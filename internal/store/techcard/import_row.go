@@ -103,7 +103,8 @@ const expireStaleTechCardImportsQuery = `
 // is also the house convention for age-based sweeps (see GetStuckPlacedOrders).
 //
 // ONLY 'uploaded' MOVES. 'committed' rows are a card's provenance and are read long after the
-// object expires; 'failed' rows are the record of a commit that did not survive its transaction,
+// object expires; 'failed' is reserved for a row quarantined by hand (no code path writes it — a
+// rolled-back commit leaves the row 'uploaded' on purpose, see entity.TechCardImportStatusFailed),
 // and repainting either as "expired" would erase what actually happened. The status is matched by
 // the entity constant rather than a literal for the same reason the insert does: two spellings of
 // one status is a row nobody picks up.

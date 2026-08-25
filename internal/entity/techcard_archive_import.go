@@ -173,7 +173,12 @@ const (
 	TechCardImportStatusUploaded = "uploaded"
 	// TechCardImportStatusCommitted — a card was created from it; tech_card_id and report are set.
 	TechCardImportStatusCommitted = "committed"
-	// TechCardImportStatusFailed — the commit was attempted and did not survive its transaction.
+	// TechCardImportStatusFailed — RESERVED: no code path writes it (checked at Ф3.3 review). A
+	// rolled-back commit deliberately leaves the row 'uploaded' — the claim happens INSIDE the
+	// transaction, so the rollback returns the row with everything else and the operator simply
+	// presses commit again, which is strictly better than a stuck upload. The word stays in the
+	// vocabulary as a manual quarantine: a row hand-set to 'failed' is refused by the commit
+	// pre-flight with «upload the file again», and the expiry sweep never repaints it.
 	TechCardImportStatusFailed = "failed"
 	// TechCardImportStatusExpired — the bucket object aged out before anybody committed it.
 	TechCardImportStatusExpired = "expired"

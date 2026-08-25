@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -500,15 +501,30 @@ func archiveManifestToPb(m techcardarchive.Manifest) *pb_admin.TechCardArchiveMa
 //     then deletes the pattern objects of a card that is ALIVE, because pattern objects have no
 //     foreign key protecting them the way media rows do. So compensation is gated on a POSITIVE
 //     re-read of tech_card_import on a fresh connection: rolled back → take the files back;
-//     committed → answer with the card that landed; could not tell → leave the objects to the
-//     sweeper (Ф5.1). An orphaned object costs storage. A deleted object of a live card costs the
-//     card.
+//     committed → answer with the card that landed; could not tell → leave the objects WHERE THEY
+//     ARE. Nothing automatic reclaims them — they live in the media/pattern segments, which the
+//     archive sweeper (Ф5.1) is forbidden to touch — so the settle logs every key loudly and the
+//     minted media rows stay visible in the media library as unused. An orphaned object costs
+//     storage and a log line. A deleted object of a live card costs the card.
 //
 //   - A PICTURE THAT VANISHED IS A HOLE, NEVER A REFUSAL. Ф3.1 mints media rows BEFORE this
 //     transaction opens, so a parallel import can match one of them by content hash and plan to
 //     reuse it; if the first import then compensates, the second one's foreign key has nothing to
 //     point at. Losing one picture with a line in the report is the owner's binding rule; losing
-//     the whole import is not. Hence the retry below.
+//     the whole import is not. Hence the retry below — which repeats for as long as pictures keep
+//     disappearing, because one vanishing does not make the next one impossible.
+//
+//   - EVERY REPAIR HERE IS BOUNDED BY A SHRINKING SET, NOT BY A COUNTER OF ONE. The two things a
+//     transaction can teach us — this number is taken, this picture is gone — can both be true
+//     twice, and a repair with a single shot answers the second occurrence by throwing the whole
+//     import away. So the number walks a bounded list of DISTINCT candidates and, when it runs
+//     out, lands the card without a number at stage `idea`; the pictures walk the set of reuse
+//     targets not yet known missing, which strictly shrinks. Neither ever answers «start over».
+//
+//   - AND WHEN A REFERENCE THAT IS NOT A PICTURE DISAPPEARS, THE ANSWER SAYS SO. Re-checking every
+//     foreign key inside the transaction is a tier this file does not have; what it does have is
+//     the knowledge that the rollback left the upload intact, so the refusal is a typed «press
+//     commit again» (codes.Aborted) rather than an internal error the operator can only report.
 //
 //   - THE REPORT IS STAMPED BY THE STORE, INSIDE THE TRANSACTION. Only the transaction knows what
 //     the WRITE dropped (chart cells outside the card's own size range, a grade base, areas, an
@@ -530,6 +546,9 @@ const (
 	tcciErrorDomain            = "techcard-import.grbpwr"
 	tcciReasonAlreadyCommitted = "TECH_CARD_IMPORT_ALREADY_COMMITTED"
 	tcciReasonNotCommittable   = "TECH_CARD_IMPORT_NOT_COMMITTABLE"
+	// tcciReasonReferenceVanished — a reference the resolver checked stopped existing before the
+	// write. The upload is untouched and pressing commit again is the fix; see tcciSettleFailure.
+	tcciReasonReferenceVanished = "TECH_CARD_IMPORT_REFERENCE_VANISHED"
 )
 
 // CommitTechCardImport turns an uploaded archive into a tech card.
@@ -601,15 +620,35 @@ func (s *Server) CommitTechCardImport(ctx context.Context, req *pb_admin.CommitT
 		return nil, err
 	}
 
-	return s.tcciWrite(ctx, tcciCommit{
-		importID: importID,
-		arch:     arch,
-		res:      res,
-		place:    place,
-		card:     card,
-		markers:  markers,
-		actor:    card.CreatedBy,
-	})
+	c := tcciCommit{
+		importID:     importID,
+		arch:         arch,
+		res:          res,
+		place:        place,
+		card:         card,
+		markers:      markers,
+		actor:        card.CreatedBy,
+		numberWanted: strings.TrimSpace(card.StyleNumber.String),
+		numberTried:  map[string]bool{},
+		mediaGone:    map[int32]bool{},
+	}
+
+	// A NUMBER THIS BASE WOULD NOT ACCEPT IS RENUMBERED, NOT REFUSED. The strict manual grammar is
+	// younger than the cards that were numbered by hand before it, so an archive of one of those
+	// carries a number that is real on the source and unwritable here — and refusing the import over
+	// it would mean this server cannot import its OWN export. The machine that answers a taken
+	// number answers this too: a proposal from the season, or a numberless card at stage idea, with
+	// the line in the report either way.
+	if verr := validateStyleNumberOverride(card); verr != nil {
+		slog.Default().InfoContext(ctx, "tech card import: the archive's style number is not writable here",
+			slog.String("import_id", importID), slog.String("style_number", c.numberWanted),
+			slog.String("err", verr.Error()))
+		s.tcciRenumber(ctx, &c, techcardarchive.ReasonArchiveRowInvalid,
+			fmt.Sprintf("the archive's style number %q is not a number this base can hold "+
+				"(it predates the current article grammar)", c.numberWanted))
+	}
+
+	return s.tcciWrite(ctx, c)
 }
 
 // tcciCommittable answers whether this upload row may still become a card, and says WHY not in
@@ -728,9 +767,18 @@ func tcciArchiveError(ctx context.Context, importID, phase string, err error) er
 // supplied sign-offs into fresh ones stamped with the importing operator's name — so handing it any
 // would be how you MINT a signature out of a file. The store strips them a third time; this is the
 // second, and the first is the sanitiser.
+//
+// AND ONE GATE THAT DELIBERATELY IS NOT RUN HERE: validateStyleNumberOverride. It is a REFUSAL on
+// the create path (a person typed a number that does not match the grammar; tell them so) and must
+// not be one here, because the number in the archive was not typed by the person importing it —
+// see tcciRenumber's last paragraph. The caller runs it and routes its refusal into the renumber
+// machine, which is the only place in this file that decides what a card is called.
 func (s *Server) tcciPayload(ctx context.Context, res *resolvedTechCardImport) (
 	*entity.TechCardInsert, []entity.TechCardMarkerInsert, error) {
 
+	if err := tcciMoneyBelt(ctx, res.Insert); err != nil {
+		return nil, nil, err
+	}
 	if err := tcciWireGates(res.Insert); err != nil {
 		return nil, nil, err
 	}
@@ -738,9 +786,18 @@ func (s *Server) tcciPayload(ctx context.Context, res *resolvedTechCardImport) (
 	if err != nil {
 		return nil, nil, techCardConvertErr(err)
 	}
-	if err := validateStyleNumberOverride(card); err != nil {
-		return nil, nil, err
-	}
+	// THE SECOND HALF OF THE WASTAGE BADGE CHECK, AND IT HAS TO BE HERE.
+	//
+	// The resolver re-earned the badge against THIS base's own measured lays and wrote its verdict
+	// into res.WastageVerified — but the field that verdict lands in (WastageClaimVerified) is
+	// `db:"-"`: it exists only on the entity and only for the store to read, which is what makes
+	// the store fail-closed against a direct caller. So the stamp cannot happen where the verdict
+	// is taken; it happens on the FIRST object that has the field, which is this one, one line
+	// after it comes into existence. Without this call the check still degrades what it cannot
+	// confirm — and silently drops what it CAN, which is the loss the whole check exists to stop:
+	// a card exported from this base and restored into it would come back with its badge as
+	// 'manual', with nothing in the report to say why.
+	res.stampVerifiedWastageClaims(card)
 	markers, err := tcciMarkers(res.MarkerPlan)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "this archive's %v", err)
@@ -751,6 +808,49 @@ func (s *Server) tcciPayload(ctx context.Context, res *resolvedTechCardImport) (
 	username := authsrv.GetAdminUsername(ctx)
 	card.CreatedBy, card.UpdatedBy = username, username
 	return card, markers, nil
+}
+
+// tcciMoneyBelt is the last check that no money from a foreign base is about to be written, and it
+// is meant to be dead code forever.
+//
+// THE INVARIANT IS NOT «THIS OPERATOR MAY WRITE COSTS». CreateTechCard asks that question, because
+// there a person is sending their own figures and the answer is a permission. Here the figures came
+// out of somebody else's ZIP, and the rule above every permission is that ARCHIVE MONEY DOES NOT
+// TRAVEL AT ALL (FORMAT.md's money policy; the resolver's sanitiser is what enforces it). So this
+// probe — the very one the create path uses to detect cost input — must be FALSE by construction on
+// every payload that reaches here, and costs nothing to ask.
+//
+// WHICH IS WHY A HIT IS `Internal` AND NOT `PermissionDenied`. If it ever fires, the archive is not
+// the problem and the operator is not the problem: OUR sanitiser leaked, and a refusal blaming the
+// person's rights would send them to ask for a permission that would not help and, if granted,
+// would write another company's prices into this catalogue. The answer names the field that leaked,
+// because that is the only thing anybody debugging this will want.
+func tcciMoneyBelt(ctx context.Context, in *pb_common.TechCardInsert) error {
+	if !techCardInsertHasCostingData(in) {
+		return nil
+	}
+	field := tcciLeakedCostingField(in)
+	slog.Default().ErrorContext(ctx,
+		"tech card import: THE MONEY SANITISER LEAKED — costing data survived into the import payload",
+		slog.String("field", field))
+	return status.Errorf(codes.Internal,
+		"this import carries costing data in %s, which an archive may never bring; nothing was written "+
+			"— this is a fault in the importer, not in the archive", field)
+}
+
+// tcciLeakedCostingField names the first cost-bearing field for the sentence above. It only ever
+// DESCRIBES: techCardInsertHasCostingData is the authority on whether there is anything to describe,
+// and if the two ever disagree the belt still refuses — with "unknown" rather than with silence.
+func tcciLeakedCostingField(in *pb_common.TechCardInsert) string {
+	if in.GetCosting() != nil {
+		return "costing"
+	}
+	for i, b := range in.GetBomItems() {
+		if b.GetUnitPrice() != nil {
+			return fmt.Sprintf("bom_items[%d].unit_price", i)
+		}
+	}
+	return "unknown"
 }
 
 // tcciWireGates runs the capability shields in the order CreateTechCard runs them.
@@ -921,15 +1021,37 @@ type tcciCommit struct {
 	// re-stamp it: a rebuilt card carrying the archive's created_by would credit the import to
 	// somebody in another company.
 	actor string
-	// holes are the lines this HANDLER added on top of the resolver's — a style number that turned
-	// out to be taken, a reused picture that disappeared. They are kept apart from res.Holes so a
-	// retry rebuilds the report from one accumulating list rather than mutating the resolver's.
+	// holes are the lines this HANDLER added on top of the resolver's — a reused picture that
+	// disappeared. They are kept apart from res.Holes so a retry rebuilds the report from one
+	// accumulating list rather than mutating the resolver's.
 	holes []techcardarchive.ImportHole
-	// renumbered / remedied make each repair once. A repair that could fire twice is a loop: the
-	// second style number can be taken too, and «try another one forever» is how an import spends an
-	// afternoon writing nothing.
-	renumbered bool
-	remedied   bool
+
+	// ── the number ──────────────────────────────────────────────────────────────────────────────
+	//
+	// numberWanted is the number the ARCHIVE asked for, kept because it is what the report line has
+	// to name however many proposals it took to land: the operator's question is «what happened to
+	// my article number», not «what was the third candidate».
+	numberWanted string
+	// numberTried is every number this commit has already offered the base, folded for comparison —
+	// the archive's own included. It is what makes the retry try a DIFFERENT candidate each time
+	// (a proposal repeated is a transaction spent to fail identically) and what bounds the loop.
+	numberTried map[string]bool
+	// numberHole is the ONE report line about the number, rewritten rather than appended on each
+	// attempt: the intermediate candidates are this server's business, and three lines saying
+	// «taken» in a row is how a report stops being read.
+	numberHole *techcardarchive.ImportHole
+	// numberDecided says this handler — not the archive — chose the card's number and stage, so a
+	// rebuild has to re-apply that choice instead of re-deriving the archive's.
+	numberDecided bool
+	// numberExhausted says the machine has run out of candidates and landed the card numberless; a
+	// further duplicate key cannot be the style-number index (no number, nothing to collide), so it
+	// must not be answered by renumbering again.
+	numberExhausted bool
+
+	// mediaGone is every reused media row this commit has already found missing and cleared out of
+	// the payload. It is the working set's complement: each repair moves at least one target into
+	// it and nothing ever leaves, which is what makes the repair repeatable AND finite.
+	mediaGone map[int32]bool
 }
 
 // tcciWrite runs the transaction, and repairs at most two things that can only be discovered by
@@ -1005,9 +1127,15 @@ func (s *Server) tcciWrite(ctx context.Context, c tcciCommit) (*pb_admin.CommitT
 // It is stamped by the STORE, inside the transaction, after the write has amended it with its own
 // losses. Nothing here writes it anywhere.
 func tcciReport(c tcciCommit) ([]byte, error) {
-	holes := make([]techcardarchive.ImportHole, 0, len(c.res.Holes)+len(c.holes))
+	holes := make([]techcardarchive.ImportHole, 0, len(c.res.Holes)+len(c.holes)+1)
 	holes = append(holes, c.res.Holes...)
 	holes = append(holes, c.holes...)
+	// ONE line about the number, however many candidates it took. It lives apart from the list
+	// above precisely so a retry REPLACES it: the operator's question is what became of their
+	// article number, and three consecutive «taken» lines answer it worse than one.
+	if c.numberHole != nil {
+		holes = append(holes, *c.numberHole)
+	}
 	return techcardarchive.MarshalReport(techcardarchive.BuildReport(techcardarchive.ReportInput{
 		ImportID:    c.importID,
 		StyleNumber: c.card.StyleNumber.String,
@@ -1040,36 +1168,31 @@ func tcciLabelLinks(in []tcimpLabelLink) []entity.TechCardArchiveLabelLink {
 // EVERY BRANCH HERE STANDS ON A DEFINITE ROLLBACK. A duplicate key and a foreign key are raised by
 // a STATEMENT, so the transaction that carried them is gone and nothing it wrote survives — which
 // is why these two may retry while the ambiguous class below may not.
+//
+// NEITHER BRANCH IS ONCE-ONLY, AND BOTH ARE FINITE. A repair allowed exactly one shot is a bet that
+// the base holds still between two transactions, which is the very assumption this whole path
+// exists to deny: the number a server proposed can be taken by the import running beside ours
+// before we write it, and a second reused picture can vanish after the first was patched out. Each
+// branch therefore repeats — and each repeats against a set that STRICTLY SHRINKS (candidates not
+// yet tried; reuse targets not yet known missing), which is why «repeat» is not «loop».
 func (s *Server) tcciRepair(ctx context.Context, c *tcciCommit, err error) (bool, error) {
 	switch {
 	// ── the style number was taken between the dry run and now ──
-	case !c.renumbered && s.repo.IsErrUniqueViolation(err):
-		// A 1062 does not say WHICH unique index fired — the driver reports one number for every
-		// index in the schema — and a card write touches two of them (style_number and the
-		// equipment profile key of 0306). Renumbering on the strength of the number alone would
-		// loop forever on the other one, minting a fresh style number on every pass. So the
-		// conflict is CONFIRMED by reading the number back before anything is renamed.
-		taken, lookupErr := s.tcciStyleNumberTaken(ctx, c.card.StyleNumber.String)
-		if lookupErr != nil {
-			slog.Default().ErrorContext(ctx, "tech card import: can't check whether the style number is taken",
-				slog.String("import_id", c.importID),
-				slog.String("style_number", c.card.StyleNumber.String),
-				slog.String("err", lookupErr.Error()))
-			return false, nil // fall through to the ordinary failure path; the files are settled there
-		}
-		if !taken {
+	case !c.numberExhausted && c.card.StyleNumber.Valid && s.repo.IsErrUniqueViolation(err):
+		if !s.tcciConflictIsStyleNumber(ctx, c, err) {
 			return false, nil // somebody else's unique index — not ours to rename around
 		}
-		c.holes = append(c.holes, s.tcciRenumber(ctx, c.card))
-		c.renumbered = true
+		s.tcciRenumber(ctx, c, techcardarchive.ReasonStyleNumberTaken,
+			fmt.Sprintf("the archive's style number %q is already used by a card in this base", c.numberWanted))
 		return true, nil
 
 	// ── a picture this base already held disappeared under us ──
-	case !c.remedied && s.repo.IsErrForeignKeyViolation(err):
-		holes := s.tcciDropVanishedMedia(ctx, c.res, c.place)
+	case s.repo.IsErrForeignKeyViolation(err):
+		holes := s.tcciDropVanishedMedia(ctx, c)
 		if len(holes) == 0 {
-			// The foreign key that broke was not a media row. Nothing here can repair it, and
-			// pretending otherwise would retry an identical transaction.
+			// The foreign key that broke was not a media row — or was one this commit has already
+			// patched out. Nothing here can repair it, and pretending otherwise would retry an
+			// identical transaction. tcciSettleFailure turns it into a sentence.
 			return false, nil
 		}
 		// THE REPAIR IS ON THE WIRE MESSAGE, AND THE PAYLOAD IS DERIVED FROM IT. Without this the
@@ -1084,7 +1207,6 @@ func (s *Server) tcciRepair(ctx context.Context, c *tcciCommit, err error) (bool
 			return false, err
 		}
 		c.holes = append(c.holes, holes...)
-		c.remedied = true
 		return true, nil
 	}
 	return false, nil
@@ -1093,22 +1215,79 @@ func (s *Server) tcciRepair(ctx context.Context, c *tcciCommit, err error) (bool
 // rebuild re-derives the entity payload from the repaired insert and re-applies every decision this
 // commit has already made about it — the operator's stamp, and a style number this handler picked.
 //
-// A decision is re-applied rather than re-taken: the number was chosen once, against the state of
-// the base at that moment, and asking for another proposal here would mint a second number and
-// leave the report describing the first.
+// A decision is re-applied rather than re-taken: the number was chosen against the state of the
+// base at the moment it was chosen, and asking for another proposal here would mint a number
+// nothing has refused yet and leave the report describing the previous one.
 func (c *tcciCommit) rebuild() error {
 	fresh, err := dto.ConvertPbTechCardInsertToEntity(c.res.Insert)
 	if err != nil {
 		return techCardConvertErr(err)
 	}
+	// The badge again, for the same reason and on the same line as in tcciPayload: this entity is
+	// BRAND NEW — the conversion above built it from the wire message, where the verdict has no
+	// field to travel in — so a repair that forgot to re-stamp would silently demote to 'manual'
+	// every claim the resolver confirmed, and would do it only on the retry paths, which is the
+	// half nobody looks at. The stamper is idempotent and keyed by line_key, so re-running it over
+	// a payload whose media ids have just been cleared touches exactly the lines it touched before.
+	c.res.stampVerifiedWastageClaims(fresh)
 	fresh.CreatedBy, fresh.UpdatedBy = c.actor, c.actor
-	if c.renumbered {
+	if c.numberDecided {
 		fresh.StyleNumber = c.card.StyleNumber
 		fresh.StyleNumberSource = c.card.StyleNumberSource
 		fresh.Stage = c.card.Stage
 	}
 	c.card = fresh
 	return nil
+}
+
+// tcciConflictIsStyleNumber answers the one question a 1062 does not: WHICH unique index fired.
+//
+// It matters because a card write touches more than one (style_number, and the equipment profile
+// key of 0306), and renumbering on the strength of the error NUMBER alone would answer somebody
+// else's collision by minting a fresh style number on every pass — a card renamed for nothing, and
+// a bounded loop spent to fail identically at the end of it.
+//
+// TWO SOURCES, THE CHEAP ONE FIRST. MySQL names the index in the message («Duplicate entry 'X' for
+// key 'tech_card.uniq_tech_card_style_number'») and the driver keeps that text in the error it
+// returns, so the name survives every %w wrap up to here. The store's classifier deliberately
+// exposes only the number — it is one predicate for the whole schema — but the name is free to
+// read, and reading it is strictly better than the fallback: it says which index fired, where the
+// fallback can only say that the number happens to be taken by SOMEBODY, which is also true when
+// the conflict was elsewhere entirely.
+//
+// The fallback is the paged read-back, used only when no name can be extracted. Its cost is a walk
+// of the card list; its answer is an inference. Both directions of the name are trusted when it is
+// there: a name that does not mention style_number means the conflict is not ours, and failing fast
+// with the store's own error is what a person can act on.
+func (s *Server) tcciConflictIsStyleNumber(ctx context.Context, c *tcciCommit, err error) bool {
+	if key, ok := tcciDuplicateKeyName(err); ok {
+		return strings.Contains(strings.ToLower(key), "style_number")
+	}
+	taken, lookupErr := s.tcciStyleNumberTaken(ctx, c.card.StyleNumber.String)
+	if lookupErr != nil {
+		slog.Default().ErrorContext(ctx, "tech card import: can't check whether the style number is taken",
+			slog.String("import_id", c.importID),
+			slog.String("style_number", c.card.StyleNumber.String),
+			slog.String("err", lookupErr.Error()))
+		return false // fall through to the ordinary failure path; the files are settled there
+	}
+	return taken
+}
+
+// tcciDupKeyRxp lifts the index name out of a MySQL 1062. The quoted form is stable across 5.7 and
+// 8.0 (8.0 qualifies it with the table, which is why the match is a `Contains` above and not an
+// equality), and a message this does not match simply means «no name here» — never a wrong name.
+var tcciDupKeyRxp = regexp.MustCompile(`for key '([^']+)'`)
+
+func tcciDuplicateKeyName(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	m := tcciDupKeyRxp.FindStringSubmatch(err.Error())
+	if len(m) != 2 || strings.TrimSpace(m[1]) == "" {
+		return "", false
+	}
+	return m[1], true
 }
 
 // tcciStyleNumberTaken reads the number back and reports whether a card here already carries it.
@@ -1143,43 +1322,81 @@ func (s *Server) tcciStyleNumberTaken(ctx context.Context, number string) (bool,
 	}
 }
 
-// tcciRenumber gives the card a number it can actually have, and returns the line that says so.
+// tcciMaxStyleNumberProposals bounds how many DISTINCT numbers the server may propose for one
+// commit before it stops proposing and lands the card without a number.
+//
+// THREE, and the bound is about livelock rather than correctness. Every proposal costs a whole
+// SERIALIZABLE transaction that re-runs every write of the card, and a k-th consecutive refusal
+// means k−1 OTHER imports of the same season won the number between our proposal and our write.
+// Imports are a human pressing a button; three lost races in a row is already a base doing
+// something this handler should stop guessing about. And stopping is cheap here in a way it is not
+// elsewhere: the numberless landing below is a COMPLETE outcome — the whole card, every picture,
+// every operation — that a person closes by typing a number, not a failure.
+const tcciMaxStyleNumberProposals = 3
+
+// tcciRenumber gives the card a number it can actually have, and writes the ONE report line that
+// says so.
 //
 // TWO OUTCOMES, and the second one is not a failure:
 //
-//   - THE CARD HAS A SEASON → the server proposes the next free number of that season, exactly as
-//     the «suggest» button does, and the card lands under it with source=generated. The archive's
-//     number is in the report, so the operator can decide whether the collision was a coincidence
-//     or two people importing the same garment.
-//   - IT HAS NO SEASON → there is nothing to generate FROM, so the card lands with NO NUMBER and
-//     stage `idea`. That pairing is forced by the contract, not chosen here: a style number is
-//     required from `proto` onward, so a numberless card at any later stage is unwritable. `idea`
-//     is the honest stage for «a card that still has to be named», and the report says what to do.
+//   - A CANDIDATE IS AVAILABLE → the server proposes the next free number of the card's season,
+//     exactly as the «suggest» button does, and the card lands under it with source=generated. The
+//     archive's number is in the report, so the operator can decide whether the collision was a
+//     coincidence or two people importing the same garment.
+//   - THERE IS NO CANDIDATE LEFT → the card lands with NO NUMBER and stage `idea`. That pairing is
+//     forced by the contract, not chosen here: a style number is required from `proto` onward, so a
+//     numberless card at any later stage is unwritable. `idea` is the honest stage for «a card that
+//     still has to be named», and the report says what to do.
 //
-// A failed proposal falls into the second outcome rather than failing the import. The card and its
-// whole content are already in hand at that point, and losing them over a number a person can type
-// in five seconds would be the wrong trade.
-func (s *Server) tcciRenumber(ctx context.Context, card *entity.TechCardInsert) techcardarchive.ImportHole {
-	was := strings.TrimSpace(card.StyleNumber.String)
-	ref := fmt.Sprintf("style_number=%s", was)
+// «NO CANDIDATE LEFT» IS THREE SITUATIONS AND ONE ANSWER: the card carries no season to generate
+// from; the proposal failed or came back empty; the proposal is one this commit has ALREADY offered
+// and had refused (a repeat is a transaction spent to fail identically), or the proposal budget is
+// spent. Every one of them lands the whole card rather than losing it over a number a person types
+// in five seconds — which is the owner's binding rule applied to the card's own name.
+//
+// IT IS ALSO THE ANSWER TO A NUMBER THIS BASE WOULD NOT ACCEPT AT ALL. The strict manual grammar
+// (stylenumber.ValidateManual: uppercase segments, no spaces) postdates cards that were numbered by
+// hand before it existed, and an archive of one of those carries a number that is perfectly real on
+// the source and unwritable here. Refusing the import over it would mean OUR OWN export cannot be
+// imported; so the caller routes that refusal into this machine with its own reason code, and the
+// card lands under a number this base can hold.
+func (s *Server) tcciRenumber(ctx context.Context, c *tcciCommit, reason techcardarchive.Reason, because string) {
+	card := c.card
+	c.numberDecided = true
+	if c.numberTried == nil {
+		c.numberTried = map[string]bool{}
+	}
+	// The number this attempt carried is now known to be unusable, whichever way it failed.
+	c.numberTried[strings.ToLower(strings.TrimSpace(card.StyleNumber.String))] = true
+	ref := fmt.Sprintf("style_number=%s", c.numberWanted)
 
 	season := strings.TrimSpace(card.SeasonCode.String)
-	if card.SeasonCode.Valid && season != "" && card.SeasonYear.Valid {
+	if len(c.numberTried) <= tcciMaxStyleNumberProposals &&
+		card.SeasonCode.Valid && season != "" && card.SeasonYear.Valid {
+
 		next, err := s.repo.TechCards().SuggestStyleNumber(ctx, season, int(card.SeasonYear.Int32))
-		if err != nil {
+		switch n := strings.TrimSpace(next); {
+		case err != nil:
 			slog.Default().WarnContext(ctx, "tech card import: can't propose a replacement style number",
 				slog.String("season", season), slog.Int("year", int(card.SeasonYear.Int32)),
 				slog.String("err", err.Error()))
-		} else if n := strings.TrimSpace(next); n != "" {
+		case n == "":
+		case c.numberTried[strings.ToLower(n)]:
+			// The proposal is one the base has already refused for this commit. Proposing it again
+			// would spend another transaction to land in exactly this branch, so the budget is
+			// declared spent here rather than counted down.
+			slog.Default().WarnContext(ctx, "tech card import: the proposed style number was already refused",
+				slog.String("import_id", c.importID), slog.String("style_number", n))
+		default:
 			card.StyleNumber = sql.NullString{String: n, Valid: true}
 			card.StyleNumberSource = entity.StyleNumberSourceGenerated
-			return techcardarchive.ImportHole{
+			c.numberHole = &techcardarchive.ImportHole{
 				Entity: techcardarchive.EntityCard, Ref: ref,
 				Status: techcardarchive.StatusDegraded,
-				Reason: techcardarchive.ReasonStyleNumberTaken,
-				Detail: fmt.Sprintf("the archive's style number %q is already used by a card in this base, "+
-					"so this one landed as %q", was, n),
+				Reason: reason,
+				Detail: fmt.Sprintf("%s, so this one landed as %q", because, n),
 			}
+			return
 		}
 	}
 
@@ -1188,13 +1405,13 @@ func (s *Server) tcciRenumber(ctx context.Context, card *entity.TechCardInsert) 
 	// means «the value was hand-set and passed the strict validator», which an empty string is not.
 	card.StyleNumberSource = entity.StyleNumberSourceGenerated
 	card.Stage = entity.TechCardStageIdea
-	return techcardarchive.ImportHole{
+	c.numberExhausted = true
+	c.numberHole = &techcardarchive.ImportHole{
 		Entity: techcardarchive.EntityCard, Ref: ref,
 		Status: techcardarchive.StatusDegraded,
-		Reason: techcardarchive.ReasonStyleNumberTaken,
-		Detail: fmt.Sprintf("the archive's style number %q is already used here, and the card carries no "+
-			"season to propose a replacement from, so it landed WITHOUT a number at stage `idea` — "+
-			"give it a number to move it on", was),
+		Reason: reason,
+		Detail: fmt.Sprintf("%s, and no replacement could be proposed for it, so the card landed WITHOUT a "+
+			"number at stage `idea` — give it a number to move it on", because),
 	}
 }
 
@@ -1212,12 +1429,30 @@ func (s *Server) tcciRenumber(ctx context.Context, card *entity.TechCardInsert) 
 // survives — the same walk and the same field list the resolver used to put those ids there. A
 // bespoke «set these ids to zero» pass would be a second mechanism for one rule, and the two would
 // drift the first time a media field is added to the contract.
-func (s *Server) tcciDropVanishedMedia(ctx context.Context, res *resolvedTechCardImport, p *tcflPlacement) []techcardarchive.ImportHole {
+//
+// IT IS CALLED AGAIN AFTER IT HAS ALREADY REPAIRED SOMETHING, AND THAT IS THE POINT. One picture
+// vanishing does not stop a second from vanishing while the repaired transaction is on its way, and
+// a repair allowed one shot would answer the second disappearance with the whole import. The set it
+// asks about is the reuse targets NOT ALREADY KNOWN GONE (c.mediaGone), and every repair moves at
+// least one target into that set and never back out — so the set it works on strictly shrinks, the
+// walk runs at most once per reused picture, and the call after the last one answers «nothing left
+// to repair» with an empty slice rather than looping. That shrinking IS the termination proof; no
+// counter is needed and none is kept.
+func (s *Server) tcciDropVanishedMedia(ctx context.Context, c *tcciCommit) []techcardarchive.ImportHole {
+	res, p := c.res, c.place
+	if c.mediaGone == nil {
+		c.mediaGone = map[int32]bool{}
+	}
 	reused := map[int32]bool{}
 	ids := []int{}
 	for _, plan := range res.MediaPlan {
-		if plan.Action == tcimpMediaReuse && plan.TargetID > 0 && !reused[plan.TargetID] {
-			reused[plan.TargetID] = true
+		if plan.Action != tcimpMediaReuse || plan.TargetID <= 0 || reused[plan.TargetID] {
+			continue
+		}
+		reused[plan.TargetID] = true
+		// Already cleared out of the payload by an earlier repair: asking about it again would
+		// re-report a picture whose line is already in the report, and re-decrement its counter.
+		if !c.mediaGone[plan.TargetID] {
 			ids = append(ids, int(plan.TargetID))
 		}
 	}
@@ -1231,9 +1466,10 @@ func (s *Server) tcciDropVanishedMedia(ctx context.Context, res *resolvedTechCar
 		return nil
 	}
 	gone := map[int32]bool{}
-	for id := range reused {
-		if _, ok := live[int(id)]; !ok {
-			gone[id] = true
+	for _, id := range ids {
+		if _, ok := live[id]; !ok {
+			gone[int32(id)] = true
+			c.mediaGone[int32(id)] = true
 		}
 	}
 	if len(gone) == 0 {
@@ -1245,7 +1481,10 @@ func (s *Server) tcciDropVanishedMedia(ctx context.Context, res *resolvedTechCar
 	// and Ф3.1 the only media ids in this payload are reuse targets and freshly minted rows.
 	mapping := make(map[int64]int64, len(reused)+len(p.mediaByPlaceholder))
 	for id := range reused {
-		if !gone[id] {
+		// c.mediaGone and not just this round's `gone`: a picture cleared by an EARLIER repair is
+		// not in the payload any more, and re-listing it as a survivor would be this walk stating
+		// that it is.
+		if !c.mediaGone[id] {
 			mapping[int64(id)] = int64(id)
 		}
 	}
@@ -1324,6 +1563,13 @@ type tcciSettlement struct {
 // A read error is `unknown`, and so is a row that has gone missing: both mean «this cannot be
 // established», and the whole point of the verdict is that only a POSITIVE «rolled back» unlocks
 // deletion.
+//
+// THE STATUS IS READ BY NAME, NEVER BY «IS IT NOT COMMITTED». The set of statuses is held in Go
+// with no CHECK behind it (entity.TechCardImportStatus*, migration 0336 declines the constraint on
+// purpose) precisely so it can grow — which means the one thing this function must not do is treat
+// every word it has not heard of as proof of a rollback. A status minted by a newer binary during a
+// rolling deploy, or a value corrupted by hand, would then unlock the deletion of a live card's
+// objects. «I do not know» is not a rollback; only «uploaded» is.
 func (s *Server) tcciSettle(ctx context.Context, importID string) tcciSettlement {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tcciSettleTimeout)
 	defer cancel()
@@ -1334,16 +1580,45 @@ func (s *Server) tcciSettle(ctx context.Context, importID string) tcciSettlement
 			slog.String("import_id", importID), slog.String("err", err.Error()))
 		return tcciSettlement{verdict: tcciVerdictUnknown}
 	}
-	if row.Status != entity.TechCardImportStatusCommitted {
+
+	switch row.Status {
+	// THE ONLY PROVEN ROLLBACK. The claim that flips this row to `committed` is the transaction's
+	// FIRST statement, so a row still reading `uploaded` on a fresh connection is a transaction that
+	// is not there: nothing it wrote survived, and the files it moved are orphans.
+	case entity.TechCardImportStatusUploaded:
 		return tcciSettlement{verdict: tcciVerdictRolledBack}
+
+	case entity.TechCardImportStatusCommitted:
+		if row.TechCardID.Valid && row.TechCardID.Int32 > 0 {
+			return tcciSettlement{verdict: tcciVerdictCommitted, techCardID: int(row.TechCardID.Int32)}
+		}
+		// `committed` with no card id cannot be produced by one transaction — the claim and the
+		// stamp are two statements of the same one. Something else wrote this row, and guessing is
+		// exactly what must not happen next.
+		slog.Default().ErrorContext(sctx,
+			"tech card import: the import row says committed but carries no card id; nothing will be deleted",
+			slog.String("import_id", importID))
+		return tcciSettlement{verdict: tcciVerdictUnknown}
+
+	// EVERY OTHER WORD IS «I DO NOT KNOW», INCLUDING THE TWO WE SHIP.
+	//
+	//   - `expired` is written by the archive sweeper, whose predicate lives in another component;
+	//     reading it as «therefore it was never committed» would make this function's safety depend
+	//     on a WHERE clause it does not own, and the day that clause widens the dependency fails
+	//     silently and deletes objects of a live card.
+	//   - `failed` has no writer at all (entity.TechCardImportStatusFailed is a reserved word for a
+	//     hand-set quarantine), so a row carrying it was painted by a person and says nothing about
+	//     the fate of THIS transaction.
+	//   - anything else is a status this binary has never heard of.
+	//
+	// All three cost the same thing: storage for objects nobody reclaims, and the log line below.
+	// The alternative costs a card.
+	default:
+		slog.Default().ErrorContext(sctx,
+			"tech card import: the import row carries a status this server cannot read as an outcome; nothing will be deleted",
+			slog.String("import_id", importID), slog.String("status", row.Status))
+		return tcciSettlement{verdict: tcciVerdictUnknown}
 	}
-	if row.TechCardID.Valid && row.TechCardID.Int32 > 0 {
-		return tcciSettlement{verdict: tcciVerdictCommitted, techCardID: int(row.TechCardID.Int32)}
-	}
-	// `committed` with no card id cannot be produced by one transaction — the claim and the stamp
-	// are two statements of the same one. Something else wrote this row, and guessing is exactly
-	// what must not happen next.
-	return tcciSettlement{verdict: tcciVerdictUnknown}
 }
 
 // tcciSettleFailure is the last word on a commit that returned an error: what to tell the operator,
@@ -1355,8 +1630,11 @@ func (s *Server) tcciSettle(ctx context.Context, importID string) tcciSettlement
 //     files are ours to take back, and the answer names the card the winner made.
 //   - rolled back → definite. Take the files back and say the import failed.
 //   - committed → the import LANDED and the error was on the way back. Answer with the card.
-//   - unknown → say nothing was deleted. An orphaned object costs storage until the sweeper (Ф5.1)
-//     finds it; an object deleted out from under a live card costs the card.
+//   - unknown → say nothing was deleted. The leftovers are NOT swept by anything: Ф5.1 cleans only
+//     the two archive segments, never the media/pattern folders these objects live in — which is
+//     why the log below lists every key, and why the minted media rows (still in the media table)
+//     surface in the media library as unused. An orphaned object costs storage and a log line; an
+//     object deleted out from under a live card costs the card.
 func (s *Server) tcciSettleFailure(ctx context.Context, c tcciCommit, err error) (
 	*pb_admin.CommitTechCardImportResponse, error) {
 
@@ -1400,8 +1678,47 @@ func (s *Server) tcciSettleFailure(ctx context.Context, c tcciCommit, err error)
 	if errors.As(err, &ve) {
 		return nil, apierr.Invalid(ve)
 	}
+
+	// A FOREIGN KEY THAT SURVIVED THE REPAIR IS A REFERENCE THAT DISAPPEARED, AND SAYING SO IS THE
+	// WHOLE FIX.
+	//
+	// The resolver checked every reference this payload carries against this base, minutes ago at
+	// most. A 1452 out of the write therefore means one of them went away in between: a category
+	// deleted, a material retired, a size taken out of the dictionary, a work removed from the
+	// catalogue. Repairing it properly — re-verifying every foreign key INSIDE the transaction — is
+	// a tier this handler does not have and this task does not order.
+	//
+	// What is not acceptable is a five-hundred. The rollback left the import row `uploaded` (the
+	// claim is the transaction's first statement and went back with it), so the archive is still in
+	// the bucket and pressing commit again re-resolves against the base as it is NOW — which is
+	// exactly the fix. An answer that hides that behind «internal error» sends the operator to open
+	// a ticket instead of pressing a button. Aborted rather than FailedPrecondition because that is
+	// gRPC's word for «a concurrent change lost you this attempt, retry it», which is the literal
+	// truth here.
+	if s.repo.IsErrForeignKeyViolation(err) {
+		return nil, tcciReferenceVanished(c.importID)
+	}
+
 	return nil, status.Errorf(codes.Internal,
 		"the import could not be written and no card was created; try again (import %s)", c.importID)
+}
+
+// tcciReferenceVanished is the answer to «something this archive pointed at stopped existing while
+// the import was running»: a sentence naming the remedy, and a machine-readable reason beside it so
+// a panel can offer the button rather than print English.
+func tcciReferenceVanished(importID string) error {
+	st := status.New(codes.Aborted,
+		"something this import referred to — a category, a material, a size, a work or a picture — was "+
+			"deleted while the import was running, so no card was created. Press commit again: the archive "+
+			"is still uploaded and will be matched against the catalogue as it is now.")
+	withDetails, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason: tcciReasonReferenceVanished, Domain: tcciErrorDomain,
+		Metadata: map[string]string{"import_id": importID},
+	})
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
 }
 
 // tcciCommitted builds the success answer, with THE REPORT THAT WAS STORED.
