@@ -1146,6 +1146,11 @@ type (
 		// которые НАЗЫВАЮТ работу и несут норму времени. Победителя на каждую работу выбирает
 		// entity.LatestOperationWorkSmv, а не запрос.
 		ListOperationWorkSmvSamples(ctx context.Context) ([]entity.OperationWorkSmvSample, error)
+		// AppendTechCardArchiveExportedEvent records one ZIP export in the card's auto-journal
+		// (Ф1.5). Nothing else remembers it: the bucket object expires in days, the presigned link
+		// in minutes, and an export does not touch the card — so without this row "was this style
+		// ever sent out of the building" has no answer in the database at all.
+		AppendTechCardArchiveExportedEvent(ctx context.Context, techCardID int, author, summary string) error
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size
