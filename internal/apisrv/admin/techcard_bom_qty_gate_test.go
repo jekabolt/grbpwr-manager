@@ -248,3 +248,26 @@ func TestBomQtyGatesAreActuallyCalled(t *testing.T) {
 			"сотрёт количества молча", got)
 	}
 }
+
+// TestCloneDeclaresBomQtyAware — СЕРВЕРНЫЙ ПУТЬ ОБЯЗАН СТАВИТЬ ФЛАГ САМ.
+//
+// Щит не фильтрует поля, но и не делает исключений: CloneStyleForSeason строит payload сам и
+// транспортных флагов не эмитит, поэтому без явной установки клон карточки С количествами упёрся бы
+// в собственный щит — то есть сломался бы ровно там, где данные надо СОХРАНИТЬ. Проверяется рядом с
+// уже стоящим operation_kinds_aware: его наличие — положительный контроль, что извлекатель смотрит
+// в нужную функцию.
+func TestCloneDeclaresBomQtyAware(t *testing.T) {
+	body, err := os.ReadFile("style.go")
+	if err != nil {
+		t.Fatalf("не читается style.go: %v", err)
+	}
+	src := string(body)
+	if !strings.Contains(src, "pbInsert.OperationKindsAware = true") {
+		t.Fatal("в style.go не нашлось pbInsert.OperationKindsAware — извлекатель смотрит не туда, " +
+			"и проверка ниже зеленела бы на любой ошибке")
+	}
+	if !strings.Contains(src, "pbInsert.BomQtyAware = true") {
+		t.Error("клон сезона не объявляет bom_qty_aware — карточка с количествами не склонируется " +
+			"вовсе: её остановит собственный щит")
+	}
+}
