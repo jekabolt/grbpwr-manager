@@ -1442,6 +1442,9 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		ProductId:   int(req.ProductId),
 		Purpose:     purpose,
 		CategoryIds: categoryIDs,
+		// Коллекция фильтруется по хранимому ИМЕНИ: колонки-ссылки у тех-карты нет — её дропнула
+		// 0240 как мёртвую схему. "" = нет фильтра.
+		Collection: strings.TrimSpace(req.GetCollection()),
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

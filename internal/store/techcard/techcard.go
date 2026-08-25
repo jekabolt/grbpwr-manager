@@ -905,6 +905,18 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 		where += " AND purpose = :purpose"
 		params["purpose"] = filter.Purpose
 	}
+	// ПО ИМЕНИ, ПОТОМУ ЧТО КОЛОНКИ-ССЫЛКИ НЕ СУЩЕСТВУЕТ. Коллекция хранится ИМЕНЕМ в
+	// tech_card.collection (свободный текст, его пишет форма карточки); `tech_card.collection_id`,
+	// заведённую 0154, дропнула 0240_drop_tech_card_collection_id.sql как мёртвую схему — «an unread
+	// orphan». Это не недосмотр и не место для «починки»: фильтровать здесь можно ТОЛЬКО по строке.
+	//
+	// Точное совпадение, а не LIKE: значения приходят из словаря коллекций (или из пула имён,
+	// встреченных в самих строках листа), то есть человек ВЫБИРАЕТ существующее имя, а не набирает
+	// его. Подстрочный поиск склеил бы «SS24» и «SS24 drop 2» в один фильтр.
+	if filter.Collection != "" {
+		where += " AND collection = :collection"
+		params["collection"] = filter.Collection
+	}
 	if len(filter.CategoryIds) > 0 {
 		// Matched at every level, so one id works whichever node the operator picked: the leaf tag
 		// (category_id) and the derived taxonomy triple are all compared against the same set. The
