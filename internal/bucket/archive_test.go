@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7"
 )
 
 // testArchiveBucket — бакет с КОНФИГОМ, но без живого клиента. Тот же приём, что у
@@ -255,17 +257,21 @@ func TestArchivePresignGate(t *testing.T) {
 // снос. Клиента нет — дойди вызов до ListObjects, была бы паника.
 func TestArchiveCleanupSegmentGate(t *testing.T) {
 	b := testArchiveBucket()
+	past := time.Now().UTC().Add(-ArchiveRetention)
 	for _, segment := range []string{
 		"grbpwr-com", "files-library", "tech-card-patterns", "shipping-labels", "",
 		"techcard-archives/", "/techcard-archives", "techcard-archives-public",
 	} {
-		if _, err := b.ListObjectsOlderThan(t.Context(), segment, ArchiveRetention); !errors.Is(err, ErrManagedKeyNotAllowed) {
+		if _, err := b.ListObjectsOlderThan(t.Context(), segment, past); !errors.Is(err, ErrManagedKeyNotAllowed) {
 			t.Errorf("ListObjectsOlderThan(%q): want ErrManagedKeyNotAllowed, got %v", segment, err)
 		}
 	}
-	for _, age := range []time.Duration{0, -time.Hour} {
-		if _, err := b.ListObjectsOlderThan(t.Context(), ArchiveSegment, age); !errors.Is(err, ErrInvalidArchiveUpload) {
-			t.Errorf("ListObjectsOlderThan(age=%s): want ErrInvalidArchiveUpload, got %v", age, err)
+	// Рубеж в БУДУЩЕМ (или ровно «сейчас») выбрал бы на снос вообще всё, включая архив, залитый
+	// минуту назад. Это тот же отказ, что раньше давал `age <= 0`; при переходе с длительности на
+	// абсолютный рубеж он обязан был выжить, иначе опечатка в знаке вычищает сегмент целиком.
+	for _, cutoff := range []time.Time{{}, time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(24 * time.Hour)} {
+		if _, err := b.ListObjectsOlderThan(t.Context(), ArchiveSegment, cutoff); !errors.Is(err, ErrInvalidArchiveUpload) {
+			t.Errorf("ListObjectsOlderThan(cutoff=%s): want ErrInvalidArchiveUpload, got %v", cutoff, err)
 		}
 	}
 	// Положительный контроль: разрешённые сегменты гард пропускает — иначе тест выше был бы
@@ -274,6 +280,94 @@ func TestArchiveCleanupSegmentGate(t *testing.T) {
 		if !isCleanableSegment(segment) {
 			t.Errorf("isCleanableSegment(%q) = false, want true", segment)
 		}
+	}
+}
+
+// objectStream — канал листинга, каким его отдаёт minio: значения и закрытие.
+func objectStream(objects ...minio.ObjectInfo) <-chan minio.ObjectInfo {
+	ch := make(chan minio.ObjectInfo, len(objects))
+	for _, o := range objects {
+		ch <- o
+	}
+	close(ch)
+	return ch
+}
+
+// TestSelectExpiredKeysBoundary — ГРАНИЦА ОТБОРА У НАСТОЯЩЕЙ ФУНКЦИИ, а не у её двойника.
+//
+// До этого теста граница проверялась только в internal/archivecleanup, где поддельное хранилище
+// ПОВТОРЯЕТ ту же логику отбора, а здешние тесты трогали лишь охранные условия (сегмент, рубеж).
+// То есть сторож стоял у копии: сдвинь `Before` на `!After` вот здесь, в коде, который реально
+// решает, какие байты удалить, — и весь пакет чистки остался бы зелёным. Ровно тот же класс, что
+// чинили в тесте потолка тела запроса.
+//
+// Три случая, ради которых тест существует, и каждый — необратимое удаление, если ответ неверен:
+// строго старше рубежа (удаляем), ровно на рубеже (оставляем), без даты (оставляем).
+func TestSelectExpiredKeysBoundary(t *testing.T) {
+	cutoff := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	key := func(name string) string { return ArchiveSegment + "/" + name }
+
+	got, err := selectExpiredKeys(ArchiveSegment, cutoff, objectStream(
+		// Строго раньше рубежа — на удаление. Наносекунда считается: «строго» это строго.
+		minio.ObjectInfo{Key: key("a-week-and-a-nanosecond.zip"), LastModified: cutoff.Add(-time.Nanosecond)},
+		minio.ObjectInfo{Key: key("a-minute-older.zip"), LastModified: cutoff.Add(-time.Minute)},
+		minio.ObjectInfo{Key: key("ancient.zip"), LastModified: cutoff.Add(-30 * 24 * time.Hour)},
+		// Тот же момент, записанный в другом поясе: сравнение идёт по МГНОВЕНИЮ, а не по
+		// настенному тексту. 15:00+03:00 — это те же 12:00 UTC, минус минута.
+		minio.ObjectInfo{Key: key("older-in-another-zone.zip"),
+			LastModified: cutoff.Add(-time.Minute).In(time.FixedZone("MSK", 3*60*60))},
+
+		// РОВНО НА РУБЕЖЕ — остаётся. Это и есть мутируемая граница.
+		minio.ObjectInfo{Key: key("exactly-on-the-cutoff.zip"), LastModified: cutoff},
+		// Тот же момент в другом поясе — тоже остаётся.
+		minio.ObjectInfo{Key: key("on-the-cutoff-another-zone.zip"),
+			LastModified: cutoff.In(time.FixedZone("MSK", 3*60*60))},
+		// Моложе рубежа — остаётся.
+		minio.ObjectInfo{Key: key("a-nanosecond-younger.zip"), LastModified: cutoff.Add(time.Nanosecond)},
+		minio.ObjectInfo{Key: key("uploaded-today.zip"), LastModified: cutoff.Add(6 * 24 * time.Hour)},
+		// БЕЗ ДАТЫ — остаётся: «возраст неизвестен» это не «старый», а удаление необратимо.
+		minio.ObjectInfo{Key: key("undated.zip")},
+		// Псевдо-записи листинга: пустой ключ и «папка». Ни то, ни другое не объект.
+		minio.ObjectInfo{Key: "", LastModified: cutoff.Add(-time.Hour)},
+		minio.ObjectInfo{Key: ArchiveSegment + "/", LastModified: cutoff.Add(-time.Hour)},
+		minio.ObjectInfo{Key: key("subfolder/"), LastModified: cutoff.Add(-time.Hour)},
+	))
+	if err != nil {
+		t.Fatalf("selectExpiredKeys: %v", err)
+	}
+	want := []string{
+		key("a-week-and-a-nanosecond.zip"),
+		key("a-minute-older.zip"),
+		key("ancient.zip"),
+		key("older-in-another-zone.zip"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("selected %v, want exactly %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("selected %v, want exactly %v", got, want)
+		}
+	}
+
+	// Пустой листинг — пустая выборка и НЕ ошибка: сегмент, где нечего чистить, это норма.
+	if keys, err := selectExpiredKeys(ImportSegment, cutoff, objectStream()); err != nil || len(keys) != 0 {
+		t.Fatalf("empty listing gave (%v, %v), want (nil, nil)", keys, err)
+	}
+
+	// Ошибка листинга обрывает отбор и не отдаёт «то, что успели»: половина выборки, поданная как
+	// полная, — это удаление по неполному ответу S3.
+	boom := errors.New("spaces said no")
+	keys, err := selectExpiredKeys(ArchiveSegment, cutoff, objectStream(
+		minio.ObjectInfo{Key: key("ancient.zip"), LastModified: cutoff.Add(-30 * 24 * time.Hour)},
+		minio.ObjectInfo{Err: boom},
+		minio.ObjectInfo{Key: key("also-ancient.zip"), LastModified: cutoff.Add(-30 * 24 * time.Hour)},
+	))
+	if !errors.Is(err, boom) {
+		t.Fatalf("listing error: got %v, want it wrapped", err)
+	}
+	if keys != nil {
+		t.Fatalf("a failed listing returned %v, want no keys at all", keys)
 	}
 }
 

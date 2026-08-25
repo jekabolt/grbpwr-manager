@@ -6,16 +6,21 @@
 // window (bucket.ArchiveRetention — seven days, an owner decision) the bytes go, and the row that
 // still claims it could become a card has to stop claiming it. Both halves run on the same tick
 // and off the same cutoff, because a row that says "uploaded" after its object is deleted is an
-// operator pressing commit onto a 404.
+// operator pressing commit onto a 404. "The same cutoff" is literal and structural: runCleanup
+// reads the clock exactly once and passes that INSTANT to both the bucket listing and the expiry
+// UPDATE. Neither takes a duration, so neither can quietly restart the countdown from its own
+// "now" — which is precisely what the listing used to do.
 //
 // AGE IS THE ONLY CRITERION, AND THAT IS DELIBERATE. This worker never looks at an import row to
 // decide whether to delete an object. It is tempting — a row that is neither committed nor failed
 // "looks abandoned" — and it is exactly the wrong instinct, twice over:
 //
-//   - The commit handler, when its transaction fails ambiguously, KNOWINGLY leaves its uploaded
-//     objects behind rather than risk deleting the bytes of a commit that actually landed. This
-//     worker is the only thing that will ever pick those up. It picks them up by age, like
-//     everything else, and needs to know nothing about why they are there.
+//   - The commit handler, when its transaction fails ambiguously, KNOWINGLY leaves the files it
+//     placed rather than risk deleting the bytes of a commit that actually landed. Those files are
+//     NOT this worker's to reclaim — they are media/pattern objects in segments this worker must
+//     never touch; the commit logs their keys and the minted media rows read as unused in the media
+//     library. What this worker does own is the import's ARCHIVE OBJECT, which it removes by age
+//     alone — including after a successful commit — needing to know nothing about why it is there.
 //   - A row can be in a state this package has never heard of. Statuses are held in Go (0336
 //     declined a CHECK) and the import pipeline is still growing; deleting bytes on the strength
 //     of a status that turns out to mean "in flight" would destroy an import mid-commit.
@@ -92,6 +97,18 @@ type Worker struct {
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
 	tracker health.Tracker
+
+	// now is the tick's clock, a field ONLY so a test can fail the promise this package opens
+	// with: that one tick reads the clock ONCE and hands the same instant to both halves.
+	//
+	// Comparing the instants the two halves received cannot prove it, and that is a measured fact
+	// rather than a worry: on darwin time.Now() has microsecond granularity, so two consecutive
+	// reads return the IDENTICAL wall instant (20 of 20 pairs, checked). An equality assertion
+	// therefore stays green on a worker that reads the clock twice — exactly the defect this
+	// field exists to catch — while on a nanosecond-resolution kernel the same assertion would
+	// start failing at random. A clock that visibly moves on every read makes the question
+	// answerable on any platform: count the reads.
+	now func() time.Time
 }
 
 // Name implements health.Reporter.
@@ -113,6 +130,7 @@ func New(c *Config, repo dependency.Repository, files dependency.FileStore) *Wor
 		repo:  repo,
 		files: files,
 		c:     c,
+		now:   time.Now,
 	}
 }
 
@@ -206,16 +224,18 @@ func (w *Worker) runCleanup(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
 	defer cancel()
 
-	// ONE instant for the whole tick, shared by both halves. The bucket takes an age and the
-	// store takes a cutoff, but they are the same boundary said two ways, and computing "now"
-	// twice would put a hair of drift between them for no reason at all.
-	now := time.Now().UTC()
+	// ONE instant for the whole tick, and this line is the only place in the sweep that reads a
+	// clock. Both halves take an absolute cutoff — the bucket listing and the expiry UPDATE — so
+	// "the same boundary said two ways" is now something the code enforces rather than something
+	// this file asserts. It used to hand the bucket an AGE, and the bucket stamped its own "now"
+	// inside the call: two starting instants for one tick, and a package doc promising one.
+	cutoff := w.now().UTC().Add(-bucket.ArchiveRetention)
 
 	ok := true
-	if !w.removeExpiredObjects(ctx) {
+	if !w.removeExpiredObjects(ctx, cutoff) {
 		ok = false
 	}
-	if !w.expireStaleImportRows(ctx, now.Add(-bucket.ArchiveRetention)) {
+	if !w.expireStaleImportRows(ctx, cutoff) {
 		ok = false
 	}
 
@@ -230,17 +250,17 @@ func (w *Worker) runCleanup(ctx context.Context) bool {
 // removeExpiredObjects deletes every object in the feature's two segments older than the retention
 // window, and reports whether it got through both segments cleanly.
 //
-// Listing and removing are two calls on purpose: the selection is decided by ONE argument
-// (bucket.ArchiveRetention) that can be inspected without deleting anything. A failure in one
-// segment does not skip the other — they age out independently and one bad listing is no reason to
-// keep the other segment's week-old bytes.
-func (w *Worker) removeExpiredObjects(ctx context.Context) bool {
+// Listing and removing are two calls on purpose: the selection is decided by ONE argument (the
+// tick's cutoff) that can be inspected without deleting anything. A failure in one segment does not
+// skip the other — they age out independently and one bad listing is no reason to keep the other
+// segment's week-old bytes.
+func (w *Worker) removeExpiredObjects(ctx context.Context, cutoff time.Time) bool {
 	ok := true
 	for _, segment := range cleanableSegments {
-		// The age, not a cutoff: this is the single knob that keeps a not-yet-committed import
-		// uploaded THIS MORNING out of the selection. Anything younger than the window is invisible
-		// to this call, whatever state its row is in.
-		keys, err := w.files.ListObjectsOlderThan(ctx, segment, bucket.ArchiveRetention)
+		// The tick's cutoff, the same instant the row half gets: this is the single knob that keeps
+		// a not-yet-committed import uploaded THIS MORNING out of the selection. Anything younger
+		// than the window is invisible to this call, whatever state its row is in.
+		keys, err := w.files.ListObjectsOlderThan(ctx, segment, cutoff)
 		if err != nil {
 			ok = false
 			w.tracker.MarkError(err)

@@ -370,31 +370,53 @@ func isCleanableSegment(segment string) bool {
 	return segment == ArchiveSegment || segment == ImportSegment
 }
 
-// ListObjectsOlderThan возвращает ключи объектов сегмента, изменённых раньше чем age назад.
+// ListObjectsOlderThan возвращает ключи объектов сегмента, изменённых СТРОГО раньше рубежа cutoff.
 // Пара к уже существующему RemoveObjectsByKeys: перечисление и удаление разведены, чтобы отбор
 // можно было проверить, не удаляя (Ф5.1).
 //
-// Объект без даты изменения НЕ попадает в выборку: «возраст неизвестен» это не «старый», а
-// удаление здесь необратимо.
-func (b *Bucket) ListObjectsOlderThan(ctx context.Context, segment string, age time.Duration) ([]string, error) {
+// РУБЕЖ, А НЕ ДЛИТЕЛЬНОСТЬ, И ЭТО НЕ КОСМЕТИКА. Раньше сюда передавали age, а «сейчас» бралось
+// ЗДЕСЬ — то есть у одного тика чистильщика было ДВА начала отсчёта: одно у объектов бакета,
+// другое у строк импорта, которые считаются от «сейчас», взятого в воркере. Обещание «обе
+// половины считают от одного момента» было прозой, которой код не давал. Теперь момент приходит
+// снаружи, и отбор не обращается к часам вовсе — обещание держится по построению.
+//
+// Часы ниже всё-таки читаются, но ТОЛЬКО чтобы отказать: рубеж в будущем (или ровно «сейчас»)
+// выбрал бы на удаление вообще всё, включая архив, залитый минуту назад. Это ровно то, от чего
+// защищал прежний `age <= 0`, и терять эту защиту при переходе на абсолютный рубеж нельзя. На
+// сам отбор чтение не влияет: прошёл вызов гард — границей служит ровно переданный cutoff.
+func (b *Bucket) ListObjectsOlderThan(ctx context.Context, segment string, cutoff time.Time) ([]string, error) {
 	if !isCleanableSegment(segment) {
 		return nil, fmt.Errorf("%w: %q is not a cleanable segment", ErrManagedKeyNotAllowed, segment)
 	}
-	if age <= 0 {
-		return nil, fmt.Errorf("%w: age must be positive, got %s", ErrInvalidArchiveUpload, age)
+	if cutoff.IsZero() {
+		return nil, fmt.Errorf("%w: cutoff must be set", ErrInvalidArchiveUpload)
 	}
-	cutoff := time.Now().UTC().Add(-age)
+	if !cutoff.Before(time.Now().UTC()) {
+		return nil, fmt.Errorf("%w: cutoff %s is not in the past", ErrInvalidArchiveUpload, cutoff.UTC())
+	}
 
 	// Собственный отменяемый контекст: minio отдаёт листинг горутиной, которая пишет в канал и
 	// слушает ctx.Done. Выйти из цикла по ошибке, не отменив её, — оставить горутину висеть.
 	listCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var keys []string
-	for obj := range b.Client.ListObjects(listCtx, b.S3BucketName, minio.ListObjectsOptions{
+	return selectExpiredKeys(segment, cutoff, b.Client.ListObjects(listCtx, b.S3BucketName, minio.ListObjectsOptions{
 		Prefix:    segment + "/",
 		Recursive: true,
-	}) {
+	}))
+}
+
+// selectExpiredKeys — САМ ОТБОР, вынутый из ListObjectsOlderThan отдельной функцией, чтобы у
+// границы был собственный тест. Всё остальное в методе выше — это гарды и один вызов minio;
+// решает, какие байты уйдут навсегда, вот эти шесть строк, и до выделения их нельзя было
+// проверить, не подняв живой S3. Проверял их только ДВОЙНИК в тестах воркера чистки, то есть
+// сторож стоял у копии: сдвинь границу здесь — и та копия осталась бы зелёной.
+//
+// Объект без даты изменения НЕ попадает в выборку: «возраст неизвестен» это не «старый», а
+// удаление необратимо. Граница СТРОГАЯ: объект ровно на рубеже остаётся.
+func selectExpiredKeys(segment string, cutoff time.Time, objects <-chan minio.ObjectInfo) ([]string, error) {
+	var keys []string
+	for obj := range objects {
 		if obj.Err != nil {
 			return nil, fmt.Errorf("list %q objects: %w", segment, obj.Err)
 		}

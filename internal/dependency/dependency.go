@@ -2116,12 +2116,16 @@ type (
 		// io.ReaderAt, but every ReadAt is a separate ranged GET, and zip reads in 4-32 KiB
 		// chunks — so the object is downloaded once, streaming, into a temp file instead.
 		GetImportObjectReaderAt(ctx context.Context, objectKey string) (ReaderAtCloser, int64, error)
-		// ListObjectsOlderThan returns the keys in an archive segment last modified before
-		// now-age; the pair to RemoveObjectsByKeys, split from it so the selection can be
-		// checked without deleting. Only techcard-archives and techcard-imports may be
-		// listed — that gate is what makes "the cleanup worker touches nothing else" true
-		// by construction.
-		ListObjectsOlderThan(ctx context.Context, segment string, age time.Duration) ([]string, error)
+		// ListObjectsOlderThan returns the keys in an archive segment last modified
+		// STRICTLY before cutoff; the pair to RemoveObjectsByKeys, split from it so the
+		// selection can be checked without deleting. The boundary is an INSTANT, not an
+		// age, and that is the point: the cleanup tick reads the clock once and hands the
+		// same instant to this listing and to ExpireStaleTechCardImports, so the two halves
+		// cannot drift apart. An implementation that derived the boundary from its own
+		// time.Now() would break that promise silently. Only techcard-archives and
+		// techcard-imports may be listed — that gate is what makes "the cleanup worker
+		// touches nothing else" true by construction.
+		ListObjectsOlderThan(ctx context.Context, segment string, cutoff time.Time) ([]string, error)
 		// UploadContentImageVerbatim stores a picture whose FULL-SIZE object must be the bytes
 		// it was handed, byte-for-byte, and derives the compressed/thumbnail variants from
 		// them. UploadContentImage re-encodes every JPEG/PNG/WebP into a fresh full-size WebP,

@@ -22,12 +22,20 @@ import (
 // to touch is present (so the fake satisfies the interface) and panics if called (so "the sweeper
 // only ever calls these two things" is enforced by the test rather than asserted in prose).
 //
-// fakeFiles does not stub ListObjectsOlderThan with a canned answer — it IMPLEMENTS the documented
-// selection (an object counts as expired when its last-modified is strictly before now-age, and an
-// object with no date never counts) over a fixture of real timestamps. That is what makes the age
-// tests below mean anything: the fixture supplies the objects, the WORKER supplies the age, and a
-// worker that passed a shorter window would start eating fresh uploads exactly as the real bucket
-// would.
+// fakeFiles does not stub ListObjectsOlderThan with a canned answer — it re-implements the
+// documented selection (an object counts as expired when its last-modified is strictly before the
+// cutoff, and an object with no date never counts) over a fixture of real timestamps. That is what
+// makes the boundary tests below mean anything: the fixture supplies the objects, the WORKER
+// supplies the cutoff, and a worker that computed a shorter window would start eating fresh
+// uploads exactly as the real bucket would.
+//
+// AND IT IS A COPY — SAY SO OUT LOUD. A guard standing in front of a mirror proves nothing about
+// the original: shift the boundary inside the real bucket and every test in this file stays green,
+// because nothing here executes bucket code. The copy is only worth having while the original is
+// pinned somewhere else, and it is — bucket.TestSelectExpiredKeysBoundary runs the REAL selection
+// (bucket.selectExpiredKeys, the function ListObjectsOlderThan actually loops with) over the same
+// three cases this fake encodes: strictly older, exactly on the cutoff, and undated. Delete that
+// test and this fake silently becomes decoration.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type fakeObject struct {
@@ -39,13 +47,12 @@ type fakeFiles struct {
 	dependency.FileStore
 
 	mu      sync.Mutex
-	now     time.Time
 	objects []fakeObject
 
 	listErr map[string]error
 
 	askedSegments []string
-	askedAges     []time.Duration
+	askedCutoffs  []time.Time
 	removed       []string
 	removeErr     error
 	removeCalls   int
@@ -56,13 +63,13 @@ type fakeFiles struct {
 	release chan struct{}
 }
 
-func (f *fakeFiles) ListObjectsOlderThan(ctx context.Context, segment string, age time.Duration) ([]string, error) {
+func (f *fakeFiles) ListObjectsOlderThan(ctx context.Context, segment string, cutoff time.Time) ([]string, error) {
 	f.mu.Lock()
 	f.askedSegments = append(f.askedSegments, segment)
-	f.askedAges = append(f.askedAges, age)
+	f.askedCutoffs = append(f.askedCutoffs, cutoff)
 	entered, release := f.entered, f.release
 	err := f.listErr[segment]
-	now, objects := f.now, append([]fakeObject(nil), f.objects...)
+	objects := append([]fakeObject(nil), f.objects...)
 	f.mu.Unlock()
 
 	if entered != nil {
@@ -76,7 +83,6 @@ func (f *fakeFiles) ListObjectsOlderThan(ctx context.Context, segment string, ag
 		return nil, err
 	}
 
-	cutoff := now.Add(-age)
 	var keys []string
 	for _, o := range objects {
 		if !inSegment(o.key, segment) {
@@ -124,11 +130,11 @@ func (f *fakeFiles) survivors() []string {
 	return left
 }
 
-func (f *fakeFiles) snapshot() (segments []string, ages []time.Duration, removed []string, removeCalls int) {
+func (f *fakeFiles) snapshot() (segments []string, cutoffs []time.Time, removed []string, removeCalls int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.askedSegments...),
-		append([]time.Duration(nil), f.askedAges...),
+		append([]time.Time(nil), f.askedCutoffs...),
 		append([]string(nil), f.removed...),
 		f.removeCalls
 }
@@ -169,9 +175,15 @@ type fakeRepo struct {
 
 func (r *fakeRepo) TechCards() dependency.TechCards { return r.cards }
 
-func newFixture(now time.Time, objects []fakeObject, rows []time.Time) (*fakeRepo, *fakeFiles) {
+// newFixture no longer takes a "now". It used to, because the fake computed its own cutoff from
+// the age the worker passed and needed a clock to subtract it from. The worker now hands down an
+// absolute instant, so the fixture's timestamps are compared against the TICK's cutoff — which is
+// the real clock. Tests therefore date their objects relative to time.Now(), never to a fixed
+// calendar date: a hard-coded 2026-08-25 would have quietly stopped meaning "two hours ago"
+// tomorrow.
+func newFixture(objects []fakeObject, rows []time.Time) (*fakeRepo, *fakeFiles) {
 	return &fakeRepo{cards: &fakeTechCards{rows: rows}},
-		&fakeFiles{now: now, objects: objects, listErr: map[string]error{}}
+		&fakeFiles{objects: objects, listErr: map[string]error{}}
 }
 
 // runOneTick drives exactly one cleanup pass without the ticker, so nothing in these tests
@@ -191,7 +203,10 @@ func runOneTick(t *testing.T, repo dependency.Repository, files dependency.FileS
 // the age keeps it alive, so the age is what is measured here — at today, at yesterday, and on
 // both sides of the boundary itself.
 func TestCleanupSparesObjectsYoungerThanRetention(t *testing.T) {
-	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	// Relative to the real clock, not a fixed date: the cutoff the worker hands the fake is
+	// time.Now()-retention, so fixture timestamps have to be anchored to the same clock or the
+	// test would start meaning something different every day.
+	now := time.Now().UTC()
 	objects := []fakeObject{
 		{key: bucket.ImportSegment + "/today.zip", lastModified: now.Add(-2 * time.Hour)},
 		{key: bucket.ImportSegment + "/yesterday.zip", lastModified: now.Add(-24 * time.Hour)},
@@ -204,7 +219,7 @@ func TestCleanupSparesObjectsYoungerThanRetention(t *testing.T) {
 		// No last-modified date at all: "unknown age" must not read as "old".
 		{key: bucket.ArchiveSegment + "/undated.zip"},
 	}
-	repo, files := newFixture(now, objects, nil)
+	repo, files := newFixture(objects, nil)
 
 	if ok := runOneTick(t, repo, files); !ok {
 		t.Fatal("clean tick reported failure")
@@ -221,7 +236,7 @@ func TestCleanupSparesObjectsYoungerThanRetention(t *testing.T) {
 		t.Fatalf("wrong objects survived the sweep:\n got %v\nwant %v", got, want)
 	}
 
-	_, ages, removed, _ := files.snapshot()
+	_, cutoffs, removed, _ := files.snapshot()
 	sort.Strings(removed)
 	wantRemoved := []string{
 		bucket.ArchiveSegment + "/old-export.zip",
@@ -230,9 +245,9 @@ func TestCleanupSparesObjectsYoungerThanRetention(t *testing.T) {
 	if !equalStrings(removed, wantRemoved) {
 		t.Fatalf("wrong objects removed:\n got %v\nwant %v", removed, wantRemoved)
 	}
-	for _, age := range ages {
-		if age != bucket.ArchiveRetention {
-			t.Fatalf("listing asked for age %s, want the retention window %s", age, bucket.ArchiveRetention)
+	for _, c := range cutoffs {
+		if drift := now.Add(-bucket.ArchiveRetention).Sub(c); drift < -time.Minute || drift > time.Minute {
+			t.Fatalf("listing asked for cutoff %s, %s away from now-%s", c, drift, bucket.ArchiveRetention)
 		}
 	}
 	if bucket.ArchiveRetention != 168*time.Hour {
@@ -252,7 +267,7 @@ func TestExpireCutoffMatchesRetentionAndSparesYesterday(t *testing.T) {
 		now.Add(-bucket.ArchiveRetention - time.Minute), // one minute past it
 		now.Add(-30 * 24 * time.Hour),                   // a month old
 	}
-	repo, files := newFixture(now, nil, rows)
+	repo, files := newFixture(nil, rows)
 
 	if ok := runOneTick(t, repo, files); !ok {
 		t.Fatal("clean tick reported failure")
@@ -278,6 +293,63 @@ func TestExpireCutoffMatchesRetentionAndSparesYesterday(t *testing.T) {
 	}
 }
 
+// TestOneCutoffForBothHalves turns the package doc's opening promise into something executable.
+//
+// The doc says both halves of a tick run "off the same cutoff". Until this fix that was prose the
+// code did not deliver: the worker computed an instant for the row half and handed the bucket a
+// DURATION, and the bucket restarted the countdown from its own time.Now(). Two boundaries, one
+// promise, no test.
+//
+// THE OBVIOUS TEST FOR THIS DOES NOT WORK, AND THAT WAS MEASURED, NOT GUESSED. The first draft
+// simply compared the instants the three call sites received and required them equal. It passes on
+// a worker that reads the clock three times: time.Now() on darwin returns microsecond-granular
+// wall time, and two back-to-back reads produce the IDENTICAL instant — 20 pairs out of 20 in a
+// standalone check. So the draft was a sentinel that could not fail for the defect it was written
+// for, and on a nanosecond-resolution kernel it would have started failing at random instead.
+//
+// A clock that MOVES AN HOUR on every read answers the question on any platform: if the tick reads
+// it once, all three boundaries are that one instant; if it reads it twice, the second boundary is
+// an hour away and the read count says 2. Both halves of that are asserted, because either alone
+// can be dodged (a mutation calling time.Now() directly instead of w.now leaves the count at 1).
+func TestOneCutoffForBothHalves(t *testing.T) {
+	repo, files := newFixture(nil, nil)
+	w := New(nil, repo, files)
+
+	base := time.Now().UTC()
+	var reads int
+	w.now = func() time.Time {
+		reads++
+		return base.Add(time.Duration(reads) * time.Hour)
+	}
+
+	if ok := w.runCleanup(context.Background()); !ok {
+		t.Fatal("clean tick reported failure")
+	}
+
+	if reads != 1 {
+		t.Fatalf("the tick read the clock %d times, want exactly 1 — every extra read is another "+
+			"boundary, and the package doc promises one", reads)
+	}
+
+	_, listCutoffs, _, _ := files.snapshot()
+	if len(listCutoffs) != len(cleanableSegments) {
+		t.Fatalf("the tick listed %d times, want one per segment (%d)", len(listCutoffs), len(cleanableSegments))
+	}
+	if len(repo.cards.cutoffs) != 1 {
+		t.Fatalf("the tick expired rows %d times, want exactly 1", len(repo.cards.cutoffs))
+	}
+
+	want := base.Add(time.Hour).Add(-bucket.ArchiveRetention)
+	instants := append(append([]time.Time(nil), listCutoffs...), repo.cards.cutoffs...)
+	for _, got := range instants {
+		if !got.Equal(want) {
+			t.Fatalf("the tick used more than one boundary: got %v, all of them must be %s — "+
+				"the object half and the row half are handed the SAME instant or the doc is lying",
+				instants, want)
+		}
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEGMENTS — what the sweeper is allowed to name.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -298,7 +370,7 @@ func TestCleanupNamesOnlyTheTwoArchiveSegments(t *testing.T) {
 		{key: "tech-card-patterns/9/front.dxf", lastModified: old},
 		{key: "files-library/notes.pdf", lastModified: old},
 	}
-	repo, files := newFixture(now, objects, nil)
+	repo, files := newFixture(objects, nil)
 
 	if ok := runOneTick(t, repo, files); !ok {
 		t.Fatal("clean tick reported failure")
@@ -330,7 +402,7 @@ func TestCleanupNamesOnlyTheTwoArchiveSegments(t *testing.T) {
 // remain a thing that only happens when something was actually selected.
 func TestCleanupSkipsRemovalWhenNothingExpired(t *testing.T) {
 	now := time.Now().UTC()
-	repo, files := newFixture(now, []fakeObject{
+	repo, files := newFixture([]fakeObject{
 		{key: bucket.ImportSegment + "/today.zip", lastModified: now.Add(-time.Hour)},
 	}, nil)
 
@@ -351,7 +423,7 @@ func TestCleanupHalvesDoNotGateEachOther(t *testing.T) {
 	old := now.Add(-30 * 24 * time.Hour)
 
 	t.Run("a broken bucket still lets the rows expire", func(t *testing.T) {
-		repo, files := newFixture(now, nil, []time.Time{old})
+		repo, files := newFixture(nil, []time.Time{old})
 		files.listErr[bucket.ArchiveSegment] = errors.New("spaces is down")
 		files.listErr[bucket.ImportSegment] = errors.New("spaces is down")
 
@@ -364,7 +436,7 @@ func TestCleanupHalvesDoNotGateEachOther(t *testing.T) {
 	})
 
 	t.Run("a broken DB still lets the objects go", func(t *testing.T) {
-		repo, files := newFixture(now, []fakeObject{
+		repo, files := newFixture([]fakeObject{
 			{key: bucket.ArchiveSegment + "/old.zip", lastModified: old},
 		}, nil)
 		repo.cards.err = errors.New("pool is closed")
@@ -378,7 +450,7 @@ func TestCleanupHalvesDoNotGateEachOther(t *testing.T) {
 	})
 
 	t.Run("one bad segment does not skip the other", func(t *testing.T) {
-		repo, files := newFixture(now, []fakeObject{
+		repo, files := newFixture([]fakeObject{
 			{key: bucket.ImportSegment + "/old.zip", lastModified: old},
 		}, nil)
 		files.listErr[bucket.ArchiveSegment] = errors.New("spaces is down")
@@ -395,8 +467,7 @@ func TestCleanupHalvesDoNotGateEachOther(t *testing.T) {
 // TestFailedTickDoesNotMarkSuccess: /statusz reads LastSuccess, and a sweeper that keeps stamping
 // "fine" while it fails is worse than no reporter at all.
 func TestFailedTickDoesNotMarkSuccess(t *testing.T) {
-	now := time.Now().UTC()
-	repo, files := newFixture(now, nil, nil)
+	repo, files := newFixture(nil, nil)
 	repo.cards.err = errors.New("pool is closed")
 
 	w := New(nil, repo, files)
@@ -425,8 +496,7 @@ func TestFailedTickDoesNotMarkSuccess(t *testing.T) {
 // returned while a tick were still running, the expiry UPDATE would land on a closed pool. The
 // test holds the worker inside a tick, calls Stop, and requires Stop to still be blocked.
 func TestStopWaitsForAnInFlightTick(t *testing.T) {
-	now := time.Now().UTC()
-	repo, files := newFixture(now, nil, nil)
+	repo, files := newFixture(nil, nil)
 	files.entered = make(chan struct{}, 1)
 	files.release = make(chan struct{})
 
@@ -553,7 +623,7 @@ func TestAppStopsThisWorkerBeforeClosingTheDB(t *testing.T) {
 }
 
 func TestStopIsRefusedTwice(t *testing.T) {
-	repo, files := newFixture(time.Now().UTC(), nil, nil)
+	repo, files := newFixture(nil, nil)
 	w := New(nil, repo, files)
 
 	if err := w.Stop(); err == nil {
@@ -579,7 +649,7 @@ func TestDefaultsAreTheOwnersDecision(t *testing.T) {
 	if got := DefaultConfig().WorkerInterval; got != time.Hour {
 		t.Fatalf("worker interval %s, want hourly", got)
 	}
-	repo, files := newFixture(time.Now().UTC(), nil, nil)
+	repo, files := newFixture(nil, nil)
 	if got := New(&Config{}, repo, files).c.WorkerInterval; got != time.Hour {
 		t.Fatalf("a zero interval became %s, want the default hour", got)
 	}
