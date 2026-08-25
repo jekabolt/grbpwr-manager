@@ -3,8 +3,10 @@ package bucket
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/gif"
@@ -28,17 +30,24 @@ type B64Image struct {
 	contentType ContentType
 }
 
-// upload image to bucket return url
-func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder, imageName string, contentType ContentType) (string, error) {
+// uploadImageToBucket stores img and returns the CDN url plus the hex SHA-256 of the bytes
+// that were actually stored.
+//
+// The hash is taken from `data` — the very slice handed to PutObject — and not from
+// whatever the caller decoded or re-encoded upstream. That is the whole point: the archive
+// export downloads this object and puts its sha in the archive, so a hash of any other
+// representation of the same picture would never match and de-duplication would silently
+// never fire.
+func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder, imageName string, contentType ContentType) (string, string, error) {
 	ext, err := fileExtensionFromContentType(contentType)
 	if err != nil {
-		return "", fmt.Errorf("can't get file extension")
+		return "", "", fmt.Errorf("can't get file extension")
 	}
 	fp := b.constructFullPath(folder, imageName, ext)
 
 	data, err := io.ReadAll(img)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	r := bytes.NewReader(data)
@@ -53,10 +62,11 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 		},
 	)
 	if err != nil {
-		return "", fmt.Errorf("error putting object: %v", err)
+		return "", "", fmt.Errorf("error putting object: %v", err)
 	}
 
-	return b.getCDNURL(fp), nil
+	sum := sha256.Sum256(data)
+	return b.getCDNURL(fp), hex.EncodeToString(sum[:]), nil
 }
 
 // getB64ImageFromString extracts the content type and the byte content from a raw base64 image string.
@@ -104,24 +114,27 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 	return decodeImage(raw, ct)
 }
 
-// upload single image with defined quality and prefix to bucket
-func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (*pb_common.MediaInfo, error) {
+// uploadSingleImage encodes img to WebP at the given quality, uploads it, and returns the
+// variant descriptor plus the hex SHA-256 of the encoded bytes that were stored. Only the
+// full-size variant's hash is ever persisted (see uploadImageObj); the others are returned
+// so no call site has to guess which string belongs to which object.
+func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (*pb_common.MediaInfo, string, error) {
 	var buf bytes.Buffer
 
 	if err := encodeWEBP(&buf, img, quality); err != nil {
-		return nil, fmt.Errorf("failed to encode WebP: %v", err)
+		return nil, "", fmt.Errorf("failed to encode WebP: %v", err)
 	}
 
-	url, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeWEBP)
+	url, sha, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeWEBP)
 	if err != nil {
-		return nil, fmt.Errorf("failed to upload image to bucket: %v", err)
+		return nil, "", fmt.Errorf("failed to upload image to bucket: %v", err)
 	}
 
 	return &pb_common.MediaInfo{
 		MediaUrl: url,
 		Width:    int32(img.Bounds().Dx()),
 		Height:   int32(img.Bounds().Dy()),
-	}, nil
+	}, sha, nil
 }
 
 // uploadImageObj composes 3 image variants (full-size, compressed, thumbnail) in parallel via errgroup,
@@ -137,23 +150,27 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		mu                   sync.Mutex
 		fullSize, compressed *pb_common.MediaInfo
 		thumbnail            *pb_common.MediaInfo
+		// Hash of the FULL-SIZE variant only: that is the object the archive export
+		// downloads, so it is the only one an incoming archive can be compared against.
+		// Written under the same mutex as the descriptors it belongs to.
+		fullSizeSHA string
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		info, err := b.uploadSingleImage(gctx, img, 100, folder, fullSizeName)
+		info, sha, err := b.uploadSingleImage(gctx, img, 100, folder, fullSizeName)
 		if err != nil {
 			return fmt.Errorf("full-size: %w", err)
 		}
 		mu.Lock()
-		fullSize = info
+		fullSize, fullSizeSHA = info, sha
 		mu.Unlock()
 		return nil
 	})
 
 	g.Go(func() error {
-		info, err := b.uploadSingleImage(gctx, img, 60, folder, compressedName)
+		info, _, err := b.uploadSingleImage(gctx, img, 60, folder, compressedName)
 		if err != nil {
 			return fmt.Errorf("compressed: %w", err)
 		}
@@ -164,7 +181,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	})
 
 	g.Go(func() error {
-		info, err := b.uploadSingleImage(gctx, thumbImg, 90, folder, thumbnailName)
+		info, _, err := b.uploadSingleImage(gctx, thumbImg, 90, folder, thumbnailName)
 		if err != nil {
 			return fmt.Errorf("thumbnail: %w", err)
 		}
@@ -198,6 +215,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		ThumbnailWidth:     int(thumbnail.Width),
 		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: true},
+		ContentHash:        sql.NullString{String: fullSizeSHA, Valid: fullSizeSHA != ""},
 	})
 	if err != nil {
 		// All three objects are in S3 but no row references them: clean them up.
@@ -243,14 +261,18 @@ func (b *Bucket) uploadRawImageObj(ctx context.Context, raw []byte, ct ContentTy
 		return nil, fmt.Errorf("failed to decode GIF: %w", err)
 	}
 
-	rawURL, err := b.uploadImageToBucket(ctx, bytes.NewReader(raw), folder, fmt.Sprintf("%s-%s", imageName, "og"), ct)
+	// rawSHA fingerprints the object under the full-size url. Here the stored bytes happen
+	// to equal the posted bytes (the whole point of this path is that the GIF is not
+	// re-encoded), but the hash is still taken from the upload, not from `raw` directly, so
+	// that this path keeps agreeing with the WebP one if that ever stops being true.
+	rawURL, rawSHA, err := b.uploadImageToBucket(ctx, bytes.NewReader(raw), folder, fmt.Sprintf("%s-%s", imageName, "og"), ct)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload GIF to bucket: %w", err)
 	}
 	full := &pb_common.MediaInfo{MediaUrl: rawURL, Width: int32(cfg.Width), Height: int32(cfg.Height)}
 
 	thumbImg := resizeImage(firstFrame, 1080)
-	thumbnail, err := b.uploadSingleImage(ctx, thumbImg, 90, folder, fmt.Sprintf("%s-%s", imageName, "thumb"))
+	thumbnail, _, err := b.uploadSingleImage(ctx, thumbImg, 90, folder, fmt.Sprintf("%s-%s", imageName, "thumb"))
 	if err != nil {
 		b.cleanupUploadedVariants(full)
 		return nil, fmt.Errorf("failed to upload GIF thumbnail: %w", err)
@@ -276,6 +298,8 @@ func (b *Bucket) uploadRawImageObj(ctx context.Context, raw []byte, ct ContentTy
 		ThumbnailWidth:     int(thumbnail.Width),
 		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: h != ""},
+		// Full-size and compressed are the SAME object here, so one hash describes both.
+		ContentHash: sql.NullString{String: rawSHA, Valid: rawSHA != ""},
 	})
 	if err != nil {
 		// The objects are in S3 but no row references them: clean them up.

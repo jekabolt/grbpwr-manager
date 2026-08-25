@@ -3,6 +3,9 @@ package bucket
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 
@@ -54,10 +57,18 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	}
 	url := b.getCDNURL(fp)
 
+	// Fingerprint of the stored object. Video is uploaded verbatim, so the bytes handed to
+	// PutObject above ARE the object, and all three urls point at it — one hash covers the
+	// row. Taken after the upload succeeded so a row never claims a hash for an object that
+	// is not in the bucket.
+	sum := sha256.Sum256(mp4Data)
+	contentHash := hex.EncodeToString(sum[:])
+
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   url,
 		CompressedMediaURL: url,
 		ThumbnailMediaURL:  url,
+		ContentHash:        sql.NullString{String: contentHash, Valid: true},
 	})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't add media to db",

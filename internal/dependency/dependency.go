@@ -1734,6 +1734,12 @@ type (
 		// so the library can tell a free file from one standing on the storefront. Ids with
 		// no references are absent from the map. One query covers the whole batch.
 		GetMediaUsage(ctx context.Context, ids []int) (map[int][]entity.MediaUsageRef, error)
+		// FindMediaByContentHash looks a media item up by the hex SHA-256 of its full-size
+		// object, so an import can reuse a file that is already stored instead of uploading
+		// a second copy of identical bytes. Returns (nil, nil) when nothing matches —
+		// including for an empty hash and for every row written before migration 0336,
+		// which carry NULL and are meant to match nothing.
+		FindMediaByContentHash(ctx context.Context, hash string) (*entity.MediaFull, error)
 	}
 
 	Admin interface {
