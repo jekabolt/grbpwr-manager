@@ -233,4 +233,61 @@ func TestImportColorwaysApply(t *testing.T) {
 		require.Error(t, T.StampTechCardImportReport(ctx, committed, []byte("not json")),
 			"the column is JSON and a bare MySQL 3140 names neither the import nor the caller")
 	})
+
+	// ── 6. the clear is scoped by the CARD as well as by the colour (R6/N-9) ────────
+	//
+	// The clear says `colorway_id = :colorway AND piece_id IN (SELECT … WHERE tech_card_id = :card)`,
+	// and only the first half had a guard: dropping the card scope left every case above green,
+	// because in all of them the colourway's rows and the card's pieces are the same set.
+	//
+	// The half that was untested is what the write PROMISES: it touches rows about THIS card's
+	// pieces and nothing else. tech_card_piece_material's own UNIQUE is (piece_id, colorway_id) and
+	// its FKs are to tech_card_piece(id) and product(id) — neither knows about tech_card_id — so a
+	// row pairing this colour with another card's piece is storable, and an unscoped clear would
+	// delete it while claiming to have re-applied one card's mapping.
+	t.Run("the clear touches only rows about THIS card's pieces", func(t *testing.T) {
+		const foreignPieceKey = "TCIC-PIECE-FOREIGN"
+		foreign, err := T.AddTechCard(ctx, &entity.TechCardInsert{
+			Name: "Import Colourways Foreign Pieces", Stage: entity.TechCardStageProto,
+			StyleNumber:     ns(fmt.Sprintf("TCIC-FOREIGN-%d", time.Now().UnixNano())),
+			MeasurementUnit: entity.TechCardUnitMm, ApprovalState: entity.TechCardApprovalDraft,
+			Pieces: []entity.TechCardPiece{
+				{LineKey: foreignPieceKey, Name: "чужая деталь", PiecesPerGarment: 1, Grainline: "lengthwise"},
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", foreign) })
+
+		var foreignPieceID int
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			`SELECT id FROM tech_card_piece WHERE tech_card_id = ? AND line_key = ?`,
+			foreign, foreignPieceKey).Scan(&foreignPieceID))
+
+		// A row that must not exist in production and is storable anyway: our colour, their piece.
+		_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_piece_material
+			(piece_id, colorway_id, display_order) VALUES (?, ?, 99)`, foreignPieceID, blk)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, _ = testDB.ExecContext(context.Background(),
+				"DELETE FROM tech_card_piece_material WHERE piece_id = ?", foreignPieceID)
+		})
+
+		require.NoError(t, T.ApplyImportedColorwayPieceMaterials(ctx, tcID, blk,
+			[]entity.TechCardArchivePieceMaterial{{PieceLineKey: pieceFrnt, BomLineKey: bomFabric}}))
+
+		var survived int
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM tech_card_piece_material WHERE colorway_id = ? AND piece_id = ?`,
+			blk, foreignPieceID).Scan(&survived))
+		require.Equal(t, 1, survived,
+			"the clear is scoped to the pieces of the card it was given; a row about another card's "+
+				"piece is not this write's to delete")
+
+		var mine int
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tech_card_piece_material pm
+			JOIN tech_card_piece p ON p.id = pm.piece_id
+			WHERE pm.colorway_id = ? AND p.tech_card_id = ?`, blk, tcID).Scan(&mine))
+		require.Equal(t, 1, mine, "and it did re-apply this card's own mapping")
+	})
 }

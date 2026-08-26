@@ -403,6 +403,19 @@ Reference payload: colourways are **products**, and an import does not create pr
 travels so a later, explicit «create colourways from archive» action can build draft colourways and their recipes from it, and
 so a human can read what the source card's colourways were.
 
+That action REWRITES the colourway half of the stored report, and it rewrites **only the colours it
+pronounced on**. Two kinds of colourway line survive a press untouched, and both would otherwise be
+lost with nothing put in their place:
+
+  * a line filed against a **cut piece** (`ref: piece_line_key=…`) rather than a colour. The piece
+    named the cloth it is cut from per colourway; the press does not answer that question, so it has
+    no verdict to replace it with.
+  * a line about a colour a **previous press** already created. The press leaves a standing
+    colourway alone — recipe and mapping both — so its report entry and its share of the counter
+    stand as the earlier press left them. A second press therefore stores byte-for-byte the report
+    the first one did, and whatever the first press could not write is still on the record: nothing
+    re-attempts a standing colourway's recipe or its piece→cloth mapping.
+
 ```json
 [
   {
@@ -662,7 +675,7 @@ explanation and the report action text.
 | `assembly_component_not_found` | the assembly component style number is not in the target base |
 | `colorways_not_applied` | colourways travelled as reference and were not created — the explicit «create colourways from archive» action builds them later |
 | `colorway_exists` | the card already carries a colourway of that colour — nothing was created and the standing recipe was left alone |
-| `colorway_not_created` | the draft colourway could not be created here at all (commonly: the colour code is not in this base's colour dictionary) |
+| `colorway_not_created` | the draft colourway could not be created here at all — commonly the colour code is not in this base's colour dictionary; also an ARCHIVED colourway already holding the code, and a write the database went on refusing under contention |
 | `colorway_pin_lost` | the recipe row's material pin could not be re-resolved — the norm and the placement landed, the row takes the BOM line's own article |
 | `composition_not_derived` | the structured fibre breakdown travelled and was not written — it is derived here from the card's own fabric lines on every save |
 | `wastage_claim_degraded` | a wastage/consumption claim lost its provenance and reads as manual |

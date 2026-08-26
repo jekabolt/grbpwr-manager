@@ -96,7 +96,7 @@ func (s *Server) ApplyTechCardImportColorways(ctx context.Context,
 		return nil, status.Error(codes.Internal, "the stored import report cannot be read")
 	}
 
-	run, err := s.tcacPrepare(ctx, techCardID, rec.ObjectKey)
+	run, err := s.tcacPrepare(ctx, techCardID, rec.ObjectKey, payloads, stored)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (s *Server) ApplyTechCardImportColorways(ctx context.Context,
 		}
 	}
 
-	updated, err := stored.ApplyColorways(run.holes, run.tally)
+	updated, err := stored.ApplyColorways(run.holes, run.tally, run.supersedes)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "apply import colourways: can't rebuild the report",
 			slog.Int("tech_card_id", techCardID), slog.String("import_id", rec.ImportID),
@@ -234,6 +234,14 @@ type tcacRun struct {
 	passportByRef      map[int64]techcardarchive.MaterialPassport
 	passportsAvailable bool
 
+	// priorLines is what the STORED report already says about colourways, and it is what tells a
+	// FIRST press apart from a SECOND one. colourRefs is the ref of every colour in this payload;
+	// decided is the subset this press actually pronounced on, and only those are superseded in the
+	// rewritten report — see supersedes.
+	priorLines []*pb_admin.TechCardImportReportLine
+	colourRefs map[string]bool
+	decided    map[string]bool
+
 	holes   []techcardarchive.ImportHole
 	tally   techcardarchive.EntityTally
 	created []int32
@@ -242,7 +250,8 @@ type tcacRun struct {
 // tcacPrepare reads everything the whole press needs, once. Every read here is against the TARGET
 // base and none of it depends on the payload: a per-colourway catalogue read would be the N+1 the
 // import resolver already refuses to be.
-func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey string) (*tcacRun, error) {
+func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey string,
+	payloads []techcardarchive.ColorwayPayload, stored *techcardarchive.ImportReport) (*tcacRun, error) {
 	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -263,6 +272,16 @@ func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey stri
 		pieceKeys:        make(map[string]bool, len(card.Pieces)),
 		cardSizes:        make(map[int]bool, len(card.SizeIds)),
 		tally:            techcardarchive.EntityTally{},
+		colourRefs:       make(map[string]bool, len(payloads)),
+		decided:          make(map[string]bool, len(payloads)),
+	}
+	for i := range payloads {
+		run.colourRefs[tcacRef(payloads[i].ColorCode)] = true
+	}
+	for _, l := range stored.Message().GetLines() {
+		if l.GetEntity() == techcardarchive.EntityColorway {
+			run.priorLines = append(run.priorLines, l)
+		}
 	}
 	for i := range card.Colorways {
 		run.colorwayIDByCode[tcacColourKey(card.Colorways[i].ColorCode)] = card.Colorways[i].Id
@@ -299,8 +318,29 @@ func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey stri
 		// entity.Material and not MaterialWithPrice: the matcher must not be able to reach a price.
 		run.catalog = append(run.catalog, mats[i].Material)
 	}
-	run.passportByRef, run.passportsAvailable = s.tcacPassports(ctx, objectKey)
+	// ONLY IF SOMETHING PINS. tcacPassports copies the whole uploaded ZIP out of the bucket into a
+	// temporary file (GetImportObjectReaderAt) to read one entry out of it, and the payload is
+	// already parsed by the time we get here — so the question «does any recipe row pin an article»
+	// is free to ask and answers the download in the commonest case. When nothing pins, pin()
+	// returns at its first line and never consults either field, which is why leaving them at zero
+	// costs no report line: a colourway with no pins has no pin to lose.
+	if tcacPinsAnything(payloads) {
+		run.passportByRef, run.passportsAvailable = s.tcacPassports(ctx, objectKey)
+	}
 	return run, nil
+}
+
+// tcacPinsAnything reports whether any recipe row in the payload pins a source article — the ONE
+// thing the archive's material index is read for.
+func tcacPinsAnything(payloads []techcardarchive.ColorwayPayload) bool {
+	for i := range payloads {
+		for j := range payloads[i].Recipe {
+			if payloads[i].Recipe[j].MaterialRef > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tcacPassports fetches materials/index.json out of the uploaded archive — BEST EFFORT, and the
@@ -364,14 +404,14 @@ func (s *Server) tcacPassports(ctx context.Context, objectKey string) (map[int64
 // with a report full of the same line N times would bury the one sentence the operator needs.
 func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayload) error {
 	code := tcacColourKey(p.ColorCode)
-	ref := fmt.Sprintf("color_code=%s", p.ColorCode)
+	ref := tcacRef(p.ColorCode)
 	if code == "" {
 		r.skip(ref, techcardarchive.ReasonArchiveRowInvalid,
 			"the archive's colourway row names no colour, so there is nothing to create")
 		return nil
 	}
 	if id, taken := r.colorwayIDByCode[code]; taken {
-		r.exists(ref, id, len(p.Recipe))
+		r.standing(ref, id, len(p.Recipe))
 		return nil
 	}
 
@@ -390,11 +430,16 @@ func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayloa
 		// транзакциях (стор проверяет внутри своей, мы — по прочитанной карточке), и в зазор
 		// помещается второй клик по той же кнопке. Ответ обязан быть тем же, что и у заведомо
 		// занятого цвета, иначе идемпотентность держалась бы на удаче гонки.
-		r.exists(ref, 0, len(p.Recipe))
+		r.taken(ctx, ref, code, len(p.Recipe))
 		return nil
 	case errors.Is(err, entity.ErrTechCardReleased), errors.Is(err, entity.ErrColorwayNotSellable),
 		errors.Is(err, sql.ErrNoRows):
 		return createColorwayStatus(ctx, err)
+	case r.s.repo.IsErrorRepeat(err):
+		// CONTENTION, NOT CONTENT. See tcacContention: the sentence colorway_not_created carries by
+		// default is about the colour DICTIONARY, and nothing is wrong with this colour.
+		r.skip(ref, techcardarchive.ReasonColorwayNotCreated, tcacContention(err))
+		return nil
 	default:
 		r.skip(ref, techcardarchive.ReasonColorwayNotCreated, tcacRefusal(err))
 		return nil
@@ -402,18 +447,147 @@ func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayloa
 
 	r.colorwayIDByCode[code] = colorwayID
 	r.created = append(r.created, int32(colorwayID))
+	r.decided[ref] = true
 
 	degraded := r.recipe(ctx, ref, colorwayID, p.Recipe)
-	lost, err := r.pieceMaterials(ctx, ref, colorwayID, p.PieceMaterials)
-	if err != nil {
-		return err
-	}
+	lost := r.pieceMaterials(ctx, ref, colorwayID, p.PieceMaterials)
 	if degraded || lost {
 		r.tally.Degraded++
 		return nil
 	}
 	r.tally.Imported++
 	return nil
+}
+
+// standing decides what to say about a colour the card ALREADY carries, and the decision is «did
+// THIS feature put it there».
+//
+// A press that finds the colour standing does not touch it — that is the whole of the button's
+// idempotency, and it is deliberate: writing the archive's recipe over a colourway somebody has
+// been working on is the worse of the two mistakes. But «did not touch it» has to mean the REPORT
+// too, and it did not:
+//
+//   - the first press created the colour and left the report clean (imported). The second press
+//     wrote a fresh colorway_exists line and counted it DEGRADED, so an accidental double click
+//     turned the card's permanent provenance into a claim of degradation that never happened.
+//   - worse, ApplyColorways replaces the colourway half whole, so whatever the FIRST press reported
+//     as lost — a refused recipe, a refused piece→cloth mapping, a lost pin — was erased by the
+//     second press and replaced with a line that mentions none of it. Nothing re-attempts those
+//     losses, so that line was the only record they ever had.
+//
+// So a colour a PREVIOUS press already pronounced on is left out of `decided`: its stored lines are
+// not superseded, they stand exactly as they were, and its count stands with them. The report of a
+// second press is then byte-for-byte the report of the first.
+//
+// The one case that IS re-decided is a colour this feature never created: the commit's own
+// `colorways_not_applied` line still standing at the ref, or a previous press's verdict saying the
+// colour did not land (a skip) while the card now shows it. Both are stale and both are replaced by
+// the colorway_exists line this branch has always written.
+func (r *tcacRun) standing(ref string, colorwayID, recipeRows int) {
+	pressed, thinner := r.priorVerdict(ref)
+	if !pressed {
+		r.exists(ref, colorwayID, recipeRows)
+		return
+	}
+	if thinner {
+		r.tally.Degraded++
+		return
+	}
+	r.tally.Imported++
+}
+
+// priorVerdict reads what the STORED report already says about one colour.
+//
+// pressed is «a previous run of this action pronounced on this colour», and it is read off the
+// absence of a stale verdict rather than off a flag: the commit writes exactly one
+// `colorways_not_applied` line per payload colour (resolveColorways), so a colour still carrying
+// one has never been pressed, and a colour carrying a SKIPPED verdict at its own ref was pressed
+// and did not land — which the card now contradicts. thinner is whether that previous press left
+// any line at the colour or under one of its rows, which is what its count was.
+func (r *tcacRun) priorVerdict(ref string) (pressed, thinner bool) {
+	pressed = true
+	for _, l := range r.priorLines {
+		if l.GetRef() != ref && !strings.HasPrefix(l.GetRef(), ref+" ") {
+			continue
+		}
+		thinner = true
+		if l.GetRef() == ref && (l.GetStatus() == techcardarchive.StatusSkipped ||
+			l.GetReason() == string(techcardarchive.ReasonColorwaysNotApplied)) {
+			pressed = false
+		}
+	}
+	return pressed, thinner
+}
+
+// supersedes says whether a stored colourway line is about something THIS press pronounced on, and
+// it is the whole of what ApplyColorways removes.
+//
+// «Every line about a colourway» was too wide by two: the resolver also files a colourway line per
+// CUT PIECE that named its cloth per colour (techcard_archive_resolve.go — ref piece_line_key=…),
+// and that line is not this press's news to revise. A press where every colour came back standing
+// used to erase it and put nothing in its place: the piece→cloth mapping still had not arrived, and
+// the report had stopped saying so. Lines about a colour this press left alone are kept for the
+// same reason (see standing).
+func (r *tcacRun) supersedes(ref string) bool {
+	// An exact colour ref answers for itself and is never read as a row of a shorter one.
+	if r.colourRefs[ref] {
+		return r.decided[ref]
+	}
+	for d := range r.decided {
+		if strings.HasPrefix(ref, d+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// taken answers the store's «this colour is already on this card» when the card WE read did not
+// show it. TWO very different things arrive here and they used to share one sentence and no id:
+//
+//   - a PHANTOM RACE. Somebody else's press committed between our read and our write; the colour is
+//     genuinely there, the operator has nothing to do, and a 500 would punish a double click.
+//   - an ARCHIVED colourway. The store's uniqueness pre-check counts every product row of the style
+//     (colorway_write.go: SELECT COUNT(*) … WHERE style_id AND color_code — no lifecycle filter),
+//     while the card read that fills colorwayIDByCode drops lifecycle_status = 4 (materials.go).
+//     So the code is occupied by a colourway the colourways tab does not list, and «this card
+//     already has a colourway of this colour» named nothing the operator could open and offered
+//     nothing to do about it. It is by far the likelier of the two: an archive is a state somebody
+//     chose, a race is a coincidence of two clicks.
+//
+// They are told apart BY LOOKING, not by guessing: the card is read again, and a colour that has
+// appeared is the race while a colour that still is not there is the archived one. A read that
+// fails says neither, and falls back to the sentence both used to share.
+func (r *tcacRun) taken(ctx context.Context, ref, code string, recipeRows int) {
+	id, looked := r.recheckColour(ctx, code)
+	switch {
+	case !looked:
+		r.exists(ref, 0, recipeRows)
+	case id > 0:
+		r.colorwayIDByCode[code] = id
+		r.standing(ref, id, recipeRows)
+	default:
+		r.skip(ref, techcardarchive.ReasonColorwayNotCreated,
+			fmt.Sprintf("colour %s is already taken on this card by a colourway the colourways tab does not "+
+				"show — an ARCHIVED one. Restore it (or delete it) and press the button again; nothing was "+
+				"created and the archive's recipe for this colour was not applied", code))
+	}
+}
+
+// recheckColour re-reads the card and reports the LIVE colourway of one colour, plus whether the
+// read happened at all. Only on the refusal path, and only for the colour that was refused.
+func (r *tcacRun) recheckColour(ctx context.Context, code string) (int, bool) {
+	card, err := r.s.repo.TechCards().GetTechCardByIdConsistent(ctx, r.techCardID)
+	if err != nil || card == nil {
+		slog.Default().WarnContext(ctx, "apply import colourways: can't re-read the card after a taken colour",
+			slog.Int("tech_card_id", r.techCardID), slog.String("color_code", code))
+		return 0, false
+	}
+	for i := range card.Colorways {
+		if tcacColourKey(card.Colorways[i].ColorCode) == code {
+			return card.Colorways[i].Id, true
+		}
+	}
+	return 0, true
 }
 
 // recipe writes one colourway's material recipe and reports what it had to leave out. It returns
@@ -619,11 +793,20 @@ func (r *tcacRun) sizeConsumptions(rowRef string, l *techcardarchive.RecipeLine,
 }
 
 // pieceMaterials writes the colourway's piece→cloth mapping, dropping the rows this card cannot
-// hold. Returns whether anything was lost; an error is fatal to the press.
+// hold. It returns whether anything was lost and NOTHING is fatal to the press — for the same
+// reason recipe() gives forty lines above, which this function used to contradict.
+//
+// The store's refusal was returned as an error, so one deadlock on the last write of one colour
+// aborted the whole RPC — leaving the colourways created and standing, the report NOT rewritten
+// (StampTechCardImportReport is never reached), and the card therefore still claiming
+// `colorways_not_applied` next to colours that are on it. Worse on the second press: the colour
+// then reads as standing, this function is not reached at all, and the mapping it could not write
+// is never written by anything. That made a store refusal a SILENT loss, which is the one outcome
+// this feature may not produce.
 func (r *tcacRun) pieceMaterials(ctx context.Context, ref string, colorwayID int,
-	lines []techcardarchive.PieceMaterialLine) (bool, error) {
+	lines []techcardarchive.PieceMaterialLine) bool {
 	if len(lines) == 0 {
-		return false, nil
+		return false
 	}
 	rows := make([]entity.TechCardArchivePieceMaterial, 0, len(lines))
 	seen := make(map[string]bool, len(lines))
@@ -665,15 +848,20 @@ func (r *tcacRun) pieceMaterials(ctx context.Context, ref string, colorwayID int
 		})
 	}
 	if len(rows) == 0 {
-		return lost, nil
+		return lost
 	}
 	if err := r.s.repo.TechCards().ApplyImportedColorwayPieceMaterials(ctx, r.techCardID, colorwayID, rows); err != nil {
 		slog.Default().ErrorContext(ctx, "apply import colourways: can't write the piece→cloth mapping",
 			slog.Int("tech_card_id", r.techCardID), slog.Int("colorway_id", colorwayID),
 			slog.String("err", err.Error()))
-		return lost, status.Error(codes.Internal, "can't write the colourway's piece mapping")
+		r.hole(techcardarchive.EntityColorway, ref, techcardarchive.StatusDegraded,
+			techcardarchive.ReasonArchiveRowInvalid,
+			fmt.Sprintf("the colourway was created and its piece→cloth mapping was refused (%v); assign the "+
+				"cloths on the colourway by hand — pressing the button again will NOT re-attempt them, "+
+				"because a standing colourway is left alone", err))
+		return true
 	}
-	return lost, nil
+	return lost
 }
 
 // ────────────────────────────── the optimistic token ──────────────────────────────
@@ -719,6 +907,7 @@ func (r *tcacRun) hole(entityName, ref, status string, reason techcardarchive.Re
 
 // skip records a colour that did not land at all.
 func (r *tcacRun) skip(ref string, reason techcardarchive.Reason, detail string) {
+	r.decided[ref] = true
 	r.hole(techcardarchive.EntityColorway, ref, techcardarchive.StatusSkipped, reason, detail)
 	r.tally.Skipped++
 }
@@ -726,6 +915,7 @@ func (r *tcacRun) skip(ref string, reason techcardarchive.Reason, detail string)
 // exists records a colour the card already carried. colorwayID is 0 when the collision was caught
 // on the write rather than read off the card, which changes nothing the operator can act on.
 func (r *tcacRun) exists(ref string, colorwayID, recipeRows int) {
+	r.decided[ref] = true
 	detail := fmt.Sprintf("this card already has a colourway of this colour, so it was not created and "+
 		"its recipe was left alone; the archive's %d recipe rows were not applied over it", recipeRows)
 	if colorwayID > 0 {
@@ -759,6 +949,12 @@ func (r *tcacRun) decimalOf(rowRef, field, raw string) (decimal.NullDecimal, boo
 // tcacColourKey normalises a colour code the way the colour dictionary does: trimmed and upper
 // case. It is what makes «blk» in a payload and «BLK» on the card one colour rather than two.
 func tcacColourKey(code string) string { return strings.ToUpper(strings.TrimSpace(code)) }
+
+// tcacRef names one colour in the report. VERBATIM from the payload and not through tcacColourKey,
+// because the commit's own line for the same colour is built from the same bytes
+// (resolveColorways) and the two have to be the same string — matching them is how a second press
+// knows what the first one said.
+func tcacRef(colorCode string) string { return fmt.Sprintf("color_code=%s", colorCode) }
 
 // tcacRowRef names one recipe row inside its colour, so a report line points at something an
 // operator can find. Both keys, because a slot legitimately appears twice: once for the garment
@@ -804,4 +1000,25 @@ func tcacIsDuplicateColour(err error) bool {
 // vaguer dictionary.
 func tcacRefusal(err error) string {
 	return techcardarchive.ClipDetail(fmt.Sprintf("the colourway could not be created here: %v", err), 512)
+}
+
+// tcacContention is the sentence for a write the DATABASE refused for contention rather than for
+// content, and it exists because colorway_not_created's own action text is about the colour
+// DICTIONARY — «add the colour and press again» — which would send somebody to add a colour that
+// is present and correct.
+//
+// It is RARE, and rarer than it looks. Every write of CreateColorway runs through store.Tx, which
+// is SERIALIZABLE and already retries a deadlock (1213) or a lock-wait timeout (1205) five times
+// with backoff, re-running the whole closure (internal/store/db.go). On that retry the create's own
+// uniqueness pre-check sees the winner's committed row and answers ErrColorwayColorExists — which
+// is why an ordinary simultaneous double press lands on «exists» and never here. What lands here is
+// the case where five retries were not enough, and the honest instruction for it is to press again;
+// a sixth retry from this layer would only be a slower fifth.
+//
+// The predicate is the STORE'S OWN (Repository.IsErrorRepeat, the same 1213/1205 the retry loop
+// uses), so «transient» has one definition in the service rather than a second one spelled here.
+func tcacContention(err error) string {
+	return techcardarchive.ClipDetail(fmt.Sprintf("the database refused the write under contention and went on "+
+		"refusing it through the store's own retries (%v); nothing was created and nothing is wrong with this "+
+		"colour or with this base's colour dictionary — press the button again", err), 512)
 }

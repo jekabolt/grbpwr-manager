@@ -173,20 +173,35 @@ func (r *ImportReport) Amend(holes []ImportHole, lost Counters) ([]byte, error) 
 // only appends lines and only moves rows OUT of the imported column, so the card would end up
 // carrying both verdicts and a tally that counts every colour twice.
 //
-// So: every line about `colorway` goes, whatever its reason, and the caller's lines take their
-// place. Whatever the import said about colourways has just been superseded WHOLE — by an action
-// that looked at every one of them — and keeping a stale half of it would be the same lie in
-// smaller print. Lines about anything else are untouched; a media hole is not news this action has
-// any standing to revise.
+// So: the lines about the colourways the caller PRONOUNCED ON go, whatever their reason, and the
+// caller's lines take their place. Whatever the import said about those has just been superseded —
+// by an action that looked at every one of them — and keeping a stale half of it would be the same
+// lie in smaller print. Lines about anything else are untouched; a media hole is not news this
+// action has any standing to revise.
+//
+// WHICH colourway lines those are is the CALLER'S to say, through `superseded`, and it is not «all
+// of them». Two kinds of colourway line are about something the press did not decide:
+//
+//   - a line filed against a CUT PIECE rather than a colour (ref piece_line_key=…, written by the
+//     resolver for a piece that named its cloth per colourway). A press where every colour turned
+//     out to be standing decides nothing, and used to erase that line and put nothing in its place
+//     — the mapping still had not arrived and the report had stopped saying so.
+//   - a line about a colour the press deliberately left alone, which is every colour a PREVIOUS
+//     press already created. Replacing those turned a clean first press into a degraded second one
+//     and erased the first press's record of what it could not write — a record nothing re-attempts.
+//
+// A nil `superseded` keeps the old meaning (every colourway line goes), which is what a caller that
+// really did look at all of them wants.
 //
 // tally REPLACES the colourway counter rather than moving rows within it, for the same reason: the
 // import counted every colour as skipped, and after this action each one is imported, degraded or
 // still skipped. The caller is required to have counted each colour exactly once — this function
 // cannot check that, because a colour legitimately produces SEVERAL lines (its own verdict plus one
-// per lost pin) and lines have never been the counter's source (see report.go).
+// per lost pin) and lines have never been the counter's source (see report.go). A colour the caller
+// left alone still counts: it counts as whatever the report already said about it.
 //
 // The receiver is not modified, exactly like Amend: a caller that retries must not accumulate.
-func (r *ImportReport) ApplyColorways(holes []ImportHole, tally EntityTally) ([]byte, error) {
+func (r *ImportReport) ApplyColorways(holes []ImportHole, tally EntityTally, superseded func(ref string) bool) ([]byte, error) {
 	if r == nil || r.msg == nil {
 		return nil, fmt.Errorf("no import report to apply colourways to")
 	}
@@ -197,7 +212,7 @@ func (r *ImportReport) ApplyColorways(holes []ImportHole, tally EntityTally) ([]
 
 	kept := make([]*pb_admin.TechCardImportReportLine, 0, len(out.GetLines())+len(holes))
 	for _, l := range out.GetLines() {
-		if l.GetEntity() == EntityColorway {
+		if l.GetEntity() == EntityColorway && (superseded == nil || superseded(l.GetRef())) {
 			continue
 		}
 		kept = append(kept, l)
