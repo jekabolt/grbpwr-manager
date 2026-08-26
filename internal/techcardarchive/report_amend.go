@@ -163,6 +163,75 @@ func (r *ImportReport) Amend(holes []ImportHole, lost Counters) ([]byte, error) 
 	return MarshalReport(out)
 }
 
+// ApplyColorways REPLACES the colourway half of a stored report, and it is the one operation on a
+// report that removes lines rather than adding them.
+//
+// It exists for the second, explicit step of an import: colourways travel as reference, the import
+// creates none and writes one `colorways_not_applied` line per colour, and later somebody presses
+// «create colourways from archive». After that press those lines are FALSE — they say the colours
+// are not on the card, standing next to the colours that now are. An Amend cannot fix that: Amend
+// only appends lines and only moves rows OUT of the imported column, so the card would end up
+// carrying both verdicts and a tally that counts every colour twice.
+//
+// So: every line about `colorway` goes, whatever its reason, and the caller's lines take their
+// place. Whatever the import said about colourways has just been superseded WHOLE — by an action
+// that looked at every one of them — and keeping a stale half of it would be the same lie in
+// smaller print. Lines about anything else are untouched; a media hole is not news this action has
+// any standing to revise.
+//
+// tally REPLACES the colourway counter rather than moving rows within it, for the same reason: the
+// import counted every colour as skipped, and after this action each one is imported, degraded or
+// still skipped. The caller is required to have counted each colour exactly once — this function
+// cannot check that, because a colour legitimately produces SEVERAL lines (its own verdict plus one
+// per lost pin) and lines have never been the counter's source (see report.go).
+//
+// The receiver is not modified, exactly like Amend: a caller that retries must not accumulate.
+func (r *ImportReport) ApplyColorways(holes []ImportHole, tally EntityTally) ([]byte, error) {
+	if r == nil || r.msg == nil {
+		return nil, fmt.Errorf("no import report to apply colourways to")
+	}
+	out, ok := proto.Clone(r.msg).(*pb_admin.TechCardImportReport)
+	if !ok { // unreachable: Clone returns the same concrete type it was given
+		return nil, fmt.Errorf("the import report did not clone as one")
+	}
+
+	kept := make([]*pb_admin.TechCardImportReportLine, 0, len(out.GetLines())+len(holes))
+	for _, l := range out.GetLines() {
+		if l.GetEntity() == EntityColorway {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	for _, h := range holes {
+		status := h.Status
+		if status == "" {
+			status = DefaultStatusFor(h.Reason)
+		}
+		kept = append(kept, reportLine(h.Entity, h.Ref, status, h.Reason, h.Detail))
+	}
+	if len(kept) == 0 {
+		out.Lines = nil
+	} else {
+		out.Lines = kept
+	}
+
+	replaced := false
+	for _, c := range out.GetCounters() {
+		if c.GetEntity() != EntityColorway {
+			continue
+		}
+		c.Imported, c.Skipped, c.Degraded = clampCount(tally.Imported), clampCount(tally.Skipped), clampCount(tally.Degraded)
+		replaced = true
+	}
+	if !replaced {
+		// A report assembled by BuildReport always carries the row (CountedEntities). One that does
+		// not was assembled elsewhere or by an older writer — appending is right, because dropping
+		// the tally would leave the card claiming nobody ever looked at its colourways.
+		out.Counters = append(out.Counters, counterOf(EntityColorway, tally))
+	}
+	return MarshalReport(out)
+}
+
 // moveLostCounters applies the write's losses to the tally, entity by entity in a fixed order so
 // the refusal below names the same entity on every run.
 func moveLostCounters(rep *pb_admin.TechCardImportReport, lost Counters) error {

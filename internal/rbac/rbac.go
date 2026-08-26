@@ -449,6 +449,22 @@ var methodRequirements = map[string]Requirement{
 	// предупреждение у ВСЕХ, кто откроет карточку, и берёт дыры импорта на себя.
 	"GetTechCardImportReport":         rd(SectionTechCards),
 	"AcknowledgeTechCardImportReport": wr(SectionTechCards),
+	// КОЛОРВЕИ ИЗ АРХИВА — wr(PRODUCTS), а не wr(tech_cards), и это единственный метод фичи,
+	// который уходит из её секции. Три предыдущих пишут карточку; этот СОЗДАЁТ ПРОДУКТЫ — той же
+	// внутренней дорогой, что CreateColorway двумя сотнями строк выше, с тем же UNIQUE(style_id,
+	// color_code) и тем же драфт-статусом. Классификация идёт за тем, что жест ЗАВОДИТ, а не за
+	// тем, из какого экрана его нажимают: повесить создание колорвеев на tech_cards:write значило
+	// бы раздать создание продуктов всякому, кто ведёт тех-карты, в обход всей секции products.
+	//
+	// Следствие, которое надо назвать вслух: технолог с tech_cards:write и без products:write
+	// импортирует карточку и НЕ МОЖЕТ нажать эту кнопку. Это не пробел — это то же ограничение,
+	// которое не даёт ему завести колорвей руками, и отчёт импорта остаётся у него на экране
+	// целиком, просто с непримененными строками.
+	//
+	// Карта допускает ровно одну секцию на метод, поэтому tech_cards:write здесь НЕ требуется
+	// вторым гейтом; неизменяемость карточки (релиз/заморозка) закрывает не право, а стор —
+	// RequireMutableTechCard внутри создания колорвея.
+	"ApplyTechCardImportColorways": wr(SectionProducts),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),

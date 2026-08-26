@@ -77,6 +77,40 @@ const (
 
 	// ReasonColorwaysNotApplied — colourways travelled as reference and were not created.
 	ReasonColorwaysNotApplied Reason = "colorways_not_applied"
+	// ReasonColorwayExists — the card ALREADY carries a colourway of that colour, so the archive's
+	// one was not created and its recipe was not written over the standing one.
+	//
+	// This is what makes the «create colourways from archive» button idempotent, and it is a
+	// DEGRADATION rather than a skip on purpose: the colour IS on the card, so telling the operator
+	// «the row is not there» would send them to create a duplicate the UNIQUE(style_id, color_code)
+	// would refuse anyway. What is missing is only THIS archive's recipe for it — which nobody may
+	// silently write over a colourway somebody has already been working on.
+	ReasonColorwayExists Reason = "colorway_exists"
+	// ReasonColorwayNotCreated — the draft colourway could not be created in this base at all, so
+	// neither it nor its recipe landed. The commonest cause is a colour code that is not in THIS
+	// base's colour dictionary: color_code is a dictionary FK, and the archive's codes are the
+	// source's.
+	//
+	// Its own code and not archive_row_invalid, whose contract is «the row was already broken when
+	// it was written»: nothing is wrong with the archive here, this base is simply missing the
+	// colour. It is closed HERE — add the colour, press the button again — which is why it must not
+	// borrow a sentence that sends the operator to the source card.
+	ReasonColorwayNotCreated Reason = "colorway_not_created"
+	// ReasonColorwayPinLost — the recipe row's material PIN could not be re-resolved, so the row
+	// landed with its norm and its placement and with no article pinned (it therefore takes the BOM
+	// slot's own article).
+	//
+	// A pin resolves through materials/index.json (§5.4) — the recipe carries only the source's
+	// material_id — and that index lives in the ARCHIVE, while this action runs off
+	// tech_card_import.colorways_payload, which is all that outlives the archive object. Once the
+	// object has aged out of the bucket there is nothing left to match a pin against, and that is
+	// what this code says.
+	//
+	// Its own code and NOT material_not_found: that one means «this catalogue has no such article»
+	// and sends the operator to create it. Here the catalogue may hold the article perfectly well —
+	// what was lost is the description of WHICH article the source meant. Sending somebody to
+	// create an article they already have is exactly the wrong afternoon.
+	ReasonColorwayPinLost Reason = "colorway_pin_lost"
 	// ReasonCompositionNotDerived — the structured fibre breakdown travelled and was not written.
 	//
 	// It is a PROJECTION of style_composition, a table whose only writer re-derives it from the

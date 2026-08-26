@@ -148,6 +148,27 @@ type TechCardArchivePieceArea struct {
 	ParsedAt        time.Time
 }
 
+// TechCardArchivePieceMaterial is ONE row of a colourway's piece→cloth mapping as the archive
+// carries it (colorways.json, FORMAT.md §5.3): «деталь X этого цвета кроится из артикула Y», with
+// the клеевая beside it when the piece is fused.
+//
+// EVERY REFERENCE IS A STABLE LINE KEY AND NOT AN ID, which is the whole reason this type exists
+// next to TechCardPieceMaterial rather than being it: the wire type carries the resolved FKs and
+// the legacy positional indexes, and both are the SOURCE base's numbers here. The keys travel
+// verbatim and are valid on the imported card without any remap, so the store resolves them against
+// the card it is writing to and never has anything else to go on.
+//
+// It is written by the explicit «create colourways from archive» action (Ф6.2) and by nothing else.
+// The card save owns this table on every other path.
+type TechCardArchivePieceMaterial struct {
+	PieceLineKey string
+	// BomLineKey is the fabric; empty is legal and means the row states only a note.
+	BomLineKey string
+	// FusingBomLineKey is the клеевая, empty when the piece is not fused.
+	FusingBomLineKey string
+	Note             string
+}
+
 // TechCardArchiveLabelLink re-sews ONE label to the BOM line it prints on.
 //
 // TechCardLabel.bom_item_id is a REAL input FK and the archive carries the source base's row id in

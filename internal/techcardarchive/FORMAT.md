@@ -660,7 +660,10 @@ explanation and the report action text.
 | `work_token_unknown` | the operation's work token is not in the target work catalogue |
 | `category_unknown` | the category path does not resolve — the card lands without a category |
 | `assembly_component_not_found` | the assembly component style number is not in the target base |
-| `colorways_not_applied` | colourways travelled as reference and were not created |
+| `colorways_not_applied` | colourways travelled as reference and were not created — the explicit «create colourways from archive» action builds them later |
+| `colorway_exists` | the card already carries a colourway of that colour — nothing was created and the standing recipe was left alone |
+| `colorway_not_created` | the draft colourway could not be created here at all (commonly: the colour code is not in this base's colour dictionary) |
+| `colorway_pin_lost` | the recipe row's material pin could not be re-resolved — the norm and the placement landed, the row takes the BOM line's own article |
 | `composition_not_derived` | the structured fibre breakdown travelled and was not written — it is derived here from the card's own fabric lines on every save |
 | `wastage_claim_degraded` | a wastage/consumption claim lost its provenance and reads as manual |
 | `norm_marker_lost` | the norm's marker stamp could not be re-sewn — the norm stands, the stamp does not |
@@ -675,22 +678,26 @@ which is the only question a reason code exists to answer:
 
 1. **This side is missing a reference** — `material_not_found`, `material_ambiguous`,
    `material_unit_mismatch`, `size_unknown`, `measurement_unknown`, `work_token_unknown`,
-   `category_unknown`, `assembly_component_not_found`, `norm_marker_lost`. Closed HERE: add the
-   article, the size, the measurement, the work, the category, the component — or re-run the marker
-   — and the card is whole. Importing the same archive again after that finishes the job.
+   `category_unknown`, `assembly_component_not_found`, `norm_marker_lost`, `colorway_not_created`.
+   Closed HERE: add the article, the size, the measurement, the work, the category, the component,
+   the colour — or re-run the marker — and the card is whole. Importing the same archive again after
+   that finishes the job (for the colourways, pressing their button again).
 2. **The archive did not bring it** — `media_missing`, `media_object_missing`, `pattern_invalid`,
-   `archive_row_invalid`. Nothing on this side closes any of them: the bytes never travelled, or
-   travelled broken, or the row was already unusable when it was written. Fix it on the SOURCE card
-   and export again — or re-enter that one row here.
+   `archive_row_invalid`, `colorway_pin_lost`. Nothing on this side closes any of them: the bytes
+   never travelled, or travelled broken, or the row was already unusable when it was written, or the
+   description that identified an article outlived neither the upload nor the question. Fix it on
+   the SOURCE card and export again — or re-enter that one row here.
 3. **This import deliberately does not write it** — `colorways_not_applied`,
    `composition_not_derived`, `wastage_claim_degraded`. Not a gap and not a failure: colourways are
-   products, the fibre breakdown is re-derived from this base's own catalogue, and a «median over N
-   cut lays» badge is an assertion about THIS server's lays that only this server's lays can
-   re-earn. The line is there so the loss is visible, not so somebody chases it.
+   products (and are built by a SEPARATE, explicit action rather than by the import), the fibre
+   breakdown is re-derived from this base's own catalogue, and a «median over N cut lays» badge is
+   an assertion about THIS server's lays that only this server's lays can re-earn. The line is there
+   so the loss is visible, not so somebody chases it.
 4. **This side collided or faltered** — `style_number_taken`, `media_upload_failed`,
-   `media_vanished`. The archive is fine and the reference is fine; the target base was busy. Each
-   has its own remedy (rename the card, look at the bucket, import again) and none of them is «add
-   the missing thing».
+   `media_vanished`, `colorway_exists`. The archive is fine and the reference is fine; the target
+   base already held something of its own. Each has its own remedy (rename the card, look at the
+   bucket, import again, compare the two colourways by hand) and none of them is «add the missing
+   thing».
 5. **Neither side is at fault** — `size_not_in_card_range` (the size IS in the dictionary and the
    imported card's own range is narrower — which is exactly why it is not `size_unknown`, whose
    action text sends the operator to a dictionary that is in perfect order) and `unknown_entry`

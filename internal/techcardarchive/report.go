@@ -465,8 +465,24 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"assembly tab."},
 
 	ReasonColorwaysNotApplied: {StatusSkipped,
-		"Colourways are products and do not travel in an archive. Create them here and link them to " +
-			"the card by hand — the archive's colour list is in the report for reference."},
+		"Colourways are products and an import creates none. Press «create colourways from archive» " +
+			"on this report to build them as drafts with their recipes, or create them by hand — the " +
+			"archive's colour list is in the report for reference."},
+	ReasonColorwayExists: {StatusDegraded,
+		"This card already has a colourway of that colour, so nothing was created and its recipe was " +
+			"left alone. Nothing to do unless you WANT the archive's recipe on it — in that case " +
+			"compare the two by hand; a button that overwrote a colourway somebody is working on " +
+			"would be the worse of the two mistakes."},
+	ReasonColorwayNotCreated: {StatusSkipped,
+		"The colourway could not be created here, usually because its colour code is not in this " +
+			"base's colour dictionary. The detail names the refusal: add the colour (or fix what it " +
+			"names) and press «create colourways from archive» again — colours already created are " +
+			"skipped, so it is safe to press twice."},
+	ReasonColorwayPinLost: {StatusDegraded,
+		"The recipe row landed with its consumption and its placement, and with no article pinned — " +
+			"so it takes the BOM line's own article. A pin is described by the archive's material " +
+			"passports, which do not outlive the uploaded file; pin the article by hand on the " +
+			"colourway's recipe if this colour takes a different one."},
 	ReasonCompositionNotDerived: {StatusDegraded,
 		"The fibre breakdown is derived here from the articles the card's fabric lines link to, and is " +
 			"re-derived every time the card is saved — so the archive's own rows were not written. The " +

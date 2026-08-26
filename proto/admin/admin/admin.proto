@@ -1984,6 +1984,33 @@ service AdminService {
     };
   }
 
+  // КОЛОРВЕИ ИЗ АРХИВА — ОТДЕЛЬНОЙ КНОПКОЙ ИЗ ОТЧЁТА, а не самим импортом (решение владельца).
+  //
+  // Колорвей — это ПРОДУКТ, и импорт продуктов не создаёт: colorways.json едет справкой, а импорт
+  // отчитывается строкой colorways_not_applied по каждому цвету. Этот вызов — второй, ЯВНЫЙ шаг:
+  // из сохранённого тела colorways.json он заводит на импортированной карточке ДРАФТ-колорвеи и
+  // раскладывает их рецепты и маппинг деталей. Ни SKU, ни публикации, ни цен — драфт это ровно
+  // столько, сколько архив удостоверяет, а денег в архиве нет по построению (money_policy).
+  //
+  // ИДЕМПОТЕНТЕН ПО ЦВЕТУ, а не по факту нажатия: колорвей с таким color_code на карточке уже
+  // есть — строка отчёта «exists» и пропуск. Поэтому повторное нажатие безопасно и не плодит
+  // дублей, и поэтому же ответ на второй клик — обычный отчёт, а не ошибка.
+  //
+  // ОТЧЁТ ВОЗВРАЩАЕТСЯ ОБНОВЛЁННЫЙ И ПЕРЕЗАПИСЫВАЕТ ХРАНИМЫЙ: строки колорвеев уходят из skipped
+  // в imported/degraded. Иначе карточка навсегда осталась бы с отчётом, который утверждает, что
+  // колорвеи не приехали, — ровно после того, как их завели.
+  //
+  // Классифицирован wr(products), и это НЕ описка рядом с соседними четырьмя: жест СОЗДАЁТ
+  // ПРОДУКТЫ, той же внутренней дорогой, что CreateColorway, и право на это — право того, кто
+  // ведёт каталог. Технолог с tech_cards:write, но без products:write, импортирует карточку и не
+  // может завести из неё колорвеи; это следствие того, чем колорвей является, а не пробел.
+  rpc ApplyTechCardImportColorways(ApplyTechCardImportColorwaysRequest) returns (ApplyTechCardImportColorwaysResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/import/colorways/apply"
+      body: "*"
+    };
+  }
+
   // Material catalog (task 10): shared nomenclature for BOM lines + append-only price history.
   rpc CreateMaterial(CreateMaterialRequest) returns (CreateMaterialResponse) {
     option (google.api.http) = {
@@ -8630,6 +8657,22 @@ message AcknowledgeTechCardImportReportRequest {
 }
 
 message AcknowledgeTechCardImportReportResponse {}
+
+message ApplyTechCardImportColorwaysRequest {
+  int32 tech_card_id = 1;
+}
+
+message ApplyTechCardImportColorwaysResponse {
+  // created_colorway_ids — колорвеи, заведённые ЭТИМ нажатием, в порядке colorways.json. Пусто на
+  // повторном клике: всё, что архив нёс, уже стоит на карточке, и это успех, а не отказ. Ids, а не
+  // коды цвета: клиенту нужно чем-то открыть только что созданный драфт, а color_code — ключ
+  // архива, не ссылка на строку этой базы.
+  repeated int32 created_colorway_ids = 1;
+  // report — ХРАНИМЫЙ отчёт карточки, переписанный этим применением: строки колорвеев перешли из
+  // skipped в imported/degraded, счётчики сдвинулись за ними. Клиент подменяет им то, что показывал
+  // до нажатия, а не дописывает — иначе на экране окажутся обе версии одной новости.
+  TechCardImportReport report = 2;
+}
 
 // TechCardImportReport — что произошло при импорте. Он остаётся НА КАРТОЧКЕ после коммита:
 // импортированная карточка неотличима от заведённой руками, и единственное, что помнит о её

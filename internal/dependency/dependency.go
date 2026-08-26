@@ -1226,6 +1226,19 @@ type (
 		// the second a hand-set quarantine (no code path writes 'failed'; a rolled-back commit
 		// leaves the row 'uploaded' deliberately, see entity.TechCardImportStatusFailed).
 		ExpireStaleTechCardImports(ctx context.Context, olderThan time.Time) (int64, error)
+		// ApplyImportedColorwayPieceMaterials writes ONE colourway's piece→cloth mapping onto an
+		// imported card (Ф6.2), resolving pieces and BOM lines by the stable line keys the archive
+		// carried verbatim. A full replace SCOPED TO THAT COLOURWAY — never the card save's clear,
+		// which wipes every colour's mapping.
+		//
+		// Every key is promised to exist by the caller (it holds the card's key sets and reports
+		// what it filtered out), so a key that names nothing here is an error and not a dropped row.
+		ApplyImportedColorwayPieceMaterials(ctx context.Context, techCardID, colorwayID int,
+			rows []entity.TechCardArchivePieceMaterial) error
+		// StampTechCardImportReport replaces the stored report of an ALREADY COMMITTED import
+		// (Ф6.2: the colourway lines stop saying «not created» once they are). Guarded on
+		// status='committed'; it cannot touch tech_card_id, which is the commit's alone.
+		StampTechCardImportReport(ctx context.Context, importID string, report []byte) error
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size
