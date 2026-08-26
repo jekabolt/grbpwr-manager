@@ -736,3 +736,74 @@ func TestClampProvenanceMakesArchiveTextFitToRead(t *testing.T) {
 		})
 	}
 }
+
+// A раскладка is dropped WHOLE over a size the imported card does not make, and the two ways it can
+// name one — the состав and the legacy summary size — are one decision with one line.
+//
+// The decision used to be a REFUSAL of the entire import, and the archive that reached it is one our
+// own export writes: narrowing a card's size range while its markers are alive is legal (the prune
+// clears measurements and the grade base, and a состав's foreign key points at the size DICTIONARY),
+// the export carries every marker of the card, and the export-side reimport probe cannot see markers
+// at all — TechCardInsert has none. So this is also the test that says the backup restores.
+func TestImportedMarkerOutsideTheCardsRangeIsNamedWhole(t *testing.T) {
+	rng := storeutil.NewTechCardSizeRange(7, 11, 12)
+	mk := func(size int64, composition ...int) entity.TechCardMarkerInsert {
+		out := entity.TechCardMarkerInsert{Name: "lay"}
+		if size > 0 {
+			out.SizeId = sql.NullInt64{Int64: size, Valid: true}
+		}
+		for _, s := range composition {
+			out.Composition = append(out.Composition, entity.MarkerCompositionEntry{SizeId: s, Quantity: 1})
+		}
+		return out
+	}
+	cases := []struct {
+		name string
+		in   entity.TechCardMarkerInsert
+		want []int
+	}{
+		{"a lay of sizes the card makes stays", mk(11, 11, 12), nil},
+		{"a состав naming one size outside the range", mk(0, 11, 99), []int{99}},
+		{"the legacy summary size alone", mk(99), []int{99}},
+		{"both halves name the same size once", mk(99, 99), []int{99}},
+		{"a mixed lay names every offending size, sorted", mk(0, 98, 12, 99), []int{98, 99}},
+		{"«no size» is not size zero", mk(0, 11), nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := importedMarkerSizesOutsideRange(c.in, rng)
+			if len(got) != len(c.want) {
+				t.Fatalf("sizes outside the range = %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("sizes outside the range = %v, want %v", got, c.want)
+				}
+			}
+		})
+	}
+
+	// THE SENTENCE THE OPERATOR READS. A mixed lay is lost over a SET of sizes, so naming only the
+	// first would have them widen the range, import again, and be told about the next one.
+	if got := importedSizeRefs([]int{98, 99}); got != "size_id=98, size_id=99" {
+		t.Fatalf("detail names %q, want both sizes", got)
+	}
+	// The ref is the resolver's own, so the dry run's marker lines and the write's read as one
+	// document: dropping the marker under a size ref would file it beside the size chart's losses.
+	if got := importedMarkerRef("  RT · основная 150 "); got != "marker_name=RT · основная 150" {
+		t.Fatalf("marker ref = %q", got)
+	}
+
+	// AND THE LOSS IS COUNTED, not merely mentioned: the resolver tallied this раскладка as imported,
+	// and a report that still says so about a marker the write threw away is the exact lie the
+	// amendment mechanism exists to prevent.
+	l := newImportLosses()
+	l.dropCounted(techcardarchive.EntityMarker, importedMarkerRef("lay"),
+		techcardarchive.StatusSkipped, techcardarchive.ReasonSizeNotInCardRange, "detail")
+	if l.lost[techcardarchive.EntityMarker].Skipped != 1 || len(l.holes) != 1 {
+		t.Fatalf("counters = %+v, lines = %+v; the marker must leave the imported column", l.lost, l.holes)
+	}
+	if act := techcardarchive.ActionFor(techcardarchive.ReasonSizeNotInCardRange); strings.Contains(act, "to the dictionary") {
+		t.Errorf("the action for a size the CARD refused sends the operator to the dictionary: %q", act)
+	}
+}

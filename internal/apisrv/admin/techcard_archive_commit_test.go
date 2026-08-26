@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -1108,6 +1109,57 @@ func TestCommitTechCardImportAnswersWithTheReportTheStoreStamped(t *testing.T) {
 	require.Equal(t, tcciTestImportID, (*seen)[0].importID)
 	require.Equal(t, "im", (*seen)[0].actor)
 	require.Equal(t, "backend.source.example", (*seen)[0].sourceHost)
+}
+
+// A REPORT WRITTEN BY A NEWER BINARY STILL COMES BACK IN FULL.
+//
+// The report evolves the way the format does — additively — and a rolling deploy is enough for the
+// process that WROTE the row to be one version ahead of the process answering this call. This
+// handler used to parse the stored bytes with a bare protojson.Unmarshal, which is strict about
+// unknown fields: one field added by the newer writer and the whole document was dropped, silently,
+// leaving the operator a success with no report — while the read RPC one click later, which parses
+// through techcardarchive.ParseReport, showed the very same document in full. Two parsers of one
+// payload, disagreeing about whether an unknown field is fatal.
+//
+// The unknown field is put in TWICE on purpose: at the top level and inside a line, because those
+// are two different messages and a parser can be tolerant about one and strict about the other.
+func TestCommitTechCardImportAnswersWithAReportFromANewerWriter(t *testing.T) {
+	r := tcciNewRig(t)
+	a := tcciArchiveOneUpload(t, r)
+	r.serve(t, tcciZip(t, a))
+	r.tcciExpectUpload(7001)
+	stored := tcciReportFromANewerWriter(t, tcciStoredReport(t, "GRB-SS26-014"))
+	r.rows(tcciRowOK(entity.TechCardImportStatusUploaded, 0, nil),
+		tcciRowOK(entity.TechCardImportStatusCommitted, 909, stored))
+
+	r.expectImport(t, tcciImported(909))
+
+	resp, err := tcciCommitCall(t, r.s)
+	require.NoError(t, err)
+	require.EqualValues(t, 909, resp.GetTechCardId())
+	require.NotNil(t, resp.GetReport(),
+		"a field this binary does not know must be dropped, not the whole report with it")
+	require.Equal(t, "GRB-SS26-014", resp.GetReport().GetStyleNumber())
+	require.Len(t, tcciReportLines(resp.GetReport(), techcardarchive.ReasonSizeUnknown), 1,
+		"the write's own losses have to survive the parse, or the answer understates them")
+}
+
+// tcciReportFromANewerWriter puts fields into a stored report that this binary has no field for —
+// the only way to reproduce, in one process, a row written by the next version of the server.
+func tcciReportFromANewerWriter(t *testing.T, stored []byte) []byte {
+	t.Helper()
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(stored, &doc))
+	doc["future_verdict"] = "the next version had something to say"
+	lines, ok := doc["lines"].([]any)
+	require.True(t, ok, "the fixture report must carry a line to add a field to")
+	require.NotEmpty(t, lines)
+	line, ok := lines[0].(map[string]any)
+	require.True(t, ok)
+	line["future_hint"] = "and something to say about this line"
+	raw, err := json.Marshal(doc)
+	require.NoError(t, err)
+	return raw
 }
 
 // A read-back that fails does NOT fail the import: the card exists, so the answer carries its id

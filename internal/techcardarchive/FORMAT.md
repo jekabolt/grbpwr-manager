@@ -490,8 +490,11 @@ pins, and an auxiliary card's `output_material_id` (the warehouse bucket its run
 `ref` is the source `material_id` — the key `card.json` and `colorways.json` point at, and the
 reason the passport exists at all. The import **matches, it does not create**: `code` among
 non-archived articles first (the code is unique only among live rows and only in the application —
-the schema does not enforce it), then `(supplier, supplier_ref)`, with the `unit` checked on a
-code match. Ambiguous, unit-mismatched or unmatched articles leave `material_id` empty and produce
+the schema does not enforce it), then `(supplier, supplier_ref)`, with the `unit` checked on
+**either match**: whichever key finds exactly one live article, that article's unit has to agree
+before the link is made — and only when both sides state a unit, since a blank claims nothing and a
+claim against a blank is not a contradiction.
+Ambiguous, unit-mismatched or unmatched articles leave `material_id` empty and produce
 a hole — the BOM line itself imports regardless, because it carries its own
 `name/supplier/supplier_ref/composition/spec/unit`. The output article resolves the same way and
 misses with the same three codes, under the `ref` `output_material`; a miss leaves the card's
@@ -596,6 +599,11 @@ This list is the whole contract; nothing else in a marker is an identity.
   have is a `size_unknown` hole and the WHOLE MARKER is dropped rather than written with a gap in
   its состав: a раскладка that lost a size no longer describes the lay that was measured, and
   the piece-instance formula would silently hand the orphaned contour zero instances.
+* A size the target dictionary DOES have and the imported **card** does not make is the other miss
+  and carries the other code: the write drops the marker whole with a `size_not_in_card_range` line
+  (§7), and the import continues. This is not an exotic archive — narrowing a card's size range
+  while its markers are alive is legal on the source side, and the export carries every marker of
+  the card — so refusing the import over it would mean our own archives do not restore.
 * `summary.colorway_id` is **zeroed**, and the import writes a report line (`entity=marker`, reason
   `colorways_not_applied`). Colourways are products and an import does not create them (§5.3), so
   there is nothing to remap onto; the marker lands as общекарточная geometry and the hole is what

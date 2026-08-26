@@ -252,7 +252,7 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err := resewImportedLabels(ctx, db, newID, in.Labels, bomIDs); err != nil {
 			return err
 		}
-		if err := insertImportedMarkers(ctx, db, newID, in.Markers, bomIDs, in.Actor, rng); err != nil {
+		if err := insertImportedMarkers(ctx, db, newID, in.Markers, bomIDs, in.Actor, rng, losses); err != nil {
 			return err
 		}
 		if err := insertImportedPieceAreas(ctx, db, newID, importID, in.PieceAreas, rng, losses); err != nil {
@@ -349,8 +349,10 @@ func (s *Store) prepareImportedCard(card *entity.TechCardInsert) {
 //     assembly lines — not chart cells, not measured areas, not the card's own «model wears» field.
 //     Moving a counter for one of those would claim a size or a sheet did not import when it did.
 //   - dropCounted() writes a line AND moves one row out of the imported column. It is for rows the
-//     resolver planned and tallied: today that is the assembly bill, whose imported count is
-//     exactly the number of lines this transaction was handed.
+//     resolver planned and tallied: today that is the assembly bill and the раскладки, both of
+//     which this transaction is handed exactly as the dry run counted them. The move is capped at
+//     what that column holds (see Amend), so a раскладка the resolver counted as DEGRADED rather
+//     than imported still gets its line and moves no number it cannot take.
 //
 // Lines are deduplicated by (entity, ref, reason) the way the resolver deduplicates its own, so one
 // out-of-range size does not produce a line per measurement it appears in. COUNTERS ARE NOT: two
@@ -421,6 +423,18 @@ func importedSizeRef(sizeID int) string {
 		return "size_name=" + strings.TrimSpace(s.Name)
 	}
 	return fmt.Sprintf("size_id=%d", sizeID)
+}
+
+// importedSizeRefs names SEVERAL sizes in one detail sentence, in the order they were given — for
+// the rows that are lost over a set of sizes rather than over one (a раскладка's состав). Naming
+// only the first would send the operator to widen the range once and import again to be told about
+// the next one.
+func importedSizeRefs(sizeIDs []int) string {
+	refs := make([]string, 0, len(sizeIDs))
+	for _, id := range sizeIDs {
+		refs = append(refs, importedSizeRef(id))
+	}
+	return strings.Join(refs, ", ")
 }
 
 // ────────────────────────────── the journal sentence ──────────────────────────────
@@ -812,8 +826,10 @@ func importedGradeRule(id int, chart entity.StyleSizeChart,
 }
 
 // sortedIntKeys puts the report's lines in a fixed order: a report that shuffles between two runs of
-// the same archive cannot be diffed by the person reading it.
-func sortedIntKeys(m map[int]int) []int {
+// the same archive cannot be diffed by the person reading it. Generic in the value because the two
+// callers count different things about a size — how many rows it lost, and merely that it is out of
+// range — and one order is what makes their sentences comparable.
+func sortedIntKeys[V any](m map[int]V) []int {
 	out := make([]int, 0, len(m))
 	for k := range m {
 		out = append(out, k)
@@ -967,14 +983,32 @@ func resewImportedLabels(ctx context.Context, db dependency.DB, techCardID int,
 //   - RUN_ID is NULL by construction. Only card markers travel (FORMAT.md §5.7); a run's раскладка
 //     belongs to its run and dies with it.
 //
-// A состав naming a size outside the card's range REFUSES the whole import, through the same
-// requireCardSizes every marker save uses. That is deliberately harsher than the size chart's
-// dropped cell above: a раскладка is a claim about cloth, and one whose состав lost a size no
-// longer describes the lay that was measured — while its total_units, the divisor of every cost
-// read downstream, would silently shrink.
+// A размер OUTSIDE THE IMPORTED CARD'S RANGE DROPS THE РАСКЛАДКА WHOLE, with a report line, and
+// does not refuse the import — the same answer its sisters above give (a chart cell, a grade rule,
+// a measured area, an assembly line), under the same reason code `size_not_in_card_range`.
+//
+// It refused the whole import until this review, and that was a defect rather than strictness. The
+// case it refused is one OUR OWN EXPORT produces: narrowing a card's size range while its markers
+// are alive is legal here — pruneSizeScopedDataOutsideRange clears measurements and the grade base
+// and nothing else, and a состав's foreign key points at the size DICTIONARY (fk_tcms_size, 0273),
+// not at the card's ряд — the export carries every marker of the card without filtering by range,
+// and reimportProbe cannot warn about it because it runs on TechCardInsert, which has no markers in
+// it at all. So the archive of such a card opened, resolved, wrote its card, its children and its
+// chart, and then failed on the last marker: a backup that does not restore, over data the source
+// keeps quite happily.
+//
+// WHOLE, NEVER PARTLY, and that half of the old comment stands: a раскладка is a claim about cloth,
+// and one whose состав lost a size no longer describes the lay that was measured — while
+// total_units, the divisor of every cost read downstream, would silently shrink. So the marker is
+// dropped entire, its one line names it, and the marker counter moves out of imported.
+//
+// What is still a REFUSAL is what no report line can describe: a marker with no name, two markers
+// with one identity, more placements than pieces, a BOM key naming a line the archive did not
+// carry, and a состав that says nothing at all. Those are archives our export cannot write, so a
+// payload carrying one was made by something else — the corrupt-archive case.
 func insertImportedMarkers(ctx context.Context, db dependency.DB, techCardID int,
 	markers []entity.TechCardMarkerInsert, bomIDs map[string]int64, actor string,
-	rng storeutil.TechCardSizeRange) error {
+	rng storeutil.TechCardSizeRange, lost *importLosses) error {
 	if len(markers) == 0 {
 		return nil
 	}
@@ -1015,14 +1049,38 @@ func insertImportedMarkers(ctx context.Context, db dependency.DB, techCardID int
 				fmt.Sprintf("%d of %d pieces placed", m.PlacedCount, m.TotalCount),
 				"the archive's marker counts more placements than it has pieces")
 		}
-		// The legacy single size, when the row still carries one.
-		if m.SizeId.Valid {
-			if err := rng.Require(field+".size_id", int(m.SizeId.Int64)); err != nil {
-				return err
+		// THE SHAPE of the состав, which is not the same question as its MEMBERSHIP of the card's
+		// ряд and is decided in a different place: entity.ValidateMarkerComposition owns the shape
+		// and the converter has already run it, rng owns the membership and decides just below. A
+		// состав with no rows means total_units = 0 — the divisor of every cost read from this
+		// marker — and one that names no size addresses nothing a report line could point at, so
+		// neither is a hole. Both are unreachable through the import route (dto refuses them before
+		// the transaction opens) and both were refused here through requireCardSizes until the
+		// membership check moved to rng; stated explicitly so that removal did not quietly take
+		// them with it.
+		if len(m.Composition) == 0 {
+			return entity.NewFieldViolation(field+".composition", entity.ReasonCompositionMissing, "",
+				"the archive's marker does not say how many garments of which sizes it cuts")
+		}
+		for _, c := range m.Composition {
+			if c.SizeId <= 0 {
+				return entity.NewFieldViolation(field+".composition", entity.ReasonCompositionMissing,
+					fmt.Sprintf("%d garments under no size", c.Quantity),
+					"the archive's marker cuts garments of a size it does not name")
 			}
 		}
-		if err := requireCardSizes(ctx, db, techCardID, m.Composition); err != nil {
-			return err
+		// THE ONE HOLE THIS LOOP WRITES. rng is this card's own ряд, read back inside this
+		// transaction from the rows insertTechCardChildren just wrote — the same authority the
+		// chart, the grade rule, the measured areas and the assembly bill are held against, and
+		// the same rows requireCardSizes would have queried a second time per marker.
+		if outside := importedMarkerSizesOutsideRange(m, rng); len(outside) > 0 {
+			lost.dropCounted(techcardarchive.EntityMarker, importedMarkerRef(m.Name),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonSizeNotInCardRange,
+				fmt.Sprintf("the раскладка is laid out in %s, which the imported card does not make; "+
+					"the whole marker was skipped, because one laid out on a different set of sizes is "+
+					"not the lay that was measured — and half of it would shrink total_units, the "+
+					"divisor of every cost read from it", importedSizeRefs(outside)))
+			continue
 		}
 
 		bomItemID := sql.NullInt64{}
@@ -1083,6 +1141,37 @@ func insertImportedMarkers(ctx context.Context, db dependency.DB, techCardID int
 		}
 	}
 	return nil
+}
+
+// importedMarkerSizesOutsideRange names every size ONE раскладка is laid out in that the imported
+// card does not make — the состав's sizes and the legacy summary size together, deduplicated and
+// sorted so two runs of the same archive produce the same sentence.
+//
+// A DECISION, SEPARATE FROM THE WRITE, for the reason stated over the size chart: what this
+// transaction drops has to reach the report, and that is only testable without a database if
+// choosing and writing are two functions.
+//
+// A NON-POSITIVE SIZE IS NOT ITS BUSINESS — 0 means «not size-scoped» across this whole contract
+// (storeutil.TechCardSizeRange.Require reads it the same way), and a состав carrying one is refused
+// by the caller as a shape error rather than reported as a missing size.
+func importedMarkerSizesOutsideRange(m entity.TechCardMarkerInsert, rng storeutil.TechCardSizeRange) []int {
+	outside := make(map[int]bool, len(m.Composition)+1)
+	if m.SizeId.Valid && m.SizeId.Int64 > 0 && !rng.Has(int(m.SizeId.Int64)) {
+		outside[int(m.SizeId.Int64)] = true
+	}
+	for _, c := range m.Composition {
+		if c.SizeId > 0 && !rng.Has(c.SizeId) {
+			outside[c.SizeId] = true
+		}
+	}
+	return sortedIntKeys(outside)
+}
+
+// importedMarkerRef names a раскладка the way the resolver's own marker lines name one, so the two
+// halves of the report — what the dry run could not do and what the write could not do — read as
+// one document.
+func importedMarkerRef(name string) string {
+	return "marker_name=" + strings.TrimSpace(name)
 }
 
 // ────────────────────────────── measured piece areas ──────────────────────────────

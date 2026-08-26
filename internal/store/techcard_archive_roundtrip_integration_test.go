@@ -765,8 +765,20 @@ const (
 	rtPressProfile   = "01RTPROFILEPRESS00000000M2"
 )
 
+// rtFixtureSeq считает ПОСТРОЙКИ фикстуры в одном процессе.
+//
+// Артикул UNIQUE по всей базе, а фикстура заводит свои два литералами. Пока строил её один тест,
+// это было незаметно; второй тест того же пакета падал на 1062 чужой карточки — и падал в фикстуре,
+// то есть до единой строки собственного замера. Номер прогона в артикуле убирает связь между
+// тестами, не трогая ни одного утверждения: все они читают fx.styleNo / fx.auxNumber, а не литерал.
+var rtFixtureSeq int
+
+// rtMaxNumber — артикул основной карточки этой постройки.
+func rtMaxNumber(seq int) string { return fmt.Sprintf("RT-MAX-%04d", seq) }
+
 // rtFixture — то, что фикстура рассказывает о себе тесту после того, как построила карточку.
 type rtFixture struct {
+	seq         int
 	cardID      int
 	auxID       int
 	auxNumber   string
@@ -849,7 +861,8 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	}
 	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
 
-	var fx rtFixture
+	rtFixtureSeq++
+	fx := rtFixture{seq: rtFixtureSeq}
 
 	// ── словарь: два размера и категория-тройка ──
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size").Scan(&fx.sizeA))
@@ -913,7 +926,7 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	rig.objs.put(keyUni, dxfUni)
 
 	// ── вспомогательная карточка для связи сборки ──
-	fx.auxNumber = "RT-AUX-0001"
+	fx.auxNumber = fmt.Sprintf("RT-AUX-%04d", fx.seq)
 	fx.auxID, err = T.AddTechCard(ctx, &entity.TechCardInsert{
 		Name: "RT Care Label", StyleNumber: ns(fx.auxNumber),
 		StyleNumberSource: entity.StyleNumberSourceGenerated,
@@ -1100,7 +1113,7 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	}
 
 	card := &entity.TechCardInsert{
-		Name: "RT Maximal Jacket", StyleNumber: ns("RT-MAX-0001"),
+		Name: "RT Maximal Jacket", StyleNumber: ns(rtMaxNumber(fx.seq)),
 		StyleNumberSource: entity.StyleNumberSourceGenerated,
 		// Автор архива и импортёр — РАЗНЫЕ люди: без этого нечем показать, что новая карточка
 		// подписывается тем, кто её импортировал, а не тем, кто её нарисовал (§4.1 №10/11).
@@ -1203,7 +1216,7 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	t.Cleanup(func() {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", fx.cardID)
 	})
-	fx.styleNo = "RT-MAX-0001"
+	fx.styleNo = rtMaxNumber(fx.seq)
 
 	// ── размерная таблица: обе оси именами (§5.1) ──
 	var meas1, meas2 int
@@ -1547,4 +1560,158 @@ func rtRequireReportLine(t *testing.T, rep *pb_admin.TechCardImportReport, entit
 	}
 	t.Fatalf("в отчёте нет строки %s/%s* — потеря без строки в отчёте это и есть тихая потеря; строки: %+v",
 		entityName, refPrefix, rep.GetLines())
+}
+
+// ────────────────────────────── раскладка вне ряда ──────────────────────────────
+
+// TestTechCardArchiveImportKeepsGoingWhenAMarkerLeavesTheRange — ГЕЙТ САМОИМПОРТА для раскладок.
+//
+// ЧТО ЗАМЕРЯЕТСЯ. Сужение размерного ряда при ЖИВЫХ раскладках законно: prune чистит только мерки и
+// базу градации, а внешний ключ состава смотрит в СЛОВАРЬ размеров (fk_tcms_size, 0273), не в ряд
+// карты. Экспорт везёт все раскладки карты без фильтра, а проба пригодности к реимпорту их не видит
+// вовсе — их нет в TechCardInsert. Значит наш собственный архив такой карты обязан импортироваться.
+//
+// До этой правки он не импортировался: промах по ряду был нарушением поля, то есть откатом ВСЕЙ
+// транзакции — после того, как карточка, её дети и её таблица уже написаны. Резервная копия, которая
+// не восстанавливается, и молчаливое нарушение правила владельца «промах по ссылке — пропуск строки
+// с записью в отчёт, НИКОГДА отказ от всего импорта».
+//
+// ПОЧЕМУ ЭТО НЕ ЧАСТЬ ГЛАВНОГО КРУГА. Круг сравнивает A и B на РАВЕНСТВО; здесь потеря запланирована,
+// и подмешивать её в равенство значило бы ослабить круг.
+func TestTechCardArchiveImportKeepsGoingWhenAMarkerLeavesTheRange(t *testing.T) {
+	if os.Getenv("CI") == "" &&
+		!strings.Contains(testCfg.DSN, "127.0.0.1") &&
+		!strings.Contains(testCfg.DSN, "localhost") {
+		t.Skip("skipping outside CI unless the DSN targets a local container (avoids the configured prod DB)")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	rig := newRTRig(t, ctx)
+	fx := rtBuildMaximalCard(t, rig)
+	T := rig.store.TechCards()
+
+	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
+	nd := func(v string) decimal.NullDecimal { return decimal.NewNullDecimal(decimal.RequireFromString(v)) }
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+	nb := func(v bool) sql.NullBool { return sql.NullBool{Bool: v, Valid: true} }
+
+	const doomedMarker = "RT · настил на B"
+
+	// ── вторая раскладка: состав НА ВТОРОЙ РАЗМЕР, блоб версии, которая состав умеет ──
+	layout := &pb_common.TechCardMarkerLayout{
+		SchemaVersion: int32(entity.MarkerLayoutSchemaWithComposition),
+		Composition: []*pb_common.TechCardMarkerCompositionEntry{
+			{SizeId: int32(fx.sizeB), Quantity: 1},
+		},
+		Pieces: []*pb_common.TechCardMarkerPiece{{
+			PieceId: 1, Name: "FRONT", Source: "rt-graded.dxf", Quantity: 1,
+			SizeId: int32(fx.sizeB),
+			Poly: []*pb_common.TechCardMarkerPoint{
+				{XCm: 0, YCm: 0}, {XCm: 31, YCm: 0}, {XCm: 31, YCm: 72}, {XCm: 0, YCm: 72},
+			},
+			BboxWCm: 31, BboxHCm: 72, AreaCm2: 2232,
+			PieceLineKey: rtPieceFront, BlockName: "FRONT",
+		}},
+		Placements: []*pb_common.TechCardMarkerPlacement{
+			{PieceId: 1, Instance: 0, RotDeg: 0, XCm: 1, YCm: 1},
+		},
+	}
+	facts, err := dto.MarkerLayoutFactsFromPb(layout)
+	require.NoError(t, err)
+	blob, err := protojson.Marshal(layout)
+	require.NoError(t, err)
+
+	mk := entity.TechCardMarkerInsert{
+		Name: doomedMarker, Source: entity.MarkerSourceManual,
+		BomLineKey:    rtLineShell,
+		FabricWidthCm: d("150"), GapCm: d("0.5"), EdgeMarginCm: d("1"), SelvedgeCm: d("1.5"),
+		UsedLengthCm:  d("530.2"),
+		EfficiencyPct: nd("71.0"),
+		PlacedCount:   1, TotalCount: 1,
+		SeamAllowanceMm: nd("10"), ContourAllowanceMm: nd("0"),
+		ContourLayer: ns("1"), GrainLayer: ns("7"), AllowFlip: nb(false),
+		Layout: string(blob), LayoutFacts: facts,
+		Composition: []entity.MarkerCompositionEntry{{SizeId: fx.sizeB, Quantity: 1}},
+	}
+	// ЖИВОЙ путь сохранения, на размер, который карта ТОГДА делает. Без этого замер ниже был бы о
+	// состоянии, которого сервер не производит.
+	_, err = T.SaveMarker(ctx, fx.cardID, 0, mk, rtActor)
+	require.NoError(t, err, "раскладка на размер из ряда обязана сохраняться живым путём")
+
+	// ── сужение ряда: РОВНО то, что оставляет за собой сохранение с коротким size_ids ──
+	// pruneSizeScopedDataOutsideRange (store/techcard/techcard.go) сносит мерки этого размера и
+	// гасит базу градации — и больше НИЧЕГО: ни раскладок, ни их состава.
+	_, err = testDB.ExecContext(ctx,
+		"DELETE FROM tech_card_size WHERE tech_card_id = ? AND size_id = ?", fx.cardID, fx.sizeB)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx,
+		"DELETE FROM tech_card_size_measurement WHERE tech_card_id = ? AND size_id = ?", fx.cardID, fx.sizeB)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE tech_card SET grade_base_size_id = NULL WHERE id = ? AND grade_base_size_id = ?",
+		fx.cardID, fx.sizeB)
+	require.NoError(t, err)
+
+	// ЛОВУШКА СУЩЕСТВУЕТ: состав пережил сужение и называет размер, которого карта больше не делает.
+	var survived int
+	require.NoError(t, testDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tech_card_marker_size c
+		JOIN tech_card_marker m ON m.id = c.marker_id
+		WHERE m.tech_card_id = ? AND c.size_id = ?`, fx.cardID, fx.sizeB).Scan(&survived))
+	require.Equal(t, 1, survived,
+		"сужение ряда не трогает состав раскладки — если бы трогало, дефекта бы не было")
+
+	// ── ЭКСПОРТ: везёт ОБЕ раскладки и молчит о той, что вне ряда ──
+	zip, _ := rig.export(t, fx.cardID)
+	arch, err := techcardarchive.OpenArchive(bytes.NewReader(zip), int64(len(zip)))
+	require.NoError(t, err)
+	require.Equal(t, 2, arch.Manifest.Contents.Markers,
+		"экспорт обязан везти обе раскладки: фильтра по ряду у него нет")
+	for _, h := range arch.Manifest.ExportHoles {
+		require.NotEqual(t, techcardarchive.EntityMarker, h.Entity,
+			"экспорт о раскладке вне ряда не предупреждает — именно поэтому импорт обязан её пережить: %+v", h)
+	}
+
+	// ── ИМПОРТ: то, ради чего тест написан. Отказ здесь = откат всего импорта ──
+	cardID, rep := rig.importArchive(t, zip)
+	require.Positive(t, cardID, "импорт обязан создать карточку, а не отказать из-за одной раскладки")
+
+	rtRequireReportReason(t, rep, techcardarchive.EntityMarker, "marker_name="+doomedMarker,
+		string(techcardarchive.ReasonSizeNotInCardRange))
+
+	// СЧЁТЧИК ДВИНУЛСЯ, а не просто строка появилась: сумма обязана остаться прежней (обе раскладки
+	// заявлены архивом), а «импортировано» — уменьшиться.
+	var markerTally *pb_admin.TechCardImportCounter
+	for _, c := range rep.GetCounters() {
+		if c.GetEntity() == techcardarchive.EntityMarker {
+			markerTally = c
+		}
+	}
+	require.NotNil(t, markerTally, "счётчик раскладок обязан присутствовать в отчёте")
+	require.EqualValues(t, 1, markerTally.GetImported(), "уцелеть обязана ровно одна раскладка")
+	require.EqualValues(t, 1, markerTally.GetSkipped(), "выброшенная обязана уйти из «импортировано»")
+
+	// И ЭТО ПРАВДА О БАЗЕ, а не только об отчёте.
+	var landed int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM tech_card_marker WHERE tech_card_id = ?", cardID).Scan(&landed))
+	require.Equal(t, 1, landed, "на импортированной карточке обязана быть ровно одна раскладка")
+	var doomed int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM tech_card_marker WHERE tech_card_id = ? AND name = ?",
+		cardID, doomedMarker).Scan(&doomed))
+	require.Zero(t, doomed, "раскладка выбрасывается ЦЕЛИКОМ: половина настила хуже его отсутствия")
+
+	// Отчёт из ответа коммита — тот, что СОХРАНЁН (tcciCommitted перечитывает строку). Строка о
+	// раскладке появляется только внутри транзакции, так что её присутствие выше и есть
+	// доказательство, что ответ несёт сохранённый документ, а не предтранзакционную копию.
+	stored, err := T.GetTechCardImportReport(ctx, cardID)
+	require.NoError(t, err)
+	require.NotEmpty(t, stored.Report)
+	parsed, err := techcardarchive.ParseReport(stored.Report)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(parsed.Message(), rep),
+		"ответ коммита обязан быть побайтово тем же документом, что лежит на карточке")
 }

@@ -449,11 +449,20 @@ func checkIndexesAgainstFiles(in ArchiveInput) error {
 // acceptable» is how an export and an import come to disagree, and the loser is always whichever
 // check runs second — which here is the partner's, three days later, with no card to point at.
 //
-// The one asymmetry: an entry the classifier does not KNOW is allowed through. It is not a
-// refusal at the far end — §3 makes it a report line (unknown_entry) and the bytes are still served
-// through the index — and the case that produces it is real: a media object whose extension is
-// outside the list in §1.1 (.avif and friends reach the bucket verbatim). Refusing the export of a
-// whole card over one picture's extension would trade a report line for a dead feature.
+// The one asymmetry: an entry the classifier does not KNOW is allowed through. It is not a refusal
+// at the far end — §3 makes it a report line (unknown_entry) and the bytes are still served through
+// the index — and the reason to allow it is that the export names an entry from the OBJECT KEY it
+// downloaded (archiveObjectExt), while §1.1's list is a list of what this server writes today.
+//
+// The two are not the same set, and the old note here had the direction backwards: `.avif` does not
+// reach the bucket at all, verbatim or otherwise. Every upload path either re-encodes to `.webp`
+// (JPEG/PNG/WebP/HEIC all decode and come back out as WebP) or stores one of the handful of types
+// bucket's own MIME map can name — `.jpg`, `.png`, `.webp`, `.gif` (an animated GIF is the one
+// image kept byte-for-byte), `.mp4`, `.webm` for media and `.dxf`, `.pdf` for sheets. All of those
+// are in §1.1. What still arrives outside it is a key this server did not mint: a historic row from
+// before those paths, a hand-edited url, a key with no extension at all. Refusing the export of a
+// whole card over one such key would trade a report line for a dead feature — and the card whose
+// media that is is exactly the card somebody wants a backup of.
 func checkArchiveEntries(entries []archiveEntry) error {
 	if len(entries) > MaxZipEntries {
 		return fmt.Errorf("%w: %d entries, the format ceiling is %d",

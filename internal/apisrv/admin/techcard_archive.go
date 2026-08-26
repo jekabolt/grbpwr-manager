@@ -1750,13 +1750,21 @@ func (s *Server) tcciCommitted(ctx context.Context, importID string, techCardID 
 		slog.Default().ErrorContext(ctx, "tech card import: committed, but the row carries no report",
 			slog.String("import_id", importID), slog.Int("tech_card_id", techCardID))
 	default:
-		stored := &pb_admin.TechCardImportReport{}
-		if uerr := protojson.Unmarshal(row.Report, stored); uerr != nil {
+		// PARSED THROUGH THE PACKAGE THAT OWNS THE REPORT, exactly as the read RPC parses it
+		// (techcard_archive_report.go) and as the store parses the payload it amends. A bare
+		// protojson.Unmarshal here was a SECOND door with its own options: it is strict about
+		// unknown fields, so during a rolling deploy — where the process that wrote the row can be
+		// newer than the one answering this call — a report carrying one new field would fail to
+		// read and this answer would carry NO report at all, while the read RPC, one click later,
+		// showed it in full. ParseReport reads with DiscardUnknown; one payload, one parser, one
+		// answer about whether an unknown field is fatal.
+		parsed, uerr := techcardarchive.ParseReport(row.Report)
+		if uerr != nil {
 			slog.Default().ErrorContext(ctx, "tech card import: the stored report does not read as one",
 				slog.String("import_id", importID), slog.Int("tech_card_id", techCardID),
 				slog.String("err", uerr.Error()))
 		} else {
-			out.Report = stored
+			out.Report = parsed.Message()
 		}
 	}
 
