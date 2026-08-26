@@ -621,7 +621,7 @@ func (r *tcacRun) buildUsages(ref string, lines []techcardarchive.RecipeLine) ([
 	degraded := false
 	for i := range lines {
 		l := &lines[i]
-		rowRef := tcacRowRef(ref, l)
+		rowRef := tcacRowRef(ref, l, i)
 		if l.BomLineKey != "" && !r.bomKeys[l.BomLineKey] {
 			r.hole(techcardarchive.EntityColorway, rowRef, techcardarchive.StatusSkipped,
 				techcardarchive.ReasonArchiveRowInvalid,
@@ -959,13 +959,27 @@ func tcacRef(colorCode string) string { return fmt.Sprintf("color_code=%s", colo
 // tcacRowRef names one recipe row inside its colour, so a report line points at something an
 // operator can find. Both keys, because a slot legitimately appears twice: once for the garment
 // (the norm) and once per cut-piece (the material assignment).
-func tcacRowRef(ref string, l *techcardarchive.RecipeLine) string {
+//
+// A ROW THAT NAMES NEITHER KEY STILL GETS ITS OWN REF, and that is not decoration. Such rows exist
+// by construction: `bom_item_index` has been NULLable since 0079, and 0159's backfill of
+// `bom_item_id`/`piece_id` ran only `WHERE bom_item_index IS NOT NULL`, so a legacy usage row with
+// both references empty survives — and the exporter, which reads the keys out of a map, writes ""
+// for a miss. Without the discriminator such a row's loss line would land on the COLOUR's own ref,
+// and that string is load-bearing twice over: the client counts it as "this colour never arrived"
+// and would advertise the button forever for a colour already on the card, while priorVerdict
+// reads a skipped line at the exact colour ref as "the previous press did not create it" and lets
+// the next press supersede — erasing the record of the loss. A silent loss is the one outcome this
+// feature may never produce, so the ref of a row and the ref of a colour must never collide.
+func tcacRowRef(ref string, l *techcardarchive.RecipeLine, row int) string {
 	out := ref
 	if l.BomLineKey != "" {
 		out += " bom_line_key=" + l.BomLineKey
 	}
 	if l.PieceLineKey != "" {
 		out += " piece_line_key=" + l.PieceLineKey
+	}
+	if out == ref {
+		out += fmt.Sprintf(" recipe_row=%d", row)
 	}
 	return out
 }

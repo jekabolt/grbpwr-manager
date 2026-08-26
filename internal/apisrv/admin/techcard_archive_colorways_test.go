@@ -1155,3 +1155,132 @@ func TestApplyImportColorwaysRetriesTheRecipeOnALockConflict(t *testing.T) {
 		})
 	}
 }
+
+// ────────────────── 12. R7: a recipe row that names NEITHER line_key ──────────────────
+
+// R7. tcacRowRef names a report line after the recipe row it is about — «color_code=BLK
+// bom_line_key=BOM-MAIN» — by appending whichever keys the row states. A row that states NEITHER
+// was therefore named by the bare COLOUR ref, and that collision was not cosmetic.
+//
+// SUCH ROWS EXIST BY CONSTRUCTION, so this is not a hypothetical shape.
+// tech_card_colorway_usage.bom_item_index has been NULLable since 0079_tech_card_overhaul.sql, and
+// 0159_bom_stable_lines.sql backfilled bom_item_id / piece_id only `WHERE bom_item_index IS NOT
+// NULL` — so a legacy usage row with both references empty survives every migration. The export
+// reads both keys out of a map keyed by id (techcard_archive_sidecars.go) and writes "" on a miss,
+// so the archive carries such a row keyless and this action reads it back keyless.
+//
+// What the collision cost, and it cost it twice:
+//
+//   - THE BUTTON. The client offers «create colourways from archive» for the colours whose report
+//     line stands at the bare colour ref, so a ROW-level loss filed there advertised the button
+//     forever for a colour that is already on the card.
+//   - THE RECORD. priorVerdict reads a SKIPPED line at the EXACT colour ref as «the previous press
+//     did not create this colour». The second press therefore treats the colour as never pressed,
+//     goes to exists(), and supersedes the ref — ERASING the first press's record of the loss and
+//     putting colorway_exists in its place. Nothing ever re-attempts that row, so that line was
+//     the only record the loss had. A silent loss is the one outcome this feature may not produce.
+//
+// Both cases below file a SKIPPED row-level line, which is the status priorVerdict turns on.
+func TestApplyImportColorwaysNamesARecipeRowThatNamesNoLineKey(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		row    techcardarchive.RecipeLine
+		reason techcardarchive.Reason
+	}{
+		{
+			// Reachable end to end: per-size norms travel by size NAME, and «l» is not in this
+			// base's size dictionary.
+			name:   "its per-size norm names a size this base has never heard of",
+			row:    techcardarchive.RecipeLine{Consumption: "1.42", SizeConsumptions: map[string]string{"l": "1.50"}},
+			reason: techcardarchive.ReasonSizeUnknown,
+		},
+		{
+			name:   "its norm is not a number, so the row is dropped whole",
+			row:    techcardarchive.RecipeLine{Consumption: "n/a"},
+			reason: techcardarchive.ReasonArchiveRowInvalid,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Row 0 names neither key; row 1 is an ordinary row that lands, so the colour is
+			// created either way and the loss is genuinely a ROW-level one.
+			payload := tcacPayloadOf(t, techcardarchive.ColorwayPayload{
+				ColorCode: "BLK",
+				Recipe: []techcardarchive.RecipeLine{
+					tc.row,
+					{BomLineKey: tcacBomKeyMain, Consumption: "1.42"},
+				},
+				PieceMaterials: []techcardarchive.PieceMaterialLine{
+					{PieceLineKey: tcacPieceKey, BomLineKey: tcacBomKeyMain},
+				},
+			})
+			const rowRef = "color_code=BLK recipe_row=0"
+
+			// ── press one: the colour is created and the keyless row's loss is reported ──
+			first := tcacServer(t)
+			first.cards.EXPECT().GetTechCardImportReport(mock.Anything, tcacCardID).
+				Return(tcacImportRow(t, payload, "BLK"), nil).Once()
+			first.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, tcacCardID).Return(tcacCard(), nil).Once()
+			first.cards.EXPECT().ListMaterials(mock.Anything, "", true).Return(tcacCatalogue(), nil).Once()
+			// No bucket expectation: nothing in this payload pins an article, so the uploaded ZIP
+			// is not fetched. The strict mock is what proves it.
+			first.products.EXPECT().CreateColorway(mock.Anything, tcacCardID, mock.Anything, mock.Anything,
+				mock.Anything, mock.Anything, mock.Anything).Return(901, nil).Once()
+			first.cards.EXPECT().GetTechCardLockVersion(mock.Anything, tcacCardID).Return(7, nil).Once()
+			first.cards.EXPECT().UpdateColorwayRecipe(mock.Anything, 901, 7, mock.Anything).Return(8, nil).Once()
+			first.cards.EXPECT().ApplyImportedColorwayPieceMaterials(mock.Anything, tcacCardID, 901, mock.Anything).
+				Return(nil).Once()
+			var afterFirst []byte
+			first.cards.EXPECT().StampTechCardImportReport(mock.Anything, tcacImportID, mock.Anything).
+				Run(func(_ context.Context, _ string, report []byte) { afterFirst = report }).Return(nil).Once()
+
+			resp1, err := first.apply(t)
+			require.NoError(t, err)
+			require.Equal(t, []int32{901}, resp1.GetCreatedColorwayIds(),
+				"the colour IS on the card: a keyless row is a row-level loss, not a refusal of the colour")
+			require.NotEmpty(t, afterFirst, "the report must be stamped: the draft is on the card either way")
+
+			// A nested subtest rather than a bare require, so that the SECOND press below is
+			// exercised even when this half fails — the two are separate properties and a mutation
+			// has to be seen breaking both.
+			t.Run("the loss is filed on the row's own ref, never on the colour's", func(t *testing.T) {
+				require.False(t, tcacHasLine(resp1.GetReport(), "color_code=BLK", tc.reason),
+					"a ROW-level loss standing at the bare colour ref is the collision this guards: the "+
+						"client reads it as «this colour never arrived» and priorVerdict reads it as «the "+
+						"previous press did not create it»:\n%s", tcacDumpLines(resp1.GetReport()))
+				line := tcacLineFor(t, resp1.GetReport(), rowRef, tc.reason)
+				require.Equal(t, techcardarchive.StatusSkipped, line.GetStatus())
+				require.Equal(t, int32(1), tcrepCounter(t, resp1.GetReport(), techcardarchive.EntityColorway).GetDegraded(),
+					"the colour landed, thinner")
+			})
+
+			// ── press two: the card now carries the colour, and nothing may be rewritten ──
+			second := tcacServer(t)
+			card := tcacCard()
+			card.Colorways = []entity.TechCardColorway{{Id: 901, ColorCode: "BLK"}}
+			row := tcacImportRow(t, payload, "BLK")
+			row.Report = afterFirst // the report the FIRST press stored is what the second one reads
+			second.cards.EXPECT().GetTechCardImportReport(mock.Anything, tcacCardID).Return(row, nil).Once()
+			second.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, tcacCardID).Return(card, nil).Once()
+			second.cards.EXPECT().ListMaterials(mock.Anything, "", true).Return(tcacCatalogue(), nil).Once()
+			var afterSecond []byte
+			second.cards.EXPECT().StampTechCardImportReport(mock.Anything, tcacImportID, mock.Anything).
+				Run(func(_ context.Context, _ string, report []byte) { afterSecond = report }).Return(nil).Once()
+			// No CreateColorway / UpdateColorwayRecipe / ApplyImportedColorwayPieceMaterials
+			// expectations: the strict mock proves the second press writes nothing to the card.
+
+			resp2, err := second.apply(t)
+			require.NoError(t, err)
+			require.Empty(t, resp2.GetCreatedColorwayIds(), "a second press creates nothing")
+
+			t.Run("the record of that loss survives the second press", func(t *testing.T) {
+				tcacLineFor(t, resp2.GetReport(), rowRef, tc.reason)
+				require.False(t, tcacHasReason(resp2.GetReport(), techcardarchive.ReasonColorwayExists),
+					"replacing the record of a row this press will never re-attempt with «this card already "+
+						"has a colourway of this colour» is the silent loss the owner ruled out:\n%s",
+					tcacDumpLines(resp2.GetReport()))
+				require.JSONEq(t, string(afterFirst), string(afterSecond),
+					"a press that changed nothing must leave the report it found")
+			})
+		})
+	}
+}
