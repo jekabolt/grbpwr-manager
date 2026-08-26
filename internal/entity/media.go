@@ -34,4 +34,15 @@ type MediaItem struct {
 	CompressedWidth    int            `db:"compressed_width" json:"compressed_width"`
 	CompressedHeight   int            `db:"compressed_height" json:"compressed_height"`
 	BlurHash           sql.NullString `db:"blur_hash" json:"blur_hash"`
+	// ContentHash is the hex SHA-256 of the FULL-SIZE object exactly as it lies in the
+	// bucket — not of the bytes the client posted. The image path re-encodes to WebP, so
+	// hashing the payload would fingerprint something that is nowhere in storage; the
+	// archive export downloads the full-size object and the archive import compares its
+	// sha against this column, and those two are only ever the same number when both are
+	// taken over the STORED bytes.
+	//
+	// Invalid = "not computed": every row written before 0336 has no hash and must compare
+	// equal to nothing. It is deliberately not unique — the same file legitimately appears
+	// in media more than once, and de-duplication is import policy, not a storage invariant.
+	ContentHash sql.NullString `db:"content_hash" json:"content_hash"`
 }

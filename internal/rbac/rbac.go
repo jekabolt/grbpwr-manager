@@ -422,6 +422,49 @@ var methodRequirements = map[string]Requirement{
 	// asymmetry rather than a gap. Never allowlisted: allowlisted means ANY authenticated account may
 	// call it, and this one enumerates the whole style portfolio by article and name.
 	"ListTechCardFabricDirectionGaps": rd(SectionTechCards),
+	// ЭКСПОРТ/ИМПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ.
+	//
+	// ExportTechCardArchive — wr(tech_cards), и это НЕ описка рядом с GetTechCard. Экспорт не
+	// «читает карточку»: он одним файлом уносит ЗА ПРЕДЕЛЫ панели приватные выкройки, паспорта
+	// материалов и медиа. Осознанная выдача наружу — право того, кто карточку ведёт, а не всякого,
+	// кому её дали посмотреть; повесить архив на чтение значило бы раздать вынос вместе с просмотром.
+	// Денег в архиве нет по построению (money_policy манифеста), поэтому SectionCosting здесь не
+	// участвует — иначе право на цены пришлось бы проверять ещё и тут.
+	//
+	// CommitTechCardImport — wr(tech_cards), хотя импорт пишет НЕ ТОЛЬКО в тех-карты: он заводит
+	// строки медиатеки и кладёт файлы в бакет, то есть содержимое секции content. Второй секцией
+	// его не гейтим — карта допускает ровно одну секцию на метод, и требование content:write
+	// отняло бы импорт у технолога, который в медиатеку сам не ходит. Классификация идёт ЗА
+	// СОДЕРЖИМЫМ ОТВЕТА и за смыслом жеста (прецедент — GetBomWastageSuggestion и
+	// GetProductionRunMaterialPlan ниже: обе читают факты карточки, но классифицированы по тому,
+	// чей это экран). Медиа тут — материал одной карточки, а не курирование библиотеки.
+	//
+	// Загрузка архива с сухим прогоном в этой карте отсутствует СОЗНАТЕЛЬНО: она HTTP-multipart
+	// (POST /api/techcard-archive/upload), а карта гейтит только gRPC-методы. Тот маршрут проверяет
+	// wr(tech_cards) руками, до чтения тела.
+	"ExportTechCardArchive": wr(SectionTechCards),
+	"CommitTechCardImport":  wr(SectionTechCards),
+	// Отчёт импорта — обычное чтение тех-карты: он не несёт ни денег, ни чужих секций, а без него
+	// баннер «импортировано» на карточке не объясним. Закрытие баннера — запись: жест снимает
+	// предупреждение у ВСЕХ, кто откроет карточку, и берёт дыры импорта на себя.
+	"GetTechCardImportReport":         rd(SectionTechCards),
+	"AcknowledgeTechCardImportReport": wr(SectionTechCards),
+	// КОЛОРВЕИ ИЗ АРХИВА — wr(PRODUCTS), а не wr(tech_cards), и это единственный метод фичи,
+	// который уходит из её секции. Три предыдущих пишут карточку; этот СОЗДАЁТ ПРОДУКТЫ — той же
+	// внутренней дорогой, что CreateColorway двумя сотнями строк выше, с тем же UNIQUE(style_id,
+	// color_code) и тем же драфт-статусом. Классификация идёт за тем, что жест ЗАВОДИТ, а не за
+	// тем, из какого экрана его нажимают: повесить создание колорвеев на tech_cards:write значило
+	// бы раздать создание продуктов всякому, кто ведёт тех-карты, в обход всей секции products.
+	//
+	// Следствие, которое надо назвать вслух: технолог с tech_cards:write и без products:write
+	// импортирует карточку и НЕ МОЖЕТ нажать эту кнопку. Это не пробел — это то же ограничение,
+	// которое не даёт ему завести колорвей руками, и отчёт импорта остаётся у него на экране
+	// целиком, просто с непримененными строками.
+	//
+	// Карта допускает ровно одну секцию на метод, поэтому tech_cards:write здесь НЕ требуется
+	// вторым гейтом; неизменяемость карточки (релиз/заморозка) закрывает не право, а стор —
+	// RequireMutableTechCard внутри создания колорвея.
+	"ApplyTechCardImportColorways": wr(SectionProducts),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),
@@ -627,6 +670,13 @@ var methodRequirements = map[string]Requirement{
 	"AddTaskChecklistItem":     wr(SectionTasks),
 	"SetTaskChecklistItemDone": wr(SectionTasks),
 	"DeleteTaskChecklistItem":  wr(SectionTasks),
+	// Сабтаски, связи и удаление реплики. Все четыре — ЗАПИСЬ по секции задач; у DeleteTaskComment
+	// поверх этого стоит ВТОРОЙ гейт в хендлере («свою реплику — автор, супер — любую»), потому что
+	// карта прав знает секцию, но не знает, чья это реплика.
+	"SetTaskParent":     wr(SectionTasks),
+	"AddTaskLink":       wr(SectionTasks),
+	"DeleteTaskLink":    wr(SectionTasks),
+	"DeleteTaskComment": wr(SectionTasks),
 	// ЗАДАЧИ ФАЙЛА — секция TASKS, а не files, хотя все три RPC живут по адресу /api/admin/files/… и
 	// зовутся с карточки файла. Секция следует за тем, ЧТО В ОТВЕТЕ, а не за тем, где кнопка (прецедент
 	// GetMaterialCuttingCoefficientSuggestion выше в production): в ответе едут заголовки, колонки,

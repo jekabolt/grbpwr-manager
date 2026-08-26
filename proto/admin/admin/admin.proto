@@ -1133,6 +1133,50 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/task/checklist/{id}"};
   }
 
+  // SetTaskParent делает задачу сабтаской другой (или возвращает её на верхний уровень).
+  //
+  // ОТДЕЛЬНЫЙ RPC, А НЕ ПОЛЕ TaskInsert: содержимое карточки сохраняется полной заменой, и клиент,
+  // не знающий поля, стирал бы родителя каждым сохранением. Ровно та же причина, по которой
+  // placement меняется отдельным MoveTask.
+  //
+  // Циклы запрещены: подъём по цепочке родителей идёт внутри пишущей SERIALIZABLE-транзакции.
+  rpc SetTaskParent(SetTaskParentRequest) returns (SetTaskParentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/parent"
+      body: "*"
+    };
+  }
+
+  // AddTaskLink связывает две задачи. ИДЕМПОТЕНТНО: существующая связь — no-op, а не 1062.
+  //
+  // kind задаётся С ТОЧКИ ЗРЕНИЯ task_id; BLOCKED_BY хранится перевёрнутым blocks, поэтому пара
+  // никогда не может полусуществовать. Прямая пара A⇄B по blocks отвергается (она ошибка всегда);
+  // длинные циклы терпятся — блокер здесь совет, а не замок.
+  rpc AddTaskLink(AddTaskLinkRequest) returns (AddTaskLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/link/add"
+      body: "*"
+    };
+  }
+
+  // DeleteTaskLink снимает связь, с любой из двух сторон. Идемпотентно: снять несуществующую связь —
+  // no-op, потому что обе кнопки описывают ЖЕЛАЕМОЕ состояние.
+  rpc DeleteTaskLink(DeleteTaskLinkRequest) returns (DeleteTaskLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/link/remove"
+      body: "*"
+    };
+  }
+
+  // DeleteTaskComment removes one's own remark (a super admin — any): ТОТ ЖЕ ВТОРОЙ ГЕЙТ, что у
+  // DeleteLibraryFileComment. Права на секцию tasks недостаточно — стирать чужие слова по одному
+  // лишь tasks:write значило бы превратить журнал обсуждения в поле формы.
+  //
+  // Литеральный сегмент comment отводит маршрут от DELETE /api/admin/task/{id}.
+  rpc DeleteTaskComment(DeleteTaskCommentRequest) returns (DeleteTaskCommentResponse) {
+    option (google.api.http) = {delete: "/api/admin/task/comment/{id}"};
+  }
+
   // FILES LIBRARY
   // Shared internal documents: mockups, design guidelines, icons, 3D parts,
   // spreadsheets. The bytes live PRIVATELY in object storage (unlike the media
@@ -1883,6 +1927,86 @@ service AdminService {
   rpc RememberOperationWorkDefault(RememberOperationWorkDefaultRequest) returns (RememberOperationWorkDefaultResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/operation-work/default"
+      body: "*"
+    };
+  }
+
+  // ЭКСПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ — карточка целиком одним файлом: card.json, размерная сетка,
+  // сборка, колорвеи, паспорта материалов, медиа, выкройки и раскладки. Деньги из архива вырезаны
+  // (money_policy манифеста), подписи и релизы вычищены: архив — исходник для чужой панели, а не
+  // копия состояния этой.
+  //
+  // Ответ несёт presigned-ссылку с явным сроком жизни И ПАСПОРТ архива (manifest), чтобы человек
+  // увидел, ЧТО именно уехало и чего в архиве НЕТ, до того как отдаст файл наружу. Дыры экспорта
+  // (пропавший объект медиа, нечитаемая выкройка) НЕ роняют вызов — они перечисляются в
+  // manifest.holes, потому что отказ целиком превратил бы одну потерянную картинку в «экспорт
+  // сломан».
+  //
+  // Классифицирован wr(tech_cards), а не rd, и это не описка рядом с GetTechCard: архив уносит
+  // приватные выкройки и паспорта материалов ЗА ПРЕДЕЛЫ панели одним файлом. Это осознанная
+  // выдача, а не чтение карточки, и право на неё — право автора карточки, а не её читателя.
+  rpc ExportTechCardArchive(ExportTechCardArchiveRequest) returns (ExportTechCardArchiveResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/archive/export"
+      body: "*"
+    };
+  }
+
+  // ФИКСАЦИЯ ИМПОРТА — вторая половина двухшагового импорта.
+  //
+  // ПЕРВОЙ ПОЛОВИНЫ В ЭТОМ КОНТРАКТЕ НЕТ И НЕ БУДЕТ: заливка архива с сухим прогоном —
+  // multipart/form-data (POST /api/techcard-archive/upload), а multipart не выражается в protobuf.
+  // Оттуда приезжает import_id и предварительный отчёт; сюда возвращается только import_id.
+  //
+  // Отчёт СТРОИТСЯ ЗАНОВО на коммите, а не берётся из сухого прогона: между загрузкой и нажатием
+  // база могла уехать (материал переименован, размер снят), и показать старый отчёт значило бы
+  // соврать о том, что произошло на самом деле.
+  rpc CommitTechCardImport(CommitTechCardImportRequest) returns (CommitTechCardImportResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/import/commit"
+      body: "*"
+    };
+  }
+
+  // ОТЧЁТ ИМПОРТА ПО КАРТОЧКЕ — что именно приехало, что пропущено и что приехало обеднённым.
+  // Карточка без импорта — норма, а не ошибка: у неё просто нет строки отчёта.
+  rpc GetTechCardImportReport(GetTechCardImportReportRequest) returns (GetTechCardImportReportResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/import/report/{tech_card_id}"};
+  }
+
+  // ЗАКРЫТИЕ БАННЕРА «карточка импортирована»: человек прочитал отчёт и берёт дыры на себя.
+  // Идемпотентно — повторный ack не ошибка. wr(tech_cards): жест снимает предупреждение с
+  // карточки у ВСЕХ, кто её откроет, и это решение владельца карточки, а не её читателя.
+  rpc AcknowledgeTechCardImportReport(AcknowledgeTechCardImportReportRequest) returns (AcknowledgeTechCardImportReportResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/import/report/acknowledge"
+      body: "*"
+    };
+  }
+
+  // КОЛОРВЕИ ИЗ АРХИВА — ОТДЕЛЬНОЙ КНОПКОЙ ИЗ ОТЧЁТА, а не самим импортом (решение владельца).
+  //
+  // Колорвей — это ПРОДУКТ, и импорт продуктов не создаёт: colorways.json едет справкой, а импорт
+  // отчитывается строкой colorways_not_applied по каждому цвету. Этот вызов — второй, ЯВНЫЙ шаг:
+  // из сохранённого тела colorways.json он заводит на импортированной карточке ДРАФТ-колорвеи и
+  // раскладывает их рецепты и маппинг деталей. Ни SKU, ни публикации, ни цен — драфт это ровно
+  // столько, сколько архив удостоверяет, а денег в архиве нет по построению (money_policy).
+  //
+  // ИДЕМПОТЕНТЕН ПО ЦВЕТУ, а не по факту нажатия: колорвей с таким color_code на карточке уже
+  // есть — строка отчёта «exists» и пропуск. Поэтому повторное нажатие безопасно и не плодит
+  // дублей, и поэтому же ответ на второй клик — обычный отчёт, а не ошибка.
+  //
+  // ОТЧЁТ ВОЗВРАЩАЕТСЯ ОБНОВЛЁННЫЙ И ПЕРЕЗАПИСЫВАЕТ ХРАНИМЫЙ: строки колорвеев уходят из skipped
+  // в imported/degraded. Иначе карточка навсегда осталась бы с отчётом, который утверждает, что
+  // колорвеи не приехали, — ровно после того, как их завели.
+  //
+  // Классифицирован wr(products), и это НЕ описка рядом с соседними четырьмя: жест СОЗДАЁТ
+  // ПРОДУКТЫ, той же внутренней дорогой, что CreateColorway, и право на это — право того, кто
+  // ведёт каталог. Технолог с tech_cards:write, но без products:write, импортирует карточку и не
+  // может завести из неё колорвеи; это следствие того, чем колорвей является, а не пробел.
+  rpc ApplyTechCardImportColorways(ApplyTechCardImportColorwaysRequest) returns (ApplyTechCardImportColorwaysResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/import/colorways/apply"
       body: "*"
     };
   }
@@ -5221,6 +5345,11 @@ message AddTaskRequest {
   common.TaskInsert task = 1; // content
   common.TaskBoard board = 2; // required: the department lane the card is created in
   common.TaskStatus status = 3; // initial column; TASK_STATUS_UNKNOWN = server default (TODO)
+  // Родитель СОЗДАВАЕМОЙ карточки; 0 = верхний уровень. Единственное место, где родитель едет не
+  // отдельным SetTaskParent: «создать сабтаску» обязано быть одним вызовом, а стирать здесь нечего —
+  // карточки ещё нет. Несуществующий id отвечает тем же InvalidArgument, что остальные глубокие
+  // ссылки.
+  int32 parent_task_id = 4;
 }
 
 message AddTaskResponse {
@@ -5917,13 +6046,17 @@ message LibraryFileTask {
   int32 task_id = 1;
   string title = 2;
   common.TaskStatus status = 3;
-  // assignee is an AdminAccount.username; "" = nobody is on it.
-  string assignee = 4;
+  // DEPRECATED АЛИАС ОДНОГО РЕЛИЗА = assignees[0] или "". Настоящий список — assignees ниже; снять
+  // reserved'ом следующей волной (см. TaskInsert.assignee — там же довод про DiscardUnknown).
+  string assignee = 4 [deprecated = true];
   // due_date unset = no deadline (the row then simply has no date, not "today").
   google.protobuf.Timestamp due_date = 5;
   // board is the department lane, so the row can say WHERE the work lives — the
   // same file is attached from several lanes at once.
   common.TaskBoard board = 6;
+  // Все, кто на задаче; пусто = её никто не взял. Порядок — порядок показа аватарок, «главного»
+  // среди них нет (см. common.TaskInsert.assignees).
+  repeated string assignees = 7;
 }
 
 message ListLibraryFileTasksRequest {
@@ -6253,6 +6386,10 @@ message ListTasksRequest {
   // Несуществующий проект отдаёт пустой список, а не отличимый отказ: у семи соседних фильтров так
   // же, и различимость сделала бы чтение оракулом по темам.
   int32 project_topic_id = 15; // optional filter; 0 = no filter
+  // САБТАСКИ ЭТОЙ ЗАДАЧИ — фильтр того же списка, а не новый RPC (та же доктрина, что у
+  // project_topic_id выше): это тот же список задач, просто суженный, и он обязан идти под тем же
+  // rd(tasks). 0 = no filter.
+  int32 parent_task_id = 16;
 }
 
 message ListTasksResponse {
@@ -6309,6 +6446,35 @@ message DeleteTaskChecklistItemRequest {
 }
 
 message DeleteTaskChecklistItemResponse {}
+
+message SetTaskParentRequest {
+  int32 id = 1; // задача, которую делают сабтаской
+  int32 parent_task_id = 2; // 0 = снять родителя, вернуть на верхний уровень
+}
+
+message SetTaskParentResponse {}
+
+message AddTaskLinkRequest {
+  int32 task_id = 1;
+  int32 other_task_id = 2;
+  common.TaskLinkKind kind = 3; // required, С ТОЧКИ ЗРЕНИЯ task_id
+}
+
+message AddTaskLinkResponse {}
+
+message DeleteTaskLinkRequest {
+  int32 task_id = 1;
+  int32 other_task_id = 2;
+  common.TaskLinkKind kind = 3; // required, С ТОЧКИ ЗРЕНИЯ task_id
+}
+
+message DeleteTaskLinkResponse {}
+
+message DeleteTaskCommentRequest {
+  int32 id = 1; // comment id
+}
+
+message DeleteTaskCommentResponse {}
 
 // ORDER FULFILLMENT BOARD
 
@@ -8401,6 +8567,147 @@ message RememberOperationWorkDefaultRequest {
 
 message RememberOperationWorkDefaultResponse {}
 
+// ЭКСПОРТ/ИМПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ.
+//
+// Отчёты и паспорт архива — ПЛОСКИЕ СПИСКИ строк, а не словари и не enum'ы, и это выбор, а не
+// лень. Словарь причин (reason) живёт в Go (internal/techcardarchive) и растёт вместе с фичей:
+// незнакомый член enum protojson выбрасывает МОЛЧА (инцидент Ж7), поэтому новая причина у старого
+// клиента обязана доехать как незнакомая строка, а не исчезнуть. По той же причине счётчики —
+// список пар, а не поле на каждую сущность: новая сущность архива не должна требовать
+// перегенерации клиента, чтобы её посчитали.
+
+message ExportTechCardArchiveRequest {
+  int32 tech_card_id = 1;
+}
+
+message ExportTechCardArchiveResponse {
+  // url — presigned-ссылка на объект архива в бакете. Живёт до expires_at, после чего
+  // экспорт повторяют: ссылка не хранится ни на карточке, ни в отчёте.
+  string url = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  TechCardArchiveManifest manifest = 3;
+}
+
+// TechCardArchiveManifest — ЧИТАЕМАЯ ЧЕЛОВЕКОМ проекция manifest.json архива, ровно та его часть,
+// которую рисует панель: откуда архив, сколько чего в нём и чего в нём НЕ хватает. Полный манифест
+// (id_maps размеров/категорий/колорвеев) сюда сознательно не тащится — он машинный, нужен только
+// импортёру и читается из самого архива.
+message TechCardArchiveManifest {
+  string format = 1;
+  // format_version — "MAJOR.MINOR". Чужой MAJOR импорт отвергает; MINOR аддитивен.
+  string format_version = 2;
+  // money_policy — обязательный штамп «деньги вырезаны» (v1: "stripped-v1"). Архив без него
+  // импорт отвергает: молчание тут неотличимо от «цены забыли вырезать».
+  string money_policy = 3;
+  google.protobuf.Timestamp exported_at = 4;
+  string exported_by = 5;
+  TechCardArchiveSource source = 6;
+  // counters — сколько объектов каждого рода легло в архив (media, patterns, markers, materials).
+  repeated TechCardArchiveCounter counters = 7;
+  // holes — чего в архиве НЕТ и почему. Пустой список — единственное доказательство полноты.
+  repeated TechCardArchiveHole holes = 8;
+}
+
+// TechCardArchiveSource — паспорт источника: откуда, что и в каком состоянии уехало.
+message TechCardArchiveSource {
+  string host = 1;
+  int32 tech_card_id = 2;
+  string style_number = 3;
+  int32 lock_version = 4;
+  string approval_state_at_export = 5;
+  string app_version = 6;
+}
+
+message TechCardArchiveCounter {
+  string entity = 1;
+  int32 count = 2;
+}
+
+message TechCardArchiveHole {
+  string entity = 1;
+  // ref — чем дыра опознаётся на карточке-источнике (id медиа, line_key выкройки, код материала).
+  string ref = 2;
+  // reason — код словаря причин; строка, а не enum: словарь аддитивен и живёт на сервере.
+  string reason = 3;
+  string detail = 4;
+}
+
+message CommitTechCardImportRequest {
+  // import_id — ULID загруженного архива, выданный multipart-маршрутом загрузки.
+  string import_id = 1;
+}
+
+message CommitTechCardImportResponse {
+  int32 tech_card_id = 1;
+  TechCardImportReport report = 2;
+}
+
+message GetTechCardImportReportRequest {
+  int32 tech_card_id = 1;
+}
+
+message GetTechCardImportReportResponse {
+  TechCardImportReport report = 1;
+  // acknowledged_at не задан — отчёт ещё не закрыт человеком, баннер на карточке висит.
+  google.protobuf.Timestamp acknowledged_at = 2;
+}
+
+message AcknowledgeTechCardImportReportRequest {
+  int32 tech_card_id = 1;
+}
+
+message AcknowledgeTechCardImportReportResponse {}
+
+message ApplyTechCardImportColorwaysRequest {
+  int32 tech_card_id = 1;
+}
+
+message ApplyTechCardImportColorwaysResponse {
+  // created_colorway_ids — колорвеи, заведённые ЭТИМ нажатием, в порядке colorways.json. Пусто на
+  // повторном клике: всё, что архив нёс, уже стоит на карточке, и это успех, а не отказ. Ids, а не
+  // коды цвета: клиенту нужно чем-то открыть только что созданный драфт, а color_code — ключ
+  // архива, не ссылка на строку этой базы.
+  repeated int32 created_colorway_ids = 1;
+  // report — ХРАНИМЫЙ отчёт карточки, переписанный этим применением: строки колорвеев перешли из
+  // skipped в imported/degraded, счётчики сдвинулись за ними. Клиент подменяет им то, что показывал
+  // до нажатия, а не дописывает — иначе на экране окажутся обе версии одной новости.
+  TechCardImportReport report = 2;
+}
+
+// TechCardImportReport — что произошло при импорте. Он остаётся НА КАРТОЧКЕ после коммита:
+// импортированная карточка неотличима от заведённой руками, и единственное, что помнит о её
+// происхождении и о потерях — этот отчёт.
+message TechCardImportReport {
+  repeated TechCardImportReportLine lines = 1;
+  repeated TechCardImportCounter counters = 2;
+  // style_number и stage — ИТОГОВЫЕ, как карточка легла в эту базу. Номер из архива мог быть занят,
+  // и тогда он здесь другой (со строкой отчёта style_number_taken) или пустой при stage=idea.
+  string style_number = 3;
+  string stage = 4;
+  string import_id = 5;
+}
+
+message TechCardImportReportLine {
+  string entity = 1;
+  // ref — чем строка опознаётся в архиве (line_key BOM, код материала, имя файла выкройки).
+  string ref = 2;
+  // status — imported | skipped | degraded. Строка, а не enum: см. комментарий над блоком.
+  string status = 3;
+  // reason — код словаря причин сервера; клиент показывает его человеческий перевод, а незнакомый
+  // код — как есть, но НЕ прячет.
+  string reason = 4;
+  string detail = 5;
+  // action — что человеку сделать руками, чтобы дыру закрыть. Пусто, если делать нечего.
+  string action = 6;
+}
+
+message TechCardImportCounter {
+  string entity = 1;
+  int32 imported = 2;
+  int32 skipped = 3;
+  int32 degraded = 4;
+}
+
 message DeleteTechCardRequest {
   int32 id = 1;
 }
@@ -8426,6 +8733,13 @@ message ListTechCardsRequest {
   // category browser can pass whichever node the operator picked — "outerwear" (a top category) or
   // "parka" (a type) — without the client having to expand the tree itself. Empty = no filter.
   repeated int32 category_ids = 12;
+  // ФИЛЬТР ПО КОЛЛЕКЦИИ — ТОЧНОЕ СОВПАДЕНИЕ ХРАНИМОГО ИМЕНИ ("" = нет фильтра).
+  //
+  // ИМЕНЕМ, А НЕ ID, И ЭТО НЕ НЕДОСМОТР: колонки-ссылки у тех-карты НЕТ — `tech_card.collection_id`
+  // и её FK дропнула 0240_drop_tech_card_collection_id.sql как мёртвую схему («an unread orphan —
+  // the tech-card form writes the collection NAME string»). Живая колонка ровно одна,
+  // `tech_card.collection`, свободный текст, и клиент пишет в неё ИМЯ.
+  string collection = 13;
 }
 
 message ListTechCardsResponse {

@@ -3,6 +3,7 @@ package bucket
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -50,25 +51,38 @@ func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
 	}
 }
 
+// errNoImageHeader means this content type has no cheap header reader here — HEIC (bounded
+// separately inside decodeHEIC) and anything unrecognised. It is a sentinel, not a failure:
+// a caller that only wants a budget check must let such a payload through to the decoder,
+// while a caller that NEEDS the dimensions has to refuse it itself.
+var errNoImageHeader = errors.New("no image header reader for this content type")
+
+// imageHeaderConfig reads ONLY the header of a raster payload — no raster is allocated — and
+// returns the dimensions it declares. Split out of checkImagePixelBudget because the verbatim
+// upload path needs the numbers themselves (it never decodes to get bounds from the raster),
+// not just a verdict.
+func imageHeaderConfig(ct ContentType, raw []byte) (image.Config, error) {
+	switch ct {
+	case contentTypeJPEG:
+		return jpeg.DecodeConfig(bytes.NewReader(raw))
+	case contentTypePNG:
+		return png.DecodeConfig(bytes.NewReader(raw))
+	case contentTypeWEBP:
+		return webp.DecodeConfig(bytes.NewReader(raw))
+	default:
+		return image.Config{}, errNoImageHeader
+	}
+}
+
 // checkImagePixelBudget reads only the image header (cheap, no full raster) and
 // rejects images whose pixel count exceeds maxImagePixels. HEIC has no header
 // config path here and is bounded separately (see decodeHEIC).
 func checkImagePixelBudget(ct ContentType, raw []byte) error {
-	var (
-		cfg image.Config
-		err error
-	)
-	switch ct {
-	case contentTypeJPEG:
-		cfg, err = jpeg.DecodeConfig(bytes.NewReader(raw))
-	case contentTypePNG:
-		cfg, err = png.DecodeConfig(bytes.NewReader(raw))
-	case contentTypeWEBP:
-		cfg, err = webp.DecodeConfig(bytes.NewReader(raw))
-	default:
-		return nil
-	}
+	cfg, err := imageHeaderConfig(ct, raw)
 	if err != nil {
+		if errors.Is(err, errNoImageHeader) {
+			return nil
+		}
 		return fmt.Errorf("can't read image header: %w", err)
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {

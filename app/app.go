@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/archivecleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -70,6 +71,7 @@ type App struct {
 	oc   *ordercleanup.Worker
 	dsw  *deliverysync.Worker
 	sc   *storefrontcleanup.Worker
+	acw  *archivecleanup.Worker
 	tm   *tiermanagement.Worker
 	maw  *marketingaggregate.Worker
 	om   *opexmaterialize.Worker
@@ -267,6 +269,22 @@ func (a *App) Start(ctx context.Context) error {
 		slog.Default().WarnContext(ctx, "libheif unavailable; HEIC image uploads will fail (other uploads unaffected)",
 			slog.String("err", herr.Error()),
 		)
+	}
+
+	// Tech-card archive cleanup. It lives HERE rather than beside the other cleanup workers
+	// above because this is the first line at which both of its dependencies exist: it is the
+	// only cleanup worker that talks to the bucket as well as the DB.
+	//
+	// Nil config on purpose: neither knob is worth an operator's attention. The retention window
+	// is an owner decision that already has exactly one home (bucket.ArchiveRetention), and an
+	// hourly sweep of two folders needs no tuning — so there is no archive_cleanup section in
+	// config, and no second place for seven days to be true.
+	a.acw = archivecleanup.New(nil, a.db, a.b)
+	if err = a.acw.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start archive cleanup worker",
+			slog.String("err", err.Error()),
+		)
+		return err
 	}
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
@@ -538,6 +556,12 @@ func (a *App) Start(ctx context.Context) error {
 	// ручная обёртка авторизацией: картинка приходит multipart-ом, мимо gRPC, а
 	// значит мимо интерцептора, который проверяет права у всех остальных методов.
 	a.hs.SetFilePreviewHandler(authS.WithAdminAuthz(a.adminS.FilePreviewHandler()))
+	// Импорт тех-карты архивом (POST /api/techcard-archive/upload) — третий и последний
+	// админский write мимо gRPC: 256-мегабайтный ZIP в одно gRPC-сообщение не влезает. Та же
+	// ручная обёртка авторизацией и по той же причине: интерцептор, проверяющий права у всех
+	// остальных методов, простого HTTP-маршрута не видит вовсе. Сам маршрут дополнительно
+	// требует tech_cards:write внутри хендлера — обёртка аутентифицирует, секцию решает он.
+	a.hs.SetTechCardArchiveUploadHandler(authS.WithAdminAuthz(a.adminS.TechCardArchiveUploadHandler()))
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest
@@ -678,6 +702,11 @@ func (a *App) Stop(ctx context.Context) {
 	if a.sc != nil {
 		_ = a.sc.Stop()
 	}
+	// Inside the workers block, i.e. ABOVE a.db.Close() below: this worker's tick runs the
+	// import-expiry UPDATE, and Stop does not return until that goroutine is gone.
+	if a.acw != nil {
+		_ = a.acw.Stop()
+	}
 	if a.tm != nil {
 		_ = a.tm.Stop()
 	}
@@ -766,6 +795,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.sc != nil {
 		addWorker(a.sc)
+	}
+	if a.acw != nil {
+		addWorker(a.acw)
 	}
 	if a.tm != nil {
 		addWorker(a.tm)

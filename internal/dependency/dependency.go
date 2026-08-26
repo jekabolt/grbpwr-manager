@@ -637,6 +637,32 @@ type (
 		SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error
 		DeleteTaskChecklistItem(ctx context.Context, id int) error
 
+		// --- Сабтаски и связи задач (0338) ---
+
+		// SetTaskParent делает задачу сабтаской другой; parentID 0 = снять родителя. sql.ErrNoRows,
+		// если самой задачи нет; entity.ErrTaskParentCycle, если предлагаемый родитель — потомок этой
+		// задачи или она сама. Несуществующий РОДИТЕЛЬ доезжает нарушением внешнего ключа, как и
+		// восемь глубоких ссылок карточки.
+		SetTaskParent(ctx context.Context, taskID, parentID int) error
+		// AddTaskLink связывает две задачи ИДЕМПОТЕНТНО (повтор — no-op, не 1062). kind приезжает уже
+		// развёрнутым в сторону хранилища: BLOCKED_BY снимается перестановкой концов В DTO, потому
+		// что перспектива — свойство контракта. relates нормализуется здесь (min,max — инвариант
+		// CHECK'а). entity.ErrTaskReverseBlock на прямую обратную пару blocks.
+		AddTaskLink(ctx context.Context, fromTaskID, toTaskID int, kind entity.TaskLinkKind, createdBy string) error
+		// DeleteTaskLink снимает связь; снять несуществующую — no-op по тому же доводу, что у
+		// DetachFileFromTask: кнопка описывает ЖЕЛАЕМОЕ состояние.
+		DeleteTaskLink(ctx context.Context, fromTaskID, toTaskID int, kind entity.TaskLinkKind) error
+
+		// --- Удаление реплики (0339) ---
+
+		// GetTaskCommentById читает реплику ПЕРЕД проверкой права «только свою»: автор хранится, а не
+		// приезжает в запросе. sql.ErrNoRows, если реплики нет.
+		GetTaskCommentById(ctx context.Context, id int) (*entity.TaskComment, error)
+		// DeleteTaskComment удаляет реплику. sql.ErrNoRows, если удалять было нечего, — НЕ молчаливая
+		// идемпотентность: хендлеру нужен NotFound, иначе «удалено» про несуществующее оставляет
+		// реплику на экране. Право проверяет ХЕНДЛЕР, стор не знает зовущего.
+		DeleteTaskComment(ctx context.Context, id int) error
+
 		// --- Файл ↔ задача, со стороны ФАЙЛА (Ф4) ---
 		//
 		// Эти три живут здесь, а не в Files, по тому же правилу, по которому классифицированы их
@@ -1146,6 +1172,73 @@ type (
 		// которые НАЗЫВАЮТ работу и несут норму времени. Победителя на каждую работу выбирает
 		// entity.LatestOperationWorkSmv, а не запрос.
 		ListOperationWorkSmvSamples(ctx context.Context) ([]entity.OperationWorkSmvSample, error)
+		// AppendTechCardArchiveExportedEvent records one ZIP export in the card's auto-journal
+		// (Ф1.5). Nothing else remembers it: the bucket object expires in days, the presigned link
+		// in minutes, and an export does not touch the card — so without this row "was this style
+		// ever sent out of the building" has no answer in the database at all.
+		AppendTechCardArchiveExportedEvent(ctx context.Context, techCardID int, author, summary string) error
+		// CreateTechCardImportRow records ONE uploaded import archive (Ф2.5, migration 0336): where
+		// its bytes went in the bucket, what its manifest said, and the colourway payload the much
+		// later "create colourways from the archive" step needs after the bucket object has expired.
+		// It writes only the columns the UPLOAD knows — tech_card_id, report and the commit's
+		// timestamps belong to the write path.
+		//
+		// archiveManifest is manifest.json VERBATIM, never a re-marshal: an archive of a newer MINOR
+		// carries fields this server has no member for, encoding/json drops them silently, and the
+		// row would then show a shorter manifest than the one that arrived under the label "what was
+		// in the ZIP at upload". colorwaysPayload is nil when the archive carried no colorways.json.
+		CreateTechCardImportRow(ctx context.Context, importID, objectKey string, archiveManifest, colorwaysPayload []byte, importedBy string) error
+		// ImportTechCardArchive writes ONE imported archive in ONE transaction (Ф3.2): a NEW tech
+		// card — never an update, whatever the style number says — plus its children, its size
+		// chart and grade rule, its markers, its measured piece areas, its assembly bill, the
+		// journal entry saying where it came from, and the commit stamp on the tech_card_import
+		// row. Returns the new card's id.
+		//
+		// The card is forced to DRAFT with its sign-offs dropped before the first INSERT: the
+		// create pipeline COERCES supplied sign-offs into fresh ones stamped with the importing
+		// operator's name rather than refusing them, so handing it none is the only defence that
+		// does not rest on the exporter's manners.
+		//
+		// entity.ErrImportAlreadyCommitted when that import_id has already produced a card (the
+		// double-click race, closed by claiming the row inside the transaction); sql.ErrNoRows when
+		// there is no such import_id. A UNIQUE violation on style_number comes out AS IT IS:
+		// retrying inside a SERIALIZABLE transaction would re-run every write above it, so the
+		// caller picks a new number and calls again.
+		ImportTechCardArchive(ctx context.Context, in entity.TechCardArchiveImport) (int, error)
+		// GetTechCardImportByImportID returns one upload row by its ULID — the state carried
+		// between the dry run and the commit. sql.ErrNoRows when there is none.
+		GetTechCardImportByImportID(ctx context.Context, importID string) (entity.TechCardArchiveImportRecord, error)
+		// GetTechCardImportReport returns the LATEST import a card came from, so the card can say
+		// «this arrived as an archive, and here is what did not fit». sql.ErrNoRows for a card
+		// nobody imported, which is every card anybody typed by hand.
+		GetTechCardImportReport(ctx context.Context, techCardID int) (entity.TechCardArchiveImportRecord, error)
+		// AcknowledgeTechCardImport closes the «imported» banner on a card. Idempotent by
+		// construction — the guard is `acknowledged_at IS NULL`, so a second click writes nothing
+		// and the stamp keeps the moment the report was actually read.
+		AcknowledgeTechCardImport(ctx context.Context, techCardID int) error
+		// ExpireStaleTechCardImports moves every still-'uploaded' import row created before
+		// olderThan to 'expired' and returns how many moved (Ф5.1). The background cleanup calls
+		// it on the same tick that deletes the aged-out bucket objects, with the SAME cutoff: the
+		// two halves state one fact, and a row that still says "uploaded" after its archive's
+		// bytes are gone is an operator pressing commit onto a 404.
+		//
+		// 'committed' and 'failed' rows are never touched — the first is a card's provenance,
+		// the second a hand-set quarantine (no code path writes 'failed'; a rolled-back commit
+		// leaves the row 'uploaded' deliberately, see entity.TechCardImportStatusFailed).
+		ExpireStaleTechCardImports(ctx context.Context, olderThan time.Time) (int64, error)
+		// ApplyImportedColorwayPieceMaterials writes ONE colourway's piece→cloth mapping onto an
+		// imported card (Ф6.2), resolving pieces and BOM lines by the stable line keys the archive
+		// carried verbatim. A full replace SCOPED TO THAT COLOURWAY — never the card save's clear,
+		// which wipes every colour's mapping.
+		//
+		// Every key is promised to exist by the caller (it holds the card's key sets and reports
+		// what it filtered out), so a key that names nothing here is an error and not a dropped row.
+		ApplyImportedColorwayPieceMaterials(ctx context.Context, techCardID, colorwayID int,
+			rows []entity.TechCardArchivePieceMaterial) error
+		// StampTechCardImportReport replaces the stored report of an ALREADY COMMITTED import
+		// (Ф6.2: the colourway lines stop saying «not created» once they are). Guarded on
+		// status='committed'; it cannot touch tech_card_id, which is the commit's alone.
+		StampTechCardImportReport(ctx context.Context, importID string, report []byte) error
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size
@@ -1734,6 +1827,23 @@ type (
 		// so the library can tell a free file from one standing on the storefront. Ids with
 		// no references are absent from the map. One query covers the whole batch.
 		GetMediaUsage(ctx context.Context, ids []int) (map[int][]entity.MediaUsageRef, error)
+		// FindMediaByContentHash looks a media item up by the hex SHA-256 of its full-size
+		// object, so an import can reuse a file that is already stored instead of uploading
+		// a second copy of identical bytes. Returns (nil, nil) when nothing matches —
+		// including for an empty hash and for every row written before migration 0336,
+		// which carry NULL and are meant to match nothing.
+		FindMediaByContentHash(ctx context.Context, hash string) (*entity.MediaFull, error)
+		// DeleteMediaByIdIfUnused deletes the row only when nothing in the database references
+		// it, taking that decision and the delete under one lock. It returns whether the row
+		// went and, when it did not, the references that kept it.
+		//
+		// It exists because DeleteMediaById is not safe for a caller compensating a failed
+		// import: content-hash de-duplication means the row it minted may already have been
+		// ADOPTED by another import that committed first, and the several ON DELETE SET NULL
+		// foreign keys into media(id) let that delete succeed and blank the winner's picture
+		// instead of refusing. "Still used" is not an error — it means the row is no longer
+		// the caller's to take back, and neither are the objects behind it.
+		DeleteMediaByIdIfUnused(ctx context.Context, id int) (deleted bool, refs []entity.MediaUsageRef, err error)
 	}
 
 	Admin interface {
@@ -2013,6 +2123,66 @@ type (
 		// (empty and duplicate URLs are ignored). Used so deleting a media row or a
 		// partially-failed variant upload does not orphan public CDN objects.
 		DeleteObjects(ctx context.Context, urls ...string) error
+		// GetManagedObject opens a bucket object for STREAMING and returns its size. It is
+		// what puts media and pattern bytes into a tech-card archive (a link to a foreign
+		// host is not an export). The key must sit in a segment this method is allowed to
+		// read — media base folder, tech-card-patterns, techcard-archives,
+		// techcard-imports, with files-library explicitly excluded because it has its own
+		// reader and its own read cap. A foreign prefix is refused BEFORE any S3 call.
+		// The key comes ONLY from a DB row (media.url via the managed-url parser), never
+		// from a request: the segment gate narrows what is reachable, it does not tell our
+		// object from someone else's inside the folder.
+		GetManagedObject(ctx context.Context, objectKey string) (io.ReadCloser, int64, error)
+		// UploadArchiveObject streams an exported tech-card zip into a PRIVATE object and
+		// returns its key. Private is the ABSENCE of the public-read acl the media/pattern/
+		// label paths set: an archive carries a whole tech card and must never be publicly
+		// addressable — it is reachable only through a short-lived presigned GET.
+		UploadArchiveObject(ctx context.Context, r io.Reader, name string) (objectKey string, err error)
+		// UploadImportObject streams an archive accepted for import into
+		// techcard-imports/<importID>.zip and returns the key (stored in
+		// tech_card_import.object_key). The 256 MiB ceiling is enforced here as well as on
+		// the HTTP route: a stream of unknown length has no bound of its own.
+		UploadImportObject(ctx context.Context, r io.Reader, importID string) (objectKey string, err error)
+		// PresignArchiveObject returns a presigned GET for an archive object, valid for
+		// ttl (callers pass 10 minutes — owner decision B-5). Only the techcard-archives
+		// segment can be signed, and unlike PresignPatternObject there is no window
+		// snapping and no memoization: those buy a stable url string for the panel's
+		// <object> embeds, and the price (a url that outlives revocation by up to 12h) is
+		// not payable for a full card export.
+		PresignArchiveObject(ctx context.Context, objectKey string, ttl time.Duration) (url string, expiresAt time.Time, err error)
+		// GetImportObjectReaderAt materializes an uploaded import archive as the io.ReaderAt
+		// zip.NewReader needs, plus the Close that releases it. *minio.Object does implement
+		// io.ReaderAt, but every ReadAt is a separate ranged GET, and zip reads in 4-32 KiB
+		// chunks — so the object is downloaded once, streaming, into a temp file instead.
+		GetImportObjectReaderAt(ctx context.Context, objectKey string) (ReaderAtCloser, int64, error)
+		// ListObjectsOlderThan returns the keys in an archive segment last modified
+		// STRICTLY before cutoff; the pair to RemoveObjectsByKeys, split from it so the
+		// selection can be checked without deleting. The boundary is an INSTANT, not an
+		// age, and that is the point: the cleanup tick reads the clock once and hands the
+		// same instant to this listing and to ExpireStaleTechCardImports, so the two halves
+		// cannot drift apart. An implementation that derived the boundary from its own
+		// time.Now() would break that promise silently. Only techcard-archives and
+		// techcard-imports may be listed — that gate is what makes "the cleanup worker
+		// touches nothing else" true by construction.
+		ListObjectsOlderThan(ctx context.Context, segment string, cutoff time.Time) ([]string, error)
+		// UploadContentImageVerbatim stores a picture whose FULL-SIZE object must be the bytes
+		// it was handed, byte-for-byte, and derives the compressed/thumbnail variants from
+		// them. UploadContentImage re-encodes every JPEG/PNG/WebP into a fresh full-size WebP,
+		// so media.content_hash — the sha of the full-size object as stored — describes bytes
+		// that did not exist before the upload. That is fatal for the tech-card archive, whose
+		// de-duplication is exactly the comparison of the archive's sha against that column: a
+		// re-imported archive would never match, would store every picture again, and would add
+		// another lossy generation each time. Same byte/pixel/dimension ceilings as the
+		// re-encoding path, all read from the header; JPEG, PNG, WebP and GIF only.
+		UploadContentImageVerbatim(ctx context.Context, raw []byte, folder, imageName string) (*pb_common.MediaFull, error)
+	}
+
+	// ReaderAtCloser is what zip.NewReader needs plus the Close that releases whatever
+	// backs it. It lives here rather than in the bucket package because FileStore is
+	// declared here and bucket imports dependency, not the other way round.
+	ReaderAtCloser interface {
+		io.ReaderAt
+		io.Closer
 	}
 
 	RevalidationService interface {

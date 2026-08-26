@@ -4213,4 +4213,11 @@ message TechCardListItem {
   // colorway_count. The COUNT only — a "latest consumption" here would be a lie without naming
   // the size and the BOM slot it was measured for.
   int32 marker_count = 27;
+  // Коллекция строки листа — хранимое ИМЯ из tech_card.collection ("" = не задана).
+  //
+  // НУЖНА НЕ ТОЛЬКО ДЛЯ ПОКАЗА: из неё клиент собирает пул значений фасета, и благодаря этому
+  // фильтруемыми становятся карты с рукописными и архивными именами, которых в словаре коллекций
+  // нет (такие существуют намеренно). Колонки-ссылки collection_id у тех-карты не существует —
+  // её дропнула 0240 как мёртвую схему, поэтому фильтровать можно ТОЛЬКО по этой строке.
+  string collection = 28;
 }

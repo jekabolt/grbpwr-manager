@@ -35,6 +35,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	"github.com/jekabolt/grbpwr-manager/log"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
@@ -173,6 +174,7 @@ type Server struct {
 	runPackHandler          http.Handler
 	fileUploadHandler       http.Handler
 	filePreviewHandler      http.Handler
+	tcArchiveUploadHandler  http.Handler
 	fileLinkHandler         http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
@@ -214,6 +216,15 @@ func (s *Server) SetFileUploadHandler(h http.Handler) {
 // carries a thumbnail, not a file.
 func (s *Server) SetFilePreviewHandler(h http.Handler) {
 	s.filePreviewHandler = h
+}
+
+// SetTechCardArchiveUploadHandler registers the tech-card archive import endpoint
+// (POST /api/techcard-archive/upload). Same posture as the two above — already
+// wrapped in admin authorization by the caller, outside the gateway because a
+// 256 MiB ZIP cannot ride inside a gRPC message — and its own body cap, which is
+// the format's number and not the files-library one.
+func (s *Server) SetTechCardArchiveUploadHandler(h http.Handler) {
+	s.tcArchiveUploadHandler = h
 }
 
 // SetPatternViewerHandler registers the card-level pattern viewer manifest endpoint
@@ -348,6 +359,19 @@ const maxFileUploadBodyBytes = 95 << 20 // 95 MiB
 // endpoint can ever legitimately use — and the extra room is the whole cost of an
 // unauthenticated flood. 4 MiB is the 2 MiB payload plus multipart headroom.
 const maxFilePreviewBodyBytes = 4 << 20 // 4 MiB
+
+// maxImportArchiveBodyBytes caps an uploaded tech-card archive. It is READ FROM THE
+// FORMAT rather than typed here: techcardarchive.MaxUploadedArchiveBytes is the same
+// constant the bucket's own capReader enforces on the way into the object, so the two
+// checks can never answer differently about one body. A second number spelled out here
+// is how "is this archive too big" acquires two answers, and the loser is whichever
+// check happens to run second.
+//
+// It sits ABOVE the files-library cap and that is deliberate: an export of a card with
+// video is legitimately hundreds of megabytes, and the archive route is authenticated
+// behind tech_cards:write rather than open. Nothing about this number belongs to the
+// files-library upload, whose 95 MiB stays exactly where it is.
+const maxImportArchiveBodyBytes = techcardarchive.MaxUploadedArchiveBytes // 256 MiB
 
 // limitBody caps the request body via http.MaxBytesReader, so an oversized body is
 // rejected instead of being fully buffered by the JSON gateway.
@@ -571,6 +595,16 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.filePreviewHandler != nil {
 			r.With(limitBody(maxFilePreviewBodyBytes)).
 				Method(http.MethodPost, "/files/{id}/preview", s.filePreviewHandler)
+		}
+		// Tech-card archive import. Its own body cap and DELIBERATELY NOT the files-library
+		// one: 95 MiB is a guess about a platform ceiling, while 256 MiB is a number the
+		// FORMAT states (FORMAT.md §1.3) and the bucket enforces a second time on the same
+		// constant. Sharing the file cap would mean an archive refused by a limit that has
+		// nothing to do with archives — and moving the file cap to fit would change the
+		// files-library route, which this feature must not touch.
+		if s.tcArchiveUploadHandler != nil {
+			r.With(limitBody(maxImportArchiveBodyBytes)).
+				Method(http.MethodPost, "/techcard-archive/upload", s.tcArchiveUploadHandler)
 		}
 	})
 

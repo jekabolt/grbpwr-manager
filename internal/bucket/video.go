@@ -3,6 +3,9 @@ package bucket
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 
@@ -54,12 +57,25 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	}
 	url := b.getCDNURL(fp)
 
+	// Fingerprint of the stored object. Video is uploaded verbatim, so the bytes handed to
+	// PutObject above ARE the object, and all three urls point at it — one hash covers the
+	// row. Taken after the upload succeeded so a row never claims a hash for an object that
+	// is not in the bucket.
+	sum := sha256.Sum256(mp4Data)
+	contentHash := hex.EncodeToString(sum[:])
+
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   url,
 		CompressedMediaURL: url,
 		ThumbnailMediaURL:  url,
+		ContentHash:        sql.NullString{String: contentHash, Valid: true},
 	})
 	if err != nil {
+		// The object is already in the bucket but no row references it. Unlike the image
+		// path, the caller gets nil back here — it has no urls to put in a compensation
+		// plan, so nobody would ever be able to remove it. Same remedy as the image path:
+		// take it back on the spot.
+		b.cleanupUploadedVariants(&pb_common.MediaInfo{MediaUrl: url})
 		slog.Default().ErrorContext(ctx, "can't add media to db",
 			slog.String("err", err.Error()))
 		return nil, err

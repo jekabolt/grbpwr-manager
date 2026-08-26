@@ -107,8 +107,9 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	if len(pb.Description) > maxTaskText {
 		return nil, fmt.Errorf("task description must be at most %d characters", maxTaskText)
 	}
-	if len(pb.Assignee) > maxVarchar255 {
-		return nil, fmt.Errorf("task assignee must be at most %d characters", maxVarchar255)
+	assignees, err := taskAssigneesFromPb(pb.Assignees, pb.Assignee)
+	if err != nil {
+		return nil, err
 	}
 	// ВСЕ глубокие ссылки разом. sample_id тут не хватало с самого его появления: отрицательный
 	// id проходил гейт, уезжал в стор как Valid и умирал об внешний ключ — то есть внятный
@@ -192,7 +193,7 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	return &entity.TaskInsert{
 		Title:            title,
 		Description:      nullStringFromPb(strings.TrimSpace(pb.Description)),
-		Assignee:         strings.TrimSpace(pb.Assignee),
+		Assignees:        assignees,
 		Priority:         priority,
 		DueDate:          dueDate,
 		StartDate:        startDate,
@@ -209,6 +210,54 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 		FileIds:          fileIds,
 		MediaAnnotations: mediaAnnotations,
 	}, nil
+}
+
+// taskAssigneesFromPb собирает список исполнителей и СЛИВАЕТ В НЕГО deprecated-алиас поля 3.
+//
+// ПРАВИЛО СЛИЯНИЯ: непустой assignees выигрывает всегда, алиас при этом игнорируется молча. Пустой
+// assignees плюс непустой алиас = список из одного. Иначе — пусто, «задачу никто не взял».
+//
+// ПОЧЕМУ АЛИАС ВООБЩЕ ЖИВ. Старая вкладка админки шлёт только поле 3, а admin-гейтвей разбирает JSON
+// с DiscardUnknown: false — снятие поля превратило бы каждое её сохранение в 400. Названное
+// следствие переходного окна: сохранение из СТАРОЙ вкладки оставит одного (первого) исполнителя, она
+// шлёт то, что прочла. Окно — минуты между деплоем бека и клиента.
+//
+// Trim/дедуп/предел длины — дословно как у labels ниже: половина списков карточки не может прощать
+// дубль, пока другая половина роняет сохранение.
+func taskAssigneesFromPb(list []string, deprecatedAlias string) ([]string, error) {
+	merged := list
+	if len(merged) == 0 && strings.TrimSpace(deprecatedAlias) != "" {
+		merged = []string{deprecatedAlias}
+	}
+	out := make([]string, 0, len(merged))
+	seen := make(map[string]bool, len(merged))
+	for _, a := range merged {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if len(a) > maxVarchar255 {
+			return nil, fmt.Errorf("task assignee must be at most %d characters", maxVarchar255)
+		}
+		if seen[a] {
+			continue
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// taskAssigneeAlias — обратный ход: чем заполнить deprecated-поле 3 на выходе.
+//
+// ЗАБЫТЬ ЕГО ЗАПОЛНИТЬ НЕЛЬЗЯ: EmitUnpopulated отдал бы "", и доска СТАРОГО клиента показала бы все
+// карточки неназначенными — то есть тихая потеря, а не ошибка. Ровно это ловит негативный контроль
+// теста алиаса.
+func taskAssigneeAlias(assignees []string) string {
+	if len(assignees) == 0 {
+		return ""
+	}
+	return assignees[0]
 }
 
 // taskMediaAnnotationsFromPb разбирает указания, нарисованные на вложенных картинках карточки.
@@ -348,9 +397,12 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 	return &pb_common.Task{
 		Id: int32(t.Id),
 		Task: &pb_common.TaskInsert{
-			Title:           t.Title,
-			Description:     pbStringFromNull(t.Description),
-			Assignee:        t.Assignee,
+			Title:       t.Title,
+			Description: pbStringFromNull(t.Description),
+			Assignees:   t.Assignees,
+			// Deprecated-алиас поля 3 ОБЯЗАН быть заполнен, пока он на проводе: старый клиент читает
+			// только его, а EmitUnpopulated отдал бы "" и нарисовал бы всю доску неназначенной.
+			Assignee:        taskAssigneeAlias(t.Assignees),
 			Priority:        taskPriorityEntityToPb[t.Priority],
 			DueDate:         pbTimestampFromNullTime(t.DueDate),
 			StartDate:       pbTimestampFromNullTime(t.StartDate),
@@ -380,7 +432,63 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 		StartedAt:  pbTimestampFromNullTime(t.StartedAt),
 		Checklist:  ConvertEntityTaskChecklistToPb(t.Checklist),
 		FileIds:    fileIds,
+		// Иерархия и связи едут на Task, а НЕ внутри TaskInsert: TaskInsert сохраняется полной
+		// заменой, и клиент, не знающий поля, стирал бы родителя каждым сохранением.
+		ParentTaskId: pbInt32FromNull(t.ParentTaskId),
+		Links:        ConvertEntityTaskLinksToPb(t.Links),
+		SubtaskTotal: int32(t.SubtaskTotal),
+		SubtaskDone:  int32(t.SubtaskDone),
 	}
+}
+
+// taskLinkRoleToPb — перспектива хранилища → перспектива контракта. Ролей ТРИ, видов в хранилище ДВА:
+// BLOCKED_BY это blocks, прочитанный с другого конца.
+var taskLinkRoleToPb = map[entity.TaskLinkRole]pb_common.TaskLinkKind{
+	entity.TaskLinkRoleBlocks:    pb_common.TaskLinkKind_TASK_LINK_KIND_BLOCKS,
+	entity.TaskLinkRoleBlockedBy: pb_common.TaskLinkKind_TASK_LINK_KIND_BLOCKED_BY,
+	entity.TaskLinkRoleRelates:   pb_common.TaskLinkKind_TASK_LINK_KIND_RELATES,
+}
+
+// ConvertPbTaskLinkKindToEntity разворачивает ПЕРСПЕКТИВУ в хранимую строку: возвращает вид и то,
+// надо ли поменять концы местами.
+//
+// ЧИСТАЯ ФУНКЦИЯ И ЖИВЁТ ЗДЕСЬ, А НЕ В СТОРЕ, потому что перспектива — свойство КОНТРАКТА: «ту
+// задачу надо закончить раньше этой» и «эта блокирует ту» — один факт, названный с разных концов.
+// Нормализация relates (min,max) наоборот живёт в сторе, рядом с CHECK'ом, который её закрепляет.
+func ConvertPbTaskLinkKindToEntity(k pb_common.TaskLinkKind) (kind entity.TaskLinkKind, swap bool, err error) {
+	switch k {
+	case pb_common.TaskLinkKind_TASK_LINK_KIND_BLOCKS:
+		return entity.TaskLinkKindBlocks, false, nil
+	case pb_common.TaskLinkKind_TASK_LINK_KIND_BLOCKED_BY:
+		// Перевёрнутый blocks: блокером становится ВТОРАЯ задача.
+		return entity.TaskLinkKindBlocks, true, nil
+	case pb_common.TaskLinkKind_TASK_LINK_KIND_RELATES:
+		return entity.TaskLinkKindRelates, false, nil
+	default:
+		return "", false, fmt.Errorf("unknown or unset task link kind: %v", k)
+	}
+}
+
+// ConvertEntityTaskLinksToPb converts a card's resolved links.
+//
+// Неизвестные строки статуса и доски едут нулевым энумом — ровно как в ConvertEntityTaskToPb:
+// разойтись двум чтениям одной задачи хуже, чем отдать UNKNOWN.
+func ConvertEntityTaskLinksToPb(links []entity.TaskLink) []*pb_common.TaskLink {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TaskLink, 0, len(links))
+	for _, l := range links {
+		out = append(out, &pb_common.TaskLink{
+			TaskId:   int32(l.TaskId),
+			Kind:     taskLinkRoleToPb[l.Role],
+			Title:    l.Title,
+			Status:   taskStatusEntityToPb[l.Status],
+			Board:    taskBoardEntityToPb[l.Board],
+			Archived: l.Archived,
+		})
+	}
+	return out
 }
 
 // ConvertEntityTaskChecklistToPb converts a task's checklist items to proto.
@@ -429,10 +537,13 @@ func ConvertEntityLibraryFileTasksToPb(rows []entity.LibraryFileTask) []*pb_admi
 	out := make([]*pb_admin.LibraryFileTask, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, &pb_admin.LibraryFileTask{
-			TaskId:   int32(r.TaskId),
-			Title:    r.Title,
-			Status:   taskStatusEntityToPb[r.Status],
-			Assignee: r.Assignee,
+			TaskId:    int32(r.TaskId),
+			Title:     r.Title,
+			Status:    taskStatusEntityToPb[r.Status],
+			Assignees: r.Assignees,
+			// Deprecated-алиас поля 4 = первый исполнитель. Заполняется по той же причине, что и на
+			// карточке: старая вкладка читает только его.
+			Assignee: taskAssigneeAlias(r.Assignees),
 			// Срока может не быть, и тогда поля нет вовсе — «нет срока», а не «сегодня».
 			DueDate: pbTimestampFromNullTime(r.DueDate),
 			Board:   taskBoardEntityToPb[r.Board],
@@ -465,9 +576,12 @@ func ConvertEntityTaskCommentToPb(c *entity.TaskComment) *pb_common.TaskComment 
 		return nil
 	}
 	return &pb_common.TaskComment{
-		Id:        int32(c.Id),
-		TaskId:    int32(c.TaskId),
-		Author:    c.Author,
+		Id:     int32(c.Id),
+		TaskId: int32(c.TaskId),
+		Author: c.Author,
+		// Живая ссылка на аккаунт автора; 0 = аккаунта больше нет. По ней клиент решает, рисовать ли
+		// кнопку удаления, но ПРОВЕРЯЕТ пару «имя + живая ссылка» сервер.
+		AuthorId:  pbInt32FromNull(c.AuthorId),
 		Body:      c.Body,
 		CreatedAt: timestamppb.New(c.CreatedAt),
 	}

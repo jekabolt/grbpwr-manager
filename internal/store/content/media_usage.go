@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
@@ -251,10 +252,22 @@ func buildMediaUsageQuery() string {
 // Ids with no references are absent from the map; the caller decides whether that means
 // "unused" or "unknown id". Duplicate ids in the input are harmless.
 func (s *Store) GetMediaUsage(ctx context.Context, ids []int) (map[int][]entity.MediaUsageRef, error) {
+	return mediaUsageOn(ctx, s.DB, ids)
+}
+
+// mediaUsageOn is GetMediaUsage against a caller-chosen connection: the pooled one for the
+// RPC above, the transaction's own for DeleteMediaByIdIfUnused.
+//
+// It exists so that "what can reference a media item" is asked in exactly ONE place. The
+// registry is the answer to that question and it is maintained by hand (see mediaRefSource);
+// a second enumeration of the same columns — one for showing usage, one for deciding a delete —
+// would drift the day a new foreign key lands, and it would drift silently in the worse
+// direction: the delete path would call a referenced row free.
+func mediaUsageOn(ctx context.Context, db dependency.DB, ids []int) (map[int][]entity.MediaUsageRef, error) {
 	if len(ids) == 0 {
 		return map[int][]entity.MediaUsageRef{}, nil
 	}
-	rows, err := storeutil.QueryListNamed[entity.MediaUsageRef](ctx, s.DB,
+	rows, err := storeutil.QueryListNamed[entity.MediaUsageRef](ctx, db,
 		mediaUsageQuery, map[string]any{"ids": ids})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get media usage: %w", err)

@@ -61,7 +61,14 @@ enum TaskPriority {
 message TaskInsert {
   string title = 1; // required
   string description = 2; // optional, free text / markdown
-  string assignee = 3; // AdminAccount.username; "" = unassigned
+  // DEPRECATED АЛИАС ОДНОГО РЕЛИЗА, а не «главный исполнитель». Настоящий список — assignees ниже.
+  // На ВХОДЕ читается только когда assignees пуст (тогда трактуется как список из одного); на
+  // ВЫХОДЕ равен assignees[0] или "". Снять reserved'ом СЛЕДУЮЩЕЙ волной по процедуре инвентаря
+  // retired-полей (комментарий к newAdminJSONMarshaler, internal/api/http/http.go).
+  //
+  // ПОЧЕМУ НЕ СНЯТО СРАЗУ: admin-гейтвей разбирает JSON с DiscardUnknown: false, поэтому reserved на
+  // живом поле превратил бы каждое сохранение карточки из ОТКРЫТОЙ старой вкладки в 400.
+  string assignee = 3 [deprecated = true];
   TaskPriority priority = 4; // TASK_PRIORITY_UNKNOWN = unset
   google.protobuf.Timestamp due_date = 5; // optional; unset = no deadline
   repeated string labels = 6; // freeform lightweight tags within a board (client/list filtering)
@@ -122,6 +129,21 @@ message TaskInsert {
   // НАБОР БЕЗ СВОЕЙ КАРТИНКИ СБРАСЫВАЕТСЯ СЕРВЕРОМ: указание на снимке, снятом с карточки,
   // нельзя ни увидеть, ни убрать, а хранить его значило бы копить невидимое.
   repeated TaskMediaAnnotations media_annotations = 17;
+
+  // ИСПОЛНИТЕЛИ КАРТОЧКИ — СПИСОК БЕЗ «ГЛАВНОГО». AdminAccount.username каждый; пусто = задачу
+  // никто не взял. Порядок = порядок показа аватарок.
+  //
+  // ПОЛНАЯ ЗАМЕНА ПРИ СОХРАНЕНИИ, как labels/media_ids: обе стороны пишет одна форма карточки, и
+  // присланный пустой список означает «исполнителей больше нет». Клиент обязан слать то, что
+  // прочитал.
+  //
+  // «Главного» в модели НЕТ намеренно: ни фильтр «мои», ни строка карточки файла, ни доска не
+  // различают первого и остальных, а различие без потребителя — это поле, которое заполняют
+  // наугад. Появись потребитель — им станет первый элемент, и контракт менять не придётся.
+  //
+  // Существование аккаунта сервером НЕ проверяется — паритет с прежним поведением одиночного
+  // assignee: пикер клиента наполняется из ListAccounts.
+  repeated string assignees = 19;
 }
 
 // TaskMediaAnnotations — указания одной прикреплённой картинки.
@@ -138,6 +160,39 @@ message TaskInsert {
 message TaskMediaAnnotations {
   int32 media_id = 1; // FK media(id); ОБЯЗАН быть одним из media_ids этой же карточки
   repeated TechCardAnnotation annotations = 2;
+}
+
+// TaskLinkKind — ВИД СВЯЗИ С ТОЧКИ ЗРЕНИЯ ВЛАДЕЛЬЦА СПИСКА, а не вид строки в хранилище.
+//
+// В хранилище видов ДВА (blocks|relates) и на один факт приходится ОДНА строка: BLOCKED_BY — это
+// blocks, прочитанный с другого конца. Две строки на один факт позволили бы паре полусуществовать —
+// A знает, что блокирует B, а B не знает, что заблокирована.
+//
+// RELATES симметрична и нормализуется при записи (меньший id первым), поэтому дубль (A,B)+(B,A)
+// невыразим схемой, а не только кодом.
+enum TaskLinkKind {
+  TASK_LINK_KIND_UNKNOWN = 0;
+  TASK_LINK_KIND_BLOCKS = 1; // эта задача блокирует ту
+  TASK_LINK_KIND_BLOCKED_BY = 2; // ту задачу надо закончить раньше этой
+  TASK_LINK_KIND_RELATES = 3; // просто связаны
+}
+
+// TaskLink — строка связи, КАК ЕЁ РИСУЕТ КАРТОЧКА: второй конец УЖЕ разрешён в заголовок, статус и
+// доску (та же доктрина проекции, что у admin.LibraryFileTask), чтобы бейдж «заблокирована» и
+// список связей не требовали ни второго RPC, ни N+1.
+//
+// БЛОКЕР — СОВЕТ, А НЕ ЗАМОК: сервер НЕ запрещает перевести в DONE задачу с открытыми блокерами.
+// Доска — drag-and-drop, и отказ посреди жеста хуже бейджа; заархивированный недоделанный блокер
+// замуровал бы карточку навсегда. Заблокированность считает клиент: есть BLOCKED_BY со status !=
+// DONE. Заархивированный блокер считается ОТКРЫТЫМ, пока не done, — архив прячет с доски, но не
+// отменяет «сначала то, потом это».
+message TaskLink {
+  int32 task_id = 1; // id ВТОРОГО конца связи (не той карточки, в чьём списке эта строка едет)
+  TaskLinkKind kind = 2;
+  string title = 3;
+  TaskStatus status = 4;
+  TaskBoard board = 5;
+  bool archived = 6;
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
@@ -179,6 +234,33 @@ message Task {
   // their expiring presigned urls, ride on admin.GetTaskResponse.files, because
   // this message is reused in contexts that get persisted.
   repeated int32 file_ids = 13;
+
+  // РОДИТЕЛЬ-САБТАСКА. 0 = верхний уровень.
+  //
+  // ЧИТАЕТСЯ ЗДЕСЬ, НО МЕНЯЕТСЯ ТОЛЬКО ЧЕРЕЗ SetTaskParent, и в TaskInsert его НЕТ намеренно:
+  // содержимое карточки сохраняется полной заменой, и клиент, не знающий поля, стирал бы родителя
+  // каждым сохранением (ровно ловушка «отсутствующее поле = дефолт»). Единственное исключение —
+  // AddTaskRequest.parent_task_id, чтобы «создать сабтаску» было одним вызовом.
+  //
+  // КОЛОНКА, А НЕ ВИД СВЯЗИ: у карточки РОВНО ОДИН родитель, и в колонке два родителя невозможны
+  // физически, тогда как таблица связей потребовала бы условного UNIQUE, которого у MySQL нет.
+  // Глубина не ограничена; циклы запрещает стор.
+  int32 parent_task_id = 14;
+
+  // ВСЕ связи карточки: и blocks/blocked_by в обе стороны, и relates. Вид назван с точки зрения
+  // ЭТОЙ карточки (см. TaskLinkKind).
+  //
+  // ЗДЕСЬ ТОЛЬКО ЧТЕНИЕ. Пишутся связи отдельными идемпотентными AddTaskLink/DeleteTaskLink, а не
+  // полной заменой внутри TaskInsert: связь принадлежит ДВУМ карточкам сразу, и полная замена
+  // «связей карточки A» при сохранении её формы снесла бы связь, добавленную с карточки B, пока
+  // форма A была открыта.
+  repeated TaskLink links = 15;
+
+  // Свёртка сабтасок для карточки на доске: сколько АКТИВНЫХ (незаархивированных) детей и сколько
+  // из них в DONE. Заголовки детей здесь не резолвятся — доска рисует счётчик, детальная страница
+  // берёт их фильтром ListTasks(parent_task_id).
+  int32 subtask_total = 16;
+  int32 subtask_done = 17;
 }
 
 // TaskCommentInsert is the writable payload for a comment. author is set
@@ -191,7 +273,14 @@ message TaskCommentInsert {
 message TaskComment {
   int32 id = 1;
   int32 task_id = 2;
-  string author = 3; // AdminAccount.username
+  string author = 3; // AdminAccount.username AS OF WRITING — строка-факт, переживает удаление аккаунта
   string body = 4;
   google.protobuf.Timestamp created_at = 5;
+  // ЖИВАЯ ссылка на аккаунт автора; 0 = аккаунта больше нет (строка author при этом остаётся).
+  //
+  // Клиент по ней решает, рисовать ли кнопку удаления; ПРОВЕРЯЕТ сервер, и проверяет он ровно эту
+  // пару — совпадение имени ПРИ живой ссылке. Одного имени мало: UNIQUE на admins.username
+  // освобождает имя при удалении аккаунта, и новый однофамилец совпал бы по строке со всей
+  // перепиской прежнего (тот же гейт и тот же довод, что у LibraryFileComment, 0316).
+  int32 author_id = 6;
 }

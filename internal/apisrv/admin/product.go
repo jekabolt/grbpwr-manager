@@ -37,18 +37,89 @@ func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwa
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
-	prd, err := dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
+	id, err := s.createColorway(ctx, colorwayCreateInput{
+		StyleID:                   int(req.GetStyleId()),
+		Merchandising:             req.GetMerchandising(),
+		CountryCode:               req.GetCountryCode(),
+		ThumbnailMediaID:          req.GetThumbnailMediaId(),
+		SecondaryThumbnailMediaID: req.GetSecondaryThumbnailMediaId(),
+		Translations:              req.GetTranslations(),
+		CostPrice:                 req.GetCostPrice(),
+		MediaIDs:                  req.GetMediaIds(),
+		Tags:                      req.GetTags(),
+		Prices:                    req.GetPrices(),
+		Development:               req.GetDevelopment(),
+	})
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
+		return nil, createColorwayStatus(ctx, err)
 	}
-	id, err := s.repo.Products().CreateColorway(ctx, int(req.GetStyleId()), prd,
-		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), nil)))
+	return &pb_admin.CreateColorwayResponse{ColorwayId: int32(id)}, nil
+}
+
+// colorwayCreateInput is a CreateColorway request with the request type taken off it — the same
+// fields, so that a caller which is not an RPC (the «create colourways from archive» action, Ф6.2)
+// can travel the identical road instead of assembling its own convoy of converter calls.
+//
+// It carries the WIRE types rather than entity ones deliberately: dto.BuildColorwayInsertEntity is
+// where a colourway's form is decided (the three-uppercase colour code, its presence in the colour
+// dictionary, the hex override's shape, the rounding of a cost), and a second caller building
+// entity.ColorwayInsert by hand would be a second opinion about what a colourway is — the kind that
+// agrees today and drifts on the next rule.
+type colorwayCreateInput struct {
+	StyleID                   int
+	Merchandising             *pb_common.ColorwayMerchandisingInsert
+	CountryCode               string
+	ThumbnailMediaID          int32
+	SecondaryThumbnailMediaID int32
+	Translations              []*pb_common.ColorwayInsertTranslation
+	CostPrice                 *pb_decimal.Decimal
+	MediaIDs                  []int32
+	Tags                      []*pb_common.ColorwayTagInsert
+	Prices                    []*pb_common.ColorwayPriceInsert
+	Development               *pb_common.ColorwayDevelopmentInsert
+}
+
+// errColorwayInvalid marks the converter's refusal — a colour code that is not three uppercase
+// characters, one the colour dictionary does not carry, a malformed hex override. It is a sentinel
+// rather than a status because the second caller has to TELL IT APART from the store's refusals: an
+// archive full of colours reports the bad one and carries on with the rest, and it can only do that
+// if the errors still answer errors.Is.
+var errColorwayInvalid = errors.New("invalid colourway")
+
+// createColorway is the ONE way a draft colourway comes into being on this server: convert, write,
+// and run the side effects a new colourway has (hero cache, dictionary counts, storefront
+// revalidation).
+//
+// It returns errors RAW — errColorwayInvalid, or whatever the store said (entity.ErrColorwayColorExists,
+// entity.ErrTechCardReleased, entity.ErrColorwayNotSellable, sql.ErrNoRows) — because a gRPC status
+// does not wrap and every caller past the first has to classify. createColorwayStatus below is what
+// turns one into the answer an RPC gives.
+//
+// The CAPABILITY gates are NOT here and must not move here: rejectEmbeddedColorwayUsages and the
+// costing:write check answer questions about the REQUEST and about who sent it, and a caller that
+// has no request and no cost to set would be asking them of nobody.
+func (s *Server) createColorway(ctx context.Context, in colorwayCreateInput) (int, error) {
+	prd, err := dto.BuildColorwayInsertEntity(in.Merchandising, in.CountryCode, in.ThumbnailMediaID,
+		in.SecondaryThumbnailMediaID, in.Translations, in.CostPrice)
 	if err != nil {
-		return nil, colorwayWriteError(ctx, "create", 0, err)
+		return 0, fmt.Errorf("%w: %v", errColorwayInvalid, err)
+	}
+	id, err := s.repo.Products().CreateColorway(ctx, in.StyleID, prd,
+		dto.ConvertColorwayMediaIDs(in.MediaIDs), dto.ConvertColorwayTags(in.Tags), dto.ConvertColorwayPrices(in.Prices),
+		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(in.Development, nil)))
+	if err != nil {
+		return 0, err
 	}
 	s.afterColorwayWrite(ctx, id)
-	return &pb_admin.CreateColorwayResponse{ColorwayId: int32(id)}, nil
+	return id, nil
+}
+
+// createColorwayStatus is the answer an RPC gives for what createColorway returned.
+func createColorwayStatus(ctx context.Context, err error) error {
+	if errors.Is(err, errColorwayInvalid) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return colorwayWriteError(ctx, "create", 0, err)
 }
 
 // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock (R2/R4). It
