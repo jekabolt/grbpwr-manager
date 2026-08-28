@@ -66,6 +66,23 @@ type Presigner interface {
 	PresignLibraryObjectShortLived(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error)
 }
 
+// Reader — узкий срез dependency.FileStore: ВЫТАЩИТЬ ОДИН ПРИВАТНЫЙ ОБЪЕКТ В ПАМЯТЬ.
+//
+// Нужен ради одного: страница ссылки на .md обязана ПОКАЗАТЬ документ, а не предложить его
+// скачать. Подписанным url это не решается — text/markdown не в inline-аллоулисте (и не будет:
+// подпись смотрит в origin бакета), а fetch подписанного url из браузера упирается в CORS
+// бакета, за эти грабли фича выкроек уже заплатила. Значит текст обязан приехать ТЕМ ЖЕ
+// ответом, что и метаданные.
+//
+// ЧИТАЕТСЯ ТОТ ЖЕ КЛЮЧ, ЧТО И ПОДПИСЫВАЕТСЯ, и берётся он из строки файла (см. ObjectKey в
+// entity.LibraryFileLinkTarget) — из запроса ключ не принимается никогда, иначе маршрут стал бы
+// оракулом на произвольный объект бакета. Свой потолок у метода уже есть
+// (bucket.maxLibraryReadBytes): публичный маршрут не имеет права тянуть в память сколько
+// попросят.
+type Reader interface {
+	GetLibraryObject(ctx context.Context, objectKey string) ([]byte, error)
+}
+
 const (
 	// Пер (ip|файл). Ссылку открывают, перезагружают и тянут второй раз ради скачивания —
 	// бюджету достаточно покрывать это.
@@ -96,7 +113,11 @@ const (
 type Service struct {
 	files   Files
 	presign Presigner
-	minter  *patterntoken.Minter
+	// reader может быть nil — тогда ответ ?mode=json просто не несёт поля `text`, как было до
+	// этой правки. Сборки без бакета (тесты админского сервера) от этого не падают: показ
+	// документа — свойство ответа, а не условие его существования, ровно как и миниатюра.
+	reader Reader
+	minter *patterntoken.Minter
 
 	// baseURL — внешний origin этого бэкенда (PatternToken.PublicBaseURL без хвостового слэша).
 	// Ссылка АБСОЛЮТНАЯ, потому что её копируют в мессенджер, а не открывают из панели.
@@ -123,7 +144,7 @@ type Service struct {
 
 // New собирает сервис. Пустой pepper — отказ на старте (patterntoken.NewMinter): пустой ключ
 // HMAC сделал бы подделываемой каждую ссылку каждым, кто прочитал этот файл.
-func New(files Files, presign Presigner, pepper, baseURL string) (*Service, error) {
+func New(files Files, presign Presigner, reader Reader, pepper, baseURL string) (*Service, error) {
 	minter, err := patterntoken.NewMinter(pepper)
 	if err != nil {
 		return nil, err
@@ -131,6 +152,7 @@ func New(files Files, presign Presigner, pepper, baseURL string) (*Service, erro
 	s := &Service{
 		files:        files,
 		presign:      presign,
+		reader:       reader,
 		minter:       minter,
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		tokenLimiter: ratelimit.NewLimiter(perTokenWindow, perTokenMax),
@@ -381,6 +403,41 @@ func (s *Service) ServeFile(w http.ResponseWriter, r *http.Request) {
 					slog.Int("file_id", fileID), slog.String("err", perr.Error()))
 			} else {
 				body["preview_url"] = previewURL
+			}
+		}
+		// ТЕКСТ ДОКУМЕНТА ЦЕЛИКОМ — ДЛЯ ТЕХ ТИПОВ, У КОТОРЫХ ПОКАЗАТЬ ЗНАЧИТ ПРОЧИТАТЬ.
+		//
+		// Претензия владельца дословно: «если мы шейрим маркдаун документ, там должна быть
+		// ссылка, где сразу можно посмотреть весь документ, а не только скачать». У .md нет ни
+		// inline-подписи (тип не в аллоулисте), ни отрисованной первой страницы — то есть до
+		// этой правки заметка, отправленная подрядчику, приезжала именем файла и кнопкой
+		// «скачать», и прочитать её в браузере было нечем.
+		//
+		// ПРИЗНАК ТОТ ЖЕ, ЧТО У ЭКРАНА ЗАМЕТКИ (dto.IsLibraryNoteFile): тип И расширение. Второй
+		// список «что считать текстом» разошёлся бы с первым, и файл, который админка открывает
+		// заметкой, публичная страница показывала бы двоичным.
+		//
+		// ЧТЕНИЕ НЕ УБИВАЕТ ОТВЕТ. Объект больше потолка чтения, пропал из бакета, оказался не
+		// UTF-8 — это повод не показать текст, а не сказать «ссылка не работает» про живой файл:
+		// поля просто нет, и страница рисует то же, что рисовала раньше (имя, тип, размер,
+		// «скачать»).
+		// РАЗМЕР СМОТРИМ ДО ЧТЕНИЯ, А НЕ ПОСЛЕ. Маршрут публичный и неаутентифицированный: до этой
+		// правки одно попадание стоило процессу подписи и нисколько байт, теперь — чтения объекта
+		// в память. Строка файла знает размер заранее, и объект крупнее потолка заметки читать
+		// незачем: `ValidateLibraryNoteContent` всё равно откажет, только уже с полумегабайтом в
+		// памяти на каждый запрос из бюджета лимитера.
+		if s.reader != nil && row.SizeBytes <= entity.MaxLibraryNoteBytes &&
+			dto.IsLibraryNoteFile(row.ContentType, row.FileName) {
+			if raw, rerr := s.reader.GetLibraryObject(ctx, row.ObjectKey); rerr != nil {
+				slog.Default().WarnContext(ctx, "library file text read failed",
+					slog.Int("file_id", fileID), slog.String("err", rerr.Error()))
+			} else if text := string(raw); dto.ValidateLibraryNoteContent(text) == nil {
+				// Тот же потолок и та же проверка UTF-8, что у редактора: текст, который админка
+				// отказывается открыть заметкой, публичная страница показывать не берётся тоже.
+				body["text"] = text
+			} else {
+				slog.Default().WarnContext(ctx, "library file text is not shown as a document",
+					slog.Int("file_id", fileID), slog.Int("bytes", len(raw)))
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +86,23 @@ func (p *fakePresign) PresignLibraryObjectShortLived(_ context.Context, objectKe
 	return "https://bucket.example/" + objectKey + "?signed=1", time.Now().Add(10 * time.Minute), nil
 }
 
+// fakeReader — читатель объекта, который ЗАПОМИНАЕТ, о чём его спросили. Спросили или нет — тут
+// половина проверки: у pdf текста не читают вовсе, и «поля text нет» само по себе этого не
+// доказывает (его могло не быть и после прочитанных мегабайт).
+type fakeReader struct {
+	body []byte
+	err  error
+	keys []string
+}
+
+func (r *fakeReader) GetLibraryObject(_ context.Context, objectKey string) ([]byte, error) {
+	r.keys = append(r.keys, objectKey)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.body, nil
+}
+
 func linkTarget(id int, epoch int) *entity.LibraryFileLinkTarget {
 	return &entity.LibraryFileLinkTarget{
 		FileId:      id,
@@ -99,12 +117,26 @@ func linkTarget(id int, epoch int) *entity.LibraryFileLinkTarget {
 
 func newTestService(t *testing.T, files *fakeFiles, presign *fakePresign) *Service {
 	t.Helper()
-	svc, err := New(files, presign, testPepper, "https://backend.example/")
+	return newTestServiceWithReader(t, files, presign, nil)
+}
+
+func newTestServiceWithReader(t *testing.T, files *fakeFiles, presign *fakePresign, reader Reader) *Service {
+	t.Helper()
+	svc, err := New(files, presign, reader, testPepper, "https://backend.example/")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(svc.Stop)
 	return svc
+}
+
+// noteTarget — строка заметки: тот же файл библиотеки, только текстовый.
+func noteTarget(id, epoch int) *entity.LibraryFileLinkTarget {
+	row := linkTarget(id, epoch)
+	row.FileName = "спецификация.md"
+	row.ContentType = "text/markdown"
+	row.ObjectKey = "files-library/2026/august/note-" + strings.Repeat("b", 4) + ".md"
+	return row
 }
 
 // TestPublicLinkFiveRefusals — ПЯТЬ ОТКАЗОВ ПУБЛИЧНОГО МАРШРУТА в одном месте, потому что
@@ -324,7 +356,7 @@ func TestStatsAreDebouncedAndFlushed(t *testing.T) {
 
 // TestEmptyPepperFailsClosed: пустой ключ HMAC сделал бы подделываемой каждую ссылку.
 func TestEmptyPepperFailsClosed(t *testing.T) {
-	if _, err := New(&fakeFiles{}, &fakePresign{}, "  ", "https://backend.example"); err == nil {
+	if _, err := New(&fakeFiles{}, &fakePresign{}, nil, "  ", "https://backend.example"); err == nil {
 		t.Fatal("an empty pepper must refuse to start")
 	}
 }
@@ -394,5 +426,101 @@ func TestPublicLinkPreview(t *testing.T) {
 	}
 	if len(presign.keys) != 1 {
 		t.Fatalf("a file without a preview must be signed once, got %v", presign.keys)
+	}
+}
+
+// TestPublicLinkTextForNotes — ЧТО ПОКАЗЫВАЕТ ССЫЛКА НА ТЕКСТОВЫЙ ДОКУМЕНТ.
+//
+// Проверяются четыре вещи разом, и вместе они и есть контракт поля `text`: у заметки текст
+// приезжает ответом (иначе публичная страница показать её нечем — .md не inline-безопасен, а
+// fetch подписанного url упирается в CORS бакета); у нетекстового файла объект НЕ ЧИТАЕТСЯ вовсе;
+// отказ чтения не убивает ответ; и объект, который не проходит проверку текста, полем не едет.
+func TestPublicLinkTextForNotes(t *testing.T) {
+	const noteText = "# спецификация\n\nстрочка про ткань\n"
+
+	files := &fakeFiles{rows: map[int]*entity.LibraryFileLinkTarget{
+		7: noteTarget(7, 1),
+		8: linkTarget(8, 1), // pdf
+	}}
+
+	decode := func(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("?mode=json: want 200, got %d", w.Code)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body
+	}
+
+	// 1. ЗАМЕТКА — ТЕКСТ В ОТВЕТЕ, и прочитан ровно её ключ, тот же, что подписан.
+	reader := &fakeReader{body: []byte(noteText)}
+	svc := newTestServiceWithReader(t, files, &fakePresign{}, reader)
+	body := decode(t, serveFile(svc, http.MethodGet, "/api/f/"+svc.minter.Mint(patterntoken.ScopeFile, 7, 1)+"?mode=json"))
+	if body["text"] != noteText {
+		t.Fatalf("a note must carry its text, got %v", body["text"])
+	}
+	if len(reader.keys) != 1 || reader.keys[0] != files.rows[7].ObjectKey {
+		t.Fatalf("want the note's own object read once, got %v", reader.keys)
+	}
+	// Скачивание остаётся: показ документа его не отменяет, а `download` у .md по-прежнему true —
+	// тип не в inline-аллоулисте, и подписанный url остаётся вложением.
+	if body["download"] != true {
+		t.Fatalf("markdown stays an attachment on the signed url, got %v", body["download"])
+	}
+
+	// 2. PDF — ОБЪЕКТ НЕ ЧИТАЕТСЯ ВОВСЕ. Мегабайты в память ради поля, которого у него не бывает.
+	reader.keys = nil
+	body = decode(t, serveFile(svc, http.MethodGet, "/api/f/"+svc.minter.Mint(patterntoken.ScopeFile, 8, 1)+"?mode=json"))
+	if _, ok := body["text"]; ok {
+		t.Fatalf("a pdf must not carry text, got %v", body["text"])
+	}
+	if len(reader.keys) != 0 {
+		t.Fatalf("a pdf must not be read at all, got %v", reader.keys)
+	}
+
+	// 3. ОТКАЗ ЧТЕНИЯ — ЭТО НЕ МЁРТВАЯ ССЫЛКА. Объект пропал или перерос потолок чтения: поля
+	//    нет, ответ прежний, имя и «скачать» на месте.
+	broken := &fakeReader{err: errors.New("object is gone")}
+	svcBroken := newTestServiceWithReader(t, files, &fakePresign{}, broken)
+	body = decode(t, serveFile(svcBroken, http.MethodGet, "/api/f/"+svcBroken.minter.Mint(patterntoken.ScopeFile, 7, 1)+"?mode=json"))
+	if _, ok := body["text"]; ok {
+		t.Fatal("a read failure must drop the field, not invent text")
+	}
+	if body["file_name"] != "спецификация.md" {
+		t.Fatalf("the rest of the answer must survive a read failure, got %v", body["file_name"])
+	}
+
+	// 4. НЕ ТЕКСТ — НЕ ПОКАЗЫВАЕМ. Файл с расширением .md, внутри которого двоичный мусор:
+	//    невалидный UTF-8 не имеет права уехать в json-строку ответа.
+	binary := &fakeReader{body: []byte{0xff, 0xfe, 0x00, 0x41}}
+	svcBinary := newTestServiceWithReader(t, files, &fakePresign{}, binary)
+	body = decode(t, serveFile(svcBinary, http.MethodGet, "/api/f/"+svcBinary.minter.Mint(patterntoken.ScopeFile, 7, 1)+"?mode=json"))
+	if _, ok := body["text"]; ok {
+		t.Fatalf("invalid utf-8 must not be served as a document, got %v", body["text"])
+	}
+
+	// 5. КРУПНЫЙ ФАЙЛ НЕ ЧИТАЕТСЯ ВОВСЕ. Размер известен из строки, и тянуть полмегабайта в
+	//    память на каждое попадание публичного маршрута, чтобы затем отказать по потолку, —
+	//    это плата, которую назначает кто угодно из интернета.
+	files.rows[7].SizeBytes = entity.MaxLibraryNoteBytes + 1
+	big := &fakeReader{body: []byte(noteText)}
+	svcBig := newTestServiceWithReader(t, files, &fakePresign{}, big)
+	body = decode(t, serveFile(svcBig, http.MethodGet, "/api/f/"+svcBig.minter.Mint(patterntoken.ScopeFile, 7, 1)+"?mode=json"))
+	if _, ok := body["text"]; ok {
+		t.Fatal("a file over the note cap must not be served as a document")
+	}
+	if len(big.keys) != 0 {
+		t.Fatalf("and it must not be read at all, got %v", big.keys)
+	}
+	files.rows[7].SizeBytes = 1024
+
+	// 6. БЕЗ ЧИТАТЕЛЯ (сборка без бакета) ответ прежний, а не пятисотый.
+	svcNil := newTestService(t, files, &fakePresign{})
+	body = decode(t, serveFile(svcNil, http.MethodGet, "/api/f/"+svcNil.minter.Mint(patterntoken.ScopeFile, 7, 1)+"?mode=json"))
+	if _, ok := body["text"]; ok {
+		t.Fatal("no reader means no text field")
 	}
 }

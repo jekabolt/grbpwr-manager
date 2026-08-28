@@ -534,7 +534,10 @@ func (a *App) Start(ctx context.Context) error {
 	// непересекающихся пространства идентичности. Base url нужен ЗДЕСЬ (в отличие от наряда):
 	// ссылку копируют наружу, в мессенджер, и собрать её из origin панели нельзя. ACL объектов
 	// бакета сервис не трогает никогда — публичность даёт маршрут, а не бакет.
-	fileLinkSvc, err := fileaccess.New(a.db.Files(), a.b,
+	// `a.b` приезжает сюда дважды не по недосмотру: подписыватель и читатель — два РАЗНЫХ
+	// узких интерфейса (Presigner и Reader), и то, что сегодня их удовлетворяет один бакет,
+	// не повод давать маршруту весь FileStore целиком.
+	fileLinkSvc, err := fileaccess.New(a.db.Files(), a.b, a.b,
 		a.c.PatternToken.Pepper, strings.TrimRight(a.c.PatternToken.PublicBaseURL, "/"))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create file link service",
