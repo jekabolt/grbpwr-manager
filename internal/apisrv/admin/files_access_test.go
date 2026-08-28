@@ -131,7 +131,7 @@ func TestSetLibraryFileAccessRefusesNonsense(t *testing.T) {
 // url, собранный по одному лишь её наличию, был бы копируемой ссылкой, которая гарантированно
 // отвечает 404.
 func TestAccessBlockShowsTheUrlOnlyAtLevelLink(t *testing.T) {
-	svc, err := fileaccess.New(nil, nil, "test-pepper", "https://backend.example")
+	svc, err := fileaccess.New(nil, nil, nil, "test-pepper", "https://backend.example")
 	require.NoError(t, err)
 	t.Cleanup(svc.Stop)
 
