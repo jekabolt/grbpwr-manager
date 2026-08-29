@@ -1965,6 +1965,90 @@ type (
 		RemoveFromWaitlistBatch(ctx context.Context, productId int, sizeId int) error
 		GetWaitlistEntriesWithBuyerNames(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntryWithBuyer, error)
 	}
+	// Design is the DESIGN band store: generation runs and their paid attempts, the pictures they
+	// produce, the bench that promotes a picture into a view, the frozen sheet versions that get
+	// printed, the vector edit layers and the day's money.
+	//
+	// ⚠ THIS INTERFACE IS FROZEN WHOLE, INCLUDING THE METHODS WHOSE BODIES ARRIVE IN THE NEXT
+	// WAVE. It and its registration in internal/store/store.go are the SEAM between the two
+	// waves; an interface that shipped only the implemented half would force the next executor to
+	// reopen exactly these two files — the two files every other agent working in this tree also
+	// has a reason to touch. The generative methods therefore exist here now and refuse with
+	// entity.ErrDesignNotImplemented, and the next wave adds FILES to internal/store/design
+	// rather than editing this declaration.
+	//
+	// Every write below runs in a SERIALIZABLE transaction and every read in a REPEATABLE READ
+	// read-only one; the transaction callback receives the WHOLE repository, so rep.TechCards()
+	// and rep.Design() share one transaction. Wave 2's atomic mint depends on that property.
+	// Isolation does NOT replace logical idempotency: client_request_id, slot_rev and
+	// expected_rev each guard something the isolation level cannot see, namely a retried request
+	// and a stale screen.
+	Design interface {
+		// --- reads -------------------------------------------------------------------
+		// GetBand reads the whole band in one read transaction. The aggregates
+		// (total_runs, archived_runs, max rrev, colour recipes, hidden_by_run, total batches)
+		// are counted IN THAT TRANSACTION over the WHOLE card — counted over the loaded page
+		// they would silently truncate the header to what fitted on screen.
+		GetBand(ctx context.Context, techCardID, runLimit int) (*entity.DesignBand, error)
+		// ListRuns is one keyset page of the history WITH the pictures of that page.
+		ListRuns(ctx context.Context, page entity.DesignRunPage) (*entity.DesignRunPageResult, error)
+		// GetRun reads one history row with its attempts and pictures.
+		GetRun(ctx context.Context, runID int) (*entity.DesignRun, error)
+		// GetPicture reads one picture with its media resolved. The split handler needs it
+		// BEFORE its transaction, to fetch the original bytes it is about to cut.
+		GetPicture(ctx context.Context, pictureID int) (*entity.DesignPicture, error)
+		// GetSheetVersion reads ONE frozen version whole: plates, callouts and its journal.
+		GetSheetVersion(ctx context.Context, techCardID, versionNumber int) (*entity.DesignSheetVersionFull, error)
+		// GetEditLayer reads ONE layer WITH its strokes — the only place strokes are served.
+		GetEditLayer(ctx context.Context, techCardID, layerID int) (*entity.DesignEditLayer, error)
+		// GetBudget reports today's money bar, with the day computed in the org's timezone.
+		GetBudget(ctx context.Context) (entity.DesignBudget, error)
+		// GetSettings reads the singleton row that IS the band's whole configuration.
+		GetSettings(ctx context.Context) (entity.DesignSettings, error)
+
+		// --- the manual path ---------------------------------------------------------
+		// SetBenchSlot places, displaces or unmarks a plate under compare-and-set on slot_rev,
+		// and gives birth to one of the four silhouette slots on first touch — with an UPSERT,
+		// never a select-then-insert. On a mismatch it returns the slot's CURRENT state
+		// alongside the refusal so the client can show what actually stands there.
+		SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet) (*entity.DesignBenchSlot, error)
+		// DeleteDetailSlot removes an EMPTY detail slot that no version quotes.
+		DeleteDetailSlot(ctx context.Context, slotID int) error
+		// RegisterBatch files one upload gesture as one batch plus its pictures, optionally
+		// placing the first picture into a slot under the same CAS. Idempotent by
+		// client_request_id.
+		RegisterBatch(ctx context.Context, req entity.DesignBatchRegister) (*entity.DesignBatchResult, error)
+		// HidePicture is the only persistent verb for picture invisibility; its four guards read
+		// in the same transaction as the update.
+		HidePicture(ctx context.Context, pictureID int, hidden bool, actor string) (*entity.DesignPicture, error)
+		// ArchiveRun flips a presentational, reversible flag on a history row.
+		ArchiveRun(ctx context.Context, runID int, archived bool, actor string) (*entity.DesignRun, error)
+		// SplitPicture files the crops of a composite as siblings under its own row. The byte
+		// work happens before the call.
+		SplitPicture(ctx context.Context, req entity.DesignSplitRequest) ([]entity.DesignPicture, error)
+		// SaveEditLayer stores a vector layer under compare-and-set on its rev.
+		SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSave) (*entity.DesignEditLayer, error)
+		// FlattenEditLayer files an already-rasterised image as a picture, carrying
+		// derived_from, source_class and layer_rev, under CAS on the layer's rev.
+		FlattenEditLayer(ctx context.Context, req entity.DesignEditLayerFlatten) (*entity.DesignPicture, error)
+		// SetReferenceRole states which side of the garment a reference is about; an empty role
+		// clears it.
+		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)
+		// RecordSheetIssue writes a printed/shared line into a version's append-only journal.
+		RecordSheetIssue(ctx context.Context, req entity.DesignSheetIssueRecord) (*entity.DesignSheetIssue, error)
+
+		// --- the generative half: signatures frozen now, bodies next wave --------------
+		StartRun(ctx context.Context, req entity.DesignRunStart) (*entity.DesignRunStarted, error)
+		ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)
+		ReviveExpiredRuns(ctx context.Context) (int, error)
+		StartAttempt(ctx context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error)
+		FinishAttempt(ctx context.Context, req entity.DesignAttemptFinish) error
+		CompleteRun(ctx context.Context, req entity.DesignRunComplete) (*entity.DesignRun, error)
+		FailRun(ctx context.Context, req entity.DesignRunFail) (*entity.DesignRun, error)
+		CancelRun(ctx context.Context, runID int, actor string) (*entity.DesignRun, error)
+		MintSheetVersion(ctx context.Context, req entity.DesignSheetMint) (*entity.DesignSheetVersionFull, error)
+	}
+
 	Repository interface {
 		Products() Products
 		Hero() Hero
@@ -2002,6 +2086,7 @@ type (
 		Support() Support
 		Language() Language
 		PatternObjects() PatternObjects
+		Design() Design
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error
