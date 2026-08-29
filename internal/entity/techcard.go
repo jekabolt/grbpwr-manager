@@ -664,6 +664,19 @@ const (
 	TechCardMediaMoodboard TechCardMediaKind = "moodboard"
 	TechCardMediaReference TechCardMediaKind = "reference"
 	TechCardMediaSwatch    TechCardMediaKind = "swatch"
+	// БОКОВЫЕ ВИДЫ И ПРИНЯТЫЙ РЕНДЕР — расширение ЭТОГО словаря, а не вторая ось: матрице видов
+	// студии нужны четыре стороны силуэта, и без side_l/side_r боковой флэт пришлось бы класть в
+	// DETAIL, то есть перестать быть боком. RENDER — рендер, поднятый в category='technical', то
+	// есть уходящий наружу вместе с карточкой.
+	//
+	// СЛОВАРЬ БАЗЫ ДОГОНЯЕТ ОТДЕЛЬНОЙ МИГРАЦИЕЙ (0346): chk_tech_card_media_kind перечисляет
+	// значения текстом, а ADD CHECK — это КОПИЯ таблицы. Пока 0346 не применена, эти три значения
+	// живут только на проводе, и вход отвергает их внятным отказом — ОДИН гейт, в dto:
+	// dto.techCardMediaKindDictExtended. Здесь они перечислены как значения ЭНУМА (зеркало proto),
+	// а не как разрешение писать их в колонку.
+	TechCardMediaSideL  TechCardMediaKind = "side_l"
+	TechCardMediaSideR  TechCardMediaKind = "side_r"
+	TechCardMediaRender TechCardMediaKind = "render"
 )
 
 // ValidTechCardMediaKinds is the set of accepted sketch-media kinds.
@@ -676,6 +689,9 @@ var ValidTechCardMediaKinds = map[TechCardMediaKind]bool{
 	TechCardMediaMoodboard: true,
 	TechCardMediaReference: true,
 	TechCardMediaSwatch:    true,
+	TechCardMediaSideL:     true,
+	TechCardMediaSideR:     true,
+	TechCardMediaRender:    true,
 }
 
 // IsValidTechCardMediaKind reports whether k is an accepted media kind.
@@ -744,6 +760,22 @@ type TechCardCallout struct {
 	// В БД — JSON-колонка (0310), в Go — разобранный список; сырое значение читается в PartsRaw.
 	Parts    []string `db:"-"`
 	PartsRaw []byte   `db:"parts"`
+	// ClientRef — СОБСТВЕННЫЙ КЛЮЧ СТРОКИ, который минтит клиент (UUID) при рождении выноски,
+	// хранимый (0345, VARCHAR(64) NULL) и круглорейсовый. Сегодня единственная идентичность выноски
+	// это номер, а номер присваивает сервер: после сейва форма не понимает, какой её строке достался
+	// какой номер, и фокус, подсветка и «отказ ведёт в место» показывают ЧУЖУЮ выноску.
+	//
+	// ТРИ СВОЙСТВА, КАЖДОЕ НЕСУЩЕЕ:
+	//   1. В ДАЙДЖЕСТ НЕ ВХОДИТ. Это АДРЕС, а не содержание, — ровно как цвет выноски, который
+	//      designProjection не хеширует по тому же доводу.
+	//   2. УПРАВЛЯЕТ МИНТОМ НОМЕРА. `Number == 0 && ClientRef != ""` ⇒ «сминти номер».
+	//      `Number == 0 && ClientRef == ""` ⇒ ЛЕГАСИ-НОЛЬ, не трогать: в tech_card_callout лежит
+	//      callout_number NOT NULL DEFAULT 0 БЕЗ UNIQUE (0067:113), дублирующиеся нули там законны,
+	//      и правило «ноль = минти» перенумеровало бы их первым же сейвом с ЛЮБОГО клиента, то есть
+	//      сдвинуло бы подпись DESIGN массово, на всём проде, в момент выката.
+	//   3. НЕ ОБЯЗАТЕЛЕН. Хранимые строки читаются с пустым ключом; старый клиент его не шлёт, его
+	//      номера остаются его, и он ничего не теряет.
+	ClientRef sql.NullString `db:"client_ref"`
 }
 
 // PartList — детали указания ОДНИМ СПИСКОМ, по единственному правилу: непустой список главнее,
@@ -3962,6 +3994,32 @@ type TechCardInsert struct {
 	MeasurementUnitSet bool           `db:"-"`
 	Concept            sql.NullString `db:"concept"` // design concept / intent (designer)
 	Notes              sql.NullString `db:"notes"`
+	// MoodNote — ОБЩЕЕ ПОЛЕ МУДБОРДА (0345): слова, которые человек пишет ко ВСЕЙ доске референсов,
+	// в отличие от подписи под одной картинкой.
+	//
+	// MoodNoteOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же НЕГАТИВНЫЙ смысл
+	// и та же причина, что у PurposeOmitted на строке спецификации: админка — SPA, вкладки переживают
+	// деплой, а карточка сохраняется ЦЕЛИКОМ. Голая proto3-строка от бандла, который про это поле не
+	// знает, приехала бы как "" и СТЁРЛА бы заметку — молча, из вкладки, которая мудборд даже не
+	// открывала. Три состояния, дословно те же, что у соседей:
+	//   * поле ОТСУТСТВУЕТ (null)      → НЕ ТРОГАТЬ (стор: IF(:mood_note_omitted, mood_note, …));
+	//   * поле ЕСТЬ, значение ""       → ОЧИСТИТЬ (в колонку уезжает NULL);
+	//   * поле ЕСТЬ со значением       → записать.
+	//
+	// В проекцию дайджеста НЕ ВХОДИТ (Д4 отозвано — проекция DESIGN не менялась вовсе): добавление
+	// поля в проекцию объявило бы КАЖДУЮ подписанную секцию DESIGN отредактированной после подписания,
+	// на всех карточках разом и в момент деплоя.
+	MoodNote        sql.NullString `db:"mood_note"`
+	MoodNoteOmitted bool           `db:"-"`
+	// CalloutSeq — МОНОТОННЫЙ ИСТОЧНИК НОМЕРА ВЫНОСКИ (0345). Серверный счётчик карточки: хендлер
+	// UpdateTechCard двигает его ТЕМ ЖЕ UPDATE, который бампает lock_version, поэтому взаимное
+	// исключение уже стоит — сейв идёт под expected_lock_version, и два сейва не сминтят один номер.
+	//
+	// Читается с карточки (`SELECT *`), пересчитывается в ХЕНДЛЕРЕ как
+	// GREATEST(хранимый, MAX(номеров payload'а), присвоенные) и едет обратно в шапку. Стор берёт
+	// GREATEST ещё раз, чтобы путь, который счётчик не считал (клон, импорт, прямой вызов стора),
+	// не мог его ОБНУЛИТЬ: номер, уже отданный клиенту, не должен достаться второй выноске.
+	CalloutSeq int `db:"callout_seq"`
 	// child sections (in-memory only; persisted to their own tables)
 	SizeIds   []int               `db:"-"`
 	Media     []TechCardMediaItem `db:"-"`

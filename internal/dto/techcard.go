@@ -95,6 +95,40 @@ var techCardMediaKindPbToEntity = map[pb_common.TechCardMediaKind]entity.TechCar
 	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_MOODBOARD: entity.TechCardMediaMoodboard,
 	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_REFERENCE: entity.TechCardMediaReference,
 	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_SWATCH:    entity.TechCardMediaSwatch,
+	// Расширение словаря видов. БЕЗ ЭТИХ ТРЁХ СТРОК SIDE_L С ПРОВОДА ПАДАЕТ В КОНВЕРСИИ: ниже стоит
+	// `k, ok := techCardMediaKindPbToEntity[m.Kind]`, и незнакомое значение отвергает ВЕСЬ сейв
+	// карточки словами «unknown tech card media kind: 9», которые не называют ни картинку, ни то,
+	// что с ней делать. Карта обязана знать значение раньше, чем его начнут присылать; писать ли
+	// его в колонку — отдельный вопрос, и на него отвечает гейт словаря ниже.
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_SIDE_L: entity.TechCardMediaSideL,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_SIDE_R: entity.TechCardMediaSideR,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_RENDER: entity.TechCardMediaRender,
+}
+
+// techCardMediaKindDictExtended — ПРИМЕНЕНА ЛИ МИГРАЦИЯ 0346, расширяющая словарь колонки
+// tech_card_media.kind значениями side_l / side_r / render.
+//
+// ОДНА СТРОКА — ВЕСЬ ГЕЙТ. Поставь true, когда 0346 уехала на прод, и три новых вида начинают
+// приниматься с провода; до тех пор они живут ТОЛЬКО на проводе, и вход отвергает их внятным
+// отказом с именем поля — а не паникой, не тишиной и не сырым 3819 от chk_tech_card_media_kind,
+// который называет constraint и не называет картинку.
+//
+// ФЛАГ СУЩЕСТВУЕТ, ПОТОМУ ЧТО 0346 — ОТДЕЛЯЕМЫЙ ФАЙЛ. Это единственный ADD CHECK волны, то есть
+// единственная КОПИЯ таблицы под пятиминутным потолком всего прогона миграций, и размер
+// tech_card_media замерить не удалось. Файл заведён отдельно ровно затем, чтобы его можно было
+// вынуть из волны одним движением и увезти в тихое окно — а тогда бинарь уезжает на прод раньше
+// словаря, и принимать side_l ему нельзя.
+//
+// Переменная, а не константа, ровно затем, чтобы проба могла проверить ОБЕ стороны гейта. Ни один
+// рабочий путь её не пишет.
+var techCardMediaKindDictExtended = false
+
+// techCardMediaKindPendingDict — вид, который знает провод, но ещё не знает колонка.
+func techCardMediaKindPendingDict(k entity.TechCardMediaKind) bool {
+	if techCardMediaKindDictExtended {
+		return false
+	}
+	return k == entity.TechCardMediaSideL || k == entity.TechCardMediaSideR || k == entity.TechCardMediaRender
 }
 
 var techCardFabricDirectionPbToEntity = map[pb_common.TechCardFabricDirection]entity.TechCardFabricDirection{
@@ -190,8 +224,14 @@ func defaultTechCardMediaKind(cat entity.TechCardMediaCategory) entity.TechCardM
 // tags each item with its category. Media in the two lists share the same shape; the
 // category is implied by which list the item arrived in.
 func parseTechCardMediaItems(items []*pb_common.TechCardMediaItem, cat entity.TechCardMediaCategory) ([]entity.TechCardMediaItem, error) {
+	// Имя списка, в который приехал элемент, — оно же имя поля в отказе: у двух списков одна форма,
+	// и «technical_media[2]» это единственное, что даёт человеку дойти до картинки.
+	field := "technical_media"
+	if cat == entity.TechCardMediaCategoryMoodboard {
+		field = "moodboard_media"
+	}
 	out := make([]entity.TechCardMediaItem, 0, len(items))
-	for _, m := range items {
+	for i, m := range items {
 		if m.MediaId <= 0 {
 			return nil, fmt.Errorf("tech card media media_id must be positive")
 		}
@@ -200,6 +240,15 @@ func parseTechCardMediaItems(items []*pb_common.TechCardMediaItem, cat entity.Te
 			k, ok := techCardMediaKindPbToEntity[m.Kind]
 			if !ok {
 				return nil, fmt.Errorf("unknown tech card media kind: %v", m.Kind)
+			}
+			// СЛОВАРЬ КОЛОНКИ ЕЩЁ УЖЕ ПРОВОДА. Отказ здесь, а не 3819 от chk_tech_card_media_kind
+			// на записи: тот называет constraint, не называет картинку и приезжает как «внутренняя
+			// ошибка» после того, как сейв прошёл половину пути. Снимается одной строкой —
+			// techCardMediaKindDictExtended, — когда 0346 применена.
+			if techCardMediaKindPendingDict(k) {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("%s[%d].kind", field, i),
+					"kind_not_available_yet", string(k),
+					"this view is not enabled on the server yet: file the image as another kind, or wait for the sketch-view update")
 			}
 			kind = k
 		}
@@ -376,6 +425,86 @@ func skuSeasonToPb(code sql.NullString, year sql.NullInt32) *pb_common.SkuSeason
 		return nil
 	}
 	return &pb_common.SkuSeason{Code: pbCode, Year: year.Int32}
+}
+
+// calloutAwaitsNumber — ЕДИНСТВЕННОЕ написание гейта минта. Одно правило, три места (сам минт,
+// граница перед отпечатком, пробы), и написанное в каждом отдельно оно разъедется — ровно так, как
+// разъехалось правило списка деталей, пока его не свели в TechCardCallout.PartList.
+//
+// ГЕЙТ — НЕПУСТОЙ КЛЮЧ СТРОКИ, А НЕ «number <= 0», И ЭТО ПРИНЦИПИАЛЬНО. В tech_card_callout лежит
+// callout_number INT NOT NULL DEFAULT 0 БЕЗ UNIQUE (0067_add_tech_card_core.sql), дублирующиеся нули
+// там ЗАКОННЫ и ими заполнен весь прод. Правило «ноль означает сминти» перенумеровало бы их первым же
+// сохранением с ЛЮБОГО клиента — то есть сдвинуло бы подпись DESIGN массово, на всём проде, в момент
+// выката: c.Number хешируется designProjection явно. Ключ строки исключает это по построению —
+// старый клиент его не шлёт, и его нули остаются его.
+func calloutAwaitsNumber(c entity.TechCardCallout) bool {
+	return c.Number == 0 && c.ClientRef.Valid && c.ClientRef.String != ""
+}
+
+// CalloutsAwaitingNumber — несёт ли payload хоть одну выноску, которой ещё не присвоен номер.
+// Существует ради ГРАНИЦЫ перед отпечатком секций (см. restampFreshSignoffDigests): порядок «минт
+// раньше подписи» это инвариант, и нарушать его должно быть громко, а не молча.
+func CalloutsAwaitingNumber(tc *entity.TechCardInsert) bool {
+	if tc == nil {
+		return false
+	}
+	for _, c := range tc.Callouts {
+		if calloutAwaitsNumber(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// MintCalloutNumbers присваивает номер выноске, которая его ещё не имеет, и двигает счётчик карточки.
+//
+// ВЫЗЫВАЕТСЯ ИЗ ХЕНДЛЕРА И ТОЛЬКО ОТТУДА — как и CarryOmittedCalloutGeometry рядом, и по той же
+// причине. Минт в СТОРЕ означал бы, что подпись посчитана по payload с нулём, а в колонку уехала
+// семёрка: свежая подпись рождается протухшей и не лечится переутверждением. Место в конвейере
+// хендлера — ПЕРВЫМ: раньше всей цепочки carryOmitted* (CarryOmittedCalloutGeometry сопоставляет
+// выноски ПО НОМЕРУ, и выноска с нулём подцепила бы геометрию легаси-нуля) и раньше штампа
+// отпечатков.
+//
+// РЕМАПА ПЕРЕИСПОЛЬЗОВАННЫХ НОМЕРОВ НЕТ ВОВСЕ. Цена посчитана по коду: на номер выноски в том же
+// payload ссылаются операция и дефект, и первая теряет пин МОЛЧА (techcard_production.go), а второй
+// РОНЯЕТ сохранение. Ремапить чужие номера значит устраивать это старым клиентам без единого слова
+// на их экране.
+//
+// МИНТ НЕ МОЖЕТ ОСИРОТИТЬ ССЫЛКУ: и операция, и дефект проверяют свою ссылку предикатом `> 0`
+// (parseTechCardOperations, parseTechCardIssues), поэтому НА номер 0 не ссылается никто и никогда, и
+// исчезновение нуля из payload не рвёт ни одной связи.
+//
+// СЧЁТЧИК ДВИЖЕТСЯ КАЖДЫМ СОХРАНЕНИЕМ, даже когда минтить нечего:
+// GREATEST(хранимый, MAX(номеров payload'а), присвоенные). Иначе номер, который клиент старой схемы
+// («максимум по своему экрану») уже нарисовал, столкнулся бы с номером, который сервер сминтит
+// следующим. Взаимное исключение уже стоит: новое значение уезжает ТЕМ ЖЕ UPDATE, что бампает
+// lock_version, под expected_lock_version, так что два параллельных сохранения не сминтят один номер.
+//
+// stored == nil — это СОЗДАНИЕ карточки, а не отсутствие данных: хранимой карточки нет, счётчик
+// начинается с нуля.
+func MintCalloutNumbers(stored *entity.TechCard, tc *entity.TechCardInsert) {
+	if tc == nil {
+		return
+	}
+	seq := 0
+	if stored != nil {
+		seq = stored.CalloutSeq
+	}
+	for _, c := range tc.Callouts {
+		if c.Number > seq {
+			seq = c.Number
+		}
+	}
+	for i := range tc.Callouts {
+		// Ровно одна комбинация минтится: номера нет И строка себя назвала. Всё остальное — и
+		// прежде всего ЛЕГАСИ-НОЛЬ без ключа — уезжает в стор ровно таким, каким пришло.
+		if !calloutAwaitsNumber(tc.Callouts[i]) {
+			continue
+		}
+		seq++
+		tc.Callouts[i].Number = seq
+	}
+	tc.CalloutSeq = seq
 }
 
 // ConvertPbTechCardInsertToEntity converts a pb_common.TechCardInsert to an
@@ -574,6 +703,14 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 					fmt.Sprintf("a piece name in a callout is at most %d characters", maxVarchar255))
 			}
 		}
+		// Ключ строки проверяется у того, что уедет в колонку (VARCHAR(64), 0345), и по тому же
+		// доводу, что список деталей выше: иначе MySQL ответит сырым 1406, не назвав ни выноску, ни
+		// поле. Пустой ключ законен и означает ровно одно — «эту строку прислал клиент, который про
+		// ключи не знает»; см. entity.TechCardCallout.ClientRef о том, что из этого следует.
+		if len(c.ClientRef) > maxVarchar64 {
+			return nil, entity.NewFieldViolation(path+".client_ref", "too_long", "",
+				fmt.Sprintf("a callout's client key is at most %d characters", maxVarchar64))
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(part),
@@ -592,6 +729,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			// переносится по номеру выноски (CarryOmittedCalloutGeometry). `parts` в группу не
 			// входит: старое `part` есть у любого клиента.
 			KindOmitted: c.Kind == nil,
+			// Ключ строки едет ДО минта номера: именно он — гейт минта (см. ClientRef), и хендлер
+			// читает его на уже разобранной сущности.
+			ClientRef: nullStringFromPb(c.ClientRef),
 		})
 	}
 
@@ -753,6 +893,13 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		MeasurementUnitSet: unitSet,
 		Concept:            nullStringFromPb(pb.Concept),
 		Notes:              nullStringFromPb(pb.Notes),
+		// ОБЩЕЕ ПОЛЕ МУДБОРДА. Verbatim-протокол «absent = сохранить», дословно тот же, что у
+		// purpose/kind строки спецификации: ПРИСУТСТВИЕ поля, а не его значение, решает, трогать ли
+		// колонку. Голая proto3-строка от бандла, который про поле не знает, приехала бы как "" и
+		// стёрла бы заметку молча — карточка сохраняется целиком, а вкладки переживают деплой.
+		// Третья нога (IF(:mood_note_omitted, mood_note, :mood_note)) стоит в сторе.
+		MoodNote:           nullStringFromPb(pb.GetMoodNote()),
+		MoodNoteOmitted:    pb.MoodNote == nil,
 		SizeIds:            sizeIds,
 		Media:              media,
 		Callouts:           callouts,
@@ -1117,6 +1264,10 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			// записанное до 0310, списка не несёт, и он собирается из `part` — иначе новый
 			// клиент, вернувший прочитанное круглым рейсом, стёр бы деталь пустым списком.
 			Parts: calloutPartsToPb(c),
+			// Ключ строки отдаётся круглым рейсом — это ВЕСЬ смысл его хранения: после сейва форма
+			// сопоставляет свою строку с серверным номером по нему, а не по номеру, которого у
+			// новой строки ещё не было. Пусто у всего, что заведено до 0345.
+			ClientRef: pbStringFromNull(c.ClientRef),
 		})
 	}
 
@@ -1131,6 +1282,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 	for _, q := range tc.SizeQuantities {
 		orderQtyBySize[q.SizeId] = q.OrderQty
 	}
+
+	// Заметка мудборда — ПРИСУТСТВУЮЩИМ полем всегда, см. довод на месте присваивания.
+	moodNote := pbStringFromNull(tc.MoodNote)
 
 	return &pb_common.TechCard{
 		Id:              int32(tc.Id),
@@ -1164,23 +1318,28 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
 			Concept:           pbStringFromNull(tc.Concept),
 			Notes:             pbStringFromNull(tc.Notes),
-			SizeIds:           sizeIds,
-			MoodboardMedia:    moodboardMedia,
-			TechnicalMedia:    technicalMedia,
-			Callouts:          callouts,
-			Details:           techCardDetailsToPb(tc.Details),
-			BomItems:          techCardBomItemsToPb(tc.BomItems, tc.LinkedMaterials),
-			Construction:      techCardConstructionToPb(tc.Construction),
-			Operations:        techCardOperationsToPb(tc.Operations),
-			Labels:            techCardLabelsToPb(tc.Labels),
-			Packaging:         techCardPackagingToPb(tc.Packaging),
-			Costing:           techCardCostingToPb(tc, fx),
-			Issues:            techCardIssuesToPb(tc.Issues),
-			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
-			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
-			Patterns:          techCardPatternsToPb(tc.Patterns),
-			Pieces:            techCardPiecesToPb(tc.Pieces),
-			PieceDxfAliases:   techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
+			// ЗАМЕТКА МУДБОРДА НА ЧТЕНИИ ПРИСУТСТВУЕТ ВСЕГДА, ровно как вид выноски ниже и по той же
+			// причине: чтение не бывает «умолчавшим», а новый клиент возвращает круглым рейсом то,
+			// что прочитал, — значит он никогда не молчит про заметку по ошибке. Пустая колонка
+			// читается как "", и её круглый рейс — «очисти» поверх уже пустого, то есть ничего.
+			MoodNote:        &moodNote,
+			SizeIds:         sizeIds,
+			MoodboardMedia:  moodboardMedia,
+			TechnicalMedia:  technicalMedia,
+			Callouts:        callouts,
+			Details:         techCardDetailsToPb(tc.Details),
+			BomItems:        techCardBomItemsToPb(tc.BomItems, tc.LinkedMaterials),
+			Construction:    techCardConstructionToPb(tc.Construction),
+			Operations:      techCardOperationsToPb(tc.Operations),
+			Labels:          techCardLabelsToPb(tc.Labels),
+			Packaging:       techCardPackagingToPb(tc.Packaging),
+			Costing:         techCardCostingToPb(tc, fx),
+			Issues:          techCardIssuesToPb(tc.Issues),
+			SizeQuantities:  techCardSizeQuantitiesToPb(tc.SizeQuantities),
+			Signoffs:        techCardSignoffsToPb(tc.Signoffs),
+			Patterns:        techCardPatternsToPb(tc.Patterns),
+			Pieces:          techCardPiecesToPb(tc.Pieces),
+			PieceDxfAliases: techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
 
 			// Ф3.2: absent on the wire when the card sets no requirement of its own, so a client can
 			// tell «take the workshop default» from a card that requires exactly 0.
