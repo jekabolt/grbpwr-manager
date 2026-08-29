@@ -75,12 +75,12 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
 	required_seam_allowance_mm, base_model_id, base_sample_size_id,
-	measurement_unit, concept, notes, purpose, output_material_id, aux_subtype, created_by, updated_by`
+	measurement_unit, concept, notes, mood_note, callout_seq, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
 	:required_seam_allowance_mm, :base_model_id, :base_sample_size_id,
-	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
+	:measurement_unit, :concept, :notes, :mood_note, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
@@ -122,6 +122,19 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"measurement_unit":    string(tc.MeasurementUnit),
 		"concept":             tc.Concept,
 		"notes":               tc.Notes,
+
+		// ОБЩЕЕ ПОЛЕ МУДБОРДА (0345) + ЕГО ФЛАГ ПРИСУТСТВИЯ. Пара, а не одно значение: на UPDATE
+		// колонка стоит под IF(:mood_note_omitted, mood_note, :mood_note) — тот же verbatim-протокол
+		// «absent = сохранить», что у purpose/kind строки спецификации, и по той же причине (карточка
+		// сохраняется целиком, вкладка со старым бандлом поля не шлёт вовсе). На INSERT флаг не
+		// смотрят: у новой карточки нечего сохранять.
+		"mood_note":         tc.MoodNote,
+		"mood_note_omitted": tc.MoodNoteOmitted,
+		// МОНОТОННЫЙ СЧЁТЧИК НОМЕРА ВЫНОСКИ (0345). Значение СЧИТАЕТ ХЕНДЛЕР (dto.MintCalloutNumbers)
+		// — там же, где присваиваются номера и где ставится подпись; стор его только записывает, и на
+		// UPDATE только через GREATEST. Клон и импорт приезжают сюда с посчитанным по своей карточке
+		// значением, а прямой INSERT мимо dto — с нулём, что для карточки без выносок и есть правда.
+		"callout_seq": tc.CalloutSeq,
 
 		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2): the card's override of the workshop default. NULL = «take the
 		// workshop's», 0 = «this model's выкройки carry the cut line». Written like any header scalar
@@ -436,6 +449,21 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		// ever changed to bind Valid:true/Int32:0, this COALESCE would see 0 rather than NULL, treat it
 		// as a real value and write category_id = 0 — tripping fk_tech_card_category. A dto change
 		// there must keep 0 mapping to NULL, or this needs NULLIF(:category_id, 0) instead.
+		//
+		// mood_note = IF(:mood_note_omitted, …) — третья нога verbatim-протокола «absent = сохранить»
+		// для заметки мудборда, дословно та же, что у fabric_direction и purpose/kind на строке
+		// спецификации. ПРИСУТСТВИЕ поля решает, трогать ли колонку; без этой ноги сейв из вкладки,
+		// которая про мудборд не знает, стирал бы заметку молча.
+		//
+		// callout_seq = GREATEST(…) — СЧЁТЧИК ТОЛЬКО РАСТЁТ, и это запрет, а не предосторожность.
+		// Номер, уже отданный клиенту, не имеет права достаться второй выноске, а считает счётчик
+		// ХЕНДЛЕР (dto.MintCalloutNumbers) — значит любой другой писатель шапки (клон, импорт, прямой
+		// вызов стора мимо UpdateTechCard) приехал бы сюда с нулём и ОБНУЛИЛ его, после чего
+		// следующий минт начал бы раздавать номера заново, поверх уже нарисованных. GREATEST делает
+		// такое состояние невыразимым в SQL, а не «проверяемым на входе».
+		//
+		// Оба комментария стоят ЗДЕСЬ, а не внутри запроса, намеренно: двоеточие внутри `--`
+		// комментария ломает разбор именованных параметров sqlx, и притом молча.
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
@@ -448,6 +476,8 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 				required_seam_allowance_mm = :required_seam_allowance_mm,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
+				mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
+				callout_seq = GREATEST(callout_seq, :callout_seq),
 					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
 		if err != nil {
@@ -1916,8 +1946,13 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"filled":         c.Filled,
 			// NULL, а не «[]», когда якорей нет: у пина их не бывает вовсе, и пустой массив в
 			// колонке был бы вторым способом сказать то же самое.
-			"points":        points,
-			"parts":         parts,
+			"points": points,
+			"parts":  parts,
+			// Ключ строки, которым клиент опознаёт свою выноску после сейва (0345). Хранится и
+			// возвращается круглым рейсом; NULL у всего, что заведено раньше, и у любого клиента,
+			// который про ключи не знает. Индекса на колонке нет намеренно — сопоставление идёт в
+			// памяти по payload, а не запросом.
+			"client_ref":    c.ClientRef,
 			"display_order": i,
 		})
 	}

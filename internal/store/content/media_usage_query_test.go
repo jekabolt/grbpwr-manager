@@ -80,3 +80,58 @@ func TestMediaRefRegistryEntriesAreWellFormed(t *testing.T) {
 			"%s filters on alias %q but its own table is aliased %q", src.kind, alias, tableAlias)
 	}
 }
+
+// TestMediaRefRegistryCoversTheDesignWave pins BOTH halves of the DESIGN band's registration: the
+// four columns that must be in the registry, and the two that must stay out of it.
+//
+// The four are the wave's owning references — each an ON DELETE RESTRICT into media(id) (0340,
+// 0342, 0343). A missing one is not a cosmetic gap: GetMediaUsage is also what
+// DeleteMediaByIdIfUnused asks, so an unregistered holder makes the library call a file free,
+// offer the delete, and then meet a foreign key that refuses it with nothing to show for it.
+//
+// The two exclusions are decisions with consequences of their own. design_run.inputs is a JSON
+// snapshot of what a model was shown; registering it would both freeze every moodboard picture
+// forever and put a JSON scan of the whole run history into a query that is deliberately a
+// relational UNION ALL. design_reference.media_id records a hint, carries no foreign key at all
+// (0347), and registering it would turn an optional role into a lock on the delete.
+//
+// This test does not need a database. The live schema is diffed against the registry by
+// TestMediaUsageRegistryCoversSchema, which does — this one states what that diff is expected to
+// agree with, so a wrong registration is caught here rather than in a container.
+func TestMediaRefRegistryCoversTheDesignWave(t *testing.T) {
+	targets := map[string]bool{}
+	for _, target := range MediaRefRegistryTargets() {
+		targets[target] = true
+	}
+
+	for _, owning := range []string{
+		"design_picture.media_id",
+		"design_sheet_version_plate.media_id",
+		"design_sheet_version_callout.media_id",
+		"design_edit_layer.base_media_id",
+	} {
+		assert.True(t, targets[owning],
+			"%s holds its media with ON DELETE RESTRICT; unregistered, the library reports the file as free", owning)
+	}
+
+	for _, excluded := range []string{"design_reference.media_id", "design_run.inputs"} {
+		assert.False(t, targets[excluded],
+			"%s is deliberately not a holder — registering it would make a hint refuse a delete", excluded)
+	}
+
+	// The kinds the client turns into routes. A registry entry that emits an unknown kind reaches
+	// the operator as an unlabelled row.
+	kinds := map[string]bool{}
+	for _, src := range mediaRefRegistry {
+		kinds[src.kind] = true
+	}
+	for _, kind := range []string{"design_picture", "design_sheet_version", "design_edit_layer"} {
+		assert.True(t, kinds[kind], "the DESIGN band must reach the client as kind %q", kind)
+	}
+
+	// The property this query is worth protecting for: no JSON scan, and no branch over the tables
+	// whose columns were deliberately left out.
+	assert.NotContains(t, mediaUsageQuery, "->>", "the usage query must stay purely relational")
+	assert.NotContains(t, mediaUsageQuery, "design_run", "a run snapshot is provenance, not ownership")
+	assert.NotContains(t, mediaUsageQuery, "design_reference", "a reference role is a hint, not ownership")
+}

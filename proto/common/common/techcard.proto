@@ -52,6 +52,15 @@ enum TechCardMediaKind {
   TECH_CARD_MEDIA_KIND_MOODBOARD = 6; // mood / inspiration board
   TECH_CARD_MEDIA_KIND_REFERENCE = 7; // reference / fabric photo
   TECH_CARD_MEDIA_KIND_SWATCH = 8; // colour / fabric swatch
+  // Side views. The DESIGN band's view matrix has four silhouette sides, and without these two a
+  // side flat has nowhere to be filed — it would have to masquerade as DETAIL and stop being a
+  // side. This EXTENDS the existing vocabulary; it is not a second axis.
+  TECH_CARD_MEDIA_KIND_SIDE_L = 9; // left side flat sketch
+  TECH_CARD_MEDIA_KIND_SIDE_R = 10; // right side flat sketch
+  // An ACCEPTED render — a rendered image promoted into category='technical', i.e. one that leaves
+  // the studio and goes out with the card. The pair (category='technical', kind=RENDER) is what
+  // says «this is a render and it is official»; there is no separate artifact_role column.
+  TECH_CARD_MEDIA_KIND_RENDER = 11;
 }
 
 // TechCardMediaItem is a writable sketch-media reference (id + kind).
@@ -119,6 +128,42 @@ message TechCardCallout {
   // СОВМЕСТИМОСТЬ БЕЗ ФЛАГА: пустой список читается как [part], непустой вытесняет `part`
   // целиком, и сервер отдаёт `part` = первым элементом.
   repeated string parts = 13;
+  // THE CLIENT'S OWN KEY FOR THIS ROW — minted by the client (UUID) when the callout is born,
+  // STORED, and round-tripped. Today a callout's only identity is its number, and the number is
+  // assigned by the server: after a save the form cannot tell which of its rows got which number,
+  // so focus, highlighting and «the refusal leads to the place» all point at SOMEBODY ELSE'S
+  // callout.
+  //
+  // THREE PROPERTIES, EACH LOAD-BEARING:
+  //   1. IT IS NOT IN THE DIGEST. This is an ADDRESS, not content — exactly like the callout's
+  //      colour, which the DESIGN projection leaves out for the same reason.
+  //   2. IT DRIVES NUMBER MINTING. `number == 0 && client_ref != ""` ⇒ «mint a number».
+  //      `number == 0 && client_ref == ""` ⇒ a LEGACY ZERO, leave it alone: tech_card_callout holds
+  //      callout_number NOT NULL DEFAULT 0 with no UNIQUE, duplicate zeros there are legal, and a
+  //      rule «number<=0 means mint» would renumber them on the first save from ANY client — i.e.
+  //      move the DESIGN signature of every such card, across the whole of production, at rollout.
+  //   3. IT IS NOT REQUIRED, AND AN OLD BUNDLE MUST NOT ERASE IT. «An old client loses nothing» is
+  //      true of the old client and FALSE of the new one: a stale tab resends the callouts without
+  //      this field, a full-replace write would blank the column, and the addresses the new client
+  //      is holding would vanish out from under it — silently, since client_ref is outside the
+  //      digest and nothing would restate.
+  //
+  //      SO THE SERVER CARRIES IT: an incoming callout with `number != 0` and an EMPTY client_ref
+  //      inherits the stored client_ref OF THAT CALLOUT, and «that callout» means the identity
+  //      (sketch + number), never the bare number. CarryOmittedCalloutGeometry carries geometry by
+  //      the same identity, in the same place in the pipeline. An explicitly DIFFERENT non-empty
+  //      value replaces it — that is a real re-address, not an omission.
+  //
+  //      MATCHING BY THE BARE NUMBER WOULD BE A DEFECT, NOT A SIMPLIFICATION. A callout number is
+  //      NOT unique per card: the sketch and the moodboard number independently, on purpose, and
+  //      the schema forbids no duplicate. Carrying by number alone would hand a moodboard note the
+  //      address of a technical callout that happens to share its number. That exact rule was once
+  //      written twice in this repository and drifted in OPPOSITE directions; it now lives once, in
+  //      entity.TechCardCalloutsByKey, and every consumer asks it rather than re-deriving it.
+  //
+  //      The carry cannot collide with minting: minting is `number == 0`, carrying is
+  //      `number != 0`, and a legacy zero has neither a number to carry by nor a ref to mint for.
+  string client_ref = 14;
 }
 
 // TechCardRevision is one entry in the spec-document changelog (what changed in
@@ -3134,6 +3179,18 @@ message TechCardInsert {
   repeated TechCardMediaItem moodboard_media = 55;
   repeated TechCardMediaItem technical_media = 56;
   repeated TechCardCallout callouts = 33; // sketch callouts (pin onto any moodboard or technical media by media_id)
+  // THE MOODBOARD'S SHARED NOTE — the words the whole board is about, as opposed to a caption on
+  // one image. It is what the DESIGN band's `draft the idea` reads, together with the callouts
+  // pinned on moodboard images.
+  //
+  // OPTIONAL for the same load-bearing reason as `cutting_coefficient` and purpose/kind above: the
+  // admin is an SPA, tabs survive deploys, and the card is saved WHOLE. A bare proto3 string from a
+  // bundle that predates this field arrives as "" and would ERASE the note — silently, from a tab
+  // that never opened the moodboard. Three states, verbatim the same as its neighbours:
+  //   * field ABSENT (null)        → LEAVE AS IS.
+  //   * field PRESENT, value ""    → CLEAR it (store NULL).
+  //   * field PRESENT with a value → set it.
+  optional string mood_note = 118;
   // revisions (34) removed as INPUT (Q1): the revision log is a server-stamped auto-journal, not a
   // client-supplied list — read it on the TechCard message (TechCard.revisions).
 

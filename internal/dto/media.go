@@ -46,6 +46,13 @@ func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 		Id:        int32(eMedia.Id), // Assuming the conversion from int to int32 is safe and acceptable
 		CreatedAt: createdAt,
 		Media:     MediaItem,
+		// ContentHash is an OBLIGATION on every producer of MediaFull, not a convenience: a
+		// consumer reads empty as "this media predates 0336" and WITHHOLDS the staleness
+		// comparison. A path that leaves it empty on a hashed row therefore does not raise a
+		// mismatch — it silently suppresses one, and a badge that should have fired never does.
+		// Empty here is honest only for rows genuinely older than 0336 and for video, which is
+		// not content-hashed at all.
+		ContentHash: eMedia.ContentHash.String,
 	}
 }
 

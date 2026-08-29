@@ -63,7 +63,7 @@ type mediaRefSource struct {
 }
 
 // mediaRefRegistry lists every live foreign key into media(id), verified against both the
-// migration history and the deployed schema (17 columns as of 0311).
+// migration history and the deployed schema (21 columns as of 0343).
 var mediaRefRegistry = []mediaRefSource{
 	// product — the colourway. Four different columns point at media from this one table.
 	{
@@ -183,12 +183,80 @@ var mediaRefRegistry = []mediaRefSource{
 			`CONCAT('sample ', s.number))`,
 		slot: "photo",
 	},
+
+	// design band — the four OWNING references of the DESIGN wave (0340, 0342, 0343). Each is
+	// ON DELETE RESTRICT, so a file one of them holds cannot be deleted at all; the library has to
+	// be able to name the holder, or the operator meets a refusal with nothing behind it.
+	{
+		// A picture of the band IS the entity here, not a join row: it is what holds the bytes, and
+		// "design_picture" is its own kind in the contract (admin.proto, MediaUsageRef.kind), so the
+		// id is the picture's own. hidden_at is deliberately NOT filtered out, for the same reason a
+		// soft-deleted product is not: a hidden row still refuses the delete, and hiding it here
+		// would report "unused" for a file that cannot go.
+		kind: "design_picture", table: "design_picture dp", column: "dp.media_id",
+		joins:      `JOIN tech_card tc ON tc.id = dp.tech_card_id`,
+		entityExpr: "dp.id", labelExpr: techCardLabel,
+		// The row already records what the picture is and where it came from; passing both through
+		// keeps two frames of the same card apart in the list.
+		slotExpr: `CONCAT_WS(', ', COALESCE(NULLIF(dp.kind, ''), 'picture'), NULLIF(dp.source_class, ''))`,
+	},
+	{
+		// A plate belongs to the MINTED VERSION, so that is the entity the operator is sent to —
+		// the plate row itself is exactly the "product_media #417" this registry exists to avoid.
+		kind: "design_sheet_version", table: "design_sheet_version_plate dsvp", column: "dsvp.media_id",
+		joins: `JOIN design_sheet_version dsv ON dsv.id = dsvp.version_id ` +
+			`JOIN tech_card tc ON tc.id = dsv.tech_card_id`,
+		entityExpr: "dsv.id", labelExpr: designSheetVersionLabel,
+		slotExpr: `CONCAT_WS(' ', CONCAT('plate ', dsvp.ordinal), NULLIF(dsvp.view_key, ''))`,
+	},
+	{
+		kind: "design_sheet_version", table: "design_sheet_version_callout dsvc", column: "dsvc.media_id",
+		joins: `JOIN design_sheet_version dsv ON dsv.id = dsvc.version_id ` +
+			`JOIN tech_card tc ON tc.id = dsv.tech_card_id`,
+		entityExpr: "dsv.id", labelExpr: designSheetVersionLabel,
+		slotExpr: `CONCAT('callout ', dsvc.number)`,
+	},
+
+	{
+		// The BASE of an edit layer — the picture the strokes were drawn on top of. It owns the
+		// file (0343, ON DELETE RESTRICT) for a reason worth keeping in view: without the base a
+		// saved layer cannot be opened and cannot be flattened, so a library that called the file
+		// free would let somebody delete it and leave a person's own edit floating over nothing.
+		//
+		// The layer is addressed by its OWN id, not by its base: base_media_id is nullable (a layer
+		// drawn from an empty studio has no base at all), so the base is not an identity. A NULL
+		// base simply never matches the IN (...) predicate, which is exactly right — there is no
+		// media to report.
+		kind: "design_edit_layer", table: "design_edit_layer del", column: "del.base_media_id",
+		joins:      `JOIN tech_card tc ON tc.id = del.tech_card_id`,
+		entityExpr: "del.id", labelExpr: techCardLabel, slot: "edit layer base",
+	},
+
+	// WHAT THE DESIGN WAVE DELIBERATELY DOES NOT REGISTER. Both omissions are decisions, not gaps;
+	// the next person reading this list must not "fix" them.
+	//
+	//   * design_run.inputs (0340) — a JSON SNAPSHOT of what the model was shown, not ownership. A
+	//     media item cited only by a run's snapshot is honestly free: deleting it blanks a thumbnail
+	//     in the history and breaks no factory document. Registering it would make every moodboard
+	//     picture undeletable forever AND turn this query — today a purely relational UNION ALL over
+	//     reference columns — into a JSON scan of the whole organisation's run history. There is no
+	//     foreign key behind it either, so the schema audit does not ask for one.
+	//
+	//   * design_reference.media_id (0347) — the role of a moodboard reference is a hint to the
+	//     model, not ownership. It carries a bare KEY and no foreign key precisely so that this
+	//     registry stays the list of holders; the full argument lives in the head of
+	//     0347_design_reference.sql, with design_picture.derived_from (0340) as the precedent.
 }
 
 // fittingLabel is declared after the shared consts because it references techCardLabel through
 // the same tc alias; a fitting is identified by its style plus round number.
 const fittingLabel = `CONCAT_WS(' ', COALESCE(NULLIF(tc.name, ''), NULLIF(tc.style_number, '')), ` +
 	`CONCAT('round ', f.round_number))`
+
+// designSheetVersionLabel names a minted sheet version by its style plus its Rev number: a version
+// has no name of its own, and "Rev.3" without the style is not something an operator can act on.
+const designSheetVersionLabel = `CONCAT_WS(' ', COALESCE(NULLIF(tc.name, ''), NULLIF(tc.style_number, '')), ` +
+	`CONCAT('Rev.', dsv.version_number))`
 
 // selectSQL renders one registry entry as a branch of the UNION.
 //
@@ -229,7 +297,7 @@ func MediaRefRegistryTargets() []string {
 // mediaUsageQuery is the whole registry as a single UNION ALL, built once at init.
 //
 // One statement, not one per table: the library asks about a page of ~50 tiles at a time, and
-// seventeen round trips per page is what would make the feature too slow to leave switched on.
+// twenty-one round trips per page is what would make the feature too slow to leave switched on.
 // UNION ALL, not UNION, because deduplication is neither needed (each branch is a distinct
 // table+column) nor wanted (it would cost a sort over the whole result).
 //

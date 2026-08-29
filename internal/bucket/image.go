@@ -231,6 +231,11 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 			Thumbnail:  thumbnail,
 			Blurhash:   h,
 		},
+		// The row we just inserted carries this hash; the response must too. A consumer reads an
+		// empty ContentHash as "older than 0336" and WITHHOLDS the staleness comparison — so
+		// leaving it empty here would not raise a mismatch, it would silently suppress one, and
+		// exactly for the freshest upload of all: the one a bench slot is about to be filled with.
+		ContentHash: fullSizeSHA,
 	}, nil
 }
 
@@ -428,6 +433,9 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 			Thumbnail:  thumbnail,
 			Blurhash:   h,
 		},
+		// Same obligation as the standard path, and it matters more here: verbatim is what a flat
+		// is uploaded through, and a frozen sheet plate pins exactly these bytes by this hash.
+		ContentHash: rawSHA,
 	}, nil
 }
 

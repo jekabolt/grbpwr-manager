@@ -169,6 +169,13 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := s.verifyBomWastageClaims(ctx, nil, tc.BomItems); err != nil {
 		return nil, err
 	}
+	// МИНТ НОМЕРА ВЫНОСКИ И НА СОЗДАНИИ — по тому же доводу, что на сохранении, и это не симметрия
+	// ради симметрии. Карточку законно создают с УЖЕ утверждённой секцией DESIGN; не сминтив здесь,
+	// сервер записал бы выноски нулями, подписал бы отпечаток по этим нулям, а первое же сохранение
+	// сминтило бы номера — и подпись, поставленная минуту назад, объявила бы себя протухшей, не
+	// лечась переутверждением. Хранимой карточки нет вовсе, поэтому счётчик начинается с нуля и
+	// поднимается до MAX(номеров payload'а).
+	dto.MintCalloutNumbers(nil, tc)
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
@@ -378,6 +385,22 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
 		}
 	}
+	// МИНТ НОМЕРА ВЫНОСКИ — ПЕРВЫМ, РАНЬШЕ ВСЕЙ ЦЕПОЧКИ carryOmitted* И РАНЬШЕ ПОДПИСИ.
+	//
+	// Оба «раньше» несущие, и каждое закрывает свой необратимый дефект:
+	//   * раньше обоих переносов выноски, потому что оба сопоставляют по ИДЕНТИЧНОСТИ указания
+	//     (entity.TechCardCalloutKey = эскиз + номер), а идентичность содержит номер. Выноска,
+	//     пришедшая с нулём, искала бы себя под нулём и подцепила бы геометрию ЛЕГАСИ-НУЛЯ — чужую
+	//     мерку на чужой картинке, молча;
+	//   * раньше restampFreshSignoffDigests, потому что c.Number хешируется в проекции DESIGN
+	//     явно. Минт после штампа (или, тем более, в СТОРЕ) означал бы, что подпись посчитана по
+	//     payload с нулём, а в колонку уехала семёрка: свежая подпись РОЖДАЕТСЯ ПРОТУХШЕЙ и не
+	//     лечится переутверждением, потому что повторный штамп берёт то же расхождение.
+	//
+	// Перестановка минта ниже штампа не «ловится пробой», а ОТКАЗЫВАЕТ: restampFreshSignoffDigests
+	// начинается с проверки dto.CalloutsAwaitingNumber, и payload с несминченной выноской до
+	// отпечатка не доезжает вовсе.
+	dto.MintCalloutNumbers(stored, tc)
 	// A field the payload did not speak must not reach the DIGEST as empty. fabric_direction became
 	// optional so a stale tab cannot erase it (the store honours that with IF(:omitted, …)), but it
 	// also sits in materialsProjection, whose invariant is that it projects only fields that survive
@@ -408,6 +431,13 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// такой вкладки стёрло бы каждую мерку и скобку на карточке, а подпись DESIGN, поставленная
 	// из неё, хешировала бы «просто точки» поверх эскиза, где нарисовано указание.
 	dto.CarryOmittedCalloutGeometry(stored, tc)
+	// КЛЮЧ СТРОКИ ВЫНОСКИ (0345) — тот же контракт присутствия, та же секция и то же место
+	// конвейера, но чинит он не подпись, а АДРЕСАЦИЮ. Выноски пишутся полной заменой, вкладка со
+	// старым бандлом шлёт их без ключа, и запись обнулила бы колонку — адреса, которые новый клиент
+	// уже держит, исчезли бы молча, потому что ключ намеренно вне дайджеста и ни одна подпись про
+	// это не скажет. С минтом выше не спорит по построению: минт — `number == 0`, перенос —
+	// `number != 0`.
+	dto.CarryOmittedCalloutClientRef(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
@@ -487,7 +517,24 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // Only sections explicitly classified as fresh by prepareCreateTechCardSignoffs or
 // reconcileUpdateTechCardSignoffs move. A carried approval is copied from storage and never restamped.
 func (s *Server) restampFreshSignoffDigests(ctx context.Context, techCardID int, tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool) error {
-	if tc == nil || len(tc.Signoffs) == 0 {
+	if tc == nil {
+		return nil
+	}
+	// НЕСМИНЧЕННАЯ ВЫНОСКА ДО ОТПЕЧАТКА НЕ ДОЕЗЖАЕТ. Номер выноски хешируется проекцией DESIGN явно,
+	// а присваивает его хендлер — значит порядок «сначала минт, потом штамп» это ИНВАРИАНТ, а не
+	// соглашение о стиле. Нарушить его можно ровно одним движением (переставить два вызова), а
+	// последствие необратимо и молчаливо: подпись считается по нулю, в колонку уезжает семёрка,
+	// свежая подпись РОЖДАЕТСЯ ПРОТУХШЕЙ и не лечится переутверждением — повторный штамп берёт то же
+	// расхождение ([[digest-write-vs-read-asymmetry]]).
+	//
+	// Поэтому здесь стоит не проба, а ГРАНИЦА: перестановка ломает сохранение вслух, на первом же
+	// запросе, вместо того чтобы выдать зелёный ответ и испорченную подпись. Проверка стоит ДО
+	// раннего выхода по пустым подписям намеренно — инвариант касается payload'а, а не того, что
+	// именно этим запросом утверждают.
+	if dto.CalloutsAwaitingNumber(tc) {
+		return fmt.Errorf("callout numbers must be minted before the section digests are stamped")
+	}
+	if len(tc.Signoffs) == 0 {
 		return nil
 	}
 	fresh := make([]*entity.TechCardSignoff, 0, len(tc.Signoffs))

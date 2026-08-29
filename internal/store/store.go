@@ -26,6 +26,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/campaign"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
 	"github.com/jekabolt/grbpwr-manager/internal/store/content"
+	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/jekabolt/grbpwr-manager/internal/store/dictionary"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fileslibrary"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
@@ -128,6 +129,7 @@ type MYSQLStore struct {
 	accounting         *accounting.Store
 	patternObjectStore *patternobject.Store
 	workshopStore      *workshop.Store
+	designStore        *design.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -437,6 +439,10 @@ func initSubStores(ms *MYSQLStore) {
 	ms.sampleStore = sample.New(base, ms.Tx)
 	ms.patternObjectStore = patternobject.New(base)
 	ms.workshopStore = workshop.New(base, ms.Tx)
+	// readTx is a SECOND argument here and not a duplicate of Tx: GetBand runs its page and its
+	// aggregates inside one REPEATABLE READ snapshot, and a counter taken outside that snapshot
+	// would caption a page it disagrees with.
+	ms.designStore = design.New(base, ms.Tx, ms.readTx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -471,6 +477,9 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.sampleStore = sample.New(base, outerTx)
 	txStore.patternObjectStore = patternobject.New(base)
 	txStore.workshopStore = workshop.New(base, outerTx)
+	// Inside a transaction both roles collapse onto outerTx, exactly as techcard does: a nested
+	// begin is not available, and the enclosing transaction is already the snapshot.
+	txStore.designStore = design.New(base, outerTx, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -542,6 +551,7 @@ func (ms *MYSQLStore) Membership() dependency.Membership         { return ms.mem
 func (ms *MYSQLStore) Models() dependency.Models                 { return ms.modelStore }
 func (ms *MYSQLStore) Fittings() dependency.Fittings             { return ms.fittingStore }
 func (ms *MYSQLStore) PatternObjects() dependency.PatternObjects { return ms.patternObjectStore }
+func (ms *MYSQLStore) Design() dependency.Design                 { return ms.designStore }
 func (ms *MYSQLStore) Tasks() dependency.Tasks                   { return ms.taskStore }
 func (ms *MYSQLStore) Files() dependency.Files                   { return ms.filesStore }
 func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.fulfillmentStore }

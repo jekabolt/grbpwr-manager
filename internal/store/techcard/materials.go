@@ -57,39 +57,25 @@ type pieceExistingRow struct {
 }
 
 // calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
-type calloutRef struct {
-	part    string
-	mediaID int
-	pinned  bool // media_id > 0 (anchored on some sketch)
-}
-
 // calloutSync resolves a piece's callout_number against the card's payload (S6/S7/S8): the canonical
 // part name (the single place a detail name is entered, §2.5) and whether the callout is anchored on a
 // TECHNICAL sketch. A moodboard/unanchored callout carries no piece semantics (S7) — a piece pointing
 // at one is marked detached, not name-synced.
+//
+// САМО ПРАВИЛО ЖИВЁТ В entity.TechCardCalloutIndex, А НЕ ЗДЕСЬ. Номер выноски не уникален по
+// карточке — эскиз и мудборд нумеруются независимо, — и второй потребитель того же номера
+// (dto.CarryOmittedCalloutGeometry, перенос геометрии) решал коллизию В ДРУГУЮ СТОРОНУ, чем этот.
+// Развод двух копий одного правила и был дефектом: мудбордный двойник помечал живую деталь кроя
+// detached, а перенос геометрии в том же сохранении смотрел на другую выноску. Доводы целиком — в
+// internal/entity/techcard_callout.go.
 type calloutSync struct {
-	technicalMedia map[int]bool // raw media_id → is a technical sketch of this card
-	byNumber       map[int]calloutRef
+	entity.TechCardCalloutIndex
 }
 
 // buildCalloutSync indexes the payload's technical sketch media and its callouts. Both live in the same
 // UpdateTechCard payload as the pieces, so no DB read is needed.
 func buildCalloutSync(tc *entity.TechCardInsert) calloutSync {
-	cs := calloutSync{technicalMedia: make(map[int]bool), byNumber: make(map[int]calloutRef, len(tc.Callouts))}
-	for _, m := range tc.Media {
-		if m.Category == entity.TechCardMediaCategoryTechnical {
-			cs.technicalMedia[m.MediaId] = true
-		}
-	}
-	for i := range tc.Callouts {
-		c := &tc.Callouts[i]
-		mediaID := 0
-		if c.MediaId.Valid {
-			mediaID = int(c.MediaId.Int32)
-		}
-		cs.byNumber[c.Number] = calloutRef{part: strings.TrimSpace(c.Part.String), mediaID: mediaID, pinned: mediaID > 0}
-	}
-	return cs
+	return calloutSync{entity.NewTechCardCalloutIndex(tc.Media, tc.Callouts)}
 }
 
 // apply syncs a piece's derived name from its technical-sketch callout and sets its detached flag
@@ -97,19 +83,7 @@ func buildCalloutSync(tc *entity.TechCardInsert) calloutSync {
 // piece whose callout was removed or is a moodboard/unanchored callout keeps its own name but is
 // marked detached (it has no live technical-sketch source — orphan-control keeps it, does not drop it).
 func (cs calloutSync) apply(p *entity.TechCardPiece) {
-	if !p.CalloutNumber.Valid {
-		p.Detached = false
-		return
-	}
-	ref, ok := cs.byNumber[int(p.CalloutNumber.Int32)]
-	if ok && ref.pinned && cs.technicalMedia[ref.mediaID] {
-		if ref.part != "" {
-			p.Name = ref.part // S8: the detail name lives once, on callout.part; the piece derives it
-		}
-		p.Detached = false
-		return
-	}
-	p.Detached = true
+	cs.ApplyToPiece(p)
 }
 
 // The two halves of the piece upsert, named so a bind-without-a-database test can hold the REAL text
