@@ -272,3 +272,117 @@ func TestMoodNoteIsNotHashed(t *testing.T) {
 		TechCardSectionDigests(&entity.TechCardInsert{})[entity.SignoffDesign],
 		TechCardSectionDigests(with)[entity.SignoffDesign])
 }
+
+func mid(v int32) sql.NullInt32 { return sql.NullInt32{Int32: v, Valid: true} }
+
+// ПЕРЕНОС СОСТОЯЛСЯ. Вкладка со старым бандлом пересылает выноски без ключа; без переноса полная
+// замена обнулила бы колонку, и адреса, которые новый клиент уже держит, исчезли бы молча — ключ
+// вне дайджеста, ни одна подпись про это не скажет.
+func TestClientRefIsCarriedOntoASilentPayload(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{{Number: 7, MediaId: mid(11), ClientRef: ref("abc")}},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 7, MediaId: mid(11)}, // старый бандл: поля нет вовсе
+	}}
+
+	MintCalloutNumbers(stored, tc)
+	CarryOmittedCalloutClientRef(stored, tc)
+
+	require.Equal(t, "abc", tc.Callouts[0].ClientRef.String, "ключ обязан пережить сейв со старого бандла")
+	require.Equal(t, 7, tc.Callouts[0].Number, "перенос не имеет права трогать номер")
+}
+
+// ЗАМЕЩЕНИЕ РАБОТАЕТ. Явно присланное НЕПУСТОЕ значение — настоящая пере-адресация, а не умолчание.
+// Съешь её «переносом» — и ключ станет вечным и неисправимым, притом молча.
+func TestExplicitClientRefReplacesTheStoredOne(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{{Number: 7, MediaId: mid(11), ClientRef: ref("abc")}},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 7, MediaId: mid(11), ClientRef: ref("xyz")},
+	}}
+
+	CarryOmittedCalloutClientRef(stored, tc)
+	require.Equal(t, "xyz", tc.Callouts[0].ClientRef.String, "клиент обязан мочь перевыдать строке ключ")
+}
+
+// ПЕРЕНОС НЕ ПЕРЕСЕКАЕТ ЭСКИЗЫ — ради этого всё остальное и написано.
+//
+// Номер выноски НЕ УНИКАЛЕН по карточке: эскиз и мудборд нумеруются независимо, схема дубли не
+// запрещает. Перенос по ГОЛОМУ НОМЕРУ не потерял бы ключ, а ПОДМЕНИЛ его: мудбордная записка
+// унаследовала бы адрес технической выноски, и форма нового клиента после сейва подсвечивала бы не
+// ту строку — ровно тот дефект, ради которого ключ и заведён.
+func TestClientRefCarryDoesNotCrossSketches(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{
+			{Number: 7, MediaId: mid(11), ClientRef: ref("technical-abc")}, // технический эскиз
+		},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 7, MediaId: mid(20)}, // ТОТ ЖЕ номер, но на мудбордной картинке
+	}}
+
+	CarryOmittedCalloutClientRef(stored, tc)
+
+	require.False(t, tc.Callouts[0].ClientRef.Valid && tc.Callouts[0].ClientRef.String != "",
+		"адрес технической выноски не имеет права переехать на мудбордную с тем же номером")
+
+	// Контроль: на СВОЁЙ картинке тот же номер переносится — значит проба ловит границу эскиза, а не
+	// отсутствие переноса вообще.
+	same := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{{Number: 7, MediaId: mid(11)}}}
+	CarryOmittedCalloutClientRef(stored, same)
+	require.Equal(t, "technical-abc", same.Callouts[0].ClientRef.String)
+}
+
+// МИНТ И ПЕРЕНОС НЕ СПОРЯТ. Три строки в одном payload'е, три разных исхода, и ни одна не задевает
+// соседнюю: минт — `number == 0` при непустом ключе, перенос — `number != 0` при пустом, легаси-ноль
+// не подходит ни под одно правило.
+func TestMintAndClientRefCarryDoNotCollide(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		CalloutSeq: 7,
+		Callouts: []entity.TechCardCallout{
+			{Number: 0, MediaId: mid(11)},                          // легаси-ноль, ключа нет и не было
+			{Number: 7, MediaId: mid(11), ClientRef: ref("old-7")}, // старая выноска с ключом
+			// Хранимый двойник ТОГО НОМЕРА, который счётчик выдаст новой строке. Он здесь затем,
+			// чтобы «минт и перенос не спорят» проверялось, а не подразумевалось: перенос, съедающий
+			// явно присланное значение, отдал бы новой строке ЭТОТ адрес.
+			{Number: 8, MediaId: mid(11), ClientRef: ref("stale-8")},
+		},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 0, MediaId: mid(11)},                        // легаси-ноль: не трогать
+		{Number: 0, MediaId: mid(11), ClientRef: ref("new")}, // новая строка: сминтить номер
+		{Number: 7, MediaId: mid(11)},                        // старый бандл молчит: перенести ключ
+	}}
+
+	MintCalloutNumbers(stored, tc)
+	CarryOmittedCalloutClientRef(stored, tc)
+
+	require.Equal(t, 0, tc.Callouts[0].Number, "легаси-ноль не трогают ни минтом, ни переносом")
+	require.False(t, tc.Callouts[0].ClientRef.Valid && tc.Callouts[0].ClientRef.String != "",
+		"легаси-нолю переносить нечего и неоткуда")
+
+	require.Equal(t, 8, tc.Callouts[1].Number, "новая строка получает номер от счётчика")
+	require.Equal(t, "new", tc.Callouts[1].ClientRef.String, "сминченной строке чужой ключ не переезжает")
+
+	require.Equal(t, 7, tc.Callouts[2].Number)
+	require.Equal(t, "old-7", tc.Callouts[2].ClientRef.String, "молчащая старая строка получает свой ключ")
+}
+
+// ЛЕГАСИ-НОЛЬ НЕ ПОЛУЧАЕТ ЧУЖОЙ АДРЕС ДАЖЕ ИЗ ИСПОРЧЕННОГО ХРАНИМОГО. Пара (номер 0, непустой ключ)
+// этим бинарём не создаётся — минт присваивает номер всему, у чего ключ есть, — но схема её не
+// запрещает: UNIQUE и CHECK на tech_card_callout нет ни одного, а строки приезжают и из архива
+// импорта, и из ручного SQL. Гейт `Number == 0` в переносе стоит ровно на этот случай: раздать
+// адреса нулям значило бы объявить неразличимые строки одной и той же.
+func TestClientRefCarrySkipsLegacyZeroEvenIfStoredIsCorrupt(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(11), ClientRef: ref("impossible")}},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(11)}}}
+
+	CarryOmittedCalloutClientRef(stored, tc)
+
+	require.False(t, tc.Callouts[0].ClientRef.Valid && tc.Callouts[0].ClientRef.String != "",
+		"легаси-ноль обязан остаться безадресным: нулей на карточке законно много, и они неразличимы")
+}

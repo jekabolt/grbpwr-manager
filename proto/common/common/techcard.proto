@@ -149,9 +149,17 @@ message TechCardCallout {
   //      digest and nothing would restate.
   //
   //      SO THE SERVER CARRIES IT: an incoming callout with `number != 0` and an EMPTY client_ref
-  //      inherits the stored client_ref OF THAT NUMBER, exactly the way CarryOmittedCalloutGeometry
-  //      already carries geometry by number, and in the same place in the pipeline. An explicitly
-  //      DIFFERENT non-empty value replaces it — that is a real re-address, not an omission.
+  //      inherits the stored client_ref OF THAT CALLOUT, and «that callout» means the identity
+  //      (sketch + number), never the bare number. CarryOmittedCalloutGeometry carries geometry by
+  //      the same identity, in the same place in the pipeline. An explicitly DIFFERENT non-empty
+  //      value replaces it — that is a real re-address, not an omission.
+  //
+  //      MATCHING BY THE BARE NUMBER WOULD BE A DEFECT, NOT A SIMPLIFICATION. A callout number is
+  //      NOT unique per card: the sketch and the moodboard number independently, on purpose, and
+  //      the schema forbids no duplicate. Carrying by number alone would hand a moodboard note the
+  //      address of a technical callout that happens to share its number. That exact rule was once
+  //      written twice in this repository and drifted in OPPOSITE directions; it now lives once, in
+  //      entity.TechCardCalloutsByKey, and every consumer asks it rather than re-deriving it.
   //
   //      The carry cannot collide with minting: minting is `number == 0`, carrying is
   //      `number != 0`, and a legacy zero has neither a number to carry by nor a ref to mint for.
