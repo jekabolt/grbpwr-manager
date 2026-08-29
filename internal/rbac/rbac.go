@@ -422,6 +422,43 @@ var methodRequirements = map[string]Requirement{
 	// asymmetry rather than a gap. Never allowlisted: allowlisted means ANY authenticated account may
 	// call it, and this one enumerates the whole style portfolio by article and name.
 	"ListTechCardFabricDirectionGaps": rd(SectionTechCards),
+
+	// ПОЛОСА DESIGN — студийная половина тех-карты: прогоны генерации, их картинки, верстак,
+	// замороженные версии листа и векторные слои. Вся секция — tech_cards, и ни одного метода в
+	// allowlist: полоса перечисляет портфель стилей картинками и тратит деньги ключа.
+	//
+	// СВОЕЙ СЕКЦИИ У НЕЁ НЕТ НАМЕРЕННО. Полоса рисует и минтит содержимое ОДНОЙ карточки — эскизы,
+	// виды, выноски листа, — то есть ровно то, что tech_cards уже читает и пишет. Отдельное право
+	// означало бы аккаунт, который правит карточку, но не видит, из чего собран её лист.
+	"GetDesignBand":         rd(SectionTechCards),
+	"ListDesignRuns":        rd(SectionTechCards),
+	"GetDesignSheetVersion": rd(SectionTechCards),
+	// Чтение ОДНОГО слоя со штрихами. Отдельный метод, потому что GetDesignBand отдаёт слои без
+	// штрихов; право то же самое — это содержимое той же карточки, просто взятое поштучно.
+	"GetDesignEditLayer": rd(SectionTechCards),
+	// ВСЁ ПИШУЩЕЕ И ВСЁ ТРАТЯЩЕЕ — write, включая те методы, которые «просто прячут» или «просто
+	// помечают». Прецедент рядом: GenerateTechCardOperations и AnalyzeTechCardConstruction стоят на
+	// записи именно потому, что тратят деньги ключа, а не потому, что сохраняют строку.
+	//
+	// StartDesignRun и DraftDesignIdea — платные вызовы: право их звать это право выставить
+	// организации счёт, и на чтении им места нет ни при каких обстоятельствах.
+	"StartDesignRun":         wr(SectionTechCards),
+	"DraftDesignIdea":        wr(SectionTechCards),
+	"CancelDesignRun":        wr(SectionTechCards),
+	"ArchiveDesignRun":       wr(SectionTechCards),
+	"HideDesignPicture":      wr(SectionTechCards),
+	"RegisterDesignUpload":   wr(SectionTechCards),
+	"SplitDesignPicture":     wr(SectionTechCards),
+	"SetDesignBenchSlot":     wr(SectionTechCards),
+	"SetDesignReferenceRole": wr(SectionTechCards),
+	"DeleteDesignDetailSlot": wr(SectionTechCards),
+	// MintDesignSheetVersion выполняет ОБЫЧНУЮ ЗАПИСЬ ДОКУМЕНТА той же транзакцией (тот же код, что
+	// UpdateTechCard), поэтому его право обязано быть не слабее, чем у UpdateTechCard, — иначе минт
+	// стал бы чёрным ходом в документ мимо права на документ.
+	"MintDesignSheetVersion": wr(SectionTechCards),
+	"RecordDesignSheetIssue": wr(SectionTechCards),
+	"SaveDesignEditLayer":    wr(SectionTechCards),
+	"FlattenDesignEditLayer": wr(SectionTechCards),
 	// ЭКСПОРТ/ИМПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ.
 	//
 	// ExportTechCardArchive — wr(tech_cards), и это НЕ описка рядом с GetTechCard. Экспорт не

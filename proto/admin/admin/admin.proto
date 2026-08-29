@@ -4,6 +4,7 @@ package admin;
 
 import "common/archive.proto";
 import "common/buyer.proto";
+import "common/design.proto";
 import "common/dict.proto";
 import "common/email_campaign.proto";
 import "common/filter.proto";
@@ -2524,6 +2525,244 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/fabric-direction-gaps"};
   }
 
+  // DESIGN BAND
+  //
+  // The studio half of a tech card: generation runs, the pictures they produce, the bench that
+  // promotes a picture into a view, and the frozen sheet versions that get printed. It lives
+  // OUTSIDE the card document — its own writes, its own lifecycle — but inside THIS service: a
+  // second service would be a second authorization channel for no gain. Messages: common/design.proto.
+
+  // GetDesignBand is ONE read of the whole band: bench slots, the version numbers plus the latest
+  // version's composition, the issue journal, the day's budget, the edit layers, the aggregates the
+  // header needs, and the FIRST PAGE of runs with their pictures already under them.
+  //
+  // HIDDEN AND ARCHIVED ROWS COME BACK, WITH THEIR FLAGS. The client filters. A server that omitted
+  // them would make «· 3 hidden» unprintable and would turn every count into a second, disagreeing
+  // truth.
+  rpc GetDesignBand(GetDesignBandRequest) returns (GetDesignBandResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design"};
+  }
+
+  // ListDesignRuns is one page of the history, WITH the pictures of that page. A flat picture list
+  // beside the rows would ship the same MediaFull twice and leave the client to re-pair them.
+  // InvalidArgument when limit > 24.
+  rpc ListDesignRuns(ListDesignRunsRequest) returns (ListDesignRunsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/runs"};
+  }
+
+  // GetDesignSheetVersion reads ONE frozen version whole: its plates, its callouts and its journal.
+  // Without it, printing an older Rev.N, a QR that points at a specific issue, and checking the
+  // paper on the factory floor against what was actually minted are all impossible — a QR on Rev.3
+  // must lead to Rev.3, not to «latest».
+  rpc GetDesignSheetVersion(GetDesignSheetVersionRequest) returns (GetDesignSheetVersionResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/sheet/{version_number}"};
+  }
+
+  // StartDesignRun opens a paid job. ONE SERIALIZABLE transaction does all of it: the gate belts,
+  // the reservation against the day's budget, the server-assembled input snapshot, and the row.
+  //
+  // IDEMPOTENT BY client_request_id: a repeat returns the EXISTING row with OK, and buys nothing.
+  //
+  // FailedPrecondition: budget_exceeded | profile_requirements_unmet | composite_input |
+  // run_in_flight | hourly_limit | kind_not_available. InvalidArgument for a malformed or oversized
+  // params.
+  //
+  // kind_not_available: a generation KIND with no provider configured for it refuses EXPLICITLY, so
+  // the client can draw an honest lock with a reason on it. Silence, or a run that sits pending
+  // forever, would be the same fact told as a bug.
+  rpc StartDesignRun(StartDesignRunRequest) returns (StartDesignRunResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/runs"
+      body: "*"
+    };
+  }
+
+  // CancelDesignRun stops a run. `pending` → `cancelled` and the day's reservation is released;
+  // `running` → cancel_requested_at is stamped and the worker honours it before dispatch and after
+  // the answer.
+  //
+  // A RESULT THAT ARRIVES AFTER A CANCEL IS STILL PAID AND STILL RECORDED, and the row says so.
+  // Throwing it away would mean «we paid and erased it», which no ledger can explain.
+  //
+  // FailedPrecondition: already_terminal.
+  rpc CancelDesignRun(CancelDesignRunRequest) returns (CancelDesignRunResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/run/{run_id}/cancel"
+      body: "*"
+    };
+  }
+
+  // ArchiveDesignRun flips a PRESENTATIONAL, REVERSIBLE flag on a history row. It does NOT hide the
+  // row's pictures — that would be a second registry of invisibility, and there is exactly one.
+  rpc ArchiveDesignRun(ArchiveDesignRunRequest) returns (ArchiveDesignRunResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/run/{run_id}/archive"
+      body: "*"
+    };
+  }
+
+  // HideDesignPicture is the ONLY persistent verb for picture invisibility, and it is reversible.
+  // Guards, each of which would otherwise leave a live reference pointing at something the band
+  // refuses to draw — FailedPrecondition: in_slot | in_version | live_run_input | live_crop_parent.
+  rpc HideDesignPicture(HideDesignPictureRequest) returns (HideDesignPictureResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/hide"
+      body: "*"
+    };
+  }
+
+  // RegisterDesignUpload files ONE GESTURE as one batch plus its pictures; the bytes themselves
+  // went up through UploadContentImage first. Optionally the same call puts the FIRST picture into
+  // a bench slot, under the SAME compare-and-set as an ordinary placement — otherwise a drop onto
+  // an empty slot would be two calls and could half-succeed.
+  //
+  // FORMAT IS NOT GATED: whatever the upload accepted, this accepts. «~1200px — the print will be
+  // mush» is a label on the client, not a refusal here.
+  //
+  // InvalidArgument: an empty item list, an unknown ghost_view. Aborted: slot_rev_mismatch.
+  rpc RegisterDesignUpload(RegisterDesignUploadRequest) returns (RegisterDesignUploadResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/upload"
+      body: "*"
+    };
+  }
+
+  // SplitDesignPicture cuts a composite into per-view pictures SERVER-SIDE and LOSSLESSLY, from the
+  // original bytes. The crops are SIBLINGS OF THEIR SOURCE — they inherit its run_id or its
+  // batch_id, whichever it has, and never get a history row of their own: no money was spent on
+  // them. A crop of an uploaded composite therefore lands on the same upload shelf row.
+  // Idempotent by client_request_id. FailedPrecondition: not_composite. InvalidArgument for frames
+  // outside 0..1 or of zero area.
+  rpc SplitDesignPicture(SplitDesignPictureRequest) returns (SplitDesignPictureResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/split"
+      body: "*"
+    };
+  }
+
+  // SetDesignBenchSlot places, displaces or unmarks a plate. COMPARE-AND-SET on slot_rev; a slot
+  // that does not exist yet is born by this same act (expected_slot_rev = 0), through an upsert
+  // rather than a read-then-insert — two people placing `front` at once would both see «no row».
+  //
+  // UNMARKING IS `picture_id = 0`: the slot is emptied and KEPT. That is a different act from
+  // DeleteDesignDetailSlot, which removes the slot itself, and the two must not be reachable
+  // through one verb — a human emptying a slot has not asked to lose its name or its address.
+  //
+  // Aborted: slot_rev_mismatch, carrying the slot's CURRENT state so the client can redraw instead
+  // of re-reading. FailedPrecondition: composite_plate | hidden_plate | wrong_kind |
+  // foreign_card_plate | picture_already_in_slot | detail_name_required.
+  rpc SetDesignBenchSlot(SetDesignBenchSlotRequest) returns (SetDesignBenchSlotResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/bench"
+      body: "*"
+    };
+  }
+
+  // SetDesignReferenceRole states WHICH SIDE of the garment a reference image is about, and in what
+  // order it is fed to the model. Upsert by (tech_card_id, media_id); an empty role clears it.
+  //
+  // The role lives in the BAND and not on the card's media row — see common.DesignReference for
+  // why that is forced. It enters no section digest: a prompt hint is not a fact about the garment,
+  // and saving one must not stale a sign-off.
+  //
+  // InvalidArgument: an unknown role, or a media_id the card does not hold.
+  rpc SetDesignReferenceRole(SetDesignReferenceRoleRequest) returns (SetDesignReferenceRoleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/reference-role"
+      body: "*"
+    };
+  }
+
+  // DeleteDesignDetailSlot removes an EMPTY detail slot that NO version quotes. A slot quoted by a
+  // minted version keeps its address alive so the paper can still be explained.
+  // FailedPrecondition: slot_filled | slot_in_version, the latter naming the versions.
+  rpc DeleteDesignDetailSlot(DeleteDesignDetailSlotRequest) returns (DeleteDesignDetailSlotResponse) {
+    option (google.api.http) = {delete: "/api/admin/design/bench/{slot_id}"};
+  }
+
+  // MintDesignSheetVersion is an ATOMIC MINT: in ONE SERIALIZABLE transaction it performs the
+  // ordinary document write (the same code path as UpdateTechCard) AND gives birth to the version.
+  // The frozen callouts are taken from the document THIS transaction just wrote, so the state
+  // «re-pinned, but no version» does not exist.
+  //
+  // Idempotent by client_request_id: a lost response must not mint a phantom vN+1.
+  //
+  // Aborted: lock_version_mismatch | bench_moved (naming which slot moved). FailedPrecondition:
+  // mixed_needs_consent | fit_mismatch {view, fit, card_fit} | uploaded_fit_unconfirmed |
+  // sheet_min_unmet {missing views}.
+  rpc MintDesignSheetVersion(MintDesignSheetVersionRequest) returns (MintDesignSheetVersionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/sheet"
+      body: "*"
+    };
+  }
+
+  // RecordDesignSheetIssue writes a printed/shared line into a version's append-only journal. It
+  // MINTS NOTHING: reprinting the same paper is not a new revision, and a system that made it one
+  // would grow a revision per print.
+  rpc RecordDesignSheetIssue(RecordDesignSheetIssueRequest) returns (RecordDesignSheetIssueResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/sheet/{version_number}/issue"
+      body: "*"
+    };
+  }
+
+  // GetDesignEditLayer reads ONE layer WITH its strokes. It exists because GetDesignBand
+  // deliberately lists the layers WITHOUT them: 512 KB is the cap per LAYER, a card may hold
+  // several, and shipping them all would make every open of the tab cost megabytes in order to draw
+  // a list. The editor fetches the one layer it is about to open, and only then.
+  rpc GetDesignEditLayer(GetDesignEditLayerRequest) returns (GetDesignEditLayerResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}"};
+  }
+
+  // SaveDesignEditLayer stores a vector layer under compare-and-set on its rev. `layer_id = 0` with
+  // `base_media_id = 0` gives birth to a CLEAN VECTOR BASE — the `draw it` door out of an empty
+  // studio, which has no picture underneath it at all.
+  //
+  // Aborted: layer_rev_mismatch {current_rev}. InvalidArgument: strokes_too_large (> 512 KB).
+  rpc SaveDesignEditLayer(SaveDesignEditLayerRequest) returns (SaveDesignEditLayerResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/layer"
+      body: "*"
+    };
+  }
+
+  // FlattenDesignEditLayer records a flattened layer: it files an ALREADY-RASTERISED image as a
+  // DesignPicture carrying derived_from, source_class and layer_rev.
+  //
+  // THE CLIENT RASTERISES, THE SERVER RECORDS THE PROVENANCE. There is no rasteriser in this
+  // repository — no vector renderer of any kind — and the strokes are the client's own canvas
+  // format, so the only place that can turn them into pixels honestly is the canvas that drew them.
+  // The client uploads the raster through UploadContentImage (preserve_original) and passes its
+  // media_id here.
+  //
+  // expected_rev IS STILL REQUIRED, and for exactly the reason it always was: it names the revision
+  // the person actually looked at. Without it a colleague saves r4 while somebody who last saw r3
+  // presses flatten, and r4 is materialised under an intention that never saw it. The compare-and-
+  // set does not weaken by moving the pixels to the client — it guards the INTENTION, not the
+  // rendering.
+  //
+  // Aborted: layer_rev_mismatch. FailedPrecondition: empty_layer. InvalidArgument: an unknown or
+  // foreign media_id.
+  rpc FlattenDesignEditLayer(FlattenDesignEditLayerRequest) returns (FlattenDesignEditLayerResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}/flatten"
+      body: "*"
+    };
+  }
+
+  // DraftDesignIdea is a TEXT run through the same money and idempotency machine as every picture
+  // run — a paid call with no row in the register would be a hole in the ledger. It runs INLINE:
+  // the response already carries a finished DesignRun with status=done and output_text set.
+  //
+  // FailedPrecondition: budget_exceeded | no_moodboard.
+  rpc DraftDesignIdea(DraftDesignIdeaRequest) returns (DraftDesignIdeaResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/draft-idea"
+      body: "*"
+    };
+  }
+
   // GetWorkshopSettings returns «дом настроек цеха» (Ф2.5, 0272): the shop-floor constants that
   // belong to the ЦЕХ itself and not to any one card or раскладка. Первый жилец is the cutting
   // table length, which the nesting modal used to make the operator retype on every раскладка.
@@ -3265,6 +3504,16 @@ message GetDictionaryResponse {
 
 message UploadContentImageRequest {
   string raw_b64_image = 1;
+  // STORE THE ORIGINAL BYTES VERBATIM instead of re-encoding. What it buys: a flat sketch prints
+  // 1:1 with the bytes that were uploaded, and its content_hash stays the hash of the file the
+  // human actually has.
+  //
+  // THE PROMISE IS EXACT, NOT GENERAL: JPEG, PNG, WebP and GIF are stored byte-for-byte. HEIC has
+  // no verbatim path and is REFUSED outright rather than silently re-encoded — «1:1 for
+  // everything» would be the dishonest wording.
+  //
+  // Absent/false = the ordinary path (re-encode + derive thumbnail/compressed), unchanged.
+  bool preserve_original = 2;
 }
 
 message UploadContentImageResponse {
@@ -3326,7 +3575,12 @@ message MediaUsage {
 // entity when it uses the file in more than one slot (a photo that is both the product
 // thumbnail and a gallery frame yields two refs with the same kind and entity_id).
 message MediaUsageRef {
-  string kind = 1; // product | archive | model | material | task | tech_card | fitting | sample
+  // product | archive | model | material | task | tech_card | fitting | sample |
+  // design_picture | design_sheet_version | design_edit_layer.
+  // The last two are the DESIGN band: a picture holds its media, and a MINTED SHEET VERSION holds
+  // it with RESTRICT — that is why the library must name it, or somebody deletes the bytes a
+  // printed Rev.N depends on.
+  string kind = 1;
   int32 entity_id = 2; // id of the entity to navigate to, in the space named by kind
   string label = 3; // human-readable name of that entity, e.g. "CARGO PANTS BLACK"
   string slot = 4; // where inside the entity, e.g. thumbnail | gallery | swatch | callout | moodboard
@@ -11219,4 +11473,399 @@ message AccrueCorporationTaxRequest {
 message AccrueCorporationTaxResponse {
   google.type.Decimal corp_tax = 1; // amount accrued (0 for a loss period)
   bool already_posted = 2; // true if the period was already accrued (no new posting)
+}
+
+// DESIGN BAND messages
+//
+// The band's own types live in common/design.proto; what follows is only the RPC surface.
+// Vocabularies (kind, status, view_key, source_class, minted_via, …) are documented there.
+
+// DesignBenchSlotRef addresses ONE bench slot in EITHER of the two ways a slot can be named: by its
+// view for the four silhouette sides, or by its minted id for a detail. Exactly one must be set.
+//
+// A DETAIL IS NEVER ADDRESSED BY NAME. «Detail 1 / detail 2» as a key would move a plate on rename
+// and would collide between two details a human called the same thing.
+message DesignBenchSlotRef {
+  // A ONEOF rather than two fields, so «both at once» is not a state anybody can send and the
+  // server has no contradiction to adjudicate.
+  oneof slot {
+    // front | back | side_l | side_r — the four silhouette sides, each of which is its own slot.
+    //
+    // ALSO `detail`, AND THAT VALUE MEANS «MINT A NEW DETAIL SLOT»: it addresses no existing row,
+    // so a name is REQUIRED alongside it (SetDesignBenchSlotRequest.new_detail_name,
+    // RegisterDesignUploadRequest.target) and expected_slot_rev must be 0. Creating a detail has no
+    // other spelling — a oneof cannot carry a view AND an id at once, so «view_key=detail with
+    // slot_id 0» was never expressible and would have been guessed two different ways on the two
+    // sides of the wire.
+    string view_key = 1;
+    // FK design_bench_slot(id) — an EXISTING slot, silhouette or detail alike, addressed by its
+    // minted id. This is how every detail is addressed after its birth.
+    int32 slot_id = 2;
+  }
+}
+
+message GetDesignBandRequest {
+  int32 tech_card_id = 1;
+}
+
+// GetDesignBandResponse is the whole band in one read. Bounded on purpose: the journal is capped
+// and the runs come back one page at a time, because a card with 40 runs × 3 outputs would
+// otherwise ship 120 MediaFull on every open of the tab.
+message GetDesignBandResponse {
+  // The bench: the four silhouette slots that have been touched, plus every detail slot. Slots that
+  // have never been touched are simply absent — they are born lazily by SetDesignBenchSlot.
+  repeated common.DesignBenchSlot bench = 1;
+  // Every minted version number of this card, ascending. Numbers only: the older versions are read
+  // whole through GetDesignSheetVersion, on demand, when somebody actually prints one.
+  repeated int32 version_numbers = 2;
+  // The LATEST version in full — the composition ARTIFACTS compares the live document against to
+  // draw «differs from v3». Unset when the card has never minted one, which is honestly «no sheet
+  // yet», not «version 0».
+  common.DesignSheetVersion latest_version = 3;
+  // The sheet journal, newest first, at most 50 lines. A card that issues more than that has a
+  // history worth paging, and it will get its own read before it does.
+  repeated common.DesignSheetIssue journal = 4;
+  common.DesignBudget budget = 5;
+  // The roles stated for this card's reference images, in prompt order. Only images that HAVE a
+  // role appear; a reference without one is still a reference, and the document is what lists them.
+  repeated common.DesignReference references = 14;
+  // The card's vector layers WITHOUT their strokes — id, base_media_id, rev, updated_by, updated_at
+  // only. Enough to list them and to know which rev to compare-and-set against; not enough to draw
+  // one, and deliberately so. The editor calls GetDesignEditLayer for the single layer it opens.
+  repeated common.DesignEditLayer layers = 6;
+  // AGGREGATES OVER THE WHOLE BAND, not over the page. Counting the page would make the header lie
+  // by exactly the amount that is not on screen.
+  int32 total_runs = 7;
+  int32 archived_runs = 8;
+  int32 max_rrev = 9; // the highest render revision on this card; 0 = no render has ever run
+  // Every colour recipe this card's render runs have used, newest first — the chips of the colour
+  // history. Derived from the runs, so a chip restores a RECIPE and never a picture.
+  repeated common.DesignColourRecipe colour_recipes = 10;
+  // run_id → how many of that run's pictures are hidden. Feeds «· 2 hidden» on a collapsed row
+  // without making the client count the pictures it was given. Counts over the WHOLE run, not over
+  // the page, which is the point: a collapsed row must state its own total.
+  //
+  // IT COVERS RUNS ONLY. Batch pictures have run_id 0 and are counted by hidden_by_batch below —
+  // not folded into key 0 here, which would make «run 0» a magic value meaning «everything
+  // uploaded, ever».
+  map<int32, int32> hidden_by_run = 11;
+  // batch_id → how many of that batch's pictures are hidden. The upload shelf's half of the pair.
+  map<int32, int32> hidden_by_batch = 16;
+  // The first page of history, newest first, with each row's pictures already under it.
+  repeated common.DesignRun runs = 12;
+  // The upload shelf rows of THAT SAME PAGE, newest first, with their pictures under them.
+  //
+  // THE BAND'S FEED IS RUNS AND BATCHES MERGED BY TIME, and `limit` counts rows across both. A
+  // manual upload has no run — design_picture.run_id is NULL for it, and design_run.kind has no
+  // member for it on purpose — so if batches did not ride the feed, an uploaded picture would hang
+  // under nothing and the shelf would be empty on every reload. That is the whole of what this wave
+  // actually ships, so it is not an edge.
+  repeated common.DesignBatch batches = 15;
+  // Cursor for the next page of the merged feed; empty when the history ends here. Pass it to
+  // ListDesignRuns.page_token.
+  //
+  // CONTINUE IT WITH include_archived = true. This first page is unfiltered by design (see above),
+  // so a continuation that filtered would change the row set mid-pagination and silently drop or
+  // duplicate rows around the seam.
+  string next_page_token = 13;
+}
+
+message ListDesignRunsRequest {
+  int32 tech_card_id = 1;
+  // Max 24, default 12 when 0. The history shows about 4 rows per screen; three screens of slack is
+  // a page, and a larger one is a picture flood, not a page. Above 24 → InvalidArgument.
+  //
+  // IT COUNTS ROWS ACROSS BOTH runs AND batches: the feed is the two merged by time, so a page of
+  // 12 may be 9 runs and 3 uploads. Counting only runs would let a card full of uploads return a
+  // page with almost nothing generated on it.
+  int32 limit = 2;
+  // Cursor from a previous response; empty starts at the newest row. A CURSOR, NOT AN OFFSET: rows
+  // are born at the head of this list, and an offset page would duplicate and skip rows exactly
+  // while somebody is generating.
+  //
+  // THIS IS THE FIRST CURSOR-PAGINATED RPC IN THIS SERVICE — everything around it pages by
+  // limit/offset. That is not an oversight here and should not be «fixed» into an offset: no other
+  // paged list in the admin grows at its head while the reader is looking at it.
+  //
+  // The cursor addresses the MERGED feed (runs + batches by time), not either table's ids, so it
+  // stays valid whichever kind of row happens to sit on the seam.
+  string page_token = 3;
+  // Include archived rows. Archiving is presentational, so this is a filter and not a state.
+  //
+  // MUST BE TRUE WHEN CONTINUING A CURSOR FROM GetDesignBand, whose first page is deliberately
+  // unfiltered. Flipping the filter mid-pagination changes the row set the cursor was cut from, and
+  // rows around the seam are then dropped or repeated with nothing to notice it. Only batches are
+  // unaffected — a batch is never archived.
+  bool include_archived = 4;
+}
+
+message ListDesignRunsResponse {
+  repeated common.DesignRun runs = 1; // newest first, pictures included under each row
+  // The upload shelf rows of the same page. The feed is runs and batches merged by time — see
+  // GetDesignBandResponse.batches for why a batch is a first-class row and not an afterthought.
+  repeated common.DesignBatch batches = 3;
+  string next_page_token = 2; // empty when the history ends here
+}
+
+message GetDesignSheetVersionRequest {
+  int32 tech_card_id = 1;
+  int32 version_number = 2; // the N of Rev.N; NotFound if this card never minted it
+}
+
+message GetDesignSheetVersionResponse {
+  common.DesignSheetVersion version = 1; // plates and callouts, frozen as minted
+  // This version's journal, oldest first: minted, then every print and share of it.
+  repeated common.DesignSheetIssue issues = 2;
+}
+
+message StartDesignRunRequest {
+  int32 tech_card_id = 1;
+  // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
+  // one payment.
+  string client_request_id = 2;
+  // flat | render | threed. `draft_idea` is REFUSED here with InvalidArgument: a text run executes
+  // inline and returns its answer, so it has its own verb (DraftDesignIdea) rather than a shared
+  // one that would return a pending row nobody ever polls.
+  string kind = 3;
+  string ask = 4; // the delta phrase; may be empty
+  // What is being asked for; at most 8 KB encoded. The INPUTS are not here and cannot be: the
+  // server snapshots them itself, because provenance a caller supplies is a claim, not provenance.
+  common.DesignRunParams params = 5;
+}
+
+message StartDesignRunResponse {
+  // The run as stored — pending, priced, with its input snapshot already taken. On an idempotent
+  // repeat this is the row that already existed, in whatever state it has reached.
+  common.DesignRun run = 1;
+  // The budget AFTER the reservation, so the bar moves with the click instead of on the next poll.
+  common.DesignBudget budget = 2;
+}
+
+message CancelDesignRunRequest {
+  int32 run_id = 1;
+}
+
+message CancelDesignRunResponse {
+  // The row after the cancel: `cancelled` outright if it had not started, otherwise still running
+  // with cancel_requested_at stamped.
+  common.DesignRun run = 1;
+}
+
+message ArchiveDesignRunRequest {
+  int32 run_id = 1;
+  bool archived = 2; // false un-archives; the flag is reversible by design
+}
+
+message ArchiveDesignRunResponse {
+  common.DesignRun run = 1;
+}
+
+message HideDesignPictureRequest {
+  int32 picture_id = 1;
+  bool hidden = 2; // false un-hides
+}
+
+message HideDesignPictureResponse {
+  common.DesignPicture picture = 1;
+}
+
+// DesignUploadItem is one already-uploaded file being filed into the band. The bytes went up
+// through UploadContentImage; this only says what the file IS.
+message DesignUploadItem {
+  int32 media_id = 1; // FK media(id)
+  // The view this file is GUESSED to be: front | back | side_l | side_r | detail. Empty = no guess.
+  // A guess, never a fact — a human confirms it by putting the plate into a slot.
+  string ghost_view = 2;
+}
+
+message RegisterDesignUploadRequest {
+  int32 tech_card_id = 1;
+  string client_request_id = 2; // one gesture = one batch, even across a retry
+  repeated DesignUploadItem items = 3; // must not be empty
+  // OPTIONAL: also place the FIRST item into this slot, in the same transaction. Unset = file the
+  // batch and touch no slot. `view_key = detail` mints a new detail slot and REQUIRES
+  // new_detail_name, exactly as in SetDesignBenchSlot.
+  DesignBenchSlotRef target = 4;
+  // The slot rev the caller believed `target` was at; 0 means «the slot does not exist yet», which
+  // is also the only legal value when target mints a detail. Read ONLY when target is set, and
+  // enforced exactly as in SetDesignBenchSlot.
+  int32 expected_slot_rev = 5;
+  // The name for a detail slot minted by `target`. Required in that case and ignored otherwise —
+  // same rule as SetDesignBenchSlotRequest.new_detail_name.
+  string new_detail_name = 6;
+}
+
+message RegisterDesignUploadResponse {
+  common.DesignBatch batch = 1;
+  repeated common.DesignPicture pictures = 2; // in the order the items were sent
+  common.DesignBenchSlot slot = 3; // the resulting slot; unset when no target was given
+}
+
+// DesignSplitFrame is one crop rectangle over a composite, in NORMALISED coordinates (0..1) of the
+// source image — the same coordinate system, and the same precision guard, as the card's
+// annotation points. Decimal rather than float: a lossless round trip, and one numeric type for
+// every normalised coordinate on the card.
+message DesignSplitFrame {
+  google.type.Decimal x = 1; // left edge, 0..1
+  google.type.Decimal y = 2; // top edge, 0..1
+  google.type.Decimal w = 3; // width, > 0, and x + w <= 1
+  google.type.Decimal h = 4; // height, > 0, and y + h <= 1
+  // The view this frame claims to be — it becomes the crop's ghost_view. Empty is allowed: an
+  // unnamed crop is still a crop, and naming it wrong is worse than not naming it.
+  string view_key = 5;
+}
+
+message SplitDesignPictureRequest {
+  int32 picture_id = 1; // must be a composite (composite_views non-empty), else not_composite
+  string client_request_id = 2; // a retried split must not produce a second set of crops
+  repeated DesignSplitFrame frames = 3;
+}
+
+message SplitDesignPictureResponse {
+  // The crops, siblings under the SAME run row as their source, in frame order.
+  repeated common.DesignPicture pictures = 1;
+}
+
+message SetDesignBenchSlotRequest {
+  int32 tech_card_id = 1;
+  DesignBenchSlotRef slot = 2;
+  // The plate to place. 0 = UNMARK — empty the slot without deleting it, which is a different act
+  // from deleting a detail slot and must stay different.
+  int32 picture_id = 3;
+  // CAS. Echo the slot_rev the client last read; 0 when the slot has never existed. A mismatch is
+  // Aborted:slot_rev_mismatch with the current slot attached.
+  int32 expected_slot_rev = 4;
+  // Names a detail slot. REQUIRED when slot.view_key = `detail`, which mints a new one — the name
+  // is what distinguishes it from every other detail, so a nameless mint is refused with
+  // FailedPrecondition:detail_name_required. On an existing detail addressed by slot.slot_id a
+  // non-empty value is a RENAME; empty leaves the name alone. Ignored for the four silhouette
+  // sides, which have no name of their own.
+  string new_detail_name = 5;
+}
+
+message SetDesignBenchSlotResponse {
+  common.DesignBenchSlot slot = 1; // the slot as stored, with its incremented slot_rev
+}
+
+message DeleteDesignDetailSlotRequest {
+  int32 slot_id = 1;
+}
+
+message DeleteDesignDetailSlotResponse {}
+
+// DesignExpectedPlate is one line of the mint's optimistic lock over the BENCH: «I am minting the
+// bench in which this slot stood at this rev». The card's own document is locked separately by
+// expected_lock_version — the two locks guard two different things, and a mint that checked only
+// the document could freeze a composition somebody rearranged a second earlier.
+message DesignExpectedPlate {
+  DesignBenchSlotRef slot = 1;
+  int32 slot_rev = 2; // the rev the minter saw; a mismatch is Aborted:bench_moved naming this slot
+}
+
+message MintDesignSheetVersionRequest {
+  int32 tech_card_id = 1;
+  string client_request_id = 2; // a lost response must not mint a phantom vN+1
+  // The card document, written by this SAME transaction with the same code path as UpdateTechCard.
+  // It is here rather than in a preceding call because the version freezes callouts, and callouts
+  // are part of the document: two calls could leave «re-pinned, but no version» on the floor.
+  common.TechCardInsert tech_card = 3;
+  int32 expected_lock_version = 4; // from GetTechCard; a mismatch is Aborted:lock_version_mismatch
+  // The bench as the minter saw it. Empty means «do not check the bench», which is only honest for
+  // a server-side caller; the UI always sends the full set.
+  repeated DesignExpectedPlate expected_plates = 5;
+  // The minter has seen and accepted that the composition mixes provenances. Without it such a mint
+  // is refused (mixed_needs_consent) rather than quietly blessed.
+  bool mixed_consent = 6;
+  // The minter has confirmed the fit claimed for UPLOADED plates, which carry no fit of their own.
+  // Without it: uploaded_fit_unconfirmed.
+  bool uploaded_fit_confirmed = 7;
+  string minted_via = 8; // callout | print | release | share — WHICH ACT minted this version
+}
+
+message MintDesignSheetVersionResponse {
+  // The version as frozen. The card document is NOT echoed: like UpdateTechCard, the client
+  // re-reads the card and merges server-assigned values by key — here, callout numbers by
+  // client_ref.
+  common.DesignSheetVersion version = 1;
+}
+
+message RecordDesignSheetIssueRequest {
+  int32 tech_card_id = 1;
+  int32 version_number = 2;
+  // printed | shared. `minted` is InvalidArgument, and so is any value outside the pair: the mint's
+  // own journal line must be reachable ONLY by minting, or the journal stops being evidence of what
+  // happened and becomes a list of what somebody typed.
+  string action = 3;
+  string client_request_id = 4; // a retried print must not double the journal
+}
+
+message RecordDesignSheetIssueResponse {
+  common.DesignSheetIssue issue = 1;
+}
+
+message GetDesignEditLayerRequest {
+  int32 tech_card_id = 1;
+  int32 layer_id = 2;
+}
+
+message GetDesignEditLayerResponse {
+  common.DesignEditLayer layer = 1; // the ONLY place strokes are served
+}
+
+message SaveDesignEditLayerRequest {
+  int32 tech_card_id = 1;
+  int32 layer_id = 2; // 0 = create; with base_media_id 0 this is the clean vector base
+  int32 base_media_id = 3; // FK media(id); 0 = no raster underneath. Ignored when layer_id != 0
+  int32 expected_rev = 4; // CAS; 0 on create. Mismatch → Aborted:layer_rev_mismatch {current_rev}
+  bytes strokes = 5; // JSON-encoded strokes, at most 512 KB → InvalidArgument:strokes_too_large
+}
+
+message SaveDesignEditLayerResponse {
+  common.DesignEditLayer layer = 1; // with the incremented rev the next save must echo
+}
+
+message FlattenDesignEditLayerRequest {
+  int32 tech_card_id = 1;
+  int32 layer_id = 2;
+  // REQUIRED, and not a convenience: it names the revision the person actually looked at. Without
+  // it a colleague's newer save gets materialised under somebody else's intention.
+  int32 expected_rev = 3;
+  // FK media(id): the raster the CLIENT produced from base + layer and uploaded through
+  // UploadContentImage. The server does not rasterise — see the RPC comment. It must belong to this
+  // installation and not already be filed as another picture of this card.
+  int32 media_id = 4;
+}
+
+message FlattenDesignEditLayerResponse {
+  // The rasterised result, carrying derived_from (the base), source_class and layer_rev. It is a
+  // SIBLING of its base — inheriting the base's run_id or batch_id. A layer drawn from NOTHING
+  // (base_media_id = 0) has no parent to inherit from, so its flatten is filed into a
+  // single-picture BATCH, which is what puts it on the upload shelf and keeps it readable after a
+  // reload.
+  common.DesignPicture picture = 1;
+}
+
+message SetDesignReferenceRoleRequest {
+  int32 tech_card_id = 1;
+  int32 media_id = 2; // FK media(id); must be a reference image the card holds
+  // front | back | side_l | side_r | detail. EMPTY CLEARS the role — «no side stated» is a real
+  // answer and must not require a second verb.
+  string role = 3;
+  int32 ordinal = 4; // order in the prompt; lower goes first
+}
+
+message SetDesignReferenceRoleResponse {
+  common.DesignReference reference = 1; // unset when the call cleared the role
+}
+
+message DraftDesignIdeaRequest {
+  int32 tech_card_id = 1;
+  string client_request_id = 2; // the same idempotency as every other paid call
+}
+
+message DraftDesignIdeaResponse {
+  // Already finished: status=done and output_text filled, because this run executes inline. It is
+  // still a row in the money register — that is the whole reason it goes through this machine.
+  common.DesignRun run = 1;
+  common.DesignBudget budget = 2; // the bar after the charge
 }

@@ -1,0 +1,503 @@
+syntax = "proto3";
+
+package common;
+
+import "common/media.proto";
+// The DESIGN band freezes callouts of a minted sheet version, and it freezes them as the ONE
+// annotation primitive the whole system draws with: TechCardAnnotation, its kinds, its points and
+// its palette are declared in techcard.proto and reused here verbatim. There is no
+// DesignAnnotationKind and there must never be one — a callout dragged from the sheet into the
+// document must stay the same arc on both sides of the move. No cycle: techcard.proto knows
+// nothing about the band.
+import "common/techcard.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// The DESIGN band is the studio half of a tech card: generation runs, the pictures they produce,
+// the bench that promotes pictures into views, and the frozen sheet versions that get printed.
+// It lives OUTSIDE the card document (its own lifecycle, its own writes) — which is why it has its
+// own file rather than another thousand lines of techcard.proto.
+//
+// VOCABULARIES ARE OPEN STRINGS ON PURPOSE, not enums. Every one of them has already grown once
+// during design (source_class gained `drawn`), and a closed proto enum would make the next member
+// undeployable until every client is out. The server is the authority on the accepted set; an
+// unknown value renders as itself rather than collapsing to UNKNOWN.
+
+// DesignRun is one row of the band's history: a generation job, its money, its inputs and its
+// output pictures. A run is NEVER deleted — archiving hides it presentationally (see archived_at).
+message DesignRun {
+  int32 id = 1; // the row's address; the handle a human says out loud as «run 5»
+  int32 tech_card_id = 2; // FK tech_card(id); which card's band this row belongs to
+  // Which state of the studio produced this row: flat | render | threed | draft_idea.
+  // Written by the client at start; immutable afterwards.
+  string kind = 3;
+  // OUTPUT-ONLY lifecycle: pending | running | done | failed | cancelled. A tile that is still
+  // running renders differently from a finished one, so this is the field the band polls.
+  string status = 4;
+  // IDEMPOTENCY KEY minted by the client (UUID). A double click on GENERATE is ONE payment: a
+  // second StartDesignRun with the same value returns THIS row with OK instead of starting a
+  // second paid job. Unique across the whole table.
+  string client_request_id = 5;
+  // OUTPUT-ONLY provenance of the server-side prompt profile that ran, pinned at launch:
+  // «flat-3view @ v4» under the history row. Profiles are server config, not a client-writable
+  // object — a client that could name the prompt could bill the org for anything.
+  string profile_name = 6;
+  string profile_version = 7;
+  // The delta phrase the human typed («wider collar»); the caption of the history row. Empty on a
+  // first generation, which asked for nothing in particular.
+  //
+  // A MANUAL UPLOAD IS NOT A RUN AND HAS NO ROW HERE — it is a DesignBatch. The band's feed is the
+  // two of them merged by time; see GetDesignBandResponse.
+  string ask = 8;
+  // What was asked for. Written by the client at start, echoed back verbatim; the run panel is
+  // unreadable without it. Capped at 8 KB — a params blob larger than that is not a request, it is
+  // a payload.
+  DesignRunParams params = 9;
+  // OUTPUT-ONLY SNAPSHOT of what the inputs WERE at launch. The SERVER assembles it — a
+  // client-supplied provenance is not provenance, it is a claim. Capped at 64 KB.
+  DesignInputSnapshot inputs = 10;
+  // OUTPUT-ONLY copy of the card's fit at launch, so the badge «fit slim ≠ card oversized» can be
+  // drawn on an old picture. Empty = the fit was not stated; the mint asks then. Uploaded plates
+  // never state one at all, which is why MintDesignSheetVersion has uploaded_fit_confirmed.
+  string fit_at_launch = 11;
+  // OUTPUT-ONLY render revision — the «r4» caption in the colour history. MAX+1 per card, assigned
+  // only for kind=render; 0 on every other kind.
+  int32 rrev = 12;
+  // OUTPUT-ONLY: how many pictures were asked for. `done · 2 of 3` needs the denominator; without
+  // it a partial provider answer is indistinguishable from a complete one.
+  int32 requested_outputs = 13;
+  // OUTPUT-ONLY, and the reason the money register can be honest: «failed · attempt 2 of 3 · $0.04
+  // was still charged». Without per-attempt rows price_actual shows the price of the LAST attempt
+  // and the budget bar undercounts every retry.
+  repeated DesignRunAttempt attempts = 14;
+  // OUTPUT-ONLY money. price_estimate is what was reserved against the day BEFORE dispatch;
+  // price_actual is the SUM of attempts[].price, paid failures included. Unset (null) means «not
+  // known yet», which is not zero.
+  //
+  // costing-shaped: stripped when the account lacks costing:read
+  google.type.Decimal price_estimate = 15;
+  // costing-shaped: stripped when the account lacks costing:read
+  google.type.Decimal price_actual = 16;
+  // ISO 4217. On the wire so the budget bar never hard-codes «$».
+  string currency = 17;
+  // OUTPUT-ONLY stamp of the admin who started the run. Without it a race between two authors is
+  // invisible on the history row.
+  string author = 18;
+  // OUTPUT-ONLY: set when a running row was asked to stop; drives the `cancelling…` pill. A result
+  // that arrives after this stamp is STILL paid and STILL recorded — the row says so rather than
+  // pretending the money was not spent.
+  google.protobuf.Timestamp cancel_requested_at = 19;
+  // OUTPUT-ONLY, PRESENTATIONAL AND REVERSIBLE: a collapsed row (`· K archived`) and who collapsed
+  // it. Archiving hides the ROW, never its pictures — picture invisibility has exactly one
+  // persistent verb, and it is HideDesignPicture.
+  google.protobuf.Timestamp archived_at = 20;
+  string archived_by = 21;
+  // OUTPUT-ONLY failure facts, so a dead row reads `failed · provider timeout` instead of being a
+  // silent hole. error_code is the stable machine token; last_error is the human tail.
+  string error_code = 22;
+  string last_error = 23;
+  // OUTPUT-ONLY result of a TEXT run (kind=draft_idea). Empty on every picture-producing kind.
+  string output_text = 24;
+  // OUTPUT-ONLY timing: `0:14 / ~25 s` and the sort order of the history.
+  google.protobuf.Timestamp created_at = 25;
+  google.protobuf.Timestamp started_at = 26;
+  google.protobuf.Timestamp completed_at = 27;
+  // The pictures this run produced, UNDER their own row rather than in a flat list beside it. A
+  // card with 40 runs × 3 outputs would otherwise ship 120 MediaFull on every read of the band.
+  // Hidden pictures are included WITH their flag — the client filters, the server never lies about
+  // what exists.
+  repeated DesignPicture pictures = 28;
+}
+
+// DesignRunAttempt is ONE paid provider call. It exists because the history row must be able to
+// say «the first attempt was paid for and the answer never arrived»: without it price_actual is
+// the price of the last attempt, the budget bar undercounts retries, and the answer to «where did
+// the money go» is untrue.
+message DesignRunAttempt {
+  int32 attempt_no = 1; // 1-based, unique within the run
+  string provider = 2;
+  string provider_request_id = 3; // for reconciliation against the provider's own billing
+  // The idempotency key sent TO the provider. Minted once per RUN and STABLE across its attempts —
+  // that is the whole point: a retry must not buy a second picture.
+  //
+  // IT IS THE RUN'S KEY, REPEATED IN EVERY ATTEMPT, AND IT IS STORED ONCE — on design_run, not per
+  // attempt. It appears here so a reader holding one attempt can reconcile against the provider's
+  // billing without loading the run. Do NOT give the attempt table a column of its own: two homes
+  // for one key is how a retry ends up buying a second picture.
+  string provider_idempotency_key = 4;
+  // dispatching | accepted | delivered | failed | unknown.
+  // `unknown` is load-bearing: it means the money was POSSIBLY taken and the outcome is not
+  // knowable from our side. Collapsing it into `failed` would be a lie about the ledger.
+  string state = 5;
+  // The price of THIS attempt. Unset = not billed (or not known yet); 0 = billed nothing.
+  //
+  // costing-shaped: stripped when the account lacks costing:read
+  google.type.Decimal price = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp finished_at = 8;
+  string error_code = 9;
+}
+
+// DesignRunParams is what was asked for — written by the client at start, replayed verbatim into
+// the run panel. Total encoded size is capped at 8 KB.
+message DesignRunParams {
+  // Which views were requested: front | back | side_l | side_r | detail. Drives the placeholder
+  // tiles that stand in for outputs that have not arrived yet.
+  repeated string views = 1;
+  // one | per_view — a single composite sheet against one picture per view. A composite has no
+  // single view and therefore cannot be clicked into a bench slot; it is split first.
+  string layout = 2;
+  // The colour recipe of a render submission. The chips in the colour history restore THIS, not
+  // the picture — the recipe migrates, the pixels do not.
+  DesignColourRecipe colour = 3;
+  DesignThreedParams threed = 4; // only meaningful for kind=threed
+  // `fix: back` — which view of the bench this run was asked to fix. Empty = not a fix. Feeds the
+  // history column «input = slots (back)».
+  //
+  // SILHOUETTE SIDES ONLY: front | back | side_l | side_r. A detail slot is deliberately NOT
+  // targetable, because a bare view key cannot name one of several details and this field is frozen
+  // into the run's history — an ambiguous target here could never be repaired afterwards. If fixing
+  // a detail is ever wanted, it arrives as a slot_id field beside this one, not as a `detail`
+  // string inside it.
+  string fix_target = 5;
+  // Extra media fed to a render besides the bench slots — e.g. an unmarked flat the human dropped
+  // in. FK media(id).
+  repeated int32 extra_input_media_ids = 6;
+}
+
+// DesignColourRecipe is the colour submission of a render run, in a form that a history chip can
+// RESTORE. fabric_media_id is not optional decoration: without it a photo-sourced recipe cannot be
+// rebuilt from the chip at all.
+message DesignColourRecipe {
+  string source = 1; // dictionary | own | photo
+  string code = 2; // colourway code when source=dictionary, e.g. OLV
+  string hex = 3; // #RRGGBB screen approximation; a visualisation override, never canonical
+  string words = 4; // the free «in words» description that went to the model
+  int32 fabric_media_id = 5; // FK media(id); REQUIRED when source=photo, otherwise 0
+}
+
+// DesignThreedParams are the parameters of a turntable run.
+message DesignThreedParams {
+  int32 frames = 1; // number of turntable frames, e.g. 12
+  string presentation = 2; // air | model — a garment floating, or a garment on a mannequin
+  int32 model_id = 3; // FK model(id); 0 = unset. Only meaningful when presentation=model
+  int32 garment_size_id = 4; // FK size(id); 0 = unset — the size the turntable claims to show
+  // Overrides the card's fit for THIS submission only. Empty = the card's fit was used. A fit is a
+  // property of the garment; presentation cannot change it, so an override is a stated deviation
+  // and is stamped as one.
+  string fit_override = 5;
+  // The four render plates of ONE rrev that this turntable was built from. Without them the run
+  // panel cannot show what the rotation was assembled out of, and a turntable stitched from
+  // different rrevs (i.e. from different colours) would be indistinguishable from a coherent one.
+  repeated int32 source_picture_ids = 6;
+}
+
+// DesignInputSnapshot is what the inputs WERE when the run started. Assembled by the SERVER only.
+//
+// IDS ARE STORED, MediaFull IS SERVED. The stored snapshot freezes media_id — freezing a URL is
+// wrong because objects move — and the read joins media and hands back a ready picture. Nothing
+// else could draw the run panel: AdminService has no RPC that reads media by id.
+//
+// Total encoded size capped at 64 KB; refs ≤ 24; slots ≤ 8. A snapshot must fit in a row and in an
+// eye.
+message DesignInputSnapshot {
+  string garment_note = 1; // the words that went to the model
+  DesignMoodSnapshot mood = 2; // what `draft the idea` actually read off the moodboard
+  repeated DesignInputRef refs = 3; // reference thumbnails of the run panel
+  repeated DesignInputSlot slots = 4; // the bench plates fed to a render / fix
+  string fit = 5; // the fit the model was told about
+  // The requested views and layout, frozen: the fingerprint that draws the `current / earlier`
+  // divider in the history.
+  repeated string views = 6;
+  string layout = 7;
+}
+
+// DesignMoodSnapshot is the moodboard as the model read it — the note plus the callouts pinned on
+// moodboard images. Moodboard callouts are ordinary TechCardCallout rows on the card; this is a
+// frozen copy of what they said at launch, not a second home for them.
+message DesignMoodSnapshot {
+  string note = 1;
+  repeated DesignMoodCallout callouts = 2;
+}
+
+// DesignMoodCallout is one frozen moodboard callout inside a run snapshot: which image, what it
+// said. Geometry is deliberately absent — the snapshot answers «what did the model read», and a
+// marker position is not something a model reads.
+message DesignMoodCallout {
+  int32 media_id = 1; // FK media(id)
+  string text = 2;
+}
+
+// DesignInputRef is one reference image fed to the run.
+message DesignInputRef {
+  // WHAT THE SNAPSHOT FROZE. This is the stored fact and it is always populated, including when
+  // the media row has since been deleted — «which input disappeared» must be answerable from the
+  // snapshot itself, not from an object the server is obliged to leave empty.
+  int32 media_id = 1;
+  // The resolved picture, joined from media_id at read time. UNSET when deleted is true.
+  MediaFull media = 2;
+  string role = 3; // what the human said this reference is for (silhouette, fabric, mood …)
+  string note = 4;
+  bool deleted = 5; // the media row no longer exists; the snapshot still remembers its id
+}
+
+// DesignInputSlot is one bench plate fed to a render or a fix.
+message DesignInputSlot {
+  string view_key = 1; // front | back | side_l | side_r | detail
+  // WHICH SLOT, when view_key is `detail`. A view key alone cannot tell two details apart, and the
+  // comparison «is this input stale» has no join key without it — so the badge would be
+  // uncomputable for every card with more than one detail slot, FOREVER: a snapshot is frozen at
+  // launch and is never repaired later. DesignSheetPlate solved the same problem the same way.
+  //
+  // 0 for the four silhouette sides, which view_key already identifies.
+  int32 slot_id = 2;
+  // COPY of the detail's name at launch, so a snapshot still reads «detail: cuff» after the slot
+  // has been renamed or deleted. Empty for the silhouette sides.
+  string detail_name = 3;
+  int32 media_id = 4; // what the snapshot froze; always populated, deleted media included
+  // Resolved at read time from media_id. UNSET when deleted is true (see DesignInputRef).
+  MediaFull media = 5;
+  // The plate's content hash AT LAUNCH. Comparing it against the CURRENT media.content_hash of the
+  // slot is exactly what earns the `stale` badge — the plate was re-flattened or replaced since.
+  // Empty = the media predates content hashing (0336) and no comparison is possible; say so rather
+  // than guess.
+  string content_hash = 6;
+  int32 layer_rev = 7; // the edit layer's revision at launch, for the same staleness comparison
+  bool deleted = 8;
+}
+
+// DesignPicture is one image in the band. It hangs under EITHER a run (generated) or a batch
+// (uploaded by hand) — exactly one of run_id / batch_id is set, never both and never neither.
+// Pictures are never deleted through this contract: invisibility (hidden_at) and erasing bytes are
+// different floors of the building.
+//
+// THE CONTENT HASH IS ON `media.content_hash` and nowhere else. A picture has nothing to freeze —
+// it IS the live file — so a second copy here could only ever disagree with the first.
+message DesignPicture {
+  int32 id = 1;
+  int32 tech_card_id = 2; // FK tech_card(id)
+  MediaFull media = 3; // the resolved image
+  int32 run_id = 4; // FK design_run(id); set for GENERATED pictures, 0 for uploaded ones
+  int32 batch_id = 5; // FK design_batch(id); set for UPLOADED pictures, 0 for generated ones
+  int32 ordinal = 6; // position within its run/batch; stable, and the key of idempotent insertion
+  string kind = 7; // flat | render | threed
+  // The GHOST label: a hypothesis about which view this is, not a fact. Front-and-back guesses are
+  // routinely wrong, so the label is shown as a guess and a human confirms it by putting the plate
+  // into a slot. Empty = no hypothesis. On a crop this carries the frame's declared view.
+  string ghost_view = 8;
+  // Non-empty ONLY on a composite: the views glued into one image. A composite has no single view,
+  // is not clickable into a slot, and must be split first (SplitDesignPicture).
+  repeated string composite_views = 9;
+  // The picture this one was derived from — a crop or a flattened edit. A derivative is a SIBLING
+  // OF ITS PARENT: it inherits the parent's run_id or batch_id, and never gets a row of its own,
+  // because no money was spent on it. A crop of an uploaded composite therefore sits under the same
+  // BATCH the composite arrived in.
+  int32 derived_from = 10;
+  // PROVENANCE, an open vocabulary: ai | uploaded | ai_edits | imported_svg | drawn.
+  // It has already grown once (`drawn`, for a vector base drawn from nothing), which is why it is
+  // a string and not an enum.
+  string source_class = 11;
+  // This picture is the output of a fix whose INPUT slots were of mixed provenance. The flag does
+  // not forbid anything — it refuses to let the mixture be laundered by one more generation.
+  bool mixed_input = 12;
+  int32 layer_rev = 13; // the edit layer revision this picture was flattened from; 0 = not flattened
+  // Reversible invisibility — the ONLY persistent verb for hiding a picture. The guards live in
+  // HideDesignPicture: a plate in a slot, in a minted version, feeding a live run, or parenting a
+  // live crop cannot be hidden.
+  google.protobuf.Timestamp hidden_at = 14;
+  string hidden_by = 15;
+  google.protobuf.Timestamp created_at = 16;
+}
+
+// DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the
+// carrier of the batch's coherence — plates that arrived together are one hand's work, and the
+// mixed-provenance warning reads that.
+message DesignBatch {
+  int32 id = 1;
+  int32 tech_card_id = 2; // FK tech_card(id)
+  // IDEMPOTENCY KEY minted by the client (UUID). Without it a retry after a network timeout files
+  // a SECOND batch and a second set of pictures. Unique across the table.
+  string client_request_id = 3;
+  string author = 4; // server-stamped
+  int32 files_count = 5;
+  int64 size_bytes = 6; // the batch's real «price» — an upload costs megabytes, not money
+  google.protobuf.Timestamp created_at = 7;
+  // The pictures of this batch, UNDER their own shelf row — the same arrangement runs use, and for
+  // the same reason. Without it an uploaded picture hangs under nothing readable: it has no run,
+  // so no history row could carry it, and the upload shelf would be empty on every reload of the
+  // tab. Hidden pictures are included WITH their flag; the client filters.
+  repeated DesignPicture pictures = 8;
+}
+
+// DesignReference is the ROLE of one reference image inside the band's prompt: which side of the
+// garment this reference is about, and in what order it is fed.
+//
+// IT LIVES IN THE BAND, NOT IN THE DOCUMENT, and that is forced rather than chosen. A reference in
+// the document is TechCardMediaItem{media_id, kind, caption}, where `kind` is ALREADY spent on what
+// the image IS (MOODBOARD | REFERENCE | SWATCH). For a bench plate the argument «the view axis is
+// the existing kind» holds; for a reference it does not — kind is occupied, so this is a genuine
+// second axis. And it cannot become a column on tech_card_media either: that table has no row key
+// at all, it is rewritten whole by every card save, and there would be nothing to carry the
+// attribute onto the resent row.
+//
+// IT IS NOT PART OF THE DOCUMENT'S SIGNATURE. A role is a hint to the model and an order in the
+// prompt, not a fact about the garment, so it enters no section digest and stales no sign-off.
+message DesignReference {
+  int32 tech_card_id = 1; // FK tech_card(id)
+  int32 media_id = 2; // FK media(id); the reference image, which the document also holds
+  // front | back | side_l | side_r | detail. NEVER EMPTY on the wire: clearing a role deletes the
+  // row, so «no role stated» is expressed by the ABSENCE of a DesignReference for that media, not
+  // by a present row carrying "". See SetDesignReferenceRole, which takes "" as the clear verb.
+  string role = 3;
+  int32 ordinal = 4; // order in the prompt; lower goes first
+  string set_by = 5; // server-stamped
+  google.protobuf.Timestamp set_at = 6;
+}
+
+// DesignBenchSlot is one exclusive place on the bench: a view holds at most one plate. The four
+// silhouette sides (front/back/side_l/side_r) are born lazily on first touch; detail slots are
+// created by naming one.
+message DesignBenchSlot {
+  // The slot's OWN minted id. «Detail 1 / detail 2» as a key is forbidden: renaming a detail must
+  // not move a plate, and two details named the same must still be two slots.
+  int32 id = 1;
+  string view_key = 2; // front | back | side_l | side_r | detail
+  string detail_name = 3; // presentation only; required when view_key=detail, empty otherwise
+  int32 picture_id = 4; // FK design_picture(id); 0 = the slot is empty
+  // CAS TOKEN. Every write to this slot echoes the rev it believed it was overwriting; a mismatch
+  // is Aborted:slot_rev_mismatch with the slot's current state attached. 0 = the slot does not
+  // exist yet, which is the value a lazy first placement sends.
+  int32 slot_rev = 5;
+  string set_by = 6; // server-stamped
+  google.protobuf.Timestamp set_at = 7;
+  // THE RESOLVED PLATE, not just its id. Unset when the slot is empty.
+  //
+  // A bare picture_id is unreadable on its own: the plate a slot holds is routinely older than the
+  // first page of runs, so the client would have nothing to draw the thumbnail from and no
+  // source_class to compute the mixed-provenance warning with. It is also what makes the CAS
+  // refusal usable — Aborted:slot_rev_mismatch hands back the slot's CURRENT state, and a bare id
+  // there would force the loser of the race into another round trip before it could redraw.
+  DesignPicture picture = 8;
+}
+
+// DesignSheetVersion is a MINTED, FROZEN sheet: Rev.N as it was printed. Its plates and callouts
+// are rows of their own, not a JSON blob — a version must still print a year from now, so its
+// bytes must not be erasable, and that is expressed by a foreign key the media library can see.
+message DesignSheetVersion {
+  int32 id = 1;
+  int32 version_number = 2; // 1-based per card; the N in «Rev.N» and in the QR of the printed sheet
+  string client_request_id = 3; // idempotency: a lost response must not mint a phantom vN+1
+  // The minter explicitly consented to a composition of mixed provenance. Without consent such a
+  // mint is refused (FailedPrecondition: mixed_needs_consent) rather than silently blessed.
+  bool mixed_consent = 4;
+  // WHICH ACT gave birth to this version: callout | print | release | share. There is no «accept»
+  // button anywhere — a version is a by-product of an act, never a ceremony of its own.
+  string minted_via = 5;
+  string minted_by = 6; // server-stamped
+  google.protobuf.Timestamp minted_at = 7;
+  repeated DesignSheetPlate plates = 8;
+  // The frozen callouts of this version, at most 200 — the same readability ceiling the card's
+  // annotations already carry.
+  repeated DesignSheetCallout callouts = 9;
+}
+
+// DesignSheetPlate is one frozen image of a version, with everything needed to explain a year later
+// what was printed and where it came from.
+message DesignSheetPlate {
+  string view_key = 1; // front | back | side_l | side_r | detail
+  // The bench slot this plate came from, or 0 if that slot has since been deleted. The version
+  // survives the slot's death, which is why detail_name below is a COPY and not a lookup.
+  int32 slot_id = 2;
+  string detail_name = 3; // COPY of the slot's name at mint: a deleted slot must not take it away
+  MediaFull media = 4; // resolved; the bytes are pinned (media cannot be deleted out from under it)
+  // THE HASH AT MINT — what this version actually froze. Empty = the media predates 0336.
+  //
+  // IT LIVES HERE, unlike on DesignPicture, and the asymmetry is the point rather than an
+  // oversight: a plate of a minted version is a FROZEN fact («these are the bytes the sheet was
+  // signed over»), and it must survive even a future recomputation of media.content_hash. A live
+  // picture has nothing to freeze — it is the current file — so for it a second copy could only
+  // disagree with the first.
+  string content_hash = 5;
+  int32 layer_rev = 6; // the edit-layer revision at mint
+  string source_class = 7; // ai | uploaded | ai_edits | imported_svg | drawn, frozen
+  int32 run_id = 8; // the run this plate came from; 0 for an uploaded plate
+  string fit_stamp = 9; // the fit claimed for this plate at mint; empty = never stated
+  bool mixed_input = 10; // frozen copy of the plate's mixed-input flag
+  int32 ordinal = 11; // print order within the version
+}
+
+// DesignSheetCallout is one frozen callout of a version. Geometry is a TechCardAnnotation — the
+// system's single annotation primitive, at the same coordinate precision the card's annotations
+// already enforce.
+message DesignSheetCallout {
+  int32 number = 1; // the callout number as printed on this version
+  MediaFull media = 2; // the plate this callout is pinned to, resolved
+  // The frozen shape: kind, points, colour, dashes. Its own `text` field is left EMPTY — the note
+  // that gets printed lives in `text` below, because a card callout's note is composed of
+  // part / description / dimensions and it is the COMPOSED line that goes on paper.
+  TechCardAnnotation annotation = 3;
+  string text = 4; // the printable note, frozen at mint
+}
+
+// DesignSheetIssue is one APPEND-ONLY journal line of a version: minted | printed | shared.
+// Reprinting a sheet does NOT mint a new version — it writes a line here. That distinction is the
+// whole reason the journal exists.
+message DesignSheetIssue {
+  int32 id = 1;
+  int32 version_number = 2;
+  string action = 3; // minted | printed | shared
+  string actor = 4; // server-stamped
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// DesignEditLayer is a vector layer: strokes over a raster base, or strokes over nothing.
+//
+// ADDRESSED BY ITS OWN id, never by base_media_id. The `draw it` door opens a layer with NO base
+// (base_media_id = 0), and a card may hold several such layers; the model «a layer is tracing
+// paper over a picture» cannot express that at all.
+message DesignEditLayer {
+  int32 id = 1;
+  int32 tech_card_id = 2; // FK tech_card(id)
+  int32 base_media_id = 3; // FK media(id); 0 = a clean vector base, drawn from nothing
+  // CAS TOKEN. SaveDesignEditLayer and FlattenDesignEditLayer both echo the rev they believed they
+  // were acting on; a mismatch is Aborted:layer_rev_mismatch carrying the current rev.
+  int32 rev = 4;
+  // The layer's strokes, JSON-encoded. Capped at 512 KB — one vector edit; beyond that the answer
+  // is «too many strokes, split it», not a slower save. There is deliberately no revision history:
+  // a minted version pins the content_hash of the already-rasterised file.
+  //
+  // SERVED ONLY BY GetDesignEditLayer, AND LEFT EMPTY EVERYWHERE ELSE. GetDesignBand lists the
+  // layers without their strokes on purpose: 512 KB is the cap per LAYER, a card may hold several,
+  // and shipping them all would make every open of the tab cost megabytes to draw a list of
+  // thumbnails. The editor fetches the one layer it is about to open.
+  bytes strokes = 5;
+  string updated_by = 6; // server-stamped
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// DesignBudget is the band's money bar: `today $0.41 of $2.00`.
+//
+// costing-shaped: EVERY money field below is stripped when the account lacks costing:read. A band
+// read by an account without it shows no bar at all — a bar with blanks in it would read as «the
+// budget is zero», which is a different and false statement.
+message DesignBudget {
+  string day = 1; // YYYY-MM-DD, computed in `timezone` — never in the MySQL session's day
+  // ACTUALLY CHARGED today: the sum of attempt prices, paid failures included.
+  google.type.Decimal spent = 2;
+  // RESERVED today: the estimates of runs that are still in flight and have not been billed yet.
+  //
+  // TWO FIELDS, NOT ONE SUM, even though the ceiling check adds them. The gate MUST compare
+  // `spent + reserved` against `cap` — counting only the charged half would let two simultaneous
+  // starts both pass a ceiling only one of them fits under. But a single field called «spent»
+  // holding that sum would LIE to the reader about what was actually paid. One fact, one field;
+  // the bar draws `spent` solid and `reserved` as a pale tail, and the sum is derived where it is
+  // needed.
+  google.type.Decimal reserved = 3;
+  google.type.Decimal cap = 4; // the org's daily ceiling
+  string currency = 5; // ISO 4217
+  // WHOSE «today» resets the bar. On the wire because that is an organisational decision, not a
+  // property of the database session that happened to answer.
+  string timezone = 6;
+}
