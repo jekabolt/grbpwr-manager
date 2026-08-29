@@ -3577,9 +3577,13 @@ message MediaUsage {
 message MediaUsageRef {
   // product | archive | model | material | task | tech_card | fitting | sample |
   // design_picture | design_sheet_version | design_edit_layer.
-  // The last two are the DESIGN band: a picture holds its media, and a MINTED SHEET VERSION holds
-  // it with RESTRICT — that is why the library must name it, or somebody deletes the bytes a
-  // printed Rev.N depends on.
+  // The last three are the DESIGN band, and all three are OWNING references: a picture holds its
+  // media, a MINTED SHEET VERSION holds the bytes of its plates and its frozen callouts, and an
+  // EDIT LAYER holds the image its strokes were drawn over — without it the saved layer cannot be
+  // opened or flattened at all. All three hold with RESTRICT, which is why the library must name
+  // them: otherwise somebody deletes the bytes a printed Rev.N, or an unfinished edit, depends on.
+  // The band's reference roles are deliberately NOT here — a role is a hint to the model, and a
+  // lock on deleting a moodboard picture would be harm, so that column carries no FK at all.
   string kind = 1;
   int32 entity_id = 2; // id of the entity to navigate to, in the space named by kind
   string label = 3; // human-readable name of that entity, e.g. "CARGO PANTS BLACK"
