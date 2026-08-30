@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // ПРОБЫ ВОРОТ, КОТОРЫЕ СТЕРЕГУТ ПРАВДУ: цену, происхождение входа и то, что дверь приняла.
@@ -365,7 +366,7 @@ func TestReferenceNoteHasACeiling(t *testing.T) {
 		TechCardId: designGuardCardID,
 		MediaId:    100,
 		Role:       entity.DesignViewFront,
-		Note:       strings.Repeat("a", designMaxRefNoteRunes+1),
+		Note:       proto.String(strings.Repeat("a", designMaxRefNoteRunes+1)),
 	})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
@@ -387,7 +388,7 @@ func TestReferenceNoteCeilingCountsRunes(t *testing.T) {
 	srv := &Server{repo: repo}
 	_, err := srv.SetDesignReferenceRole(designGuardCtx(), &pb_admin.SetDesignReferenceRoleRequest{
 		TechCardId: designGuardCardID, MediaId: 100,
-		Role: entity.DesignViewFront, Note: note,
+		Role: entity.DesignViewFront, Note: proto.String(note),
 	})
 	require.NoError(t, err, "записка ровно в потолок рун обязана пройти")
 	require.Equal(t, note, sent.Note, "записка обязана доехать до стора дословно")

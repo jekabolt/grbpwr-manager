@@ -323,9 +323,13 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 		// The note rides on the SAME upsert as the role — one row, one write. An empty note on a
 		// row that keeps its role clears the note; an empty ROLE deletes the row and takes the
 		// note with it, because the row is the role's existence.
-		Note:    strings.TrimSpace(req.GetNote()),
-		Ordinal: int(req.GetOrdinal()),
-		Actor:   designActor(ctx),
+		Note: strings.TrimSpace(req.GetNote()),
+		// ОТСУТСТВИЕ ПОЛЯ — НЕ ПУСТАЯ СТРОКА. `req.Note == nil` значит «вызывающий про записку
+		// ничего не сказал»; GetNote() вернул бы на этом месте "" и был бы неотличим от «сотри».
+		// Читать это надо ИМЕННО с указателя, до всякого GetNote.
+		NoteOmitted: req.Note == nil,
+		Ordinal:     int(req.GetOrdinal()),
+		Actor:       designActor(ctx),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to set the design reference role", err, nil)

@@ -12016,7 +12016,15 @@ message SetDesignReferenceRoleRequest {
   // a real answer for it. That is NOT the rule `role` follows: an empty role deletes the row, and
   // takes the note with it, because the row IS the role's existence. The asymmetry is deliberate;
   // see common.DesignReference.
-  string note = 5;
+  //
+  // OPTIONAL, AND THAT KEYWORD IS THE WHOLE POINT — it buys the THIRD state, «the caller said
+  // nothing about the note». Without it the field had two states where the verb needs three, and
+  // the missing one is not academic: a tab running older JS omits the field, proto3 decodes the
+  // absence as "", the line above reads "" as «clear it», and the human's words are gone with no
+  // gesture from anybody. Presence separates «leave it alone» (absent) from «erase it» (present
+  // and empty). This is the same shape common.TechCard.garment_description already uses, for the
+  // same reason, and it is why THAT field survived the bug this one had.
+  optional string note = 5;
 }
 
 message SetDesignReferenceRoleResponse {

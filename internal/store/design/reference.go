@@ -69,12 +69,24 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 			INSERT INTO design_reference (tech_card_id, media_id, role, note, ordinal, set_by, set_at)
 			VALUES (:card, :media, :role, :note, :ord, :who, UTC_TIMESTAMP(6))
 			ON DUPLICATE KEY UPDATE
-				role = VALUES(role), note = VALUES(note), ordinal = VALUES(ordinal),
+				role = VALUES(role),
+				-- IF, А НЕ VALUES(note) — когда вызывающий про записку ничего не сказал, колонка
+				-- обязана остаться КАК БЫЛА. Ветвиться в Go двумя разными запросами здесь нельзя,
+				-- это два писателя одной строки, и они разойдутся на первой же правке одного.
+				--
+				-- ⚠ В КОММЕНТАРИИ ВНУТРИ ИМЕНОВАННОГО ЗАПРОСА НЕ СТАВИТЬ ДВОЕТОЧИЕ. sqlx разбирает
+				-- текст ДО того, как MySQL увидит комментарий, и «двоеточие плюс пробел» читает как
+				-- параметр с ПУСТЫМ именем. Запрос падает на связывании с «could not find name»,
+				-- то есть не на синтаксисе SQL, а там, где искать не станешь.
+				note = IF(:note_omitted, note, VALUES(note)),
+				ordinal = VALUES(ordinal),
 				set_by = VALUES(set_by), set_at = VALUES(set_at)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "role": req.Role,
-				"note": nullStr(strings.TrimSpace(req.Note)),
-				"ord":  req.Ordinal, "who": req.Actor,
+				// На ВСТАВКЕ omitted даёт NULL, и это верно: у новорождённой строки записки нет.
+				"note":         nullStr(strings.TrimSpace(req.Note)),
+				"note_omitted": req.NoteOmitted,
+				"ord":          req.Ordinal, "who": req.Actor,
 			}); err != nil {
 			return fmt.Errorf("failed to set design reference role: %w", err)
 		}
