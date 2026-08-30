@@ -2003,6 +2003,19 @@ type (
 		GetEditLayer(ctx context.Context, techCardID, layerID int) (*entity.DesignEditLayer, error)
 		// GetBudget reports today's money bar, with the day computed in the org's timezone.
 		GetBudget(ctx context.Context) (entity.DesignBudget, error)
+		// AssertMediaNotForeign refuses a media id that belongs to a DIFFERENT tech card.
+		//
+		// ⚠ IT IS ONE RULE WITH TWO CALLERS, NEVER TWO RULES. The door asks BEFORE it reserves
+		// money (a foreign picture must not open a paid run at all), and ImportVector asks again
+		// inside its own transaction (where the answer cannot go stale between check and insert).
+		// The two cannot drift because there is only one of them — the same argument
+		// designRerunParent makes about the parent of a rerun.
+		//
+		// The rule is NEGATIVE — «not another card's», not «this card's» — because a file freshly
+		// uploaded through UploadContentImage belongs to no card at all and is a legal input, while
+		// a band picture lives in design_picture and never reaches tech_card_media. A positive rule
+		// would refuse both. Ownerless media therefore passes; see the store for the whole argument.
+		AssertMediaNotForeign(ctx context.Context, techCardID int, mediaIDs []int) error
 		// GetSettings reads the singleton row that IS the band's whole configuration.
 		GetSettings(ctx context.Context) (entity.DesignSettings, error)
 

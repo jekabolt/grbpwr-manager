@@ -129,6 +129,26 @@ func (p threedProvider) Collect(ctx context.Context, job Job, requestID string) 
 	var model, thumb bytes.Buffer
 	res, err := p.c.Await(ctx, requestID, meshy.Sink{Model: &model, Thumbnail: &thumb})
 	if err != nil {
+		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as it does on the vector route
+		// (see vector.go): the transport attaches what a failed call consumed when it knew, and
+		// Charge reads it back. Without this the money of a terminal failure — a SUCCEEDED task
+		// with no glb, a model past the size cap — vanished: the attempt closed with a NULL price,
+		// the day's cap never saw the spend, and nobody could say what the failures cost.
+		//
+		// ok = false is NOT a charge of zero. It means nobody could say, and the ledger has to keep
+		// that difference, so an unpriced failure still returns a nil Outcome.
+		if credits, ok := meshy.Charge(err); ok {
+			if usd := p.c.CostUSD(credits); usd.IsPositive() {
+				// THE OUTCOME TRAVELS BESIDE THE ERROR, which is what Outcome documents and what
+				// settle() expects: the price is written first, from the provider's own answer, and
+				// the run then fails with no artifacts. RequestID rides along so the ledger line
+				// names the task the money went to.
+				return &Outcome{
+					RequestID: requestID,
+					Price:     decimal.NullDecimal{Decimal: usd, Valid: true},
+				}, err
+			}
+		}
 		return nil, err
 	}
 

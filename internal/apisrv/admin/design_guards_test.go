@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -49,47 +50,42 @@ type designGuardRig struct {
 	repo   *mocks.MockRepository
 	cards  *mocks.MockTechCards
 	design *mocks.MockDesign
-	media  *mocks.MockMedia
-	// usage — ответ реестра ссылок на медиа. Пустая карта значит «на этот файл не ссылается
-	// никто», то есть свежая загрузка.
-	usage map[int][]entity.MediaUsageRef
-	// pictures — картинки полосы по id, чтобы реестр можно было довести до карточки.
-	pictures map[int]*entity.DesignPicture
+	// foreign — множество медиа, про которые СТОР говорит «принадлежит другой карточке».
+	//
+	// ⚠ ЗДЕСЬ ЗАМОКАН ОТВЕТ, А НЕ ПРАВИЛО, И ЭТО ГРАНИЦА ТОГО, ЧТО ЭТИ ПРОБЫ ДОКАЗЫВАЮТ. Само
+	// правило («держателей двое: tech_card_media и design_picture; ничейное проходит») живёт в
+	// сторе, ходит в две таблицы и проверяется живыми пробами базы (layer_import_db_test.go).
+	// Здесь проверяется дверь: что она СПРАШИВАЕТ — до резерва денег — и что делает с ответом.
+	foreign map[int]bool
 	// sent — то, что дверь отдала стору. nil значит, что до денег дело не дошло.
 	sent *entity.DesignRunStart
+	// asked — номера, о которых дверь спросила. Пустой список при непустых входах значит, что
+	// ворота не сработали вовсе.
+	asked []int
 }
 
 func newDesignGuardRig(t *testing.T, card *entity.TechCard, band *entity.DesignBand) *designGuardRig {
 	t.Helper()
 	rig := &designGuardRig{
-		repo:     mocks.NewMockRepository(t),
-		cards:    mocks.NewMockTechCards(t),
-		design:   mocks.NewMockDesign(t),
-		media:    mocks.NewMockMedia(t),
-		usage:    map[int][]entity.MediaUsageRef{},
-		pictures: map[int]*entity.DesignPicture{},
+		repo:    mocks.NewMockRepository(t),
+		cards:   mocks.NewMockTechCards(t),
+		design:  mocks.NewMockDesign(t),
+		foreign: map[int]bool{},
 	}
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
-	rig.repo.EXPECT().Media().Return(rig.media).Maybe()
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designGuardCardID).Return(card, nil).Maybe()
 	rig.design.EXPECT().GetBand(mock.Anything, designGuardCardID, mock.Anything).Return(band, nil).Maybe()
-	rig.media.EXPECT().GetMediaUsage(mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, ids []int) (map[int][]entity.MediaUsageRef, error) {
-			out := map[int][]entity.MediaUsageRef{}
+	rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, cardID int, ids []int) error {
+			rig.asked = append(rig.asked, ids...)
 			for _, id := range ids {
-				if refs, ok := rig.usage[id]; ok {
-					out[id] = refs
+				if rig.foreign[id] {
+					return fmt.Errorf("%w: media %d belongs to another tech card, not to %d",
+						entity.ErrDesignForeignMedia, id, cardID)
 				}
 			}
-			return out, nil
-		}).Maybe()
-	rig.design.EXPECT().GetPicture(mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, id int) (*entity.DesignPicture, error) {
-			if pic, ok := rig.pictures[id]; ok {
-				return pic, nil
-			}
-			return nil, sql.ErrNoRows
+			return nil
 		}).Maybe()
 	rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
 		Run(func(_ context.Context, req entity.DesignRunStart) {
@@ -242,17 +238,18 @@ func TestReserveScalesWithTheFramesAsked(t *testing.T) {
 func TestRunRefusesAPictureOfAnotherCard(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
 	const foreignMedia = 777
-	rig.usage[foreignMedia] = []entity.MediaUsageRef{
-		{MediaId: foreignMedia, Kind: "design_picture", EntityId: 606},
-	}
-	rig.pictures[606] = &entity.DesignPicture{Id: 606, TechCardId: designGuardOtherCardID, MediaId: foreignMedia}
+	rig.foreign[foreignMedia] = true
 
 	req := designGuardStart(entity.DesignRunKindRender)
 	req.Params = &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{foreignMedia}}
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
 	require.Error(t, err)
-	require.Equal(t, codes.NotFound, status.Code(err))
+	// FailedPrecondition + reason=foreign_media — ровно то, чем этот же сентинел отвечает у
+	// SetDesignReferenceRole (designRefusals). ОДНА новость обязана звучать одинаково, откуда бы
+	// ни пришла: клиент ветвится по слову, а не по тому, какой глагол её родил.
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), "another tech card")
+	require.Equal(t, []int{foreignMedia}, rig.asked, "дверь обязана СПРОСИТЬ про названный номер")
 	require.Nil(t, rig.sent, "отказ обязан прийти ДО стора: иначе день уже потерял резерв")
 }
 
@@ -264,9 +261,7 @@ func TestRunRefusesAPictureOfAnotherCard(t *testing.T) {
 func TestRunRefusesAFabricPhotoOfAnotherCard(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
 	const foreignFabric = 778
-	rig.usage[foreignFabric] = []entity.MediaUsageRef{
-		{MediaId: foreignFabric, Kind: "tech_card", EntityId: designGuardOtherCardID},
-	}
+	rig.foreign[foreignFabric] = true
 
 	req := designGuardStart(entity.DesignRunKindRender)
 	req.Params = &pb_common.DesignRunParams{
@@ -274,7 +269,8 @@ func TestRunRefusesAFabricPhotoOfAnotherCard(t *testing.T) {
 	}
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
 	require.Error(t, err)
-	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, rig.asked, foreignFabric, "про фото ткани обязаны спросить отдельно")
 	require.Nil(t, rig.sent)
 }
 
@@ -286,11 +282,8 @@ func TestRunRefusesAFabricPhotoOfAnotherCard(t *testing.T) {
 func TestRunAcceptsItsOwnPictureAndAFreshUpload(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
 	const ownMedia, freshMedia = 300, 301
-	rig.usage[ownMedia] = []entity.MediaUsageRef{
-		{MediaId: ownMedia, Kind: "design_picture", EntityId: 607},
-	}
-	rig.pictures[607] = &entity.DesignPicture{Id: 607, TechCardId: designGuardCardID, MediaId: ownMedia}
-	// freshMedia не назван в usage вовсе: на него не ссылается никто.
+	// Ни один из двух не объявлен чужим: первый — картинка этой карточки, второй — свежая
+	// загрузка, за которой не стоит ещё ни одна карточка. Оба законны.
 
 	req := designGuardStart(entity.DesignRunKindRender)
 	req.Params = &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{ownMedia, freshMedia}}
@@ -309,23 +302,20 @@ func TestRunAcceptsItsOwnPictureAndAFreshUpload(t *testing.T) {
 		"снимок обязан нести оба явно названных входа")
 }
 
-// ОДНА КАРТИНКА, НАЗВАННАЯ И ЗДЕСЬ, И ТАМ, — ЗАКОННА.
+// ДВЕРЬ СПРАШИВАЕТ ПРО ВСЕ НАЗВАННЫЕ НОМЕРА, А НЕ ПРО ПЕРВЫЙ.
 //
-// Медиа, на которое ссылается И эта карточка, И чужая (один файл в двух карточках — обычный
-// случай для ткани), отказывать нельзя: правило про то, что картинка НЕ ЧУЖАЯ, а не про то, что
-// она нигде больше не встречается.
-func TestRunAcceptsAMediaSharedWithAnotherCard(t *testing.T) {
+// Ворота, спросившие про один номер из трёх, зеленеют на пробе про чужой первый номер и молча
+// пропускают чужой третий.
+func TestEveryNamedInputIsChecked(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
-	const shared = 302
-	rig.usage[shared] = []entity.MediaUsageRef{
-		{MediaId: shared, Kind: "tech_card", EntityId: designGuardOtherCardID},
-		{MediaId: shared, Kind: "tech_card", EntityId: designGuardCardID},
-	}
+	rig.foreign[303] = true
 	req := designGuardStart(entity.DesignRunKindRender)
-	req.Params = &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{shared}}
+	req.Params = &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{301, 302, 303}}
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
-	require.NoError(t, err)
-	require.NotNil(t, rig.sent)
+	require.Error(t, err, "чужой номер обязан быть найден, на каком бы месте он ни стоял")
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Equal(t, []int{301, 302, 303}, rig.asked)
+	require.Nil(t, rig.sent)
 }
 
 // ─────────────────────── 5. ПОТОЛКИ ───────────────────────

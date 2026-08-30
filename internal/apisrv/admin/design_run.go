@@ -569,41 +569,23 @@ func (s *Server) designRerunParent(ctx context.Context, cardID, parentID int) (*
 
 // ─────────────────── ЧУЖОЕ МЕДИА: ГРАНИЦА КАРТОЧКИ ───────────────────
 
-// Слова словаря MediaUsageRef.kind, по которым ЧИТАЕТСЯ ПРИНАДЛЕЖНОСТЬ. Они объявлены контрактом
-// (admin.proto, MediaUsageRef.kind) и написаны в реестре ссылок (store/content/media_usage.go);
-// здесь повторены потому, что сравнивать их обязан тот, кто спрашивает. Родов в реестре больше —
-// продукт, архив, модель, примерка, — но НИ ОДИН из них не отвечает на вопрос «чья это карточка»,
-// поэтому решают ровно эти два.
-const (
-	designUsageKindTechCard = "tech_card"
-	designUsagePictureKind  = "design_picture"
-)
-
-// designRefuseForeignMedia — ЕДИНСТВЕННОЕ ПРАВИЛО ГРАНИЦЫ: медиа, ПРИНАДЛЕЖАЩЕЕ ДРУГОЙ ТЕХ-КАРТЕ,
-// в эту карточку не заходит.
+// designRefuseForeignMedia — ГРАНИЦА КАРТОЧКИ У ДВЕРИ: медиа, ПРИНАДЛЕЖАЩЕЕ ДРУГОЙ ТЕХ-КАРТЕ, не
+// открывает здесь оплаченного прогона.
 //
 // ЧТО БЫЛО. Идентификаторы медиа приезжали с провода и проверялись ровно на «> 0». Любой номер из
-// системы — картинка чужой карточки в том числе — уезжал в платную генерацию (`extra_input_media_ids`,
-// `colour.fabric_media_id`) и в векторный слой (`ImportDesignVector`), замерзал там в снимке и
-// оставался в истории утверждением, которого никто не делал.
+// системы — картинка чужой карточки в том числе — уезжал в платную генерацию
+// (`extra_input_media_ids`, `colour.fabric_media_id`), замерзал в снимке и оставался в истории
+// утверждением, которого никто не делал.
 //
-// ⚠ ПРАВИЛО ОТРИЦАТЕЛЬНОЕ («не чужое»), А НЕ ПОЛОЖИТЕЛЬНОЕ («своё»), И ЭТО РЕШЕНИЕ.
-// Положительное правило — «медиа обязано лежать в tech_card_media этой карточки», как у
-// SetReferenceRole, — здесь ЛОЖНО ОТКАЗЫВАЛО БЫ на законном жесте: файл, только что загруженный
-// через UploadContentImage, не принадлежит ещё ни одной карточке (контракт ImportDesignVector
-// говорит это дословно про source_media_id), а картинка полосы живёт в design_picture и в
-// tech_card_media не попадает вовсе — ту таблицу целиком переписывает сейв карточки. Отрицательное
-// правило пропускает и ничейное, и своё, и отказывает ровно тому, что названо в находке: чужой
-// карточке.
+// ⚠ ПРАВИЛО ЖИВЁТ В СТОРЕ, А ЗДЕСЬ ТОЛЬКО СПРАШИВАЮТ. Сначала эта функция отвечала на вопрос сама,
+// через реестр ссылок media, — и это было ВТОРОЕ мнение о том же вопросе, на который внутри своей
+// транзакции отвечает ImportVector: два множества «держателей» (реестр знает ещё выноски карточки,
+// плиты версий и примерки) разошлись бы в первый же день, когда правят одно. Спрашивается ОДИН
+// глагол — Design().AssertMediaNotForeign, — и потому у двери и у стора ответ один по построению.
 //
-// ⚠ ЧТО ОНО НЕ ЗАКРЫВАЕТ, СКАЗАНО ВСЛУХ: медиа, не привязанное ни к одной карточке (фото товара,
-// файл библиотеки), проходит. Закрыть это можно только положительным правилом «tech_card_media ∪
-// design_picture этой карточки», а оно требует ОДНОГО запроса стора, которого в интерфейсе Design
-// сегодня нет; см. отчёт фазы.
-//
-// ЦЕНА ВОПРОСА — ОДИН GetMediaUsage на дверь плюс по одному GetPicture на те номера, чья
-// единственная привязка — картинка полосы. Реестр ссылок отвечает на вопрос «кто ссылается на этот
-// файл» и есть ровно тот источник, который ЗНАЕТ ответ; вопрос «чья карточка» — его подвопрос.
+// ⚠ ЗАЧЕМ ТОГДА ВООБЩЕ СПРАШИВАТЬ ЗДЕСЬ, РАЗ СТОР ЗНАЕТ. Потому что StartRun РЕЗЕРВИРУЕТ ДЕНЬГИ:
+// отказ, пришедший после резерва, стоил бы дню оплаченной строки. Тот же довод, по которому здесь
+// же стоят ворота рода и W-13.
 func (s *Server) designRefuseForeignMedia(ctx context.Context, cardID int, field string, ids ...int) error {
 	want := make([]int, 0, len(ids))
 	seen := make(map[int]struct{}, len(ids))
@@ -620,54 +602,18 @@ func (s *Server) designRefuseForeignMedia(ctx context.Context, cardID int, field
 	if len(want) == 0 {
 		return nil
 	}
-	usage, err := s.repo.Media().GetMediaUsage(ctx, want)
-	if err != nil {
-		// ЗАКРЫТО, А НЕ ОТКРЫТО: это платная дверь, и «не смог проверить» не равно «проверено».
-		slog.Default().ErrorContext(ctx, "design: cannot read media usage before a paid door",
-			slog.Int("tech_card_id", cardID), slog.String("field", field),
-			slog.String("err", err.Error()))
-		return status.Error(codes.Internal, "cannot check who the pictures belong to")
+	err := s.repo.Design().AssertMediaNotForeign(ctx, cardID, want)
+	if err == nil {
+		return nil
 	}
-	for _, id := range want {
-		owned, foreign := false, 0
-		for _, ref := range usage[id] {
-			switch ref.Kind {
-			case designUsageKindTechCard:
-				if ref.EntityId == cardID {
-					owned = true
-				} else {
-					foreign++
-				}
-			case designUsagePictureKind:
-				// entity_id реестра — id КАРТИНКИ, а не карточки (её имя приезжает только меткой для
-				// человека), поэтому карточку приходится спрашивать у самой картинки.
-				pic, perr := s.repo.Design().GetPicture(ctx, ref.EntityId)
-				if perr != nil || pic == nil {
-					// Строка исчезла между двумя чтениями. Исчезнувшая картинка не доказывает НИ
-					// принадлежности, ни чуждости — она просто не голосует. Отказать по ней значило
-					// бы уронить законный запрос из-за гонки с удалением.
-					slog.Default().WarnContext(ctx, "design: a referencing picture could not be read",
-						slog.Int("picture_id", ref.EntityId))
-					continue
-				}
-				if pic.TechCardId == cardID {
-					owned = true
-				} else {
-					foreign++
-				}
-			}
-		}
-		if owned || foreign == 0 {
-			continue
-		}
-		// NotFound, а не PermissionDenied, по тому же доводу, что у чужого родителя рерана: «этой
-		// картинки у этой карточки нет» — правда, и она не рассказывает постороннему, чья она.
-		return designRefusal(codes.NotFound, "foreign_media",
-			fmt.Sprintf("media %d belongs to another tech card, not to %d: %s takes pictures of this card",
-				id, cardID, field),
-			map[string]string{"media_id": strconv.Itoa(id), "field": field})
-	}
-	return nil
+	// ⚠ ПРОВЕРКА НА nil ОБЯЗАТЕЛЬНА ЗДЕСЬ, А НЕ ВНУТРИ designError: та таблица переводов не знает
+	// «всё хорошо» — не найдя ошибку в списке, она отвечает Internal. Переданный ей nil закрыл бы
+	// КАЖДЫЙ законный прогон.
+	//
+	// Поле называется в детали отказа: у прогона два независимых источника чужого номера, и
+	// человеку надо знать, какой из них чинить.
+	return designError(ctx, "failed to check who the input pictures belong to", err,
+		map[string]string{"field": field})
 }
 
 // designEffectiveParams — ЧТО ПРОСЯТ У МОДЕЛИ.
@@ -961,14 +907,10 @@ func (s *Server) ImportDesignVector(ctx context.Context, req *pb_admin.ImportDes
 		return nil, status.Error(codes.InvalidArgument,
 			"client_request_id is required — without it a retry files the same SVG twice")
 	}
-	// ⚠ ЭТОТ КЛЮЧ ТРЕБУЕТСЯ, НО СЕГОДНЯ НЕ ОН ОБЕСПЕЧИВАЕТ ИДЕМПОТЕНТНОСТЬ, И ЭТО НАДО ЗНАТЬ
-	// ЗАРАНЕЕ. Стор дедуплицирует по паре (tech_card_id, source_media_id) — у design_edit_layer нет
-	// колонки под request-id (0343, 0350 её не добавила), — и `client_request_id` уезжает в
-	// entity.DesignVectorImport, где его никто не читает. Обещанное контрактом («a retry after a
-	// lost response must not file the same SVG as a second layer») этой парой ВЫПОЛНЯЕТСЯ: повтор
-	// несёт тот же media_id. Расходятся два других случая: ДРУГОЙ файл под тем же запросом заведёт
-	// второй слой, а ТОТ ЖЕ файл под новым запросом вернёт старый. Закрывается это только колонкой
-	// с уникальным индексом — миграция плюс layer.go, см. отчёт фазы.
+	// КЛЮЧ ЧИТАЕТСЯ СТОРОМ, И ЭТО ПОТРЕБОВАЛО КОЛОНКИ (0351). До неё поле требовалось здесь,
+	// доезжало в entity.DesignVectorImport и НЕ ЧИТАЛОСЬ ничем: дедупликация шла по паре
+	// (карточка, файл), из-за чего ДРУГОЙ файл под тем же запросом заводил второй слой. Теперь
+	// ключ — он, а пара осталась вторым поясом того же обещания; см. шапку store.ImportVector.
 	strokes := req.GetStrokes()
 	if len(strokes) > design.MaxStrokesBytes {
 		return nil, designError(ctx, "strokes too large",
@@ -981,20 +923,14 @@ func (s *Server) ImportDesignVector(ctx context.Context, req *pb_admin.ImportDes
 	if len(strokes) > 0 && !json.Valid(strokes) {
 		return nil, status.Error(codes.InvalidArgument, "strokes must be JSON")
 	}
-	// ⚠ ЧУЖОЕ МЕДИА ЗДЕСЬ ЕЩЁ НЕ ОСТАНАВЛИВАЕТСЯ, И ЭТО ИЗВЕСТНАЯ ДЫРА, А НЕ УМОЛЧАНИЕ.
-	//
-	// Стор проверяет на принадлежность карточке ТОЛЬКО `source_picture_id`; ни файл
-	// (`source_media_id`), ни подложка (`base_media_id`) не проверяются ничем, кроме существования
-	// строки медиа, — то есть картинка чужой карточки становится векторным слоем этой, и полоса
-	// потом рисует её как свою.
-	//
-	// ПОЧЕМУ НЕ ЗАКРЫТО ЗДЕСЬ. У двери нет ни одного бесплатного источника этого факта: она не
-	// читает ни карточку, ни полосу, а «чья это картинка» знает только база. Правило обязано быть
-	// ОТРИЦАТЕЛЬНЫМ («не принадлежит другой карточке»), потому что свежезагруженный SVG по
-	// контракту не принадлежит ещё никому, и положительная проверка сломала бы главный жест
-	// глагола. Место ему — в той же SERIALIZABLE-транзакции стора, рядом с уже стоящей там
-	// проверкой картинки, с тем же entity.ErrDesignForeignMedia, которым отвечает SetReferenceRole;
-	// см. отчёт фазы.
+	// ⚠ ГРАНИЦУ КАРТОЧКИ ДЕРЖИТ СТОР, И ЗДЕСЬ ЕЁ НАМЕРЕННО НЕТ. Раньше на принадлежность
+	// проверялась только картинка (`source_picture_id`); файл и подложка не проверялись ничем,
+	// кроме существования строки медиа, — картинка чужой карточки становилась векторным слоем этой.
+	// Закрыто в той же SERIALIZABLE-транзакции, где идёт вставка (refuseForeignMedia): у двери нет
+	// бесплатного источника этого факта — она не читает ни карточку, ни полосу, — а вторая копия
+	// правила здесь была бы вторым мнением о том же вопросе. Этот глагол ничего не резервирует,
+	// поэтому и опережать стор ему незачем: у StartDesignRun довод обратный, там ответ нужен ДО
+	// денег.
 	layer, err := s.repo.Design().ImportVector(ctx, entity.DesignVectorImport{
 		TechCardId:      int(req.GetTechCardId()),
 		ClientRequestId: clientRequestID,

@@ -85,7 +85,11 @@ type App struct {
 	// dgw is the DESIGN band generation worker. NIL WHENEVER DESIGN_GENERATION_ENABLED IS OFF:
 	// a disabled feature is not a worker that ticks and finds nothing, it is a worker that was
 	// never built — the queue it drains costs money to drain.
-	dgw  *designgen.Worker
+	dgw *designgen.Worker
+	// dgs — подметальщик резервов, ЗЕРКАЛО dgw: он не nil ровно тогда, когда nil воркер.
+	// Выключенная генерация обязана перестать ТРАТИТЬ, но не перестать УБИРАТЬ за собой: строки,
+	// заведённые до выключения, иначе держат деньги дня до полуночи и не закрываются никогда.
+	dgs  *designgen.Sweeper
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
 	re   dependency.RevalidationService
@@ -511,6 +515,26 @@ func (a *App) Start(ctx context.Context) error {
 			)
 			return err
 		}
+	} else {
+		// ВЫКЛЮЧЕНО — ЗНАЧИТ НЕ ТРАТИТ, А НЕ «НЕ УБИРАЕТ». Воркер выше не построен вовсе, и вместе
+		// с очередью замолкает ReviveExpiredRuns — единственный путь, которым брошенная и
+		// отменённая строка доходит до терминала и ОТПУСКАЕТ РЕЗЕРВ. Без этой ветки выключение
+		// флага деплоем оставляет сирот с занятыми деньгами дня, и снять их некому никогда.
+		//
+		// Подметальщик не получает ни одного провайдера: потратить он не может физически.
+		a.dgs, err = designgen.NewSweeper(a.db)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't construct design reserve sweeper",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		if err = a.dgs.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start design reserve sweeper",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, aiOpsClient, jpk.Taxpayer{
@@ -814,6 +838,11 @@ func (a *App) Stop(ctx context.Context) {
 	if a.dgw != nil {
 		_ = a.dgw.Stop()
 	}
+	// По тому же доводу, что и выше: подметание, уже снявшее резерв, обязано дописать это в живой
+	// пул, поэтому останов идёт ДО закрытия базы.
+	if a.dgs != nil {
+		_ = a.dgs.Stop()
+	}
 	if a.sr != nil {
 		_ = a.sr.Stop()
 	}
@@ -908,6 +937,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.dgw != nil {
 		addWorker(a.dgw)
+	}
+	if a.dgs != nil {
+		addWorker(a.dgs)
 	}
 	if a.sr != nil {
 		addWorker(a.sr)

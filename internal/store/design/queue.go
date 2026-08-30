@@ -118,13 +118,75 @@ func resumeHandlerRun(ctx context.Context, db dependency.DB, prior entity.Design
 }
 
 const (
-	// designMaxAttempts — сколько раз одно задание вправе быть оплачено. Ретрай платит ВТОРОЙ
+	// designMaxPaidAttempts — сколько раз одно задание вправе быть ОПЛАЧЕНО. Ретрай платит ВТОРОЙ
 	// раз, поэтому потолок здесь — денежная величина, а не техническая.
-	designMaxAttempts = 5
+	//
+	// ⚠ ПЯТЬ ЗНАЧИТ ПЯТЬ. Здесь стояло `run.AttemptCount+1 < designMaxAttempts`, что давало
+	// ЧЕТЫРЕ платных вызова при константе 5, — и три комментария в двух пакетах (этот,
+	// designgen/dispatch.go и meshy.go) обещали пять. Верным признан комментарий: пятая попытка —
+	// решение владельца о том, сколько денег задание вправе стоить, а четвёртая была опечаткой в
+	// сравнении. Считает потолок теперь paidAttempts, и `paid < designMaxPaidAttempts` читается
+	// ровно как обещание.
+	//
+	// ⚠ И ПОТОЛОК СТОИТ НА ЧИСЛЕ ПЛАТЕЖЕЙ, А НЕ НА attempt_count. Растровая дорога платит на
+	// КАЖДОМ круге, а 3D — ОДИН раз: Submit покупает задачу, дальнейшие Collect/Await
+	// БЕСПЛАТНЫ, но каждый неудавшийся опрос закрывает круг и увеличивает attempt_count. Пока
+	// потолок стоял на attempt_count, оплаченная 3D-задача умирала терминально после трёх-четырёх
+	// окон ожидания, не будучи оплаченной повторно ни разу: кредиты у провайдера списаны, модель,
+	// возможно, ещё строится, а строка уже `failed` — и цена её так и осталась неизвестной,
+	// потому что называет её только успешный сбор.
+	designMaxPaidAttempts = 5
+
+	// designMaxRounds — сколько раз задание вправе быть ВЗЯТО В РАБОТУ, платно или бесплатно.
+	//
+	// ЗАЧЕМ ВТОРОЙ ПОТОЛОК, РАЗ ПЕРВЫЙ ДЕНЕЖНЫЙ. Денежный сам по себе бесплатный цикл не
+	// закрывает: 3D-прогон, заплативший однажды, опрашивал бы задачу, которая не придёт никогда,
+	// до конца времён — и всё это время держал бы резерв дня и слот воркера. Ограничение здесь не
+	// денежное, а на ЗАНЯТОСТЬ: runOnce строго последовательна, пачка по умолчанию равна единице,
+	// и каждый круг держит очередь до RunTimeout.
+	//
+	// ПОЧЕМУ ДЕСЯТЬ. На 3D-дороге это девять окон ожидания: Await опрашивает до двенадцати минут,
+	// между кругами стоит экспонента до пятнадцати — то есть больше трёх часов на задачу, которую
+	// провайдер строит минуты. На растровой дороге он не срабатывает никогда: там раньше
+	// упирается денежный потолок в пять.
+	designMaxRounds = 10
+
 	// designRetryBase / designRetryMax — экспонента возврата в очередь.
 	designRetryBase = 30 * time.Second
 	designRetryMax  = 15 * time.Minute
 )
+
+// designPaidAttemptsSQL — СКОЛЬКО РАЗ ПРОГОН БЫЛ ОПЛАЧЕН, выведенное из строк попыток.
+//
+// ПОЧЕМУ ВЫВОДИТСЯ, А НЕ ХРАНИТСЯ. Колонка «эта попытка была платной» потребовала бы миграции, а
+// число выводится из того, что УЖЕ записано, без единой догадки — и выводится ТЕМ ЖЕ признаком, по
+// которому решение принимает воркер. designgen/dispatch.go идёт в бесплатный сбор ровно тогда,
+// когда acceptedRequestID нашёл попытку в состоянии `accepted` с непустым provider_request_id;
+// значит всё, что стоит ПОСЛЕ такой попытки, — опросы уже купленного задания, а не новые покупки.
+//
+// САМА `accepted` СЧИТАЕТСЯ ПЛАТНОЙ, и это несущая половина условия: `accepted` — это и есть
+// состоявшаяся отправка. Без неё второй Submit (он случается, когда чтение попыток не удалось и
+// воркер счёл прогон свежим) не был бы виден потолку вовсе.
+const designPaidAttemptsSQL = `
+	SELECT COUNT(*) FROM design_run_attempt a
+	WHERE a.run_id = :run
+	  AND (a.state = 'accepted'
+	       OR NOT EXISTS (
+	           SELECT 1 FROM design_run_attempt b
+	           WHERE b.run_id = a.run_id
+	             AND b.attempt_no < a.attempt_no
+	             AND b.state = 'accepted'
+	             AND b.provider_request_id IS NOT NULL
+	             AND b.provider_request_id <> ''))`
+
+// paidAttempts — то же число, вызовом.
+func paidAttempts(ctx context.Context, db dependency.DB, runID int) (int, error) {
+	n, err := storeutil.QueryCountNamed(ctx, db, designPaidAttemptsSQL, map[string]any{"run": runID})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count the paid attempts of design run %d: %w", runID, err)
+	}
+	return n, nil
+}
 
 // ClaimRuns leases up to n pending runs to a worker.
 func (s *Store) ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error) {
@@ -192,7 +254,31 @@ func (s *Store) ClaimRuns(ctx context.Context, n int, lease time.Duration, claim
 	return claimed, nil
 }
 
-// ReviveExpiredRuns returns runs whose lease expired to `pending`.
+// designRunAbandonedCancelledSQL — ОТМЕНЁННАЯ СТРОКА, КОТОРУЮ НЕКОМУ ДОВЕСТИ ДО КОНЦА.
+//
+// ⚠ ЭТО ЕДИНСТВЕННОЕ СОСТОЯНИЕ, ИЗ КОТОРОГО НЕ БЫЛО ВЫХОДА ВОВСЕ. Человек отменяет идущий прогон
+// — CancelRun ставит cancel_requested_at и оставляет строку воркеру (закрыть её здесь значило бы
+// выбросить оплаченный результат, который придёт секундой позже). Воркер умирает на редеплое, не
+// успев закрыть строку. Дальше: подметальщик возвращает её в `pending`, а предикат захвата не
+// берёт отменённые (`cancel_requested_at IS NULL`) — значит терминального перехода не будет
+// НИКОГДА, а он единственный, кто снимает резерв дня. Строка висит в pending, деньги дня заняты
+// прогоном, который никто не ведёт, и лечит это только смена календарной даты.
+//
+// ЖИВОСТЬ ЛИЗЫ В ПРЕДИКАТЕ ОБЯЗАТЕЛЬНА. Отменённый прогон с ЖИВЫМ захватом ведёт живой воркер (а
+// для kind=draft_idea — живой хендлер, чью лизу выдал сам StartRun), и он честит отмену сам, до
+// отправки и после ответа. Подмести такую строку значило бы отобрать её у того, кто прямо сейчас
+// за неё платит.
+//
+// `pending` СТОИТ В СПИСКЕ НАРАВНЕ С `running` не про запас: именно в pending и лежат уже
+// накопленные сироты — те, кого прежний подметальщик успел вернуть в очередь. Законного состояния
+// «ждёт и отменён» не существует: CancelRun закрывает ждущий прогон терминально одним оператором.
+const designRunAbandonedCancelledSQL = `
+	status IN ('pending', 'running')
+	AND cancel_requested_at IS NOT NULL
+	AND (claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at < UTC_TIMESTAMP(6))`
+
+// ReviveExpiredRuns подметает всё, что осталось от умерших воркеров: возвращает в очередь строки
+// с истёкшей лизой, терминально закрывает исчерпавшие потолок и отменённые-и-брошенные.
 //
 // БЕЗ ЭТОГО ПОДМЕТАЛЬЩИКА «истёкший захват — та же дорога» это дорога без ног: ClaimRuns берёт
 // только `pending`, а строка умершего воркера осталась `running` навсегда.
@@ -208,41 +294,20 @@ func (s *Store) ReviveExpiredRuns(ctx context.Context) (int, error) {
 		revived = 0
 		db := rep.DB()
 
-		// 1. ПОТОЛОК ПОПЫТОК ДЕЙСТВУЕТ И ЗДЕСЬ. Задание, чей воркер умирает раз за разом,
-		// иначе воскресало бы вечно — и каждый круг мог бы стоить денег, потому что смерть
-		// наступает ПОСЛЕ вызова провайдера так же часто, как до него. Строки, исчерпавшие
-		// потолок, закрываются терминально и называют причину.
-		expired, err := storeutil.QueryListNamed[entity.DesignRun](ctx, db, `
-			SELECT * FROM design_run
-			WHERE status = 'running'
-			  AND claim_expires_at IS NOT NULL
-			  AND claim_expires_at < UTC_TIMESTAMP(6)
-			  AND attempt_count >= :cap
-			ORDER BY id`, map[string]any{"cap": designMaxAttempts})
-		if err != nil {
-			return fmt.Errorf("failed to read design runs past the attempt cap: %w", err)
-		}
-		for _, run := range expired {
-			rows, err := storeutil.ExecNamedRows(ctx, db, `
-				UPDATE design_run
-				SET status = 'failed',
-				    error_code = COALESCE(error_code, 'lease_expired'),
-				    completed_at = UTC_TIMESTAMP(6),
-				    claim_token = NULL,
-				    claim_expires_at = NULL
-				WHERE id = :id AND status = 'running' AND attempt_count >= :cap`,
-				map[string]any{"id": run.Id, "cap": designMaxAttempts})
-			if err != nil {
-				return fmt.Errorf("failed to close design run %d past the attempt cap: %w", run.Id, err)
-			}
-			if rows == 1 {
-				if err := releaseRunReserve(ctx, db, run); err != nil {
-					return err
-				}
-			}
+		// 1. ОТМЕНЁННЫЕ И БРОШЕННЫЕ — ПЕРВЫМИ, и порядок здесь несущий: пункт 2 закрыл бы их как
+		// `failed`, а человек их ОТМЕНИЛ, и строка истории обязана говорить это, а не «упало».
+		if err := sweepAbandonedCancelledRuns(ctx, db); err != nil {
+			return err
 		}
 
-		// 2. ОСТАЛЬНЫЕ ВОЗВРАЩАЮТСЯ В ОЧЕРЕДЬ. next_attempt_at ставится в «сейчас»: истёкшая
+		// 2. ПОТОЛКИ ДЕЙСТВУЮТ И ЗДЕСЬ. Задание, чей воркер умирает раз за разом, иначе воскресало
+		// бы вечно — и каждый круг мог бы стоить денег, потому что смерть наступает ПОСЛЕ вызова
+		// провайдера так же часто, как до него.
+		if err := closeRunsPastTheirCeiling(ctx, db); err != nil {
+			return err
+		}
+
+		// 3. ОСТАЛЬНЫЕ ВОЗВРАЩАЮТСЯ В ОЧЕРЕДЬ. next_attempt_at ставится в «сейчас»: истёкшая
 		// лиза не есть провал провайдера, и заставлять задание ждать экспоненту не за что.
 		n, err := storeutil.ExecNamedRows(ctx, db, `
 			UPDATE design_run
@@ -263,6 +328,91 @@ func (s *Store) ReviveExpiredRuns(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return revived, nil
+}
+
+// sweepAbandonedCancelledRuns доводит отменённую-и-брошенную строку до `cancelled`.
+//
+// РЕЗЕРВ СНИМАЕТСЯ ТЕМ ЖЕ releaseRunReserve, ЧТО И НА ЧЕТЫРЁХ ОСТАЛЬНЫХ ПУТЯХ (CompleteRun,
+// FailRun, CancelRun ждущего, потолок здесь же), и второго механизма снятия не заводится: снятие
+// в одном месте, под сторожем перехода, — единственное, что делает его однократным по построению
+// (см. шапку wave2.go). Сторожем здесь служит повторённый предикат: строка, которую параллельно
+// закрыл кто-то другой, даёт rows = 0, и денег этот проход не трогает.
+func sweepAbandonedCancelledRuns(ctx context.Context, db dependency.DB) error {
+	orphans, err := storeutil.QueryListNamed[entity.DesignRun](ctx, db, `
+		SELECT * FROM design_run
+		WHERE `+designRunAbandonedCancelledSQL+`
+		ORDER BY id`, map[string]any{})
+	if err != nil {
+		return fmt.Errorf("failed to read cancelled design runs nobody is running: %w", err)
+	}
+	for _, run := range orphans {
+		rows, err := storeutil.ExecNamedRows(ctx, db, `
+			UPDATE design_run
+			SET status = 'cancelled',
+			    completed_at = COALESCE(completed_at, UTC_TIMESTAMP(6)),
+			    error_code = COALESCE(error_code, 'cancelled_abandoned'),
+			    claim_token = NULL,
+			    claim_expires_at = NULL
+			WHERE id = :id AND `+designRunAbandonedCancelledSQL,
+			map[string]any{"id": run.Id})
+		if err != nil {
+			return fmt.Errorf("failed to close abandoned cancelled design run %d: %w", run.Id, err)
+		}
+		if rows == 1 {
+			if err := releaseRunReserve(ctx, db, run); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// closeRunsPastTheirCeiling терминально закрывает брошенные строки, исчерпавшие потолок — денежный
+// либо потолок кругов.
+//
+// ⚠ ВЫБОРКА БОЛЬШЕ НЕ НЕСЁТ ПРЕДИКАТ ПОТОЛКА, И ЭТО ВЫНУЖДЕННО: число ПЛАТЕЖЕЙ выводится из
+// строк попыток (designPaidAttemptsSQL), то есть предикат перестал быть выражением по одной
+// таблице. Поэтому решение принимает Go, а сторожем повторной записи служит `attempt_count = :ac`
+// — оптимистичная сверка с тем значением, ПО КОТОРОМУ решение и было принято. Роль у неё та же,
+// что у повторённого предиката в ClaimRuns: гарантию сегодня несёт SERIALIZABLE, а сторож стоит
+// на день, когда уровень изоляции опустят.
+func closeRunsPastTheirCeiling(ctx context.Context, db dependency.DB) error {
+	expired, err := storeutil.QueryListNamed[entity.DesignRun](ctx, db, `
+		SELECT * FROM design_run
+		WHERE status = 'running'
+		  AND claim_expires_at IS NOT NULL
+		  AND claim_expires_at < UTC_TIMESTAMP(6)
+		ORDER BY id`, map[string]any{})
+	if err != nil {
+		return fmt.Errorf("failed to read design runs with an expired lease: %w", err)
+	}
+	for _, run := range expired {
+		paid, err := paidAttempts(ctx, db, run.Id)
+		if err != nil {
+			return err
+		}
+		if paid < designMaxPaidAttempts && run.AttemptCount < designMaxRounds {
+			continue
+		}
+		rows, err := storeutil.ExecNamedRows(ctx, db, `
+			UPDATE design_run
+			SET status = 'failed',
+			    error_code = COALESCE(error_code, 'lease_expired'),
+			    completed_at = UTC_TIMESTAMP(6),
+			    claim_token = NULL,
+			    claim_expires_at = NULL
+			WHERE id = :id AND status = 'running' AND attempt_count = :ac`,
+			map[string]any{"id": run.Id, "ac": run.AttemptCount})
+		if err != nil {
+			return fmt.Errorf("failed to close design run %d past its ceiling: %w", run.Id, err)
+		}
+		if rows == 1 {
+			if err := releaseRunReserve(ctx, db, run); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // StartAttempt opens one paid provider call.
@@ -342,6 +492,15 @@ func (s *Store) StartAttempt(ctx context.Context, req entity.DesignAttemptStart)
 // ИДЕМПОТЕНТНОСТЬ — finished_at. Второй вызов на закрытую попытку денег НЕ ДВИГАЕТ: без этого
 // повтор после потерянного ответа удваивал бы `spent`, то есть врал бы владельцу про его же
 // траты в сторону увеличения.
+//
+// ⚠ И ЭТОГО БЫЛО МАЛО, ПОТОМУ ЧТО ПОВТОР ПРИХОДИТ НЕ ТОЛЬКО НА ТУ ЖЕ СТРОКУ. У асинхронной
+// дороги платёж ОДИН (Submit), а строк попытки несколько: отправка закрывается как `accepted` с
+// NULL-ценой, цену называет СБОР, и у сбора своя строка. Стоит первому сбору доехать, а прогону
+// после этого вернуться в очередь — не сложилась загрузка в бакет, перехватили строку, — как
+// следующий сбор спрашивает провайдера про ТУ ЖЕ задачу, получает ТЕ ЖЕ consumed_credits и
+// закрывает СВОЮ, ещё не закрытую попытку той же суммой. finished_at про это ничего не знает.
+// Дневной потолок съедался вымышленными тратами, а price_actual (СУММА цен попыток) показывал
+// удвоенную цену модели, купленной один раз. См. chargeAlreadyBooked.
 func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinish) error {
 	if req.RunId <= 0 || req.AttemptNo <= 0 {
 		return fmt.Errorf("%w: an attempt is addressed by run id and attempt number",
@@ -363,6 +522,19 @@ func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinis
 		if attempt.FinishedAt.Valid {
 			return nil
 		}
+		// ЦЕНА ДУБЛЯ НЕ ПИШЕТСЯ ВОВСЕ, а не просто «не двигает день»: price_actual считается как
+		// СУММА цен попыток, и записанная второй раз сумма соврала бы и в строке истории тоже.
+		// Бесплатный опрос стоил ноль — NULL здесь и есть правда о нём.
+		price := req.Price
+		if price.Valid && price.Decimal.IsPositive() {
+			booked, err := chargeAlreadyBooked(ctx, db, req.RunId, req.AttemptNo, req.ProviderRequestId)
+			if err != nil {
+				return err
+			}
+			if booked {
+				price = decimal.NullDecimal{}
+			}
+		}
 		rows, err := storeutil.ExecNamedRows(ctx, db, `
 			UPDATE design_run_attempt
 			SET provider_request_id = :prid,
@@ -373,7 +545,7 @@ func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinis
 			WHERE run_id = :run AND attempt_no = :no AND finished_at IS NULL`,
 			map[string]any{
 				"run": req.RunId, "no": req.AttemptNo, "prid": nullStr(req.ProviderRequestId),
-				"state": req.State, "price": req.Price, "code": nullStr(req.ErrorCode),
+				"state": req.State, "price": price, "code": nullStr(req.ErrorCode),
 			})
 		if err != nil {
 			return fmt.Errorf("failed to close design attempt %d of run %d: %w", req.AttemptNo, req.RunId, err)
@@ -385,7 +557,7 @@ func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinis
 		if err := syncRunPriceActual(ctx, db, req.RunId); err != nil {
 			return err
 		}
-		if !req.Price.Valid || !req.Price.Decimal.IsPositive() {
+		if !price.Valid || !price.Decimal.IsPositive() {
 			return nil
 		}
 		// ДЕНЬГИ ЛОЖАТСЯ НА ДЕНЬ, В КОТОРЫЙ ОНИ ПОТРАЧЕНЫ, а резерв снимается отдельно и на
@@ -403,8 +575,38 @@ func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinis
 			currency = set.Currency
 		}
 		return moveBudgetDay(ctx, db,
-			DesignBudgetDayKey(s.Now(), set.BudgetTimezone), decimal.Zero, req.Price.Decimal, currency)
+			DesignBudgetDayKey(s.Now(), set.BudgetTimezone), decimal.Zero, price.Decimal, currency)
 	})
+}
+
+// chargeAlreadyBooked — «этот счёт уже записан ДРУГОЙ попыткой того же прогона».
+//
+// ЧЕМ ОПОЗНАЁТСЯ ОДИН И ТОТ ЖЕ СЧЁТ: provider_request_id. У асинхронной дороги это id задачи, и
+// каждый её опрос возвращает те же consumed_credits — сумма принадлежит ЗАДАЧЕ, а не обращению к
+// ней. У синхронной дороги id ответа у каждого платного вызова свой; совпасть он может только
+// когда провайдер сам склеил повтор по provider_idempotency_key — то есть когда второго списания
+// опять-таки не было. В обе стороны правило одно: ОДИН id — ОДИН счёт.
+//
+// ПУСТОЙ id НЕ СКЛЕИВАЕТСЯ НИ С ЧЕМ. «Провайдер не назвал обращение» — не признак тождества, и
+// считать две безымянные попытки одним платежом значило бы недосчитать реальные деньги; ошибаться
+// здесь дешевле в сторону «записать», а не «потерять».
+func chargeAlreadyBooked(ctx context.Context, db dependency.DB, runID, attemptNo int, providerRequestID string) (bool, error) {
+	if providerRequestID == "" {
+		return false, nil
+	}
+	n, err := storeutil.QueryCountNamed(ctx, db, `
+		SELECT COUNT(*) FROM design_run_attempt
+		WHERE run_id = :run
+		  AND attempt_no <> :no
+		  AND provider_request_id = :prid
+		  AND price IS NOT NULL
+		  AND price > 0`,
+		map[string]any{"run": runID, "no": attemptNo, "prid": providerRequestID})
+	if err != nil {
+		return false, fmt.Errorf("failed to check whether the charge of design run %d is already booked: %w",
+			runID, err)
+	}
+	return n > 0, nil
 }
 
 // CompleteRun files the outputs and closes the run.
@@ -612,7 +814,19 @@ func (s *Store) FailRun(ctx context.Context, req entity.DesignRunFail) (*entity.
 		// поставил бы в очередь задание, которое человек уже отменил, — и предикат захвата
 		// (`cancel_requested_at IS NULL`) держал бы его в pending вечно.
 		cancelled := run.CancelRequestedAt.Valid
-		retry := req.Retryable && !cancelled && run.AttemptCount+1 < designMaxAttempts
+
+		// ДВА ПОТОЛКА, И ОНИ СЧИТАЮТ РАЗНОЕ: paid — сколько раз мы ПЛАТИЛИ, attempt_count —
+		// сколько раз БРАЛИСЬ ЗА РАБОТУ. Слить их в один значит либо убить оплаченную однажды
+		// 3D-задачу на четвёртом бесплатном опросе (так и было), либо разрешить пятому платному
+		// вызову уйти к провайдеру. Экспонента ретрая при этом остаётся на attempt_count: ждать
+		// дольше заставляет ЧИСЛО КРУГОВ, а не число платежей.
+		paid, err := paidAttempts(ctx, db, run.Id)
+		if err != nil {
+			return err
+		}
+		retry := req.Retryable && !cancelled &&
+			paid < designMaxPaidAttempts &&
+			run.AttemptCount < designMaxRounds
 		next := req.NextAttempt
 		if next.IsZero() {
 			next = designNextAttemptAt(s.Now(), run.AttemptCount)

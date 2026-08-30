@@ -207,6 +207,61 @@ var ErrUnexpectedResponse = errors.New("meshy: unreadable response from the prov
 // maxModelBytes.
 var ErrTooLarge = errors.New("meshy: artifact is larger than the allowed maximum")
 
+// ChargedError marks a failure the provider HAS ALREADY BILLED, and carries the charge.
+//
+// ⚠ IT EXISTS BECAUSE THIS PROVIDER FAILS *AFTER* THE METER RAN, AND ONLY THIS PACKAGE EVER SEES
+// THE NUMBER. `consumed_credits` arrives on the task envelope, is read here, and then — before this
+// type — was dropped on the floor by every terminal failure: a SUCCEEDED task that carries no glb
+// url, a model that exceeds maxModelBytes, a download that dies mid-transfer. In every one of those
+// the model was built and the credits are gone, and the run closed with a NULL price. Money spent,
+// nothing in the ledger, daily cap blind to it, and the owner never told what the failures cost.
+//
+// THE SHAPE IS RECRAFT'S, DELIBERATELY (see recraft.ChargedError / recraft.Charge). Two mechanisms
+// for one fact would be two things to remember at the one call site that reads them, and the reader
+// (designgen/threed.go) already knows the vector route's spelling.
+//
+// THE UNIT IS CREDITS, NOT DOLLARS, AND THAT IS NOT AN OVERSIGHT. Credits are what the provider
+// says; the rate is configuration (MESHY_CREDIT_USD) and lives on the Client. Converting here would
+// put a second conversion beside Client.CostUSD, which is the one place that knows it — and a
+// package-level wrap has no client to ask.
+type ChargedError struct {
+	// Err is the failure itself; errors.Is / errors.As reach it through Unwrap, so every sentinel
+	// above keeps classifying exactly as it did before the charge was attached.
+	Err error
+	// Credits is what the provider reported consuming. Always > 0 — an unbilled failure must never
+	// be dressed as a billed one, so chargedWith refuses to wrap without a number.
+	Credits int
+	// TaskID names the job the money went to, so a ledger line can be traced back to the provider.
+	TaskID string
+}
+
+func (e *ChargedError) Error() string {
+	return fmt.Sprintf("%v [charged %d credits]", e.Err, e.Credits)
+}
+
+func (e *ChargedError) Unwrap() error { return e.Err }
+
+// chargedWith attaches a charge to an error, and ONLY when the provider named one. Zero credits
+// means «the provider did not say», which is not the same as «free» — and an error that claims a
+// charge of zero would put a false zero in a ledger whose whole job is to know the difference.
+func chargedWith(err error, credits int, taskID string) error {
+	if err == nil || credits <= 0 {
+		return err
+	}
+	return &ChargedError{Err: err, Credits: credits, TaskID: taskID}
+}
+
+// Charge reports what a failed call consumed, when the provider said. ok = false means NOBODY COULD
+// SAY — never «it was free», and the caller has to keep that difference: a NULL price and a zero
+// price are different claims about the same run.
+func Charge(err error) (credits int, ok bool) {
+	var ce *ChargedError
+	if errors.As(err, &ce) {
+		return ce.Credits, true
+	}
+	return 0, false
+}
+
 // Config is the client configuration. Bound in config/cfg.go — EVERY field below has its own
 // explicit viper.BindEnv line and a test, because viper.AutomaticEnv is off in this repo and an
 // unbound variable reads as empty without a word of complaint.
@@ -443,27 +498,44 @@ func (c *Client) collect(lookupCtx, fetchCtx context.Context, taskID string, dst
 	if err := c.callJSON(lookupCtx, http.MethodGet, multiImagePath+"/"+url.PathEscape(taskID), nil, &t); err != nil {
 		return nil, err
 	}
+	// ⚠ EVERY FAILURE FROM HERE ON CARRIES THE CHARGE, BECAUSE FROM HERE ON THE NUMBER IS KNOWN.
+	// The envelope has been read, so `consumed_credits` is in hand; dropping it on the way out is
+	// precisely how paid failures came to be invisible to the ledger. `charged` attaches it when
+	// the provider named one and is a no-op when it did not — see ChargedError.
+	charged := func(err error) error { return chargedWith(err, t.ConsumedCredits, taskID) }
+
 	status := Status(strings.ToUpper(strings.TrimSpace(t.Status)))
 	switch status {
 	case "":
-		return nil, fmt.Errorf("%w: task %s came back with no status", ErrUnexpectedResponse, taskID)
+		return nil, charged(fmt.Errorf("%w: task %s came back with no status", ErrUnexpectedResponse, taskID))
 	case StatusPending, StatusInProgress:
+		// NOT CHARGED, AND THE OMISSION IS THE POINT: a task still being built has settled nothing,
+		// Await loops on this error rather than ending on it, and a charge attached here would be
+		// re-read on every poll of the same unfinished job.
 		return nil, fmt.Errorf("%w: task %s is %s (%d%%)", ErrNotReady, taskID, status, t.Progress)
 	case StatusFailed, StatusCanceled:
 		msg := strings.TrimSpace(t.TaskError.Message)
 		if msg == "" {
 			msg = "no reason given"
 		}
-		return nil, fmt.Errorf("%w: task %s is %s: %s", ErrTaskFailed, taskID, status, msg)
+		// ⚠ WRAPPED THOUGH THIS PROVIDER REFUNDS FAILED TASKS (see ErrTaskFailed). The refund shows
+		// up as `consumed_credits: 0`, and then chargedWith attaches nothing — so the ordinary case
+		// records nothing, exactly as before. What this covers is the case where the provider DOES
+		// name a number on a failed task: believing the doc over the envelope would mean silently
+		// discarding a charge the provider itself reported, in the direction that under-counts.
+		return nil, charged(fmt.Errorf("%w: task %s is %s: %s", ErrTaskFailed, taskID, status, msg))
 	case StatusSucceeded:
 		// fall through
 	default:
-		return nil, fmt.Errorf("%w: task %s has unknown status %q", ErrUnexpectedResponse, taskID, status)
+		return nil, charged(fmt.Errorf("%w: task %s has unknown status %q", ErrUnexpectedResponse, taskID, status))
 	}
 
 	modelURL := strings.TrimSpace(t.ModelURLs.GLB)
 	if modelURL == "" {
-		return nil, fmt.Errorf("%w: task %s", ErrNoGLB, taskID)
+		// THE MOST EXPENSIVE LINE IN THE PACKAGE: the task SUCCEEDED, the model was built and the
+		// credits are spent — there is simply no glb url to fetch it with. Unwrapped, this returned
+		// a bare ErrNoGLB and the run closed with a NULL price.
+		return nil, charged(fmt.Errorf("%w: task %s", ErrNoGLB, taskID))
 	}
 
 	res := &Result{TaskID: taskID, Format: formatGLB, ConsumedCredits: t.ConsumedCredits}
@@ -472,7 +544,9 @@ func (c *Client) collect(lookupCtx, fetchCtx context.Context, taskID string, dst
 	// below is the reason the lookup happened.
 	n, sum, err := c.fetch(fetchCtx, modelURL, dst.Model, maxModelBytes)
 	if err != nil {
-		return nil, fmt.Errorf("meshy: downloading the model of task %s: %w", taskID, err)
+		// A model too large for maxModelBytes, or a transfer that died: built and billed either
+		// way. The bytes are lost; the money is not, and must not be.
+		return nil, charged(fmt.Errorf("meshy: downloading the model of task %s: %w", taskID, err))
 	}
 	res.ModelBytes, res.ModelSHA256 = n, sum
 

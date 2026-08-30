@@ -668,8 +668,13 @@ type DesignEditLayer struct {
 	// файл пришёл извне полосы либо слой нарисован из пустоты. FK ставит SET NULL при исчезновении
 	// картинки: слой работоспособен и без родословной, а висящее число соврало бы.
 	SourcePictureId sql.NullInt32 `db:"source_picture_id"`
-	UpdatedBy       string        `db:"updated_by"`
-	UpdatedAt       time.Time     `db:"updated_at"`
+	// ClientRequestId — КЛЮЧ ИДЕМПОТЕНТНОСТИ ИМПОРТА (0351), тот самый, который объявляет контракт.
+	// NULL у всякого слоя, заведённого не импортом: SaveEditLayer — это compare-and-set по rev, у
+	// него однократной подачи нет и запроса тоже. Хранится, а не только сверяется, потому что стор
+	// обязан отличить «тот же запрос про тот же файл» от «тот же запрос про ДРУГОЙ файл».
+	ClientRequestId sql.NullString `db:"client_request_id"`
+	UpdatedBy       string         `db:"updated_by"`
+	UpdatedAt       time.Time      `db:"updated_at"`
 }
 
 // Словарь origin слоя правки — ПРОВОДНОЙ, см. DesignEditLayer.Origin.

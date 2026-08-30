@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -132,12 +133,27 @@ func (s *Store) SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSav
 // is about to draw them. `strokes` may legitimately be empty and then means «file the file»: the
 // layer holds the vector without an editable form of it yet.
 //
-// ⚠ IDEMPOTENCY IS BY (tech_card_id, source_media_id), NOT BY client_request_id, and the reason is
-// the table: design_edit_layer (0343) has no request-id column and 0350 did not add one. The retry
-// that matters — a lost response — arrives carrying the SAME media id, because the file went up
-// through UploadContentImage before this call and the client holds its id. The re-read runs INSIDE
-// the SERIALIZABLE transaction, where an ordinary SELECT already blocks, so two concurrent retries
-// cannot both insert; the guarantee is a lock, not a hope.
+// ⚠ IDEMPOTENCY IS BY client_request_id — THE KEY THE CONTRACT DECLARES — AND THE FILE IS A SECOND
+// BELT ON THE SAME PROMISE.
+//
+// This comment used to say the opposite, and it argued from the table: design_edit_layer had no
+// request-id column, so the pair (tech_card_id, source_media_id) was made the key instead. That was
+// a rationale outliving its reason the moment 0351 added the column — and while it stood, the verb
+// answered backwards to what it promised: the SAME request naming a DIFFERENT file filed a second
+// layer, while the field the contract calls the key was carried all the way here and never read.
+//
+// The two readings are ONE rule with two ways of recognising a retry, not two rules — both return
+// the existing layer, and only the mismatch is new:
+//
+//   - the request id catches the ordinary retry, and a request id that turns up naming a different
+//     card or a different file is REFUSED rather than silently handed somebody else's layer;
+//   - the file still catches a client that reissued its request id, because the promise the
+//     contract writes down is about the FILE: «a retry after a lost response must not file the same
+//     SVG as a second layer».
+//
+// Both re-reads run INSIDE the SERIALIZABLE transaction, where an ordinary SELECT already blocks,
+// so two concurrent retries cannot both insert; the guarantee is a lock, not a hope, and the unique
+// index behind it is the belt for anything that reaches the table without passing through here.
 func (s *Store) ImportVector(ctx context.Context, req entity.DesignVectorImport) (*entity.DesignEditLayer, error) {
 	if err := requireCard(req.TechCardId); err != nil {
 		return nil, err
@@ -161,11 +177,40 @@ func (s *Store) ImportVector(ctx context.Context, req entity.DesignVectorImport)
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 
-		// ─── the idempotent short-circuit, read under SERIALIZABLE ───
+		// ─── 1. ИДЕМПОТЕНТНОСТЬ ПО ТОМУ КЛЮЧУ, КОТОРЫЙ ОБЪЯВЛЕН КОНТРАКТОМ ───
 		//
-		// It returns the EXISTING layer untouched rather than re-writing it: the second call is a
-		// retry of the first, and a retry that overwrote the strokes would throw away whatever
-		// editing happened between the two.
+		// `client_request_id` — вот он, и до 0351 колонки под него не было вовсе: поле требовалось
+		// хендлером, доезжало сюда в запросной структуре и НЕ ЧИТАЛОСЬ. Дедупликация шла по паре
+		// (карточка, файл), то есть по другому правилу, расходящемуся с обещанным в обе стороны.
+		//
+		// Ответ на повтор — СУЩЕСТВУЮЩИЙ слой, нетронутым: второй вызов это ретрай первого, а
+		// ретрай, переписавший штрихи, выбросил бы всю правку, случившуюся между ними.
+		if prior, ok, err := layerByRequestID(ctx, db, req.ClientRequestId); err != nil {
+			return err
+		} else if ok {
+			// ⚠ ТОТ ЖЕ ЗАПРОС, НАЗЫВАЮЩИЙ ДРУГОЕ, — ЭТО ОШИБКА, А НЕ ПОВТОР, и молчаливо вернуть
+			// ему чужой ответ значит соврать дважды: клиент считает, что подшил ЭТОТ файл, а
+			// подшит другой. Тот же приём и та же формулировка, что у StartRun с чужой карточкой.
+			if prior.TechCardId != req.TechCardId {
+				return fmt.Errorf("%w: client_request_id %q already filed a layer on tech card %d",
+					entity.ErrDesignInvalidArgument, req.ClientRequestId, prior.TechCardId)
+			}
+			if int(prior.SourceMediaId.Int32) != req.SourceMediaId {
+				return fmt.Errorf("%w: client_request_id %q already filed media %d, not %d",
+					entity.ErrDesignInvalidArgument, req.ClientRequestId,
+					prior.SourceMediaId.Int32, req.SourceMediaId)
+			}
+			out = prior
+			return nil
+		}
+
+		// ─── 2. ТОТ ЖЕ ФАЙЛ, ПОТЕРЯННЫЙ ЗАПРОС — ВТОРОЙ ПОЯС, А НЕ ВТОРОЕ ПРАВИЛО ───
+		//
+		// Контракт формулирует обещание про ФАЙЛ дословно: «a retry after a lost response must not
+		// file the same SVG as a second layer». Клиент, перевыпустивший идентификатор запроса
+		// (а таких клиентов пишут), прошёл бы проверку выше и подшил бы тот же SVG вторым слоем —
+		// то есть ровно то, что обещание запрещает. Оба чтения дают ОДИН ответ (существующий
+		// слой) и разойтись не могут: они отличаются только тем, по чему узнают повтор.
 		existing, err := storeutil.QueryListNamed[entity.DesignEditLayer](ctx, db, `
 			SELECT * FROM design_edit_layer
 			WHERE tech_card_id = :card AND source_media_id = :src ORDER BY id LIMIT 1`,
@@ -208,24 +253,43 @@ func (s *Store) ImportVector(ctx context.Context, req entity.DesignVectorImport)
 					entity.ErrDesignNotFound, req.SourcePictureId, pic.TechCardId)
 			}
 		}
+		// ⚠ И ТА ЖЕ ПРОВЕРКА ДЛЯ ДВУХ МЕДИА, КОТОРЫЕ ЕЁ НЕ ИМЕЛИ ВОВСЕ. Строкой выше картинка
+		// проверяется на принадлежность карточке с 0350; файл и подложка не проверялись ничем,
+		// кроме существования строки media, — то есть картинка ЧУЖОЙ карточки становилась
+		// векторным слоем этой, и полоса рисовала её как свою, а «скачать SVG» отдавало чужой файл.
+		if err := refuseForeignMedia(ctx, db, req.TechCardId, req.SourceMediaId, req.BaseMediaId); err != nil {
+			return err
+		}
 
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_edit_layer
 				(tech_card_id, base_media_id, rev, strokes, origin, source_media_id,
-				 source_picture_id, updated_by)
-			VALUES (:card, :base, 1, :strokes, :origin, :src, :pic, :who)`,
+				 source_picture_id, client_request_id, updated_by)
+			VALUES (:card, :base, 1, :strokes, :origin, :src, :pic, :req, :who)`,
 			map[string]any{
 				"card": req.TechCardId, "base": nullInt(req.BaseMediaId),
 				"strokes": jsonOrNil(req.Strokes), "origin": req.Origin,
 				"src": req.SourceMediaId, "pic": nullInt(req.SourcePictureId),
-				"who": req.Actor,
+				"req": nullStr(req.ClientRequestId), "who": req.Actor,
 			})
 		if err != nil {
-			// uq_design_edit_layer_base: a layer over THIS base already exists on this card. Same
-			// answer as SaveEditLayer gives, and for the same reason — the caller believed it was
-			// creating one, so the honest reply is the CAS refusal that makes it reload and
-			// continue the layer that is already there.
 			if isDupKey(err) {
+				// ДВА РАЗНЫХ УНИКАЛЬНЫХ КЛЮЧА, И ОТВЕТЫ У НИХ РАЗНЫЕ.
+				//
+				// uq_design_edit_layer_client_request (0351) — это ГОНКА ДВУХ ПОВТОРОВ одного
+				// запроса: чтение выше их обоих пропустило, вставку выиграл один. Проигравшему
+				// причитается ТОТ ЖЕ ОТВЕТ, что и победителю, — иначе идемпотентность держалась бы
+				// на том, кто успел первым. Остаточный 1062 здесь пояс, а не механизм.
+				if prior, ok, rerr := layerByRequestID(ctx, db, req.ClientRequestId); rerr != nil {
+					return rerr
+				} else if ok {
+					out = prior
+					return nil
+				}
+				// uq_design_edit_layer_base: a layer over THIS base already exists on this card.
+				// Same answer as SaveEditLayer gives, and for the same reason — the caller believed
+				// it was creating one, so the honest reply is the CAS refusal that makes it reload
+				// and continue the layer that is already there.
 				return fmt.Errorf("%w: a layer over this base already exists",
 					entity.ErrDesignLayerRevMismatch)
 			}
@@ -372,6 +436,114 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		return nil, err
 	}
 	return &out, nil
+}
+
+// layerByRequestID reads the layer a given client_request_id already filed, if any.
+//
+// AN EMPTY REQUEST ID MATCHES NOTHING, deliberately: the column is NULL for every layer born of
+// SaveEditLayer, and a blank key that matched them would make the first hand-drawn layer on a card
+// the idempotent answer to every import.
+func layerByRequestID(ctx context.Context, db dependency.DB, requestID string) (entity.DesignEditLayer, bool, error) {
+	var out entity.DesignEditLayer
+	if strings.TrimSpace(requestID) == "" {
+		return out, false, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.DesignEditLayer](ctx, db,
+		`SELECT * FROM design_edit_layer WHERE client_request_id = :req LIMIT 1`,
+		map[string]any{"req": requestID})
+	if err != nil {
+		return out, false, fmt.Errorf("failed to look for an already-filed vector import: %w", err)
+	}
+	if len(rows) == 0 {
+		return out, false, nil
+	}
+	return rows[0], true, nil
+}
+
+// AssertMediaNotForeign — та же граница, вынесенная НАРУЖУ, для двери.
+//
+// ⚠ ЗАЧЕМ ГЛАГОЛ, А НЕ КОПИЯ ПРАВИЛА В ХЕНДЛЕРЕ. Дверь обязана отказать ДО резерва денег: прогон с
+// чужой картинкой не должен даже открываться. Но правило «чьё это медиа» знает только база, и
+// хендлер, отвечавший на него по-своему (через реестр ссылок media), был ВТОРЫМ мнением о том же
+// вопросе — а два мнения расходятся в тот день, когда правят одно. Здесь оно одно, и спрашивают его
+// оба: дверь снаружи транзакции, ImportVector — внутри своей.
+//
+// ЧИТАЮЩАЯ ТРАНЗАКЦИЯ, а не пишущая: это вопрос, а не изменение, и SERIALIZABLE-писатель ради
+// одного COUNT держал бы блокировки на чужих строках.
+func (s *Store) AssertMediaNotForeign(ctx context.Context, techCardID int, mediaIDs []int) error {
+	if err := requireCard(techCardID); err != nil {
+		return err
+	}
+	if len(mediaIDs) == 0 {
+		return nil
+	}
+	return s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		return refuseForeignMedia(ctx, rep.DB(), techCardID, mediaIDs...)
+	})
+}
+
+// refuseForeignMedia — ГРАНИЦА КАРТОЧКИ ДЛЯ ИДЕНТИФИКАТОРА МЕДИА, ПРИШЕДШЕГО С ПРОВОДА.
+//
+// ⚠ ПРАВИЛО ОТРИЦАТЕЛЬНОЕ («не принадлежит ДРУГОЙ карточке»), А НЕ ПОЛОЖИТЕЛЬНОЕ («принадлежит
+// этой»), И ЭТО РЕШЕНИЕ, А НЕ СЛАБОСТЬ. Положительное правило — то, что стоит у SetReferenceRole
+// («медиа обязано лежать в tech_card_media этой карточки»), — здесь ЛОЖНО ОТКАЗЫВАЛО БЫ на
+// законном жесте: файл, только что загруженный через UploadContentImage, не принадлежит ещё ни
+// одной карточке (контракт ImportDesignVector говорит это про source_media_id дословно), а
+// картинка полосы живёт в design_picture и в tech_card_media не попадает вовсе — ту таблицу
+// целиком переписывает сейв карточки.
+//
+// ДЕРЖАТЕЛЕЙ РОВНО ДВА, И ЭТО НЕ ПРОИЗВОЛ: tech_card_media — картинки, которые карточка держит
+// сама, design_picture — картинки её полосы. Больше НИ ОДНА таблица не отвечает на вопрос «чья это
+// карточка» (реестр ссылок media знает ещё продукты, архивы и примерки, но они про другую
+// принадлежность). Медиа, за которым не стоит ни одна карточка, — ничейное, и оно проходит.
+//
+// НОЛЬ И ОТРИЦАТЕЛЬНОЕ МОЛЧА ПРОПУСКАЮТСЯ: «не задано» — законное состояние обоих полей, и
+// отказывать за отсутствие значения обязан тот, кто его требует, а не эта функция.
+func refuseForeignMedia(ctx context.Context, db dependency.DB, cardID int, mediaIDs ...int) error {
+	seen := make(map[int]struct{}, len(mediaIDs))
+	for _, id := range mediaIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+
+		// СНАЧАЛА СПРАШИВАЕТСЯ «ЧУЖОЕ ЛИ», и обычный ответ — ноль, на котором второй запрос не
+		// нужен вовсе: ничейный свежий файл проходит одним чтением.
+		others, err := storeutil.QueryCountNamed(ctx, db, `
+			SELECT COUNT(*) FROM (
+				SELECT tech_card_id FROM tech_card_media WHERE media_id = :media
+				UNION ALL
+				SELECT tech_card_id FROM design_picture WHERE media_id = :media
+			) h WHERE h.tech_card_id <> :card`,
+			map[string]any{"media": id, "card": cardID})
+		if err != nil {
+			return fmt.Errorf("failed to check who media %d belongs to: %w", id, err)
+		}
+		if others == 0 {
+			continue
+		}
+		// ОДИН ФАЙЛ В ДВУХ КАРТОЧКАХ — ОБЫЧНОЕ ДЕЛО (та же ткань, тот же референс), и отказывать
+		// за это нельзя: правило про то, что картинка НЕ ЧУЖАЯ, а не про то, что она больше нигде
+		// не встречается.
+		mine, err := storeutil.QueryCountNamed(ctx, db, `
+			SELECT COUNT(*) FROM (
+				SELECT tech_card_id FROM tech_card_media WHERE media_id = :media
+				UNION ALL
+				SELECT tech_card_id FROM design_picture WHERE media_id = :media
+			) h WHERE h.tech_card_id = :card`,
+			map[string]any{"media": id, "card": cardID})
+		if err != nil {
+			return fmt.Errorf("failed to check whether media %d belongs here: %w", id, err)
+		}
+		if mine == 0 {
+			return fmt.Errorf("%w: media %d belongs to another tech card, not to %d",
+				entity.ErrDesignForeignMedia, id, cardID)
+		}
+	}
+	return nil
 }
 
 func layerByID(ctx context.Context, db dependency.DB, id int) (entity.DesignEditLayer, error) {

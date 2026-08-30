@@ -114,7 +114,20 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// ─── THE FREE COLLECT. Its own attempt row, because it is where the price of an asynchronous
 	// job finally becomes known: the submit closed with a NULL price (nobody could say yet), and
 	// FinishAttempt is idempotent, so the charge could never be written onto that row afterwards.
-	// Two rows, one payment — and price_actual, which is the SUM of attempt prices, still adds up.
+	//
+	// ⚠ TWO ROWS, ONE PAYMENT — AND THE STORE IS WHAT HOLDS THAT SECOND HALF UP, in two separate
+	// places, because this loop breaks both of the store's older assumptions:
+	//
+	//   * the ATTEMPT CAP is a money cap, so it counts payments rather than attempt rows: an
+	//     attempt that follows an `accepted` one is a free lookup and does not spend a round of it
+	//     (designPaidAttemptsSQL). Counted the other way, a turntable paid for once died terminally
+	//     after three windows of waiting;
+	//   * a REPEATED collect of the same task answers with the same consumed_credits, on a fresh,
+	//     not-yet-closed attempt row. `spent` and price_actual move on the FIRST of them only —
+	//     the charge is keyed by provider_request_id, not by the row that reports it
+	//     (chargeAlreadyBooked).
+	//
+	// So `accepted` + the task id is not bookkeeping: it is the token both of those decisions read.
 	if collector == nil {
 		// Unreachable today: pendingID is only ever set on a route that implements Collector. It is
 		// written down anyway because the alternative to a refusal here is a nil dereference on a
@@ -267,9 +280,10 @@ func (w *Worker) finishAttempt(ctx context.Context, run entity.DesignRun, attemp
 
 // failRun writes the failure down, letting the store decide the backoff.
 //
-// NEXT ATTEMPT TIME IS NOT SET HERE ON PURPOSE. The exponent (30 s × 2ⁿ, capped at fifteen minutes,
-// five attempts) is a MONEY policy and it lives in exactly one place, in the store. A second copy
-// of it in the worker would be a second policy the day either one is edited.
+// NEXT ATTEMPT TIME IS NOT SET HERE ON PURPOSE. The exponent (30 s × 2ⁿ, capped at fifteen minutes)
+// and the two ceilings it runs into — FIVE PAID CALLS and ten rounds, paid or free — are a MONEY
+// policy and they live in exactly one place, in the store. A second copy of them in the worker
+// would be a second policy the day either one is edited.
 func (w *Worker) failRun(ctx context.Context, run entity.DesignRun, token string, cause error) error {
 	v := classify(cause)
 	if _, err := w.store.FailRun(ctx, entity.DesignRunFail{
