@@ -83,7 +83,9 @@ func TestGenerate_RoundTrip(t *testing.T) {
 		`"background":"opaque"`,
 		`"output_format":"png"`,
 		`"output_compression":90`,
-		`"input_references":["https://media.grbpwr.com/moodboard/1.png"]`,
+		// The object envelope is the provider's schema, measured 2026-08-30: a bare string in this
+		// array is refused with `invalid_type: expected object, received string` before auth runs.
+		`"input_references":[{"type":"image_url","image_url":{"url":"https://media.grbpwr.com/moodboard/1.png"}}]`,
 	} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("request body missing %s\nbody: %s", want, gotBody)
@@ -142,7 +144,7 @@ func TestGenerate_OmitsUnsetFields(t *testing.T) {
 // or remap a transparent request so nothing 400s. THIS PACKAGE MUST NOT DO THAT: a silently
 // rewritten background is a picture that differs from the one that was ordered, and the difference
 // surfaces hours later in a sheet nobody can lay over anything. A 400 naming the parameter is the
-// cheap, loud outcome — and TestGenerate_UnclassifiedStatusStaysGeneric already proves that 400
+// cheap, loud outcome — and TestGenerate_ProviderBadRequestIsTerminal already proves that 400
 // arrives as our own bad request rather than as retryable weather.
 //
 // So: whatever the caller puts in Background reaches the wire verbatim, supported or not.
@@ -225,6 +227,12 @@ func TestGenerate_ProviderErrorsAreClassifiedByStatus(t *testing.T) {
 			`{"error":{"message":"Insufficient credits","code":402}}`, ErrOutOfCredit, "Insufficient credits"},
 		{"502 is an unbilled provider failure", http.StatusBadGateway, `{"error":{"message":"upstream failed"}}`, ErrProviderFailure, "upstream failed"},
 		{"503 is an unbilled provider failure", http.StatusServiceUnavailable, `{"error":{"message":"down"}}`, ErrProviderFailure, "down"},
+		// The 2026-08-30 flat outage, pinned: a schema refusal used to fall into the unclassified
+		// default, designgen read it as retryable weather (`provider_unavailable`) and silently
+		// re-sent the same refused body three times. A provider 400 is OUR request being wrong and
+		// must carry ErrBadRequest so the caller stops on the first refusal.
+		{"400 is our own bad request, not weather", http.StatusBadRequest,
+			`{"success":false,"error":{"name":"ZodError","message":"Invalid input: expected object, received string"}}`, ErrBadRequest, "expected object, received string"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,9 +259,14 @@ func TestGenerate_ProviderErrorsAreClassifiedByStatus(t *testing.T) {
 	}
 }
 
-// TestGenerate_UnclassifiedStatusStaysGeneric: a 400 is our own malformed request, not one of the
-// named faults, and must NOT masquerade as retryable weather.
-func TestGenerate_UnclassifiedStatusStaysGeneric(t *testing.T) {
+// TestGenerate_ProviderBadRequestIsTerminal: a 400 is our own malformed request, not one of the
+// retryable faults, and it must SAY SO with the sentinel.
+//
+// The old version of this test only asserted what a 400 is NOT (rate limit, provider failure,
+// retired slug) and let the error stay generic — and a generic error is exactly what designgen's
+// classifier reads as retryable weather. That gap is how the 2026-08-30 flat outage burned three
+// silent rounds on a request the validator had already refused for good.
+func TestGenerate_ProviderBadRequestIsTerminal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, `{"error":{"message":"background transparent is not supported"}}`)
@@ -264,6 +277,9 @@ func TestGenerate_UnclassifiedStatusStaysGeneric(t *testing.T) {
 	_, err := c.Generate(context.Background(), Request{Prompt: "p"})
 	if err == nil {
 		t.Fatal("a 400 must be an error")
+	}
+	if !errors.Is(err, ErrBadRequest) {
+		t.Errorf("a provider 400 must carry ErrBadRequest so the caller stops instead of retrying, got: %v", err)
 	}
 	for _, sentinel := range []error{ErrRateLimited, ErrProviderFailure, ErrModelUnavailable} {
 		if errors.Is(err, sentinel) {
@@ -696,7 +712,15 @@ func TestRequestWireIsValidJSON(t *testing.T) {
 		t.Errorf("quality = %v, want the trimmed value", back["quality"])
 	}
 	refs, _ := back["input_references"].([]any)
-	if len(refs) != 1 || refs[0] != "https://x/y.png" {
-		t.Errorf("input_references = %v, want the trimmed address", back["input_references"])
+	if len(refs) != 1 {
+		t.Fatalf("input_references = %v, want exactly one object", back["input_references"])
+	}
+	ref, _ := refs[0].(map[string]any)
+	if ref["type"] != "image_url" {
+		t.Errorf(`reference type = %v, want "image_url" — the validator refuses bare strings`, ref["type"])
+	}
+	iu, _ := ref["image_url"].(map[string]any)
+	if iu["url"] != "https://x/y.png" {
+		t.Errorf("reference url = %v, want the trimmed address", iu["url"])
 	}
 }

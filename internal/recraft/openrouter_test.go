@@ -29,6 +29,16 @@ func orService(t *testing.T, srvURL string) *Client {
 	})
 }
 
+// refURL digs the address out of one input_references element. Since 2026-08-30 the wire shape is
+// the object {"type":"image_url","image_url":{"url":…}} — the endpoint's validator refuses a bare
+// string with `invalid_type: expected object, received string`.
+func refURL(v any) string {
+	m, _ := v.(map[string]any)
+	iu, _ := m["image_url"].(map[string]any)
+	u, _ := iu["url"].(string)
+	return u
+}
+
 func TestOpenRouter_Success(t *testing.T) {
 	var seenPath string
 	var body map[string]any
@@ -59,7 +69,7 @@ func TestOpenRouter_Success(t *testing.T) {
 		t.Errorf("n = %v, want 1 (n means n variants of one prompt, each billed)", body["n"])
 	}
 	refs, _ := body["input_references"].([]any)
-	if len(refs) != 1 || refs[0] != "https://media.grbpwr.com/flat.png" {
+	if len(refs) != 1 || refURL(refs[0]) != "https://media.grbpwr.com/flat.png" {
 		t.Errorf("input_references = %v, want our own media url crossing as a url", body["input_references"])
 	}
 	// This endpoint has no negative-prompt field, so the instruction is SAID OUT LOUD in the prompt
@@ -96,7 +106,7 @@ func TestOpenRouter_BytesBecomeADataURI(t *testing.T) {
 	}
 	refs, _ := body["input_references"].([]any)
 	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("PRETEND-PNG"))
-	if len(refs) != 1 || refs[0] != want {
+	if len(refs) != 1 || refURL(refs[0]) != want {
 		t.Fatalf("input_references = %v, want a data uri", body["input_references"])
 	}
 }

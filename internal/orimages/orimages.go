@@ -115,10 +115,12 @@ const (
 // as a run that waits forever for a provider nobody can call.
 var ErrNotConfigured = errors.New("orimages: no OpenRouter API key is set")
 
-// ErrBadRequest is returned when the REQUEST WE BUILT is one the provider would refuse, and it is
-// raised HERE, before the round trip, for the things we can be certain about locally: an empty
-// prompt, `n` outside the provider's range, more reference pictures than the model accepts, and a
-// reference that is not a fetchable url.
+// ErrBadRequest is returned when the REQUEST WE BUILT is one the provider refuses. It is raised in
+// two places for one meaning: locally, before the round trip, for the things we can be certain
+// about here (an empty prompt, `n` outside the provider's range, more reference pictures than the
+// model accepts, a reference that is not a fetchable url) — and on the provider's own 4xx answer
+// for the refusals only its validator can see (classifyStatus). Either way nothing was billed and
+// re-sending the identical request cannot end differently.
 //
 // ⚠ IT IS A SENTINEL RATHER THAN PROSE BECAUSE THE CALLER HAS TO TELL IT FROM WEATHER. An
 // unrecognised error is classified as a transient provider fault and RETRIED — five times, by the
@@ -344,15 +346,34 @@ type Result struct {
 // --- wire types ---
 
 type imageRequestWire struct {
-	Model             string   `json:"model"`
-	Prompt            string   `json:"prompt"`
-	N                 int      `json:"n,omitempty"`
-	AspectRatio       string   `json:"aspect_ratio,omitempty"`
-	Quality           string   `json:"quality,omitempty"`
-	Background        string   `json:"background,omitempty"`
-	OutputFormat      string   `json:"output_format,omitempty"`
-	OutputCompression *int     `json:"output_compression,omitempty"`
-	InputReferences   []string `json:"input_references,omitempty"`
+	Model             string               `json:"model"`
+	Prompt            string               `json:"prompt"`
+	N                 int                  `json:"n,omitempty"`
+	AspectRatio       string               `json:"aspect_ratio,omitempty"`
+	Quality           string               `json:"quality,omitempty"`
+	Background        string               `json:"background,omitempty"`
+	OutputFormat      string               `json:"output_format,omitempty"`
+	OutputCompression *int                 `json:"output_compression,omitempty"`
+	InputReferences   []inputReferenceWire `json:"input_references,omitempty"`
+}
+
+// inputReferenceWire is ONE reference picture in the ONLY shape the endpoint's validator accepts:
+// an object, not a bare string.
+//
+// ⚠ MEASURED, NOT ASSUMED (2026-08-30, live API): `input_references: ["https://…"]` is refused
+// with HTTP 400 `invalid_type: expected object, received string` — for EVERY element, before auth
+// even runs — while `[{"type":"image_url","image_url":{"url":"https://…"}}]` passes the schema.
+// It is the same content-part shape the chat endpoint uses for multimodal messages. The caller's
+// seam (Request.InputReferences) stays a []string of addresses on purpose: which envelope the
+// provider wants around an address is this package's private knowledge, and the day it changes
+// again it changes HERE and nowhere else.
+type inputReferenceWire struct {
+	Type     string            `json:"type"`
+	ImageURL imageReferenceURL `json:"image_url"`
+}
+
+type imageReferenceURL struct {
+	URL string `json:"url"`
 }
 
 type apiError struct {
@@ -482,13 +503,13 @@ func (c *Client) buildRequest(req Request) (imageRequestWire, error) {
 		return imageRequestWire{}, fmt.Errorf("%w: %d reference pictures exceeds the %d the model accepts",
 			ErrBadRequest, len(req.InputReferences), MaxInputReferences)
 	}
-	refs := make([]string, 0, len(req.InputReferences))
+	refs := make([]inputReferenceWire, 0, len(req.InputReferences))
 	for i, raw := range req.InputReferences {
 		u := strings.TrimSpace(raw)
 		if err := validateReference(u); err != nil {
 			return imageRequestWire{}, fmt.Errorf("%w: reference %d: %v", ErrBadRequest, i+1, err)
 		}
-		refs = append(refs, u)
+		refs = append(refs, inputReferenceWire{Type: "image_url", ImageURL: imageReferenceURL{URL: u}})
 	}
 	if len(refs) == 0 {
 		refs = nil // omit the key entirely rather than sending an empty array
@@ -555,6 +576,19 @@ func classifyStatus(status int, body []byte) error {
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrRateLimited, status, apiErrorMessage(body))
 	case status >= 500:
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrProviderFailure, status, apiErrorMessage(body))
+	case status >= 400:
+		// Any 4xx the cases above did not name is the provider refusing THE REQUEST WE BUILT —
+		// a schema the validator rejected, a parameter the model does not take. Nothing was
+		// billed, and re-sending the identical request cannot end differently, so it carries
+		// ErrBadRequest and the caller stops instead of retrying.
+		//
+		// ⚠ THIS CASE IS WHAT THE FLAT OUTAGE OF 2026-08-30 WAS MISSING. A 400 (`input_references`
+		// sent as strings where the validator wants objects) fell into the bare default below,
+		// designgen's classifier read the unrecognised error as retryable weather
+		// (`provider_unavailable`), and the queue silently repeated the same refused request —
+		// three paid rounds of nothing, and a run row blaming the provider's availability for a
+		// body we built wrong.
+		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrBadRequest, status, apiErrorMessage(body))
 	default:
 		return fmt.Errorf("orimages: API error (HTTP %d): %s", status, apiErrorMessage(body))
 	}
