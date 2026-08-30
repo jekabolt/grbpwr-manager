@@ -175,6 +175,12 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		Runs:           designRunsToPb(ctx, band.Runs),
 		Batches:        designBatchesToPb(band.Batches),
 		NextPageToken:  design.EncodePageToken(band.NextCursor, band.NextBatchCursor, true),
+		// W-13, ЗЕРКАЛО ДЛЯ ЭКРАНА. Сам гейт стоит в StartDesignRun и отказывает `threed` без
+		// непрятанного рендера; этот флаг существует ровно затем, чтобы полоса рисовала дверь
+		// закрытой, а не пускала человека в отказ. Считает его GetBand по ВСЕЙ карточке — клиент,
+		// вычисляющий то же правило по выданной ему странице, ошибался бы ровно на те рендеры,
+		// которые на страницу не попали, то есть на обычной карточке с историей.
+		HasFabricRender: band.HasFabricRender,
 	}
 	if band.LatestVersion != nil {
 		resp.LatestVersion = designSheetVersionToPb(ctx, *band.LatestVersion)
@@ -277,8 +283,12 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 		TechCardId: int(req.GetTechCardId()),
 		MediaId:    int(req.GetMediaId()),
 		Role:       strings.TrimSpace(req.GetRole()),
-		Ordinal:    int(req.GetOrdinal()),
-		Actor:      designActor(ctx),
+		// The note rides on the SAME upsert as the role — one row, one write. An empty note on a
+		// row that keeps its role clears the note; an empty ROLE deletes the row and takes the
+		// note with it, because the row is the role's existence.
+		Note:    strings.TrimSpace(req.GetNote()),
+		Ordinal: int(req.GetOrdinal()),
+		Actor:   designActor(ctx),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to set the design reference role", err, nil)
@@ -822,8 +832,12 @@ func designBenchToPb(in []entity.DesignBenchSlot) []*pb_common.DesignBenchSlot {
 
 func designSlotToPb(s entity.DesignBenchSlot) *pb_common.DesignBenchSlot {
 	out := &pb_common.DesignBenchSlot{
-		Id:         int32(s.Id),
-		ViewKey:    s.ViewKey,
+		Id:      int32(s.Id),
+		ViewKey: s.ViewKey,
+		// ВТОРАЯ ОСЬ ВЕРСТАКА (0349). Пустое в базе читается как flat — одним и тем же правилом
+		// на всех трёх ярусах, иначе строка старого писателя и строка нового попали бы в РАЗНЫЕ
+		// слоты одного адреса.
+		Kind:       entity.DesignKindOrFlat(s.Kind),
 		DetailName: s.DetailName.String,
 		PictureId:  int32(s.PictureId.Int32),
 		SlotRev:    int32(s.SlotRev),
@@ -860,7 +874,10 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		MixedInput:  p.MixedInput,
 		LayerRev:    int32(p.LayerRev),
 		HiddenBy:    p.HiddenBy.String,
-		CreatedAt:   timestamppb.New(p.CreatedAt),
+		// W-12: «выбран» — НЕ обратная сторона hidden. Спрятать значит убрать с глаз, выбрать —
+		// поднять над остальными, и выбранных может быть несколько.
+		Selected:  p.Selected,
+		CreatedAt: timestamppb.New(p.CreatedAt),
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)
@@ -941,8 +958,11 @@ func designRunToPb(ctx context.Context, r entity.DesignRun) *pb_common.DesignRun
 		ErrorCode:        r.ErrorCode.String,
 		LastError:        r.LastError.String,
 		OutputText:       r.OutputText.String,
-		CreatedAt:        timestamppb.New(r.CreatedAt),
-		Pictures:         designPicturesToPb(r.Pictures),
+		// РОДОСЛОВНАЯ РЕРАНА (0348). Без неё история не отличает «повторили прогон 12» от
+		// «сделали похожий», а именно это отличие делает реран читаемым из одной строки.
+		RerunOf:   r.RerunOf.Int32,
+		CreatedAt: timestamppb.New(r.CreatedAt),
+		Pictures:  designPicturesToPb(r.Pictures),
 	}
 	if r.CancelRequestedAt.Valid {
 		out.CancelRequestedAt = timestamppb.New(r.CancelRequestedAt.Time)
@@ -1081,9 +1101,12 @@ func designReferenceToPb(r entity.DesignReference) *pb_common.DesignReference {
 		TechCardId: int32(r.TechCardId),
 		MediaId:    int32(r.MediaId),
 		Role:       r.Role,
-		Ordinal:    int32(r.Ordinal),
-		SetBy:      r.SetBy,
-		SetAt:      timestamppb.New(r.SetAt),
+		// The human's words about THIS reference (W-3). Without them a board of eight references
+		// states eight roles and no intent, and the intent is the half that changes the answer.
+		Note:    r.Note.String,
+		Ordinal: int32(r.Ordinal),
+		SetBy:   r.SetBy,
+		SetAt:   timestamppb.New(r.SetAt),
 	}
 }
 
@@ -1101,8 +1124,14 @@ func designLayerToPb(l entity.DesignEditLayer, withStrokes bool) *pb_common.Desi
 		TechCardId:  int32(l.TechCardId),
 		BaseMediaId: l.BaseMediaId.Int32,
 		Rev:         int32(l.Rev),
-		UpdatedBy:   l.UpdatedBy,
-		UpdatedAt:   timestamppb.New(l.UpdatedAt),
+		// PROVENANCE (0350). `origin` is served NORMALISED — an empty column reads as `drawn`,
+		// which is what every layer that predates the field is — so a client never has to know
+		// that the default was written by a migration rather than by a writer.
+		Origin:          entity.DesignLayerOriginOrDrawn(l.Origin),
+		SourceMediaId:   l.SourceMediaId.Int32,
+		SourcePictureId: l.SourcePictureId.Int32,
+		UpdatedBy:       l.UpdatedBy,
+		UpdatedAt:       timestamppb.New(l.UpdatedAt),
 	}
 	if withStrokes {
 		out.Strokes = l.Strokes

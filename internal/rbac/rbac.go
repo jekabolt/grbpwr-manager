@@ -433,6 +433,10 @@ var methodRequirements = map[string]Requirement{
 	"GetDesignBand":         rd(SectionTechCards),
 	"ListDesignRuns":        rd(SectionTechCards),
 	"GetDesignSheetVersion": rd(SectionTechCards),
+	// Чтение ОДНОГО прогона целиком — снимок входов, попытки, картинки. Право то же, что у ленты:
+	// это та же карточка, взятая по одной строке, а не другой объём знания. Деньги здесь не
+	// тратятся — реран платит через StartDesignRun, который стоит на записи.
+	"GetDesignRun": rd(SectionTechCards),
 	// Чтение ОДНОГО слоя со штрихами. Отдельный метод, потому что GetDesignBand отдаёт слои без
 	// штрихов; право то же самое — это содержимое той же карточки, просто взятое поштучно.
 	"GetDesignEditLayer": rd(SectionTechCards),
@@ -442,16 +446,19 @@ var methodRequirements = map[string]Requirement{
 	//
 	// StartDesignRun и DraftDesignIdea — платные вызовы: право их звать это право выставить
 	// организации счёт, и на чтении им места нет ни при каких обстоятельствах.
-	"StartDesignRun":         wr(SectionTechCards),
-	"DraftDesignIdea":        wr(SectionTechCards),
-	"CancelDesignRun":        wr(SectionTechCards),
-	"ArchiveDesignRun":       wr(SectionTechCards),
-	"HideDesignPicture":      wr(SectionTechCards),
-	"RegisterDesignUpload":   wr(SectionTechCards),
-	"SplitDesignPicture":     wr(SectionTechCards),
-	"SetDesignBenchSlot":     wr(SectionTechCards),
-	"SetDesignReferenceRole": wr(SectionTechCards),
-	"DeleteDesignDetailSlot": wr(SectionTechCards),
+	"StartDesignRun":    wr(SectionTechCards),
+	"DraftDesignIdea":   wr(SectionTechCards),
+	"CancelDesignRun":   wr(SectionTechCards),
+	"ArchiveDesignRun":  wr(SectionTechCards),
+	"HideDesignPicture": wr(SectionTechCards),
+	// «Выбран» — такое же дешёвое обратимое утверждение о картинке, как «спрятан»,
+	// и права у них одни: кто может прятать, тот может и выбирать.
+	"SetDesignPictureSelected": wr(SectionTechCards),
+	"RegisterDesignUpload":     wr(SectionTechCards),
+	"SplitDesignPicture":       wr(SectionTechCards),
+	"SetDesignBenchSlot":       wr(SectionTechCards),
+	"SetDesignReferenceRole":   wr(SectionTechCards),
+	"DeleteDesignDetailSlot":   wr(SectionTechCards),
 	// MintDesignSheetVersion выполняет ОБЫЧНУЮ ЗАПИСЬ ДОКУМЕНТА той же транзакцией (тот же код, что
 	// UpdateTechCard), поэтому его право обязано быть не слабее, чем у UpdateTechCard, — иначе минт
 	// стал бы чёрным ходом в документ мимо права на документ.
@@ -459,6 +466,10 @@ var methodRequirements = map[string]Requirement{
 	"RecordDesignSheetIssue": wr(SectionTechCards),
 	"SaveDesignEditLayer":    wr(SectionTechCards),
 	"FlattenDesignEditLayer": wr(SectionTechCards),
+	// ImportDesignVector НИЧЕГО НЕ ТРАТИТ — он подшивает уже загруженный SVG, — но пишет слой и
+	// заводит картинку с провенансом imported_svg. Право пишущее, потому что запись, а не потому
+	// что деньги; машинная векторизация это StartDesignRun с kind=vector, у которого право уже есть.
+	"ImportDesignVector": wr(SectionTechCards),
 	// ЭКСПОРТ/ИМПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ.
 	//
 	// ExportTechCardArchive — wr(tech_cards), и это НЕ описка рядом с GetTechCard. Экспорт не

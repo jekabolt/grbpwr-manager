@@ -3,6 +3,7 @@ package design
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -57,15 +58,23 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 			return nil
 		}
 
+		// THE NOTE IS WRITTEN BY THIS UPSERT AND BY NO OTHER (0348, W-3). It lives on this row, so
+		// a verb of its own would be a second write over the same key that could half-succeed —
+		// leaving a role stated with somebody else's words next to it.
+		//
+		// AN EMPTY NOTE CLEARS IT — the column goes to NULL. That is not the rule `role` follows,
+		// and the asymmetry is deliberate: a note is text, and empty text is a real answer for it,
+		// while an empty role deletes the row above (see the branch before this one).
 		if err := storeutil.ExecNamed(ctx, db, `
-			INSERT INTO design_reference (tech_card_id, media_id, role, ordinal, set_by, set_at)
-			VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6))
+			INSERT INTO design_reference (tech_card_id, media_id, role, note, ordinal, set_by, set_at)
+			VALUES (:card, :media, :role, :note, :ord, :who, UTC_TIMESTAMP(6))
 			ON DUPLICATE KEY UPDATE
-				role = VALUES(role), ordinal = VALUES(ordinal),
+				role = VALUES(role), note = VALUES(note), ordinal = VALUES(ordinal),
 				set_by = VALUES(set_by), set_at = VALUES(set_at)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "role": req.Role,
-				"ord": req.Ordinal, "who": req.Actor,
+				"note": nullStr(strings.TrimSpace(req.Note)),
+				"ord":  req.Ordinal, "who": req.Actor,
 			}); err != nil {
 			return fmt.Errorf("failed to set design reference role: %w", err)
 		}

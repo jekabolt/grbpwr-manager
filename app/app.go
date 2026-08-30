@@ -28,6 +28,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
@@ -36,11 +37,14 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
+	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
+	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
@@ -63,21 +67,25 @@ func SetCommitHash(hash string) {
 
 // App is the main application
 type App struct {
-	hs   *httpapi.Server
-	db   dependency.Repository
-	b    dependency.FileStore
-	ma   dependency.Mailer
-	cdw  *campaigndispatch.Worker
-	oc   *ordercleanup.Worker
-	dsw  *deliverysync.Worker
-	sc   *storefrontcleanup.Worker
-	acw  *archivecleanup.Worker
-	tm   *tiermanagement.Worker
-	maw  *marketingaggregate.Worker
-	om   *opexmaterialize.Worker
-	ap   *acctposting.Worker
-	sr   *stripereconcile.Worker
-	fxw  *fxsync.Worker
+	hs  *httpapi.Server
+	db  dependency.Repository
+	b   dependency.FileStore
+	ma  dependency.Mailer
+	cdw *campaigndispatch.Worker
+	oc  *ordercleanup.Worker
+	dsw *deliverysync.Worker
+	sc  *storefrontcleanup.Worker
+	acw *archivecleanup.Worker
+	tm  *tiermanagement.Worker
+	maw *marketingaggregate.Worker
+	om  *opexmaterialize.Worker
+	ap  *acctposting.Worker
+	sr  *stripereconcile.Worker
+	fxw *fxsync.Worker
+	// dgw is the DESIGN band generation worker. NIL WHENEVER DESIGN_GENERATION_ENABLED IS OFF:
+	// a disabled feature is not a worker that ticks and finds nothing, it is a worker that was
+	// never built — the queue it drains costs money to drain.
+	dgw  *designgen.Worker
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
 	re   dependency.RevalidationService
@@ -450,6 +458,61 @@ func (a *App) Start(ctx context.Context) error {
 	// weeks later, on one of the three features.
 	aiOpsClient.WarnIfModelRetired()
 
+	// ─── DESIGN band, generative half ─────────────────────────────────────────────────────────
+	//
+	// The image client is a SECOND OpenRouter client, not more options on the first: POST
+	// /api/v1/images is a different endpoint with a different catalogue, and `openai/gpt-image-2`
+	// is absent from the chat one entirely — no value of OPENROUTER_MODEL could reach it.
+	//
+	// Its retired-slug probe stands beside the chat client's for the reason that line exists at
+	// all: a slug pulled from the provider's catalogue turns the feature into a 404 in a fifth of
+	// a second, and the last time it happened here it was found weeks later, by a person pressing
+	// a button. The probe returns immediately, refuses nothing, and stays silent when no key is
+	// set — so an untouched deployment sees no new line.
+	designImages := orimages.New(a.c.OpenRouterImages)
+	designImages.WarnIfModelRetired()
+
+	// The worker is GATED, and the gate means NOT CONSTRUCTED — the precedent is ACCOUNTING_ENABLED
+	// above. An inert feature must not be a worker that wakes every few seconds to ask an empty
+	// table for work it is not allowed to do; and the queue it drains is the one that spends the
+	// owner's money, so "off" has to mean the code does not run at all.
+	//
+	// ⚠ THE HANDLER AND THIS WORKER SHIP TOGETHER OR NOT AT ALL. StartDesignRun without a worker
+	// means every press of GENERATE creates a run that stays `pending` forever, holds its budget
+	// reservation until midnight, and eventually kills the button with budget_exceeded for a
+	// reason nobody can see.
+	// Настройки воркера приходят из общего конфига, как у всех остальных компонентов. Раньше здесь
+	// стоял designgen.ConfigFromEnv() — временный мост: секцию нельзя было завести, пока config/cfg.go
+	// правил другой автор той же волны. Мост снят, чтения снова одно.
+	//
+	// Умолчания и инвариант «RunTimeout < ClaimLease» применяет сам designgen.New, поэтому
+	// незаполненная секция здесь безопасна: очередь не сможет воскресить прогон, чей воркер
+	// ещё жив и платит.
+	designCfg := a.c.DesignGen
+	if designCfg.Enabled {
+		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
+			// flat and render — the raster route.
+			Image: designgen.NewImageProvider(designImages),
+			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
+			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
+			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
+			// threed — Meshy, directly, because OpenRouter has no 3D modality to route to.
+			Threed: designgen.NewThreedProvider(meshy.New(a.c.Meshy)),
+		})
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		if err = a.dgw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start design generation worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+	}
+
 	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, aiOpsClient, jpk.Taxpayer{
 		NIP:       a.c.JPK.NIP,
 		FullName:  a.c.JPK.FullName,
@@ -463,6 +526,13 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	// THE PAID HANDLERS READ THE SAME FLAG THE WORKER WAS GATED ON, AND FROM THE SAME VALUE.
+	//
+	// Not from a second os.Getenv, and not from a copy of the string: the two are one decision.
+	// Diverging gives exactly two states, each worse than "off" — StartDesignRun open with no
+	// worker leaves every paid run in `pending` until midnight, holding its reservation; a worker
+	// up with the handler closed is a loop polling a queue nothing can enqueue into.
+	adminS.SetDesignGenerationEnabled(designCfg.Enabled)
 	a.adminS = adminS
 
 	var frontendS *frontend.Server
@@ -725,6 +795,13 @@ func (a *App) Stop(ctx context.Context) {
 	if a.fxw != nil {
 		_ = a.fxw.Stop()
 	}
+	// Inside the workers block, i.e. ABOVE a.db.Close(): a pass that has already paid a provider
+	// finishes writing the charge and the picture on a context that ignores cancellation, and Stop
+	// waits for it. Moving this below the close would turn a redeploy landing mid-generation into
+	// a purchase with no record of it.
+	if a.dgw != nil {
+		_ = a.dgw.Stop()
+	}
 	if a.sr != nil {
 		_ = a.sr.Stop()
 	}
@@ -816,6 +893,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.fxw != nil {
 		addWorker(a.fxw)
+	}
+	if a.dgw != nil {
+		addWorker(a.dgw)
 	}
 	if a.sr != nil {
 		addWorker(a.sr)

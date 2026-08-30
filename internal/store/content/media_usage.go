@@ -63,7 +63,7 @@ type mediaRefSource struct {
 }
 
 // mediaRefRegistry lists every live foreign key into media(id), verified against both the
-// migration history and the deployed schema (21 columns as of 0343).
+// migration history and the deployed schema (22 columns as of 0350).
 var mediaRefRegistry = []mediaRefSource{
 	// product — the colourway. Four different columns point at media from this one table.
 	{
@@ -230,6 +230,21 @@ var mediaRefRegistry = []mediaRefSource{
 		kind: "design_edit_layer", table: "design_edit_layer del", column: "del.base_media_id",
 		joins:      `JOIN tech_card tc ON tc.id = del.tech_card_id`,
 		entityExpr: "del.id", labelExpr: techCardLabel, slot: "edit layer base",
+	},
+	{
+		// The SVG a vector model returned (0350). A SECOND, independent column into media(id) on the
+		// same table — not a duplicate of base_media_id: the base is the raster the human drew over,
+		// this is the vector the provider drew from it. A layer can carry one, both or neither.
+		//
+		// It MUST be registered, and its foreign key says why: source_media_id is ON DELETE RESTRICT,
+		// so the database will refuse to delete this file. An unregistered RESTRICT is the worst of
+		// the two possible mistakes — GetMediaUsage would report the file as free, the human would
+		// press delete, and the deletion would fail with a foreign-key error naming a table they
+		// have never heard of. Registering a SET NULL column is merely polite; registering a
+		// RESTRICT one is what keeps the screen from lying.
+		kind: "design_edit_layer", table: "design_edit_layer del", column: "del.source_media_id",
+		joins:      `JOIN tech_card tc ON tc.id = del.tech_card_id`,
+		entityExpr: "del.id", labelExpr: techCardLabel, slot: "vector source",
 	},
 
 	// WHAT THE DESIGN WAVE DELIBERATELY DOES NOT REGISTER. Both omissions are decisions, not gaps;

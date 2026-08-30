@@ -38,6 +38,13 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		if it.GhostView != "" && !entity.IsDesignGhostView(it.GhostView) {
 			return nil, fmt.Errorf("%w: unknown ghost_view %q", entity.ErrDesignInvalidArgument, it.GhostView)
 		}
+		// РОД БЕРЁТСЯ СО ВХОДА. До волны 2 он был захардкожен в `flat` прямо в INSERT'е, и это
+		// значило ровно одно: рендер и 3D нельзя было завести РУКАМИ вовсе — а ручная загрузка
+		// (W-8) единственный путь, который работает всегда, в том числе когда генерации нет.
+		// Пустое читается как flat, поэтому старый вызывающий не заметил перемены.
+		if !entity.IsDesignPictureKind(entity.DesignKindOrFlat(it.Kind)) {
+			return nil, fmt.Errorf("%w: unknown picture kind %q", entity.ErrDesignInvalidArgument, it.Kind)
+		}
 	}
 
 	out := &entity.DesignBatchResult{}
@@ -95,7 +102,7 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 				ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
 				map[string]any{
 					"card": req.TechCardId, "media": it.MediaId, "batch": batchID, "ord": i,
-					"kind": entity.DesignPictureKindFlat, "ghost": nullStr(it.GhostView),
+					"kind": entity.DesignKindOrFlat(it.Kind), "ghost": nullStr(it.GhostView),
 					// mixed_input is 0 for an upload BY CONSTRUCTION: one gesture has one
 					// provenance, so there is no mixture to launder. The flag becomes computable
 					// only where inputs of several provenances meet — a fix run's output — and it
@@ -123,9 +130,17 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		out.Batch, out.Pictures = batch, pics
 
 		if req.Target != nil && len(pics) > 0 {
+			// РОД АДРЕСА ПО УМОЛЧАНИЮ — РОД САМОЙ КАРТИНКИ. Жест один: «положи ЭТОТ файл на ЭТУ
+			// сторону», и рода в нём человек не называл вовсе. Подставить сюда `flat` значило бы
+			// отказывать каждой ручной загрузке рендера с постановкой — то есть закрыть ровно ту
+			// дверь, которую эта волна открывает. Названный вызывающим род имеет приоритет.
+			target := *req.Target
+			if target.Kind == "" {
+				target.Kind = entity.DesignKindOrFlat(pics[0].Kind)
+			}
 			slot, err := setBenchSlotTx(ctx, rep, entity.DesignBenchSlotSet{
 				TechCardId:      req.TechCardId,
-				Slot:            *req.Target,
+				Slot:            target,
 				PictureId:       pics[0].Id,
 				ExpectedSlotRev: req.ExpectedSlotRev,
 				Actor:           req.Actor,
@@ -178,6 +193,51 @@ func (s *Store) HidePicture(ctx context.Context, pictureID int, hidden bool, act
 		if err != nil {
 			return fmt.Errorf("failed to set design picture visibility: %w", err)
 		}
+		out, err = pictureByID(ctx, db, pictureID)
+		if err != nil {
+			return err
+		}
+		return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetPictureSelected marks a picture as CHOSEN, and un-marks it (owner requirement W-12: «мы так
+// же можем маркать 3д рендеры как выбранные»).
+//
+// IT IS NOT THE OTHER SIDE OF HidePicture, and folding the two would make one gesture silently
+// undo the other: hidden says «do not show me this», selected says «this is the one». The two are
+// independent — a chosen picture may later be hidden — and that is why this is a verb of its own
+// rather than a second flag on the hide.
+//
+// NOTHING IS EXCLUSIVE AND NOTHING IS GUARDED. The owner speaks in the plural, so many pictures of
+// a kind may be chosen at once (there is deliberately no UNIQUE on the column); and a mark that
+// changes no visibility, no slot and no frozen version has nothing it could break, which is the
+// whole reason HidePicture's four guards have no counterpart here.
+func (s *Store) SetPictureSelected(ctx context.Context, pictureID int, selected bool, actor string) (*entity.DesignPicture, error) {
+	var out entity.DesignPicture
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		// THE ROW IS READ BEFORE IT IS WRITTEN so an unknown or foreign id is a NotFound rather
+		// than a silent zero-row UPDATE that would answer OK about a picture that does not exist.
+		if _, err := pictureByID(ctx, db, pictureID); err != nil {
+			return err
+		}
+		// actor IS NOT STAMPED, AND THAT IS NOT AN OVERSIGHT: design_picture has no selected_by
+		// column (0350 added the flag alone), and inventing one out of hidden_by would say that
+		// the person who chose the frame is the person who hid it. It stays in the argument list
+		// because every write of this band is called with it and a signature that quietly differs
+		// is a signature somebody will forget to pass.
+		_ = actor
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE design_picture SET selected = :selected WHERE id = :id`,
+			map[string]any{"id": pictureID, "selected": selected}); err != nil {
+			return fmt.Errorf("failed to set design picture selection: %w", err)
+		}
+		var err error
 		out, err = pictureByID(ctx, db, pictureID)
 		if err != nil {
 			return err

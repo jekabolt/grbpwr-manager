@@ -240,11 +240,15 @@ func casExpectedPlates(slots []entity.DesignBenchSlot, expected []entity.DesignE
 		return nil
 	}
 	byID := make(map[int]entity.DesignBenchSlot, len(slots))
+	// КЛЮЧ КАРТЫ — ПАРА (род, вид), а не вид: после 0349 у карточки законно живут и `flat/front`,
+	// и `render/front`, и карта по одному виду молча отдала бы ту из двух строк, которая пришла
+	// последней. CAS сверял бы ревизию НЕ ТОГО слота — и минт либо ложно отказывал бы, либо
+	// ложно проходил, а различить эти два исхода по ответу невозможно.
 	byView := make(map[string]entity.DesignBenchSlot, len(slots))
 	for _, sl := range slots {
 		byID[sl.Id] = sl
 		if entity.IsDesignSilhouetteView(sl.ViewKey) {
-			byView[sl.ViewKey] = sl
+			byView[entity.DesignKindOrFlat(sl.Kind)+"/"+sl.ViewKey] = sl
 		}
 	}
 	for _, e := range expected {
@@ -258,7 +262,7 @@ func casExpectedPlates(slots []entity.DesignBenchSlot, expected []entity.DesignE
 			cur, found = byID[e.Slot.SlotId]
 			name = "slot " + strconv.Itoa(e.Slot.SlotId)
 		case e.Slot.ViewKey != "":
-			cur, found = byView[e.Slot.ViewKey]
+			cur, found = byView[entity.DesignKindOrFlat(e.Slot.Kind)+"/"+e.Slot.ViewKey]
 			name = e.Slot.ViewKey
 		default:
 			return fmt.Errorf("%w: an expected plate names neither a view nor a slot id",
@@ -291,22 +295,7 @@ func casExpectedPlates(slots []entity.DesignBenchSlot, expected []entity.DesignE
 // composeMintPlates собирает состав: четыре стороны в каноническом порядке, затем детали по
 // возрастанию id слота. Пустые слоты в состав не входят — плита это КАРТИНКА, а не адрес.
 func composeMintPlates(ctx context.Context, db dependency.DB, slots []entity.DesignBenchSlot) ([]mintPlate, error) {
-	ordered := make([]entity.DesignBenchSlot, 0, len(slots))
-	for _, view := range entity.DesignSilhouetteViews {
-		for _, sl := range slots {
-			if sl.ViewKey == view && sl.PictureId.Valid {
-				ordered = append(ordered, sl)
-			}
-		}
-	}
-	details := make([]entity.DesignBenchSlot, 0, len(slots))
-	for _, sl := range slots {
-		if !entity.IsDesignSilhouetteView(sl.ViewKey) && sl.PictureId.Valid {
-			details = append(details, sl)
-		}
-	}
-	sort.Slice(details, func(i, j int) bool { return details[i].Id < details[j].Id })
-	ordered = append(ordered, details...)
+	ordered := orderMintSlots(slots)
 	if len(ordered) == 0 {
 		return nil, nil
 	}
@@ -343,6 +332,50 @@ func composeMintPlates(ctx context.Context, db dependency.DB, slots []entity.Des
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// orderMintSlots — КТО ИМЕННО ПОПАДАЕТ НА БУМАГУ И В КАКОМ ПОРЯДКЕ. Отделено от чтения базы,
+// чтобы фильтр рода можно было проверить в обе стороны без контейнера: «рендер отброшен» и
+// «флэт остался» — два разных утверждения, и второе без первого зеленеет на фильтре, который
+// отбрасывает ВСЁ.
+func orderMintSlots(slots []entity.DesignBenchSlot) []entity.DesignBenchSlot {
+	// ⚠ ЛИСТ БЕРЁТ ТОЛЬКО ФЛЭТ-ОСЬ ВЕРСТАКА, И ЭТО НЕСУЩИЙ ФИЛЬТР, А НЕ ОПРЯТНОСТЬ.
+	//
+	// Технический лист флэтов по определению: механизм «деталь кроя ↔ выноска» читает плиты как
+	// technical-медиа, размеры и швы снимаются с чертежа, а рендер и турнтейбл чертежом не
+	// являются. Пока верстак был ОДНООСНЫМ (0341), рендер фронта физически не мог существовать
+	// рядом с флэтом фронта — UNIQUE держал один адрес, — и фильтр был не нужен. 0349 сделал
+	// верстак двухосным: теперь `render/front` и `flat/front` — две законные строки одной
+	// карточки, и состав БЕЗ этого фильтра положил бы на бумагу ту из них, которая раньше
+	// нашлась. Отказа при этом не было бы ни одного: рендер — валидная плита с валидным медиа.
+	//
+	// ЭТО ВТОРОЙ ПОЯС. Первый стоит на записи (setBenchSlotTx требует совпадения рода кадра и
+	// рода слота), но он не действует задним числом: строки, написанные до 0349 и до этой волны,
+	// проверок не проходили, а бумага печатается с них.
+	flat := make([]entity.DesignBenchSlot, 0, len(slots))
+	for _, sl := range slots {
+		if entity.DesignKindOrFlat(sl.Kind) == entity.DesignPictureKindFlat {
+			flat = append(flat, sl)
+		}
+	}
+	slots = flat
+
+	ordered := make([]entity.DesignBenchSlot, 0, len(slots))
+	for _, view := range entity.DesignSilhouetteViews {
+		for _, sl := range slots {
+			if sl.ViewKey == view && sl.PictureId.Valid {
+				ordered = append(ordered, sl)
+			}
+		}
+	}
+	details := make([]entity.DesignBenchSlot, 0, len(slots))
+	for _, sl := range slots {
+		if !entity.IsDesignSilhouetteView(sl.ViewKey) && sl.PictureId.Valid {
+			details = append(details, sl)
+		}
+	}
+	sort.Slice(details, func(i, j int) bool { return details[i].Id < details[j].Id })
+	return append(ordered, details...)
 }
 
 // mintGates — четыре ворот прототипа (mintAnalysis), дословно и в том же порядке: минимум листа,

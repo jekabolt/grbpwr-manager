@@ -26,6 +26,11 @@ const (
 	designCountArchivedRuns = `SELECT COUNT(*) FROM design_run WHERE tech_card_id = :card AND archived_at IS NOT NULL`
 	designMaxRrev           = `SELECT COALESCE(MAX(rrev), 0) FROM design_run WHERE tech_card_id = :card`
 	designCountBatches      = `SELECT COUNT(*) FROM design_batch WHERE tech_card_id = :card`
+	// designCountFabricRenders — W-13, СЕКВЕНЦИЯ «флэты → рендер → 3D». Считается по ВСЕЙ
+	// карточке и только по НЕСПРЯТАННЫМ кадрам: спрятанный рендер человек уже отверг, и
+	// открывать им 3D значило бы обещать дверь, за которую сервер откажет.
+	designCountFabricRenders = `SELECT COUNT(*) FROM design_picture
+		WHERE tech_card_id = :card AND kind = 'render' AND hidden_at IS NULL`
 )
 
 // GetBand reads the whole band in ONE read transaction.
@@ -88,8 +93,14 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		}
 		// Layers WITHOUT their strokes: 512 KB is the cap per LAYER and a card may hold several,
 		// so shipping them all would make every open of the tab cost megabytes to draw a list.
+		//
+		// ⚠ THE COLUMN LIST IS NAMED, SO EVERY NEW COLUMN MUST BE ADDED TO IT BY HAND, and the
+		// three of 0350 are here for that reason. A projection that omits `origin` and its two
+		// source ids does not fail — the band simply serves every layer as `drawn` with no file
+		// behind it, which is precisely the shape the mixed-provenance warning reads.
 		if band.Layers, err = storeutil.QueryListNamed[entity.DesignEditLayer](ctx, db, `
-			SELECT id, tech_card_id, base_media_id, rev, updated_by, updated_at
+			SELECT id, tech_card_id, base_media_id, rev, origin, source_media_id,
+			       source_picture_id, updated_by, updated_at
 			FROM design_edit_layer WHERE tech_card_id = :card ORDER BY id`,
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to list design edit layers: %w", err)
@@ -114,6 +125,13 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to count design batches: %w", err)
 		}
+		renders, err := storeutil.QueryCountNamed(ctx, db, designCountFabricRenders,
+			map[string]any{"card": cardID})
+		if err != nil {
+			return fmt.Errorf("failed to count design fabric renders: %w", err)
+		}
+		band.HasFabricRender = renders > 0
+
 		if band.HiddenByRun, err = loadHiddenCounts(ctx, db, cardID, "run_id"); err != nil {
 			return err
 		}

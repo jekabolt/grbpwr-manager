@@ -18,14 +18,18 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/campaigndispatch"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
+	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
+	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -105,7 +109,26 @@ type Config struct {
 	GA4Sync            ga4sync.Config            `mapstructure:"ga4_sync"`
 	BigQuery           bq.Config                 `mapstructure:"bigquery"`
 	OpenRouter         openrouter.Config         `mapstructure:"openrouter"`
-	PatternToken       PatternTokenConfig        `mapstructure:"pattern_token"`
+	// OpenRouterImages is the SECOND OpenRouter client: the image endpoint. It is a separate
+	// section rather than more fields on OpenRouter because the two are different endpoints with
+	// different catalogues, different timeouts and a response ceiling that differs by an order of
+	// magnitude — see internal/orimages.
+	OpenRouterImages orimages.Config `mapstructure:"openrouter_images"`
+	// Meshy is the 3D provider, and the ONE place this feature departs from "everything through
+	// OpenRouter" (P-5). Not by preference: OpenRouter has no 3D modality at all — "3d" is not a
+	// value its catalogue accepts — so there is nothing there to route to. See internal/meshy.
+	Meshy meshy.Config `mapstructure:"meshy"`
+	// Recraft is the VECTOR provider (owner spec P-3: «ровный вектор, а не куча полигонов»). Its
+	// primary route is the OpenRouterImages client above — the vector models are ordinary rows of
+	// that same image catalogue — and this section only carries the tier→slug table plus the
+	// FALLBACK direct-Recraft credentials. See internal/recraft.
+	Recraft recraft.Config `mapstructure:"recraft"`
+	// DesignGen is the generation WORKER — the thing that actually claims a paid run and calls a
+	// provider. It is inert unless DESIGN_GENERATION_ENABLED is set (precedent: ACCOUNTING_ENABLED),
+	// and that is deliberate: prod stands at migration 0339 and has no DESIGN band at all, so the
+	// binary must be able to carry this code without running it. See internal/designgen.
+	DesignGen    designgen.Config   `mapstructure:"design_generation"`
+	PatternToken PatternTokenConfig `mapstructure:"pattern_token"`
 }
 
 // PatternTokenConfig configures the tokenized pattern read path (/api/p/{token}) that
@@ -556,4 +579,103 @@ func bindEnvVars() {
 	viper.BindEnv("openrouter.model_analysis", "OPENROUTER_MODEL_ANALYSIS")
 	viper.BindEnv("openrouter.base_url", "OPENROUTER_BASE_URL")
 	viper.BindEnv("openrouter.http_timeout", "OPENROUTER_HTTP_TIMEOUT")
+
+	// OpenRouter IMAGES (design generation, P-2). A SECOND endpoint at the same provider:
+	// POST /api/v1/images, whose catalogue (GET /api/v1/images/models) does not overlap the chat
+	// one — no `openai/gpt-image-*` slug appears in /api/v1/models at all, so no value of
+	// OPENROUTER_MODEL can reach one. See internal/orimages.
+	//
+	// KEY AND ROOT FALL BACK TO THE CHAT ONES, in that order: it is one OpenRouter account, so a
+	// working deployment needs NO new secret to turn pictures on. The dedicated names exist only so
+	// picture spend can later be moved to its own key, or the images route to its own proxy,
+	// without touching code. viper takes the FIRST variable of the list that is set.
+	viper.BindEnv("openrouter_images.api_key", "OPENROUTER_IMAGES_API_KEY", "OPENROUTER_API_KEY")
+	viper.BindEnv("openrouter_images.base_url", "OPENROUTER_IMAGES_BASE_URL", "OPENROUTER_BASE_URL")
+	// The image slug. Empty => orimages.DefaultModel (openai/gpt-image-2 — the raster half of
+	// "good raster, then a good vector"; the older gpt-image-1 was kept only for its
+	// `background: transparent`, which the band's prompts do not want and the vectoriser does not
+	// carry). A slug set here MUST come from the IMAGE catalogue AND accept every parameter the
+	// caller sends: the per-model enums differ inside the family, so this override can turn a
+	// working deployment into a 400 on every press. See internal/orimages.DefaultModel.
+	viper.BindEnv("openrouter_images.model", "OPENROUTER_MODEL_IMAGE")
+	// One generation is tens of seconds of provider compute; a timeout shorter than the work bills
+	// for a picture nobody receives.
+	viper.BindEnv("openrouter_images.http_timeout", "OPENROUTER_IMAGES_TIMEOUT")
+	// The read ceiling in BYTES, and on a 0.5 GiB instance it is the OOM guard — tunable so a box
+	// that grows needs no deploy and a box that is dying can be rescued by lowering one number.
+	viper.BindEnv("openrouter_images.max_response_bytes", "OPENROUTER_IMAGES_MAX_RESPONSE_BYTES")
+
+	// Meshy (3D generation, P-4). A DIFFERENT PROVIDER with a key of its own — nothing here falls
+	// back to an OpenRouter variable, because there is no 3D at OpenRouter to fall back to.
+	//
+	// EVERY LINE BELOW IS LOAD-BEARING IN THE SAME SILENT WAY. viper.AutomaticEnv is off in this
+	// package on purpose, so a variable without its own BindEnv reads as EMPTY — and empty is also
+	// what a correctly-unset optional override looks like. A forgotten line here does not fail, log
+	// or differ visibly; it just means the number somebody set in the DO dashboard is never the
+	// number the process uses. config/cfg_meshy_env_test.go sets each one and insists it arrives.
+	//
+	// ⚠️ These are set IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml: pushing the spec
+	// deploys prod and overwrites live SECRET values with the empty ones in the file.
+
+	// MESHY_API_KEY is the whole switch. Unset => the client is disabled and StartRun must refuse a
+	// 3D run outright rather than queue one nobody can execute.
+	viper.BindEnv("meshy.api_key", "MESHY_API_KEY")
+	// The API root. Exists for tests and a possible regional host, not as a knob to turn.
+	viper.BindEnv("meshy.base_url", "MESHY_BASE_URL")
+	// Bounds ONE control-plane request (submit or status lookup), not the generation.
+	viper.BindEnv("meshy.http_timeout", "MESHY_HTTP_TIMEOUT")
+	// The waiting shape: how often to ask, and how long to keep asking. A worker sizing its lease
+	// or its next_attempt_at should read these off the client rather than guess them again.
+	viper.BindEnv("meshy.poll_interval", "MESHY_POLL_INTERVAL")
+	viper.BindEnv("meshy.poll_timeout", "MESHY_POLL_TIMEOUT")
+	// Bounds fetching the finished model, SEPARATELY from the wait above — deliberately, because a
+	// download cut by the waiting deadline loses an artifact that was already paid for and whose
+	// link dies in three days.
+	viper.BindEnv("meshy.download_timeout", "MESHY_DOWNLOAD_TIMEOUT")
+	// Price of one Meshy credit in USD, the only bridge from consumed_credits to money. Unset falls
+	// back to an estimate from the published plans; set it to the real rate of the active plan.
+	viper.BindEnv("meshy.credit_usd", "MESHY_CREDIT_USD")
+
+	// Recraft (VECTOR generation, P-3). The paid call normally goes through the OpenRouter image
+	// client above; this section decides WHICH MODEL it names and, for the fallback route, how to
+	// reach Recraft directly.
+	//
+	// EVERY LINE BELOW IS LOAD-BEARING IN THE SAME SILENT WAY as the Meshy block: AutomaticEnv is
+	// off, so a name without its own BindEnv reads as empty, and empty is exactly what a correctly
+	// unset override looks like. config/cfg_recraft_env_test.go sets each one and insists it lands.
+	//
+	// ⚠️ Set these IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml.
+
+	// RECRAFT_ROUTE picks the transport: unset/"openrouter" (owner rule P-5, the default) or
+	// "direct" — Recraft's own API, which is the only way to reach the `strength` dial.
+	viper.BindEnv("recraft.route", "RECRAFT_ROUTE")
+	// The two model ids, for the ACTIVE ROUTE (the routes spell the same models differently:
+	// recraft/recraft-v4-vector at OpenRouter, recraftv4_vector at Recraft). Unset => the verified
+	// defaults in internal/recraft. They exist because a baked-in provider slug rots silently, and
+	// this repo has already lost every AI feature to exactly that once.
+	viper.BindEnv("recraft.model_vector", "RECRAFT_MODEL_VECTOR")
+	viper.BindEnv("recraft.model_vector_pro", "RECRAFT_MODEL_VECTOR_PRO")
+	// The fallback route's own credentials. RECRAFT_API_KEY is its whole switch: unset, the direct
+	// route is disabled and the service refuses up front rather than queueing a run nobody can run.
+	viper.BindEnv("recraft.direct.api_key", "RECRAFT_API_KEY")
+	viper.BindEnv("recraft.direct.base_url", "RECRAFT_BASE_URL")
+	viper.BindEnv("recraft.direct.http_timeout", "RECRAFT_HTTP_TIMEOUT")
+	// Price of one Recraft API unit in USD (published: $1.00 = 1000 units, so 80 units = $0.08 for
+	// V4 Vector and 300 = $0.30 for V4 Pro Vector). The only bridge from `credits` to money.
+	viper.BindEnv("recraft.direct.credit_usd", "RECRAFT_CREDIT_USD")
+
+	// Design generation worker. Six knobs, and only the first one decides anything on its own:
+	// with DESIGN_GENERATION_ENABLED unset the worker is not constructed at all, and a run started
+	// by hand would sit in `pending` with nobody to claim it — which is why the handler refuses to
+	// start one while the flag is off.
+	//
+	// ⚠ DESIGN_IMAGE_QUALITY defaults to `medium` to AGREE WITH the handler's price reservation.
+	// Raising it to `high` without raising the estimate under-reserves roughly fourfold, silently,
+	// in the overspending direction. The two numbers are one decision and must move together.
+	viper.BindEnv("design_generation.enabled", "DESIGN_GENERATION_ENABLED")
+	viper.BindEnv("design_generation.worker_interval", "DESIGN_WORKER_INTERVAL")
+	viper.BindEnv("design_generation.batch_size", "DESIGN_WORKER_BATCH_SIZE")
+	viper.BindEnv("design_generation.claim_lease", "DESIGN_WORKER_CLAIM_LEASE")
+	viper.BindEnv("design_generation.run_timeout", "DESIGN_WORKER_RUN_TIMEOUT")
+	viper.BindEnv("design_generation.image_quality", "DESIGN_IMAGE_QUALITY")
 }

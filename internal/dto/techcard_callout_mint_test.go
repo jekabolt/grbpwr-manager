@@ -253,6 +253,68 @@ func TestMoodNoteCarriesPresenceNotValue(t *testing.T) {
 	require.Equal(t, "", blank.GetTechCard().GetMoodNote())
 }
 
+// ОПИСАНИЕ ИЗДЕЛИЯ (W-3) — ТОТ ЖЕ VERBATIM-ПРОТОКОЛ, И ЦЕНА МОЛЧАНИЯ ЗДЕСЬ ВЫШЕ.
+//
+// Эти слова уходят в КАЖДЫЙ прогон полосы DESIGN и замерзают в его снимке входов. Голая
+// proto3-строка от вкладки, которая полосу даже не открывала, приехала бы как "" и стёрла бы
+// описание — а следующая генерация ушла бы к модели, ничего не зная об изделии, и НИ ОДНОЙ ошибки
+// при этом не появилось бы: промпт просто сказал бы меньше.
+//
+// ⚠ ПРОБА ДЕРЖИТ ОБА КОНЦА. Одного «отсутствие сохраняет» мало: оно зеленеет и на конвертере,
+// который поле не читает вовсе. Рядом стоит положительный контроль — заполненное значение обязано
+// доехать и вернуться круглым рейсом.
+func TestGarmentDescriptionCarriesPresenceNotValue(t *testing.T) {
+	base := func(v *string) *pb_common.TechCardInsert {
+		return &pb_common.TechCardInsert{
+			Name:               "Field Jacket",
+			Stage:              pb_common.TechCardStage_TECH_CARD_STAGE_IDEA,
+			MeasurementUnit:    pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
+			GarmentDescription: v,
+		}
+	}
+
+	absent, err := ConvertPbTechCardInsertToEntity(base(nil))
+	require.NoError(t, err)
+	require.True(t, absent.GarmentDescriptionOmitted, "поля не было — колонку трогать нельзя")
+
+	empty := ""
+	cleared, err := ConvertPbTechCardInsertToEntity(base(&empty))
+	require.NoError(t, err)
+	require.False(t, cleared.GarmentDescriptionOmitted,
+		"явная пустая строка — это ОЧИСТИТЬ, а не «молчание»")
+	require.False(t, cleared.GarmentDescription.Valid)
+
+	text := "oversized boxy shirt, dropped shoulder, no placket"
+	set, err := ConvertPbTechCardInsertToEntity(base(&text))
+	require.NoError(t, err)
+	require.False(t, set.GarmentDescriptionOmitted)
+	require.Equal(t, text, set.GarmentDescription.String)
+
+	// Круглый рейс: на чтении описание ПРИСУТСТВУЕТ всегда.
+	back := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *set}, CostingFx{Base: "EUR"})
+	require.NotNil(t, back.GetTechCard().GarmentDescription, "на чтении поле обязано присутствовать")
+	require.Equal(t, text, back.GetTechCard().GetGarmentDescription())
+
+	blank := ConvertEntityTechCardToPb(&entity.TechCard{}, CostingFx{Base: "EUR"})
+	require.NotNil(t, blank.GetTechCard().GarmentDescription,
+		"пустая колонка читается как присутствующее \"\"")
+	require.Equal(t, "", blank.GetTechCard().GetGarmentDescription())
+}
+
+// ОПИСАНИЕ ИЗДЕЛИЯ НЕ ВХОДИТ В ОТПЕЧАТОК DESIGN — по тому же доводу, по которому туда не входит
+// заметка мудборда (Д4 отозвано). Это подсказка модели, а не факт об изделии; добавленное в
+// проекцию, оно объявило бы КАЖДУЮ подписанную секцию DESIGN отредактированной после подписания —
+// на всех карточках разом и в момент деплоя.
+func TestGarmentDescriptionIsNotHashed(t *testing.T) {
+	with := &entity.TechCardInsert{
+		GarmentDescription: sql.NullString{String: "oversized boxy shirt", Valid: true},
+	}
+	without := &entity.TechCardInsert{}
+	require.Equal(t,
+		TechCardSectionDigests(without)[entity.SignoffDesign],
+		TechCardSectionDigests(with)[entity.SignoffDesign])
+}
+
 // КЛЮЧ СТРОКИ НЕ ВХОДИТ В ОТПЕЧАТОК DESIGN. Это АДРЕС, а не содержание, ровно как цвет выноски:
 // захешируй его — и подпись протухала бы от того, что клиент перевыдал себе ключ.
 func TestClientRefIsNotHashed(t *testing.T) {

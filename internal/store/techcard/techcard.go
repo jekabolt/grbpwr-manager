@@ -79,12 +79,12 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
 	required_seam_allowance_mm, base_model_id, base_sample_size_id,
-	measurement_unit, concept, notes, mood_note, callout_seq, purpose, output_material_id, aux_subtype, created_by, updated_by`
+	measurement_unit, concept, notes, mood_note, garment_description, callout_seq, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
 	:required_seam_allowance_mm, :base_model_id, :base_sample_size_id,
-	:measurement_unit, :concept, :notes, :mood_note, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
+	:measurement_unit, :concept, :notes, :mood_note, :garment_description, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
@@ -134,6 +134,15 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		// смотрят: у новой карточки нечего сохранять.
 		"mood_note":         tc.MoodNote,
 		"mood_note_omitted": tc.MoodNoteOmitted,
+
+		// ОПИСАНИЕ ИЗДЕЛИЯ (0348, W-3) + ЕГО ФЛАГ ПРИСУТСТВИЯ. Та же пара и по той же причине, что
+		// у mood_note строкой выше: на UPDATE колонка стоит под
+		// IF(:garment_description_omitted, garment_description, :garment_description). Разница
+		// между ними одна и она в НАЗНАЧЕНИИ — эти слова уходят в КАЖДЫЙ прогон полосы DESIGN и
+		// замерзают в его снимке входов, поэтому молча стёртое описание означает, что модель с
+		// этого момента рисует изделие, про которое ей ничего не сказали.
+		"garment_description":         tc.GarmentDescription,
+		"garment_description_omitted": tc.GarmentDescriptionOmitted,
 		// МОНОТОННЫЙ СЧЁТЧИК НОМЕРА ВЫНОСКИ (0345). Значение СЧИТАЕТ ХЕНДЛЕР (dto.MintCalloutNumbers)
 		// — там же, где присваиваются номера и где ставится подпись; стор его только записывает, и на
 		// UPDATE только через GREATEST. Клон и импорт приезжают сюда с посчитанным по своей карточке
@@ -469,6 +478,11 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// спецификации. ПРИСУТСТВИЕ поля решает, трогать ли колонку; без этой ноги сейв из вкладки,
 	// которая про мудборд не знает, стирал бы заметку молча.
 	//
+	// garment_description = IF(:garment_description_omitted, …) — ТА ЖЕ НОГА для описания изделия
+	// (0348, W-3), и цена ошибки здесь выше: эти слова уезжают в КАЖДЫЙ прогон полосы DESIGN и
+	// замерзают в его снимке входов, поэтому стёртое описание — это модель, которой с этого момента
+	// не сказали, что она рисует.
+	//
 	// callout_seq = GREATEST(…) — СЧЁТЧИК ТОЛЬКО РАСТЁТ, и это запрет, а не предосторожность.
 	// Номер, уже отданный клиенту, не имеет права достаться второй выноске, а считает счётчик
 	// ХЕНДЛЕР (dto.MintCalloutNumbers) — значит любой другой писатель шапки (клон, импорт, прямой
@@ -491,6 +505,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 			base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 			measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
 			mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
+			garment_description = IF(:garment_description_omitted, garment_description, :garment_description),
 			callout_seq = GREATEST(callout_seq, :callout_seq),
 				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
 		WHERE id = :id AND lock_version = :expected_lock_version`, params)

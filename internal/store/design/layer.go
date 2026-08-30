@@ -117,6 +117,129 @@ func (s *Store) SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSav
 	return &out, nil
 }
 
+// ImportVector files an ALREADY-UPLOADED vector file into the band as an edit layer: the media row
+// keeps the authoritative SVG, the layer keeps the editable projection of it, and
+// design_edit_layer.source_media_id is the edge between them.
+//
+// IT SPENDS NOTHING, AND THAT IS THE LINE BETWEEN IT AND GENERATION. Vectorising BY MACHINE is a
+// paid provider call and goes through StartRun with kind = vector; this files a file that already
+// exists. Two doors for the money would be two budget checks, and one of them would eventually be
+// the one nobody updated.
+//
+// THE CLIENT PARSES, THE STORE RECORDS THE PROVENANCE — the same division of labour
+// FlattenEditLayer already draws, and for the same reason: there is no SVG parser and no vector
+// renderer anywhere in this repository, so the only honest producer of strokes is the canvas that
+// is about to draw them. `strokes` may legitimately be empty and then means «file the file»: the
+// layer holds the vector without an editable form of it yet.
+//
+// ⚠ IDEMPOTENCY IS BY (tech_card_id, source_media_id), NOT BY client_request_id, and the reason is
+// the table: design_edit_layer (0343) has no request-id column and 0350 did not add one. The retry
+// that matters — a lost response — arrives carrying the SAME media id, because the file went up
+// through UploadContentImage before this call and the client holds its id. The re-read runs INSIDE
+// the SERIALIZABLE transaction, where an ordinary SELECT already blocks, so two concurrent retries
+// cannot both insert; the guarantee is a lock, not a hope.
+func (s *Store) ImportVector(ctx context.Context, req entity.DesignVectorImport) (*entity.DesignEditLayer, error) {
+	if err := requireCard(req.TechCardId); err != nil {
+		return nil, err
+	}
+	if req.SourceMediaId <= 0 {
+		return nil, fmt.Errorf("%w: an import needs the vector file it is filing",
+			entity.ErrDesignInvalidArgument)
+	}
+	// `drawn` IS REFUSED, and it is not pedantry: a layer drawn from nothing is born by
+	// SaveEditLayer and has no file to import at all. Accepting it would file a layer claiming a
+	// provenance its own source_media_id contradicts.
+	if !entity.IsDesignImportableLayerOrigin(req.Origin) {
+		return nil, fmt.Errorf("%w: origin %q is not imported | vectorised",
+			entity.ErrDesignInvalidArgument, req.Origin)
+	}
+	if len(req.Strokes) > MaxStrokesBytes {
+		return nil, fmt.Errorf("%w: %d bytes of strokes, the ceiling is %d",
+			entity.ErrDesignStrokesTooLarge, len(req.Strokes), MaxStrokesBytes)
+	}
+	var out entity.DesignEditLayer
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+
+		// ─── the idempotent short-circuit, read under SERIALIZABLE ───
+		//
+		// It returns the EXISTING layer untouched rather than re-writing it: the second call is a
+		// retry of the first, and a retry that overwrote the strokes would throw away whatever
+		// editing happened between the two.
+		existing, err := storeutil.QueryListNamed[entity.DesignEditLayer](ctx, db, `
+			SELECT * FROM design_edit_layer
+			WHERE tech_card_id = :card AND source_media_id = :src ORDER BY id LIMIT 1`,
+			map[string]any{"card": req.TechCardId, "src": req.SourceMediaId})
+		if err != nil {
+			return fmt.Errorf("failed to look for an already-imported vector: %w", err)
+		}
+		if len(existing) > 0 {
+			out = existing[0]
+			return nil
+		}
+
+		// ─── the file must exist, and the raster must belong to THIS card ───
+		//
+		// The FK would catch a missing media with a raw 1452 naming a constraint; caught here it
+		// is an InvalidArgument that names the id the caller sent. The picture check the schema
+		// cannot make at all: design_picture(id) is a valid target no matter whose card it is on,
+		// and a lineage pointing at somebody else's flat is a lie the band would then draw.
+		media, err := resolveMediaIDs(ctx, rep, []int{req.SourceMediaId, req.BaseMediaId})
+		if err != nil {
+			return fmt.Errorf("failed to resolve the vector source media: %w", err)
+		}
+		if _, ok := media[req.SourceMediaId]; !ok {
+			return fmt.Errorf("%w: media %d does not exist",
+				entity.ErrDesignInvalidArgument, req.SourceMediaId)
+		}
+		if req.BaseMediaId > 0 {
+			if _, ok := media[req.BaseMediaId]; !ok {
+				return fmt.Errorf("%w: base media %d does not exist",
+					entity.ErrDesignInvalidArgument, req.BaseMediaId)
+			}
+		}
+		if req.SourcePictureId > 0 {
+			pic, err := pictureByID(ctx, db, req.SourcePictureId)
+			if err != nil {
+				return err
+			}
+			if pic.TechCardId != req.TechCardId {
+				return fmt.Errorf("%w: picture %d belongs to tech card %d",
+					entity.ErrDesignNotFound, req.SourcePictureId, pic.TechCardId)
+			}
+		}
+
+		id, err := storeutil.ExecNamedLastId(ctx, db, `
+			INSERT INTO design_edit_layer
+				(tech_card_id, base_media_id, rev, strokes, origin, source_media_id,
+				 source_picture_id, updated_by)
+			VALUES (:card, :base, 1, :strokes, :origin, :src, :pic, :who)`,
+			map[string]any{
+				"card": req.TechCardId, "base": nullInt(req.BaseMediaId),
+				"strokes": jsonOrNil(req.Strokes), "origin": req.Origin,
+				"src": req.SourceMediaId, "pic": nullInt(req.SourcePictureId),
+				"who": req.Actor,
+			})
+		if err != nil {
+			// uq_design_edit_layer_base: a layer over THIS base already exists on this card. Same
+			// answer as SaveEditLayer gives, and for the same reason — the caller believed it was
+			// creating one, so the honest reply is the CAS refusal that makes it reload and
+			// continue the layer that is already there.
+			if isDupKey(err) {
+				return fmt.Errorf("%w: a layer over this base already exists",
+					entity.ErrDesignLayerRevMismatch)
+			}
+			return fmt.Errorf("failed to import the design vector: %w", err)
+		}
+		out, err = layerByID(ctx, db, id)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // FlattenEditLayer files an ALREADY-RASTERISED image as a picture of the band, carrying
 // derived_from, source_class and layer_rev. The server does not rasterise (Р-2): the client
 // produced the raster from base + layer and uploaded it, and the server records the provenance.

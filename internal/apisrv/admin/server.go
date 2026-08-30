@@ -108,6 +108,13 @@ type Server struct {
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer
+	// designGenerationEnabled gates the PAID half of the DESIGN band (DESIGN_GENERATION_ENABLED).
+	//
+	// ⚠ THE ZERO VALUE IS «OFF», AND THAT IS THE WHOLE POINT. A Server built without
+	// SetDesignGenerationEnabled refuses StartDesignRun and DraftDesignIdea in plain words rather
+	// than opening a run that no worker exists to pick up — a run that would hold a budget
+	// reservation and sit in `pending` until midnight while the screen says «generating».
+	designGenerationEnabled bool
 }
 
 // New creates a new server with admin handlers.

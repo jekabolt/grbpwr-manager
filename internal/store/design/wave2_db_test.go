@@ -1,0 +1,1029 @@
+package design_test
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/store/design"
+	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/require"
+)
+
+// ЖИВЫЕ ПРОБЫ ГЕНЕРАТИВНОЙ ПОЛОВИНЫ — ДЕНЬГИ, ЗАХВАТ, ТОКЕН.
+//
+// ⚠ КАК ОНИ ОТКАЗЫВАЮТСЯ ТРОГАТЬ ПРОД. Пакет internal/store вне CI читает config/config.toml, где
+// лежит ПРОДОВЫЙ DSN, и на очистке ДРОПАЕТ ТАБЛИЦЫ. В этом файле такого пути нет вовсе: DSN
+// собирается ИСКЛЮЧИТЕЛЬНО из переменных CI, без CI=1 каждая проба пропускается ДО открытия
+// соединения, а имя базы, не похожее на пробное, отвергается отдельно. Это свойство кода, а не
+// привычка запускающего.
+//
+// Запуск (одноразовый контейнер, база пересоздаётся между прогонами — очистка TestMain пакета
+// store обрывается на внешних ключах):
+//
+//	docker run -d --name grbpwr-design-b3 -e MYSQL_ROOT_PASSWORD=probe \
+//	  -e MYSQL_DATABASE=grbpwr_probe -p 33107:3306 mysql:8.0
+//	CI=1 MYSQL_HOST=127.0.0.1 MYSQL_PORT=33107 MYSQL_USER=root MYSQL_PASSWORD=probe \
+//	  MYSQL_DATABASE=grbpwr_probe go test -count=1 -run TestDesignDB ./internal/store/design/
+//
+// ВНЕШНИЙ ТЕСТОВЫЙ ПАКЕТ (design_test), потому что репозиторий строит internal/store, который
+// импортирует этот пакет. Собирать здесь второй, самодельный репозиторий значило бы проверять не
+// тот стор, который поедет на бету, — а именно это и есть цена «своей» пробной обвязки.
+
+var (
+	probeOnce sync.Once
+	probeRep  dependency.Repository
+	probeRaw  *sql.DB
+	probeErr  error
+)
+
+func probeRepository(t *testing.T) (dependency.Repository, *sql.DB) {
+	t.Helper()
+	if os.Getenv("CI") != "1" {
+		t.Skip("design band DB probes run only against a disposable container (CI=1)")
+	}
+	host, port := os.Getenv("MYSQL_HOST"), os.Getenv("MYSQL_PORT")
+	user, pass, name := os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), os.Getenv("MYSQL_DATABASE")
+	if host == "" || port == "" || user == "" || name == "" {
+		t.Skip("MYSQL_* of the disposable container are not set")
+	}
+	// ПОСЛЕДНИЙ ГЕЙТ ПО ИМЕНИ. Даже под CI=1 база, чьё имя не говорит, что она пробная,
+	// отвергается: цена ошибки здесь — продовая схема.
+	if name == "grbpwr" || name == "grbpwr_beta" {
+		t.Fatalf("refusing to run destructive probes against %q", name)
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
+		user, pass, host, port, name)
+	probeOnce.Do(func() {
+		ctx := context.Background()
+		probeRaw, probeErr = sql.Open("mysql", dsn)
+		if probeErr != nil {
+			return
+		}
+		if probeErr = probeRaw.Ping(); probeErr != nil {
+			return
+		}
+		probeRep, probeErr = store.NewForTest(ctx, store.Config{
+			DSN:                dsn,
+			Automigrate:        true,
+			MaxOpenConnections: 10,
+			MaxIdleConnections: 5,
+		})
+	})
+	require.NoError(t, probeErr)
+	require.NotNil(t, probeRep)
+	return probeRep, probeRaw
+}
+
+// ─────────────────────── фикстуры ───────────────────────
+
+func probeCard(t *testing.T, raw *sql.DB) int {
+	t.Helper()
+	res, err := raw.Exec(`INSERT INTO tech_card (style_number, name, brand, target_gender, top_category_id)
+		VALUES (CONCAT('DSG-', UUID_SHORT()), 'design band probe', 'b', 'unisex', 1)`)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = raw.Exec(`DELETE FROM tech_card WHERE id = ?`, id) })
+	return int(id)
+}
+
+func probeMedia(t *testing.T, raw *sql.DB) int {
+	t.Helper()
+	key := uuid.NewString()
+	res, err := raw.Exec(`INSERT INTO media
+		(full_size, full_size_width, full_size_height, thumbnail, thumbnail_width, thumbnail_height,
+		 compressed, compressed_width, compressed_height)
+		VALUES (?, 100, 100, ?, 10, 10, ?, 50, 50)`,
+		"probe/"+key+"-full.png", "probe/"+key+"-thumb.png", "probe/"+key+"-small.png")
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	// Медиа удаляется ПОСЛЕ карточки: design_picture держит media(id) через RESTRICT, а карточка
+	// уносит свои картинки каскадом. t.Cleanup исполняется LIFO, поэтому этот вызов должен быть
+	// зарегистрирован ПОСЛЕ probeCard — за этим следят сами пробы.
+	t.Cleanup(func() { _, _ = raw.Exec(`DELETE FROM media WHERE id = ?`, id) })
+	return int(id)
+}
+
+// resetBudget приводит день и потолок к известному состоянию. design_budget_day и
+// design_settings — синглтоны организации, а не карточки, поэтому пробы денег обязаны
+// начинаться с этого вызова, иначе они читают остатки соседа.
+func resetBudget(t *testing.T, raw *sql.DB, cap string) {
+	t.Helper()
+	_, err := raw.Exec(`DELETE FROM design_budget_day`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`UPDATE design_settings SET daily_budget = ? WHERE id = 1`, cap)
+	require.NoError(t, err)
+}
+
+func startProbeRun(t *testing.T, rep dependency.Repository, card int, est string) *entity.DesignRunStarted {
+	t.Helper()
+	started, err := rep.Design().StartRun(context.Background(), entity.DesignRunStart{
+		TechCardId:       card,
+		ClientRequestId:  uuid.NewString(),
+		Kind:             entity.DesignRunKindFlat,
+		RequestedOutputs: 1,
+		PriceEstimate:    decimal.NullDecimal{Decimal: decimal.RequireFromString(est), Valid: true},
+		Author:           "probe",
+	})
+	require.NoError(t, err)
+	return started
+}
+
+func expireClaim(t *testing.T, raw *sql.DB, runID int) {
+	t.Helper()
+	_, err := raw.Exec(
+		`UPDATE design_run SET claim_expires_at = DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 1 HOUR) WHERE id = ?`,
+		runID)
+	require.NoError(t, err)
+}
+
+func runStatus(t *testing.T, raw *sql.DB, runID int) (string, sql.NullString) {
+	t.Helper()
+	var status string
+	var token sql.NullString
+	require.NoError(t, raw.QueryRow(`SELECT status, claim_token FROM design_run WHERE id = ?`, runID).
+		Scan(&status, &token))
+	return status, token
+}
+
+// orphanedAfter — половина компенсации сирот на стороне вызывающего: что из загруженных байт
+// строка НЕ усыновила. Ровно этот расчёт делает воркер после CompleteRun.
+func orphanedAfter(minted []int, run *entity.DesignRun) []int {
+	adopted := make([]int, 0, len(run.Pictures))
+	for _, p := range run.Pictures {
+		adopted = append(adopted, p.MediaId)
+	}
+	return design.OrphanedMedia(minted, adopted)
+}
+
+// ─────────────────────── деньги ───────────────────────
+
+// РЕЗЕРВ И ВСТАВКА — ОДНА ТРАНЗАКЦИЯ, А ПОВТОР НЕ ПЛАТИТ ВТОРОЙ РАЗ.
+func TestDesignDBStartRunReservesOnceForOneRequestID(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "2.00")
+	card := probeCard(t, raw)
+	ctx := context.Background()
+
+	req := uuid.NewString()
+	first, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: req, Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.50"), Valid: true},
+	})
+	require.NoError(t, err)
+	require.False(t, first.Idempotent)
+	require.Equal(t, entity.DesignRunPending, first.Run.Status)
+	require.True(t, first.Budget.Reserved.Equal(decimal.RequireFromString("0.5")),
+		"резерв обязан быть виден сразу, вместе с кликом: %s", first.Budget.Reserved)
+
+	second, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: req, Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.50"), Valid: true},
+	})
+	require.NoError(t, err)
+	require.True(t, second.Idempotent, "повтор после сетевого таймаута — тот же прогон, а не второй")
+	require.Equal(t, first.Run.Id, second.Run.Id)
+	require.True(t, second.Budget.Reserved.Equal(decimal.RequireFromString("0.5")),
+		"повтор НЕ резервирует второй раз: %s", second.Budget.Reserved)
+}
+
+// ПОТОЛОК ОТКАЗЫВАЕТ, И ОТКАЗ НЕ ОСТАВЛЯЕТ ЗА СОБОЙ ПОВИСШИЙ РЕЗЕРВ.
+//
+// Вторая половина утверждения — та, ради которой резерв и проверка стоят в ОДНОЙ транзакции:
+// если бы проверка была снаружи, отказавший прогон унёс бы деньги дня с собой навсегда.
+func TestDesignDBStartRunRefusesOverTheCapAndRollsItsReserveBack(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "1.00")
+	card := probeCard(t, raw)
+	ctx := context.Background()
+
+	startProbeRun(t, rep, card, "0.60")
+
+	_, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.60"), Valid: true},
+	})
+	require.ErrorIs(t, err, entity.ErrDesignBudgetExceeded)
+
+	budget, err := rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Reserved.Equal(decimal.RequireFromString("0.6")),
+		"резерв отказавшего прогона обязан уехать вместе с откатом: %s", budget.Reserved)
+}
+
+// НОЛЬ — ЭТО «СЕГОДНЯ НЕ ЗАПУСКАЕМ», а не «бесплатно можно».
+func TestDesignDBStartRunRefusesAClosedDay(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "0.00")
+	card := probeCard(t, raw)
+
+	_, err := rep.Design().StartRun(context.Background(), entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+	})
+	require.ErrorIs(t, err, entity.ErrDesignBudgetExceeded)
+}
+
+// ─────────────────────── захват ───────────────────────
+
+// ОДНО ЗАДАНИЕ — ОДИН ВЛАДЕЛЕЦ, ДАЖЕ ПРИ ОДНОВРЕМЕННОМ ЗАХВАТЕ.
+//
+// МУТАЦИЯ, КОТОРАЯ ОБЯЗАНА УРОНИТЬ ЭТУ ПРОБУ: убрать повтор предиката из WHERE у UPDATE в
+// ClaimRuns (оставить `WHERE id = :id`). Тогда оба воркера «захватят» строку, и второй токен
+// затрёт первый — первый воркер больше никогда не сможет закрыть свой оплаченный прогон.
+func TestDesignDBClaimGivesTheRunToExactlyOneWorker(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	started := startProbeRun(t, rep, card, "0.10")
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		winners []string
+	)
+	// СТАРТОВЫЙ БАРЬЕР. Без него две горутины не пересекаются вовсе: первая успевает закрыть свою
+	// транзакцию до того, как вторая начнёт, и «ровно один победитель» становится истинным по
+	// причине «одновременности не было» — то есть проба зеленела бы, ничего не измерив.
+	gate := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		token := uuid.NewString()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-gate
+			runs, err := rep.Design().ClaimRuns(context.Background(), 4, time.Minute, token)
+			if err != nil {
+				return
+			}
+			for _, r := range runs {
+				if r.Id == started.Run.Id {
+					mu.Lock()
+					winners = append(winners, token)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	close(gate)
+	wg.Wait()
+	require.Len(t, winners, 1, "строку обязан получить ровно один воркер")
+
+	status, token := runStatus(t, raw, started.Run.Id)
+	require.Equal(t, entity.DesignRunRunning, status)
+	require.True(t, token.Valid)
+	require.Equal(t, winners[0], token.String, "у строки стоит токен ПОБЕДИТЕЛЯ, а не последнего")
+}
+
+// ЖИВУЮ ЛИЗУ НЕ ПЕРЕХВАТЫВАЮТ. Это тот самый дефект первой редакции плана: предиката лизы не
+// было вовсе, второй захват уводил живой токен, и первый воркер НИКОГДА не мог закрыть свой уже
+// оплаченный прогон — CompleteRun сверяет токен.
+//
+// Проба ПОСЛЕДОВАТЕЛЬНАЯ намеренно: одновременность здесь ничего не добавляет (её закрывает
+// SERIALIZABLE), а перехват живой лизы — это про ВРЕМЯ, а не про гонку.
+//
+// МУТАЦИЯ, КОТОРАЯ ОБЯЗАНА УРОНИТЬ ЭТУ ПРОБУ: убрать
+// `AND (claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at < UTC_TIMESTAMP(6))`
+// из designRunClaimableSQL.
+func TestDesignDBALiveLeaseIsNotStolen(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	started := startProbeRun(t, rep, card, "0.10")
+	ctx := context.Background()
+
+	tokenA := uuid.NewString()
+	first, err := rep.Design().ClaimRuns(ctx, 4, time.Minute, tokenA)
+	require.NoError(t, err)
+	require.Len(t, first, 1, "положительный контроль: свободную строку захват берёт")
+
+	// СОСТОЯНИЕ, РАДИ КОТОРОГО ПРЕДИКАТ ЛИЗЫ СУЩЕСТВУЕТ, СОБИРАЕТСЯ ЯВНО: строка ЖДЁТ и при этом
+	// ЗАХВАЧЕНА. Само по себе `status = 'pending'` такую строку не отсеет, а она законна и
+	// сегодня — ровно её заводит StartRun для kind=draft_idea, чтобы воркер не оплатил второй
+	// вызов текстовой модели, пока хендлер зовёт её сам. Без этой подготовки проба зеленела бы
+	// на статусе и о предикате лизы не сказала бы ничего.
+	_, err = raw.Exec(`UPDATE design_run SET status = 'pending' WHERE id = ?`, started.Run.Id)
+	require.NoError(t, err)
+
+	second, err := rep.Design().ClaimRuns(ctx, 4, time.Minute, uuid.NewString())
+	require.NoError(t, err)
+	for _, r := range second {
+		require.NotEqual(t, started.Run.Id, r.Id, "живая лиза не перехватывается")
+	}
+
+	_, token := runStatus(t, raw, started.Run.Id)
+	require.True(t, token.Valid)
+	require.Equal(t, tokenA, token.String, "токен первого воркера обязан устоять")
+}
+
+// ИСТЁКШАЯ ЛИЗА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ. Без этого подметальщика «истёкший захват — та же дорога»
+// это дорога без ног: ClaimRuns берёт только pending.
+func TestDesignDBExpiredLeaseComesBackToPending(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	started := startProbeRun(t, rep, card, "0.10")
+	ctx := context.Background()
+
+	claimed, err := rep.Design().ClaimRuns(ctx, 4, time.Minute, uuid.NewString())
+	require.NoError(t, err)
+	require.NotEmpty(t, claimed)
+
+	// Положительный контроль: пока лиза жива, подметальщику брать нечего.
+	n, err := rep.Design().ReviveExpiredRuns(ctx)
+	require.NoError(t, err)
+	require.Zero(t, n, "живая лиза не подметается")
+
+	expireClaim(t, raw, started.Run.Id)
+	n, err = rep.Design().ReviveExpiredRuns(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, n, 1)
+
+	status, token := runStatus(t, raw, started.Run.Id)
+	require.Equal(t, entity.DesignRunPending, status)
+	require.False(t, token.Valid, "подметённая строка не принадлежит никому")
+}
+
+// ⚠ ГЛАВНОЕ УТВЕРЖДЕНИЕ ВСЕЙ МАШИНЫ: ВОРКЕР С ИСТЁКШИМ ЗАХВАТОМ НЕ ЗАТИРАЕТ ЧУЖОЙ РЕЗУЛЬТАТ.
+//
+// Сценарий ровно тот, ради которого claim_token стоит в WHERE: A забрал задание, умер (лиза
+// истекла), подметальщик вернул строку, B забрал её заново и ПРИСЛАЛ РЕЗУЛЬТАТ. Затем оживает A
+// и присылает СВОЙ. Правильный исход — отказ A и НЕТРОНУТАЯ выдача B.
+//
+// МУТАЦИЯ, КОТОРАЯ ОБЯЗАНА УРОНИТЬ ЭТУ ПРОБУ: убрать `AND claim_token = :tok` из закрывающего
+// UPDATE в CompleteRun. Проверка requireClaim перед ним этого НЕ ловит — она читает строку до
+// записи, и её одной хватило бы ровно до первой гонки.
+func TestDesignDBExpiredClaimCannotOverwriteAnothersResult(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	mediaB := probeMedia(t, raw)
+	mediaA := probeMedia(t, raw)
+	started := startProbeRun(t, rep, card, "0.10")
+	ctx := context.Background()
+
+	tokenA := uuid.NewString()
+	claimedA, err := rep.Design().ClaimRuns(ctx, 4, time.Minute, tokenA)
+	require.NoError(t, err)
+	require.NotEmpty(t, claimedA)
+
+	expireClaim(t, raw, started.Run.Id)
+	_, err = rep.Design().ReviveExpiredRuns(ctx)
+	require.NoError(t, err)
+
+	tokenB := uuid.NewString()
+	claimedB, err := rep.Design().ClaimRuns(ctx, 4, time.Minute, tokenB)
+	require.NoError(t, err)
+	require.NotEmpty(t, claimedB)
+
+	// ─── СЛУЧАЙ ПЕРВЫЙ: СТРОКУ ВЕДЁТ B, А РЕЗУЛЬТАТ НЕСЁТ A ───
+	//
+	// Здесь строка ЖИВАЯ, и записать в неё чужую выдачу было бы прямой порчей. Отказ обязателен.
+	_, err = rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: started.Run.Id, ClaimToken: tokenA,
+		Outputs: []entity.DesignPictureInsert{{MediaId: mediaA, Ordinal: 1}},
+	})
+	require.ErrorIs(t, err, entity.ErrDesignClaimLost)
+	var filed int
+	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM design_picture WHERE run_id = ?`, started.Run.Id).
+		Scan(&filed))
+	require.Zero(t, filed, "ни один кадр опоздавшего не должен был просочиться в чужую строку")
+
+	doneB, err := rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: started.Run.Id, ClaimToken: tokenB,
+		Outputs: []entity.DesignPictureInsert{{MediaId: mediaB, Ordinal: 0}},
+	})
+	require.NoError(t, err)
+	// СОСТАВ ВОЗВРАЩАЕТСЯ ВЫЗЫВАЮЩЕМУ — без него воркер не может посчитать OrphanedMedia и
+	// свежезагруженные, но не усыновлённые байты остались бы в бакете навсегда.
+	require.Len(t, doneB.Pictures, 1)
+	require.Equal(t, mediaB, doneB.Pictures[0].MediaId)
+	require.Empty(t, orphanedAfter([]int{mediaB}, doneB))
+
+	// ПОВТОР B С ДРУГИМИ БАЙТАМИ: строка уже done, кадры первого ответа остаются, а свежий файл
+	// объявляется сиротой — ровно тот случай err == nil, ради которого компенсация существует.
+	again, err := rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: started.Run.Id, ClaimToken: tokenB,
+		Outputs: []entity.DesignPictureInsert{{MediaId: mediaA, Ordinal: 7}},
+	})
+	require.NoError(t, err)
+	require.Len(t, again.Pictures, 1, "повтор на закрытой строке кадров не добавляет")
+	require.Equal(t, []int{mediaA}, orphanedAfter([]int{mediaA}, again),
+		"загруженное повтором не усыновил никто — воркер обязан это увидеть")
+
+	// ─── СЛУЧАЙ ВТОРОЙ: A ОЖИВАЕТ, КОГДА СТРОКА УЖЕ ЗАКРЫТА ───
+	//
+	// Здесь писать некуда, и ответ — СОСТАВ, а не отказ: A обязан узнать, что его байты не
+	// усыновил никто, иначе они останутся в бакете ничьими. ОРДИНАЛ У НЕГО ДРУГОЙ намеренно: с
+	// ординалом 0 вставку остановил бы ещё и uq_design_picture_run_ordinal, и «выдача не
+	// изменилась» оказалось бы истинным по ЧУЖОЙ причине — то есть проба зеленела бы и без
+	// сторожа.
+	late, err := rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: started.Run.Id, ClaimToken: tokenA,
+		Outputs: []entity.DesignPictureInsert{{MediaId: mediaA, Ordinal: 1}},
+	})
+	require.NoError(t, err)
+	require.Len(t, late.Pictures, 1, "опоздавший ничего не дописывает в закрытую строку")
+	require.Equal(t, []int{mediaA}, orphanedAfter([]int{mediaA}, late),
+		"опоздавший обязан УЗНАТЬ, что его байты — сироты, а не остаться с ними наедине")
+
+	var media int
+	var count int
+	require.NoError(t, raw.QueryRow(
+		`SELECT COUNT(*), COALESCE(MIN(media_id), 0) FROM design_picture WHERE run_id = ?`,
+		started.Run.Id).Scan(&count, &media))
+	require.Equal(t, 1, count, "выдача перехватившего обязана остаться единственной")
+	require.Equal(t, mediaB, media, "в строке лежит кадр B, а не подсунутый A")
+}
+
+// ─────────────────────── прилёт результата ───────────────────────
+
+// MIXED_INPUT СЧИТАЕТСЯ В МОМЕНТ РОЖДЕНИЯ КАДРА, а не при минте.
+//
+// Здесь у прогона два входа разного провенанса: кадр полосы (ai) и файл человека, которого среди
+// картинок полосы нет вовсе. Контроль ниже — прогон с одним провенансом.
+func TestDesignDBCompleteRunComputesMixedInputAtBirth(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	aiMedia := probeMedia(t, raw)
+	humanMedia := probeMedia(t, raw)
+	outMixed := probeMedia(t, raw)
+	outPlain := probeMedia(t, raw)
+	ctx := context.Background()
+
+	// Кадр полосы с провенансом ai — вход первого рода.
+	_, err := raw.Exec(`INSERT INTO design_picture (tech_card_id, media_id, ordinal, kind, source_class)
+		VALUES (?, ?, 0, 'flat', 'ai')`, card, aiMedia)
+	require.NoError(t, err)
+
+	mixedRun, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.10"), Valid: true},
+		Inputs: []byte(fmt.Sprintf(
+			`{"slots":[{"media_id":%d}],"refs":[{"media_id":%d}]}`, aiMedia, humanMedia)),
+	})
+	require.NoError(t, err)
+	token := uuid.NewString()
+	_, err = rep.Design().ClaimRuns(ctx, 8, time.Minute, token)
+	require.NoError(t, err)
+	_, err = rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: mixedRun.Run.Id, ClaimToken: token,
+		Outputs: []entity.DesignPictureInsert{{MediaId: outMixed, Ordinal: 0}},
+	})
+	require.NoError(t, err)
+
+	var mixed bool
+	require.NoError(t, raw.QueryRow(`SELECT mixed_input FROM design_picture WHERE media_id = ?`, outMixed).
+		Scan(&mixed))
+	require.True(t, mixed, "кадр из ИИ-плиты и человеческого референса — смесь провенансов")
+
+	// КОНТРОЛЬ: один провенанс — не смесь. Без него проба выше зеленела бы на флаге, поднятом
+	// всегда.
+	plainRun, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.10"), Valid: true},
+		Inputs:        []byte(fmt.Sprintf(`{"refs":[{"media_id":%d}]}`, humanMedia)),
+	})
+	require.NoError(t, err)
+	token2 := uuid.NewString()
+	_, err = rep.Design().ClaimRuns(ctx, 8, time.Minute, token2)
+	require.NoError(t, err)
+	_, err = rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: plainRun.Run.Id, ClaimToken: token2,
+		Outputs: []entity.DesignPictureInsert{{MediaId: outPlain, Ordinal: 0}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, raw.QueryRow(`SELECT mixed_input FROM design_picture WHERE media_id = ?`, outPlain).
+		Scan(&mixed))
+	require.False(t, mixed, "один провенанс смесью не является")
+}
+
+// COMPOSITE_VIEWS ПИШЕТСЯ ПРИ ПРИЛЁТЕ, И ПРАВИЛО «КОМПОЗИТ В СЛОТ НЕ ВСТАЁТ» СРАЗУ ОЖИВАЕТ.
+//
+// Это две половины одного факта: колонка без писателя делала isComposite() на клиенте ВСЕГДА
+// ложным, а сторож верстака — недостижимым.
+func TestDesignDBCompositeArrivesMarkedAndTheBenchRefusesIt(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	sheet := probeMedia(t, raw)
+	ctx := context.Background()
+
+	started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.10"), Valid: true},
+		Params:        []byte(`{"views":["front","back","side_l"],"layout":"one"}`),
+	})
+	require.NoError(t, err)
+	token := uuid.NewString()
+	_, err = rep.Design().ClaimRuns(ctx, 8, time.Minute, token)
+	require.NoError(t, err)
+	_, err = rep.Design().CompleteRun(ctx, entity.DesignRunComplete{
+		RunId: started.Run.Id, ClaimToken: token,
+		Outputs: []entity.DesignPictureInsert{{MediaId: sheet, Ordinal: 0}},
+	})
+	require.NoError(t, err)
+
+	var (
+		pictureID int
+		composite sql.NullString
+		ghost     sql.NullString
+	)
+	require.NoError(t, raw.QueryRow(
+		`SELECT id, composite_views, ghost_view FROM design_picture WHERE media_id = ?`, sheet).
+		Scan(&pictureID, &composite, &ghost))
+	require.True(t, composite.Valid, "лист из трёх видов обязан приехать помеченным")
+	require.JSONEq(t, `["front","back","side_l"]`, composite.String)
+	require.False(t, ghost.Valid, "у композита нет ОДНОГО вида, и подставленный первый соврал бы резаку")
+
+	_, err = rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId: card,
+		Slot:       entity.DesignSlotRef{ViewKey: entity.DesignViewFront},
+		PictureId:  pictureID,
+		Actor:      "probe",
+	})
+	require.ErrorIs(t, err, entity.ErrDesignCompositePlate,
+		"композит сначала режут — и теперь это правило достижимо")
+}
+
+// ─────────────────────── род кадра и вторая ось верстака ───────────────────────
+
+// РОД БЕРЁТСЯ СО ВХОДА. До этой волны он был захардкожен в flat, и рендер нельзя было завести
+// руками вовсе.
+func TestDesignDBRegisterBatchFilesTheKindFromTheInput(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	renderMedia := probeMedia(t, raw)
+	plainMedia := probeMedia(t, raw)
+
+	out, err := rep.Design().RegisterBatch(context.Background(), entity.DesignBatchRegister{
+		TechCardId:      card,
+		ClientRequestId: uuid.NewString(),
+		Actor:           "probe",
+		Items: []entity.DesignUploadItem{
+			{MediaId: renderMedia, Kind: entity.DesignPictureKindRender},
+			{MediaId: plainMedia},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Pictures, 2)
+	require.Equal(t, entity.DesignPictureKindRender, out.Pictures[0].Kind)
+	require.Equal(t, entity.DesignPictureKindFlat, out.Pictures[1].Kind,
+		"неназванный род читается как flat — старый вызывающий перемены не заметил")
+}
+
+// ВЕРСТАК ДЕРЖИТ ОБЕ ОСИ ОДНОГО ВИДА, и флэт-слот рендер не принимает.
+func TestDesignDBBenchHoldsBothAxesOfOneView(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	flatMedia := probeMedia(t, raw)
+	renderMedia := probeMedia(t, raw)
+	ctx := context.Background()
+
+	batch, err := rep.Design().RegisterBatch(ctx, entity.DesignBatchRegister{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Items: []entity.DesignUploadItem{
+			{MediaId: flatMedia},
+			{MediaId: renderMedia, Kind: entity.DesignPictureKindRender},
+		},
+	})
+	require.NoError(t, err)
+	flatPic, renderPic := batch.Pictures[0].Id, batch.Pictures[1].Id
+
+	flatSlot, err := rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId: card, Slot: entity.DesignSlotRef{ViewKey: entity.DesignViewFront},
+		PictureId: flatPic, Actor: "probe",
+	})
+	require.NoError(t, err)
+
+	renderSlot, err := rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId: card,
+		Slot: entity.DesignSlotRef{
+			ViewKey: entity.DesignViewFront, Kind: entity.DesignPictureKindRender,
+		},
+		PictureId: renderPic, Actor: "probe",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, flatSlot.Id, renderSlot.Id,
+		"рендер фронта и флэт фронта — два адреса, а не один вытесняющий другой")
+	require.Equal(t, entity.DesignPictureKindFlat, flatSlot.Kind)
+	require.Equal(t, entity.DesignPictureKindRender, renderSlot.Kind)
+
+	// ФЛЭТ-СЛОТ РЕНДЕР НЕ ПРИНИМАЕТ — иначе минт печатает рендер на техническом листе.
+	_, err = rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId: card, Slot: entity.DesignSlotRef{ViewKey: entity.DesignViewBack},
+		PictureId: renderPic, Actor: "probe",
+	})
+	require.ErrorIs(t, err, entity.ErrDesignWrongKind)
+
+	band, err := rep.Design().GetBand(ctx, card, 4)
+	require.NoError(t, err)
+	require.True(t, band.HasFabricRender, "неспрятанный рендер обязан открывать 3D (W-13)")
+}
+
+// ─────────────────────── провал и деньги попыток ───────────────────────
+
+// РЕТРАЙ ВОЗВРАЩАЕТ В ОЧЕРЕДЬ И НЕ ТРОГАЕТ РЕЗЕРВ; ТЕРМИНАЛЬНЫЙ ПРОВАЛ РЕЗЕРВ ОСВОБОЖДАЕТ.
+func TestDesignDBFailRunRetriesThenReleasesTheReserve(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	started := startProbeRun(t, rep, card, "0.40")
+	ctx := context.Background()
+
+	token := uuid.NewString()
+	_, err := rep.Design().ClaimRuns(ctx, 8, time.Minute, token)
+	require.NoError(t, err)
+
+	run, err := rep.Design().FailRun(ctx, entity.DesignRunFail{
+		RunId: started.Run.Id, ClaimToken: token, ErrorCode: "provider_429",
+		LastError: "too many requests", Retryable: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignRunPending, run.Status)
+	require.Equal(t, 1, run.AttemptCount)
+	require.False(t, run.ClaimToken.Valid)
+	require.True(t, run.NextAttemptAt.Valid)
+
+	budget, err := rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Reserved.Equal(decimal.RequireFromString("0.4")),
+		"ретрай НЕ снимает резерв: задание всё ещё в полёте, %s", budget.Reserved)
+
+	// Терминальный провал: сначала снова забираем строку — она вернулась в очередь.
+	_, err = raw.Exec(`UPDATE design_run SET next_attempt_at = UTC_TIMESTAMP(6) WHERE id = ?`, started.Run.Id)
+	require.NoError(t, err)
+	token2 := uuid.NewString()
+	_, err = rep.Design().ClaimRuns(ctx, 8, time.Minute, token2)
+	require.NoError(t, err)
+	run, err = rep.Design().FailRun(ctx, entity.DesignRunFail{
+		RunId: started.Run.Id, ClaimToken: token2, ErrorCode: "provider_result_unknown",
+		LastError: "no answer", Retryable: false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignRunFailed, run.Status)
+
+	budget, err = rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Reserved.IsZero(),
+		"терминальный переход обязан вернуть дню зарезервированное: %s", budget.Reserved)
+}
+
+// ДЕНЬГИ ПОПЫТКИ СЧИТАЮТСЯ РОВНО ОДИН РАЗ, даже если ответ потерялся и воркер повторил.
+func TestDesignDBAttemptMoneyIsCountedOnce(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	started := startProbeRun(t, rep, card, "0.40")
+	ctx := context.Background()
+
+	token := uuid.NewString()
+	_, err := rep.Design().ClaimRuns(ctx, 8, time.Minute, token)
+	require.NoError(t, err)
+
+	attempt, err := rep.Design().StartAttempt(ctx, entity.DesignAttemptStart{
+		RunId: started.Run.Id, ClaimToken: token, Provider: "openrouter",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, attempt.AttemptNo)
+	require.Equal(t, entity.DesignAttemptDispatching, attempt.State)
+
+	finish := entity.DesignAttemptFinish{
+		RunId: started.Run.Id, AttemptNo: attempt.AttemptNo, State: entity.DesignAttemptDelivered,
+		ProviderRequestId: "req-1",
+		Price:             decimal.NullDecimal{Decimal: decimal.RequireFromString("0.30"), Valid: true},
+	}
+	require.NoError(t, rep.Design().FinishAttempt(ctx, finish))
+	budget, err := rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Spent.Equal(decimal.RequireFromString("0.3")), "spent = %s", budget.Spent)
+
+	// ПОВТОР ПОСЛЕ ПОТЕРЯННОГО ОТВЕТА — деньги не двигаются.
+	require.NoError(t, rep.Design().FinishAttempt(ctx, finish))
+	budget, err = rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Spent.Equal(decimal.RequireFromString("0.3")),
+		"повтор удвоил бы траты владельца: %s", budget.Spent)
+
+	run, err := rep.Design().GetRun(ctx, started.Run.Id)
+	require.NoError(t, err)
+	require.True(t, run.PriceActual.Valid)
+	require.True(t, run.PriceActual.Decimal.Equal(decimal.RequireFromString("0.3")),
+		"цена прогона — СУММА цен попыток: %s", run.PriceActual.Decimal)
+}
+
+// ОТМЕНА ЖДУЩЕГО ПРОГОНА ВОЗВРАЩАЕТ ДЕНЬГИ ДНЮ, отмена идущего — только просит.
+func TestDesignDBCancelReleasesAPendingReserveAndOnlyAsksARunningOne(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	ctx := context.Background()
+
+	pending := startProbeRun(t, rep, card, "0.25")
+	run, err := rep.Design().CancelRun(ctx, pending.Run.Id, "probe")
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignRunCancelled, run.Status)
+	budget, err := rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Reserved.IsZero(), "ждущий прогон никто не оплачивал: %s", budget.Reserved)
+
+	running := startProbeRun(t, rep, card, "0.25")
+	_, err = rep.Design().ClaimRuns(ctx, 8, time.Minute, uuid.NewString())
+	require.NoError(t, err)
+	run, err = rep.Design().CancelRun(ctx, running.Run.Id, "probe")
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignRunRunning, run.Status,
+		"идущий прогон закрывает воркер: результат мог прийти секундой позже, и выбрасывать оплаченное нельзя")
+	require.True(t, run.CancelRequestedAt.Valid)
+	budget, err = rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, budget.Reserved.Equal(decimal.RequireFromString("0.25")),
+		"резерв идущего прогона держится до его терминального перехода: %s", budget.Reserved)
+}
+
+// ─────────────────────── W-3: СЛОВА ЧЕЛОВЕКА ХРАНЯТСЯ ───────────────────────
+
+// ЗАПИСКА РЕФЕРЕНСА ПИШЕТСЯ ТЕМ ЖЕ АПСЕРТОМ, ЧТО И РОЛЬ, И ЧИТАЕТСЯ ОБРАТНО.
+//
+// ⚠ ЭТО ПРОБА КОЛОНКИ, А НЕ СТРУКТУРЫ, и без базы её сделать нельзя: хендл стора — d.Unsafe(),
+// поэтому колонка, которую сущность не несёт, ЧИТАЕТСЯ В НИЧТО без единой ошибки. Ровно так все
+// три поля этой волны и терялись между базой и проводом.
+//
+// АСИММЕТРИЯ ПРОВЕРЯЕТСЯ ОБОИМИ КОНЦАМИ: пустая записка на строке, которая сохраняет роль,
+// ОЧИЩАЕТ записку; пустая роль удаляет строку целиком и уносит записку с собой.
+func TestDesignDBReferenceNoteRidesWithTheRole(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	mediaID := probeMedia(t, raw)
+	ctx := context.Background()
+	_, err := raw.Exec(`INSERT INTO tech_card_media (tech_card_id, media_id, category, display_order)
+		VALUES (?, ?, 'moodboard', 0)`, card, mediaID)
+	require.NoError(t, err)
+
+	ref, err := rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
+		TechCardId: card, MediaId: mediaID, Role: entity.DesignViewFront,
+		Note: "only the collar", Ordinal: 1, Actor: "probe",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ref)
+	require.Equal(t, "only the collar", ref.Note.String,
+		"записка обязана вернуться той же транзакцией, которая её записала")
+
+	// И тем же значением её видит ЧИТАТЕЛЬ ПОЛОСЫ — тот самый список, из которого собирается
+	// снимок входов прогона.
+	band, err := rep.Design().GetBand(ctx, card, 1)
+	require.NoError(t, err)
+	require.Len(t, band.References, 1)
+	require.Equal(t, "only the collar", band.References[0].Note.String)
+
+	// Пустая записка при сохранённой роли — ОЧИСТИТЬ.
+	ref, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
+		TechCardId: card, MediaId: mediaID, Role: entity.DesignViewFront, Ordinal: 1, Actor: "probe",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ref)
+	require.False(t, ref.Note.Valid, "пустой текст для записки — настоящий ответ, а не молчание")
+	require.Equal(t, entity.DesignViewFront, ref.Role, "роль при этом на месте")
+
+	// Пустая роль — строки нет вовсе.
+	ref, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
+		TechCardId: card, MediaId: mediaID, Note: "ignored", Actor: "probe",
+	})
+	require.NoError(t, err)
+	require.Nil(t, ref)
+}
+
+// ОПИСАНИЕ ИЗДЕЛИЯ ПРОХОДИТ КОЛОНКУ ТУДА И ОБРАТНО, А ОТСУТСТВИЕ ПОЛЯ ЕГО СОХРАНЯЕТ.
+//
+// Третья нога verbatim-протокола живёт в SQL (IF(:garment_description_omitted, …)), и проверить её
+// можно только выполнив этот SQL: сущность про неё ничего не знает, а sqlx свяжет параметр молча
+// в любом случае.
+func TestDesignDBGarmentDescriptionSurvivesASaveThatDoesNotMentionIt(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	ctx := context.Background()
+
+	load := func() *entity.TechCard {
+		t.Helper()
+		tc, err := rep.TechCards().GetTechCardById(ctx, card)
+		require.NoError(t, err)
+		return tc
+	}
+
+	// ─── РОЖДЕНИЕ КАРТОЧКИ ───
+	//
+	// ⚠ ОТДЕЛЬНАЯ НОГА, ПОТОМУ ЧТО ЭТО ДРУГОЙ SQL. Список колонок шапки (techCardHeaderColumns)
+	// читает ТОЛЬКО INSERT — его же берут клон и импорт, — а UPDATE ниже перечисляет колонки сам.
+	// Проба, проверяющая один из них, зеленеет, когда второй теряет колонку: измерено мутацией,
+	// которая выбросила garment_description из списка вставки и НЕ покраснела, пока этой ноги
+	// здесь не было.
+	born := &entity.TechCardInsert{
+		Name:               "design band probe: a card born with a description",
+		Stage:              entity.TechCardStageIdea,
+		MeasurementUnit:    entity.TechCardUnitMm,
+		ApprovalState:      entity.TechCardApprovalDraft,
+		TargetGender:       sql.NullString{String: "unisex", Valid: true},
+		GarmentDescription: sql.NullString{String: "born describing itself", Valid: true},
+	}
+	newID, err := rep.TechCards().AddTechCard(ctx, born)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = raw.Exec(`DELETE FROM tech_card WHERE id = ?`, newID) })
+	fresh, err := rep.TechCards().GetTechCardById(ctx, newID)
+	require.NoError(t, err)
+	require.Equal(t, "born describing itself", fresh.GarmentDescription.String,
+		"без колонки в INSERT описание теряется на СОЗДАНИИ карточки — и вместе с ним на клоне и импорте")
+
+	tc := load()
+	payload := tc.TechCardInsert
+	payload.GarmentDescription = sql.NullString{String: "oversized boxy shirt", Valid: true}
+	require.NoError(t, rep.TechCards().UpdateTechCard(ctx, card, &payload, tc.LockVersion))
+	require.Equal(t, "oversized boxy shirt", load().GarmentDescription.String,
+		"без колонки в INSERT/UPDATE описание уехало бы в никуда, и промпт остался бы без изделия")
+
+	// Сейв из вкладки, которая про полосу DESIGN не знает: поля НЕТ на проводе.
+	tc = load()
+	silent := tc.TechCardInsert
+	silent.GarmentDescription = sql.NullString{}
+	silent.GarmentDescriptionOmitted = true
+	require.NoError(t, rep.TechCards().UpdateTechCard(ctx, card, &silent, tc.LockVersion))
+	require.Equal(t, "oversized boxy shirt", load().GarmentDescription.String,
+		"отсутствующее поле обязано СОХРАНИТЬ колонку: иначе описание стирает вкладка, которая его не видела")
+
+	// Явная пустая строка — ОЧИСТИТЬ.
+	tc = load()
+	clear := tc.TechCardInsert
+	clear.GarmentDescription = sql.NullString{}
+	clear.GarmentDescriptionOmitted = false
+	require.NoError(t, rep.TechCards().UpdateTechCard(ctx, card, &clear, tc.LockVersion))
+	require.False(t, load().GarmentDescription.Valid)
+}
+
+// ─────────────────────── W-12: ОТМЕТКА «ВЫБРАН» ───────────────────────
+
+// ОТМЕТКА ХРАНИТСЯ, СНИМАЕТСЯ И НЕ ЯВЛЯЕТСЯ ОБРАТНОЙ СТОРОНОЙ hidden.
+//
+// Складывать их было бы жестом, который молча отменяет другой: спрятать — убрать с глаз, выбрать —
+// поднять над остальными. Проба ставит эксперимент, в котором обе отметки стоят ОДНОВРЕМЕННО, —
+// на сложенной паре это состояние невыразимо.
+func TestDesignDBPictureSelectionIsIndependentOfHiding(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	mediaA, mediaB := probeMedia(t, raw), probeMedia(t, raw)
+	ctx := context.Background()
+
+	reg, err := rep.Design().RegisterBatch(ctx, entity.DesignBatchRegister{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Items: []entity.DesignUploadItem{
+			{MediaId: mediaA, Kind: entity.DesignPictureKindThreed},
+			{MediaId: mediaB, Kind: entity.DesignPictureKindThreed},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, reg.Pictures, 2)
+	first, second := reg.Pictures[0].Id, reg.Pictures[1].Id
+
+	pic, err := rep.Design().SetPictureSelected(ctx, first, true, "probe")
+	require.NoError(t, err)
+	require.True(t, pic.Selected)
+
+	// НИЧЕГО НЕ ИСКЛЮЧИТЕЛЬНО: владелец говорит во множественном числе.
+	pic, err = rep.Design().SetPictureSelected(ctx, second, true, "probe")
+	require.NoError(t, err)
+	require.True(t, pic.Selected)
+	again, err := rep.Design().GetPicture(ctx, first)
+	require.NoError(t, err)
+	require.True(t, again.Selected, "вторая отметка не смеет снимать первую")
+
+	// Выбранный кадр можно спрятать, и обе отметки живут рядом.
+	hidden, err := rep.Design().HidePicture(ctx, first, true, "probe")
+	require.NoError(t, err)
+	require.True(t, hidden.HiddenAt.Valid)
+	require.True(t, hidden.Selected, "спрятать — не то же, что снять выбор")
+
+	off, err := rep.Design().SetPictureSelected(ctx, first, false, "probe")
+	require.NoError(t, err)
+	require.False(t, off.Selected)
+
+	_, err = rep.Design().SetPictureSelected(ctx, 0, true, "probe")
+	require.ErrorIs(t, err, entity.ErrDesignNotFound,
+		"неизвестный кадр — отказ, а не тихий UPDATE на ноль строк")
+}
+
+// ─────────────────────── ИМПОРТ ВЕКТОРА ───────────────────────
+
+// ФАЙЛ ПОДШИВАЕТСЯ ОДИН РАЗ, С ПРОВЕНАНСОМ, И ПОВТОР НЕ РОЖДАЕТ ВТОРОГО СЛОЯ.
+//
+// ⚠ ИДЕМПОТЕНТНОСТЬ ЗДЕСЬ ПО (карточка, файл), А НЕ ПО client_request_id: у design_edit_layer
+// (0343) колонки под запросный ключ нет, а 0350 её не добавляла. Повтор после потерянного ответа
+// приезжает с ТЕМ ЖЕ media_id, потому что файл загружен раньше вызова, — значит покрыт ровно тот
+// случай, ради которого идемпотентность и нужна.
+func TestDesignDBImportVectorFilesTheFileOnceWithItsProvenance(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	svg, base := probeMedia(t, raw), probeMedia(t, raw)
+	ctx := context.Background()
+
+	reg, err := rep.Design().RegisterBatch(ctx, entity.DesignBatchRegister{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Items: []entity.DesignUploadItem{{MediaId: base, Kind: entity.DesignPictureKindFlat}},
+	})
+	require.NoError(t, err)
+	source := reg.Pictures[0].Id
+
+	req := entity.DesignVectorImport{
+		TechCardId: card, ClientRequestId: uuid.NewString(),
+		SourceMediaId: svg, SourcePictureId: source,
+		Origin: entity.DesignLayerOriginVectorised, BaseMediaId: base,
+		Strokes: []byte(`[{"d":"M0 0 L1 1"}]`), Actor: "probe",
+	}
+	layer, err := rep.Design().ImportVector(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignLayerOriginVectorised, layer.Origin)
+	require.Equal(t, int32(svg), layer.SourceMediaId.Int32,
+		"ребро «слой ↔ авторитетный файл» и есть предмет глагола")
+	require.Equal(t, int32(source), layer.SourcePictureId.Int32)
+	require.Equal(t, 1, layer.Rev)
+
+	// ПОВТОР ВОЗВРАЩАЕТ ТУ ЖЕ СТРОКУ, а не вторую. Ключ запроса нарочно ДРУГОЙ: идемпотентность
+	// стоит на файле, и проба обязана это показать, а не совпасть случайно.
+	req.ClientRequestId = uuid.NewString()
+	repeat, err := rep.Design().ImportVector(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, layer.Id, repeat.Id)
+	var layers int
+	require.NoError(t, raw.QueryRow(
+		`SELECT COUNT(*) FROM design_edit_layer WHERE tech_card_id = ?`, card).Scan(&layers))
+	require.Equal(t, 1, layers, "второй слой на тот же файл — это оплаченный дважды импорт в истории")
+
+	// Слой виден полосе ВМЕСТЕ с провенансом: без него смешанность вектора невычислима.
+	band, err := rep.Design().GetBand(ctx, card, 1)
+	require.NoError(t, err)
+	require.Len(t, band.Layers, 1)
+	require.Equal(t, entity.DesignLayerOriginVectorised, band.Layers[0].Origin)
+	require.Equal(t, int32(svg), band.Layers[0].SourceMediaId.Int32)
+}
+
+// ИМПОРТ ОТКАЗЫВАЕТСЯ ОТ drawn, ОТ НЕСУЩЕСТВУЮЩЕГО ФАЙЛА И ОТ ЧУЖОГО РАСТРА.
+//
+// Последнее схема выразить не может вовсе: design_picture(id) — законная цель, чьей бы карточки
+// строка ни была, и родословная, указывающая на чужой флэт, это ложь, которую полоса потом
+// нарисует.
+func TestDesignDBImportVectorRefusesNonsense(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	other := probeCard(t, raw)
+	svg, foreign := probeMedia(t, raw), probeMedia(t, raw)
+	ctx := context.Background()
+
+	reg, err := rep.Design().RegisterBatch(ctx, entity.DesignBatchRegister{
+		TechCardId: other, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Items: []entity.DesignUploadItem{{MediaId: foreign, Kind: entity.DesignPictureKindFlat}},
+	})
+	require.NoError(t, err)
+	foreignPicture := reg.Pictures[0].Id
+
+	ok := entity.DesignVectorImport{
+		TechCardId: card, ClientRequestId: uuid.NewString(), SourceMediaId: svg,
+		Origin: entity.DesignLayerOriginImported, Actor: "probe",
+	}
+
+	drawn := ok
+	drawn.Origin = entity.DesignLayerOriginDrawn
+	_, err = rep.Design().ImportVector(ctx, drawn)
+	require.ErrorIs(t, err, entity.ErrDesignInvalidArgument,
+		"слой, нарисованный из пустоты, импортировать нечем: файла у него нет вовсе")
+
+	missing := ok
+	missing.SourceMediaId = 999999999
+	_, err = rep.Design().ImportVector(ctx, missing)
+	require.ErrorIs(t, err, entity.ErrDesignInvalidArgument)
+
+	stranger := ok
+	stranger.SourcePictureId = foreignPicture
+	_, err = rep.Design().ImportVector(ctx, stranger)
+	require.ErrorIs(t, err, entity.ErrDesignNotFound)
+
+	// Положительный контроль: тот же запрос без чужого растра проходит. Без него три отказа выше
+	// доказывали бы только то, что импорт не работает никогда.
+	layer, err := rep.Design().ImportVector(ctx, ok)
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignLayerOriginImported, layer.Origin)
+}

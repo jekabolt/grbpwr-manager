@@ -28,11 +28,21 @@ import (
 // and the previous time — on a CAS that SUCCEEDED. slot_rev is assigned LAST here for exactly
 // that reason. Moving it back up reintroduces a defect that no round trip would show, because
 // the picture does land in the slot; only the byline lies.
+//
+// ⚠ `kind` УЧАСТВУЕТ В INSERT И НЕ УЧАСТВУЕТ В ON DUPLICATE KEY UPDATE, и это не пропуск. Род —
+// ЧАСТЬ АДРЕСА (uq_design_bench_view = tech_card_id, kind, exclusive_key после 0349), а адрес
+// строки не переписывается её же upsert'ом: строка, на которую он разрешился, УЖЕ имеет тот род,
+// по которому её нашли. Присвоение `kind = VALUES(kind)` было бы тождеством в лучшем случае и
+// переездом строки между осями в худшем.
+//
+// ИМЯ КЛЮЧА uq_design_bench_view СОХРАНЕНО 0349-й намеренно: mysqlDupKey разбирает 1062 ПО ИМЕНИ
+// ключа, отличая «слот тронули» от «плита занята». Переименование ключа молча схлопнуло бы два
+// разных отказа в один.
 const benchSlotUpsert = `
 	INSERT INTO design_bench_slot
-		(tech_card_id, view_key, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
+		(tech_card_id, view_key, kind, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
 	VALUES
-		(:card, :view, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))
+		(:card, :view, :kind, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))
 	ON DUPLICATE KEY UPDATE
 		picture_id  = IF(slot_rev = :expected_rev, VALUES(picture_id), picture_id),
 		detail_name = IF(slot_rev = :expected_rev, VALUES(detail_name), detail_name),
@@ -132,6 +142,13 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 	if !byID && !entity.IsDesignGhostView(req.Slot.ViewKey) {
 		return nil, fmt.Errorf("%w: unknown view_key %q", entity.ErrDesignInvalidArgument, req.Slot.ViewKey)
 	}
+	// РОД — ВТОРАЯ ПОЛОВИНА АДРЕСА (0349). Пустое читается как flat ровно как DEFAULT колонки,
+	// поэтому всякий писатель, который род не именует, попадает туда же, куда попадал до
+	// миграции; и ровно поэтому запрос про рендер фронта перестал разрешаться на флэт фронта.
+	kind := entity.DesignKindOrFlat(req.Slot.Kind)
+	if !entity.IsDesignPictureKind(kind) {
+		return nil, fmt.Errorf("%w: unknown slot kind %q", entity.ErrDesignInvalidArgument, kind)
+	}
 
 	// The plate, and the four refusals that belong to it. Every one of them is read in THIS
 	// transaction: a guard read outside it is a TOCTOU with a nicer name.
@@ -155,10 +172,18 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 		if pic.HiddenAt.Valid {
 			return nil, fmt.Errorf("%w: picture %d is hidden", entity.ErrDesignHiddenPlate, pic.Id)
 		}
-		// A turntable frame is a rotation step, not a sheet plate. The bench holds flats, renders
-		// and drawings; `threed` is the one kind that cannot stand in a slot.
-		if pic.Kind == entity.DesignPictureKindThreed {
-			return nil, fmt.Errorf("%w: picture %d is a turntable frame", entity.ErrDesignWrongKind, pic.Id)
+		// РОД КАДРА ОБЯЗАН СОВПАСТЬ С РОДОМ СЛОТА, и это ЗАМЕНА прежнему «threed в слот не
+		// встаёт» — не ослабление его, а обобщение. Пока ось была одна, единственным способом
+		// сказать «этот кадр сюда не относится» было назвать один запретный род; но настоящая
+		// беда была не в турнтейбле, а в РЕНДЕРЕ: он вставал на тот же адрес, что флэт, вытеснял
+		// его, и минт печатал рендер на техническом листе. Теперь адресов два, и правило — одно.
+		//
+		// Для писателя, который род не именует (kind = flat), поведение НЕ ИЗМЕНИЛОСЬ: threed
+		// по-прежнему отказывают, флэт по-прежнему принимают. Изменилось ровно то, что рендер
+		// теперь отказывают во флэт-слоте вместо того, чтобы принять и испортить лист.
+		if pic.Kind != kind {
+			return nil, fmt.Errorf("%w: picture %d is %q and the slot is %q",
+				entity.ErrDesignWrongKind, pic.Id, pic.Kind, kind)
 		}
 	}
 
@@ -176,7 +201,8 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 			return nil, fmt.Errorf("failed to check where design plate %d stands: %w", req.PictureId, err)
 		}
 		for _, h := range holder {
-			same := (byID && h.Id == req.Slot.SlotId) || (!byID && h.ExclusiveKey == req.Slot.ViewKey)
+			same := (byID && h.Id == req.Slot.SlotId) ||
+				(!byID && h.ExclusiveKey == req.Slot.ViewKey && entity.DesignKindOrFlat(h.Kind) == kind)
 			if !same {
 				return nil, fmt.Errorf("%w: picture %d already stands in slot %d",
 					entity.ErrDesignPictureAlreadyInSlot, req.PictureId, h.Id)
@@ -188,9 +214,9 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 	case byID:
 		return casExistingSlot(ctx, db, req)
 	case req.Slot.ViewKey == entity.DesignViewDetail:
-		return createDetailSlot(ctx, db, req)
+		return createDetailSlot(ctx, db, req, kind)
 	default:
-		return upsertSilhouetteSlot(ctx, db, req)
+		return upsertSilhouetteSlot(ctx, db, req, kind)
 	}
 }
 
@@ -202,8 +228,8 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 // its stale placement succeeded. The pre-read inside this SERIALIZABLE transaction is
 // authoritative, so the base revision is known, and the verdict is "the row moved from the base
 // I actually read".
-func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet) (*entity.DesignBenchSlot, error) {
-	before, found, err := slotByKey(ctx, db, req.TechCardId, req.Slot.ViewKey)
+func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, kind string) (*entity.DesignBenchSlot, error) {
+	before, found, err := slotByKey(ctx, db, req.TechCardId, kind, req.Slot.ViewKey)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +251,7 @@ func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.Desi
 	_, err = storeutil.ExecNamedRows(ctx, db, benchSlotUpsert, map[string]any{
 		"card":         req.TechCardId,
 		"view":         req.Slot.ViewKey,
+		"kind":         kind,
 		"excl":         req.Slot.ViewKey,
 		"name":         name,
 		"pic":          nullInt(req.PictureId),
@@ -241,13 +268,13 @@ func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.Desi
 				return nil, fmt.Errorf("%w: picture %d was placed elsewhere concurrently",
 					entity.ErrDesignPictureAlreadyInSlot, req.PictureId)
 			}
-			after, _, _ := slotByKey(ctx, db, req.TechCardId, req.Slot.ViewKey)
+			after, _, _ := slotByKey(ctx, db, req.TechCardId, kind, req.Slot.ViewKey)
 			return &after, fmt.Errorf("%w: slot was born concurrently", entity.ErrDesignSlotRevMismatch)
 		}
 		return nil, fmt.Errorf("failed to set design bench slot: %w", err)
 	}
 
-	after, ok, err := slotByKey(ctx, db, req.TechCardId, req.Slot.ViewKey)
+	after, ok, err := slotByKey(ctx, db, req.TechCardId, kind, req.Slot.ViewKey)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +293,7 @@ func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.Desi
 // a plate on rename, and two details a human called the same thing must still be two slots — so
 // the lazy-birth upsert deliberately does not apply here: two people naming a detail at the same
 // moment legitimately create two slots, and collapsing them would be the bug.
-func createDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet) (*entity.DesignBenchSlot, error) {
+func createDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, kind string) (*entity.DesignBenchSlot, error) {
 	if req.NewDetailName == "" {
 		return nil, fmt.Errorf("%w: a new detail slot needs a name", entity.ErrDesignDetailNameRequired)
 	}
@@ -275,12 +302,13 @@ func createDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBe
 	}
 	id, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO design_bench_slot
-			(tech_card_id, view_key, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
+			(tech_card_id, view_key, kind, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
 		VALUES
-			(:card, :view, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))`,
+			(:card, :view, :kind, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))`,
 		map[string]any{
 			"card": req.TechCardId,
 			"view": entity.DesignViewDetail,
+			"kind": kind,
 			"excl": "detail:" + uuid.NewString(),
 			"name": req.NewDetailName,
 			"pic":  nullInt(req.PictureId),
@@ -363,15 +391,29 @@ func revMismatch(slot entity.DesignBenchSlot, found bool, expected int) error {
 		entity.ErrDesignSlotRevMismatch, slot.SlotRev, expected)
 }
 
-func slotByKey(ctx context.Context, db dependency.DB, cardID int, exclusiveKey string) (entity.DesignBenchSlot, bool, error) {
+// slotByKey reads ONE slot by its FULL address — the card, the KIND and the exclusive key.
+//
+// ⚠ THE KIND IS PART OF THE PREDICATE, NOT OF THE RESULT. Before 0349 the address was
+// (card, exclusive_key) and the set was one-element by UNIQUE; after 0349 it is
+// (card, kind, exclusive_key), and dropping `kind` from the WHERE would silently make this a
+// LIST — `rows[0]` would then answer «the render of front» with the FLAT of front, or the other
+// way round, depending on insertion order. Nothing would fail; the wrong plate would just be
+// read, compared and CAS-ed. The comparison is made against the normalised kind so that rows
+// written before the migration (kind = 'flat' by DEFAULT) stay reachable by a caller that names
+// no kind at all.
+func slotByKey(ctx context.Context, db dependency.DB, cardID int, kind, exclusiveKey string) (entity.DesignBenchSlot, bool, error) {
+	kind = entity.DesignKindOrFlat(kind)
 	rows, err := storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db, `
-		SELECT * FROM design_bench_slot WHERE tech_card_id = :card AND exclusive_key = :excl`,
-		map[string]any{"card": cardID, "excl": exclusiveKey})
+		SELECT * FROM design_bench_slot
+		WHERE tech_card_id = :card AND kind = :kind AND exclusive_key = :excl`,
+		map[string]any{"card": cardID, "kind": kind, "excl": exclusiveKey})
 	if err != nil {
 		return entity.DesignBenchSlot{}, false, fmt.Errorf("failed to read design bench slot: %w", err)
 	}
 	if len(rows) == 0 {
-		return entity.DesignBenchSlot{ViewKey: exclusiveKey, ExclusiveKey: exclusiveKey, TechCardId: cardID}, false, nil
+		return entity.DesignBenchSlot{
+			ViewKey: exclusiveKey, Kind: kind, ExclusiveKey: exclusiveKey, TechCardId: cardID,
+		}, false, nil
 	}
 	return rows[0], true, nil
 }
@@ -437,7 +479,7 @@ func (s *Store) DeleteDetailSlot(ctx context.Context, slotID int) error {
 // detail slot. Untouched sides are simply absent — they are born on first placement.
 func listBenchSlots(ctx context.Context, db dependency.DB, cardID int) ([]entity.DesignBenchSlot, error) {
 	rows, err := storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db, `
-		SELECT * FROM design_bench_slot WHERE tech_card_id = :card ORDER BY view_key, id`,
+		SELECT * FROM design_bench_slot WHERE tech_card_id = :card ORDER BY kind, view_key, id`,
 		map[string]any{"card": cardID})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list design bench slots: %w", err)

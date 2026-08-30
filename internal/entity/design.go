@@ -148,20 +148,84 @@ const (
 	DesignSourceDrawn       = "drawn"
 )
 
-// Виды кадра.
+// Виды кадра. ОН ЖЕ СЛОВАРЬ ВТОРОЙ ОСИ ВЕРСТАКА: design_bench_slot.kind (0349) объявлен тем же
+// словарём намеренно — «род» у слота и у кадра обязан быть одним понятием, иначе рендер встанет
+// на технический лист.
 const (
 	DesignPictureKindFlat   = "flat"
 	DesignPictureKindRender = "render"
 	DesignPictureKindThreed = "threed"
 )
 
-// Виды прогона.
+// IsDesignPictureKind сообщает, известен ли род кадра. Словарь растёт, CHECK в схеме намеренно
+// нет — поэтому проверяет Go, и отказ называет значение, а не отдаёт сырой 1265.
+func IsDesignPictureKind(v string) bool {
+	return v == DesignPictureKindFlat || v == DesignPictureKindRender || v == DesignPictureKindThreed
+}
+
+// DesignKindOrFlat — ПУСТОЕ ЧИТАЕТСЯ КАК flat, ровно как DEFAULT 'flat' в 0349. Один способ
+// сказать «род не назван» на всех трёх ярусах (провод, Go, схема): иначе строка, написанная
+// старым клиентом, и строка, написанная новым, попали бы в РАЗНЫЕ слоты одного адреса.
+func DesignKindOrFlat(v string) string {
+	if v == "" {
+		return DesignPictureKindFlat
+	}
+	return v
+}
+
+// Виды прогона. `vector` приехал волной 2: векторизация — это ДЕНЬГИ, и у денег одна дверь, а не
+// отдельный RPC мимо бюджета (31 §решения).
 const (
 	DesignRunKindFlat      = "flat"
 	DesignRunKindRender    = "render"
 	DesignRunKindThreed    = "threed"
+	DesignRunKindVector    = "vector"
 	DesignRunKindDraftIdea = "draft_idea"
 )
+
+// IsDesignRunKind сообщает, известен ли род прогона.
+func IsDesignRunKind(v string) bool {
+	switch v {
+	case DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed,
+		DesignRunKindVector, DesignRunKindDraftIdea:
+		return true
+	}
+	return false
+}
+
+// DesignPictureKindOfRun — какого рода кадры рождает прогон этого рода. Вектор рождает ПЛОСКИЙ
+// кадр: SVG остаётся флэтом изделия, а не третьим родом верстака.
+func DesignPictureKindOfRun(runKind string) string {
+	switch runKind {
+	case DesignRunKindRender:
+		return DesignPictureKindRender
+	case DesignRunKindThreed:
+		return DesignPictureKindThreed
+	default:
+		return DesignPictureKindFlat
+	}
+}
+
+// Состояния попытки — СЛОВАРЬ ИЗ СХЕМЫ 0340 ДОСЛОВНО. `unknown` значит «деньги, возможно,
+// списаны, результата нет»; это единственное состояние, которое человек обязан прочитать в
+// истории, поэтому оно названо, а не выведено из пустоты.
+const (
+	DesignAttemptDispatching = "dispatching"
+	DesignAttemptAccepted    = "accepted"
+	DesignAttemptDelivered   = "delivered"
+	DesignAttemptFailed      = "failed"
+	DesignAttemptUnknown     = "unknown"
+)
+
+// IsDesignAttemptState сообщает, известно ли состояние попытки.
+func IsDesignAttemptState(v string) bool {
+	switch v {
+	case DesignAttemptDispatching, DesignAttemptAccepted, DesignAttemptDelivered,
+		DesignAttemptFailed, DesignAttemptUnknown:
+		return true
+	}
+	return false
+}
 
 // Статусы прогона.
 const (
@@ -253,6 +317,25 @@ var (
 	// целиком СЕЙЧАС именно для того, чтобы следующий исполнитель добавлял ФАЙЛЫ в пакет, а не
 	// правил шов в dependency.go и store.go повторно.
 	ErrDesignNotImplemented = errors.New("design: not implemented in this wave")
+
+	// ───────────────────────── отказы генеративной половины ─────────────────────────
+
+	// ErrDesignBudgetExceeded — дневной потолок не пускает прогон: `spent + reserved + оценка`
+	// вышло за `design_settings.daily_budget`. Проверка стоит ВНУТРИ той же транзакции, что и
+	// резерв, потому что «посмотрел, потом положил» пропускает два одновременных клика.
+	// FailedPrecondition на проводе: это не поломка запроса, а состояние дня.
+	ErrDesignBudgetExceeded = errors.New("design: budget_exceeded")
+	// ErrDesignClaimLost — воркер пришёл с claim_token, которого у строки уже нет: его лизу
+	// подмёл ReviveExpiredRuns либо строку перехватил другой воркер.
+	//
+	// ЭТО ОТКАЗ, А НЕ УСПЕХ, И ИМЕННО ОН СТЕРЕЖЁТ ЧУЖОЙ РЕЗУЛЬТАТ. Без токена в WHEREе
+	// CompleteRun/FailRun воркер с истёкшим захватом затёр бы картинки того, кто перехватил
+	// задание, — и оба ответа выглядели бы успешными.
+	ErrDesignClaimLost = errors.New("design: claim_lost")
+	// ErrDesignRunTerminal — прогон уже закрыт (done|failed|cancelled), и повторное закрытие
+	// его не двигает. Отдельно от ErrDesignClaimLost: «ты опоздал» и «строка уже кончилась» —
+	// разные новости, и воркер поступает с ними по-разному.
+	ErrDesignRunTerminal = errors.New("design: run_terminal")
 
 	// ───────────────────────── отказы атомарного минта ─────────────────────────
 	//
@@ -373,37 +456,40 @@ func DesignPlateMediaKind(viewKey string) TechCardMediaKind {
 
 // DesignRun — строка design_run (0340). Она же строка истории на экране полосы.
 type DesignRun struct {
-	Id                     int                 `db:"id"`
-	TechCardId             int                 `db:"tech_card_id"`
-	Kind                   string              `db:"kind"`
-	Status                 string              `db:"status"`
-	ClientRequestId        string              `db:"client_request_id"`
-	ProviderIdempotencyKey string              `db:"provider_idempotency_key"`
-	ProfileName            string              `db:"profile_name"`
-	ProfileVersion         int                 `db:"profile_version"`
-	Ask                    sql.NullString      `db:"ask"`
-	Params                 RawJSON             `db:"params"`
-	Inputs                 RawJSON             `db:"inputs"`
-	FitAtLaunch            sql.NullString      `db:"fit_at_launch"`
-	Rrev                   int                 `db:"rrev"`
-	RequestedOutputs       int                 `db:"requested_outputs"`
-	AttemptCount           int                 `db:"attempt_count"`
-	NextAttemptAt          sql.NullTime        `db:"next_attempt_at"`
-	ClaimToken             sql.NullString      `db:"claim_token"`
-	ClaimExpiresAt         sql.NullTime        `db:"claim_expires_at"`
-	PriceEstimate          decimal.NullDecimal `db:"price_estimate"`
-	PriceActual            decimal.NullDecimal `db:"price_actual"`
-	Currency               string              `db:"currency"`
-	Author                 string              `db:"author"`
-	CancelRequestedAt      sql.NullTime        `db:"cancel_requested_at"`
-	ArchivedAt             sql.NullTime        `db:"archived_at"`
-	ArchivedBy             sql.NullString      `db:"archived_by"`
-	ErrorCode              sql.NullString      `db:"error_code"`
-	LastError              sql.NullString      `db:"last_error"`
-	OutputText             sql.NullString      `db:"output_text"`
-	CreatedAt              time.Time           `db:"created_at"`
-	StartedAt              sql.NullTime        `db:"started_at"`
-	CompletedAt            sql.NullTime        `db:"completed_at"`
+	Id                     int            `db:"id"`
+	TechCardId             int            `db:"tech_card_id"`
+	Kind                   string         `db:"kind"`
+	Status                 string         `db:"status"`
+	ClientRequestId        string         `db:"client_request_id"`
+	ProviderIdempotencyKey string         `db:"provider_idempotency_key"`
+	ProfileName            string         `db:"profile_name"`
+	ProfileVersion         int            `db:"profile_version"`
+	Ask                    sql.NullString `db:"ask"`
+	Params                 RawJSON        `db:"params"`
+	Inputs                 RawJSON        `db:"inputs"`
+	// RerunOf — прогон, который повторяем (0348). FK НЕТ намеренно: читатель джойнит и на
+	// пустоту говорит «прогон удалён», а не роняет строку истории.
+	RerunOf           sql.NullInt32       `db:"rerun_of"`
+	FitAtLaunch       sql.NullString      `db:"fit_at_launch"`
+	Rrev              int                 `db:"rrev"`
+	RequestedOutputs  int                 `db:"requested_outputs"`
+	AttemptCount      int                 `db:"attempt_count"`
+	NextAttemptAt     sql.NullTime        `db:"next_attempt_at"`
+	ClaimToken        sql.NullString      `db:"claim_token"`
+	ClaimExpiresAt    sql.NullTime        `db:"claim_expires_at"`
+	PriceEstimate     decimal.NullDecimal `db:"price_estimate"`
+	PriceActual       decimal.NullDecimal `db:"price_actual"`
+	Currency          string              `db:"currency"`
+	Author            string              `db:"author"`
+	CancelRequestedAt sql.NullTime        `db:"cancel_requested_at"`
+	ArchivedAt        sql.NullTime        `db:"archived_at"`
+	ArchivedBy        sql.NullString      `db:"archived_by"`
+	ErrorCode         sql.NullString      `db:"error_code"`
+	LastError         sql.NullString      `db:"last_error"`
+	OutputText        sql.NullString      `db:"output_text"`
+	CreatedAt         time.Time           `db:"created_at"`
+	StartedAt         sql.NullTime        `db:"started_at"`
+	CompletedAt       sql.NullTime        `db:"completed_at"`
 
 	// Собирается читателем, не колонки.
 	Attempts []DesignRunAttempt `db:"-"`
@@ -458,9 +544,12 @@ type DesignPicture struct {
 	SourceClass    string         `db:"source_class"`
 	MixedInput     bool           `db:"mixed_input"`
 	LayerRev       int            `db:"layer_rev"`
-	HiddenAt       sql.NullTime   `db:"hidden_at"`
-	HiddenBy       sql.NullString `db:"hidden_by"`
-	CreatedAt      time.Time      `db:"created_at"`
+	// Selected — кадр помечен выбранным (0350, W-12). НЕ обратная сторона hidden_at: спрятать —
+	// убрать с глаз, выбрать — поднять над остальными; выбранных может быть несколько.
+	Selected  bool           `db:"selected"`
+	HiddenAt  sql.NullTime   `db:"hidden_at"`
+	HiddenBy  sql.NullString `db:"hidden_by"`
+	CreatedAt time.Time      `db:"created_at"`
 
 	// Media резолвится джойном на media(id) читателем полосы.
 	Media *MediaFull `db:"-"`
@@ -476,9 +565,13 @@ type DesignPicture struct {
 // ТО ЖЕ САМОЕ ОБЯЗАТЕЛЬНО В ОТКАЗЕ slot_rev_mismatch: в details едет текущее состояние слота, и
 // весь смысл этого отказа — показать человеку, ЧТО там стоит сейчас. Голый id этого не показывает.
 type DesignBenchSlot struct {
-	Id           int            `db:"id"`
-	TechCardId   int            `db:"tech_card_id"`
-	ViewKey      string         `db:"view_key"`
+	Id         int    `db:"id"`
+	TechCardId int    `db:"tech_card_id"`
+	ViewKey    string `db:"view_key"`
+	// Kind — ВТОРАЯ ОСЬ ВЕРСТАКА (0349): flat | render | threed. Адрес слота это ПАРА
+	// (род, вид), а не один вид: пока ось была одна, рендер фронта вытеснял флэт фронта, и
+	// технический лист печатал рендер. Пустое читается как flat — см. DesignKindOrFlat.
+	Kind         string         `db:"kind"`
 	ExclusiveKey string         `db:"exclusive_key"`
 	DetailName   sql.NullString `db:"detail_name"`
 	PictureId    sql.NullInt32  `db:"picture_id"`
@@ -558,21 +651,68 @@ type DesignEditLayer struct {
 	BaseMediaId sql.NullInt32 `db:"base_media_id"`
 	Rev         int           `db:"rev"`
 	Strokes     RawJSON       `db:"strokes"`
-	UpdatedBy   string        `db:"updated_by"`
-	UpdatedAt   time.Time     `db:"updated_at"`
+	// Origin — ОТКУДА У СЛОЯ ВЕКТОР (0350): drawn | imported | vectorised. Пустое читается как
+	// drawn — это правда про каждый слой до 0350, других способов родиться у него не было.
+	//
+	// ⚠ СЛОВАРЬ БЕРЁТСЯ С ПРОВОДА, А НЕ ИЗ ПРОЗЫ МИГРАЦИИ, ровно как у DesignSourceAIEdits:
+	// комментарий 0350 называет третье значение `imported_svg`, контракт
+	// (common.DesignEditLayer.origin и ImportDesignVectorRequest.origin) — `imported`. Клиент
+	// ветвится по проводу, значит побеждает провод; CHECK в схеме намеренно нет, и разойтись эти
+	// два написания могли бы только молча.
+	Origin string `db:"origin"`
+	// SourceMediaId — АВТОРИТЕТНЫЙ ВЕКТОРНЫЙ ФАЙЛ, проекцией которого является Strokes. Медиа
+	// держит файл, штрихи — его редактируемую проекцию, и обратно в байты они не разворачиваются:
+	// «скачать SVG» отдаёт ЭТО медиа, а не пересериализацию штрихов.
+	SourceMediaId sql.NullInt32 `db:"source_media_id"`
+	// SourcePictureId — растр, из которого получен вектор, когда он из растра получен. Пусто =
+	// файл пришёл извне полосы либо слой нарисован из пустоты. FK ставит SET NULL при исчезновении
+	// картинки: слой работоспособен и без родословной, а висящее число соврало бы.
+	SourcePictureId sql.NullInt32 `db:"source_picture_id"`
+	UpdatedBy       string        `db:"updated_by"`
+	UpdatedAt       time.Time     `db:"updated_at"`
+}
+
+// Словарь origin слоя правки — ПРОВОДНОЙ, см. DesignEditLayer.Origin.
+const (
+	DesignLayerOriginDrawn      = "drawn"
+	DesignLayerOriginImported   = "imported"
+	DesignLayerOriginVectorised = "vectorised"
+)
+
+// IsDesignImportableLayerOrigin — что ВОЛЬНО ПОДШИТЬ ImportDesignVector. `drawn` сюда не входит и
+// это не придирка: слой, нарисованный из пустоты, рождается SaveDesignEditLayer и импортировать
+// ему нечего — файла у него нет вовсе.
+func IsDesignImportableLayerOrigin(v string) bool {
+	return v == DesignLayerOriginImported || v == DesignLayerOriginVectorised
+}
+
+// DesignLayerOriginOrDrawn — ПУСТОЕ ЧИТАЕТСЯ КАК drawn, ровно как DEFAULT 'drawn' в 0350.
+func DesignLayerOriginOrDrawn(v string) string {
+	if v == "" {
+		return DesignLayerOriginDrawn
+	}
+	return v
 }
 
 // DesignReference — строка design_reference: какой стороне изделия отвечает референс на входе
 // генерации. Роль живёт в полосе, а не в документе: `kind` у медиа карточки уже занят тем, ЧЕМ
 // картинка является, и это настоящая вторая ось.
 type DesignReference struct {
-	Id         int       `db:"id"`
-	TechCardId int       `db:"tech_card_id"`
-	MediaId    int       `db:"media_id"`
-	Role       string    `db:"role"`
-	Ordinal    int       `db:"ordinal"`
-	SetBy      string    `db:"set_by"`
-	SetAt      time.Time `db:"set_at"`
+	Id         int    `db:"id"`
+	TechCardId int    `db:"tech_card_id"`
+	MediaId    int    `db:"media_id"`
+	Role       string `db:"role"`
+	// Note — ЧТО ИМЕННО ЭТА КАРТИНКА ДОБАВЛЯЕТ (0348, W-3): «только воротник», «ткань, а не крой».
+	// Едет к модели рядом с картинкой и замерзает в снимке входов как DesignInputRef.note.
+	//
+	// Живёт РЯДОМ С РОЛЬЮ, а не вместо неё: роль отвечает «какой стороне изделия отвечает этот
+	// референс» и питает ПОРЯДОК в промпте, записка — свободный текст человека. Восемь референсов
+	// без записок называют восемь сторон и ни одного намерения, а намерение и есть та половина,
+	// которая меняет ответ.
+	Note    sql.NullString `db:"note"`
+	Ordinal int            `db:"ordinal"`
+	SetBy   string         `db:"set_by"`
+	SetAt   time.Time      `db:"set_at"`
 }
 
 // DesignSettings — строка design_settings (singleton id=1).
@@ -607,6 +747,10 @@ type DesignBudget struct {
 type DesignSlotRef struct {
 	ViewKey string
 	SlotId  int
+	// Kind — род верстака, на котором живёт этот адрес (flat | render | threed). Пустое = flat,
+	// поэтому всякий существующий писатель, который род не именует, продолжает попадать ровно
+	// туда, куда попадал до 0349.
+	Kind string
 }
 
 // DesignBenchSlotSet — постановка, вытеснение либо unmark плиты.
@@ -628,6 +772,10 @@ type DesignUploadItem struct {
 	MediaId   int
 	GhostView string
 	SizeBytes int64
+	// Kind — РОД ЗАГРУЖАЕМОГО КАДРА (flat | render | threed). До волны 2 писатель хардкодил
+	// `flat`, и это означало ровно одно: рендер и 3D невозможно было завести руками вовсе
+	// (W-8), хотя ручная загрузка — единственный путь, который работает всегда. Пустое = flat.
+	Kind string
 }
 
 // DesignBatchRegister — один жест загрузки: пачка плюс её картинки, опционально с постановкой
@@ -677,6 +825,31 @@ type DesignEditLayerSave struct {
 	Actor       string
 }
 
+// DesignVectorImport — подшивка УЖЕ ЗАГРУЖЕННОГО векторного файла в полосу как слоя правки:
+// медиа держит авторитетный SVG, слой — его редактируемую проекцию, а SourceMediaId и есть ребро
+// между ними.
+//
+// ⚠ ЭТО НИЧЕГО НЕ ТРАТИТ, И В ЭТОМ ГРАНИЦА С ГЕНЕРАЦИЕЙ. Векторизация машиной — платный вызов
+// поставщика и идёт через StartRun с kind = vector; этот запрос подшивает файл, который уже
+// существует. Две двери для денег означали бы две проверки бюджета.
+//
+// ИДЕМПОТЕНТНОСТЬ ЗДЕСЬ — ПО (TechCardId, SourceMediaId), А НЕ ПО ClientRequestId, и это
+// вынужденно: у design_edit_layer (0343) колонки под запросный ключ нет вовсе, а 0350 её не
+// добавляла. Повтор после потерянного ответа приезжает с ТЕМ ЖЕ файлом — медиа загружено раньше и
+// его id у клиента на руках, — поэтому пара «карточка + файл» покрывает ровно тот случай, ради
+// которого идемпотентность и нужна. Пере-проверка живёт ВНУТРИ SERIALIZABLE-транзакции, где
+// обычный SELECT уже блокирует, поэтому гонка двух повторов закрыта, а не сглажена.
+type DesignVectorImport struct {
+	TechCardId      int
+	ClientRequestId string
+	SourceMediaId   int
+	SourcePictureId int
+	Origin          string
+	BaseMediaId     int
+	Strokes         json.RawMessage
+	Actor           string
+}
+
 // DesignEditLayerFlatten — регистрация уже растеризованного клиентом изображения как картинки
 // полосы. ExpectedRev ОБЯЗАТЕЛЕН: без него коллега сохраняет r4, а флэттен материализует его
 // под намерением того, кто видел r3.
@@ -694,8 +867,16 @@ type DesignReferenceRole struct {
 	TechCardId int
 	MediaId    int
 	Role       string
-	Ordinal    int
-	Actor      string
+	// Note — записка человека про ЭТУ картинку, пишется ТЕМ ЖЕ апсертом, что и роль: она лежит на
+	// той же строке, и второй глагол для неё был бы вторым писателем, способным сработать
+	// наполовину.
+	//
+	// АСИММЕТРИЯ С РОЛЬЮ НАМЕРЕННА. Пустая записка на строке, которая сохраняет роль, ОЧИЩАЕТ
+	// записку: записка — это текст, и пустой текст для неё настоящий ответ. Пустая РОЛЬ удаляет
+	// строку и уносит записку с собой, потому что строка И ЕСТЬ существование роли.
+	Note    string
+	Ordinal int
+	Actor   string
 }
 
 // DesignRunPage — страница истории. Курсор, а не смещение: строки рождаются В ГОЛОВЕ этого
@@ -765,6 +946,13 @@ type DesignBand struct {
 	// осталась бы без бейджа «· 2 hidden», которого клиенту нечем посчитать.
 	HiddenByBatch map[int]int
 
+	// HasFabricRender — у карточки есть ХОТЯ БЫ ОДИН НЕСПРЯТАННЫЙ кадр рода `render` (W-13).
+	// Считается в той же читающей транзакции по ВСЕЙ карточке, а не по загруженной странице:
+	// рендер вполне может лежать за потолком страницы, и посчитанный по ней флаг закрыл бы 3D
+	// ровно там, где оно законно. Гейт стоит на сервере в StartRun, это поле — его зеркало для
+	// экрана, чтобы кнопка не обещала того, за что сервер откажет.
+	HasFabricRender bool
+
 	Runs            []DesignRun
 	NextCursor      int
 	NextBatchCursor int
@@ -806,6 +994,9 @@ type DesignRunStart struct {
 	PriceEstimate    decimal.NullDecimal
 	Currency         string
 	Author           string
+	// RerunOf — прогон, который повторяем (W-7). Снимок входов собирает СЕРВЕР, а не клиент:
+	// клиентский снимок позволил бы истории утверждать входы, которых не было.
+	RerunOf int
 }
 
 // DesignRunStarted — строка прогона плюс бюджет ПОСЛЕ резерва, чтобы полоса двигалась вместе

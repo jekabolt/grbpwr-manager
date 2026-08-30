@@ -2021,6 +2021,10 @@ type (
 		// HidePicture is the only persistent verb for picture invisibility; its four guards read
 		// in the same transaction as the update.
 		HidePicture(ctx context.Context, pictureID int, hidden bool, actor string) (*entity.DesignPicture, error)
+		// SetPictureSelected marks a picture as CHOSEN, and un-marks it (W-12). It is NOT the
+		// other side of HidePicture — hidden says «do not show me this», selected says «this is
+		// the one» — and nothing is exclusive: many pictures may be chosen at once.
+		SetPictureSelected(ctx context.Context, pictureID int, selected bool, actor string) (*entity.DesignPicture, error)
 		// ArchiveRun flips a presentational, reversible flag on a history row.
 		ArchiveRun(ctx context.Context, runID int, archived bool, actor string) (*entity.DesignRun, error)
 		// SplitPicture files the crops of a composite as siblings under its own row. The byte
@@ -2031,6 +2035,10 @@ type (
 		// FlattenEditLayer files an already-rasterised image as a picture, carrying
 		// derived_from, source_class and layer_rev, under CAS on the layer's rev.
 		FlattenEditLayer(ctx context.Context, req entity.DesignEditLayerFlatten) (*entity.DesignPicture, error)
+		// ImportVector files an ALREADY-UPLOADED vector file as an edit layer: the media row keeps
+		// the authoritative SVG, the layer keeps its editable projection. IT SPENDS NOTHING —
+		// machine vectorisation is StartRun with kind = vector, and money has one door.
+		ImportVector(ctx context.Context, req entity.DesignVectorImport) (*entity.DesignEditLayer, error)
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)

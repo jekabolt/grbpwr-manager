@@ -33,7 +33,17 @@ const (
 	defaultBaseURL = "https://openrouter.ai/api/v1"
 	// defaultTimeout bounds a single generation call (LLM latency can be seconds).
 	defaultTimeout = 60 * time.Second
-	// maxResponseBytes caps how much of an API response we read (defensive).
+	// maxResponseBytes caps how much of an API response we read (defensive). It stays at 4 MiB
+	// because everything THIS package reads is text: a completion that big is already an order of
+	// magnitude past any prompt here, and raising it would only buy a bigger allocation on a
+	// 0.5 GiB box. What changed is what happens at the wall — see ErrResponseTooLarge: the cap
+	// refuses, it no longer trims in silence.
+	//
+	// GENERATED PICTURES DO NOT COME THROUGH HERE. A single base64 PNG is bigger than this whole
+	// ceiling, and it arrives on a DIFFERENT endpoint from a DIFFERENT catalogue — see
+	// internal/orimages, which carries its own (much larger, configurable) ceiling for exactly
+	// that reason. Raising this constant would not have made images fit; it would have made a
+	// text path allocate for a body it can never receive.
 	maxResponseBytes = 4 << 20 // 4 MiB
 	// maxOperations caps how many drafted operations we return (runaway guard).
 	maxOperations = 200
@@ -96,6 +106,37 @@ var ErrModelUnavailable = errors.New("openrouter: the configured model is not av
 // off is a short review and the verifier refuses it on its own terms; NO content means the budget
 // never reached the answer.
 var ErrBudgetExhausted = errors.New("openrouter: the model spent the whole completion budget without answering")
+
+// ErrResponseTooLarge is returned when the provider's response body exceeds the read ceiling.
+//
+// IT IS AN ERROR ON PURPOSE, AND THAT IS A BEHAVIOUR CHANGE. Until now the ceiling was an
+// io.LimitReader and nothing else: a body one byte over the cap came back as a TRUNCATED PREFIX,
+// which then failed to unmarshal as "unexpected end of JSON input" — a sentence that names the
+// wrong culprit (the provider's JSON is fine; ours is a knife). Worse, a prefix that happens to
+// parse would have been accepted as a complete answer, and a silently shortened answer is the one
+// failure mode nobody can see from the outside.
+//
+// So the cap now REFUSES rather than trims: too big is a fault with a name, and the name says
+// which knob (the ceiling) is the one to turn.
+var ErrResponseTooLarge = errors.New("openrouter: the provider's response exceeded the read ceiling")
+
+// readCapped reads at most limit bytes and REFUSES anything longer instead of handing back a
+// prefix. It reads limit+1 on purpose: that one extra byte is the entire difference between "the
+// body is exactly at the ceiling" and "the body is over it", and without it the two are
+// indistinguishable.
+//
+// `what` names the body in the error, so a log line says which of the package's two routes
+// (completion vs model probe) hit the wall.
+func readCapped(r io.Reader, limit int64, what string) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrResponseTooLarge, what, limit)
+	}
+	return body, nil
+}
 
 // Config is the OpenRouter client configuration. Bound in config/cfg.go; every
 // field is optional except APIKey (without which the client is disabled).
@@ -597,18 +638,28 @@ func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt s
 	return c.chat(ctx, req)
 }
 
-// chat performs one chat/completions request and returns the assistant message content plus the
-// response metadata (finish reason, token usage), or a clear error on transport failure, non-2xx
-// status, or an empty/malformed envelope.
+// chat performs one chat/completions request from the TEXT-ONLY request shape and returns the
+// assistant message content plus the response metadata (finish reason, token usage), or a clear
+// error on transport failure, non-2xx status, or an empty/malformed envelope.
 //
-// THIS IS THE ONLY REQUEST PATH IN THE PACKAGE — GenerateOperations, Complete and CompleteWithMeta
-// all funnel through it. A second one would be a second place for the auth header, the 404
-// classification and the response-size cap to drift apart.
+// GenerateOperations, Complete and CompleteWithMeta all funnel through it. The multimodal entry
+// point (see multimodal.go) has its OWN request struct — because the wire shape of `content` is
+// genuinely different there and merging the two would mean typing this one's Content as `any` —
+// but it shares the transport below, so the auth header, the 404 classification and the
+// response-size cap still live in exactly one place.
 func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, string, Usage, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", "", Usage{}, fmt.Errorf("openrouter: marshal request: %w", err)
 	}
+	return c.postChatCompletion(ctx, payload)
+}
+
+// postChatCompletion is THE ONLY PLACE THIS PACKAGE TALKS TO /chat/completions. It takes an
+// already-marshalled body precisely so the two request shapes (text-only chatRequest, multimodal
+// multimodalRequest) can differ in structure without duplicating the auth header, the status
+// classification, the size ceiling or the envelope rules.
+func (c *Client) postChatCompletion(ctx context.Context, payload []byte) (string, string, Usage, error) {
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -625,7 +676,7 @@ func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, string,
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	body, err := readCapped(resp.Body, maxResponseBytes, "chat/completions response")
 	if err != nil {
 		return "", "", Usage{}, fmt.Errorf("openrouter: read response: %w", err)
 	}
@@ -794,7 +845,7 @@ func (c *Client) checkModel(ctx context.Context, model string) error {
 		return fmt.Errorf("openrouter: model probe failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	body, err := readCapped(resp.Body, maxResponseBytes, "model probe response")
 	if err != nil {
 		return fmt.Errorf("openrouter: read model probe: %w", err)
 	}

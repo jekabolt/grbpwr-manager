@@ -2550,6 +2550,22 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/runs"};
   }
 
+  // GetDesignRun reads ONE run whole: its params, the server-assembled input snapshot, its attempts
+  // and its pictures. Neither read beside it can do this — GetDesignBand and ListDesignRuns page the
+  // feed, so a specific older row is reachable only by walking pages to it, and each page ships
+  // MediaFull for every row it crosses on the way.
+  //
+  // IT IS ALSO HOW A LIVE RUN IS WATCHED. A run in flight is one row changing; polling it through
+  // the band read costs the whole band — bench, versions, journal, budget, layers, a page of
+  // pictures — per tick, to observe one status string.
+  //
+  // AND IT IS WHAT A RERUN SHOWS BEFORE IT SPENDS ANYTHING: selecting an old run must draw its
+  // prompt, its pictures, its descriptions and its markup (W-7), which is exactly this row's
+  // snapshot and nothing else.
+  rpc GetDesignRun(GetDesignRunRequest) returns (GetDesignRunResponse) {
+    option (google.api.http) = {get: "/api/admin/design/run/{run_id}"};
+  }
+
   // GetDesignSheetVersion reads ONE frozen version whole: its plates, its callouts and its journal.
   // Without it, printing an older Rev.N, a QR that points at a specific issue, and checking the
   // paper on the factory floor against what was actually minted are all impossible — a QR on Rev.3
@@ -2607,6 +2623,23 @@ service AdminService {
   rpc HideDesignPicture(HideDesignPictureRequest) returns (HideDesignPictureResponse) {
     option (google.api.http) = {
       post: "/api/admin/design/picture/{picture_id}/hide"
+      body: "*"
+    };
+  }
+
+  // SetDesignPictureSelected marks a picture as CHOSEN (owner requirement W-12: «мы так же можем
+  // маркать 3д рендеры как выбранные»). It is a verb of its own and deliberately NOT a flag on
+  // HideDesignPicture: hidden says "do not show me this", selected says "this is the one" — the
+  // two are independent (a chosen picture can later be hidden), and folding them would make one
+  // gesture silently undo the other.
+  //
+  // Nothing is exclusive: the owner speaks in the plural, so many pictures of a kind may be chosen.
+  // ARTIFACTS reads the mark to decide what it offers for markup, which is why the field existed
+  // on the wire before this verb did — and why, until it landed, the mark was readable everywhere
+  // and settable nowhere.
+  rpc SetDesignPictureSelected(SetDesignPictureSelectedRequest) returns (SetDesignPictureSelectedResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/selected"
       body: "*"
     };
   }
@@ -2747,6 +2780,32 @@ service AdminService {
   rpc FlattenDesignEditLayer(FlattenDesignEditLayerRequest) returns (FlattenDesignEditLayerResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}/flatten"
+      body: "*"
+    };
+  }
+
+  // ImportDesignVector files an ALREADY-UPLOADED vector file into the band as an edit layer: the
+  // media row keeps the authoritative SVG, the layer keeps the editable projection of it, and
+  // DesignEditLayer.source_media_id is the edge between them.
+  //
+  // WITHOUT IT A FOREIGN SVG HAS NOWHERE TO LAND. `source_class = imported_svg` has been declared
+  // since Ф0 and written by nobody, because the band could hold rasters and strokes and no file in
+  // between.
+  //
+  // THE CLIENT PARSES, THE SERVER RECORDS THE PROVENANCE — the same division of labour
+  // FlattenDesignEditLayer already draws, and for the same reason: there is no SVG parser and no
+  // vector renderer anywhere in this repository, so the only honest producer of strokes is the
+  // canvas that is about to draw them.
+  //
+  // IT SPENDS NOTHING, AND THAT IS THE LINE BETWEEN IT AND GENERATION. Vectorising by machine is a
+  // paid provider call and goes through StartDesignRun with kind = vector; this verb only files a
+  // file that already exists. Two doors for the money would be two budget checks.
+  //
+  // Idempotent by client_request_id. InvalidArgument: an unknown or foreign media_id, an unknown
+  // origin, strokes_too_large (> 512 KB).
+  rpc ImportDesignVector(ImportDesignVectorRequest) returns (ImportDesignVectorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/vector"
       body: "*"
     };
   }
@@ -11506,6 +11565,17 @@ message DesignBenchSlotRef {
     // minted id. This is how every detail is addressed after its birth.
     int32 slot_id = 2;
   }
+  // WHICH BENCH the ref addresses: flat | render | threed. Empty = flat, so every caller written
+  // before the second axis existed keeps addressing the bench it meant.
+  //
+  // IT IS DELIBERATELY OUTSIDE THE ONEOF. The oneof answers «which slot», this answers «on which
+  // bench», and the two are independent: a render front and a flat front are two different slots
+  // and BOTH are addressed by view_key `front`. Folding kind into the oneof would make them
+  // alternatives to each other, which they are not.
+  //
+  // IGNORED when the ref addresses an existing slot by slot_id — a minted id already names its
+  // bench, and a kind disagreeing with it would be a contradiction nobody could adjudicate.
+  string kind = 3;
 }
 
 message GetDesignBandRequest {
@@ -11572,6 +11642,14 @@ message GetDesignBandResponse {
   // so a continuation that filtered would change the row set mid-pagination and silently drop or
   // duplicate rows around the seam.
   string next_page_token = 13;
+  // W-13 MIRRORED FOR THE INTERFACE: this card owns at least one fabric render that is not hidden,
+  // so the 3D door may be drawn open.
+  //
+  // THE GATE ITSELF IS ON THE SERVER — StartDesignRun refuses kind = threed without one — and this
+  // flag exists only so the band can draw the door closed instead of letting somebody click into a
+  // refusal. A client computing the same rule from what it was handed would be wrong by exactly the
+  // renders that are not on this page, which is the usual case for a card with any history.
+  bool has_fabric_render = 17;
 }
 
 message ListDesignRunsRequest {
@@ -11611,6 +11689,17 @@ message ListDesignRunsResponse {
   string next_page_token = 2; // empty when the history ends here
 }
 
+message GetDesignRunRequest {
+  int32 run_id = 1;
+}
+
+message GetDesignRunResponse {
+  // The run WITH its pictures, its attempts and its input snapshot resolved — the same shape a
+  // history page carries, so the answer drops straight into the row the client already drew instead
+  // of forcing it to merge two different shapes of the same row.
+  common.DesignRun run = 1;
+}
+
 message GetDesignSheetVersionRequest {
   int32 tech_card_id = 1;
   int32 version_number = 2; // the N of Rev.N; NotFound if this card never minted it
@@ -11627,14 +11716,32 @@ message StartDesignRunRequest {
   // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
   // one payment.
   string client_request_id = 2;
-  // flat | render | threed. `draft_idea` is REFUSED here with InvalidArgument: a text run executes
-  // inline and returns its answer, so it has its own verb (DraftDesignIdea) rather than a shared
-  // one that would return a pending row nobody ever polls.
+  // flat | render | threed | vector. `draft_idea` is REFUSED here with InvalidArgument: a text run
+  // executes inline and returns its answer, so it has its own verb (DraftDesignIdea) rather than a
+  // shared one that would return a pending row nobody ever polls.
+  //
+  // `vector` IS ACCEPTED HERE and has no verb of its own on purpose: machine vectorisation spends
+  // the key's money like every other kind, and money has exactly one door. Filing an SVG that
+  // already exists is the other thing entirely and is ImportDesignVector.
   string kind = 3;
   string ask = 4; // the delta phrase; may be empty
   // What is being asked for; at most 8 KB encoded. The INPUTS are not here and cannot be: the
   // server snapshots them itself, because provenance a caller supplies is a claim, not provenance.
   common.DesignRunParams params = 5;
+  // RERUN RUN N: repeat an earlier run with the inputs THAT RUN actually had. 0 = an ordinary run.
+  //
+  // A RUN NUMBER, NEVER A SNAPSHOT, and that is the entire design. The server re-reads run N's own
+  // frozen DesignInputSnapshot and assembles this run's inputs from it. A client that could post
+  // the inputs of a rerun could post inputs that never existed, and the history — the one place
+  // that answers «what did we actually send» — would degrade from evidence into a list of claims.
+  //
+  // `ask` and `params` still apply ON TOP: a rerun with a new delta phrase is the ordinary case,
+  // and it is what makes this a rerun rather than a replay. The resulting row carries
+  // DesignRun.rerun_of so the lineage is readable from the history alone.
+  //
+  // NotFound when the run does not exist or belongs to another card. InvalidArgument when the
+  // named run is a draft_idea — a text run has no picture inputs to repeat.
+  int32 rerun_of_run_id = 6;
 }
 
 message StartDesignRunResponse {
@@ -11673,6 +11780,15 @@ message HideDesignPictureResponse {
   common.DesignPicture picture = 1;
 }
 
+message SetDesignPictureSelectedRequest {
+  int32 picture_id = 1;
+  bool selected = 2; // false un-marks
+}
+
+message SetDesignPictureSelectedResponse {
+  common.DesignPicture picture = 1;
+}
+
 // DesignUploadItem is one already-uploaded file being filed into the band. The bytes went up
 // through UploadContentImage; this only says what the file IS.
 message DesignUploadItem {
@@ -11680,6 +11796,14 @@ message DesignUploadItem {
   // The view this file is GUESSED to be: front | back | side_l | side_r | detail. Empty = no guess.
   // A guess, never a fact — a human confirms it by putting the plate into a slot.
   string ghost_view = 2;
+  // WHAT THE FILE IS: flat | render | threed. Empty = flat. Unlike ghost_view this is a STATEMENT,
+  // not a guess — the uploader knows whether the file they are dragging in is a line drawing or a
+  // colour render, and nothing downstream can recover it from the pixels.
+  //
+  // IT EXISTS BECAUSE THE UPLOAD USED TO HARD-CODE `flat`. Manual upload is the one path in the
+  // band that works end to end, and it could file only one of the three kinds it is supposed to
+  // carry: a fabric render or a turntable frame could not be brought in by hand at all.
+  string kind = 3;
 }
 
 message RegisterDesignUploadRequest {
@@ -11849,6 +11973,34 @@ message FlattenDesignEditLayerResponse {
   common.DesignPicture picture = 1;
 }
 
+message ImportDesignVectorRequest {
+  int32 tech_card_id = 1;
+  // Idempotency: a retry after a lost response must not file the same SVG as a second layer.
+  string client_request_id = 2;
+  // FK media(id): the SVG itself, uploaded through UploadContentImage. It is the AUTHORITATIVE file
+  // — `download SVG` hands back this, never a re-serialisation of the strokes below.
+  int32 source_media_id = 3;
+  // FK design_picture(id): the raster this vector was traced FROM, when it was. 0 = the file came
+  // from outside the band and traces nothing here.
+  int32 source_picture_id = 4;
+  // imported | vectorised — where the file came from. `drawn` is NOT importable: a layer drawn from
+  // nothing is born by SaveDesignEditLayer with no base and has no file to import.
+  string origin = 5;
+  // FK media(id): the raster to draw the strokes over; 0 = none. Same meaning, and the same
+  // optionality, as SaveDesignEditLayerRequest.base_media_id.
+  int32 base_media_id = 6;
+  // The EDITABLE PROJECTION of the SVG, in the canvas's own stroke format, at most 512 KB — the
+  // same cap and the same encoding as SaveDesignEditLayer. Empty is legal and means «file the
+  // file»: the layer then holds the vector without an editable form of it yet.
+  bytes strokes = 7;
+}
+
+message ImportDesignVectorResponse {
+  // The layer as stored: origin and source_media_id set, rev = 1, strokes echoed. Its rev is what
+  // the next SaveDesignEditLayer must compare-and-set against.
+  common.DesignEditLayer layer = 1;
+}
+
 message SetDesignReferenceRoleRequest {
   int32 tech_card_id = 1;
   int32 media_id = 2; // FK media(id); must be a reference image the card holds
@@ -11856,6 +12008,15 @@ message SetDesignReferenceRoleRequest {
   // answer and must not require a second verb.
   string role = 3;
   int32 ordinal = 4; // order in the prompt; lower goes first
+  // The human's words about THIS reference — «only the collar», «the fabric, not the cut» (W-3).
+  // Written by the same upsert as the role, because it lives on the same row and a second verb for
+  // it would be a second write that could half-succeed.
+  //
+  // AN EMPTY NOTE ON A ROW THAT KEEPS ITS ROLE CLEARS THE NOTE — a note is text, and empty text is
+  // a real answer for it. That is NOT the rule `role` follows: an empty role deletes the row, and
+  // takes the note with it, because the row IS the role's existence. The asymmetry is deliberate;
+  // see common.DesignReference.
+  string note = 5;
 }
 
 message SetDesignReferenceRoleResponse {

@@ -3191,6 +3191,22 @@ message TechCardInsert {
   //   * field PRESENT, value ""    → CLEAR it (store NULL).
   //   * field PRESENT with a value → set it.
   optional string mood_note = 118;
+  // THE GARMENT'S OWN DESCRIPTION — what the thing IS, in the designer's words: «oversized boxy
+  // shirt, dropped shoulder, no placket» (W-3). It rides into EVERY design run's prompt beside the
+  // references, and it is frozen into each run's snapshot as DesignInputSnapshot.garment_note.
+  //
+  // IT IS NOT `concept` AND NOT `mood_note`, and the three must not be merged. `concept` is the
+  // intent behind the style and belongs to the document; `mood_note` is what the BOARD is about,
+  // read only by `draft the idea`; this is what the GARMENT is, read by every generation. Spending
+  // one field on all three would make editing the prompt edit the document's stated intent.
+  //
+  // OPTIONAL for the same load-bearing reason as `mood_note` above — the admin is an SPA, tabs
+  // survive deploys, and the card is saved WHOLE, so a bare proto3 string from an older bundle
+  // would arrive as "" and ERASE the description from a tab that never opened the DESIGN band:
+  //   * field ABSENT (null)        → LEAVE AS IS.
+  //   * field PRESENT, value ""    → CLEAR it (store NULL).
+  //   * field PRESENT with a value → set it.
+  optional string garment_description = 119;
   // revisions (34) removed as INPUT (Q1): the revision log is a server-stamped auto-journal, not a
   // client-supplied list — read it on the TechCard message (TechCard.revisions).
 

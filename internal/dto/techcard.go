@@ -997,25 +997,31 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// колонку. Голая proto3-строка от бандла, который про поле не знает, приехала бы как "" и
 		// стёрла бы заметку молча — карточка сохраняется целиком, а вкладки переживают деплой.
 		// Третья нога (IF(:mood_note_omitted, mood_note, :mood_note)) стоит в сторе.
-		MoodNote:           nullStringFromPb(pb.GetMoodNote()),
-		MoodNoteOmitted:    pb.MoodNote == nil,
-		SizeIds:            sizeIds,
-		Media:              media,
-		Callouts:           callouts,
-		Details:            details,
-		BomItems:           bomItems,
-		Construction:       construction,
-		Operations:         operations,
-		Labels:             labels,
-		Packaging:          packaging,
-		Costing:            costing,
-		Issues:             issues,
-		SizeQuantities:     sizeQuantities,
-		Signoffs:           signoffs,
-		Patterns:           patterns,
-		Pieces:             pieces,
-		PieceDxfAliases:    pieceDxfAliases,
-		PieceDxfAliasesSet: pieceDxfAliasesSet,
+		MoodNote:        nullStringFromPb(pb.GetMoodNote()),
+		MoodNoteOmitted: pb.MoodNote == nil,
+		// ОПИСАНИЕ ИЗДЕЛИЯ (W-3). Тот же verbatim-протокол и по той же причине, но цена молчания
+		// другая: эти слова уходят в КАЖДЫЙ прогон полосы DESIGN и замерзают в снимке входов.
+		// Голая proto3-строка от старого бандла приехала бы как "" и стёрла бы описание — и
+		// следующая генерация ушла бы к модели, ничего не зная об изделии.
+		GarmentDescription:        nullStringFromPb(pb.GetGarmentDescription()),
+		GarmentDescriptionOmitted: pb.GarmentDescription == nil,
+		SizeIds:                   sizeIds,
+		Media:                     media,
+		Callouts:                  callouts,
+		Details:                   details,
+		BomItems:                  bomItems,
+		Construction:              construction,
+		Operations:                operations,
+		Labels:                    labels,
+		Packaging:                 packaging,
+		Costing:                   costing,
+		Issues:                    issues,
+		SizeQuantities:            sizeQuantities,
+		Signoffs:                  signoffs,
+		Patterns:                  patterns,
+		Pieces:                    pieces,
+		PieceDxfAliases:           pieceDxfAliases,
+		PieceDxfAliasesSet:        pieceDxfAliasesSet,
 
 		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2). ABSENT is carried through as INVALID — «take the workshop
 		// default» — and an explicit 0 is carried through as a set zero. Deliberately NOT folded into
@@ -1384,6 +1390,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 
 	// Заметка мудборда — ПРИСУТСТВУЮЩИМ полем всегда, см. довод на месте присваивания.
 	moodNote := pbStringFromNull(tc.MoodNote)
+	// Описание изделия — тоже присутствующим полем всегда, по тому же доводу.
+	garmentDescription := pbStringFromNull(tc.GarmentDescription)
 
 	return &pb_common.TechCard{
 		Id:              int32(tc.Id),
@@ -1421,24 +1429,26 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			// причине: чтение не бывает «умолчавшим», а новый клиент возвращает круглым рейсом то,
 			// что прочитал, — значит он никогда не молчит про заметку по ошибке. Пустая колонка
 			// читается как "", и её круглый рейс — «очисти» поверх уже пустого, то есть ничего.
-			MoodNote:        &moodNote,
-			SizeIds:         sizeIds,
-			MoodboardMedia:  moodboardMedia,
-			TechnicalMedia:  technicalMedia,
-			Callouts:        callouts,
-			Details:         techCardDetailsToPb(tc.Details),
-			BomItems:        techCardBomItemsToPb(tc.BomItems, tc.LinkedMaterials),
-			Construction:    techCardConstructionToPb(tc.Construction),
-			Operations:      techCardOperationsToPb(tc.Operations),
-			Labels:          techCardLabelsToPb(tc.Labels),
-			Packaging:       techCardPackagingToPb(tc.Packaging),
-			Costing:         techCardCostingToPb(tc, fx),
-			Issues:          techCardIssuesToPb(tc.Issues),
-			SizeQuantities:  techCardSizeQuantitiesToPb(tc.SizeQuantities),
-			Signoffs:        techCardSignoffsToPb(tc.Signoffs),
-			Patterns:        techCardPatternsToPb(tc.Patterns),
-			Pieces:          techCardPiecesToPb(tc.Pieces),
-			PieceDxfAliases: techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
+			MoodNote: &moodNote,
+			// ОПИСАНИЕ ИЗДЕЛИЯ — ровно та же присутствующая-всегда форма, что у заметки выше.
+			GarmentDescription: &garmentDescription,
+			SizeIds:            sizeIds,
+			MoodboardMedia:     moodboardMedia,
+			TechnicalMedia:     technicalMedia,
+			Callouts:           callouts,
+			Details:            techCardDetailsToPb(tc.Details),
+			BomItems:           techCardBomItemsToPb(tc.BomItems, tc.LinkedMaterials),
+			Construction:       techCardConstructionToPb(tc.Construction),
+			Operations:         techCardOperationsToPb(tc.Operations),
+			Labels:             techCardLabelsToPb(tc.Labels),
+			Packaging:          techCardPackagingToPb(tc.Packaging),
+			Costing:            techCardCostingToPb(tc, fx),
+			Issues:             techCardIssuesToPb(tc.Issues),
+			SizeQuantities:     techCardSizeQuantitiesToPb(tc.SizeQuantities),
+			Signoffs:           techCardSignoffsToPb(tc.Signoffs),
+			Patterns:           techCardPatternsToPb(tc.Patterns),
+			Pieces:             techCardPiecesToPb(tc.Pieces),
+			PieceDxfAliases:    techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
 
 			// Ф3.2: absent on the wire when the card sets no requirement of its own, so a client can
 			// tell «take the workshop default» from a card that requires exactly 0.
