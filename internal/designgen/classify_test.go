@@ -38,6 +38,13 @@ func TestClassifyIsAMoneyDecision(t *testing.T) {
 		// We sent something unacceptable; a retry repeats it exactly.
 		{"vector bad request", recraft.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
 		{"meshy image count", meshy.ErrImageCount, false, CodeBadRequest, entity.DesignAttemptFailed},
+		// ЭТИХ ТРЁХ ЗДЕСЬ НЕ БЫЛО, И КАЖДЫЙ УХОДИЛ В ДЕФОЛТНУЮ ВЕТКУ — то есть читался как ПОГОДА
+		// и жёг все пять попыток на запросе, который провайдер уже отверг. Строка истории при этом
+		// говорила `provider_unavailable`: человек шёл смотреть статус поставщика вместо того,
+		// чтобы починить свой запрос.
+		{"meshy prompt over the ceiling", meshy.ErrPromptTooLong, false, CodeBadRequest, entity.DesignAttemptFailed},
+		{"meshy refused the request (4xx)", meshy.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
+		{"image request we built wrong", orimages.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
 		// Billed and useless: `unknown` is the schema's word for it and a person has to read it.
 		{"image returned nothing", orimages.ErrNoImages, false, CodeEmptyResponse, entity.DesignAttemptUnknown},
 		{"vector malformed", recraft.ErrInvalidResponse, false, CodeEmptyResponse, entity.DesignAttemptUnknown},

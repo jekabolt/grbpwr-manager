@@ -68,4 +68,23 @@
 // tell "the provider never saw it" from "the provider saw it and we lost the answer" is the worker,
 // which owns the attempt row and the task id. An HTTP-level retry loop hidden in here would pay
 // twice, off the books.
+//
+// # WHICH IS WHY EVERY FAULT THAT IS NOT WEATHER HAS A NAME
+//
+// The worker decides whether to spend another attempt by looking at the sentinel it gets back, and
+// its default is RETRYABLE — correctly, because a reset connection really is weather. So every
+// fault this provider reports that a retry cannot fix has to be named here, or it is silently
+// classified as a transient one and the whole attempt cap is spent reproducing it:
+//
+//   - 402 → ErrOutOfCredit. An empty balance, said in the vocabulary the other providers already
+//     use. Unnamed, a drained account reads as "the provider is unavailable".
+//   - 401/403 → ErrUnauthorized, and any other 4xx → ErrBadRequest: we sent something the provider
+//     will refuse identically next time. 5xx stays weather, which is what it is.
+//   - The two ceilings we can check ourselves — MaxImages and MaxTexturePrompt — are refused BEFORE
+//     the request leaves. A local refusal costs no round trip and cannot be mistaken for weather.
+//
+// And one fault points the other way: ErrTaskNotFound is terminal, but the first status lookup can
+// land before the provider's read path has caught up with the submit that just charged us. Await
+// therefore treats a 404 as "not yet" for notFoundGrace, and only then as the terminal fact —
+// see the constant.
 package meshy

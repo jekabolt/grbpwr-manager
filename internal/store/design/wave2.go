@@ -107,11 +107,15 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 				return fmt.Errorf("%w: client_request_id %q already opened a run of tech card %d",
 					entity.ErrDesignInvalidArgument, req.ClientRequestId, prior.TechCardId)
 			}
+			resumed, run, err := resumeHandlerRun(ctx, db, prior)
+			if err != nil {
+				return err
+			}
 			budget, err := loadBudget(ctx, db, s.Now())
 			if err != nil {
 				return err
 			}
-			out.Run, out.Budget, out.Idempotent = prior, budget, true
+			out.Run, out.Budget, out.Idempotent, out.Resumed = run, budget, true, resumed
 			return nil
 		}
 

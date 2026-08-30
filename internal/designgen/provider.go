@@ -154,3 +154,75 @@ func (p Providers) forKind(kind string) (Provider, error) {
 		return nil, fmt.Errorf("%w: unknown run kind %q", errRouteMissing, kind)
 	}
 }
+
+// ─────────────────────────── THE PRE-FLIGHT, IN ONE PLACE ───────────────────────────
+
+// KindRefusal is a pre-flight verdict in the shape a CALLER OUTSIDE THIS PACKAGE needs: the
+// sentence, plus the machine reason that is the very same code the history row would have carried
+// had the run been allowed to fail its way to it.
+//
+// It wraps the sentinel rather than replacing it, so classify() — and everything else that asks
+// errors.Is — keeps working on the worker's own path. RefusalReason is a METHOD rather than an
+// exported field read by an importer, so the API layer can pick the reason up through a one-method
+// interface and not depend on this package at all.
+type KindRefusal struct {
+	// Kind is the run kind that was asked for.
+	Kind string
+	// Reason is the machine word: output_not_storable, kind_not_available…
+	Reason string
+	err    error
+}
+
+func (r *KindRefusal) Error() string         { return r.err.Error() }
+func (r *KindRefusal) Unwrap() error         { return r.err }
+func (r *KindRefusal) RefusalReason() string { return r.Reason }
+
+// preflight is EVERY refusal that happens before an attempt row exists — that is, before any money
+// can move: no route wired, no credentials, nowhere to put what the route produces. It returns the
+// provider as well, because the pass needs it immediately afterwards and looking it up twice is how
+// two lookups come to disagree.
+//
+// ⚠ THIS IS THE SINGLE EXPRESSION BEHIND BOTH GUARDS — the worker's, and the door's (see
+// PreflightKind). It is computed from the ROUTE'S OWN Produces() crossed with the SINK'S OWN
+// Accepts(), never from a list of kind names: a hand-written list of "kinds that do not work" would
+// keep refusing after the sink learned the type, and would keep accepting after a route started
+// returning a new one. Because this is a computation, the refusal disappears BY ITSELF the day the
+// sink can store the output — with no edit here and none at the door.
+func (p Providers) preflight(sink MediaSink, kind string) (Provider, error) {
+	refuse := func(err error) error {
+		return &KindRefusal{Kind: kind, Reason: classify(err).Code, err: err}
+	}
+	prov, err := p.forKind(kind)
+	if err != nil {
+		return nil, refuse(err)
+	}
+	if !prov.Enabled() {
+		return nil, refuse(fmt.Errorf("%w: %s", errProviderDisabled, prov.Name()))
+	}
+	if sink == nil {
+		// A worker cannot reach this (New refuses a nil bucket); a caller assembling the gate by
+		// hand can. "I cannot tell whether the output is storable" must not read as "it is".
+		return nil, refuse(fmt.Errorf("%w: %s has no sink to store its output", errSinkUnsupported, prov.Name()))
+	}
+	for _, ct := range prov.Produces() {
+		if !sink.Accepts(ct) {
+			// ⚠ THE GUARD THAT SAVES REAL MONEY. A route whose output the sink cannot store would
+			// otherwise be paid for on every pass and refused by the upload every single time —
+			// five times per run, for as long as the mismatch lives.
+			return nil, refuse(fmt.Errorf("%w: %s returns %s", errSinkUnsupported, prov.Name(), ct))
+		}
+	}
+	return prov, nil
+}
+
+// PreflightKind is the DOOR'S copy of the question the pass asks first: would a run of this kind be
+// refused for free, before any money moved?
+//
+// It exists so the handler can refuse BEFORE it reserves the day's budget instead of after. The
+// refusal it hands back is not a second opinion — it is the same call, on the same providers and
+// the same sink, that the worker will make a tick later; the two cannot drift because there is only
+// one of them. A nil error means the pass would get as far as paying.
+func (w *Worker) PreflightKind(kind string) error {
+	_, err := w.providers.preflight(w.sink, kind)
+	return err
+}

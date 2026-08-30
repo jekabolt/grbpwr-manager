@@ -159,9 +159,14 @@ func TestOpenRouter_ErrorTranslation(t *testing.T) {
 		{http.StatusNotFound, ErrModelUnavailable},
 		{http.StatusTooManyRequests, ErrRateLimited},
 		{http.StatusBadGateway, ErrProviderFailure},
-		// HONEST GAP: the shared client does not classify 401/402, so they arrive as "we do not
-		// know". The fix belongs in internal/orimages, not in a substring match here.
-		{http.StatusUnauthorized, ErrProviderFailure},
+		// THIS LINE USED TO EXPECT ErrProviderFailure, and the comment beside it explained that the
+		// shared client could not tell a rejected key from weather. That stopped being true in the
+		// same wave — orimages classifies 401/403 and 402 now — but the test kept demanding the old
+		// answer, so the package was green while every vector run against a revoked key burned four
+		// retries and was filed as «the provider is unavailable».
+		{http.StatusUnauthorized, ErrUnauthorized},
+		{http.StatusForbidden, ErrUnauthorized},
+		{http.StatusPaymentRequired, ErrInsufficientCredits},
 	}
 	for _, tc := range cases {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {

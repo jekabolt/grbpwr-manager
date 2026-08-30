@@ -122,10 +122,15 @@ func promptWithNegative(prompt, negative string) string {
 // of ImageToImage sees ONE error vocabulary regardless of which route spent the money.
 //
 // HONEST GAP: the shared client does not classify 401 / 402 / 400 — they arrive as a bare error and
-// land in ErrProviderFailure here, i.e. "we do not know whether it was billed". A rejected key and
-// an exhausted balance therefore read as weather on this route, where the direct route names them.
-// The fix belongs in internal/orimages, not in a substring match here: matching the provider's
-// prose is exactly how a reworded sentence silently reclassifies a fault.
+// THIS PARAGRAPH USED TO SAY the shared client cannot tell a rejected key from weather, and that
+// the fix belonged in internal/orimages rather than here. That was true when it was written and
+// stopped being true in the same wave: orimages now classifies 401/403 as ErrUnauthorized and 402
+// as ErrOutOfCredit. The rationale outlived its cause, and while it stood, every vector run against
+// a revoked key burned four retries over eight minutes and was filed as «provider unavailable» —
+// so the person on duty would go looking at the provider instead of at the key.
+//
+// The mapping below is by SENTINEL, never by the provider's prose: matching a sentence is how a
+// reworded message silently reclassifies a fault.
 func translateORError(err error) error {
 	switch {
 	case err == nil:
@@ -134,6 +139,10 @@ func translateORError(err error) error {
 		return fmt.Errorf("%w: %v", ErrNotConfigured, err)
 	case errors.Is(err, orimages.ErrModelUnavailable):
 		return fmt.Errorf("%w: %v", ErrModelUnavailable, err)
+	case errors.Is(err, orimages.ErrUnauthorized):
+		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	case errors.Is(err, orimages.ErrOutOfCredit):
+		return fmt.Errorf("%w: %v", ErrInsufficientCredits, err)
 	case errors.Is(err, orimages.ErrRateLimited):
 		return fmt.Errorf("%w: %v", ErrRateLimited, err)
 	case errors.Is(err, orimages.ErrNoImages):

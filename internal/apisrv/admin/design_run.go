@@ -7,13 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -120,6 +121,62 @@ func (s *Server) designGenerationGate() error {
 		designGenerationDisabledMsg, nil)
 }
 
+// ─────────────────── ВТОРЫЕ ВОРОТА: РОД, КОТОРЫЙ ВСЁ РАВНО НЕ ДОЕДЕТ ───────────────────
+
+// designKindRefusal — то единственное, что дверь хочет знать об ошибке ворот: МАШИННУЮ ПРИЧИНУ.
+//
+// Объявлено интерфейсом, а не импортом типа воркера, намеренно: этот ярус не должен зависеть от
+// пакета генерации ради одного слова. Ошибка, которая метод не реализует, — тоже ошибка: причина
+// тогда общая, а отказ всё равно происходит.
+type designKindRefusal interface{ RefusalReason() string }
+
+// designReasonKindUnavailable — общая машинная причина, когда ворота отказали, но своей причины не
+// назвали. Совпадает со словарём `design_run.error_code` (designgen.CodeKindNotAvailable): клиент
+// разбирает одни и те же слова, откуда бы отказ ни пришёл.
+const designReasonKindUnavailable = "kind_not_available"
+
+// SetDesignKindGate вешает на дверь ПРОВЕРКУ ВОЗМОЖНОСТЕЙ прогона — ровно тот предполётный
+// вопрос, который воркер задаёт первым: «этот прогон вообще может доехать?»
+//
+// ⚠ ЗАЧЕМ ЭТО ОТДЕЛЬНЫЕ ВОРОТА, А НЕ ЕЩЁ ОДНА СТРОЧКА В ФЛАГЕ. StartDesignRun РЕЗЕРВИРУЕТ ДЕНЬГИ:
+// строка прогона заводится с price_estimate, и резерв держится до полуночи или до терминального
+// перехода. Род, чей выход некуда положить (или чей маршрут не подключён), был бы принят, оплачен
+// резервом и через тик воркера гарантированно провален — по разу за каждый клик. Отказ обязан
+// стоять ДО резерва.
+//
+// ⚠ ЗДЕСЬ НЕТ И НЕ ДОЛЖНО БЫТЬ СПИСКА РОДОВ. Функция приходит из воркера и считает ответ из
+// возможностей маршрута и приёмника (Produces() × Accepts()). Список имён родов, зашитый в этом
+// файле, разошёлся бы с реальностью молча — и в ту, и в другую сторону: он продолжал бы отказывать
+// после того, как хранилище научилось типу, и продолжал бы пропускать после того, как маршрут стал
+// возвращать новый. Считаемый ответ гаснет САМ.
+//
+// Звать ДО начала обслуживания, рядом с SetDesignGenerationEnabled: поле читается запросами.
+func (s *Server) SetDesignKindGate(gate func(kind string) error) { s.designKindGate = gate }
+
+// designKindGateCheck — ворота рода. Молчат, когда ворот не повесили (см. поле designKindGate:
+// сервер без них — это сервер с выключенным флагом денег, который отказал строчкой выше).
+func (s *Server) designKindGateCheck(kind string) error {
+	if s.designKindGate == nil {
+		return nil
+	}
+	err := s.designKindGate(kind)
+	if err == nil {
+		return nil
+	}
+	reason := designReasonKindUnavailable
+	var named designKindRefusal
+	if errors.As(err, &named) {
+		reason = named.RefusalReason()
+	}
+	// FailedPrecondition, а не InvalidArgument: запрос правильный, не готова СИСТЕМА — ключа нет,
+	// маршрут не подключён, хранилище не умеет такой файл. Тот же код, что у флага и у W-13,
+	// потому что это та же новость: «сейчас — нельзя», а не «вы прислали ерунду».
+	return designRefusal(codes.FailedPrecondition, reason,
+		fmt.Sprintf("a %s run cannot be started: %s. Nothing was reserved and nothing was charged",
+			kind, err.Error()),
+		map[string]string{"kind": kind})
+}
+
 // ─────────────────────────── цена до клика ───────────────────────────
 
 // designPriceEstimate — ОЦЕНКА, А НЕ КОТИРОВКА, и она названа оценкой вслух (34-PLAN §5.4;
@@ -130,14 +187,112 @@ func (s *Server) designGenerationGate() error {
 // на терминальном переходе. Поэтому оценка обязана быть скорее завышенной, чем заниженной:
 // заниженная пропускает за дневной потолок больше прогонов, чем владелец согласился оплатить.
 //
+// ⚠ КАЖДОЕ ЧИСЛО ЗДЕСЬ — ВЕРХНЯЯ ГРАНИЦА РОДА, А НЕ ЕГО ОЖИДАНИЕ, И ЭТО НЕСУЩЕЕ РЕШЕНИЕ.
+//
+// ЧТО БЫЛО. Вектор резервировал $0.04, а собственная константа провайдерского пакета
+// (recraft.Tier.EstimatedUSD) говорит $0.08 за стандартный тир и $0.30 за pro — то есть дневной
+// потолок пропускал ВДВОЕ больше трат, чем с владельцем согласовано, и делал это молча. Картинка
+// же стоила плоскую константу БЕЗ члена качества вовсе, хотя дил DESIGN_IMAGE_QUALITY — «the
+// single largest multiplier on what a press costs» (designgen.Config.ImageQuality), и на `high`
+// кадр стоит вчетверо против той константы. Обе поломки — один класс: рядом с местом списания
+// лежала СВОЯ копия цены, а две копии расходятся в тот день, когда правят одну.
+//
+// ЧТО СТАЛО. Там, где у списания есть СОБСТВЕННЫЙ источник числа, оценка ВЫВОДИТСЯ из него
+// (вектор — из recraft.Tiers()), а не повторяет его. Там, где источника нет — картинку тарифицирует
+// сам провайдер, и локальной таблицы цен у неё не существует, — оценка берёт САМОЕ ДОРОГОЕ
+// положение дила, и связь с дилом становится не нужна: покрыто любое.
+//
+// ⚠ ПОЧЕМУ ПОТОЛОК, А НЕ ЧТЕНИЕ ДИЛА. Чтобы резерв следовал за DESIGN_IMAGE_QUALITY, дверь должна
+// прочитать ту же настройку, что читает воркер, — а «ту же» значит из ОДНОГО выражения, а не из
+// двух чтений одной переменной (см. SetDesignGenerationEnabled: настройка едет из TOML И из среды,
+// и второе чтение os.Getenv молча разошлось бы с первым на любом деплое, который задал её файлом).
+// Второй читатель дила — это второе число, ровно то, что здесь и чинится. Потолок читателя не
+// заводит вовсе. Платит за это только ОДНОВРЕМЕННОСТЬ: резерв висит от старта прогона до его
+// терминального перехода и снимается целиком, а в дневной потолок после этого входит ФАКТ
+// (`spent`), — то есть завышенная оценка сужает очередь в полёте на минуты и не отнимает у дня ни
+// цента.
+//
 // ⚠ ЦИФРЫ ЖДУТ ВЛАДЕЛЬЦА (34-PLAN §6). До тех пор это правдоподобная догадка в долларах, и она
 // стоит здесь одной таблицей ровно затем, чтобы её было где заменить одной правкой.
 var designPriceEstimate = map[string]decimal.Decimal{
-	entity.DesignRunKindFlat:      decimal.RequireFromString("0.04"),
-	entity.DesignRunKindRender:    decimal.RequireFromString("0.08"),
-	entity.DesignRunKindThreed:    decimal.RequireFromString("0.60"),
-	entity.DesignRunKindVector:    decimal.RequireFromString("0.04"),
+	entity.DesignRunKindFlat:   designImageMediumUSD.Mul(designImageQualityCeiling),
+	entity.DesignRunKindRender: designRenderMediumUSD.Mul(designImageQualityCeiling),
+	// 3D: ~30 кредитов Meshy по ~$0.02 (meshy.defaultCreditUSD и его же комментарий). Вывести это
+	// число из пакета нечем и не нужно: сколько кредитов съест задание, до сабмита не знает и сам
+	// провайдер, а курс кредита — env-дил (MESHY_CREDIT_USD), которого дверь не видит. Списание
+	// считает meshy.CostUSD по ФАКТИЧЕСКИ съеденным кредитам; здесь стоит потолок обычного задания.
+	entity.DesignRunKindThreed: decimal.RequireFromString("0.60"),
+	// ВЕКТОР — ЕДИНСТВЕННЫЙ РОД, У КОТОРОГО ЦЕНА ОПУБЛИКОВАНА ПАКЕТОМ СПИСАНИЯ. Берётся ИМЕННО ОНА.
+	entity.DesignRunKindVector:    designVectorCeilingUSD(),
 	entity.DesignRunKindDraftIdea: decimal.RequireFromString("0.02"),
+}
+
+// Базовые цены картиночных родов НА `medium` — том положении дила, которое стоит в
+// designgen.DefaultConfig(). Флэт и рендер различаются здесь исторической догадкой (§6), а не
+// прайсом провайдера: он тарифицирует выходные токены, а не жанр картинки.
+var (
+	designImageMediumUSD  = decimal.RequireFromString("0.04")
+	designRenderMediumUSD = decimal.RequireFromString("0.08")
+)
+
+// designImageQualityFactor — ДИЛ ЦЕНЫ КАРТИНКИ (DESIGN_IMAGE_QUALITY, он же
+// designgen.Config.ImageQuality), выраженный множителем к `medium`.
+//
+// Множитель — это КОЛИЧЕСТВО ВЫХОДНЫХ ТОКЕНОВ, а не ставка: каталог тарифицирует один токен, а
+// качество решает, сколько их в картинке. На gpt-image-1 замерено 272 / 1056 / 4160 токенов на
+// 1024² для low / medium / high, отсюда ¼ и ×4 (см. orimages: «`high` roughly four times
+// `medium`»; per-quality токенов для gpt-image-2 провайдер не публикует, а деньги на нём поехали
+// ВНИЗ — −25% за выходной токен, — так что старые множители над новой моделью покрывают с запасом).
+//
+// ВСЕ ЧЕТЫРЕ ПОЛОЖЕНИЯ НАЗВАНЫ, ХОТЯ СЕГОДНЯ ЧИТАЕТСЯ ТОЛЬКО МАКСИМУМ. Таблица — это то место, где
+// дил станет читаться, если дверь однажды его увидит; тот, кто это сделает, возьмёт множитель
+// отсюда, а не напишет рядом второй.
+var designImageQualityFactor = map[string]decimal.Decimal{
+	"low":    decimal.RequireFromString("0.25"),
+	"medium": decimal.RequireFromString("1"),
+	"high":   decimal.RequireFromString("4"),
+	// `auto` ОТДАЁТ ВЫБОР ПРОВАЙДЕРУ, поэтому стоит столько же, сколько самое дорогое положение:
+	// оценка не вправе спорить с решением, которого она не принимала.
+	"auto": decimal.RequireFromString("4"),
+}
+
+// designImageQualityCeiling — самое дорогое положение дила. Считается ПО ТАБЛИЦЕ, а не вписано
+// числом: положение, добавленное в таблицу завтра, поднимает потолок само.
+var designImageQualityCeiling = designMaxFactor(designImageQualityFactor)
+
+func designMaxFactor(m map[string]decimal.Decimal) decimal.Decimal {
+	out := decimal.Zero
+	for _, v := range m {
+		if v.GreaterThan(out) {
+			out = v
+		}
+	}
+	if out.IsZero() {
+		// Пустая таблица — это не «бесплатно»: множитель 1 оставляет базовую цену как есть.
+		return decimal.NewFromInt(1)
+	}
+	return out
+}
+
+// designVectorCeilingUSD — САМЫЙ ДОРОГОЙ ИЗ ОПУБЛИКОВАННЫХ ТАРИФОВ ВЕКТОРА, взятый из
+// recraft.Tier.EstimatedUSD() — того самого числа, которое провайдерский пакет называет «the number
+// to RESERVE before the call».
+//
+// ⚠ ПОЧЕМУ ПО МАКСИМУМУ, А НЕ ПО ТОМУ ТИРУ, КОТОРЫЙ СЕГОДНЯ ЗОВЁТ ВОРКЕР. Тир на проводе не
+// выбирается вовсе: designgen/vector.go зашивает recraft.TierVector, то есть $0.08. Но слаг ЭТОГО
+// тира переопределяется средой (RECRAFT_MODEL_VECTOR), и деплой, направивший стандартный тир на
+// pro-модель, получил бы списание $0.30 против резерва $0.08 — резерв ниже факта, ровно то, что
+// здесь чинится. Плюс тот день, когда выбор тира появится на проводе: оценка, привязанная к
+// зашитому тиру, промолчала бы. Перебор по recraft.Tiers() гасит оба случая сам и поднимется сам,
+// если у провайдера появится третий тир.
+func designVectorCeilingUSD() decimal.Decimal {
+	out := decimal.Zero
+	for _, t := range recraft.Tiers() {
+		if v := decimal.NewFromFloat(t.EstimatedUSD()); v.GreaterThan(out) {
+			out = v
+		}
+	}
+	return out
 }
 
 // designEstimateFor — оценка задания целиком: цена одного выхода на число запрошенных выходов.
@@ -167,6 +322,28 @@ const (
 	// designMaxAskRunes — потолок дельта-фразы. Строка `ask` едет в промпт и в историю; без
 	// потолка одно нажатие вставляет туда целую книгу.
 	designMaxAskRunes = 4000
+	// designMaxGarmentNoteRunes — потолок ОПИСАНИЯ ИЗДЕЛИЯ (tech_card.garment_description, W-3).
+	//
+	// ⚠ ЭТО ТОТ ЖЕ ПОТОЛОК, ЧТО У `ask`, И ПО ТОЙ ЖЕ ПРИЧИНЕ: оба — слова человека, оба уезжают в
+	// промпт и оба ЗАМЕРЗАЮТ в снимке прогона (designAssembleInputs пишет описание в
+	// `inputs.garment_note` копией, а не джойном). Разница ровно одна: `ask` пишется этой дверью, а
+	// описание — сейвом карточки, поэтому здесь стоит ОТКАЗ ЗАПУСКА, а не отказ записи.
+	//
+	// ⚠ ПОЧЕМУ ОТКАЗ, А НЕ ОБРЕЗКА. Молчаливая обрезка уже ловилась в этой же волне как отдельный
+	// дефект: снимок обязан говорить, ЧТО УШЛО В МОДЕЛЬ, а обрезанная копия утверждала бы слова,
+	// которых человек не писал, — и утверждала бы навсегда. Колонка объявлена TEXT, то есть до 64 KB
+	// одного описания, а весь снимок ограничен теми же 64 KB: без этого потолка одно описание
+	// съедало бы снимок целиком и отказ приходил бы про БАЙТЫ СНИМКА — про число, которого человек
+	// не видит и починить не может.
+	designMaxGarmentNoteRunes = 4000
+	// designMaxRefNoteRunes — потолок записки НА ОДНОЙ КАРТИНКЕ (design_reference.note, W-3:
+	// «только воротник», «ткань, а не крой»).
+	//
+	// МЕНЬШЕ, ЧЕМ У ОПИСАНИЯ, И ЭТО СЧИТАЕТСЯ, А НЕ ВКУС: записок в снимке до designMaxInputRefs
+	// штук, и они делят те же 64 KB с выносками и плитами. 24 × 1000 рун кириллицы — это ~48 KB,
+	// то есть обычный снимок остаётся далеко от стены, а патологический по-прежнему ловится
+	// потолком байтов.
+	designMaxRefNoteRunes = 1000
 )
 
 // Раскладки кадра — словарь DesignRunParams.layout, повторённый здесь потому, что в сторе он
@@ -218,6 +395,12 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		return nil, status.Error(codes.InvalidArgument,
 			"a text run has its own verb: call DraftDesignIdea, which executes inline and returns its answer")
 	}
+	// ⚠ ДО ЧТЕНИЙ И ДО РЕЗЕРВА. Род, чей маршрут не подключён, не имеет ключа или чей выход
+	// некуда положить, не должен заводить строку: она зарезервировала бы деньги дня и через тик
+	// воркера гарантированно провалилась. Ответ считает воркер из своих же возможностей.
+	if err := s.designKindGateCheck(kind); err != nil {
+		return nil, err
+	}
 	ask := strings.TrimSpace(req.GetAsk())
 	if len([]rune(ask)) > designMaxAskRunes {
 		return nil, status.Errorf(codes.InvalidArgument,
@@ -233,6 +416,14 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		slog.Default().ErrorContext(ctx, "design run: cannot load the tech card",
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot load the tech card")
+	}
+	// ОПИСАНИЕ ИЗДЕЛИЯ МЕРЯЕТСЯ ЗДЕСЬ, ХОТЯ ПИШЕТСЯ НЕ ЗДЕСЬ: оно замерзает в снимке ЭТОГО прогона
+	// и едет в промпт, а сейв карточки о промпте ничего не знает. См. designMaxGarmentNoteRunes.
+	if n := len([]rune(card.GarmentDescription.String)); n > designMaxGarmentNoteRunes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"the card's garment description is %d characters; the ceiling is %d — it is copied into "+
+				"this run's frozen snapshot and into the prompt, so shorten it on the card first",
+			n, designMaxGarmentNoteRunes)
 	}
 	// runLimit = 1: истории здесь не нужно ни строки, нужны верстак, референсы и флаг рендера.
 	band, err := s.repo.Design().GetBand(ctx, cardID, 1)
@@ -265,6 +456,33 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err != nil {
 		return nil, err
 	}
+	// ГРАНИЦА КАРТОЧКИ — ДО ДЕНЕГ. Оба списка приезжают с провода и оба уезжают ПОСТАВЩИКУ:
+	// designgen/snapshot.go собирает ссылки прогона из плит, референсов, `extra_input_media_ids` И
+	// `colour.fabric_media_id`. Проверяются оба, потому что дефект у них один.
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.extra_input_media_ids",
+		designInt32sToInts(params.GetExtraInputMediaIds())...); err != nil {
+		return nil, err
+	}
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.colour.fabric_media_id",
+		int(params.GetColour().GetFabricMediaId())); err != nil {
+		return nil, err
+	}
+
+	src := designInputSources{
+		Kind:   kind,
+		Card:   card,
+		Refs:   band.References,
+		Bench:  band.Bench,
+		Params: params,
+	}
+	inputs, fitAtLaunch, err := s.designRunInputs(ctx, src, parent)
+	if err != nil {
+		return nil, err
+	}
+	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
+	// иначе в колонку уедет то, что прислал клиент.
+	designStampSourcePictures(kind, params, designRunPlates(src, parent))
+
 	paramsJSON, err := designMarshalJSON(params)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "design run: params did not encode",
@@ -276,16 +494,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 			"params encode to %d bytes; the ceiling is %d", len(paramsJSON), designMaxParamsBytes)
 	}
 
-	inputs, fitAtLaunch, err := s.designRunInputs(ctx, designInputSources{
-		Kind:   kind,
-		Card:   card,
-		Refs:   band.References,
-		Bench:  band.Bench,
-		Params: params,
-	}, parent)
-	if err != nil {
-		return nil, err
-	}
 	inputsJSON, err := designMarshalJSON(inputs)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "design run: the input snapshot did not encode",
@@ -359,6 +567,109 @@ func (s *Server) designRerunParent(ctx context.Context, cardID, parentID int) (*
 	return parent, nil
 }
 
+// ─────────────────── ЧУЖОЕ МЕДИА: ГРАНИЦА КАРТОЧКИ ───────────────────
+
+// Слова словаря MediaUsageRef.kind, по которым ЧИТАЕТСЯ ПРИНАДЛЕЖНОСТЬ. Они объявлены контрактом
+// (admin.proto, MediaUsageRef.kind) и написаны в реестре ссылок (store/content/media_usage.go);
+// здесь повторены потому, что сравнивать их обязан тот, кто спрашивает. Родов в реестре больше —
+// продукт, архив, модель, примерка, — но НИ ОДИН из них не отвечает на вопрос «чья это карточка»,
+// поэтому решают ровно эти два.
+const (
+	designUsageKindTechCard = "tech_card"
+	designUsagePictureKind  = "design_picture"
+)
+
+// designRefuseForeignMedia — ЕДИНСТВЕННОЕ ПРАВИЛО ГРАНИЦЫ: медиа, ПРИНАДЛЕЖАЩЕЕ ДРУГОЙ ТЕХ-КАРТЕ,
+// в эту карточку не заходит.
+//
+// ЧТО БЫЛО. Идентификаторы медиа приезжали с провода и проверялись ровно на «> 0». Любой номер из
+// системы — картинка чужой карточки в том числе — уезжал в платную генерацию (`extra_input_media_ids`,
+// `colour.fabric_media_id`) и в векторный слой (`ImportDesignVector`), замерзал там в снимке и
+// оставался в истории утверждением, которого никто не делал.
+//
+// ⚠ ПРАВИЛО ОТРИЦАТЕЛЬНОЕ («не чужое»), А НЕ ПОЛОЖИТЕЛЬНОЕ («своё»), И ЭТО РЕШЕНИЕ.
+// Положительное правило — «медиа обязано лежать в tech_card_media этой карточки», как у
+// SetReferenceRole, — здесь ЛОЖНО ОТКАЗЫВАЛО БЫ на законном жесте: файл, только что загруженный
+// через UploadContentImage, не принадлежит ещё ни одной карточке (контракт ImportDesignVector
+// говорит это дословно про source_media_id), а картинка полосы живёт в design_picture и в
+// tech_card_media не попадает вовсе — ту таблицу целиком переписывает сейв карточки. Отрицательное
+// правило пропускает и ничейное, и своё, и отказывает ровно тому, что названо в находке: чужой
+// карточке.
+//
+// ⚠ ЧТО ОНО НЕ ЗАКРЫВАЕТ, СКАЗАНО ВСЛУХ: медиа, не привязанное ни к одной карточке (фото товара,
+// файл библиотеки), проходит. Закрыть это можно только положительным правилом «tech_card_media ∪
+// design_picture этой карточки», а оно требует ОДНОГО запроса стора, которого в интерфейсе Design
+// сегодня нет; см. отчёт фазы.
+//
+// ЦЕНА ВОПРОСА — ОДИН GetMediaUsage на дверь плюс по одному GetPicture на те номера, чья
+// единственная привязка — картинка полосы. Реестр ссылок отвечает на вопрос «кто ссылается на этот
+// файл» и есть ровно тот источник, который ЗНАЕТ ответ; вопрос «чья карточка» — его подвопрос.
+func (s *Server) designRefuseForeignMedia(ctx context.Context, cardID int, field string, ids ...int) error {
+	want := make([]int, 0, len(ids))
+	seen := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		want = append(want, id)
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	usage, err := s.repo.Media().GetMediaUsage(ctx, want)
+	if err != nil {
+		// ЗАКРЫТО, А НЕ ОТКРЫТО: это платная дверь, и «не смог проверить» не равно «проверено».
+		slog.Default().ErrorContext(ctx, "design: cannot read media usage before a paid door",
+			slog.Int("tech_card_id", cardID), slog.String("field", field),
+			slog.String("err", err.Error()))
+		return status.Error(codes.Internal, "cannot check who the pictures belong to")
+	}
+	for _, id := range want {
+		owned, foreign := false, 0
+		for _, ref := range usage[id] {
+			switch ref.Kind {
+			case designUsageKindTechCard:
+				if ref.EntityId == cardID {
+					owned = true
+				} else {
+					foreign++
+				}
+			case designUsagePictureKind:
+				// entity_id реестра — id КАРТИНКИ, а не карточки (её имя приезжает только меткой для
+				// человека), поэтому карточку приходится спрашивать у самой картинки.
+				pic, perr := s.repo.Design().GetPicture(ctx, ref.EntityId)
+				if perr != nil || pic == nil {
+					// Строка исчезла между двумя чтениями. Исчезнувшая картинка не доказывает НИ
+					// принадлежности, ни чуждости — она просто не голосует. Отказать по ней значило
+					// бы уронить законный запрос из-за гонки с удалением.
+					slog.Default().WarnContext(ctx, "design: a referencing picture could not be read",
+						slog.Int("picture_id", ref.EntityId))
+					continue
+				}
+				if pic.TechCardId == cardID {
+					owned = true
+				} else {
+					foreign++
+				}
+			}
+		}
+		if owned || foreign == 0 {
+			continue
+		}
+		// NotFound, а не PermissionDenied, по тому же доводу, что у чужого родителя рерана: «этой
+		// картинки у этой карточки нет» — правда, и она не рассказывает постороннему, чья она.
+		return designRefusal(codes.NotFound, "foreign_media",
+			fmt.Sprintf("media %d belongs to another tech card, not to %d: %s takes pictures of this card",
+				id, cardID, field),
+			map[string]string{"media_id": strconv.Itoa(id), "field": field})
+	}
+	return nil
+}
+
 // designEffectiveParams — ЧТО ПРОСЯТ У МОДЕЛИ.
 //
 // РАЗДЕЛЕНИЕ, КОТОРОЕ ВАЖНО НЕ ПЕРЕПУТАТЬ. Параметры — это ЗАПРОС («какие виды, какая
@@ -410,9 +721,36 @@ func designEffectiveParams(in *pb_common.DesignRunParams, parent *entity.DesignR
 				"params.fix_targets.%d %q is not a silhouette side; a detail is named in fix_slot_ids", i, v)
 		}
 	}
-	if t := params.GetFixTarget(); t != "" && !entity.IsDesignSilhouetteView(t) {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"params.fix_target %q is not a silhouette side", t)
+	if t := params.GetFixTarget(); t != "" {
+		if !entity.IsDesignSilhouetteView(t) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"params.fix_target %q is not a silhouette side", t)
+		}
+		// ─── ДВА НАПИСАНИЯ ОДНОГО ПОЛЯ ПРИВОДЯТСЯ К ОДНОМУ ЗДЕСЬ, У ДВЕРИ ───
+		//
+		// Контракт называет ОДНО правило: читатель берёт `fix_targets`, когда список непуст, и
+		// падает на скаляр `fix_target` только когда он пуст. Скаляр — старое написание, которое
+		// обязано остаться читаемым навсегда.
+		//
+		// ЧТО БЫЛО. Правил жило ДВА: промпт (designgen/snapshot.go) честно падал на скаляр, а
+		// отбор плит верстака строил ОБЪЕДИНЕНИЕ списка и скаляра. Запрос с fix_target="front" и
+		// fix_targets=["back"] отдавал модели плиты front И back, а текстом просил «правь back» —
+		// то есть оплаченный кадр собирался не из того, о чём его просили, и ни один из двух
+		// читателей при этом не ошибался «по-своему»: они просто отвечали на разные вопросы.
+		//
+		// ПРОТИВОРЕЧИЕ ОТВЕРГАЕТСЯ, А НЕ РАЗРЕШАЕТСЯ МОЛЧА. Выбросить `front` по правилу «список
+		// сильнее» значило бы снова тихо отрезать часть просьбы — тот же класс, что молчаливая
+		// обрезка входов. Совпадающие написания (скаляр назван И входит в список) законны:
+		// клиент, который шлёт оба для совместимости, ничему не противоречит — и при таком входе
+		// ОБА мыслимых правила, объединение и падение, дают ОДИН И ТОТ ЖЕ ответ. Разойтись им
+		// больше не на чем.
+		if n := len(params.GetFixTargets()); n > 0 && !slices.Contains(params.GetFixTargets(), t) {
+			return nil, designRefusal(codes.InvalidArgument, "contradictory_fix_target",
+				fmt.Sprintf("params.fix_target %q is not among params.fix_targets %v: the two spellings "+
+					"of one field contradict each other, and the server will not guess which one you meant",
+					t, params.GetFixTargets()),
+				map[string]string{"fix_target": t, "fix_targets": strings.Join(params.GetFixTargets(), ",")})
+		}
 	}
 	for i, id := range params.GetExtraInputMediaIds() {
 		if id <= 0 {
@@ -420,7 +758,85 @@ func designEffectiveParams(in *pb_common.DesignRunParams, parent *entity.DesignR
 				"params.extra_input_media_ids.%d must be a media id", i)
 		}
 	}
+	// ЧИСЛО ДОП-ВХОДОВ МЕРЯЕТСЯ ЗДЕСЬ, А НЕ ТОЛЬКО ПОСЛЕ СБОРКИ СНИМКА, И ЭТО НЕ ДУБЛИКАТ.
+	// Потолок designMaxInputRefs в designAssembleInputs стоит на СОБРАННЫХ refs — а у рерана
+	// снимок переписывается со строки родителя и сборка не зовётся вовсе, тогда как воркер читает
+	// `extra_input_media_ids` ИЗ ПАРАМЕТРОВ (designgen/snapshot.go: referenceMediaIDs), то есть
+	// список без потолка доехал бы до поставщика в обход обоих. Тот же потолок и по той же причине:
+	// снимок обязан помещаться в строку и в глаз.
+	if n := len(params.GetExtraInputMediaIds()); n > designMaxInputRefs {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"params.extra_input_media_ids names %d pictures; the ceiling is %d", n, designMaxInputRefs)
+	}
 	return params, nil
+}
+
+// designInt32sToInts — один переход между шириной провода и шириной домена. Отдельной функцией,
+// чтобы цикл-конвертер не размножался по местам вызова.
+func designInt32sToInts(in []int32) []int {
+	out := make([]int, 0, len(in))
+	for _, v := range in {
+		out = append(out, int(v))
+	}
+	return out
+}
+
+// ─────────────────── ПЛИТЫ, ИЗ КОТОРЫХ СОБРАН ПОВОРОТНЫЙ СТОЛ ───────────────────
+
+// designStampSourcePictures ЗАПОЛНЯЕТ DesignThreedParams.source_picture_ids — поле, которое до сих
+// пор не писал НИКТО.
+//
+// ЧТО БЫЛО. Контракт объявляет его дословно: «The four render plates of ONE rrev that this
+// turntable was built from. Without them the run panel cannot show what the rotation was assembled
+// out of». Писателей у поля было ноль, и это опаснее обычной мёртвой строки: параметры прогона —
+// ЗАМОРОЖЕННАЯ ИСТОРИЯ, и пустое поле в ней не молчит, а УТВЕРЖДАЕТ, что прогон не видел ни одной
+// плиты. Видел: 3D по построению собирается из плит рендера (designInputSlots), и никакого второго
+// источника у него нет. Задним числом это не чинится — снимок заморожен.
+//
+// ⚠ ПОЛЕ ПРИНАДЛЕЖИТ СЕРВЕРУ ЦЕЛИКОМ, ровно как входы, поэтому клиентское значение ЗАТИРАЕТСЯ
+// ВСЕГДА, а не дополняется. Иначе к пустому полю, которое врёт молчанием, добавилось бы непустое,
+// которое врёт содержанием: клиент назвал бы плиты, которых прогон не брал, и история подтвердила
+// бы это навсегда.
+//
+// ⚠ И ЗАТИРАЕТСЯ ОНО У ЛЮБОГО РОДА, А НЕ ТОЛЬКО У 3D. Поле «meaningful only for kind=threed», но
+// присланное на флэте оно всё равно замёрзло бы в строке и читалось бы как провенанс. Род, который
+// плит не берёт, обязан говорить об этом пустотой — и это единственный случай, когда пустота здесь
+// правдива.
+func designStampSourcePictures(kind string, params *pb_common.DesignRunParams, plates []int32) {
+	if params == nil {
+		return
+	}
+	if kind != entity.DesignRunKindThreed {
+		if params.GetThreed() != nil {
+			params.Threed.SourcePictureIds = nil
+		}
+		return
+	}
+	if params.GetThreed() == nil {
+		// Прогон 3D без блока параметров — законный вход (все поля блока необязательны), но
+		// провенанс у него всё равно есть, и положить его больше некуда.
+		params.Threed = &pb_common.DesignThreedParams{}
+	}
+	params.Threed.SourcePictureIds = plates
+}
+
+// designParentPlates — плиты РОДИТЕЛЯ рерана.
+//
+// Реран посылает модели ТО ЖЕ САМОЕ: входы переписываются со строки родителя целиком, значит и
+// сказать про плиты он обязан то же, что сказал родитель. Сегодняшний верстак здесь не читается
+// вовсе — он мог с тех пор смениться, и посчитанный по нему список назвал бы плиты, которых этот
+// прогон не увидит.
+func designParentPlates(parent *entity.DesignRun) []int32 {
+	if parent == nil || len(parent.Params) == 0 {
+		return nil
+	}
+	stored := &pb_common.DesignRunParams{}
+	if err := designUnmarshalJSON(parent.Params, stored); err != nil {
+		// Нечитаемые параметры родителя уже отказали выше (designEffectiveParams) на том пути, где
+		// они нужны; здесь молчание честнее выдумки.
+		return nil
+	}
+	return stored.GetThreed().GetSourcePictureIds()
 }
 
 // designRequestedOutputs — сколько кадров задание вправе ждать. Число едет в строку и рисует
@@ -545,6 +961,14 @@ func (s *Server) ImportDesignVector(ctx context.Context, req *pb_admin.ImportDes
 		return nil, status.Error(codes.InvalidArgument,
 			"client_request_id is required — without it a retry files the same SVG twice")
 	}
+	// ⚠ ЭТОТ КЛЮЧ ТРЕБУЕТСЯ, НО СЕГОДНЯ НЕ ОН ОБЕСПЕЧИВАЕТ ИДЕМПОТЕНТНОСТЬ, И ЭТО НАДО ЗНАТЬ
+	// ЗАРАНЕЕ. Стор дедуплицирует по паре (tech_card_id, source_media_id) — у design_edit_layer нет
+	// колонки под request-id (0343, 0350 её не добавила), — и `client_request_id` уезжает в
+	// entity.DesignVectorImport, где его никто не читает. Обещанное контрактом («a retry after a
+	// lost response must not file the same SVG as a second layer») этой парой ВЫПОЛНЯЕТСЯ: повтор
+	// несёт тот же media_id. Расходятся два других случая: ДРУГОЙ файл под тем же запросом заведёт
+	// второй слой, а ТОТ ЖЕ файл под новым запросом вернёт старый. Закрывается это только колонкой
+	// с уникальным индексом — миграция плюс layer.go, см. отчёт фазы.
 	strokes := req.GetStrokes()
 	if len(strokes) > design.MaxStrokesBytes {
 		return nil, designError(ctx, "strokes too large",
@@ -557,6 +981,20 @@ func (s *Server) ImportDesignVector(ctx context.Context, req *pb_admin.ImportDes
 	if len(strokes) > 0 && !json.Valid(strokes) {
 		return nil, status.Error(codes.InvalidArgument, "strokes must be JSON")
 	}
+	// ⚠ ЧУЖОЕ МЕДИА ЗДЕСЬ ЕЩЁ НЕ ОСТАНАВЛИВАЕТСЯ, И ЭТО ИЗВЕСТНАЯ ДЫРА, А НЕ УМОЛЧАНИЕ.
+	//
+	// Стор проверяет на принадлежность карточке ТОЛЬКО `source_picture_id`; ни файл
+	// (`source_media_id`), ни подложка (`base_media_id`) не проверяются ничем, кроме существования
+	// строки медиа, — то есть картинка чужой карточки становится векторным слоем этой, и полоса
+	// потом рисует её как свою.
+	//
+	// ПОЧЕМУ НЕ ЗАКРЫТО ЗДЕСЬ. У двери нет ни одного бесплатного источника этого факта: она не
+	// читает ни карточку, ни полосу, а «чья это картинка» знает только база. Правило обязано быть
+	// ОТРИЦАТЕЛЬНЫМ («не принадлежит другой карточке»), потому что свежезагруженный SVG по
+	// контракту не принадлежит ещё никому, и положительная проверка сломала бы главный жест
+	// глагола. Место ему — в той же SERIALIZABLE-транзакции стора, рядом с уже стоящей там
+	// проверкой картинки, с тем же entity.ErrDesignForeignMedia, которым отвечает SetReferenceRole;
+	// см. отчёт фазы.
 	layer, err := s.repo.Design().ImportVector(ctx, entity.DesignVectorImport{
 		TechCardId:      int(req.GetTechCardId()),
 		ClientRequestId: clientRequestID,
@@ -635,6 +1073,17 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
 	}
+	// ⚠ ТОТ ЖЕ ПОТОЛОК, ЧТО У КАРТИНОЧНОГО ПРОГОНА, И ЕГО ЗДЕСЬ НЕ БЫЛО ВОВСЕ. Снимок этого прогона
+	// — доска целиком: записка плюс ТЕКСТ каждой выноски, ни на одно из которых своего потолка нет.
+	// Без проверки строка уезжала в стор, где `inputs` объявлена JSON-колонкой, и отказ приходил бы
+	// от MySQL про размер пакета — либо не приходил вовсе, а доска молча уезжала в платный вызов
+	// мегабайтом. Потолок объявлен контрактом дословно («capped at 64 KB») и проверяется по
+	// ЗАКОДИРОВАННЫМ байтам: считать поля вместо байтов значит проверять другое число.
+	if len(inputsJSON) > designMaxInputsBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"the moodboard encodes to %d bytes; the ceiling is %d — shorten the board's note or its callouts",
+			len(inputsJSON), designMaxInputsBytes)
+	}
 
 	est := designEstimateFor(entity.DesignRunKindDraftIdea, 1)
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
@@ -660,7 +1109,14 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// client_request_id. Незаконченный — тот, чей хендлер умер посреди вызова; его перехват
 	// разрешён ТОЛЬКО по истёкшей лизе, потому что живая лиза означает, что вызов идёт прямо
 	// сейчас, и второй звонок оплатил бы его второй раз.
-	if started.Idempotent && !designRunResumable(run, s.repo.Now().UTC()) {
+	//
+	// ⚠ ПРИЗНАК ПЕРЕХВАТА ПРИХОДИТ ИЗ СТОРА, А НЕ ВЫЧИСЛЯЕТСЯ ЗДЕСЬ. Считать «лиза истекла» на
+	// этой стороне значит отвечать на вопрос, у которого нет одного ответа: из двух одновременных
+	// повторов истёкшую лизу видят ОБА, и оба пошли бы платить. Перехват исключающий, и совершает
+	// его та же транзакция, что решает про идемпотентность (см. designRunResumableSQL): она же
+	// ротирует токен и продлевает лизу, а проигравшему возвращает Resumed = false — то есть ровно
+	// тот ответ, что и живой лизе.
+	if started.Idempotent && !started.Resumed {
 		return &pb_admin.DraftDesignIdeaResponse{
 			Run:    s.designRunResponse(ctx, run),
 			Budget: s.designBudgetResponse(ctx, started.Budget),
@@ -717,29 +1173,6 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		Run:    s.designRunResponse(ctx, *done),
 		Budget: s.designBudgetResponse(ctx, budget),
 	}, nil
-}
-
-// designRunResumable — можно ли доисполнить прогон, чей хендлер не вернулся.
-//
-// ЛИЗА — ЕДИНСТВЕННЫЙ ПРИЗНАК. Строка `pending` с ЖИВОЙ лизой означает «вызов идёт прямо сейчас,
-// в соседнем запросе»; перехватить её значит оплатить ту же модель дважды. Строка с ИСТЁКШЕЙ
-// лизой означает, что хендлер умер: у draft_idea нет воркера, который бы её подобрал
-// (ClaimRuns исключает этот род), и без перехвата она висела бы с зарезервированными деньгами до
-// полуночи.
-func designRunResumable(run entity.DesignRun, now time.Time) bool {
-	switch run.Status {
-	case entity.DesignRunDone, entity.DesignRunFailed, entity.DesignRunCancelled:
-		return false
-	}
-	if !run.ClaimToken.Valid || run.ClaimToken.String == "" {
-		// Без токена закрыть строку нечем: CompleteRun сверяет его в WHERE. Перехват без него
-		// оставил бы прогон открытым уже после оплаченного вызова.
-		return false
-	}
-	if !run.ClaimExpiresAt.Valid {
-		return false
-	}
-	return run.ClaimExpiresAt.Time.Before(now)
 }
 
 // designFailDraft закрывает попытку и прогон после провала вызова. ЛУЧШЕЕ УСИЛИЕ И ГРОМКОЕ:
@@ -902,15 +1335,33 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 // ВЫБОРКА `fix` СУЖАЕТ СПИСОК. `fix_targets` + `fix_slot_ids` — ОДНА выборка, а не два режима:
 // «выбрать всё в FLAT SLOTS» (W-10) называет три стороны и манжету одним прогоном.
 func designInputSlots(src designInputSources) []*pb_common.DesignInputSlot {
+	slots, _ := designSelectBench(src)
+	return slots
+}
+
+// designSelectBench — САМ ОТБОР, и он ЕДИНСТВЕННЫЙ. Отдаёт две проекции одного прохода: слоты для
+// снимка и id КАРТИНОК тех же слотов для `params.threed.source_picture_ids`.
+//
+// ⚠ ДВЕ ПРОЕКЦИИ ИЗ ОДНОГО ЦИКЛА, А НЕ ДВА ОБХОДА ВЕРСТАКА. Второй обход был бы вторым мнением о
+// том, какие плиты взял прогон, и разошлись бы они ровно на выборке `fix` — то есть там, где
+// человек сузил прогон и где ошибка дороже всего. Звать эту функцию дважды за один запрос при этом
+// БЕЗОПАСНО: это один и тот же ответ на один и тот же вопрос, ценой прохода по восьми слотам.
+func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []int32) {
 	want := entity.DesignPictureKindFlat
 	if src.Kind == entity.DesignRunKindThreed {
 		want = entity.DesignPictureKindRender
 	}
+	// ОДНО ПРАВИЛО, ДОСЛОВНО КОНТРАКТНОЕ: список, когда он непуст, иначе скаляр. Здесь было
+	// ОБЪЕДИНЕНИЕ, и это второе правило рядом с первым — промпт (designgen/snapshot.go) читает
+	// ровно падение. Расхождение видно только на противоречивом входе, который дверь теперь
+	// отвергает (designEffectiveParams), но полагаться на это нельзя: снимки старых прогонов
+	// заморожены и противоречие в них уже есть, а читать их обязаны одинаково оба.
 	targets := map[string]struct{}{}
-	for _, v := range src.Params.GetFixTargets() {
-		targets[v] = struct{}{}
-	}
-	if t := src.Params.GetFixTarget(); t != "" {
+	if list := src.Params.GetFixTargets(); len(list) > 0 {
+		for _, v := range list {
+			targets[v] = struct{}{}
+		}
+	} else if t := src.Params.GetFixTarget(); t != "" {
 		targets[t] = struct{}{}
 	}
 	slotIDs := map[int]struct{}{}
@@ -920,6 +1371,7 @@ func designInputSlots(src designInputSources) []*pb_common.DesignInputSlot {
 	selective := len(targets) > 0 || len(slotIDs) > 0
 
 	out := make([]*pb_common.DesignInputSlot, 0, len(src.Bench))
+	plates := make([]int32, 0, len(src.Bench))
 	for _, slot := range src.Bench {
 		if entity.DesignKindOrFlat(slot.Kind) != want {
 			continue
@@ -950,8 +1402,15 @@ func designInputSlots(src designInputSources) []*pb_common.DesignInputSlot {
 			in.ContentHash = slot.Picture.Media.ContentHash.String
 		}
 		out = append(out, in)
+		if slot.Picture.Id > 0 {
+			// id КАРТИНКИ, а не медиа: `source_picture_ids` объявлено ссылкой на design_picture(id),
+			// и панель прогона по нему поднимает саму плиту — её род, её rrev и её принадлежность
+			// прогону. Медиа этого не знает: один и тот же файл может лежать под несколькими
+			// картинками полосы.
+			plates = append(plates, int32(slot.Picture.Id))
+		}
 	}
-	return out
+	return out, plates
 }
 
 // designRunInputs — снимок ЭТОГО прогона плюс фит, под которым он уходит.
@@ -991,6 +1450,25 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	// приедет со штампом сегодняшнего фита, а нарисована будет по вчерашнему, и минт сверил бы
 	// её не с тем.
 	return snap, snap.GetFit(), nil
+}
+
+// designRunPlates — ПЛИТЫ ЭТОГО ПРОГОНА, id картинок.
+//
+// Свежий прогон называет то, что отобрал он сам; реран — то, что назвал родитель, потому что входы
+// у него родительские и сегодняшний верстак к делу не относится.
+//
+// ⚠ ДЛЯ СВЕЖЕГО ПРОГОНА ЭТО ВТОРОЙ ВЫЗОВ ТОЙ ЖЕ designSelectBench, что уже сделала сборка входов —
+// и это НАМЕРЕННО дешевле альтернатив. Протащить плиты через designAssembleInputs значило бы
+// сменить её подпись, а её зовут пробы соседних задач в этом же дереве; посчитать плиты вторым,
+// собственным обходом верстака значило бы завести второе правило отбора. Один и тот же вызов
+// одной и той же функции разойтись не может ни при каком входе, а стоит он прохода по восьми
+// слотам.
+func designRunPlates(src designInputSources, parent *entity.DesignRun) []int32 {
+	if parent != nil {
+		return designParentPlates(parent)
+	}
+	_, plates := designSelectBench(src)
+	return plates
 }
 
 // ─────────────────────────── доска: только слова ───────────────────────────

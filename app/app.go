@@ -533,6 +533,18 @@ func (a *App) Start(ctx context.Context) error {
 	// worker leaves every paid run in `pending` until midnight, holding its reservation; a worker
 	// up with the handler closed is a loop polling a queue nothing can enqueue into.
 	adminS.SetDesignGenerationEnabled(designCfg.Enabled)
+	// AND THE DOOR GETS THE WORKER'S OWN PRE-FLIGHT, not a second opinion about it.
+	//
+	// StartDesignRun reserves money the moment it files a row. A run whose route is unwired, whose
+	// key is missing, or whose output the media store cannot keep would be accepted, hold the
+	// reservation, and be failed by the very first pass — once per click. PreflightKind is the same
+	// call that pass makes, on the same providers and the same sink, so the door refuses exactly
+	// what the worker would refuse for free, and stops refusing by itself the day the sink learns
+	// the type. Wired only when the worker exists; without it the flag above has already closed
+	// every paid verb.
+	if a.dgw != nil {
+		adminS.SetDesignKindGate(a.dgw.PreflightKind)
+	}
 	a.adminS = adminS
 
 	var frontendS *frontend.Server

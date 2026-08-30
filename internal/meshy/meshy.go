@@ -36,6 +36,16 @@ const (
 	MinImages = 1
 	MaxImages = 4
 
+	// MaxTexturePrompt is the provider's ceiling on texture_prompt, in characters. Meshy answers
+	// 400 above it.
+	//
+	// ⚠ IT IS CHECKED LOCALLY, BY THE SAME ARGUMENT AS MaxImages: this is something we can be
+	// certain about without asking, and the 400 it saves is not free. A 400 read as weather —
+	// which is exactly what an unrecognised provider error is — is retried to the attempt cap,
+	// five rounds of sending the same too-long text, and the history row then says "failed after 5
+	// attempts · provider_unavailable" instead of naming a sentence that is 40 characters too long.
+	MaxTexturePrompt = 600
+
 	// defaultHTTPTimeout bounds ONE control-plane request (submit or lookup). Both answer with a
 	// small JSON object; seconds are plenty, and a provider that cannot answer a status question in
 	// half a minute is not answering.
@@ -51,6 +61,18 @@ const (
 	// slot sit on a task that will never land. Hitting it yields ErrTimedOut, and the task id is in
 	// the error: the model may still finish, and a later Collect can still fetch it — for three days.
 	defaultPollTimeout = 12 * time.Minute
+
+	// notFoundGrace is how long Await keeps reading a 404 as "the provider has not caught up yet"
+	// instead of as the terminal "this id buys nothing".
+	//
+	// ⚠ IT EXISTS BECAUSE THE FIRST LOOKUP HAS NO PAUSE IN FRONT OF IT. Generate submits and polls
+	// in the same breath, and the submit is THE PAYMENT. If a create call can return an id that the
+	// retrieve endpoint does not serve for a moment — an ordinary shape for a read path behind a
+	// write — then the strict reading throws away a model that was paid for one second earlier, and
+	// the only route back to a discarded id is a second charge. Thirty seconds is several poll
+	// intervals of patience against a fault whose whole cost is a few free lookups, and it does not
+	// weaken the terminal verdict: an id nobody knows is still terminal thirty seconds later.
+	notFoundGrace = 30 * time.Second
 
 	// defaultDownloadTimeout bounds fetching one artifact. It is generous on purpose: this is the
 	// step that must not be cut short (see doc.go), and a slow CDN is a bad reason to lose a paid
@@ -109,6 +131,20 @@ var ErrNotConfigured = errors.New("meshy: MESHY_API_KEY is not set")
 // the count is something we can be certain about locally.
 var ErrImageCount = fmt.Errorf("meshy: multi-image-to-3d takes %d..%d images, the first being the front view", MinImages, MaxImages)
 
+// ErrPromptTooLong is returned when texture_prompt exceeds MaxTexturePrompt. Like ErrImageCount it
+// is raised BEFORE the request leaves: the length is a local fact, and the provider's answer to it
+// is a 400 that a retry reproduces exactly.
+var ErrPromptTooLong = fmt.Errorf("meshy: texture_prompt is capped at %d characters", MaxTexturePrompt)
+
+// ErrBadRequest is the provider's own 4xx for a request it will not accept (400, 422 and the rest
+// that are not a rejected key, a rate limit or an unknown task).
+//
+// ⚠ WITHOUT IT A 4xx WAS WEATHER. The classifier's default leans retryable on purpose — a reset
+// connection really is weather — but that default swallowed every "you sent something wrong"
+// answer this provider gives, and burnt the whole attempt cap re-sending it. A refusal that names
+// the request is the one failure category a retry provably cannot fix.
+var ErrBadRequest = errors.New("meshy: the provider refused the request")
+
 // ErrBadImageURL is returned for a reference that is neither an http(s) url nor a data: uri. The
 // provider must be able to FETCH these itself, so a bucket key, a relative path or a file:// url is
 // a mistake worth catching here rather than as a provider-side failure minutes later.
@@ -142,6 +178,21 @@ var ErrTaskNotFound = errors.New("meshy: the provider does not know this task")
 // wearing the clothes of a transient one: retrying an invalid key produces the same answer forever
 // while telling the operator it is weather.
 var ErrUnauthorized = errors.New("meshy: the API key was rejected")
+
+// ErrOutOfCredit is returned on 402: the key is good, the request is good, and the account has no
+// balance left to build a model with.
+//
+// IT IS ITS OWN SENTINEL BECAUSE IT IS ITS OWN INSTRUCTION. A rejected key is fixed by an operator
+// with a new key, a bad request is fixed by the caller, and an empty account is fixed by nobody in
+// this process — but all three are equally terminal, and only a named one can say so. Untold, an
+// empty balance is a plain error, and a plain error from a provider is weather: five paid-looking
+// attempts against a till with nothing in it, then a history row blaming the provider's
+// availability for the owner's own unpaid invoice.
+//
+// ⚠ IT IS RECOGNISED BY THE STATUS CODE ALONE. If Meshy ever starts signalling an exhausted
+// balance some other way, this is the place to teach it — never providerMessage, which is display
+// only, so that a reworded sentence cannot change what an error means.
+var ErrOutOfCredit = errors.New("meshy: the account has no credits left")
 
 // ErrRateLimited is returned on 429, so a caller can back off instead of hammering. Submits are
 // not retried here in any case (see doc.go).
@@ -322,6 +373,11 @@ func (c *Client) Submit(ctx context.Context, req Request) (string, error) {
 	if len(req.ImageURLs) < MinImages || len(req.ImageURLs) > MaxImages {
 		return "", fmt.Errorf("%w (got %d)", ErrImageCount, len(req.ImageURLs))
 	}
+	// THE LENGTH IS MEASURED IN CHARACTERS, NOT BYTES. The provider counts what a person typed;
+	// counting utf-8 bytes here would refuse a perfectly legal Cyrillic prompt at half the cap.
+	if prompt := strings.TrimSpace(req.TexturePrompt); len([]rune(prompt)) > MaxTexturePrompt {
+		return "", fmt.Errorf("%w (got %d)", ErrPromptTooLong, len([]rune(prompt)))
+	}
 	images := make([]string, 0, len(req.ImageURLs))
 	for i, raw := range req.ImageURLs {
 		u := strings.TrimSpace(raw)
@@ -454,10 +510,28 @@ func (c *Client) Await(ctx context.Context, taskID string, dst Sink) (*Result, e
 	timer := time.NewTimer(c.cfg.PollInterval)
 	defer timer.Stop()
 
+	// A 404 IN THE FIRST SECONDS IS A LAG, NOT AN ANSWER — see notFoundGrace. The grace never eats
+	// more than half the ceiling, so a task that really is unknown still gets its terminal verdict
+	// inside the wait rather than surfacing as a timeout, which points a worker the other way.
+	grace := notFoundGrace
+	if half := ceiling / 2; grace > half {
+		grace = half
+	}
+	started := time.Now()
+
 	for {
 		res, err := c.collect(waitCtx, ctx, taskID, dst)
 		if err == nil {
 			return res, nil
+		}
+		// THE FIRST LOOKUP CAN LAND BEFORE THE PROVIDER HAS FINISHED KNOWING ABOUT THE SUBMIT.
+		// Generate polls immediately after the create call returns, and ErrTaskNotFound is
+		// TERMINAL: taken at face value there, a read-after-write lag of a second would close a
+		// PAID task within seconds of buying it, and the only way forward from a discarded id is
+		// buying another one. Inside the grace a 404 is therefore treated as "not yet" — the same
+		// road ErrNotReady takes — and after it, it means what it says.
+		if errors.Is(err, ErrTaskNotFound) && time.Since(started) < grace {
+			err = fmt.Errorf("%w: task %s is not visible to the provider yet", ErrNotReady, taskID)
 		}
 		if !errors.Is(err, ErrNotReady) {
 			// A LOOKUP killed by the ceiling must read as a ceiling, not as a transport hiccup —
@@ -587,12 +661,29 @@ func (c *Client) statusError(resp *http.Response, method, path string) error {
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, resp.StatusCode, detail)
+	case http.StatusPaymentRequired:
+		// 402 IS A DRAINED BALANCE, AND IT MUST NOT SHARE A ROAD WITH «BAD REQUEST» OR WITH
+		// WEATHER. Every other provider in this feature already names it — orimages.ErrOutOfCredit,
+		// recraft.ErrInsufficientCredits — and the classifier turns those into a terminal
+		// provider_out_of_credit. Meshy had no such sentinel, so an empty account arrived as a
+		// generic error, fell into the classifier's retryable default and spent the entire attempt
+		// cap knocking on a till with nothing in it, while the history row said the provider was
+		// unavailable. Nothing about an empty balance improves on a retry, and the operator needs
+		// to read the word «credit», not the word «unavailable».
+		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, resp.StatusCode, detail)
 	case http.StatusTooManyRequests:
 		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, resp.StatusCode, detail)
 	case http.StatusNotFound:
 		if method == http.MethodGet {
 			return fmt.Errorf("%w (HTTP 404): %s", ErrTaskNotFound, detail)
 		}
+	}
+	// EVERY OTHER 4xx IS «WE SENT SOMETHING WRONG», AND THAT IS NOT WEATHER. Leaving it to the
+	// generic sentence below meant the caller's classifier read it as a transient fault and spent
+	// the whole attempt cap re-sending a request the provider had already judged. 5xx keeps the
+	// generic form: a server that is failing today may well answer tomorrow.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, resp.StatusCode, detail)
 	}
 	return fmt.Errorf("meshy: %s %s: HTTP %d: %s", method, path, resp.StatusCode, detail)
 }

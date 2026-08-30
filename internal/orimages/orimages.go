@@ -91,9 +91,12 @@ const (
 	// that is dying should be rescuable by lowering one number.
 	defaultMaxResponseBytes = 24 << 20 // 24 MiB
 
-	// maxInputReferences is the provider's own cap for this model family (0..16, measured on
+	// MaxInputReferences is the provider's own cap for this model family (0..16, measured on
 	// gpt-image-1, -1-mini and -2 alike on 2026-08-30 — the three agree).
-	maxInputReferences = 16
+	//
+	// EXPORTED because the caller has to be able to ASK, and the alternative is a copy of the
+	// number living next to every caller — which is two numbers as soon as one of them is edited.
+	MaxInputReferences = 16
 
 	// maxImagesPerRequest is the provider's cap on `n` (1..10, measured; the same on all three
 	// GPT Image slugs).
@@ -111,6 +114,17 @@ const (
 // as a clear "not configured" precondition failure — and, upstream, as a locked button rather than
 // as a run that waits forever for a provider nobody can call.
 var ErrNotConfigured = errors.New("orimages: no OpenRouter API key is set")
+
+// ErrBadRequest is returned when the REQUEST WE BUILT is one the provider would refuse, and it is
+// raised HERE, before the round trip, for the things we can be certain about locally: an empty
+// prompt, `n` outside the provider's range, more reference pictures than the model accepts, and a
+// reference that is not a fetchable url.
+//
+// ⚠ IT IS A SENTINEL RATHER THAN PROSE BECAUSE THE CALLER HAS TO TELL IT FROM WEATHER. An
+// unrecognised error is classified as a transient provider fault and RETRIED — five times, by the
+// attempt cap — and every one of those retries repeats the exact same unacceptable request. A
+// request we built wrong does not improve by being sent again.
+var ErrBadRequest = errors.New("orimages: the request is one the provider will refuse")
 
 // ErrModelUnavailable is returned when the provider answers 404: the configured image slug is not
 // one it serves — retired, renamed, never existing, or (the trap this package exists for) a CHAT
@@ -454,21 +468,25 @@ func (c *Client) buildRequest(req Request) (imageRequestWire, error) {
 	}
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
-		return imageRequestWire{}, fmt.Errorf("orimages: a generation needs a prompt")
+		return imageRequestWire{}, fmt.Errorf("%w: a generation needs a prompt", ErrBadRequest)
 	}
 	if req.N < 0 || req.N > maxImagesPerRequest {
-		return imageRequestWire{}, fmt.Errorf("orimages: n=%d is outside the supported range 1..%d",
-			req.N, maxImagesPerRequest)
+		return imageRequestWire{}, fmt.Errorf("%w: n=%d is outside the supported range 1..%d",
+			ErrBadRequest, req.N, maxImagesPerRequest)
 	}
-	if len(req.InputReferences) > maxInputReferences {
-		return imageRequestWire{}, fmt.Errorf("orimages: %d reference pictures exceeds the %d the model accepts",
-			len(req.InputReferences), maxInputReferences)
+	// THE COUNT IS REFUSED, NEVER TRIMMED, and the caller is refused rather than the tail. A
+	// silently shortened list produces a picture composed from less than what the run's frozen
+	// snapshot says went into it — and the snapshot is the only record there will ever be of what
+	// was asked. "Some of the inputs" filed as "all of them" is a lie a person cannot detect.
+	if len(req.InputReferences) > MaxInputReferences {
+		return imageRequestWire{}, fmt.Errorf("%w: %d reference pictures exceeds the %d the model accepts",
+			ErrBadRequest, len(req.InputReferences), MaxInputReferences)
 	}
 	refs := make([]string, 0, len(req.InputReferences))
 	for i, raw := range req.InputReferences {
 		u := strings.TrimSpace(raw)
 		if err := validateReference(u); err != nil {
-			return imageRequestWire{}, fmt.Errorf("orimages: reference %d: %w", i+1, err)
+			return imageRequestWire{}, fmt.Errorf("%w: reference %d: %v", ErrBadRequest, i+1, err)
 		}
 		refs = append(refs, u)
 	}

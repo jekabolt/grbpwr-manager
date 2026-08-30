@@ -9,9 +9,8 @@ import (
 
 // Config is the worker's configuration.
 //
-// The mapstructure tags are here so that the section can be mounted on config.Config as
-// `design_generation` with a one-line field the day its owner adds it; see ConfigFromEnv below for
-// why it is not mounted yet.
+// The mapstructure tags mount this section on config.Config as `design_generation`, which is where
+// the binary reads it from; ConfigFromEnv below is a leftover of the days before that field existed.
 type Config struct {
 	// Enabled gates the whole feature. Off means the worker is NOT CONSTRUCTED and NOT REGISTERED
 	// — not "constructed and idle" — so a deployment that has not been given provider keys runs
@@ -21,18 +20,29 @@ type Config struct {
 	// low-rate action: a few seconds of latency on a job that takes half a minute is invisible,
 	// while a tight loop is a pointless query every tick on an idle table.
 	WorkerInterval time.Duration `mapstructure:"worker_interval"`
-	// BatchSize is how many runs one tick claims. It is SMALL on purpose: each claimed run
-	// occupies this worker for the length of a provider call, and a big batch would mean a long
-	// tick holding many leases while doing one thing at a time.
+	// BatchSize is how many runs one tick claims. It is SMALL on purpose, and applyDefaults caps it
+	// at what ONE lease can carry: the whole batch is leased at the instant of the claim, and the
+	// worker then executes it one run at a time, so the last row of a batch of N waits out N-1
+	// predecessors with its own lease already running. See applyDefaults for why the batch is the
+	// number that gives.
+	//
+	// It buys no parallelism — runOnce is strictly sequential — only one queue round trip per N
+	// runs instead of N. Raising throughput is done by lengthening ClaimLease (which lets the cap
+	// rise), never by naming a batch the lease cannot cover.
 	BatchSize int `mapstructure:"batch_size"`
 	// ClaimLease is how long a claim survives without being renewed. THE ONE INVARIANT THAT
-	// MATTERS: it must exceed the longest possible provider call. If it does not, the queue
-	// revives a run whose worker is still alive and paying — and then two workers hold what each
-	// believes is the same job, exactly the way the store's ReviveExpiredRuns comment describes.
+	// MATTERS: it must exceed the longest possible provider call — TIMES THE BATCH, because
+	// ClaimRuns stamps one expiry on every claimed row and there is no verb that renews it. If it
+	// does not, the queue revives a run whose worker is still alive and paying — and then two
+	// workers hold what each believes is the same job, exactly the way the store's
+	// ReviveExpiredRuns comment describes.
+	//
+	// It is also the delay before a run whose worker really died comes back, and the time its
+	// budget reservation stays held, so it is not free to stretch.
 	ClaimLease time.Duration `mapstructure:"claim_lease"`
-	// RunTimeout bounds ONE pass over ONE run, provider call included. Kept strictly below
-	// ClaimLease by applyDefaults, which is what makes the invariant above true by construction
-	// rather than by an operator getting two numbers right.
+	// RunTimeout bounds ONE pass over ONE run, provider call included. applyDefaults keeps
+	// BatchSize × RunTimeout under ClaimLease, which is what makes the invariant above true by
+	// construction rather than by an operator getting three numbers right.
 	RunTimeout time.Duration `mapstructure:"run_timeout"`
 	// ImageQuality is the image provider's price dial ("auto" | "low" | "medium" | "high"). It is
 	// configuration rather than a constant because it is the single largest multiplier on what a
@@ -61,10 +71,15 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:        false,
 		WorkerInterval: 5 * time.Second,
-		BatchSize:      2,
-		ClaimLease:     20 * time.Minute,
-		RunTimeout:     15 * time.Minute,
-		ImageQuality:   "medium",
+		// ONE. Not because a tick may only do one thing, but because the default lease pays for
+		// exactly one 15-minute pass and a batch of two would put the second run outside it — the
+		// double-payment window this config's invariant exists to close. A sequential worker loses
+		// nothing by it: two runs one tick apart and two runs in one tick take the same time, minus
+		// one WorkerInterval. This is a fixed point of applyDefaults.
+		BatchSize:    1,
+		ClaimLease:   20 * time.Minute,
+		RunTimeout:   15 * time.Minute,
+		ImageQuality: "medium",
 	}
 }
 
@@ -85,25 +100,70 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.ImageQuality) == "" {
 		c.ImageQuality = d.ImageQuality
 	}
-	// THE INVARIANT, ENFORCED RATHER THAN DOCUMENTED. A pass that may outlive its own lease is the
-	// one configuration mistake that produces two workers on one paid job, and it is invisible
-	// until it happens. Clamping to three quarters leaves the pass room to finish writing its
-	// result after the last provider byte arrived.
+	// THE INVARIANT, ENFORCED RATHER THAN DOCUMENTED — AND IT IS ABOUT THE WHOLE BATCH.
+	//
+	// A LEASE IS GRANTED ONCE, TO EVERY ROW OF THE BATCH, AT THE MOMENT OF THE CLAIM. ClaimRuns
+	// stamps claim_expires_at = now + ClaimLease on all N rows and nothing ever renews it; runOnce
+	// then walks those rows ONE AT A TIME, each under its own RunTimeout. So run number k of a batch
+	// can still be inside a paid provider call k × RunTimeout after the claim, while its lease died
+	// at ClaimLease. "RunTimeout < ClaimLease" is therefore an invariant about k = 1 only, and it
+	// proves nothing about the rest of the batch.
+	//
+	// With the numbers this file used to ship (batch 2, run 15m, lease 20m) the SECOND run of every
+	// batch executed between minute 15 and minute 30 on a lease that expired at minute 20. A second
+	// instance — overlapping containers on a deploy are the ordinary case, not the exception —
+	// sweeps that row back to `pending` with ReviveExpiredRuns, claims it and PAYS FOR IT A SECOND
+	// TIME, while the first worker comes back with a paid result and loses it as a lost claim. At
+	// the old batch ceiling of 16 the tail of a batch could start three and three quarter hours
+	// after its lease was already dead.
+	//
+	// The invariant that is actually needed is BatchSize × RunTimeout ≤ ¾ × ClaimLease, and of the
+	// three numbers it is THE BATCH that gives:
+	//
+	//   - RunTimeout bounds a PAID call. Dividing it by the batch would cut a provider wait the
+	//     operator sized deliberately (Meshy alone polls for twelve minutes before it has anything),
+	//     which is the money-losing direction.
+	//   - ClaimLease is how long a genuinely dead worker's run stays stuck in `running` holding its
+	//     budget reservation. Multiplying it by up to the batch ceiling would turn one redeploy into
+	//     hours of frozen runs and reserved daily budget.
+	//   - BatchSize has NOTHING to lose. The worker is sequential, so a batch of N is not N runs at
+	//     once, it is N runs in a row — the same work N successive ticks would do, minus one
+	//     WorkerInterval of latency against a call measured in minutes. What a batch does buy is
+	//     exposure: every row past the first burns its lease waiting for its predecessors.
+	//
+	// So the batch is capped at what one lease can carry, and an operator who wants a larger batch
+	// gets it by naming a lease that covers it. Worker.Start logs the effective value.
 	if c.RunTimeout >= c.ClaimLease {
 		c.RunTimeout = c.ClaimLease / 4 * 3
+	}
+	if c.RunTimeout <= 0 {
+		// A lease so short that three quarters of it round to zero is a typo, not a policy, and a
+		// zero RunTimeout would make every pass expire before it started. Fall back to the PAIR that
+		// is known to hold rather than to one half of it.
+		c.ClaimLease, c.RunTimeout = d.ClaimLease, d.RunTimeout
+	}
+	// Three quarters, as before: the last run of the batch still needs room to write down the
+	// result of the call it already paid for, after the last provider byte arrived.
+	if maxBatch := int(c.ClaimLease / 4 * 3 / c.RunTimeout); c.BatchSize > maxBatch {
+		if maxBatch < 1 {
+			// k = 1 is already covered by the clamp above; a batch of zero would drain nothing.
+			maxBatch = 1
+		}
+		c.BatchSize = maxBatch
 	}
 }
 
 // ConfigFromEnv reads the worker's settings straight from the process environment.
 //
-// ⚠ THIS IS A BRIDGE, AND IT IS MEANT TO BE DELETED. Every other component of this backend is
-// configured through config.Config + viper.BindEnv, and this one is not, for one reason only:
-// config/cfg.go was owned by another change in the wave that introduced this package, so a
-// `design_generation` section could not be added there without two authors writing one file.
+// ⚠ THE BRIDGE IS ALREADY CROSSED, AND THIS IS THE PLANK NOBODY PULLED UP. config.Config now
+// carries `DesignGen designgen.Config \`mapstructure:"design_generation"\“, bindEnvVars carries the
+// six BindEnv lines quoted below, and app.go passes &a.c.DesignGen — so NOTHING IN THE BINARY CALLS
+// THIS FUNCTION any more. Do not follow the instructions this comment used to give: adding that
+// section a second time is the only way to make the two readers disagree.
 //
-// To finish the job: add `DesignGen designgen.Config \`mapstructure:"design_generation"\“ to
-// config.Config, add the six BindEnv lines below to bindEnvVars, pass &a.c.DesignGen in app.go,
-// and delete this function together with its test.
+// It survives because TestConfigFromEnvReadsEveryVariable and TestConfigFromEnvDefaultsToOff in
+// worker_test.go still call it. Deleting those two tests and this function is a tidy-up of a dead
+// path, not a behaviour change.
 //
 //	viper.BindEnv("design_generation.enabled", "DESIGN_GENERATION_ENABLED")
 //	viper.BindEnv("design_generation.worker_interval", "DESIGN_WORKER_INTERVAL")

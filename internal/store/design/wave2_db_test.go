@@ -4,7 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -360,13 +368,21 @@ func TestDesignDBExpiredLeaseComesBackToPending(t *testing.T) {
 
 // ⚠ ГЛАВНОЕ УТВЕРЖДЕНИЕ ВСЕЙ МАШИНЫ: ВОРКЕР С ИСТЁКШИМ ЗАХВАТОМ НЕ ЗАТИРАЕТ ЧУЖОЙ РЕЗУЛЬТАТ.
 //
-// Сценарий ровно тот, ради которого claim_token стоит в WHERE: A забрал задание, умер (лиза
-// истекла), подметальщик вернул строку, B забрал её заново и ПРИСЛАЛ РЕЗУЛЬТАТ. Затем оживает A
-// и присылает СВОЙ. Правильный исход — отказ A и НЕТРОНУТАЯ выдача B.
+// Сценарий: A забрал задание, умер (лиза истекла), подметальщик вернул строку, B забрал её заново
+// и ПРИСЛАЛ РЕЗУЛЬТАТ. Затем оживает A и присылает СВОЙ. Правильный исход — отказ A и НЕТРОНУТАЯ
+// выдача B. Именно это здесь и проверяется, целиком через путь Go.
 //
-// МУТАЦИЯ, КОТОРАЯ ОБЯЗАНА УРОНИТЬ ЭТУ ПРОБУ: убрать `AND claim_token = :tok` из закрывающего
-// UPDATE в CompleteRun. Проверка requireClaim перед ним этого НЕ ловит — она читает строку до
-// записи, и её одной хватило бы ровно до первой гонки.
+// ⚠ ИСПРАВЛЕНИЕ ПРЕЖНЕГО КОММЕНТАРИЯ, КОТОРЫЙ ОБЕЩАЛ НЕ ТО. Здесь стояло: «мутация, которая
+// ОБЯЗАНА уронить эту пробу — убрать `AND claim_token = :tok` из закрывающего UPDATE; requireClaim
+// этого НЕ ловит». ИЗМЕРЕНО — ЛОЖЬ В ОБЕИХ ПОЛОВИНАХ: мутация выполнена, проба осталась ЗЕЛЁНОЙ,
+// потому что requireClaim ловит ровно этот случай. Отказывает опоздавшему ОН, а не WHERE: строка
+// читается и пишется в одной SERIALIZABLE-транзакции, войти между ними чужой сессии нечем (это
+// измеряет TestDesignDBWriteTxLocksTheRunRowItRead).
+//
+// ЧТО ЭТА ПРОБА ДОКАЗЫВАЕТ: ГАРАНТИЮ — чужой результат не затирается, опоздавший получает
+// claim_lost, а на закрытой строке — состав, из которого видно, что его байты сироты. Каким
+// именно сторожем гарантия держится, проба не различает и не обязана. Сторож токена в WHERE
+// покрыт отдельно: TestDesignDBCompleteRunClosingUpdateRefusesAForeignToken.
 func TestDesignDBExpiredClaimCannotOverwriteAnothersResult(t *testing.T) {
 	rep, raw := probeRepository(t)
 	resetBudget(t, raw, "5.00")
@@ -1026,4 +1042,371 @@ func TestDesignDBImportVectorRefusesNonsense(t *testing.T) {
 	layer, err := rep.Design().ImportVector(ctx, ok)
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignLayerOriginImported, layer.Origin)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ТОКЕН В WHERE: ЧТО ЕГО СТЕРЕЖЁТ И ЧЕГО НИКАКАЯ ПРОБА ЗДЕСЬ НЕ ДОКАЗЫВАЕТ
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Комментарии над CompleteRun, FailRun и ClaimRuns обещают, что `claim_token` в WHERE закрывающего
+// UPDATE (и повтор предиката захвата в UPDATE ClaimRuns) стоят там ПРОТИВ ГОНКИ: «между чтением и
+// записью строку может перехватить другой воркер». Из этого обещания следует проба: вклиниться в
+// окно между `runByID` и записью и увидеть отказ. ЭТА ПРОБА НЕВОЗМОЖНА, и первый тест ниже
+// ИЗМЕРЯЕТ причину, а не рассуждает о ней: пишущая транзакция стора идёт SERIALIZABLE
+// (internal/store/db.go:63), InnoDB на этом уровне превращает обычный SELECT в чтение ПОД
+// БЛОКИРОВКОЙ, и строка заперта с первого же чтения до коммита. Чужая сессия, желающая
+// ротировать токен, ЖДЁТ снаружи; войти в окно ей нечем.
+//
+// СЛЕДСТВИЕ, КОТОРОЕ НАДО НАЗВАТЬ ВСЛУХ: пока изоляция такая, оба сторожа НЕДОСТИЖИМЫ ЧЕРЕЗ Go —
+// requireClaim успевает отказать раньше, чем дело доходит до WHERE. Ревью это и намерило: обе
+// мутации («убрать AND claim_token = :tok», «убрать повтор предиката») не роняют ни одну
+// поведенческую пробу, и это не слабость проб, а свойство кода. Сторожа при этом НЕ лишние: они
+// страховка на день, когда Tx понизят до REPEATABLE READ — там обычное чтение снимка вернёт
+// СТАРЫЙ токен, requireClaim согласится, а запись пойдёт по свежей строке. В тот день
+// TestDesignDBWriteTxLocksTheRunRowItRead краснеет и говорит, что страховка стала работой.
+//
+// ЧТО ТОГДА ДЕЛАЮТ ТРИ ПРОБЫ НИЖЕ. Они берут ТЕКСТ ПРОДАКШЕН-ОПЕРАТОРА из исходника пакета
+// (разбором AST, не грепом: конкатенация с designRunClaimableSQL собирается так же, как её
+// собирает компилятор) и ИСПОЛНЯЮТ ЕГО на живой строке с чужим токеном. Это осознанный размен, и
+// он назван прямо:
+//
+//   ✓ ДОКАЗЫВАЮТ: оператор, который сегодня стоит в queue.go, на настоящем MySQL действительно
+//     отказывает — затрагивает НОЛЬ строк при чужом токене и при живой чужой лизе. Убери сторож
+//     из продакшен-кода — краснеет именно эта проба, поимённо, потому что текст она берёт оттуда,
+//     а не держит свою копию (копия молча разошлась бы и стерегла бы саму себя).
+//   ✗ НЕ ДОКАЗЫВАЮТ: что путь Go способен привести строку в это состояние. Он не способен — см.
+//     выше. Параметры пробы связывает сама, состояние строки готовит прямым UPDATE.
+//
+// Проба на уровне SQL со СВОЕЙ копией оператора была бы дешевле и не стоила бы ничего: мутация в
+// queue.go оставила бы её зелёной.
+
+// ─────────────────────── окно между чтением и записью ───────────────────────
+
+// ЧУЖАЯ СЕССИЯ НЕ МОЖЕТ ВОЙТИ В ОКНО МЕЖДУ ЧТЕНИЕМ СТРОКИ И ЗАПИСЬЮ В НЕЁ.
+//
+// Здесь измеряется РОВНО ОДНО: обычное чтение design_run внутри пишущей транзакции стора запирает
+// строку от чужой ротации токена. Пока это так, «read, check, write» в CompleteRun / FailRun /
+// ClaimRuns честен без токена в WHERE, а требовать от проб покраснения на его удалении —
+// требовать доказать недостижимое.
+//
+// ЧТО СЛОМАЕТСЯ, ЕСЛИ ГАРАНТИЯ ИСЧЕЗНЕТ (Tx понизили до REPEATABLE READ или READ COMMITTED):
+// requireClaim начнёт сверять токен со снимком, а UPDATE пойдёт по свежей строке — и с этой
+// секунды сторожа в WHERE станут единственным, что отделяет опоздавшего воркера от затирания
+// чужого оплаченного результата. Эта проба покраснеет ПЕРВОЙ и скажет, что размен изменился.
+func TestDesignDBWriteTxLocksTheRunRowItRead(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+	started := startProbeRun(t, rep, card, "0.10")
+
+	read := make(chan struct{})
+	release := make(chan struct{})
+	closed := make(chan error, 1)
+
+	go func() {
+		closed <- rep.Tx(context.Background(), func(ctx context.Context, tx dependency.Repository) error {
+			var token sql.NullString
+			if err := tx.DB().GetContext(ctx, &token,
+				`SELECT claim_token FROM design_run WHERE id = ?`, started.Run.Id); err != nil {
+				return err
+			}
+			close(read)
+			<-release
+			return nil
+		})
+	}()
+	<-read
+
+	blocked, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_, err := raw.ExecContext(blocked,
+		`UPDATE design_run SET claim_token = ? WHERE id = ?`, uuid.NewString(), started.Run.Id)
+	require.Error(t, err,
+		"пока читающая запись открыта, чужая ротация токена обязана ЖДАТЬ, а не проходить")
+
+	close(release)
+	require.NoError(t, <-closed)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ. Без него «ошибка» выше доказывала бы лишь то, что этот UPDATE не
+	// работает никогда — например, из-за опечатки в имени колонки.
+	after, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	_, err = raw.ExecContext(after,
+		`UPDATE design_run SET claim_token = ? WHERE id = ?`, uuid.NewString(), started.Run.Id)
+	require.NoError(t, err, "та же ротация ПОСЛЕ коммита проходит немедленно")
+}
+
+// ─────────────────────── сторожа, взятые из исходника и исполненные ───────────────────────
+
+// designRunUpdatesOf возвращает операторы `UPDATE design_run`, которые именованная функция пакета
+// design отдаёт исполнителю, — СОБРАННЫМИ ТАК ЖЕ, КАК ИХ СОБИРАЕТ КОМПИЛЯТОР.
+//
+// РАЗБОР AST, А НЕ ГРЕП, и это не педантизм. Оператор ClaimRuns существует в исходнике как
+// «литерал + designRunClaimableSQL»: грепом по файлу видно только первую половину, а сторож живёт
+// во второй. Разбор склеивает конкатенацию и подставляет строковые константы пакета, поэтому
+// проба видит ровно тот текст, который уедет в MySQL. Ищется по ВСЕМУ пакету, а не по queue.go:
+// переезд функции в соседний файл — не повод пробе ослепнуть.
+func designRunUpdatesOf(t *testing.T, fn string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	fset := token.NewFileSet()
+	files := make([]*ast.File, 0, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
+		require.NoError(t, err, "исходник пакета design не разобрался: %s", name)
+		files = append(files, f)
+	}
+
+	// Строковые константы пакета — словарь для подстановки в конкатенацию.
+	consts := map[string]string{}
+	for _, f := range files {
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs, ok := sp.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, nm := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					if s, ok := designGoString(vs.Values[i], nil); ok {
+						consts[nm.Name] = s
+					}
+				}
+			}
+		}
+	}
+
+	var found []string
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Name.Name != fn || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				for _, arg := range call.Args {
+					s, ok := designGoString(arg, consts)
+					if ok && strings.Contains(s, "UPDATE design_run") {
+						found = append(found, s)
+					}
+				}
+				return true
+			})
+		}
+	}
+	require.NotEmpty(t, found,
+		"в пакете design не нашлось ни одного UPDATE design_run внутри %s — либо оператор переехал, "+
+			"либо функция переименована; проба обязана быть переписана вслед, а не удалена", fn)
+	return found
+}
+
+// designGoString склеивает выражение Go в строку: литерал, строковая константа пакета либо их
+// конкатенация. Всё прочее — не строка, и это честный «нет».
+func designGoString(e ast.Expr, consts map[string]string) (string, bool) {
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(v.Value)
+		return s, err == nil
+	case *ast.Ident:
+		s, ok := consts[v.Name]
+		return s, ok
+	case *ast.ParenExpr:
+		return designGoString(v.X, consts)
+	case *ast.BinaryExpr:
+		if v.Op != token.ADD {
+			return "", false
+		}
+		l, lok := designGoString(v.X, consts)
+		r, rok := designGoString(v.Y, consts)
+		if !lok || !rok {
+			return "", false
+		}
+		return l + r, true
+	}
+	return "", false
+}
+
+var designNamedParam = regexp.MustCompile(`:([a-z_]+)`)
+
+// execProbeStatement связывает именованные параметры продакшен-оператора и исполняет его,
+// возвращая ЧИСЛО ЗАТРОНУТЫХ СТРОК. Имя, которого нет в values, — это не «подставим ноль», а
+// падение с именем: оператор изменился, и проба обязана быть перечитана человеком.
+func execProbeStatement(t *testing.T, raw *sql.DB, stmt string, values map[string]any) int64 {
+	t.Helper()
+	args := map[string]any{}
+	for _, m := range designNamedParam.FindAllStringSubmatch(stmt, -1) {
+		name := m[1]
+		v, ok := values[name]
+		require.Truef(t, ok, "оператор просит параметр %q, которого проба не знает:\n%s", name, stmt)
+		args[name] = v
+	}
+	q, bound, err := sqlx.Named(stmt, args)
+	require.NoError(t, err)
+	res, err := raw.Exec(q, bound...)
+	require.NoError(t, err)
+	n, err := res.RowsAffected()
+	require.NoError(t, err)
+	return n
+}
+
+// heldProbeRun приводит строку в состояние «идёт, ведёт её token, лиза жива» — то самое, в котором
+// закрывающий UPDATE обязан различать своего и чужого.
+func heldProbeRun(t *testing.T, raw *sql.DB, runID int, token string) {
+	t.Helper()
+	_, err := raw.Exec(`
+		UPDATE design_run
+		SET status = 'running', claim_token = ?,
+		    claim_expires_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 HOUR)
+		WHERE id = ?`, token, runID)
+	require.NoError(t, err)
+}
+
+// ЗАКРЫВАЮЩИЙ UPDATE CompleteRun НЕ ЗАКРЫВАЕТ ЧУЖУЮ СТРОКУ.
+//
+// Что сломается, если сторож исчезнет: воркер, чей захват истёк и чью работу уже переделал другой,
+// закроет строку СВОИМ ответом. Обе стороны увидят успех, а карточка получит выдачу того, кто
+// пришёл вторым, — молча, без единого отказа. requireClaim этого не ловит: он читает строку ДО
+// записи, и его хватает ровно до тех пор, пока читать и писать нельзя порознь (см. шапку раздела).
+//
+// МУТАЦИЯ: убрать `AND claim_token = :tok` из этого UPDATE в queue.go.
+func TestDesignDBCompleteRunClosingUpdateRefusesAForeignToken(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+
+	stmts := designRunUpdatesOf(t, "CompleteRun")
+	require.Len(t, stmts, 1, "CompleteRun закрывает строку РОВНО ОДНИМ UPDATE design_run")
+
+	run := startProbeRun(t, rep, card, "0.10").Run.Id
+	mine := uuid.NewString()
+	heldProbeRun(t, raw, run, mine)
+
+	base := map[string]any{"id": run, "text": nil}
+
+	foreign := map[string]any{"tok": uuid.NewString()}
+	for k, v := range base {
+		foreign[k] = v
+	}
+	require.Zero(t, execProbeStatement(t, raw, stmts[0], foreign),
+		"чужой токен обязан закрыть НОЛЬ строк:\n%s", stmts[0])
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ, и он здесь не украшение: без него ноль выше объяснялся бы чем
+	// угодно — не тем предикатом, опечаткой в связывании, вовсе не тем оператором.
+	own := map[string]any{"tok": mine}
+	for k, v := range base {
+		own[k] = v
+	}
+	require.EqualValues(t, 1, execProbeStatement(t, raw, stmts[0], own),
+		"тот же оператор со СВОИМ токеном строку закрывает")
+
+	status, token := runStatus(t, raw, run)
+	require.Equal(t, entity.DesignRunDone, status)
+	require.False(t, token.Valid, "закрытая строка не принадлежит никому")
+}
+
+// ОБА ЗАКРЫВАЮЩИХ UPDATE FailRun НЕ ТРОГАЮТ ЧУЖУЮ СТРОКУ.
+//
+// Их два, потому что отказ ветвится: ретрай возвращает строку в очередь, терминальный кладёт её
+// насовсем. Проба ходит по ОБОИМ и на каждом требует отказ, иначе сторож, снятый с одной ветки,
+// уехал бы незамеченным — а цена веток одинакова: опоздавший роняет задание, которое уже ведёт
+// другой, и его оплаченная попытка превращается в ретрай чужого прогона.
+//
+// МУТАЦИЯ: убрать `AND claim_token = :tok` из любого из двух UPDATE в queue.go.
+func TestDesignDBFailRunClosingUpdatesRefuseAForeignToken(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+
+	stmts := designRunUpdatesOf(t, "FailRun")
+	require.Len(t, stmts, 2, "у FailRun две ветки записи: ретрай и терминальная")
+
+	for i, stmt := range stmts {
+		run := startProbeRun(t, rep, card, "0.10").Run.Id
+		mine := uuid.NewString()
+		heldProbeRun(t, raw, run, mine)
+
+		base := map[string]any{
+			"id":     run,
+			"next":   time.Now().UTC().Add(time.Minute),
+			"code":   nil,
+			"err":    nil,
+			"status": entity.DesignRunFailed,
+		}
+		foreign := map[string]any{"tok": uuid.NewString()}
+		for k, v := range base {
+			foreign[k] = v
+		}
+		require.Zerof(t, execProbeStatement(t, raw, stmt, foreign),
+			"ветка %d: чужой токен обязан затронуть НОЛЬ строк:\n%s", i, stmt)
+
+		own := map[string]any{"tok": mine}
+		for k, v := range base {
+			own[k] = v
+		}
+		require.EqualValuesf(t, 1, execProbeStatement(t, raw, stmt, own),
+			"ветка %d: тот же оператор со СВОИМ токеном пишет", i)
+	}
+}
+
+// UPDATE ЗАХВАТА ПОВТОРЯЕТ ПРЕДИКАТ ГОТОВНОСТИ, А НЕ ДОВЕРЯЕТ ЕГО SELECT'У.
+//
+// Что сломается, если повтор исчезнет: захват станет писать по id, добытому чтением, — и всякая
+// причина, по которой строку брать нельзя (живая лиза соседа, отменённое задание, ещё не
+// наступивший next_attempt_at), перестанет действовать в момент ЗАПИСИ. Ниже это исполнено на
+// строке с ЖИВОЙ ЛИЗОЙ: сторож обязан затронуть ноль строк, а без него захват уведёт токен у
+// воркера, который прямо сейчас платит провайдеру, и тот НИКОГДА не сможет закрыть свой прогон.
+//
+// Заметьте, чего проба НЕ утверждает: что через ClaimRuns такое состояние достижимо. Оно
+// недостижимо — SELECT ... FOR UPDATE SKIP LOCKED запирает строку до записи, и предикат в UPDATE
+// проверяет то же, что уже проверено. Это страховка, и здесь она измерена как страховка.
+//
+// МУТАЦИЯ: заменить `WHERE id = :id AND `+designRunClaimableSQL на `WHERE id = :id` в queue.go.
+func TestDesignDBClaimUpdateRepeatsTheClaimablePredicate(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw, "5.00")
+	card := probeCard(t, raw)
+
+	stmts := designRunUpdatesOf(t, "ClaimRuns")
+	require.Len(t, stmts, 1, "захват берёт строку РОВНО ОДНИМ UPDATE design_run")
+
+	// Строка, которую ведёт сосед и чья лиза ЖИВА.
+	busy := startProbeRun(t, rep, card, "0.10").Run.Id
+	neighbour := uuid.NewString()
+	heldProbeRun(t, raw, busy, neighbour)
+
+	require.Zero(t, execProbeStatement(t, raw, stmts[0], map[string]any{
+		"id": busy, "tok": uuid.NewString(), "lease_micros": time.Minute.Microseconds(),
+	}), "живую лизу захват обязан НЕ трогать:\n%s", stmts[0])
+
+	_, token := runStatus(t, raw, busy)
+	require.Equal(t, neighbour, token.String, "токен соседа устоял")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: свободную строку тот же оператор берёт.
+	free := startProbeRun(t, rep, card, "0.10").Run.Id
+	taker := uuid.NewString()
+	require.EqualValues(t, 1, execProbeStatement(t, raw, stmts[0], map[string]any{
+		"id": free, "tok": taker, "lease_micros": time.Minute.Microseconds(),
+	}))
+	status, token := runStatus(t, raw, free)
+	require.Equal(t, entity.DesignRunRunning, status)
+	require.Equal(t, taker, token.String)
 }

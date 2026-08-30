@@ -3,18 +3,11 @@ package designgen
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/shopspring/decimal"
 )
-
-// maxImageReferences mirrors the provider's own ceiling (0..16 for this model family). It is
-// repeated here rather than imported because the client keeps it unexported — and because the
-// consequence of exceeding it belongs to this side: orimages refuses the whole request, so a run
-// with seventeen inputs would fail for a reason nobody can act on.
-const maxImageReferences = 16
 
 // imageProvider is the flat / render route: OpenRouter's image endpoint (internal/orimages).
 type imageProvider struct{ c *orimages.Client }
@@ -47,14 +40,17 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		return nil, fmt.Errorf("%w: the image route holds no API key", errProviderDisabled)
 	}
 
+	// ⚠ THE TAIL IS NOT CUT. It used to be — with a warn line nobody reads — and that made the run
+	// LIE ABOUT ITSELF: the frozen snapshot said twenty-four pictures went to the model, the model
+	// saw sixteen, and the run closed `done`. Nothing anywhere recorded which eight were dropped,
+	// so the provenance of the picture that came back was unrecoverable forever after. A log line
+	// is not a record: it is not on the run, the author never sees it, and it is gone in a week.
+	//
+	// THE REFUSAL IS THE PROVIDER'S OWN, AND DELIBERATELY SO. orimages checks the count LOCALLY,
+	// before the round trip, so this costs nothing — no paid call is made — and the ceiling lives
+	// in exactly one place, next to the client that knows it. A copy of the number here is a
+	// second number, and two numbers disagree the moment one of them is edited.
 	refs := job.References
-	if len(refs) > maxImageReferences {
-		// LOUD, never silent: what the model is shown is the whole substance of the request, and a
-		// quietly shortened list produces a picture nobody can explain.
-		slog.Default().WarnContext(ctx, "design run has more input pictures than the image model accepts; the tail is not sent",
-			slog.Int("run_id", job.RunID), slog.Int("have", len(refs)), slog.Int("sent", maxImageReferences))
-		refs = refs[:maxImageReferences]
-	}
 
 	calls := imageCalls(job)
 	out := &Outcome{Model: p.c.Model()}

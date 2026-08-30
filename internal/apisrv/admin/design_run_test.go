@@ -532,23 +532,91 @@ func TestGetDesignBandMirrorsTheFabricRenderGate(t *testing.T) {
 	require.True(t, resp.GetHasFabricRender())
 }
 
-func TestDesignRunResumableOnlyAfterTheLeaseExpired(t *testing.T) {
-	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	live := entity.DesignRun{
-		Id: 1, Status: entity.DesignRunPending,
-		ClaimToken:     sql.NullString{String: "tok", Valid: true},
-		ClaimExpiresAt: sql.NullTime{Time: now.Add(5 * time.Minute), Valid: true},
+// newDraftIdeaRig — стенд ЧЕРНОВИКА ИДЕИ, у которого StartRun НЕ заглушён заранее: обе пробы ниже
+// про то, ЧТО ИМЕННО вернул стор, и общий рижок с `.Maybe()`-заглушкой ответил бы за него сам.
+func newDraftIdeaRig(t *testing.T, client *openrouter.Client) *designRunRig {
+	t.Helper()
+	rig := &designRunRig{
+		repo:   mocks.NewMockRepository(t),
+		cards:  mocks.NewMockTechCards(t),
+		design: mocks.NewMockDesign(t),
 	}
-	require.False(t, designRunResumable(live, now),
-		"живая лиза значит «вызов идёт прямо сейчас»; перехват оплатил бы модель дважды")
+	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
+	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
+	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).
+		Return(designMoodCard(), nil).Maybe()
+	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true, aiOps: client}
+	return rig
+}
 
-	expired := live
-	expired.ClaimExpiresAt = sql.NullTime{Time: now.Add(-time.Minute), Valid: true}
-	require.True(t, designRunResumable(expired, now))
+// ПОВТОР, КОТОРОМУ СТОР НЕ ОТДАЛ СТРОКУ, МОДЕЛЬ НЕ ЗОВЁТ ВОВСЕ.
+//
+// ЧТО ЭТО СТЕРЕЖЁТ. Перехват брошенного хендлера ИСКЛЮЧАЮЩИЙ, и решает его та транзакция, что
+// решает про идемпотентность: она одна может сказать «строку забрал ТЫ». Пока хендлер вычислял
+// признак сам («лиза истекла?»), два одновременных повтора одного client_request_id видели
+// истёкшую лизу ОБА, брали ОДИН И ТОТ ЖЕ токен со строки и ОБА ПЛАТИЛИ модели — обещание
+// «повтор = один платёж» в окне резюма не выполнялось.
+//
+// МУТАЦИЯ: вернуть условие к `!designRunResumable(run, now)` — то есть к вычислению признака на
+// этой стороне. Тогда прогон с истёкшей лизой зовёт модель у КАЖДОГО повтора.
+func TestDraftDesignIdeaRepeatWithoutAResumeDoesNotCallTheModel(t *testing.T) {
+	client, calls := newFakeOpenRouter(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"an idea"}}]}`))
+	})
+	rig := newDraftIdeaRig(t, client)
 
-	done := expired
-	done.Status = entity.DesignRunDone
-	require.False(t, designRunResumable(done, now), "законченный прогон не переисполняется")
+	// Строка с ИСТЁКШЕЙ лизой — и стор всё равно говорит «перехват не твой»: его выиграл соседний
+	// запрос. Именно этот исход прежде читался как «можно платить».
+	prior := entity.DesignRun{
+		Id: 900, TechCardId: designRunCardID, Status: entity.DesignRunPending,
+		ClaimToken:     sql.NullString{String: "held-by-the-other-repeat", Valid: true},
+		ClaimExpiresAt: sql.NullTime{Time: time.Now().Add(-time.Minute), Valid: true},
+	}
+	rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
+		Return(&entity.DesignRunStarted{Run: prior, Idempotent: true, Resumed: false}, nil).Once()
+
+	resp, err := rig.srv.DraftDesignIdea(designRunCtx(), &pb_admin.DraftDesignIdeaRequest{
+		TechCardId: designRunCardID, ClientRequestId: "44444444-4444-4444-4444-444444444444",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(900), resp.GetRun().GetId())
+	require.Empty(t, *calls, "повтор без перехвата НЕ ПЛАТИТ: вызов идёт в соседнем запросе")
+}
+
+// ЗЕРКАЛО: повтор, которому стор ОТДАЛ строку, доисполняет её — и делает это НОВЫМ токеном,
+// который вернула та же транзакция. Без этой половины первая проба была бы выполнима заглушкой
+// «никогда не звать модель».
+func TestDraftDesignIdeaResumeUsesTheRotatedToken(t *testing.T) {
+	client, calls := newFakeOpenRouter(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"an idea"}}]}`))
+	})
+	rig := newDraftIdeaRig(t, client)
+
+	const rotated = "rotated-token"
+	resumedRun := entity.DesignRun{
+		Id: 900, TechCardId: designRunCardID, Status: entity.DesignRunPending,
+		ClaimToken:     sql.NullString{String: rotated, Valid: true},
+		ClaimExpiresAt: sql.NullTime{Time: time.Now().Add(5 * time.Minute), Valid: true},
+	}
+	rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
+		Return(&entity.DesignRunStarted{Run: resumedRun, Idempotent: true, Resumed: true}, nil).Once()
+	rig.design.EXPECT().StartAttempt(mock.Anything, mock.MatchedBy(func(a entity.DesignAttemptStart) bool {
+		return a.ClaimToken == rotated
+	})).Return(&entity.DesignRunAttempt{RunId: 900, AttemptNo: 2}, nil).Once()
+	rig.design.EXPECT().FinishAttempt(mock.Anything, mock.AnythingOfType("entity.DesignAttemptFinish")).
+		Return(nil).Once()
+	rig.design.EXPECT().CompleteRun(mock.Anything, mock.MatchedBy(func(c entity.DesignRunComplete) bool {
+		return c.ClaimToken == rotated
+	})).Return(&resumedRun, nil).Once()
+	rig.design.EXPECT().GetBudget(mock.Anything).Return(entity.DesignBudget{Day: "2026-08-30"}, nil).Once()
+
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), &pb_admin.DraftDesignIdeaRequest{
+		TechCardId: designRunCardID, ClientRequestId: "44444444-4444-4444-4444-444444444444",
+	})
+	require.NoError(t, err)
+	require.Len(t, *calls, 1, "перехвативший повтор доисполняет прогон ровно один раз")
 }
 
 // ПОТОЛКИ СНИМКА ОТКАЗЫВАЮТ, А НЕ МОЛЧА ОБРЕЗАЮТ: снимок, у которого половина входов пропала,

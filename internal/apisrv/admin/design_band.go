@@ -88,6 +88,28 @@ var designRefusals = []struct {
 	// вкладывает сервер. Если он всё-таки приехал, значит верстак уехал между чтением и
 	// транзакцией, и правильный ответ человеку — «перечитай полосу», а не молча оторванные детали.
 	{entity.ErrDesignPlatesNotInDocument, codes.FailedPrecondition, "plates_not_in_document"},
+	// ─── ОЧЕРЕДЬ И ДЕНЬГИ ───
+	//
+	// ЭТИХ ТРЁХ ЗДЕСЬ НЕ БЫЛО, И ЦЕНА ПРОПУСКА НАЗЫВАЕТСЯ ТОЧНО: всё, чего нет в таблице, уходит
+	// на провод как Internal «failed to …» ПЛЮС строка ERROR в логе. То есть ОЖИДАЕМЫЙ ОТКАЗ
+	// выглядел поломкой сервера — человек упирался в дневной потолок и получал «что-то сломалось»,
+	// а дежурный получал ошибку в логе на штатное состояние дня.
+	//
+	// budget_exceeded — FailedPrecondition, ровно как обещает комментарий у самого sentinel-а: это
+	// не поломка запроса, а СОСТОЯНИЕ ДНЯ. Тем же отказом отвечает намеренно закрытая полоса
+	// (`daily_budget = 0` — «сегодня не запускаем»), и это одна новость, а не две: и там и там
+	// действие человека — подождать до завтра либо поднять потолок. Машинный токен, который
+	// sentinel обещает, до этой правки на проводе не появлялся НИ РАЗУ.
+	{entity.ErrDesignBudgetExceeded, codes.FailedPrecondition, "budget_exceeded"},
+	// claim_lost — Aborted, В ОДНОМ РЯДУ С slot_rev_mismatch И bench_moved, потому что это тот же
+	// самый класс: оптимистичный захват не подтвердился, состояние уехало, и правильное действие —
+	// ПЕРЕЧИТАТЬ И ПОВТОРИТЬ. Internal сказал бы «сломались мы», и клиент, который умеет
+	// откатывать Aborted, откатывать бы не стал.
+	{entity.ErrDesignClaimLost, codes.Aborted, "claim_lost"},
+	// run_terminal — FailedPrecondition: прогон УЖЕ КОНЧИЛСЯ, и повтор его не двигает. Отдельно от
+	// claim_lost намеренно — «ты опоздал» и «строка закончена» разные новости, и повторять
+	// вторую бессмысленно, в отличие от первой.
+	{entity.ErrDesignRunTerminal, codes.FailedPrecondition, "run_terminal"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -279,6 +301,21 @@ func (s *Server) DeleteDesignDetailSlot(ctx context.Context, req *pb_admin.Delet
 // SetDesignReferenceRole states which side of the garment a reference is about; an empty role
 // clears it and the response then carries no reference.
 func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDesignReferenceRoleRequest) (*pb_admin.SetDesignReferenceRoleResponse, error) {
+	// ЗАПИСКА ИМЕЕТ ПОТОЛОК, ПОТОМУ ЧТО ОНА ПИТАЕТ СНИМОК, А НЕ ТОЛЬКО ЭКРАН.
+	//
+	// Она уезжает в `design_run.inputs` каждого прогона, который эту картинку возьмёт
+	// (DesignInputRef.note), и там ЗАМЕРЗАЕТ. Колонка объявлена TEXT — до 64 KB на одну записку, —
+	// а весь снимок ограничен теми же 64 KB на ДВАДЦАТЬ ЧЕТЫРЕ референса; без этого потолка одна
+	// записка съедала бы снимок целиком, и отказ приходил бы человеку не про его текст, а про число
+	// байтов JSON, которого он не видит.
+	//
+	// ⚠ ОТКАЗ, А НЕ ОБРЕЗКА, и это правило волны, а не вкус: обрезанная копия утверждала бы в
+	// истории слова, которых человек не писал. Считаются РУНЫ, а не байты: кириллическая записка
+	// иначе упиралась бы в потолок вдвое раньше латинской.
+	if n := len([]rune(req.GetNote())); n > designMaxRefNoteRunes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"note is %d characters; the ceiling is %d", n, designMaxRefNoteRunes)
+	}
 	ref, err := s.repo.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
 		TechCardId: int(req.GetTechCardId()),
 		MediaId:    int(req.GetMediaId()),
@@ -316,8 +353,22 @@ func (s *Server) RegisterDesignUpload(ctx context.Context, req *pb_admin.Registe
 			return nil, status.Errorf(codes.InvalidArgument,
 				"items.%d.ghost_view %q is not a view of the garment", i, it.GetGhostView())
 		}
+		// РОД ФАЙЛА ЕДЕТ В СТОР, А НЕ НА ПОЛ. Он объявлен на проводе УТВЕРЖДЕНИЕМ, а не догадкой
+		// («the uploader knows whether the file they are dragging in is a line drawing or a colour
+		// render, and nothing downstream can recover it from the pixels»), и стор его ждёт:
+		// pictures.go валидирует род, пишет его в колонку и выводит из него род целевого слота.
+		//
+		// ЧЕМ МОЛЧАНИЕ ЗДЕСЬ СТОИЛО. Отброшенный род читался как `flat` (DesignKindOrFlat), и
+		// рендер, загруженный руками, ложился в полосу флэтом: (а) гейт `pic.Kind != kind`
+		// пропускал цветной рендер во флэт-слот, и минт печатал его на ТЕХНИЧЕСКОМ ЛИСТЕ без
+		// единого отказа; (б) счётчик W-13 его не видел, дверь 3D рисовалась закрытой, а
+		// StartDesignRun(threed) отказывал — хотя рендер на карточке был.
+		if it.GetKind() != "" && !entity.IsDesignPictureKind(it.GetKind()) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"items.%d.kind %q is not a kind of design picture", i, it.GetKind())
+		}
 		items = append(items, entity.DesignUploadItem{
-			MediaId: int(it.GetMediaId()), GhostView: it.GetGhostView(),
+			MediaId: int(it.GetMediaId()), GhostView: it.GetGhostView(), Kind: it.GetKind(),
 		})
 	}
 	in := entity.DesignBatchRegister{
@@ -799,10 +850,26 @@ func (s *Server) stripDesignCosting(ctx context.Context, runs []*pb_common.Desig
 // `view_key = "detail"` means MINT A NEW DETAIL SLOT — that is the only form the oneof can carry,
 // since it cannot send a view and an id at once, and a detail's identity is its minted id rather
 // than its name. The name is then required, and the refusal for a missing one already exists.
+//
+// РОД — ВТОРАЯ ПОЛОВИНА АДРЕСА (0349), И ОН ЧИТАЕТСЯ ЗДЕСЬ. Без него двухосный верстак по проводу
+// НЕ СУЩЕСТВОВАЛ: всякий адрес приезжал в стор с пустым родом, то есть `flat`, — значит
+// SetDesignBenchSlot с родом `render` молча спрашивал про флэт-слот, гейт `pic.Kind != kind`
+// отказывал любому рендеру в любом слоте, и цепочка «флэты → рендер в слот → 3D» была непроходима:
+// designInputSlots для 3D ищет слоты рода `render`, а завести их не мог никто.
+//
+// ⚠ ПРИ АДРЕСАЦИИ ПО slot_id РОД ИГНОРИРУЕТСЯ, И ЭТО СЛОВО КОНТРАКТА, а не упрощение: «a minted
+// id already names its bench, and a kind disagreeing with it would be a contradiction nobody could
+// adjudicate». Поэтому он и не переносится в адрес — противоречие, которого нет в структуре,
+// нельзя послать. Сторона стора держит вторую половину этого правила (setBenchSlotTx сверяет род
+// кадра с родом САМОЙ СТРОКИ слота).
 func designSlotRefFromPb(ref *pb_admin.DesignBenchSlotRef) (entity.DesignSlotRef, error) {
 	if ref == nil {
 		return entity.DesignSlotRef{}, status.Error(codes.InvalidArgument,
 			"a bench slot must be addressed by view_key or slot_id")
+	}
+	if ref.GetKind() != "" && !entity.IsDesignPictureKind(ref.GetKind()) {
+		return entity.DesignSlotRef{}, status.Errorf(codes.InvalidArgument,
+			"slot.kind %q is not a kind of design bench", ref.GetKind())
 	}
 	switch v := ref.GetSlot().(type) {
 	case *pb_admin.DesignBenchSlotRef_ViewKey:
@@ -810,7 +877,7 @@ func designSlotRefFromPb(ref *pb_admin.DesignBenchSlotRef) (entity.DesignSlotRef
 			return entity.DesignSlotRef{}, status.Errorf(codes.InvalidArgument,
 				"slot.view_key %q is not a view of the garment", v.ViewKey)
 		}
-		return entity.DesignSlotRef{ViewKey: v.ViewKey}, nil
+		return entity.DesignSlotRef{ViewKey: v.ViewKey, Kind: ref.GetKind()}, nil
 	case *pb_admin.DesignBenchSlotRef_SlotId:
 		if v.SlotId <= 0 {
 			return entity.DesignSlotRef{}, status.Error(codes.InvalidArgument, "slot.slot_id must be positive")

@@ -147,9 +147,11 @@ func workerBackoff(failures int) time.Duration {
 // runOnce is one tick: revive, claim, and take each claimed run through a pass.
 //
 // THE TWO PHASES HAVE DIFFERENT CLOCKS, AND THEY HAVE TO. The queue verbs are short and get a
-// short bound; a pass contains a provider call and gets RunTimeout, which applyDefaults keeps
-// strictly under the claim lease — the invariant that stops the queue from reviving a run whose
-// worker is still alive and paying for it.
+// short bound; a pass contains a provider call and gets RunTimeout, and applyDefaults keeps the
+// WHOLE BATCH — BatchSize × RunTimeout — strictly under the claim lease. Не один прогон, а пачка:
+// runOnce строго последовательна, поэтому последний прогон пачки ждёт всех предыдущих и всё это
+// время жжёт СВОЮ лизу. Инвариант на один прогон был бы верен арифметически и всё равно позволил
+// очереди воскресить строку, чей воркер жив и прямо сейчас за неё платит.
 func (w *Worker) runOnce(ctx context.Context) bool {
 	defer saferun.Recover(ctx, workerName)
 

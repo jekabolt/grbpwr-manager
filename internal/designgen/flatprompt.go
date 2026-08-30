@@ -22,10 +22,12 @@ import (
 // literal copies precisely so that an improvement here goes red there.
 //
 // TWO SMALL COHERENCES WORTH KNOWING:
-//   - The image route asks the provider for `background=transparent` (images.go) while these
-//     paragraphs say "plain white background". Not a contradiction: the words tell the model to
-//     draw as if on clean white — no shadows, no ground — and the API parameter keeps the actual
-//     alpha empty so the flat can be laid over a technical sheet.
+//   - The words say "plain white background" and THE API PARAMETER NOW AGREES: the image route
+//     asks for an opaque background (`backgroundFor`, images.go). This paragraph used to explain
+//     that the route asked for transparency instead and that the two were coherent anyway. They
+//     were — until the default model became one whose catalogue has no `transparent` at all, at
+//     which point the request became a 400 on every flat run. The explanation outlived its subject
+//     by one wave, which is exactly how a reader "fixes" working code back to broken.
 //   - "no text, labels, measurements, callouts" agrees with the product: our callouts are a
 //     separate entity drawn OVER the picture, never baked into it.
 const (

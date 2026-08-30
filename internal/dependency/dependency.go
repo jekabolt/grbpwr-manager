@@ -2268,6 +2268,20 @@ type (
 		// another lossy generation each time. Same byte/pixel/dimension ceilings as the
 		// re-encoding path, all read from the header; JPEG, PNG, WebP and GIF only.
 		UploadContentImageVerbatim(ctx context.Context, raw []byte, folder, imageName string) (*pb_common.MediaFull, error)
+		// UploadContentNonRaster stores a media file that is NOT a picture — today an SVG
+		// vector or a GLB model — as ONE verbatim object plus a media row whose three url
+		// slots all point at it (the shape the video path already uses, and the reason the
+		// row is visible to GetMediaById / the library / GetMediaUsage without a new
+		// column). No migration is involved: the media table has never carried a content
+		// type, and the object extension is where the file type lives.
+		//
+		// THE DECLARED TYPE IS CHECKED AGAINST THE BYTES, and for SVG the check is
+		// recraft.InspectSVG: these bytes are served from our own public host and an SVG is
+		// a document, so <script>, on*/javascript: attributes, <foreignObject> and declared
+		// XML entities are refused rather than scrubbed. A GLB is verified through its
+		// container header, which also catches a truncated download. Both types have a
+		// LOUD byte ceiling — an oversized payload is an error, never a stored prefix.
+		UploadContentNonRaster(ctx context.Context, raw []byte, contentType, folder, objectName string) (*pb_common.MediaFull, error)
 	}
 
 	// ReaderAtCloser is what zip.NewReader needs plus the Close that releases whatever

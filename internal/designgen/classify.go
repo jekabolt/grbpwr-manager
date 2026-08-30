@@ -88,14 +88,27 @@ func classify(err error) verdict {
 	case errors.Is(err, orimages.ErrUnauthorized), errors.Is(err, recraft.ErrUnauthorized),
 		errors.Is(err, meshy.ErrUnauthorized):
 		return verdict{Retryable: false, Code: CodeUnauthorized, State: entity.DesignAttemptFailed}
-	case errors.Is(err, orimages.ErrOutOfCredit), errors.Is(err, recraft.ErrInsufficientCredits):
+	case errors.Is(err, orimages.ErrOutOfCredit), errors.Is(err, recraft.ErrInsufficientCredits),
+		errors.Is(err, meshy.ErrOutOfCredit):
 		return verdict{Retryable: false, Code: CodeOutOfCredit, State: entity.DesignAttemptFailed}
 	case errors.Is(err, orimages.ErrModelUnavailable), errors.Is(err, recraft.ErrModelUnavailable):
 		return verdict{Retryable: false, Code: CodeModelRetired, State: entity.DesignAttemptFailed}
 
 	// ─── we sent something unacceptable; a retry repeats it exactly ───
+	//
+	// ⚠ THE 4xx CASES BELONG HERE AND NOT IN THE DEFAULT, and the difference is five paid rounds.
+	// The default leans retryable because an unrecognised fault is usually weather — but a
+	// provider's own "this request is wrong" is the one fault a retry provably cannot fix, and it
+	// used to land in that default and burn the whole attempt cap. Worse, the row then read
+	// `failed · provider_unavailable`, which sends a person to look at the provider's status page
+	// for a request that was never acceptable in the first place.
+	//
+	// The two LOCAL ceilings (input picture count, texture prompt length) are the same verdict for
+	// the same reason: they are refused before the request leaves, so nothing was billed, and
+	// re-sending the identical too-long list changes nothing.
 	case errors.Is(err, recraft.ErrBadRequest), errors.Is(err, meshy.ErrImageCount),
-		errors.Is(err, meshy.ErrBadImageURL):
+		errors.Is(err, meshy.ErrBadImageURL), errors.Is(err, meshy.ErrPromptTooLong),
+		errors.Is(err, meshy.ErrBadRequest), errors.Is(err, orimages.ErrBadRequest):
 		return verdict{Retryable: false, Code: CodeBadRequest, State: entity.DesignAttemptFailed}
 
 	// ─── billed and useless: the money is real, the output is not ───

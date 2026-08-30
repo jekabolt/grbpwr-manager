@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -18,12 +19,23 @@ import (
 // LOCKED по предикату готовности, затем UPDATE, В КОТОРОМ ТОТ ЖЕ ПРЕДИКАТ ПОВТОРЁН ЦЕЛИКОМ,
 // вместе с условием лизы.
 //
-// ПОЧЕМУ ПРЕДИКАТ ПОВТОРЯЕТСЯ. SKIP LOCKED пропускает строки, ЗАБЛОКИРОВАННЫЕ ПРЯМО СЕЙЧАС, — он
-// ничего не говорит о строке, которую другой воркер захватил и ОТПУСТИЛ (транзакция захвата
-// коротка, а лиза живёт минутами). Без повтора предиката второй захват выиграл бы гонку у живого
-// токена: первый воркер уходит звать провайдера, второй перезаписывает claim_token, и первый
-// уже НИКОГДА не сможет закрыть свой прогон — CompleteRun сверяет токен. Деньги списаны, строка
-// висит. Ровно этот дефект был в первой редакции плана, и он назван там вслух.
+// ПОЧЕМУ ПРЕДИКАТ ПОВТОРЯЕТСЯ — И ЧЕМ ЭТОТ ДОВОД БЫЛ НЕВЕРЕН. Здесь стояло: «без повтора второй
+// захват выиграл бы гонку у живого токена». ЭТО ИЗМЕРЕНО И ОПРОВЕРГНУТО. Пишущая транзакция
+// открыта SERIALIZABLE (internal/store/db.go), InnoDB превращает на этом уровне обычный SELECT в
+// чтение ПОД БЛОКИРОВКОЙ, и строка заперта до конца транзакции захвата — окна между чтением и
+// записью НЕ СУЩЕСТВУЕТ. Замер: TestDesignDBWriteTxLocksTheRunRowItRead — чужая ротация токена
+// ЖДЁТ, пока прочитавшая транзакция открыта, и проходит мгновенно после её коммита. Под удалением
+// этого повтора четыре поведенческие пробы очереди остаются ЗЕЛЁНЫМИ.
+//
+// ПОЭТОМУ ПОВТОР ОСТАЁТСЯ, НО ПО ДРУГОЙ ПРИЧИНЕ: он — страховка на ПОНИЖЕНИЕ ИЗОЛЯЦИИ. Гарантию
+// сегодня несут SERIALIZABLE и SKIP LOCKED, а не он; в день, когда кто-то опустит уровень до
+// READ COMMITTED ради скорости — а это правка в другом файле, которую ревьюер очереди не увидит,
+// — повторённый предикат окажется единственным, что стоит между двумя воркерами и потерянным
+// результатом. Ложный довод был опаснее отсутствующего: он приглашал удалить сторож («такого не
+// бывает») и одновременно ПРЯТАЛ то, что корректность держится на уровне изоляции.
+//
+// ЧТО СТОРОЖИТ САМ ОПЕРАТОР: TestDesignDBClaimUpdateRepeatsTheClaimablePredicate достаёт текст
+// запроса разбором AST и ИСПОЛНЯЕТ его на живом MySQL — своя копия SQL осталась бы зелёной.
 //
 // ЧЕМ ДОКАЗЫВАЕТСЯ, ЧТО ИСТЁКШИЙ ЗАХВАТ НЕ ЗАТРЁТ ЧУЖОЙ РЕЗУЛЬТАТ: claim_token стоит в WHERE у
 // ОБОИХ закрывающих глаголов (CompleteRun и FailRun), а перехват задания меняет токен строки.
@@ -43,6 +55,67 @@ const designRunClaimableSQL = `
 	AND cancel_requested_at IS NULL
 	AND (next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP(6))
 	AND (claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at < UTC_TIMESTAMP(6))`
+
+// designRunResumableSQL — предикат ПЕРЕХВАТА БРОШЕННОГО ХЕНДЛЕРА, и он ТОЧНОЕ ДОПОЛНЕНИЕ
+// designRunClaimableSQL по роду: воркер не берёт `draft_idea` вовсе, значит подобрать его строку
+// может только следующий хендлер того же client_request_id.
+//
+// ⚠ ЖИВОСТЬ ЛИЗЫ СТОИТ ЗДЕСЬ, В WHERE ЗАПИСИ, А НЕ В ПРОВЕРКЕ ПЕРЕД НЕЙ, и это тот же довод, что
+// у ClaimRuns: проверка даёт человеческий отказ, а WHERE даёт ИСКЛЮЧЕНИЕ. Пока перехват сводился
+// к чтению строки и переиспользованию ЕЁ ЖЕ токена, два одновременных повтора одного
+// client_request_id проходили ОБА: оба видели истёкшую лизу, оба брали один и тот же токен, оба
+// открывали попытку (MAX(attempt_no)+1 их лишь нумерует) и ОБА ПЛАТИЛИ МОДЕЛИ. Обещание
+// «повтор = один платёж» — единственное, ради чего client_request_id существует, — в окне резюма
+// не выполнялось.
+//
+// ПОЧЕМУ ТОКЕН РОТИРУЕТСЯ, А НЕ ПЕРЕИСПОЛЬЗУЕТСЯ. Так устроена вся остальная машина: перехват
+// задания МЕНЯЕТ claim_token, и опоздавший получает rows = 0 и claim_lost вместо «успеха мимо»
+// (см. шапку файла). Оставленный прежним токен сделал бы двух хендлеров неразличимыми для
+// CompleteRun — первый закрыл бы прогон, который ведёт второй, и оба ответа выглядели бы удачными.
+//
+// ПОЧЕМУ ЛИЗА ПРОДЛЕВАЕТСЯ. Перехват без продления оставляет строку с истёкшей лизой, то есть
+// открытой для ТРЕТЬЕГО повтора секундой позже — исключение действовало бы ровно один раз.
+const designRunResumableSQL = `
+	kind = 'draft_idea'
+	AND status IN ('pending', 'running')
+	AND cancel_requested_at IS NULL
+	AND claim_token IS NOT NULL
+	AND claim_expires_at IS NOT NULL
+	AND claim_expires_at < UTC_TIMESTAMP(6)`
+
+// resumeHandlerRun ПЫТАЕТСЯ перехватить строку, чей синхронный хендлер не вернулся.
+//
+// Возвращает (false, строка как есть, nil), когда перехватывать нечего: прогон закончен, отменён,
+// либо его лиза ЖИВА — «вызов идёт прямо сейчас, в соседнем запросе», и второй звонок оплатил бы
+// ту же модель второй раз. Ровно это же значение возвращается ПРОИГРАВШЕМУ гонки: строку у него
+// увели между чтением и записью, и правильный ответ ему — та же строка, которую ведёт победитель.
+func resumeHandlerRun(ctx context.Context, db dependency.DB, prior entity.DesignRun) (bool, entity.DesignRun, error) {
+	token := uuid.NewString()
+	rows, err := storeutil.ExecNamedRows(ctx, db, `
+		UPDATE design_run
+		SET claim_token = :tok,
+		    claim_expires_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL :lease_micros MICROSECOND),
+		    started_at = COALESCE(started_at, UTC_TIMESTAMP(6))
+		WHERE id = :id AND `+designRunResumableSQL,
+		map[string]any{
+			"id": prior.Id, "tok": token,
+			"lease_micros": designHandlerLease.Microseconds(),
+		})
+	if err != nil {
+		return false, entity.DesignRun{}, fmt.Errorf("failed to resume design run %d: %w", prior.Id, err)
+	}
+	if rows == 0 {
+		return false, prior, nil
+	}
+	// Строка ПЕРЕЧИТЫВАЕТСЯ, а не правится в памяти: хендлеру уезжает claim_token, которым он
+	// потом закроет прогон, и собранная из догадок копия строки — это второй источник правды о
+	// том, кто ею владеет.
+	run, err := runByID(ctx, db, prior.Id)
+	if err != nil {
+		return false, entity.DesignRun{}, err
+	}
+	return true, run, nil
+}
 
 const (
 	// designMaxAttempts — сколько раз одно задание вправе быть оплачено. Ретрай платит ВТОРОЙ
@@ -337,9 +410,11 @@ func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinis
 // CompleteRun files the outputs and closes the run.
 //
 // ⚠ claim_token СТОИТ В WHERE ЗАКРЫВАЮЩЕГО UPDATE, а не только в проверке перед ним. Проверка
-// даёт человеческий отказ; WHERE даёт ГАРАНТИЮ: между чтением и записью строку может перехватить
-// другой воркер, и без токена в WHERE опоздавший затёр бы результат перехватившего — обе
-// стороны при этом считали бы, что всё прошло успешно.
+// даёт человеческий отказ; WHERE — страховка на понижение изоляции, и ровно в этом качестве, а
+// не в том, что здесь было написано раньше. Прежний довод («между чтением и записью строку может
+// перехватить другой воркер») ИЗМЕРЕН И НЕВЕРЕН: транзакция SERIALIZABLE держит строку под
+// блокировкой с момента чтения, перехватить её в этом окне нельзя, и requireClaim отказывает
+// раньше, чем дело дойдёт до WHERE. Подробный разбор и замер — в шапке файла.
 //
 // ЧАСТИЧНЫЙ ОТВЕТ — ЭТО МЕНЬШЕ КАРТИНОК И ВСЁ РАВНО `done`: строка истории скажет «done · 2 of 3»
 // по requested_outputs. Вставка идемпотентна по uq_design_picture_run_ordinal, поэтому повтор
@@ -505,8 +580,10 @@ func attachRunPictures(ctx context.Context, db dependency.DB, run *entity.Design
 
 // FailRun records a failure: exponential retry or a terminal `failed`.
 //
-// claim_token — В WHERE, по тому же доводу, что и в CompleteRun: воркер с истёкшим захватом не
-// вправе ни уронить, ни отложить задание, которое уже ведёт другой.
+// claim_token — В WHERE, по тому же доводу, что и в CompleteRun, и с той же оговоркой: сегодня
+// эту гонку закрывает уровень изоляции, а токен в WHERE держит её закрытой в день, когда уровень
+// опустят. Утверждение остаётся верным — воркер с истёкшим захватом не вправе ни уронить, ни
+// отложить чужое задание, — но несёт его не эта строка.
 func (s *Store) FailRun(ctx context.Context, req entity.DesignRunFail) (*entity.DesignRun, error) {
 	if req.RunId <= 0 {
 		return nil, fmt.Errorf("%w: run id is required", entity.ErrDesignInvalidArgument)

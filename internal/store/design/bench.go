@@ -150,6 +150,31 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 		return nil, fmt.Errorf("%w: unknown slot kind %q", entity.ErrDesignInvalidArgument, kind)
 	}
 
+	// ⚠ АДРЕС ПО slot_id НАЗЫВАЕТ СВОЙ ВЕРСТАК САМ, и род запроса при нём ИГНОРИРУЕТСЯ — это
+	// слово контракта («a minted id already names its bench, and a kind disagreeing with it would
+	// be a contradiction nobody could adjudicate»), а не удобство.
+	//
+	// ПОЧЕМУ СТРОКА ЧИТАЕТСЯ ЗДЕСЬ, А НЕ В casExistingSlot. Ниже стоит единственный сторож,
+	// который вообще сверяет род кадра с родом слота, и сравнивать ему при адресации по id не с
+	// чем, кроме РОДА САМОЙ СТРОКИ. Взять род из запроса значило бы завести ровно два новых
+	// молчаливых исхода: замена плиты в рендер-слоте по id без рода — ЛОЖНЫЙ ОТКАЗ (`render` кадр
+	// против подставленного `flat`), а `slot_id` рендер-слота с родом `flat` — ФЛЭТ, ПРИНЯТЫЙ В
+	// РЕНДЕР-СЛОТ, потому что сам casExistingSlot род не проверяет вовсе. Второй исход тише
+	// первого и дороже: он портит верстак, с которого строится 3D.
+	var existing *entity.DesignBenchSlot
+	if byID {
+		before, err := slotByID(ctx, db, req.Slot.SlotId)
+		if err != nil {
+			return nil, err
+		}
+		if before.TechCardId != req.TechCardId {
+			return nil, fmt.Errorf("%w: slot %d belongs to tech card %d",
+				entity.ErrDesignNotFound, before.Id, before.TechCardId)
+		}
+		existing = &before
+		kind = entity.DesignKindOrFlat(before.Kind)
+	}
+
 	// The plate, and the four refusals that belong to it. Every one of them is read in THIS
 	// transaction: a guard read outside it is a TOCTOU with a nicer name.
 	if req.PictureId != 0 {
@@ -212,7 +237,7 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 
 	switch {
 	case byID:
-		return casExistingSlot(ctx, db, req)
+		return casExistingSlot(ctx, db, req, *existing)
 	case req.Slot.ViewKey == entity.DesignViewDetail:
 		return createDetailSlot(ctx, db, req, kind)
 	default:
@@ -331,15 +356,11 @@ func createDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBe
 // casExistingSlot updates a slot addressed by its own id under compare-and-set. RowsAffected
 // answers unambiguously here — the DSN carries no clientFoundRows, so a row that did not change
 // counts zero — and the re-read is only for the payload.
-func casExistingSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet) (*entity.DesignBenchSlot, error) {
-	before, err := slotByID(ctx, db, req.Slot.SlotId)
-	if err != nil {
-		return nil, err
-	}
-	if before.TechCardId != req.TechCardId {
-		return nil, fmt.Errorf("%w: slot %d belongs to tech card %d",
-			entity.ErrDesignNotFound, before.Id, before.TechCardId)
-	}
+//
+// `before` ПРИХОДИТ ПАРАМЕТРОМ, а не читается второй раз: setBenchSlotTx уже прочитал эту строку —
+// род слота ему нужен ДО сторожа рода кадра, — и второе чтение той же строки в той же транзакции
+// было бы вторым источником правды о её роде.
+func casExistingSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, before entity.DesignBenchSlot) (*entity.DesignBenchSlot, error) {
 	if before.SlotRev != req.ExpectedSlotRev {
 		return &before, revMismatch(before, true, req.ExpectedSlotRev)
 	}

@@ -51,6 +51,10 @@ type fakeS3 struct {
 	bucket  string
 	mu      sync.Mutex
 	objects map[string][]byte
+	// contentTypes records the Content-Type each object was PUT with. It is the header the CDN
+	// will serve the object back with, so for a file whose whole point is the type the browser
+	// obeys — an SVG, a GLB — it is the thing under test, not decoration.
+	contentTypes map[string]string
 	// puts counts every object that ever ARRIVED, so an assertion on an empty store can tell
 	// "it was taken back" from "it was never sent" — the two look identical in `objects`.
 	puts int
@@ -67,6 +71,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Lock()
 		f.objects[key] = body
+		if f.contentTypes == nil {
+			f.contentTypes = map[string]string{}
+		}
+		f.contentTypes[key] = r.Header.Get("Content-Type")
 		f.puts++
 		f.mu.Unlock()
 		sum := md5.Sum(body)
@@ -100,6 +108,40 @@ func (f *fakeS3) storedUnder(t *testing.T, suffix string) []byte {
 	return f.objects[hits[0]]
 }
 
+// storedTypeUnder is storedUnder's sibling: the Content-Type the single matching object was
+// stored with.
+func (f *fakeS3) storedTypeUnder(t *testing.T, suffix string) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var hits []string
+	for k := range f.objects {
+		if strings.Contains(k, suffix) {
+			hits = append(hits, k)
+		}
+	}
+	sort.Strings(hits)
+	require.Lenf(t, hits, 1, "expected exactly one stored object matching %q, got %v", suffix, hits)
+	return f.contentTypes[hits[0]]
+}
+
+// storedKeyUnder returns the KEY of the single matching object — the extension in it is how every
+// reader learns the file type, because the media table has no content-type column.
+func (f *fakeS3) storedKeyUnder(t *testing.T, suffix string) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var hits []string
+	for k := range f.objects {
+		if strings.Contains(k, suffix) {
+			hits = append(hits, k)
+		}
+	}
+	sort.Strings(hits)
+	require.Lenf(t, hits, 1, "expected exactly one stored object matching %q, got %v", suffix, hits)
+	return hits[0]
+}
+
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -114,7 +156,7 @@ func newProbeBucket(t *testing.T) (*Bucket, *fakeS3, *mocks.MockMedia) {
 	t.Helper()
 	const bucketName = "probe-bucket"
 
-	store := &fakeS3{bucket: bucketName, objects: map[string][]byte{}}
+	store := &fakeS3{bucket: bucketName, objects: map[string][]byte{}, contentTypes: map[string]string{}}
 	srv := httptest.NewTLSServer(store)
 	t.Cleanup(srv.Close)
 

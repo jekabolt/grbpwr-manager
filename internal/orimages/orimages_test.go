@@ -457,7 +457,7 @@ func TestGenerate_RefusesBadInputBeforeTheNetwork(t *testing.T) {
 	defer srv.Close()
 	c := New(Config{APIKey: "k", BaseURL: srv.URL})
 
-	tooMany := make([]string, maxInputReferences+1)
+	tooMany := make([]string, MaxInputReferences+1)
 	for i := range tooMany {
 		tooMany[i] = "https://media.grbpwr.com/x.png"
 	}

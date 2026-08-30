@@ -48,25 +48,16 @@ type mediaResolver interface {
 // tick off for.
 func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string) error {
 	// ─── PRE-FLIGHT. Everything here happens BEFORE an attempt row exists, therefore before any
-	// money can move. Each of these three refusals is permanent by nature: no number of retries
-	// wires a route, hands over an API key or teaches the bucket a new file type.
-	prov, err := w.providers.forKind(run.Kind)
+	// money can move. Each of these refusals is permanent by nature: no number of retries wires a
+	// route, hands over an API key or teaches the bucket a new file type.
+	//
+	// IT IS THE SAME CALL THE HANDLER ALREADY MADE AT THE DOOR (PreflightKind), and it is repeated
+	// here rather than trusted: the door answered when the run was created, this answers when it is
+	// executed, and between the two lie a redeploy, a rotated key and a changed configuration. One
+	// expression, asked twice — never two expressions.
+	prov, err := w.providers.preflight(w.sink, run.Kind)
 	if err != nil {
 		return w.failRun(ctx, run, token, err)
-	}
-	if !prov.Enabled() {
-		return w.failRun(ctx, run, token,
-			fmt.Errorf("%w: %s", errProviderDisabled, prov.Name()))
-	}
-	for _, ct := range prov.Produces() {
-		if !w.sink.Accepts(ct) {
-			// ⚠ THE GUARD THAT SAVES REAL MONEY TODAY. The vector route returns SVG and the 3D
-			// route returns GLB, and the picture path of the bucket stores raster only — so
-			// without this check the provider would be paid for a file that the upload then
-			// refuses, every single time, five times per run.
-			return w.failRun(ctx, run, token,
-				fmt.Errorf("%w: %s returns %s", errSinkUnsupported, prov.Name(), ct))
-		}
 	}
 
 	job, err := buildJob(ctx, w.media, run, w.c.ImageQuality)

@@ -115,6 +115,17 @@ type Server struct {
 	// than opening a run that no worker exists to pick up — a run that would hold a budget
 	// reservation and sit in `pending` until midnight while the screen says «generating».
 	designGenerationEnabled bool
+	// designKindGate answers, for one run kind, whether the generation pass would refuse it for
+	// FREE — no route, no credentials, or an output the media store cannot keep. It is a function
+	// rather than a value because the answer is COMPUTED (the route's Produces() crossed with the
+	// sink's Accepts()); a stored list of "kinds that do not work" is exactly the thing that goes
+	// stale silently on the day one of the two sides changes.
+	//
+	// Nil = not wired, and the door then lets the kind through. That is safe by construction and
+	// not by hope: app.go sets this beside SetDesignGenerationEnabled, from the same `if enabled`
+	// block that builds the worker, so a Server without the gate is a Server whose money flag is
+	// off and which therefore refuses every paid verb one check earlier.
+	designKindGate func(kind string) error
 }
 
 // New creates a new server with admin handlers.

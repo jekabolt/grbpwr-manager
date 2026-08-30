@@ -240,6 +240,42 @@ func (s *Store) ImportVector(ctx context.Context, req entity.DesignVectorImport)
 	return &out, nil
 }
 
+// designFlattenSourceClass — ПРОВЕНАНС ФЛЭТТЕНА, И ОН ЧИТАЕТ origin СЛОЯ (0350).
+//
+// ЧТО БЫЛО. Решение принималось ТОЛЬКО по наличию базовой картинки: есть база → ai_edits, нет →
+// drawn. Колонка origin не читалась вовсе, и это ОТМЫВАЛО машинное происхождение в человеческое:
+// слой `vectorised` — платная перерисовка растра моделью — записывался «нарисован от руки», а
+// чужой импортированный файл `imported` — тоже. Предупреждение о смеси провенансов считается по
+// design_picture.source_class (runInputsAreMixed), поэтому оно молчало ровно там, где обязано было
+// звучать: ИИ-кадр и человеческий кадр становились неразличимы.
+//
+// ПОЧЕМУ origin СИЛЬНЕЕ ДОГАДКИ ПО БАЗЕ. База отвечает на вопрос «поверх чего», origin — на вопрос
+// «откуда сам вектор», и провенанс — это второе. Импортированный SVG остаётся чужим файлом и
+// лёжа поверх нашего растра; машинная перерисовка остаётся машинной и без базы.
+//
+// entity.DesignSourceImportedSVG получает здесь СВОЕГО ПЕРВОГО ПИСАТЕЛЯ: до этой правки значение
+// стояло в словаре провода и не записывалось ни одной строкой кода.
+func designFlattenSourceClass(origin string, hasParent bool) string {
+	switch entity.DesignLayerOriginOrDrawn(origin) {
+	case entity.DesignLayerOriginImported:
+		return entity.DesignSourceImportedSVG
+	case entity.DesignLayerOriginVectorised:
+		// С базой это правка ИМЕННО ТОГО кадра машиной (ai_edits); без базы — просто машинный
+		// вектор (ai). Ни одно из двух не `drawn`, и в этом вся разница.
+		if hasParent {
+			return entity.DesignSourceAIEdits
+		}
+		return entity.DesignSourceAI
+	default:
+		// origin = drawn (в том числе пустая колонка): рука человека. Поверх кадра это правка
+		// того кадра, на чистом листе — рисунок.
+		if hasParent {
+			return entity.DesignSourceAIEdits
+		}
+		return entity.DesignSourceDrawn
+	}
+}
+
 // FlattenEditLayer files an ALREADY-RASTERISED image as a picture of the band, carrying
 // derived_from, source_class and layer_rev. The server does not rasterise (Р-2): the client
 // produced the raster from base + layer and uploaded it, and the server records the provenance.
@@ -293,16 +329,13 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 			}
 		}
 
-		// PROVENANCE. A layer over a picture produces an edit of that picture (ai_edits); a layer
-		// over nothing produces a drawing (drawn). Both strings come from the wire vocabulary of
-		// DesignPicture.source_class — see entity.DesignSourceAIEdits for why the wire wins over
-		// the migration's prose.
-		src := entity.DesignSourceDrawn
+		// PROVENANCE. Both strings come from the wire vocabulary of DesignPicture.source_class —
+		// see entity.DesignSourceAIEdits for why the wire wins over the migration's prose.
+		src := designFlattenSourceClass(layer.Origin, parent != nil)
 		ghost, kind := any(nil), entity.DesignPictureKindFlat
 		mixed := false
 		runID, batchID, derived := any(nil), any(nil), any(nil)
 		if parent != nil {
-			src = entity.DesignSourceAIEdits
 			kind = parent.Kind
 			mixed = parent.MixedInput
 			runID, batchID, derived = nullInt32(parent.RunId), nullInt32(parent.BatchId), parent.Id
