@@ -81,7 +81,4 @@ func (s *Store) CancelRun(ctx context.Context, runID int, actor string) (*entity
 	return nil, entity.ErrDesignNotImplemented
 }
 
-// MintSheetVersion writes the document and mints the frozen version in ONE transaction.
-func (s *Store) MintSheetVersion(ctx context.Context, req entity.DesignSheetMint) (*entity.DesignSheetVersionFull, error) {
-	return nil, entity.ErrDesignNotImplemented
-}
+// MintSheetVersion живёт в mint.go — тело приехало волной 2, сигнатура не двигалась.

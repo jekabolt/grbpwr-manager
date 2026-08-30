@@ -214,7 +214,11 @@ func TestBomQtyStoredGateStandsBeforeTheWrite(t *testing.T) {
 		t.Fatalf("не читается techcard.go: %v", err)
 	}
 	src := string(body)
-	gate := strings.Index(src, "if err := bomQtyStoredGate(req.TechCard, stored); err != nil {")
+	// ПАВЛОАД ОБНОВЛЕНИЯ ЗОВЁТСЯ `in`, А НЕ `req.TechCard`: конвейер хендлера вынесен в
+	// prepareTechCardWrite, потому что входов в запись документа стало ДВА (сейв и атомарный минт
+	// версии листа), а скопированный список шагов расходится молча. Щит от этого стоит там же —
+	// перед записью и на обоих входах сразу.
+	gate := strings.Index(src, "if err := bomQtyStoredGate(in, stored); err != nil {")
 	write := strings.Index(src, "UpdateTechCardAndListOrphanedPatternURLs(")
 	if gate < 0 || write < 0 {
 		t.Fatalf("якоря не найдены (щит %d, запись %d) — проверка ничего не измеряет", gate, write)
@@ -289,17 +293,25 @@ func TestBomQtyGatesAreActuallyCalled(t *testing.T) {
 	src := string(body)
 	// Положительный контроль: если разбор смотрит не туда, соседний щит тоже «не найдётся», и
 	// пустой результат перестаёт читаться как «вызова нет».
-	if strings.Count(src, "operationWorkWireGate(req.TechCard)") != 2 {
-		t.Fatalf("в techcard.go не нашлось двух вызовов operationWorkWireGate — извлекатель смотрит " +
-			"не туда, а сломанный извлекатель зеленит проверку ниже на любой ошибке")
+	// ДВА НАПИСАНИЯ ОДНОГО ПАВЛОАДА, и это не небрежность: создание работает с req.TechCard, а
+	// путь обновления вынесен в prepareTechCardWrite, где тот же payload зовётся `in`, — потому
+	// что входов в запись документа стало два (сейв и атомарный минт версии листа) и список шагов
+	// обязан быть ОДИН. Считаются оба, иначе перенос вызова в общий конвейер прочитался бы как
+	// «вызова нет».
+	create := strings.Count(src, "operationWorkWireGate(req.TechCard)")
+	shared := strings.Count(src, "operationWorkWireGate(in)")
+	if create+shared != 2 {
+		t.Fatalf("в techcard.go не нашлось двух вызовов operationWorkWireGate (создание %d, общий "+
+			"конвейер %d) — извлекатель смотрит не туда, а сломанный извлекатель зеленит проверку "+
+			"ниже на любой ошибке", create, shared)
 	}
-	if got := strings.Count(src, "bomQtyWireGate(req.TechCard)"); got != 2 {
+	if got := strings.Count(src, "bomQtyWireGate(req.TechCard)") + strings.Count(src, "bomQtyWireGate(in)"); got != 2 {
 		t.Errorf("bomQtyWireGate зовётся %d раз(а), ожидалось 2 (создание и обновление) — "+
 			"неосведомлённое эхо количеств пройдёт насквозь", got)
 	}
-	if got := strings.Count(src, "bomQtyStoredGate(req.TechCard, stored)"); got != 1 {
-		t.Errorf("bomQtyStoredGate зовётся %d раз(а), ожидался 1 (обновление) — отставшая вкладка "+
-			"сотрёт количества молча", got)
+	if got := strings.Count(src, "bomQtyStoredGate(in, stored)"); got != 1 {
+		t.Errorf("bomQtyStoredGate зовётся %d раз(а), ожидался 1 (общий конвейер записи) — "+
+			"отставшая вкладка сотрёт количества молча", got)
 	}
 }
 

@@ -187,7 +187,7 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	card := in.Card
 	s.prepareImportedCard(card)
 
-	if err := s.ensureDictionaryFresh(ctx, "archive import"); err != nil {
+	if err := s.EnsureDictionaryFresh(ctx, "archive import"); err != nil {
 		return 0, err
 	}
 
@@ -416,7 +416,7 @@ func (l *importLosses) dropCounted(entityName, ref, status string, reason techca
 
 // importedSizeRef names a size the way every other size line of the report names one: by NAME when
 // the dictionary has it, because that is what the operator reads on the card, and by id otherwise.
-// The dictionary was refreshed before the transaction opened (ensureDictionaryFresh), and a name it
+// The dictionary was refreshed before the transaction opened (EnsureDictionaryFresh), and a name it
 // cannot produce is not worth a second statement inside a SERIALIZABLE transaction.
 func importedSizeRef(sizeID int) string {
 	if s, ok := cache.GetSizeById(sizeID); ok && strings.TrimSpace(s.Name) != "" {

@@ -442,7 +442,7 @@ func initSubStores(ms *MYSQLStore) {
 	// readTx is a SECOND argument here and not a duplicate of Tx: GetBand runs its page and its
 	// aggregates inside one REPEATABLE READ snapshot, and a counter taken outside that snapshot
 	// would caption a page it disagrees with.
-	ms.designStore = design.New(base, ms.Tx, ms.readTx)
+	ms.designStore = design.New(base, ms.Tx, ms.readTx, ms.techCardStore)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -479,7 +479,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.workshopStore = workshop.New(base, outerTx)
 	// Inside a transaction both roles collapse onto outerTx, exactly as techcard does: a nested
 	// begin is not available, and the enclosing transaction is already the snapshot.
-	txStore.designStore = design.New(base, outerTx, outerTx)
+	txStore.designStore = design.New(base, outerTx, outerTx, txStore.techCardStore)
 }
 
 func (ms *MYSQLStore) Close() {

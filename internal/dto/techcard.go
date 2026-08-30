@@ -105,27 +105,24 @@ var techCardMediaKindPbToEntity = map[pb_common.TechCardMediaKind]entity.TechCar
 	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_RENDER: entity.TechCardMediaRender,
 }
 
-// techCardMediaKindDictExtended — ПРИМЕНЕНА ЛИ МИГРАЦИЯ 0346, расширяющая словарь колонки
+// О ГЕЙТЕ СЛОВАРЯ ВИДОВ (entity.TechCardMediaKindDictExtended) — ПРИМЕНЕНА ЛИ МИГРАЦИЯ 0346, расширяющая словарь колонки
 // tech_card_media.kind значениями side_l / side_r / render.
 //
-// ОДНА СТРОКА — ВЕСЬ ГЕЙТ. Поставь true, когда 0346 уехала на прод, и три новых вида начинают
-// приниматься с провода; до тех пор они живут ТОЛЬКО на проводе, и вход отвергает их внятным
-// отказом с именем поля — а не паникой, не тишиной и не сырым 3819 от chk_tech_card_media_kind,
-// который называет constraint и не называет картинку.
+// ОДНА СТРОКА — ВЕСЬ ГЕЙТ, И ЖИВЁТ ОНА В entity. Поставь entity.TechCardMediaKindDictExtended в
+// true, когда 0346 уехала на прод, и три новых вида начинают приниматься с провода; до тех пор они
+// живут ТОЛЬКО на проводе, и вход отвергает их внятным отказом с именем поля — а не паникой, не
+// тишиной и не сырым 3819 от chk_tech_card_media_kind, который называет constraint и не называет
+// картинку.
 //
-// ФЛАГ СУЩЕСТВУЕТ, ПОТОМУ ЧТО 0346 — ОТДЕЛЯЕМЫЙ ФАЙЛ. Это единственный ADD CHECK волны, то есть
-// единственная КОПИЯ таблицы под пятиминутным потолком всего прогона миграций, и размер
-// tech_card_media замерить не удалось. Файл заведён отдельно ровно затем, чтобы его можно было
-// вынуть из волны одним движением и увезти в тихое окно — а тогда бинарь уезжает на прод раньше
-// словаря, и принимать side_l ему нельзя.
+// ПЕРЕЕХАЛ В entity, ПОТОМУ ЧТО ГЕЙТ ПЕРЕСТАЛ БЫТЬ ТОЛЬКО ВХОДНЫМ. Атомарный минт версии листа
+// вкладывает плиты верстака в technical-медиа карточки СЕРВЕРОМ (П-А), то есть выбирает kind без
+// участия провода; второй флаг в store/design разошёлся бы с этим ровно в тот день, когда первый
+// флипнут, а второй забыли — и side_l поехал бы в колонку, которая его не знает.
 //
-// Переменная, а не константа, ровно затем, чтобы проба могла проверить ОБЕ стороны гейта. Ни один
-// рабочий путь её не пишет.
-var techCardMediaKindDictExtended = false
 
 // techCardMediaKindPendingDict — вид, который знает провод, но ещё не знает колонка.
 func techCardMediaKindPendingDict(k entity.TechCardMediaKind) bool {
-	if techCardMediaKindDictExtended {
+	if entity.TechCardMediaKindDictExtended {
 		return false
 	}
 	return k == entity.TechCardMediaSideL || k == entity.TechCardMediaSideR || k == entity.TechCardMediaRender
@@ -244,7 +241,7 @@ func parseTechCardMediaItems(items []*pb_common.TechCardMediaItem, cat entity.Te
 			// СЛОВАРЬ КОЛОНКИ ЕЩЁ УЖЕ ПРОВОДА. Отказ здесь, а не 3819 от chk_tech_card_media_kind
 			// на записи: тот называет constraint, не называет картинку и приезжает как «внутренняя
 			// ошибка» после того, как сейв прошёл половину пути. Снимается одной строкой —
-			// techCardMediaKindDictExtended, — когда 0346 применена.
+			// entity.TechCardMediaKindDictExtended, — когда 0346 применена.
 			if techCardMediaKindPendingDict(k) {
 				return nil, entity.NewFieldViolation(fmt.Sprintf("%s[%d].kind", field, i),
 					"kind_not_available_yet", string(k),
@@ -437,8 +434,20 @@ func skuSeasonToPb(code sql.NullString, year sql.NullInt32) *pb_common.SkuSeason
 // сохранением с ЛЮБОГО клиента — то есть сдвинуло бы подпись DESIGN массово, на всём проде, в момент
 // выката: c.Number хешируется designProjection явно. Ключ строки исключает это по построению —
 // старый клиент его не шлёт, и его нули остаются его.
-func calloutAwaitsNumber(c entity.TechCardCallout) bool {
-	return c.Number == 0 && c.ClientRef.Valid && c.ClientRef.String != ""
+// ВТОРАЯ ПОЛОВИНА ГЕЙТА — ПРЕДИКАТ ПО МЕДИА, И БЕЗ НЕЁ ГЕЙТ НЕПОЛОН. Номер выноски это адрес НА
+// ЛИСТЕ: на него ссылаются деталь кроя, операция, дефект и печатный тех-пак. Мудбордная заметка ни
+// для кого из них адресом не является, и как только клиент начнёт слать client_ref и на мудбордных
+// выносках (F-4 это ТРЕБУЕТ — иначе они станут новыми легаси-нулями), заметка съела бы очередной
+// номер листа: нумерация листа поехала бы дырами, а номер перестал бы означать «выноска N на
+// эскизе». Это ровно тот класс коллизий эскиз↔мудборд, который чинил B-5a, только с другой стороны.
+//
+// ПРАВИЛО НЕ ПИШЕТСЯ ЗДЕСЬ ЗАНОВО. «Что такое мудборд» и «берёт ли указание номер листа» живут в
+// entity.TechCardMoodboardMedia / entity.CalloutTakesSheetNumber — там же, где правило адресации
+// выноски по номеру, и там же расписано, почему отказ требует ПОЛОЖИТЕЛЬНОГО признака мудборда, что
+// происходит с незапиненным указанием и что с незнакомой картинкой.
+func calloutAwaitsNumber(c entity.TechCardCallout, moodboardMedia map[int]bool) bool {
+	return c.Number == 0 && c.ClientRef.Valid && c.ClientRef.String != "" &&
+		entity.CalloutTakesSheetNumber(c, moodboardMedia)
 }
 
 // CalloutsAwaitingNumber — несёт ли payload хоть одну выноску, которой ещё не присвоен номер.
@@ -448,8 +457,13 @@ func CalloutsAwaitingNumber(tc *entity.TechCardInsert) bool {
 	if tc == nil {
 		return false
 	}
+	// ТОТ ЖЕ ПРЕДИКАТ, ЧТО У МИНТА, ВКЛЮЧАЯ ПОЛОВИНУ ПРО МЕДИА. Разъехавшись, эти двое дают не
+	// расхождение, а ВЕЧНУЮ ГРАНИЦУ: мудбордная выноска, которую минт по построению не трогает,
+	// считалась бы «ждущей номера» на каждом сохранении, и сохранение карточки с мудбордом
+	// отказывало бы навсегда со словами про отпечаток секций.
+	mood := entity.TechCardMoodboardMedia(tc.Media)
 	for _, c := range tc.Callouts {
-		if calloutAwaitsNumber(c) {
+		if calloutAwaitsNumber(c, mood) {
 			return true
 		}
 	}
@@ -491,15 +505,24 @@ func MintCalloutNumbers(stored *entity.TechCard, tc *entity.TechCardInsert) {
 	if stored != nil {
 		seq = stored.CalloutSeq
 	}
+	// MAX БЕРЁТСЯ ПО ВСЕМ ВХОДЯЩИМ НОМЕРАМ, ВКЛЮЧАЯ МУДБОРДНЫЕ, И ЭТО НАМЕРЕННО. Счётчик обязан
+	// ТОЛЬКО РАСТИ: номер, уже нарисованный клиентом старой схемы («максимум по своему экрану»),
+	// не имеет права достаться второй выноске. Сузить MAX до листа значило бы разменять этот
+	// запрет на косметику — дыры в нумерации листа, — а дыра безобидна, повтор номера нет.
+	// Дыр в новых данных всё равно не будет: мудбордная выноска номера не рисует и не минтит,
+	// то есть приезжает с нулём.
 	for _, c := range tc.Callouts {
 		if c.Number > seq {
 			seq = c.Number
 		}
 	}
+	// Мудборд карточки считается ОДИН раз на payload: множество, а не построчный вопрос.
+	mood := entity.TechCardMoodboardMedia(tc.Media)
 	for i := range tc.Callouts {
-		// Ровно одна комбинация минтится: номера нет И строка себя назвала. Всё остальное — и
-		// прежде всего ЛЕГАСИ-НОЛЬ без ключа — уезжает в стор ровно таким, каким пришло.
-		if !calloutAwaitsNumber(tc.Callouts[i]) {
+		// Ровно одна комбинация минтится: номера нет, строка себя назвала И стоит она НА ЛИСТЕ.
+		// Всё остальное — ЛЕГАСИ-НОЛЬ без ключа и мудбордная заметка с ключом — уезжает в стор
+		// ровно таким, каким пришло.
+		if !calloutAwaitsNumber(tc.Callouts[i], mood) {
 			continue
 		}
 		seq++
@@ -533,25 +556,48 @@ func MintCalloutNumbers(stored *entity.TechCard, tc *entity.TechCardInsert) {
 // адрес технической выноски, и форма нового клиента после сейва подсвечивала бы не ту строку — ровно
 // тот дефект, который ключ и заведён предотвращать. Третье написание этого правила заводить нельзя:
 // два прежних уже разошлись в разные стороны (индекс детали брал последнего, перенос геометрии
-// первого), и B-5a свёл их в entity.TechCardCalloutsByKey — включая развязку дублей.
+// первого), и B-5a свёл их в entity.TechCardCalloutKey. Развязка дублей у переноса ПОЗИЦИОННАЯ —
+// n-я входящая берёт у n-й хранимой; довод целиком в entity.TechCardCalloutGroups.
 //
-// С МИНТОМ НЕ СПОРИТ ПО ПОСТРОЕНИЮ: минт — это `Number == 0` при НЕПУСТОМ ключе, перенос — это
-// `Number != 0` при ПУСТОМ. Легаси-ноль не подходит ни под одно: номера, по которому переносить,
-// у него нет, ключа, ради которого минтить, — тоже. Порядок относительно минта тем не менее
-// ЗНАЧИМ: ключ ищется по идентичности, а идентичность содержит номер, поэтому перенос обязан
-// смотреть на УЖЕ сминченный payload, иначе только что рождённая выноска искала бы себя под нулём.
+// НУЛЕВОЙ НОМЕР ПЕРЕНОСУ НЕ ПОМЕХА, И ЭТО ИСПРАВЛЕНИЕ, А НЕ ПОСЛАБЛЕНИЕ. Прежний guard отказывался
+// трогать строку с `Number == 0`, и пока это значило «легаси-ноль», отказ был безвреден. Волна
+// изменила смысл: заметка мудборда номера листа не берёт вовсе (entity.CalloutTakesSheetNumber),
+// то есть она НАВСЕГДА в этом классе — и её ключ стирался бы любым сохранением из вкладки со
+// старым бандлом, молча и без сдвига подписи (ключ в дайджест не входит).
+//
+// До переноса доезжает ровно один класс: `Number == 0` при ПУСТОМ входящем ключе. Это либо
+// легаси-ноль — тогда хранимый ключ тоже пуст и перенос ничего не делает, — либо мудбордная
+// заметка от старого бандла, которой ключ и надо вернуть. Пара заметок на одной картинке
+// безопасна по построению: позиционное сопоставление отдаёт каждой её собственную хранимую.
+//
+// С МИНТОМ НЕ СПОРИТ: минт берёт `Number == 0` при НЕПУСТОМ ключе, перенос — пустой ключ. Порядок
+// относительно минта ЗНАЧИМ: идентичность содержит номер, поэтому перенос обязан смотреть на УЖЕ
+// сминченный payload, иначе только что рождённая выноска искала бы себя под нулём.
 func CarryOmittedCalloutClientRef(stored *entity.TechCard, tc *entity.TechCardInsert) {
 	if stored == nil || tc == nil || len(tc.Callouts) == 0 {
 		return
 	}
-	byKey := entity.TechCardCalloutsByKey(stored.Callouts)
+	pos := entity.NewTechCardCalloutPositional(stored.Callouts, tc.Callouts)
 	for i := range tc.Callouts {
 		c := &tc.Callouts[i]
-		if c.Number == 0 || (c.ClientRef.Valid && c.ClientRef.String != "") {
+		// Позиция считается по КАЖДОЙ входящей строке с этим ключом, включая те, что перенос
+		// пропускает: счётчик описывает вход, а не отобранное подмножество.
+		prev, ok := pos.Next(c.CalloutKey())
+		if c.ClientRef.Valid && c.ClientRef.String != "" {
 			continue
 		}
-		prev, ok := byKey[c.CalloutKey()]
 		if !ok {
+			continue
+		}
+		// НУЛЕВОМУ НОМЕРУ АДРЕС ВЫДАЁТСЯ, ТОЛЬКО ЕСЛИ КЛЮЧ ОДНОЗНАЧЕН.
+		//
+		// Заметка мудборда — одна на картинке в обычном случае, и она свой ключ получает. А вот
+		// легаси-нули на одном эскизе бывают во множестве (UNIQUE на tech_card_callout нет ни
+		// одного, строки приезжают и из архива импорта, и из ручного SQL), и там позиционного
+		// сопоставления мало: позиция держится на порядке, порядок — на честности клиента, а цена
+		// ошибки — подсвеченная человеку ЧУЖАЯ строка. Для геометрии позиции достаточно: потеря
+		// фигуры видна, подмена — нет; для адреса наоборот.
+		if c.Number == 0 && !pos.Unique(c.CalloutKey()) {
 			continue
 		}
 		c.ClientRef = prev.ClientRef
@@ -778,8 +824,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			Parts:       parts,
 			// Группа атомарна: молчание про вид — молчание про всю геометрию, и хранимая
 			// переносится по ИДЕНТИЧНОСТИ выноски, эскиз + номер (CarryOmittedCalloutGeometry
-			// через entity.TechCardCalloutsByKey), а не по голому номеру: номер не уникален по
-			// карточке. `parts` в группу не входит: старое `part` есть у любого клиента.
+			// через entity.NewTechCardCalloutPositional — позиционно внутри группы одного ключа),
+			// а не по голому номеру: номер не уникален по карточке. `parts` в группу не входит:
+			// старое `part` есть у любого клиента.
 			KindOmitted: c.Kind == nil,
 			// Ключ строки едет ДО минта номера: именно он — гейт минта (см. ClientRef), и хендлер
 			// читает его на уже разобранной сущности.
@@ -2483,6 +2530,13 @@ func pbTechCardMeasurementUnit(u entity.TechCardMeasurementUnit) pb_common.TechC
 		return v
 	}
 	return pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM
+}
+
+// PbTechCardMediaKind — тот же перевод для вызова ИЗ ДРУГОГО ПАКЕТА. Нужен ровно одному месту:
+// атомарный минт вкладывает плиты верстака в technical_media документа СЕРВЕРОМ (П-А), а документ
+// на этом этапе ещё protobuf. Собственная карта видов там была бы вторым домом одного факта.
+func PbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind {
+	return pbTechCardMediaKind(k)
 }
 
 func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind {

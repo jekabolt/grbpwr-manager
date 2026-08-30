@@ -47,7 +47,11 @@ func New(base storeutil.Base, txFunc, readTxFunc TxFunc, repFunc RepFunc) *Store
 	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc, repFunc: repFunc}
 }
 
-func (s *Store) ensureDictionaryFresh(ctx context.Context, action string) error {
+// EnsureDictionaryFresh refreshes the shared in-memory dictionary before a dictionary-dependent
+// write opens its transaction. Exported because the atomic mint of a design sheet version performs
+// the very same document write from another package and owes the same refresh — and owes it OUTSIDE
+// its transaction, for the reason spelled out on UpdateTechCardTx.
+func (s *Store) EnsureDictionaryFresh(ctx context.Context, action string) error {
 	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
 		return fmt.Errorf("can't refresh dictionary before tech card %s: %w", action, err)
 	}
@@ -200,7 +204,7 @@ func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert, prevState entity.T
 
 // AddTechCard inserts a tech card and its child sections, returning the new id.
 func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error) {
-	if err := s.ensureDictionaryFresh(ctx, "create"); err != nil {
+	if err := s.EnsureDictionaryFresh(ctx, "create"); err != nil {
 		return 0, err
 	}
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
@@ -301,296 +305,322 @@ func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 	return s.updateTechCardAndListOrphanedPatternURLs(ctx, id, tc, expectedLockVersion)
 }
 
+// UpdateTechCardTx IS THE DOCUMENT WRITE, and the only one. It runs inside a transaction the
+// CALLER opened, so a second entry point can wrap the very same write together with its own work
+// in ONE transaction — which is what the atomic mint of a design sheet version needs: the frozen
+// callouts must come from the document that same transaction just wrote, or the state «re-pinned,
+// but no version» becomes reachable and, worse, invisible.
+//
+// WHY `rep` AND NOT A BARE DB HANDLE. The body reaches for rep.DB() only, but the parameter is the
+// whole repository on purpose: store.Tx hands its callback a full dependency.Repository (db.go:62),
+// so rep.TechCards() and rep.Design() are the SAME transaction. Narrowing this to a DB handle would
+// make the atomic mint inexpressible without a second, divergent copy of this function — and a
+// second writer of the tech-card document is exactly what must never exist.
+//
+// NOT A NEW WRITER. Both entry points — UpdateTechCard (the save) and MintDesignSheetVersion (the
+// mint) — call THIS function. The dictionary refresh stays with the callers because it is a shared
+// in-memory cache refresh that reads its own rows, and pulling it inside a SERIALIZABLE write would
+// put every dictionary table into the mint's lock set for no gain.
+func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
+	var orphanedPatternURLs []string
+	cur, err := storeutil.QueryNamedOne[struct {
+		LockVersion     int          `db:"lock_version"`
+		ApprovalState   string       `db:"approval_state"`
+		ApprovedAt      sql.NullTime `db:"approved_at"`
+		ReleasedAt      sql.NullTime `db:"released_at"`
+		Purpose         string       `db:"purpose"`
+		Stage           string       `db:"stage"`
+		MeasurementUnit string       `db:"measurement_unit"`
+	}](ctx, rep.DB(),
+		`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit
+		 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("failed to load tech card for update: %w", err)
+	}
+	// Freeze check BEFORE the version check (plan §4): a released card is frozen for
+	// the factory — only a re-open to draft is allowed; any other edit while still
+	// released is rejected. Checking this first means a stale-version edit of a
+	// released card gets the actionable "re-open to draft" (FailedPrecondition) rather
+	// than a misleading "modified concurrently" (Aborted).
+	if cur.ApprovalState == string(entity.TechCardApprovalReleased) &&
+		tc.ApprovalState != entity.TechCardApprovalDraft {
+		return nil, entity.ErrTechCardReleased
+	}
+	if cur.LockVersion != expectedLockVersion {
+		return nil, entity.ErrTechCardConflict
+	}
+	// NF-07: purpose is a commitment to what the card PRODUCES, so it may only move while nothing
+	// downstream has committed to the old answer. The line is the first sale: until a colourway of
+	// this style has actually been bought, mis-filing a dust bag as a garment is a correctable data
+	// entry mistake, and the operator has to be able to correct it. Past that line the flip would
+	// rewrite what a customer already bought, strand a batch's stock destination, or turn a
+	// packing-spec component into a garment.
+	//
+	// A merely EXISTING colourway is not such a commitment — it is archivable, and an archived one
+	// is retired work exactly as it is for the stage-regression guard below. That is why this reads
+	// product.style_id (the single source, PR6 R1) rather than the tech_card_product mirror: the
+	// mirror keeps its row for an archived colourway, so counting it left the operator with a lock
+	// no admin action could clear.
+	if cur.Purpose != string(tc.Purpose) {
+		refs, err := storeutil.QueryNamedOne[struct {
+			Runs           int `db:"runs"`
+			LiveColorways  int `db:"live_colorways"`
+			SoldColorways  int `db:"sold_colorways"`
+			Assemblies     int `db:"assemblies"`
+			OutputVariants int `db:"output_variants"`
+		}](ctx, rep.DB(),
+			// A CANCELLED run produced nothing, so it pins nothing. "Sold" is any order that got
+			// past payment — a refunded sale still happened, and the placed/awaiting_payment/
+			// cancelled carts the ordercleanup worker sweeps are not sales at all.
+			`SELECT (SELECT COUNT(*) FROM production_run
+			           WHERE tech_card_id = :id AND status <> 'cancelled')       AS runs,
+			        (SELECT COUNT(*) FROM product
+			           WHERE style_id = :id AND lifecycle_status <> :archived)   AS live_colorways,
+			        (SELECT COUNT(DISTINCT oi.product_id)
+			           FROM order_item oi
+			           JOIN product p ON p.id = oi.product_id
+			           JOIN customer_order co ON co.id = oi.order_id
+			           JOIN order_status os ON os.id = co.order_status_id
+			          WHERE p.style_id = :id
+			            AND os.name NOT IN ('placed', 'awaiting_payment', 'cancelled')
+			        )                                                            AS sold_colorways,
+			        (SELECT COUNT(*) FROM style_assembly
+			           WHERE component_tech_card_id = :id)                       AS assemblies,
+			        (SELECT COUNT(*) FROM tech_card_output_variant
+			           WHERE tech_card_id = :id)                                 AS output_variants`,
+			map[string]any{"id": id, "archived": uint8(entity.ColorwayStatusArchived)})
+		if err != nil {
+			return nil, fmt.Errorf("failed to check tech card purpose change: %w", err)
+		}
+		// Name the references that actually pin the purpose. The rule has independent arms and a
+		// card usually trips exactly one of them, so reporting all of them reads as a false
+		// positive ("but it has no runs") and hides the one thing to clear.
+		if reason := purposeLockReason(refs.Runs, refs.LiveColorways, refs.SoldColorways,
+			refs.Assemblies, refs.OutputVariants); reason != "" {
+			return nil, fmt.Errorf("%w: %s", entity.ErrTechCardPurposeLocked, reason)
+		}
+	}
+	// A card's stage may advance but must not REGRESS once downstream artifacts exist: a sample, a
+	// release snapshot, or a colourway (product.style_id) is work already committed at the card's
+	// current maturity, so moving the stage back to an earlier ordinal (e.g. proto → idea) would
+	// desync those artifacts from the card's declared stage. Forward and same-stage saves are always
+	// allowed; a backward move is allowed only while nothing downstream exists. This runs inside the
+	// same tx as the write, so a concurrent sample/colourway insert cannot slip past the count.
+	if err := guardTechCardStageRegression(ctx, rep.DB(), id, entity.TechCardStage(cur.Stage), tc.Stage); err != nil {
+		return nil, err
+	}
+	// The measurement unit is a FACT ABOUT the values already on file, not an instruction to
+	// convert them: tech_card_size_measurement.measurement_value is a bare DECIMAL(10,2) carrying
+	// no unit of its own, and the storefront serves it without one either. Flipping cm↔mm on a
+	// charted card therefore re-reads every point of measure as 10× or 1/10 of what was measured,
+	// silently, all the way to the buyer.
+	//
+	// Two rules keep that impossible. An ABSENT unit preserves the stored one (a save that never
+	// mentioned the unit must not re-unit the chart via the create-time default). An EXPLICIT flip
+	// is refused while any measurement exists — the author has to clear the chart and re-enter it
+	// in the new unit, which is the only conversion this code can perform reliably.
+	if !tc.MeasurementUnitSet {
+		tc.MeasurementUnit = entity.TechCardMeasurementUnit(cur.MeasurementUnit)
+	} else if string(tc.MeasurementUnit) != cur.MeasurementUnit {
+		charted, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return nil, fmt.Errorf("count tech card %d measurements: %w", id, err)
+		}
+		if charted > 0 {
+			return nil, entity.NewFieldViolation("measurement_unit", "chart_already_measured",
+				fmt.Sprintf("%d values recorded in %s", charted, cur.MeasurementUnit),
+				fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
+		}
+	}
+
+	// Server owns the lifecycle stamps (set on enter, cleared on re-open).
+	s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
+
+	params := techCardHeaderParams(tc)
+	params["id"] = id
+	params["expected_lock_version"] = expectedLockVersion
+	// R4/§14.7: UpdateTechCard writes PLM facts ONLY. The catalogue-style facts (brand, sku_season
+	// [season/season_code/season_year], collection, target_gender) moved to UpdateStyle so no fact is
+	// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
+	// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
+	// stays a PLM fact. The unused :brand/:season/... binds remain in params (sqlx.Named ignores
+	// extra keys) so the base header parameter map stays shared with the insert.
+	//
+	// category_id is COALESCEd, not assigned: THE TECH-CARD WRITE NEVER UN-SETS A CATEGORY. This
+	// update is a full replace of the header, so a card whose category was never chosen through
+	// this UI — every style predating the category derivation — would otherwise have its category
+	// silently wiped by an unrelated save (a note edit, a stage change). That is the exact "the
+	// category disappears when I save" symptom this change fixes. Changing a category means picking
+	// a different one; there is deliberately no way to clear it back to none.
+	//
+	// This is load-bearing on the bind being SQL NULL, not 0: entity.TechCardInsert.CategoryId is a
+	// sql.NullInt32, and the wire's `0 = unset` is translated at the dto boundary by
+	// nullInt32FromPb (internal/dto/model.go), which maps 0 to Valid:false. If that translation
+	// ever changed to bind Valid:true/Int32:0, this COALESCE would see 0 rather than NULL, treat it
+	// as a real value and write category_id = 0 — tripping fk_tech_card_category. A dto change
+	// there must keep 0 mapping to NULL, or this needs NULLIF(:category_id, 0) instead.
+	//
+	// mood_note = IF(:mood_note_omitted, …) — третья нога verbatim-протокола «absent = сохранить»
+	// для заметки мудборда, дословно та же, что у fabric_direction и purpose/kind на строке
+	// спецификации. ПРИСУТСТВИЕ поля решает, трогать ли колонку; без этой ноги сейв из вкладки,
+	// которая про мудборд не знает, стирал бы заметку молча.
+	//
+	// callout_seq = GREATEST(…) — СЧЁТЧИК ТОЛЬКО РАСТЁТ, и это запрет, а не предосторожность.
+	// Номер, уже отданный клиенту, не имеет права достаться второй выноске, а считает счётчик
+	// ХЕНДЛЕР (dto.MintCalloutNumbers) — значит любой другой писатель шапки (клон, импорт, прямой
+	// вызов стора мимо UpdateTechCard) приехал бы сюда с нулём и ОБНУЛИЛ его, после чего
+	// следующий минт начал бы раздавать номера заново, поверх уже нарисованных. GREATEST делает
+	// такое состояние невыразимым в SQL, а не «проверяемым на входе».
+	//
+	// Оба комментария стоят ЗДЕСЬ, а не внутри запроса, намеренно: двоеточие внутри `--`
+	// комментария ломает разбор именованных параметров sqlx, и притом молча.
+	rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+		UPDATE tech_card SET
+			lock_version = lock_version + 1,
+			style_number = :style_number, style_number_source = :style_number_source, name = :name,
+			updated_by = :updated_by,
+			category_id = COALESCE(:category_id, category_id),
+			stage = :stage, status = :status, approval_state = :approval_state,
+			approved_at = :approved_at, released_at = :released_at,
+			target_drop_date = :target_drop_date,
+			required_seam_allowance_mm = :required_seam_allowance_mm,
+			base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
+			measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
+			mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
+			callout_seq = GREATEST(callout_seq, :callout_seq),
+				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
+		WHERE id = :id AND lock_version = :expected_lock_version`, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update tech card: %w", err)
+	}
+	// The row provably exists (loaded above), so 0 rows means lock_version moved
+	// under us — make the WHERE guard load-bearing, not just the in-Go check.
+	if rows == 0 {
+		return nil, entity.ErrTechCardConflict
+	}
+
+	// Re-derive the top/sub/type triple from the category_id just written, BEFORE the children are
+	// rebuilt: insertTechCardChildren validates the new size range against the card's category,
+	// which it reads back off this row (validateTechCardSizeIDs -> loadTechCardCategoryPath). Sync
+	// any later and a save that changes the category AND the sizes together would validate the new
+	// sizes against the OLD category. A no-op when category_id is unset — see the clobber rule on
+	// syncStyleCategoryTriple.
+	if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
+		return nil, err
+	}
+	priorPatterns, err := techCardPatternRows(ctx, rep.DB(), id)
+	if err != nil {
+		return nil, err
+	}
+	patternCleanupCandidates := patternURLsRemovedByPayload(priorPatterns, tc.Patterns)
+
+	// Capture the style's products before the full-replace so a change to the style's SKU facts
+	// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
+	// they are NOT part of the tech-card full-replace and keep their stable ids and sample links.
+	prevProductLinks, err := captureCardProductLinks(ctx, rep.DB(), id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
+	// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
+	// (R1 merge) — they live in product and are managed via CreateColorway.
+	// NB: tech_card_bom_item is NOT full-replaced here — it is reconciled by line_key in
+	// upsertTechCardBom (S2/S3) so its ids stay stable for the referrer FKs. tech_card_piece is
+	// likewise NOT full-replaced (WS4 / S8) — it is keyed-upserted so its ids stay stable for the
+	// usage.piece_id FK; its piece_material grandchildren are cleared in Phase A (see
+	// insertTechCardChildren) rather than here. The operation referrer IS cleared here BEFORE the
+	// BOM upsert, so the only bom_item_id / piece_id RESTRICT that can fire is from a persistent
+	// colourway usage — the intended cross-aggregate guard.
+	// tech_card_revision is intentionally ABSENT as well: it is the append-only auto-journal
+	// (Q1), not a client-replaced child, so a save must never wipe the history.
+	//
+	// The three 1:1 message sections are presence-aware: nil means the protobuf field was absent,
+	// so preserve its stored row; non-nil means replace it. A present-but-empty message parses to
+	// a non-nil all-zero entity and deliberately takes the replace path, clearing every value by
+	// inserting an all-NULL row (valid for all three schemas). Lists remain full-replace.
+	//
+	// The equipment park (0306) is presence-aware ONE LEVEL DEEPER, and it needs its own line for
+	// two independent reasons. Its FK is on tech_card, not on tech_card_construction, so the
+	// DELETE of the construction row above does not cascade to it — clearing it is this loop's
+	// job or nobody's. And its presence signal is the WRAPPER, not the section: a client that
+	// sends a construction it does understand while knowing nothing about profiles must not erase
+	// the park, whereas a present-but-empty wrapper is a deliberate «delete them all».
+	preserveAbsentSection := map[string]bool{
+		"tech_card_construction":      tc.Construction == nil,
+		"tech_card_packaging":         tc.Packaging == nil,
+		"tech_card_costing":           tc.Costing == nil,
+		"tech_card_equipment_profile": tc.Construction == nil || tc.Construction.EquipmentDefaults == nil,
+	}
+	for _, table := range []string{
+		"tech_card_size", "tech_card_product", "tech_card_media",
+		"tech_card_callout", "tech_card_detail",
+		"tech_card_construction", "tech_card_equipment_profile",
+		"tech_card_operation", "tech_card_label",
+		"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
+	} {
+		if preserveAbsentSection[table] {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
+			map[string]any{"id": id}); err != nil {
+			return nil, fmt.Errorf("failed to clear %s: %w", table, err)
+		}
+	}
+	if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
+	// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
+	// post-commit release snapshot (snapshotReleaseIfReleased) marshals what the COLUMNS then
+	// hold — so a linked BOM line whose catalog price appeared only after the material was linked
+	// (unit_price still NULL) must take the current catalog price NOW, inside this transaction.
+	// The freeze check above guarantees this save IS the release transition (a released card only
+	// re-opens to draft), so the fill runs exactly once per release episode. Only NULL prices are
+	// filled — an agreed price is never overwritten — and an unpriceable line stays NULL rather
+	// than blocking the release. NB: the fill legitimately stales an approved MATERIALS sign-off,
+	// including one approved in this same save — that is documented, deliberate, and non-blocking;
+	// see the KNOWN CONSEQUENCE note on backfillBomPricesOnRelease before "fixing" it.
+	if tc.ApprovalState == entity.TechCardApprovalReleased {
+		if err := backfillBomPricesOnRelease(ctx, rep.DB(), id); err != nil {
+			return nil, err
+		}
+	}
+	// UpdateTechCard is the BOM's write owner, so refresh the auto-derived style composition from
+	// the just-upserted fabric lines before committing. Manual composition remains untouched.
+	if err := product.ReconcileStyleCompositionTx(ctx, rep.DB(), id); err != nil {
+		return nil, err
+	}
+	// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
+	if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
+		return nil, err
+	}
+	// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
+	action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
+	if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
+		return nil, err
+	}
+	orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), patternCleanupCandidates)
+	if err != nil {
+		return nil, err
+	}
+	return orphanedPatternURLs, nil
+}
+
 func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
-	if err := s.ensureDictionaryFresh(ctx, "update"); err != nil {
+	if err := s.EnsureDictionaryFresh(ctx, "update"); err != nil {
 		return nil, err
 	}
 	var orphanedPatternURLs []string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// txFunc may retry the callback after a deadlock; never carry candidates from an aborted attempt.
-		orphanedPatternURLs = nil
-		cur, err := storeutil.QueryNamedOne[struct {
-			LockVersion     int          `db:"lock_version"`
-			ApprovalState   string       `db:"approval_state"`
-			ApprovedAt      sql.NullTime `db:"approved_at"`
-			ReleasedAt      sql.NullTime `db:"released_at"`
-			Purpose         string       `db:"purpose"`
-			Stage           string       `db:"stage"`
-			MeasurementUnit string       `db:"measurement_unit"`
-		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit
-			 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return sql.ErrNoRows
-			}
-			return fmt.Errorf("failed to load tech card for update: %w", err)
-		}
-		// Freeze check BEFORE the version check (plan §4): a released card is frozen for
-		// the factory — only a re-open to draft is allowed; any other edit while still
-		// released is rejected. Checking this first means a stale-version edit of a
-		// released card gets the actionable "re-open to draft" (FailedPrecondition) rather
-		// than a misleading "modified concurrently" (Aborted).
-		if cur.ApprovalState == string(entity.TechCardApprovalReleased) &&
-			tc.ApprovalState != entity.TechCardApprovalDraft {
-			return entity.ErrTechCardReleased
-		}
-		if cur.LockVersion != expectedLockVersion {
-			return entity.ErrTechCardConflict
-		}
-		// NF-07: purpose is a commitment to what the card PRODUCES, so it may only move while nothing
-		// downstream has committed to the old answer. The line is the first sale: until a colourway of
-		// this style has actually been bought, mis-filing a dust bag as a garment is a correctable data
-		// entry mistake, and the operator has to be able to correct it. Past that line the flip would
-		// rewrite what a customer already bought, strand a batch's stock destination, or turn a
-		// packing-spec component into a garment.
-		//
-		// A merely EXISTING colourway is not such a commitment — it is archivable, and an archived one
-		// is retired work exactly as it is for the stage-regression guard below. That is why this reads
-		// product.style_id (the single source, PR6 R1) rather than the tech_card_product mirror: the
-		// mirror keeps its row for an archived colourway, so counting it left the operator with a lock
-		// no admin action could clear.
-		if cur.Purpose != string(tc.Purpose) {
-			refs, err := storeutil.QueryNamedOne[struct {
-				Runs           int `db:"runs"`
-				LiveColorways  int `db:"live_colorways"`
-				SoldColorways  int `db:"sold_colorways"`
-				Assemblies     int `db:"assemblies"`
-				OutputVariants int `db:"output_variants"`
-			}](ctx, rep.DB(),
-				// A CANCELLED run produced nothing, so it pins nothing. "Sold" is any order that got
-				// past payment — a refunded sale still happened, and the placed/awaiting_payment/
-				// cancelled carts the ordercleanup worker sweeps are not sales at all.
-				`SELECT (SELECT COUNT(*) FROM production_run
-				           WHERE tech_card_id = :id AND status <> 'cancelled')       AS runs,
-				        (SELECT COUNT(*) FROM product
-				           WHERE style_id = :id AND lifecycle_status <> :archived)   AS live_colorways,
-				        (SELECT COUNT(DISTINCT oi.product_id)
-				           FROM order_item oi
-				           JOIN product p ON p.id = oi.product_id
-				           JOIN customer_order co ON co.id = oi.order_id
-				           JOIN order_status os ON os.id = co.order_status_id
-				          WHERE p.style_id = :id
-				            AND os.name NOT IN ('placed', 'awaiting_payment', 'cancelled')
-				        )                                                            AS sold_colorways,
-				        (SELECT COUNT(*) FROM style_assembly
-				           WHERE component_tech_card_id = :id)                       AS assemblies,
-				        (SELECT COUNT(*) FROM tech_card_output_variant
-				           WHERE tech_card_id = :id)                                 AS output_variants`,
-				map[string]any{"id": id, "archived": uint8(entity.ColorwayStatusArchived)})
-			if err != nil {
-				return fmt.Errorf("failed to check tech card purpose change: %w", err)
-			}
-			// Name the references that actually pin the purpose. The rule has independent arms and a
-			// card usually trips exactly one of them, so reporting all of them reads as a false
-			// positive ("but it has no runs") and hides the one thing to clear.
-			if reason := purposeLockReason(refs.Runs, refs.LiveColorways, refs.SoldColorways,
-				refs.Assemblies, refs.OutputVariants); reason != "" {
-				return fmt.Errorf("%w: %s", entity.ErrTechCardPurposeLocked, reason)
-			}
-		}
-		// A card's stage may advance but must not REGRESS once downstream artifacts exist: a sample, a
-		// release snapshot, or a colourway (product.style_id) is work already committed at the card's
-		// current maturity, so moving the stage back to an earlier ordinal (e.g. proto → idea) would
-		// desync those artifacts from the card's declared stage. Forward and same-stage saves are always
-		// allowed; a backward move is allowed only while nothing downstream exists. This runs inside the
-		// same tx as the write, so a concurrent sample/colourway insert cannot slip past the count.
-		if err := guardTechCardStageRegression(ctx, rep.DB(), id, entity.TechCardStage(cur.Stage), tc.Stage); err != nil {
-			return err
-		}
-		// The measurement unit is a FACT ABOUT the values already on file, not an instruction to
-		// convert them: tech_card_size_measurement.measurement_value is a bare DECIMAL(10,2) carrying
-		// no unit of its own, and the storefront serves it without one either. Flipping cm↔mm on a
-		// charted card therefore re-reads every point of measure as 10× or 1/10 of what was measured,
-		// silently, all the way to the buyer.
-		//
-		// Two rules keep that impossible. An ABSENT unit preserves the stored one (a save that never
-		// mentioned the unit must not re-unit the chart via the create-time default). An EXPLICIT flip
-		// is refused while any measurement exists — the author has to clear the chart and re-enter it
-		// in the new unit, which is the only conversion this code can perform reliably.
-		if !tc.MeasurementUnitSet {
-			tc.MeasurementUnit = entity.TechCardMeasurementUnit(cur.MeasurementUnit)
-		} else if string(tc.MeasurementUnit) != cur.MeasurementUnit {
-			charted, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-				`SELECT COUNT(*) FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": id})
-			if err != nil {
-				return fmt.Errorf("count tech card %d measurements: %w", id, err)
-			}
-			if charted > 0 {
-				return entity.NewFieldViolation("measurement_unit", "chart_already_measured",
-					fmt.Sprintf("%d values recorded in %s", charted, cur.MeasurementUnit),
-					fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
-			}
-		}
-
-		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
-		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
-
-		params := techCardHeaderParams(tc)
-		params["id"] = id
-		params["expected_lock_version"] = expectedLockVersion
-		// R4/§14.7: UpdateTechCard writes PLM facts ONLY. The catalogue-style facts (brand, sku_season
-		// [season/season_code/season_year], collection, target_gender) moved to UpdateStyle so no fact is
-		// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
-		// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
-		// stays a PLM fact. The unused :brand/:season/... binds remain in params (sqlx.Named ignores
-		// extra keys) so the base header parameter map stays shared with the insert.
-		//
-		// category_id is COALESCEd, not assigned: THE TECH-CARD WRITE NEVER UN-SETS A CATEGORY. This
-		// update is a full replace of the header, so a card whose category was never chosen through
-		// this UI — every style predating the category derivation — would otherwise have its category
-		// silently wiped by an unrelated save (a note edit, a stage change). That is the exact "the
-		// category disappears when I save" symptom this change fixes. Changing a category means picking
-		// a different one; there is deliberately no way to clear it back to none.
-		//
-		// This is load-bearing on the bind being SQL NULL, not 0: entity.TechCardInsert.CategoryId is a
-		// sql.NullInt32, and the wire's `0 = unset` is translated at the dto boundary by
-		// nullInt32FromPb (internal/dto/model.go), which maps 0 to Valid:false. If that translation
-		// ever changed to bind Valid:true/Int32:0, this COALESCE would see 0 rather than NULL, treat it
-		// as a real value and write category_id = 0 — tripping fk_tech_card_category. A dto change
-		// there must keep 0 mapping to NULL, or this needs NULLIF(:category_id, 0) instead.
-		//
-		// mood_note = IF(:mood_note_omitted, …) — третья нога verbatim-протокола «absent = сохранить»
-		// для заметки мудборда, дословно та же, что у fabric_direction и purpose/kind на строке
-		// спецификации. ПРИСУТСТВИЕ поля решает, трогать ли колонку; без этой ноги сейв из вкладки,
-		// которая про мудборд не знает, стирал бы заметку молча.
-		//
-		// callout_seq = GREATEST(…) — СЧЁТЧИК ТОЛЬКО РАСТЁТ, и это запрет, а не предосторожность.
-		// Номер, уже отданный клиенту, не имеет права достаться второй выноске, а считает счётчик
-		// ХЕНДЛЕР (dto.MintCalloutNumbers) — значит любой другой писатель шапки (клон, импорт, прямой
-		// вызов стора мимо UpdateTechCard) приехал бы сюда с нулём и ОБНУЛИЛ его, после чего
-		// следующий минт начал бы раздавать номера заново, поверх уже нарисованных. GREATEST делает
-		// такое состояние невыразимым в SQL, а не «проверяемым на входе».
-		//
-		// Оба комментария стоят ЗДЕСЬ, а не внутри запроса, намеренно: двоеточие внутри `--`
-		// комментария ломает разбор именованных параметров sqlx, и притом молча.
-		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
-			UPDATE tech_card SET
-				lock_version = lock_version + 1,
-				style_number = :style_number, style_number_source = :style_number_source, name = :name,
-				updated_by = :updated_by,
-				category_id = COALESCE(:category_id, category_id),
-				stage = :stage, status = :status, approval_state = :approval_state,
-				approved_at = :approved_at, released_at = :released_at,
-				target_drop_date = :target_drop_date,
-				required_seam_allowance_mm = :required_seam_allowance_mm,
-				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
-				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
-				mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
-				callout_seq = GREATEST(callout_seq, :callout_seq),
-					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
-			WHERE id = :id AND lock_version = :expected_lock_version`, params)
-		if err != nil {
-			return fmt.Errorf("failed to update tech card: %w", err)
-		}
-		// The row provably exists (loaded above), so 0 rows means lock_version moved
-		// under us — make the WHERE guard load-bearing, not just the in-Go check.
-		if rows == 0 {
-			return entity.ErrTechCardConflict
-		}
-
-		// Re-derive the top/sub/type triple from the category_id just written, BEFORE the children are
-		// rebuilt: insertTechCardChildren validates the new size range against the card's category,
-		// which it reads back off this row (validateTechCardSizeIDs -> loadTechCardCategoryPath). Sync
-		// any later and a save that changes the category AND the sizes together would validate the new
-		// sizes against the OLD category. A no-op when category_id is unset — see the clobber rule on
-		// syncStyleCategoryTriple.
-		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
-			return err
-		}
-		priorPatterns, err := techCardPatternRows(ctx, rep.DB(), id)
-		if err != nil {
-			return err
-		}
-		patternCleanupCandidates := patternURLsRemovedByPayload(priorPatterns, tc.Patterns)
-
-		// Capture the style's products before the full-replace so a change to the style's SKU facts
-		// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
-		// they are NOT part of the tech-card full-replace and keep their stable ids and sample links.
-		prevProductLinks, err := captureCardProductLinks(ctx, rep.DB(), id)
-		if err != nil {
-			return err
-		}
-
-		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
-		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
-		// (R1 merge) — they live in product and are managed via CreateColorway.
-		// NB: tech_card_bom_item is NOT full-replaced here — it is reconciled by line_key in
-		// upsertTechCardBom (S2/S3) so its ids stay stable for the referrer FKs. tech_card_piece is
-		// likewise NOT full-replaced (WS4 / S8) — it is keyed-upserted so its ids stay stable for the
-		// usage.piece_id FK; its piece_material grandchildren are cleared in Phase A (see
-		// insertTechCardChildren) rather than here. The operation referrer IS cleared here BEFORE the
-		// BOM upsert, so the only bom_item_id / piece_id RESTRICT that can fire is from a persistent
-		// colourway usage — the intended cross-aggregate guard.
-		// tech_card_revision is intentionally ABSENT as well: it is the append-only auto-journal
-		// (Q1), not a client-replaced child, so a save must never wipe the history.
-		//
-		// The three 1:1 message sections are presence-aware: nil means the protobuf field was absent,
-		// so preserve its stored row; non-nil means replace it. A present-but-empty message parses to
-		// a non-nil all-zero entity and deliberately takes the replace path, clearing every value by
-		// inserting an all-NULL row (valid for all three schemas). Lists remain full-replace.
-		//
-		// The equipment park (0306) is presence-aware ONE LEVEL DEEPER, and it needs its own line for
-		// two independent reasons. Its FK is on tech_card, not on tech_card_construction, so the
-		// DELETE of the construction row above does not cascade to it — clearing it is this loop's
-		// job or nobody's. And its presence signal is the WRAPPER, not the section: a client that
-		// sends a construction it does understand while knowing nothing about profiles must not erase
-		// the park, whereas a present-but-empty wrapper is a deliberate «delete them all».
-		preserveAbsentSection := map[string]bool{
-			"tech_card_construction":      tc.Construction == nil,
-			"tech_card_packaging":         tc.Packaging == nil,
-			"tech_card_costing":           tc.Costing == nil,
-			"tech_card_equipment_profile": tc.Construction == nil || tc.Construction.EquipmentDefaults == nil,
-		}
-		for _, table := range []string{
-			"tech_card_size", "tech_card_product", "tech_card_media",
-			"tech_card_callout", "tech_card_detail",
-			"tech_card_construction", "tech_card_equipment_profile",
-			"tech_card_operation", "tech_card_label",
-			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
-		} {
-			if preserveAbsentSection[table] {
-				continue
-			}
-			if err := storeutil.ExecNamed(ctx, rep.DB(),
-				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
-				map[string]any{"id": id}); err != nil {
-				return fmt.Errorf("failed to clear %s: %w", table, err)
-			}
-		}
-		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
-			return err
-		}
-		// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
-		// post-commit release snapshot (snapshotReleaseIfReleased) marshals what the COLUMNS then
-		// hold — so a linked BOM line whose catalog price appeared only after the material was linked
-		// (unit_price still NULL) must take the current catalog price NOW, inside this transaction.
-		// The freeze check above guarantees this save IS the release transition (a released card only
-		// re-opens to draft), so the fill runs exactly once per release episode. Only NULL prices are
-		// filled — an agreed price is never overwritten — and an unpriceable line stays NULL rather
-		// than blocking the release. NB: the fill legitimately stales an approved MATERIALS sign-off,
-		// including one approved in this same save — that is documented, deliberate, and non-blocking;
-		// see the KNOWN CONSEQUENCE note on backfillBomPricesOnRelease before "fixing" it.
-		if tc.ApprovalState == entity.TechCardApprovalReleased {
-			if err := backfillBomPricesOnRelease(ctx, rep.DB(), id); err != nil {
-				return err
-			}
-		}
-		// UpdateTechCard is the BOM's write owner, so refresh the auto-derived style composition from
-		// the just-upserted fabric lines before committing. Manual composition remains untouched.
-		if err := product.ReconcileStyleCompositionTx(ctx, rep.DB(), id); err != nil {
-			return err
-		}
-		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
-		if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
-			return err
-		}
-		// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
-		action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
-		if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
-			return err
-		}
-		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), patternCleanupCandidates)
+		// txFunc may retry the callback after a deadlock; never carry candidates from an aborted
+		// attempt — UpdateTechCardTx returns nil alongside its error, so this assignment clears them.
+		var err error
+		orphanedPatternURLs, err = s.UpdateTechCardTx(ctx, rep, id, tc, expectedLockVersion)
 		return err
 	})
 	if err != nil {

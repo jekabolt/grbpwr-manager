@@ -165,9 +165,9 @@ func TestMintRunsBeforeCalloutGeometryCarry(t *testing.T) {
 // отвергался бы словами «unknown tech card media kind: 9», которые не называют ни картинку, ни то,
 // что с ней делать.
 func TestSideViewKindsRoundTripOnceTheDictionaryIsWide(t *testing.T) {
-	prev := techCardMediaKindDictExtended
-	techCardMediaKindDictExtended = true
-	defer func() { techCardMediaKindDictExtended = prev }()
+	prev := entity.TechCardMediaKindDictExtended
+	entity.TechCardMediaKindDictExtended = true
+	defer func() { entity.TechCardMediaKindDictExtended = prev }()
 
 	parsed, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
 		Name:            "Field Jacket",
@@ -191,9 +191,9 @@ func TestSideViewKindsRoundTripOnceTheDictionaryIsWide(t *testing.T) {
 
 // ПОКА СЛОВАРЬ КОЛОНКИ УЖЕ ПРОВОДА — ВНЯТНЫЙ ОТКАЗ, а не паника, не тишина и не сырой 3819 от
 // chk_tech_card_media_kind, который называет constraint и не называет картинку. Гейт снимается одной
-// строкой (techCardMediaKindDictExtended), потому что 0346 — отделяемый файл.
+// строкой (entity.TechCardMediaKindDictExtended), потому что 0346 — отделяемый файл.
 func TestPendingDictionaryKindIsRefusedInWords(t *testing.T) {
-	require.False(t, techCardMediaKindDictExtended,
+	require.False(t, entity.TechCardMediaKindDictExtended,
 		"гейт снимают ВМЕСТЕ с выкаткой 0346; если он снят, а миграция не уехала, отказ приедет из MySQL")
 
 	_, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
@@ -370,19 +370,116 @@ func TestMintAndClientRefCarryDoNotCollide(t *testing.T) {
 	require.Equal(t, "old-7", tc.Callouts[2].ClientRef.String, "молчащая старая строка получает свой ключ")
 }
 
-// ЛЕГАСИ-НОЛЬ НЕ ПОЛУЧАЕТ ЧУЖОЙ АДРЕС ДАЖЕ ИЗ ИСПОРЧЕННОГО ХРАНИМОГО. Пара (номер 0, непустой ключ)
-// этим бинарём не создаётся — минт присваивает номер всему, у чего ключ есть, — но схема её не
-// запрещает: UNIQUE и CHECK на tech_card_callout нет ни одного, а строки приезжают и из архива
-// импорта, и из ручного SQL. Гейт `Number == 0` в переносе стоит ровно на этот случай: раздать
-// адреса нулям значило бы объявить неразличимые строки одной и той же.
-func TestClientRefCarrySkipsLegacyZeroEvenIfStoredIsCorrupt(t *testing.T) {
+// НОЛЬ ПОЛУЧАЕТ АДРЕС, ТОЛЬКО ЕСЛИ ОН ОДИН. Прежняя проба здесь запрещала это вовсе, и её довод
+// был верен ДОСЛОВНО: «пара (номер 0, непустой ключ) этим бинарём не создаётся — минт присваивает
+// номер всему, у чего ключ есть». Волна сделала премису ложной: минт больше НЕ присваивает номер
+// заметке мудборда (entity.CalloutTakesSheetNumber), то есть пара создаётся этим же бинарём и
+// является нормой, а не порчей.
+//
+// Опасение, стоявшее за прежним запретом, никуда не делось и обслуживается точнее: «раздать адреса
+// нулям значило бы объявить неразличимые строки одной и той же» верно ровно тогда, когда нулей на
+// одной картинке НЕСКОЛЬКО. Один ноль на картинке различим — это та же строка при полной замене, и
+// вернуть ей её собственный адрес не значит ничего объявить.
+func TestZeroCalloutTakesItsAddressOnlyWhenItIsTheOnlyOne(t *testing.T) {
+	t.Run("один ноль — свой адрес возвращается", func(t *testing.T) {
+		stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+			Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(11), ClientRef: ref("only")}},
+		}}
+		tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(11)}}}
+
+		CarryOmittedCalloutClientRef(stored, tc)
+
+		require.Equal(t, "only", tc.Callouts[0].ClientRef.String,
+			"это ТА ЖЕ строка при полной замене; отнять у неё адрес — потерять личность заметки мудборда")
+	})
+
+	t.Run("несколько нулей — адресов не даёт никому", func(t *testing.T) {
+		stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+			Callouts: []entity.TechCardCallout{
+				{Number: 0, MediaId: mid(11), ClientRef: ref("a")},
+				{Number: 0, MediaId: mid(11), ClientRef: ref("b")},
+			},
+		}}
+		tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+			{Number: 0, MediaId: mid(11)},
+			{Number: 0, MediaId: mid(11)},
+		}}
+
+		CarryOmittedCalloutClientRef(stored, tc)
+
+		require.Empty(t, tc.Callouts[0].ClientRef.String,
+			"нули на одной картинке неразличимы: выданный адрес подсветит человеку чужую строку")
+		require.Empty(t, tc.Callouts[1].ClientRef.String)
+	})
+}
+
+// ЗАМЕТКА МУДБОРДА ТОЖЕ НЕ ТЕРЯЕТ КЛЮЧ. Она навсегда `Number == 0`, потому что номер листа ей не
+// положен; прежний guard `c.Number == 0` отказывался её трогать, и любое сохранение из вкладки со
+// старым бандлом стирало её идентичность — молча и без сдвига подписи, потому что ключ в дайджест
+// не входит.
+func TestMoodboardNoteKeepsItsClientRefThroughAnOldBundle(t *testing.T) {
 	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
-		Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(11), ClientRef: ref("impossible")}},
+		Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(20), ClientRef: ref("mood-1")}},
 	}}
-	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{{Number: 0, MediaId: mid(11)}}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 0, MediaId: mid(20)}, // старый бандл: поля нет вовсе
+	}}
 
 	CarryOmittedCalloutClientRef(stored, tc)
 
-	require.False(t, tc.Callouts[0].ClientRef.Valid && tc.Callouts[0].ClientRef.String != "",
-		"легаси-ноль обязан остаться безадресным: нулей на карточке законно много, и они неразличимы")
+	require.Equal(t, "mood-1", tc.Callouts[0].ClientRef.String,
+		"без переноса заметка теряет личность при каждом сейве со старого бандла")
+	require.Equal(t, 0, tc.Callouts[0].Number, "номер листа заметке мудборда не положен")
+}
+
+// ДВА НУЛЯ НА ОДНОЙ КАРТИНКЕ АДРЕСОВ НЕ ПОЛУЧАЮТ — И ЭТО НЕ ТА ЖЕ РАЗВЯЗКА, ЧТО У ГЕОМЕТРИИ.
+//
+// Позиционного сопоставления хватает, когда цена ошибки — потерянная фигура: она ВИДНА. Для адреса
+// строки цена другая: ошибиться им значит подсветить человеку ЧУЖУЮ строку, то есть воспроизвести
+// ровно тот дефект, ради которого адрес заведён. Позиция держится на порядке, порядок — на
+// честности клиента, поэтому при неоднозначном ключе адрес не выдаётся вовсе.
+//
+// Заметка мудборда от этого не страдает: одна на картинке — обычный случай, и её ключ однозначен
+// (см. TestMoodboardNoteKeepsItsClientRefThroughAnOldBundle).
+func TestTwoZeroCalloutsSharingOneKeyGetNoAddressAtAll(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{
+			{Number: 0, MediaId: mid(20), ClientRef: ref("first")},
+			{Number: 0, MediaId: mid(20), ClientRef: ref("second")},
+		},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 0, MediaId: mid(20)},
+		{Number: 0, MediaId: mid(20)},
+	}}
+
+	CarryOmittedCalloutClientRef(stored, tc)
+
+	require.Empty(t, tc.Callouts[0].ClientRef.String, "неоднозначный ключ адреса не даёт")
+	require.Empty(t, tc.Callouts[1].ClientRef.String,
+		"и второй тоже: выдать здесь адрес значит рискнуть подсветить человеку чужую строку")
+}
+
+// А ВОТ ГЕОМЕТРИЯ ПРИ ТОМ ЖЕ ВХОДЕ РАЗВЯЗЫВАЕТСЯ ПОЗИЦИОННО, И КАЖДЫЙ ПОЛУЧАЕТ СВОЮ.
+// Расхождение с правилом выше намеренное и держится на цене ошибки: потерянная фигура видна,
+// подменённая — нет; для адреса ровно наоборот.
+func TestTwoZeroCalloutsKeepTheirOwnGeometry(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{
+			{Number: 0, MediaId: mid(20), Kind: entity.AnnotationKindDim, Dashed: true},
+			{Number: 0, MediaId: mid(20), Kind: entity.AnnotationKindArc, Filled: true},
+		},
+	}}
+	tc := &entity.TechCardInsert{Callouts: []entity.TechCardCallout{
+		{Number: 0, MediaId: mid(20), KindOmitted: true},
+		{Number: 0, MediaId: mid(20), KindOmitted: true},
+	}}
+
+	CarryOmittedCalloutGeometry(stored, tc)
+
+	require.Equal(t, entity.AnnotationKindDim, tc.Callouts[0].Kind)
+	require.True(t, tc.Callouts[0].Dashed, "первая обязана сохранить СВОЮ фигуру, а не потерять её")
+	require.Equal(t, entity.AnnotationKindArc, tc.Callouts[1].Kind,
+		"вторая обязана получить свою, а не первую")
+	require.True(t, tc.Callouts[1].Filled)
 }

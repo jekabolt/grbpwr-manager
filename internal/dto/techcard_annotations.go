@@ -9,6 +9,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Выноски на фотографиях шага: разбор с провода и обратно.
@@ -189,8 +190,8 @@ func operationMediaFromPb(step string, in []*pb_common.TechCardOperationMedia) (
 			return nil, err
 		}
 		out = append(out, entity.TechCardOperationMedia{
-			MediaId:      mediaID,
-			Caption:      nullStringFromPb(caption),
+			MediaId: mediaID,
+			Caption: nullStringFromPb(caption),
 			// Позиция в РЕЗУЛЬТАТЕ, а не индекс входа: nil-элемент посреди списка оставил бы
 			// дыру, и порядок в сущности разошёлся бы с тем, что запишет стор.
 			DisplayOrder: len(out),
@@ -562,16 +563,26 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 	// эскиз и мудборд нумеруются независимо, и «выноска номер 3» бывает сразу двумя разными
 	// указаниями на двух разных картинках. Перенос по одному номеру тогда не теряет фигуру, а
 	// ПОДМЕНЯЕТ её — мудбордной записке досталась бы мерка с технического эскиза, нарисованная в
-	// координатах ЧУЖОЙ картинки. Правило и доводы целиком — entity.TechCardCalloutKey; там же
-	// развязка дублей (первый выигрывает), и она НАМЕРЕННО та же самая, что у второго потребителя
-	// этого номера — индекса детали кроя. Пока копий правила было две, они выбирали разные выноски
-	// на одном и том же входе.
-	byKey := entity.TechCardCalloutsByKey(stored.Callouts)
+	// координатах ЧУЖОЙ картинки. Правило и доводы целиком — entity.TechCardCalloutKey.
+	//
+	// ДУБЛИ РАЗВЯЗЫВАЮТСЯ ПОЗИЦИОННО, а не «первым победившим» и не выбросом ключа. Идентичность
+	// делят несколько строк ЗАКОННО: заметка мудборда номера листа не берёт вовсе, поэтому две
+	// заметки на одной картинке несут один ключ; на проде есть и легаси-нули с нарисованными
+	// мерками на одном эскизе (геометрия 0309/0310 старше ключа строки 0345). «Первый выигрывает»
+	// подменяло бы второму чужую фигуру; выброс ключа стирал бы фигуру ОБОИМ — включая первого,
+	// который раньше сопоставлялся сам с собой и своё сохранял. n-я входящая берёт у n-й хранимой:
+	// при полной замене клиент пересылает строки в исходном порядке, поэтому каждая получает своё.
+	//
+	// Индекс детали кроя развязывает дубли ИНАЧЕ (первый выигрывает) — там разрешается ССЫЛКА, и
+	// выброс объявил бы живую деталь оторванной. Расхождение намеренное и утверждается пробой.
+	pos := entity.NewTechCardCalloutPositional(stored.Callouts, tc.Callouts)
 	for i := range tc.Callouts {
+		// Счётчик позиции двигается на КАЖДОЙ входящей строке с этим ключом, а не только на тех,
+		// что просят перенос: иначе вторая просящая получила бы содержание ПЕРВОЙ хранимой.
+		prev, ok := pos.Next(tc.Callouts[i].CalloutKey())
 		if !tc.Callouts[i].KindOmitted {
 			continue
 		}
-		prev, ok := byKey[tc.Callouts[i].CalloutKey()]
 		if !ok {
 			continue
 		}
@@ -749,16 +760,16 @@ func operationMediaToPb(in []entity.TechCardOperationMedia) []*pb_common.TechCar
 				first = keys[0]
 			}
 			anns = append(anns, &pb_common.TechCardAnnotation{
-				Kind:           annotationKindToPb[a.Kind],
-				Points:         points,
-				Text:           a.Text,
-				LabelX:         pbDecimalFromDecimal(a.LabelX),
-				LabelY:         pbDecimalFromDecimal(a.LabelY),
-				Color:          annotationColorToPb[a.Color],
-				PieceLineKey:   first,
-				PieceLineKeys:  keys,
-				Dashed:         a.Dashed,
-				Filled:         a.Filled,
+				Kind:          annotationKindToPb[a.Kind],
+				Points:        points,
+				Text:          a.Text,
+				LabelX:        pbDecimalFromDecimal(a.LabelX),
+				LabelY:        pbDecimalFromDecimal(a.LabelY),
+				Color:         annotationColorToPb[a.Color],
+				PieceLineKey:  first,
+				PieceLineKeys: keys,
+				Dashed:        a.Dashed,
+				Filled:        a.Filled,
 			})
 		}
 		out = append(out, &pb_common.TechCardOperationMedia{
@@ -784,4 +795,38 @@ func resolvedOperationMedia(tc *entity.TechCard) []*pb_common.TechCardMediaFull 
 		})
 	}
 	return out
+}
+
+// TechCardCalloutAnnotationJSON — ГЕОМЕТРИЯ УКАЗАНИЯ В ТОЙ ФОРМЕ, В КАКОЙ ЕЁ ЧИТАЕТ ПРОВОД.
+//
+// Существует ради ОДНОГО потребителя: атомарный минт версии листа замораживает выноску в колонку
+// design_sheet_version_callout.annotation, объявленную как protojson common.TechCardAnnotation, а
+// читатель версии разбирает её обратно в это же сообщение.
+//
+// ⚠ ПОЧЕМУ НЕ «СЛОЖИТЬ JSON РУКАМИ». Потому что это уже было сделано и МОЛЧА ТЕРЯЛО ВСЁ. Читатель
+// разбирает колонку с DiscardUnknown, а вид и цвет на проводе — ЭНУМЫ: protojson ждёт их
+// объявленные имена (TECH_CARD_ANNOTATION_KIND_DIM), а не хранимые строки («dim»). Самодельный
+// объект с хранимыми строками разбирается БЕЗ ОШИБКИ в ПУСТОЕ сообщение — то есть бумага теряет
+// каждую мерку и каждую скобку, и ни одна ошибка нигде не появляется. Единственный способ не
+// разойтись — собрать то же сообщение теми же картами, что и весь остальной провод.
+//
+// Точка привязки берётся из pos_x/pos_y выноски: у указания на эскизе это положение плашки с
+// номером, то есть ровно то, что label_x/label_y и означают.
+func TechCardCalloutAnnotationJSON(c entity.TechCardCallout) ([]byte, error) {
+	ann := &pb_common.TechCardAnnotation{
+		Kind:   annotationKindToPb[calloutKindOrPin(c.Kind)],
+		Points: calloutPointsToPb(c.Points),
+		// TEXT ОСТАЁТСЯ ПУСТЫМ, И ЭТО НЕ УПУЩЕНИЕ. Контракт (`DesignSheetCallout.annotation`)
+		// говорит дословно: «Its own `text` field is left EMPTY — the note that gets printed lives
+		// in `text` below». Заполнив его, мы получили бы одну и ту же заметку дважды: у фигуры и в
+		// списке. Печатная строка собирается `entity.TechCardCalloutPrintedLine` и едет в
+		// `DesignSheetCallout.text`.
+		Text:   "",
+		LabelX: pbDecimalFromNull(c.PosX),
+		LabelY: pbDecimalFromNull(c.PosY),
+		Color:  annotationColorToPb[c.Color],
+		Dashed: c.Dashed,
+		Filled: c.Filled,
+	}
+	return protojson.Marshal(ann)
 }

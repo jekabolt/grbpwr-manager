@@ -369,10 +369,8 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		if err != nil {
 			return err
 		}
-		if len(parent.CompositeViews) == 0 || string(parent.CompositeViews) == "null" ||
-			string(parent.CompositeViews) == "[]" {
-			return fmt.Errorf("%w: picture %d is not a composite", entity.ErrDesignNotComposite, parent.Id)
-		}
+		// No compositeness check here either — see the note in the handler. The column it read has
+		// no writer in this wave, so the check refused every split that could ever reach it.
 
 		existing, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db,
 			`SELECT * FROM design_picture WHERE derived_from = :id AND hidden_at IS NULL ORDER BY ordinal, id`,

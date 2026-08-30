@@ -2,12 +2,80 @@ package entity
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// RawJSON — СЫРАЯ JSON-КОЛОНКА, ПЕРЕЖИВАЮЩАЯ NULL.
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ ТИП, А НЕ json.RawMessage. json.RawMessage сканером НЕ является, а
+// database/sql умеет положить NULL только в тип, который либо реализует sql.Scanner, либо
+// является *[]byte / *any / *sql.RawBytes. Именованный слайс под это не подходит, поэтому
+// `json.RawMessage` в db-структуре роняет чтение на КАЖДОЙ строке, где колонка пуста:
+// «struct scan: unsupported Scan, storing driver.Value type <nil> into type *json.RawMessage».
+//
+// А ПУСТА ОНА В НОРМЕ, И ЭТО НЕ КРАЙ. `composite_views` не пишет НИКТО (NULL = одиночная плита,
+// то есть каждая загруженная картинка); `params`/`inputs` пусты у строки, заведённой не
+// провайдером; `strokes` — у только что созданного слоя; `annotation` — у выноски без геометрии.
+// Отказ приходит не пустым полем, а обрывом чтения в середине — то есть выглядит как поломка
+// стора, а не как «нечего показать».
+//
+// СОДЕРЖАНИЕ ЭТОТ ТИП НЕ ТРОГАЕТ, ровно как не трогал json.RawMessage: JSON внутри — контракт, а
+// не схема. Пустое значение уезжает в базу как NULL, а не как строка «null»: два способа сказать
+// «ничего» в одной колонке — это то, ради чего колонка объявлена NULLable.
+type RawJSON []byte
+
+// Scan принимает NULL, []byte и string — три формы, в которых MySQL-драйвер отдаёт JSON-колонку.
+func (r *RawJSON) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*r = nil
+	case []byte:
+		// КОПИЯ, А НЕ ССЫЛКА: буфер драйвера переиспользуется между строками, и сохранённый
+		// слайс показал бы содержимое СЛЕДУЮЩЕЙ строки.
+		*r = append(RawJSON(nil), v...)
+	case string:
+		*r = RawJSON(v)
+	default:
+		return fmt.Errorf("cannot scan %T into RawJSON", src)
+	}
+	return nil
+}
+
+// Value отдаёт NULL на пустом значении — см. довод в шапке типа.
+func (r RawJSON) Value() (driver.Value, error) {
+	if len(r) == 0 {
+		return nil, nil
+	}
+	return []byte(r), nil
+}
+
+// MarshalJSON / UnmarshalJSON — ЧТОБЫ ТИП БЫЛ ТЕМ, ЧЕМ СЕБЯ НАЗЫВАЕТ.
+//
+// `json.RawMessage` печатает СЫРЫЕ байты; голый именованный `[]byte` печатает **base64**. Шапка
+// выше подаёт RawJSON как замену json.RawMessage, и в отношении сериализации без этих двух методов
+// он ею НЕ является. Сегодня недостижимо — ни один `json.Marshal` этих структур не касается, — но
+// первый, кто сложит прогон в снапшот, лог или экспорт, получит base64 молча, и молчание тут самое
+// дорогое: JSON останется валидным, а содержимое станет нечитаемым для всех, кто его ждёт.
+func (r RawJSON) MarshalJSON() ([]byte, error) {
+	if len(r) == 0 {
+		return []byte("null"), nil
+	}
+	return r, nil
+}
+
+func (r *RawJSON) UnmarshalJSON(data []byte) error {
+	if r == nil {
+		return errors.New("entity.RawJSON: UnmarshalJSON on nil pointer")
+	}
+	*r = append((*r)[0:0], data...)
+	return nil
+}
 
 // Полоса DESIGN — студийная половина тех-карты: прогоны генерации, картинки, которые они
 // произвели, верстак (какая плита принята какой стороной изделия) и замороженные версии листа,
@@ -17,7 +85,9 @@ import (
 // структур. Ни один из них не знает про protobuf: конверсия живёт в
 // internal/apisrv/admin/design_band.go, а стор остаётся чистым от провода. JSON-колонки
 // (`params`, `inputs`, `composite_views`, `strokes`, `annotation`) едут сквозь стор как
-// json.RawMessage — стор их не разбирает, потому что их СОДЕРЖАНИЕ это контракт, а не схема.
+// RawJSON — стор их не разбирает, потому что их СОДЕРЖАНИЕ это контракт, а не схема. Тип свой, а
+// не json.RawMessage, по одной причине: все пять колонок NULLable, а json.RawMessage не Scanner
+// и на NULL роняет чтение. См. шапку RawJSON.
 //
 // ⚠ ОДНО СОГЛАШЕНИЕ, КОТОРОЕ ОБЯЗАНО ПЕРЕЖИТЬ ВОЛНУ 2. `design_run.params` и
 // `design_run.inputs` хранят protojson с UseProtoNames: true, то есть snake_case ключами
@@ -154,6 +224,13 @@ var (
 	ErrDesignLiveRunInput   = errors.New("design: live_run_input")
 	ErrDesignLiveCropParent = errors.New("design: live_crop_parent")
 	// ErrDesignNotComposite — режут не композит.
+	//
+	// СЕЙЧАС ЕГО НИКТО НЕ ПОДНИМАЕТ, и это записано здесь, чтобы читатель не решил, будто разрез
+	// может отказать по этой причине. Проверку сняли и в хендлере, и в сторе: единственным
+	// писателем `composite_views` был прилёт генеративного прогона, а генерация из волны отрезана,
+	// поэтому колонка пуста на каждой картинке, которая вообще может существовать, и проверка
+	// отказывала ВСЕМ разрезам. Что режется на куски, объявляет человек — `view_key` на рамке.
+	// Сентинел и его отображение в код оставлены: они вернутся вместе с писателем колонки.
 	ErrDesignNotComposite = errors.New("design: not_composite")
 	// ErrDesignLayerRevMismatch — CAS по rev слоя правки.
 	ErrDesignLayerRevMismatch = errors.New("design: layer_rev_mismatch")
@@ -176,7 +253,119 @@ var (
 	// целиком СЕЙЧАС именно для того, чтобы следующий исполнитель добавлял ФАЙЛЫ в пакет, а не
 	// правил шов в dependency.go и store.go повторно.
 	ErrDesignNotImplemented = errors.New("design: not implemented in this wave")
+
+	// ───────────────────────── отказы атомарного минта ─────────────────────────
+	//
+	// ДВА ЗАМКА, А НЕ ОДИН, и это не перестраховка. expected_lock_version стережёт ДОКУМЕНТ
+	// (выноски, эскизы, спецификацию), expected_plates — ВЕРСТАК (какая плита какой стороной
+	// принята). Это две разные вещи, живущие в разных таблицах и двигаемые разными жестами:
+	// минт, проверивший только документ, заморозил бы состав, который кто-то переставил секундой
+	// раньше, и человек узнал бы об этом с бумаги.
+
+	// ErrDesignBenchMoved — CAS по expected_plates не сошёлся: слот уехал под минтом. Aborted, и
+	// details называют ИМЕННО ТОТ слот — «верстак изменился» без имени слота не действие, а
+	// новость.
+	ErrDesignBenchMoved = errors.New("design: bench_moved")
+	// ErrDesignMixedNeedsConsent — состав смешивает провенансы (две и более разных генерации
+	// среди четырёх сторон), и человек этого не подтвердил. FailedPrecondition: согласие даётся
+	// галкой в диалоге, а не догадкой сервера.
+	ErrDesignMixedNeedsConsent = errors.New("design: mixed_needs_consent")
+	// ErrDesignUploadedFitUnconfirmed — среди плит есть загруженные руками, а они посадки не
+	// заявляют вовсе (её заявляет ПРОГОН). Минт спрашивает, а не подставляет карточкину.
+	ErrDesignUploadedFitUnconfirmed = errors.New("design: uploaded_fit_unconfirmed")
+	// ErrDesignFitMismatch — плита нарисована под ОДНУ посадку, карточка теперь говорит другую.
+	// Согласием это не снимается: посадка — свойство изделия, и одно из двух утверждений неверно.
+	// details несут view, fit и card_fit.
+	ErrDesignFitMismatch = errors.New("design: fit_mismatch")
+	// ErrDesignSheetMinUnmet — обязательные стороны листа не заполнены. Проверяется В МИНТЕ, а не
+	// на прогоне: пустой обязательный слот запирает и v2+, не только v1.
+	ErrDesignSheetMinUnmet = errors.New("design: sheet_min_unmet")
+	// ErrDesignUnrepinnedCallouts — П-Е, СОСТАВ ЗАМОРОЗКИ. Морозятся выноски, стоящие на медиа
+	// ПЛИТ. Выноска, стоявшая на медиа плиты ПРОШЛОЙ версии, чья плита в этом составе заменена,
+	// осталась висеть на картинке, которой на бумаге больше нет: её надо перепинить либо снять.
+	// details несут НОМЕРА — «часть выносок потеряна» без номеров человеку нечем закрыть.
+	//
+	// ГРАНИЦА УЖЕ, ЧЕМ «ВСЕ ВЫНОСКИ ВНЕ ПЛИТ», и это решение. Мудбордная выноска и выноска на
+	// легаси-эскизе НИКОГДА не были плитой листа, значит их никто не заменял; запирать ими минт
+	// значило бы сделать минт недостижимым на каждой карточке с мудбордом (К-14).
+	ErrDesignUnrepinnedCallouts = errors.New("design: unrepinned_callouts")
+	// ErrDesignPlatesNotInDocument — П-А, ПОЯС. Документ, который минт замораживает, обязан
+	// содержать плиты верстака как technical-медиа: механизм «деталь кроя ↔ выноска» читает
+	// ровно tc.Media с category='technical' (store/techcard/materials.go), и плита вне этого
+	// множества делает КАЖДУЮ деталь на листовой выноске detached, а тех-пак печатает пустой
+	// эскиз. Вкладывает их хендлер; эта проверка стоит в транзакции, потому что только она видит
+	// верстак и документ одновременно.
+	ErrDesignPlatesNotInDocument = errors.New("design: plates_not_in_document")
 )
+
+// DesignMintRefusal — отказ минта ВМЕСТЕ с машинными подробностями для details.
+//
+// ЗАЧЕМ ТИП, А НЕ ТЕКСТ. Контракт обещает не просто «unrepinned_callouts», а
+// «unrepinned_callouts {numbers}» и «bench_moved, naming which slot moved»: без номеров и без
+// имени слота человеку нечем закрыть отказ, и клиент вместо действия показывает новость. Вынимать
+// их обратно разбором строки значило бы завести второе, хрупкое написание того, что стор и так
+// знает точно.
+//
+// Sentinel остаётся первым классом: Unwrap отдаёт его, поэтому таблица отказов хендлера,
+// errors.Is и все существующие пробы работают, ничего не зная про этот тип.
+type DesignMintRefusal struct {
+	Err      error
+	Metadata map[string]string
+}
+
+func (e *DesignMintRefusal) Error() string { return e.Err.Error() }
+func (e *DesignMintRefusal) Unwrap() error { return e.Err }
+
+// DesignSheetMinViews — стороны, без которых лист не выпускается. Проверяются В МИНТЕ (прототип,
+// mintAnalysis: «the run above is free, the minimum is checked here»), а не на генерации: пустой
+// обязательный слот обязан запирать и v2+, иначе «минимум» это пожелание к первой версии.
+var DesignSheetMinViews = []string{DesignViewFront, DesignViewBack}
+
+// DesignMintedVia — каким актом рождена версия. Словарь закрыт: `minted` в журнале обязан быть
+// достижим ТОЛЬКО минтом, а «каким жестом» — это то, что аудит потом читает.
+const (
+	DesignMintedViaCallout = "callout"
+	DesignMintedViaPrint   = "print"
+	DesignMintedViaRelease = "release"
+	DesignMintedViaShare   = "share"
+)
+
+// IsDesignMintedVia сообщает, законен ли акт минта.
+func IsDesignMintedVia(v string) bool {
+	switch v {
+	case DesignMintedViaCallout, DesignMintedViaPrint, DesignMintedViaRelease, DesignMintedViaShare:
+		return true
+	}
+	return false
+}
+
+// DesignPlateMediaKind — под каким видом плита верстака ложится в tech_card_media карточки (П-А).
+//
+// ГЕЙТ СЛОВАРЯ ОДИН НА ВЕСЬ РЕПОЗИТОРИЙ — TechCardMediaKindDictExtended. Пока 0346 не применена,
+// chk_tech_card_media_kind не знает side_l/side_r, и плита боковой стороны обязана лечь как
+// DETAIL: она всё равно остаётся ТЕХНИЧЕСКОЙ, а больше механизму «деталь ↔ выноска» ничего и не
+// нужно. Второй флаг здесь был бы ложным расщеплением — разошлись бы ровно в тот день, когда
+// первый флипнут, а второй забыли.
+func DesignPlateMediaKind(viewKey string) TechCardMediaKind {
+	switch viewKey {
+	case DesignViewFront:
+		return TechCardMediaFront
+	case DesignViewBack:
+		return TechCardMediaBack
+	case DesignViewSideL:
+		if TechCardMediaKindDictExtended {
+			return TechCardMediaSideL
+		}
+		return TechCardMediaDetail
+	case DesignViewSideR:
+		if TechCardMediaKindDictExtended {
+			return TechCardMediaSideR
+		}
+		return TechCardMediaDetail
+	default:
+		return TechCardMediaDetail
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Строки таблиц
@@ -193,8 +382,8 @@ type DesignRun struct {
 	ProfileName            string              `db:"profile_name"`
 	ProfileVersion         int                 `db:"profile_version"`
 	Ask                    sql.NullString      `db:"ask"`
-	Params                 json.RawMessage     `db:"params"`
-	Inputs                 json.RawMessage     `db:"inputs"`
+	Params                 RawJSON             `db:"params"`
+	Inputs                 RawJSON             `db:"inputs"`
 	FitAtLaunch            sql.NullString      `db:"fit_at_launch"`
 	Rrev                   int                 `db:"rrev"`
 	RequestedOutputs       int                 `db:"requested_outputs"`
@@ -256,22 +445,22 @@ type DesignBatch struct {
 
 // DesignPicture — строка design_picture: плита, кадр прогона, кроп композита или флэттен слоя.
 type DesignPicture struct {
-	Id             int             `db:"id"`
-	TechCardId     int             `db:"tech_card_id"`
-	MediaId        int             `db:"media_id"`
-	RunId          sql.NullInt32   `db:"run_id"`
-	BatchId        sql.NullInt32   `db:"batch_id"`
-	Ordinal        int             `db:"ordinal"`
-	Kind           string          `db:"kind"`
-	GhostView      sql.NullString  `db:"ghost_view"`
-	CompositeViews json.RawMessage `db:"composite_views"`
-	DerivedFrom    sql.NullInt32   `db:"derived_from"`
-	SourceClass    string          `db:"source_class"`
-	MixedInput     bool            `db:"mixed_input"`
-	LayerRev       int             `db:"layer_rev"`
-	HiddenAt       sql.NullTime    `db:"hidden_at"`
-	HiddenBy       sql.NullString  `db:"hidden_by"`
-	CreatedAt      time.Time       `db:"created_at"`
+	Id             int            `db:"id"`
+	TechCardId     int            `db:"tech_card_id"`
+	MediaId        int            `db:"media_id"`
+	RunId          sql.NullInt32  `db:"run_id"`
+	BatchId        sql.NullInt32  `db:"batch_id"`
+	Ordinal        int            `db:"ordinal"`
+	Kind           string         `db:"kind"`
+	GhostView      sql.NullString `db:"ghost_view"`
+	CompositeViews RawJSON        `db:"composite_views"`
+	DerivedFrom    sql.NullInt32  `db:"derived_from"`
+	SourceClass    string         `db:"source_class"`
+	MixedInput     bool           `db:"mixed_input"`
+	LayerRev       int            `db:"layer_rev"`
+	HiddenAt       sql.NullTime   `db:"hidden_at"`
+	HiddenBy       sql.NullString `db:"hidden_by"`
+	CreatedAt      time.Time      `db:"created_at"`
 
 	// Media резолвится джойном на media(id) читателем полосы.
 	Media *MediaFull `db:"-"`
@@ -339,12 +528,12 @@ type DesignSheetPlate struct {
 // common.TechCardAnnotation: стор её не разбирает, потому что примитив указания у системы один
 // и его форма — контракт, а не схема полосы.
 type DesignSheetCallout struct {
-	Id         int             `db:"id"`
-	VersionId  int             `db:"version_id"`
-	Number     int             `db:"number"`
-	MediaId    int             `db:"media_id"`
-	Annotation json.RawMessage `db:"annotation"`
-	Text       sql.NullString  `db:"text"`
+	Id         int            `db:"id"`
+	VersionId  int            `db:"version_id"`
+	Number     int            `db:"number"`
+	MediaId    int            `db:"media_id"`
+	Annotation RawJSON        `db:"annotation"`
+	Text       sql.NullString `db:"text"`
 
 	Media *MediaFull `db:"-"`
 }
@@ -364,13 +553,13 @@ type DesignSheetIssue struct {
 // пустоты. Strokes пусты везде, кроме GetEditLayer, — 512 KB на слой, слоёв на карточке
 // несколько, и полоса не обязана возить их все ради списка миниатюр.
 type DesignEditLayer struct {
-	Id          int             `db:"id"`
-	TechCardId  int             `db:"tech_card_id"`
-	BaseMediaId sql.NullInt32   `db:"base_media_id"`
-	Rev         int             `db:"rev"`
-	Strokes     json.RawMessage `db:"strokes"`
-	UpdatedBy   string          `db:"updated_by"`
-	UpdatedAt   time.Time       `db:"updated_at"`
+	Id          int           `db:"id"`
+	TechCardId  int           `db:"tech_card_id"`
+	BaseMediaId sql.NullInt32 `db:"base_media_id"`
+	Rev         int           `db:"rev"`
+	Strokes     RawJSON       `db:"strokes"`
+	UpdatedBy   string        `db:"updated_by"`
+	UpdatedAt   time.Time     `db:"updated_at"`
 }
 
 // DesignReference — строка design_reference: какой стороне изделия отвечает референс на входе
@@ -585,6 +774,17 @@ type DesignBand struct {
 type DesignSheetVersionFull struct {
 	Version DesignSheetVersion
 	Issues  []DesignSheetIssue
+	// OrphanedPatternURLs — ПОБОЧНЫЙ РЕЗУЛЬТАТ ДОКУМЕНТНОЙ ЗАПИСИ ВНУТРИ МИНТА: объекты выкроек,
+	// которые полная замена сделала глобально неупомянутыми. Хендлер удаляет их ПОСЛЕ коммита —
+	// ровно то же, что делает сейв (deleteOrphanedPatternObjects). Не отдать их значило бы, что
+	// минт течёт в S3 там, где сейв не течёт, и разошлись бы два пути одной записи.
+	//
+	// У ЧТЕНИЯ ПУСТО, и это не «не заполнено»: GetSheetVersion ничего не пишет, значит ничему
+	// осиротеть не могло.
+	OrphanedPatternURLs []string
+	// Idempotent — версия с этим client_request_id уже существовала, и вернулась ОНА, а не
+	// вторая. Хендлер отдаёт OK: потерянный ответ не рождает фантомную vN+1.
+	Idempotent bool
 }
 
 // ---------------------------------------------------------------------------

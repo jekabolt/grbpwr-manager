@@ -74,6 +74,20 @@ var designRefusals = []struct {
 	{entity.ErrDesignInvalidArgument, codes.InvalidArgument, "invalid_argument"},
 	{entity.ErrDesignNotFound, codes.NotFound, "not_found"},
 	{entity.ErrDesignNotImplemented, codes.Unimplemented, "not_implemented"},
+	// ─── минт версии листа ───
+	//
+	// bench_moved — ВТОРОЙ ЗАМОК, а не дубль slot_rev_mismatch: тот стережёт ОДНУ постановку
+	// плиты, этот — весь состав, который человек видел в диалоге минта.
+	{entity.ErrDesignBenchMoved, codes.Aborted, "bench_moved"},
+	{entity.ErrDesignMixedNeedsConsent, codes.FailedPrecondition, "mixed_needs_consent"},
+	{entity.ErrDesignUploadedFitUnconfirmed, codes.FailedPrecondition, "uploaded_fit_unconfirmed"},
+	{entity.ErrDesignFitMismatch, codes.FailedPrecondition, "fit_mismatch"},
+	{entity.ErrDesignSheetMinUnmet, codes.FailedPrecondition, "sheet_min_unmet"},
+	{entity.ErrDesignUnrepinnedCallouts, codes.FailedPrecondition, "unrepinned_callouts"},
+	// plates_not_in_document — ПОЯС П-А. Клиенту он в норме не показывается вовсе: плиты
+	// вкладывает сервер. Если он всё-таки приехал, значит верстак уехал между чтением и
+	// транзакцией, и правильный ответ человеку — «перечитай полосу», а не молча оторванные детали.
+	{entity.ErrDesignPlatesNotInDocument, codes.FailedPrecondition, "plates_not_in_document"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -452,11 +466,21 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 	if err != nil {
 		return nil, designError(ctx, "failed to read the composite", err, nil)
 	}
-	if len(parent.CompositeViews) == 0 || string(parent.CompositeViews) == "null" ||
-		string(parent.CompositeViews) == "[]" {
-		return nil, designError(ctx, "not a composite",
-			fmt.Errorf("%w: picture %d", entity.ErrDesignNotComposite, parent.Id), nil)
-	}
+	// COMPOSITENESS IS NOT A PRECONDITION, and the guard that demanded it was removed rather than
+	// relaxed, because it could never be satisfied.
+	//
+	// `design_picture.composite_views` says «this one image has these views glued into it». Its only
+	// writer was the arrival of a generative run, and generation is cut from this wave — so the
+	// column is empty on every picture that can exist here. `DesignUploadItem` carries `media_id`
+	// and `ghost_view` and nothing else, so a human who brings in one sheet holding front and back
+	// has no way to declare it composite either. The check therefore refused EVERY split, which is
+	// worse than no feature: the door opens and the server says «not a composite» about a picture
+	// that plainly is one.
+	//
+	// What replaces it is the operator's own statement: `DesignSplitFrame.view_key` says what is on
+	// each piece, one frame at a time, and `designSplitRects` already refuses frames that do not
+	// describe a rectangle inside the source. Compositeness was a guess about the file; the frames
+	// are a fact about the cut.
 	if parent.Media == nil {
 		return nil, status.Error(codes.FailedPrecondition, "the composite's file is gone")
 	}
@@ -1122,7 +1146,9 @@ func designColourRecipesToPb(ctx context.Context, in []json.RawMessage) []*pb_co
 // field means the client is confused and must be told.
 var designJSONUnmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
 
-func designUnmarshalJSON(raw json.RawMessage, into proto.Message) error {
+// Принимает []byte, а не json.RawMessage: JSON-колонки полосы приезжают из стора как
+// entity.RawJSON (NULL-безопасный сырой JSON), и оба типа суть []byte.
+func designUnmarshalJSON(raw []byte, into proto.Message) error {
 	return designJSONUnmarshal.Unmarshal(raw, into)
 }
 

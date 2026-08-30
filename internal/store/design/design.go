@@ -35,18 +35,38 @@ import (
 // TxFunc runs f inside a transaction, handing it the full repository.
 type TxFunc func(ctx context.Context, f func(context.Context, dependency.Repository) error) error
 
+// DocumentWriter is THE tech-card document write, handed to this package so the atomic mint can
+// run it inside the mint's OWN transaction.
+//
+// A TYPED SEAM, NOT AN INTERFACE ON dependency.Repository, and that is deliberate. rep.TechCards()
+// inside a transaction is a sub-store whose txFunc is the OUTER Tx — calling its ordinary
+// UpdateTechCard from within the mint would open a SECOND, independent transaction, which is
+// exactly the atomicity the mint exists to remove. This interface names the ONE method that takes
+// somebody else's transaction, and there is exactly one implementation of it: *techcard.Store.
+//
+// EnsureDictionaryFresh rides along because it belongs to the same write and must run OUTSIDE the
+// transaction — see the note on techcard.UpdateTechCardTx.
+type DocumentWriter interface {
+	UpdateTechCardTx(ctx context.Context, rep dependency.Repository, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error)
+	EnsureDictionaryFresh(ctx context.Context, action string) error
+}
+
 // Store implements dependency.Design.
 type Store struct {
 	storeutil.Base
 	txFunc     TxFunc
 	readTxFunc TxFunc
+	cards      DocumentWriter
 }
 
 // New builds the design band store. readTxFunc is separate and load-bearing: GetBand runs its
 // page AND its aggregates in one REPEATABLE READ snapshot, and a counter taken outside that
 // snapshot would disagree with the page it captions.
-func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
-	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
+//
+// cards is the tech-card document writer: the atomic mint writes the card with THE SAME CODE as
+// UpdateTechCard, in the mint's transaction. Nothing else in this package touches it.
+func New(base storeutil.Base, txFunc, readTxFunc TxFunc, cards DocumentWriter) *Store {
+	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc, cards: cards}
 }
 
 // Ceilings declared by the contract (10 §6). They are enforced here rather than only at the

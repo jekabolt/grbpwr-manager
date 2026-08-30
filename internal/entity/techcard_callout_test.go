@@ -100,22 +100,38 @@ func TestCalloutIndexPieceSemanticsBoundary(t *testing.T) {
 	}
 }
 
-// ДУБЛЬ ВНУТРИ ОДНОГО ЭСКИЗА — уже испорченные данные, но ответ на них обязан быть один и тот же у
-// всех, кто спрашивает. Первый выигрывает — ровно та же развязка, что у TechCardCalloutsByKey,
-// которым пользуется перенос геометрии.
-func TestCalloutIndexDuplicateOnOneSketchFirstWins(t *testing.T) {
+// ДУБЛЬ РАЗВЯЗЫВАЕТСЯ ПО-РАЗНОМУ У ДВУХ ПОЛОВИН, И ЭТО НЕ РАССОГЛАСОВАНИЕ, А ЦЕНА ОШИБКИ.
+//
+//	ИНДЕКС ДЕТАЛИ (по номеру, только технические эскизы): первый выигрывает. Выбросить или
+//	перепутать — значит объявить живую деталь кроя оторванной, то есть создать потерю там, где
+//	ничего не терялось.
+//	ПЕРЕНОС СОДЕРЖАНИЯ (по паре): позиционно — n-я входящая берёт у n-й хранимой, каждая своё.
+//
+// Раньше здесь стояла третья половина — карта «один ответ на ключ» (TechCardCalloutsByKey). Её
+// больше нет: после перевода обоих переносов на позиционное сопоставление у неё не осталось ни
+// одного рабочего вызывающего, а проба, её сторожившая, описывала систему НЕВЕРНО — рабочий ответ
+// на тот же сценарий теперь противоположный (см. dto.TestTwoZeroCalloutsKeepTheirOwnGeometry).
+func TestCalloutDuplicateResolvesByTheCostOfBeingWrong(t *testing.T) {
 	media := []TechCardMediaItem{sketch(10)}
 	callouts := []TechCardCallout{
 		{Number: 7, Part: ncs("First"), MediaId: nc(10)},
 		{Number: 7, Part: ncs("Second"), MediaId: nc(10)},
 	}
+
+	// Ссылка разрешается: деталь, ссылающаяся на 7, не становится оторванной.
 	got, ok := NewTechCardCalloutIndex(media, callouts).TechnicalCallout(7)
-	require.True(t, ok)
+	require.True(t, ok, "индекс обязан ответить: иначе живая деталь объявляется оторванной")
 	require.Equal(t, "First", got.Part.String)
 
-	byKey := TechCardCalloutsByKey(callouts)
-	require.Equal(t, "First", byKey[callouts[0].CalloutKey()].Part.String,
-		"обе половины правила обязаны развязывать дубль ОДИНАКОВО")
+	// Перенос содержания видит ОБЕ строки, каждую на своём месте.
+	pos := NewTechCardCalloutPositional(callouts, callouts)
+	first, ok := pos.Next(callouts[0].CalloutKey())
+	require.True(t, ok)
+	require.Equal(t, "First", first.Part.String)
+	second, ok := pos.Next(callouts[1].CalloutKey())
+	require.True(t, ok)
+	require.Equal(t, "Second", second.Part.String, "вторая обязана получить СВОЮ, а не первую")
+	require.False(t, pos.Unique(callouts[0].CalloutKey()), "ключ носят двое — однозначным он не бывает")
 }
 
 // ИДЕНТИЧНОСТЬ УКАЗАНИЯ — ПАРА, А НЕ ЧИСЛО. Один номер на двух картинках даёт два разных ключа;
@@ -129,6 +145,6 @@ func TestCalloutKeyIsSketchPlusNumber(t *testing.T) {
 	require.NotEqual(t, onSketch.CalloutKey(), unpinned.CalloutKey())
 	require.Equal(t, TechCardCalloutKey{MediaId: 0, Number: 3}, unpinned.CalloutKey())
 
-	byKey := TechCardCalloutsByKey([]TechCardCallout{onSketch, onMoodboard, unpinned})
+	byKey := TechCardCalloutGroups([]TechCardCallout{onSketch, onMoodboard, unpinned})
 	require.Len(t, byKey, 3, "три указания с одним номером — три разных указания")
 }

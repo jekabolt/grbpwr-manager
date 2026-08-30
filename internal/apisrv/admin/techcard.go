@@ -270,13 +270,31 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 	}, nil
 }
 
-// UpdateTechCard updates a tech card, replacing its nested sections.
-func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCardRequest) (*pb_admin.UpdateTechCardResponse, error) {
-	if req.Id <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
-	}
+// prepareTechCardWrite IS THE HANDLER-SIDE PIPELINE OF A TECH-CARD WRITE — everything that happens
+// between the wire and the store, in the order it happens.
+//
+// IT EXISTS BECAUSE THERE ARE NOW TWO ENTRY POINTS, and copying this list into the second one is
+// the failure the gap analysis named (П-Д). The atomic mint of a design sheet version writes the
+// SAME document, so it owes the SAME wire gates, the SAME stored gates, the SAME callout-number
+// mint, the SAME carries and the SAME digest restamp — and it owes them IN THIS ORDER:
+//
+//	wire gates → convert → load stored → stored gates → wastage claims → sign-off reconcile →
+//	costing preservation → MINT CALLOUT NUMBERS → carryOmitted{FabricDirection,CutSymmetry,
+//	Ungraded,Fusing} → CarryOmittedCalloutGeometry → CarryOmittedCalloutClientRef →
+//	fresh-section presence → sign-off belts → restampFreshSignoffDigests
+//
+// Two of those arrows are invariants rather than habits, and both are spelled out at their call
+// sites: the number mint must precede BOTH carries (they match callouts by identity, and identity
+// contains the number) and it must precede the restamp (the number is hashed by the DESIGN
+// projection, so a digest taken before the mint is BORN STALE and no re-approval can clear it).
+// A mint handler that inherited the store call without inheriting this list would freeze v1's very
+// first callout under the number 0 and sign it with a fingerprint of a document that never existed.
+//
+// It returns the entity ready for the store; the caller owns the transaction and the post-commit
+// work (finalizeTechCardWrite).
+func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common.TechCardInsert) (*entity.TechCardInsert, error) {
 	canReadCosting, canWriteCosting := s.costingAccess(ctx)
-	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
+	if !canWriteCosting && techCardInsertHasCostingData(in) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
 	}
 	// §8, rule 1 — ahead of the conversion for the same reason it is ahead of it on Create: it reads
@@ -284,83 +302,83 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// must hear «update the admin panel» rather than the converter's «pick a type from the list»,
 	// which names a control that bundle does not have. Rule 2 stays where it is — it needs the stored
 	// card, which is loaded below.
-	if err := machineCapabilityWireGate(req.TechCard); err != nil {
+	if err := machineCapabilityWireGate(in); err != nil {
 		return nil, err
 	}
 	// Тот же довод, тот же момент — щит узлов сборки (0307).
-	if err := mediaCapabilityWireGate(req.TechCard); err != nil {
+	if err := mediaCapabilityWireGate(in); err != nil {
 		return nil, err
 	}
-	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
+	if err := assemblyCapabilityWireGate(in); err != nil {
 		return nil, err
 	}
 	// Тот же довод, тот же момент — щит видов операций (0324).
-	if err := operationKindsWireGate(req.TechCard); err != nil {
+	if err := operationKindsWireGate(in); err != nil {
 		return nil, err
 	}
 	// Тот же довод, тот же момент — щит оси «работа» (0330).
-	if err := operationWorkWireGate(req.TechCard); err != nil {
+	if err := operationWorkWireGate(in); err != nil {
 		return nil, err
 	}
 	// Тот же довод, тот же момент — щит количеств на связях шага (0334).
-	if err := bomQtyWireGate(req.TechCard); err != nil {
+	if err := bomQtyWireGate(in); err != nil {
 		return nil, err
 	}
-	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
+	tc, err := dto.ConvertPbTechCardInsertToEntity(in)
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
-	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, int(req.Id))
+	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
 		}
 		slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
-			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
 	if stored == nil {
 		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
-			slog.Int("tech_card_id", int(req.Id)))
+			slog.Int("tech_card_id", id))
 		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
 	// §8, rule 2 — the first thing done with `stored`, because it is about what this save would
 	// DESTROY and every line below either reconciles sign-offs or moves data toward the store.
-	if err := machineCapabilityStoredGate(req.TechCard, stored); err != nil {
+	if err := machineCapabilityStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит + контентный бекстоп для узлов: отказывает и устаревшей вкладке, и осведомлённой, но
 	// пустой записи, которая стёрла бы разметку молча (параллельная вкладка, AI-черновик,
 	// восстановленный до-фичевый черновик).
-	if err := mediaCapabilityStoredGate(req.TechCard, stored); err != nil {
+	if err := mediaCapabilityStoredGate(in, stored); err != nil {
 		return nil, err
 	}
-	if err := assemblyCapabilityStoredGate(req.TechCard, stored); err != nil {
+	if err := assemblyCapabilityStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит видов операций (0324) — правило 2, то самое, что срабатывает на практике: payload
 	// отставшей вкладки, выбросившей непонятные ей блоки, выглядит невинно, и только хранилище
 	// знает, какие восемнадцать полей на старых парах (глагол, machine_type) — и какие токены,
 	// дописанные волной в словари живых колонок, — запись сотрёт.
-	if err := operationKindsStoredGate(req.TechCard, stored); err != nil {
+	if err := operationKindsStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит оси «работа» (0330) — правило 2 и, следом, правило снятой работы. Оба здесь по одной
 	// причине: только хранилище знает, что карточка размечена, и только оно даёт снятой работе
 	// право доехать там, где строка уже её несёт.
-	if err := operationWorkStoredGate(req.TechCard, stored); err != nil {
+	if err := operationWorkStoredGate(in, stored); err != nil {
 		return nil, err
 	}
-	if err := operationWorkRetiredGate(req.TechCard, stored); err != nil {
+	if err := operationWorkRetiredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит количеств на связях шага (0334) — правило 2, то самое, что срабатывает на практике:
 	// payload отставшей вкладки про количества не говорит вовсе и выглядит невинно, а полная
 	// замена операций стёрла бы их молча и безвозвратно.
-	if err := bomQtyStoredGate(req.TechCard, stored); err != nil {
+	if err := bomQtyStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет
@@ -372,7 +390,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	}
 	username := authsrv.GetAdminUsername(ctx)
 	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)
-	freshSignoffs := reconcileUpdateTechCardSignoffs(tc, req.TechCard.Signoffs, stored.Signoffs,
+	freshSignoffs := reconcileUpdateTechCardSignoffs(tc, in.Signoffs, stored.Signoffs,
 		username, time.Now().UTC())
 	if costingSignoffChanged(stored.Signoffs, tc.Signoffs, freshSignoffs) && !canReadCosting {
 		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
@@ -381,7 +399,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if !canWriteCosting {
 		if err := preserveStoredCostingFrom(stored, tc); err != nil {
 			slog.Default().ErrorContext(ctx, "can't preserve stored tech card costing",
-				slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
 		}
 	}
@@ -450,46 +468,73 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
-	if err := s.restampFreshSignoffDigests(ctx, int(req.Id), tc, freshSignoffs); err != nil {
+	if err := s.restampFreshSignoffDigests(ctx, id, tc, freshSignoffs); err != nil {
 		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
-			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
+	}
+	return tc, nil
+}
+
+// techCardWriteError translates a document-write failure into the status the client acts on. ONE
+// mapping, both entry points: a mint that answered NotFound where the save answers Aborted would
+// send a person to reload a card that is present.
+func (s *Server) techCardWriteError(ctx context.Context, err error) error {
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return status.Errorf(codes.NotFound, "tech card not found")
+	}
+	if errors.Is(err, entity.ErrTechCardConflict) {
+		return status.Error(codes.Aborted, "tech card was modified concurrently; reload and retry")
+	}
+	if errors.Is(err, entity.ErrTechCardReleased) {
+		return status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
+	}
+	if errors.Is(err, entity.ErrTechCardPurposeLocked) {
+		// err, not the bare sentinel: the store appends the references that actually pin the
+		// purpose, and that list is the only actionable part of the message.
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if s.repo.IsErrUniqueViolation(err) {
+		return techCardUniqueViolation(err)
+	}
+	if s.repo.IsErrForeignKeyViolation(err) {
+		return status.Error(codes.InvalidArgument, techCardFKMsg)
+	}
+	slog.Default().ErrorContext(ctx, "can't update tech card",
+		slog.String("err", err.Error()),
+	)
+	return status.Errorf(codes.Internal, "can't update tech card")
+}
+
+// finalizeTechCardWrite is the POST-COMMIT half of a tech-card write, and the mint owes it too:
+// the orphaned pattern objects it drops are objects THIS write made unreferenced, and the release
+// snapshot is what the factory reads. A mint that skipped it would leak into S3 where the save
+// does not, and would leave a released card without the snapshot of what it released.
+func (s *Server) finalizeTechCardWrite(ctx context.Context, id, expectedLockVersion int, orphanedPatternURLs []string) {
+	s.deleteOrphanedPatternObjects(ctx, "tech_card", id, orphanedPatternURLs)
+	s.seedProductCostsFromTechCard(ctx, id, expectedLockVersion+1)
+	s.snapshotReleaseIfReleased(ctx, id)
+}
+
+// UpdateTechCard updates a tech card, replacing its nested sections.
+func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCardRequest) (*pb_admin.UpdateTechCardResponse, error) {
+	if req.Id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
+	}
+	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard)
+	if err != nil {
+		return nil, err
 	}
 	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
 		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
 	if err != nil {
-		var ve *entity.ValidationError
-		if errors.As(err, &ve) {
-			return nil, apierr.Invalid(ve)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "tech card not found")
-		}
-		if errors.Is(err, entity.ErrTechCardConflict) {
-			return nil, status.Error(codes.Aborted, "tech card was modified concurrently; reload and retry")
-		}
-		if errors.Is(err, entity.ErrTechCardReleased) {
-			return nil, status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
-		}
-		if errors.Is(err, entity.ErrTechCardPurposeLocked) {
-			// err, not the bare sentinel: the store appends the references that actually pin the
-			// purpose, and that list is the only actionable part of the message.
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
-		}
-		if s.repo.IsErrUniqueViolation(err) {
-			return nil, techCardUniqueViolation(err)
-		}
-		if s.repo.IsErrForeignKeyViolation(err) {
-			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
-		}
-		slog.Default().ErrorContext(ctx, "can't update tech card",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update tech card")
+		return nil, s.techCardWriteError(ctx, err)
 	}
-	s.deleteOrphanedPatternObjects(ctx, "tech_card", int(req.Id), orphanedPatternURLs)
-	s.seedProductCostsFromTechCard(ctx, int(req.Id), int(req.ExpectedLockVersion)+1)
-	s.snapshotReleaseIfReleased(ctx, int(req.Id))
+	s.finalizeTechCardWrite(ctx, int(req.Id), int(req.ExpectedLockVersion), orphanedPatternURLs)
 	return &pb_admin.UpdateTechCardResponse{}, nil
 }
 
