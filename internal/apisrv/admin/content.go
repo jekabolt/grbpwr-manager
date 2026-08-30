@@ -174,6 +174,39 @@ func (s *Server) UploadPattern(ctx context.Context, req *pb_admin.UploadPatternR
 	}, nil
 }
 
+// UploadContentVector uploads a vector file (SVG) into the media library — the same shelf, and
+// the same MediaFull answer, as UploadContentImage and UploadContentVideo (owner decision
+// 2026-08-30: the vector goes to the media storage, where the pictures and videos live, not to
+// the files library).
+//
+// The handler is deliberately thin: the gate that must not move lives in
+// bucket.UploadContentNonRaster, which inspects the bytes (recraft.InspectSVG refuses active
+// content, declared XML entities, not-XML, and a raster wearing a vector's name) BEFORE anything
+// lands on our own public host, and files the row the way a video's is filed — one verbatim
+// object, three url slots. The content type is fixed by the verb, not read from the request:
+// this door stores image/svg+xml and nothing else, so a client cannot talk its way into the GLB
+// branch of the non-raster path.
+//
+// Error split is UploadPattern's, for the same reason: a refused payload (empty, oversized, not
+// a safe SVG) is the client's fault — InvalidArgument, with the inspector's own words — while an
+// S3 or DB failure is Internal.
+func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadContentVectorRequest) (*pb_admin.UploadContentVectorResponse, error) {
+	media, err := s.bucket.UploadContentNonRaster(ctx, req.GetRaw(), "image/svg+xml", s.bucket.GetBaseFolder(), bucket.GetMediaName())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't upload content vector",
+			slog.String("err", err.Error()),
+		)
+		code := codes.Internal
+		if errors.Is(err, bucket.ErrInvalidNonRaster) {
+			code = codes.InvalidArgument
+		}
+		return nil, status.Errorf(code, "failed to upload vector: %v", err)
+	}
+	return &pb_admin.UploadContentVectorResponse{
+		Media: media,
+	}, nil
+}
+
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
 	resp := &pb_admin.DeleteFromBucketResponse{}

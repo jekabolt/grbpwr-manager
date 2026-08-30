@@ -264,9 +264,15 @@ var methodRequirements = map[string]Requirement{
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),
 	"UploadPattern":      wr(SectionContent),
-	"DeleteFromBucket":   wr(SectionContent),
-	"ListObjectsPaged":   rd(SectionContent),
-	"GetMediaUsage":      rd(SectionContent),
+	// UploadContentVector — МЕДИА-глагол, и права у него РОВНО как у соседей по семейству: тот же
+	// content:write, что кладёт картинку и видео на ту же полку. Не tech_cards — дверь ничья не
+	// карточная: она только кладёт байты в медиа-хранилище, а привязку к карточке делает
+	// ImportDesignVector под своим собственным правом. Границу «что за байты» держит не право, а
+	// гейт формы в bucket.UploadContentNonRaster (recraft.InspectSVG).
+	"UploadContentVector": wr(SectionContent),
+	"DeleteFromBucket":    wr(SectionContent),
+	"ListObjectsPaged":    rd(SectionContent),
+	"GetMediaUsage":       rd(SectionContent),
 	// hero
 	"AddHero":                wr(SectionHero),
 	"GetBackgroundHeroColor": rd(SectionHero),

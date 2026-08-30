@@ -70,6 +70,34 @@ service AdminService {
     };
   }
 
+  // UploadContentVector uploads a vector file (SVG) into the MEDIA LIBRARY — the same shelf, and
+  // the same MediaFull answer, as UploadContentImage and UploadContentVideo (owner decision
+  // 2026-08-30: «векторный файл надо будет записывать в медиа хранилище там где все картинки и
+  // видео», replacing the earlier files-library destination). The object is stored the way a
+  // video is: ONE verbatim object, all three media slots pointing at it, one media row that every
+  // existing reader — the media library, GetMediaUsage, ImportDesignVector's source_media_id —
+  // sees as a first-class member.
+  //
+  // THE BYTES ARE INSPECTED BEFORE THEY ARE STORED, and the check is a security boundary, not
+  // pedantry: the object is served from our own public host, where an SVG is a DOCUMENT —
+  // <script>, on* handlers, javascript: urls, <foreignObject> and declared XML entities run or
+  // expand in the viewer's browser. The storage path (bucket.UploadContentNonRaster →
+  // recraft.InspectSVG) refuses active content, declared entities, not-XML, and a raster wearing a
+  // vector's name; the ceiling is recraft.MaxSVGBytes (8 MiB). A refusal is InvalidArgument, and
+  // it has a named price: an SVG wrapping text in <foreignObject>, or an old export carrying
+  // benign DTD entities, will not upload through this door.
+  //
+  // THERE IS DELIBERATELY NO «list this card's vectors» VERB NEXT TO THIS ONE. Re-entry («при
+  // повторном заходе вектор уже был») is served by the band itself: ImportDesignVector files the
+  // layer with source_media_id, and GetDesignBand reads the layers back. A second list would be a
+  // second source of the same truth — this verb only puts bytes on the shelf.
+  rpc UploadContentVector(UploadContentVectorRequest) returns (UploadContentVectorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/content/vector"
+      body: "*"
+    };
+  }
+
   // DeleteFromBucket deletes objects specified by their keys.
   rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
     option (google.api.http) = {delete: "/api/admin/content"};
@@ -3597,6 +3625,17 @@ message UploadPatternResponse {
   string url = 1; // CDN url of the stored PDF
   string filename = 2; // echoed original filename
   int64 size_bytes = 3; // stored file size in bytes
+}
+
+message UploadContentVectorRequest {
+  // Raw SVG bytes as exported by the editor. The content type is fixed by the verb — this door
+  // stores image/svg+xml and nothing else (GLB models are minted by the design worker, not
+  // uploaded by hand); the bytes are checked against that claim, never trusted.
+  bytes raw = 1;
+}
+
+message UploadContentVectorResponse {
+  common.MediaFull media = 1;
 }
 
 message ListObjectsPagedRequest {
@@ -11977,7 +12016,7 @@ message ImportDesignVectorRequest {
   int32 tech_card_id = 1;
   // Idempotency: a retry after a lost response must not file the same SVG as a second layer.
   string client_request_id = 2;
-  // FK media(id): the SVG itself, uploaded through UploadContentImage. It is the AUTHORITATIVE file
+  // FK media(id): the SVG itself, uploaded through UploadContentVector. It is the AUTHORITATIVE file
   // — `download SVG` hands back this, never a re-serialisation of the strokes below.
   int32 source_media_id = 3;
   // FK design_picture(id): the raster this vector was traced FROM, when it was. 0 = the file came
