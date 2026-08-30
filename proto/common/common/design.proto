@@ -129,6 +129,29 @@ message DesignRun {
   // NO FOREIGN KEY, deliberately: a run is never deleted, so nothing needs enforcing, and a FK
   // would make the row's lineage a reason a card cannot be cleaned up later.
   int32 rerun_of = 29;
+  // OUTPUT-ONLY: the COMPOSED BASE INSTRUCTION the worker built for this run — the ask, the
+  // garment, the fit, the colour, the numbered reference captions («image 1: front — …», counting
+  // through the pictures in the order they were attached) and, on flats, the owner's craft
+  // paragraphs.
+  //
+  // ⚠ «BASE», AND THE WORD IS LOAD-BEARING. On the single-call flat route this IS the text the
+  // provider received, byte for byte. On `per_view` each paid call gets «view:\n<view>» appended,
+  // and on 3D the text is cut to the provider's texture ceiling — so on those two routes what
+  // went out is NOT what is stored, and a reader who takes this field for a transcript will be
+  // wrong. It was called «what the worker sent» here until a review pointed out that the sentence
+  // is false on two of four routes.
+  //
+  // STORED AT DISPATCH, NEVER RECONSTRUCTED ON READ. This is a deliberate fork: a preview verb
+  // would compose the text a second time, and what the modal shows could drift from what the
+  // model was told. Instead the worker writes the very string it is about to send, before the
+  // first paid attempt, and this field echoes that record — the history carries the sent text by
+  // construction — for the base text, with the two deviations named above.
+  //
+  // EMPTY MEANS TWO DIFFERENT THINGS, and a reader must not collapse them: either no worker has
+  // picked this run up yet, or the run PREDATES the column (migration 0352). Every historical row
+  // is empty forever — the text was never kept — so a screen that says «not dispatched yet» over
+  // an old finished run is lying about history.
+  string prompt = 30;
 }
 
 // DesignRunAttempt is ONE paid provider call. It exists because the history row must be able to

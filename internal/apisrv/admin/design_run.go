@@ -1677,6 +1677,7 @@ func designMarshalJSON(m proto.Message) ([]byte, error) { return designJSONMarsh
 // этой пары разошлись бы, и один из глаголов однажды отдал бы цены аккаунту без costing:read.
 func (s *Server) designRunResponse(ctx context.Context, run entity.DesignRun) *pb_common.DesignRun {
 	pb := designRunToPb(ctx, run)
+	s.joinDesignRunInputMedia(ctx, []*pb_common.DesignRun{pb})
 	s.stripDesignCosting(ctx, []*pb_common.DesignRun{pb}, nil)
 	return pb
 }

@@ -29,7 +29,10 @@ func flatPrompt(t *testing.T, params, inputs string) string {
 	r.Params = entity.RawJSON(params)
 	r.Inputs = entity.RawJSON(inputs)
 	r.Ask = sql.NullString{String: "ASK-the words of the person", Valid: true}
-	return composePrompt(r, parseParams(r.Params), parseInputs(r.Inputs))
+	p, in := parseParams(r.Params), parseInputs(r.Inputs)
+	// Every snapshot picture resolves in these tests; buildJob's filtering is exercised where the
+	// resolver is faked (TestCaptionNumberKIsImageNumberK).
+	return composePrompt(r, p, in, referenceList(p, in))
 }
 
 const oneRef = `{"refs":[{"media_id":11,"role":"silhouette","note":"NOTE-collar"}]}`
@@ -123,7 +126,8 @@ func TestCraftIsForFlatsOnly(t *testing.T) {
 		r.Params = entity.RawJSON(`{"views":["front","back"],"layout":"one"}`)
 		r.Inputs = entity.RawJSON(oneRef)
 		r.Ask = sql.NullString{String: "ASK", Valid: true}
-		got := composePrompt(r, parseParams(r.Params), parseInputs(r.Inputs))
+		p, in := parseParams(r.Params), parseInputs(r.Inputs)
+		got := composePrompt(r, p, in, referenceList(p, in))
 		require.NotContains(t, got, "Strictly excluded", "kind %s must keep its bare context", kind)
 		require.NotContains(t, got, "black vector line art", "kind %s must keep its bare context", kind)
 		require.Contains(t, got, "ASK")

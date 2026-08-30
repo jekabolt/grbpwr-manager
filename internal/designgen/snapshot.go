@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -98,35 +99,61 @@ func parseInputs(raw entity.RawJSON) runInputs {
 	return in
 }
 
-// referenceMediaIDs is EVERY picture this run is allowed to show a model, in a stable order.
+// refCaption is ONE picture of the run TOGETHER WITH the words the prompt says about it.
 //
-// THREE SOURCES, ALL OF THEM CHOSEN BY A PERSON: the references panel, the bench plates a fix or a
-// render was pointed at, and the extra media dropped into a render. The moodboard is not among
-// them and cannot be — see runInputs.
+// THE PAIR IS THE POINT. Until this type existed, the list of pictures was built in one place
+// (referenceMediaIDs) and the list of captions in another (composePrompt), each with its own
+// filters — a reference with no role and no note produced a picture but no caption, a slot
+// produced a picture and never had a caption at all — so caption k routinely described picture
+// k+something. The model was left to guess which words went with which image, which is exactly
+// the owner's complaint («должно быть помечено какое медиа и что на нем»). One list, carrying
+// both halves, is what makes the correspondence a construction rather than a hope.
+type refCaption struct {
+	MediaID int
+	Caption string
+}
+
+// referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
+// with its caption.
+//
+// FOUR SOURCES, ALL OF THEM CHOSEN BY A PERSON: the bench plates a fix or a render was pointed
+// at, the references panel, the extra media dropped into a render, and the colour recipe's fabric
+// swatch. The moodboard is not among them and cannot be — see runInputs.
 //
 // ORDER IS MEANING ON THE 3D ROUTE, where Meshy reads the first url as the front view. Slots
 // therefore come first and are sorted front, back, side_l, side_r, detail rather than in whatever
 // order the snapshot happens to hold them.
-func referenceMediaIDs(p runParams, in runInputs) []int {
+//
+// EVERY ENTRY HAS WORDS, EVEN THE UNANNOTATED ONES. A picture that goes to the model with no
+// caption line shifts the numbering of every caption after it — that silent shift is the defect
+// this type exists to close, so «no words» is itself said in words («reference image»).
+func referenceList(p runParams, in runInputs) []refCaption {
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
 		return viewRank(slots[i].ViewKey) < viewRank(slots[j].ViewKey)
 	})
 
-	seen := map[int]struct{}{}
-	var out []int
-	add := func(id int) {
+	seen := map[int]int{}
+	var out []refCaption
+	add := func(id int, caption string) {
 		if id <= 0 {
 			return
 		}
-		if _, dup := seen[id]; dup {
+		if at, dup := seen[id]; dup {
+			// The same picture named by a second source keeps its FIRST position — order is
+			// meaning on the 3D route — but the second source's words are appended rather than
+			// dropped: a bench plate that is also a reference with a note must not lose the note
+			// to deduplication.
+			if caption != "" && !strings.Contains(out[at].Caption, caption) {
+				out[at].Caption = out[at].Caption + "; " + caption
+			}
 			return
 		}
-		seen[id] = struct{}{}
-		out = append(out, id)
+		seen[id] = len(out)
+		out = append(out, refCaption{MediaID: id, Caption: caption})
 	}
 	for _, s := range slots {
-		add(s.MediaID)
+		add(s.MediaID, slotCaption(s))
 	}
 	for _, r := range in.Refs {
 		// A reference whose media row is gone is remembered by the snapshot but cannot be fetched
@@ -134,15 +161,86 @@ func referenceMediaIDs(p runParams, in runInputs) []int {
 		if r.Deleted {
 			continue
 		}
-		add(r.MediaID)
+		add(r.MediaID, refEntryCaption(r))
 	}
 	for _, id := range p.ExtraInputMediaIDs {
-		add(id)
+		add(id, "additional reference image")
 	}
 	if p.Colour != nil {
-		add(p.Colour.FabricMediaID)
+		add(p.Colour.FabricMediaID, "fabric swatch for the colour")
 	}
 	return out
+}
+
+// referenceMediaIDs is the picture half of referenceList — kept as a name because half the band's
+// comments point at it, and DERIVED from the list rather than built beside it: two builders of
+// «the run's pictures, in order» is how captions and urls came to disagree in the first place.
+func referenceMediaIDs(p runParams, in runInputs) []int {
+	list := referenceList(p, in)
+	out := make([]int, 0, len(list))
+	for _, rc := range list {
+		out = append(out, rc.MediaID)
+	}
+	return out
+}
+
+// slotCaption says what a bench plate is: the garment's own current state, and WHICH SIDE of it —
+// the «фронт/бэк» mark the owner asked every picture to carry.
+func slotCaption(s inputSlot) string {
+	c := "current state of the garment — " + captionView(s.ViewKey)
+	if name := strings.TrimSpace(s.DetailName); name != "" {
+		c += " (" + name + ")"
+	}
+	return c
+}
+
+// refEntryCaption is the words a person put on one reference: the role they gave it, the note
+// they wrote, the callouts they pinned. A reference with none of the three still gets words —
+// see referenceList on why silence is not allowed.
+// oneLine сплющивает человеческий текст в одну строку.
+//
+// ПОЧЕМУ ЭТО НЕ КОСМЕТИКА. Подписи референсов нумерованы (`- image 3: …`), и номер связывает
+// подпись с картинкой. Записка или выноска, содержащая перевод строки, вписала бы в промпт СВОЮ
+// строку — в том числе строку вида «- image 2: …», — и модель прочла бы её как подпись соседней
+// картинки. Человек, пишущий заметку, не подозревает, что редактирует структуру промпта.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func refEntryCaption(r inputRef) string {
+	line := strings.TrimSpace(oneLine(r.Role) + " — " + oneLine(r.Note))
+	line = strings.Trim(line, "— ")
+	var marks []string
+	for _, c := range r.Callouts {
+		if t := strings.TrimSpace(c.Text); t != "" {
+			marks = append(marks, t)
+		}
+	}
+	if len(marks) > 0 {
+		line = strings.TrimSpace(line + " [" + strings.Join(marks, "; ") + "]")
+	}
+	if line == "" {
+		return "reference image"
+	}
+	return line
+}
+
+// captionView spells a slot's view key the way a caption reads it.
+func captionView(v string) string {
+	switch v {
+	case entity.DesignViewFront:
+		return "front view"
+	case entity.DesignViewBack:
+		return "back view"
+	case entity.DesignViewSideL:
+		return "left side view"
+	case entity.DesignViewSideR:
+		return "right side view"
+	case entity.DesignViewDetail:
+		return "detail view"
+	default:
+		return v
+	}
 }
 
 // viewRank orders the silhouette so the front comes first. Anything unnamed sorts last.
@@ -169,7 +267,16 @@ func viewRank(v string) int {
 // launched, and by then the card's description, fit and references may all have moved. A prompt
 // assembled from live data would make the history row a lie: it would say what was asked and the
 // model would have been told something else.
-func composePrompt(run entity.DesignRun, p runParams, in runInputs) string {
+//
+// `attached` IS THE PICTURES ACTUALLY GOING OUT, in the order they go out — the survivors of
+// buildJob's media resolution, not the snapshot's wish list. The caption block is numbered off
+// this slice, so «image 3» in the words is images[2] on the wire BY CONSTRUCTION: both halves are
+// read off the same element of the same slice, in one loop, in one place (buildJob). Composing
+// from the pre-resolution list instead would let one unfetchable media row shift every caption
+// after it onto the wrong picture — the exact defect the numbering exists to close. The words of
+// a reference whose picture did not survive are dropped WITH the picture: a caption describing an
+// image the model cannot see is an instruction about nothing.
+func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []refCaption) string {
 	var b strings.Builder
 	write := func(label, value string) {
 		value = strings.TrimSpace(value)
@@ -216,28 +323,14 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs) string {
 		write("turntable", strings.Join(parts, ", "))
 	}
 
-	// The references speak for themselves: the role a person gave each picture, the note they
-	// wrote on it, and the callouts they pinned on it. This is the whole of W-7's «our prompt: the
-	// pictures, the descriptions and the markup» that is expressible in words.
+	// The references, EACH TIED TO ITS PICTURE BY NUMBER. «image k:» counts through the pictures
+	// in the order they are attached (see the contract on `attached` above), so the model — and a
+	// person reading the stored prompt — can say which words describe which image instead of
+	// guessing. This is W-7's «our prompt: the pictures, the descriptions and the markup», with
+	// the binding between the first two finally said out loud.
 	var refLines []string
-	for _, r := range in.Refs {
-		if r.Deleted {
-			continue
-		}
-		line := strings.TrimSpace(strings.TrimSpace(r.Role) + " — " + strings.TrimSpace(r.Note))
-		line = strings.Trim(line, "— ")
-		var marks []string
-		for _, c := range r.Callouts {
-			if t := strings.TrimSpace(c.Text); t != "" {
-				marks = append(marks, t)
-			}
-		}
-		if len(marks) > 0 {
-			line = strings.TrimSpace(line + " [" + strings.Join(marks, "; ") + "]")
-		}
-		if line != "" {
-			refLines = append(refLines, "- "+line)
-		}
+	for i, rc := range attached {
+		refLines = append(refLines, "- image "+strconv.Itoa(i+1)+": "+rc.Caption)
 	}
 	write("references", strings.Join(refLines, "\n"))
 
@@ -269,7 +362,7 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs) string {
 	// is a redraw of an already-approved raster and draft_idea never reaches the worker; neither
 	// takes the block either.
 	if run.Kind == entity.DesignRunKindFlat {
-		write("", flatCraft(p, in))
+		write("", flatCraft(p, len(attached)))
 	}
 	return b.String()
 }
@@ -297,32 +390,45 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 		RunID:      run.Id,
 		TechCardID: run.TechCardId,
 		Kind:       run.Kind,
-		Prompt:     composePrompt(run, p, in),
 		Views:      p.Views,
 		Layout:     p.Layout,
 		Outputs:    run.RequestedOutputs,
 		Quality:    quality,
 	}
 
-	ids := referenceMediaIDs(p, in)
-	if len(ids) == 0 {
-		return job, nil
-	}
-	byID, err := media.GetMediaByIds(ctx, ids)
-	if err != nil {
-		return Job{}, fmt.Errorf("failed to resolve the input media of design run %d: %w", run.Id, err)
-	}
-	for _, id := range ids {
-		m, ok := byID[id]
-		if !ok {
-			// The row went away between the snapshot and the pass. Skipping is right: the id
-			// cannot be fetched by the provider either, and refusing the whole run over one
-			// missing reference would throw away a job whose remaining inputs are intact.
-			continue
+	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
+	// that actually attach, so the media has to be resolved BEFORE the prompt is composed. Both
+	// halves of each pair — the url and the caption — are appended by the SAME iteration of the
+	// SAME loop, off the SAME element: that, and nothing subtler, is what guarantees that caption
+	// k describes references[k-1]. TestCaptionNumberKIsImageNumberK holds the guarantee.
+	list := referenceList(p, in)
+	var attached []refCaption
+	if len(list) > 0 {
+		ids := make([]int, 0, len(list))
+		for _, rc := range list {
+			ids = append(ids, rc.MediaID)
 		}
-		if u := strings.TrimSpace(m.FullSizeMediaURL); u != "" {
+		byID, err := media.GetMediaByIds(ctx, ids)
+		if err != nil {
+			return Job{}, fmt.Errorf("failed to resolve the input media of design run %d: %w", run.Id, err)
+		}
+		for _, rc := range list {
+			m, ok := byID[rc.MediaID]
+			if !ok {
+				// The row went away between the snapshot and the pass. Skipping is right: the id
+				// cannot be fetched by the provider either, and refusing the whole run over one
+				// missing reference would throw away a job whose remaining inputs are intact. The
+				// caption is skipped WITH the picture — see composePrompt on why.
+				continue
+			}
+			u := strings.TrimSpace(m.FullSizeMediaURL)
+			if u == "" {
+				continue
+			}
 			job.References = append(job.References, u)
+			attached = append(attached, rc)
 		}
 	}
+	job.Prompt = composePrompt(run, p, in, attached)
 	return job, nil
 }

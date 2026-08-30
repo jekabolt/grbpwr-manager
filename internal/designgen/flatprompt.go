@@ -52,13 +52,18 @@ const (
 // flatCraft assembles the craft block for one flat run: intro, identification, the layout
 // paragraph built from the frozen params, then the owner's style / exclusions / output verbatim.
 //
+// `refs` IS THE COUNT OF PICTURES ACTUALLY ATTACHED, handed down from buildJob's resolution —
+// not the snapshot's wish list. The intro's grammar hangs on it («the reference image» /
+// «images» / no reference at all), and a run whose only reference failed to resolve must get the
+// no-reference identification, or the model is told to be faithful to a picture it was never
+// shown.
+//
 // ROUTING BETWEEN THE TWO REFERENCE PROMPTS: a run whose every chosen view is `detail` is a
 // detail callout and gets Эталон 2; anything else — silhouette views, or a mix that happens to
 // include a detail — gets Эталон 1, with the detail named in the view list as an enlarged
 // close-up. The mixed case is not something either reference prompt describes, so the garment
 // frame (the more general of the two) carries it.
-func flatCraft(p runParams, in runInputs) string {
-	refs := len(referenceMediaIDs(p, in))
+func flatCraft(p runParams, refs int) string {
 	detail := detailOnly(p.Views)
 
 	identify := flatIdentifyGarment

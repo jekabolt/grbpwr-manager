@@ -29,6 +29,7 @@ type runStore interface {
 	ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)
 	ReviveExpiredRuns(ctx context.Context) (int, error)
 	GetRun(ctx context.Context, runID int) (*entity.DesignRun, error)
+	RecordRunPrompt(ctx context.Context, runID int, claimToken, prompt string) error
 	StartAttempt(ctx context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error)
 	FinishAttempt(ctx context.Context, req entity.DesignAttemptFinish) error
 	CompleteRun(ctx context.Context, req entity.DesignRunComplete) (*entity.DesignRun, error)
@@ -79,6 +80,38 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 				slog.Int("run_id", run.Id), slog.String("err", gerr.Error()))
 		} else if full != nil {
 			pendingID = acceptedRequestID(full.Attempts)
+		}
+	}
+
+	// ─── THE PROMPT GOES INTO THE HISTORY ROW BEFORE IT GOES TO A PROVIDER — И ТОЛЬКО ТОГДА,
+	// КОГДА ЭТОТ ПРОХОД ДЕЙСТВИТЕЛЬНО ОТПРАВЛЯЕТ ТЕКСТ.
+	//
+	// ⚠ ПОРЯДОК ЗДЕСЬ ИСПРАВЛЕН ПО РЕВЬЮ, И ПРЕЖНИЙ БЫЛ НЕВЕРЕН ДВАЖДЫ. Запись стояла ВЫШЕ поиска
+	// принятой попытки, поэтому на ВОЗОБНОВЛЕНИИ уже оплаченного асинхронного задания она:
+	//   · переписывала колонку заново собранным текстом, который поставщику НЕ отправлялся ни
+	//     разу (состав входов мог измениться между проходами — удалили медиа, переехал сборщик), —
+	//     то есть история начинала утверждать про деньги неправду;
+	//   · своим отказом отменяла БЕСПЛАТНЫЙ сбор результата: submit был оплачен раньше, а проход
+	//     обрывался до Collect, и оплаченное задание ждало истечения аренды. Дорогая ошибка ради
+	//     дешёвой записи.
+	// Возобновление текст не отправляет вовсе, значит и писать ему нечего: в колонке уже лежит то,
+	// что ушло на самом деле.
+	//
+	// СТОРОНА ХРАНЕНИЯ ВЫБРАНА НАМЕРЕННО, а не глагол предпросмотра: предпросмотр — вторая сборка
+	// другим кодом в другое время, и «что показала модалка» разошлось бы с «что услышала модель»
+	// молча. Здесь колонка пишется ИЗ ТОГО ЖЕ `Job.Prompt`, который отправляют следующие строки.
+	//
+	// RECORD-THEN-SPEND: запись стоит до `StartAttempt`, то есть до любого движения денег; её
+	// отказ останавливает проход, ничего не потратив. Токен захвата сторожит её как и всякую
+	// другую запись результата.
+	//
+	// ЧТО В КОЛОНКЕ — БАЗОВАЯ ИНСТРУКЦИЯ, и это НЕ ПРИДИРКА: на маршруте `per_view` каждый платный
+	// вызов получает сверху «view:\n<view>» (viewPrompt), а 3D режет текст по потолку текстуры
+	// (textureSteer). Значит на этих двух маршрутах отправленный текст СТРОГО ДЛИННЕЕ или короче
+	// хранимого, и контракт обязан говорить «базовая инструкция», а не «то, что ушло».
+	if pendingID == "" {
+		if err := w.store.RecordRunPrompt(ctx, run.Id, token, job.Prompt); err != nil {
+			return w.abandon(ctx, run, err)
 		}
 	}
 

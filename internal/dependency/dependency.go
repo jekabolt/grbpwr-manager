@@ -2062,6 +2062,10 @@ type (
 		StartRun(ctx context.Context, req entity.DesignRunStart) (*entity.DesignRunStarted, error)
 		ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)
 		ReviveExpiredRuns(ctx context.Context) (int, error)
+		// RecordRunPrompt writes the COMPOSED prompt the worker is about to send onto the run row,
+		// claim-guarded, BEFORE the first attempt — so the history carries the sent text itself
+		// rather than a reconstruction that could drift from it.
+		RecordRunPrompt(ctx context.Context, runID int, claimToken, prompt string) error
 		StartAttempt(ctx context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error)
 		FinishAttempt(ctx context.Context, req entity.DesignAttemptFinish) error
 		CompleteRun(ctx context.Context, req entity.DesignRunComplete) (*entity.DesignRun, error)

@@ -574,6 +574,13 @@ func classifyStatus(status int, body []byte) error {
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrOutOfCredit, status, apiErrorMessage(body))
 	case status == http.StatusTooManyRequests:
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrRateLimited, status, apiErrorMessage(body))
+	case status == http.StatusRequestTimeout:
+		// 408 НАЗВАН ОТДЕЛЬНО, ИНАЧЕ ЕГО ЗАБИРАЕТ ВЕТКА «ЛЮБОЙ ПРОЧИЙ 4xx» НИЖЕ — и временный
+		// таймаут становится терминальным отказом с первой попытки. Ошибка в эту сторону дороже
+		// прежней: та жгла три попытки на постоянной ошибке, эта отнимает две попытки у ошибки,
+		// которая прошла бы сама. Повтор того же запроса после таймаута ЗАКОННО кончается иначе —
+		// это ровно определение погоды.
+		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrProviderFailure, status, apiErrorMessage(body))
 	case status >= 500:
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrProviderFailure, status, apiErrorMessage(body))
 	case status >= 400:

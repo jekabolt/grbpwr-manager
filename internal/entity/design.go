@@ -487,6 +487,10 @@ type DesignRun struct {
 	ErrorCode         sql.NullString      `db:"error_code"`
 	LastError         sql.NullString      `db:"last_error"`
 	OutputText        sql.NullString      `db:"output_text"`
+	// Prompt — СОБРАННЫЙ текст, ушедший модели (0352): пишется воркером при диспатче
+	// (RecordRunPrompt), ДО первой платной попытки, той же строкой, что уходит поставщику.
+	// NULL = воркер прогон ещё не поднимал. Это хранение отправленного, не предпросмотр.
+	Prompt sql.NullString `db:"prompt"`
 	CreatedAt         time.Time           `db:"created_at"`
 	StartedAt         sql.NullTime        `db:"started_at"`
 	CompletedAt       sql.NullTime        `db:"completed_at"`

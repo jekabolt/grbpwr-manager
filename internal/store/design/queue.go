@@ -415,11 +415,62 @@ func closeRunsPastTheirCeiling(ctx context.Context, db dependency.DB) error {
 	return nil
 }
 
+// RecordRunPrompt пишет СОБРАННЫЙ текст промпта в строку прогона — тот самый Job.Prompt, который
+// воркер через мгновение отправит поставщику.
+//
+// ЭТО ВЫБРАННАЯ СТОРОНА РАЗВИЛКИ «хранить отправленное» против «глагол предпросмотра».
+// Предпросмотр — вторая сборка текста в другое время другим кодом, и показанное могло бы молча
+// разойтись с отправленным; здесь же колонка наполняется той же строкой, которая уходит в сеть,
+// поэтому история несёт отправленный текст ПО ПОСТРОЕНИЮ (см. Worker.execute, record-then-spend —
+// запись стоит ДО первой платной попытки).
+//
+// ⚠ ДВЕ ОГОВОРКИ, БЕЗ КОТОРЫХ ПРЕДЫДУЩИЙ АБЗАЦ ПЕРЕОБЕЩАЕТ. Во-первых, «отправленный текст» верен
+// на одновызовном флэтовом маршруте; на `per_view` каждому платному вызову дописывается свой
+// «view:», а 3D режет текст по потолку текстуры — там в колонке лежит БАЗОВАЯ инструкция.
+// Во-вторых, возобновление уже оплаченного асинхронного задания эту запись НЕ делает вовсе:
+// оно ничего не отправляет, а перезапись переписала бы историю текстом, которого никто не слышал.
+//
+// СВЕРКА ЗАХВАТА — как у всех пишущих глаголов машины. Опоздавший воркер, чья аренда истекла, не
+// вправе переписать текст поверх записи воркера, который строкой владеет: их снапшот один, но
+// composer мог смениться между деплоями, и строка обязана следовать за тем, кто реально шлёт.
+// Повторная запись тем же владельцем безопасна, но НЕ потому, что «composePrompt — чистая функция
+// замороженного снапшота»: это утверждение неверно и было здесь ошибкой. Состав промпта зависит от
+// ЖИВОГО резолва медиа (`buildJob` → `GetMediaByIds`), поэтому удалённая между попытками картинка
+// меняет и список вложений, и нумерацию подписей. Строка следует за тем, что ушло В ПОСЛЕДНИЙ РАЗ,
+// и это осознанный выбор: история обязана описывать последнюю реальную отправку, а не первую.
+func (s *Store) RecordRunPrompt(ctx context.Context, runID int, claimToken, prompt string) error {
+	if runID <= 0 {
+		return fmt.Errorf("%w: run id is required", entity.ErrDesignInvalidArgument)
+	}
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		run, err := runByID(ctx, db, runID)
+		if err != nil {
+			return err
+		}
+		if err := requireClaim(run, claimToken); err != nil {
+			return err
+		}
+		if err := storeutil.ExecNamed(ctx, db, `
+			UPDATE design_run
+			SET prompt = :prompt
+			WHERE id = :id AND claim_token = :tok`,
+			map[string]any{"id": runID, "tok": claimToken, "prompt": prompt}); err != nil {
+			return fmt.Errorf("failed to record the prompt of design run %d: %w", runID, err)
+		}
+		return nil
+	})
+}
+
 // StartAttempt opens one paid provider call.
 //
 // ПОПЫТКА — СОБСТВЕННАЯ СТРОКА, и оплаченный провал тоже строка: полоса бюджета обязана ВИДЕТЬ,
 // что ретрай заплатил второй раз. Идемпотентна по uq_design_run_attempt (run_id, attempt_no):
 // повтор после потерянного ответа не заводит вторую попытку.
+//
+// (Эта шапка какое-то время стояла слитно с шапкой соседнего глагола, без пустой строки между
+// ними, — и godoc отдавал ВЕСЬ блок соседу, а StartAttempt оставалась вовсе без описания. В этом
+// коде доводы в шапках — навигация, поэтому такой слипшийся шов не косметика.)
 func (s *Store) StartAttempt(ctx context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error) {
 	if req.RunId <= 0 {
 		return nil, fmt.Errorf("%w: run id is required", entity.ErrDesignInvalidArgument)

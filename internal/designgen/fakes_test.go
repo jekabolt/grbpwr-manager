@@ -36,6 +36,12 @@ type fakeStore struct {
 	completeEr error
 	failed     []entity.DesignRunFail
 	failErr    error
+
+	// recordedPrompts is what RecordRunPrompt was handed; events is the ORDER the writing verbs
+	// were called in — the record-then-spend probes assert on it.
+	recordedPrompts []string
+	recordErr       error
+	events          []string
 }
 
 func (f *fakeStore) ClaimRuns(_ context.Context, _ int, _ time.Duration, token string) ([]entity.DesignRun, error) {
@@ -56,9 +62,21 @@ func (f *fakeStore) GetRun(context.Context, int) (*entity.DesignRun, error) {
 	return f.getRun, f.getRunErr
 }
 
+func (f *fakeStore) RecordRunPrompt(_ context.Context, _ int, _ string, prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, "record_prompt")
+	if f.recordErr != nil {
+		return f.recordErr
+	}
+	f.recordedPrompts = append(f.recordedPrompts, prompt)
+	return nil
+}
+
 func (f *fakeStore) StartAttempt(_ context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.events = append(f.events, "start_attempt")
 	f.started = append(f.started, req)
 	if f.startErr != nil {
 		return nil, f.startErr

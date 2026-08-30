@@ -181,6 +181,10 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design band", err, nil)
 	}
+	// Картинки входов резолвятся ОДНИМ запросом на всю страницу прогонов — см. довод у
+	// joinDesignRunInputMedia; снимок хранит только идентификаторы.
+	runsPb := designRunsToPb(ctx, band.Runs)
+	s.joinDesignRunInputMedia(ctx, runsPb)
 	resp := &pb_admin.GetDesignBandResponse{
 		Bench:          designBenchToPb(band.Bench),
 		VersionNumbers: intsToInt32(band.VersionNumbers),
@@ -194,7 +198,7 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		ColourRecipes:  designColourRecipesToPb(ctx, band.ColourRecipes),
 		HiddenByRun:    intMapToPb(band.HiddenByRun),
 		HiddenByBatch:  intMapToPb(band.HiddenByBatch),
-		Runs:           designRunsToPb(ctx, band.Runs),
+		Runs:           runsPb,
 		Batches:        designBatchesToPb(band.Batches),
 		NextPageToken:  design.EncodePageToken(band.NextCursor, band.NextBatchCursor, true),
 		// W-13, ЗЕРКАЛО ДЛЯ ЭКРАНА. Сам гейт стоит в StartDesignRun и отказывает `threed` без
@@ -238,8 +242,10 @@ func (s *Server) ListDesignRuns(ctx context.Context, req *pb_admin.ListDesignRun
 	if err != nil {
 		return nil, designError(ctx, "failed to list design runs", err, nil)
 	}
+	runsPb := designRunsToPb(ctx, page.Runs)
+	s.joinDesignRunInputMedia(ctx, runsPb)
 	resp := &pb_admin.ListDesignRunsResponse{
-		Runs:          designRunsToPb(ctx, page.Runs),
+		Runs:          runsPb,
 		Batches:       designBatchesToPb(page.Batches),
 		NextPageToken: design.EncodePageToken(page.NextCursor, page.NextBatchCursor, includeArchived),
 	}
@@ -418,8 +424,10 @@ func (s *Server) ArchiveDesignRun(ctx context.Context, req *pb_admin.ArchiveDesi
 	if err != nil {
 		return nil, designError(ctx, "failed to archive the design run", err, nil)
 	}
-	pb := designRunToPb(ctx, *run)
-	s.stripDesignCosting(ctx, []*pb_common.DesignRun{pb}, nil)
+	// Через ЕДИНСТВЕННУЮ дверь: собственная копия «конверсия + редакция денег» разошлась бы с
+	// designRunResponse — ровно то расхождение, о котором предупреждает комментарий у той пары, и
+	// вторая копия уже успела разойтись, потеряв join входных картинок.
+	pb := s.designRunResponse(ctx, *run)
 	return &pb_admin.ArchiveDesignRunResponse{Run: pb}, nil
 }
 
@@ -999,6 +1007,83 @@ func designBatchToPb(b entity.DesignBatch) *pb_common.DesignBatch {
 	}
 }
 
+// joinDesignRunInputMedia resolves the pictures a frozen snapshot only REMEMBERS BY ID (S-11).
+//
+// ЧТО БЫЛО СЛОМАНО. `DesignInputRef.media` и `DesignInputSlot.media` объявлены в контракте как
+// «joined from media_id at read time», и этот join НЕ БЫЛ НАПИСАН НИГДЕ. Снимок пишется один раз
+// при старте и хранит только `media_id` — это правильно и записано отдельным доводом («IDS ARE
+// STORED, MediaFull IS SERVED»): картинку нельзя морозить, её могли переименовать, пережать или
+// удалить. Но читающая половина обещания отсутствовала, и потому `media` не был заполнен НИ У
+// ОДНОГО прогона НИ ДЛЯ КОГО. Владелец видел это как «в деталке прогона у референсов всегда
+// no image» — и был прав буквально: сервер честно слал пустоту.
+//
+// ⚠ ФЛАГ `deleted` СТАВИТСЯ ЗДЕСЬ, И РАНЬШЕ ОН НЕ СТАВИЛСЯ НИКОГДА. Он значит «строки медиа
+// больше нет», и узнать это можно ровно в момент чтения: на старте она была. Отсутствие join'а
+// делало «deleted» полем, которое не могло стать истинным, — то есть «какой вход исчез» было
+// неотвечаемым вопросом, хотя контракт обещает ответ.
+//
+// ОДИН ЗАПРОС НА ВЕСЬ ОТВЕТ, А НЕ НА СТРОКУ. История отдаётся страницами по десятки прогонов, у
+// каждого до дюжины входов; join по одному дал бы сотни обращений на один экран. Идентификаторы
+// собираются со всех строк разом и резолвятся одним `GetMediaByIds`.
+func (s *Server) joinDesignRunInputMedia(ctx context.Context, runs []*pb_common.DesignRun) {
+	seen := make(map[int]struct{})
+	for _, r := range runs {
+		in := r.GetInputs()
+		if in == nil {
+			continue
+		}
+		for _, ref := range in.GetRefs() {
+			if id := int(ref.GetMediaId()); id > 0 {
+				seen[id] = struct{}{}
+			}
+		}
+		for _, sl := range in.GetSlots() {
+			if id := int(sl.GetMediaId()); id > 0 {
+				seen[id] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	found, err := s.repo.Media().GetMediaByIds(ctx, ids)
+	if err != nil {
+		// ОТКАЗ JOIN'А НЕ ОТМЕНЯЕТ ОТВЕТ. В строке истории кроме картинок есть идентификаторы,
+		// слова, попытки и деньги — всё это правда и без него. Уронить весь запрос значило бы
+		// спрятать прогон целиком из-за неудавшегося украшения; а ставить `deleted` по ошибке
+		// чтения — солгать, что вход удалён, когда он, возможно, жив.
+		slog.Default().ErrorContext(ctx, "design: failed to join input media into run snapshots",
+			slog.String("err", err.Error()))
+		return
+	}
+	fill := func(id int32) (*pb_common.MediaFull, bool) {
+		if id <= 0 {
+			return nil, false
+		}
+		m, ok := found[int(id)]
+		if !ok {
+			return nil, true
+		}
+		return designMediaToPb(&m), false
+	}
+	for _, r := range runs {
+		in := r.GetInputs()
+		if in == nil {
+			continue
+		}
+		for _, ref := range in.GetRefs() {
+			ref.Media, ref.Deleted = fill(ref.GetMediaId())
+		}
+		for _, sl := range in.GetSlots() {
+			sl.Media, sl.Deleted = fill(sl.GetMediaId())
+		}
+	}
+}
+
 func designRunsToPb(ctx context.Context, in []entity.DesignRun) []*pb_common.DesignRun {
 	out := make([]*pb_common.DesignRun, 0, len(in))
 	for _, r := range in {
@@ -1029,6 +1114,9 @@ func designRunToPb(ctx context.Context, r entity.DesignRun) *pb_common.DesignRun
 		ErrorCode:        r.ErrorCode.String,
 		LastError:        r.LastError.String,
 		OutputText:       r.OutputText.String,
+		// Отправленный текст промпта (0352). Пустая строка = воркер прогон ещё не поднимал; это
+		// честный ответ, а не потеря — до диспатча отправленного текста не существует.
+		Prompt: r.Prompt.String,
 		// РОДОСЛОВНАЯ РЕРАНА (0348). Без неё история не отличает «повторили прогон 12» от
 		// «сделали похожий», а именно это отличие делает реран читаемым из одной строки.
 		RerunOf:   r.RerunOf.Int32,
