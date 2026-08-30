@@ -35,18 +35,21 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 		out = nil
 		db := rep.DB()
 
-		// The image must be one the CARD holds. Without this a role could be pinned onto any file
-		// in the installation, and the prompt would then feed the model a picture that belongs to
-		// somebody else's card.
-		held, err := storeutil.QueryCountNamed(ctx, db,
-			`SELECT COUNT(*) FROM tech_card_media WHERE tech_card_id = :card AND media_id = :media`,
-			map[string]any{"card": req.TechCardId, "media": req.MediaId})
-		if err != nil {
-			return fmt.Errorf("failed to check tech card media %d: %w", req.MediaId, err)
-		}
-		if held == 0 {
-			return fmt.Errorf("%w: media %d is not held by tech card %d",
-				entity.ErrDesignForeignMedia, req.MediaId, req.TechCardId)
+		// ГРАНИЦА ЗДЕСЬ ОТРИЦАТЕЛЬНАЯ — «медиа не принадлежит ДРУГОЙ карточке», refuseForeignMedia,
+		// та же и в той же транзакции, что у ImportVector. Положительное правило, стоявшее тут
+		// раньше («лежит в tech_card_media ЭТОЙ карточки»), ЛОЖНО ОТКАЗЫВАЛО на двух законных
+		// жестах (R-10, R-11): картинка входа, которую клиент положил только в НЕСОХРАНЁННУЮ форму
+		// (tech_card_media переписывается лишь сейвом всей карточки, поэтому между «добавил» и
+		// «нажал Save» любой выбор роли был обречён), и кроп сплита, который живёт в design_picture
+		// и в tech_card_media не попадает никогда.
+		//
+		// Ослабление обязано остаться УЗКИМ: держателей у границы ровно два (tech_card_media ∪
+		// design_picture), и медиа, которое держит ЧУЖАЯ карточка и не держит эта, получает отказ
+		// по-прежнему — иначе роль скармливала бы модели чужую картинку. Это закреплено отдельной
+		// пробой (TestDesignDBReferenceRoleStillRefusesForeignCard); убрать вызов ниже — она
+		// краснеет первой.
+		if err := refuseForeignMedia(ctx, db, req.TechCardId, req.MediaId); err != nil {
+			return err
 		}
 
 		if req.Role == "" {

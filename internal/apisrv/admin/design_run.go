@@ -846,12 +846,18 @@ func (s *Server) GetDesignRun(ctx context.Context, req *pb_admin.GetDesignRunReq
 
 // draftIdeaSystemPrompt — роль модели. Она пишет ПРОЗУ ДЛЯ ЧЕЛОВЕКА, а не JSON: ответ ложится в
 // `design_run.output_text` и читается глазами, поэтому и просить надо связный текст.
+//
+// ⚠ РОЛЬ ГОВОРИТ ПРО КАРТИНКИ, ПОТОМУ ЧТО КАРТИНКИ ТЕПЕРЬ ПРИЕЗЖАЮТ. Пока этот путь слал только
+// текст, «from the notes» было правдой. Теперь доска уезжает изображениями (см. DraftDesignIdea), и
+// роль, продолжающая говорить «по заметкам», прямо велела бы модели не смотреть на то, за что уже
+// заплачено: картинки в биллинге — входные токены, и потраченные впустую они всё равно потрачены.
 const draftIdeaSystemPrompt = "You are a fashion designer's assistant. " +
-	"From the notes of a garment's moodboard you draft ONE short brief of the garment the notes " +
-	"are reaching for: silhouette, proportions, construction, the two or three details that carry " +
+	"You are shown the pictures of a garment's moodboard together with the designer's notes on it. " +
+	"From what you SEE and what the notes say you draft ONE short brief of the garment the board " +
+	"is reaching for: silhouette, proportions, construction, the two or three details that carry " +
 	"the idea. Write plain prose in English, at most 250 words. " +
-	"Never invent a fabric, a colour or a measurement that the notes do not mention — say what is " +
-	"missing instead."
+	"Never invent a fabric, a colour or a measurement that the pictures do not show and the notes " +
+	"do not mention — say what is missing instead."
 
 // draftIdeaNotConfiguredMsg / draftIdeaModelUnavailableMsg — те же две несводимые настройки, что
 // у остальных функций на s.aiOps, и те же слова: одна причина обязана звучать одинаково везде,
@@ -949,16 +955,28 @@ func (s *Server) ImportDesignVector(ctx context.Context, req *pb_admin.ImportDes
 	return &pb_admin.ImportDesignVectorResponse{Layer: designLayerToPb(*layer, true)}, nil
 }
 
-// DraftDesignIdea runs a TEXT model over the moodboard's WORDS and returns its answer inline.
+// DraftDesignIdea runs a MULTIMODAL model over the moodboard — its PICTURES and its WORDS — and
+// returns the answer inline.
 //
 // ПОЧЕМУ СИНХРОННО, А НЕ ВОРКЕРОМ, КАК ВСЁ ОСТАЛЬНОЕ. Стор намеренно исключает `draft_idea` из
 // предиката захвата (`kind <> 'draft_idea'` в designRunClaimableSQL): воркер, забравший эту
 // строку, оплатил бы ВТОРОЙ вызов той же модели. Ответ здесь приходит за секунды и нужен человеку
 // на экране немедленно, а не строкой истории, которую он потом опрашивает.
 //
-// ⚠ КАРТИНКИ ДОСКИ СЮДА НЕ ПОПАДАЮТ. Модель текстовая, промпт собирается из mood_note и из ТЕКСТА
-// выносок — ни одного media_id, ни одного url. Это вторая половина W-15: доска даёт слова, и
-// только слова.
+// ─────────────────── ⚠ ГРАНИЦА W-15 ПРОХОДИТ ЗДЕСЬ, И ОНА НЕ ТАМ, ГДЕ КАЖЕТСЯ ───────────────────
+//
+// W-15 ЗАПРЕЩАЕТ ДОСКУ В ГЕНЕРАЦИИ, А НЕ ВО ВСЯКОМ ПРОМПТЕ. Решение владельца дословно: «только в
+// генерации». То есть картинки доски не смеют уехать во ФЛЭТЫ, РЕНДЕРЫ и 3D — и обязаны уехать
+// сюда: прототип обещает про эту кнопку «reads the pictures, the shared note and the card»
+// (proto.html:3223) и показывает счётчик «read N pictures», а строку самого прототипа, которую
+// процитировал владелец, надо читать целиком: «read by “draft the idea”, NEVER SENT TO GENERATION»
+// (proto.html:3268) — два адресата в одном предложении, один разрешён, другой запрещён.
+//
+// ⚠ ДВА СОСЕДНИХ ГЛАГОЛА ТЕПЕРЬ ВЕДУТ СЕБЯ ПО-РАЗНОМУ, И РАЗЛИЧИЕ ДЕРЖИТСЯ ТОЛЬКО НА КОДЕ.
+// StartDesignRun собирает входы через designAssembleInputs, куда доска не приходит ни при каком
+// входе; этот глагол читает доску напрямую. Соблазн «унифицировать два пути» сломает требование
+// владельца молча, поэтому различие прибито пробой TestW15BoardReachesTheDraftButNeverGeneration —
+// она краснеет с ОБЕИХ сторон: и если доска перестанет доезжать сюда, и если начнёт доезжать туда.
 func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignIdeaRequest) (*pb_admin.DraftDesignIdeaResponse, error) {
 	cardID := int(req.GetTechCardId())
 	if cardID <= 0 {
@@ -993,6 +1011,13 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// ⚠ ПРОВЕРЯЕТСЯ mood, А НЕ ДЛИНА ПРОМПТА, и это разные вопросы. Промпт несёт ещё и имя
 	// изделия с фитом, поэтому у любой названной карточки он непустой ВСЕГДА — сторож по его
 	// длине не сработал бы никогда и оплачивал бы «придумай одежду по слову „пальто“».
+	// ⚠ СТОРОЖ ОСТАЛСЯ НА СЛОВАХ, ХОТЯ КАРТИНКИ ТЕПЕРЬ ЧИТАЮТСЯ, И ЭТО РЕШЕНИЕ, А НЕ НЕДОСМОТР.
+	// Доска из одних картинок, без записки и выносок, теперь технически осмысленна — модель их
+	// увидит. Но снимок прогона (`inputs`) умеет хранить только СЛОВА доски: поля под список
+	// показанных картинок в DesignMoodSnapshot нет. Пустив такую доску, мы завели бы оплаченную
+	// строку истории, которая утверждает, что в модель не ушло НИЧЕГО, — а ушло 12 изображений.
+	// История, врущая про потраченные деньги, хуже отказа, поэтому дверь пока закрыта.
+	// РАСШИРЯТЬ ЭТО НАДО ВМЕСТЕ С ПОЛЕМ В КОНТРАКТЕ, а не отдельно (прото сейчас чужое).
 	mood := designMoodSnapshot(card)
 	if mood == nil {
 		return nil, status.Error(codes.FailedPrecondition,
@@ -1000,8 +1025,40 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	}
 	prompt := designDraftIdeaPrompt(card, mood)
 
-	// СНИМОК ВХОДОВ ТЕКСТОВОГО ПРОГОНА — ЭТО ДОСКА, И ТОЛЬКО ОНА. Ни refs, ни slots: картинок
-	// этот прогон не читает вовсе, и пустые списки здесь — утверждение, а не забывчивость.
+	// ─── КАРТИНКИ ДОСКИ: ПОТОЛОК ДО ДЕНЕГ, ПОТОМ АДРЕСА ───
+	//
+	// ПОТОЛОК СТОИТ ЗДЕСЬ, А НЕ У ТРАНСПОРТА, И ЭТО НЕ ДУБЛИРОВАНИЕ. Число одно и то же —
+	// openrouter.MaxImageParts, — но проверить его надо ДО StartRun: транспорт откажет уже после
+	// того, как строка заведена и деньги зарезервированы, и тогда прогон придётся закрывать
+	// вместо того, чтобы не открывать. Ровно та же логика, что у потолка снимка ниже.
+	//
+	// ⚠ СЕРВЕРНЫЙ ПОТОЛОК ДОСКИ ПОЯВИЛСЯ ИМЕННО СЕЙЧАС, ПОТОМУ ЧТО ЧИСЛО КАРТИНОК СТАЛО ДЕНЬГАМИ.
+	// Клиент держит MOOD_MAX = 12, но клиентский потолок обходится вторым клиентом и повтором
+	// запроса; пока доска давала только слова, цена от числа плиток не зависела и обход ничего не
+	// стоил. Теперь каждая картинка — входные токены, поэтому это ОТКАЗ, А НЕ ОБРЕЗКА: молча
+	// послать 16 из 40 значит показать модели произвольную часть доски и выдать ответ по ней за
+	// ответ по доске.
+	boardIDs := designBoardMediaIDs(card)
+	if len(boardIDs) > openrouter.MaxImageParts {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"the moodboard carries %d pictures; one draft may read %d — remove some, or draft from a smaller board",
+			len(boardIDs), openrouter.MaxImageParts)
+	}
+	// АДРЕСА, А НЕ БАЙТЫ: провайдер скачивает наши публичные url сам. Загрузка их сюда прошла бы
+	// через процесс с 0.5 GiB RAM и base64-раздуванием — тот же довод, что в designgen.buildJob.
+	//
+	// РАЗРЕШАЕТСЯ ДО StartRun по той же причине, что и потолок: сорванное чтение медиа не должно
+	// оставлять открытый прогон с зарезервированными деньгами. Цена — один лишний запрос на
+	// идемпотентном повторе, а повтор это двойной клик, а не горячий путь.
+	boardURLs, err := s.designBoardPictureURLs(ctx, boardIDs)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "draft design idea: cannot resolve the moodboard pictures",
+			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "cannot read the moodboard pictures")
+	}
+
+	// СНИМОК ВХОДОВ ТЕКСТОВОГО ПРОГОНА — ЭТО ДОСКА, И ТОЛЬКО ОНА. Ни refs, ни slots: ни одного
+	// референса и ни одной плиты верстака этот прогон не читает, и пустые списки — утверждение.
 	inputs := &pb_common.DesignInputSnapshot{Mood: mood, Fit: card.Fit.String}
 	inputsJSON, err := designMarshalJSON(inputs)
 	if err != nil {
@@ -1075,7 +1132,15 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		return nil, designError(ctx, "failed to open the idea draft attempt", err, nil)
 	}
 
-	text, callErr := s.aiOps.Complete(ctx, draftIdeaSystemPrompt, prompt, false)
+	// ⚠ CompleteWithImages, А НЕ Complete: ЭТО И ЕСТЬ ВСЯ ПОЧИНКА. Пустой boardURLs законен и
+	// вырождается в обычный текстовый запрос — доска без картинок это нормальное состояние, и
+	// выбирать между двумя методами по этому признаку значило бы держать один промпт в двух местах.
+	//
+	// СЛУГ МОДЕЛИ ТОТ ЖЕ, ОБЩИЙ. Отдельная переменная окружения здесь не нужна и была бы вредна:
+	// P-1 спеки владельца называет «OpenRouter, Sonnet», а defaultModel и есть
+	// anthropic/claude-sonnet-5 — модель мультимодальная. Второй слуг был бы вторым именем,
+	// которое однажды протухнет у поставщика молча.
+	text, _, _, callErr := s.aiOps.CompleteWithImages(ctx, draftIdeaSystemPrompt, prompt, boardURLs, false, 0)
 	if callErr == nil && strings.TrimSpace(text) == "" {
 		callErr = errors.New("the model returned an empty draft")
 	}
@@ -1449,6 +1514,64 @@ func designMoodSnapshot(card *entity.TechCard) *pb_common.DesignMoodSnapshot {
 	return out
 }
 
+// designBoardMediaIDs — КАРТИНКИ ДОСКИ, В ПОРЯДКЕ КАРТОЧКИ, без повторов.
+//
+// ⚠ ЭТО ВТОРОЙ ЧИТАТЕЛЬ Card.Media, И ОБА ЖИВУТ РЯДОМ НАМЕРЕННО. Первый — designMoodSnapshot, он
+// строит МНОЖЕСТВО доски, чтобы отсеять выноски чужих картинок; этот отдаёт СПИСОК, потому что
+// порядок уезжает на провод и должен быть воспроизводим: один и тот же мудборд обязан давать один
+// и тот же запрос, иначе повтор с тем же client_request_id перестал бы быть тем же запросом.
+// Условие членства («категория moodboard») обязано совпадать у обоих — разойдясь, они дали бы
+// картинку, чья выноска прочитана как доска, но сама картинка не послана, или наоборот.
+//
+// ФИЛЬТР ПО КАТЕГОРИИ, А НЕ ПО ОТСУТСТВИЮ ССЫЛОК: технический эскиз карточки лежит в том же
+// Card.Media и доской не является — послать его значило бы читать чертёж как вдохновение.
+func designBoardMediaIDs(card *entity.TechCard) []int {
+	if card == nil {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(card.Media))
+	out := make([]int, 0, len(card.Media))
+	for _, m := range card.Media {
+		if m.Category != entity.TechCardMediaCategoryMoodboard || m.MediaId <= 0 {
+			continue
+		}
+		if _, dup := seen[m.MediaId]; dup {
+			continue
+		}
+		seen[m.MediaId] = struct{}{}
+		out = append(out, m.MediaId)
+	}
+	return out
+}
+
+// designBoardPictureURLs — АДРЕСА КАРТИНОК ДОСКИ, в порядке пришедших id.
+//
+// ⚠ ПРОПАВШАЯ СТРОКА МЕДИА ПРОПУСКАЕТСЯ, А НЕ РОНЯЕТ ЧЕРНОВИК. Тот же довод, что в
+// designgen.buildJob: id, которого нет у нас, провайдер тоже не скачает, а отказ всей кнопки
+// из-за одной удалённой плитки выбросил бы доску, чьи остальные картинки целы. Пустой url
+// пропускается по той же причине: CompleteWithImages отказал бы на нём поимённо уже после
+// StartAttempt, то есть внутри оплаченного круга.
+func (s *Server) designBoardPictureURLs(ctx context.Context, ids []int) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	byID, err := s.repo.Media().GetMediaByIds(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		m, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if u := strings.TrimSpace(m.FullSizeMediaURL); u != "" {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 // designFrozenCallout — ОДНА ВЫНОСКА В ЗАМОРОЖЕННОМ ВИДЕ: слова плюс геометрия. nil, если слов
 // нет — снимок хранит то, ЧТО ПРОЧИТАЛИ, и безымянный маркер прочитать нечем.
 //
@@ -1501,11 +1624,14 @@ func designCalloutsByMedia(card *entity.TechCard) map[int][]*pb_common.DesignMoo
 	return out
 }
 
-// designDraftIdeaPrompt — ЧТО ИМЕННО УХОДИТ В ТЕКСТОВУЮ МОДЕЛЬ.
+// designDraftIdeaPrompt — СЛОВЕСНАЯ ЧАСТЬ ЗАПРОСА. Картинки едут ОТДЕЛЬНЫМИ content-parts мимо
+// этой функции (см. DraftDesignIdea), поэтому здесь их нет и быть не должно.
 //
-// СЛОВА, И ТОЛЬКО СЛОВА. Ни media_id, ни url, ни имени файла: картинка доски в промпт не попадает
-// никак — ни байтами, ни ссылкой, ни номером, по которому её можно было бы достать. Это половина
-// W-15, которую видно глазами прямо здесь.
+// ⚠ НОМЕР КАРТИНКИ НЕ ПИШЕТСЯ СЮДА ДАЖЕ ТЕПЕРЬ, КОГДА КАРТИНКИ ПОСЫЛАЮТСЯ. Довод сменился, но
+// вывод остался: media_id — это НАШ внутренний ключ, модели он ничего не сообщает и ни на что не
+// ссылается, потому что в её глазах картинки пронумерованы порядком в content-частях, а не нашей
+// базой. Строка «выноска на медиа 900» заставила бы её угадывать, к какому из присланных
+// изображений это относится, — то есть врать увереннее.
 func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot) string {
 	var b strings.Builder
 	if card != nil {

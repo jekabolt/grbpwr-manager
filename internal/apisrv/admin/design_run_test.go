@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -100,7 +102,7 @@ func designMoodCard() *entity.TechCard {
 
 const (
 	// designBoardMediaID лежит ТОЛЬКО на доске и ни в одном референсе — единственный
-	// правдоподобный способ для него попасть в промпт это ошибка сборки входов.
+	// правдоподобный способ для него попасть в СНИМОК ГЕНЕРАЦИИ это ошибка сборки входов.
 	designBoardMediaID = 900
 	// designTechnicalMediaID — технический эскиз карточки, тоже не референс.
 	designTechnicalMediaID = 901
@@ -108,6 +110,14 @@ const (
 	designRefMediaID = 100
 	// designPlateMediaID — плита верстака.
 	designPlateMediaID = 200
+	// designBoardMediaURL — адрес картинки доски, каким его отдаёт медиа-стор.
+	//
+	// ⚠ ОН НАМЕРЕННО НЕ СОДЕРЖИТ ЧИСЛА 900, И ЭТО НЕСУЩЕЕ СВОЙСТВО СТЕНДА, А НЕ УКРАШЕНИЕ.
+	// Прежний «замер W-15 по байтам провода» утверждал `NotContains(body, "900")` и был ЗЕЛЁН
+	// при реально уехавших картинках: настоящий CDN-адрес номера медиа не несёт, он ключ объекта.
+	// Проба, которую нельзя провалить, ничего не охраняет, поэтому адрес здесь выглядит как
+	// настоящий — иначе стенд снова начал бы доказывать не то, что утверждает.
+	designBoardMediaURL = "https://cdn.grbpwr.com/media/9f8e7d6c/full.jpg"
 )
 
 func designBandWith(hasRender bool) *entity.DesignBand {
@@ -228,10 +238,16 @@ func TestDesignRunInputsKeepAReferenceThatAlsoSitsOnTheBoard(t *testing.T) {
 		"явно перенесённый референс обязан доехать, даже если та же картинка висит на доске")
 }
 
-// ПРОМПТ ЧЕРНОВИКА ИДЕИ НЕСЁТ СЛОВА И НИ ОДНОГО СПОСОБА ДОСТАТЬ КАРТИНКУ.
+// СЛОВЕСНАЯ ЧАСТЬ ЗАПРОСА НЕСЁТ СЛОВА И НИ ОДНОГО НАШЕГО КЛЮЧА.
 //
-// Вторая половина W-15, видимая глазами: текстовая модель получает записку доски и тексты
-// выносок — ни media_id, ни url, ни имени файла.
+// ⚠ ЭТО БОЛЬШЕ НЕ СТОРОЖ W-15, И РАНЬШЕ ОН ИМ НЕ БЫЛ ТОЖЕ — он щупает сборщик промпта в
+// ИЗОЛЯЦИИ, а картинки едут отдельными content-частями мимо этой функции, поэтому покраснеть на
+// уехавшей картинке он не мог в принципе. Гарантию границы теперь держит
+// TestW15BoardReachesTheDraftButNeverGeneration, которая меряет провод.
+//
+// Утверждение здесь осталось верным и осмысленным по ДРУГОЙ причине: media_id — наш внутренний
+// ключ, модели он не сообщает ничего, а «выноска на медиа 900» заставила бы её гадать, к какому
+// из присланных изображений это относится (см. шапку designDraftIdeaPrompt).
 func TestDraftIdeaPromptCarriesWordsAndNoPictureIdentity(t *testing.T) {
 	card := designMoodCard()
 	mood := designMoodSnapshot(card)
@@ -545,6 +561,15 @@ func newDraftIdeaRig(t *testing.T, client *openrouter.Client) *designRunRig {
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).
 		Return(designMoodCard(), nil).Maybe()
+	// ЧЕРНОВИК ИДЕИ ТЕПЕРЬ РАЗРЕШАЕТ КАРТИНКИ ДОСКИ В АДРЕСА, поэтому медиа-стор нужен и здесь.
+	// Эти пробы про захват и повтор, а не про картинки, — заглушка `.Maybe()` тут уместна.
+	media := mocks.NewMockMedia(t)
+	rig.repo.EXPECT().Media().Return(media).Maybe()
+	media.EXPECT().GetMediaByIds(mock.Anything, []int{designBoardMediaID}).
+		Return(map[int]entity.MediaFull{designBoardMediaID: {
+			Id:        designBoardMediaID,
+			MediaItem: entity.MediaItem{FullSizeMediaURL: designBoardMediaURL},
+		}}, nil).Maybe()
 	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true, aiOps: client}
 	return rig
 }
@@ -639,10 +664,64 @@ func TestDesignAssembleInputsRefusesTooManyReferences(t *testing.T) {
 // ─────────────────────── черновик идеи: весь круг ───────────────────────
 
 // draftIdeaStub — поставщик текста, отвечающий один раз и запоминающий, ЧТО ЕМУ ПРИСЛАЛИ.
-// Тело запроса и есть предмет пробы: W-15 проверяется не намерением, а байтами, ушедшими в сеть.
+// Тело запроса и есть предмет пробы: граница W-15 проверяется не намерением, а байтами в сети.
 type draftIdeaStub struct {
 	srv  *httptest.Server
 	body string
+}
+
+// imageURLs — адреса, ушедшие на провод ОТДЕЛЬНЫМИ частями `image_url`, в порядке отправки.
+//
+// ⚠ РАЗБИРАЕТ ТЕЛО, А НЕ ИЩЕТ ПОДСТРОКУ. Это и есть починка пустого сторожа: `Contains(body, url)`
+// зеленел бы и от адреса, случайно попавшего в ТЕКСТ промпта, а `NotContains(body, "900")` —
+// молчал бы при реально уехавших картинках. Утверждать надо ровно то, что означает «модель
+// увидела картинку»: часть типа image_url в ходе пользователя.
+func (s *draftIdeaStub) imageURLs(t *testing.T) []string {
+	t.Helper()
+	if s.body == "" {
+		return nil
+	}
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(s.body), &req), "тело запроса обязано быть JSON")
+	var out []string
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		_, images := orContent(t, m.Content)
+		out = append(out, images...)
+	}
+	return out
+}
+
+// systemTurnIsAPlainString — системный ход обязан остаться СТРОКОЙ, а не массивом частей.
+//
+// Это не придирка к форме: на текстовом ходе висит разбор тех-карты, РАБОТАЮЩИЙ НА ПРОДЕ, и вся
+// причина, по которой мультимодальность заведена ВТОРОЙ структурой запроса, — чтобы его байты не
+// поехали. Если однажды кто-то «упростит» и переведёт системный ход в части, эта проба скажет об
+// этом здесь, а не 400-й от поставщика в живой функции, которую никто в тот момент не трогал.
+func (s *draftIdeaStub) systemTurnIsAPlainString(t *testing.T) bool {
+	t.Helper()
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(s.body), &req))
+	for _, m := range req.Messages {
+		if m.Role != "system" {
+			continue
+		}
+		var asString string
+		return json.Unmarshal(m.Content, &asString) == nil
+	}
+	return false
 }
 
 func newDraftIdeaStub(t *testing.T, status int, answer string) *draftIdeaStub {
@@ -676,7 +755,27 @@ type draftRig struct {
 	completedTok  string
 }
 
+// newDraftRig — стенд на КАРТОЧКЕ ПО УМОЛЧАНИЮ (одна картинка доски, записка, выноска).
 func newDraftRig(t *testing.T, httpStatus int, answer string) *draftRig {
+	t.Helper()
+	return newDraftRigWithCard(t, httpStatus, answer, designMoodCard(),
+		[]int{designBoardMediaID},
+		map[int]entity.MediaFull{designBoardMediaID: {
+			Id:        designBoardMediaID,
+			MediaItem: entity.MediaItem{FullSizeMediaURL: designBoardMediaURL},
+		}})
+}
+
+// newDraftRigWithCard — тот же стенд, но доска задаётся вызывающим.
+//
+// `boardIDs` — ровно тот список, которым хендлер обязан спросить медиа-стор: строгий мок сам
+// покраснеет, если порядок или состав разойдутся, и это ЧАСТЬ УТВЕРЖДЕНИЯ, а не удобство —
+// запрос за картинками должен быть воспроизводим, иначе повтор с тем же client_request_id
+// перестал бы быть тем же запросом.
+func newDraftRigWithCard(
+	t *testing.T, httpStatus int, answer string,
+	card *entity.TechCard, boardIDs []int, byID map[int]entity.MediaFull,
+) *draftRig {
 	t.Helper()
 	repo := mocks.NewMockRepository(t)
 	cards := mocks.NewMockTechCards(t)
@@ -690,7 +789,12 @@ func newDraftRig(t *testing.T, httpStatus int, answer string) *draftRig {
 	}
 	repo.EXPECT().TechCards().Return(cards).Maybe()
 	repo.EXPECT().Design().Return(design).Maybe()
-	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(designMoodCard(), nil).Maybe()
+	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
+	// КАРТИНКИ ДОСКИ РАЗРЕШАЮТСЯ В АДРЕСА: с этого места черновик идеи их ЧИТАЕТ (решение
+	// владельца «только в генерации»), поэтому стенд обязан уметь их отдать.
+	media := mocks.NewMockMedia(t)
+	repo.EXPECT().Media().Return(media).Maybe()
+	media.EXPECT().GetMediaByIds(mock.Anything, boardIDs).Return(byID, nil).Maybe()
 	design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
 		Return(&entity.DesignRunStarted{Run: run, Budget: entity.DesignBudget{Day: "2026-08-30"}}, nil).Once()
 	design.EXPECT().StartAttempt(mock.Anything, mock.AnythingOfType("entity.DesignAttemptStart")).
@@ -732,8 +836,8 @@ func draftRequest() *pb_admin.DraftDesignIdeaRequest {
 // деньгами до полуночи. Проба меряет весь круг: попытка открыта, попытка закрыта с ценой, прогон
 // закрыт СВОИМ токеном захвата и несёт ответ модели.
 //
-// И ОНА ЖЕ МЕРЯЕТ W-15 ПО БАЙТАМ, УШЕДШИМ В СЕТЬ, а не по намерению кода: в теле запроса есть
-// слова доски и нет ни одного способа достать её картинку.
+// И ОНА ЖЕ МЕРЯЕТ ПО БАЙТАМ, УШЕДШИМ В СЕТЬ, а не по намерению кода: в теле запроса есть слова
+// доски И её картинки.
 func TestDraftDesignIdeaRunsInlineAndFilesItsAnswer(t *testing.T) {
 	rig := newDraftRig(t, http.StatusOK, "A boxy coat with a storm flap.")
 	resp, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
@@ -742,8 +846,9 @@ func TestDraftDesignIdeaRunsInlineAndFilesItsAnswer(t *testing.T) {
 
 	require.Contains(t, rig.stub.body, "MOODWORDS-do-not-generate", "доска даёт слова")
 	require.Contains(t, rig.stub.body, "MOODCALLOUT-do-not-generate")
-	require.NotContains(t, rig.stub.body, strconv.Itoa(designBoardMediaID),
-		"номер картинки доски в запросе модели запрещён W-15")
+	// КАРТИНКА ДОСКИ ОБЯЗАНА БЫТЬ НА ПРОВОДЕ — это решение владельца «только в генерации».
+	require.Equal(t, []string{designBoardMediaURL}, rig.stub.imageURLs(t),
+		"черновик идеи обязан показать модели картинки доски: прототип обещает «reads the pictures»")
 
 	require.Len(t, rig.finished, 1)
 	require.Equal(t, entity.DesignAttemptDelivered, rig.finished[0].State)
@@ -796,6 +901,139 @@ func TestDraftDesignIdeaRefusesAnEmptyBoard(t *testing.T) {
 	require.Error(t, err)
 	code, _ := errorReason(t, err)
 	require.Equal(t, codes.FailedPrecondition, code)
+}
+
+// ─────────────────── ГРАНИЦА W-15: ОДНА ПРОБА, ДВЕ ПОЛОВИНЫ ───────────────────
+
+// ДОСКА ДОЕЗЖАЕТ ДО ЧЕРНОВИКА ИДЕИ И НЕ ДОЕЗЖАЕТ ДО ГЕНЕРАЦИИ.
+//
+// РЕШЕНИЕ ВЛАДЕЛЬЦА ДОСЛОВНО: «только в генерации». W-15 запрещает картинки доски во ФЛЭТАХ,
+// РЕНДЕРАХ и 3D — и не запрещает их в «набросай идею», про которую прототип обещает «reads the
+// pictures» (proto.html:3223) и показывает счётчик «read N pictures» (3231).
+//
+// ⚠ ПОЧЕМУ ОБЕ ПОЛОВИНЫ В ОДНОЙ ПРОБЕ. После этой правки два соседних глагола ведут себя
+// ПО-РАЗНОМУ, и различие не выражено ни типом, ни схемой — оно держится только на коде. Ровно
+// такое различие «унифицируют» через полгода, из лучших побуждений, в одну сторону или в другую.
+// Стоя порознь, две пробы позволили бы починить одну и не заметить вторую; стоя вместе, они
+// краснеют С ОБЕИХ СТОРОН: и если доска перестанет доезжать до черновика, и если начнёт доезжать
+// до генерации.
+//
+// МУТАЦИИ, КОТОРЫМИ ПРОВЕРЕНА (обе — по ЧИСЛУ ИСПОЛНЕННЫХ ИСХОДОВ, не по коду возврата):
+//   - вернуть `Complete` вместо `CompleteWithImages` в DraftDesignIdea → краснеет первая половина;
+//   - подмешать доску в out.Refs внутри designAssembleInputs → краснеет вторая.
+func TestW15BoardReachesTheDraftButNeverGeneration(t *testing.T) {
+	// ── ПОЛОВИНА ПЕРВАЯ: черновик идеи ВИДИТ картинки доски ──
+	rig := newDraftRig(t, http.StatusOK, "A boxy coat with a storm flap.")
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.NoError(t, err)
+	require.Equal(t, []string{designBoardMediaURL}, rig.stub.imageURLs(t),
+		"«набросай идею» обязан показать модели доску: это разрешённый адресат")
+	require.True(t, rig.stub.systemTurnIsAPlainString(t),
+		"системный ход обязан остаться строкой: на текстовом пути висит разбор тех-карты с прода")
+
+	// ── ПОЛОВИНА ВТОРАЯ: ни один род ГЕНЕРАЦИИ доску не несёт ──
+	card := designMoodCard()
+	band := designBandWith(true)
+	for _, kind := range []string{
+		entity.DesignRunKindFlat, entity.DesignRunKindRender,
+		entity.DesignRunKindThreed, entity.DesignRunKindVector,
+	} {
+		t.Run(kind, func(t *testing.T) {
+			snap, err := designAssembleInputs(designInputSources{
+				Kind: kind, Card: card, Refs: band.References, Bench: band.Bench,
+				Params: &pb_common.DesignRunParams{
+					Views: []string{entity.DesignViewFront}, Layout: designLayoutPerView,
+				},
+			})
+			require.NoError(t, err)
+
+			// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ. Без него «доски нет» зеленело бы и на пустом снимке —
+			// то есть на сборке, которая не отправляет ВООБЩЕ ничего.
+			refIDs := make([]int32, 0, len(snap.GetRefs()))
+			for _, r := range snap.GetRefs() {
+				refIDs = append(refIDs, r.GetMediaId())
+			}
+			require.Contains(t, refIDs, int32(designRefMediaID),
+				"явно перенесённый референс обязан доехать — иначе проба зелена от пустоты")
+
+			raw, err := designMarshalJSON(snap)
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), strconv.Itoa(designBoardMediaID),
+				"картинка доски в снимке генерации запрещена W-15")
+			require.Nil(t, snap.GetMood(),
+				"заполненный mood отдал бы воркеру media_id доски прямо в руки")
+		})
+	}
+}
+
+// ─────────────────── ПОТОЛОК ДОСКИ: ЧИСЛО КАРТИНОК СТАЛО ДЕНЬГАМИ ───────────────────
+
+// ДОСКА СВЕРХ ПОТОЛКА — ОТКАЗ ДО ДЕНЕГ, А НЕ ОБРЕЗКА.
+//
+// ⚠ ПОТОЛОК ПОЯВИЛСЯ ВМЕСТЕ С КАРТИНКАМИ, И ЭТО НЕ СОВПАДЕНИЕ. Пока доска давала только слова,
+// цена не зависела от числа плиток; теперь каждая картинка — входные токены. Клиентский MOOD_MAX
+// обходится вторым клиентом и повтором запроса, поэтому потолок обязан стоять здесь.
+//
+// ОТКАЗ, А НЕ ОБРЕЗКА: молча послать 16 из 40 значит показать модели произвольную часть доски и
+// выдать ответ по ней за ответ по доске. Отказ называет оба числа — без них его не с чем сравнить.
+//
+// СТОР НЕ ТРОНУТ ВОВСЕ: строгий мок покраснел бы на любом неожиданном вызове, поэтому «отказ
+// пришёл ДО StartRun» здесь измерен, а не заявлен. Это и есть разница между «дорого» и «бесплатно»:
+// отказ транспорта прилетел бы уже после резерва денег.
+func TestDraftDesignIdeaRefusesABoardOverTheImageCeiling(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	cards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(cards).Maybe()
+
+	card := designMoodCard()
+	card.Media = nil
+	for i := range openrouter.MaxImageParts + 1 {
+		card.Media = append(card.Media, entity.TechCardMediaItem{
+			MediaId: 1000 + i, Category: entity.TechCardMediaCategoryMoodboard,
+		})
+	}
+	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Once()
+
+	srv := &Server{
+		repo: repo, designGenerationEnabled: true,
+		aiOps: openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"}),
+	}
+	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.Error(t, err)
+	code, _ := errorReason(t, err)
+	require.Equal(t, codes.InvalidArgument, code)
+	require.Contains(t, err.Error(), strconv.Itoa(openrouter.MaxImageParts),
+		"отказ обязан назвать потолок, иначе его не с чем сравнить")
+	require.Contains(t, err.Error(), strconv.Itoa(openrouter.MaxImageParts+1),
+		"и обязан назвать, сколько картинок на доске сейчас")
+}
+
+// РОВНО ПОТОЛОК — ПРОХОДИТ, И ЭТО ГРАНИЦА, А НЕ ОКРЕСТНОСТЬ.
+//
+// Без этой пробы `>` и `>=` неразличимы: обе версии одинаково отказывают на потолке+1, и ошибка
+// на единицу молча съела бы у человека одну картинку доски.
+func TestDraftDesignIdeaAcceptsABoardExactlyAtTheCeiling(t *testing.T) {
+	card := designMoodCard()
+	card.Media = nil
+	want := make([]string, 0, openrouter.MaxImageParts)
+	byID := map[int]entity.MediaFull{}
+	ids := make([]int, 0, openrouter.MaxImageParts)
+	for i := range openrouter.MaxImageParts {
+		id := 1000 + i
+		url := fmt.Sprintf("https://cdn.grbpwr.com/media/%02x/full.jpg", i)
+		card.Media = append(card.Media, entity.TechCardMediaItem{
+			MediaId: id, Category: entity.TechCardMediaCategoryMoodboard,
+		})
+		byID[id] = entity.MediaFull{Id: id, MediaItem: entity.MediaItem{FullSizeMediaURL: url}}
+		ids = append(ids, id)
+		want = append(want, url)
+	}
+
+	rig := newDraftRigWithCard(t, http.StatusOK, "A boxy coat.", card, ids, byID)
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.NoError(t, err, "доска ровно в потолок обязана пройти")
+	require.Equal(t, want, rig.stub.imageURLs(t),
+		"на провод обязаны уйти ВСЕ картинки доски, в порядке карточки")
 }
 
 // ─────────────────────── W-3: СЛОВА ЧЕЛОВЕКА ДОЕЗЖАЮТ ДО МОДЕЛИ ───────────────────────

@@ -23,9 +23,49 @@ import (
 
 // fakeORCall is what the fake OpenRouter endpoint saw on one call.
 type fakeORCall struct {
-	System         string
-	User           string
+	System string
+	User   string
+	// Images — адреса картинок, приехавших в ЭТОМ запросе отдельными content-частями.
+	// Пусто у текстового запроса; непусто ровно тогда, когда на провод ушли image_url.
+	Images         []string
 	ResponseFormat any
+}
+
+// orContent разбирает поле `content` ОДНОГО хода, которое на проводе имеет ДВЕ ЗАКОННЫЕ ФОРМЫ:
+// строку (текстовый путь) и массив частей (мультимодальный путь, internal/openrouter/multimodal.go).
+//
+// ⚠ ЭТОТ РАЗБОР ЗАМЕНИЛ `Content string`, И ЭТО БЫЛА НЕ КОСМЕТИКА. Строгий тип давал `json:
+// cannot unmarshal array into Go struct field .messages.content of type string` — то есть КРАСНОТУ
+// ОТ СЛОМАННОГО СТУБА в тестах, которые про мультимодальность ничего не спрашивают (черновик идеи
+// ходит через тот же эндпоинт). Такая краснота не доказывает ничего о поведении и маскирует
+// настоящие провалы: она приходит из стенда, а не из кода под замером.
+func orContent(t *testing.T, raw json.RawMessage) (text string, images []string) {
+	t.Helper()
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, nil
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &parts),
+		"content обязан быть либо строкой, либо массивом частей — третьей формы на проводе нет")
+	for _, p := range parts {
+		switch {
+		case p.ImageURL != nil:
+			images = append(images, p.ImageURL.URL)
+		case p.Text != "":
+			text += p.Text
+		}
+	}
+	return text, images
 }
 
 // newFakeOpenRouter stands up a fake chat/completions endpoint and returns a client wired to it
@@ -39,19 +79,21 @@ func newFakeOpenRouter(t *testing.T, reply func(w http.ResponseWriter)) (*openro
 		require.NoError(t, err)
 		var req struct {
 			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 			ResponseFormat any `json:"response_format"`
 		}
 		require.NoError(t, json.Unmarshal(body, &req))
 		call := fakeORCall{ResponseFormat: req.ResponseFormat}
 		for _, m := range req.Messages {
+			text, images := orContent(t, m.Content)
 			switch m.Role {
 			case "system":
-				call.System = m.Content
+				call.System = text
 			case "user":
-				call.User = m.Content
+				call.User = text
+				call.Images = append(call.Images, images...)
 			}
 		}
 		calls = append(calls, call)

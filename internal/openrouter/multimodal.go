@@ -35,14 +35,24 @@ import (
 	"strings"
 )
 
-// maxImageParts caps how many pictures one request may carry.
+// MaxImageParts caps how many pictures one request may carry.
 //
 // It is a guard on OUR side, not the provider's limit. A moodboard is a user-controlled list, and
 // an unbounded one turns a single button press into a prompt of arbitrary size and arbitrary cost —
-// images are billed as input tokens, so "how many" is "how much". Sixteen is the same number the
-// image endpoint accepts as references (see internal/orimages), which keeps one number in a human's
-// head instead of two.
-const maxImageParts = 16
+// images are billed as input tokens, so "how many" is "how much".
+//
+// ⚠ ЭКСПОРТИРОВАН ПОТОМУ, ЧТО ДВЕРЬ ОБЯЗАНА ОТКАЗЫВАТЬ ТЕМ ЖЕ ЧИСЛОМ, КОТОРЫМ ОТКАЗЫВАЕТ ТРАНСПОРТ.
+// DraftDesignIdea считает картинки доски ДО того, как заведёт оплаченный прогон, и сравнивает их
+// ровно с этим числом. Своя константа рядом с вызовом была бы вторым числом, а два числа
+// расходятся при правке одного: доска прошла бы дверь и упала бы здесь — уже после StartRun, то
+// есть с зарезервированными деньгами и с прогоном, который надо закрывать.
+//
+// ⚠ И ОНО НАМЕРЕННО НЕ СВЕДЕНО С orimages.MaxInputReferences, ХОТЯ СЕГОДНЯ ОБА РАВНЫ 16. Это два
+// РАЗНЫХ предела двух РАЗНЫХ эндпоинтов: там — сколько референсов принимает генератор картинок
+// (замеренный факт про gpt-image), здесь — сколько картинок мы кладём в ОДИН чат-запрос. Их
+// равенство сегодня — совпадение, а не тождество; связав их одной константой, мы получили бы
+// молчаливо неверное число у обоих в тот день, когда любой из двух поставщиков сдвинет свой предел.
+const MaxImageParts = 16
 
 // contentPart is one member of a multimodal message's content array. Exactly one of Text / ImageURL
 // is meaningful, selected by Type; the other is omitted from the wire.
@@ -140,9 +150,9 @@ func (c *Client) CompleteWithImages(
 // it cannot vouch for. The text part comes FIRST on purpose: it is the instruction, and a model
 // reading instructions after sixteen pictures is a model that has already started guessing.
 func buildContentParts(userPrompt string, imageURLs []string) ([]contentPart, error) {
-	if len(imageURLs) > maxImageParts {
+	if len(imageURLs) > MaxImageParts {
 		return nil, fmt.Errorf("openrouter: %d pictures exceeds the %d-picture limit for one request",
-			len(imageURLs), maxImageParts)
+			len(imageURLs), MaxImageParts)
 	}
 	parts := make([]contentPart, 0, len(imageURLs)+1)
 	parts = append(parts, contentPart{Type: "text", Text: userPrompt})

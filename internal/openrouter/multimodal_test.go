@@ -190,7 +190,7 @@ func TestCompleteWithImages_RefusesBadInputBeforeTheNetwork(t *testing.T) {
 	defer srv.Close()
 	c := New(Config{APIKey: "k", Model: "m", BaseURL: srv.URL})
 
-	tooMany := make([]string, maxImageParts+1)
+	tooMany := make([]string, MaxImageParts+1)
 	for i := range tooMany {
 		tooMany[i] = "https://media.grbpwr.com/x.png"
 	}

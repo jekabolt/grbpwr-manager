@@ -480,6 +480,49 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 				return fmt.Errorf("failed to file crop %d of picture %d: %w", i, parent.Id, err)
 			}
 		}
+
+		// ДЕТАЛИ СПЛИТА ВХОДЯТ В ПРОМПТ СРАЗУ, ПОМЕЧЕННЫЕ РОЛЬЮ СВОЕГО ВИДА (решение владельца,
+		// R-11). Словарь ролей design_reference и словарь view_key — ОДИН и тот же
+		// (entity.IsDesignGhostView проверяет оба: см. валидацию кадров выше и SetReferenceRole),
+		// поэтому перенос без догадок. Кадр БЕЗ view_key роли НЕ получает: придуманная здесь роль
+		// соврала бы модели о стороне изделия, и снять эту ложь человеку было бы негде — он её не
+		// ставил.
+		//
+		// ИДЕМПОТЕНТНОСТЬ НЕ ЛОМАЕТСЯ: повтор сплита срезается ВЫШЕ, на живых кропах родителя, и до
+		// этого места не доходит — второй набор ролей взяться неоткуда. Всё в одной SERIALIZABLE
+		// транзакции с самими кропами: роль без кропа или кроп без роли не переживают отказ.
+		//
+		// ОРДИНАЛ — ХВОСТ за максимальным из уже стоящих, а не ноль: промпт читается
+		// ORDER BY ordinal, и кроп с ordinal 0 встал бы ВПЕРЕДИ референсов мудборда, чей порядок
+		// назначил человек.
+		ord, err := storeutil.QueryCountNamed(ctx, db,
+			`SELECT COALESCE(MAX(ordinal), 0) FROM design_reference WHERE tech_card_id = :card`,
+			map[string]any{"card": parent.TechCardId})
+		if err != nil {
+			return fmt.Errorf("failed to read the prompt tail of tech card %d: %w", parent.TechCardId, err)
+		}
+		for _, f := range req.Frames {
+			if f.ViewKey == "" {
+				continue
+			}
+			ord++
+			// Упсерт, а не голый INSERT — на случай, когда одно медиа названо двумя кадрами одного
+			// запроса; записка (note) НЕ перечислена и потому не затирается, если строка уже была.
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT INTO design_reference (tech_card_id, media_id, role, ordinal, set_by, set_at)
+				VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6))
+				ON DUPLICATE KEY UPDATE
+					role = VALUES(role),
+					ordinal = VALUES(ordinal),
+					set_by = VALUES(set_by), set_at = VALUES(set_at)`,
+				map[string]any{
+					"card": parent.TechCardId, "media": f.MediaId,
+					"role": f.ViewKey, "ord": ord, "who": req.Actor,
+				}); err != nil {
+				return fmt.Errorf("failed to file the prompt role of crop media %d: %w", f.MediaId, err)
+			}
+		}
+
 		out, err = storeutil.QueryListNamed[entity.DesignPicture](ctx, db,
 			`SELECT * FROM design_picture WHERE derived_from = :id ORDER BY ordinal, id`,
 			map[string]any{"id": parent.Id})
