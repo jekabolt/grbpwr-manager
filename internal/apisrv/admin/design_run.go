@@ -448,7 +448,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// ─── реран: параметры и входы приезжают ИЗ БАЗЫ ───
 	var parent *entity.DesignRun
 	if req.GetRerunOfRunId() > 0 {
-		parent, err = s.designRerunParent(ctx, cardID, int(req.GetRerunOfRunId()))
+		parent, err = s.designRerunParent(ctx, cardID, kind, int(req.GetRerunOfRunId()))
 		if err != nil {
 			return nil, err
 		}
@@ -482,15 +482,37 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseForeignDetailSlots(cardID, req.GetParams(), band.Bench); err != nil {
 		return nil, err
 	}
-	// ГРАНИЦА КАРТОЧКИ — ДО ДЕНЕГ. Оба списка приезжают с провода и оба уезжают ПОСТАВЩИКУ:
-	// designgen/snapshot.go собирает ссылки прогона из плит, референсов, `extra_input_media_ids` И
-	// `colour.fabric_media_id`. Проверяются оба, потому что дефект у них один.
+	// ТОТ ЖЕ ПРИЁМ ДЛЯ ПОЛОК: адрес, названный КЛИЕНТОМ, отвечает за себя, унаследованный — нет.
+	// Довод дословно тот же, что у детали строкой выше, и он здесь ещё жёстче: полку законно
+	// удаляют (DeleteDesignAsset), а параметры родителя заморожены — проверка унаследованного
+	// списка сделала бы прогон неперезапускаемым НАВСЕГДА.
+	if err := designRefuseForeignClothAssets(cardID, req.GetParams(), band.Assets); err != nil {
+		return nil, err
+	}
+	// ГРАНИЦА КАРТОЧКИ — ДО ДЕНЕГ. Все три списка приезжают с провода и все три уезжают
+	// ПОСТАВЩИКУ: designgen/snapshot.go собирает ссылки прогона из плит, референсов,
+	// `extra_input_media_ids`, `colour.fabric_media_id` И текстуры КАЖДОЙ ткани `colour.fabrics`.
+	// Проверяются все, потому что дефект у них один.
 	if err := s.designRefuseForeignMedia(ctx, cardID, "params.extra_input_media_ids",
 		designInt32sToInts(params.GetExtraInputMediaIds())...); err != nil {
 		return nil, err
 	}
 	if err := s.designRefuseForeignMedia(ctx, cardID, "params.colour.fabric_media_id",
 		int(params.GetColour().GetFabricMediaId())); err != nil {
+		return nil, err
+	}
+	// ⚠ СПИСОК ТКАНЕЙ — ТРЕТИЙ НЕЗАВИСИМЫЙ ИСТОЧНИК ЧУЖОГО НОМЕРА, И ЭТО НЕ ПОВТОР СКАЛЯРА.
+	// Скаляр — эхо ПЕРВОЙ ткани (контракт DesignColourRecipe), поэтому проверка скаляра ничего не
+	// говорит о второй: достаточно было положить чужую картинку в `fabrics[1]`, и она уезжала
+	// поставщику при полностью законном `fabric_media_id`. Волна, научившая воркер отправлять
+	// текстуру КАЖДОЙ ткани (snapshot.go), обязана была расширить и эту границу.
+	//
+	// ЗДЕСЬ ДЕЙСТВУЮЩИЕ ПАРАМЕТРЫ, А НЕ СООБЩЕНИЕ КЛИЕНТА, и это ТА ЖЕ ГРАНИЦА, ЧТО У ДВУХ
+	// ПРОВЕРОК ВЫШЕ: медиа уезжает поставщику и с унаследованных параметров тоже, а строка
+	// media(id) под собой не исчезает (FK держат её RESTRICT'ом), так что вечного отказа, из-за
+	// которого адрес полки проверяется только у говорящего, здесь просто не бывает.
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.colour.fabrics.media_id",
+		designClothMediaIDs(params.GetColour())...); err != nil {
 		return nil, err
 	}
 
@@ -570,12 +592,26 @@ func designParentID(parent *entity.DesignRun) int {
 }
 
 // designRerunParent читает прогон, который повторяют, и отвечает за то, чтобы им нельзя было
-// указать на чужую карточку или на текстовый прогон.
+// указать на чужую карточку, на текстовый прогон или на прогон ДРУГОГО РОДА.
 //
 // СТОР ПРОВЕРЯЕТ ТО ЖЕ САМОЕ ВНУТРИ СВОЕЙ ТРАНЗАКЦИИ, и это не дубликат: там проверка — пояс
 // против гонки (родителя могли удалить между чтением и вставкой), здесь — источник ВХОДОВ,
 // которые без этого чтения неоткуда взять.
-func (s *Server) designRerunParent(ctx context.Context, cardID, parentID int) (*entity.DesignRun, error) {
+//
+// ⚠ РОД ОБЯЗАН СОВПАСТЬ, И ЭТО НЕ АККУРАТНОСТЬ, А ГРАНИЦА ВХОДА. Реран копирует снимок родителя
+// ДОСЛОВНО («из сегодняшнего состояния карточки берётся ноль полей»), а `DesignInputSlot` рода
+// плиты не несёт: в нём есть вид и media_id и нет ответа на вопрос, флэт это или плита рендера.
+// Значит всякий читатель снимка вынужден считать род ИЗ РОДА ПРОГОНА — и threedPictures именно
+// это и делает, законно узнавая в скопированной строке «плиту этого прогона». Реран 3D по
+// рендер-родителю поэтому отправлял поворотному столу ФЛЭТЫ, из которых делали рендер: технические
+// чертежи вместо четырёх видов готовой вещи, прогон закрывался `done`, деньги списывались. Это тот
+// же V-14 с другой стороны — там вход считали два писателя, здесь его подменяет род.
+//
+// ПОЧЕМУ ПРАВИЛО ЗДЕСЬ, А НЕ В ФИЛЬТРЕ 3D. Починить это в threedPictures было бы нечем: у него на
+// руках снимок, в котором рода нет. Написать род в снимок значило бы завести ВТОРОЙ дом для факта,
+// который уже сказан колонкой `kind` строки прогона, — и старые замороженные снимки его всё равно
+// не несут. Совпадение рода — это утверждение о ДВУХ СТРОКАХ, и проверяется оно там, где обе видны.
+func (s *Server) designRerunParent(ctx context.Context, cardID int, kind string, parentID int) (*entity.DesignRun, error) {
 	parent, err := s.repo.Design().GetRun(ctx, parentID)
 	if err != nil {
 		return nil, designError(ctx, "failed to read the run being rerun", err, nil)
@@ -589,6 +625,12 @@ func (s *Server) designRerunParent(ctx context.Context, cardID, parentID int) (*
 	if parent.Kind == entity.DesignRunKindDraftIdea {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"run %d is a text run: it has no picture inputs to repeat", parentID)
+	}
+	if parent.Kind != kind {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"run %d is a %s run and this is a %s run: a repeat sends the model the SAME inputs, "+
+				"and the pictures a %s run froze are not the pictures a %s run may send",
+			parentID, parent.Kind, kind, parent.Kind, kind)
 	}
 	return parent, nil
 }
@@ -799,6 +841,53 @@ func designRefuseForeignDetailSlots(cardID int, spoken *pb_common.DesignRunParam
 		}
 	}
 	return nil
+}
+
+// designRefuseForeignClothAssets держит КАРТОЧНУЮ половину адреса полки, ровно как
+// designRefuseForeignDetailSlots держит её для адреса детали. Второго чтения не делает: полки
+// приезжают в полосе ЦЕЛИКОМ, без страницы (entity.DesignBand.Assets, потолок
+// MaxDesignAssetsPerCard), поэтому band.Assets — это весь набор адресов карточки.
+//
+// ⚠ ЗАЧЕМ ВООБЩЕ ПРОВЕРЯТЬ ПОЛЕ, КОТОРОЕ НИКТО НЕ РАЗРЕШАЕТ. Именно поэтому и проверять. Контракт
+// говорит прямо: факты ткани ЗАМОРОЖЕНЫ копиями, а `asset_id` едет рядом как ПРОВЕНАНС — «какая
+// это была строка полки» — и читатель его не резолвит. Значит ложное значение никогда не всплывёт
+// ошибкой: строка истории просто навсегда утверждает, что ткань пришла с полки, которой у этой
+// карточки нет. Параметры прогона заморожены, задним числом это не чинится.
+//
+// `spoken` — СООБЩЕНИЕ КЛИЕНТА, и разница видна только на реране без параметров: см. довод у места
+// вызова. nil-сообщение отдаёт пустой список, цикл не исполняется ни разу.
+//
+// НОЛЬ ПРОПУСКАЕТСЯ МОЛЧА: контракт объявляет его законным («0 when the cloth was stated without a
+// shelf row»), и ткань, названную одними словами, эта функция отвергать не вправе.
+func designRefuseForeignClothAssets(cardID int, spoken *pb_common.DesignRunParams, assets []entity.DesignAsset) error {
+	shelf := make(map[int]struct{}, len(assets))
+	for _, a := range assets {
+		if a.TechCardId == cardID {
+			shelf[a.Id] = struct{}{}
+		}
+	}
+	for i, f := range spoken.GetColour().GetFabrics() {
+		id := int(f.GetAssetId())
+		if id == 0 {
+			continue
+		}
+		if _, ok := shelf[id]; !ok {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.fabrics.%d.asset_id %d is not a shelf row of tech card %d", i, id, cardID)
+		}
+	}
+	return nil
+}
+
+// designClothMediaIDs — текстуры ВСЕХ тканей рецепта. Отдельной функцией, чтобы у места вызова
+// стоял список, а не цикл: границе карточки отдаётся один набор номеров, и дедупликацию с нулями
+// разбирает она сама.
+func designClothMediaIDs(c *pb_common.DesignColourRecipe) []int {
+	out := make([]int, 0, len(c.GetFabrics()))
+	for _, f := range c.GetFabrics() {
+		out = append(out, int(f.GetMediaId()))
+	}
+	return out
 }
 
 // designInt32sToInts — один переход между шириной провода и шириной домена. Отдельной функцией,

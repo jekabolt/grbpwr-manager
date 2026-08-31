@@ -51,12 +51,22 @@ func (s *Server) UpsertDesignAsset(ctx context.Context, req *pb_admin.UpsertDesi
 
 // DeleteDesignAsset removes ONE shelf row and reports how many marks went with it.
 //
-// THE REQUEST CARRIES THE ASSET ID AND NOTHING ELSE — exactly as DeleteDesignDetailSlotRequest
-// carries the slot id and nothing else — so the card is passed as 0 and the store addresses the row
-// by its own identity. A minted id already names its card; asking the client to repeat that fact
-// would be asking it for a fact it can only get wrong.
+// ⚠ THE REQUEST NAMES THE CARD, AND THE CARD IS NOT A REPEATED FACT. The first version of this
+// handler passed 0 — which in the store DISABLES the ownership check — and justified it by
+// DeleteDesignDetailSlotRequest, which carries the slot id and nothing else. That justification was
+// wrong twice over. It is wrong in substance: what the client states here is not a property of the
+// id (which it could only get wrong) but its OWN BELIEF ABOUT WHICH SHELF WALL IS ON THE SCREEN,
+// and a disagreement between the two is precisely the thing worth refusing — a stale list, a second
+// tab or a card switched under an open panel deleted a DIFFERENT card's row and, by ON DELETE
+// CASCADE, every mark it had left on that card's flats, answering OK. And it is wrong in kind:
+// DeleteDesignDetailSlot is not a precedent that makes this safe, it is a SECOND ROW WITH THE SAME
+// HOLE (internal/store/design/bench.go: DeleteDetailSlot takes no card at all) — the cheaper one,
+// because an empty detail slot cascades into nothing.
+//
+// EVERY OTHER VERB OF THIS BAND ALREADY STATES THE CARD, SetDesignAssetPlacement included, and the
+// store now REQUIRES it: there is no longer a value of the argument that means «do not check».
 func (s *Server) DeleteDesignAsset(ctx context.Context, req *pb_admin.DeleteDesignAssetRequest) (*pb_admin.DeleteDesignAssetResponse, error) {
-	removed, err := s.repo.Design().DeleteAsset(ctx, 0, int(req.GetAssetId()))
+	removed, err := s.repo.Design().DeleteAsset(ctx, int(req.GetTechCardId()), int(req.GetAssetId()))
 	if err != nil {
 		return nil, designError(ctx, "failed to delete the design asset", err, nil)
 	}
@@ -85,8 +95,13 @@ func (s *Server) SetDesignAssetPlacement(ctx context.Context, req *pb_admin.SetD
 }
 
 // DeleteDesignAssetPlacement takes ONE mark off a flat; the asset stays on its shelf.
+//
+// THE CARD IS NAMED FOR THE REASON DeleteDesignAsset GIVES, and here it buys one thing more: a
+// placement row carries no tech_card_id at all (0354 — a second home for one fact diverges from the
+// first), so «this card's mark» is reachable ONLY through the JOIN onto its asset. Passing 0 did
+// not merely skip a comparison, it skipped the join that IS the scope.
 func (s *Server) DeleteDesignAssetPlacement(ctx context.Context, req *pb_admin.DeleteDesignAssetPlacementRequest) (*pb_admin.DeleteDesignAssetPlacementResponse, error) {
-	if err := s.repo.Design().DeleteAssetPlacement(ctx, 0, int(req.GetPlacementId())); err != nil {
+	if err := s.repo.Design().DeleteAssetPlacement(ctx, int(req.GetTechCardId()), int(req.GetPlacementId())); err != nil {
 		return nil, designError(ctx, "failed to remove the design asset placement", err, nil)
 	}
 	return &pb_admin.DeleteDesignAssetPlacementResponse{}, nil

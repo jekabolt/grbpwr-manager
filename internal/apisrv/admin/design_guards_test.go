@@ -495,3 +495,106 @@ func TestSourcePicturesAreServerOwned(t *testing.T) {
 			"род, который плит не берёт, обязан говорить об этом пустотой")
 	})
 }
+
+// ─────────────────────── 6. ТКАНИ ПРОГОНА (V-8) ───────────────────────
+
+// designGuardBandWithShelf — та же полоса плюс ДВЕ полки ЭТОЙ карточки. Всё, чего в этом списке
+// нет, для карточки чужое.
+func designGuardBandWithShelf() *entity.DesignBand {
+	band := designGuardBand()
+	band.Assets = []entity.DesignAsset{
+		{Id: 61, TechCardId: designGuardCardID, Kind: entity.DesignAssetKindFabric, Name: "main jersey"},
+		{Id: 62, TechCardId: designGuardCardID, Kind: entity.DesignAssetKindFabric, Name: "contrast rib"},
+	}
+	return band
+}
+
+// designGuardTwoCloths — ДВЕ ткани в рецепте: первая законная и повторённая в скаляре ровно так,
+// как велит контракт, вторая — та, которую проба портит.
+func designGuardTwoCloths(second *pb_common.DesignFabricUse) *pb_admin.StartDesignRunRequest {
+	req := designGuardStart(entity.DesignRunKindRender)
+	req.Params = &pb_common.DesignRunParams{
+		Colour: &pb_common.DesignColourRecipe{
+			Source: "photo", FabricMediaId: 300,
+			Fabrics: []*pb_common.DesignFabricUse{
+				{AssetId: 61, Name: "main jersey", MediaId: 300, Parts: "body"},
+				second,
+			},
+		},
+	}
+	return req
+}
+
+// ФОТОГРАФИЯ ТКАНИ ЧУЖОЙ КАРТОЧКИ НЕ УХОДИТ В ПЛАТНЫЙ ПРОГОН.
+//
+// ЧТО БЫЛО. Дверь спрашивала про `extra_input_media_ids` и про легаси-скаляр
+// `colour.fabric_media_id` — и НИ РАЗУ про `fabrics[*].media_id`, хотя эту же волну воркер научили
+// отправлять фотографию КАЖДОЙ ткани (designgen/snapshot.go). Достаточно было положить чужой номер
+// во ВТОРУЮ ткань: скаляр законный, дверь довольна, чужая картинка уезжает поставщику и замерзает
+// в истории этой карточки.
+func TestRunRefusesAClothPhotoOfAnotherCard(t *testing.T) {
+	rig := newDesignGuardRig(t, designGuardCard(), designGuardBandWithShelf())
+	const foreignCloth = 779
+	rig.foreign[foreignCloth] = true
+
+	req := designGuardTwoCloths(&pb_common.DesignFabricUse{
+		AssetId: 62, Name: "contrast rib", MediaId: foreignCloth, Parts: "collar",
+	})
+	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+	require.Error(t, err)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, rig.asked, foreignCloth,
+		"про текстуру каждой ткани обязаны спросить: воркер отправляет их все")
+	require.Nil(t, rig.sent, "отказ обязан прийти ДО резерва денег")
+}
+
+// ТКАНЬ С ЧУЖОЙ ПОЛКИ НЕ ЗАМЕРЗАЕТ В ИСТОРИИ ЭТОЙ КАРТОЧКИ.
+//
+// `asset_id` — провенанс, и контракт прямо говорит, что читатель его НЕ РАЗРЕШАЕТ: строка истории
+// навсегда утверждает «эта ткань пришла с полки 99». Полка 99 принадлежит другой карточке, значит
+// утверждение ложно, а починить его нельзя — параметры прогона заморожены.
+func TestRunRefusesAClothFromAnotherCardsShelf(t *testing.T) {
+	rig := newDesignGuardRig(t, designGuardCard(), designGuardBandWithShelf())
+	req := designGuardTwoCloths(&pb_common.DesignFabricUse{
+		AssetId: 99, Name: "contrast rib", Parts: "collar",
+	})
+	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, err.Error(), "params.colour.fabrics.1.asset_id")
+	require.Nil(t, rig.sent)
+}
+
+// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: ЗАКОННЫЕ ДВЕ ТКАНИ ПРОХОДЯТ ЦЕЛИКОМ.
+//
+// Ворота, отказывающие всякому списку тканей, зеленят обе пробы выше и убивают саму волну V-8.
+// Здесь обе ткани названы полками ЭТОЙ карточки, текстура второй — свежая загрузка (за ней не
+// стоит ещё ни одна карточка, и это по контракту законно), и обе обязаны доехать до стора.
+func TestRunAcceptsTwoClothsOfItsOwnShelf(t *testing.T) {
+	rig := newDesignGuardRig(t, designGuardCard(), designGuardBandWithShelf())
+	req := designGuardTwoCloths(&pb_common.DesignFabricUse{
+		AssetId: 62, Name: "contrast rib", MediaId: 301, Parts: "collar",
+	})
+	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent, "законный список тканей обязан доехать до стора")
+	require.Contains(t, rig.asked, 301, "про текстуру второй ткани всё равно спрашивают")
+
+	stored := &pb_common.DesignRunParams{}
+	require.NoError(t, designUnmarshalJSON(rig.sent.Params, stored))
+	require.Len(t, stored.GetColour().GetFabrics(), 2, "обе ткани обязаны замёрзнуть в параметрах")
+}
+
+// ТКАНЬ БЕЗ ПОЛКИ — ЗАКОННАЯ ТКАНЬ.
+//
+// Контракт объявляет это дословно: «asset_id = 0, когда ткань названа без строки полки». Правило,
+// требующее полку, закрыло бы обычный жест «просто напиши, из чего это сшито».
+func TestRunAcceptsAClothStatedWithoutAShelfRow(t *testing.T) {
+	rig := newDesignGuardRig(t, designGuardCard(), designGuardBandWithShelf())
+	req := designGuardTwoCloths(&pb_common.DesignFabricUse{
+		Name: "contrast rib", Words: "2x2 rib", Parts: "collar",
+	})
+	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent)
+}

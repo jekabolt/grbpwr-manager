@@ -382,3 +382,56 @@ func TestGetDesignBandCarriesTheShelvesAndTheirMarks(t *testing.T) {
 	assert.Equal(t, pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_DIM,
 		resp.GetAssetPlacements()[0].GetAnnotation().GetKind())
 }
+
+// ─────────────────────── СКОУП КАРТОЧКИ У ГЛАГОЛА УДАЛЕНИЯ ───────────────────────
+
+// УДАЛЕНИЕ АССЕТА НАЗЫВАЕТ СТОРУ КАРТОЧКУ, А НЕ НОЛЬ.
+//
+// ЧТО БЫЛО. Хендлер звал `DeleteAsset(ctx, 0, id)`, а ноль в сторе ОТКЛЮЧАЕТ проверку
+// принадлежности (requireAssetOfCard). Карточки в запросе не было вовсе, поэтому клиент,
+// державший идентификатор ассета ДРУГОЙ карточки — устаревший список, вторая вкладка, карточка,
+// переключённая под открытой панелью, — удалял чужую строку и КАСКАДОМ все её метки на чужих
+// флэтах. Молча: ответ OK, число удалённых меток правдоподобное, и ни на одном из двух экранов
+// нет ничего, по чему это заметить.
+//
+// ⚠ ПРОБА СМОТРИТ НА ТО, ЧТО ОТДАНО СТОРУ, А НЕ НА ОТВЕТ. Ответ здесь одинаков в обоих мирах —
+// весь дефект в аргументе, которого не видно снаружи.
+func TestDeleteDesignAssetNamesTheCardItDeletesFrom(t *testing.T) {
+	rig := newDesignAssetRig(t)
+	var gotCard, gotAsset int
+	rig.design.EXPECT().DeleteAsset(mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Run(func(_ context.Context, card, asset int) { gotCard, gotAsset = card, asset }).
+		Return(3, nil).Once()
+
+	resp, err := rig.srv.DeleteDesignAsset(designRunCtx(), &pb_admin.DeleteDesignAssetRequest{
+		TechCardId: designRunCardID,
+		AssetId:    12,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), resp.GetRemovedPlacements())
+	assert.Equal(t, 12, gotAsset)
+	assert.Equal(t, designRunCardID, gotCard,
+		"ноль вместо карточки снимает единственную проверку, отделяющую эту полку от чужой")
+}
+
+// ТО ЖЕ ДЛЯ МЕТКИ НА ФЛЭТЕ.
+//
+// У размещения своего tech_card_id нет по решению 0354, и скоуп до него дотягивается ТОЛЬКО через
+// JOIN на ассет — то есть ровно через карточку, которую хендлер и обязан назвать. Ноль отменял и
+// этот JOIN.
+func TestDeleteDesignAssetPlacementNamesTheCardItUnmarks(t *testing.T) {
+	rig := newDesignAssetRig(t)
+	var gotCard, gotPlacement int
+	rig.design.EXPECT().DeleteAssetPlacement(mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Run(func(_ context.Context, card, placement int) { gotCard, gotPlacement = card, placement }).
+		Return(nil).Once()
+
+	_, err := rig.srv.DeleteDesignAssetPlacement(designRunCtx(), &pb_admin.DeleteDesignAssetPlacementRequest{
+		TechCardId:  designRunCardID,
+		PlacementId: 8,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 8, gotPlacement)
+	assert.Equal(t, designRunCardID, gotCard,
+		"без карточки метка адресуется по одному номеру, и JOIN, который и есть скоуп, не строится")
+}

@@ -42,17 +42,24 @@ func assetByID(ctx context.Context, db dependency.DB, id int) (entity.DesignAsse
 
 // requireAssetOfCard reads the row and refuses one that belongs to a DIFFERENT card.
 //
-// cardID <= 0 means «the caller does not name a card», and that is a real case rather than a hole:
-// DeleteDesignAssetRequest carries the asset id and nothing else, exactly as
-// DeleteDesignDetailSlotRequest carries the slot id and nothing else. A minted id already names its
-// card; demanding a second copy of that fact from the client would be demanding a fact it could
-// only get wrong.
+// ⚠ THERE IS NO «DO NOT CHECK» VALUE OF cardID, AND THAT ABSENCE IS THE POINT. This function used
+// to skip the comparison on cardID <= 0, and the delete verbs used to hand it exactly that — which
+// meant the one gesture in this file that CASCADES was also the one gesture with no card boundary
+// at all. The argument for it was that a minted id already names its card, so asking the client to
+// repeat it would be asking for a fact it can only get wrong. That reads the request wrongly: the
+// card in a delete request is not a copy of the id's own property, it is the CALLER'S BELIEF about
+// which shelf wall it is looking at, and the whole value of stating it is that the server can
+// refuse when belief and fact disagree. Every caller now names a card, so a bad state is not
+// checked for here — it cannot be spelled.
 func requireAssetOfCard(ctx context.Context, db dependency.DB, cardID, assetID int) (entity.DesignAsset, error) {
+	if err := requireCard(cardID); err != nil {
+		return entity.DesignAsset{}, err
+	}
 	a, err := assetByID(ctx, db, assetID)
 	if err != nil {
 		return a, err
 	}
-	if cardID > 0 && a.TechCardId != cardID {
+	if a.TechCardId != cardID {
 		return a, fmt.Errorf("%w: design asset %d belongs to tech card %d",
 			entity.ErrDesignNotFound, a.Id, a.TechCardId)
 	}
@@ -206,7 +213,13 @@ func (s *Store) UpsertAsset(ctx context.Context, req entity.DesignAssetUpsert) (
 // A PATTERN BUILT FROM THIS ASSET SURVIVES, its parentage cleared by the FK's SET NULL. That is
 // the schema's decision and it is right: a pattern with a picture and a repeat is a usable
 // instruction to a factory after its swatch is gone.
+//
+// ⚠ THE CARD IS REQUIRED, NOT OPTIONAL. A delete that cascades is the last verb in this file that
+// may be addressed by a bare id: see requireAssetOfCard.
 func (s *Store) DeleteAsset(ctx context.Context, techCardID, assetID int) (int, error) {
+	if err := requireCard(techCardID); err != nil {
+		return 0, err
+	}
 	if assetID <= 0 {
 		return 0, fmt.Errorf("%w: asset id is required", entity.ErrDesignInvalidArgument)
 	}
@@ -284,12 +297,17 @@ func (s *Store) SetAssetPlacement(ctx context.Context, req entity.DesignAssetPla
 		if err != nil {
 			return err
 		}
-		// foreign_card_plate, the SAME refusal the bench raises for the same fact — a plate of
-		// another card. One fact must not grow two machine tokens; the client already knows how to
-		// act on this one.
-		if pic.TechCardId != req.TechCardId {
-			return fmt.Errorf("%w: picture %d belongs to tech card %d",
-				entity.ErrDesignForeignCardPlate, pic.Id, pic.TechCardId)
+		// BOTH HALVES OF «MAY THIS PICTURE CARRY A MARK» — the card AND the kind — are asked of
+		// entity.DesignAssetPlacementSet.RefusePicture, and the refusals it raises are the SAME
+		// ones the bench raises for the same two facts (foreign_card_plate, wrong_kind). One fact
+		// must not grow two machine tokens; the client already knows how to act on both.
+		//
+		// ⚠ THE RULE LIVES IN entity BECAUSE ITS KIND HALF IS TESTABLE THERE WITHOUT A DATABASE,
+		// and the half that lived here alone is exactly the half that was complete: the card was
+		// checked, the kind was not checked anywhere at all, and a mark on a render came back
+		// from the band calling itself a mark on a flat.
+		if err := req.RefusePicture(pic); err != nil {
+			return err
 		}
 
 		params := map[string]any{
@@ -338,6 +356,9 @@ func (s *Store) SetAssetPlacement(ctx context.Context, req entity.DesignAssetPla
 // DeleteAssetPlacement takes ONE mark off a flat. The asset stays on its shelf: unmarking and
 // removing are different acts, exactly as emptying a bench slot is not deleting the plate.
 func (s *Store) DeleteAssetPlacement(ctx context.Context, techCardID, placementID int) error {
+	if err := requireCard(techCardID); err != nil {
+		return err
+	}
 	if placementID <= 0 {
 		return fmt.Errorf("%w: placement id is required", entity.ErrDesignInvalidArgument)
 	}
@@ -370,11 +391,14 @@ func placementByID(ctx context.Context, db dependency.DB, id int) (entity.Design
 }
 
 // placementOfCard reads one mark THROUGH its asset, which is the only way to scope it by card —
-// design_asset_placement carries no tech_card_id by design (0354). cardID <= 0 skips the scoping,
-// for the same reason requireAssetOfCard does: the delete verb is addressed by id alone.
+// design_asset_placement carries no tech_card_id by design (0354).
+//
+// ⚠ AND THEREFORE THERE IS NO UNSCOPED BRANCH HERE EITHER. It used to fall back to placementByID
+// on cardID <= 0, which did not merely skip a comparison — it skipped THE JOIN, and the join is the
+// scope. See requireAssetOfCard for why the delete verbs no longer ask for that.
 func placementOfCard(ctx context.Context, db dependency.DB, cardID, id int) (entity.DesignAssetPlacement, error) {
-	if cardID <= 0 {
-		return placementByID(ctx, db, id)
+	if err := requireCard(cardID); err != nil {
+		return entity.DesignAssetPlacement{}, err
 	}
 	rows, err := storeutil.QueryListNamed[entity.DesignAssetPlacement](ctx, db, `
 		SELECT p.* FROM design_asset_placement p

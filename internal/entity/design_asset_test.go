@@ -125,3 +125,57 @@ func TestDesignAssetUpsertValidate(t *testing.T) {
 		})
 	}
 }
+
+// ─────────────────── КАКАЯ КАРТИНКА МОЖЕТ НЕСТИ МЕТКУ ПОЛКИ ───────────────────
+
+// МЕТКА СТАВИТСЯ НА ФЛЭТ, И РОД КАДРА ПРОВЕРЯЕТСЯ НАРАВНЕ С ЕГО КАРТОЧКОЙ.
+//
+// ЧТО БЫЛО. Запись метки сверяла только `pic.TechCardId` и не смотрела `pic.Kind` НИ РАЗУ, хотя и
+// схема (0354: «флэт, на котором стоит метка»), и контракт («puts ONE mark on ONE flat»), и клиент
+// (markableFlats) говорят одно: разметка живёт на ФЛЭТАХ. Метка, поставленная на рендер или на
+// кадр поворотного стола, принималась и возвращалась полосой как «метка на флэте» — то есть
+// система утверждала о картинке род, которого у неё нет.
+//
+// ЧЕМ ЭТО ПЛОХО ПО СУЩЕСТВУ. Координаты метки — доли ЭТОГО кадра. Флэт и рендер одного вида
+// кадрированы по-разному, поэтому одна и та же доля показывает на разные места изделия: метка,
+// поставленная на рендер, указывает не туда, куда указал человек, — и это молча.
+//
+// ⚠ ДВА ВОПРОСА ЖИВУТ В ОДНОЙ ФУНКЦИИ НАМЕРЕННО. «Чья это картинка» и «того ли она рода» — две
+// половины ОДНОГО «может ли она нести метку», и разнесённые по двум местам они расходятся: первая
+// половина уже жила в сторе одна, вторая не жила нигде.
+func TestDesignAssetPlacementRefusesAPictureThatCannotCarryAMark(t *testing.T) {
+	const card = 41
+	set := DesignAssetPlacementSet{TechCardId: card, AssetId: 7, PictureId: 91}
+
+	for _, tc := range []struct {
+		name string
+		pic  DesignPicture
+		want error
+	}{
+		{"флэт этой карточки",
+			DesignPicture{Id: 91, TechCardId: card, Kind: DesignPictureKindFlat}, nil},
+		{"пустой род читается как флэт, ровно как DEFAULT 'flat' в 0349",
+			DesignPicture{Id: 91, TechCardId: card, Kind: ""}, nil},
+		{"флэт ДРУГОЙ карточки",
+			DesignPicture{Id: 91, TechCardId: card + 1, Kind: DesignPictureKindFlat},
+			ErrDesignForeignCardPlate},
+		{"рендер этой карточки",
+			DesignPicture{Id: 91, TechCardId: card, Kind: DesignPictureKindRender},
+			ErrDesignWrongKind},
+		{"кадр поворотного стола",
+			DesignPicture{Id: 91, TechCardId: card, Kind: DesignPictureKindThreed},
+			ErrDesignWrongKind},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := set.RefusePicture(tc.pic)
+			if tc.want == nil {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, tc.want),
+				"ожидался %v, получено %v: у чужой карточки и у чужого рода разные машинные токены "+
+					"и разные починки", tc.want, err)
+		})
+	}
+}

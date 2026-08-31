@@ -142,3 +142,81 @@ func TestThreedPromptSaysNothingAboutAnUnstatedBody(t *testing.T) {
 	require.NotContains(t, job.Prompt, "body ")
 	require.Contains(t, job.Prompt, "presentation air")
 }
+
+// ═══ ГОДНЫЙ НАБОР ВИДОВ, А НЕ ПРОСТО «ПРИШЛО ИЗ СЛОТА» ═══════════════════════════════════════
+//
+// Фильтр выше доказывает ПРОИСХОЖДЕНИЕ картинки — что она плита этого прогона. Провайдер читает
+// список иначе: `image_urls[0]` это ПЕРЁД, а остальные — другие виды ТОГО ЖЕ предмета, и их не
+// больше четырёх. Значит происхождения мало: набор обязан быть набором ВИДОВ СИЛУЭТА, и он обязан
+// начинаться с переда.
+
+// threedRunOfSlots — прогон 3D, у которого верстак задан пробой целиком. Всё остальное (референсы,
+// дополнительное медиа, свотч) остаётся на месте: набор обязан сужаться, а не исчезать.
+func threedRunOfSlots(slots string) entity.DesignRun {
+	r := threedRun()
+	r.Inputs = entity.RawJSON(`{"garment_note":"boxy overshirt","refs":[{"media_id":90},{"media_id":91}],"slots":` + slots + `}`)
+	return r
+}
+
+// TestThreedWithoutTheFrontSendsNothing — СЦЕНАРИЙ «В ВЕРСТАКЕ ТОЛЬКО СПИНА».
+//
+// Meshy читает первую присланную картинку как ПЕРЁД — это не соглашение, а его контракт
+// (meshy.MinImages/MaxImages, image_urls[0] = фронт). Прогон, у которого переда нет, отправлял
+// СПИНУ первой, и провайдер строил поворотный стол, считая спину лицом изделия: тихий успех, `done`
+// и списанные деньги за модель, повёрнутую задом наперёд. Отличить это от честной сборки по
+// истории нечем.
+//
+// ПУСТОЙ ОТВЕТ ЗДЕСЬ — ЭТО ПРАВДА, А НЕ ОТКАЗ ОТ РАБОТЫ: провайдер отвечает своим ErrImageCount
+// («a turntable needs at least the front view»), и такой отказ человек читает.
+func TestThreedWithoutTheFrontSendsNothing(t *testing.T) {
+	r := threedRunOfSlots(`[{"view_key":"back","media_id":2},{"view_key":"side_l","media_id":3}]`)
+
+	job, err := buildJob(context.Background(), media(2, 3, 77, 88, 90, 91), r, "medium")
+	require.NoError(t, err)
+	require.Empty(t, job.References,
+		"без переда список видов не набор: первая картинка уехала бы к провайдеру как лицо изделия")
+
+	client := meshy.New(meshy.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})
+	_, subErr := client.Submit(context.Background(), meshy.Request{ImageURLs: job.References})
+	require.ErrorIs(t, subErr, meshy.ErrImageCount,
+		"отказ обязан прийти от провайдера словами, а не молча стать чужим передом")
+}
+
+// TestThreedLeavesADetailPlateOutOfTheTurntable — СЦЕНАРИЙ «ЧЕТЫРЕ СТОРОНЫ ПЛЮС ДЕТАЛЬ».
+//
+// Деталь-рендер — законная плита верстака рендера и законный вход рендера, но она НЕ ВИД ИЗДЕЛИЯ:
+// поворотному столу она пятая картинка, то есть локальный отказ `meshy.Submit` ДО сети. Карточка,
+// на которой человек сделал рендер манжеты, теряла из-за него КАЖДЫЙ прогон 3D.
+func TestThreedLeavesADetailPlateOutOfTheTurntable(t *testing.T) {
+	r := threedRunOfSlots(`[
+	  {"view_key":"front","media_id":1},
+	  {"view_key":"back","media_id":2},
+	  {"view_key":"side_l","media_id":3},
+	  {"view_key":"side_r","media_id":4},
+	  {"view_key":"detail","slot_id":31,"media_id":5}
+	]`)
+
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 5, 77, 88, 90, 91), r, "medium")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"https://cdn.example/m/1.png",
+		"https://cdn.example/m/2.png",
+		"https://cdn.example/m/3.png",
+		"https://cdn.example/m/4.png",
+	}, job.References, "стол крутит четыре стороны силуэта; деталь ему не вид, а пятая картинка")
+
+	client := meshy.New(meshy.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})
+	_, subErr := client.Submit(context.Background(), meshy.Request{ImageURLs: job.References})
+	require.NotErrorIs(t, subErr, meshy.ErrImageCount,
+		"набор обязан проходить локальный счётчик провайдера, а не умирать у двери")
+}
+
+// TestThreedStillCarriesEverySilhouetteSide — ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ к двум пробам выше.
+//
+// Фильтр, оставляющий ОДИН перёд, зеленит обе: и «без переда пусто», и «детали нет». Здесь сказано,
+// что сужение не съело стороны, ради которых стол и существует.
+func TestThreedStillCarriesEverySilhouetteSide(t *testing.T) {
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), threedRun(), "medium")
+	require.NoError(t, err)
+	require.Len(t, job.References, 4, "четыре стороны обязаны доехать все")
+}

@@ -2752,8 +2752,11 @@ service AdminService {
   // are the asset's own statements about itself and have no meaning once it is gone. A pattern
   // built from this asset SURVIVES with its parentage cleared; it still carries a picture and a
   // repeat, which is a usable instruction on its own.
+  //
+  // THE CARD IS NAMED IN THE PATH, and it is not decoration: the server refuses an asset_id that
+  // belongs to a DIFFERENT card. NotFound.
   rpc DeleteDesignAsset(DeleteDesignAssetRequest) returns (DeleteDesignAssetResponse) {
-    option (google.api.http) = {delete: "/api/admin/design/asset/{asset_id}"};
+    option (google.api.http) = {delete: "/api/admin/tech-card/{tech_card_id}/design/asset/{asset_id}"};
   }
 
   // SetDesignAssetPlacement puts ONE mark on ONE flat: this asset, this drawing, here. Creates when
@@ -2770,8 +2773,11 @@ service AdminService {
 
   // DeleteDesignAssetPlacement takes ONE mark off a flat. The asset stays on its shelf: unmarking
   // and removing are different acts, exactly as unmarking a bench slot is not deleting the plate.
+  //
+  // THE CARD IS NAMED IN THE PATH here too, and the mark is scoped to it THROUGH ITS ASSET — a
+  // placement row carries no tech_card_id of its own by design. NotFound on a mark of another card.
   rpc DeleteDesignAssetPlacement(DeleteDesignAssetPlacementRequest) returns (DeleteDesignAssetPlacementResponse) {
-    option (google.api.http) = {delete: "/api/admin/design/asset-placement/{placement_id}"};
+    option (google.api.http) = {delete: "/api/admin/tech-card/{tech_card_id}/design/asset-placement/{placement_id}"};
   }
 
   // GetDesignEditLayer reads ONE layer WITH its strokes. It exists because GetDesignBand
@@ -12072,8 +12078,18 @@ message UpsertDesignAssetResponse {
   common.DesignAsset asset = 1;
 }
 
+// DeleteDesignAssetRequest names BOTH the shelf row and the card it is being deleted from.
+//
+// ⚠ THE CARD IS NOT A SECOND COPY OF A FACT THE ID ALREADY CARRIES — it is the CALLER'S BELIEF
+// ABOUT WHICH SHELF WALL IS ON THE SCREEN, and the server refuses when the two disagree. Without
+// it a client holding an asset id of a different card — a stale list, a second tab, a card
+// switched under an open panel — deleted somebody else's row and, by ON DELETE CASCADE, every mark
+// that row had left on their flats, with no error and nothing on either screen to notice it by.
+// Every other verb of this band already states the card for exactly this reason;
+// SetDesignAssetPlacement states it two messages down.
 message DeleteDesignAssetRequest {
   int32 asset_id = 1;
+  int32 tech_card_id = 2; // required: the card whose shelf this row is being removed from
 }
 
 message DeleteDesignAssetResponse {
@@ -12097,8 +12113,12 @@ message SetDesignAssetPlacementResponse {
   common.DesignAssetPlacement placement = 1;
 }
 
+// DeleteDesignAssetPlacementRequest names BOTH the mark and the card it is being taken off.
+// See DeleteDesignAssetRequest for why the card is stated; the scoping runs THROUGH the asset,
+// since a placement row deliberately carries no tech_card_id.
 message DeleteDesignAssetPlacementRequest {
   int32 placement_id = 1;
+  int32 tech_card_id = 2; // required: the card whose flat this mark is being taken off
 }
 
 message DeleteDesignAssetPlacementResponse {}

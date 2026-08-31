@@ -1288,3 +1288,62 @@ func TestImportDesignVectorRefusesBeforeTheStore(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
+
+// ─────────────────── РЕРАН ЧЕРЕЗ РОД ───────────────────
+
+// ПОВТОРИТЬ МОЖНО ТОЛЬКО ПРОГОН СВОЕГО РОДА.
+//
+// ЧТО БЫЛО. Родитель проверялся на принадлежность карточке и на «не текстовый» — и ни разу на
+// СОВПАДЕНИЕ РОДА. А входы родителя копируются ДОСЛОВНО (designRunInputs: «из сегодняшнего
+// состояния карточки берётся ноль полей»), и в снимке слота рода нет вовсе: `DesignInputSlot`
+// несёт вид и media_id, но не говорит, флэт это или плита рендера.
+//
+// ЧЕМ ЭТО КОНЧАЛОСЬ. `StartDesignRun(kind=threed, rerun_of_run_id=R)`, где R — рендер-прогон:
+// вызов принимался, ФЛЭТЫ R копировались в снимок нового прогона, и фильтр 3D (threedPictures)
+// честно узнавал в них «плиты этого прогона» — потому что для него они ими и стали. К провайдеру
+// уезжали технические чертежи вместо четырёх видов готовой вещи, поворотный стол строился по ним,
+// прогон закрывался `done`. Это тот же V-14, зашедший с другой стороны: там вход считали два
+// писателя, здесь его подменяет род.
+//
+// ⚠ ОТКАЗ СТОИТ У ДВЕРИ, А НЕ В ВОРКЕРЕ, потому что StartRun РЕЗЕРВИРУЕТ ДЕНЬГИ: отказ после
+// резерва стоил бы дню оплаченной строки. Тот же довод, по которому здесь стоят ворота W-13.
+func TestDesignRerunRefusesAParentOfAnotherKind(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	rig.design.EXPECT().GetRun(mock.Anything, 12).Return(&entity.DesignRun{
+		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindRender,
+		// Замороженные слоты рендер-прогона — ФЛЭТЫ, из которых рендер и делали.
+		Inputs: entity.RawJSON(`{"slots":[{"view_key":"front","media_id":501}]}`),
+	}, nil).Once()
+
+	req := designStartRequest(entity.DesignRunKindThreed)
+	req.RerunOfRunId = 12
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.Error(t, err, "3D не повторяет рендер: у них разные входы и разный смысл слова «плита»")
+	code, _ := errorReason(t, err)
+	require.Equal(t, codes.InvalidArgument, code)
+	require.Contains(t, err.Error(), "render")
+	require.Nil(t, rig.sent, "отказ обязан прийти ДО резерва денег")
+}
+
+// ...И ПОВТОР СВОЕГО РОДА ПО-ПРЕЖНЕМУ РАБОТАЕТ.
+//
+// Без этой половины предыдущая проба зеленела бы и на «запретить реран вовсе», то есть на починке,
+// которая убивает саму функцию.
+func TestDesignRerunOfTheSameKindStillRepeatsIt(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	rig.design.EXPECT().GetRun(mock.Anything, 12).Return(&entity.DesignRun{
+		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindThreed,
+		Inputs: entity.RawJSON(`{"slots":[{"view_key":"front","media_id":601}]}`),
+	}, nil).Once()
+
+	req := designStartRequest(entity.DesignRunKindThreed)
+	req.RerunOfRunId = 12
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent)
+	snap := &pb_common.DesignInputSnapshot{}
+	require.NoError(t, designUnmarshalJSON(rig.sent.Inputs, snap))
+	require.Len(t, snap.GetSlots(), 1)
+	require.Equal(t, int32(601), snap.GetSlots()[0].GetMediaId(),
+		"повторение обязано послать модели ТО ЖЕ САМОЕ: плиты родителя, а не сегодняшний верстак")
+}

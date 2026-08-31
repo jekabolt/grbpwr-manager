@@ -90,6 +90,25 @@ const (
 	// words, rather than left for the model to resolve differently on every run.
 	renderClothNoInvention = "Change cloth only where this list says the cloth changes. Where it does not, the garment is ONE cloth throughout: no extra panel, block, yoke, trim, binding, facing, cuff or collar in a cloth of its own, no cloth beyond the ones listed here, and no colour or pattern on a part that was not given one. Every cloth on this list, with its own colour and its own pattern, IS called for: the exclusion of colours and patterns stated further down removes only what this list does not name."
 
+	// THE SAME PROHIBITION WHEN NOBODY MARKED A PART, AND IT HAS TO BE A SECOND SENTENCE RATHER
+	// THAN THE ONE ABOVE.
+	//
+	// ⚠ THE SENTENCE ABOVE CONTRADICTS THE HEADING IN THIS ONE CASE, AND ONLY IN THIS ONE. It is
+	// conditional on the list — «change cloth only where THIS LIST says the cloth changes» — and a
+	// list in which no cloth names a part says it NOWHERE. Read together with the heading three
+	// lines above it («the division is yours to make. Use every cloth on this list»), the pair
+	// tells the model to use both cloths and forbids every place the second one could begin. Two
+	// of our own sentences commanding opposite things is the worst thing this file can contain:
+	// the model obeys whichever it prefers, and prefers a different one on every run — the
+	// run-to-run lottery the whole craft block exists to remove.
+	//
+	// WHAT IS DROPPED IS ONLY THE CLAUSE THAT FROZE THE GARMENT INTO ONE CLOTH. What survives is
+	// the half that is still true and still load-bearing — nothing beyond this list — because that
+	// half is what stops two cloths from becoming a contrast collar, a contrast placket and a
+	// contrast pocket flap, and it is what settles the collision with renderExcluded that this
+	// block cannot edit.
+	renderClothNoInventionUnmarked = "Beyond the division you make yourself, invent nothing: no cloth that is not on this list, no extra panel, block, yoke, trim, binding, facing, cuff or collar in a cloth of its own, and no colour or pattern anywhere on this garment that this list does not name. Every cloth on this list, with its own colour and its own pattern, IS called for: the exclusion of colours and patterns stated further down removes only what this list does not name."
+
 	// WHAT THE PARAGRAPH AFTER THE LIST IS ABOUT, once there is more than one cloth. The `colour`
 	// block, the `fabric in words` block and the order of authority all speak about ONE cloth —
 	// the first — because that is what the contract makes them carry (DesignColourRecipe:
@@ -310,9 +329,14 @@ func renderClothLines(cloths []fabricUse, attached []refCaption) []string {
 		}
 	}
 
-	rule := renderClothPartsUnmarked
+	// ⚠ ОБА ПРАВИЛА ВЫБИРАЮТСЯ ОДНИМ И ТЕМ ЖЕ ПРИЗНАКОМ, И ЭТО НЕСУЩЕЕ. Заголовок и закрывающий
+	// запрет — две половины ОДНОГО высказывания о том, где ткань меняется. Пока признак у них был
+	// один, а закрывающий запрет — безусловный, размеченный вариант заголовка стоял рядом с
+	// правилом, которое ему подходит, а неразмеченный — рядом с правилом, которое ему прямо
+	// противоречит (см. renderClothNoInventionUnmarked).
+	rule, closing := renderClothPartsUnmarked, renderClothNoInventionUnmarked
 	if anyParts {
-		rule = renderClothPartsRule
+		rule, closing = renderClothPartsRule, renderClothNoInvention
 	}
 	lines := []string{
 		"The cloths of this garment. This garment is made of " + countWord(len(cloths)) +
@@ -322,7 +346,7 @@ func renderClothLines(cloths []fabricUse, attached []refCaption) []string {
 	for i, c := range cloths {
 		lines = append(lines, renderClothLine(i+1, c, attached, anyParts))
 	}
-	return append(lines, renderClothNoInvention)
+	return append(lines, closing)
 }
 
 // renderClothLine is ONE cloth: what to call it, which picture carries it, what colour it is, what

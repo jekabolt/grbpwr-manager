@@ -311,3 +311,44 @@ func TestSeveralClothsNeverClaimTheRunStatedNoFabric(t *testing.T) {
 	require.NotContains(t, got, renderClothFirstIsTheScalar,
 		"there is no paragraph below to narrow, so the sentence that narrows it points at nothing")
 }
+
+// TestUnmarkedClothsAreNotAlsoOrderedToBeOneCloth — ДВЕ СОБСТВЕННЫЕ ФРАЗЫ ПРОМПТА, ТРЕБУЮЩИЕ
+// ПРОТИВОПОЛОЖНОГО, И ЭТО ХУДШЕЕ, ЧТО В ПРОМПТЕ БЫВАЕТ.
+//
+// Заголовок незамеченного случая говорит «деление за тобой, ИСПОЛЬЗУЙ КАЖДУЮ ткань». Закрывающее
+// правило говорило безусловно: «меняй ткань только там, где СПИСОК говорит, что она меняется; где
+// не говорит — вся вещь ОДНА ткань». Но список, в котором ни одна ткань не назвала части, не
+// говорит этого НИГДЕ, — то есть второе предложение читается как «используй одну ткань» ровно там,
+// где первое сказало «используй все». Модель подчиняется той половине, которая ей ближе, и
+// подчиняется РАЗНОЙ на каждом прогоне: это и есть лотерея, ради устранения которой написан весь
+// файл.
+//
+// ⚠ ЗАПРЕТ НЕ СНЯТ, СНЯТА ТОЛЬКО ЕГО ПРОТИВОРЕЧИВАЯ ПОЛОВИНА. Половина «ничего сверх этого списка»
+// и есть то, что удерживает две ткани от превращения в контрастный воротник, контрастную планку и
+// контрастный клапан кармана, поэтому она обязана звучать и здесь.
+func TestUnmarkedClothsAreNotAlsoOrderedToBeOneCloth(t *testing.T) {
+	got := renderPrompt(t,
+		`{"views":["front","back"],"layout":"one","colour":{"hex":"#b1121a","fabric_media_id":9,"fabrics":[`+
+			`{"name":"main jersey","media_id":9,"colour_hex":"#b1121a"},`+
+			`{"name":"contrast rib","colour_hex":"#1b2a4a"}]}}`,
+		renderSlots)
+
+	require.Contains(t, got, renderClothPartsUnmarked, "просьба использовать обе ткани стоит на месте")
+	require.NotContains(t, got, "the garment is ONE cloth throughout",
+		"промпт, требующий двух тканей, не может тут же запретить всякое место, где вторая начинается")
+	require.NotContains(t, got, renderClothNoInvention,
+		"безусловное закрывающее правило написано для размеченного случая и только для него")
+	require.Contains(t, got, renderClothNoInventionUnmarked,
+		"запрет на выдумывание ТРЕТЬЕЙ ткани обязан остаться: без него две ткани становятся четырьмя")
+}
+
+// TestMarkedClothsKeepTheUnconditionalProhibition — ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ, без которого проба
+// выше зеленела бы и от «выбросить закрывающее правило совсем».
+//
+// Там, где части названы, список ДЕЙСТВИТЕЛЬНО говорит, где ткань меняется, и «в остальном вся
+// вещь одна ткань» — не противоречие, а самая нужная фраза во всём блоке.
+func TestMarkedClothsKeepTheUnconditionalProhibition(t *testing.T) {
+	got := renderPrompt(t, twoCloths, renderSlots)
+	require.Contains(t, got, renderClothNoInvention)
+	require.NotContains(t, got, renderClothNoInventionUnmarked)
+}
