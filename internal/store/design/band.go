@@ -31,6 +31,18 @@ const (
 	// открывать им 3D значило бы обещать дверь, за которую сервер откажет.
 	designCountFabricRenders = `SELECT COUNT(*) FROM design_picture
 		WHERE tech_card_id = :card AND kind = 'render' AND hidden_at IS NULL`
+	// designListLayers — ПРОЕКЦИЯ СЛОЁВ ДЛЯ ПОЛОСЫ, И ОНА ИМЕНОВАННАЯ, ПОЭТОМУ КАЖДАЯ НОВАЯ
+	// КОЛОНКА ПОПАДАЕТ СЮДА РУКАМИ. Пропуск не падает и ничего не логирует — полоса просто
+	// сервирует поле нулём, и это ровно та форма, которую читают экраны: три колонки 0350 без
+	// строки здесь сделали бы каждый слой «drawn» без файла за ним, а `raster_media_id` (0355) —
+	// каждый закрашенный слой неотличимым от пустого до открытия редактора.
+	//
+	// `strokes` ЗДЕСЬ НЕТ НАМЕРЕННО, и это не противоречие: 512 KB на слой, слоёв на карточке
+	// несколько, и список миниатюр не обязан возить их все. Растр — голый id, а не килобайты.
+	designListLayers = `
+		SELECT id, tech_card_id, base_media_id, rev, origin, source_media_id,
+		       source_picture_id, raster_media_id, updated_by, updated_at
+		FROM design_edit_layer WHERE tech_card_id = :card ORDER BY id`
 )
 
 // GetBand reads the whole band in ONE read transaction.
@@ -95,11 +107,14 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		// three of 0350 are here for that reason. A projection that omits `origin` and its two
 		// source ids does not fail — the band simply serves every layer as `drawn` with no file
 		// behind it, which is precisely the shape the mixed-provenance warning reads.
-		if band.Layers, err = storeutil.QueryListNamed[entity.DesignEditLayer](ctx, db, `
-			SELECT id, tech_card_id, base_media_id, rev, origin, source_media_id,
-			       source_picture_id, updated_by, updated_at
-			FROM design_edit_layer WHERE tech_card_id = :card ORDER BY id`,
-			map[string]any{"card": cardID}); err != nil {
+		//
+		// `raster_media_id` (0355) IS HERE AND `strokes` IS STILL NOT, and the two are not an
+		// inconsistency: strokes are up to 512 KB per layer, the raster is a bare id. Omitting it
+		// would not fail either — the band would simply serve every painted layer as unpainted, so
+		// the tab could not tell a canvas with brushwork on it from an empty one until the editor
+		// was opened.
+		if band.Layers, err = storeutil.QueryListNamed[entity.DesignEditLayer](ctx, db,
+			designListLayers, map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to list design edit layers: %w", err)
 		}
 

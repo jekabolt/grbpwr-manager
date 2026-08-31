@@ -38,12 +38,29 @@ func (s *Store) GetEditLayer(ctx context.Context, cardID, layerID int) (*entity.
 	return &out, nil
 }
 
-// SaveEditLayer stores a vector layer under compare-and-set on its rev. layer_id = 0 creates one;
+// SaveEditLayer stores a layer under compare-and-set on its rev. layer_id = 0 creates one;
 // with base_media_id = 0 that is the clean vector base of the «draw it» door, and a card may hold
 // several of those — uq_design_edit_layer_base tolerates repeated NULLs.
 //
 // CAS IS NOT MADE REDUNDANT BY SERIALIZABLE. The isolation level orders two writers; it cannot
 // tell that the second one was looking at r3 while r4 already existed.
+//
+// ⚠ IT WRITES BOTH CHANNELS OF THE LAYER (0355) UNDER ONE COMPARE-AND-SET. Since the layer grew a
+// pixel channel, `strokes` and `raster_media_id` move together under the same `rev = :expected`
+// predicate. That is X-9's «the revision must not drift between the two channels»: losing a
+// person's brushwork to a stale writer is exactly as expensive as losing their strokes.
+//
+// ⚠ WHAT ACTUALLY CARRIES THAT GUARANTEE IS THE TRANSACTION, NOT THE COUNT OF STATEMENTS, and the
+// difference was MEASURED rather than assumed. A raster written by a SECOND statement inside this
+// same closure is redundant but harmless: a CAS miss returns an error, the closure rolls back, and
+// the stray write goes with it — the probe stays green under exactly that mutation, correctly. The
+// hazard is a raster written under a SECOND VERB (its own transaction, no expected_rev), and there
+// the probe goes red: the stale writer's pixels commit, the strokes are refused, and the person
+// whose painting was overwritten learns it from the picture rather than from a refusal.
+//
+// So the rule this function keeps is: THE PIXELS NEVER MOVE OUTSIDE THIS TRANSACTION, and every
+// refusal inside it is an error rather than a quiet `return nil`. A second rev column would break
+// it the same way a second verb does.
 func (s *Store) SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSave) (*entity.DesignEditLayer, error) {
 	if err := requireCard(req.TechCardId); err != nil {
 		return nil, err
@@ -52,20 +69,59 @@ func (s *Store) SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSav
 		return nil, fmt.Errorf("%w: %d bytes of strokes, the ceiling is %d",
 			entity.ErrDesignStrokesTooLarge, len(req.Strokes), MaxStrokesBytes)
 	}
+	// NAMING A RASTER AND ASKING TO CLEAR ONE IS A CONTRADICTION, not a precedence puzzle. Picking
+	// a winner would make one half of the request silently unread, and the half that loses is the
+	// half somebody's editor believed it had sent.
+	if req.RasterMediaId > 0 && req.ClearRaster {
+		return nil, fmt.Errorf("%w: a save cannot both set raster media %d and clear the raster",
+			entity.ErrDesignInvalidArgument, req.RasterMediaId)
+	}
 	var out entity.DesignEditLayer
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+
+		// ─── ГРАНИЦА КАРТОЧКИ ДЛЯ ПИКСЕЛЬНОГО КАНАЛА ───
+		//
+		// ⚠ ГЕЙТ ОТВЕЧАЕТ ОШИБКОЙ, А НЕ `return nil`, И ЭТО НЕ МЕЛОЧЬ. Ранний выход из этого
+		// замыкания оставил бы `out` нулевым, а вызывающий вернул бы «слой» с нулевым id как
+		// успех — тот самый дефект, который вчера нашёлся в соседней функции пакета.
+		//
+		// ПОЧЕМУ ПРОВЕРКА ВООБЩЕ НУЖНА. Растр отдаётся клиенту как ссылка и рисуется им на
+		// холсте: непроверенное поле означает, что слой карточки A показывает и сплющивает
+		// картинку карточки B — дословно та же беда, которую ImportVector закрыл для
+		// source_media_id и base_media_id. Правило ОТРИЦАТЕЛЬНОЕ («не принадлежит чужой
+		// карточке»), поэтому свежезагруженный ничейный PNG — обычный случай — проходит одним
+		// чтением; см. шапку refuseForeignMedia.
+		//
+		// СУЩЕСТВОВАНИЕ СПРАШИВАЕТСЯ ЗДЕСЬ, А НЕ У ВНЕШНЕГО КЛЮЧА: 1452 назвал бы человеку имя
+		// ограничения, а этот отказ называет id, который он прислал.
+		if req.RasterMediaId > 0 {
+			media, err := resolveMediaIDs(ctx, rep, []int{req.RasterMediaId})
+			if err != nil {
+				return fmt.Errorf("failed to resolve the raster media of the layer: %w", err)
+			}
+			if _, ok := media[req.RasterMediaId]; !ok {
+				return fmt.Errorf("%w: media %d does not exist",
+					entity.ErrDesignInvalidArgument, req.RasterMediaId)
+			}
+			if err := refuseForeignMedia(ctx, db, req.TechCardId, req.RasterMediaId); err != nil {
+				return err
+			}
+		}
+
 		if req.LayerId == 0 {
 			if req.ExpectedRev != 0 {
 				return fmt.Errorf("%w: a layer that does not exist yet is at rev 0",
 					entity.ErrDesignLayerRevMismatch)
 			}
 			id, err := storeutil.ExecNamedLastId(ctx, db, `
-				INSERT INTO design_edit_layer (tech_card_id, base_media_id, rev, strokes, updated_by)
-				VALUES (:card, :base, 1, :strokes, :who)`,
+				INSERT INTO design_edit_layer
+					(tech_card_id, base_media_id, rev, strokes, raster_media_id, updated_by)
+				VALUES (:card, :base, 1, :strokes, :raster, :who)`,
 				map[string]any{
 					"card": req.TechCardId, "base": nullInt(req.BaseMediaId),
-					"strokes": jsonOrNil(req.Strokes), "who": req.Actor,
+					"strokes": jsonOrNil(req.Strokes), "raster": nullInt(req.RasterMediaId),
+					"who": req.Actor,
 				})
 			if err != nil {
 				// uq_design_edit_layer_base means a layer over THIS base already exists on this
@@ -90,14 +146,20 @@ func (s *Store) SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSav
 			return fmt.Errorf("%w: layer %d belongs to tech card %d",
 				entity.ErrDesignNotFound, req.LayerId, before.TechCardId)
 		}
-		n, err := storeutil.ExecNamedRows(ctx, db, `
-			UPDATE design_edit_layer
-			SET strokes = :strokes, rev = rev + 1, updated_by = :who
-			WHERE id = :id AND rev = :expected`,
-			map[string]any{
-				"strokes": jsonOrNil(req.Strokes), "who": req.Actor,
-				"id": req.LayerId, "expected": req.ExpectedRev,
-			})
+		// THE RASTER JOINS THE SET LIST ONLY WHEN THE REQUEST SAID SOMETHING ABOUT IT, and that is
+		// how «silence keeps» is implemented — by never writing the column, rather than by reading
+		// the old value and writing it back. A read-modify-write would be correct under this
+		// transaction too, but it would put a second reader of the same fact into the function and
+		// make the guarantee depend on that reader staying in step.
+		rasterStated := req.RasterMediaId > 0 || req.ClearRaster
+		args := map[string]any{
+			"strokes": jsonOrNil(req.Strokes), "who": req.Actor,
+			"id": req.LayerId, "expected": req.ExpectedRev,
+		}
+		if rasterStated {
+			args["raster"] = nullInt(req.RasterMediaId)
+		}
+		n, err := storeutil.ExecNamedRows(ctx, db, layerSaveUpdate(rasterStated), args)
 		if err != nil {
 			return fmt.Errorf("failed to save design edit layer %d: %w", req.LayerId, err)
 		}
@@ -340,6 +402,55 @@ func designFlattenSourceClass(origin string, hasParent bool) string {
 	}
 }
 
+// layerSaveUpdate — ОДИН ОПЕРАТОР НА ОБА КАНАЛА СЛОЯ, ПОД ОДНИМ ПРЕДИКАТОМ CAS.
+//
+// Пиксели присваиваются В ТОМ ЖЕ `UPDATE … WHERE rev = :expected`, что и штрихи, поэтому
+// устаревший писатель теряет ОБА канала либо ни одного.
+//
+// ⚠ ЧЕСТНО ПРО СИЛУ ЭТОЙ ФОРМЫ, ПОТОМУ ЧТО ОНА ЗАМЕРЕНА. Один оператор здесь — это ЯСНОСТЬ, а не
+// сам замок: замок — транзакция. Растр, вынесенный во второй оператор ВНУТРИ того же замыкания,
+// откатился бы вместе с промахом CAS, и проба на это (правильно) не краснеет. Краснеет она на том,
+// что действительно опасно, — на растре, уехавшем во ВТОРОЙ ГЛАГОЛ со своей транзакцией и без
+// expected_rev. Формулировать «мутация — второй оператор» значило бы держать в коде довод,
+// который проба не подтверждает.
+//
+// ПУСТОЙ ХВОСТ ЗНАЧИТ «ПРО РАСТР НИЧЕГО НЕ СКАЗАНО»: колонка не пишется вовсе, поэтому хранимое
+// переживает сохранение, тронувшее одни штрихи. Клиент, приславший растр или явную очистку, попадает
+// в первую ветку, и nullInt превращает ноль в NULL — то есть «очистить» и «не задано» на проводе
+// различает флаг, а в SQL — присутствие самого присваивания.
+func layerSaveUpdate(rasterStated bool) string {
+	raster := ""
+	if rasterStated {
+		raster = ", raster_media_id = :raster"
+	}
+	return `
+		UPDATE design_edit_layer
+		SET strokes = :strokes` + raster + `, rev = rev + 1, updated_by = :who
+		WHERE id = :id AND rev = :expected`
+}
+
+// designLayerIsEmpty — «СПЛЮЩИВАТЬ НЕЧЕГО», И ЭТО ТЕПЕРЬ ВОПРОС ПРО ДВА КАНАЛА, А НЕ ПРО ОДИН.
+//
+// ЧТО БЫЛО И ПОЧЕМУ ЭТО СЛОМАЛОСЬ БЫ МОЛЧА. Гейт флэттена звучал «нет штрихов — пусто», и до 0355
+// это было верно тождественно: штрихи были ЕДИНСТВЕННЫМ каналом слоя. С появлением пикселей то же
+// условие стало ложью ровно про тот случай, ради которого круг 6 и затевался: человек взял кисть,
+// закрасил, стёр ластиком дырку в фотографии, пера не касался — и получил бы FailedPrecondition
+// «у слоя нет штрихов» на полностью законченной работе. Отказ был бы не косметическим: сплющивание
+// — единственная дверь, через которую правка попадает в полосу как картинка.
+//
+// ОБРАТНОЕ ТОЖЕ ДЕРЖИТСЯ: слой с одними штрихами и без растра сплющивается как и раньше.
+//
+// ПУСТАЯ КОЛОНКА JSON У MySQL ТРЁХЛИКА — отсутствие, литерал `null` и пустой массив, — и все три
+// значат одно; проверка перечисляет их явно, потому что ни одна из трёх форм не сводится к другой
+// на стороне драйвера.
+func designLayerIsEmpty(l entity.DesignEditLayer) bool {
+	if l.RasterMediaId.Valid && l.RasterMediaId.Int32 > 0 {
+		return false
+	}
+	s := string(l.Strokes)
+	return len(l.Strokes) == 0 || s == "null" || s == "[]"
+}
+
 // FlattenEditLayer files an ALREADY-RASTERISED image as a picture of the band, carrying
 // derived_from, source_class and layer_rev. The server does not rasterise (Р-2): the client
 // produced the raster from base + layer and uploaded it, and the server records the provenance.
@@ -372,8 +483,9 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 			return fmt.Errorf("%w: layer is at rev %d, %d was echoed",
 				entity.ErrDesignLayerRevMismatch, layer.Rev, req.ExpectedRev)
 		}
-		if len(layer.Strokes) == 0 || string(layer.Strokes) == "null" || string(layer.Strokes) == "[]" {
-			return fmt.Errorf("%w: layer %d has no strokes", entity.ErrDesignEmptyLayer, req.LayerId)
+		if designLayerIsEmpty(layer) {
+			return fmt.Errorf("%w: layer %d holds neither pixels nor strokes",
+				entity.ErrDesignEmptyLayer, req.LayerId)
 		}
 
 		// The base picture, when the layer has one, is both the derivation parent and the row the

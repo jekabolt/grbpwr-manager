@@ -2792,7 +2792,13 @@ service AdminService {
   // `base_media_id = 0` gives birth to a CLEAN VECTOR BASE — the `draw it` door out of an empty
   // studio, which has no picture underneath it at all.
   //
-  // Aborted: layer_rev_mismatch {current_rev}. InvalidArgument: strokes_too_large (> 512 KB).
+  // IT CARRIES BOTH CHANNELS OF THE LAYER — the vector `strokes` and the pixel `raster_media_id`
+  // — under ONE compare-and-set, because they are one layer. Saving pixels over somebody else's
+  // revision loses exactly as much work as saving strokes over it.
+  //
+  // Aborted: layer_rev_mismatch {current_rev}. InvalidArgument: strokes_too_large (> 512 KB), a
+  // raster_media_id that does not exist or belongs to another tech card, or a request that both
+  // names a raster and asks to clear one.
   rpc SaveDesignEditLayer(SaveDesignEditLayerRequest) returns (SaveDesignEditLayerResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/layer"
@@ -2808,6 +2814,16 @@ service AdminService {
   // format, so the only place that can turn them into pixels honestly is the canvas that drew them.
   // The client uploads the raster through UploadContentImage (preserve_original) and passes its
   // media_id here.
+  //
+  // ⚠ THE COMPOSITE IS RASTER FIRST, STROKES ON TOP. Since the layer grew a pixel channel
+  // (DesignEditLayer.raster_media_id) the client MUST draw raster_media_id — or, when the layer has
+  // none, the base — and then the vector strokes over it. Flattening only the strokes would file a
+  // picture with the brushwork missing; flattening only the raster would drop the drawing.
+  //
+  // A LAYER WITH PIXELS AND NO STROKES IS FLATTENABLE. `empty_layer` used to mean «no strokes»,
+  // which was the only way to be empty when strokes were the only channel. It now means «neither
+  // channel holds anything» — a layer that was painted with the brush and never touched with the
+  // pen is a finished piece of work, and refusing it would refuse the very editor this wave added.
   //
   // expected_rev IS STILL REQUIRED, and for exactly the reason it always was: it names the revision
   // the person actually looked at. Without it a colleague saves r4 while somebody who last saw r3
@@ -11964,8 +11980,33 @@ message SaveDesignEditLayerRequest {
   int32 tech_card_id = 1;
   int32 layer_id = 2; // 0 = create; with base_media_id 0 this is the clean vector base
   int32 base_media_id = 3; // FK media(id); 0 = no raster underneath. Ignored when layer_id != 0
-  int32 expected_rev = 4; // CAS; 0 on create. Mismatch → Aborted:layer_rev_mismatch {current_rev}
+  // CAS; 0 on create. Mismatch → Aborted:layer_rev_mismatch {current_rev}.
+  //
+  // IT COVERS BOTH CHANNELS OF THE LAYER. Pixels and strokes are two channels of ONE layer, they
+  // live on one row and move under one rev: saving pixels over somebody else's revision is the
+  // same loss of work as saving strokes over it, and the same refusal answers both.
+  int32 expected_rev = 4;
   bytes strokes = 5; // JSON-encoded strokes, at most 512 KB → InvalidArgument:strokes_too_large
+  // FK media(id): the layer's PIXEL CHANNEL — one RGBA image holding the full state of its pixels
+  // (see common.DesignEditLayer.raster_media_id). The client painted it and uploaded it through
+  // UploadContentImage; the server records the reference.
+  //
+  // ⚠ THREE STATES, AND SILENCE IS «KEEP», NOT «CLEAR».
+  //
+  //   raster_media_id > 0                    → this is the new pixel state
+  //   raster_media_id = 0, clear_raster = 0  → NOTHING IS SAID; whatever is stored survives
+  //   raster_media_id = 0, clear_raster = 1  → drop the pixel channel, back to pure vector
+  //
+  // The asymmetry with SetDesignReferenceRole.note is deliberate and it is the SAME rule that verb
+  // states: empty TEXT is a real answer, so a blank note clears it; a media reference is an
+  // EXISTENCE, so a blank one is a destruction and must be said out loud. Were absence to mean
+  // «clear», a stroke-only autosave — or a stale tab running yesterday's bundle — would silently
+  // delete a person's painting, which is the one outcome the CAS on this row exists to prevent.
+  //
+  // Sending both a media id and clear_raster is a contradiction, not a precedence puzzle:
+  // InvalidArgument.
+  int32 raster_media_id = 6;
+  bool clear_raster = 7;
 }
 
 message SaveDesignEditLayerResponse {

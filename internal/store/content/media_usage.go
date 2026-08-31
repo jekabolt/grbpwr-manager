@@ -63,7 +63,8 @@ type mediaRefSource struct {
 }
 
 // mediaRefRegistry lists every live foreign key into media(id), verified against both the
-// migration history and the deployed schema (23 columns as of 0354).
+// migration history and the deployed schema (22 columns as of 0355 — the count is the length of
+// this slice, and TestMediaUsageRegistryCoversSchema is what keeps it equal to the live one).
 var mediaRefRegistry = []mediaRefSource{
 	// product — the colourway. Four different columns point at media from this one table.
 	{
@@ -230,6 +231,26 @@ var mediaRefRegistry = []mediaRefSource{
 		joins:      `JOIN tech_card tc ON tc.id = del.tech_card_id`,
 		entityExpr: "del.id", labelExpr: techCardLabel, slot: "vector source",
 	},
+	{
+		// THE PIXEL CHANNEL of an edit layer (0355) — a THIRD independent column into media(id) on
+		// the same table, and the one holding the most irreplaceable thing of the three.
+		//
+		// base_media_id is what the person drew OVER; source_media_id is where the vector CAME
+		// FROM; this is the painting itself — one RGBA image carrying the full state of the
+		// layer's pixels, brush strokes and eraser holes included. It is not derived from anything
+		// and cannot be rebuilt: unlike strokes, pixels keep no second set of coordinates.
+		//
+		// ON DELETE RESTRICT, so registration is not politeness. Unregistered, GetMediaUsage — and
+		// therefore DeleteMediaByIdIfUnused, which asks it — would call the file free, offer the
+		// delete, and hand the operator a raw foreign-key error naming a table they have never
+		// heard of, for a file that is somebody's unfinished artwork.
+		//
+		// A NULL raster (nothing painted yet) never matches the IN (...) predicate, which is
+		// exactly right: there is no media to report.
+		kind: "design_edit_layer", table: "design_edit_layer del", column: "del.raster_media_id",
+		joins:      `JOIN tech_card tc ON tc.id = del.tech_card_id`,
+		entityExpr: "del.id", labelExpr: techCardLabel, slot: "edit layer pixels",
+	},
 
 	{
 		// A SHELF ROW OF THE CARD — a cloth, a pattern tile or a piece of hardware (0354). The
@@ -278,20 +299,55 @@ const fittingLabel = `CONCAT_WS(' ', COALESCE(NULLIF(tc.name, ''), NULLIF(tc.sty
 // label and slot are wrapped in COALESCE(..., ”) so a NULL from any join can never break the
 // scan into a non-nullable Go string — a missing translation must degrade to a blank name, not
 // to a failed RPC over the whole page.
+//
+// Both are ALSO wrapped in CAST(... AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci —
+// the same idiom already used in internal/store/accounting (reconcile.go, periods.go,
+// vatreturn.go) to pin a comparison's collation. It is load-bearing here, not defensive: the
+// registry's tables were declared under three different collation policies across five years of
+// migrations — bare (no CHARSET/COLLATE at all, so the column inherits whatever the server's
+// default collation was on the day the table was created: product, product_translation, archive,
+// model, tech_card, tech_card_media, tech_card_detail, ...), CHARSET-only (DEFAULT CHARSET=utf8mb4
+// with no COLLATE — material, task; this resolves to utf8mb4's own fixed default collation for
+// the running MySQL version, NOT the server default, so it does not move when the server's does),
+// and fully explicit utf8mb4_unicode_ci (the design-band tables added by 0340+: design_picture,
+// design_asset). label mixes the first two classes (tech_card vs material/task); slot mixes the
+// first and third (tech_card_media/tech_card_detail vs design_picture/design_asset). Whenever two
+// UNION branches land same-charset-different-collation columns in the same output position,
+// MySQL refuses instead of picking one: Error 1271 "Illegal mix of collations for operation
+// 'UNION'". Verified against the real query on a stock MySQL 8.0 container
+// (utf8mb4_0900_ai_ci, mysql:8.0's own default) — GetMediaUsage fails on exactly this.
+//
+// prod and beta happen to survive today only because their bare-class tables sit on a legacy
+// utf8mb3 server default: a utf8mb3-vs-utf8mb4 clash is a DIFFERENT character set, and MySQL
+// widens the narrower operand instead of refusing — the same rescue this codebase already leans
+// on elsewhere (0220, 0306, 0314). That is an accident of the server's current setting, not a
+// guarantee this query can keep relying on: it is why every stock dev/CI MySQL 8 container fails
+// where prod does not, and prod itself would start failing the moment its server default ever
+// moved off utf8mb3 (a very plausible future — utf8mb3 is the legacy MySQL 5.x default, not
+// something anyone would choose fresh on MySQL 8). CAST + COLLATE gives every branch's label/slot
+// the SAME collation at coercibility 0 (an explicit COLLATE clause — the strongest, it always
+// wins), so the query's correctness stops depending on which server it happens to run against.
+// utf8mb4_unicode_ci, not utf8mb4_0900_ai_ci, matches what the newest (explicit) tables in the
+// registry already declare; label/slot are pure display/equality text that nothing here sorts or
+// indexes on, so unicode_ci's weaker, more portable ordering costs nothing.
 func (src mediaRefSource) selectSQL() string {
+	label := "CAST(COALESCE(" + src.labelExpr + ", '') AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci"
+
 	// A constant slot needs no COALESCE; a computed one can go NULL through its joins.
 	slot := "'" + src.slot + "'"
 	if src.slotExpr != "" {
 		slot = "COALESCE(" + src.slotExpr + ", '')"
 	}
+	slot = "CAST(" + slot + " AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci"
+
 	from := src.table
 	if src.joins != "" {
 		from += " " + src.joins
 	}
 	return fmt.Sprintf(
 		"SELECT %s AS media_id, '%s' AS kind, %s AS entity_id, "+
-			"COALESCE(%s, '') AS label, %s AS slot FROM %s WHERE %s IN (:ids)",
-		src.column, src.kind, src.entityExpr, src.labelExpr, slot, from, src.column)
+			"%s AS label, %s AS slot FROM %s WHERE %s IN (:ids)",
+		src.column, src.kind, src.entityExpr, label, slot, from, src.column)
 }
 
 // MediaRefRegistryTargets returns the "table.column" of every reference the registry covers.

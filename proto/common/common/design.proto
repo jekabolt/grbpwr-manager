@@ -723,6 +723,25 @@ message DesignEditLayer {
   // fix run needs in order to feed the raster and the vector as one input rather than two
   // unrelated ones.
   int32 source_picture_id = 10;
+  // FK media(id) RESTRICT: THE PIXEL CHANNEL OF THIS LAYER — one RGBA image holding the FULL state
+  // of its pixels, never a delta. 0 = nothing has been painted; the layer is pure vector.
+  //
+  // WHY FULL STATE AND NOT A DELTA. The eraser chews through the BASE as well (the owner's answer,
+  // verbatim: «И саму фотографию тоже»), so the result is not expressible as «the base plus
+  // something on top» at all — a hole in the photograph is the ALPHA OF THIS IMAGE. That is also
+  // why there is no separate base mask: it would be a second way of stating the same fact, and a
+  // second channel obliged not to drift from the revision.
+  //
+  // ONE PAINT LAYER PER PICTURE — the owner's answer, verbatim: «Один. Как сейчас».
+  //
+  // THE CLIENT PAINTS IT AND UPLOADS IT, exactly as it already does for the flatten: the server
+  // does not rasterise (Р-2), so this arrives as a media id from UploadContentImage. It is served
+  // by GetDesignBand as well as GetDesignEditLayer — unlike `strokes` it is a bare id, not
+  // kilobytes, and the band's thumbnails need to know a layer has been painted.
+  //
+  // THE VECTOR STROKES LIVE ABOVE IT. Pen, curves and seams are a DRAWING and must stay editable;
+  // a flatten is raster first, strokes on top.
+  int32 raster_media_id = 11;
 }
 
 // DesignBudget is the band's money bar: `today $0.41 of $2.00`.

@@ -107,6 +107,13 @@ func TestMediaRefRegistryCoversTheDesignWave(t *testing.T) {
 	for _, owning := range []string{
 		"design_picture.media_id",
 		"design_edit_layer.base_media_id",
+		// THE PIXEL CHANNEL of an edit layer (0355) — one RGBA image holding the full state of the
+		// layer's pixels. It is the most irreplaceable of the three media columns on that table:
+		// the base is what was drawn OVER and the vector source is where the strokes CAME FROM,
+		// but this is the painting itself, and unlike strokes it keeps no second set of
+		// coordinates to be rebuilt from. ON DELETE RESTRICT, so an unregistered entry would have
+		// the library call somebody's unfinished artwork free and then meet a raw foreign key.
+		"design_edit_layer.raster_media_id",
 		// A shelf row of the card (0354). Its media IS the asset — the texture, the pattern tile,
 		// the hardware photograph — and the column is ON DELETE RESTRICT, so an unregistered entry
 		// would let the library call the file free and hand the operator a raw foreign-key error.

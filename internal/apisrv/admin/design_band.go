@@ -439,7 +439,14 @@ func (s *Server) SaveDesignEditLayer(ctx context.Context, req *pb_admin.SaveDesi
 		BaseMediaId: int(req.GetBaseMediaId()),
 		ExpectedRev: int(req.GetExpectedRev()),
 		Strokes:     json.RawMessage(strokes),
-		Actor:       designActor(ctx),
+		// THE PIXEL CHANNEL, WITH ITS THIRD STATE CARRIED THROUGH UNTOUCHED. Silence — neither
+		// field set — must reach the store as «nothing was said», never as «clear»: a stroke-only
+		// autosave or a stale tab would otherwise delete somebody's painting without a word. The
+		// contradiction (both an id and a clear) is refused by the store, in one place, rather
+		// than resolved differently here and there.
+		RasterMediaId: int(req.GetRasterMediaId()),
+		ClearRaster:   req.GetClearRaster(),
+		Actor:         designActor(ctx),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to save the design edit layer", err, nil)
@@ -1198,8 +1205,12 @@ func designLayerToPb(l entity.DesignEditLayer, withStrokes bool) *pb_common.Desi
 		Origin:          entity.DesignLayerOriginOrDrawn(l.Origin),
 		SourceMediaId:   l.SourceMediaId.Int32,
 		SourcePictureId: l.SourcePictureId.Int32,
-		UpdatedBy:       l.UpdatedBy,
-		UpdatedAt:       timestamppb.New(l.UpdatedAt),
+		// THE PIXEL CHANNEL (0355) IS SERVED EVERYWHERE, INCLUDING THE LIST, and that is not an
+		// inconsistency with `strokes` being held back: strokes are up to 512 KB per layer, this is
+		// a bare id. A band that omitted it could not tell a painted canvas from an empty one.
+		RasterMediaId: l.RasterMediaId.Int32,
+		UpdatedBy:     l.UpdatedBy,
+		UpdatedAt:     timestamppb.New(l.UpdatedAt),
 	}
 	if withStrokes {
 		out.Strokes = l.Strokes
