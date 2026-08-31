@@ -2053,6 +2053,22 @@ type (
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)
+		// UpsertAsset writes ONE shelf row of the card — a cloth, a pattern or a piece of
+		// hardware (0354) — creating it when AssetId is 0 and replacing it otherwise. One verb
+		// because the screen has one gesture; a second would be a second place to forget the
+		// ordinal or the parentage.
+		UpsertAsset(ctx context.Context, req entity.DesignAssetUpsert) (*entity.DesignAsset, error)
+		// DeleteAsset removes ONE shelf row and reports how many marks on flats went with it —
+		// counted BEFORE the delete, because the cascade leaves nothing to count afterwards. A
+		// techCardID of 0 addresses the asset by its own id, exactly as DeleteDetailSlot does.
+		DeleteAsset(ctx context.Context, techCardID, assetID int) (int, error)
+		// SetAssetPlacement puts ONE mark on ONE flat, or moves an existing one. Both ends are
+		// checked against the same card in the write transaction: design_asset_placement carries
+		// no tech_card_id, so its two foreign keys can each be satisfied by another style's row.
+		SetAssetPlacement(ctx context.Context, req entity.DesignAssetPlacementSet) (*entity.DesignAssetPlacement, error)
+		// DeleteAssetPlacement takes ONE mark off a flat and leaves the asset on its shelf:
+		// unmarking and removing are different acts.
+		DeleteAssetPlacement(ctx context.Context, techCardID, placementID int) error
 		// --- the generative half: signatures frozen now, bodies next wave --------------
 		StartRun(ctx context.Context, req entity.DesignRunStart) (*entity.DesignRunStarted, error)
 		ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)

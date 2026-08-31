@@ -94,6 +94,20 @@ var designRefusals = []struct {
 	// claim_lost намеренно — «ты опоздал» и «строка закончена» разные новости, и повторять
 	// вторую бессмысленно, в отличие от первой.
 	{entity.ErrDesignRunTerminal, codes.FailedPrecondition, "run_terminal"},
+	// ─── ПОЛКИ АССЕТОВ (0354) ───
+	//
+	// Четыре отказа, и КАЖДЫЙ из них называет своё, потому что действие человека у всех четырёх
+	// разное: выбрать полку, вписать имя, убрать лишнее с полки, снять раппорт с не-паттерна.
+	// Схлопнуть их в общий invalid_argument значило бы отдать клиенту один экран «запрос не
+	// годится» на четыре разные починки.
+	//
+	// ДВА ПЕРВЫХ — InvalidArgument: запрос ЧИНИБЕЛЕН правкой того же запроса. Два последних —
+	// FailedPrecondition: запрос правильный, не годится СОСТОЯНИЕ (полка полна; полка не та,
+	// на которой раппорт имеет смысл), и чинится оно другим жестом, а не редактированием поля.
+	{entity.ErrDesignAssetKindUnknown, codes.InvalidArgument, "asset_kind_unknown"},
+	{entity.ErrDesignAssetNameRequired, codes.InvalidArgument, "asset_name_required"},
+	{entity.ErrDesignAssetTooMany, codes.FailedPrecondition, "asset_too_many"},
+	{entity.ErrDesignAssetNotAPattern, codes.FailedPrecondition, "asset_not_a_pattern"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -189,6 +203,11 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// вычисляющий то же правило по выданной ему странице, ошибался бы ровно на те рендеры,
 		// которые на страницу не попали, то есть на обычной карточке с историей.
 		HasFabricRender: band.HasFabricRender,
+		// ПОЛКИ И ИХ РАЗМЕТКА ЕДУТ ЭТИМ ЖЕ ЧТЕНИЕМ (0354). Убери эти две строки — полоса
+		// по-прежнему отвечает 200, стена полок просто пустеет, а метки на флэтах исчезают:
+		// молчаливая потеря, которую ловит только проба формы ответа.
+		Assets:          designAssetsToPb(band.Assets),
+		AssetPlacements: designAssetPlacementsToPb(band.AssetPlacements),
 	}
 	s.stripDesignCosting(ctx, resp.Runs, resp.Budget)
 	return resp, nil

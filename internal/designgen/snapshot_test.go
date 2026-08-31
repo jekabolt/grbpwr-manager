@@ -76,6 +76,12 @@ func TestMoodboardNeverReachesTheProvider(t *testing.T) {
 // TestBenchPlatesComeFirstAndFrontIsFirstOfThose. Order is meaning on the 3D route: Meshy reads
 // image_urls[0] as the primary frontal reference, so a snapshot that happens to hold the back first
 // would produce a model built the wrong way round.
+//
+// ⚠ РЕФЕРЕНС КАРТОЧКИ (90) БОЛЬШЕ НЕ В ОЖИДАНИИ, И ЭТО НЕ ПОСЛАБЛЕНИЕ ПРОБЫ. Она держит ПОРЯДОК
+// плит, и порядок здесь прежний. Пятого элемента у сборки 3D теперь нет вовсе: Meshy принимает
+// 1..4 картинки и читает КАЖДУЮ как вид одного предмета, поэтому референс настроения там либо
+// убивал прогон отказом по числу, либо сам становился «видом» (V-14, см. threed_inputs.go). Что
+// вход рендера при этом НЕ сузился, держит TestRenderStillCarriesTheCardsReferences.
 func TestBenchPlatesComeFirstAndFrontIsFirstOfThose(t *testing.T) {
 	r := testRun(1, entity.DesignRunKindThreed)
 	r.Inputs = entity.RawJSON(`{
@@ -94,7 +100,6 @@ func TestBenchPlatesComeFirstAndFrontIsFirstOfThose(t *testing.T) {
 		"https://cdn.example/m/2.png",
 		"https://cdn.example/m/3.png",
 		"https://cdn.example/m/4.png",
-		"https://cdn.example/m/90.png",
 	}, job.References)
 }
 

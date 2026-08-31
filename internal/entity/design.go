@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -235,6 +236,57 @@ const (
 	DesignRunCancelled = "cancelled"
 )
 
+// Полки ассетов карточки (0354, V-11): ткани, паттерны, фурнитура.
+//
+// ОДИН СЛОВАРЬ, А НЕ ТРИ ТАБЛИЦЫ — довод целиком лежит в шапке 0354_design_asset.sql и здесь не
+// пересказывается. Читателю Go нужна ровно одна его половина: `kind` говорит, ЧЕМ ассет ЯВЛЯЕТСЯ,
+// и никогда — КАК он получен. Происхождение паттерна это DerivedFromAssetId, отдельное ребро, и
+// потому паттерн, нарисованный моделью, и паттерн, разложенный из загруженного лоскута, — ОДИН
+// род с разной родословной.
+const (
+	DesignAssetKindFabric   = "fabric"
+	DesignAssetKindPattern  = "pattern"
+	DesignAssetKindHardware = "hardware"
+)
+
+// DesignAssetKinds — три полки в том порядке, в каком их называет владелец: ткани, паттерны,
+// фурнитура. Порядок значим ровно настолько, насколько значим порядок полок на стене.
+var DesignAssetKinds = []string{DesignAssetKindFabric, DesignAssetKindPattern, DesignAssetKindHardware}
+
+// IsDesignAssetKind сообщает, известна ли полка.
+//
+// CHECK в схеме намеренно нет — словарь растёт, а поздний `ADD CONSTRAINT ... CHECK` на
+// потолстевшей таблице это КОПИРОВАНИЕ таблицы целиком, у которого захардкожен пятиминутный потолок
+// прогона миграций, то есть остановленный старт прода. Поэтому проверяет Go, и отказ называет
+// значение, а не отдаёт сырой 3819 с именем колонки.
+func IsDesignAssetKind(v string) bool {
+	for _, k := range DesignAssetKinds {
+		if k == v {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxDesignAssetsPerCard — потолок полок одной карточки. Изделие из сорока тканей это не изделие,
+// а именно поэтому полки едут в полосе ЦЕЛИКОМ, без страницы (см. DesignBand.Assets): потолок и
+// есть то, что делает «всё сразу» законным ответом.
+const MaxDesignAssetsPerCard = 40
+
+// Границы двух чисел паттерна и двух текстовых полей ассета.
+//
+// РАППОРТ И ПОВОРОТ — ЧИСЛА, НА КОТОРЫЕ МОДЕЛЬ МОЖЕТ ДЕЙСТВОВАТЬ, в отличие от «крупный» и
+// «мелкий». Два метра это уже не раппорт, а полотно; поворот считается по часовой и замыкается на
+// 360, поэтому 360 запрещён — он и есть 0, записанный вторым способом.
+const (
+	MaxDesignAssetRepeatMm    = 2000
+	MaxDesignAssetRotationDeg = 359
+	// Имя и записка меряются В РУНАХ, а не в байтах: колонки объявлены VARCHAR(60)/VARCHAR(500), а
+	// VARCHAR в MySQL считает символы. Байтовый предел отказал бы кириллице вдвое раньше срока.
+	MaxDesignAssetNameRunes = 60
+	MaxDesignAssetNoteRunes = 500
+)
+
 // ---------------------------------------------------------------------------
 // Отказы полосы
 // ---------------------------------------------------------------------------
@@ -304,6 +356,25 @@ var (
 	// целиком СЕЙЧАС именно для того, чтобы следующий исполнитель добавлял ФАЙЛЫ в пакет, а не
 	// правил шов в dependency.go и store.go повторно.
 	ErrDesignNotImplemented = errors.New("design: not implemented in this wave")
+
+	// ───────────────────────── отказы полок ассетов (0354) ─────────────────────────
+
+	// ErrDesignAssetKindUnknown — полки с таким именем нет. ОТДЕЛЬНО ОТ ErrDesignInvalidArgument,
+	// хотя код на проводе у них один: у клиента здесь есть ЧТО ПОКАЗАТЬ человеку («выберите полку»)
+	// вместо общего «запрос не годится», и различить это он может только по машинному токену.
+	ErrDesignAssetKindUnknown = errors.New("design: asset_kind_unknown")
+	// ErrDesignAssetNameRequired — ассет без имени. Имя обязательно не из аккуратности: промпт
+	// цитирует ткань именем («contrast rib on the collar»), и безымянный ассет доезжает до модели
+	// словом «ткань» — ровно тот провал, который слоты деталей уже проходили однажды.
+	ErrDesignAssetNameRequired = errors.New("design: asset_name_required")
+	// ErrDesignAssetTooMany — полки уперлись в MaxDesignAssetsPerCard. FailedPrecondition, а не
+	// InvalidArgument: запрос правильный, кончилось место, и чинится это удалением, а не правкой.
+	ErrDesignAssetTooMany = errors.New("design: asset_too_many")
+	// ErrDesignAssetNotAPattern — не-паттерн заявил родителя либо раппорт. Оба поля значат
+	// «во что и какого размера разложена ткань», и у ткани либо фурнитуры они не значат НИЧЕГО:
+	// принять их значило бы завести форму, которую экран не умеет ни нарисовать, ни отредактировать,
+	// а промпт прочитал бы как раппорт гладкого полотна.
+	ErrDesignAssetNotAPattern = errors.New("design: asset_not_a_pattern")
 
 	// ───────────────────────── отказы генеративной половины ─────────────────────────
 
@@ -539,6 +610,66 @@ type DesignReference struct {
 	SetAt   time.Time      `db:"set_at"`
 }
 
+// DesignAsset — строка design_asset (0354): одна вещь, ИЗ КОТОРОЙ СДЕЛАНО изделие и которая не
+// является изображением самого изделия — ткань, паттерн из этой ткани, фурнитура.
+//
+// АССЕТ ПЕРЕЖИВАЕТ ПРОГОН, и в этом весь смысл полки. Прогон — это подача, он умирает в историю;
+// ткань — факт о модели, и она стоит на полке, пока её не уберут руками.
+//
+// NULLABLE ТАМ, ГДЕ «НЕ СКАЗАНО» — НАСТОЯЩИЙ ОТВЕТ. media_id пуст у ткани, которую назвали словами
+// и цветом раньше, чем сфотографировали; derived_from_asset_id пуст у всего, кроме паттерна, да и
+// у паттерна он гаснет вместе с исчезнувшей тканью (FK SET NULL) — паттерн с картинкой и раппортом
+// остаётся законченным указанием фабрике и без своего лоскута.
+type DesignAsset struct {
+	Id         int    `db:"id"`
+	TechCardId int    `db:"tech_card_id"`
+	Kind       string `db:"kind"`
+	Name       string `db:"name"`
+	// MediaId — текстура, плитка паттерна либо снимок фурнитуры. FK RESTRICT: файл, на котором
+	// держится ткань изделия, удалять нельзя, и ровно поэтому колонка ЗАРЕГИСТРИРОВАНА в
+	// mediaRefRegistry (в отличие от design_reference.media_id — там медиа подсказка, здесь оно
+	// и есть сам ассет).
+	MediaId            sql.NullInt32  `db:"media_id"`
+	ColourCode         sql.NullString `db:"colour_code"`
+	ColourHex          sql.NullString `db:"colour_hex"`
+	Note               sql.NullString `db:"note"`
+	DerivedFromAssetId sql.NullInt32  `db:"derived_from_asset_id"`
+	RepeatMm           int            `db:"repeat_mm"`
+	RotationDeg        int            `db:"rotation_deg"`
+	Ordinal            int            `db:"ordinal"`
+	CreatedBy          string         `db:"created_by"`
+	CreatedAt          time.Time      `db:"created_at"`
+	UpdatedAt          time.Time      `db:"updated_at"`
+
+	// Media резолвится читателем полосы тем же батчем, что и медиа кадров, — ровно как
+	// DesignPicture.Media. Пропавший файл оставляет здесь nil, а не выбрасывает ассет: «файл
+	// исчез» — это факт, который полка обязана уметь показать.
+	Media *MediaFull `db:"-"`
+}
+
+// DesignAssetPlacement — строка design_asset_placement (0354): ОДНА МЕТКА НА ОДНОМ ФЛЭТЕ,
+// говорящая, что вот этот ассет — вот здесь.
+//
+// ОДИН ОТВЕТ НА ТРИ ТРЕБОВАНИЯ ВЛАДЕЛЬЦА (V-6 фурнитура, V-7 паттерн, V-8 ткань по частям): все
+// три звучат как «эта вещь, на этом чертеже, здесь», значит все три — эта строка. Три механизма
+// были бы тремя геометриями, расходящимися на одной картинке.
+//
+// ⚠ ТУТ НЕТ tech_card_id, И ЭТО РЕШЕНИЕ СХЕМЫ, А НЕ ПРОБЕЛ. Карточка выводится через design_asset;
+// второй дом для одного факта разошёлся бы с первым при первом же переносе. Чтение полосы джойнит
+// ассет, запись проверяет в Go, что картинка и ассет принадлежат ОДНОЙ карточке.
+type DesignAssetPlacement struct {
+	Id        int `db:"id"`
+	AssetId   int `db:"asset_id"`
+	PictureId int `db:"picture_id"`
+	// Annotation — та же common.TechCardAnnotation, что рисует вся система. Стор её не разбирает:
+	// СОДЕРЖАНИЕ этой колонки — контракт, а не схема. Тип RawJSON, а не json.RawMessage, по общей
+	// причине пакета — см. шапку RawJSON.
+	Annotation RawJSON        `db:"annotation"`
+	Note       sql.NullString `db:"note"`
+	SetBy      string         `db:"set_by"`
+	SetAt      time.Time      `db:"set_at"`
+}
+
 // DesignSettings — строка design_settings (singleton id=1).
 type DesignSettings struct {
 	DailyBudget    decimal.Decimal `db:"daily_budget"`
@@ -714,6 +845,102 @@ type DesignReferenceRole struct {
 	Actor       string
 }
 
+// DesignAssetUpsert — ОДНА строка полки, заведённая либо переписанная целиком.
+//
+// ЭТО ЗАМЕНА, А НЕ ПАТЧ, и флага присутствия у полей нет намеренно: экран держит всю плитку в
+// форме и шлёт её целиком. Вызывающего, который знает одно свойство ассета и не знает остальных,
+// не существует, поэтому флаг на поле был бы третьим состоянием без единого писателя — и первым
+// же местом, где кто-нибудь потеряет ordinal или родословную.
+//
+// AssetId == 0 — ЗАВЕДЕНИЕ. Один глагол на оба жеста стоит здесь по той же причине, по какой
+// SetBenchSlot один: у экрана жест один — «плитку заполнили и сохранили».
+type DesignAssetUpsert struct {
+	TechCardId int
+	AssetId    int
+	Kind       string
+	Name       string
+	MediaId    int
+	ColourCode string
+	ColourHex  string
+	Note       string
+	// DerivedFromAssetId — ткань, из которой сделан ЭТОТ паттерн (V-7). Осмысленно только на
+	// паттерне; у ткани и фурнитуры отказывается (ErrDesignAssetNotAPattern).
+	DerivedFromAssetId int
+	RepeatMm           int
+	RotationDeg        int
+	Ordinal            int
+	Actor              string
+}
+
+// Validate — ВСЕ ЧИСТЫЕ ПРАВИЛА АПСЕРТА, отделённые от тех, которым нужна база.
+//
+// ЗАЧЕМ ОТДЕЛЬНО. Правил здесь семь, и каждое из них — слово контракта, а не деталь SQL; оставь их
+// внутри транзакции, и единственный способ проверить их — база, то есть на практике никак. Всё,
+// чему нужна строка (родитель существует и той же карточки, медиа не чужое, полка не переполнена),
+// осталось в сторе и проверяется В ТОЙ ЖЕ транзакции, что и запись, — вынести это сюда значило бы
+// завести TOCTOU с красивым именем.
+//
+// ПОРЯДОК ПРОВЕРОК ЗНАЧИМ ровно в одном месте: границы чисел читаются РАНЬШЕ правила «не-паттерн
+// не носит раппорт». Раппорт в пять метров — бессмыслица независимо от полки, и назвать её
+// «это не паттерн» значило бы отправить человека менять полку вместо числа.
+func (r DesignAssetUpsert) Validate() error {
+	if !IsDesignAssetKind(r.Kind) {
+		return fmt.Errorf("%w: unknown design asset kind %q", ErrDesignAssetKindUnknown, r.Kind)
+	}
+	name := strings.TrimSpace(r.Name)
+	if name == "" {
+		return fmt.Errorf("%w: a shelf row is cited by its name", ErrDesignAssetNameRequired)
+	}
+	if len([]rune(name)) > MaxDesignAssetNameRunes {
+		return fmt.Errorf("%w: an asset name is at most %d characters",
+			ErrDesignInvalidArgument, MaxDesignAssetNameRunes)
+	}
+	if len([]rune(strings.TrimSpace(r.Note))) > MaxDesignAssetNoteRunes {
+		return fmt.Errorf("%w: an asset note is at most %d characters",
+			ErrDesignInvalidArgument, MaxDesignAssetNoteRunes)
+	}
+	if r.RepeatMm < 0 || r.RepeatMm > MaxDesignAssetRepeatMm {
+		return fmt.Errorf("%w: repeat_mm is whole millimetres from 0 to %d",
+			ErrDesignInvalidArgument, MaxDesignAssetRepeatMm)
+	}
+	if r.RotationDeg < 0 || r.RotationDeg > MaxDesignAssetRotationDeg {
+		return fmt.Errorf("%w: rotation_deg is degrees clockwise from 0 to %d",
+			ErrDesignInvalidArgument, MaxDesignAssetRotationDeg)
+	}
+	if r.DerivedFromAssetId < 0 {
+		return fmt.Errorf("%w: derived_from_asset_id %d", ErrDesignInvalidArgument, r.DerivedFromAssetId)
+	}
+	if r.Kind != DesignAssetKindPattern && (r.DerivedFromAssetId != 0 || r.RepeatMm != 0) {
+		return fmt.Errorf("%w: %q carries a parent or a repeat, and both belong to a pattern",
+			ErrDesignAssetNotAPattern, r.Kind)
+	}
+	// САМ СЕБЕ РОДИТЕЛЬ — не «странный ввод», а ребро, которого нельзя нарисовать: у полки
+	// появилась бы строка, чья родословная указывает на неё же, и всякий обход происхождения
+	// закрутился бы на ней навсегда. Схема этого не ловит: FK на СВОЮ таблицу самоссылку разрешает.
+	if r.AssetId != 0 && r.DerivedFromAssetId == r.AssetId {
+		return fmt.Errorf("%w: asset %d cannot be built from itself", ErrDesignInvalidArgument, r.AssetId)
+	}
+	return nil
+}
+
+// DesignAssetPlacementSet — постановка либо перенос ОДНОЙ метки на флэте.
+//
+// PlacementId == 0 — новая метка; иначе двигается существующая. TechCardId тут есть, хотя у самой
+// строки размещения его нет: он и есть та карточка, ПРИНАДЛЕЖНОСТЬ КОТОРОЙ проверяется у обоих
+// концов — и у ассета, и у картинки. Без него запись приняла бы метку чужого ассета на своём флэте
+// и наоборот, а схема этого выразить не может.
+type DesignAssetPlacementSet struct {
+	TechCardId  int
+	PlacementId int
+	AssetId     int
+	PictureId   int
+	// Annotation — геометрия метки, уже проверенная общим сводом указаний и сериализованная
+	// protojson'ом провода. Стор её не разбирает и не переписывает.
+	Annotation json.RawMessage
+	Note       string
+	Actor      string
+}
+
 // DesignRunPage — страница истории. Курсор, а не смещение: строки рождаются В ГОЛОВЕ этого
 // списка, и страница по offset дублировала бы и пропускала ровно тогда, когда кто-то генерит.
 type DesignRunPage struct {
@@ -784,6 +1011,22 @@ type DesignBand struct {
 	// ровно там, где оно законно. Гейт стоит на сервере в StartRun, это поле — его зеркало для
 	// экрана, чтобы кнопка не обещала того, за что сервер откажет.
 	HasFabricRender bool
+
+	// Assets / AssetPlacements — ПОЛКИ КАРТОЧКИ И ВСЯ РАЗМЕТКА, КОТОРУЮ ОНИ ОСТАВИЛИ НА ФЛЭТАХ
+	// (0354). Читаются В ТОЙ ЖЕ транзакции, что и верстак с референсами: студия рисует стену полок,
+	// верстак и референсы одним кадром, и второе чтение позволило бы им разойтись во мнении о том,
+	// какой момент карточки на экране.
+	//
+	// ЭТИ ДВА СПИСКА НЕ ПАГИНИРОВАНЫ, В ОТЛИЧИЕ ОТ ПРОГОНОВ, и это не недосмотр. Полок у карточки
+	// горстка по построению — изделие из сорока тканей это не изделие, — а сервер их ещё и
+	// ОГРАНИЧИВАЕТ (MaxDesignAssetsPerCard, отказ asset_too_many на записи). Потолок и есть то, что
+	// делает «всё сразу» честным: число на стене полок — всегда вся правда, а не «столько влезло».
+	//
+	// Разметка едет РЯДОМ с ассетами, а не вложенной в них, потому что экран читает её с другой
+	// стороны — «что размечено на ЭТОМ чертеже», — и вложенность заставила бы клиента обойти все
+	// полки ради одной картинки.
+	Assets          []DesignAsset
+	AssetPlacements []DesignAssetPlacement
 
 	Runs            []DesignRun
 	NextCursor      int

@@ -63,7 +63,7 @@ type mediaRefSource struct {
 }
 
 // mediaRefRegistry lists every live foreign key into media(id), verified against both the
-// migration history and the deployed schema (22 columns as of 0350).
+// migration history and the deployed schema (23 columns as of 0354).
 var mediaRefRegistry = []mediaRefSource{
 	// product — the colourway. Four different columns point at media from this one table.
 	{
@@ -231,6 +231,27 @@ var mediaRefRegistry = []mediaRefSource{
 		entityExpr: "del.id", labelExpr: techCardLabel, slot: "vector source",
 	},
 
+	{
+		// A SHELF ROW OF THE CARD — a cloth, a pattern tile or a piece of hardware (0354). The
+		// asset IS the entity here, so the id is its own; the card supplies the readable name.
+		//
+		// ⚠ IT IS REGISTERED AND design_reference.media_id (0347) IS NOT, and the difference is
+		// HINT versus OWNERSHIP, not oversight. A reference's file is a hint to the model about
+		// what to look at: deleting it loses a suggestion and breaks no factory document, which is
+		// why that column carries a bare KEY and no foreign key at all. Here the file IS the asset
+		// — the texture of the cloth, the tile of the pattern, the photograph of the hardware —
+		// and design_asset.media_id is ON DELETE RESTRICT, so the database will refuse the delete.
+		// An unregistered RESTRICT is the worst of the two possible mistakes: GetMediaUsage would
+		// call the file free, a person would press delete, and they would meet a raw foreign-key
+		// error naming a table they have never heard of.
+		kind: "design_asset", table: "design_asset da", column: "da.media_id",
+		joins:      `JOIN tech_card tc ON tc.id = da.tech_card_id`,
+		entityExpr: "da.id", labelExpr: techCardLabel,
+		// The shelf AND the name, because a card legitimately holds several cloths and «design
+		// asset» alone would not say which one is holding the file.
+		slotExpr: `CONCAT_WS(' · ', da.kind, da.name)`,
+	},
+
 	// WHAT THE DESIGN WAVE DELIBERATELY DOES NOT REGISTER. Both omissions are decisions, not gaps;
 	// the next person reading this list must not "fix" them.
 	//
@@ -254,7 +275,7 @@ const fittingLabel = `CONCAT_WS(' ', COALESCE(NULLIF(tc.name, ''), NULLIF(tc.sty
 
 // selectSQL renders one registry entry as a branch of the UNION.
 //
-// label and slot are wrapped in COALESCE(..., '') so a NULL from any join can never break the
+// label and slot are wrapped in COALESCE(..., ”) so a NULL from any join can never break the
 // scan into a non-nullable Go string — a missing translation must degrade to a blank name, not
 // to a failed RPC over the whole page.
 func (src mediaRefSource) selectSQL() string {

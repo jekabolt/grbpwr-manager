@@ -2732,6 +2732,48 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/design/bench/{slot_id}"};
   }
 
+  // THE CARD'S ASSET SHELVES — cloths, patterns and hardware (V-11).
+  //
+  // UpsertDesignAsset writes ONE shelf row, creating it when asset_id is 0 and replacing its
+  // fields otherwise. There is one verb rather than a create and an update because the screen has
+  // one gesture: a shelf tile is filled in and saved, and a second verb would be a second place to
+  // forget the ordinal or the parentage.
+  //
+  // InvalidArgument: an unknown kind, an empty name, a media the card does not hold, a
+  // derived_from_asset_id belonging to another card, or a repeat outside 1..2000 mm.
+  rpc UpsertDesignAsset(UpsertDesignAssetRequest) returns (UpsertDesignAssetResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/asset"
+      body: "*"
+    };
+  }
+
+  // DeleteDesignAsset removes ONE shelf row and, with it, every mark it left on a flat — the marks
+  // are the asset's own statements about itself and have no meaning once it is gone. A pattern
+  // built from this asset SURVIVES with its parentage cleared; it still carries a picture and a
+  // repeat, which is a usable instruction on its own.
+  rpc DeleteDesignAsset(DeleteDesignAssetRequest) returns (DeleteDesignAssetResponse) {
+    option (google.api.http) = {delete: "/api/admin/design/asset/{asset_id}"};
+  }
+
+  // SetDesignAssetPlacement puts ONE mark on ONE flat: this asset, this drawing, here. Creates when
+  // placement_id is 0, moves it otherwise.
+  //
+  // InvalidArgument: an asset or a picture of another card, a shape whose point count does not
+  // match its kind, or a coordinate outside 0..1.
+  rpc SetDesignAssetPlacement(SetDesignAssetPlacementRequest) returns (SetDesignAssetPlacementResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/asset-placement"
+      body: "*"
+    };
+  }
+
+  // DeleteDesignAssetPlacement takes ONE mark off a flat. The asset stays on its shelf: unmarking
+  // and removing are different acts, exactly as unmarking a bench slot is not deleting the plate.
+  rpc DeleteDesignAssetPlacement(DeleteDesignAssetPlacementRequest) returns (DeleteDesignAssetPlacementResponse) {
+    option (google.api.http) = {delete: "/api/admin/design/asset-placement/{placement_id}"};
+  }
+
   // GetDesignEditLayer reads ONE layer WITH its strokes. It exists because GetDesignBand
   // deliberately lists the layers WITHOUT them: 512 KB is the cap per LAYER, a card may hold
   // several, and shipping them all would make every open of the tab cost megabytes in order to draw
@@ -11652,6 +11694,22 @@ message GetDesignBandResponse {
   // refusal. A client computing the same rule from what it was handed would be wrong by exactly the
   // renders that are not on this page, which is the usual case for a card with any history.
   bool has_fabric_render = 17;
+  // THE CARD'S ASSET SHELVES — cloths, patterns and hardware (V-11), all three in one list ordered
+  // by kind and then by ordinal. They ride the band read rather than a list verb of their own for
+  // the reason every other member of this message does: the studio draws bench, references and
+  // shelves in one frame, and a second read would let them disagree about which instant of the
+  // card is on screen.
+  //
+  // UNLIKE THE RUNS, THIS LIST IS NOT PAGED. A card's shelves are a handful of rows by
+  // construction — a garment made of forty cloths is not a garment — and the server caps them
+  // rather than paging them (UpsertDesignAsset refuses past the ceiling), so the count on the
+  // shelf wall is always the whole truth.
+  repeated common.DesignAsset assets = 18;
+  // EVERY MARK THOSE ASSETS LEFT ON THIS CARD'S FLATS, flat by flat. They come beside the assets
+  // rather than nested inside them because the screen reads them the other way round — «what is
+  // marked on THIS drawing» — and nesting would force the client to walk every asset to draw one
+  // picture.
+  repeated common.DesignAssetPlacement asset_placements = 19;
 }
 
 message ListDesignRunsRequest {
@@ -11986,6 +12044,64 @@ message SetDesignReferenceRoleRequest {
 message SetDesignReferenceRoleResponse {
   common.DesignReference reference = 1; // unset when the call cleared the role
 }
+
+// UpsertDesignAssetRequest writes one shelf row of the card (V-11).
+//
+// EVERY FIELD IS SENT ON EVERY CALL — this is a replace, not a patch, and the screen holds the
+// whole tile in a form. A patch would need a presence flag per field for no gain: there is no
+// caller that knows one property of an asset and nothing else.
+message UpsertDesignAssetRequest {
+  int32 tech_card_id = 1;
+  int32 asset_id = 2; // 0 = create
+  string kind = 3; // fabric | pattern | hardware
+  string name = 4; // required, ≤ 60 characters
+  int32 media_id = 5; // FK media(id); 0 = stated in words and colour only
+  string colour_code = 6;
+  string colour_hex = 7;
+  string note = 8; // ≤ 500 characters
+  // The fabric this pattern was built from. Only meaningful on kind = pattern; refused on the
+  // other two, because a cloth that claims a parent is a shape nothing on the screen can produce
+  // and nothing downstream would know how to read.
+  int32 derived_from_asset_id = 9;
+  int32 repeat_mm = 10; // 1..2000 on a pattern, 0 elsewhere
+  int32 rotation_deg = 11; // 0..359
+  int32 ordinal = 12;
+}
+
+message UpsertDesignAssetResponse {
+  common.DesignAsset asset = 1;
+}
+
+message DeleteDesignAssetRequest {
+  int32 asset_id = 1;
+}
+
+message DeleteDesignAssetResponse {
+  // How many marks on flats went with it. The screen says the number BEFORE it asks, and repeats it
+  // after: a delete that silently erased eight markings would be a delete nobody could have
+  // predicted from what they were looking at.
+  int32 removed_placements = 1;
+}
+
+// SetDesignAssetPlacementRequest puts one mark on one flat.
+message SetDesignAssetPlacementRequest {
+  int32 tech_card_id = 1;
+  int32 placement_id = 2; // 0 = create
+  int32 asset_id = 3;
+  int32 picture_id = 4;
+  common.TechCardAnnotation annotation = 5;
+  string note = 6; // ≤ 500 characters
+}
+
+message SetDesignAssetPlacementResponse {
+  common.DesignAssetPlacement placement = 1;
+}
+
+message DeleteDesignAssetPlacementRequest {
+  int32 placement_id = 1;
+}
+
+message DeleteDesignAssetPlacementResponse {}
 
 message DraftDesignIdeaRequest {
   int32 tech_card_id = 1;

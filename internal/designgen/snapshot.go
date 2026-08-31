@@ -43,11 +43,50 @@ type colourRecipe struct {
 	Hex           string `json:"hex"`
 	Words         string `json:"words"`
 	FabricMediaID int    `json:"fabric_media_id"`
+	// THE CLOTHS OF THIS GARMENT, one entry per cloth, in the order the person stated them (V-8).
+	//
+	// ⚠ THE FOUR SCALARS ABOVE ARE NOT SUPERSEDED BY THIS LIST, THEY ARE ITS FIRST MEMBER'S ECHO.
+	// The contract (DesignColourRecipe.fabric_media_id) says it in as many words: a new run states
+	// its cloths here AND ALSO repeats the first one's texture in `fabric_media_id`, because the
+	// order-of-authority paragraph names the governing photograph by its image number and reads it
+	// from that scalar. So a ONE-cloth run — the ordinary case, and every run frozen before this
+	// field existed — is fully described by the scalars alone, and the render craft must keep
+	// composing it from them, byte for byte. This list earns its own words only from the SECOND
+	// cloth onwards, where the scalars have nothing left to say.
+	Fabrics []fabricUse `json:"fabrics"`
+}
+
+// fabricUse is ONE cloth of the submission: what it looks like and WHICH PART OF THE GARMENT it is
+// for. The fields are the frozen copies of DesignFabricUse, never a join: a run's history must
+// still read after the shelf asset was renamed, re-coloured or deleted, which is why `asset_id`
+// travels beside the copies as provenance and not as something to resolve.
+type fabricUse struct {
+	AssetID    int    `json:"asset_id"`
+	Name       string `json:"name"`
+	MediaID    int    `json:"media_id"`
+	ColourCode string `json:"colour_code"`
+	ColourHex  string `json:"colour_hex"`
+	Words      string `json:"words"`
+	// WHICH PARTS THIS CLOTH IS FOR, in the human's own words, composed from the marks drawn on the
+	// flats. ⚠ EMPTY MEANS THE WHOLE GARMENT — or, among several cloths, the remainder — AND NEVER
+	// «unknown»: see the contract. A reader that treated the empty string as missing data would
+	// drop the one cloth the person did not have to mark, which is usually the main one.
+	Parts string `json:"parts"`
+	// The repeat of a PATTERN cloth in whole millimetres on the finished garment; 0 = plain cloth.
+	RepeatMM int `json:"repeat_mm"`
 }
 
 type threedParams struct {
 	Presentation string `json:"presentation"`
 	FitOverride  string `json:"fit_override"`
+	// ТЕЛОСЛОЖЕНИЕ — ЕДИНСТВЕННОЕ, ЧТО ЭТОТ ПРОГОН ГОВОРИТ ПРО ТЕЛО СЛОВАМИ (V-15).
+	//
+	// `model_id` в промпт не едет и ехать ему некуда: он называет СТРОКУ нашей картотеки, а у
+	// снимка нет поля ни под имя модели, ни под её мерки — сборка о ней не узнает ничего. Значит
+	// без этой строки выбор «на модели» менял в картинке ровно ноль, и «телосложение» было бы
+	// вторым таким же органом. Оно СТРОКА, а не enum, потому что словарь телосложений — вопрос
+	// формулировок, а enum заморозил бы сегодняшние слова в истории каждого замороженного прогона.
+	BodyType string `json:"body_type"`
 }
 
 // runInputs is the frozen input snapshot.
@@ -234,14 +273,48 @@ func referenceList(p runParams, in runInputs) []refCaption {
 	for _, id := range p.ExtraInputMediaIDs {
 		add(id, "additional reference image")
 	}
-	if p.Colour != nil {
-		// ⚠ THE CAPTION SAYS MATERIAL, NOT COLOUR, AND THE CHANGE IS LOAD-BEARING. It read «fabric
-		// swatch for the colour» while a recipe could only be ONE of photo / picker / words. Now
-		// that all three may be given at once, that caption contradicts the order of precedence the
-		// render craft states two blocks later: the photograph governs the MATERIAL and loses the
-		// colour to the picker. A caption and a rule that disagree about the same picture is worse
-		// than either alone — the model gets to choose which of our two sentences it believes.
-		add(p.Colour.FabricMediaID, "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here")
+	// ─── THE CLOTHS ────────────────────────────────────────────────────────────────────────────
+	//
+	// TWO BRANCHES, AND THE SPLIT IS THE SAME ONE renderFabricSection MAKES, for the same reason:
+	// a run of one cloth must attach exactly what it attached before this wave, byte for byte,
+	// because the composed prompt is written into the history and a caption that shifted would
+	// renumber every image reference after it in every future single-cloth run.
+	//
+	// ⚠ WITHOUT THE LOOP BELOW THE MULTI-CLOTH FEATURE IS HALF DEAD, AND SILENTLY SO. `fabrics`
+	// reached the prompt while only `colour.fabric_media_id` — the FIRST cloth's texture, echoed by
+	// the client — reached the provider, so a two-cloth submission sent one photograph and the
+	// second cloth's line honestly reported «no photograph of this cloth was sent». Nothing lied;
+	// the person simply did not get the thing they asked for. Measured: media 9 and 10 stated,
+	// attachments [1 2 9].
+	cloths := statedCloths(p.Colour)
+	switch {
+	case len(cloths) < 2:
+		if p.Colour != nil {
+			// ⚠ THE CAPTION SAYS MATERIAL, NOT COLOUR, AND THE CHANGE IS LOAD-BEARING. It read
+			// «fabric swatch for the colour» while a recipe could only be ONE of photo / picker /
+			// words. Now that all three may be given at once, that caption contradicts the order of
+			// precedence the render craft states two blocks later: the photograph governs the
+			// MATERIAL and loses the colour to the picker. A caption and a rule that disagree about
+			// the same picture is worse than either alone — the model gets to choose which of our
+			// two sentences it believes.
+			add(p.Colour.FabricMediaID, "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here")
+		}
+	default:
+		// ONE ENTRY PER CLOTH, NUMBERED THE WAY THE CLOTH LIST NUMBERS THEM. Both walks are over
+		// the same `statedCloths` slice in the same order, so «CLOTH 2» in the caption and «CLOTH
+		// 2» in the craft block are the same cloth by construction rather than by coincidence —
+		// and the craft block's own «its texture is image N» is resolved against this very list.
+		//
+		// THE SCALAR IS NOT ADDED IN THIS BRANCH. It is the client's echo of the first cloth, so
+		// adding it too would find the id already present and APPEND its caption to cloth 1's —
+		// leaving one picture described twice, once as «CLOTH 1» and once as «the material this
+		// garment is made of», which is exactly the disagreement the caption above was rewritten to
+		// end. A first cloth that somehow carries no texture of its own loses nothing: the scalar
+		// it would have echoed is that same absent texture.
+		for i, c := range cloths {
+			add(c.MediaID, "fabric photograph — CLOTH "+strconv.Itoa(i+1)+clothCaptionName(c)+
+				": the material of the parts this cloth is used on, read its weave, texture, sheen and drape from here")
+		}
 	}
 	return out
 }
@@ -411,6 +484,12 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		if t.Presentation != "" {
 			parts = append(parts, "presentation "+t.Presentation)
 		}
+		// ТЕЛО НАЗЫВАЕТСЯ СРАЗУ ЗА ПОДАЧЕЙ, потому что это её уточнение: «on a model» отвечает на
+		// «есть ли фигура», телосложение — на «какая». Пустое молчит, и молчание здесь правдиво:
+		// контракт говорит «Empty = not stated; the generator picks».
+		if t.BodyType != "" {
+			parts = append(parts, "body "+t.BodyType)
+		}
 		if t.FitOverride != "" {
 			parts = append(parts, "fit "+t.FitOverride)
 		}
@@ -543,6 +622,13 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 	// SAME loop, off the SAME element: that, and nothing subtler, is what guarantees that caption
 	// k describes references[k-1]. TestCaptionNumberKIsImageNumberK holds the guarantee.
 	list := referenceList(p, in)
+	if run.Kind == entity.DesignRunKindThreed {
+		// У СБОРКИ 3D КАРТИНКИ — ЭТО ЕЁ ПЛИТЫ, И ТОЛЬКО ОНИ (V-14). Довод целиком в
+		// threed_inputs.go: Meshy читает КАЖДУЮ присланную картинку как ВИД одного предмета и
+		// принимает их 1..4, поэтому референс карточки здесь либо убивает прогон отказом по числу,
+		// либо — что тише и дороже — сам становится «видом», и модель строится по чужой одежде.
+		list = threedPictures(list, in)
+	}
 	var attached []refCaption
 	if len(list) > 0 {
 		ids := make([]int, 0, len(list))
@@ -572,4 +658,17 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 	}
 	job.Prompt = composePrompt(run, p, in, attached)
 	return job, nil
+}
+
+// clothCaptionName is the « — contrast rib» half of a cloth's attachment caption, or nothing when
+// the cloth was never named.
+//
+// IT IS A SEPARATE FUNCTION SO THE UNNAMED CASE CANNOT PRODUCE A DANGLING DASH. A caption reading
+// «CLOTH 2 — : the material of…» would be read by a model as an empty name rather than as an absent
+// one, and by a human as a bug.
+func clothCaptionName(c fabricUse) string {
+	if name := oneLine(c.Name); name != "" {
+		return " — " + name
+	}
+	return ""
 }

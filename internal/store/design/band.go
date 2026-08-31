@@ -71,6 +71,23 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to list design references: %w", err)
 		}
+		// THE SHELF WALL AND ITS MARKS (0354), IN THIS SAME SNAPSHOT. The studio draws bench,
+		// references and shelves in one frame; read separately they could disagree about which
+		// instant of the card is on screen. Neither list is paged and neither needs to be — the
+		// shelves are capped on the WRITE side (entity.MaxDesignAssetsPerCard), so «all of them»
+		// is a bounded answer rather than an unbounded one, and the count on the wall is the whole
+		// truth instead of «as much as fitted».
+		if band.Assets, err = listAssets(ctx, db, cardID); err != nil {
+			return err
+		}
+		// The file of each asset, in ONE batch. Without it a shelf tile has an id and no swatch,
+		// which is the same defect a bench slot without its plate had.
+		if err = attachAssetMedia(ctx, rep, band.Assets); err != nil {
+			return err
+		}
+		if band.AssetPlacements, err = listAssetPlacements(ctx, db, cardID); err != nil {
+			return err
+		}
 		// Layers WITHOUT their strokes: 512 KB is the cap per LAYER and a card may hold several,
 		// so shipping them all would make every open of the tab cost megabytes to draw a list.
 		//

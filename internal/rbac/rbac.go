@@ -463,9 +463,16 @@ var methodRequirements = map[string]Requirement{
 	"SplitDesignPicture":       wr(SectionTechCards),
 	"SetDesignBenchSlot":       wr(SectionTechCards),
 	"SetDesignReferenceRole":   wr(SectionTechCards),
-	"DeleteDesignDetailSlot":   wr(SectionTechCards),
-	"SaveDesignEditLayer":      wr(SectionTechCards),
-	"FlattenDesignEditLayer":   wr(SectionTechCards),
+	// Полки ассетов карточки (0354): ткани, паттерны, фурнитура и их разметка на флэтах. Это
+	// ЗАПИСЬ О КАРТОЧКЕ, а не деньги: ассет ничего не тратит, он объявляет, из чего сделано
+	// изделие, — и потому стоит рядом с ролью референса, а не рядом со StartDesignRun.
+	"UpsertDesignAsset":          wr(SectionTechCards),
+	"DeleteDesignAsset":          wr(SectionTechCards),
+	"SetDesignAssetPlacement":    wr(SectionTechCards),
+	"DeleteDesignAssetPlacement": wr(SectionTechCards),
+	"DeleteDesignDetailSlot":     wr(SectionTechCards),
+	"SaveDesignEditLayer":        wr(SectionTechCards),
+	"FlattenDesignEditLayer":     wr(SectionTechCards),
 	// ImportDesignVector НИЧЕГО НЕ ТРАТИТ — он подшивает уже загруженный SVG, — но пишет слой и
 	// заводит картинку с провенансом imported_svg. Право пишущее, потому что запись, а не потому
 	// что деньги; машинная векторизация это StartDesignRun с kind=vector, у которого право уже есть.

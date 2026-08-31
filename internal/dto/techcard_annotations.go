@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -828,4 +829,55 @@ func TechCardCalloutAnnotationJSON(c entity.TechCardCallout) ([]byte, error) {
 		Filled: c.Filled,
 	}
 	return protojson.Marshal(ann)
+}
+
+// TechCardAnnotationFromPb проверяет ОДНО указание и отдаёт его доменную форму.
+//
+// ⚠ ЭТО ТОНКАЯ ОБЁРТКА, А НЕ ВТОРОЙ ВАЛИДАТОР, и обёрткой она обязана остаться. Правил у фигуры
+// пять (вид из закрытого списка, число точек по виду, координата в кадре и не длиннее шести знаков,
+// цвет из закрытого списка, согласованность пунктира со штриховкой); разойдясь хоть в одном, два
+// экрана начали бы принимать разные фигуры под одним именем — притом молча. Поэтому тело здесь —
+// вызов annotationsFromPb, того же самого, которым идут тех-карта, задача и примерка.
+//
+// Заведена ради писателя, у которого указание ОДНО, а не список на снимок: метка ассета на флэте
+// (design_asset_placement, 0354) — это ровно одна фигура на одной картинке, и разворачивать её в
+// список из одного элемента у каждого вызывающего значило бы разложить nil-случай по трём местам.
+//
+// nil ОТКАЗЫВАЕТСЯ ЯВНО. annotationsFromPb пропускает nil-элементы молча (в списке на снимок это
+// верно: дыра в массиве — не фигура), и без этой ветки одиночный nil вернул бы пустой результат с
+// nil-ошибкой, то есть «указание принято» про указание, которого не прислали.
+func TechCardAnnotationFromPb(path string, a *pb_common.TechCardAnnotation) (entity.TechCardAnnotation, error) {
+	if a == nil {
+		return entity.TechCardAnnotation{}, entity.NewFieldViolation(path, "required", "",
+			"a mark on a drawing is a shape: without one there is nothing to draw and nothing to point at")
+	}
+	out, err := annotationsFromPb(path, []*pb_common.TechCardAnnotation{a})
+	if err != nil {
+		return entity.TechCardAnnotation{}, singleAnnotationViolation(path, err)
+	}
+	if len(out) != 1 {
+		return entity.TechCardAnnotation{}, entity.NewFieldViolation(path, "required", "",
+			"a mark on a drawing is a shape: without one there is nothing to draw and nothing to point at")
+	}
+	return out[0], nil
+}
+
+// singleAnnotationViolation убирает из имени поля индекс, которого у одиночного указания нет.
+//
+// annotationsFromPb называет поля как «<path>.annotations[0].points», потому что у неё их СПИСОК.
+// Отдать это имя клиенту, приславшему одно поле `annotation`, значило бы указать на путь, которого
+// в его запросе не существует, — а весь смысл BadRequest.field_violations в том, чтобы экран
+// подсветил ровно то место, куда человек ткнул. Переписывается ПРЕФИКС и только он: причина,
+// конфликтующее значение и совет остаются теми же, что у общего свода.
+func singleAnnotationViolation(path string, err error) error {
+	var ve *entity.ValidationError
+	if !errors.As(err, &ve) {
+		return err
+	}
+	prefix := path + ".annotations[0]"
+	if !strings.HasPrefix(ve.Field, prefix) {
+		return err
+	}
+	return entity.NewFieldViolation(path+strings.TrimPrefix(ve.Field, prefix),
+		ve.Reason, ve.Conflicting, ve.HowToFix)
 }

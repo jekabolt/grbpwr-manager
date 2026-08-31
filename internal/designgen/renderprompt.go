@@ -52,6 +52,58 @@ const (
 	// is the path of a run launched by something that is not that screen — an older client, a
 	// script, a recalled snapshot. Guessing a colour would be worse than naming the guess.
 	renderNoFabric = "Fabric: this run states no fabric and no colour. Render the garment in a plain, unpatterned mid-weight cloth of a single neutral colour, and do not invent a print, a texture or a trim the drawings do not show."
+
+	/* ─── SEVERAL CLOTHS (V-8). The four sentences below are the whole of the requirement in
+	   words, and they are constants for the same reason every sentence above is one: they are the
+	   part of the prompt a person may want to read, quote or argue with, and a sentence assembled
+	   out of fragments at three call sites cannot be read anywhere. ─── */
+
+	// THE READING RULE FOR THE LIST, AND THE POINT OF THE WHOLE WAVE. The owner's ask is not «send
+	// two swatches», it is «на флетах показать маркером какая часть какой тканью должна быть» — the
+	// marks say WHICH PART. So the list has to be read as an assignment of cloth to part, and the
+	// two halves of that assignment are stated here: a cloth that names parts is pinned to them,
+	// and a cloth that names none is what is left over.
+	//
+	// ⚠ «NAMES NONE» IS A STATEMENT, NOT A HOLE. The contract says it outright: an empty `parts`
+	// means the whole garment, and among several cloths that is the remainder — never «unknown».
+	// A reader that treated it as missing would drop exactly the cloth nobody had to mark, which is
+	// almost always the main one, and the render would come back in one contrast fabric.
+	renderClothPartsRule = "A cloth that names its parts is used ON THOSE PARTS AND ON NO OTHER PART OF THIS GARMENT; a cloth that names no parts is the REMAINDER — every part of the garment that the other cloths on this list do not claim."
+
+	// The same rule when NOBODY marked anything. The contract calls this legal and says what it
+	// means: «a run that states two cloths and no parts is telling the model to choose». Emitting
+	// the rule above here would be a sentence about a remainder of nothing — every cloth would be
+	// the remainder of every other, which is not an instruction but a circle.
+	renderClothPartsUnmarked = "None of these cloths names a part: the drawings carry no mark saying which cloth goes where, so the division is yours to make. Use every cloth on this list, and change cloth only on a seam, a panel edge or a finished edge the drawings actually show."
+
+	// THE PROHIBITION, in the spirit of renderExcluded and for the identical reason: everything a
+	// model is not told is a thing it will supply. Given two cloths and no boundary, it invents
+	// contrast cuffs, a contrast collar and a contrast placket, because that is what two cloths
+	// usually mean in the pictures it was trained on — and none of those are in our drawings.
+	//
+	// THE SECOND SENTENCE SETTLES A COLLISION WITH renderExcluded, WHICH THIS BLOCK CANNOT EDIT.
+	// That list forbids «any colour, print or pattern that neither the fabric photograph nor the
+	// stated colour calls for», and it was written when a run had exactly one of each. Read beside
+	// a second cloth it would forbid that cloth's own colour — the prompt would be telling the
+	// model to use the contrast rib and to leave it out. Two of our own sentences that disagree
+	// about the same thing are worse than either alone, so the collision is resolved here, in
+	// words, rather than left for the model to resolve differently on every run.
+	renderClothNoInvention = "Change cloth only where this list says the cloth changes. Where it does not, the garment is ONE cloth throughout: no extra panel, block, yoke, trim, binding, facing, cuff or collar in a cloth of its own, no cloth beyond the ones listed here, and no colour or pattern on a part that was not given one. Every cloth on this list, with its own colour and its own pattern, IS called for: the exclusion of colours and patterns stated further down removes only what this list does not name."
+
+	// WHAT THE PARAGRAPH AFTER THE LIST IS ABOUT, once there is more than one cloth. The `colour`
+	// block, the `fabric in words` block and the order of authority all speak about ONE cloth —
+	// the first — because that is what the contract makes them carry (DesignColourRecipe:
+	// «a NEW run states its cloths in `fabrics` and ALSO repeats the first one's texture here»).
+	//
+	// ⚠ WITHOUT THIS SENTENCE THE PROMPT CONTRADICTS ITSELF IN THE WORST POSSIBLE PLACE. The
+	// order-of-authority clauses say «the COLOUR of this garment» and, in their solo form, «render
+	// the WHOLE GARMENT in exactly that colour». Beside a list that has just pinned a second cloth
+	// to the collar, that is a direct instruction to overpaint the collar — and it is the LAST
+	// word on the subject, which is the half a model obeys. The clauses themselves cannot be
+	// reworded: they are frozen into the history of every single-cloth run ever composed. So the
+	// scope is narrowed here instead, before them, in one sentence that costs nothing when the
+	// list is absent because the list is what emits it.
+	renderClothFirstIsTheScalar = "The `colour` block and the `fabric in words` block above, and the paragraph that follows this list, all speak about CLOTH 1 and about nothing else: wherever they say `this garment` or `the whole garment`, they mean CLOTH 1 and the parts CLOTH 1 covers, never a part another cloth on this list claims. The order of authority in that paragraph — the photograph, then the stated colour, then the words — settles a disagreement INSIDE one cloth, and it settles it the same way inside every other cloth on this list."
 )
 
 /* ─────────────────────────── the order of precedence ─────────────────────────── */
@@ -180,6 +232,154 @@ func renderFabricParagraph(f fabricStated) string {
 	return strings.Join(lines, "\n")
 }
 
+/* ─────────────────────────── several cloths ─────────────────────────── */
+
+// statedCloths is the cloths this run actually stated — the frozen list with the rows that say
+// NOTHING dropped.
+//
+// ⚠ A BLANK ROW IS NOT A CLOTH, AND DROPPING IT IS NOT TIDINESS. The whole shape of the fabric
+// paragraph turns on the COUNT: one cloth keeps the wording every frozen run already has, two
+// rebuild it around a list. A client that left a half-filled row behind — an «add cloth» button
+// pressed and abandoned — would otherwise flip an ordinary single-cloth submission into a
+// two-cloth prompt whose second member has nothing to say, and the model would dutifully invent a
+// second fabric to fill it. A row that states nothing states nothing.
+//
+// asset_id ALONE DOES NOT COUNT. It is provenance — «which shelf row was this» — and the contract
+// is explicit that a reader never resolves it. An entry carrying only an id therefore reaches the
+// model as the bare word «cloth», which is the failure detail slots already went through once.
+func statedCloths(c *colourRecipe) []fabricUse {
+	if c == nil {
+		return nil
+	}
+	out := make([]fabricUse, 0, len(c.Fabrics))
+	for _, f := range c.Fabrics {
+		stated := f.MediaID > 0 || f.RepeatMM > 0 ||
+			oneLine(f.Name) != "" || strings.TrimSpace(f.ColourCode) != "" ||
+			strings.TrimSpace(f.ColourHex) != "" || oneLine(f.Words) != "" ||
+			oneLine(f.Parts) != ""
+		if stated {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// renderFabricSection is the fabric half of the craft block: the cloth list when there is more than
+// one cloth, and the order of precedence.
+//
+// ⚠ ONE CLOTH TAKES THE OLD PATH LITERALLY, AND THAT IS THE LOAD-BEARING LINE OF THIS WAVE. The
+// composed prompt is written into the run's history, so the wording of a single-cloth render is not
+// a style choice — it is the sentence every frozen run already says, and the sentence every future
+// single-cloth run has to keep saying if the two are ever to be compared. A one-member `fabrics`
+// list is the ORDINARY new submission, not an exotic case: the client repeats that cloth's texture
+// into `fabric_media_id`, its colour into `code`/`hex` and its words into `words`, exactly as the
+// contract instructs, so the existing three-source machinery already describes it completely. So
+// the ≤1 branch does not merely produce the same words — it calls the same function, which is the
+// only version of «identical» that cannot rot.
+func renderFabricSection(f fabricStated, cloths []fabricUse, attached []refCaption) []string {
+	if len(cloths) < 2 {
+		return []string{renderFabricParagraph(f)}
+	}
+	lines := renderClothLines(cloths, attached)
+	authority := renderFabricParagraph(f)
+	if authority == renderNoFabric {
+		// THE FALLBACK IS FALSE HERE AND MUST NOT BE SPOKEN. It says «this run states no fabric and
+		// no colour» — a flat contradiction of a list that has just named two of them. It can only
+		// be reached by a writer that filled `fabrics` and left the echo scalars empty; the list
+		// still says everything the model needs, so the honest move is to drop the sentence that
+		// is wrong rather than to keep a paragraph for the shape of it.
+		return []string{strings.Join(lines, "\n")}
+	}
+	return []string{strings.Join(append(lines, renderClothFirstIsTheScalar), "\n"), authority}
+}
+
+// renderClothLines is the list itself: a heading that states the reading rule, one line per cloth,
+// and the prohibition that closes it.
+//
+// THE RULE COMES BEFORE THE LIST AND THE PROHIBITION AFTER IT, deliberately. A reader — model or
+// human — meets «It is used on: collar, cuffs» already knowing that such a line excludes every
+// other part; met the other way round, each line first reads as a loose hint and is only narrowed
+// afterwards. The prohibition closes because it is the negative half, and the negative half of this
+// prompt is written last everywhere else in the file too (renderExcluded).
+func renderClothLines(cloths []fabricUse, attached []refCaption) []string {
+	anyParts := false
+	for _, c := range cloths {
+		if oneLine(c.Parts) != "" {
+			anyParts = true
+			break
+		}
+	}
+
+	rule := renderClothPartsUnmarked
+	if anyParts {
+		rule = renderClothPartsRule
+	}
+	lines := []string{
+		"The cloths of this garment. This garment is made of " + countWord(len(cloths)) +
+			" different cloths, and the marks drawn on the drawings say which part is made of which. " +
+			rule + " The cloths, in the order they were stated:",
+	}
+	for i, c := range cloths {
+		lines = append(lines, renderClothLine(i+1, c, attached, anyParts))
+	}
+	return append(lines, renderClothNoInvention)
+}
+
+// renderClothLine is ONE cloth: what to call it, which picture carries it, what colour it is, what
+// was said about it, how big its repeat is, and WHICH PARTS it is for.
+//
+// ⚠ IT IS «CLOTH 1», NOT «1.», AND THE DIFFERENCE IS NOT COSMETIC. The paragraph that follows this
+// list is itself a numbered list — the three ranks of the order of authority — and two numbered
+// lists standing one under the other make «2» mean the picked colour in one of them and the
+// contrast rib in the other. The cloths are numbered by a word that carries its own noun.
+//
+// A CLOTH WHOSE PICTURE DID NOT GO OUT IS NOT GIVEN A NUMBER, exactly as the ranked photograph
+// clause refuses one: imageNumberOf answers 0 both for «there was never a texture» and for «the
+// media row went away between the snapshot and the pass», and from where the model sits those are
+// the same fact. But the silence is spoken rather than left blank, on the doctrine fabricSource.solo
+// records: a cloth listed beside a neighbour that DOES cite an image, and itself citing none, is a
+// cloth whose texture the model will happily read off the neighbour's photograph.
+//
+// name, words AND parts ARE FLATTENED TO ONE LINE for the reason oneLine exists: these lines are
+// one-per-cloth and a newline typed into a cloth's name would write a line of its own into the
+// prompt — including, if the person happens to type it, a line that reads like another cloth.
+func renderClothLine(n int, c fabricUse, attached []refCaption, anyParts bool) string {
+	var b strings.Builder
+	b.WriteString("CLOTH " + strconv.Itoa(n))
+	if name := oneLine(c.Name); name != "" {
+		b.WriteString(" — " + name)
+	}
+	b.WriteString(".")
+
+	if img := imageNumberOf(attached, c.MediaID); img > 0 {
+		b.WriteString(" Its texture is image " + strconv.Itoa(img) +
+			": read this cloth's weave or knit structure, surface, sheen and drape from that image.")
+	} else {
+		b.WriteString(" No photograph of this cloth was sent, and its texture must not be borrowed from another cloth's photograph.")
+	}
+	if col := colourPhrase(c.ColourCode, c.ColourHex); col != "" {
+		b.WriteString(" Its colour is " + col + ".")
+	}
+	if w := oneLine(c.Words); w != "" {
+		b.WriteString(" In words: " + w + ".")
+	}
+	// THE REPEAT IS A NUMBER IN MILLIMETRES BECAUSE «large» AND «small» ARE NOT INSTRUCTIONS. It is
+	// the owner's own «какого размера располагать этот паттерн», and it is measured ON THE FINISHED
+	// GARMENT rather than on the swatch — a tile photographed close up says nothing about the scale
+	// it is printed at, which is exactly why the number was put on the wire.
+	if c.RepeatMM > 0 {
+		b.WriteString(" Its pattern repeats every " + strconv.Itoa(c.RepeatMM) + " mm on the finished garment.")
+	}
+
+	switch parts := oneLine(c.Parts); {
+	case parts != "":
+		b.WriteString(" It is used on: " + parts + " — and on no other part of this garment.")
+	case anyParts:
+		b.WriteString(" It names no parts, so it is the REMAINDER: every part of the garment that the other cloths on this list do not claim.")
+	}
+	return b.String()
+}
+
 /* ─────────────────────────── the block ─────────────────────────── */
 
 // renderCraft assembles the craft block for one render run: intro, the fabric authority, the layout
@@ -200,15 +400,19 @@ func renderCraft(p runParams, detailNames []string, attached []refCaption) strin
 		stated.words = c.Words
 	}
 
-	paras := []string{
-		renderIntro(len(attached)),
-		renderFabricParagraph(stated),
+	// THE FABRIC HALF IS SPLICED IN AS A SLICE, not written as one more element, because with
+	// several cloths it is TWO paragraphs — the list and the order of precedence — and with one it
+	// is the single paragraph it has always been. A section that decides its own paragraph count
+	// keeps the ≤1 case producing a slice identical to the one this literal used to hold.
+	paras := []string{renderIntro(len(attached))}
+	paras = append(paras, renderFabricSection(stated, statedCloths(p.Colour), attached)...)
+	paras = append(paras,
 		renderLayoutParagraph(p.Views, detailNames, p.Layout),
 		renderStyle,
 		renderMaterial,
 		renderExcluded,
 		renderOutput,
-	}
+	)
 	return strings.Join(paras, "\n\n")
 }
 
@@ -300,7 +504,19 @@ func colourStatement(c *colourRecipe) string {
 	if c == nil {
 		return ""
 	}
-	code, hex := strings.TrimSpace(c.Code), strings.TrimSpace(c.Hex)
+	return colourPhrase(c.Code, c.Hex)
+}
+
+// colourPhrase is the ONE writer of «what a stated colour reads like», shared by the run's own
+// colour block and by every cloth on the cloth list.
+//
+// IT IS SHARED RATHER THAN COPIED FOR THE REASON THE COMMENT ABOVE ALREADY PAID FOR ONCE. The
+// name-and-exact-value shape is not formatting, it is the resolution of a disagreement between a
+// dictionary code and a typed hex; a second copy of that shape, written beside the cloth list,
+// would be a second place for that resolution to drift — and the drift would show up as two cloths
+// on one prompt describing their colours by two different rules.
+func colourPhrase(code, hex string) string {
+	code, hex = strings.TrimSpace(code), strings.TrimSpace(hex)
 	switch {
 	case code != "" && hex != "":
 		return "colourway " + code + " — the exact value is " + hex

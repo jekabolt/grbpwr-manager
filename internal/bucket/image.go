@@ -434,7 +434,11 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 			Blurhash:   h,
 		},
 		// Same obligation as the standard path, and it matters more here: verbatim is what a flat
-		// is uploaded through, and a frozen sheet plate pins exactly these bytes by this hash.
+		// is uploaded through, so these are the bytes a person drew on.
+		//
+		// ЗДЕСЬ СТОЯЛО «а замороженная плита листа пинит ровно эти байты по этому хешу». Подсистемы
+		// версий листа больше нет, и довод пережил свою причину: обязательство осталось, но держится
+		// оно теперь на дедупликации и на сверке загруженного, а не на подписи, которой не существует.
 		ContentHash: rawSHA,
 	}, nil
 }

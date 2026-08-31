@@ -107,6 +107,10 @@ func TestMediaRefRegistryCoversTheDesignWave(t *testing.T) {
 	for _, owning := range []string{
 		"design_picture.media_id",
 		"design_edit_layer.base_media_id",
+		// A shelf row of the card (0354). Its media IS the asset — the texture, the pattern tile,
+		// the hardware photograph — and the column is ON DELETE RESTRICT, so an unregistered entry
+		// would let the library call the file free and hand the operator a raw foreign-key error.
+		"design_asset.media_id",
 	} {
 		assert.True(t, targets[owning],
 			"%s holds its media with ON DELETE RESTRICT; unregistered, the library reports the file as free", owning)
@@ -123,7 +127,7 @@ func TestMediaRefRegistryCoversTheDesignWave(t *testing.T) {
 	for _, src := range mediaRefRegistry {
 		kinds[src.kind] = true
 	}
-	for _, kind := range []string{"design_picture", "design_edit_layer"} {
+	for _, kind := range []string{"design_picture", "design_edit_layer", "design_asset"} {
 		assert.True(t, kinds[kind], "the DESIGN band must reach the client as kind %q", kind)
 	}
 
