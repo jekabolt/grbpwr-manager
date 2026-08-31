@@ -161,6 +161,13 @@ func readRefs(t *testing.T, raw *sql.DB, card int) []promptRefRow {
 // Кадры с view_key рождают роль этого вида, кадр без view_key — НЕ рождает (придуманная роль
 // соврала бы модели), а ординалы встают ХВОСТОМ за уже стоящими референсами мудборда: промпт
 // читается ORDER BY ordinal, и кроп с ordinal 0 пролез бы вперёд порядка, назначенного человеком.
+//
+// ⚠ РАЗРЕЗ ЗДЕСЬ ЗАЯВЛЕН ДЛЯ ПРОМПТА (`ForInput: true`), И ЭТО НЕ ФОРМАЛЬНОСТЬ. R-11 круга 2
+// штамповал роли ВСЕГДА, T-15 круга 4 сузил его до разрезов, о которых попросили. Проба написана
+// ДО T-15 и поле не называла — то есть после сужения она описывала жест, которого больше нет:
+// «сплит по умолчанию набивает промпт». Роль по-прежнему стоит на кадре с видом, но теперь только
+// когда её попросили; отрицательную половину того же правила держит соседняя проба
+// TestDesignDBSplitWithoutForInputStampsNoRoles.
 func TestDesignDBSplitStampsPromptRolesFromViewKeys(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -182,6 +189,7 @@ func TestDesignDBSplitStampsPromptRolesFromViewKeys(t *testing.T) {
 
 	crops, err := rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
 		PictureId: batch.Pictures[0].Id, ClientRequestId: uuid.NewString(), Actor: "probe-split",
+		ForInput: true,
 		Frames: []entity.DesignSplitFrame{
 			{MediaId: m1, ViewKey: entity.DesignViewFront},
 			{MediaId: m2}, // вид не объявлен — роли быть не должно
@@ -204,6 +212,10 @@ func TestDesignDBSplitStampsPromptRolesFromViewKeys(t *testing.T) {
 // Повтор сплита (сетевой ретрай хендлера приезжает с НОВЫМИ медиа перезалитых кропов) обязан
 // вернуть ТЕ ЖЕ картинки и НЕ родить второй набор ролей: срез повтора стоит выше штампа ролей,
 // в той же транзакции.
+//
+// Оба вызова заявлены для промпта (`ForInput: true`) по той же причине, что и в пробе выше:
+// иначе ролей не было бы вовсе ни у первого разреза, ни у повтора, и «повтор не удвоил» стало бы
+// утверждением о пустоте — оно верно и при полностью выключенном штампе.
 func TestDesignDBSplitRetryDoesNotDoubleRoles(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -219,7 +231,7 @@ func TestDesignDBSplitRetryDoesNotDoubleRoles(t *testing.T) {
 	parent := batch.Pictures[0].Id
 
 	first, err := rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
-		PictureId: parent, ClientRequestId: uuid.NewString(), Actor: "probe",
+		PictureId: parent, ClientRequestId: uuid.NewString(), Actor: "probe", ForInput: true,
 		Frames: []entity.DesignSplitFrame{{MediaId: m1, ViewKey: entity.DesignViewFront}},
 	})
 	require.NoError(t, err)
@@ -230,7 +242,7 @@ func TestDesignDBSplitRetryDoesNotDoubleRoles(t *testing.T) {
 	// Ретрай: тот же родитель, но кроп перезалит под новым media id.
 	m2 := probeMedia(t, raw)
 	second, err := rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
-		PictureId: parent, ClientRequestId: uuid.NewString(), Actor: "probe",
+		PictureId: parent, ClientRequestId: uuid.NewString(), Actor: "probe", ForInput: true,
 		Frames: []entity.DesignSplitFrame{{MediaId: m2, ViewKey: entity.DesignViewFront}},
 	})
 	require.NoError(t, err)
@@ -243,4 +255,67 @@ func TestDesignDBSplitRetryDoesNotDoubleRoles(t *testing.T) {
 	for _, r := range after {
 		require.NotEqual(t, m2, r.Media, "медиа непринятого ретрая не должно получать роль")
 	}
+}
+
+// ─────────────────── T-15: РАЗРЕЗ ПО УМОЛЧАНИЮ НЕ НАБИВАЕТ ПРОМПТ ───────────────────
+
+// ДВА УТВЕРЖДЕНИЯ ОБ ОДНОМ ЖЕСТЕ, И ИМЕННО ПОТОМУ ОНИ В ОДНОЙ ПРОБЕ: при `for_input=false` — а
+// это ЗНАЧЕНИЕ ПО УМОЛЧАНИЮ провода и прямое правило владельца T-15 — разрез обязан
+//
+//  1. ВЕРНУТЬ КРОПЫ вызывающему, и
+//  2. НЕ ЗАВЕСТИ НИ ОДНОЙ роли в design_reference.
+//
+// ⚠ ПОЧЕМУ ПЕРВОЕ ВООБЩЕ ПРИХОДИТСЯ УТВЕРЖДАТЬ. Гейт T-15 стоял `if !req.ForInput { return nil }`,
+// то есть выходом из ВСЕЙ транзакции, а `out` наполняется в самом хвосте той же функции. Значит
+// НА ПУТИ ПО УМОЛЧАНИЮ кропы записывались в базу, а вызывающему возвращался пустой список: клиент
+// видел «разрез не дал ничего», имея разрез в базе.
+//
+// СОСЕДНИЕ ПРОБЫ ЭТО НЕ ДЕРЖАЛИ, хотя и краснели. Они не называли ForInput вовсе, поэтому шли по
+// тому же пути по умолчанию и падали ДВАЖДЫ сразу — сперва на пустом списке кропов, следом на
+// ненаписанных ролях, — и по такому падению нельзя было сказать, которое из двух правил сломано.
+// Теперь они заявляют `ForInput: true` и судят ровно штамп ролей, а путь по умолчанию судит эта
+// проба, и только она.
+//
+// ⚠ ПОЧЕМУ ВТОРОЕ НЕЛЬЗЯ ОПУСТИТЬ. Починка гейта — правка ровно того условия, которое ПРАВИЛО
+// T-15 и есть. Соседние пробы утверждают штамп при `ForInput: true`; без этой пробы гейт можно
+// снять целиком, и весь пакет останется зелёным, а разрез на верстаке снова начнёт молча набивать
+// промпт флэтами — тем самым, что T-15 запретил дословно.
+func TestDesignDBSplitWithoutForInputStampsNoRoles(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	parentMedia := probeMedia(t, raw)
+	m1, m2 := probeMedia(t, raw), probeMedia(t, raw)
+
+	batch, err := rep.Design().RegisterBatch(ctx, entity.DesignBatchRegister{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Items: []entity.DesignUploadItem{{MediaId: parentMedia, Kind: entity.DesignPictureKindFlat}},
+	})
+	require.NoError(t, err)
+	require.Len(t, batch.Pictures, 1)
+
+	// ForInput НЕ НАЗВАН НАМЕРЕННО: проба судит именно УМОЛЧАНИЕ, а не явную ложь. Написать здесь
+	// `ForInput: false` значило бы проверять путь, по которому провод не ходит.
+	crops, err := rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
+		PictureId: batch.Pictures[0].Id, ClientRequestId: uuid.NewString(), Actor: "probe-split",
+		Frames: []entity.DesignSplitFrame{
+			{MediaId: m1, ViewKey: entity.DesignViewFront},
+			{MediaId: m2, ViewKey: entity.DesignViewDetail},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, crops, 2,
+		"разрез по умолчанию обязан ВЕРНУТЬ свои кропы: гейт огораживает запись ролей, а не хвост чтения")
+	require.Equal(t, m1, crops[0].MediaId)
+	require.Equal(t, m2, crops[1].MediaId)
+
+	// Кропы в базе — та же пара, что вернулась. Иначе «вернул две» могло бы означать «записал
+	// что-то другое, а показал это».
+	var filed int
+	require.NoError(t, raw.QueryRow(
+		`SELECT COUNT(*) FROM design_picture WHERE derived_from = ?`, batch.Pictures[0].Id).Scan(&filed))
+	require.Equal(t, 2, filed, "кропы обязаны лечь в базу — их запись гейт не трогает вовсе")
+
+	require.Empty(t, readRefs(t, raw, card),
+		"T-15: разрез, не заявленный для промпта, не имеет права завести роль референса")
 }
