@@ -821,6 +821,10 @@ type DesignSplitRequest struct {
 	ClientRequestId string
 	Frames          []DesignSplitFrame
 	Actor           string
+	// ForInput — просил ли ВЫЗЫВАЮЩИЙ показать кропы модели. Ложь = кадры получают вид, но НЕ
+	// получают роль в промпте. См. `SplitDesignPictureRequest.for_input`: умолчание ложно, потому
+	// что разрез на верстаке — это раскладка видов по слотам, а не пополнение промпта.
+	ForInput bool
 }
 
 // DesignEditLayerSave — CAS-сохранение слоя. LayerId == 0 рождает слой; BaseMediaId == 0

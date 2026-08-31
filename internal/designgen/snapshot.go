@@ -31,6 +31,7 @@ type runParams struct {
 	Layout             string        `json:"layout"`
 	Colour             *colourRecipe `json:"colour"`
 	ExtraInputMediaIDs []int         `json:"extra_input_media_ids"`
+	DetailSlotIDs      []int         `json:"detail_slot_ids"`
 	FixTarget          string        `json:"fix_target"`
 	FixTargets         []string      `json:"fix_targets"`
 	Threed             *threedParams `json:"threed"`
@@ -76,9 +77,76 @@ type inputCallout struct {
 }
 
 type inputSlot struct {
-	ViewKey    string `json:"view_key"`
+	ViewKey string `json:"view_key"`
+	// WHICH detail slot, so `detail_slot_ids` can be resolved to a NAME. The wire has carried this
+	// since the snapshot existed (`DesignInputSlot.slot_id`); this reader simply never asked for
+	// it, and without it a run that requested two details could only say «draw two details».
+	SlotID     int    `json:"slot_id"`
 	DetailName string `json:"detail_name"`
 	MediaID    int    `json:"media_id"`
+}
+
+// requestedDetailNameList names the detail slots this run asked for, ONE ENTRY PER ASKED SLOT and
+// in the order they were asked; an entry the snapshot cannot name is empty.
+//
+// THE LIST IS THE PRIMITIVE, THE JOINED STRING IS A VIEW OF IT. Three different readers need these
+// names — the «draw these details» block, the frame labels of a layout paragraph, and the per-call
+// suffix of a per_view job — and only the first of them wants them glued together. Deriving the
+// other two by splitting a comma-joined string would break on a detail whose own name has a comma.
+//
+// ПОЗИЦИОННО, И НИКАК ИНАЧЕ. Сервер у двери уже отверг прогон, у которого число элементов
+// `detail_slot_ids` не совпало с числом `detail` в `views` (designEffectiveParams), поэтому здесь
+// i-й `detail` соответствует i-му идентификатору. Сортировать или дедуплицировать эти списки
+// нельзя: порядок `views` — тот же порядок, которым разрезчик подписывает кадры склеенного листа.
+//
+// ЧТО ДЕЛАЕТ НЕИЗВЕСТНЫЙ ИДЕНТИФИКАТОР. Он НЕ отменяет прогон и НЕ подставляет соседнее имя:
+// снимок мог быть записан до того, как слоты попали в него, или деталь удалили вместе со слотом.
+// Такая позиция говорит «detail» — ровно столько, сколько известно, — и молчание здесь честнее
+// догадки, которая нарисовала бы не ту деталь под правильным именем.
+//
+// ⚠ ЧИТАЕТСЯ ВЕСЬ in.Slots, ВКЛЮЧАЯ ЗАПИСИ БЕЗ media_id, И ИМЕННО В ЭТОМ ВСЯ ФУНКЦИЯ. Плита с
+// картинкой уже названа подписью `slotCaption` («… — detail view (collar)»); слот, который просят
+// НАРИСОВАТЬ, картинки не имеет по определению — её как раз и заказывают, — и до этой волны в
+// снимок не попадал вовсе. Сервер кладёт его записью без media_id (designNamedEmptyDetailSlots),
+// и вот она — единственный источник имени в том единственном случае, ради которого поле завели.
+func requestedDetailNameList(p runParams, in runInputs) []string {
+	nameOf := make(map[int]string, len(in.Slots))
+	for _, s := range in.Slots {
+		if s.SlotID > 0 && strings.TrimSpace(s.DetailName) != "" {
+			nameOf[s.SlotID] = strings.TrimSpace(s.DetailName)
+		}
+	}
+	names := make([]string, 0, len(p.DetailSlotIDs))
+	for _, id := range p.DetailSlotIDs {
+		names = append(names, nameOf[id])
+	}
+	return names
+}
+
+// detailNameAt — имя i-й по счёту просимой детали либо пустая строка. Позиция, которой список не
+// покрывает, — это унаследованный снимок, записанный до появления поля; см. правило длин у двери.
+func detailNameAt(names []string, i int) string {
+	if i < 0 || i >= len(names) {
+		return ""
+	}
+	return names[i]
+}
+
+// requestedDetailNames is the «draw these details» line: the same list, joined, with the unnameable
+// positions saying «detail» — as much as that run ever knew about them.
+func requestedDetailNames(p runParams, in runInputs) string {
+	list := requestedDetailNameList(p, in)
+	if len(list) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(list))
+	for _, n := range list {
+		if n == "" {
+			n = "detail"
+		}
+		names = append(names, n)
+	}
+	return strings.Join(names, ", ")
 }
 
 // parseParams / parseInputs decode LENIENTLY, exactly as the store does: a snapshot that will not
@@ -167,7 +235,13 @@ func referenceList(p runParams, in runInputs) []refCaption {
 		add(id, "additional reference image")
 	}
 	if p.Colour != nil {
-		add(p.Colour.FabricMediaID, "fabric swatch for the colour")
+		// ⚠ THE CAPTION SAYS MATERIAL, NOT COLOUR, AND THE CHANGE IS LOAD-BEARING. It read «fabric
+		// swatch for the colour» while a recipe could only be ONE of photo / picker / words. Now
+		// that all three may be given at once, that caption contradicts the order of precedence the
+		// render craft states two blocks later: the photograph governs the MATERIAL and loses the
+		// colour to the picker. A caption and a rule that disagree about the same picture is worse
+		// than either alone — the model gets to choose which of our two sentences it believes.
+		add(p.Colour.FabricMediaID, "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here")
 	}
 	return out
 }
@@ -293,24 +367,44 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		b.WriteString(value)
 	}
 
+	// РОД, КОТОРЫЙ РИСУЕТ ДЕТАЛИ ПО ПРОСЬБЕ, РОВНО ОДИН НА КАЖДОМ МАРШРУТЕ: флэт и рендер. Он же
+	// решает, писать ли блок имён и звать ли крафт — поэтому предикат считается ОДИН РАЗ и здесь.
+	drawsDetails := run.Kind == entity.DesignRunKindFlat || renderIsTheKind(run.Kind)
+	detailNames := requestedDetailNameList(p, in)
+
 	if run.Ask.Valid {
 		write("", run.Ask.String)
 	}
 	write("garment", in.GarmentNote)
 	write("fit", in.Fit)
+	// КАКИЕ ИМЕННО ДЕТАЛИ ПРОСИЛИ. Без этой строки прогон на две детали говорил модели ровно
+	// «нарисуй две детали» — и получал два произвольных крупных плана, потому что `views` несёт
+	// ключ вида (`detail`), а ключ вида не различает воротник и карман. Имя берётся из ЗАМОРОЖЕННОГО
+	// снимка слота, а не из карточки: деталь могли переименовать после запуска, и старый прогон
+	// обязан читаться тем именем, с которым он был отправлен.
+	//
+	// ⚠ БЛОК ПРИНАДЛЕЖИТ ТОЛЬКО РИСУЮЩИМ РОДАМ, и раньше он стоял ДО switch'а, то есть писался
+	// всем. 3D — это сборка в Meshy, а не картинка по этим словам; унаследовав `detail_slot_ids`
+	// от родителя-флэта (реран переписывает параметры целиком), он получал в промпт сборки список
+	// деталей, который сборке нечего делать. У Meshy при этом есть собственный ErrPromptTooLong,
+	// то есть лишние слова там не бесплатны. Вектор перерисовывает утверждённый растр и тоже не
+	// рисует ничего по просьбе.
+	if drawsDetails {
+		write("draw these details", requestedDetailNames(p, in))
+	}
 
+	// ─── COLOUR AND WORDS ARE TWO BLOCKS, NOT ONE COMMA-JOINED LINE.
+	//
+	// They used to be one ("olive, colourway OLV-03, #4a5a3c"), which was harmless while nothing
+	// downstream had to tell them apart. The render route now does: the owner allows a fabric
+	// photograph, a picked colour and a free description to be given TOGETHER, so the craft block
+	// has to rank them — and a rule cannot point at "the stated colour" and "the words" separately
+	// if the prompt has already glued them into one sentence. Split here rather than in the render
+	// craft, because it is composePrompt that owns the shape of the human context and a second
+	// writer of the same fields is how two readers come to disagree.
 	if c := p.Colour; c != nil {
-		var parts []string
-		if c.Words != "" {
-			parts = append(parts, c.Words)
-		}
-		if c.Code != "" {
-			parts = append(parts, "colourway "+c.Code)
-		}
-		if c.Hex != "" {
-			parts = append(parts, c.Hex)
-		}
-		write("colour", strings.Join(parts, ", "))
+		write("colour", colourStatement(c))
+		write("fabric in words", c.Words)
 	}
 	if t := p.Threed; t != nil {
 		var parts []string
@@ -344,7 +438,7 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		write("correct these views", strings.Join(targets, ", "))
 	}
 
-	// ─── THE CRAFT, LAST, AND ON THE FLAT ROUTE ONLY (flatprompt.go).
+	// ─── THE CRAFT, LAST: flatprompt.go on the flat route, renderprompt.go on the render one.
 	//
 	// LAST IS A DECISION, NOT AN ACCIDENT. The human context above legitimately carries colour
 	// words (a colourway recipe), callout texts and free-form notes — and a flat must stay black
@@ -356,13 +450,26 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// sentence written to operate on material already given, and here everything it operates on
 	// (the ask, the garment, the fit, the references and their markup) has already been said.
 	//
-	// FLAT ONLY: the owner supplied these reference prompts for flats. A render is a picture of
-	// a garment in a scene and a 3D run is a Meshy build — neither is described by "black vector
-	// line art on a plain white background", so both keep the bare context above. The vector kind
-	// is a redraw of an already-approved raster and draft_idea never reaches the worker; neither
-	// takes the block either.
-	if run.Kind == entity.DesignRunKindFlat {
-		write("", flatCraft(p, len(attached)))
+	// ON THE RENDER ROUTE THE SAME POSITION CARRIES A SECOND, SHARPER LOAD. The render craft is
+	// where the ORDER OF PRECEDENCE over the fabric is written, and that rule exists precisely to
+	// settle a disagreement between things said ABOVE it — the `colour` block, the `fabric in
+	// words` block and the swatch's own caption. A rule that arbitrates between earlier sentences
+	// has to come after all of them, or it arbitrates over half its subject.
+	//
+	// ONE CRAFT PER ROUTE, AND NEVER TWO. The flat block is the owner's reference wording for
+	// technical drawings; the render block (renderprompt.go) is the craft of a photograph of cloth.
+	// They contradict each other on purpose — "black vector line art, strictly excluded: shading,
+	// fabric texture" against "photorealistic, the weave must read" — so a run that took both would
+	// end on whichever paragraph happened to be written last.
+	//
+	// 3D IS A MESHY BUILD, VECTOR REDRAWS AN APPROVED RASTER, AND draft_idea NEVER REACHES THE
+	// WORKER. None of the three is a picture composed by these words, so all three keep the bare
+	// human context above and take no craft block at all.
+	switch {
+	case run.Kind == entity.DesignRunKindFlat:
+		write("", flatCraft(p, detailNames, len(attached)))
+	case renderIsTheKind(run.Kind):
+		write("", renderCraft(p, detailNames, attached))
 	}
 	return b.String()
 }
@@ -374,6 +481,37 @@ func viewPrompt(base, view string) string {
 		return base
 	}
 	return strings.TrimSpace(base + "\n\nview:\n" + view)
+}
+
+// viewCallLabels — ЧТО ИМЕННО ДОПИСЫВАЕТСЯ К БАЗОВОМУ ПРОМПТУ НА КАЖДОМ ПЛАТНОМ ВЫЗОВЕ per_view,
+// позиционно по views.
+//
+// ЧТО БЫЛО СЛОМАНО, И ЭТО САМЫЙ ДОРОГОЙ ИЗ ДЕФЕКТОВ ВОЛНЫ. `per_view` — умолчание формы, то есть
+// основной маршрут. Прогон на две детали давал ДВА вызова, у которых промпт совпадал ПОБАЙТОВО:
+// дописывался ключ вида (`detail`), а ключ вида не различает воротник и карман. Два списания за
+// два одинаковых запроса, и какая из вернувшихся картинок воротник — не знал никто.
+//
+// СЧЁТЧИК ИДЁТ ПО `detail` В views, А НЕ ПО ИНДЕКСУ КАДРА, потому что позиционное соответствие
+// объявлено именно так: i-й `detail` в views ↔ i-й адрес в detail_slot_ids. Кадры силуэта в этом
+// счёте не участвуют, и «detail, front, detail» обязан отдать первой детали первое имя, а второй —
+// второе, а не первое и третье.
+//
+// НЕИЗВЕСТНОЕ ИМЯ ОСТАВЛЯЕТ ГОЛЫЙ КЛЮЧ ВИДА — то же молчание, что и в блоке «draw these details»:
+// это ровно столько, сколько знает старый снимок, и меньше лжи, чем догадка.
+func viewCallLabels(views, detailNames []string) []string {
+	out := make([]string, 0, len(views))
+	seen := 0
+	for _, v := range views {
+		label := v
+		if v == entity.DesignViewDetail {
+			if n := detailNameAt(detailNames, seen); n != "" {
+				label = v + " — " + n
+			}
+			seen++
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 // buildJob assembles everything a provider needs out of one claimed run, resolving media ids into
@@ -392,8 +530,11 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 		Kind:       run.Kind,
 		Views:      p.Views,
 		Layout:     p.Layout,
-		Outputs:    run.RequestedOutputs,
-		Quality:    quality,
+		// РЕЗОЛВИТСЯ ЗДЕСЬ, А НЕ У ВЫЗОВА, потому что имя живёт в ЗАМОРОЖЕННОМ снимке, а снимок
+		// дальше этой функции не едет. Провайдеру достаётся уже разрешённый позиционный список.
+		DetailNames: requestedDetailNameList(p, in),
+		Outputs:     run.RequestedOutputs,
+		Quality:     quality,
 	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures

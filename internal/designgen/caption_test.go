@@ -52,7 +52,7 @@ func TestCaptionNumberKIsImageNumberK(t *testing.T) {
 		"11": "reference image",
 		"12": "back — NOTE-12-collar",
 		"7":  "additional reference image",
-		"9":  "fabric swatch for the colour",
+		"9":  "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here",
 	}
 
 	lines := captionLines(t, job.Prompt)

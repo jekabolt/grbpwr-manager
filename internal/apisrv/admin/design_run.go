@@ -456,6 +456,30 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err != nil {
 		return nil, err
 	}
+	// ИДЕНТИЧНОСТЬ ДЕТАЛИ ДЕРЖИТСЯ НА ОБЕИХ ГРАНИЦАХ. designEffectiveParams проверяет форму
+	// списка, но намеренно не знает базы; уже загруженная полоса отвечает на второй вопрос — каждый
+	// названный адрес действительно является detail-слотом ЭТОЙ карточки. Положительный чужой id
+	// иначе замёрз бы в истории как правдоподобная, но ложная подпись результата.
+	//
+	// ⚠ ЕЙ ОТДАЁТСЯ req.GetParams(), А НЕ params, И ЭТО ТО ЖЕ РАЗЛИЧЕНИЕ, ЧТО У ПРАВИЛА ДЛИН
+	// («THE LENGTH RULE BINDS THE CALLER, NOT HISTORY», designEffectiveParams). params у рерана без
+	// параметров — УНАСЛЕДОВАННЫЕ: клиент не присылал ни поля, ни списка, и отказ назвал бы ему
+	// `params.detail_slot_ids.0` в запросе, где нет ни `params`. Хуже того, он был бы ВЕЧНЫМ:
+	// пустой detail-слот законно удаляется (DeleteDetailSlot), сегодняшний верстак его больше не
+	// содержит, а снимок задним числом не чинят — прогон стал бы неперезапускаемым навсегда.
+	//
+	// ДЕГРАДАЦИЯ ЧЕСТНАЯ, А НЕ МОЛЧАЛИВАЯ. Унаследованный список НЕ чистится: выбросить из него
+	// «уже не существующий» адрес значило бы переписать замороженную просьбу и сдвинуть позиционное
+	// соответствие с `views`. Он едет как есть, а ИМЯ к нему приходит из снимка РОДИТЕЛЯ, который
+	// реран переписывает целиком (designRunInputs) — то есть из той единственной записи, где имя
+	// удалённой детали ещё живо. Не нашлось и там — промпт скажет «detail», ровно столько, сколько
+	// известно.
+	//
+	// Передавать сюда сообщение КЛИЕНТА, а не флаг, — тоже решение: функция физически не видит
+	// унаследованного списка и не может начать его проверять по недосмотру.
+	if err := designRefuseForeignDetailSlots(cardID, req.GetParams(), band.Bench); err != nil {
+		return nil, err
+	}
 	// ГРАНИЦА КАРТОЧКИ — ДО ДЕНЕГ. Оба списка приезжают с провода и оба уезжают ПОСТАВЩИКУ:
 	// designgen/snapshot.go собирает ссылки прогона из плит, референсов, `extra_input_media_ids` И
 	// `colour.fabric_media_id`. Проверяются оба, потому что дефект у них один.
@@ -644,11 +668,46 @@ func designEffectiveParams(in *pb_common.DesignRunParams, parent *entity.DesignR
 	// входящее сообщение значит писать в чужую память — перехватчики и логи видят тот же объект.
 	params, _ = proto.Clone(params).(*pb_common.DesignRunParams)
 
+	detailViews := 0
 	for i, v := range params.GetViews() {
 		if !entity.IsDesignGhostView(v) {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"params.views.%d %q is not a view of the garment", i, v)
 		}
+		if v == entity.DesignViewDetail {
+			detailViews++
+		}
+	}
+	detailSlots := params.GetDetailSlotIds()
+	seenDetailSlots := make(map[int32]int, len(detailSlots))
+	for i, id := range detailSlots {
+		if id <= 0 {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"params.detail_slot_ids.%d must be a detail slot id", i)
+		}
+		if first, duplicate := seenDetailSlots[id]; duplicate {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"params.detail_slot_ids.%d duplicates params.detail_slot_ids.%d (slot %d)", i, first, id)
+		}
+		seenDetailSlots[id] = i
+	}
+	// ─── THE LENGTH RULE BINDS THE CALLER, NOT HISTORY ───
+	//
+	// `in == nil` means these params were INHERITED from the parent run of a rerun, and a run
+	// frozen before this field existed carries `views:["detail"]` with no ids at all. Holding
+	// inherited params to the rule would mean that every detail run recorded before today can
+	// never be rerun again — a validation added now would retroactively condemn rows already on
+	// disk, which no amount of correctness at the door is worth. The prompt degrades honestly
+	// instead: an unnamed detail is asked for as «detail», which is exactly as much as that run
+	// ever knew.
+	//
+	// A CALLER THAT SPEAKS, THOUGH, IS HELD TO BOTH STATEMENTS AT ONCE: `views` says how many
+	// detail pictures were asked for and `detail_slot_ids` says which slots they are for, and a
+	// pair that disagrees means one of them is false.
+	if in != nil && len(detailSlots) != detailViews {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"params.detail_slot_ids has %d elements but params.views has %d detail elements; "+
+				"each detail view must name exactly one slot", len(detailSlots), detailViews)
 	}
 	switch params.GetLayout() {
 	case "":
@@ -715,6 +774,29 @@ func designEffectiveParams(in *pb_common.DesignRunParams, parent *entity.DesignR
 			"params.extra_input_media_ids names %d pictures; the ceiling is %d", n, designMaxInputRefs)
 	}
 	return params, nil
+}
+
+// designRefuseForeignDetailSlots держит КАРТОЧНУЮ половину адреса детали. Проверка формы живёт в
+// designEffectiveParams; эта стоит после GetBand и не делает второго чтения: Bench уже содержит
+// полный набор адресов карточки.
+//
+// ⚠ `spoken` — СООБЩЕНИЕ КЛИЕНТА, а не действующие параметры прогона. Разницу видно только на
+// реране без параметров, и она там решающая: см. довод у места вызова. nil-сообщение отдаёт пустой
+// список, цикл не исполняется ни разу — «тот, кто молчит, не может противоречить».
+func designRefuseForeignDetailSlots(cardID int, spoken *pb_common.DesignRunParams, bench []entity.DesignBenchSlot) error {
+	details := make(map[int]struct{}, len(bench))
+	for _, slot := range bench {
+		if slot.TechCardId == cardID && slot.ViewKey == entity.DesignViewDetail {
+			details[slot.Id] = struct{}{}
+		}
+	}
+	for i, id := range spoken.GetDetailSlotIds() {
+		if _, ok := details[int(id)]; !ok {
+			return status.Errorf(codes.InvalidArgument,
+				"params.detail_slot_ids.%d %d is not a detail slot of tech card %d", i, id, cardID)
+		}
+	}
+	return nil
 }
 
 // designInt32sToInts — один переход между шириной провода и шириной домена. Отдельной функцией,
@@ -1319,10 +1401,31 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	}
 
 	// ─── slots: плиты верстака ───
+	//
+	// ⚠ ПОТОЛОК СЧИТАЕТ ПЛИТЫ, А НЕ ЗАПИСИ, И РАЗЛИЧИЕ ПОЯВИЛОСЬ ВМЕСТЕ С ПУСТЫМИ ДЕТАЛЯМИ.
+	// designInputSlots отдаёт теперь два разных рода записей: плиты (несут media_id, уезжают
+	// поставщику ссылкой и подписью) и записи-имена для просимых пустых деталей (не несут ничего,
+	// кроме slot_id и названия). Считать их одним числом значило бы отказывать в ЗАКОННОМ прогоне:
+	// карточка с четырьмя сторонами и четырьмя деталями даёт восемь плит, и первая же галка на
+	// пустую деталь перевалила бы за потолок — то есть новая фича закрыла бы старый сценарий.
+	// Довод потолка («снимок обязан помещаться в строку и в глаз») от разделения не страдает: обе
+	// половины ограничены, а запись-имя весит десятки байт против плиты с хешем и адресом.
 	out.Slots = designInputSlots(src)
-	if len(out.Slots) > designMaxInputSlots {
+	plates, asked := 0, 0
+	for _, s := range out.Slots {
+		if s.GetMediaId() > 0 {
+			plates++
+			continue
+		}
+		asked++
+	}
+	if plates > designMaxInputSlots {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"a run may carry %d bench plates; this one has %d", designMaxInputSlots, len(out.Slots))
+			"a run may carry %d bench plates; this one has %d", designMaxInputSlots, plates)
+	}
+	if asked > designMaxInputSlots {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"a run may ask for %d empty detail slots; this one asks for %d", designMaxInputSlots, asked)
 	}
 	return out, nil
 }
@@ -1337,7 +1440,76 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 // «выбрать всё в FLAT SLOTS» (W-10) называет три стороны и манжету одним прогоном.
 func designInputSlots(src designInputSources) []*pb_common.DesignInputSlot {
 	slots, _ := designSelectBench(src)
-	return slots
+	return append(slots, designNamedEmptyDetailSlots(src, slots)...)
+}
+
+// designNamedEmptyDetailSlots — ЗАПИСЬ БЕЗ КАРТИНКИ ДЛЯ ДЕТАЛИ, КОТОРУЮ ПРОСЯТ НАРИСОВАТЬ.
+//
+// ЧТО БЫЛО СЛОМАНО, И ПОЧЕМУ ЭТО НЕЛЬЗЯ БЫЛО ЗАМЕТИТЬ. `params.detail_slot_ids` резолвится в ИМЯ
+// («collar», «patch pocket») ровно одним читателем — designgen/snapshot.go, requestedDetailNames, —
+// и читает он `inputs.slots[*].slot_id`. А отбор плит (designSelectBench) выбрасывает слот, у
+// которого нет картинки. Пустой слот детали — это ГЛАВНЫЙ случай фичи, а не краевой: галку ставят
+// именно затем, чтобы воротник НАРИСОВАЛИ, то есть в слоте картинки ещё нет. Слот в снимок не
+// попадал, имя не резолвилось, и промпт говорил «draw these details: detail» — ровно та строка,
+// от которой уходили.
+//
+// И ОБРАТНОЕ БЫЛО ВЕРНО ПО ПОСТРОЕНИЮ: слот, попавший в отбор, несёт картинку, а значит уже получил
+// подпись `slotCaption` вида «current state of the garment — detail view (collar)». То есть в
+// единственном случае, когда имя резолвилось, оно было сказано и без этой волны.
+//
+// ПОЧЕМУ СНИМОК, А НЕ ВТОРОЕ ПОЛЕ РЯДОМ С id. Заморозить имена в `params` рядом с адресами —
+// рабочая альтернатива, и она отвергнута сознательно: `DesignInputSlot` УЖЕ несёт пару
+// (`slot_id`, `detail_name`), и единственный читатель уже ходит именно в неё. Второе написание
+// того же факта дало бы двух писателей и двух читателей одной пары, а расходятся такие пары
+// молча — здесь это уже случалось (`fix_target` против `fix_targets`, две трактовки одного поля).
+// Плюс параметры принадлежат ЧЕЛОВЕКУ («что просят»), а имя детали — факт сервера; провенанс
+// живёт в снимке (см. designEffectiveParams).
+//
+// ПОДПИСИ КАРТИНОК НЕ СДВИГАЮТСЯ. referenceList складывает картинки через `add`, который выходит
+// на `id <= 0` первой же строкой, — запись без media_id не даёт ни url, ни строки «- image k»,
+// поэтому нумерация подписей остаётся ровно такой, какой была. Читающий join (joinDesignRunInputMedia)
+// на нулевом id тоже молчит: `fill(0)` отдаёт (nil, false), то есть «картинки нет» и «не удалена».
+//
+// ЧТО СЮДА НЕ ПОПАДАЕТ. Адрес, которого на верстаке нет вовсе: имени для него взять негде, и
+// выдуманного тут не будет. Для свежего прогона такого адреса и не бывает — дверь отвергает чужой
+// (designRefuseForeignDetailSlots); у рерана имя приезжает из снимка родителя целиком.
+func designNamedEmptyDetailSlots(src designInputSources, already []*pb_common.DesignInputSlot) []*pb_common.DesignInputSlot {
+	ids := src.Params.GetDetailSlotIds()
+	if len(ids) == 0 {
+		return nil
+	}
+	covered := make(map[int32]struct{}, len(already))
+	for _, s := range already {
+		if s.GetSlotId() > 0 {
+			covered[s.GetSlotId()] = struct{}{}
+		}
+	}
+	named := make(map[int]entity.DesignBenchSlot, len(src.Bench))
+	for _, slot := range src.Bench {
+		if slot.ViewKey == entity.DesignViewDetail {
+			named[slot.Id] = slot
+		}
+	}
+	out := make([]*pb_common.DesignInputSlot, 0, len(ids))
+	for _, id := range ids {
+		if _, dup := covered[id]; dup {
+			continue
+		}
+		slot, ok := named[int(id)]
+		if !ok {
+			continue
+		}
+		covered[id] = struct{}{}
+		// MediaId, ContentHash и LayerRev ОСТАЮТСЯ ПУСТЫМИ, И ЭТО ПРАВДА, А НЕ ПРОПУСК: в слоте
+		// нет картинки, сравнивать «вход протух» не с чем, а нулевой media_id читается ровно как
+		// «эта деталь была ПРОСИМА, а не ПОКАЗАНА».
+		out = append(out, &pb_common.DesignInputSlot{
+			ViewKey:    entity.DesignViewDetail,
+			SlotId:     id,
+			DetailName: slot.DetailName.String,
+		})
+	}
+	return out
 }
 
 // designSelectBench — САМ ОТБОР, и он ЕДИНСТВЕННЫЙ. Отдаёт две проекции одного прохода: слоты для
@@ -1446,6 +1618,24 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	}
 	snap.Views = src.Params.GetViews()
 	snap.Layout = src.Params.GetLayout()
+	// ─── ТРЕТЬЕ ПОЛЕ, КОТОРОЕ ДОПОЛНЯЕТСЯ, И ОНО ИЗ ТОЙ ЖЕ КАТЕГОРИИ, ЧТО ДВА ВЫШЕ ───
+	//
+	// Реран вправе изменить просьбу: контракт говорит «`ask` and `params` still apply ON TOP», то
+	// есть клиент может поставить галку на ДРУГУЮ деталь. Снимок родителя про неё не знает ничего —
+	// и без этой строки повторение с новой галкой снова говорило бы «draw these details: detail»,
+	// то есть MAJOR-1 был бы починен ровно на половине входов.
+	//
+	// ⚠ ЭТО НЕ ПРОТИВОРЕЧИТ ПРАВИЛУ «ВХОДЫ ПЕРЕПИСЫВАЮТСЯ СО СТРОКИ РОДИТЕЛЯ». Правило про
+	// ПРОВЕНАНС — про то, какие КАРТИНКИ ушли в модель; ни одной картинки здесь не добавляется
+	// (записи идут без media_id). Добавляется КОПИЯ ПАРАМЕТРОВ этого прогона, ровно как `views` и
+	// `layout` строкой выше, и по тому же доводу: снимок, чей отпечаток не сходится с собственными
+	// параметрами строки, врёт.
+	//
+	// ⚠ И ИМЕНА РОДИТЕЛЯ ПРИ ЭТОМ НЕПРИКОСНОВЕННЫ: covered-фильтр внутри пропускает только адреса,
+	// которых в снимке ЕЩЁ НЕТ. Деталь, переименованная после родителя, останется в этом реране
+	// под СТАРЫМ именем — тем, с которым прогон был отправлен, — а сегодняшнее имя получит только
+	// та, которую только что попросили впервые.
+	snap.Slots = append(snap.GetSlots(), designNamedEmptyDetailSlots(src, snap.GetSlots())...)
 	// ФИТ БЕРЁТСЯ ИЗ СНИМКА РОДИТЕЛЯ, А НЕ С КАРТОЧКИ. Модель получит те же слова, что получила в
 	// прошлый раз, значит и `fit_at_launch` строки обязан говорить о том же: иначе плита
 	// приедет со штампом сегодняшнего фита, а нарисована будет по вчерашнему, и минт сверил бы

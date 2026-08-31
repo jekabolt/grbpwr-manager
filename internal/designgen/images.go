@@ -109,9 +109,15 @@ type imageCall struct {
 // imageCalls turns a job into the calls it costs.
 func imageCalls(job Job) []imageCall {
 	if job.Layout == layoutPerView && len(job.Views) > 0 {
+		// ⚠ ПОДПИСЬ ВЫЗОВА И ВИД КАДРА — РАЗНЫЕ ВЕЩИ, И РАСХОДЯТСЯ ОНИ НАМЕРЕННО. В промпт уходит
+		// РАЗЛИЧАЮЩАЯ подпись («detail — collar»), иначе два вызова на две детали были бы одним и
+		// тем же платным запросом дважды; а в `view` кладётся ЧИСТЫЙ КЛЮЧ ВИДА, потому что это
+		// GhostView — метка, которую стор сверяет со своим словарём видов, и имя детали в ней
+		// сделало бы её нечитаемой.
+		labels := viewCallLabels(job.Views, job.DetailNames)
 		calls := make([]imageCall, 0, len(job.Views))
-		for _, v := range job.Views {
-			calls = append(calls, imageCall{prompt: viewPrompt(job.Prompt, v), n: 1, view: v})
+		for i, v := range job.Views {
+			calls = append(calls, imageCall{prompt: viewPrompt(job.Prompt, labels[i]), n: 1, view: v})
 		}
 		return calls
 	}

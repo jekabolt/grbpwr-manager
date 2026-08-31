@@ -601,6 +601,7 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 		ClientRequestId: strings.TrimSpace(req.GetClientRequestId()),
 		Frames:          frames,
 		Actor:           designActor(ctx),
+		ForInput:        req.GetForInput(),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to file the design crops", err, nil)

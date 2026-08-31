@@ -1,0 +1,123 @@
+{
+  "one": {
+    "params": {
+      "views": [
+        "detail",
+        "detail"
+      ],
+      "layout": "one",
+      "detail_slot_ids": [
+        17,
+        18
+      ]
+    },
+    "inputs": {
+      "refs": [
+        {
+          "media_id": 100,
+          "role": "front"
+        }
+      ],
+      "slots": [
+        {
+          "view_key": "front",
+          "media_id": 200
+        },
+        {
+          "view_key": "detail",
+          "slot_id": 17,
+          "detail_name": "collar"
+        },
+        {
+          "view_key": "detail",
+          "slot_id": 18,
+          "detail_name": "patch pocket"
+        }
+      ],
+      "fit": "oversized",
+      "views": [
+        "detail",
+        "detail"
+      ],
+      "layout": "one"
+    }
+  },
+  "one_single_detail": {
+    "params": {
+      "views": [
+        "detail"
+      ],
+      "layout": "one",
+      "detail_slot_ids": [
+        17
+      ]
+    },
+    "inputs": {
+      "refs": [
+        {
+          "media_id": 100,
+          "role": "front"
+        }
+      ],
+      "slots": [
+        {
+          "view_key": "front",
+          "media_id": 200
+        },
+        {
+          "view_key": "detail",
+          "slot_id": 17,
+          "detail_name": "collar"
+        }
+      ],
+      "fit": "oversized",
+      "views": [
+        "detail"
+      ],
+      "layout": "one"
+    }
+  },
+  "per_view": {
+    "params": {
+      "views": [
+        "detail",
+        "detail"
+      ],
+      "layout": "per_view",
+      "detail_slot_ids": [
+        17,
+        18
+      ]
+    },
+    "inputs": {
+      "refs": [
+        {
+          "media_id": 100,
+          "role": "front"
+        }
+      ],
+      "slots": [
+        {
+          "view_key": "front",
+          "media_id": 200
+        },
+        {
+          "view_key": "detail",
+          "slot_id": 17,
+          "detail_name": "collar"
+        },
+        {
+          "view_key": "detail",
+          "slot_id": 18,
+          "detail_name": "patch pocket"
+        }
+      ],
+      "fit": "oversized",
+      "views": [
+        "detail",
+        "detail"
+      ],
+      "layout": "per_view"
+    }
+  }
+}

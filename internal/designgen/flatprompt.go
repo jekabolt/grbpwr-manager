@@ -63,8 +63,8 @@ const (
 // include a detail — gets Эталон 1, with the detail named in the view list as an enlarged
 // close-up. The mixed case is not something either reference prompt describes, so the garment
 // frame (the more general of the two) carries it.
-func flatCraft(p runParams, refs int) string {
-	detail := detailOnly(p.Views)
+func flatCraft(p runParams, detailNames []string, refs int) string {
+	detail := detailOnlyRun(p.Views)
 
 	identify := flatIdentifyGarment
 	style, excluded := flatStyleGarment, flatExcludedGarment
@@ -84,9 +84,9 @@ func flatCraft(p runParams, refs int) string {
 	}
 
 	paras := []string{
-		flatIntro(detail, refs),
+		flatIntro(detail, countDetails(p.Views), refs),
 		identify,
-		flatLayoutParagraph(p.Views, p.Layout, detail, refs),
+		flatLayoutParagraph(p.Views, detailNames, p.Layout, refs),
 		style,
 		excluded,
 		flatOutput,
@@ -104,10 +104,17 @@ const (
 
 // flatIntro is the opening sentence, aimed at what the run actually has: the reference image, the
 // reference images, or — when a person launched from words alone — the description above it.
-func flatIntro(detail bool, refs int) string {
+//
+// `details` IS THE COUNT, NOT A FLAG, because "the construction detail" is a promise of exactly one
+// and a run may legitimately ask for several — the very confusion the layout paragraph used to make
+// on its own.
+func flatIntro(detail bool, details, refs int) string {
 	subject, sketch := "the garment", "professional fashion technical flat sketch (CAD-style tech pack drawing)"
 	if detail {
 		subject, sketch = "the construction detail", "professional fashion technical detail sketch (CAD-style tech pack callout drawing)"
+		if details > 1 {
+			subject, sketch = "the construction details", "professional fashion technical detail sheet (CAD-style tech pack callout drawings)"
+		}
 	}
 	switch {
 	case refs == 1:
@@ -129,9 +136,20 @@ func flatIntro(detail bool, refs int) string {
 // what it is looking at must be the SAME list in the SAME order — a prompt that re-sorted the
 // views would produce sheets whose split frames are systematically mislabeled. (per_view has the
 // same property through ghostViewOf: requested views are handed out by ordinal.)
-func flatLayoutParagraph(views []string, layout string, detail bool, refs int) string {
-	if detail {
-		// Эталон 2's layout paragraph, verbatim — a detail is a single enlarged view by nature,
+//
+// ⚠ ЭТАЛОН 2 ОТДАЁТСЯ ТОЛЬКО ОДНОЙ ДЕТАЛИ, И ЭТО ИСПРАВЛЕНИЕ, А НЕ ОГРАНИЧЕНИЕ. Его абзац говорит
+// «a single enlarged view of the detail» дословно, и отдавался он ЛЮБОМУ прогону, у которого все
+// виды — детали. Прогон на две детали получал промпт, где один абзац просит нарисовать воротник И
+// карман, а следующий — «одну увеличенную деталь»: модель обязана была выбрать, какому из двух
+// предложений подчиниться. Параллельно стор записывал в composite_views ["detail","detail"], и
+// человеку предлагалось разрезать пополам лист, на котором один воротник.
+//
+// ПРИ ДВУХ И БОЛЕЕ ДЕТАЛЯХ РАБОТАЕТ ОБЩИЙ РЯД-АБЗАЦ, А КАДРЫ НАЗЫВАЮТСЯ ИМЕНАМИ (displayViews):
+// «left to right: DETAIL — collar …, DETAIL — patch pocket …». Ключ вида здесь не годится по той
+// же причине, по которой он не годится нигде в этой волне: он одинаков у обеих деталей.
+func flatLayoutParagraph(views, detailNames []string, layout string, refs int) string {
+	if singleDetailCanvas(views) {
+		// Эталон 2's layout paragraph, verbatim — ONE detail is a single enlarged view by nature,
 		// whatever the run's layout says. Only the "same angle as the reference" clause depends
 		// on a reference existing.
 		if refs > 0 {
@@ -140,10 +158,7 @@ func flatLayoutParagraph(views []string, layout string, detail bool, refs int) s
 		return "Layout: a single enlarged view of the detail, isolated and centered on the canvas. Include just enough of the surrounding garment panel or edge to make the construction readable, with the fragment ending in clean straight edges."
 	}
 
-	names := make([]string, 0, len(views))
-	for _, v := range views {
-		names = append(names, displayView(v))
-	}
+	names := displayViews(views, detailNames)
 
 	switch {
 	case len(views) == 0:
@@ -171,9 +186,19 @@ func flatLayoutParagraph(views []string, layout string, detail bool, refs int) s
 	}
 }
 
-// detailOnly reports whether every chosen view is the detail view — the shape that switches the
-// prompt from Эталон 1 to Эталон 2.
-func detailOnly(views []string) bool {
+// ─── ДВА ВОПРОСА О ДЕТАЛЯХ, И ОНИ РАЗНЫЕ. Один предикат отвечал на оба, и на втором врал.
+//
+// detailOnlyRun — «прогон РИСУЕТ ТОЛЬКО ДЕТАЛИ», и это выбор ЭТАЛОНА: словарь конструкции
+// («identify what the detail is: seam, closure, strap…») и стиль детальной прорисовки. Он верен и
+// для двух деталей: лист из двух крупных планов — всё ещё не силуэт изделия, и Эталон 1, который
+// велел бы воспроизвести горловину, рукава и пояс, был бы там противоречием, а не улучшением.
+//
+// singleDetailCanvas — «на холсте РОВНО ОДИН кадр, и это деталь», и это выбор РАСКЛАДКИ: только
+// такому прогону принадлежит абзац «a single enlarged view of the detail».
+//
+// Слить их обратно в одно имя нельзя ни в какую сторону: одно даст двум деталям силуэтный эталон,
+// другое — двум деталям обещание одного кадра. Обе ошибки уже были сделаны, вторая — этой волной.
+func detailOnlyRun(views []string) bool {
 	if len(views) == 0 {
 		return false
 	}
@@ -183,6 +208,38 @@ func detailOnly(views []string) bool {
 		}
 	}
 	return true
+}
+
+func singleDetailCanvas(views []string) bool {
+	return len(views) == 1 && views[0] == entity.DesignViewDetail
+}
+
+// countDetails — сколько кадров-деталей просит прогон.
+func countDetails(views []string) int {
+	n := 0
+	for _, v := range views {
+		if v == entity.DesignViewDetail {
+			n++
+		}
+	}
+	return n
+}
+
+// displayViews spells the frames of one canvas, IN params.views ORDER, giving each detail frame the
+// NAME of the slot it was asked for. The i-th `detail` takes the i-th name — the same positional
+// correspondence the whole feature rests on — and an unnamed one keeps the bare view spelling.
+func displayViews(views, detailNames []string) []string {
+	out := make([]string, 0, len(views))
+	seen := 0
+	for _, v := range views {
+		if v != entity.DesignViewDetail {
+			out = append(out, displayView(v))
+			continue
+		}
+		out = append(out, displayDetail(detailNameAt(detailNames, seen)))
+		seen++
+	}
+	return out
 }
 
 // displayView spells a view key the way a drawing instruction says it. The raw keys survive on
@@ -199,10 +256,19 @@ func displayView(v string) string {
 	case entity.DesignViewSideR:
 		return "SIDE RIGHT"
 	case entity.DesignViewDetail:
-		return "DETAIL (one enlarged construction close-up)"
+		return displayDetail("")
 	default:
 		return v
 	}
+}
+
+// displayDetail spells one detail frame. The name goes BEFORE the parenthetical so that a row of
+// them reads as a list of different things rather than a repetition of the same word.
+func displayDetail(name string) string {
+	if name == "" {
+		return "DETAIL (one enlarged construction close-up)"
+	}
+	return "DETAIL — " + name + " (one enlarged construction close-up)"
 }
 
 // countWord spells the small counts a layout sentence uses; anything larger falls back to digits.

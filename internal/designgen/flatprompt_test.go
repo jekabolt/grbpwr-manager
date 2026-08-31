@@ -114,13 +114,21 @@ func TestDetailRunsGetTheDetailEtalon(t *testing.T) {
 	require.NotContains(t, got, ownerStyleGarment)
 }
 
-// TestCraftIsForFlatsOnly — the owner gave the reference prompts for flats. A render is a garment
-// in a scene, a 3D run is a Meshy build, the vector kind redraws an approved raster and
-// draft_idea never reaches the worker: none of them may inherit "black vector line art".
-func TestCraftIsForFlatsOnly(t *testing.T) {
+// TestFlatCraftIsForFlatsOnly — the owner gave these reference prompts for flats. A 3D run is a
+// Meshy build, the vector kind redraws an approved raster and draft_idea never reaches the worker:
+// none of them may inherit "black vector line art".
+//
+// ⚠ RENDER LEFT THIS LOOP WHEN IT GREW A CRAFT OF ITS OWN, AND THE GUARANTEE DID NOT LEAVE WITH IT.
+// The loop's real claim about a render was never "it carries no craft" — it was "it does not come
+// back as a drawing", which was true incidentally while a render carried no craft at all. Now that
+// renderprompt.go exists, the same claim is asserted directly and in both directions by
+// TestARenderIsNotAFlatAndAFlatIsNotARender: no line-art wording in a render, no photographic
+// wording in a flat. Deleting the kind from this list without that test would have dropped the
+// guarantee; keeping the kind here would have failed on the render's own exclusion paragraph, for
+// a reason that has nothing to do with what this test is about.
+func TestFlatCraftIsForFlatsOnly(t *testing.T) {
 	for _, kind := range []string{
-		entity.DesignRunKindRender, entity.DesignRunKindThreed,
-		entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
+		entity.DesignRunKindThreed, entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
 	} {
 		r := testRun(1, kind)
 		r.Params = entity.RawJSON(`{"views":["front","back"],"layout":"one"}`)

@@ -11886,6 +11886,21 @@ message SplitDesignPictureRequest {
   int32 picture_id = 1; // must be a composite (composite_views non-empty), else not_composite
   string client_request_id = 2; // a retried split must not produce a second set of crops
   repeated DesignSplitFrame frames = 3;
+  // WHETHER THE CROPS JOIN THE PROMPT. A cut names the views on the pieces either way; this says
+  // whether those names are also filed as `design_reference` roles, i.e. whether the crops are
+  // shown to the model on the next run.
+  //
+  // FALSE IS THE DEFAULT AND IT IS THE OWNER'S RULE, not a conservative guess: «в INPUT —
+  // REFERENCES не должны уходить все флеты если мы их явно туда сами не добавим». A cut made on
+  // the bench is a person laying views into slots, and it used to fill the prompt behind their
+  // back. Only a cut made FROM the input block is a person saying «these go to the model».
+  //
+  // WHY IT MUST BE THE SERVER THAT ASKS. A client that did not want the rows could only delete
+  // them afterwards — and between the write and the delete a person can put their OWN role and
+  // note on that media, which the delete would then destroy. There is no client-side way to close
+  // that window: the clear verb is a bare DELETE by (card, media) with no expected-value guard.
+  // So the only place the question can be answered without a race is before the write.
+  bool for_input = 4;
 }
 
 message SplitDesignPictureResponse {

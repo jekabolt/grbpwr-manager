@@ -44,6 +44,13 @@ type Job struct {
 	// `per_view` for one picture per view — which is one paid call per view, not one call with n.
 	Views  []string
 	Layout string
+	// DetailNames names the requested details POSITIONALLY: the i-th entry belongs to the i-th
+	// `detail` in Views. An entry is empty when the frozen snapshot could not name that slot.
+	//
+	// IT IS NOT DERIVABLE FROM Views, WHICH IS THE WHOLE REASON IT TRAVELS. A view key says
+	// `detail` and nothing else, so two details are two indistinguishable calls — on the per_view
+	// route, two paid calls with a byte-identical prompt.
+	DetailNames []string
 	// Outputs is design_run.requested_outputs: how many pictures the history row expects.
 	Outputs int
 	// Quality is the price dial for the image route.
