@@ -75,25 +75,6 @@ func designProbeRun(t *testing.T, raw *sql.DB, cardID int, archived bool) int {
 	return int(id)
 }
 
-// designProbeVersionQuotingSlot морозит лист, чья плита ЦИТИРУЕТ слот. Ровно эта ссылка и делает
-// слот неудаляемым.
-func designProbeVersionQuotingSlot(t *testing.T, raw *sql.DB, cardID, slotID int) {
-	t.Helper()
-	media := probeMedia(t, raw)
-	res, err := raw.Exec(`
-		INSERT INTO design_sheet_version
-			(tech_card_id, version_number, client_request_id, minted_via, minted_by)
-		VALUES (?, 1, ?, 'probe', 'probe')`, cardID, uuid.NewString())
-	require.NoError(t, err)
-	versionID, err := res.LastInsertId()
-	require.NoError(t, err)
-	_, err = raw.Exec(`
-		INSERT INTO design_sheet_version_plate
-			(version_id, ordinal, view_key, slot_id, media_id, source_class)
-		VALUES (?, 0, 'detail', ?, ?, 'uploaded')`, versionID, slotID, media)
-	require.NoError(t, err)
-}
-
 // ─────────────────────── верстак ───────────────────────
 
 // РОЖДЕНИЕ СЛОТА ПОД ГОНКОЙ ИМЕЕТ РОВНО ОДНОГО ПОБЕДИТЕЛЯ, А ПРОИГРАВШИЙ ПОЛУЧАЕТ ОТКАЗ, КОТОРЫЙ
@@ -339,37 +320,6 @@ func TestDesignDBHidePictureRefusesAPlateInASlot(t *testing.T) {
 }
 
 // ─────────────────────── удаление слота детали ───────────────────────
-
-// СЛОТ, ПРОЦИТИРОВАННЫЙ ЗАМОРОЖЕННОЙ ВЕРСИЕЙ, НЕ УДАЛЯЕТСЯ — И ЭТО ОТКАЗ, КОТОРЫЙ FK ВЫРАЗИТЬ НЕ
-// МОЖЕТ.
-//
-// Слот и версия оба каскадируют от tech_card, поэтому RESTRICT на design_sheet_version_plate.slot_id
-// убил бы DeleteTechCard ошибкой 1451, которую вызывающему нечем починить. Значит правило живёт в
-// Go, и здесь у него ДВЕ половины: слот с плитой (slot_filled) и слот, на который ссылается
-// бумага (slot_in_version). Проверять надо обе — сторож, снятый с одной, оставил бы другую
-// зелёной.
-func TestDesignDBDetailSlotQuotedByAVersionCannotBeDeleted(t *testing.T) {
-	rep, raw := probeRepository(t)
-	ctx := context.Background()
-	card, pic, _ := designProbeCard(t, rep, raw)
-
-	slot, err := rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
-		TechCardId: card, Slot: entity.DesignSlotRef{ViewKey: entity.DesignViewDetail},
-		PictureId: pic, ExpectedSlotRev: 0, NewDetailName: "pocket flap", Actor: "probe",
-	})
-	require.NoError(t, err)
-
-	// Пока держит плиту.
-	require.ErrorIs(t, rep.Design().DeleteDetailSlot(ctx, slot.Id), entity.ErrDesignSlotFilled)
-
-	_, err = rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
-		TechCardId: card, Slot: entity.DesignSlotRef{SlotId: slot.Id},
-		PictureId: 0, ExpectedSlotRev: slot.SlotRev, Actor: "probe",
-	})
-	require.NoError(t, err)
-	designProbeVersionQuotingSlot(t, raw, card, slot.Id)
-	require.ErrorIs(t, rep.Design().DeleteDetailSlot(ctx, slot.Id), entity.ErrDesignSlotInVersion)
-}
 
 // СТОРОНУ СИЛУЭТА УДАЛИТЬ НЕЛЬЗЯ, ДАЖЕ ПУСТУЮ.
 //

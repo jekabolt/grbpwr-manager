@@ -252,12 +252,12 @@ func TestDraftIdeaPromptCarriesWordsAndNoPictureIdentity(t *testing.T) {
 	card := designMoodCard()
 	mood := designMoodSnapshot(card)
 	require.NotNil(t, mood)
-	prompt := designDraftIdeaPrompt(card, mood)
+	prompt := designDraftIdeaPrompt(card, mood, designBoardMediaIDs(card))
 
 	require.Contains(t, prompt, "MOODWORDS-do-not-generate", "записка доски — это и есть вход")
 	require.Contains(t, prompt, "MOODCALLOUT-do-not-generate", "текст выноски тоже вход")
 	require.NotContains(t, prompt, strconv.Itoa(designBoardMediaID),
-		"номер картинки доски в промпте не нужен модели и запрещён W-15")
+		"НАШ media_id в промпте не нужен модели: «picture N» — это порядковый номер content-части")
 	require.NotContains(t, prompt, "http", "ни одной ссылки на объект")
 }
 

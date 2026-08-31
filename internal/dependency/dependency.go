@@ -1997,8 +1997,6 @@ type (
 		// GetPicture reads one picture with its media resolved. The split handler needs it
 		// BEFORE its transaction, to fetch the original bytes it is about to cut.
 		GetPicture(ctx context.Context, pictureID int) (*entity.DesignPicture, error)
-		// GetSheetVersion reads ONE frozen version whole: plates, callouts and its journal.
-		GetSheetVersion(ctx context.Context, techCardID, versionNumber int) (*entity.DesignSheetVersionFull, error)
 		// GetEditLayer reads ONE layer WITH its strokes — the only place strokes are served.
 		GetEditLayer(ctx context.Context, techCardID, layerID int) (*entity.DesignEditLayer, error)
 		// GetBudget reports today's money bar, with the day computed in the org's timezone.
@@ -2055,9 +2053,6 @@ type (
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)
-		// RecordSheetIssue writes a printed/shared line into a version's append-only journal.
-		RecordSheetIssue(ctx context.Context, req entity.DesignSheetIssueRecord) (*entity.DesignSheetIssue, error)
-
 		// --- the generative half: signatures frozen now, bodies next wave --------------
 		StartRun(ctx context.Context, req entity.DesignRunStart) (*entity.DesignRunStarted, error)
 		ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)
@@ -2071,7 +2066,6 @@ type (
 		CompleteRun(ctx context.Context, req entity.DesignRunComplete) (*entity.DesignRun, error)
 		FailRun(ctx context.Context, req entity.DesignRunFail) (*entity.DesignRun, error)
 		CancelRun(ctx context.Context, runID int, actor string) (*entity.DesignRun, error)
-		MintSheetVersion(ctx context.Context, req entity.DesignSheetMint) (*entity.DesignSheetVersionFull, error)
 	}
 
 	Repository interface {

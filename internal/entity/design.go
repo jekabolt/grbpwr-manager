@@ -78,10 +78,9 @@ func (r *RawJSON) UnmarshalJSON(data []byte) error {
 }
 
 // Полоса DESIGN — студийная половина тех-карты: прогоны генерации, картинки, которые они
-// произвели, верстак (какая плита принята какой стороной изделия) и замороженные версии листа,
-// которые печатают.
+// произвели, и верстак (какая плита принята какой стороной изделия).
 //
-// ЧТО ЭТИ ТИПЫ ЕСТЬ И ЧЕМ НЕ ЯВЛЯЮТСЯ. Это строки таблиц 0340–0347 плюс несколько запросных
+// ЧТО ЭТИ ТИПЫ ЕСТЬ И ЧЕМ НЕ ЯВЛЯЮТСЯ. Это строки таблиц 0340–0352 плюс несколько запросных
 // структур. Ни один из них не знает про protobuf: конверсия живёт в
 // internal/apisrv/admin/design_band.go, а стор остаётся чистым от провода. JSON-колонки
 // (`params`, `inputs`, `composite_views`, `strokes`, `annotation`) едут сквозь стор как
@@ -236,13 +235,6 @@ const (
 	DesignRunCancelled = "cancelled"
 )
 
-// Действия журнала выпуска.
-const (
-	DesignIssueMinted  = "minted"
-	DesignIssuePrinted = "printed"
-	DesignIssueShared  = "shared"
-)
-
 // ---------------------------------------------------------------------------
 // Отказы полосы
 // ---------------------------------------------------------------------------
@@ -273,18 +265,13 @@ var (
 	ErrDesignDetailNameRequired = errors.New("design: detail_name_required")
 	// ErrDesignSlotFilled — удаляемый слот детали не пуст.
 	ErrDesignSlotFilled = errors.New("design: slot_filled")
-	// ErrDesignSlotInVersion — слот процитирован замороженной версией листа. FK RESTRICT тут
-	// стоять не может: и слот, и версия каскадятся от tech_card, и удаление карточки уперлось бы
-	// в 1451 в ЕДИНСТВЕННОЙ операции удаления, которой нечего было бы предложить человеку.
-	ErrDesignSlotInVersion = errors.New("design: slot_in_version")
 	// ErrDesignNotADetailSlot — DeleteDesignDetailSlot позвали на одну из четырёх сторон.
 	// В плане этот отказ не назван; он добавлен, потому что иначе единственный законный ответ
 	// на «удали front» — молчаливое удаление стороны, которую слот-адрес обязан переживать.
 	ErrDesignNotADetailSlot = errors.New("design: not_a_detail_slot")
-	// ErrDesignInSlot / ErrDesignInVersion / ErrDesignLiveRunInput / ErrDesignLiveCropParent —
-	// четыре сторожа HidePicture. Читаются в ТОЙ ЖЕ транзакции, что и UPDATE, иначе TOCTOU.
+	// ErrDesignInSlot / ErrDesignLiveRunInput / ErrDesignLiveCropParent — три сторожа
+	// HidePicture. Читаются в ТОЙ ЖЕ транзакции, что и UPDATE, иначе TOCTOU.
 	ErrDesignInSlot         = errors.New("design: in_slot")
-	ErrDesignInVersion      = errors.New("design: in_version")
 	ErrDesignLiveRunInput   = errors.New("design: live_run_input")
 	ErrDesignLiveCropParent = errors.New("design: live_crop_parent")
 	// ErrDesignNotComposite — режут не композит.
@@ -336,119 +323,7 @@ var (
 	// его не двигает. Отдельно от ErrDesignClaimLost: «ты опоздал» и «строка уже кончилась» —
 	// разные новости, и воркер поступает с ними по-разному.
 	ErrDesignRunTerminal = errors.New("design: run_terminal")
-
-	// ───────────────────────── отказы атомарного минта ─────────────────────────
-	//
-	// ДВА ЗАМКА, А НЕ ОДИН, и это не перестраховка. expected_lock_version стережёт ДОКУМЕНТ
-	// (выноски, эскизы, спецификацию), expected_plates — ВЕРСТАК (какая плита какой стороной
-	// принята). Это две разные вещи, живущие в разных таблицах и двигаемые разными жестами:
-	// минт, проверивший только документ, заморозил бы состав, который кто-то переставил секундой
-	// раньше, и человек узнал бы об этом с бумаги.
-
-	// ErrDesignBenchMoved — CAS по expected_plates не сошёлся: слот уехал под минтом. Aborted, и
-	// details называют ИМЕННО ТОТ слот — «верстак изменился» без имени слота не действие, а
-	// новость.
-	ErrDesignBenchMoved = errors.New("design: bench_moved")
-	// ErrDesignMixedNeedsConsent — состав смешивает провенансы (две и более разных генерации
-	// среди четырёх сторон), и человек этого не подтвердил. FailedPrecondition: согласие даётся
-	// галкой в диалоге, а не догадкой сервера.
-	ErrDesignMixedNeedsConsent = errors.New("design: mixed_needs_consent")
-	// ErrDesignUploadedFitUnconfirmed — среди плит есть загруженные руками, а они посадки не
-	// заявляют вовсе (её заявляет ПРОГОН). Минт спрашивает, а не подставляет карточкину.
-	ErrDesignUploadedFitUnconfirmed = errors.New("design: uploaded_fit_unconfirmed")
-	// ErrDesignFitMismatch — плита нарисована под ОДНУ посадку, карточка теперь говорит другую.
-	// Согласием это не снимается: посадка — свойство изделия, и одно из двух утверждений неверно.
-	// details несут view, fit и card_fit.
-	ErrDesignFitMismatch = errors.New("design: fit_mismatch")
-	// ErrDesignSheetMinUnmet — обязательные стороны листа не заполнены. Проверяется В МИНТЕ, а не
-	// на прогоне: пустой обязательный слот запирает и v2+, не только v1.
-	ErrDesignSheetMinUnmet = errors.New("design: sheet_min_unmet")
-	// ErrDesignUnrepinnedCallouts — П-Е, СОСТАВ ЗАМОРОЗКИ. Морозятся выноски, стоящие на медиа
-	// ПЛИТ. Выноска, стоявшая на медиа плиты ПРОШЛОЙ версии, чья плита в этом составе заменена,
-	// осталась висеть на картинке, которой на бумаге больше нет: её надо перепинить либо снять.
-	// details несут НОМЕРА — «часть выносок потеряна» без номеров человеку нечем закрыть.
-	//
-	// ГРАНИЦА УЖЕ, ЧЕМ «ВСЕ ВЫНОСКИ ВНЕ ПЛИТ», и это решение. Мудбордная выноска и выноска на
-	// легаси-эскизе НИКОГДА не были плитой листа, значит их никто не заменял; запирать ими минт
-	// значило бы сделать минт недостижимым на каждой карточке с мудбордом (К-14).
-	ErrDesignUnrepinnedCallouts = errors.New("design: unrepinned_callouts")
-	// ErrDesignPlatesNotInDocument — П-А, ПОЯС. Документ, который минт замораживает, обязан
-	// содержать плиты верстака как technical-медиа: механизм «деталь кроя ↔ выноска» читает
-	// ровно tc.Media с category='technical' (store/techcard/materials.go), и плита вне этого
-	// множества делает КАЖДУЮ деталь на листовой выноске detached, а тех-пак печатает пустой
-	// эскиз. Вкладывает их хендлер; эта проверка стоит в транзакции, потому что только она видит
-	// верстак и документ одновременно.
-	ErrDesignPlatesNotInDocument = errors.New("design: plates_not_in_document")
 )
-
-// DesignMintRefusal — отказ минта ВМЕСТЕ с машинными подробностями для details.
-//
-// ЗАЧЕМ ТИП, А НЕ ТЕКСТ. Контракт обещает не просто «unrepinned_callouts», а
-// «unrepinned_callouts {numbers}» и «bench_moved, naming which slot moved»: без номеров и без
-// имени слота человеку нечем закрыть отказ, и клиент вместо действия показывает новость. Вынимать
-// их обратно разбором строки значило бы завести второе, хрупкое написание того, что стор и так
-// знает точно.
-//
-// Sentinel остаётся первым классом: Unwrap отдаёт его, поэтому таблица отказов хендлера,
-// errors.Is и все существующие пробы работают, ничего не зная про этот тип.
-type DesignMintRefusal struct {
-	Err      error
-	Metadata map[string]string
-}
-
-func (e *DesignMintRefusal) Error() string { return e.Err.Error() }
-func (e *DesignMintRefusal) Unwrap() error { return e.Err }
-
-// DesignSheetMinViews — стороны, без которых лист не выпускается. Проверяются В МИНТЕ (прототип,
-// mintAnalysis: «the run above is free, the minimum is checked here»), а не на генерации: пустой
-// обязательный слот обязан запирать и v2+, иначе «минимум» это пожелание к первой версии.
-var DesignSheetMinViews = []string{DesignViewFront, DesignViewBack}
-
-// DesignMintedVia — каким актом рождена версия. Словарь закрыт: `minted` в журнале обязан быть
-// достижим ТОЛЬКО минтом, а «каким жестом» — это то, что аудит потом читает.
-const (
-	DesignMintedViaCallout = "callout"
-	DesignMintedViaPrint   = "print"
-	DesignMintedViaRelease = "release"
-	DesignMintedViaShare   = "share"
-)
-
-// IsDesignMintedVia сообщает, законен ли акт минта.
-func IsDesignMintedVia(v string) bool {
-	switch v {
-	case DesignMintedViaCallout, DesignMintedViaPrint, DesignMintedViaRelease, DesignMintedViaShare:
-		return true
-	}
-	return false
-}
-
-// DesignPlateMediaKind — под каким видом плита верстака ложится в tech_card_media карточки (П-А).
-//
-// ГЕЙТ СЛОВАРЯ ОДИН НА ВЕСЬ РЕПОЗИТОРИЙ — TechCardMediaKindDictExtended. Пока 0346 не применена,
-// chk_tech_card_media_kind не знает side_l/side_r, и плита боковой стороны обязана лечь как
-// DETAIL: она всё равно остаётся ТЕХНИЧЕСКОЙ, а больше механизму «деталь ↔ выноска» ничего и не
-// нужно. Второй флаг здесь был бы ложным расщеплением — разошлись бы ровно в тот день, когда
-// первый флипнут, а второй забыли.
-func DesignPlateMediaKind(viewKey string) TechCardMediaKind {
-	switch viewKey {
-	case DesignViewFront:
-		return TechCardMediaFront
-	case DesignViewBack:
-		return TechCardMediaBack
-	case DesignViewSideL:
-		if TechCardMediaKindDictExtended {
-			return TechCardMediaSideL
-		}
-		return TechCardMediaDetail
-	case DesignViewSideR:
-		if TechCardMediaKindDictExtended {
-			return TechCardMediaSideR
-		}
-		return TechCardMediaDetail
-	default:
-		return TechCardMediaDetail
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Строки таблиц
@@ -490,10 +365,10 @@ type DesignRun struct {
 	// Prompt — СОБРАННЫЙ текст, ушедший модели (0352): пишется воркером при диспатче
 	// (RecordRunPrompt), ДО первой платной попытки, той же строкой, что уходит поставщику.
 	// NULL = воркер прогон ещё не поднимал. Это хранение отправленного, не предпросмотр.
-	Prompt sql.NullString `db:"prompt"`
-	CreatedAt         time.Time           `db:"created_at"`
-	StartedAt         sql.NullTime        `db:"started_at"`
-	CompletedAt       sql.NullTime        `db:"completed_at"`
+	Prompt      sql.NullString `db:"prompt"`
+	CreatedAt   time.Time      `db:"created_at"`
+	StartedAt   sql.NullTime   `db:"started_at"`
+	CompletedAt sql.NullTime   `db:"completed_at"`
 
 	// Собирается читателем, не колонки.
 	Attempts []DesignRunAttempt `db:"-"`
@@ -584,66 +459,6 @@ type DesignBenchSlot struct {
 	SetAt        sql.NullTime   `db:"set_at"`
 
 	Picture *DesignPicture `db:"-"`
-}
-
-// DesignSheetVersion — строка design_sheet_version: замороженный выпуск листа.
-type DesignSheetVersion struct {
-	Id              int       `db:"id"`
-	TechCardId      int       `db:"tech_card_id"`
-	VersionNumber   int       `db:"version_number"`
-	ClientRequestId string    `db:"client_request_id"`
-	MixedConsent    bool      `db:"mixed_consent"`
-	MintedVia       string    `db:"minted_via"`
-	MintedBy        string    `db:"minted_by"`
-	MintedAt        time.Time `db:"minted_at"`
-
-	Plates   []DesignSheetPlate   `db:"-"`
-	Callouts []DesignSheetCallout `db:"-"`
-}
-
-// DesignSheetPlate — строка design_sheet_version_plate. Строка, а не JSON, чтобы медиатека
-// видела ссылку на media(id): версия печатается через год, и её байты стереть нельзя.
-type DesignSheetPlate struct {
-	Id          int            `db:"id"`
-	VersionId   int            `db:"version_id"`
-	Ordinal     int            `db:"ordinal"`
-	ViewKey     string         `db:"view_key"`
-	SlotId      sql.NullInt32  `db:"slot_id"`
-	DetailName  sql.NullString `db:"detail_name"`
-	MediaId     int            `db:"media_id"`
-	ContentHash sql.NullString `db:"content_hash"`
-	LayerRev    int            `db:"layer_rev"`
-	SourceClass string         `db:"source_class"`
-	RunId       sql.NullInt32  `db:"run_id"`
-	FitStamp    sql.NullString `db:"fit_stamp"`
-	MixedInput  bool           `db:"mixed_input"`
-
-	Media *MediaFull `db:"-"`
-}
-
-// DesignSheetCallout — строка design_sheet_version_callout. Геометрия хранится как protojson
-// common.TechCardAnnotation: стор её не разбирает, потому что примитив указания у системы один
-// и его форма — контракт, а не схема полосы.
-type DesignSheetCallout struct {
-	Id         int            `db:"id"`
-	VersionId  int            `db:"version_id"`
-	Number     int            `db:"number"`
-	MediaId    int            `db:"media_id"`
-	Annotation RawJSON        `db:"annotation"`
-	Text       sql.NullString `db:"text"`
-
-	Media *MediaFull `db:"-"`
-}
-
-// DesignSheetIssue — строка design_sheet_issue: append-only журнал выпуска.
-type DesignSheetIssue struct {
-	Id              int            `db:"id"`
-	VersionId       int            `db:"version_id"`
-	VersionNumber   int            `db:"version_number"`
-	Action          string         `db:"action"`
-	Actor           string         `db:"actor"`
-	ClientRequestId sql.NullString `db:"client_request_id"`
-	CreatedAt       time.Time      `db:"created_at"`
 }
 
 // DesignEditLayer — строка design_edit_layer: векторная калька поверх картинки либо поверх
@@ -928,13 +743,10 @@ type DesignRunPageResult struct {
 // и страница: посчитанные по загруженной странице, они соврали бы шапке ровно на то, чего нет
 // на экране.
 type DesignBand struct {
-	Bench          []DesignBenchSlot
-	VersionNumbers []int
-	LatestVersion  *DesignSheetVersion
-	Journal        []DesignSheetIssue
-	Budget         DesignBudget
-	References     []DesignReference
-	Layers         []DesignEditLayer
+	Bench      []DesignBenchSlot
+	Budget     DesignBudget
+	References []DesignReference
+	Layers     []DesignEditLayer
 
 	// Batches — полки ручной загрузки со своими картинками, свежие первыми. Пока генеративная
 	// машина отрезана от волны, это ГЛАВНАЯ ветка чтения, а не второстепенная: прогонов на бете
@@ -976,23 +788,6 @@ type DesignBand struct {
 	Runs            []DesignRun
 	NextCursor      int
 	NextBatchCursor int
-}
-
-// DesignSheetVersionFull — версия целиком вместе со своим журналом.
-type DesignSheetVersionFull struct {
-	Version DesignSheetVersion
-	Issues  []DesignSheetIssue
-	// OrphanedPatternURLs — ПОБОЧНЫЙ РЕЗУЛЬТАТ ДОКУМЕНТНОЙ ЗАПИСИ ВНУТРИ МИНТА: объекты выкроек,
-	// которые полная замена сделала глобально неупомянутыми. Хендлер удаляет их ПОСЛЕ коммита —
-	// ровно то же, что делает сейв (deleteOrphanedPatternObjects). Не отдать их значило бы, что
-	// минт течёт в S3 там, где сейв не течёт, и разошлись бы два пути одной записи.
-	//
-	// У ЧТЕНИЯ ПУСТО, и это не «не заполнено»: GetSheetVersion ничего не пишет, значит ничему
-	// осиротеть не могло.
-	OrphanedPatternURLs []string
-	// Idempotent — версия с этим client_request_id уже существовала, и вернулась ОНА, а не
-	// вторая. Хендлер отдаёт OK: потерянный ответ не рождает фантомную vN+1.
-	Idempotent bool
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,34 +882,4 @@ type DesignRunFail struct {
 	LastError   string
 	Retryable   bool
 	NextAttempt time.Time
-}
-
-// DesignExpectedPlate — одна строка оптимистичной блокировки минта ПО ВЕРСТАКУ.
-type DesignExpectedPlate struct {
-	Slot    DesignSlotRef
-	SlotRev int
-}
-
-// DesignSheetMint — атомарный минт: запись документа и рождение версии в ОДНОЙ транзакции.
-// TechCard едет отдельным аргументом (*TechCardInsert), потому что документ пишется ТЕМ ЖЕ
-// кодом, что и UpdateTechCard.
-type DesignSheetMint struct {
-	TechCardId          int
-	ClientRequestId     string
-	TechCard            *TechCardInsert
-	ExpectedLockVersion int
-	ExpectedPlates      []DesignExpectedPlate
-	MixedConsent        bool
-	UploadedFitConfirm  bool
-	MintedVia           string
-	Actor               string
-}
-
-// DesignSheetIssueRecord — строка журнала printed/shared. Ничего не минтит.
-type DesignSheetIssueRecord struct {
-	TechCardId      int
-	VersionNumber   int
-	Action          string
-	ClientRequestId string
-	Actor           string
 }

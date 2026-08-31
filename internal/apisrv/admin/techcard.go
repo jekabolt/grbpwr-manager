@@ -273,10 +273,10 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 // prepareTechCardWrite IS THE HANDLER-SIDE PIPELINE OF A TECH-CARD WRITE — everything that happens
 // between the wire and the store, in the order it happens.
 //
-// IT EXISTS BECAUSE THERE ARE NOW TWO ENTRY POINTS, and copying this list into the second one is
-// the failure the gap analysis named (П-Д). The atomic mint of a design sheet version writes the
-// SAME document, so it owes the SAME wire gates, the SAME stored gates, the SAME callout-number
-// mint, the SAME carries and the SAME digest restamp — and it owes them IN THIS ORDER:
+// IT IS ONE FUNCTION RATHER THAN A LIST OF STEPS AT THE CALL SITE, because any future second
+// entry point that writes the SAME document owes the SAME wire gates, the SAME stored gates, the
+// SAME callout-number mint, the SAME carries and the SAME digest restamp — and owes them IN THIS
+// ORDER:
 //
 //	wire gates → convert → load stored → stored gates → wastage claims → sign-off reconcile →
 //	costing preservation → MINT CALLOUT NUMBERS → carryOmitted{FabricDirection,CutSymmetry,
@@ -287,8 +287,8 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 // sites: the number mint must precede BOTH carries (they match callouts by identity, and identity
 // contains the number) and it must precede the restamp (the number is hashed by the DESIGN
 // projection, so a digest taken before the mint is BORN STALE and no re-approval can clear it).
-// A mint handler that inherited the store call without inheriting this list would freeze v1's very
-// first callout under the number 0 and sign it with a fingerprint of a document that never existed.
+// A caller that took the store call without taking this list would number a card's very first
+// callout 0 and sign it with a fingerprint of a document that never existed.
 //
 // It returns the entity ready for the store; the caller owns the transaction and the post-commit
 // work (finalizeTechCardWrite).
@@ -477,8 +477,8 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 }
 
 // techCardWriteError translates a document-write failure into the status the client acts on. ONE
-// mapping, both entry points: a mint that answered NotFound where the save answers Aborted would
-// send a person to reload a card that is present.
+// mapping for every entry point of the document write: a caller that answered NotFound where the
+// save answers Aborted would send a person to reload a card that is present.
 func (s *Server) techCardWriteError(ctx context.Context, err error) error {
 	var ve *entity.ValidationError
 	if errors.As(err, &ve) {
@@ -510,10 +510,10 @@ func (s *Server) techCardWriteError(ctx context.Context, err error) error {
 	return status.Errorf(codes.Internal, "can't update tech card")
 }
 
-// finalizeTechCardWrite is the POST-COMMIT half of a tech-card write, and the mint owes it too:
-// the orphaned pattern objects it drops are objects THIS write made unreferenced, and the release
-// snapshot is what the factory reads. A mint that skipped it would leak into S3 where the save
-// does not, and would leave a released card without the snapshot of what it released.
+// finalizeTechCardWrite is the POST-COMMIT half of a tech-card write, and every entry point of
+// that write owes it: the orphaned pattern objects it drops are objects THIS write made
+// unreferenced, and the release snapshot is what the factory reads. A caller that skipped it would
+// leak into S3, and would leave a released card without the snapshot of what it released.
 func (s *Server) finalizeTechCardWrite(ctx context.Context, id, expectedLockVersion int, orphanedPatternURLs []string) {
 	s.deleteOrphanedPatternObjects(ctx, "tech_card", id, orphanedPatternURLs)
 	s.seedProductCostsFromTechCard(ctx, id, expectedLockVersion+1)
@@ -565,9 +565,9 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, techCardID int,
 	if tc == nil {
 		return nil
 	}
-	// НЕСМИНЧЕННАЯ ВЫНОСКА ДО ОТПЕЧАТКА НЕ ДОЕЗЖАЕТ. Номер выноски хешируется проекцией DESIGN явно,
-	// а присваивает его хендлер — значит порядок «сначала минт, потом штамп» это ИНВАРИАНТ, а не
-	// соглашение о стиле. Нарушить его можно ровно одним движением (переставить два вызова), а
+	// ВЫНОСКА БЕЗ НОМЕРА ДО ОТПЕЧАТКА НЕ ДОЕЗЖАЕТ. Номер выноски хешируется проекцией DESIGN явно,
+	// а присваивает его хендлер — значит порядок «сначала раздача номеров, потом штамп» это
+	// ИНВАРИАНТ, а не соглашение о стиле. Нарушить его можно ровно одним движением (переставить два вызова), а
 	// последствие необратимо и молчаливо: подпись считается по нулю, в колонку уезжает семёрка,
 	// свежая подпись РОЖДАЕТСЯ ПРОТУХШЕЙ и не лечится переутверждением — повторный штамп берёт то же
 	// расхождение ([[digest-write-vs-read-asymmetry]]).

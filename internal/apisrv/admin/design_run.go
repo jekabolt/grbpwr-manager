@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -933,11 +935,24 @@ func (s *Server) GetDesignRun(ctx context.Context, req *pb_admin.GetDesignRunReq
 // текст, «from the notes» было правдой. Теперь доска уезжает изображениями (см. DraftDesignIdea), и
 // роль, продолжающая говорить «по заметкам», прямо велела бы модели не смотреть на то, за что уже
 // заплачено: картинки в биллинге — входные токены, и потраченные впустую они всё равно потрачены.
+// ⚠ THE THREE SECTION TITLES ARE A CONTRACT WITH THE CLIENT, NOT A STYLE CHOICE (V-19). The owner
+// asks the draft for three different answers with three different fates: the description is
+// offered line by line into the printed concept, the aspects are advice for the construction
+// block, the missing callouts are advice to go pin something — and the client
+// (head/mood-draft.tsx, parseDraftSections) tells them apart BY THESE TITLES. Renaming a title
+// here silently demotes its section to "offer everything into the concept".
 const draftIdeaSystemPrompt = "You are a fashion designer's assistant. " +
-	"You are shown the pictures of a garment's moodboard together with the designer's notes on it. " +
-	"From what you SEE and what the notes say you draft ONE short brief of the garment the board " +
-	"is reaching for: silhouette, proportions, construction, the two or three details that carry " +
-	"the idea. Write plain prose in English, at most 250 words. " +
+	"You are shown the pictures of a garment's moodboard, the designer's concept & construction " +
+	"description, and the notes pinned on the pictures — every note names its picture by number " +
+	"and the spot on it, so you know exactly which part of which image it marks. " +
+	"Look at the pictures and answer in exactly three titled sections, plain English prose:\n" +
+	"DESCRIPTION — one paragraph, at most 120 words: the garment the board is reaching for — " +
+	"silhouette, proportions, construction, the two or three details that carry the idea — " +
+	"written so it can stand as the concept & construction description itself.\n" +
+	"DESIGN ASPECTS — the construction aspects the pictures and the notes imply, one line each " +
+	"(closure, collar, pockets, seams, hem and the like).\n" +
+	"MISSING CALLOUTS — what deserves a pinned note and has none: name the picture by its number " +
+	"and the spot on it.\n" +
 	"Never invent a fabric, a colour or a measurement that the pictures do not show and the notes " +
 	"do not mention — say what is missing instead."
 
@@ -1103,9 +1118,8 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	mood := designMoodSnapshot(card)
 	if mood == nil {
 		return nil, status.Error(codes.FailedPrecondition,
-			"the moodboard says nothing yet: write the board's note or pin a callout, then draft the idea")
+			"the moodboard says nothing yet: write the description or pin a callout, then draft the idea")
 	}
-	prompt := designDraftIdeaPrompt(card, mood)
 
 	// ─── КАРТИНКИ ДОСКИ: ПОТОЛОК ДО ДЕНЕГ, ПОТОМ АДРЕСА ───
 	//
@@ -1132,12 +1146,16 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// РАЗРЕШАЕТСЯ ДО StartRun по той же причине, что и потолок: сорванное чтение медиа не должно
 	// оставлять открытый прогон с зарезервированными деньгами. Цена — один лишний запрос на
 	// идемпотентном повторе, а повтор это двойной клик, а не горячий путь.
-	boardURLs, err := s.designBoardPictureURLs(ctx, boardIDs)
+	//
+	// И ДО СБОРКИ ПРОМПТА, потому что промпт нумерует выноски по ФАКТИЧЕСКИ приложенным картинкам
+	// (V-19): слова и провод обязаны читаться с одного списка, см. designDraftIdeaPrompt.
+	boardURLs, attachedIDs, err := s.designBoardPictureURLs(ctx, boardIDs)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "draft design idea: cannot resolve the moodboard pictures",
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot read the moodboard pictures")
 	}
+	prompt := designDraftIdeaPrompt(card, mood, attachedIDs)
 
 	// СНИМОК ВХОДОВ ТЕКСТОВОГО ПРОГОНА — ЭТО ДОСКА, И ТОЛЬКО ОНА. Ни refs, ни slots: ни одного
 	// референса и ни одной плиты верстака этот прогон не читает, и пустые списки — утверждение.
@@ -1664,8 +1682,8 @@ func designRunPlates(src designInputSources, parent *entity.DesignRun) []int32 {
 
 // ─────────────────────────── доска: только слова ───────────────────────────
 
-// designMoodSnapshot — доска в том виде, в каком её ЧИТАЕТ ТЕКСТОВЫЙ ПРОГОН: общая записка плюс
-// выноски, приколотые на картинки доски.
+// designMoodSnapshot — доска в том виде, в каком её ЧИТАЕТ ТЕКСТОВЫЙ ПРОГОН: записка (после V-16 —
+// `concept`, с легаси-`mood_note` вторым абзацем) плюс выноски, приколотые на картинки доски.
 //
 // ⚠ ЗДЕСЬ ЕДИНСТВЕННОЕ МЕСТО ВО ВСЁМ ФАЙЛЕ, ГДЕ ЧИТАЕТСЯ Card.Media, и зовётся оно ровно из одного
 // глагола — DraftDesignIdea. Card.Callouts читает ещё designCalloutsByMedia, и она доски не знает:
@@ -1682,7 +1700,23 @@ func designMoodSnapshot(card *entity.TechCard) *pb_common.DesignMoodSnapshot {
 			board[m.MediaId] = struct{}{}
 		}
 	}
-	out := &pb_common.DesignMoodSnapshot{Note: card.MoodNote.String}
+	// V-16: THE BOARD'S NOTE IS THE CONCEPT. The owner: «CONCEPT & CONSTRUCTION DESCRIPTION это и
+	// есть SHARED NOTE в MOODBOARD» — the client now edits exactly one text, `concept`, in the
+	// moodboard block. The legacy `mood_note` column is no longer editable anywhere, but cards
+	// written before the merge still carry it, and a note the model reads must be a note the
+	// history shows — so the snapshot composes BOTH, concept first, and stores the composition.
+	// The columns themselves are NOT merged: `concept` sits inside the DESIGN digest projection
+	// and `mood_note` deliberately does not (see entity.TechCard), so a column merge would flip
+	// every signed DESIGN section at once.
+	note := strings.TrimSpace(card.Concept.String)
+	if legacy := strings.TrimSpace(card.MoodNote.String); legacy != "" && legacy != note {
+		if note == "" {
+			note = legacy
+		} else {
+			note = note + "\n" + legacy
+		}
+	}
+	out := &pb_common.DesignMoodSnapshot{Note: note}
 	for _, c := range card.Callouts {
 		if !c.MediaId.Valid {
 			continue
@@ -1734,32 +1768,41 @@ func designBoardMediaIDs(card *entity.TechCard) []int {
 	return out
 }
 
-// designBoardPictureURLs — АДРЕСА КАРТИНОК ДОСКИ, в порядке пришедших id.
+// designBoardPictureURLs — АДРЕСА КАРТИНОК ДОСКИ, в порядке пришедших id, ПЛЮС САМИ id выживших.
 //
 // ⚠ ПРОПАВШАЯ СТРОКА МЕДИА ПРОПУСКАЕТСЯ, А НЕ РОНЯЕТ ЧЕРНОВИК. Тот же довод, что в
 // designgen.buildJob: id, которого нет у нас, провайдер тоже не скачает, а отказ всей кнопки
 // из-за одной удалённой плитки выбросил бы доску, чьи остальные картинки целы. Пустой url
 // пропускается по той же причине: CompleteWithImages отказал бы на нём поимённо уже после
 // StartAttempt, то есть внутри оплаченного круга.
-func (s *Server) designBoardPictureURLs(ctx context.Context, ids []int) ([]string, error) {
+//
+// ⚠ ВТОРОЕ ВОЗВРАЩАЕМОЕ — НЕ УДОБСТВО, А ПОЛОВИНА ПРИВЯЗКИ (V-19). Промпт нумерует выноски
+// «picture N» по порядку ПРИЛОЖЕННЫХ картинок, и обе половины — url на проводе и номер в словах —
+// обязаны читаться С ОДНОГО списка, собранного одним циклом. Нумеровать по boardIDs до резолюции
+// значило бы, что одна нечитаемая строка медиа сдвигает каждый номер после себя на чужую картинку —
+// ровно тот дефект, ради которого designgen.composePrompt считает подписи по `attached`, а не по
+// снимку.
+func (s *Server) designBoardPictureURLs(ctx context.Context, ids []int) ([]string, []int, error) {
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	byID, err := s.repo.Media().GetMediaByIds(ctx, ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make([]string, 0, len(ids))
+	urls := make([]string, 0, len(ids))
+	attached := make([]int, 0, len(ids))
 	for _, id := range ids {
 		m, ok := byID[id]
 		if !ok {
 			continue
 		}
 		if u := strings.TrimSpace(m.FullSizeMediaURL); u != "" {
-			out = append(out, u)
+			urls = append(urls, u)
+			attached = append(attached, id)
 		}
 	}
-	return out, nil
+	return urls, attached, nil
 }
 
 // designFrozenCallout — ОДНА ВЫНОСКА В ЗАМОРОЖЕННОМ ВИДЕ: слова плюс геометрия. nil, если слов
@@ -1815,14 +1858,24 @@ func designCalloutsByMedia(card *entity.TechCard) map[int][]*pb_common.DesignMoo
 }
 
 // designDraftIdeaPrompt — СЛОВЕСНАЯ ЧАСТЬ ЗАПРОСА. Картинки едут ОТДЕЛЬНЫМИ content-parts мимо
-// этой функции (см. DraftDesignIdea), поэтому здесь их нет и быть не должно.
+// этой функции (см. DraftDesignIdea); здесь — их НОМЕРА и всё, что к ним приколото.
 //
-// ⚠ НОМЕР КАРТИНКИ НЕ ПИШЕТСЯ СЮДА ДАЖЕ ТЕПЕРЬ, КОГДА КАРТИНКИ ПОСЫЛАЮТСЯ. Довод сменился, но
-// вывод остался: media_id — это НАШ внутренний ключ, модели он ничего не сообщает и ни на что не
-// ссылается, потому что в её глазах картинки пронумерованы порядком в content-частях, а не нашей
-// базой. Строка «выноска на медиа 900» заставила бы её угадывать, к какому из присланных
-// изображений это относится, — то есть врать увереннее.
-func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot) string {
+// ПРИВЯЗКА — ВЕСЬ СМЫСЛ ЭТОЙ ФУНКЦИИ (V-19, владелец дословно: «важно что модель принимала
+// картинку и знала какой пин из колаутов как размечен а не что он просто есть (к какой картинке и
+// какой части картинки)»). До этого выноски уезжали плоским списком текстов: модель знала, ЧТО
+// написано, и не знала, ГДЕ. Теперь каждая строка называет свою картинку номером и место на ней
+// в долях кадра — тем же приёмом, каким designgen.composePrompt нумерует референсы («image k:»),
+// потому что два способа привязывать слова к картинкам в одном репозитории уже расходились.
+//
+// ⚠ `attachedIDs` — КАРТИНКИ, ФАКТИЧЕСКИ УХОДЯЩИЕ НА ПРОВОД, в порядке отправки: выжившие после
+// резолюции медиа, а не список желаний доски. Номер считается ПО НИМ, потому что в глазах модели
+// «picture 2» — это второй content-part; нумерация по снимку сдвигалась бы на каждой пропавшей
+// строке медиа. Выноска картинки, которая не уехала, выбрасывается ВМЕСТЕ с картинкой — слова о
+// изображении, которого модель не видит, это инструкция ни о чём (довод composePrompt, дословно).
+//
+// ⚠ media_id ПО-ПРЕЖНЕМУ НЕ ПИШЕТСЯ: это наш внутренний ключ, модели он не сообщает ничего.
+// Номер здесь — порядковый номер content-части, и только он.
+func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int) string {
 	var b strings.Builder
 	if card != nil {
 		if v := strings.TrimSpace(card.Name); v != "" {
@@ -1833,17 +1886,105 @@ func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnap
 		}
 	}
 	if note := strings.TrimSpace(mood.GetNote()); note != "" {
-		b.WriteString("\nThe board is about:\n" + note + "\n")
+		b.WriteString("\nConcept & construction description — the designer's own words, build on them:\n" + note + "\n")
 	}
-	if len(mood.GetCallouts()) > 0 {
-		b.WriteString("\nNotes pinned on the board:\n")
-		for _, c := range mood.GetCallouts() {
-			// НОМЕР КАРТИНКИ НЕ ПИШЕТСЯ. Он не помог бы модели — она картинки не видит — и
-			// был бы ровно тем, чего W-15 не допускает.
-			b.WriteString("- " + strings.TrimSpace(c.GetText()) + "\n")
+	if len(attachedIDs) > 0 {
+		b.WriteString("\nThe moodboard pictures are attached in order: «picture 1» is the first attached image, «picture 2» the second, and so on.\n")
+	}
+	pictureAt := make(map[int32]int, len(attachedIDs))
+	for i, id := range attachedIDs {
+		pictureAt[int32(id)] = i + 1
+	}
+	var lines []string
+	for _, c := range mood.GetCallouts() {
+		n, ok := pictureAt[c.GetMediaId()]
+		if !ok {
+			continue // картинка не уехала — её слова едут вместе с ней, то есть никуда
 		}
+		lines = append(lines,
+			"- picture "+strconv.Itoa(n)+designCalloutSpot(c.GetAnnotation())+": "+designOneLine(c.GetText()))
+	}
+	if len(lines) > 0 {
+		b.WriteString("\nNotes pinned on the pictures — each names its picture and the spot it marks:\n")
+		b.WriteString(strings.Join(lines, "\n") + "\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// designOneLine сплющивает человеческий текст в одну строку — тот же приём и тот же довод, что
+// designgen.oneLine: строки выносок нумерованы («- picture 2 …»), и перевод строки внутри текста
+// вписал бы в промпт СВОЮ строку, которую модель прочла бы как подпись соседней картинки.
+func designOneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// designCalloutSpot — МЕСТО УКАЗАНИЯ НА КАДРЕ, словами для модели: вид отметки и точка в
+// процентах кадра. Пустая строка — законный ответ (легаси-выноска без геометрии): строка без
+// места хуже строки без выноски не становится.
+//
+// ТОЧКА БЕРЁТСЯ У ЯКОРЕЙ ФИГУРЫ, А НЕ У ПЛАШКИ, когда якоря есть: у линии/дуги плашка с текстом
+// намеренно отводится ОТ отмеченного места (чтобы не лечь на саму линию — см. mood-callouts.add),
+// то есть отвечает на вопрос «где подпись», а не «где отметка». У пина якорей нет — его
+// label_x/label_y И ЕСТЬ точка.
+func designCalloutSpot(ann *pb_common.TechCardAnnotation) string {
+	if ann == nil {
+		return ""
+	}
+	dec := func(d *pb_decimal.Decimal) (float64, bool) {
+		if d == nil {
+			return 0, false
+		}
+		v, err := strconv.ParseFloat(d.GetValue(), 64)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
+	var x, y float64
+	var got bool
+	if pts := ann.GetPoints(); len(pts) > 0 {
+		var sx, sy float64
+		n := 0
+		for _, p := range pts {
+			px, okx := dec(p.GetX())
+			py, oky := dec(p.GetY())
+			if !okx || !oky {
+				continue
+			}
+			sx, sy, n = sx+px, sy+py, n+1
+		}
+		if n > 0 {
+			x, y, got = sx/float64(n), sy/float64(n), true
+		}
+	}
+	if !got {
+		px, okx := dec(ann.GetLabelX())
+		py, oky := dec(ann.GetLabelY())
+		if !okx || !oky {
+			return ""
+		}
+		x, y, got = px, py, true
+	}
+	word := "mark"
+	switch ann.GetKind() {
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN:
+		word = "pin"
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_LABEL:
+		word = "note"
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_DIM:
+		word = "measurement"
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_BRACKET:
+		word = "bracket"
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_MULTI,
+		pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_INK:
+		word = "line"
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_ARC:
+		word = "arc"
+	case pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON:
+		word = "area"
+	}
+	return " — " + word + " at " + strconv.Itoa(int(math.Round(x*100))) + "% from the left, " +
+		strconv.Itoa(int(math.Round(y*100))) + "% from the top"
 }
 
 // ─────────────────────────── общее ───────────────────────────

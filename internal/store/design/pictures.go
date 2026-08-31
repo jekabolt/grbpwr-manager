@@ -262,23 +262,6 @@ func hidePictureGuards(ctx context.Context, db dependency.DB, pic entity.DesignP
 		return fmt.Errorf("%w: picture %d stands in a bench slot", entity.ErrDesignInSlot, pic.Id)
 	}
 
-	// IN A MINTED VERSION — matched BY media_id, because media_id is what a version froze.
-	// design_sheet_version_plate has no picture_id and must not grow one: the version is a record
-	// of BYTES, and a picture row is not what gets printed a year later.
-	inVersion, err := storeutil.QueryCountNamed(ctx, db, `
-		SELECT COUNT(*) FROM design_sheet_version v
-		WHERE v.tech_card_id = :card AND (
-			EXISTS (SELECT 1 FROM design_sheet_version_plate p WHERE p.version_id = v.id AND p.media_id = :media)
-			OR EXISTS (SELECT 1 FROM design_sheet_version_callout c WHERE c.version_id = v.id AND c.media_id = :media)
-		)`,
-		map[string]any{"card": pic.TechCardId, "media": pic.MediaId})
-	if err != nil {
-		return fmt.Errorf("failed to check design version use of picture %d: %w", pic.Id, err)
-	}
-	if inVersion > 0 {
-		return fmt.Errorf("%w: picture %d is part of a minted sheet version", entity.ErrDesignInVersion, pic.Id)
-	}
-
 	// FEEDING A LIVE RUN. The snapshot is JSON, so this is a JSON predicate — bounded to the
 	// card's own pending/running rows, which are units, not the organisation's whole history.
 	// The paths are SNAKE_CASE; see entity.DesignInputsJSONSlotMedia for why that is load-bearing.

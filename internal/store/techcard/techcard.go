@@ -48,9 +48,10 @@ func New(base storeutil.Base, txFunc, readTxFunc TxFunc, repFunc RepFunc) *Store
 }
 
 // EnsureDictionaryFresh refreshes the shared in-memory dictionary before a dictionary-dependent
-// write opens its transaction. Exported because the atomic mint of a design sheet version performs
-// the very same document write from another package and owes the same refresh — and owes it OUTSIDE
-// its transaction, for the reason spelled out on UpdateTechCardTx.
+// write opens its transaction. OUTSIDE the transaction, always: it is a cache refresh that reads
+// its own rows, and pulling it inside a SERIALIZABLE write would put every dictionary table into
+// that write's lock set for no gain. Called by the create, the update, the clone and the archive
+// import — every entry point that resolves a dictionary name.
 func (s *Store) EnsureDictionaryFresh(ctx context.Context, action string) error {
 	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
 		return fmt.Errorf("can't refresh dictionary before tech card %s: %w", action, err)
@@ -315,21 +316,25 @@ func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 }
 
 // UpdateTechCardTx IS THE DOCUMENT WRITE, and the only one. It runs inside a transaction the
-// CALLER opened, so a second entry point can wrap the very same write together with its own work
-// in ONE transaction — which is what the atomic mint of a design sheet version needs: the frozen
-// callouts must come from the document that same transaction just wrote, or the state «re-pinned,
-// but no version» becomes reachable and, worse, invisible.
+// CALLER opened, so an entry point that needs the document write and its own work in ONE
+// transaction can have both without a second, divergent copy of this function — and a second
+// writer of the tech-card document is exactly what must never exist.
+//
+// ⚠ IT IS EXPORTED FOR NOBODY RIGHT NOW. The second entry point that motivated the export was the
+// atomic mint of a design sheet version, and that whole subsystem was removed by the owner's
+// decision (see 0353). Today the only caller is updateTechCardAndListOrphanedPatternURLs, in this
+// package. The shape is kept rather than folded back in because the SEAM is the property worth
+// keeping — «the document write can be handed somebody else's transaction» is what stops the next
+// such caller from copying the body — but anyone narrowing the API surface may unexport it, and
+// nothing outside this package will notice.
 //
 // WHY `rep` AND NOT A BARE DB HANDLE. The body reaches for rep.DB() only, but the parameter is the
 // whole repository on purpose: store.Tx hands its callback a full dependency.Repository (db.go:62),
-// so rep.TechCards() and rep.Design() are the SAME transaction. Narrowing this to a DB handle would
-// make the atomic mint inexpressible without a second, divergent copy of this function — and a
-// second writer of the tech-card document is exactly what must never exist.
+// so rep.TechCards() and any sibling sub-store are the SAME transaction. A DB handle here would
+// force the next caller that needs a sibling store in the same transaction to write its own copy.
 //
-// NOT A NEW WRITER. Both entry points — UpdateTechCard (the save) and MintDesignSheetVersion (the
-// mint) — call THIS function. The dictionary refresh stays with the callers because it is a shared
-// in-memory cache refresh that reads its own rows, and pulling it inside a SERIALIZABLE write would
-// put every dictionary table into the mint's lock set for no gain.
+// The dictionary refresh stays with the CALLERS (EnsureDictionaryFresh) rather than moving in
+// here, for the reason stated there.
 func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
 	var orphanedPatternURLs []string
 	cur, err := storeutil.QueryNamedOne[struct {

@@ -2555,14 +2555,14 @@ service AdminService {
 
   // DESIGN BAND
   //
-  // The studio half of a tech card: generation runs, the pictures they produce, the bench that
-  // promotes a picture into a view, and the frozen sheet versions that get printed. It lives
-  // OUTSIDE the card document — its own writes, its own lifecycle — but inside THIS service: a
-  // second service would be a second authorization channel for no gain. Messages: common/design.proto.
+  // The studio half of a tech card: generation runs, the pictures they produce, and the bench that
+  // promotes a picture into a view. It lives OUTSIDE the card document — its own writes, its own
+  // lifecycle — but inside THIS service: a second service would be a second authorization channel
+  // for no gain. Messages: common/design.proto.
 
-  // GetDesignBand is ONE read of the whole band: bench slots, the version numbers plus the latest
-  // version's composition, the issue journal, the day's budget, the edit layers, the aggregates the
-  // header needs, and the FIRST PAGE of runs with their pictures already under them.
+  // GetDesignBand is ONE read of the whole band: bench slots, the day's budget, the edit layers,
+  // the reference roles, the aggregates the header needs, and the FIRST PAGE of runs with their
+  // pictures already under them.
   //
   // HIDDEN AND ARCHIVED ROWS COME BACK, WITH THEIR FLAGS. The client filters. A server that omitted
   // them would make «· 3 hidden» unprintable and would turn every count into a second, disagreeing
@@ -2584,22 +2584,14 @@ service AdminService {
   // MediaFull for every row it crosses on the way.
   //
   // IT IS ALSO HOW A LIVE RUN IS WATCHED. A run in flight is one row changing; polling it through
-  // the band read costs the whole band — bench, versions, journal, budget, layers, a page of
-  // pictures — per tick, to observe one status string.
+  // the band read costs the whole band — bench, budget, layers, references, a page of pictures —
+  // per tick, to observe one status string.
   //
   // AND IT IS WHAT A RERUN SHOWS BEFORE IT SPENDS ANYTHING: selecting an old run must draw its
   // prompt, its pictures, its descriptions and its markup (W-7), which is exactly this row's
   // snapshot and nothing else.
   rpc GetDesignRun(GetDesignRunRequest) returns (GetDesignRunResponse) {
     option (google.api.http) = {get: "/api/admin/design/run/{run_id}"};
-  }
-
-  // GetDesignSheetVersion reads ONE frozen version whole: its plates, its callouts and its journal.
-  // Without it, printing an older Rev.N, a QR that points at a specific issue, and checking the
-  // paper on the factory floor against what was actually minted are all impossible — a QR on Rev.3
-  // must lead to Rev.3, not to «latest».
-  rpc GetDesignSheetVersion(GetDesignSheetVersionRequest) returns (GetDesignSheetVersionResponse) {
-    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/sheet/{version_number}"};
   }
 
   // StartDesignRun opens a paid job. ONE SERIALIZABLE transaction does all of it: the gate belts,
@@ -2647,7 +2639,7 @@ service AdminService {
 
   // HideDesignPicture is the ONLY persistent verb for picture invisibility, and it is reversible.
   // Guards, each of which would otherwise leave a live reference pointing at something the band
-  // refuses to draw — FailedPrecondition: in_slot | in_version | live_run_input | live_crop_parent.
+  // refuses to draw — FailedPrecondition: in_slot | live_run_input | live_crop_parent.
   rpc HideDesignPicture(HideDesignPictureRequest) returns (HideDesignPictureResponse) {
     option (google.api.http) = {
       post: "/api/admin/design/picture/{picture_id}/hide"
@@ -2734,38 +2726,10 @@ service AdminService {
     };
   }
 
-  // DeleteDesignDetailSlot removes an EMPTY detail slot that NO version quotes. A slot quoted by a
-  // minted version keeps its address alive so the paper can still be explained.
-  // FailedPrecondition: slot_filled | slot_in_version, the latter naming the versions.
+  // DeleteDesignDetailSlot removes an EMPTY detail slot.
+  // FailedPrecondition: slot_filled.
   rpc DeleteDesignDetailSlot(DeleteDesignDetailSlotRequest) returns (DeleteDesignDetailSlotResponse) {
     option (google.api.http) = {delete: "/api/admin/design/bench/{slot_id}"};
-  }
-
-  // MintDesignSheetVersion is an ATOMIC MINT: in ONE SERIALIZABLE transaction it performs the
-  // ordinary document write (the same code path as UpdateTechCard) AND gives birth to the version.
-  // The frozen callouts are taken from the document THIS transaction just wrote, so the state
-  // «re-pinned, but no version» does not exist.
-  //
-  // Idempotent by client_request_id: a lost response must not mint a phantom vN+1.
-  //
-  // Aborted: lock_version_mismatch | bench_moved (naming which slot moved). FailedPrecondition:
-  // mixed_needs_consent | fit_mismatch {view, fit, card_fit} | uploaded_fit_unconfirmed |
-  // sheet_min_unmet {missing views}.
-  rpc MintDesignSheetVersion(MintDesignSheetVersionRequest) returns (MintDesignSheetVersionResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/tech-card/{tech_card_id}/design/sheet"
-      body: "*"
-    };
-  }
-
-  // RecordDesignSheetIssue writes a printed/shared line into a version's append-only journal. It
-  // MINTS NOTHING: reprinting the same paper is not a new revision, and a system that made it one
-  // would grow a revision per print.
-  rpc RecordDesignSheetIssue(RecordDesignSheetIssueRequest) returns (RecordDesignSheetIssueResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/tech-card/{tech_card_id}/design/sheet/{version_number}/issue"
-      body: "*"
-    };
   }
 
   // GetDesignEditLayer reads ONE layer WITH its strokes. It exists because GetDesignBand
@@ -3674,12 +3638,11 @@ message MediaUsage {
 // thumbnail and a gallery frame yields two refs with the same kind and entity_id).
 message MediaUsageRef {
   // product | archive | model | material | task | tech_card | fitting | sample |
-  // design_picture | design_sheet_version | design_edit_layer.
-  // The last three are the DESIGN band, and all three are OWNING references: a picture holds its
-  // media, a MINTED SHEET VERSION holds the bytes of its plates and its frozen callouts, and an
-  // EDIT LAYER holds the image its strokes were drawn over — without it the saved layer cannot be
-  // opened or flattened at all. All three hold with RESTRICT, which is why the library must name
-  // them: otherwise somebody deletes the bytes a printed Rev.N, or an unfinished edit, depends on.
+  // design_picture | design_edit_layer.
+  // The last two are the DESIGN band, and both are OWNING references: a picture holds its media,
+  // and an EDIT LAYER holds the image its strokes were drawn over — without it the saved layer
+  // cannot be opened or flattened at all. Both hold with RESTRICT, which is why the library must
+  // name them: otherwise somebody deletes the bytes an unfinished edit depends on.
   // The band's reference roles are deliberately NOT here — a role is a hint to the model, and a
   // lock on deleting a moodboard picture would be harm, so that column carries no FK at all.
   string kind = 1;
@@ -11580,7 +11543,7 @@ message AccrueCorporationTaxResponse {
 // DESIGN BAND messages
 //
 // The band's own types live in common/design.proto; what follows is only the RPC surface.
-// Vocabularies (kind, status, view_key, source_class, minted_via, …) are documented there.
+// Vocabularies (kind, status, view_key, source_class, …) are documented there.
 
 // DesignBenchSlotRef addresses ONE bench slot in EITHER of the two ways a slot can be named: by its
 // view for the four silhouette sides, or by its minted id for a detail. Exactly one must be set.
@@ -11621,23 +11584,23 @@ message GetDesignBandRequest {
   int32 tech_card_id = 1;
 }
 
-// GetDesignBandResponse is the whole band in one read. Bounded on purpose: the journal is capped
-// and the runs come back one page at a time, because a card with 40 runs × 3 outputs would
-// otherwise ship 120 MediaFull on every open of the tab.
+// GetDesignBandResponse is the whole band in one read. Bounded on purpose: the runs come back one
+// page at a time, because a card with 40 runs × 3 outputs would otherwise ship 120 MediaFull on
+// every open of the tab.
 message GetDesignBandResponse {
+  // 2, 3 and 4 CARRIED THE SHEET MINT — `version_numbers`, `latest_version`, `journal` — and the
+  // whole minting subsystem was removed by the owner's decision (PRINT/MINTS v1 and VERSIONS are
+  // not wanted), along with the tables behind it (0353). They are reserved rather than reused
+  // because the admin gateway parses JSON with DiscardUnknown = false: a NEW field handed one of
+  // these numbers would be fed the old shape by any admin tab still open from before the deploy,
+  // and the mismatch would surface as a 400 on an unrelated screen rather than as a decode error
+  // anyone could trace back to here.
+  reserved 2, 3, 4;
+  reserved "version_numbers", "latest_version", "journal";
+
   // The bench: the four silhouette slots that have been touched, plus every detail slot. Slots that
   // have never been touched are simply absent — they are born lazily by SetDesignBenchSlot.
   repeated common.DesignBenchSlot bench = 1;
-  // Every minted version number of this card, ascending. Numbers only: the older versions are read
-  // whole through GetDesignSheetVersion, on demand, when somebody actually prints one.
-  repeated int32 version_numbers = 2;
-  // The LATEST version in full — the composition ARTIFACTS compares the live document against to
-  // draw «differs from v3». Unset when the card has never minted one, which is honestly «no sheet
-  // yet», not «version 0».
-  common.DesignSheetVersion latest_version = 3;
-  // The sheet journal, newest first, at most 50 lines. A card that issues more than that has a
-  // history worth paging, and it will get its own read before it does.
-  repeated common.DesignSheetIssue journal = 4;
   common.DesignBudget budget = 5;
   // The roles stated for this card's reference images, in prompt order. Only images that HAVE a
   // role appear; a reference without one is still a reference, and the document is what lists them.
@@ -11737,17 +11700,6 @@ message GetDesignRunResponse {
   // history page carries, so the answer drops straight into the row the client already drew instead
   // of forcing it to merge two different shapes of the same row.
   common.DesignRun run = 1;
-}
-
-message GetDesignSheetVersionRequest {
-  int32 tech_card_id = 1;
-  int32 version_number = 2; // the N of Rev.N; NotFound if this card never minted it
-}
-
-message GetDesignSheetVersionResponse {
-  common.DesignSheetVersion version = 1; // plates and callouts, frozen as minted
-  // This version's journal, oldest first: minted, then every print and share of it.
-  repeated common.DesignSheetIssue issues = 2;
 }
 
 message StartDesignRunRequest {
@@ -11934,56 +11886,6 @@ message DeleteDesignDetailSlotRequest {
 }
 
 message DeleteDesignDetailSlotResponse {}
-
-// DesignExpectedPlate is one line of the mint's optimistic lock over the BENCH: «I am minting the
-// bench in which this slot stood at this rev». The card's own document is locked separately by
-// expected_lock_version — the two locks guard two different things, and a mint that checked only
-// the document could freeze a composition somebody rearranged a second earlier.
-message DesignExpectedPlate {
-  DesignBenchSlotRef slot = 1;
-  int32 slot_rev = 2; // the rev the minter saw; a mismatch is Aborted:bench_moved naming this slot
-}
-
-message MintDesignSheetVersionRequest {
-  int32 tech_card_id = 1;
-  string client_request_id = 2; // a lost response must not mint a phantom vN+1
-  // The card document, written by this SAME transaction with the same code path as UpdateTechCard.
-  // It is here rather than in a preceding call because the version freezes callouts, and callouts
-  // are part of the document: two calls could leave «re-pinned, but no version» on the floor.
-  common.TechCardInsert tech_card = 3;
-  int32 expected_lock_version = 4; // from GetTechCard; a mismatch is Aborted:lock_version_mismatch
-  // The bench as the minter saw it. Empty means «do not check the bench», which is only honest for
-  // a server-side caller; the UI always sends the full set.
-  repeated DesignExpectedPlate expected_plates = 5;
-  // The minter has seen and accepted that the composition mixes provenances. Without it such a mint
-  // is refused (mixed_needs_consent) rather than quietly blessed.
-  bool mixed_consent = 6;
-  // The minter has confirmed the fit claimed for UPLOADED plates, which carry no fit of their own.
-  // Without it: uploaded_fit_unconfirmed.
-  bool uploaded_fit_confirmed = 7;
-  string minted_via = 8; // callout | print | release | share — WHICH ACT minted this version
-}
-
-message MintDesignSheetVersionResponse {
-  // The version as frozen. The card document is NOT echoed: like UpdateTechCard, the client
-  // re-reads the card and merges server-assigned values by key — here, callout numbers by
-  // client_ref.
-  common.DesignSheetVersion version = 1;
-}
-
-message RecordDesignSheetIssueRequest {
-  int32 tech_card_id = 1;
-  int32 version_number = 2;
-  // printed | shared. `minted` is InvalidArgument, and so is any value outside the pair: the mint's
-  // own journal line must be reachable ONLY by minting, or the journal stops being evidence of what
-  // happened and becomes a list of what somebody typed.
-  string action = 3;
-  string client_request_id = 4; // a retried print must not double the journal
-}
-
-message RecordDesignSheetIssueResponse {
-  common.DesignSheetIssue issue = 1;
-}
 
 message GetDesignEditLayerRequest {
   int32 tech_card_id = 1;

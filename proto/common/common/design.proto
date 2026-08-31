@@ -3,12 +3,11 @@ syntax = "proto3";
 package common;
 
 import "common/media.proto";
-// The DESIGN band freezes callouts of a minted sheet version, and it freezes them as the ONE
-// annotation primitive the whole system draws with: TechCardAnnotation, its kinds, its points and
-// its palette are declared in techcard.proto and reused here verbatim. There is no
-// DesignAnnotationKind and there must never be one — a callout dragged from the sheet into the
-// document must stay the same arc on both sides of the move. No cycle: techcard.proto knows
-// nothing about the band.
+// The DESIGN band marks up moodboard references, and it marks them up with the ONE annotation
+// primitive the whole system draws with: TechCardAnnotation, its kinds, its points and its palette
+// are declared in techcard.proto and reused here verbatim. There is no DesignAnnotationKind and
+// there must never be one — a shape drawn on a reference and a shape drawn on the card must stay
+// the same arc on both sides of the move. No cycle: techcard.proto knows nothing about the band.
 import "common/techcard.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
@@ -16,9 +15,9 @@ import "google/type/decimal.proto";
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
 // The DESIGN band is the studio half of a tech card: generation runs, the pictures they produce,
-// the bench that promotes pictures into views, and the frozen sheet versions that get printed.
-// It lives OUTSIDE the card document (its own lifecycle, its own writes) — which is why it has its
-// own file rather than another thousand lines of techcard.proto.
+// and the bench that promotes pictures into views. It lives OUTSIDE the card document (its own
+// lifecycle, its own writes) — which is why it has its own file rather than another thousand lines
+// of techcard.proto.
 //
 // VOCABULARIES ARE OPEN STRINGS ON PURPOSE, not enums. Every one of them has already grown once
 // during design (source_class gained `drawn`), and a closed proto enum would make the next member
@@ -68,8 +67,9 @@ message DesignRun {
   // client-supplied provenance is not provenance, it is a claim. Capped at 64 KB.
   DesignInputSnapshot inputs = 10;
   // OUTPUT-ONLY copy of the card's fit at launch, so the badge «fit slim ≠ card oversized» can be
-  // drawn on an old picture. Empty = the fit was not stated; the mint asks then. Uploaded plates
-  // never state one at all, which is why MintDesignSheetVersion has uploaded_fit_confirmed.
+  // drawn on an old picture. Empty = the fit was not stated, which is the ordinary case for a
+  // manually uploaded picture: it carries no fit of its own, and stamping one would record a claim
+  // nobody actually made.
   string fit_at_launch = 11;
   // OUTPUT-ONLY render revision — the «r4» caption in the colour history. MAX+1 per card, assigned
   // only for kind=render; 0 on every other kind.
@@ -271,6 +271,16 @@ message DesignThreedParams {
   // panel cannot show what the rotation was assembled out of, and a turntable stitched from
   // different rrevs (i.e. from different colours) would be indistinguishable from a coherent one.
   repeated int32 source_picture_ids = 6;
+  // WHAT BODY the garment is asked to be shown on, when no particular model is named. A person
+  // picks a model when they know whose photographs they want; they pick a body when they only know
+  // the shape. The two are not alternatives to each other on the wire: model_id names an existing
+  // model row, this names a build, and a run may state both (this one then reads as the build the
+  // model is being asked to stand for). Empty = not stated; the generator picks.
+  //
+  // NOT AN ENUM ON PURPOSE. The vocabulary of builds is a wording question that belongs to the
+  // people writing the ask, and an enum would freeze today's four words into the contract and into
+  // every already-frozen run's history.
+  string body_type = 7;
 }
 
 // DesignInputSnapshot is what the inputs WERE when the run started. Assembled by the SERVER only.
@@ -320,9 +330,11 @@ message DesignMoodSnapshot {
 message DesignMoodCallout {
   int32 media_id = 1; // FK media(id)
   string text = 2;
-  // The frozen shape — the SAME TechCardAnnotation the sheet freezes and the card draws, at the
-  // same coordinate precision. Its own `text` is left empty: the words that were read live in
-  // `text` above, composed, exactly as DesignSheetCallout arranges the same pair.
+  // The frozen shape — the SAME TechCardAnnotation the card draws, at the same coordinate
+  // precision. Its own `text` is left empty: the words that were read live in `text` above,
+  // composed, exactly the way the card's own callouts arrange the same pair (a note is composed of
+  // part / description / dimensions, and it is the COMPOSED line a reader sees, not the geometry's
+  // label).
   //
   // Unset = this callout carried no shape, or predates the field. That is a readable state and is
   // NOT the same as a zero-area rectangle at the top-left corner, which is what a non-optional
@@ -366,7 +378,7 @@ message DesignInputSlot {
   // WHICH SLOT, when view_key is `detail`. A view key alone cannot tell two details apart, and the
   // comparison «is this input stale» has no join key without it — so the badge would be
   // uncomputable for every card with more than one detail slot, FOREVER: a snapshot is frozen at
-  // launch and is never repaired later. DesignSheetPlate solved the same problem the same way.
+  // launch and is never repaired later.
   //
   // 0 for the four silhouette sides, which view_key already identifies.
   int32 slot_id = 2;
@@ -423,8 +435,8 @@ message DesignPicture {
   bool mixed_input = 12;
   int32 layer_rev = 13; // the edit layer revision this picture was flattened from; 0 = not flattened
   // Reversible invisibility — the ONLY persistent verb for hiding a picture. The guards live in
-  // HideDesignPicture: a plate in a slot, in a minted version, feeding a live run, or parenting a
-  // live crop cannot be hidden.
+  // HideDesignPicture: a plate in a slot, feeding a live run, or parenting a live crop cannot be
+  // hidden.
   google.protobuf.Timestamp hidden_at = 14;
   string hidden_by = 15;
   google.protobuf.Timestamp created_at = 16;
@@ -528,79 +540,10 @@ message DesignBenchSlot {
   //
   // ONE AXIS WAS A DEFECT, not a simplification. With view alone, a fabric render of the front and
   // the technical flat of the front are the same key: placing the render DISPLACES the flat, and
-  // the next mint lays a colour render onto a technical line-drawing sheet. Uniqueness is
+  // the bench then offers a colour render where the technical line-drawing stood — two different
+  // answers to «what is the front», with the second silently erasing the first. Uniqueness is
   // (tech_card_id, kind, exclusive_key).
   string kind = 9;
-}
-
-// DesignSheetVersion is a MINTED, FROZEN sheet: Rev.N as it was printed. Its plates and callouts
-// are rows of their own, not a JSON blob — a version must still print a year from now, so its
-// bytes must not be erasable, and that is expressed by a foreign key the media library can see.
-message DesignSheetVersion {
-  int32 id = 1;
-  int32 version_number = 2; // 1-based per card; the N in «Rev.N» and in the QR of the printed sheet
-  string client_request_id = 3; // idempotency: a lost response must not mint a phantom vN+1
-  // The minter explicitly consented to a composition of mixed provenance. Without consent such a
-  // mint is refused (FailedPrecondition: mixed_needs_consent) rather than silently blessed.
-  bool mixed_consent = 4;
-  // WHICH ACT gave birth to this version: callout | print | release | share. There is no «accept»
-  // button anywhere — a version is a by-product of an act, never a ceremony of its own.
-  string minted_via = 5;
-  string minted_by = 6; // server-stamped
-  google.protobuf.Timestamp minted_at = 7;
-  repeated DesignSheetPlate plates = 8;
-  // The frozen callouts of this version, at most 200 — the same readability ceiling the card's
-  // annotations already carry.
-  repeated DesignSheetCallout callouts = 9;
-}
-
-// DesignSheetPlate is one frozen image of a version, with everything needed to explain a year later
-// what was printed and where it came from.
-message DesignSheetPlate {
-  string view_key = 1; // front | back | side_l | side_r | detail
-  // The bench slot this plate came from, or 0 if that slot has since been deleted. The version
-  // survives the slot's death, which is why detail_name below is a COPY and not a lookup.
-  int32 slot_id = 2;
-  string detail_name = 3; // COPY of the slot's name at mint: a deleted slot must not take it away
-  MediaFull media = 4; // resolved; the bytes are pinned (media cannot be deleted out from under it)
-  // THE HASH AT MINT — what this version actually froze. Empty = the media predates 0336.
-  //
-  // IT LIVES HERE, unlike on DesignPicture, and the asymmetry is the point rather than an
-  // oversight: a plate of a minted version is a FROZEN fact («these are the bytes the sheet was
-  // signed over»), and it must survive even a future recomputation of media.content_hash. A live
-  // picture has nothing to freeze — it is the current file — so for it a second copy could only
-  // disagree with the first.
-  string content_hash = 5;
-  int32 layer_rev = 6; // the edit-layer revision at mint
-  string source_class = 7; // ai | uploaded | ai_edits | imported_svg | drawn, frozen
-  int32 run_id = 8; // the run this plate came from; 0 for an uploaded plate
-  string fit_stamp = 9; // the fit claimed for this plate at mint; empty = never stated
-  bool mixed_input = 10; // frozen copy of the plate's mixed-input flag
-  int32 ordinal = 11; // print order within the version
-}
-
-// DesignSheetCallout is one frozen callout of a version. Geometry is a TechCardAnnotation — the
-// system's single annotation primitive, at the same coordinate precision the card's annotations
-// already enforce.
-message DesignSheetCallout {
-  int32 number = 1; // the callout number as printed on this version
-  MediaFull media = 2; // the plate this callout is pinned to, resolved
-  // The frozen shape: kind, points, colour, dashes. Its own `text` field is left EMPTY — the note
-  // that gets printed lives in `text` below, because a card callout's note is composed of
-  // part / description / dimensions and it is the COMPOSED line that goes on paper.
-  TechCardAnnotation annotation = 3;
-  string text = 4; // the printable note, frozen at mint
-}
-
-// DesignSheetIssue is one APPEND-ONLY journal line of a version: minted | printed | shared.
-// Reprinting a sheet does NOT mint a new version — it writes a line here. That distinction is the
-// whole reason the journal exists.
-message DesignSheetIssue {
-  int32 id = 1;
-  int32 version_number = 2;
-  string action = 3; // minted | printed | shared
-  string actor = 4; // server-stamped
-  google.protobuf.Timestamp created_at = 5;
 }
 
 // DesignEditLayer is a vector layer: strokes over a raster base, or strokes over nothing.
@@ -617,7 +560,8 @@ message DesignEditLayer {
   int32 rev = 4;
   // The layer's strokes, JSON-encoded. Capped at 512 KB — one vector edit; beyond that the answer
   // is «too many strokes, split it», not a slower save. There is deliberately no revision history:
-  // a minted version pins the content_hash of the already-rasterised file.
+  // the layer is a working surface, and what gets used downstream is the FLATTENED file, which is
+  // an ordinary media row with its own identity and its own content hash.
   //
   // SERVED ONLY BY GetDesignEditLayer, AND LEFT EMPTY EVERYWHERE ELSE. GetDesignBand lists the
   // layers without their strokes on purpose: 512 KB is the cap per LAYER, a card may hold several,

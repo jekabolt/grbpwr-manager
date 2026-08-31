@@ -429,16 +429,15 @@ var methodRequirements = map[string]Requirement{
 	// call it, and this one enumerates the whole style portfolio by article and name.
 	"ListTechCardFabricDirectionGaps": rd(SectionTechCards),
 
-	// ПОЛОСА DESIGN — студийная половина тех-карты: прогоны генерации, их картинки, верстак,
-	// замороженные версии листа и векторные слои. Вся секция — tech_cards, и ни одного метода в
-	// allowlist: полоса перечисляет портфель стилей картинками и тратит деньги ключа.
+	// ПОЛОСА DESIGN — студийная половина тех-карты: прогоны генерации, их картинки, верстак и
+	// векторные слои. Вся секция — tech_cards, и ни одного метода в allowlist: полоса перечисляет
+	// портфель стилей картинками и тратит деньги ключа.
 	//
-	// СВОЕЙ СЕКЦИИ У НЕЁ НЕТ НАМЕРЕННО. Полоса рисует и минтит содержимое ОДНОЙ карточки — эскизы,
-	// виды, выноски листа, — то есть ровно то, что tech_cards уже читает и пишет. Отдельное право
-	// означало бы аккаунт, который правит карточку, но не видит, из чего собран её лист.
-	"GetDesignBand":         rd(SectionTechCards),
-	"ListDesignRuns":        rd(SectionTechCards),
-	"GetDesignSheetVersion": rd(SectionTechCards),
+	// СВОЕЙ СЕКЦИИ У НЕЁ НЕТ НАМЕРЕННО. Полоса рисует содержимое ОДНОЙ карточки — эскизы, виды,
+	// выноски, — то есть ровно то, что tech_cards уже читает и пишет. Отдельное право означало бы
+	// аккаунт, который правит карточку, но не видит, из чего она собрана.
+	"GetDesignBand":  rd(SectionTechCards),
+	"ListDesignRuns": rd(SectionTechCards),
 	// Чтение ОДНОГО прогона целиком — снимок входов, попытки, картинки. Право то же, что у ленты:
 	// это та же карточка, взятая по одной строке, а не другой объём знания. Деньги здесь не
 	// тратятся — реран платит через StartDesignRun, который стоит на записи.
@@ -465,13 +464,8 @@ var methodRequirements = map[string]Requirement{
 	"SetDesignBenchSlot":       wr(SectionTechCards),
 	"SetDesignReferenceRole":   wr(SectionTechCards),
 	"DeleteDesignDetailSlot":   wr(SectionTechCards),
-	// MintDesignSheetVersion выполняет ОБЫЧНУЮ ЗАПИСЬ ДОКУМЕНТА той же транзакцией (тот же код, что
-	// UpdateTechCard), поэтому его право обязано быть не слабее, чем у UpdateTechCard, — иначе минт
-	// стал бы чёрным ходом в документ мимо права на документ.
-	"MintDesignSheetVersion": wr(SectionTechCards),
-	"RecordDesignSheetIssue": wr(SectionTechCards),
-	"SaveDesignEditLayer":    wr(SectionTechCards),
-	"FlattenDesignEditLayer": wr(SectionTechCards),
+	"SaveDesignEditLayer":      wr(SectionTechCards),
+	"FlattenDesignEditLayer":   wr(SectionTechCards),
 	// ImportDesignVector НИЧЕГО НЕ ТРАТИТ — он подшивает уже загруженный SVG, — но пишет слой и
 	// заводит картинку с провенансом imported_svg. Право пишущее, потому что запись, а не потому
 	// что деньги; машинная векторизация это StartDesignRun с kind=vector, у которого право уже есть.

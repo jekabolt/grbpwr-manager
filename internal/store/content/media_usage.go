@@ -200,22 +200,6 @@ var mediaRefRegistry = []mediaRefSource{
 		// keeps two frames of the same card apart in the list.
 		slotExpr: `CONCAT_WS(', ', COALESCE(NULLIF(dp.kind, ''), 'picture'), NULLIF(dp.source_class, ''))`,
 	},
-	{
-		// A plate belongs to the MINTED VERSION, so that is the entity the operator is sent to —
-		// the plate row itself is exactly the "product_media #417" this registry exists to avoid.
-		kind: "design_sheet_version", table: "design_sheet_version_plate dsvp", column: "dsvp.media_id",
-		joins: `JOIN design_sheet_version dsv ON dsv.id = dsvp.version_id ` +
-			`JOIN tech_card tc ON tc.id = dsv.tech_card_id`,
-		entityExpr: "dsv.id", labelExpr: designSheetVersionLabel,
-		slotExpr: `CONCAT_WS(' ', CONCAT('plate ', dsvp.ordinal), NULLIF(dsvp.view_key, ''))`,
-	},
-	{
-		kind: "design_sheet_version", table: "design_sheet_version_callout dsvc", column: "dsvc.media_id",
-		joins: `JOIN design_sheet_version dsv ON dsv.id = dsvc.version_id ` +
-			`JOIN tech_card tc ON tc.id = dsv.tech_card_id`,
-		entityExpr: "dsv.id", labelExpr: designSheetVersionLabel,
-		slotExpr: `CONCAT('callout ', dsvc.number)`,
-	},
 
 	{
 		// The BASE of an edit layer — the picture the strokes were drawn on top of. It owns the
@@ -267,11 +251,6 @@ var mediaRefRegistry = []mediaRefSource{
 // the same tc alias; a fitting is identified by its style plus round number.
 const fittingLabel = `CONCAT_WS(' ', COALESCE(NULLIF(tc.name, ''), NULLIF(tc.style_number, '')), ` +
 	`CONCAT('round ', f.round_number))`
-
-// designSheetVersionLabel names a minted sheet version by its style plus its Rev number: a version
-// has no name of its own, and "Rev.3" without the style is not something an operator can act on.
-const designSheetVersionLabel = `CONCAT_WS(' ', COALESCE(NULLIF(tc.name, ''), NULLIF(tc.style_number, '')), ` +
-	`CONCAT('Rev.', dsv.version_number))`
 
 // selectSQL renders one registry entry as a branch of the UNION.
 //

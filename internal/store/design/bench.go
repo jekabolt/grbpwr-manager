@@ -451,12 +451,11 @@ func slotByID(ctx context.Context, db dependency.DB, id int) (entity.DesignBench
 	return slot, nil
 }
 
-// DeleteDetailSlot removes an EMPTY detail slot that no version quotes.
+// DeleteDetailSlot removes an EMPTY detail slot.
 //
-// The version check cannot be a foreign key. design_sheet_version_plate.slot_id is ON DELETE SET
-// NULL on purpose: both the slot and the version cascade from tech_card, so a RESTRICT here
-// would make DeleteTechCard — one bare DELETE FROM tech_card — die on 1451 with nothing the
-// caller could remove. So the refusal lives in Go, in the same transaction as the delete.
+// Both refusals live in Go rather than in the schema, and in the SAME transaction as the delete:
+// «is this a detail» is not expressible as a constraint at all, and «is it empty» read outside the
+// transaction would be a TOCTOU against a concurrent placement.
 func (s *Store) DeleteDetailSlot(ctx context.Context, slotID int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		slot, err := slotByID(ctx, rep.DB(), slotID)
@@ -473,20 +472,6 @@ func (s *Store) DeleteDetailSlot(ctx context.Context, slotID int) error {
 		}
 		if slot.PictureId.Valid {
 			return fmt.Errorf("%w: slot %d still holds a plate", entity.ErrDesignSlotFilled, slot.Id)
-		}
-		versions, err := storeutil.QueryScalarListNamed[int](ctx, rep.DB(), `
-			SELECT DISTINCT v.version_number
-			FROM design_sheet_version_plate p
-			JOIN design_sheet_version v ON v.id = p.version_id
-			WHERE p.slot_id = :id
-			ORDER BY v.version_number`,
-			map[string]any{"id": slotID})
-		if err != nil {
-			return fmt.Errorf("failed to check versions quoting design slot %d: %w", slotID, err)
-		}
-		if len(versions) > 0 {
-			return fmt.Errorf("%w: slot %d is quoted by versions %v",
-				entity.ErrDesignSlotInVersion, slotID, versions)
 		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM design_bench_slot WHERE id = :id`, map[string]any{"id": slotID}); err != nil {

@@ -63,26 +63,6 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if err = attachSlotPictures(ctx, rep, benchPtrs); err != nil {
 			return err
 		}
-		if band.VersionNumbers, err = storeutil.QueryScalarListNamed[int](ctx, db, `
-			SELECT version_number FROM design_sheet_version
-			WHERE tech_card_id = :card ORDER BY version_number`,
-			map[string]any{"card": cardID}); err != nil {
-			return fmt.Errorf("failed to list design sheet versions: %w", err)
-		}
-		// THE LATEST VERSION IN FULL — that is what «comp последней» means, and the plan never
-		// spells it out. ARTIFACTS diffs the live document against a COMPOSITION, so numbers
-		// alone would not draw «differs from v3»: the latest version arrives with its plates and
-		// its frozen callouts, every older one is fetched whole on demand by GetSheetVersion.
-		if n := len(band.VersionNumbers); n > 0 {
-			full, err := loadSheetVersion(ctx, rep, cardID, band.VersionNumbers[n-1])
-			if err != nil {
-				return err
-			}
-			band.LatestVersion = &full.Version
-		}
-		if band.Journal, err = loadBandJournal(ctx, db, cardID); err != nil {
-			return err
-		}
 		if band.Budget, err = loadBudget(ctx, db, s.Now()); err != nil {
 			return err
 		}
@@ -258,107 +238,6 @@ func listRunsTx(ctx context.Context, rep dependency.Repository, p entity.DesignR
 	}
 	res.Runs = runs
 	return res, nil
-}
-
-// GetSheetVersion reads ONE frozen version whole: its plates, its callouts and its journal.
-// Without it printing an old Rev.N, a QR that points at a specific issue, and checking the paper
-// on the factory floor are all impossible.
-func (s *Store) GetSheetVersion(ctx context.Context, cardID, versionNumber int) (*entity.DesignSheetVersionFull, error) {
-	if err := requireCard(cardID); err != nil {
-		return nil, err
-	}
-	var out entity.DesignSheetVersionFull
-	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		full, err := loadSheetVersion(ctx, rep, cardID, versionNumber)
-		if err != nil {
-			return err
-		}
-		out = *full
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// loadSheetVersion reads a version, its plates, its callouts and its own journal, and resolves
-// the media of both plates and callouts in one batch.
-func loadSheetVersion(ctx context.Context, rep dependency.Repository, cardID, versionNumber int) (*entity.DesignSheetVersionFull, error) {
-	db := rep.DB()
-	v, err := storeutil.QueryNamedOne[entity.DesignSheetVersion](ctx, db, `
-		SELECT * FROM design_sheet_version
-		WHERE tech_card_id = :card AND version_number = :n`,
-		map[string]any{"card": cardID, "n": versionNumber})
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("%w: tech card %d has no sheet version %d",
-				entity.ErrDesignNotFound, cardID, versionNumber)
-		}
-		return nil, fmt.Errorf("failed to read design sheet version: %w", err)
-	}
-	if v.Plates, err = storeutil.QueryListNamed[entity.DesignSheetPlate](ctx, db,
-		`SELECT * FROM design_sheet_version_plate WHERE version_id = :v ORDER BY ordinal, id`,
-		map[string]any{"v": v.Id}); err != nil {
-		return nil, fmt.Errorf("failed to read design sheet plates: %w", err)
-	}
-	if v.Callouts, err = storeutil.QueryListNamed[entity.DesignSheetCallout](ctx, db,
-		`SELECT * FROM design_sheet_version_callout WHERE version_id = :v ORDER BY number, id`,
-		map[string]any{"v": v.Id}); err != nil {
-		return nil, fmt.Errorf("failed to read design sheet callouts: %w", err)
-	}
-	issues, err := storeutil.QueryListNamed[entity.DesignSheetIssue](ctx, db, `
-		SELECT i.*, v.version_number
-		FROM design_sheet_issue i
-		JOIN design_sheet_version v ON v.id = i.version_id
-		WHERE i.version_id = :v ORDER BY i.id`,
-		map[string]any{"v": v.Id})
-	if err != nil {
-		return nil, fmt.Errorf("failed to read design sheet issues: %w", err)
-	}
-
-	ids := make([]int, 0, len(v.Plates)+len(v.Callouts))
-	for _, p := range v.Plates {
-		ids = append(ids, p.MediaId)
-	}
-	for _, c := range v.Callouts {
-		ids = append(ids, c.MediaId)
-	}
-	media, err := resolveMediaIDs(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve design sheet media: %w", err)
-	}
-	for i := range v.Plates {
-		if m, ok := media[v.Plates[i].MediaId]; ok {
-			mm := m
-			v.Plates[i].Media = &mm
-		}
-	}
-	for i := range v.Callouts {
-		if m, ok := media[v.Callouts[i].MediaId]; ok {
-			mm := m
-			v.Callouts[i].Media = &mm
-		}
-	}
-	return &entity.DesignSheetVersionFull{Version: v, Issues: issues}, nil
-}
-
-// loadBandJournal returns the newest MaxBandJournal lines across every version of the card.
-// What happens after the fiftieth is stated in the constant: they are dropped from the band and
-// remain readable per version through GetSheetVersion.
-func loadBandJournal(ctx context.Context, db dependency.DB, cardID int) ([]entity.DesignSheetIssue, error) {
-	rows, err := storeutil.QueryListNamed[entity.DesignSheetIssue](ctx, db, `
-		SELECT i.*, v.version_number
-		FROM design_sheet_issue i
-		JOIN design_sheet_version v ON v.id = i.version_id
-		WHERE v.tech_card_id = :card
-		ORDER BY i.created_at DESC, i.id DESC
-		LIMIT :limit`,
-		map[string]any{"card": cardID, "limit": MaxBandJournal})
-	if err != nil {
-		return nil, fmt.Errorf("failed to read design sheet journal: %w", err)
-	}
-	return rows, nil
 }
 
 // loadColourRecipes builds the chips of the colour history.

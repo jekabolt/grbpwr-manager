@@ -106,8 +106,6 @@ func TestMediaRefRegistryCoversTheDesignWave(t *testing.T) {
 
 	for _, owning := range []string{
 		"design_picture.media_id",
-		"design_sheet_version_plate.media_id",
-		"design_sheet_version_callout.media_id",
 		"design_edit_layer.base_media_id",
 	} {
 		assert.True(t, targets[owning],
@@ -125,7 +123,7 @@ func TestMediaRefRegistryCoversTheDesignWave(t *testing.T) {
 	for _, src := range mediaRefRegistry {
 		kinds[src.kind] = true
 	}
-	for _, kind := range []string{"design_picture", "design_sheet_version", "design_edit_layer"} {
+	for _, kind := range []string{"design_picture", "design_edit_layer"} {
 		assert.True(t, kinds[kind], "the DESIGN band must reach the client as kind %q", kind)
 	}
 

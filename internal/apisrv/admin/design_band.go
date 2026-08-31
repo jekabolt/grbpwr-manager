@@ -59,10 +59,8 @@ var designRefusals = []struct {
 	{entity.ErrDesignPictureAlreadyInSlot, codes.FailedPrecondition, "picture_already_in_slot"},
 	{entity.ErrDesignDetailNameRequired, codes.FailedPrecondition, "detail_name_required"},
 	{entity.ErrDesignSlotFilled, codes.FailedPrecondition, "slot_filled"},
-	{entity.ErrDesignSlotInVersion, codes.FailedPrecondition, "slot_in_version"},
 	{entity.ErrDesignNotADetailSlot, codes.FailedPrecondition, "not_a_detail_slot"},
 	{entity.ErrDesignInSlot, codes.FailedPrecondition, "in_slot"},
-	{entity.ErrDesignInVersion, codes.FailedPrecondition, "in_version"},
 	{entity.ErrDesignLiveRunInput, codes.FailedPrecondition, "live_run_input"},
 	{entity.ErrDesignLiveCropParent, codes.FailedPrecondition, "live_crop_parent"},
 	{entity.ErrDesignNotComposite, codes.FailedPrecondition, "not_composite"},
@@ -74,20 +72,6 @@ var designRefusals = []struct {
 	{entity.ErrDesignInvalidArgument, codes.InvalidArgument, "invalid_argument"},
 	{entity.ErrDesignNotFound, codes.NotFound, "not_found"},
 	{entity.ErrDesignNotImplemented, codes.Unimplemented, "not_implemented"},
-	// ─── минт версии листа ───
-	//
-	// bench_moved — ВТОРОЙ ЗАМОК, а не дубль slot_rev_mismatch: тот стережёт ОДНУ постановку
-	// плиты, этот — весь состав, который человек видел в диалоге минта.
-	{entity.ErrDesignBenchMoved, codes.Aborted, "bench_moved"},
-	{entity.ErrDesignMixedNeedsConsent, codes.FailedPrecondition, "mixed_needs_consent"},
-	{entity.ErrDesignUploadedFitUnconfirmed, codes.FailedPrecondition, "uploaded_fit_unconfirmed"},
-	{entity.ErrDesignFitMismatch, codes.FailedPrecondition, "fit_mismatch"},
-	{entity.ErrDesignSheetMinUnmet, codes.FailedPrecondition, "sheet_min_unmet"},
-	{entity.ErrDesignUnrepinnedCallouts, codes.FailedPrecondition, "unrepinned_callouts"},
-	// plates_not_in_document — ПОЯС П-А. Клиенту он в норме не показывается вовсе: плиты
-	// вкладывает сервер. Если он всё-таки приехал, значит верстак уехал между чтением и
-	// транзакцией, и правильный ответ человеку — «перечитай полосу», а не молча оторванные детали.
-	{entity.ErrDesignPlatesNotInDocument, codes.FailedPrecondition, "plates_not_in_document"},
 	// ─── ОЧЕРЕДЬ И ДЕНЬГИ ───
 	//
 	// ЭТИХ ТРЁХ ЗДЕСЬ НЕ БЫЛО, И ЦЕНА ПРОПУСКА НАЗЫВАЕТСЯ ТОЧНО: всё, чего нет в таблице, уходит
@@ -186,30 +170,25 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 	runsPb := designRunsToPb(ctx, band.Runs)
 	s.joinDesignRunInputMedia(ctx, runsPb)
 	resp := &pb_admin.GetDesignBandResponse{
-		Bench:          designBenchToPb(band.Bench),
-		VersionNumbers: intsToInt32(band.VersionNumbers),
-		Journal:        designIssuesToPb(band.Journal),
-		Budget:         designBudgetToPb(band.Budget),
-		References:     designReferencesToPb(band.References),
-		Layers:         designLayersToPb(band.Layers, false),
-		TotalRuns:      int32(band.TotalRuns),
-		ArchivedRuns:   int32(band.ArchivedRuns),
-		MaxRrev:        int32(band.MaxRrev),
-		ColourRecipes:  designColourRecipesToPb(ctx, band.ColourRecipes),
-		HiddenByRun:    intMapToPb(band.HiddenByRun),
-		HiddenByBatch:  intMapToPb(band.HiddenByBatch),
-		Runs:           runsPb,
-		Batches:        designBatchesToPb(band.Batches),
-		NextPageToken:  design.EncodePageToken(band.NextCursor, band.NextBatchCursor, true),
+		Bench:         designBenchToPb(band.Bench),
+		Budget:        designBudgetToPb(band.Budget),
+		References:    designReferencesToPb(band.References),
+		Layers:        designLayersToPb(band.Layers, false),
+		TotalRuns:     int32(band.TotalRuns),
+		ArchivedRuns:  int32(band.ArchivedRuns),
+		MaxRrev:       int32(band.MaxRrev),
+		ColourRecipes: designColourRecipesToPb(ctx, band.ColourRecipes),
+		HiddenByRun:   intMapToPb(band.HiddenByRun),
+		HiddenByBatch: intMapToPb(band.HiddenByBatch),
+		Runs:          runsPb,
+		Batches:       designBatchesToPb(band.Batches),
+		NextPageToken: design.EncodePageToken(band.NextCursor, band.NextBatchCursor, true),
 		// W-13, ЗЕРКАЛО ДЛЯ ЭКРАНА. Сам гейт стоит в StartDesignRun и отказывает `threed` без
 		// непрятанного рендера; этот флаг существует ровно затем, чтобы полоса рисовала дверь
 		// закрытой, а не пускала человека в отказ. Считает его GetBand по ВСЕЙ карточке — клиент,
 		// вычисляющий то же правило по выданной ему странице, ошибался бы ровно на те рендеры,
 		// которые на страницу не попали, то есть на обычной карточке с историей.
 		HasFabricRender: band.HasFabricRender,
-	}
-	if band.LatestVersion != nil {
-		resp.LatestVersion = designSheetVersionToPb(ctx, *band.LatestVersion)
 	}
 	s.stripDesignCosting(ctx, resp.Runs, resp.Budget)
 	return resp, nil
@@ -251,18 +230,6 @@ func (s *Server) ListDesignRuns(ctx context.Context, req *pb_admin.ListDesignRun
 	}
 	s.stripDesignCosting(ctx, resp.Runs, nil)
 	return resp, nil
-}
-
-// GetDesignSheetVersion reads ONE frozen version whole.
-func (s *Server) GetDesignSheetVersion(ctx context.Context, req *pb_admin.GetDesignSheetVersionRequest) (*pb_admin.GetDesignSheetVersionResponse, error) {
-	full, err := s.repo.Design().GetSheetVersion(ctx, int(req.GetTechCardId()), int(req.GetVersionNumber()))
-	if err != nil {
-		return nil, designError(ctx, "failed to read the design sheet version", err, nil)
-	}
-	return &pb_admin.GetDesignSheetVersionResponse{
-		Version: designSheetVersionToPb(ctx, full.Version),
-		Issues:  designIssuesToPb(full.Issues),
-	}, nil
 }
 
 // GetDesignEditLayer reads ONE layer WITH its strokes — the only place strokes are served.
@@ -429,21 +396,6 @@ func (s *Server) ArchiveDesignRun(ctx context.Context, req *pb_admin.ArchiveDesi
 	// вторая копия уже успела разойтись, потеряв join входных картинок.
 	pb := s.designRunResponse(ctx, *run)
 	return &pb_admin.ArchiveDesignRunResponse{Run: pb}, nil
-}
-
-// RecordDesignSheetIssue writes a printed/shared line into a version's append-only journal.
-func (s *Server) RecordDesignSheetIssue(ctx context.Context, req *pb_admin.RecordDesignSheetIssueRequest) (*pb_admin.RecordDesignSheetIssueResponse, error) {
-	issue, err := s.repo.Design().RecordSheetIssue(ctx, entity.DesignSheetIssueRecord{
-		TechCardId:      int(req.GetTechCardId()),
-		VersionNumber:   int(req.GetVersionNumber()),
-		Action:          strings.TrimSpace(req.GetAction()),
-		ClientRequestId: strings.TrimSpace(req.GetClientRequestId()),
-		Actor:           designActor(ctx),
-	})
-	if err != nil {
-		return nil, designError(ctx, "failed to record the design sheet issue", err, nil)
-	}
-	return &pb_admin.RecordDesignSheetIssueResponse{Issue: designIssueToPb(*issue)}, nil
 }
 
 // ─────────────────────────── edit layers ───────────────────────────
@@ -1185,69 +1137,6 @@ func designRunToPb(ctx context.Context, r entity.DesignRun) *pb_common.DesignRun
 	return out
 }
 
-func designSheetVersionToPb(ctx context.Context, v entity.DesignSheetVersion) *pb_common.DesignSheetVersion {
-	out := &pb_common.DesignSheetVersion{
-		Id:              int32(v.Id),
-		VersionNumber:   int32(v.VersionNumber),
-		ClientRequestId: v.ClientRequestId,
-		MixedConsent:    v.MixedConsent,
-		MintedVia:       v.MintedVia,
-		MintedBy:        v.MintedBy,
-		MintedAt:        timestamppb.New(v.MintedAt),
-	}
-	for _, p := range v.Plates {
-		out.Plates = append(out.Plates, &pb_common.DesignSheetPlate{
-			ViewKey:     p.ViewKey,
-			SlotId:      p.SlotId.Int32,
-			DetailName:  p.DetailName.String,
-			Media:       designMediaToPb(p.Media),
-			ContentHash: p.ContentHash.String,
-			LayerRev:    int32(p.LayerRev),
-			SourceClass: p.SourceClass,
-			RunId:       p.RunId.Int32,
-			FitStamp:    p.FitStamp.String,
-			MixedInput:  p.MixedInput,
-			Ordinal:     int32(p.Ordinal),
-		})
-	}
-	for _, c := range v.Callouts {
-		pc := &pb_common.DesignSheetCallout{
-			Number: int32(c.Number),
-			Media:  designMediaToPb(c.Media),
-			Text:   c.Text.String,
-		}
-		if len(c.Annotation) > 0 {
-			a := &pb_common.TechCardAnnotation{}
-			if err := designUnmarshalJSON(c.Annotation, a); err == nil {
-				pc.Annotation = a
-			} else {
-				slog.Default().WarnContext(ctx, "a frozen design callout's geometry did not parse",
-					slog.Int("version_id", v.Id), slog.String("err", err.Error()))
-			}
-		}
-		out.Callouts = append(out.Callouts, pc)
-	}
-	return out
-}
-
-func designIssuesToPb(in []entity.DesignSheetIssue) []*pb_common.DesignSheetIssue {
-	out := make([]*pb_common.DesignSheetIssue, 0, len(in))
-	for _, i := range in {
-		out = append(out, designIssueToPb(i))
-	}
-	return out
-}
-
-func designIssueToPb(i entity.DesignSheetIssue) *pb_common.DesignSheetIssue {
-	return &pb_common.DesignSheetIssue{
-		Id:            int32(i.Id),
-		VersionNumber: int32(i.VersionNumber),
-		Action:        i.Action,
-		Actor:         i.Actor,
-		CreatedAt:     timestamppb.New(i.CreatedAt),
-	}
-}
-
 func designReferencesToPb(in []entity.DesignReference) []*pb_common.DesignReference {
 	out := make([]*pb_common.DesignReference, 0, len(in))
 	for _, r := range in {
@@ -1341,15 +1230,7 @@ func designUnmarshalJSON(raw []byte, into proto.Message) error {
 	return designJSONUnmarshal.Unmarshal(raw, into)
 }
 
-// intsToInt32 / intMapToPb are the two shapes the wire wants that Go does not carry.
-func intsToInt32(in []int) []int32 {
-	out := make([]int32, 0, len(in))
-	for _, v := range in {
-		out = append(out, int32(v))
-	}
-	return out
-}
-
+// intMapToPb is the shape the wire wants that Go does not carry.
 func intMapToPb(in map[int]int) map[int32]int32 {
 	out := make(map[int32]int32, len(in))
 	for k, v := range in {

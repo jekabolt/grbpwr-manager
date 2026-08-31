@@ -12,7 +12,9 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ОТКАЗЫ ОЧЕРЕДИ И ДЕНЕГ — НЕ ПОЛОМКА СЕРВЕРА.
@@ -26,6 +28,27 @@ import (
 //
 // ЭТИ ПРОБЫ ХОДЯТ ЧЕРЕЗ ЖИВЫЕ ХЕНДЛЕРЫ, а не зовут designError напрямую: таблица бесполезна, если
 // путь до неё где-то заворачивает ошибку в свою прозу и errors.Is перестаёт срабатывать.
+
+// errorReason разбирает отказ полосы на ДВЕ половины, по которым ветвится клиент: gRPC-код и
+// машинные подробности из errdetails.ErrorInfo (включая ключ `reason`). Переехала сюда из
+// design_sheet_mint_test.go, снесённого вместе с подсистемой минта; читателей у неё почти два
+// десятка по всем пробам полосы.
+//
+// ⚠ ОТСУТСТВИЕ ErrorInfo — НЕ ПРОВАЛ, А ЗАКОННЫЙ ИСХОД, и поэтому здесь нет require на деталь.
+// Отказы у ДВЕРИ (designEffectiveParams и соседи) — это обычный status.Errorf без деталей: они
+// не проходят через designError вовсе. Уронив пробу на пустых деталях, хелпер запретил бы
+// проверять код отказа ровно там, где проверяется только код.
+func errorReason(t *testing.T, err error) (codes.Code, map[string]string) {
+	t.Helper()
+	st, ok := status.FromError(err)
+	require.True(t, ok, "не gRPC-статус: %v", err)
+	for _, d := range st.Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok {
+			return st.Code(), info.GetMetadata()
+		}
+	}
+	return st.Code(), nil
+}
 
 // ДНЕВНОЙ ПОТОЛОК: FailedPrecondition и машинная причина, по которой клиент рисует полосу бюджета
 // вместо «что-то пошло не так».

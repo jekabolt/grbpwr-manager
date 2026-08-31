@@ -799,9 +799,9 @@ func resolvedOperationMedia(tc *entity.TechCard) []*pb_common.TechCardMediaFull 
 
 // TechCardCalloutAnnotationJSON — ГЕОМЕТРИЯ УКАЗАНИЯ В ТОЙ ФОРМЕ, В КАКОЙ ЕЁ ЧИТАЕТ ПРОВОД.
 //
-// Существует ради ОДНОГО потребителя: атомарный минт версии листа замораживает выноску в колонку
-// design_sheet_version_callout.annotation, объявленную как protojson common.TechCardAnnotation, а
-// читатель версии разбирает её обратно в это же сообщение.
+// Существует ради потребителя, которому нужна ФОРМА выноски отдельно от строки её текста: снимок
+// мудбордной выноски в прогоне (DesignMoodCallout.annotation) собирается из этой же карточкиной
+// выноски и разбирается обратно в то же самое сообщение common.TechCardAnnotation.
 //
 // ⚠ ПОЧЕМУ НЕ «СЛОЖИТЬ JSON РУКАМИ». Потому что это уже было сделано и МОЛЧА ТЕРЯЛО ВСЁ. Читатель
 // разбирает колонку с DiscardUnknown, а вид и цвет на проводе — ЭНУМЫ: protojson ждёт их
@@ -816,11 +816,10 @@ func TechCardCalloutAnnotationJSON(c entity.TechCardCallout) ([]byte, error) {
 	ann := &pb_common.TechCardAnnotation{
 		Kind:   annotationKindToPb[calloutKindOrPin(c.Kind)],
 		Points: calloutPointsToPb(c.Points),
-		// TEXT ОСТАЁТСЯ ПУСТЫМ, И ЭТО НЕ УПУЩЕНИЕ. Контракт (`DesignSheetCallout.annotation`)
-		// говорит дословно: «Its own `text` field is left EMPTY — the note that gets printed lives
-		// in `text` below». Заполнив его, мы получили бы одну и ту же заметку дважды: у фигуры и в
-		// списке. Печатная строка собирается `entity.TechCardCalloutPrintedLine` и едет в
-		// `DesignSheetCallout.text`.
+		// TEXT ОСТАЁТСЯ ПУСТЫМ, И ЭТО НЕ УПУЩЕНИЕ. Геометрия несёт ФОРМУ, а не слова: заполнив
+		// её `text`, мы получили бы одну и ту же заметку дважды — у фигуры и в списке, — и два
+		// написания разошлись бы на первой же правке. Читаемая строка собирается ОДНИМ местом,
+		// `entity.TechCardCalloutPrintedLine`, и едет полем рядом с геометрией.
 		Text:   "",
 		LabelX: pbDecimalFromNull(c.PosX),
 		LabelY: pbDecimalFromNull(c.PosY),

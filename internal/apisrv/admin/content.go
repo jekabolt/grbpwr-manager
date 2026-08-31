@@ -286,11 +286,11 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 //
 // THE KIND DICTIONARY, as the registry emits it (internal/store/content/media_usage.go):
 // product | archive | model | material | task | tech_card | fitting | sample | design_picture |
-// design_sheet_version | design_edit_layer. The last three are the DESIGN band and all three hold
-// their media with ON DELETE RESTRICT, so they are the kinds an operator is most likely to meet on
-// a refused delete — a minted sheet version a printed Rev.N depends on, a picture of the band, and
-// the base a saved edit layer was drawn over. A kind that reaches the client without being in this
-// list is a registry entry somebody added without deciding what the operator should be shown.
+// design_edit_layer. The last two are the DESIGN band and both hold their media with ON DELETE
+// RESTRICT, so they are the kinds an operator is most likely to meet on a refused delete — a
+// picture of the band, and the base a saved edit layer was drawn over. A kind that reaches the
+// client without being in this list is a registry entry somebody added without deciding what the
+// operator should be shown.
 func (s *Server) GetMediaUsage(ctx context.Context, req *pb_admin.GetMediaUsageRequest) (*pb_admin.GetMediaUsageResponse, error) {
 	// Deduplicate before counting against the cap: a client repeating an id must not be able
 	// to burn the budget, and the store would only fold the duplicates away anyway.
