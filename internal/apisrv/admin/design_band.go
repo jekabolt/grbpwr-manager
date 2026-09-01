@@ -251,13 +251,26 @@ func (s *Server) ListDesignRuns(ctx context.Context, req *pb_admin.ListDesignRun
 	return resp, nil
 }
 
-// GetDesignEditLayer reads ONE layer WITH its strokes — the only place strokes are served.
+// GetDesignEditLayer reads ONE layer WITH its strokes — the only place strokes are served, and the
+// only place the layer's PIXELS are resolved.
+//
+// ОБА ТЯЖЁЛЫХ КАНАЛА ОТДАЮТСЯ ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ, и это одна и та же граница, прочитанная с двух
+// сторон. `strokes` придерживаются в полосе, потому что 512 KB на слой × несколько слоёв — это
+// мегабайты на отрисовку списка миниатюр. Байты растра придерживаются там же по обратному доводу:
+// полоса не рисует пиксели слоя НИГДЕ (её плитки — картинки прогонов и партий), а нужный ей факт
+// «закрашен или нет» уже отвечает сам `raster_media_id`. Соединение в полосе купило бы чтение медиа
+// на КАЖДОЕ открытие вкладки ради URL, который некому нарисовать.
+//
+// Редактор же открывает ОДИН слой и есть единственный экран, которому байты нужны: без них он
+// выбирает между отказом и записью копии подложки поверх вчерашней живописи.
 func (s *Server) GetDesignEditLayer(ctx context.Context, req *pb_admin.GetDesignEditLayerRequest) (*pb_admin.GetDesignEditLayerResponse, error) {
 	layer, err := s.repo.Design().GetEditLayer(ctx, int(req.GetTechCardId()), int(req.GetLayerId()))
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design edit layer", err, nil)
 	}
-	return &pb_admin.GetDesignEditLayerResponse{Layer: designLayerToPb(*layer, true)}, nil
+	pb := designLayerToPb(*layer, true)
+	s.joinDesignLayerRasterMedia(ctx, []*pb_common.DesignEditLayer{pb})
+	return &pb_admin.GetDesignEditLayerResponse{Layer: pb}, nil
 }
 
 // ─────────────────────────── the bench ───────────────────────────
@@ -1060,6 +1073,61 @@ func (s *Server) joinDesignRunInputMedia(ctx context.Context, runs []*pb_common.
 		for _, sl := range in.GetSlots() {
 			sl.Media, sl.Deleted = fill(sl.GetMediaId())
 		}
+	}
+}
+
+// joinDesignLayerRasterMedia resolves the PIXELS a layer only remembers by id (0355, X-2).
+//
+// ЧТО БЫЛО СЛОМАНО. Пиксельный канал слоя хранится как `raster_media_id`, и это правильно — по тем
+// же доводам, по которым снимок прогона хранит идентификаторы, а не картинки. Но читающая половина
+// обещания отсутствовала: `raster_media_id` уезжал на провод ГОЛЫМ ЧИСЛОМ, а глагола «прочитай
+// медиа по id» в этом контракте нет вовсе. Клиент, получивший число и ничего больше, имеет ровно
+// два хода, и оба плохие: запереть пиксельные инструменты (и тогда «покрасил → сохранил → открыл
+// заново» не круг, а тупик) или завести холст КОПИЕЙ ПОДЛОЖКИ — а первое же сохранение записало бы
+// эту копию поверх вчерашней живописи, молча и безвозвратно, потому что ленты правок у слоя нет.
+//
+// ТОТ ЖЕ ПРИЁМ, ЧТО У joinDesignRunInputMedia, А НЕ ВТОРОЙ. Живое медиа доезжает картинкой,
+// исчезнувшее ПОМЕЧАЕТСЯ удалённым, запрос ОДИН на весь ответ. Соединение батчевое, хотя редактор
+// читает один слой: построчный вариант пришлось бы переписывать в тот день, когда список слоёв
+// понадобится с пикселями, и в репозитории появились бы два соединения одного факта.
+//
+// ⚠ ОТКАЗ ЗАПРОСА — ЭТО «МЫ НЕ ЗНАЕМ», А НЕ «ЕГО НЕТ». Ни `raster_deleted`, ни ошибка всего вызова:
+// первое солгало бы про пропажу файла, который, вероятно, жив, второе спрятало бы слой, у которого
+// кроме пикселей есть ШТРИХИ и ревизия, — а именно за ними редактор сюда и пришёл.
+func (s *Server) joinDesignLayerRasterMedia(ctx context.Context, layers []*pb_common.DesignEditLayer) {
+	seen := make(map[int]struct{})
+	for _, l := range layers {
+		// 0 — «никогда не красили», а не «медиа пропало»: такой слой не участвует в запросе и не
+		// получает флаг. Спутать эти два состояния значит отправить человека искать живопись,
+		// которой не было.
+		if id := int(l.GetRasterMediaId()); id > 0 {
+			seen[id] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	found, err := s.repo.Media().GetMediaByIds(ctx, ids)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "design: failed to join the raster media into edit layers",
+			slog.String("err", err.Error()))
+		return
+	}
+	for _, l := range layers {
+		id := int(l.GetRasterMediaId())
+		if id <= 0 {
+			continue
+		}
+		m, ok := found[id]
+		if !ok {
+			l.RasterMedia, l.RasterDeleted = nil, true
+			continue
+		}
+		l.RasterMedia, l.RasterDeleted = designMediaToPb(&m), false
 	}
 }
 

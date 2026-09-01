@@ -742,6 +742,37 @@ message DesignEditLayer {
   // THE VECTOR STROKES LIVE ABOVE IT. Pen, curves and seams are a DRAWING and must stay editable;
   // a flatten is raster first, strokes on top.
   int32 raster_media_id = 11;
+  // THE RESOLVED PIXELS, joined from raster_media_id at read time — the same promise
+  // `DesignInputRef.media` and `DesignInputSlot.media` already make, kept by the same batch join.
+  //
+  // WHY THE ID ALONE WAS NOT ENOUGH. A bare id is a fact the writer stored; it is not a picture. The
+  // editor's ONLY way back to yesterday's painting is its bytes, and no verb in this contract reads
+  // a media by id — so a client handed the id and nothing else has exactly two moves, and both are
+  // wrong: refuse to open the pixel tools, or seed the canvas from the BASE and let the next save
+  // write that copy over the painting. There is no revision history on a layer, so that second move
+  // is final. Serving the resolved media is what makes «painted → saved → reopened» a circle.
+  //
+  // SERVED BY GetDesignEditLayer AND LEFT UNSET BY GetDesignBand, and that is the same split
+  // `strokes` is under, for the same reason read the other way round: the band needs to KNOW a layer
+  // has been painted, which `raster_media_id` already answers, and it draws no layer pixels
+  // anywhere — its thumbnails are pictures. Resolving it there would buy a media read on every open
+  // of the tab for URLs nothing paints. The editor opens ONE layer and is the only screen that needs
+  // the bytes.
+  //
+  // UNSET when raster_deleted is true, and ALSO unset when the join itself failed — see there.
+  MediaFull raster_media = 12;
+  // THE PAINTING'S MEDIA ROW IS GONE. True ONLY when the row was actually looked for and not found.
+  //
+  // «WE DO NOT KNOW» IS NOT «IT IS NOT THERE». If the media read fails, this stays false and
+  // raster_media stays unset: the layer still answers with its strokes, its rev and its id, and a
+  // client seeing an id with neither bytes nor a deletion knows it was told nothing — which is the
+  // truth. Setting it on a failed read would be a lie about a file that is probably alive, and
+  // failing the whole call would hide a layer whose strokes are perfectly readable.
+  //
+  // The distinction is not cosmetic: `raster_media_id = 0` means «nothing was ever painted, start
+  // from the base», this flag means «there WAS a painting and it is unrecoverable», and neither one
+  // may be shown to a person as the other.
+  bool raster_deleted = 13;
 }
 
 // DesignBudget is the band's money bar: `today $0.41 of $2.00`.
