@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // Config is the worker's configuration.
@@ -53,6 +55,29 @@ type Config struct {
 	// before the call; raising this dial without raising that estimate makes the daily budget
 	// under-count real spend, silently, in the direction that overspends.
 	ImageQuality string `mapstructure:"image_quality"`
+	// ImageQualityFlat is the SAME dial held separately for the flat route, and it defaults to the
+	// TOP of the enum rather than to ImageQuality.
+	//
+	// ⚠ «MAXIMUM RESOLUTION» IS NOT A PARAMETER THIS ENDPOINT HAS, and pretending otherwise is the
+	// mistake this comment exists to prevent. The images endpoint takes `aspect_ratio` — a RATIO —
+	// and has no pixel-size field at all (orimages.Request lists every key the provider accepts,
+	// measured against the live API). The only dial that decides how much the model spends on one
+	// picture is `quality`, and on GPT Image it is a TOKEN COUNT: `high` buys roughly four times
+	// the output tokens of `medium`. So this is the whole of what «draw the flat as large as it
+	// can be drawn» can mean here, and it is named for the dial it moves, not for a promise about
+	// pixels.
+	//
+	// WHY THE FLAT AND NOT EVERYTHING. A flat is the drawing the pattern room works from: hairline
+	// topstitching, a zip tape, a bar-tack. It is also the picture that gets vectorised afterwards,
+	// and a vectoriser cannot recover a stitch the raster never resolved. A render is looked at; a
+	// flat is read.
+	//
+	// THE MONEY WAS ALREADY COVERED, WHICH IS WHY THIS IS SAFE. designPriceEstimate reserves every
+	// image kind at the CEILING of this dial (designImageQualityCeiling) rather than at the
+	// configured position, precisely so that moving the dial cannot make the daily budget
+	// under-count. Raising the flat to the ceiling spends inside a reservation that was already
+	// being held for it. What it does change is the real bill, so the knob stays a knob.
+	ImageQualityFlat string `mapstructure:"image_quality_flat"`
 	// ThreedProvider names WHICH 3D route is wired: fal | meshy.
 	//
 	// ⚠ IT IS AN EXPLICIT WORD AND NOT «WHICHEVER KEY HAPPENS TO BE SET», AND THAT IS THE WHOLE
@@ -72,14 +97,38 @@ type Config struct {
 // Environment variable names. AutomaticEnv is switched off in this repo, so a name that is not
 // read explicitly is silently empty — which is also what a correctly-unset override looks like.
 const (
-	EnvEnabled        = "DESIGN_GENERATION_ENABLED"
-	EnvInterval       = "DESIGN_WORKER_INTERVAL"
-	EnvBatchSize      = "DESIGN_WORKER_BATCH_SIZE"
-	EnvClaimLease     = "DESIGN_WORKER_CLAIM_LEASE"
-	EnvRunTimeout     = "DESIGN_WORKER_RUN_TIMEOUT"
-	EnvImageQuality   = "DESIGN_IMAGE_QUALITY"
-	EnvThreedProvider = "DESIGN_THREED_PROVIDER"
+	EnvEnabled          = "DESIGN_GENERATION_ENABLED"
+	EnvInterval         = "DESIGN_WORKER_INTERVAL"
+	EnvBatchSize        = "DESIGN_WORKER_BATCH_SIZE"
+	EnvClaimLease       = "DESIGN_WORKER_CLAIM_LEASE"
+	EnvRunTimeout       = "DESIGN_WORKER_RUN_TIMEOUT"
+	EnvImageQuality     = "DESIGN_IMAGE_QUALITY"
+	EnvImageQualityFlat = "DESIGN_IMAGE_QUALITY_FLAT"
+	EnvThreedProvider   = "DESIGN_THREED_PROVIDER"
 )
+
+// ImageQualityMax is the top position of the provider's quality dial — the most this deployment can
+// ask a single picture to be worth.
+//
+// It is a WORD, not a number, because the dial is an enum the provider owns ("auto" | "low" |
+// "medium" | "high", the same four on every GPT Image slug as of 2026-08-30 — see
+// orimages.Request.Quality). "auto" is not the top: it is the provider deciding, which is the one
+// answer a caller asking for the maximum has ruled out.
+const ImageQualityMax = "high"
+
+// QualityFor is THE ONE EXPRESSION that answers «what quality does this run ask for».
+//
+// Two readers of a dial are two numbers, and two numbers disagree the day one of them is edited —
+// the defect this whole package's comments keep coming back to. Every caller goes through here;
+// nothing anywhere else reads c.ImageQuality or c.ImageQualityFlat.
+func (c Config) QualityFor(kind string) string {
+	if kind == entity.DesignRunKindFlat {
+		if q := strings.TrimSpace(c.ImageQualityFlat); q != "" {
+			return q
+		}
+	}
+	return c.ImageQuality
+}
 
 // DefaultConfig is the shape of a deployment nobody has tuned.
 func DefaultConfig() Config {
@@ -91,11 +140,12 @@ func DefaultConfig() Config {
 		// double-payment window this config's invariant exists to close. A sequential worker loses
 		// nothing by it: two runs one tick apart and two runs in one tick take the same time, minus
 		// one WorkerInterval. This is a fixed point of applyDefaults.
-		BatchSize:      1,
-		ClaimLease:     20 * time.Minute,
-		RunTimeout:     15 * time.Minute,
-		ImageQuality:   "medium",
-		ThreedProvider: ThreedProviderFal,
+		BatchSize:        1,
+		ClaimLease:       20 * time.Minute,
+		RunTimeout:       15 * time.Minute,
+		ImageQuality:     "medium",
+		ImageQualityFlat: ImageQualityMax,
+		ThreedProvider:   ThreedProviderFal,
 	}
 }
 
@@ -129,6 +179,9 @@ func applyDefaults(c *Config) {
 	}
 	if strings.TrimSpace(c.ImageQuality) == "" {
 		c.ImageQuality = d.ImageQuality
+	}
+	if strings.TrimSpace(c.ImageQualityFlat) == "" {
+		c.ImageQualityFlat = d.ImageQualityFlat
 	}
 	// AN UNKNOWN WORD FALLS BACK TO THE DEFAULT AND app.go SAYS WHICH ROUTE IT WIRED, at info level,
 	// on every boot. Refusing to boot over a typo in a route name would take the whole backend down;
@@ -225,6 +278,9 @@ func ConfigFromEnv() Config {
 	c.RunTimeout = envDuration(EnvRunTimeout, c.RunTimeout)
 	if v := strings.TrimSpace(os.Getenv(EnvImageQuality)); v != "" {
 		c.ImageQuality = v
+	}
+	if v := strings.TrimSpace(os.Getenv(EnvImageQualityFlat)); v != "" {
+		c.ImageQualityFlat = v
 	}
 	if v := strings.TrimSpace(os.Getenv(EnvThreedProvider)); v != "" {
 		c.ThreedProvider = v
