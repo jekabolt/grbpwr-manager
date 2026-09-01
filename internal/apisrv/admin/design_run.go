@@ -227,6 +227,13 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	// ВЕКТОР — ЕДИНСТВЕННЫЙ РОД, У КОТОРОГО ЦЕНА ОПУБЛИКОВАНА ПАКЕТОМ СПИСАНИЯ. Берётся ИМЕННО ОНА.
 	entity.DesignRunKindVector:    designVectorCeilingUSD(),
 	entity.DesignRunKindDraftIdea: decimal.RequireFromString("0.02"),
+	// ПЕРЕКРАС И ПАТТЕРН — ТОТ ЖЕ ПЛАТНЫЙ ЭНДПОИНТ, ЧТО У РЕНДЕРА, ЗНАЧИТ ТА ЖЕ ЛЕСТНИЦА ЧИСЕЛ.
+	// Оба вызова несут ВХОДНУЮ картинку и просят выходную того же порядка, поэтому база берётся
+	// рендерная, а не флэтовая, и множится на тот же потолок дила качества. Перекрас, кроме того,
+	// платит ЗА КАЖДЫЙ снимок отдельно — но это уже считает designRequestedOutputs, а не эта
+	// таблица: здесь цена ОДНОГО выхода, там их число.
+	entity.DesignRunKindRecolor: designRenderMediumUSD.Mul(designImageQualityCeiling),
+	entity.DesignRunKindPattern: designRenderMediumUSD.Mul(designImageQualityCeiling),
 }
 
 // Базовые цены картиночных родов НА `medium` — том положении дила, которое стоит в
@@ -387,7 +394,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	kind := strings.TrimSpace(req.GetKind())
 	if !entity.IsDesignRunKind(kind) {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"kind %q is not flat | render | threed | vector", kind)
+			"kind %q is not flat | render | threed | vector | recolor | pattern", kind)
 	}
 	// draft_idea ОТКАЗЫВАЕТСЯ ЗДЕСЬ, дословно по контракту. Текстовый прогон исполняется в
 	// хендлере синхронно и возвращает свой ответ; заведённый отсюда, он вернул бы строку
@@ -516,6 +523,14 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		return nil, err
 	}
 
+	// ─── РОДЫ, У КОТОРЫХ ВХОД — КОНКРЕТНАЯ КАРТИНКА, А НЕ КОНТЕКСТ ───
+	//
+	// Стоит ПОСЛЕ границы карточки и ДО резерва: прогон, которому нечего перекрашивать, не должен
+	// заводить строку, занимать деньги дня и через тик воркера гарантированно проваливаться.
+	if err := designRefuseUnworkableSources(kind, params); err != nil {
+		return nil, err
+	}
+
 	src := designInputSources{
 		Kind:   kind,
 		Card:   card,
@@ -580,6 +595,54 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		Run:    s.designRunResponse(ctx, started.Run),
 		Budget: s.designBudgetResponse(ctx, started.Budget),
 	}, nil
+}
+
+// designRefuseUnworkableSources — ворота двух родов, чей вход это НАЗВАННАЯ КАРТИНКА, а не набор
+// контекста (K-17 и K-13).
+//
+// ⚠ ПОЧЕМУ ЭТО ПРОВЕРЯЕТСЯ ЗДЕСЬ, А НЕ ТОЛЬКО В ВОРКЕРЕ. Воркер тоже отказывает — и обязан, потому
+// что медиа-строка могла исчезнуть между снимком и проходом, — но его отказ приходит ПОСЛЕ того,
+// как строка прогона завела резерв дневного бюджета и заняла его до полуночи либо до терминального
+// перехода. Клик по кнопке, у которой не выбрана ни одна фотография, обошёлся бы в один такой
+// висящий резерв за клик. Здесь не зарезервировано ничего и не потрачено ничего.
+//
+// ⚠ ЧИСЛА РАЗНЫЕ, И РАЗНИЦА СОДЕРЖАТЕЛЬНАЯ. Перекрас берёт СКОЛЬКО УГОДНО снимков — «фото на
+// модели с разных сторон» это ровно про несколько кадров, и каждый едет отдельным платным
+// вызовом. Паттерн берёт РОВНО ОДИН: плитка, склеенная из двух лоскутов, не стыкуется сама с
+// собой ни при каком раскладе, то есть бесполезна в том единственном смысле, ради которого её
+// заказывали.
+//
+// ⚠ И ПЕРЕКРАС ТРЕБУЕТ НАЗВАННОГО ЦВЕТА. «Поменяй цвет» без цвета — это просьба, на которую
+// модель ответит чем угодно: вернётся тот же снимок в случайном оттенке, деньги списаны, а по
+// истории такой прогон не отличить от честного. Годится ЛЮБОЕ из трёх написаний рецепта (код
+// колорвея, hex, слова), потому что все три доезжают до промпта одним блоком `colour`.
+func designRefuseUnworkableSources(kind string, params *pb_common.DesignRunParams) error {
+	sources := len(params.GetExtraInputMediaIds())
+	switch kind {
+	case entity.DesignRunKindRecolor:
+		if sources == 0 {
+			return designRefusal(codes.InvalidArgument, "no_source_picture",
+				"a recolour needs the photographs it recolours: name them in "+
+					"params.extra_input_media_ids. Nothing was reserved and nothing was charged", nil)
+		}
+		c := params.GetColour()
+		if strings.TrimSpace(c.GetCode()) == "" && strings.TrimSpace(c.GetHex()) == "" &&
+			strings.TrimSpace(c.GetWords()) == "" {
+			return designRefusal(codes.InvalidArgument, "no_target_colour",
+				"a recolour needs the colour to recolour TO: state params.colour.code, "+
+					"params.colour.hex or params.colour.words. Nothing was reserved and nothing was charged",
+				nil)
+		}
+	case entity.DesignRunKindPattern:
+		if sources != 1 {
+			return designRefusal(codes.InvalidArgument, "one_source_picture",
+				fmt.Sprintf("a repeating tile is built from exactly one picture, and this run names %d: "+
+					"put that one picture in params.extra_input_media_ids. Nothing was reserved and "+
+					"nothing was charged", sources),
+				map[string]string{"named": strconv.Itoa(sources)})
+		}
+	}
+	return nil
 }
 
 // designParentID — id родителя рерана либо 0. Отдельной функцией, чтобы «nil значит обычный
@@ -966,6 +1029,20 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 	case entity.DesignRunKindThreed, entity.DesignRunKindVector:
 		// Одна модель и один SVG. Кадры поворотного стола, если они появятся, приедут одним
 		// артефактом, а не отдельными кадрами полосы.
+		return 1
+	case entity.DesignRunKindPattern:
+		// ОДНА ПЛИТКА ИЗ ОДНОЙ КАРТИНКИ. Число здесь не выводится из длины списка входов ровно
+		// потому, что список обязан быть длиной один, и это проверено отдельно, у двери.
+		return 1
+	case entity.DesignRunKindRecolor:
+		// СКОЛЬКО СНИМКОВ ДАЛИ — СТОЛЬКО КАДРОВ И ПЛАТНЫХ ВЫЗОВОВ. Владелец грузит фото «с разных
+		// сторон», и каждое из них — отдельная правка отдельной картинки: `n` у провайдера
+		// возвращает n ВАРИАНТОВ ОДНОГО промпта, а не n разных кадров, так что четыре снимка это
+		// четыре вызова. Число обязано совпадать с тем, что построит imageCalls, иначе плитка-
+		// плейсхолдер останется незаполненной и прочитается как потерянный результат.
+		if n := len(params.GetExtraInputMediaIds()); n > 0 {
+			return n
+		}
 		return 1
 	}
 	if params.GetLayout() == designLayoutOne {
@@ -1627,6 +1704,20 @@ func designNamedEmptyDetailSlots(src designInputSources, already []*pb_common.De
 // человек сузил прогон и где ошибка дороже всего. Звать эту функцию дважды за один запрос при этом
 // БЕЗОПАСНО: это один и тот же ответ на один и тот же вопрос, ценой прохода по восьми слотам.
 func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []int32) {
+	// ⚠ ПЕРЕКРАС И ПАТТЕРН НЕ БЕРУТ ИЗ ВЕРСТАКА НИЧЕГО, И ЭТО ПРО ЧЕСТНОСТЬ СНИМКА, А НЕ ПРО ЭКОНОМИЮ
+	// БАЙТОВ. Снимок отвечает на один вопрос — «чем этот прогон ПИТАЛСЯ», — и воркер уже сузил обоим
+	// родам список до названных картинок (designgen/source_inputs.go). Оставить здесь плиты значило
+	// бы записать в замороженную историю утверждение, которого не было: панель прогона показала бы
+	// человеку четыре флэта как входы перекраса, он бы пошёл искать, почему модель их использовала,
+	// и не нашёл бы — потому что она их не видела.
+	//
+	// ⚠ И ЭТО НЕ КОПИЯ ФИЛЬТРА ВОРКЕРА, а ДРУГАЯ ЕГО ПОЛОВИНА: там решается, что уедет провайдеру,
+	// здесь — что будет записано как вход. Разойтись им не на чем: обе половины отвечают «только
+	// названные картинки», и названные картинки в верстаке не живут вовсе.
+	switch src.Kind {
+	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
+		return nil, nil
+	}
 	want := entity.DesignPictureKindFlat
 	if src.Kind == entity.DesignRunKindThreed {
 		want = entity.DesignPictureKindRender
@@ -1649,6 +1740,29 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 		slotIDs[int(id)] = struct{}{}
 	}
 	selective := len(targets) > 0 || len(slotIDs) > 0
+
+	/*
+	 * ФЛЕТ-ПРОГОН НЕ БЕРЁТ ПЛИТЫ ФЛЕТ-СЛОТОВ, ПОКА ЕГО ОБ ЭТОМ НЕ ПОПРОСЯТ (K-1).
+	 *
+	 * ⚠ ЭТО БЫЛ НЕ ВЫБОР, А ПАДЕНИЕ В УМОЛЧАНИЕ. Правило выбора имеет ровно двух членов и записано
+	 * выше своими словами: «рендер строится из ФЛЭТОВ, 3D — из РЕНДЕРОВ». У вида `flat` своей
+	 * ветки нет вовсе, и он наследовал `want = flat` — то есть флет-прогон получал СВОИ ЖЕ старые
+	 * флеты как референс. Владелец описал следствие точно: «сгенеренные флеты вообще не похожи на
+	 * то что в референс картинах но 1 в 1 похожи на то что во флетах». Модель получала готовый
+	 * ответ и переписывала его.
+	 *
+	 * Экран говорил обратное — `generation-form.tsx` печатает рядом с деньгами «a flat run reads
+	 * the card's references, never the bench plates». Эта фраза была ложью ровно до этой строки.
+	 *
+	 * ЧТО ЗДЕСЬ НЕ ЗАТРОНУТО, и это важно. `selective` — сужение до названных плит (правка одной
+	 * картинки), у него свой смысл и своя дверь, поэтому он проходит мимо гейта. Именные пустые
+	 * детали заводятся ниже отдельным проходом и продолжают уезжать: «нарисуй воротник» — это
+	 * просьба, а не референс. Перезапуск снимок не пересобирает вовсе, поэтому старые прогоны
+	 * повторяются ровно так, как шли.
+	 */
+	if src.Kind == entity.DesignRunKindFlat && !selective && !src.Params.GetUseFlatSlots() {
+		return nil, nil
+	}
 
 	out := make([]*pb_common.DesignInputSlot, 0, len(src.Bench))
 	plates := make([]int32, 0, len(src.Bench))

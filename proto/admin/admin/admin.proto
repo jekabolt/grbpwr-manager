@@ -11787,13 +11787,24 @@ message StartDesignRunRequest {
   // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
   // one payment.
   string client_request_id = 2;
-  // flat | render | threed | vector. `draft_idea` is REFUSED here with InvalidArgument: a text run
-  // executes inline and returns its answer, so it has its own verb (DraftDesignIdea) rather than a
-  // shared one that would return a pending row nobody ever polls.
+  // flat | render | threed | vector | recolor | pattern. `draft_idea` is REFUSED here with
+  // InvalidArgument: a text run executes inline and returns its answer, so it has its own verb
+  // (DraftDesignIdea) rather than a shared one that would return a pending row nobody ever polls.
   //
   // `vector` IS ACCEPTED HERE and has no verb of its own on purpose: machine vectorisation spends
   // the key's money like every other kind, and money has exactly one door. Filing an SVG that
   // already exists is the other thing entirely and is ImportDesignVector.
+  //
+  // `recolor` AND `pattern` ARE HERE FOR THE SAME REASON and take the same door: both spend the
+  // image key's money, both must be counted against the day, and both must show up in one history.
+  // What each needs is stated on common.DesignRun.kind and on DesignRunParams; what each REFUSES
+  // for free, before anything is reserved, is:
+  //   · recolor — no photograph named in params.extra_input_media_ids («no_source_picture»), or no
+  //     colour stated in params.colour («no_target_colour»);
+  //   · pattern — anything other than exactly one picture in params.extra_input_media_ids
+  //     («one_source_picture»).
+  // Each of those is FailedPrecondition-shaped news in an InvalidArgument wrapper: the request is
+  // incomplete, and the sentence says which half is missing.
   string kind = 3;
   string ask = 4; // the delta phrase; may be empty
   // What is being asked for; at most 8 KB encoded. The INPUTS are not here and cannot be: the

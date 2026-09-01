@@ -40,6 +40,21 @@ type Job struct {
 	// References are public URLs the provider fetches itself. Order is meaning for the 3D route,
 	// where the first is the front view.
 	References []string
+	// ReferenceViews names the SIDE each reference shows, POSITIONALLY: the i-th entry belongs to
+	// References[i], and is empty where the run has no view for that picture (a moodboard-style
+	// reference, a fabric swatch, an uploaded photograph nobody labelled).
+	//
+	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND ONE PROVIDER NEEDS THE NAME. Meshy reads
+	// an ORDERED LIST and infers the front from position zero; fal's hitem3d takes NAMED SLOTS
+	// (front_image_url, back_image_url, …), which is exactly what the owner asked for — «что бы мы
+	// могли туда подавать наши фронт бэк и так далее». Handing that provider an ordered list and
+	// letting it guess would throw away the one thing the bench already knows for certain.
+	//
+	// A ROUTE THAT NEEDS THE NAMES MUST REFUSE AN UNNAMED PICTURE RATHER THAN GUESS ONE. An empty
+	// entry is legal here and means «this run does not claim to know»; inventing `front` for it
+	// would buy a model of a garment turned the wrong way round, and the history could not tell
+	// that run from an honest one.
+	ReferenceViews []string
 	// Views and Layout come from the frozen params: `one` asks for a single composite sheet,
 	// `per_view` for one picture per view — which is one paid call per view, not one call with n.
 	Views  []string
@@ -111,6 +126,33 @@ type Provider interface {
 	Execute(ctx context.Context, job Job) (*Outcome, error)
 }
 
+// CredentialNamer is a route that can say WHICH SETTING would turn it on.
+//
+// ⚠ IT EXISTS BECAUSE THE REFUSAL A PERSON READS IS THE PRE-FLIGHT'S, NEVER THE PROVIDER'S OWN.
+// Every Execute in this package opens with a sentence that names its variable ("FAL_KEY is not
+// set"), and not one of them is ever reached with the key missing: preflight refuses first, at the
+// door, and its message could only say the route's NAME. So the owner who types a key into the
+// dashboard pressed GENERATE and was told "the provider for this run kind is not configured: fal" —
+// which does not tell them whether the thing they just typed was the thing that was missing.
+//
+// OPTIONAL, so a route that has nothing to say is still a legal Provider; missingCredential falls
+// back to a generic sentence rather than to silence.
+type CredentialNamer interface {
+	// MissingCredential names the unset setting, as a sentence a person can act on:
+	// "FAL_KEY is not set".
+	MissingCredential() string
+}
+
+// missingCredential asks a route to name the setting it lacks.
+func missingCredential(p Provider) string {
+	if n, ok := p.(CredentialNamer); ok {
+		if s := n.MissingCredential(); s != "" {
+			return s
+		}
+	}
+	return "no API key is configured for this route"
+}
+
 // Collector is the second half of an asynchronous route. Only the 3D route implements it: Meshy
 // answers a submit with a task id and builds the model for minutes afterwards.
 //
@@ -138,7 +180,13 @@ type Providers struct {
 // forKind returns the route for a run kind, or an error naming the kind.
 func (p Providers) forKind(kind string) (Provider, error) {
 	switch kind {
-	case entity.DesignRunKindFlat, entity.DesignRunKindRender:
+	// ⚠ ЧЕТЫРЕ РОДА НА ОДНОМ МАРШРУТЕ, И ЭТО НЕ ЛЕНЬ. Флэт, рендер, перекрас и паттерн — ОДИН
+	// платный эндпоинт (POST /api/v1/images) с ОДНИМ ключом и одним провайдером в строке истории.
+	// Различаются они не транспортом, а ПРОМПТОМ и тем, КАКИЕ КАРТИНКИ уходят в КАКОЙ вызов, — и
+	// обе эти вещи уже живут в этом пакете (composePrompt, imageCalls). Второй Provider с тем же
+	// клиентом внутри дал бы второе имя провайдера в истории для одних и тех же денег.
+	case entity.DesignRunKindFlat, entity.DesignRunKindRender,
+		entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
 		if p.Image == nil {
 			return nil, fmt.Errorf("%w: no image route is wired", errRouteMissing)
 		}
@@ -204,7 +252,11 @@ func (p Providers) preflight(sink MediaSink, kind string) (Provider, error) {
 		return nil, refuse(err)
 	}
 	if !prov.Enabled() {
-		return nil, refuse(fmt.Errorf("%w: %s", errProviderDisabled, prov.Name()))
+		// THE SENTENCE NAMES THE SETTING, because this is the sentence that reaches the screen —
+		// see CredentialNamer. "the provider for this run kind is not configured: fal" and
+		// "…: fal — FAL_KEY is not set" are the same refusal; only the second one tells the person
+		// who just typed a key whether they typed the right one.
+		return nil, refuse(fmt.Errorf("%w: %s — %s", errProviderDisabled, prov.Name(), missingCredential(prov)))
 	}
 	if sink == nil {
 		// A worker cannot reach this (New refuses a nil bucket); a caller assembling the gate by

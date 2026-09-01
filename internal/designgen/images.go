@@ -19,6 +19,14 @@ func (p imageProvider) Name() string { return "openrouter_images" }
 
 func (p imageProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 
+// MissingCredential is the sentence the DOOR shows when the route is off — see CredentialNamer.
+// Both names are given because config/cfg.go binds them in that order: the dedicated one wins, the
+// shared account key is the fallback, and a deployment that already translates email needs no new
+// secret at all to draw pictures.
+func (p imageProvider) MissingCredential() string {
+	return "OPENROUTER_IMAGES_API_KEY (or OPENROUTER_API_KEY) is not set"
+}
+
 // Produces is PNG and only PNG: the route asks for it explicitly, because a transparent flat needs
 // a format that carries transparency and jpeg silently does not.
 func (p imageProvider) Produces() []string { return []string{ContentTypePNG} }
@@ -50,9 +58,14 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	// before the round trip, so this costs nothing — no paid call is made — and the ceiling lives
 	// in exactly one place, next to the client that knows it. A copy of the number here is a
 	// second number, and two numbers disagree the moment one of them is edited.
-	refs := job.References
-
-	calls := imageCalls(job)
+	calls, err := imageCalls(job)
+	if err != nil {
+		// A LOCAL REFUSAL, BEFORE ANY MONEY MOVES. It exists for the two routes whose input is a
+		// particular picture rather than a pile of context: a recolour with nothing to recolour and
+		// a pattern built from no swatch are requests we can judge here, for free, and re-sending
+		// either one unchanged cannot end differently.
+		return nil, err
+	}
 	out := &Outcome{Model: p.c.Model()}
 	cost := decimal.Zero
 	charged := false
@@ -64,7 +77,7 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			Quality:         job.Quality,
 			Background:      backgroundFor(job.Kind),
 			OutputFormat:    "png",
-			InputReferences: refs,
+			InputReferences: call.refs,
 		})
 		// THE PRICE IS TAKEN FIRST, BEFORE THE ERROR IS EVEN LOOKED AT. Both the empty-data case
 		// and the undecodable-image case return a *Result carrying Usage TOGETHER WITH the error:
@@ -96,18 +109,77 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		// run as done.
 		return out, fmt.Errorf("%w: the image route produced no pictures", orimages.ErrNoImages)
 	}
+	// ─── DOES THE TILE ACTUALLY TILE. The measurement, the reasoning behind it and the reason it
+	// may not fail the run are all in seam.go. Here it does one thing: it returns the artifacts
+	// TOGETHER WITH the complaint, which is the shape settle() already implements for a partial
+	// success — the picture is filed and the attempt row carries `pattern_not_seamless`.
+	if job.Kind == entity.DesignRunKindPattern {
+		if v := seamCheck(out.Artifacts[0].Bytes); !v.Seamless() {
+			// THE FIGURES TRAVEL WITH THE COMPLAINT. «It does not tile» with no numbers beside it
+			// is an accusation nobody can check against the picture they are looking at.
+			return out, fmt.Errorf("%w: %d×%d tile — wrap seam %.1f across / %.1f down against a "+
+				"tolerance of %.1f, edge bias %.1f against a tolerance of %.1f; the picture was kept",
+				errPatternNotSeamless, v.Width, v.Height, v.Horizontal, v.Vertical, v.WrapLimit(),
+				v.EdgeBias, v.BiasLimit())
+		}
+	}
 	return out, nil
 }
 
-// imageCall is one paid request: a prompt, how many variants of it, and the view it stands for.
+// imageCall is one paid request: a prompt, how many variants of it, the pictures THIS call shows the
+// model, and the view it stands for.
+//
+// ⚠ THE REFERENCES BELONG TO THE CALL, NOT TO THE JOB, AND THAT MOVE IS THE WHOLE RECOLOUR ROUTE.
+// Every call used to receive the run's entire reference list, which is right for a flat and for a
+// render — they compose from all of it — and wrong for a recolour, whose instruction is «give me
+// back THIS photograph with one thing changed». Handed a second picture, the model composes: the
+// answer is a similar frame, not the same one, and nothing in the history distinguishes that from a
+// correct result. Four on-model photographs are therefore four calls of one picture each, not four
+// calls of four.
 type imageCall struct {
 	prompt string
 	n      int
+	refs   []string
 	view   string
 }
 
 // imageCalls turns a job into the calls it costs.
-func imageCalls(job Job) []imageCall {
+//
+// It returns an error for the routes whose input is a PARTICULAR PICTURE: a recolour with nothing to
+// recolour, a pattern with no swatch. That refusal happens before the loop that spends money, and it
+// is terminal by nature — re-sending the identical empty request cannot end differently.
+func imageCalls(job Job) ([]imageCall, error) {
+	switch job.Kind {
+	case entity.DesignRunKindRecolor:
+		// ONE PAID CALL PER PHOTOGRAPH, EACH SHOWING ONLY ITS OWN. The owner asked for «фото
+		// реальное на модели с разных сторон», i.e. several frames of one garment; each of them is
+		// a separate edit of a separate picture, and there is no cheaper honest shape — a single
+		// call with four references returns ONE image, which would answer none of the four asks.
+		if len(job.References) == 0 {
+			return nil, fmt.Errorf("%w: a recolour needs the photograph it recolours — add the on-model "+
+				"pictures to this run", orimages.ErrBadRequest)
+		}
+		calls := make([]imageCall, 0, len(job.References))
+		for _, u := range job.References {
+			// THE VIEW IS LEFT EMPTY DELIBERATELY. A recoloured photograph is not addressed to a
+			// side of the bench: the person uploaded frames of their own choosing, the run never
+			// claimed which side each one shows, and a ghost view invented here would put the
+			// picture into a slot nobody pointed at.
+			calls = append(calls, imageCall{prompt: job.Prompt, n: 1, refs: []string{u}})
+		}
+		return calls, nil
+	case entity.DesignRunKindPattern:
+		// ONE PICTURE IN, ONE TILE OUT. The door already refuses a pattern run that names anything
+		// other than exactly one source; this is the same rule at the money boundary, where the
+		// resolved list may be shorter than the frozen one (a media row can disappear between the
+		// snapshot and the pass).
+		if len(job.References) != 1 {
+			return nil, fmt.Errorf("%w: a repeating tile is built from exactly one picture, and this run "+
+				"resolved %d", orimages.ErrBadRequest, len(job.References))
+		}
+		return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+	}
+
 	if job.Layout == layoutPerView && len(job.Views) > 0 {
 		// ⚠ ПОДПИСЬ ВЫЗОВА И ВИД КАДРА — РАЗНЫЕ ВЕЩИ, И РАСХОДЯТСЯ ОНИ НАМЕРЕННО. В промпт уходит
 		// РАЗЛИЧАЮЩАЯ подпись («detail — collar»), иначе два вызова на две детали были бы одним и
@@ -117,9 +189,11 @@ func imageCalls(job Job) []imageCall {
 		labels := viewCallLabels(job.Views, job.DetailNames)
 		calls := make([]imageCall, 0, len(job.Views))
 		for i, v := range job.Views {
-			calls = append(calls, imageCall{prompt: viewPrompt(job.Prompt, labels[i]), n: 1, view: v})
+			calls = append(calls, imageCall{
+				prompt: viewPrompt(job.Prompt, labels[i]), n: 1, refs: job.References, view: v,
+			})
 		}
-		return calls
+		return calls, nil
 	}
 	// `one` (and anything unspecified, which the store also reads as one sheet): ONE prompt and
 	// ONE picture.
@@ -133,7 +207,7 @@ func imageCalls(job Job) []imageCall {
 	//
 	// A composite carries several views and therefore has no single one; leaving the view empty
 	// lets the store's own rule (no ghost guess for a composite) stand.
-	return []imageCall{{prompt: job.Prompt, n: 1}}
+	return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
 }
 
 // backgroundFor names the background the model must produce.
@@ -159,8 +233,20 @@ func imageCalls(job Job) []imageCall {
 //
 // A render is a picture of a garment in a scene and keeps the provider's own default.
 func backgroundFor(kind string) string {
-	if kind == entity.DesignRunKindFlat {
+	switch kind {
+	case entity.DesignRunKindFlat:
+		return "opaque"
+	case entity.DesignRunKindPattern:
+		// A TILE IS CLOTH, AND CLOTH HAS NO HOLES. A transparent region inside a repeating tile is a
+		// hole that repeats: it shows through at the same spot in every cell of the grid, which is
+		// the one artefact a person will not be able to explain and will not be able to remove. The
+		// value is STATED rather than left to `auto` for the reason the flat route states it — «auto»
+		// is the model deciding a thing we have an opinion about.
 		return "opaque"
 	}
+	// A render, a recolour and a turntable are pictures of a garment in a scene, and keep the
+	// provider's own default. On the recolour route that matters twice over: the background of the
+	// answer must be the background of the SOURCE PHOTOGRAPH, and any value we sent here would be an
+	// instruction to change it.
 	return ""
 }

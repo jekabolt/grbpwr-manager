@@ -65,7 +65,10 @@ func TestTwoDetailSheetNamesBothFramesAndAsksForTwo(t *testing.T) {
 
 	// ── положительный контроль: промпт вообще собрался, а не оказался пустым ──
 	require.Contains(t, job.Prompt, flatOutput)
-	require.Len(t, job.References, 2, "плита верстака и референс обязаны уехать")
+	// ⚠ БЫЛО ДВА, СТАЛО ОДИН, И ЭТО ФИКС K-1, А НЕ ПОТЕРЯ. Второй картинкой была ПЛИТА ФЛЕТ-СЛОТА,
+	// которую флет-прогон брал молча: модель получала свой же старый флет как референс и
+	// переписывала его один в один. Уезжает то, что человек принёс, — его референс.
+	require.Len(t, job.References, 1, "уезжает референс карточки; плиты верстака — только по просьбе")
 }
 
 // КОНТРОЛЬ ГРАНИЦЫ: РОВНО ОДНОЙ ДЕТАЛИ ЭТАЛОН 2 ПРИНАДЛЕЖИТ ПО-ПРЕЖНЕМУ.
@@ -90,7 +93,8 @@ func TestPerViewMakesTwoDIFFERENTPaidCallsForTwoDetails(t *testing.T) {
 	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
 	require.NoError(t, err)
 
-	calls := imageCalls(job)
+	calls, err := imageCalls(job)
+	require.NoError(t, err)
 	require.Len(t, calls, 2, "два кадра — два платных вызова")
 	require.NotEqual(t, calls[0].prompt, calls[1].prompt,
 		"два списания за побайтово одинаковый запрос: какая из картинок воротник, не знает никто")
@@ -153,7 +157,9 @@ func TestDetailNameNeverLeaksIntoTheGhostLabel(t *testing.T) {
 	run := serverFrozen(t, "per_view", entity.DesignRunKindFlat)
 	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
 	require.NoError(t, err)
-	for _, c := range imageCalls(job) {
+	perViewCalls, err := imageCalls(job)
+	require.NoError(t, err)
+	for _, c := range perViewCalls {
 		require.False(t, strings.Contains(c.view, "collar") || strings.Contains(c.view, "pocket"),
 			"GhostView сверяется со словарём видов стора: имя детали делает её нечитаемой")
 	}

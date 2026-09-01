@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/recraft"
@@ -40,6 +41,14 @@ const (
 	CodeProviderTimeout     = "provider_timeout"
 	CodeTaskFailed          = "provider_task_failed"
 	CodeStorageFailed       = "storage_failed"
+	// CodePatternNotSeamless — ПЛИТКА КУПЛЕНА И НЕ СТЫКУЕТСЯ САМА С СОБОЙ (K-13).
+	//
+	// ⚠ ЭТО КОД ДОСТАВЛЕННОЙ ПОПЫТКИ, А НЕ ПРОВАЛЕННОЙ, и в этом весь его смысл. Картинка получена
+	// и оплачена, её кладут в карточку, прогон закрывается `done` — а строка попытки говорит, чем
+	// именно результат может не быть тем, что просили. Полный ответ на вопрос «стыкуется ли»
+	// по-прежнему за глазом человека (см. seam.go), но обычный провал — рамка, виньетка, просто
+	// незаворачивающийся квадрат — виден отсюда в момент покупки, а не через две недели.
+	CodePatternNotSeamless = "pattern_not_seamless"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -74,10 +83,17 @@ func classify(err error) verdict {
 	// ─── ours: settled before any payment ───
 	case errors.Is(err, errRouteMissing), errors.Is(err, errProviderDisabled),
 		errors.Is(err, orimages.ErrNotConfigured), errors.Is(err, recraft.ErrNotConfigured),
-		errors.Is(err, meshy.ErrNotConfigured):
+		errors.Is(err, meshy.ErrNotConfigured), errors.Is(err, fal.ErrNotConfigured):
 		return verdict{Retryable: false, Code: CodeKindNotAvailable, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errSinkUnsupported):
 		return verdict{Retryable: false, Code: CodeOutputNotStorable, State: entity.DesignAttemptFailed}
+
+	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
+	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it
+	// would pay again for the same kind of answer from the same general-purpose model — and the
+	// state is `delivered` because that is what happened. See seam.go.
+	case errors.Is(err, errPatternNotSeamless):
+		return verdict{Retryable: false, Code: CodePatternNotSeamless, State: entity.DesignAttemptDelivered}
 
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.
@@ -86,12 +102,18 @@ func classify(err error) verdict {
 
 	// ─── credentials and balance: not weather ───
 	case errors.Is(err, orimages.ErrUnauthorized), errors.Is(err, recraft.ErrUnauthorized),
-		errors.Is(err, meshy.ErrUnauthorized):
+		errors.Is(err, meshy.ErrUnauthorized), errors.Is(err, fal.ErrUnauthorized):
 		return verdict{Retryable: false, Code: CodeUnauthorized, State: entity.DesignAttemptFailed}
 	case errors.Is(err, orimages.ErrOutOfCredit), errors.Is(err, recraft.ErrInsufficientCredits),
-		errors.Is(err, meshy.ErrOutOfCredit):
+		errors.Is(err, meshy.ErrOutOfCredit), errors.Is(err, fal.ErrOutOfCredit):
 		return verdict{Retryable: false, Code: CodeOutOfCredit, State: entity.DesignAttemptFailed}
-	case errors.Is(err, orimages.ErrModelUnavailable), errors.Is(err, recraft.ErrModelUnavailable):
+	// ⚠ fal.ErrModelUnavailable СТОИТ ИМЕННО ЗДЕСЬ, А НЕ В ПОГОДЕ, И ЭТО ТОТ САМЫЙ ДЕФЕКТ, КОТОРЫЙ
+	// УЖЕ РУБИЛ ОБЕ AI-ФУНКЦИИ РАЗОМ: снятый провайдером идентификатор модели маскировался под
+	// временный отказ, и по экрану «такой модели нет» было не отличить от «сервис занят». Транспорт
+	// различает их по ПУТИ (404 на сабмите — модель, 404 на статусе — задание), а не по английской
+	// фразе провайдера, и здесь это различие доезжает до строки истории.
+	case errors.Is(err, orimages.ErrModelUnavailable), errors.Is(err, recraft.ErrModelUnavailable),
+		errors.Is(err, fal.ErrModelUnavailable):
 		return verdict{Retryable: false, Code: CodeModelRetired, State: entity.DesignAttemptFailed}
 
 	// ─── we sent something unacceptable; a retry repeats it exactly ───
@@ -108,33 +130,44 @@ func classify(err error) verdict {
 	// re-sending the identical too-long list changes nothing.
 	case errors.Is(err, recraft.ErrBadRequest), errors.Is(err, meshy.ErrImageCount),
 		errors.Is(err, meshy.ErrBadImageURL), errors.Is(err, meshy.ErrPromptTooLong),
-		errors.Is(err, meshy.ErrBadRequest), errors.Is(err, orimages.ErrBadRequest):
+		errors.Is(err, meshy.ErrBadRequest), errors.Is(err, orimages.ErrBadRequest),
+		errors.Is(err, fal.ErrBadRequest), errors.Is(err, fal.ErrBadImageURL),
+		errors.Is(err, fal.ErrNoFrontView):
 		return verdict{Retryable: false, Code: CodeBadRequest, State: entity.DesignAttemptFailed}
 
 	// ─── billed and useless: the money is real, the output is not ───
 	case errors.Is(err, orimages.ErrNoImages), errors.Is(err, recraft.ErrInvalidResponse),
 		errors.Is(err, meshy.ErrNoGLB), errors.Is(err, meshy.ErrUnexpectedResponse),
-		errors.Is(err, meshy.ErrTaskNotFound):
+		errors.Is(err, meshy.ErrTaskNotFound), errors.Is(err, fal.ErrNoModel),
+		errors.Is(err, fal.ErrUnexpectedResponse), errors.Is(err, fal.ErrRequestNotFound):
 		return verdict{Retryable: false, Code: CodeEmptyResponse, State: entity.DesignAttemptUnknown}
-	case errors.Is(err, orimages.ErrResponseTooLarge), errors.Is(err, meshy.ErrTooLarge):
+	case errors.Is(err, orimages.ErrResponseTooLarge), errors.Is(err, meshy.ErrTooLarge),
+		errors.Is(err, fal.ErrTooLarge):
 		return verdict{Retryable: false, Code: CodeResponseTooLarge, State: entity.DesignAttemptUnknown}
 	case errors.Is(err, recraft.ErrNotVector), errors.Is(err, recraft.ErrUnsafeSVG):
 		return verdict{Retryable: false, Code: CodeWrongFormat, State: entity.DesignAttemptUnknown}
 
 	// ─── the provider ended the task itself. Meshy returns the credits on FAILED, so this is a
 	// failure that cost nothing — `failed`, not `unknown`.
+	// ⚠ fal СТОИТ РЯДОМ, НО СОСТОЯНИЕ У НЕГО ДРУГОЕ. Meshy возвращает кредиты на FAILED, поэтому
+	// его провал стоил ноль и закрывается как `failed`. Про fal такого обещания нет: задание,
+	// упавшее ПОСЛЕ начала исполнения, вполне могло быть списано, а мы этого не узнаем — и
+	// `unknown` это ровно то слово схемы, которое значит «деньги, возможно, ушли, показать нечего».
 	case errors.Is(err, meshy.ErrTaskFailed):
 		return verdict{Retryable: false, Code: CodeTaskFailed, State: entity.DesignAttemptFailed}
+	case errors.Is(err, fal.ErrTaskFailed):
+		return verdict{Retryable: false, Code: CodeTaskFailed, State: entity.DesignAttemptUnknown}
 
 	// ─── retryable ───
 	// The request was REFUSED, so it was not billed: the one failure that can be repeated with a
 	// clear conscience.
 	case errors.Is(err, orimages.ErrRateLimited), errors.Is(err, recraft.ErrRateLimited),
-		errors.Is(err, meshy.ErrRateLimited):
+		errors.Is(err, meshy.ErrRateLimited), errors.Is(err, fal.ErrRateLimited):
 		return verdict{Retryable: true, Code: CodeRateLimited, State: entity.DesignAttemptFailed}
 	// The wait ran out on a task that is probably still alive. The submit was already closed as
 	// `accepted` with its id, so the next pass COLLECTS FOR FREE instead of submitting again.
-	case errors.Is(err, meshy.ErrTimedOut), errors.Is(err, meshy.ErrNotReady):
+	case errors.Is(err, meshy.ErrTimedOut), errors.Is(err, meshy.ErrNotReady),
+		errors.Is(err, fal.ErrTimedOut), errors.Is(err, fal.ErrNotReady):
 		return verdict{Retryable: true, Code: CodeProviderTimeout, State: entity.DesignAttemptUnknown}
 	case errors.Is(err, orimages.ErrProviderFailure), errors.Is(err, recraft.ErrProviderFailure):
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}

@@ -29,8 +29,21 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 message DesignRun {
   int32 id = 1; // the row's address; the handle a human says out loud as «run 5»
   int32 tech_card_id = 2; // FK tech_card(id); which card's band this row belongs to
-  // Which state of the studio produced this row: flat | render | threed | vector | draft_idea.
-  // Written by the client at start; immutable afterwards.
+  // Which state of the studio produced this row: flat | render | threed | vector | draft_idea |
+  // recolor | pattern. Written by the client at start; immutable afterwards.
+  //
+  // `recolor` IS THE ON MODEL SECTION'S OWN VERB (K-17). The owner's ask — «мы можем загрузить фото
+  // реальное на модели с разных сторон и нам можно будет поменять цвет вещи» — and the owner's own
+  // decision on how: the colour is changed BY GENERATION, not by a filter, so the weave, the folds
+  // and the shadows survive the change. It is NOT `render` with a flag, because a render COMPOSES a
+  // photograph that does not exist and a recolour must not touch the one that does: the two
+  // instructions to the model contradict each other line by line. Inputs are the photographs named
+  // in params.extra_input_media_ids, ONE PAID CALL EACH; the target colour is params.colour.
+  //
+  // `pattern` MAKES A REPEATING TILE OUT OF ONE PICTURE (K-13): «заапдоудить картинку и через
+  // gpt image 2 сделать из неё повторяемый паттерн». Exactly one input (see
+  // extra_input_media_ids), exactly one output, and the output is a picture of kind `pattern` —
+  // neither a flat nor a render, because a tile is not a state of the garment.
   //
   // `vector` IS A MEMBER OF THIS VOCABULARY AND NOT AN RPC OF ITS OWN. Machine vectorisation is a
   // paid provider call exactly like a flat or a render, so it walks through StartDesignRun — the
@@ -194,6 +207,11 @@ message DesignRunParams {
   string layout = 2;
   // The colour recipe of a render submission. The chips in the colour history restore THIS, not
   // the picture — the recipe migrates, the pixels do not.
+  //
+  // IT IS ALSO THE TARGET OF A `recolor` RUN, and it is REQUIRED there: «change the colour» with no
+  // colour named is a request a model answers with any shade at all, at full price, and the history
+  // could not tell that run from a correct one. Any one of code / hex / words satisfies it — all
+  // three reach the prompt as the same block.
   DesignColourRecipe colour = 3;
   DesignThreedParams threed = 4; // only meaningful for kind=threed
   // `fix: back` — which view of the bench this run was asked to fix. Empty = not a fix. Feeds the
@@ -212,8 +230,19 @@ message DesignRunParams {
   // fix_targets when it is non-empty and falls back to this scalar otherwise — the old meaning
   // stays readable forever, which is the whole reason the field was not reused.
   string fix_target = 5;
-  // Extra media fed to a render besides the bench slots — e.g. an unmarked flat the human dropped
-  // in. FK media(id).
+  // The media the human handed THIS run, besides the bench slots. FK media(id).
+  //
+  // ⚠ ITS NAME SAYS «EXTRA», AND ON TWO KINDS IT CARRIES THE PRIMARY INPUT — deliberate reuse, not
+  // an oversight. On a render these really are extras (an unmarked flat somebody dropped in); on
+  // `recolor` they are THE PHOTOGRAPHS BEING RECOLOURED, one paid call each, and on `pattern` it is
+  // THE ONE PICTURE the tile is built from. It is one list — «media this person gave this run» —
+  // and it is one list on purpose: it already has a card-boundary check, a freezing path and a
+  // reader in the prompt builder, and a second field with the same meaning would mean a second of
+  // each, one of which somebody eventually forgets.
+  //
+  // COUNTS ARE PER KIND AND ARE ENFORCED AT THE DOOR, before anything is reserved: `recolor` needs
+  // at least one, `pattern` needs exactly one (a tile glued out of two swatches cannot join to
+  // itself), and every kind is capped at the snapshot's own reference ceiling.
   repeated int32 extra_input_media_ids = 6;
   // WHICH SIDES OF THE BENCH this run was asked to fix — «select everything in FLAT SLOTS» (W-10),
   // which a single string could not express at all: the studio marks up three plates and asks for
@@ -244,6 +273,41 @@ message DesignRunParams {
   // detail pictures were requested and the other cannot name all and only their slots, so one of
   // the two statements is false.
   repeated int32 detail_slot_ids = 10;
+  // Only meaningful for kind=pattern.
+  DesignPatternParams pattern = 11;
+
+  // ОТДАТЬ ЭТОМУ ФЛЕТ-ПРОГОНУ ПЛИТЫ СОБСТВЕННЫХ `FLAT SLOTS` КАРТОЧКИ КАК РЕФЕРЕНСЫ.
+  //
+  // УМОЛЧАНИЕ false, И УМОЛЧАНИЕ — ЭТО ВСЁ ПОЛЕ ЦЕЛИКОМ. Плита флет-слота, как правило, флет,
+  // который эта же машина и нарисовала; прикладывая их без спроса, мы отдавали модели готовый
+  // ответ, и она переписывала их один в один, не глядя на фотографии, которые человек принёс.
+  // Кому нужны старые плиты в промпте — говорит это вслух, и замороженные params запоминают, что
+  // он это сказал.
+  //
+  // ОСМЫСЛЕНО ТОЛЬКО ДЛЯ kind=flat. Рендер СТРОИТСЯ из флетов, а 3D — из рендеров: это и есть
+  // содержание тех видов прогона, а не их настройка. Вектор сужается до своей единственной плиты
+  // через fix_slot_ids.
+  bool use_flat_slots = 12;
+}
+
+// DesignPatternParams is the frozen ask of a REPEATING-TILE run (kind=pattern, K-13).
+//
+// ONE FIELD, AND IT IS A NUMBER THE MODEL CAN ACT ON. That is V-7's own argument about
+// design_asset.repeat_mm, repeated here because it is the same argument: «крупный» and «мелкий» are
+// not instructions a generator can obey, «120 mm» is. It is also the number an ASSET built from
+// this tile inherits, so «generated at 120 mm» and «placed at 120 mm» stay one claim about one
+// cloth instead of two that drift.
+//
+// WHAT IS DELIBERATELY NOT HERE. There is no `seamless` flag: a tile that does not repeat is not a
+// cheaper tile, it is a useless one, so the whole route asks for a repeat and never asks whether to.
+// There is no rotation either — how a pattern SITS on a garment is placement
+// (design_asset.rotation_deg), and the tile itself has no orientation to state.
+message DesignPatternParams {
+  // The repeat this tile is meant to be printed at, in whole millimetres on the finished garment.
+  // 0 = not stated, which is legal: a tile is a tile whether or not anybody has decided its scale
+  // yet. Non-zero reaches the model as a SCALE instruction («one tile covers 120 mm of cloth»),
+  // never as a pixel size.
+  int32 repeat_mm = 1;
 }
 
 // DesignColourRecipe is the colour submission of a render run, in a form that a history chip can
@@ -541,7 +605,14 @@ message DesignPicture {
   int32 run_id = 4; // FK design_run(id); set for GENERATED pictures, 0 for uploaded ones
   int32 batch_id = 5; // FK design_batch(id); set for UPLOADED pictures, 0 for generated ones
   int32 ordinal = 6; // position within its run/batch; stable, and the key of idempotent insertion
-  string kind = 7; // flat | render | threed
+  // flat | render | threed | pattern.
+  //
+  // `pattern` is a REPEATING TILE, the output of a kind=pattern run. It has a name of its own
+  // rather than borrowing `flat` because a tile that calls itself a flat becomes selectable into a
+  // bench slot — «the front of the garment» would be a square of cloth — and one that calls itself
+  // a render satisfies the «3D needs a fabric render first» gate on a card where nobody has drawn
+  // the garment at all.
+  string kind = 7;
   // The GHOST label: a hypothesis about which view this is, not a fact. Front-and-back guesses are
   // routinely wrong, so the label is shown as a guess and a human confirms it by putting the plate
   // into a slot. Empty = no hypothesis. On a crop this carries the frame's declared view.

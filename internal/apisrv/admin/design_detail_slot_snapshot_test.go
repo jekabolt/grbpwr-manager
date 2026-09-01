@@ -54,15 +54,44 @@ func TestStartDesignRunFreezesTheNameOfAnEmptyDetailSlot(t *testing.T) {
 		"в слоте нет картинки — её как раз и заказывают; нулевой media_id здесь правда, а не пропуск")
 	require.Zero(t, bySlot[18].GetMediaId())
 
-	// ── положительный контроль: плита с картинкой на месте и не потеряна ──
-	plates := 0
-	for _, s := range snap.GetSlots() {
-		if s.GetMediaId() > 0 {
-			plates++
+	// ⚠ ПЛИТ ЗДЕСЬ БОЛЬШЕ НЕТ, И ЭТО ФИКС K-1, А НЕ ПОТЕРЯ. Флет-прогон брал плиты флет-слотов
+	// молча — то есть отдавал модели её же старые флеты как референс, и она переписывала их один
+	// в один. Теперь их берут только по просьбе.
+	countPlates := func(sn *pb_common.DesignInputSnapshot) int {
+		n := 0
+		for _, s := range sn.GetSlots() {
+			if s.GetMediaId() > 0 {
+				n++
+			}
+		}
+		return n
+	}
+	require.Zero(t, countPlates(snap),
+		"без просьбы флет-прогон не берёт плиты верстака — иначе модель получает готовый ответ")
+
+	// ── ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: попросили — взял. Без него проба зеленела бы на сборке, которая
+	// разучилась брать плиты ВООБЩЕ, и разницы между «не берёт без спроса» и «не умеет» не было бы.
+	rig2 := newDesignRunRig(t, designMoodCard(), designBandWithEmptyDetails())
+	req2 := designStartRequest(entity.DesignRunKindFlat)
+	req2.Params.Views = []string{entity.DesignViewDetail, entity.DesignViewDetail}
+	req2.Params.Layout = designLayoutOne
+	req2.Params.DetailSlotIds = []int32{17, 18}
+	req2.Params.UseFlatSlots = true
+	_, err = rig2.srv.StartDesignRun(designRunCtx(), req2)
+	require.NoError(t, err)
+	require.NotNil(t, rig2.sent)
+	snap2 := &pb_common.DesignInputSnapshot{}
+	require.NoError(t, designUnmarshalJSON(rig2.sent.Inputs, snap2))
+	require.Equal(t, 1, countPlates(snap2), "попросили плиты — они уехали")
+
+	// И записи-имена уцелели рядом с плитой: имя добавляется К плитам, а не вместо них.
+	names := 0
+	for _, s := range snap2.GetSlots() {
+		if s.GetMediaId() == 0 && s.GetDetailName() != "" {
+			names++
 		}
 	}
-	require.Equal(t, 1, plates,
-		"запись-имя добавляется К плитам, а не вместо них: иначе проба зеленела бы на пустом снимке")
+	require.Equal(t, 2, names, "имена пустых деталей живут рядом с плитой, а не вместо неё")
 }
 
 // ПОДПИСИ КАРТИНОК НЕ СДВИГАЮТСЯ ОТ ЗАПИСИ БЕЗ КАРТИНКИ.

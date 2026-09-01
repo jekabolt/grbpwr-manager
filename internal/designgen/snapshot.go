@@ -35,6 +35,20 @@ type runParams struct {
 	FixTarget          string        `json:"fix_target"`
 	FixTargets         []string      `json:"fix_targets"`
 	Threed             *threedParams `json:"threed"`
+	// Pattern is only meaningful for kind=pattern. A nil pointer is «the run said nothing about the
+	// repeat», which is legal — a tile is a tile whether or not anybody has decided how large it
+	// will be printed.
+	Pattern *patternParams `json:"pattern"`
+}
+
+// patternParams is the frozen ask of a repeating-tile run.
+//
+// ONE FIELD, AND IT IS A NUMBER THE MODEL CAN ACT ON. That is the same argument V-7 already made
+// about `design_asset.repeat_mm`: «крупный» and «мелкий» are not instructions, «120 mm» is. It is
+// also the number the ASSET built from this tile inherits, so «generated at 120 mm» and «placed at
+// 120 mm» are one claim rather than two that drift.
+type patternParams struct {
+	RepeatMM int `json:"repeat_mm"`
 }
 
 type colourRecipe struct {
@@ -218,6 +232,14 @@ func parseInputs(raw entity.RawJSON) runInputs {
 type refCaption struct {
 	MediaID int
 	Caption string
+	// View is the SIDE this picture shows, when the run knows: front | back | side_l | side_r |
+	// detail. Empty for every source that is not a bench plate — a reference, an extra upload, a
+	// fabric swatch — and empty is a truthful answer there rather than a missing one.
+	//
+	// IT IS FILLED BY THE SAME add() CALL THAT FILLS THE CAPTION, off the same element, which is
+	// what keeps view k, caption k and reference k the same picture by construction. A second walk
+	// producing «the views, in order» is exactly how captions and urls once came to disagree.
+	View string
 }
 
 // referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
@@ -242,7 +264,7 @@ func referenceList(p runParams, in runInputs) []refCaption {
 
 	seen := map[int]int{}
 	var out []refCaption
-	add := func(id int, caption string) {
+	add := func(id int, caption, view string) {
 		if id <= 0 {
 			return
 		}
@@ -254,13 +276,16 @@ func referenceList(p runParams, in runInputs) []refCaption {
 			if caption != "" && !strings.Contains(out[at].Caption, caption) {
 				out[at].Caption = out[at].Caption + "; " + caption
 			}
+			// AND IT KEEPS ITS FIRST VIEW, for the same reason the position is kept: the plate
+			// walk runs first, so a picture that is both a plate and a reference is already
+			// labelled with the side it stands on, and the second source has no side to offer.
 			return
 		}
 		seen[id] = len(out)
-		out = append(out, refCaption{MediaID: id, Caption: caption})
+		out = append(out, refCaption{MediaID: id, Caption: caption, View: view})
 	}
 	for _, s := range slots {
-		add(s.MediaID, slotCaption(s))
+		add(s.MediaID, slotCaption(s), s.ViewKey)
 	}
 	for _, r := range in.Refs {
 		// A reference whose media row is gone is remembered by the snapshot but cannot be fetched
@@ -268,10 +293,10 @@ func referenceList(p runParams, in runInputs) []refCaption {
 		if r.Deleted {
 			continue
 		}
-		add(r.MediaID, refEntryCaption(r))
+		add(r.MediaID, refEntryCaption(r), "")
 	}
 	for _, id := range p.ExtraInputMediaIDs {
-		add(id, "additional reference image")
+		add(id, "additional reference image", "")
 	}
 	// ─── THE CLOTHS ────────────────────────────────────────────────────────────────────────────
 	//
@@ -297,7 +322,7 @@ func referenceList(p runParams, in runInputs) []refCaption {
 			// MATERIAL and loses the colour to the picker. A caption and a rule that disagree about
 			// the same picture is worse than either alone — the model gets to choose which of our
 			// two sentences it believes.
-			add(p.Colour.FabricMediaID, "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here")
+			add(p.Colour.FabricMediaID, "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here", "")
 		}
 	default:
 		// ONE ENTRY PER CLOTH, NUMBERED THE WAY THE CLOTH LIST NUMBERS THEM. Both walks are over
@@ -313,7 +338,7 @@ func referenceList(p runParams, in runInputs) []refCaption {
 		// it would have echoed is that same absent texture.
 		for i, c := range cloths {
 			add(c.MediaID, "fabric photograph — CLOTH "+strconv.Itoa(i+1)+clothCaptionName(c)+
-				": the material of the parts this cloth is used on, read its weave, texture, sheen and drape from here")
+				": the material of the parts this cloth is used on, read its weave, texture, sheen and drape from here", "")
 		}
 	}
 	return out
@@ -549,6 +574,18 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		write("", flatCraft(p, detailNames, len(attached)))
 	case renderIsTheKind(run.Kind):
 		write("", renderCraft(p, detailNames, attached))
+	// ПЕРЕКРАС И ПАТТЕРН — ЕЩЁ ДВА РЕМЕСЛА, И КАЖДОЕ ПРОТИВОРЕЧИТ ОБОИМ СОСЕДНИМ. Рендер СОЧИНЯЕТ
+	// сцену, перекрас обязан её НЕ ТРОГАТЬ; флэт рисует чёрную линию на белом, паттерн — сплошное
+	// поле цвета без единого поля вокруг. Поэтому абзац ровно один на прогон, как и у первых двух:
+	// прогон, взявший два, закончился бы тем, который случайно написан ниже.
+	case run.Kind == entity.DesignRunKindRecolor:
+		write("", recolorCraft(p))
+	case run.Kind == entity.DesignRunKindPattern:
+		pp := patternParams{}
+		if p.Pattern != nil {
+			pp = *p.Pattern
+		}
+		write("", patternCraft(pp))
 	}
 	return b.String()
 }
@@ -622,6 +659,13 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 	// SAME loop, off the SAME element: that, and nothing subtler, is what guarantees that caption
 	// k describes references[k-1]. TestCaptionNumberKIsImageNumberK holds the guarantee.
 	list := referenceList(p, in)
+	switch run.Kind {
+	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
+		// ПЕРЕКРАС И ПАТТЕРН ДЕЙСТВУЮТ НА НАЗВАННЫЕ СНИМКИ, И ТОЛЬКО НА НИХ. Довод целиком в
+		// source_inputs.go: вторая картинка в вызове превращает «верни ТОТ ЖЕ кадр» в «сочини
+		// похожий», а плитку, собранную из двух лоскутов, невозможно состыковать саму с собой.
+		list = sourcePictures(list, p)
+	}
 	if run.Kind == entity.DesignRunKindThreed {
 		// У СБОРКИ 3D КАРТИНКИ — ЭТО ЕЁ ПЛИТЫ, И ТОЛЬКО ОНИ (V-14). Довод целиком в
 		// threed_inputs.go: Meshy читает КАЖДУЮ присланную картинку как ВИД одного предмета и
@@ -652,7 +696,11 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 			if u == "" {
 				continue
 			}
+			// THE THREE HALVES MOVE TOGETHER, IN ONE APPEND, off one element — the url, the side
+			// it shows, and the caption that describes it. That, and nothing subtler, is what makes
+			// References[k], ReferenceViews[k] and caption k+1 the same picture.
 			job.References = append(job.References, u)
+			job.ReferenceViews = append(job.ReferenceViews, rc.View)
 			attached = append(attached, rc)
 		}
 	}

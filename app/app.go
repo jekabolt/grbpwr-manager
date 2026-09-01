@@ -31,6 +31,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
@@ -493,15 +494,44 @@ func (a *App) Start(ctx context.Context) error {
 	// незаполненная секция здесь безопасна: очередь не сможет воскресить прогон, чей воркер
 	// ещё жив и платит.
 	designCfg := a.c.DesignGen
+	// ⚠ NORMALISED BEFORE ANY FIELD OF IT IS READ. designgen.New would do this itself, but the 3D
+	// route is chosen BELOW, from ThreedProvider — and a raw `MESHY` typed into the dashboard does
+	// not equal the lower-case constant, so an un-normalised read would wire fal and log fal while
+	// the operator had asked for Meshy. Idempotent; New() applies it again.
+	designgen.Normalize(&designCfg)
 	if designCfg.Enabled {
+		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
+		//
+		// DESIGN_THREED_PROVIDER, defaulting to `fal` — the provider the owner named. It is NOT
+		// inferred from which key happens to be present: that rule would move the owner's money
+		// between two vendors as a side effect of typing a key into a dashboard. designgen's
+		// applyDefaults has already normalised an unknown word to the default; this line is where
+		// the effective choice is SAID OUT LOUD, once per boot, so «which vendor is this bill from»
+		// is answerable from the logs and not only from an attempt row.
+		//
+		// Neither client is asked for a key here. A route with no credentials is a route that
+		// refuses AT THE DOOR, in words, naming its variable (PreflightKind → MissingCredential) —
+		// which is what lets the owner tell «I have not set the key yet» from «the service is
+		// busy».
+		threed := designgen.NewFalThreedProvider(fal.New(a.c.Fal))
+		if designCfg.ThreedProvider == designgen.ThreedProviderMeshy {
+			threed = designgen.NewThreedProvider(meshy.New(a.c.Meshy))
+		}
+		slog.Default().InfoContext(ctx, "design generation: 3D route wired",
+			slog.String("provider", designCfg.ThreedProvider),
+			slog.String("flag", designgen.EnvThreedProvider))
+
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
-			// flat and render — the raster route.
+			// flat, render, recolor and pattern — the raster route. ONE endpoint and ONE key for
+			// all four: they differ by prompt and by which pictures go into which paid call, both
+			// of which live inside designgen.
 			Image: designgen.NewImageProvider(designImages),
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
 			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
-			// threed — Meshy, directly, because OpenRouter has no 3D modality to route to.
-			Threed: designgen.NewThreedProvider(meshy.New(a.c.Meshy)),
+			// threed — fal.ai's hitem3d by default (K-10), Meshy behind the same slot on request.
+			// Both are reached DIRECTLY, because OpenRouter has no 3D modality to route to.
+			Threed: threed,
 		})
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",

@@ -19,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/campaigndispatch"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
@@ -118,6 +119,11 @@ type Config struct {
 	// OpenRouter" (P-5). Not by preference: OpenRouter has no 3D modality at all — "3d" is not a
 	// value its catalogue accepts — so there is nothing there to route to. See internal/meshy.
 	Meshy meshy.Config `mapstructure:"meshy"`
+	// Fal is the SECOND 3D provider and the one the owner named: hitem3d's multi-view-to-3d, reached
+	// through fal.ai's queue. Which of the two the turntable actually uses is
+	// `design_generation.threed_provider` (DESIGN_THREED_PROVIDER), an explicit word rather than a
+	// guess from which key happens to be present — see designgen.Config.ThreedProvider.
+	Fal fal.Config `mapstructure:"fal"`
 	// Recraft is the VECTOR provider (owner spec P-3: «ровный вектор, а не куча полигонов»). Its
 	// primary route is the OpenRouterImages client above — the vector models are ordinary rows of
 	// that same image catalogue — and this section only carries the tier→slug table plus the
@@ -678,4 +684,38 @@ func bindEnvVars() {
 	viper.BindEnv("design_generation.claim_lease", "DESIGN_WORKER_CLAIM_LEASE")
 	viper.BindEnv("design_generation.run_timeout", "DESIGN_WORKER_RUN_TIMEOUT")
 	viper.BindEnv("design_generation.image_quality", "DESIGN_IMAGE_QUALITY")
+	// WHICH 3D PROVIDER GETS PAID: fal (default, the owner's own choice) | meshy. An unknown word
+	// falls back to the default and app.go logs the route it wired.
+	viper.BindEnv("design_generation.threed_provider", "DESIGN_THREED_PROVIDER")
+
+	// fal.ai (3D generation, K-10). A THIRD provider with a key of its own — nothing here falls back
+	// to an OpenRouter or a Meshy variable, because neither account can pay for a fal request.
+	//
+	// EVERY LINE BELOW IS LOAD-BEARING IN THE SAME SILENT WAY as the Meshy block: viper.AutomaticEnv
+	// is off in this package on purpose, so a variable without its own BindEnv reads as EMPTY — and
+	// empty is also what a correctly-unset optional override looks like. A forgotten line here does
+	// not fail, log or differ visibly; it just means the number somebody set in the DO dashboard is
+	// never the number the process uses.
+	//
+	// ⚠️ These are set IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml: pushing the spec deploys
+	// prod and overwrites live SECRET values with the empty ones in the file.
+
+	// FAL_KEY is the whole switch. Unset => the client is disabled and StartDesignRun refuses a
+	// threed run IN WORDS, naming this variable, before anything is reserved or charged.
+	viper.BindEnv("fal.api_key", "FAL_KEY")
+	// The queue root. Empty => https://queue.fal.run. For tests and a proxy, not a knob.
+	viper.BindEnv("fal.base_url", "FAL_BASE_URL")
+	// The 3D slug. Empty => fal.DefaultModel3D (hitem3d/hi3d/v3.0/multi-view-to-3d — the owner named
+	// it by name). It is overridable for the reason orimages.DefaultModel is: a slug the provider
+	// retires turns every press into a 404, and an operator must be able to move off it without a
+	// deploy. A 404 on the submit path is reported as a RETIRED MODEL, never as a busy service.
+	viper.BindEnv("fal.model_3d", "FAL_MODEL_3D")
+	viper.BindEnv("fal.http_timeout", "FAL_HTTP_TIMEOUT")
+	viper.BindEnv("fal.poll_interval", "FAL_POLL_INTERVAL")
+	viper.BindEnv("fal.poll_timeout", "FAL_POLL_TIMEOUT")
+	viper.BindEnv("fal.download_timeout", "FAL_DOWNLOAD_TIMEOUT")
+	// Price of one fal billable unit in USD — the only bridge from x-fal-billable-units to money.
+	// Unset falls back to a documented estimate, deliberately: recording a plausible cost is better
+	// than recording zero, which would make every paid 3D build read as free in the ledger.
+	viper.BindEnv("fal.unit_usd", "FAL_UNIT_USD")
 }

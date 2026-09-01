@@ -145,8 +145,13 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 	// РОД — ВТОРАЯ ПОЛОВИНА АДРЕСА (0349). Пустое читается как flat ровно как DEFAULT колонки,
 	// поэтому всякий писатель, который род не именует, попадает туда же, куда попадал до
 	// миграции; и ровно поэтому запрос про рендер фронта перестал разрешаться на флэт фронта.
+	//
+	// ⚠ СПРАШИВАЕТСЯ IsDesignBenchKind, А НЕ IsDesignPictureKind, И РАЗНИЦА ПОЯВИЛАСЬ ВМЕСТЕ С
+	// `pattern`: плитка обоев — законный кадр карточки и НЕ состояние изделия ни с какой стороны.
+	// Список принимаемых значений при этом не изменился ни на один член, так что ни одна уже
+	// стоящая строка верстака смысла не поменяла.
 	kind := entity.DesignKindOrFlat(req.Slot.Kind)
-	if !entity.IsDesignPictureKind(kind) {
+	if !entity.IsDesignBenchKind(kind) {
 		return nil, fmt.Errorf("%w: unknown slot kind %q", entity.ErrDesignInvalidArgument, kind)
 	}
 

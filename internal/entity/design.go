@@ -155,12 +155,44 @@ const (
 	DesignPictureKindFlat   = "flat"
 	DesignPictureKindRender = "render"
 	DesignPictureKindThreed = "threed"
+	// DesignPictureKindPattern — ПОВТОРЯЕМАЯ ПЛИТКА, выход прогона рода `pattern` (K-13).
+	//
+	// ⚠ ОНА НЕ ФЛЭТ И НЕ РЕНДЕР, И ОБА ЭТИХ ИМЕНИ БЫЛИ БЫ ЛОЖЬЮ С ПОСЛЕДСТВИЯМИ, а не неточностью.
+	// Названная флэтом, плитка попадает в список, из которого человек ставит кадр в СЛОТ ВЕРСТАКА,
+	// и «перёд изделия» оказывается куском ткани. Названная рендером — открывает ворота W-13
+	// («3D только после fabric render»), то есть карточка, на которой сгенерили только обои,
+	// начинает считаться готовой к сборке 3D. Своё имя не стоит ничего и закрывает оба случая.
+	DesignPictureKindPattern = "pattern"
 )
 
 // IsDesignPictureKind сообщает, известен ли род кадра. Словарь растёт, CHECK в схеме намеренно
 // нет — поэтому проверяет Go, и отказ называет значение, а не отдаёт сырой 1265.
 func IsDesignPictureKind(v string) bool {
-	return v == DesignPictureKindFlat || v == DesignPictureKindRender || v == DesignPictureKindThreed
+	switch v {
+	case DesignPictureKindFlat, DesignPictureKindRender, DesignPictureKindThreed,
+		DesignPictureKindPattern:
+		return true
+	}
+	return false
+}
+
+// IsDesignBenchKind сообщает, законен ли род как ВТОРАЯ ОСЬ ВЕРСТАКА (design_bench_slot.kind).
+//
+// ⚠ ЭТО НЕ РАСЩЕПЛЕНИЕ СЛОВАРЯ НАДВОЕ, А ЕГО СУЖЕНИЕ В ОДНУ СТОРОНУ, и разница проверяется одним
+// вопросом: «может ли член попасть в чужую половину молча?». Верстак держит СОСТОЯНИЕ ИЗДЕЛИЯ по
+// сторонам силуэта, и всякий его род обязан быть родом кадра — обратное неверно с появлением
+// `pattern`: плитка обоев это кадр карточки, но не состояние изделия с какой-либо стороны.
+//
+// До этой волны функция была бы посимвольной копией IsDesignPictureKind, поэтому её и не было. Она
+// заводится ровно в тот момент, когда словарь кадров вырос на члена, которому в верстаке места
+// нет, — и список здесь ТОТ ЖЕ, что верстак принимал вчера, то есть ни одна существующая строка не
+// меняет смысла.
+func IsDesignBenchKind(v string) bool {
+	switch v {
+	case DesignPictureKindFlat, DesignPictureKindRender, DesignPictureKindThreed:
+		return true
+	}
+	return false
 }
 
 // DesignKindOrFlat — ПУСТОЕ ЧИТАЕТСЯ КАК flat, ровно как DEFAULT 'flat' в 0349. Один способ
@@ -181,13 +213,32 @@ const (
 	DesignRunKindThreed    = "threed"
 	DesignRunKindVector    = "vector"
 	DesignRunKindDraftIdea = "draft_idea"
+	// DesignRunKindRecolor — ПЕРЕКРАС ВЕЩИ НА ГОТОВОЙ ФОТОГРАФИИ (K-17). Владелец: «раздел ON MODEL
+	// должен быть таким что мы можем загрузить фото реальное на модели с разных сторон и нам можно
+	// будет поменять цвет вещи», и решение о механизме — его же: цвет меняется ГЕНЕРАЦИЕЙ, то есть
+	// модель перерисовывает вещь в новый цвет, сохраняя ткань, складки и тени.
+	//
+	// ЭТО ОТДЕЛЬНЫЙ РОД, А НЕ РЕНДЕР С ФЛАЖКОМ, и различие несущее. Рендер СОЧИНЯЕТ фотографию по
+	// флэтам и по описанию ткани; перекрас НИЧЕГО НЕ СОЧИНЯЕТ — он обязан вернуть ту же самую
+	// фотографию, тот же кадр, ту же позу и то же освещение, изменив ровно одно. Это две
+	// противоположные инструкции модели, и один род не может нести обе: прогон закончился бы тем
+	// абзацем ремесла, который случайно написан последним.
+	DesignRunKindRecolor = "recolor"
+	// DesignRunKindPattern — ПОВТОРЯЕМАЯ ПЛИТКА ИЗ КАРТИНКИ (K-13). Владелец: «заапдоудить картинку
+	// и через gpt image 2 сделать из неё повторяемый паттерн».
+	//
+	// КЛЮЧЕВОЕ СЛОВО — ПОВТОРЯЕМЫЙ: результат обязан стыковаться сам с собой по краям, иначе он
+	// бесполезен. Поэтому род отдельный: у него единственный вход (одна картинка), единственный
+	// выход (одна плитка) и инструкция, которой нет ни у одного другого рода.
+	DesignRunKindPattern = "pattern"
 )
 
 // IsDesignRunKind сообщает, известен ли род прогона.
 func IsDesignRunKind(v string) bool {
 	switch v {
 	case DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed,
-		DesignRunKindVector, DesignRunKindDraftIdea:
+		DesignRunKindVector, DesignRunKindDraftIdea,
+		DesignRunKindRecolor, DesignRunKindPattern:
 		return true
 	}
 	return false
@@ -201,6 +252,15 @@ func DesignPictureKindOfRun(runKind string) string {
 		return DesignPictureKindRender
 	case DesignRunKindThreed:
 		return DesignPictureKindThreed
+	// ПЕРЕКРАС РОЖДАЕТ РЕНДЕР, И ЭТО ПРАВДА, А НЕ УДОБСТВО: на выходе фотография изделия в сцене —
+	// ровно то, что означает `render`. Следствие названо вслух, потому что оно неочевидно: такой
+	// кадр УДОВЛЕТВОРЯЕТ ворота W-13 («3D только после fabric render»). Это верно по существу —
+	// перекрашенный настоящий снимок изделия основание для сборки не худшее, а лучшее, чем
+	// сочинённый рендер.
+	case DesignRunKindRecolor:
+		return DesignPictureKindRender
+	case DesignRunKindPattern:
+		return DesignPictureKindPattern
 	default:
 		return DesignPictureKindFlat
 	}

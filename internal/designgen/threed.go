@@ -26,6 +26,9 @@ func (p threedProvider) Name() string { return "meshy" }
 
 func (p threedProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 
+// MissingCredential is the sentence the DOOR shows when the route is off — see CredentialNamer.
+func (p threedProvider) MissingCredential() string { return "MESHY_API_KEY is not set" }
+
 // Produces names BOTH artifacts, because the pass refuses up front unless the sink can store every
 // one of them: the model itself, and the raster thumbnail that stands in for it wherever a list
 // has to draw a tile (a GLB is not something a list view can render).

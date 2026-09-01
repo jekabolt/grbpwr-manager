@@ -53,17 +53,32 @@ type Config struct {
 	// before the call; raising this dial without raising that estimate makes the daily budget
 	// under-count real spend, silently, in the direction that overspends.
 	ImageQuality string `mapstructure:"image_quality"`
+	// ThreedProvider names WHICH 3D route is wired: fal | meshy.
+	//
+	// ⚠ IT IS AN EXPLICIT WORD AND NOT «WHICHEVER KEY HAPPENS TO BE SET», AND THAT IS THE WHOLE
+	// POINT. This setting decides WHO GETS PAID for a turntable. A rule like «use fal if FAL_KEY is
+	// present, otherwise Meshy» would move the owner's money from one vendor to another as a side
+	// effect of typing a key into a dashboard, silently, with the history row the only trace. A word
+	// somebody wrote down is the only honest way to say a thing like that.
+	//
+	// THE DEFAULT IS `fal`, BECAUSE THE OWNER NAMED IT: «для 3d как референсы должны использоваться
+	// hitem3d/hi3d/v3.0/multi-view-to-3d и нам нужна интеграция с fal.ai». The consequence is
+	// deliberate and is the behaviour the requirement asks for — with no FAL_KEY the 3D button
+	// refuses IN WORDS, naming the variable, instead of quietly falling back to a provider the owner
+	// did not ask for and reporting success. Meshy stays one variable away.
+	ThreedProvider string `mapstructure:"threed_provider"`
 }
 
 // Environment variable names. AutomaticEnv is switched off in this repo, so a name that is not
 // read explicitly is silently empty — which is also what a correctly-unset override looks like.
 const (
-	EnvEnabled      = "DESIGN_GENERATION_ENABLED"
-	EnvInterval     = "DESIGN_WORKER_INTERVAL"
-	EnvBatchSize    = "DESIGN_WORKER_BATCH_SIZE"
-	EnvClaimLease   = "DESIGN_WORKER_CLAIM_LEASE"
-	EnvRunTimeout   = "DESIGN_WORKER_RUN_TIMEOUT"
-	EnvImageQuality = "DESIGN_IMAGE_QUALITY"
+	EnvEnabled        = "DESIGN_GENERATION_ENABLED"
+	EnvInterval       = "DESIGN_WORKER_INTERVAL"
+	EnvBatchSize      = "DESIGN_WORKER_BATCH_SIZE"
+	EnvClaimLease     = "DESIGN_WORKER_CLAIM_LEASE"
+	EnvRunTimeout     = "DESIGN_WORKER_RUN_TIMEOUT"
+	EnvImageQuality   = "DESIGN_IMAGE_QUALITY"
+	EnvThreedProvider = "DESIGN_THREED_PROVIDER"
 )
 
 // DefaultConfig is the shape of a deployment nobody has tuned.
@@ -76,11 +91,26 @@ func DefaultConfig() Config {
 		// double-payment window this config's invariant exists to close. A sequential worker loses
 		// nothing by it: two runs one tick apart and two runs in one tick take the same time, minus
 		// one WorkerInterval. This is a fixed point of applyDefaults.
-		BatchSize:    1,
-		ClaimLease:   20 * time.Minute,
-		RunTimeout:   15 * time.Minute,
-		ImageQuality: "medium",
+		BatchSize:      1,
+		ClaimLease:     20 * time.Minute,
+		RunTimeout:     15 * time.Minute,
+		ImageQuality:   "medium",
+		ThreedProvider: ThreedProviderFal,
 	}
+}
+
+// Normalize applies this package's own defaults and ceilings to a configuration IN PLACE.
+//
+// ⚠ IT EXISTS SO NOBODY READS A FIELD BEFORE IT MEANS ANYTHING, and that is not hypothetical: the
+// first version of app.go compared ThreedProvider against `meshy` BEFORE constructing the worker,
+// i.e. before applyDefaults had lower-cased it — so an operator who wrote `MESHY` in the dashboard
+// got fal, silently, and the log line said fal too. New() normalises as a matter of course; a
+// caller that needs to READ a normalised value before that point calls this. It is idempotent.
+func Normalize(c *Config) {
+	if c == nil {
+		return
+	}
+	applyDefaults(c)
 }
 
 func applyDefaults(c *Config) {
@@ -99,6 +129,16 @@ func applyDefaults(c *Config) {
 	}
 	if strings.TrimSpace(c.ImageQuality) == "" {
 		c.ImageQuality = d.ImageQuality
+	}
+	// AN UNKNOWN WORD FALLS BACK TO THE DEFAULT AND app.go SAYS WHICH ROUTE IT WIRED, at info level,
+	// on every boot. Refusing to boot over a typo in a route name would take the whole backend down;
+	// silently picking one and never mentioning it is how a deployment comes to pay a vendor nobody
+	// chose. The pair — normalise here, announce there — is the cheap version of both.
+	switch strings.ToLower(strings.TrimSpace(c.ThreedProvider)) {
+	case ThreedProviderFal, ThreedProviderMeshy:
+		c.ThreedProvider = strings.ToLower(strings.TrimSpace(c.ThreedProvider))
+	default:
+		c.ThreedProvider = d.ThreedProvider
 	}
 	// THE INVARIANT, ENFORCED RATHER THAN DOCUMENTED — AND IT IS ABOUT THE WHOLE BATCH.
 	//
@@ -171,6 +211,7 @@ func applyDefaults(c *Config) {
 //	viper.BindEnv("design_generation.claim_lease", "DESIGN_WORKER_CLAIM_LEASE")
 //	viper.BindEnv("design_generation.run_timeout", "DESIGN_WORKER_RUN_TIMEOUT")
 //	viper.BindEnv("design_generation.image_quality", "DESIGN_IMAGE_QUALITY")
+//	viper.BindEnv("design_generation.threed_provider", "DESIGN_THREED_PROVIDER")
 //
 // Until then the two readers agree on ONE spelling of every variable, which is what the constants
 // above are for. Unparseable values fall back to the default rather than refusing to boot: a typo
@@ -184,6 +225,9 @@ func ConfigFromEnv() Config {
 	c.RunTimeout = envDuration(EnvRunTimeout, c.RunTimeout)
 	if v := strings.TrimSpace(os.Getenv(EnvImageQuality)); v != "" {
 		c.ImageQuality = v
+	}
+	if v := strings.TrimSpace(os.Getenv(EnvThreedProvider)); v != "" {
+		c.ThreedProvider = v
 	}
 	applyDefaults(&c)
 	return c

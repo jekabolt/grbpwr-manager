@@ -149,10 +149,11 @@ func TestBrokenSnapshotDoesNotStopAPaidJob(t *testing.T) {
 // TestPerViewIsOnePaidCallPerView. The provider's `n` returns n VARIANTS OF ONE PROMPT, so reading
 // it as "how many views" would buy three copies of the same drawing and deliver no back or side.
 func TestPerViewIsOnePaidCallPerView(t *testing.T) {
-	calls := imageCalls(Job{
+	calls, err := imageCalls(Job{
 		Prompt: "flat of a shirt", Layout: layoutPerView,
 		Views: []string{"front", "back", "side_l"}, Outputs: 3,
 	})
+	require.NoError(t, err)
 	require.Len(t, calls, 3)
 	for i, v := range []string{"front", "back", "side_l"} {
 		require.Equal(t, 1, calls[i].n, "each view is its own prompt, never an extra variant")
@@ -164,10 +165,11 @@ func TestPerViewIsOnePaidCallPerView(t *testing.T) {
 // TestCompositeIsOneCallAndClaimsNoView. A composite carries several views and therefore has no
 // single one; naming the first would hand the splitter a wrong hint.
 func TestCompositeIsOneCallAndClaimsNoView(t *testing.T) {
-	calls := imageCalls(Job{
+	calls, err := imageCalls(Job{
 		Prompt: "one sheet", Layout: layoutOne,
 		Views: []string{"front", "back", "side_l"}, Outputs: 1,
 	})
+	require.NoError(t, err)
 	require.Len(t, calls, 1)
 	require.Equal(t, 1, calls[0].n)
 	require.Empty(t, calls[0].view)
@@ -199,10 +201,11 @@ func TestFlatNeverAsksForABackgroundTheModelDoesNotKnow(t *testing.T) {
 // requested_outputs as `n` would buy three whole composites at three times the price, and deliver
 // nothing anybody asked for.
 func TestCompositeNeverBuysVariantsByAccident(t *testing.T) {
-	calls := imageCalls(Job{
+	calls, err := imageCalls(Job{
 		Prompt: "one sheet", Layout: layoutOne,
 		Views: []string{"front", "back", "side_l"}, Outputs: 3,
 	})
+	require.NoError(t, err)
 	require.Len(t, calls, 1)
 	require.Equal(t, 1, calls[0].n)
 }

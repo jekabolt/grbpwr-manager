@@ -22,6 +22,14 @@ func (p vectorProvider) Name() string { return "recraft_vector" }
 
 func (p vectorProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 
+// MissingCredential is the sentence the DOOR shows when the route is off — see CredentialNamer.
+// TWO NAMES, BECAUSE THE ROUTE HAS TWO TRANSPORTS and either one turns it on: the default path
+// borrows the OpenRouter image key, and RECRAFT_ROUTE=direct uses Recraft's own. Naming only one of
+// them would send an operator to set a variable that this deployment does not read.
+func (p vectorProvider) MissingCredential() string {
+	return "neither OPENROUTER_API_KEY (the default transport) nor RECRAFT_API_KEY (RECRAFT_ROUTE=direct) is set"
+}
+
 func (p vectorProvider) Produces() []string { return []string{ContentTypeSVG} }
 
 // Execute redraws an approved raster as vector.
