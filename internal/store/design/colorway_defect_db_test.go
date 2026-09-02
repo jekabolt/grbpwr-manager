@@ -104,7 +104,7 @@ func TestDesignDBRelinkRefusesAColorwayTheDesignBandStillNames(t *testing.T) {
 			}
 		}},
 		{"прогон", "GRN", func(cw int) func() {
-			resetBudget(t, raw, "10.00")
+			resetBudget(t, raw)
 			started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
 				TechCardId: card, ClientRequestId: uuid.NewString(),
 				Kind: entity.DesignRunKindRender, RequestedOutputs: 1, Author: "probe",
@@ -271,7 +271,7 @@ func TestDesignDBCompleteRunRefusesAKindThatCannotCarryTheRunsColorway(t *testin
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	ctx := context.Background()
 
 	started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
@@ -441,7 +441,7 @@ func TestDesignDBIdempotencyKeysAreBoundToTheColorway(t *testing.T) {
 		"и колорвей строки остался тем, каким записан")
 
 	// ─── ПРОГОН ───
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	// Params замораживают ПРОСЬБУ ровно так, как их пишет хендлер: различитель повтора читает
 	// именно её (F7), и стенд без params проверял бы путь, которым живой вызов не ходит.
 	start := func(reqID string, cw int) (*entity.DesignRunStarted, error) {
@@ -492,7 +492,7 @@ func TestDesignDBColorwayDeletionVerdictNamesTheDesignBand(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	ctx := context.Background()
 
 	pic := uploadRenderPlate(t, rep, raw, card, cw)
@@ -560,7 +560,7 @@ func TestDesignDBRunSurvivesTheDeletionOfItsColorway(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	ctx := context.Background()
 
 	req := uuid.NewString()
@@ -706,7 +706,7 @@ func TestDesignDBLiveDesignRunBlocksColorwayDeletion(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	ctx := context.Background()
 
 	started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
@@ -860,7 +860,7 @@ func TestDesignDBThreedRefusesADeletedColorwayInsteadOfDegrading(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	ctx := context.Background()
 
 	inherited := func(kind string) error {

@@ -79,12 +79,10 @@ var designRefusals = []struct {
 	// выглядел поломкой сервера — человек упирался в дневной потолок и получал «что-то сломалось»,
 	// а дежурный получал ошибку в логе на штатное состояние дня.
 	//
-	// budget_exceeded — FailedPrecondition, ровно как обещает комментарий у самого sentinel-а: это
-	// не поломка запроса, а СОСТОЯНИЕ ДНЯ. Тем же отказом отвечает намеренно закрытая полоса
-	// (`daily_budget = 0` — «сегодня не запускаем»), и это одна новость, а не две: и там и там
-	// действие человека — подождать до завтра либо поднять потолок. Машинный токен, который
-	// sentinel обещает, до этой правки на проводе не появлялся НИ РАЗУ.
-	{entity.ErrDesignBudgetExceeded, codes.FailedPrecondition, "budget_exceeded"},
+	// ⚠ ЗДЕСЬ БЫЛ budget_exceeded, И ЕГО НЕТ (0358, L-8). Отказ по деньгам снят вместе с самим
+	// потолком, поэтому токен НЕДОСТИЖИМ — а недостижимая ветка на проводе хуже отсутствующей:
+	// клиент продолжал бы рисовать «потолок исчерпан», состояние, которого сервер больше не
+	// производит. Ветку в клиенте надо снять отдельным изменением (координатор маршрутизирует).
 	// claim_lost — Aborted, В ОДНОМ РЯДУ С slot_rev_mismatch И bench_moved, потому что это тот же
 	// самый класс: оптимистичный захват не подтвердился, состояние уехало, и правильное действие —
 	// ПЕРЕЧИТАТЬ И ПОВТОРИТЬ. Internal сказал бы «сломались мы», и клиент, который умеет
@@ -869,7 +867,6 @@ func (s *Server) stripDesignCosting(ctx context.Context, runs []*pb_common.Desig
 	if budget != nil {
 		budget.Spent = nil
 		budget.Reserved = nil
-		budget.Cap = nil
 	}
 }
 
@@ -1388,7 +1385,6 @@ func designBudgetToPb(b entity.DesignBudget) *pb_common.DesignBudget {
 		Day:      b.Day,
 		Spent:    &pb_decimal.Decimal{Value: b.Spent.String()},
 		Reserved: &pb_decimal.Decimal{Value: b.Reserved.String()},
-		Cap:      &pb_decimal.Decimal{Value: b.Cap.String()},
 		Currency: b.Currency,
 		Timezone: b.Timezone,
 	}

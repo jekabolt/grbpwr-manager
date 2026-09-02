@@ -941,7 +941,18 @@ message DesignBudget {
   // the bar draws `spent` solid and `reserved` as a pale tail, and the sum is derived where it is
   // needed.
   google.type.Decimal reserved = 3;
-  google.type.Decimal cap = 4; // the org's daily ceiling
+  // ⚠ FIELD 4 WAS `cap`, THE ORG'S DAILY CEILING, AND IT IS GONE — the ceiling itself was removed,
+  // not raised (migration 0358). The owner, twice: there must be no generation ceiling at all,
+  // whatever ate it. A run is never refused for money any more, so there is no limit left to draw
+  // a bar against.
+  //
+  // CLIENTS MUST STOP DRAWING «spent of cap» and show the plain amount spent instead; the
+  // `budget_exceeded` refusal is likewise unreachable and its branch should be deleted rather than
+  // left waiting for a state the server no longer produces. The number itself did not go away —
+  // that was the point: `spent` and `reserved` are still measured, recorded per run and served
+  // here, because the owner does care what things cost.
+  reserved 4;
+  reserved "cap";
   string currency = 5; // ISO 4217
   // WHOSE «today» resets the bar. On the wire because that is an organisational decision, not a
   // property of the database session that happened to answer.

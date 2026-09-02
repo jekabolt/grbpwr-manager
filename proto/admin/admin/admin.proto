@@ -2599,9 +2599,16 @@ service AdminService {
   //
   // IDEMPOTENT BY client_request_id: a repeat returns the EXISTING row with OK, and buys nothing.
   //
-  // FailedPrecondition: budget_exceeded | profile_requirements_unmet | composite_input |
-  // run_in_flight | hourly_limit | kind_not_available. InvalidArgument for a malformed or oversized
-  // params.
+  // FailedPrecondition: profile_requirements_unmet | composite_input | kind_not_available.
+  // InvalidArgument for a malformed or oversized params.
+  //
+  // ⚠ NO RUN IS EVER REFUSED FOR MONEY. `budget_exceeded` was listed here and is GONE (0358): the
+  // daily ceiling was removed as a concept, not raised, so the token is unreachable and a client
+  // branch waiting for it waits forever. Spend is still measured and served on DesignBudget —
+  // what was removed is a machine deciding the day is over, not the accounting.
+  //
+  // `run_in_flight` and `hourly_limit` were listed here too and NEVER EXISTED IN THE CODE; they
+  // are removed from this list as documentation of refusals the server cannot produce.
   //
   // kind_not_available: a generation KIND with no provider configured for it refuses EXPLICITLY, so
   // the client can draw an honest lock with a reason on it. Silence, or a run that sits pending
@@ -2899,7 +2906,8 @@ service AdminService {
   // run — a paid call with no row in the register would be a hole in the ledger. It runs INLINE:
   // the response already carries a finished DesignRun with status=done and output_text set.
   //
-  // FailedPrecondition: budget_exceeded | no_moodboard.
+  // FailedPrecondition: no_moodboard. (`budget_exceeded` was listed here until 0358 removed the
+  // generation ceiling as a concept — no verb refuses for money any more.)
   rpc DraftDesignIdea(DraftDesignIdeaRequest) returns (DraftDesignIdeaResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/draft-idea"

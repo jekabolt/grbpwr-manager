@@ -50,37 +50,28 @@ func errorReason(t *testing.T, err error) (codes.Code, map[string]string) {
 	return st.Code(), nil
 }
 
-// ДНЕВНОЙ ПОТОЛОК: FailedPrecondition и машинная причина, по которой клиент рисует полосу бюджета
-// вместо «что-то пошло не так».
+// ⚠ ЗДЕСЬ ЖИЛА TestStartDesignRunAnswersTheDailyCapAsAPrecondition, И ОНА СНЯТА ВМЕСТЕ СО СВОИМ
+// ПРЕДМЕТОМ (0358, L-8). Она удостоверяла, что исчерпанный дневной потолок доезжает до клиента
+// машинной причиной `budget_exceeded`; потолка больше нет ни в одной форме, sentinel удалён, и
+// проба на его перевод проверяла бы состояние, которого сервер не производит.
 //
-// МУТАЦИЯ: убрать строку {ErrDesignBudgetExceeded, …} из designRefusals — отказ немедленно
-// становится Internal без причины.
-func TestStartDesignRunAnswersTheDailyCapAsAPrecondition(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-	}{
-		{"потолок дня исчерпан", fmt.Errorf("%w: 1.20 spent + 0.80 reserved would pass the 2.00 cap for 2026-08-30",
-			entity.ErrDesignBudgetExceeded)},
-		// НАМЕРЕННО ЗАКРЫТАЯ ПОЛОСА — ТОТ ЖЕ ОТКАЗ, И ЭТО РЕШЕНИЕ: `daily_budget = 0` значит
-		// «сегодня не запускаем», а не «бесплатно можно». Действие человека в обоих случаях одно —
-		// подождать до завтра либо поднять потолок, — значит новость одна.
-		{"полоса закрыта на день (cap = 0)", fmt.Errorf("%w: today's cap is 0 EUR — the band is closed for the day",
-			entity.ErrDesignBudgetExceeded)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rig := newDesignRunRigWithoutStartRun(t)
-			rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
-				Return(nil, tc.err).Once()
+// ЧТО ЗАНЯЛО ЕЁ МЕСТО: TestStartDesignRunIsNeverRefusedForMoney ниже — утверждение ровно обратного
+// и уже про живой код. Стереть пробу молча было нельзя: следующий читатель обязан узнать, что
+// отказ по деньгам не «забыли протестировать», а сняли.
 
-			_, err := rig.srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindFlat))
-			require.Error(t, err)
-			code, md := errorReason(t, err)
-			require.Equal(t, codes.FailedPrecondition, code,
-				"исчерпанный потолок — состояние дня, а не поломка запроса и не поломка сервера")
-			require.Equal(t, "budget_exceeded", md["reason"],
-				"клиент ветвится по машинной причине, а не по английской прозе")
-		})
+// НИ ОДИН ПРОГОН НЕ ОТКАЗЫВАЕТСЯ ПО ДЕНЬГАМ — НА ЯРУСЕ ПЕРЕВОДА ОТКАЗОВ.
+//
+// Слова владельца: «у нас в принципе не должно быть потолка похуй чем он съеден убери потолок».
+// Проба держит ту половину, которую видно с провода: в словаре отказов больше нет строки, дающей
+// денежную причину. Токен `budget_exceeded` недостижим, и клиентская ветка, которая его ждёт,
+// ждала бы вечно.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: вернуть в designRefusals строку с денежным sentinel-ом.
+func TestStartDesignRunIsNeverRefusedForMoney(t *testing.T) {
+	for _, r := range designRefusals {
+		require.NotEqual(t, "budget_exceeded", r.reason,
+			"денежный отказ снят вместе с потолком: клиент не должен получать причину, "+
+				"по которой сервер больше не отказывает")
 	}
 }
 

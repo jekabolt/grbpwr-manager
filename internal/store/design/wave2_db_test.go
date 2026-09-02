@@ -123,14 +123,16 @@ func probeMedia(t *testing.T, raw *sql.DB) int {
 	return int(id)
 }
 
-// resetBudget приводит день и потолок к известному состоянию. design_budget_day и
-// design_settings — синглтоны организации, а не карточки, поэтому пробы денег обязаны
-// начинаться с этого вызова, иначе они читают остатки соседа.
-func resetBudget(t *testing.T, raw *sql.DB, cap string) {
+// resetBudget приводит день к известному состоянию. design_budget_day — синглтон организации, а
+// не карточки, поэтому пробы денег обязаны начинаться с этого вызова, иначе они читают остатки
+// соседа.
+//
+// ⚠ ПОТОЛКА ЗДЕСЬ БОЛЬШЕ НЕТ (0358): у функции был аргумент `cap`, писавший
+// design_settings.daily_budget, а колонка удалена вместе с самим понятием. Ставить было бы нечего
+// и незачем.
+func resetBudget(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	_, err := raw.Exec(`DELETE FROM design_budget_day`)
-	require.NoError(t, err)
-	_, err = raw.Exec(`UPDATE design_settings SET daily_budget = ? WHERE id = 1`, cap)
 	require.NoError(t, err)
 }
 
@@ -180,7 +182,7 @@ func orphanedAfter(minted []int, run *entity.DesignRun) []int {
 // РЕЗЕРВ И ВСТАВКА — ОДНА ТРАНЗАКЦИЯ, А ПОВТОР НЕ ПЛАТИТ ВТОРОЙ РАЗ.
 func TestDesignDBStartRunReservesOnceForOneRequestID(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "2.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	ctx := context.Background()
 
@@ -208,42 +210,120 @@ func TestDesignDBStartRunReservesOnceForOneRequestID(t *testing.T) {
 		"повтор НЕ резервирует второй раз: %s", second.Budget.Reserved)
 }
 
-// ПОТОЛОК ОТКАЗЫВАЕТ, И ОТКАЗ НЕ ОСТАВЛЯЕТ ЗА СОБОЙ ПОВИСШИЙ РЕЗЕРВ.
+// ПОТОЛКА НЕТ: ПРОГОН НЕ ОТКАЗЫВАЕТСЯ ПО ДЕНЬГАМ, СКОЛЬКО БЫ ДЕНЬ УЖЕ НИ СТОИЛ (0358, L-8).
 //
-// Вторая половина утверждения — та, ради которой резерв и проверка стоят в ОДНОЙ транзакции:
-// если бы проверка была снаружи, отказавший прогон унёс бы деньги дня с собой навсегда.
-func TestDesignDBStartRunRefusesOverTheCapAndRollsItsReserveBack(t *testing.T) {
+// ЗДЕСЬ БЫЛИ ДВЕ ПРОБЫ — «потолок отказывает и откатывает свой резерв» и «ноль значит сегодня не
+// запускаем», — и обе утверждали то, что владелец потребовал убрать: «у нас в принципе не должно
+// быть потолка похуй чем он съеден убери потолок». Они заменены утверждением обратного, и это не
+// удаление покрытия: сумма, на которой прежняя проба отказывала, здесь ПРЕВЫШЕНА ВДВОЕ, и прогон
+// обязан пройти.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: вернуть в StartRun любую из двух прежних проверок.
+func TestDesignDBStartRunIsNeverRefusedForMoney(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "1.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	ctx := context.Background()
 
-	startProbeRun(t, rep, card, "0.60")
-
-	_, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+	// Сумма, которая при прежнем потолке в $1.00 закрывала полосу на день с запасом.
+	for i := 0; i < 4; i++ {
+		startProbeRun(t, rep, card, "0.60")
+	}
+	started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
 		RequestedOutputs: 1, Author: "probe",
-		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.60"), Valid: true},
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("99.00"), Valid: true},
 	})
-	require.ErrorIs(t, err, entity.ErrDesignBudgetExceeded)
+	require.NoError(t, err, "ни одна сумма не имеет права закрыть полосу")
+	require.Equal(t, entity.DesignRunPending, started.Run.Status)
+}
+
+// ПОТОЛОК НЕГДЕ ДАЖЕ ВЫРАЗИТЬ — И ЭТО ЕДИНСТВЕННОЕ, ЧТО ОТЛИЧАЕТ «СНЯЛИ ПОНЯТИЕ» ОТ «ПОДНЯЛИ ЧИСЛО».
+//
+// Требование звучало «убери потолок», а не «поставь побольше», и разница между этими двумя
+// прочтениями видна только в схеме: пока колонка жива, любой UPDATE одной строкой возвращает
+// жалобу владельца целиком, и ни один тест поведения этого не заметит — прогон откажется ровно
+// так, как раньше. Проба смотрит туда, где живёт возможность: в information_schema.
+//
+// Проверяется отсутствие ЛЮБОЙ денежной колонки на design_settings, а не только имени
+// daily_budget: `monthly_budget` или `spend_limit` были бы тем же понятием под другим словом, и
+// проба обязана поймать возврат смысла, а не возврат строки.
+//
+// НА ПРОВОДЕ ЭТО ЖЕ ЗАПРЕЩЕНО СИЛЬНЕЕ, ЧЕМ ПРОБОЙ: поле 4 сообщения DesignBudget объявлено
+// `reserved 4; reserved "cap";`, и protoc откажется собрать файл, где его переиспользуют. Там
+// проба не нужна — состояние невыразимо по построению. Здесь MySQL таких слов не знает.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: заменить DROP COLUMN в 0358 на 'SELECT 1'.
+func TestDesignDBACeilingHasNowhereToLive(t *testing.T) {
+	_, raw := probeRepository(t)
+
+	rows, err := raw.Query(`
+		SELECT COLUMN_NAME FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'design_settings'`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var seen []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		seen = append(seen, name)
+		lower := strings.ToLower(name)
+		for _, word := range []string{"budget", "cap", "limit", "ceiling", "quota", "max_spend"} {
+			// budget_timezone — не деньги, а часовой пояс, в котором считается ДЕНЬ.
+			if name == "budget_timezone" {
+				continue
+			}
+			require.NotContains(t, lower, word,
+				"колонка %q возвращает понятие потолка на design_settings: убрано было ПОНЯТИЕ, "+
+					"а не число", name)
+		}
+	}
+	require.NoError(t, rows.Err())
+	require.NotEmpty(t, seen, "таблица настроек обязана существовать: проба должна падать от "+
+		"возврата потолка, а не от опечатки в имени таблицы")
+}
+
+// НО ДЕНЬГИ ПО-ПРЕЖНЕМУ СЧИТАЮТСЯ, ЗАПИСЫВАЮТСЯ И ЧИТАЮТСЯ — И ЭТО ВТОРАЯ ПОЛОВИНА ТРЕБОВАНИЯ.
+//
+// Владелец возражал не против учёта: поводом ко всему был прогон, стоивший $100 вместо оценки в
+// $0.60, то есть он ЦЕНУ КАК РАЗ СПРАШИВАЕТ. Снята машина, решавшая, что сегодня работать нельзя,
+// а не число. Проба держит ровно это: резерв виден сразу, снимается при закрытии, а фактическая
+// цена садится в потраченное.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать вызов moveBudgetDay из StartRun — потолок бы «не вернулся», а
+// учёт исчез бы молча, что ровно противоположно просьбе.
+func TestDesignDBSpendIsStillMeasuredWithoutACeiling(t *testing.T) {
+	rep, raw := probeRepository(t)
+	resetBudget(t, raw)
+	card := probeCard(t, raw)
+	ctx := context.Background()
+
+	started := startProbeRun(t, rep, card, "0.75")
+	require.True(t, started.Budget.Reserved.Equal(decimal.RequireFromString("0.75")),
+		"резерв обязан быть виден вместе с кликом: %s", started.Budget.Reserved)
 
 	budget, err := rep.Design().GetBudget(ctx)
 	require.NoError(t, err)
-	require.True(t, budget.Reserved.Equal(decimal.RequireFromString("0.6")),
-		"резерв отказавшего прогона обязан уехать вместе с откатом: %s", budget.Reserved)
-}
+	require.True(t, budget.Reserved.Equal(decimal.RequireFromString("0.75")),
+		"и читаться отдельным глаголом: %s", budget.Reserved)
+	require.NotEmpty(t, budget.Day, "день по-прежнему считается в поясе организации")
+	require.NotEmpty(t, budget.Currency)
 
-// НОЛЬ — ЭТО «СЕГОДНЯ НЕ ЗАПУСКАЕМ», а не «бесплатно можно».
-func TestDesignDBStartRunRefusesAClosedDay(t *testing.T) {
-	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "0.00")
-	card := probeCard(t, raw)
-
-	_, err := rep.Design().StartRun(context.Background(), entity.DesignRunStart{
-		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
-		RequestedOutputs: 1, Author: "probe",
+	// ЗАКРЫТИЕ ПРОГОНА СНИМАЕТ РЕЗЕРВ — иначе «сколько сегодня стоило» врало бы вверх навсегда.
+	claimed, err := rep.Design().ClaimRuns(ctx, 1, time.Minute, uuid.NewString())
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	_, err = rep.Design().FailRun(ctx, entity.DesignRunFail{
+		RunId: claimed[0].Id, ClaimToken: claimed[0].ClaimToken.String,
+		ErrorCode: "probe", LastError: "probe", Retryable: false,
 	})
-	require.ErrorIs(t, err, entity.ErrDesignBudgetExceeded)
+	require.NoError(t, err)
+
+	after, err := rep.Design().GetBudget(ctx)
+	require.NoError(t, err)
+	require.True(t, after.Reserved.IsZero(),
+		"резерв закрытого прогона обязан уйти: %s", after.Reserved)
 }
 
 // ─────────────────────── захват ───────────────────────
@@ -255,7 +335,7 @@ func TestDesignDBStartRunRefusesAClosedDay(t *testing.T) {
 // затрёт первый — первый воркер больше никогда не сможет закрыть свой оплаченный прогон.
 func TestDesignDBClaimGivesTheRunToExactlyOneWorker(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.10")
 
@@ -309,7 +389,7 @@ func TestDesignDBClaimGivesTheRunToExactlyOneWorker(t *testing.T) {
 // из designRunClaimableSQL.
 func TestDesignDBALiveLeaseIsNotStolen(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.10")
 	ctx := context.Background()
@@ -342,7 +422,7 @@ func TestDesignDBALiveLeaseIsNotStolen(t *testing.T) {
 // это дорога без ног: ClaimRuns берёт только pending.
 func TestDesignDBExpiredLeaseComesBackToPending(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.10")
 	ctx := context.Background()
@@ -385,7 +465,7 @@ func TestDesignDBExpiredLeaseComesBackToPending(t *testing.T) {
 // покрыт отдельно: TestDesignDBCompleteRunClosingUpdateRefusesAForeignToken.
 func TestDesignDBExpiredClaimCannotOverwriteAnothersResult(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	mediaB := probeMedia(t, raw)
 	mediaA := probeMedia(t, raw)
@@ -474,7 +554,7 @@ func TestDesignDBExpiredClaimCannotOverwriteAnothersResult(t *testing.T) {
 // картинок полосы нет вовсе. Контроль ниже — прогон с одним провенансом.
 func TestDesignDBCompleteRunComputesMixedInputAtBirth(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	aiMedia := probeMedia(t, raw)
 	humanMedia := probeMedia(t, raw)
@@ -537,7 +617,7 @@ func TestDesignDBCompleteRunComputesMixedInputAtBirth(t *testing.T) {
 // ложным, а сторож верстака — недостижимым.
 func TestDesignDBCompositeArrivesMarkedAndTheBenchRefusesIt(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	sheet := probeMedia(t, raw)
 	ctx := context.Background()
@@ -660,7 +740,7 @@ func TestDesignDBBenchHoldsBothAxesOfOneView(t *testing.T) {
 // РЕТРАЙ ВОЗВРАЩАЕТ В ОЧЕРЕДЬ И НЕ ТРОГАЕТ РЕЗЕРВ; ТЕРМИНАЛЬНЫЙ ПРОВАЛ РЕЗЕРВ ОСВОБОЖДАЕТ.
 func TestDesignDBFailRunRetriesThenReleasesTheReserve(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.40")
 	ctx := context.Background()
@@ -706,7 +786,7 @@ func TestDesignDBFailRunRetriesThenReleasesTheReserve(t *testing.T) {
 // ДЕНЬГИ ПОПЫТКИ СЧИТАЮТСЯ РОВНО ОДИН РАЗ, даже если ответ потерялся и воркер повторил.
 func TestDesignDBAttemptMoneyIsCountedOnce(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.40")
 	ctx := context.Background()
@@ -749,7 +829,7 @@ func TestDesignDBAttemptMoneyIsCountedOnce(t *testing.T) {
 // ОТМЕНА ЖДУЩЕГО ПРОГОНА ВОЗВРАЩАЕТ ДЕНЬГИ ДНЮ, отмена идущего — только просит.
 func TestDesignDBCancelReleasesAPendingReserveAndOnlyAsksARunningOne(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	ctx := context.Background()
 
@@ -1095,7 +1175,7 @@ func TestDesignDBImportVectorRefusesNonsense(t *testing.T) {
 // чужого оплаченного результата. Эта проба покраснеет ПЕРВОЙ и скажет, что размен изменился.
 func TestDesignDBWriteTxLocksTheRunRowItRead(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.10")
 
@@ -1290,7 +1370,7 @@ func heldProbeRun(t *testing.T, raw *sql.DB, runID int, token string) {
 // МУТАЦИЯ: убрать `AND claim_token = :tok` из этого UPDATE в queue.go.
 func TestDesignDBCompleteRunClosingUpdateRefusesAForeignToken(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 
 	stmts := designRunUpdatesOf(t, "CompleteRun")
@@ -1333,7 +1413,7 @@ func TestDesignDBCompleteRunClosingUpdateRefusesAForeignToken(t *testing.T) {
 // МУТАЦИЯ: убрать `AND claim_token = :tok` из любого из двух UPDATE в queue.go.
 func TestDesignDBFailRunClosingUpdatesRefuseAForeignToken(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 
 	stmts := designRunUpdatesOf(t, "FailRun")
@@ -1382,7 +1462,7 @@ func TestDesignDBFailRunClosingUpdatesRefuseAForeignToken(t *testing.T) {
 // МУТАЦИЯ: заменить `WHERE id = :id AND `+designRunClaimableSQL на `WHERE id = :id` в queue.go.
 func TestDesignDBClaimUpdateRepeatsTheClaimablePredicate(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 
 	stmts := designRunUpdatesOf(t, "ClaimRuns")

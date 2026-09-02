@@ -204,7 +204,16 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 			}
 		}
 
-		// ─── 3. ДЕНЬГИ: РЕЗЕРВ И ПОТОЛОК В ОДНОЙ ТРАНЗАКЦИИ ───
+		// ─── 3. ДЕНЬГИ: РЕЗЕРВ. ПОТОЛКА БОЛЬШЕ НЕТ (0358, L-8) ───
+		//
+		// Здесь стояли ДВА отказа — «сегодня не запускаем» (daily_budget = 0) и «spent + reserved
+		// вышли за cap», — и оба сняты вместе с самим понятием потолка. Слова владельца: «у нас в
+		// принципе не должно быть потолка похуй чем он съеден убери потолок».
+		//
+		// РЕЗЕРВ ОСТАЁТСЯ, И ЭТО НЕ ОСТАТОК МЕХАНИЗМА, А ЕГО ИСХОДНЫЙ СМЫСЛ: он держит оценку
+		// незакрытого задания, чтобы «сколько сегодня стоило» отвечало правду ДО того, как придёт
+		// счёт. Раньше эта запись заодно кормила ворота; теперь она только считает. Снятие резерва
+		// при закрытии (releaseRunReserve) и запись фактической цены не тронуты.
 		set, err := loadSettings(ctx, db)
 		if err != nil {
 			return err
@@ -214,27 +223,12 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 			currency = set.Currency
 		}
 		day := DesignBudgetDayKey(s.Now(), set.BudgetTimezone)
-		// НОЛЬ — ЭТО «СЕГОДНЯ НЕ ЗАПУСКАЕМ», а не «бесплатно можно». Так объявлена колонка
-		// (0344), и отказ здесь называет причину, вместо того чтобы пропустить прогон, у
-		// которого просто нет оценки.
-		if !set.DailyBudget.IsPositive() {
-			return fmt.Errorf("%w: today's cap is %s %s — the band is closed for the day",
-				entity.ErrDesignBudgetExceeded, set.DailyBudget.String(), currency)
-		}
 		if err := moveBudgetDay(ctx, db, day, est, decimal.Zero, currency); err != nil {
 			return err
 		}
 		budget, err := loadBudget(ctx, db, s.Now())
 		if err != nil {
 			return err
-		}
-		// ПРОВЕРКА ПОСЛЕ ПРИБАВЛЕНИЯ, А НЕ ДО. «Посмотрел, потом положил» пропускает два
-		// одновременных клика: оба видят старую сумму. Здесь второй читает сумму, В КОТОРУЮ УЖЕ
-		// ВОШЁЛ ПЕРВЫЙ, и откатывается целиком — вместе со своим резервом.
-		if budget.Spent.Add(budget.Reserved).GreaterThan(budget.Cap) {
-			return fmt.Errorf("%w: %s spent + %s reserved would pass the %s cap for %s",
-				entity.ErrDesignBudgetExceeded, budget.Spent.String(), budget.Reserved.String(),
-				budget.Cap.String(), budget.Day)
 		}
 
 		// ─── 4. ПОДПИСЬ ИСТОРИИ ЦВЕТА ───

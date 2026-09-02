@@ -596,11 +596,12 @@ var (
 
 	// ───────────────────────── отказы генеративной половины ─────────────────────────
 
-	// ErrDesignBudgetExceeded — дневной потолок не пускает прогон: `spent + reserved + оценка`
-	// вышло за `design_settings.daily_budget`. Проверка стоит ВНУТРИ той же транзакции, что и
-	// резерв, потому что «посмотрел, потом положил» пропускает два одновременных клика.
-	// FailedPrecondition на проводе: это не поломка запроса, а состояние дня.
-	ErrDesignBudgetExceeded = errors.New("design: budget_exceeded")
+	// ⚠ ЗДЕСЬ БЫЛ ErrDesignBudgetExceeded, И ОН СНЯТ ВМЕСТЕ С САМИМ ПОНЯТИЕМ ПОТОЛКА (0358, L-8).
+	// Слова владельца: «у нас в принципе не должно быть потолка похуй чем он съеден убери
+	// потолок». Отказ по деньгам не существует ни в одной форме — не «выключен», а СНЯТ: пока
+	// sentinel жив, кто-нибудь once again подключит его к проверке. Деньги при этом
+	// по-прежнему считаются и записываются (DesignBudget ниже) — убрана МАШИНА, РЕШАВШАЯ, ЧТО
+	// сегодня работать нельзя, а не учёт.
 	// ErrDesignClaimLost — воркер пришёл с claim_token, которого у строки уже нет: его лизу
 	// подмёл ReviveExpiredRuns либо строку перехватил другой воркер.
 	//
@@ -948,23 +949,30 @@ type DesignAssetPlacement struct {
 }
 
 // DesignSettings — строка design_settings (singleton id=1).
+//
+// ⚠ ПОЛЯ DailyBudget ЗДЕСЬ БОЛЬШЕ НЕТ (0358): колонка удалена вместе с понятием потолка. Осталось
+// то, что отвечает на «в чём считать» и «чей сегодня», а не на «можно ли работать».
 type DesignSettings struct {
-	DailyBudget    decimal.Decimal `db:"daily_budget"`
-	Currency       string          `db:"currency"`
-	BudgetTimezone string          `db:"budget_timezone"`
-	UpdatedBy      string          `db:"updated_by"`
-	UpdatedAt      time.Time       `db:"updated_at"`
+	Currency       string    `db:"currency"`
+	BudgetTimezone string    `db:"budget_timezone"`
+	UpdatedBy      string    `db:"updated_by"`
+	UpdatedAt      time.Time `db:"updated_at"`
 }
 
-// DesignBudget — денежная полоса дня: `today $0.41 of $2.00`.
+// DesignBudget — ДЕНЬГИ ДНЯ КАК ЗАПИСЬ, А НЕ КАК ВОРОТА: `today $0.41`.
 //
-// ДВА ПОЛЯ, А НЕ ОДНА СУММА, хотя гейт потолка их складывает: одно поле «потрачено», несущее
-// сумму, соврало бы читателю о том, что реально оплачено.
+// ⚠ ПОЛЕ Cap СНЯТО (0358, L-8) ВМЕСТЕ С САМИМ ПОТОЛКОМ. Эта структура больше ничего не
+// разрешает и не запрещает — она отвечает на «сколько сегодня стоило», и ровно этого владелец
+// и хотел: он возражал против машины, решающей, что работать нельзя, а цену как раз спрашивает
+// (поводом была фактическая сотня долларов против оценки в шестьдесят центов).
+//
+// ДВА ПОЛЯ, А НЕ ОДНА СУММА, и довод пережил снятие потолка, хотя раньше его формулировали через
+// гейт: `spent` — то, что РЕАЛЬНО оплачено, `reserved` — оценки ещё не закрытых заданий. Одно
+// поле «потрачено», несущее их сумму, соврало бы читателю о заплаченном.
 type DesignBudget struct {
 	Day      string // YYYY-MM-DD, посчитанный в BudgetTimezone В GO
 	Spent    decimal.Decimal
 	Reserved decimal.Decimal
-	Cap      decimal.Decimal
 	Currency string
 	Timezone string
 }

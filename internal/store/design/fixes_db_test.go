@@ -155,7 +155,7 @@ func TestDesignDBFlattenCarriesTheLayerOrigin(t *testing.T) {
 // UTC_TIMESTAMP(6)`) — перехват перестаёт быть исключающим и побеждают оба.
 func TestDesignDBResumeOfAnAbandonedHandlerHasExactlyOneWinner(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	ctx := context.Background()
 
@@ -240,7 +240,7 @@ func TestDesignDBResumeOfAnAbandonedHandlerHasExactlyOneWinner(t *testing.T) {
 // МУТАЦИЯ: убрать `kind = 'draft_idea'` из designRunResumableSQL.
 func TestDesignDBResumeLeavesWorkerRunsToTheSweeper(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	ctx := context.Background()
 

@@ -182,7 +182,7 @@ func TestDesignDBForeignColorwayIsRefusedAtEveryDoor(t *testing.T) {
 	})
 	require.ErrorIs(t, err, entity.ErrDesignForeignColorway)
 
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 	_, err = rep.Design().StartRun(context.Background(), entity.DesignRunStart{
 		TechCardId: card, ClientRequestId: uuid.NewString(),
 		Kind: entity.DesignRunKindRender, RequestedOutputs: 1,
@@ -199,7 +199,7 @@ func TestDesignDBRunRecordsTheColorwayAndItsOutputsInheritIt(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	resetBudget(t, raw, "10.00")
+	resetBudget(t, raw)
 
 	_, err := rep.Design().StartRun(context.Background(), entity.DesignRunStart{
 		TechCardId: card, ClientRequestId: uuid.NewString(),

@@ -503,15 +503,19 @@ func (s *Store) GetSettings(ctx context.Context) (entity.DesignSettings, error) 
 
 func loadSettings(ctx context.Context, db dependency.DB) (entity.DesignSettings, error) {
 	s, err := storeutil.QueryNamedOne[entity.DesignSettings](ctx, db, `
-		SELECT daily_budget, currency, budget_timezone, updated_by, updated_at
+		SELECT currency, budget_timezone, updated_by, updated_at
 		FROM design_settings WHERE id = 1`, map[string]any{})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// 0344 seeds the row with INSERT IGNORE, so this is only reachable if somebody
 			// deleted it. Falling back to the schema defaults keeps the band readable instead of
 			// making a missing configuration row look like a broken card.
+			// ⚠ ЗДЕСЬ ЖИЛА ЛОВУШКА, И ОНА УМЕРЛА ВМЕСТЕ С КОЛОНКОЙ (0358). Фолбэк отдавал
+			// DailyBudget = 0, а ноль значил «сегодня не запускаем», — то есть инсталляция, у
+			// которой строку синглтона кто-то удалил, была ЗАКРЫТА НАВСЕГДА, и сказано это было
+			// бы теми же словами «потолок исчерпан», что и обычное исчерпание. Теперь отсутствие
+			// строки не может закрыть полосу: закрывать нечем.
 			return entity.DesignSettings{
-				DailyBudget:    decimal.NewFromInt(0),
 				Currency:       "USD",
 				BudgetTimezone: "Europe/Warsaw",
 			}, nil
@@ -545,7 +549,6 @@ func loadBudget(ctx context.Context, db dependency.DB, now time.Time) (entity.De
 		Day:      day,
 		Spent:    decimal.Zero,
 		Reserved: decimal.Zero,
-		Cap:      set.DailyBudget,
 		Currency: set.Currency,
 		Timezone: set.BudgetTimezone,
 	}

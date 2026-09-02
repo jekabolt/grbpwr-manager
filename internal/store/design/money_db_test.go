@@ -72,7 +72,7 @@ func attemptStates(t *testing.T, raw *sql.DB, runID int) map[int]string {
 // одном платеже не срабатывает вовсе.
 func TestDesignDBFreePollsDoNotBurnThePaidCap(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.40")
 	ctx := context.Background()
@@ -153,7 +153,7 @@ func TestDesignDBFreePollsDoNotBurnThePaidCap(t *testing.T) {
 // сумму второй раз. Дневной потолок съедался вымышленными тратами.
 func TestDesignDBOneProviderChargeMovesTheDayOnce(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.40")
 	ctx := context.Background()
@@ -226,7 +226,7 @@ func TestDesignDBOneProviderChargeMovesTheDayOnce(t *testing.T) {
 // снимает резерв дня. Резерв висел до полуночи, занимая деньги дня прогоном, которого нет.
 func TestDesignDBCancelledAndAbandonedRunReachesTerminalAndReleasesItsReserve(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.40")
 	ctx := context.Background()
@@ -276,7 +276,7 @@ func TestDesignDBCancelledAndAbandonedRunReachesTerminalAndReleasesItsReserve(t 
 // названную политику неправдой; а всё, что рядом с деньгами, обязано значить ровно то, что сказано.
 func TestDesignDBTheAttemptCapIsFivePaidCallsNotFour(t *testing.T) {
 	rep, raw := probeRepository(t)
-	resetBudget(t, raw, "5.00")
+	resetBudget(t, raw)
 	card := probeCard(t, raw)
 	started := startProbeRun(t, rep, card, "0.10")
 	ctx := context.Background()
