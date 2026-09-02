@@ -739,6 +739,63 @@ message DesignBatch {
   repeated DesignPicture pictures = 8;
 }
 
+// DesignCardOutput is ONE generative output of the card, carrying the minimal facts of the run it
+// came out of.
+//
+// WHY THE STAMP EXISTS AT ALL. This list is deliberately NOT page-bound (see
+// GetDesignBandResponse.outputs), so the run a picture came out of may be nowhere in the response.
+// Two facts are then unrecoverable from the picture alone and both are load-bearing:
+//
+//   * WHICH SECTION IT BELONGS TO. A recolour run produces pictures whose own kind is `render` —
+//     that is true rather than a shortcut, the output IS a photograph of the garment — so a client
+//     reading picture.kind files an ON MODEL result under RENDERS and the two sections lie about
+//     each other. run_kind is the only place the difference survives.
+//   * WHICH COLOURWAY AND WHICH REVISION. Both live on the run and neither is recoverable from
+//     the picture's own row once the run has left the page.
+//
+// ⚠ THE STAMP SAYS WHICH RUN THIS BRANCH GREW OUT OF — IT DOES NOT SAY «A RUN PRODUCED THIS».
+// The difference is real and a client that ignores it will mislabel pictures. A crop inherits its
+// parent's run_id, and so does a flatten, so a hand-painted flatten laid over a render arrives here
+// as run_id X, run_kind "render", run_rrev 7 — byte-for-byte indistinguishable from a direct output
+// of run X IF THE STAMP IS ALL YOU READ. What separates them travels on the picture itself:
+// `picture.source_class` (a direct output is `generated`; an edit over one carries an editor class)
+// and `picture.derived_from` (0 on a direct output, the parent's id on a crop or a flatten). Any
+// «was this generated or drawn?» question must be asked of those two fields, never of a non-empty
+// run_kind.
+//
+// WHAT THE STAMP DOES CERTIFY, exactly: the kind, revision and colourway of the run this picture's
+// ANCESTRY came out of. Since crops and flattens inherit kind and colourway along with run_id,
+// those are precisely the facts needed to file the picture in the right section — which is what the
+// stamp is for.
+//
+// A picture that hangs under an upload batch rather than a run answers run_id 0 and run_kind "" —
+// nobody generated it, so there is no stamp to make up. It is classified by picture.kind, and
+// batch_id says where it came from.
+//
+// ⚠ «NO RUN» DOES NOT IMPLY «HAS A BATCH». run_id 0 AND batch_id 0 together is a reachable, legal
+// row: a flatten with no underlying picture (FlattenLayer with no parent) writes NULL to both
+// columns. Such a picture belongs to the card and to nothing else. A client that treats
+// `run_id == 0` as «came from batch_id» will render a shelf reference that does not exist.
+message DesignCardOutput {
+  DesignPicture picture = 1;
+  // FK design_run(id). 0 = no run: an uploaded picture, or a parentless flatten. It does NOT imply
+  // «a run produced this picture» when non-zero — see the ancestry note above.
+  int32 run_id = 2;
+  // render | threed | pattern | recolor — the kind of the RUN, never of the picture. "" when there
+  // is no run at all.
+  string run_kind = 3;
+  int32 run_rrev = 4; // the render revision of that run; 0 when there is no run
+  // The run's colourway — product(id), 0 = unattributed or no run.
+  //
+  // ⚠ THIS IS NOT THE SECTION KEY. Narrow by `picture.colorway_id`, which is what
+  // GetDesignBandResponse.outputs_total_by_colorway is keyed by and what the bench already narrows
+  // by. For everything a run produced the two are equal by construction (the run's colourway is
+  // written onto its outputs, and crops and flattens inherit it); they part company on a picture
+  // with no run, where this field is 0 while the picture's own colourway is named and real.
+  int32 run_colorway_id = 5;
+  int32 batch_id = 6; // FK design_batch(id); 0 = not on a shelf (a run output, or a parentless flatten)
+}
+
 // DesignReference is the ROLE of one reference image inside the band's prompt: which side of the
 // garment this reference is about, and in what order it is fed.
 //

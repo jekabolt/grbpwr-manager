@@ -229,7 +229,28 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// молчаливая потеря, которую ловит только проба формы ответа.
 		Assets:          designAssetsToPb(band.Assets),
 		AssetPlacements: designAssetPlacementsToPb(band.AssetPlacements),
+		// ВЫХОДЫ КАРТОЧКИ ЦЕЛИКОМ, А НЕ ВЫХОДЫ ЭТОЙ СТРАНИЦЫ (H-9). Раздел «рендеры этой
+		// карточки» читал `Runs` — двенадцать свежих строк ленты — и терял рендеры по одному:
+		// всякий прогон любого рода выталкивал из окна старый, а вместе с ним уходили и кропы,
+		// нарезанные из его листа. Здесь область видимости совпадает с обещанием заголовка.
+		//
+		// СНИМАТЬ ЭТИ ТРИ СТРОКИ НЕЛЬЗЯ ПО ТОЙ ЖЕ ПРИЧИНЕ, ЧТО И ДВЕ СТРОКИ ПОЛОК ВЫШЕ: полоса
+		// по-прежнему ответит 200, а раздел просто вернётся к постраничному чтению — молчаливая
+		// потеря, которую ловит только проба формы ответа.
+		//
+		// OutputsTotalByColorway — ПОДПИСЬ УСЕЧЕНИЯ ТОМУ, КТО СУЖАЕТ. Потолок тратится поколорвейно,
+		// поэтому карточный OutputsTotal не отвечает на вопрос раздела вовсе: «больше двухсот
+		// где-то на карточке» не говорит, всё ли показано в колорвее F. Убери эту строку — раздел
+		// снова не сможет отличить «это всё» от «это первые шестьдесят».
+		Outputs:                designCardOutputsToPb(band.Outputs),
+		OutputsTotal:           int32(band.OutputsTotal),
+		OutputsTotalByColorway: intMapToPb(band.OutputsTotalByColorway),
 	}
+	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
+	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —
+	// price_estimate/price_actual остались на DesignRun, а он редактируется здесь же строкой ниже.
+	// Появится на выходе хоть одно денежное поле — эту строку придётся расширить, и молча она не
+	// расширится сама.
 	s.stripDesignCosting(ctx, resp.Runs, resp.Budget)
 	return resp, nil
 }
@@ -1051,6 +1072,31 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		}
 	}
 	out.Media = designMediaToPb(p.Media)
+	return out
+}
+
+// designCardOutputsToPb converts the card's whole-card generative outputs.
+//
+// ШТАМП ЕДЕТ РЯДОМ С КАРТИНКОЙ, А НЕ ВЫВОДИТСЯ ИЗ НЕЁ. Прогон такого кадра почти всегда лежит вне
+// страницы истории в этом же ответе, и три факта из картинки не восстановить: род ПРОГОНА (перекрас
+// рождает кадры рода `render`, и без штампа результат ON MODEL считался бы рендером), ревизию и
+// колорвей прогона. Клиент, синтезирующий прогон из штампа, получает ровно ту форму `{picture, run}`,
+// которую читают все разделы.
+//
+// BatchId берётся У КАРТИНКИ, а не второй колонкой сущности: это один и тот же факт, и вторая копия
+// была бы вторым источником правды.
+func designCardOutputsToPb(in []entity.DesignCardOutput) []*pb_common.DesignCardOutput {
+	out := make([]*pb_common.DesignCardOutput, 0, len(in))
+	for _, o := range in {
+		out = append(out, &pb_common.DesignCardOutput{
+			Picture:       designPictureToPb(o.Picture),
+			RunId:         int32(o.RunId),
+			RunKind:       o.RunKind,
+			RunRrev:       int32(o.RunRrev),
+			RunColorwayId: int32(o.RunColorwayId),
+			BatchId:       o.Picture.BatchId.Int32,
+		})
+	}
 	return out
 }
 

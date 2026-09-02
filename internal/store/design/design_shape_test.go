@@ -249,3 +249,147 @@ func TestOrphanedMediaCatchesTheIdempotentShortCircuit(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────────── выходы карточки: цитаты, не строки ───────────────────
+
+// TestCardOutputsCountAndListShareOnePredicate — счётчик и список говорят про ОДНО множество,
+// И ЭТО ПРОВЕРЯЕТСЯ ПО СБОРКЕ, А НЕ ПО ТЕКСТУ.
+//
+// ЧТО ЭТО СТЕРЕЖЁТ. OutputsTotalByColorway существует затем, чтобы усечение на потолке было
+// измеримо. Две копии предиката разошлись бы при первой правке словаря родов, и разошлись бы
+// МОЛЧА: сервер сказал бы «14 из 20» там, где их ровно 14, — то есть клиент нарисовал бы фразу об
+// усечении на полном списке. То же и с ключом раздела: разойдясь, он подписал бы раздел числом,
+// посчитанным не по тем строкам, которые в разделе лежат.
+//
+// ⚠ ПОЧЕМУ ЗДЕСЬ БОЛЬШЕ НЕТ `strings.Contains(запрос, константа)`. Такую проверку проходит и
+// побайтно ВПИСАННАЯ копия предиката: она содержит ту же подстроку. То есть прежний сторож ловил
+// «кусок пропал» и НЕ ЛОВИЛ «кусок продублирован», ради чего он и заведён — дублю ничто не мешает
+// разойтись следующей правкой. Проверок здесь две, и они ловят разное:
+//
+//  1. Builder зовётся с ЧАСОВЫМИ вместо области и ключа. Если он сам несёт вписанную копию, в
+//     часовой сборке останутся слова настоящего предиката.
+//     МУТАЦИЯ: вписать `designCardOutputsFrom + designCardOutputsWhere` внутрь `count` вместо
+//     параметра `scope` — часовая сборка покажет `design_picture p` там, где его быть не может.
+//  2. Запросы, которые стор ДЕЙСТВИТЕЛЬНО исполняет, сверяются с тем, что builder делает из
+//     настоящих кусков. Это и есть сторож против дубля мимо builder'а.
+//     МУТАЦИЯ: объявить designCountCardOutputsByColorway отдельной константой с вписанной копией
+//     и убрать из неё `recolor`.
+//
+// ⚠ ЧЕГО ЭТА ПРОБА НЕ ЛОВИТ, И ЭТО ИЗМЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО. Дубль, ПОБАЙТНО РАВНЫЙ сборке
+// builder'а, проходит: сравнивать нечего, строки равны. Текстом это и нельзя поймать. Ловится
+// ровно то, ради чего сторож существует, — РАСХОЖДЕНИЕ дубля: проверка 2 краснеет в тот же миг,
+// когда копия отличается хоть байтом. Вторую половину пары держит живая проба
+// TestDesignDBBandOutputsAreWholeCardNotThePage: разошедшийся счёт даёт {cw: 4} против пяти строк
+// списка (проверено обеими мутациями выше).
+func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
+	const (
+		scopeSentinel    = "<<SCOPE-SENTINEL>>"
+		colorwaySentinel = "<<COLORWAY-SENTINEL>>"
+	)
+	list, count := designCardOutputsStatements(scopeSentinel, colorwaySentinel)
+
+	for name, stmt := range map[string]string{"list": list, "count": count} {
+		if strings.Count(stmt, scopeSentinel) != 1 {
+			t.Fatalf("%s must take the FROM+WHERE scope from its single source exactly once", name)
+		}
+		if !strings.Contains(stmt, colorwaySentinel) {
+			t.Fatalf("%s must take the section key from its single source", name)
+		}
+		// Ни одного слова настоящей области и настоящего ключа: всё, что от них осталось бы, —
+		// это вписанная вторая копия.
+		for _, inlined := range []string{
+			"design_picture p", "design_run r", "p.tech_card_id", "r.kind IN", "p.colorway_id",
+		} {
+			if strings.Contains(stmt, inlined) {
+				t.Fatalf("%s carries its OWN copy of %q instead of the shared piece: a second "+
+					"copy drifts silently and makes the truncation caption lie", name, inlined)
+			}
+		}
+	}
+
+	// …и в бою собраны ровно те же два запроса из настоящих кусков.
+	gotList, gotCount := designCardOutputsStatements(
+		designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway)
+	if gotList != designListCardOutputs || gotCount != designCountCardOutputsByColorway {
+		t.Fatal("the statements the store actually runs must be what this builder produces from " +
+			"the shared pieces, or the probe above proves nothing about them")
+	}
+}
+
+// TestCardOutputsClassifyByRunKindNotPictureKind — род берётся у ПРОГОНА.
+//
+// ЧТО ЭТО СТЕРЕЖЁТ (L-1). Перекрас рождает кадры рода `render` — это правда, на выходе фотография
+// изделия, — поэтому отбор по роду КАРТИНКИ смешал бы результаты ON MODEL с рендерами, и штамп в
+// ответе не смог бы их развести: у него был бы тот же `render`. Ветка `r.kind IN (...)` обязана
+// содержать `recolor`, а колонка штампа — приезжать из `r.kind`.
+//
+// МУТАЦИЯ: заменить `r.kind IN` на `p.kind IN` в предикате прогонной ветки.
+func TestCardOutputsClassifyByRunKindNotPictureKind(t *testing.T) {
+	if !strings.Contains(designCardOutputsWhere, "r.kind IN ('render', 'threed', 'pattern', 'recolor')") {
+		t.Fatal("a picture that came out of a run is classified by the RUN's kind, recolor included")
+	}
+	if !strings.Contains(designListCardOutputs, "COALESCE(r.kind, '') AS run_kind") {
+		t.Fatal("the stamp's kind must come from the run row, not from the picture")
+	}
+}
+
+// TestCardOutputsDoNotFilterHidden — спрятанные едут СО СВОИМ ФЛАГОМ.
+//
+// ЧТО ЭТО СТЕРЕЖЁТ. Контракт полосы: сервер не врёт о том, что существует, фильтрует клиент
+// (band.go, шапка GetBand). `hidden_at IS NULL` здесь завёл бы ВТОРОЕ место, где кадр исчезает, —
+// причём невидимое: раздел просто показывал бы меньше плиток, чем говорит счётчик карточки.
+//
+// МУТАЦИЯ: дописать AND p.hidden_at IS NULL в предикат.
+func TestCardOutputsDoNotFilterHidden(t *testing.T) {
+	if strings.Contains(designCardOutputsWhere, "hidden_at") {
+		t.Fatal("hidden pictures travel WITH their flag; filtering them here is a second, " +
+			"invisible hiding place the client cannot see or undo")
+	}
+}
+
+// TestCardOutputsAreCappedPerColorwayAndNewestFirst — потолок ПОКОЛОРВЕЙНЫЙ, порядок свежий,
+// и число ПРИБИТО.
+//
+// ЧТО ЭТО СТЕРЕЖЁТ. Потолок достижим бесплатно (кропы и флэттены наследуют run_id и kind — довод у
+// MaxCardOutputsPerColorway), поэтому важно не «есть ли он», а КАК он тратится. Общий `LIMIT` по
+// карточке выбрасывал бы самые старые её строки, и раздел колорвея, целиком лежащего за
+// горизонтом, приходил бы ПУСТЫМ — то есть дефект H-9, отложенный на 200 строк. Окно PARTITION BY
+// делает это невыразимым.
+//
+// ⚠ ЧИСЛО ЗДЕСЬ ПРИБИТО НАМЕРЕННО. Прежняя редакция утверждала лишь `MaxCardOutputs >
+// MaxRunPageLimit`, и потому молчаливое понижение 200 → 25 проходило весь пакет: сравнение с
+// соседней константой не удостоверяет НИ ОДНОГО поведения. Понижение потолка меняет, сколько
+// кадров человек видит, и обязано быть отдельным решением, а не правкой цифры.
+//
+// ЧТО ПОТОЛОК ДЕЙСТВИТЕЛЬНО СВЯЗАН С ЧТЕНИЕМ — доказывается не здесь, а живой пробой
+// TestDesignDBBandOutputsAreCappedPerColorway (band_outputs_db_test.go): там колорвею кладут
+// MaxCardOutputsPerColorway+3 кадра и считают, сколько вернулось. Текстовая проба может лишь
+// удостоверить, что запрос параметризован, а не зашит числом.
+//
+// МУТАЦИЯ: перевернуть `ORDER BY p.id DESC` внутри окна (усечение оставило бы САМЫЕ СТАРЫЕ
+// выходы), убрать PARTITION BY (общий потолок, голодание раздела), либо понизить константу.
+func TestCardOutputsAreCappedPerColorwayAndNewestFirst(t *testing.T) {
+	if MaxCardOutputsPerColorway != 60 {
+		t.Fatalf("MaxCardOutputsPerColorway = %d: the per-colourway ceiling is 60 and changing it "+
+			"changes how much of a section a person can see — decide it, do not drift it",
+			MaxCardOutputsPerColorway)
+	}
+	// Отступы запроса к делу не относятся — сравнение идёт по словам.
+	flat := strings.Join(strings.Fields(designListCardOutputs), " ")
+	if !strings.Contains(flat, "ROW_NUMBER() OVER ( PARTITION BY "+
+		strings.Join(strings.Fields(designCardOutputsColorway), " ")+" ORDER BY p.id DESC )") {
+		t.Fatal("the ceiling is spent PER COLOURWAY, newest first: a whole-card LIMIT drops the " +
+			"card's oldest rows and can empty one colourway's section entirely")
+	}
+	if !strings.Contains(designListCardOutputs, "WHERE o.rn <= :per_colorway") {
+		t.Fatal("the outputs list must carry the ceiling in the statement itself, as a parameter " +
+			"rather than a literal, so the constant is what the read is bound by")
+	}
+	if strings.Contains(designListCardOutputs, "LIMIT") {
+		t.Fatal("a whole-card LIMIT beside the per-colourway window would re-open the starvation " +
+			"the window closes: the oldest colourway loses its rows again")
+	}
+	if !strings.HasSuffix(designListCardOutputs, "ORDER BY o.id DESC") {
+		t.Fatal("outputs reach the client newest first")
+	}
+}

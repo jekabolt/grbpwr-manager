@@ -92,7 +92,121 @@ const (
 		SELECT id, tech_card_id, base_media_id, rev, origin, source_media_id,
 		       source_picture_id, raster_media_id, updated_by, updated_at
 		FROM design_edit_layer WHERE tech_card_id = :card ORDER BY id`
+	// designCardOutputsFrom / designCardOutputsWhere / designCardOutputsColorway — ГЕНЕРАТИВНЫЕ
+	// ВЫХОДЫ КАРТОЧКИ, ОДИН ПРЕДИКАТ И ОДИН КЛЮЧ РАЗДЕЛА НА ДВА ЗАПРОСА.
+	//
+	// Список и счётчик разнесены по разным вызовам, но предикат у них ОБЯЗАН быть буквально один:
+	// две копии разошлись бы при первой же правке словаря родов, и разошлись бы молча — сервер
+	// сказал бы «выходов 14 из 20» там, где их ровно 14. Поэтому условие объявлено один раз и
+	// подставляется в оба.
+	//
+	// ТО ЖЕ САМОЕ И СИЛЬНЕЕ — ПРО КЛЮЧ КОЛОРВЕЯ. Список режется окном PARTITION BY по этому
+	// выражению, а счётчик группируется по нему же. Две копии здесь дали бы не «счёт разошёлся с
+	// длиной», а «подпись раздела считана НЕ ПО ТЕМ строкам, которые в разделе лежат», — то есть
+	// клиент нарисовал бы «60 из 143» над списком, где 143 относится к другому множеству.
+	//
+	// ЧТО СЮДА ВХОДИТ. Кадр из ПРОГОНА рода render|threed|pattern|recolor — род берётся у
+	// ПРОГОНА, а не у кадра, и это не педантизм: перекрас рождает кадры рода `render`
+	// (DesignPictureKindOfRun), и отбор по роду КАДРА подмешал бы результаты ON MODEL в рендеры,
+	// а штамп ниже не смог бы их развести. Плюс кадр БЕЗ прогона рода render|threed|pattern —
+	// загруженный вручную рендер это рендер карточки, а пометка «выбран» пишется по id любого
+	// кадра: плита, которой нет в списке, не может быть выбрана.
+	//
+	// КРОПЫ ВХОДЯТ САМИ СОБОЙ и это половина всей задачи: разрез наследует run_id родителя
+	// (pictures.go), значит кроп листа рендера — такой же кадр прогона рода render, как и лист.
+	//
+	// СПРЯТАННЫЕ ВХОДЯТ СО СВОИМ ФЛАГОМ — контракт полосы («hidden и archived едут С ФЛАГАМИ,
+	// фильтрует клиент»). Добавить сюда hidden_at IS NULL значило бы завести второе, невидимое
+	// место, где кадр исчезает.
+	designCardOutputsFrom = `
+		FROM design_picture p
+		LEFT JOIN design_run r ON r.id = p.run_id`
+	designCardOutputsWhere = `
+		WHERE p.tech_card_id = :card
+		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor'))
+		    OR (p.run_id IS NULL AND p.kind IN ('render', 'threed', 'pattern')))`
+	// designCardOutputsColorway — КЛЮЧ РАЗДЕЛА: колорвей САМОГО КАДРА, 0 = неатрибутированный.
+	//
+	// ПОЧЕМУ КОЛОРВЕЙ КАДРА, А НЕ ПРОГОНА. Это не «ещё одна такая же колонка», и выбор здесь
+	// решает, где кадр окажется на экране:
+	//
+	//   - У КАЖДОГО кадра, рождённого прогоном, они РАВНЫ — не по совпадению, а по записи:
+	//     queue.go кладёт в кадр `nullInt32(run.ColorwayId)`, кроп наследует колорвей родителя
+	//     (pictures.go), флэттен тоже (layer.go). Так что для всего сгенерированного спор пустой.
+	//   - РАСХОДЯТСЯ они ровно на кадре БЕЗ прогона: у загруженной вручную рендер-плиты
+	//     run_colorway_id = 0 (прогона нет), а колорвей у неё назван и настоящий. Ключ по прогону
+	//     свалил бы её в «неатрибутированный» раздел — то есть плита колорвея BLK лежала бы в
+	//     чужом разделе и не выбиралась бы из своего.
+	//   - И это ТОТ ЖЕ ключ, по которому карточка уже сужается везде: designBenchForColorway
+	//     сравнивает `DesignColorwayOrNone(slot.ColorwayId)` — колорвей ПЛИТЫ, не прогона.
+	//
+	// Одно имя — один ключ. Разные ключи под одним словом «колорвей» и есть тот дефект, который
+	// эта строка закрывает.
+	designCardOutputsColorway = `COALESCE(p.colorway_id, 0)`
 )
+
+// designListCardOutputs / designCountCardOutputsByColorway — список выходов и поколорвейный счёт,
+// СОБРАННЫЕ ОДНОЙ ФУНКЦИЕЙ ИЗ ОДНИХ КУСКОВ.
+//
+// ⚠ ПОЧЕМУ ФУНКЦИЯ, А НЕ ДВЕ КОНСТАНТЫ СО СКЛЕЙКОЙ. Прежняя редакция склеивала те же куски прямо
+// в двух объявлениях, и проверить это можно было только `strings.Contains(запрос, кусок)` — а
+// такую проверку проходит и побайтно вписанная копия. То есть сторож ловил «кусок пропал» и НЕ
+// ловил «кусок продублирован и потом разошёлся», ради чего он и заведён. Через builder это
+// проверяется по существу: проба зовёт его с ЧАСОВЫМИ вместо предиката и ключа и убеждается, что
+// в готовых запросах не осталось ни одного слова настоящего предиката (design_shape_test.go).
+var designListCardOutputs, designCountCardOutputsByColorway = designCardOutputsStatements(
+	designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway)
+
+// designCardOutputsStatements строит оба запроса выходов из ОБЛАСТИ (FROM+WHERE) и КЛЮЧА РАЗДЕЛА.
+//
+// Список — сами строки, СВЕЖИЕ ПЕРВЫМИ, со штампом прогона рядом, по MaxCardOutputsPerColorway на
+// колорвей. COALESCE стоит на всех трёх колонках прогона потому, что JOIN у кадра из пачки НЕ
+// СОВПАДАЕТ: без него сканер получил бы NULL в string/int и упал бы на первой же загруженной
+// плите. Ноль и пустая строка здесь читаются как «прогона нет», и штамп это говорит явно.
+//
+// ⚠ ПОТОЛОК ТРАТИТСЯ ОКНОМ, А НЕ ОДНИМ LIMIT НА ВСЮ КАРТОЧКУ. `ORDER BY p.id DESC LIMIT 200`
+// выбрасывал самые старые строки карточки ЦЕЛИКОМ — а читатель сужает по колорвею, и раздел
+// колорвея, все кадры которого старше двухсотого id, выходил ПУСТЫМ. Это тот самый дефект,
+// который волна закрывает, просто отодвинутый на 200 строк (довод целиком — у
+// MaxCardOutputsPerColorway). ROW_NUMBER PARTITION BY даёт каждому разделу собственное окно,
+// поэтому объём одного колорвея физически не может съесть другой.
+//
+// Порядок внутри окна и на выходе — по id кадра убыванием: id монотонен, значит это «свежие
+// первыми» без обращения к created_at, и он же ключ индекса idx_design_picture_card
+// (tech_card_id, id). Внутри окна он решает, ЧТО остаётся при усечении (свежие), снаружи — в
+// каком порядке это приходит клиенту.
+//
+// ЧТО ЭТО СТОИТ, ЧЕСТНО. До окна план был обратным сканом индекса без сортировки вовсе. Теперь
+// EXPLAIN показывает `Using temporary; Using filesort` — но ДОСТУП К ТАБЛИЦЕ НЕ ИЗМЕНИЛСЯ: тот же
+// `ref` по idx_design_picture_card, то есть трогаются кадры ОДНОЙ карточки, а прогон приходит
+// `eq_ref` по первичному ключу. Сортируется, стало быть, ровно то, что полоса и так читает целиком
+// в соседних запросах (loadHiddenCounts, designCountFabricRenders). Внешняя сортировка идёт уже по
+// (колорвеи × 60) строкам. Это цена за то, чтобы усечение не выкашивало раздел, и она заплачена
+// сознательно.
+//
+// Счёт — сколько их ВСЕГО, тем же предикатом, тем же ключом раздела и без потолка. Существует
+// затем, чтобы усечение было измеримо ИМЕННО ТЕМ читателем, который сузил: «больше двухсот где-то
+// на карточке» не подписывает раздел одного колорвея. Карточный итог складывается из этих же
+// чисел — второй COUNT(*) был бы вторым источником правды о том же множестве.
+func designCardOutputsStatements(scope, colorway string) (list, count string) {
+	list = `
+		SELECT o.* FROM (
+			SELECT p.*,
+			       COALESCE(r.kind, '') AS run_kind,
+			       COALESCE(r.rrev, 0) AS run_rrev,
+			       COALESCE(r.colorway_id, 0) AS run_cw,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY ` + colorway + `
+			           ORDER BY p.id DESC
+			       ) AS rn` + scope + `
+		) o
+		WHERE o.rn <= :per_colorway
+		ORDER BY o.id DESC`
+	count = `
+		SELECT ` + colorway + ` AS colorway_id, COUNT(*) AS n` + scope + `
+		GROUP BY ` + colorway
+	return list, count
+}
 
 // GetBand reads the whole band in ONE read transaction.
 //
@@ -210,6 +324,15 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 			return err
 		}
 
+		// ВЫХОДЫ КАРТОЧКИ ЦЕЛИКОМ, В ЭТОМ ЖЕ СНИМКЕ. Раздел «рендеры этой карточки» и лента
+		// обязаны показывать ОДИН момент карточки; вторым чтением они разошлись бы ровно на те
+		// кадры, что родились между двумя запросами.
+		band.Outputs, band.OutputsTotal, band.OutputsTotalByColorway, err =
+			loadCardOutputs(ctx, rep, cardID)
+		if err != nil {
+			return err
+		}
+
 		// THE BAND'S OWN PAGE IS TAKEN WITH IncludeArchived TRUE, and the token it mints carries
 		// that flag. A cursor born over the unfiltered list and then continued with
 		// include_archived=false would change the row set MID-PAGINATION and skip rows in
@@ -229,6 +352,88 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		return nil, err
 	}
 	return band, nil
+}
+
+// cardOutputRow — строка design_picture ПЛЮС три колонки её прогона. Колонки прогона отдельными
+// полями, а не вторым чтением design_run: прогон такого кадра почти всегда вне страницы истории,
+// и второй запрос по id пришлось бы делать на каждый кадр.
+//
+// Rn — номер строки ВНУТРИ ОКНА своего колорвея. Он не едет наружу и существует здесь только
+// потому, что StructScan требует поле на каждую выданную колонку, а внешний `SELECT o.*` тащит и
+// её. Резать окно в Go вместо SQL значило бы прочитать всю карточку, чтобы выбросить хвост.
+type cardOutputRow struct {
+	entity.DesignPicture
+	RunKind string `db:"run_kind"`
+	RunRrev int    `db:"run_rrev"`
+	RunCw   int    `db:"run_cw"`
+	Rn      int    `db:"rn"`
+}
+
+// cardOutputCountRow — одна строка поколорвейного счёта.
+type cardOutputCountRow struct {
+	ColorwayId int `db:"colorway_id"`
+	N          int `db:"n"`
+}
+
+// loadCardOutputs читает ГЕНЕРАТИВНЫЕ ВЫХОДЫ ВСЕЙ КАРТОЧКИ вместе со штампом прогона у каждого,
+// по MaxCardOutputsPerColorway самых свежих НА КАЖДЫЙ колорвей, и поколорвейный счёт рядом.
+//
+// ПОЧЕМУ ЭТО НЕ СТРАНИЦА ЛЕНТЫ. Раздел «рендеры этой карточки» читал `Runs` — первую страницу
+// ленты, — и потому терял рендеры по одному, стоило человеку сделать десяток прогонов другого
+// рода. Здесь область видимости совпадает с обещанием заголовка: карточка.
+//
+// ⚠ И ПОЧЕМУ ПОТОЛОК ТРАТИТСЯ ПОКОЛОРВЕЙНО. Прежняя редакция этого абзаца говорила, что «отвечать
+// так позволяют ДЕНЬГИ: эти роды платные». Это неправда — кропы и флэттены наследуют run_id и kind
+// и не стоят ничего (довод и замер — у MaxCardOutputsPerColorway). Потолок достижим, значит его
+// нельзя тратить общим `LIMIT ... ORDER BY id DESC`: он выбрасывал бы самые старые строки
+// КАРТОЧКИ, а читатель сужает по КОЛОРВЕЮ — и раздел, целиком лежащий за горизонтом, приходил бы
+// пустым, то есть с ровно тем дефектом, который волна закрывает.
+//
+// СЧЁТ ИДЁТ ТЕМ ЖЕ ПРЕДИКАТОМ, ТЕМ ЖЕ КЛЮЧОМ РАЗДЕЛА И В ТОЙ ЖЕ ЧИТАЮЩЕЙ ТРАНЗАКЦИИ: посчитанный
+// другим условием либо вне снимка, он подписывал бы список, которого не видел. Карточный итог —
+// сумма тех же чисел, а не отдельный COUNT(*): второй запрос был бы вторым источником правды.
+func loadCardOutputs(ctx context.Context, rep dependency.Repository, cardID int) (
+	[]entity.DesignCardOutput, int, map[int]int, error,
+) {
+	db := rep.DB()
+	counts, err := storeutil.QueryListNamed[cardOutputCountRow](ctx, db,
+		designCountCardOutputsByColorway, map[string]any{"card": cardID})
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("failed to count design card outputs: %w", err)
+	}
+	byColorway := make(map[int]int, len(counts))
+	total := 0
+	for _, c := range counts {
+		byColorway[c.ColorwayId] = c.N
+		total += c.N
+	}
+	rows, err := storeutil.QueryListNamed[cardOutputRow](ctx, db, designListCardOutputs,
+		map[string]any{"card": cardID, "per_colorway": MaxCardOutputsPerColorway})
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("failed to list design card outputs: %w", err)
+	}
+	out := make([]entity.DesignCardOutput, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, entity.DesignCardOutput{
+			Picture: r.DesignPicture,
+			// RunId берётся у САМОЙ КАРТИНКИ, а не у джойна: NULL здесь означает «кадр из пачки»,
+			// и ноль это ровно то, что обязан увидеть клиент.
+			RunId:         int(r.RunId.Int32),
+			RunKind:       r.RunKind,
+			RunRrev:       r.RunRrev,
+			RunColorwayId: r.RunCw,
+		})
+	}
+	// Файлы — ОДНИМ пакетом на весь список. Без этого у выхода есть id и нет миниатюры, то есть
+	// раздел нечем нарисовать: тот же дефект, что у слота верстака без плиты.
+	flat := make([]*entity.DesignPicture, 0, len(out))
+	for i := range out {
+		flat = append(flat, &out[i].Picture)
+	}
+	if err := resolveMedia(ctx, rep, flat); err != nil {
+		return nil, 0, nil, err
+	}
+	return out, total, byColorway, nil
 }
 
 // ListRuns returns one page of the history WITH the pictures of that page. A flat picture list
