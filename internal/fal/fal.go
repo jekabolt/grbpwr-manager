@@ -82,15 +82,25 @@ const (
 	// that must not be cut short, because a slow CDN is a bad reason to lose a paid model.
 	defaultDownloadTimeout = 5 * time.Minute
 
-	// defaultUnitUSD is the fallback price of ONE fal billable unit in USD, used when FAL_UNIT_USD
-	// is unset.
+	// defaultRequestUSD is the fallback price of ONE 3D build in USD, used when FAL_UNIT_USD is
+	// unset.
 	//
 	// IT IS AN ESTIMATE AND IT IS HERE SO THAT AN UNCONFIGURED DEPLOYMENT RECORDS A PLAUSIBLE COST
 	// RATHER THAN ZERO — the same argument meshy.defaultCreditUSD makes, and for the same ledger:
-	// «this run was free» is a worse lie than «this run cost about a dollar». Marketplace models on
-	// fal bill one unit per request, so one unit ≈ one 3D build. Set the variable to the rate the
-	// model's own pricing page states.
-	defaultUnitUSD = 1.00
+	// «this run was free» is a worse lie than «this run cost about a dollar».
+	//
+	// ⚠ ЭТО ЦЕНА ЗАПРОСА, А НЕ ЕДИНИЦЫ, И ИМЕННО ЗДЕСЬ БЫЛ ДЕФЕКТ. Раньше константа звалась
+	// `defaultUnitUSD` и стоила тот же доллар, а рядом стоял довод: «маркетплейсные модели на fal
+	// берут одну единицу за запрос, значит единица ≈ одна сборка». Довод — ДОПУЩЕНИЕ О ПРОВАЙДЕРЕ,
+	// и оно не проверялось ничем. Живой прогон беты (run 17, 2026-09-01) вернул СТО единиц, их
+	// умножили на доллар, и в бухгалтерию уехали **100.0000 USD** при оценке 0.60 — ровное число,
+	// какого не выставляет ни один API картинок, и оно одно съело дневной потолок.
+	//
+	// Поэтому умолчание больше НИЧЕГО НЕ УМНОЖАЕТ: не зная тарифа, честно назвать можно только
+	// порядок цены сборки, а не цену единицы, смысл которой у каждой модели свой. Как только
+	// FAL_UNIT_USD задан — считается настоящая арифметика `единица × единицы`, потому что тогда
+	// развёртывание знает, ЧТО у этой модели является единицей.
+	defaultRequestUSD = 0.60
 
 	// maxAPIResponseBytes caps a control-plane JSON body. Queue envelopes are a few kilobytes.
 	maxAPIResponseBytes = 1 << 20
@@ -301,8 +311,10 @@ func New(cfg Config) *Client {
 	if cfg.DownloadTimeout <= 0 {
 		cfg.DownloadTimeout = defaultDownloadTimeout
 	}
-	if cfg.UnitUSD <= 0 {
-		cfg.UnitUSD = defaultUnitUSD
+	// НЕ ПОДСТАВЛЯЕТСЯ. Ноль здесь — не «забыли», а «тариф неизвестен», и `CostUSD` отвечает на это
+	// оценкой ЗА ЗАПРОС. Подстановка доллара за единицу и была тем, что дало сто долларов.
+	if cfg.UnitUSD < 0 {
+		cfg.UnitUSD = 0
 	}
 	return &Client{
 		// The shared http.Client carries NO Timeout of its own: every request below gets its
@@ -347,6 +359,13 @@ func (c *Client) PollTimeout() time.Duration {
 func (c *Client) CostUSD(units float64) decimal.Decimal {
 	if c == nil || units <= 0 {
 		return decimal.Zero
+	}
+	// ТАРИФ НЕ ЗАДАН — ЗНАЧИТ УМНОЖАТЬ НЕ НА ЧТО. Число единиц провайдер называет честно, но что
+	// именно он ими меряет — секунды, мегапиксели, запросы — знает только его прайс. Умножение на
+	// выдуманный тариф даёт не оценку, а уверенное враньё, тем более убедительное, чем больше
+	// единиц вернул провайдер. Без тарифа отвечаем ОДНОЙ оценкой за сборку.
+	if c.cfg.UnitUSD <= 0 {
+		return decimal.NewFromFloat(defaultRequestUSD)
 	}
 	return decimal.NewFromFloat(c.cfg.UnitUSD).Mul(decimal.NewFromFloat(units))
 }
