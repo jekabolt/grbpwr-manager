@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
-	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -61,8 +59,14 @@ func (p threedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 	// ceiling. The person narrows the run with fix_targets / fix_slot_ids, which is the selection
 	// mechanism the bench already has, instead of the provider choosing for them in silence.
 	id, err := p.c.Submit(ctx, meshy.Request{
-		ImageURLs:     refs,
-		TexturePrompt: textureSteer(ctx, job),
+		ImageURLs: refs,
+		// THE SURFACE, AND ONLY THE SURFACE — see Job.SurfaceSteer. What used to travel here was
+		// `textureSteer`: the run's WHOLE prompt cut down to meshy.MaxTexturePrompt, which handed
+		// the texturing stage the ask, the garment note («crossed straps on the back»), the fit and
+		// the numbered reference captions. The steer is now composed for this field rather than
+		// amputated to fit it, so no cut is needed and none is made: meshy.Submit refuses above the
+		// ceiling locally, before the network and before any money.
+		TexturePrompt: job.SurfaceSteer,
 	})
 	if err != nil {
 		return nil, err
@@ -73,51 +77,15 @@ func (p threedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 	return &Outcome{RequestID: id, Pending: true}, nil
 }
 
-// textureSteer is the run's prompt CUT DOWN to what `texture_prompt` may carry.
+// SentPrompt is what this route actually puts in front of the provider — see PromptCarrier.
 //
-// WHY A CUT IS LEGITIMATE HERE, AND ONLY HERE. This band's rule is that a ceiling REFUSES and never
-// trims quietly: a trimmed value is a claim nobody made, frozen where nobody can see it was
-// trimmed. `texture_prompt` is the one field that rule does not fit, because it is not the order —
-// it is a HINT ABOUT THE SURFACE. The substance of a 3D job travels as four approved pictures, and
-// those are never cut (see Execute: the count is refused, not trimmed). A steer that reaches the
-// provider one sentence short still describes the same garment; a run refused for it would refuse
-// the whole 3D route on every card whose prompt is longer than 600 characters — that is, all of
-// them.
-//
-// ⚠ AND THE ROUTE IS DEAD WITHOUT THIS. meshy.Submit now refuses TexturePrompt above
-// meshy.MaxTexturePrompt locally, before the network, and classify() reads that refusal as a
-// terminal provider_bad_request. The run's composed prompt (ask + garment + fit + colour +
-// presentation + every reference line) is several times that on real data, so every realistic 3D
-// run died instantly at the door. Not a regression — before the local ceiling it died after five
-// paid-looking attempts as provider_unavailable — but a dead route either way.
-//
-// THE CUT LANDS ON A SECTION BOUNDARY when there is one. composePrompt joins its sections with a
-// blank line, so cutting there means the steer carries WHOLE sections — the ask, the garment, the
-// fit, the colour — instead of half a sentence about a reference. Only when the first section
-// alone is already too long does it fall back to cutting at the rune ceiling.
-//
-// ⚠ THE PROPER FIX IS ELSEWHERE, and it is a short steer composed FROM THE COLOUR AND 3D PARAMS
-// rather than a cut of the whole prompt — the surface is what `texture_prompt` steers, and the run
-// already knows its colourway recipe and its presentation. That belongs in snapshot.go (a field of
-// its own on Job, filled by buildJob), which this task does not own; until then this keeps the
-// route alive and says so out loud.
-func textureSteer(ctx context.Context, job Job) string {
-	steer := strings.TrimSpace(job.Prompt)
-	if len([]rune(steer)) <= meshy.MaxTexturePrompt {
-		return steer
-	}
-	cut := string([]rune(steer)[:meshy.MaxTexturePrompt])
-	if at := strings.LastIndex(cut, "\n\n"); at > 0 {
-		cut = cut[:at]
-	}
-	cut = strings.TrimSpace(cut)
-	// LOUD, because a silent trim is what this comment argues against everywhere else: the operator
-	// has to be able to see that the provider was told less than the run says.
-	slog.Default().WarnContext(ctx, "3D: the texture steer was cut to the provider's ceiling",
-		slog.Int("run_id", job.RunID), slog.Int("prompt_runes", len([]rune(steer))),
-		slog.Int("ceiling_runes", meshy.MaxTexturePrompt), slog.Int("sent_runes", len([]rune(cut))))
-	return cut
-}
+// ⚠ THE OLD ANSWER TO THIS QUESTION WAS A LIE THE HISTORY TOLD ITSELF. `textureSteer` cut the run's
+// whole composed prompt down to meshy.MaxTexturePrompt and sent that; the run's stored prompt was
+// the UNCUT text, so the panel showed the operator words the provider never read — while the words
+// it DID read (the garment note about the back, the numbered captions) were the ones that had no
+// business reaching a texturing stage at all. Both halves are fixed by composing for the field
+// instead of amputating to it: the steer is what goes out, and the steer is what is written down.
+func (p threedProvider) SentPrompt(job Job) string { return job.SurfaceSteer }
 
 // Collect is the FREE half: one status lookup and, once the task has succeeded, the bytes.
 //

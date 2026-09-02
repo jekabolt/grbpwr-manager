@@ -22,6 +22,9 @@ var (
 	// errStorageFailed — the provider delivered and OUR storage refused. Money spent, nothing to
 	// show, and A RETRY IS FORBIDDEN: it would pay a second time for bytes we already had.
 	errStorageFailed = errors.New("designgen: the delivered bytes could not be stored")
+	// errDuplicateView — TWO PLATES OF THIS RUN CLAIM THE SAME SIDE OF THE GARMENT, and a build
+	// has one slot per side. Raised before the request leaves, so nothing is spent; see falViews.
+	errDuplicateView = errors.New("designgen: two input plates claim the same view of the garment")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -145,7 +148,12 @@ func classify(err error) verdict {
 	// The two LOCAL ceilings (input picture count, texture prompt length) are the same verdict for
 	// the same reason: they are refused before the request leaves, so nothing was billed, and
 	// re-sending the identical too-long list changes nothing.
-	case errors.Is(err, recraft.ErrBadRequest), errors.Is(err, meshy.ErrImageCount),
+	//
+	// errDuplicateView IS OURS AND SITS HERE FOR THE SAME REASON: the frozen snapshot names one
+	// side twice, and it will still name it twice on the fifth pass. Unclassified it would fall
+	// into the retryable default and spend the whole cap on a run that cannot become sendable.
+	case errors.Is(err, errDuplicateView),
+		errors.Is(err, recraft.ErrBadRequest), errors.Is(err, meshy.ErrImageCount),
 		errors.Is(err, meshy.ErrBadImageURL), errors.Is(err, meshy.ErrPromptTooLong),
 		errors.Is(err, meshy.ErrBadRequest), errors.Is(err, orimages.ErrBadRequest),
 		errors.Is(err, fal.ErrBadRequest), errors.Is(err, fal.ErrBadImageURL),

@@ -9,6 +9,15 @@
 // which is exactly the shape the bench already has, and is what the owner asked for by name. An
 // ordered list flattens that naming and loses the one thing this provider is better at.
 //
+// ⚠ TWO MODEL FAMILIES NOW SHARE THIS TRANSPORT, AND THE REQUEST THIS PACKAGE TAKES STAYS NAMED
+// FOR BOTH. fal serves meshy's own multi-image-to-3d as well (`meshy/v7/multi-image-to-3d`, the
+// default since the owner asked for it), and that endpoint takes the ORDERED, UNNAMED `image_urls`
+// list. The naming is therefore flattened HERE, at the last possible moment and in one place:
+// Request3D keeps its four named slots, and the meshy body is written front, back, left, right
+// with the front at index 0. Callers do not learn which family they are talking to, so the day the
+// slug moves back nothing above this package has to change — and, more to the point, no caller can
+// quietly start passing an ordered list of its own and lose the one fact the bench knows for sure.
+//
 // THE PACKAGE IS SHAPED LIKE internal/meshy ON PURPOSE, down to the sentinel names and the
 // Submit / Collect / Await split. It is the same problem — a paid submit, then minutes of building,
 // then artifacts behind expiring links — and designgen's 3D pass already knows that shape. Two
@@ -43,15 +52,29 @@ const (
 	// and for a proxy — not as a knob anybody is expected to set.
 	defaultBaseURL = "https://queue.fal.run"
 
-	// DefaultModel3D is the multi-view-to-3d slug the owner named. It is LOAD-BEARING in the way
-	// orimages.DefaultModel is: a slug the provider retires turns every 3D press into a 404 in a
-	// fifth of a second, and this repository has already paid for that once — a dead model slug
-	// killed both AI features at once and read, on the screen, as a temporary provider fault.
+	// DefaultModel3D is the multi-view-to-3d slug the band builds turntables with. It is
+	// LOAD-BEARING in the way orimages.DefaultModel is: a slug the provider retires turns every 3D
+	// press into a 404 in a fifth of a second, and this repository has already paid for that once —
+	// a dead model slug killed both AI features at once and read, on the screen, as a temporary
+	// provider fault.
 	//
 	// THAT IS WHY A 404 ON THE SUBMIT PATH IS ITS OWN SENTINEL HERE (ErrModelUnavailable) and not
 	// weather: «there is no such model» and «the service is busy» send a person to two different
 	// places, and only one of them is a place where the problem actually is.
-	DefaultModel3D = "hitem3d/hi3d/v3.0/multi-view-to-3d"
+	//
+	// ⚠ IT MOVED FROM hitem3d TO MESHY v7 ON THE OWNER'S OWN ASK, AND THE TRADE IS SAID OUT LOUD.
+	// hitem3d takes the plates BY NAME; meshy/v7 takes an unnamed list and infers the sides itself,
+	// which is a WEAKER contract on exactly the axis the complaint was about. It is chosen anyway
+	// because the owner asked for the better reconstruction, and the loss is mitigated the only way
+	// an ordered list can be: the front is always index 0 (see meshyImageURLs).
+	//
+	// THE DEFAULT LIVES IN CODE RATHER THAN IN FAL_MODEL_3D, and that is not a preference either:
+	// updating the DigitalOcean spec IS a deployment of whatever master happens to be, so a model
+	// change made through the environment carries an unrelated release with it.
+	//
+	// ⚠ MOVING IT ORPHANS EVERY BUILD IN FLIGHT UNLESS SOMETHING LOOKS FOR THEM — see
+	// retired3D and locateRequest, which is where that is handled.
+	DefaultModel3D = "meshy/v7/multi-image-to-3d"
 
 	// formatGLB is the only export format asked for or accepted. The band shows GLB and only GLB,
 	// exactly as on the Meshy route.
@@ -100,7 +123,15 @@ const (
 	// порядок цены сборки, а не цену единицы, смысл которой у каждой модели свой. Как только
 	// FAL_UNIT_USD задан — считается настоящая арифметика `единица × единицы`, потому что тогда
 	// развёртывание знает, ЧТО у этой модели является единицей.
-	defaultRequestUSD = 0.60
+	//
+	// ⚠ 1.20 IS MESHY v7's TEXTURED PRICE FROM fal'S OWN MODEL PAGE, read on 2026-09-02, and it
+	// moved with DefaultModel3D. A default left at the retired provider's 0.60 would under-report
+	// every build by half — quieter than the hundred-dollar line above, and therefore worse.
+	//
+	// ⚠ IT IS READ THROUGH EstimatedRequestUSD BY THE DOOR AS WELL AS BY CostUSD, and it is
+	// unexported so that it can only be read that way. See EstimatedRequestUSD for what happened
+	// when the door kept its own copy.
+	defaultRequestUSD = 1.20
 
 	// maxAPIResponseBytes caps a control-plane JSON body. Queue envelopes are a few kilobytes.
 	maxAPIResponseBytes = 1 << 20
@@ -224,6 +255,10 @@ type ChargedError struct {
 	Units float64
 	// RequestID names the job the money went to, so a ledger line can be traced to the provider.
 	RequestID string
+	// Model is the slug that was actually being polled when the failure happened — the same
+	// provenance Result.Model carries, and needed for the same reason: a failed-but-billed call on
+	// a RECOVERED build must be priced as the model it was bought at, not as today's.
+	Model string
 }
 
 func (e *ChargedError) Error() string {
@@ -234,11 +269,22 @@ func (e *ChargedError) Unwrap() error { return e.Err }
 
 // chargedWith attaches a charge to an error, and ONLY when the provider named one. Zero units means
 // «the provider did not say», which is not the same as «free».
-func chargedWith(err error, units float64, requestID string) error {
+func chargedWith(err error, units float64, requestID, model string) error {
 	if err == nil || units <= 0 {
 		return err
 	}
-	return &ChargedError{Err: err, Units: units, RequestID: requestID}
+	return &ChargedError{Err: err, Units: units, RequestID: requestID, Model: model}
+}
+
+// ChargedModel is the slug a failed-but-billed call was polling, or «» when the error carries no
+// charge at all. A caller pricing that charge must ask this rather than the client's CONFIGURED
+// model — see Result.Model for the same argument on the success path.
+func ChargedModel(err error) string {
+	var ce *ChargedError
+	if errors.As(err, &ce) {
+		return ce.Model
+	}
+	return ""
 }
 
 // Charge reports what a failed call billed, when the provider said. ok = false means NOBODY COULD
@@ -353,10 +399,58 @@ func (c *Client) PollTimeout() time.Duration {
 	return c.cfg.PollTimeout
 }
 
+// EstimatedRequestUSD is what ONE build off this route is expected to cost, before the provider has
+// said anything. It is the number CostUSD falls back on when no tariff is configured — and it is
+// EXPORTED BECAUSE THE DOOR RESERVES AGAINST IT.
+//
+// ⚠ TWO LITERALS THAT HAPPEN TO MATCH ARE NOT ONE NUMBER, AND THESE TWO HAD ALREADY COME APART.
+// StartDesignRun writes designPriceEstimate[threed] into design_run.price_estimate and adds it to
+// design_budget_day.reserved. That table carried its own literal — $0.60, the retired provider's
+// price — while this package charged $1.20 for the same build. Five turntables in flight showed
+// $3.00 of committed money against $6.00 of real spend. The estimate a route publishes and the
+// number the door reserves are now one expression, so moving one moves the other.
+//
+// ⚠ WHAT IT IS NOT: A GATE. The daily admission ceiling was removed as a concept in migration 0358
+// («у нас в принципе не должно быть потолка»), so nothing is refused on the strength of this
+// number. Getting it wrong therefore misstates the books and the panel — it does not let spending
+// past a limit, because there is no limit. That is a smaller harm and it is the accurate one.
+//
+// IT IS A FUNCTION RATHER THAN A CONSTANT so callers get a decimal.Decimal rather than a float they
+// would each have to convert — three conversions of one number is how a number becomes three.
+func EstimatedRequestUSD() decimal.Decimal { return EstimatedRequestUSDFor("") }
+
+// EstimatedRequestUSDFor is the same number FOR A NAMED MODEL, which matters exactly once: when a
+// build is recovered from a slug this deployment has since moved off.
+//
+// ⚠ AN UNKNOWN OR EMPTY SLUG ANSWERS WITH THE CURRENT DEFAULT'S PRICE, WHICH IS THE SAFE END OF
+// THE MISTAKE. The two ways to be wrong are not symmetrical: pricing an old build at today's
+// (higher) number overstates one row, while pricing today's build at an old (lower) number
+// understates real spend in the ledger — the failure this whole accounting exists to prevent. A
+// slug nobody wrote down therefore gets the current estimate, not the cheapest one.
+func EstimatedRequestUSDFor(model string) decimal.Decimal {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	for _, r := range retired3D {
+		if strings.EqualFold(model, r.Model) {
+			return decimal.NewFromFloat(r.RequestUSD)
+		}
+	}
+	return decimal.NewFromFloat(defaultRequestUSD)
+}
+
 // CostUSD converts billable units into money at the configured rate (FAL_UNIT_USD). It is the only
 // place that knows the conversion, so the price written into an attempt row and the price shown on
 // a button cannot drift apart.
-func (c *Client) CostUSD(units float64) decimal.Decimal {
+func (c *Client) CostUSD(units float64) decimal.Decimal { return c.CostUSDFor("", units) }
+
+// CostUSDFor prices a charge against THE MODEL THAT ACTUALLY PRODUCED IT (Result.Model /
+// ChargedModel), rather than against the one this client is configured with today.
+//
+// ⚠ THE TARIFF IS NOT PER-MODEL AND IS NOT TREATED AS IF IT WERE. FAL_UNIT_USD is one number an
+// operator typed for one deployment; there is no second one to reach for, and inventing a
+// per-model rate out of a single configured value would be a guess wearing arithmetic. Only the
+// UNCONFIGURED fallback varies by model, because only there does this package supply the number
+// itself.
+func (c *Client) CostUSDFor(model string, units float64) decimal.Decimal {
 	if c == nil || units <= 0 {
 		return decimal.Zero
 	}
@@ -365,13 +459,18 @@ func (c *Client) CostUSD(units float64) decimal.Decimal {
 	// выдуманный тариф даёт не оценку, а уверенное враньё, тем более убедительное, чем больше
 	// единиц вернул провайдер. Без тарифа отвечаем ОДНОЙ оценкой за сборку.
 	if c.cfg.UnitUSD <= 0 {
-		return decimal.NewFromFloat(defaultRequestUSD)
+		return EstimatedRequestUSDFor(model)
 	}
 	return decimal.NewFromFloat(c.cfg.UnitUSD).Mul(decimal.NewFromFloat(units))
 }
 
 // Request3D is one multi-view-to-3d job. The four views are NAMED rather than ordered, which is the
 // whole reason this provider was asked for: the bench already knows which plate is the front.
+//
+// ⚠ THE NAMES SURVIVE EVEN WHERE THE MODEL CANNOT READ THEM. On the meshy family Submit flattens
+// these four fields into the ordered `image_urls` list (front first) — the caller still states what
+// it knows, and the one place that has to give that knowledge up is the one line that writes the
+// body. A Request3D shaped like a list would push the loss all the way back to the render bench.
 type Request3D struct {
 	// FrontURL is REQUIRED — see ErrNoFrontView.
 	FrontURL string
@@ -387,6 +486,14 @@ type Request3D struct {
 	Resolution string
 	// Model overrides the configured slug for this one call. Empty = the configured slug.
 	Model string
+	// TexturePrompt is a short hint about the SURFACE — colour and cloth — for the texturing stage.
+	//
+	// ⚠ IT REACHES THE MESHY FAMILY ONLY, AND ON hitem3d IT IS SILENTLY DROPPED — not by oversight
+	// but because hitem3d's multi-view-to-3d payload HAS NO TEXT FIELD AT ALL: there is nowhere for
+	// the words to go. Refusing the request over it would be worse (a run killed for a hint), and
+	// pretending it travelled would be worse still — which is why AcceptsTexturePrompt exists, so
+	// the caller that WRITES DOWN what the provider was told can ask instead of assuming.
+	TexturePrompt string
 }
 
 // Sink is where the bytes of a finished request go. Model is required; Thumbnail is optional and,
@@ -410,6 +517,14 @@ type Result struct {
 	// RequestID is the provider's id for the job — durable, free to look up again, and the one
 	// thing worth storing.
 	RequestID string
+	// Model is the slug this result was ACTUALLY fetched from, which is not always the configured
+	// one: a build submitted before a model move is found under the slug it was bought at.
+	//
+	// ⚠ IT TRAVELS BECAUSE THE PRICE FOLLOWS IT. Without it a caller can only ask the client what
+	// model it is configured with NOW, and a recovered hitem3d build — reserved at $0.60 — would be
+	// booked at meshy's $1.20, rewriting the money of a run frozen before the deploy. See
+	// EstimatedRequestUSDFor.
+	Model string
 	// Format is always formatGLB, stated rather than assumed so a caller writing a media row does
 	// not hardcode the extension in a second place.
 	Format string
@@ -444,36 +559,76 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 	if front == "" {
 		return "", ErrNoFrontView
 	}
-	body := submitBody{
-		ExportFormat: formatGLB,
-		// A flat drawing becomes a garment only with its colour and print on it; an untextured
-		// mesh answers a different question than the one the designer asked.
-		EnableTexture: true,
-		// PBR maps quadruple the download for lighting nuance a product tile does not show. The
-		// provider's own default here is TRUE, so this field is STATED rather than omitted.
-		EnablePBR: false,
-		// Safety checking is the provider's default and is left on: a refusal we can read is worth
-		// more than a surprise on somebody else's terms.
-		EnableSafetyChecker: true,
-		FaceCount:           req.FaceCount,
-		Resolution:          strings.TrimSpace(req.Resolution),
-	}
-	for i, pair := range []struct {
-		dst *string
-		src string
+	// THE FOUR SLOTS ARE VALIDATED ONCE, IN THE ONE ORDER BOTH FAMILIES CARE ABOUT. The order is
+	// meaning for the meshy body (index 0 is the front) and is merely tidy for hitem3d's named
+	// fields; deriving it here, before the branch, is what keeps the two bodies from disagreeing
+	// about which url is the face of the garment.
+	views := []struct {
+		name string
+		url  string
 	}{
-		{&body.FrontImageURL, front},
-		{&body.BackImageURL, strings.TrimSpace(req.BackURL)},
-		{&body.LeftImageURL, strings.TrimSpace(req.LeftURL)},
-		{&body.RightImageURL, strings.TrimSpace(req.RightURL)},
-	} {
-		if pair.src == "" {
+		{"front", front},
+		{"back", strings.TrimSpace(req.BackURL)},
+		{"left", strings.TrimSpace(req.LeftURL)},
+		{"right", strings.TrimSpace(req.RightURL)},
+	}
+	for _, v := range views {
+		if v.url == "" {
 			continue
 		}
-		if err := validateImageRef(pair.src); err != nil {
-			return "", fmt.Errorf("view %d: %w", i, err)
+		if err := validateImageRef(v.url); err != nil {
+			// NAMED, NOT NUMBERED. On the meshy body the ordinal of a view is not even stable —
+			// an unoccupied slot closes up — so a refusal reading «view 2» would point at nothing
+			// a person can find on the bench.
+			return "", fmt.Errorf("%s view: %w", v.name, err)
 		}
-		*pair.dst = pair.src
+	}
+
+	var body any
+	if isMeshyFamily(model) {
+		// ⚠ THE NAMES ARE LOST HERE AND NOWHERE ELSE, AND THE FRONT IS INDEX 0 BY CONSTRUCTION.
+		// meshy's multi-image-to-3d takes «images of the same object from different angles» with no
+		// way to say which angle each one is; its own documentation promises only that the FIRST is
+		// read as the primary frontal reference. So the one guarantee this route can still offer is
+		// that the front leads the list — never that a hole in the middle keeps the rest in place,
+		// because there are no places to keep.
+		urls := make([]string, 0, len(views))
+		for _, v := range views {
+			if v.url != "" {
+				urls = append(urls, v.url)
+			}
+		}
+		body = meshySubmitBody{
+			ImageURLs: urls,
+			// A flat drawing becomes a garment only with its colour and print on it; an untextured
+			// mesh answers a different question than the one the designer asked.
+			ShouldTexture: true,
+			// PBR maps quadruple the download for lighting nuance a product tile does not show. The
+			// provider's own default is TRUE, so this field is STATED rather than omitted.
+			EnablePBR: false,
+			// Safety checking is the provider's default and is left on: a refusal we can read is
+			// worth more than a surprise on somebody else's terms.
+			EnableSafetyChecker: true,
+			// Omitted when empty: an empty texture_prompt is not «no hint», it is a hint that says
+			// nothing, and the provider's own default behaviour is the better answer to that.
+			TexturePrompt: strings.TrimSpace(req.TexturePrompt),
+			// symmetry_mode and target_polycount are DELIBERATELY ABSENT: the provider's defaults
+			// (auto / 30000) are right for a garment shown in a browser, and a value stated here
+			// would freeze today's guess into every future build.
+		}
+	} else {
+		// The hitem3d body, unchanged: NAMED slots, and the text field it has nowhere to put.
+		h := submitBody{
+			ExportFormat:        formatGLB,
+			EnableTexture:       true,
+			EnablePBR:           false,
+			EnableSafetyChecker: true,
+			FaceCount:           req.FaceCount,
+			Resolution:          strings.TrimSpace(req.Resolution),
+		}
+		h.FrontImageURL, h.BackImageURL = views[0].url, views[1].url
+		h.LeftImageURL, h.RightImageURL = views[2].url, views[3].url
+		body = h
 	}
 
 	var out submitResponse
@@ -490,8 +645,39 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 	// is not. The submit answer carries status_url, so the derivation can be compared with the
 	// truth for free, at the one moment both are in hand — and a mismatch is said out loud rather
 	// than discovered as an unresumable paid build.
+	//
+	// ⚠ IT MATTERS MORE SINCE THE DEFAULT MOVED TO `meshy/v7/multi-image-to-3d`: that the polling
+	// namespace of THAT slug is `meshy/v7` is a derivation, not something fal's docs state, and the
+	// first live submit is where it gets checked.
 	c.checkQueuePath(ctx, model, id, out.StatusURL)
 	return id, nil
+}
+
+// isMeshyFamily says whether a slug is one of meshy's own models on fal, which take the ORDERED
+// `image_urls` list and a `texture_prompt`, rather than hitem3d's named slots.
+//
+// ⚠ IT IS A PREFIX ON THE SLUG BECAUSE THE SLUG IS THE ONLY THING THE PROVIDER GIVES US. fal
+// publishes the same family under two spellings — `meshy/v7/…` and `fal-ai/meshy/v6/…` — and both
+// are accepted here so a deployment pinned to v6 through FAL_MODEL_3D does not silently get the
+// hitem3d body, which meshy would answer with a 422 that reads like our own bug.
+//
+// A SLUG THIS FUNCTION DOES NOT RECOGNISE TAKES THE NAMED BODY, which is the safe default: a named
+// payload sent to a list-shaped endpoint is refused loudly by the provider's validator, while an
+// ordered list sent to a named-slot endpoint is a build with NO front view at all.
+func isMeshyFamily(model string) bool {
+	m := strings.ToLower(strings.Trim(strings.TrimSpace(model), "/"))
+	return strings.HasPrefix(m, "meshy/") || strings.HasPrefix(m, "fal-ai/meshy/")
+}
+
+// AcceptsTexturePrompt reports whether the CONFIGURED model has anywhere to put Request3D's
+// TexturePrompt. Nil-safe.
+//
+// ⚠ IT EXISTS FOR THE HISTORY ROW, NOT FOR THE REQUEST. The submit needs no such question — it
+// simply writes the body its model takes. What needs it is the caller that WRITES DOWN what the
+// provider was told: a run panel showing a paragraph the provider never received is a lie about
+// money that has already been spent, and hitem3d's payload has no text field at all.
+func (c *Client) AcceptsTexturePrompt() bool {
+	return c != nil && isMeshyFamily(c.Model())
 }
 
 // queuePath is the path the STATUS and RESULT endpoints hang off: the model id's first two
@@ -506,6 +692,139 @@ func queuePath(model string) string {
 		return strings.Join(parts, "/")
 	}
 	return parts[0] + "/" + parts[1]
+}
+
+// retiredModel3D is every 3D slug this band has DEFAULTED to before the current one.
+//
+// ⚠ IT IS A MONEY LIST, NOT A HISTORY NOTE. A submit is the payment; it closes its attempt
+// `accepted` with a request id and the build runs for minutes afterwards. The polling path is
+// derived from a MODEL SLUG (queuePath), so a release that moves the default DURING those minutes
+// sends the next poll to `meshy/v7/requests/<id>/status` for an id that was bought at
+// `hitem3d/hi3d`. The provider answers 404, which this package reads — correctly, for an id it has
+// no other reason to doubt — as the terminal ErrRequestNotFound. Two things are lost at once: the
+// build, and its price, because the 404 lands on the STATUS call and x-fal-billable-units rides
+// only on the RESULT one, so the ledger records the whole thing as free.
+//
+// A SLUG IS ADDED HERE WHEN THE DEFAULT MOVES OFF IT, and is not removed while any build could
+// still be in flight under it — which, given PollTimeout and the retry window, is a matter of
+// hours, not of releases.
+// retired3D is every 3D model this band has DEFAULTED to before the current one, with what one
+// build off it was worth.
+//
+// ⚠ IT IS A MONEY LIST, NOT A HISTORY NOTE, AND IT CARRIES A PRICE FOR THE SAME REASON IT CARRIES A
+// SLUG. A submit is the payment; it closes its attempt `accepted` with a request id and the build
+// runs for minutes afterwards. The polling path is derived from a MODEL SLUG (queuePath), so a
+// release that moves the default DURING those minutes sends the next poll to
+// `meshy/v7/requests/<id>/status` for an id that was bought at `hitem3d/hi3d`. The provider answers
+// 404, which this package reads — correctly, for an id it has no other reason to doubt — as the
+// terminal ErrRequestNotFound. Two things are lost at once: the build, and its price, because the
+// 404 lands on the STATUS call and x-fal-billable-units rides only on the RESULT one, so the ledger
+// records the whole thing as free.
+//
+// AND A RECOVERED BUILD MUST BE PRICED AS WHAT IT WAS BOUGHT AS. Finding it and then booking it at
+// TODAY's model's price rewrites the money of a run frozen before the deploy: an hitem3d turntable
+// that was estimated at $0.60 would settle at meshy's $1.20 for no reason a person could reconstruct
+// from the row. So the estimate travels with the slug — see EstimatedRequestUSDFor.
+//
+// A MODEL IS ADDED HERE WHEN THE DEFAULT MOVES OFF IT, and is not removed while any build could
+// still be in flight under it — which, given PollTimeout and the retry window, is a matter of
+// hours, not of releases.
+var retired3D = []struct {
+	Model      string
+	RequestUSD float64
+}{
+	// hitem3d's named-slot multi-view-to-3d: the default until the owner asked for meshy v7's
+	// reconstruction. Both 3D runs on beta were submitted under it, at ~30 Meshy credits.
+	{Model: "hitem3d/hi3d/v3.0/multi-view-to-3d", RequestUSD: 0.60},
+}
+
+// locateOutcome is what a search for a request id concluded, and its three values are three
+// DIFFERENT claims that must not collapse into two.
+type locateOutcome int
+
+const (
+	// locateDenied — every candidate was asked and every one of them said 404. The id really does
+	// buy nothing, and the caller may end the run on it.
+	locateDenied locateOutcome = iota
+	// locateFound — a candidate knows the id, and its model is the one to poll and to price with.
+	locateFound
+	// ⚠ locateUnknown — AT LEAST ONE CANDIDATE COULD NOT BE ASKED (429, 5xx, a dead socket), so
+	// the search is UNFINISHED, not exhausted. Reported as a denial it would discard a paid build
+	// on the strength of a rate limit: ErrRequestNotFound classifies non-retryable
+	// (CodeEmptyResponse), the run closes, and the only way back is a second submit — a second
+	// charge — for a model that was already built and is sitting in the provider's queue.
+	locateUnknown
+)
+
+// locateRequest looks for a request id in every OTHER queue namespace this deployment could have
+// submitted it to.
+//
+// ⚠ WHY A SEARCH AND NOT A RECORDED SLUG. Nothing writes the model down. design_run_attempt carries
+// the ROUTE («fal») and the provider's request id and nothing else — see entity.DesignRunAttempt —
+// so on a RESUME the only thing in hand is an id. The choice was therefore between losing a paid
+// build and looking in the places we could have put it, and a status lookup is free.
+//
+// WHAT IT COVERS AND WHAT IT DOES NOT. It covers the moves that actually happen: a default moved in
+// code (in either direction, because both the current default and the retired ones are tried), and
+// a deployment that switched between the default and FAL_MODEL_3D. It does NOT cover one override
+// replaced by another — nobody recorded the first — and it says so here rather than pretending.
+func (c *Client) locateRequest(ctx context.Context, current, requestID string) (string, locateOutcome, error) {
+	tried := map[string]bool{queuePath(strings.Trim(strings.TrimSpace(current), "/")): true}
+	candidates := []string{DefaultModel3D, c.cfg.Model3D}
+	for _, r := range retired3D {
+		candidates = append(candidates, r.Model)
+	}
+	// THE FIRST TRANSIENT FAULT IS KEPT, NOT THE LAST, because it is the one closest to the model
+	// the caller was already polling — and because a caller that reports «could not be asked» has
+	// to be able to say WHY, in the provider's own words.
+	var unreachable error
+	for _, m := range candidates {
+		m = strings.Trim(strings.TrimSpace(m), "/")
+		q := queuePath(m)
+		if q == "" || tried[q] {
+			continue
+		}
+		tried[q] = true
+		var st statusResponse
+		path := "/" + q + "/requests/" + url.PathEscape(requestID) + "/status"
+		err := c.callJSON(ctx, http.MethodGet, path, nil, &st, nil)
+		switch {
+		case err == nil:
+			// LOUD, AND AT ERROR LEVEL, because it means a paid build was one release away from
+			// being thrown away and recorded as free. The operator's action is to leave the retired
+			// slug in retired3D until nothing can still be in flight under it.
+			c.log.ErrorContext(ctx, "fal: a request id was not found under the configured model and was "+
+				"located under another one; a model move left this paid build behind",
+				slog.String("request_id", requestID), slog.String("configured", current),
+				slog.String("found_under", m))
+			return m, locateFound, nil
+		case errors.Is(err, ErrRequestNotFound):
+			// A REAL DENIAL: this namespace was asked and does not know the id.
+			continue
+		default:
+			// ⚠ NOT A DENIAL. A 429 or a 500 says nothing whatever about where the request lives,
+			// and treating silence as «no» is how a rate limit becomes a discarded paid build.
+			if unreachable == nil {
+				unreachable = err
+			}
+			c.log.WarnContext(ctx, "fal: a candidate namespace could not be asked about a request id; "+
+				"the search is unfinished, not exhausted",
+				slog.String("request_id", requestID), slog.String("candidate", m),
+				slog.String("err", err.Error()))
+		}
+	}
+	if unreachable != nil {
+		return "", locateUnknown, unreachable
+	}
+	return "", locateDenied, nil
+}
+
+// notFoundYetUnsure turns an unfinished search into an error a worker can act on: RETRYABLE, and
+// carrying the provider's own transient sentinel so the classifier reads it as weather rather than
+// as «this id buys nothing».
+func notFoundYetUnsure(requestID, current string, cause error) error {
+	return fmt.Errorf("fal: request %s is not under %s and the other namespaces could not be asked, "+
+		"so it is not yet known to be lost: %w", requestID, current, cause)
 }
 
 // checkQueuePath compares the polling path this client derived with the one the provider itself
@@ -528,8 +847,23 @@ func (c *Client) checkQueuePath(ctx context.Context, model, requestID, statusURL
 // Collect performs ONE status lookup and, when the request has completed, downloads the artifacts
 // into dst BEFORE returning. It is the whole answer to the expiring-link trap: there is no moment
 // between «we learned the url» and «we have the bytes» in which a caller could store the url.
+//
+// A REQUEST THE CONFIGURED MODEL DOES NOT KNOW IS LOOKED FOR ELSEWHERE BEFORE IT IS GIVEN UP — see
+// locateRequest. The id was bought under whatever slug was configured AT SUBMIT TIME, which is not
+// necessarily the one configured now.
 func (c *Client) Collect(ctx context.Context, requestID string, dst Sink) (*Result, error) {
-	return c.collect(ctx, ctx, c.cfg.Model3D, requestID, dst)
+	res, err := c.collect(ctx, ctx, c.cfg.Model3D, requestID, dst)
+	if !errors.Is(err, ErrRequestNotFound) {
+		return res, err
+	}
+	switch alt, out, cause := c.locateRequest(ctx, c.cfg.Model3D, requestID); out {
+	case locateFound:
+		return c.collect(ctx, ctx, alt, requestID, dst)
+	case locateUnknown:
+		// THE SEARCH DID NOT FINISH, so the 404 has not earned the right to be terminal.
+		return nil, notFoundYetUnsure(requestID, c.cfg.Model3D, cause)
+	}
+	return res, err
 }
 
 // collect splits the two budgets: lookupCtx bounds the status and result requests (and is therefore
@@ -576,9 +910,9 @@ func (c *Client) collect(lookupCtx, fetchCtx context.Context, model, requestID s
 		return nil, err
 	}
 	units, assumed := billableUnits(hdr)
-	charged := func(err error) error { return chargedWith(err, units, requestID) }
+	charged := func(err error) error { return chargedWith(err, units, requestID, model) }
 
-	modelURL := strings.TrimSpace(out.ModelMesh.URL)
+	modelURL := out.modelURL()
 	if modelURL == "" {
 		// THE MOST EXPENSIVE LINE IN THE PACKAGE: the request COMPLETED, the model was built and
 		// the units are spent — there is simply no file url to fetch it with.
@@ -587,6 +921,7 @@ func (c *Client) collect(lookupCtx, fetchCtx context.Context, model, requestID s
 
 	res := &Result{
 		RequestID:     requestID,
+		Model:         model,
 		Format:        formatGLB,
 		BillableUnits: units,
 		UnitsAssumed:  assumed,
@@ -643,13 +978,50 @@ func (c *Client) Await(ctx context.Context, requestID string, dst Sink) (*Result
 	}
 	started := time.Now()
 
+	// THE MODEL IS A LOCAL, NOT A READ OF THE CONFIGURATION EACH TIME AROUND, because a 404 that
+	// outlives the grace is the one symptom of a model that moved under a build already paid for —
+	// and the answer to it is to poll where the build actually is. Searched at most ONCE per wait:
+	// a second search could only offer a namespace already tried, and would spin.
+	model := c.cfg.Model3D
+	searched := false
+
 	for {
-		res, err := c.collect(waitCtx, ctx, c.cfg.Model3D, requestID, dst)
+		res, err := c.collect(waitCtx, ctx, model, requestID, dst)
 		if err == nil {
 			return res, nil
 		}
-		if errors.Is(err, ErrRequestNotFound) && time.Since(started) < grace {
-			err = fmt.Errorf("%w: request %s is not visible to the provider yet", ErrNotReady, requestID)
+		if errors.Is(err, ErrRequestNotFound) {
+			switch {
+			case time.Since(started) < grace:
+				err = fmt.Errorf("%w: request %s is not visible to the provider yet", ErrNotReady, requestID)
+			case !searched:
+				// PAST THE GRACE THE 404 IS ABOUT TO BECOME TERMINAL, and that is the one moment
+				// worth spending a few free lookups on: past here the build is written off and,
+				// because the 404 landed on the status call, written off as FREE.
+				alt, out, cause := c.locateRequest(waitCtx, model, requestID)
+				switch out {
+				case locateFound:
+					model = alt
+					continue
+				case locateUnknown:
+					// ⚠ UNFINISHED, NOT EXHAUSTED — so the wait ENDS, retryably, rather than
+					// polling a namespace already known to 404 until the ceiling. The verdict
+					// carries the candidate's own transient sentinel, so the run backs off (30 s ×
+					// 2ⁿ) and the NEXT pass resumes for free and searches again with the rate limit
+					// expired. `searched` deliberately stays false: it exists to stop a search that
+					// CONCLUDED, and this one did not.
+					err = notFoundYetUnsure(requestID, model, cause)
+				case locateDenied:
+					searched = true
+				}
+				if waitCtx.Err() != nil {
+					// THE SEARCH RAN OUT OF TIME RATHER THAN OUT OF PLACES, and those are different
+					// verdicts about money. «This id buys nothing» is terminal and writes the build
+					// off; «the wait ran out» keeps the id, and a later pass collects it for free.
+					// An unfinished search may not be reported as an exhausted one.
+					return nil, waitErr(ctx, requestID, ceiling)
+				}
+			}
 		}
 		if !errors.Is(err, ErrNotReady) {
 			// A LOOKUP killed by the ceiling must read as a ceiling, not as a transport hiccup —
@@ -714,6 +1086,18 @@ type submitBody struct {
 	Resolution          string `json:"resolution,omitempty"`
 }
 
+// meshySubmitBody is meshy's multi-image-to-3d payload on fal. Field names are the provider's.
+//
+// ⚠ `image_urls` HAS NO NAMES IN IT, and that is the whole difference between the two families —
+// see the package doc. The list is written front, back, left, right, occupied entries only.
+type meshySubmitBody struct {
+	ImageURLs           []string `json:"image_urls"`
+	ShouldTexture       bool     `json:"should_texture"`
+	EnablePBR           bool     `json:"enable_pbr"`
+	EnableSafetyChecker bool     `json:"enable_safety_checker"`
+	TexturePrompt       string   `json:"texture_prompt,omitempty"`
+}
+
 type submitResponse struct {
 	RequestID   string `json:"request_id"`
 	StatusURL   string `json:"status_url"`
@@ -734,9 +1118,26 @@ type falFile struct {
 	FileSize    int64  `json:"file_size"`
 }
 
+// resultBody reads BOTH families' answers, because the two spell the same file differently:
+// hitem3d returns `model_mesh`, meshy returns `model_glb`. The thumbnail happens to coincide.
+//
+// ⚠ READING ONLY ONE OF THEM IS THE MOST EXPENSIVE POSSIBLE MISTAKE HERE. A model that was built
+// and billed, whose url this client cannot see, ends as ErrNoModel with the charge attached — the
+// money gone and nothing delivered — and it would look exactly like a provider defect.
 type resultBody struct {
 	ModelMesh falFile `json:"model_mesh"`
+	ModelGLB  falFile `json:"model_glb"`
 	Thumbnail falFile `json:"thumbnail"`
+}
+
+// modelURL is the one non-empty model link of the answer, whichever field carried it. Neither key
+// is preferred over the other: a response carries one of them, and a response carrying both would
+// have to be naming the same file twice.
+func (r resultBody) modelURL() string {
+	if u := strings.TrimSpace(r.ModelMesh.URL); u != "" {
+		return u
+	}
+	return strings.TrimSpace(r.ModelGLB.URL)
 }
 
 // callJSON performs one control-plane request against the queue API and decodes its JSON answer.

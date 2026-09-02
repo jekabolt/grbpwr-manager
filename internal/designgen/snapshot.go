@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 )
 
 // Layouts of a run's output — the DesignRunParams.layout dictionary.
@@ -590,6 +592,195 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	return b.String()
 }
 
+// surfaceSteer is the words a 3D route sends, and the ONLY words it sends: what the SURFACE of
+// this garment is made of and how the turntable is presented.
+//
+// ⚠ WHAT IS ABSENT IS THE POINT OF THE FUNCTION. The ask, the garment note, the fit and the
+// numbered reference captions are all deliberately left out. `texture_prompt` is a hint to the
+// TEXTURING stage, which paints a surface it cannot locate: told «crossed straps on the back» it
+// stamps straps wherever it happens to be painting, and told «- image 3: right side view» it is
+// handed a numbering protocol it has no images to attach to. The shape of the garment is carried
+// by the plates — four approved pictures — and the only thing words can add is what the cloth is.
+//
+// IT IS COMPOSED FROM THE FROZEN SNAPSHOT, LIKE EVERY OTHER WORD THIS PACKAGE SENDS, so a run that
+// waits an hour in the queue still says what it was launched with.
+//
+// THE CLOTH LIST STARTS AT THE SECOND CLOTH, and the first one's absence is the rule rather than an
+// omission. The scalars just written ARE cloth one — the contract on colourRecipe.Fabrics says the
+// client repeats the first cloth's colour into `code`/`hex` and its words into `words` — so a loop
+// over the whole list said «colourway BLK» and «matte heavy jersey» twice in a row, measured on
+// this function's own two-cloth fixture. The composed prompt can afford that repetition because it
+// LABELS it (renderClothFirstIsTheScalar); a hint of a few dozen words cannot, and an unlabelled
+// repetition inside a hint reads as two cloths that happen to match.
+//
+// WHAT THAT GIVES UP IS CLOTH ONE'S `parts`, DELIBERATELY. The scalars are the garment's stated
+// surface and the lines below them are the EXCEPTIONS to it — which is exactly how `parts` reads on
+// the remaining cloths, whose contract calls an empty `parts` «the whole garment, or the remainder».
+// Naming cloth one's region as well would state the same surface twice, once as the base and once
+// as a region, and leave the texturing stage to reconcile them.
+//
+// ⚠ THE CEILING IS ENFORCED HERE, BY CONSTRUCTION, AND THE PREVIOUS ARGUMENT FOR NOT ENFORCING IT
+// WAS MEASURABLY WRONG. It read: «nothing is trimmed here, meshy.Submit refuses above
+// meshy.MaxTexturePrompt locally… affordable now that the steer is a colour phrase and a cloth
+// line». The steer is not bounded by being short in the ordinary case. Nothing in this band bounds
+// `colour.words`, `fabrics[].words`, `fabrics[].parts` or the number of cloths: a 660-character
+// `colour.words` composes a 703-rune steer, and an eight-cloth recipe composes 1262, against a
+// ceiling of 600. Both outcomes were TERMINAL — the direct meshy route refuses locally, the fal
+// meshy route takes a 422 — so 3D was permanently dead for that colourway, with an error naming
+// `texture_prompt`, a field nobody on the bench has ever heard of.
+//
+// WHY BOUNDING IS RIGHT HERE AND CUTTING WAS WRONG BEFORE, WHICH IS NOT THE SAME QUESTION. The band
+// rule «a ceiling refuses, it does not trim quietly» protects an ORDER a person gave: a trimmed
+// order is a claim nobody made. This is not an order. It is a hint this package composes ITSELF,
+// for one field, out of a snapshot whose order travels elsewhere in full — as Job.Prompt, and as
+// four approved plates. And the trim is not quiet in the way the old one was: the recorded prompt
+// column is now filled from what the route actually sends (PromptCarrier), so the bounded text is
+// the text a person reads in the run panel. The old textureSteer cut the whole prompt and stored
+// the UNCUT one; that is what made its cut a lie rather than a bound.
+func surfaceSteer(ctx context.Context, p runParams) string {
+	var parts []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if c := p.Colour; c != nil {
+		add(colourStatement(c))
+		add(oneLine(c.Words))
+		if cloths := statedCloths(c); len(cloths) > 1 {
+			for _, f := range cloths[1:] {
+				add(clothSteerLine(f))
+			}
+		}
+	}
+	if t := p.Threed; t != nil {
+		// PRESENTATION AND NOTHING ELSE OUT OF THE 3D PARAMS. `air` and `model` change what the
+		// surface has to look like — cloth hanging on nothing reads differently from cloth on a
+		// body. Body type and the fit override do not: they are the SHAPE of the thing, which the
+		// plates already carry, and asking a texturing stage for a body is asking it for the one
+		// thing it cannot give.
+		//
+		// ⚠ AN UNSTATED PRESENTATION SAYS NOTHING, NOT «presentation». The contract calls the empty
+		// value «not stated; the generator picks», and the bare label would be a word the texturing
+		// stage has to interpret — the one thing a hint must never be.
+		if pres := oneLine(t.Presentation); pres != "" {
+			add("presentation " + pres)
+		}
+	}
+	steer, dropped := joinSteer(parts)
+	if dropped > 0 {
+		// LOUD, EVERY TIME, because the alternative to a loud bound is a silent one. The run still
+		// goes out — a hint one phrase short still describes the same cloth — but «the provider was
+		// told less than the run says» is a fact an operator has to be able to find, and the knob
+		// that ends it is a shorter colour description on the colourway.
+		slog.Default().WarnContext(ctx, "3D: the surface steer reached the provider's ceiling and "+
+			"the tail of it was left off",
+			slog.Int("ceiling_runes", steerCeiling), slog.Int("sent_runes", len([]rune(steer))),
+			slog.Int("parts_lost", dropped))
+	}
+	return steer
+}
+
+// steerCeiling is the number of runes a surface hint may carry, and it is the PROVIDER'S number
+// rather than a taste of ours: meshy.Submit refuses above it locally, and the meshy family reached
+// through fal answers a longer one with a 422. Both refusals are terminal, so this is the one place
+// that can keep them unreachable.
+const steerCeiling = meshy.MaxTexturePrompt
+
+// steerMinPhrase is how much room a part needs before it is worth sending in part. Below it the
+// remainder is not a phrase but a fragment — «matte heavy jer» — and a fragment in a hint is worse
+// than the absence of one, because the texturing stage has no way to know it was cut.
+const steerMinPhrase = 24
+
+// joinSteer joins the parts with «; » and stops at steerCeiling, answering with how many parts did
+// not travel whole.
+//
+// AT MOST ONE PART IS EVER CUT, AND IT IS THE LAST THING WRITTEN. A cut means the ceiling has been
+// reached, so there is nothing to put after it; skipping a long part to fit a short one behind it
+// would silently reorder a list whose order is its priority.
+func joinSteer(parts []string) (string, int) {
+	var b strings.Builder
+	n := 0
+	for i, s := range parts {
+		sep := 0
+		if n > 0 {
+			sep = 2
+		}
+		r := []rune(s)
+		if n+sep+len(r) <= steerCeiling {
+			if sep > 0 {
+				b.WriteString("; ")
+			}
+			b.WriteString(s)
+			n += sep + len(r)
+			continue
+		}
+		if room := steerCeiling - n - sep; room >= steerMinPhrase {
+			// THE ROOM AND THE RESULT ARE BOTH MEASURED, because a part whose only space sits near
+			// its start leaves a one-word stub inside a perfectly roomy budget — «a», where the
+			// rule above promises a phrase.
+			if cut := cutAtWord(r, room); len([]rune(cut)) >= steerMinPhrase {
+				if sep > 0 {
+					b.WriteString("; ")
+				}
+				b.WriteString(cut)
+			}
+		}
+		return b.String(), len(parts) - i
+	}
+	return b.String(), 0
+}
+
+// cutAtWord takes at most `room` runes and gives back the last WHOLE word inside them.
+//
+// ⚠ NO WHITESPACE IN THE PREFIX MEANS NOTHING COMES BACK, AND THAT IS THE CONTRACT RATHER THAN AN
+// EDGE CASE. `colour.words` is free text: a person who pastes 660 characters without a space —
+// a url, a pasted hex list, a language that does not space its words — used to have it sliced at
+// the rune budget, and what reached the texturing stage was A TOKEN THAT DOES NOT EXIST, invented
+// by us, indistinguishable to the provider from a word the person actually wrote. A hint that
+// says nothing is honest; a hint that says a word nobody typed is not. So the part is dropped
+// whole, joinSteer counts it as lost, and surfaceSteer warns.
+func cutAtWord(r []rune, room int) string {
+	if room <= 0 {
+		return ""
+	}
+	if len(r) <= room {
+		return strings.TrimSpace(string(r))
+	}
+	cut := string(r[:room])
+	at := strings.LastIndexAny(cut, " \t")
+	if at <= 0 {
+		return ""
+	}
+	// A phrase must not end on the punctuation that was joining it to the words that were dropped.
+	return strings.TrimRight(strings.TrimSpace(cut[:at]), " ,;:-—")
+}
+
+// clothSteerLine is ONE cloth of a multi-cloth run BEYOND THE FIRST, in as few words as still
+// identify it: which parts it is for, what colour it is and what it looks like. Cloth one never
+// reaches here — the scalars are already its echo; see surfaceSteer.
+//
+// THE PARTS COME FIRST BECAUSE THEY ARE WHAT MAKES THE REST ADDRESSABLE. «contrast rib, red» tells
+// the texturing stage nothing it can act on; «cuffs and collar: contrast rib, red» does. An empty
+// `parts` is legal and means the whole garment (or the remainder) — see the contract on fabricUse —
+// so it is left off rather than called unknown.
+func clothSteerLine(f fabricUse) string {
+	var bits []string
+	for _, s := range []string{oneLine(f.Name), colourPhrase(f.ColourCode, f.ColourHex), oneLine(f.Words)} {
+		if s = strings.TrimSpace(s); s != "" {
+			bits = append(bits, s)
+		}
+	}
+	body := strings.Join(bits, ", ")
+	if body == "" {
+		return ""
+	}
+	if parts := oneLine(f.Parts); parts != "" {
+		return parts + ": " + body
+	}
+	return body
+}
+
 // viewPrompt is the per-call instruction on the per_view route, where each paid call is made for
 // one named side and the model must be told which.
 func viewPrompt(base, view string) string {
@@ -705,6 +896,10 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 		}
 	}
 	job.Prompt = composePrompt(run, p, in, attached)
+	// COMPOSED FOR EVERY KIND, USED BY ONE. Deriving it here rather than inside the 3D route keeps
+	// every word this package sends coming out of the same reader of the same frozen snapshot; a
+	// route that composed its own text would be a second composer to keep in step.
+	job.SurfaceSteer = surfaceSteer(ctx, p)
 	return job, nil
 }
 

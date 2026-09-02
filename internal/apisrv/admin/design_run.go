@@ -14,6 +14,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
@@ -219,11 +220,7 @@ func (s *Server) designKindGateCheck(kind string) error {
 var designPriceEstimate = map[string]decimal.Decimal{
 	entity.DesignRunKindFlat:   designImageMediumUSD.Mul(designImageQualityCeiling),
 	entity.DesignRunKindRender: designRenderMediumUSD.Mul(designImageQualityCeiling),
-	// 3D: ~30 кредитов Meshy по ~$0.02 (meshy.defaultCreditUSD и его же комментарий). Вывести это
-	// число из пакета нечем и не нужно: сколько кредитов съест задание, до сабмита не знает и сам
-	// провайдер, а курс кредита — env-дил (MESHY_CREDIT_USD), которого дверь не видит. Списание
-	// считает meshy.CostUSD по ФАКТИЧЕСКИ съеденным кредитам; здесь стоит потолок обычного задания.
-	entity.DesignRunKindThreed: decimal.RequireFromString("0.60"),
+	entity.DesignRunKindThreed: designThreedCeilingUSD(),
 	// ВЕКТОР — ЕДИНСТВЕННЫЙ РОД, У КОТОРОГО ЦЕНА ОПУБЛИКОВАНА ПАКЕТОМ СПИСАНИЯ. Берётся ИМЕННО ОНА.
 	entity.DesignRunKindVector:    designVectorCeilingUSD(),
 	entity.DesignRunKindDraftIdea: decimal.RequireFromString("0.02"),
@@ -303,6 +300,49 @@ func designVectorCeilingUSD() decimal.Decimal {
 	}
 	return out
 }
+
+// designThreedCeilingUSD — САМЫЙ ДОРОГОЙ ИЗ ДВУХ 3D-МАРШРУТОВ, и он выбирается ПЕРЕБОРОМ, потому
+// что дверь не знает, какой из них включён.
+//
+// ⚠ ЧТО ЭТО ЧИСЛО ДЕЛАЕТ СЕГОДНЯ — И ЧЕГО ОНО НЕ ДЕЛАЕТ. Оно попадает в `design_run.price_estimate`
+// и в `design_budget_day.reserved`, то есть в БУХГАЛТЕРИЮ и на панель рядом с `price_actual`.
+// ВОРОТ ЗА НИМ НЕТ: дневной потолок снят как понятие миграцией 0358 («у нас в принципе не должно
+// быть потолка»), поэтому ошибка здесь искажает учёт и число на экране, но НЕ пропускает трату за
+// какой-либо предел — предела нет. Соседний абзац designPriceEstimate написан до 0358 и местами
+// говорит о потолке как о живых воротах; читать его надо с этой поправкой.
+//
+// ⚠ ЗДЕСЬ БЫЛ ДЕФЕКТ ДЕНЕГ ТОГО ЖЕ КЛАССА, ЧТО ОПИСАН ВЫШЕ: рядом с местом списания лежала СВОЯ
+// копия цены. Таблица держала литерал $0.60 — цену ушедшего hitem3d, — а маршрут fal с тех пор
+// считает сборку по $1.20 (fal.EstimatedRequestUSD, цена meshy v7 с текстурой с прайс-страницы
+// самого fal). Пять поворотных столов в полёте показывали $3.00 обязательств против $6.00
+// настоящего списания. Теперь оценка маршрута и резерв двери — ОДНО ВЫРАЖЕНИЕ.
+//
+// ⚠ ЧТО ЭТА ОЦЕНКА В ПРИНЦИПЕ МОЖЕТ ОБЕЩАТЬ, СКАЗАНО ЧЕСТНО И БЕЗ ЗАПАСА. Она покрывает сборку
+// РОВНО ПОКА FAL_UNIT_USD НЕ ЗАДАН: тогда `fal.CostUSDFor` отвечает плоской ценой за запрос, не
+// зависящей от числа единиц, и любой ответ провайдера уложится в резерв. Как только тариф задан,
+// списание считается как `тариф × единицы`, а число единиц до сборки не знает и сам провайдер —
+// прогон 17 вернул сто. Значит СТАТИЧЕСКОЙ верхней границы там не существует вовсе, и эта таблица
+// её не изображает: при заданном тарифе резерв — правдоподобное ожидание, а не потолок. Настоящая
+// защита от того дефекта живёт не здесь, а в `fal.CostUSDFor` (без тарифа не умножать) и в потолке
+// ПОВТОРОВ (designMaxPaidAttempts).
+//
+// ⚠ ПОЧЕМУ МАКСИМУМ, А НЕ ЧТЕНИЕ DESIGN_THREED_PROVIDER. Довод тот же, что у дила качества
+// картинки двумя абзацами выше: второй читатель настройки — это второе число, и оно разойдётся с
+// первым на том деплое, который задаст настройку файлом, а не средой. Максимум читателя не заводит
+// вовсе, а платит за это лишь тем, что число в полёте слегка завышено — и оно снимается целиком на
+// терминальном переходе, уступая место ФАКТУ.
+//
+// MESHY СТОИТ ЛИТЕРАЛОМ, А FAL — НЕТ, И РАЗНИЦА НЕ В ВКУСЕ. У маршрута fal есть СОБСТВЕННОЕ
+// опубликованное число, которым он и списывает без заданного тарифа, — его и берём. У прямого
+// Meshy такого числа нет и быть не может: сколько кредитов съест задание, до сабмита не знает и сам
+// провайдер, а курс кредита — env-дил (MESHY_CREDIT_USD), которого дверь не видит. $0.60 — это
+// ~30 кредитов по ~$0.02 (meshy.defaultCreditUSD), догадка двери о ПОТОЛКЕ обычного задания, и она
+// не дублирует ничего: в пакете meshy такого числа нет.
+func designThreedCeilingUSD() decimal.Decimal {
+	return decimal.Max(fal.EstimatedRequestUSD(), designMeshyTaskCeilingUSD)
+}
+
+var designMeshyTaskCeilingUSD = decimal.RequireFromString("0.60")
 
 // designEstimateFor — оценка задания целиком: цена одного выхода на число запрошенных выходов.
 func designEstimateFor(kind string, outputs int) decimal.NullDecimal {

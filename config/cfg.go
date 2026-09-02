@@ -119,8 +119,9 @@ type Config struct {
 	// OpenRouter" (P-5). Not by preference: OpenRouter has no 3D modality at all — "3d" is not a
 	// value its catalogue accepts — so there is nothing there to route to. See internal/meshy.
 	Meshy meshy.Config `mapstructure:"meshy"`
-	// Fal is the SECOND 3D provider and the one the owner named: hitem3d's multi-view-to-3d, reached
-	// through fal.ai's queue. Which of the two the turntable actually uses is
+	// Fal is the SECOND 3D transport and the one the owner named: multi-view-to-3d reached through
+	// fal.ai's queue (hitem3d at first; `meshy/v7/multi-image-to-3d` since the owner asked for the
+	// better reconstruction — see fal.DefaultModel3D). Which of the two the turntable actually uses is
 	// `design_generation.threed_provider` (DESIGN_THREED_PROVIDER), an explicit word rather than a
 	// guess from which key happens to be present — see designgen.Config.ThreedProvider.
 	Fal fal.Config `mapstructure:"fal"`
@@ -705,10 +706,18 @@ func bindEnvVars() {
 	viper.BindEnv("fal.api_key", "FAL_KEY")
 	// The queue root. Empty => https://queue.fal.run. For tests and a proxy, not a knob.
 	viper.BindEnv("fal.base_url", "FAL_BASE_URL")
-	// The 3D slug. Empty => fal.DefaultModel3D (hitem3d/hi3d/v3.0/multi-view-to-3d — the owner named
-	// it by name). It is overridable for the reason orimages.DefaultModel is: a slug the provider
-	// retires turns every press into a 404, and an operator must be able to move off it without a
-	// deploy. A 404 on the submit path is reported as a RETIRED MODEL, never as a busy service.
+	// The 3D slug. Empty => fal.DefaultModel3D (`meshy/v7/multi-image-to-3d`; it was hitem3d until
+	// the owner asked for meshy). ⚠ THE DEFAULT IS MOVED IN CODE, NOT THROUGH THIS VARIABLE:
+	// updating the DigitalOcean spec is itself a deployment of whatever master holds, so a model
+	// change made here would carry an unrelated release with it. This override is for an operator
+	// who has to move off a slug NOW — the reason orimages.DefaultModel is overridable too: a slug
+	// the provider retires turns every press into a 404, and an operator must be able to move off it
+	// without a deploy. A 404 on the submit path is reported as a RETIRED MODEL, never as a busy service.
+	//
+	// MOVING IT DOES NOT ORPHAN THE BUILDS IN FLIGHT UNDER THE OLD SLUG: a request id the configured
+	// namespace does not know is looked for in the others before it is given up — see
+	// fal.locateRequest and fal.retiredModel3D, which is also where the one uncovered move is named
+	// (one override replaced straight by another).
 	viper.BindEnv("fal.model_3d", "FAL_MODEL_3D")
 	viper.BindEnv("fal.http_timeout", "FAL_HTTP_TIMEOUT")
 	viper.BindEnv("fal.poll_interval", "FAL_POLL_INTERVAL")

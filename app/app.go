@@ -529,8 +529,10 @@ func (a *App) Start(ctx context.Context) error {
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
 			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
-			// threed — fal.ai's hitem3d by default (K-10), Meshy behind the same slot on request.
-			// Both are reached DIRECTLY, because OpenRouter has no 3D modality to route to.
+			// threed — fal.ai's queue by default (K-10), Meshy's own API behind the same slot on
+			// request. Which MODEL the fal route asks for is FAL_MODEL_3D / fal.DefaultModel3D,
+			// today `meshy/v7/multi-image-to-3d`. Both are reached DIRECTLY, because OpenRouter has
+			// no 3D modality to route to.
 			Threed: threed,
 		})
 		if err != nil {

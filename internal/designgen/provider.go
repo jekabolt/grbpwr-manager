@@ -44,11 +44,17 @@ type Job struct {
 	// References[i], and is empty where the run has no view for that picture (a moodboard-style
 	// reference, a fabric swatch, an uploaded photograph nobody labelled).
 	//
-	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND ONE PROVIDER NEEDS THE NAME. Meshy reads
-	// an ORDERED LIST and infers the front from position zero; fal's hitem3d takes NAMED SLOTS
-	// (front_image_url, back_image_url, …), which is exactly what the owner asked for — «что бы мы
-	// могли туда подавать наши фронт бэк и так далее». Handing that provider an ordered list and
-	// letting it guess would throw away the one thing the bench already knows for certain.
+	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND THE ROUTE HAS TO STATE WHAT IT KNOWS. Both
+	// meshy families — the direct API and meshy on fal, which is what FAL_MODEL_3D defaults to
+	// today — take an ORDERED LIST and infer the front from position zero. fal's hitem3d, the slug
+	// the owner named first, takes NAMED SLOTS (front_image_url, back_image_url, …) and is one
+	// variable away.
+	//
+	// ⚠ THE DEFAULT BEING A LIST-SHAPED MODEL IS THE REASON THIS FIELD MATTERS MORE, NOT LESS. The
+	// name is what lets falViews REFUSE a run whose front plate did not survive media resolution
+	// instead of sending the back as the face of the garment; the flattening to an ordered list
+	// then happens in one line of the transport, front first, rather than by a positional rule
+	// spread across the band. See falViews.
 	//
 	// A ROUTE THAT NEEDS THE NAMES MUST REFUSE AN UNNAMED PICTURE RATHER THAN GUESS ONE. An empty
 	// entry is legal here and means «this run does not claim to know»; inventing `front` for it
@@ -66,6 +72,27 @@ type Job struct {
 	// `detail` and nothing else, so two details are two indistinguishable calls — on the per_view
 	// route, two paid calls with a byte-identical prompt.
 	DetailNames []string
+	// SurfaceSteer is the ONLY text a 3D route sends: a short hint about the SURFACE of the
+	// garment — its stated colour, the words describing the cloth, and how the turntable is
+	// presented. It is composed in buildJob from the frozen snapshot, exactly like Prompt.
+	//
+	// ⚠ IT IS A SECOND, NARROWER COMPOSITION AND NOT A CUT OF Prompt, AND THAT IS THE FIX. What
+	// used to travel to `texture_prompt` was the run's whole prompt truncated to the provider's
+	// ceiling — which meant the texturing stage was handed the ASK («build the turntable of this
+	// top»), the GARMENT NOTE («crossed straps on the back»), the FIT and the numbered reference
+	// captions. A texturing stage has no spatial understanding to place «on the back» with: it
+	// stamps what it is told wherever it is texturing, which is the single most plausible textual
+	// route to the owner's complaint of a back that came out at the front. Silhouette travels as
+	// PICTURES; only the surface travels as words.
+	//
+	// EMPTY IS LEGAL AND MEANS «this run states nothing about its surface» — the provider's own
+	// defaults are the honest answer to that, and an empty hint is not the same as no hint.
+	//
+	// ⚠ IT IS COMPOSED WITHIN A CEILING, NOT MERELY SHORT BY NATURE. Nothing in the band bounds
+	// `colour.words`, `fabrics[].words` or the number of cloths, and both providers refuse a hint
+	// past 600 runes TERMINALLY — see surfaceSteer, which is where the bound lives and where the
+	// argument for bounding rather than refusing is made.
+	SurfaceSteer string
 	// Outputs is design_run.requested_outputs: how many pictures the history row expects.
 	Outputs int
 	// Quality is the price dial for the image route.
@@ -151,6 +178,37 @@ func missingCredential(p Provider) string {
 		}
 	}
 	return "no API key is configured for this route"
+}
+
+// PromptCarrier is a route whose OUTGOING TEXT is not the job's composed prompt.
+//
+// ⚠ IT EXISTS SO THE HISTORY ROW CAN STOP GUESSING. design_run.prompt is written by the worker
+// before the paid call and is read by a person as «what this run told the model». On the image
+// routes that is exactly what Job.Prompt is. On the 3D routes it never was: the only text a
+// turntable provider accepts is a short surface hint (`texture_prompt`), and one of the two model
+// families accepts NO text at all — so the column was showing an operator a composed paragraph
+// that the provider had not been sent, beside a price that was real. A run panel that attributes
+// words to a spend that never carried them is worse than an empty column, because it looks like
+// evidence.
+//
+// OPTIONAL, and its absence means «this route sends Job.Prompt», which is the truth for the image
+// and vector routes and the reason they implement nothing.
+//
+// ⚠ THE ANSWER IS THE ROUTE'S, NEVER THE KIND'S. A `switch kind` in the dispatcher would be a
+// second opinion about a fact only the route holds — which model family is configured, and whether
+// that family has a text field — and the two would drift the first time a slug moved.
+type PromptCarrier interface {
+	// SentPrompt returns the text this route will hand the provider for this job. Empty means «no
+	// words travel», which is a claim in its own right and not a missing value.
+	SentPrompt(job Job) string
+}
+
+// recordedPrompt is what design_run.prompt must say about a job: what the route is going to send.
+func recordedPrompt(prov Provider, job Job) string {
+	if pc, ok := prov.(PromptCarrier); ok {
+		return pc.SentPrompt(job)
+	}
+	return job.Prompt
 }
 
 // Collector is the second half of an asynchronous route. Only the 3D route implements it: Meshy

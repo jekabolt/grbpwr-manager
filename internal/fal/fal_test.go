@@ -79,6 +79,14 @@ func TestThePollingPathDropsTheSubPathButTheSubmitKeepsIt(t *testing.T) {
 	require.Equal(t, "nonsense", queuePath("nonsense"))
 }
 
+// hitem3dModel is the NAMED-SLOT family, spelled out rather than taken from DefaultModel3D.
+//
+// ⚠ IT IS A LITERAL BECAUSE THE DEFAULT MOVED AND THE BODY DID NOT. Reading the configured slug
+// here would make this test follow whatever family happens to be the default, and the assertion it
+// carries — «the named body still goes to the named endpoint» — would evaporate silently the moment
+// the default changed. Which is exactly what happened when it changed to meshy/v7.
+const hitem3dModel = "hitem3d/hi3d/v3.0/multi-view-to-3d"
+
 // TestSubmitSendsTheViewsBY_NAME. This is the whole reason this provider was asked for: the bench
 // knows which plate is the front, and this route is the first one that can be told.
 func TestSubmitSendsTheViewsBY_NAME(t *testing.T) {
@@ -96,15 +104,19 @@ func TestSubmitSendsTheViewsBY_NAME(t *testing.T) {
 
 	c := newTestClient(t, srv.URL)
 	id, err := c.Submit(context.Background(), Request3D{
+		Model:    hitem3dModel,
 		FrontURL: "https://cdn.example/front.png",
 		BackURL:  "https://cdn.example/back.png",
 		LeftURL:  "https://cdn.example/left.png",
 		RightURL: "https://cdn.example/right.png",
+		// STATED AND EXPECTED TO VANISH: this family's payload has no text field, so the hint is
+		// dropped rather than refused — and the assertion below is what keeps «dropped» honest.
+		TexturePrompt: "matte black jersey",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "req-42", id)
 
-	require.Equal(t, "/"+DefaultModel3D, gotPath, "the submit keeps the model's whole sub-path")
+	require.Equal(t, "/"+hitem3dModel, gotPath, "the submit keeps the model's whole sub-path")
 	// fal's own scheme is `Key`, not `Bearer`. A Bearer prefix here is a 401 on every call.
 	require.Equal(t, "Key test-key-not-a-real-one", gotAuth)
 
@@ -117,6 +129,126 @@ func TestSubmitSendsTheViewsBY_NAME(t *testing.T) {
 	// STATED, NOT OMITTED: the provider's own default for enable_pbr is TRUE, and PBR maps
 	// quadruple the download for lighting nuance a product tile does not show.
 	require.Equal(t, false, body["enable_pbr"])
+
+	// AND NOT ONE FIELD OF THE OTHER FAMILY. An `image_urls` list reaching this endpoint would be a
+	// build with no front view at all; a `texture_prompt` reaching it would be a hint nothing reads,
+	// recorded in the history as though it had been read.
+	require.NotContains(t, body, "image_urls")
+	require.NotContains(t, body, "texture_prompt")
+}
+
+// TestTheMESHY_FAMILY_SENDS_AN_ORDERED_LIST_WITH_THE_FRONT_FIRST.
+//
+// ⚠ THIS IS THE AXIS THE OWNER COMPLAINED ABOUT, AND THE MIGRATION MAKES THE CONTRACT WEAKER ON IT.
+// meshy's endpoint takes «images of the same object from different angles» with no way to say which
+// angle each one is, so the ONE guarantee left is that the front leads the list. A hole in the
+// middle (no left plate) must close up rather than shift anything: there are no positions to hold.
+func TestTheMESHY_FAMILY_SENDS_AN_ORDERED_LIST_WITH_THE_FRONT_FIRST(t *testing.T) {
+	var gotPath string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"request_id": "req-77",
+			"status_url": srvStatusURL(r.Host, "meshy/v7", "req-77"),
+		})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	id, err := c.Submit(context.Background(), Request3D{
+		// The RIGHT plate is given and the LEFT is not — the ordinary half-filled bench.
+		FrontURL:      "https://cdn.example/front.png",
+		BackURL:       "https://cdn.example/back.png",
+		RightURL:      "https://cdn.example/right.png",
+		TexturePrompt: "colourway BLK — the exact value is #0a0a0a; matte heavy jersey",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "req-77", id)
+	require.Equal(t, "/"+DefaultModel3D, gotPath, "the default slug IS the meshy one now")
+
+	require.Equal(t, []any{
+		"https://cdn.example/front.png",
+		"https://cdn.example/back.png",
+		"https://cdn.example/right.png",
+	}, body["image_urls"], "front first, occupied views only, in front-back-left-right order")
+
+	require.Equal(t, true, body["should_texture"], "an untextured mesh answers a different question")
+	require.Equal(t, false, body["enable_pbr"])
+	require.Equal(t, true, body["enable_safety_checker"])
+	require.Equal(t, "colourway BLK — the exact value is #0a0a0a; matte heavy jersey", body["texture_prompt"])
+
+	// NOT ONE NAMED FIELD OF THE OTHER FAMILY, and no export_format either: meshy's schema has
+	// neither, and a body carrying keys the validator does not know is a 422 that reads like ours.
+	for _, k := range []string{"front_image_url", "back_image_url", "left_image_url", "right_image_url", "export_format", "enable_texture"} {
+		require.NotContains(t, body, k)
+	}
+	// AND THE PRICE DIALS ARE LEFT TO THE PROVIDER: a stated symmetry_mode or target_polycount
+	// would freeze today's guess into every future build.
+	require.NotContains(t, body, "symmetry_mode")
+	require.NotContains(t, body, "target_polycount")
+}
+
+// TestAnEmptySteerIsOMITTED_NOT_SENT_EMPTY. An empty texture_prompt is not «no hint», it is a hint
+// that says nothing — and the provider's own default behaviour is the better answer to that.
+func TestAnEmptySteerIsOMITTED_NOT_SENT_EMPTY(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "req-78"})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, err := c.Submit(context.Background(), Request3D{FrontURL: "https://cdn.example/front.png"})
+	require.NoError(t, err)
+	require.NotContains(t, body, "texture_prompt")
+	// POSITIVE CONTROL: the body itself did arrive, so «the key is absent» is a statement about the
+	// key and not about an empty request.
+	require.Equal(t, []any{"https://cdn.example/front.png"}, body["image_urls"])
+}
+
+// TestWhichFamilyASlugBelongsTo. The prefix decides the body, so it decides whether the plates keep
+// their names — and an unrecognised slug must take the NAMED body, which a list-shaped endpoint
+// refuses loudly, rather than the list, which a named endpoint accepts as a build with no front.
+func TestWhichFamilyASlugBelongsTo(t *testing.T) {
+	for _, slug := range []string{
+		"meshy/v7/multi-image-to-3d",
+		"fal-ai/meshy/v6/multi-image-to-3d",
+		"MESHY/v7/multi-image-to-3d",
+	} {
+		require.Truef(t, isMeshyFamily(slug), "slug %q", slug)
+		require.Truef(t, New(Config{APIKey: "k", Model3D: slug}).AcceptsTexturePrompt(), "slug %q", slug)
+	}
+	for _, slug := range []string{
+		hitem3dModel,
+		"fal-ai/flux/dev",
+		"",
+		"meshyish/v1/thing",
+	} {
+		require.Falsef(t, isMeshyFamily(slug), "slug %q", slug)
+	}
+	// The CONFIGURED slug is what the question is about — an empty Model3D falls back to the
+	// default, which is the meshy one.
+	require.True(t, New(Config{APIKey: "k"}).AcceptsTexturePrompt())
+	require.False(t, New(Config{APIKey: "k", Model3D: hitem3dModel}).AcceptsTexturePrompt())
+	// A NIL CLIENT ANSWERS NO rather than panicking: it sends nothing at all.
+	var nilC *Client
+	require.False(t, nilC.AcceptsTexturePrompt())
+}
+
+// TestTheDEFAULT_IS_MESHY_V7_AND_ITS_ESTIMATE_IS_ITS_PRICE.
+//
+// Both halves moved together and must stay together: an estimate left at the retired provider's
+// $0.60 would under-report every build by half, quietly, in the ledger the daily cap reads.
+func TestTheDEFAULT_IS_MESHY_V7_AND_ITS_ESTIMATE_IS_ITS_PRICE(t *testing.T) {
+	require.Equal(t, "meshy/v7/multi-image-to-3d", DefaultModel3D)
+	require.Equal(t, "meshy/v7", queuePath(DefaultModel3D),
+		"the status and result endpoints hang off the namespace, not off the whole slug")
+	// $1.20 is meshy v7's textured price on fal's own model page. Said in the test's own words:
+	// comparing a number with the function that computes it is not a comparison.
+	require.Equal(t, "1.2", New(Config{APIKey: "k"}).CostUSD(1).String())
 }
 
 func srvStatusURL(host, base, id string) string {
@@ -188,12 +320,276 @@ func TestEveryStatusCodeGetsTheSentinelThatSaysWhatToDO(t *testing.T) {
 	}
 }
 
+// ─────────────── МОДЕЛЬ ПЕРЕЕХАЛА, А СБОРКА УЖЕ ОПЛАЧЕНА ───────────────
+
+// movedModelStand — очередь, в которой ОДИН запрос живёт под ОДНИМ пространством имён. Всё, что
+// приходит по чужому пути, отвечает 404 — ровно как отвечает fal на id, которого в этом namespace
+// нет.
+//
+// СТЕНД СЧИТАЕТ ОБРАЩЕНИЯ ПО ПУТЯМ, потому что утверждение пробы — не «ответ пришёл», а «искали
+// там, где сборка на самом деле лежит».
+type movedModelStand struct {
+	live  string // queuePath, под которым запрос существует
+	paths map[string]int
+}
+
+func newMovedModelStand(t *testing.T, live string) (*movedModelStand, *httptest.Server) {
+	t.Helper()
+	st := &movedModelStand{live: live, paths: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/model.glb") {
+			_, _ = w.Write([]byte("glTF-bytes"))
+			return
+		}
+		st.paths[queueNamespaceOf(r.URL.Path)]++
+		if !strings.HasPrefix(strings.TrimPrefix(r.URL.Path, "/"), st.live+"/requests/") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Request is not found"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/status") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "COMPLETED"})
+			return
+		}
+		w.Header().Set(billableUnitsHeader, "1")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model_mesh": map[string]any{"url": "http://" + r.Host + "/model.glb"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return st, srv
+}
+
+// queueNamespaceOf — первые два сегмента пути запроса, то есть тот самый queuePath, по которому
+// клиент решил, где искать.
+func queueNamespaceOf(p string) string {
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	if len(parts) < 2 {
+		return p
+	}
+	return parts[0] + "/" + parts[1]
+}
+
+// TestAMovedDEFAULT_DOES_NOT_ORPHAN_A_PAID_BUILD.
+//
+// ⚠ ЭТО ДЕНЬГИ, И ТЕРЯЛИСЬ ОНИ ДВАЖДЫ ЗА ОДИН РАЗ. Сабмит — это платёж: попытка закрывается
+// `accepted` с id, а сборка идёт минутами. Путь опроса выводится ИЗ СЛАГА МОДЕЛИ, поэтому релиз,
+// приехавший в эти минуты, отправлял следующий опрос в `meshy/v7/requests/<id>/status` за id,
+// купленным в `hitem3d/hi3d`. Провайдер отвечал 404, клиент — терминальным ErrRequestNotFound, и
+// сборка пропадала. А поскольку 404 приходил на СТАТУС, заголовок x-fal-billable-units не читался
+// вовсе — и в бухгалтерию платная сборка уезжала БЕСПЛАТНОЙ.
+//
+// МУТАЦИЯ, КОТОРУЮ ЭТО КРАСИТ: вернуть опрос к `c.cfg.Model3D` (то есть убрать locateRequest из
+// Collect и Await). ИГЛА УНИКАЛЬНА: единственный способ позеленеть — постучаться в то пространство
+// имён, в котором сборка действительно лежит; проба это ещё и пересчитывает по путям.
+func TestAMovedDEFAULT_DOES_NOT_ORPHAN_A_PAID_BUILD(t *testing.T) {
+	// Сборка куплена под УШЕДШИМ слагом; клиент настроен на сегодняшний.
+	st, srv := newMovedModelStand(t, queuePath(hitem3dModel))
+	c := newTestClient(t, srv.URL)
+	require.Equal(t, DefaultModel3D, c.Model(), "положительный контроль: клиент настроен на сегодняшний слаг")
+
+	var model bytes.Buffer
+	res, err := c.Collect(context.Background(), "req-moved", Sink{Model: &model})
+	require.NoError(t, err, "оплаченная сборка не нашлась после переезда модели")
+	require.Equal(t, "glTF-bytes", model.String(), "байты обязаны доехать, а не только статус")
+
+	// ⚠ И ДЕНЬГИ ТОЖЕ. Это вторая половина дефекта: 404 на статусе означал ещё и цену NULL.
+	require.Equal(t, 1.0, res.BillableUnits, "заряд провайдера читается только на выборке результата")
+
+	require.Equal(t, 1, st.paths[queuePath(DefaultModel3D)], "настроенное пространство пробуется ПЕРВЫМ и один раз")
+	require.GreaterOrEqual(t, st.paths[queuePath(hitem3dModel)], 1, "ушедшее пространство обязано быть опрошено")
+}
+
+// TestAWaitPastItsGraceLOOKS_WHERE_THE_BUILD_ACTUALLY_IS — тот же дефект на боевом пути.
+//
+// Воркер зовёт Await, а не Collect, и у Await впереди ЛЬГОТА: 404 в первые секунды — это отставание
+// очереди, а не ответ (см. notFoundGrace). Поиск обязан стоять ровно ЗА льготой: раньше он тратил бы
+// лишние обращения на нормальное отставание, позже — уже некуда, 404 к этому моменту терминален.
+//
+// МУТАЦИЯ, КОТОРУЮ ЭТО КРАСИТ: та же — опрос по `c.cfg.Model3D`. ВТОРАЯ: поставить поиск ДО льготы;
+// тогда `paths` настроенного пространства покажет одно обращение вместо нескольких, потому что
+// первая же попытка уедет в чужой namespace.
+func TestAWaitPastItsGraceLOOKS_WHERE_THE_BUILD_ACTUALLY_IS(t *testing.T) {
+	st, srv := newMovedModelStand(t, queuePath(hitem3dModel))
+	c := New(Config{
+		APIKey: "k", BaseURL: srv.URL,
+		HTTPTimeout: 2 * time.Second, PollInterval: 20 * time.Millisecond,
+		PollTimeout: time.Second, // льгота = половина потолка = 500 мс
+	})
+
+	var model bytes.Buffer
+	res, err := c.Await(context.Background(), "req-moved", Sink{Model: &model})
+	require.NoError(t, err, "оплаченная сборка обязана найтись до того, как 404 станет терминальным")
+	require.Equal(t, "glTF-bytes", model.String())
+	require.Equal(t, 1.0, res.BillableUnits)
+
+	require.Greater(t, st.paths[queuePath(DefaultModel3D)], 1,
+		"льгота обязана отработать в настроенном пространстве, а не быть пропущена")
+}
+
+// TestAnIdNOBODY_KNOWS_IS_STILL_TERMINAL — отрицательный контроль поиска.
+//
+// Без него предыдущие две пробы зеленели бы и в мире, где клиент считает найденным что угодно:
+// «искать в других пространствах» не имеет права превратиться в «не признавать 404 никогда».
+func TestAnIdNOBODY_KNOWS_IS_STILL_TERMINAL(t *testing.T) {
+	st, srv := newMovedModelStand(t, "nobody/at-all")
+	c := newTestClient(t, srv.URL)
+
+	_, err := c.Collect(context.Background(), "req-ghost", Sink{Model: &bytes.Buffer{}})
+	require.ErrorIs(t, err, ErrRequestNotFound, "id, которого нет нигде, обязан остаться терминальным")
+	require.NotErrorIs(t, err, ErrModelUnavailable, "404 на пути запроса — не про слаг")
+	require.GreaterOrEqual(t, len(st.paths), 2, "положительный контроль: поиск всё-таки состоялся")
+}
+
+// TestACandidateTHAT_COULD_NOT_BE_ASKED_IS_NOT_A_DENIAL.
+//
+// ⚠ P1 FROM REVIEW, AND IT DISCARDS A PAID BUILD. The configured namespace 404s after the grace,
+// the build really is sitting under the retired slug — and that slug's status request answers 429.
+// A search that treats «could not ask» as «asked and told no» concludes the id buys nothing;
+// ErrRequestNotFound classifies NON-RETRYABLE (CodeEmptyResponse), the run closes, and the only
+// road back is a second submit — a second charge — for a model already built and waiting.
+//
+// WHAT THIS PROBE REQUIRES: the outcome stays RETRYABLE and carries the provider's own transient
+// sentinel, so the run backs off and the next pass searches again with the rate limit expired.
+//
+// МУТАЦИЯ, КОТОРУЮ ЭТО КРАСИТ: `continue` на любой ошибке кандидата (то есть слить locateUnknown с
+// locateDenied). ИГЛА УНИКАЛЬНА: отрицательный контроль ниже требует, чтобы ЧЕСТНЫЙ отказ всех
+// кандидатов остался терминальным, поэтому «никогда не верить 404» этой парой не позеленеет.
+func TestACandidateTHAT_COULD_NOT_BE_ASKED_IS_NOT_A_DENIAL(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ns := queueNamespaceOf(r.URL.Path)
+		asked = append(asked, ns)
+		if ns == queuePath(hitem3dModel) {
+			// The namespace the build actually lives under is rate-limited right now.
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"detail":"rate limit exceeded"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"Request is not found"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, err := c.Collect(context.Background(), "req-paid", Sink{Model: &bytes.Buffer{}})
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrRequestNotFound,
+		"кандидат ответил 429, а не «не знаю такого»: оплаченная сборка списана бы в терминальный отказ")
+	require.ErrorIs(t, err, ErrRateLimited,
+		"вердикт обязан нести транзиентную причину провайдера, иначе классификатор не назовёт его погодой")
+	require.Contains(t, err.Error(), "req-paid", "id — единственное, чем оплаченную сборку можно найти снова")
+	require.Contains(t, asked, queuePath(hitem3dModel), "положительный контроль: кандидата всё-таки спрашивали")
+}
+
+// TestAnUnaskableCandidateKEEPS_AWAIT_RETRYABLE_TOO — тот же довод на боевом пути.
+//
+// Воркер зовёт Await, а не Collect. Здесь важно ещё и то, что ожидание ЗАКАНЧИВАЕТСЯ повторяемым
+// вердиктом, а не докручивает потолок опроса в пространстве, про которое уже известно, что оно
+// отвечает 404: откат прогона (30 с × 2ⁿ) — это ровно тот ответ, которого просит 429.
+func TestAnUnaskableCandidateKEEPS_AWAIT_RETRYABLE_TOO(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if queueNamespaceOf(r.URL.Path) == queuePath(hitem3dModel) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"detail":"upstream boom"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"Request is not found"}`))
+	}))
+	defer srv.Close()
+
+	c := New(Config{
+		APIKey: "k", BaseURL: srv.URL,
+		HTTPTimeout: 2 * time.Second, PollInterval: 20 * time.Millisecond,
+		PollTimeout: time.Second, // льгота = половина потолка = 500 мс
+	})
+	_, err := c.Await(context.Background(), "req-paid", Sink{Model: &bytes.Buffer{}})
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrRequestNotFound, "незавершённый поиск не имеет права стать приговором")
+}
+
+// TestARecoveredBuildIsPricedASWHAT_IT_WAS_BOUGHT_AS.
+//
+// ⚠ P2 FROM REVIEW. Finding the build was only half the repair. An hitem3d turntable was estimated
+// at $0.60; the deployment then moves to meshy, the fallback recovers the result — and pricing it
+// with the CONFIGURED model books meshy's $1.20. Nothing in the row explains why a run frozen
+// before the deploy settled at twice its own estimate.
+//
+// МУТАЦИЯ, КОТОРУЮ ЭТО КРАСИТ: `CostUSDFor(c.cfg.Model3D, …)` вместо модели результата, или
+// возврат Result без поля Model. ИГЛА УНИКАЛЬНА: цены двух семейств различаются вдвое, и проба
+// сверяет ИМЕННО цену, а не только слаг.
+func TestARecoveredBuildIsPricedASWHAT_IT_WAS_BOUGHT_AS(t *testing.T) {
+	_, srv := newMovedModelStand(t, queuePath(hitem3dModel))
+	// ⚠ БЕЗ ТАРИФА НАРОЧНО: FAL_UNIT_USD не задан ни на одном сегодняшнем развёртывании, и ровно
+	// тогда цену называет САМ ПАКЕТ — то есть только тогда выбор модели вообще влияет на число.
+	c := New(Config{
+		APIKey: "k", BaseURL: srv.URL,
+		HTTPTimeout: 2 * time.Second, PollInterval: 5 * time.Millisecond, PollTimeout: 2 * time.Second,
+	})
+	require.Equal(t, DefaultModel3D, c.Model(), "положительный контроль: настроено сегодняшнее семейство")
+
+	res, err := c.Collect(context.Background(), "req-moved", Sink{Model: &bytes.Buffer{}})
+	require.NoError(t, err)
+
+	require.Equal(t, hitem3dModel, res.Model,
+		"результат обязан назвать слаг, ПОД КОТОРЫМ его нашли, иначе цену считать не по чему")
+	require.Equal(t, "0.6", c.CostUSDFor(res.Model, res.BillableUnits).String(),
+		"сборка hitem3d стоит hitem3d, даже когда развёртывание уже переехало на meshy")
+	require.Equal(t, "1.2", c.CostUSD(res.BillableUnits).String(),
+		"отрицательный контроль: по НАСТРОЕННОЙ модели это была бы цена meshy — та самая ошибка")
+
+	// И ТАРИФ, КОГДА ОН ЗАДАН, ОДИН НА РАЗВЁРТЫВАНИЕ: оператор ввёл одно число, второго нет и
+	// выдумывать его по слагу — это догадка в костюме арифметики.
+	tariffed := New(Config{APIKey: "k", BaseURL: srv.URL, UnitUSD: 0.5})
+	require.Equal(t, tariffed.CostUSDFor(hitem3dModel, 3).String(), tariffed.CostUSDFor(DefaultModel3D, 3).String(),
+		"заданный тариф не зависит от модели")
+}
+
+// TestTheRETIRED_MODELS_ESTIMATE_TRAVELS_WITH_ITS_SLUG. Малая проба на таблицу цен: неизвестный
+// слаг обязан отвечать ЦЕНОЙ СЕГОДНЯШНЕЙ МОДЕЛИ, а не самой дешёвой.
+//
+// ⚠ ДВЕ ОШИБКИ ЗДЕСЬ НЕСИММЕТРИЧНЫ. Оценить старую сборку по сегодняшней (большей) цене — завысить
+// одну строку; оценить сегодняшнюю по старой (меньшей) — ЗАНИЗИТЬ реальные траты в учёте, ровно та
+// беда, ради которой вся эта бухгалтерия и существует.
+func TestTheRETIRED_MODELS_ESTIMATE_TRAVELS_WITH_ITS_SLUG(t *testing.T) {
+	require.Equal(t, "0.6", EstimatedRequestUSDFor(hitem3dModel).String())
+	require.Equal(t, "1.2", EstimatedRequestUSDFor(DefaultModel3D).String())
+	require.Equal(t, "1.2", EstimatedRequestUSDFor("").String(), "неизвестное = сегодняшняя цена")
+	require.Equal(t, "1.2", EstimatedRequestUSDFor("some/model/nobody/wrote/down").String())
+	require.Equal(t, EstimatedRequestUSD().String(), EstimatedRequestUSDFor("").String(),
+		"старое имя обязано остаться тем же выражением, а не второй копией числа")
+}
+
 // falStub serves one queue lifecycle: status, then the result, then the artifacts.
 type falStub struct {
 	statusAfter int    // how many status calls answer IN_PROGRESS before COMPLETED
 	units       string // x-fal-billable-units on the result fetch; "" omits the header
+	modelKey    string // which key names the delivered file; "" = model_mesh (hitem3d's spelling)
 	noModelURL  bool
 	calls       int
+}
+
+// TestAModelNamedMODEL_GLB_IsStillDelivered.
+//
+// ⚠ THE MOST EXPENSIVE MISTAKE THIS PACKAGE COULD MAKE IS READING ONE SPELLING. meshy returns the
+// finished file as `model_glb` where hitem3d returns `model_mesh`. A client that knows only the old
+// key sees a COMPLETED request with no file: it raises ErrNoModel WITH THE CHARGE ATTACHED — money
+// gone, nothing delivered — and the row blames the provider.
+func TestAModelNamedMODEL_GLB_IsStillDelivered(t *testing.T) {
+	stub := &falStub{units: "1", modelKey: "model_glb"}
+	srv := httptest.NewServer(stub.handler(t))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	var model, thumb bytes.Buffer
+	res, err := c.Await(context.Background(), "req-13", Sink{Model: &model, Thumbnail: &thumb})
+	require.NoError(t, err, "a delivered model must not read as a missing one")
+	require.Equal(t, "glTF-bytes", model.String())
+	require.Equal(t, int64(10), res.ModelBytes)
+	require.Equal(t, "png-bytes", thumb.String(), "the thumbnail is spelled the same either way")
 }
 
 func (s *falStub) handler(t *testing.T) http.HandlerFunc {
@@ -216,7 +612,13 @@ func (s *falStub) handler(t *testing.T) http.HandlerFunc {
 			}
 			out := map[string]any{"thumbnail": map[string]any{"url": "http://" + r.Host + "/thumb.png"}}
 			if !s.noModelURL {
-				out["model_mesh"] = map[string]any{
+				// modelKey is how THIS family spells the delivered file. The two spellings are the
+				// same fact and the client must read both — see resultBody.
+				key := "model_mesh"
+				if s.modelKey != "" {
+					key = s.modelKey
+				}
+				out[key] = map[string]any{
 					"url": "http://" + r.Host + "/model.glb", "content_type": "model/gltf-binary",
 				}
 			}
@@ -301,7 +703,7 @@ func TestA_COMPLETED_REQUEST_WITH_NO_MODEL_STILL_CARRIES_ITS_CHARGE(t *testing.T
 	// which is a different claim from «it was free».
 	_, ok = Charge(ErrNoModel)
 	require.False(t, ok)
-	require.Equal(t, ErrNoModel, chargedWith(ErrNoModel, 0, "req-9"),
+	require.Equal(t, ErrNoModel, chargedWith(ErrNoModel, 0, "req-9", DefaultModel3D),
 		"zero units means «the provider did not say» and must not be wrapped as a charge of zero")
 }
 

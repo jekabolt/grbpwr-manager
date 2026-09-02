@@ -19,14 +19,20 @@ const (
 	ThreedProviderMeshy = "meshy"
 )
 
-// falThreedProvider is the 3D route the owner asked for by name: hitem3d's multi-view-to-3d, reached
-// through fal.ai's queue (K-10 — «для 3d как референсы должны использоваться
-// hitem3d/hi3d/v3.0/multi-view-to-3d и нам нужна интеграция с fal.ai и что бы мы могли туда подавать
-// наши фронт бэк и так далее»).
+// falThreedProvider is the 3D route reached through fal.ai's queue (K-10 — «для 3d как референсы
+// должны использоваться hitem3d/hi3d/v3.0/multi-view-to-3d и нам нужна интеграция с fal.ai и что бы
+// мы могли туда подавать наши фронт бэк и так далее»).
 //
-// WHAT IT DOES THAT THE MESHY ROUTE CANNOT. It sends the plates BY NAME — front, back, left, right —
-// instead of as an ordered list whose first member is taken on faith to be the face of the garment.
-// The bench has always known which plate is which; this is the first route that can be told.
+// WHAT IT DOES THAT THE DIRECT MESHY ROUTE CANNOT. It hands the transport the plates BY NAME —
+// front, back, left, right — instead of as an ordered list whose first member is taken on faith to
+// be the face of the garment. The bench has always known which plate is which; this is the route
+// that can be told.
+//
+// ⚠ WHETHER THE NAMES SURVIVE THE WIRE IS THE MODEL'S BUSINESS, NOT THIS ROUTE'S. hitem3d takes
+// named slots; `meshy/v7/multi-image-to-3d` — the configured default since the owner asked for it —
+// takes an unnamed list, and the fal client flattens front-first. Keeping the statement named ALL
+// THE WAY DOWN TO THE TRANSPORT is what makes that flattening one line in one file instead of a
+// property of the whole band.
 //
 // IT IS THE SAME TWO-HALVED SHAPE as the Meshy route (Execute submits and pays, Collect looks up and
 // is free), because it is the same problem, and because the worker's resume logic reads that shape.
@@ -66,6 +72,20 @@ func (p falThreedProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	if err != nil {
 		return nil, err
 	}
+	// THE ONLY WORDS THIS ROUTE SENDS, and they describe the SURFACE — see Job.SurfaceSteer. On a
+	// model family with nowhere to put them (hitem3d) the transport drops them; that is why the
+	// history row asks AcceptsTexturePrompt rather than assuming the text travelled.
+	req.TexturePrompt = job.SurfaceSteer
+	if job.SurfaceSteer != "" && !p.c.AcceptsTexturePrompt() {
+		// ⚠ THE ONE PLACE THE TWO KINDS OF SILENCE ARE TOLD APART — see SentPrompt on why the
+		// COLUMN does not tell them apart and must not. «This run said nothing about its surface»
+		// and «this model has nowhere to put what the run said» are one empty column and two
+		// different facts, and the second one is a configuration a person can change.
+		slog.Default().InfoContext(ctx, "3D: the configured model has no text field, so the run's "+
+			"surface steer was composed and not sent",
+			slog.Int("run_id", job.RunID), slog.String("model", p.c.Model()),
+			slog.Int("steer_runes", len([]rune(job.SurfaceSteer))))
+	}
 	id, err := p.c.Submit(ctx, req)
 	if err != nil {
 		return nil, err
@@ -89,26 +109,48 @@ func (p falThreedProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 // AN UNNAMED PICTURE IS REFUSED, NOT GUESSED AT. Reaching here it would mean the narrowing above
 // let through something that is not a plate, and inventing a side for it is how the run becomes
 // unaccountable.
+//
+// A SIDE CLAIMED TWICE IS REFUSED, NOT OVERWRITTEN. `req.FrontURL = u` used to take the LAST plate
+// of a repeated view in silence, which is a paid build of a garment nobody chose: two plates of the
+// front are two different drawings, and picking one of them by list order is not a decision this
+// function is entitled to make. Today's bench cannot produce a duplicate (a slot is unique by
+// view × kind × colourway), but a RERUN executes a FROZEN snapshot, and snapshots frozen before the
+// colourway scope existed legally carry two plates of one view. The refusal costs nothing — it
+// happens before the submit — and it names the side, which is the one thing a person needs in order
+// to narrow the run.
 func falViews(job Job) (fal.Request3D, error) {
 	var req fal.Request3D
+	claim := func(dst *string, view, u string) error {
+		if *dst != "" {
+			return fmt.Errorf("%w: the %s of this garment is claimed by two input plates, and a "+
+				"named-slot build has one place for it — narrow the run to a single %s plate",
+				errDuplicateView, view, view)
+		}
+		*dst = u
+		return nil
+	}
 	for i, u := range job.References {
 		view := ""
 		if i < len(job.ReferenceViews) {
 			view = job.ReferenceViews[i]
 		}
+		var err error
 		switch view {
 		case entity.DesignViewFront:
-			req.FrontURL = u
+			err = claim(&req.FrontURL, view, u)
 		case entity.DesignViewBack:
-			req.BackURL = u
+			err = claim(&req.BackURL, view, u)
 		case entity.DesignViewSideL:
-			req.LeftURL = u
+			err = claim(&req.LeftURL, view, u)
 		case entity.DesignViewSideR:
-			req.RightURL = u
+			err = claim(&req.RightURL, view, u)
 		default:
-			return fal.Request3D{}, fmt.Errorf(
+			err = fmt.Errorf(
 				"%w: reference %d shows no addressable side of the silhouette (view %q), and a named-slot "+
 					"build has nowhere to put it", fal.ErrNoFrontView, i+1, view)
+		}
+		if err != nil {
+			return fal.Request3D{}, err
 		}
 	}
 	if req.FrontURL == "" {
@@ -117,6 +159,32 @@ func falViews(job Job) (fal.Request3D, error) {
 		return fal.Request3D{}, fmt.Errorf("%w: this run has no front plate", fal.ErrNoFrontView)
 	}
 	return req, nil
+}
+
+// SentPrompt is what this route will actually put in front of the provider — see PromptCarrier.
+//
+// ⚠ IT ANSWERS WITH THE MODEL FAMILY'S TRUTH, NOT WITH THE JOB'S WISH. hitem3d's payload has no
+// text field at all, so on that slug the steer is composed, ignored and must be recorded as the
+// nothing it was: the run panel showing an operator a paragraph the provider never received is a
+// false statement about money that has already been spent, and it is the exact defect measured on
+// beta (both 3D runs there sent four urls and not one word, while the history showed the full
+// composed prompt).
+//
+// ⚠ AND THE EMPTY STRING IT RETURNS CARRIES TWO DIFFERENT FACTS — «this run states nothing about
+// its surface» and «this model has nowhere to put what it stated» — WHICH IS DELIBERATE, AND THE
+// ARGUMENT IS NOT «close enough». The column is read as ONE question: what words did this run put
+// in front of the provider it paid? Both cases answer «none», truthfully, and any wording that
+// distinguished them would have to be prose OUR side invented and stored in a column a person reads
+// as the model's instruction — a second class of text in a field whose whole repair was that it
+// stops containing text nobody sent. The pair of facts is separable where it is actionable and
+// nowhere else: Execute logs it, because «the model has no text field» is a CONFIGURATION a person
+// can change (DESIGN_THREED_PROVIDER / FAL_MODEL_3D), while «the colourway says nothing» is a
+// property of the run, visible in its own params on the same panel.
+func (p falThreedProvider) SentPrompt(job Job) string {
+	if !p.c.AcceptsTexturePrompt() {
+		return ""
+	}
+	return job.SurfaceSteer
 }
 
 // Collect is the FREE half: one status lookup, then — once the request has completed — the bytes.
@@ -134,15 +202,20 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		// routes: the transport attaches what a failed call billed when it knew, and Charge reads
 		// it back. Without this the money of a terminal failure — a COMPLETED request with no
 		// model file, a model past the size cap — vanishes: the attempt closes with a NULL price,
-		// the day's cap never sees the spend, and nobody can say what the failures cost.
+		// the day's ledger never sees the spend, and nobody can say what the failures cost.
 		//
 		// ok = false is NOT a charge of zero. It means nobody could say, so an unpriced failure
 		// still returns a nil Outcome.
+		//
+		// ⚠ AND IT IS PRICED AGAINST THE MODEL THAT WAS POLLED, NOT THE ONE CONFIGURED NOW — see
+		// the success path below for the whole argument. A billed failure on a RECOVERED build is
+		// money about an old model.
 		if units, ok := fal.Charge(err); ok {
-			if usd := p.c.CostUSD(units); usd.IsPositive() {
+			model := fal.ChargedModel(err)
+			if usd := p.c.CostUSDFor(model, units); usd.IsPositive() {
 				return &Outcome{
 					RequestID: requestID,
-					Model:     p.c.Model(),
+					Model:     model,
 					Price:     decimal.NullDecimal{Decimal: usd, Valid: true},
 				}, err
 			}
@@ -150,8 +223,16 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		return nil, err
 	}
 
-	out := &Outcome{RequestID: res.RequestID, Model: p.c.Model()}
-	if usd := p.c.CostUSD(res.BillableUnits); usd.IsPositive() {
+	// ⚠ THE MODEL COMES OFF THE RESULT, NEVER OFF THE CLIENT, AND THAT IS A MONEY DECISION. The
+	// transport finds a build submitted before a model move under the slug it was BOUGHT at (see
+	// fal.locateRequest), so `p.c.Model()` here would name a model this build never touched — and
+	// with no tariff configured it would then book an hitem3d turntable, estimated at $0.60, at
+	// meshy's $1.20. That silently rewrites the money of a run frozen before the deploy: the panel
+	// ends up showing a price_actual that disagrees with its own price_estimate for a reason nobody
+	// can reconstruct from the row. What a build was worth is a property of the request, not of the
+	// configuration that outlived it.
+	out := &Outcome{RequestID: res.RequestID, Model: res.Model}
+	if usd := p.c.CostUSDFor(res.Model, res.BillableUnits); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	} else {
 		out.Price = decimal.NullDecimal{}
