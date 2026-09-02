@@ -173,9 +173,12 @@ func (f fabricStated) hasWords() bool  { return strings.TrimSpace(f.words) != ""
 //     picker and chooses a value has made a deliberate, exact statement; the swatch's colour is
 //     incidental to why the swatch was attached (it was attached for its cloth). So the texture is
 //     kept and re-coloured.
-//  3. THE WORDS FILL THE GAPS AND OVERRIDE NOTHING. Prose is the vaguest of the three and the only
-//     one that can be written without looking at anything, so it may add ("brushed", "slight
-//     sheen") but never contradict.
+//  3. THE WORDS FILL THE GAPS AND OVERRIDE NOTHING — AND THE GAP IS NOT A SMALL ONE. Prose is the
+//     vaguest of the three and the only one that can be written without looking at anything, so it
+//     may add ("brushed", "slight sheen") but never contradict. What it adds, though, is the whole
+//     of the MATERIAL whenever no photograph rides: a colour states colour and nothing else, so
+//     transparency, weight, hand and drape are the words' to give, and rank 3 has to SAY so in as
+//     many words or they arrive as decoration. See the clause's own comment below.
 //
 // WHY THE RULE IS IN THE PROMPT TEXT AND NOT ONLY IN THIS CODE. Code can pick which fields travel;
 // it cannot pick what the model does with two fields that disagree once both have travelled. If the
@@ -196,8 +199,68 @@ var renderFabricAuthority = []fabricSource{
 		},
 	},
 	{
+		// ⚠ THE RANKED FORM CARRIES AN AFFIRMATIVE HALF TOO, AND WITHOUT IT THIS RANK IS DECORATION.
+		//
+		// H-13 is the owner's own ask — «нам надо иметь возможность сказать на генерации фабрик
+		// рендеров что ткань полупрозрачная например или имеет примерно такую грамматуру» — and the
+		// studio now composes exactly that into this block: an opacity (`opaque` / `semi-sheer` /
+		// `sheer`) and a grammage («about 180 g/m²»), joined ahead of whatever else was typed. Those
+		// words almost never reach the affirmative solo form below: solo fires only when the words
+		// are the SOLE source, and a colourway fills `code` and `hex` — so the ORDINARY H-13
+		// submission is colour + words and it lands HERE.
+		//
+		// And here, until this edit, the only imperative touching those words was «is to be
+		// ignored». The clause was written entirely as a restriction — «adds only what neither …
+		// already says» — and a restriction is not an instruction to build anything: a model reading
+		// it treats the words as decoration. That is the failure mode the studio names in its own
+		// comment («ткнул semi-sheer, купил картинку и получил непрозрачную ткань»), reached not by
+		// the ranking being wrong but by the ranking being the only thing said.
+		//
+		// THE ORDER OF AUTHORITY IS NOT WHAT WAS WRONG AND IT IS NOT TOUCHED. A stated colour states
+		// COLOUR. It says nothing whatever about transparency, weight, hand or drape, so «semi-sheer»
+		// and «about 180 g/m²» cannot contradict it — they are precisely the «adds what neither
+		// already says» case this clause always permitted and never once told anybody to use. So the
+		// permission is named out loud and given a verb; the prohibition after it is left standing
+		// word for word.
+		//
+		// ⚠ THE AFFIRMATIVE HALF IS CONDITIONAL, AND ITS CONDITION STANDS IN FRONT OF IT. This is the
+		// correction of the first shape of this edit, which granted the material and commanded the
+		// build UNCONDITIONALLY and only afterwards said that a photograph takes them back. Read as
+		// prose that scans; read as an INSTRUCTION it was a command followed by its own retraction,
+		// standing under a rank 1 that says «Read the cloth from that image and from nothing else» —
+		// and a model that obeys the strong affirmative and stops there returns sheer cloth against
+		// a photograph of melton. A prompt may not issue an order it means to withdraw two clauses
+		// later; the condition has to be read BEFORE the verb, so it is written before the verb.
+		//
+		// AGAINST A PHOTOGRAPH THE ANSWER GENUINELY DIFFERS, AND RANK 1 KEEPS IT WHOLE. A photograph
+		// DOES state transparency, weight and drape — that is the entire reason it ranks first — so
+		// there the same words stay description. The grant is therefore gated on the ONE fact that
+		// decides it («WHEN THIS RUN CARRIES NO FABRIC PHOTOGRAPH»), and both halves — what the
+		// words may give and the order to build from them — live inside that gate.
+		//
+		// THE GATE IS A SENTENCE AND NOT A SECOND `clause` KEYED ON `hasPhoto`, and the reason is
+		// no longer «to avoid a branch». A gate written in words is CHECKABLE BY ITS READER: the
+		// model can see whether a photograph is ranked above it in the very paragraph it is reading,
+		// and so can the person opening the stored prompt six weeks later. A gate written in Go is
+		// invisible to both — the stored text would simply differ between two runs with no statement
+		// anywhere of why.
+		//
+		// IT ALSO ANSWERS THE PHANTOM PHOTOGRAPH, WHICH IS A DEFECT OF THIS PARAGRAPH AND NOT OF
+		// THIS CLAUSE. Rank 2 above names «the fabric photograph» whether or not the run carries
+		// one, so on the ordinary colour-and-words submission the paragraph speaks of a picture that
+		// is not there — and an obliging model may go looking for it among the garment drawings.
+		// Rank 2 cannot be reworded here: it is frozen into the history of every single-cloth run
+		// ever composed. So this clause states the absence out loud instead — «nothing ranked above
+		// this clause states the material at all» — which is the one sentence in the paragraph that
+		// forecloses that reading.
+		//
+		// NOTHING THE OLD CLAUSE ASSERTED WAS DROPPED, AND IT IS STILL ITS OPENING. «adds only what
+		// neither the photograph nor the stated colour already says. It never overrides either of
+		// them: a word that contradicts the photograph's material or the stated colour is to be
+		// ignored» survives CONTIGUOUSLY, word for word, with one full stop turned into a comma. The
+		// edit is what follows it.
 		clause: func(fabricStated) string {
-			return "THE FABRIC DESCRIPTION IN WORDS — the `fabric in words` block above — adds only what neither the photograph nor the stated colour already says. It never overrides either of them: a word that contradicts the photograph's material or the stated colour is to be ignored."
+			return "THE FABRIC DESCRIPTION IN WORDS — the `fabric in words` block above — adds only what neither the photograph nor the stated colour already says. It never overrides either of them: a word that contradicts the photograph's material or the stated colour is to be ignored, and where a fabric photograph is ranked above this clause it states the transparency, the weight and the drape as surely as it states the weave, so against a photograph a word about any of those is description and not instruction. WHEN THIS RUN CARRIES NO FABRIC PHOTOGRAPH, nothing ranked above this clause states the material at all: a stated colour states COLOUR and nothing else — not how sheer or opaque the cloth is, not its weight, not its hand, not its drape — so a word about any of those adds rather than contradicts, and the weave or knit, the weight, the surface and the drape of this garment are to be built from those words."
 		},
 		solo: func(fabricStated) string {
 			return "THE FABRIC DESCRIPTION IN WORDS — the `fabric in words` block above — is the only statement this run makes about the cloth, and it governs the material outright: build the weave or knit, the weight, the surface and the drape from those words. Where they do not say, choose the plainest reading of them and invent no print, no pattern and no trim the drawings do not show."
