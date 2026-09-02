@@ -81,6 +81,17 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 	if !entity.IsDesignRunKind(req.Kind) {
 		return nil, fmt.Errorf("%w: unknown run kind %q", entity.ErrDesignInvalidArgument, req.Kind)
 	}
+	if req.ColorwayId < 0 {
+		return nil, fmt.Errorf("%w: colorway_id must not be negative", entity.ErrDesignInvalidArgument)
+	}
+	// ОСЬ КОЛОРВЕЯ ЕСТЬ НЕ У ВСЯКОГО РОДА (0356): render/recolor генерят мультивью КОЛОРВЕЯ,
+	// threed рендерит ЕГО верстак; флэт же — одна разметка на карточку (L-4), и колорвей при нём
+	// ОТКАЗЫВАЕТСЯ, а не молча сбрасывается: принятая и не исполненная просьба разошлась бы с
+	// записью без единого отказа.
+	if req.ColorwayId > 0 && !entity.DesignRunKindTakesColorway(req.Kind) {
+		return nil, fmt.Errorf("%w: a %s run has no colourway axis",
+			entity.ErrDesignColorwayForbidden, req.Kind)
+	}
 	if req.RequestedOutputs < 0 || req.RequestedOutputs > designMaxRequestedOutputs {
 		return nil, fmt.Errorf("%w: requested_outputs %d is outside 0..%d",
 			entity.ErrDesignInvalidArgument, req.RequestedOutputs, designMaxRequestedOutputs)
@@ -100,13 +111,9 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 		db := rep.DB()
 
 		// ─── 1. ПОВТОР ЛИ ЭТО — ПЕРВЫМ ДЕЛОМ И ДО ДЕНЕГ ───
-		if prior, ok, err := runByRequestID(ctx, db, req.ClientRequestId); err != nil {
+		if prior, ok, err := priorStart(ctx, db, req); err != nil {
 			return err
 		} else if ok {
-			if prior.TechCardId != req.TechCardId {
-				return fmt.Errorf("%w: client_request_id %q already opened a run of tech card %d",
-					entity.ErrDesignInvalidArgument, req.ClientRequestId, prior.TechCardId)
-			}
 			resumed, run, err := resumeHandlerRun(ctx, db, prior)
 			if err != nil {
 				return err
@@ -134,6 +141,67 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 					entity.ErrDesignNotFound, parent.Id, parent.TechCardId)
 			}
 			rerun = parent.Id
+		}
+
+		// ─── 2б. ГРАНИЦА КАРТОЧКИ ДЛЯ КОЛОРВЕЯ — ДО ДЕНЕГ (0356) ───
+		//
+		// В той же транзакции, что резерв: чужой колорвей не должен ни занять деньги дня, ни
+		// замёрзнуть в истории правдоподобной ложной атрибуцией.
+		//
+		// ⚠ УНАСЛЕДОВАННЫЙ КОЛОРВЕЙ, КОТОРОГО БОЛЬШЕ НЕТ, — НЕ ОТКАЗ, А ДЕГРАДАЦИЯ (F2), И ЭТО ТА
+		// ЖЕ ГРАНИЦА, ЧТО У ДЕТАЛЕЙ И ПОЛОК В ХЕНДЛЕРЕ: «адрес, названный КЛИЕНТОМ, отвечает за
+		// себя, унаследованный — нет». Реран без параметров наследует колорвей из ЗАМОРОЖЕННЫХ
+		// params родителя; колорвей законно удаляют, FK гасит колонку родителя в NULL — и строгая
+		// проверка сделала бы такой прогон НЕПОВТОРИМЫМ НАВСЕГДА, причём без единого написания
+		// запроса, которое прошло бы: клиент не присылал ни params, ни колорвея, а отказ называл
+		// бы ему `foreign_colorway`. Ровно тот исход, от которого соседние два сторожа отказались
+		// дословно теми же словами.
+		//
+		// ДЕГРАДАЦИЯ СИММЕТРИЧНА ТОМУ, ЧТО СЛУЧИЛОСЬ С РОДИТЕЛЕМ: реран уезжает
+		// НЕАТРИБУТИРОВАННЫМ, а его замороженные params по-прежнему называют просимый id — то
+		// есть ровно та пара (колонка NULL, params помнят), в которой после удаления оказалась
+		// строка родителя. Ничего не выдумано и ничего не потеряно.
+		//
+		// ЧУЖОЙ (существующий, но не этой карточки) ОТКАЗЫВАЕТСЯ И УНАСЛЕДОВАННЫЙ ТОЖЕ: это
+		// состояние обратимо (колорвей можно вернуть на карточку), поэтому отказ не вечен, а тихо
+		// рендерить чужой цвет — та самая ложная атрибуция, ради которой ось и заводилась.
+		colorwayID := req.ColorwayId
+		if colorwayID > 0 {
+			owner, exists, err := colorwayOwnerCard(ctx, db, colorwayID)
+			if err != nil {
+				return err
+			}
+			switch {
+			case exists && owner == req.TechCardId:
+				// граница пройдена
+			case !exists && !req.ColorwayStated && !entity.DesignRunKindReadsColorwayBench(req.Kind):
+				colorwayID = 0
+			case !exists && entity.DesignRunKindReadsColorwayBench(req.Kind):
+				// ⚠ 3D ДЕГРАДИРОВАТЬ НЕЛЬЗЯ, И ЭТО НЕ ИСКЛЮЧЕНИЕ ИЗ ПРАВИЛА, А ЕГО ГРАНИЦА (N6).
+				//
+				// Деградация честна ровно потому, что у рендера колорвей — это АТРИБУЦИЯ: прогон
+				// уезжает неатрибутированным, params помнят просимый id, и ни одно другое поле
+				// строки о колорвее ничего не утверждало. У 3D он другой по устройству: колорвей
+				// ВЫБИРАЕТ ВЕРСТАК, и к этому месту снимок входов УЖЕ ЗАМОРОЖЕН против верстака
+				// названного цвета. Обнулив колорвей здесь, мы записали бы строку, чьи inputs
+				// описывают верстак 5, а колонка говорит «безколорвейный», — и её выход лёг бы на
+				// ЧУЖОЙ верстак. Это не потеря атрибуции, это ложь о том, из чего собран прогон.
+				//
+				// Окно узкое (колорвей удалён между чтением полосы хендлером и этой транзакцией) и
+				// именно поэтому опасное: ворота 3D его уже прошли, деньги на подходе, а человек
+				// увидел бы «запущено» на верстак, которого нет. Отказ здесь стоит одного
+				// перезапуска экрана; молчаливое обнуление стоило бы оплаченного прогона, чей
+				// результат нельзя ни истолковать, ни разобрать потом.
+				return fmt.Errorf("%w: colourway %d was deleted while this 3D run was being started; "+
+					"its inputs are already frozen against that colourway's bench",
+					entity.ErrDesignForeignColorway, colorwayID)
+			case !exists:
+				return fmt.Errorf("%w: colourway %d does not exist",
+					entity.ErrDesignForeignColorway, colorwayID)
+			default:
+				return fmt.Errorf("%w: colourway %d does not belong to tech card %d",
+					entity.ErrDesignForeignColorway, colorwayID, req.TechCardId)
+			}
 		}
 
 		// ─── 3. ДЕНЬГИ: РЕЗЕРВ И ПОТОЛОК В ОДНОЙ ТРАНЗАКЦИИ ───
@@ -196,11 +264,11 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 			INSERT INTO design_run
 				(tech_card_id, kind, status, client_request_id, provider_idempotency_key,
 				 profile_name, profile_version, ask, params, inputs, fit_at_launch, rrev,
-				 requested_outputs, price_estimate, currency, author, rerun_of,
+				 requested_outputs, price_estimate, currency, author, rerun_of, colorway_id,
 				 claim_token, claim_expires_at, next_attempt_at)
 			VALUES
 				(:card, :kind, 'pending', :req, :pkey, :profile, :pver, :ask, :params, :inputs,
-				 :fit, :rrev, :outputs, :est, :cur, :who, :rerun,
+				 :fit, :rrev, :outputs, :est, :cur, :who, :rerun, :cw,
 				 :claim, :claim_exp, UTC_TIMESTAMP(6))`,
 			map[string]any{
 				"card": req.TechCardId, "kind": req.Kind, "req": req.ClientRequestId,
@@ -208,6 +276,7 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 				"ask": nullStr(req.Ask), "params": jsonOrNil(req.Params), "inputs": jsonOrNil(req.Inputs),
 				"fit": nullStr(req.FitAtLaunch), "rrev": rrev, "outputs": req.RequestedOutputs,
 				"est": req.PriceEstimate, "cur": currency, "who": req.Author, "rerun": rerun,
+				"cw":    nullInt(colorwayID),
 				"claim": claimToken, "claim_exp": claimExpires,
 			})
 		if err != nil {
@@ -215,7 +284,17 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 			// этой же SERIALIZABLE-транзакции; сюда попадает только гонка, разрешившаяся не
 			// дедлоком. Ответ тот же самый — существующая строка с OK.
 			if isDupKey(err) {
-				prior, ok, rerr := runByRequestID(ctx, db, req.ClientRequestId)
+				// ⚠ ПОЯС ХОДИТ ТОЙ ЖЕ ДВЕРЬЮ, ЧТО И ГЛАВНЫЙ ПУТЬ (T10). Раньше он звал
+				// runByRequestID напрямую и не сравнивал НИЧЕГО — а чтение выше сверяет и
+				// карточку, и колорвей; две одновременные заявки с одним ключом, но разными
+				// карточками либо колорвеями, разойдясь не дедлоком, а 1062, получали чужой
+				// прогон с ответом OK. Починка не в том, чтобы добавить сюда сравнение (его
+				// снова можно забыть, а проверить пробой нечем: путь недостижим из одного
+				// соединения — пре-чтение под SERIALIZABLE берёт next-key lock, а две
+				// транзакции расходятся дедлоком 1213 и повторяются в главный путь), а в том,
+				// чтобы «найти прежний старт» существовало РОВНО В ОДНОМ виде. Состояние
+				// «пояс забыл рассудить» теперь невыразимо.
+				prior, ok, rerr := priorStart(ctx, db, req)
 				if rerr != nil {
 					return rerr
 				}
@@ -397,6 +476,11 @@ type designRunParams struct {
 	Views              []string `json:"views"`
 	Layout             string   `json:"layout"`
 	ExtraInputMediaIds []int    `json:"extra_input_media_ids"`
+	// ColorwayId — ПРОСЬБА, а не живое зеркало (0356). Колонка design_run.colorway_id гаснет в
+	// NULL, когда колорвей удаляют (FK SET NULL); этот снимок не гаснет никогда и остаётся
+	// единственным свидетельством того, для какого цвета прогон ЗАКАЗЫВАЛИ. Различитель повтора
+	// (F7) спрашивает именно его.
+	ColorwayId int `json:"colorway_id"`
 }
 
 type designRunInputs struct {
@@ -417,6 +501,59 @@ const (
 // parseRunParams / parseRunInputs разбирают снимок ЩАДЯЩЕ: испорченный JSON не роняет прилёт
 // оплаченного результата. Что теряется при этом — догадка о виде и о композитности, а не сама
 // картинка; уронить прилёт значило бы выбросить то, за что уже заплачено.
+// designSameStartRequest — ОДИН ЛИ ЭТО ЗАПРОС, что уже открыл найденную строку.
+//
+// ОДНО ПРАВИЛО НА ОБА ПУТИ ИДЕМПОТЕНТНОСТИ: чтение до вставки и остаточный 1062 после неё. Пояс,
+// судивший иначе (а он не судил вовсе), отдавал бы в гонке чужой прогон с ответом OK — то есть
+// ровно тот исход, который главный путь считает достойным отказа.
+//
+// КАРТОЧКА. Ключ, уже открывший прогон другой карточки, — коллизия, а не повтор; вернуть его
+// строку значит соврать дважды.
+//
+// КОЛОРВЕЙ — ИЗ ЗАМОРОЖЕННЫХ params, А НЕ ИЗ ЖИВОЙ КОЛОНКИ. Колонку гасит FK SET NULL, когда
+// колорвей удаляют, и настоящий ретрай того же запроса получал бы отказ «уже открыт для 0, просят
+// 7» по причине, к запросу не относящейся. Порядок источников, а не два мнения: ноль в params
+// значит «params про колорвей не говорят», и тогда колонка — единственный свидетель. Остаточное
+// окно (вызывающий передал ColorwayId без Params — хендлер так не делает никогда) названо в
+// шапке волны и закрыть его нечем: просьба нигде не записана.
+// priorStart — ЕДИНСТВЕННЫЙ СПОСОБ НАЙТИ ПРЕЖНИЙ СТАРТ ПО КЛЮЧУ, и он же его СУДИТ.
+//
+// Поиск и сравнение соединены нарочно (T10): пока это были два вызова, один из двух путей
+// идемпотентности (остаточный 1062) вызывал первый и забывал второй — и «пояс забыл рассудить»
+// было выразимым состоянием, которое к тому же нечем проверить, потому что путь недостижим из
+// одного соединения. Сложив их, мы убрали не дефект, а ВОЗМОЖНОСТЬ дефекта: тот же приём, что
+// «сначала спроси, нельзя ли сделать неправильное состояние невыразимым».
+//
+// ok = false значит «такого ключа нет»; ошибка — либо чтение, либо ПРОТИВОРЕЧИЕ (другая карточка,
+// другой колорвей), и вызывающему в обоих случаях полагается вернуть её как есть.
+func priorStart(ctx context.Context, db dependency.DB, req entity.DesignRunStart) (entity.DesignRun, bool, error) {
+	prior, ok, err := runByRequestID(ctx, db, req.ClientRequestId)
+	if err != nil || !ok {
+		return prior, ok, err
+	}
+	if err := designSameStartRequest(prior, req); err != nil {
+		return prior, false, err
+	}
+	return prior, true, nil
+}
+
+func designSameStartRequest(prior entity.DesignRun, req entity.DesignRunStart) error {
+	if prior.TechCardId != req.TechCardId {
+		return fmt.Errorf("%w: client_request_id %q already opened a run of tech card %d",
+			entity.ErrDesignInvalidArgument, req.ClientRequestId, prior.TechCardId)
+	}
+	was := entity.DesignColorwayOrNone(prior.ColorwayId)
+	if asked := parseRunParams(prior.Params).ColorwayId; asked != 0 {
+		was = asked
+	}
+	if was != req.ColorwayId {
+		return fmt.Errorf("%w: client_request_id %q already opened run %d for colourway %d "+
+			"and is now being reused for colourway %d (0 = none)",
+			entity.ErrDesignColorwayMismatch, req.ClientRequestId, prior.Id, was, req.ColorwayId)
+	}
+	return nil
+}
+
 func parseRunParams(raw entity.RawJSON) designRunParams {
 	var p designRunParams
 	if len(raw) == 0 {

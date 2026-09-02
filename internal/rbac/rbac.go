@@ -468,6 +468,7 @@ var methodRequirements = map[string]Requirement{
 	// изделие, — и потому стоит рядом с ролью референса, а не рядом со StartDesignRun.
 	"UpsertDesignAsset":          wr(SectionTechCards),
 	"DeleteDesignAsset":          wr(SectionTechCards),
+	"SetDesignAssetColorway":     wr(SectionTechCards), // 0357: чья это ткань
 	"SetDesignAssetPlacement":    wr(SectionTechCards),
 	"DeleteDesignAssetPlacement": wr(SectionTechCards),
 	"DeleteDesignDetailSlot":     wr(SectionTechCards),

@@ -231,6 +231,12 @@ func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDr
 			return nil, status.Errorf(codes.NotFound, "colourway %d or target style %d not found", req.ColorwayId, req.TargetStyleId)
 		case errors.Is(err, entity.ErrColorwayNotDraft):
 			return nil, status.Errorf(codes.FailedPrecondition, "colourway %d is not a draft; only drafts can be relinked", req.ColorwayId)
+		case errors.Is(err, entity.ErrColorwayHasDesignRows):
+			// Сообщение несёт ОТВЕТ СТОРА целиком: он один знает, что именно держит колорвей
+			// (прогон, кадр или слот) и сколько таких строк — без этого человеку нечего открыть.
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"colourway %d cannot leave its style while the style's design band still names it: %v",
+				req.ColorwayId, err)
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "the colourway or a style was modified concurrently; reload and retry")
 		default:

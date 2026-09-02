@@ -20,8 +20,8 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -440,18 +440,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		return nil, designError(ctx, "failed to read the design band before starting a run", err, nil)
 	}
 
-	// ─── W-13: 3D ТОЛЬКО ПОСЛЕ FABRIC RENDER ───
-	//
-	// Флаг считает GetBand по ВСЕЙ карточке (`design_picture.kind = 'render' AND hidden_at IS
-	// NULL`), а не по загруженной странице: рендер вполне лежит за потолком страницы, и гейт,
-	// посчитанный по ней, закрыл бы 3D ровно там, где оно законно.
-	if kind == entity.DesignRunKindThreed && !band.HasFabricRender {
-		return nil, designRefusal(codes.FailedPrecondition, "no_fabric_render",
-			"3D needs a fabric render first: this card has no render that is not hidden. "+
-				"The order is flats → fabric render → 3D",
-			map[string]string{"tech_card_id": strconv.Itoa(cardID)})
-	}
-
 	// ─── реран: параметры и входы приезжают ИЗ БАЗЫ ───
 	var parent *entity.DesignRun
 	if req.GetRerunOfRunId() > 0 {
@@ -464,6 +452,36 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	params, err := designEffectiveParams(req.GetParams(), parent)
 	if err != nil {
 		return nil, err
+	}
+
+	// ─── W-13 × L-3: 3D ТОЛЬКО ПОСЛЕ ЗАНЯТОГО РЕНДЕР-ВЕРСТАКА ТОГО ЖЕ КОЛОРВЕЯ ───
+	//
+	// Множество считает GetBand по ВСЕЙ карточке (занятые render-слоты, DISTINCT по колорвею), а
+	// не по загруженной странице: слот вполне лежит за её потолком, и гейт, посчитанный по
+	// странице, закрыл бы 3D ровно там, где оно законно.
+	//
+	// ГЕЙТ СПРАШИВАЕТ ВЕРСТАК, А НЕ ПОЛОСУ, ПОТОМУ ЧТО ВЕРСТАК ЖЕ ЧИТАЕТ ОТБОР ПЛИТ
+	// (designSelectBench): 3D колорвея A собирается ТОЛЬКО из занятых render-слотов A. Гейт по
+	// картинкам отвечал на другой вопрос — «есть ли на карточке такой файл» — и пропускал
+	// главный, повседневный случай: рендер загружен, но ещё не поставлен ни на одну сторону.
+	// Деньги резервировались, прогон уходил в работу без единого входа. Колорвей 0 —
+	// безколорвейное 3D — требует занятого неатрибутированного верстака: ровно того, что есть у
+	// каждой карточки, жившей до оси. Гейт стоит ПОСЛЕ designEffectiveParams намеренно: реран
+	// наследует колорвей из params родителя, и гейт по сырому запросу спрашивал бы не про тот
+	// верстак.
+	if kind == entity.DesignRunKindThreed {
+		cw := int(params.GetColorwayId())
+		if !designHasRenderForColorway(band.RenderBenchColorways, cw) {
+			return nil, designRefusal(codes.FailedPrecondition, "no_fabric_render",
+				fmt.Sprintf("3D reads the render bench of the colourway it renders, and colourway %d has no "+
+					"fabric render STANDING ON a render slot of this card (0 = the colourway-less bench). "+
+					"Uploading a render is not enough — put it on a side first. "+
+					"The order is flats → fabric render → place it on the render bench → 3D", cw),
+				map[string]string{
+					"tech_card_id": strconv.Itoa(cardID),
+					"colorway_id":  strconv.Itoa(cw),
+				})
+		}
 	}
 	// ИДЕНТИЧНОСТЬ ДЕТАЛИ ДЕРЖИТСЯ НА ОБЕИХ ГРАНИЦАХ. designEffectiveParams проверяет форму
 	// списка, но намеренно не знает базы; уже загруженная полоса отвечает на второй вопрос — каждый
@@ -486,7 +504,30 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	//
 	// Передавать сюда сообщение КЛИЕНТА, а не флаг, — тоже решение: функция физически не видит
 	// унаследованного списка и не может начать его проверять по недосмотру.
-	if err := designRefuseForeignDetailSlots(cardID, req.GetParams(), band.Bench); err != nil {
+	// ⚠ ИСТОЧНИКИ СОБИРАЮТСЯ ЗДЕСЬ, А НЕ ПЕРЕД СНИМКОМ, потому что теперь ими пользуются И ДВЕРИ
+	// (N5): предикат, которым отбор сужает верстак, обязан быть ТЕМ ЖЕ, которым дверь отвергает
+	// названный адрес, — иначе один молча выбросит то, что другой принял. Значение чисто
+	// описательное (род, карточка, референсы, верстак, действующие params) и до самого отбора не
+	// меняется, так что перенос вверх ничего не сдвигает.
+	src := designInputSources{
+		Kind:   kind,
+		Card:   card,
+		Refs:   band.References,
+		Bench:  band.Bench,
+		Params: params,
+	}
+
+	if err := designRefuseForeignDetailSlots(cardID, req.GetParams(), band.Bench, src); err != nil {
+		return nil, err
+	}
+	// ⚠ И ТО ЖЕ САМОЕ ДЛЯ fix_slot_ids, У КОТОРОГО ПРОВЕРКИ ПРИНАДЛЕЖНОСТИ НЕ БЫЛО ВОВСЕ (N5).
+	// Он СУЖАЕТ отбор до названных плит, и это делает его опаснее списка деталей: денежные ворота
+	// смотрят на верстак колорвея ЦЕЛИКОМ, поэтому достаточно одного занятого слота, чтобы дверь
+	// открылась, — а выборочный прогон, назвавший только чужой адрес, соберёт НОЛЬ плит и уедет
+	// оплаченным и пустым. Тот же приём и та же граница: спрашивают с того, КТО НАЗВАЛ, поэтому
+	// сюда едет сообщение клиента, а не действующие params (унаследованный снимок рерана
+	// проверять нельзя — адрес законно удаляют, и прогон стал бы неповторимым навсегда).
+	if err := designRefuseForeignFixSlots(cardID, req.GetParams(), band.Bench, src); err != nil {
 		return nil, err
 	}
 	// ТОТ ЖЕ ПРИЁМ ДЛЯ ПОЛОК: адрес, названный КЛИЕНТОМ, отвечает за себя, унаследованный — нет.
@@ -531,13 +572,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		return nil, err
 	}
 
-	src := designInputSources{
-		Kind:   kind,
-		Card:   card,
-		Refs:   band.References,
-		Bench:  band.Bench,
-		Params: params,
-	}
 	inputs, fitAtLaunch, err := s.designRunInputs(ctx, src, parent)
 	if err != nil {
 		return nil, err
@@ -587,6 +621,16 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		PriceEstimate:    designEstimateFor(kind, outputs),
 		Author:           designActor(ctx),
 		RerunOf:          designParentID(parent),
+		// Колорвей прогона — из ДЕЙСТВУЮЩИХ params (реран наследует родительские); стор в той же
+		// транзакции отказывает роду без оси и чужому колорвею — до резерва денег.
+		ColorwayId: int(params.GetColorwayId()),
+		// ⚠ А ВОТ «КТО ЭТО СКАЗАЛ» — ИЗ СООБЩЕНИЯ КЛИЕНТА, И ЭТО ТО ЖЕ РАЗЛИЧЕНИЕ, ЧТО У ДЕТАЛЕЙ И
+		// ПОЛОК ВЫШЕ (F2). Реран без параметров наследует колорвей из замороженных params
+		// родителя; колорвей законно удаляют, и строгая проверка унаследованного id отказывала бы
+		// `foreign_colorway` ВЕЧНО — клиенту, который не присылал ни params, ни колорвея, и
+		// которому нечего было бы написать иначе. Стор деградирует такой прогон в
+		// неатрибутированный, ровно как FK погасил колонку родителя.
+		ColorwayStated: req.GetParams() != nil,
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to start the design run", err, nil)
@@ -643,6 +687,20 @@ func designRefuseUnworkableSources(kind string, params *pb_common.DesignRunParam
 		}
 	}
 	return nil
+}
+
+// designHasRenderForColorway — открыта ли дверь 3D ДЛЯ ЭТОГО КОЛОРВЕЯ. Множество приезжает из
+// GetBand (вся карточка, DISTINCT по колорвею ЗАНЯТЫХ render-слотов); 0 в нём — неатрибутированный
+// легаси-верстак, открывающий только безколорвейное 3D. Членство, а не непустота: занятый верстак
+// чужого колорвея открыл бы дверь прогону, чей отбор плит (designSelectBench) вернёт пустоту, — то
+// есть оплаченному прогону без входов.
+func designHasRenderForColorway(set []int, colorwayID int) bool {
+	for _, cw := range set {
+		if cw == colorwayID {
+			return true
+		}
+	}
+	return false
 }
 
 // designParentID — id родителя рерана либо 0. Отдельной функцией, чтобы «nil значит обычный
@@ -775,6 +833,38 @@ func designEffectiveParams(in *pb_common.DesignRunParams, parent *entity.DesignR
 	// входящее сообщение значит писать в чужую память — перехватчики и логи видят тот же объект.
 	params, _ = proto.Clone(params).(*pb_common.DesignRunParams)
 
+	// ─── КОЛОРВЕЙ НАСЛЕДУЕТСЯ ПОШТУЧНО, А НЕ ВМЕСТЕ СО ВСЕМ СНИМКОМ (T2) ───
+	//
+	// Наследование выше — ОПТОМ ИЛИ НИКАК: родительские params читаются, только если клиент не
+	// прислал СВОИХ. Для всех прочих полей это верно, а для колорвея — ловушка, которую эта же
+	// волна диагностирует своими словами пятьюдесятью строками выше, у DesignAsset.colorway_id:
+	// голый proto3-скаляр приезжает НУЛЁМ от всякого клиента, который поля не знает, и от всякого
+	// сохранения по НЕСВЯЗАННОЙ причине. Там довод применили и завели отдельный глагол; здесь —
+	// нет, и «реран наследует колорвей» оставалось правдой ровно до первого рерана, тронувшего
+	// `ask`.
+	//
+	// ЧЕМ ЭТО ПЛАТИЛОСЬ, ПОШАГОВО. Карточка с легаси-рендерами (множество [0,5]), прогон 900 —
+	// турнтейбл колорвея 5, человек повторяет его и правит `ask`. Колорвей приезжает нулём →
+	// ворота проверяют членство НУЛЯ, а он в множестве есть, значит ОТКРЫВАЮТСЯ → входы
+	// копируются из снимка родителя целиком, то есть модель получает плиты колорвея 5 → строка
+	// пишется с NULL → кадры рождаются неатрибутированными и в threed-верстак колорвея 5 их уже
+	// не поставить (colorway_mismatch). Деньги потрачены, результат некуда положить, а строка
+	// противоречит сама себе: её inputs описывают цвет, которого её колонка не называет.
+	//
+	// СЕМАНТИКА — НАСЛЕДОВАНИЕ, и это ровно то, что обещает комментарий у params.colorway_id.
+	// ⚠ ЦЕНА НАЗВАНА: «повтори этот прогон, но БЕЗ колорвея» через реран невыразимо — нулём это
+	// сказать больше нельзя. Оно и не нужно: прогон без колорвея читает другой верстак и
+	// собирается из других плит, то есть это не повтор, а новый прогон, и заводится он обычной
+	// дверью. Обратный выбор (замена) стоил бы дороже и молча — см. абзац выше.
+	if in != nil && parent != nil && params.GetColorwayId() == 0 && len(parent.Params) > 0 {
+		inherited := &pb_common.DesignRunParams{}
+		if err := designUnmarshalJSON(parent.Params, inherited); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"run %d cannot be rerun: its stored parameters do not parse", parent.Id)
+		}
+		params.ColorwayId = inherited.GetColorwayId()
+	}
+
 	detailViews := 0
 	for i, v := range params.GetViews() {
 		if !entity.IsDesignGhostView(v) {
@@ -890,17 +980,33 @@ func designEffectiveParams(in *pb_common.DesignRunParams, parent *entity.DesignR
 // ⚠ `spoken` — СООБЩЕНИЕ КЛИЕНТА, а не действующие параметры прогона. Разницу видно только на
 // реране без параметров, и она там решающая: см. довод у места вызова. nil-сообщение отдаёт пустой
 // список, цикл не исполняется ни разу — «тот, кто молчит, не может противоречить».
-func designRefuseForeignDetailSlots(cardID int, spoken *pb_common.DesignRunParams, bench []entity.DesignBenchSlot) error {
+func designRefuseForeignDetailSlots(cardID int, spoken *pb_common.DesignRunParams, bench []entity.DesignBenchSlot, src designInputSources) error {
+	// ⚠ ГРАНИЦА ЗДЕСЬ — ЭТО НЕ ТОЛЬКО КАРТОЧКА (N5). Отбор ниже сужает верстак ещё и колорвеем
+	// (designBenchColorwayScope), поэтому названный адрес чужого колорвея ПРИНИМАЛСЯ дверью, а
+	// потом молча выпадал из снимка: клиент получал OK на просьбу, которую никто не исполнил, и
+	// платил за прогон, в котором названной им детали нет. «Принято и не исполнено» — ровно тот
+	// класс, от которого эта волна отказалась на всех остальных дверях; отказывать надо ТАМ, ГДЕ
+	// СКАЗАЛИ, а не выбрасывать молча там, где отбирают.
+	//
+	// Предикат ОБЯЗАН совпадать с отбором, поэтому он и берётся из того же designBenchColorwayScope,
+	// а не пишется вторым мнением: разойдясь, они дали бы либо ложный отказ, либо ту же тихую
+	// потерю обратно.
+	matchColorway, wantColorway := designBenchColorwayScope(src)
 	details := make(map[int]struct{}, len(bench))
 	for _, slot := range bench {
-		if slot.TechCardId == cardID && slot.ViewKey == entity.DesignViewDetail {
-			details[slot.Id] = struct{}{}
+		if slot.TechCardId != cardID || slot.ViewKey != entity.DesignViewDetail {
+			continue
 		}
+		if matchColorway && entity.DesignColorwayOrNone(slot.ColorwayId) != wantColorway {
+			continue
+		}
+		details[slot.Id] = struct{}{}
 	}
 	for i, id := range spoken.GetDetailSlotIds() {
 		if _, ok := details[int(id)]; !ok {
 			return status.Errorf(codes.InvalidArgument,
-				"params.detail_slot_ids.%d %d is not a detail slot of tech card %d", i, id, cardID)
+				"params.detail_slot_ids.%d %d is not a detail slot of tech card %d that this run can use "+
+					"(a 3D run reads only its own colourway's bench)", i, id, cardID)
 		}
 	}
 	return nil
@@ -1627,6 +1733,109 @@ func designInputSlots(src designInputSources) []*pb_common.DesignInputSlot {
 	return append(slots, designNamedEmptyDetailSlots(src, slots)...)
 }
 
+// designRefuseForeignFixSlots — КАРТОЧНАЯ И КОЛОРВЕЙНАЯ ГРАНИЦА ДЛЯ `fix_slot_ids`.
+//
+// Список сужает прогон до названных плит, и до этой правки его никто не проверял против базы
+// вовсе: чужой (или просто не читаемый этим прогоном) адрес принимался, отбор возвращал пустоту, и
+// оплаченный прогон уходил без единого входа — притом денежные ворота 3D его пропускали, потому
+// что они спрашивают верстак колорвея целиком, а не названное подмножество.
+//
+// Предикат ТОТ ЖЕ, что у отбора: род (`want`) и колорвей. Слот, который отбор всё равно
+// выбросит, — это адрес, который прогон не исполнит, и назвать его молча принятым нельзя.
+// `spoken` — сообщение КЛИЕНТА по тому же доводу, что у деталей: унаследованный снимок рерана
+// заморожен, а адрес законно удаляют.
+func designRefuseForeignFixSlots(cardID int, spoken *pb_common.DesignRunParams, bench []entity.DesignBenchSlot, src designInputSources) error {
+	// ⚠ ОБЕ ПОЛОВИНЫ СУЖЕНИЯ, А НЕ ОДНА (T1). Первая редакция этой двери выходила первой же
+	// строкой, если `fix_slot_ids` пуст, — и `fix_targets` (сужение ПО ВИДУ) проходил мимо неё
+	// целиком: его проверяли только на ФОРМУ («это вообще силуэтная сторона?»), но никогда против
+	// верстака. Довод, написанный ниже для адресов, применим к видам ДОСЛОВНО, и после
+	// колорвейного сужения он стал ещё сильнее: до этой волны `side_l` совпадал с side_l ЛЮБОГО
+	// колорвея, а теперь — только своего.
+	//
+	// ЧЕМ ЭТО ПЛАТИТСЯ. Прогон 3D колорвея 5 с выбором front + side_l, где side_l есть только у
+	// колорвея 6: денежные ворота открыты (у 5 есть занятые слоты), дверь молчала, отбор возвращал
+	// ОДНУ плиту — а у поставщика turntable нижний порог MinImages = 1, то есть вызов уходит и
+	// оплачивается, турнтейбл строится из одного вида вместо двух, и человеку про потерянную
+	// сторону не говорят НИЧЕГО. Это не пустой прогон, который где-то ниже отказал бы, — это
+	// молча УРЕЗАННЫЙ прогон, и отличить его от заказанного нельзя даже потом.
+	ids := spoken.GetFixSlotIds()
+	// ТОТ ЖЕ ВЫБОР ИСТОЧНИКА, ЧТО У ОТБОРА (designSelectBench): список, когда он непуст, иначе
+	// скаляр. Второе правило рядом с первым разошлось бы ровно на противоречивом входе.
+	views := spoken.GetFixTargets()
+	if len(views) == 0 && spoken.GetFixTarget() != "" {
+		views = []string{spoken.GetFixTarget()}
+	}
+	if len(ids) == 0 && len(views) == 0 {
+		return nil
+	}
+	want := entity.DesignPictureKindFlat
+	if src.Kind == entity.DesignRunKindThreed {
+		want = entity.DesignPictureKindRender
+	}
+	matchColorway, wantColorway := designBenchColorwayScope(src)
+	usableIDs := make(map[int]struct{}, len(bench))
+	usableViews := make(map[string]struct{}, len(bench))
+	for _, slot := range bench {
+		if slot.TechCardId != cardID || entity.DesignKindOrFlat(slot.Kind) != want {
+			continue
+		}
+		if matchColorway && entity.DesignColorwayOrNone(slot.ColorwayId) != wantColorway {
+			continue
+		}
+		// ПЛИТА ОБЯЗАТЕЛЬНА, потому что её требует отбор: слот без картинки он выбрасывает той же
+		// строкой, что и слот чужого рода. Дверь, не спросившая про плиту, приняла бы адрес,
+		// который прогон всё равно не исполнит, — то есть вернула бы ту же тихую потерю.
+		if slot.Picture == nil || slot.Picture.MediaId <= 0 {
+			continue
+		}
+		usableIDs[slot.Id] = struct{}{}
+		usableViews[slot.ViewKey] = struct{}{}
+	}
+	for i, id := range ids {
+		if _, ok := usableIDs[int(id)]; !ok {
+			return status.Errorf(codes.InvalidArgument,
+				"params.fix_slot_ids.%d %d is not a %s slot this run can read on tech card %d "+
+					"(a run narrowed to slots it cannot read would be paid for and empty)",
+				i, id, want, cardID)
+		}
+	}
+	for i, v := range views {
+		if _, ok := usableViews[v]; !ok {
+			// СООБЩЕНИЕ НАЗЫВАЕТ КОЛОРВЕЙ, а не только сторону: без него человек читает «нет
+			// рендера на side_l» на карточке, где side_l прекрасно виден — просто у другого цвета.
+			return status.Errorf(codes.InvalidArgument,
+				"params.fix_targets.%d %q has no %s plate on colourway %d of tech card %d, so this run "+
+					"would silently be built from fewer sides than were picked (0 = the colourway-less bench)",
+				i, v, want, wantColorway, cardID)
+		}
+	}
+	return nil
+}
+
+// designBenchColorwayScope — СУЖАЕТ ЛИ КОЛОРВЕЙ ЧТЕНИЕ ВЕРСТАКА ЭТИМ ПРОГОНОМ, и каким.
+//
+// ОДНО ПРАВИЛО НА ОБА ПРОХОДА ПО ВЕРСТАКУ — плиты (designSelectBench) и пустые именные детали
+// (designNamedEmptyDetailSlots). Написанное дважды, оно разошлось бы ровно там, где расходиться
+// дороже всего: в замороженном снимке оплаченного прогона.
+//
+// Сужает ТОЛЬКО у 3D, и это не пропуск у рендера. Рендер строится ИЗ ФЛЭТОВ, а флэт — одна
+// разметка на карточку и колорвея не имеет по существу (L-4): рендер колорвея A и рендер
+// колорвея B читают ОДИН И ТОТ ЖЕ флэтовый верстак, различаясь рецептом цвета. 3D же читает
+// рендер-верстак, а он живёт НА КОЛОРВЕЙ (L-2) — и без этого фильтра `want = render` брал бы
+// рендеры ВСЕХ колорвеев карточки разом: оплаченный прогон собирался бы из смеси цветов, и в
+// записи не оставалось бы ничего, чем это потом разобрать.
+//
+// «Колорвей не назван» (0) — ТОЖЕ ЗНАЧЕНИЕ, а не отсутствие фильтра: безколорвейное 3D видит
+// ровно неатрибутированный верстак — тот единственный, что существовал до оси, — и потому старые
+// карточки ведут себя байт в байт как раньше, а в именованный колорвей ничего чужого не
+// подмешивается никогда.
+func designBenchColorwayScope(src designInputSources) (match bool, want int) {
+	if src.Kind != entity.DesignRunKindThreed {
+		return false, 0
+	}
+	return true, int(src.Params.GetColorwayId())
+}
+
 // designNamedEmptyDetailSlots — ЗАПИСЬ БЕЗ КАРТИНКИ ДЛЯ ДЕТАЛИ, КОТОРУЮ ПРОСЯТ НАРИСОВАТЬ.
 //
 // ЧТО БЫЛО СЛОМАНО, И ПОЧЕМУ ЭТО НЕЛЬЗЯ БЫЛО ЗАМЕТИТЬ. `params.detail_slot_ids` резолвится в ИМЯ
@@ -1668,11 +1877,21 @@ func designNamedEmptyDetailSlots(src designInputSources, already []*pb_common.De
 			covered[s.GetSlotId()] = struct{}{}
 		}
 	}
+	// ⚠ ТОТ ЖЕ КОЛОРВЕЙНЫЙ СКОУП, ЧТО У ОТБОРА ПЛИТ (D8). Пустая деталь — тоже ВХОД прогона: она
+	// уезжает в снимок и оттуда в промпт («draw these details: collar»). Без фильтра 3D колорвея A
+	// могло вписать в свой замороженный снимок пустую деталь колорвея B — вход чужого верстака в
+	// оплаченном прогоне, и разобрать это потом было бы нечем. Правило одно на два прохода
+	// (designBenchColorwayScope), потому что два написания одного правила расходятся молча.
+	matchColorway, wantColorway := designBenchColorwayScope(src)
 	named := make(map[int]entity.DesignBenchSlot, len(src.Bench))
 	for _, slot := range src.Bench {
-		if slot.ViewKey == entity.DesignViewDetail {
-			named[slot.Id] = slot
+		if slot.ViewKey != entity.DesignViewDetail {
+			continue
 		}
+		if matchColorway && entity.DesignColorwayOrNone(slot.ColorwayId) != wantColorway {
+			continue
+		}
+		named[slot.Id] = slot
 	}
 	out := make([]*pb_common.DesignInputSlot, 0, len(ids))
 	for _, id := range ids {
@@ -1719,6 +1938,9 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 		return nil, nil
 	}
 	want := entity.DesignPictureKindFlat
+	// ⚠ КОЛОРВЕЙ СУЖАЕТ ОТБОР ТОЛЬКО У 3D, и довод — у самого правила (designBenchColorwayScope),
+	// в одном месте на оба прохода по верстаку.
+	matchColorway, wantColorway := designBenchColorwayScope(src)
 	if src.Kind == entity.DesignRunKindThreed {
 		want = entity.DesignPictureKindRender
 	}
@@ -1768,6 +1990,9 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 	plates := make([]int32, 0, len(src.Bench))
 	for _, slot := range src.Bench {
 		if entity.DesignKindOrFlat(slot.Kind) != want {
+			continue
+		}
+		if matchColorway && entity.DesignColorwayOrNone(slot.ColorwayId) != wantColorway {
 			continue
 		}
 		if slot.Picture == nil || slot.Picture.MediaId <= 0 {

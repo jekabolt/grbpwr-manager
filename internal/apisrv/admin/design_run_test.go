@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -110,6 +111,9 @@ const (
 	designRefMediaID = 100
 	// designPlateMediaID — плита верстака.
 	designPlateMediaID = 200
+	// designRenderPlateMediaID — плита РЕНДЕР-верстака: без неё «полоса с рендером» была флагом
+	// над пустым верстаком, и ворота 3D открывались прогону без единого входа (F3).
+	designRenderPlateMediaID = 210
 	// designBoardMediaURL — адрес картинки доски, каким его отдаёт медиа-стор.
 	//
 	// ⚠ ОН НАМЕРЕННО НЕ СОДЕРЖИТ ЧИСЛА 900, И ЭТО НЕСУЩЕЕ СВОЙСТВО СТЕНДА, А НЕ УКРАШЕНИЕ.
@@ -121,7 +125,7 @@ const (
 )
 
 func designBandWith(hasRender bool) *entity.DesignBand {
-	return &entity.DesignBand{
+	band := &entity.DesignBand{
 		HasFabricRender: hasRender,
 		References: []entity.DesignReference{
 			{TechCardId: designRunCardID, MediaId: designRefMediaID, Role: entity.DesignViewFront, Ordinal: 1},
@@ -138,6 +142,56 @@ func designBandWith(hasRender bool) *entity.DesignBand {
 			},
 		}},
 	}
+	// ⚠ «ЕСТЬ РЕНДЕР» ЗНАЧИТ ЗАНЯТЫЙ РЕНДЕР-СЛОТ, А НЕ ФЛАГ РЯДОМ С ПУСТЫМ ВЕРСТАКОМ.
+	//
+	// Здесь стенд однажды уже соврал: он выставлял RenderBenchColorways = {0} при верстаке, где
+	// не было НИ ОДНОГО render-слота, — то есть изображал ровно то состояние, которое настоящий
+	// стор произвести не может (его запрос считает занятые слоты). Положительный контроль ворот
+	// 3D на таком стенде доказывал, что дверь открывается карточке с ПУСТЫМ рендер-верстаком, —
+	// то есть ровно то, что эти ворота обязаны закрывать.
+	//
+	// Лечится не подгонкой числа, а тем, что стенд больше не умеет расходиться со стором:
+	// множество ВЫВОДИТСЯ из верстака тем же правилом, что в designRenderBenchColorways.
+	if hasRender {
+		band.Bench = append(band.Bench, entity.DesignBenchSlot{
+			Id:         6,
+			TechCardId: designRunCardID,
+			ViewKey:    entity.DesignViewFront,
+			Kind:       entity.DesignPictureKindRender,
+			PictureId:  sql.NullInt32{Int32: 78, Valid: true},
+			Picture: &entity.DesignPicture{
+				Id: 78, TechCardId: designRunCardID, MediaId: designRenderPlateMediaID,
+				Kind: entity.DesignPictureKindRender,
+			},
+		})
+	}
+	band.RenderBenchColorways = designRenderBenchColorwaysOf(band.Bench)
+	return band
+}
+
+// designRenderBenchColorwaysOf — ЗЕРКАЛО СЕРВЕРНОГО ЗАПРОСА В СТЕНДЕ (`designRenderBenchColorways`,
+// store/design/band.go): колорвеи занятых render-слотов, NULL как 0, по возрастанию. Стенд считает
+// его САМ, а не принимает числом, чтобы «полоса с рендером» не могла означать в стенде одно, а в
+// сторе другое: расхождение этих двух ответов и было дефектом F3.
+func designRenderBenchColorwaysOf(bench []entity.DesignBenchSlot) []int {
+	seen := map[int]struct{}{}
+	out := make([]int, 0, len(bench))
+	for _, s := range bench {
+		if entity.DesignKindOrFlat(s.Kind) != entity.DesignPictureKindRender {
+			continue
+		}
+		if s.Picture == nil || s.Picture.MediaId <= 0 || s.Picture.HiddenAt.Valid {
+			continue
+		}
+		cw := entity.DesignColorwayOrNone(s.ColorwayId)
+		if _, dup := seen[cw]; dup {
+			continue
+		}
+		seen[cw] = struct{}{}
+		out = append(out, cw)
+	}
+	sort.Ints(out)
+	return out
 }
 
 func designStartRequest(kind string) *pb_admin.StartDesignRunRequest {
@@ -478,11 +532,13 @@ func TestDesignInputSlotsFollowTheSecondBenchAxis(t *testing.T) {
 	bench := []entity.DesignBenchSlot{
 		{
 			Id: 1, ViewKey: entity.DesignViewFront, Kind: entity.DesignPictureKindFlat,
-			Picture: &entity.DesignPicture{Id: 1, MediaId: 201},
+			Picture: &entity.DesignPicture{Id: 1, MediaId: 201, Kind: entity.DesignPictureKindFlat},
 		},
 		{
+			// Род плиты назван ЯВНО: опущенный читается как `flat`, и рендер-слот с флэтовой
+			// плитой — пара, которую настоящая постановка отвергает (N7).
 			Id: 2, ViewKey: entity.DesignViewFront, Kind: entity.DesignPictureKindRender,
-			Picture: &entity.DesignPicture{Id: 2, MediaId: 202},
+			Picture: &entity.DesignPicture{Id: 2, MediaId: 202, Kind: entity.DesignPictureKindRender},
 		},
 	}
 	flats := designInputSlots(designInputSources{
@@ -534,18 +590,45 @@ func TestDesignInputSlotsTakeSidesAndDetailsAsOneSelection(t *testing.T) {
 
 // ─────────────────────── прочее ───────────────────────
 
-// ПОЛОСА ОТДАЁТ ФЛАГ W-13 КЛИЕНТУ. Без него экран рисовал бы дверь 3D открытой и вёл человека в
-// серверный отказ.
-func TestGetDesignBandMirrorsTheFabricRenderGate(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	design := mocks.NewMockDesign(t)
-	repo.EXPECT().Design().Return(design).Maybe()
-	design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).
-		Return(designBandWith(true), nil).Once()
-	srv := &Server{repo: repo}
-	resp, err := srv.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: designRunCardID})
-	require.NoError(t, err)
-	require.True(t, resp.GetHasFabricRender())
+// ПОЛОСА ОТДАЁТ ОБА ПОЛЯ ДВЕРИ 3D, И ОНИ ЗНАЧАТ РАЗНОЕ.
+//
+// ⚠ ИМЯ И ТЕЛО ЭТОЙ ПРОБЫ ПЕРЕЖИЛИ СВОЁ УТВЕРЖДЕНИЕ. Она звалась «полоса ЗЕРКАЛИТ ворота
+// фабрик-рендера» и проверяла только has_fabric_render — а ворота с тех пор спрашивают
+// render_bench_colorway_ids (занятые рендер-слоты), и собственный текст этой волны в admin.proto
+// написан капслоком: дверь по этому флагу НЕ РИСОВАТЬ. То есть проба удостоверяла ровно ту связь,
+// которую волна отменила, и не касалась поля, от которого контракт клиента теперь зависит.
+//
+// Теперь она проверяет ОБА и то, чем они отличаются.
+func TestGetDesignBandServesBothFabricRenderSignals(t *testing.T) {
+	newSrv := func(band *entity.DesignBand) *Server {
+		repo := mocks.NewMockRepository(t)
+		design := mocks.NewMockDesign(t)
+		repo.EXPECT().Design().Return(design).Maybe()
+		design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).
+			Return(band, nil).Once()
+		return &Server{repo: repo}
+	}
+	read := func(band *entity.DesignBand) *pb_admin.GetDesignBandResponse {
+		resp, err := newSrv(band).GetDesignBand(designRunCtx(),
+			&pb_admin.GetDesignBandRequest{TechCardId: designRunCardID})
+		require.NoError(t, err)
+		return resp
+	}
+
+	// ЗАНЯТЫЙ ВЕРСТАК: оба поля говорят «да», и второе — то, по которому рисуют дверь.
+	occupied := read(designBandWith(true))
+	require.True(t, occupied.GetHasFabricRender())
+	require.Equal(t, []int32{0}, occupied.GetRenderBenchColorwayIds(),
+		"клиент рисует дверь 3D по ЭТОМУ полю; без него он не знает, какому цвету она открыта")
+
+	// КАДРЫ ЕСТЬ, ВЕРСТАК ПУСТ — то самое состояние, в котором два поля РАСХОДЯТСЯ, и ради
+	// которого второе поле вообще заведено. Клиент, читающий флаг, откроет кнопку в отказ.
+	loose := designBandWith(false)
+	loose.HasFabricRender = true
+	split := read(loose)
+	require.True(t, split.GetHasFabricRender())
+	require.Empty(t, split.GetRenderBenchColorwayIds(),
+		"загруженный, но не поставленный рендер двери не открывает — и полоса обязана это сказать")
 }
 
 // newDraftIdeaRig — стенд ЧЕРНОВИКА ИДЕИ, у которого StartRun НЕ заглушён заранее: обе пробы ниже

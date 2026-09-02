@@ -2759,6 +2759,35 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/tech-card/{tech_card_id}/design/asset/{asset_id}"};
   }
 
+  // SetDesignAssetColorway says WHICH COLOURWAY WEARS THIS ASSET as its fabric — the owner's «a
+  // pattern is a seamless tile, a seamless tile is fabric», made once, kept in the card's library,
+  // and picked in a render/3D run as the fabric of that colourway. colorway_id 0 takes the
+  // assignment off, which is a real answer («it wears its own colour»), not an omission.
+  //
+  // SINGLE-SELECT, IN ONE TRANSACTION: a colourway wears ONE fabric, so assigning asset X to
+  // colourway N first clears N off every other asset of this card. Pressing the neighbouring chip
+  // IS the intent «the fabric of N is now this one» — refusing it as a duplicate would make the
+  // person unassign and reassign for a single decision.
+  //
+  // WHY A VERB OF ITS OWN AND NOT A FIELD ON UpsertDesignAsset: Upsert is a FULL REPLACE, and a
+  // proto3 scalar there would arrive as 0 from every client that predates the field and from every
+  // unrelated save — silently taking the fabric off the colourway. Upsert's SET list does not name
+  // the column at all, so an assignment survives renames and colour edits.
+  //
+  // InvalidArgument `colorway_forbidden`: kind = hardware (a zip is not what a colourway is made
+  // of), or an Upsert would turn an assigned asset into hardware. It is InvalidArgument and not
+  // FailedPrecondition because the request is fixed by changing the REQUEST — name a different
+  // asset — which is the same rule the shared refusal table applies to every `colorway_forbidden`
+  // in this band. FailedPrecondition `foreign_colorway`: the colourway belongs to another card.
+  // NotFound on an asset of another card, exactly like DeleteDesignAsset. InvalidArgument on a
+  // negative colorway_id.
+  rpc SetDesignAssetColorway(SetDesignAssetColorwayRequest) returns (SetDesignAssetColorwayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/asset/colorway"
+      body: "*"
+    };
+  }
+
   // SetDesignAssetPlacement puts ONE mark on ONE flat: this asset, this drawing, here. Creates when
   // placement_id is 0, moves it otherwise.
   //
@@ -11642,10 +11671,51 @@ message DesignBenchSlotRef {
   // IGNORED when the ref addresses an existing slot by slot_id — a minted id already names its
   // bench, and a kind disagreeing with it would be a contradiction nobody could adjudicate.
   string kind = 3;
+  // WHOSE render bench the ref addresses. The render bench is PER COLOURWAY: colourway A's front
+  // and colourway B's front are two different slots, and this field is the half of the address
+  // that tells them apart.
+  //
+  //   0  — NOT STATED. Legacy behaviour, and what every client that knows nothing about the
+  //        colourway axis sends: with a view_key it addresses the colourway-less bench, with a
+  //        slot_id it lets the slot's own colourway stand.
+  //   -1 — the COLOURWAY-LESS bench, stated on purpose. Say this when you mean "the unattributed
+  //        render bench" and want to be told if the plate disagrees, instead of being quietly
+  //        redirected. This is a real, permanently legal bench: every render made before the
+  //        colourway axis lives on it.
+  //   >0 — product(id) of the colourway whose bench is addressed.
+  //
+  // REFUSED with kind flat (`colorway_forbidden`): the flat bench is one per card and has no
+  // colourway axis — that is L-4's boundary, not an omission. Refused when the colourway belongs
+  // to another card (`foreign_colorway`).
+  //
+  // WITH slot_id THE SLOT'S OWN COLOURWAY WINS — but a STATED colourway that disagrees with it is
+  // REFUSED (`colorway_forbidden` on a slot with no colourway axis, `colorway_mismatch` on a
+  // different colourway) rather than dropped. Dropping it would answer OK to a request nobody
+  // carried out. This differs from `kind`, which stays ignored beside a slot_id: that behaviour
+  // shipped and is not changed here.
+  int32 colorway_id = 4;
 }
 
 message GetDesignBandRequest {
   int32 tech_card_id = 1;
+  // OPTIONAL bench filter, with THREE outcomes — 0 is "not stated", not "colourway zero":
+  //
+  //   0  — the WHOLE bench, exactly as before and exactly what every older client sends.
+  //   -1 — the flat bench PLUS the UNATTRIBUTED render bench, and nothing else. Say this to draw
+  //        the "no colourway" entry of the 3D colourway picker: that bench is real, selectable and
+  //        permanently legal (every render made before the colourway axis stands on it), and a 3D
+  //        run that names no colourway reads exactly it. Without an explicit way to say it, it
+  //        could not be shown apart from "everything".
+  //   >0 — a colourway product(id): the flat bench (colourway-independent by nature) PLUS only
+  //        that colourway's render/threed slots.
+  //
+  // The unattributed bench is NEVER folded into a named colourway's bench: attribution is not
+  // invented by a filter.
+  //
+  // The filter narrows `bench` ONLY. Runs, batches, pictures, aggregates and
+  // render_bench_colorway_ids stay whole-card: the band's history is one feed, and a filtered
+  // history would silently change the row set a page token was cut from.
+  int32 bench_colorway_id = 2;
 }
 
 // GetDesignBandResponse is the whole band in one read. Bounded on purpose: the runs come back one
@@ -11708,14 +11778,32 @@ message GetDesignBandResponse {
   // so a continuation that filtered would change the row set mid-pagination and silently drop or
   // duplicate rows around the seam.
   string next_page_token = 13;
-  // W-13 MIRRORED FOR THE INTERFACE: this card owns at least one fabric render that is not hidden,
-  // so the 3D door may be drawn open.
+  // THIS CARD OWNS AT LEAST ONE FABRIC RENDER PICTURE THAT IS NOT HIDDEN. Counted over the whole
+  // card in the same read, never over the loaded page.
   //
-  // THE GATE ITSELF IS ON THE SERVER — StartDesignRun refuses kind = threed without one — and this
-  // flag exists only so the band can draw the door closed instead of letting somebody click into a
-  // refusal. A client computing the same rule from what it was handed would be wrong by exactly the
-  // renders that are not on this page, which is the usual case for a card with any history.
+  // ⚠ DO NOT DRAW THE 3D DOOR FROM THIS FLAG — use render_bench_colorway_ids below. This field
+  // once mirrored the 3D gate, and that sentence is no longer true: the gate asks which render
+  // BENCHES are occupied, because occupied slots are what a 3D run builds its inputs from. The two
+  // legitimately disagree — a render that was uploaded but never placed on a side sets this flag
+  // true and leaves that set EMPTY — and a client following the old rule opens the button into a
+  // `no_fabric_render` refusal, which is the outcome this field was added to prevent.
+  //
+  // WHAT IT IS GOOD FOR NOW: telling "this card has no fabric renders at all" apart from "it has
+  // renders, they are just not on the bench yet" — an empty-state question, not a door question.
+  // Kept rather than removed because it still answers that truthfully and it shipped.
   bool has_fabric_render = 17;
+  // THE COLOURWAYS WHOSE RENDER BENCH IS OCCUPIED on this card — product(id)s, with 0 standing
+  // for the unattributed legacy bench (renders made before the colourway axis). A colourway is in
+  // this set when at least one render SLOT of that colourway holds a plate; it is what a 3D run
+  // actually builds from, and the server-side gate refuses a threed run whose named colourway is
+  // not in it. Computed over the WHOLE card in the same read, never over the loaded page.
+  //
+  // ⚠ THIS IS NOT A BREAKDOWN OF has_fabric_render, and the two legitimately disagree. That flag
+  // counts PICTURES on the card; this set counts OCCUPIED SLOTS. A card where a fabric render was
+  // uploaded but not yet placed on any side has has_fabric_render = true and this set EMPTY — and
+  // 3D is correctly refused there, because the run would have had no input at all. Draw the 3D
+  // door from this set, never from the flag.
+  repeated int32 render_bench_colorway_ids = 20;
   // THE CARD'S ASSET SHELVES — cloths, patterns and hardware (V-11), all three in one list ordered
   // by kind and then by ordinal. They ride the band read rather than a list verb of their own for
   // the reason every other member of this message does: the studio draws bench, references and
@@ -11886,6 +11974,13 @@ message DesignUploadItem {
   // band that works end to end, and it could file only one of the three kinds it is supposed to
   // carry: a fabric render or a turntable frame could not be brought in by hand at all.
   string kind = 3;
+  // WHICH COLOURWAY the file belongs to — product(id), 0 = none. A statement like `kind`, and
+  // meaningful only WITH kind render|threed: a hand-uploaded fabric render is a render OF a
+  // colourway, and nothing downstream can recover which one from the pixels. REFUSED on a flat
+  // (and pattern) item with `colorway_forbidden` — a flat has no colourway by nature — and
+  // refused when the colourway belongs to another card (`foreign_colorway`). 0 on a render files
+  // it as unattributed, exactly what every render uploaded before this axis is.
+  int32 colorway_id = 4;
 }
 
 message RegisterDesignUploadRequest {
@@ -12163,6 +12258,25 @@ message SetDesignAssetPlacementRequest {
 
 message SetDesignAssetPlacementResponse {
   common.DesignAssetPlacement placement = 1;
+}
+
+// SetDesignAssetColorwayRequest — «the fabric of colourway N is this asset». The card is named in
+// the path and it is not decoration: the server refuses an asset_id belonging to a DIFFERENT card,
+// and it refuses a colourway that is not this card's.
+message SetDesignAssetColorwayRequest {
+  int32 tech_card_id = 1;
+  int32 asset_id = 2;
+  // product(id) of the colourway that wears this asset. 0 UNASSIGNS — a real answer («this
+  // colourway wears its own colour»), which is why no sentinel is needed here: the verb has one
+  // job, so whoever calls it is speaking about the colourway by definition. Negative is
+  // InvalidArgument.
+  int32 colorway_id = 3;
+}
+
+message SetDesignAssetColorwayResponse {
+  // The saved row, media included — the screen redraws the tile it just got back, and a bare
+  // media_id would blank the swatch. No second projection: the shelf is re-read with the band.
+  common.DesignAsset asset = 1;
 }
 
 // DeleteDesignAssetPlacementRequest names BOTH the mark and the card it is being taken off.

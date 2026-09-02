@@ -131,7 +131,8 @@ type (
 		SetVariantPrice(ctx context.Context, variantID int, prices []entity.ColorwayPriceInsert) error
 		// RelinkDraftColorway moves a DRAFT colourway onto a different style (R4), guarded on both sides'
 		// shared lock_version, re-minting its SKU. entity.ErrColorwayNotDraft if not draft,
-		// entity.ErrTechCardConflict on a stale version, sql.ErrNoRows if colourway/target style absent.
+		// entity.ErrTechCardConflict on a stale version, sql.ErrNoRows if colourway/target style absent,
+		// entity.ErrColorwayHasDesignRows when the source style's design band still names the colourway.
 		RelinkDraftColorway(ctx context.Context, colorwayID, targetStyleID, expectedColorwayVersion, expectedTargetStyleVersion int) error
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
@@ -2062,6 +2063,12 @@ type (
 		// counted BEFORE the delete, because the cascade leaves nothing to count afterwards. A
 		// techCardID of 0 addresses the asset by its own id, exactly as DeleteDetailSlot does.
 		DeleteAsset(ctx context.Context, techCardID, assetID int) (int, error)
+		// SetAssetColorway says which colourway wears this asset as its fabric (0357); ColorwayId 0
+		// unassigns. Single-select: the assignment is taken off every other asset of the card in the
+		// same transaction. entity.ErrDesignColorwayForbidden on kind=hardware,
+		// entity.ErrDesignForeignColorway on a colourway of another card, entity.ErrDesignNotFound on
+		// an asset of another card.
+		SetAssetColorway(ctx context.Context, req entity.DesignAssetColorwaySet) (*entity.DesignAsset, error)
 		// SetAssetPlacement puts ONE mark on ONE flat, or moves an existing one. Both ends are
 		// checked against the same card in the write transaction: design_asset_placement carries
 		// no tech_card_id, so its two foreign keys can each be satisfied by another style's row.

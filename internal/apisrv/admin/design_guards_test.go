@@ -114,26 +114,44 @@ func designGuardCard() *entity.TechCard {
 // designGuardBand — полоса с рендером (иначе 3D закрыто воротами W-13) и двумя плитами: флэт и
 // рендер одного вида, чтобы отбор было чем ошибиться.
 func designGuardBand() *entity.DesignBand {
-	return &entity.DesignBand{
+	band := &entity.DesignBand{
 		HasFabricRender: true,
+		// ⚠ ПЛИТА НЕСЁТ РОД СВОЕГО СЛОТА, И ЭТО НЕ ПЕДАНТИЗМ (N7). Раньше во всех трёх слотах
+		// лежали картинки с ОПУЩЕННЫМ Kind, а опущенный род читается как `flat` — то есть в
+		// рендер-слотах стояли флэты, пара, которую настоящий писатель постановки отвергает
+		// (wrong_kind). Стенд, изображающий состояние, недостижимое через дверь записи, доказывает
+		// поведение на данных, которых в базе быть не может.
 		Bench: []entity.DesignBenchSlot{
 			{
 				Id: 11, TechCardId: designGuardCardID, ViewKey: entity.DesignViewFront,
-				Kind:    entity.DesignPictureKindRender,
-				Picture: &entity.DesignPicture{Id: 501, TechCardId: designGuardCardID, MediaId: 201},
+				Kind: entity.DesignPictureKindRender,
+				Picture: &entity.DesignPicture{
+					Id: 501, TechCardId: designGuardCardID, MediaId: 201,
+					Kind: entity.DesignPictureKindRender,
+				},
 			},
 			{
 				Id: 12, TechCardId: designGuardCardID, ViewKey: entity.DesignViewBack,
-				Kind:    entity.DesignPictureKindRender,
-				Picture: &entity.DesignPicture{Id: 502, TechCardId: designGuardCardID, MediaId: 202},
+				Kind: entity.DesignPictureKindRender,
+				Picture: &entity.DesignPicture{
+					Id: 502, TechCardId: designGuardCardID, MediaId: 202,
+					Kind: entity.DesignPictureKindRender,
+				},
 			},
 			{
 				Id: 13, TechCardId: designGuardCardID, ViewKey: entity.DesignViewFront,
-				Kind:    entity.DesignPictureKindFlat,
-				Picture: &entity.DesignPicture{Id: 503, TechCardId: designGuardCardID, MediaId: 203},
+				Kind: entity.DesignPictureKindFlat,
+				Picture: &entity.DesignPicture{
+					Id: 503, TechCardId: designGuardCardID, MediaId: 203,
+					Kind: entity.DesignPictureKindFlat,
+				},
 			},
 		},
 	}
+	// Множество ВЫВОДИТСЯ из верстака тем же правилом, что в сторе: числом его задавать нельзя —
+	// именно так родился первый ложно-зелёный стенд этой волны.
+	band.RenderBenchColorways = designRenderBenchColorwaysOf(band.Bench)
+	return band
 }
 
 func designGuardStart(kind string) *pb_admin.StartDesignRunRequest {

@@ -49,6 +49,13 @@ const (
 	// по-прежнему за глазом человека (см. seam.go), но обычный провал — рамка, виньетка, просто
 	// незаворачивающийся квадрат — виден отсюда в момент покупки, а не через две недели.
 	CodePatternNotSeamless = "pattern_not_seamless"
+
+	// CodeOutputRefused — СТОР ОТКАЗАЛСЯ ПОДШИТЬ ВЫДАЧУ, и это НЕ погода. Сюда попадают
+	// детерминированные ошибки ВОРКЕРА: род кадра, который не может нести колорвей задания
+	// (0356), два выхода с одним ординалом, неизвестный ghost_view, выход без медиа. Все они
+	// дадут ТОТ ЖЕ ответ на том же задании сколько ни повторяй, поэтому единственное, что
+	// покупает повтор, — ещё один платный вызов поставщика.
+	CodeOutputRefused = "output_refused"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -80,6 +87,16 @@ type verdict struct {
 // store's, and it is a money figure.
 func classify(err error) verdict {
 	switch {
+	// ─── ours: DELIVERED, and then the STORE refused to file it. RETRY FORBIDDEN, and this one is
+	// the most expensive of the family to get wrong. The attempt is already recorded as delivered
+	// (the provider was paid before CompleteRun is ever called), so an unclassified refusal here
+	// falls through to `abandon`, which does NOT fail the run — the lease simply expires and the
+	// queue hands the same job back out while paid attempts are under the cap. A deterministic
+	// routing bug would therefore BUY THE SAME BAD OUTPUT FIVE TIMES and finish as a generic
+	// `lease_expired`, with the real cause nowhere in the row.
+	case errors.Is(err, entity.ErrDesignColorwayForbidden),
+		errors.Is(err, entity.ErrDesignInvalidArgument):
+		return verdict{Retryable: false, Code: CodeOutputRefused, State: entity.DesignAttemptDelivered}
 	// ─── ours: settled before any payment ───
 	case errors.Is(err, errRouteMissing), errors.Is(err, errProviderDisabled),
 		errors.Is(err, orimages.ErrNotConfigured), errors.Is(err, recraft.ErrNotConfigured),

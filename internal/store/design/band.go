@@ -26,11 +26,60 @@ const (
 	designCountArchivedRuns = `SELECT COUNT(*) FROM design_run WHERE tech_card_id = :card AND archived_at IS NOT NULL`
 	designMaxRrev           = `SELECT COALESCE(MAX(rrev), 0) FROM design_run WHERE tech_card_id = :card`
 	designCountBatches      = `SELECT COUNT(*) FROM design_batch WHERE tech_card_id = :card`
-	// designCountFabricRenders — W-13, СЕКВЕНЦИЯ «флэты → рендер → 3D». Считается по ВСЕЙ
-	// карточке и только по НЕСПРЯТАННЫМ кадрам: спрятанный рендер человек уже отверг, и
-	// открывать им 3D значило бы обещать дверь, за которую сервер откажет.
+	// designCountFabricRenders — «ЕСТЬ ЛИ У КАРТОЧКИ ФАБРИК-РЕНДЕРЫ ВООБЩЕ» (W-13). Считается по
+	// ВСЕЙ карточке и только по НЕСПРЯТАННЫМ кадрам: спрятанный рендер человек уже отверг.
+	//
+	// ⚠ ЭТО БОЛЬШЕ НЕ ТО, ЧТО ОТКРЫВАЕТ 3D, и прежняя формулировка («открывать им 3D значило бы
+	// обещать дверь, за которую сервер откажет») эту волну не пережила: дверь открывает
+	// designRenderBenchColorways — ЗАНЯТЫЕ РЕНДЕР-СЛОТЫ, потому что именно из них прогон собирает
+	// входы. Два ответа законно расходятся: загруженный, но не поставленный рендер даёт здесь
+	// единицу и оставляет то множество пустым. Оставлено как подсказка пустого состояния
+	// («рендеров нет» против «рендеры есть, разложи их»), см. DesignBand.HasFabricRender.
 	designCountFabricRenders = `SELECT COUNT(*) FROM design_picture
 		WHERE tech_card_id = :card AND kind = 'render' AND hidden_at IS NULL`
+	// designRenderBenchColorways — ВОРОТА 3D, И ОНИ СПРАШИВАЮТ ВЕРСТАК, А НЕ ПОЛОСУ (D5).
+	//
+	// Гейт обязан задавать РОВНО ТОТ ЖЕ ВОПРОС, что и отбор входов. 3D читает не картинки
+	// карточки, а ЗАНЯТЫЕ РЕНДЕР-СЛОТЫ своего колорвея (designSelectBench: род слота = render,
+	// колорвей слота = колорвей прогона, у слота есть плита с медиа). Прежний счёт по
+	// design_picture отвечал на другой вопрос — «есть ли на карточке такой файл», — и расходился
+	// с отбором ровно в главном случае: загруженный, но НЕ ПОСТАВЛЕННЫЙ рендер открывал дверь,
+	// деньги дня резервировались, прогон уходил в работу с ПУСТЫМ набором плит. Оплаченный
+	// прогон без входов — не редкость, а нормальный порядок работы: файл загружают раньше, чем
+	// решают, на какую сторону его положить.
+	//
+	// JOIN на design_picture повторяет две последние проверки отбора (`slot.Picture != nil`,
+	// `MediaId > 0`).
+	//
+	// ⚠ ТРЕТИЙ ПРЕДИКАТ, `hidden_at IS NULL`, У ОТБОРА ОТСУТСТВУЕТ, И ЭТО НАМЕРЕННАЯ
+	// НЕСИММЕТРИЯ, а не «тот же вопрос» (F8). Отбор плит спрятанность не смотрит вовсе, а
+	// attachSlotPictures прикрепляет спрятанную плиту наравне с прочими. То есть гейт СТРОЖЕ
+	// отбора: множество занятых верстаков ⊆ множество верстаков, из которых отбор что-нибудь
+	// возьмёт.
+	//
+	// НЕСИММЕТРИЯ ВЫБРАНА В СТОРОНУ ДЕНЕГ И ПРОВЕРЕНА ПО ОБОИМ ИСХОДАМ:
+	//   * ложный ОТКАЗ (все плиты колорвея спрятаны, гейт закрыт) стоит одного клика «показать»;
+	//   * ложное РАЗРЕШЕНИЕ (гейт открыт, отбор пуст) стоит оплаченного прогона без входов —
+	//     ровно того, что D5 и закрывает.
+	// Убрать `hidden_at` отсюда значило бы открывать дверь по спрятанной плите; добавить его в
+	// отбор — вторая правка, меняющая ПОВЕДЕНИЕ уже уехавшего 3D (сегодня спрятанная плита в
+	// слоте кормит прогон), и она этой волне не принадлежит.
+	//
+	// Остаточный перекос: у колорвея front спрятан, back виден — гейт открывает back, а прогон
+	// возьмёт ОБА, включая спрятанный front. Это не потеря денег, но и не то, чего человек ждёт
+	// от «спрятать». Долг записан здесь; чинится он в designSelectBench, вместе с решением, что
+	// вообще значит спрятанная плита в занятом слоте (сегодня hidePictureGuards её не создаёт —
+	// прятать стоящую в слоте отказано, — так что состояние достижимо только постановкой
+	// спрятанной плиты либо прямой правкой базы).
+	//
+	// NULL схлопывается в 0: неатрибутированный легаси-верстак открывает дверь только
+	// безколорвейному 3D. Скоуп — ВСЯ карточка, никакой страницы, ровно как у счётчика выше.
+	designRenderBenchColorways = `SELECT DISTINCT COALESCE(s.colorway_id, 0) AS cw
+		FROM design_bench_slot s
+		JOIN design_picture p ON p.id = s.picture_id
+		WHERE s.tech_card_id = :card AND s.kind = 'render'
+		  AND p.media_id > 0 AND p.hidden_at IS NULL
+		ORDER BY cw`
 	// designListLayers — ПРОЕКЦИЯ СЛОЁВ ДЛЯ ПОЛОСЫ, И ОНА ИМЕНОВАННАЯ, ПОЭТОМУ КАЖДАЯ НОВАЯ
 	// КОЛОНКА ПОПАДАЕТ СЮДА РУКАМИ. Пропуск не падает и ничего не логирует — полоса просто
 	// сервирует поле нулём, и это ровно та форма, которую читают экраны: три колонки 0350 без
@@ -143,6 +192,16 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 			return fmt.Errorf("failed to count design fabric renders: %w", err)
 		}
 		band.HasFabricRender = renders > 0
+		cwRows, err := storeutil.QueryListNamed[struct {
+			Cw int `db:"cw"`
+		}](ctx, db, designRenderBenchColorways, map[string]any{"card": cardID})
+		if err != nil {
+			return fmt.Errorf("failed to list design render bench colourways: %w", err)
+		}
+		band.RenderBenchColorways = make([]int, 0, len(cwRows))
+		for _, r := range cwRows {
+			band.RenderBenchColorways = append(band.RenderBenchColorways, r.Cw)
+		}
 
 		if band.HiddenByRun, err = loadHiddenCounts(ctx, db, cardID, "run_id"); err != nil {
 			return err

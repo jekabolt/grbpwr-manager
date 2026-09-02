@@ -45,6 +45,16 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		if !entity.IsDesignPictureKind(entity.DesignKindOrFlat(it.Kind)) {
 			return nil, fmt.Errorf("%w: unknown picture kind %q", entity.ErrDesignInvalidArgument, it.Kind)
 		}
+		// КОЛОРВЕЙ — УТВЕРЖДЕНИЕ ЗАГРУЖАЮЩЕГО, как и род (0356): из пикселей его не восстановить.
+		// Флэту (и паттерну) значение ОТКАЗЫВАЕТСЯ, а не молча сбрасывается: чертёж изделия один
+		// на все цвета, и «флэт колорвея 5» не должен быть выразим ни одной дверью записи.
+		if it.ColorwayId < 0 {
+			return nil, fmt.Errorf("%w: colorway_id must not be negative", entity.ErrDesignInvalidArgument)
+		}
+		if it.ColorwayId > 0 && !entity.DesignPictureKindTakesColorway(it.Kind) {
+			return nil, fmt.Errorf("%w: a %s picture has no colourway axis",
+				entity.ErrDesignColorwayForbidden, entity.DesignKindOrFlat(it.Kind))
+		}
 	}
 
 	out := &entity.DesignBatchResult{}
@@ -92,17 +102,86 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 			return fmt.Errorf("%w: client_request_id belongs to tech card %d",
 				entity.ErrDesignNotFound, batch.TechCardId)
 		}
+		// ГРАНИЦА КАРТОЧКИ ДЛЯ КАЖДОГО НАЗВАННОГО КОЛОРВЕЯ — в этой же транзакции, что и вставка:
+		// чужой id замёрз бы в полосе правдоподобной, но ложной атрибуцией (0356).
+		checkedCw := map[int]struct{}{}
+		for _, it := range req.Items {
+			if it.ColorwayId <= 0 {
+				continue
+			}
+			if _, ok := checkedCw[it.ColorwayId]; ok {
+				continue
+			}
+			if err := assertColorwayOfCard(ctx, db, req.TechCardId, it.ColorwayId); err != nil {
+				return err
+			}
+			checkedCw[it.ColorwayId] = struct{}{}
+		}
+		// ─── ПОВТОР КЛЮЧА С ДРУГИМ КОЛОРВЕЕМ — ПРОТИВОРЕЧИЕ, А НЕ ПОВТОР (D9) ───
+		//
+		// client_request_id разрешается по одной только карточке, а INSERT ниже идёт с
+		// ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id) — колонки он НЕ обновляет. Значит
+		// повтор того же ключа с ДРУГИМ колорвеем возвращал ранее записанные строки и OK, а новую
+		// атрибуцию выбрасывал молча: клиент видел «загружено», сервер хранил прежний цвет. Ровно
+		// тот же класс, что молчаливый сброс колорвея у флэта, только спрятанный за словом
+		// «идемпотентность». Идемпотентность — это «повтор ТОГО ЖЕ запроса»; запрос с другим
+		// колорвеем — другой запрос, и ему полагается отказ.
+		//
+		// Сравнение по ординалу — по тому же ключу uq_design_picture_batch_ordinal, которым
+		// схлопывается сама вставка, поэтому сравнивается ровно та строка, на которую повтор бы и
+		// разрешился.
+		//
+		// ⚠ ТРИ УНАСЛЕДОВАННЫХ ДЫРЫ ЭТОЙ ДВЕРИ, НАЗВАННЫЕ И НЕ ЗАКРЫТЫЕ ЗДЕСЬ. Все три старше
+		// оси колорвея и чинятся не подпоркой, а решением о том, что такое «тот же запрос» для
+		// пачки; заклеивать их по одной внутри колорвейной волны значило бы прятать общий дефект
+		// за частным симптомом.
+		//   1. РОД (`kind`) той же вставкой не обновляется и имеет ровно тот же порок, что
+		//      колорвей имел до этой правки: повтор с другим родом принимается и молча
+		//      игнорируется. Уехало с 0349.
+		//   2. ПОВТОР С ЛИШНИМ ЭЛЕМЕНТОМ дописывает картинку, а design_batch.files_count остаётся
+		//      прежним — полка начинает противоречить собственному счётчику.
+		//   3. СРАВНИВАЕТСЯ ИЗМЕНЯЕМАЯ АТРИБУЦИЯ, А НЕ ИСХОДНАЯ ПРОСЬБА. У прогона эту разницу
+		//      уже пришлось развести (там просьба живёт в замороженных params); у пачки такого
+		//      места нет вовсе, поэтому после удаления колорвея настоящий ретрай с ИСХОДНЫМ id
+		//      будет отвергнут, а повтор с нулём — принят. Ровно наоборот тому, что значит
+		//      идемпотентность. Починка требует хранить просьбу пачки, то есть колонку, а не
+		//      предикат.
+		if out.Idempotent {
+			type filedPicture struct {
+				Ordinal int           `db:"ordinal"`
+				Cw      sql.NullInt32 `db:"colorway_id"`
+			}
+			filed, err := storeutil.QueryListNamed[filedPicture](ctx, db,
+				`SELECT ordinal, colorway_id FROM design_picture WHERE batch_id = :batch`,
+				map[string]any{"batch": batchID})
+			if err != nil {
+				return fmt.Errorf("failed to read the pictures already filed under batch %d: %w", batchID, err)
+			}
+			byOrdinal := make(map[int]int, len(filed))
+			for _, f := range filed {
+				byOrdinal[f.Ordinal] = entity.DesignColorwayOrNone(f.Cw)
+			}
+			for i, it := range req.Items {
+				if was, ok := byOrdinal[i]; ok && was != it.ColorwayId {
+					return fmt.Errorf(
+						"%w: client_request_id %q already filed picture %d of this batch under colourway %d "+
+							"and is now being reused with colourway %d (0 = none)",
+						entity.ErrDesignColorwayMismatch, req.ClientRequestId, i, was, it.ColorwayId)
+				}
+			}
+		}
 		// uq_design_picture_batch_ordinal makes each picture idempotent on its own, so a retry
 		// that reached the batch insert but not the pictures still converges.
 		for i, it := range req.Items {
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
-					(tech_card_id, media_id, batch_id, ordinal, kind, ghost_view, source_class, mixed_input)
-				VALUES (:card, :media, :batch, :ord, :kind, :ghost, :src, 0)
+					(tech_card_id, media_id, batch_id, ordinal, kind, ghost_view, colorway_id, source_class, mixed_input)
+				VALUES (:card, :media, :batch, :ord, :kind, :ghost, :cw, :src, 0)
 				ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
 				map[string]any{
 					"card": req.TechCardId, "media": it.MediaId, "batch": batchID, "ord": i,
 					"kind": entity.DesignKindOrFlat(it.Kind), "ghost": nullStr(it.GhostView),
+					"cw": nullInt(it.ColorwayId),
 					// mixed_input is 0 for an upload BY CONSTRUCTION: one gesture has one
 					// provenance, so there is no mixture to launder. The flag becomes computable
 					// only where inputs of several provenances meet — a fix run's output — and it
@@ -129,6 +208,13 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		batch.Pictures = pics
 		out.Batch, out.Pictures = batch, pics
 
+		// ⚠ ЧЕТВЁРТАЯ УНАСЛЕДОВАННАЯ ДЫРА, И ОНА ЖИВЁТ ИМЕННО ЗДЕСЬ: ТОЧНЫЙ РЕТРАЙ ЖЕСТА С
+		// ПОСТАНОВКОЙ ПРОИГРЫВАЕТ ПОСТАНОВКУ ЗАНОВО. Пачка уже идемпотентна, картинки уже
+		// схлопнулись — а setBenchSlotTx ниже позовётся второй раз с тем же ExpectedSlotRev,
+		// который первый вызов уже сдвинул, и ответит slot_rev_mismatch вместо исходного успеха.
+		// То есть повтор после сетевого таймаута сообщает об ошибке там, где всё уже сделано.
+		// Старше оси колорвея и чинится не здесь: нужен признак «эта пачка уже ставила плиту»,
+		// то есть запись о жесте, а не о его половинах. Записано, не закрыто.
 		if req.Target != nil && len(pics) > 0 {
 			// РОД АДРЕСА ПО УМОЛЧАНИЮ — РОД САМОЙ КАРТИНКИ. Жест один: «положи ЭТОТ файл на ЭТУ
 			// сторону», и рода в нём человек не называл вовсе. Подставить сюда `flat` значило бы
@@ -137,6 +223,22 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 			target := *req.Target
 			if target.Kind == "" {
 				target.Kind = entity.DesignKindOrFlat(pics[0].Kind)
+			}
+			// И КОЛОРВЕЙ АДРЕСА ПО УМОЛЧАНИЮ — КОЛОРВЕЙ САМОЙ КАРТИНКИ, тем же доводом: жест
+			// один, «положи ЭТОТ файл на ЭТУ сторону», и колорвей в нём уже назван у файла.
+			// Подставить 0 значило бы отказывать каждой загрузке колорвейного рендера с
+			// постановкой.
+			//
+			// ⚠ УМОЛЧАНИЕ СТАВИТСЯ ТОЛЬКО ТОМУ, КТО НИЧЕГО НЕ НАЗВАЛ (D4). Пока «не назвал» и
+			// «назвал безколорвейный верстак» делили ноль, эта строка ПЕРЕПИСЫВАЛА НАЗВАННУЮ
+			// ЦЕЛЬ: загрузка рендера колорвея 5 с явным адресом безколорвейного верстака уезжала
+			// в верстак 5 и отвечала OK — то есть составная дверь молча делала то, за что прямая
+			// (SetBenchSlot) отказывает colorway_mismatch'ем. Разошлись бы они навсегда и молча:
+			// у кадра и слота колорвеи СОВПАДАЛИ по построению, поэтому ни один сторож ниже
+			// сработать не мог. Теперь названный адрес едет как назван, и противоречие ловит
+			// ровно тот же сторож, что на прямой двери.
+			if !target.ColorwayId.Stated() {
+				target.ColorwayId = entity.DesignColorwayRef(entity.DesignColorwayOrNone(pics[0].ColorwayId))
 			}
 			slot, err := setBenchSlotTx(ctx, rep, entity.DesignBenchSlotSet{
 				TechCardId:      req.TechCardId,
@@ -447,12 +549,16 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
 					(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
-					 derived_from, source_class, mixed_input, layer_rev)
-				VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :parent, :src, :mixed, :layer)`,
+					 colorway_id, derived_from, source_class, mixed_input, layer_rev)
+				VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :src, :mixed, :layer)`,
 				map[string]any{
 					"card": parent.TechCardId, "media": f.MediaId,
 					"run": nullInt32(parent.RunId), "batch": nullInt32(parent.BatchId),
 					"ord": base + i, "kind": parent.Kind, "ghost": nullStr(f.ViewKey),
+					// РАЗРЕЗ НАСЛЕДУЕТ КОЛОРВЕЙ РОДИТЕЛЯ — это и есть модель владельца: мультивью
+					// колорвея нарезается сплитом на стороны ЭТОГО ЖЕ колорвея. Кроп без наследования
+					// рождался бы неатрибутированным и не вставал бы в колорвейный верстак.
+					"cw":     nullInt32(parent.ColorwayId),
 					"parent": parent.Id,
 					// A crop INHERITS its parent's provenance and its mixed flag. Cutting a
 					// picture up does not change where it came from, and a crop of a mixed

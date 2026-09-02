@@ -49,6 +49,25 @@ func (s *Server) UpsertDesignAsset(ctx context.Context, req *pb_admin.UpsertDesi
 	return &pb_admin.UpsertDesignAssetResponse{Asset: designAssetToPb(*asset)}, nil
 }
 
+// SetDesignAssetColorway says which colourway wears this asset as its fabric; colorway_id 0 takes
+// the assignment off.
+//
+// NO VALIDATION HERE, by the same rule as the rest of this file: the kind guard, the card boundary
+// and the single-select steal all live in the store's transaction, where they are read against the
+// rows they judge. A copy of any of them here would be a second opinion that agrees today.
+func (s *Server) SetDesignAssetColorway(ctx context.Context, req *pb_admin.SetDesignAssetColorwayRequest) (*pb_admin.SetDesignAssetColorwayResponse, error) {
+	asset, err := s.repo.Design().SetAssetColorway(ctx, entity.DesignAssetColorwaySet{
+		TechCardId: int(req.GetTechCardId()),
+		AssetId:    int(req.GetAssetId()),
+		ColorwayId: int(req.GetColorwayId()),
+		Actor:      designActor(ctx),
+	})
+	if err != nil {
+		return nil, designError(ctx, "failed to set the colourway of the design asset", err, nil)
+	}
+	return &pb_admin.SetDesignAssetColorwayResponse{Asset: designAssetToPb(*asset)}, nil
+}
+
 // DeleteDesignAsset removes ONE shelf row and reports how many marks went with it.
 //
 // ⚠ THE REQUEST NAMES THE CARD, AND THE CARD IS NOT A REPEATED FACT. The first version of this
@@ -170,9 +189,12 @@ func designAssetToPb(a entity.DesignAsset) *pb_common.DesignAsset {
 		RepeatMm:           int32(a.RepeatMm),
 		RotationDeg:        int32(a.RotationDeg),
 		Ordinal:            int32(a.Ordinal),
-		CreatedBy:          a.CreatedBy,
-		CreatedAt:          timestamppb.New(a.CreatedAt),
-		UpdatedAt:          timestamppb.New(a.UpdatedAt),
+		// ЧЬЯ ЭТО ТКАНЬ (0357): 0 = ничья, одно правило NULL→0 на всех ярусах. Пишется только
+		// SetDesignAssetColorway; Upsert колонку не называет вовсе.
+		ColorwayId: int32(entity.DesignColorwayOrNone(a.ColorwayId)),
+		CreatedBy:  a.CreatedBy,
+		CreatedAt:  timestamppb.New(a.CreatedAt),
+		UpdatedAt:  timestamppb.New(a.UpdatedAt),
 	}
 }
 

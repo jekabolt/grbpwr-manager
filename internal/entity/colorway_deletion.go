@@ -49,6 +49,16 @@ const (
 	ColorwayBlockerFitting         = "fitting"          // fitting.product_id RESTRICT
 	ColorwayBlockerReferenced      = "referenced"       // RESTRICT, которого нет в перечислении: схема ушла вперёд
 
+	// ColorwayBlockerDesignRunLive — ЖИВАЯ ОПЛАЧЕННАЯ РАБОТА, и это блокер, а не предупреждение.
+	// Разница с терминальной историей (она остаётся сиротой ниже) в том, что законченный прогон
+	// ничего больше не сделает, а pending/running — СДЕЛАЕТ: воркер закроет его после удаления,
+	// INSERT кадров пройдёт с colorway_id = NULL, и на карточке появятся НОВЫЕ неатрибутированные
+	// кадры от задания, которое просили для названного цвета. Их не было в том списке, который
+	// оператор подписал, — то есть вердикт был бы неполон не по недосмотру, а по устройству:
+	// он считает то, что есть, а это появится после. Верстак к тому моменту уже уйдёт каскадом,
+	// так что кадрам будет некуда встать.
+	ColorwayBlockerDesignRunLive = "design_run_live"
+
 	// Каскад — собственность колорвея, уходит вместе с ним (ON DELETE CASCADE).
 	ColorwayCascadeVariant         = "variant"
 	ColorwayCascadeVariantPrice    = "variant_price"
@@ -65,6 +75,10 @@ const (
 	ColorwayCascadeWaitlist        = "waitlist"
 	ColorwayCascadeStockHistory    = "stock_history"
 	ColorwayCascadeStyleLink       = "style_link"
+	// ПОЛОСА DESIGN (0356). Слот верстака — АДРЕС колорвея, а не артефакт, и уходит с ним
+	// (ON DELETE CASCADE): адрес `front@cw:5` без колорвея 5 недостижим ничем и остался бы вечным
+	// призраком в каждой выдаче. Кадры при этом НЕ уходят — они в сиротах ниже.
+	ColorwayCascadeDesignBenchSlot = "design_bench_slot"
 
 	// Сироты — ON DELETE SET NULL. Ни блокер, ни каскад: запись переживёт удаление и потеряет
 	// колорвей. Третья категория существует потому, что первые две не описывают этот исход: строку
@@ -73,6 +87,22 @@ const (
 	ColorwayOrphanMaterialMovement = "orphan_material_movement"
 	ColorwayOrphanSample           = "orphan_sample"
 	ColorwayOrphanTask             = "orphan_task"
+	// ПОЛОСА DESIGN (0356), ВТОРАЯ ПОЛОВИНА. Кадр — ОПЛАЧЕННЫЙ АРТЕФАКТ, и переживать колорвей он
+	// обязан; строка прогона — история, она не удаляется никогда. Обоим FK поставлен SET NULL, и
+	// после удаления они честно становятся НЕАТРИБУТИРОВАННЫМИ — тем самым состоянием, в котором
+	// живёт вся полоса до этой оси.
+	//
+	// ⚠ ИМЕННО ПОЭТОМУ ОНИ ОБЯЗАНЫ БЫТЬ В ВЕРДИКТЕ, А НЕ МОЛЧАТЬ. Потеря необратима и невидима:
+	// у кадра нет признака, по которому «родился без колорвея» отличается от «колорвей удалили»,
+	// — 0356 отказалась бэкфиллить ровно потому, что такую догадку потом не разобрать. Сетка
+	// безопасности 1451 их не ловит по построению: она видит ТОЛЬКО RESTRICT.
+	ColorwayOrphanDesignPicture = "orphan_design_picture"
+	ColorwayOrphanDesignRun     = "orphan_design_run"
+	// ЧЕТВЁРТАЯ ТАБЛИЦА ПОЛОСЫ (0357): ассет-полка, назначенная тканью этого колорвея. Тот же
+	// SET NULL и тот же довод — плитка остаётся тканью КАРТОЧКИ, просто ничьей. Заведена вместе с
+	// самой колонкой, а не следующим ревью: урок 0356 в том и состоял, что колонку и вердикт
+	// пишут одним движением.
+	ColorwayOrphanDesignAsset = "orphan_design_asset"
 )
 
 // colorwayBlockerHowToFix — общий выход из любого блокера. Один на все: архив — это и есть
@@ -110,6 +140,7 @@ type ColorwayCascadeCounts struct {
 	Waitlist         int // product_waitlist
 	StockHistory     int // product_stock_change_history
 	StyleLinks       int // tech_card_product
+	DesignBenchSlots int // design_bench_slot.colorway_id (0356) — АДРЕС, уходит с колорвеем
 }
 
 // ColorwayOrphanCounts — сколько ЧУЖИХ записей переживут удаление и потеряют колорвей.
@@ -118,6 +149,9 @@ type ColorwayOrphanCounts struct {
 	MaterialMovements int // material_stock_movement.product_id
 	Samples           int // sample.colorway_id
 	Tasks             int // task.product_id
+	DesignPictures    int // design_picture.colorway_id (0356) — оплаченный кадр переживает колорвей
+	DesignRuns        int // ТЕРМИНАЛЬНЫЕ прогоны (done|failed|cancelled); живые — блокер, не сирота
+	DesignAssets      int // design_asset.colorway_id (0357) — ткань колорвея остаётся тканью карточки
 }
 
 // ColorwayDeletionFacts — сырые факты о колорвее одним снимком. Стор читает их одним запросом и
@@ -135,6 +169,8 @@ type ColorwayDeletionFacts struct {
 	Lays             []ColorwayLayRef
 	InventoryTargets int
 	Fittings         int
+	// DesignRunsLive — прогоны в pending|running. БЛОКЕР: см. ColorwayBlockerDesignRunLive.
+	DesignRunsLive int
 
 	Cascade ColorwayCascadeCounts
 	Orphans ColorwayOrphanCounts
@@ -223,6 +259,14 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 				pluralEN(f.InventoryTargets, "%d inventory target", "%d inventory targets")),
 		})
 	}
+	if f.DesignRunsLive > 0 {
+		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
+			Reason: ColorwayBlockerDesignRunLive,
+			Count:  f.DesignRunsLive,
+			Text: fmt.Sprintf("%s still running for it",
+				pluralEN(f.DesignRunsLive, "%d paid design run", "%d paid design runs")),
+		})
+	}
 	if f.Fittings > 0 {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerFitting,
@@ -269,6 +313,12 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 		"%d stock history entry", "%d stock history entries")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeStyleLink, c.StyleLinks,
 		"%d style link", "%d style links")
+	// ВЕРСТАК ПОЛОСЫ DESIGN. Формулировка называет ПОСЛЕДСТВИЕ, а не таблицу: оператор не знает,
+	// что такое design_bench_slot, но точно знает, что значит «рендеры перестанут стоять на своих
+	// сторонах» — и что после этого 3D для этого цвета не запустится.
+	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeDesignBenchSlot, c.DesignBenchSlots,
+		"%d design bench slot (its render will no longer stand on that side)",
+		"%d design bench slots (their renders will no longer stand on those sides)")
 
 	// --- Сироты ------------------------------------------------------------------------------
 	// Раскладка, снятая ПОД этот колорвей, переживёт удаление и станет длиной, померенной ни на
@@ -284,6 +334,18 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 		"%d sample will lose the colourway", "%d samples will lose the colourway")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanTask, o.Tasks,
 		"%d task will lose the colourway", "%d tasks will lose the colourway")
+	// ПОЛОСА DESIGN. Фраза говорит «станет неатрибутированным», а не «потеряет колорвей», потому
+	// что у полосы это ИМЕНОВАННОЕ состояние с собственным смыслом: кадр уезжает на безколорвейный
+	// верстак, к тем рендерам, что делались до появления оси. Различить их потом нельзя ничем.
+	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanDesignPicture, o.DesignPictures,
+		"%d design picture will become unattributed (it stays, but nothing will say which colourway it is of)",
+		"%d design pictures will become unattributed (they stay, but nothing will say which colourway they are of)")
+	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanDesignRun, o.DesignRuns,
+		"%d finished design run will lose the colourway (its frozen params still name it)",
+		"%d finished design runs will lose the colourway (their frozen params still name it)")
+	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanDesignAsset, o.DesignAssets,
+		"%d shelf asset will stop being this colourway's fabric (it stays on the shelf, unassigned)",
+		"%d shelf assets will stop being this colourway's fabric (they stay on the shelf, unassigned)")
 
 	return v
 }

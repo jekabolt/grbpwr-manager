@@ -756,6 +756,33 @@ func (s *Store) CompleteRun(ctx context.Context, req entity.DesignRunComplete) (
 			if source == "" {
 				source = entity.DesignSourceAI
 			}
+			// ─── РОД ОТВЕТА ПРОТИВ ОСИ ЗАДАНИЯ (D6) ───
+			//
+			// Род кадра приходит ОТ ВОРКЕРА, колорвей — ОТ СТРОКИ, и до этого сторожа они
+			// копировались независимо: прогон рендера колорвея 5, чей воркер вернул Kind="flat",
+			// записывал ФЛЭТ С КОЛОРВЕЕМ 5 — состояние, которое все три двери записи объявляют
+			// невыразимым (загрузка, постановка, старт прогона отказывают colorway_forbidden'ом).
+			// Проверка «род есть в словаре» этого не ловит: оба значения по отдельности законны,
+			// незаконна ПАРА.
+			//
+			// ОТКАЗ, А НЕ МОЛЧАЛИВОЕ ОБНУЛЕНИЕ КОЛОРВЕЯ. Воркер, вернувший не тот род, — это баг
+			// воркера либо ответ не от того задания; обнулив колорвей, мы бы записали правдоподобный
+			// кадр и потеряли единственный признак, по которому этот баг вообще виден.
+			//
+			// КУДА УХОДИТ ЭТА ОШИБКА: минтованные байты подметает вызывающий, а строка
+			// ПРОВАЛИВАЕТСЯ НАСОВСЕМ — designgen.designResultRefused узнаёт этот класс и ведёт его
+			// в failRun с Retryable = false и error_code = output_refused. Первая редакция этого
+			// абзаца говорила «уходит в abandon, строка остаётся незакрытой и её видно», и это
+			// было верно ровно до того, как выяснилась цена: abandon строку НЕ проваливает, лизинг
+			// истекает, очередь выдаёт то же задание снова — и детерминированный баг маршрутизации
+			// покупал один и тот же плохой ответ до потолка платных попыток, заканчиваясь безымянным
+			// lease_expired.
+			if cw := entity.DesignColorwayOrNone(run.ColorwayId); cw > 0 &&
+				!entity.DesignPictureKindTakesColorway(kind) {
+				return fmt.Errorf("%w: run %d is for colourway %d, but output %d came back as %q, "+
+					"a kind that has no colourway axis",
+					entity.ErrDesignColorwayForbidden, run.Id, cw, o.Ordinal, kind)
+			}
 			composite, err := compositeViewsOf(o, params)
 			if err != nil {
 				return err
@@ -763,13 +790,17 @@ func (s *Store) CompleteRun(ctx context.Context, req entity.DesignRunComplete) (
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
 					(tech_card_id, media_id, run_id, ordinal, kind, ghost_view, composite_views,
-					 source_class, mixed_input)
-				VALUES (:card, :media, :run, :ord, :kind, :ghost, :composite, :src, :mixed)
+					 colorway_id, source_class, mixed_input)
+				VALUES (:card, :media, :run, :ord, :kind, :ghost, :composite, :cw, :src, :mixed)
 				ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
 				map[string]any{
 					"card": run.TechCardId, "media": o.MediaId, "run": run.Id, "ord": o.Ordinal,
 					"kind": kind, "ghost": nullStr(ghostViewOf(o, params)),
 					"composite": jsonOrNil(composite), "src": source,
+					// КАДР НАСЛЕДУЕТ КОЛОРВЕЙ СВОЕЙ СТРОКИ (0356): рендер-прогон колорвея A
+					// рождает мультивью колорвея A, и разрез потом нарезает его на стороны того
+					// же колорвея. Воркер колорвей не называет — он атрибут задания, не ответа.
+					"cw": nullInt32(run.ColorwayId),
 					// Флаг = «смешаны ВХОДЫ прогона» ИЛИ «воркер уже знает, что смешаны».
 					// Одно не отменяет другого: воркер видит то, чего нет в снимке (например,
 					// подмешанный им же кадр), а стор видит то, чего не видит воркер.

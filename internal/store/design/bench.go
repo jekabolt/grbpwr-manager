@@ -38,11 +38,15 @@ import (
 // ИМЯ КЛЮЧА uq_design_bench_view СОХРАНЕНО 0349-й намеренно: mysqlDupKey разбирает 1062 ПО ИМЕНИ
 // ключа, отличая «слот тронули» от «плита занята». Переименование ключа молча схлопнуло бы два
 // разных отказа в один.
+// ⚠ `colorway_id` — ТОЖЕ ЧАСТЬ АДРЕСА и тоже не участвует в ON DUPLICATE KEY UPDATE, по тому же
+// доводу, что kind: он закодирован в exclusive_key (DesignBenchExclusiveKey), строка, на которую
+// разрешился upsert, уже несёт тот колорвей, по которому её нашли, а колонка рядом — читаемая
+// половина того же факта, записанная тем же INSERT из того же значения.
 const benchSlotUpsert = `
 	INSERT INTO design_bench_slot
-		(tech_card_id, view_key, kind, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
+		(tech_card_id, view_key, kind, colorway_id, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
 	VALUES
-		(:card, :view, :kind, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))
+		(:card, :view, :kind, :cw, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))
 	ON DUPLICATE KEY UPDATE
 		picture_id  = IF(slot_rev = :expected_rev, VALUES(picture_id), picture_id),
 		detail_name = IF(slot_rev = :expected_rev, VALUES(detail_name), detail_name),
@@ -154,6 +158,34 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 	if !entity.IsDesignBenchKind(kind) {
 		return nil, fmt.Errorf("%w: unknown slot kind %q", entity.ErrDesignInvalidArgument, kind)
 	}
+	// ─── ВТОРАЯ ПОЛОВИНА ВТОРОЙ ОСИ: КОЛОРВЕЙ АДРЕСА (0356) ───
+	//
+	// Рендер-верстак живёт НА КОЛОРВЕЙ: front колорвея A и front колорвея B — два слота, и
+	// различает их exclusive_key, куда колорвей закодирован (entity.DesignBenchExclusiveKey).
+	// Флэтовому адресу колорвей ОТКАЗЫВАЕТСЯ, а не молча обнуляется: чертёж изделия один на все
+	// цвета (L-4), и «флэт колорвея 5» не должен быть выразим ни через одну дверь записи.
+	// ⚠ НОЛЬ У ЗАПРОСА — ЭТО «НЕ НАЗВАЛ», А НЕ «НАЗВАЛ БЕЗКОЛОРВЕЙНЫЙ» (entity.DesignColorwayRef).
+	// Здесь, на прямой двери постановки, оба намерения дают один и тот же АДРЕС, и различать их
+	// незачем; различает их вызывающий составного жеста (RegisterBatch) и адресация по id ниже.
+	if !req.Slot.ColorwayId.Valid() {
+		return nil, fmt.Errorf("%w: colorway_id %d is neither a colourway, 0 (not stated) nor %d (the colourway-less bench)",
+			entity.ErrDesignInvalidArgument, int(req.Slot.ColorwayId), entity.DesignColorwayUnattributed)
+	}
+	cw := req.Slot.ColorwayId.Id()
+	if !byID {
+		if cw > 0 && !entity.DesignPictureKindTakesColorway(kind) {
+			return nil, fmt.Errorf("%w: the %s bench has no colourway axis — a flat is one markup for the whole card",
+				entity.ErrDesignColorwayForbidden, kind)
+		}
+		// ГРАНИЦА КАРТОЧКИ — В ЭТОЙ ЖЕ ТРАНЗАКЦИИ, как у плиты ниже: колорвей после 0151 — строка
+		// product со style_id карточки, и чужой id замёрз бы в верстаке правдоподобной,
+		// но ложной атрибуцией.
+		if cw > 0 {
+			if err := assertColorwayOfCard(ctx, db, req.TechCardId, cw); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	// ⚠ АДРЕС ПО slot_id НАЗЫВАЕТ СВОЙ ВЕРСТАК САМ, и род запроса при нём ИГНОРИРУЕТСЯ — это
 	// слово контракта («a minted id already names its bench, and a kind disagreeing with it would
@@ -178,6 +210,29 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 		}
 		existing = &before
 		kind = entity.DesignKindOrFlat(before.Kind)
+		// КОЛОРВЕЙ ПРИ АДРЕСАЦИИ ПО id БЕРЁТСЯ У СТРОКИ — иначе замена плиты в колорвейном слоте
+		// по id (сегодняшний клиент колорвея при этом не шлёт) ловила бы ЛОЖНЫЙ mismatch.
+		//
+		// ⚠ НО НАЗВАННЫЙ И НЕСОГЛАСНЫЙ — ОТКАЗЫВАЕТСЯ, А НЕ ВЫБРАСЫВАЕТСЯ (D2). «Рассудить
+		// некому» было неправдой: строка слота лежит перед нами, и она знает и свой род, и свой
+		// колорвей. Тихо принять `slot_id` флэтового слота с `colorway_id: 5` значит ответить OK
+		// на просьбу, которой никто не исполнил, — та же молчаливая потеря, от которой эта волна
+		// отказалась на двери загрузки и на двери прогона. Два исхода, ровно как у двери по виду:
+		// у безосного верстака положительный колорвей — colorway_forbidden, у осного несогласный —
+		// colorway_mismatch (сюда же попадает названный сентинелом безколорвейный верстак против
+		// именованного слота: `-1` против `cw:5` — противоречие, а не умолчание).
+		rowCw := entity.DesignColorwayOrNone(before.ColorwayId)
+		if req.Slot.ColorwayId.Stated() {
+			if cw > 0 && !entity.DesignPictureKindTakesColorway(kind) {
+				return nil, fmt.Errorf("%w: slot %d is a %s slot and has no colourway axis, but colourway %d was named",
+					entity.ErrDesignColorwayForbidden, before.Id, kind, cw)
+			}
+			if cw != rowCw {
+				return nil, fmt.Errorf("%w: slot %d stands on colourway %d and colourway %d was named (0 = none)",
+					entity.ErrDesignColorwayMismatch, before.Id, rowCw, cw)
+			}
+		}
+		cw = rowCw
 	}
 
 	// The plate, and the four refusals that belong to it. Every one of them is read in THIS
@@ -215,6 +270,15 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 			return nil, fmt.Errorf("%w: picture %d is %q and the slot is %q",
 				entity.ErrDesignWrongKind, pic.Id, pic.Kind, kind)
 		}
+		// КОЛОРВЕЙ ПЛИТЫ ОБЯЗАН СОВПАСТЬ С КОЛОРВЕЕМ СЛОТА — вторая ось того же сторожа. Рендер
+		// колорвея A в верстаке B печатал бы на листе B чужой цвет; и НЕатрибутированная плита в
+		// именованном верстаке — тоже отказ, в обе стороны: постановка не выдумывает атрибуцию,
+		// которой у кадра нет, и не стирает ту, которая есть. Легаси-плиты (colorway NULL) при
+		// этом остаются полноценными жителями своего, безколорвейного верстака.
+		if picCw := entity.DesignColorwayOrNone(pic.ColorwayId); picCw != cw {
+			return nil, fmt.Errorf("%w: picture %d belongs to colourway %d and the slot to colourway %d (0 = none)",
+				entity.ErrDesignColorwayMismatch, pic.Id, picCw, cw)
+		}
 	}
 
 	// WHERE THE PLATE ALREADY STANDS — and this check is REQUIRED FOR CORRECTNESS, not for a
@@ -231,8 +295,11 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 			return nil, fmt.Errorf("failed to check where design plate %d stands: %w", req.PictureId, err)
 		}
 		for _, h := range holder {
+			// Тот же адрес — та же ТРОЙКА (род, эксклюзивный ключ), где ключ уже несёт колорвей:
+			// сравнение с голым view_key считало бы слот колорвея «другим» слотом самого себя.
 			same := (byID && h.Id == req.Slot.SlotId) ||
-				(!byID && h.ExclusiveKey == req.Slot.ViewKey && entity.DesignKindOrFlat(h.Kind) == kind)
+				(!byID && h.ExclusiveKey == entity.DesignBenchExclusiveKey(req.Slot.ViewKey, cw) &&
+					entity.DesignKindOrFlat(h.Kind) == kind)
 			if !same {
 				return nil, fmt.Errorf("%w: picture %d already stands in slot %d",
 					entity.ErrDesignPictureAlreadyInSlot, req.PictureId, h.Id)
@@ -244,9 +311,9 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 	case byID:
 		return casExistingSlot(ctx, db, req, *existing)
 	case req.Slot.ViewKey == entity.DesignViewDetail:
-		return createDetailSlot(ctx, db, req, kind)
+		return createDetailSlot(ctx, db, req, kind, cw)
 	default:
-		return upsertSilhouetteSlot(ctx, db, req, kind)
+		return upsertSilhouetteSlot(ctx, db, req, kind, cw)
 	}
 }
 
@@ -258,8 +325,8 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 // its stale placement succeeded. The pre-read inside this SERIALIZABLE transaction is
 // authoritative, so the base revision is known, and the verdict is "the row moved from the base
 // I actually read".
-func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, kind string) (*entity.DesignBenchSlot, error) {
-	before, found, err := slotByKey(ctx, db, req.TechCardId, kind, req.Slot.ViewKey)
+func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, kind string, cw int) (*entity.DesignBenchSlot, error) {
+	before, found, err := slotByKey(ctx, db, req.TechCardId, kind, cw, req.Slot.ViewKey)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +349,8 @@ func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.Desi
 		"card":         req.TechCardId,
 		"view":         req.Slot.ViewKey,
 		"kind":         kind,
-		"excl":         req.Slot.ViewKey,
+		"cw":           nullInt(cw),
+		"excl":         entity.DesignBenchExclusiveKey(req.Slot.ViewKey, cw),
 		"name":         name,
 		"pic":          nullInt(req.PictureId),
 		"who":          req.Actor,
@@ -298,13 +366,13 @@ func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.Desi
 				return nil, fmt.Errorf("%w: picture %d was placed elsewhere concurrently",
 					entity.ErrDesignPictureAlreadyInSlot, req.PictureId)
 			}
-			after, _, _ := slotByKey(ctx, db, req.TechCardId, kind, req.Slot.ViewKey)
+			after, _, _ := slotByKey(ctx, db, req.TechCardId, kind, cw, req.Slot.ViewKey)
 			return &after, fmt.Errorf("%w: slot was born concurrently", entity.ErrDesignSlotRevMismatch)
 		}
 		return nil, fmt.Errorf("failed to set design bench slot: %w", err)
 	}
 
-	after, ok, err := slotByKey(ctx, db, req.TechCardId, kind, req.Slot.ViewKey)
+	after, ok, err := slotByKey(ctx, db, req.TechCardId, kind, cw, req.Slot.ViewKey)
 	if err != nil {
 		return nil, err
 	}
@@ -323,22 +391,25 @@ func upsertSilhouetteSlot(ctx context.Context, db dependency.DB, req entity.Desi
 // a plate on rename, and two details a human called the same thing must still be two slots — so
 // the lazy-birth upsert deliberately does not apply here: two people naming a detail at the same
 // moment legitimately create two slots, and collapsing them would be the bug.
-func createDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, kind string) (*entity.DesignBenchSlot, error) {
+func createDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBenchSlotSet, kind string, cw int) (*entity.DesignBenchSlot, error) {
 	if req.NewDetailName == "" {
 		return nil, fmt.Errorf("%w: a new detail slot needs a name", entity.ErrDesignDetailNameRequired)
 	}
 	if req.ExpectedSlotRev != 0 {
 		return nil, fmt.Errorf("%w: a slot that does not exist yet is at rev 0", entity.ErrDesignSlotRevMismatch)
 	}
+	// Ключ детали остаётся минтованным uuid — он эксклюзивен сам по себе, и колорвей ему для
+	// единственности не нужен; колонка при этом записывает, ЧЬЕМУ верстаку деталь принадлежит.
 	id, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO design_bench_slot
-			(tech_card_id, view_key, kind, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
+			(tech_card_id, view_key, kind, colorway_id, exclusive_key, detail_name, picture_id, slot_rev, set_by, set_at)
 		VALUES
-			(:card, :view, :kind, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))`,
+			(:card, :view, :kind, :cw, :excl, :name, :pic, 1, :who, UTC_TIMESTAMP(6))`,
 		map[string]any{
 			"card": req.TechCardId,
 			"view": entity.DesignViewDetail,
 			"kind": kind,
+			"cw":   nullInt(cw),
 			"excl": "detail:" + uuid.NewString(),
 			"name": req.NewDetailName,
 			"pic":  nullInt(req.PictureId),
@@ -427,21 +498,82 @@ func revMismatch(slot entity.DesignBenchSlot, found bool, expected int) error {
 // read, compared and CAS-ed. The comparison is made against the normalised kind so that rows
 // written before the migration (kind = 'flat' by DEFAULT) stay reachable by a caller that names
 // no kind at all.
-func slotByKey(ctx context.Context, db dependency.DB, cardID int, kind, exclusiveKey string) (entity.DesignBenchSlot, bool, error) {
+// Колорвей — ТРЕТЬЯ ЧАСТЬ ТОГО ЖЕ АДРЕСА (0356), и в предикат он входит не отдельной колонкой, а
+// внутри exclusive_key: DesignBenchExclusiveKey возвращает голый вид при colorwayID == 0 — байт в
+// байт легаси-ключ, — поэтому каждый слот, рождённый до оси, остаётся достижим тем же адресом.
+func slotByKey(ctx context.Context, db dependency.DB, cardID int, kind string, colorwayID int, viewKey string) (entity.DesignBenchSlot, bool, error) {
 	kind = entity.DesignKindOrFlat(kind)
+	excl := entity.DesignBenchExclusiveKey(viewKey, colorwayID)
 	rows, err := storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db, `
 		SELECT * FROM design_bench_slot
 		WHERE tech_card_id = :card AND kind = :kind AND exclusive_key = :excl`,
-		map[string]any{"card": cardID, "kind": kind, "excl": exclusiveKey})
+		map[string]any{"card": cardID, "kind": kind, "excl": excl})
 	if err != nil {
 		return entity.DesignBenchSlot{}, false, fmt.Errorf("failed to read design bench slot: %w", err)
 	}
 	if len(rows) == 0 {
-		return entity.DesignBenchSlot{
-			ViewKey: exclusiveKey, Kind: kind, ExclusiveKey: exclusiveKey, TechCardId: cardID,
-		}, false, nil
+		phantom := entity.DesignBenchSlot{
+			ViewKey: viewKey, Kind: kind, ExclusiveKey: excl, TechCardId: cardID,
+		}
+		if colorwayID > 0 {
+			phantom.ColorwayId = sql.NullInt32{Int32: int32(colorwayID), Valid: true}
+		}
+		return phantom, false, nil
 	}
 	return rows[0], true, nil
+}
+
+// assertColorwayOfCard — граница карточки для названного колорвея, в ТОЙ ЖЕ транзакции, что
+// запись. Колорвей после слияния доменов (0151) — строка product, а принадлежность стилю несёт
+// `style_id` (0138: «every product belongs to a style», FK RESTRICT) — ровно та колонка, по
+// которой ходит CRUD колорвеев (colorway_write.go). НЕ primary_tech_card_id: то — старое
+// SET NULL-зеркало для экономики, и оно законно пусто у строк, заведённых до зеркала.
+// ⚠ АРХИВНЫЙ КОЛОРВЕЙ ПРИНИМАЕТСЯ, И ЭТО РЕШЕНИЕ (F5). Предиката по lifecycle_status/deleted_at
+// здесь НЕТ намеренно: `DeleteProductById` — МЯГКОЕ удаление, архив это состояние ВИТРИНЫ, а не
+// исчезновение строки, и полоса DESIGN живёт до витрины, а не после неё. Рендерить и хранить
+// кадры архивного цвета законно ровно потому, что архив и заводят, чтобы перестать ПРОДАВАТЬ, —
+// а не чтобы перестать проектировать: цвет, снятый с продажи, регулярно возвращается следующим
+// сезоном, и запрет на его рендер сделал бы возврат дороже, чем заведение нового колорвея.
+// Обратное правило (отказывать архивным) стоило бы дороже и молча: замороженные params рерана
+// называют id, и прогон становился бы неповторимым в тот день, когда цвет архивируют.
+// Единственное состояние, которое здесь ОТКАЗЫВАЕТСЯ, — чужая карточка: атрибуция принадлежит
+// стилю, а не витрине.
+func assertColorwayOfCard(ctx context.Context, db dependency.DB, cardID, colorwayID int) error {
+	owner, exists, err := colorwayOwnerCard(ctx, db, colorwayID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: colourway %d does not exist", entity.ErrDesignForeignColorway, colorwayID)
+	}
+	if owner != cardID {
+		return fmt.Errorf("%w: colourway %d does not belong to tech card %d",
+			entity.ErrDesignForeignColorway, colorwayID, cardID)
+	}
+	return nil
+}
+
+// colorwayOwnerCard — ЧЬЯ ЭТО СТРОКА И ЕСТЬ ЛИ ОНА ВООБЩЕ, двумя РАЗЛИЧИМЫМИ ответами.
+//
+// Различие нужно ровно одному вызывающему — старту прогона (F2): «колорвея нет вовсе» и «колорвей
+// чужой» требуют РАЗНЫХ исходов у УНАСЛЕДОВАННОГО параметра, и слепив их в один отказ, мы делали
+// реран невозможным навсегда. Всем остальным дверям различие не нужно, и они ходят через
+// assertColorwayOfCard.
+//
+// owner = 0 у строки без style_id (законно у продуктов, заведённых до 0138), и он не совпадёт ни
+// с одной карточкой: requireCard не пускает нулевой id.
+func colorwayOwnerCard(ctx context.Context, db dependency.DB, colorwayID int) (owner int, exists bool, err error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		Card sql.NullInt32 `db:"style_id"`
+	}](ctx, db, `SELECT style_id FROM product WHERE id = :id`,
+		map[string]any{"id": colorwayID})
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to resolve colourway %d: %w", colorwayID, err)
+	}
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	return int(rows[0].Card.Int32), true, nil
 }
 
 func slotByID(ctx context.Context, db dependency.DB, id int) (entity.DesignBenchSlot, error) {

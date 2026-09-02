@@ -10,6 +10,12 @@ import (
 // FailedPrecondition.
 var ErrColorwayNotDraft = errors.New("colourway is not a draft")
 
+// ErrColorwayHasDesignRows is returned by RelinkDraftColorway when the DESIGN band of the SOURCE
+// style still holds rows that name this colourway — a run, a picture or a bench slot (0356). The
+// API layer maps it to FailedPrecondition. The full argument for refusing rather than moving them
+// lives at the guard itself (store/product/relink.go, refuseRelinkWithDesignRows).
+var ErrColorwayHasDesignRows = errors.New("colourway is used by the style's design band")
+
 // ErrStyleFrozenSiblings is returned by UpdateStyle when a change to the style's SKU facts (season)
 // would have to re-mint a colourway whose SKU is frozen (has order/label history, sku_locked_at set).
 // The whole change is refused rather than silently skipping the frozen sibling; the official path is

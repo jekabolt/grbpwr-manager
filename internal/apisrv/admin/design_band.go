@@ -108,6 +108,18 @@ var designRefusals = []struct {
 	{entity.ErrDesignAssetNameRequired, codes.InvalidArgument, "asset_name_required"},
 	{entity.ErrDesignAssetTooMany, codes.FailedPrecondition, "asset_too_many"},
 	{entity.ErrDesignAssetNotAPattern, codes.FailedPrecondition, "asset_not_a_pattern"},
+	// ─── ОСЬ КОЛОРВЕЯ (0356, L-2/L-3) ───
+	//
+	// colorway_forbidden — InvalidArgument: запрос чинится правкой самого запроса (колорвей назван
+	// там, где оси нет по существу — у флэта). Два других — FailedPrecondition, тот же класс, что
+	// foreign_card_plate и wrong_kind: запрос правильной формы, не годится СОСТОЯНИЕ.
+	{entity.ErrDesignColorwayForbidden, codes.InvalidArgument, "colorway_forbidden"},
+	{entity.ErrDesignForeignColorway, codes.FailedPrecondition, "foreign_colorway"},
+	{entity.ErrDesignColorwayMismatch, codes.FailedPrecondition, "colorway_mismatch"},
+	// ambiguous_flatten_base — FailedPrecondition того же класса: запрос правилен, не годится
+	// СОСТОЯНИЕ (один файл зарегистрирован на карточке под несколькими колорвеями, а слой не
+	// назвал, поверх которого из них рисовали).
+	{entity.ErrDesignAmbiguousFlattenBase, codes.FailedPrecondition, "ambiguous_flatten_base"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -175,6 +187,12 @@ func designActor(ctx context.Context) string {
 
 // GetDesignBand is ONE read of the whole band.
 func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandRequest) (*pb_admin.GetDesignBandResponse, error) {
+	benchSel := entity.DesignColorwayRef(req.GetBenchColorwayId())
+	if !benchSel.Valid() {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"bench_colorway_id %d is neither a colourway id, 0 (the whole bench) nor %d (the colourway-less bench)",
+			req.GetBenchColorwayId(), entity.DesignColorwayUnattributed)
+	}
 	band, err := s.repo.Design().GetBand(ctx, int(req.GetTechCardId()), design.DefaultRunPageLimit)
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design band", err, nil)
@@ -184,7 +202,7 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 	runsPb := designRunsToPb(ctx, band.Runs)
 	s.joinDesignRunInputMedia(ctx, runsPb)
 	resp := &pb_admin.GetDesignBandResponse{
-		Bench:         designBenchToPb(band.Bench),
+		Bench:         designBenchToPb(designBenchForColorway(band.Bench, benchSel)),
 		Budget:        designBudgetToPb(band.Budget),
 		References:    designReferencesToPb(band.References),
 		Layers:        designLayersToPb(band.Layers, false),
@@ -203,6 +221,11 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// вычисляющий то же правило по выданной ему странице, ошибался бы ровно на те рендеры,
 		// которые на страницу не попали, то есть на обычной карточке с историей.
 		HasFabricRender: band.HasFabricRender,
+		// ДВЕРЬ 3D РИСУЕТСЯ ПО ЗАНЯТОМУ ВЕРСТАКУ, А НЕ ПО СОСЕДНЕМУ ФЛАГУ (L-3, D5): гейт
+		// StartDesignRun(threed) отказывает колорвею вне этого множества, и множество считается
+		// по тем же занятым render-слотам, из которых прогон соберёт входы. 0 в списке =
+		// неатрибутированный легаси-верстак, открывающий только безколорвейное 3D.
+		RenderBenchColorwayIds: intsToInt32(band.RenderBenchColorways),
 		// ПОЛКИ И ИХ РАЗМЕТКА ЕДУТ ЭТИМ ЖЕ ЧТЕНИЕМ (0354). Убери эти две строки — полоса
 		// по-прежнему отвечает 200, стена полок просто пустеет, а метки на флэтах исчезают:
 		// молчаливая потеря, которую ловит только проба формы ответа.
@@ -378,6 +401,9 @@ func (s *Server) RegisterDesignUpload(ctx context.Context, req *pb_admin.Registe
 		}
 		items = append(items, entity.DesignUploadItem{
 			MediaId: int(it.GetMediaId()), GhostView: it.GetGhostView(), Kind: it.GetKind(),
+			// Колорвей — утверждение загружающего, как и род (0356); сторожа (ось рода, граница
+			// карточки) стоят в сторе, в той же транзакции, что вставка.
+			ColorwayId: int(it.GetColorwayId()),
 		})
 	}
 	in := entity.DesignBatchRegister{
@@ -875,22 +901,84 @@ func designSlotRefFromPb(ref *pb_admin.DesignBenchSlotRef) (entity.DesignSlotRef
 		return entity.DesignSlotRef{}, status.Errorf(codes.InvalidArgument,
 			"slot.kind %q is not a kind of design bench", ref.GetKind())
 	}
+	cw := entity.DesignColorwayRef(ref.GetColorwayId())
+	if !cw.Valid() {
+		return entity.DesignSlotRef{}, status.Errorf(codes.InvalidArgument,
+			"slot.colorway_id %d is neither a colourway id, 0 (not stated) nor %d (the colourway-less bench)",
+			ref.GetColorwayId(), entity.DesignColorwayUnattributed)
+	}
 	switch v := ref.GetSlot().(type) {
 	case *pb_admin.DesignBenchSlotRef_ViewKey:
 		if !entity.IsDesignGhostView(v.ViewKey) {
 			return entity.DesignSlotRef{}, status.Errorf(codes.InvalidArgument,
 				"slot.view_key %q is not a view of the garment", v.ViewKey)
 		}
-		return entity.DesignSlotRef{ViewKey: v.ViewKey, Kind: ref.GetKind()}, nil
+		// КОЛОРВЕЙ ЕДЕТ В СТОР ВМЕСТЕ С РОДОМ — вторая половина адреса рендер-верстака (0356).
+		// Выброшенный здесь, он молча адресовал бы безколорвейный верстак, и рендеры всех
+		// колорвеев легли бы в один — ровно дефект, ради которого ось и заводилась.
+		return entity.DesignSlotRef{ViewKey: v.ViewKey, Kind: ref.GetKind(), ColorwayId: cw}, nil
 	case *pb_admin.DesignBenchSlotRef_SlotId:
 		if v.SlotId <= 0 {
 			return entity.DesignSlotRef{}, status.Error(codes.InvalidArgument, "slot.slot_id must be positive")
 		}
-		return entity.DesignSlotRef{SlotId: int(v.SlotId)}, nil
+		// ⚠ КОЛОРВЕЙ ЕДЕТ И ЗДЕСЬ, В ОТЛИЧИЕ ОТ РОДА (D2). Выбросить его значило бы ответить OK
+		// на просьбу, которая не исполнена: `slot_id` флэтового слота с `colorway_id: 5` — это
+		// противоречие, и молчание о нём ровно так же не отличимо от согласия, как молчаливый
+		// сброс колорвея у флэта, от которого эта же волна отказалась на всех остальных дверях.
+		// Рассудить противоречие ЕСТЬ ЧЕМ: строка слота лежит в базе, её и спрашивает
+		// setBenchSlotTx — colorway_forbidden у безосного верстака, colorway_mismatch у чужого
+		// колорвея. Ноль по-прежнему значит «не назвал» и по-прежнему игнорируется, поэтому
+		// сегодняшний клиент (он колорвея при адресации по id не шлёт) не сдвинулся ни на бит.
+		//
+		// РОД (`kind`) при этом ОСТАВЛЕН ИГНОРИРУЕМЫМ. Довод против него ТОТ ЖЕ — противоречие
+		// рассудить есть чем, строка слота знает свой род, — но его поведение уехало на прод
+		// с 0349 и записано словом контракта в admin.proto; менять его вместе с новой осью
+		// значило бы спрятать смену старого контракта внутри волны про другое. Долг записан.
+		return entity.DesignSlotRef{SlotId: int(v.SlotId), ColorwayId: cw}, nil
 	default:
 		return entity.DesignSlotRef{}, status.Error(codes.InvalidArgument,
 			"a bench slot must be addressed by view_key or slot_id")
 	}
+}
+
+// designBenchForColorway — верстак ОДНОГО колорвея (0356). Селектор приезжает как
+// entity.DesignColorwayRef, и у него ТРИ исхода, а не два:
+//
+//	не назван (0/отсутствует) — полоса отдаётся ЦЕЛИКОМ, как всегда отдавалась и как её читает
+//	                            всякий сегодняшний клиент;
+//	назван колорвей (>0)      — флэтовые слоты (у флэта колорвея нет по существу, он относится ко
+//	                            ВСЕМ цветам) плюс слоты именно этого колорвея;
+//	назван -1                 — флэтовые слоты плюс НЕАТРИБУТИРОВАННЫЙ рендер-верстак.
+//
+// ⚠ ТРЕТИЙ ИСХОД — И ЕСТЬ ПРАВКА (D3). Пока «не назван» и «безколорвейный» делили ноль, назвать
+// безколорвейный верстак было НЕЧЕМ: он законный, вечный и выбираемый (3D без колорвея читает
+// ровно его), но пикер колорвеев на экране 3D не мог его показать — «все» и «этот» отвечали одним
+// и тем же. Ноль оставлен «всей полосой» намеренно: любой другой выбор сдвинул бы поведение
+// каждого уже написанного вызова.
+//
+// Неатрибутированный верстак в ЧУЖОЙ, именованный колорвей не входит ни при каком селекторе:
+// атрибуцию фильтром не выдумывают.
+func designBenchForColorway(in []entity.DesignBenchSlot, sel entity.DesignColorwayRef) []entity.DesignBenchSlot {
+	if !sel.Stated() {
+		return in
+	}
+	want := sel.Id()
+	out := make([]entity.DesignBenchSlot, 0, len(in))
+	for _, s := range in {
+		if !entity.DesignPictureKindTakesColorway(s.Kind) ||
+			entity.DesignColorwayOrNone(s.ColorwayId) == want {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func intsToInt32(in []int) []int32 {
+	out := make([]int32, 0, len(in))
+	for _, v := range in {
+		out = append(out, int32(v))
+	}
+	return out
 }
 
 func designBenchToPb(in []entity.DesignBenchSlot) []*pb_common.DesignBenchSlot {
@@ -914,6 +1002,9 @@ func designSlotToPb(s entity.DesignBenchSlot) *pb_common.DesignBenchSlot {
 		SlotRev:    int32(s.SlotRev),
 		SetBy:      s.SetBy,
 	}
+	// ЧЕЙ ВЕРСТАК (0356): 0 = безколорвейный (флэтовый либо легаси-рендер), одно правило NULL→0
+	// на всех ярусах.
+	out.ColorwayId = int32(entity.DesignColorwayOrNone(s.ColorwayId))
 	if s.SetAt.Valid {
 		out.SetAt = timestamppb.New(s.SetAt.Time)
 	}
@@ -947,8 +1038,11 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		HiddenBy:    p.HiddenBy.String,
 		// W-12: «выбран» — НЕ обратная сторона hidden. Спрятать значит убрать с глаз, выбрать —
 		// поднять над остальными, и выбранных может быть несколько.
-		Selected:  p.Selected,
-		CreatedAt: timestamppb.New(p.CreatedAt),
+		Selected: p.Selected,
+		// ЧЕЙ КАДР (0356): 0 на флэте = «оси нет по существу», 0 на рендере/3D = «не
+		// атрибутирован» (до оси либо колорвей удалён); различает их пара с Kind.
+		ColorwayId: int32(entity.DesignColorwayOrNone(p.ColorwayId)),
+		CreatedAt:  timestamppb.New(p.CreatedAt),
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)
@@ -1166,9 +1260,12 @@ func designRunToPb(ctx context.Context, r entity.DesignRun) *pb_common.DesignRun
 		Prompt: r.Prompt.String,
 		// РОДОСЛОВНАЯ РЕРАНА (0348). Без неё история не отличает «повторили прогон 12» от
 		// «сделали похожий», а именно это отличие делает реран читаемым из одной строки.
-		RerunOf:   r.RerunOf.Int32,
-		CreatedAt: timestamppb.New(r.CreatedAt),
-		Pictures:  designPicturesToPb(r.Pictures),
+		RerunOf: r.RerunOf.Int32,
+		// ДЛЯ КАКОГО КОЛОРВЕЯ прогон (0356): 0 = род без оси, прогон до оси либо колорвей
+		// удалён (замороженные params при этом помнят просимый id).
+		ColorwayId: int32(entity.DesignColorwayOrNone(r.ColorwayId)),
+		CreatedAt:  timestamppb.New(r.CreatedAt),
+		Pictures:   designPicturesToPb(r.Pictures),
 	}
 	if r.CancelRequestedAt.Valid {
 		out.CancelRequestedAt = timestamppb.New(r.CancelRequestedAt.Time)

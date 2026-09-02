@@ -491,16 +491,61 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// The base picture, when the layer has one, is both the derivation parent and the row the
 		// flatten hangs under: a flatten is a SIBLING of what it was traced over, not a run of its
 		// own, because no money was spent on it.
+		// ─── КТО РОДИТЕЛЬ: СНАЧАЛА СПРОСИТЬ СЛОЙ, ПОТОМ ИСКАТЬ ПО ФАЙЛУ (D7) ───
+		//
+		// У слоя ЕСТЬ колонка source_picture_id — та самая плита, поверх которой рисовали, — и
+		// она игнорировалась: родителя искали по паре (карточка, base_media_id) и брали ПЕРВУЮ
+		// строку по id. Пока картинка была одна на файл, это совпадало; с осью колорвея один и
+		// тот же файл законно регистрируется дважды (тот же мультивью, залитый на другой цвет), и
+		// «первая по id» стала БРОСКОМ МОНЕТЫ: флэттен наследовал колорвей произвольной плиты и
+		// уезжал в чужой верстак — молча, потому что у результата и у слота колорвеи совпадали
+		// по построению.
+		//
+		// Порядок теперь: названный слоем родитель → иначе поиск по файлу → и если файл называет
+		// НЕСКОЛЬКО колорвеев, ОТКАЗ вместо догадки.
+		//
+		// ⚠ ЗАПИСАННЫЙ ДОЛГ, А НЕ ЗАКРЫТЫЙ ДЕФЕКТ: сужение защищает ТОЛЬКО колорвей. Две
+		// регистрации одного файла ПОД ОДНИМ колорвеем по-прежнему разрешаются «первой по id», и
+		// вместе с ней флэттен наследует род, прогон, пачку, provenance и derived_from — то есть
+		// исходный порок «произвольный родитель» жив, просто перестал менять ВЕРСТАК. Наблюдаемое
+		// следствие: перезалив того же мультивью под тем же цветом меняет смысл флэттена в
+		// зависимости от порядка вставки. Чинится это не здесь, а решением о том, обязан ли слой
+		// ВСЕГДА называть source_picture_id (сегодня его пишет только ImportVector, а
+		// SaveEditLayer — никогда); расширять отказ на весь наследуемый набор без этого решения
+		// значило бы закрыть флэттен там, где он сегодня работает и никого не обманывает.
 		var parent *entity.DesignPicture
-		if layer.BaseMediaId.Valid && layer.BaseMediaId.Int32 > 0 {
+		switch {
+		case layer.SourcePictureId.Valid && layer.SourcePictureId.Int32 > 0:
+			pic, err := pictureByID(ctx, db, int(layer.SourcePictureId.Int32))
+			if err != nil {
+				return fmt.Errorf("failed to resolve the source picture of layer %d: %w", req.LayerId, err)
+			}
+			// Граница карточки перепроверяется здесь, а не берётся на веру у записи слоя:
+			// чтение и запись разделены временем, и картинка живёт дольше слоя.
+			if pic.TechCardId != req.TechCardId {
+				return fmt.Errorf("%w: source picture %d of layer %d belongs to tech card %d",
+					entity.ErrDesignNotFound, pic.Id, req.LayerId, pic.TechCardId)
+			}
+			parent = &pic
+		case layer.BaseMediaId.Valid && layer.BaseMediaId.Int32 > 0:
 			rows, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db, `
 				SELECT * FROM design_picture
-				WHERE tech_card_id = :card AND media_id = :media ORDER BY id LIMIT 1`,
+				WHERE tech_card_id = :card AND media_id = :media ORDER BY id`,
 				map[string]any{"card": req.TechCardId, "media": layer.BaseMediaId.Int32})
 			if err != nil {
 				return fmt.Errorf("failed to resolve the base picture of layer %d: %w", req.LayerId, err)
 			}
 			if len(rows) > 0 {
+				for _, r := range rows[1:] {
+					if entity.DesignColorwayOrNone(r.ColorwayId) != entity.DesignColorwayOrNone(rows[0].ColorwayId) {
+						return fmt.Errorf(
+							"%w: media %d is registered on tech card %d as pictures %d (colourway %d) and %d "+
+								"(colourway %d), and layer %d does not say which one it was drawn over",
+							entity.ErrDesignAmbiguousFlattenBase, layer.BaseMediaId.Int32, req.TechCardId,
+							rows[0].Id, entity.DesignColorwayOrNone(rows[0].ColorwayId),
+							r.Id, entity.DesignColorwayOrNone(r.ColorwayId), req.LayerId)
+					}
+				}
 				parent = &rows[0]
 			}
 		}
@@ -511,10 +556,14 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		ghost, kind := any(nil), entity.DesignPictureKindFlat
 		mixed := false
 		runID, batchID, derived := any(nil), any(nil), any(nil)
+		cw := any(nil)
 		if parent != nil {
 			kind = parent.Kind
 			mixed = parent.MixedInput
 			runID, batchID, derived = nullInt32(parent.RunId), nullInt32(parent.BatchId), parent.Id
+			// Флэттен — СИБЛИНГ подложки и наследует её колорвей (0356): перекрашенный слоем
+			// рендер колорвея A остаётся кадром колорвея A, иначе он выпал бы из своего верстака.
+			cw = nullInt32(parent.ColorwayId)
 			if parent.GhostView.Valid {
 				ghost = parent.GhostView.String
 			}
@@ -528,11 +577,11 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
 				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
-				 derived_from, source_class, mixed_input, layer_rev)
-			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :parent, :src, :mixed, :layer)`,
+				 colorway_id, derived_from, source_class, mixed_input, layer_rev)
+			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :src, :mixed, :layer)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
-				"ord": ord, "kind": kind, "ghost": ghost, "parent": derived,
+				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
 				"src": src, "mixed": mixed, "layer": layer.Rev,
 			})
 		if err != nil {

@@ -158,15 +158,29 @@ type colorwayDeletionFactsRow struct {
 	Waitlist         int `db:"waitlist"`
 	StockHistory     int `db:"stock_history"`
 	StyleLinks       int `db:"style_links"`
+	DesignBenchSlots int `db:"design_bench_slots"`
 
 	Markers           int `db:"markers"`
 	MaterialMovements int `db:"material_movements"`
 	Samples           int `db:"samples"`
 	Tasks             int `db:"tasks"`
+	DesignPictures    int `db:"design_pictures"`
+	DesignRuns        int `db:"design_runs"`
+	DesignRunsLive    int `db:"design_runs_live"`
+	DesignAssets      int `db:"design_assets"`
 }
 
 // readColorwayDeletionFacts собирает всё, что решает судьбу колорвея, ОДНИМ запросом плюс два
 // списочных (партии и настилы — их надо назвать поимённо, счётчика мало).
+//
+// ⚠ ЖИВОЕ/ТЕРМИНАЛЬНОЕ РАЗДЕЛЯЕТСЯ ПО СПИСКУ ЗАКОНЧЕННЫХ, А НЕ ЖИВЫХ, И ЭТО ПРО БУДУЩЕЕ (T9).
+// Предикат «живой = pending|running» верен СЕГОДНЯ и отказывает в безопасную сторону только
+// сегодня: словарь статусов закрыт пятью значениями, но шестое (скажем, `paused` или
+// `awaiting_review`) не попало бы ни в один из двух списков в первой формулировке — и посчиталось
+// бы ТЕРМИНАЛЬНЫМ, то есть колорвей с живым оплаченным заданием снова стал бы удаляемым, молча.
+// Перечисляются поэтому ЗАКОНЧЕННЫЕ: новый статус по умолчанию считается живым и БЛОКИРУЕТ. Цена
+// ошибки в эту сторону — лишний отказ, который человек прочитает; в ту — оплаченная работа,
+// дописывающая кадры после согласия оператора.
 //
 // ПРОДАЖА ЧИТАЕТСЯ ПО ОБЕИМ ССЫЛКАМ. Строка заказа адресует колорвей дважды: order_item.product_id
 // (с 0001) и order_item.variant_id → product_size (канонический ключ с 0153, пара product_id+size_id
@@ -211,10 +225,18 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 			(SELECT COUNT(*) FROM product_stock_change_history h WHERE h.product_id = p.id) AS stock_history,
 			(SELECT COUNT(*) FROM tech_card_product tp WHERE tp.product_id = p.id) AS style_links,
 
+			(SELECT COUNT(*) FROM design_bench_slot s WHERE s.colorway_id = p.id) AS design_bench_slots,
+
 			(SELECT COUNT(*) FROM tech_card_marker m WHERE m.colorway_id = p.id) AS markers,
 			(SELECT COUNT(*) FROM material_stock_movement msm WHERE msm.product_id = p.id) AS material_movements,
 			(SELECT COUNT(*) FROM sample sm WHERE sm.colorway_id = p.id) AS samples,
-			(SELECT COUNT(*) FROM task t WHERE t.product_id = p.id) AS tasks
+			(SELECT COUNT(*) FROM task t WHERE t.product_id = p.id) AS tasks,
+			(SELECT COUNT(*) FROM design_picture dp WHERE dp.colorway_id = p.id) AS design_pictures,
+			(SELECT COUNT(*) FROM design_run dr WHERE dr.colorway_id = p.id
+				AND dr.status NOT IN ('done', 'failed', 'cancelled')) AS design_runs_live,
+			(SELECT COUNT(*) FROM design_run dr WHERE dr.colorway_id = p.id
+				AND dr.status IN ('done', 'failed', 'cancelled')) AS design_runs,
+			(SELECT COUNT(*) FROM design_asset da WHERE da.colorway_id = p.id) AS design_assets
 		FROM product p
 		WHERE p.id = :id`, map[string]any{"id": colorwayID})
 	if err != nil {
@@ -258,6 +280,7 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 		Lays:             lays,
 		InventoryTargets: row.InventoryTargets,
 		Fittings:         row.Fittings,
+		DesignRunsLive:   row.DesignRunsLive,
 		Cascade: entity.ColorwayCascadeCounts{
 			Variants:         row.Variants,
 			VariantPrices:    row.VariantPrices,
@@ -274,12 +297,16 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 			Waitlist:         row.Waitlist,
 			StockHistory:     row.StockHistory,
 			StyleLinks:       row.StyleLinks,
+			DesignBenchSlots: row.DesignBenchSlots,
 		},
 		Orphans: entity.ColorwayOrphanCounts{
 			Markers:           row.Markers,
 			MaterialMovements: row.MaterialMovements,
 			Samples:           row.Samples,
 			Tasks:             row.Tasks,
+			DesignPictures:    row.DesignPictures,
+			DesignRuns:        row.DesignRuns,
+			DesignAssets:      row.DesignAssets,
 		},
 	}, nil
 }

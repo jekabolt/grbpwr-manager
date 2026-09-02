@@ -44,6 +44,121 @@ func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, col
 	return nil
 }
 
+// designColorwayHolders — КАЖДАЯ ТАБЛИЦА ПОЛОСЫ, ССЫЛАЮЩАЯСЯ НА КОЛОРВЕЙ, ОДНИМ СПИСКОМ.
+//
+// ⚠ СПИСОК, А НЕ ЛИТЕРАЛ ВНУТРИ ЦИКЛА, ПОТОМУ ЧТО ОН УЖЕ ОТСТАВАЛ ОДИН РАЗ. 0356 завела три
+// ссылки, 0357 — четвёртую (design_asset.colorway_id), и сторож перепривязки о ней не узнал:
+// ассет, назначенный тканью колорвея N, уезжал вместе с N на чужой стиль и оставался на исходной
+// карточке, называя колорвей, который ей больше не принадлежит. Хуже: кража в SetAssetColorway
+// скоупится КАРТОЧКОЙ, поэтому назначение ассета целевой карточки тому же N не сняло бы старый —
+// и один колорвей носили бы две ткани на двух карточках, ровно то состояние, которое 0357
+// объявляет невыразимым.
+//
+// Пятую ссылку этот список тоже не заметит сам — его стережёт проба
+// TestDesignDBRelinkGuardCoversEveryColorwayHolder, которая читает FK из information_schema и
+// сверяет с ним ЭТОТ список. Список — единственное место, где перечисление живёт; проба — то, что
+// заставляет его быть полным.
+var designColorwayHolders = []struct {
+	table, column, what string
+	// countedInDeletionFacts — НАЗЫВАЕТ ЛИ ЭТУ ТАБЛИЦУ ВЕРДИКТ УДАЛЕНИЯ (readColorwayDeletionFacts).
+	//
+	// ⚠ ФЛАГ, А НЕ МОЛЧАНИЕ, ПОТОМУ ЧТО ПЕРЕЧИСЛЕНИЙ ОДНОГО ФАКТА БЫЛО ДВА (T3). Этот список
+	// стерёг ТОЛЬКО перепривязку; вердикт удаления пересчитывал те же таблицы РУКАМИ в SQL, и
+	// схемная проба на него не смотрела. То есть будущая 0358 покраснила бы пробу, кто-то дописал
+	// бы таблицу СЮДА, проба позеленела бы — и диалог удаления продолжил бы молчать про новые
+	// строки, а сетка 1451 их не поймает (SET NULL/CASCADE она не видит, это записано в шапке
+	// 0357). Флаг делает вторую половину ВЫРАЗИМОЙ в том же месте, и проба сверяет обе.
+	countedInDeletionFacts bool
+}{
+	{"design_run", "colorway_id", "generation run", true},
+	{"design_picture", "colorway_id", "picture", true},
+	{"design_bench_slot", "colorway_id", "bench slot", true},
+	{"design_asset", "colorway_id", "shelf asset", true},
+}
+
+// DesignColorwayHolderColumns — пары (таблица, колонка) для схемной пробы.
+//
+// ⚠ ПАРА, А НЕ ИМЯ ТАБЛИЦЫ (T8): вторая колонка, ссылающаяся на product(id) на УЖЕ известной
+// таблице полосы, при сверке по именам таблиц прошла бы незамеченной — множество имён совпало бы,
+// а держатель остался бы вне сторожа.
+func DesignColorwayHolderColumns() [][2]string {
+	out := make([][2]string, 0, len(designColorwayHolders))
+	for _, h := range designColorwayHolders {
+		out = append(out, [2]string{h.table, h.column})
+	}
+	return out
+}
+
+// DesignColorwayDeletionCountedColumns — те держатели, которые вердикт удаления обязан посчитать
+// и назвать оператору. Сегодня это ВСЕ; функция существует, чтобы «все» было УТВЕРЖДЕНИЕМ,
+// проверяемым пробой, а не совпадением.
+func DesignColorwayDeletionCountedColumns() [][2]string {
+	out := make([][2]string, 0, len(designColorwayHolders))
+	for _, h := range designColorwayHolders {
+		if h.countedInDeletionFacts {
+			out = append(out, [2]string{h.table, h.column})
+		}
+	}
+	return out
+}
+
+// refuseRelinkWithDesignRows is the DESIGN-band half of the relink boundary (0356/0357): a
+// colourway cannot leave its style while that style's design band still holds rows naming it.
+//
+// ─── ПОЧЕМУ ОТКАЗ, А НЕ ПЕРЕНОС ───
+//
+// Ось колорвея завела ЧЕТЫРЕ ссылки на product(id): design_run.colorway_id (для какого колорвея
+// прогон), design_picture.colorway_id (чей кадр), design_bench_slot.colorway_id (чей верстак) —
+// все три из 0356 — и design_asset.colorway_id (чья ткань, 0357). Все четыре висят на строках, у
+// которых есть ВТОРОЙ владелец — tech_card_id ИСХОДНОЙ карточки. Перепривязка меняет product.style_id и не трогает ни одну из них, поэтому без
+// сторожа карточка A остаётся с рядами, называющими колорвей, который теперь принадлежит B, а
+// незакрытый прогон продолжает штамповать на A новые кадры чужого колорвея.
+//
+// Перенос (вариант «увезти строки вместе с колорвеем») отвергнут, и не по цене:
+//   - ИСТОРИЯ — СВИДЕТЕЛЬСТВО, А НЕ ЗАЯВЛЕНИЕ. Рендер колорвея X сделан НА КАРТОЧКЕ A, из её
+//     флэтов, её референсов и её описания изделия; замороженные params и inputs прогона называют
+//     слоты, медиа и полки карточки A поимённо. Переписать у такой строки tech_card_id значит
+//     заявить, что работа шла на B. Снимок при этом не переезжает и переехать не может: адреса в
+//     нём — id верстака A. Ровно тот класс «правдоподобной, но ложной атрибуции», от которого
+//     отказалась и сама 0356, не став бэкфиллить колорвей у старых рендеров.
+//   - ДЕНЬГИ. design_run несёт price_estimate/price_actual и участвует в дневном бюджете; перенос
+//     переписал бы, какая карточка что потратила.
+//   - АДРЕСА СТОЛКНУЛИСЬ БЫ. Единственность слота — (tech_card_id, kind, exclusive_key), а ключ
+//     несёт колорвей: `front@cw:5` на карточке B может быть уже занят. Перенос потребовал бы
+//     политики слияния верстаков — то есть решения, которое некому принять, кроме человека.
+//   - ГОНКА. Прогон в статусе pending/running закрывается воркером ВНЕ этой транзакции и минтует
+//     кадры по своему run.tech_card_id. Перенос под живым прогоном не атомарен ни при каком
+//     порядке операторов.
+//
+// Отказ же цену имеет и она известна: человек, начавший рисовать колорвей и решивший увезти его
+// на другой стиль, должен сначала сам разобрать полосу (спрятать/удалить кадры, снять слоты). Это
+// ручная работа, но она ЗРЯЧАЯ — а молчаливая порча полосы не чинится вовсе. Тот же довод, что у
+// соседнего сторожа: перепривязывать разрешено только ЧЕРНОВИК, потому что у всего остального
+// есть история, привязанная к стилю. Полоса DESIGN — тоже история.
+//
+// ⚠ ПРОВЕРКА В ТОЙ ЖЕ ТРАНЗАКЦИИ, ЧТО И САМ UPDATE (SERIALIZABLE), иначе это TOCTOU: прогон
+// стартует между чтением и записью, и его строка родится уже сиротой.
+func refuseRelinkWithDesignRows(ctx context.Context, db dependency.DB, colorwayID int) error {
+	// Отдельный счёт на держателя, а не один UNION: имя таблицы уезжает в сообщение, и человеку
+	// надо сказать, ЧТО именно держит колорвей — иначе «полоса держит» не подсказывает ни одного
+	// следующего шага.
+	for _, t := range designColorwayHolders {
+		n, err := storeutil.QueryCountNamed(ctx, db,
+			// #nosec G201 -- t.table and t.column are constants from the literal above, never caller input.
+			"SELECT COUNT(*) FROM "+t.table+" WHERE "+t.column+" = :id",
+			map[string]any{"id": colorwayID})
+		if err != nil {
+			return fmt.Errorf("check design %s rows of colourway %d: %w", t.what, colorwayID, err)
+		}
+		if n > 0 {
+			return fmt.Errorf("%w: %d design %s row(s) of the source style name colourway %d; "+
+				"clear the design band of that colourway first",
+				entity.ErrColorwayHasDesignRows, n, t.what, colorwayID)
+		}
+	}
+	return nil
+}
+
 // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4 official workaround for the
 // frozen-sibling problem: CloneStyleForSeason a style under a new season, then relink the draft rather
 // than re-minting frozen siblings). Only a DRAFT may be relinked — an ACTIVE/HIDDEN/ARCHIVED colourway
@@ -52,6 +167,10 @@ func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, col
 // tech_card.lock_version (entity.ErrTechCardConflict on a stale value or a concurrent relink), the
 // target style must exist (sql.ErrNoRows otherwise), and the colourway's SKU is re-minted from the
 // target style's facts (season/model) so its identity reflects its new style.
+//
+// A colourway that the SOURCE style's design band still names is refused outright
+// (entity.ErrColorwayHasDesignRows) — see refuseRelinkWithDesignRows for why moving those rows is
+// the wrong boundary.
 func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyleID, expectedColorwayVersion, expectedTargetStyleVersion int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cw, err := storeutil.QueryNamedOne[struct {
@@ -84,6 +203,11 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		}
 		if tgtLV != expectedTargetStyleVersion {
 			return entity.ErrTechCardConflict
+		}
+		// ПОЛОСА DESIGN — ДО ЛЮБОЙ ЗАПИСИ. Сторож стоит выше detach'а намеренно: отказ обязан
+		// оставить обе стороны нетронутыми, а detach уже снял бы штампы норм.
+		if err := refuseRelinkWithDesignRows(ctx, rep.DB(), colorwayID); err != nil {
+			return err
 		}
 		if err := detachRelinkedColorwayReferences(ctx, rep.DB(), colorwayID); err != nil {
 			return err

@@ -238,6 +238,20 @@ func (w *Worker) settle(ctx context.Context, run entity.DesignRun, token string,
 		// objects are already publicly addressable and the media rows already exist, and the only
 		// list of them is the one in this stack frame.
 		w.sweep(sctx, minted)
+		// ⚠ «СТРОКА БОЛЬШЕ НЕ НАША» И «СТОР ОТВЕРГ ВЫДАЧУ» — ДВА РАЗНЫХ ИСХОДА, И РАНЬШЕ ОБА
+		// УХОДИЛИ В abandon. Разница — в деньгах. Потерянный захват действительно не инцидент:
+		// работу доделает тот, кто её перехватил. А отвергнутая выдача — детерминированный баг
+		// ВОРКЕРА: платный вызов уже записан как delivered, abandon строку НЕ проваливает, лизинг
+		// истекает, очередь выдаёт то же задание снова — и так до потолка платных попыток, после
+		// чего строка закрывается безымянным `lease_expired`. То есть ошибка маршрутизации
+		// покупала один и тот же плохой ответ пять раз и стирала собственную причину.
+		//
+		// Дорога «не повторять» в этом воркере уже есть — failRun с Retryable=false, — и
+		// классификатор теперь называет этот класс своим кодом (CodeOutputRefused). Прогон
+		// проваливается СРАЗУ и НАЗВАННО.
+		if designResultRefused(err) {
+			return w.failRun(sctx, run, token, err)
+		}
 		return w.abandon(sctx, run, err)
 	}
 
@@ -333,6 +347,21 @@ func (w *Worker) failRun(ctx context.Context, run entity.DesignRun, token string
 		slog.String("code", v.Code), slog.Bool("retryable", v.Retryable),
 		slog.String("err", cause.Error()))
 	return nil
+}
+
+// designResultRefused — отверг ли СТОР саму выдачу (в отличие от «строка уже не наша»).
+//
+// Обе половины детерминированы и обе куплены: род кадра, который не может нести колорвей задания
+// (0356, наш собственный сторож), и старая четвёрка InvalidArgument в CompleteRun — выход без
+// медиа, отрицательный ординал, два выхода с одним ординалом, неизвестный ghost_view. Ни одна из
+// них не изменит ответа от повтора, поэтому повтор покупает ровно ещё один платный вызов.
+//
+// ⚠ ГРАНИЦА НАРОЧНО НЕ ШИРЕ. ErrDesignClaimLost, ErrDesignRunTerminal и всё, что говорит «строка
+// уже не наша», обязаны и дальше уходить в abandon: провалить их значило бы затереть результат
+// того, кто перехватил задание, — ровно то, ради чего в WHERE стоит токен.
+func designResultRefused(err error) bool {
+	return errors.Is(err, entity.ErrDesignColorwayForbidden) ||
+		errors.Is(err, entity.ErrDesignInvalidArgument)
 }
 
 // abandon turns "this row is no longer ours" into a normal, quiet outcome.

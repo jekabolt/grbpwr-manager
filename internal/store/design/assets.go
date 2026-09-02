@@ -160,8 +160,31 @@ func (s *Store) UpsertAsset(ctx context.Context, req entity.DesignAssetUpsert) (
 			// ambiguous — «no such asset», «somebody else's asset» and «you saved the tile
 			// unchanged» all look identical — and answering the third with NotFound would tell a
 			// person their shelf vanished for pressing Save twice.
-			if _, err := requireAssetOfCard(ctx, db, req.TechCardId, id); err != nil {
+			before, err := requireAssetOfCard(ctx, db, req.TechCardId, id)
+			if err != nil {
 				return err
+			}
+			// ─── UPSERT НЕ ЧЁРНЫЙ ХОД В «ФУРНИТУРУ С КОЛОРВЕЕМ» (N2) ───
+			//
+			// SetAssetColorway отказывает назначить колорвей фурнитуре; но Upsert меняет РОД,
+			// сохраняя колонку, — и тот же запретный конец достигался с другой стороны: назначь
+			// ткань X колорвею 5, потом сохрани X как hardware, и строка станет фурнитурой,
+			// носящей колорвей. Состояние, которое выделенный глагол называет невыразимым, обязано
+			// быть невыразимым ЧЕРЕЗ ВСЕ ДВЕРИ, иначе запрет — это не правило, а привычка одной
+			// двери.
+			//
+			// ОТКАЗ, А НЕ ТИХОЕ СНЯТИЕ, и выбор здесь тот же, что у всей волны. Снять назначение
+			// молча значит исполнить не то, о чём просили: человек редактировал ПОЛКУ, а сервер
+			// заодно и без единого слова снял бы ткань с цвета — потерю, которую видно только
+			// на другом экране и только потом. Отказ же чинится одним понятным шагом («сними
+			// ткань с колорвея, потом меняй род»), и он называет оба факта.
+			if req.Kind == entity.DesignAssetKindHardware &&
+				before.Kind != entity.DesignAssetKindHardware &&
+				entity.DesignColorwayOrNone(before.ColorwayId) > 0 {
+				return fmt.Errorf("%w: asset %d is the fabric of colourway %d and cannot become %s; "+
+					"take it off the colourway first",
+					entity.ErrDesignColorwayForbidden, id,
+					entity.DesignColorwayOrNone(before.ColorwayId), entity.DesignAssetKindHardware)
 			}
 			params["id"] = id
 			// created_by / created_at ARE NOT IN THE SET LIST. Who put the cloth on the shelf is
@@ -189,6 +212,83 @@ func (s *Store) UpsertAsset(ctx context.Context, req entity.DesignAssetUpsert) (
 		// ⚠ THE ROW GOES THROUGH A SLICE AND COMES BACK OUT OF IT. attachAssetMedia fills its
 		// argument IN PLACE, so handing it a fresh one-element literal and then returning `saved`
 		// would return the copy that was never touched — a silent «no file» on every save.
+		one := []entity.DesignAsset{saved}
+		if err := attachAssetMedia(ctx, rep, one); err != nil {
+			return err
+		}
+		out = &one[0]
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetAssetColorway is the ONLY writer of design_asset.colorway_id (0357): «the fabric of colourway
+// N is this asset», and colorwayID 0 takes the assignment off.
+//
+// SINGLE-SELECT, AND THE STEAL IS PART OF THE SAME TRANSACTION. A colourway wears ONE fabric, so
+// assigning X to N first clears N off every other asset of this card. Doing it in a second call
+// would leave a window in which the card claims two fabrics for one colourway — and doing it with
+// a UNIQUE key instead would refuse the click outright, which is wrong twice over: the key would
+// not constrain the unassigned majority at all (MySQL treats NULL as distinct), and pressing the
+// neighbouring chip IS the intent «the fabric of N is now this one», not an accident to refuse.
+//
+// KIND GUARD: hardware has no fabric role — a zip is not what a colourway is made of — so naming
+// it is `colorway_forbidden`, refused rather than silently ignored. fabric AND pattern are both
+// allowed: the owner's «colour OR pattern» is about CONTENT, and a fabric asset with a photograph
+// is the material case of the same sentence.
+//
+// The card boundary is read in THIS transaction (requireAssetOfCard, assertColorwayOfCard) for the
+// reason every guard in this package is: one read outside it is a TOCTOU with a nicer name.
+func (s *Store) SetAssetColorway(ctx context.Context, req entity.DesignAssetColorwaySet) (*entity.DesignAsset, error) {
+	if req.ColorwayId < 0 {
+		return nil, fmt.Errorf("%w: colorway_id must not be negative", entity.ErrDesignInvalidArgument)
+	}
+	var out *entity.DesignAsset
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		asset, err := requireAssetOfCard(ctx, db, req.TechCardId, req.AssetId)
+		if err != nil {
+			return err
+		}
+		if req.ColorwayId > 0 {
+			if asset.Kind == entity.DesignAssetKindHardware {
+				return fmt.Errorf("%w: a %s asset cannot be the fabric of a colourway",
+					entity.ErrDesignColorwayForbidden, asset.Kind)
+			}
+			if err := assertColorwayOfCard(ctx, db, req.TechCardId, req.ColorwayId); err != nil {
+				return err
+			}
+			// ─── КРАЖА: колорвей снимается со всех прочих ассетов ЭТОЙ карточки ───
+			//
+			// Скоуп — карточка, потому что дом факта — полка карточки, и колорвей принадлежит ей
+			// же (assertColorwayOfCard только что это доказал). `id <> :id` оставляет строку-цель
+			// в покое: повторное назначение того же ассета тому же колорвею обязано быть
+			// идемпотентным, а не снять и вернуть.
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE design_asset SET colorway_id = NULL, updated_at = UTC_TIMESTAMP(6)
+				WHERE tech_card_id = :card AND colorway_id = :cw AND id <> :id`,
+				map[string]any{"card": req.TechCardId, "cw": req.ColorwayId, "id": req.AssetId}); err != nil {
+				return fmt.Errorf("failed to clear colourway %d off the other assets of tech card %d: %w",
+					req.ColorwayId, req.TechCardId, err)
+			}
+		}
+		if err := storeutil.ExecNamed(ctx, db, `
+			UPDATE design_asset SET colorway_id = :cw, updated_at = UTC_TIMESTAMP(6)
+			WHERE id = :id AND tech_card_id = :card`,
+			map[string]any{"cw": nullInt(req.ColorwayId), "id": req.AssetId, "card": req.TechCardId}); err != nil {
+			return fmt.Errorf("failed to set the colourway of design asset %d: %w", req.AssetId, err)
+		}
+
+		saved, err := assetByID(ctx, db, req.AssetId)
+		if err != nil {
+			return err
+		}
+		// Файл едет вместе со строкой по тому же доводу, что у UpsertAsset: экран перерисовывает
+		// вернувшуюся плитку, и голый media_id стёр бы свотч, который только что показывали.
+		// attachAssetMedia заполняет аргумент НА МЕСТЕ — отсюда срез и возврат из него.
 		one := []entity.DesignAsset{saved}
 		if err := attachAssetMedia(ctx, rep, one); err != nil {
 			return err
