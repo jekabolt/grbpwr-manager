@@ -148,6 +148,27 @@ const (
 	DesignSourceDrawn       = "drawn"
 )
 
+// ЧЕМ КАДР ПРОИЗВЕДЁН ОТ РОДИТЕЛЯ (0359, J-1/J-23): разрезом или сплющенной правкой.
+//
+// ⚠ ЭТО НЕ ВТОРОЕ ИМЯ ПРОВЕНАНСА. `source_class` отвечает «ОТКУДА пиксели» (машина, рука, чужой
+// файл), derivation — «КАКИМ ЖЕСТОМ эта строка отделилась от родительской». Кроп машинного листа
+// и флэттен машинного листа несут ОДИН source_class и РАЗНЫЕ глаголы, и лента складывается в
+// колоду ровно по глаголу.
+//
+// ⚠ И ЭТО НЕ `layer_rev`. Кроп КОПИРУЕТ ревизию родителя (pictures.go), поэтому кроп
+// отредактированного листа неотличим по ней от флэттена; обещание контракта «0 = not flattened»
+// сломано этим наследованием и было сломано ещё до того, как эта колонка появилась.
+const (
+	// DesignDerivationNone — «глагол не назван». Читается ТОЛЬКО в паре с DerivedFrom: пустой
+	// родитель = корень, непустой = легаси-строка, которую бэкфилл 0359 не смог классифицировать
+	// (родителя уже нет). Схлопывать эти два смысла нельзя — см. шапку 0359.
+	DesignDerivationNone = ""
+	// DesignDerivationCrop — кадр вырезан из родителя (SplitPicture).
+	DesignDerivationCrop = "crop"
+	// DesignDerivationFlatten — кадр это сплющенная правка родителя (FlattenEditLayer с базой).
+	DesignDerivationFlatten = "flatten"
+)
+
 // Виды кадра. ОН ЖЕ СЛОВАРЬ ВТОРОЙ ОСИ ВЕРСТАКА: design_bench_slot.kind (0349) объявлен тем же
 // словарём намеренно — «род» у слота и у кадра обязан быть одним понятием, иначе рендер встанет
 // на технический лист.
@@ -715,9 +736,12 @@ type DesignPicture struct {
 	GhostView      sql.NullString `db:"ghost_view"`
 	CompositeViews RawJSON        `db:"composite_views"`
 	DerivedFrom    sql.NullInt32  `db:"derived_from"`
-	SourceClass    string         `db:"source_class"`
-	MixedInput     bool           `db:"mixed_input"`
-	LayerRev       int            `db:"layer_rev"`
+	// Derivation — КАКИМ ГЛАГОЛОМ кадр отделился от DerivedFrom (0359): crop | flatten | пусто.
+	// Пустое значение читается ТОЛЬКО в паре с DerivedFrom — см. DesignDerivationNone.
+	Derivation  string `db:"derivation"`
+	SourceClass string `db:"source_class"`
+	MixedInput  bool   `db:"mixed_input"`
+	LayerRev    int    `db:"layer_rev"`
 	// Selected — кадр помечен выбранным (0350, W-12). НЕ обратная сторона hidden_at: спрятать —
 	// убрать с глаз, выбрать — поднять над остальными; выбранных может быть несколько.
 	Selected bool `db:"selected"`
@@ -849,10 +873,17 @@ type DesignReference struct {
 	// референс» и питает ПОРЯДОК в промпте, записка — свободный текст человека. Восемь референсов
 	// без записок называют восемь сторон и ни одного намерения, а намерение и есть та половина,
 	// которая меняет ответ.
-	Note    sql.NullString `db:"note"`
-	Ordinal int            `db:"ordinal"`
-	SetBy   string         `db:"set_by"`
-	SetAt   time.Time      `db:"set_at"`
+	Note sql.NullString `db:"note"`
+	// DetailSlotId — КАКОЙ ИМЕННО ДЕТАЛИ этот референс (0360, J-9): FK design_bench_slot(id).
+	//
+	// ССЫЛКА, А НЕ КОПИЯ ИМЕНИ: имя детали переименовываемо, и копия разошлась бы с оригиналом
+	// молча. Осмысленно только при Role == DesignViewDetail; у прочих ролей стор держит NULL.
+	// NULL при роли `detail` значит «слот удалён» (FK ON DELETE SET NULL) либо «строка старше
+	// колонки» — оба состояния клиент печатает словами, а не именем, которого у него нет.
+	DetailSlotId sql.NullInt32 `db:"detail_slot_id"`
+	Ordinal      int           `db:"ordinal"`
+	SetBy        string        `db:"set_by"`
+	SetAt        time.Time     `db:"set_at"`
 }
 
 // DesignAsset — строка design_asset (0354): одна вещь, ИЗ КОТОРОЙ СДЕЛАНО изделие и которая не
@@ -1160,8 +1191,20 @@ type DesignReferenceRole struct {
 	// стороны. Тот же приём и по той же причине несёт TechCard.GarmentDescriptionOmitted — и
 	// именно поэтому ТО поле этой беды не знало.
 	NoteOmitted bool
-	Ordinal     int
-	Actor       string
+	// DetailSlotId — АДРЕС ДЕТАЛИ, про которую этот референс (0360, J-9). Правило записи имеет
+	// ТРИ члена, и третий — не украшение, а тот же приём, что спас записку выше:
+	//
+	//	Role != detail            — колонка ОЧИЩАЕТСЯ. Референс, переставший быть деталью, не может
+	//	                            продолжать указывать на деталь;
+	//	Role == detail, Id  > 0   — колонка ПИШЕТСЯ;
+	//	Role == detail, Id == 0   — колонка ОСТАЁТСЯ КАК БЫЛА. Ноль на проводе это «про слот ничего
+	//	                            не сказано», и никогда «сотри»: proto3 не отличает незаполненный
+	//	                            int32 от нуля, поэтому вкладка со старым JS, переписывающая
+	//	                            записку или ординал, стёрла бы связь с деталью без единого
+	//	                            жеста человека. Ровно эта беда уже случалась с Note (0348).
+	DetailSlotId int
+	Ordinal      int
+	Actor        string
 }
 
 // DesignAssetUpsert — ОДНА строка полки, заведённая либо переписанная целиком.

@@ -26,7 +26,10 @@ import (
 func attachedIDs(t *testing.T, params, inputs string) []int {
 	t.Helper()
 	p, in := parseParams(entity.RawJSON(params)), parseInputs(entity.RawJSON(inputs))
-	return referenceMediaIDs(p, in)
+	// РОД ЗДЕСЬ РЕНДЕР, И ЭТО НЕ ФОРМАЛЬНОСТЬ. Порядок картинок с круга 15 зависит от рода:
+	// у флэта референсы идут ПЕРЕД плитами, у всех остальных — как было. Эти пробы держат
+	// РЕНДЕРНЫЙ маршрут (фикстура renderSlots, ткани рецепта), и их числа — числа рендера.
+	return referenceMediaIDs(entity.DesignRunKindRender, p, in)
 }
 
 // twoClothsAttach — два ассета полки с СОБСТВЕННЫМИ текстурами (9 и 10). Первая ткань эхом повторена в
@@ -63,7 +66,7 @@ func TestSingleClothKeepsTheOldCaptionWordForWord(t *testing.T) {
 	one := `{"views":["front"],"layout":"one","colour":{"hex":"#b1121a","fabric_media_id":9,` +
 		`"fabrics":[{"asset_id":1,"name":"main jersey","media_id":9}]}}`
 	p, in := parseParams(entity.RawJSON(one)), parseInputs(entity.RawJSON(renderSlots))
-	list := referenceList(p, in)
+	list := referenceList(entity.DesignRunKindRender, p, in)
 	require.Len(t, list, 3)
 	require.Equal(t,
 		"fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here",
@@ -78,7 +81,7 @@ func TestSingleClothKeepsTheOldCaptionWordForWord(t *testing.T) {
 // перепутанный индекс в цикле подписи прошёл бы любую проверку «текст содержит CLOTH 2».
 func TestMultiClothCaptionsNameTheClothAndAgreeWithTheList(t *testing.T) {
 	p, in := parseParams(entity.RawJSON(twoClothsAttach)), parseInputs(entity.RawJSON(renderSlots))
-	list := referenceList(p, in)
+	list := referenceList(entity.DesignRunKindRender, p, in)
 
 	byID := map[int]string{}
 	for _, rc := range list {
@@ -103,7 +106,7 @@ func TestMultiClothCaptionsNameTheClothAndAgreeWithTheList(t *testing.T) {
 // правила, ради устранения которого подпись однажды переписывали.
 func TestMultiClothDoesNotDescribeOnePictureTwice(t *testing.T) {
 	p, in := parseParams(entity.RawJSON(twoClothsAttach)), parseInputs(entity.RawJSON(renderSlots))
-	for _, rc := range referenceList(p, in) {
+	for _, rc := range referenceList(entity.DesignRunKindRender, p, in) {
 		if rc.MediaID != 9 {
 			continue
 		}
@@ -124,5 +127,5 @@ func TestClothWithoutATextureClaimsNoPicture(t *testing.T) {
 	require.Equal(t, []int{1, 2, 9}, got, "ткань без media_id не прикрепляет ничего")
 
 	p, in := parseParams(entity.RawJSON(mixed)), parseInputs(entity.RawJSON(renderSlots))
-	require.Equal(t, 0, imageNumberOf(referenceList(p, in), 0))
+	require.Equal(t, 0, imageNumberOf(referenceList(entity.DesignRunKindRender, p, in), 0))
 }

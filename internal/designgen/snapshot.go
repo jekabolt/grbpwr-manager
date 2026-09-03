@@ -255,10 +255,29 @@ type refCaption struct {
 // therefore come first and are sorted front, back, side_l, side_r, detail rather than in whatever
 // order the snapshot happens to hold them.
 //
+// ⚠ AND ON THE FLAT ROUTE THE ORDER IS THE OPPOSITE, DELIBERATELY (J-10). The owner's rule about
+// the plates the studio chooses to send along with a flat run — «так же они всегда добавляются в
+// конец промпта» — is a statement about the PROMPT, so it has to hold in the one list that numbers
+// the prompt's images. It did not: the plate walk ran first on every route, and a flat run with
+// `use_flat_slots` numbered the bench plates `image 1…k` AHEAD of the references the operator
+// actually brought. The screen that names each plate's number counts it as «after the last
+// reference», so screen and prompt disagreed about which picture `image 3` is — and a caption that
+// points at the wrong picture is worse than no caption, because the model acts on it.
+//
+// THE FLIP IS FLAT-ONLY, AND THE REASON IS THE SAME SENTENCE AS ABOVE: on 3D the first url IS the
+// front view, so «references first» would hand Meshy somebody's mood photograph as the front of
+// the garment. Render, recolor, pattern and vector are untouched for the plainer reason that their
+// composed prompts are already frozen in history, and a reordering would renumber every caption of
+// every future run of a kind nobody asked to change.
+//
+// KIND IS A PARAMETER RATHER THAN A FIELD OF runParams BECAUSE THAT IS WHERE IT LIVES: the kind is
+// a column of design_run, not one of the frozen params, and inventing a params field for it would
+// mint a second, staleable copy of a fact the row already states.
+//
 // EVERY ENTRY HAS WORDS, EVEN THE UNANNOTATED ONES. A picture that goes to the model with no
 // caption line shifts the numbering of every caption after it — that silent shift is the defect
 // this type exists to close, so «no words» is itself said in words («reference image»).
-func referenceList(p runParams, in runInputs) []refCaption {
+func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
 		return viewRank(slots[i].ViewKey) < viewRank(slots[j].ViewKey)
@@ -286,16 +305,37 @@ func referenceList(p runParams, in runInputs) []refCaption {
 		seen[id] = len(out)
 		out = append(out, refCaption{MediaID: id, Caption: caption, View: view})
 	}
-	for _, s := range slots {
-		add(s.MediaID, slotCaption(s), s.ViewKey)
-	}
-	for _, r := range in.Refs {
-		// A reference whose media row is gone is remembered by the snapshot but cannot be fetched
-		// by anyone; sending its id would produce a 404 at the provider, mid-paid-call.
-		if r.Deleted {
-			continue
+	addSlots := func() {
+		for _, s := range slots {
+			add(s.MediaID, slotCaption(s), s.ViewKey)
 		}
-		add(r.MediaID, refEntryCaption(r), "")
+	}
+	addRefs := func() {
+		for _, r := range in.Refs {
+			// A reference whose media row is gone is remembered by the snapshot but cannot be
+			// fetched by anyone; sending its id would produce a 404 at the provider,
+			// mid-paid-call.
+			if r.Deleted {
+				continue
+			}
+			add(r.MediaID, refEntryCaption(r), "")
+		}
+	}
+	// TWO ORDERS, ONE `add`. Both branches walk the same three sources through the same closure,
+	// so the dedup rule, the caption-merging rule and the «first position wins» rule are one
+	// implementation rather than two that can drift — which is exactly how captions and urls came
+	// to disagree the first time.
+	//
+	// THE EXTRAS SIT LAST IN BOTH, AND ON THE FLAT ROUTE THAT COSTS NOTHING: designAssembleInputs
+	// already folds `extra_input_media_ids` INTO the snapshot's refs before it is frozen
+	// (design_run.go), so by the time this walk runs they are ordinary references and this third
+	// loop is a dedup no-op that only exists for snapshots frozen before that folding did.
+	if kind == entity.DesignRunKindFlat {
+		addRefs()
+		addSlots()
+	} else {
+		addSlots()
+		addRefs()
 	}
 	for _, id := range p.ExtraInputMediaIDs {
 		add(id, "additional reference image", "")
@@ -349,8 +389,8 @@ func referenceList(p runParams, in runInputs) []refCaption {
 // referenceMediaIDs is the picture half of referenceList — kept as a name because half the band's
 // comments point at it, and DERIVED from the list rather than built beside it: two builders of
 // «the run's pictures, in order» is how captions and urls came to disagree in the first place.
-func referenceMediaIDs(p runParams, in runInputs) []int {
-	list := referenceList(p, in)
+func referenceMediaIDs(kind string, p runParams, in runInputs) []int {
+	list := referenceList(kind, p, in)
 	out := make([]int, 0, len(list))
 	for _, rc := range list {
 		out = append(out, rc.MediaID)
@@ -849,7 +889,7 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 	// halves of each pair — the url and the caption — are appended by the SAME iteration of the
 	// SAME loop, off the SAME element: that, and nothing subtler, is what guarantees that caption
 	// k describes references[k-1]. TestCaptionNumberKIsImageNumberK holds the guarantee.
-	list := referenceList(p, in)
+	list := referenceList(run.Kind, p, in)
 	switch run.Kind {
 	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
 		// ПЕРЕКРАС И ПАТТЕРН ДЕЙСТВУЮТ НА НАЗВАННЫЕ СНИМКИ, И ТОЛЬКО НА НИХ. Довод целиком в

@@ -574,15 +574,32 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 				return err
 			}
 		}
+		// ГЛАГОЛ ЗАПИСЫВАЕТСЯ ЗДЕСЬ, А НЕ ВЫВОДИТСЯ ЧИТАТЕЛЕМ (0359, J-1).
+		//
+		// БЕЗ БАЗЫ ГЛАГОЛА НЕТ ВОВСЕ, и пустая строка тут не «неизвестно», а КОРЕНЬ: слой,
+		// нарисованный с чистого листа, ни от чего не производен, `derived` рядом тоже NULL, и
+		// пара (derived_from, derivation) читается однозначно.
+		//
+		// ⚠ ПОЧЕМУ НЕЛЬЗЯ ОСТАВИТЬ КЛИЕНТУ ДОГАДКУ ПО `layer_rev`, которая пишется строкой ниже:
+		// кроп КОПИРУЕТ ревизию родителя (pictures.go), поэтому «правка» и «разрез правки»
+		// приходят с одинаковой ненулевой ревизией; а «правь → сохрани → правь снова» даёт два
+		// флэттена, чьи ревизии могут совпасть. Обещание контракта «layer_rev 0 = not flattened»
+		// сломано первым из этих двух и было сломано до появления колонки.
+		derivation := entity.DesignDerivationNone
+		if parent != nil {
+			derivation = entity.DesignDerivationFlatten
+		}
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
 				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
-				 colorway_id, derived_from, source_class, mixed_input, layer_rev)
-			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :src, :mixed, :layer)`,
+				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev)
+			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
+			        :src, :mixed, :layer)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
 				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
-				"src": src, "mixed": mixed, "layer": layer.Rev,
+				"derivation": derivation,
+				"src":        src, "mixed": mixed, "layer": layer.Rev,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to file the flattened design layer: %w", err)

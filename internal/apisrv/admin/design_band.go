@@ -375,8 +375,15 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 		// ничего не сказал»; GetNote() вернул бы на этом месте "" и был бы неотличим от «сотри».
 		// Читать это надо ИМЕННО с указателя, до всякого GetNote.
 		NoteOmitted: req.Note == nil,
-		Ordinal:     int(req.GetOrdinal()),
-		Actor:       designActor(ctx),
+		// КАКОЙ ИМЕННО ДЕТАЛИ этот референс (0360, J-9). НОЛЬ ЗДЕСЬ — «ПРО СЛОТ НИЧЕГО НЕ
+		// СКАЗАНО», И НИКОГДА «СОТРИ»: proto3 не отличает незаполненный int32 от нуля, и вкладка,
+		// которая правит ЗАПИСКУ и о детали не думает вовсе, стёрла бы связь без единого жеста
+		// человека. Третье состояние здесь берётся не из `optional`, а из самого значения — «ноль
+		// значит оставить» — потому что «очистить» уже сказано другим полем (роль перестаёт быть
+		// `detail`), и второго правописания у него быть не должно.
+		DetailSlotId: int(req.GetDetailSlotId()),
+		Ordinal:      int(req.GetOrdinal()),
+		Actor:        designActor(ctx),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to set the design reference role", err, nil)
@@ -1050,6 +1057,12 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		Kind:        p.Kind,
 		GhostView:   p.GhostView.String,
 		DerivedFrom: p.DerivedFrom.Int32,
+		// КАКИМ ГЛАГОЛОМ кадр отделился от родителя (0359, J-1): crop | flatten | пусто. Пустое
+		// читается ТОЛЬКО в паре с DerivedFrom — корень против неклассифицированной легаси-строки.
+		// `layer_rev` рядом дискриминатором НЕ является и никогда не был: кроп наследует его у
+		// родителя, поэтому кроп ОТРЕДАКТИРОВАННОГО листа приходит с той же ненулевой ревизией,
+		// что и флэттен.
+		Derivation:  p.Derivation,
 		SourceClass: p.SourceClass,
 		MixedInput:  p.MixedInput,
 		LayerRev:    int32(p.LayerRev),
@@ -1386,10 +1399,14 @@ func designReferenceToPb(r entity.DesignReference) *pb_common.DesignReference {
 		Role:       r.Role,
 		// The human's words about THIS reference (W-3). Without them a board of eight references
 		// states eight roles and no intent, and the intent is the half that changes the answer.
-		Note:    r.Note.String,
-		Ordinal: int32(r.Ordinal),
-		SetBy:   r.SetBy,
-		SetAt:   timestamppb.New(r.SetAt),
+		Note: r.Note.String,
+		// WHICH DETAIL this reference is about (0360, J-9), 0 = none stated. A pointer rather than
+		// a copy of the name — the client resolves the word from the card's bench by this id, so a
+		// rename stays one fact instead of two that drift.
+		DetailSlotId: r.DetailSlotId.Int32,
+		Ordinal:      int32(r.Ordinal),
+		SetBy:        r.SetBy,
+		SetAt:        timestamppb.New(r.SetAt),
 	}
 }
 

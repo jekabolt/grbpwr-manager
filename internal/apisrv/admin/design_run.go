@@ -2026,6 +2026,36 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 		return nil, nil
 	}
 
+	/*
+	 * …И БЕРЁТ НЕ ОБЯЗАТЕЛЬНО ВСЕ (J-10). `use_flat_slots` — выключатель на ВЕСЬ верстак, а человек
+	 * смотрит на плиты по одной и про одну из них знает, что она этому прогону мешает. До этого
+	 * списка у него было ровно два ответа — «все» и «ни одной», — и чтобы убрать одну плиту, ему
+	 * приходилось ВЫНИМАТЬ ЕЁ ИЗ СЛОТА, то есть менять состояние карточки ради параметра одного
+	 * прогона.
+	 *
+	 * ПУСТОЙ СПИСОК — ЭТО «ВСЕ», А НЕ «НИ ОДНОЙ», и на этом держится совместимость: каждый
+	 * замороженный прогон и каждый клиент, не знающий поля, продолжают значить ровно то, что
+	 * значили. «Ни одной» уже имеет своё правописание — `use_flat_slots = false`, — и второго ему
+	 * не нужно.
+	 *
+	 * ⚠ СУЖЕНИЕ ТОЛЬКО У ФЛЭТА С ВКЛЮЧЁННЫМ ВЫКЛЮЧАТЕЛЕМ, И ЭТО НЕ ОСТОРОЖНОСТЬ, А ГРАНИЦА СМЫСЛА.
+	 * У рендера плиты флэтов — это СОДЕРЖАНИЕ рода, а не опция (тот же довод, что у самого
+	 * `use_flat_slots` выше); у 3D — тем более. Позволить списку сужать их значило бы дать одному
+	 * полю два разных смысла на разных маршрутах.
+	 *
+	 * ⚠ И НЕ НА ВЫБОРОЧНОМ ПУТИ (`selective`): правка названных плит уже сужена своими
+	 * `fix_targets`/`fix_slot_ids`, у которых своя дверь и свой смысл. Два независимых сужения
+	 * одного списка разошлись бы ровно там, где человек сузил дважды.
+	 */
+	keepFlatSlots := map[int]struct{}{}
+	if src.Kind == entity.DesignRunKindFlat && !selective && src.Params.GetUseFlatSlots() {
+		for _, id := range src.Params.GetFlatSlotIds() {
+			if id > 0 {
+				keepFlatSlots[int(id)] = struct{}{}
+			}
+		}
+	}
+
 	out := make([]*pb_common.DesignInputSlot, 0, len(src.Bench))
 	plates := make([]int32, 0, len(src.Bench))
 	for _, slot := range src.Bench {
@@ -2037,6 +2067,13 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 		}
 		if slot.Picture == nil || slot.Picture.MediaId <= 0 {
 			continue
+		}
+		// ИМЕНОВАННОЕ СУЖЕНИЕ ФЛЭТ-ПЛИТ (J-10). Карта пуста на всяком маршруте, кроме флэта с
+		// включённым `use_flat_slots` и НЕПУСТЫМ списком, — см. её построение выше.
+		if len(keepFlatSlots) > 0 {
+			if _, ok := keepFlatSlots[slot.Id]; !ok {
+				continue
+			}
 		}
 		if selective {
 			_, byView := targets[slot.ViewKey]

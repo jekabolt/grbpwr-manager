@@ -54,7 +54,7 @@ func renderPrompt(t *testing.T, params, inputs string) string {
 	r.Inputs = entity.RawJSON(inputs)
 	r.Ask = sql.NullString{String: "ASK-the words of the person", Valid: true}
 	p, in := parseParams(r.Params), parseInputs(r.Inputs)
-	return composePrompt(r, p, in, referenceList(p, in))
+	return composePrompt(r, p, in, referenceList(r.Kind, p, in))
 }
 
 // One bench plate and one fabric swatch: the ordinary shape of a render submitted from the studio.
@@ -381,7 +381,7 @@ func TestRenderCraftIsForRendersOnly(t *testing.T) {
 		r.Inputs = entity.RawJSON(renderSlots)
 		r.Ask = sql.NullString{String: "ASK", Valid: true}
 		p, in := parseParams(r.Params), parseInputs(r.Inputs)
-		got := composePrompt(r, p, in, referenceList(p, in))
+		got := composePrompt(r, p, in, referenceList(r.Kind, p, in))
 		require.NotContains(t, got, renderStyle, "kind %s must keep its bare context", kind)
 		require.NotContains(t, got, authorityHeader, "kind %s must keep its bare context", kind)
 		require.Contains(t, got, "ASK")

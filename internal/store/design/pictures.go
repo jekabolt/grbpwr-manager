@@ -549,8 +549,9 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
 					(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
-					 colorway_id, derived_from, source_class, mixed_input, layer_rev)
-				VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :src, :mixed, :layer)`,
+					 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev)
+				VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
+				        :src, :mixed, :layer)`,
 				map[string]any{
 					"card": parent.TechCardId, "media": f.MediaId,
 					"run": nullInt32(parent.RunId), "batch": nullInt32(parent.BatchId),
@@ -560,6 +561,12 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 					// рождался бы неатрибутированным и не вставал бы в колорвейный верстак.
 					"cw":     nullInt32(parent.ColorwayId),
 					"parent": parent.Id,
+					// ГЛАГОЛ ЗАПИСЫВАЕТСЯ, А НЕ ВЫВОДИТСЯ (0359, J-1). Строкой ниже кроп наследует
+					// `layer_rev` родителя — и ровно поэтому по `layer_rev` его НЕЛЬЗЯ отличить от
+					// флэттена: кроп отредактированного листа приходит с той же ненулевой ревизией.
+					// Клиент складывает ленту в колоду только после РАЗРЕЗА, и это единственное
+					// место, где факт «это был разрез» ещё известен.
+					"derivation": entity.DesignDerivationCrop,
 					// A crop INHERITS its parent's provenance and its mixed flag. Cutting a
 					// picture up does not change where it came from, and a crop of a mixed
 					// composite is still mixed — laundering the mixture by one more operation is
@@ -627,6 +634,11 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 				VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6))
 				ON DUPLICATE KEY UPDATE
 					role = VALUES(role),
+					-- ВТОРОЙ ПИСАТЕЛЬ РОЛИ НИКОГДА НЕ ЗНАЕТ СЛОТА ДЕТАЛИ, поэтому он его и не
+					-- утверждает (0360). Разрез называет вид кадра, а не адрес на верстаке; оставить
+					-- здесь чужой уцелевший detail_slot_id значило бы напечатать человеку имя
+					-- ДРУГОЙ детали, что и есть та ошибка, ради которой связь заводилась.
+					detail_slot_id = NULL,
 					ordinal = VALUES(ordinal),
 					set_by = VALUES(set_by), set_at = VALUES(set_at)`,
 					map[string]any{

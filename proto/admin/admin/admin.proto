@@ -12267,6 +12267,26 @@ message SetDesignReferenceRoleRequest {
   // and empty). This is the same shape common.TechCard.garment_description already uses, for the
   // same reason, and it is why THAT field survived the bug this one had.
   optional string note = 5;
+  // WHICH DETAIL this reference is about — design_bench_slot(id) of a `detail` slot on THIS card.
+  //
+  // THE RULE HAS THREE MEMBERS, AND THE THIRD IS THE ONE THIS REPOSITORY HAS ALREADY PAID FOR:
+  //   * role ≠ detail                   — the stored link is CLEARED. A reference that stopped
+  //                                       being a detail cannot go on pointing at one;
+  //   * role = detail, this field  > 0  — the link is WRITTEN;
+  //   * role = detail, this field == 0  — the stored link is KEPT. Zero means «the caller said
+  //                                       nothing about the slot», NEVER «clear it».
+  //
+  // The third member is not decoration. proto3 cannot tell an unset int32 from a zero, so a tab
+  // running older JS — one that re-sends role, ordinal and note to edit the NOTE — would send 0
+  // here and erase the detail link with no gesture from anybody. That is precisely the bug `note`
+  // had before it became `optional` (see the field above), reproduced on a field where `optional`
+  // buys nothing extra: «keep» is the only thing 0 could usefully mean, so 0 IS «keep».
+  //
+  // REFUSED with InvalidArgument when the id names a slot of another card, a slot that does not
+  // exist, or a slot that is not a `detail`. The boundary is the same one `refuseForeignMedia`
+  // holds one line away in the same transaction, for the same reason: the client resolves the
+  // NAME from this id, and a foreign id would make it print another card's word.
+  int32 detail_slot_id = 6;
 }
 
 message SetDesignReferenceRoleResponse {
