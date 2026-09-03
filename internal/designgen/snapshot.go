@@ -36,7 +36,10 @@ type runParams struct {
 	DetailSlotIDs      []int         `json:"detail_slot_ids"`
 	FixTarget          string        `json:"fix_target"`
 	FixTargets         []string      `json:"fix_targets"`
-	Threed             *threedParams `json:"threed"`
+	// FixSlotIDs — ТРЕТЬЕ ПРАВОПИСАНИЕ СУЖЕНИЯ, и без него сборщик ссылок читал «сужен ли прогон»
+	// иначе, чем отбор плит: прогон, сузивший себя слотами, а не видами, выглядел здесь обычным.
+	FixSlotIDs []int         `json:"fix_slot_ids"`
+	Threed     *threedParams `json:"threed"`
 	// Pattern is only meaningful for kind=pattern. A nil pointer is «the run said nothing about the
 	// repeat», which is legal — a tile is a tile whether or not anybody has decided how large it
 	// will be printed.
@@ -297,9 +300,17 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			if caption != "" && !strings.Contains(out[at].Caption, caption) {
 				out[at].Caption = out[at].Caption + "; " + caption
 			}
-			// AND IT KEEPS ITS FIRST VIEW, for the same reason the position is kept: the plate
-			// walk runs first, so a picture that is both a plate and a reference is already
-			// labelled with the side it stands on, and the second source has no side to offer.
+			// ⚠ AND IT ADOPTS A SIDE IF IT DOES NOT YET HAVE ONE. The old comment here said the
+			// plate walk always runs first, so a deduped picture «is already labelled with the
+			// side it stands on» — TRUE UNTIL THE FLAT ROUTE STARTED WALKING REFERENCES FIRST, and
+			// false after it: on flat, a picture that is both a plate and a reference entered as a
+			// reference (view "") and the plate's own side was then dropped on the floor. A
+			// reference never offers a side, so this can only ever fill a blank, never overwrite a
+			// stated one — the 3D route, where the first url IS the front view, is untouched by
+			// construction.
+			if out[at].View == "" && view != "" {
+				out[at].View = view
+			}
 			return
 		}
 		seen[id] = len(out)
@@ -330,7 +341,16 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// already folds `extra_input_media_ids` INTO the snapshot's refs before it is frozen
 	// (design_run.go), so by the time this walk runs they are ordinary references and this third
 	// loop is a dedup no-op that only exists for snapshots frozen before that folding did.
-	if kind == entity.DesignRunKindFlat {
+	//
+	// ⚠ ВЫБОРОЧНАЯ ПРАВКА ИЗ ПЕРЕВОРОТА ИСКЛЮЧЕНА, И ГРАНИЦА ТА ЖЕ, ЧТО У ОТБОРА ПЛИТ. Гейт K-1
+	// («флэт не берёт плиты, пока не попросят») обходится признаком `selective`, поэтому
+	// выборочный флэт-фикс плиты НЕСЁТ — и переворот выводил бы вперёд снимок настроения, а плиту,
+	// НА КОТОРУЮ ПРОГОН НАВОДИЛИ, нумеровал вторым. Прогон, чей промпт открывается словами «Turn
+	// the garment shown in the reference image into a technical flat sketch», получал бы при этом
+	// чужую картинку первой — на платном вызове. Признак считается ОДНОЙ функцией на оба читателя
+	// (entity.IsDesignSelectiveFix), иначе половины волны разъезжаются.
+	selective := entity.IsDesignSelectiveFix(p.FixTarget, p.FixTargets, p.FixSlotIDs)
+	if kind == entity.DesignRunKindFlat && !selective {
 		addRefs()
 		addSlots()
 	} else {

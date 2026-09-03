@@ -7,6 +7,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ═══ `flat_slot_ids` — УБРАТЬ ОДНУ ПЛИТУ, НЕ ВЫНИМАЯ ЕЁ ИЗ СЛОТА (J-10) ════════════════════════
@@ -98,10 +100,15 @@ func TestFlatSlotIdsNarrowsThePlatesAndEmptyStillMeansAll(t *testing.T) {
 			wantMedia: []int32{111, 112, 113},
 		},
 		{
-			// ИД, КОТОРЫЙ НЕ НАЗЫВАЕТ НИ ОДНОГО СЛОТА КАРТОЧКИ, НЕ СОВПАДАЕТ НИ С ЧЕМ — и прогон
-			// теряет плиты, что и означает его отсутствие. Чужая карточка отсюда ничего не
-			// получает: сужение идёт ПО СПИСКУ ЭТОГО ВЕРСТАКА, пересечением, а не выборкой.
-			name: "a stale or foreign slot id matches nothing",
+			// ⚠ ЭТА СТРОКА ОПИСЫВАЕТ ВТОРУЮ ПОЛОВИНУ ПРАВИЛА, А НЕ ПОВЕДЕНИЕ ДВЕРИ. Отбор сужает
+			// ПЕРЕСЕЧЕНИЕМ с этим верстаком, поэтому чужой карточке отсюда не достаётся ничего —
+			// и это ровно то свойство, ради которого пересечение и выбрано.
+			//
+			// НО ПУСТОЙ РЕЗУЛЬТАТ САМ ПО СЕБЕ ДО ОТБОРА НЕ ДОХОДИТ: устаревший адрес отвергает
+			// дверь designRefuseForeignFlatSlots ДО ДЕНЕГ (см. TestRefuseForeignFlatSlots).
+			// В первой редакции двери не было, и эта проба УТВЕРЖДАЛА ДЕФЕКТ — «оплачен и пуст» —
+			// как норму. Здесь она осталась только как описание пересечения.
+			name: "the selection intersects, so an unmatched id contributes nothing (the door refuses it earlier)",
 			kind: entity.DesignRunKindFlat,
 			params: &pb_common.DesignRunParams{
 				UseFlatSlots: true, FlatSlotIds: []int32{9999},
@@ -153,4 +160,73 @@ func TestFlatSlotIdsDoesNotTouchTheSelectiveFixPath(t *testing.T) {
 	})
 	require.Equal(t, []int32{111}, mediaOfSlots(slots),
 		"выборочная правка сужает своими fix_slot_ids; flat_slot_ids на этом пути молчит")
+}
+
+// ═══ ДВЕРЬ ДЛЯ `flat_slot_ids` — «ПРИНЯТО И НЕ ИСПОЛНЕНО» ЗАКРЫТО (F5) ════════════════════════
+//
+// Поле сужает плиты пересечением с верстаком, поэтому адрес, не называющий ни одного пригодного
+// слота, просто ни с чем не совпадал: прогон СОЗДАВАЛСЯ, ОПЛАЧИВАЛСЯ и замерзал со снимком «плит
+// нет» — неотличимо от use_flat_slots=false и без отказа, который человек мог бы прочесть, хотя он
+// именно ПОПРОСИЛ послать эти плиты.
+func TestRefuseForeignFlatSlots(t *testing.T) {
+	bench := flatBenchOfThree()
+	src := designInputSources{Kind: entity.DesignRunKindFlat, Bench: bench}
+
+	// ⚠ ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ ПЕРВЫМ: настоящий адрес обязан ПРОХОДИТЬ. Без него все отказы ниже
+	// зеленели бы и на двери, которая отвергает всё подряд, — то есть на мёртвой возможности.
+	require.NoError(t, designRefuseForeignFlatSlots(41,
+		&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{1, 3}}, bench, src))
+
+	// УСТАРЕВШИЙ ИЛИ ЧУЖОЙ АДРЕС — ОТКАЗ ДО ДЕНЕГ.
+	err := designRefuseForeignFlatSlots(41,
+		&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{9999}}, bench, src)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "flat_slot_ids")
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	// ЧАСТИЧНОЕ СОВПАДЕНИЕ — ТОЖЕ ОТКАЗ. Молча исполнить половину просьбы значит отдать модели не
+	// тот набор плит, который человек назвал, и не сказать ему об этом.
+	require.Error(t, designRefuseForeignFlatSlots(41,
+		&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{1, 9999}}, bench, src))
+
+	// НОЛЬ — НЕ АДРЕС, и дверь говорит это прямо, а не пропускает его в отбор, где он растворится.
+	require.Error(t, designRefuseForeignFlatSlots(41,
+		&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{0}}, bench, src))
+
+	// СЛОТ БЕЗ ПЛИТЫ НЕПРИГОДЕН — предикат двери обязан совпадать с отбором, который пустой слот
+	// выбрасывает. Дверь, не спросившая про плиту, приняла бы адрес, который прогон не исполнит.
+	empty := append(flatBenchOfThree(), entity.DesignBenchSlot{
+		Id: 4, TechCardId: 41, ViewKey: entity.DesignViewSideR, Kind: entity.DesignPictureKindFlat,
+	})
+	require.Error(t, designRefuseForeignFlatSlots(41,
+		&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{4}}, empty,
+		designInputSources{Kind: entity.DesignRunKindFlat, Bench: empty}))
+
+	// ─── ГДЕ ДВЕРЬ ОБЯЗАНА МОЛЧАТЬ ───
+	//
+	// Каждая строка — отдельный способ сделать дверь слишком громкой; ложный отказ здесь стоит
+	// человеку прогона, который он имел право запустить.
+	silent := []struct {
+		name   string
+		card   int
+		params *pb_common.DesignRunParams
+		kind   string
+	}{
+		{"пустой список значит ВСЕ плиты", 41,
+			&pb_common.DesignRunParams{UseFlatSlots: true}, entity.DesignRunKindFlat},
+		{"выключатель выключен — плит нет по другой причине", 41,
+			&pb_common.DesignRunParams{FlatSlotIds: []int32{9999}}, entity.DesignRunKindFlat},
+		{"не флэт — поле игнорируется целиком", 41,
+			&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{9999}},
+			entity.DesignRunKindRender},
+		{"выборочная правка сужает себя сама", 41,
+			&pb_common.DesignRunParams{UseFlatSlots: true, FlatSlotIds: []int32{9999},
+				FixTargets: []string{entity.DesignViewFront}}, entity.DesignRunKindFlat},
+	}
+	for _, c := range silent {
+		t.Run(c.name, func(t *testing.T) {
+			require.NoError(t, designRefuseForeignFlatSlots(c.card, c.params, bench,
+				designInputSources{Kind: c.kind, Bench: bench}))
+		})
+	}
 }

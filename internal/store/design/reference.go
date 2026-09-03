@@ -62,6 +62,16 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 		// ⚠ ПРОВЕРЯЕТСЯ ТОЛЬКО НАЗВАННЫЙ НЕНУЛЕВОЙ ID. Ноль — это «про слот ничего не сказано»
 		// (см. DesignReferenceRole.DetailSlotId), и превращать молчание в отказ значило бы сломать
 		// каждого писателя, который редактирует записку и о детали не думает вовсе.
+		// ⚠ ОТРИЦАТЕЛЬНЫЙ ИДЕНТИФИКАТОР — ЧЕТВЁРТЫЙ, НЕЗАДУМАННЫЙ ЧЛЕН ПРАВИЛА, И ОН ЗАКРЫВАЕТСЯ
+		// ЗДЕСЬ. `keepSlot` ловит ровно ноль, ветка записи — строго положительное, поэтому
+		// отрицательное значение проваливалось мимо обоих и доезжало до VALUES(detail_slot_id) =
+		// NULL, то есть МОЛЧА СТИРАЛО связь. Ни одна дверь его не проверяла. Отказ, а не
+		// «считать за ноль»: минус не приходит от человека, он приходит от сломанного писателя, и
+		// принятое молчком стирание — ровно тот класс, от которого волна отказалась везде.
+		if req.DetailSlotId < 0 {
+			return fmt.Errorf("%w: detail_slot_id must not be negative, got %d",
+				entity.ErrDesignInvalidArgument, req.DetailSlotId)
+		}
 		if req.DetailSlotId > 0 && req.Role == entity.DesignViewDetail {
 			ok, err := storeutil.QueryCountNamed(ctx, db, `
 				SELECT COUNT(*) FROM design_bench_slot

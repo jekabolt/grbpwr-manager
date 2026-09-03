@@ -145,3 +145,93 @@ func TestFlatWithoutPlatesNumbersItsReferencesExactlyAsBefore(t *testing.T) {
 	require.Equal(t, []int{11, 12},
 		orderOf(t, entity.DesignRunKindFlat, `{"views":["front"],"layout":"one"}`, refsOnly))
 }
+
+// ⚠ ВЫБОРОЧНАЯ ПРАВКА ФЛЭТА НЕ ПЕРЕВОРАЧИВАЕТСЯ, И ЭТО НЕ ОСТОРОЖНОСТЬ (F2).
+//
+// `designSelectBench` УЖЕ отказывается сужать выборочный прогон списком `flat_slot_ids` и говорит
+// почему: «правка названных плит уже сужена своими fix_targets/fix_slot_ids, два независимых
+// сужения одного списка разошлись бы». Переворот порядка — сужение того же рода, и он обязан
+// подчиняться той же границе; иначе одна половина волны исключает выборочный путь, а вторая молча
+// его переписывает.
+//
+// ЧТО ЛОМАЛОСЬ. Гейт K-1 («флэт не берёт плиты, пока не попросят») обходится признаком
+// `selective`, поэтому выборочный флэт-фикс ПЛИТЫ НЕСЁТ. Прогон, который говорит «поправь вид
+// front» и открывается словами «Turn the garment shown in the reference image into a technical
+// flat sketch», после переворота вёл СНИМКОМ НАСТРОЕНИЯ, а плиту, на которую его наводили,
+// нумеровал второй — на платном вызове.
+func TestSelectiveFlatFixKeepsItsSubjectFirst(t *testing.T) {
+	const oneRefOnePlate = `{"refs":[{"media_id":11,"role":"front","note":"mood"}],` +
+		`"slots":[{"view_key":"front","media_id":21}]}`
+
+	cases := []struct {
+		name   string
+		params string
+		want   []int
+	}{
+		{
+			// ВЫБОРОЧНО ПО ВИДУ.
+			name:   "fix_targets names the view — the plate under repair leads",
+			params: `{"views":["front"],"layout":"one","fix_targets":["front"]}`,
+			want:   []int{21, 11},
+		},
+		{
+			// ВЫБОРОЧНО ПО СЛОТУ. Второе правописание того же сужения; читать их надо одинаково,
+			// иначе прогон меняет смысл от того, каким полем его сузили.
+			name:   "fix_slot_ids names the slot — same rule, second spelling",
+			params: `{"views":["front"],"layout":"one","fix_slot_ids":[3]}`,
+			want:   []int{21, 11},
+		},
+		{
+			// СТАРОЕ СКАЛЯРНОЕ ПРАВОПИСАНИЕ — тоже выборочный путь.
+			name:   "the legacy scalar fix_target counts as selective too",
+			params: `{"views":["front"],"layout":"one","fix_target":"front"}`,
+			want:   []int{21, 11},
+		},
+		{
+			// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: обычный флэт с просьбой о плитах ПЕРЕВОРАЧИВАЕТСЯ. Без него
+			// три утверждения выше зеленели бы и на правке, которая убрала переворот целиком.
+			name:   "a plain flat run with use_flat_slots still flips",
+			params: `{"views":["front"],"layout":"one"}`,
+			want:   []int{11, 21},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, orderOf(t, entity.DesignRunKindFlat, c.params, oneRefOnePlate))
+		})
+	}
+}
+
+// ПЕРЕВОРОТ НЕ ТЕРЯЕТ СТОРОНУ ПЛИТЫ (F6).
+//
+// ⚠ ЭТО НЕ ТО ЖЕ, ЧТО ПРОБА ПРО ПОДПИСИ. Та держит СЛОВА склеенной строки; эта — поле `View`,
+// которым картинка называет СТОРОНУ ИЗДЕЛИЯ. Потерять можно только его: длина списка, порядок и
+// обе подписи остаются правильными, поэтому пропажа абсолютно молчалива.
+//
+// ЧТО ЛОМАЛОСЬ. Правило дедупликации оставляет ПЕРВУЮ позицию, а с ней и первую сторону. Пока
+// плиты шли первыми, это было верно — плита приходила уже со своей стороной. После переворота
+// первой стала ссылка, у которой стороны нет ВООБЩЕ, и плита, добавленная второй, свою сторону
+// теряла. Комментарий у самого места при этом продолжал утверждать обратное.
+func TestFlatDedupKeepsThePlatesSide(t *testing.T) {
+	const both = `{"refs":[{"media_id":21,"role":"front","note":"NOTE-mine"}],` +
+		`"slots":[{"view_key":"front","media_id":21}]}`
+	const params = `{"views":["front"],"layout":"one"}`
+
+	p, in := parseParams(entity.RawJSON(params)), parseInputs(entity.RawJSON(both))
+
+	flat := referenceList(entity.DesignRunKindFlat, p, in)
+	require.Len(t, flat, 1)
+	require.Equal(t, entity.DesignViewFront, flat[0].View,
+		"на флэте ссылка идёт первой и стороны не несёт — сторону обязана донести плита")
+
+	// ⚠ КОНТРОЛЬ РАВЕНСТВА МАРШРУТОВ: рендер отвечал на этот вопрос правильно всегда, и починка
+	// флэта обязана привести их к ОДНОМУ ответу, а не завести второй.
+	render := referenceList(entity.DesignRunKindRender, p, in)
+	require.Len(t, render, 1)
+	require.Equal(t, flat[0].View, render[0].View,
+		"одна и та же картинка обязана называть одну и ту же сторону на обоих маршрутах")
+
+	// И СТОРОНА, УЖЕ НАЗВАННАЯ ПЛИТОЙ, НЕ ПЕРЕПИСЫВАЕТСЯ ВТОРЫМ ИСТОЧНИКОМ: ссылка стороны не
+	// предлагает вовсе, поэтому заполнить пустое она может, а затереть занятое — нет.
+	require.Equal(t, entity.DesignViewFront, render[0].View)
+}

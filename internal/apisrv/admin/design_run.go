@@ -570,6 +570,12 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseForeignFixSlots(cardID, req.GetParams(), band.Bench, src); err != nil {
 		return nil, err
 	}
+	// ТА ЖЕ ДВЕРЬ ДЛЯ СПИСКА ФЛЭТ-ПЛИТ (J-10): человек попросил послать ИМЕННО эти плиты, и просьба,
+	// не совпавшая ни с одним пригодным слотом, обязана получить отказ ЗДЕСЬ, а не выпасть молча
+	// при отборе — иначе прогон оплачен, а плит в нём нет.
+	if err := designRefuseForeignFlatSlots(cardID, req.GetParams(), band.Bench, src); err != nil {
+		return nil, err
+	}
 	// ТОТ ЖЕ ПРИЁМ ДЛЯ ПОЛОК: адрес, названный КЛИЕНТОМ, отвечает за себя, унаследованный — нет.
 	// Довод дословно тот же, что у детали строкой выше, и он здесь ещё жёстче: полку законно
 	// удаляют (DeleteDesignAsset), а параметры родителя заморожены — проверка унаследованного
@@ -1852,6 +1858,67 @@ func designRefuseForeignFixSlots(cardID int, spoken *pb_common.DesignRunParams, 
 	return nil
 }
 
+// designRefuseForeignFlatSlots держит дверь для `flat_slot_ids` (J-10) — ровно ту, которой у поля
+// не было и без которой оно было «принято и не исполнено».
+//
+// ⚠ ЧТО ЛОМАЛОСЬ. Список сужает плиты ПЕРЕСЕЧЕНИЕМ с верстаком, поэтому адрес, не называющий ни
+// одного пригодного слота (устаревший, опустевший, чужого колорвея, чужой карточки), просто ни с
+// чем не совпадал: прогон СОЗДАВАЛСЯ, ОПЛАЧИВАЛСЯ и замораживал снимок, утверждающий «плит нет» —
+// неотличимо от `use_flat_slots = false`, и без единого отказа, который человек мог бы прочесть.
+// Он ведь именно ПОПРОСИЛ послать эти плиты. Тот же довод дословно записан у
+// designRefuseForeignFixSlots и designRefuseForeignDetailSlots; это третья дверь того же класса.
+//
+// ПРЕДИКАТ ОБЯЗАН СОВПАДАТЬ С ОТБОРОМ (designSelectBench), поэтому проверяются ровно те же четыре
+// условия — карточка, род верстака, колорвейный скоуп и НАЛИЧИЕ ПЛИТЫ. Разойдясь, дверь дала бы
+// либо ложный отказ, либо ту же тихую потерю обратно.
+//
+// ⚠ СПРАШИВАЕТСЯ С ТОГО, КТО НАЗВАЛ: сюда едет СООБЩЕНИЕ КЛИЕНТА, а не действующие параметры.
+// Унаследованный снимок рерана проверять нельзя — слот законно удаляют, и прогон стал бы
+// неперезапускаемым навсегда. Та же граница и по той же причине, что у обеих соседних дверей.
+//
+// МОЛЧИТ ВЕЗДЕ, КРОМЕ СВОЕГО МАРШРУТА. Пустой список — это «все плиты» (контракт), выключенный
+// `use_flat_slots` — «ни одной», выборочная правка сужает себя сама, а прочие роды поле
+// игнорируют: во всех этих случаях спрашивать не о чем.
+func designRefuseForeignFlatSlots(cardID int, spoken *pb_common.DesignRunParams, bench []entity.DesignBenchSlot, src designInputSources) error {
+	ids := spoken.GetFlatSlotIds()
+	if len(ids) == 0 || src.Kind != entity.DesignRunKindFlat || !spoken.GetUseFlatSlots() {
+		return nil
+	}
+	if entity.IsDesignSelectiveFix(spoken.GetFixTarget(), spoken.GetFixTargets(),
+		designInt32sToInts(spoken.GetFixSlotIds())) {
+		return nil
+	}
+	matchColorway, wantColorway := designBenchColorwayScope(src)
+	usable := make(map[int]struct{}, len(bench))
+	for _, slot := range bench {
+		if slot.TechCardId != cardID ||
+			entity.DesignKindOrFlat(slot.Kind) != entity.DesignPictureKindFlat {
+			continue
+		}
+		if matchColorway && entity.DesignColorwayOrNone(slot.ColorwayId) != wantColorway {
+			continue
+		}
+		if slot.Picture == nil || slot.Picture.MediaId <= 0 {
+			continue
+		}
+		usable[slot.Id] = struct{}{}
+	}
+	for i, id := range ids {
+		if id <= 0 {
+			return status.Errorf(codes.InvalidArgument,
+				"params.flat_slot_ids.%d must be a bench slot id, got %d", i, id)
+		}
+		if _, ok := usable[int(id)]; !ok {
+			return status.Errorf(codes.InvalidArgument,
+				"params.flat_slot_ids.%d %d is not a filled flat slot of tech card %d "+
+					"(a run narrowed to plates it cannot read would be paid for and carry none; "+
+					"send no flat_slot_ids to use every filled slot, or use_flat_slots=false to send none)",
+				i, id, cardID)
+		}
+	}
+	return nil
+}
+
 // designBenchColorwayScope — СУЖАЕТ ЛИ КОЛОРВЕЙ ЧТЕНИЕ ВЕРСТАКА ЭТИМ ПРОГОНОМ, и каким.
 //
 // ОДНО ПРАВИЛО НА ОБА ПРОХОДА ПО ВЕРСТАКУ — плиты (designSelectBench) и пустые именные детали
@@ -2001,7 +2068,11 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 	for _, id := range src.Params.GetFixSlotIds() {
 		slotIDs[int(id)] = struct{}{}
 	}
-	selective := len(targets) > 0 || len(slotIDs) > 0
+	// ОДНА ФУНКЦИЯ НА ОБА ЧИТАТЕЛЯ (entity.IsDesignSelectiveFix): тот же вопрос задаёт сборщик
+	// ссылок промпта, и два независимых прочтения разошлись бы ровно на выборочном прогоне.
+	selective := entity.IsDesignSelectiveFix(
+		src.Params.GetFixTarget(), src.Params.GetFixTargets(),
+		designInt32sToInts(src.Params.GetFixSlotIds()))
 
 	/*
 	 * ФЛЕТ-ПРОГОН НЕ БЕРЁТ ПЛИТЫ ФЛЕТ-СЛОТОВ, ПОКА ЕГО ОБ ЭТОМ НЕ ПОПРОСЯТ (K-1).

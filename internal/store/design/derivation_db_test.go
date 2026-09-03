@@ -144,14 +144,18 @@ func TestDesignDBDerivationBackfillClassifiesALegacyChain(t *testing.T) {
 		return int(id)
 	}
 
-	sheet := mk(nil, 3)          // лист, отредактированный до ревизии 3
-	crop := mk(sheet, 3)         // кроп КОПИРУЕТ 3
-	flatten := mk(crop, 7)       // правка кропа пишет СВОЮ ревизию
-	cropOfFlat := mk(flatten, 7) // кроп флэттена снова копирует
+	// ⚠ РЕВИЗИИ ЗДЕСЬ — ТЕ, ЧТО ЖИВЫЕ ПИСАТЕЛИ РЕАЛЬНО ПРОИЗВОДЯТ. В первой редакции пробы стояли
+	// 3, 3, 7, 7 — цепочка, которую не порождает ни один путь кода: слой рождается на ревизии 1 и
+	// только инкрементируется. Выдуманные числа обходили стороной ровно тот случай, ради которого
+	// бэкфилл и писался, и проба зеленела над дефектом.
+	sheet := mk(nil, 0)          // загруженный лист: слоя не было, ревизия 0
+	crop := mk(sheet, 0)         // разрез КОПИРУЕТ ноль
+	flatten := mk(crop, 1)       // первая правка разреза — слой рождается единицей
+	cropOfFlat := mk(flatten, 1) // разрез правки снова копирует единицу
 
 	// СИРОТА: родителя нет вовсе. Родитель здесь — заведомо несуществующий id, что законно:
 	// design_picture.derived_from объявлен голым KEY без FK (0340).
-	orphan := mk(2147483647, 3)
+	orphan := mk(2147483647, 0)
 
 	// Сбросить глагол у ВСЕХ пяти строк — включая те, которым писатели уже что-то поставили бы.
 	_, err := raw.Exec(`UPDATE design_picture SET derivation = '' WHERE tech_card_id = ?`, card)
@@ -165,11 +169,15 @@ func TestDesignDBDerivationBackfillClassifiesALegacyChain(t *testing.T) {
 		return d
 	}
 	require.Equal(t, entity.DesignDerivationNone, got(sheet), "корень остаётся корнем")
-	require.Equal(t, entity.DesignDerivationCrop, got(crop), "ревизия совпала с родительской — разрез")
-	require.Equal(t, entity.DesignDerivationFlatten, got(flatten), "своя ревизия — правка")
-	require.Equal(t, entity.DesignDerivationCrop, got(cropOfFlat), "кроп правки снова копирует ревизию")
+	require.Equal(t, entity.DesignDerivationCrop, got(crop),
+		"у родителя ревизия 0, у ребёнка 0 — флэттен принёс бы ≥ 1, значит это разрез")
+	require.Equal(t, entity.DesignDerivationFlatten, got(flatten),
+		"у родителя ревизия 0, у ребёнка 1 — разрез скопировал бы ноль, значит это правка")
+	require.Equal(t, entity.DesignDerivationNone, got(cropOfFlat),
+		"родитель ОТРЕДАКТИРОВАН, и правку от разреза здесь не отличить ничем — молчание честнее "+
+			"догадки, потому что неверный штамп неисправим")
 	require.Equal(t, entity.DesignDerivationNone, got(orphan),
-		"строку без родителя эвристике классифицировать НЕЧЕМ, и она честно молчит — назвать её "+
+		"строку без родителя классифицировать НЕЧЕМ, и она честно молчит — назвать её "+
 			"кропом значило бы вписать в летопись догадку")
 
 	// ПОВТОР БЭКФИЛЛА НИЧЕГО НЕ ПЕРЕПИСЫВАЕТ. Миграции идемпотентны по требованию репозитория, и
@@ -194,7 +202,16 @@ func TestDesignDBDerivationBackfillClassifiesALegacyChain(t *testing.T) {
 // исполнив ничего.
 func runMigrationUp(t *testing.T, raw *sql.DB, name string) {
 	t.Helper()
-	body, err := os.ReadFile("../sql/" + name)
+	// ⚠ КАТАЛОГ ПЕРЕОПРЕДЕЛЯЕМ, И ЭТО НЕ УДОБСТВО, А УСЛОВИЕ ИЗМЕРИМОСТИ. Текст миграции читается
+	// в РАНТАЙМЕ, поэтому `go -overlay` — которым подменяются исходники — до него не достаёт: игла,
+	// возвращающая старую эвристику, оставляла пробу ЗЕЛЁНОЙ, и зелень эта означала «сторож не
+	// подключён», а вовсе не «дефекта нет». Через эту переменную игла подсовывает патченную копию
+	// каталога, и проба наконец умеет краснеть.
+	dir := os.Getenv("DESIGN_SQL_DIR")
+	if dir == "" {
+		dir = "../sql"
+	}
+	body, err := os.ReadFile(dir + "/" + name)
 	require.NoError(t, err)
 
 	text := string(body)

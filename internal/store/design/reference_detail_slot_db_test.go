@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 )
@@ -192,4 +193,106 @@ func TestDesignDBReferenceDetailSlotRefusesAForeignAndANonDetailSlot(t *testing.
 	})
 	require.NoError(t, err)
 	require.Equal(t, int32(ok.Id), ref.DetailSlotId.Int32)
+}
+
+// ОТРИЦАТЕЛЬНЫЙ АДРЕС ОТВЕРГАЕТСЯ, А НЕ ЧИТАЕТСЯ КАК «СОТРИ» (F4).
+//
+// ⚠ У ПРАВИЛА БЫЛ ЧЕТВЁРТЫЙ, НЕЗАДУМАННЫЙ ЧЛЕН. «Сохранить» ловило ровно ноль, «записать» — строго
+// положительное, поэтому минус проваливался мимо обоих и доезжал до NULL: связь исчезала МОЛЧА, на
+// вызове, который про деталь ничего не говорил. Ни одна дверь знака не проверяла.
+func TestDesignDBReferenceDetailSlotRefusesANegativeId(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	media := probeMedia(t, raw)
+
+	slot, err := rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId:    card,
+		Slot:          entity.DesignSlotRef{ViewKey: entity.DesignViewDetail},
+		NewDetailName: "hem",
+		Actor:         "probe",
+	})
+	require.NoError(t, err)
+	_, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
+		TechCardId: card, MediaId: media, Role: entity.DesignViewDetail,
+		DetailSlotId: slot.Id, Ordinal: 1, Actor: "probe",
+	})
+	require.NoError(t, err)
+
+	// Тот самый вызов «правлю записку», который стирал связь.
+	_, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
+		TechCardId: card, MediaId: media, Role: entity.DesignViewDetail,
+		DetailSlotId: -1, Note: "editing the note", Ordinal: 1, Actor: "probe",
+	})
+	require.ErrorIs(t, err, entity.ErrDesignInvalidArgument,
+		"минус приходит от сломанного писателя, и принять его молчком значит стереть связь")
+
+	require.Equal(t, 1,
+		countRows(t, raw, `SELECT COUNT(*) FROM design_reference
+			WHERE tech_card_id = ? AND media_id = ? AND detail_slot_id = ?`, card, media, slot.Id),
+		"отказ обязан оставить связь нетронутой")
+}
+
+// ПОВТОРНЫЙ РАЗРЕЗ НЕ УНОСИТ ИМЯ ДЕТАЛИ, ВПИСАННОЕ ЧЕЛОВЕКОМ (F3).
+//
+// ⚠ ВТОРОЙ ПИСАТЕЛЬ РОЛИ — апсерт внутри SplitPicture — обнулял detail_slot_id БЕЗУСЛОВНО, даже
+// когда кадр режется с видом `detail` и роль не меняется вовсе. Записка строкой выше от этого
+// защищена намеренно («не перечислена — не затирается»), а связь с деталью не была.
+func TestDesignDBSplitDoesNotEraseAHumanSetDetailLink(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+
+	slot, err := rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId:    card,
+		Slot:          entity.DesignSlotRef{ViewKey: entity.DesignViewDetail},
+		NewDetailName: "pocket",
+		Actor:         "probe",
+	})
+	require.NoError(t, err)
+
+	cropMedia := probeMedia(t, raw)
+	_, err = rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
+		PictureId: sheet.Id, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Frames:   []entity.DesignSplitFrame{{MediaId: cropMedia, ViewKey: entity.DesignViewDetail}},
+		ForInput: true,
+	})
+	require.NoError(t, err)
+
+	// Человек называет деталь для этого самого кадра.
+	_, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
+		TechCardId: card, MediaId: cropMedia, Role: entity.DesignViewDetail,
+		DetailSlotId: slot.Id, Note: "именно этот карман", Ordinal: 1, Actor: "probe",
+	})
+	require.NoError(t, err)
+
+	// Второй разрез ДРУГОГО листа, называющий ТО ЖЕ медиа тем же видом — путь, на котором апсерт
+	// роли срабатывает второй раз по существующей строке.
+	other := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	_, err = rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
+		PictureId: other.Id, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Frames:   []entity.DesignSplitFrame{{MediaId: cropMedia, ViewKey: entity.DesignViewDetail}},
+		ForInput: true,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1,
+		countRows(t, raw, `SELECT COUNT(*) FROM design_reference
+			WHERE tech_card_id = ? AND media_id = ? AND detail_slot_id = ?`, card, cropMedia, slot.Id),
+		"разрез не знает адреса на верстаке и потому не имеет права его стирать")
+
+	// ⚠ И ОБРАТНАЯ ПОЛОВИНА: когда роль ВСЁ-ТАКИ меняется на не-деталь, связь обязана исчезнуть —
+	// иначе «сохранить» превратилось бы в «никогда не очищать», а это уже другой дефект.
+	third := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	_, err = rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
+		PictureId: third.Id, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Frames:   []entity.DesignSplitFrame{{MediaId: cropMedia, ViewKey: entity.DesignViewFront}},
+		ForInput: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0,
+		countRows(t, raw, `SELECT COUNT(*) FROM design_reference
+			WHERE tech_card_id = ? AND media_id = ? AND detail_slot_id IS NOT NULL`, card, cropMedia),
+		"роль перестала быть деталью — связь обязана очиститься")
 }
