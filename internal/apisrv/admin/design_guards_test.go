@@ -466,17 +466,44 @@ func TestThreedRunStampsThePlatesItWasBuiltFrom(t *testing.T) {
 //
 // Положительный контроль, без которого проба выше зеленела бы на реализации, которая перечисляет
 // ВСЕ плиты карточки: `fix_targets` сужает отбор, и провенанс обязан назвать ровно отобранное.
+//
+// ⚠ СУЖЕНИЕ ЗДЕСЬ — ДО ПЕРЕДА, А НЕ ДО СПИНЫ, И ЗАМЕНА НЕ КОСМЕТИЧЕСКАЯ (J-26). Стояло
+// `fix_targets: [back]`, и такой прогон СУЖАЛСЯ ДО ОДНОЙ СПИНЫ: провайдеру уезжал пустой список
+// (`threedPictures` без переда возвращает nil), маршрут отвечал `ErrNoFrontView`/`ErrImageCount`, а
+// строка успевала завестись и занять резерв. То есть проба брала за положительный контроль вход,
+// который гарантированно проваливался ниже по течению. Теперь такой вход отвергается ДО денег
+// (`designRefuseThreedWithoutFront`), и предмет пробы от этого не меняется ни на слово: она про то,
+// что штамп называет РОВНО ОТОБРАННОЕ, а сужение двух плит до одной доказывает это передом ничуть
+// не хуже, чем спиной.
 func TestThreedStampFollowsTheFixSelection(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
 	req := designGuardStart(entity.DesignRunKindThreed)
-	req.Params = &pb_common.DesignRunParams{FixTargets: []string{entity.DesignViewBack}}
+	req.Params = &pb_common.DesignRunParams{FixTargets: []string{entity.DesignViewFront}}
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, rig.sent)
 
 	stored := &pb_common.DesignRunParams{}
 	require.NoError(t, designUnmarshalJSON(rig.sent.Params, stored))
-	require.Equal(t, []int32{502}, stored.GetThreed().GetSourcePictureIds())
+	require.Equal(t, []int32{501}, stored.GetThreed().GetSourcePictureIds(),
+		"верстак держит две рендер-плиты (501 перед, 502 спина) — сужение обязано оставить одну")
+}
+
+// ...И СУЖЕНИЕ, ВЫБРОСИВШЕЕ ПЕРЁД, ОТВЕРГАЕТСЯ ДО ДЕНЕГ (J-26).
+//
+// Вторая половина того же факта, и без неё правка пробы выше выглядела бы подгонкой входа под
+// новый сторож. Утверждается ровно обратное: вход НЕ СТАЛ незаконным — он был незаконным всегда,
+// просто узнавал об этом провайдер после резерва.
+func TestAThreedFixSelectionWithoutTheFrontIsRefusedBeforeTheReserve(t *testing.T) {
+	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
+	rig.sent = nil
+	req := designGuardStart(entity.DesignRunKindThreed)
+	req.Params = &pb_common.DesignRunParams{FixTargets: []string{entity.DesignViewBack}}
+	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+	require.Error(t, err)
+	_, md := errorReason(t, err)
+	require.Equal(t, entity.DesignErrorCodeNoFrontRender, md["reason"])
+	require.Nil(t, rig.sent, "сужение без переда не заводит строки и не двигает резерв")
 }
 
 // ПРОВЕНАНС ПРИНАДЛЕЖИТ СЕРВЕРУ: КЛИЕНТСКОЕ ЗНАЧЕНИЕ ЗАТИРАЕТСЯ.

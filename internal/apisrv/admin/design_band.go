@@ -1035,6 +1035,11 @@ func designSlotToPb(s entity.DesignBenchSlot) *pb_common.DesignBenchSlot {
 	}
 	if s.Picture != nil {
 		out.Picture = designPictureToPb(*s.Picture)
+		// ШТАМП ПРОГОНА ПЛИТЫ ЕДЕТ ТОЛЬКО ВМЕСТЕ С ПЛИТОЙ, и это не оптимизация: пустой слот не
+		// имеет прогона ни в каком смысле, и ненулевой rrev рядом с пустой стороной читался бы как
+		// «здесь что-то стояло», то есть как факт, которого никто не утверждал.
+		out.RunKind = s.RunKind
+		out.RunRrev = int32(s.RunRrev)
 	}
 	return out
 }

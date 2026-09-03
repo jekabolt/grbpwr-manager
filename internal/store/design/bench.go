@@ -98,6 +98,14 @@ func (s *Store) SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet)
 // A slot's plate is routinely an OLD upload that sits outside the band's first page, so a bare
 // picture_id leaves the slot with no thumbnail and no source_class — and source_class is exactly
 // what the mixed-provenance warning is computed from. The join is not decoration.
+//
+// ⚠ И ПО ТОМУ ЖЕ ДОВОДУ — ШТАМП ПРОГОНА ПЛИТЫ (kind, rrev). Довод у самой плиты записан («старше
+// первой страницы»), а вывод из него был сделан только наполовину: plate.run_id уезжает, а СТРОКИ
+// прогона за ним в ответе нет — лента везёт двенадцать свежих. Клиент, спрашивающий «какой
+// ревизии эта сторона», получал ноль на всякой карточке с историей, и отказ 3D «four sides of ONE
+// revision» переставал срабатывать вовсе. Резолвится ЗДЕСЬ, а не отдельным чтением у вызывающего:
+// три двери (GetBand, SetBenchSlot, RegisterBatch) отдают слот, и три копии этого join'а разошлись
+// бы — тихо, потому что расхождение выглядит как пустое поле, а не как ошибка.
 func attachSlotPictures(ctx context.Context, rep dependency.Repository, slots []*entity.DesignBenchSlot) error {
 	ids := make([]int, 0, len(slots))
 	for _, sl := range slots {
@@ -122,6 +130,10 @@ func attachSlotPictures(ctx context.Context, rep dependency.Repository, slots []
 	if err := resolveMedia(ctx, rep, flat); err != nil {
 		return err
 	}
+	stamp, err := runStampsOf(ctx, rep, rows)
+	if err != nil {
+		return err
+	}
 	for _, sl := range slots {
 		if sl == nil || !sl.PictureId.Valid {
 			continue
@@ -129,9 +141,67 @@ func attachSlotPictures(ctx context.Context, rep dependency.Repository, slots []
 		if p, ok := byID[int(sl.PictureId.Int32)]; ok {
 			cp := *p
 			sl.Picture = &cp
+			// ⚠ ШТАМП БЕРЁТСЯ ПО RunId ПЛИТЫ, А НЕ ПО ЕЁ РОДУ. Кроп и флэттен НАСЛЕДУЮТ run_id
+			// родителя (SplitPicture, FlattenEditLayer), поэтому нарезанная сторона отвечает
+			// ревизией того прогона, из чьего листа она вырезана, — ровно то, что спрашивает
+			// «четыре стороны ОДНОЙ ревизии». Ноль здесь честен: плита без прогона (загрузка
+			// руками либо флэттен без родителя) ревизии не имеет и выдумывать её нечем.
+			if st, ok := stamp[int(cp.RunId.Int32)]; ok && cp.RunId.Valid {
+				sl.RunKind = st.Kind
+				sl.RunRrev = st.Rrev
+			}
 		}
 	}
 	return nil
+}
+
+// runStampsOf — kind и rrev прогонов, из которых вышли переданные плиты, ОДНИМ чтением.
+//
+// ПОЧЕМУ ОТДЕЛЬНЫМ ЗАПРОСОМ, А НЕ JOIN'ОМ В `SELECT * FROM design_picture`. Плиты читаются
+// звёздочкой в entity.DesignPicture, у которой этих колонок нет: приклеенные join'ом `kind` и
+// `rrev` столкнулись бы с одноимённым `design_picture.kind` и разобрались бы sqlx'ом молча и не
+// туда. Второе чтение по узкому списку id дешевле разбирательства с тем, чей `kind` победил.
+func runStampsOf(ctx context.Context, rep dependency.Repository, pics []entity.DesignPicture) (map[int]struct {
+	Kind string
+	Rrev int
+}, error) {
+	out := map[int]struct {
+		Kind string
+		Rrev int
+	}{}
+	ids := make([]int, 0, len(pics))
+	seen := map[int]struct{}{}
+	for _, p := range pics {
+		if !p.RunId.Valid || p.RunId.Int32 <= 0 {
+			continue
+		}
+		id := int(p.RunId.Int32)
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		Id   int    `db:"id"`
+		Kind string `db:"kind"`
+		Rrev int    `db:"rrev"`
+	}](ctx, rep.DB(),
+		`SELECT id, kind, rrev FROM design_run WHERE id IN (:ids)`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve the runs behind design bench plates: %w", err)
+	}
+	for _, r := range rows {
+		out[r.Id] = struct {
+			Kind string
+			Rrev int
+		}{Kind: r.Kind, Rrev: r.Rrev}
+	}
+	return out, nil
 }
 
 // setBenchSlotTx is the body, split out because RegisterBatch performs the very same placement

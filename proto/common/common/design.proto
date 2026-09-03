@@ -982,6 +982,50 @@ message DesignBenchSlot {
   // they were. The plate in a slot always carries the SAME colorway_id as the slot — a mismatch
   // is refused at placement (`colorway_mismatch`).
   int32 colorway_id = 10;
+  // ═══ THE STAMP OF THE RUN THE PLATE CAME OUT OF — the same argument as `picture` above, one
+  // level further in ═══════════════════════════════════════════════════════════════════════════
+  //
+  // `picture` is resolved server-side because «the plate a slot holds is routinely older than the
+  // first page of runs». That sentence is true of the plate's RUN as well, and the consequence was
+  // never drawn: `run_id` rides along on the picture, but the run row it points at is on the first
+  // page of `runs` or nowhere, and a client can only look it up THERE. Twelve rows
+  // (design.DefaultRunPageLimit). On any card with history the lookup returns nothing.
+  //
+  // WHAT WAS SILENTLY BROKEN BY THAT, and it is not cosmetic. The 3D screen refuses «four sides of
+  // ONE revision r» by collecting the rrev of each marked side. With every lookup answering «not on
+  // this page» the set of revisions collapses to EMPTY, the refusal cannot fire, and a turntable
+  // gets built from a front of r3 and a back of r7 — two different colourings of the garment,
+  // fused into one paid model, with `done` on the row and nothing in the history to tell them
+  // apart. A guard fed zeroes is worse than no guard: it reads like coverage.
+  //
+  // WHY ON THE SLOT AND NOT ON DesignPicture. A picture reached any other way (`runs[].pictures`,
+  // `batches`, `outputs`) already arrives beside the facts of its run — DesignCardOutput exists for
+  // precisely that and carries this same stamp. The bench is the ONE place a plate arrives orphaned
+  // from its run, so this is where the missing half belongs. Putting it on the picture would make a
+  // second carrier of a fact DesignCardOutput already states, and two carriers of one fact drift in
+  // silence — this file says so about `run_colorway_id` two hundred lines up.
+  //
+  // NOT ADDED: the run's colourway. The slot states whose bench it is (`colorway_id` above) and the
+  // plate states its own; a third writing of the same fact is the split this message just refused.
+  //
+  // render | threed | pattern | recolor — the kind of the RUN, never of the picture. "" when the
+  // plate has no run at all (a hand upload, or a flatten with no parent).
+  //
+  // IT IS NOT THE SAME QUESTION AS `picture.kind`, AND ON THIS BENCH THE DIFFERENCE IS PAID FOR. A
+  // recolour produces pictures whose own kind is `render` — truthfully, the output IS a photograph
+  // of the garment — so a plate cut from an ON MODEL result is placeable on the render bench and
+  // indistinguishable there from a fabric render. 3D would then build a body from a photograph of a
+  // body. The only field in which that difference survives is this one.
+  string run_kind = 11;
+  // The render revision of that run — design_run.rrev, the card's own counter of fabric-render
+  // runs. 0 when there is no run, and 0 on every run kind that does not take a revision (only
+  // `render` mints one).
+  //
+  // ⚠ ABSENT ≠ 0 ON THE WIRE. The gateway emits unpopulated fields, so a server that knows this
+  // field always sends a number; a response with no field at all is a binary older than it, where
+  // the page-bound lookup is still the only answer available. A client must not read the silence of
+  // an old server as «this plate has no revision».
+  int32 run_rrev = 12;
 }
 
 // DesignEditLayer is a vector layer: strokes over a raster base, or strokes over nothing.

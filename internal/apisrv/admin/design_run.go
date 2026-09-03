@@ -654,6 +654,30 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err != nil {
 		return nil, err
 	}
+	// ─── 3D БЕЗ ПЕРЕДА — ОТКАЗ ЗДЕСЬ, А НЕ ПАДЕНИЕ В ВОРКЕРЕ (J-26) ───
+	//
+	// СТОИТ РОВНО ЗДЕСЬ, И ЭТО ЕДИНСТВЕННОЕ ВОЗМОЖНОЕ МЕСТО. Раньше — вопросу не на чем стоять:
+	// снимок ещё не собран, а у РЕРАНА он и не собирается из сегодняшнего верстака вовсе
+	// (designRunInputs переписывает входы со строки родителя целиком). Позже — уже поздно:
+	// s.repo.Design().StartRun тридцатью строками ниже РЕЗЕРВИРУЕТ деньги дня одной транзакцией со
+	// вставкой строки, и всякий отказ после неё — это занятый резерв и `failed` в оплаченной
+	// истории за просьбу, которую можно было отклонить бесплатно.
+	//
+	// ⚠ ЭТО ТОТ ЖЕ ПРЕДИКАТ, ЧТО У ВОРКЕРА, НА ТЕХ ЖЕ ДАННЫХ — не второе мнение о том же.
+	// designgen.threedPictures читает `inputs.slots`, ищет силуэтную сторону `front` с медиа и на
+	// её отсутствии возвращает ПУСТОЙ список, после чего маршрут отказывает у самой двери
+	// провайдера (meshy.ErrImageCount / fal.ErrNoFrontView, оба Retryable=false). Здесь спрашивается
+	// ТОТ ЖЕ снимок, на один тик раньше и до денег. Разойтись им не на чем: второго источника
+	// `inputs.slots` не существует.
+	//
+	// ЭТО УЖЕСТОЧЕНИЕ СУЩЕСТВУЮЩИХ ВОРОТ, А НЕ ЗАМЕНА ИМ. Ворота выше (`no_fabric_render`)
+	// спрашивают «занят ли рендер-верстак этого колорвея ХОТЬ ЧЕМ-НИБУДЬ» и пропускают верстак, на
+	// котором стоит одна СПИНА: множество RenderBenchColorways считает занятые слоты, не различая
+	// сторон. Такой прогон резервировал и гарантированно падал у провайдера. Ни один законный 3D-
+	// прогон этим не задет: без переда провайдер не строит ничего ни в одном из двух маршрутов.
+	if err := designRefuseThreedWithoutFront(kind, cardID, params, inputs); err != nil {
+		return nil, err
+	}
 	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
 	// иначе в колонку уедет то, что прислал клиент.
 	designStampSourcePictures(kind, params, designRunPlates(src, parent))
@@ -999,6 +1023,51 @@ func designHasRenderForColorway(set []int, colorwayID int) bool {
 		}
 	}
 	return false
+}
+
+// designRefuseThreedWithoutFront — ПЕРЁД ОБЯЗАТЕЛЕН, И СПРАШИВАЕТСЯ ОН У СНИМКА.
+//
+// ЧТО ИМЕННО ПРОВЕРЯЕТСЯ. `inputs.slots` — это то, что прогон СОБСТВЕННО повезёт: у свежего
+// прогона его собрал designSelectBench из занятых render-слотов колорвея, у рерана он переписан со
+// строки родителя целиком. Оба случая отвечают на один вопрос одинаково, и ровно этот вопрос через
+// тик задаст воркер (designgen.threedPictures): силуэтная сторона `front` с непустым media_id.
+//
+// ⚠ РОД КАДРА ЗДЕСЬ НЕ СПРАШИВАЕТСЯ, И ЭТО НЕ ПРОПУСК. Снимок не несёт рода плиты вовсе, а тот,
+// кто его собирал, уже сузил верстак до `kind='render'` (designSelectBench). Спросить здесь второй
+// раз было бы вторым написанием того же правила — и разошлось бы оно молча, потому что расхождение
+// выглядит как лишний отказ на законном прогоне, а не как ошибка.
+//
+// ПОЧЕМУ ЗДЕСЬ НЕТ ОТДЕЛЬНОГО `IsDesignSilhouetteView`, ХОТЯ У ВОРКЕРА ОН ЕСТЬ. Он тут ИНЕРТЕН, и
+// это замерено: игла, снимавшая его, оставалась зелёной на всех пробах — сравнение с константой
+// `front` уже отвечает на силуэтный вопрос, потому что `front` силуэтной стороной ЯВЛЯЕТСЯ, а слот
+// детали носит `view_key = 'detail'` по построению (createDetailSlot — единственный его писатель).
+// У воркера предикат несёт настоящий вес: он строит СПИСОК видов и обязан выбросить деталь-рендер,
+// иначе тот станет пятой картинкой у провайдера. Здесь список не строится, спрашивается ровно одна
+// сторона. Строка, которую не может провалить ни одна мутация, — это не пояс, а декорация, и
+// оставленная она означала бы покрытие, которого нет. Проба на верстак из одной ДЕТАЛИ при этом
+// остаётся: она стережёт ПОВЕДЕНИЕ («деталь передом не считается»), а не эту строку.
+func designRefuseThreedWithoutFront(kind string, cardID int, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot) error {
+	if kind != entity.DesignRunKindThreed {
+		return nil
+	}
+	for _, sl := range inputs.GetSlots() {
+		if sl.GetMediaId() > 0 && sl.GetViewKey() == entity.DesignViewFront {
+			return nil
+		}
+	}
+	cw := int(params.GetColorwayId())
+	return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeNoFrontRender,
+		fmt.Sprintf("3D is built from the fabric render slots, and FRONT is the one it cannot do "+
+			"without: the provider is handed the front as the primary view and rejects a build that "+
+			"has none. Colourway %d (0 = the colourway-less bench) has renders on its bench but not "+
+			"on FRONT. Put a render into the FRONT slot on FABRIC RENDER. Nothing was reserved and "+
+			"nothing was charged", cw),
+		map[string]string{
+			"tech_card_id": strconv.Itoa(cardID),
+			"colorway_id":  strconv.Itoa(cw),
+			"view_key":     entity.DesignViewFront,
+		})
 }
 
 // designParentID — id родителя рерана либо 0. Отдельной функцией, чтобы «nil значит обычный
