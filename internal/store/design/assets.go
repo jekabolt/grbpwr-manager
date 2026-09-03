@@ -66,6 +66,212 @@ func requireAssetOfCard(ctx context.Context, db dependency.DB, cardID, assetID i
 	return a, nil
 }
 
+// refuseFullShelf — потолок полок карточки, посчитанный В ТРАНЗАКЦИИ ВЫЗЫВАЮЩЕГО.
+//
+// THE CEILING IS COUNTED IN THIS TRANSACTION, not before it. Counted outside, two people adding the
+// fortieth and forty-first cloth at the same moment both see 39.
+//
+// ⚠ ОТДЕЛЬНОЙ ФУНКЦИЕЙ, ПОТОМУ ЧТО ПИСАТЕЛЕЙ ПОЛКИ СТАЛО ДВА. Второй — посадка плитки при закрытии
+// прогона паттерна (keepPatternTx, queue.go), и он приходит сюда через минуты после того, как
+// дверь уже спросила то же самое у полосы. Одна проверка без другой была бы либо TOCTOU, либо
+// платой за заведомо невозможную посадку; два написания одного счёта разошлись бы молча.
+func refuseFullShelf(ctx context.Context, db dependency.DB, cardID int) error {
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM design_asset WHERE tech_card_id = :card`,
+		map[string]any{"card": cardID})
+	if err != nil {
+		return fmt.Errorf("failed to count design assets: %w", err)
+	}
+	if n >= entity.MaxDesignAssetsPerCard {
+		return fmt.Errorf("%w: tech card %d already holds %d shelf rows, the ceiling is %d",
+			entity.ErrDesignAssetTooMany, cardID, n, entity.MaxDesignAssetsPerCard)
+	}
+	return nil
+}
+
+// insertAssetTx — ОДНА строка полки, вставленная в транзакции вызывающего.
+//
+// ⚠ ОДИН INSERT НА ДВУХ ПИСАТЕЛЕЙ, И ЭТО НЕ ЭКОНОМИЯ СТРОК. Колонок у design_asset четырнадцать;
+// второй список колонок рядом с первым — это место, где однажды забудут `created_by` или
+// `ordinal`, и заметить это будет нечем: строка вставится, просто беднее. Именованные параметры
+// ровно те же, что собирает UpsertAsset, поэтому у обоих писателей ОДИН набор обязательных полей.
+func insertAssetTx(ctx context.Context, db dependency.DB, params map[string]any) (int, error) {
+	id, err := storeutil.ExecNamedLastId(ctx, db, `
+		INSERT INTO design_asset
+			(tech_card_id, kind, name, media_id, colour_code, colour_hex, note,
+			 derived_from_asset_id, repeat_mm, rotation_deg, ordinal,
+			 created_by, created_at, updated_at)
+		VALUES
+			(:card, :kind, :name, :media, :colour_code, :colour_hex, :note,
+			 :parent, :repeat_mm, :rotation, :ord,
+			 :who, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))`, params)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create design asset: %w", err)
+	}
+	return id, nil
+}
+
+// stealColorwayTx — КРАЖА: колорвей снимается со всех прочих ассетов ЭТОЙ карточки.
+//
+// Скоуп — карточка, потому что дом факта — полка карточки, и колорвей принадлежит ей же (у
+// SetAssetColorway это только что доказал assertColorwayOfCard). `id <> :id` оставляет строку-цель
+// в покое: повторное назначение того же ассета тому же колорвею обязано быть идемпотентным, а не
+// снять и вернуть.
+//
+// ⚠ ВТОРОЙ ЗВАТЕЛЬ — ПОСАДКА ПЛИТКИ (keepPatternTx), И ТАМ КРАЖА ОБЯЗАНА ИДТИ ДО ВСТАВКИ.
+// uq_design_asset_colorway (tech_card_id, colorway_id) — настоящий UNIQUE: вставить нового
+// носителя, пока прежний ещё носит, значит получить 1062 на уже оплаченном прогоне. У ассета,
+// которого ещё нет, нет и id — отсюда keepID = 0, «не щадить никого»: строки с id 0 не бывает,
+// поэтому условие `id <> 0` истинно для всех и означает ровно «снять со всех».
+func stealColorwayTx(ctx context.Context, db dependency.DB, cardID, colorwayID, keepID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE design_asset SET colorway_id = NULL, updated_at = UTC_TIMESTAMP(6)
+		WHERE tech_card_id = :card AND colorway_id = :cw AND id <> :id`,
+		map[string]any{"card": cardID, "cw": colorwayID, "id": keepID}); err != nil {
+		return fmt.Errorf("failed to clear colourway %d off the other assets of tech card %d: %w",
+			colorwayID, cardID, err)
+	}
+	return nil
+}
+
+// keepPatternTx САЖАЕТ ГОТОВУЮ ПЛИТКУ НА ПОЛКУ КАРТОЧКИ — в той же транзакции, что закрывает
+// прогон паттерна.
+//
+// ═══ ПОЧЕМУ ПОСАДКА ЖИВЁТ ЗДЕСЬ, А НЕ ВТОРЫМ ЖЕСТОМ ЧЕЛОВЕКА ════════════════════════════════════
+//
+// Владелец (J-12): «тут мы делаем только сам паттерн выбираем ему название и колорвей и все».
+// «И всё» — это один жест. До круга 15 их было три: сделать плитку, нажать KEEP, назначить носку;
+// две из трёх делались ПОСЛЕ денег и потому терялись — картинка оставалась в ленте, а полка карточки
+// не знала о ней ничего. Имя и колорвей называются ДО денег (дверь отказывает `pattern_name_required`
+// бесплатно), поэтому к моменту прилёта известно всё, что нужно строке полки.
+//
+// ⚠ И ЭТО ВТОРОЙ ПИСАТЕЛЬ design_asset.colorway_id, ЧТО НЕ ОТМЕНЯЕТ ПРАВИЛА, А НАЗЫВАЕТ ЕГО
+// ГРАНИЦУ. Правило «пишет только SetDesignAssetColorway» защищает от ЗАТИРАНИЯ: Upsert — полная
+// замена, и proto3-скаляр в нём приезжал бы нулём от всякого клиента, снимая ткань с колорвея
+// молча. Здесь затирать нечего — строки ещё не существует, и колорвей у неё ровно тот, который
+// прогон назвал до денег. Комментарий у поля в design.proto обновлён теми же словами.
+//
+// ⚠ КРАЖА ИДЁТ ДО ВСТАВКИ, И ЭТО НЕ ПОРЯДОК РАДИ ПОРЯДКА. uq_design_asset_colorway
+// (tech_card_id, colorway_id) — настоящий UNIQUE; вставка второго носителя того же колорвея дала бы
+// 1062 на прогоне, за который уже заплачено, и откатила бы вместе с собой ВСЮ выдачу.
+//
+// ⚠ ПОЛКА, ПЕРЕПОЛНИВШАЯСЯ ПОКА ПРОГОН ШЁЛ, — НЕ ОТКАЗ, А ЗАПИСЬ. Картинка куплена: провалить
+// прилёт значило бы выбросить оплаченный результат и оставить байты в бакете ничьими. Поэтому кадр
+// остаётся filed, строка закрывается `done`, а `error_code = 'library_full'` говорит человеку, что
+// плитка есть, а места на полке для неё не нашлось. Дверь спрашивала то же самое ДО денег и в
+// обычном случае этой ветки не бывает.
+//
+// ЧТО МОЛЧА НЕ ДЕЛАЕТСЯ. Прогон, замороженный до круга 15 (нет `params.pattern.name`), не сажает
+// ничего: имени взять негде, а выдуманное приехало бы в следующий промпт словом «pattern». Такие
+// плитки кладёт человек, как и раньше.
+func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, p designRunParams, mediaID int) error {
+	if p.Pattern == nil || mediaID <= 0 {
+		return nil
+	}
+	name := strings.TrimSpace(p.Pattern.Name)
+	if name == "" {
+		return nil
+	}
+	// ⚠ ОБРЕЗКА, А НЕ ОТКАЗ, И ТОЛЬКО ЗДЕСЬ. Дверь уже держит 60 знаков (то же правило, что у
+	// UpsertDesignAsset.name — колонка одна), так что этой ветки в честном пути не бывает. Но
+	// колонка VARCHAR(60) в строгом режиме отвечает на переполнение ошибкой 1406, и она уронила бы
+	// прилёт УЖЕ ОПЛАЧЕННОЙ картинки. Между «имя короче на хвост» и «выброшенный результат» выбор
+	// не близкий.
+	if r := []rune(name); len(r) > entity.MaxDesignAssetNameRunes {
+		name = strings.TrimSpace(string(r[:entity.MaxDesignAssetNameRunes]))
+	}
+	// ⚠ ТОТ ЖЕ ПОЯС ДЛЯ РАППОРТА, И ПО ТОЙ ЖЕ ПРИЧИНЕ. Колонка `repeat_mm` — SMALLINT UNSIGNED
+	// (0354): отрицательное или пятизначное число отдаёт 1264 в строгом режиме и уносит с собой
+	// прилёт оплаченной картинки. Дверь держит ту же границу ДО денег
+	// (entity.MaxDesignAssetRepeatMm), так что в честном пути эта ветка недостижима — она про
+	// прогоны, замороженные раньше двери, и про клиентов, которых у нас нет.
+	repeat := p.Pattern.RepeatMM
+	if repeat < 0 {
+		repeat = 0
+	}
+	if repeat > entity.MaxDesignAssetRepeatMm {
+		repeat = entity.MaxDesignAssetRepeatMm
+	}
+
+	if err := refuseFullShelf(ctx, db, run.TechCardId); err != nil {
+		if errors.Is(err, entity.ErrDesignAssetTooMany) {
+			if err := storeutil.ExecNamed(ctx, db,
+				`UPDATE design_run SET error_code = :code WHERE id = :id`,
+				map[string]any{"code": entity.DesignErrorCodeLibraryFull, "id": run.Id}); err != nil {
+				return fmt.Errorf("failed to record that run %d had nowhere to file its tile: %w", run.Id, err)
+			}
+			return nil
+		}
+		return err
+	}
+
+	// КОЛОРВЕЙ БЕРЁТСЯ ИЗ ЖИВОЙ КОЛОНКИ, А НЕ ИЗ ЗАМОРОЖЕННЫХ params, И РАЗНИЦА СОДЕРЖАТЕЛЬНАЯ:
+	// колорвей законно удаляют между стартом и прилётом, FK гасит колонку в NULL, и посадка на
+	// несуществующий id упала бы внешним ключом. Ноль здесь значит «плитка встаёт на полку ничьей»,
+	// ровно то же, что случилось со строкой прогона.
+	cw := entity.DesignColorwayOrNone(run.ColorwayId)
+	if cw > 0 {
+		if err := stealColorwayTx(ctx, db, run.TechCardId, cw, 0); err != nil {
+			return err
+		}
+	}
+
+	// РОДИТЕЛЬ ПРОВЕРЯЕТСЯ, А НЕ ПРИНИМАЕТСЯ НА ВЕРУ, и не найденный — это ПУСТО, а не отказ.
+	// Дверь проверила принадлежность у говорящего; полку законно удаляют, пока прогон идёт, и
+	// вставка с висящим id упала бы внешним ключом на оплаченном результате. Паттерн без
+	// родословной — законное состояние: ровно в него его переводит ON DELETE SET NULL.
+	//
+	// ⚠ И ПОЛКА ПРОВЕРЯЕТСЯ ТОЖЕ, А НЕ ТОЛЬКО КАРТОЧКА. Контракт `source_asset_id` называет
+	// `fabric|pattern`, а `derived_from_asset_id` — «паттерн, сделанный из ткани»; фурнитура
+	// родителем принта не бывает ни в одном чтении, и строка «этот принт сделан из молнии»
+	// пережила бы прогон навсегда. Дверь отказывает такому источнику ДО денег; здесь родословная
+	// просто не пишется — провалить прилёт УЖЕ ОПЛАЧЕННОЙ плитки из-за поля, которое законно
+	// пустует, было бы дороже правды, которую оно несёт.
+	parent := 0
+	if src := p.Pattern.SourceAssetID; src > 0 {
+		switch a, err := assetByID(ctx, db, src); {
+		case err != nil && !errors.Is(err, entity.ErrDesignNotFound):
+			return err
+		case err == nil && a.TechCardId == run.TechCardId &&
+			(a.Kind == entity.DesignAssetKindFabric || a.Kind == entity.DesignAssetKindPattern):
+			parent = src
+		}
+	}
+
+	id, err := insertAssetTx(ctx, db, map[string]any{
+		"card":        run.TechCardId,
+		"kind":        entity.DesignAssetKindPattern,
+		"name":        name,
+		"media":       nullInt(mediaID),
+		"colour_code": nil,
+		"colour_hex":  nil,
+		"note":        nil,
+		"parent":      nullInt(parent),
+		"repeat_mm":   repeat,
+		"rotation":    0,
+		"ord":         0,
+		"who":         run.Author,
+	})
+	if err != nil {
+		return err
+	}
+	if cw == 0 {
+		return nil
+	}
+	// ⚠ НОСКА — ОТДЕЛЬНЫМ UPDATE, И ЭТО НАМЕРЕННО. Колонки colorway_id НЕТ в общем INSERT, которым
+	// пользуется UpsertAsset, и её там не будет: держать её вне того оператора — это и есть
+	// структурная гарантия «Upsert колорвей не несёт и не гасит». Оба оператора идут в ОДНОЙ
+	// SERIALIZABLE-транзакции, поэтому окна, в котором ассет уже есть, а носка ещё нет, не
+	// существует ни для одного читателя.
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE design_asset SET colorway_id = :cw, updated_at = UTC_TIMESTAMP(6)
+		WHERE id = :id AND tech_card_id = :card`,
+		map[string]any{"cw": cw, "id": id, "card": run.TechCardId}); err != nil {
+		return fmt.Errorf("failed to give the kept pattern of run %d to colourway %d: %w", run.Id, cw, err)
+	}
+	return nil
+}
+
 // UpsertAsset writes ONE shelf row — creating it when AssetId is 0, replacing it otherwise.
 //
 // ONE VERB FOR BOTH GESTURES, because the screen has one: a shelf tile is filled in and saved. A
@@ -129,29 +335,12 @@ func (s *Store) UpsertAsset(ctx context.Context, req entity.DesignAssetUpsert) (
 		}
 
 		if id == 0 {
-			// THE CEILING IS COUNTED IN THIS TRANSACTION, not before it. Counted outside, two
-			// people adding the fortieth and forty-first cloth at the same moment both see 39.
-			n, err := storeutil.QueryCountNamed(ctx, db,
-				`SELECT COUNT(*) FROM design_asset WHERE tech_card_id = :card`,
-				map[string]any{"card": req.TechCardId})
-			if err != nil {
-				return fmt.Errorf("failed to count design assets: %w", err)
+			if err := refuseFullShelf(ctx, db, req.TechCardId); err != nil {
+				return err
 			}
-			if n >= entity.MaxDesignAssetsPerCard {
-				return fmt.Errorf("%w: tech card %d already holds %d shelf rows, the ceiling is %d",
-					entity.ErrDesignAssetTooMany, req.TechCardId, n, entity.MaxDesignAssetsPerCard)
-			}
-			newID, err := storeutil.ExecNamedLastId(ctx, db, `
-				INSERT INTO design_asset
-					(tech_card_id, kind, name, media_id, colour_code, colour_hex, note,
-					 derived_from_asset_id, repeat_mm, rotation_deg, ordinal,
-					 created_by, created_at, updated_at)
-				VALUES
-					(:card, :kind, :name, :media, :colour_code, :colour_hex, :note,
-					 :parent, :repeat_mm, :rotation, :ord,
-					 :who, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))`, params)
+			newID, err := insertAssetTx(ctx, db, params)
 			if err != nil {
-				return fmt.Errorf("failed to create design asset: %w", err)
+				return err
 			}
 			id = newID
 		} else {
@@ -261,18 +450,8 @@ func (s *Store) SetAssetColorway(ctx context.Context, req entity.DesignAssetColo
 			if err := assertColorwayOfCard(ctx, db, req.TechCardId, req.ColorwayId); err != nil {
 				return err
 			}
-			// ─── КРАЖА: колорвей снимается со всех прочих ассетов ЭТОЙ карточки ───
-			//
-			// Скоуп — карточка, потому что дом факта — полка карточки, и колорвей принадлежит ей
-			// же (assertColorwayOfCard только что это доказал). `id <> :id` оставляет строку-цель
-			// в покое: повторное назначение того же ассета тому же колорвею обязано быть
-			// идемпотентным, а не снять и вернуть.
-			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE design_asset SET colorway_id = NULL, updated_at = UTC_TIMESTAMP(6)
-				WHERE tech_card_id = :card AND colorway_id = :cw AND id <> :id`,
-				map[string]any{"card": req.TechCardId, "cw": req.ColorwayId, "id": req.AssetId}); err != nil {
-				return fmt.Errorf("failed to clear colourway %d off the other assets of tech card %d: %w",
-					req.ColorwayId, req.TechCardId, err)
+			if err := stealColorwayTx(ctx, db, req.TechCardId, req.ColorwayId, req.AssetId); err != nil {
+				return err
 			}
 		}
 		if err := storeutil.ExecNamed(ctx, db, `

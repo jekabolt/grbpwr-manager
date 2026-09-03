@@ -360,7 +360,21 @@ func statedCloths(c *colourRecipe) []fabricUse {
 // only version of «identical» that cannot rot.
 func renderFabricSection(f fabricStated, cloths []fabricUse, attached []refCaption) []string {
 	if len(cloths) < 2 {
-		return []string{renderFabricParagraph(f)}
+		// ⚠ THE OLD PARAGRAPH IS STILL THE FIRST ONE, UNTOUCHED, AND THE PATTERN ONE STANDS AFTER
+		// IT. That order is the same decision composePrompt makes about the craft: the sentence
+		// that says HOW the cloth is laid arbitrates over the sentences that say WHAT it is, so it
+		// comes after them. It also keeps the frozen wording literally first, which is what lets
+		// the six single-cloth goldens stay goldens.
+		//
+		// ⚠ AND THE GATE IS `kind`, NOT THE NAME AND NOT THE REPEAT. Every cloth has a name (one of
+		// those very goldens is «main jersey»), and the repeat went to zero the round the pattern
+		// screen stopped asking for it. `kind` is empty on every frozen run, so nothing that
+		// already exists can reach this branch — see fabricUse.Kind.
+		paras := []string{renderFabricParagraph(f)}
+		if len(cloths) == 1 && clothIsAPattern(cloths[0]) {
+			paras = append(paras, renderPatternClothParagraph(cloths[0], attached))
+		}
+		return paras
 	}
 	lines := renderClothLines(cloths, attached)
 	authority := renderFabricParagraph(f)
@@ -412,6 +426,61 @@ func renderClothLines(cloths []fabricUse, attached []refCaption) []string {
 	return append(lines, closing)
 }
 
+// renderPatternClothParagraph is the sentence a SINGLE-CLOTH render needs when that cloth is a
+// generated pattern tile rather than a photograph of material.
+//
+// ═══ WHY THE ORDINARY PARAGRAPH IS NOT ENOUGH, AND WHY IT IS STILL KEPT ═════════════════════════
+//
+// renderFabricParagraph states the ORDER OF AUTHORITY over the cloth — which of the photograph, the
+// picked colour and the words governs what. That rule is right for a tile too, and rewriting it per
+// kind would be a second, drifting copy of the one rule this file exists to state once. What it
+// does NOT say, because until round 15 it never had to, is what the attached picture IS. It calls
+// it «the fabric photograph» and tells the model to read the cloth off it — and a model handed a
+// seamless tile under that sentence does the plausible thing: it prints the tile ONCE, at the size
+// it arrived, like a patch or a print panel, and reads a drape that a flat tile does not have.
+//
+// SO THIS PARAGRAPH SAYS THE TWO THINGS THE OTHER ONE CANNOT: this picture is a repeat tile, and
+// laying it out is the instruction. It says the scale twice over — where to take it from (the motif
+// on the tile), and both ways of getting it wrong (one motif blown up to a panel, or the print
+// shrunk into texture) — because «at a sensible scale» is not something a generator can act on.
+//
+// ⚠ A TILE WHOSE PICTURE DID NOT GO OUT IS NOT GIVEN A NUMBER, exactly as renderClothLine refuses
+// one: imageNumberOf answers 0 both for «there was never a picture» and for «the media row went
+// away between the snapshot and the pass», and from where the model sits those are the same fact.
+// The silence is spoken rather than left blank, because a paragraph that says «lay out the tile»
+// while no tile was attached is an invitation to invent one.
+func renderPatternClothParagraph(c fabricUse, attached []refCaption) string {
+	var b strings.Builder
+	b.WriteString("The cloth of this garment is the pattern")
+	if name := oneLine(c.Name); name != "" {
+		b.WriteString(" «" + name + "»")
+	}
+	b.WriteString(".")
+
+	img := imageNumberOf(attached, c.MediaID)
+	if img == 0 {
+		b.WriteString(" No picture of this pattern was sent with this run, so its motif is not " +
+			"available: do not invent a print, and do not borrow one from another picture in this " +
+			"request.")
+		return b.String()
+	}
+	b.WriteString(" Image " + strconv.Itoa(img) + " is its seamless repeat tile, not a photograph " +
+		"of the garment: lay that tile out as a continuous all-over repeat across every part of the " +
+		"garment made of this cloth, upright and unrotated, continuous across the body and " +
+		"interrupted only where a seam, a fold or a pocket would interrupt real printed cloth. " +
+		"Do not enlarge one motif to fill a panel and do not shrink the print into a texture.")
+	if c.RepeatMM > 0 {
+		// LEGACY AND FOREIGN CLIENTS. When the run stated a number, the number is the scale — said
+		// in the SAME WORDS renderClothLine uses for it, so one repeat is one sentence everywhere.
+		b.WriteString(" Its pattern repeats every " + strconv.Itoa(c.RepeatMM) + " mm on the finished garment.")
+	} else {
+		b.WriteString(" Lay it at a natural garment scale taken from the size of the motif on the tile itself.")
+	}
+	b.WriteString(" The stated colour and the words above still govern what they govern; this " +
+		"paragraph says what the tile is and how it is laid.")
+	return b.String()
+}
+
 // renderClothLine is ONE cloth: what to call it, which picture carries it, what colour it is, what
 // was said about it, how big its repeat is, and WHICH PARTS it is for.
 //
@@ -438,10 +507,21 @@ func renderClothLine(n int, c fabricUse, attached []refCaption, anyParts bool) s
 	}
 	b.WriteString(".")
 
-	if img := imageNumberOf(attached, c.MediaID); img > 0 {
+	switch img := imageNumberOf(attached, c.MediaID); {
+	case img > 0 && clothIsAPattern(c):
+		// A TILE IS NOT A TEXTURE PHOTOGRAPH, AND THE INSTRUCTION IS THE OPPOSITE ONE. «Read the
+		// weave and the drape from that image» is what one does with a photograph of material; a
+		// seamless tile has neither, and what one does with it is LAY IT OUT. Told to read drape
+		// off a flat tile, a model invents the drape and prints the tile once, like a patch.
+		b.WriteString(" Its picture is image " + strconv.Itoa(img) +
+			", a seamless repeat tile of its print: lay it out as a continuous all-over repeat on " +
+			"the parts below, at a natural garment scale taken from the motif itself.")
+	case img > 0:
 		b.WriteString(" Its texture is image " + strconv.Itoa(img) +
 			": read this cloth's weave or knit structure, surface, sheen and drape from that image.")
-	} else {
+	case clothIsAPattern(c):
+		b.WriteString(" No picture of this pattern was sent, and its motif must not be borrowed from another cloth's picture.")
+	default:
 		b.WriteString(" No photograph of this cloth was sent, and its texture must not be borrowed from another cloth's photograph.")
 	}
 	if col := colourPhrase(c.ColourCode, c.ColourHex); col != "" {

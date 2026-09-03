@@ -11962,12 +11962,17 @@ message StartDesignRunRequest {
   // image key's money, both must be counted against the day, and both must show up in one history.
   // What each needs is stated on common.DesignRun.kind and on DesignRunParams; what each REFUSES
   // for free, before anything is reserved, is:
-  //   · recolor — no photograph named in params.extra_input_media_ids («no_source_picture»), or no
-  //     colour stated in params.colour («no_target_colour»);
+  //   · recolor — no photograph named in params.extra_input_media_ids («no_source_picture»); or no
+  //     target stated at all in params.colour, meaning neither a code, a hex, words, NOR a cloth
+  //     carrying a picture («no_target_colour»); or a cloth named in words alone, with no picture
+  //     to lay on the photograph and no colour either («cloth_without_picture»);
   //   · pattern — anything other than exactly one picture in params.extra_input_media_ids
-  //     («one_source_picture»).
-  // Each of those is FailedPrecondition-shaped news in an InvalidArgument wrapper: the request is
-  // incomplete, and the sentence says which half is missing.
+  //     («one_source_picture»); no name in params.pattern.name («pattern_name_required»); or a card
+  //     whose asset shelves are already full, so the tile this run buys would have nowhere to land
+  //     («library_full», FailedPrecondition).
+  // Each of those is FailedPrecondition-shaped news in an InvalidArgument wrapper, except
+  // `library_full`, which IS FailedPrecondition: the request is incomplete, and the sentence says
+  // which half is missing.
   string kind = 3;
   string ask = 4; // the delta phrase; may be empty
   // What is being asked for; at most 8 KB encoded. The INPUTS are not here and cannot be: the

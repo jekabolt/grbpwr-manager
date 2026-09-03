@@ -475,6 +475,22 @@ type designRunParams struct {
 	// единственным свидетельством того, для какого цвета прогон ЗАКАЗЫВАЛИ. Различитель повтора
 	// (F7) спрашивает именно его.
 	ColorwayId int `json:"colorway_id"`
+	// Pattern — ПРОСЬБА ПРОГОНА ПАТТЕРНА, читаемая ровно одним читателем: посадкой плитки на полку
+	// при закрытии прогона (keepPatternTx). Имя и родитель приезжают отсюда, потому что здесь они
+	// ЗАМОРОЖЕНЫ: человек назвал плитку до денег, и переименование ассета завтра не имеет права
+	// переписать то, чем прогон был запущен.
+	Pattern *designRunPatternParams `json:"pattern"`
+}
+
+// designRunPatternParams — замороженная просьба прогона паттерна (DesignPatternParams).
+//
+// ⚠ ПОЛЯ ЧИТАЮТСЯ ИЗ params, А НЕ ИЗ КОЛОНОК, И ЭТО НЕ ЛЕНЬ. Строка design_run не несёт ни имени
+// плитки, ни её родителя, и заводить под них две колонки значило бы завести второй дом факту,
+// который уже заморожен в снимке параметров вместе со всем остальным, что человек назвал.
+type designRunPatternParams struct {
+	RepeatMM      int    `json:"repeat_mm"`
+	Name          string `json:"name"`
+	SourceAssetID int    `json:"source_asset_id"`
 }
 
 type designRunInputs struct {

@@ -165,7 +165,22 @@ func imageCalls(job Job) ([]imageCall, error) {
 			// side of the bench: the person uploaded frames of their own choosing, the run never
 			// claimed which side each one shows, and a ghost view invented here would put the
 			// picture into a slot nobody pointed at.
-			calls = append(calls, imageCall{prompt: job.Prompt, n: 1, refs: []string{u}})
+			//
+			// ⚠ THE CLOTH RIDES WITH EVERY CALL, AND IT DOES NOT MAKE A CALL OF ITS OWN (J-31).
+			// «One paid call per photograph» is still the whole shape of the route — the count is
+			// len(References), which is what the door priced and what requested_outputs says. What
+			// changes is what each call SHOWS: [this photograph, the cloth to lay on it]. The
+			// second picture is not a second frame to compose from, and the prompt says so in as
+			// many words (reclothCraft, «image 1 … image 2»); the caption block is numbered off
+			// exactly this shape (recolorAttached), so the numbers point at what the call holds.
+			//
+			// A FRESH SLICE PER CALL, NOT append TO A SHARED ONE. `append([]string{u}, …)` allocates
+			// its own backing array; reusing one prefix across the loop would give every call a
+			// slice whose head is rewritten by the next iteration.
+			calls = append(calls, imageCall{
+				prompt: job.Prompt, n: 1,
+				refs: append([]string{u}, job.ClothReferences...),
+			})
 		}
 		return calls, nil
 	case entity.DesignRunKindPattern:

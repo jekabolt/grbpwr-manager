@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -583,6 +584,37 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseForeignClothAssets(cardID, req.GetParams(), band.Assets); err != nil {
 		return nil, err
 	}
+	// ТА ЖЕ ЛЕСТНИЦА ДЛЯ ИСТОЧНИКА ПЛИТКИ: `params.pattern.source_asset_id` — это полка ЭТОЙ
+	// карточки, из которой сделан паттерн, и она замерзает в `derived_from_asset_id` сажаемого
+	// ассета. Спрашивается с ГОВОРЯЩЕГО по тому же доводу, что и ткани: полку законно удаляют, и
+	// проверка унаследованного id сделала бы реран невозможным навсегда.
+	if err := designRefuseForeignPatternSource(cardID, req.GetParams(), band.Assets); err != nil {
+		return nil, err
+	}
+	// ─── ПОЛКА ПЕРЕПОЛНЕНА — ОТКАЗ ДО ДЕНЕГ, А НЕ ПОСЛЕ (J-12) ───
+	//
+	// Прогон паттерна ПОКУПАЕТ ПЛИТКУ И ТУТ ЖЕ САЖАЕТ ЕЁ НА ПОЛКУ. Если полка уже полна, посадка в
+	// транзакции закрытия не состоится — картинка останется в ленте, а ассета не будет, и человек
+	// узнает об этом ПОСЛЕ списания. Здесь это стоит одного отказа и ноля денег.
+	//
+	// ⚠ ЭТО ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА, А НЕ НАСТОЯЩАЯ, И ВТОРАЯ ВСЁ РАВНО НУЖНА. Между этим
+	// чтением и посадкой проходят минуты работы воркера, за которые сороковую полку заводит
+	// сосед; поэтому потолок считается ЕЩЁ РАЗ в транзакции посадки (store/design: keepPatternTx),
+	// и там его цена — уже купленная картинка без ассета и `error_code = 'library_full'` на
+	// закрытой строке. Одна из двух проверок без другой была бы либо TOCTOU, либо тратой денег на
+	// заведомо невозможную посадку.
+	if kind == entity.DesignRunKindPattern && len(band.Assets) >= entity.MaxDesignAssetsPerCard {
+		return nil, designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeLibraryFull,
+			fmt.Sprintf("tech card %d already holds %d shelf rows, the ceiling is %d — a pattern run "+
+				"files its tile on that shelf when it lands, so there would be nowhere to put it. "+
+				"Delete a cloth or a pattern first. Nothing was reserved and nothing was charged",
+				cardID, len(band.Assets), entity.MaxDesignAssetsPerCard),
+			map[string]string{
+				"tech_card_id": strconv.Itoa(cardID),
+				"held":         strconv.Itoa(len(band.Assets)),
+				"ceiling":      strconv.Itoa(entity.MaxDesignAssetsPerCard),
+			})
+	}
 	// ГРАНИЦА КАРТОЧКИ — ДО ДЕНЕГ. Все три списка приезжают с провода и все три уезжают
 	// ПОСТАВЩИКУ: designgen/snapshot.go собирает ссылки прогона из плит, референсов,
 	// `extra_input_media_ids`, `colour.fabric_media_id` И текстуры КАЖДОЙ ткани `colour.fabrics`.
@@ -671,12 +703,23 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		// транзакции отказывает роду без оси и чужому колорвею — до резерва денег.
 		ColorwayId: int(params.GetColorwayId()),
 		// ⚠ А ВОТ «КТО ЭТО СКАЗАЛ» — ИЗ СООБЩЕНИЯ КЛИЕНТА, И ЭТО ТО ЖЕ РАЗЛИЧЕНИЕ, ЧТО У ДЕТАЛЕЙ И
-		// ПОЛОК ВЫШЕ (F2). Реран без параметров наследует колорвей из замороженных params
+		// ПОЛОК ВЫШЕ (F2). Реран, не назвавший колорвея, наследует его из замороженных params
 		// родителя; колорвей законно удаляют, и строгая проверка унаследованного id отказывала бы
-		// `foreign_colorway` ВЕЧНО — клиенту, который не присылал ни params, ни колорвея, и
-		// которому нечего было бы написать иначе. Стор деградирует такой прогон в
-		// неатрибутированный, ровно как FK погасил колонку родителя.
-		ColorwayStated: req.GetParams() != nil,
+		// `foreign_colorway` ВЕЧНО — клиенту, которому нечего было бы написать иначе. Стор
+		// деградирует такой прогон в неатрибутированный, ровно как FK погасил колонку родителя.
+		//
+		// ⚠ СПРАШИВАЕТСЯ «НАЗВАЛ ЛИ КОЛОРВЕЙ», А НЕ «ПРИСЛАЛ ЛИ PARAMS», И РАЗНИЦА БЫЛА ДЕФЕКТОМ.
+		// Прежнее написание — `req.GetParams() != nil` — считало НАЗВАВШИМ всякого, кто прислал
+		// параметры по любой причине: реран, поправивший `ask`, приезжал сюда с колорвеем,
+		// УНАСЛЕДОВАННЫМ строкой выше (designEffectiveParams), и с флагом «это сказал я». Если тот
+		// колорвей к тому времени удалили, мягкая половина стора (wave2.go) не срабатывала, и
+		// законный реран получал `foreign_colorway` НАВСЕГДА — притом что колорвея он не называл
+		// вовсе. Денег это не стоило (отказ до резерва); стоило это невозможности повторить прогон.
+		//
+		// НОЛЬ У РЕРАНА ЗНАЧИТ «НАСЛЕДУЙ», И ЭТО СКАЗАНО ВЫШЕ ДОСЛОВНО, поэтому «назвал ноль»
+		// невыразимо и здесь ничего не теряет. У обычного прогона ноль тоже безопасен: стор входит
+		// в эту развилку только при `colorwayID > 0`.
+		ColorwayStated: req.GetParams().GetColorwayId() > 0,
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to start the design run", err, nil)
@@ -702,10 +745,24 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 // собой ни при каком раскладе, то есть бесполезна в том единственном смысле, ради которого её
 // заказывали.
 //
-// ⚠ И ПЕРЕКРАС ТРЕБУЕТ НАЗВАННОГО ЦВЕТА. «Поменяй цвет» без цвета — это просьба, на которую
-// модель ответит чем угодно: вернётся тот же снимок в случайном оттенке, деньги списаны, а по
-// истории такой прогон не отличить от честного. Годится ЛЮБОЕ из трёх написаний рецепта (код
-// колорвея, hex, слова), потому что все три доезжают до промпта одним блоком `colour`.
+// ⚠ И ПЕРЕКРАС ТРЕБУЕТ НАЗВАННОЙ ЦЕЛИ. «Поменяй цвет» без цели — это просьба, на которую модель
+// ответит чем угодно: вернётся тот же снимок в случайном оттенке, деньги списаны, а по истории
+// такой прогон не отличить от честного. Годится ЛЮБОЕ из ЧЕТЫРЁХ написаний: код колорвея, hex,
+// слова — все три доезжают до промпта одним блоком `colour`, — И ТКАНЬ С КАРТИНКОЙ, потому что
+// после J-31 «переодеть в эту ткань» такая же законная цель, как «перекрасить в этот цвет», и
+// уезжает она отдельной картинкой в каждый платный вызов (designgen/images.go).
+//
+// ⚠ А ВОТ ТКАНЬ БЕЗ КАРТИНКИ ЦЕЛЬЮ НЕ РАБОТАЕТ, И ОТКАЗ ЕЙ ОТДЕЛЬНЫЙ. Ткань, названная одними
+// словами, не может быть НАЛОЖЕНА на фотографию: класть нечего, а в промпте она превратилась бы в
+// описание, которое модель отработает свободной перерисовкой — то есть новым снимком за те же
+// деньги. Своё имя (`cloth_without_picture`) вместо `no_target_colour` потому, что человек
+// назвал цель, и сказать ему «ничего не названо» значило бы послать его чинить не то.
+//
+// ⚠ И ПАТТЕРН ТРЕБУЕТ ИМЕНИ. Плитка после круга 15 садится на полку карточки в той же транзакции,
+// что закрывает прогон (store/design: keepPatternTx), а `design_asset.name` — NOT NULL и колонка
+// на 60 знаков. Безымянная плитка либо уронила бы посадку уже оплаченного прогона, либо приехала
+// бы в следующий промпт словом «pattern». Спрашивается ДО денег, потому что человек и так его
+// пишет до нажатия кнопки.
 func designRefuseUnworkableSources(kind string, params *pb_common.DesignRunParams) error {
 	sources := len(params.GetExtraInputMediaIds())
 	switch kind {
@@ -715,13 +772,8 @@ func designRefuseUnworkableSources(kind string, params *pb_common.DesignRunParam
 				"a recolour needs the photographs it recolours: name them in "+
 					"params.extra_input_media_ids. Nothing was reserved and nothing was charged", nil)
 		}
-		c := params.GetColour()
-		if strings.TrimSpace(c.GetCode()) == "" && strings.TrimSpace(c.GetHex()) == "" &&
-			strings.TrimSpace(c.GetWords()) == "" {
-			return designRefusal(codes.InvalidArgument, "no_target_colour",
-				"a recolour needs the colour to recolour TO: state params.colour.code, "+
-					"params.colour.hex or params.colour.words. Nothing was reserved and nothing was charged",
-				nil)
+		if err := designRefuseUnworkableRecolourCloth(params); err != nil {
+			return err
 		}
 	case entity.DesignRunKindPattern:
 		if sources != 1 {
@@ -731,8 +783,208 @@ func designRefuseUnworkableSources(kind string, params *pb_common.DesignRunParam
 					"nothing was charged", sources),
 				map[string]string{"named": strconv.Itoa(sources)})
 		}
+		name := strings.TrimSpace(params.GetPattern().GetName())
+		if name == "" {
+			return designRefusal(codes.InvalidArgument, "pattern_name_required",
+				"a pattern is filed on this card's shelf the moment it lands, and a shelf row needs a "+
+					"name: state params.pattern.name. Nothing was reserved and nothing was charged", nil)
+		}
+		if n := len([]rune(name)); n > entity.MaxDesignAssetNameRunes {
+			// НЕ СЕНТИНЕЛ, А ОБЫЧНЫЙ InvalidArgument: это не «чего-то не хватает», а «слишком
+			// длинно», и правило то же самое, которому подчиняется UpsertDesignAsset.name —
+			// потому что колонка одна.
+			return status.Errorf(codes.InvalidArgument,
+				"params.pattern.name is %d characters; the ceiling is %d — it lands in the same column "+
+					"an asset name lands in", n, entity.MaxDesignAssetNameRunes)
+		}
+		// ⚠ И РАППОРТ ТОЖЕ ЛАНДИТ В КОЛОНКУ, А КОЛОНКА SMALLINT UNSIGNED (0354). До круга 15 это
+		// число никуда, кроме промпта, не ехало, и границы ему не требовалось; теперь оно едет в
+		// `design_asset.repeat_mm` при закрытии прогона, и `repeat_mm: 70000` уронил бы посадку
+		// УЖЕ ОПЛАЧЕННОЙ картинки ошибкой 1264. Правило и число — те же самые, которым подчиняется
+		// UpsertDesignAsset (entity.MaxDesignAssetRepeatMm), потому что колонка одна.
+		if mm := int(params.GetPattern().GetRepeatMm()); mm < 0 || mm > entity.MaxDesignAssetRepeatMm {
+			return status.Errorf(codes.InvalidArgument,
+				"params.pattern.repeat_mm is %d; it is whole millimetres from 0 to %d — it lands in the "+
+					"same column an asset repeat lands in", mm, entity.MaxDesignAssetRepeatMm)
+		}
 	}
 	return nil
+}
+
+// designRefuseUnworkableRecolourCloth — ВСЁ, ЧТО ДВЕРЬ ЗНАЕТ ПРО ТКАНЬ ПЕРЕКРАСА, в одном месте и
+// целиком ДО РЕЗЕРВА.
+//
+// ⚠ ЧЕТЫРЕ ОТКАЗА, И ВСЕ ЧЕТЫРЕ — ДЕНЬГИ, потому что после J-31 ткань стала ВТОРОЙ КАРТИНКОЙ
+// КАЖДОГО платного вызова (designgen/images.go). До этой волны вызов перекраса нёс РОВНО ОДНУ
+// ссылку, и ни одна из четырёх форм не была выразима вовсе — то есть это не «ужесточение старой
+// двери», а дверь для режима, который эта же волна и завела.
+//
+// ⚠ СПРАШИВАЕТСЯ С ДЕЙСТВУЮЩИХ ПАРАМЕТРОВ, А НЕ С СООБЩЕНИЯ КЛИЕНТА, И ЭТО ОТЛИЧАЕТ ЭТУ ДВЕРЬ ОТ
+// ГРАНИЦ ПОЛОК. Там довод был «унаследованный адрес законно устаревает, и вечный отказ клиенту,
+// который ничего не присылал, — это дефект»; здесь наоборот: неработоспособная ФОРМА прогона
+// остаётся неработоспособной и на реране, а замороженный прогон прода, у которого ткань совпадает
+// с фотографией, обязан быть остановлен ЗДЕСЬ — иначе новый бинарь повторит его и заплатит за
+// картинку дважды. Отказ бесплатный и называет поле; клиент чинит его, прислав params.
+func designRefuseUnworkableRecolourCloth(params *pb_common.DesignRunParams) error {
+	c := params.GetColour()
+	colourStated := strings.TrimSpace(c.GetCode()) != "" || strings.TrimSpace(c.GetHex()) != "" ||
+		strings.TrimSpace(c.GetWords()) != ""
+	pictured := designClothsWithPicture(c)
+
+	if !colourStated && len(pictured) == 0 {
+		// ДВА РАЗНЫХ ОТКАЗА НА ОДНОМ ЭТАЖЕ, И РАЗЛИЧАЕТ ИХ ОДИН ВОПРОС: назвал ли человек ткань
+		// вообще. Назвал и она без картинки — чинится выбором другой плитки; не назвал ничего —
+		// чинится любым из четырёх написаний.
+		if len(c.GetFabrics()) > 0 {
+			return designRefusal(codes.InvalidArgument, "cloth_without_picture",
+				"a cloth stated in words alone cannot be laid on a photograph: every cloth in "+
+					"params.colour.fabrics has media_id 0, and no colour was stated either. Pick a "+
+					"pattern that has a picture, or state a colour. Nothing was reserved and nothing "+
+					"was charged", nil)
+		}
+		return designRefusal(codes.InvalidArgument, "no_target_colour",
+			"a recolour needs the cloth to re-dress the garment IN: state params.colour.code, "+
+				"params.colour.hex or params.colour.words — or a cloth with a picture in "+
+				"params.colour.fabrics. Nothing was reserved and nothing was charged",
+			nil)
+	}
+
+	// ─── B1: ОДНА ТКАНЬ, И ЭТО ПРО ТО, ЧТО ПРОМПТ УМЕЕТ ОБЪЯСНИТЬ ───
+	//
+	// Владелец (J-31) просит одну вещь: «загрузить несколько фото на модели в нашей вещи и выбрать
+	// и или паттерн/цвет». Ткань — ОДНА, цвет — ОДИН, фотографий сколько угодно.
+	//
+	// ⚠ ПОЧЕМУ ЭТО ОТКАЗ, А НЕ ВТОРОЙ АБЗАЦ В РЕМЕСЛЕ. reclothCraft называет РОВНО ОДНУ картинку —
+	// «the garment made of the cloth in image 2». Две ткани уехали бы ТРЕМЯ картинками в одном
+	// платном вызове, третья не была бы упомянута ни разу, и модель законно взяла бы её как
+	// материал для композиции. Написать список «CLOTH 1 … CLOTH 2» по образцу renderClothLines
+	// значило бы завести фичу, которой никто не просил, и оставить без ответа второй вопрос,
+	// который список немедленно задаёт: КАКИЕ ЧАСТИ изделия из какой ткани. У рендера на него
+	// отвечает разметка флэтов (`parts`); у фотографии на модели такой разметки нет вовсе.
+	//
+	// ⚠ И ТРЕТЬЯ ПОЛОМКА ТОЙ ЖЕ ФОРМЫ — РАППОРТ. Он берётся у ПЕРВОЙ ткани с repeat_mm > 0 и
+	// приписывается «its pattern», то есть паттерн + гладкая ткань читались бы как один раппорт на
+	// всё изделие.
+	if len(pictured) > 1 {
+		return designRefusal(codes.InvalidArgument, "one_cloth_only",
+			fmt.Sprintf("a recolour re-dresses the garment in ONE cloth, and this run names %d with a "+
+				"picture: every one of them would ride into every paid call as another image, and the "+
+				"instruction names exactly one («the garment made of the cloth in image 2»). Leave one "+
+				"cloth in params.colour.fabrics with a media_id. Nothing was reserved and nothing was "+
+				"charged", len(pictured)),
+			map[string]string{"pictured_cloths": strconv.Itoa(len(pictured))})
+	}
+
+	// ─── B3: ФОТОГРАФИЯ И ТКАНЬ — РАЗНЫЕ КАРТИНКИ ───
+	//
+	// ⚠ ИНАЧЕ ЗА ОДНУ КАРТИНКУ ПЛАТЯТ ДВАЖДЫ В ОДНОМ ВЫЗОВЕ. Медиа, названное И в
+	// `extra_input_media_ids`, И тканью, даёт вызов `[9.png, 9.png]`: модель просят вернуть ТУ ЖЕ
+	// ФОТОГРАФИЮ лоскута, переодетую в него же. Ссылка уходит поставщику дважды и оплачивается
+	// дважды как вход.
+	//
+	// ⚠ ОТКАЗ, А НЕ ТИХОЕ ВЫБРАСЫВАНИЕ ТКАНИ ИЗ СПИСКА, И ВЫБОР ЗДЕСЬ ВЫНУЖДЕННЫЙ. Ремесло
+	// ветвится по ЗАМОРОЖЕННЫМ params (`clothsWithTexture`), а список вложений строит воркер:
+	// выбросив ткань в воркере, мы получили бы промпт, который говорит «the cloth in image 2» там,
+	// где картинки 2 нет вовсе. Промпт и вложения обязаны сходиться, и единственная форма, при
+	// которой они сходятся, — не начинать такой прогон.
+	if dup := designClothAlsoAPhotograph(params); dup > 0 {
+		return designRefusal(codes.InvalidArgument, "cloth_is_also_a_photograph",
+			fmt.Sprintf("media %d is named BOTH as a photograph to recolour (params.extra_input_media_ids) "+
+				"and as the cloth to lay on it (params.colour.fabrics): that call would carry the same "+
+				"picture twice and ask for it to be re-dressed in itself. Name a different cloth. "+
+				"Nothing was reserved and nothing was charged", dup),
+			map[string]string{"media_id": strconv.Itoa(dup)})
+	}
+
+	// ─── B2: ОДИН ВЫЗОВ ОБЯЗАН ПОМЕЩАТЬСЯ В ПОТОЛОК ПОСТАВЩИКА ───
+	//
+	// ⚠ ПОТОЛОК СЧИТАЕТСЯ ПО ВЫЗОВУ, А НЕ ПО ПРОГОНУ, и до J-31 этого различия не существовало:
+	// вызов перекраса нёс одну ссылку при любом числе фотографий. Теперь он несёт `1 + ткани`, и
+	// прогон, перевалив потолок, зарезервировал бы деньги, встал бы в очередь, был бы захвачен и
+	// умер бы НЕПОВТОРИМО с отказом поставщика `bad_request` — без единого предложения, называющего
+	// починку. Списания при этом нет (orimages отказывает ЛОКАЛЬНО, до сети, и резерв
+	// освобождается терминальным переходом), но всякая другая неработоспособная форма в этой двери
+	// отказывается бесплатно и словами, и эта обязана вести себя так же.
+	//
+	// ЧИСЛО БЕРЁТСЯ У ПОСТАВЩИКА, А НЕ ПЕРЕПИСЫВАЕТСЯ СЮДА: копия разошлась бы с потолком молча в
+	// ту самую сторону, в которую дороже. B1 делает эту ветку почти недостижимой — почти, потому
+	// что потолок общий, и маршрут рендера его двигает.
+	return designRefuseOversizedRecolourCall(len(pictured))
+}
+
+// designRefuseOversizedRecolourCall — помещается ли ОДИН вызов перекраса в потолок поставщика.
+//
+// ⚠ ОТДЕЛЬНОЙ ФУНКЦИЕЙ, ПОТОМУ ЧТО ЧЕРЕЗ ДВЕРЬ ОНА НЕДОСТИЖИМА, А СТОРОЖЕМ БЫТЬ ОБЯЗАНА. Правило
+// «одна ткань» (B1) выше строже и ловит тот же вход первым — и это правильный порядок: «оставь
+// одну ткань» человеку исполнимее, чем «их слишком много для вызова». Но потолок ОБЩИЙ с
+// маршрутом рендера и однажды поедет, а правило «одна ткань» — продуктовое и может смягчиться;
+// сторож, который нельзя вызвать отдельно, был бы сторожем, которого нельзя и измерить.
+//
+// ЧИСЛО БЕРЁТСЯ У ПОСТАВЩИКА, А НЕ ПЕРЕПИСЫВАЕТСЯ СЮДА: копия разошлась бы с потолком молча и в
+// ту сторону, в которую дороже.
+func designRefuseOversizedRecolourCall(pictured int) error {
+	n := 1 + pictured
+	if n <= orimages.MaxInputReferences {
+		return nil
+	}
+	return designRefusal(codes.InvalidArgument, "too_many_call_images",
+		fmt.Sprintf("one recolour call carries the photograph plus every stated cloth — %d images "+
+			"here — and this provider takes at most %d per call. Nothing was reserved and nothing "+
+			"was charged", n, orimages.MaxInputReferences),
+		map[string]string{
+			"images":  strconv.Itoa(n),
+			"ceiling": strconv.Itoa(orimages.MaxInputReferences),
+		})
+}
+
+// designClothAlsoAPhotograph — медиа, названное И фотографией к перекрасу, И тканью. 0 = такого нет.
+//
+// ПЕРВОЕ СОВПАДЕНИЕ, А НЕ ВСЕ: отказ называет ОДИН номер, потому что чинится он одним жестом, и
+// список из трёх повторов той же ошибки читается хуже, чем один пример.
+func designClothAlsoAPhotograph(params *pb_common.DesignRunParams) int {
+	photos := make(map[int]struct{}, len(params.GetExtraInputMediaIds()))
+	for _, id := range params.GetExtraInputMediaIds() {
+		if id > 0 {
+			photos[int(id)] = struct{}{}
+		}
+	}
+	for _, f := range params.GetColour().GetFabrics() {
+		if id := int(f.GetMediaId()); id > 0 {
+			if _, dup := photos[id]; dup {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
+// designClothsWithPicture — ткани рецепта, которые ФИЗИЧЕСКИ уедут в вызов: у них есть картинка.
+func designClothsWithPicture(c *pb_common.DesignColourRecipe) []*pb_common.DesignFabricUse {
+	out := make([]*pb_common.DesignFabricUse, 0, len(c.GetFabrics()))
+	for _, f := range c.GetFabrics() {
+		if f.GetMediaId() > 0 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// designAnyClothWithPicture — есть ли в рецепте ткань, которую МОЖНО ПОКАЗАТЬ модели.
+//
+// КАРТИНКА, А НЕ ИМЯ И НЕ asset_id. Ткань уезжает в перекрас ВТОРОЙ КАРТИНКОЙ вызова
+// (designgen/images.go: refs = [фото, ...ткани]); ткань без `media_id` не уезжает никуда, и
+// считать её целью значило бы открыть дверь прогону, у которого цели нет.
+//
+// ОДНА ФУНКЦИЯ НА ДВЕРЬ И НА ВОРКЕРА ПО СМЫСЛУ, НО НЕ ПО КОДУ: воркер читает ЗАМОРОЖЕННЫЙ снимок
+// (designgen: clothsWithTexture), дверь — сообщение клиента; типы разные, вопрос один, и он
+// записан здесь теми же словами.
+func designAnyClothWithPicture(c *pb_common.DesignColourRecipe) bool {
+	for _, f := range c.GetFabrics() {
+		if f.GetMediaId() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // designHasRenderForColorway — открыта ли дверь 3D ДЛЯ ЭТОГО КОЛОРВЕЯ. Множество приезжает из
@@ -1075,12 +1327,7 @@ func designRefuseForeignDetailSlots(cardID int, spoken *pb_common.DesignRunParam
 // НОЛЬ ПРОПУСКАЕТСЯ МОЛЧА: контракт объявляет его законным («0 when the cloth was stated without a
 // shelf row»), и ткань, названную одними словами, эта функция отвергать не вправе.
 func designRefuseForeignClothAssets(cardID int, spoken *pb_common.DesignRunParams, assets []entity.DesignAsset) error {
-	shelf := make(map[int]struct{}, len(assets))
-	for _, a := range assets {
-		if a.TechCardId == cardID {
-			shelf[a.Id] = struct{}{}
-		}
-	}
+	shelf := designShelfIDs(cardID, assets)
 	for i, f := range spoken.GetColour().GetFabrics() {
 		id := int(f.GetAssetId())
 		if id == 0 {
@@ -1092,6 +1339,59 @@ func designRefuseForeignClothAssets(cardID int, spoken *pb_common.DesignRunParam
 		}
 	}
 	return nil
+}
+
+// designShelfIDs — какие полки принадлежат ЭТОЙ карточке, множеством.
+//
+// ОДНА ЛЕСТНИЦА НА ВСЕ АДРЕСА ПОЛОК В ЗАПРОСЕ. Их теперь два рода — ткани рецепта и источник
+// плитки, — и второе построение того же множества рядом с первым было бы вторым местом, где
+// однажды забудут сравнить карточку.
+func designShelfIDs(cardID int, assets []entity.DesignAsset) map[int]struct{} {
+	shelf := make(map[int]struct{}, len(assets))
+	for _, a := range assets {
+		if a.TechCardId == cardID {
+			shelf[a.Id] = struct{}{}
+		}
+	}
+	return shelf
+}
+
+// designRefuseForeignPatternSource — «из какой полки сделана эта плитка» обязано называть полку
+// ЭТОЙ карточки.
+//
+// ⚠ ЭТО НЕ ПОВТОР ПРОВЕРКИ ТКАНЕЙ, А ТРЕТИЙ НЕЗАВИСИМЫЙ ИСТОЧНИК ЧУЖОГО НОМЕРА. Он уезжает не в
+// промпт, а в КОЛОНКУ: `design_asset.derived_from_asset_id` сажаемого паттерна. FK говорит «какая-то
+// строка design_asset», а не «одна из ЭТОЙ карточки», — то есть без этой проверки паттерн одного
+// стиля повис бы на ткани другого, и схема приняла бы это молча (тот же довод стоит в
+// store/design/assets.go у UpsertAsset). Стор проверит то же в своей транзакции; здесь — ДО денег.
+//
+// СПРАШИВАЕТСЯ С ГОВОРЯЩЕГО, а не с действующих параметров: полку законно удаляют, а params
+// родителя заморожены — проверка унаследованного id сделала бы прогон неперезапускаемым навсегда.
+func designRefuseForeignPatternSource(cardID int, spoken *pb_common.DesignRunParams, assets []entity.DesignAsset) error {
+	id := int(spoken.GetPattern().GetSourceAssetId())
+	if id == 0 {
+		// 0 = «источник не с полки»: файл из библиотеки, вставка из буфера. Обычный случай.
+		return nil
+	}
+	for _, a := range assets {
+		if a.Id != id || a.TechCardId != cardID {
+			continue
+		}
+		// ⚠ И ПОЛКА ОБЯЗАНА БЫТЬ ТОЙ, КОТОРУЮ НАЗЫВАЕТ КОНТРАКТ. `source_asset_id` объявлен как
+		// «design_asset(id) of THIS card, kind fabric|pattern», и запись едет в
+		// `derived_from_asset_id`, чей собственный контракт говорит «set on a pattern made from a
+		// fabric». Фурнитура родителем паттерна быть не может ни в одном чтении: «этот принт
+		// сделан из молнии» — предложение без смысла, а строка с ним переживает прогон навсегда.
+		// Схема этого не ловит — FK знает только «какая-то строка design_asset».
+		if a.Kind != entity.DesignAssetKindFabric && a.Kind != entity.DesignAssetKindPattern {
+			return status.Errorf(codes.InvalidArgument,
+				"params.pattern.source_asset_id %d is a %s row of tech card %d, and a pattern is made "+
+					"from a cloth or from another pattern", id, a.Kind, cardID)
+		}
+		return nil
+	}
+	return status.Errorf(codes.InvalidArgument,
+		"params.pattern.source_asset_id %d is not a shelf row of tech card %d", id, cardID)
 }
 
 // designClothMediaIDs — текстуры ВСЕХ тканей рецепта. Отдельной функцией, чтобы у места вызова
@@ -1645,6 +1945,57 @@ type designInputSources struct {
 	Params *pb_common.DesignRunParams
 }
 
+// designKindReadsTheCard — ЧИТАЕТ ЛИ ЭТОТ РОД ПРОГОНА КАРТОЧКУ ВООБЩЕ, или его вход — только те
+// картинки, которые человек назвал ПОИМЁННО в этом самом запросе.
+//
+// ⚠ ОДИН ПРЕДИКАТ НА ОБЕ ПОЛОВИНЫ СНИМКА, И ЗАВЁЛСЯ ОН ПОТОМУ, ЧТО ПОЛОВИН БЫЛО ДВЕ, А ПРАВИЛО
+// ОДНО. Отбор плит (designSelectBench) знал это правило с самого начала и своим switch'ем отдавал
+// перекрасу и паттерну пустоту; цикл по референсам в designAssembleInputs не знал его НИКОГДА — и
+// замороженный снимок паттерна перечислял ВСЕ ссылки карточки как свои входы. Воркер их не
+// отправлял (sourcePictures сужает список до названных), но снимок утверждал обратное, а панель
+// прогона рисует снимок — то есть история говорила про оплаченный прогон то, чего не было.
+//
+// ВЛАДЕЛЕЦ УВИДЕЛ ИМЕННО ЭТО (J-6): «почему у нас в паттерн генерацию отправляются наши INPUT —
+// REFERENCES … по крайне мере они есть в card's references». Последняя половина фразы — подпись
+// панели, прочитанная обратно.
+//
+// ⚠ ЭТО НЕ КОПИЯ ФИЛЬТРА ВОРКЕРА, а его ДВЕРНАЯ половина: там решается, что уедет провайдеру,
+// здесь — что будет ЗАПИСАНО как вход. Разойтись им не на чем — обе половины отвечают «только
+// названные картинки», — но раньше они и не могли сойтись: у двери правило было написано в одном
+// месте из двух. Теперь оно написано ровно один раз, и оба места зовут его по имени.
+//
+// СПИСОК ЗАКРЫТ ПО СМЫСЛУ, А НЕ ПО ОСТОРОЖНОСТИ: карточку не читает род, чей вход — конкретная
+// фотография (перекрас) или конкретный лоскут (паттерн). Всякий новый род по умолчанию попадает в
+// «читает» — и это безопасная сторона: лишняя строка в снимке видна человеку, недостающая нет.
+func designKindReadsTheCard(kind string) bool {
+	switch kind {
+	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
+		return false
+	}
+	return true
+}
+
+// designKindReadsTheGarmentNote — уезжают ли в промпт ОПИСАНИЕ ИЗДЕЛИЯ и ПОСАДКА этой карточки.
+//
+// ⚠ ЭТО ОТДЕЛЬНЫЙ ВОПРОС ОТ ПРЕДЫДУЩЕГО, И РАЗНИЦА — ДЕНЬГИ. composePrompt пишет `garment:` и
+// `fit:` ДО всякой развилки по роду (designgen/snapshot.go), то есть промпт паттерна нёс описание
+// изделия («olive shirt, spread collar») в прогон, который делает КУСОК ТКАНИ. Экран паттерна при
+// этом печатал рядом с кнопкой «Nothing else from this card travels: not the bench, not the
+// references, not the garment description» — и последняя половина была неправдой.
+//
+// ПЕРЕКРАС ОПИСАНИЕ СОХРАНЯЕТ, и это не недосмотр: перекрашивают ФОТОГРАФИЮ ИЗДЕЛИЯ, и «olive
+// shirt, spread collar» описывает ровно тот предмет, который на снимке. Владелец про перекрас не
+// сказал ничего, а снять слова у рода, который их законно использует, значило бы починить одну
+// жалобу и завести вторую.
+//
+// ПОЧЕМУ ПУСТОЙ СНИМОК, А НЕ ВЕТКА В КОМПОЗИТОРЕ. `write()` в composePrompt пропускает пустое
+// значение, поэтому пустые поля снимка ГАСЯТ блоки сами — без второго читателя рода в пакете,
+// который и так решает по роду четыре вещи. И снимок при этом честен: он говорит, чем прогон
+// располагал, а паттерн этими словами не располагал.
+func designKindReadsTheGarmentNote(kind string) bool {
+	return kind != entity.DesignRunKindPattern
+}
+
 // designAssembleInputs — ГАРАНТИЯ W-15, И ОНА ЖИВЁТ ЗДЕСЬ, А НЕ НА ЭКРАНЕ.
 //
 // ВЛАДЕЛЕЦ ПРОЦИТИРОВАЛ СТРОКУ ПРОТОТИПА ДОСЛОВНО: «the mood, not the prompt: nothing here is
@@ -1673,7 +2024,7 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		Views:  src.Params.GetViews(),
 		Layout: src.Params.GetLayout(),
 	}
-	if src.Card != nil {
+	if src.Card != nil && designKindReadsTheGarmentNote(src.Kind) {
 		out.Fit = src.Card.Fit.String
 		// ОПИСАНИЕ ИЗДЕЛИЯ (W-3) — «пишем общий коммент», который уходит в КАЖДЫЙ прогон.
 		// Замораживается КОПИЕЙ, а не джойном: правка описания завтра не имеет права переписать
@@ -1694,7 +2045,14 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// Card.Media при этом по-прежнему не читается ВООБЩЕ: карта строится по Card.Callouts.
 	callouts := designCalloutsByMedia(src.Card)
 	seen := make(map[int]struct{}, len(src.Refs))
-	for _, r := range src.Refs {
+	// ⚠ ССЫЛКИ КАРТОЧКИ ЧИТАЕТ НЕ ВСЯКИЙ РОД (J-6), И ПРАВИЛО ЖИВЁТ В designKindReadsTheCard —
+	// одно на этот цикл и на отбор плит ниже. Цикл по `extra_input_media_ids` идёт ВСЕГДА: это и
+	// есть то, что человек назвал поимённо, и у перекраса с паттерном он единственный вход.
+	cardRefs := src.Refs
+	if !designKindReadsTheCard(src.Kind) {
+		cardRefs = nil
+	}
+	for _, r := range cardRefs {
 		if r.MediaId <= 0 {
 			continue
 		}
@@ -2040,8 +2398,13 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 	// ⚠ И ЭТО НЕ КОПИЯ ФИЛЬТРА ВОРКЕРА, а ДРУГАЯ ЕГО ПОЛОВИНА: там решается, что уедет провайдеру,
 	// здесь — что будет записано как вход. Разойтись им не на чем: обе половины отвечают «только
 	// названные картинки», и названные картинки в верстаке не живут вовсе.
-	switch src.Kind {
-	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
+	//
+	// ⚠ ПЕРЕЧЕНЬ РОДОВ УЕХАЛ В designKindReadsTheCard, И ЭТО НЕ ПЕРЕКЛАДЫВАНИЕ. Ровно этот switch
+	// был ЕДИНСТВЕННЫМ местом, где правило стояло, — а второй половине снимка (цикл по референсам в
+	// designAssembleInputs) оно не досталось вовсе, и снимок паттерна перечислял ссылки карточки
+	// как свои входы. Два написания одного правила расходятся молча; здесь они разошлись с самого
+	// начала.
+	if !designKindReadsTheCard(src.Kind) {
 		return nil, nil
 	}
 	want := entity.DesignPictureKindFlat
@@ -2230,10 +2593,48 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	// под СТАРЫМ именем — тем, с которым прогон был отправлен, — а сегодняшнее имя получит только
 	// та, которую только что попросили впервые.
 	snap.Slots = append(snap.GetSlots(), designNamedEmptyDetailSlots(src, snap.GetSlots())...)
+
+	// ─── ЧЕТВЁРТОЕ ПОЛЕ, И ОНО ЗАКРЫВАЕТ ДЫРУ В J-6 РАЗМЕРОМ В ЦЕЛЫЙ МАРШРУТ ───
+	//
+	// ⚠ РЕРАН НЕ ЗОВЁТ designAssembleInputs ВОВСЕ, поэтому оба предиката круга 15 на нём не стояли.
+	// Реран прогона паттерна, замороженного ДО круга 15, приносил в НОВЫЙ ПЛАТНЫЙ промпт описание
+	// изделия родителя и все ссылки карточки — то есть ровно то, что J-6 (в) объявил деньгами, и
+	// обойти ворота имени можно было простым «пришли params».
+	//
+	// ⚠ ЭТО НЕ ПЕРЕПИСЫВАНИЕ ИСТОРИИ, И РАЗЛИЧЕНИЕ РОВНО ТО ЖЕ, ЧТО У `views`/`layout` ВЫШЕ.
+	// Строка РОДИТЕЛЯ не трогается ни байтом — она свидетельство и остаётся им. Здесь собирается
+	// снимок РЕБЁНКА: новой строки о новом платном прогоне, у которой есть собственные параметры и
+	// собственный род. Снимок, не сходящийся с собственной строкой, врёт — этим доводом маршрут
+	// уже патчит три поля, и четвёртое приходит по нему же.
+	//
+	// ⚠ ССЫЛКИ СУЖАЮТСЯ ДО ТОГО, ЧТО ЭТОТ ПРОГОН НАЗВАЛ САМ, а не «до чего-нибудь поменьше». Тот
+	// же список воркер и отправит (designgen: sourcePictures оставляет ровно
+	// `extra_input_media_ids`), так что снимок и вложения совпадают по построению. Дверь при этом
+	// уже отказала перекрасу без снимков и паттерну не с одной картинкой, значит пустым этот
+	// список после сужения не бывает.
+	if !designKindReadsTheCard(src.Kind) {
+		named := make(map[int32]struct{}, len(src.Params.GetExtraInputMediaIds()))
+		for _, id := range src.Params.GetExtraInputMediaIds() {
+			named[id] = struct{}{}
+		}
+		kept := make([]*pb_common.DesignInputRef, 0, len(named))
+		for _, r := range snap.GetRefs() {
+			if _, ok := named[r.GetMediaId()]; ok {
+				kept = append(kept, r)
+			}
+		}
+		snap.Refs = kept
+	}
+	if !designKindReadsTheGarmentNote(src.Kind) {
+		snap.GarmentNote = ""
+		snap.Fit = ""
+	}
+
 	// ФИТ БЕРЁТСЯ ИЗ СНИМКА РОДИТЕЛЯ, А НЕ С КАРТОЧКИ. Модель получит те же слова, что получила в
 	// прошлый раз, значит и `fit_at_launch` строки обязан говорить о том же: иначе плита
 	// приедет со штампом сегодняшнего фита, а нарисована будет по вчерашнему, и минт сверил бы
-	// её не с тем.
+	// её не с тем. У рода, которому фит не показывают вовсе, обе половины пусты — и это не потеря
+	// штампа, а честный штамп: прогон был отправлен без единого слова о посадке.
 	return snap, snap.GetFit(), nil
 }
 

@@ -40,6 +40,21 @@ type Job struct {
 	// References are public URLs the provider fetches itself. Order is meaning for the 3D route,
 	// where the first is the front view.
 	References []string
+	// ClothReferences are the CLOTH TEXTURES that travel WITH every photograph of a recolour — the
+	// pictures of `params.colour.fabrics`, in statedCloths order. Empty on every other kind, and
+	// empty on a recolour that names no cloth (a plain colour change, which is the route as it
+	// existed before J-31).
+	//
+	// ⚠ THEY ARE A SEPARATE LIST BECAUSE `References` IS ALSO THE COUNT OF PAID CALLS. A recolour
+	// makes one call per photograph (imageCalls) and the run row's requested_outputs was computed
+	// from the same number at the door; folding the cloth into References would have made the
+	// worker buy one more picture than the run was priced for, silently. The cloth is not another
+	// photograph to recolour — it is the SECOND IMAGE OF EVERY CALL.
+	//
+	// ⚠ AND THAT IS WHY THE CAPTIONS OF A RECOLOUR ARE NOT NUMBERED OFF `References`. Each call
+	// shows the model [one photograph, the cloths]; a caption block numbered «image 1..N» over N
+	// photographs described a call that never happens. See buildJob's recolorAttached.
+	ClothReferences []string
 	// ReferenceViews names the SIDE each reference shows, POSITIONALLY: the i-th entry belongs to
 	// References[i], and is empty where the run has no view for that picture (a moodboard-style
 	// reference, a fabric swatch, an uploaded photograph nobody labelled).

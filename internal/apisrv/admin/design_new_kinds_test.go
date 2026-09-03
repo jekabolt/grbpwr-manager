@@ -2,12 +2,15 @@ package admin
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestEVERY_RUN_KIND_THE_DOOR_ACCEPTS_HAS_A_PRICE.
@@ -81,24 +84,87 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	require.Error(t, err, "«change the colour» with no colour named is answerable with any shade")
 	require.Contains(t, err.Error(), "params.colour")
 
-	// ANY ONE OF THE THREE SPELLINGS SATISFIES IT — all three reach the prompt as one block, so
+	// ANY ONE OF THE FOUR SPELLINGS SATISFIES IT — the three colour spellings reach the prompt as
+	// one block, and a cloth WITH A PICTURE reaches every call as its second image (J-31), so
 	// insisting on a particular one would refuse a legitimate ask.
 	for _, c := range []*pb_common.DesignColourRecipe{
 		{Code: "OLV"}, {Hex: "#4a5a3c"}, {Words: "deep olive, slightly grey"},
+		{Fabrics: []*pb_common.DesignFabricUse{{MediaId: 9, Name: "floral", Kind: "pattern"}}},
 	} {
 		require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor,
 			&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11, 12}, Colour: c}))
 	}
 
+	// ⚠ A CLOTH NAMED IN WORDS ALONE IS ITS OWN REFUSAL, NOT «nothing was stated». There is nothing
+	// to LAY on the photograph — clothPictures selects on media_id — and a cloth described in words
+	// inside a recolour prompt is an invitation to redraw the frame at full price. The sentinel is
+	// separate so the screen sends the person to the right fix.
+	err = designRefuseUnworkableSources(entity.DesignRunKindRecolor, &pb_common.DesignRunParams{
+		ExtraInputMediaIds: []int32{11},
+		Colour:             &pb_common.DesignColourRecipe{Fabrics: []*pb_common.DesignFabricUse{{Name: "floral"}}},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot be laid on a photograph")
+	require.Contains(t, err.Error(), "nothing was charged")
+
 	// ─── pattern ───
+	named := &pb_common.DesignPatternParams{Name: "chevron"}
 	for _, ids := range [][]int32{nil, {11, 12}, {11, 12, 13}} {
 		err := designRefuseUnworkableSources(entity.DesignRunKindPattern,
-			&pb_common.DesignRunParams{ExtraInputMediaIds: ids})
+			&pb_common.DesignRunParams{ExtraInputMediaIds: ids, Pattern: named})
 		require.Errorf(t, err, "%d sources: a tile glued out of several swatches cannot join to itself",
 			len(ids))
 	}
 	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindPattern,
-		&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{90}}))
+		&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{90}, Pattern: named}))
+
+	// ⚠ AND A PATTERN WITHOUT A NAME IS REFUSED FREE, BECAUSE THE LANDING NEEDS ONE. The tile is
+	// filed on the card's shelf in the transaction that closes the run, and design_asset.name is
+	// NOT NULL — so a nameless run either breaks the filing of a picture already paid for, or
+	// files a row that reaches the next prompt as the bare word «pattern».
+	for _, pp := range []*pb_common.DesignPatternParams{nil, {}, {Name: "   "}, {RepeatMm: 120}} {
+		err := designRefuseUnworkableSources(entity.DesignRunKindPattern,
+			&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{90}, Pattern: pp})
+		require.Error(t, err, "a tile with no name has nowhere to land")
+		require.Contains(t, err.Error(), "params.pattern.name")
+		require.Contains(t, err.Error(), "nothing was charged")
+	}
+
+	// THE LENGTH IS THE COLUMN'S, and it is the SAME rule UpsertDesignAsset.name obeys — 60 runes
+	// counted in RUNES, because the column is 60 characters and «Ф» is one of them.
+	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindPattern,
+		&pb_common.DesignRunParams{
+			ExtraInputMediaIds: []int32{90},
+			Pattern:            &pb_common.DesignPatternParams{Name: strings.Repeat("ф", 60)},
+		}))
+	err = designRefuseUnworkableSources(entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+		ExtraInputMediaIds: []int32{90},
+		Pattern:            &pb_common.DesignPatternParams{Name: strings.Repeat("ф", 61)},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, err.Error(), "61 characters")
+
+	// ⚠ AND THE REPEAT IS BOUNDED FOR THE SAME REASON THE NAME IS: it lands in a column. Since
+	// round 15 `params.pattern.repeat_mm` is copied into design_asset.repeat_mm, which is
+	// SMALLINT UNSIGNED — so a five-digit number would fail the FILING of a picture already paid
+	// for, with a raw 1264. Before round 15 the number only reached the prompt and needed no bound.
+	for _, mm := range []int32{-1, entity.MaxDesignAssetRepeatMm + 1, 70000} {
+		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+			ExtraInputMediaIds: []int32{90},
+			Pattern:            &pb_common.DesignPatternParams{Name: "chevron", RepeatMm: mm},
+		})
+		require.Errorf(t, err, "repeat_mm %d", mm)
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		require.Contains(t, err.Error(), "params.pattern.repeat_mm")
+	}
+	for _, mm := range []int32{0, 120, entity.MaxDesignAssetRepeatMm} {
+		require.NoErrorf(t, designRefuseUnworkableSources(entity.DesignRunKindPattern,
+			&pb_common.DesignRunParams{
+				ExtraInputMediaIds: []int32{90},
+				Pattern:            &pb_common.DesignPatternParams{Name: "chevron", RepeatMm: mm},
+			}), "repeat_mm %d is legal", mm)
+	}
 
 	// ─── AND THE GATE IS SILENT FOR EVERY OTHER KIND. A flat with no extra media is the ordinary
 	// case, and a rule that leaked onto it would close the band's main route.

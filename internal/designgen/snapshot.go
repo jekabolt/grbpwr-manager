@@ -93,6 +93,28 @@ type fabricUse struct {
 	Parts string `json:"parts"`
 	// The repeat of a PATTERN cloth in whole millimetres on the finished garment; 0 = plain cloth.
 	RepeatMM int `json:"repeat_mm"`
+	// WHAT THIS CLOTH IS: `fabric` | `pattern`, the shelf asset's kind AT LAUNCH.
+	//
+	// ⚠ EMPTY IS A FABRIC, AND THAT IS WHAT MAKES THIS FIELD FREE. Every run frozen before round 15
+	// carries no `kind` at all, so `clothIsAPattern` is false for all of them and every sentence
+	// this package composes about them is the sentence it composed yesterday — the six frozen
+	// single-cloth goldens included. The pattern wording therefore cannot reach an old run by
+	// construction rather than by a guard somebody could get wrong.
+	//
+	// ⚠ AND IT IS NOT DERIVABLE FROM `repeat_mm`, WHICH IS WHY IT HAD TO BE PUT ON THE WIRE. That
+	// number was the only circumstantial evidence of a pattern, and the round that added this field
+	// is the round that took the number off the pattern screen: new tiles carry 0. A reader that
+	// kept guessing from the repeat would have started calling every new pattern a plain cloth.
+	Kind string `json:"kind"`
+}
+
+// clothIsAPattern — эта ткань ПЛИТКА, а не фотография ткани.
+//
+// ОДИН ЧИТАТЕЛЬ ПОЛЯ НА ВЕСЬ ПАКЕТ, потому что вопрос один, а мест, где он задаётся, три: подпись
+// картинки, строка клота и абзац одноклоточного рендера. Три сравнения со строковым литералом
+// разошлись бы на первой же опечатке, и разошлись бы молча — «не паттерн» это законный ответ.
+func clothIsAPattern(c fabricUse) bool {
+	return strings.TrimSpace(c.Kind) == entity.DesignAssetKindPattern
 }
 
 type threedParams struct {
@@ -384,7 +406,13 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			// MATERIAL and loses the colour to the picker. A caption and a rule that disagree about
 			// the same picture is worse than either alone — the model gets to choose which of our
 			// two sentences it believes.
-			add(p.Colour.FabricMediaID, "fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here", "")
+			// ⚠ A PATTERN TILE IS NOT A PHOTOGRAPH OF CLOTH, AND THE OLD CAPTION SAID IT WAS. «read
+			// its weave, texture, sheen and drape from here» is an instruction about a piece of
+			// material photographed under light; a generated seamless tile has no drape and no
+			// sheen to read, and a model told to read them off it invents them. The tile's own
+			// caption says what it IS and what to take from it, which is the motif and the colours.
+			// Reached only when the frozen cloth states `kind: pattern` — see fabricUse.Kind.
+			add(p.Colour.FabricMediaID, clothOneCaption(cloths), "")
 		}
 	default:
 		// ONE ENTRY PER CLOTH, NUMBERED THE WAY THE CLOTH LIST NUMBERS THEM. Both walks are over
@@ -399,8 +427,7 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		// end. A first cloth that somehow carries no texture of its own loses nothing: the scalar
 		// it would have echoed is that same absent texture.
 		for i, c := range cloths {
-			add(c.MediaID, "fabric photograph — CLOTH "+strconv.Itoa(i+1)+clothCaptionName(c)+
-				": the material of the parts this cloth is used on, read its weave, texture, sheen and drape from here", "")
+			add(c.MediaID, clothCaption(i+1, c), "")
 		}
 	}
 	return out
@@ -910,11 +937,22 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 	// SAME loop, off the SAME element: that, and nothing subtler, is what guarantees that caption
 	// k describes references[k-1]. TestCaptionNumberKIsImageNumberK holds the guarantee.
 	list := referenceList(run.Kind, p, in)
+	// ⚠ ТКАНИ ОТБИРАЮТСЯ ИЗ ПОЛНОГО СПИСКА И ДО ЕГО СУЖЕНИЯ. sourcePictures оставляет только
+	// названные фотографии — то есть выбрасывает и плитку, — поэтому «сначала сузить, потом искать
+	// ткани» дало бы пустоту всегда, и починка J-31 была бы зелёной и мёртвой.
+	var cloths []refCaption
 	switch run.Kind {
-	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
-		// ПЕРЕКРАС И ПАТТЕРН ДЕЙСТВУЮТ НА НАЗВАННЫЕ СНИМКИ, И ТОЛЬКО НА НИХ. Довод целиком в
-		// source_inputs.go: вторая картинка в вызове превращает «верни ТОТ ЖЕ кадр» в «сочини
-		// похожий», а плитку, собранную из двух лоскутов, невозможно состыковать саму с собой.
+	case entity.DesignRunKindRecolor:
+		// ПЕРЕКРАС ДЕЙСТВУЕТ НА НАЗВАННЫЕ СНИМКИ — и, с J-31, ОДЕВАЕТ их в названную ткань.
+		// Фотографии остаются в References (по ним считаются платные вызовы и requested_outputs);
+		// ткань уезжает отдельным списком и попадает ВТОРОЙ КАРТИНКОЙ В КАЖДЫЙ вызов, см. images.go.
+		cloths = clothPictures(list, p)
+		list = sourcePictures(list, p)
+	case entity.DesignRunKindPattern:
+		// ПАТТЕРН ДЕЙСТВУЕТ НА ОДНУ НАЗВАННУЮ КАРТИНКУ, И ТОЛЬКО НА НЕЁ. Довод целиком в
+		// source_inputs.go: плитку, собранную из двух лоскутов, невозможно состыковать саму с
+		// собой. Тканей у этого рода нет по построению — images.go отказывает всему, что не ровно
+		// одна ссылка.
 		list = sourcePictures(list, p)
 	}
 	if run.Kind == entity.DesignRunKindThreed {
@@ -925,26 +963,38 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 		list = threedPictures(list, in)
 	}
 	var attached []refCaption
-	if len(list) > 0 {
-		ids := make([]int, 0, len(list))
+	if len(list) > 0 || len(cloths) > 0 {
+		// ОДИН ПОХОД В МЕДИА НА ОБА СПИСКА. Два запроса были бы двумя моментами времени: строка,
+		// исчезнувшая между ними, отдала бы задание, у которого ткань разрешилась, а фотография нет.
+		ids := make([]int, 0, len(list)+len(cloths))
 		for _, rc := range list {
+			ids = append(ids, rc.MediaID)
+		}
+		for _, rc := range cloths {
 			ids = append(ids, rc.MediaID)
 		}
 		byID, err := media.GetMediaByIds(ctx, ids)
 		if err != nil {
 			return Job{}, fmt.Errorf("failed to resolve the input media of design run %d: %w", run.Id, err)
 		}
-		for _, rc := range list {
+		resolve := func(rc refCaption) (string, bool) {
 			m, ok := byID[rc.MediaID]
 			if !ok {
 				// The row went away between the snapshot and the pass. Skipping is right: the id
 				// cannot be fetched by the provider either, and refusing the whole run over one
 				// missing reference would throw away a job whose remaining inputs are intact. The
 				// caption is skipped WITH the picture — see composePrompt on why.
-				continue
+				return "", false
 			}
 			u := strings.TrimSpace(m.FullSizeMediaURL)
 			if u == "" {
+				return "", false
+			}
+			return u, true
+		}
+		for _, rc := range list {
+			u, ok := resolve(rc)
+			if !ok {
 				continue
 			}
 			// THE THREE HALVES MOVE TOGETHER, IN ONE APPEND, off one element — the url, the side
@@ -954,6 +1004,18 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 			job.ReferenceViews = append(job.ReferenceViews, rc.View)
 			attached = append(attached, rc)
 		}
+		var attachedCloths []refCaption
+		for _, rc := range cloths {
+			u, ok := resolve(rc)
+			if !ok {
+				continue
+			}
+			job.ClothReferences = append(job.ClothReferences, u)
+			attachedCloths = append(attachedCloths, rc)
+		}
+		if run.Kind == entity.DesignRunKindRecolor {
+			attached = recolorAttached(len(job.References), attachedCloths)
+		}
 	}
 	job.Prompt = composePrompt(run, p, in, attached)
 	// COMPOSED FOR EVERY KIND, USED BY ONE. Deriving it here rather than inside the 3D route keeps
@@ -961,6 +1023,74 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 	// route that composed its own text would be a second composer to keep in step.
 	job.SurfaceSteer = surfaceSteer(ctx, p)
 	return job, nil
+}
+
+// recolorAttached is WHAT ONE RECOLOUR CALL SHOWS THE MODEL, which is not what the job carries.
+//
+// ═══ THE ONLY PLACE IN THIS PACKAGE WHERE CAPTIONS ARE NOT NUMBERED OFF `References` ════════════
+//
+// Every other route makes ONE call holding ALL of `References`, so «- image k» counting through
+// that slice is the truth. A recolour makes N calls holding ONE photograph each (imageCalls), and
+// numbering the captions over N photographs described a call that never happens: with three frames
+// the prompt said «- image 1 … - image 3» while every call carried exactly one picture, and the
+// model was handed a numbering protocol with nothing to attach it to. That inaccuracy predates
+// J-31 and is fixed by the same edit that creates the reason to care: with a cloth attached, the
+// numbers stop being decorative and start pointing — «the garment made of the cloth in image 2».
+//
+// SO THE CAPTION BLOCK DESCRIBES THE SHAPE OF ONE CALL: the photograph first, then the cloths, in
+// the order imageCalls appends them. It is the same list for all N calls, which is honest, because
+// all N calls have the same shape and the same prompt.
+//
+// ⚠ THE PHOTOGRAPH'S LINE IS SYNTHETIC AND CARRIES NO media_id, DELIBERATELY. There is no single
+// photograph to name — there are N, one per call — so naming any of them would be a lie about the
+// other N-1. `imageNumberOf` is never asked about a recolour (only renderCraft asks, and a recolour
+// takes recolorCraft), so a zero id here cannot point anything at the wrong picture.
+func recolorAttached(photos int, cloths []refCaption) []refCaption {
+	if photos == 0 {
+		// Nothing to recolour: imageCalls refuses this job before any money moves. Whatever the
+		// caption block says here reaches nobody, so it says only what is true.
+		return cloths
+	}
+	out := make([]refCaption, 0, 1+len(cloths))
+	out = append(out, refCaption{
+		Caption: "the photograph being recoloured — the real photograph this call must give back, " +
+			"with the same person, pose, framing, background and lighting",
+	})
+	return append(out, cloths...)
+}
+
+// clothOneCaption is the caption of the ONE cloth of an ordinary single-cloth run — the picture the
+// client echoes into `colour.fabric_media_id`.
+//
+// ⚠ THE FABRIC WORDING IS RETURNED BYTE FOR BYTE WHENEVER THE CLOTH IS NOT A PATTERN, and that is
+// the load-bearing half of this function. Every run frozen before `kind` existed reaches here with
+// `cloths` empty or with a cloth whose kind is "" — both answer «not a pattern» — so the caption of
+// every single-cloth run that has ever gone out is the caption it went out with. The new sentence
+// can only be reached by a run that STATED `kind: pattern`, which no frozen run does.
+func clothOneCaption(cloths []fabricUse) string {
+	const fabric = "fabric photograph — the material this garment is made of: read its weave, " +
+		"texture, sheen and drape from here"
+	if len(cloths) != 1 || !clothIsAPattern(cloths[0]) {
+		return fabric
+	}
+	name := ""
+	if n := oneLine(cloths[0].Name); n != "" {
+		name = " «" + n + "»"
+	}
+	return "pattern tile" + name + " — a seamless repeat tile of the print this garment is made in: " +
+		"read the motif and its colours from here; it is not a photograph of the garment's cloth"
+}
+
+// clothCaption is the caption of cloth N of a MULTI-cloth run, numbered exactly as the craft block
+// numbers it — both walks are over the same statedCloths slice, in the same order.
+func clothCaption(n int, c fabricUse) string {
+	if !clothIsAPattern(c) {
+		return "fabric photograph — CLOTH " + strconv.Itoa(n) + clothCaptionName(c) +
+			": the material of the parts this cloth is used on, read its weave, texture, sheen and drape from here"
+	}
+	return "pattern tile — CLOTH " + strconv.Itoa(n) + clothCaptionName(c) +
+		": a seamless repeat tile of the print the parts this cloth is used on are made in; " +
+		"read the motif and its colours from here, it is not a photograph of cloth"
 }
 
 // clothCaptionName is the « — contrast rib» half of a cloth's attachment caption, or nothing when

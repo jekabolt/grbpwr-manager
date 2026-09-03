@@ -695,6 +695,29 @@ func chargeAlreadyBooked(ctx context.Context, db dependency.DB, runID, attemptNo
 // ЧАСТИЧНЫЙ ОТВЕТ — ЭТО МЕНЬШЕ КАРТИНОК И ВСЁ РАВНО `done`: строка истории скажет «done · 2 of 3»
 // по requested_outputs. Вставка идемпотентна по uq_design_picture_run_ordinal, поэтому повтор
 // после потерянного ответа не заводит второй набор кадров.
+// keptTileMedia — КАКОЙ ИЗ КАДРОВ ПРОГОНА СТАНОВИТСЯ ПЛИТКОЙ НА ПОЛКЕ.
+//
+// ПО МИНИМАЛЬНОМУ ОРДИНАЛУ, А НЕ ПО ПОРЯДКУ В СРЕЗЕ. Порядок элементов `req.Outputs` — это порядок,
+// в котором их собрал воркер, и он ничего не обещает; ординал — это НОМЕР КАДРА в выдаче, и он
+// обещает ровно то, что нужно: «первый». У паттерна кадр по устройству один (images.go отдаёт один
+// вызов на одну картинку), так что различие проявится только в дне, когда род научится отдавать
+// несколько, — и в тот день молчаливый выбор «какой попадётся» был бы уже написан.
+//
+// ПУСТАЯ ВЫДАЧА — ЭТО 0, и посадка на нём выходит первой строкой: частичный ответ («done · 0 of 1»)
+// это закрытая строка без картинки, и сажать на полку нечего.
+func keptTileMedia(outputs []entity.DesignPictureInsert) int {
+	media, best := 0, 0
+	for _, o := range outputs {
+		if o.MediaId <= 0 {
+			continue
+		}
+		if media == 0 || o.Ordinal < best {
+			media, best = o.MediaId, o.Ordinal
+		}
+	}
+	return media
+}
+
 func (s *Store) CompleteRun(ctx context.Context, req entity.DesignRunComplete) (*entity.DesignRun, error) {
 	if req.RunId <= 0 {
 		return nil, fmt.Errorf("%w: run id is required", entity.ErrDesignInvalidArgument)
@@ -856,6 +879,26 @@ func (s *Store) CompleteRun(ctx context.Context, req entity.DesignRunComplete) (
 		if err := releaseRunReserve(ctx, db, run); err != nil {
 			return err
 		}
+
+		// ─── ПЛИТКА САДИТСЯ НА ПОЛКУ ЗДЕСЬ, В ЭТОЙ ЖЕ ТРАНЗАКЦИИ (J-12) ───
+		//
+		// ⚠ ЗДЕСЬ, А НЕ ВТОРЫМ ВЫЗОВОМ КЛИЕНТА, ПОТОМУ ЧТО ВТОРОЙ ВЫЗОВ МОЖНО НЕ СДЕЛАТЬ. Владелец
+		// назвал плитку и её колорвей ДО денег; между прилётом и «KEEP» стояла вкладка, которую
+		// закрывают. Довод и цена — целиком у keepPatternTx.
+		//
+		// ⚠ ПОСЛЕ ЗАКРЫТИЯ СТРОКИ, А НЕ ДО, И ЭТО ПОРЯДОК: до строки `rows == 0` мы ещё не знаем,
+		// наша ли эта выдача, а полку карточки чужой прилёт трогать не должен. Откат при потере
+		// захвата уносит посадку вместе с кадрами — ровно этого мы и хотим.
+		//
+		// ⚠ ПОВТОРНЫЙ ПРИЛЁТ СЮДА НЕ ДОХОДИТ ВОВСЕ: закрытая строка отвечает составом в самом
+		// начале функции (`case entity.DesignRunDone`), поэтому второго ассета не бывает — и
+		// идемпотентность посадки держится тем же сторожем, что идемпотентность кадров.
+		if run.Kind == entity.DesignRunKindPattern {
+			if err := keepPatternTx(ctx, db, run, params, keptTileMedia(req.Outputs)); err != nil {
+				return err
+			}
+		}
+
 		out, err = runByID(ctx, db, run.Id)
 		if err != nil {
 			return err

@@ -299,10 +299,13 @@ message DesignRunParams {
   // должно быть так 1 колорвей там должно быть мультивью которое мы генерим … и потом мы в 3д
   // рендере уже выбираем колорвей который будем рендерить».
   //
-  // MEANINGFUL ON render / recolor (the multiview being generated is THIS colourway's) and on
-  // threed (the build reads ONLY this colourway's render bench). REFUSED on flat / vector /
-  // pattern / draft_idea with `colorway_forbidden`: a flat is ONE markup for the whole card and
-  // has no colourway BY NATURE — not «not filled in yet». 0 = no colourway stated, which on a
+  // MEANINGFUL ON render / recolor (the multiview being generated is THIS colourway's), on threed
+  // (the build reads ONLY this colourway's render bench) and — since round 15 — on PATTERN: there
+  // it names the colourway this tile is being MADE FOR, and the asset the run lands on the shelf is
+  // given to that colourway in the same transaction that closes the run (single-select, so it is
+  // taken off whatever cloth wore it before). REFUSED on flat / vector / draft_idea with
+  // `colorway_forbidden`: a flat is ONE markup for the whole card and has no colourway BY NATURE —
+  // not «not filled in yet». 0 = no colourway stated, which on a
   // render keeps the legacy meaning (an unattributed render, exactly what every render made
   // before this axis existed is) and on a 3D run selects ONLY the unattributed render bench —
   // never a mixture of colourways.
@@ -360,10 +363,31 @@ message DesignRunParams {
 // (design_asset.rotation_deg), and the tile itself has no orientation to state.
 message DesignPatternParams {
   // The repeat this tile is meant to be printed at, in whole millimetres on the finished garment.
-  // 0 = not stated, which is legal: a tile is a tile whether or not anybody has decided its scale
-  // yet. Non-zero reaches the model as a SCALE instruction («one tile covers 120 mm of cloth»),
-  // never as a pixel size.
+  // 0 = not stated, which is legal AND IS NOW THE DEFAULT: the craft block tells the model to take
+  // the density from the source picture itself, which is the answer the number used to give. A
+  // non-zero value still reaches the model as a SCALE instruction («one tile covers 120 mm of
+  // cloth»), never as a pixel size — legacy runs and clients that still state it keep their words.
   int32 repeat_mm = 1;
+
+  // THE NAME THE KEPT PATTERN IS FILED UNDER, and the name a render cites it by.
+  //
+  // REQUIRED ON kind=pattern, refused free with `pattern_name_required` before anything is
+  // reserved, and at most 60 characters — the SAME rule UpsertDesignAsset.name obeys, because it
+  // lands in the same column (design_asset.name, VARCHAR(60) NOT NULL). Naming the tile BEFORE the
+  // money is what makes the landing possible at all: the run closes by putting a `pattern` asset on
+  // this card's shelf, and a shelf row with no name reaches a later prompt as the bare word
+  // «pattern» — the failure detail slots already went through once.
+  string name = 2;
+
+  // THE SHELF ROW THE SOURCE PICTURE CAME FROM — design_asset(id) of THIS card, kind fabric or
+  // pattern. 0 = the source was a library file or a paste, which is the ordinary case.
+  //
+  // It is written into the kept asset's `derived_from_asset_id` (V-7 parentage), so «this pattern
+  // was made from that cloth» survives the run it was made in. A foreign id is refused like every
+  // other asset reference on this message; an id whose row is later deleted leaves the pattern
+  // standing with its parentage cleared (the FK's ON DELETE SET NULL), because a tile with a
+  // picture is still a usable instruction after its swatch is gone.
+  int32 source_asset_id = 3;
 }
 
 // DesignColourRecipe is the colour submission of a render run, in a form that a history chip can
@@ -416,6 +440,21 @@ message DesignFabricUse {
   // cloth, no repeat stated. It is the answer to «какого размера располагать этот паттерн» (V-7)
   // and it is a number the model can act on, unlike «large» or «small».
   int32 repeat_mm = 8;
+
+  // WHAT THIS CLOTH IS: `fabric` | `pattern` — the shelf asset's kind AT LAUNCH, frozen like every
+  // other field of this message.
+  //
+  // ⚠ IT IS NOT DERIVABLE, AND THAT IS WHY IT TRAVELS. A pattern tile is not a photograph of cloth:
+  // the render prompt has to describe it as a repeat tile and tell the model to LAY IT OUT, which
+  // it cannot do without knowing which of the two it is holding. `asset_id` is provenance and is
+  // never resolved by a reader (see above), the asset itself may be deleted, and `repeat_mm` stopped
+  // being evidence the moment the pattern screen stopped asking for a number — so the kind has to
+  // be copied here beside the name and the picture, on the same argument that put those here.
+  //
+  // EMPTY = A FABRIC, and empty is what every run frozen before this field carries. That is what
+  // keeps the render prompt of every existing single-cloth run byte-for-byte what it was: the new
+  // paragraph fires on `kind == "pattern"` and on nothing else.
+  string kind = 9;
 }
 
 // DesignAsset is ONE THING THIS CARD IS MADE OF that is not a picture of the garment: a cloth, a
@@ -480,12 +519,16 @@ message DesignAsset {
   // devHex / pantone / colorCode / swatch, and a second field would be a competing answer to a
   // question that already has one. Only «colourway N wears asset X» needed a home.
   //
-  // ⚠ OUTPUT-ONLY, AND WRITTEN BY EXACTLY ONE VERB: SetDesignAssetColorway. UpsertDesignAsset
-  // NEITHER CARRIES NOR CLEARS IT. That is deliberate and it is the whole reason the assignment
-  // does not live on Upsert: Upsert is a full replace, so a proto3 scalar there would arrive as 0
-  // from every client that predates this field — and from every unrelated save (a rename, a colour
-  // edit, «keep as cloth») — silently taking the fabric off the colourway. This codebase has paid
-  // for that trap twice already. An assignment therefore survives any edit to the asset.
+  // ⚠ OUTPUT-ONLY, AND WRITTEN BY EXACTLY TWO PLACES: SetDesignAssetColorway, and the LANDING OF A
+  // PATTERN RUN (the tile is filed with the colourway its run named — see DesignRunParams.colorway_id).
+  // UpsertDesignAsset NEITHER CARRIES NOR CLEARS IT. That is deliberate and it is the whole reason
+  // the assignment does not live on Upsert: Upsert is a full replace, so a proto3 scalar there would
+  // arrive as 0 from every client that predates this field — and from every unrelated save (a
+  // rename, a colour edit, «keep as cloth») — silently taking the fabric off the colourway. This
+  // codebase has paid for that trap twice already. An assignment therefore survives any edit to the
+  // asset. The second writer is the OPPOSITE case and not an exception to the rule: it is a
+  // CREATE, of a row nobody could have assigned yet, by a run that stated the colourway before it
+  // spent any money.
   //
   // SINGLE-SELECT: one colourway wears one fabric. Assigning an asset to a colourway takes that
   // colourway off every other asset of the card, in the same transaction.
