@@ -81,6 +81,7 @@ func designFormatRig(t *testing.T, band *entity.DesignBand, withStartRun bool, o
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
 	rig.repo.EXPECT().Media().Return(media).Maybe()
+	designStubNoDisplayOnly(rig.design)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).
 		Return(designMoodCard(), nil).Maybe()
 	rig.design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).
@@ -323,6 +324,7 @@ func TestDraftIdeaWithAModelOnTheBoardIsRefusedBeforeTheReserve(t *testing.T) {
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
 	rig.repo.EXPECT().Media().Return(media).Maybe()
+	designStubNoDisplayOnly(rig.design)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
 	media.EXPECT().GetMediaByIds(mock.Anything, mock.Anything).
 		Return(designFormatMedia(nil), nil).Maybe()

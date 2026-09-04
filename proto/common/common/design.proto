@@ -204,8 +204,8 @@ message DesignRunAttempt {
 // DesignRunParams is what was asked for — written by the client at start, replayed verbatim into
 // the run panel. Total encoded size is capped at 8 KB.
 message DesignRunParams {
-  // Which views were requested: front | back | side_l | side_r | detail. Drives the placeholder
-  // tiles that stand in for outputs that have not arrived yet.
+  // Which views were requested: front | back | side_l | side_r | three_quarter_l | three_quarter_r
+  // | detail. Drives the placeholder tiles that stand in for outputs that have not arrived yet.
   repeated string views = 1;
   // one | per_view — a single composite sheet against one picture per view. A composite has no
   // single view and therefore cannot be clicked into a bench slot; it is split first.
@@ -222,7 +222,10 @@ message DesignRunParams {
   // `fix: back` — which view of the bench this run was asked to fix. Empty = not a fix. Feeds the
   // history column «input = slots (back)».
   //
-  // SILHOUETTE SIDES ONLY: front | back | side_l | side_r. A detail slot is deliberately NOT
+  // SILHOUETTE SIDES ONLY: front | back | side_l | side_r | three_quarter_l | three_quarter_r. On a
+  // 3D run only the four cardinal sides (front, back, side_l, side_r) may be named — a three-quarter
+  // plate is neither a Meshy view nor a fal slot, and a run narrowed to one would be silently built
+  // from fewer sides than were picked. A detail slot is deliberately NOT
   // targetable, because a bare view key cannot name one of several details and this field is frozen
   // into the run's history — an ambiguous target here could never be repaired afterwards. If fixing
   // a detail is ever wanted, it arrives as a slot_id field beside this one, not as a `detail`
@@ -253,7 +256,8 @@ message DesignRunParams {
   // which a single string could not express at all: the studio marks up three plates and asks for
   // one correction across them, and a scalar target would make that three paid runs.
   //
-  // SILHOUETTE SIDES ONLY, exactly as the scalar above: front | back | side_l | side_r. A detail is
+  // SILHOUETTE SIDES ONLY, exactly as the scalar above: front | back | side_l | side_r |
+  // three_quarter_l | three_quarter_r (3D: the four cardinal sides only, as above). A detail is
   // named in fix_slot_ids instead, because a bare view key cannot tell two details apart and this
   // list is frozen into the run's history, where an ambiguous target could never be repaired.
   repeated string fix_targets = 7;
@@ -684,13 +688,13 @@ message DesignInputRef {
 // (`detail_slot_ids` → `slots[*].slot_id` → `detail_name`) and no other place to come from. Without
 // it the prompt said «draw these details: detail», which is what the ids were introduced to end.
 message DesignInputSlot {
-  string view_key = 1; // front | back | side_l | side_r | detail
+  string view_key = 1; // front | back | side_l | side_r | three_quarter_l | three_quarter_r | detail
   // WHICH SLOT, when view_key is `detail`. A view key alone cannot tell two details apart, and the
   // comparison «is this input stale» has no join key without it — so the badge would be
   // uncomputable for every card with more than one detail slot, FOREVER: a snapshot is frozen at
   // launch and is never repaired later.
   //
-  // 0 for the four silhouette sides, which view_key already identifies.
+  // 0 for the six silhouette sides, which view_key already identifies.
   int32 slot_id = 2;
   // COPY of the detail's name at launch, so a snapshot still reads «detail: cuff» after the slot
   // has been renamed or deleted. Empty for the silhouette sides.
@@ -809,6 +813,13 @@ message DesignPicture {
   // OUTPUT-ONLY here: a generated picture inherits the run's colourway, a crop and a flatten
   // inherit their parent's, an upload states it on DesignUploadItem.
   int32 colorway_id = 18;
+  // ONLY FOR SHOWING (round 18, D-24). Visible on the sheet and in ARTIFACTS; never an input of any
+  // paid call, never a bench plate, never a reference. Stated on DesignUploadItem.display_only at
+  // registration and inherited by every crop and flatten of the picture. Every door that would let
+  // it reach a prompt refuses with `display_only` (slot, role, split-for-input) or
+  // `display_only_input` (a run or a draft, before the reserve). A run's own outputs are never
+  // display-only: the flag is a statement about a file a person brought in, not about pixels.
+  bool display_only = 20;
 }
 
 // DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the
@@ -904,9 +915,10 @@ message DesignCardOutput {
 message DesignReference {
   int32 tech_card_id = 1; // FK tech_card(id)
   int32 media_id = 2; // FK media(id); the reference image, which the document also holds
-  // front | back | side_l | side_r | detail. NEVER EMPTY on the wire: clearing a role deletes the
-  // row, so «no role stated» is expressed by the ABSENCE of a DesignReference for that media, not
-  // by a present row carrying "". See SetDesignReferenceRole, which takes "" as the clear verb.
+  // front | back | side_l | side_r | three_quarter_l | three_quarter_r | detail. NEVER EMPTY on the
+  // wire: clearing a role deletes the row, so «no role stated» is expressed by the ABSENCE of a
+  // DesignReference for that media, not by a present row carrying "". See SetDesignReferenceRole,
+  // which takes "" as the clear verb.
   string role = 3;
   int32 ordinal = 4; // order in the prompt; lower goes first
   string set_by = 5; // server-stamped
@@ -937,14 +949,14 @@ message DesignReference {
   int32 detail_slot_id = 8;
 }
 
-// DesignBenchSlot is one exclusive place on the bench: a view holds at most one plate. The four
-// silhouette sides (front/back/side_l/side_r) are born lazily on first touch; detail slots are
-// created by naming one.
+// DesignBenchSlot is one exclusive place on the bench: a view holds at most one plate. The six
+// silhouette sides (front/back/side_l/side_r/three_quarter_l/three_quarter_r) are born lazily on
+// first touch; detail slots are created by naming one.
 message DesignBenchSlot {
   // The slot's OWN minted id. «Detail 1 / detail 2» as a key is forbidden: renaming a detail must
   // not move a plate, and two details named the same must still be two slots.
   int32 id = 1;
-  string view_key = 2; // front | back | side_l | side_r | detail
+  string view_key = 2; // front | back | side_l | side_r | three_quarter_l | three_quarter_r | detail
   string detail_name = 3; // presentation only; required when view_key=detail, empty otherwise
   int32 picture_id = 4; // FK design_picture(id); 0 = the slot is empty
   // CAS TOKEN. Every write to this slot echoes the rev it believed it was overwriting; a mismatch

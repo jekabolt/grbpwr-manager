@@ -25,14 +25,14 @@ import (
 // возвращает его со штампом run_kind = "" / run_rrev = 0. Бакет умеет model/gltf-binary с
 // векторной волны. Не было ровно ДВЕРИ, через которую байты модели попадают в медиа.
 
-// TestUploadContentModelGoesToTheMediaShelfAsAGLB — несущая проверка ТИПА, зафиксированного
-// ГЛАГОЛОМ.
+// TestUploadContentModelGoesToTheMediaShelfAsAGLB — несущая проверка ГЛАГОЛА бакета, а не типа.
 //
-// МУТАЦИЯ, КОТОРУЮ ОНА ЛОВИТ, И ЭТО САМАЯ ВЕРОЯТНАЯ ЗДЕСЬ: дверь написана копией соседней
-// (UploadContentVector) и литерал типа остался «image/svg+xml». Тогда .glb уезжает в SVG-ветку
-// bucket.UploadContentNonRaster, там его встречает recraft.InspectSVG, и человек получает отказ
-// «не XML» на совершенно исправный файл. Ожидание мока стоит ровно на "model/gltf-binary", поэтому
-// и копия литерала, и «хендлер стал читать тип из запроса» валят тест.
+// С круга 18 (D-29) тип не называется в хендлере вовсе: дверь зовёт bucket.UploadContentModel,
+// который хранит model/gltf-binary по построению. МУТАЦИЯ, КОТОРУЮ ЛОВИТ ЭТА ПРОБА: хендлер
+// написан копией соседней двери (UploadContentVector) и зовёт UploadContentNonRaster с литералом
+// типа — тогда превью теряется по дороге в бакет (у того глагола нет второго аргумента), и модель
+// снова встаёт на карточку битой плиткой. Строгий мок без ожидания на UploadContentNonRaster роняет
+// такую копию по имени.
 //
 // Папка тоже утверждается: модель живёт на ТОЙ ЖЕ полке, что картинка и видео (медиа-хранилище), а
 // не в библиотеке файлов — иначе GetMediaUsage её не увидит, и «где используется» соврёт.
@@ -42,7 +42,7 @@ func TestUploadContentModelGoesToTheMediaShelfAsAGLB(t *testing.T) {
 
 	fs := mocks.NewMockFileStore(t)
 	fs.EXPECT().GetBaseFolder().Return("grbpwr-com")
-	fs.EXPECT().UploadContentNonRaster(mock.Anything, glb, "model/gltf-binary", "grbpwr-com", mock.Anything).
+	fs.EXPECT().UploadContentModel(mock.Anything, glb, []byte(nil), "grbpwr-com", mock.Anything).
 		Return(minted, nil)
 
 	s := &Server{bucket: fs}
@@ -52,25 +52,50 @@ func TestUploadContentModelGoesToTheMediaShelfAsAGLB(t *testing.T) {
 	require.Same(t, minted, resp.GetMedia())
 }
 
-// TestTheTwoNonRasterDoorsDoNotShareAContentType — ПАРА, А НЕ ДВА ОТДЕЛЬНЫХ УТВЕРЖДЕНИЯ.
+// TestUploadContentModelHandsThePreviewToTheBucketInTheSameCall — ОДИН ВЫЗОВ, ДВА ФАЙЛА (D-29).
 //
-// Смысл разделения на два глагола записан на самом контракте: «this door stores image/svg+xml and
-// nothing else, so a client cannot talk its way into the GLB branch». Проверка каждой двери по
-// отдельности проходит и в том мире, где обе двери зовут ОДИН тип, — а это ровно та поломка,
-// которой разделение и посвящено, и стоит она в обе стороны: SVG, уехавший GLB-веткой, минует
-// recraft.InspectSVG, то есть границу безопасности, а не формальность.
+// Владелец: «загружали glb и + миниатюру фото превью … и это все как один объект». Превью едет в
+// ТОМ ЖЕ вызове бакета, что и модель, байт в байт: второй вызов означал бы полу-объект при обрыве
+// между ними — ровно то, ради чего поле живёт на этом запросе, а не на своём глаголе.
 //
-// Поэтому обе двери едут по ОДНОМУ моку, и он записывает, какой тип назвала каждая.
-func TestTheTwoNonRasterDoorsDoNotShareAContentType(t *testing.T) {
-	var seen []string
+// МУТАЦИИ, КОТОРЫЕ ЭТО КРАСНИТ: хендлер перестал передавать req.GetPreview() (в бакет уезжает nil);
+// хендлер зовёт бакет дважды (второй вызов незаявлен — строгий мок роняет по имени).
+func TestUploadContentModelHandsThePreviewToTheBucketInTheSameCall(t *testing.T) {
+	glb := []byte("glTF\x02\x00\x00\x00\x0c\x00\x00\x00")
+	preview := []byte("\x89PNG\r\n\x1a\n-not-really-decoded-here")
+	minted := &pb_common.MediaFull{Id: 78, ContentHash: "cafe"}
 
 	fs := mocks.NewMockFileStore(t)
 	fs.EXPECT().GetBaseFolder().Return("grbpwr-com")
-	fs.EXPECT().UploadContentNonRaster(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Run(func(_ context.Context, _ []byte, contentType, _, _ string) {
-			seen = append(seen, contentType)
-		}).
-		Return(&pb_common.MediaFull{Id: 1}, nil)
+	fs.EXPECT().UploadContentModel(mock.Anything, glb, preview, "grbpwr-com", mock.Anything).
+		Return(minted, nil).Once()
+
+	s := &Server{bucket: fs}
+	resp, err := s.UploadContentModel(context.Background(), &pb_admin.UploadContentModelRequest{
+		Raw: glb, Preview: preview,
+	})
+
+	require.NoError(t, err)
+	require.Same(t, minted, resp.GetMedia())
+}
+
+// TestTheTwoNonRasterDoorsDoNotShareAVerb — ПАРА, А НЕ ДВА ОТДЕЛЬНЫХ УТВЕРЖДЕНИЯ.
+//
+// Смысл разделения на два глагола записан на самом контракте: «this door stores image/svg+xml and
+// nothing else, so a client cannot talk its way into the GLB branch». До D-29 обе двери звали ОДИН
+// глагол бакета с разными литералами типа, и проба сверяла литералы. Теперь у модели свой глагол
+// бакета (UploadContentModel), у вектора — прежний с фиксированным «image/svg+xml»; общего
+// параметра типа между ними больше нет, и разделение держится ИМЕНАМИ ВЫЗОВОВ. Поэтому обе двери
+// едут по ОДНОМУ строгому моку, у которого заявлено ровно по одному вызову на дверь: вектор,
+// уехавший в UploadContentModel, или модель, уехавшая в UploadContentNonRaster, падают на
+// незаявленном вызове по имени — в обе стороны, как и раньше.
+func TestTheTwoNonRasterDoorsDoNotShareAVerb(t *testing.T) {
+	fs := mocks.NewMockFileStore(t)
+	fs.EXPECT().GetBaseFolder().Return("grbpwr-com")
+	fs.EXPECT().UploadContentNonRaster(mock.Anything, mock.Anything, "image/svg+xml", "grbpwr-com", mock.Anything).
+		Return(&pb_common.MediaFull{Id: 1}, nil).Once()
+	fs.EXPECT().UploadContentModel(mock.Anything, mock.Anything, mock.Anything, "grbpwr-com", mock.Anything).
+		Return(&pb_common.MediaFull{Id: 2}, nil).Once()
 
 	s := &Server{bucket: fs}
 	_, err := s.UploadContentVector(context.Background(), &pb_admin.UploadContentVectorRequest{
@@ -81,23 +106,16 @@ func TestTheTwoNonRasterDoorsDoNotShareAContentType(t *testing.T) {
 		Raw: []byte("glTF\x02\x00\x00\x00\x0c\x00\x00\x00"),
 	})
 	require.NoError(t, err)
-
-	require.Len(t, seen, 2)
-	require.NotEqual(t, seen[0], seen[1],
-		"один тип на две двери означает, что одна из них разбирает чужие байты: SVG, уехавший "+
-			"GLB-веткой, минует recraft.InspectSVG — границу безопасности, а не формальность")
-	require.Equal(t, []string{"image/svg+xml", "model/gltf-binary"}, seen,
-		"каждый глагол называет СВОЙ тип, и тип не приезжает с провода")
 }
 
 // TestUploadContentModelRefusalIsTheClientsFault — отказ гейта формы (пустые байты, не-GLB,
-// оборванный контейнер, файл за потолком 64 МиБ) обязан приехать клиенту InvalidArgument СО
-// СЛОВАМИ проверяющего: это единственная подсказка, по которой человек чинит свой файл. Тот же
-// разрез, что у UploadContentVector и UploadPattern.
+// оборванный контейнер, файл за потолком 64 МиБ, И превью, которое не растр) обязан приехать
+// клиенту InvalidArgument СО СЛОВАМИ проверяющего: это единственная подсказка, по которой человек
+// чинит свой файл. Тот же разрез, что у UploadContentVector и UploadPattern.
 func TestUploadContentModelRefusalIsTheClientsFault(t *testing.T) {
 	fs := mocks.NewMockFileStore(t)
 	fs.EXPECT().GetBaseFolder().Return("grbpwr-com")
-	fs.EXPECT().UploadContentNonRaster(mock.Anything, mock.Anything, "model/gltf-binary", "grbpwr-com", mock.Anything).
+	fs.EXPECT().UploadContentModel(mock.Anything, mock.Anything, mock.Anything, "grbpwr-com", mock.Anything).
 		Return(nil, fmt.Errorf("%w: not a glTF binary: bad magic", bucket.ErrInvalidNonRaster))
 
 	s := &Server{bucket: fs}
@@ -117,7 +135,7 @@ func TestUploadContentModelRefusalIsTheClientsFault(t *testing.T) {
 func TestUploadContentModelStorageFailureIsInternal(t *testing.T) {
 	fs := mocks.NewMockFileStore(t)
 	fs.EXPECT().GetBaseFolder().Return("grbpwr-com")
-	fs.EXPECT().UploadContentNonRaster(mock.Anything, mock.Anything, "model/gltf-binary", "grbpwr-com", mock.Anything).
+	fs.EXPECT().UploadContentModel(mock.Anything, mock.Anything, mock.Anything, "grbpwr-com", mock.Anything).
 		Return(nil, errors.New("s3: connection reset"))
 
 	s := &Server{bucket: fs}

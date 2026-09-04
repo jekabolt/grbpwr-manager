@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -148,12 +149,8 @@ func (b *Bucket) UploadContentNonRaster(ctx context.Context, raw []byte, content
 		}
 		width, height = svgPixelSize(stats)
 	case contentTypeGLB:
-		if len(raw) > maxModelPayloadBytes {
-			return nil, fmt.Errorf("%w: model payload too large: %d bytes, max %d bytes",
-				ErrInvalidNonRaster, len(raw), maxModelPayloadBytes)
-		}
-		if err := checkGLB(raw); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidNonRaster, err)
+		if err := checkModelPayload(raw); err != nil {
+			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("%w: %q has no non-raster storage path; this one stores %s and %s",
@@ -204,6 +201,177 @@ func (b *Bucket) UploadContentNonRaster(ctx context.Context, raw []byte, content
 			FullSize:   info,
 			Compressed: info,
 			Thumbnail:  info,
+		},
+		ContentHash: sha,
+	}, nil
+}
+
+// ─────────────────────── A MODEL WITH ITS PREVIEW: ONE ROW ───────────────────────
+//
+// WHY THE PREVIEW LIVES ON THE MODEL'S OWN MEDIA ROW AND NOT ON A SECOND ONE (round 18, D-29). The
+// generative 3D route stores a model as TWO media rows and TWO design_picture rows — the .glb and a
+// raster poster that follows it in write order — and the client has to pair them back by adjacency
+// (its own comment: «threedResults pairs a .glb with the raster that follows it in WRITE order»).
+// A hand-uploaded model had no poster at all, so its tile was the .glb handed to an <img>: the
+// «broken frame a person reads as "the server broke"». The media row already has the three slots
+// this needs, and every reader already reads them the right way round: the tile draws `thumbnail`,
+// the model viewer reads `full_size` and decides «this is a model» by the .glb suffix of THAT url.
+// Putting the preview into the thumbnail and compressed slots therefore fixes the tile in every
+// client that exists today, and leaves the model detection untouched. One object by construction:
+// nothing to pair, nothing to order, nothing that can arrive without its other half.
+//
+// What this row promises differently from a plain raster row: `full_size` has no pixel dimensions
+// (0×0, as the video path stores «no frame»), `content_hash` is the sha of the MODEL, and the
+// compressed/thumbnail dimensions describe the preview.
+
+// modelPreview is a checked preview: its sniffed type, header dimensions and decoded frame.
+type modelPreview struct {
+	ct            ContentType
+	width, height int
+	frame         image.Image
+}
+
+// checkModelPayload is the whole model gate — emptiness, the byte ceiling and the container
+// header — shared by the preview-less and the preview-carrying door so the two cannot drift.
+func checkModelPayload(raw []byte) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("%w: payload is empty", ErrInvalidNonRaster)
+	}
+	if len(raw) > maxModelPayloadBytes {
+		return fmt.Errorf("%w: model payload too large: %d bytes, max %d bytes",
+			ErrInvalidNonRaster, len(raw), maxModelPayloadBytes)
+	}
+	if err := checkGLB(raw); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidNonRaster, err)
+	}
+	return nil
+}
+
+// checkModelPreview verifies the preview AS STRICTLY AS checkGLB VERIFIES THE MODEL — by the bytes
+// and never by a label: the magic decides the type, the header is read against the raster
+// ceilings, and the picture is decoded, because a preview that will not decode is a tile nothing
+// can draw, stored under a url a person clicks days later.
+//
+// JPEG, PNG AND WEBP ONLY — the three stills a canvas snapshot produces. A GIF is refused on
+// purpose although the verbatim picture path stores it: a preview is a still, and the animated
+// pass-through path exists for a different reason. A model, a vector or a video in this field is
+// refused with the type it turned out to be, so the message names what to replace.
+func checkModelPreview(raw []byte) (modelPreview, error) {
+	if len(raw) > maxRawImagePayloadBytes {
+		return modelPreview{}, fmt.Errorf("%w: preview payload too large: %d bytes, max %d bytes",
+			ErrInvalidNonRaster, len(raw), maxRawImagePayloadBytes)
+	}
+	ct := sniffImageType(raw)
+	switch ct {
+	case contentTypeJPEG, contentTypePNG, contentTypeWEBP:
+	case "":
+		return modelPreview{}, fmt.Errorf("%w: the preview is not a picture: no JPEG, PNG or WebP header",
+			ErrInvalidNonRaster)
+	default:
+		return modelPreview{}, fmt.Errorf("%w: the preview is %s; a model preview is a still JPEG, PNG or WebP",
+			ErrInvalidNonRaster, ct)
+	}
+	cfg, err := imageHeaderConfig(ct, raw)
+	if err != nil {
+		return modelPreview{}, fmt.Errorf("%w: cannot read the preview header: %v", ErrInvalidNonRaster, err)
+	}
+	if cfg.Width > maxImageDimension || cfg.Height > maxImageDimension {
+		return modelPreview{}, fmt.Errorf("%w: preview dimensions %dx%d exceed maximum allowed %dpx",
+			ErrInvalidNonRaster, cfg.Width, cfg.Height, maxImageDimension)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return modelPreview{}, fmt.Errorf("%w: preview too large: %dx%d exceeds %d-pixel limit",
+			ErrInvalidNonRaster, cfg.Width, cfg.Height, maxImagePixels)
+	}
+	img, err := decodeImage(raw, ct)
+	if err != nil {
+		return modelPreview{}, fmt.Errorf("%w: the preview does not decode: %v", ErrInvalidNonRaster, err)
+	}
+	return modelPreview{ct: ct, width: cfg.Width, height: cfg.Height, frame: img}, nil
+}
+
+// UploadContentModel stores a GLB model and, when one is handed in, the raster preview that stands
+// in for it — as ONE media row. See the section comment above for why one row.
+//
+// BOTH FILES ARE CHECKED BEFORE EITHER IS STORED, and a failure after the model went up takes the
+// model back (cleanupUploadedVariants, the remedy every path here uses): the caller asked for a
+// model WITH its preview, and a row carrying only the model would be precisely the half-object
+// this verb exists not to mint. An empty preview is the old door, unchanged.
+func (b *Bucket) UploadContentModel(ctx context.Context, raw, preview []byte, folder, objectName string) (*pb_common.MediaFull, error) {
+	if len(preview) == 0 {
+		return b.UploadContentNonRaster(ctx, raw, string(contentTypeGLB), folder, objectName)
+	}
+	if err := checkModelPayload(raw); err != nil {
+		return nil, err
+	}
+	pv, err := checkModelPreview(preview)
+	if err != nil {
+		return nil, err
+	}
+
+	// THE MODEL FIRST, under the same "-og" name and through the same verb as the preview-less
+	// door, so its sha is the sha of the bytes as they lie in the bucket — the invariant
+	// media.content_hash carries everywhere else.
+	modelURL, sha, err := b.uploadImageToBucket(ctx, bytes.NewReader(raw), folder,
+		fmt.Sprintf("%s-%s", objectName, "og"), contentTypeGLB)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload %s object to bucket: %w", contentTypeGLB, err)
+	}
+	// 0×0: a model has no pixel dimensions, exactly as the preview-less row and the video row say.
+	model := &pb_common.MediaInfo{MediaUrl: modelURL}
+
+	// THE PREVIEW'S VARIANTS, built the way the verbatim picture path builds them (same qualities,
+	// same thumbnail height), so a model's tile and a picture's tile are the same kind of object.
+	compressed, _, err := b.uploadSingleImage(ctx, pv.frame, 60, folder,
+		fmt.Sprintf("%s-%s", objectName, "compressed"))
+	if err != nil {
+		b.cleanupUploadedVariants(model)
+		return nil, fmt.Errorf("failed to upload the model preview: %w", err)
+	}
+	thumbImg := resizeImage(pv.frame, 1080)
+	thumbnail, _, err := b.uploadSingleImage(ctx, thumbImg, 90, folder,
+		fmt.Sprintf("%s-%s", objectName, "thumb"))
+	if err != nil {
+		b.cleanupUploadedVariants(model, compressed)
+		return nil, fmt.Errorf("failed to upload the model preview thumbnail: %w", err)
+	}
+	h, err := getBlurHash(thumbImg)
+	if err != nil {
+		// Decorative placeholder, same policy as the picture paths: a preview that will not
+		// blur-hash is still a preview.
+		slog.Default().WarnContext(ctx, "model preview blurhash failed; storing empty",
+			slog.String("err", err.Error()))
+		h = ""
+	}
+
+	mediaID, err := b.ms.AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL:   model.MediaUrl,
+		FullSizeWidth:      0,
+		FullSizeHeight:     0,
+		CompressedMediaURL: compressed.MediaUrl,
+		CompressedWidth:    int(compressed.Width),
+		CompressedHeight:   int(compressed.Height),
+		ThumbnailMediaURL:  thumbnail.MediaUrl,
+		ThumbnailWidth:     int(thumbnail.Width),
+		ThumbnailHeight:    int(thumbnail.Height),
+		BlurHash:           sql.NullString{String: h, Valid: h != ""},
+		// The hash describes the MODEL — the full-size object, the one the archive downloads.
+		ContentHash: sql.NullString{String: sha, Valid: sha != ""},
+	})
+	if err != nil {
+		b.cleanupUploadedVariants(model, compressed, thumbnail)
+		slog.Default().ErrorContext(ctx, "can't add model media to db",
+			slog.String("err", err.Error()))
+		return nil, fmt.Errorf("failed to add media to db: %w", err)
+	}
+
+	return &pb_common.MediaFull{
+		Id: int32(mediaID),
+		Media: &pb_common.MediaItem{
+			FullSize:   model,
+			Compressed: compressed,
+			Thumbnail:  thumbnail,
+			Blurhash:   h,
 		},
 		ContentHash: sha,
 	}, nil

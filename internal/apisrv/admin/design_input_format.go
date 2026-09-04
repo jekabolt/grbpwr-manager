@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
 )
@@ -243,4 +244,70 @@ func designUnreadableStorableTypes() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ═══ КАДР «ТОЛЬКО ДЛЯ ПОКАЗА» НЕ УЕЗЖАЕТ НИ В ОДИН ПЛАТНЫЙ ВЫЗОВ (0361, D-24) ═══════════════════
+//
+// Владелец (круг 18): «в THE SHEET должна быть возможность добавить отдельно медиа без слотов
+// КОТОРЫЕ НЕ ПОЙДУТ в промпты они нужны только для визуализации в артефактах». Флаг живёт на
+// design_picture (`display_only`), а ЭТО — дверь, которая держит деньги.
+//
+// ⚠ ДВЕРЬ, А НЕ ФИЛЬТР В СБОРКЕ ВХОДОВ, И РАЗНИЦА НЕСУЩАЯ. Фильтр в designSelectBench молча
+// пропустил бы новый путь: `extra_input_media_ids` с провода, ткань рецепта, референс, которому
+// кто-то дал роль, — каждый из них минует верстак целиком. Стор уже отказывает такому кадру в
+// слоте, в роли и в разрезе «для промпта», но это три двери ЗАПИСИ, а вход прогона собирается из
+// ПЯТИ источников (designRunInputMediaRefs), и часть из них — голые номера медиа, у которых нет ни
+// слота, ни роли. Спросить надо у самих номеров, у денежной двери, до резерва.
+//
+// ОДИН ЗАПРОС НА ПРОГОН — MediaHeldDisplayOnly — по тем же id и в том же порядке атрибуции, что у
+// соседа выше (designRunInputMediaRefs): первый найденный источник и есть тот, что называется
+// человеку, поэтому параметры запроса опережают плиты и референсы карточки.
+//
+// Тот же вопрос задаётся и доске текстового прогона (DraftDesignIdea): доска — tech_card_media, а
+// не полоса, но положить в неё медиа кадра, помеченного «только для показа», человеку никто не
+// мешает, и тогда оно уехало бы в платный вызов ровно так же.
+
+// designRefuseDisplayOnlyInputs — сама дверь. refs — входы прогона С ИСТОЧНИКАМИ, уже собранные
+// вызывающим (у картиночного прогона — designRunInputMediaRefs, у черновика — designBoardMediaRefs).
+func (s *Server) designRefuseDisplayOnlyInputs(ctx context.Context, refs []designInputMediaRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(refs))
+	for _, r := range refs {
+		ids = append(ids, r.ID)
+	}
+	held, err := s.repo.Design().MediaHeldDisplayOnly(ctx, ids)
+	if err != nil {
+		return designError(ctx, "failed to check whether the run's inputs are display-only pictures", err, nil)
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	heldSet := make(map[int]struct{}, len(held))
+	for _, id := range held {
+		heldSet[id] = struct{}{}
+	}
+	for _, ref := range refs {
+		if _, bad := heldSet[ref.ID]; bad {
+			return designDisplayOnlyRefusal(ref)
+		}
+	}
+	return nil
+}
+
+// designDisplayOnlyRefusal — текст отказа. Называет ТРИ вещи, как и сосед про формат: какой номер,
+// откуда он приехал (единственная подсказка, по которой человек чинит запрос) и что ничего не
+// зарезервировано и не списано.
+func designDisplayOnlyRefusal(ref designInputMediaRef) error {
+	return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeDisplayOnlyInput,
+		fmt.Sprintf("media %d is filed on the card as DISPLAY-ONLY — a picture kept for the sheet and "+
+			"the artifacts that must never reach a paid call — and this run would hand it to the "+
+			"provider. It came in as %s. Remove it there, or file the picture again without the "+
+			"display-only mark. Nothing was reserved and nothing was charged",
+			ref.ID, ref.Where),
+		map[string]string{
+			"media_id": strconv.Itoa(ref.ID),
+			"where":    ref.Where,
+		})
 }

@@ -3,6 +3,7 @@ package design
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -54,6 +55,9 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		if it.ColorwayId > 0 && !entity.DesignPictureKindTakesColorway(it.Kind) {
 			return nil, fmt.Errorf("%w: a %s picture has no colourway axis",
 				entity.ErrDesignColorwayForbidden, entity.DesignKindOrFlat(it.Kind))
+		}
+		if err := checkUploadCompositeViews(it); err != nil {
+			return nil, err
 		}
 	}
 
@@ -173,15 +177,29 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		// uq_design_picture_batch_ordinal makes each picture idempotent on its own, so a retry
 		// that reached the batch insert but not the pictures still converges.
 		for i, it := range req.Items {
+			composite, err := compositeViewsJSON(it.CompositeViews)
+			if err != nil {
+				return err
+			}
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
-					(tech_card_id, media_id, batch_id, ordinal, kind, ghost_view, colorway_id, source_class, mixed_input)
-				VALUES (:card, :media, :batch, :ord, :kind, :ghost, :cw, :src, 0)
+					(tech_card_id, media_id, batch_id, ordinal, kind, ghost_view, colorway_id,
+					 composite_views, display_only, source_class, mixed_input)
+				VALUES (:card, :media, :batch, :ord, :kind, :ghost, :cw, :composite, :display_only, :src, 0)
 				ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
 				map[string]any{
 					"card": req.TechCardId, "media": it.MediaId, "batch": batchID, "ord": i,
 					"kind": entity.DesignKindOrFlat(it.Kind), "ghost": nullStr(it.GhostView),
 					"cw": nullInt(it.ColorwayId),
+					// THE SECOND WRITER OF composite_views (D-26). Until this line the column had
+					// exactly one — the arrival of a generative run (queue.go, compositeViewsOf) —
+					// and a hand-filed sheet could never say it was one. NULL for a single picture,
+					// exactly what every upload before this field wrote.
+					"composite": composite,
+					// ONLY FOR SHOWING (0361, D-24) — the uploader's statement, frozen here; the
+					// doors that read it are the bench, the reference role, the split and the
+					// money door of every run.
+					"display_only": it.DisplayOnly,
 					// mixed_input is 0 for an upload BY CONSTRUCTION: one gesture has one
 					// provenance, so there is no mixture to launder. The flag becomes computable
 					// only where inputs of several provenances meet — a fix run's output — and it
@@ -514,6 +532,17 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		if err != nil {
 			return err
 		}
+		// A DISPLAY-ONLY SHEET IS NOT SPLIT «FOR THE PROMPT» (0361, D-24). The for_input flag is a
+		// promise to give every named crop a reference role — that is, to feed it to the model —
+		// and the sheet's flag says the opposite. Refused rather than silently downgraded to a
+		// plain split: the caller asked for two things that cannot both be true, and a split that
+		// answered OK while quietly writing no roles is the same class of lie as a colourway that
+		// was accepted and dropped. Checked BEFORE the idempotent early return below, so a repeat
+		// of the contradiction is refused exactly as the first attempt was.
+		if req.ForInput && parent.DisplayOnly {
+			return fmt.Errorf("%w: picture %d is display-only and cannot be split for the prompt",
+				entity.ErrDesignDisplayOnly, parent.Id)
+		}
 		// No compositeness check here either — see the note in the handler. The column it read has
 		// no writer in this wave, so the check refused every split that could ever reach it.
 
@@ -549,13 +578,17 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
 					(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
-					 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev)
+					 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev,
+					 display_only)
 				VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
-				        :src, :mixed, :layer)`,
+				        :src, :mixed, :layer, :display_only)`,
 				map[string]any{
 					"card": parent.TechCardId, "media": f.MediaId,
 					"run": nullInt32(parent.RunId), "batch": nullInt32(parent.BatchId),
 					"ord": base + i, "kind": parent.Kind, "ghost": nullStr(f.ViewKey),
+					// ONLY-FOR-SHOWING IS INHERITED (0361, D-24), by the same argument as the mixed
+					// flag two lines down: cutting a sheet up does not turn its pieces into inputs.
+					"display_only": parent.DisplayOnly,
 					// РАЗРЕЗ НАСЛЕДУЕТ КОЛОРВЕЙ РОДИТЕЛЯ — это и есть модель владельца: мультивью
 					// колорвея нарезается сплитом на стороны ЭТОГО ЖЕ колорвея. Кроп без наследования
 					// рождался бы неатрибутированным и не вставал бы в колорвейный верстак.
@@ -713,4 +746,97 @@ func nullInt32(v sql.NullInt32) any {
 		return nil
 	}
 	return v.Int32
+}
+
+// checkUploadCompositeViews — ФОРМА ОБЪЯВЛЕННОГО МУЛЬТИВЬЮ у загружаемого кадра (D-26). Стор
+// проверяет то же, что и хендлер, потому что он последнее место, которое ещё может отказать.
+//
+// ОДИН ВИД — НЕ КОМПОЗИТ: у одиночного кадра есть ghost_view, и список из одного члена был бы
+// вторым написанием того же факта, расходящимся с первым молча. ВМЕСТЕ С ghost_view — противоречие:
+// у композита догадки о виде нет по построению (ghostViewOf у прилёта прогона отдаёт пустоту ровно
+// поэтому), и принять оба значило бы записать в строку два ответа на один вопрос. Повторы
+// законны: прогон пишет ["detail","detail"] для двух деталей на одном листе, и загруженный лист
+// имеет право сказать то же.
+func checkUploadCompositeViews(it entity.DesignUploadItem) error {
+	n := len(it.CompositeViews)
+	if n == 0 {
+		return nil
+	}
+	if n == 1 {
+		return fmt.Errorf("%w: composite_views names one view %q — one view is a ghost_view, not a composite",
+			entity.ErrDesignInvalidArgument, it.CompositeViews[0])
+	}
+	if it.GhostView != "" {
+		return fmt.Errorf("%w: composite_views and ghost_view %q together — a composite has no single view",
+			entity.ErrDesignInvalidArgument, it.GhostView)
+	}
+	for i, v := range it.CompositeViews {
+		if !entity.IsDesignGhostView(v) {
+			return fmt.Errorf("%w: unknown composite view %q at %d", entity.ErrDesignInvalidArgument, v, i)
+		}
+	}
+	return nil
+}
+
+// compositeViewsJSON — колонка composite_views для загружаемого кадра: NULL у одиночного кадра
+// (ровно то, что писала каждая загрузка до D-26), JSON-массив у объявленного мультивью — в той
+// же форме, в какой его пишет прилёт прогона (compositeViewsOf), чтобы читатели (bench.go,
+// designPictureToPb) видели одну и ту же колонку от обоих писателей.
+func compositeViewsJSON(views []string) (any, error) {
+	if len(views) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(views)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode the composite views of a design upload: %w", err)
+	}
+	return []byte(raw), nil
+}
+
+// MediaHeldDisplayOnly — КАКИЕ ИЗ НАЗВАННЫХ МЕДИА КАКОЙ-НИБУДЬ КАДР ДЕРЖИТ КАК «ТОЛЬКО ДЛЯ ПОКАЗА»
+// (0361, D-24). Единственный запрос денежной двери прогона; дословно та же форма вопроса, что у
+// роли референса (SetReferenceRole), — по медиа, а не по карточке: флаг — утверждение о ФАЙЛЕ, а
+// граница карточки — чужая дверь (AssertMediaNotForeign).
+//
+// Пустой вход отвечает пустотой, не трогая базу; нули и повторы выбрасываются здесь, чтобы
+// вызывающему не приходилось помнить об этом на каждом из пяти источников входа.
+func (s *Store) MediaHeldDisplayOnly(ctx context.Context, mediaIDs []int) ([]int, error) {
+	ids := make([]int, 0, len(mediaIDs))
+	seen := make(map[int]struct{}, len(mediaIDs))
+	for _, id := range mediaIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	type row struct {
+		MediaId int `db:"media_id"`
+	}
+	var out []int
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		rows, err := storeutil.QueryListNamed[row](ctx, rep.DB(), `
+			SELECT DISTINCT media_id FROM design_picture
+			WHERE display_only = 1 AND media_id IN (:ids)
+			ORDER BY media_id`,
+			map[string]any{"ids": ids})
+		if err != nil {
+			return fmt.Errorf("failed to check which media are display-only: %w", err)
+		}
+		out = make([]int, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.MediaId)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

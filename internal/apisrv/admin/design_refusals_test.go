@@ -146,6 +146,7 @@ func newDesignRunRigWithoutStartRun(t *testing.T) *designRunRig {
 	}
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
+	designStubNoDisplayOnly(rig.design)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).
 		Return(designMoodCard(), nil).Maybe()
 	rig.design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).

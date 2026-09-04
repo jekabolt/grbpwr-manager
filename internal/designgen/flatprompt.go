@@ -11,8 +11,9 @@ import (
 // technical drawing. The owner supplied two reference prompts — one for a multi-view flat sheet,
 // one for an enlarged construction-detail callout — and said to adapt them to our case. What is
 // adapted is exactly one thing: the LAYOUT paragraph, because our runs do not have three fixed
-// views. Views are checkboxes (front, back, side_l, side_r, detail — one to five of them, two
-// sides when the garment is asymmetric) and the layout is a run parameter (`one` = every chosen
+// views. Views are checkboxes (front, back, side_l, side_r, three_quarter_l, three_quarter_r,
+// detail — one to seven of them, two sides when the garment is asymmetric) and the layout is a run
+// parameter (`one` = every chosen
 // view on a single sheet a person later splits; `per_view` = one paid call and one image per
 // view). So the layout paragraph is BUILT from the frozen params, while the craft paragraphs
 // below are carried through untouched.
@@ -255,6 +256,10 @@ func displayView(v string) string {
 		return "SIDE LEFT"
 	case entity.DesignViewSideR:
 		return "SIDE RIGHT"
+	case entity.DesignViewThreeQuarterL:
+		return "THREE-QUARTER LEFT"
+	case entity.DesignViewThreeQuarterR:
+		return "THREE-QUARTER RIGHT"
 	case entity.DesignViewDetail:
 		return displayDetail("")
 	default:
@@ -282,6 +287,10 @@ func countWord(n int) string {
 		return "four"
 	case 5:
 		return "five"
+	case 6:
+		return "six"
+	case 7:
+		return "seven"
 	}
 	return strconv.Itoa(n)
 }

@@ -327,6 +327,16 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 		if pic.HiddenAt.Valid {
 			return nil, fmt.Errorf("%w: picture %d is hidden", entity.ErrDesignHiddenPlate, pic.Id)
 		}
+		// ONLY FOR SHOWING NEVER STANDS ON THE BENCH (0361, D-24). The bench is what runs read —
+		// designSelectBench takes its plates from the slots — so a slot is the one address through
+		// which a picture reaches a paid call without anybody naming it in a request. The owner's
+		// words are «медиа без слотов»: such a picture has no slot by definition, and refusing it
+		// here, in the same transaction as the write, is what keeps the money door downstream a
+		// second belt rather than the only one.
+		if pic.DisplayOnly {
+			return nil, fmt.Errorf("%w: picture %d is display-only and does not stand on the bench",
+				entity.ErrDesignDisplayOnly, pic.Id)
+		}
 		// РОД КАДРА ОБЯЗАН СОВПАСТЬ С РОДОМ СЛОТА, и это ЗАМЕНА прежнему «threed в слот не
 		// встаёт» — не ослабление его, а обобщение. Пока ось была одна, единственным способом
 		// сказать «этот кадр сюда не относится» было назвать один запретный род; но настоящая

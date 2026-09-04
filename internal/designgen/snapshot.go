@@ -497,6 +497,10 @@ func captionView(v string) string {
 		return "left side view"
 	case entity.DesignViewSideR:
 		return "right side view"
+	case entity.DesignViewThreeQuarterL:
+		return "three-quarter view from the left"
+	case entity.DesignViewThreeQuarterR:
+		return "three-quarter view from the right"
 	case entity.DesignViewDetail:
 		return "detail view"
 	default:
@@ -504,7 +508,8 @@ func captionView(v string) string {
 	}
 }
 
-// viewRank orders the silhouette so the front comes first. Anything unnamed sorts last.
+// viewRank orders the silhouette so the front comes first: the four cardinal sides, then the two
+// three-quarter views, then details. Anything unnamed sorts last.
 func viewRank(v string) int {
 	switch v {
 	case entity.DesignViewFront:
@@ -515,10 +520,14 @@ func viewRank(v string) int {
 		return 2
 	case entity.DesignViewSideR:
 		return 3
-	case entity.DesignViewDetail:
+	case entity.DesignViewThreeQuarterL:
 		return 4
-	default:
+	case entity.DesignViewThreeQuarterR:
 		return 5
+	case entity.DesignViewDetail:
+		return 6
+	default:
+		return 7
 	}
 }
 

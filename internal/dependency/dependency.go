@@ -2033,6 +2033,12 @@ type (
 		// HidePicture is the only persistent verb for picture invisibility; its four guards read
 		// in the same transaction as the update.
 		HidePicture(ctx context.Context, pictureID int, hidden bool, actor string) (*entity.DesignPicture, error)
+		// MediaHeldDisplayOnly answers, for a set of media ids, WHICH of them some design picture
+		// holds as DISPLAY-ONLY (0361, D-24) — on any card: the flag is a statement about the file
+		// («never to a paid call»), and the card boundary is somebody else's door. It is the one
+		// query the money door asks before reserving a run; an empty input answers empty without
+		// touching the base. Ids that no picture holds are simply absent from the answer.
+		MediaHeldDisplayOnly(ctx context.Context, mediaIDs []int) ([]int, error)
 		// SetPictureSelected marks a picture as CHOSEN, and un-marks it (W-12). It is NOT the
 		// other side of HidePicture — hidden says «do not show me this», selected says «this is
 		// the one» — and nothing is exclusive: many pictures may be chosen at once.
@@ -2316,6 +2322,16 @@ type (
 		// container header, which also catches a truncated download. Both types have a
 		// LOUD byte ceiling — an oversized payload is an error, never a stored prefix.
 		UploadContentNonRaster(ctx context.Context, raw []byte, contentType, folder, objectName string) (*pb_common.MediaFull, error)
+		// UploadContentModel stores a GLB model AND the raster preview that stands in for it as
+		// ONE media row (round 18, D-29): the full-size slot is the .glb (verified through its
+		// container header exactly as UploadContentNonRaster does, content_hash = its sha), the
+		// compressed and thumbnail slots are the preview's variants (a WebP and a 1080px
+		// thumbnail, real dimensions, a blurhash). The preview is checked by its bytes — JPEG,
+		// PNG or WebP by magic, header ceilings, a real decode — before either file is stored,
+		// and a failure after the model went up takes the model back: one call, one row, or
+		// nothing. An empty preview delegates to UploadContentNonRaster, so a model without a
+		// preview keeps the shape every model uploaded before this verb has.
+		UploadContentModel(ctx context.Context, raw, preview []byte, folder, objectName string) (*pb_common.MediaFull, error)
 	}
 
 	// ReaderAtCloser is what zip.NewReader needs plus the Close that releases whatever

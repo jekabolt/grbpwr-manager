@@ -109,16 +109,40 @@ const (
 // Словари полосы. CHECK в схеме намеренно нет (словарь растёт), поэтому проверяет их Go — и
 // отказ называет значение, а не отдаёт сырой 3819 с именем колонки.
 const (
-	DesignViewFront  = "front"
-	DesignViewBack   = "back"
-	DesignViewSideL  = "side_l"
-	DesignViewSideR  = "side_r"
-	DesignViewDetail = "detail"
+	DesignViewFront = "front"
+	DesignViewBack  = "back"
+	DesignViewSideL = "side_l"
+	DesignViewSideR = "side_r"
+	// DesignViewThreeQuarterL / DesignViewThreeQuarterR — ТРИ ЧЕТВЕРТИ слева и справа (круг 18,
+	// D-28: «добавь еще в слоты три четверти право и лево и как возможность для генерации»).
+	// Пятая и шестая стороны силуэта: они рождаются лениво первым касанием, адресуются по
+	// view_key, просятся у генерации флэта и рендера и правятся выборочно — ровно как четыре
+	// первые. Ключи выбраны по образцу `side_l`: сторона, затем подчёркивание, затем l|r.
+	DesignViewThreeQuarterL = "three_quarter_l"
+	DesignViewThreeQuarterR = "three_quarter_r"
+	DesignViewDetail        = "detail"
 )
 
-// DesignSilhouetteViews — четыре стороны, которые рождаются лениво первым касанием и
-// адресуются по view_key. Деталь в этот список НЕ входит: она адресуется своим id.
-var DesignSilhouetteViews = []string{DesignViewFront, DesignViewBack, DesignViewSideL, DesignViewSideR}
+// DesignSilhouetteViews — ШЕСТЬ сторон, которые рождаются лениво первым касанием и адресуются по
+// view_key. Деталь в этот список НЕ входит: она адресуется своим id.
+//
+// ⚠ ЭТО НЕ ТОТ СПИСОК, ИЗ КОТОРОГО СОБИРАЕТСЯ 3D — тот называется DesignCardinalViews, и различие
+// появилось вместе с тремя четвертями. Всякий читатель, которому нужны «стороны, которые можно
+// отдать поворотному столу», обязан спрашивать IsDesignCardinalView, а не этот список: шесть
+// плит превышают потолок Meshy (четыре картинки одного предмета), а именной маршрут fal имеет ровно
+// четыре слота — front, back, left, right — и три четверти ему некуда положить.
+var DesignSilhouetteViews = []string{
+	DesignViewFront, DesignViewBack, DesignViewSideL, DesignViewSideR,
+	DesignViewThreeQuarterL, DesignViewThreeQuarterR,
+}
+
+// DesignCardinalViews — ЧЕТЫРЕ ОРТОГОНАЛЬНЫЕ стороны, из которых строится 3D: перёд, спина, левый
+// и правый бок. Подмножество DesignSilhouetteViews, и подмножество ЗАМКНУТОЕ: оба маршрута сборки
+// (meshy: 1..4 картинки, image_urls[0] = перёд; fal: четыре именованных слота) принимают ровно эти
+// четыре и ничего сверх них. Три четверти — законная плита верстака и законный вход рендера, но
+// столу она не вид, а пятая картинка, то есть локальный отказ провайдера ДО сети либо, что хуже,
+// молча вычеркнутая сторона.
+var DesignCardinalViews = []string{DesignViewFront, DesignViewBack, DesignViewSideL, DesignViewSideR}
 
 // IsDesignSilhouetteView сообщает, адресуема ли сторона по view_key.
 func IsDesignSilhouetteView(v string) bool {
@@ -130,8 +154,18 @@ func IsDesignSilhouetteView(v string) bool {
 	return false
 }
 
+// IsDesignCardinalView сообщает, может ли сторона уехать в сборку 3D — см. DesignCardinalViews.
+func IsDesignCardinalView(v string) bool {
+	for _, s := range DesignCardinalViews {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
 // IsDesignGhostView сообщает, законна ли догадка о виде у загруженного файла либо у кадра
-// разреза. Четыре стороны плюс `detail`; пустая строка (догадки нет) законна отдельно.
+// разреза. Шесть сторон плюс `detail`; пустая строка (догадки нет) законна отдельно.
 func IsDesignGhostView(v string) bool {
 	return v == DesignViewDetail || IsDesignSilhouetteView(v)
 }
@@ -520,6 +554,11 @@ const DesignErrorCodeLibraryFull = "library_full"
 // на оба случая заставило бы экран гадать, какой из них ему показали.
 const DesignErrorCodeNoFrontRender = "no_front_render"
 
+// DesignErrorCodeDisplayOnlyInput — «во вход прогона попал кадр, помеченный ТОЛЬКО ДЛЯ ПОКАЗА»
+// (круг 18, D-24). Отказ стоит у денежной двери, рядом с `input_not_a_picture`, и называет медиа и
+// то, откуда оно приехало: человек чинит запрос, а не карточку.
+const DesignErrorCodeDisplayOnlyInput = "display_only_input"
+
 // DesignAssetKinds — три полки в том порядке, в каком их называет владелец: ткани, паттерны,
 // фурнитура. Порядок значим ровно настолько, насколько значим порядок полок на стене.
 var DesignAssetKinds = []string{DesignAssetKindFabric, DesignAssetKindPattern, DesignAssetKindHardware}
@@ -578,6 +617,11 @@ var (
 	ErrDesignCompositePlate = errors.New("design: composite_plate")
 	// ErrDesignHiddenPlate — скрытую плиту нельзя принять стороной.
 	ErrDesignHiddenPlate = errors.New("design: hidden_plate")
+	// ErrDesignDisplayOnly — кадр помечен ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24): он виден на листе и в
+	// артефактах и никогда не уезжает ни в один платный вызов. Поэтому он не встаёт ни в один слот
+	// верстака (слоты — это входы прогонов), не получает роли референса и не режется «для промпта».
+	// Три двери, один сентинел: клиент читает одно слово и показывает одно объяснение.
+	ErrDesignDisplayOnly = errors.New("design: display_only")
 	// ErrDesignWrongKind — кадр турнтейбла (kind=threed) не может стоять плитой листа.
 	ErrDesignWrongKind = errors.New("design: wrong_kind")
 	// ErrDesignPictureAlreadyInSlot — плита уже стоит в ДРУГОМ слоте этой карточки.
@@ -803,6 +847,10 @@ type DesignPicture struct {
 	// Selected — кадр помечен выбранным (0350, W-12). НЕ обратная сторона hidden_at: спрятать —
 	// убрать с глаз, выбрать — поднять над остальными; выбранных может быть несколько.
 	Selected bool `db:"selected"`
+	// DisplayOnly — кадр ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24): виден на листе и в артефактах, но никогда
+	// не уезжает ни в один платный вызов. Утверждение загружающего, замороженное при регистрации;
+	// кроп и флэттен наследуют его у родителя — разрез не делает картинку входом.
+	DisplayOnly bool `db:"display_only"`
 	// ColorwayId — ЧЕЙ это кадр (0356): FK product(id). NULL у флэта = колорвея нет по существу
 	// (двери записи флэту значения не дают); NULL у рендера/3D = кадр до оси либо колорвей
 	// удалён — «не атрибутирован», и читатель обязан различать эти два NULL парой с Kind.
@@ -1138,6 +1186,16 @@ type DesignUploadItem struct {
 	// загружающего, как и Kind: из пикселей колорвей не восстановить. С родом flat|pattern
 	// значение отказывается (ErrDesignColorwayForbidden) — у флэта колорвея нет по существу.
 	ColorwayId int
+	// CompositeViews — КАКИЕ ВИДЫ СКЛЕЕНЫ В ЭТОМ ОДНОМ ФАЙЛЕ (круг 18, D-26): снимок сцены 3D с
+	// нескольких ракурсов, положенный на карточку руками, объявляет себя мультивью ровно так же,
+	// как это делает прилёт генеративного прогона (`design_picture.composite_views`). Пусто =
+	// одиночный кадр. Два и более вида; ОДИН вид — это ghost_view, а не композит, и такой список
+	// отказывается. Вместе с GhostView не сочетается: у композита догадки о виде нет по
+	// построению. Композит в слот не встаёт — его сначала режут (store/design/bench.go).
+	CompositeViews []string
+	// DisplayOnly — кадр ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24): виден на листе и в артефактах, но никогда
+	// не уезжает ни в один платный вызов и не встаёт ни в один слот.
+	DisplayOnly bool
 }
 
 // DesignBatchRegister — один жест загрузки: пачка плюс её картинки, опционально с постановкой

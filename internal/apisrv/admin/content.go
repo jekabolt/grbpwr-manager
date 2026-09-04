@@ -241,8 +241,15 @@ func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadCo
 //
 // NOTHING IS SPENT HERE. No generator is called; this verb puts bytes on a shelf. Filing them onto
 // a card is RegisterDesignUpload's job, with `kind: "threed"`, and that verb charges nothing either.
+//
+// THE PREVIEW RIDES IN THE SAME CALL (round 18, D-29), and the content type is no longer named
+// here at all: the bucket's model door stores model/gltf-binary and nothing else by construction,
+// which is a stronger form of the «one verb, one type» rule than a literal a copy could get wrong.
+// An empty preview is the old door — a row whose three url slots are the .glb; a preview makes the
+// thumbnail and compressed slots a real picture. The preview's refusals wrap the same sentinel as
+// the model's, so a bad preview is the client's fault (InvalidArgument) exactly as a bad model is.
 func (s *Server) UploadContentModel(ctx context.Context, req *pb_admin.UploadContentModelRequest) (*pb_admin.UploadContentModelResponse, error) {
-	media, err := s.bucket.UploadContentNonRaster(ctx, req.GetRaw(), "model/gltf-binary", s.bucket.GetBaseFolder(), bucket.GetMediaName())
+	media, err := s.bucket.UploadContentModel(ctx, req.GetRaw(), req.GetPreview(), s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload content model",
 			slog.String("err", err.Error()),

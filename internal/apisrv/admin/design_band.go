@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -55,6 +56,10 @@ var designRefusals = []struct {
 	{entity.ErrDesignForeignCardPlate, codes.FailedPrecondition, "foreign_card_plate"},
 	{entity.ErrDesignCompositePlate, codes.FailedPrecondition, "composite_plate"},
 	{entity.ErrDesignHiddenPlate, codes.FailedPrecondition, "hidden_plate"},
+	// ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24) — один токен на три двери стора (слот, роль референса, разрез
+	// «для промпта»); денежная дверь прогона отказывает своим `display_only_input`, потому что там
+	// нужно назвать ещё и ИСТОЧНИК входа.
+	{entity.ErrDesignDisplayOnly, codes.FailedPrecondition, "display_only"},
 	{entity.ErrDesignWrongKind, codes.FailedPrecondition, "wrong_kind"},
 	{entity.ErrDesignPictureAlreadyInSlot, codes.FailedPrecondition, "picture_already_in_slot"},
 	{entity.ErrDesignDetailNameRequired, codes.FailedPrecondition, "detail_name_required"},
@@ -425,11 +430,37 @@ func (s *Server) RegisterDesignUpload(ctx context.Context, req *pb_admin.Registe
 			return nil, status.Errorf(codes.InvalidArgument,
 				"items.%d.kind %q is not a kind of design picture", i, it.GetKind())
 		}
+		// ОБЪЯВЛЕННОЕ МУЛЬТИВЬЮ (D-26) — ФОРМА ПРОВЕРЯЕТСЯ У ДВЕРИ, С ИМЕНЕМ ПОЛЯ. Стор проверяет то
+		// же самое (checkUploadCompositeViews) — он последнее место, которое ещё может отказать, — но
+		// его отказ приходит без индекса элемента, а человеку чинить конкретную строку пачки.
+		if n := len(it.GetCompositeViews()); n > 0 {
+			if n == 1 {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"items.%d.composite_views names one view %q — one view is a ghost_view, not a composite",
+					i, it.GetCompositeViews()[0])
+			}
+			if it.GetGhostView() != "" {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"items.%d.composite_views and items.%d.ghost_view %q together — a composite has no single view",
+					i, i, it.GetGhostView())
+			}
+			for j, v := range it.GetCompositeViews() {
+				if !entity.IsDesignGhostView(v) {
+					return nil, status.Errorf(codes.InvalidArgument,
+						"items.%d.composite_views.%d %q is not a view of the garment", i, j, v)
+				}
+			}
+		}
 		items = append(items, entity.DesignUploadItem{
 			MediaId: int(it.GetMediaId()), GhostView: it.GetGhostView(), Kind: it.GetKind(),
 			// Колорвей — утверждение загружающего, как и род (0356); сторожа (ось рода, граница
 			// карточки) стоят в сторе, в той же транзакции, что вставка.
 			ColorwayId: int(it.GetColorwayId()),
+			// Мультивью и «только для показа» — тоже утверждения загружающего (D-26, D-24).
+			// Композит в слот не встаёт: `target` на таком элементе отказывает `composite_plate`
+			// тем же сторожем и в той же транзакции, что и лист прогона (store/design/bench.go).
+			CompositeViews: it.GetCompositeViews(),
+			DisplayOnly:    it.GetDisplayOnly(),
 		})
 	}
 	in := entity.DesignBatchRegister{
@@ -626,8 +657,25 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "frames.%d: %v", i, err)
 		}
+		// ⚠ ИМЯ ОБЪЕКТА КАДРА УНИКАЛЬНО НА ПОПЫТКУ, И ЭТО ПОЧИНКА, А НЕ УКРАШЕНИЕ (D-18 круга 18).
+		//
+		// Здесь стояло `crop-<parentId>-<i>` — имя, ОДИНАКОВОЕ у любого разреза одного и того же
+		// листа. А `uploadVerbatimImageObj` при провале загрузки МИНИАТЮРЫ убирает за собой первые
+		// два варианта (`cleanupUploadedVariants(full, compressed)`) и оставляет третий. Значит
+		// провалившаяся попытка и успешный повтор писали в ОДНИ И ТЕ ЖЕ ключи, и уборка первой
+		// сносила объекты, на которые смотрит строка второй.
+		//
+		// ЗАМЕРЕНО НА БЕТЕ, а не выведено: из 28 кадров разреза у трёх (все — куски листа 75)
+		// `-og.png` и `-compressed.webp` отдают 403 AccessDenied, а `-thumb.webp` — 200. S3 отвечает
+		// AccessDenied и на ОТСУТСТВУЮЩИЙ ключ, когда у запрашивающего нет ListBucket, то есть двух
+		// объектов из трёх просто нет. Плитка полосы берёт миниатюру и рисуется, зум и артефакты
+		// берут полный размер и получают битый кадр — ровно то, что владелец видит на снимке.
+		//
+		// Метка времени в наносекундах — та же мера уникальности, которой пользуется вся остальная
+		// библиотека (`20260903232243470bc65`), и её достаточно: два разреза одного листа в одну
+		// наносекунду невозможны, потому что оба идут через один вызов этого метода.
 		media, err := s.bucket.UploadContentImageVerbatim(ctx, raw, "design",
-			fmt.Sprintf("crop-%d-%d", parent.Id, i))
+			fmt.Sprintf("crop-%d-%d-%d", parent.Id, i, time.Now().UTC().UnixNano()))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "failed to store a design crop",
 				slog.String("err", err.Error()))
@@ -1078,7 +1126,9 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		// ЧЕЙ КАДР (0356): 0 на флэте = «оси нет по существу», 0 на рендере/3D = «не
 		// атрибутирован» (до оси либо колорвей удалён); различает их пара с Kind.
 		ColorwayId: int32(entity.DesignColorwayOrNone(p.ColorwayId)),
-		CreatedAt:  timestamppb.New(p.CreatedAt),
+		// ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24): виден в артефактах, не вход ни одного прогона.
+		DisplayOnly: p.DisplayOnly,
+		CreatedAt:   timestamppb.New(p.CreatedAt),
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)

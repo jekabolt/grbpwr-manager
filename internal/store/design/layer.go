@@ -557,9 +557,15 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		mixed := false
 		runID, batchID, derived := any(nil), any(nil), any(nil)
 		cw := any(nil)
+		// ONLY-FOR-SHOWING IS INHERITED FROM THE BASE (0361, D-24): a layer drawn over a display-only
+		// picture flattens into a display-only picture. An edit does not turn a file the person
+		// brought in «for the artifacts only» into a prompt input; a layer drawn from nothing has no
+		// base and is an ordinary picture.
+		displayOnly := false
 		if parent != nil {
 			kind = parent.Kind
 			mixed = parent.MixedInput
+			displayOnly = parent.DisplayOnly
 			runID, batchID, derived = nullInt32(parent.RunId), nullInt32(parent.BatchId), parent.Id
 			// Флэттен — СИБЛИНГ подложки и наследует её колорвей (0356): перекрашенный слоем
 			// рендер колорвея A остаётся кадром колорвея A, иначе он выпал бы из своего верстака.
@@ -592,14 +598,16 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
 				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
-				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev)
+				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev,
+				 display_only)
 			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
-			        :src, :mixed, :layer)`,
+			        :src, :mixed, :layer, :display_only)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
 				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
 				"derivation": derivation,
 				"src":        src, "mixed": mixed, "layer": layer.Rev,
+				"display_only": displayOnly,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to file the flattened design layer: %w", err)

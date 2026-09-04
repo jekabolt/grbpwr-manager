@@ -51,6 +51,24 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 		if err := refuseForeignMedia(ctx, db, req.TechCardId, req.MediaId); err != nil {
 			return err
 		}
+		// A DISPLAY-ONLY PICTURE GETS NO ROLE (0361, D-24). A role is a promise to feed the picture
+		// to every run that reads the card's references; the flag says the file is for showing
+		// only. Refused on a NON-EMPTY role only — clearing a role is always legal — and read in
+		// this transaction, as every guard here is. Asked of the media, not of the card: the flag is
+		// a statement about the file, and the money door downstream asks the same question the same
+		// way (MediaHeldDisplayOnly).
+		if req.Role != "" {
+			held, err := storeutil.QueryCountNamed(ctx, db,
+				`SELECT COUNT(*) FROM design_picture WHERE media_id = :media AND display_only = 1`,
+				map[string]any{"media": req.MediaId})
+			if err != nil {
+				return fmt.Errorf("failed to check whether media %d is display-only: %w", req.MediaId, err)
+			}
+			if held > 0 {
+				return fmt.Errorf("%w: media %d is a display-only picture of the card and takes no reference role",
+					entity.ErrDesignDisplayOnly, req.MediaId)
+			}
+		}
 
 		// ГРАНИЦА ДЕТАЛИ — РЯДОМ С ГРАНИЦЕЙ МЕДИА, В ТОЙ ЖЕ ТРАНЗАКЦИИ И ПО ТОМУ ЖЕ ДОВОДУ (0360).
 		//

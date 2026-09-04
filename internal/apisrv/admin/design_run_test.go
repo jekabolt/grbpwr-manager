@@ -44,6 +44,22 @@ func designRunCtx() context.Context {
 	return authsrv.PutAdminUsername(fullAccessCtx(), "designer")
 }
 
+// designStubNoDisplayOnly — СТОР ПОЛОСЫ ДЛЯ РИГОВ, КОТОРЫЕ ПРО «ТОЛЬКО ДЛЯ ПОКАЗА» НЕ ПРОБУЮТ.
+//
+// ⚠ ЗАЧЕМ ОН ПОНАДОБИЛСЯ И ЧТО ЭТО ГОВОРИТ — тот же довод, что у designStubAnyMedia. С круга 18
+// (D-24) КАЖДЫЙ старт прогона и черновика спрашивает у стора, не помечен ли какой-нибудь из его
+// входов «только для показа» (designRefuseDisplayOnlyInputs → MediaHeldDisplayOnly), поэтому
+// всякий стенд StartDesignRun/DraftDesignIdea обязан ждать этот вызов — иначе строгий mockery
+// роняет пробу на незаявленном вызове. Это цена решения «дверь до денег, а не фильтр в отборе»,
+// и она тут видна: 82 пробы покраснели одним вызовом, пока его не заявили.
+//
+// ОТДАЁТСЯ «НИЧЕГО НЕ ПОМЕЧЕНО», И ЭТО ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ, А НЕ ПУСТАЯ ЗАГЛУШКА: дверь
+// исполняется на каждом из этих стендов и отказывать не должна; отказ, который она начнёт выдавать
+// по ошибке, покраснеет здесь же. Пробы САМОЙ двери ставят своё ожидание (design_display_only_test.go).
+func designStubNoDisplayOnly(design *mocks.MockDesign) {
+	design.EXPECT().MediaHeldDisplayOnly(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+}
+
 // ─────────────────────── стенд ───────────────────────
 
 type designRunRig struct {
@@ -67,6 +83,7 @@ func newDesignRunRig(t *testing.T, card *entity.TechCard, band *entity.DesignBan
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
 	designStubAnyMedia(t, rig.repo)
+	designStubNoDisplayOnly(rig.design)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
 	rig.design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).Return(band, nil).Maybe()
 	rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
@@ -643,6 +660,7 @@ func newDraftIdeaRig(t *testing.T, client *openrouter.Client) *designRunRig {
 	}
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
+	designStubNoDisplayOnly(rig.design)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).
 		Return(designMoodCard(), nil).Maybe()
 	// ЧЕРНОВИК ИДЕИ ТЕПЕРЬ РАЗРЕШАЕТ КАРТИНКИ ДОСКИ В АДРЕСА, поэтому медиа-стор нужен и здесь.
@@ -873,6 +891,7 @@ func newDraftRigWithCard(
 	}
 	repo.EXPECT().TechCards().Return(cards).Maybe()
 	repo.EXPECT().Design().Return(design).Maybe()
+	designStubNoDisplayOnly(design)
 	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
 	// КАРТИНКИ ДОСКИ РАЗРЕШАЮТСЯ В АДРЕСА: с этого места черновик идеи их ЧИТАЕТ (решение
 	// владельца «только в генерации»), поэтому стенд обязан уметь их отдать.

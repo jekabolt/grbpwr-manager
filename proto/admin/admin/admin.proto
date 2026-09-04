@@ -139,11 +139,23 @@ service AdminService {
   // No fourth constant is written here for the effective limit: two ceilings for one question are
   // how a file the checker accepts and the transport refuses come to have two different answers.
   //
-  // WHAT COMES BACK, AND WHAT THE CLIENT DOES WITH IT. One media row whose full-size, compressed
-  // and thumbnail urls ALL point at the one .glb object (there is no frame to resize), width and
-  // height 0, no blurhash. The client then calls RegisterDesignUpload with that media_id and
-  // `kind: "threed"` — no ghost_view, no colourway unless it means one — and the model lands in
-  // 3D MODELS OF THIS CARD as a first-class row that is visibly not a run output.
+  // WHAT COMES BACK, AND WHAT THE CLIENT DOES WITH IT. ONE media row for the model AND its
+  // preview together (round 18, D-29: «загружали glb и + миниатюру фото превью … и это все как один
+  // объект»). The full-size slot is the .glb (width and height 0, content_hash = the sha of the
+  // model); the compressed and thumbnail slots are the RASTER PREVIEW handed in beside it — a
+  // WebP of the preview and a 1080px thumbnail of it, with real dimensions and a blurhash. So every
+  // list that draws `thumbnail` gets a picture, every viewer that reads `full_size` gets the model,
+  // and there is no second row to pair, order or lose. Without a preview the row keeps the old
+  // shape: all three slots point at the .glb. The client then calls RegisterDesignUpload with that
+  // media_id and `kind: "threed"` — no ghost_view, no colourway unless it means one — and the model
+  // lands in 3D MODELS OF THIS CARD as a first-class row that is visibly not a run output.
+  //
+  // THE PREVIEW IS CHECKED AS STRICTLY AS THE MODEL: sniffed by magic bytes (JPEG, PNG or WebP —
+  // the three a canvas snapshot produces; an animated GIF, a vector, a model or a video in that
+  // field is refused), its header read against the raster dimension and pixel ceilings, and
+  // decoded before a byte of either file is stored. ONE CALL, ONE ROW, OR NOTHING: a preview that
+  // fails after the model went up takes the model back with it — a model row without the preview
+  // it was sent with is exactly the half-object this verb exists not to mint.
   //
   // ⚠ A MODEL FILED THIS WAY IS NOT WIRED AS THE INPUT OF ANY RUN, and that is a decision rather
   // than an omission. It may be viewed, kept and downloaded. A threed picture can only stand in a
@@ -3773,11 +3785,18 @@ message UploadContentModelRequest {
   // trailing bytes after a complete container are allowed on purpose). Practical ceiling 50 MiB —
   // the transport's, not the bucket's; see the rpc's comment.
   bytes raw = 1;
+  // OPTIONAL raster preview of the model — the still that stands in for the .glb wherever a list
+  // draws a tile (D-29). JPEG, PNG or WebP, checked by its bytes exactly as `raw` is checked by its
+  // header; anything else is InvalidArgument and NOTHING is stored, the model included. Empty =
+  // no preview: the media row keeps the old shape (every url slot is the .glb), which is what every
+  // model uploaded before this field looks like. The same raster ceilings as UploadContentImage.
+  bytes preview = 2;
 }
 
 message UploadContentModelResponse {
-  // One media row, three url slots all pointing at the one .glb object, width and height 0. Feed
-  // its `id` to RegisterDesignUpload with kind = "threed" to file it onto a card.
+  // One media row. `full_size` is the .glb (width and height 0); `compressed` and `thumbnail` are
+  // the preview's variants when one was sent, and the .glb again when none was. Feed its `id` to
+  // RegisterDesignUpload with kind = "threed" to file it onto a card.
   common.MediaFull media = 1;
 }
 
@@ -11733,7 +11752,8 @@ message DesignBenchSlotRef {
   // A ONEOF rather than two fields, so «both at once» is not a state anybody can send and the
   // server has no contradiction to adjudicate.
   oneof slot {
-    // front | back | side_l | side_r — the four silhouette sides, each of which is its own slot.
+    // front | back | side_l | side_r | three_quarter_l | three_quarter_r — the six silhouette
+    // sides, each of which is its own slot.
     //
     // ALSO `detail`, AND THAT VALUE MEANS «MINT A NEW DETAIL SLOT»: it addresses no existing row,
     // so a name is REQUIRED alongside it (SetDesignBenchSlotRequest.new_detail_name,
@@ -12121,8 +12141,10 @@ message SetDesignPictureSelectedResponse {
 // through UploadContentImage; this only says what the file IS.
 message DesignUploadItem {
   int32 media_id = 1; // FK media(id)
-  // The view this file is GUESSED to be: front | back | side_l | side_r | detail. Empty = no guess.
-  // A guess, never a fact — a human confirms it by putting the plate into a slot.
+  // The view this file is GUESSED to be: front | back | side_l | side_r | three_quarter_l |
+  // three_quarter_r | detail. Empty = no guess. A guess, never a fact — a human confirms it by
+  // putting the plate into a slot. Not combinable with composite_views: a composite has no single
+  // view to guess.
   string ghost_view = 2;
   // WHAT THE FILE IS: flat | render | threed. Empty = flat. Unlike ghost_view this is a STATEMENT,
   // not a guess — the uploader knows whether the file they are dragging in is a line drawing or a
@@ -12139,6 +12161,36 @@ message DesignUploadItem {
   // refused when the colourway belongs to another card (`foreign_colorway`). 0 on a render files
   // it as unattributed, exactly what every render uploaded before this axis is.
   int32 colorway_id = 4;
+  // THE VIEWS GLUED INTO THIS ONE FILE (round 18, D-26: «если ты сделал снапшот из 3д он
+  // сохраняется как мультивью»). A snapshot of the 3D scene taken from several angles files itself
+  // as a MULTIVIEW, exactly as a `layout: one` run output does — the value lands in
+  // `design_picture.composite_views`, which until this field had a single writer (the arrival of a
+  // generative run; measured on beta: 18 of 73 pictures carry it, none of the 21 uploads).
+  //
+  // Two or more of front | back | side_l | side_r | three_quarter_l | three_quarter_r | detail, in
+  // LEFT-TO-RIGHT order of the sheet — the split reads them by position. Repeats are legal (two
+  // detail frames on one sheet), as they are on a run's sheet. Empty = a single picture. ONE entry
+  // is InvalidArgument: one view is a `ghost_view`, not a composite. Together with a non-empty
+  // ghost_view it is InvalidArgument too — a composite has no single view.
+  //
+  // ⚠ A COMPOSITE DOES NOT STAND IN A SLOT, and this door does not change that: `target` naming
+  // an item that declares composite_views is refused with `composite_plate` by the very same guard
+  // that refuses a run's sheet (store/design/bench.go), inside the same transaction, so the whole
+  // gesture — batch, pictures, placement — is rolled back together. A multiview is a SHEET, and a
+  // sheet is split first (SplitDesignPicture); the crops are what go on the bench.
+  repeated string composite_views = 5;
+  // ONLY FOR SHOWING (round 18, D-24: «медиа без слотов КОТОРЫЕ НЕ ПОЙДУТ в промпты они нужны
+  // только для визуализации в артефактах»). A picture filed with this flag is visible on the sheet
+  // and in ARTIFACTS and NEVER reaches a paid call: it is refused a bench slot (`display_only` —
+  // slots are what runs read), refused a reference role (`display_only`), refused a split «for the
+  // prompt» (`display_only`), and — the door that actually holds the money — refused as an input of
+  // any run or draft BEFORE the reserve (`display_only_input`, naming the media and where it came
+  // from), whichever of the five input sources it arrives through. A crop or a flatten of such a
+  // picture inherits the flag: cutting a picture up does not make it an input.
+  //
+  // Read back as DesignPicture.display_only. Not idempotency-compared on a retried batch (the same
+  // inherited hole as `kind`; see the store).
+  bool display_only = 6;
 }
 
 message RegisterDesignUploadRequest {
@@ -12329,8 +12381,10 @@ message ImportDesignVectorResponse {
 message SetDesignReferenceRoleRequest {
   int32 tech_card_id = 1;
   int32 media_id = 2; // FK media(id); must be a reference image the card holds
-  // front | back | side_l | side_r | detail. EMPTY CLEARS the role — «no side stated» is a real
-  // answer and must not require a second verb.
+  // front | back | side_l | side_r | three_quarter_l | three_quarter_r | detail. EMPTY CLEARS the
+  // role — «no side stated» is a real answer and must not require a second verb. A media the card
+  // holds as a display-only picture is refused (`display_only`): a role is a promise to feed the
+  // prompt, and that picture must never reach one.
   string role = 3;
   int32 ordinal = 4; // order in the prompt; lower goes first
   // The human's words about THIS reference — «only the collar», «the fabric, not the cut» (W-3).

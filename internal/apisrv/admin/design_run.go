@@ -692,6 +692,13 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseNonPictureInputs(ctx, params, inputs); err != nil {
 		return nil, err
 	}
+	// ─── КАДР «ТОЛЬКО ДЛЯ ПОКАЗА» — ОТКАЗ ЗДЕСЬ ЖЕ, ПО ТЕМ ЖЕ ПЯТИ ИСТОЧНИКАМ (0361, D-24) ───
+	//
+	// Та же позиция и тот же довод, что у двери формата строкой выше: входы уже собраны, деньги
+	// ещё нет. Довод, почему это дверь, а не фильтр в отборе плит, — в шапке design_input_format.go.
+	if err := s.designRefuseDisplayOnlyInputs(ctx, designRunInputMediaRefs(params, inputs)); err != nil {
+		return nil, err
+	}
 	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
 	// иначе в колонку уедет то, что прислал клиент.
 	designStampSourcePictures(kind, params, designRunPlates(src, parent))
@@ -1865,6 +1872,11 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if ref, ct, bad := designFirstNonPictureInput(designBoardMediaRefs(attachedIDs, boardURLs)); bad {
 		return nil, designNonPictureRefusal(ref, ct)
 	}
+	// И ТА ЖЕ ДВЕРЬ «ТОЛЬКО ДЛЯ ПОКАЗА» (0361, D-24), тоже до денег: медиа кадра, помеченного так,
+	// человек может положить на доску, и оно уехало бы в платный вызов, минуя полосу целиком.
+	if err := s.designRefuseDisplayOnlyInputs(ctx, designBoardMediaRefs(attachedIDs, boardURLs)); err != nil {
+		return nil, err
+	}
 	prompt := designDraftIdeaPrompt(card, mood, attachedIDs)
 
 	// СНИМОК ВХОДОВ ТЕКСТОВОГО ПРОГОНА — ЭТО ДОСКА, И ТОЛЬКО ОНА. Ни refs, ни slots: ни одного
@@ -2271,6 +2283,9 @@ func designRefuseForeignFixSlots(cardID int, spoken *pb_common.DesignRunParams, 
 	matchColorway, wantColorway := designBenchColorwayScope(src)
 	usableIDs := make(map[int]struct{}, len(bench))
 	usableViews := make(map[string]struct{}, len(bench))
+	// viewOfUsableID — сторона каждого пригодного слота, для проверки 3D ниже: адрес по id тоже
+	// умеет назвать три четверти, и молча урезать прогон он умеет ровно так же, как адрес по виду.
+	viewOfUsableID := make(map[int]string, len(bench))
 	for _, slot := range bench {
 		if slot.TechCardId != cardID || entity.DesignKindOrFlat(slot.Kind) != want {
 			continue
@@ -2286,6 +2301,7 @@ func designRefuseForeignFixSlots(cardID int, spoken *pb_common.DesignRunParams, 
 		}
 		usableIDs[slot.Id] = struct{}{}
 		usableViews[slot.ViewKey] = struct{}{}
+		viewOfUsableID[slot.Id] = slot.ViewKey
 	}
 	for i, id := range ids {
 		if _, ok := usableIDs[int(id)]; !ok {
@@ -2303,6 +2319,32 @@ func designRefuseForeignFixSlots(cardID int, spoken *pb_common.DesignRunParams, 
 				"params.fix_targets.%d %q has no %s plate on colourway %d of tech card %d, so this run "+
 					"would silently be built from fewer sides than were picked (0 = the colourway-less bench)",
 				i, v, want, wantColorway, cardID)
+		}
+	}
+	// ─── 3D ЧИТАЕТ ЧЕТЫРЕ ОРТОГОНАЛЬНЫЕ СТОРОНЫ, И СУЖЕНИЕ НЕ СМЕЕТ НАЗВАТЬ ПЯТУЮ (D-28) ───
+	//
+	// Три четверти — законная плита рендер-верстака и законный вход рендера, но ни один из двух
+	// маршрутов сборки её не примет: у fal четыре именованных слота (front/back/left/right), у Meshy
+	// потолок в четыре вида одного предмета, а воркер (designgen.threedPictures) отбирает плиты
+	// ровно по entity.IsDesignCardinalView. Прогон 3D, суженный до `front + three_quarter_l`,
+	// прошёл бы обе проверки выше (плита есть, колорвей тот) и уехал бы оплаченным с ОДНОЙ
+	// стороной вместо двух — та самая молча урезанная сборка, о которой написано в шапке. Спросить
+	// надо здесь, у того, кто назвал, и ДО денег.
+	if src.Kind == entity.DesignRunKindThreed {
+		for i, v := range views {
+			if !entity.IsDesignCardinalView(v) {
+				return status.Errorf(codes.InvalidArgument,
+					"params.fix_targets.%d %q is not a side a 3D build can read: the turntable takes the four "+
+						"cardinal sides (front, back, side_l, side_r), and a run narrowed to a three-quarter "+
+						"plate would be paid for and built from fewer sides than were picked", i, v)
+			}
+		}
+		for i, id := range ids {
+			if v, ok := viewOfUsableID[int(id)]; ok && !entity.IsDesignCardinalView(v) {
+				return status.Errorf(codes.InvalidArgument,
+					"params.fix_slot_ids.%d %d stands on %q, which is not a side a 3D build can read: the "+
+						"turntable takes the four cardinal sides (front, back, side_l, side_r)", i, id, v)
+			}
 		}
 	}
 	return nil
