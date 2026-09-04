@@ -14,6 +14,32 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// designFeedKinds — ЧТО ЛЕНТА ПОКАЗЫВАЕТ, И ЧЕГО ОНА НЕ ПОКАЗЫВАЕТ (B-21).
+//
+// Владелец дословно: «генерация DRAFT OF THE CONSTRUCTION не долна попадать в историю генераций в
+// принципе». Текстовый черновик — строка РЕЕСТРА, а не ленты: он оплачен, у него есть попытка,
+// оценка и снимок входов, он двигает дневной бюджет — но у него нет ни кадра, ни верстака, ни
+// колорвея, а его ответ живёт на самом органе черновика, под кнопкой, а не в ленте.
+//
+// ⚠ ПРЕДИКАТ СТОИТ НА СЕРВЕРЕ, И ЭТО НЕ ВКУС. Заголовок ленты («N runs», «page 1 of M»), притязание
+// firstRunId (runs.length >= totalRuns) и полка архива делят ЗАГРУЖЕННЫЕ строки на числа, которые
+// приходят ОТСЮДА. Клиентский `.filter` заставил бы каждое из этих трёх чисел врать ровно на число
+// черновиков — и врать правдоподобно, то есть незаметно.
+//
+// ⚠ ГДЕ ЕГО НЕТ И ПОЧЕМУ, ПОИМЕННО:
+//   - designMaxRrev — черновик не несёт rrev вовсе (RequestedOutputs: 0), считать его там нечего;
+//   - деньги (design_budget_day, design_run.price_*) — оплаченный вызов без строки в регистре это
+//     дыра в бухгалтерии, и убрать его оттуда владелец не просил;
+//   - GetRun(run_id) — прямое чтение по id не лента; строка остаётся живой, читаемой и ценной.
+//
+// ⚠ КУРСОР ОТ ЭТОГО НЕ ДВИГАЕТСЯ: предикат СУЖАЕТ набор, а `id < :cursor` под `ORDER BY id DESC`
+// остаётся тем же ключом (тот же довод, что у `archived_at` ниже в listRunsTx).
+//
+// ⚠ РОД СОБИРАЕТСЯ ИЗ КОНСТАНТЫ, А НЕ ВПИСАН СТРОКОЙ: вторая, написанная от руки копия
+// 'draft_idea' разошлась бы с entity.DesignRunKindDraftIdea в тот день, когда род переименуют, и
+// разошлась бы МОЛЧА — предикат остался бы синтаксически верным и перестал бы что-либо прятать.
+const designFeedKinds = `kind <> '` + entity.DesignRunKindDraftIdea + `'`
+
 // THE FOUR HEADER AGGREGATES, AS NAMED CONSTANTS.
 //
 // They are constants rather than inline strings so that «counted over the whole card» is a
@@ -21,9 +47,13 @@ import (
 // tech_card_id and by nothing else: no LIMIT, no cursor, no join to the page. Counting the loaded
 // page instead would truncate the header by exactly the amount that is not on the screen — a card
 // with forty runs would caption itself «12», and the number would look plausible.
+//
+// ⚠ ДВА ИЗ НИХ СЧИТАЮТ ЛЕНТУ, А НЕ РЕЕСТР (B-21): у обоих счётчиков прогонов стоит designFeedKinds,
+// потому что число в заголовке ленты обязано совпадать с тем, что в ленте лежит. Третий (rrev) и
+// счётчик пачек нетронуты — они отвечают на другие вопросы.
 const (
-	designCountRuns         = `SELECT COUNT(*) FROM design_run WHERE tech_card_id = :card`
-	designCountArchivedRuns = `SELECT COUNT(*) FROM design_run WHERE tech_card_id = :card AND archived_at IS NOT NULL`
+	designCountRuns         = `SELECT COUNT(*) FROM design_run WHERE tech_card_id = :card AND ` + designFeedKinds
+	designCountArchivedRuns = `SELECT COUNT(*) FROM design_run WHERE tech_card_id = :card AND archived_at IS NOT NULL AND ` + designFeedKinds
 	designMaxRrev           = `SELECT COALESCE(MAX(rrev), 0) FROM design_run WHERE tech_card_id = :card`
 	designCountBatches      = `SELECT COUNT(*) FROM design_batch WHERE tech_card_id = :card`
 	// designCountFabricRenders — «ЕСТЬ ЛИ У КАРТОЧКИ ФАБРИК-РЕНДЕРЫ ВООБЩЕ» (W-13). Считается по
@@ -483,7 +513,10 @@ func listRunsTx(ctx context.Context, rep dependency.Repository, p entity.DesignR
 		limit = MaxRunPageLimit
 	}
 	db := rep.DB()
-	where := "tech_card_id = :card"
+	// ⚠ ТРЕТИЙ ПРЕДИКАТ СТРАНИЦЫ — РОД (B-21), И ОН ЖЕ СТОИТ У ОБОИХ СЧЁТЧИКОВ ЗАГОЛОВКА. Страница
+	// без него, а счётчики с ним (или наоборот) — это лента, чей заголовок обещает строки, которых
+	// на ней нет: пейджер считает «страницу N из M» по числу, которое пришло из другого запроса.
+	where := "tech_card_id = :card AND " + designFeedKinds
 	params := map[string]any{"card": p.TechCardId, "limit": limit + 1}
 	if !p.IncludeArchived {
 		where += " AND archived_at IS NULL"
