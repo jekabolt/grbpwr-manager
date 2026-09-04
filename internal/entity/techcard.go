@@ -1775,6 +1775,10 @@ type TechCardBomItem struct {
 	Supplier        sql.NullString      `db:"supplier"`
 	SupplierRef     sql.NullString      `db:"supplier_ref"`
 	Color           sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	// Pantone — цвет строки на стадии замысла, до выбора артикула (0363). У каталожного материала
+	// свой `pantone`, и он СТАРШЕ: он про то, что реально купят. Это поле отвечает на вопрос
+	// раньше — когда `material_id` ещё пуст, а цвет уже решён.
+	Pantone sql.NullString `db:"pantone"`
 	Composition     sql.NullString      `db:"composition"`
 	Spec            sql.NullString      `db:"spec"`
 	Unit            sql.NullString      `db:"unit"`

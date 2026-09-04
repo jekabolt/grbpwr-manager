@@ -562,7 +562,7 @@ const bomItemUpdateQuery = `
 		kind_note=IF(:kind_note_omitted, kind_note, :kind_note),
 		is_sample=IF(:is_sample_omitted, is_sample, :is_sample),
 		name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
-		color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
+		color=:color, pantone=:pantone, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 		comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 		fabric_direction=IF(:fabric_direction_omitted, fabric_direction, :fabric_direction),
 		wastage_percent=:wastage_percent,
@@ -576,11 +576,11 @@ const bomItemUpdateQuery = `
 const bomItemInsertQuery = `
 	INSERT INTO tech_card_bom_item
 		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, is_sample, name, supplier, supplier_ref,
-		 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
+		 color, pantone, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
 		 fabric_weight_gsm, fabric_direction, wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at,
 		 wastage_applied_percent, qty_per_garment, spare_qty, line_key, price_source, price_snapshot_at)
 	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :is_sample, :name, :supplier, :supplier_ref,
-		 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
+		 :color, :pantone, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
 		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :wastage_source, :wastage_lay_count, :wastage_applied_at,
 		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :line_key, :price_source, :price_snapshot_at)`
 
@@ -837,6 +837,7 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"supplier":                 b.Supplier,
 		"supplier_ref":             b.SupplierRef,
 		"color":                    b.Color,
+		"pantone":                  b.Pantone,
 		"composition":              b.Composition,
 		"spec":                     b.Spec,
 		"unit":                     b.Unit,
@@ -1112,6 +1113,13 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
 		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,
 		       bi.color,
+		       -- ⚠ ГОЛОЕ ПОЛЕ СТРОКИ, А НЕ ЛЕСТНИЦА COALESCE, КАК У composition/spec/unit НИЖЕ.
+		       -- Лестница отдала бы каталожный pantone как значение строки, и первый же круговой
+		       -- рейс (прочитал, записал без правок) СКОПИРОВАЛ БЫ его в карточку и сдвинул бы
+		       -- подпись секции материалов у каждой строки, чей артикул несёт код, а сама она
+		       -- нет. Каталожный код действительно старше, но старшинство это вопрос ПОКАЗА, и
+		       -- решает его лист, а не хранение.
+		       bi.pantone,
 		       COALESCE(NULLIF(m.composition, ''), bi.composition) AS composition,
 		       COALESCE(NULLIF(m.spec, ''), bi.spec) AS spec,
 		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,

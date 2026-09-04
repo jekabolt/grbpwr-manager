@@ -932,6 +932,16 @@ message TechCardBomItem {
   // опустит поле целиком, скажет «не трогай», и число останется на слоте навсегда.
   google.type.Decimal qty_per_garment = 41;
   google.type.Decimal spare_qty = 42;
+  // ЦВЕТ PANTONE ЭТОЙ СТРОКИ — намерение стадии замысла, а не снимок каталога.
+  //
+  // ЗАЧЕМ ОТДЕЛЬНО ОТ `Material.pantone`, КОТОРЫЙ УЖЕ ЕСТЬ. Артикул выбирают ПОЗЖЕ, чем решают
+  // цвет: на CONSTRUCTION строка живёт с ролью и назначением, но без `material_id`, и записать
+  // цвет некуда — а решение уже принято. Когда артикул появится, каталожный цвет старше: он
+  // относится к тому, что реально купят.
+  //
+  // СВОБОДНЫЙ ТЕКСТ, А НЕ ЗАКРЫТЫЙ СПИСОК: PANTONE это чужой каталог из тысяч кодов, он
+  // обновляется, и словарь на нашей стороне устарел бы молча, отвергая законный код.
+  string pantone = 43;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;

@@ -3319,6 +3319,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			Supplier:                 nullStringFromPb(b.Supplier),
 			SupplierRef:              nullStringFromPb(b.SupplierRef),
 			Color:                    nullStringFromPb(b.Color),
+			// Pantone — цвет строки до выбора артикула (0363). Каталожный `material.pantone`
+			// старше: он про то, что реально купят.
+			Pantone:                  nullStringFromPb(b.Pantone),
 			Composition:              nullStringFromPb(b.Composition),
 			Spec:                     nullStringFromPb(b.Spec),
 			Unit:                     nullStringFromPb(b.Unit),
@@ -3783,6 +3786,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.
 			Supplier:    pbStringFromNull(b.Supplier),
 			SupplierRef: pbStringFromNull(b.SupplierRef),
 			Color:       pbStringFromNull(b.Color),
+			Pantone:     pbStringFromNull(b.Pantone),
 			Composition: pbStringFromNull(b.Composition),
 			Spec:        pbStringFromNull(b.Spec),
 			Unit:        pbStringFromNull(b.Unit),

@@ -1135,6 +1135,13 @@ func materialsTails(b *entity.TechCardBomItem) []any {
 			opKindDec("qty_per_garment", b.QtyPerGarment),
 			opKindDec("spare_qty", b.SpareQty),
 		),
+		// ЦВЕТ PANTONE ВХОДИТ В ПОДПИСЬ, в отличие от цвета выноски: код PANTONE это то, во что
+		// красят, а не то, чем различают строки на экране. Строка, у которой сменили код, — другая
+		// инструкция поставщику.
+		//
+		// ПАРОЙ, А НЕ ПОЗИЦИЕЙ, поэтому у строк без кода — а это каждая существующая — хвост не
+		// рождается вовсе и отпечаток не двигается.
+		operationKindTail("colour", opKindStr("pantone", b.Pantone)),
 	}
 	out := make([]any, 0, len(tails))
 	for _, t := range tails {
