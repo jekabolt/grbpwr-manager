@@ -207,6 +207,57 @@ func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadCo
 	}, nil
 }
 
+// UploadContentModel uploads a 3D model (glTF binary, .glb) into the media library — the same
+// shelf and the same MediaFull answer as UploadContentImage, UploadContentVideo and
+// UploadContentVector (owner, round 16, E-13: «в 3D в 3D MODELS OF THIS CARD добавь возможность
+// загрузить свою 3d модель»).
+//
+// ⚠ IT IS A SECOND THIN HANDLER RATHER THAN A content_type PARAMETER ON THE VECTOR ONE, and the
+// reason is written on that verb: «the content type is fixed by the verb, not read from the
+// request: this door stores image/svg+xml and nothing else, so a client cannot talk its way into
+// the GLB branch of the non-raster path». Adding a type field would reopen exactly that, in both
+// directions — an SVG could be pushed through the GLB branch and skip recraft.InspectSVG, which is
+// a security boundary and not a formality. One verb per content type keeps the routing decision on
+// this side of the wire.
+//
+// The gate that must not move is bucket.UploadContentNonRaster's: checkGLB reads the container
+// header and refuses anything that is not a glTF binary, or that DECLARES MORE BYTES THAN ARRIVED
+// — a truncated download, which opens in nothing while looking like a successful upload. Trailing
+// bytes after a complete container are deliberately accepted (see checkGLB's own comment: refusing
+// them would fail a 3D run already paid for), so "the header matches the payload" is not what is
+// promised and must not be written down as if it were.
+//
+// ⚠ WHAT ACTUALLY STOPS A BIG MODEL IS THE TRANSPORT, AND THE BUCKET'S CEILING IS UNREACHABLE FROM
+// HERE. Measured, in the order they bite: raw ≲ 50 MiB reaches this function; ~50…54 MiB dies at
+// grpcMaxRecvMsgSize with a bare ResourceExhausted; ≳ 54 MiB dies even earlier, at
+// maxAdminJSONBodyBytes (72 MiB of base64 = 54 MiB of model), as an HTTP 400. The bucket's 64 MiB
+// is therefore never reached over REST — it exists for the worker's own in-process downloads,
+// which do not cross this gateway. No constant is written here for the effective limit: one
+// question with two written answers is how they come to disagree.
+//
+// Error split is UploadContentVector's, for its reason: a refused payload (empty, oversized, not a
+// GLB) is the client's fault — InvalidArgument, with the checker's own words — while an S3 or DB
+// failure is Internal.
+//
+// NOTHING IS SPENT HERE. No generator is called; this verb puts bytes on a shelf. Filing them onto
+// a card is RegisterDesignUpload's job, with `kind: "threed"`, and that verb charges nothing either.
+func (s *Server) UploadContentModel(ctx context.Context, req *pb_admin.UploadContentModelRequest) (*pb_admin.UploadContentModelResponse, error) {
+	media, err := s.bucket.UploadContentNonRaster(ctx, req.GetRaw(), "model/gltf-binary", s.bucket.GetBaseFolder(), bucket.GetMediaName())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't upload content model",
+			slog.String("err", err.Error()),
+		)
+		code := codes.Internal
+		if errors.Is(err, bucket.ErrInvalidNonRaster) {
+			code = codes.InvalidArgument
+		}
+		return nil, status.Errorf(code, "failed to upload model: %v", err)
+	}
+	return &pb_admin.UploadContentModelResponse{
+		Media: media,
+	}, nil
+}
+
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
 	resp := &pb_admin.DeleteFromBucketResponse{}

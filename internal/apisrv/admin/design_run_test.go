@@ -66,6 +66,7 @@ func newDesignRunRig(t *testing.T, card *entity.TechCard, band *entity.DesignBan
 	}
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
+	designStubAnyMedia(t, rig.repo)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
 	rig.design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).Return(band, nil).Maybe()
 	rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).

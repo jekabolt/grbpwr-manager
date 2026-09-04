@@ -75,6 +75,7 @@ func newDesignGuardRig(t *testing.T, card *entity.TechCard, band *entity.DesignB
 	}
 	rig.repo.EXPECT().TechCards().Return(rig.cards).Maybe()
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
+	designStubAnyMedia(t, rig.repo)
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designGuardCardID).Return(card, nil).Maybe()
 	rig.design.EXPECT().GetBand(mock.Anything, designGuardCardID, mock.Anything).Return(band, nil).Maybe()
 	rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, mock.Anything, mock.Anything).

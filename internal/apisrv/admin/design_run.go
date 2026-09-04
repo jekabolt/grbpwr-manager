@@ -678,6 +678,20 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseThreedWithoutFront(kind, cardID, params, inputs); err != nil {
 		return nil, err
 	}
+	// ─── ВХОД, КОТОРЫЙ НЕ КАРТИНКА, — ОТКАЗ ЗДЕСЬ, А НЕ ОПЛАЧЕННЫЙ ОТКАЗ У ПОСТАВЩИКА ───
+	//
+	// СТОИТ РОВНО ЗДЕСЬ ПО ДВУМ ПРИЧИНАМ СРАЗУ. Раньше нельзя: `inputs` ещё не собраны, а плиты
+	// верстака и референсы живут только в них — у рерана они и вовсе переписаны со строки
+	// родителя. Позже нельзя: `s.repo.Design().StartRun` двадцатью строками ниже РЕЗЕРВИРУЕТ
+	// деньги дня той же транзакцией, что вставляет строку, и всякий отказ после неё — занятый
+	// резерв и `failed` в оплаченной истории.
+	//
+	// Довод целиком — в шапке design_input_format.go: медиа опознаётся номером и адресом, content
+	// type не хранит никто, и до этой двери .glb, загруженный руками, доезжал до слота картинки
+	// платного вызова пятью разными путями.
+	if err := s.designRefuseNonPictureInputs(ctx, params, inputs); err != nil {
+		return nil, err
+	}
 	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
 	// иначе в колонку уедет то, что прислал клиент.
 	designStampSourcePictures(kind, params, designRunPlates(src, parent))
@@ -1841,6 +1855,15 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		slog.Default().ErrorContext(ctx, "draft design idea: cannot resolve the moodboard pictures",
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot read the moodboard pictures")
+	}
+	// ─── ТА ЖЕ ДВЕРЬ ДЛЯ ДОСКИ, И ТОЖЕ ДО ДЕНЕГ ───
+	//
+	// Адреса уже на руках, поэтому второго запроса в медиа здесь нет; политику читает та же
+	// функция, что и картиночный прогон (design_input_format.go). Доска не приходит с провода, но
+	// .glb, прицепленный к ней, уезжает в слот картинки того же платного вызова — вопрос «что это
+	// за файл» от источника не зависит.
+	if ref, ct, bad := designFirstNonPictureInput(designBoardMediaRefs(attachedIDs, boardURLs)); bad {
+		return nil, designNonPictureRefusal(ref, ct)
 	}
 	prompt := designDraftIdeaPrompt(card, mood, attachedIDs)
 

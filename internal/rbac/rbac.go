@@ -270,9 +270,15 @@ var methodRequirements = map[string]Requirement{
 	// ImportDesignVector под своим собственным правом. Границу «что за байты» держит не право, а
 	// гейт формы в bucket.UploadContentNonRaster (recraft.InspectSVG).
 	"UploadContentVector": wr(SectionContent),
-	"DeleteFromBucket":    wr(SectionContent),
-	"ListObjectsPaged":    rd(SectionContent),
-	"GetMediaUsage":       rd(SectionContent),
+	// UploadContentModel — ТОТ ЖЕ ДОВОД ДОСЛОВНО, и он повторён, а не заменён ссылкой, потому что
+	// это второй член семейства, а не второе имя одного глагола: дверь кладёт .glb на ту же полку,
+	// что картинка, видео и вектор, и карточки не касается вовсе — привязку делает
+	// RegisterDesignUpload под правом tech_cards:write. Границу «что за байты» держит гейт формы в
+	// bucket.UploadContentNonRaster (checkGLB), а не право.
+	"UploadContentModel": wr(SectionContent),
+	"DeleteFromBucket":   wr(SectionContent),
+	"ListObjectsPaged":   rd(SectionContent),
+	"GetMediaUsage":      rd(SectionContent),
 	// hero
 	"AddHero":                wr(SectionHero),
 	"GetBackgroundHeroColor": rd(SectionHero),

@@ -80,3 +80,48 @@ func (b *Bucket) getOriginEndpoint(filePath string) string {
 func (b *Bucket) getCDNURL(filePath string) string {
 	return fmt.Sprintf("https://%s/%s", b.SubdomainEndpoint, filePath)
 }
+
+// ─────────────────── WHAT A STORED OBJECT IS, READ BACK OFF ITS ADDRESS ───────────────────
+
+// extensionToMimeType is mimeTypeToFileExtension INVERTED, built from that map rather than typed
+// out a second time. A hand-written copy is how "the bucket writes .glb" and "the reader knows
+// .glb" come to disagree — and this pair is read at a money door, where disagreeing means either
+// a paid call to a vendor that cannot read the file or a refusal of a run that was fine.
+//
+// The map is injective today and the probe holds it to that (a duplicate extension would make one
+// of two types unrecoverable, silently).
+var extensionToMimeType = func() map[string]ContentType {
+	out := make(map[string]ContentType, len(mimeTypeToFileExtension))
+	for ct, ext := range mimeTypeToFileExtension {
+		out[ext] = ct
+	}
+	return out
+}()
+
+// ObjectMediaType names the content type of a STORED object, read back from the extension this
+// package itself put on it (constructFullPath appends exactly one, from the closed map above).
+//
+// ⚠ WHY THE ADDRESS AND NOT THE MEDIA ROW'S DIMENSIONS. A caller asking "is this object a picture"
+// has two candidate facts about a media row: the extension, and width/height being zero. MEASURED
+// on beta's 195 rows: zero dimensions identifies the GLB models and the video, and MISSES EVERY
+// SVG — a stored vector carries the size it declared in its viewBox (svgPixelSize), so all three
+// SVG rows read 502×865, 528×851, 528×851. Zero dimensions is a CONSEQUENCE of non-rasterness for
+// some types and not for others; the extension is the fact the storage path actually stated.
+//
+// ok = false means "not an extension this package writes", and the caller must treat that as
+// UNKNOWN rather than as any particular type: a legacy row, or a url that came from somewhere else.
+// Guessing on that is how a guard comes to refuse something legitimate.
+func ObjectMediaType(objectURL string) (string, bool) {
+	u := strings.TrimSpace(objectURL)
+	// A query string or a fragment is not part of the object name. Neither appears on our own CDN
+	// urls today; both are cheap to survive and expensive to meet unprepared at a money door.
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	ext := strings.ToLower(strings.TrimPrefix(path.Ext(u), "."))
+	if ext == "" {
+		return "", false
+	}
+	ct, ok := extensionToMimeType[ext]
+	return string(ct), ok
+}

@@ -98,6 +98,67 @@ service AdminService {
     };
   }
 
+  // UploadContentModel uploads a 3D model (glTF binary, .glb) into the MEDIA LIBRARY, on the same
+  // shelf and with the same MediaFull answer as UploadContentImage, UploadContentVideo and
+  // UploadContentVector. Owner, round 16 (E-13): «в 3D в 3D MODELS OF THIS CARD добавь возможность
+  // загрузить свою 3d модель».
+  //
+  // THIS IS THE ONLY THING THAT WAS MISSING, and saying so is the point of this comment. Filing a
+  // hand-uploaded model onto a card needs NO new design verb: RegisterDesignUpload already accepts
+  // `kind = threed`, design_picture.run_id is nullable, and the band's card-output query already
+  // admits a picture with no run («p.run_id IS NULL AND p.kind IN ('render','threed','pattern')»),
+  // handing it back with run_kind = "" and run_rrev = 0 — the same «this was not bought» stamp a
+  // hand-uploaded render already carries. The bucket has stored model/gltf-binary since the vector
+  // wave (bucket.UploadContentNonRaster, mediaStorableTypes). What did not exist was a DOOR: the
+  // image verb refuses a GLB and the vector verb hardcodes image/svg+xml precisely so that no
+  // client can talk its way into the model branch. So the door is opened by its own verb.
+  //
+  // THE BYTES ARE CHECKED AGAINST THE CLAIM, never trusted: bucket.checkGLB reads the 12-byte
+  // glTF-binary header — the magic, the container version and the declared total length — and
+  // refuses a file that is not a glTF binary, or one that DECLARES MORE BYTES THAN ARRIVED, which
+  // is a truncated download: a model cut at a boundary opens in nothing while looking like a
+  // successful upload. Trailing bytes AFTER a complete container are deliberately left alone —
+  // somebody else's untidiness is not a broken model, and refusing it would fail a 3D run that has
+  // already been paid for. A refused payload is InvalidArgument with the checker's own words; an S3
+  // or DB failure is Internal. Same split as UploadContentVector.
+  //
+  // ⚠ WHAT A PERSON ACTUALLY MEETS IS 50 MiB, AND THE CLIENT MUST SAY THAT NUMBER. Three ceilings
+  // stand on this path and the bucket's is the LAST of them, so it is unreachable over REST.
+  // Measured, in the order they bite (internal/api/http/http.go):
+  //
+  //   · raw ≲ 50 MiB — reaches this handler, and the bucket's readable refusals apply.
+  //   · ~50…54 MiB — grpcMaxRecvMsgSize (50 MiB) refuses the loopback gRPC hop: bare
+  //     ResourceExhausted, no sentence a person can act on.
+  //   · ≳ 54 MiB — maxAdminJSONBodyBytes (72 MiB) refuses the base64 body first, as HTTP 400,
+  //     before gRPC is reached at all: base64 inflates by 4/3, so 72 MiB of body is 54 MiB of
+  //     model.
+  //   · 64 MiB (bucket.maxModelPayloadBytes) — NEVER REACHED FROM HERE. It exists so that a model
+  //     our own worker already paid for and downloaded in-process cannot be turned away by our own
+  //     bucket, and that path does not cross this gateway.
+  //
+  // No fourth constant is written here for the effective limit: two ceilings for one question are
+  // how a file the checker accepts and the transport refuses come to have two different answers.
+  //
+  // WHAT COMES BACK, AND WHAT THE CLIENT DOES WITH IT. One media row whose full-size, compressed
+  // and thumbnail urls ALL point at the one .glb object (there is no frame to resize), width and
+  // height 0, no blurhash. The client then calls RegisterDesignUpload with that media_id and
+  // `kind: "threed"` — no ghost_view, no colourway unless it means one — and the model lands in
+  // 3D MODELS OF THIS CARD as a first-class row that is visibly not a run output.
+  //
+  // ⚠ A MODEL FILED THIS WAY IS NOT WIRED AS THE INPUT OF ANY RUN, and that is a decision rather
+  // than an omission. It may be viewed, kept and downloaded. A threed picture can only stand in a
+  // threed bench slot (the kind guard in store/design/bench.go), and no run reads that bench:
+  // designSelectBench takes flat slots for a flat/render run and RENDER slots for a 3D one, never
+  // threed ones. So nothing here can make a hand-uploaded model reach a paid provider call.
+  //
+  // NOTHING IS SPENT HERE. This verb calls no generator; it puts bytes on a shelf.
+  rpc UploadContentModel(UploadContentModelRequest) returns (UploadContentModelResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/content/model"
+      body: "*"
+    };
+  }
+
   // DeleteFromBucket deletes objects specified by their keys.
   rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
     option (google.api.http) = {delete: "/api/admin/content"};
@@ -3694,12 +3755,29 @@ message UploadPatternResponse {
 
 message UploadContentVectorRequest {
   // Raw SVG bytes as exported by the editor. The content type is fixed by the verb — this door
-  // stores image/svg+xml and nothing else (GLB models are minted by the design worker, not
-  // uploaded by hand); the bytes are checked against that claim, never trusted.
+  // stores image/svg+xml and nothing else; the bytes are checked against that claim, never
+  // trusted. A GLB has its own door (UploadContentModel), for the same reason: one verb, one
+  // content type, so no client can choose which branch of the non-raster path its payload takes.
   bytes raw = 1;
 }
 
 message UploadContentVectorResponse {
+  common.MediaFull media = 1;
+}
+
+message UploadContentModelRequest {
+  // Raw glTF-binary (.glb) bytes. The content type is fixed by the verb — this door stores
+  // model/gltf-binary and nothing else — and the bytes are checked against that claim: the
+  // container header must carry the glTF magic, a container version this decade understands, and a
+  // declared total length no LARGER than the payload (a bigger one means a truncated download;
+  // trailing bytes after a complete container are allowed on purpose). Practical ceiling 50 MiB —
+  // the transport's, not the bucket's; see the rpc's comment.
+  bytes raw = 1;
+}
+
+message UploadContentModelResponse {
+  // One media row, three url slots all pointing at the one .glb object, width and height 0. Feed
+  // its `id` to RegisterDesignUpload with kind = "threed" to file it onto a card.
   common.MediaFull media = 1;
 }
 
