@@ -645,6 +645,7 @@ func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int,
 			"color":          string(c.Color),
 			"points":         points,
 			"dashed":         c.Dashed,
+			"caps":           string(entity.NormalizeAnnotationCaps(kind, c.Caps)),
 			"filled":         c.Filled,
 			"display_order":  i,
 		})
@@ -889,7 +890,7 @@ func (s *Store) calloutsByFittingIds(ctx context.Context, ids []int) (map[int][]
 	}
 	rows, err := storeutil.QueryListNamed[fittingCalloutRow](ctx, s.DB, `
 		SELECT fitting_id, callout_number, note, media_id, pos_x, pos_y,
-		       kind, color, points, dashed, filled
+		       kind, color, points, dashed, filled, caps
 		FROM fitting_callout
 		WHERE fitting_id IN (:ids)
 		ORDER BY fitting_id, display_order`, map[string]any{"ids": ids})

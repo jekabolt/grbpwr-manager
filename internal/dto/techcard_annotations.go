@@ -69,6 +69,41 @@ var annotationKindToPb = map[entity.TechCardAnnotationKind]pb_common.TechCardAnn
 	entity.AnnotationKindInk:     pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_INK,
 }
 
+// annotationCapsFromPb / annotationCapsToPb — наконечник линии в обе стороны. UNSPECIFIED ↔ пусто:
+// «не выбран» это НЕ «без наконечников», а «по виду» (dim → засечки, bracket → скобки, arc → без),
+// и оба представления обязаны означать ровно это, иначе уже нарисованная мерка, перечитанная и
+// записанная обратно, сменила бы байты и объявила подпись секции протухшей.
+var annotationCapsFromPb = map[pb_common.TechCardAnnotationCaps]entity.TechCardAnnotationCaps{
+	pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_TICK:    entity.AnnotationCapsTick,
+	pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_BRACKET: entity.AnnotationCapsBracket,
+	pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_BULLET:  entity.AnnotationCapsBullet,
+	pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_ARROW:   entity.AnnotationCapsArrow,
+}
+
+var annotationCapsToPb = map[entity.TechCardAnnotationCaps]pb_common.TechCardAnnotationCaps{
+	entity.AnnotationCapsTick:    pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_TICK,
+	entity.AnnotationCapsBracket: pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_BRACKET,
+	entity.AnnotationCapsBullet:  pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_BULLET,
+	entity.AnnotationCapsArrow:   pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_ARROW,
+}
+
+// capsFromPb — наконечник с провода, приведённый к тому, что он может значить у этого вида.
+// Неизвестное значение энума ОТВЕРГАЕТСЯ, а не приводится: пришедший из будущего наконечник это
+// сведения, которых сервер не понимает, и молча нарисовать вместо стрелки засечку значило бы
+// отдать в цех другое указание. Осмысленный, но неуместный (наконечник у зоны) — приводится, ровно
+// как Dashed у точки.
+func capsFromPb(path string, k entity.TechCardAnnotationKind, c pb_common.TechCardAnnotationCaps) (entity.TechCardAnnotationCaps, error) {
+	if c == pb_common.TechCardAnnotationCaps_TECH_CARD_ANNOTATION_CAPS_UNSPECIFIED {
+		return "", nil
+	}
+	caps, ok := annotationCapsFromPb[c]
+	if !ok {
+		return "", entity.NewFieldViolation(path+".caps", "unknown_value", c.String(),
+			"a line cap comes from a closed list: tick, bracket, bullet or arrow")
+	}
+	return entity.NormalizeAnnotationCaps(k, caps), nil
+}
+
 var annotationColorFromPb = map[pb_common.TechCardAnnotationColor]entity.TechCardAnnotationColor{
 	pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_RED:    entity.AnnotationColorRed,
 	pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_BLUE:   entity.AnnotationColorBlue,
@@ -281,6 +316,10 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 		if len(keys) > 0 {
 			first = keys[0]
 		}
+		caps, err := capsFromPb(ap, kind, a.Caps)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardAnnotation{
 			Kind:          kind,
 			Points:        points,
@@ -302,6 +341,7 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 			// вместо приведения объявлял бы подпись протухшей за нажатие, ничего не изменившее.
 			Dashed: a.Dashed && kind.HasLine(),
 			Filled: a.Filled && kind.HasArea(),
+			Caps:   caps,
 		})
 	}
 	return out, nil
@@ -410,6 +450,7 @@ type calloutGeometry struct {
 	Color  entity.TechCardAnnotationColor
 	Dashed bool
 	Filled bool
+	Caps   entity.TechCardAnnotationCaps
 }
 
 // calloutGeometryPb — та же группа, как она приезжает С ПРОВОДА. Аргументом-структурой, а не
@@ -422,16 +463,17 @@ type calloutGeometryPb struct {
 	Color  pb_common.TechCardAnnotationColor
 	Dashed bool
 	Filled bool
+	Caps   pb_common.TechCardAnnotationCaps
 }
 
 // techCardCalloutGeometryPb / fittingCalloutGeometryPb — снимок группы с конкретного сообщения.
 // Две строчки на переходник вместо второго валидатора.
 func techCardCalloutGeometryPb(c *pb_common.TechCardCallout) calloutGeometryPb {
-	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled}
+	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled, Caps: c.Caps}
 }
 
 func fittingCalloutGeometryPb(c *pb_common.FittingCallout) calloutGeometryPb {
-	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled}
+	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled, Caps: c.Caps}
 }
 
 // calloutGeometryFromPb разбирает вид, якоря и цвет нумерованной выноски — карточной или
@@ -492,10 +534,15 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 		}
 		color = c
 	}
+	caps, err := capsFromPb(path, kind, c.Caps)
+	if err != nil {
+		return zeroGeom, err
+	}
 	return calloutGeometry{
 		Kind:   kind,
 		Points: points,
 		Color:  color,
+		Caps:   caps,
 		// Пунктир у точки и заливка у линии приводятся к false, а не отвергаются: бессмысленный
 		// флаг это не порча данных, а два способа записать «нечего рисовать» разошлись бы в
 		// отпечатке секции и объявили бы подпись протухшей за нажатие, ничего не изменившее.
@@ -594,6 +641,9 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		// фигуру. Перенести якоря дуги и потерять её пунктир значило бы отдать в цех другую линию.
 		tc.Callouts[i].Dashed = prev.Dashed
 		tc.Callouts[i].Filled = prev.Filled
+		// Наконечник — та же группа: перенести якоря и потерять стрелку значило бы отдать в цех
+		// другую линию, ровно как с пунктиром.
+		tc.Callouts[i].Caps = prev.Caps
 	}
 }
 
@@ -659,6 +709,7 @@ func CarryOmittedFittingCalloutGeometry(stored *entity.Fitting, f *entity.Fittin
 		// фигуру.
 		f.Callouts[i].Dashed = prev.Dashed
 		f.Callouts[i].Filled = prev.Filled
+		f.Callouts[i].Caps = prev.Caps
 	}
 }
 
@@ -771,6 +822,7 @@ func operationMediaToPb(in []entity.TechCardOperationMedia) []*pb_common.TechCar
 				PieceLineKeys: keys,
 				Dashed:        a.Dashed,
 				Filled:        a.Filled,
+				Caps:          annotationCapsToPb[a.Caps],
 			})
 		}
 		out = append(out, &pb_common.TechCardOperationMedia{
@@ -827,6 +879,7 @@ func TechCardCalloutAnnotationJSON(c entity.TechCardCallout) ([]byte, error) {
 		Color:  annotationColorToPb[c.Color],
 		Dashed: c.Dashed,
 		Filled: c.Filled,
+		Caps:   annotationCapsToPb[c.Caps],
 	}
 	return protojson.Marshal(ann)
 }

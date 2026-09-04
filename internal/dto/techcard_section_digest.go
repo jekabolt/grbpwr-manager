@@ -315,15 +315,30 @@ func designProjection(tc *entity.TechCardInsert) any {
 		parts := c.PartList()
 		geom := calloutKindOrPin(c.Kind) != entity.AnnotationKindPin || len(c.Points) > 0
 		style := c.Dashed || c.Filled || len(parts) > 1
-		if geom || style {
+		// ТРЕТИЙ ХВОСТ — НАКОНЕЧНИК (0362), и открывается он ТОЛЬКО ЗАДАННЫМ. Пустой наконечник
+		// означает «по виду» (мерка с засечками, скобка со скобками), то есть ровно ту картинку,
+		// которая рисовалась и до круга 18; открывать хвост под него значило бы сдвинуть отпечаток
+		// каждой карточки, где кто-то нарисовал мерку, — в момент выката и без единой правки.
+		//
+		// ТЯНЕТ ЗА СОБОЙ ОБА ПРЕДЫДУЩИХ, даже пустых, по тому же правилу, что второй тянет первый:
+		// иначе девятый элемент кортежа означал бы то стиль, то наконечник, и прочесть подпись, не
+		// угадывая, стало бы нельзя.
+		//
+		// ВХОДИТ В ПОДПИСЬ, как пунктир, а не как цвет: засечка говорит «этот участок измерен»,
+		// стрелка — «смотри сюда», точка — «вот здесь». Это разные указания цеху.
+		caps := c.Caps != "" && calloutKindOrPin(c.Kind).HasCaps()
+		if geom || style || caps {
 			points := make([]any, 0, len(c.Points))
 			for _, p := range c.Points {
 				points = append(points, []any{p.X.String(), p.Y.String()})
 			}
 			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
 		}
-		if style {
+		if style || caps {
 			row = append(row, []any{c.Dashed, c.Filled, parts})
+		}
+		if caps {
+			row = append(row, string(c.Caps))
 		}
 		callouts = append(callouts, row)
 	}
@@ -699,11 +714,19 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 				first = keys[0]
 			}
 			style := a.Dashed || a.Filled || len(keys) > 1
-			if first != "" || style {
+			// ТРЕТИЙ ХВОСТ (0362: наконечник линии) — тем же правилом, что и второй: открывается
+			// только ЗАДАННЫМ наконечником и обязательно тянет за собой оба предыдущих. Пустой
+			// наконечник — «по виду», то есть та же картинка, что и до круга 18, поэтому снимок
+			// шага, где никто не выбирал концы, хешируется байт в байт как до 0362.
+			caps := a.Caps != "" && a.Kind.HasCaps()
+			if first != "" || style || caps {
 				ann = append(ann, first)
 			}
-			if style {
+			if style || caps {
 				ann = append(ann, []any{a.Dashed, a.Filled, digestList(keys)})
+			}
+			if caps {
+				ann = append(ann, string(a.Caps))
 			}
 			anns = append(anns, ann)
 		}

@@ -209,6 +209,7 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 			Color:   geom.Color,
 			Dashed:  geom.Dashed,
 			Filled:  geom.Filled,
+			Caps:    geom.Caps,
 			// Группа атомарна: молчание про вид — молчание про всю геометрию, и хранимая
 			// переносится по номеру выноски (CarryOmittedFittingCalloutGeometry).
 			KindOmitted: c.Kind == nil,
@@ -458,6 +459,7 @@ func fittingCalloutsToPb(cs []entity.FittingCallout) []*pb_common.FittingCallout
 			Color:  annotationColorToPb[c.Color],
 			Dashed: c.Dashed,
 			Filled: c.Filled,
+			Caps:   annotationCapsToPb[c.Caps],
 		})
 	}
 	return out

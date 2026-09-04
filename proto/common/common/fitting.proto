@@ -161,6 +161,9 @@ message FittingCallout {
   // приводится к false, а не отвергается.
   bool dashed = 9;
   bool filled = 10;
+  // Наконечники линии — см. TechCardAnnotationCaps в techcard.proto. Замечание примерки переносят
+  // в тех-карту, и стрелка обязана остаться стрелкой по обе стороны переноса.
+  TechCardAnnotationCaps caps = 11;
 }
 
 // FittingPattern is one выкройка iteration tried in a fitting (snapshot of the

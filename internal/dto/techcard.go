@@ -821,6 +821,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			Color:       geom.Color,
 			Dashed:      geom.Dashed,
 			Filled:      geom.Filled,
+			Caps:        geom.Caps,
 			Parts:       parts,
 			// Группа атомарна: молчание про вид — молчание про всю геометрию, и хранимая
 			// переносится по ИДЕНТИЧНОСТИ выноски, эскиз + номер (CarryOmittedCalloutGeometry
@@ -1365,6 +1366,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Color:  annotationColorToPb[c.Color],
 			Dashed: c.Dashed,
 			Filled: c.Filled,
+			Caps:   annotationCapsToPb[c.Caps],
 			// Список деталей отдаётся всегда, а `part` выше — первым его элементом. Хранимое,
 			// записанное до 0310, списка не несёт, и он собирается из `part` — иначе новый
 			// клиент, вернувший прочитанное круглым рейсом, стёр бы деталь пустым списком.

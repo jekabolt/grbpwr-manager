@@ -362,6 +362,7 @@ func taskMediaAnnotationsToPb(in []entity.TaskMediaAnnotations) []*pb_common.Tas
 				Color:  annotationColorToPb[a.Color],
 				Dashed: a.Dashed,
 				Filled: a.Filled,
+				Caps:   annotationCapsToPb[a.Caps],
 			})
 		}
 		out = append(out, &pb_common.TaskMediaAnnotations{

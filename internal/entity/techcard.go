@@ -768,6 +768,10 @@ type TechCardCallout struct {
 	// штриховка живёт только у полигона. Колонки заведены 0310.
 	Dashed bool `db:"dashed"`
 	Filled bool `db:"filled"`
+	// Caps — наконечники линии (0362). Колонка, а не JSON: у карточной выноски вид, цвет, пунктир
+	// и штриховка уже лежат колонками, и класть рядом с ними пятое свойство той же фигуры в JSON
+	// значило бы завести второе место, где живёт стиль одной линии.
+	Caps TechCardAnnotationCaps `db:"caps"`
 	// KindOmitted — вкладка со старым бандлом про геометрию не говорила вовсе. Тогда хранимая
 	// тройка (вид, якоря, цвет) переносится по НОМЕРУ выноски, до пересчёта дайджеста. Не колонка:
 	// это факт запроса, а не карточки.
@@ -3340,6 +3344,46 @@ func (k TechCardAnnotationKind) HasLine() bool { return k != AnnotationKindPin }
 // нечего, и флаг заливки под ними означал бы ровно ничего.
 func (k TechCardAnnotationKind) HasArea() bool { return k == AnnotationKindPolygon }
 
+// HasCaps — вид, у которого есть КОНЦЫ, то есть тот, у которого наконечник что-то значит: отрезок
+// (dim/bracket) и дуга. У пина и записки конец один и он же якорь; у зоны контур замкнут, конца
+// нет вовсе; у следа концы есть, но след — росчерк от руки, и засечка на нём была бы чертёжным
+// знаком на нечертёжной фигуре.
+func (k TechCardAnnotationKind) HasCaps() bool {
+	return k == AnnotationKindDim || k == AnnotationKindBracket || k == AnnotationKindArc
+}
+
+// TechCardAnnotationCaps — ЧЕМ КОНЧАЕТСЯ линия. Ось, отдельная от вида: до круга 18 в наборе
+// стояли два вида, различавшихся только концами (мерка с засечками и скобка), и человек выбирал
+// между ними как между разными инструментами, хотя рисовал одну и ту же линию.
+//
+// ПУСТО — НЕ «БЕЗ НАКОНЕЧНИКОВ», А «ПО ВИДУ»: dim → засечки, bracket → скобки, arc → без. Отсюда
+// главное свойство: уже нарисованная мерка и уже нарисованная скоба, прочитанные и записанные
+// обратно без правок, уезжают байт в байт и подпись секции не сдвигают. Заданное значение старше
+// ключа вида — bracket со стрелками рисуется стрелками.
+type TechCardAnnotationCaps string
+
+const (
+	AnnotationCapsTick    TechCardAnnotationCaps = "tick"    // T-образная засечка поперёк линии
+	AnnotationCapsBracket TechCardAnnotationCaps = "bracket" // L-образная лапка
+	AnnotationCapsBullet  TechCardAnnotationCaps = "bullet"  // залитая точка
+	AnnotationCapsArrow   TechCardAnnotationCaps = "arrow"   // стрелка
+)
+
+var ValidTechCardAnnotationCaps = map[TechCardAnnotationCaps]bool{
+	AnnotationCapsTick: true, AnnotationCapsBracket: true,
+	AnnotationCapsBullet: true, AnnotationCapsArrow: true,
+}
+
+// NormalizeAnnotationCaps приводит наконечник к тому единственному, что он может значить у этого
+// вида: у вида без концов — к пустому, у неизвестного значения — к пустому. Приведение, а не
+// отказ: тот же довод, что у Filled под не-полигоном — бессмысленное значение это не порча данных.
+func NormalizeAnnotationCaps(k TechCardAnnotationKind, c TechCardAnnotationCaps) TechCardAnnotationCaps {
+	if !k.HasCaps() || !ValidTechCardAnnotationCaps[c] {
+		return ""
+	}
+	return c
+}
+
 // PointsAllowed возвращает допустимый диапазон числа точек для вида. Второе значение — false,
 // если вид неизвестен.
 func (k TechCardAnnotationKind) PointsAllowed() (min, max int, ok bool) {
@@ -3420,6 +3464,10 @@ type TechCardAnnotation struct {
 	Dashed bool `json:"dashed,omitempty"`
 	// Filled — штриховка области полигона. Только у полигона; у прочих видов сервер обнуляет.
 	Filled bool `json:"filled,omitempty"`
+	// Caps — наконечники линии. omitempty обязателен: колонка annotations это JSON, и без него
+	// каждая уже записанная выноска получила бы новый ключ в теле, то есть новые байты у карточки,
+	// которую никто не трогал.
+	Caps TechCardAnnotationCaps `json:"caps,omitempty"`
 }
 
 // TechCardOperationMedia — одна картинка шага со своими выносками.

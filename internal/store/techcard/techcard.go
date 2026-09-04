@@ -1994,6 +1994,9 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"color":          string(c.Color),
 			"dashed":         c.Dashed,
 			"filled":         c.Filled,
+			// Наконечник линии (0362). Пусто — «по виду», а не «без наконечников»: та же строка,
+			// перечитанная и записанная обратно, уезжает байт в байт.
+			"caps": string(entity.NormalizeAnnotationCaps(kind, c.Caps)),
 			// NULL, а не «[]», когда якорей нет: у пина их не бывает вовсе, и пустой массив в
 			// колонке был бы вторым способом сказать то же самое.
 			"points": points,
