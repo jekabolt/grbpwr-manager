@@ -451,6 +451,36 @@ message DesignColourMap {
   // map because the palette is what makes the map READABLE: it is the closed set of labels the
   // prompt may name, and re-deriving it would mean scanning a PNG on the server.
   repeated DesignColourSwatch palette = 4;
+  // OUTPUT-ONLY. The painted PNG itself, joined from media_id at read time — the SAME PAIR
+  // DesignInputRef states (media + deleted) and for the same reason: IDS ARE STORED, MediaFull IS
+  // SERVED, and AdminService has no verb that reads media by id.
+  //
+  // ⚠ WITHOUT IT A SAVED PLAN CANNOT BE SHOWN OR RE-OPENED. The map's PNG is its own upload — it
+  // is not a DesignPicture, not a bench plate, not a shelf row — so a stored map that travels as a
+  // bare number reaches the screen as a number and nothing else. The painting then survives a
+  // reload in the database and NOWHERE ELSE: the tile falls back to the flat, `paint ▸` opens a
+  // blank canvas over it, and the next save writes that blank over twenty minutes of work — the
+  // very loop this feature exists for («paint → save → come back → adjust») is a dead end. It is
+  // the same defect, and the same fix, that DesignEditLayer.raster_media already records.
+  //
+  // ⚠ UNSET IS NEVER «PRESENT», IN EITHER LIFE OF THIS MESSAGE, AND THAT IS A PROPERTY RATHER THAN
+  // A RULE. On DesignColourPlan.maps the server joins every map before the message leaves (both
+  // producers of a plan do it, so «empty» cannot mean «nobody ran the join»), and on the FROZEN
+  // copy in DesignColourRecipe.colour_maps the door STRIPS both fields before it marshals the
+  // recipe — freezing a URL is wrong for the same reason DesignInputSnapshot states, and a client
+  // echoing back the plan it was just served must not be able to write a picture into history.
+  // So `media` empty means «there is no picture here», everywhere, and a reader that treats it as
+  // present is reading a field nobody set.
+  MediaFull media = 5;
+  // OUTPUT-ONLY: media_id names a row that NO LONGER EXISTS. The plan still remembers the id —
+  // «which painting disappeared» has to be answerable from the plan itself — and the screen says
+  // so instead of showing a hole.
+  //
+  // It is a POSITIVE assertion and only that: false plus an empty `media` means «not joined here»
+  // (the frozen recipe) or «the join could not be run» (a media read that errored), and neither is
+  // a claim that the file is gone. The distinction is DesignEditLayer.raster_deleted's, verbatim:
+  // a failed lookup must not report a deletion that may not have happened.
+  bool deleted = 6;
 }
 
 // DesignColourSwatch is ONE label of a colour map: a colour somebody deliberately chose, and how

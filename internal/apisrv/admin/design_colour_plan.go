@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -56,7 +57,13 @@ func (s *Server) SetDesignColourPlan(ctx context.Context, req *pb_admin.SetDesig
 		return nil, designError(ctx, "failed to save the design colour plan", err,
 			map[string]string{"tech_card_id": strconv.Itoa(cardID)})
 	}
-	return &pb_admin.SetDesignColourPlanResponse{Plan: designColourPlanToPb(plan)}, nil
+	// ⚠ ОТВЕТ СОХРАНЕНИЯ ПРОХОДИТ ТОТ ЖЕ JOIN, ЧТО И ПОЛОСА, И ЭТО НЕ УКРАШЕНИЕ. Клиент,
+	// сохранивший план, обязан получить РОВНО ТО ЖЕ, что он получил бы, перезагрузив страницу, —
+	// иначе «после сохранения карта видна, после перезагрузки нет» (или наоборот), и разница
+	// читается как потеря данных. Ровно поэтому конвертер — метод: собрать DesignColourPlan, не
+	// соединив картинки, отсюда физически нельзя, а значит пустой `media` на проводе всегда
+	// значит «картинки нет», а не «здесь join забыли позвать».
+	return &pb_admin.SetDesignColourPlanResponse{Plan: s.designColourPlanToPb(ctx, plan)}, nil
 }
 
 /* ─────────────────────────── the wire ─────────────────────────── */
@@ -106,17 +113,92 @@ func designColourClothsFromPb(in []*pb_common.DesignColourCloth) []entity.Design
 // designColourPlanToPb — nil ОСТАЁТСЯ nil. Полоса объявляет «на этой карточке плана нет» пустым
 // полем, а не пустым документом с rev 0: клиент, получивший план-пустышку, echo'нул бы её rev и
 // разошёлся бы с сервером на первом же сохранении.
-func designColourPlanToPb(p *entity.DesignColourPlan) *pb_common.DesignColourPlan {
+//
+// ⚠ ЭТО МЕТОД, А НЕ ФУНКЦИЯ, И ПРИЧИНА РОВНО ОДНА: СОЕДИНЕНИЕ КАРТИНОК. Пока конвертер был
+// свободной функцией, план можно было собрать где угодно и отдать без картинок — а тогда пустой
+// `media` на проводе означал бы два разных состояния («файла нет» и «здесь join не звали»), и
+// клиенту пришлось бы гадать, какое. Метод делает соединение НЕИЗБЕЖНЫМ: у producers плана нет
+// другого способа получить сообщение.
+func (s *Server) designColourPlanToPb(ctx context.Context, p *entity.DesignColourPlan) *pb_common.DesignColourPlan {
 	if p == nil {
 		return nil
 	}
-	return &pb_common.DesignColourPlan{
+	out := &pb_common.DesignColourPlan{
 		TechCardId: int32(p.TechCardId),
 		Rev:        int32(p.Rev),
 		Maps:       designColourMapsToPb(p.Maps),
 		Cloths:     designColourClothsToPb(p.Cloths),
 		UpdatedBy:  p.UpdatedBy,
 		UpdatedAt:  timestamppb.New(p.UpdatedAt),
+	}
+	s.joinDesignColourPlanMedia(ctx, out)
+	return out
+}
+
+// joinDesignColourPlanMedia резолвит ЖИВОПИСЬ, которую план помнит одним номером (Feature A).
+//
+// ЧТО БЫЛО СЛОМАНО. PNG карты — это СОБСТВЕННАЯ загрузка: он не DesignPicture, не плита верстака и
+// не строка полки, поэтому во всём ответе полосы не было НИ ОДНОГО места, откуда клиент мог бы
+// взять его url. Сохранённая карта уезжала голым числом, и после перезагрузки страница не могла ни
+// показать её, ни открыть на правку: плитка откатывалась к флэту, «paint ▸» открывал чистый холст
+// поверх него, а следующее сохранение записывало эту чистоту поверх двадцати минут покраски.
+// Палитра и назначения при этом переживали перезагрузку целыми — то есть экран выглядел рабочим и
+// молча терял ровно ту половину, ради которой фича существует.
+//
+// ТОТ ЖЕ ПРИЁМ, ЧТО У joinDesignRunInputMedia И joinDesignLayerRasterMedia, А НЕ ЧЕТВЁРТЫЙ. Живое
+// медиа доезжает картинкой, ИСЧЕЗНУВШЕЕ помечается `deleted`, запрос ОДИН на весь план. Номер при
+// этом не стирается никогда: «какая живопись пропала» отвечается только по нему.
+//
+// ⚠ ОТКАЗ ЗАПРОСА — ЭТО «МЫ НЕ ЗНАЕМ», А НЕ «ЕГО НЕТ», и это дословно правило соседа. Ставить
+// `deleted` по неудавшемуся чтению значило бы сказать человеку, что его покраска удалена, когда
+// она, вероятно, жива, — и он перекрасил бы вид заново поверх целого файла. Ронять же весь ответ
+// нельзя тем более: кроме картинок в плане есть палитра, назначения и rev, и все они правда.
+//
+// ПОТОЛОК ОТВЕТА НАЗВАН И ЗАМЕРЕН, А НЕ ОЦЕНЁН НА ГЛАЗ: карт в плане не больше
+// MaxDesignColourMaps (6), картинка у карты одна, значит соединение добавляет к полосе не более
+// ШЕСТИ MediaFull. Полностью заполненный MediaFull (три url, размеры, blurhash, sha256) кодируется
+// в 390 байт, то есть худший случай — 2340 байт против grpcMaxSendMsgSize в 50 МиБ (0,0045%).
+// Это и есть ответ на находку 4 ревью: документ плана уже ограничен 64 КБ, и путь ЧТЕНИЯ не
+// открывает ему нового способа расти. Подложка (`base_media_id`) сюда НЕ входит и это не пропуск:
+// флэт у клиента уже есть — он на верстаке и в выходах карточки, — а второй join удвоил бы цену
+// ради url, который в том же ответе лежит рядом.
+func (s *Server) joinDesignColourPlanMedia(ctx context.Context, p *pb_common.DesignColourPlan) {
+	if p == nil {
+		return
+	}
+	seen := make(map[int]struct{}, len(p.GetMaps()))
+	for _, m := range p.GetMaps() {
+		if id := int(m.GetMediaId()); id > 0 {
+			seen[id] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	found, err := s.repo.Media().GetMediaByIds(ctx, ids)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "design: failed to join the painted media into the colour plan",
+			slog.String("err", err.Error()))
+		return
+	}
+	for _, m := range p.GetMaps() {
+		id := int(m.GetMediaId())
+		if id <= 0 {
+			// НУЛЯ ЗДЕСЬ НЕ БЫВАЕТ У ЖИВОГО ПЛАНА — entity.Validate требует картинку у каждой
+			// карты, — но если он всё же приехал, это «карта без картинки», а не «картинку
+			// удалили»: флаг о пропаже принадлежит только тому, у кого номер есть.
+			continue
+		}
+		md, ok := found[id]
+		if !ok {
+			m.Media, m.Deleted = nil, true
+			continue
+		}
+		m.Media, m.Deleted = designMediaToPb(&md), false
 	}
 }
 
