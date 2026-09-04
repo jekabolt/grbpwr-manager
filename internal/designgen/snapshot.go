@@ -303,6 +303,19 @@ type refCaption struct {
 	// what keeps view k, caption k and reference k the same picture by construction. A second walk
 	// producing «the views, in order» is exactly how captions and urls once came to disagree.
 	View string
+	// IsColourMap — ЭТА КАРТИНКА УЕХАЛА ИМЕННО КАРТОЙ ЦВЕТА, а не просто уехала.
+	//
+	// ⚠ ОДИН ФАКТ, ПОТОМУ ЧТО ЛГАЛИ ДВА РАЗНЫХ ЧТЕНИЯ ОДНОГО ВОПРОСА. Ревью замерило три способа
+	// получить платный промпт, утверждающий про карту, которой у модели нет: `map_hex` без единой
+	// карты в рецепте; две карты на один media_id («Images 3 and 3»); и карта, которая на самом
+	// деле плита верстака — картинка, подписанная одновременно «current state of the garment» и
+	// «colour map … those colours LABEL which cloth covers which part». Все три — один вопрос:
+	// СТАЛА ЛИ ЭТА КАРТИНКА КАРТОЙ В СПИСКЕ ВЛОЖЕНИЙ. Он задаётся здесь один раз, при сборке
+	// списка, и читается промптом (colourMapsSent) — вместо трёх параллельных догадок по номеру.
+	//
+	// Наличие media в списке ответом НЕ является: плита, названная картой, в списке есть — под
+	// подписью плиты.
+	IsColourMap bool
 }
 
 // referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
@@ -434,9 +447,29 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// A MAP WHOSE MEDIA ROW WENT AWAY IS SIMPLY NOT NUMBERED AND NOT MENTIONED — the same rule as
 	// a cloth's picture, enforced in the same place: `attached` is the survivors of buildJob's
 	// resolution, and imageNumberOf answers 0 for anything not in it.
+	//
+	// ⚠ КАРТОЙ СТАНОВИТСЯ ТОЛЬКО КАРТИНКА, КОТОРОЙ В СПИСКЕ ЕЩЁ НЕТ, И ЭТО НЕ МИКРО-ОПТИМИЗАЦИЯ.
+	// `add` дедуплицирует по media id и СКЛЕИВАЕТ подписи, поэтому карта, чей media_id совпал с
+	// плитой, референсом или второй картой, давала одну картинку с двумя взаимно исключающими
+	// подписями: «current state of the garment — front view; colour map of the front flat — … those
+	// colours LABEL which cloth covers which part». Замерено ревью на обоих совпадениях. Дверь
+	// прогона такие рецепты теперь отвергает до денег (designRefuseMalformedColourMaps,
+	// designRefuseColourMapAlsoAnInput); здесь стоит вторая половина того же правила — ОДНА
+	// КАРТИНКА ЕСТЬ ОДНА РОЛЬ, — чтобы промпт не мог соврать даже про снимок, замороженный мимо
+	// сегодняшней двери.
 	if p.Colour != nil {
 		for _, m := range p.Colour.ColourMaps {
+			if m.MediaID <= 0 {
+				continue
+			}
+			if _, taken := seen[m.MediaID]; taken {
+				continue
+			}
+			at := len(out)
 			add(m.MediaID, colourMapCaption(m.View), m.View)
+			if at < len(out) {
+				out[at].IsColourMap = true
+			}
 		}
 	}
 	// ─── THE CLOTHS ────────────────────────────────────────────────────────────────────────────

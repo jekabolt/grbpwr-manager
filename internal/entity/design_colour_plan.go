@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,6 +23,33 @@ import (
 // силуэтных видов (DesignSilhouetteViews), и седьмой карты не бывает не по бережливости, а потому
 // что рисовать её не на чем.
 const MaxDesignColourMaps = 6
+
+// ПОТОЛКИ ДОКУМЕНТА — ТРИ, И ОНИ ЗАКРЫВАЮТ ЗАМЕРЕННУЮ ДЫРУ, А НЕ ВКУСОВЩИНУ.
+//
+// ⚠ ЧТО СЛУЧАЛОСЬ БЕЗ НИХ. Потолок стоял ровно один — шесть карт, — а ни палитре, ни списку
+// тканей, ни документу целиком не было потолка вовсе; gRPC принимает 50 МиБ. Один
+// SetDesignColourPlan с шестью картами по ~10⁵ образцов клал десятки мегабайт в `maps`/`cloths`, а
+// colourPlanByCard сидит ВНУТРИ чтения ленты карточки (store/design/band.go) — значит КАЖДЫЙ
+// GetDesignBand этой карточки грузил и перекодировал их, и за grpcMaxSendMsgSize экран студии
+// падал с ResourceExhausted НАВСЕГДА. Лечилось только удалением плана или хирургией по базе.
+//
+// ⚠ ПОЧЕМУ ПОТОЛОК БАЙТАМ, А НЕ ТОЛЬКО СЧЁТЧИКАМ. Ровно тот же довод, что у пути прогона
+// (designMaxParamsBytes/designMaxInputsBytes): считать поля вместо байтов значит проверять другое
+// число — `words` и `parts` строки не ограничены длиной, и шестнадцать строк по мегабайту прошли
+// бы любой счётчик. Отказ отсюда называет ЧИСЛО и поле, в отличие от отказа кодировщика.
+const (
+	// MaxDesignColourSwatchesPerMap — ярлыков на одной карте. Палитра это ЗАМКНУТОЕ множество
+	// красок, которые человек выбрал сам (см. DesignColourSwatch): у изделия деталей десятки, а не
+	// тысячи, и сканированная кромка ярлыком не становится по построению.
+	MaxDesignColourSwatchesPerMap = 64
+	// MaxDesignColourCloths — назначений в плане. Назначение бывает только на покрашенный ярлык,
+	// поэтому больше, чем ярлыков на одной карте, их осмысленно не бывает.
+	MaxDesignColourCloths = 64
+	// MaxDesignColourPlanBytes — ВЕСЬ документ в закодированном виде, тот же потолок, что у снимка
+	// входов прогона. План читается на каждой ленте карточки, поэтому его цена — это цена
+	// открытия студии, а не цена одной записи.
+	MaxDesignColourPlanBytes = 64 << 10
+)
 
 // DesignColourSwatch — ОДИН ЯРЛЫК карты: цвет, который человек выбрал сам, и сколько пикселей им
 // закрашено.
@@ -65,9 +93,16 @@ type DesignColourCloth struct {
 
 // Stated — сказала ли строка хоть что-нибудь. См. шапку типа: строка, назвавшая один ярлык и
 // больше ничего, — это ярлык, указывающий в тишину.
+//
+// ⚠ `Parts` СЮДА НЕ ВХОДИТ, И ЭТО ПОЧИНКА, А НЕ УЖЕСТОЧЕНИЕ. Контракт говорит буквально «хотя бы
+// одно из ТРЁХ» и перечисляет их — asset_id, colour_hex, words (common/design.proto,
+// DesignColourCloth), — и шапка этого типа строкой выше говорит то же самое. Код принимал ЧЕТВЁРТОЕ,
+// поэтому строка `{hex, parts:"cuffs"}` хранилась и возвращалась как назначение, НЕ НАЗЫВАЮЩЕЕ
+// МАТЕРИАЛА ВОВСЕ: «манжеты сделаны из… » — и тишина. `Parts` отвечает на другой вопрос («КАКИЕ
+// детали»), а этот метод спрашивает «ИЗ ЧЕГО», и ответом на него имя детали быть не может.
 func (c DesignColourCloth) Stated() bool {
 	return c.AssetId > 0 || strings.TrimSpace(c.ColourHex) != "" ||
-		strings.TrimSpace(c.Words) != "" || strings.TrimSpace(c.Parts) != ""
+		strings.TrimSpace(c.Words) != ""
 }
 
 // DesignColourPlan — строка design_colour_plan: весь план одной карточки.
@@ -121,11 +156,16 @@ func (s DesignColourPlanSave) Validate() error {
 		return fmt.Errorf("%w: %d colour maps, the ceiling is %d",
 			ErrDesignInvalidArgument, len(s.Maps), MaxDesignColourMaps)
 	}
+	if len(s.Cloths) > MaxDesignColourCloths {
+		return fmt.Errorf("%w: %d cloth assignments, the ceiling is %d",
+			ErrDesignInvalidArgument, len(s.Cloths), MaxDesignColourCloths)
+	}
 	// ПАЛИТРА СОБИРАЕТСЯ ЗДЕСЬ ЖЕ, А НЕ ВТОРЫМ ПРОХОДОМ: множество законных ярлыков — это ровно то,
 	// что проверка карт уже перебрала, и второй сборщик того же множества разошёлся бы с первым в
 	// первый же день, когда правят одно.
 	painted := make(map[string]struct{})
 	views := make(map[string]struct{}, len(s.Maps))
+	pictures := make(map[int]int, len(s.Maps))
 	for i, m := range s.Maps {
 		if !IsDesignSilhouetteView(m.View) {
 			return fmt.Errorf("%w: maps.%d.view %q is not a silhouette view",
@@ -143,6 +183,20 @@ func (s DesignColourPlanSave) Validate() error {
 		if m.BaseMediaId <= 0 {
 			return fmt.Errorf("%w: maps.%d.base_media_id %d — a map must name the flat it was painted over",
 				ErrDesignInvalidArgument, i, m.BaseMediaId)
+		}
+		// ⚠ ОДНА КАРТИНКА — ОДНА КАРТА, И ЭТО НЕ ТО ЖЕ САМОЕ, ЧТО «ОДНА КАРТА НА ВИД». Дубль вида
+		// отвергался с первого дня, дубль КАРТИНКИ не отвергался ничем: две карты на один media_id
+		// давали одну картинку, объявленную картой двух разных видов. В рецепте прогона это
+		// доезжало до модели предложением «Images 3 and 3 are colour maps of the front and back
+		// drawings» — на оплаченном вызове (замер ревью).
+		if at, dup := pictures[m.MediaId]; dup {
+			return fmt.Errorf("%w: maps.%d names picture %d, which maps.%d already is; one picture is one map",
+				ErrDesignInvalidArgument, i, m.MediaId, at)
+		}
+		pictures[m.MediaId] = i
+		if len(m.Palette) > MaxDesignColourSwatchesPerMap {
+			return fmt.Errorf("%w: maps.%d.palette holds %d labels, the ceiling is %d",
+				ErrDesignInvalidArgument, i, len(m.Palette), MaxDesignColourSwatchesPerMap)
 		}
 		for j, sw := range m.Palette {
 			if !IsDesignColourMapHex(sw.Hex) {
@@ -179,7 +233,38 @@ func (s DesignColourPlanSave) Validate() error {
 				"with a texture, a colour or words", ErrDesignInvalidArgument, i, c.Hex)
 		}
 	}
+	// ─── ПОТОЛОК ДОКУМЕНТА ЦЕЛИКОМ, ПОСЛЕДНИМ ───
+	//
+	// ПОСЛЕДНИМ, ПОТОМУ ЧТО ЭТО ЕДИНСТВЕННАЯ ПРОВЕРКА, КОТОРАЯ СТОИТ РАБОТЫ: счётчики выше режут
+	// очевидное даром, а сюда доходит только документ правильной формы, у которого остались длинные
+	// строки. Кодируется ровно то, что уедет в колонки (см. store/design/colour_plan.go), поэтому
+	// названное здесь число — то самое, которое потом читает каждая лента карточки.
+	size, err := colourPlanEncodedSize(s.Maps, s.Cloths)
+	if err != nil {
+		return fmt.Errorf("%w: the colour plan does not encode: %s", ErrDesignInvalidArgument, err)
+	}
+	if size > MaxDesignColourPlanBytes {
+		return fmt.Errorf("%w: the colour plan encodes to %d bytes, the ceiling is %d — this plan "+
+			"is read again on every card band, so an oversized one makes the card unreadable rather "+
+			"than merely large", ErrDesignInvalidArgument, size, MaxDesignColourPlanBytes)
+	}
 	return nil
+}
+
+// colourPlanEncodedSize — сколько байт займут ОБЕ JSON-колонки плана вместе.
+//
+// ОДИН СЧЁТЧИК, ПОТОМУ ЧТО ЧИСЛО ОДНО: стор кодирует ровно эти два документа ровно этим
+// кодировщиком, и второй способ померить то же самое разошёлся бы с первым молча.
+func colourPlanEncodedSize(maps []DesignColourMap, cloths []DesignColourCloth) (int, error) {
+	m, err := json.Marshal(maps)
+	if err != nil {
+		return 0, err
+	}
+	c, err := json.Marshal(cloths)
+	if err != nil {
+		return 0, err
+	}
+	return len(m) + len(c), nil
 }
 
 // IsDesignColourMapHex — ГОДИТСЯ ЛИ СТРОКА В ЯРЛЫК КАРТЫ: строго `#rrggbb` в нижнем регистре, и

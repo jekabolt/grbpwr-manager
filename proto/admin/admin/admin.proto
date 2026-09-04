@@ -2985,28 +2985,29 @@ service AdminService {
   //
   // `expected_rev = 0` CREATES the plan; a card that already holds one refuses that with the CAS
   // error, which is how a colleague's plan is never overwritten by a tab that never saw it.
-  // A plan with no maps and no cloths is legal and means «painted, then cleared»; DELETE is the
-  // verb for «there is no plan», not an empty save.
   //
-  // Aborted: colour_plan_rev_mismatch {current_rev}. InvalidArgument: a `view` that is not a
-  // silhouette view, two maps for one view, more than six maps, a hex that is not #rrggbb, a cloth
-  // whose hex appears on no map, an asset_id that is not a shelf row of this card, or a media id
-  // belonging to another tech card.
+  // ⚠ THIS IS ALSO THE VERB FOR «CLEAR», AND IT IS THE ONLY ONE. A plan with no maps and no cloths
+  // is legal and means «painted, then cleared». There was a DeleteDesignColourPlan beside this
+  // call and it is GONE: it carried nothing but tech_card_id, so it compared no revision and could
+  // not fail — a tab that had been open since rev 3 could silently drop a colleague's twenty
+  // minutes of painting saved at rev 5, and orphan the PNGs with it. Clearing under
+  // `expected_rev` loses nothing and needs no second verb; it also keeps the rev ladder, which a
+  // delete would have reset to zero.
+  //
+  // Aborted: colour_plan_rev_mismatch {current_rev}. NotFound: no such tech card.
+  // FailedPrecondition: foreign_media — a map or its base belongs to another tech card.
+  // InvalidArgument: a `view` that is not a silhouette view, two maps for one view, TWO MAPS ON ONE
+  // PICTURE (one picture is one map: a single image declared to be the map of two views reaches the
+  // model as «Images N and N»), more than six maps, more than 64 labels on one map's palette, more
+  // than 64 cloth assignments, a document over 64 KB encoded (the plan is read again on every band
+  // read, so an oversized one makes the card unreadable rather than merely large), a hex that is not
+  // #rrggbb, a cloth whose hex appears on no map, a cloth that states none of asset_id / colour_hex /
+  // words, an asset_id that is not a shelf row of this card, or a media id that does not exist.
   rpc SetDesignColourPlan(SetDesignColourPlanRequest) returns (SetDesignColourPlanResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/colour-plan"
       body: "*"
     };
-  }
-
-  // DeleteDesignColourPlan removes the card's colour plan. The map PNGs themselves are ordinary
-  // media and are NOT deleted: they may already be frozen into a run's recipe, and a run's history
-  // must keep pointing at the pictures it was launched with.
-  //
-  // Deleting a plan that does not exist succeeds — the caller's intent is «this card has no plan»,
-  // and that is already true.
-  rpc DeleteDesignColourPlan(DeleteDesignColourPlanRequest) returns (DeleteDesignColourPlanResponse) {
-    option (google.api.http) = {delete: "/api/admin/tech-card/{tech_card_id}/design/colour-plan"};
   }
 
   // DraftDesignIdea is a TEXT run through the same money and idempotency machine as every picture
@@ -12417,12 +12418,6 @@ message SetDesignColourPlanResponse {
   // just wrote.
   common.DesignColourPlan plan = 1;
 }
-
-message DeleteDesignColourPlanRequest {
-  int32 tech_card_id = 1;
-}
-
-message DeleteDesignColourPlanResponse {}
 
 message ImportDesignVectorRequest {
   int32 tech_card_id = 1;

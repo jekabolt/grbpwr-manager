@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -15,13 +14,24 @@ import (
 
 // ─────────────────────────── ЦВЕТОВОЙ ПЛАН (Feature A, 0364) ───────────────────────────
 //
-// ДВЕ ДВЕРИ И ОДНО ЧТЕНИЕ: план приезжает в GetDesignBand вместе с верстаком и полками (одно
-// мгновение карточки на весь экран), пишется целиком под CAS и удаляется целиком.
+// ОДНА ДВЕРЬ И ОДНО ЧТЕНИЕ: план приезжает в GetDesignBand вместе с верстаком и полками (одно
+// мгновение карточки на весь экран) и пишется целиком под CAS.
 //
-// ⚠ ГРАНИЦА КАРТОЧКИ ЖИВЁТ В СТОРЕ, В ТОЙ ЖЕ ТРАНЗАКЦИИ, ЧТО И ЗАПИСЬ — сюда она не переносится и
-// не дублируется. Здесь спрашивается только то, чего стор спросить не может: принадлежит ли
-// названная полка ЭТОЙ карточке. Полки приезжают в полосе целиком (потолок MaxDesignAssetsPerCard),
-// поэтому ответ читается одним чтением полосы и не требует второго запроса.
+// ⚠ ВТОРОЙ ДВЕРИ — «УДАЛИТЬ» — ЗДЕСЬ БОЛЬШЕ НЕТ, И ЭТО ПОЧИНКА, А НЕ УПРОЩЕНИЕ. DeleteDesignColourPlan
+// нёс ОДИН tech_card_id: ревизия не сверялась, ошибки не было, строка исчезала. Сценарий, который
+// это стоило: A открыл карточку на rev 3, B двадцать минут красил и сохранил rev 5, устаревшая
+// вкладка A жмёт «очистить» — и покраска B снесена молча, а PNG осиротели. Шапка SetColourPlan в
+// сторе сама пишет, что двадцать минут покраски — ровно та работа, которую нельзя потерять молча.
+// Отдельный глагол для этого и не нужен: «очистить» — это SetDesignColourPlan{expected_rev,
+// maps:[], cloths:[]}, состояние, которое контракт называет законным («painted, then cleared»), и
+// оно проходит тот же CAS, что всякая другая запись. Добавлять `expected_rev` на удаление значило
+// бы завести ВТОРОЙ глагол с теми же правилами и той же ценой ошибки.
+//
+// ⚠ ГРАНИЦЫ ЖИВУТ В СТОРЕ, В ТОЙ ЖЕ ТРАНЗАКЦИИ, ЧТО И ЗАПИСЬ, И ТЕПЕРЬ ВСЕ ТРИ. Карточка, медиа и
+// ПОЛКА проверяются там (refuseUnknownCard / refuseMissingPlanMedia / refuseForeignMedia /
+// refuseForeignPlanAssets). Полка проверялась здесь и читала полосу ОТДЕЛЬНЫМ GetBand до открытия
+// транзакции — единственная граница фичи, стоявшая не там, где пишут; гонка с DeleteDesignAsset
+// пропускала план, называющий снесённую строку.
 
 // SetDesignColourPlan replaces the card's whole colour plan under compare-and-set on its rev.
 func (s *Server) SetDesignColourPlan(ctx context.Context, req *pb_admin.SetDesignColourPlanRequest) (*pb_admin.SetDesignColourPlanResponse, error) {
@@ -35,14 +45,6 @@ func (s *Server) SetDesignColourPlan(ctx context.Context, req *pb_admin.SetDesig
 	maps := designColourMapsFromPb(req.GetMaps())
 	cloths := designColourClothsFromPb(req.GetCloths())
 
-	// ⚠ АДРЕС ПОЛКИ ПРОВЕРЯЕТСЯ ЗДЕСЬ, И ЭТО ТОТ ЖЕ ДОВОД, ЧТО У designRefuseForeignClothAssets НА
-	// ДВЕРИ ПРОГОНА. Ложный `asset_id` не всплывёт ошибкой никогда: план просто навсегда утверждает,
-	// что цвет метит полку, которой у этой карточки нет, — и утверждение это уедет в рецепт
-	// прогона, где оно уже заморожено. Чтение полосы здесь одно и оно же отвечает на вопрос.
-	if err := s.designRefusePlanForeignAssets(ctx, cardID, cloths); err != nil {
-		return nil, err
-	}
-
 	plan, err := s.repo.Design().SetColourPlan(ctx, entity.DesignColourPlanSave{
 		TechCardId:  cardID,
 		ExpectedRev: int(req.GetExpectedRev()),
@@ -55,59 +57,6 @@ func (s *Server) SetDesignColourPlan(ctx context.Context, req *pb_admin.SetDesig
 			map[string]string{"tech_card_id": strconv.Itoa(cardID)})
 	}
 	return &pb_admin.SetDesignColourPlanResponse{Plan: designColourPlanToPb(plan)}, nil
-}
-
-// DeleteDesignColourPlan removes the card's colour plan. The map pictures are ordinary media and
-// are NOT deleted — they may already be frozen into a run's recipe.
-func (s *Server) DeleteDesignColourPlan(ctx context.Context, req *pb_admin.DeleteDesignColourPlanRequest) (*pb_admin.DeleteDesignColourPlanResponse, error) {
-	cardID := int(req.GetTechCardId())
-	if cardID <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
-	}
-	if err := s.repo.Design().DeleteColourPlan(ctx, cardID); err != nil {
-		return nil, designError(ctx, "failed to delete the design colour plan", err,
-			map[string]string{"tech_card_id": strconv.Itoa(cardID)})
-	}
-	return &pb_admin.DeleteDesignColourPlanResponse{}, nil
-}
-
-// designRefusePlanForeignAssets держит карточную половину адреса полки, ровно как
-// designRefuseForeignClothAssets держит её для тканей прогона.
-//
-// НОЛЬ ПРОПУСКАЕТСЯ МОЛЧА: цвет, названный плоским цветом или словами, полки не имеет вовсе, и это
-// законный, полный ответ на вопрос «из чего эта деталь».
-func (s *Server) designRefusePlanForeignAssets(ctx context.Context, cardID int, cloths []entity.DesignColourCloth) error {
-	need := false
-	for _, c := range cloths {
-		if c.AssetId > 0 {
-			need = true
-			break
-		}
-	}
-	if !need {
-		return nil
-	}
-	band, err := s.repo.Design().GetBand(ctx, cardID, 1)
-	if err != nil {
-		return designError(ctx, "failed to read the card's shelves", err, nil)
-	}
-	shelf := make(map[int]struct{}, len(band.Assets))
-	for _, a := range band.Assets {
-		if a.TechCardId == cardID {
-			shelf[a.Id] = struct{}{}
-		}
-	}
-	for i, c := range cloths {
-		if c.AssetId <= 0 {
-			continue
-		}
-		if _, ok := shelf[c.AssetId]; !ok {
-			return designError(ctx, "a colour plan named a foreign shelf row",
-				fmt.Errorf("%w: cloths.%d.asset_id %d is not a shelf row of tech card %d",
-					entity.ErrDesignInvalidArgument, i, c.AssetId, cardID), nil)
-		}
-	}
-	return nil
 }
 
 /* ─────────────────────────── the wire ─────────────────────────── */

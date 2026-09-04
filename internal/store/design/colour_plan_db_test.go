@@ -125,18 +125,76 @@ func TestDesignDBColourPlanCAS(t *testing.T) {
 	require.Empty(t, plan.Maps)
 	require.Empty(t, plan.Cloths)
 
-	// УДАЛЕНИЕ — И ПОВТОРНОЕ УДАЛЕНИЕ. Второе успешно: намерение «у этой карточки нет плана» уже
-	// исполнено, и отказ заставил бы клиента различать два состояния, между которыми для него нет
-	// разницы.
-	require.NoError(t, rep.Design().DeleteColourPlan(ctx, card))
-	require.NoError(t, rep.Design().DeleteColourPlan(ctx, card))
-	require.Nil(t, probePlanOf(t, card))
+	// ⚠ ОЧИСТКА — ЭТО ТА ЖЕ ЗАПИСЬ, И ВТОРОГО ГЛАГОЛА ДЛЯ НЕЁ НЕТ. Здесь стоял DeleteColourPlan:
+	// он нёс ОДИН tech_card_id, ревизию не сверял и упасть не мог — то есть устаревшая вкладка
+	// сносила чужую покраску молча. Вот тот самый жест, и теперь он ОТКАЗЫВАЕТ.
+	_, err = rep.Design().SetColourPlan(ctx, entity.DesignColourPlanSave{
+		TechCardId: card, ExpectedRev: 2, Actor: "устаревшая вкладка",
+	})
+	require.True(t, errors.Is(err, entity.ErrDesignColourPlanRevMismatch),
+		"⚠ «очистить» с устаревшей ревизией не имеет права снести чужой план")
+	require.Len(t, probePlanOf(t, card).Cloths, 0, "положительный контроль: план всё ещё пуст на rev 3")
 
-	// И ПОСЛЕ УДАЛЕНИЯ ПЛАН СНОВА РОЖДАЕТСЯ С НУЛЯ. Ревизия начинается заново — строки нет, значит
-	// и истории у неё нет.
-	plan, err = rep.Design().SetColourPlan(ctx, probePlanSave(card, base, mapMedia, 0, nil))
+	// И ЛЕСТНИЦА РЕВИЗИЙ ПЕРЕЖИВАЕТ ОЧИСТКУ, в отличие от удаления, которое сбрасывало её в ноль:
+	// покрасить снова — это следующий rev, а не новая строка с нулевой историей.
+	plan, err = rep.Design().SetColourPlan(ctx, probePlanSave(card, base, mapMedia, 3, nil))
 	require.NoError(t, err)
-	require.Equal(t, 1, plan.Rev)
+	require.Equal(t, 4, plan.Rev)
+}
+
+// TestDesignDBColourPlanRefusesWhatTheDoorCannotSee — три границы, КАЖДАЯ В ТОЙ ЖЕ ТРАНЗАКЦИИ, ЧТО
+// И ЗАПИСЬ, и каждая из них раньше отвечала не тем.
+//
+//   - НЕИЗВЕСТНАЯ КАРТОЧКА: существование не спрашивалось вовсе, INSERT ловил 1452 от
+//     fk_design_colour_plan_card, а маппится в этом сторе только 1062 — значит ожидаемый отказ
+//     уезжал клиенту как Internal 500 и писал ERROR в лог дежурному;
+//   - НЕСУЩЕСТВУЮЩЕЕ МЕДИА: у JSON-колонок внешнего ключа нет ВОВСЕ, поэтому план мог навсегда
+//     назвать картинку, которой не было, а дверь прогона заморозила бы этот номер в `params`;
+//   - ЧУЖАЯ ПОЛКА: проверялась в обработчике ОТДЕЛЬНЫМ чтением полосы до открытия транзакции —
+//     единственная граница фичи, стоявшая не там, где пишут.
+func TestDesignDBColourPlanRefusesWhatTheDoorCannotSee(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card, base, mapMedia := designProbePlanCard(t)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ ПЕРВЫМ: законный план проходит, иначе всё ниже зеленело бы у правила
+	// «отказывать всему».
+	_, err := rep.Design().SetColourPlan(ctx, probePlanSave(card, base, mapMedia, 0, nil))
+	require.NoError(t, err)
+
+	// НЕИЗВЕСТНАЯ КАРТОЧКА — NotFound, а не «сломался сервер».
+	_, err = rep.Design().SetColourPlan(ctx, probePlanSave(card+1_000_000, base, mapMedia, 0, nil))
+	require.True(t, errors.Is(err, entity.ErrDesignNotFound),
+		"неизвестная карточка — ОЖИДАЕМЫЙ отказ, а не 1452 в логе дежурного")
+
+	// НЕСУЩЕСТВУЮЩЕЕ МЕДИА — отказ называет id, который прислали.
+	var maxMedia int
+	require.NoError(t, raw.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM media`).Scan(&maxMedia))
+	_, err = rep.Design().SetColourPlan(ctx, probePlanSave(card, base, maxMedia+1_000, 1, nil))
+	require.True(t, errors.Is(err, entity.ErrDesignInvalidArgument),
+		"план не имеет права навсегда назвать картинку, которой не было")
+
+	// ЧУЖАЯ ПОЛКА — та же граница, теперь внутри транзакции записи.
+	otherCard, _, _ := designProbeCard(t, rep, raw)
+	require.NotEqual(t, card, otherCard)
+	otherAsset, err := rep.Design().UpsertAsset(ctx, entity.DesignAssetUpsert{
+		TechCardId: otherCard, Kind: entity.DesignAssetKindFabric, Name: "чужой джерси", Actor: "probe",
+	})
+	require.NoError(t, err)
+	_, err = rep.Design().SetColourPlan(ctx, probePlanSave(card, base, mapMedia, 1,
+		[]entity.DesignColourCloth{{Hex: "#3a7bd5", AssetId: otherAsset.Id}}))
+	require.True(t, errors.Is(err, entity.ErrDesignInvalidArgument),
+		"полка чужой карточки не встаёт в план")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: СВОЯ полка проходит той же дорогой.
+	mineAsset, err := rep.Design().UpsertAsset(ctx, entity.DesignAssetUpsert{
+		TechCardId: card, Kind: entity.DesignAssetKindFabric, Name: "свой джерси", Actor: "probe",
+	})
+	require.NoError(t, err)
+	plan, err := rep.Design().SetColourPlan(ctx, probePlanSave(card, base, mapMedia, 1,
+		[]entity.DesignColourCloth{{Hex: "#3a7bd5", AssetId: mineAsset.Id}}))
+	require.NoError(t, err)
+	require.Equal(t, 2, plan.Rev)
 }
 
 // TestDesignDBColourPlanRefusesAForeignPicture — ГРАНИЦА КАРТОЧКИ, ПРОВЕРЕННАЯ В ТОЙ ЖЕ

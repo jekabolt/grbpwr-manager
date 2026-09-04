@@ -2,6 +2,8 @@ package entity
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -47,11 +49,14 @@ func TestDesignColourPlanValidate(t *testing.T) {
 			planSave(func(s *DesignColourPlanSave) { s.Maps, s.Cloths = nil, nil }), true},
 		{"a map nobody has assigned yet — the ordinary half-finished screen",
 			planSave(func(s *DesignColourPlanSave) { s.Cloths = nil }), true},
+		// ⚠ КАЖДЫЙ ВИД СВОЕЙ КАРТИНКОЙ, И ЭТО НЕ КОСМЕТИКА ФИКСТУРЫ. Она была написана с одним
+		// media_id на все шесть карт — то есть сама была примером дефекта, который «одна картинка
+		// — одна карта» теперь и закрывает.
 		{"six maps, the ceiling", planSave(func(s *DesignColourPlanSave) {
 			s.Maps = nil
 			s.Cloths = nil
-			for _, v := range DesignSilhouetteViews {
-				s.Maps = append(s.Maps, DesignColourMap{MediaId: 20, View: v, BaseMediaId: 1})
+			for i, v := range DesignSilhouetteViews {
+				s.Maps = append(s.Maps, DesignColourMap{MediaId: 20 + i, View: v, BaseMediaId: 1})
 			}
 		}), true},
 
@@ -69,6 +74,43 @@ func TestDesignColourPlanValidate(t *testing.T) {
 			}), false},
 		{"a map with no picture — a map IS a picture",
 			planSave(func(s *DesignColourPlanSave) { s.Maps[0].MediaId = 0 }), false},
+		// ─── ЗАМЕРЫ АДВЕРСАРНОГО РЕВЮ ───
+		{"two maps on ONE picture — «Images 3 and 3» on a paid call",
+			planSave(func(s *DesignColourPlanSave) {
+				s.Maps = append(s.Maps, DesignColourMap{
+					MediaId: s.Maps[0].MediaId, View: DesignViewBack, BaseMediaId: 2,
+				})
+			}), false},
+		{"a palette of ten thousand labels — the band read carries it on every open",
+			planSave(func(s *DesignColourPlanSave) {
+				s.Maps[0].Palette = nil
+				for i := 0; i <= MaxDesignColourSwatchesPerMap; i++ {
+					s.Maps[0].Palette = append(s.Maps[0].Palette,
+						DesignColourSwatch{Hex: fmt.Sprintf("#00%04x", i+1), Px: 1})
+				}
+				s.Cloths = nil
+			}), false},
+		// ⚠ ЯРЛЫКИ РАЗЛОЖЕНЫ ПО ДВУМ КАРТАМ НАМЕРЕННО. Сложи их на одну — и отказал бы потолок
+		// ПАЛИТРЫ, а строка зеленела бы, не исполнив ту ветку, ради которой написана (замерено
+		// мутацией: снятый потолок назначений её не красил).
+		{"more assignments than there are labels to assign",
+			planSave(func(s *DesignColourPlanSave) {
+				s.Maps = []DesignColourMap{
+					{MediaId: 20, View: DesignViewFront, BaseMediaId: 1},
+					{MediaId: 21, View: DesignViewBack, BaseMediaId: 2},
+				}
+				s.Cloths = nil
+				for i := 0; i <= MaxDesignColourCloths; i++ {
+					hex := fmt.Sprintf("#00%04x", i+1)
+					at := i % 2
+					s.Maps[at].Palette = append(s.Maps[at].Palette, DesignColourSwatch{Hex: hex, Px: 1})
+					s.Cloths = append(s.Cloths, DesignColourCloth{Hex: hex, Words: "jersey"})
+				}
+			}), false},
+		{"a document too large to read back — the card's band would refuse for ever",
+			planSave(func(s *DesignColourPlanSave) {
+				s.Cloths[0].Words = strings.Repeat("w", MaxDesignColourPlanBytes+1)
+			}), false},
 		{"a map that cannot name its base — un-stale-able for ever after",
 			planSave(func(s *DesignColourPlanSave) { s.Maps[0].BaseMediaId = 0 }), false},
 		{"an upper-case label — the hex is the KEY a cloth finds its parts by",
@@ -116,21 +158,30 @@ func TestDesignColourPlanValidate(t *testing.T) {
 	}
 }
 
-// TestDesignColourClothStated — «сказала ли строка хоть что-нибудь», и каждая из четырёх половин
+// TestDesignColourClothStated — «сказала ли строка хоть что-нибудь», и каждая из ТРЁХ половин
 // считается сама по себе.
 //
 // ⚠ МУТАЦИЯ, КОТОРУЮ ЭТО КРАСИТ: считать строку сказанной по одному лишь `asset_id`, либо наоборот
-// — забыть один из четырёх способов ответить. Первое пускает пустую строку, второе ОТКАЗЫВАЕТ
+// — забыть один из трёх способов ответить. Первое пускает пустую строку, второе ОТКАЗЫВАЕТ
 // человеку, который назвал цвет одними словами, — а это полный и законный ответ на вопрос «из чего
 // эта деталь».
+//
+// ⚠ И ЧЕТВЁРТОГО СПОСОБА НЕТ, ХОТЯ КОД ЕГО ПРИНИМАЛ. Контракт (common/design.proto,
+// DesignColourCloth) говорит «хотя бы одно из ТРЁХ» и называет их поимённо; `parts` отвечает на
+// вопрос «КАКИЕ детали», а не «ИЗ ЧЕГО они». Строка `{hex, parts:"cuffs"}` хранилась и возвращалась
+// как назначение, не называющее материала вовсе, — то есть ярлык карты по-прежнему указывал в
+// тишину, ровно то состояние, ради запрета которого этот метод и написан.
 func TestDesignColourClothStated(t *testing.T) {
 	require.False(t, DesignColourCloth{Hex: "#3a7bd5"}.Stated())
 	require.False(t, DesignColourCloth{Hex: "#3a7bd5", Words: "   "}.Stated(),
 		"пробелы — это не слова")
+	require.False(t, DesignColourCloth{Hex: "#3a7bd5", Parts: "cuffs"}.Stated(),
+		"имя детали не отвечает на вопрос, из чего она сделана")
 	require.True(t, DesignColourCloth{Hex: "#3a7bd5", AssetId: 4}.Stated())
 	require.True(t, DesignColourCloth{Hex: "#3a7bd5", ColourHex: "#112233"}.Stated())
 	require.True(t, DesignColourCloth{Hex: "#3a7bd5", Words: "2x2 rib"}.Stated())
-	require.True(t, DesignColourCloth{Hex: "#3a7bd5", Parts: "cuffs"}.Stated())
+	require.True(t, DesignColourCloth{Hex: "#3a7bd5", Words: "2x2 rib", Parts: "cuffs"}.Stated(),
+		"положительный контроль: `parts` рядом со сказанным материалом ничего не ломает")
 }
 
 // TestIsDesignColourMapHex — ОДИН читатель формата ярлыка на всю полосу, поэтому у него одна проба.

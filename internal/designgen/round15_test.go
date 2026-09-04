@@ -211,8 +211,8 @@ func TestAOneClothRenderOfAPatternADDS_A_PARAGRAPH_AND_MOVES_NOTHING(t *testing.
 // МНОГОКЛОТОЧНАЯ СТРОКА ПЛИТКИ ГОВОРИТ «РАЗЛОЖИ», А НЕ «ПРОЧИТАЙ ДРАП».
 func TestAPatternClothInAMultiClothRunIS_LAID_OUT_NOT_READ(t *testing.T) {
 	attached := []refCaption{{MediaID: 9}, {MediaID: 10}}
-	plain := renderClothLine(1, fabricUse{Name: "jersey", MediaID: 9}, attached, false)
-	tile := renderClothLine(2, fabricUse{Name: "floral", MediaID: 10, Kind: entity.DesignAssetKindPattern}, attached, false)
+	plain := renderClothLine(1, fabricUse{Name: "jersey", MediaID: 9}, attached, false, false)
+	tile := renderClothLine(2, fabricUse{Name: "floral", MediaID: 10, Kind: entity.DesignAssetKindPattern}, attached, false, false)
 
 	require.Contains(t, plain, "Its texture is image 1: read this cloth's weave")
 	require.Contains(t, tile, "Its picture is image 2, a seamless repeat tile of its print")
@@ -220,7 +220,7 @@ func TestAPatternClothInAMultiClothRunIS_LAID_OUT_NOT_READ(t *testing.T) {
 
 	// И БЕЗ КАРТИНКИ МОЛЧАНИЕ СКАЗАНО, А НЕ ОСТАВЛЕНО ПУСТЫМ — иначе модель прочитает мотив с
 	// фотографии соседа.
-	mute := renderClothLine(2, fabricUse{Name: "floral", Kind: entity.DesignAssetKindPattern}, attached, false)
+	mute := renderClothLine(2, fabricUse{Name: "floral", Kind: entity.DesignAssetKindPattern}, attached, false, false)
 	require.Contains(t, mute, "No picture of this pattern was sent")
 }
 

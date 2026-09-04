@@ -2062,11 +2062,13 @@ type (
 		// replace rather than a patch for the reason SaveEditLayer already gives about strokes:
 		// the plan is one screen's state, and repainting a view removes colours together with
 		// their assignments. entity.ErrDesignColourPlanRevMismatch on a stale rev.
+		//
+		// ⚠ И ЭТО ЖЕ ГЛАГОЛ «ОЧИСТИТЬ»: пустой документ — законное состояние («painted, then
+		// cleared»), и он проходит тот же CAS. Отдельный DeleteColourPlan здесь был и УБРАН: он
+		// сносил строку по одному tech_card_id, без сверки ревизии, то есть устаревшая вкладка
+		// молча стирала двадцать минут чужой покраски — ровно ту потерю, ради запрета которой этот
+		// глагол и держит expected_rev.
 		SetColourPlan(ctx context.Context, req entity.DesignColourPlanSave) (*entity.DesignColourPlan, error)
-		// DeleteColourPlan removes the card's plan. Deleting a plan that is not there SUCCEEDS —
-		// the caller's intent is «this card has no plan», and that is already true. The map PNGs
-		// are ordinary media and are NOT touched: they may already be frozen into a run's recipe.
-		DeleteColourPlan(ctx context.Context, techCardID int) error
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)

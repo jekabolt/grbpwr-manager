@@ -409,14 +409,32 @@ func renderFabricSection(f fabricStated, cloths []fabricUse, maps []colourMap, v
 // afterwards. The prohibition closes because it is the negative half, and the negative half of this
 // prompt is written last everywhere else in the file too (renderExcluded).
 func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, attached []refCaption) []string {
+	// ─── ОДИН ФАКТ НА ВСЕ ТРИ ПРЕДЛОЖЕНИЯ О КАРТЕ ───
+	//
+	// ⚠ ЭТО ПОЧИНКА ЗАМЕРЕННОГО ДЕФЕКТА, А НЕ ПЕРЕСТРАХОВКА. Ревью собрало платный промпт с
+	// `map_hex` и ПУСТЫМ `colour_maps`: строки тканей говорили «used on the parts painted steel
+	// blue (#3a7bd5) on the colour map», а ни предложения «Image N is a colour map», ни самой
+	// карты в запросе не было вовсе. renderColourMapSentence правило соблюдала («карта, которая не
+	// уехала, не нумеруется и не упоминается»), renderClothLine — нет, потому что читала ДРУГОЙ
+	// факт: собственное поле строки вместо списка вложений.
+	//
+	// Теперь факт один и считается один раз: `sent` — карты, доехавшие до модели ИМЕННО КАРТАМИ.
+	// Из него живут все трое — заголовок, признак «отметки есть» и клаузула места на строке ткани.
+	sent := colourMapsSent(maps, attached)
+	mapped := len(sent) > 0
+
 	// ⚠ «SOMEBODY MARKED SOMETHING» NOW HAS TWO SPELLINGS, AND BOTH COUNT. A cloth pinned by a
 	// painted label is pinned exactly as hard as one pinned by words — harder, if anything, since
 	// the picture shows the boundary instead of naming it. Reading only `Parts` here would have
 	// left a fully painted run under the «nobody marked anything, the division is yours» rule,
 	// which is the one sentence that tells the model to ignore the maps it was just handed.
+	//
+	// ⚠ НО ТОЛЬКО ЕСЛИ КАРТА ДОЕХАЛА. `map_hex` без карты — это не отметка, это ссылка в пустоту, и
+	// взведённый от неё признак уводил прогон из честного правила «деление — ваше» в правило
+	// «отметки есть», то есть заставлял модель искать границы на картинке, которой ей не давали.
 	anyParts := false
 	for _, c := range cloths {
-		if oneLine(c.Parts) != "" || strings.TrimSpace(c.MapHex) != "" {
+		if oneLine(c.Parts) != "" || (mapped && strings.TrimSpace(c.MapHex) != "") {
 			anyParts = true
 			break
 		}
@@ -441,12 +459,12 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 	//
 	// A RUN WITH NO MAPS ADDS NOTHING HERE, which is why every prompt this file composed before
 	// Feature A is the prompt it composes now.
-	if s := renderColourMapSentence(maps, views, attached); s != "" {
+	if s := renderColourMapSentence(sent, views, attached); s != "" {
 		heading += " " + s
 	}
 	lines := []string{heading + " " + rule + " The cloths, in the order they were stated:"}
 	for i, c := range cloths {
-		lines = append(lines, renderClothLine(i+1, c, attached, anyParts))
+		lines = append(lines, renderClothLine(i+1, c, attached, anyParts, mapped))
 	}
 	return append(lines, closing)
 }
@@ -473,8 +491,8 @@ func renderColourMapSentence(maps []colourMap, views []string, attached []refCap
 	var numbers []string
 	var painted []string
 	seen := make(map[string]struct{}, len(maps))
-	for _, m := range maps {
-		img := imageNumberOf(attached, m.MediaID)
+	for _, m := range colourMapsSent(maps, attached) {
+		img := colourMapNumberOf(attached, m.MediaID)
 		if img == 0 {
 			continue
 		}
@@ -609,7 +627,7 @@ func renderPatternClothParagraph(c fabricUse, attached []refCaption) string {
 // name, words AND parts ARE FLATTENED TO ONE LINE for the reason oneLine exists: these lines are
 // one-per-cloth and a newline typed into a cloth's name would write a line of its own into the
 // prompt — including, if the person happens to type it, a line that reads like another cloth.
-func renderClothLine(n int, c fabricUse, attached []refCaption, anyParts bool) string {
+func renderClothLine(n int, c fabricUse, attached []refCaption, anyParts, mapped bool) string {
 	var b strings.Builder
 	b.WriteString("CLOTH " + strconv.Itoa(n))
 	if name := oneLine(c.Name); name != "" {
@@ -661,7 +679,19 @@ func renderClothLine(n int, c fabricUse, attached []refCaption, anyParts bool) s
 	// so the name is the instruction and the hex is the exact value it stands for, the same shape
 	// colourPhrase already uses for a colourway code and its value. The map itself disambiguates
 	// when the name is coarse.
-	parts, mapHex := oneLine(c.Parts), strings.TrimSpace(c.MapHex)
+	//
+	// ⚠ И ЯРЛЫК ПЕЧАТАЕТСЯ ТОЛЬКО ТОГДА, КОГДА КАРТА ДЕЙСТВИТЕЛЬНО УЕХАЛА. `mapped` — тот же самый
+	// `sent`, что считает заголовок; см. шапку renderClothLines. Без него строка ткани говорила
+	// «the parts painted steel blue (#3a7bd5) on the colour map» рядом с запросом, в котором карты
+	// нет ни одной, — и это состояние достижимо не только кривым клиентом: строка media карты может
+	// исчезнуть между снимком и проходом воркера, и тогда картинку молча пропускает buildJob.
+	// Ткань при этом НЕ немеет: она просто ничего не говорит о месте — и попадает под то же
+	// правило остатка, что и всякая ткань без отметок.
+	parts := oneLine(c.Parts)
+	mapHex := ""
+	if mapped {
+		mapHex = strings.TrimSpace(c.MapHex)
+	}
 	switch {
 	case mapHex != "" && parts != "":
 		b.WriteString(" It is used on: " + parts + " — the parts painted " + colourWord(mapHex) +
@@ -912,6 +942,55 @@ func imageNumberOf(attached []refCaption, mediaID int) int {
 	}
 	for i, rc := range attached {
 		if rc.MediaID == mediaID {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// colourMapsSent — КАРТЫ, ДОЕХАВШИЕ ДО МОДЕЛИ ИМЕННО КАРТАМИ. Один читатель факта, три читателя
+// вывода: заголовок списка тканей, признак «отметки есть» и клаузула места на строке ткани.
+//
+// ⚠ ТРИ СОСТОЯНИЯ, КОТОРЫЕ ЭТА ФУНКЦИЯ ОДИНАКОВО СЧИТАЕТ «КАРТЫ НЕТ», и все три ревью замерило на
+// собранном промпте:
+//
+//   - карта не уехала вовсе (её строка media исчезла между снимком и проходом; buildJob такие
+//     молча пропускает) — и предложение про картинку, которой никому не показали, есть инструкция
+//     ни о чём;
+//   - две карты назвали ОДИН media_id — картинка одна, и объявить её картой двух разных видов
+//     («Images 3 and 3») значит соврать дважды в одном предложении;
+//   - «карта» оказалась плитой верстака или референсом — тогда картинка уехала, но под ЧУЖОЙ
+//     подписью, и ярлыков на ней нет.
+//
+// Все три различает ОДНО поле, проставленное там, где список и собирается (refCaption.IsColourMap),
+// а не догадка по номеру: наличие media в списке ответом не является.
+func colourMapsSent(maps []colourMap, attached []refCaption) []colourMap {
+	out := make([]colourMap, 0, len(maps))
+	seen := make(map[int]struct{}, len(maps))
+	for _, m := range maps {
+		if colourMapNumberOf(attached, m.MediaID) == 0 {
+			continue
+		}
+		if _, dup := seen[m.MediaID]; dup {
+			continue
+		}
+		seen[m.MediaID] = struct{}{}
+		out = append(out, m)
+	}
+	return out
+}
+
+// colourMapNumberOf — номер картинки, УЕХАВШЕЙ КАРТОЙ. 0 = такой карты в запросе нет; см.
+// colourMapsSent о том, почему это не то же самое, что imageNumberOf.
+func colourMapNumberOf(attached []refCaption, mediaID int) int {
+	if mediaID <= 0 {
+		return 0
+	}
+	for i, rc := range attached {
+		if rc.MediaID == mediaID {
+			if !rc.IsColourMap {
+				return 0
+			}
 			return i + 1
 		}
 	}

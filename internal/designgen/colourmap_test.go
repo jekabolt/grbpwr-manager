@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -111,8 +112,10 @@ func TestAColourMapWhoseMediaVanishedIsNeitherNumberedNorMentioned(t *testing.T)
 	require.Equal(t, "", got,
 		"a map that did not go out must not be described — the model cannot see it")
 
-	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: та же карта, доехавшая, говорит.
-	attached = append(attached, refCaption{MediaID: 20, Caption: "map"})
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: та же карта, доехавшая КАРТОЙ, говорит. Признак ставит referenceList
+	// в момент сборки списка — см. refCaption.IsColourMap: «картинка в списке есть» ответом на этот
+	// вопрос не является, потому что плита верстака, названная картой, в списке тоже есть.
+	attached = append(attached, refCaption{MediaID: 20, Caption: "map", IsColourMap: true})
 	require.Contains(t, renderColourMapSentence([]colourMap{{MediaID: 20, View: "front"}}, []string{"front"}, attached),
 		"Image 3 is a colour map of the front drawing")
 }
@@ -218,7 +221,8 @@ func TestColourWordNamesThePaintedLabel(t *testing.T) {
 // model may take apart into separate instructions.
 func TestColourMapSentenceListsSeveralMapsAndSeveralBareViews(t *testing.T) {
 	attached := []refCaption{
-		{MediaID: 1}, {MediaID: 2}, {MediaID: 20}, {MediaID: 21},
+		{MediaID: 1}, {MediaID: 2},
+		{MediaID: 20, IsColourMap: true}, {MediaID: 21, IsColourMap: true},
 	}
 	got := renderColourMapSentence(
 		[]colourMap{{MediaID: 20, View: "front"}, {MediaID: 21, View: "back"}},
@@ -235,4 +239,125 @@ func TestColourMapSentenceListsSeveralMapsAndSeveralBareViews(t *testing.T) {
 		[]string{"front", "back"}, attached)
 	require.NotContains(t, all, "carries no colour map")
 	require.NotContains(t, all, "carry no colour map")
+}
+
+// ═══ ЧТО ПРОМПТ НЕ ИМЕЕТ ПРАВА СКАЗАТЬ ПРО КАРТУ, КОТОРОЙ У МОДЕЛИ НЕТ ═════════════════════════
+//
+// Четыре пробы ниже написаны по ЗАМЕРАМ адверсарного ревью: каждая собирает промпт целиком и
+// требует, чтобы ложного предложения в нём не было. Все четыре состояния попадали в ОПЛАЧЕННЫЙ
+// вызов, и все четыре сходятся в одну точку — картинка, названная картой, но моделью не увиденная
+// (см. refCaption.IsColourMap и colourMapsSent).
+
+// TestAMapHexWithNoMapAtAllCitesNoMap — ЗАМЕР РЕВЬЮ №1: `map_hex` задан, `colour_maps` пуст.
+//
+// Было: строки тканей говорили «used on the parts painted steel blue (#3a7bd5) on the colour map»,
+// а ни предложения «Image N is a colour map», ни самой карты в запросе не было. Хуже: признак
+// «отметки есть» взводился от одного `map_hex` и уводил прогон из правила «деление — ваше» в
+// правило «ищите границы на разметке», то есть на картинке, которой модели не давали.
+func TestAMapHexWithNoMapAtAllCitesNoMap(t *testing.T) {
+	params := `{"views":["front","back"],"layout":"one","colour":{"code":"RED-01","hex":"#b1121a",` +
+		`"fabric_media_id":9,"fabrics":[` +
+		`{"name":"main jersey","media_id":9,"map_hex":"#3a7bd5"},` +
+		`{"name":"contrast rib","media_id":10,"map_hex":"#ff0000"}]}}`
+	got := renderPrompt(t, params, renderSlots)
+
+	require.NotContains(t, got, "the parts painted",
+		"a cloth may not cite a painted label when no map went out with this run")
+	require.NotContains(t, got, "colour map",
+		"there is no map in this request, so nothing in it may name one")
+
+	// И ПРАВИЛО — ЧЕСТНОЕ. Без отметок деление принадлежит модели, и это ровно то, что говорит
+	// неразмеченная пара правил.
+	require.Contains(t, got, renderClothPartsUnmarked)
+	require.NotContains(t, got, renderClothPartsRule)
+	require.Contains(t, got, renderClothNoInventionUnmarked)
+	require.NotContains(t, got, "it is the REMAINDER",
+		"остатка не бывает там, где никто ничего не разметил")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: обе ткани по-прежнему названы — молчание про карту не имеет права
+	// стать молчанием про ткань.
+	require.Contains(t, got, "This garment is made of two different cloths")
+	require.Contains(t, clothLine(t, got, "2"), "contrast rib")
+}
+
+// TestAClothCitesNoMapWhenTheMapsPictureDidNotGoOut — ЗАМЕР РЕВЬЮ №1, ВТОРАЯ ПОЛОВИНА: рецепт
+// назвал карту, но её строка media исчезла между снимком и проходом воркера.
+//
+// Это состояние достижимо ЧЕСТНЫМ клиентом: buildJob молча пропускает картинку, которая больше не
+// разрешается, и `attached` — это выжившие. Дверь прогона здесь ни при чём: она отработала месяц
+// назад. Поэтому промпт обязан молчать про карту сам.
+func TestAClothCitesNoMapWhenTheMapsPictureDidNotGoOut(t *testing.T) {
+	r := testRun(1, entity.DesignRunKindRender)
+	r.Params = entity.RawJSON(twoClothsOneMap)
+	r.Inputs = entity.RawJSON(renderSlots)
+	p, in := parseParams(r.Params), parseInputs(r.Inputs)
+
+	// Список вложений строится как обычно, и КАРТА ИЗ НЕГО ВЫПАДАЕТ — ровно то, что делает
+	// buildJob со строкой, которой больше нет.
+	var survivors []refCaption
+	for _, rc := range referenceList(r.Kind, p, in) {
+		if rc.MediaID == 20 {
+			continue
+		}
+		survivors = append(survivors, rc)
+	}
+	got := composePrompt(r, p, in, survivors)
+
+	require.NotContains(t, got, "the parts painted",
+		"the map did not go out, so no cloth may address it")
+	require.NotContains(t, got, "is a colour map",
+		"a sentence pointing at an image nobody was shown is an instruction about nothing")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: та же строка ткани, названная СЛОВАМИ, остаётся на месте — потеря
+	// карты стирает только адрес по цвету.
+	require.Contains(t, clothLine(t, got, "2"),
+		"It is used on: collar, cuffs — and on no other part of this garment.")
+}
+
+// TestTwoMapsOnOnePictureDoNotBecomeImagesThreeAndThree — ЗАМЕР РЕВЬЮ №2.
+//
+// Было: `colour_maps:[{20,"front"},{20,"back"}]` давало ОДНУ картинку, объявленную картой двух
+// разных видов, склеенную подпись и предложение «Images 3 and 3 are colour maps of the front and
+// back drawings» на платном вызове. Одна картинка — одна роль: первая карта выигрывает, второй вид
+// честно объявляется непокрашенным.
+func TestTwoMapsOnOnePictureDoNotBecomeImagesThreeAndThree(t *testing.T) {
+	params := `{"views":["front","back"],"layout":"one","colour":{"code":"RED-01","hex":"#b1121a",` +
+		`"colour_maps":[{"media_id":20,"view":"front"},{"media_id":20,"view":"back"}],` +
+		`"fabrics":[{"name":"main jersey","map_hex":"#3a7bd5"},{"name":"contrast rib","map_hex":"#ff0000"}]}}`
+	got := renderPrompt(t, params, renderSlots)
+
+	require.NotContains(t, got, "Images 3 and 3",
+		"one picture cannot be the map of two views, and a repeated number says nothing at all")
+	require.NotContains(t, got, "colour map of the back flat",
+		"the caption of one picture may not carry two mutually exclusive descriptions")
+	require.Equal(t, 1, strings.Count(got, "colour map of the front flat"),
+		"ровно одна подпись карты на ровно одну картинку")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: первая карта осталась картой, а второй вид назван непокрашенным.
+	require.Contains(t, got, "Image 3 is a colour map of the front drawing")
+	require.Contains(t, got, "The back drawing carries no colour map")
+}
+
+// TestABenchPlateNamedAsAColourMapIsNotDeclaredTwice — ЗАМЕР РЕВЬЮ №3.
+//
+// `media_id` и `base_media_id` — соседи на одном сообщении, и база это и есть флэт, поэтому
+// опечатка в одно поле объявляла картой ПЛИТУ ВЕРСТАКА. Замер: одна картинка, подписанная
+// одновременно «current state of the garment — front view» и «colour map … those colours LABEL
+// which cloth covers which part» — ровно тот провал, ради предотвращения которого блок подписей и
+// написан. Дверь прогона такой рецепт теперь отвергает до денег; здесь проверяется вторая половина
+// правила — что промпт не соврёт и про снимок, замороженный мимо неё.
+func TestABenchPlateNamedAsAColourMapIsNotDeclaredTwice(t *testing.T) {
+	params := `{"views":["front","back"],"layout":"one","colour":{"code":"RED-01","hex":"#b1121a",` +
+		`"colour_maps":[{"media_id":1,"view":"front"}],` +
+		`"fabrics":[{"name":"main jersey","map_hex":"#3a7bd5"},{"name":"contrast rib","map_hex":"#ff0000"}]}}`
+	got := renderPrompt(t, params, renderSlots)
+
+	require.NotContains(t, got, "colour map",
+		"a picture already declared the state of the garment is not also a sheet of labels")
+	require.NotContains(t, got, "the parts painted",
+		"and no cloth may address labels that were never sent")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: подпись плиты цела и НЕ склеена со второй.
+	require.Contains(t, got, "- image 1: current state of the garment — front view")
+	require.NotContains(t, got, "front view; ")
 }

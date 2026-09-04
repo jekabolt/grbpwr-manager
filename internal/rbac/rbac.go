@@ -484,8 +484,7 @@ var methodRequirements = map[string]Requirement{
 	// полками ассетов и по тому же доводу — это ЗАПИСЬ О КАРТОЧКЕ, объявление того, из чего сделано
 	// изделие. Денег не тратит: карты рисуют и загружают до всякого прогона, а платит за них
 	// StartDesignRun, у которого право своё.
-	"SetDesignColourPlan":    wr(SectionTechCards),
-	"DeleteDesignColourPlan": wr(SectionTechCards),
+	"SetDesignColourPlan": wr(SectionTechCards),
 	// ImportDesignVector НИЧЕГО НЕ ТРАТИТ — он подшивает уже загруженный SVG, — но пишет слой и
 	// заводит картинку с провенансом imported_svg. Право пишущее, потому что запись, а не потому
 	// что деньги; машинная векторизация это StartDesignRun с kind=vector, у которого право уже есть.

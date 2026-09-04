@@ -764,6 +764,14 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseDisplayOnlyInputs(ctx, designRunInputMediaRefs(params, inputs)); err != nil {
 		return nil, err
 	}
+	// ─── КАРТА ЦВЕТА, КОТОРАЯ НА САМОМ ДЕЛЕ ПЛИТА ИЛИ РЕФЕРЕНС ───
+	//
+	// Та же позиция и тот же довод, что у двух сторожей выше, и тот же СПИСОК ИСТОЧНИКОВ: вопрос
+	// «чем ещё является эта картинка» отвечается ровно по тем пяти местам, откуда медиа уезжает
+	// поставщику. Довод целиком — в шапке designRefuseColourMapAlsoAnInput.
+	if err := designRefuseColourMapAlsoAnInput(params, inputs); err != nil {
+		return nil, err
+	}
 	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
 	// иначе в колонку уедет то, что прислал клиент.
 	designStampSourcePictures(kind, params, designRunPlates(src, parent))
@@ -1580,8 +1588,33 @@ func designColourMapMediaIDs(c *pb_common.DesignColourRecipe) []int {
 //
 // ⚠ И ЯРЛЫК ТКАНИ ПРОВЕРЯЕТСЯ ТОЖЕ. `map_hex` — это КЛЮЧ, по которому ткань находит свои детали на
 // карте; «#3A7BD5» против «#3a7bd5» означал бы ткань, потерявшую детали, без единого сообщения.
+//
+// ═══ ЧЕТЫРЕ ВОПРОСА, КОТОРЫХ ЗДЕСЬ НЕ ЗАДАВАЛОСЬ, И ЦЕНА КАЖДОГО (адверсарное ревью) ══════════
+//
+// Проверялась ОДНА ФОРМА и только она, поэтому мимо двери проходили четыре рецепта, каждый из
+// которых заставлял ПЛАТНЫЙ промпт утверждать неправду. Все четыре замерены на собранном промпте:
+//
+//   - ЯРЛЫК БЕЗ ЕДИНОЙ КАРТЫ: строки тканей говорили «used on the parts painted steel blue
+//     (#3a7bd5) on the colour map» при пустом `colour_maps` — предложения про карту и самой карты
+//     в запросе не было вовсе;
+//   - ЯРЛЫК, КОТОРОГО НЕТ НИ НА ОДНОЙ ПАЛИТРЕ: карта уехала, но такого цвета на ней никто не
+//     красил, и модель ищет область, которой нет. Палитра — ЗАМКНУТОЕ множество ярлыков (см.
+//     DesignColourSwatch), и вопрос «есть ли этот ярлык» отвечается только по ней;
+//   - ДВЕ КАРТЫ НА ОДИН `media_id`: список вложений дедуплицирует по номеру медиа и СКЛЕИВАЕТ
+//     подписи, поэтому одна картинка объявлялась картой двух разных видов, а предложение читалось
+//     «Images 3 and 3»;
+//   - ДВЕ ТКАНИ НА ОДИН `map_hex`: две строки заявляли «used on the parts painted steel blue …
+//     and on no other part» — два взаимно исключающих утверждения об одной области, оба
+//     абсолютные. У ПЛАНА этот дубль отвергался с первого дня (entity.DesignColourPlanSave), у
+//     двери прогона эквивалента не было.
+//
+// Промпт с тех пор молчит про карту, которой у модели нет (designgen: colourMapsSent), но молчание
+// — это не то, о чём просил человек: он просил разложить ткани по покрашенным деталям. Поэтому
+// здесь ОТКАЗ СЛОВАМИ И ДО ДЕНЕГ, а не тихо усечённый промпт за полную цену.
 func designRefuseMalformedColourMaps(spoken *pb_common.DesignRunParams) error {
 	views := make(map[string]struct{})
+	pictures := make(map[int]int)
+	painted := make(map[string]struct{})
 	maps := spoken.GetColour().GetColourMaps()
 	if n := len(maps); n > entity.MaxDesignColourMaps {
 		return status.Errorf(codes.InvalidArgument,
@@ -1602,14 +1635,27 @@ func designRefuseMalformedColourMaps(spoken *pb_common.DesignRunParams) error {
 			return status.Errorf(codes.InvalidArgument,
 				"params.colour.colour_maps.%d.media_id %d — a map is a picture", i, m.GetMediaId())
 		}
+		// ОДНА КАРТИНКА — ОДНА КАРТА. Дубль ВИДА отвергался строкой выше, дубль КАРТИНКИ не
+		// отвергался ничем, а следствие у него хуже: вид хотя бы называется дважды честно, а
+		// одна картинка, объявленная картой двух видов, приезжает к модели с одним номером на два
+		// вида и склеенной подписью.
+		if at, dup := pictures[int(m.GetMediaId())]; dup {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d names picture %d, which colour_maps.%d already is: "+
+					"one picture is one map, and a single image declared to be the map of two views "+
+					"reaches the model as «Images N and N»", i, m.GetMediaId(), at)
+		}
+		pictures[int(m.GetMediaId())] = i
 		for j, sw := range m.GetPalette() {
 			if !entity.IsDesignColourMapHex(sw.GetHex()) {
 				return status.Errorf(codes.InvalidArgument,
 					"params.colour.colour_maps.%d.palette.%d.hex %q is not a lower-case #rrggbb label",
 					i, j, sw.GetHex())
 			}
+			painted[sw.GetHex()] = struct{}{}
 		}
 	}
+	claimed := make(map[string]int)
 	for i, f := range spoken.GetColour().GetFabrics() {
 		hex := f.GetMapHex()
 		if hex == "" {
@@ -1619,6 +1665,77 @@ func designRefuseMalformedColourMaps(spoken *pb_common.DesignRunParams) error {
 			return status.Errorf(codes.InvalidArgument,
 				"params.colour.fabrics.%d.map_hex %q is not a lower-case #rrggbb label", i, hex)
 		}
+		if len(maps) == 0 {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.fabrics.%d.map_hex %s addresses a colour map, and this run carries "+
+					"none: the cloth would name a picture the model was never shown. Send the "+
+					"painted view in params.colour.colour_maps, or state this cloth's parts in words",
+				i, hex)
+		}
+		if _, ok := painted[hex]; !ok {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.fabrics.%d.map_hex %s is on the palette of no colour map of this "+
+					"run: nobody painted that colour, so the cloth would be sent to look for a "+
+					"region that is not there", i, hex)
+		}
+		if at, dup := claimed[hex]; dup {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.fabrics.%d.map_hex %s is already claimed by fabrics.%d: both lines "+
+					"would say «used on the parts painted that colour — and on no other part», which "+
+					"is two absolute claims over one region. The hex is the key, one cloth per label",
+				i, hex, at)
+		}
+		claimed[hex] = i
+	}
+	return nil
+}
+
+// designRefuseColourMapAlsoAnInput — КАРТА ЦВЕТА НЕ МОЖЕТ БЫТЬ ПЛИТОЙ ВЕРСТАКА, РЕФЕРЕНСОМ, ЛИШНИМ
+// ВХОДОМ ИЛИ ЛОСКУТОМ ТКАНИ.
+//
+// ⚠ ЭТО ТОТ ЖЕ КЛАСС, ЧТО designClothAlsoAPhotograph, И ФОРМА СТОРОЖА ВЗЯТА У НЕГО. Там медиа,
+// названное И фотографией к перекрасу, И тканью, давало вызов «переодень эту картинку в неё же».
+// Здесь — хуже: `media_id` карты и `base_media_id` карты соседи на одном сообщении, а база это и
+// есть флэт, поэтому опечатка в ОДНО поле объявляет картой ПЛИТУ. Замер ревью: одна картинка,
+// подписанная одновременно «current state of the garment — front view» и «colour map … those
+// colours LABEL which cloth covers which part», то есть ровно тот провал, ради предотвращения
+// которого блок подписей и написан.
+//
+// ⚠ ОТКАЗ, А НЕ ТИХОЕ РАЗЖАЛОВАНИЕ КАРТЫ, И ВЫБОР ТОТ ЖЕ, ЧТО У СОСЕДА. Список вложений роль
+// картинки уже не удваивает (designgen: refCaption.IsColourMap), так что промпт не соврёт, — но
+// прогон при этом молча сделает НЕ ТО, о чём просили: ткани останутся без адреса, а человек
+// заплатит за картинку, которую считал картой. Одна опечатка чинится одним жестом, если её
+// назвать.
+//
+// СТОИТ ПОСЛЕ СБОРКИ ВХОДОВ И ДО РЕЗЕРВА, по тому же доводу, что два соседних сторожа: раньше
+// плит и референсов ещё не существует (у рерана они и вовсе переписаны со строки родителя), позже
+// — деньги дня уже заняты.
+func designRefuseColourMapAlsoAnInput(params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot) error {
+	maps := params.GetColour().GetColourMaps()
+	if len(maps) == 0 {
+		return nil
+	}
+	byID := make(map[int]designInputMediaRef, 16)
+	for _, ref := range designRunInputMediaRefs(params, inputs) {
+		byID[ref.ID] = ref
+	}
+	for i, m := range maps {
+		ref, clash := byID[int(m.GetMediaId())]
+		if !clash {
+			continue
+		}
+		return designRefusal(codes.InvalidArgument, "colour_map_is_also_an_input",
+			fmt.Sprintf("media %d is named BOTH as %s and as the colour map of the %s view "+
+				"(params.colour.colour_maps.%d.media_id): one picture cannot be a drawing OF the "+
+				"garment and a sheet of labels ABOUT it in the same request. A colour map is its own "+
+				"upload — check that colour_maps.%d.media_id is not the flat it was painted over, "+
+				"which belongs in base_media_id. Nothing was reserved and nothing was charged",
+				ref.ID, ref.Where, m.GetView(), i, i),
+			map[string]string{
+				"media_id": strconv.Itoa(ref.ID),
+				"also":     ref.Where,
+				"view":     m.GetView(),
+			})
 	}
 	return nil
 }

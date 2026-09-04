@@ -17,6 +17,14 @@ import (
 // же снимке, что верстак и полки, — потому что студия рисует их одним кадром. Отдельный
 // GetColourPlan был бы вторым моментом времени и вторым мнением о том, что значит пустая колонка;
 // внутренний colourPlanByCard остаётся единственным читателем строки.
+//
+// ⚠ И ГЛАГОЛА-УДАЛИТЕЛЯ ЗДЕСЬ ТОЖЕ НЕТ, ХОТЯ ОН БЫЛ. DeleteColourPlan сносил строку по одному
+// tech_card_id, БЕЗ СВЕРКИ РЕВИЗИИ, — то есть ровно ту работу, о которой шапка SetColourPlan
+// строкой ниже пишет «двадцать минут покраски нельзя потерять молча», устаревшая вкладка стирала
+// одним нажатием и без единой ошибки. Второго глагола для этого не нужно: «очистить» — это
+// SetColourPlan{expected_rev, maps:[], cloths:[]}, состояние законное и названное контрактом
+// («painted, then cleared»), и оно проходит тот же CAS, что всякая другая запись. Удаление же
+// сбрасывало бы rev в ноль, то есть ЛОМАЛО лестницу сравнения там, где её и надо держать.
 
 // ЦВЕТОВОЙ ПЛАН КАРТОЧКИ (0364) — ОДНА СТРОКА, ДВА JSON-ДОКУМЕНТА, CAS ПО `rev`.
 //
@@ -75,7 +83,22 @@ func (s *Store) SetColourPlan(ctx context.Context, req entity.DesignColourPlanSa
 	var out entity.DesignColourPlan
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		if err := refuseUnknownCard(ctx, db, req.TechCardId); err != nil {
+			return err
+		}
+		if err := refuseMissingPlanMedia(ctx, rep, req.Maps); err != nil {
+			return err
+		}
 		if err := refuseForeignMedia(ctx, db, req.TechCardId, colourPlanMediaIDs(req.Maps)...); err != nil {
+			return err
+		}
+		// ⚠ ГРАНИЦА ПОЛКИ ЖИВЁТ ЗДЕСЬ, А НЕ У ДВЕРИ, И ЭТО ПОЧИНКА ЗАМЕРЕННОГО РАСХОЖДЕНИЯ. Она
+		// стояла в обработчике и читала полку ОТДЕЛЬНЫМ GetBand — до открытия транзакции, — то
+		// есть единственная граница этой фичи, проверяемая НЕ там, где пишут. Гонка с
+		// DeleteDesignAsset между тем чтением и этой записью пропускала план, называющий снесённую
+		// строку, и утверждение это потом замерзало в рецепте прогона. Соседняя граница по медиа
+		// всегда стояла здесь; теперь обе стоят в одном месте и в одной транзакции.
+		if err := refuseForeignPlanAssets(ctx, db, req.TechCardId, req.Cloths); err != nil {
 			return err
 		}
 
@@ -154,26 +177,79 @@ func (s *Store) SetColourPlan(ctx context.Context, req entity.DesignColourPlanSa
 	return &out, nil
 }
 
-// DeleteColourPlan removes the card's plan.
+// refuseUnknownCard — СУЩЕСТВУЕТ ЛИ КАРТОЧКА, СПРОШЕНО СЛОВАМИ, А НЕ ВНЕШНИМ КЛЮЧОМ.
 //
-// УДАЛЕНИЕ ОТСУТСТВУЮЩЕГО — УСПЕХ. Намерение вызывающего «у этой карточки нет плана», и оно уже
-// исполнено; отказ здесь заставил бы клиента различать два состояния, между которыми для него нет
-// разницы.
-//
-// ⚠ PNG КАРТ НЕ ТРОГАЮТСЯ. Они могли уже замёрзнуть в рецепте прогона, а история обязана
-// показывать те картинки, с которыми прогон был запущен.
-func (s *Store) DeleteColourPlan(ctx context.Context, cardID int) error {
-	if err := requireCard(cardID); err != nil {
-		return err
+// ⚠ ПОЧЕМУ НЕ ОСТАВИТЬ ЭТО FK. fk_design_colour_plan_card отвечает на неизвестную карточку ошибкой
+// 1452, а маппится в этом сторе только 1062 — значит ОЖИДАЕМЫЙ ОТКАЗ («такой карточки нет»)
+// уезжал клиенту как Internal 500 и писал строку ERROR в лог дежурному. Это ровно тот класс,
+// который шапка designRefusals называет поимённо: человек получал «что-то сломалось» на штатное
+// состояние. Тот же довод, слово в слово, записан у SaveEditLayer про существование медиа.
+func refuseUnknownCard(ctx context.Context, db dependency.DB, cardID int) error {
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM tech_card WHERE id = :card`, map[string]any{"card": cardID})
+	if err != nil {
+		return fmt.Errorf("failed to check whether tech card %d exists: %w", cardID, err)
 	}
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM design_colour_plan WHERE tech_card_id = :card`,
-			map[string]any{"card": cardID}); err != nil {
-			return fmt.Errorf("failed to delete the design colour plan of tech card %d: %w", cardID, err)
-		}
+	if n == 0 {
+		return fmt.Errorf("%w: tech card %d", entity.ErrDesignNotFound, cardID)
+	}
+	return nil
+}
+
+// refuseMissingPlanMedia — КАРТА И ЕЁ ПОДЛОЖКА ОБЯЗАНЫ СУЩЕСТВОВАТЬ.
+//
+// ⚠ СПРАШИВАЕТСЯ ЗДЕСЬ, А НЕ У ВНЕШНЕГО КЛЮЧА, ПО ДОВОДУ SaveEditLayer (layer.go): 1452 назвал бы
+// человеку имя ограничения, а этот отказ называет id, который он прислал. Колонки плана — JSON, у
+// них внешнего ключа нет ВОВСЕ, поэтому без этой проверки план мог навсегда назвать медиа, которого
+// не было, — а дверь прогона потом заморозила бы этот номер в `params`, где промпт молча пропустит
+// картинку, которой не существует.
+func refuseMissingPlanMedia(ctx context.Context, rep dependency.Repository, maps []entity.DesignColourMap) error {
+	ids := colourPlanMediaIDs(maps)
+	if len(ids) == 0 {
 		return nil
-	})
+	}
+	known, err := resolveMediaIDs(ctx, rep, ids)
+	if err != nil {
+		return fmt.Errorf("failed to resolve the media of the colour plan: %w", err)
+	}
+	for i, m := range maps {
+		if _, ok := known[m.MediaId]; !ok {
+			return fmt.Errorf("%w: maps.%d.media_id %d does not exist",
+				entity.ErrDesignInvalidArgument, i, m.MediaId)
+		}
+		if _, ok := known[m.BaseMediaId]; !ok {
+			return fmt.Errorf("%w: maps.%d.base_media_id %d does not exist",
+				entity.ErrDesignInvalidArgument, i, m.BaseMediaId)
+		}
+	}
+	return nil
+}
+
+// refuseForeignPlanAssets — НАЗВАННАЯ ПОЛКА ПРИНАДЛЕЖИТ ЭТОЙ КАРТОЧКЕ.
+//
+// НОЛЬ ПРОПУСКАЕТСЯ МОЛЧА: цвет, названный плоским цветом или словами, полки не имеет вовсе, и это
+// законный, полный ответ на вопрос «из чего эта деталь».
+//
+// Форма взята у refuseForeignMedia — по одному вопросу на адрес, а не один запрос на список:
+// адресов здесь единицы (потолок MaxDesignColourCloths), а читаемость отказа важнее одного round
+// trip'а.
+func refuseForeignPlanAssets(ctx context.Context, db dependency.DB, cardID int, cloths []entity.DesignColourCloth) error {
+	for i, c := range cloths {
+		if c.AssetId <= 0 {
+			continue
+		}
+		n, err := storeutil.QueryCountNamed(ctx, db,
+			`SELECT COUNT(*) FROM design_asset WHERE id = :asset AND tech_card_id = :card`,
+			map[string]any{"asset": c.AssetId, "card": cardID})
+		if err != nil {
+			return fmt.Errorf("failed to check who design asset %d belongs to: %w", c.AssetId, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: cloths.%d.asset_id %d is not a shelf row of tech card %d",
+				entity.ErrDesignInvalidArgument, i, c.AssetId, cardID)
+		}
+	}
+	return nil
 }
 
 // colourPlanByCard — ЕДИНСТВЕННЫЙ читатель строки на весь пакет, и разбор JSON живёт в нём.
