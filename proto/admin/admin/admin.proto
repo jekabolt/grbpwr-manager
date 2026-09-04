@@ -12524,6 +12524,18 @@ message DeleteDesignAssetPlacementResponse {}
 message DraftDesignIdeaRequest {
   int32 tech_card_id = 1;
   string client_request_id = 2; // the same idempotency as every other paid call
+  // ASK FOR THE STRUCTURED ANSWER instead of the three-section prose.
+  //
+  // ABSENT (false) IS THE OLD BEHAVIOUR, BYTE FOR BYTE: the same system prompt, the same user
+  // prompt, no json mode, no token ceiling, and `output_text` still holds the prose the client
+  // splits by its three titles. A client that predates this field keeps working unchanged, which
+  // is the entire reason this is a flag on the existing verb and not a second verb.
+  //
+  // WHY NOT A NEW `kind`. Run kinds are a vocabulary every client maps — the bench, the history,
+  // the artifacts panel each hold their own table of them — so a new member would ripple through
+  // all of them to say something none of them act on: this is still one text run on the moodboard,
+  // through the same money register and the same idempotency, asked for in a different shape.
+  bool construction = 3;
 }
 
 message DraftDesignIdeaResponse {
@@ -12531,4 +12543,13 @@ message DraftDesignIdeaResponse {
   // still a row in the money register — that is the whole reason it goes through this machine.
   common.DesignRun run = 1;
   common.DesignBudget budget = 2; // the bar after the charge
+  // The structured proposal, filled ONLY when the run answered in that shape.
+  //
+  // ⚠ IT IS REBUILT FROM `run.output_text` ON THE IDEMPOTENT REPLAY, by the same parser, and that
+  // is a requirement rather than an optimisation: a second click returns the STORED run without
+  // calling the model, so anything the client cannot recover from `output_text` would simply
+  // vanish on the second press of the same button. Which is why what is stored is the VERIFIED,
+  // canonical JSON of this message — what the client was handed, not what the model happened to
+  // type.
+  common.DesignConstructionDraft construction = 3;
 }

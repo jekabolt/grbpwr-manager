@@ -626,6 +626,21 @@ message DesignInputSnapshot {
 message DesignMoodSnapshot {
   string note = 1;
   repeated DesignMoodCallout callouts = 2;
+  // THE PICTURES THIS RUN ACTUALLY SENT, in wire order — media(id) of every moodboard image that
+  // survived resolution and became a content part.
+  //
+  // IT EXISTS BECAUSE THE SNAPSHOT USED TO LIE BY OMISSION. `draft the idea` has sent the board's
+  // images since the multimodal merge, and the snapshot could only hold the board's WORDS: a run
+  // over a wordless board would have filed a history row claiming nothing was read while twelve
+  // pictures were paid for as input tokens. That is why the door refused a pictures-only board
+  // (design_run.go), and this field is what lets the refusal shrink to «no pictures AND no words».
+  //
+  // ORDER IS THE BINDING, NOT A PREFERENCE: the prompt numbers the pinned notes «picture N» by this
+  // very order, so the list is the only record of what «picture 2» meant. Ids, not URLs — objects
+  // move, the same argument DesignInputRef.media_id already makes.
+  //
+  // Empty is a readable state: a board of words alone, or a run that predates this field.
+  repeated int32 media_ids = 3;
 }
 
 // DesignMoodCallout is one frozen callout inside a run snapshot: which image, what it said, and
@@ -1179,4 +1194,77 @@ message DesignBudget {
   // WHOSE «today» resets the bar. On the wire because that is an organisational decision, not a
   // property of the database session that happened to answer.
   string timezone = 6;
+}
+
+// DesignConstructionDraft is what `draft the construction` answers: ONE proposal covering the four
+// groups the CONSTRUCTION tab draws, read off the moodboard pictures, the designer's concept and
+// the notes pinned on the images.
+//
+// IT IS A PROPOSAL, NOT A WRITE. Nothing here is persisted onto the card by the run: every value
+// lands in the client's staging state and reaches the form only through the SAME writers a
+// hand-typed value uses, one deliberate click per row. That is why the shape is deliberately flat
+// and stringly — it carries VALUES for fields that already exist, never rows of any table, and no
+// field of it is ever handed to the card's own schema as an object.
+//
+// EMPTY IS SILENCE, NOT «CLEAR IT». A field the model did not answer is absent, and absence means
+// the model had nothing to say — never that the card's value should go away. The client has no
+// «apply all» for the same reason: omission must not be able to erase.
+//
+// WHAT IS DELIBERATELY NOT HERE: category, base model, base sample size (FK picks — a name is not
+// an id and a guessed id is a wrong card), the size run (PATTERNS owns it), and the callout table's
+// FEATURE and STITCH columns (derived from operations, so asking for them would invite a second,
+// disagreeing answer).
+message DesignConstructionDraft {
+  string silhouette = 1; // → details[key=silhouette].text
+  string fabric = 2; // → details[key=fabric].text
+  string fit = 3; // one of the fit vocabulary, or '' when the pictures do not show it
+  // Offered ONLY when the card's own concept is empty — the designer's words outrank the model's,
+  // and a proposal that competes with them would ask a person to defend what they already wrote.
+  string concept = 4;
+  repeated DesignConstructionAspect aspects = 5; // one of the standard keys, or a custom one
+  repeated DesignConstructionCallout callouts = 6; // UNPINNED rows for the construction table
+  repeated DesignConstructionBomLine bom = 7;
+  // What deserves a pinned note and has none. READ-ONLY ADVICE: it names a picture and a spot, it
+  // proposes no value, and there is nothing on the card for it to land in.
+  repeated string missing = 8;
+}
+
+// DesignConstructionAspect is one row of the aspects editor: its key and its text.
+//
+// The key is a STRING and not an enum because the aspects editor already accepts a custom key —
+// closing the vocabulary here would make the model's legitimate answer («cuff», «vent») invalid on
+// the wire while the human's identical answer stays legal.
+message DesignConstructionAspect {
+  string key = 1; // silhouette | collar | fastening | pockets | sleeve_cuff | topstitching | extra_details | aux_materials | a custom key
+  string text = 2;
+}
+
+// DesignConstructionCallout is one proposed row of the construction callout table, in the three
+// columns a human fills by hand: what it is, what to do about it, and how big it is.
+//
+// NO media_id AND NO NUMBER, and that is the whole point of the shape. A proposal is born as an
+// UNPINNED row — the server mints the number on save, and the pin is a gesture on a picture that
+// only a person can make. A model naming either would be inventing our identifiers.
+message DesignConstructionCallout {
+  string feature = 1; // → callout.part
+  string details = 2; // → callout.description
+  string dimensions = 3; // → callout.dimensions; empty unless the board actually states one
+}
+
+// DesignConstructionBomLine is one proposed component of the bill of materials, named BY ITS ROLE
+// («main fabric», «neck binding», «care label») rather than by an article.
+//
+// material_id IS 0 UNLESS THE SERVER CONFIRMED IT against the catalogue — an id is a claim about
+// our own database, and a model that guesses one produces a line that looks linked and priced while
+// pointing at somebody else's article. An unlinked line is a legal, useful BOM row; a wrongly
+// linked one is a costing error wearing a price tag.
+message DesignConstructionBomLine {
+  TechCardBomSection section = 1;
+  TechCardBomPurpose purpose = 2; // roll goods only; UNSET otherwise
+  TechCardBomKind kind = 3; // hardware / trims / decoration only; UNSET otherwise
+  string name = 4; // the role this component plays on the garment
+  string composition = 5;
+  string colour = 6;
+  string pantone = 7;
+  int64 material_id = 8; // 0 unless catalogue matching confirmed the article
 }

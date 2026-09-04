@@ -855,6 +855,9 @@ type draftRig struct {
 	// CompleteRun сверяет его в WHERE, и закрытие чужим токеном — это claim_lost.
 	completedText string
 	completedTok  string
+	// started — то, чем прогон был ОТКРЫТ: снимок входов и цена. Замораживается в строке навсегда,
+	// поэтому пробы про доску и про деньги смотрят сюда, а не на ответ хендлера.
+	started entity.DesignRunStart
 }
 
 // newDraftRig — стенд на КАРТОЧКЕ ПО УМОЛЧАНИЮ (одна картинка доски, записка, выноска).
@@ -899,6 +902,7 @@ func newDraftRigWithCard(
 	repo.EXPECT().Media().Return(media).Maybe()
 	media.EXPECT().GetMediaByIds(mock.Anything, boardIDs).Return(byID, nil).Maybe()
 	design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
+		Run(func(_ context.Context, req entity.DesignRunStart) { rig.started = req }).
 		Return(&entity.DesignRunStarted{Run: run, Budget: entity.DesignBudget{Day: "2026-08-30"}}, nil).Once()
 	design.EXPECT().StartAttempt(mock.Anything, mock.AnythingOfType("entity.DesignAttemptStart")).
 		Return(&entity.DesignRunAttempt{RunId: 55, AttemptNo: 1}, nil).Once()

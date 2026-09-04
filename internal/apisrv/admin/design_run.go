@@ -223,8 +223,14 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	entity.DesignRunKindRender: designRenderMediumUSD.Mul(designImageQualityCeiling),
 	entity.DesignRunKindThreed: designThreedCeilingUSD(),
 	// ВЕКТОР — ЕДИНСТВЕННЫЙ РОД, У КОТОРОГО ЦЕНА ОПУБЛИКОВАНА ПАКЕТОМ СПИСАНИЯ. Берётся ИМЕННО ОНА.
-	entity.DesignRunKindVector:    designVectorCeilingUSD(),
-	entity.DesignRunKindDraftIdea: decimal.RequireFromString("0.02"),
+	entity.DesignRunKindVector: designVectorCeilingUSD(),
+	// ЧЕРНОВИК — ЦЕНА ПУСТОЙ ДОСКИ, а не цена нажатия. Полная оценка складывается в
+	// designDraftIdeaEstimate, потому что у этого рода задание измеряется не числом выходов, а
+	// числом ПРОЧИТАННЫХ КАРТИНОК, и таблица «цена одного выхода» такой вопрос не выражает.
+	// Строка остаётся здесь, и это несущее: designEstimateFor обязана отвечать положительным
+	// числом на КАЖДЫЙ род, который дверь принимает, иначе род резервирует NULL и его трата
+	// проходит мимо дневного счёта (см. TestEVERY_RUN_KIND_THE_DOOR_ACCEPTS_HAS_A_PRICE).
+	entity.DesignRunKindDraftIdea: designDraftIdeaBaseUSD,
 	// ПЕРЕКРАС И ПАТТЕРН — ТОТ ЖЕ ПЛАТНЫЙ ЭНДПОИНТ, ЧТО У РЕНДЕРА, ЗНАЧИТ ТА ЖЕ ЛЕСТНИЦА ЧИСЕЛ.
 	// Оба вызова несут ВХОДНУЮ картинку и просят выходную того же порядка, поэтому база берётся
 	// рендерная, а не флэтовая, и множится на тот же потолок дила качества. Перекрас, кроме того,
@@ -344,6 +350,46 @@ func designThreedCeilingUSD() decimal.Decimal {
 }
 
 var designMeshyTaskCeilingUSD = decimal.RequireFromString("0.60")
+
+// designDraftIdeaBaseUSD / designDraftIdeaPictureUSD — ДВА СЛАГАЕМЫХ ЦЕНЫ ТЕКСТОВОГО ЧЕРНОВИКА.
+//
+// ⚠ ПОЧЕМУ ПЛОСКОЕ ЧИСЛО ЗДЕСЬ БОЛЬШЕ НЕ ГОДИТСЯ. Пока доска давала только слова, нажатие стоило
+// одинаково независимо от того, сколько на ней плиток. С тех пор как картинки уезжают на провод
+// (CompleteWithImages), КАЖДАЯ ИЗ НИХ — ЭТО ВХОДНЫЕ ТОКЕНЫ, то есть число картинок и есть цена.
+// Прежние «0.02» на доске из двенадцати кадров занижали расход впятеро, и занижение шло не в
+// отчёт, а в РЕЗЕРВ: дневной счёт видел пятую часть того, что было потрачено.
+//
+// ЧИСЛА — ПОРЯДОК ВЕЛИЧИНЫ ПО ЗАМЕРУ, А НЕ ПРАЙС ПОСТАВЩИКА, и названы вслух именно так. Sonnet
+// берёт ≈$3 за миллион входных токенов; один сжатый провайдером кадр — ≈1.6k токенов, отсюда
+// ≈$0.005 за картинку, округлённые вверх до 0.006. База покрывает сам промпт (≈2k входных токенов)
+// и ответ (до 3k выходных на структурной ветке) — ≈$0.03. Доска из двенадцати кадров выходит на
+// ≈$0.10, что совпадает с прикидкой «сколько стоит одно нажатие» в дизайне фичи.
+//
+// ⚠ ОЦЕНКА ЖЕ И СПИСЫВАЕТСЯ. Чат-эндпоинт возвращает токены, а не деньги (см. FinishAttempt ниже),
+// поэтому это число — не только резерв, но и ФАКТ в регистре. Завышать его безопаснее, чем
+// занижать: завышенный резерв сужает очередь на минуты, заниженный факт врёт про потраченное
+// навсегда.
+var (
+	designDraftIdeaBaseUSD    = decimal.RequireFromString("0.03")
+	designDraftIdeaPictureUSD = decimal.RequireFromString("0.006")
+)
+
+// designDraftIdeaEstimate — цена ОДНОГО нажатия «черновик» при данном числе прочитанных картинок.
+//
+// Считает по attachedIDs, а не по плиткам доски: платится то, что уехало на провод. База берётся
+// ИЗ ТОЙ ЖЕ ТАБЛИЦЫ, что читает designEstimateFor, — второе число рядом с первым разошлось бы в
+// тот день, когда правят одно.
+func designDraftIdeaEstimate(pictures int) decimal.NullDecimal {
+	base, ok := designPriceEstimate[entity.DesignRunKindDraftIdea]
+	if !ok {
+		return decimal.NullDecimal{}
+	}
+	if pictures < 0 {
+		pictures = 0
+	}
+	total := base.Add(designDraftIdeaPictureUSD.Mul(decimal.NewFromInt(int64(pictures))))
+	return decimal.NullDecimal{Decimal: total, Valid: true}
+}
 
 // designEstimateFor — оценка задания целиком: цена одного выхода на число запрошенных выходов.
 func designEstimateFor(kind string, outputs int) decimal.NullDecimal {
@@ -1505,6 +1551,20 @@ func designInt32sToInts(in []int32) []int {
 	return out
 }
 
+// designIntsToInt32s — обратный переход, домен → провод. Пустой вход даёт nil, а не пустой слайс:
+// в proto3 повторяемое поле из нуля членов и отсутствующее поле — одно и то же состояние, и
+// заводить пустой слайс значило бы утверждать разницу, которой на проводе нет.
+func designIntsToInt32s(in []int) []int32 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]int32, 0, len(in))
+	for _, v := range in {
+		out = append(out, int32(v))
+	}
+	return out
+}
+
 // ─────────────────── ПЛИТЫ, ИЗ КОТОРЫХ СОБРАН ПОВОРОТНЫЙ СТОЛ ───────────────────
 
 // designStampSourcePictures ЗАПОЛНЯЕТ DesignThreedParams.source_picture_ids — поле, которое до сих
@@ -1811,24 +1871,6 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot load the tech card")
 	}
-	// ПУСТАЯ ДОСКА — ОТКАЗ, А НЕ ПЛАТНЫЙ ВЫЗОВ НИ О ЧЁМ.
-	//
-	// ⚠ ПРОВЕРЯЕТСЯ mood, А НЕ ДЛИНА ПРОМПТА, и это разные вопросы. Промпт несёт ещё и имя
-	// изделия с фитом, поэтому у любой названной карточки он непустой ВСЕГДА — сторож по его
-	// длине не сработал бы никогда и оплачивал бы «придумай одежду по слову „пальто“».
-	// ⚠ СТОРОЖ ОСТАЛСЯ НА СЛОВАХ, ХОТЯ КАРТИНКИ ТЕПЕРЬ ЧИТАЮТСЯ, И ЭТО РЕШЕНИЕ, А НЕ НЕДОСМОТР.
-	// Доска из одних картинок, без записки и выносок, теперь технически осмысленна — модель их
-	// увидит. Но снимок прогона (`inputs`) умеет хранить только СЛОВА доски: поля под список
-	// показанных картинок в DesignMoodSnapshot нет. Пустив такую доску, мы завели бы оплаченную
-	// строку истории, которая утверждает, что в модель не ушло НИЧЕГО, — а ушло 12 изображений.
-	// История, врущая про потраченные деньги, хуже отказа, поэтому дверь пока закрыта.
-	// РАСШИРЯТЬ ЭТО НАДО ВМЕСТЕ С ПОЛЕМ В КОНТРАКТЕ, а не отдельно (прото сейчас чужое).
-	mood := designMoodSnapshot(card)
-	if mood == nil {
-		return nil, status.Error(codes.FailedPrecondition,
-			"the moodboard says nothing yet: write the description or pin a callout, then draft the idea")
-	}
-
 	// ─── КАРТИНКИ ДОСКИ: ПОТОЛОК ДО ДЕНЕГ, ПОТОМ АДРЕСА ───
 	//
 	// ПОТОЛОК СТОИТ ЗДЕСЬ, А НЕ У ТРАНСПОРТА, И ЭТО НЕ ДУБЛИРОВАНИЕ. Число одно и то же —
@@ -1877,7 +1919,62 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if err := s.designRefuseDisplayOnlyInputs(ctx, designBoardMediaRefs(attachedIDs, boardURLs)); err != nil {
 		return nil, err
 	}
-	prompt := designDraftIdeaPrompt(card, mood, attachedIDs)
+
+	// ─── ПУСТАЯ ДОСКА — ОТКАЗ, А НЕ ПЛАТНЫЙ ВЫЗОВ НИ О ЧЁМ ───
+	//
+	// ⚠ ПРОВЕРЯЕТСЯ ДОСКА, А НЕ ДЛИНА ПРОМПТА, и это разные вопросы. Промпт несёт ещё и имя
+	// изделия с фитом, поэтому у любой названной карточки он непустой ВСЕГДА — сторож по его
+	// длине не сработал бы никогда и оплачивал бы «придумай одежду по слову „пальто“».
+	//
+	// ⚠ СТОРОЖ БОЛЬШЕ НЕ СТОИТ НА ОДНИХ СЛОВАХ, И ЭТО ТА САМАЯ ПРАВКА, КОТОРУЮ ЗДЕСЬ ЖДАЛИ.
+	// Прежний комментарий на этом месте объяснял, почему доска из одних картинок отвергается:
+	// снимок прогона умел хранить только СЛОВА доски, поля под список показанных картинок в
+	// DesignMoodSnapshot не было, и такая доска завела бы оплаченную строку истории, которая
+	// утверждает, что в модель не ушло НИЧЕГО, — а ушло двенадцать изображений. Довод был верен и
+	// назвал своё условие: «расширять это надо ВМЕСТЕ С ПОЛЕМ В КОНТРАКТЕ». Поле появилось
+	// (DesignMoodSnapshot.media_ids), поэтому довод исчерпан, а не обойдён: снимок теперь называет
+	// каждую уехавшую картинку по id и в порядке отправки, и история про потраченные деньги
+	// больше не врёт. Остаётся ровно одно условие отказа — НЕ УЕХАЛО НИЧЕГО ВООБЩЕ.
+	//
+	// ⚠ СЧИТАЮТСЯ attachedIDs, А НЕ boardIDs. Доска из трёх плиток, чьи строки медиа удалены,
+	// посылает НОЛЬ картинок; отказ по списку желаний пропустил бы её в платный вызов ни о чём.
+	//
+	// ПОРЯДОК: ЭТОТ СТОРОЖ ТЕПЕРЬ ПОСЛЕ РАЗРЕШЕНИЯ КАРТИНОК, потому что он о них и спрашивает.
+	// Ценой этого стали более ТОЧНЫЕ отказы у соседей: доску из сорока плиток встречает потолок,
+	// а доску из одного кадра «только для показа» — его собственный отказ, оба до денег.
+	mood := designMoodSnapshot(card)
+	if mood == nil && len(attachedIDs) == 0 {
+		return nil, status.Error(codes.FailedPrecondition,
+			"there is nothing to read: put a picture on the moodboard or write the description")
+	}
+	if mood == nil {
+		// ДОСКА ИЗ ОДНИХ КАРТИНОК — ЗАКОННОЕ СОСТОЯНИЕ, И СНИМОК ОБЯЗАН ЕГО ВЫРАЗИТЬ. Пустой
+		// снимок с непустым media_ids говорит ровно то, что было: слов не было, картинки были.
+		mood = &pb_common.DesignMoodSnapshot{}
+	}
+	// ⚠ ПИШЕТСЯ ИМЕННО ТОТ СПИСОК, ПО КОТОРОМУ НУМЕРУЕТ ПРОМПТ, И ЭТО ОДНА ПЕРЕМЕННАЯ, А НЕ ДВЕ
+	// ПОХОЖИЕ. Снимок — это запись о том, что «picture 2» значило в тот день; собранный из
+	// boardIDs, он называл бы картинку, которой модель не видела, и рерун по нему послал бы не то.
+	mood.MediaIds = designIntsToInt32s(attachedIDs)
+
+	// ─── ДВЕ ФОРМЫ ОДНОГО ВОПРОСА ───
+	//
+	// ⚠ ВЕТКА ВЫБИРАЕТСЯ ОДИН РАЗ И СРАЗУ ЦЕЛИКОМ: роль, промпт, json-режим и потолок токенов —
+	// это ОДИН договор с моделью, а не четыре независимые настройки. Разъехавшись (json-режим без
+	// роли, требующей объект; потолок без проверки finish_reason), они дают ответ, который
+	// формально пришёл и содержательно наполовину.
+	//
+	// ⚠ ОТСУТСТВУЮЩИЙ ФЛАГ ОБЯЗАН ДАВАТЬ ПРЕЖНИЕ БАЙТЫ. Старый клиент разбирает `output_text` по
+	// трём заголовкам (V-19), поэтому у него не меняется ничего: та же роль, тот же промпт, тот
+	// же выключенный json и тот же отсутствующий потолок.
+	construction := req.GetConstruction()
+	systemPrompt, prompt := draftIdeaSystemPrompt, designDraftIdeaPrompt(card, mood, attachedIDs)
+	maxTokens := 0
+	if construction {
+		systemPrompt = designConstructionSystemPrompt
+		prompt = designConstructionUserPrompt(card, mood, attachedIDs)
+		maxTokens = designConstructionMaxTokens
+	}
 
 	// СНИМОК ВХОДОВ ТЕКСТОВОГО ПРОГОНА — ЭТО ДОСКА, И ТОЛЬКО ОНА. Ни refs, ни slots: ни одного
 	// референса и ни одной плиты верстака этот прогон не читает, и пустые списки — утверждение.
@@ -1900,7 +1997,8 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			len(inputsJSON), designMaxInputsBytes)
 	}
 
-	est := designEstimateFor(entity.DesignRunKindDraftIdea, 1)
+	// ЦЕНА СЧИТАЕТСЯ ПО ЧИСЛУ УЕХАВШИХ КАРТИНОК, а не по роду прогона: см. designDraftIdeaEstimate.
+	est := designDraftIdeaEstimate(len(attachedIDs))
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:       cardID,
 		ClientRequestId:  clientRequestID,
@@ -1932,9 +2030,17 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// ротирует токен и продлевает лизу, а проигравшему возвращает Resumed = false — то есть ровно
 	// тот ответ, что и живой лизе.
 	if started.Idempotent && !started.Resumed {
+		// ⚠ СТРУКТУРНЫЙ ОТВЕТ ПЕРЕСОБИРАЕТСЯ ИЗ СОХРАНЁННОЙ СТРОКИ, И БЕЗ ЭТОГО ФИЧА ЛОМАЛАСЬ БЫ
+		// ИМЕННО НА ДВОЙНОМ КЛИКЕ — то есть на том самом жесте, ради которого идемпотентность и
+		// заведена. Модель здесь не зовётся, значит всё, чего нельзя прочитать обратно из
+		// `output_text`, при повторе исчезает. Спрашивается САМА СТРОКА, а не флаг запроса:
+		// прогон отвечен один раз и навсегда в той форме, в какой был отвечен, а флаг — это
+		// свойство нажатия. Проза разбором не признаётся и даёт nil — ровно так и отличается
+		// «этот прогон был структурным» от «этот был прозой».
 		return &pb_admin.DraftDesignIdeaResponse{
-			Run:    s.designRunResponse(ctx, run),
-			Budget: s.designBudgetResponse(ctx, started.Budget),
+			Run:          s.designRunResponse(ctx, run),
+			Budget:       s.designBudgetResponse(ctx, started.Budget),
+			Construction: designConstructionDraftFromRun(run.OutputText.String),
 		}, nil
 	}
 	if !run.ClaimToken.Valid || run.ClaimToken.String == "" {
@@ -1962,13 +2068,49 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// P-1 спеки владельца называет «OpenRouter, Sonnet», а defaultModel и есть
 	// anthropic/claude-sonnet-5 — модель мультимодальная. Второй слуг был бы вторым именем,
 	// которое однажды протухнет у поставщика молча.
-	text, _, _, callErr := s.aiOps.CompleteWithImages(ctx, draftIdeaSystemPrompt, prompt, boardURLs, false, 0)
+	text, finishReason, usage, callErr := s.aiOps.CompleteWithImages(
+		ctx, systemPrompt, prompt, boardURLs, construction, maxTokens)
 	if callErr == nil && strings.TrimSpace(text) == "" {
 		callErr = errors.New("the model returned an empty draft")
 	}
 	if callErr != nil {
 		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr)
 		return nil, s.designDraftCallError(ctx, cardID, callErr)
+	}
+
+	// ─── ПРОВЕРКА СТРУКТУРНОГО ОТВЕТА ───
+	//
+	// ⚠ ПОПЫТКА ЗАКРЫВАЕТСЯ ОПЛАЧЕННОЙ, ХОТЯ ПРОГОН ПРОВАЛЕН, И ЭТО НЕ ОПИСКА. Вызов состоялся:
+	// картинки уехали, входные токены посчитаны, деньги поставщику причитаются. Списать ноль
+	// значило бы сделать «модель ответила не по схеме» бесплатным способом жечь бюджет — а
+	// бесплатным он не является ни для кого, кроме нашей бухгалтерии.
+	var draft *pb_common.DesignConstructionDraft
+	if construction {
+		parsed, stats, perr := parseConstructionDraft(text, finishReason)
+		s.designLogConstructionDraft(ctx, cardID, run.Id, finishReason, usage, stats, perr)
+		if perr != nil {
+			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
+				perr, designConstructionReasonInvalidOutput, est)
+			msg := designConstructionShapeRefusalMsg
+			if strings.EqualFold(strings.TrimSpace(finishReason), "length") {
+				msg = designConstructionCutRefusalMsg
+			}
+			return nil, designRefusal(codes.FailedPrecondition,
+				designConstructionReasonInvalidOutput, msg, nil)
+		}
+		// ⚠ В СТРОКУ УЕЗЖАЕТ ПРОВЕРЕННЫЙ КАНОНИЧЕСКИЙ JSON, А НЕ ОТВЕТ МОДЕЛИ: сохранённый прогон
+		// обязан быть ровно тем, что получил клиент, иначе повтор и история показывают третью,
+		// никем не виденную версию ответа.
+		canonical, merr := designMarshalJSON(parsed)
+		if merr != nil {
+			slog.Default().ErrorContext(ctx, "draft design idea: the construction draft did not encode",
+				slog.Int("run_id", run.Id), slog.String("err", merr.Error()))
+			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
+				merr, designConstructionReasonInvalidOutput, est)
+			return nil, designRefusal(codes.FailedPrecondition,
+				designConstructionReasonInvalidOutput, designConstructionShapeRefusalMsg, nil)
+		}
+		draft, text = parsed, string(canonical)
 	}
 
 	// ЦЕНА ПОПЫТКИ — ОЦЕНКА, И ЭТО НАЗВАНО ВСЛУХ. Чат-эндпоинт OpenRouter возвращает токены, но
@@ -1993,19 +2135,85 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		return nil, designError(ctx, "failed to read the design budget", err, nil)
 	}
 	return &pb_admin.DraftDesignIdeaResponse{
-		Run:    s.designRunResponse(ctx, *done),
-		Budget: s.designBudgetResponse(ctx, budget),
+		Run:          s.designRunResponse(ctx, *done),
+		Budget:       s.designBudgetResponse(ctx, budget),
+		Construction: draft,
 	}, nil
+}
+
+// designLogConstructionDraft — ОДНА СТРОКА ЛОГА НА ОДИН СТРУКТУРНЫЙ ЧЕРНОВИК.
+//
+// ДИСЦИПЛИНА ЗАИМСТВОВАНА У РАЗБОРА ТЕХ-КАРТЫ (logAnalysisRun) ЦЕЛИКОМ, ВМЕСТЕ С ДОВОДОМ: платный
+// вызов, чья стоимость никогда не доезжает до лога, — это счёт, которого никто не видит. Уровень
+// строки И ЕСТЬ ВЕРДИКТ: провал разбора — Error и ровно один, поэтому «как часто модель отвечает
+// не по схеме» это счёт, а не join; ответ, у которого что-то поправлено или выброшено, — Warn;
+// чистый — Info, и существует он ради usage.
+//
+// ⚠ ТОКЕНЫ ПЕЧАТАЮТСЯ ИМЕННО ЗДЕСЬ, ПОТОМУ ЧТО БОЛЬШЕ ИМ НЕГДЕ БЫТЬ. Чат-эндпоинт возвращает
+// токены, а не деньги, поэтому в регистр уезжает ОЦЕНКА (см. FinishAttempt ниже), и единственное
+// место, где видно фактический расход, — эта строка. Разойдясь, оценка и факт станут заметны
+// только отсюда.
+func (s *Server) designLogConstructionDraft(
+	ctx context.Context, cardID, runID int,
+	finishReason string, usage openrouter.Usage, stats designConstructionStats, err error,
+) {
+	attrs := []any{
+		slog.Int("tech_card_id", cardID),
+		slog.Int("run_id", runID),
+		slog.String("model", s.aiOps.Model()),
+		slog.String("base_url", s.aiOps.BaseURL()),
+		slog.String("finish_reason", finishReason),
+		slog.Int("prompt_tokens", usage.Prompt),
+		slog.Int("completion_tokens", usage.Completion),
+		slog.Int("total_tokens", usage.Total),
+		slog.Int("aspects_custom", stats.AspectsCustom),
+		slog.Int("aspects_dropped", stats.AspectsDropped),
+		slog.Int("callouts_dropped", stats.CalloutsDropped),
+		slog.Int("bom_dropped", stats.BomDropped),
+		slog.Int("missing_dropped", stats.MissingDropped),
+		slog.Int("enums_unset", stats.EnumsUnset),
+		slog.Int("material_ids_zeroed", stats.MaterialIDs),
+		slog.Int("truncated", stats.Truncated),
+		slog.Int("over_limit", stats.OverLimit),
+		slog.Int("deduped", stats.Deduped),
+	}
+	switch {
+	case err != nil:
+		attrs = append(attrs, slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "design construction draft was refused", attrs...)
+	case stats.Any():
+		slog.Default().WarnContext(ctx, "design construction draft was coerced", attrs...)
+	default:
+		slog.Default().InfoContext(ctx, "design construction draft", attrs...)
+	}
 }
 
 // designFailDraft закрывает попытку и прогон после провала вызова. ЛУЧШЕЕ УСИЛИЕ И ГРОМКОЕ:
 // ошибка здесь не возвращается человеку — он должен увидеть ту, из-за которой всё началось, — но
 // молчание оставило бы прогон висеть с зарезервированными деньгами.
 func (s *Server) designFailDraft(ctx context.Context, run entity.DesignRun, attemptNo int, cause error) {
+	// ПРОВАЛ ПОСТАВЩИКА НЕ ОПЛАЧИВАЕТСЯ: ответа не было вовсе, платить не за что.
+	s.designFailDraftAs(ctx, run, attemptNo, cause, "provider_error", decimal.NullDecimal{})
+}
+
+// designFailDraftAs — тот же круг закрытия, но КОД ПРИЧИНЫ И ЦЕНА ЗАДАЮТСЯ ВЫЗЫВАЮЩИМ.
+//
+// ⚠ ДВЕ ПРИЧИНЫ — ДВА РАЗНЫХ СОБЫТИЯ, И РАЗЛИЧАТЬ ИХ ОБЯЗАНА КОЛОНКА, А НЕ ПРОЗА. `provider_error`
+// значит «ответа не было»; `invalid_output` — «ответ был, и он не той формы». Первое чинит
+// дежурный, второе — промпт. Слепив их в один код, мы получили бы график «поставщик падает» там,
+// где падает наша собственная схема.
+//
+// ⚠ И ИМЕННО ПОЭТОМУ ЦЕНА ЗДЕСЬ ПАРАМЕТР. Ответ, пришедший не по схеме, УЖЕ ОПЛАЧЕН входными
+// токенами картинок; закрыть такую попытку нулём значит спрятать потраченные деньги.
+func (s *Server) designFailDraftAs(
+	ctx context.Context, run entity.DesignRun, attemptNo int,
+	cause error, errorCode string, price decimal.NullDecimal,
+) {
 	if err := s.repo.Design().FinishAttempt(ctx, entity.DesignAttemptFinish{
 		RunId: run.Id, AttemptNo: attemptNo,
 		State:     entity.DesignAttemptFailed,
-		ErrorCode: "provider_error",
+		Price:     price,
+		ErrorCode: errorCode,
 	}); err != nil {
 		slog.Default().ErrorContext(ctx, "draft design idea: cannot close the failed attempt",
 			slog.Int("run_id", run.Id), slog.String("err", err.Error()))
@@ -2013,7 +2221,7 @@ func (s *Server) designFailDraft(ctx context.Context, run entity.DesignRun, atte
 	if _, err := s.repo.Design().FailRun(ctx, entity.DesignRunFail{
 		RunId:      run.Id,
 		ClaimToken: run.ClaimToken.String,
-		ErrorCode:  "provider_error",
+		ErrorCode:  errorCode,
 		LastError:  cause.Error(),
 		// НЕ RETRYABLE: ретраить некому. Воркер эту строку не заберёт по построению, а повтор —
 		// это новый клик человека с новым client_request_id.
@@ -2801,6 +3009,12 @@ func designRunPlates(src designInputSources, parent *entity.DesignRun) []int32 {
 // она отдаёт КАРТУ по media_id, а какие ключи из неё спросить, решает уже отобранный список
 // референсов. Всё остальное собирается designAssembleInputs, куда доска не приходит ни при каком
 // входе.
+//
+// ⚠ nil ЗНАЧИТ «СЛОВ НЕТ», А НЕ «ДОСКИ НЕТ», И РАЗНИЦА ТЕПЕРЬ СТОИТ ДЕНЕГ. Картинки в снимок
+// пишет ВЫЗЫВАЮЩИЙ (DraftDesignIdea, поле media_ids), потому что «какие картинки уехали» —
+// это факт о РАЗРЕШЁННЫХ адресах, а не о карточке: половина плиток доски может не иметь живой
+// строки медиа. Пустить сюда id прямо с карточки значило бы записать в историю картинки, которых
+// модель не видела.
 func designMoodSnapshot(card *entity.TechCard) *pb_common.DesignMoodSnapshot {
 	if card == nil {
 		return nil
@@ -2996,6 +3210,22 @@ func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnap
 			b.WriteString("Fit: " + v + "\n")
 		}
 	}
+	b.WriteString(designBoardPromptBody(mood, attachedIDs))
+	return strings.TrimSpace(b.String())
+}
+
+// designBoardPromptBody — ДОСКА СЛОВАМИ: замысел плюс записки, привязанные к картинке и месту.
+//
+// ⚠ ВЫДЕЛЕНА В ОТДЕЛЬНУЮ ФУНКЦИЮ РАДИ ВТОРОГО ЧИТАТЕЛЯ, И ЭТО НЕСУЩЕЕ. Структурный черновик
+// (designConstructionUserPrompt) обязан задавать вопрос ПО ТОЙ ЖЕ доске и с той же привязкой; он
+// брал эти строки, вырезая их из готового промпта по заголовку — то есть держался на том, что
+// заголовок не поправят. Поправили бы — и замысел с записками исчезли бы из платного запроса
+// МОЛЧА, оставив модель гадать по картинкам. Одна сборка на двоих такого состояния не имеет.
+//
+// Шапка (имя изделия, посадка) сюда НЕ входит: у двух читателей она разная — короткая у прозы,
+// с категорией, полом и размерным рядом у конструкции.
+func designBoardPromptBody(mood *pb_common.DesignMoodSnapshot, attachedIDs []int) string {
+	var b strings.Builder
 	if note := strings.TrimSpace(mood.GetNote()); note != "" {
 		b.WriteString("\nConcept & construction description — the designer's own words, build on them:\n" + note + "\n")
 	}
@@ -3019,7 +3249,7 @@ func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnap
 		b.WriteString("\nNotes pinned on the pictures — each names its picture and the spot it marks:\n")
 		b.WriteString(strings.Join(lines, "\n") + "\n")
 	}
-	return strings.TrimSpace(b.String())
+	return b.String()
 }
 
 // designOneLine сплющивает человеческий текст в одну строку — тот же приём и тот же довод, что
