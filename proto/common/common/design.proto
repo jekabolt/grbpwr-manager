@@ -419,6 +419,93 @@ message DesignColourRecipe {
   // «one fabric» spelling and there must not be one, or the two would disagree the first time
   // either grew a property.
   repeated DesignFabricUse fabrics = 6;
+  // THE COLOUR MAPS OF THIS RUN — frozen copies, exactly like `fabrics`. Empty = nothing was
+  // painted, and that is the ordinary run.
+  //
+  // ⚠ A MAP IS NOT A REFERENCE, AND THAT IS WHY IT TRAVELS HERE RATHER THAN IN
+  // `extra_input_media_ids`. An extra input is captioned «additional reference image» — one
+  // sentence for every picture nobody else described — and a colour map read under that caption is
+  // a drawing of the garment in improbable colours. The map is part of the RECIPE: it is what
+  // `DesignFabricUse.map_hex` points at, and a picture the prompt names by number has to be a
+  // picture the prompt can recognise.
+  repeated DesignColourMap colour_maps = 7;
+}
+
+// DesignColourMap is ONE PAINTED VIEW of a colour plan: the flat of `view`, flooded part by part in
+// flat colours.
+//
+// ⚠ THE COLOURS ARE LABELS, NEVER THE GARMENT'S OWN, and everything about this message follows from
+// that one sentence. A part painted steel blue is not a part that will be steel blue; it is a part
+// that wears whatever cloth the plan pinned to `#3a7bd5`. The garment's actual colours are stated
+// where they have always been stated — on the cloths — so a reader that took these pixels for the
+// answer would render the plan instead of the garment.
+message DesignColourMap {
+  int32 media_id = 1; // FK media(id): the painted PNG, white ground, the size of the flat
+  string view = 2; // front | back | side_l | side_r | three_quarter_l | three_quarter_r
+  // FK media(id): THE FLAT IT WAS PAINTED OVER. A different flat standing in that slot means the
+  // map is stale — the geometry it was painted against is gone — and the client refuses to send it.
+  // It is kept beside the map rather than derived because the slot legitimately moves on, and a map
+  // that could not name its own base would be un-stale-able for ever after.
+  int32 base_media_id = 3;
+  // THE COLOURS ACTUALLY USED ON THIS MAP, with their exact-match pixel counts. Frozen with the
+  // map because the palette is what makes the map READABLE: it is the closed set of labels the
+  // prompt may name, and re-deriving it would mean scanning a PNG on the server.
+  repeated DesignColourSwatch palette = 4;
+}
+
+// DesignColourSwatch is ONE label of a colour map: a colour somebody deliberately chose, and how
+// much of the map it covers.
+//
+// `px` IS THE EXACT-MATCH COUNT AND NOTHING ELSE. The painter's brush and its bucket both blend at
+// their edges, so a raw scan of the pixels contains hundreds of intermediate colours nobody chose;
+// the count here is over the CLOSED set of recorded inks, which is what keeps an antialiased rim
+// from becoming a cloth. It is also what makes a three-pixel accident nameable as one (the stray
+// rule) instead of reaching the model as a part of the garment.
+message DesignColourSwatch {
+  string hex = 1; // #rrggbb, lower-case; never #000000 / #ffffff — those are line ink and paper
+  int32 px = 2; // exact-match pixels at the moment the map was saved
+}
+
+// DesignColourPlan is the DURABLE colour plan of a card — the pre-launch state, one document per
+// card: which views are painted, and which cloth each painted colour stands for.
+//
+// ⚠ IT IS NOT A LAYER AND NOT A PICTURE, and both of those were the obvious homes. An edit layer is
+// unique per base (uq_design_edit_layer_base), so a colour painting over a flat would collide with
+// that flat's own trace; a DesignPicture would be offered to bench slots and listed among the
+// card's outputs as a drawing of the garment, which a map is precisely not. What it IS, is the
+// working state of a screen — minutes of painting that must survive a reload and be visible from a
+// colleague's browser — so it is one row per card under compare-and-set, the same shape
+// SaveDesignEditLayer already uses to replace a whole document.
+message DesignColourPlan {
+  int32 tech_card_id = 1;
+  // CAS TOKEN, exactly like DesignEditLayer.rev: SetDesignColourPlan echoes the rev it believed it
+  // was acting on, and a mismatch is Aborted:colour_plan_rev_mismatch carrying the current rev.
+  int32 rev = 2;
+  repeated DesignColourMap maps = 3; // at most one per view
+  // THE PALETTE'S ASSIGNMENTS, keyed by hex. A colour with no row here is a colour somebody painted
+  // and has not yet said anything about — a legitimate half-finished state the screen shows as
+  // `unassigned`, never as a cloth.
+  repeated DesignColourCloth cloths = 4;
+  string updated_by = 5; // server-stamped
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// DesignColourCloth is WHAT ONE PAINTED COLOUR MEANS: the cloth, colour or words the parts wearing
+// that label are made of.
+//
+// THE KEY IS THE HEX, not the asset. One cloth may legitimately label two colours (the same jersey
+// in two colourways is two rows), and a colour may name no asset at all — a plain colour or a
+// sentence is a complete answer to «what is this part made of». At least one of the three has to be
+// said, or the row states nothing and the map's label points at silence.
+message DesignColourCloth {
+  string hex = 1; // #rrggbb, lower-case; must appear in the palette of some map of this plan
+  int32 asset_id = 2; // design_asset(id) of this card, or 0
+  string colour_hex = 3; // a plain colour picked for these parts, or ''
+  string words = 4; // free words about these parts, or ''
+  // THE HUMAN NAME OF THE PART(S) — «cuffs and collar» — or ''. It is what the render prompt prints
+  // beside the painted colour and the ONLY half of this row the 3D steer can carry, because a
+  // phrase addressed to a picture the texturing stage never sees is a phrase about nothing.
+  string parts = 5;
 }
 
 // DesignFabricUse is ONE cloth of a render submission: which card asset it came from, what it looks
@@ -459,6 +546,19 @@ message DesignFabricUse {
   // keeps the render prompt of every existing single-cloth run byte-for-byte what it was: the new
   // paragraph fires on `kind == "pattern"` and on nothing else.
   string kind = 9;
+  // THE FLAT COLOUR THAT MARKS THIS CLOTH'S PARTS on the run's colour maps (#rrggbb, lower-case).
+  // '' = this cloth was not placed by painting, which is every run frozen before this field and
+  // every run of a card nobody painted.
+  //
+  // ⚠ IT DOES NOT REPLACE `parts`, IT ANSWERS A DIFFERENT QUESTION. `parts` is the human's words —
+  // «cuffs and collar» — and stays optional; this is the LABEL the map carries, and the prompt
+  // prints the two together when both are there («the parts painted steel blue (#3a7bd5) on the
+  // colour map»). A cloth with a map_hex and no words is fully placed: the picture says where.
+  //
+  // ⚠ AND IT IS IGNORED BY THE 3D STEER ON PURPOSE. That hint reaches a texturing stage which is
+  // shown the render plates and nothing else, so «painted steel blue on the colour map» would
+  // address a picture it has never seen.
+  string map_hex = 10;
 }
 
 // DesignAsset is ONE THING THIS CARD IS MADE OF that is not a picture of the garment: a cloth, a

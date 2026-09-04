@@ -73,6 +73,30 @@ type colourRecipe struct {
 	// composing it from them, byte for byte. This list earns its own words only from the SECOND
 	// cloth onwards, where the scalars have nothing left to say.
 	Fabrics []fabricUse `json:"fabrics"`
+	// THE COLOUR MAPS OF THIS RUN — the painted flats, frozen copies like the cloths.
+	//
+	// ⚠ EMPTY IS THE ORDINARY RUN, AND THAT IS WHAT MAKES THIS FIELD FREE. Every run frozen before
+	// Feature A carries no `colour_maps` at all, so the attach loop below adds nothing, the heading
+	// sentence is not emitted and every cloth line is the line it was — the six frozen single-cloth
+	// goldens included. The new wording therefore cannot reach an old run by construction rather
+	// than by a guard somebody could get wrong.
+	ColourMaps []colourMap `json:"colour_maps"`
+}
+
+// colourMap is ONE PAINTED VIEW that went out with this run: which picture it is and which drawing
+// it is a map OF.
+//
+// ⚠ TWO FIELDS, AND THE ABSENT ONES ARE THE POINT. The contract's map also carries
+// `base_media_id` and a `palette`; neither is read here, and reading them would be this package
+// inventing a second opinion. The base is a STALENESS MARK the client compares against the slot —
+// it never goes to the provider and the prompt never mentions it — and the palette is the closed
+// set of labels the CLIENT verified when it saved the map. The prompt names a colour because a
+// cloth pointed at it (`map_hex`), never because a palette listed it: a label nobody assigned to a
+// cloth is a label with nothing to say, and printing it would tell the model about a part of the
+// garment the person never described.
+type colourMap struct {
+	MediaID int    `json:"media_id"`
+	View    string `json:"view"`
 }
 
 // fabricUse is ONE cloth of the submission: what it looks like and WHICH PART OF THE GARMENT it is
@@ -106,6 +130,18 @@ type fabricUse struct {
 	// is the round that took the number off the pattern screen: new tiles carry 0. A reader that
 	// kept guessing from the repeat would have started calling every new pattern a plain cloth.
 	Kind string `json:"kind"`
+	// MapHex — THE FLAT COLOUR THAT MARKS THIS CLOTH'S PARTS on the run's colour maps. '' = this
+	// cloth was not placed by painting, which is every run frozen before Feature A.
+	//
+	// ⚠ IT IS A SECOND WAY OF SAYING WHERE, NOT A REPLACEMENT FOR `Parts`. The two are printed
+	// together when both are there («body, sleeves — the parts painted steel blue (#3a7bd5) on the
+	// colour map»), because the words are what a person recognises and the colour is what the
+	// picture actually shows. A cloth carrying only this is fully placed: the map says where.
+	//
+	// ⚠ AND `statedCloths` COUNTS IT. A row whose only content is a map label is a cloth somebody
+	// deliberately painted onto the garment, and dropping it would drop a whole cloth out of a paid
+	// run in silence — the same defect a blank row exists to avoid, read from the other end.
+	MapHex string `json:"map_hex"`
 }
 
 // clothIsAPattern — эта ткань ПЛИТКА, а не фотография ткани.
@@ -382,6 +418,27 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	for _, id := range p.ExtraInputMediaIDs {
 		add(id, "additional reference image", "")
 	}
+	// ─── THE COLOUR MAPS ───────────────────────────────────────────────────────────────────────
+	//
+	// ⚠ THE CAPTION IS THE WHOLE REASON THIS PICTURE TRAVELS IN THE RECIPE AND NOT AS AN EXTRA
+	// INPUT. An extra input is captioned «additional reference image» — one sentence for every
+	// picture nobody else described — and a colour map read under that caption is a DRAWING OF THE
+	// GARMENT in improbable colours: a model shown a flat flooded steel blue and told it is a
+	// reference will render a steel blue garment. What has to be said, and can only be said here,
+	// is that those colours are LABELS.
+	//
+	// THEY STAND AFTER THE REFERENCES AND BEFORE THE CLOTHS, which is where the cloth list can
+	// point at them by number: the heading of that list cites the maps and every cloth line cites
+	// its own swatch, and both numbers come off THIS slice, in this order, by construction.
+	//
+	// A MAP WHOSE MEDIA ROW WENT AWAY IS SIMPLY NOT NUMBERED AND NOT MENTIONED — the same rule as
+	// a cloth's picture, enforced in the same place: `attached` is the survivors of buildJob's
+	// resolution, and imageNumberOf answers 0 for anything not in it.
+	if p.Colour != nil {
+		for _, m := range p.Colour.ColourMaps {
+			add(m.MediaID, colourMapCaption(m.View), m.View)
+		}
+	}
 	// ─── THE CLOTHS ────────────────────────────────────────────────────────────────────────────
 	//
 	// TWO BRANCHES, AND THE SPLIT IS THE SAME ONE renderFabricSection MAKES, for the same reason:
@@ -484,6 +541,47 @@ func refEntryCaption(r inputRef) string {
 		return "reference image"
 	}
 	return line
+}
+
+// colourMapCaption says what a colour map IS, and it is the one sentence that makes the picture
+// usable at all.
+//
+// ⚠ IT SAYS «NOT THE GARMENT'S COLOURS» OUT LOUD, AND THAT CLAUSE IS THE WHOLE CAPTION. Everything
+// else in this request is a picture of the thing being made; this one is a picture ABOUT it, and a
+// model that misses the distinction renders the labels. The garment's real colours are stated on
+// the cloth list, and the caption points at it rather than restating them — two places saying what
+// colour the garment is would be the same disagreement the order of authority exists to end.
+func colourMapCaption(view string) string {
+	return "colour map of the " + viewWord(view) + " flat — the same drawing with each part " +
+		"flooded in one flat colour; those colours LABEL which cloth covers which part and are " +
+		"not the garment's own colours, which the cloth list states"
+}
+
+// viewWord spells a view key as a bare adjective — «front», «left side» — where a caption needs it
+// to sit inside a noun phrase («the front flat»).
+//
+// IT IS NOT captionView, AND THE TWO ARE NOT DUPLICATES. That one answers «what does this picture
+// show» and ends in the noun («front view»); this one is the ADJECTIVE half, and «the front view
+// flat» is not English. One function per grammatical role, both over the same dictionary.
+func viewWord(v string) string {
+	switch v {
+	case entity.DesignViewFront:
+		return "front"
+	case entity.DesignViewBack:
+		return "back"
+	case entity.DesignViewSideL:
+		return "left side"
+	case entity.DesignViewSideR:
+		return "right side"
+	case entity.DesignViewThreeQuarterL:
+		return "three-quarter from the left"
+	case entity.DesignViewThreeQuarterR:
+		return "three-quarter from the right"
+	case entity.DesignViewDetail:
+		return "detail"
+	default:
+		return v
+	}
 }
 
 // captionView spells a slot's view key the way a caption reads it.

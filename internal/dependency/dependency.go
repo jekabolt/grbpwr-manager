@@ -2057,6 +2057,16 @@ type (
 		// the authoritative SVG, the layer keeps its editable projection. IT SPENDS NOTHING —
 		// machine vectorisation is StartRun with kind = vector, and money has one door.
 		ImportVector(ctx context.Context, req entity.DesignVectorImport) (*entity.DesignEditLayer, error)
+		// SetColourPlan replaces the card's WHOLE colour plan under compare-and-set on its rev —
+		// the painted views and what each painted colour stands for, in one document. A whole
+		// replace rather than a patch for the reason SaveEditLayer already gives about strokes:
+		// the plan is one screen's state, and repainting a view removes colours together with
+		// their assignments. entity.ErrDesignColourPlanRevMismatch on a stale rev.
+		SetColourPlan(ctx context.Context, req entity.DesignColourPlanSave) (*entity.DesignColourPlan, error)
+		// DeleteColourPlan removes the card's plan. Deleting a plan that is not there SUCCEEDS —
+		// the caller's intent is «this card has no plan», and that is already true. The map PNGs
+		// are ordinary media and are NOT touched: they may already be frozen into a run's recipe.
+		DeleteColourPlan(ctx context.Context, techCardID int) error
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)

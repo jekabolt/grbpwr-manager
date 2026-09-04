@@ -53,6 +53,10 @@ var designRefusals = []struct {
 }{
 	{entity.ErrDesignSlotRevMismatch, codes.Aborted, "slot_rev_mismatch"},
 	{entity.ErrDesignLayerRevMismatch, codes.Aborted, "layer_rev_mismatch"},
+	// colour_plan_rev_mismatch — тот же класс, что два соседа выше, и ОТДЕЛЬНЫЙ ТОКЕН намеренно:
+	// у клиента здесь другой экран и другое объяснение («коллега сохранил свой план цвета, ваш
+	// не записан»), а различить их он может только по машинному слову.
+	{entity.ErrDesignColourPlanRevMismatch, codes.Aborted, "colour_plan_rev_mismatch"},
 	{entity.ErrDesignForeignCardPlate, codes.FailedPrecondition, "foreign_card_plate"},
 	{entity.ErrDesignCompositePlate, codes.FailedPrecondition, "composite_plate"},
 	{entity.ErrDesignHiddenPlate, codes.FailedPrecondition, "hidden_plate"},
@@ -250,6 +254,12 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		Outputs:                designCardOutputsToPb(band.Outputs),
 		OutputsTotal:           int32(band.OutputsTotal),
 		OutputsTotalByColorway: intMapToPb(band.OutputsTotalByColorway),
+		// ЦВЕТОВОЙ ПЛАН (0364). nil = у карточки плана нет — ответ, а не молчание: клиент рисует
+		// дверь покраски по САМОМУ ПРИСУТСТВИЮ поля («этот сервер умеет план»), а его содержимое
+		// читает как состояние. Убери эту строку — полоса по-прежнему ответит 200, строка деталей
+		// просто опустеет, а клиент, отличающий «нет плана» от «сервер старый», решит, что сервер
+		// откатили, и закроет дверь: молчаливая потеря, которую ловит только проба формы ответа.
+		ColourPlan: designColourPlanToPb(band.ColourPlan),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —

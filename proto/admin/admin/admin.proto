@@ -2975,6 +2975,40 @@ service AdminService {
     };
   }
 
+  // SetDesignColourPlan replaces the card's WHOLE colour plan under compare-and-set on its rev —
+  // the painted views and what each painted colour stands for, in one document.
+  //
+  // WHOLE-DOCUMENT REPLACE, NOT A PATCH, and that is the same decision SaveDesignEditLayer already
+  // made about strokes. The plan is one screen's state: repainting a view removes colours from the
+  // palette and takes their assignments with them, and a per-row patch API would leave the client
+  // to compose that removal out of several calls, any one of which can fail on its own.
+  //
+  // `expected_rev = 0` CREATES the plan; a card that already holds one refuses that with the CAS
+  // error, which is how a colleague's plan is never overwritten by a tab that never saw it.
+  // A plan with no maps and no cloths is legal and means «painted, then cleared»; DELETE is the
+  // verb for «there is no plan», not an empty save.
+  //
+  // Aborted: colour_plan_rev_mismatch {current_rev}. InvalidArgument: a `view` that is not a
+  // silhouette view, two maps for one view, more than six maps, a hex that is not #rrggbb, a cloth
+  // whose hex appears on no map, an asset_id that is not a shelf row of this card, or a media id
+  // belonging to another tech card.
+  rpc SetDesignColourPlan(SetDesignColourPlanRequest) returns (SetDesignColourPlanResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/colour-plan"
+      body: "*"
+    };
+  }
+
+  // DeleteDesignColourPlan removes the card's colour plan. The map PNGs themselves are ordinary
+  // media and are NOT deleted: they may already be frozen into a run's recipe, and a run's history
+  // must keep pointing at the pictures it was launched with.
+  //
+  // Deleting a plan that does not exist succeeds — the caller's intent is «this card has no plan»,
+  // and that is already true.
+  rpc DeleteDesignColourPlan(DeleteDesignColourPlanRequest) returns (DeleteDesignColourPlanResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/{tech_card_id}/design/colour-plan"};
+  }
+
   // DraftDesignIdea is a TEXT run through the same money and idempotency machine as every picture
   // run — a paid call with no row in the register would be a hole in the ledger. It runs INLINE:
   // the response already carries a finished DesignRun with status=done and output_text set.
@@ -11993,6 +12027,18 @@ message GetDesignBandResponse {
   //
   // A colourway with no outputs at all is simply absent from the map; read a missing key as 0.
   map<int32, int32> outputs_total_by_colorway = 23;
+  // THE CARD'S DURABLE COLOUR PLAN — the painted views and what each painted colour stands for.
+  // It rides the band read for the reason every other member of this message does: the studio draws
+  // the bench, the shelves and the parts row in one frame, and a second read would let them
+  // disagree about which instant of the card is on screen.
+  //
+  // ⚠ ABSENT ≠ EMPTY, AND THE CLIENT MUST KEEP THE DISTINCTION — the same doctrine
+  // `has_fabric_render` records. `null` here is «this card has no plan», which a server that knows
+  // the field always says out loud; NOTHING AT ALL means a binary older than the field, and a
+  // client that painted a plan against such a server would launch a run whose maps protojson
+  // silently dropped — money spent on a question nobody asked. The colour-map door is therefore
+  // drawn from the presence of this field, never from its contents.
+  common.DesignColourPlan colour_plan = 24;
 }
 
 message ListDesignRunsRequest {
@@ -12349,6 +12395,34 @@ message FlattenDesignEditLayerResponse {
   // reload.
   common.DesignPicture picture = 1;
 }
+
+message SetDesignColourPlanRequest {
+  int32 tech_card_id = 1;
+  // The rev the caller believed it was acting on. 0 = «this card has no plan yet», which creates
+  // one; anything else must equal the stored rev or the save is refused.
+  int32 expected_rev = 2;
+  // THE WHOLE SET OF PAINTED VIEWS, at most one per view and at most six in all. What is not in
+  // this list is not in the plan afterwards: a view whose map was dropped is dropped by leaving it
+  // out, not by a second verb.
+  repeated common.DesignColourMap maps = 3;
+  // THE WHOLE SET OF ASSIGNMENTS, keyed by hex. Every hex here must appear on the palette of one
+  // of the maps above — an assignment pointing at a colour nobody painted is a statement about
+  // nothing, and it would outlive the repaint that removed the colour.
+  repeated common.DesignColourCloth cloths = 4;
+}
+
+message SetDesignColourPlanResponse {
+  // The stored plan, with its NEW rev — the token the next save must compare against. Returned in
+  // full rather than as a bare number so a screen never has to re-read the band to know what it
+  // just wrote.
+  common.DesignColourPlan plan = 1;
+}
+
+message DeleteDesignColourPlanRequest {
+  int32 tech_card_id = 1;
+}
+
+message DeleteDesignColourPlanResponse {}
 
 message ImportDesignVectorRequest {
   int32 tech_card_id = 1;

@@ -1,6 +1,7 @@
 package designgen
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -335,10 +336,15 @@ func statedCloths(c *colourRecipe) []fabricUse {
 	}
 	out := make([]fabricUse, 0, len(c.Fabrics))
 	for _, f := range c.Fabrics {
+		// A MAP LABEL IS A STATEMENT, AND THE STRONGEST ONE ON THIS ROW. A cloth whose only content
+		// is `map_hex` was placed by somebody painting it onto the drawing — the picture says
+		// exactly which parts it covers — so leaving it out of the count would drop a whole cloth
+		// out of a paid run in silence. It is the blank-row rule read from the other end: a row
+		// that states nothing states nothing, and this row states where it goes.
 		stated := f.MediaID > 0 || f.RepeatMM > 0 ||
 			oneLine(f.Name) != "" || strings.TrimSpace(f.ColourCode) != "" ||
 			strings.TrimSpace(f.ColourHex) != "" || oneLine(f.Words) != "" ||
-			oneLine(f.Parts) != ""
+			oneLine(f.Parts) != "" || strings.TrimSpace(f.MapHex) != ""
 		if stated {
 			out = append(out, f)
 		}
@@ -358,7 +364,7 @@ func statedCloths(c *colourRecipe) []fabricUse {
 // contract instructs, so the existing three-source machinery already describes it completely. So
 // the ≤1 branch does not merely produce the same words — it calls the same function, which is the
 // only version of «identical» that cannot rot.
-func renderFabricSection(f fabricStated, cloths []fabricUse, attached []refCaption) []string {
+func renderFabricSection(f fabricStated, cloths []fabricUse, maps []colourMap, views []string, attached []refCaption) []string {
 	if len(cloths) < 2 {
 		// ⚠ THE OLD PARAGRAPH IS STILL THE FIRST ONE, UNTOUCHED, AND THE PATTERN ONE STANDS AFTER
 		// IT. That order is the same decision composePrompt makes about the craft: the sentence
@@ -370,13 +376,18 @@ func renderFabricSection(f fabricStated, cloths []fabricUse, attached []refCapti
 		// those very goldens is «main jersey»), and the repeat went to zero the round the pattern
 		// screen stopped asking for it. `kind` is empty on every frozen run, so nothing that
 		// already exists can reach this branch — see fabricUse.Kind.
+		// ⚠ A COLOUR MAP CHANGES NOTHING ON THIS BRANCH, AND THAT IS THE DESIGN. One cloth is the
+		// WHOLE garment, so there is no assignment for a map to make: its picture still travels and
+		// still carries its own caption, but the paragraph is the frozen one, byte for byte. A
+		// sentence about labels beside a garment made of one cloth would be an instruction to
+		// divide something that is not divided.
 		paras := []string{renderFabricParagraph(f)}
 		if len(cloths) == 1 && clothIsAPattern(cloths[0]) {
 			paras = append(paras, renderPatternClothParagraph(cloths[0], attached))
 		}
 		return paras
 	}
-	lines := renderClothLines(cloths, attached)
+	lines := renderClothLines(cloths, maps, views, attached)
 	authority := renderFabricParagraph(f)
 	if authority == renderNoFabric {
 		// THE FALLBACK IS FALSE HERE AND MUST NOT BE SPOKEN. It says «this run states no fabric and
@@ -397,10 +408,15 @@ func renderFabricSection(f fabricStated, cloths []fabricUse, attached []refCapti
 // other part; met the other way round, each line first reads as a loose hint and is only narrowed
 // afterwards. The prohibition closes because it is the negative half, and the negative half of this
 // prompt is written last everywhere else in the file too (renderExcluded).
-func renderClothLines(cloths []fabricUse, attached []refCaption) []string {
+func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, attached []refCaption) []string {
+	// ⚠ «SOMEBODY MARKED SOMETHING» NOW HAS TWO SPELLINGS, AND BOTH COUNT. A cloth pinned by a
+	// painted label is pinned exactly as hard as one pinned by words — harder, if anything, since
+	// the picture shows the boundary instead of naming it. Reading only `Parts` here would have
+	// left a fully painted run under the «nobody marked anything, the division is yours» rule,
+	// which is the one sentence that tells the model to ignore the maps it was just handed.
 	anyParts := false
 	for _, c := range cloths {
-		if oneLine(c.Parts) != "" {
+		if oneLine(c.Parts) != "" || strings.TrimSpace(c.MapHex) != "" {
 			anyParts = true
 			break
 		}
@@ -415,15 +431,109 @@ func renderClothLines(cloths []fabricUse, attached []refCaption) []string {
 	if anyParts {
 		rule, closing = renderClothPartsRule, renderClothNoInvention
 	}
-	lines := []string{
-		"The cloths of this garment. This garment is made of " + countWord(len(cloths)) +
-			" different cloths, and the marks drawn on the drawings say which part is made of which. " +
-			rule + " The cloths, in the order they were stated:",
+	heading := "The cloths of this garment. This garment is made of " + countWord(len(cloths)) +
+		" different cloths, and the marks drawn on the drawings say which part is made of which."
+	// ⚠ THE MAP SENTENCE IS SPLICED AFTER THE FIRST SENTENCE AND BEFORE THE RULE, and the position
+	// is the argument. The rule that follows («a cloth that names its parts is used ON THOSE PARTS»)
+	// is about to be read against lines that name a COLOUR rather than a part; a reader who has not
+	// yet been told what those colours are meets «the parts painted steel blue» as a description of
+	// the garment. Told first, it meets it as an address.
+	//
+	// A RUN WITH NO MAPS ADDS NOTHING HERE, which is why every prompt this file composed before
+	// Feature A is the prompt it composes now.
+	if s := renderColourMapSentence(maps, views, attached); s != "" {
+		heading += " " + s
 	}
+	lines := []string{heading + " " + rule + " The cloths, in the order they were stated:"}
 	for i, c := range cloths {
 		lines = append(lines, renderClothLine(i+1, c, attached, anyParts))
 	}
 	return append(lines, closing)
+}
+
+// renderColourMapSentence names the painted flats BY THEIR IMAGE NUMBERS and says what the colours
+// on them mean. Empty when this run carries no map that actually went out.
+//
+// ⚠ IT IS THE ONE PLACE THE WORD «LABEL» IS SAID INSIDE THE CRAFT, and the caption block says it
+// again beside the picture itself. That is deliberate duplication of a single claim rather than two
+// claims: everything else in the request is a picture of the garment, so «this one is not» has to
+// survive a model that reads only the captions and a model that reads only the craft.
+//
+// A MAP WHOSE PICTURE DID NOT GO OUT IS NEITHER NUMBERED NOR MENTIONED — the rule renderClothLine
+// and renderPatternClothParagraph already keep, for the same reason: imageNumberOf answers 0 both
+// for «there was never a picture» and for «the media row went away between the snapshot and the
+// pass», and from where the model sits those are the same fact. A sentence pointing at an image
+// nobody was shown is an instruction about nothing.
+//
+// THE UNPAINTED VIEWS ARE NAMED TOO, and that sentence exists because its absence is what a model
+// fills in. Handed a front map and a back drawing with no map, it either carries the division over
+// (what we want) or treats the unmapped view as a second garment (what we have seen). Said out
+// loud, it is one reading instead of a lottery.
+func renderColourMapSentence(maps []colourMap, views []string, attached []refCaption) string {
+	var numbers []string
+	var painted []string
+	seen := make(map[string]struct{}, len(maps))
+	for _, m := range maps {
+		img := imageNumberOf(attached, m.MediaID)
+		if img == 0 {
+			continue
+		}
+		numbers = append(numbers, strconv.Itoa(img))
+		painted = append(painted, viewWord(m.View))
+		seen[m.View] = struct{}{}
+	}
+	if len(numbers) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(numbers) == 1 {
+		b.WriteString("Image " + numbers[0] + " is a colour map of the " + painted[0] +
+			" drawing — the same drawing with each part flooded in one flat colour.")
+	} else {
+		b.WriteString("Images " + joinWords(numbers) + " are colour maps of the " +
+			joinWords(painted) + " drawings — the same drawings with each part flooded in one flat colour.")
+	}
+	b.WriteString(" Those flat colours are LABELS that say which cloth covers which part; they are " +
+		"not the garment's colours, which the list below states.")
+
+	// The views this run draws that carry no map. `detail` is left out on purpose: a detail frame
+	// is a close-up of something already divided by the sides, not a side of its own to divide.
+	var bare []string
+	for _, v := range views {
+		if !entity.IsDesignSilhouetteView(v) {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		bare = append(bare, viewWord(v))
+	}
+	switch {
+	case len(bare) == 0:
+	case len(bare) == 1:
+		b.WriteString(" The " + bare[0] + " drawing carries no colour map: on that view, divide " +
+			"the cloths as the mapped views imply.")
+	default:
+		b.WriteString(" The " + joinWords(bare) + " drawings carry no colour map: on those views, " +
+			"divide the cloths as the mapped views imply.")
+	}
+	return b.String()
+}
+
+// joinWords is «a, b and c» — the way a sentence lists things, not the way a machine does. A
+// comma-only list reads as an enumeration the model may treat as a set of separate instructions;
+// the conjunction says the list has ended.
+func joinWords(in []string) string {
+	switch len(in) {
+	case 0:
+		return ""
+	case 1:
+		return in[0]
+	case 2:
+		return in[0] + " and " + in[1]
+	default:
+		return strings.Join(in[:len(in)-1], ", ") + " and " + in[len(in)-1]
+	}
 }
 
 // renderPatternClothParagraph is the sentence a SINGLE-CLOTH render needs when that cloth is a
@@ -538,13 +648,159 @@ func renderClothLine(n int, c fabricUse, attached []refCaption, anyParts bool) s
 		b.WriteString(" Its pattern repeats every " + strconv.Itoa(c.RepeatMM) + " mm on the finished garment.")
 	}
 
-	switch parts := oneLine(c.Parts); {
+	// ─── WHERE THIS CLOTH GOES: WORDS, A PAINTED LABEL, OR BOTH ───
+	//
+	// ⚠ THE TWO ARE PRINTED TOGETHER RATHER THAN ONE INSTEAD OF THE OTHER, and that is not
+	// belt-and-braces. The words are what a PERSON recognises when they read the stored prompt back
+	// («cuffs and collar»); the colour is what the PICTURE actually shows, and it is the only half
+	// that survives a boundary nobody has a word for. Dropping either would make one of the two
+	// readers guess.
+	//
+	// ⚠ AND THE COLOUR IS NAMED BESIDE ITS HEX, NEVER INSTEAD OF IT. An image model reads «steel
+	// blue» far more reliably than `#3a7bd5`, and the hex is what the map is actually painted in —
+	// so the name is the instruction and the hex is the exact value it stands for, the same shape
+	// colourPhrase already uses for a colourway code and its value. The map itself disambiguates
+	// when the name is coarse.
+	parts, mapHex := oneLine(c.Parts), strings.TrimSpace(c.MapHex)
+	switch {
+	case mapHex != "" && parts != "":
+		b.WriteString(" It is used on: " + parts + " — the parts painted " + colourWord(mapHex) +
+			" (" + mapHex + ") on the colour map — and on no other part of this garment.")
+	case mapHex != "":
+		b.WriteString(" It is used on the parts painted " + colourWord(mapHex) + " (" + mapHex +
+			") on the colour map — and on no other part of this garment.")
 	case parts != "":
 		b.WriteString(" It is used on: " + parts + " — and on no other part of this garment.")
 	case anyParts:
 		b.WriteString(" It names no parts, so it is the REMAINDER: every part of the garment that the other cloths on this list do not claim.")
 	}
 	return b.String()
+}
+
+/* ─────────────────────────── naming a painted colour ─────────────────────────── */
+
+// colourNames is the table colourWord picks from: sixteen anchors spread over the colour wheel plus
+// the three achromatic ones a painter actually reaches for.
+//
+// ⚠ SIXTEEN AND NOT TWO HUNDRED, DELIBERATELY. This word is an INSTRUCTION to an image model, and
+// the instruction is «find the region of the drawing that is roughly this colour». A dense
+// dictionary buys precision the model cannot use and costs it a word it may not know — «feldgrau»
+// resolves to nothing, «grey» resolves to a region. The hex travels beside the word for the
+// precision, and the map itself is the final arbiter.
+//
+// `steel blue` EARNS ITS PLACE among plainer names because that band of muted mid-blue is what a
+// person actually picks off a colour wheel first, and it is the example the design of this feature
+// is written against. It is a phrase image models read, not a paint-chip name.
+var colourNames = []struct {
+	name string
+	hex  string
+}{
+	{"red", "#ff0000"},
+	{"orange", "#ff8000"},
+	{"brown", "#8b4513"},
+	{"yellow", "#ffff00"},
+	{"olive", "#808000"},
+	{"green", "#00c000"},
+	{"teal", "#008080"},
+	{"cyan", "#00ffff"},
+	{"steel blue", "#3a7bd5"},
+	{"blue", "#0060ff"},
+	{"navy", "#002080"},
+	{"violet", "#8000ff"},
+	{"magenta", "#ff00ff"},
+	{"pink", "#ff99cc"},
+	{"grey", "#808080"},
+	{"cream", "#f5eedd"},
+}
+
+// colourWord names the nearest anchor to a painted label, by distance in HSL.
+//
+// ⚠ HSL AND NOT RGB, BECAUSE THE QUESTION IS «WHAT WOULD A PERSON CALL THIS», NOT «HOW FAR APART
+// ARE THESE TWO SIGNALS». In RGB, `#3a7bd5` sits nearer to some greys than to any blue; in HSL its
+// hue answers the question directly. HUE IS WEIGHTED BY THE LOWER OF THE TWO SATURATIONS, which is
+// the one piece of arithmetic here that is load-bearing: an unsaturated colour HAS no meaningful
+// hue, and comparing it by hue would name a near-grey «magenta» on the strength of a rounding
+// error.
+//
+// AN UNPARSEABLE LABEL FALLS BACK TO THE HEX ITSELF rather than to a guess. The door already
+// refuses anything that is not `#rrggbb` (entity.IsDesignColourMapHex), so this branch is reachable
+// only through a snapshot frozen by something that bypassed it — and there the honest answer is the
+// value we were given, not a colour name invented for it.
+func colourWord(hex string) string {
+	h, s, l, ok := hexToHSL(hex)
+	if !ok {
+		return hex
+	}
+	best, bestD := "", 0.0
+	for i, c := range colourNames {
+		ch, cs, cl, ok := hexToHSL(c.hex)
+		if !ok {
+			continue
+		}
+		dh := hueDistance(h, ch) * math.Min(s, cs)
+		ds, dl := s-cs, l-cl
+		d := 2*dh*dh + ds*ds + dl*dl
+		if i == 0 || d < bestD {
+			best, bestD = c.name, d
+		}
+	}
+	if best == "" {
+		return hex
+	}
+	return best
+}
+
+// hueDistance is the shortest way round the wheel, normalised to 0..1. Hue is CIRCULAR and 350° is
+// ten degrees from 0°, not three hundred and fifty: a linear subtraction here would call a red
+// «violet» for no reason a person could see.
+func hueDistance(a, b float64) float64 {
+	d := math.Abs(a - b)
+	if d > 0.5 {
+		d = 1 - d
+	}
+	return d * 2
+}
+
+// hexToHSL parses `#rrggbb` into hue, saturation and lightness, each 0..1. `ok` is false for
+// anything that is not exactly that shape — see colourWord on why a fallback beats a guess.
+func hexToHSL(hex string) (h, s, l float64, ok bool) {
+	if len(hex) != 7 || hex[0] != '#' {
+		return 0, 0, 0, false
+	}
+	var v [3]float64
+	for i := 0; i < 3; i++ {
+		n, err := strconv.ParseUint(hex[1+i*2:3+i*2], 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		v[i] = float64(n) / 255
+	}
+	r, g, b := v[0], v[1], v[2]
+	max, min := math.Max(r, math.Max(g, b)), math.Min(r, math.Min(g, b))
+	l = (max + min) / 2
+	d := max - min
+	if d == 0 {
+		// A GREY HAS NO HUE, and returning 0 (which is red) would be an invented fact. Saturation
+		// 0 is what stops colourWord from acting on it.
+		return 0, 0, l, true
+	}
+	if l > 0.5 {
+		s = d / (2 - max - min)
+	} else {
+		s = d / (max + min)
+	}
+	switch max {
+	case r:
+		h = (g - b) / d
+		if g < b {
+			h += 6
+		}
+	case g:
+		h = (b-r)/d + 2
+	default:
+		h = (r-g)/d + 4
+	}
+	return h / 6, s, l, true
 }
 
 /* ─────────────────────────── the block ─────────────────────────── */
@@ -572,7 +828,14 @@ func renderCraft(p runParams, detailNames []string, attached []refCaption) strin
 	// is the single paragraph it has always been. A section that decides its own paragraph count
 	// keeps the ≤1 case producing a slice identical to the one this literal used to hold.
 	paras := []string{renderIntro(len(attached))}
-	paras = append(paras, renderFabricSection(stated, statedCloths(p.Colour), attached)...)
+	// THE MAPS AND THE VIEWS TRAVEL INTO THE SECTION because the cloth list has to name the maps
+	// BY IMAGE NUMBER and to say which of the drawn views carries no map at all. Both are read off
+	// the frozen params, like everything else here.
+	var maps []colourMap
+	if c := p.Colour; c != nil {
+		maps = c.ColourMaps
+	}
+	paras = append(paras, renderFabricSection(stated, statedCloths(p.Colour), maps, p.Views, attached)...)
 	paras = append(paras,
 		renderLayoutParagraph(p.Views, detailNames, p.Layout),
 		renderStyle,

@@ -296,6 +296,16 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if band.ColourRecipes, err = loadColourRecipes(ctx, db, cardID); err != nil {
 			return err
 		}
+		// ЦВЕТОВОЙ ПЛАН (0364) — В ЭТОМ ЖЕ СНИМКЕ, ПО ТОМУ ЖЕ ДОВОДУ, ЧТО ПОЛКИ И ВЕРСТАК: студия
+		// рисует верстак, полки и строку деталей одним кадром, а второе чтение позволило бы им
+		// разойтись в том, какой момент карточки на экране.
+		//
+		// ⚠ nil ЗДЕСЬ — ЭТО ОТВЕТ, А НЕ ПРОБЕЛ: «на этой карточке плана нет». Пустой план — это
+		// «покрасили и стёрли», состояние, сделанное руками; подменив одно другим, полоса сообщила
+		// бы клиенту rev 0 у несуществующей строки, и первое же сохранение прошло бы мимо CAS.
+		if band.ColourPlan, err = colourPlanByCard(ctx, db, cardID); err != nil {
+			return err
+		}
 		if band.TotalBatches, err = storeutil.QueryCountNamed(ctx, db, designCountBatches,
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to count design batches: %w", err)

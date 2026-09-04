@@ -687,6 +687,25 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designClothMediaIDs(params.GetColour())...); err != nil {
 		return nil, err
 	}
+	// ⚠ КАРТЫ ЦВЕТА — ЧЕТВЁРТЫЙ ИСТОЧНИК ЧУЖОГО НОМЕРА, И ОН ДОБАВЛЕН ВМЕСТЕ С ПОЛЕМ. Карта уезжает
+	// поставщику как картинка прогона (designgen/snapshot.go цепляет каждую `colour_maps`), значит
+	// граница у неё та же самая, что у плит, референсов и текстур. Без этой проверки достаточно
+	// было положить чужой PNG в `colour.colour_maps[0].media_id` — и он уезжал бы при полностью
+	// законных остальных трёх списках.
+	//
+	// ПОДЛОЖКА КАРТЫ (`base_media_id`) ЗДЕСЬ НЕ ПРОВЕРЯЕТСЯ, И ЭТО НЕ ПРОПУСК: она поставщику не
+	// уезжает и в промпте не упоминается — это метка устаревания, которую читает клиент. Проверка
+	// заморожённого номера сделала бы реран невозможным ровно тогда, когда флэт законно сменили.
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.colour.colour_maps.media_id",
+		designColourMapMediaIDs(params.GetColour())...); err != nil {
+		return nil, err
+	}
+	// ФОРМА КАРТ — У ГОВОРЯЩЕГО, А НЕ У УНАСЛЕДОВАННОГО СНИМКА, и это та же лестница, что у адреса
+	// полки строкой выше: словарь видов законно растёт, а параметры родителя заморожены, поэтому
+	// проверка унаследованного значения сделала бы старый прогон неперезапускаемым навсегда.
+	if err := designRefuseMalformedColourMaps(req.GetParams()); err != nil {
+		return nil, err
+	}
 
 	// ─── РОДЫ, У КОТОРЫХ ВХОД — КОНКРЕТНАЯ КАРТИНКА, А НЕ КОНТЕКСТ ───
 	//
@@ -1539,6 +1558,69 @@ func designClothMediaIDs(c *pb_common.DesignColourRecipe) []int {
 		out = append(out, int(f.GetMediaId()))
 	}
 	return out
+}
+
+// designColourMapMediaIDs — картинки карт цвета, то есть ровно то, что цепляет снимок. Подложка
+// (`base_media_id`) сюда НЕ входит: она поставщику не уезжает, это метка устаревания для клиента.
+func designColourMapMediaIDs(c *pb_common.DesignColourRecipe) []int {
+	out := make([]int, 0, len(c.GetColourMaps()))
+	for _, m := range c.GetColourMaps() {
+		out = append(out, int(m.GetMediaId()))
+	}
+	return out
+}
+
+// designRefuseMalformedColourMaps — ФОРМА КАРТ ЦВЕТА У ДВЕРИ ПРОГОНА.
+//
+// ⚠ ПОЧЕМУ ЭТО ПРОВЕРЯЕТСЯ ДВАЖДЫ — ЗДЕСЬ И В ПЛАНЕ. Это НЕ повтор: план и прогон — две
+// независимые двери, и прогон законно запускают, не сохранив плана вовсе (клиент собирает рецепт
+// сам, скрипт — тем более). Кривой вид или ярлык из этой двери замерзает в `params` НАВСЕГДА:
+// промпт печатает `viewWord(view)` и `colourWord(hex)`, и «front-ish» доехал бы до модели словом,
+// которого она не знает, на оплаченном вызове.
+//
+// ⚠ И ЯРЛЫК ТКАНИ ПРОВЕРЯЕТСЯ ТОЖЕ. `map_hex` — это КЛЮЧ, по которому ткань находит свои детали на
+// карте; «#3A7BD5» против «#3a7bd5» означал бы ткань, потерявшую детали, без единого сообщения.
+func designRefuseMalformedColourMaps(spoken *pb_common.DesignRunParams) error {
+	views := make(map[string]struct{})
+	maps := spoken.GetColour().GetColourMaps()
+	if n := len(maps); n > entity.MaxDesignColourMaps {
+		return status.Errorf(codes.InvalidArgument,
+			"params.colour.colour_maps names %d maps; the ceiling is %d", n, entity.MaxDesignColourMaps)
+	}
+	for i, m := range maps {
+		if !entity.IsDesignSilhouetteView(m.GetView()) {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d.view %q is not a silhouette view", i, m.GetView())
+		}
+		if _, dup := views[m.GetView()]; dup {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d names view %q a second time; one map per view",
+				i, m.GetView())
+		}
+		views[m.GetView()] = struct{}{}
+		if m.GetMediaId() <= 0 {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d.media_id %d — a map is a picture", i, m.GetMediaId())
+		}
+		for j, sw := range m.GetPalette() {
+			if !entity.IsDesignColourMapHex(sw.GetHex()) {
+				return status.Errorf(codes.InvalidArgument,
+					"params.colour.colour_maps.%d.palette.%d.hex %q is not a lower-case #rrggbb label",
+					i, j, sw.GetHex())
+			}
+		}
+	}
+	for i, f := range spoken.GetColour().GetFabrics() {
+		hex := f.GetMapHex()
+		if hex == "" {
+			continue
+		}
+		if !entity.IsDesignColourMapHex(hex) {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.fabrics.%d.map_hex %q is not a lower-case #rrggbb label", i, hex)
+		}
+	}
+	return nil
 }
 
 // designInt32sToInts — один переход между шириной провода и шириной домена. Отдельной функцией,
