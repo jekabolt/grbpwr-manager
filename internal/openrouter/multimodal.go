@@ -105,6 +105,23 @@ type multimodalRequest struct {
 // The slug is the SHARED model — the one Complete uses — because that is the multimodal model this
 // deployment already runs on; the analysis override is scoped to the analysis pass and is not
 // dragged in here.
+//
+// ⚠ ПОТОЛОК И ВЫКЛЮЧЕННОЕ МЫШЛЕНИЕ — ЭТО ОДИН ДОГОВОР, А НЕ ДВЕ НАСТРОЙКИ. Ставя `max_tokens`, мы
+// говорим «ответ помещается в N токенов»; думающая модель (defaultModel — anthropic/claude-sonnet-5)
+// тратит рассуждения ИЗ ЭТОГО ЖЕ БЮДЖЕТА и ДО ответа, поэтому потолок без `reasoning:{effort:"none"}`
+// покупает размышление вместо ответа. Это не гипотеза: openrouter.go:analysisReasoningEffort хранит
+// замер первого живого прогона разбора тех-карты — 2500 токенов завершения, НОЛЬ контента, 42 с,
+// ~$0.11. Ревью круга 19 нашло ровно эту дыру здесь: черновик конструкции поставил потолок 3000 и
+// мышление не выключил.
+//
+// ПОЧЕМУ ПО НАЛИЧИЮ ПОТОЛКА, А НЕ ВСЕГДА. Прозаический черновик идеи зовёт этот же метод БЕЗ
+// потолка, и его байты — контракт со старым клиентом (V-19): безусловный `reasoning` изменил бы
+// запрос, у которого ничего не менялось, и на пути без потолка выключать нечего — там мышление
+// тратит СВОИ токены, а не съедает чужие. Так связь остаётся одним решением в одном месте: кто
+// ставит потолок, тот и получает выключенное мышление, и разъехаться им негде.
+//
+// Модели, которые не рассуждают, поле игнорируют; модель, у которой рассуждение ОБЯЗАТЕЛЬНО,
+// откажется его выключать, и пустой ответ вернётся как ErrBudgetExhausted, а не молчанием.
 func (c *Client) CompleteWithImages(
 	ctx context.Context,
 	systemPrompt, userPrompt string,
@@ -137,6 +154,7 @@ func (c *Client) CompleteWithImages(
 	}
 	if maxTokens > 0 {
 		req.MaxTokens = maxTokens
+		req.Reasoning = &reasoningSpec{Effort: analysisReasoningEffort}
 	}
 
 	payload, err := json.Marshal(req)

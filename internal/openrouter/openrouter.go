@@ -52,7 +52,10 @@ const (
 	// modelProbeTimeout bounds the startup model probe. It is short on purpose: the probe is a
 	// courtesy, and a provider that is slow to answer at boot is not news worth waiting for.
 	modelProbeTimeout = 3 * time.Second
-	// analysisReasoningEffort switches EXTENDED THINKING OFF for the tech-card analysis pass.
+	// analysisReasoningEffort switches EXTENDED THINKING OFF wherever a TOKEN CEILING is set — the
+	// tech-card analysis pass (CompleteWithMeta) and the picture-carrying call that asks for a
+	// structured answer (CompleteWithImages with maxTokens > 0). Имя осталось от первого читателя;
+	// правило одно на обоих: КТО СТАВИТ ПОТОЛОК, ТОТ ВЫКЛЮЧАЕТ МЫШЛЕНИЕ.
 	//
 	// WHY OFF. Reasoning tokens are billed and budgeted as output tokens, and they are spent BEFORE
 	// the answer. The whole analysis chain is sized around a non-reasoning completion — the cap is
@@ -606,9 +609,11 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 // OPENROUTER_MODEL_ANALYSIS exists to escalate exactly that pass without dragging the features
 // behind Complete onto a different model. With the override unset the two are the same string.
 func (c *Client) CompleteWithMeta(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (text string, finishReason string, usage Usage, err error) {
-	// THE ONLY CALLER THAT SETS `reasoning`. See analysisReasoningEffort for why it is off here and
-	// nowhere else: this is the one pass whose token cap, server budget and screen budget were all
-	// sized for a completion that is answer and nothing but answer.
+	// ONE OF THE TWO CALLERS THAT SET `reasoning`, and for the same reason: see
+	// analysisReasoningEffort. Мышление выключено там, где стоит ПОТОЛОК ТОКЕНОВ, — этот пас и
+	// CompleteWithImages с непустым maxTokens (multimodal.go). Обратное («выключено только здесь»)
+	// стояло тут до круга 19 и ровно поэтому черновик конструкции поставил потолок 3000, мышление
+	// не выключил и купил бы размышление вместо ответа.
 	return c.complete(ctx, c.AnalysisModel(), systemPrompt, userPrompt, jsonMode, maxTokens,
 		&reasoningSpec{Effort: analysisReasoningEffort})
 }

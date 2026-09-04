@@ -25,10 +25,13 @@ package admin
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -36,6 +39,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 )
 
 // ─────────────────────────── РАЗБОР ───────────────────────────
@@ -631,4 +635,531 @@ func TestDraftDesignIdeaReplayRebuildsTheDraftFromTheStoredRun(t *testing.T) {
 	require.Equal(t, "collar", resp.GetConstruction().GetAspects()[0].GetKey())
 	require.Equal(t, pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
 		resp.GetConstruction().GetBom()[0].GetSection())
+}
+
+// ═══════════════════ ПОЧИНКИ ПО АДВЕРСАРНОМУ РЕВЬЮ КРУГА 19 ═══════════════════
+//
+// Каждая проба ниже КРАСНЕЛА БЫ НА КОММИТЕ 553926c. Пять из них меряют деньги или отказ в
+// сохранении карточки, поэтому у каждой названо, что именно ломалось.
+
+// ПОТОЛОК ТОКЕНОВ ОБЯЗАН ЕХАТЬ ВМЕСТЕ С ВЫКЛЮЧЕННЫМ МЫШЛЕНИЕМ — И МЕРЯЕТСЯ ЭТО В БАЙТАХ ЗАПРОСА.
+//
+// Слуг — думающая модель; рассуждения биллятся и тратятся ИЗ бюджета завершения ДО ответа, поэтому
+// потолок без `reasoning:{"effort":"none"}` покупает размышление вместо ответа (замер соседа: 2500
+// токенов, ноль контента, 42 с, ~$0.11). Вторая половина пробы не менее несущая: у прозы потолка
+// нет, значит и поля быть не должно — её байты это контракт со старым клиентом.
+func TestDraftDesignIdeaTurnsReasoningOffWhereverItCapsTheAnswer(t *testing.T) {
+	readReasoning := func(t *testing.T, body string) (present bool, effort string) {
+		t.Helper()
+		var req struct {
+			MaxTokens int `json:"max_tokens"`
+			Reasoning *struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &req))
+		if req.Reasoning == nil {
+			return false, ""
+		}
+		return true, req.Reasoning.Effort
+	}
+
+	t.Run("структурный ответ: потолок стоит — мышление выключено", func(t *testing.T) {
+		rig := newDraftRig(t, http.StatusOK, constructionAnswer)
+		_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest())
+		require.NoError(t, err)
+		present, effort := readReasoning(t, rig.stub.body)
+		require.True(t, present,
+			"потолок 3000 без выключенного мышления оплачивает размышление и отдаёт пустоту")
+		require.Equal(t, "none", effort)
+	})
+
+	t.Run("проза: потолка нет — поля нет", func(t *testing.T) {
+		rig := newDraftRig(t, http.StatusOK, "A boxy coat with a storm flap.")
+		_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+		require.NoError(t, err)
+		present, _ := readReasoning(t, rig.stub.body)
+		require.False(t, present, "у старого запроса байты не менялись и меняться не должны")
+	})
+}
+
+// ПОТОЛОК, СЪЕДЕННЫЙ БЕЗ ОТВЕТА, — СВОЙ КОД ПРИЧИНЫ И ОПЛАЧЕННАЯ ПОПЫТКА.
+//
+// ⚠ ЭТО ПРО ДЕНЬГИ. Тот же потолок даёт два исхода: половина ответа (`invalid_output`) платится
+// оценкой, а полное отсутствие ответа платилось НУЛЁМ — то есть дешевле выглядел ХУДШИЙ из двух, и
+// «жечь бюджет бесплатно» было способом. Токены поставщик напечатал в usage в обоих случаях.
+func TestDraftDesignIdeaChargesTheCeilingItAteWithoutAnswering(t *testing.T) {
+	rig := newDraftRig(t, http.StatusOK, "")
+	rig.stub.raw = `{"choices":[{"message":{"content":""},"finish_reason":"length"}],` +
+		`"usage":{"prompt_tokens":1200,"completion_tokens":3000,"total_tokens":4200}}`
+
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest())
+	require.Error(t, err)
+
+	code, md := errorReason(t, err)
+	require.Equal(t, codes.FailedPrecondition, code)
+	require.Equal(t, designReasonBudgetExhausted, md["reason"],
+		"«бюджет ответа съеден» — не «поставщик упал»: чинят их разные люди разными правками")
+
+	require.Len(t, rig.failed, 1)
+	require.Equal(t, designReasonBudgetExhausted, rig.failed[0].ErrorCode)
+	require.Len(t, rig.finished, 1)
+	require.Equal(t, entity.DesignAttemptFailed, rig.finished[0].State)
+	require.True(t, rig.finished[0].Price.Valid,
+		"картинки уехали и токены завершения потрачены — списать ноль значит спрятать деньги")
+	require.Equal(t, designDraftIdeaEstimate(1).Decimal.String(),
+		rig.finished[0].Price.Decimal.String(),
+		"тот же потолок, тот же счёт: с половиной ответа и без ответа платится одинаково")
+}
+
+// ПРОВАЛЕННЫЙ ПРОГОН НА ПОВТОРЕ ОТДАЁТ ОТКАЗ, А НЕ ПУСТОЙ УСПЕХ.
+//
+// Предикат перехвата резюмирует только `pending|running`, поэтому `failed` — навсегда. Хендлер
+// отвечал на него HTTP-OK с `construction: nil` и без ошибки, а проза отказа велит «draft again»:
+// человек жал ту же кнопку и получал молчаливую пустоту.
+func TestDraftDesignIdeaReplayOfAFailedRunIsARefusalNotAnEmptyOK(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code string
+		want string
+	}{
+		{"не та форма", designConstructionReasonInvalidOutput, "did not answer in the shape asked for"},
+		{"бюджет съеден", designReasonBudgetExhausted, "used up the whole answer budget"},
+		{"код неизвестен этому файлу", "provider_error", "already failed"},
+		{"кода нет вовсе", "", "already failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDraftIdeaRig(t, openrouter.New(openrouter.Config{
+				APIKey: "test-key", BaseURL: "http://127.0.0.1:1",
+			}))
+			prior := entity.DesignRun{
+				Id: 901, TechCardId: designRunCardID, Kind: entity.DesignRunKindDraftIdea,
+				Status:    entity.DesignRunFailed,
+				ErrorCode: sql.NullString{String: tc.code, Valid: tc.code != ""},
+			}
+			rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
+				Return(&entity.DesignRunStarted{Run: prior, Idempotent: true}, nil).Once()
+
+			_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest())
+			require.Error(t, err, "пустой успех на проваленном прогоне — это тупик, а не ответ")
+			code, md := errorReason(t, err)
+			require.Equal(t, codes.FailedPrecondition, code)
+			require.Contains(t, err.Error(), tc.want)
+			require.NotEmpty(t, md["reason"])
+		})
+	}
+}
+
+// ТОТ ЖЕ КЛЮЧ С ПРОТИВОПОЛОЖНЫМ ФЛАГОМ — ОТКАЗ, А НЕ РЕЗУЛЬТАТ ДРУГОЙ ФОРМЫ.
+//
+// Флаг в ключ идемпотентности не входит: прогон отвечен один раз и навсегда в той форме, в какой
+// был отвечен. Соседняя ось (колорвей) ровно этот случай считает отказом.
+func TestDraftDesignIdeaReplayRefusesTheOppositeShape(t *testing.T) {
+	canonical, err := designMarshalConstructionDraft(&pb_common.DesignConstructionDraft{
+		Silhouette: "Sleeveless V-neck tank top",
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name        string
+		stored      string
+		asksForJSON bool
+		wantErr     bool
+	}{
+		{"проза сохранена, просят структуру", "A boxy coat with a storm flap.", true, true},
+		{"структура сохранена, просят прозу", string(canonical), false, true},
+		{"структура сохранена, просят структуру", string(canonical), true, false},
+		{"проза сохранена, просят прозу", "A boxy coat with a storm flap.", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDraftIdeaRig(t, openrouter.New(openrouter.Config{
+				APIKey: "test-key", BaseURL: "http://127.0.0.1:1",
+			}))
+			prior := entity.DesignRun{
+				Id: 902, TechCardId: designRunCardID, Kind: entity.DesignRunKindDraftIdea,
+				Status:     entity.DesignRunDone,
+				OutputText: sql.NullString{String: tc.stored, Valid: true},
+			}
+			rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
+				Return(&entity.DesignRunStarted{Run: prior, Idempotent: true}, nil).Once()
+
+			req := draftRequest()
+			req.Construction = tc.asksForJSON
+			resp, err := rig.srv.DraftDesignIdea(designRunCtx(), req)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				require.Equal(t, tc.asksForJSON, resp.GetConstruction() != nil)
+				return
+			}
+			require.Error(t, err)
+			_, md := errorReason(t, err)
+			require.Equal(t, designReasonShapeMismatch, md["reason"])
+		})
+	}
+}
+
+// КРУГОВОЙ ОБХОД ХРАНЕНИЯ ДЕРЖИТСЯ НА ЛЮБОЙ ФОРМЕ ОТВЕТА, ВКЛЮЧАЯ ЗАМЕРЕННУЮ РЕВЬЮ.
+//
+// ⚠ ЭТО ПРОБА ПРО ОПЛАЧЕННЫЙ ДВОЙНОЙ КЛИК. Ревью круга 19 ЗАМЕРИЛО: черновик, содержательный одним
+// лишь `missing`, сохранялся писателем `inputs` как `{"missing":[…]}` — protojson по умолчанию не
+// пишет пустых полей, — а читатель требует присутствия хотя бы одного из семи ключей и возвращал
+// nil. То есть УСПЕШНЫЙ ОПЛАЧЕННЫЙ прогон на повторе отдавал пустоту, и системный промпт сам ведёт
+// к этой форме (правило 1: «оставь поле пустым, назови нехватку в missing»).
+//
+// ⚠ У КАЖДОГО СЛУЧАЯ ЕСТЬ НЕГАТИВНЫЙ КОНТРОЛЬ — тот же круг ПРЕЖНИМ писателем. Без него проба
+// зеленела бы и на разборе, который принимает вообще всё, и не доказывала бы, что чинилась именно
+// асимметрия «писатель против читателя».
+func TestConstructionDraftRoundTripsEveryShapeIncludingTheEmptyOnes(t *testing.T) {
+	full, _, err := parseConstructionDraft(`{
+	  "silhouette": "boxy", "fabric": "melton wool", "fit": "relaxed", "concept": "a winter shell",
+	  "aspects": [{"key": "sleeve / cuff", "text": "two-piece sleeve"}],
+	  "callouts": [{"feature": "storm flap", "details": "single layer", "dimensions": "80 mm"}],
+	  "bom": [{"section": "hardware", "kind": "zipper", "name": "front zip", "pantone": "19-4052"}],
+	  "missing": ["picture 3 — the cuff"]
+	}`, "stop")
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		in   *pb_common.DesignConstructionDraft
+		// lossyLosesIt — читал ли ПРЕЖНИЙ писатель эту форму обратно. false = ровно тот дефект.
+		lossyLosesIt bool
+	}{
+		{
+			name:         "только missing — случай, замеренный ревью",
+			in:           &pb_common.DesignConstructionDraft{Missing: []string{"picture 1 — the shoulder"}},
+			lossyLosesIt: true,
+		},
+		{
+			name:         "всё пусто — модель посмотрела, и ей нечего сказать",
+			in:           &pb_common.DesignConstructionDraft{},
+			lossyLosesIt: true,
+		},
+		{name: "полный черновик", in: full},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stored, err := designMarshalConstructionDraft(tc.in)
+			require.NoError(t, err)
+			back := designConstructionDraftFromRun(string(stored))
+			require.NotNil(t, back, "сохранено %d байт: %s", len(stored), stored)
+			require.True(t, proto.Equal(tc.in, back),
+				"круг не сошёлся.\nхранилось (%d байт): %s\nпрочитано: %v", len(stored), stored, back)
+			t.Logf("%s: сохранено %d байт, прочитано обратно ПОЛЕ В ПОЛЕ РАВНЫМ (proto.Equal)",
+				tc.name, len(stored))
+
+			lossy, err := designMarshalJSON(tc.in)
+			require.NoError(t, err)
+			lossyBack := designConstructionDraftFromRun(string(lossy))
+			if tc.lossyLosesIt {
+				require.Nil(t, lossyBack,
+					"негативный контроль обязан ТЕРЯТЬ эту форму, иначе проба ничего не меряет; "+
+						"прежний писатель дал %d байт: %s", len(lossy), lossy)
+			} else {
+				require.NotNil(t, lossyBack)
+			}
+		})
+	}
+}
+
+// ПАРА «СЕКЦИЯ ↔ НАЗНАЧЕНИЕ/ВИД» — ЗДЕСЬ, ПОТОМУ ЧТО ИНАЧЕ ОТКАЗЫВАЕТ СОХРАНЕНИЕ ВСЕЙ КАРТОЧКИ.
+//
+// ⚠ КАЖДЫЙ ТОКЕН НИЖЕ ЗАКОНЕН САМ ПО СЕБЕ, И ИМЕННО ПОЭТОМУ РАЗБОР ИХ ПРОПУСКАЛ. Сохранение
+// требует ПАР (store/techcard/materials.go: назначение только на рулонных, вид только в своей
+// домашней секции), а UpsertTechCard — всё-или-ничего: одна предложенная строка спеки отказывала
+// в сохранении ВСЕЙ тех-карты, причём поля, которые её сломали, интерфейс предложения не рисует.
+func TestParseConstructionDraftClearsImpossibleBomPairs(t *testing.T) {
+	const (
+		unsetPurpose = pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+		mainPurpose  = pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_MAIN
+		unsetKind    = pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET
+		buttonKind   = pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BUTTON
+		otherKind    = pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_OTHER
+		bindingKind  = pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BINDING
+	)
+	for _, tc := range []struct {
+		name        string
+		line        string
+		wantSection pb_common.TechCardBomSection
+		wantPurpose pb_common.TechCardBomPurpose
+		wantKind    pb_common.TechCardBomKind
+		wantCleared int
+	}{{
+		name:        "назначение на фурнитуре — снято, вид в своём доме остаётся",
+		line:        `{"section":"hardware","purpose":"main","kind":"button","name":"front button"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE,
+		wantPurpose: unsetPurpose, wantKind: buttonKind, wantCleared: 1,
+	}, {
+		name:        "вид на ткани — снят, назначение на рулонном остаётся",
+		line:        `{"section":"fabric","purpose":"main","kind":"button","name":"main cloth"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
+		wantPurpose: mainPurpose, wantKind: unsetKind, wantCleared: 1,
+	}, {
+		name:        "вид не своей секции — снят",
+		line:        `{"section":"trim","kind":"button","name":"tape"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM,
+		wantPurpose: unsetPurpose, wantKind: unsetKind, wantCleared: 1,
+	}, {
+		name:        "вид своей секции — остаётся",
+		line:        `{"section":"trim","kind":"binding","name":"neck binding"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM,
+		wantPurpose: unsetPurpose, wantKind: bindingKind, wantCleared: 0,
+	}, {
+		name:        "`other` — запасной выход КАЖДОЙ пригодной семьи",
+		line:        `{"section":"packaging","kind":"other","name":"filler"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING,
+		wantPurpose: unsetPurpose, wantKind: otherKind, wantCleared: 0,
+	}, {
+		name:        "этикетка вид не принимает вовсе — своим словарём владеет label_type",
+		line:        `{"section":"label","kind":"other","name":"care label"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL,
+		wantPurpose: unsetPurpose, wantKind: unsetKind, wantCleared: 1,
+	}, {
+		name:        "секции нет — не может быть ни назначения, ни вида",
+		line:        `{"purpose":"main","kind":"button","name":"something"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_UNKNOWN,
+		wantPurpose: unsetPurpose, wantKind: unsetKind, wantCleared: 2,
+	}, {
+		name:        "рулонное назначение на рулонной секции — остаётся",
+		line:        `{"section":"lining","purpose":"lining","name":"cupro"}`,
+		wantSection: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LINING,
+		wantPurpose: pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_LINING,
+		wantKind:    unsetKind, wantCleared: 0,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, stats, err := parseConstructionDraft(`{"bom":[`+tc.line+`]}`, "stop")
+			require.NoError(t, err, "невозможная пара роняет ТОКЕН, а не оплаченный прогон")
+			require.Len(t, got.GetBom(), 1, "строка обязана уцелеть: технологу нужнее строка без токена")
+			require.Equal(t, tc.wantSection, got.GetBom()[0].GetSection())
+			require.Equal(t, tc.wantPurpose, got.GetBom()[0].GetPurpose())
+			require.Equal(t, tc.wantKind, got.GetBom()[0].GetKind())
+			require.Equal(t, tc.wantCleared, stats.PairsCleared,
+				"снятая пара обязана быть ВИДНА в логе: иначе «ответ чистый» врёт")
+		})
+	}
+}
+
+// ПОТОЛКИ СОВПАДАЮТ С КОЛОНКАМИ, И СЧИТАЮТ ОНИ БАЙТЫ.
+//
+// ⚠ ЕДИНИЦЫ — ВЕСЬ СМЫСЛ ПРОБЫ. Сторожа DTO дальше по маршруту меряют `len()`, то есть БАЙТЫ, и
+// колонка меряет байты; потолок в 500 рун пропускал ~85 кириллических рун сверх varchar(255), а у
+// `pantone` (varchar(64), 0363) сторожа не было ВООБЩЕ — приезжал сырой MySQL 1406, не называющий
+// ни строки, ни поля. Поэтому каждый случай ниже кириллический: на латинице дефект невидим.
+func TestParseConstructionDraftCapsEveryValueByItsColumn(t *testing.T) {
+	long := strings.Repeat("я", 400) // 400 рун = 800 байт
+	raw := `{"aspects":[{"key":"` + long + `","text":"текст"}],
+	  "callouts":[{"feature":"` + long + `","details":"ок","dimensions":"` + long + `"}],
+	  "bom":[{"section":"fabric","name":"` + long + `","composition":"` + long + `",
+	          "colour":"` + long + `","pantone":"` + long + `"}]}`
+
+	got, stats, err := parseConstructionDraft(raw, "stop")
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		field    string
+		value    string
+		maxBytes int
+	}{
+		{"aspects[0].key → tech_card_detail.detail_key varchar(64)", got.GetAspects()[0].GetKey(), designConstructionMaxVarchar64},
+		{"callouts[0].feature → tech_card_callout.part varchar(255)", got.GetCallouts()[0].GetFeature(), designConstructionMaxVarchar255},
+		{"callouts[0].dimensions → varchar(255)", got.GetCallouts()[0].GetDimensions(), designConstructionMaxVarchar255},
+		{"bom[0].name → varchar(255)", got.GetBom()[0].GetName(), designConstructionMaxVarchar255},
+		{"bom[0].composition → varchar(255)", got.GetBom()[0].GetComposition(), designConstructionMaxVarchar255},
+		{"bom[0].colour → color varchar(255)", got.GetBom()[0].GetColour(), designConstructionMaxVarchar255},
+		{"bom[0].pantone → varchar(64) (0363)", got.GetBom()[0].GetPantone(), designConstructionMaxVarchar64},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			require.LessOrEqual(t, len(tc.value), tc.maxBytes,
+				"%s: %d БАЙТ при потолке %d — сторож DTO меряет len(), и это отказ в сохранении ВСЕЙ карточки",
+				tc.field, len(tc.value), tc.maxBytes)
+			require.True(t, utf8.ValidString(tc.value),
+				"резать посреди руны — это MySQL 1366 вместо обрезанного слова")
+			require.NotEmpty(t, tc.value, "обрезка не имеет права съедать значение целиком")
+		})
+	}
+	require.Positive(t, stats.Truncated, "обрезка обязана быть видна в логе")
+
+	// ⚠ ПОЛЯ КОЛОНКИ TEXT ОСТАЮТСЯ ПОД ПОТОЛКОМ РУН: там ограничение смысловое, а не про колонку.
+	longer, _, err := parseConstructionDraft(
+		`{"silhouette":"`+strings.Repeat("я", designConstructionMaxLongRunes+50)+`"}`, "stop")
+	require.NoError(t, err)
+	require.Equal(t, designConstructionMaxLongRunes, utf8.RuneCountInString(longer.GetSilhouette()))
+}
+
+// НЕСКАЛЯР НА МЕСТЕ СКАЛЯРА — ЭТО ПУСТО, А НЕ ЗНАЧЕНИЕ СО СКОБКАМИ.
+//
+// Прежняя ветка «что-то ещё скалярное — берётся как написано» брала ЛЮБОЙ токен байтами, и
+// технологу предлагалось вписать в поле силуэта строку `{"top":"tank","bottom":"none"}`.
+// Статистика при этом была нулевой, а лог — Info, то есть «ответ чистый».
+func TestParseConstructionDraftRefusesToQuoteObjectsAsValues(t *testing.T) {
+	got, stats, err := parseConstructionDraft(`{
+	  "silhouette": {"top":"tank","bottom":"none"},
+	  "fabric": ["jersey","rib"],
+	  "aspects": [{"key":"collar","text":{"a":1}}],
+	  "bom": [{"section":"fabric","name":"main cloth","colour":{"hex":"#000"}}]
+	}`, "stop")
+	require.NoError(t, err, "форма ответа цела — ронять оплаченный прогон не за что")
+	require.Empty(t, got.GetSilhouette(), "объект — не текст, который человек согласится вписать")
+	require.Empty(t, got.GetFabric())
+	require.Empty(t, got.GetAspects(), "аспект без текста не строка")
+	require.Len(t, got.GetBom(), 1)
+	require.Empty(t, got.GetBom()[0].GetColour())
+	require.Equal(t, 4, stats.NonScalars,
+		"«модель отвечает объектами» — это факт про промпт, и узнать его можно только из лога")
+}
+
+// ИДЕАЛЬНО ОФОРМЛЕННЫЙ ОТВЕТ СО ВСЕМИ null — НЕ `invalid_output`, А ЗАКОННЫЙ ПУСТОЙ ЧЕРНОВИК.
+//
+// ⚠ ЭТО ПРО ДЕНЬГИ: такой ответ ронял ВЕСЬ оплаченный прогон. Присутствие ключа спрашивается у
+// карты сырых кусков, а не у указателя после разбора, — json.Unmarshal кладёт nil в указатель и на
+// `null`, схлопывая «ключ не написан» с «ключ написан пустым».
+func TestParseConstructionDraftAcceptsAnAllNullAnswerAndDropsOnlyBrokenFields(t *testing.T) {
+	t.Run("все ключи есть, все null", func(t *testing.T) {
+		got, _, err := parseConstructionDraft(`{"silhouette":null,"fabric":null,"fit":null,
+		  "concept":null,"aspects":null,"callouts":null,"bom":null,"missing":["the cuff"]}`, "stop")
+		require.NoError(t, err, "«тут ничего» — обычный способ модели ответить, и он оплачен")
+		require.Empty(t, got.GetSilhouette())
+		require.Equal(t, []string{"the cuff"}, got.GetMissing())
+	})
+
+	t.Run("несовпадение типа роняет ПОЛЕ, а не оплаченный ответ", func(t *testing.T) {
+		got, stats, err := parseConstructionDraft(`{
+		  "silhouette":"boxy", "aspects":"none",
+		  "bom":[{"section":"fabric","name":"main cloth"}, "not a line",
+		         {"section":"hardware","kind":"button","name":"front button"}]}`, "stop")
+		require.NoError(t, err)
+		require.Equal(t, "boxy", got.GetSilhouette(), "шесть целых полей не уезжают за одно кривое")
+		require.Empty(t, got.GetAspects())
+		require.Len(t, got.GetBom(), 2, "одна кривая строка спеки не уносит соседние")
+		require.Equal(t, 2, stats.FieldsDropped)
+	})
+
+	t.Run("ни одного из семи ключей — по-прежнему отказ", func(t *testing.T) {
+		_, _, err := parseConstructionDraft(`{"missing":["the cuff"]}`, "stop")
+		require.Error(t, err, "ответ из одного совета не отвечает на заданный вопрос")
+	})
+}
+
+// СТРОГОЕ ЧТЕНИЕ СОХРАНЁННОЙ СТРОКИ: ПРОЗА С ФИГУРНЫМИ СКОБКАМИ — НЕ ЧЕРНОВИК.
+//
+// Живой ответ модели терпит ограду и прозу вокруг объекта (так же, как разбор тех-карты), и это
+// правильно. Здесь читается НАШ СОБСТВЕННЫЙ канонический JSON, всегда объект целиком, — а прежняя
+// терпимость превращала прозаический прогон в выдуманное предложение, которого никто не делал.
+func TestConstructionDraftFromRunRefusesProseThatMerelyContainsBraces(t *testing.T) {
+	for _, prose := range []string{
+		`Use a {"fabric": "jersey"} weight.`,
+		"DESCRIPTION\nA boxy coat.\n```json\n{\"fabric\":\"melton\"}\n```",
+		`  {"fabric":"melton"} and then some prose`,
+	} {
+		require.Nil(t, designConstructionDraftFromRun(prose),
+			"на прогоне, который структурного ответа не просил, предложение выдумывать нечем: %q", prose)
+	}
+	// Положительный контроль: наш собственный канонический JSON читается.
+	canonical, err := designMarshalConstructionDraft(&pb_common.DesignConstructionDraft{Fabric: "melton"})
+	require.NoError(t, err)
+	require.NotNil(t, designConstructionDraftFromRun("  "+string(canonical)+"\n"))
+}
+
+// СЧЁТЧИК САМОДЕЛЬНЫХ КЛЮЧЕЙ СЧИТАЕТ ПРИНЯТЫЕ СТРОКИ, А НЕ УВИДЕННЫЕ.
+//
+// Он стоял выше дедупа и потолка и печатал 40 там, где технологу предложено 10, — лог отвечал на
+// вопрос, которого никто не задавал.
+func TestParseConstructionDraftCountsOnlyTheCustomAspectsItKept(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"aspects":[`)
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"key":"custom%d","text":"t"}`, i)
+	}
+	b.WriteString(`]}`)
+
+	got, stats, err := parseConstructionDraft(b.String(), "stop")
+	require.NoError(t, err)
+	require.Len(t, got.GetAspects(), designConstructionMaxAspects)
+	require.Equal(t, designConstructionMaxAspects, stats.AspectsCustom,
+		"счётчик обязан называть число ПРЕДЛОЖЕННЫХ строк")
+	require.Equal(t, 30, stats.OverLimit)
+}
+
+// СЕКЦИЯ «УЖЕ НА КАРТОЧКЕ» ИМЕЕТ ПОТОЛОК, И ОБРЕЗКА НАЗЫВАЕТ СЕБЯ ВСЛУХ.
+//
+// Цикл обходил ВСЕ детали, выноски и строки спеки без предела: карточка со ста выносками и
+// шестьюдесятью строками спеки добавляла десятки килобайт (~15k входных токенов, ≈$0.045) к
+// КАЖДОМУ нажатию — невидимо для оценки, которая считает одни картинки.
+func TestConstructionUserPromptCapsWhatTheCardAlreadySays(t *testing.T) {
+	card := &entity.TechCard{}
+	card.Name = "a very talkative card"
+	for i := 0; i < 100; i++ {
+		card.Details = append(card.Details, entity.TechCardDetail{
+			Key:  sql.NullString{String: fmt.Sprintf("aspect%d", i), Valid: true},
+			Text: sql.NullString{String: strings.Repeat("подробность ", 200), Valid: true},
+		})
+		card.Callouts = append(card.Callouts, entity.TechCardCallout{
+			Number: i + 1,
+			Part:   sql.NullString{String: strings.Repeat("узел ", 200), Valid: true},
+		})
+		card.BomItems = append(card.BomItems, entity.TechCardBomItem{
+			Section: entity.BomSectionFabric,
+			Name:    strings.Repeat("материал ", 200),
+		})
+	}
+
+	already := designCardAlreadySays(card)
+	require.LessOrEqual(t, len(already), designConstructionMaxAlreadyBytes+512,
+		"секция «уже на карточке» — входные токены КАЖДОГО нажатия: %d байт", len(already))
+	require.Contains(t, already, "more aspects on the card, not listed",
+		"молча показав половину, мы велели бы модели молчать о том, чего не показали")
+	require.Contains(t, already, "not listed")
+	t.Logf("100+100+100 громких строк карточки ужались до %d байт", len(already))
+
+	// Положительный контроль: короткая карточка по-прежнему едет ЦЕЛИКОМ и без хвостов.
+	small := &entity.TechCard{}
+	small.Details = []entity.TechCardDetail{{
+		Key: sql.NullString{String: "collar", Valid: true}, Text: sql.NullString{String: "notch", Valid: true},
+	}}
+	quiet := designCardAlreadySays(small)
+	require.Equal(t, "- collar: notch\n", quiet)
+}
+
+// СТОРОЖ ПУСТОТЫ СПРАШИВАЕТ ТО, ЧТО ДОЕДЕТ ДО МОДЕЛИ, А НЕ ТО, ЧТО ЛЕЖИТ НА ДОСКЕ.
+//
+// Снимок бывает НЕПУСТЫМ от одной только выноски, а сборка промпта выбрасывает выноску, чья
+// картинка не уехала. Доска из трёх плиток с удалёнными медиа и записками на них проходила дверь и
+// покупала вызов, чей промпт — две строки шапки.
+func TestDraftDesignIdeaRefusesABoardWhoseWordsTravelWithPicturesThatDidNot(t *testing.T) {
+	card := &entity.TechCard{}
+	card.Name = "a board of ghosts with notes"
+	card.Media = []entity.TechCardMediaItem{
+		{MediaId: designBoardMediaID, Category: entity.TechCardMediaCategoryMoodboard},
+	}
+	// Записки есть — но они приколоты к картинке, чьей строки медиа больше нет.
+	card.Callouts = []entity.TechCardCallout{{
+		Number:      1,
+		Description: sql.NullString{String: "the shoulder seam", Valid: true},
+		MediaId:     sql.NullInt32{Int32: designBoardMediaID, Valid: true},
+	}}
+
+	repo := mocks.NewMockRepository(t)
+	cards := mocks.NewMockTechCards(t)
+	design := mocks.NewMockDesign(t)
+	media := mocks.NewMockMedia(t)
+	repo.EXPECT().TechCards().Return(cards).Maybe()
+	repo.EXPECT().Design().Return(design).Maybe()
+	repo.EXPECT().Media().Return(media).Maybe()
+	designStubNoDisplayOnly(design)
+	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Once()
+	media.EXPECT().GetMediaByIds(mock.Anything, []int{designBoardMediaID}).
+		Return(map[int]entity.MediaFull{}, nil).Once()
+	// СТЕНД БЕЗ ЕДИНОГО ОЖИДАНИЯ StartRun — отказ обязан прийти ДО денег, и строгий мок это меряет.
+	srv := &Server{
+		repo: repo, designGenerationEnabled: true,
+		aiOps: openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"}),
+	}
+
+	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.Error(t, err, "промпт из двух строк шапки — платный вызов ни о чём")
+	code, _ := errorReason(t, err)
+	require.Equal(t, codes.FailedPrecondition, code)
+	require.Contains(t, err.Error(), "there is nothing to read")
 }

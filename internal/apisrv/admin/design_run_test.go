@@ -770,6 +770,10 @@ func TestDesignAssembleInputsRefusesTooManyReferences(t *testing.T) {
 type draftIdeaStub struct {
 	srv  *httptest.Server
 	body string
+	// raw — ВЕСЬ КОНВЕРТ ОТВЕТА ДОСЛОВНО, когда пробе нужен не только текст: finish_reason и
+	// usage живут рядом с содержимым, и исход «потолок съеден, ответа ноль» без них невыразим.
+	// Пустая строка — обычный конверт из `answer`.
+	raw string
 }
 
 // imageURLs — адреса, ушедшие на провод ОТДЕЛЬНЫМИ частями `image_url`, в порядке отправки.
@@ -835,6 +839,10 @@ func newDraftIdeaStub(t *testing.T, status int, answer string) *draftIdeaStub {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		if status == http.StatusOK {
+			if stub.raw != "" {
+				_, _ = w.Write([]byte(stub.raw))
+				return
+			}
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(answer) + `}}]}`))
 			return
 		}

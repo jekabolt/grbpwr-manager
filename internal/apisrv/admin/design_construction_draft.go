@@ -46,6 +46,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -66,12 +68,31 @@ const (
 	// designConstructionMaxTextRunes — потолок остальных строк: аспект, выноска, строка спеки,
 	// «что стоит приколоть». Это ОДНА мысль на строку, а не абзац.
 	designConstructionMaxTextRunes = 500
-	// designConstructionMaxKeyRunes — потолок САМОДЕЛЬНОГО ключа аспекта: колонка detail_key —
-	// varchar(64), и ключ длиннее не сохранился бы.
-	designConstructionMaxKeyRunes = 64
+	// ─── ПОТОЛКИ КОЛОНОК. СЧИТАЮТСЯ БАЙТЫ, А НЕ РУНЫ, И ЭТО НЕ ПЕДАНТИЗМ ───
+	//
+	// ⚠ РЕВЬЮ КРУГА 19: ШЕСТЬ ПОЛЕЙ ЕХАЛИ С ПОТОЛКОМ 500 РУН В КОЛОНКИ VARCHAR(255), А PANTONE — БЕЗ
+	// ПОТОЛКА ВОВСЕ В VARCHAR(64) (0363). Дальше по маршруту стоят сторожа DTO, и они меряют `len()`,
+	// то есть БАЙТЫ: ~85 рун кириллицы уже не влезают в 255. Промах любого из них — не «поле
+	// обрезалось», а ОТКАЗ В СОХРАНЕНИИ ВСЕЙ КАРТОЧКИ (UpsertTechCard — всё-или-ничего), либо, у
+	// pantone, сырой MySQL 1406, не называющий ни строки, ни поля. Поэтому предложение режется ПО
+	// НАЗНАЧЕНИЮ и В ТЕХ ЖЕ ЕДИНИЦАХ, в которых считает сторож.
+	//
+	// ⚠ ПОТОЛОК РУН ОСТАЁТСЯ ТАМ, ГДЕ КОЛОНКА TEXT (описание выноски, тексты аспектов, «что стоит
+	// приколоть»): там ограничение смысловое — «одна мысль на строку», — а не про размер колонки.
+	designConstructionMaxVarchar255 = 255 // bom.name/colour/composition, callout.part, callout.dimensions
+	designConstructionMaxVarchar64  = 64  // bom.pantone (0363) и detail_key самодельного аспекта
 
 	// Потолки списков. Не вкус: предложение, которое человек обязан просмотреть по строкам, за
 	// этими числами перестаёт быть предложением и становится работой.
+	// ─── ПОТОЛКИ СЕКЦИИ «УЖЕ НА КАРТОЧКЕ» (входные токены КАЖДОГО нажатия) ───
+	//
+	// Числа взяты у соседа по смыслу, а не по величине: строка карточки читается моделью ради
+	// одного — «этого не предлагай», — и для этого хватает начала строки и первых двух десятков
+	// строк каждого списка. Байтовый потолок — последнее слово: он держит СУММУ трёх списков.
+	designConstructionMaxAlreadyRows      = 20
+	designConstructionMaxAlreadyLineRunes = 200
+	designConstructionMaxAlreadyBytes     = 8 << 10 // 8 KiB на всю секцию
+
 	designConstructionMaxAspects  = 10
 	designConstructionMaxCallouts = 15
 	designConstructionMaxBom      = 15
@@ -83,12 +104,42 @@ const (
 // поставщика, не разбирая английскую прозу, а история прогонов — по колонке.
 const designConstructionReasonInvalidOutput = "invalid_output"
 
+// designReasonBudgetExhausted — «модель истратила весь бюджет ответа и не ответила».
+//
+// ⚠ ТРЕТИЙ КОД РЯДОМ С ДВУМЯ, А НЕ СИНОНИМ ОДНОГО ИЗ НИХ. `provider_error` значит «ответа не было»
+// (транспорт, 404, неверная настройка), `invalid_output` — «ответ был, и он не той формы». Здесь
+// ответ БЫЛ, он пуст, детерминирован и ОПЛАЧЕН токенами завершения; чинит его не дежурный и не
+// промпт, а потолок вместе с выключенным мышлением. Слив его в «поставщик падает», мы получили бы
+// график аварии там, где мал наш собственный потолок.
+const designReasonBudgetExhausted = "budget_exhausted"
+
+// designReasonShapeMismatch — тот же client_request_id пришёл с ПРОТИВОПОЛОЖНЫМ флагом формы.
+// Флаг в ключ идемпотентности не входит (он не свойство прогона, а свойство нажатия), поэтому
+// расхождение ловится сверкой с уже сохранённой строкой — ровно как расхождение по колорвею.
+const designReasonShapeMismatch = "shape_mismatch"
+
 const (
 	// Две прозы на два РАЗНЫХ исхода, и различие несущее: первый чинится повтором, второй —
 	// уменьшением доски или описания. Одна фраза на оба отправила бы человека жать ту же кнопку
 	// до тех пор, пока он не бросит.
 	designConstructionShapeRefusalMsg = "the model did not answer in the shape asked for — draft again"
 	designConstructionCutRefusalMsg   = "the answer was cut off — fewer pictures or a shorter description, then draft again"
+	// ТРЕТЬЯ ПРОЗА НА ТРЕТИЙ ИСХОД: бюджет ответа истрачен целиком, а ответа нет. Чинится тем же
+	// жестом, что и обрезанный ответ, — доска поменьше, — но исход другой и путать их нельзя.
+	designConstructionBudgetRefusalMsg = "the model used up the whole answer budget without answering — fewer pictures or a shorter description, then draft again"
+
+	// ─── ПРОЗА ПОВТОРА: ПРОГОН УЖЕ ОТВЕЧЕН, И ОТВЕЧЕН ОН ПРОВАЛОМ ───
+	//
+	// Все три говорят одно и то же действие — НОВОЕ нажатие, — потому что повторить прогон под тем
+	// же ключом идемпотентности нельзя: вторая платная попытка под одним ключом сломала бы
+	// единственное, ради чего ключ существует.
+	designConstructionReplayShapeMsg  = "this draft already failed: the model did not answer in the shape asked for — press draft again to start a new one"
+	designConstructionReplayBudgetMsg = "this draft already failed: the model used up the whole answer budget without answering — press draft again to start a new one"
+	designDraftReplayFailedMsg        = "this draft already failed — press draft again to start a new one"
+
+	// ФОРМА ОТВЕТА ПРИБИТА К ПРОГОНУ, А НЕ К НАЖАТИЮ: прогон отвечен один раз и навсегда в той
+	// форме, в какой был отвечен.
+	designConstructionShapeMismatchMsg = "this request has already been answered in the other form — press draft again to start a new one"
 )
 
 // designConstructionAspectKeys — СТАНДАРТНЫЕ КЛЮЧИ АСПЕКТОВ, В ПОРЯДКЕ РЕДАКТОРА.
@@ -374,19 +425,63 @@ func designSizeRunLine(card *entity.TechCard) string {
 //
 // Пустая строка, когда карточка не говорит ничего: секция «не повторяй то, чего нет» — это
 // инструкция ни о чём, и она стоила бы входных токенов на каждом нажатии.
+//
+// ⚠ У СЕКЦИИ ЕСТЬ ПОТОЛОК, И ОН НЕ ВКУС, А ДЕНЬГИ. Ревью круга 19: цикл обходил ВСЕ `card.Details`
+// (колонка TEXT), ВСЕ неприколотые выноски и ВСЕ строки спецификации без единого предела. Карточка
+// со ста выносками и шестьюдесятью строками спеки добавляет десятки килобайт (~15k входных токенов,
+// ≈$0.045) к КАЖДОМУ нажатию — и невидимо для оценки, которая считает одни картинки. Соседний
+// платный путь (techcardanalysis/context.go, promptField) держит «единственные ворота, через
+// которые проходит каждая строка карточки»; здесь ворот не было ни одних.
+//
+// ТРИ ПРЕДЕЛА, И КАЖДЫЙ ОТВЕЧАЕТ НА СВОЙ ВОПРОС:
+//   - СТРОКА — потолок рун на строку: одна строка не имеет права съесть секцию целиком;
+//   - СПИСОК — потолок строк на список: сто выносок читаются не лучше двадцати;
+//   - СЕКЦИЯ — потолок БАЙТОВ на всё: три списка вместе не имеют права вырасти без предела, даже
+//     когда каждый по отдельности в своём пределе.
+//
+// ⚠ ОБРЕЗКА НАЗЫВАЕТ СЕБЯ ВСЛУХ. Секция велит модели «не повторяй то, что уже написано»; молча
+// показав её половину, мы велели бы молчать о том, чего не показали, — и получили бы дубликаты
+// именно там, где обещали их не получать. Строка «(+N more … not listed)» стоит десяток байт и
+// делает список ЧЕСТНЫМ вместо ПОЛНОГО.
 func designCardAlreadySays(card *entity.TechCard) string {
 	if card == nil {
 		return ""
 	}
 	var b strings.Builder
+	// budget — общий потолок секции в БАЙТАХ; строки берут из него, пока он не кончится.
+	budget := designConstructionMaxAlreadyBytes
+	write := func(line string) bool {
+		if len(line) > budget {
+			return false
+		}
+		budget -= len(line)
+		b.WriteString(line)
+		return true
+	}
+	// tail печатает пропущенное число, если оно есть. Сам он в бюджет не входит: это НАША строка,
+	// а не строка карточки, и урезать честность ради данных было бы обменом не в ту сторону.
+	tail := func(kind string, skipped int) {
+		if skipped > 0 {
+			b.WriteString("- (+" + strconv.Itoa(skipped) + " more " + kind + " on the card, not listed)\n")
+		}
+	}
+
+	shown, skipped := 0, 0
 	for _, d := range card.Details {
-		key := strings.TrimSpace(d.Key.String)
-		text := designOneLine(d.Text.String)
+		key := aiBoundedText(strings.TrimSpace(d.Key.String), designConstructionMaxVarchar64)
+		text := aiBoundedText(designOneLine(d.Text.String), designConstructionMaxAlreadyLineRunes)
 		if key == "" || text == "" {
 			continue
 		}
-		b.WriteString("- " + key + ": " + text + "\n")
+		if shown >= designConstructionMaxAlreadyRows || !write("- "+key+": "+text+"\n") {
+			skipped++
+			continue
+		}
+		shown++
 	}
+	tail("aspects", skipped)
+
+	shown, skipped = 0, 0
 	for _, c := range card.Callouts {
 		// ВЫНОСКИ ТАБЛИЦЫ, А НЕ ДОСКИ: приколотые на картинки уже уехали секцией 3, и второй раз
 		// они приехали бы как «уже сказано», то есть велели бы модели молчать о том, что она
@@ -394,26 +489,41 @@ func designCardAlreadySays(card *entity.TechCard) string {
 		if c.MediaId.Valid && c.MediaId.Int32 > 0 {
 			continue
 		}
-		line := designOneLine(entity.TechCardCalloutPrintedLine(c))
+		line := aiBoundedText(designOneLine(entity.TechCardCalloutPrintedLine(c)),
+			designConstructionMaxAlreadyLineRunes)
 		if line == "" {
 			continue
 		}
 		if c.Number > 0 {
 			line = "#" + strconv.Itoa(c.Number) + " " + line
 		}
-		b.WriteString("- callout: " + line + "\n")
+		if shown >= designConstructionMaxAlreadyRows || !write("- callout: "+line+"\n") {
+			skipped++
+			continue
+		}
+		shown++
 	}
+	tail("callouts", skipped)
+
+	shown, skipped = 0, 0
 	for _, item := range card.BomItems {
-		name := designOneLine(item.Name)
+		name := aiBoundedText(designOneLine(item.Name), designConstructionMaxAlreadyLineRunes)
 		if name == "" {
 			continue
 		}
 		line := "- bom: " + string(item.Section) + " · " + name
-		if comp := designOneLine(item.Composition.String); comp != "" {
+		if comp := aiBoundedText(designOneLine(item.Composition.String),
+			designConstructionMaxAlreadyLineRunes); comp != "" {
 			line += " · " + comp
 		}
-		b.WriteString(line + "\n")
+		if shown >= designConstructionMaxAlreadyRows || !write(line+"\n") {
+			skipped++
+			continue
+		}
+		shown++
 	}
+	tail("bom lines", skipped)
+
 	return b.String()
 }
 
@@ -433,15 +543,27 @@ type designConstructionStats struct {
 	MissingDropped  int
 	EnumsUnset      int // секция/назначение/вид не узнаны — строка сохранена, токен пуст
 	MaterialIDs     int // предложенный артикул обнулён (каталог не показывали)
-	Truncated       int // строка обрезана потолком рун
+	Truncated       int // строка обрезана потолком (рун — у TEXT, байтов — у VARCHAR)
 	OverLimit       int // строки, не влезшие в потолок списка
 	Deduped         int
+	// PairsCleared — токен, законный сам по себе, но НЕЗАКОННЫЙ В ЭТОЙ ПАРЕ, снят со строки
+	// (назначение не на рулонном, вид не в своей секции). Считается отдельно от EnumsUnset:
+	// «слово не узнано» чинит промпт, «пара невозможна» чинит вопрос, который мы задали.
+	PairsCleared int
+	// NonScalars — на месте скаляра приехал объект или список. Раньше такой токен брался
+	// ДОСЛОВНО, и технологу предлагалось значение `{"top":"tank","bottom":"none"}`.
+	NonScalars int
+	// FieldsDropped — поле (или элемент списка) не разобралось по типу и выброшено ПООДИНОЧКЕ.
+	// До круга 19 любое несовпадение типа роняло json.Unmarshal целиком, то есть весь оплаченный
+	// ответ ради одного «aspects": "none"».
+	FieldsDropped int
 }
 
 // Any говорит, было ли ХОТЬ ЧТО-ТО поправлено: уровень строки лога решается по нему.
 func (s designConstructionStats) Any() bool {
 	return s.AspectsCustom+s.AspectsDropped+s.CalloutsDropped+s.BomDropped+s.MissingDropped+
-		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped > 0
+		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped+
+		s.PairsCleared+s.NonScalars+s.FieldsDropped > 0
 }
 
 // designLoose — строка, принимающая ТРИ формы, в которых модели пишут скаляр: строку, число и
@@ -452,54 +574,109 @@ func (s designConstructionStats) Any() bool {
 // ⚠ ЧИСЛО ЗДЕСЬ НЕ ГИПОТЕТИЧЕСКОЕ: `material_id` в НАШЕМ СОБСТВЕННОМ каноническом JSON — int64,
 // а protojson пишет int64 СТРОКОЙ. Одна и та же величина приезжает числом от модели и строкой с
 // повтора, и жёсткий тип отверг бы ровно один из двух путей.
-type designLoose string
+//
+// ⚠ ОБЪЕКТ И СПИСОК — НЕ СКАЛЯР, И ДОСЛОВНО ОНИ БОЛЬШЕ НЕ БЕРУТСЯ. Ревью круга 19: прежняя ветка
+// «что-то ещё скалярное — берётся как написано» брала ЛЮБОЙ нескалярный токен байтами, и модель,
+// ответившая `"silhouette": {"top":"tank","bottom":"none"}`, предлагала технологу эту строку в
+// поле силуэта — со скобками и кавычками, как значение. Терпимость к форме кончается там, где
+// принятое перестаёт быть текстом, который человек согласится вписать в карточку: такой токен
+// читается как ПУСТО и считается (NonScalars), потому что «модель отвечает объектами» — это факт
+// про промпт, и узнать его можно только из лога.
+type designLoose struct {
+	v string
+	// nonScalar помнит, что на месте скаляра приехала структура. Флаг живёт на значении, а не в
+	// статистике, потому что разбор поля и его подсчёт происходят в разных местах: json.Unmarshal
+	// счётчика не видит, а читающая сторона видит.
+	nonScalar bool
+}
 
 func (l *designLoose) UnmarshalJSON(b []byte) error {
 	trimmed := strings.TrimSpace(string(b))
 	if trimmed == "" || trimmed == "null" {
-		*l = ""
+		*l = designLoose{}
 		return nil
 	}
 	if trimmed[0] == '"' {
-		var s string
-		if err := json.Unmarshal(b, &s); err != nil {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
 			return err
 		}
-		*l = designLoose(s)
+		*l = designLoose{v: str}
 		return nil
 	}
-	// Число, bool или что-то ещё скалярное — берётся как написано.
-	*l = designLoose(trimmed)
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		*l = designLoose{nonScalar: true}
+		return nil
+	}
+	// Число или bool — берётся как написано.
+	*l = designLoose{v: trimmed}
 	return nil
 }
 
-func (l designLoose) String() string { return strings.TrimSpace(string(l)) }
+func (l designLoose) String() string { return strings.TrimSpace(l.v) }
 
-// designRawConstruction — ответ модели ДО коэрции: каждое поле указателем или сырым куском.
-//
-// ⚠ УКАЗАТЕЛИ — ЭТО НЕ СТИЛЬ, А ЕДИНСТВЕННЫЙ СПОСОБ ОТЛИЧИТЬ «КЛЮЧА НЕТ» ОТ «КЛЮЧ ПУСТ». Первое
-// значит «ответ не той формы» (и роняет прогон), второе — «модель посмотрела и ей нечего сказать»
-// (и это законный, полезный ответ). Схлопнув их в пустую строку, разбор принял бы прозу за пустой
-// черновик и предъявил бы человеку четыре пустые группы вместо отказа.
-type designRawConstruction struct {
-	Silhouette *designLoose        `json:"silhouette"`
-	Fabric     *designLoose        `json:"fabric"`
-	Fit        *designLoose        `json:"fit"`
-	Concept    *designLoose        `json:"concept"`
-	Aspects    *[]designRawAspect  `json:"aspects"`
-	Callouts   *[]designRawCallout `json:"callouts"`
-	Bom        *[]designRawBomLine `json:"bom"`
-	Missing    *[]designLoose      `json:"missing"`
+// designTake читает скаляр и СЧИТАЕТ выброшенную структуру. Одна дверь на все чтения: пропустив
+// её в одном месте, мы получили бы поле, про которое лог молчит.
+func designTake(l designLoose, stats *designConstructionStats) string {
+	if l.nonScalar {
+		stats.NonScalars++
+	}
+	return l.String()
 }
 
-// designScalar читает необязательный скаляр: отсутствующий ключ и пустая строка дают одно и то же
-// ЗНАЧЕНИЕ. Разница между ними нужна ровно один раз — при проверке формы — и спрашивается там
-// напрямую у указателя, а не через это чтение.
-func designScalar(p *designLoose) string {
-	if p == nil {
-		return ""
+// ─── КЛЮЧИ ОТВЕТА ───
+
+// designConstructionValueKeys — СЕМЬ КЛЮЧЕЙ, КОТОРЫМ ЕСТЬ КУДА ЛЕЧЬ. Присутствие хотя бы одного из
+// них и есть признак «это ответ по схеме»; `missing` в семёрку не входит намеренно — это читаемый
+// совет, а не значение поля, и ответ из одного совета не отвечает на заданный вопрос.
+var designConstructionValueKeys = []string{
+	"silhouette", "fabric", "fit", "concept", "aspects", "callouts", "bom",
+}
+
+// designField читает ОДИН необязательный ключ, и НЕУДАЧА ОДНОГО КЛЮЧА НЕ РОНЯЕТ ОСТАЛЬНЫЕ.
+//
+// ⚠ ЭТО И ЕСТЬ ПОЧИНКА «ТРЕТЬЕГО ИСХОДА» (ревью круга 19). Разбор шёл одним json.Unmarshal в
+// struct, поэтому ЛЮБОЕ несовпадение типа — `"aspects": "none"`, `"bom": {}` — роняло весь
+// оплаченный ответ, включая шесть полей, которые приехали безупречно. Граница «коэрция против
+// отказа» объявлена по форме ОТВЕТА ЦЕЛИКОМ, а не по форме каждого поля; поле, которое не
+// разобралось, — это ровно та строка, которую разбор и обязан выбросить поодиночке.
+func designField[T any](fields map[string]json.RawMessage, key string, stats *designConstructionStats) T {
+	var out T
+	raw, ok := fields[key]
+	if !ok {
+		return out
 	}
-	return p.String()
+	if err := json.Unmarshal(raw, &out); err != nil {
+		stats.FieldsDropped++
+		var zero T
+		return zero
+	}
+	return out
+}
+
+// designListField — то же для списка, и ПОЭЛЕМЕНТНО: одна кривая строка спеки не уносит с собой
+// четырнадцать целых. Отсутствующий ключ, `null` и пустой список читаются одинаково — «нечего
+// перебирать»; отличать их нужно ровно в одном месте (проверка формы), и оно стоит выше.
+func designListField[T any](fields map[string]json.RawMessage, key string, stats *designConstructionStats) []T {
+	raw, ok := fields[key]
+	if !ok {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		stats.FieldsDropped++
+		return nil
+	}
+	out := make([]T, 0, len(items))
+	for _, it := range items {
+		var v T
+		if err := json.Unmarshal(it, &v); err != nil {
+			stats.FieldsDropped++
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 type designRawAspect struct {
@@ -538,10 +715,14 @@ type designRawBomLine struct {
 // ⚠ ДВА ИСХОДА, КОТОРЫЕ РОНЯЮТ ВЕСЬ ОТВЕТ, И БОЛЬШЕ НИКАКИХ:
 //  1. finish_reason == "length" — ответ обрезан потолком токенов. Половина черновика неотличима
 //     от полного: человек увидел бы четыре группы и решил, что остального модель не заметила.
-//  2. в теле нет JSON-объекта, или в объекте нет НИ ОДНОГО из семи ключей, которым есть куда
-//     лечь. Это ответ не по схеме; принять его значило бы показать пустое предложение как
-//     полноценный ответ. `missing` в эту семёрку не входит намеренно: это читаемый совет, а не
-//     значение поля, и ответ из одного совета не отвечает на заданный вопрос.
+//  2. в теле нет JSON-объекта, или в объекте НЕТ НИ ОДНОГО из семи ключей, которым есть куда лечь.
+//
+// ⚠ «КЛЮЧ ЕСТЬ» СПРАШИВАЕТСЯ У КАРТЫ КЛЮЧЕЙ, А НЕ У УКАЗАТЕЛЯ ПОСЛЕ РАЗБОРА, И ЭТО ПОЧИНКА, А НЕ
+// СТИЛЬ. Раньше присутствие ключа читалось по «указатель не nil», но json.Unmarshal кладёт nil в
+// указатель и на `"silhouette": null` — то есть ИДЕАЛЬНО ОФОРМЛЕННЫЙ ответ, где модель обычным для
+// себя способом сказала «тут ничего», уходил в `invalid_output` ОПЛАЧЕННЫМ. Карта сырых кусков
+// отвечает на вопрос, который здесь и задаётся: КЛЮЧ НАПИСАН ИЛИ НЕТ. «Написан и пуст» — законный
+// и полезный ответ, «не написан вовсе» — не наша форма.
 func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstructionDraft, designConstructionStats, error) {
 	var stats designConstructionStats
 
@@ -553,40 +734,57 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 	if js == "" {
 		return nil, stats, fmt.Errorf("no JSON object in the model output (%q)", aiBoundedText(raw, 200))
 	}
-	var in designRawConstruction
-	if err := json.Unmarshal([]byte(js), &in); err != nil {
-		return nil, stats, fmt.Errorf("the model output is not a construction draft: %v", err)
+	out, err := designParseConstructionObject(js, &stats)
+	return out, stats, err
+}
+
+// designParseConstructionObject — разбор УЖЕ ВЫДЕЛЕННОГО объекта. Отдельная функция ради второго
+// входа: повтор читает НАШ СОБСТВЕННЫЙ канонический JSON и не имеет права терпеть вокруг него прозу
+// (см. designConstructionDraftFromRun), а живой ответ модели — обязан.
+func designParseConstructionObject(js string, stats *designConstructionStats) (*pb_common.DesignConstructionDraft, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(js), &fields); err != nil {
+		return nil, fmt.Errorf("the model output is not a construction draft: %v", err)
 	}
-	if in.Silhouette == nil && in.Fabric == nil && in.Fit == nil && in.Concept == nil &&
-		in.Aspects == nil && in.Callouts == nil && in.Bom == nil {
-		return nil, stats, fmt.Errorf("the model output carries none of the construction draft keys")
+	found := false
+	for _, k := range designConstructionValueKeys {
+		if _, ok := fields[k]; ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("the model output carries none of the construction draft keys")
 	}
 
 	out := &pb_common.DesignConstructionDraft{
-		Silhouette: designBounded(designScalar(in.Silhouette), designConstructionMaxLongRunes, &stats),
-		Fabric:     designBounded(designScalar(in.Fabric), designConstructionMaxLongRunes, &stats),
-		Concept:    designBounded(designScalar(in.Concept), designConstructionMaxLongRunes, &stats),
-		Fit:        designConstructionFitByFold[designFoldToken(designScalar(in.Fit))],
+		Silhouette: designBoundedRunes(designScalarField(fields, "silhouette", stats), designConstructionMaxLongRunes, stats),
+		Fabric:     designBoundedRunes(designScalarField(fields, "fabric", stats), designConstructionMaxLongRunes, stats),
+		Concept:    designBoundedRunes(designScalarField(fields, "concept", stats), designConstructionMaxLongRunes, stats),
+		Fit:        designConstructionFitByFold[designFoldToken(designScalarField(fields, "fit", stats))],
 	}
 
 	// ─── АСПЕКТЫ ───
 	seenAspect := make(map[string]struct{})
-	for _, a := range designDeref(in.Aspects) {
-		key := a.Key.String()
-		text := designBounded(a.Text.String(), designConstructionMaxTextRunes, &stats)
+	for _, a := range designListField[designRawAspect](fields, "aspects", stats) {
+		key := designTake(a.Key, stats)
+		text := designBoundedRunes(designTake(a.Text, stats), designConstructionMaxTextRunes, stats)
 		if key == "" || text == "" {
 			stats.AspectsDropped++
 			continue
 		}
 		fold := designFoldToken(key)
+		custom := false
 		if canon, ok := designConstructionAspectByFold[fold]; ok {
 			key = canon
 		} else {
 			// САМОДЕЛЬНЫЙ КЛЮЧ ПРИНИМАЕТСЯ, А НЕ ОТВЕРГАЕТСЯ: редактор аспектов принимает такие
 			// от человека, и запрет ровно того же от модели был бы правилом про автора, а не
-			// про данные. Обрезается по колонке, иначе строка не сохранилась бы.
-			key = aiBoundedText(key, designConstructionMaxKeyRunes)
-			stats.AspectsCustom++
+			// про данные. Обрезается ПО БАЙТАМ КОЛОНКИ (detail_key varchar(64)) — потолок в
+			// рунах пропускал бы 64 кириллические руны, то есть 128 байт, и MySQL ответил бы
+			// сырым 1406.
+			key = designBoundedBytes(key, designConstructionMaxVarchar64, stats)
+			custom = true
 		}
 		if _, dup := seenAspect[fold]; dup {
 			stats.Deduped++
@@ -597,15 +795,23 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 			stats.OverLimit++
 			continue
 		}
+		// ⚠ СЧИТАЕТСЯ ПРИНЯТАЯ СТРОКА, А НЕ УВИДЕННАЯ. До круга 19 счётчик стоял выше дедупа и
+		// потолка и печатал 40 там, где технологу предложено 10, — то есть лог отвечал на вопрос,
+		// которого никто не задавал.
+		if custom {
+			stats.AspectsCustom++
+		}
 		out.Aspects = append(out.Aspects, &pb_common.DesignConstructionAspect{Key: key, Text: text})
 	}
 
 	// ─── ВЫНОСКИ ───
 	seenCallout := make(map[string]struct{})
-	for _, c := range designDeref(in.Callouts) {
-		feature := designBounded(c.Feature.String(), designConstructionMaxTextRunes, &stats)
-		details := designBounded(c.Details.String(), designConstructionMaxTextRunes, &stats)
-		dims := designBounded(c.Dimensions.String(), designConstructionMaxTextRunes, &stats)
+	for _, c := range designListField[designRawCallout](fields, "callouts", stats) {
+		// `feature` уезжает в tech_card_callout.part (varchar(255)), `dimensions` — в одноимённую
+		// varchar(255); описание — в TEXT, и там потолок смысловой.
+		feature := designBoundedBytes(designTake(c.Feature, stats), designConstructionMaxVarchar255, stats)
+		details := designBoundedRunes(designTake(c.Details, stats), designConstructionMaxTextRunes, stats)
+		dims := designBoundedBytes(designTake(c.Dimensions, stats), designConstructionMaxVarchar255, stats)
 		if feature == "" && details == "" {
 			// РАЗМЕР БЕЗ СЛОВ — НЕ СТРОКА. «12 мм» без того, ЧТО двенадцать миллиметров, нельзя
 			// ни принять, ни осмысленно отвергнуть.
@@ -629,8 +835,8 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 
 	// ─── СПЕЦИФИКАЦИЯ ───
 	seenBom := make(map[string]struct{})
-	for _, l := range designDeref(in.Bom) {
-		name := designBounded(l.Name.String(), designConstructionMaxTextRunes, &stats)
+	for _, l := range designListField[designRawBomLine](fields, "bom", stats) {
+		name := designBoundedBytes(designTake(l.Name, stats), designConstructionMaxVarchar255, stats)
 		if name == "" {
 			// СТРОКА СПЕКИ БЕЗ ИМЕНИ НЕ СОХРАНЯЕТСЯ ВОВСЕ (свободная строка обязана нести имя),
 			// поэтому её нечего и предлагать.
@@ -647,24 +853,30 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 			stats.OverLimit++
 			continue
 		}
-		colour := l.Colour.String()
+		colour := designTake(l.Colour, stats)
 		if colour == "" {
-			colour = l.ColorUS.String()
+			colour = designTake(l.ColorUS, stats)
 		}
+		section := designBomEnum(designTake(l.Section, stats), designBomSectionByFold, stats)
+		purpose := designBomEnum(designTake(l.Purpose, stats), designBomPurposeByFold, stats)
+		kind := designBomEnum(designTake(l.Kind, stats), designBomKindByFold, stats)
+		purpose, kind = designPairBomTokens(section, purpose, kind, stats)
 		line := &pb_common.DesignConstructionBomLine{
 			Name:        name,
-			Composition: designBounded(l.Composition.String(), designConstructionMaxTextRunes, &stats),
-			Colour:      designBounded(colour, designConstructionMaxTextRunes, &stats),
-			Pantone:     designBounded(l.Pantone.String(), designConstructionMaxTextRunes, &stats),
-			Section:     designBomEnum(l.Section.String(), designBomSectionByFold, &stats),
-			Purpose:     designBomEnum(l.Purpose.String(), designBomPurposeByFold, &stats),
-			Kind:        designBomEnum(l.Kind.String(), designBomKindByFold, &stats),
+			Composition: designBoundedBytes(designTake(l.Composition, stats), designConstructionMaxVarchar255, stats),
+			Colour:      designBoundedBytes(colour, designConstructionMaxVarchar255, stats),
+			// PANTONE — varchar(64) (0363), и СВОЕГО СТОРОЖА В DTO У НЕГО НЕТ ВОВСЕ: длинная
+			// строка доезжала бы до MySQL и возвращалась сырым 1406, не назвав ни строки, ни поля.
+			Pantone: designBoundedBytes(designTake(l.Pantone, stats), designConstructionMaxVarchar64, stats),
+			Section: section,
+			Purpose: purpose,
+			Kind:    kind,
 		}
 		// ⚠ АРТИКУЛ ОБНУЛЯЕТСЯ ВСЕГДА, И ЭТО ФАЗА, А НЕ ЗАБЫВЧИВОСТЬ: каталог в промпт не уезжает
 		// (фаза 4), значит подтвердить предложенный id нечем. Строка, выглядящая связанной и
 		// оценённой, но указывающая на чужой артикул, — ошибка себестоимости с ценником; строка
 		// без связи — законная и полезная строка спеки.
-		if v := l.MaterialID.String(); v != "" && v != "0" {
+		if v := designTake(l.MaterialID, stats); v != "" && v != "0" {
 			stats.MaterialIDs++
 		}
 		out.Bom = append(out.Bom, line)
@@ -672,8 +884,8 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 
 	// ─── ЧТО СТОИТ ПРИКОЛОТЬ ───
 	seenMissing := make(map[string]struct{})
-	for _, m := range designDeref(in.Missing) {
-		text := designBounded(m.String(), designConstructionMaxTextRunes, &stats)
+	for _, m := range designListField[designLoose](fields, "missing", stats) {
+		text := designBoundedRunes(designTake(m, stats), designConstructionMaxTextRunes, stats)
 		if text == "" {
 			stats.MissingDropped++
 			continue
@@ -691,27 +903,113 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 		out.Missing = append(out.Missing, text)
 	}
 
-	return out, stats, nil
+	return out, nil
 }
 
-// designDeref разворачивает необязательный список: отсутствующий и пустой читаются одинаково —
-// как «нечего перебирать». Отличать их нужно ровно в одном месте (проверка формы выше), и оно
-// стоит до этого вызова.
-func designDeref[T any](p *[]T) []T {
-	if p == nil {
-		return nil
+// designScalarField — один скалярный ключ ответа: прочитан, посчитан, отдан строкой. Отсутствующий
+// ключ и пустая строка дают одно и то же ЗНАЧЕНИЕ; разница между ними нужна ровно один раз — при
+// проверке формы — и спрашивается там у карты ключей.
+func designScalarField(fields map[string]json.RawMessage, key string, stats *designConstructionStats) string {
+	return designTake(designField[designLoose](fields, key, stats), stats)
+}
+
+// designPairBomTokens СНИМАЕТ СО СТРОКИ ТОКЕН, ЗАКОННЫЙ САМ ПО СЕБЕ И НЕВОЗМОЖНЫЙ В ЭТОЙ ПАРЕ.
+//
+// ⚠ РАДИУС ПОРАЖЕНИЯ ЗДЕСЬ — ВСЯ КАРТОЧКА, И ИМЕННО ПОЭТОМУ ЭТО ЧИНИТСЯ В РАЗБОРЕ. Разбор клал
+// section / purpose / kind независимо друг от друга, и `{"section":"hardware","purpose":"main",
+// "kind":"button"}` проходил: каждый токен есть в своём словаре. Сохранение же требует ПАР —
+// назначение только на рулонных (store/techcard/materials.go, rollGoodsSections) и вид только в
+// своей домашней секции (validateBomKindSection), — а UpsertTechCard устроен «всё-или-ничего».
+// То есть одна предложенная строка спеки отказывала в сохранении ВСЕЙ тех-карты, причём поля,
+// которые её сломали, интерфейс предложения даже не рисует: человек не видит, что править.
+//
+// ⚠ СНИМАЕТСЯ ТОКЕН, А НЕ СТРОКА, И ЭТО ТА ЖЕ ГРАНИЦА, ЧТО У designBomEnum: технологу нужнее
+// строка спеки без назначения, чем отсутствие строки, которую модель увидела правильно.
+//
+// ⚠ ПРАВИЛО НЕ ПЕРЕПИСАНО, А ПОЗВАНО ПО ИМЕНИ (entity.IsRollGoodsSection, entity.IsKindEligibleSection,
+// entity.BomKindHomeSection). Вторая копия «какие семьи рулонные» разошлась бы с первой в тот день,
+// когда семей станет пять, и разбор снова начал бы предлагать пары, которые сохранение отвергает.
+func designPairBomTokens(
+	section pb_common.TechCardBomSection,
+	purpose pb_common.TechCardBomPurpose,
+	kind pb_common.TechCardBomKind,
+	stats *designConstructionStats,
+) (pb_common.TechCardBomPurpose, pb_common.TechCardBomKind) {
+	sec := designEntityBomSection(section)
+	if purpose != pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET && !entity.IsRollGoodsSection(sec) {
+		purpose = pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+		stats.PairsCleared++
 	}
-	return *p
+	if kind != pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET {
+		home, known := entity.BomKindHomeSection(designEntityBomKind(kind))
+		legal := known && entity.IsKindEligibleSection(sec) &&
+			(home == entity.BomKindAnySection || home == sec)
+		if !legal {
+			kind = pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET
+			stats.PairsCleared++
+		}
+	}
+	return purpose, kind
 }
 
-// designBounded — обрезка по рунам со счётчиком. Обрезка МАРКИРУЕТСЯ (тот же довод, что у
+// designEntityBomSection / designEntityBomKind — ОДНО И ТО ЖЕ ЗНАЧЕНИЕ ДВУМЯ ПИСЬМАМИ.
+//
+// Хранимая строка выводится ИЗ ИМЕНИ ЧЛЕНА ENUM'А, а не из второй написанной от руки карты — тем же
+// приёмом и по тому же доводу, что designEnumVocabulary выше: карта, переписанная руками, молча
+// теряет член, добавленный в другом файле. Тождество «имя члена без префикса, строчными = строка
+// колонки» прибито дрейф-пробами (TestBomKindEnumNoDrift, TestBomSectionEnumNoDrift).
+//
+// Нулевой член — это «не задано», а не значение: он даёт пустую строку, которую ни одна семья не
+// признаёт своей, и пара с ним поэтому невозможна по построению.
+func designEntityBomSection(v pb_common.TechCardBomSection) entity.TechCardBomSection {
+	if v == pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_UNKNOWN {
+		return ""
+	}
+	return entity.TechCardBomSection(strings.ToLower(strings.TrimPrefix(
+		pb_common.TechCardBomSection_name[int32(v)], "TECH_CARD_BOM_SECTION_")))
+}
+
+func designEntityBomKind(v pb_common.TechCardBomKind) entity.TechCardBomKind {
+	if v == pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET {
+		return ""
+	}
+	return entity.TechCardBomKind(strings.ToLower(strings.TrimPrefix(
+		pb_common.TechCardBomKind_name[int32(v)], "TECH_CARD_BOM_KIND_")))
+}
+
+// designBoundedRunes — обрезка по РУНАМ со счётчиком, для колонок TEXT и для читаемых советов, где
+// потолок смысловой («одна мысль на строку»). Обрезка МАРКИРУЕТСЯ (тот же довод, что у
 // aiBoundedText): оборванная фраза, прочитанная как законченная, — это другая инструкция.
-func designBounded(s string, max int, stats *designConstructionStats) string {
+func designBoundedRunes(s string, max int, stats *designConstructionStats) string {
 	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) > max {
 		stats.Truncated++
 	}
 	return aiBoundedText(s, max)
+}
+
+// designBoundedBytes — обрезка по БАЙТАМ, для колонок VARCHAR(N).
+//
+// ⚠ БАЙТЫ, ПОТОМУ ЧТО БАЙТЫ СЧИТАЕТ СТОРОЖ, СТОЯЩИЙ ДАЛЬШЕ ПО МАРШРУТУ (internal/dto меряет
+// `len()`), И ПОТОМУ ЧТО БАЙТЫ СЧИТАЕТ КОЛОНКА. Потолок в рунах пропускает ~85 кириллических рун
+// в varchar(255) сверх предела, и отказ приходит либо полем DTO — то есть отказом в сохранении
+// ВСЕЙ карточки, — либо сырым MySQL 1406.
+//
+// РЕЖЕТСЯ ПО ГРАНИЦЕ РУНЫ: половина многобайтового символа — это невалидный UTF-8, который MySQL
+// встретит ошибкой 1366 вместо обрезанного слова. Многоточие-маркер (3 байта) входит В потолок, а
+// не сверх него.
+func designBoundedBytes(s string, maxBytes int, stats *designConstructionStats) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= maxBytes {
+		return s
+	}
+	stats.Truncated++
+	const ellipsis = "…" // 3 байта в UTF-8
+	cut := s[:maxBytes-len(ellipsis)]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return strings.TrimSpace(cut) + ellipsis
 }
 
 // designBomEnum узнаёт токен закрытого словаря. Неузнанный — UNSET, а СТРОКА ОСТАЁТСЯ: человеку
@@ -763,13 +1061,52 @@ func designExtractJSONObject(s string) string {
 //
 // nil — законный ответ и обычный: так выглядит прогон, отвеченный ПРОЗОЙ (старый клиент, флага не
 // было). Прозе здесь ошибки не полагается — вопрос «структурный ли это прогон» задают именно так.
+//
+// ⚠ ПРОЗА БОЛЬШЕ НЕ РАЗБИРАЕТСЯ ВОВСЕ, И ЭТО ПОЧИНКА (ревью круга 19). Тот же разбор звался через
+// designExtractJSONObject, который берёт от первой `{` до последней `}` и терпит прозу вокруг —
+// терпимость, законная для ЖИВОГО ответа модели и НЕЗАКОННАЯ здесь. Прозаический черновик,
+// содержащий фигурные скобки («Use a {"fabric": "jersey"} weight.»), давал НЕПУСТОЙ черновик: на
+// прогоне, который структурного ответа не просил, человеку показывалось предложение, которого
+// никто не делал. Здесь читается наш СОБСТВЕННЫЙ канонический JSON, и он всегда объект целиком,
+// поэтому строгость не стоит ничего: тело обязано начинаться `{` и кончаться `}`.
+//
+// Эта же строгость и есть признак формы, по которому повтор отличает структурный прогон от
+// прозаического (см. designReasonShapeMismatch).
 func designConstructionDraftFromRun(outputText string) *pb_common.DesignConstructionDraft {
-	if strings.TrimSpace(outputText) == "" {
+	js := strings.TrimSpace(outputText)
+	if !strings.HasPrefix(js, "{") || !strings.HasSuffix(js, "}") {
 		return nil
 	}
-	draft, _, err := parseConstructionDraft(outputText, "")
+	var stats designConstructionStats
+	draft, err := designParseConstructionObject(js, &stats)
 	if err != nil {
 		return nil
 	}
 	return draft
+}
+
+// designConstructionMarshal — ПИСАТЕЛЬ КАНОНИЧЕСКОГО ЧЕРНОВИКА, И ОН НАМЕРЕННО НЕ ТОТ, ЧТО ПИШЕТ
+// `params` и `inputs` (designJSONMarshal).
+//
+// ⚠ EmitUnpopulated ВКЛЮЧЁН, И БЕЗ НЕГО КРУГОВОЙ ОБХОД НЕ ДЕРЖИТСЯ. Замерено ревью круга 19: ответ,
+// у которого содержательным оказался один только список `missing`, сохранялся как `{"missing":[…]}`
+// — потому что protojson по умолчанию не пишет пустых полей, — а designConstructionDraftFromRun
+// требует ПРИСУТСТВИЯ хотя бы одного из семи ключей и на такой строке возвращал nil. То есть
+// УСПЕШНЫЙ ОПЛАЧЕННЫЙ прогон на идемпотентном повторе отдавал пустоту — ровно тот двойной клик,
+// ради которого механизм и существует. Системный промпт сам ведёт к этой форме: правило 1 велит
+// «оставь поле пустым, назови нехватку в missing».
+//
+// ЭТО ТА ЖЕ АСИММЕТРИЯ «ПИСАТЕЛЬ ПРОТИВ ЧИТАТЕЛЯ», ЧТО ОДНАЖДЫ СЛОМАЛА ПОДПИСЬ ДАЙДЖЕСТА: правило
+// «не хранить выводимое» экономит байты у писателя и молча меняет ответ у читателя. Здесь писатель
+// пишет ровно то, чего читатель требует.
+//
+// ⚠ И ИМЕННО ПОЭТОМУ ЭТО ВТОРАЯ НАСТРОЙКА, А НЕ ПРАВКА ПЕРВОЙ. У `inputs` довод против
+// EmitUnpopulated живой и денежный: снимок ограничен 64 KB, и заполнение нулями тратило бы потолок.
+// У черновика потолка нет — он едет в output_text (TEXT), — а восемь пустых ключей стоят около
+// сотни байт. UseProtoNames обе разделяют: канонический JSON читается обратно тем же разбором, чей
+// словарь узнаёт ПОЛНЫЕ имена членов enum'а (TECH_CARD_BOM_SECTION_FABRIC).
+var designConstructionMarshal = protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}
+
+func designMarshalConstructionDraft(d *pb_common.DesignConstructionDraft) ([]byte, error) {
+	return designConstructionMarshal.Marshal(d)
 }

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -261,17 +260,12 @@ var rollGoodsSections = func() map[string]bool {
 // Sorted, because map iteration order is randomised per run and this list is rendered into the
 // operator-facing refusal below — an error message whose wording reshuffles between two identical
 // requests is a bug report waiting to happen.
-var kindEligibleSectionList = func() []entity.TechCardBomSection {
-	out := make([]entity.TechCardBomSection, 0, len(entity.ValidTechCardBomSections))
-	for s := range entity.ValidTechCardBomSections {
-		if rollGoodsSections[string(s)] || s == entity.BomSectionLabel {
-			continue
-		}
-		out = append(out, s)
-	}
-	slices.Sort(out)
-	return out
-}()
+//
+// ⚠ СПИСОК ПЕРЕЕХАЛ В internal/entity (KindEligibleSectionList) ПО ТОМУ ЖЕ ДОВОДУ, ПО КОТОРОМУ ТУДА
+// УЕХАЛ РУЛОННЫЙ: с круга 19 у правила есть второй читатель вне стора — разбор структурного
+// черновика конструкции, который обязан отбросить пару «вид не своей секции» ДО сохранения, иначе
+// UpsertTechCard отвергает карточку целиком. Здесь остался только псевдоним; вывод по-прежнему один.
+var kindEligibleSectionList = entity.KindEligibleSectionList
 
 var kindEligibleSections = func() map[entity.TechCardBomSection]bool {
 	m := make(map[entity.TechCardBomSection]bool, len(kindEligibleSectionList))

@@ -1,5 +1,7 @@
 package entity
 
+import "slices"
+
 // РУЛОННЫЙ ТОВАР — THE list of BOM families sold by length, and the projections every consumer of
 // that list needs.
 //
@@ -33,6 +35,47 @@ var rollGoodsSectionSet = func() map[TechCardBomSection]bool {
 
 // IsRollGoodsSection reports whether a BOM section is sold by length.
 func IsRollGoodsSection(s TechCardBomSection) bool { return rollGoodsSectionSet[s] }
+
+// KindEligibleSectionList — СЕМЬИ, КОТОРЫЕ ВИД ПОЗИЦИИ (`kind`, 0278) ИМЕЕТ ПРАВО КЛАССИФИЦИРОВАТЬ.
+//
+// ⚠ ЭТО НЕ НОВЫЙ СПИСОК, А ПЕРЕЕЗД ТОГО ЖЕ ВЫВОДА НА ОДНУ ПОЛКУ С ЕГО ИСХОДНИКОМ. Он жил в
+// internal/store/techcard (kindEligibleSectionList) с шапкой, объясняющей, почему это ВЫВОД, а не
+// список: дополнение рулонного набора, написанное от руки, оставило бы виды на ткани в тот день,
+// когда рулонных семей станет пять. Ровно тот же довод и переселил его сюда: с круга 19 предикат
+// нужен ВТОРОМУ читателю за пределами стора — разбор структурного черновика (design_construction_draft)
+// обязан отбрасывать пару «вид не своей секции» ДО того, как она приедет в UpsertTechCard и
+// отвергнет сохранение ВСЕЙ карточки. Копия в apisrv была бы тем самым молчаливым расхождением,
+// которое та шапка запрещает, только пакетом дальше. Стор теперь берёт список отсюда.
+//
+//   - рулонные исключены: у них своя ось (назначение, 0265), и две оси отвечают на разные вопросы
+//     о материалах, которые мерят, а не считают;
+//   - `label` исключён: tech_card_label.label_type УЖЕ владеет этим словарём, и `kind` был бы
+//     вторым, неподписанным мнением рядом с подписанным дайджестом этикеток.
+//
+// Отсортирован: порядок обхода карты рандомизирован на каждый прогон, а этот список печатается в
+// отказ оператору — переставляющаяся между двумя одинаковыми запросами фраза это будущий баг-репорт.
+var KindEligibleSectionList = func() []TechCardBomSection {
+	out := make([]TechCardBomSection, 0, len(ValidTechCardBomSections))
+	for s := range ValidTechCardBomSections {
+		if IsRollGoodsSection(s) || s == BomSectionLabel {
+			continue
+		}
+		out = append(out, s)
+	}
+	slices.Sort(out)
+	return out
+}()
+
+var kindEligibleSectionSet = func() map[TechCardBomSection]bool {
+	m := make(map[TechCardBomSection]bool, len(KindEligibleSectionList))
+	for _, s := range KindEligibleSectionList {
+		m[s] = true
+	}
+	return m
+}()
+
+// IsKindEligibleSection reports whether ЧТО ЭТО ЗА ПОЗИЦИЯ may classify a line of this family.
+func IsKindEligibleSection(s TechCardBomSection) bool { return kindEligibleSectionSet[s] }
 
 // RollGoodsLinesOfBom projects a card's loaded BOM onto the shape the ONE binding rule reads
 // (ResolveFabricScope): the stable line_key and the назначение, roll goods only.

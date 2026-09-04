@@ -2025,10 +2025,6 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// Ценой этого стали более ТОЧНЫЕ отказы у соседей: доску из сорока плиток встречает потолок,
 	// а доску из одного кадра «только для показа» — его собственный отказ, оба до денег.
 	mood := designMoodSnapshot(card)
-	if mood == nil && len(attachedIDs) == 0 {
-		return nil, status.Error(codes.FailedPrecondition,
-			"there is nothing to read: put a picture on the moodboard or write the description")
-	}
 	if mood == nil {
 		// ДОСКА ИЗ ОДНИХ КАРТИНОК — ЗАКОННОЕ СОСТОЯНИЕ, И СНИМОК ОБЯЗАН ЕГО ВЫРАЗИТЬ. Пустой
 		// снимок с непустым media_ids говорит ровно то, что было: слов не было, картинки были.
@@ -2038,6 +2034,25 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// ПОХОЖИЕ. Снимок — это запись о том, что «picture 2» значило в тот день; собранный из
 	// boardIDs, он называл бы картинку, которой модель не видела, и рерун по нему послал бы не то.
 	mood.MediaIds = designIntsToInt32s(attachedIDs)
+	// ⚠ СПРАШИВАЕТСЯ ТО, ЧТО ФАКТИЧЕСКИ ДОЕДЕТ ДО МОДЕЛИ, А НЕ ТО, ЧТО ЛЕЖИТ НА ДОСКЕ.
+	//
+	// Прежний сторож звучал как `mood == nil && len(attachedIDs) == 0` и объявлял инвариант «ни
+	// картинок, ни слов». Ревью круга 19 показало, что он его не держит: снимок бывает НЕПУСТЫМ от
+	// одной только выноски, а designBoardPromptBody выбрасывает выноску, чья картинка не уехала
+	// («слова о изображении, которого модель не видит, — инструкция ни о чём»). Доска из трёх
+	// плиток с удалёнными медиа и тремя записками на них проходила дверь и покупала вызов, чей
+	// промпт — две строки шапки.
+	//
+	// ⚠ МЕРИТСЯ ИМЕННО ТЕЛО ДОСКИ, А НЕ ДЛИНА ВСЕГО ПРОМПТА, и это разные вопросы. Промпт несёт ещё
+	// имя изделия с посадкой, поэтому у любой названной карточки он непустой ВСЕГДА — сторож по его
+	// длине не сработал бы никогда и оплачивал бы «придумай одежду по слову „пальто“».
+	//
+	// ⚠ И ЭТО ТА ЖЕ ФУНКЦИЯ, ЧТО СОБИРАЕТ ПРОМПТ, А НЕ ЕЁ ПЕРЕСКАЗ. Второе мнение о том, «что
+	// считается непустой доской», разошлось бы с первым в первый же раз, когда правят одно из двух.
+	if strings.TrimSpace(designBoardPromptBody(mood, attachedIDs)) == "" {
+		return nil, status.Error(codes.FailedPrecondition,
+			"there is nothing to read: put a picture on the moodboard or write the description")
+	}
 
 	// ─── ДВЕ ФОРМЫ ОДНОГО ВОПРОСА ───
 	//
@@ -2119,10 +2134,50 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// прогон отвечен один раз и навсегда в той форме, в какой был отвечен, а флаг — это
 		// свойство нажатия. Проза разбором не признаётся и даёт nil — ровно так и отличается
 		// «этот прогон был структурным» от «этот был прозой».
+		//
+		// ─── ПРОВАЛЕННЫЙ ПРОГОН ОТДАЁТСЯ ОТКАЗОМ, А НЕ ПУСТЫМ УСПЕХОМ ───
+		//
+		// ⚠ ЭТО БЫЛ ТУПИК, И НАШЛО ЕГО РЕВЬЮ КРУГА 19. Предикат перехвата (designRunResumableSQL)
+		// резюмирует только `pending|running`, поэтому после designFailDraftAs строка навсегда
+		// остаётся `failed` — а хендлер отвечал на неё HTTP-OK с `construction: nil` и без единой
+		// ошибки. Проза отказа при этом велит «draft again», то есть человек жмёт ту же кнопку, тот
+		// же client_request_id приезжает второй раз и получает молчаливую пустоту вместо новостей.
+		// `invalid_output` — рядовой исход дрейфа модели, значит тупик был бы штатным.
+		//
+		// ОТДАЁТСЯ ТОТ ЖЕ ОТКАЗ, ЧТО В ПЕРВЫЙ РАЗ, И ИМЕННО ПО КОЛОНКЕ `error_code`, а не по прозе:
+		// прогон отвечен один раз и навсегда — в том числе отвечен ПРОВАЛОМ. Повторить его нечем:
+		// вторая платная попытка под одним ключом идемпотентности сломала бы единственное
+		// обещание, ради которого ключ существует; новое нажатие — это НОВЫЙ client_request_id, и
+		// проза отказа говорит об этом словами.
+		if run.Status == entity.DesignRunFailed {
+			return nil, designReplayedFailure(run)
+		}
+		// ─── ФЛАГ ФОРМЫ НЕ ВХОДИТ В КЛЮЧ ИДЕМПОТЕНТНОСТИ, ПОЭТОМУ СВЕРЯЕТСЯ ЗДЕСЬ ───
+		//
+		// ⚠ ТОТ ЖЕ client_request_id С ПРОТИВОПОЛОЖНЫМ ФЛАГОМ ОТДАВАЛ РЕЗУЛЬТАТ ДРУГОЙ ФОРМЫ МОЛЧА:
+		// нажатие «структурно» по ключу прозаического прогона возвращало `construction: nil` и
+		// выглядело как «модель ничего не предложила», а обратное — как «клиент просил прозу, а
+		// ему прислали объект». Соседняя ось (колорвей, store/design/wave2.go:designSameStartRequest)
+		// ровно этот случай считает ОТКАЗОМ, и здесь ответ обязан быть тем же.
+		//
+		// ⚠ ФОРМА СПРАШИВАЕТСЯ У СТРОКИ, А НЕ У ЗАПРОСА, И ФЛАГ В `inputs` НЕ ПИШЕТСЯ. Снимок
+		// входов — это ДОСКА (что уехало модели), а форма ответа доской не является: записав её
+		// туда, мы завели бы второе, свободное разойтись мнение о том, чем прогон уже ответил.
+		// Строка отвечает на этот вопрос точно: канонический JSON читается строгим разбором
+		// (designConstructionDraftFromRun), проза — нет.
+		//
+		// СПРАШИВАЕТСЯ ТОЛЬКО У ЗАКОНЧЕННОГО ПРОГОНА. У живой лизы `output_text` пуст ЗАКОННО —
+		// вызов идёт прямо сейчас в соседнем запросе, — и отказ по «форма не совпала» обвинил бы
+		// человека в том, что он всего лишь нажал дважды подряд.
+		stored := designConstructionDraftFromRun(run.OutputText.String)
+		if run.Status == entity.DesignRunDone && construction != (stored != nil) {
+			return nil, designRefusal(codes.FailedPrecondition, designReasonShapeMismatch,
+				designConstructionShapeMismatchMsg, nil)
+		}
 		return &pb_admin.DraftDesignIdeaResponse{
 			Run:          s.designRunResponse(ctx, run),
 			Budget:       s.designBudgetResponse(ctx, started.Budget),
-			Construction: designConstructionDraftFromRun(run.OutputText.String),
+			Construction: stored,
 		}, nil
 	}
 	if !run.ClaimToken.Valid || run.ClaimToken.String == "" {
@@ -2155,7 +2210,34 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if callErr == nil && strings.TrimSpace(text) == "" {
 		callErr = errors.New("the model returned an empty draft")
 	}
+	// ─── ПОТОЛОК, СЪЕДЕННЫЙ БЕЗ ОТВЕТА, — СВОЙ ИСХОД, И ОН ОПЛАЧЕН ───
+	//
+	// ⚠ РЕВЬЮ КРУГА 19 НАШЛО ЗДЕСЬ ТРИ ПОЛОВИНЫ ОДНОГО ДЕФЕКТА, И ЧИНИТЬ ИХ НАДО ВМЕСТЕ. Потолок
+	// стоял, мышление не выключалось (починено в multimodal.go), а исход «токены потрачены, ответа
+	// ноль» падал в `provider_error` с NULL-ценой: картинки сожжены, регистр денег пишет ноль,
+	// человеку говорят «погода, повтори» — и он повторяет, покупая тот же ноль.
+	//
+	// ⚠ КОД ПРИЧИНЫ ОТДЕЛЬНЫЙ, ПО ТОМУ ЖЕ ДОВОДУ, ЧТО У `invalid_output` (см. designFailDraftAs):
+	// `provider_error` значит «ответа не было», а здесь ответ БЫЛ — пустой, оплаченный и
+	// детерминированный. Слепив их, мы получили бы график «поставщик падает» там, где на самом деле
+	// мал наш собственный потолок. Классификация — ПО СЕНТИНЕЛУ (openrouter.ErrBudgetExhausted),
+	// никогда по прозе поставщика; ровно так же это делает разбор тех-карты (techcard_analysis.go).
+	//
+	// ⚠ ДЕНЬГИ СПИСЫВАЮТСЯ, И ЭТО ВЫРАВНИВАНИЕ, А НЕ УЖЕСТОЧЕНИЕ. У ОДНОГО И ТОГО ЖЕ потолка два
+	// исхода: половина ответа (finish_reason=length с текстом) уходит в `invalid_output` и платится
+	// оценкой, а полное отсутствие ответа платилось НУЛЁМ. Токены потрачены одинаково — их
+	// напечатал сам поставщик в usage, — поэтому дешевле выглядел ровно ХУДШИЙ исход, и «сжечь
+	// бюджет бесплатно» было бы способом, а не аварией. Ноль остаётся ровно там, где ответа не было
+	// ВОВСЕ: транспорт, 404, неверная настройка — см. designFailDraft.
 	if callErr != nil {
+		if errors.Is(callErr, openrouter.ErrBudgetExhausted) {
+			s.designLogConstructionDraft(ctx, cardID, run.Id, finishReason, usage,
+				designConstructionStats{}, callErr)
+			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
+				callErr, designReasonBudgetExhausted, est)
+			return nil, designRefusal(codes.FailedPrecondition,
+				designReasonBudgetExhausted, designConstructionBudgetRefusalMsg, nil)
+		}
 		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr)
 		return nil, s.designDraftCallError(ctx, cardID, callErr)
 	}
@@ -2183,7 +2265,12 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// ⚠ В СТРОКУ УЕЗЖАЕТ ПРОВЕРЕННЫЙ КАНОНИЧЕСКИЙ JSON, А НЕ ОТВЕТ МОДЕЛИ: сохранённый прогон
 		// обязан быть ровно тем, что получил клиент, иначе повтор и история показывают третью,
 		// никем не виденную версию ответа.
-		canonical, merr := designMarshalJSON(parsed)
+		//
+		// ⚠ ПИШЕТ СВОЙ МАРШАЛЕР (designMarshalConstructionDraft), А НЕ ТОТ, ЧТО ПИШЕТ `inputs`:
+		// он заполняет ПУСТЫЕ ключи, потому что их присутствия требует читатель этой же строки.
+		// Довод целиком — у designConstructionMarshal; без него черновик, содержательный одним
+		// лишь `missing`, читался обратно как nil.
+		canonical, merr := designMarshalConstructionDraft(parsed)
 		if merr != nil {
 			slog.Default().ErrorContext(ctx, "draft design idea: the construction draft did not encode",
 				slog.Int("run_id", run.Id), slog.String("err", merr.Error()))
@@ -2326,6 +2413,26 @@ func (s *Server) designDraftCallError(ctx context.Context, cardID int, err error
 		return aiModelRefusal(draftIdeaModelUnavailableMsg, s.aiOps.Model())
 	}
 	return status.Errorf(codes.Unavailable, "drafting the idea failed: %v", err)
+}
+
+// designReplayedFailure переводит УЖЕ ЗАКРЫТЫЙ ПРОВАЛОМ прогон в тот же отказ, который человек
+// получил, когда прогон провалился впервые.
+//
+// ⚠ ВЫБИРАЕТ КОЛОНКА `error_code`, А НЕ ПРОЗА `last_error`. Проза — это текст ошибки поставщика или
+// разбора; она годится в лог и не годится в решение. Незнакомый код — это прогон, проваленный
+// кодом, которого этот файл ещё не знает, и правильный ответ на него общий, а не выдуманный.
+func designReplayedFailure(run entity.DesignRun) error {
+	code := strings.TrimSpace(run.ErrorCode.String)
+	switch code {
+	case designConstructionReasonInvalidOutput:
+		return designRefusal(codes.FailedPrecondition, code, designConstructionReplayShapeMsg, nil)
+	case designReasonBudgetExhausted:
+		return designRefusal(codes.FailedPrecondition, code, designConstructionReplayBudgetMsg, nil)
+	}
+	if code == "" {
+		code = "provider_error"
+	}
+	return designRefusal(codes.FailedPrecondition, code, designDraftReplayFailedMsg, nil)
 }
 
 // ─────────────────────────── W-15: СБОРКА ВХОДОВ ───────────────────────────
