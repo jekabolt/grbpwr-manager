@@ -62,7 +62,14 @@ func TestParseConstructionDraftReadsAWellFormedAnswer(t *testing.T) {
 	}`
 	draft, stats, err := parseConstructionDraft(raw, "stop")
 	require.NoError(t, err)
-	require.False(t, stats.Any(), "чистый ответ не нуждается ни в одной поправке: %+v", stats)
+	// ⚠ ОДИН СЧЁТЧИК ЗДЕСЬ ЗАКОННО НЕ НОЛЬ, И ЭТО КРУГ 20. Фикстура — ФОРМА ОТВЕТА ДО B-13, вместе
+	// с выноской: она держит обещание «сохранённый прогон читается обратно». Промпт выносок больше
+	// не просит, поэтому принятая строка считается как CalloutsUnasked — «модель ответила на
+	// незаданный вопрос». Остальные поправки обязаны быть нулём: это положительный контроль.
+	require.Equal(t, 1, stats.CalloutsUnasked)
+	clean := stats
+	clean.CalloutsUnasked = 0
+	require.False(t, clean.Any(), "чистый ответ не нуждается ни в одной поправке: %+v", stats)
 
 	require.Equal(t, "Sleeveless V-neck tank top", draft.GetSilhouette())
 	require.Equal(t, "Stretch knit jersey", draft.GetFabric())
@@ -407,7 +414,7 @@ func TestConstructionUserPromptCarriesEverySection(t *testing.T) {
 
 	mood := designMoodSnapshot(card)
 	require.NotNil(t, mood)
-	prompt := designConstructionUserPrompt(card, mood, []int{11, 22, 33})
+	prompt := designConstructionUserPrompt(card, mood, []int{11, 22, 33}, draftProbeColours())
 
 	// 1 — шапка изделия.
 	require.Contains(t, prompt, "Garment: bind subject")
@@ -438,7 +445,7 @@ func TestConstructionUserPromptCarriesEverySection(t *testing.T) {
 // есть велела бы модели молчать ровно о том, что она и должна прочитать.
 func TestConstructionUserPromptDoesNotEchoBoardCallouts(t *testing.T) {
 	card := draftBindCard()
-	prompt := designConstructionUserPrompt(card, designMoodSnapshot(card), []int{11, 22, 33})
+	prompt := designConstructionUserPrompt(card, designMoodSnapshot(card), []int{11, 22, 33}, draftProbeColours())
 	require.Contains(t, prompt, "PINWORDS-collar-roll")
 	require.NotContains(t, prompt, "- callout: ", "выноска доски не смеет прийти дважды")
 }
@@ -449,13 +456,13 @@ func TestConstructionUserPromptDoesNotEchoBoardCallouts(t *testing.T) {
 // одна на все карточки.
 func TestConstructionUserPromptGatesTheConceptRow(t *testing.T) {
 	card := draftBindCard()
-	require.Contains(t, designConstructionUserPrompt(card, designMoodSnapshot(card), []int{11, 22, 33}),
+	require.Contains(t, designConstructionUserPrompt(card, designMoodSnapshot(card), []int{11, 22, 33}, draftProbeColours()),
 		"already has a concept")
 
 	bare := &entity.TechCard{}
 	bare.Name = "wordless"
 	bare.Media = []entity.TechCardMediaItem{{MediaId: 11, Category: entity.TechCardMediaCategoryMoodboard}}
-	require.Contains(t, designConstructionUserPrompt(bare, &pb_common.DesignMoodSnapshot{}, []int{11}),
+	require.Contains(t, designConstructionUserPrompt(bare, &pb_common.DesignMoodSnapshot{}, []int{11}, draftProbeColours()),
 		"propose one in \"concept\"")
 }
 
@@ -463,7 +470,17 @@ func TestConstructionUserPromptGatesTheConceptRow(t *testing.T) {
 func TestConstructionSystemPromptAsksForOneJSONObject(t *testing.T) {
 	require.Contains(t, designConstructionSystemPrompt, "ONE JSON object")
 	require.Contains(t, designConstructionSystemPrompt, "Never invent")
-	require.Contains(t, designConstructionSystemPrompt, "\"callouts\"")
+	// ⚠ ВЫНОСОК РОЛЬ БОЛЬШЕ НЕ ПРОСИТ ВОВСЕ (B-13) — ни в форме ответа, ни в правилах. Слово
+	// «callouts» здесь и есть предмет проверки: пока оно в промпте, мы платим выходными токенами
+	// за строки, которых никто не рисует.
+	require.NotContains(t, designConstructionSystemPrompt, "callouts",
+		"промпт не имеет права просить выноски (B-13)")
+	// А ФАКТЫ, РАДИ КОТОРЫХ ИХ ПРОСИЛИ, НИКУДА НЕ ДЕЛИСЬ: правило 3 переписано на аспекты.
+	require.Contains(t, designConstructionSystemPrompt, "go into \"aspects\"")
+	require.Contains(t, designConstructionSystemPrompt, "seams, closures, edges, pockets, bindings")
+	// И РОЛЬ СПРАШИВАЕТ КОЛОРВЕИ (B-25).
+	require.Contains(t, designConstructionSystemPrompt, "\"colourways\"")
+	require.Contains(t, designConstructionSystemPrompt, "\"color_code\"")
 	require.NotEqual(t, draftIdeaSystemPrompt, designConstructionSystemPrompt)
 	// СТАРАЯ РОЛЬ — КОНТРАКТ С РАБОТАЮЩИМ КЛИЕНТОМ: три заголовка, по которым он режет ответ.
 	require.Contains(t, draftIdeaSystemPrompt, "DESCRIPTION")
@@ -1162,4 +1179,336 @@ func TestDraftDesignIdeaRefusesABoardWhoseWordsTravelWithPicturesThatDidNot(t *t
 	code, _ := errorReason(t, err)
 	require.Equal(t, codes.FailedPrecondition, code)
 	require.Contains(t, err.Error(), "there is nothing to read")
+}
+
+// ─────────────────────── КРУГ 20: КОЛОРВЕИ И УШЕДШИЕ ВЫНОСКИ ───────────────────────
+
+// draftProbeColours — СЛОВАРЬ ЦВЕТА СТЕНДА. Три кода, из них один с именем, которое модель
+// охотнее напишет вместо кода («bone white»), — иначе проба узнавания по имени зеленела бы на
+// словаре, где имя и код совпадают.
+func draftProbeColours() []entity.Color {
+	return []entity.Color{
+		{ID: 1, Code: "BLK", Name: "black", Hex: sql.NullString{String: "#000000", Valid: true}},
+		{ID: 2, Code: "BON", Name: "bone white", Hex: sql.NullString{String: "#EFE9DC", Valid: true}},
+		{ID: 3, Code: "OLV", Name: "olive", Hex: sql.NullString{String: "#5B6236", Valid: true}},
+	}
+}
+
+// ПРОМПТ ПОКАЗЫВАЕТ СЛОВАРЬ ЦВЕТА — ИЛИ ЧЕСТНО ГОВОРИТ, ЧТО СПИСКА НЕТ.
+//
+// ⚠ ТРИ ИСХОДА, И ДВА ИЗ НИХ СОВПАДАЮТ НАМЕРЕННО. Пустой словарь и словарь длиннее потолка дают
+// одну строку «списка нет», потому что вопрос один: есть ли модели чем выбрать код. Урезанный
+// список был бы худшим третьим ответом — модель выбирала бы «ближайший» из набора, который мы
+// молча обрезали, и её выбор выглядел бы таким же уверенным, как настоящий.
+func TestConstructionUserPromptCarriesTheColourDictionary(t *testing.T) {
+	card := draftBindCard()
+	mood := designMoodSnapshot(card)
+
+	with := designConstructionUserPrompt(card, mood, []int{11, 22, 33}, draftProbeColours())
+	require.Contains(t, with, "colours (code · name · hex):")
+	require.Contains(t, with, "BLK · black · #000000")
+	require.Contains(t, with, "BON · bone white · #EFE9DC")
+
+	none := designConstructionUserPrompt(card, mood, []int{11, 22, 33}, nil)
+	require.Contains(t, none, "no colour list is given; leave \"color_code\" empty")
+	require.NotContains(t, none, "colours (code · name · hex):")
+
+	// ЗА ПОТОЛКОМ — ТА ЖЕ СТРОКА, А НЕ ПОЛОВИНА СЛОВАРЯ.
+	huge := make([]entity.Color, 0, designConstructionMaxColourRows+1)
+	for i := 0; i <= designConstructionMaxColourRows; i++ {
+		huge = append(huge, entity.Color{ID: i + 1, Code: fmt.Sprintf("C%02d", i), Name: "colour"})
+	}
+	over := designConstructionUserPrompt(card, mood, []int{11, 22, 33}, huge)
+	require.Contains(t, over, "no colour list is given")
+	require.NotContains(t, over, "C42",
+		"половина словаря заставила бы модель выбирать «ближайший» из молча обрезанного набора")
+}
+
+// РАЗБОР ЧИТАЕТ КОЛОРВЕИ ЦЕЛИКОМ: имя, код, пантон образца, hex и цвет НА СЛОТ.
+//
+// Положительный контроль всех проверок ниже: без него «неверное выброшено» зеленело бы и на
+// разборе, который не принимает вообще ничего.
+func TestParseConstructionDraftReadsColourways(t *testing.T) {
+	raw := `{
+	  "bom": [{"section":"fabric","purpose":"main","name":"main fabric"},
+	          {"section":"lining","name":"lining"}],
+	  "colourways": [
+	    {"name":"Black / Bone","color_code":"BLK","pantone":"19-4005 TCX","hex":"#0A0A0A",
+	     "slots":[{"slot":"main fabric","pantone":"19-4005 TCX","hex":"#0A0A0A","colour":"black"},
+	              {"slot":"Lining","pantone":"11-0601 TCX","hex":"#F2F0E6","color":"bright white"}]},
+	    {"name":"Olive / Sand","colour_code":"olive","pantone":"18-0625 TCX","hex":"#5B6236",
+	     "slots":[{"slot":"main fabric","pantone":"18-0625 TCX","colour":"olive"}]}
+	  ]}`
+	draft, stats, err := parseConstructionDraft(raw, "stop")
+	require.NoError(t, err)
+	require.Len(t, draft.GetColourways(), 2)
+
+	first := draft.GetColourways()[0]
+	require.Equal(t, "Black / Bone", first.GetName())
+	require.Equal(t, "BLK", first.GetColorCode())
+	require.Equal(t, "19-4005 TCX", first.GetPantone())
+	require.Equal(t, "#0A0A0A", first.GetHex())
+	require.Len(t, first.GetSlots(), 2)
+	require.Equal(t, "main fabric", first.GetSlots()[0].GetSlot())
+	require.Equal(t, "black", first.GetSlots()[0].GetColour())
+	// COLOR/COLOUR — ОДНО ПОЛЕ, ДВА НАПИСАНИЯ: американское принимается наравне с британским.
+	require.Equal(t, "bright white", first.GetSlots()[1].GetColour())
+	// COLOR_CODE/COLOUR_CODE — ТОЖЕ.
+	require.Equal(t, "olive", draft.GetColourways()[1].GetColorCode(),
+		"разбор кода не сверяет — это делает designVerifyColourways")
+	require.Zero(t, stats.ColourwaysDropped)
+	require.Zero(t, stats.SlotColoursUnbound)
+}
+
+// ⚠ ПРОВЕРКА КОДА И ПРИВЯЗКИ СЛОТОВ — ОТДЕЛЬНЫЙ ШАГ, И ОН ДЕЛАЕТ ЧЕТЫРЕ ВЕЩИ.
+func TestVerifyColourwaysFoldsCodesAndBindsSlots(t *testing.T) {
+	draft, _, err := parseConstructionDraft(`{
+	  "bom": [{"name":"main fabric"}],
+	  "colourways": [
+	    {"name":"Black","color_code":"blk",
+	     "slots":[{"slot":"Main Fabric","pantone":"19-4005 TCX","colour":"black"},
+	              {"slot":"moon dust","pantone":"11-0601 TCX","colour":"white"}]},
+	    {"name":"Bone","color_code":"bone white","slots":[{"slot":"neck binding","colour":"bone"}]},
+	    {"name":"Fuchsia","color_code":"NOPE","slots":[{"slot":"main fabric","colour":"pink"}]}
+	  ]}`, "stop")
+	require.NoError(t, err)
+
+	card := &entity.TechCard{}
+	card.BomItems = []entity.TechCardBomItem{{Section: entity.BomSectionTrim, Name: "neck binding"}}
+
+	var stats designConstructionStats
+	designVerifyColourways(draft, designBuildColourDictionary(draftProbeColours()),
+		designCardSlotFolds(card), &stats)
+
+	require.Len(t, draft.GetColourways(), 3)
+	// 1 — КОД УЗНАЁТСЯ ПО СКЛАДКЕ И ПРИВОДИТСЯ К КАНОНУ.
+	require.Equal(t, "BLK", draft.GetColourways()[0].GetColorCode())
+	// 2 — И ПО ИМЕНИ ЦВЕТА ТОЖЕ: модель охотнее пишет «bone white», чем «BON».
+	require.Equal(t, "BON", draft.GetColourways()[1].GetColorCode())
+	// 3 — НЕУЗНАННЫЙ КОД ОБНУЛЯЕТСЯ, А СТРОКА ОСТАЁТСЯ: человеку нужнее предложение, у которого
+	//     код надо выбрать самому, чем отсутствие предложения.
+	require.Equal(t, "", draft.GetColourways()[2].GetColorCode())
+	require.Equal(t, 1, stats.ColourCodesUnset)
+	// 4 — СЛОТ ПРИВЯЗЫВАЕТСЯ ПО СЛОЖЕННОМУ ИМЕНИ: к строке спеки ЭТОГО ОТВЕТА («Main Fabric»)
+	//     или к строке спеки КАРТОЧКИ («neck binding»); неизвестный — выброшен.
+	require.Len(t, draft.GetColourways()[0].GetSlots(), 1)
+	require.Equal(t, "Main Fabric", draft.GetColourways()[0].GetSlots()[0].GetSlot())
+	require.Len(t, draft.GetColourways()[1].GetSlots(), 1)
+	require.Equal(t, 1, stats.SlotColoursUnbound, "цвет слота «moon dust» некуда положить")
+}
+
+// БЕЗЫМЯННЫЙ КОЛОРВЕЙ СО СЛОТАМИ ПОДПИСЫВАЕТСЯ СЕРВЕРОМ; БЕЗ ИМЕНИ И БЕЗ СЛОТОВ — ВЫБРАСЫВАЕТСЯ.
+func TestVerifyColourwaysNamesTheUnnamedAndDropsTheEmpty(t *testing.T) {
+	draft, stats, err := parseConstructionDraft(`{
+	  "bom": [{"name":"main fabric"}],
+	  "colourways": [
+	    {"name":"","color_code":"BLK","pantone":"19-4005 TCX"},
+	    {"name":"Named","slots":[{"slot":"main fabric","colour":"black"}]},
+	    {"name":"","slots":[{"slot":"main fabric","colour":"olive"}]}
+	  ]}`, "stop")
+	require.NoError(t, err)
+	// ПЕРВЫЙ УМЕР УЖЕ В РАЗБОРЕ: ни имени, ни слотов — подтверждать нечего, даже с пантоном.
+	require.Equal(t, 1, stats.ColourwaysDropped)
+	require.Len(t, draft.GetColourways(), 2)
+
+	designVerifyColourways(draft, designBuildColourDictionary(draftProbeColours()),
+		map[string]struct{}{}, &stats)
+	require.Len(t, draft.GetColourways(), 2)
+	require.Equal(t, "Named", draft.GetColourways()[0].GetName())
+	// ПОДПИСЬ ПО ПОРЯДКУ В ОТВЕТЕ, А НЕ ПО СЧЁТУ БЕЗЫМЯННЫХ: «colourway 2» = второе предложение.
+	require.Equal(t, "colourway 2", draft.GetColourways()[1].GetName())
+}
+
+// ПОТОЛКИ, ДЕДУП И ШЕСТНАДЦАТЕРИЧНЫЙ ЦВЕТ.
+func TestParseConstructionDraftBoundsColourways(t *testing.T) {
+	t.Run("не шестнадцатеричный hex читается как ПУСТО, а не обрезается", func(t *testing.T) {
+		for _, in := range []string{"black", "#ABC", "#GGGGGG", "19-4005 TCX", "#0A0A0A0"} {
+			require.Equal(t, "", designHexColour(in), in)
+		}
+		require.Equal(t, "#0a0A0f", designHexColour(" #0a0A0f "))
+	})
+
+	t.Run("пятый колорвей и шестнадцатый цвет не влезают", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString(`{"bom":[`)
+		for i := 0; i < 20; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"name":"slot %d"}`, i)
+		}
+		b.WriteString(`],"colourways":[`)
+		for i := 0; i < 6; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"name":"cw %d","slots":[`, i)
+			for j := 0; j < 20; j++ {
+				if j > 0 {
+					b.WriteString(",")
+				}
+				fmt.Fprintf(&b, `{"slot":"slot %d","colour":"c"}`, j)
+			}
+			b.WriteString(`]}`)
+		}
+		b.WriteString(`]}`)
+
+		draft, stats, err := parseConstructionDraft(b.String(), "stop")
+		require.NoError(t, err)
+		require.Len(t, draft.GetColourways(), designConstructionMaxColourways)
+		for _, cw := range draft.GetColourways() {
+			require.Len(t, cw.GetSlots(), designConstructionMaxColourwaySlots)
+		}
+		require.Positive(t, stats.OverLimit)
+	})
+
+	t.Run("один слот дважды — это один слот", func(t *testing.T) {
+		draft, stats, err := parseConstructionDraft(`{"bom":[{"name":"main fabric"}],
+		  "colourways":[{"name":"A","slots":[
+		    {"slot":"main fabric","colour":"black"},
+		    {"slot":"Main / Fabric","colour":"grey"}]}]}`, "stop")
+		require.NoError(t, err)
+		require.Len(t, draft.GetColourways()[0].GetSlots(), 1)
+		require.Positive(t, stats.Deduped)
+	})
+
+	t.Run("не-список на месте slots не уносит весь колорвей", func(t *testing.T) {
+		draft, _, err := parseConstructionDraft(
+			`{"colourways":[{"name":"A","color_code":"BLK","slots":"black"}]}`, "stop")
+		require.NoError(t, err)
+		require.Len(t, draft.GetColourways(), 1)
+		require.Equal(t, "A", draft.GetColourways()[0].GetName())
+		require.Empty(t, draft.GetColourways()[0].GetSlots())
+	})
+
+	t.Run("длинное имя режется, а не роняет сохранение", func(t *testing.T) {
+		long := strings.Repeat("я", 400)
+		draft, stats, err := parseConstructionDraft(
+			`{"colourways":[{"name":"`+long+`","slots":[{"slot":"x","colour":"c"}]}]}`, "stop")
+		require.NoError(t, err)
+		name := draft.GetColourways()[0].GetName()
+		require.LessOrEqual(t, utf8.RuneCountInString(name), designConstructionMaxColourwayNameRunes)
+		require.LessOrEqual(t, len(name), designConstructionMaxVarchar255)
+		require.Positive(t, stats.Truncated)
+	})
+}
+
+// ОТВЕТ, СОДЕРЖАТЕЛЬНЫЙ ОДНИМИ КОЛОРВЕЯМИ, — ЗАКОННЫЙ ОТВЕТ.
+//
+// Без `colourways` в списке ключей, которым есть куда лечь, он уходил бы в `invalid_output`
+// ОПЛАЧЕННЫМ.
+func TestParseConstructionDraftAcceptsAColourwayOnlyAnswer(t *testing.T) {
+	draft, _, err := parseConstructionDraft(
+		`{"colourways":[{"name":"Black","color_code":"BLK","slots":[]}]}`, "stop")
+	require.NoError(t, err)
+	require.Len(t, draft.GetColourways(), 1)
+}
+
+// ⚠ СОХРАНЁННЫЙ ДО КРУГА 20 ОТВЕТ ВОССТАНАВЛИВАЕТСЯ ЦЕЛИКОМ, ВМЕСТЕ С ВЫНОСКАМИ.
+//
+// ЭТО НЕ УТВЕРЖДЕНИЕ, А ИСПОЛНЕНИЕ: строка ниже — БАЙТЫ, которые прежний маршалер положил в
+// `output_text`, и они прогоняются через сегодняшний читатель. Выбросив ключ `callouts` из разбора
+// вместе с ним из промпта, мы сломали бы ВТОРОЕ нажатие на каждом прогоне, отвеченном до этой
+// волны, — и сломали бы навсегда: перезвонить модели по тому же ключу идемпотентности нельзя.
+func TestOldStoredAnswerWithCalloutsStillReplays(t *testing.T) {
+	// Форма — ровно та, что писал designConstructionMarshal ДО круга 20: UseProtoNames,
+	// EmitUnpopulated, БЕЗ ключа `colourways` (поля 9 тогда не существовало).
+	preB13 := `{"silhouette":"Sleeveless V-neck tank top","fabric":"Stretch knit jersey",` +
+		`"fit":"regular","concept":"","aspects":[{"key":"collar","text":"V-neck binding"}],` +
+		`"callouts":[{"feature":"neck binding","details":"self-fabric, folded","dimensions":"1 cm"},` +
+		`{"feature":"side seam","details":"overlocked","dimensions":""}],` +
+		`"bom":[{"section":"TECH_CARD_BOM_SECTION_FABRIC","purpose":"TECH_CARD_BOM_PURPOSE_MAIN",` +
+		`"kind":"TECH_CARD_BOM_KIND_UNSET","name":"main fabric","composition":"","colour":"black",` +
+		`"pantone":"19-4005 TCX","material_id":"0"}],"missing":["picture 1 — the shoulder"]}`
+
+	back := designConstructionDraftFromRun(preB13)
+	require.NotNil(t, back, "прогон, отвеченный до круга 20, обязан читаться сегодняшним разбором")
+	require.Equal(t, "Sleeveless V-neck tank top", back.GetSilhouette())
+	require.Len(t, back.GetAspects(), 1)
+	require.Len(t, back.GetBom(), 1)
+	require.Equal(t, pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, back.GetBom()[0].GetSection())
+	require.Len(t, back.GetCallouts(), 2, "выноски старого ответа обязаны доехать до клиента как были")
+	require.Equal(t, "neck binding", back.GetCallouts()[0].GetFeature())
+	require.Equal(t, "1 cm", back.GetCallouts()[0].GetDimensions())
+	require.Empty(t, back.GetColourways(), "поля 9 в том ответе не было — и выдумывать его нечем")
+
+	// И ОТВЕТ, СОДЕРЖАТЕЛЬНЫЙ ОДНИМИ ВЫНОСКАМИ, — ТОЖЕ: ключ остался в списке «есть куда лечь».
+	onlyCallouts := designConstructionDraftFromRun(
+		`{"callouts":[{"feature":"hem","details":"double needle","dimensions":""}]}`)
+	require.NotNil(t, onlyCallouts)
+	require.Len(t, onlyCallouts.GetCallouts(), 1)
+}
+
+// ВЫНОСКИ, ПРИСЛАННЫЕ БЕЗ СПРОСА, ПРИНИМАЮТСЯ И СЧИТАЮТСЯ.
+//
+// Клиент их не рисует; счётчик существует ради одного вопроса — работает ли переписанное правило 3.
+// Ноль здесь доказывает, что работает; растущее число — счёт за выходные токены, которых не читают.
+func TestParseConstructionDraftCountsUnaskedCallouts(t *testing.T) {
+	draft, stats, err := parseConstructionDraft(
+		`{"callouts":[{"feature":"hem","details":"double needle"},
+		              {"feature":"cuff","details":"binding"}],"fabric":"jersey"}`, "stop")
+	require.NoError(t, err)
+	require.Len(t, draft.GetCallouts(), 2)
+	require.Equal(t, 2, stats.CalloutsUnasked)
+	require.Zero(t, stats.CalloutsDropped, "строка со словами — не брак формы")
+	require.True(t, stats.Any(), "«модель отвечает на незаданный вопрос» обязано доехать до лога")
+
+	clean, cleanStats, err := parseConstructionDraft(`{"fabric":"jersey"}`, "stop")
+	require.NoError(t, err)
+	require.Empty(t, clean.GetCallouts())
+	require.Zero(t, cleanStats.CalloutsUnasked)
+}
+
+// КРУГОВОЙ ОБХОД С КОЛОРВЕЯМИ: маршалер → строка → тот же разбор.
+func TestConstructionDraftRoundTripsColourways(t *testing.T) {
+	in := &pb_common.DesignConstructionDraft{
+		Colourways: []*pb_common.DesignColourwayProposal{{
+			Name: "Black / Bone", ColorCode: "BLK", Pantone: "19-4005 TCX", Hex: "#0A0A0A",
+			Slots: []*pb_common.DesignColourwaySlotColour{
+				{Slot: "main fabric", Pantone: "19-4005 TCX", Hex: "#0A0A0A", Colour: "black"},
+			},
+		}},
+	}
+	stored, err := designMarshalConstructionDraft(in)
+	require.NoError(t, err)
+	require.Contains(t, string(stored), "\"colourways\"")
+	require.Contains(t, string(stored), "\"color_code\"")
+
+	back := designConstructionDraftFromRun(string(stored))
+	require.NotNil(t, back)
+	require.True(t, proto.Equal(in, back), "круг обязан вернуть то же самое:\n%v\n%v", in, back)
+}
+
+// ЖИВОЙ КРУГ: НАЖАТИЕ ОТДАЁТ КОЛОРВЕИ, СЛОВАРЬ ЕДЕТ В ПРОМПТ, А В СТРОКУ УХОДИТ ПРОВЕРЕННОЕ.
+func TestDraftDesignIdeaAnswersWithVerifiedColourways(t *testing.T) {
+	answer := `{"silhouette":"tank","fabric":"jersey",
+	  "bom":[{"section":"fabric","purpose":"main","name":"main fabric"}],
+	  "colourways":[
+	    {"name":"Black","color_code":"black","pantone":"19-4005 TCX","hex":"#0A0A0A",
+	     "slots":[{"slot":"Main Fabric","pantone":"19-4005 TCX","colour":"black"},
+	              {"slot":"nowhere","colour":"grey"}]},
+	    {"name":"Fuchsia","color_code":"NOPE","slots":[{"slot":"main fabric","colour":"pink"}]}]}`
+	rig := newDraftRig(t, http.StatusOK, answer)
+	resp, err := rig.srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest())
+	require.NoError(t, err)
+
+	// СЛОВАРЬ УЕХАЛ В ПЛАТНЫЙ ВЫЗОВ — по БАЙТАМ запроса, а не по намерению кода.
+	require.Contains(t, rig.stub.body, "BLK · black · #000000")
+
+	cws := resp.GetConstruction().GetColourways()
+	require.Len(t, cws, 2)
+	require.Equal(t, "BLK", cws[0].GetColorCode(), "код узнан по имени цвета и приведён к канону")
+	require.Len(t, cws[0].GetSlots(), 1, "цвет слота, которого нет ни в ответе, ни на карточке, выброшен")
+	require.Equal(t, "Main Fabric", cws[0].GetSlots()[0].GetSlot())
+	require.Equal(t, "", cws[1].GetColorCode(), "неузнанный код обнулён, а строка осталась")
+
+	// В `output_text` УЕХАЛО ПРОВЕРЕННОЕ, А НЕ ОТВЕТ МОДЕЛИ: повтор обязан отдать то же, что
+	// человек уже видел.
+	stored := designConstructionDraftFromRun(rig.completedText)
+	require.NotNil(t, stored)
+	require.Len(t, stored.GetColourways(), 2)
+	require.Equal(t, "BLK", stored.GetColourways()[0].GetColorCode())
+	require.Len(t, stored.GetColourways()[0].GetSlots(), 1)
+	require.NotContains(t, rig.completedText, "nowhere",
+		"выброшенный цвет слота не имеет права остаться в сохранённой строке")
 }

@@ -97,6 +97,29 @@ const (
 	designConstructionMaxCallouts = 15
 	designConstructionMaxBom      = 15
 	designConstructionMaxMissing  = 8
+
+	// ─── ПОТОЛКИ ПРЕДЛОЖЕННЫХ КОЛОРВЕЕВ (B-25) ───
+	//
+	// ЧЕТЫРЕ, ПОТОМУ ЧТО ВЛАДЕЛЕЦ ПРОСИЛ «НЕСКОЛЬКО», А НЕ «СПИСОК»: подтверждение колорвея
+	// СОЗДАЁТ ПРОДУКТ, и предложение, которое человек обязан просмотреть по одному, за четырьмя
+	// строками перестаёт быть предложением. Промпт просит 2–4; потолок — последнее слово.
+	designConstructionMaxColourways = 4
+	// ПЯТНАДЦАТЬ ЦВЕТОВ НА КОЛОРВЕЙ — РОВНО ПОТОЛОК СПЕКИ: слот берётся из строк спеки, и
+	// шестнадцатый цвет указывал бы на слот, которого предложение не называло.
+	designConstructionMaxColourwaySlots = 15
+	// ИМЯ КОЛОРВЕЯ — 64 РУНЫ (сверх этого — потолок колонки tech_card_colorway.dev_name,
+	// varchar(255), в байтах). Это ПОДПИСЬ («Black / Bone»), а не описание: пикер колорвеев рисует
+	// её в одну строку, и длинное имя не читается ни там, ни в списке продукта.
+	designConstructionMaxColourwayNameRunes = 64
+
+	// designConstructionMaxColourRows — СКОЛЬКО СТРОК СЛОВАРЯ ЦВЕТА УЕЗЖАЕТ В ПРОМПТ.
+	//
+	// Тот же довод и то же место, что у потолка секции «уже на карточке»: список едет во ВХОДНЫХ
+	// токенах КАЖДОГО нажатия. Двести строк — ≈4 KiB, ≈1k токенов, ≈$0.003; тысяча строк словаря
+	// стоила бы впятеро дороже и не помогла бы модели выбрать. За потолком список не режется, а НЕ
+	// ДАЁТСЯ ВОВСЕ, и промпт говорит об этом вслух: половина словаря заставила бы модель выбирать
+	// «ближайший код» из набора, который мы ей молча урезали.
+	designConstructionMaxColourRows = 200
 )
 
 // designConstructionReasonInvalidOutput — машинная причина «ответ не той формы», она же
@@ -270,6 +293,22 @@ func designFoldToken(s string) string {
 // РОЛЬ ГОВОРИТ ПРО КАРТИНКИ, ПОТОМУ ЧТО КАРТИНКИ ПРИЕЗЖАЮТ, и про то, что каждая записка называет
 // свою картинку и место на ней: за привязку уже заплачено сборкой промпта, и роль, умалчивающая о
 // ней, велела бы модели не пользоваться тем, что ей дали.
+//
+// ⚠ КРУГ 20, ДВЕ ПРАВКИ, И ОБЕ — ПРО ТО, ЗА ЧТО МЫ ПЛАТИМ ВЫХОДНЫМИ ТОКЕНАМИ.
+//
+//  1. ВЫНОСОК БОЛЬШЕ НЕ ПРОСЯТ (B-13). Владелец дословно: «DRAFT OF THE CONSTRUCTION не должен
+//     добавлять коллауты все это можно добавить в CONSTRUCTION аспектами». Клиент строки выносок
+//     всё равно перестал рисовать — но ВЫБРОСИТЬ ИХ ТОЛЬКО НА КЛИЕНТЕ БЫЛО БЫ НЕЧЕСТНО ДВАЖДЫ: мы
+//     продолжали бы платить до пятнадцати выходных строк (~$0.01 за нажатие) за то, чего никто не
+//     читает, И ТЕРЯЛИ БЫ САМИ ФАКТЫ — швы, застёжки, края, карманы, — вместо того чтобы положить
+//     их туда, куда владелец их и адресовал. Поэтому правило 3 переписано на «аспекты», а не
+//     удалено, и ключ ушёл из формы ответа. Поле 6 провода и его разбор ОСТАЛИСЬ: сохранённый до
+//     этой волны прогон обязан читаться обратно на идемпотентном повторе.
+//
+//  2. КОЛОРВЕИ СПРАШИВАЮТСЯ ТЕМ ЖЕ ПЛАТНЫМ ПРОГОНОМ (B-25), правило 9. Второй прогон перечитывал бы
+//     те же ≤12 картинок (≈$0.06 входных за нажатие) ради вопроса, входы которого — слоты ткани и
+//     цвета доски — этот ответ уже держит. Список стоит ≈300–500 выходных токенов ≈ $0.005, и
+//     ровно на эту величину подвинута база оценки (designDraftIdeaBaseUSD, 0.03 → 0.035).
 const designConstructionSystemPrompt = "You are a garment technologist's assistant. " +
 	"You are shown the moodboard pictures, the designer's concept & construction description, and " +
 	"the notes pinned on the pictures — every note names its picture by number and the spot it " +
@@ -278,26 +317,34 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"English. The object has exactly these keys:\n" +
 	"{\"silhouette\": string, \"fabric\": string, \"fit\": string, \"concept\": string, " +
 	"\"aspects\": [{\"key\": string, \"text\": string}], " +
-	"\"callouts\": [{\"feature\": string, \"details\": string, \"dimensions\": string}], " +
 	"\"bom\": [{\"section\": string, \"purpose\": string, \"kind\": string, \"name\": string, " +
 	"\"composition\": string, \"colour\": string, \"pantone\": string}], " +
+	"\"colourways\": [{\"name\": string, \"color_code\": string, \"pantone\": string, " +
+	"\"hex\": string, \"slots\": [{\"slot\": string, \"pantone\": string, \"hex\": string, " +
+	"\"colour\": string}]}], " +
 	"\"missing\": [string]}\n" +
 	"Rules:\n" +
 	"1. Never invent a fabric, a colour, a measurement or a piece of hardware that the pictures do " +
 	"not show and the notes do not state. Leave the field empty and name what is missing under " +
 	"\"missing\" instead.\n" +
 	"2. Prefer the designer's own words where they say the same thing.\n" +
-	"3. \"callouts\" are construction features visible on the pictures — seams, closures, edges, " +
-	"pockets, bindings — one row each. Fill \"dimensions\" only when a measurement is actually " +
-	"stated; leave it empty otherwise.\n" +
+	"3. Construction features visible on the pictures — seams, closures, edges, pockets, bindings — " +
+	"go into \"aspects\" under the fitting key (fastening, pockets, topstitching, extraDetails, or " +
+	"a short custom key); do not list them separately.\n" +
 	"4. \"bom\" names components BY THEIR ROLE («main fabric», «neck binding», «care label»), one " +
 	"line per component. Use the section / purpose / kind tokens given in the prompt; leave a token " +
 	"empty when it does not apply.\n" +
 	"5. \"aspects\" use the keys given in the prompt, or a short custom key when none of them fits; " +
 	"at most 60 words each.\n" +
 	"6. Do not repeat what the card already says — refine it or leave the field empty.\n" +
-	"7. Limits: at most 10 aspects, 15 callouts, 15 bom lines, 8 missing notes.\n" +
-	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it empty."
+	"7. Limits: at most 10 aspects, 15 bom lines, 8 missing notes, 4 colourways of at most 15 " +
+	"slot colours each.\n" +
+	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it " +
+	"empty.\n" +
+	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
+	"entry per combination, naming EVERY cloth slot from \"bom\" by its exact \"name\" with a " +
+	"Pantone TCX code and a hex; \"color_code\" is the closest code from the colour list in the " +
+	"prompt (empty when none is close); never invent a colour the board does not show."
 
 // ─────────────────────────── пользовательский промпт ───────────────────────────
 
@@ -316,7 +363,20 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 //     что человек уже набрал, и он платит вниманием за каждую строку.
 //   - ТОКЕНЫ — закрытые словари спеки. Модель, которой не показали список, отвечает синонимом, и
 //     синоним превращается в UNSET у строки, которая на самом деле была верной.
-func designConstructionUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int) string {
+//   - СЛОВАРЬ ЦВЕТА (B-25) — ровно тот же довод, но с ценником: `color_code` предложенного
+//     колорвея обязан быть КОДОМ ИЗ СЛОВАРЯ, потому что CreateColorway без него отказывает.
+//     Модель, которой словарь не показали, называет цвет словом, разбор обнуляет код, и человек
+//     получает предложение, которое нельзя подтвердить — то есть оплаченный список, ни одна
+//     строка которого не доводит до продукта.
+//
+// ⚠ ЦВЕТА ПРИХОДЯТ ПАРАМЕТРОМ, А НЕ ЧИТАЮТСЯ ЗДЕСЬ. Функция остаётся ЧИСТОЙ: она не ходит ни в
+// стор, ни в кэш, и накрывается табличными пробами без обвязки. Тот же список хендлер отдаёт
+// проверке ответа (designVerifyColourways) — один список на вопрос и на проверку ответа, потому
+// что второе чтение словаря между запросом и разбором дало бы код, которого модели не показывали.
+func designConstructionUserPrompt(
+	card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int,
+	colours []entity.Color,
+) string {
 	var b strings.Builder
 
 	// ─── 1. ШАПКА ИЗДЕЛИЯ ───
@@ -369,6 +429,7 @@ func designConstructionUserPrompt(card *entity.TechCard, mood *pb_common.DesignM
 	b.WriteString("bom kinds (hardware / trims / decoration only): " +
 		strings.Join(designBomKindTokens, ", ") + "\n")
 	b.WriteString("fit: " + strings.Join(designConstructionFits, ", ") + "\n")
+	b.WriteString(designColourTokenLine(colours))
 
 	// ⚠ КАТАЛОГА НЕТ, И ЭТО ГОВОРИТСЯ ВСЛУХ. Модель, которой не сказали, что артикулов ей не дали,
 	// охотно придумает `material_id`; разбор его всё равно обнулит, но потраченные на выдумку
@@ -376,6 +437,107 @@ func designConstructionUserPrompt(card *entity.TechCard, mood *pb_common.DesignM
 	b.WriteString("\nNo materials catalogue is given: never invent an article id.\n")
 
 	return strings.TrimSpace(b.String())
+}
+
+// designColourTokenLine — СТРОКА СЛОВАРЯ ЦВЕТА ДЛЯ ПРОМПТА, ИЛИ ЧЕСТНОЕ «СПИСКА НЕТ» (B-25).
+//
+// ⚠ ТРИ ИСХОДА, И ТОЛЬКО ОДИН ИЗ НИХ — СПИСОК. Пустой словарь и словарь длиннее потолка дают ОДНУ
+// И ТУ ЖЕ строку «списка нет — оставь color_code пустым», потому что вопрос, который она закрывает,
+// один: «есть ли у модели чем выбрать код». Урезанный список был бы третьим, ХУДШИМ ответом —
+// модель выбирала бы «ближайший код» из набора, который мы молча обрезали, и её выбор выглядел бы
+// таким же уверенным, как настоящий.
+//
+// ⚠ АРХИВНЫЕ ЦВЕТА НЕ ЕДУТ ВОВСЕ (ListColors(ctx,false) у вызывающего): архивный код нельзя дать
+// новому продукту, и предложение с ним нельзя подтвердить.
+func designColourTokenLine(colours []entity.Color) string {
+	if len(colours) == 0 || len(colours) > designConstructionMaxColourRows {
+		return "colours: no colour list is given; leave \"color_code\" empty\n"
+	}
+	rows := make([]string, 0, len(colours))
+	for _, c := range colours {
+		code := strings.TrimSpace(c.Code)
+		if code == "" {
+			continue
+		}
+		row := code
+		if name := strings.TrimSpace(c.Name); name != "" {
+			row += " · " + name
+		}
+		if hex := strings.TrimSpace(c.Hex.String); hex != "" {
+			row += " · " + hex
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return "colours: no colour list is given; leave \"color_code\" empty\n"
+	}
+	return "colours (code · name · hex): " + strings.Join(rows, ", ") + "\n"
+}
+
+// designColourDictionary — СЛОВАРЬ ЦВЕТА, СЛОЖЕННЫЙ ДЛЯ УЗНАВАНИЯ: складка → канонический код.
+//
+// ⚠ В КАРТУ КЛАДЁТСЯ И КОД, И ИМЯ, И ЭТО НЕ ЩЕДРОСТЬ, А ЗАМЕР ТОГО, КАК ОТВЕЧАЮТ МОДЕЛИ. Промпт
+// показывает «BLK · black · #000000» и просит код; модель регулярно отвечает тем, что человекообразнее
+// — именем. Приняв только код, мы обнуляли бы верный ответ и заставляли человека доискивать в пикере
+// то, что модель уже выбрала.
+//
+// ⚠ КОД СТАРШЕ ИМЕНИ, И СТОЛКНОВЕНИЕ ИМЁН УБИВАЕТ ОБЕ СТОРОНЫ. Складка, занятая КОДОМ, именем не
+// переписывается: код — это идентификатор, имя — подпись. Складка, на которую претендуют ДВА разных
+// имени, выбрасывается из карты вовсе: «bone» двух разных цветов — это не узнавание, а жребий, и
+// жребий здесь стоит чужого продукта.
+type designColourDictionary map[string]string
+
+func designBuildColourDictionary(colours []entity.Color) designColourDictionary {
+	dict := make(designColourDictionary, len(colours)*2)
+	for _, c := range colours {
+		code := strings.TrimSpace(c.Code)
+		if code == "" {
+			continue
+		}
+		dict[designFoldToken(code)] = code
+	}
+	byName := make(map[string]string, len(colours))
+	ambiguous := make(map[string]struct{}, 4)
+	for _, c := range colours {
+		code, name := strings.TrimSpace(c.Code), designFoldToken(c.Name)
+		if code == "" || name == "" {
+			continue
+		}
+		if prev, seen := byName[name]; seen && prev != code {
+			ambiguous[name] = struct{}{}
+			continue
+		}
+		byName[name] = code
+	}
+	for name, code := range byName {
+		if _, clash := ambiguous[name]; clash {
+			continue
+		}
+		if _, taken := dict[name]; taken {
+			continue
+		}
+		dict[name] = code
+	}
+	return dict
+}
+
+// designCardSlotFolds — СКЛАДКИ ИМЁН СТРОК СПЕКИ, УЖЕ СТОЯЩИХ НА КАРТОЧКЕ.
+//
+// Это половина ответа на вопрос «есть ли такой слот»; вторая половина — строки спеки САМОГО ОТВЕТА
+// (см. designVerifyColourways). Обе нужны: колорвей, предложенный в одном ответе со своими слотами,
+// обязан к ним привязаться ДО того, как человек их принял, а колорвей на карточку, где слоты уже
+// набраны руками, — к набранным.
+func designCardSlotFolds(card *entity.TechCard) map[string]struct{} {
+	out := make(map[string]struct{})
+	if card == nil {
+		return out
+	}
+	for _, item := range card.BomItems {
+		if fold := designFoldToken(item.Name); fold != "" {
+			out[fold] = struct{}{}
+		}
+	}
+	return out
 }
 
 // designCategoryName — имя категории карточки, если словарь его знает.
@@ -557,13 +719,36 @@ type designConstructionStats struct {
 	// До круга 19 любое несовпадение типа роняло json.Unmarshal целиком, то есть весь оплаченный
 	// ответ ради одного «aspects": "none"».
 	FieldsDropped int
+
+	// ─── КРУГ 20 ───
+
+	// CalloutsUnasked — СКОЛЬКО ВЫНОСОК МОДЕЛЬ ПРИСЛАЛА, ХОТЯ ПРОМПТ ИХ БОЛЬШЕ НЕ ПРОСИТ (B-13).
+	//
+	// ⚠ ЭТО НЕ CalloutsDropped, И РАЗНИЦА НЕСУЩАЯ. `CalloutsDropped` считает строку БЕЗ СЛОВ —
+	// брак формы. Здесь строка ЦЕЛА, ПРИНЯТА и уедет на провод (поле 6 живо ради повтора старых
+	// прогонов); посчитана она потому, что «модель отвечает на вопрос, которого ей не задавали» —
+	// это факт ПРО ПРОМПТ, а узнать его можно только из лога. Ноль здесь — доказательство, что
+	// правило 3 сработало; растущее число — счёт за выходные токены, которых никто не читает.
+	CalloutsUnasked int
+	// ColourCodesUnset — предложенный код цвета НЕ УЗНАН словарём и обнулён. Строка колорвея
+	// остаётся (её можно подтвердить, выбрав код руками) — та же граница, что у designBomEnum:
+	// человеку нужнее предложение без кода, чем отсутствие предложения.
+	ColourCodesUnset int
+	// SlotColoursUnbound — цвет назван для слота, которого нет НИ В ЭТОМ ОТВЕТЕ, НИ НА КАРТОЧКЕ.
+	// Рецепт колорвея ключуется по строке спеки; цвет несуществующего слота некуда положить, и
+	// нарисованный он обещал бы человеку строку, которую подтверждение молча пропустит.
+	SlotColoursUnbound int
+	// ColourwaysDropped — колорвей без имени и без единого привязанного цвета. Подтверждать нечего:
+	// продукт требует имени или хотя бы одного цвета, чтобы отличаться от соседнего.
+	ColourwaysDropped int
 }
 
 // Any говорит, было ли ХОТЬ ЧТО-ТО поправлено: уровень строки лога решается по нему.
 func (s designConstructionStats) Any() bool {
 	return s.AspectsCustom+s.AspectsDropped+s.CalloutsDropped+s.BomDropped+s.MissingDropped+
 		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped+
-		s.PairsCleared+s.NonScalars+s.FieldsDropped > 0
+		s.PairsCleared+s.NonScalars+s.FieldsDropped+
+		s.CalloutsUnasked+s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped > 0
 }
 
 // designLoose — строка, принимающая ТРИ формы, в которых модели пишут скаляр: строку, число и
@@ -629,8 +814,16 @@ func designTake(l designLoose, stats *designConstructionStats) string {
 // designConstructionValueKeys — СЕМЬ КЛЮЧЕЙ, КОТОРЫМ ЕСТЬ КУДА ЛЕЧЬ. Присутствие хотя бы одного из
 // них и есть признак «это ответ по схеме»; `missing` в семёрку не входит намеренно — это читаемый
 // совет, а не значение поля, и ответ из одного совета не отвечает на заданный вопрос.
+// ⚠ `colourways` В СЕМЁРКУ ДОБАВЛЕН, И ОТ ЭТОГО ОНА СТАЛА ВОСЬМЁРКОЙ. Ключ отвечает тому же
+// условию, что и остальные семь: ему ЕСТЬ КУДА ЛЕЧЬ (блок предложений на студии, а оттуда —
+// продукт). Ответ, содержательный одним лишь списком колорвеев, — законный и оплаченный ответ, и
+// без этой строки он уходил бы в `invalid_output`.
+//
+// ⚠ `callouts` ИЗ СПИСКА НЕ УБРАН, ХОТЯ ПРОМПТ ИХ БОЛЬШЕ НЕ ПРОСИТ (B-13). Список отвечает на
+// вопрос «это ответ по нашей схеме», а не «это то, что мы просили»: сохранённый до круга 20 прогон,
+// у которого содержательными оказались одни выноски, обязан читаться обратно на повторе.
 var designConstructionValueKeys = []string{
-	"silhouette", "fabric", "fit", "concept", "aspects", "callouts", "bom",
+	"silhouette", "fabric", "fit", "concept", "aspects", "callouts", "bom", "colourways",
 }
 
 // designField читает ОДИН необязательный ключ, и НЕУДАЧА ОДНОГО КЛЮЧА НЕ РОНЯЕТ ОСТАЛЬНЫЕ.
@@ -705,6 +898,53 @@ type designRawBomLine struct {
 	// MaterialID читается, чтобы БЫТЬ ОБНУЛЁННЫМ ГРОМКО (счётчик статистики), а не выброшенным
 	// молча: «модель придумывает артикулы» — это про промпт, и узнать это можно только из лога.
 	MaterialID designLoose `json:"material_id"`
+}
+
+// designLooseList — СПИСОК, ТЕРПЯЩИЙ НЕ-СПИСОК НА СВОЁМ МЕСТЕ.
+//
+// Тот же приём и тот же довод, что у designLoose: `"slots": {}` или `"slots": "black"` — это дрейф
+// ФОРМЫ вложенного поля, и ронять из-за него ВЕСЬ колорвей (а вместе с ним имя, код и пантон,
+// которые приехали безупречно) значило бы применить к форме наказание, придуманное для содержания.
+// Читается как «слотов не названо»; колорвей, у которого не осталось ни имени, ни слотов, дальше
+// выбрасывается своим собственным правилом и попадает в ColourwaysDropped.
+type designLooseList []json.RawMessage
+
+func (l *designLooseList) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	if trimmed == "" || trimmed == "null" || trimmed[0] != '[' {
+		*l = nil
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(b, &items); err != nil {
+		*l = nil
+		return nil
+	}
+	*l = items
+	return nil
+}
+
+// designRawColourway — ОДНО ПРЕДЛОЖЕНИЕ КОЛОРВЕЯ, КАК ЕГО ПИШЕТ МОДЕЛЬ.
+//
+// COLOR_CODE И COLOUR_CODE — ОДИН КЛЮЧ, ДВА НАПИСАНИЯ, ровно как colour/color у строки спеки: наш
+// собственный канонический JSON пишет `color_code` (так поле названо в схеме — колонка словаря
+// называется `color_code`), а промпт, написанный по-британски, регулярно получает `colour_code`.
+// Приняв одно, мы теряли бы код у каждого второго ответа по орфографии.
+type designRawColourway struct {
+	Name       designLoose     `json:"name"`
+	ColorCode  designLoose     `json:"color_code"`
+	ColourCode designLoose     `json:"colour_code"`
+	Pantone    designLoose     `json:"pantone"`
+	Hex        designLoose     `json:"hex"`
+	Slots      designLooseList `json:"slots"`
+}
+
+type designRawSlotColour struct {
+	Slot    designLoose `json:"slot"`
+	Pantone designLoose `json:"pantone"`
+	Hex     designLoose `json:"hex"`
+	Colour  designLoose `json:"colour"`
+	ColorUS designLoose `json:"color"`
 }
 
 // parseConstructionDraft — ЧИСТАЯ ФУНКЦИЯ: текст модели → проверенный черновик.
@@ -805,6 +1045,14 @@ func designParseConstructionObject(js string, stats *designConstructionStats) (*
 	}
 
 	// ─── ВЫНОСКИ ───
+	//
+	// ⚠ РАЗБОР ЖИВ, ХОТЯ ПРОМПТ ВЫНОСОК БОЛЬШЕ НЕ ПРОСИТ (B-13), И ЭТО ТРЕБОВАНИЕ, А НЕ ЗАБЫВЧИВОСТЬ.
+	// Идемпотентный повтор читает СОХРАНЁННЫЙ канонический JSON тем же самым разбором; выбросив
+	// ключ, мы сломали бы второе нажатие на КАЖДОМ прогоне, отвеченном до этой волны, — и сломали
+	// бы навсегда, потому что перезвонить модели по тому же ключу идемпотентности нельзя.
+	//
+	// Строки, которые модель шлёт по своей воле, ПРИНИМАЮТСЯ и считаются (CalloutsUnasked): клиент
+	// их не рисует, а лог говорит, работает ли правило 3.
 	seenCallout := make(map[string]struct{})
 	for _, c := range designListField[designRawCallout](fields, "callouts", stats) {
 		// `feature` уезжает в tech_card_callout.part (varchar(255)), `dimensions` — в одноимённую
@@ -831,6 +1079,7 @@ func designParseConstructionObject(js string, stats *designConstructionStats) (*
 		out.Callouts = append(out.Callouts, &pb_common.DesignConstructionCallout{
 			Feature: feature, Details: details, Dimensions: dims,
 		})
+		stats.CalloutsUnasked++
 	}
 
 	// ─── СПЕЦИФИКАЦИЯ ───
@@ -903,7 +1152,207 @@ func designParseConstructionObject(js string, stats *designConstructionStats) (*
 		out.Missing = append(out.Missing, text)
 	}
 
+	// ─── КОЛОРВЕИ (B-25) ───
+	//
+	// ⚠ ЗДЕСЬ ТОЛЬКО ФОРМА: потолки, границы колонок, дедуп, шестнадцатеричный цвет. КОД СЛОВАРЯ И
+	// ПРИВЯЗКА СЛОТОВ ПРОВЕРЯЮТСЯ ОТДЕЛЬНЫМ ШАГОМ (designVerifyColourways), И РАЗДЕЛЕНИЕ ЭТО
+	// НЕСУЩЕЕ. Этот же разбор читает СОХРАНЁННЫЙ канонический JSON на идемпотентном повторе — там
+	// ни словаря, ни карточки под рукой нет и быть не должно. Сложив проверку сюда, мы получили бы
+	// повтор, который сверяет вчерашний оплаченный ответ с СЕГОДНЯШНИМ словарём: архивированный за
+	// ночь цвет молча обнулял бы код, а переименованная строка спеки — уносила бы цвета слотов.
+	// Прогон отвечен один раз и навсегда.
+	seenColourway := make(map[string]struct{})
+	for _, c := range designListField[designRawColourway](fields, "colourways", stats) {
+		// ИМЯ — ПОДПИСЬ: потолок в РУНАХ (смысловой, 64), затем в БАЙТАХ (колонка
+		// tech_card_colorway.dev_name, varchar(255)). Порядок именно такой: рунный потолок строже
+		// для латиницы, байтовый — для кириллицы, и нужны оба.
+		name := designBoundedBytes(
+			designBoundedRunes(designTake(c.Name, stats), designConstructionMaxColourwayNameRunes, stats),
+			designConstructionMaxVarchar255, stats)
+		code := designTake(c.ColorCode, stats)
+		if code == "" {
+			code = designTake(c.ColourCode, stats)
+		}
+		cw := &pb_common.DesignColourwayProposal{
+			Name: name,
+			// КОД ЕДЕТ СЫРЫМ И ПРОВЕРЯЕТСЯ ШАГОМ ВЫШЕ ПО МАРШРУТУ. Здесь он лишь обрезан по
+			// колонке словаря (varchar(64) с запасом: настоящий код — три знака).
+			ColorCode: designBoundedBytes(code, designConstructionMaxVarchar64, stats),
+			Pantone:   designBoundedBytes(designTake(c.Pantone, stats), designConstructionMaxVarchar64, stats),
+			Hex:       designHexColour(designTake(c.Hex, stats)),
+		}
+		seenSlot := make(map[string]struct{}, len(c.Slots))
+		for _, rawSlot := range c.Slots {
+			var s designRawSlotColour
+			if err := json.Unmarshal(rawSlot, &s); err != nil {
+				stats.FieldsDropped++
+				continue
+			}
+			slot := designBoundedBytes(designTake(s.Slot, stats), designConstructionMaxVarchar255, stats)
+			fold := designFoldToken(slot)
+			if fold == "" {
+				// ЦВЕТ БЕЗ СЛОТА НЕКУДА ПОЛОЖИТЬ: строка рецепта ключуется именем строки спеки.
+				stats.SlotColoursUnbound++
+				continue
+			}
+			if _, dup := seenSlot[fold]; dup {
+				stats.Deduped++
+				continue
+			}
+			seenSlot[fold] = struct{}{}
+			if len(cw.Slots) >= designConstructionMaxColourwaySlots {
+				stats.OverLimit++
+				continue
+			}
+			colour := designTake(s.Colour, stats)
+			if colour == "" {
+				colour = designTake(s.ColorUS, stats)
+			}
+			cw.Slots = append(cw.Slots, &pb_common.DesignColourwaySlotColour{
+				Slot:    slot,
+				Pantone: designBoundedBytes(designTake(s.Pantone, stats), designConstructionMaxVarchar64, stats),
+				Hex:     designHexColour(designTake(s.Hex, stats)),
+				Colour:  designBoundedBytes(colour, designConstructionMaxVarchar255, stats),
+			})
+		}
+		if designColourwayIsEmpty(cw) {
+			stats.ColourwaysDropped++
+			continue
+		}
+		// ДЕДУП ПО СЛОЖЕННОМУ ИМЕНИ: два «Black / Bone» в одном ответе — это одно предложение,
+		// напечатанное дважды, и подтвердить их оба нельзя (второй CreateColorway отказал бы по
+		// занятому коду).
+		fold := designFoldToken(cw.Name + "|" + cw.ColorCode)
+		if _, dup := seenColourway[fold]; dup {
+			stats.Deduped++
+			continue
+		}
+		seenColourway[fold] = struct{}{}
+		if len(out.Colourways) >= designConstructionMaxColourways {
+			stats.OverLimit++
+			continue
+		}
+		out.Colourways = append(out.Colourways, cw)
+	}
+
 	return out, nil
+}
+
+// designColourwayIsEmpty — «ПОДТВЕРЖДАТЬ НЕЧЕГО».
+//
+// Правило дизайна дословно: колорвей без имени И без слотов выбрасывается. Именно эта пара, а не
+// «пусто по всем полям»: имя без цветов — законный колорвей (цвета доставят на вкладке), цвета без
+// имени — тоже (сервер подпишет его «colourway N»). Пустое И то, и другое — строка, которая не
+// отличается от соседней ничем.
+func designColourwayIsEmpty(c *pb_common.DesignColourwayProposal) bool {
+	return c.GetName() == "" && len(c.GetSlots()) == 0
+}
+
+// designHexColour — ЭКРАННОЕ ПРИБЛИЖЕНИЕ ЦВЕТА ИЛИ ПУСТО, ТРЕТЬЕГО НЕ ДАНО.
+//
+// ⚠ ПРОВЕРКА, А НЕ ОБРЕЗКА, И ЭТО РАЗНЫЕ ВЕЩИ. `dev_hex` — varchar(7), то есть «#RRGGBB» ровно;
+// обрезав «black» до семи знаков, мы положили бы в колонку слово и нарисовали бы человеку плашку
+// цвета, которого никто не называл. Не шестнадцатеричное — это ОТСУТСТВИЕ приближения, и пустая
+// строка говорит именно это; пантон рядом при этом остаётся, и клиент рисует плашку по нему
+// (findPantone) — то есть по КОДУ, который человек может проверить, а не по выдумке.
+//
+// Сокращённая запись (#RGB) НЕ ПРИНИМАЕТСЯ: разворачивать её значило бы называть цвет, который
+// модель не написала, а колонка всё равно ждёт семь знаков.
+func designHexColour(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) != 7 || s[0] != '#' {
+		return ""
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		hex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !hex {
+			return ""
+		}
+	}
+	return s
+}
+
+// designVerifyColourways — ВТОРОЙ, НЕЧИСТЫЙ ПО ВХОДАМ ШАГ: ответ сверяется С НАШИМИ СОБСТВЕННЫМИ
+// ДАННЫМИ — со словарём цвета и со строками спеки.
+//
+// ⚠ ПОЧЕМУ ЭТО ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ЧАСТЬ РАЗБОРА. Разбор зовётся ДВАЖДЫ: на живом ответе
+// модели и на СОХРАНЁННОЙ строке при идемпотентном повторе. Проверка обязана случиться РОВНО ОДИН
+// РАЗ — на живом ответе, до записи канонического JSON. Сверка на повторе означала бы, что
+// вчерашний оплаченный ответ пересматривается сегодняшним словарём: цвет, архивированный за ночь,
+// молча терял бы код, а переименованная строка спеки уносила бы с собой цвета слотов. То, что
+// человек уже видел и за что заплачено, менять нельзя — это тот же довод, по которому в
+// `output_text` уезжает проверенный канон, а не ответ модели.
+//
+// ФУНКЦИЯ ОСТАЁТСЯ ЧИСТОЙ: словарь и складки карточки приходят готовыми, стор она не знает.
+func designVerifyColourways(
+	draft *pb_common.DesignConstructionDraft,
+	dict designColourDictionary,
+	cardSlots map[string]struct{},
+	stats *designConstructionStats,
+) {
+	if draft == nil || len(draft.Colourways) == 0 {
+		return
+	}
+
+	// ЧТО СЧИТАЕТСЯ СУЩЕСТВУЮЩИМ СЛОТОМ: строки спеки ЭТОГО ЖЕ ОТВЕТА плюс строки спеки КАРТОЧКИ.
+	// Первое — потому что колорвей и его слоты приезжают одним ответом и человек примет их одним
+	// заходом; второе — потому что на карточке со набранной руками спекой предложение обязано
+	// лечь на неё, а не потребовать пересоздать слоты.
+	bound := make(map[string]struct{}, len(cardSlots)+len(draft.Bom))
+	for fold := range cardSlots {
+		bound[fold] = struct{}{}
+	}
+	for _, line := range draft.Bom {
+		if fold := designFoldToken(line.GetName()); fold != "" {
+			bound[fold] = struct{}{}
+		}
+	}
+
+	kept := draft.Colourways[:0]
+	for _, cw := range draft.Colourways {
+		// ─── КОД СЛОВАРЯ ───
+		if cw.ColorCode != "" {
+			if canon, ok := dict[designFoldToken(cw.ColorCode)]; ok {
+				cw.ColorCode = canon
+			} else {
+				// ⚠ СТРОКА ОСТАЁТСЯ, ОБНУЛЯЕТСЯ ТОЛЬКО КОД — та же граница, что у designBomEnum.
+				// Человеку нужнее предложение, у которого код надо выбрать самому, чем отсутствие
+				// предложения, которое модель составила правильно и подписала своим словом.
+				cw.ColorCode = ""
+				stats.ColourCodesUnset++
+			}
+		}
+
+		// ─── ПРИВЯЗКА ЦВЕТОВ К СЛОТАМ ───
+		keptSlots := cw.Slots[:0]
+		for _, s := range cw.Slots {
+			if _, ok := bound[designFoldToken(s.GetSlot())]; !ok {
+				stats.SlotColoursUnbound++
+				continue
+			}
+			keptSlots = append(keptSlots, s)
+		}
+		cw.Slots = keptSlots
+
+		if designColourwayIsEmpty(cw) {
+			stats.ColourwaysDropped++
+			continue
+		}
+		kept = append(kept, cw)
+	}
+	draft.Colourways = kept
+
+	// ─── ПОДПИСЬ БЕЗЫМЯННОМУ ───
+	//
+	// ⚠ СЧИТАЕТСЯ ПО ПОРЯДКУ В ОТВЕТЕ, А НЕ ПО ЧИСЛУ БЕЗЫМЯННЫХ: «colourway 2» рядом с «Black /
+	// Bone» и «colourway 3» читается как «второе и третье предложение», а два подряд «colourway 1»
+	// и «colourway 2» на местах 2 и 4 не сказали бы человеку ничего.
+	for i, cw := range draft.Colourways {
+		if cw.Name == "" {
+			cw.Name = "colourway " + strconv.Itoa(i+1)
+		}
+	}
 }
 
 // designScalarField — один скалярный ключ ответа: прочитан, посчитан, отдан строкой. Отсутствующий

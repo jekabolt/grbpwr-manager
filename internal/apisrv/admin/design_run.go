@@ -365,12 +365,19 @@ var designMeshyTaskCeilingUSD = decimal.RequireFromString("0.60")
 // и ответ (до 3k выходных на структурной ветке) — ≈$0.03. Доска из двенадцати кадров выходит на
 // ≈$0.10, что совпадает с прикидкой «сколько стоит одно нажатие» в дизайне фичи.
 //
+// ⚠ КРУГ 20: БАЗА 0.03 → 0.035, И ЭТО РОВНО ОДИН НОВЫЙ СПИСОК В ОТВЕТЕ (B-25). Колорвеи —
+// ≈300–500 выходных токенов на нажатие, ≈$0.005; словарь цвета во входных — ещё ≈1k токенов при
+// полном потолке в 200 строк. Двинуть базу обязательно, потому что ОЦЕНКА ЖЕ И СПИСЫВАЕТСЯ: не
+// двинув её, мы получили бы не «неточный отчёт», а РЕЗЕРВ, который меньше траты, — то есть
+// дневной счёт, врущий про потраченное. Выноски при этом из ответа ушли (B-13) и высвободили до
+// 15 строк, поэтому чистая прибавка меньше названной; в сторону завышения — намеренно.
+//
 // ⚠ ОЦЕНКА ЖЕ И СПИСЫВАЕТСЯ. Чат-эндпоинт возвращает токены, а не деньги (см. FinishAttempt ниже),
 // поэтому это число — не только резерв, но и ФАКТ в регистре. Завышать его безопаснее, чем
 // занижать: завышенный резерв сужает очередь на минуты, заниженный факт врёт про потраченное
 // навсегда.
 var (
-	designDraftIdeaBaseUSD    = decimal.RequireFromString("0.03")
+	designDraftIdeaBaseUSD    = decimal.RequireFromString("0.035")
 	designDraftIdeaPictureUSD = decimal.RequireFromString("0.006")
 )
 
@@ -2200,11 +2207,10 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// трём заголовкам (V-19), поэтому у него не меняется ничего: та же роль, тот же промпт, тот
 	// же выключенный json и тот же отсутствующий потолок.
 	construction := req.GetConstruction()
-	systemPrompt, prompt := draftIdeaSystemPrompt, designDraftIdeaPrompt(card, mood, attachedIDs)
+	systemPrompt := draftIdeaSystemPrompt
 	maxTokens := 0
 	if construction {
 		systemPrompt = designConstructionSystemPrompt
-		prompt = designConstructionUserPrompt(card, mood, attachedIDs)
 		maxTokens = designConstructionMaxTokens
 	}
 
@@ -2323,6 +2329,38 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		return nil, status.Error(codes.Internal, "the idea draft could not be claimed")
 	}
 
+	// ─── ПРОМПТ СОБИРАЕТСЯ ЗДЕСЬ, ПОСЛЕ ПОВТОРА, А НЕ ДО НЕГО ───
+	//
+	// Ниже этой строки прогон ТОЧНО пойдёт к модели: идемпотентный повтор уже вернулся сохранённым
+	// ответом, перехват уже разрешён. Всё, что нужно только живому вызову, собирается здесь —
+	// иначе двойной клик, который модель не зовёт вовсе, платил бы чтением словаря цвета за
+	// вопрос, который никто не задаст.
+	prompt := designDraftIdeaPrompt(card, mood, attachedIDs)
+	// colours — СЛОВАРЬ ЦВЕТА, ЧИТАЕМЫЙ ОДИН РАЗ НА НАЖАТИЕ И ИДУЩИЙ В ДВА МЕСТА (B-25): в промпт
+	// (что модели показали) и в проверку ответа (чем ответ поверяется). ДВА чтения между вопросом
+	// и разбором развели бы эти множества: цвет, заведённый или архивированный в те секунды, пока
+	// шёл платный вызов, дал бы либо код, которого модели не показывали, либо отказ коду, который
+	// ей показали как законный.
+	var colours []entity.Color
+	if construction {
+		// НЕАРХИВНЫЕ, потому что архивный код нельзя дать новому продукту: предложение с ним нельзя
+		// подтвердить, и показывать его модели значило бы платить за строку, которая никуда не ведёт.
+		//
+		// ⚠ ОШИБКА СЛОВАРЯ НЕ РОНЯЕТ ПРОГОН, А ЗАБИРАЕТ ОДИН СПИСОК. Черновик отвечает на четыре
+		// вопроса, из которых цвет — один; отказать во всём нажатии из-за соседнего, независимого
+		// справочника значило бы сделать его условием работы конструкции. Промпт тогда сам говорит
+		// модели «списка нет — оставь color_code пустым» (designColourTokenLine), разбор кода не
+		// узнаёт и обнуляет, а человек выберет его руками на блоке предложений.
+		var cerr error
+		if colours, cerr = s.repo.Dictionary().ListColors(ctx, false); cerr != nil {
+			slog.Default().WarnContext(ctx,
+				"draft design idea: the colour dictionary is unreadable; colourways will carry no code",
+				slog.Int("tech_card_id", cardID), slog.String("err", cerr.Error()))
+			colours = nil
+		}
+		prompt = designConstructionUserPrompt(card, mood, attachedIDs, colours)
+	}
+
 	attempt, err := s.repo.Design().StartAttempt(ctx, entity.DesignAttemptStart{
 		RunId:      run.Id,
 		ClaimToken: run.ClaimToken.String,
@@ -2386,6 +2424,12 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	var draft *pb_common.DesignConstructionDraft
 	if construction {
 		parsed, stats, perr := parseConstructionDraft(text, finishReason)
+		// ⚠ СВЕРКА С НАШИМИ ДАННЫМИ — ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ, ДО ЗАПИСИ КАНОНА (B-25). Разбор чист и
+		// зовётся ещё раз на повторе, где ни словаря, ни свежей карточки быть не должно: сверка
+		// там пересматривала бы вчерашний оплаченный ответ сегодняшним словарём. Довод целиком —
+		// у designVerifyColourways.
+		designVerifyColourways(parsed, designBuildColourDictionary(colours),
+			designCardSlotFolds(card), &stats)
 		s.designLogConstructionDraft(ctx, cardID, run.Id, finishReason, usage, stats, perr)
 		if perr != nil {
 			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
@@ -2480,6 +2524,14 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("truncated", stats.Truncated),
 		slog.Int("over_limit", stats.OverLimit),
 		slog.Int("deduped", stats.Deduped),
+		// ─── КРУГ 20 ───
+		// callouts_unasked — модель прислала выноски, хотя правило 3 их больше не просит (B-13).
+		// Ноль означает, что переписанное правило работает; растущее число — счёт за выходные
+		// токены, которых клиент не рисует.
+		slog.Int("callouts_unasked", stats.CalloutsUnasked),
+		slog.Int("colour_codes_unset", stats.ColourCodesUnset),
+		slog.Int("slot_colours_unbound", stats.SlotColoursUnbound),
+		slog.Int("colourways_dropped", stats.ColourwaysDropped),
 	}
 	switch {
 	case err != nil:

@@ -909,6 +909,12 @@ func newDraftRigWithCard(
 	media := mocks.NewMockMedia(t)
 	repo.EXPECT().Media().Return(media).Maybe()
 	media.EXPECT().GetMediaByIds(mock.Anything, boardIDs).Return(byID, nil).Maybe()
+	// СЛОВАРЬ ЦВЕТА (B-25) — ТОЛЬКО НЕАРХИВНЫЙ, И `false` ЗДЕСЬ ЧАСТЬ УТВЕРЖДЕНИЯ: архивный код
+	// нельзя дать новому продукту, значит показывать его модели — платить за строку, ведущую
+	// в отказ. Строгий мок покраснеет, если хендлер спросит с `true`.
+	dict := mocks.NewMockDictionary(t)
+	repo.EXPECT().Dictionary().Return(dict).Maybe()
+	dict.EXPECT().ListColors(mock.Anything, false).Return(draftProbeColours(), nil).Maybe()
 	design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
 		Run(func(_ context.Context, req entity.DesignRunStart) { rig.started = req }).
 		Return(&entity.DesignRunStarted{Run: run, Budget: entity.DesignBudget{Day: "2026-08-30"}}, nil).Once()

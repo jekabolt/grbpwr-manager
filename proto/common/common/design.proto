@@ -1352,11 +1352,55 @@ message DesignConstructionDraft {
   // and a proposal that competes with them would ask a person to defend what they already wrote.
   string concept = 4;
   repeated DesignConstructionAspect aspects = 5; // one of the standard keys, or a custom one
-  repeated DesignConstructionCallout callouts = 6; // UNPINNED rows for the construction table
+  // UNPINNED rows for the construction table.
+  //
+  // ⚠ THE PROMPT NO LONGER ASKS FOR THESE (B-13), AND THE FIELD STAYS ANYWAY. Two reasons, both
+  // load-bearing: a run answered before B-13 is replayed from its stored canonical JSON and must
+  // still parse, and proto fields are never renumbered. Construction features — seams, closures,
+  // edges, pockets — are now asked for under `aspects`, where the owner said they belong. A model
+  // that volunteers callouts anyway is still parsed and still carried; the client draws none.
+  repeated DesignConstructionCallout callouts = 6;
   repeated DesignConstructionBomLine bom = 7;
   // What deserves a pinned note and has none. READ-ONLY ADVICE: it names a picture and a spot, it
   // proposes no value, and there is nothing on the card for it to land in.
   repeated string missing = 8;
+  // Colour combinations the board supports (B-25). 2 to 4, empty when the pictures state no
+  // colour. A PROPOSAL LIKE EVERY OTHER FIELD HERE: nothing is created until a person confirms
+  // one, because confirming writes a PRODUCT (a colourway of this style) and not a form value.
+  repeated DesignColourwayProposal colourways = 9;
+}
+
+// DesignColourwayProposal is ONE proposed colourway: what to call it, which dictionary colour it
+// is, what the swatch looks like, and which Pantone goes on which cloth slot.
+//
+// THE SHAPE IS EXACTLY WHAT THE COLORWAYS TAB ALREADY NEEDS AND NOTHING MORE. `color_code` is what
+// CreateColorway requires (a colourway is a product and a product needs a dictionary colour);
+// name / pantone / hex are the colourway's own development row; `slots` are the recipe rows keyed
+// by the BOM line the slot's NAME folds onto. Nothing is invented for the wire that the tab does
+// not already draw.
+message DesignColourwayProposal {
+  string name = 1; // dev name, «Black / Bone»; the server names an unnamed one «colourway N»
+  // A code the SERVER VERIFIED against the colour dictionary, or '' when none was close.
+  //
+  // ⚠ '' IS A LEGAL ANSWER AND THE CLIENT MUST ASK FOR A CODE. A model that names a colour we do
+  // not stock produces a proposal that cannot become a product; an unverified code would produce
+  // one that fails at CreateColorway with the server's own words instead of ours.
+  string color_code = 2;
+  string pantone = 3; // the swatch — the main cloth's Pantone, e.g. «19-4005 TCX», kept as typed
+  string hex = 4; // #RRGGBB screen approximation, or '' when the answer was not a hex
+  // One entry per cloth slot the answer named. BOUND BY THE SLOT'S FOLDED NAME, never by index or
+  // id: the same fold the BOM/slot table dedupes on, so a colourway proposed beside its slots
+  // binds to them and to hand-typed slots of the same name alike.
+  repeated DesignColourwaySlotColour slots = 5;
+}
+
+// DesignColourwaySlotColour is one cloth slot wearing one colour, in the two spellings the recipe
+// row holds: a Pantone code and the words a person reads.
+message DesignColourwaySlotColour {
+  string slot = 1; // the slot's NAME as the answer spelled it — never an index and never an id
+  string pantone = 2; // → colorway recipe usages[].pantone
+  string hex = 3; // #RRGGBB, or '' when the answer was not a hex
+  string colour = 4; // words: «black», «bone white» → colorway recipe usages[].color
 }
 
 // DesignConstructionAspect is one row of the aspects editor: its key and its text.
