@@ -915,6 +915,15 @@ type draftRig struct {
 	// started — то, чем прогон был ОТКРЫТ: снимок входов и цена. Замораживается в строке навсегда,
 	// поэтому пробы про доску и про деньги смотрят сюда, а не на ответ хендлера.
 	started entity.DesignRunStart
+	// budgetCtxErr / budgetDeadline — ЖИВ ЛИ БЫЛ КОНТЕКСТ У ТРЕТЬЕГО ОБРАЩЕНИЯ К СТОРУ, того, что
+	// читает полосу бюджета уже ПОСЛЕ закрытия прогона.
+	//
+	// Заведено по тому же доводу, что и два соседних поля, и ловит зеркальный дефект: две
+	// закрывающие ЗАПИСИ получили по своему сроку от context.WithoutCancel, а это ЧТЕНИЕ осталось
+	// на ЖИВОМ контексте запроса — то есть на ушедшем клиенте падало и превращало удачный,
+	// спасённый прогон в ERROR «failed to read the design budget» с codes.Internal.
+	budgetCtxErr   []error
+	budgetDeadline []time.Time
 	// finishErr — ЧЕМ ОТВЕЧАЕТ ПЕРВАЯ ЗАКРЫВАЮЩАЯ ЗАПИСЬ. Ноль — успех.
 	//
 	// Ручка нужна ровно одной пробе — той, что читает СЛЕД ПРОПАВШЕГО СПИСАНИЯ: этот исход не
@@ -1015,7 +1024,13 @@ func newDraftRigWithCard(
 				time.Sleep(rig.completeDelay)
 			}
 		}).Return(&entity.DesignRun{Id: 55, Status: entity.DesignRunDone}, nil).Maybe()
-	design.EXPECT().GetBudget(mock.Anything).Return(entity.DesignBudget{Day: "2026-08-30"}, nil).Maybe()
+	design.EXPECT().GetBudget(mock.Anything).
+		Run(func(ctx context.Context) {
+			rig.budgetCtxErr = append(rig.budgetCtxErr, ctx.Err())
+			if dl, ok := ctx.Deadline(); ok {
+				rig.budgetDeadline = append(rig.budgetDeadline, dl)
+			}
+		}).Return(entity.DesignBudget{Day: "2026-08-30"}, nil).Maybe()
 
 	rig.srv = &Server{
 		repo:                    repo,

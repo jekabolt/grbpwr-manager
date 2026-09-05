@@ -2672,9 +2672,25 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if err != nil {
 		return nil, designError(ctx, "failed to file the idea draft", err, nil)
 	}
-	budget, err := s.repo.Design().GetBudget(ctx)
+	// ТРЕТИЙ СРОК, И ОН ОТ ТОГО ЖЕ closeBase, ЧТО ДВА ВЫШЕ.
+	//
+	// ⚠ БЕЗ НЕГО ПОЧИНКА «ОТВЕТ СОХРАНЯЕТСЯ, ДАЖЕ ЕСЛИ СЛУШАТЬ ЕГО НЕКОМУ» ЗАКАНЧИВАЛАСЬ ЛОЖНЫМ
+	// ERROR РОВНО НА ТЕХ ПРОГОНАХ, КОТОРЫЕ ОНА СПАСЛА. Ушедший клиент отменяет ctx; CompleteRun
+	// клал оплаченный ответ в строку своим сроком и возвращался успехом — а это чтение шло СТАРЫМ,
+	// уже отменённым контекстом, падало на BeginTx, и designError писал ERROR «failed to read the
+	// design budget» с codes.Internal. Денег это не теряет (повтор ключа отдаёт сохранённый ответ),
+	// но в журнале рядом с run_id вставала строка, утверждающая ПРОВАЛ там, где всё удалось, — и
+	// стояла она бок о бок со следом пропавшего списания выше, конкурируя с ним за внимание.
+	//
+	// ⚠ ЭТО ЧТЕНИЕ, А НЕ ЗАПИСЬ, И ОНО НАМЕРЕННО НЕ ВЛИЯЕТ НИ НА ЧТО, КРОМЕ ОТВЕТА. Прогон уже
+	// закрыт строкой выше; здесь читается только полоса бюджета для ответа, который, возможно,
+	// никто не прочтёт. Свой срок ему нужен по той же причине, что и двум записям: наследовать
+	// чужой остаток значит зависеть от того, сколько заняли они.
+	budgetCtx, cancelBudget := context.WithTimeout(closeBase, designCloseWriteBudget)
+	defer cancelBudget()
+	budget, err := s.repo.Design().GetBudget(budgetCtx)
 	if err != nil {
-		return nil, designError(ctx, "failed to read the design budget", err, nil)
+		return nil, designError(budgetCtx, "failed to read the design budget", err, nil)
 	}
 	return &pb_admin.DraftDesignIdeaResponse{
 		Run:          s.designRunResponse(ctx, *done),
