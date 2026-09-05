@@ -868,7 +868,21 @@ type draftRig struct {
 	// производный срок со своим `defer cancel()`; спросив сохранённый контекст ПОСЛЕ возврата,
 	// проба увидела бы context.Canceled ВСЕГДА — и покраснела бы на здоровом коде.
 	finishedCtxErr []error
-	failed         []entity.DesignRunFail
+	// finishDelay / *Deadline / failedCtxErr — ЗАМЕР ТОГО, ЧТО ДВЕ ЗАКРЫВАЮЩИЕ ЗАПИСИ НЕ ДЕЛЯТ
+	// ОДИН СРОК. Первая (FinishAttempt) — семь операторов в SERIALIZABLE плюс до пяти повторов по
+	// дедлоку с паузой 300 ms; съев общий бюджет, она оставляла второй (FailRun) истёкший контекст,
+	// и та отказывала на BeginTx ОДНОЙ СТРОКОЙ ЛОГА. Списание записано, прогон не закрыт, резерв не
+	// снят — и такую строку не подметает НИЧТО (обе метлы ReviveExpiredRuns фильтруют
+	// `status='running'`, а draft_idea там не бывает).
+	//
+	// finishDelay заставляет первую запись занять время; дедлайны показывают, откуда отсчитан срок
+	// второй. Равные дедлайны = общий бюджет.
+	finishDelay      time.Duration
+	finishedDeadline []time.Time
+	failedDeadline   []time.Time
+	failedRemaining  []time.Duration
+	failedCtxErr     []error
+	failed           []entity.DesignRunFail
 	// completedText / completedTok — то, чем прогон был закрыт. Токен здесь не декорация:
 	// CompleteRun сверяет его в WHERE, и закрытие чужим токеном — это claim_lost.
 	completedText string
@@ -934,10 +948,21 @@ func newDraftRigWithCard(
 		Run(func(ctx context.Context, req entity.DesignAttemptFinish) {
 			rig.finished = append(rig.finished, req)
 			rig.finishedCtxErr = append(rig.finishedCtxErr, ctx.Err())
+			if dl, ok := ctx.Deadline(); ok {
+				rig.finishedDeadline = append(rig.finishedDeadline, dl)
+			}
+			if rig.finishDelay > 0 {
+				time.Sleep(rig.finishDelay)
+			}
 		}).Return(nil).Maybe()
 	design.EXPECT().FailRun(mock.Anything, mock.AnythingOfType("entity.DesignRunFail")).
-		Run(func(_ context.Context, req entity.DesignRunFail) {
+		Run(func(ctx context.Context, req entity.DesignRunFail) {
 			rig.failed = append(rig.failed, req)
+			rig.failedCtxErr = append(rig.failedCtxErr, ctx.Err())
+			if dl, ok := ctx.Deadline(); ok {
+				rig.failedDeadline = append(rig.failedDeadline, dl)
+				rig.failedRemaining = append(rig.failedRemaining, time.Until(dl))
+			}
 		}).Return(&run, nil).Maybe()
 	design.EXPECT().CompleteRun(mock.Anything, mock.AnythingOfType("entity.DesignRunComplete")).
 		Run(func(_ context.Context, req entity.DesignRunComplete) {

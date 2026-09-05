@@ -310,3 +310,46 @@ func TestAnIdempotentRepeatOfACutDraftDoesNotPayAgain(t *testing.T) {
 	require.Contains(t, err.Error(), "charged",
 		"повтор не платит, но и не умалчивает, что первый раз был оплачен")
 }
+
+// ═══════ ДВЕ ЗАКРЫВАЮЩИЕ ЗАПИСИ — ДВА БЮДЖЕТА, А НЕ ОДИН НА ОБЕ ═══════
+//
+// ЧТО БЫЛО. designFailDraftAs ставил ОДИН context.WithTimeout(designFailWriteBudget) и отдавал его
+// И FinishAttempt, И FailRun. Обе — пишущие транзакции SERIALIZABLE; у первой семь операторов,
+// включая moveBudgetDay, и до пяти повторов по дедлоку с паузой в 300 ms, то есть полторы секунды
+// одного только сна из пяти доступных. Съев бюджет, она оставляла второй ИСТЁКШИЙ контекст, а
+// BeginTx на истёкшем отказывает СРАЗУ.
+//
+// ЧЕМ ЭТО КОНЧАЛОСЬ — И ЭТО ПРОВЕРЕНО ПО ИСХОДНИКУ ПОДМЕТАЛЬЩИКОВ, А НЕ ПРЕДПОЛОЖЕНО. Списание
+// записано, прогон НЕ закрыт, releaseRunReserve не позвана. Строку рода `draft_idea` не подбирает
+// НИКТО: StartRun вставляет `pending`, `running` ставит только ClaimRuns, а она этот род не берёт
+// (`kind <> 'draft_idea'`); обе метлы ReviveExpiredRuns — и возврат в очередь, и
+// closeRunsPastTheirCeiling — фильтруют ровно `status='running'`. Значит резерв дня висит до
+// полуночи, а как только истечёт лиза, строка становится добычей следующего повтора того же
+// client_request_id (designRunResumableSQL) — то есть второго платного вызова.
+//
+// МУТАЦИЯ: вернуть общий контекст (один WithTimeout на обе записи) → краснеет.
+func TestTheTwoClosingWritesDoNotShareOneBudget(t *testing.T) {
+	rig := newDraftRig(t, http.StatusInternalServerError, "")
+	// Первая запись занимает ощутимое время — ровно то, что делал дедлочный повтор.
+	rig.finishDelay = 200 * time.Millisecond
+
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.Error(t, err)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: обе записи вообще состоялись и обе несли срок. Без него проба
+	// зеленела бы в мире, где закрывающих записей нет вовсе.
+	require.Len(t, rig.finishedDeadline, 1, "первая закрывающая запись не пошла в стор со сроком")
+	require.Len(t, rig.failedDeadline, 1, "прогон не закрывался вовсе — резерв повис бы до полуночи")
+
+	require.NoError(t, rig.failedCtxErr[0],
+		"FailRun получила уже истёкший контекст: BeginTx откажет сразу, и прогон не закроется НИКОГДА")
+
+	gap := rig.failedDeadline[0].Sub(rig.finishedDeadline[0])
+	require.GreaterOrEqual(t, gap, rig.finishDelay/2,
+		"дедлайны двух записей разошлись всего на %s: срок второй отсчитан не от неё самой, "+
+			"а унаследован от первой — то есть бюджет снова общий", gap)
+
+	require.GreaterOrEqual(t, rig.failedRemaining[0], designFailWriteBudget-50*time.Millisecond,
+		"у закрытия прогона осталось %s из %s: первая запись съела чужое время",
+		rig.failedRemaining[0], designFailWriteBudget)
+}

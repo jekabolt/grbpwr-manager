@@ -2714,8 +2714,27 @@ func (s *Server) designLogConstructionDraft(
 // круг 19 отделил `budget_exhausted` от `provider_error`; здесь он о той же колонке.
 const designReasonProviderCut = "provider_cut"
 
-// designFailWriteBudget — сколько времени есть у ЗАКРЫВАЮЩЕЙ записи после того, как клиент ушёл.
-// Две строки в одной базе; больше — значит держать соединение ради человека, которого уже нет.
+// designFailWriteBudget — сколько времени есть у ОДНОЙ закрывающей записи после того, как клиент
+// ушёл. Больше — значит держать соединение ради человека, которого уже нет.
+//
+// ⚠ У ОДНОЙ, А НЕ У ОБЕИХ, И РАЗНИЦА ЗДЕСЬ ДЕНЕЖНАЯ. Пять секунд стояли ОДНИМ контекстом на
+// FinishAttempt И FailRun сразу. Обе пишущие транзакции этого стора открыты SERIALIZABLE; у
+// первой семь операторов, включая moveBudgetDay, и до пяти повторов по дедлоку с паузой в 300 ms
+// — полторы секунды одного только сна. Съев бюджет первой, вторая отказывала СРАЗУ (BeginTx на
+// истёкшем контексте), и наружу это выходило ОДНОЙ СТРОКОЙ ЛОГА: списание записано, прогон НЕ
+// закрыт, releaseRunReserve не позвана.
+//
+// ЧЕМ ЭТО КОНЧАЕТСЯ, ПРОВЕРЕНО ПО ПОДМЕТАЛЬЩИКАМ, А НЕ ПРЕДПОЛОЖЕНО: прогон рода `draft_idea`
+// НИКОГДА не бывает `status='running'` — StartRun вставляет `pending`, а `running` ставит только
+// ClaimRuns, которая этот род не берёт (`kind <> 'draft_idea'`). Обе метлы ReviveExpiredRuns
+// фильтруют ровно `status='running'`. Значит такую строку не подметает НИЧТО: она держит резерв
+// дня до полуночи, а как только её лиза истечёт — становится добычей следующего повтора того же
+// client_request_id (designRunResumableSQL), то есть второго платного вызова.
+//
+// ЧЕГО ЭТО СТОИТ, НАЗВАНО ВСЛУХ: в худшем случае провалившийся вызов возвращается человеку на
+// designFailWriteBudget позже — обе записи вправе выбрать свой срок целиком. Обмен несимметричен и
+// потому принят: цена задержки — секунды на уже провалившемся нажатии, цена общего бюджета —
+// незакрытый прогон, висящий резерв и второй платёж.
 const designFailWriteBudget = 5 * time.Second
 
 // designFailDraft закрывает попытку и прогон после провала вызова. ЛУЧШЕЕ УСИЛИЕ И ГРОМКОЕ:
@@ -2785,18 +2804,29 @@ func (s *Server) designFailDraftAs(
 	ctx context.Context, run entity.DesignRun, attemptNo int,
 	cause error, errorCode string, price decimal.NullDecimal,
 ) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), designFailWriteBudget)
-	defer cancel()
-	if err := s.repo.Design().FinishAttempt(ctx, entity.DesignAttemptFinish{
+	// ⚠ ДВЕ ЗАПИСИ — ДВА БЮДЖЕТА, И ЭТО НЕ АККУРАТНОСТЬ, А ПОЧИНКА. Один общий контекст на обе
+	// означал, что медленная первая ОТНИМАЕТ время у второй; довод целиком — у
+	// designFailWriteBudget. Отменяются они по отдельности, поэтому и defer'а два.
+	base := context.WithoutCancel(ctx)
+
+	finishCtx, cancelFinish := context.WithTimeout(base, designFailWriteBudget)
+	defer cancelFinish()
+	if err := s.repo.Design().FinishAttempt(finishCtx, entity.DesignAttemptFinish{
 		RunId: run.Id, AttemptNo: attemptNo,
 		State:     entity.DesignAttemptFailed,
 		Price:     price,
 		ErrorCode: errorCode,
 	}); err != nil {
-		slog.Default().ErrorContext(ctx, "draft design idea: cannot close the failed attempt",
+		slog.Default().ErrorContext(finishCtx, "draft design idea: cannot close the failed attempt",
 			slog.Int("run_id", run.Id), slog.String("err", err.Error()))
 	}
-	if _, err := s.repo.Design().FailRun(ctx, entity.DesignRunFail{
+
+	// СВОЙ СРОК ОТСЧИТЫВАЕТСЯ ОТСЮДА, а не от входа в функцию: закрытие прогона — то, ради чего
+	// эта функция и существует (иначе резерв висит до полуночи, а строку подберёт следующий повтор
+	// того же client_request_id), и оно не вправе зависеть от того, сколько заняла запись цены.
+	failCtx, cancelFail := context.WithTimeout(base, designFailWriteBudget)
+	defer cancelFail()
+	if _, err := s.repo.Design().FailRun(failCtx, entity.DesignRunFail{
 		RunId:      run.Id,
 		ClaimToken: run.ClaimToken.String,
 		ErrorCode:  errorCode,
@@ -2805,7 +2835,7 @@ func (s *Server) designFailDraftAs(
 		// это новый клик человека с новым client_request_id.
 		Retryable: false,
 	}); err != nil {
-		slog.Default().ErrorContext(ctx, "draft design idea: cannot close the failed run",
+		slog.Default().ErrorContext(failCtx, "draft design idea: cannot close the failed run",
 			slog.Int("run_id", run.Id), slog.String("err", err.Error()))
 	}
 }
