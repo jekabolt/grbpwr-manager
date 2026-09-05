@@ -444,7 +444,9 @@ func TestConstructionCeilingCanPhysicallyArrive(t *testing.T) {
 	const measuredTokens, measuredSeconds = 2500.0, 42.0
 	measuredRate := measuredTokens / measuredSeconds // ≈ 59.5 ток/с
 
-	// База — та, что живёт на бете и на проде: OPENROUTER_HTTP_TIMEOUT не задан ни в одном спеке.
+	// База — та, что действует при НЕЗАДАННОМ OPENROUTER_HTTP_TIMEOUT. Что переменная не задана,
+	// известно из ЗАМЕРА, а не из репозитория: в git лежит только продовый .do/app.yaml (он её
+	// оставляет умолчанию вслух), спек беты в .gitignore и проверен на платформе руками.
 	budget := openrouter.DefaultCompletionBudget(designConstructionMaxTokens)
 	required := float64(designConstructionMaxTokens) / budget.Seconds()
 	t.Logf("потолок %d токенов, бюджет вызова %s → требуется %.1f ток/с при замеренных %.1f",
@@ -481,37 +483,89 @@ func TestConstructionCeilingCanPhysicallyArrive(t *testing.T) {
 //
 // ПОЭТОМУ ПРОБА СВЕРЯЕТ ДВА ЧИСЛА ЧЕРЕЗ ГРАНИЦУ ПАКЕТОВ — там, где они и разошлись.
 //
-// МУТАЦИЯ: вернуть store/design.HandlerLease = 5 * time.Minute → краснеет.
+// ⚠ И СВЕРЯЕТ ПО КАЖДОЙ ВЕТКЕ, А НЕ ПО ОДНОЙ КОНСТАНТЕ, И ЭТО ВТОРАЯ ПОЛОВИНА ТОЙ ЖЕ ПОЧИНКИ.
+// Прежняя редакция спрашивала designConstructionMaxTokens — потолок СТРУКТУРНОЙ ветки, — тогда как
+// на провод кладётся entity.DesignDraftAnswerCeiling(ветка). Сегодня оба числа совпадают (у прозы
+// потолка нет), поэтому расхождение пришло бы МОЛЧА: в день, когда прозаический потолок встанет
+// выше 8000, CompletionBudget обгонит лизу, один client_request_id заплатит дважды, а эта проба,
+// спросившая константу одной ветки, останется ЗЕЛЁНОЙ. Цель коммита, который вывел лизу из
+// бюджета, названа дословно — «между ними нет ни одного второго числа»; здесь она держится на
+// ОБЕИХ осях: цикл по веткам и цикл по позициям таблицы потолков.
+//
+// МУТАЦИИ, И ИХ ДВЕ, ПОТОМУ ЧТО ОСЕЙ ДВЕ:
+//   - вернуть store/design.HandlerLease = 5 * time.Minute → краснеет первый цикл;
+//   - анкерить HandlerLeaseFor обратно на одну ветку (игнорировать аргумент и считать бюджет от
+//     entity.DesignConstructionMaxTokens) → краснеет второй.
 func TestHandlerLeaseOutlivesTheLongestPaidCall(t *testing.T) {
-	budget := openrouter.DefaultCompletionBudget(designConstructionMaxTokens)
 	lease := designstore.HandlerLease
-	t.Logf("бюджет вызова %s, лиза хендлера %s, запас %s", budget, lease, lease-budget)
+	ceilings := entity.DesignDraftAnswerCeilings()
+	require.Len(t, ceilings, len(entity.DesignDraftAnswerBranches()),
+		"таблица потолков потеряла ветку: ветка без строки в ней — это ветка, чью лизу никто не посчитал")
 
-	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: прежний литерал был КОРОЧЕ бюджета — то есть дефект был настоящим, а
-	// не арифметической придиркой. Без этой строки проба зеленела бы и на потолке в сто токенов.
-	require.Less(t, 5*time.Minute, budget,
-		"положительный контроль: literal-лиза в 5 минут была короче бюджета вызова (%s)", budget)
+	// ─── ОСЬ 1: ЛИЗА ПЕРЕЖИВАЕТ САМЫЙ ДОЛГИЙ ВЫЗОВ КАЖДОЙ ВЕТКИ ───
+	longest := time.Duration(0)
+	for _, construction := range entity.DesignDraftAnswerBranches() {
+		ceiling := entity.DesignDraftAnswerCeiling(construction)
+		budget := openrouter.DefaultCompletionBudget(ceiling)
+		t.Logf("ветка construction=%v: потолок %d токенов, бюджет вызова %s, лиза %s, запас %s",
+			construction, ceiling, budget, lease, lease-budget)
+		if budget > longest {
+			longest = budget
+		}
 
-	require.Greater(t, lease, budget,
-		"лиза (%s) не переживает самый долгий платный вызов (%s): пока хендлер ещё внутри вызова, "+
-			"повтор того же client_request_id перехватит строку и заплатит второй раз", lease, budget)
+		require.Greater(t, lease, budget,
+			"лиза (%s) не переживает самый долгий платный вызов ветки construction=%v (%s): пока "+
+				"хендлер ещё внутри вызова, повтор того же client_request_id перехватит строку и "+
+				"заплатит второй раз", lease, construction, budget)
 
-	// И ЗАПАС ОБЯЗАН БЫТЬ, А НЕ «НА СЕКУНДУ БОЛЬШЕ». Лиза выдаётся в StartRun — ДО сборки промпта
-	// (резолв медиа, словарь цвета, RecordRunPrompt, StartAttempt) — и снимается закрывающей
-	// записью ПОСЛЕ разбора ответа. Вызов её самая длинная, но не единственная часть.
-	require.GreaterOrEqual(t, lease-budget, 30*time.Second,
-		"у лизы не осталось запаса на сборку промпта и закрывающую запись: %s − %s = %s",
-		lease, budget, lease-budget)
+		// И ЗАПАС ОБЯЗАН БЫТЬ, А НЕ «НА СЕКУНДУ БОЛЬШЕ». Лиза выдаётся в StartRun — ДО сборки
+		// промпта (резолв медиа, словарь цвета, RecordRunPrompt, StartAttempt) — и снимается
+		// закрывающей записью ПОСЛЕ разбора ответа. Вызов её самая длинная, но не единственная часть.
+		require.GreaterOrEqual(t, lease-budget, 30*time.Second,
+			"у лизы не осталось запаса на сборку промпта и закрывающую запись: %s − %s = %s",
+			lease, budget, lease-budget)
+	}
 
-	// СВЯЗЬ, А НЕ СОВПАДЕНИЕ: лиза обязана СЛЕДОВАТЬ за потолком. Потолок вдвое больше — бюджет
-	// вырастает, и лиза, выведенная из него, обязана оставаться длиннее И ЭТОГО бюджета... а
-	// поскольку выводится она из ОДНОГО потолка, проверяем то, что проверить можно снаружи: лиза
-	// не равна ни одному круглому литералу, которым её выписали бы руками.
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: прежний литерал был КОРОЧЕ самого долгого бюджета — то есть дефект
+	// был настоящим, а не арифметической придиркой. Без этой строки проба зеленела бы и на потолке
+	// в сто токенов.
+	require.Less(t, 5*time.Minute, longest,
+		"положительный контроль: literal-лиза в 5 минут была короче бюджета вызова (%s)", longest)
+
+	// СВЯЗЬ, А НЕ СОВПАДЕНИЕ: лиза не равна ни одному круглому литералу, которым её выписали бы
+	// руками рядом с бюджетом.
 	for _, literal := range []time.Duration{time.Minute, 5 * time.Minute, 10 * time.Minute} {
 		require.NotEqual(t, literal, lease,
 			"лиза совпала с круглым литералом %s — её снова выписали рядом с бюджетом, а не вывели из него",
 			literal)
 	}
+
+	// ─── ОСЬ 2: ЛИЗА ВЫВЕДЕНА ИЗ МАКСИМУМА ПО ВЕТКАМ, А НЕ ИЗ ОДНОЙ ИЗ НИХ ───
+	//
+	// ⚠ ПОЧЕМУ ЭТО НЕЛЬЗЯ СПРОСИТЬ СРАВНЕНИЕМ ЗНАЧЕНИЙ. Сегодня «максимум по веткам» и «потолок
+	// структурной ветки» — ОДНО И ТО ЖЕ ЧИСЛО, и никакое равенство их не различает; различить их
+	// можно только ПОДСТАВНОЙ таблицей. Поэтому здесь поднимается КАЖДАЯ позиция по очереди, и
+	// лиза обязана сдвинуться на каждой: функция, слушающая одну ветку, промолчит на остальных.
+	require.Equal(t, lease, designstore.HandlerLeaseFor(ceilings...),
+		"выданная лиза перестала быть тем, что считает HandlerLeaseFor по таблице потолков")
+	for i := range ceilings {
+		bumped := append([]int(nil), ceilings...)
+		bumped[i] = maxCeiling(ceilings)*2 + 1000
+		require.Greater(t, designstore.HandlerLeaseFor(bumped...), lease,
+			"потолок ветки #%d поднят выше всех (%d → %d), а лиза не сдвинулась: она выведена не из "+
+				"МАКСИМУМА по веткам, а из одной из них — и в день, когда потолок появится у соседней, "+
+				"бюджет вызова обгонит лизу молча", i, ceilings[i], bumped[i])
+	}
+}
+
+func maxCeiling(ceilings []int) int {
+	out := 0
+	for _, c := range ceilings {
+		if c > out {
+			out = c
+		}
+	}
+	return out
 }
 
 // ─────────────────────────── 6. ПОТОЛОК И ЦЕНА ───────────────────────────

@@ -480,26 +480,16 @@ var (
 // правят одно.
 var designDraftIdeaBaseUSD = decimal.Max(designDraftIdeaProseBaseUSD, designDraftIdeaConstructionBaseUSD)
 
-// designDraftAnswerCeiling — ПОТОЛОК ОТВЕТА для данной формы нажатия, ноль значит «потолка нет».
+// ⚠ ПОТОЛОК ОТВЕТА ПЕРЕЕХАЛ В entity.DesignDraftAnswerCeiling, И ПЕРЕЕЗД БЫЛ ПОЧИНКОЙ, А НЕ
+// ПЕРЕКЛАДЫВАНИЕМ. Пока таблица потолков жила здесь, ЛИЗА ХЕНДЛЕРА (store/design.HandlerLease) не
+// могла её спросить — пакеты видят друг друга в другую сторону — и была выведена из ОДНОЙ ветки, из
+// entity.DesignConstructionMaxTokens. Сегодня это то же число; в день, когда у прозы появится свой
+// потолок выше 8000, бюджет вызова обогнал бы лизу, и один client_request_id заплатил бы дважды
+// МОЛЧА. Теперь и цена, и время, и лиза спрашивают ОДНУ таблицу: entity.DesignDraftAnswerCeilings.
 //
-// ⚠ ФУНКЦИЯ, А НЕ ДВА ЛИТЕРАЛА В ХЕНДЛЕРЕ, ПОТОМУ ЧТО ЭТО ЖЕ ЧИСЛО — ИСТОЧНИК ЦЕНЫ. Структурная
-// база выведена из designConstructionMaxTokens (круг 21), прозаическая — не выведена НИ ИЗ ЧЕГО
-// ровно потому, что здесь ноль (круг 22, см. designDraftIdeaProseBaseUSD). Пока условие «у прозы
-// потолка нет» было записано литералом внутри хендлера, оно оставалось прозой: снять его мог кто
-// угодно, и цена прозаического нажатия молча перестала бы отвечать на свой вопрос. Теперь его
-// СПРАШИВАЮТ — TestProseBaseStillCostsWhatTheLiteralDid краснеет в тот день, когда потолок у прозы
-// появится, и требует вывести базу из него так же, как у соседа.
-//
-// ⚠ ПОТОЛОК ТАЩИТ ЗА СОБОЙ ЕЩЁ ДВЕ ВЕЩИ, И ОБЕ НЕ ЗДЕСЬ. Первая — выключенное мышление (openrouter:
-// «кто ставит потолок, тот выключает мышление»); вторая — ответ на `finish_reason=length`, которого
-// прозаическая ветка сегодня не знает. Поэтому ноль здесь — не заглушка, а ТРИ несделанных решения
-// разом, и все три принимает владелец, а не эта функция.
-func designDraftAnswerCeiling(construction bool) int {
-	if construction {
-		return designConstructionMaxTokens
-	}
-	return 0
-}
+// Довод про то, ПОЧЕМУ У ПРОЗЫ ПОТОЛКА НЕТ (три несделанных решения владельца), уехал вместе с
+// функцией и здесь не пересказывается; цена прозаической ветки по-прежнему выведена из этого нуля
+// (designDraftIdeaProseBaseUSD), и TestProseBaseStillCostsWhatTheLiteralDid держит связь.
 
 // designDraftIdeaEstimate — цена ОДНОГО нажатия «черновик» при данном числе прочитанных картинок
 // и данной ФОРМЕ ответа.
@@ -2338,7 +2328,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if construction {
 		systemPrompt = designConstructionSystemPrompt
 	}
-	maxTokens := designDraftAnswerCeiling(construction)
+	maxTokens := entity.DesignDraftAnswerCeiling(construction)
 
 	// СНИМОК ВХОДОВ ТЕКСТОВОГО ПРОГОНА — ЭТО ДОСКА, И ТОЛЬКО ОНА. Ни refs, ни slots: ни одного
 	// референса и ни одной плиты верстака этот прогон не читает, и пустые списки — утверждение.
@@ -2602,13 +2592,46 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// ЦЕНА ПОПЫТКИ — ОЦЕНКА, И ЭТО НАЗВАНО ВСЛУХ. Чат-эндпоинт OpenRouter возвращает токены, но
 	// не деньги, а `spent`, который никогда не растёт, — это дневной потолок, который никогда не
 	// исчерпывается: черновики можно было бы жать бесконечно, оставаясь «в бюджете».
-	if err := s.repo.Design().FinishAttempt(ctx, entity.DesignAttemptFinish{
+	//
+	// ⚠ ЗАКРЫТИЕ УСПЕХА ИДЁТ ТОЙ ЖЕ ДОРОГОЙ, ЧТО И ЗАКРЫТИЕ ПРОВАЛА (designFailDraftAs), И ЭТО НЕ
+	// СИММЕТРИЯ РАДИ КРАСОТЫ — ЭТО ТА ЖЕ ПОЧИНКА НА БОЛЕЕ ДОРОГОЙ ПОЛОВИНЕ. Обе записи ниже стояли
+	// на ЖИВОМ контексте запроса. Клиент, ушедший в окне между возвратом CompleteWithImages и ими
+	// (закрытая вкладка, срок ингресса, react-query `retry: 1`), отменяет контекст хендлера — gRPC
+	// делает это сразу, — и обе отказывают на BeginTx. ОПЛАЧЕННЫЙ ОТВЕТ НЕ СОХРАНЯЕТСЯ ВОВСЕ:
+	// прогон остаётся `pending` с живым захватом, резерв дня висит до полуночи, а как только лиза
+	// истечёт — тот же client_request_id проходит designRunResumableSQL и ПЛАТИТ ВТОРОЙ РАЗ.
+	// Подметальщика на такую строку нет (довод и пересчёт мётел — у designCloseWriteBudget).
+	//
+	// ⚠ ОТВЕТ СОХРАНЯЕТСЯ, ДАЖЕ ЕСЛИ СЛУШАТЬ ЕГО УЖЕ НЕКОМУ, И ЭТО ЯВНОЕ РЕШЕНИЕ: деньги уже
+	// потрачены, а сохранённый ответ делает следующий повтор того же ключа БЕСПЛАТНЫМ — он читается
+	// обратно из строки (ветка «повтор» выше). Потерять его дороже, чем потерять запись о провале:
+	// там терялась строка регистра, здесь теряется то, за что заплачено.
+	//
+	// СРОК У КАЖДОЙ ЗАПИСИ СВОЙ, ПО ТОМУ ЖЕ ДОВОДУ: общий бюджет означает, что медленная первая
+	// отнимает время у второй, а вторая и есть та, без которой резерв висит и повтор платит.
+	closeBase := context.WithoutCancel(ctx)
+
+	finishCtx, cancelFinish := context.WithTimeout(closeBase, designCloseWriteBudget)
+	defer cancelFinish()
+	if err := s.repo.Design().FinishAttempt(finishCtx, entity.DesignAttemptFinish{
 		RunId: run.Id, AttemptNo: attempt.AttemptNo,
 		State: entity.DesignAttemptDelivered, Price: est,
 	}); err != nil {
-		return nil, designError(ctx, "failed to close the idea draft attempt", err, nil)
+		// ⚠ ГРОМКО, НО НЕ `return`: цена попытки и САМ ОТВЕТ — две разные потери, и вторая дороже.
+		// Уйдя отсюда ошибкой, мы оставили бы прогон `pending` с живым захватом — то есть отдали бы
+		// оплаченный ответ ради ненаписанной строки регистра, и следующий повтор заплатил бы за
+		// него заново. Регистр недосчитается одного списания, и эта строка лога — его единственный
+		// след; закрытие прогона ниже при этом снимет резерв дня.
+		slog.Default().ErrorContext(finishCtx, "draft design idea: cannot close the paid attempt; "+
+			"filing the answer anyway — the money is already spent",
+			slog.Int("run_id", run.Id), slog.String("err", err.Error()))
 	}
-	done, err := s.repo.Design().CompleteRun(ctx, entity.DesignRunComplete{
+
+	// СВОЙ СРОК ОТСЧИТЫВАЕТСЯ ОТСЮДА, а не от входа в закрытие: сохранение ответа не вправе
+	// зависеть от того, сколько заняла запись цены.
+	completeCtx, cancelComplete := context.WithTimeout(closeBase, designCloseWriteBudget)
+	defer cancelComplete()
+	done, err := s.repo.Design().CompleteRun(completeCtx, entity.DesignRunComplete{
 		RunId:      run.Id,
 		ClaimToken: run.ClaimToken.String,
 		OutputText: sql.NullString{String: text, Valid: true},
@@ -2714,28 +2737,43 @@ func (s *Server) designLogConstructionDraft(
 // круг 19 отделил `budget_exhausted` от `provider_error`; здесь он о той же колонке.
 const designReasonProviderCut = "provider_cut"
 
-// designFailWriteBudget — сколько времени есть у ОДНОЙ закрывающей записи после того, как клиент
+// designCloseWriteBudget — сколько времени есть у ОДНОЙ закрывающей записи после того, как клиент
 // ушёл. Больше — значит держать соединение ради человека, которого уже нет.
 //
 // ⚠ У ОДНОЙ, А НЕ У ОБЕИХ, И РАЗНИЦА ЗДЕСЬ ДЕНЕЖНАЯ. Пять секунд стояли ОДНИМ контекстом на
-// FinishAttempt И FailRun сразу. Обе пишущие транзакции этого стора открыты SERIALIZABLE; у
-// первой семь операторов, включая moveBudgetDay, и до пяти повторов по дедлоку с паузой в 300 ms
-// — полторы секунды одного только сна. Съев бюджет первой, вторая отказывала СРАЗУ (BeginTx на
-// истёкшем контексте), и наружу это выходило ОДНОЙ СТРОКОЙ ЛОГА: списание записано, прогон НЕ
-// закрыт, releaseRunReserve не позвана.
+// FinishAttempt И FailRun сразу. Съев бюджет, первая оставляла второй ИСТЁКШИЙ контекст, а BeginTx
+// на истёкшем отказывает СРАЗУ — наружу это выходило одной строкой лога: списание записано, прогон
+// НЕ закрыт, releaseRunReserve не позвана.
+//
+// ⚠ ЧЕМ ПЕРВАЯ ЗАПИСЬ СЪЕДАЕТ ПЯТЬ СЕКУНД — НЕ СНОМ ПОВТОРОВ, И ПРЕЖНЕЕ ЧИСЛО ЗДЕСЬ БЫЛО ЛОЖНЫМ.
+// Стояло «до пяти повторов по дедлоку с паузой в 300 ms — полторы секунды одного только сна». 300
+// ms это ПОТОЛОК паузы (txRetryMaxDelay), а не сама пауза: txRetryBackoff даёт 10ms << attempt,
+// то есть при maxTxRetries = 5 сны складываются в 10+20+40+80+160 = 310 ms, максимум ~465 ms с
+// джиттером в 50%, и потолка в 300 ms не достигает НИ ОДИН из них. Полторы секунды были завышены
+// втрое, и будущий аудитор, пересчитавший их, нашёл бы довод ложным и снял бы ВЕРНУЮ починку.
+//
+// ДОВОД ЖЕ ОСТАЁТСЯ, ПРОСТО ОН ПРО ДРУГОЕ: время ест не сон между попытками, а САМА ПОПЫТКА. Обе
+// записи открывают SERIALIZABLE-транзакцию к управляемому MySQL через TLS; у первой семь
+// операторов, включая moveBudgetDay, и каждый из них вправе ЖДАТЬ чужой next-key lock столько,
+// сколько держит его сосед, — этот отрезок не ограничен ни нашей паузой, ни нашими пятью
+// секундами. Двум таким кругам подряд общего бюджета в 5 s не хватает, и не хватает молча.
 //
 // ЧЕМ ЭТО КОНЧАЕТСЯ, ПРОВЕРЕНО ПО ПОДМЕТАЛЬЩИКАМ, А НЕ ПРЕДПОЛОЖЕНО: прогон рода `draft_idea`
 // НИКОГДА не бывает `status='running'` — StartRun вставляет `pending`, а `running` ставит только
-// ClaimRuns, которая этот род не берёт (`kind <> 'draft_idea'`). Обе метлы ReviveExpiredRuns
-// фильтруют ровно `status='running'`. Значит такую строку не подметает НИЧТО: она держит резерв
-// дня до полуночи, а как только её лиза истечёт — становится добычей следующего повтора того же
-// client_request_id (designRunResumableSQL), то есть второго платного вызова.
+// ClaimRuns, которая этот род не берёт (`kind <> 'draft_idea'`). Мётел в ReviveExpiredRuns ТРИ, и
+// прежняя приписка «обе фильтруют ровно status='running'» была неверна пересчётом: возврат в
+// очередь и closeRunsPastTheirCeiling — да, ровно `status='running'`, а вот
+// sweepAbandonedCancelledRuns берёт `status IN ('pending','running')` и мимо неё строка проходит
+// по ДРУГОМУ условию — `cancel_requested_at IS NOT NULL`, которого у неотменённого прогона нет.
+// Вывод тот же: такую строку не подметает НИЧТО. Она держит резерв дня до полуночи, а как только
+// её лиза истечёт — становится добычей следующего повтора того же client_request_id
+// (designRunResumableSQL), то есть второго платного вызова.
 //
-// ЧЕГО ЭТО СТОИТ, НАЗВАНО ВСЛУХ: в худшем случае провалившийся вызов возвращается человеку на
-// designFailWriteBudget позже — обе записи вправе выбрать свой срок целиком. Обмен несимметричен и
-// потому принят: цена задержки — секунды на уже провалившемся нажатии, цена общего бюджета —
-// незакрытый прогон, висящий резерв и второй платёж.
-const designFailWriteBudget = 5 * time.Second
+// ЧЕГО ЭТО СТОИТ, НАЗВАНО ВСЛУХ: в худшем случае ответ возвращается человеку на
+// designCloseWriteBudget позже — обе записи вправе выбрать свой срок целиком. Обмен несимметричен
+// и потому принят: цена задержки — секунды на одном нажатии, цена общего бюджета — незакрытый
+// прогон, висящий резерв и второй платёж.
+const designCloseWriteBudget = 5 * time.Second
 
 // designFailDraft закрывает попытку и прогон после провала вызова. ЛУЧШЕЕ УСИЛИЕ И ГРОМКОЕ:
 // ошибка здесь не возвращается человеку — он должен увидеть ту, из-за которой всё началось, — но
@@ -2806,10 +2844,10 @@ func (s *Server) designFailDraftAs(
 ) {
 	// ⚠ ДВЕ ЗАПИСИ — ДВА БЮДЖЕТА, И ЭТО НЕ АККУРАТНОСТЬ, А ПОЧИНКА. Один общий контекст на обе
 	// означал, что медленная первая ОТНИМАЕТ время у второй; довод целиком — у
-	// designFailWriteBudget. Отменяются они по отдельности, поэтому и defer'а два.
+	// designCloseWriteBudget. Отменяются они по отдельности, поэтому и defer'а два.
 	base := context.WithoutCancel(ctx)
 
-	finishCtx, cancelFinish := context.WithTimeout(base, designFailWriteBudget)
+	finishCtx, cancelFinish := context.WithTimeout(base, designCloseWriteBudget)
 	defer cancelFinish()
 	if err := s.repo.Design().FinishAttempt(finishCtx, entity.DesignAttemptFinish{
 		RunId: run.Id, AttemptNo: attemptNo,
@@ -2824,7 +2862,7 @@ func (s *Server) designFailDraftAs(
 	// СВОЙ СРОК ОТСЧИТЫВАЕТСЯ ОТСЮДА, а не от входа в функцию: закрытие прогона — то, ради чего
 	// эта функция и существует (иначе резерв висит до полуночи, а строку подберёт следующий повтор
 	// того же client_request_id), и оно не вправе зависеть от того, сколько заняла запись цены.
-	failCtx, cancelFail := context.WithTimeout(base, designFailWriteBudget)
+	failCtx, cancelFail := context.WithTimeout(base, designCloseWriteBudget)
 	defer cancelFail()
 	if _, err := s.repo.Design().FailRun(failCtx, entity.DesignRunFail{
 		RunId:      run.Id,

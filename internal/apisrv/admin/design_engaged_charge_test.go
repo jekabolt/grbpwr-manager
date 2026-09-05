@@ -313,19 +313,29 @@ func TestAnIdempotentRepeatOfACutDraftDoesNotPayAgain(t *testing.T) {
 
 // ═══════ ДВЕ ЗАКРЫВАЮЩИЕ ЗАПИСИ — ДВА БЮДЖЕТА, А НЕ ОДИН НА ОБЕ ═══════
 //
-// ЧТО БЫЛО. designFailDraftAs ставил ОДИН context.WithTimeout(designFailWriteBudget) и отдавал его
-// И FinishAttempt, И FailRun. Обе — пишущие транзакции SERIALIZABLE; у первой семь операторов,
-// включая moveBudgetDay, и до пяти повторов по дедлоку с паузой в 300 ms, то есть полторы секунды
-// одного только сна из пяти доступных. Съев бюджет, она оставляла второй ИСТЁКШИЙ контекст, а
-// BeginTx на истёкшем отказывает СРАЗУ.
+// ЧТО БЫЛО. designFailDraftAs ставил ОДИН context.WithTimeout(designCloseWriteBudget) и отдавал его
+// И FinishAttempt, И FailRun. Съев бюджет, первая оставляла второй ИСТЁКШИЙ контекст, а BeginTx на
+// истёкшем отказывает СРАЗУ.
+//
+// ⚠ ВРЕМЯ ЕСТ НЕ СОН ПОВТОРОВ, И ПРЕЖНЕЕ ЧИСЛО ЗДЕСЬ БЫЛО ЛОЖНЫМ ВТРОЕ. Стояло «до пяти повторов
+// по дедлоку с паузой в 300 ms, то есть полторы секунды одного только сна». 300 ms — это ПОТОЛОК
+// паузы (txRetryMaxDelay), а не пауза: txRetryBackoff даёт 10ms << attempt, и при maxTxRetries = 5
+// сны складываются в 10+20+40+80+160 = 310 ms, максимум ~465 ms с 50% джиттера; потолка не
+// достигает ни один из них. Съедает бюджет САМА ПОПЫТКА: обе записи — SERIALIZABLE-транзакции к
+// управляемому MySQL через TLS, у первой семь операторов, включая moveBudgetDay, и каждый вправе
+// ЖДАТЬ чужой next-key lock столько, сколько его держит сосед. Этот отрезок не ограничен ни нашей
+// паузой, ни нашими пятью секундами — и потому два круга подряд в общий бюджет не помещаются.
 //
 // ЧЕМ ЭТО КОНЧАЛОСЬ — И ЭТО ПРОВЕРЕНО ПО ИСХОДНИКУ ПОДМЕТАЛЬЩИКОВ, А НЕ ПРЕДПОЛОЖЕНО. Списание
 // записано, прогон НЕ закрыт, releaseRunReserve не позвана. Строку рода `draft_idea` не подбирает
 // НИКТО: StartRun вставляет `pending`, `running` ставит только ClaimRuns, а она этот род не берёт
-// (`kind <> 'draft_idea'`); обе метлы ReviveExpiredRuns — и возврат в очередь, и
-// closeRunsPastTheirCeiling — фильтруют ровно `status='running'`. Значит резерв дня висит до
-// полуночи, а как только истечёт лиза, строка становится добычей следующего повтора того же
-// client_request_id (designRunResumableSQL) — то есть второго платного вызова.
+// (`kind <> 'draft_idea'`). Мётел в ReviveExpiredRuns ТРИ, а не две (прежняя приписка считала
+// неверно): возврат в очередь и closeRunsPastTheirCeiling фильтруют ровно `status='running'`, а
+// sweepAbandonedCancelledRuns берёт `status IN ('pending','running')` — мимо неё строка проходит
+// по другому условию, `cancel_requested_at IS NOT NULL`, которого у неотменённого прогона нет.
+// Вывод не изменился: резерв дня висит до полуночи, а как только истечёт лиза, строка становится
+// добычей следующего повтора того же client_request_id (designRunResumableSQL) — то есть второго
+// платного вызова.
 //
 // МУТАЦИЯ: вернуть общий контекст (один WithTimeout на обе записи) → краснеет.
 func TestTheTwoClosingWritesDoNotShareOneBudget(t *testing.T) {
@@ -349,7 +359,7 @@ func TestTheTwoClosingWritesDoNotShareOneBudget(t *testing.T) {
 		"дедлайны двух записей разошлись всего на %s: срок второй отсчитан не от неё самой, "+
 			"а унаследован от первой — то есть бюджет снова общий", gap)
 
-	require.GreaterOrEqual(t, rig.failedRemaining[0], designFailWriteBudget-50*time.Millisecond,
+	require.GreaterOrEqual(t, rig.failedRemaining[0], designCloseWriteBudget-50*time.Millisecond,
 		"у закрытия прогона осталось %s из %s: первая запись съела чужое время",
-		rig.failedRemaining[0], designFailWriteBudget)
+		rig.failedRemaining[0], designCloseWriteBudget)
 }

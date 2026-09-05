@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -774,6 +775,10 @@ type draftIdeaStub struct {
 	// usage живут рядом с содержимым, и исход «потолок съеден, ответа ноль» без них невыразим.
 	// Пустая строка — обычный конверт из `answer`.
 	raw string
+	// answered — ОТВЕТИЛ ЛИ УЖЕ ПОСТАВЩИК. Ставится ВНУТРИ обработчика, до записи тела, поэтому
+	// «истина» happens-before любого чтения ответа клиентом: проба, которой нужно убить контекст
+	// РОВНО между платным вызовом и закрывающими записями, опирается на этот порядок, а не на сон.
+	answered atomic.Bool
 }
 
 // imageURLs — адреса, ушедшие на провод ОТДЕЛЬНЫМИ частями `image_url`, в порядке отправки.
@@ -836,6 +841,9 @@ func newDraftIdeaStub(t *testing.T, status int, answer string) *draftIdeaStub {
 	stub.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		stub.body = string(raw)
+		// ⚠ ФЛАГ СТАВИТСЯ ДО ЗАПИСИ ТЕЛА: клиент физически не может дочитать ответ раньше, чем
+		// обработчик его напишет, поэтому «поставщик ответил» истинно ко времени возврата вызова.
+		stub.answered.Store(true)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		if status == http.StatusOK {
@@ -869,11 +877,13 @@ type draftRig struct {
 	// проба увидела бы context.Canceled ВСЕГДА — и покраснела бы на здоровом коде.
 	finishedCtxErr []error
 	// finishDelay / *Deadline / failedCtxErr — ЗАМЕР ТОГО, ЧТО ДВЕ ЗАКРЫВАЮЩИЕ ЗАПИСИ НЕ ДЕЛЯТ
-	// ОДИН СРОК. Первая (FinishAttempt) — семь операторов в SERIALIZABLE плюс до пяти повторов по
-	// дедлоку с паузой 300 ms; съев общий бюджет, она оставляла второй (FailRun) истёкший контекст,
-	// и та отказывала на BeginTx ОДНОЙ СТРОКОЙ ЛОГА. Списание записано, прогон не закрыт, резерв не
-	// снят — и такую строку не подметает НИЧТО (обе метлы ReviveExpiredRuns фильтруют
-	// `status='running'`, а draft_idea там не бывает).
+	// ОДИН СРОК. Первая (FinishAttempt) — семь операторов в SERIALIZABLE, каждый из которых вправе
+	// ждать чужой next-key lock сколько угодно (сон повторов тут ни при чём: он 310 ms на все пять,
+	// ~465 ms с джиттером — см. designCloseWriteBudget); съев общий бюджет, она оставляла второй
+	// (FailRun) истёкший контекст, и та отказывала на BeginTx ОДНОЙ СТРОКОЙ ЛОГА. Списание
+	// записано, прогон не закрыт, резерв не снят — и такую строку не подметает НИЧТО: из трёх мётел
+	// ReviveExpiredRuns две фильтруют `status='running'`, а третья требует cancel_requested_at,
+	// которого здесь нет.
 	//
 	// finishDelay заставляет первую запись занять время; дедлайны показывают, откуда отсчитан срок
 	// второй. Равные дедлайны = общий бюджет.
@@ -883,6 +893,21 @@ type draftRig struct {
 	failedRemaining  []time.Duration
 	failedCtxErr     []error
 	failed           []entity.DesignRunFail
+	// completed* — ТО ЖЕ САМОЕ ДЛЯ УСПЕШНОЙ ПОЛОВИНЫ, и она дороже провальной: там терялась строка
+	// регистра, здесь теряется ОПЛАЧЕННЫЙ ОТВЕТ. Обе закрывающие записи успеха тоже обязаны пережить
+	// ушедшего клиента и не делить один срок на двоих.
+	completeDelay      time.Duration
+	completedCtxErr    []error
+	completedDeadline  []time.Time
+	completedRemaining []time.Duration
+	// onProviderAnswered — ЧТО СЛУЧАЕТСЯ РОВНО МЕЖДУ ПЛАТНЫМ ВЫЗОВОМ И ЗАКРЫВАЮЩИМИ ЗАПИСЯМИ.
+	//
+	// Зовётся ОДИН РАЗ, на первом обращении хендлера к стору ПОСЛЕ того, как поставщик ответил
+	// (stub.answered), — то есть в единственной точке, где «клиент ушёл, ответ уже куплен» ещё
+	// можно изобразить без сна и без гонки. Хендлер между этими двумя точками в стор не ходит
+	// ничем, кроме FinishAttempt, поэтому точка ОДНА и она детерминирована.
+	onProviderAnswered func()
+	providerAnswerSeen bool
 	// completedText / completedTok — то, чем прогон был закрыт. Токен здесь не декорация:
 	// CompleteRun сверяет его в WHERE, и закрытие чужим токеном — это claim_lost.
 	completedText string
@@ -925,7 +950,13 @@ func newDraftRigWithCard(
 		ClaimToken: sql.NullString{String: "claim-55", Valid: true},
 	}
 	repo.EXPECT().TechCards().Return(cards).Maybe()
-	repo.EXPECT().Design().Return(design).Maybe()
+	repo.EXPECT().Design().Return(design).Run(func() {
+		if rig.providerAnswerSeen || rig.onProviderAnswered == nil || !rig.stub.answered.Load() {
+			return
+		}
+		rig.providerAnswerSeen = true
+		rig.onProviderAnswered()
+	}).Maybe()
 	designStubNoDisplayOnly(design)
 	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
 	// КАРТИНКИ ДОСКИ РАЗРЕШАЮТСЯ В АДРЕСА: с этого места черновик идеи их ЧИТАЕТ (решение
@@ -965,8 +996,16 @@ func newDraftRigWithCard(
 			}
 		}).Return(&run, nil).Maybe()
 	design.EXPECT().CompleteRun(mock.Anything, mock.AnythingOfType("entity.DesignRunComplete")).
-		Run(func(_ context.Context, req entity.DesignRunComplete) {
+		Run(func(ctx context.Context, req entity.DesignRunComplete) {
 			rig.completedText, rig.completedTok = req.OutputText.String, req.ClaimToken
+			rig.completedCtxErr = append(rig.completedCtxErr, ctx.Err())
+			if dl, ok := ctx.Deadline(); ok {
+				rig.completedDeadline = append(rig.completedDeadline, dl)
+				rig.completedRemaining = append(rig.completedRemaining, time.Until(dl))
+			}
+			if rig.completeDelay > 0 {
+				time.Sleep(rig.completeDelay)
+			}
 		}).Return(&entity.DesignRun{Id: 55, Status: entity.DesignRunDone}, nil).Maybe()
 	design.EXPECT().GetBudget(mock.Anything).Return(entity.DesignBudget{Day: "2026-08-30"}, nil).Maybe()
 

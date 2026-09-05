@@ -319,10 +319,15 @@ func CompletionBudget(base time.Duration, maxTokens int) time.Duration {
 	return base + printing
 }
 
-// DefaultCompletionBudget — CompletionBudget при НЕЗАДАННОМ OPENROUTER_HTTP_TIMEOUT, то есть при
-// той базе, которая действительно живёт на бете и на проде (ни один из двух spec'ов переменную не
-// ставит). Отдельная дверь потому, что вызывающий, который хочет проверить свой потолок, не обязан
-// знать про конфигурацию процесса — а солгать себе, подставив базу побольше, ему было бы легко.
+// DefaultCompletionBudget — CompletionBudget при НЕЗАДАННОМ OPENROUTER_HTTP_TIMEOUT. Отдельная
+// дверь потому, что вызывающий, который хочет проверить свой потолок, не обязан знать про
+// конфигурацию процесса — а солгать себе, подставив базу побольше, ему было бы легко.
+//
+// ⚠ «НА БЕТЕ И НА ПРОДЕ ЭТА ПЕРЕМЕННАЯ НЕ ЗАДАНА» — ЗАМЕР, А НЕ ИНВАРИАНТ, и репозиторий его
+// подтверждает только наполовину: в git лежит один спек, .do/app.yaml, и он продовый — он
+// оставляет MODEL / BASE_URL / HTTP_TIMEOUT кодовым умолчаниям вслух. Спек беты в .gitignore и
+// живёт только на платформе DO; там переменная проверена руками (2026-09-04) и не задана. Кто её
+// поставит — обязан прийти сюда и к store/design.HandlerLease: база вырастет только у клиента.
 func DefaultCompletionBudget(maxTokens int) time.Duration {
 	return CompletionBudget(defaultTimeout, maxTokens)
 }

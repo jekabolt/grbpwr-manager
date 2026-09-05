@@ -3,6 +3,7 @@ package admin
 import (
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,8 +52,8 @@ func TestProseBaseStillCostsWhatTheLiteralDid(t *testing.T) {
 
 	// ПРОЗАИЧЕСКАЯ БАЗА — НЕ ГРАНИЦА, И ЭТО СКАЗАНО ЧИСЛОМ, А НЕ ТОЛЬКО ПРОЗОЙ: ветка не кладёт
 	// на провод НИ ОДНОГО потолка, поэтому выводить границу не из чего (см. довод у переменной).
-	require.Zero(t, designDraftAnswerCeiling(false),
+	require.Zero(t, entity.DesignDraftAnswerCeiling(false),
 		"как только у прозы появится потолок, база обязана считаться из НЕГО, как у соседа")
-	require.Equal(t, designConstructionMaxTokens, designDraftAnswerCeiling(true),
+	require.Equal(t, designConstructionMaxTokens, entity.DesignDraftAnswerCeiling(true),
 		"и зеркало: структурная база уже выведена ровно из этого числа")
 }

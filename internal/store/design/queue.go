@@ -291,9 +291,11 @@ const designRunAbandonedCancelledSQL = `
 //
 // ⚠ И ЭТА ФРАЗА БОЛЬШЕ НЕ ПРОСЬБА. Она была ею — и оказалась ЛОЖНОЙ НА 26.7 s в тот день, когда
 // потолок ответа поднялся до 8000 токенов и вызов купил себе 5m26.667s против лизы в 5 минут.
-// Теперь HandlerLease ВЫВЕДЕНА из openrouter.DefaultCompletionBudget того же потолка (см. её
-// шапку в wave2.go), а TestHandlerLeaseOutlivesTheLongestPaidCall спрашивает оба числа ЧЕРЕЗ
-// ГРАНИЦУ ПАКЕТОВ — то место, где они и разошлись.
+// Теперь HandlerLease ВЫВЕДЕНА из openrouter.DefaultCompletionBudget по МАКСИМУМУ потолков всех
+// веток нажатия (entity.DesignDraftAnswerCeilings; см. её шапку в wave2.go), а
+// TestHandlerLeaseOutlivesTheLongestPaidCall спрашивает эти числа ЧЕРЕЗ ГРАНИЦУ ПАКЕТОВ — то
+// место, где они и разошлись — и делает это ПО КАЖДОЙ ВЕТКЕ, чтобы потолок, появившийся у
+// соседней, не проскользнул мимо.
 func (s *Store) ReviveExpiredRuns(ctx context.Context) (int, error) {
 	var revived int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
