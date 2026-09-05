@@ -365,31 +365,50 @@ var designMeshyTaskCeilingUSD = decimal.RequireFromString("0.60")
 // и ответ (до 3k выходных на структурной ветке) — ≈$0.03. Доска из двенадцати кадров выходит на
 // ≈$0.10, что совпадает с прикидкой «сколько стоит одно нажатие» в дизайне фичи.
 //
-// ⚠ КРУГ 20: БАЗА 0.03 → 0.035, И ЭТО РОВНО ОДИН НОВЫЙ СПИСОК В ОТВЕТЕ (B-25). Колорвеи —
-// ≈300–500 выходных токенов на нажатие, ≈$0.005; словарь цвета во входных — ещё ≈1k токенов при
-// полном потолке в 200 строк. Двинуть базу обязательно, потому что ОЦЕНКА ЖЕ И СПИСЫВАЕТСЯ: не
-// двинув её, мы получили бы не «неточный отчёт», а РЕЗЕРВ, который меньше траты, — то есть
-// дневной счёт, врущий про потраченное. Выноски при этом из ответа ушли (B-13) и высвободили до
-// 15 строк, поэтому чистая прибавка меньше названной; в сторону завышения — намеренно.
+// ⚠ КРУГ 20: У БАЗЫ ПОЯВИЛАСЬ ВТОРАЯ ВЕЛИЧИНА, ПОТОМУ ЧТО У НАЖАТИЯ ПОЯВИЛИСЬ ДВЕ ФОРМЫ.
+// Структурная ветка (`construction`) покупает СВЕРХ прозаической ровно один новый список в ответе
+// — колорвеи (B-25), ≈300–500 выходных токенов, ≈$0.005, — и словарь цвета во входных, ещё ≈1k
+// токенов при полном потолке в 200 строк. Отсюда 0.035 у неё и прежние 0.03 у прозы.
+//
+// ⚠ И ИМЕННО ПОЭТОМУ ЧИСЕЛ ДВА, А НЕ ОДНО. Первая правка круга 20 подвинула ЕДИНСТВЕННУЮ базу
+// 0.03 → 0.035, а `est` считается ДО выбора ветки — значит прогон со снятым флагом (старый клиент:
+// ни колорвеев в ответе, ни словаря цвета в запросе) с того дня резервировал и ЗАПИСЫВАЛ В РЕГИСТР
+// $0.035 за то, чего не покупал: +17% к каждому прозаическому нажатию. Направление безопасное, но
+// оценка, завышенная ОДИНАКОВО ДЛЯ ВСЕХ, перестаёт отвечать на вопрос «сколько стоит вот это
+// нажатие», а другого источника этого ответа у регистра нет.
 //
 // ⚠ ОЦЕНКА ЖЕ И СПИСЫВАЕТСЯ. Чат-эндпоинт возвращает токены, а не деньги (см. FinishAttempt ниже),
 // поэтому это число — не только резерв, но и ФАКТ в регистре. Завышать его безопаснее, чем
 // занижать: завышенный резерв сужает очередь на минуты, заниженный факт врёт про потраченное
-// навсегда.
+// навсегда. Поэтому В ТАБЛИЦЕ РОДОВ стоит БОЛЬШАЯ из двух: designEstimateFor отвечает на вопрос
+// «сколько может стоить прогон этого рода», у которого формы ещё нет.
 var (
-	designDraftIdeaBaseUSD    = decimal.RequireFromString("0.035")
-	designDraftIdeaPictureUSD = decimal.RequireFromString("0.006")
+	designDraftIdeaProseBaseUSD        = decimal.RequireFromString("0.03")
+	designDraftIdeaConstructionBaseUSD = decimal.RequireFromString("0.035")
+	designDraftIdeaPictureUSD          = decimal.RequireFromString("0.006")
 )
 
-// designDraftIdeaEstimate — цена ОДНОГО нажатия «черновик» при данном числе прочитанных картинок.
+// designDraftIdeaBaseUSD — то, что стоит в designPriceEstimate: ПОТОЛОК двух баз, а не одна из
+// них. Выведен, а не выписан: третье число рядом с двумя разошлось бы с ними в тот день, когда
+// правят одно.
+var designDraftIdeaBaseUSD = decimal.Max(designDraftIdeaProseBaseUSD, designDraftIdeaConstructionBaseUSD)
+
+// designDraftIdeaEstimate — цена ОДНОГО нажатия «черновик» при данном числе прочитанных картинок
+// и данной ФОРМЕ ответа.
 //
 // Считает по attachedIDs, а не по плиткам доски: платится то, что уехало на провод. База берётся
-// ИЗ ТОЙ ЖЕ ТАБЛИЦЫ, что читает designEstimateFor, — второе число рядом с первым разошлось бы в
-// тот день, когда правят одно.
-func designDraftIdeaEstimate(pictures int) decimal.NullDecimal {
-	base, ok := designPriceEstimate[entity.DesignRunKindDraftIdea]
-	if !ok {
+// по ветке, потому что ветки покупают разное; обе стоят рядом в одном var-блоке выше, и таблица
+// родов выведена из них же.
+func designDraftIdeaEstimate(pictures int, construction bool) decimal.NullDecimal {
+	if _, ok := designPriceEstimate[entity.DesignRunKindDraftIdea]; !ok {
+		// Род без строки в таблице резервирует NULL и проходит мимо дневного счёта — тот самый
+		// инвариант, что держит TestEVERY_RUN_KIND_THE_DOOR_ACCEPTS_HAS_A_PRICE. Молчать о его
+		// нарушении здесь значило бы чинить симптом.
 		return decimal.NullDecimal{}
+	}
+	base := designDraftIdeaProseBaseUSD
+	if construction {
+		base = designDraftIdeaConstructionBaseUSD
 	}
 	if pictures < 0 {
 		pictures = 0
@@ -2235,8 +2254,10 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			len(inputsJSON), designMaxInputsBytes)
 	}
 
-	// ЦЕНА СЧИТАЕТСЯ ПО ЧИСЛУ УЕХАВШИХ КАРТИНОК, а не по роду прогона: см. designDraftIdeaEstimate.
-	est := designDraftIdeaEstimate(len(attachedIDs))
+	// ЦЕНА СЧИТАЕТСЯ ПО ЧИСЛУ УЕХАВШИХ КАРТИНОК И ПО ФОРМЕ ОТВЕТА, а не по роду прогона: см.
+	// designDraftIdeaEstimate. Флаг сюда обязателен — прогон со снятым флагом не покупает ни
+	// колорвеев в ответе, ни словаря цвета в запросе, и платить за них не должен.
+	est := designDraftIdeaEstimate(len(attachedIDs), construction)
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:       cardID,
 		ClientRequestId:  clientRequestID,
@@ -2524,6 +2545,15 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("truncated", stats.Truncated),
 		slog.Int("over_limit", stats.OverLimit),
 		slog.Int("deduped", stats.Deduped),
+		// ─── КРУГ 19: ТРИ СЧЁТЧИКА, ЗАВЕДЁННЫЕ И НЕ НАПЕЧАТАННЫЕ ───
+		//
+		// Тот же шов, что у двух ниже, только волной раньше. Каждый из трёх поднимает Warn «черновик
+		// коэрцирован», и до этой правки поднимал его С ПУСТЫМИ РУКАМИ: строка тревоги, у которой
+		// причина посчитана, но не названа. TestConstructionDraftLogPrintsEveryCounter спрашивает
+		// саму структуру, а не список имён, — поэтому следующий такой счётчик покраснеет сразу.
+		slog.Int("pairs_cleared", stats.PairsCleared),
+		slog.Int("non_scalars", stats.NonScalars),
+		slog.Int("fields_dropped", stats.FieldsDropped),
 		// ─── КРУГ 20 ───
 		// callouts_unasked — модель прислала выноски, хотя правило 3 их больше не просит (B-13).
 		// Ноль означает, что переписанное правило работает; растущее число — счёт за выходные
@@ -2532,12 +2562,19 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("colour_codes_unset", stats.ColourCodesUnset),
 		slog.Int("slot_colours_unbound", stats.SlotColoursUnbound),
 		slog.Int("colourways_dropped", stats.ColourwaysDropped),
+		// ⚠ ЭТИ ДВЕ ПРОПУСТИЛ ШОВ МЕЖДУ ДВУМЯ ВОЛНАМИ (B-16): счётчики завели в разборе, а список
+		// печати живёт в другом файле, и он не менялся. Двенадцать строк с «est_usage»: «about 2»
+		// поднимали Warn «черновик коэрцирован», у которого ВСЕ двадцать напечатанных чисел равны
+		// нулю, — тревога без причины. Счётчик без строки лога это статистика, которую никто не
+		// видит; строка без счётчика — «что-то пошло не так» без числа.
+		slog.Int("bom_est_dropped", stats.BomEstDropped),
+		slog.Int("units_unset", stats.UnitsUnset),
 	}
 	switch {
 	case err != nil:
 		attrs = append(attrs, slog.String("err", err.Error()))
 		slog.Default().ErrorContext(ctx, "design construction draft was refused", attrs...)
-	case stats.Any():
+	case stats.Coerced():
 		slog.Default().WarnContext(ctx, "design construction draft was coerced", attrs...)
 	default:
 		slog.Default().InfoContext(ctx, "design construction draft", attrs...)

@@ -162,31 +162,51 @@ func TestDraftDesignIdeaRefusesABoardThatSendsNothing(t *testing.T) {
 // деньги), поэтому заниженное число врёт про потраченное навсегда.
 func TestDraftIdeaEstimateScalesWithThePictures(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		pictures int
-		want     string
+		name         string
+		pictures     int
+		construction bool
+		want         string
 	}{
 		// ⚠ БАЗА ПОДВИНУТА КРУГОМ 20: 0.03 → 0.035, РОВНО ОДИН НОВЫЙ СПИСОК В ОТВЕТЕ (B-25).
 		// Колорвеи — ≈300–500 выходных токенов на нажатие плюс словарь цвета во входных. И это не
 		// про точность отчёта: ОЦЕНКА ЖЕ И СПИСЫВАЕТСЯ, поэтому не двинув базу, мы получили бы
 		// резерв меньше траты — дневной счёт, врущий про потраченное.
-		{"пустая доска — только промпт и ответ", 0, "0.035"},
-		{"одна картинка", 1, "0.041"},
-		{"потолок клиента", 12, "0.107"},
-		{"потолок транспорта", 16, "0.131"},
-		{"отрицательное число читается как ноль", -3, "0.035"},
+		{"структурный: пустая доска — только промпт и ответ", 0, true, "0.035"},
+		{"структурный: одна картинка", 1, true, "0.041"},
+		{"структурный: потолок клиента", 12, true, "0.107"},
+		{"структурный: потолок транспорта", 16, true, "0.131"},
+		{"структурный: отрицательное число читается как ноль", -3, true, "0.035"},
+
+		// ⚠ ПРОЗА ПЛАТИТ ПРЕЖНЮЮ БАЗУ, И БЕЗ ЭТОГО РЯДА ПОЧИНКА НЕ ДОКАЗАНА. Прогон со снятым
+		// флагом не покупает НИ колорвеев в ответе, НИ словаря цвета в запросе — а первая правка
+		// круга 20 двинула единственную базу и заставила его платить +17% за то, чего он не
+		// просил. Оценка ЖЕ И СПИСЫВАЕТСЯ, значит это не «неточный отчёт», а неверная строка
+		// регистра на каждом нажатии старого клиента.
+		{"проза: пустая доска", 0, false, "0.03"},
+		{"проза: одна картинка", 1, false, "0.036"},
+		{"проза: потолок клиента", 12, false, "0.102"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			est := designDraftIdeaEstimate(tc.pictures)
+			est := designDraftIdeaEstimate(tc.pictures, tc.construction)
 			require.True(t, est.Valid, "черновик обязан резервировать хоть что-то: NULL проходит мимо дневного счёта")
 			require.Equal(t, tc.want, est.Decimal.String())
 		})
 	}
 
-	// БАЗА — ЭТО СТРОКА ОБЩЕЙ ТАБЛИЦЫ, А НЕ ВТОРОЕ ЧИСЛО РЯДОМ. Разойдясь, они дали бы роду
-	// draft_idea две цены, и правка одной оставила бы вторую врать.
-	require.Equal(t, designPriceEstimate[entity.DesignRunKindDraftIdea].String(),
-		designDraftIdeaEstimate(0).Decimal.String())
+	// СТРУКТУРНАЯ ВЕТКА ДОРОЖЕ ПРОЗАИЧЕСКОЙ, И РОВНО НА ОДИН СПИСОК. Равенство здесь означало бы,
+	// что разделение баз потеряно и одна из двух веток снова платит чужую цену.
+	prose, structural := designDraftIdeaEstimate(4, false), designDraftIdeaEstimate(4, true)
+	require.True(t, structural.Decimal.GreaterThan(prose.Decimal),
+		"колорвеи и словарь цвета покупает только структурная ветка")
+	require.Equal(t, "0.005", structural.Decimal.Sub(prose.Decimal).String(),
+		"разница веток — это одна названная величина, а не дрейф")
+
+	// БАЗА В ТАБЛИЦЕ РОДОВ — ПОТОЛОК ДВУХ, А НЕ ОДНА ИЗ НИХ. designEstimateFor отвечает на вопрос
+	// «сколько может стоить прогон этого рода», у которого формы ещё нет, и занизив его, мы дали
+	// бы двери резерв меньше траты.
+	table := designPriceEstimate[entity.DesignRunKindDraftIdea]
+	require.Equal(t, table.String(), designDraftIdeaEstimate(0, true).Decimal.String())
+	require.True(t, table.GreaterThanOrEqual(designDraftIdeaEstimate(0, false).Decimal))
 }
 
 // ХЕНДЛЕР РЕЗЕРВИРУЕТ ИМЕННО ЭТО ЧИСЛО, И СЧИТАЕТ ЕГО ПО УЕХАВШИМ КАДРАМ.
@@ -198,7 +218,12 @@ func TestDraftDesignIdeaReservesThePictureScaledPrice(t *testing.T) {
 	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
 	require.NoError(t, err)
 
-	want := designDraftIdeaEstimate(1)
+	// ⚠ draftRequest() ИДЁТ БЕЗ ФЛАГА, ТО ЕСТЬ ЭТО ПРОЗАИЧЕСКИЙ ПРОГОН, и цена у него прозаическая.
+	// Число выписано ВСЛУХ, а не взято у самой формулы: сверка формулы с собою зеленела бы и на той
+	// версии, где проза платит за колорвеи, которых в её ответе нет.
+	want := designDraftIdeaEstimate(1, false)
+	require.Equal(t, "0.036", want.Decimal.String(),
+		"проза с одной картинкой: база 0.03 + один кадр 0.006")
 	require.True(t, rig.started.PriceEstimate.Valid)
 	require.Equal(t, want.Decimal.String(), rig.started.PriceEstimate.Decimal.String(),
 		"одна картинка доски обязана быть в резерве прогона")
