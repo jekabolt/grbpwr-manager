@@ -91,8 +91,11 @@ const (
 	//
 	// WHY OFF. Reasoning tokens are billed and budgeted as output tokens, and they are spent BEFORE
 	// the answer. The whole analysis chain is sized around a non-reasoning completion — the cap is
-	// 2500 tokens (§5: a real card answers in 1.5–2.5k), the server allows 60 s, the screen waits
-	// 55 s. Pointing that chain at a model which thinks by default produced exactly one outcome on
+	// 2500 tokens (§5: a real card answers in 1.5–2.5k), the server allowed 60 s, the screen waits
+	// 55 s. (⚠ «60 s» — ИСТОРИЯ: с тех пор бюджет сервера ВЫВОДИТСЯ из потолка — см. defaultTimeout
+	// и CompletionBudget, — и для 2500 токенов он теперь 60 s + 2500/30 ≈ 143 s. Клиент по-прежнему
+	// сдаётся первым, а это и есть тот инвариант, ради которого 55 s выбраны.) Pointing that chain
+	// at a model which thinks by default produced exactly one outcome on
 	// the first live run: 2500 completion tokens, zero content, 42 s, ~$0.11. Turning thinking on
 	// instead would mean moving the cap, the server budget, the client budget and the price of
 	// every press — a product decision, not a bug fix.
