@@ -92,7 +92,11 @@ const (
 	// ⚠ ПОТОЛОК ВЕСЬ УХОДИТ В ОТВЕТ, А НЕ В РАЗМЫШЛЕНИЕ: CompleteWithImages выключает `reasoning`
 	// ровно тогда, когда потолок задан (см. multimodal.go) — иначе думающая модель тратила бы этот
 	// же бюджет до ответа, и замер выше не значил бы ничего.
-	designConstructionMaxTokens = 8000
+	// ⚠ ЧИСЛО ПЕРЕЕХАЛО В entity, А ЗДЕСЬ ОСТАЛСЯ ЗАМЕР. Из него выводятся ЦЕНА (design_run.go),
+	// СРОК ВЫЗОВА (openrouter.CompletionBudget) и ЛИЗА ХЕНДЛЕРА (store/design.HandlerLease) — три
+	// величины в трёх пакетах, две из которых деньги и время. Пока копия числа стояла в каждом,
+	// они расходились молча: см. довод у entity.DesignConstructionMaxTokens.
+	designConstructionMaxTokens = entity.DesignConstructionMaxTokens
 
 	// designConstructionMaxLongRunes — потолок «длинных» полей: силуэт, ткань, замысел. Ровно тот,
 	// что у соответствующих текстовых полей карточки (CONCEPT_MAX = 2000 на клиенте), потому что

@@ -48,11 +48,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	designstore "github.com/jekabolt/grbpwr-manager/internal/store/design"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
 )
@@ -462,6 +464,54 @@ func TestConstructionCeilingCanPhysicallyArrive(t *testing.T) {
 	// И ВТОРАЯ ПОЛОВИНА СВЯЗИ: потолок обязан ПОКУПАТЬ время, а не просто помещаться в чужое.
 	require.Greater(t, budget, openrouter.DefaultCompletionBudget(0),
 		"бюджет вызова не вырос от потолка — значит время и потолок снова два независимых числа")
+}
+
+// TestHandlerLeaseOutlivesTheLongestPaidCall — ЛИЗА ХЕНДЛЕРА ОБЯЗАНА ПЕРЕЖИВАТЬ ПЛАТНЫЙ ВЫЗОВ,
+// И ЭТО ЕДИНСТВЕННОЕ, ЧТО СТОИТ МЕЖДУ ОДНИМ client_request_id И ДВУМЯ ПЛАТЕЖАМИ.
+//
+// ⚠ ПОЧЕМУ СОСЕДНЯЯ ПРОБА ЭТОГО НЕ ЛОВИЛА. TestConstructionCeilingCanPhysicallyArrive спрашивает
+// ровно один вопрос — «успевает ли поставщик напечатать разрешённое» — и ни разу не спрашивает,
+// ЧТО ПРОИСХОДИТ СО СТРОКОЙ, пока он печатает. А происходило вот что: бюджет вызова вырос до
+// 5m26.667s (60 s базы + 8000/30 на печать), лиза же осталась литералом в 5 минут в ДРУГОМ ПАКЕТЕ,
+// где она к тому же не экспортирована. На 300-й секунде claim_expires_at проходит, хендлер всё ещё
+// внутри вызова, и повтор ТОГО ЖЕ ключа (react-query `retry: 1`, ингресс со сроком ответа в полосе
+// 300–327 s) проходит designRunResumableSQL, ротирует токен и доходит до StartAttempt — ВТОРОЙ
+// ПЛАТНЫЙ ВЫЗОВ. Ловить его ниже нечем: у FinishAttempt сторожа захвата нет, а chargeAlreadyBooked
+// дедуплицирует по provider_request_id, которого эта дорога не ставит.
+//
+// ПОЭТОМУ ПРОБА СВЕРЯЕТ ДВА ЧИСЛА ЧЕРЕЗ ГРАНИЦУ ПАКЕТОВ — там, где они и разошлись.
+//
+// МУТАЦИЯ: вернуть store/design.HandlerLease = 5 * time.Minute → краснеет.
+func TestHandlerLeaseOutlivesTheLongestPaidCall(t *testing.T) {
+	budget := openrouter.DefaultCompletionBudget(designConstructionMaxTokens)
+	lease := designstore.HandlerLease
+	t.Logf("бюджет вызова %s, лиза хендлера %s, запас %s", budget, lease, lease-budget)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: прежний литерал был КОРОЧЕ бюджета — то есть дефект был настоящим, а
+	// не арифметической придиркой. Без этой строки проба зеленела бы и на потолке в сто токенов.
+	require.Less(t, 5*time.Minute, budget,
+		"положительный контроль: literal-лиза в 5 минут была короче бюджета вызова (%s)", budget)
+
+	require.Greater(t, lease, budget,
+		"лиза (%s) не переживает самый долгий платный вызов (%s): пока хендлер ещё внутри вызова, "+
+			"повтор того же client_request_id перехватит строку и заплатит второй раз", lease, budget)
+
+	// И ЗАПАС ОБЯЗАН БЫТЬ, А НЕ «НА СЕКУНДУ БОЛЬШЕ». Лиза выдаётся в StartRun — ДО сборки промпта
+	// (резолв медиа, словарь цвета, RecordRunPrompt, StartAttempt) — и снимается закрывающей
+	// записью ПОСЛЕ разбора ответа. Вызов её самая длинная, но не единственная часть.
+	require.GreaterOrEqual(t, lease-budget, 30*time.Second,
+		"у лизы не осталось запаса на сборку промпта и закрывающую запись: %s − %s = %s",
+		lease, budget, lease-budget)
+
+	// СВЯЗЬ, А НЕ СОВПАДЕНИЕ: лиза обязана СЛЕДОВАТЬ за потолком. Потолок вдвое больше — бюджет
+	// вырастает, и лиза, выведенная из него, обязана оставаться длиннее И ЭТОГО бюджета... а
+	// поскольку выводится она из ОДНОГО потолка, проверяем то, что проверить можно снаружи: лиза
+	// не равна ни одному круглому литералу, которым её выписали бы руками.
+	for _, literal := range []time.Duration{time.Minute, 5 * time.Minute, 10 * time.Minute} {
+		require.NotEqual(t, literal, lease,
+			"лиза совпала с круглым литералом %s — её снова выписали рядом с бюджетом, а не вывели из него",
+			literal)
+	}
 }
 
 // ─────────────────────────── 6. ПОТОЛОК И ЦЕНА ───────────────────────────

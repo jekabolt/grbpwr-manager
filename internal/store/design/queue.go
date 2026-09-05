@@ -47,7 +47,7 @@ import (
 // БЕЗ АЛИАСА ТАБЛИЦЫ намеренно: UPDATE в MySQL алиас не получает, и предикат с `r.` не
 // подставился бы в него без переписывания — то есть ровно та копия, которой быть не должно.
 //
-// `kind <> 'draft_idea'` — текстовый прогон исполняет ХЕНДЛЕР синхронно (см. designHandlerLease):
+// `kind <> 'draft_idea'` — текстовый прогон исполняет ХЕНДЛЕР синхронно (см. HandlerLease):
 // воркер, забравший его строку, оплатил бы второй вызов той же модели.
 const designRunClaimableSQL = `
 	status = 'pending'
@@ -99,7 +99,7 @@ func resumeHandlerRun(ctx context.Context, db dependency.DB, prior entity.Design
 		WHERE id = :id AND `+designRunResumableSQL,
 		map[string]any{
 			"id": prior.Id, "tok": token,
-			"lease_micros": designHandlerLease.Microseconds(),
+			"lease_micros": HandlerLease.Microseconds(),
 		})
 	if err != nil {
 		return false, entity.DesignRun{}, fmt.Errorf("failed to resume design run %d: %w", prior.Id, err)
@@ -288,6 +288,12 @@ const designRunAbandonedCancelledSQL = `
 // выбор (оставить токен) стоит дороже: тогда «истёкшая лиза» перестаёт что-либо значить, и две
 // копии одного задания идут к провайдеру, обе считая себя владельцами строки. Лечится это не
 // выбором, а длиной лизы: она обязана превышать самый долгий вызов провайдера.
+//
+// ⚠ И ЭТА ФРАЗА БОЛЬШЕ НЕ ПРОСЬБА. Она была ею — и оказалась ЛОЖНОЙ НА 26.7 s в тот день, когда
+// потолок ответа поднялся до 8000 токенов и вызов купил себе 5m26.667s против лизы в 5 минут.
+// Теперь HandlerLease ВЫВЕДЕНА из openrouter.DefaultCompletionBudget того же потолка (см. её
+// шапку в wave2.go), а TestHandlerLeaseOutlivesTheLongestPaidCall спрашивает оба числа ЧЕРЕЗ
+// ГРАНИЦУ ПАКЕТОВ — то место, где они и разошлись.
 func (s *Store) ReviveExpiredRuns(ctx context.Context) (int, error) {
 	var revived int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
