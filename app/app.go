@@ -51,6 +51,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	designstore "github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
@@ -457,6 +458,23 @@ func (a *App) Start(ctx context.Context) error {
 	// campaign auto-translation — one client, one model slug, three features. Nil-safe/disabled
 	// when OPENROUTER_API_KEY is unset, and each handler then reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
+	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
+	//
+	// Лиза строки черновика идеи обязана переживать платный вызов, а длину вызова задаёт БАЗА
+	// бюджета этого клиента — OPENROUTER_HTTP_TIMEOUT. Сойтись они больше не могут: лизу считает
+	// store/design.HandlerLeaseFor ИЗ ЭТОЙ ЖЕ базы (её приносит хендлер в DesignRunStart), поэтому
+	// отказывать на старте нечему и никакого «тихого зажима» здесь нет.
+	//
+	// Строка стоит ради другого: до неё утверждение «на бете переменная не задана» было ЗАМЕРОМ
+	// РУКАМИ на платформе — спек беты в .gitignore, из исходников его не проверить ничем, и
+	// протух бы этот замер в ту минуту, когда переменную поставят. Теперь тот же вопрос
+	// отвечается журналом живого процесса, без доступа к панели и без редеплоя.
+	slog.Default().InfoContext(ctx, "design idea draft: the paid call's budget base and the row's lease",
+		slog.String("flag", "OPENROUTER_HTTP_TIMEOUT"),
+		slog.Duration("completion_base", aiOpsClient.CompletionBase()),
+		slog.Duration("handler_lease", designstore.HandlerLeaseFor(
+			aiOpsClient.CompletionBase(), entity.DesignDraftAnswerCeilings()...)),
+	)
 	// Ask the provider once, in the background, whether that one slug is still served. It returns
 	// immediately, refuses nothing and can only write a log line — see WarnIfModelRetired. It is
 	// here because the alternative is how the last outage was found: by a person pressing a button

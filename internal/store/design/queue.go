@@ -89,7 +89,15 @@ const designRunResumableSQL = `
 // либо его лиза ЖИВА — «вызов идёт прямо сейчас, в соседнем запросе», и второй звонок оплатил бы
 // ту же модель второй раз. Ровно это же значение возвращается ПРОИГРАВШЕМУ гонки: строку у него
 // увели между чтением и записью, и правильный ответ ему — та же строка, которую ведёт победитель.
-func resumeHandlerRun(ctx context.Context, db dependency.DB, prior entity.DesignRun) (bool, entity.DesignRun, error) {
+//
+// ⚠ ЛИЗА ПРИХОДИТ АРГУМЕНТОМ, А НЕ БЕРЁТСЯ ИЗ ПАКЕТНОЙ ПЕРЕМЕННОЙ. Продление обязано быть ТЕМ ЖЕ
+// сроком, что и выдача (обе — ровно те, что переживают вызов ЭТОГО клиента поставщика); пакетная
+// переменная считалась бы от КОДОВОЙ базы и разошлась бы с настроенной молча — довод целиком у
+// HandlerLeaseFor. Не-draft_idea сюда доходит, но designRunResumableSQL его не пропускает, поэтому
+// ноль у остальных родов безвреден по построению.
+func resumeHandlerRun(
+	ctx context.Context, db dependency.DB, prior entity.DesignRun, lease time.Duration,
+) (bool, entity.DesignRun, error) {
 	token := uuid.NewString()
 	rows, err := storeutil.ExecNamedRows(ctx, db, `
 		UPDATE design_run
@@ -99,7 +107,7 @@ func resumeHandlerRun(ctx context.Context, db dependency.DB, prior entity.Design
 		WHERE id = :id AND `+designRunResumableSQL,
 		map[string]any{
 			"id": prior.Id, "tok": token,
-			"lease_micros": HandlerLease.Microseconds(),
+			"lease_micros": lease.Microseconds(),
 		})
 	if err != nil {
 		return false, entity.DesignRun{}, fmt.Errorf("failed to resume design run %d: %w", prior.Id, err)
@@ -291,11 +299,12 @@ const designRunAbandonedCancelledSQL = `
 //
 // ⚠ И ЭТА ФРАЗА БОЛЬШЕ НЕ ПРОСЬБА. Она была ею — и оказалась ЛОЖНОЙ НА 26.7 s в тот день, когда
 // потолок ответа поднялся до 8000 токенов и вызов купил себе 5m26.667s против лизы в 5 минут.
-// Теперь HandlerLease ВЫВЕДЕНА из openrouter.DefaultCompletionBudget по МАКСИМУМУ потолков всех
-// веток нажатия (entity.DesignDraftAnswerCeilings; см. её шапку в wave2.go), а
-// TestHandlerLeaseOutlivesTheLongestPaidCall спрашивает эти числа ЧЕРЕЗ ГРАНИЦУ ПАКЕТОВ — то
-// место, где они и разошлись — и делает это ПО КАЖДОЙ ВЕТКЕ, чтобы потолок, появившийся у
-// соседней, не проскользнул мимо.
+// Теперь лиза ВЫВОДИТСЯ из openrouter.CompletionBudget по МАКСИМУМУ потолков всех веток нажатия
+// (entity.DesignDraftAnswerCeilings) И по БАЗЕ ТОГО КЛИЕНТА, который делает вызов
+// (openrouter.Client.CompletionBase) — HandlerLeaseFor, см. её шапку в wave2.go. Пробы спрашивают
+// эти числа ЧЕРЕЗ ГРАНИЦУ ПАКЕТОВ — то место, где они и расходились, — по КАЖДОЙ ВЕТКЕ и отдельно
+// по НАСТРОЕННОЙ базе: и потолок, появившийся у соседней ветки, и заданный
+// OPENROUTER_HTTP_TIMEOUT прежде проскальзывали мимо молча.
 func (s *Store) ReviveExpiredRuns(ctx context.Context) (int, error) {
 	var revived int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

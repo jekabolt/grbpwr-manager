@@ -481,7 +481,7 @@ var (
 var designDraftIdeaBaseUSD = decimal.Max(designDraftIdeaProseBaseUSD, designDraftIdeaConstructionBaseUSD)
 
 // ⚠ ПОТОЛОК ОТВЕТА ПЕРЕЕХАЛ В entity.DesignDraftAnswerCeiling, И ПЕРЕЕЗД БЫЛ ПОЧИНКОЙ, А НЕ
-// ПЕРЕКЛАДЫВАНИЕМ. Пока таблица потолков жила здесь, ЛИЗА ХЕНДЛЕРА (store/design.HandlerLease) не
+// ПЕРЕКЛАДЫВАНИЕМ. Пока таблица потолков жила здесь, ЛИЗА ХЕНДЛЕРА (store/design.HandlerLeaseFor) не
 // могла её спросить — пакеты видят друг друга в другую сторону — и была выведена из ОДНОЙ ветки, из
 // entity.DesignConstructionMaxTokens. Сегодня это то же число; в день, когда у прозы появится свой
 // потолок выше 8000, бюджет вызова обогнал бы лизу, и один client_request_id заплатил бы дважды
@@ -2366,6 +2366,21 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
 		PriceEstimate:    est,
 		Author:           designActor(ctx),
+		// ⚠ ЛИЗА СЧИТАЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ — И ТОЛЬКО ЗДЕСЬ — ВИДНЫ ОБА ЧИСЛА СРАЗУ.
+		// Она обязана переживать платный вызов, а длину вызова задают ДВЕ величины: потолок ответа
+		// (entity.DesignDraftAnswerCeilings) и БАЗА бюджета ТОГО клиента, который сейчас позвонит
+		// (s.aiOps.CompletionBase — ровно то поле, что postChatCompletion кладёт в CompletionBudget).
+		// Стор конфигурацию процесса не видит; пока он считал лизу сам, он считал её от КОДОВОЙ базы
+		// в 60 s, и при заданном OPENROUTER_HTTP_TIMEOUT = 240 s вызов занимал 506.67 s против лизы в
+		// 416.67 s — на 90 s ВНУТРИ вызова строка была свободна, и повтор того же client_request_id
+		// платил модели второй раз. Довод целиком — у store/design.HandlerLeaseFor.
+		//
+		// ⚠ МАКСИМУМ ПО ВЕТКАМ, А НЕ ПОТОЛОК ЭТОЙ, ХОТЯ ВЕТКА ЗДЕСЬ УЖЕ ИЗВЕСТНА. Лизу продлевает
+		// ещё и ПЕРЕХВАТ (resumeHandlerRun), а перехватывается ЧУЖАЯ строка — открытая, вообще
+		// говоря, другой веткой: сверка формы стоит ниже и только для ЗАКОНЧЕННОГО прогона. Взяв
+		// потолок этой ветки, мы продлевали бы чужую строку сроком, который её вызов не переживает.
+		HandlerLease: design.HandlerLeaseFor(
+			s.aiOps.CompletionBase(), entity.DesignDraftAnswerCeilings()...),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to open the design idea draft", err, nil)

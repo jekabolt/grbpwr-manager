@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -167,6 +168,11 @@ func TestDesignDBResumeOfAnAbandonedHandlerHasExactlyOneWinner(t *testing.T) {
 			Kind:            entity.DesignRunKindDraftIdea,
 			PriceEstimate:   decimal.NullDecimal{Decimal: decimal.RequireFromString("0.05"), Valid: true},
 			Author:          "probe",
+			// ЛИЗА ОБЯЗАТЕЛЬНА У ЭТОГО РОДА (см. design.HandlerLeaseFor): её считает тот, кто держит
+			// клиента поставщика, и стор отказывает просьбе без неё. Ноль базы = кодовое умолчание
+			// openrouter, ровно та же нормализация, что в openrouter.New. Истечение лизы эта проба
+			// всё равно форсирует руками (expireClaim), поэтому её длина здесь не несущая.
+			HandlerLease: design.HandlerLeaseFor(0, entity.DesignDraftAnswerCeilings()...),
 		})
 	}
 	first, err := start()

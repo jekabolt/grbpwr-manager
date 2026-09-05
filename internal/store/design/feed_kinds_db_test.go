@@ -52,8 +52,11 @@ func TestDesignDBDraftIdeaLeavesTheFeedAndStaysInTheLedger(t *testing.T) {
 		ClientRequestId:  uuid.NewString(),
 		Kind:             entity.DesignRunKindDraftIdea,
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
-		PriceEstimate:    decimal.NullDecimal{Decimal: draftEstimate, Valid: true},
-		Author:           "probe",
+		// ЛИЗА ОБЯЗАТЕЛЬНА У ЭТОГО РОДА (см. design.HandlerLeaseFor): её считает тот, кто держит
+		// клиента поставщика, и стор отказывает просьбе без неё.
+		HandlerLease:  design.HandlerLeaseFor(0, entity.DesignDraftAnswerCeilings()...),
+		PriceEstimate: decimal.NullDecimal{Decimal: draftEstimate, Valid: true},
+		Author:        "probe",
 	})
 	require.NoError(t, err)
 

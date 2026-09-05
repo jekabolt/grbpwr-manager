@@ -93,7 +93,7 @@ const (
 	// ровно тогда, когда потолок задан (см. multimodal.go) — иначе думающая модель тратила бы этот
 	// же бюджет до ответа, и замер выше не значил бы ничего.
 	// ⚠ ЧИСЛО ПЕРЕЕХАЛО В entity, А ЗДЕСЬ ОСТАЛСЯ ЗАМЕР. Из него выводятся ЦЕНА (design_run.go),
-	// СРОК ВЫЗОВА (openrouter.CompletionBudget) и ЛИЗА ХЕНДЛЕРА (store/design.HandlerLease) — три
+	// СРОК ВЫЗОВА (openrouter.CompletionBudget) и ЛИЗА ХЕНДЛЕРА (store/design.HandlerLeaseFor) — три
 	// величины в трёх пакетах, две из которых деньги и время. Пока копия числа стояла в каждом,
 	// они расходились молча: см. довод у entity.DesignConstructionMaxTokens.
 	designConstructionMaxTokens = entity.DesignConstructionMaxTokens
