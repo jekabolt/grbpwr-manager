@@ -67,9 +67,8 @@ func TestParseConstructionDraftReadsAWellFormedAnswer(t *testing.T) {
 	// не просит, поэтому принятая строка считается как CalloutsUnasked — «модель ответила на
 	// незаданный вопрос». Остальные поправки обязаны быть нулём: это положительный контроль.
 	require.Equal(t, 1, stats.CalloutsUnasked)
-	clean := stats
-	clean.CalloutsUnasked = 0
-	require.False(t, clean.Any(), "чистый ответ не нуждается ни в одной поправке: %+v", stats)
+	require.False(t, stats.Coerced(),
+		"добровольная выноска ПРИНЯТА — коэрцировать было нечего: %+v", stats)
 
 	require.Equal(t, "Sleeveless V-neck tank top", draft.GetSilhouette())
 	require.Equal(t, "Stretch knit jersey", draft.GetFabric())
@@ -612,7 +611,7 @@ func TestDraftDesignIdeaRefusesAnAnswerOutOfShapeAndStillPays(t *testing.T) {
 	require.Len(t, rig.finished, 1)
 	require.Equal(t, entity.DesignAttemptFailed, rig.finished[0].State)
 	require.True(t, rig.finished[0].Price.Valid, "оплаченный вызов обязан быть виден в регистре")
-	require.Equal(t, designDraftIdeaEstimate(1).Decimal.String(), rig.finished[0].Price.Decimal.String())
+	require.Equal(t, designDraftIdeaEstimate(1, true).Decimal.String(), rig.finished[0].Price.Decimal.String())
 	require.Empty(t, rig.completedText, "прогон провален — закрывать его нечем")
 }
 
@@ -724,7 +723,7 @@ func TestDraftDesignIdeaChargesTheCeilingItAteWithoutAnswering(t *testing.T) {
 	require.Equal(t, entity.DesignAttemptFailed, rig.finished[0].State)
 	require.True(t, rig.finished[0].Price.Valid,
 		"картинки уехали и токены завершения потрачены — списать ноль значит спрятать деньги")
-	require.Equal(t, designDraftIdeaEstimate(1).Decimal.String(),
+	require.Equal(t, designDraftIdeaEstimate(1, true).Decimal.String(),
 		rig.finished[0].Price.Decimal.String(),
 		"тот же потолок, тот же счёт: с половиной ответа и без ответа платится одинаково")
 }
@@ -1451,7 +1450,12 @@ func TestParseConstructionDraftCountsUnaskedCallouts(t *testing.T) {
 	require.Len(t, draft.GetCallouts(), 2)
 	require.Equal(t, 2, stats.CalloutsUnasked)
 	require.Zero(t, stats.CalloutsDropped, "строка со словами — не брак формы")
-	require.True(t, stats.Any(), "«модель отвечает на незаданный вопрос» обязано доехать до лога")
+
+	// ⚠ И ЭТО НЕ КОЭРЦИЯ. Обе строки ПРИНЯТЫ и уехали на провод; Warn «черновик коэрцирован» на
+	// ответе, у которого ничего не поправлено, — тревога, названная чужим именем. Счётчик всё
+	// равно печатается той же строкой лога, на уровне Info.
+	require.False(t, stats.Coerced(),
+		"принятая строка не имеет права поднимать «was coerced»: %+v", stats)
 
 	clean, cleanStats, err := parseConstructionDraft(`{"fabric":"jersey"}`, "stop")
 	require.NoError(t, err)

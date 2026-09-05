@@ -105,7 +105,13 @@ func TestConstructionDraftUnitSpeaksTheColumnsVocabulary(t *testing.T) {
 	require.Equal(t, 1, stats.UnitsUnset)
 	require.NotNil(t, line.EstUsage, "число остаётся: клиент покажет семейное умолчание")
 
-	// Полное имя члена — форма НАШЕГО канонического JSON; повтор обязан её узнавать.
+	// ⚠ ПОЛНОЕ ИМЯ ЧЛЕНА — ЭТО ТЕРПИМОСТЬ К ОТВЕТУ МОДЕЛИ, А НЕ ФОРМА НАШЕГО КАНОНА, И ПРЕЖНЯЯ
+	// ФОРМУЛИРОВКА ЗДЕСЬ БЫЛА НЕВЕРНОЙ. `unit` в проводе — обычный `string` (design.proto), его
+	// пишет designUnitToken, а тот отдаёт КОРОТКОЕ имя в нижнем регистре: канон хранит «"unit":"m"»
+	// и никогда «MATERIAL_UNIT_M». Полными именами protojson пишет СОСЕДЕЙ — section/purpose/kind,
+	// которые энумы и есть. Строка ниже держит не круг повтора (его держит
+	// TestConstructionDraftEstUsageSurvivesTheCanonicalRoundTrip), а один узкий случай: модель,
+	// взявшая слово из энума, а не из списка в промпте.
 	line, _ = euDraftLine(t,
 		`{"section":"thread","name":"sewing thread","est_usage":"150","unit":"MATERIAL_UNIT_M"}`)
 	require.Equal(t, "m", line.Unit)
