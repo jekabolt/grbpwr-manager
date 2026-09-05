@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -2507,6 +2508,11 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// которое однажды протухнет у поставщика молча.
 	text, finishReason, usage, callErr := s.aiOps.CompleteWithImages(
 		ctx, systemPrompt, prompt, boardURLs, construction, maxTokens)
+	// ⚠ ЭТОТ СТОРОЖ НЕДОСТИЖИМ ПО ПОСТРОЕНИЮ, И ИМЕННО ПОЭТОМУ ЕГО NULL-ЦЕНА НЕ ДЫРА. Пустой ответ
+	// ловит и называет сам транспорт (postChatCompletion подрезает контент и отказывает — либо
+	// ErrBudgetExhausted, либо «empty message»), причём отказывает уже ПОМЕЧЕННЫМ вовлечённым, то
+	// есть оплаченным. Сюда можно попасть только если тот сторож однажды снимут; тогда эта строка
+	// поднимет НЕПОМЕЧЕННУЮ ошибку и вернёт ноль в регистр. Снимая тот сторож, пометьте этот.
 	if callErr == nil && strings.TrimSpace(text) == "" {
 		callErr = errors.New("the model returned an empty draft")
 	}
@@ -2538,7 +2544,12 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			return nil, designRefusal(codes.FailedPrecondition,
 				designReasonBudgetExhausted, designConstructionBudgetRefusalMsg, nil)
 		}
-		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr)
+		// ⚠ ЭТА ВЕТКА СТОИТ ПОСЛЕ ветки ErrBudgetExhausted, И ПОРЯДОК НЕСУЩИЙ. Съеденный потолок
+		// тоже «вовлечён» (запрос доехал, поставщик напечатал токены), и обе ветки списывают один
+		// и тот же `est` — но списать его обязана РОВНО ОДНА из них: `return` выше и есть та
+		// единственная защита от второй двери. Поменяв их местами, мы получили бы `budget_exhausted`,
+		// закрытый как `provider_cut`, — и график «нам рвёт провод» там, где мал наш потолок.
+		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr, est)
 		return nil, s.designDraftCallError(ctx, cardID, callErr)
 	}
 
@@ -2687,11 +2698,66 @@ func (s *Server) designLogConstructionDraft(
 	}
 }
 
+// designReasonProviderCut — ЧЕТВЁРТЫЙ КОД РЯДОМ С ТРЕМЯ, И ЗАВЁЛСЯ ОН РАДИ ДЕНЕГ, А НЕ РАДИ
+// точности формулировки.
+//
+// `provider_error` значит «ответа не было И ПЛАТИТЬ НЕ ЗА ЧТО» — не доехали до поставщика вовсе:
+// не собрался запрос, отказало соединение, слуг модели протух, ключ не тот. `invalid_output` —
+// «ответ был, и он не той формы». `budget_exhausted` — «ответ был, он пуст, потолок съеден».
+// Здесь — ЧЕТВЁРТОЕ СОБЫТИЕ: запрос ДОЕХАЛ, поставщик считал, а ответа мы не увидели, потому что
+// провод оборвался раньше. Это единственный исход, у которого ФАКТ ЕСТЬ, А ИЗМЕРИТЬ ЕГО НЕЧЕМ.
+//
+// ⚠ СВОЙ КОД, А НЕ ОПЛАЧЕННЫЙ `provider_error`, ИМЕННО ПОТОМУ, ЧТО ЦЕНА ТЕПЕРЬ РАЗНАЯ. Слив их в
+// один код, мы получили бы колонку, в которой одна половина строк несёт цену, а другая NULL, — и
+// ни один читатель регистра не смог бы отличить «сорвалось до денег» от «сорвалось после», кроме
+// как по наличию цены, то есть по СЛЕДСТВИЮ вместо причины. Ровно тот же довод, по которому
+// круг 19 отделил `budget_exhausted` от `provider_error`; здесь он о той же колонке.
+const designReasonProviderCut = "provider_cut"
+
+// designFailWriteBudget — сколько времени есть у ЗАКРЫВАЮЩЕЙ записи после того, как клиент ушёл.
+// Две строки в одной базе; больше — значит держать соединение ради человека, которого уже нет.
+const designFailWriteBudget = 5 * time.Second
+
 // designFailDraft закрывает попытку и прогон после провала вызова. ЛУЧШЕЕ УСИЛИЕ И ГРОМКОЕ:
 // ошибка здесь не возвращается человеку — он должен увидеть ту, из-за которой всё началось, — но
 // молчание оставило бы прогон висеть с зарезервированными деньгами.
-func (s *Server) designFailDraft(ctx context.Context, run entity.DesignRun, attemptNo int, cause error) {
-	// ПРОВАЛ ПОСТАВЩИКА НЕ ОПЛАЧИВАЕТСЯ: ответа не было вовсе, платить не за что.
+//
+// ⚠ ЦЕНУ ВЫБИРАЕТ ГРАНИЦА ПРОВОДА, А НЕ РОД ОШИБКИ, И ЭТО ЗАКРЫВАЕТ ПОСЛЕДНЮЮ ДЫРУ В РЕГИСТРЕ.
+// Раньше здесь стоял безусловный NULL с доводом «ответа не было вовсе, платить не за что» — и
+// довод был верен ровно для половины исходов, приходящих в эту функцию. Вторая половина — обрыв
+// ПОСЛЕ того, как запрос уехал: сорванная вкладка, разрыв на краю, отменённый контекст, истёкший
+// срок на 143-й секунде. Поставщик к этой секунде уже получил доску из двенадцати кадров (≈22k
+// входных токенов) и напечатал сколько-то ответа; регистр писал НОЛЬ, человек видел
+// codes.Unavailable — новость, неотличимую от погоды, — и жал ещё раз с новым client_request_id.
+// Денег в регистре не появлялось НИКОГДА.
+//
+// ⚠ РАЗЛИЧАЕТ openrouter.ProviderEngaged, А НЕ ПРОЗА ОШИБКИ. Довод целиком — у самой функции:
+// строки ошибок net/http не контракт, и сверка с ними — ровно тот способ, которым такая починка
+// гниёт молча. Здесь спрашивается флаг, поднятый httptrace на записи запроса в соединение.
+//
+// ⚠ ПОЧЕМУ СПИСЫВАЕТСЯ ВЕСЬ `est`, А НЕ ОДНА ВХОДНАЯ ЕГО ПОЛОВИНА. Три довода, и первый — доктрина
+// этого файла (см. designPriceEstimate): каждое число здесь ВЕРХНЯЯ ГРАНИЦА своего рода, потому
+// что «заниженный факт врёт про потраченное навсегда». Обрыв может случиться в любой момент — и на
+// первом токене ответа, и на последнем, — а usage приезжает ровно в том ответе, которого не было,
+// так что сузить оценку НЕ ПО ЧЕМУ: любое более узкое число было бы не измерением, а вторым
+// предположением.
+//
+// ВТОРОЙ: ЭТО ТО ЖЕ САМОЕ ЧИСЛО, КОТОРОЕ УЖЕ ЗАРЕЗЕРВИРОВАНО. `StartRun.PriceEstimate` отложил
+// ровно `est`; списав `est`, мы получаем факт, равный резерву, и разойтись им негде вовсе. Любое
+// «поуже» завело бы РЯДОМ С МЕСТОМ СПИСАНИЯ ВТОРУЮ ЦЕНУ, выведенную из тех же констант, — тот
+// самый класс дефекта, который designPriceEstimate и designDraftIdeaBaseUSD чинили дважды.
+//
+// ТРЕТИЙ, И ОН ПРО СТИМУЛ: обрезанный ответ (`invalid_output`) и съеденный потолок
+// (`budget_exhausted`) УЖЕ платят полный `est`. Оценив оборванный провод дешевле, мы бы снова
+// сделали ХУДШИЙ исход самым дешёвым — дословно то, что круг 19 разбирал у двери finish_reason.
+func (s *Server) designFailDraft(
+	ctx context.Context, run entity.DesignRun, attemptNo int, cause error, engagedPrice decimal.NullDecimal,
+) {
+	if openrouter.ProviderEngaged(cause) {
+		s.designFailDraftAs(ctx, run, attemptNo, cause, designReasonProviderCut, engagedPrice)
+		return
+	}
+	// ЗАПРОС НЕ ДОЕХАЛ: ничего не куплено, и NULL — правда о нём.
 	s.designFailDraftAs(ctx, run, attemptNo, cause, "provider_error", decimal.NullDecimal{})
 }
 
@@ -2704,10 +2770,23 @@ func (s *Server) designFailDraft(ctx context.Context, run entity.DesignRun, atte
 //
 // ⚠ И ИМЕННО ПОЭТОМУ ЦЕНА ЗДЕСЬ ПАРАМЕТР. Ответ, пришедший не по схеме, УЖЕ ОПЛАЧЕН входными
 // токенами картинок; закрыть такую попытку нулём значит спрятать потраченные деньги.
+//
+// ⚠ ПИШЕТ КОНТЕКСТОМ, ОТВЯЗАННЫМ ОТ ОТМЕНЫ, И БЕЗ ЭТОГО ВСЯ ПОЧИНКА ПРО ОПЛАЧЕННЫЙ ОБРЫВ НЕ
+// РАБОТАЕТ РОВНО В ТОМ СЛУЧАЕ, РАДИ КОТОРОГО ЗАВОДИЛАСЬ. Закрытая вкладка приходит сюда ОТМЕНОЙ
+// КОНТЕКСТА ХЕНДЛЕРА (gRPC отменяет его, как только клиент ушёл), а не таймаутом транспорта — у
+// того свой производный срок, снимаемый своим defer. Тем же отменённым контекстом эта функция
+// открывала транзакцию в сторе: BeginTx на отменённом контексте отказывает СРАЗУ, ошибка уезжала в
+// лог, и попытка не закрывалась вовсе. То есть исход «человек закрыл вкладку» продолжал бы стоить
+// регистру ноль — просто теперь молча падая на записи вместо того, чтобы молча писать NULL.
+//
+// ЗНАЧЕНИЯ СОХРАНЯЮТСЯ (context.WithoutCancel), СРОК СВОЙ И КОРОТКИЙ: это закрывающая запись, а не
+// работа, и висеть на ней после ушедшего клиента незачем.
 func (s *Server) designFailDraftAs(
 	ctx context.Context, run entity.DesignRun, attemptNo int,
 	cause error, errorCode string, price decimal.NullDecimal,
 ) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), designFailWriteBudget)
+	defer cancel()
 	if err := s.repo.Design().FinishAttempt(ctx, entity.DesignAttemptFinish{
 		RunId: run.Id, AttemptNo: attemptNo,
 		State:     entity.DesignAttemptFailed,
@@ -2742,6 +2821,16 @@ func (s *Server) designDraftCallError(ctx context.Context, cardID int, err error
 	if errors.Is(err, openrouter.ErrModelUnavailable) {
 		return aiModelRefusal(draftIdeaModelUnavailableMsg, s.aiOps.Model())
 	}
+	// ⚠ ОБОРВАННЫЙ ПРОВОД ГОВОРИТ, ЧТО ОН СТОИЛ ДЕНЕГ, И ЭТО ПОЛОВИНА ПОЧИНКИ, А НЕ ВЕЖЛИВОСТЬ.
+	// Код остаётся Unavailable — совет «повторить» верен, обрыв действительно бывает погодой, — но
+	// молчащая погода и есть то, из-за чего одно нажатие превращалось в три: человек не мог знать,
+	// что за каждое уже заплачено. Регистр теперь это знает (designReasonProviderCut); фраза лишь
+	// показывает ему то же самое до того, как он нажмёт снова.
+	if openrouter.ProviderEngaged(err) {
+		return status.Errorf(codes.Unavailable,
+			"the request reached the model and the connection broke before the answer came back, "+
+				"so this press was charged: %v", err)
+	}
 	return status.Errorf(codes.Unavailable, "drafting the idea failed: %v", err)
 }
 
@@ -2758,6 +2847,11 @@ func designReplayedFailure(run entity.DesignRun) error {
 		return designRefusal(codes.FailedPrecondition, code, designConstructionReplayShapeMsg, nil)
 	case designReasonBudgetExhausted:
 		return designRefusal(codes.FailedPrecondition, code, designConstructionReplayBudgetMsg, nil)
+	case designReasonProviderCut:
+		// ПОВТОР НЕ ПЛАТИТ ВТОРОЙ РАЗ — платной попытки здесь не заводится вовсе, — но и не
+		// умалчивает, что первый раз был оплачен: иначе человек уйдёт с этого экрана, считая
+		// оборванный вызов бесплатным, ровно как до починки.
+		return designRefusal(codes.FailedPrecondition, code, designDraftReplayCutMsg, nil)
 	}
 	if code == "" {
 		code = "provider_error"

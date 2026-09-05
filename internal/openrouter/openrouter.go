@@ -17,7 +17,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -157,6 +159,68 @@ var ErrBudgetExhausted = errors.New("openrouter: the model spent the whole compl
 // So the cap now REFUSES rather than trims: too big is a fault with a name, and the name says
 // which knob (the ceiling) is the one to turn.
 var ErrResponseTooLarge = errors.New("openrouter: the provider's response exceeded the read ceiling")
+
+// ───────────────── ГРАНИЦА «КУПЛЕНО / НЕ КУПЛЕНО» ─────────────────
+//
+// ProviderEngaged отвечает на ОДИН вопрос, у которого есть только два ответа: успел ли этот запрос
+// доехать до поставщика ДО того, как всё сломалось. Ответ — не диагностика, а ДЕНЬГИ: пока его не
+// было, вызывающий (design_run.go: designFailDraft) закрывал ЛЮБОЙ провал вызова ценой NULL, и
+// поставщик, уже напечатавший 22k входных токенов на доске из двенадцати кадров, попадал в регистр
+// нулём. Человек видел codes.Unavailable — новость, неотличимую от погоды, — жал ещё раз с новым
+// client_request_id и покупал тот же ноль второй раз. В регистре про эти деньги не было ни строки.
+//
+// ⚠ ГРАНИЦА НАЙДЕНА НА ПРОВОДЕ, А НЕ В ПРОЗЕ ОШИБКИ, И ЭТО НЕСУЩЕЕ. Разобрать `*url.Error` по
+// словам («timeout», «connection reset», «context canceled») — ровно тот способ, которым такая
+// починка гниёт: строки ошибок net/http не контракт, они меняются между релизами Go и между
+// прокси, а промах в любую сторону — это либо выдуманные деньги, либо снова спрятанные. Поэтому
+// спрашивается САМ ТРАНСПОРТ: httptrace.WroteRequest срабатывает ровно тогда, когда запрос
+// (вместе с телом) ДОПИСАН в соединение, и несёт собственную ошибку записи. Записан целиком и без
+// ошибки — поставщик его получил и начал считать; не записан — не получил ничего.
+//
+// ЧТО ПО КАКУЮ СТОРОНУ ГРАНИЦЫ ОКАЗАЛОСЬ:
+//
+//	НЕ ВОВЛЕЧЁН (NULL в регистре — правда):
+//	  · ErrNotConfigured, пустой промпт, отказ сборки частей, marshal, build request — до провода;
+//	  · DNS, отказ в соединении, TLS, оборванная ЗАПИСЬ запроса — WroteRequest не сработал;
+//	  · ЛЮБОЙ non-2xx, включая 404/ErrModelUnavailable, 401, 402, 429. Это поставщик, ОТКАЗАВШИЙ НА
+//	    ВОРОТАХ, а отказ не тарифицируется. Здесь и только здесь граница выбрана НЕ в сторону
+//	    «записать»: протухший слуг модели (см. defaultModel) отвечает 404 за 0.2 с на КАЖДОЕ
+//	    нажатие, и пометить это тратой значило бы выдумать деньги ровно в тот день, когда фича
+//	    целиком мертва, — то есть соврать в ту же кассу, только в другую сторону.
+//
+//	ВОВЛЕЧЁН (деньги ушли, сумму знает вызывающий):
+//	  · запрос дописан, а дальше срок вышел / контекст отменён / край разорвал соединение —
+//	    поставщик считает прямо сейчас, а мы не узнаем, чем он кончил;
+//	  · тело ответа не дочиталось или переросло потолок (ErrResponseTooLarge) — ответ БЫЛ;
+//	  · 2xx, у которого конверт не разобрался, пуст, без choices или с error внутри — поставщик
+//	    принял запрос и отработал его.
+//
+// ⚠ ПОМЕТКА — ОБЁРТКА, А НЕ ВТОРОЙ СЕНТИНЕЛ, И ТЕКСТ ОШИБКИ ОНА НЕ ТРОГАЕТ. errors.Join склеил бы
+// две фразы через перевод строки, а эта ошибка доезжает до человека целиком (design_run.go:
+// designDraftCallError). Цепочка сохраняется: errors.Is(err, ErrBudgetExhausted) сквозь обёртку
+// по-прежнему верен.
+type engagedError struct{ err error }
+
+func (e *engagedError) Error() string { return e.err.Error() }
+func (e *engagedError) Unwrap() error { return e.err }
+
+// engaged помечает ошибку как поднятую ПОСЛЕ того, как запрос доехал до поставщика.
+func engaged(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &engagedError{err: err}
+}
+
+// ProviderEngaged — «за этот вызов поставщику уже причитаются деньги».
+//
+// Отвечает false на nil и на всякую ошибку, поднятую до провода. Вызывающий, который на этом
+// ответе списывает, обязан списывать ВЕРХНЮЮ границу: сколько именно напечатал поставщик, здесь не
+// знает никто — usage приезжает в том самом ответе, которого не было.
+func ProviderEngaged(err error) bool {
+	var e *engagedError
+	return errors.As(err, &e)
+}
 
 // readCapped reads at most limit bytes and REFUSES anything longer instead of handing back a
 // prefix. It reads limit+1 on purpose: that one extra byte is the entire difference between "the
@@ -752,6 +816,23 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 	ctx, cancel := context.WithTimeout(ctx, CompletionBudget(c.budgetBase, maxTokens))
 	defer cancel()
 
+	// ⚠ ЕДИНСТВЕННЫЙ НАБЛЮДАТЕЛЬ ГРАНИЦЫ «КУПЛЕНО / НЕ КУПЛЕНО» (см. ProviderEngaged). Флаг
+	// поднимается ровно тогда, когда запрос ВМЕСТЕ С ТЕЛОМ дописан в соединение без ошибки: с этой
+	// секунды поставщик его получил и начал считать, и всё, что сломается дальше, сломается уже за
+	// наши деньги. Оборванная запись (info.Err != nil) флага НЕ поднимает — недописанное тело
+	// поставщик не обрабатывает.
+	//
+	// atomic, а не голый bool, и это не перестраховка: при истёкшем сроке Do возвращается из
+	// ОДНОЙ горутины, пока пишущая горутина транспорта ещё жива, и гонка тут была бы настоящей.
+	var wrote atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wrote.Store(true)
+			}
+		},
+	})
+
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -764,13 +845,22 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return "", "", Usage{}, fmt.Errorf("openrouter: request failed: %w", err)
+		// ТОТ ЖЕ ТЕКСТ ОШИБКИ ПО ОБЕ СТОРОНЫ ГРАНИЦЫ, РАЗНАЯ ТОЛЬКО ПОМЕТКА. Срок вышел на 143-й
+		// секунде ожидания ответа и «connection refused» на 0-й приезжают из Do неотличимо похоже
+		// — оба как *url.Error, — и решает между ними НЕ проза, а флаг записи.
+		failed := fmt.Errorf("openrouter: request failed: %w", err)
+		if wrote.Load() {
+			return "", "", Usage{}, engaged(failed)
+		}
+		return "", "", Usage{}, failed
 	}
 	defer resp.Body.Close()
 
+	// ОТВЕТ УЖЕ ЕДЕТ: заголовки пришли, значит поставщик отработал. Не дочитать его — наша беда,
+	// а не его бесплатность.
 	body, err := readCapped(resp.Body, maxResponseBytes, "chat/completions response")
 	if err != nil {
-		return "", "", Usage{}, fmt.Errorf("openrouter: read response: %w", err)
+		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: read response: %w", err))
 	}
 	// A 404 is the one non-2xx that is NOT weather — see ErrModelUnavailable. It is wrapped rather
 	// than replaced: the provider's own sentence and the status still reach the log, they simply
@@ -778,18 +868,21 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 	if resp.StatusCode == http.StatusNotFound {
 		return "", "", Usage{}, fmt.Errorf("%w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
 	}
+	// ⚠ NON-2xx НЕ ПОМЕЧАЕТСЯ ВОВЛЕЧЁННЫМ, И ЭТО ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ГРАНИЦА ВЫБРАНА В СТОРОНУ
+	// НУЛЯ. Довод целиком — у ProviderEngaged: 401/402/404/429 — это ворота, а не счётчик.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", "", Usage{}, fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
 	}
+	// ─── ОТСЮДА И НИЖЕ 2xx: ЗАПРОС ПРИНЯТ И ОТРАБОТАН, ЗНАЧИТ ОПЛАЧЕН ───
 	var cr chatResponse
 	if err := json.Unmarshal(body, &cr); err != nil {
-		return "", "", Usage{}, fmt.Errorf("openrouter: could not decode API response envelope: %w", err)
+		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: could not decode API response envelope: %w", err))
 	}
 	if cr.Error != nil && strings.TrimSpace(cr.Error.Message) != "" {
-		return "", "", Usage{}, fmt.Errorf("openrouter: API error: %s", cr.Error.Message)
+		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: API error: %s", cr.Error.Message))
 	}
 	if len(cr.Choices) == 0 {
-		return "", "", Usage{}, fmt.Errorf("openrouter: API response contained no choices")
+		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: API response contained no choices"))
 	}
 	content := strings.TrimSpace(cr.Choices[0].Message.Content)
 	if content == "" {
@@ -800,11 +893,15 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 		// says the cap was reached before a single character of answer — deterministic, and the
 		// caller owes the human "the setting is wrong", not "try again". Empty for any other reason
 		// stays an unclassified fault: it is genuinely a misbehaving provider.
+		//
+		// ⚠ ОБА ИСХОДА ПОМЕЧЕНЫ ВОВЛЕЧЁННЫМИ, И НА ПЕРВОМ ЭТО НИЧЕГО НЕ МЕНЯЕТ: вызывающий ловит
+		// ErrBudgetExhausted СВОЕЙ веткой и списывает там (design_run.go), до всякого вопроса про
+		// вовлечённость, — иначе один и тот же исход прошёл бы через две двери списания.
 		if strings.EqualFold(strings.TrimSpace(cr.Choices[0].FinishReason), "length") {
-			return "", cr.Choices[0].FinishReason, cr.Usage, fmt.Errorf(
-				"%w (%d completion tokens spent, none of them answer)", ErrBudgetExhausted, cr.Usage.Completion)
+			return "", cr.Choices[0].FinishReason, cr.Usage, engaged(fmt.Errorf(
+				"%w (%d completion tokens spent, none of them answer)", ErrBudgetExhausted, cr.Usage.Completion))
 		}
-		return "", cr.Choices[0].FinishReason, cr.Usage, fmt.Errorf("openrouter: model returned an empty message")
+		return "", cr.Choices[0].FinishReason, cr.Usage, engaged(fmt.Errorf("openrouter: model returned an empty message"))
 	}
 	return content, cr.Choices[0].FinishReason, cr.Usage, nil
 }

@@ -858,7 +858,17 @@ type draftRig struct {
 	design   *mocks.MockDesign
 	stub     *draftIdeaStub
 	finished []entity.DesignAttemptFinish
-	failed   []entity.DesignRunFail
+	// finishedCtxErr — ЖИВ ЛИ БЫЛ КОНТЕКСТ В ТУ СЕКУНДУ, КОГДА ЗАКРЫВАЮЩАЯ ЗАПИСЬ ПОШЛА В СТОР.
+	//
+	// Не декорация: закрытие провалившегося прогона обязано пережить ОТМЕНУ контекста хендлера
+	// (ушедший клиент), иначе стор откажет на BeginTx и исход «человек закрыл вкладку» снова стоит
+	// регистру ноль — см. designFailDraftAs.
+	//
+	// ⚠ ЗАПОМИНАЕТСЯ ОШИБКА, А НЕ САМ КОНТЕКСТ, И ЭТО ЧАСТЬ ЗАМЕРА. У закрывающей записи свой
+	// производный срок со своим `defer cancel()`; спросив сохранённый контекст ПОСЛЕ возврата,
+	// проба увидела бы context.Canceled ВСЕГДА — и покраснела бы на здоровом коде.
+	finishedCtxErr []error
+	failed         []entity.DesignRunFail
 	// completedText / completedTok — то, чем прогон был закрыт. Токен здесь не декорация:
 	// CompleteRun сверяет его в WHERE, и закрытие чужим токеном — это claim_lost.
 	completedText string
@@ -921,8 +931,9 @@ func newDraftRigWithCard(
 	design.EXPECT().StartAttempt(mock.Anything, mock.AnythingOfType("entity.DesignAttemptStart")).
 		Return(&entity.DesignRunAttempt{RunId: 55, AttemptNo: 1}, nil).Once()
 	design.EXPECT().FinishAttempt(mock.Anything, mock.AnythingOfType("entity.DesignAttemptFinish")).
-		Run(func(_ context.Context, req entity.DesignAttemptFinish) {
+		Run(func(ctx context.Context, req entity.DesignAttemptFinish) {
 			rig.finished = append(rig.finished, req)
+			rig.finishedCtxErr = append(rig.finishedCtxErr, ctx.Err())
 		}).Return(nil).Maybe()
 	design.EXPECT().FailRun(mock.Anything, mock.AnythingOfType("entity.DesignRunFail")).
 		Run(func(_ context.Context, req entity.DesignRunFail) {

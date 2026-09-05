@@ -197,6 +197,10 @@ const (
 	designConstructionReplayShapeMsg  = "this draft already failed: the model did not answer in the shape asked for — press draft again to start a new one"
 	designConstructionReplayBudgetMsg = "this draft already failed: the model used up the whole answer budget without answering — press draft again to start a new one"
 	designDraftReplayFailedMsg        = "this draft already failed — press draft again to start a new one"
+	// ЧЕТВЁРТАЯ ПРОЗА НА ЧЕТВЁРТЫЙ ИСХОД (designReasonProviderCut): предыдущее нажатие доехало до
+	// модели и было оплачено, а ответа не привезло. Жест починки тот же — новое нажатие, — но
+	// новость другая, и умолчать про деньги значило бы вернуть ровно тот дефект.
+	designDraftReplayCutMsg = "this draft reached the model and lost the answer on the way back; it was charged — press draft again to start a new one"
 
 	// ФОРМА ОТВЕТА ПРИБИТА К ПРОГОНУ, А НЕ К НАЖАТИЮ: прогон отвечен один раз и навсегда в той
 	// форме, в какой был отвечен.
