@@ -161,7 +161,11 @@ func (c *Client) CompleteWithImages(
 	if err != nil {
 		return "", "", Usage{}, fmt.Errorf("openrouter: marshal multimodal request: %w", err)
 	}
-	return c.postChatCompletion(ctx, payload)
+	// ПОТОЛОК ЕДЕТ В ТРАНСПОРТ ВТОРЫМ АРГУМЕНТОМ, а не только в теле запроса: из него считается СРОК
+	// вызова (см. openrouter.go: CompletionBudget). Именно эта ветка и сломалась, когда потолок
+	// подняли 3000 → 8000 в одиночку: разрешённый ответ перестал успевать приехать до обрыва.
+	// req.MaxTokens, а не maxTokens, — берётся ровно то число, что уехало на провод.
+	return c.postChatCompletion(ctx, payload, req.MaxTokens)
 }
 
 // buildContentParts turns a prompt plus picture addresses into the content array, refusing anything

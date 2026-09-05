@@ -31,8 +31,40 @@ const (
 	defaultModel = "anthropic/claude-sonnet-5"
 	// defaultBaseURL is the OpenRouter API root (OpenAI-compatible).
 	defaultBaseURL = "https://openrouter.ai/api/v1"
-	// defaultTimeout bounds a single generation call (LLM latency can be seconds).
+	// defaultTimeout is the BASE of a call's budget, not the whole of it: connect, upload, the
+	// provider fetching whatever pictures the request points at, and time-to-first-token. The time
+	// the ANSWER takes to print is ADDED on top by CompletionBudget — see minCompletionTokPerSec.
+	//
+	// ⚠ ЭТО БОЛЬШЕ НЕ ПОТОЛОК ВСЕГО ВЫЗОВА, И ЭТО ПОЧИНКА, А НЕ ПЕРЕИМЕНОВАНИЕ. Пока 60 s были
+	// потолком целиком, потолок токенов и бюджет времени были ДВУМЯ независимыми числами, связанными
+	// только просьбой в комментарии — «в этом порядке, и ни одно без другого» (analysisReasoningEffort
+	// ниже). Просьба не удержала: designConstructionMaxTokens подняли 3000 → 8000 в одиночку, и с того
+	// дня ответ, который потолок РАЗРЕШИЛ, физически не успевал приехать — 8000 токенов за 60 s это
+	// 133 ток/с при замеренных здесь же ~60 (см. analysisReasoningEffort: 2500 токенов за 42 s).
+	//
+	// ⚠ ЧЕМ КОНЧАЛСЯ РАЗРЫВ. Клиент рвал соединение на 60-й секунде, ошибка приезжала транспортная —
+	// то есть НЕ ErrBudgetExhausted, — и вызывающий (design_run.go: designFailDraft) закрывал попытку
+	// ЦЕНОЙ NULL: поставщик напечатал 22k входных и 5–7k выходных токенов, регистр записал НОЛЬ, а
+	// человек увидел codes.Unavailable, неотличимое от погоды, и нажал ещё раз. Это ровно тот дефект,
+	// который круг 19 чинил у двери finish_reason; он вернулся через дверь транспорта.
+	//
+	// ПОЭТОМУ СВЯЗЬ ТЕПЕРЬ ВЫВЕДЕНА, А НЕ ЗАПИСАНА: бюджет времени СЧИТАЕТСЯ ИЗ `max_tokens` того же
+	// запроса, в единственном месте, которое этот `max_tokens` на провод и кладёт. Поднять потолок,
+	// забыв про время, больше нельзя — их складывает одна функция.
 	defaultTimeout = 60 * time.Second
+	// minCompletionTokPerSec — КОНСЕРВАТИВНЫЙ НИЖНИЙ ПРЕДЕЛ скорости печати ответа, из которого
+	// считается добавка ко времени: печать `max_tokens` токенов не может занять больше, чем
+	// max_tokens / minCompletionTokPerSec, иначе поставщик просто болен.
+	//
+	// ЧИСЛО ЗАМЕРЕНО И ПОДЕЛЕНО НАДВОЕ. Единственный живой замер в этом репозитории — 2500 токенов
+	// завершения за 42 s ≈ 60 ток/с (analysisReasoningEffort). Двукратный запас на плохой день у
+	// поставщика даёт 30. Больше брать нельзя: таймаут, который срабатывает на ЗДОРОВОМ вызове,
+	// покупает ноль за полную цену — именно это здесь и чинится.
+	//
+	// ⚠ ЗАПАС ИДЁТ В СТОРОНУ ОЖИДАНИЯ, А НЕ ОБРЫВА, И ЭТО НЕСУЩЕЕ РЕШЕНИЕ. Лишняя минута ожидания
+	// стоит человеку минуты; оборванный вызов стоит денег поставщику, нуля в регистре и второго
+	// нажатия. Цены этих двух ошибок несравнимы, поэтому предел занижен нарочно.
+	minCompletionTokPerSec = 30
 	// maxResponseBytes caps how much of an API response we read (defensive). It stays at 4 MiB
 	// because everything THIS package reads is text: a completion that big is already an order of
 	// magnitude past any prompt here, and raising it would only buy a bigger allocation on a
@@ -165,8 +197,11 @@ type Config struct {
 // Client is a configured OpenRouter chat client. A nil *Client is a valid,
 // permanently-disabled client (Enabled() == false), so callers need not nil-check.
 type Client struct {
-	cfg  Config
-	http *http.Client
+	cfg Config
+	// budgetBase — БАЗА бюджета одного вызова (см. defaultTimeout): всё, что не есть печать ответа.
+	// Печать добавляется поверх, по запрошенному потолку токенов — CompletionBudget.
+	budgetBase time.Duration
+	http       *http.Client
 }
 
 // New builds a client, applying defaults for model / base URL / timeout. It does
@@ -181,11 +216,48 @@ func New(cfg Config) *Client {
 	// Trimmed, but NOT defaulted: empty stays empty and is resolved to the shared slug at read time
 	// by AnalysisModel, so there is exactly one place that decides what "unset" means.
 	cfg.ModelAnalysis = strings.TrimSpace(cfg.ModelAnalysis)
-	timeout := cfg.HTTPTimeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
+	base := cfg.HTTPTimeout
+	if base <= 0 {
+		base = defaultTimeout
 	}
-	return &Client{cfg: cfg, http: &http.Client{Timeout: timeout}}
+	// ⚠ У http.Client БОЛЬШЕ НЕТ СОБСТВЕННОГО Timeout, И ЭТО ОБЯЗАТЕЛЬНАЯ ПОЛОВИНА ПОЧИНКИ.
+	// http.Client.Timeout — это ОДНО число на все запросы клиента, поставленное до того, как стал
+	// известен размер ответа; именно оно и обрывало вызов, у которого потолок был поднят. Бюджет
+	// теперь ставится НА КАЖДЫЙ ЗАПРОС, из этой базы плюс время печати запрошенных токенов
+	// (postChatCompletion), а зонд модели носит свой короткий срок (checkModel). Ни одного маршрута
+	// без срока здесь не осталось — если появится новый, он обязан завести срок так же.
+	return &Client{cfg: cfg, budgetBase: base, http: &http.Client{}}
+}
+
+// CompletionBudget — СКОЛЬКО ВРЕМЕНИ ИМЕЕТ ПРАВО ЗАНЯТЬ ОДИН ВЫЗОВ, у которого попрошен потолок
+// maxTokens: база (соединение, загрузка, картинки, время до первого токена) плюс время печати
+// самого ответа при консервативной скорости minCompletionTokPerSec.
+//
+// ⚠ ЭКСПОРТИРОВАНА РАДИ ОДНОГО: ЧТОБЫ ТОТ, КТО СТАВИТ ПОТОЛОК, МОГ СПРОСИТЬ ПРО СВОЁ ВРЕМЯ. Потолок
+// живёт у вызывающего (design_construction_draft.go: designConstructionMaxTokens), время — здесь, и
+// раньше между ними не было ничего, кроме просьбы в комментарии. Теперь у вызывающего есть тест,
+// который спрашивает эту функцию тем же числом и краснеет, если ответ физически не успевает.
+//
+// maxTokens <= 0 значит «потолка нет»: провайдер печатает по своему усмотрению, добавлять нечего, и
+// бюджет остаётся базой — ровно то поведение, что было у всего пакета до этой починки.
+func CompletionBudget(base time.Duration, maxTokens int) time.Duration {
+	if base <= 0 {
+		base = defaultTimeout
+	}
+	if maxTokens <= 0 {
+		return base
+	}
+	// Целочисленно и через time.Second, а не float: секунда на minCompletionTokPerSec токенов.
+	printing := time.Duration(maxTokens) * time.Second / minCompletionTokPerSec
+	return base + printing
+}
+
+// DefaultCompletionBudget — CompletionBudget при НЕЗАДАННОМ OPENROUTER_HTTP_TIMEOUT, то есть при
+// той базе, которая действительно живёт на бете и на проде (ни один из двух spec'ов переменную не
+// ставит). Отдельная дверь потому, что вызывающий, который хочет проверить свой потолок, не обязан
+// знать про конфигурацию процесса — а солгать себе, подставив базу побольше, ему было бы легко.
+func DefaultCompletionBudget(maxTokens int) time.Duration {
+	return CompletionBudget(defaultTimeout, maxTokens)
 }
 
 // Enabled reports whether an API key is configured. Nil-safe.
@@ -657,14 +729,26 @@ func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, string,
 	if err != nil {
 		return "", "", Usage{}, fmt.Errorf("openrouter: marshal request: %w", err)
 	}
-	return c.postChatCompletion(ctx, payload)
+	return c.postChatCompletion(ctx, payload, reqBody.MaxTokens)
 }
 
 // postChatCompletion is THE ONLY PLACE THIS PACKAGE TALKS TO /chat/completions. It takes an
 // already-marshalled body precisely so the two request shapes (text-only chatRequest, multimodal
 // multimodalRequest) can differ in structure without duplicating the auth header, the status
 // classification, the size ceiling or the envelope rules.
-func (c *Client) postChatCompletion(ctx context.Context, payload []byte) (string, string, Usage, error) {
+//
+// ⚠ maxTokens ЕДЕТ ОТДЕЛЬНЫМ ПАРАМЕТРОМ РЯДОМ С УЖЕ ЗАКОДИРОВАННЫМ ТЕЛОМ, И ЭТО НЕ ДУБЛИРОВАНИЕ.
+// Тело здесь — байты, из которых число уже не достать иначе как разбором собственного JSON; а срок
+// вызова обязан считаться ИМЕННО ИЗ ЭТОГО ЧИСЛА и нигде больше. Оба вызывающих (chat и
+// CompleteWithImages) кладут в оба места одно и то же поле своей структуры, поэтому разъехаться им
+// негде — а тест TestTheAnswerCeilingBuysItsOwnTime следит, что срок действительно растёт.
+func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxTokens int) (string, string, Usage, error) {
+	// СРОК СТАВИТСЯ НА КАЖДЫЙ ЗАПРОС, А НЕ НА КЛИЕНТА: он зависит от того, сколько токенов у этого
+	// запроса попрошено, и никакое одно число на всех этого выразить не может. Срок вызывающего
+	// по-прежнему сильнее — context.WithTimeout не удлиняет чужой дедлайн, только укорачивает.
+	ctx, cancel := context.WithTimeout(ctx, CompletionBudget(c.budgetBase, maxTokens))
+	defer cancel()
+
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -835,6 +919,14 @@ func (c *Client) CheckModel(ctx context.Context) error {
 // and the boot warning has to ask about each — with the same route, the same verdict rule and the
 // same silence contract, from one body.
 func (c *Client) checkModel(ctx context.Context, model string) error {
+	// СВОЙ КОРОТКИЙ СРОК, И ОН ЖИВЁТ ЗДЕСЬ, А НЕ У ВЫЗЫВАЮЩЕГО. Раньше зонд был ограничен дважды:
+	// собственным сроком в WarnIfModelRetired и общим http.Client.Timeout. Второго больше нет (см.
+	// New), поэтому срок переехал в тело: экспортированный CheckModel зовут и с context.Background(),
+	// и зонд без срока — это боот, повисший на молчащем поставщике. Три секунды — то самое число,
+	// что стояло снаружи: зонд это любезность, и медленный ответ на нём не новость (modelProbeTimeout).
+	ctx, cancel := context.WithTimeout(ctx, modelProbeTimeout)
+	defer cancel()
+
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/models/" + strings.TrimSpace(model) + "/endpoints"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
