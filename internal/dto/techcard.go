@@ -3287,6 +3287,27 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			}
 		}
 
+		// ОЦЕНКА РАСХОДА НА ИЗДЕЛИЕ (0365, B-16) — совещательное «примерно столько», в единице
+		// строки (`unit`). Не деньги, не норма, не подпись: её читают только экран слотов и вкладка
+		// спецификации. Поэтому у неё НЕТ секционного сторожа — вопрос «сколько на изделие,
+		// примерно» одинаково законен на ткани, на нитке и на молнии, и разведение его на два поля
+		// по семьям было бы ложным расщеплением одного приёма.
+		//
+		// ⚠ ФЛАГ ПРИСУТСТВИЯ СТАВИТСЯ ПО УКАЗАТЕЛЮ — та же ловушка провода, что разобрана у
+		// счётной пары абзацем выше: nil и Decimal{Value:""} читаются nullDecimalFromPb ОДИНАКОВО,
+		// поэтому наивное `omitted = !estUsage.Valid` сделало бы поле НЕОЧИЩАЕМЫМ. Присутствие
+		// здесь одиночное: второй половины у оценки нет.
+		estUsageOmitted := b.EstUsage == nil
+		estUsage, err := nullDecimalFromPb(b.EstUsage)
+		if err != nil {
+			return nil, fmt.Errorf("bom est_usage: %w", err)
+		}
+		if estUsage.Valid {
+			if err := validateDecimalFits(fmt.Sprintf("bom_items[%d].est_usage", i), estUsage.Decimal, bomQtyMaxFrac, bomQtyLimit, false); err != nil {
+				return nil, err
+			}
+		}
+
 		materialID := sql.NullInt64{}
 		if b.MaterialId != 0 {
 			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
@@ -3303,22 +3324,22 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
 			// unchanged positional index. id is read-only.
-			LineKey:                  lineKey,
-			MaterialId:               materialID,
-			Section:                  section,
-			Purpose:                  purpose,
-			PurposeOmitted:           purposeOmitted,
-			PurposeNote:              purposeNote,
-			Kind:                     kind,
-			KindOmitted:              kindOmitted,
-			KindNote:                 kindNote,
-			KindNoteOmitted:          kindOmitted,
-			IsSample:                 b.GetIsSample(),
-			IsSampleOmitted:          b.IsSample == nil,
-			Name:                     b.Name,
-			Supplier:                 nullStringFromPb(b.Supplier),
-			SupplierRef:              nullStringFromPb(b.SupplierRef),
-			Color:                    nullStringFromPb(b.Color),
+			LineKey:         lineKey,
+			MaterialId:      materialID,
+			Section:         section,
+			Purpose:         purpose,
+			PurposeOmitted:  purposeOmitted,
+			PurposeNote:     purposeNote,
+			Kind:            kind,
+			KindOmitted:     kindOmitted,
+			KindNote:        kindNote,
+			KindNoteOmitted: kindOmitted,
+			IsSample:        b.GetIsSample(),
+			IsSampleOmitted: b.IsSample == nil,
+			Name:            b.Name,
+			Supplier:        nullStringFromPb(b.Supplier),
+			SupplierRef:     nullStringFromPb(b.SupplierRef),
+			Color:           nullStringFromPb(b.Color),
 			// Pantone — цвет строки до выбора артикула (0363). Каталожный `material.pantone`
 			// старше: он про то, что реально купят.
 			Pantone:                  nullStringFromPb(b.Pantone),
@@ -3339,6 +3360,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			QtyPerGarment:            qtyPerGarment,
 			SpareQty:                 spareQty,
 			CountableOmitted:         countableOmitted,
+			// Оценка расхода (0365) — совещательная, в единице строки; в подпись MATERIALS не входит.
+			EstUsage:        estUsage,
+			EstUsageOmitted: estUsageOmitted,
 		})
 	}
 	return out, nil
@@ -3816,6 +3840,10 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.
 			// поле клиент обязан явным Decimal{value:""} — см. разбор ловушки в parseTechCardBomItems.
 			QtyPerGarment: pbDecimalFromNull(b.QtyPerGarment),
 			SpareQty:      pbDecimalFromNull(b.SpareQty),
+			// ОЦЕНКА РАСХОДА (0365) — как лежит, в единице строки (`unit` рядом). Незаполненная едет
+			// nil'ом, как любой другой Decimal этой строки; ОЧИСТИТЬ поле клиент обязан явным
+			// Decimal{value:""} — разбор ловушки в parseTechCardBomItems.
+			EstUsage: pbDecimalFromNull(b.EstUsage),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),

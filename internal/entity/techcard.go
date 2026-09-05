@@ -1769,22 +1769,22 @@ type TechCardBomItem struct {
 	KindNoteOmitted bool           `db:"-"`
 	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
 	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
-	IsSample        bool                `db:"is_sample"`
-	IsSampleOmitted bool                `db:"-"`
-	Name            string              `db:"name"`
-	Supplier        sql.NullString      `db:"supplier"`
-	SupplierRef     sql.NullString      `db:"supplier_ref"`
-	Color           sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	IsSample        bool           `db:"is_sample"`
+	IsSampleOmitted bool           `db:"-"`
+	Name            string         `db:"name"`
+	Supplier        sql.NullString `db:"supplier"`
+	SupplierRef     sql.NullString `db:"supplier_ref"`
+	Color           sql.NullString `db:"color"` // base/reference colour (per-colourway colour is on the usage)
 	// Pantone — цвет строки на стадии замысла, до выбора артикула (0363). У каталожного материала
 	// свой `pantone`, и он СТАРШЕ: он про то, что реально купят. Это поле отвечает на вопрос
 	// раньше — когда `material_id` ещё пуст, а цвет уже решён.
-	Pantone sql.NullString `db:"pantone"`
-	Composition     sql.NullString      `db:"composition"`
-	Spec            sql.NullString      `db:"spec"`
-	Unit            sql.NullString      `db:"unit"`
-	UnitPrice       decimal.NullDecimal `db:"unit_price"`
-	Currency        sql.NullString      `db:"currency"`
-	Comment         sql.NullString      `db:"comment"`
+	Pantone     sql.NullString      `db:"pantone"`
+	Composition sql.NullString      `db:"composition"`
+	Spec        sql.NullString      `db:"spec"`
+	Unit        sql.NullString      `db:"unit"`
+	UnitPrice   decimal.NullDecimal `db:"unit_price"`
+	Currency    sql.NullString      `db:"currency"`
+	Comment     sql.NullString      `db:"comment"`
 	// fabric data for the cutter / marker (Phase 3.5c)
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
@@ -1844,6 +1844,29 @@ type TechCardBomItem struct {
 	// количества и количество без запаса — это две половины одного утверждения о слоте, и
 	// присланная ЛЮБАЯ из них означает «пиши обе».
 	CountableOmitted bool `db:"-"`
+	// EstUsage — ОЦЕНКА РАСХОДА НА ИЗДЕЛИЕ (0365), в единице строки (Unit): метры ткани и нитки,
+	// штуки фурнитуры. NULL = не оценено (ноль — реальное утверждение, «нисколько»).
+	//
+	// СОВЕЩАТЕЛЬНАЯ И НИКОГДА НЕ ДЕНЬГИ. Её не читают ни костинг, ни план материалов, ни кат-лист,
+	// ни проекция дайджеста MATERIALS: подписывается то, что карточка ПОКУПАЕТ, а приближение
+	// ничего не покупает. Настоящие числа остаются там, где были: мерная норма — в
+	// TechCardColorwayUsage.Consumption (per-colourway, с провенансом), счётная — в QtyPerGarment
+	// выше (подписанная норма закупки). Оценка отвечает РАНЬШЕ обеих, на стадии замысла, когда
+	// рецепта колорвея ещё нет вовсе, а подписанную норму трогать нельзя.
+	//
+	// ОДНА КОЛОНКА НА ВСЕ СЕКЦИИ, а не «оценка ткани» и «оценка фурнитуры»: это один вопрос
+	// «сколько на изделие, примерно» с разной единицей, и разведя его на два поля, мы получили бы
+	// ложное расщепление одного приёма. Секционного сторожа у неё поэтому тоже нет — в отличие от
+	// счётной пары, которую validateBomCountableSection держит на своей семье.
+	EstUsage decimal.NullDecimal `db:"est_usage"`
+	// EstUsageOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же НЕГАТИВНЫЙ
+	// смысл и та же причина, что у PurposeOmitted/CountableOmitted: карточка сохраняется целиком, а
+	// вкладка со старым бандлом поля не шлёт вовсе — без различения её сейв стёр бы оценку у ВСЕХ
+	// строк карточки. Присутствие ОДИНОЧНОЕ (у оценки нет второй половины), и ставится оно по
+	// УКАЗАТЕЛЮ, а не по значению: у google.type.Decimal нет `optional`, поэтому «очистить» —
+	// ТОЛЬКО явный Decimal{value:""}. Нулевое значение флага = «пиши как обычно», значит любой
+	// внутренний конструктор (тесты, сидер, клон) работает как писал.
+	EstUsageOmitted bool `db:"-"`
 	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
 	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
 	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится

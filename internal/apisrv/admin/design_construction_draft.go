@@ -46,6 +46,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -81,6 +83,11 @@ const (
 	// приколоть»): там ограничение смысловое — «одна мысль на строку», — а не про размер колонки.
 	designConstructionMaxVarchar255 = 255 // bom.name/colour/composition, callout.part, callout.dimensions
 	designConstructionMaxVarchar64  = 64  // bom.pantone (0363) и detail_key самодельного аспекта
+	// Потолки ОЦЕНКИ расхода (0365). Три знака после точки — сколько хранит DECIMAL(12,3);
+	// миллион — потолок здравого смысла на ОДНО изделие (см. designBoundedDecimal), заведомо ниже
+	// сторожа DTO (bomQtyLimit), чтобы предложение не могло стать отказом в сохранении карточки.
+	designEstUsageMaxFrac = 3
+	designEstUsageLimit   = 1_000_000
 
 	// Потолки списков. Не вкус: предложение, которое человек обязан просмотреть по строкам, за
 	// этими числами перестаёт быть предложением и становится работой.
@@ -265,6 +272,14 @@ var designBomPurposeByFold, designBomPurposeTokens = designEnumVocabulary[pb_com
 var designBomKindByFold, designBomKindTokens = designEnumVocabulary[pb_common.TechCardBomKind](
 	"TECH_CARD_BOM_KIND_", pb_common.TechCardBomKind_value)
 
+// ЕДИНИЦА ОЦЕНКИ (B-16) — ТОТ ЖЕ СЛОВАРЬ, ЧТО У КОЛОНКИ, И НИ ОДНОГО НОВОГО ЧЛЕНА. Строка спеки
+// хранит единицу свободным текстом (`tech_card_bom_item.unit`), но ЧИТАЕТСЯ она через MaterialUnit
+// (pbMaterialUnit, Ф5а.3), и предложение обязано говорить ровно теми написаниями, которые эта
+// проекция узнаёт: «m», «pcs», «kg». Свой список здесь был бы вторым словарём единиц — тем самым
+// местом, где значение, добавленное в techcard.proto, молча теряется.
+var designUnitByFold, designUnitTokens = designEnumVocabulary[pb_common.MaterialUnit](
+	"MATERIAL_UNIT_", pb_common.MaterialUnit_value)
+
 // designFoldToken складывает написание до узнаваемого ядра: регистр и ВСЯ пунктуация исчезают.
 //
 // ⚠ ИМЕННО ВСЯ, А НЕ ТОЛЬКО ПРОБЕЛЫ И ДЕФИСЫ (в отличие от соседней normalizeToken). Наши
@@ -305,6 +320,18 @@ func designFoldToken(s string) string {
 //     удалено, и ключ ушёл из формы ответа. Поле 6 провода и его разбор ОСТАЛИСЬ: сохранённый до
 //     этой волны прогон обязан читаться обратно на идемпотентном повторе.
 //
+//  3. ОЦЕНКА РАСХОДА И ЕДИНИЦА СПРАШИВАЮТСЯ ЗДЕСЬ ЖЕ (B-16), правило 4, и НИТКА С ФУРНИТУРОЙ
+//     ПРОСЯТСЯ ВСЛУХ (B-19), правило 10. Отдельный прогон «оцени расход» перечитывал бы те же
+//     ≤12 картинок ради вопроса, входы которого этот ответ уже держит, и стоил бы второй кнопки,
+//     второй истории и второго счёта. Цена здесь — две строки в контракте и одно правило; за них
+//     таблица слотов получает колонку EST USAGE, у которой на стадии замысла нет другого адреса
+//     (норма живёт в рецепте колорвея, которого ещё нет, а qty_per_garment — подписанная норма
+//     закупки, и приближение модели в ней двигало бы деньги).
+//
+//     ⚠ ПРАВИЛО 10, А НЕ 9: девятое уже занято колорвеями. Правила нумеруются один раз и не
+//     перенумеровываются — сохранённый прогон читается тем же разбором, а промпт, у которого
+//     смысл номера уехал, читается человеком неверно.
+//
 //  2. КОЛОРВЕИ СПРАШИВАЮТСЯ ТЕМ ЖЕ ПЛАТНЫМ ПРОГОНОМ (B-25), правило 9. Второй прогон перечитывал бы
 //     те же ≤12 картинок (≈$0.06 входных за нажатие) ради вопроса, входы которого — слоты ткани и
 //     цвета доски — этот ответ уже держит. Список стоит ≈300–500 выходных токенов ≈ $0.005, и
@@ -318,7 +345,8 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"{\"silhouette\": string, \"fabric\": string, \"fit\": string, \"concept\": string, " +
 	"\"aspects\": [{\"key\": string, \"text\": string}], " +
 	"\"bom\": [{\"section\": string, \"purpose\": string, \"kind\": string, \"name\": string, " +
-	"\"composition\": string, \"colour\": string, \"pantone\": string}], " +
+	"\"composition\": string, \"colour\": string, \"pantone\": string, " +
+	"\"est_usage\": number, \"unit\": string}], " +
 	"\"colourways\": [{\"name\": string, \"color_code\": string, \"pantone\": string, " +
 	"\"hex\": string, \"slots\": [{\"slot\": string, \"pantone\": string, \"hex\": string, " +
 	"\"colour\": string}]}], " +
@@ -333,7 +361,10 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"a short custom key); do not list them separately.\n" +
 	"4. \"bom\" names components BY THEIR ROLE («main fabric», «neck binding», «care label»), one " +
 	"line per component. Use the section / purpose / kind tokens given in the prompt; leave a token " +
-	"empty when it does not apply.\n" +
+	"empty when it does not apply. \"composition\" is written as \"NN% fibre, NN% fibre\". " +
+	"\"est_usage\" is an approximate per-garment consumption for the base size, in \"unit\": " +
+	"metres of cloth or thread, pieces of hardware; leave both empty when the pictures give no " +
+	"basis.\n" +
 	"5. \"aspects\" use the keys given in the prompt, or a short custom key when none of them fits; " +
 	"at most 60 words each.\n" +
 	"6. Do not repeat what the card already says — refine it or leave the field empty.\n" +
@@ -344,7 +375,10 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
 	"entry per combination, naming EVERY cloth slot from \"bom\" by its exact \"name\" with a " +
 	"Pantone TCX code and a hex; \"color_code\" is the closest code from the colour list in the " +
-	"prompt (empty when none is close); never invent a colour the board does not show."
+	"prompt (empty when none is close); never invent a colour the board does not show.\n" +
+	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
+	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
+	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show."
 
 // ─────────────────────────── пользовательский промпт ───────────────────────────
 
@@ -428,6 +462,7 @@ func designConstructionUserPrompt(
 	b.WriteString("bom purposes (roll goods only): " + strings.Join(designBomPurposeTokens, ", ") + "\n")
 	b.WriteString("bom kinds (hardware / trims / decoration only): " +
 		strings.Join(designBomKindTokens, ", ") + "\n")
+	b.WriteString("bom units (for \"unit\"): " + strings.Join(designUnitTokens, ", ") + "\n")
 	b.WriteString("fit: " + strings.Join(designConstructionFits, ", ") + "\n")
 	b.WriteString(designColourTokenLine(colours))
 
@@ -741,6 +776,19 @@ type designConstructionStats struct {
 	// ColourwaysDropped — колорвей без имени и без единого привязанного цвета. Подтверждать нечего:
 	// продукт требует имени или хотя бы одного цвета, чтобы отличаться от соседнего.
 	ColourwaysDropped int
+	// BomEstDropped — ОЦЕНКА РАСХОДА СНЯТА СО СТРОКИ, А САМА СТРОКА ОСТАЛАСЬ (B-16). Модель пишет
+	// «about 2», «1,6», «1.5-2 m» — это не десятичное число, и положить его в DECIMAL(12,3) нельзя.
+	//
+	// ⚠ СНИМАЕТСЯ ЗНАЧЕНИЕ, А НЕ СТРОКА — та же граница, что у designBomEnum: технологу нужнее слот
+	// без оценки, чем отсутствие слота, которую модель увидела верно и оценила словами. Отдельный
+	// счётчик потому, что «модель отвечает не числом» чинится ПРОМПТОМ, а не разбором, и узнать
+	// это можно только из лога.
+	BomEstDropped int
+	// UnitsUnset — единица названа, но словарём НЕ УЗНАНА («yd», «yards»), и отдана пустой. Отдельно
+	// от EnumsUnset: та считает секцию/назначение/вид — токены, которые промпт перечисляет как
+	// закрытый список; единица же приезжает в ту же графу, что и оценка, и её потеря означает
+	// «число есть, а в чём — неизвестно», то есть клиент покажет семейное умолчание серым.
+	UnitsUnset int
 }
 
 // Any говорит, было ли ХОТЬ ЧТО-ТО поправлено: уровень строки лога решается по нему.
@@ -748,7 +796,8 @@ func (s designConstructionStats) Any() bool {
 	return s.AspectsCustom+s.AspectsDropped+s.CalloutsDropped+s.BomDropped+s.MissingDropped+
 		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped+
 		s.PairsCleared+s.NonScalars+s.FieldsDropped+
-		s.CalloutsUnasked+s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped > 0
+		s.CalloutsUnasked+s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped+
+		s.BomEstDropped+s.UnitsUnset > 0
 }
 
 // designLoose — строка, принимающая ТРИ формы, в которых модели пишут скаляр: строку, число и
@@ -799,6 +848,39 @@ func (l *designLoose) UnmarshalJSON(b []byte) error {
 }
 
 func (l designLoose) String() string { return strings.TrimSpace(l.v) }
+
+// designRawDecimal — СКАЛЯР, У КОТОРОГО ЕСТЬ ЧЕТВЁРТАЯ ЗАКОННАЯ ФОРМА: ОБЪЕКТ `{"value":"1.6"}`.
+//
+// ⚠ ЭТА ФОРМА — НЕ ДРЕЙФ МОДЕЛИ, А НАШ СОБСТВЕННЫЙ КАНОНИЧЕСКИЙ JSON, И БЕЗ НЕЁ КРУГОВОЙ ОБХОД НЕ
+// ДЕРЖИТСЯ. `google.type.Decimal` — обычное сообщение с одним полем `value`, а не член семьи
+// google.protobuf.*, поэтому у protojson для него НЕТ спецотображения в голый скаляр: писатель
+// (designConstructionMarshal) кладёт `"est_usage": {"value": "1.6"}`, и голый designLoose прочитал
+// бы это как «на месте скаляра приехала структура» — то есть идемпотентный повтор ТЕРЯЛ БЫ оценку у
+// каждой строки и ещё считал бы свою потерю дрейфом модели (NonScalars).
+//
+// Ровно та же асимметрия «писатель против читателя», что однажды сломала подпись дайджеста: пара
+// пишется одной стороной и разбирается другой, и молчит она только у той, которая пишет.
+//
+// Объект БЕЗ ключа `value` (и любой другой не-скаляр) остаётся нескаляром: терпимость кончается
+// там, где принятое перестаёт быть числом.
+type designRawDecimal struct {
+	designLoose
+}
+
+func (d *designRawDecimal) UnmarshalJSON(b []byte) error {
+	if trimmed := strings.TrimSpace(string(b)); strings.HasPrefix(trimmed, "{") {
+		var wrap struct {
+			Value *designLoose `json:"value"`
+		}
+		if err := json.Unmarshal(b, &wrap); err == nil && wrap.Value != nil && !wrap.Value.nonScalar {
+			d.designLoose = *wrap.Value
+			return nil
+		}
+		d.designLoose = designLoose{nonScalar: true}
+		return nil
+	}
+	return d.designLoose.UnmarshalJSON(b)
+}
 
 // designTake читает скаляр и СЧИТАЕТ выброшенную структуру. Одна дверь на все чтения: пропустив
 // её в одном месте, мы получили бы поле, про которое лог молчит.
@@ -898,6 +980,12 @@ type designRawBomLine struct {
 	// MaterialID читается, чтобы БЫТЬ ОБНУЛЁННЫМ ГРОМКО (счётчик статистики), а не выброшенным
 	// молча: «модель придумывает артикулы» — это про промпт, и узнать это можно только из лога.
 	MaterialID designLoose `json:"material_id"`
+	// ОЦЕНКА РАСХОДА И ЕЁ ЕДИНИЦА (B-16). designLoose, а не float64, и это не перестраховка:
+	// модель пишет число то числом (`1.6`), то строкой (`"1.6 m"`), а НАШ СОБСТВЕННЫЙ канонический
+	// JSON, который тот же разбор читает на идемпотентном повторе, пишет google.type.Decimal
+	// СТРОКОЙ ВСЕГДА. Объявив здесь float64, мы уронили бы поле на первом же повторе.
+	EstUsage designRawDecimal `json:"est_usage"`
+	Unit     designLoose      `json:"unit"`
 }
 
 // designLooseList — СПИСОК, ТЕРПЯЩИЙ НЕ-СПИСОК НА СВОЁМ МЕСТЕ.
@@ -1120,6 +1208,11 @@ func designParseConstructionObject(js string, stats *designConstructionStats) (*
 			Section: section,
 			Purpose: purpose,
 			Kind:    kind,
+			// ОЦЕНКА РАСХОДА И ЕЁ ЕДИНИЦА (B-16). Обе НЕОБЯЗАТЕЛЬНЫ и обе снимаются поодиночке:
+			// число без единицы читается семейным умолчанием клиента, единица без числа — пустой
+			// графой. Уронить из-за них строку было бы наказанием, придуманным для содержания.
+			EstUsage: designBoundedDecimal(designTake(l.EstUsage.designLoose, stats), stats),
+			Unit:     designUnitToken(designTake(l.Unit, stats), stats),
 		}
 		// ⚠ АРТИКУЛ ОБНУЛЯЕТСЯ ВСЕГДА, И ЭТО ФАЗА, А НЕ ЗАБЫВЧИВОСТЬ: каталог в промпт не уезжает
 		// (фаза 4), значит подтвердить предложенный id нечем. Строка, выглядящая связанной и
@@ -1474,6 +1567,57 @@ func designBomEnum[E ~int32](token string, byFold map[string]E, stats *designCon
 	}
 	stats.EnumsUnset++
 	return unset
+}
+
+// designBoundedDecimal читает ОЦЕНКУ РАСХОДА (B-16): десятичное число, ≥ 0, с потолком колонки.
+//
+// ЧТО СНИМАЕТСЯ, А ЧТО ОСТАЁТСЯ. Снимается ЗНАЧЕНИЕ — «about 2», «1,6», «1.5-2 m», отрицательное,
+// слишком длинное; СТРОКА СПЕКИ ОСТАЁТСЯ (та же граница, что у designBomEnum: слот без оценки
+// полезнее отсутствия слота). Ноль — законный ответ и НЕ снимается: «нисколько» это утверждение.
+//
+// ⚠ ПОТОЛОК ЖЁСТЧЕ КОЛОНКИ, И НАМЕРЕННО. Колонка DECIMAL(12,3), сторож DTO пропускает всё меньше
+// десяти миллионов; здесь потолок миллион, потому что расход НА ОДНО ИЗДЕЛИЕ, выраженный семью
+// знаками, — это не оценка, а промах разряда, и принять его значило бы предложить технологу
+// «1 250 000 m» с видом достоверного числа. Три знака после точки — ровно столько хранит колонка;
+// лишние молча пропали бы при записи, а лишние В ПРЕДЛОЖЕНИИ обещали бы точность, которой нет.
+//
+// Возвращает nil, когда числа нет: у отсутствующей оценки нет «нулевого» написания, и пустая
+// обёртка Decimal{value:""} означала бы «очистить», а не «не сказано».
+func designBoundedDecimal(raw string, stats *designConstructionStats) *pb_decimal.Decimal {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	d, err := decimal.NewFromString(raw)
+	if err != nil {
+		stats.BomEstDropped++
+		return nil
+	}
+	if d.IsNegative() || d.Exponent() < -designEstUsageMaxFrac ||
+		d.GreaterThanOrEqual(decimal.NewFromInt(designEstUsageLimit)) {
+		stats.BomEstDropped++
+		return nil
+	}
+	return &pb_decimal.Decimal{Value: d.String()}
+}
+
+// designUnitToken складывает написание единицы к КОРОТКОМУ имени члена MaterialUnit («m», «pcs»).
+//
+// Отдаётся строка, а не энум, потому что ложится она в `tech_card_bom_item.unit` — свободный текст
+// ВНУТРИ ПОДПИСАННОГО дайджеста MATERIALS. Неузнанное написание («yd») отдаётся ПУСТЫМ и считается:
+// записать в подписываемую колонку слово, которого наш словарь не знает, значило бы сдвинуть
+// отпечаток строки ради догадки. Пустая единица — законное состояние, клиент покажет семейное
+// умолчание серым.
+func designUnitToken(raw string, stats *designConstructionStats) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	v, ok := designUnitByFold[designFoldToken(raw)]
+	if !ok {
+		stats.UnitsUnset++
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(pb_common.MaterialUnit_name[int32(v)], "MATERIAL_UNIT_"))
 }
 
 // designExtractJSONObject достаёт внешний {...}, снимая markdown-ограду и терпя прозу вокруг.
