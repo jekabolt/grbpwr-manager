@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -235,4 +236,69 @@ func constBody(t *testing.T, src, name string) string {
 	end := strings.Index(rest[len("const "+name+" = `"):], "`")
 	require.Greater(t, end, 0, "у константы %q не нашлось закрывающей кавычки", name)
 	return rest[:len("const "+name+" = `")+end]
+}
+
+// ═════════ СЛЕД ПРОПАВШЕГО СПИСАНИЯ ОБЯЗАН НЕСТИ САМО СПИСАНИЕ ═════════
+//
+// ЧТО ЗДЕСЬ ПРОИСХОДИТ. FinishAttempt отказала, а хендлер НЕ уходит ошибкой — и это верно: цена
+// попытки и оплаченный ОТВЕТ это две разные потери, и вторая дороже. Строка лога назначена
+// ЕДИНСТВЕННЫМ следом первой.
+//
+// ЧТО ОСТАЁТСЯ В БАЗЕ ПОСЛЕ ЭТОГО ИСХОДА, и почему след без суммы бесполезен: попытка застревает
+// в `dispatching` с price = NULL; прогон закрывается `done`, и price_actual =
+// COALESCE(SUM(price), 0) = 0 — то есть прогон читается не как «цена неизвестна», а как
+// БЕСПЛАТНЫЙ; `spent` дня не двигается; повтор ключа отдаёт сохранённый ответ даром (это верно —
+// второй раз никто не платит). Оператору, чтобы провести пропавшее списание руками, нужны ровно
+// четыре вещи: прогон, номер попытки, сумма и валюта. Было — только run_id.
+//
+// ⚠ И НА ПРОЗАИЧЕСКОЙ ВЕТКЕ ЭТА СТРОКА — ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ВООБЩЕ ЗВУЧАТ ДЕНЬГИ:
+// designLogConstructionDraft (та, что печатает usage) зовётся внутри `if construction`.
+//
+// МУТАЦИЯ: убрать из строки атрибуты price / attempt_no → краснеет.
+func TestTheTraceOfALostDebitCarriesTheAmount(t *testing.T) {
+	logs := tcaCaptureLog(t)
+	rig := newDraftRig(t, http.StatusOK, "A boxy coat with a storm flap.")
+	const finishFailure = "serializable deadlock, five retries in"
+	rig.finishErr = errors.New(finishFailure)
+
+	resp, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.NoError(t, err,
+		"потеря строки регистра не вправе стоить нам ОПЛАЧЕННОГО ОТВЕТА — он дороже")
+	require.Equal(t, int32(55), resp.GetRun().GetId())
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ ЗАМЕРА: списание действительно провалилось, а ответ действительно лёг
+	// в строку. Без этих двух строк проба зеленела бы в мире, где ничего не происходило.
+	require.Len(t, rig.finished, 1, "закрывающая запись цены не делалась вовсе")
+	require.Equal(t, "A boxy coat with a storm flap.", rig.completedText,
+		"ответ, за который заплачено, не сохранён — проба мерит не тот исход")
+
+	// СТРОКА ОПОЗНАЁТСЯ ПО ОШИБКЕ, КОТОРУЮ МЫ САМИ И ВПРЫСНУЛИ, а не по набору её же полей: искать
+	// след по наличию `attempt_no` значило бы утверждать существование того, что проба и проверяет.
+	var traces []map[string]string
+	for _, rec := range logs.errors() {
+		if strings.Contains(rec.Attrs["err"], finishFailure) {
+			traces = append(traces, rec.Attrs)
+		}
+	}
+	require.Len(t, traces, 1,
+		"пропавшее списание обязано оставить РОВНО ОДНУ строку уровня Error — иначе следа либо нет "+
+			"вовсе, либо «как часто это случается» перестаёт быть счётом")
+	trace := traces[0]
+
+	require.Equal(t, "55", trace["run_id"], "по прогону эту строку и ищут")
+	require.Equal(t, "1", trace["attempt_no"],
+		"без номера попытки оператор не знает, КАКУЮ строку design_run_attempt дописывать: "+
+			"их у прогона может быть несколько, и NULL-цена у той, что застряла в dispatching")
+
+	// СУММА — И ИМЕННО ТА, ЧТО УЕХАЛА БЫ В РЕГИСТР. Литерала здесь нет: оценка считается тем же
+	// designDraftIdeaEstimate, которым её считает хендлер, иначе проба сверяла бы число сама с
+	// собой переписанным.
+	want := designDraftIdeaEstimate(1, false)
+	require.True(t, want.Valid, "положительный контроль: у прозаической ветки есть цена")
+	require.Equal(t, want.Decimal.String(), trace["price"],
+		"след пропавшего списания не несёт СУММЫ — провести его по этой строке невозможно, а "+
+			"price_actual прогона при этом читается как 0, то есть как «бесплатно»")
+	require.Equal(t, "true", trace["price_known"],
+		"без этого флага ноль в price неотличим от «цены не было вовсе»")
+	require.Contains(t, trace, "currency", "сумма без валюты не проводится")
 }

@@ -915,6 +915,12 @@ type draftRig struct {
 	// started — то, чем прогон был ОТКРЫТ: снимок входов и цена. Замораживается в строке навсегда,
 	// поэтому пробы про доску и про деньги смотрят сюда, а не на ответ хендлера.
 	started entity.DesignRunStart
+	// finishErr — ЧЕМ ОТВЕЧАЕТ ПЕРВАЯ ЗАКРЫВАЮЩАЯ ЗАПИСЬ. Ноль — успех.
+	//
+	// Ручка нужна ровно одной пробе — той, что читает СЛЕД ПРОПАВШЕГО СПИСАНИЯ: этот исход не
+	// возвращает ошибку наружу (ответ дороже строки регистра), поэтому единственный способ его
+	// увидеть — заставить запись отказать и прочитать журнал.
+	finishErr error
 }
 
 // newDraftRig — стенд на КАРТОЧКЕ ПО УМОЛЧАНИЮ (одна картинка доски, записка, выноска).
@@ -985,7 +991,9 @@ func newDraftRigWithCard(
 			if rig.finishDelay > 0 {
 				time.Sleep(rig.finishDelay)
 			}
-		}).Return(nil).Maybe()
+		}).RunAndReturn(func(context.Context, entity.DesignAttemptFinish) error {
+		return rig.finishErr
+	}).Maybe()
 	design.EXPECT().FailRun(mock.Anything, mock.AnythingOfType("entity.DesignRunFail")).
 		Run(func(ctx context.Context, req entity.DesignRunFail) {
 			rig.failed = append(rig.failed, req)

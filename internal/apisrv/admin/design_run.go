@@ -2637,9 +2637,27 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// оплаченный ответ ради ненаписанной строки регистра, и следующий повтор заплатил бы за
 		// него заново. Регистр недосчитается одного списания, и эта строка лога — его единственный
 		// след; закрытие прогона ниже при этом снимет резерв дня.
+		//
+		// ⚠ СУММА И НОМЕР ПОПЫТКИ ПЕЧАТАЮТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЭТА СТРОКА — ЕДИНСТВЕННЫЙ СЛЕД
+		// ПРОПАВШЕГО СПИСАНИЯ, А СЛЕД БЕЗ СУММЫ НЕ ПОЗВОЛЯЕТ ЕГО ПРОВЕСТИ. След того, что
+		// осталось в базе: попытка застревает в `dispatching` с price = NULL, прогон закрывается
+		// `done`, и price_actual = COALESCE(SUM(price), 0) = 0 — то есть строка читается не как
+		// «неизвестно», а как БЕСПЛАТНО; `spent` дня не двигается, а повтор ключа отдаёт
+		// сохранённый ответ даром (это верно — второй раз никто не платит). Оператору, который
+		// держит в руках только эту строку, для проводки нужны ровно четыре вещи: прогон, номер
+		// попытки, сумма и валюта. run_id тут был, остальных трёх не было.
+		//
+		// ⚠ И НА ПРОЗАИЧЕСКОЙ ВЕТКЕ ЭТО ЕДИНСТВЕННОЕ МЕСТО ВООБЩЕ, ГДЕ ЗВУЧАТ ДЕНЬГИ:
+		// designLogConstructionDraft (та самая строка с usage) зовётся ВНУТРИ `if construction`,
+		// поэтому у прозы токены не печатаются нигде.
 		slog.Default().ErrorContext(finishCtx, "draft design idea: cannot close the paid attempt; "+
 			"filing the answer anyway — the money is already spent",
-			slog.Int("run_id", run.Id), slog.String("err", err.Error()))
+			slog.Int("run_id", run.Id),
+			slog.Int("attempt_no", attempt.AttemptNo),
+			slog.String("price", est.Decimal.String()),
+			slog.Bool("price_known", est.Valid),
+			slog.String("currency", run.Currency),
+			slog.String("err", err.Error()))
 	}
 
 	// СВОЙ СРОК ОТСЧИТЫВАЕТСЯ ОТСЮДА, а не от входа в закрытие: сохранение ответа не вправе
