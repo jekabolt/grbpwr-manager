@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -203,4 +204,107 @@ func require4(t *testing.T, err error) {
 	t.Helper()
 	require.NotErrorIs(t, err, context.DeadlineExceeded,
 		"мёртвый адрес обязан отказать соединением, а не сроком: иначе проба меряет таймаут")
+}
+
+// ─────────── ФЛАГ ОПИСЫВАЕТ ПОСЛЕДНЮЮ ПОПЫТКУ, А НЕ ОБЪЕДИНЕНИЕ ВСЕХ ───────────
+//
+// Две пробы ниже закрывают КЛАСС «WroteRequest{Err:nil} ещё не значит, что поставщик что-то
+// получил». Обе про одно: без сброса на GetConn флаг был МОНОТОННЫМ ИЛИ по попыткам транспорта, и
+// designFailDraft списывал полный `est` за деньги, которых никто не потратил, — то самое
+// ВЫДУМЫВАНИЕ ДЕНЕГ, которое правило про 404 отказывается делать нарочно.
+
+// ОБОРВАННАЯ НА ПОЛУСЛОВЕ ЗАПИСЬ НЕ КУПЛЕНА.
+//
+// ⚠ ЗДЕСЬ СТОЯЛ ДОВОД ВМЕСТО ЗАМЕРА. Утверждение «httptest не умеет обрывать запись» неверно:
+// сырой net.Listener, который принимает соединение и тут же закрывает его с SetLinger(0), шлёт
+// RST, а тело крупнее буферов сокета гарантирует, что клиент упрётся в этот RST ПОСРЕДИ записи.
+// Тогда Request.write возвращает ошибку, WroteRequest приезжает с info.Err != nil, и флаг не
+// поднимается ни разу. Недописанное тело поставщик не обрабатывает и счёта не выставляет.
+//
+// МУТАЦИЯ: поднимать флаг безусловно (убрать `if info.Err == nil`) → краснеет.
+func TestARequestCutMidWriteIsNotCharged(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	accepted := make(chan struct{}, 8)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+			// RST, А НЕ FIN: обычный Close даёт вежливое завершение, и ядро клиента спокойно
+			// приняло бы ещё мегабайт в свой буфер — обрыва посреди записи не случилось бы.
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	// Тело заведомо крупнее любых буферов сокета: 8 MiB не помещаются ни в bufio.Writer
+	// транспорта (4 KiB), ни в буфер отправки ядра, поэтому запись ОБЯЗАНА дойти до RST.
+	huge := strings.Repeat("x", 8<<20)
+	c := New(Config{APIKey: "k", BaseURL: "http://" + ln.Addr().String(), HTTPTimeout: 20 * time.Second})
+	_, _, _, err = c.CompleteWithImages(context.Background(), "sys", huge, nil, false, 0)
+	require.Error(t, err)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: соединение действительно устанавливалось. Без него проба зеленела бы
+	// и на «никто не слушает», то есть измеряла бы соседнюю дверь.
+	select {
+	case <-accepted:
+	default:
+		t.Fatal("слушатель не принял ни одного соединения — проба измеряет не обрыв записи")
+	}
+	require.NotErrorIs(t, err, context.DeadlineExceeded,
+		"обрыв обязан прийти ошибкой записи, а не сроком: иначе проба меряет таймаут")
+	require.False(t, ProviderEngaged(err),
+		"тело не дописано: поставщик его не обработает, и списывать нечего")
+}
+
+// ПОПЫТКА, ПОСЛЕ КОТОРОЙ БЫЛА ЕЩЁ ОДНА, НЕ ОСТАВЛЯЕТ ФЛАГ ПОДНЯТЫМ.
+//
+// Редирект — самая надёжная дорога к двум попыткам транспорта в одном Do: первый запрос уезжает
+// ЦЕЛИКОМ (флаг поднимается по-настоящему), а второй не находит, куда ехать. Тот же шов проходят
+// прозрачный повтор по nothingWrittenError и протухшее соединение из пула DefaultTransport — их
+// объединяет ровно одно: GetConn срабатывает заново, и без сброса флаг первой попытки переживал
+// бы отказ второй.
+//
+// И ОТВЕТ «НЕ КУПЛЕНО» ЗДЕСЬ ВЕРЕН ПО СУЩЕСТВУ, А НЕ ПОБОЧНО: 3xx — это ворота шлюза, ровно как
+// 401/402/404/429 (см. TestAProviderRefusalAtTheGateIsNotCharged), и завершение модели за ним не
+// покупалось.
+//
+// МУТАЦИЯ: убрать хук GetConn → краснеет.
+func TestTheEngagedFlagDescribesTheLastAttemptOnly(t *testing.T) {
+	dead := deadAddr(t)
+	wroteFirst := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Тело дочитывается ЯВНО: дочитанное тело и есть «первый запрос уехал целиком» — то
+		// условие, без которого проба не про что.
+		_, _ = io.Copy(io.Discard, r.Body)
+		once.Do(func() { close(wroteFirst) })
+		// 307, а не 302: метод и тело сохраняются, значит вторая попытка — тот же POST.
+		http.Redirect(w, r, dead+"/chat/completions", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	c := New(Config{APIKey: "k", BaseURL: srv.URL, HTTPTimeout: 5 * time.Second})
+	_, _, _, err := c.CompleteWithImages(context.Background(), "sys", "user", nil, false, 0)
+	require.Error(t, err)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: первый запрос ДЕЙСТВИТЕЛЬНО был дописан, то есть флаг поднимался.
+	// Без этой строки проба зеленела бы и в мире, где до провода вообще не дошло.
+	select {
+	case <-wroteFirst:
+	default:
+		t.Fatal("первый запрос не доехал целиком — проба не проверяет сброс, а измеряет пустоту")
+	}
+	require.False(t, ProviderEngaged(err),
+		"вторая попытка не дозвонилась: флаг обязан описывать ЕЁ, а не пережившую её первую")
 }

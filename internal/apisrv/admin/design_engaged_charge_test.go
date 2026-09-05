@@ -90,11 +90,14 @@ func pointDraftAt(t *testing.T, rig *draftRig, url string, budget time.Duration)
 //     и цена, и код;
 //   - убрать `engaged(...)` у ветки Do в postChatCompletion → цена снова NULL (4/11 красных).
 //
-// ⚠ ОДНА МУТАЦИЯ ОСТАЛАСЬ ЗЕЛЁНОЙ, И ЭТО НЕ ПРОВЕРЕНО, А НЕ ДОКАЗАНО. Поднять флаг `wrote` ДАЖЕ
-// при неудачной записи (info.Err != nil) — ЗАМЕРЕНО ЗЕЛЁНЫМ на обеих сторонах: ни одна проба здесь
-// не производит ОБОРВАННУЮ НА ПОЛУСЛОВЕ ЗАПИСЬ запроса, httptest такого исхода не даёт. Значит
-// условие `info.Err == nil` стоит на доводе (недописанное тело поставщик не обрабатывает), а не на
-// пробе, и следующий читатель обязан знать это про него.
+// ⚠ ЗДЕСЬ СТОЯЛО «ЭТА МУТАЦИЯ ОСТАЛАСЬ ЗЕЛЁНОЙ, httptest такого исхода не даёт», И УТВЕРЖДЕНИЕ
+// БЫЛО СЛИШКОМ СИЛЬНЫМ. Оборванная на полуслове запись производится сырым net.Listener'ом, который
+// принимает соединение и тут же закрывает его с SetLinger(0): при теле крупнее буферов сокета
+// клиент упирается в RST ПОСРЕДИ записи, и WroteRequest приезжает с info.Err != nil. Условие
+// `info.Err == nil` теперь стоит на пробе, а не на доводе, —
+// openrouter.TestARequestCutMidWriteIsNotCharged, и мутация «поднимать флаг безусловно» краснеет
+// ровно на ней. Там же прибит и второй, более широкий класс: флаг описывает ПОСЛЕДНЮЮ попытку
+// транспорта, а не объединение всех (TestTheEngagedFlagDescribesTheLastAttemptOnly).
 func TestADraftCutAfterTheModelWasEngagedIsChargedInTheRegister(t *testing.T) {
 	rig := newDraftRig(t, http.StatusOK, "unused: this provider never answers")
 	url, reached := hangingModel(t)
