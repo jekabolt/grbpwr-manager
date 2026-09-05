@@ -21,6 +21,25 @@ package admin
 //     TestVerifyColourwaysKeepsOneProposalPerColourCode;
 //  4. вернуть designConstructionMaxTokens = 3000 → краснеет
 //     TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer.
+//
+// ═══ КРУГ 21: ДВА ДЕФЕКТА, КОТОРЫЕ ОСТАВИЛ ЗА СОБОЙ САМ ПОДЪЁМ ПОТОЛКА 3000 → 8000 ═══════════
+//
+//  5. ПОТОЛОК ПОДНЯЛИ, А ВРЕМЯ — НЕТ. openrouter держал http.Client{Timeout: 60s} на весь вызов;
+//     8000 токенов за 60 s это 133 ток/с при замеренных ~60. Разрешённый ответ физически не
+//     успевал приехать, обрыв приходил ТРАНСПОРТНОЙ ошибкой (не ErrBudgetExhausted), и
+//     designFailDraft закрывал попытку ЦЕНОЙ NULL: поставщик напечатал, регистр записал ноль.
+//  6. ПОТОЛОК ПОДНЯЛИ, А ЦЕНУ — НЕТ. designDraftIdeaConstructionBaseUSD стоял литералом 0.035,
+//     посчитанным при потолке 3000; +5000 выходных токенов были оценены в НОЛЬ. Это число и
+//     РЕЗЕРВИРУЕТ, и СПИСЫВАЕТСЯ (FinishAttempt), то есть занижение уходит в регистр навсегда.
+//
+// ⚠️ МУТАЦИИ КРУГА 21 (каждая прогнана, покраснела и откачена):
+//  5. вернуть в openrouter.CompletionBudget `return base` (то есть игнорировать max_tokens) →
+//     краснеет TestConstructionCeilingCanPhysicallyArrive;
+//  5b. убрать context.WithTimeout из postChatCompletion → краснеет
+//     TestTheAnswerCeilingBuysItsOwnTime (internal/openrouter);
+//  6. вернуть designDraftIdeaConstructionBaseUSD = decimal.RequireFromString("0.035") → краснеет
+//     TestConstructionBasePricesTheWholeAnswerCeiling;
+//  6b. поменять designChatUSDPerMTokOut на "3" (входной тариф) → краснеет она же.
 
 import (
 	"context"
@@ -29,6 +48,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
@@ -395,4 +416,89 @@ func TestConstructionDraftStillRoundTripsAfterTheAudit(t *testing.T) {
 		"единица площади обязана пережить круг ровно тем же словом")
 	require.Len(t, back.GetColourways(), 2)
 	require.Equal(t, "", back.GetColourways()[1].GetColorCode())
+}
+
+// ─────────────────────────── 5. ПОТОЛОК И ВРЕМЯ ───────────────────────────
+
+// TestConstructionCeilingCanPhysicallyArrive — ОТВЕТ, КОТОРЫЙ ПОТОЛОК РАЗРЕШИЛ, ОБЯЗАН УСПЕВАТЬ
+// ПРИЕХАТЬ. Это та половина, которой у круга 20 не было вовсе: соседняя проба
+// (TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer) сверяет потолок с РАЗМЕРОМ ответа и
+// ни разу — со ВРЕМЕНЕМ, за которое этот размер печатается.
+//
+// ⚠ ЧТО ИМЕННО ЗДЕСЬ СЛУЧИЛОСЬ. Потолок подняли 3000 → 8000 в одиночку, а транспорт держал 60 s на
+// весь вызов. 8000 / 60 = 133 ток/с — вдвое быстрее единственного замера, который у нас есть
+// (openrouter.go: 2500 токенов за 42 s ≈ 60 ток/с). То есть с того дня полный ответ обрывался на
+// 60-й секунде, ошибка приезжала ТРАНСПОРТНАЯ, а designFailDraft закрывал попытку ценой NULL:
+// поставщик выставил счёт за 22k входных и 5–7k выходных токенов, регистр записал НОЛЬ, человек
+// увидел «погода, повтори» — и повторил.
+//
+// ⚠ ПРОБА СПРАШИВАЕТ ТРАНСПОРТ ТЕМ ЖЕ ЧИСЛОМ, КОТОРОЕ КЛАДЁТ НА ПРОВОД. Не «60 s ли там» — это
+// сверяло бы константу с константой, — а «какую скорость печати требует наш потолок при том
+// бюджете, который транспорт ему даёт». Ответ обязан быть НЕ БЫСТРЕЕ замеренной скорости.
+func TestConstructionCeilingCanPhysicallyArrive(t *testing.T) {
+	// Замер живёт в openrouter (analysisReasoningEffort): 2500 токенов завершения за 42 s.
+	// Переписан здесь ЧИСЛАМИ ЗАМЕРА, а не ссылкой на константу: проба, взявшая скорость у того же
+	// кода, который проверяет, зеленела бы при любом значении.
+	const measuredTokens, measuredSeconds = 2500.0, 42.0
+	measuredRate := measuredTokens / measuredSeconds // ≈ 59.5 ток/с
+
+	// База — та, что живёт на бете и на проде: OPENROUTER_HTTP_TIMEOUT не задан ни в одном спеке.
+	budget := openrouter.DefaultCompletionBudget(designConstructionMaxTokens)
+	required := float64(designConstructionMaxTokens) / budget.Seconds()
+	t.Logf("потолок %d токенов, бюджет вызова %s → требуется %.1f ток/с при замеренных %.1f",
+		designConstructionMaxTokens, budget, required, measuredRate)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: при прежнем фиксированном бюджете в 60 s этот же потолок требовал бы
+	// скорости ВЫШЕ замеренной. Без этой строки проба зеленела бы и на потолке в сто токенов, то
+	// есть не доказывала бы ничего про связь.
+	require.Greater(t, float64(designConstructionMaxTokens)/60.0, measuredRate,
+		"положительный контроль: при 60 s этот потолок был недостижим — если нет, замер построен неверно")
+
+	require.LessOrEqual(t, required, measuredRate,
+		"потолок ответа (%d токенов) требует %.1f ток/с, а замерено %.1f: разрешённый ответ не успеет "+
+			"приехать, обрыв придёт транспортной ошибкой и попытка закроется ценой NULL",
+		designConstructionMaxTokens, required, measuredRate)
+
+	// И ВТОРАЯ ПОЛОВИНА СВЯЗИ: потолок обязан ПОКУПАТЬ время, а не просто помещаться в чужое.
+	require.Greater(t, budget, openrouter.DefaultCompletionBudget(0),
+		"бюджет вызова не вырос от потолка — значит время и потолок снова два независимых числа")
+}
+
+// ─────────────────────────── 6. ПОТОЛОК И ЦЕНА ───────────────────────────
+
+// TestConstructionBasePricesTheWholeAnswerCeiling — ЦЕНА ОБЯЗАНА ПОКРЫВАТЬ ВЕСЬ РАЗРЕШЁННЫЙ ОТВЕТ.
+//
+// `est` здесь не отчёт: он и РЕЗЕРВИРУЕТ день, и СПИСЫВАЕТСЯ как ФАКТ (FinishAttempt, и каждый
+// designFailDraftAs). Доктрина блока цен сказана вслух: каждое число там — ВЕРХНЯЯ ГРАНИЦА рода,
+// «заниженный факт врёт про потраченное навсегда». Потолок в 8000 токенов — это разрешение
+// поставщику напечатать 8000 токенов; значит верхняя граница обязана быть посчитана по ним.
+//
+// ⚠ ТАРИФ ЗДЕСЬ ВЫПИСАН СВОЕЙ КОПИЕЙ, И ЭТО НАРОЧНО. Взяв designChatUSDPerMTokOut, проба сверяла бы
+// формулу с собою и зеленела бы в тот день, когда выходной тариф случайно поправят на входной —
+// ровно пятикратное занижение того слагаемого, которое здесь и растёт.
+func TestConstructionBasePricesTheWholeAnswerCeiling(t *testing.T) {
+	// $15 за миллион выходных токенов — класс Sonnet у Anthropic (входной $3, выходной впятеро).
+	outUSDPerMTok := decimal.RequireFromString("15")
+	floor := outUSDPerMTok.Mul(decimal.NewFromInt(int64(designConstructionMaxTokens))).
+		Div(decimal.NewFromInt(1_000_000))
+	t.Logf("потолок %d токенов → пол цены %s; база структурной ветки %s",
+		designConstructionMaxTokens, floor.String(), designDraftIdeaConstructionBaseUSD.String())
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: прежний литерал 0.035 этот пол НЕ проходил. Без него проба зеленела
+	// бы на любом потолке, лишь бы база была велика — и не говорила бы ничего про их связь.
+	require.True(t, decimal.RequireFromString("0.035").LessThan(floor),
+		"положительный контроль: литерал круга 20 обязан быть НИЖЕ пола, иначе пол построен неверно")
+
+	require.True(t, designDraftIdeaConstructionBaseUSD.GreaterThanOrEqual(floor),
+		"база структурной ветки (%s) не покрывает даже сам потолок ответа (%s): "+
+			"это число и резервирует, и списывается — занижение уходит в регистр навсегда",
+		designDraftIdeaConstructionBaseUSD.String(), floor.String())
+
+	// И ВХОДНЫЕ ТОКЕНЫ САМОГО ПРОМПТА СВЕРХ ОТВЕТА: база покрывает не только печать.
+	require.True(t, designDraftIdeaConstructionBaseUSD.GreaterThan(floor),
+		"база обязана покрывать и входные токены промпта, а не только ответ")
+
+	// СТРУКТУРНАЯ БАЗА — ТА, ЧТО СТОИТ В ТАБЛИЦЕ РОДОВ: занизив её, дверь резервирует меньше траты.
+	require.True(t, designDraftIdeaBaseUSD.GreaterThanOrEqual(designDraftIdeaConstructionBaseUSD),
+		"таблица родов обязана держать ПОТОЛОК двух баз")
 }
