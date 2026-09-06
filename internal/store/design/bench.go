@@ -351,13 +351,40 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 				entity.ErrDesignWrongKind, pic.Id, pic.Kind, kind)
 		}
 		// КОЛОРВЕЙ ПЛИТЫ ОБЯЗАН СОВПАСТЬ С КОЛОРВЕЕМ СЛОТА — вторая ось того же сторожа. Рендер
-		// колорвея A в верстаке B печатал бы на листе B чужой цвет; и НЕатрибутированная плита в
-		// именованном верстаке — тоже отказ, в обе стороны: постановка не выдумывает атрибуцию,
-		// которой у кадра нет, и не стирает ту, которая есть. Легаси-плиты (colorway NULL) при
-		// этом остаются полноценными жителями своего, безколорвейного верстака.
+		// колорвея A в верстаке B печатал бы на листе B чужой цвет, и постановка не стирает
+		// атрибуцию, которая у кадра есть. Легаси-плиты (colorway NULL) при этом остаются
+		// полноценными жителями своего, безколорвейного верстака.
+		//
+		// ⚠ НО НАПРАВЛЕНИЕ 0 → N — НЕ ОТКАЗ, А УСЫНОВЛЕНИЕ (B7). Прежняя редакция отказывала В
+		// ОБЕ СТОРОНЫ одним доводом («постановка не выдумывает атрибуцию, которой у кадра нет»),
+		// и довод был неверен ровно наполовину: НОЛЬ У КАДРА ЗНАЧИТ «НЕ СКАЗАНО», а не «сказано,
+		// что колорвея нет» (design_picture.colorway_id, 0356). Усыновляя, постановка ничего не
+		// стирает — она вписывает ответ туда, где стоял пробел, и делает это тем же жестом, каким
+		// человек говорит «эта плита — сторона ROSSO»: положить семпл в столбец колорвея. До этой
+		// правки такой перенос был невыразим вовсе, и единственным путём «семпл → колорвей»
+		// оставалась КОПИЯ (RegisterUpload того же медиа под N) — дубликаты в outputs под общим
+		// потолком 60, «uploaded» в истории вместо прогона и слот без штампа ревизии.
+		//
+		// НАПРАВЛЕНИЯ N→0 И N→M ОСТАЮТСЯ ОТКАЗОМ, и текст отказа не изменился ни на слово: там у
+		// кадра атрибуция ЕСТЬ, и постановка её не переписывает — ни на чужую, ни на пустоту.
+		//
+		// ЗАПИСЬ ИДЁТ В ЭТОЙ ЖЕ ТРАНЗАКЦИИ, что и CAS слота ниже: если постановка провалится на
+		// slot_rev_mismatch или на любом сторожа́ после этой строки, усыновление откатится вместе
+		// с ней. Обратное (обновить кадр отдельным запросом «заранее») отдало бы колорвей плите,
+		// которая никуда не встала.
+		//
+		// КРОПОВ-ПОТОМКОВ ЭТО НЕ КАСАЕТСЯ. Кроп наследует колорвей В МОМЕНТ СОЗДАНИЯ
+		// (SplitPicture), и ретроактивно переписывать уже нарезанные стороны здесь было бы вторым,
+		// невидимым писателем чужой атрибуции: усыновляется РОВНО ТА плита, которую кладут в слот.
 		if picCw := entity.DesignColorwayOrNone(pic.ColorwayId); picCw != cw {
-			return nil, fmt.Errorf("%w: picture %d belongs to colourway %d and the slot to colourway %d (0 = none)",
-				entity.ErrDesignColorwayMismatch, pic.Id, picCw, cw)
+			adopts := picCw == 0 && cw > 0 && entity.DesignPictureKindTakesColorway(pic.Kind)
+			if !adopts {
+				return nil, fmt.Errorf("%w: picture %d belongs to colourway %d and the slot to colourway %d (0 = none)",
+					entity.ErrDesignColorwayMismatch, pic.Id, picCw, cw)
+			}
+			if err := adoptPictureIntoColorway(ctx, db, &pic, cw); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -630,6 +657,39 @@ func assertColorwayOfCard(ctx context.Context, db dependency.DB, cardID, colorwa
 		return fmt.Errorf("%w: colourway %d does not belong to tech card %d",
 			entity.ErrDesignForeignColorway, colorwayID, cardID)
 	}
+	return nil
+}
+
+// adoptPictureIntoColorway — УСЫНОВЛЕНИЕ НЕАТРИБУТИРОВАННОЙ ПЛИТЫ ВЕРСТАКОМ, В КОТОРЫЙ ЕЁ КЛАДУТ
+// (B7). Единственный писатель design_picture.colorway_id после рождения кадра, и он существует
+// ровно затем, чтобы «сделать из семпла колорвей» было ОДНИМ жестом, а не копией файла.
+//
+// ⚠ УСЛОВИЕ ПРОВЕРЯЕТ ВЫЗЫВАЮЩИЙ, А ЗАПИСЬ СТОРОЖИТ SQL. Предикат `colorway_id IS NULL` в WHERE —
+// не украшение и не второе имя того же сторожа: между чтением плиты и этим UPDATE'ом строка
+// живёт под замком SERIALIZABLE-транзакции, но правило «усыновление не переписывает чужую
+// атрибуцию» дороже, чем допущение об изоляции, и стоить оно должно ровно одну строку. Ноль
+// затронутых строк здесь значит «кто-то успел атрибутировать её раньше» — и это ОТКАЗ тем же
+// mismatch'ем, а не молчаливый успех: принять постановку, не записав колорвей, значило бы посадить
+// в верстак N плиту колорвея M.
+//
+// Колонка NULL-абельна (0356), и ноль в неё не пишется никогда: «неатрибутирован» это NULL, а
+// DesignColorwayOrNone читает его нулём одним правилом на всех ярусах.
+func adoptPictureIntoColorway(ctx context.Context, db dependency.DB, pic *entity.DesignPicture, cw int) error {
+	n, err := storeutil.ExecNamedRows(ctx, db, `
+		UPDATE design_picture SET colorway_id = :cw
+		WHERE id = :id AND colorway_id IS NULL`,
+		map[string]any{"id": pic.Id, "cw": cw})
+	if err != nil {
+		return fmt.Errorf("failed to adopt design picture %d into colourway %d: %w", pic.Id, cw, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: picture %d was attributed to another colourway while it was being placed into colourway %d",
+			entity.ErrDesignColorwayMismatch, pic.Id, cw)
+	}
+	// Копия в памяти догоняет строку: она уезжает и в ответ постановки (attachSlotPictures
+	// перечитывает плиту, но составная дверь RegisterBatch держит СВОЙ список кадров), и в любого
+	// будущего читателя `pic` ниже по этой же функции.
+	pic.ColorwayId = sql.NullInt32{Int32: int32(cw), Valid: true}
 	return nil
 }
 

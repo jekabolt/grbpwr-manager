@@ -128,15 +128,19 @@ func TestDesignDBTwoColorwaysHoldTheSameViewAtOnce(t *testing.T) {
 	require.Equal(t, slotA.SlotRev+1, again.SlotRev)
 }
 
-// КОЛОРВЕЙ ПЛИТЫ ОБЯЗАН СОВПАСТЬ С КОЛОРВЕЕМ СЛОТА — в обе стороны, и «не назван» тоже значение:
-// неатрибутированную плиту не принимает именованный верстак (атрибуцию постановкой не выдумывают),
-// а именованную — безколорвейный (постановка не стирает атрибуцию).
+// НАЗВАННЫЙ КОЛОРВЕЙ ПЛИТЫ ОБЯЗАН СОВПАСТЬ С КОЛОРВЕЕМ СЛОТА: постановка не переписывает
+// атрибуцию, которая у кадра ЕСТЬ, — ни на чужую (N→M), ни на пустоту (N→0).
+//
+// ⚠ ТРЕТЬЕГО НАПРАВЛЕНИЯ ЗДЕСЬ БОЛЬШЕ НЕТ, И ЭТО НЕ ПОТЕРЯ ПОКРЫТИЯ. Проба держала ещё и
+// «неатрибутированную плиту не принимает именованный верстак», и вместе с сервером считала это
+// той же симметрией. Это было неверно наполовину: ноль у кадра значит «НЕ СКАЗАНО», а не
+// «сказано, что колорвея нет», и 0→N ничего не стирает. С B7 такая постановка УСЫНОВЛЯЕТ плиту —
+// см. bench_colorway_adoption_db_test.go, где живёт и это направление, и обе его границы.
 func TestDesignDBPlateAndSlotColorwaysMustMatch(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cwA, cwB := probeColorway(t, raw, card, "BLK"), probeColorway(t, raw, card, "WHT")
 	picA := uploadRenderPlate(t, rep, raw, card, cwA)
-	picLegacy := uploadRenderPlate(t, rep, raw, card, 0)
 
 	try := func(cw, pic int) error {
 		_, err := rep.Design().SetBenchSlot(context.Background(), entity.DesignBenchSlotSet{
@@ -150,8 +154,6 @@ func TestDesignDBPlateAndSlotColorwaysMustMatch(t *testing.T) {
 	}
 	require.ErrorIs(t, try(cwB, picA), entity.ErrDesignColorwayMismatch,
 		"рендер колорвея A в верстаке колорвея B печатал бы чужой цвет")
-	require.ErrorIs(t, try(cwA, picLegacy), entity.ErrDesignColorwayMismatch,
-		"неатрибутированная плита не атрибутируется постановкой")
 	require.ErrorIs(t, try(0, picA), entity.ErrDesignColorwayMismatch,
 		"именованная плита не теряет атрибуцию в легаси-верстаке")
 	require.NoError(t, try(cwA, picA), "свой колорвей — свой верстак")

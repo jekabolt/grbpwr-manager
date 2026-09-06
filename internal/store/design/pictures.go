@@ -271,6 +271,16 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 			if err := attachSlotPictures(ctx, rep, []*entity.DesignBenchSlot{slot}); err != nil {
 				return err
 			}
+			// ⚠ УСЫНОВЛЕНИЕ, СЛУЧИВШЕЕСЯ ПРИ ПОСТАНОВКЕ, ОБЯЗАНО ДОЕХАТЬ И ДО СПИСКА КАДРОВ (B7).
+			// Постановка неатрибутированной плиты в именованный верстак дописывает колорвей САМОЙ
+			// плите (adoptPictureIntoColorway), а `pics` здесь прочитан ДО неё: без этой строки
+			// составная дверь отвечала бы «загружено, колорвея нет» про кадр, который в базе уже
+			// несёт N, — и клиент, рисующий пилюлю по ответу, показал бы семпл там, где стоит
+			// колорвей. Слот при этом сказал бы правду: attachSlotPictures перечитывает плиту.
+			// Расхождение двух половин ОДНОГО ответа молчаливо по построению.
+			if slot.Picture != nil && slot.Picture.Id == pics[0].Id {
+				pics[0].ColorwayId = slot.Picture.ColorwayId
+			}
 			out.Slot = slot
 		}
 		return nil

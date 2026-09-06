@@ -12040,6 +12040,29 @@ message GetDesignBandResponse {
   // silently dropped — money spent on a question nobody asked. The colour-map door is therefore
   // drawn from the presence of this field, never from its contents.
   common.DesignColourPlan colour_plan = 24;
+  // THIS SERVER ADOPTS AN UNATTRIBUTED PLATE INTO THE COLOURWAY BENCH IT IS PLACED ON. A picture
+  // whose colorway_id is 0 — "not stated", the sample bench — may be put into a slot of colourway
+  // N, and the placement writes N onto the picture in the same transaction instead of refusing
+  // `colorway_mismatch`. The other two directions are unchanged and still refuse: N → 0 and N → M
+  // never rewrite an attribution the picture already has.
+  //
+  // WHICH KINDS. The bench holds flat, render and threed, and of those only render and threed have
+  // a colourway axis at all — a flat is one markup for the whole card and a positive colourway on
+  // a flat slot is still `colorway_forbidden`, before the plate is even read. So adoption is a
+  // render/threed fact in practice; it opens no door on the flat bench.
+  //
+  // WHY A CAPABILITY FLAG AND NOT A TRY. The door this opens is "take this sample plate and make
+  // it the ROSSO side" — mark ▸ / apply splitted offering foreign colourway targets for a sample
+  // plate. Discovering the answer by attempting the placement costs nothing in money but reads as
+  // «try it and see»: on a server without this the client would draw four targets and collect four
+  // refusals. So the client draws the door only where the server said it exists.
+  //
+  // ⚠ ABSENT ≠ FALSE — the same doctrine `has_fabric_render` and `colour_plan` record. The gateway
+  // emits unpopulated fields, so a server that knows this field always answers it, `false`
+  // included; NOTHING AT ALL means a binary older than the adoption, where the only honest target
+  // for a sample plate is the sample bench itself. A client that cannot tell the two apart draws
+  // doors into `colorway_mismatch` on every rollback.
+  bool bench_adopts_unattributed = 25;
 }
 
 message ListDesignRunsRequest {
