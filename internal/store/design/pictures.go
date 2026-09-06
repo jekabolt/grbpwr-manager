@@ -166,7 +166,16 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 				byOrdinal[f.Ordinal] = entity.DesignColorwayOrNone(f.Cw)
 			}
 			for i, it := range req.Items {
-				if was, ok := byOrdinal[i]; ok && was != it.ColorwayId {
+				// ПОВТОР «НЕ СКАЗАНО» СХОДИТСЯ С ЛЮБОЙ ПОЗДНЕЙШЕЙ АТРИБУЦИЕЙ (B7). После того как
+				// постановка усыновила кадр колорвеем N (adoptPictureIntoColorway), точный ретрай
+				// исходной просьбы с нулём читал бы «был N, стало 0» и отказывал бы mismatch'ем —
+				// ровно та поломка идемпотентности, что описана пунктом 3 выше, только теперь с
+				// штатным писателем, а не с удалением. Ноль у просьбы значит «не сказано», и не
+				// сказанное не спорит ни с чем сказанным: такой повтор — успех. Направление
+				// «просили N, лежит M≠N» и «просили N, лежит 0» остаются отказом.
+				was, ok := byOrdinal[i]
+				if ok && was != it.ColorwayId && !(it.ColorwayId == 0 && was > 0 &&
+					entity.DesignPictureKindTakesColorway(entity.DesignKindOrFlat(it.Kind))) {
 					return fmt.Errorf(
 						"%w: client_request_id %q already filed picture %d of this batch under colourway %d "+
 							"and is now being reused with colourway %d (0 = none)",

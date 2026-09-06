@@ -191,3 +191,85 @@ func TestDesignDBAdoptionDoesNotOpenTheFlatBenchToColorways(t *testing.T) {
 	require.ErrorIs(t, err, entity.ErrDesignColorwayForbidden,
 		"усыновление — про пробел в атрибуции, а не про появление оси там, где её нет")
 }
+
+// ТОЧНЫЙ ПОВТОР ЖЕСТА ПОСЛЕ УСЫНОВЛЕНИЯ — ЭТО ПОВТОР, А НЕ ПРОТИВОРЕЧИЕ.
+//
+// Усыновление сдвигает колонку кадра ПОСЛЕ того, как пачка уже записана: просьба говорила «не
+// сказано» (0), а в базе теперь лежит N. Сторож повтора D9 сравнивает просьбу с ИЗМЕНЯЕМОЙ
+// атрибуцией, а не с исходной просьбой (дыра 3, названная в pictures.go), — и без исключения
+// «ноль сходится с чем угодно» ретрай после сетевого таймаута получал бы `colorway_mismatch` за
+// дословно тот же запрос, который сервер уже исполнил. То есть штатный писатель ломал бы
+// идемпотентность соседней двери.
+//
+// ⚠ ЗАМЕР ДВУСТОРОННИЙ, И ОДНОЙ ПОЛОВИНЫ МАЛО. Первая: повтор УДАЛСЯ и назвался повтором
+// (`Idempotent`), а не тихо завёл вторую пачку. Вторая: усыновление ПЕРЕЖИЛО повтор — вставка
+// идёт с ON DUPLICATE KEY UPDATE, который колонок не трогает, но проба, спрашивающая только код
+// ошибки, осталась бы зелёной и у реализации, которая на повторе переписала бы колорвей нулём
+// исходной просьбы. Колонка читается прямо из базы.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: снять исключение `!(it.ColorwayId == 0 && was > 0 && …)` из сторожа
+// повтора в RegisterBatch — повтор краснеет `colorway_mismatch`'ем.
+func TestDesignDBExactRetryAfterAdoptionStaysIdempotent(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cwN := probeColorway(t, raw, card, "BLK")
+	cwM := probeColorway(t, raw, card, "WHT")
+	media := probeMedia(t, raw)
+	reqID := uuid.NewString()
+
+	// ИСХОДНАЯ ПРОСЬБА: рендер без цели и без колорвея — «не сказано».
+	register := func(cw int) (*entity.DesignBatchResult, error) {
+		return rep.Design().RegisterBatch(context.Background(), entity.DesignBatchRegister{
+			TechCardId: card, ClientRequestId: reqID, Actor: "probe",
+			Items: []entity.DesignUploadItem{
+				{MediaId: media, Kind: entity.DesignPictureKindRender, ColorwayId: cw},
+			},
+		})
+	}
+	first, err := register(0)
+	require.NoError(t, err)
+	require.False(t, first.Idempotent, "первая подача не может быть повтором — иначе ключ не свой")
+	require.Len(t, first.Pictures, 1)
+	pic := first.Pictures[0].Id
+	require.Zero(t, entity.DesignColorwayOrNone(first.Pictures[0].ColorwayId))
+
+	// ПОСТАНОВКА УСЫНОВЛЯЕТ КАДР КОЛОРВЕЕМ N — та самая запись, что расходит просьбу с базой.
+	_, err = rep.Design().SetBenchSlot(context.Background(), entity.DesignBenchSlotSet{
+		TechCardId: card,
+		Slot: entity.DesignSlotRef{
+			ViewKey: entity.DesignViewFront, Kind: entity.DesignPictureKindRender,
+			ColorwayId: entity.DesignColorwayRef(cwN),
+		},
+		PictureId: pic, Actor: "probe",
+	})
+	require.NoError(t, err)
+
+	colorwayOfPicture := func(t *testing.T) sql.NullInt32 {
+		t.Helper()
+		var colorway sql.NullInt32
+		require.NoError(t, raw.QueryRow(`SELECT colorway_id FROM design_picture WHERE id = ?`, pic).
+			Scan(&colorway))
+		return colorway
+	}
+	require.Equal(t, int32(cwN), colorwayOfPicture(t).Int32, "стенд обязан начинаться с усыновления")
+
+	// ДОСЛОВНЫЙ РЕТРАЙ ИСХОДНОЙ ПРОСЬБЫ — успех, и назвавшийся повтором.
+	again, err := register(0)
+	require.NoError(t, err,
+		"дословный повтор просьбы «не сказано» не спорит с позднейшей атрибуцией")
+	require.True(t, again.Idempotent, "повтор обязан назваться повтором, а не завести вторую пачку")
+	require.Len(t, again.Pictures, 1)
+	require.Equal(t, pic, again.Pictures[0].Id, "и разрешиться в ту же плиту")
+	require.Equal(t, cwN, entity.DesignColorwayOrNone(again.Pictures[0].ColorwayId),
+		"ответ повтора везёт усыновлённый колорвей, а не ноль исходной просьбы")
+	require.Equal(t, int32(cwN), colorwayOfPicture(t).Int32,
+		"повтор — чтение, а не откат: усыновление обязано пережить его в самой плите")
+
+	// ГРАНИЦА: НАЗВАННЫЙ ЧУЖОЙ КОЛОРВЕЙ — ПО-ПРЕЖНЕМУ ПРОТИВОРЕЧИЕ. Исключение шире одного
+	// направления не стало: сказанное M спорит со сказанным N, и это не повтор, а другой запрос.
+	_, err = register(cwM)
+	require.ErrorIs(t, err, entity.ErrDesignColorwayMismatch,
+		"тот же ключ с ДРУГИМ названным колорвеем остаётся отказом")
+	require.Equal(t, int32(cwN), colorwayOfPicture(t).Int32,
+		"и отказ обязан быть ещё и не-записью")
+}
