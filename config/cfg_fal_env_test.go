@@ -31,6 +31,8 @@ func TestFalConfigFromEnv(t *testing.T) {
 	t.Setenv("FAL_POLL_TIMEOUT", "20m")
 	t.Setenv("FAL_DOWNLOAD_TIMEOUT", "9m")
 	t.Setenv("FAL_UNIT_USD", "0.75")
+	t.Setenv("FAL_MODEL_CUTOUT", "vendor/matting/v9")
+	t.Setenv("FAL_UNIT_USD_CUTOUT", "0.045")
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err)
@@ -49,6 +51,14 @@ func TestFalConfigFromEnv(t *testing.T) {
 			"wait loses an artifact that is already paid for and whose link expires")
 	assert.InDelta(t, 0.75, cfg.Fal.UnitUSD, 1e-9)
 
+	// ─── ВТОРОЙ МАРШРУТ ТОГО ЖЕ ТРАНСПОРТА: СВОЙ СЛАГ И СВОЙ ТАРИФ ───
+	assert.Equal(t, "vendor/matting/v9", cfg.Fal.ModelCutout,
+		"аварийный руль на случай снятого слага: без него единственный способ съехать с мёртвой "+
+			"модели — деплой")
+	assert.InDelta(t, 0.045, cfg.Fal.UnitUSDCutout, 1e-9,
+		"у выреза СВОЙ тариф: единицы двух маршрутов отличаются на два порядка, и одно число "+
+			"оценило бы двухцентовую операцию в доллар")
+
 	// THE VALUES MUST SURVIVE THE CONSTRUCTOR, not merely land in the struct: a default applied
 	// over a configured value is the same silent failure one layer down.
 	c := fal.New(cfg.Fal)
@@ -58,6 +68,34 @@ func TestFalConfigFromEnv(t *testing.T) {
 	assert.Equal(t, "vendor/model/v9/multi-view-to-3d", c.Model())
 	assert.Equal(t, "1.5", c.CostUSD(2).String(),
 		"the configured unit rate must be the one that prices a build")
+
+	// ⚠ И ОБА ЧИСЛА ПРОВЕРЯЮТСЯ НА ОДНОМ КЛИЕНТЕ, ПОТОМУ ЧТО ПУТАНИЦА МЕЖДУ НИМИ — ЭТО И ЕСТЬ
+	// ДЕФЕКТ, РАДИ КОТОРОГО ЗАВЕДЕНА ВТОРАЯ ПЕРЕМЕННАЯ. Ставки нарочно разные (0.75 против 0.045),
+	// так что вычисление выреза по ставке 3D видно числом: 0.09, а не 1.5.
+	assert.Equal(t, "vendor/matting/v9", c.ModelCutout())
+	assert.Equal(t, "0.09", c.CostCutoutUSD(2).String(),
+		"вырез считается по FAL_UNIT_USD_CUTOUT, а не по FAL_UNIT_USD")
+}
+
+// TestTheCutoutSlugAndTariffFALL_BACK_TO_THE_CODE_DEFAULTS — вторая половина той же проводки.
+//
+// ⚠ УМОЛЧАНИЕ СЛАГА — ЛИЦЕНЗИОННОЕ РЕШЕНИЕ, А НЕ ВКУСОВОЕ, и проверяется здесь именно поэтому:
+// соседние по качеству веса (BRIA RMBG-2.0) живут под CC BY-NC, и попасть на них проще всего НЕ
+// выбрав ничего. А умолчание тарифа — про деньги в другую сторону: без него неоценённый вырез
+// записался бы нулём, то есть «бесплатным», и дневная книга не увидела бы траты.
+func TestTheCutoutSlugAndTariffFALL_BACK_TO_THE_CODE_DEFAULTS(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+	t.Setenv("FAL_KEY", "fal-test-key")
+
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Fal.ModelCutout, "ничего не задано — значит в конфиге пусто")
+	assert.Zero(t, cfg.Fal.UnitUSDCutout)
+
+	c := fal.New(cfg.Fal)
+	assert.Equal(t, "fal-ai/birefnet/v2", c.ModelCutout(), "MIT-модель, а не CC BY-NC")
+	assert.Equal(t, fal.EstimatedCutoutUSD().String(), c.CostCutoutUSD(3).String(),
+		"без тарифа умножать не на что: отвечаем оценкой за ЗАПРОС, а не нулём и не выдумкой")
 }
 
 // TestFalUnsetIsAnHonestLock is the other half. With no key the client is disabled — and that must
