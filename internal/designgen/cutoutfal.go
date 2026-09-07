@@ -51,11 +51,18 @@ var errCutoutNoAlpha = errors.New("designgen: the cut-out came back with nothing
 // другой тариф и другая форма ответа. Общий Provider означал бы `switch kind` внутри Execute, то
 // есть ту же развилку, только спрятанную от предполётной проверки.
 //
-// ⚠ И ОН СИНХРОННЫЙ, БЕЗ Collector. Матирование считается секунды и укладывается в один проход
-// воркера; пара Submit/Collect существует ради сборок, идущих минуты. Цена выбора названа в
-// fal/cutout.go и повторена здесь, потому что читают её отсюда: у выреза НЕТ бесплатного
-// возобновления — повтор после успешного сабмита это второй платёж, и поэтому классификация отказов
-// этого маршрута (см. errCutoutNoAlpha выше) не косметика.
+// ⚠ И ОН ДВУХПОЛОВИНЧАТЫЙ — Provider + Collector, — ХОТЯ МАТИРОВАНИЕ СЧИТАЕТСЯ СЕКУНДЫ. Пара
+// Submit/Collect существует не ради ДЛИТЕЛЬНОСТИ, а ради ТОЧКИ ОПЛАТЫ: сабмит — платёж, сбор —
+// бесплатный просмотр, и воркер, умерший между ними, обязан возобновить, а не купить второй раз.
+// Синхронная форма, стоявшая здесь раньше, честно называла этот долг вслух: «у выреза нет
+// бесплатного возобновления, повтор после успешного сабмита это второй платёж». Секунды сборки
+// уменьшают вероятность разрыва и ничего не меняют в его цене — а разрыв бывает не только от
+// падения: редеплой в середине прохода это то же самое, и он случается по расписанию.
+//
+// ЦЕНА РАЗДЕЛЕНИЯ — ОДНА ЛИШНЯЯ СТРОКА ПОПЫТКИ НА ПРОГОН (`accepted` с request_id), и она же
+// приносит то, ради чего всё: попытка после `accepted` не тратит круг платного потолка
+// (designPaidAttemptsSQL), а повторный сбор того же задания не удваивает списание (заряд ключом на
+// provider_request_id).
 type falCutoutProvider struct{ c *fal.Client }
 
 // NewFalCutoutProvider wires the background-removal route. A nil client is a disabled route, not a
@@ -93,7 +100,12 @@ func (p falCutoutProvider) Produces() []string { return []string{ContentTypePNG}
 // Ровно этот дефект был измерен на 3D-маршруте.
 func (p falCutoutProvider) SentPrompt(Job) string { return "" }
 
-// Execute cuts the background out of the run's single picture, synchronously.
+// Execute SUBMITS the run's single picture for matting and returns at once with the request id.
+//
+// ЭТО ПОЛОВИНА, НА КОТОРОЙ УХОДЯТ ДЕНЬГИ. Всё, что она может сделать полезного после сабмита, — это
+// назвать id, потому что именно он превращает следующий проход из второй покупки в бесплатный
+// просмотр. Цены здесь нет и быть не может: fal сообщает списание на ЗАБОРЕ РЕЗУЛЬТАТА, а ноль в
+// колонке сказал бы, что вырез был бесплатным.
 func (p falCutoutProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
@@ -102,9 +114,30 @@ func (p falCutoutProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	if err != nil {
 		return nil, err
 	}
+	id, err := p.c.SubmitCutout(ctx, src)
+	if err != nil {
+		// ⚠ И ЗДЕСЬ ТОЖЕ БЫВАЮТ ДЕНЬГИ. Сабмит, принятый и не назвавший id, — оплачен: транспорт
+		// вешает на такой отказ то, что он списал, когда знал, и без этого носителя трата исчезает.
+		if out := chargedCutoutOutcome(p.c, err); out != nil {
+			return out, err
+		}
+		return nil, err
+	}
+	return &Outcome{RequestID: id, Model: p.c.ModelCutout(), Pending: true}, nil
+}
+
+// Collect is the FREE half: the wait, the download and the one question this route exists to
+// answer — did anything actually get cut out.
+//
+// ⚠ ПРОВЕРКА АЛЬФЫ ЖИВЁТ ИМЕННО ЗДЕСЬ, А НЕ В Execute, И ЭТО НЕ ПЕРЕЕЗД РАДИ ПЕРЕЕЗДА: судить о
+// СОДЕРЖИМОМ можно только там, где содержимое есть. На сабмите его нет вовсе.
+func (p falCutoutProvider) Collect(ctx context.Context, job Job, requestID string) (*Outcome, error) {
+	if !p.Enabled() {
+		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
+	}
 
 	var buf bytes.Buffer
-	res, err := p.c.RemoveBackground(ctx, src, &buf)
+	res, err := p.c.CollectCutout(ctx, requestID, &buf)
 	if err != nil {
 		// «ОПЛАЧЕНО, И НИЧЕГО ИЗ ЭТОГО НЕ ВЫШЛО» ИМЕЕТ ЗДЕСЬ НОСИТЕЛЯ, как на 3D и векторе:
 		// транспорт вешает на упавший вызов то, что он списал, когда знал. Без этого деньги
@@ -284,9 +317,9 @@ func chargedCutoutOutcome(c *fal.Client, err error) *Outcome {
 		return nil
 	}
 	return &Outcome{
-		// ⚠ ИДЕНТИФИКАТОР ЗАПРОСА ЕДЕТ ИМЕННО ОТСЮДА, И БОЛЬШЕ ЕМУ ЕХАТЬ НЕОТКУДА. Маршрут
-		// синхронный: снаружи вызова id не существует, а строке попытки он нужен ровно в том
-		// случае, где деньги ушли, — иначе списание в счёте fal не с чем сопоставить.
+		// ⚠ ИДЕНТИФИКАТОР ЗАПРОСА ЕДЕТ ИМЕННО ОТСЮДА. На упавшем сборе воркер подставит тот id, по
+		// которому собирал, но упасть можно и на сабмите — а там id снаружи вызова не существует
+		// вовсе, и списание в счёте fal иначе не с чем сопоставить.
 		RequestID: ce.RequestID,
 		Model:     ce.Model,
 		Price:     decimal.NullDecimal{Decimal: usd, Valid: true},

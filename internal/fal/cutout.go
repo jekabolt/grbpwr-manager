@@ -31,12 +31,15 @@ import (
 // двух копий уже однажды рубил обе AI-функции разом. Отличается ровно ТЕЛО ЗАПРОСА, ОТВЕТ и СЛАГ, и
 // они живут в этом файле.
 //
-// ПОЧЕМУ НЕТ ПАРЫ Submit/Collect, КАК У 3D. Раздельные глаголы существуют потому, что сборка модели
-// идёт МИНУТЫ: сабмит — это оплата, коллект бесплатен, и воркер, умерший между ними, не должен
-// платить второй раз. Вырез считается СЕКУНДЫ и укладывается в один проход воркера, поэтому здесь
-// один синхронный глагол. ⚠ ЦЕНА ЭТОГО ВЫБОРА НАЗВАНА ВСЛУХ: у выреза НЕТ бесплатного возобновления,
-// и повтор после успешного сабмита — это второй платёж. Поэтому всё, что происходит ПОСЛЕ сабмита,
-// несёт на себе `chargedWith`: деньги должны доехать до книги даже там, где картинка не доехала.
+// ПОЧЕМУ ЗДЕСЬ ПАРА Submit/Collect, КАК У 3D, ХОТЯ ВЫРЕЗ СЧИТАЕТСЯ СЕКУНДЫ. Раздельные глаголы
+// существуют не ради ДЛИТЕЛЬНОСТИ, а ради ТОЧКИ ОПЛАТЫ: сабмит — это платёж, сбор бесплатен, и
+// воркер, умерший между ними, обязан возобновить, а не купить второй раз. Секунды сборки уменьшают
+// ВЕРОЯТНОСТЬ такого разрыва и ничего не меняют в его ЦЕНЕ — а сам fal прямо предупреждает, что
+// второй submit это второй charge. Прежняя синхронная форма честно называла этот долг вслух; долг
+// закрыт разделением, которое стоит одного поля в строке попытки.
+//
+// Всё, что происходит ПОСЛЕ сабмита, несёт на себе `chargedWith`: деньги должны доехать до книги
+// даже там, где картинка не доехала.
 
 const (
 	// DefaultModelCutout is the matting model the band cuts backgrounds with.
@@ -162,34 +165,29 @@ func (c *Client) CostCutoutUSD(units float64) decimal.Decimal {
 	return decimal.NewFromFloat(c.cfg.UnitUSDCutout).Mul(decimal.NewFromFloat(units))
 }
 
-// RemoveBackground submits ONE picture for matting, waits for it and writes the resulting file into
-// dst before returning. It never retries: a second submit is a second charge.
+// SubmitCutout puts ONE picture into the matting queue and returns the request id. IT NEVER
+// RETRIES, because a second submit is a second charge.
 //
-// THE BYTES ARE TAKEN IMMEDIATELY AND THE LINK IS NEVER RETURNED, for the reason the 3D route gives:
-// fal's artifact urls expire, so a stored link is a picture that quietly stops existing.
-//
-// ⚠ ЧТО ЭТА ФУНКЦИЯ НЕ ПРОВЕРЯЕТ: ЕСТЬ ЛИ В ОТВЕТЕ АЛЬФА. Транспорт отвечает за «доставлено и
-// оплачено»; «доставленное — действительно вырез» — вопрос о СОДЕРЖИМОМ, и он решается там, где уже
-// есть декодер картинок и куда её всё равно кладут. Здесь эта проверка означала бы, что транспорт
-// разбирает растр ради чужого решения — и что «вырез без альфы» нельзя ни сохранить, ни увидеть.
-func (c *Client) RemoveBackground(ctx context.Context, imageURL string, dst io.Writer) (*CutoutResult, error) {
+// ⚠ ЭТО ГЛАГОЛ, НА КОТОРОМ УХОДЯТ ДЕНЬГИ, И ОН ОТДЕЛЁН ОТ СБОРА ИМЕННО ПОЭТОМУ. Раньше здесь стоял
+// один синхронный глагол, а довод был «вырез считается секунды, глагол один»; секунды — правда, но
+// они ничего не говорят про то, что происходит с ОПЛАЧЕННЫМ заданием, если процесс умер между
+// сабмитом и ответом. Умер — id никуда не записан, и следующий проход шлёт ВТОРОЙ ПЛАТНЫЙ САБМИТ:
+// провайдер прямо предупреждает, что второй submit — второй charge. Разделение стоит одного поля в
+// строке попытки и закрывает двойное списание насовсем: id закрывает попытку `accepted`, а сбор по
+// нему бесплатен.
+func (c *Client) SubmitCutout(ctx context.Context, imageURL string) (string, error) {
 	if !c.Enabled() {
-		return nil, ErrNotConfigured
-	}
-	if dst == nil {
-		return nil, errors.New("fal: RemoveBackground has nowhere to put the picture")
+		return "", ErrNotConfigured
 	}
 	imageURL = strings.TrimSpace(imageURL)
 	if err := validateImageRef(imageURL); err != nil {
 		// Refused HERE, before the request leaves and therefore before anything is billed. A
 		// reference the provider cannot fetch is not weather and does not improve on a retry.
-		return nil, fmt.Errorf("cut-out source: %w", err)
+		return "", fmt.Errorf("cut-out source: %w", err)
 	}
 
-	model := c.ModelCutout()
-
 	var sub submitResponse
-	if err := c.callJSON(ctx, http.MethodPost, "/"+model, cutoutSubmitBody{
+	if err := c.callJSON(ctx, http.MethodPost, "/"+c.ModelCutout(), cutoutSubmitBody{
 		ImageURL:     imageURL,
 		OutputFormat: cutoutOutputFormat,
 		// ⚠ ЭТО НЕ КОСМЕТИКА. Без доводки переднего плана альфа по краю несёт ЦВЕТ ФОНА, и вырез,
@@ -198,14 +196,49 @@ func (c *Client) RemoveBackground(ctx context.Context, imageURL string, dst io.W
 		// который выглядит правильно ровно до момента, когда его на что-нибудь положат.
 		RefineForeground: true,
 	}, &sub, nil); err != nil {
-		return nil, err
+		return "", err
 	}
 	id := strings.TrimSpace(sub.RequestID)
 	if id == "" {
-		return nil, fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
+		// ⚠ ОПЛАЧЕНО И ПОТЕРЯНО. Сабмит принят, значит единицы списаны, а вернуть по нему нечего:
+		// без id ни забрать результат, ни возобновить. Отдельное слово нужно, чтобы этот исход не
+		// читался как обычный отказ транспорта.
+		return "", fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
 	}
-	// ─── ВСЁ, ЧТО НИЖЕ, ПРОИСХОДИТ ПОСЛЕ ОПЛАТЫ.
-	return c.awaitCutout(ctx, model, id, dst)
+	return id, nil
+}
+
+// CollectCutout waits for a submitted request and writes the resulting file into dst. IT IS FREE:
+// a lookup of a request that was already paid for.
+//
+// THE BYTES ARE TAKEN IMMEDIATELY AND THE LINK IS NEVER RETURNED, for the reason the 3D route gives:
+// fal's artifact urls expire, so a stored link is a picture that quietly stops existing.
+//
+// ⚠ ЧТО ЭТА ФУНКЦИЯ НЕ ПРОВЕРЯЕТ: ЕСТЬ ЛИ В ОТВЕТЕ АЛЬФА. Транспорт отвечает за «доставлено и
+// оплачено»; «доставленное — действительно вырез» — вопрос о СОДЕРЖИМОМ, и он решается там, где уже
+// есть декодер картинок и куда её всё равно кладут. Здесь эта проверка означала бы, что транспорт
+// разбирает растр ради чужого решения — и что «вырез без альфы» нельзя ни сохранить, ни увидеть.
+//
+// ⚠ СЛАГ БЕРЁТСЯ ИЗ СЕГОДНЯШНЕЙ КОНФИГУРАЦИИ, И У ЭТОГО ЕСТЬ ОКНО. Задание, отправленное до
+// переезда модели, собирается по НОВОМУ слагу и не находится. У 3D ровно для этого есть
+// locateRequest — поиск оплаченного задания в чужих неймспейсах; там он оправдан тем, что сборка
+// идёт МИНУТЫ и переживает деплой. Вырез отвечает за секунду-две, поэтому окно здесь — это
+// «процесс умер сразу после сабмита И в ту же минуту сменили слаг»; копия самого деликатного кода
+// пакета ради него стоила бы дороже, чем он.
+func (c *Client) CollectCutout(ctx context.Context, requestID string, dst io.Writer) (*CutoutResult, error) {
+	if !c.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	if dst == nil {
+		// ⚠ РЕФУЗ ДО ЕДИНОГО ЗАПРОСА, И ЭТО ПРО ДЕНЬГИ, А НЕ ПРО ЧИСТОПЛОТНОСТЬ. Картинка уже
+		// оплачена сабмитом; собрать её и выбросить — это потратить её второй раз, теперь впустую.
+		return nil, errors.New("fal: CollectCutout has nowhere to put the picture")
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, fmt.Errorf("%w: collect was given no request id", ErrBadRequest)
+	}
+	return c.awaitCutout(ctx, c.ModelCutout(), requestID, dst)
 }
 
 // awaitCutout polls the request until it completes, then downloads its picture.

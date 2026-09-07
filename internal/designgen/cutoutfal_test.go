@@ -3,6 +3,7 @@ package designgen
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -27,13 +28,17 @@ import (
 // the picture. It serves whatever bytes it is given, which is the whole point — the route's job is
 // to notice what came back, not to trust what it asked for.
 type cutoutStand struct {
-	payload   []byte
-	noImage   bool   // a COMPLETED request whose answer carries no picture url
-	units     string // x-fal-billable-units on the result fetch; "" omits the header
-	srv       *httptest.Server
-	submits   int
-	lastBody  map[string]any
-	imageURLs []string
+	payload []byte
+	noImage bool // a COMPLETED request whose answer carries no picture url
+	// failStatus makes the status lookup die, which is the closest a stand can come to «the pass
+	// never got its answer»: the submit was accepted and paid, and this process is not going to
+	// find out what came of it.
+	failStatus bool
+	units      string // x-fal-billable-units on the result fetch; "" omits the header
+	srv        *httptest.Server
+	submits    int
+	lastBody   map[string]any
+	imageURLs  []string
 }
 
 func newCutoutStand(t *testing.T, payload []byte) *cutoutStand {
@@ -44,6 +49,10 @@ func newCutoutStand(t *testing.T, payload []byte) *cutoutStand {
 		case r.URL.Path == "/picture":
 			_, _ = w.Write(st.payload)
 		case strings.HasSuffix(r.URL.Path, "/status"):
+			if st.failStatus {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "COMPLETED"})
 		case strings.Contains(r.URL.Path, "/requests/"):
 			if st.units != "" {
@@ -81,6 +90,26 @@ func (st *cutoutStand) provider() Provider {
 		UnitUSD:       0.5,  // the 3D rate — must never price a cut-out
 		UnitUSDCutout: 0.03, // the cut-out rate
 	}))
+}
+
+// cutoutPass — ОДИН УДАЧНЫЙ ПРОХОД ВОРКЕРА: сабмит, потом сбор по возвращённому id.
+//
+// Ровно то, что делает dispatch.execute на маршруте с Collector, и написано здесь отдельно затем,
+// чтобы проверки доставки говорили про доставку, а не про склейку двух глаголов. Сам сабмит — это
+// ПЛАТЁЖ, и то, что он отделён, проверяется своими пробами ниже.
+func cutoutPass(t *testing.T, p Provider, job Job) (*Outcome, error) {
+	t.Helper()
+	sub, err := p.Execute(context.Background(), job)
+	if err != nil {
+		return sub, err
+	}
+	require.True(t, sub.Pending, "сабмит не доставляет картинку; Pending — это то слово, по которому "+
+		"воркер закрывает попытку `accepted` и идёт собирать")
+	require.NotEmpty(t, sub.RequestID, "без id возобновление невозможно, а значит невозможно и не платить дважды")
+	require.False(t, sub.Price.Valid, "цену называет забор результата; ноль здесь сказал бы, что вырез бесплатен")
+	col, ok := p.(Collector)
+	require.True(t, ok, "маршрут, отдающий Pending без Collector, оставляет оплаченное задание висеть")
+	return col.Collect(context.Background(), job, sub.RequestID)
 }
 
 // pngWithAlpha is a picture that HAS transparency: an opaque disc on a transparent ground, which is
@@ -251,7 +280,7 @@ func TestACutOutWithAlphaIsDELIVERED_AND_PRICED_AT_ITS_OWN_RATE(t *testing.T) {
 	st := newCutoutStand(t, pngWithAlpha(t, 64, 64))
 	st.units = "2"
 
-	out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/shirt.jpg"))
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/shirt.jpg"))
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	require.Len(t, out.Artifacts, 1)
@@ -260,8 +289,8 @@ func TestACutOutWithAlphaIsDELIVERED_AND_PRICED_AT_ITS_OWN_RATE(t *testing.T) {
 	require.Empty(t, out.Artifacts[0].Kind,
 		"an empty kind means «the one derived from the run kind», which is right for a route whose "+
 			"single output is the run itself")
-	require.False(t, out.Pending, "the route is synchronous; a pending outcome would send the "+
-		"dispatcher looking for a Collector that does not exist")
+	require.False(t, out.Pending, "the COLLECT delivers; a pending outcome here would send the "+
+		"dispatcher back for a second lookup of a request it already has in its hands")
 
 	require.Equal(t, "cut-77", out.RequestID)
 	require.Equal(t, fal.DefaultModelCutout, out.Model)
@@ -290,7 +319,7 @@ func TestACutOutWithAlphaIsDELIVERED_AND_PRICED_AT_ITS_OWN_RATE(t *testing.T) {
 func TestACutOutWithNoAlphaIsKEPT_AND_COMPLAINED_ABOUT(t *testing.T) {
 	st := newCutoutStand(t, pngFullyOpaque(t, 32, 20))
 
-	out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
 	require.Error(t, err)
 	require.ErrorIs(t, err, errCutoutNoAlpha)
 
@@ -317,7 +346,7 @@ func TestAJPEGAnswerIsTHE_SAME_COMPLAINT(t *testing.T) {
 	require.NoError(t, jpeg.Encode(&jpg, m, nil))
 
 	st := newCutoutStand(t, jpg.Bytes())
-	out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
 	require.ErrorIs(t, err, errCutoutNoAlpha)
 	require.NotNil(t, out)
 	require.Len(t, out.Artifacts, 1)
@@ -339,7 +368,7 @@ func TestAGrayscalePNG_IsTHE_SAME_COMPLAINT(t *testing.T) {
 	}
 	st := newCutoutStand(t, encodePNG(t, g))
 
-	out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
 	require.ErrorIs(t, err, errCutoutNoAlpha)
 	require.NotNil(t, out)
 	require.Len(t, out.Artifacts, 1)
@@ -363,7 +392,7 @@ func TestASingleTranslucentPixelIsENOUGH_AND_IS_LOOKED_FOR_EVERYWHERE(t *testing
 	m.SetNRGBA(w-1, h-1, color.NRGBA{R: 10, G: 20, B: 30, A: 254})
 
 	st := newCutoutStand(t, encodePNG(t, m))
-	out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
 	require.NoError(t, err, "a picture whose only transparency is in its last pixel still has transparency")
 	require.Len(t, out.Artifacts, 1)
 }
@@ -414,7 +443,7 @@ func TestAlphaIsFoundInEVERY_SHAPE_THE_DECODER_RETURNS(t *testing.T) {
 				"a picture with real transparency must not be complained about")
 
 			st := newCutoutStand(t, raw)
-			out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
+			out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
 			require.NoError(t, err)
 			require.Len(t, out.Artifacts, 1)
 		})
@@ -433,7 +462,7 @@ func TestABilledCutoutFailureCARRIES_ITS_MONEY(t *testing.T) {
 	st.noImage = true
 	st.units = "3"
 
-	out, err := st.provider().Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
 	require.Error(t, err)
 	require.NotNil(t, out, "a billed failure must reach the ledger; nil here loses the spend")
 	require.Empty(t, out.Artifacts, "there is nothing to file — only money to record")
@@ -540,4 +569,58 @@ func TestTheCutoutSentinelIsClassifiedWithItsOwnSeam(t *testing.T) {
 	wrapped := fmt.Errorf("%w: every one of the 64 pixels is fully opaque; the picture was kept",
 		errCutoutNoAlpha)
 	require.Equal(t, CodeCutoutNoAlpha, classify(wrapped).Code)
+}
+
+// ═══════════ ОПЛАЧЕННЫЙ САБМИТ ПЕРЕЖИВАЕТ ПОТЕРЮ ПРОХОДА ═══════════
+
+// TestACutoutIsNOT_BOUGHT_TWICE_AFTER_A_LOST_PASS.
+//
+// ⚠ ЭТО ВТОРОЕ СПИСАНИЕ, А НЕ ЛИШНЯЯ СТРОКА В ИСТОРИИ. Между сабмитом и результатом стоит сеть, и
+// проход может не дойти: редеплой посреди прохода, убитый под, оборванный ответ. Синхронный глагол
+// не оставлял после себя НИЧЕГО — следующий проход начинал с нового POST, то есть покупал ту же
+// картинку второй раз, и сам провайдер прямо предупреждает, что второй submit это второй charge.
+//
+// Проба ставит именно этот разрыв: сабмит проходит, статус отвечает 502 — оплачено, а чем
+// кончилось, этот проход не узнает. Дальше воркер запускается заново на той же строке, и
+// единственное, что стоит между ним и вторым платежом, — записанный `accepted` с request_id.
+func TestACutoutIsNOT_BOUGHT_TWICE_AFTER_A_LOST_PASS(t *testing.T) {
+	stand := newCutoutStand(t, pngWithAlpha(t, 48, 48))
+	stand.failStatus = true
+
+	store := &fakeStore{}
+	sink := newFakeSink(ContentTypePNG)
+	w := testWorker(store, media(11), sink, Providers{Cutout: stand.provider()})
+
+	run := testRun(5, entity.DesignRunKindCutout)
+	run.Inputs = entity.RawJSON(`{"refs":[{"media_id":11}]}`)
+
+	// ─── ПРОХОД ПЕРВЫЙ: заплатили и не узнали, чем кончилось.
+	require.NoError(t, w.execute(context.Background(), run, "tok"))
+	require.Equal(t, 1, stand.submits)
+	require.Empty(t, sink.put, "собрать было нечего, значит и класть нечего")
+
+	accepted := ""
+	for _, f := range store.finished {
+		if f.State == entity.DesignAttemptAccepted {
+			accepted = f.ProviderRequestId
+		}
+	}
+	require.Equal(t, "cut-77", accepted,
+		"попытка обязана закрыться `accepted` С ИДЕНТИФИКАТОРОМ: это единственный след оплаченного "+
+			"задания, и без него следующий проход начинает с нуля")
+
+	// ─── ПРОХОД ВТОРОЙ: та же строка, тот же id, никакой оплаты.
+	stand.failStatus = false
+	store.getRun = &entity.DesignRun{
+		Id: run.Id, Kind: run.Kind, Attempts: []entity.DesignRunAttempt{{
+			RunId: run.Id, AttemptNo: 1, State: entity.DesignAttemptAccepted,
+			ProviderRequestId: sql.NullString{String: accepted, Valid: true},
+		}},
+	}
+	require.NoError(t, w.execute(context.Background(), run, "tok"))
+
+	require.Equal(t, 1, stand.submits,
+		"ВТОРОГО POST БЫТЬ НЕ ДОЛЖНО: у fal второй сабмит — второе списание за ту же картинку")
+	require.Len(t, sink.put, 1, "картинка, купленная первым проходом, доехала вторым")
+	require.Len(t, store.completed, 1)
 }

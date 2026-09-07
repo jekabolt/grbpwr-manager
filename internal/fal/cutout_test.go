@@ -14,6 +14,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// removeBackground — ОБА ГЛАГОЛА МАРШРУТА ПОДРЯД, как их зовёт воркер в одном удачном проходе.
+//
+// ⚠ ПРОД ТАК НЕ ДЕЛАЕТ, И В ЭТОМ ВЕСЬ СМЫСЛ РАЗДЕЛЕНИЯ: между сабмитом и сбором стоит запись
+// request_id в строку попытки, ради которой воркер, умерший посередине, возобновляет бесплатно
+// вместо второго платежа. Здесь глаголы склеены только для проб ТРАНСПОРТА, которым нужен весь
+// круг: тело запроса, ожидание, скачивание, деньги упавшего вызова.
+func removeBackground(c *Client, ctx context.Context, imageURL string, dst io.Writer) (*CutoutResult, error) {
+	id, err := c.SubmitCutout(ctx, imageURL)
+	if err != nil {
+		return nil, err
+	}
+	return c.CollectCutout(ctx, id, dst)
+}
+
 // cutoutStub serves one background-removal lifecycle: the submit, the status, the result envelope
 // and the picture itself.
 type cutoutStub struct {
@@ -108,13 +122,13 @@ func TestRemoveBackgroundWithNoKeyREFUSES_AND_NAMES_THE_VARIABLE(t *testing.T) {
 	require.Contains(t, ErrNotConfigured.Error(), "FAL_KEY is not set")
 
 	c := New(Config{}) // no key
-	_, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
+	_, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
 	require.ErrorIs(t, err, ErrNotConfigured)
 
 	// A nil client is a disabled client here too, and it still answers the question «which model
 	// would you cut with» rather than an empty string a caller could read as «no route».
 	var nilC *Client
-	_, err = nilC.RemoveBackground(context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
+	_, err = removeBackground(nilC, context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
 	require.ErrorIs(t, err, ErrNotConfigured)
 	require.Equal(t, DefaultModelCutout, nilC.ModelCutout())
 }
@@ -151,7 +165,7 @@ func TestRemoveBackgroundSendsTheMattingBODY_AND_BRINGS_BACK_THE_BYTES(t *testin
 
 	c := newCutoutClient(t, srv.URL)
 	var dst bytes.Buffer
-	res, err := c.RemoveBackground(context.Background(), "https://cdn.example/shirt.jpg", &dst)
+	res, err := removeBackground(c, context.Background(), "https://cdn.example/shirt.jpg", &dst)
 	require.NoError(t, err)
 
 	require.Equal(t, "/"+DefaultModelCutout, stub.submitPath, "the submit keeps the model's whole sub-path")
@@ -218,7 +232,7 @@ func TestAMissingBillingHeaderOnACutoutIsASSUMED_AND_FLAGGED(t *testing.T) {
 	defer srv.Close()
 
 	c := newCutoutClient(t, srv.URL)
-	res, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
+	res, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
 	require.NoError(t, err)
 	require.Equal(t, 1.0, res.BillableUnits, "one unit per request is fal's marketplace default")
 	require.True(t, res.UnitsAssumed, "the flag is what stops a guess hardening into a measurement")
@@ -236,7 +250,7 @@ func TestACompletedCutoutWithNoPictureIsBILLED_AND_SAID_SO(t *testing.T) {
 	defer srv.Close()
 
 	c := newCutoutClient(t, srv.URL)
-	_, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
+	_, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrNoCutout)
 	// ⚠ И ЭТО ЖЕ — ОТВЕТ КЛАССИФИКАТОРУ, КОТОРЫЙ ПРО ЭТОТ МАРШРУТ НЕ ЗНАЕТ НИЧЕГО. ErrNoModel уже
@@ -266,7 +280,7 @@ func TestACutoutOverTheSizeCapIsREFUSED_NOT_TRUNCATED(t *testing.T) {
 	defer srv.Close()
 
 	c := newCutoutClient(t, srv.URL)
-	_, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", io.Discard)
+	_, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", io.Discard)
 	require.ErrorIs(t, err, ErrTooLarge)
 	units, ok := Charge(err)
 	require.True(t, ok)
@@ -284,13 +298,16 @@ func TestAnUnfetchableSourceIsREFUSED_LOCALLY_FOR_FREE(t *testing.T) {
 
 	c := newCutoutClient(t, srv.URL)
 	for _, ref := range []string{"", "   ", "s3://bucket/key.png", "not a url at all"} {
-		_, err := c.RemoveBackground(context.Background(), ref, &bytes.Buffer{})
+		_, err := removeBackground(c, context.Background(), ref, &bytes.Buffer{})
 		require.ErrorIs(t, err, ErrBadImageURL, "reference %q", ref)
 	}
 
-	// A sink is not optional: «delivered» with nowhere to deliver to would spend the units and
-	// throw the picture away.
-	_, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", nil)
+	// A sink is not optional, and the refusal now lives on the COLLECT verb — which is where the
+	// picture arrives. It still leaves the process untouched (the stand above fails the test on any
+	// request), so «delivered with nowhere to deliver to» costs nothing here either; what changed is
+	// that by this point the units are already spent by the submit, so collecting and discarding
+	// would waste a picture that was paid for.
+	_, err := c.CollectCutout(context.Background(), "cut-1", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nowhere to put")
 }
@@ -304,7 +321,7 @@ func TestARetiredCutoutSlugIsITS_OWN_FAULT_NOT_WEATHER(t *testing.T) {
 	defer srv.Close()
 
 	c := newCutoutClient(t, srv.URL)
-	_, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
+	_, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
 	require.ErrorIs(t, err, ErrModelUnavailable)
 	require.NotErrorIs(t, err, ErrRequestNotFound, "a missing MODEL and a missing REQUEST are two faults")
 	require.Equal(t, 1, stub.submits, "a submit is a payment; it is never repeated inside one call")
@@ -322,7 +339,7 @@ func TestA404InTheFirstMomentsIsALAG_NOT_AN_ANSWER(t *testing.T) {
 
 	c := newCutoutClient(t, srv.URL)
 	var dst bytes.Buffer
-	res, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", &dst)
+	res, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &dst)
 	require.NoError(t, err, "a queue that has not caught up with its own submit must not lose the picture")
 	require.Equal(t, "kept", dst.String())
 	require.Equal(t, "cut-1", res.RequestID)
@@ -346,7 +363,7 @@ func TestA404ThatOUTLIVES_THE_GRACE_IS_TERMINAL(t *testing.T) {
 		// well inside the wait.
 		PollTimeout: 300 * time.Millisecond,
 	})
-	_, err := c.RemoveBackground(context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
+	_, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &bytes.Buffer{})
 	require.ErrorIs(t, err, ErrRequestNotFound)
 	require.NotErrorIs(t, err, ErrTimedOut, "«this id buys nothing» and «the wait ran out» are different verdicts")
 }
