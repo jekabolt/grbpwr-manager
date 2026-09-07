@@ -17,6 +17,7 @@ import (
 	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
@@ -789,7 +790,7 @@ func (s *Server) designCompensateMedia(ctx context.Context, minted []*pb_common.
 // designFetchImage reads a managed object by the url stored on the media row and decodes it.
 // The key comes from a DB row and only from a DB row; the segment gate lives in the bucket.
 func (s *Server) designFetchImage(ctx context.Context, rawURL string) (image.Image, error) {
-	key, err := archiveObjectKeyFromURL(rawURL)
+	key, err := bucket.ObjectKeyFromStoredURL(rawURL)
 	if err != nil {
 		return nil, err
 	}

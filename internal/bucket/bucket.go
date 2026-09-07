@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -86,19 +87,46 @@ func (b *Bucket) GetBaseFolder() string {
 	return b.BaseFolder
 }
 
+// ObjectKeyFromStoredURL достаёт ключ объекта из СОХРАНЁННОГО https-url — того, что лежит в
+// колонке медиа/выкройки и был записан этим же бакетом.
+//
+// ⚠ ЭТО РАЗБОР ПУТИ, А НЕ РЕШЕНИЕ О ПРАВЕ ЧИТАТЬ. Гард стоит там, где происходит обращение к S3:
+// GetManagedObject отказывает на ключе вне разрешённых сегментов ДО сети, а DeleteObjects идёт
+// через managedObjectKeyFromURL, который сверяет хост с настроенным. Здесь проверяется ровно то,
+// без чего ключа нет вовсе: https, непустой хост, непустой путь.
+//
+// ФУНКЦИЯ ЖИВЁТ ЗДЕСЬ, ПОТОМУ ЧТО ЧИТАТЕЛЕЙ У НЕЁ ТРИ И ОНИ В РАЗНЫХ ЯРУСАХ: экспорт архива
+// тех-карты, кроп кадра в admin и производные плейграунда в designgen. Копия в apisrv/admin
+// заставила бы designgen импортировать слой API ради двадцати строк разбора url — то есть
+// перевернуть зависимость ради функции, которая про бакет и ни про что больше.
+func ObjectKeyFromStoredURL(rawURL string) (string, error) {
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return "", errors.New("the row carries no object url")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse object url %q: %w", raw, err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("object url %q is not a managed https url", raw)
+	}
+	key := strings.Trim(u.Path, "/")
+	if key == "" {
+		return "", fmt.Errorf("object url %q carries no key", raw)
+	}
+	return key, nil
+}
+
 // objectKeyFromURL derives the S3 object key encoded in a URL path. Ownership is deliberately not
 // decided here; managedObjectKeyFromURL additionally verifies the configured CDN/origin host before
 // DeleteObjects performs an external side effect.
+//
+// ОДНА РЕАЛИЗАЦИЯ НА ОБА ИМЕНИ: единственный вызывающий (managedObjectKeyFromURL) уже потребовал
+// https и настроенный хост, так что строгость экспортированной версии здесь ничего не отнимает, а
+// две почти одинаковые функции разбора url в одном пакете разъехались бы молча.
 func objectKeyFromURL(rawURL string) (string, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("parse media url %q: %w", rawURL, err)
-	}
-	key := strings.TrimPrefix(u.Path, "/")
-	if key == "" {
-		return "", fmt.Errorf("no object key in media url %q", rawURL)
-	}
-	return key, nil
+	return ObjectKeyFromStoredURL(rawURL)
 }
 
 func (b *Bucket) managedObjectKeyFromURL(rawURL string) (string, error) {

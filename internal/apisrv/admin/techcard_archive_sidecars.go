@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
 	"path"
 	"sort"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
@@ -1049,7 +1049,7 @@ func archiveMarkerFileName(sizeName *string, counters map[string]int, used map[s
 // отказывает на ключе вне разрешённых папок ДО обращения к S3), поэтому здесь остаётся разбор
 // пути — ровно то, что делает приватная bucket.objectKeyFromURL.
 func (s *Server) archiveBlobFromURL(ctx context.Context, sp *archiveSpool, prefix, rawURL string) (archiveBlob, error) {
-	key, err := archiveObjectKeyFromURL(rawURL)
+	key, err := bucket.ObjectKeyFromStoredURL(rawURL)
 	if err != nil {
 		return archiveBlob{}, err
 	}
@@ -1094,25 +1094,9 @@ func archiveObjectExt(key string) string {
 	return out
 }
 
-// archiveObjectKeyFromURL достаёт ключ объекта из сохранённого https-url.
-func archiveObjectKeyFromURL(rawURL string) (string, error) {
-	raw := strings.TrimSpace(rawURL)
-	if raw == "" {
-		return "", errors.New("the row carries no object url")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("parse object url %q: %w", raw, err)
-	}
-	if u.Scheme != "https" || u.Host == "" {
-		return "", fmt.Errorf("object url %q is not a managed https url", raw)
-	}
-	key := strings.Trim(u.Path, "/")
-	if key == "" {
-		return "", fmt.Errorf("object url %q carries no key", raw)
-	}
-	return key, nil
-}
+// Разбор сохранённого url переехал в bucket.ObjectKeyFromStoredURL: у него появился третий
+// читатель (производные плейграунда в designgen), а тянуть ради двадцати строк слой API в
+// генератор значило бы перевернуть зависимость.
 
 // archiveIsFatal отделяет отказ, который обязан похоронить весь экспорт, от битой ссылки, которая
 // становится дырой. Один предикат на все сайдкары: два места, решающих это по-разному, — и одно из
