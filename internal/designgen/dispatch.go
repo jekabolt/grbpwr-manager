@@ -203,6 +203,25 @@ func (w *Worker) settle(ctx context.Context, run entity.DesignRun, token string,
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()
 
+	// ─── НАРУЖУ ВЫХОДИТ РОВНО ОДИН КАДР — ТАМ, ГДЕ ДВЕРЬ ПРОДАЛА ОДИН. Стоит ДО подсчёта, потому
+	// что всё ниже — состояние попытки, минт, строки выдачи — считается по этому числу.
+	if dropped := narrowToOneOutput(run.Kind, out); dropped > 0 {
+		if callErr == nil {
+			callErr = fmt.Errorf("%w: %d pictures came back for a run that bought one; the first was "+
+				"kept and the other %d were not filed", errOverDelivery, dropped+1, dropped)
+		} else {
+			// ⚠ ДВЕ ЖАЛОБЫ, ОДНА КОЛОНКА, И ПЕРВАЯ ВАЖНЕЕ. error_code у попытки один, а жалоба,
+			// приехавшая С МАРШРУТА, — про саму купленную картинку (`cutout_no_alpha`,
+			// `pattern_not_seamless`); наша — про лишние, которых человек всё равно не увидит.
+			// Перетереть первую второй значило бы обменять свидетельство о товаре на служебную
+			// заметку, поэтому вторая уходит в лог с теми же числами.
+			slog.Default().WarnContext(sctx, "design run over-delivered beside another complaint; "+
+				"the extra pictures were dropped and only the first complaint reached the attempt row",
+				slog.Int("run_id", run.Id), slog.String("kind", run.Kind),
+				slog.Int("dropped", dropped), slog.String("err", callErr.Error()))
+		}
+	}
+
 	artifacts := 0
 	if out != nil {
 		artifacts = len(out.Artifacts)
@@ -226,9 +245,14 @@ func (w *Worker) settle(ctx context.Context, run entity.DesignRun, token string,
 		return w.failRun(sctx, run, token, callErr)
 	}
 	if callErr != nil {
-		slog.Default().WarnContext(sctx, "design run delivered fewer outputs than it asked for",
-			slog.Int("run_id", run.Id), slog.Int("delivered", artifacts),
-			slog.Int("requested", run.RequestedOutputs), slog.String("err", callErr.Error()))
+		// ⚠ СТРОКА НЕ ГОВОРИТ «МЕНЬШЕ, ЧЕМ ПРОСИЛИ», ХОТЯ ГОВОРИЛА. Сюда приходят ТРИ разных
+		// исхода с картинками на руках — недобор вызовов, жалоба на сам кадр
+		// (`pattern_not_seamless`, `cutout_no_alpha`) и перебор (`over_delivery`), — и из них
+		// «меньше, чем просили» верно только для первого. Код называется словом, оба числа рядом.
+		slog.Default().WarnContext(sctx, "design run closed with a complaint beside its pictures",
+			slog.Int("run_id", run.Id), slog.String("code", classify(callErr).Code),
+			slog.Int("delivered", artifacts), slog.Int("requested", run.RequestedOutputs),
+			slog.String("err", callErr.Error()))
 	}
 
 	// ─── BYTES INTO THE BUCKET, BEFORE THE TRANSACTION. Whatever nobody adopts is swept below.
@@ -283,6 +307,54 @@ func (w *Worker) settle(ctx context.Context, run entity.DesignRun, token string,
 		w.sink.Drop(sctx, byID[id])
 	}
 	return nil
+}
+
+// narrowToOneOutput ДЕРЖИТ ПОСТ-ИНВАРИАНТ «НАРУЖУ МАКСИМУМ ОДИН КАДР» и возвращает, сколько
+// артефактов не поехало дальше.
+//
+// ⚠ ЗАЧЕМ ЭТО ВООБЩЕ НУЖНО, ЕСЛИ МАРШРУТ ПРОСИТ n=1. Потому что «попросили один» и «пришёл один» —
+// разные утверждения, и между ними стоит чужой сервер. Клиент картинок принимает ВЕСЬ `data[]`
+// ответа (orimages), провайдер превращает КАЖДУЮ картинку в артефакт (images.go), а CompleteRun
+// не сверяет их число с requested_outputs вовсе. То есть модель, ответившая двумя вариантами на
+// `n=1`, сегодня положила бы в карточку два кадра на прогон, который дверь оценила и продала как
+// ОДИН: лента карточки перестаёт совпадать с историей и со счётом, а человек не может сказать,
+// какой из двух кадров он просил.
+//
+// ПОЧЕМУ РОД, А НЕ requested_outputs. Число выходов честно равно числу артефактов далеко не везде:
+// 3D отдаёт МОДЕЛЬ И МИНИАТЮРУ на один запрошенный выход, а `per_view` — по кадру на вызов. Общая
+// сверка с requested_outputs выбросила бы миниатюру турнтейбла молча. Здесь названы ровно те два
+// рода, у которых дверь и сборка вызовов договорились об одном кадре и обе это утверждают
+// (designRequestedOutputs, imageCalls): плейграунд и вырез.
+//
+// ПОЧЕМУ ПЕРВЫЙ, А НЕ «ЛУЧШИЙ». Выбор обязан быть ДЕТЕРМИНИРОВАННЫМ, иначе реран того же снимка
+// даёт другой кадр по причине, которой нет в params; «лучший» же требует меры качества, которой у
+// нас нет ни для выреза, ни для плейграунда. Порядок `data[]` — это порядок провайдера, он
+// стабилен внутри ответа, и первый элемент — единственный, про который можно сказать, почему он.
+//
+// ПОЧЕМУ ЛИШНИЕ НЕ ФАЙЛЯТСЯ ВОВСЕ, А НЕ «ФАЙЛЯТСЯ, НО НЕ ПУБЛИКУЮТСЯ». Всё, что уходит в sink.Put,
+// уже минтит строку медиа и публично адресуемый объект; не подшитое CompleteRun'ом становится
+// сиротой, которую надо подметать (см. sweep). Обрезка ДО publish не создаёт ни объекта, ни строки:
+// нечего подметать и нечему протечь.
+func narrowToOneOutput(kind string, out *Outcome) int {
+	if out == nil || len(out.Artifacts) <= 1 || !designKindBuysOnePicture(kind) {
+		return 0
+	}
+	dropped := len(out.Artifacts) - 1
+	out.Artifacts = out.Artifacts[:1]
+	return dropped
+}
+
+// designKindBuysOnePicture — роды, у которых «сколько кадров наружу» решено ДВЕРЬЮ и равно одному.
+//
+// Список положительный НАМЕРЕННО, как и соседние предикаты словаря родов: новый род получает
+// честное false и не наследует чужого потолка, пока кто-нибудь не напишет его сюда руками.
+func designKindBuysOnePicture(kind string) bool {
+	switch kind {
+	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+		return true
+	default:
+		return false
+	}
 }
 
 // publish uploads every artifact and describes it as an output row. On the first failure it stops

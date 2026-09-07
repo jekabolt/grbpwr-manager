@@ -25,6 +25,12 @@ var (
 	// errDuplicateView — TWO PLATES OF THIS RUN CLAIM THE SAME SIDE OF THE GARMENT, and a build
 	// has one slot per side. Raised before the request leaves, so nothing is spent; see falViews.
 	errDuplicateView = errors.New("designgen: two input plates claim the same view of the garment")
+	// errOverDelivery — ПРОВАЙДЕР ПРИСЛАЛ БОЛЬШЕ КАДРОВ, ЧЕМ ПРОГОН КУПИЛ, и лишние не подшиты.
+	//
+	// ⚠ ЭТО ЖАЛОБА ДОСТАВЛЕННОЙ ПОПЫТКИ, А НЕ ПРОВАЛ. Кадр есть, он оплачен и лежит в карточке;
+	// записан ровно тот факт, что ответ был шире заказа, — иначе «в ленте один кадр, а сколько
+	// прислала модель» было бы неизвестно никому и никогда. См. narrowToOneOutput.
+	errOverDelivery = errors.New("designgen: the provider delivered more pictures than this run bought")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -59,6 +65,15 @@ const (
 	// дадут ТОТ ЖЕ ответ на том же задании сколько ни повторяй, поэтому единственное, что
 	// покупает повтор, — ещё один платный вызов поставщика.
 	CodeOutputRefused = "output_refused"
+
+	// CodeOverDelivery — ОТВЕТ ОКАЗАЛСЯ ШИРЕ ЗАКАЗА: провайдер прислал несколько кадров на прогон,
+	// который дверь продала как один, и наружу поехал первый.
+	//
+	// ⚠ ЭТО КОД ДОСТАВЛЕННОЙ ПОПЫТКИ, КАК pattern_not_seamless И cutout_no_alpha. Купленный кадр
+	// на месте, прогон закрывается `done`, а строка попытки несёт единственное свидетельство того,
+	// что ответ был не такой формы, как заказ, — без него «модель вернула два варианта» нельзя
+	// узнать вообще ниоткуда: лишние байты никуда не записаны, и правильно, что не записаны.
+	CodeOverDelivery = "over_delivery"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -124,6 +139,12 @@ func classify(err error) verdict {
 	// that was working perfectly. See errCutoutNoAlpha in cutoutfal.go.
 	case errors.Is(err, errCutoutNoAlpha):
 		return verdict{Retryable: false, Code: CodeCutoutNoAlpha, State: entity.DesignAttemptDelivered}
+
+	// ─── ours: DELIVERED, AND WIDER THAN THE ORDER. The first picture is kept and filed, the rest
+	// were never uploaded. Not retryable for the plainest reason of all: the run got what it paid
+	// for, and a second pass would buy a second answer to a question already answered.
+	case errors.Is(err, errOverDelivery):
+		return verdict{Retryable: false, Code: CodeOverDelivery, State: entity.DesignAttemptDelivered}
 
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.

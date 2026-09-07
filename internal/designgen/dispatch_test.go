@@ -334,3 +334,88 @@ func TestDatabaseTroubleIsAWorkerError(t *testing.T) {
 }
 
 func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+
+// ═══════════ НАРУЖУ РОВНО ОДИН КАДР ТАМ, ГДЕ ДВЕРЬ ПРОДАЛА ОДИН ═══════════
+
+// TestOverDeliveryFilesOnePictureAndRecordsTheRest.
+//
+// ⚠ «ПОПРОСИЛИ ОДИН» И «ПРИШЁЛ ОДИН» — РАЗНЫЕ УТВЕРЖДЕНИЯ, И МЕЖДУ НИМИ ЧУЖОЙ СЕРВЕР. Плейграунд
+// строит РОВНО ОДИН вызов с `n=1` (imageCalls), и дверь оценила прогон по этому же числу — но
+// клиент картинок принимает ВЕСЬ `data[]` ответа, провайдер превращает каждую картинку в артефакт,
+// а CompleteRun число выходов ни с чем не сверяет. Модель, ответившая двумя вариантами, положила бы
+// в ленту карточки два кадра на прогон, проданный как один.
+//
+// Проба держит все три половины этого инварианта разом: в бакет ушёл ОДИН объект (лишние не
+// заминчены и потому не могут стать сиротами), в CompleteRun уехала ОДНА строка выдачи, а факт
+// перебора записан кодом попытки — при этом попытка ДОСТАВЛЕНА, а прогон НЕ провален: кадр куплен и
+// человек его видит.
+func TestOverDeliveryFilesOnePictureAndRecordsTheRest(t *testing.T) {
+	for _, c := range []struct {
+		kind  string
+		wire  func(p Provider) Providers
+		count int
+	}{
+		{entity.DesignRunKindFreeform, func(p Provider) Providers { return Providers{Image: p} }, 3},
+		{entity.DesignRunKindCutout, func(p Provider) Providers { return Providers{Cutout: p} }, 2},
+	} {
+		t.Run(c.kind, func(t *testing.T) {
+			prov := &fakeProvider{name: "prov", out: okOutcome(c.count, 0.04)}
+			st := &fakeStore{}
+			sink := newFakeSink(ContentTypePNG)
+			w := testWorker(st, nil, sink, c.wire(prov))
+
+			require.NoError(t, w.execute(context.Background(), testRun(1, c.kind), "tok"))
+
+			require.Len(t, sink.put, 1, "лишние кадры не должны попадать в бакет вовсе: заминченный "+
+				"объект, который CompleteRun не подшил, — сирота, которую надо подметать")
+			require.Empty(t, sink.dropped, "подметать нечего, когда лишнее не минтили")
+			require.Len(t, st.completed, 1)
+			require.Len(t, st.completed[0].Outputs, 1, "в ленту карточки едет один кадр")
+			require.Equal(t, 0, st.completed[0].Outputs[0].Ordinal)
+			require.Empty(t, st.failed, "прогон не провален: кадр куплен, сохранён и виден")
+
+			require.Len(t, st.finished, 1)
+			require.Equal(t, CodeOverDelivery, st.finished[0].ErrorCode,
+				"единственное место, где вообще записано, что модель прислала больше одного")
+			require.Equal(t, entity.DesignAttemptDelivered, st.finished[0].State)
+		})
+	}
+}
+
+// TestOverDeliveryLeavesTheOtherKindsAlone — ОТРИЦАТЕЛЬНЫЙ КОНТРОЛЬ, без которого проба выше
+// зелена и у обрезки, снесённой в ноль условий.
+//
+// Числу выходов и числу артефактов НЕ ВЕЗДЕ положено совпадать: 3D отдаёт МОДЕЛЬ И МИНИАТЮРУ на
+// один запрошенный выход, `per_view` — по кадру на вызов. Сверка, написанная против
+// requested_outputs вместо рода, выбросила бы миниатюру турнтейбла молча — то есть починка одного
+// дефекта завела бы второй, потише.
+func TestOverDeliveryLeavesTheOtherKindsAlone(t *testing.T) {
+	img := &fakeProvider{name: "image", out: okOutcome(3, 0.04)}
+	st := &fakeStore{}
+	sink := newFakeSink(ContentTypePNG)
+	w := testWorker(st, nil, sink, Providers{Image: img})
+
+	require.NoError(t, w.execute(context.Background(), testRun(1, entity.DesignRunKindRender), "tok"))
+	require.Len(t, sink.put, 3, "рендер отдаёт столько кадров, сколько сделал вызовов")
+	require.Len(t, st.completed[0].Outputs, 3)
+	require.Empty(t, st.finished[0].ErrorCode, "жаловаться не на что")
+}
+
+// TestOverDeliveryDoesNotOverwriteTheComplaintAboutThePicture.
+//
+// У попытки ОДНА колонка error_code, и в неё претендуют две жалобы: маршрутная — про сам купленный
+// кадр (`cutout_no_alpha`) — и наша, про лишние, которых человек всё равно не увидит. Первая
+// описывает товар, вторая — форму ответа; перетереть первую второй значит обменять свидетельство о
+// товаре на служебную заметку. Обрезка при этом происходит в обоих случаях.
+func TestOverDeliveryDoesNotOverwriteTheComplaintAboutThePicture(t *testing.T) {
+	out := okOutcome(2, 0.02)
+	prov := &fakeProvider{name: "fal_cutout", out: out, err: errCutoutNoAlpha}
+	st := &fakeStore{}
+	sink := newFakeSink(ContentTypePNG)
+	w := testWorker(st, nil, sink, Providers{Cutout: prov})
+
+	require.NoError(t, w.execute(context.Background(), testRun(1, entity.DesignRunKindCutout), "tok"))
+	require.Len(t, sink.put, 1, "обрезка работает и рядом с чужой жалобой")
+	require.Equal(t, CodeCutoutNoAlpha, st.finished[0].ErrorCode)
+	require.Equal(t, entity.DesignAttemptDelivered, st.finished[0].State)
+}
