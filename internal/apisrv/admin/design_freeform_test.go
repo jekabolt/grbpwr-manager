@@ -379,6 +379,106 @@ func TestARerunOfAPlaygroundRunREBUILDS_ITS_REFS_FROM_ITS_OWN_PARAMS(t *testing.
 	require.Empty(t, snap.GetGarmentNote(), "the kind reads no garment note, on a rerun either")
 }
 
+// TestARerunOfAPlaygroundRunMAY_NOT_SWAP_ITS_PICTURES.
+//
+// ⚠ ВТОРАЯ ПОЛОВИНА ПРАВИЛА, БЕЗ КОТОРОЙ ПЕРВАЯ БЫЛА ДЫРОЙ. Пересборка ссылок из `params` (проба
+// выше) существует ради ОБЛАСТЕЙ: реран вправе разметить те же картинки иначе. Про КАРТИНКИ она не
+// говорила ничего — и реран прогона над снимком 11 с `items=[88]` уезжал с картинкой 88, сохраняя
+// `rerun_of`. Строка истории показывала на родителя, с которым у неё нет ни одного общего входа:
+// провенанс, доказывающий неправду, хуже отсутствующего.
+func TestARerunOfAPlaygroundRunMAY_NOT_SWAP_ITS_PICTURES(t *testing.T) {
+	parentParams := []byte(`{"freeform":{"preset":"free","items":[{"media_id":11},{"media_id":12}]}}`)
+
+	t.Run("a different picture is refused", func(t *testing.T) {
+		swap := ffParams("free", &pb_common.DesignFreeformItem{MediaId: 88})
+		err := designRefuseFreeformRerunPictureSwap(entity.DesignRunKindFreeform, swap, 900, parentParams)
+		require.Equal(t, "rerun_changes_pictures", ffReason(t, err))
+		require.Contains(t, err.Error(), "900", "человеку надо знать, какой прогон он якобы повторяет")
+		require.Contains(t, err.Error(), "88")
+	})
+	t.Run("dropping one of the parent's pictures is refused too", func(t *testing.T) {
+		// ⚠ УБАВЛЕНИЕ — ТА ЖЕ ПОДМЕНА. Прогон над одной картинкой из двух показывает модели другое
+		// множество, значит повтором родителя не является.
+		fewer := ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11})
+		require.Equal(t, "rerun_changes_pictures",
+			ffReason(t, designRefuseFreeformRerunPictureSwap(
+				entity.DesignRunKindFreeform, fewer, 900, parentParams)))
+	})
+	t.Run("the same pictures reordered and re-marked are LEGAL", func(t *testing.T) {
+		// Ровно та правка, ради которой реран вообще принимает params: те же картинки, другой
+		// порядок, другие области, другие слова.
+		same := ffParams("free",
+			&pb_common.DesignFreeformItem{MediaId: 12, Texts: []string{"try it on the cuff"}},
+			&pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion()}})
+		require.NoError(t, designRefuseFreeformRerunPictureSwap(
+			entity.DesignRunKindFreeform, same, 900, parentParams))
+	})
+	t.Run("a silent rerun is not asked anything", func(t *testing.T) {
+		// Молчащий реран наследует параметры родителя целиком — множества совпадают по построению.
+		require.NoError(t, designRefuseFreeformRerunPictureSwap(
+			entity.DesignRunKindFreeform, nil, 900, parentParams))
+	})
+	t.Run("a fresh run is not asked anything", func(t *testing.T) {
+		swap := ffParams("free", &pb_common.DesignFreeformItem{MediaId: 88})
+		require.NoError(t, designRefuseFreeformRerunPictureSwap(
+			entity.DesignRunKindFreeform, swap, 0, nil))
+	})
+	t.Run("an empty list is somebody else's refusal", func(t *testing.T) {
+		// «Ни одной картинки» — вопрос работоспособности (`no_source_picture`), и ответить на него
+		// словом про подмену значило бы послать человека чинить не то.
+		require.NoError(t, designRefuseFreeformRerunPictureSwap(
+			entity.DesignRunKindFreeform, &pb_common.DesignRunParams{}, 900, parentParams))
+	})
+	t.Run("and no other kind is asked at all", func(t *testing.T) {
+		for _, kind := range []string{
+			entity.DesignRunKindRecolor, entity.DesignRunKindPattern, entity.DesignRunKindCutout,
+		} {
+			require.NoErrorf(t, designRefuseFreeformRerunPictureSwap(kind,
+				ffParams("free", &pb_common.DesignFreeformItem{MediaId: 88}), 900, parentParams),
+				"kind %s", kind)
+		}
+	})
+}
+
+// TestStartDesignRunRefusesAPlaygroundRerunThatSWAPS_ITS_PICTURES — ТА ЖЕ ПРОВЕРКА У ЖИВОЙ ДВЕРИ.
+//
+// ⚠ БЕЗ ЭТОЙ ПОЛОВИНЫ СТОРОЖ МОГ БЫ БЫТЬ МЁРТВЫМ КОДОМ. Пробы выше зовут функцию напрямую и зелены
+// даже тогда, когда её никто не зовёт; здесь просьба идёт через StartDesignRun, и предмет проверки
+// — что до стора она НЕ ДОЕХАЛА, то есть ни резерва, ни строки, ни цента.
+func TestStartDesignRunRefusesAPlaygroundRerunThatSWAPS_ITS_PICTURES(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	rig.design.EXPECT().GetRun(mock.Anything, 12).Return(&entity.DesignRun{
+		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFreeform,
+		Params: entity.RawJSON(`{"freeform":{"preset":"free","items":[{"media_id":11}]}}`),
+	}, nil).Maybe()
+
+	req := designStartRequest(entity.DesignRunKindFreeform)
+	req.RerunOfRunId = 12
+	req.Params = ffParams("free", &pb_common.DesignFreeformItem{MediaId: 88})
+
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.Equal(t, "rerun_changes_pictures", ffReason(t, err))
+	require.Nil(t, rig.sent, "отказ до резерва: строка не заведена и бюджет дня не тронут")
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: тот же реран с той же картинкой и НОВОЙ областью проходит до стора.
+	ok := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	ok.design.EXPECT().GetRun(mock.Anything, 12).Return(&entity.DesignRun{
+		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFreeform,
+		Params: entity.RawJSON(`{"freeform":{"preset":"free","items":[{"media_id":11}]}}`),
+	}, nil).Maybe()
+	ok.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).
+		Return(nil).Maybe()
+	same := designStartRequest(entity.DesignRunKindFreeform)
+	same.RerunOfRunId = 12
+	same.Params = ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+		Regions: []*pb_common.TechCardAnnotation{ffRegion()}, Texts: []string{"here instead"}})
+	_, err = ok.srv.StartDesignRun(designRunCtx(), same)
+	require.NoError(t, err)
+	require.NotNil(t, ok.sent, "переразметить те же картинки — законная правка просьбы")
+	require.Equal(t, 12, ok.sent.RerunOf, "и она остаётся повтором того же прогона")
+}
+
 // TestGetDesignBandALWAYS_ANSWERS_ABOUT_THE_PLAYGROUND.
 //
 // Пустой список значит «сервер про плейграунд знает и говорит, что сейчас нельзя»; ОТСУТСТВИЕ

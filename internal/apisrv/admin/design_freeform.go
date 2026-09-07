@@ -2,6 +2,7 @@ package admin
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -298,6 +299,97 @@ func designFreeformItemMediaIDs(params *pb_common.DesignRunParams) []int {
 		}
 	}
 	return out
+}
+
+// designRefuseFreeformRerunPictureSwap — РЕРАН ПОВТОРЯЕТ ПРОГОН, А НЕ ЗАВОДИТ НОВЫЙ ПОД ЧУЖИМ
+// НОМЕРОМ.
+//
+// ⚠ ЧТО ЭТО ЗАКРЫВАЕТ, ПО ШАГАМ, И ЭТО ПРО СВИДЕТЕЛЬСТВО, А НЕ ПРО ДЕНЬГИ. У плейграунда ссылки
+// снимка не СУЖАЮТСЯ до названных, как у перекраса и паттерна, а ПЕРЕСОБИРАЮТСЯ из `params`
+// (designRunInputs) — потому что запись плейграунда несёт ещё и выноски, а реран вправе разметить
+// те же картинки иначе. Довод верен ровно наполовину: он объясняет, почему меняться могут ОБЛАСТИ,
+// и ничего не говорит про то, почему могли меняться КАРТИНКИ. А они могли: реран прогона,
+// показавшего модели снимок 11, с `params.freeform.items=[88]` уезжал с картинкой 88 — и оставался
+// в истории с `rerun_of = <тот прогон>`, то есть утверждал повтор того, что никогда не повторял.
+// Строка истории — это то, чем карточка доказывает своё происхождение; строка, показывающая на
+// родителя, с которым у неё нет ни одного общего входа, доказывает неправду.
+//
+// ⚠ СРАВНИВАЮТСЯ МНОЖЕСТВА, А НЕ СПИСКИ, И ЭТО НЕ СНИСХОДИТЕЛЬНОСТЬ. Порядок картинок — это их
+// НОМЕРА в промпте; переставить их и переразметить области — законная правка просьбы, ровно та, ради
+// которой реран вообще принимает `params`. Незаконно только одно: показать модели ДРУГИЕ картинки.
+//
+// ⚠ СПРАШИВАЕТСЯ С ГОВОРЯЩЕГО. Молчащий реран наследует параметры родителя целиком, значит
+// множества совпадают по построению и проверять нечего; а пустой список у говорящего — вопрос
+// РАБОТОСПОСОБНОСТИ (`no_source_picture`), и отвечать на него словом про подмену значило бы послать
+// человека чинить не то.
+func designRefuseFreeformRerunPictureSwap(kind string, spoken *pb_common.DesignRunParams,
+	parentID int, parentParams []byte) error {
+	if kind != entity.DesignRunKindFreeform || spoken == nil || parentID <= 0 {
+		return nil
+	}
+	now := designFreeformItemMediaIDs(spoken)
+	if len(now) == 0 {
+		return nil
+	}
+	inherited := &pb_common.DesignRunParams{}
+	if len(parentParams) > 0 {
+		if err := designUnmarshalJSON(parentParams, inherited); err != nil {
+			return status.Errorf(codes.FailedPrecondition,
+				"run %d cannot be rerun: its stored parameters do not parse", parentID)
+		}
+	}
+	was := designFreeformItemMediaIDs(inherited)
+	if len(was) == 0 {
+		// Родитель без единой картинки — состояние, которого дверь не пускает
+		// (`no_source_picture`). Сравнивать не с чем, и превращать «нечего сравнивать» в отказ
+		// значило бы сделать такую строку неперезапускаемой навсегда.
+		return nil
+	}
+	parentSet := make(map[int]struct{}, len(was))
+	for _, id := range was {
+		parentSet[id] = struct{}{}
+	}
+	childSet := make(map[int]struct{}, len(now))
+	for _, id := range now {
+		childSet[id] = struct{}{}
+	}
+	added := designSortedMissing(childSet, parentSet)
+	dropped := designSortedMissing(parentSet, childSet)
+	if len(added) == 0 && len(dropped) == 0 {
+		return nil
+	}
+	return designRefusal(codes.InvalidArgument, "rerun_changes_pictures",
+		fmt.Sprintf("a rerun repeats the run it points at: run %d worked on picture(s) %s, and this "+
+			"one names %s. Areas, words and the order of the pictures may change; the pictures "+
+			"themselves may not — start a new run instead of a rerun. Nothing was reserved and "+
+			"nothing was charged",
+			parentID, designJoinIDs(was), designJoinIDs(now)),
+		map[string]string{
+			"rerun_of": strconv.Itoa(parentID),
+			"added":    designJoinIDs(added),
+			"dropped":  designJoinIDs(dropped),
+		})
+}
+
+// designSortedMissing — члены a, которых нет в b, по возрастанию: отказ обязан быть одинаковым при
+// одинаковом запросе, а обход map таковым не бывает.
+func designSortedMissing(a, b map[int]struct{}) []int {
+	out := make([]int, 0, len(a))
+	for id := range a {
+		if _, ok := b[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+func designJoinIDs(ids []int) string {
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.Itoa(id))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // designRefuseFreeformOverflow — ВЛЕЗАЕТ ЛИ ЭТОТ ПРОГОН В ОДИН ВЫЗОВ, посчитано ДО денег.

@@ -847,6 +847,15 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseMalformedFreeform(kind, req.GetParams()); err != nil {
 		return nil, err
 	}
+	// ⚠ И РЕРАН ПЛЕЙГРАУНДА НЕ ВПРАВЕ ПОДМЕНИТЬ КАРТИНКИ. Ссылки снимка у него не сужаются, а
+	// пересобираются из `params` (designRunInputs), и этого хватало, чтобы повтор прогона над
+	// снимком 11 уехал с картинкой 88, сохранив `rerun_of`, — то есть чтобы строка истории
+	// показывала на родителя, с которым у неё нет ни одного общего входа. Спрашивается с
+	// ГОВОРЯЩЕГО и ДО денег; довод целиком — у designRefuseFreeformRerunPictureSwap.
+	if err := designRefuseFreeformRerunPictureSwap(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
 	// ГРАНИЦА КАРТОЧКИ ДЛЯ ШЕСТОГО СПИСКА. Картинки плейграунда уезжают поставщику ровно так же,
 	// как плиты, референсы и текстуры, значит и граница у них та же самая. ДЕЙСТВУЮЩИЕ параметры,
 	// а не сообщение клиента: строка media(id) под собой не исчезает (FK держат её RESTRICT'ом),
@@ -1393,6 +1402,17 @@ func designParentID(parent *entity.DesignRun) int {
 		return 0
 	}
 	return parent.Id
+}
+
+// designParentParams — ЗАМОРОЖЕННЫЕ ПАРАМЕТРЫ РОДИТЕЛЯ, или ничего. Нужны ровно одному сторожу —
+// тому, что держит картинки рерана плейграунда неизменными, — и отданы ему СЫРЫМИ намеренно:
+// разбирать их дважды (один раз ради наследования, второй ради сравнения) дешевле, чем протаскивать
+// через дверь второй разобранный экземпляр, о котором придётся помнить, чей он.
+func designParentParams(parent *entity.DesignRun) []byte {
+	if parent == nil {
+		return nil
+	}
+	return parent.Params
 }
 
 // designRerunParent читает прогон, который повторяют, и отвечает за то, чтобы им нельзя было
