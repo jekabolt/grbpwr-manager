@@ -54,6 +54,11 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 		{entity.DesignRunKindRender, "OPENROUTER_IMAGES_API_KEY"},
 		{entity.DesignRunKindRecolor, "OPENROUTER_IMAGES_API_KEY"},
 		{entity.DesignRunKindPattern, "OPENROUTER_IMAGES_API_KEY"},
+		// ПЛЕЙГРАУНД ЕДЕТ К ТОМУ ЖЕ КЛЮЧУ, и это его единственная зависимость: `freeform` — пятый
+		// род на маршруте картинок, а не свой провайдер. Строка здесь держит и это тоже: род,
+		// названный у двери, но не попавший в forKind, отказал бы словами «no image route», то
+		// есть человеку, который ключ как раз ввёл.
+		{entity.DesignRunKindFreeform, "OPENROUTER_IMAGES_API_KEY"},
 		{entity.DesignRunKindVector, "RECRAFT_API_KEY"},
 	} {
 		err := w.PreflightKind(tc.kind)
