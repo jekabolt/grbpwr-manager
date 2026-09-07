@@ -8,6 +8,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -196,13 +197,84 @@ func designRefuseMalformedRegion(where string, region *pb_common.TechCardAnnotat
 			"%s.points has %d points; a marked area is %d..%d points",
 			where, len(points), designFreeformRegionMinPoints, designFreeformRegionMaxPoints)
 	}
+	xs := make([]decimal.Decimal, 0, len(points))
+	ys := make([]decimal.Decimal, 0, len(points))
 	for i, p := range points {
-		if _, err := designUnitInterval(fmt.Sprintf("%s.points.%d.x", where, i), p.GetX()); err != nil {
+		x, err := designUnitInterval(fmt.Sprintf("%s.points.%d.x", where, i), p.GetX())
+		if err != nil {
 			return err
 		}
-		if _, err := designUnitInterval(fmt.Sprintf("%s.points.%d.y", where, i), p.GetY()); err != nil {
+		y, err := designUnitInterval(fmt.Sprintf("%s.points.%d.y", where, i), p.GetY())
+		if err != nil {
 			return err
 		}
+		xs = append(xs, x)
+		ys = append(ys, y)
+	}
+	return designRefuseDegenerateRegion(where, xs, ys)
+}
+
+// designFreeformMinRegionArea — САМАЯ МАЛЕНЬКАЯ ОБЛАСТЬ, КОТОРАЯ ЕЩЁ ЧТО-ТО ЗНАЧИТ, в долях кадра
+// в квадрате. 1e-5 — это одна стотысячная площади снимка: на кадре 4000×3000 примерно 120 пикселей,
+// то есть квадратик 11×11.
+//
+// ⚠ ЧИСЛО ВЫБРАНО СО СТОРОНЫ ЛОЖНОГО ОТКАЗА, А НЕ СО СТОРОНЫ КРАСОТЫ. Всё, что мельче, кроп всё
+// равно вытянет до 1024 px из десятка пикселей — то есть модель получит мыло вместо места, — а
+// человек, обводивший что-то пальцем, физически не рисует области меньше: даже точка касания на
+// телефоне это доли процента кадра. Порог ловит вырождение, а не аккуратность.
+const designFreeformMinRegionArea = "0.00001"
+
+// designRefuseDegenerateRegion — У МНОГОУГОЛЬНИКА ОБЯЗАНА БЫТЬ ПЛОЩАДЬ.
+//
+// ⚠ СЧЁТА ТОЧЕК НЕДОСТАТОЧНО, И ЭТО НЕ ПЕДАНТИЗМ, А ДЕНЬГИ. Три ОДИНАКОВЫЕ точки и три точки НА
+// ОДНОЙ ПРЯМОЙ проходят все проверки формы: их ровно три, каждая в 0..1, вид — POLYGON. А дальше
+// они работают ровно так же, как настоящая область: `add_hardware` считает картинку размеченной и
+// открывает ворота (designRefuseUnworkableSources), окно генерации берётся по ним же
+// (freeformWindowPlan), кроп получает bbox нулевой высоты или ширины — и модель платно рисует
+// пуговицу в полоску шириной в пиксель, растянутую до 1024. Отказ здесь бесплатный; тот же отказ
+// у поставщика — нет.
+//
+// ФОРМУЛА ШНУРКОВ, И ОНА ЖЕ ОТВЕЧАЕТ НА ОБА ВЫРОЖДЕНИЯ СРАЗУ: у совпавших точек площадь ноль, у
+// коллинеарных — тоже, и никакого третьего вопроса задавать не надо. Считается в decimal, потому
+// что координаты приезжают decimal'ом и потому что порог здесь — сравнение, а не оценка: float
+// внёс бы в него собственную ошибку ровно на том масштабе, где стоит порог.
+//
+// ⚠ ПОВТОР СОСЕДНИХ ТОЧЕК ОТКАЗЫВАЕТСЯ ОТДЕЛЬНО, ХОТЯ ПЛОЩАДЬ ЕГО ЧАСТО ЛОВИТ. Четырёхугольник,
+// у которого две соседние точки совпали, — это треугольник, записанный четырьмя точками: площадь у
+// него настоящая, а контур везёт мёртвую вершину, которую обводка рисует точкой поверх линии.
+// Своё слово вместо «площадь мала» потому, что чинится это иначе — убрать точку, а не растянуть
+// область.
+func designRefuseDegenerateRegion(where string, xs, ys []decimal.Decimal) error {
+	n := len(xs)
+	for i := 0; i < n; i++ {
+		j := (i + 1) % n
+		if xs[i].Equal(xs[j]) && ys[i].Equal(ys[j]) {
+			return designRefusal(codes.InvalidArgument, "region_degenerate",
+				fmt.Sprintf("%s.points.%d repeats point %d — a marked area is a polygon, and a repeated "+
+					"corner is a vertex with no edge. Nothing was reserved and nothing was charged",
+					where, j, i),
+				map[string]string{"where": where, "reason": "repeated_point"})
+		}
+	}
+	// Формула шнурков даёт УДВОЕННУЮ площадь со знаком; знак — это направление обхода, и он к делу
+	// не относится.
+	twice := decimal.Zero
+	for i := 0; i < n; i++ {
+		j := (i + 1) % n
+		twice = twice.Add(xs[i].Mul(ys[j]).Sub(xs[j].Mul(ys[i])))
+	}
+	area := twice.Abs().Div(decimal.NewFromInt(2))
+	min, err := decimal.NewFromString(designFreeformMinRegionArea)
+	if err != nil {
+		return status.Error(codes.Internal, "the minimum marked-area size is misconfigured")
+	}
+	if area.LessThan(min) {
+		return designRefusal(codes.InvalidArgument, "region_degenerate",
+			fmt.Sprintf("%s encloses %s of the picture, which is not an area a person can point at: "+
+				"its corners are the same point or lie on one straight line. The server outlines this "+
+				"area on a copy and crops it, and neither can be done with a line. Draw the area again. "+
+				"Nothing was reserved and nothing was charged", where, area.String()),
+			map[string]string{"where": where, "area": area.String(), "reason": "no_area"})
 	}
 	return nil
 }

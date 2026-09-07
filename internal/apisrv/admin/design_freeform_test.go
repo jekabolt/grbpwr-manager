@@ -132,6 +132,65 @@ func TestEveryPlaygroundRefusalHappensBEFORE_ANY_MONEY(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "fraction of the picture from 0 to 1")
 	})
+	// ⚠ ТРИ ТОЧКИ — ЕЩЁ НЕ МНОГОУГОЛЬНИК, И СЧЁТА ТОЧЕК ЗДЕСЬ БЫЛО НЕДОСТАТОЧНО. Совпавшие и
+	// лежащие на одной прямой точки проходили ВСЮ проверку формы: их ровно три, каждая в 0..1, вид
+	// POLYGON. Дальше они работали как настоящая область — открывали ворота `add_hardware`
+	// («картинка размечена»), брали окно генерации, давали кроп нулевой ширины, растянутый до
+	// 1024 px, — и за это платил человек.
+	t.Run("three identical points", func(t *testing.T) {
+		err := designRefuseMalformedFreeform(entity.DesignRunKindFreeform,
+			ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion(
+					ffPoint("0.2", "0.2"), ffPoint("0.2", "0.2"), ffPoint("0.2", "0.2"))}}))
+		require.Equal(t, "region_degenerate", ffReason(t, err))
+		require.Contains(t, err.Error(), "repeats point",
+			"совпавшая вершина чинится удалением точки, а не растягиванием области — и отказ говорит именно это")
+	})
+	t.Run("three collinear points", func(t *testing.T) {
+		// Ни одна пара не совпадает, поэтому ловит это ТОЛЬКО площадь.
+		err := designRefuseMalformedFreeform(entity.DesignRunKindFreeform,
+			ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion(
+					ffPoint("0.1", "0.1"), ffPoint("0.3", "0.3"), ffPoint("0.5", "0.5"))}}))
+		require.Equal(t, "region_degenerate", ffReason(t, err))
+		require.Contains(t, err.Error(), "one straight line")
+	})
+	t.Run("a quadrilateral with one dead vertex", func(t *testing.T) {
+		// Площадь настоящая — ловит только проверка повтора соседей.
+		err := designRefuseMalformedFreeform(entity.DesignRunKindFreeform,
+			ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion(
+					ffPoint("0.1", "0.1"), ffPoint("0.5", "0.1"),
+					ffPoint("0.5", "0.1"), ffPoint("0.5", "0.5"))}}))
+		require.Equal(t, "region_degenerate", ffReason(t, err))
+	})
+	t.Run("a sliver thinner than the threshold", func(t *testing.T) {
+		// Полоска 0.4 × 0.00001 = 4e-6 долей², то есть вдвое с лишним ниже порога.
+		err := designRefuseMalformedFreeform(entity.DesignRunKindFreeform,
+			ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion(
+					ffPoint("0.1", "0.1"), ffPoint("0.5", "0.1"),
+					ffPoint("0.5", "0.10001"), ffPoint("0.1", "0.10001"))}}))
+		require.Equal(t, "region_degenerate", ffReason(t, err))
+	})
+	t.Run("an ordinary area is STILL LEGAL", func(t *testing.T) {
+		// ⚠ БЕЗ ЭТОЙ ПОЛОВИНЫ ПРОБА БЫЛА БЫ ЗЕЛЕНА И У СТОРОЖА, ОТКАЗЫВАЮЩЕГО ВСЕМУ.
+		require.NoError(t, designRefuseMalformedFreeform(entity.DesignRunKindFreeform,
+			ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion()}})),
+			"треугольник 0.3×0.3 — обычная разметка пальцем")
+
+		// И САМАЯ МАЛЕНЬКАЯ ЗАКОННАЯ: квадрат ровно в порог. Порог назван литералом там, где он
+		// объявлен, поэтому проба меряет ЧИСЛО, а не «что-нибудь ненулевое».
+		require.Equal(t, "0.00001", designFreeformMinRegionArea,
+			"порог решает, какую разметку человек может нарисовать, — он решение, а не дрейф")
+		require.NoError(t, designRefuseMalformedFreeform(entity.DesignRunKindFreeform,
+			ffParams("free", &pb_common.DesignFreeformItem{MediaId: 11,
+				Regions: []*pb_common.TechCardAnnotation{ffRegion(
+					ffPoint("0.1", "0.1"), ffPoint("0.11", "0.1"),
+					ffPoint("0.11", "0.101"), ffPoint("0.1", "0.101"))}})),
+			"0.01 × 0.001 = 1e-5 — ровно порог, и он включительный")
+	})
 	t.Run("two lists for one fact", func(t *testing.T) {
 		p := ffParams("free", subject)
 		p.ExtraInputMediaIds = []int32{99}
