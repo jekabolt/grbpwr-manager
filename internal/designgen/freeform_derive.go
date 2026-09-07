@@ -83,10 +83,17 @@ const (
 // freeformOutlineColours — ЦВЕТ ОБЛАСТИ ПО ЕЁ НОМЕРУ, и словарь тот же, которым карточка красит
 // свои выноски (TechCardAnnotationColor: red, blue, green, orange).
 //
-// ⚠ ЦВЕТОМ, А НЕ БУКВОЙ, И ЭТО РЕШЕНИЕ, А НЕ ЛЕНЬ. Написать «A» на картинке из Go нечем: в
-// стандартной библиотеке нет шрифта, а тянуть шрифт ради двух букв — это зависимость, лицензия и
-// вес бинаря. Цвет читается и человеком, и моделью, называется словом в подписи («outlined in
-// RED») и не требует ничего. Буквы A/B рисует клиент — на своём экране, поверх той же геометрии.
+// ⚠ ЦВЕТ — ПОЛОВИНА МЕТКИ, ВТОРАЯ ПОЛОВИНА — БУКВА, И ОНА ТОЖЕ ВПЕЧАТАНА В ПИКСЕЛИ. Приём
+// называется Set-of-Mark (arXiv 2310.11441), и у него ровно два органа: видимая граница и видимый
+// ЯРЛЫК рядом с ней. Без ярлыка «сделай это в области B» указывает в никуда — модель видит два
+// одинаково обведённых места и слово, которого на картинке нет; сопоставить «B» с синим ей неоткуда,
+// кроме нашей же подписи, а подпись — это текст, спорящий с изображением.
+//
+// БУКВЫ РИСУЕТ СЕРВЕР, А НЕ КЛИЕНТ, И ЭТО НЕ ДУБЛИРОВАНИЕ. Клиентские буквы живут на ЭКРАНЕ
+// ЧЕЛОВЕКА, поверх канваса; в байты, уехавшие модели, они не попадают вовсе. Раньше здесь стоял
+// довод «шрифта в стандартной библиотеке нет, а тянуть шрифт ради двух букв — зависимость,
+// лицензия и вес бинаря»: он верен про ШРИФТ и не верен про БУКВУ. Восемь глифов 5×7 — это восемь
+// строковых литералов ниже, у которых нет ни лицензии, ни веса, ни начертания.
 var freeformOutlineColours = []struct {
 	name string
 	rgba color.RGBA
@@ -95,6 +102,104 @@ var freeformOutlineColours = []struct {
 	{"BLUE", color.RGBA{R: 30, G: 136, B: 229, A: 255}},
 	{"GREEN", color.RGBA{R: 67, G: 160, B: 71, A: 255}},
 	{"ORANGE", color.RGBA{R: 251, G: 140, B: 0, A: 255}},
+}
+
+// ═══════════ БУКВА ОБЛАСТИ, ВПЕЧАТАННАЯ В ПИКСЕЛИ ═══════════
+
+// freeformGlyphs — восемь букв растром 5×7, по строке на ряд: '#' рисуется, всё прочее пусто.
+//
+// ПОЧЕМУ ВОСЕМЬ, А НЕ ВЕСЬ АЛФАВИТ. Дверь держит потолок в четыре области НА КАРТИНКУ, а картинок в
+// прогоне до восьми; буквы сквозные по прогону, поэтому предел, до которого метка обязана быть
+// нарисуемой, — H. Область за пределом остаётся обведённой и НАЗВАННОЙ В ПОДПИСИ, но плашки не
+// получает: нарисовать не ту букву было бы хуже, чем не рисовать никакой.
+//
+// ПОЧЕМУ 5×7. Это минимальная сетка, на которой все восемь букв различимы по форме, а не по
+// плотности: у A, B, D и G есть ЗАМКНУТАЯ дыра, у C, E, F и H её нет — и это единственная разница,
+// которую надо удержать при любом масштабе.
+var freeformGlyphs = map[rune][7]string{
+	'A': {".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"},
+	'B': {"####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."},
+	'C': {".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."},
+	'D': {"####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."},
+	'E': {"#####", "#....", "#....", "####.", "#....", "#....", "#####"},
+	'F': {"#####", "#....", "#....", "####.", "#....", "#....", "#...."},
+	'G': {".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."},
+	'H': {"#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"},
+}
+
+const (
+	// freeformGlyphCols / freeformGlyphRows — сетка глифа. Названы, потому что по ним считается и
+	// плашка, и масштаб, и три числа подряд в арифметике — это три места, где можно ошибиться.
+	freeformGlyphCols = 5
+	freeformGlyphRows = 7
+	// freeformLetterFraction — высота буквы долей ШИРИНЫ кадра. 2 % это ~30 px на 1536: столько же,
+	// сколько занимает средняя подпись на скриншоте, который эти модели читают уверенно.
+	freeformLetterFraction = 0.02
+	// freeformLetterMinPx — пол высоты. Ниже двенадцати пикселей различие A и H перестаёт быть
+	// формой и становится шумом — а метка, которую нельзя прочесть, хуже отсутствующей: она
+	// занимает место в кадре и заставляет модель гадать.
+	freeformLetterMinPx = 12
+)
+
+// freeformLetterPlate впечатывает букву области в левый верхний угол её bbox: БЕЛЫЙ ГЛИФ НА ПЛАШКЕ
+// ЦВЕТА КОНТУРА.
+//
+// ПОЧЕМУ НА ПЛАШКЕ, А НЕ ПРОСТО ЦВЕТНЫМИ ПИКСЕЛЯМИ. Буква ложится на ФОТОГРАФИЮ, то есть на любой
+// цвет и любую фактуру; тонкие цветные штрихи по джинсовой ткани не читаются вовсе. Плашка даёт
+// контраст, который не зависит от того, что под ней, и заодно связывает букву с цветом контура —
+// одним взглядом, без легенды.
+//
+// ПОЧЕМУ В УГЛУ BBOX, А НЕ В ЦЕНТРЕ ОБЛАСТИ. Центр — это то, ПРО ЧТО просьба: пуговица, карман,
+// вышивка. Метка, накрывшая предмет собой, отнимает у модели ровно ту деталь, ради которой область
+// и обведена. Угол bbox всегда снаружи или на границе того, что обведено.
+func freeformLetterPlate(dst *image.RGBA, region freeformRegion, index int, c color.RGBA) {
+	rows, ok := freeformGlyphs[rune(freeformAreaLetter(index)[0])]
+	if !ok || len(freeformAreaLetter(index)) != 1 {
+		return
+	}
+	b := dst.Bounds()
+	scale := int(math.Round(float64(b.Dx()) * freeformLetterFraction / freeformGlyphRows))
+	if h := scale * freeformGlyphRows; h < freeformLetterMinPx {
+		scale = (freeformLetterMinPx + freeformGlyphRows - 1) / freeformGlyphRows
+	}
+	if scale < 1 {
+		scale = 1
+	}
+	pad := scale
+	glyphW, glyphH := freeformGlyphCols*scale, freeformGlyphRows*scale
+	plateW, plateH := glyphW+2*pad, glyphH+2*pad
+
+	minX, minY, _, _ := freeformBBox(region)
+	x0 := b.Min.X + int(math.Round(minX*float64(b.Dx()-1)))
+	y0 := b.Min.Y + int(math.Round(minY*float64(b.Dy()-1)))
+	// ПЛАШКА ЦЕЛИКОМ ВНУТРИ КАДРА. Область, прижатая к правому или нижнему краю, иначе получила бы
+	// половину буквы — а половина «B» это «E», и указание уезжает на соседнюю область.
+	if x0+plateW > b.Max.X {
+		x0 = b.Max.X - plateW
+	}
+	if y0+plateH > b.Max.Y {
+		y0 = b.Max.Y - plateH
+	}
+	if x0 < b.Min.X {
+		x0 = b.Min.X
+	}
+	if y0 < b.Min.Y {
+		y0 = b.Min.Y
+	}
+	draw.Draw(dst, image.Rect(x0, y0, x0+plateW, y0+plateH), image.NewUniform(c), image.Point{}, draw.Src)
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	for row := 0; row < freeformGlyphRows; row++ {
+		line := rows[row]
+		for col := 0; col < freeformGlyphCols && col < len(line); col++ {
+			if line[col] != '#' {
+				continue
+			}
+			draw.Draw(dst, image.Rect(
+				x0+pad+col*scale, y0+pad+row*scale,
+				x0+pad+(col+1)*scale, y0+pad+(row+1)*scale,
+			), image.NewUniform(white), image.Point{}, draw.Src)
+		}
+	}
 }
 
 // freeformAreaLetter — имя области НА ЭКРАНЕ ЧЕЛОВЕКА: A, B, C, D. Подпись называет и букву, и
@@ -202,10 +307,11 @@ func freeformOutlineCaption(number int, regions []freeformRegion) string {
 	var parts []string
 	for i := range regions {
 		colour := freeformOutlineColours[i%len(freeformOutlineColours)]
-		parts = append(parts, "area "+freeformAreaLetter(i)+" in "+colour.name)
+		parts = append(parts, "area "+freeformAreaLetter(i)+" outlined in "+colour.name+
+			" and lettered "+freeformAreaLetter(i))
 	}
 	return "image " + strconv.Itoa(number) + " with " + joinWithAnd(parts) +
-		" outlined — the outlines are markers for you, not part of the garment; never draw them"
+		" — the outlines and the letters are markers for you, not part of the garment; never draw them"
 }
 
 // freeformCropCaption — подпись кропа области. Слова человека приезжают ВНУТРЬ подписи, в кавычках:
@@ -309,6 +415,12 @@ func freeformOutlined(src image.Image, regions []freeformRegion) (string, bool, 
 	for i, region := range regions {
 		colour := freeformOutlineColours[i%len(freeformOutlineColours)].rgba
 		freeformStroke(canvas, region, colour, thickness)
+	}
+	// БУКВЫ — ВТОРЫМ ПРОХОДОМ, ПОСЛЕ ВСЕХ КОНТУРОВ. Плашка обязана лежать ПОВЕРХ линий, включая
+	// чужие: две соседние области в кадре — обычное дело, и контур второй, прошедший по плашке
+	// первой, срезал бы букве угол ровно там, где она отличается от соседней по алфавиту.
+	for i, region := range regions {
+		freeformLetterPlate(canvas, region, i, freeformOutlineColours[i%len(freeformOutlineColours)].rgba)
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, canvas, &jpeg.Options{Quality: freeformJPEGQuality}); err != nil {

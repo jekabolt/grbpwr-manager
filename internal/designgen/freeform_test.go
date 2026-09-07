@@ -7,9 +7,12 @@ import (
 	"encoding/base64"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -93,7 +96,9 @@ func TestDeriveFreeformMAKES_TWO_PICTURES_OUT_OF_ONE_MARKED_AREA(t *testing.T) {
 
 	// ─── ОБВЕДЁННАЯ КОПИЯ ───
 	require.True(t, strings.HasPrefix(got[0].dataURI, "data:image/jpeg;base64,"), got[0].dataURI[:40])
-	require.Contains(t, got[0].caption, "image 1 with area A in RED outlined")
+	require.Contains(t, got[0].caption, "image 1 with area A outlined in RED and lettered A",
+		"обе половины метки названы словами: цвет — то, что на картинке, буква — то, чем область "+
+			"зовётся в разговоре")
 	require.Contains(t, got[0].caption, "not part of the garment",
 		"without this half the model draws the outline onto the answer")
 
@@ -202,7 +207,7 @@ func TestAFreeformPromptPutsTheAskFirstAndTheCraftLast(t *testing.T) {
 	require.Contains(t, job.Prompt, "- image 1:")
 	require.Contains(t, job.Prompt, "- image 2:")
 	require.Contains(t, job.Prompt, "- image 3:")
-	require.Contains(t, job.Prompt, "an outline is a hint about WHERE, not a mask")
+	require.Contains(t, job.Prompt, "an outline and its letter are a hint about WHERE, not a mask")
 	require.NotContains(t, job.Prompt, "change nothing else",
 		"the soft mask does not keep that promise, and a promise we cannot keep reads as our bug")
 
@@ -321,4 +326,140 @@ func TestTheRepaintCraftSaysWholeGarmentWhenNothingIsMarked(t *testing.T) {
 	craft = freeformCraft(marked, []refCaption{{MediaID: 11}})
 	require.Contains(t, craft, "Repaint ONLY the outlined areas of image 1")
 	require.Contains(t, craft, "the colour described above")
+}
+
+// ═══════════ БУКВА ОБЛАСТИ ЖИВЁТ В ПИКСЕЛЯХ, А НЕ В ПОДПИСИ ═══════════
+
+// diamondRegion — ромб вокруг центра. Ромб, а не прямоугольник, НАМЕРЕННО: у прямоугольника угол
+// bbox лежит ПРЯМО НА КОНТУРЕ, и «в углу есть пиксели цвета» было бы правдой и без всякой буквы —
+// проба измеряла бы обводку и была бы зелена при снятой плашке. У ромба угол bbox отстоит от
+// ближайшей линии на сотню пикселей: всё, что там найдено, нарисовано плашкой и ничем больше.
+func diamondRegion(cx, cy, rx, ry string) freeformRegion {
+	f := func(s string) freeformDecimal { return freeformDecimal{Value: s} }
+	sum := func(a, b string, sign float64) freeformDecimal {
+		av, _ := strconv.ParseFloat(a, 64)
+		bv, _ := strconv.ParseFloat(b, 64)
+		return freeformDecimal{Value: strconv.FormatFloat(av+sign*bv, 'f', 4, 64)}
+	}
+	return freeformRegion{
+		Kind: "TECH_CARD_ANNOTATION_KIND_POLYGON",
+		Points: []freeformPoint{
+			{X: f(cx), Y: sum(cy, ry, -1)},
+			{X: sum(cx, rx, +1), Y: f(cy)},
+			{X: f(cx), Y: sum(cy, ry, +1)},
+			{X: sum(cx, rx, -1), Y: f(cy)},
+		},
+	}
+}
+
+func isNear(c color.Color, want color.RGBA, tol int) bool {
+	r, g, b, _ := c.RGBA()
+	d := func(a uint32, w uint8) int {
+		v := int(a>>8) - int(w)
+		if v < 0 {
+			return -v
+		}
+		return v
+	}
+	return d(r, want.R) <= tol && d(g, want.G) <= tol && d(b, want.B) <= tol
+}
+
+func isWhitish(c color.Color) bool {
+	r, g, b, _ := c.RGBA()
+	return r>>8 > 200 && g>>8 > 200 && b>>8 > 200
+}
+
+// TestTheAreaLetterIsPRINTED_INTO_THE_PIXELS.
+//
+// ⚠ ЭТО ОБЯЗАТЕЛЬНАЯ ПОЛОВИНА SET-OF-MARK, А НЕ УКРАШЕНИЕ. Приём (arXiv 2310.11441) состоит из
+// границы И ВИДИМОГО ЯРЛЫКА; без ярлыка просьба «сделай это в области B» указывает в никуда —
+// модель видит два одинаково обведённых места и слово, которого на картинке нет. Сопоставить «B» с
+// синим ей неоткуда, кроме нашей же подписи, то есть текста, спорящего с изображением.
+//
+// ПРОБА СМОТРИТ НА ПИКСЕЛИ, А НЕ НА ПОДПИСЬ, потому что подпись зелена и при пустой картинке.
+// Три утверждения, и каждое проверяет свой отказ:
+//
+//  1. В углу bbox есть ПЛАШКА цвета контура — снятая плашка красит эту строку.
+//  2. ВНУТРИ плашки есть БЕЛЫЕ пиксели — сплошной квадрат без глифа красит эту.
+//  3. Верхняя левая клетка глифа у A и B РАЗНАЯ (у «A» она пустая, у «B» залитая) — буква,
+//     нарисованная одна и та же для всех областей, красит эту.
+func TestTheAreaLetterIsPRINTED_INTO_THE_PIXELS(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 1600, 1200))
+	draw.Draw(src, src.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+
+	regions := []freeformRegion{
+		diamondRegion("0.30", "0.20", "0.12", "0.12"),
+		diamondRegion("0.70", "0.65", "0.12", "0.12"),
+	}
+	uri, _, err := freeformOutlined(src, regions)
+	require.NoError(t, err)
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, "data:image/jpeg;base64,"))
+	require.NoError(t, err)
+	marked, err := jpeg.Decode(bytes.NewReader(raw))
+	require.NoError(t, err)
+	mb := marked.Bounds()
+
+	for _, c := range []struct {
+		colour  color.RGBA
+		minX    float64
+		minY    float64
+		corner  bool // true when the glyph's top-left cell is FILLED ('B'), false when empty ('A')
+		letter  string
+		nearTol int
+	}{
+		{freeformOutlineColours[0].rgba, 0.18, 0.08, false, "A", 60},
+		{freeformOutlineColours[1].rgba, 0.58, 0.53, true, "B", 60},
+	} {
+		t.Run(c.letter, func(t *testing.T) {
+			x0 := mb.Min.X + int(math.Round(c.minX*float64(mb.Dx()-1)))
+			y0 := mb.Min.Y + int(math.Round(c.minY*float64(mb.Dy()-1)))
+			win := image.Rect(x0, y0, x0+50, y0+60).Intersect(mb)
+
+			// ─── 1. ПЛАШКА. Её границы находятся сканированием, а не арифметикой из констант:
+			// проба обязана увидеть то, что нарисовано, а не пересчитать то, что задумано.
+			plate := image.Rectangle{Min: image.Pt(win.Max.X, win.Max.Y), Max: image.Pt(win.Min.X, win.Min.Y)}
+			painted := 0
+			for y := win.Min.Y; y < win.Max.Y; y++ {
+				for x := win.Min.X; x < win.Max.X; x++ {
+					if !isNear(marked.At(x, y), c.colour, c.nearTol) {
+						continue
+					}
+					painted++
+					plate = plate.Union(image.Rect(x, y, x+1, y+1))
+				}
+			}
+			require.Greater(t, painted, 200,
+				"в углу bbox нет плашки цвета области: ромб отстоит от своего угла на сотню "+
+					"пикселей, значит красить там больше нечему")
+
+			// ─── 2. БЕЛЫЕ ПИКСЕЛИ ВНУТРИ ПЛАШКИ — это и есть глиф. Отступ в три пикселя от
+			// границы плашки снимает звон JPEG на резком крае, а не подгоняет результат: буква
+			// стоит в середине, на своём поле шириной в клетку.
+			inner := plate.Inset(3)
+			require.False(t, inner.Empty())
+			white := 0
+			for y := inner.Min.Y; y < inner.Max.Y; y++ {
+				for x := inner.Min.X; x < inner.Max.X; x++ {
+					if isWhitish(marked.At(x, y)) {
+						white++
+					}
+				}
+			}
+			require.Greater(t, white, 80, "плашка без белых пикселей внутри — это квадрат, а не буква")
+
+			// ─── 3. ЧТО ИМЕННО ЗА БУКВА. Верхняя левая клетка глифа: у «A» пустая (цвет плашки),
+			// у «B» залитая (белая). Одна буква на все области прошла бы обе проверки выше.
+			scale := plate.Dx() / (freeformGlyphCols + 2)
+			require.GreaterOrEqual(t, scale, 2, "масштаб глифа не может быть меньше двух пикселей на клетку")
+			cx := plate.Min.X + scale + scale/2
+			cy := plate.Min.Y + scale + scale/2
+			if c.corner {
+				require.True(t, isWhitish(marked.At(cx, cy)),
+					"у «B» верхняя левая клетка залита, а здесь она пустая — нарисована не та буква")
+			} else {
+				require.True(t, isNear(marked.At(cx, cy), c.colour, c.nearTol),
+					"у «A» верхняя левая клетка пустая, а здесь она залита — нарисована не та буква")
+			}
+		})
+	}
 }
