@@ -12063,6 +12063,16 @@ message GetDesignBandResponse {
   // for a sample plate is the sample bench itself. A client that cannot tell the two apart draws
   // doors into `colorway_mismatch` on every rollback.
   bool bench_adopts_unattributed = 25;
+
+  // THE PLAYGROUND THIS BINARY OFFERS — the presets whose route is wired right now, in chip order:
+  // "free" "add_hardware" "repaint_parts" (kind=freeform, the image key) and "cutout" (kind=cutout,
+  // FAL_KEY). Computed from the same pre-flight the door uses (designKindGate), so a chip is drawn
+  // only where GENERATE would not refuse for a missing key.
+  //
+  // ⚠ ABSENT ≠ EMPTY (the has_fabric_render / colour_plan doctrine). A binary older than this field
+  // sends nothing → the client draws NO PLAYGROUND cell on the rail. A binary that knows it sends at
+  // least [] → the cell exists; an empty list means «nothing wired», and the screen says so.
+  repeated string freeform_presets = 26;
 }
 
 message ListDesignRunsRequest {
@@ -12118,7 +12128,8 @@ message StartDesignRunRequest {
   // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
   // one payment.
   string client_request_id = 2;
-  // flat | render | threed | vector | recolor | pattern. `draft_idea` is REFUSED here with
+  // flat | render | threed | vector | recolor | pattern | freeform | cutout. `draft_idea` is
+  // REFUSED here with
   // InvalidArgument: a text run executes inline and returns its answer, so it has its own verb
   // (DraftDesignIdea) rather than a shared one that would return a pending row nobody ever polls.
   //
@@ -12141,6 +12152,24 @@ message StartDesignRunRequest {
   // Each of those is FailedPrecondition-shaped news in an InvalidArgument wrapper, except
   // `library_full`, which IS FailedPrecondition: the request is incomplete, and the sentence says
   // which half is missing.
+  //
+  // `freeform` AND `cutout` ARE THE PLAYGROUND, and they take this same door for the same reason:
+  // both spend a key's money (the image key and FAL_KEY respectively), both are counted against the
+  // day, both show up in the one history. Each returns EXACTLY ONE picture. What they refuse for
+  // free, before anything is reserved:
+  //   · freeform — no picture in params.freeform.items («no_source_picture»); preset
+  //     `add_hardware` with no item whose role is `hardware` («hardware_picture_required») or with
+  //     no region marked on the subject («mark_the_area»); a picture named both in
+  //     params.freeform.items and in params.extra_input_media_ids («one_list_per_fact»); more
+  //     pictures than the snapshot's reference ceiling once the marked copies and the crops of the
+  //     regions are counted («too_many_pictures», with the numbers);
+  //   · cutout — anything other than exactly one picture in params.extra_input_media_ids
+  //     («one_source_picture»); an `ask` or a params.freeform on a route that reads neither
+  //     («cutout_takes_no_words») — a refusal rather than silence, so nobody pays for words that
+  //     were never sent.
+  // A non-empty params.freeform on ANY other kind is «freeform_forbidden». Neither kind reads the
+  // card: no references, no bench plates, no garment description, no colourway (a positive
+  // params.colorway_id is still `colorway_forbidden`).
   string kind = 3;
   string ask = 4; // the delta phrase; may be empty
   // What is being asked for; at most 8 KB encoded. The INPUTS are not here and cannot be: the
