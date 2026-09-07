@@ -354,7 +354,7 @@ func TestARecolourCLOTH_SHAPES_THE_DOOR_REFUSES_FOR_FREE(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := designRefuseUnworkableSources(entity.DesignRunKindRecolor, tc.params)
+			err := designRefuseUnworkableSources(entity.DesignRunKindRecolor, "", tc.params)
 			require.Error(t, err)
 			code, md := errorReason(t, err)
 			require.Equal(t, codes.InvalidArgument, code)
@@ -385,7 +385,7 @@ func TestARecolourCLOTH_SHAPES_THE_DOOR_REFUSES_FOR_FREE(t *testing.T) {
 	// ─── ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: ЗАКОННАЯ ФОРМА ПРОХОДИТ ───
 	//
 	// Без него все три отказа доказывали бы только то, что перекрас с тканью не работает никогда.
-	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor,
+	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor, "",
 		&pb_common.DesignRunParams{
 			ExtraInputMediaIds: []int32{11, 12, 13},
 			Colour: &pb_common.DesignColourRecipe{
@@ -394,7 +394,7 @@ func TestARecolourCLOTH_SHAPES_THE_DOOR_REFUSES_FOR_FREE(t *testing.T) {
 		}), "одна ткань с картинкой, три фотографии и цвет — ровно то, о чём просил владелец")
 
 	// И ВТОРАЯ ТКАНЬ БЕЗ КАРТИНКИ НЕ СЧИТАЕТСЯ: в вызов она не уедет, значит и объяснять её нечем.
-	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor,
+	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor, "",
 		&pb_common.DesignRunParams{
 			ExtraInputMediaIds: []int32{11},
 			Colour: &pb_common.DesignColourRecipe{Fabrics: []*pb_common.DesignFabricUse{

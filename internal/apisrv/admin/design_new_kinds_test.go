@@ -30,6 +30,7 @@ func TestEVERY_RUN_KIND_THE_DOOR_ACCEPTS_HAS_A_PRICE(t *testing.T) {
 		entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindThreed,
 		entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
 		entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
+		entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
 	} {
 		require.Truef(t, entity.IsDesignRunKind(kind), "kind %q left the vocabulary", kind)
 		est := designEstimateFor(kind, 1)
@@ -73,13 +74,13 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	colour := &pb_common.DesignColourRecipe{Code: "OLV"}
 
 	// ─── recolour ───
-	err := designRefuseUnworkableSources(entity.DesignRunKindRecolor,
+	err := designRefuseUnworkableSources(entity.DesignRunKindRecolor, "",
 		&pb_common.DesignRunParams{Colour: colour})
 	require.Error(t, err, "a recolour with nothing to recolour")
 	require.Contains(t, err.Error(), "extra_input_media_ids")
 	require.Contains(t, err.Error(), "nothing was charged")
 
-	err = designRefuseUnworkableSources(entity.DesignRunKindRecolor,
+	err = designRefuseUnworkableSources(entity.DesignRunKindRecolor, "",
 		&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11}})
 	require.Error(t, err, "«change the colour» with no colour named is answerable with any shade")
 	require.Contains(t, err.Error(), "params.colour")
@@ -91,7 +92,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 		{Code: "OLV"}, {Hex: "#4a5a3c"}, {Words: "deep olive, slightly grey"},
 		{Fabrics: []*pb_common.DesignFabricUse{{MediaId: 9, Name: "floral", Kind: "pattern"}}},
 	} {
-		require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor,
+		require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindRecolor, "",
 			&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11, 12}, Colour: c}))
 	}
 
@@ -99,7 +100,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	// to LAY on the photograph — clothPictures selects on media_id — and a cloth described in words
 	// inside a recolour prompt is an invitation to redraw the frame at full price. The sentinel is
 	// separate so the screen sends the person to the right fix.
-	err = designRefuseUnworkableSources(entity.DesignRunKindRecolor, &pb_common.DesignRunParams{
+	err = designRefuseUnworkableSources(entity.DesignRunKindRecolor, "", &pb_common.DesignRunParams{
 		ExtraInputMediaIds: []int32{11},
 		Colour:             &pb_common.DesignColourRecipe{Fabrics: []*pb_common.DesignFabricUse{{Name: "floral"}}},
 	})
@@ -110,12 +111,12 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	// ─── pattern ───
 	named := &pb_common.DesignPatternParams{Name: "chevron"}
 	for _, ids := range [][]int32{nil, {11, 12}, {11, 12, 13}} {
-		err := designRefuseUnworkableSources(entity.DesignRunKindPattern,
+		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "",
 			&pb_common.DesignRunParams{ExtraInputMediaIds: ids, Pattern: named})
 		require.Errorf(t, err, "%d sources: a tile glued out of several swatches cannot join to itself",
 			len(ids))
 	}
-	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindPattern,
+	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "",
 		&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{90}, Pattern: named}))
 
 	// ⚠ AND A PATTERN WITHOUT A NAME IS REFUSED FREE, BECAUSE THE LANDING NEEDS ONE. The tile is
@@ -123,7 +124,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	// NOT NULL — so a nameless run either breaks the filing of a picture already paid for, or
 	// files a row that reaches the next prompt as the bare word «pattern».
 	for _, pp := range []*pb_common.DesignPatternParams{nil, {}, {Name: "   "}, {RepeatMm: 120}} {
-		err := designRefuseUnworkableSources(entity.DesignRunKindPattern,
+		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "",
 			&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{90}, Pattern: pp})
 		require.Error(t, err, "a tile with no name has nowhere to land")
 		require.Contains(t, err.Error(), "params.pattern.name")
@@ -132,12 +133,12 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 
 	// THE LENGTH IS THE COLUMN'S, and it is the SAME rule UpsertDesignAsset.name obeys — 60 runes
 	// counted in RUNES, because the column is 60 characters and «Ф» is one of them.
-	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindPattern,
+	require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "",
 		&pb_common.DesignRunParams{
 			ExtraInputMediaIds: []int32{90},
 			Pattern:            &pb_common.DesignPatternParams{Name: strings.Repeat("ф", 60)},
 		}))
-	err = designRefuseUnworkableSources(entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+	err = designRefuseUnworkableSources(entity.DesignRunKindPattern, "", &pb_common.DesignRunParams{
 		ExtraInputMediaIds: []int32{90},
 		Pattern:            &pb_common.DesignPatternParams{Name: strings.Repeat("ф", 61)},
 	})
@@ -150,7 +151,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	// SMALLINT UNSIGNED — so a five-digit number would fail the FILING of a picture already paid
 	// for, with a raw 1264. Before round 15 the number only reached the prompt and needed no bound.
 	for _, mm := range []int32{-1, entity.MaxDesignAssetRepeatMm + 1, 70000} {
-		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", &pb_common.DesignRunParams{
 			ExtraInputMediaIds: []int32{90},
 			Pattern:            &pb_common.DesignPatternParams{Name: "chevron", RepeatMm: mm},
 		})
@@ -159,7 +160,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 		require.Contains(t, err.Error(), "params.pattern.repeat_mm")
 	}
 	for _, mm := range []int32{0, 120, entity.MaxDesignAssetRepeatMm} {
-		require.NoErrorf(t, designRefuseUnworkableSources(entity.DesignRunKindPattern,
+		require.NoErrorf(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "",
 			&pb_common.DesignRunParams{
 				ExtraInputMediaIds: []int32{90},
 				Pattern:            &pb_common.DesignPatternParams{Name: "chevron", RepeatMm: mm},
@@ -172,7 +173,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 		entity.DesignRunKindFlat, entity.DesignRunKindRender,
 		entity.DesignRunKindThreed, entity.DesignRunKindVector,
 	} {
-		require.NoErrorf(t, designRefuseUnworkableSources(kind, &pb_common.DesignRunParams{}), "kind %s", kind)
+		require.NoErrorf(t, designRefuseUnworkableSources(kind, "", &pb_common.DesignRunParams{}), "kind %s", kind)
 	}
 }
 

@@ -239,6 +239,17 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	// таблица: здесь цена ОДНОГО выхода, там их число.
 	entity.DesignRunKindRecolor: designRenderMediumUSD.Mul(designImageQualityCeiling),
 	entity.DesignRunKindPattern: designRenderMediumUSD.Mul(designImageQualityCeiling),
+	// ПЛЕЙГРАУНД — ТОТ ЖЕ ЭНДПОИНТ И ТА ЖЕ ЛЕСТНИЦА, ЧТО У РЕНДЕРА. Вызов несёт входные картинки и
+	// просит выходную того же порядка, а выход у него РОВНО ОДИН (designRequestedOutputs), так что
+	// цена прогона и цена кадра здесь — одно число.
+	entity.DesignRunKindFreeform: designRenderMediumUSD.Mul(designImageQualityCeiling),
+	// ВЫРЕЗ БЕРЁТ ЧИСЛО У ПАКЕТА СПИСАНИЯ, КАК ВЕКТОР, А НЕ ПОВТОРЯЕТ ЕГО. fal.EstimatedCutoutUSD()
+	// — то самое значение, к которому маршрут откатывается, когда тариф единицы не настроен
+	// (fal.Client.CostCutoutUSD), то есть резерв и списание считаются из одного выражения. Вторая
+	// константа рядом разошлась бы с первой в тот день, когда правят одну.
+	//
+	// ⚠ ЦИФРА ЖДЁТ ВЛАДЕЛЬЦА (PLAN-r4 §8 п.2), как и все остальные в этой таблице.
+	entity.DesignRunKindCutout: fal.EstimatedCutoutUSD(),
 }
 
 // Базовые цены картиночных родов НА `medium` — том положении дила, которое стоит в
@@ -605,7 +616,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	kind := strings.TrimSpace(req.GetKind())
 	if !entity.IsDesignRunKind(kind) {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"kind %q is not flat | render | threed | vector | recolor | pattern", kind)
+			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout", kind)
 	}
 	// draft_idea ОТКАЗЫВАЕТСЯ ЗДЕСЬ, дословно по контракту. Текстовый прогон исполняется в
 	// хендлере синхронно и возвращает свой ответ; заведённый отсюда, он вернул бы строку
@@ -830,12 +841,33 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseMalformedColourMaps(req.GetParams()); err != nil {
 		return nil, err
 	}
+	// ФОРМА ПРОСЬБЫ ПЛЕЙГРАУНДА — ТА ЖЕ ГРАНИЦА И ТОТ ЖЕ ДОВОД, ЧТО У КАРТ ЦВЕТА СТРОКОЙ ВЫШЕ:
+	// спрашивается с ГОВОРЯЩЕГО, потому что словарь пресетов и ролей законно меняется, а параметры
+	// родителя заморожены.
+	if err := designRefuseMalformedFreeform(kind, req.GetParams()); err != nil {
+		return nil, err
+	}
+	// ГРАНИЦА КАРТОЧКИ ДЛЯ ШЕСТОГО СПИСКА. Картинки плейграунда уезжают поставщику ровно так же,
+	// как плиты, референсы и текстуры, значит и граница у них та же самая. ДЕЙСТВУЮЩИЕ параметры,
+	// а не сообщение клиента: строка media(id) под собой не исчезает (FK держат её RESTRICT'ом),
+	// поэтому вечного отказа, из-за которого адрес полки проверяется только у говорящего, здесь не
+	// бывает — и унаследованная картинка уезжает поставщику ровно так же.
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.freeform.items.media_id",
+		designFreeformItemMediaIDs(params)...); err != nil {
+		return nil, err
+	}
 
 	// ─── РОДЫ, У КОТОРЫХ ВХОД — КОНКРЕТНАЯ КАРТИНКА, А НЕ КОНТЕКСТ ───
 	//
 	// Стоит ПОСЛЕ границы карточки и ДО резерва: прогон, которому нечего перекрашивать, не должен
 	// заводить строку, занимать деньги дня и через тик воркера гарантированно проваливаться.
-	if err := designRefuseUnworkableSources(kind, params); err != nil {
+	if err := designRefuseUnworkableSources(kind, ask, params); err != nil {
+		return nil, err
+	}
+	// СКОЛЬКО КАРТИНОК СОБЕРЁТСЯ В ОДНОМ ВЫЗОВЕ — ТОЖЕ ДО ДЕНЕГ. Считается по ДЕЙСТВУЮЩИМ
+	// параметрам: потолок провайдера не спрашивает, кто назвал картинки, а неработоспособная форма
+	// остаётся неработоспособной и на реране.
+	if err := designRefuseFreeformOverflow(kind, params); err != nil {
 		return nil, err
 	}
 
@@ -1005,9 +1037,75 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 // на 60 знаков. Безымянная плитка либо уронила бы посадку уже оплаченного прогона, либо приехала
 // бы в следующий промпт словом «pattern». Спрашивается ДО денег, потому что человек и так его
 // пишет до нажатия кнопки.
-func designRefuseUnworkableSources(kind string, params *pb_common.DesignRunParams) error {
+// ⚠ `ask` ПРИЕХАЛ СЮДА РАДИ ВЫРЕЗА, И ЭТО НЕ РАСШИРЕНИЕ ОБЛАСТИ ВОПРОСА. Вопрос тот же самый —
+// «может ли этот прогон вообще сработать», — просто у выреза ответ зависит ещё и от слов: у
+// сегментации нет промпта, и написанное человеком не уехало бы никуда. Отдельная функция для
+// одного рода из этой же семьи была бы вторым списком «родов, чей вход — названная картинка».
+func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRunParams) error {
 	sources := len(params.GetExtraInputMediaIds())
 	switch kind {
+	// ─── ПЛЕЙГРАУНД ───
+	case entity.DesignRunKindFreeform:
+		items := params.GetFreeform().GetItems()
+		if len(items) == 0 {
+			return designRefusal(codes.InvalidArgument, "no_source_picture",
+				"the playground works on the pictures you put in it: name them in "+
+					"params.freeform.items. Nothing was reserved and nothing was charged", nil)
+		}
+		// ⚠ ПРЕСЕТ ADD_HARDWARE ТРЕБУЕТ ОБЕИХ ПОЛОВИН, И ЭТО НЕ ПЕДАНТИЗМ: его абзац ремесла
+		// дословно говорит «возьми фурнитуру с картинки N и посади её в обведённую область
+		// картинки 1». Без картинки фурнитуры брать нечего, без области — сажать некуда, и в обоих
+		// случаях модель вернёт правдоподобный кадр, по которому в истории не отличить исполненную
+		// просьбу от неисполненной. Деньги при этом списаны.
+		if params.GetFreeform().GetPreset() == entity.DesignFreeformPresetAddHardware {
+			hardware, marked := 0, 0
+			for _, it := range items {
+				if it.GetRole() == entity.DesignFreeformRoleHardware {
+					hardware++
+					continue
+				}
+				// ОБЛАСТЬ ИЩЕТСЯ НА ЛЮБОЙ НЕ-ФУРНИТУРНОЙ КАРТИНКЕ, А НЕ ТОЛЬКО НА role=subject:
+				// роль пустая законна («просто картинка»), и требовать её проставленной значило бы
+				// отказывать за неназванное имя там, где человек уже показал пальцем.
+				if len(it.GetRegions()) > 0 {
+					marked++
+				}
+			}
+			if hardware == 0 {
+				return designRefusal(codes.InvalidArgument, "hardware_picture_required",
+					"«add hardware» puts the hardware from one picture onto another: mark the picture "+
+						"of the hardware with role=hardware in params.freeform.items. Nothing was "+
+						"reserved and nothing was charged", nil)
+			}
+			if marked == 0 {
+				return designRefusal(codes.InvalidArgument, "mark_the_area",
+					"«add hardware» needs the place it goes: outline an area on the picture the "+
+						"hardware is added to. Nothing was reserved and nothing was charged", nil)
+			}
+		}
+		// `repaint_parts` БЕЗ ОБЛАСТИ ЗАКОНЕН, и это сказано вслух, чтобы никто не «дочинил» его
+		// симметрично соседу: перекрасить всю вещь — обычная просьба, и абзац ремесла умеет её
+		// («repaint the whole garment»).
+	// ─── ВЫРЕЗ ФОНА ───
+	case entity.DesignRunKindCutout:
+		if sources != 1 {
+			return designRefusal(codes.InvalidArgument, "one_source_picture",
+				fmt.Sprintf("cutting the background works on exactly one picture, and this run names "+
+					"%d: put that one picture in params.extra_input_media_ids. Nothing was reserved "+
+					"and nothing was charged", sources),
+				map[string]string{"named": strconv.Itoa(sources)})
+		}
+		// ⚠ ОТКАЗ, А НЕ МОЛЧАЛИВОЕ ИГНОРИРОВАНИЕ СЛОВ. У маршрута сегментации нет ни промпта, ни
+		// поля для него (fal.Client.RemoveBackground шлёт один url), поэтому написанное человеком
+		// не уехало бы НИКУДА — а `ask` замёрз бы в строке прогона и читался бы из истории как
+		// инструкция, которую модель получила. Молчание здесь стоит ровно столько же денег, сколько
+		// отказ, и сверх того — одну ложную улику.
+		if strings.TrimSpace(ask) != "" || params.GetFreeform() != nil {
+			return designRefusal(codes.InvalidArgument, "cutout_takes_no_words",
+				"cutting the background takes a picture and nothing else: there is no prompt on that "+
+					"route, so your words would go nowhere. Clear `ask` (and params.freeform) or use "+
+					"the playground instead. Nothing was reserved and nothing was charged", nil)
+		}
 	case entity.DesignRunKindRecolor:
 		if sources == 0 {
 			return designRefusal(codes.InvalidArgument, "no_source_picture",
@@ -1976,6 +2074,17 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 	case entity.DesignRunKindPattern:
 		// ОДНА ПЛИТКА ИЗ ОДНОЙ КАРТИНКИ. Число здесь не выводится из длины списка входов ровно
 		// потому, что список обязан быть длиной один, и это проверено отдельно, у двери.
+		return 1
+	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+		// ═══ РОВНО ОДНА КАРТИНКА, И ЭТО СЛОВО ВЛАДЕЛЬЦА, А НЕ УМОЛЧАНИЕ ═══
+		//
+		// Плейграунд отвечает ОДНИМ кадром на одну просьбу: сколько бы картинок человек ни
+		// положил и сколько бы областей ни разметил, вызов у провайдера один и `n` у него равен
+		// единице (designgen/images.go). Число обязано совпадать с тем, что построит imageCalls, —
+		// иначе полоса нарисует плитку-плейсхолдер, которую никто не заполнит, и человек прочтёт
+		// её как потерянный результат.
+		//
+		// Вырез — та же единица по другой причине: у сегментации входов один и выходов один.
 		return 1
 	case entity.DesignRunKindRecolor:
 		// СКОЛЬКО СНИМКОВ ДАЛИ — СТОЛЬКО КАДРОВ И ПЛАТНЫХ ВЫЗОВОВ. Владелец грузит фото «с разных
@@ -3009,9 +3118,14 @@ type designInputSources struct {
 // СПИСОК ЗАКРЫТ ПО СМЫСЛУ, А НЕ ПО ОСТОРОЖНОСТИ: карточку не читает род, чей вход — конкретная
 // фотография (перекрас) или конкретный лоскут (паттерн). Всякий новый род по умолчанию попадает в
 // «читает» — и это безопасная сторона: лишняя строка в снимке видна человеку, недостающая нет.
+// ⚠ ПЛЕЙГРАУНД В ЭТОМ СПИСКЕ ПО САМОМУ СИЛЬНОМУ ОСНОВАНИЮ ИЗ ЧЕТЫРЁХ: он не читает карточку не
+// «пока что», а ПО ОПРЕДЕЛЕНИЮ. Его вход — `params.freeform.items` целиком, и экран честно
+// печатает, что ни верстак, ни референсы, ни описание изделия, ни рецепт колорвея никуда не
+// уезжают. Вырез не читает даже слов.
 func designKindReadsTheCard(kind string) bool {
 	switch kind {
-	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
+	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
+		entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
 		return false
 	}
 	return true
@@ -3034,8 +3148,17 @@ func designKindReadsTheCard(kind string) bool {
 // значение, поэтому пустые поля снимка ГАСЯТ блоки сами — без второго читателя рода в пакете,
 // который и так решает по роду четыре вещи. И снимок при этом честен: он говорит, чем прогон
 // располагал, а паттерн этими словами не располагал.
+// ⚠ ПЛЕЙГРАУНД ОПИСАНИЯ НЕ ПОЛУЧАЕТ, И ЭТО ТА ЖЕ ЖАЛОБА, ЧТО У ПАТТЕРНА. «olive shirt, spread
+// collar» уехало бы в прогон, где человек положил фотографию СУМКИ и попросил приделать к ней
+// пряжку: описание карточки говорит про изделие карточки, а плейграунд про изделие карточки не
+// обязан быть вовсе. Экран печатает «not sent: garment description, colourway, colour recipe,
+// bench» — и здесь это перестаёт быть обещанием экрана.
 func designKindReadsTheGarmentNote(kind string) bool {
-	return kind != entity.DesignRunKindPattern
+	switch kind {
+	case entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+		return false
+	}
+	return true
 }
 
 // designAssembleInputs — ГАРАНТИЯ W-15, И ОНА ЖИВЁТ ЗДЕСЬ, А НЕ НА ЭКРАНЕ.
@@ -3087,6 +3210,25 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// Card.Media при этом по-прежнему не читается ВООБЩЕ: карта строится по Card.Callouts.
 	callouts := designCalloutsByMedia(src.Card)
 	seen := make(map[int]struct{}, len(src.Refs))
+	// ─── ПЛЕЙГРАУНД: ЕГО СПИСОК ВХОДОВ — ЕГО СОБСТВЕННЫЙ, И ДРУГИХ У НЕГО НЕТ ───
+	//
+	// ⚠ ВЫХОД ДО ОБОИХ ЦИКЛОВ, А НЕ ВЕТКА ВНУТРИ. Ссылки карточки этому роду закрыл
+	// designKindReadsTheCard, `extra_input_media_ids` у него пуст по правилу «один список на один
+	// факт» (designRefuseMalformedFreeform), а выноски приходят не с карточки, а из самой просьбы:
+	// человек разметил область НА ЭТОЙ картинке ЗДЕСЬ И СЕЙЧАС, и карта Card.Callouts про неё не
+	// знает ничего. Смешать два источника выносок значило бы приписать прогону разметку, которой в
+	// нём не было.
+	//
+	// ПЛИТ ВЕРСТАКА ПЛЕЙГРАУНД ТОЖЕ НЕ БЕРЁТ: designSelectBench отдаёт пустоту роду, не читающему
+	// карточку, — но выход здесь делает это утверждение видимым, а не выведенным.
+	if src.Kind == entity.DesignRunKindFreeform {
+		out.Refs = designFreeformRefs(src.Params)
+		if len(out.Refs) > designMaxInputRefs {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"a run may carry %d reference images; this one has %d", designMaxInputRefs, len(out.Refs))
+		}
+		return out, nil
+	}
 	// ⚠ ССЫЛКИ КАРТОЧКИ ЧИТАЕТ НЕ ВСЯКИЙ РОД (J-6), И ПРАВИЛО ЖИВЁТ В designKindReadsTheCard —
 	// одно на этот цикл и на отбор плит ниже. Цикл по `extra_input_media_ids` идёт ВСЕГДА: это и
 	// есть то, что человек назвал поимённо, и у перекраса с паттерном он единственный вход.
@@ -3684,7 +3826,20 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	// `extra_input_media_ids`), так что снимок и вложения совпадают по построению. Дверь при этом
 	// уже отказала перекрасу без снимков и паттерну не с одной картинкой, значит пустым этот
 	// список после сужения не бывает.
-	if !designKindReadsTheCard(src.Kind) {
+	// ⚠ У ПЛЕЙГРАУНДА ССЫЛКИ НЕ СУЖАЮТСЯ, А ПЕРЕСОБИРАЮТСЯ, И РАЗНИЦА — ЭТО ОБЛАСТИ.
+	//
+	// Сужение ниже оставляет записи РОДИТЕЛЬСКОГО снимка, у которых media названо и этим прогоном;
+	// для перекраса и паттерна этого довольно, потому что запись там несёт только номер. У
+	// плейграунда запись несёт ещё и ВЫНОСКИ — замороженные области со словами, — а реран вправе
+	// поправить `params` и разметить те же картинки ИНАЧЕ. Сужение отдало бы вчерашние области:
+	// воркер собирает ссылки из `params.freeform.items` (designgen: referenceList), то есть отправил
+	// бы новые, а снимок утверждал бы старые — про ОПЛАЧЕННЫЙ прогон, навсегда.
+	//
+	// Провенанс от этого не страдает: `params` рерана — это либо замороженные параметры родителя
+	// целиком, либо то, что клиент сказал сам, и оба случая уже прошли дверь.
+	if src.Kind == entity.DesignRunKindFreeform {
+		snap.Refs = designFreeformRefs(src.Params)
+	} else if !designKindReadsTheCard(src.Kind) {
 		named := make(map[int32]struct{}, len(src.Params.GetExtraInputMediaIds()))
 		for _, id := range src.Params.GetExtraInputMediaIds() {
 			named[id] = struct{}{}

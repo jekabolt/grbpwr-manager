@@ -105,6 +105,14 @@ func designRunInputMediaRefs(params *pb_common.DesignRunParams, inputs *pb_commo
 	for _, id := range params.GetExtraInputMediaIds() {
 		add(int(id), "params.extra_input_media_ids")
 	}
+	// ⚠ ШЕСТОЙ ИСТОЧНИК — КАРТИНКИ ПЛЕЙГРАУНДА, И ОН ДОБАВЛЕН ВМЕСТЕ С РОДОМ. Список `items` едет
+	// поставщику целиком (designgen: referenceList для freeform — это ровно он), значит оба
+	// сторожа, стоящие на этой функции, обязаны его видеть: и «вход не картинка» (.glb, названный
+	// кадром), и «кадр только для показа». Пропустить его значило бы завести седьмой путь к тем же
+	// двум дефектам — тот, о котором забудут первым, потому что он новый.
+	for i, it := range params.GetFreeform().GetItems() {
+		add(int(it.GetMediaId()), "params.freeform.items."+strconv.Itoa(i)+".media_id")
+	}
 	add(int(params.GetColour().GetFabricMediaId()), "params.colour.fabric_media_id")
 	for i, f := range params.GetColour().GetFabrics() {
 		add(int(f.GetMediaId()), "params.colour.fabrics."+strconv.Itoa(i)+".media_id")
