@@ -148,12 +148,21 @@ const (
 	// СПРЯТАННЫЕ ВХОДЯТ СО СВОИМ ФЛАГОМ — контракт полосы («hidden и archived едут С ФЛАГАМИ,
 	// фильтрует клиент»). Добавить сюда hidden_at IS NULL значило бы завести второе, невидимое
 	// место, где кадр исчезает.
+	//
+	// ⚠ ПЛЕЙГРАУНД (`freeform`, `cutout`) ВХОДИТ СЮДА ЖЕ, И ЭТО РЕШЕНИЕ, А НЕ ДОБАВКА В СПИСОК.
+	// Выход плейграунда — выход КАРТОЧКИ: он родился на её бюджете, лежит в её ленте, и человек
+	// ищет его там, где лежит всё остальное сгенерированное. Своего запроса ему заводить нельзя —
+	// это был бы второй предикат «выходы карточки», а таких предикатов, как сказано выше, не
+	// бывает двух согласных. Клиент сужает раздел по `run_kind`, ровно как уже сужает перекрас.
+	//
+	// СТРОКА КАДРА БЕЗ ПРОГОНА ЭТИХ РОДОВ НЕ ЗНАЕТ, И ЭТО ВЕРНО: кадром рода `freeform`/`cutout`
+	// нельзя стать загрузкой руками — оба рода существуют только как ВЫХОД прогона.
 	designCardOutputsFrom = `
 		FROM design_picture p
 		LEFT JOIN design_run r ON r.id = p.run_id`
 	designCardOutputsWhere = `
 		WHERE p.tech_card_id = :card
-		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor'))
+		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor', 'freeform', 'cutout'))
 		    OR (p.run_id IS NULL AND p.kind IN ('render', 'threed', 'pattern')))`
 	// designCardOutputsColorway — КЛЮЧ РАЗДЕЛА: колорвей САМОГО КАДРА, 0 = неатрибутированный.
 	//
