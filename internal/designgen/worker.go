@@ -35,6 +35,14 @@ type Worker struct {
 	media     mediaResolver
 	sink      MediaSink
 	providers Providers
+	// objects reads the BYTES of an input picture, which exactly one kind needs: the playground
+	// builds a marked copy and a close crop of every marked area from them (freeform_derive.go).
+	//
+	// ⚠ IT IS SET IN New AND NOWHERE ELSE, so newWorker — the seam every test in this package
+	// builds on — keeps its signature and its callers. A worker without it refuses a freeform run
+	// that marks an area, loudly and before any money moves, rather than sending the run with the
+	// person's markup silently missing.
+	objects objectFetcher
 
 	ctx     context.Context
 	stop    context.CancelFunc
@@ -59,7 +67,11 @@ func New(c *Config, repo dependency.Repository, files dependency.FileStore, prov
 	if files == nil {
 		return nil, fmt.Errorf("designgen: a worker without a bucket has nowhere to put what it buys")
 	}
-	return newWorker(c, repo.Design(), repo.Media(), NewBucketSink(files, repo), providers), nil
+	w := newWorker(c, repo.Design(), repo.Media(), NewBucketSink(files, repo), providers)
+	// ТОТ ЖЕ FileStore, ЧТО У ПРИЁМНИКА, И ЭТО НЕ ВТОРАЯ ЗАВИСИМОСТЬ. Приёмник им ПИШЕТ готовые
+	// картинки, производные плейграунда — ЧИТАЮТ исходные; один бакет, два глагола.
+	w.objects = files
+	return w, nil
 }
 
 // newWorker is the seam the tests use: the same worker over a fake store, a fake sink and fake

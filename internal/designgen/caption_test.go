@@ -44,7 +44,7 @@ func TestCaptionNumberKIsImageNumberK(t *testing.T) {
 	r.Params = entity.RawJSON(`{"extra_input_media_ids":[7],"colour":{"words":"olive","fabric_media_id":9}}`)
 
 	// Media 13 is deliberately missing from the resolver: its picture cannot attach.
-	job, err := buildJob(context.Background(), media(1, 11, 12, 7, 9), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 11, 12, 7, 9), nil, r, "medium")
 	require.NoError(t, err)
 
 	expected := map[string]string{
@@ -81,7 +81,7 @@ func TestDuplicateMediaKeepsBothSourcesWords(t *testing.T) {
 	  "refs": [{"media_id": 5, "role": "front", "note": "NOTE-5-neckline"}],
 	  "slots": [{"view_key": "front", "media_id": 5}]
 	}`)
-	job, err := buildJob(context.Background(), media(5), r, "medium")
+	job, err := buildJob(context.Background(), media(5), nil, r, "medium")
 	require.NoError(t, err)
 
 	require.Len(t, job.References, 1)

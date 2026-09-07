@@ -288,7 +288,7 @@ func TestARecolourSENDS_ITS_CLOTH_AND_STILL_NOTHING_FROM_THE_CARD(t *testing.T) 
 			"refs":         []map[string]any{{"media_id": 13, "note": "mood"}},
 		}),
 	}
-	job, err := buildJob(context.Background(), media(9, 11, 13, 77, 78), run, "medium")
+	job, err := buildJob(context.Background(), media(9, 11, 13, 77, 78), nil, run, "medium")
 	require.NoError(t, err)
 
 	require.Len(t, job.References, 2, "плита и настроение здесь по-прежнему ни при чём")
@@ -362,7 +362,7 @@ func TestARecolourCaptionsNUMBER_ONE_PHOTO_AND_THE_CLOTH_NOT_N_PHOTOS(t *testing
 			Params: rawJSON(t, map[string]any{"extra_input_media_ids": ids, "colour": colour}),
 			Inputs: rawJSON(t, map[string]any{}),
 		}
-		job, err := buildJob(context.Background(), media(resolvable...), run, "medium")
+		job, err := buildJob(context.Background(), media(resolvable...), nil, run, "medium")
 		require.NoError(t, err)
 		require.Len(t, job.References, 3, "три снимка — три платных вызова, что бы ни было в подписях")
 		return job.Prompt

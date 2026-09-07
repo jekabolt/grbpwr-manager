@@ -57,7 +57,7 @@ func TestMoodboardNeverReachesTheProvider(t *testing.T) {
 	r.Inputs = inputs
 	r.Ask = sql.NullString{String: "draw the flat", Valid: true}
 
-	job, err := buildJob(context.Background(), media(11, 12, 500, 501), r, "medium")
+	job, err := buildJob(context.Background(), media(11, 12, 500, 501), nil, r, "medium")
 	require.NoError(t, err)
 
 	for _, u := range job.References {
@@ -93,7 +93,7 @@ func TestBenchPlatesComeFirstAndFrontIsFirstOfThose(t *testing.T) {
 	    {"view_key": "side_l", "media_id": 3}
 	  ]
 	}`)
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 90), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 90), nil, r, "medium")
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"https://cdn.example/m/1.png",
@@ -108,7 +108,7 @@ func TestBenchPlatesComeFirstAndFrontIsFirstOfThose(t *testing.T) {
 func TestDeletedReferenceIsNotSent(t *testing.T) {
 	r := testRun(1, entity.DesignRunKindFlat)
 	r.Inputs = entity.RawJSON(`{"refs":[{"media_id":11,"deleted":true},{"media_id":12}]}`)
-	job, err := buildJob(context.Background(), media(11, 12), r, "medium")
+	job, err := buildJob(context.Background(), media(11, 12), nil, r, "medium")
 	require.NoError(t, err)
 	require.Equal(t, []string{"https://cdn.example/m/12.png"}, job.References)
 }
@@ -141,7 +141,7 @@ func TestBrokenSnapshotDoesNotStopAPaidJob(t *testing.T) {
 	r := testRun(1, entity.DesignRunKindFlat)
 	r.Inputs = entity.RawJSON(`{"refs": [ this is not json`)
 	r.Ask = sql.NullString{String: "draw it", Valid: true}
-	job, err := buildJob(context.Background(), media(), r, "medium")
+	job, err := buildJob(context.Background(), media(), nil, r, "medium")
 	require.NoError(t, err)
 	require.Contains(t, job.Prompt, "draw it")
 }
@@ -231,7 +231,7 @@ func TestTheWordsAroundTheReferencesReachTheModel(t *testing.T) {
 	    "callouts": [{"media_id": 11, "text": "MARK-topstitch here"}]
 	  }]
 	}`)
-	job, err := buildJob(context.Background(), media(11), r, "medium")
+	job, err := buildJob(context.Background(), media(11), nil, r, "medium")
 	require.NoError(t, err)
 
 	require.Contains(t, job.Prompt, "GARMENT-oversized boxy shirt",

@@ -41,7 +41,7 @@ func threedRunSixSides() entity.DesignRun {
 }
 
 func TestThreedDropsTheThreeQuarterPlatesAndKeepsTheCardinalFour(t *testing.T) {
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 5, 6), threedRunSixSides(), "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 5, 6), nil, threedRunSixSides(), "medium")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
@@ -71,7 +71,7 @@ func TestAThreeQuarterFrontlessBenchStillHasNoFront(t *testing.T) {
 	    {"view_key": "three_quarter_r", "media_id": 6}
 	  ]
 	}`)
-	job, err := buildJob(context.Background(), media(5, 6), r, "medium")
+	job, err := buildJob(context.Background(), media(5, 6), nil, r, "medium")
 	require.NoError(t, err)
 	require.Empty(t, job.References, "прогон без переда — прогон, которому нечего поставить лицом")
 }

@@ -49,7 +49,7 @@ func threedRun() entity.DesignRun {
 // дополнительное медиа, плюс свотч ткани. Провайдер принимает 1..4 (meshy.MaxImages) и отказывает
 // локально — то есть каждый прогон 3D на живой карточке умирал у двери, не начавшись.
 func TestThreedSendsOnlyItsOwnPlates(t *testing.T) {
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), threedRun(), "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), nil, threedRun(), "medium")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
@@ -72,7 +72,7 @@ func TestThreedSendsOnlyItsOwnPlates(t *testing.T) {
 // локальный отказ, который стоит на пути настоящего прогона, поэтому она краснеет ровно тогда,
 // когда краснел бы прод.
 func TestThreedFitsTheProvidersCeiling(t *testing.T) {
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), threedRun(), "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), nil, threedRun(), "medium")
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(job.References), meshy.MinImages,
 		"сборке нужен хотя бы фронт")
@@ -89,7 +89,7 @@ func TestRenderStillCarriesTheCardsReferences(t *testing.T) {
 	r := threedRun()
 	r.Kind = entity.DesignRunKindRender
 
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), nil, r, "medium")
 	require.NoError(t, err)
 	require.Len(t, job.References, 8, "у рендера вход не сужается")
 	require.Contains(t, strings.Join(job.References, " "), "/90.",
@@ -107,7 +107,7 @@ func TestThreedWithNoPlatesSendsNothing(t *testing.T) {
 	r := testRun(1, entity.DesignRunKindThreed)
 	r.Inputs = entity.RawJSON(`{"refs":[{"media_id":90},{"media_id":91}]}`)
 
-	job, err := buildJob(context.Background(), media(90, 91), r, "medium")
+	job, err := buildJob(context.Background(), media(90, 91), nil, r, "medium")
 	require.NoError(t, err)
 	require.Empty(t, job.References)
 
@@ -125,7 +125,7 @@ func TestThreedWithNoPlatesSendsNothing(t *testing.T) {
 // телосложение — ЕДИНСТВЕННОЕ, что этот прогон говорит про тело словами. Без этой строки выбор
 // телосложения был бы органом без действия.
 func TestThreedPromptNamesTheBody(t *testing.T) {
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4), threedRun(), "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4), nil, threedRun(), "medium")
 	require.NoError(t, err)
 	require.Contains(t, job.Prompt, "body athletic")
 	require.Contains(t, job.Prompt, "presentation model")
@@ -137,7 +137,7 @@ func TestThreedPromptSaysNothingAboutAnUnstatedBody(t *testing.T) {
 	r := threedRun()
 	r.Params = entity.RawJSON(`{"threed": {"presentation": "air"}}`)
 
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4), nil, r, "medium")
 	require.NoError(t, err)
 	require.NotContains(t, job.Prompt, "body ")
 	require.Contains(t, job.Prompt, "presentation air")
@@ -171,7 +171,7 @@ func threedRunOfSlots(slots string) entity.DesignRun {
 func TestThreedWithoutTheFrontSendsNothing(t *testing.T) {
 	r := threedRunOfSlots(`[{"view_key":"back","media_id":2},{"view_key":"side_l","media_id":3}]`)
 
-	job, err := buildJob(context.Background(), media(2, 3, 77, 88, 90, 91), r, "medium")
+	job, err := buildJob(context.Background(), media(2, 3, 77, 88, 90, 91), nil, r, "medium")
 	require.NoError(t, err)
 	require.Empty(t, job.References,
 		"без переда список видов не набор: первая картинка уехала бы к провайдеру как лицо изделия")
@@ -196,7 +196,7 @@ func TestThreedLeavesADetailPlateOutOfTheTurntable(t *testing.T) {
 	  {"view_key":"detail","slot_id":31,"media_id":5}
 	]`)
 
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 5, 77, 88, 90, 91), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 5, 77, 88, 90, 91), nil, r, "medium")
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"https://cdn.example/m/1.png",
@@ -216,7 +216,7 @@ func TestThreedLeavesADetailPlateOutOfTheTurntable(t *testing.T) {
 // Фильтр, оставляющий ОДИН перёд, зеленит обе: и «без переда пусто», и «детали нет». Здесь сказано,
 // что сужение не съело стороны, ради которых стол и существует.
 func TestThreedStillCarriesEverySilhouetteSide(t *testing.T) {
-	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), threedRun(), "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), nil, threedRun(), "medium")
 	require.NoError(t, err)
 	require.Len(t, job.References, 4, "четыре стороны обязаны доехать все")
 }

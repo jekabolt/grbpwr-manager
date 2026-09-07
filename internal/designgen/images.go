@@ -193,6 +193,27 @@ func imageCalls(job Job) ([]imageCall, error) {
 				"resolved %d", orimages.ErrBadRequest, len(job.References))
 		}
 		return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+	case entity.DesignRunKindFreeform:
+		// ═══ ОДИН ВЫЗОВ, ОДНА КАРТИНКА — СЛОВО ВЛАДЕЛЬЦА, И ЗДЕСЬ ОНО ИСПОЛНЯЕТСЯ ═══
+		//
+		// Сколько бы картинок человек ни положил и сколько бы областей ни разметил, платный вызов
+		// РОВНО ОДИН и `n` у него единица. Дверь посчитала цену по этому же числу
+		// (designRequestedOutputs), поэтому всякая другая форма здесь — это либо покупка того, за
+		// что не резервировали, либо плитка-плейсхолдер, которую никто не заполнит.
+		//
+		// ⚠ ЭТО НЕ ПЕРЕКРАС, ХОТЯ ВХОДОВ ТОЖЕ МНОГО. У перекраса N снимков — это N НЕЗАВИСИМЫХ
+		// правок, каждая про свой кадр. У плейграунда все картинки — про ОДНУ просьбу: предмет,
+		// фурнитура, ткань, обведённая копия и кроп области складываются в один ответ, и разбить
+		// их по вызовам значило бы спросить модель N раз про N разных вещей.
+		//
+		// ПУСТОТА — ТЕРМИНАЛЬНЫЙ ОТКАЗ, как у соседей: дверь уже отвергла прогон без единой
+		// картинки, но между снимком и проходом строку медиа могли удалить, и повторять
+		// заведомо пустой запрос значит платить за отказ.
+		if len(job.References) == 0 {
+			return nil, fmt.Errorf("%w: a playground run needs the pictures it works on, and this run "+
+				"resolved none", orimages.ErrBadRequest)
+		}
+		return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
 	}
 
 	if job.Layout == layoutPerView && len(job.Views) > 0 {
@@ -263,5 +284,10 @@ func backgroundFor(kind string) string {
 	// provider's own default. On the recolour route that matters twice over: the background of the
 	// answer must be the background of the SOURCE PHOTOGRAPH, and any value we sent here would be an
 	// instruction to change it.
+	//
+	// ⚠ И У ПЛЕЙГРАУНДА ТОЖЕ ПУСТО, ПО ТОЙ ЖЕ ПРИЧИНЕ, ЧТО У ПЕРЕКРАСА. Он работает НА КАРТИНКЕ
+	// ЧЕЛОВЕКА: фон ответа обязан быть фоном исходника, а всякое значение, посланное отсюда, было
+	// бы указанием этот фон сменить — при просьбе «пришей сюда пуговицу». Убрать фон у него просят
+	// другим родом (cutout), у которого и провайдер другой.
 	return ""
 }

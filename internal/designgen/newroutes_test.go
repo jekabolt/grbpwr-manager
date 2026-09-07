@@ -363,7 +363,7 @@ func TestARecolourSENDS_ONLY_THE_PICTURES_IT_WAS_GIVEN(t *testing.T) {
 		Id: 5, TechCardId: 41, Kind: entity.DesignRunKindRecolor,
 		Params: rawJSON(t, params), Inputs: rawJSON(t, inputs),
 	}
-	job, err := buildJob(context.Background(), media(11, 12, 13, 77, 78), run, "medium")
+	job, err := buildJob(context.Background(), media(11, 12, 13, 77, 78), nil, run, "medium")
 	require.NoError(t, err)
 	require.Len(t, job.References, 2, "the plates and the mood reference have no business here")
 	require.Contains(t, job.References[0], "/77.")
@@ -387,7 +387,7 @@ func TestAPatternRunCARRIES_ITS_REPEAT_AND_ONE_PICTURE(t *testing.T) {
 			"slots": []map[string]any{{"view_key": "front", "media_id": 11}},
 		}),
 	}
-	job, err := buildJob(context.Background(), media(11, 90), run, "medium")
+	job, err := buildJob(context.Background(), media(11, 90), nil, run, "medium")
 	require.NoError(t, err)
 	require.Len(t, job.References, 1)
 	require.Contains(t, job.References[0], "/90.")
@@ -415,7 +415,7 @@ func TestNeitherNewKindTakesACraftBlockThatIsNotITS_OWN(t *testing.T) {
 			Id: 7, Kind: tc.kind, Params: rawJSON(t, base),
 			Inputs: rawJSON(t, map[string]any{}),
 		}
-		job, err := buildJob(context.Background(), media(90), run, "medium")
+		job, err := buildJob(context.Background(), media(90), nil, run, "medium")
 		require.NoError(t, err)
 		low := strings.ToLower(job.Prompt)
 		require.Contains(t, low, tc.wants)

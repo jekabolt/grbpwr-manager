@@ -44,6 +44,64 @@ type runParams struct {
 	// repeat», which is legal — a tile is a tile whether or not anybody has decided how large it
 	// will be printed.
 	Pattern *patternParams `json:"pattern"`
+	// Freeform is the PLAYGROUND's whole ask, and on that kind it is the ONLY source of pictures:
+	// no bench, no references, no card. A nil pointer on any other kind is the ordinary state —
+	// the door refuses the field to every kind but its own.
+	Freeform *freeformParams `json:"freeform"`
+}
+
+// freeformParams / freeformItem / freeformRegion — ТОТ ЖЕ УЗКИЙ ЧИТАТЕЛЬ, ЧТО И ВСЁ ВЫШЕ: ровно
+// те поля замороженного снимка, которые нужны сборке задания, и ни одного сверх.
+//
+// ⚠ КЛЮЧИ — snake_case, ПОТОМУ ЧТО ПИСАТЕЛЬ — protojson С UseProtoNames. Ошибка здесь не падает и
+// не логируется: `media_id`, прочитанный как `mediaId`, — это ноль, то есть картинка, которая
+// просто не уехала, при полностью успешном прогоне.
+type freeformParams struct {
+	Preset string         `json:"preset"`
+	Items  []freeformItem `json:"items"`
+}
+
+// freeformItem — ОДНА КАРТИНКА ПЛЕЙГРАУНДА со всем, что человек про неё сказал.
+//
+// `Texts` и `Regions` ПАРНЫ ПО ИНДЕКСУ, и это единственное правило, по которому слова находят
+// своё место на картинке: texts[i] описывает regions[i], а хвостовой текст (i == len(regions))
+// описывает картинку целиком. Дверь держит len(texts) ≤ len(regions)+1, поэтому лишнего хвоста не
+// бывает; читатель всё равно берёт по индексу, а не по длине.
+type freeformItem struct {
+	MediaID int              `json:"media_id"`
+	Regions []freeformRegion `json:"regions"`
+	Texts   []string         `json:"texts"`
+	Role    string           `json:"role"`
+}
+
+// freeformRegion — размеченная область: многоугольник в долях картинки.
+//
+// `Kind` читается, но не проверяется здесь: дверь принимает только POLYGON, а снимок, замороженный
+// мимо сегодняшней двери, честнее обвести по его точкам, чем выбросить молча.
+type freeformRegion struct {
+	Kind   string          `json:"kind"`
+	Points []freeformPoint `json:"points"`
+}
+
+// freeformPoint — доля 0..1. Координата приезжает google.type.Decimal'ом, то есть ОБЪЕКТОМ со
+// строкой внутри: `{"x":{"value":"0.35"}}`. Читать её числом нельзя — protojson её так не пишет.
+type freeformPoint struct {
+	X freeformDecimal `json:"x"`
+	Y freeformDecimal `json:"y"`
+}
+
+type freeformDecimal struct {
+	Value string `json:"value"`
+}
+
+// f — доля числом. Непарсящееся значение читается нулём: у двери оно пройти не могло, а падать в
+// сборке задания из-за одной координаты значило бы потерять весь прогон.
+func (d freeformDecimal) f() float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(d.Value), 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // patternParams is the frozen ask of a repeating-tile run.
@@ -352,6 +410,18 @@ type refCaption struct {
 // caption line shifts the numbering of every caption after it — that silent shift is the defect
 // this type exists to close, so «no words» is itself said in words («reference image»).
 func referenceList(kind string, p runParams, in runInputs) []refCaption {
+	// ─── ПЛЕЙГРАУНД: СПИСОК ЕСТЬ РОВНО ТО, ЧТО ЧЕЛОВЕК ПОЛОЖИЛ, В ТОМ ЖЕ ПОРЯДКЕ ───
+	//
+	// ⚠ ВЕТКА ПЕРВОЙ СТРОКОЙ, А НЕ ФИЛЬТРОМ В КОНЦЕ, И ЭТО ТОТ ЖЕ ПРИЁМ, ЧТО У `sourcePictures`
+	// перекраса. Ни плиты верстака, ни ссылки карточки, ни ткани рецепта в прогон плейграунда не
+	// едут — и не «отсеиваются потом», а не строятся вовсе: отсев по построенному списку молча
+	// зависел бы от того, что положил в снимок кто-то другой.
+	//
+	// НОМЕР КАРТИНКИ — ЭТО ЕЁ МЕСТО В ЭТОМ СПИСКЕ, и он же — номер на экране человека. Порядок
+	// items и есть контракт: «image 1» — это items[0], сказано в самом контракте (design.proto).
+	if kind == entity.DesignRunKindFreeform {
+		return freeformReferences(p)
+	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
 		return viewRank(slots[i].ViewKey) < viewRank(slots[j].ViewKey)
@@ -815,6 +885,13 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 			pp = *p.Pattern
 		}
 		write("", patternCraft(pp))
+	// ПЛЕЙГРАУНД — ПЯТОЕ РЕМЕСЛО, И ОНО ПРОТИВОРЕЧИТ ВСЕМ ЧЕТЫРЁМ ОСТАЛЬНЫМ РОВНО ТЕМ, ЧЕГО НЕ
+	// ГОВОРИТ. Ни «чёрная линия на белом», ни «фотореалистично», ни «верни тот же кадр»: человек
+	// сказал сам, а абзац объясняет модели ТОЛЬКО устройство вложений — что обведено, где кроп и
+	// что контур это метка, а не часть вещи. Место то же самое, последнее, и по тому же доводу:
+	// слова ближе к концу промпта — те, которым модель подчиняется.
+	case run.Kind == entity.DesignRunKindFreeform:
+		write("", freeformCraft(p, attached))
 	}
 	return b.String()
 }
@@ -1054,7 +1131,13 @@ func viewCallLabels(views, detailNames []string) []string {
 // URLS RATHER THAN BYTES, DELIBERATELY. Our design pictures already live in a public bucket, so
 // the provider downloads them directly and nothing passes through this process — which has half a
 // gigabyte of RAM and a base64 image is the thing most likely to end it.
-func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, quality string) (Job, error) {
+// ⚠ `objects` НУЖЕН РОВНО ОДНОМУ РОДУ, И ОН ОБЯЗАТЕЛЕН ИМЕННО ТАМ. Плейграунд с размеченной
+// областью отправляет модели ПРОИЗВОДНЫЕ картинки — обведённую копию и кроп, — а сделать их можно
+// только из БАЙТОВ исходника (freeform_derive.go). Прогон без хранилища не «уедет чуть беднее»: он
+// уедет с областями, которых модель не увидит, и человек заплатит за кадр, в котором его разметка
+// не участвовала. Поэтому nil здесь — ошибка сборки, а не тихая деградация; всем прочим родам
+// хранилище не нужно вовсе, и они принимают nil.
+func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, run entity.DesignRun, quality string) (Job, error) {
 	p := parseParams(run.Params)
 	in := parseInputs(run.Inputs)
 
@@ -1155,6 +1238,31 @@ func buildJob(ctx context.Context, media mediaResolver, run entity.DesignRun, qu
 		}
 		if run.Kind == entity.DesignRunKindRecolor {
 			attached = recolorAttached(len(job.References), attachedCloths)
+		}
+	}
+	// ─── ПРОИЗВОДНЫЕ ПЛЕЙГРАУНДА: ОБВЕДЁННАЯ КОПИЯ И КРОП ОБЛАСТИ ───
+	//
+	// ⚠ СТОИТ МЕЖДУ РЕЗОЛВОМ И ПРОМПТОМ, И ДРУГОГО МЕСТА У НЕГО НЕТ. Производные — это НАСТОЯЩИЕ
+	// картинки вызова, они занимают номера в том же счёте, что и остальные, и подписи к ним обязаны
+	// попасть в тот же блок «references». Собранные позже, они уехали бы к модели без единого
+	// слова о том, что это такое, — то есть обведённая копия читалась бы как ещё одна фотография
+	// вещи с красными линиями НА НЕЙ.
+	//
+	// СТРОКИ МЕДИА НЕ МИНТУЮТСЯ: производные едут data-URI и живут ровно один вызов. Минт дал бы
+	// сирот при каждом отказе и компенсацию, которую пришлось бы писать; а воспроизвести их можно
+	// в любой момент — области заморожены в params, исходник адресуется media_id.
+	if run.Kind == entity.DesignRunKindFreeform {
+		derived, err := deriveFreeform(ctx, objects, p, attached, job.References)
+		if err != nil {
+			return Job{}, err
+		}
+		for _, d := range derived {
+			job.References = append(job.References, d.dataURI)
+			job.ReferenceViews = append(job.ReferenceViews, "")
+			// MediaID НУЛЕВОЙ НАМЕРЕННО: у этой картинки нет строки media и не должно быть.
+			// Единственный читатель id в подписях — renderCraft (imageNumberOf), а плейграунд
+			// берёт другое ремесло, так что ноль здесь ни на что не может указать неверно.
+			attached = append(attached, refCaption{Caption: d.caption})
 		}
 	}
 	job.Prompt = composePrompt(run, p, in, attached)

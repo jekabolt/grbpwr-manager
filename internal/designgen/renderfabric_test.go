@@ -246,7 +246,7 @@ func TestAClothWhosePictureDidNotGoOutIsGivenNoImageNumber(t *testing.T) {
 	r.Params = entity.RawJSON(twoCloths)
 
 	// Media 10 — the contrast rib's texture — is deliberately absent from the resolver.
-	job, err := buildJob(context.Background(), media(1, 2, 9), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 2, 9), nil, r, "medium")
 	require.NoError(t, err)
 	require.Len(t, job.References, 3, "the two plates and the jersey swatch attach; the rib does not")
 

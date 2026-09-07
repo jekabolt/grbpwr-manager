@@ -282,7 +282,7 @@ func TestRenderSwatchThatDidNotAttachLosesItsClause(t *testing.T) {
 		`{"views":["front","back"],"layout":"one","colour":{"hex":"#b1121a","fabric_media_id":9}}`)
 
 	// Media 9 — the swatch — is deliberately absent from the resolver.
-	job, err := buildJob(context.Background(), media(1, 2), r, "medium")
+	job, err := buildJob(context.Background(), media(1, 2), nil, r, "medium")
 	require.NoError(t, err)
 
 	require.Len(t, job.References, 2, "only the two plates attach")

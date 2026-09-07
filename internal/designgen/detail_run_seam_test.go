@@ -45,7 +45,7 @@ func serverFrozen(t *testing.T, name, kind string) entity.DesignRun {
 // MAJOR-1 + MAJOR-3: имя доезжает из ПУСТОГО слота, и лист на две детали больше не обещает одну.
 func TestTwoDetailSheetNamesBothFramesAndAsksForTwo(t *testing.T) {
 	run := serverFrozen(t, "one", entity.DesignRunKindFlat)
-	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
+	job, err := buildJob(context.Background(), media(100, 200), nil, run, "medium")
 	require.NoError(t, err)
 
 	// ── MAJOR-1: имя резолвится из записи БЕЗ media_id ──
@@ -77,7 +77,7 @@ func TestTwoDetailSheetNamesBothFramesAndAsksForTwo(t *testing.T) {
 // потерял бы дословную формулировку там, где она верна.
 func TestSingleDetailKeepsTheOwnersVerbatimDetailLayout(t *testing.T) {
 	run := serverFrozen(t, "one_single_detail", entity.DesignRunKindFlat)
-	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
+	job, err := buildJob(context.Background(), media(100, 200), nil, run, "medium")
 	require.NoError(t, err)
 	require.Contains(t, job.Prompt,
 		"Layout: a single enlarged view of the detail, isolated and centered on the canvas, "+
@@ -90,7 +90,7 @@ func TestSingleDetailKeepsTheOwnersVerbatimDetailLayout(t *testing.T) {
 // вызова с промптом, совпадающим ПОБАЙТОВО: дописывался ключ вида, одинаковый у обеих.
 func TestPerViewMakesTwoDIFFERENTPaidCallsForTwoDetails(t *testing.T) {
 	run := serverFrozen(t, "per_view", entity.DesignRunKindFlat)
-	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
+	job, err := buildJob(context.Background(), media(100, 200), nil, run, "medium")
 	require.NoError(t, err)
 
 	calls, err := imageCalls(job)
@@ -112,7 +112,7 @@ func TestPerViewMakesTwoDIFFERENTPaidCallsForTwoDetails(t *testing.T) {
 // по просьбе; у Meshy при этом есть собственный ErrPromptTooLong.
 func TestThreedDoesNotCarryTheDetailListIntoTheMeshyPrompt(t *testing.T) {
 	run := serverFrozen(t, "one", entity.DesignRunKindThreed)
-	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
+	job, err := buildJob(context.Background(), media(100, 200), nil, run, "medium")
 	require.NoError(t, err)
 	require.NotContains(t, job.Prompt, "draw these details")
 	require.NotContains(t, job.Prompt, "patch pocket")
@@ -130,7 +130,7 @@ func TestFabricStatedOnlyInWordsSpeaksAffirmatively(t *testing.T) {
 		Params: entity.RawJSON(`{"views":["front"],"layout":"one","colour":{"source":"own","words":"brushed cotton twill"}}`),
 		Inputs: entity.RawJSON(`{"garment_note":"a shirt"}`),
 	}
-	job, err := buildJob(context.Background(), media(), run, "medium")
+	job, err := buildJob(context.Background(), media(), nil, run, "medium")
 	require.NoError(t, err)
 	require.NotContains(t, job.Prompt, "It never overrides either of them",
 		"единственное утверждение о ткани не может быть подчинено пустоте")
@@ -144,7 +144,7 @@ func TestFabricStatedOnlyInWordsSpeaksAffirmatively(t *testing.T) {
 		Params: entity.RawJSON(`{"views":["front"],"layout":"one","colour":{"source":"dictionary","code":"OLV","hex":"#4a5a3c","words":"brushed cotton twill"}}`),
 		Inputs: entity.RawJSON(`{"garment_note":"a shirt"}`),
 	}
-	rankedJob, err := buildJob(context.Background(), media(), ranked, "medium")
+	rankedJob, err := buildJob(context.Background(), media(), nil, ranked, "medium")
 	require.NoError(t, err)
 	require.Contains(t, rankedJob.Prompt, "It never overrides either of them",
 		"с двумя источниками ранговая формулировка обязана вернуться")
@@ -155,7 +155,7 @@ func TestFabricStatedOnlyInWordsSpeaksAffirmatively(t *testing.T) {
 // протекает в метку кадра ни на одном маршруте.
 func TestDetailNameNeverLeaksIntoTheGhostLabel(t *testing.T) {
 	run := serverFrozen(t, "per_view", entity.DesignRunKindFlat)
-	job, err := buildJob(context.Background(), media(100, 200), run, "medium")
+	job, err := buildJob(context.Background(), media(100, 200), nil, run, "medium")
 	require.NoError(t, err)
 	perViewCalls, err := imageCalls(job)
 	require.NoError(t, err)
