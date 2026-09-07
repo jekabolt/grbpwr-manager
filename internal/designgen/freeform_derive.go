@@ -578,26 +578,7 @@ func freeformDot(dst *image.RGBA, x, y int, c color.RGBA, thickness int) {
 
 // freeformCrop — КРОП ОБЛАСТИ С ПОЛЯМИ. PNG, если исходник держал альфу, иначе JPEG.
 func freeformCrop(src image.Image, region freeformRegion, keepAlpha bool, side int) (string, error) {
-	b := src.Bounds()
-	minX, minY, maxX, maxY := freeformBBox(region)
-	// ПОЛЯ СЧИТАЮТСЯ ОТ РАЗМЕРА ОБЛАСТИ, а не от кадра: у пуговицы поле должно быть с пуговицу, а
-	// не с четверть куртки.
-	padX := (maxX - minX) * freeformCropPad
-	padY := (maxY - minY) * freeformCropPad
-	x0 := b.Min.X + int(math.Floor(clamp01(minX-padX)*float64(b.Dx())))
-	y0 := b.Min.Y + int(math.Floor(clamp01(minY-padY)*float64(b.Dy())))
-	x1 := b.Min.X + int(math.Ceil(clamp01(maxX+padX)*float64(b.Dx())))
-	y1 := b.Min.Y + int(math.Ceil(clamp01(maxY+padY)*float64(b.Dy())))
-	// НУЛЕВАЯ ПЛОЩАДЬ — ЭТО НЕ КАРТИНКА. Область в один пиксель законна на проводе (три точки в
-	// одной), и кроп по ней дал бы пустой прямоугольник, который провайдер отвергнет уже за
-	// деньги: расширяем до минимума вокруг того же места.
-	if x1 <= x0 {
-		x1 = x0 + 1
-	}
-	if y1 <= y0 {
-		y1 = y0 + 1
-	}
-	rect := image.Rect(x0, y0, x1, y1).Intersect(b)
+	rect := freeformCropRect(src.Bounds(), region)
 	if rect.Empty() {
 		return "", fmt.Errorf("the area lies outside the picture")
 	}
@@ -616,6 +597,34 @@ func freeformCrop(src image.Image, region freeformRegion, keepAlpha bool, side i
 		return "", err
 	}
 	return freeformDataURI("image/jpeg", buf.Bytes()), nil
+}
+
+// freeformCropRect — ПРЯМОУГОЛЬНИК КРОПА В ПИКСЕЛЯХ ИСХОДНИКА: bbox области плюс поля.
+//
+// ⚠ ОН ВЫНЕСЕН ИЗ freeformCrop, ПОТОМУ ЧТО У НЕГО ПОЯВИЛСЯ ВТОРОЙ ЧИТАТЕЛЬ, И ЭТИ ДВОЕ ОБЯЗАНЫ
+// ГОВОРИТЬ ОДНО И ТО ЖЕ. Первый вырезает по нему картинку, которую увидит модель; второй вклеивает
+// по нему ответ обратно в кадр (window.go). Две копии этой арифметики разошлись бы на округлении —
+// и результат лёг бы рядом с тем местом, куда его просили положить, на пиксель-другой мимо.
+func freeformCropRect(b image.Rectangle, region freeformRegion) image.Rectangle {
+	minX, minY, maxX, maxY := freeformBBox(region)
+	// ПОЛЯ СЧИТАЮТСЯ ОТ РАЗМЕРА ОБЛАСТИ, а не от кадра: у пуговицы поле должно быть с пуговицу, а
+	// не с четверть куртки.
+	padX := (maxX - minX) * freeformCropPad
+	padY := (maxY - minY) * freeformCropPad
+	x0 := b.Min.X + int(math.Floor(clamp01(minX-padX)*float64(b.Dx())))
+	y0 := b.Min.Y + int(math.Floor(clamp01(minY-padY)*float64(b.Dy())))
+	x1 := b.Min.X + int(math.Ceil(clamp01(maxX+padX)*float64(b.Dx())))
+	y1 := b.Min.Y + int(math.Ceil(clamp01(maxY+padY)*float64(b.Dy())))
+	// НУЛЕВАЯ ПЛОЩАДЬ — ЭТО НЕ КАРТИНКА. Область в один пиксель законна на проводе (три точки в
+	// одной), и кроп по ней дал бы пустой прямоугольник, который провайдер отвергнет уже за
+	// деньги: расширяем до минимума вокруг того же места.
+	if x1 <= x0 {
+		x1 = x0 + 1
+	}
+	if y1 <= y0 {
+		y1 = y0 + 1
+	}
+	return image.Rect(x0, y0, x1, y1).Intersect(b)
 }
 
 // freeformBBox — охватывающий прямоугольник многоугольника, в долях 0..1.

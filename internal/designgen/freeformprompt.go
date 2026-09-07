@@ -71,6 +71,9 @@ func freeformFreeCraft() string {
 // неправильно по кадру — пряжка в анфас на боковом снимке, — а человек видит просто плохой
 // результат и не знает, что попросить иначе.
 func freeformAddHardwareCraft(ff *freeformParams, attached []refCaption) string {
+	if n := freeformWindowNumber(attached); n > 0 {
+		return freeformWindowedHardwareCraft(ff, attached, n)
+	}
 	subject := freeformImageNumber(ff, attached, "")
 	hardware := freeformImageNumber(ff, attached, entity.DesignFreeformRoleHardware)
 	var b strings.Builder
@@ -83,6 +86,47 @@ func freeformAddHardwareCraft(ff *freeformParams, attached []refCaption) string 
 		"would — with its own shadow and its own reflections. Keep the rest of the picture as close " +
 		"to the original as you can: the same garment, the same pose, the same framing, the same " +
 		"background and the same light. ")
+	b.WriteString(freeformOutlineDisclaimer)
+	b.WriteString(". Return ONE picture.")
+	return b.String()
+}
+
+// freeformWindowNumber — номер картинки-окна в вызове, или 0.
+//
+// Читается по ФЛАГУ, поставленному при сборке списка, а не по подписи и не по позиции: см.
+// refCaption.IsWindow.
+func freeformWindowNumber(attached []refCaption) int {
+	for i, rc := range attached {
+		if rc.IsWindow {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// freeformWindowedHardwareCraft — ремесло ОКОННОГО прогона.
+//
+// ⚠ ОНО ОБЯЗАНО СКАЗАТЬ, ЧТО ПЕРВАЯ КАРТИНКА — КРОП, И ЭТО НЕ ВЕЖЛИВОСТЬ. Модель, которой дали
+// крупный кусок ткани с петлёй и не сказали, что это кусок, читает его как самостоятельный предмет
+// и отвечает натюрмортом на новом фоне — а мы этот ответ вклеим в кадр, и в кадре появится
+// прямоугольник чужого фона.
+//
+// И ОНО НЕ ПРОСИТ «сохрани остальное»: остального модель не видит вовсе, а сохраняет его наш
+// композит — буквально, пиксель в пиксель. Просьба, которую нельзя не выполнить, — лишние слова
+// перед той, которую выполнить можно.
+func freeformWindowedHardwareCraft(ff *freeformParams, attached []refCaption, window int) string {
+	hardware := freeformImageNumber(ff, attached, entity.DesignFreeformRoleHardware)
+	var b strings.Builder
+	b.WriteString("Image ")
+	b.WriteString(strconv.Itoa(window))
+	b.WriteString(" is a CLOSE CROP of a garment — a small part of a larger photograph, not an " +
+		"object of its own. Take the hardware shown in ")
+	b.WriteString(freeformImageWord(hardware, "the picture of the hardware"))
+	b.WriteString(" and put it into the outlined area of that crop. Match its scale, its perspective " +
+		"and the light of the crop it lands in, and let it sit on the garment the way that piece of " +
+		"hardware really would — with its own shadow and its own reflections. Return the SAME CROP, " +
+		"at the same framing and the same size, with the hardware now on it: it is going to be fitted " +
+		"straight back into the photograph it was cut from. ")
 	b.WriteString(freeformOutlineDisclaimer)
 	b.WriteString(". Return ONE picture.")
 	return b.String()

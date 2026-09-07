@@ -28,10 +28,17 @@ import (
 type fakeObjects struct {
 	byKey map[string][]byte
 	asked []string
+	// failAfter makes every read past the n-th fail, which is how the SECOND read of one picture is
+	// made to fail while the first succeeds — the window's composite reads the original a second
+	// time, after the money.
+	failAfter int
 }
 
 func (f *fakeObjects) GetManagedObject(_ context.Context, key string) (io.ReadCloser, int64, error) {
 	f.asked = append(f.asked, key)
+	if f.failAfter > 0 && len(f.asked) > f.failAfter {
+		return nil, 0, errBoom
+	}
 	raw, ok := f.byKey[key]
 	if !ok {
 		return nil, 0, errBoom

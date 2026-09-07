@@ -159,6 +159,14 @@ func classify(err error) verdict {
 	case errors.Is(err, errOverDelivery):
 		return verdict{Retryable: false, Code: CodeOverDelivery, State: entity.DesignAttemptDelivered}
 
+	// ─── ours: DELIVERED, and the answer could not be fitted back into the frame it was cut from.
+	// The crop is kept and filed — it is bought, and it shows how the hardware sat — but it is not
+	// the picture that was asked for, and the row says which. Not retryable: whatever stopped the
+	// composite (an unreadable original, a frame that no longer matches its frozen bounds) stops it
+	// again on the next pass, at the price of a second generation.
+	case errors.Is(err, errWindowNotComposited):
+		return verdict{Retryable: false, Code: CodeWindowNotComposited, State: entity.DesignAttemptDelivered}
+
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.
 	case errors.Is(err, errStorageFailed):

@@ -150,7 +150,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 			acancel()
 			pendingID = out.RequestID
 		} else {
-			return w.settle(ctx, run, token, att.AttemptNo, out, callErr)
+			return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
 		}
 	}
 
@@ -188,7 +188,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	if out != nil && out.RequestID == "" {
 		out.RequestID = pendingID
 	}
-	return w.settle(ctx, run, token, att.AttemptNo, out, callErr)
+	return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
 }
 
 // settle records the money, stores the bytes and closes the run.
@@ -196,7 +196,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 // ORDER IS THE ARGUMENT. The charge is written FIRST, from the provider's answer alone, because it
 // is already real and nothing that happens afterwards can make it less so — a bucket that refuses
 // the bytes does not refund the generation. Only then are the bytes uploaded and the run closed.
-func (w *Worker) settle(ctx context.Context, run entity.DesignRun, token string, attemptNo int, out *Outcome, callErr error) error {
+func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, token string, attemptNo int, out *Outcome, callErr error) error {
 	// The pass may be running on a context whose deadline has already passed — a long provider
 	// call is exactly the case. Everything from here on is short, and losing it would lose the
 	// paid result, so it runs beyond cancellation.
@@ -219,6 +219,21 @@ func (w *Worker) settle(ctx context.Context, run entity.DesignRun, token string,
 				"the extra pictures were dropped and only the first complaint reached the attempt row",
 				slog.Int("run_id", run.Id), slog.String("kind", run.Kind),
 				slog.Int("dropped", dropped), slog.String("err", callErr.Error()))
+		}
+	}
+
+	// ─── ОКНО ГЕНЕРАЦИИ: ОТВЕТ ВКЛЕИВАЕТСЯ ОБРАТНО В КАДР. Стоит ПОСЛЕ обрезки до одного кадра
+	// (композитить есть смысл ровно тот, который поедет наружу) и ДО publish: позже кроп уже
+	// заминчен строкой медиа и лежит в ленте карточки вместо кадра, который просили. Жалоба, а не
+	// отказ — см. postProcess: деньги уже ушли, и кроп полезнее выброшенного прогона.
+	if perr := w.postProcess(sctx, job, out); perr != nil {
+		if callErr == nil {
+			callErr = perr
+		} else {
+			slog.Default().WarnContext(sctx, "a windowed run could not be fitted back into its frame "+
+				"and already carried another complaint",
+				slog.Int("run_id", run.Id), slog.String("window_err", perr.Error()),
+				slog.String("err", callErr.Error()))
 		}
 	}
 

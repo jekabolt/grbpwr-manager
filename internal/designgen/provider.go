@@ -108,6 +108,14 @@ type Job struct {
 	// past 600 runes TERMINALLY — see surfaceSteer, which is where the bound lives and where the
 	// argument for bounding rather than refusing is made.
 	SurfaceSteer string
+	// Window is the GENERATION WINDOW of this job, or nil for every job that sends whole frames.
+	//
+	// ⚠ ЕГО ЧИТАЕТ НЕ ПРОВАЙДЕР, А ВОРКЕР, И ИМЕННО ПОЭТОМУ ОНО ЕДЕТ В Job. Маршрут получил кроп
+	// области и вернёт кроп; кадром это станет ПОСЛЕ вызова, когда ответ вклеят обратно по этим
+	// координатам (window.go). Координаты обязаны быть теми же, по которым вырезали, — значит они
+	// замораживаются один раз при сборке задания и путешествуют вместе с ним, а не пересчитываются
+	// по params во второй раз.
+	Window *GenerationWindow
 	// Outputs is design_run.requested_outputs: how many pictures the history row expects.
 	Outputs int
 	// Quality is the price dial for the image route.

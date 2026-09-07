@@ -374,6 +374,13 @@ type refCaption struct {
 	// Наличие media в списке ответом НЕ является: плита, названная картой, в списке есть — под
 	// подписью плиты.
 	IsColourMap bool
+	// IsWindow — ЭТА КАРТИНКА И ЕСТЬ ОКНО ГЕНЕРАЦИИ: кроп области, приехавший ВМЕСТО полного кадра.
+	//
+	// ⚠ ФЛАГ, А НЕ ДОГАДКА ПО ПОДПИСИ ИЛИ ПО ПОЗИЦИИ. Ремесло обязано назвать модели НОМЕР этой
+	// картинки («image 2 is a close crop…»), и номер — это позиция в списке; вычислять её поиском
+	// по тексту подписи значило бы завести второе чтение того же факта, которое разъедется при
+	// первой правке слов. Ставится ровно там же, где картинка кладётся в список.
+	IsWindow bool
 }
 
 // referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
@@ -1252,6 +1259,21 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	// сирот при каждом отказе и компенсацию, которую пришлось бы писать; а воспроизвести их можно
 	// в любой момент — области заморожены в params, исходник адресуется media_id.
 	if run.Kind == entity.DesignRunKindFreeform {
+		// ─── ОКНО ГЕНЕРАЦИИ. Если этот прогон берёт окно (add_hardware по одной области), кадр
+		// целиком к модели НЕ ЕДЕТ ВОВСЕ: она увидит только кроп, а кадром ответ станет после
+		// вызова, вклейкой по замороженным координатам. Полный кадр рядом с кропом сделал бы всю
+		// затею бессмысленной — модель ответила бы на него, то есть пересоздала бы фотографию
+		// ради пуговицы.
+		if plan := freeformWindowPlan(p); plan != nil {
+			d, win, err := deriveFreeformWindow(ctx, objects, *plan, &job, attached)
+			if err != nil {
+				return Job{}, err
+			}
+			if win != nil {
+				attached = d
+				job.Window = win
+			}
+		}
 		derived, err := deriveFreeform(ctx, objects, p, attached, job.References)
 		if err != nil {
 			return Job{}, err

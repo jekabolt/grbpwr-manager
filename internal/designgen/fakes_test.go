@@ -145,6 +145,9 @@ type fakeSink struct {
 	nextID   int
 	put      []MintedMedia
 	putTypes []string
+	// putBytes is what was actually handed to the bucket. Kept because some probes are about the
+	// PICTURE and not about the fact that a picture was stored — a composite has to be looked at.
+	putBytes [][]byte
 	dropped  []int
 	// failAfter makes the (failAfter+1)-th Put fail, to exercise a storage failure that lands
 	// AFTER something was already minted.
@@ -175,6 +178,7 @@ func (f *fakeSink) Put(_ context.Context, raw []byte, ct, _ string) (MintedMedia
 	m := MintedMedia{ID: f.nextID, URLs: []string{"https://cdn.example/o/" + ct}}
 	f.put = append(f.put, m)
 	f.putTypes = append(f.putTypes, ct)
+	f.putBytes = append(f.putBytes, append([]byte(nil), raw...))
 	return m, nil
 }
 
