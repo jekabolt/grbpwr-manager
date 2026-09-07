@@ -260,3 +260,76 @@ func TestDesignDBBandOutputsAreCappedPerColorwayNotWholeCard(t *testing.T) {
 			"выходы едут по убыванию id: раздел рисует свежие первыми")
 	}
 }
+
+// ВЫХОДЫ ПЛЕЙГРАУНДА НЕ ВЫТЕСНЯЮТ ОПЛАЧЕННЫЕ РЕНДЕРЫ ТОГО ЖЕ РАЗДЕЛА.
+//
+// ЧТО ЭТО ВОСПРОИЗВОДИТ, ПО ШАГАМ. Плейграунд не читает карточку вовсе, поэтому колорвея у его
+// прогонов нет: КАЖДЫЙ его выход ложится в раздел 0 — тот же, где живут неатрибутированные
+// рендеры. Пока окно потолка резалось ОДНИМ колорвеем, шестьдесят с лишним бесплатных игр (одна
+// картинка на прогон, и ни цента за кроп) выдавливали из ответа старый рендер целиком; клиент,
+// сузивший ленту по `run_kind`, получал ПУСТОЙ раздел RENDERS и не мог отличить это от «рендеров
+// не делали». Это дефект H-9, отложенный на одну ось.
+//
+// СТЕНД ИМЕННО ТАКОЙ, КАК В ОТЧЁТЕ: рендер ЗАВОДИТСЯ ПЕРВЫМ (самый маленький id на карточке, то
+// есть при одноключевом окне вылетает первым), за ним потолок+3 выхода плейграунда, все без
+// колорвея.
+//
+// МУТАЦИИ, КОТОРЫЕ ЭТО КРАСНЯТ (и каждая — своя строка):
+//   - убрать секцию из PARTITION BY (вернуть окно к одному колорвею) → рендер исчезает;
+//   - убрать секцию из GROUP BY счёта → поколорвейный итог считается не по тем группам;
+//   - присвоение вместо сложения в loadCardOutputs → итог раздела 0 назовёт одну секцию.
+func TestDesignDBPlaygroundOutputsDoNotEvictTheCardsRenders(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	media := probeMedia(t, raw)
+
+	// ОПЛАЧЕННЫЙ РЕНДЕР БЕЗ КОЛОРВЕЯ — самый старый кадр карточки.
+	renderRun := outputsProbeRun(t, raw, card, entity.DesignRunKindRender, 1, 0)
+	render := outputsProbePicture(t, raw, card, renderRun, media, 0,
+		entity.DesignPictureKindRender, 0, 0, false)
+
+	// ПЛЕЙГРАУНД: потолок плюс три, все в том же безколорвейном разделе.
+	over := design.MaxCardOutputsPerColorway + 3
+	ffRun := outputsProbeRun(t, raw, card, entity.DesignRunKindFreeform, 2, 0)
+	ffPics := make([]int, 0, over)
+	for i := 0; i < over; i++ {
+		ffPics = append(ffPics, outputsProbePicture(t, raw, card, ffRun, media, i,
+			entity.DesignPictureKindFreeform, 0, 0, false))
+	}
+
+	band, err := rep.Design().GetBand(ctx, card, design.DefaultRunPageLimit)
+	require.NoError(t, err)
+
+	got := map[int]entity.DesignCardOutput{}
+	var playground []int
+	for _, o := range band.Outputs {
+		got[o.Picture.Id] = o
+		if o.RunKind == entity.DesignRunKindFreeform {
+			playground = append(playground, o.Picture.Id)
+		}
+	}
+
+	// ─── ГЛАВНОЕ УТВЕРЖДЕНИЕ ───
+	require.Contains(t, got, render,
+		"оплаченный рендер обязан пережить шестьдесят бесплатных игр в том же безколорвейном "+
+			"разделе: одноключевое окно выбрасывало его первым, и раздел RENDERS приходил пустым")
+	require.Equal(t, entity.DesignRunKindRender, got[render].RunKind)
+
+	// ─── …И ЭТО НЕ «ПОТОЛОК ПЕРЕСТАЛ РАБОТАТЬ» ───
+	require.Len(t, playground, design.MaxCardOutputsPerColorway,
+		"секция плейграунда усечена своим потолком: иначе проба доказывала бы лишь то, что "+
+			"потолок сняли")
+	require.Contains(t, playground, ffPics[over-1], "самый свежий выход остаётся всегда")
+	for _, dropped := range ffPics[:3] {
+		require.NotContains(t, playground, dropped, "выброшены САМЫЕ СТАРЫЕ три")
+	}
+
+	// ─── ПОДПИСЬ УСЕЧЕНИЯ СКЛАДЫВАЕТ ОБЕ СЕКЦИИ ───
+	require.Equal(t, over+1, band.OutputsTotalByColorway[0],
+		"поколорвейный итог обещает «сколько выходов у этого колорвея ВСЕГО»; присваивание "+
+			"вместо сложения назвало бы число одной секции")
+	require.Equal(t, over+1, band.OutputsTotal)
+	require.Len(t, band.Outputs, design.MaxCardOutputsPerColorway+1,
+		"в ответе ровно потолок плейграунда плюс уцелевший рендер")
+}

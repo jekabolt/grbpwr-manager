@@ -286,8 +286,9 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 	const (
 		scopeSentinel    = "<<SCOPE-SENTINEL>>"
 		colorwaySentinel = "<<COLORWAY-SENTINEL>>"
+		sectionSentinel  = "<<SECTION-SENTINEL>>"
 	)
-	list, count := designCardOutputsStatements(scopeSentinel, colorwaySentinel)
+	list, count := designCardOutputsStatements(scopeSentinel, colorwaySentinel, sectionSentinel)
 
 	for name, stmt := range map[string]string{"list": list, "count": count} {
 		if strings.Count(stmt, scopeSentinel) != 1 {
@@ -296,10 +297,18 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 		if !strings.Contains(stmt, colorwaySentinel) {
 			t.Fatalf("%s must take the section key from its single source", name)
 		}
-		// Ни одного слова настоящей области и настоящего ключа: всё, что от них осталось бы, —
+		// ⚠ И ВТОРОЙ КЛЮЧ ОКНА — ТОЖЕ ИЗ ОДНОГО ИСТОЧНИКА, ПО ТОЙ ЖЕ ПРИЧИНЕ. Секция режет окно
+		// списка и группирует счёт; разойдясь между ними, она отдала бы поколорвейный итог,
+		// сложенный не из тех групп, которые в списке усечены.
+		if !strings.Contains(stmt, sectionSentinel) {
+			t.Fatalf("%s must take the SECTION key from its single source: the window and the "+
+				"count are cut by it together or the caption is counted over other rows", name)
+		}
+		// Ни одного слова настоящей области и настоящих ключей: всё, что от них осталось бы, —
 		// это вписанная вторая копия.
 		for _, inlined := range []string{
 			"design_picture p", "design_run r", "p.tech_card_id", "r.kind IN", "p.colorway_id",
+			"'freeform'", "'cutout'",
 		} {
 			if strings.Contains(stmt, inlined) {
 				t.Fatalf("%s carries its OWN copy of %q instead of the shared piece: a second "+
@@ -310,7 +319,7 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 
 	// …и в бою собраны ровно те же два запроса из настоящих кусков.
 	gotList, gotCount := designCardOutputsStatements(
-		designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway)
+		designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway, designCardOutputsSection)
 	if gotList != designListCardOutputs || gotCount != designCountCardOutputsByColorway {
 		t.Fatal("the statements the store actually runs must be what this builder produces from " +
 			"the shared pieces, or the probe above proves nothing about them")
@@ -452,10 +461,19 @@ func TestCardOutputsAreCappedPerColorwayAndNewestFirst(t *testing.T) {
 	}
 	// Отступы запроса к делу не относятся — сравнение идёт по словам.
 	flat := strings.Join(strings.Fields(designListCardOutputs), " ")
+	words := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	if !strings.Contains(flat, "ROW_NUMBER() OVER ( PARTITION BY "+
-		strings.Join(strings.Fields(designCardOutputsColorway), " ")+" ORDER BY p.id DESC )") {
-		t.Fatal("the ceiling is spent PER COLOURWAY, newest first: a whole-card LIMIT drops the " +
-			"card's oldest rows and can empty one colourway's section entirely")
+		words(designCardOutputsColorway)+", "+words(designCardOutputsSection)+
+		" ORDER BY p.id DESC )") {
+		t.Fatal("the ceiling is spent PER COLOURWAY AND PER SECTION, newest first: a whole-card " +
+			"LIMIT drops the card's oldest rows and can empty one colourway's section entirely, " +
+			"and a colourway-only window lets sixty free playground pictures evict the paid " +
+			"renders that share the uncoloured section with them")
+	}
+	if !strings.Contains(words(designCountCardOutputsByColorway),
+		"GROUP BY "+words(designCardOutputsColorway)+", "+words(designCardOutputsSection)) {
+		t.Fatal("the count is grouped by the SAME two keys the window is cut by, or the " +
+			"per-colourway total is summed from groups other than the ones that were truncated")
 	}
 	if !strings.Contains(designListCardOutputs, "WHERE o.rn <= :per_colorway") {
 		t.Fatal("the outputs list must carry the ceiling in the statement itself, as a parameter " +
