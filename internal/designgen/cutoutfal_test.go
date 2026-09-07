@@ -506,28 +506,38 @@ func TestTheContentTypeComesFromTHE_BYTES(t *testing.T) {
 	require.Equal(t, ContentTypePNG, cutoutContentType([]byte("nonsense")))
 }
 
-// TestTheCutoutSentinelSTILL_NEEDS_ITS_BRANCH_IN_CLASSIFY.
+// TestTheCutoutSentinelIsClassifiedWithItsOwnSeam.
 //
-// ⚠ ЭТО НЕ ПРОВЕРКА ЖЕЛАЕМОГО, А ЗАПИСЬ ИЗМЕРЕННОГО ДОЛГА, И ОНА СТОИТ ДЕНЕГ, ПОКА ДЕРЖИТСЯ.
-// Ветки для errCutoutNoAlpha в classify.go пока нет (файл — не зона этого агента), поэтому сентинел
-// проваливается в retryable-умолчание: прогон будет ПОКУПАТЬ ТОТ ЖЕ ОТВЕТ снова до потолка платных
-// попыток, а строка истории скажет `provider_unavailable` — и отправит человека смотреть
-// статус-страницу провайдера, у которого всё в порядке.
+// ⚠ ЭТА ПРОВЕРКА ЖИЛА ЗДЕСЬ КАК ЗАПИСЬ ДОЛГА, И ЕЁ ПЕРЕПИСАЛИ, КОГДА ДОЛГ ЗАКРЫЛИ. Раньше она
+// утверждала СЕГОДНЯШНЕЕ поведение — сентинел без ветки проваливается в retryable-умолчание
+// классификатора, — и краснела ровно в тот момент, когда ветку добавляли. Ветку добавили; теперь
+// она утверждает обратное, и покраснеет, если ветку когда-нибудь уберут.
 //
-// Проверка утверждает СЕГОДНЯШНЕЕ поведение и назовёт его вслух в тот момент, когда ветку добавят:
-// она станет красной, и её надо будет переписать на желаемый вердикт — то есть долг нельзя закрыть,
-// не заметив этой строки. Ветка обязана приехать ВМЕСТЕ с проводкой маршрута (Providers.Cutout +
-// forKind case), не позже: до проводки этот код недостижим, после — достижим на каждом отказе.
-func TestTheCutoutSentinelSTILL_NEEDS_ITS_BRANCH_IN_CLASSIFY(t *testing.T) {
+// ЧТО ИМЕННО СТОИТ ЗА ЭТИМИ ТРЕМЯ ПОЛЯМИ, ПО ОДНОМУ.
+// Retryable=false — повтор покупает У ТОЙ ЖЕ МОДЕЛИ ТУ ЖЕ КАРТИНКУ, и так до потолка платных
+// попыток; это единственное поле здесь, у которого есть цена в долларах.
+// Code=cutout_no_alpha — строка истории называет СВОЙ отказ, а не `provider_unavailable`, за
+// которым человек уходит смотреть чужую статус-страницу.
+// State=delivered — картинка ОПЛАЧЕНА И СОХРАНЕНА; `failed` рядом с реальным списанием был бы
+// ложью о деньгах.
+func TestTheCutoutSentinelIsClassifiedWithItsOwnSeam(t *testing.T) {
 	v := classify(errCutoutNoAlpha)
-	require.True(t, v.Retryable, "ЕСЛИ ЭТА СТРОКА ПОКРАСНЕЛА — ветку добавили; перепишите тест на "+
-		"{Retryable:false, Code:CodeCutoutNoAlpha, State:entity.DesignAttemptDelivered}")
-	require.Equal(t, CodeProviderUnavailable, v.Code)
-	// Что должно быть — записано здесь же, чтобы не искать по плану.
+	require.False(t, v.Retryable, "вырез без альфы нельзя перепокупать: тот же вход у той же модели "+
+		"даёт тот же ответ, а платит за него карточка")
+	require.Equal(t, CodeCutoutNoAlpha, v.Code)
 	require.Equal(t, "cutout_no_alpha", CodeCutoutNoAlpha)
+	require.Equal(t, entity.DesignAttemptDelivered, v.State)
 
-	// А вот СОСЕД с тем же швом уже классифицирован правильно, и именно он — образец:
+	// СОСЕД С ТЕМ ЖЕ ШВОМ, И ИМЕННО ОН БЫЛ ОБРАЗЦОМ: куплено, сохранено, пожаловались строкой.
 	seam := classify(errPatternNotSeamless)
 	require.False(t, seam.Retryable)
 	require.Equal(t, CodePatternNotSeamless, seam.Code)
+	require.Equal(t, entity.DesignAttemptDelivered, seam.State)
+
+	// ⚠ И ОБЁРНУТЫЙ СЕНТИНЕЛ ТОЖЕ: Execute возвращает его С ЧИСЛАМИ (fmt.Errorf %w), и классификатор
+	// обязан узнавать его сквозь обёртку — иначе ветка зелена на голом сентинеле и мертва на том
+	// единственном значении, которое действительно приезжает с маршрута.
+	wrapped := fmt.Errorf("%w: every one of the 64 pixels is fully opaque; the picture was kept",
+		errCutoutNoAlpha)
+	require.Equal(t, CodeCutoutNoAlpha, classify(wrapped).Code)
 }

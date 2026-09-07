@@ -115,6 +115,16 @@ func classify(err error) verdict {
 	case errors.Is(err, errPatternNotSeamless):
 		return verdict{Retryable: false, Code: CodePatternNotSeamless, State: entity.DesignAttemptDelivered}
 
+	// ─── ours: THE SAME SEAM ONE ROUTE OVER. A cut-out that came back with nothing cut out is a
+	// property of the delivered picture, not of the call: the matting model answered, the money is
+	// spent, the file is kept and shown. What must NOT happen is a retry — the same picture from the
+	// same model gives the same answer, and until this branch existed the sentinel fell into the
+	// retryable default below and the run BOUGHT THAT ANSWER AGAIN up to the paid-attempt cap while
+	// the history row said `provider_unavailable`, sending a person to the status page of a provider
+	// that was working perfectly. See errCutoutNoAlpha in cutoutfal.go.
+	case errors.Is(err, errCutoutNoAlpha):
+		return verdict{Retryable: false, Code: CodeCutoutNoAlpha, State: entity.DesignAttemptDelivered}
+
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.
 	case errors.Is(err, errStorageFailed):

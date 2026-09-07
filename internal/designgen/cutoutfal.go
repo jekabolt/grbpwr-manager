@@ -35,17 +35,12 @@ const CodeCutoutNoAlpha = "cutout_no_alpha"
 // failure: the money is spent and the picture may still be perfectly useful to look at, so the
 // store files it and the attempt row carries the complaint. Same seam as errPatternNotSeamless.
 //
-// ⚠ ЧТО ЕЩЁ НЕ СДЕЛАНО, И ЭТО СТОИТ ДЕНЕГ: В classify.go НЕТ ВЕТКИ ДЛЯ ЭТОГО СЕНТИНЕЛА. Пока её
-// нет, ошибка проваливается в retryable-умолчание классификатора — прогон будет ПОКУПАТЬ ТОТ ЖЕ
-// ОТВЕТ СНОВА до потолка платных попыток, а строка истории скажет `provider_unavailable`, отправив
-// человека смотреть статус-страницу провайдера, у которого всё в порядке. Ветка, которую надо
-// добавить рядом с errPatternNotSeamless, дословно:
-//
-//	case errors.Is(err, errCutoutNoAlpha):
-//	    return verdict{Retryable: false, Code: CodeCutoutNoAlpha, State: entity.DesignAttemptDelivered}
-//
-// Она обязана приехать ВМЕСТЕ с проводкой маршрута (Providers.Cutout + forKind), не позже: до
-// проводки этот код недостижим, после — достижим на каждом отказавшем вырезе.
+// ⚠ И У НЕГО ЕСТЬ СВОЯ ВЕТКА В classify.go, БЕЗ КОТОРОЙ ОН СТОИЛ БЫ ДЕНЕГ. Сентинел без ветки
+// проваливается в retryable-умолчание классификатора: прогон ПОКУПАЛ БЫ ТОТ ЖЕ ОТВЕТ СНОВА до
+// потолка платных попыток, а строка истории говорила бы `provider_unavailable` — и отправляла
+// человека смотреть статус-страницу провайдера, у которого всё в порядке. Ветка стоит рядом с
+// errPatternNotSeamless, потому что это тот же шов: картинка куплена, сохранена и показана, а
+// жалоба едет в строке попытки.
 var errCutoutNoAlpha = errors.New("designgen: the cut-out came back with nothing cut out")
 
 // falCutoutProvider is the background-removal route (задача 3 — «прозрачные картинки»).
