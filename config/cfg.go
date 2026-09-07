@@ -719,6 +719,14 @@ func bindEnvVars() {
 	// fal.locateRequest and fal.retiredModel3D, which is also where the one uncovered move is named
 	// (one override replaced straight by another).
 	viper.BindEnv("fal.model_3d", "FAL_MODEL_3D")
+	// The BACKGROUND-REMOVAL slug. Empty => fal.DefaultModelCutout (`fal-ai/birefnet/v2`).
+	//
+	// ⚠ THE DEFAULT IS A LICENCE DECISION, NOT A QUALITY ONE, so this override is an emergency
+	// wheel rather than a knob: BiRefNet is MIT, while the neighbouring matting weights of the same
+	// architecture (BRIA RMBG-2.0, which is what `rembg` loads unless told otherwise) are CC BY-NC —
+	// commercial use only under a separate agreement. Pointing this variable at a model somebody
+	// picked for its edges is how a licence obligation arrives without anyone deciding to take it on.
+	viper.BindEnv("fal.model_cutout", "FAL_MODEL_CUTOUT")
 	viper.BindEnv("fal.http_timeout", "FAL_HTTP_TIMEOUT")
 	viper.BindEnv("fal.poll_interval", "FAL_POLL_INTERVAL")
 	viper.BindEnv("fal.poll_timeout", "FAL_POLL_TIMEOUT")
@@ -727,4 +735,9 @@ func bindEnvVars() {
 	// Unset falls back to a documented estimate, deliberately: recording a plausible cost is better
 	// than recording zero, which would make every paid 3D build read as free in the ledger.
 	viper.BindEnv("fal.unit_usd", "FAL_UNIT_USD")
+	// Price of one billable unit of the BACKGROUND-REMOVAL route. It is a SECOND variable and not a
+	// reuse of FAL_UNIT_USD because the two routes' units differ by two orders of magnitude: one
+	// number for both would price a two-cent cut-out at a dollar, or a dollar-plus turntable at two
+	// cents, depending only on which route the operator had in mind when they typed it.
+	viper.BindEnv("fal.unit_usd_cutout", "FAL_UNIT_USD_CUTOUT")
 }

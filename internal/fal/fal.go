@@ -304,11 +304,16 @@ type Config struct {
 	APIKey          string        `mapstructure:"api_key"`          // FAL_KEY; empty = disabled
 	BaseURL         string        `mapstructure:"base_url"`         // FAL_BASE_URL; empty = defaultBaseURL
 	Model3D         string        `mapstructure:"model_3d"`         // FAL_MODEL_3D; empty = DefaultModel3D
+	ModelCutout     string        `mapstructure:"model_cutout"`     // FAL_MODEL_CUTOUT; empty = DefaultModelCutout
 	HTTPTimeout     time.Duration `mapstructure:"http_timeout"`     // FAL_HTTP_TIMEOUT
 	PollInterval    time.Duration `mapstructure:"poll_interval"`    // FAL_POLL_INTERVAL
 	PollTimeout     time.Duration `mapstructure:"poll_timeout"`     // FAL_POLL_TIMEOUT
 	DownloadTimeout time.Duration `mapstructure:"download_timeout"` // FAL_DOWNLOAD_TIMEOUT
 	UnitUSD         float64       `mapstructure:"unit_usd"`         // FAL_UNIT_USD; <=0 = defaultUnitUSD
+	// UnitUSDCutout is the tariff of the BACKGROUND-REMOVAL route, and it is a second variable
+	// rather than a reuse of UnitUSD because the two routes' units differ by two orders of
+	// magnitude — see CostCutoutUSD. <=0 = defaultCutoutUSD per request.
+	UnitUSDCutout float64 `mapstructure:"unit_usd_cutout"` // FAL_UNIT_USD_CUTOUT
 }
 
 // String renders the config with the API key redacted, so an accidental %v / %+v / %s of it — in a
@@ -320,9 +325,10 @@ func (c Config) String() string {
 		// that would turn a redaction into a second mystery.
 		key = "***REDACTED***"
 	}
-	return fmt.Sprintf("fal.Config{APIKey:%s BaseURL:%s Model3D:%s HTTPTimeout:%s PollInterval:%s "+
-		"PollTimeout:%s DownloadTimeout:%s UnitUSD:%v}",
-		key, c.BaseURL, c.Model3D, c.HTTPTimeout, c.PollInterval, c.PollTimeout, c.DownloadTimeout, c.UnitUSD)
+	return fmt.Sprintf("fal.Config{APIKey:%s BaseURL:%s Model3D:%s ModelCutout:%s HTTPTimeout:%s "+
+		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v}",
+		key, c.BaseURL, c.Model3D, c.ModelCutout, c.HTTPTimeout, c.PollInterval, c.PollTimeout,
+		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout)
 }
 
 // Client is a configured fal queue client. A nil *Client is valid and permanently disabled, so
