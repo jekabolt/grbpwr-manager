@@ -122,6 +122,19 @@ var freeformSides = []int{freeformMaxSide, freeformFallbackSide}
 // нужно другое: уменьшить картинку или снять с неё пару областей, и об этом говорит текст.
 var errFreeformJobTooLarge = errors.New("designgen: this playground run does not fit in memory")
 
+// errFreeformSourceTooLarge — ИСХОДНИК ОБЪЯВЛЯЕТ БОЛЬШЕ ПИКСЕЛЕЙ, ЧЕМ ЭТОТ ПРОЦЕСС РАЗВОРАЧИВАЕТ,
+// И ОТКАЗ БЕСПЛАТНЫЙ.
+//
+// ⚠ ЭТО НЕ ВТОРОЕ ИМЯ job_too_large, И РАЗЛИЧЕНИЕ ЧЕЛОВЕК ЧИТАЕТ ГЛАЗАМИ. `job_too_large` говорит
+// «картинок вместе слишком много байтов — снимите область или уменьшите кадры», то есть про СУММУ
+// уже собранного; здесь не собрано ничего и собирать нечего — ОДНА картинка не может быть прочитана
+// вовсе. Совет у них разный, поэтому и слово разное.
+//
+// ТЕРМИНАЛЬНЫЙ ПО ТОМУ ЖЕ ДОВОДУ, ЧТО СОСЕД: снимок заморожен, следующий проход возьмёт ту же
+// строку медиа с тем же заголовком и упрётся в тот же потолок — то есть купит пять одинаковых
+// отказов, если счесть его погодой.
+var errFreeformSourceTooLarge = errors.New("designgen: a picture of this playground run is too large to read")
+
 // freeformOutlineColours — ЦВЕТ ОБЛАСТИ ПО ЕЁ НОМЕРУ, и словарь тот же, которым карточка красит
 // свои выноски (TechCardAnnotationColor: red, blue, green, orange).
 //
@@ -458,7 +471,28 @@ func freeformFetchImage(ctx context.Context, objects objectFetcher, rawURL strin
 
 // freeformDecode ОПОЗНАЁТ ФОРМАТ ПО БАЙТАМ, а не по расширению или заголовку: полный размер медиа
 // бывает и WebP (перекодирующая загрузка), и чем угодно, что положили побайтово (verbatim).
+//
+// ⚠ ЗАГОЛОВОК ЧИТАЕТСЯ РАНЬШЕ РАСТРА, И ПОТОЛОК БАЙТОВ ЭТОГО НЕ ЗАМЕНЯЕТ. Байтовый потолок в 64 MiB
+// (freeformMaxSourceBytes) ограничивает СЖАТОЕ, а в память процесса ложится РАЗВЁРНУТОЕ: PNG,
+// WebP, GIF и JPEG все умеют объявить канву в гигапиксели несколькими килобайтами — это классическая
+// бомба разжатия, и её цена здесь не «прогон подороже», а OOM всего воркера вместе с чужими
+// оплаченными прогонами в соседних горутинах. Отказ стоит одного вызова DecodeConfig и приходит ДО
+// денег: сборка задания зовётся до StartAttempt.
+//
+// ПОТОЛОК ТОТ ЖЕ, ЧТО У БАКЕТА И У ПРОВЕРКИ АЛЬФЫ ВЫРЕЗА (bucket.ImageWithinBudget). Одно число на
+// весь процесс: копия разошлась бы молча.
 func freeformDecode(raw []byte) (image.Image, error) {
+	cfg, err := freeformDecodeConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !bucket.ImageWithinBudget(cfg.Width, cfg.Height) {
+		side, pixels := bucket.ImageBudgetCeilings()
+		return nil, fmt.Errorf("%w: its header declares %d×%d pixels, and this deployment unpacks at "+
+			"most %d px on a side and %d pixels in all — %d bytes of file would have become tens of "+
+			"gigabytes of memory. Use a smaller picture",
+			errFreeformSourceTooLarge, cfg.Width, cfg.Height, side, pixels, len(raw))
+	}
 	switch {
 	case len(raw) >= 8 && bytes.Equal(raw[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}):
 		return png.Decode(bytes.NewReader(raw))
@@ -470,6 +504,29 @@ func freeformDecode(raw []byte) (image.Image, error) {
 		return gif.Decode(bytes.NewReader(raw))
 	default:
 		return nil, fmt.Errorf("unrecognised image format")
+	}
+}
+
+// freeformDecodeConfig — ТОЛЬКО ЗАГОЛОВОК, ни одного пикселя.
+//
+// ⚠ РАЗБИЕНИЕ ПО ФОРМАТАМ ЗДЕСЬ ДОСЛОВНО ТО ЖЕ, ЧТО У ДЕКОДЕРА ВЫШЕ, И ЭТО НЕСУЩЕЕ СВОЙСТВО.
+// Общая image.DecodeConfig отвечала бы по ЗАРЕГИСТРИРОВАННЫМ форматам — то есть по тому, какие
+// пакеты кто-то импортировал ради других надобностей, — и разошлась бы с настоящим декодером в обе
+// стороны: формат, который она прочитает, а он не возьмёт (тихий отказ вместо картинки), и формат,
+// который возьмёт он, а она нет (бомба мимо потолка). Одна развилка, повторённая дважды подряд,
+// проверяется глазом; две разные — не проверяется никак.
+func freeformDecodeConfig(raw []byte) (image.Config, error) {
+	switch {
+	case len(raw) >= 8 && bytes.Equal(raw[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}):
+		return png.DecodeConfig(bytes.NewReader(raw))
+	case len(raw) >= 3 && raw[0] == 0xFF && raw[1] == 0xD8 && raw[2] == 0xFF:
+		return jpeg.DecodeConfig(bytes.NewReader(raw))
+	case len(raw) >= 12 && string(raw[0:4]) == "RIFF" && string(raw[8:12]) == "WEBP":
+		return webp.DecodeConfig(bytes.NewReader(raw))
+	case len(raw) >= 6 && (string(raw[:6]) == "GIF87a" || string(raw[:6]) == "GIF89a"):
+		return gif.DecodeConfig(bytes.NewReader(raw))
+	default:
+		return image.Config{}, fmt.Errorf("unrecognised image format")
 	}
 }
 

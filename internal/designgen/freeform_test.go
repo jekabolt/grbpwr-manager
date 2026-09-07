@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
@@ -569,6 +571,80 @@ func TestAnOversizedPlaygroundRunREFUSES_BEFORE_ANY_MONEY(t *testing.T) {
 		"снимок заморожен: следующий проход соберёт то же задание и упрётся в тот же потолок")
 	require.Contains(t, st.failed[0].LastError, "1024",
 		"отказ называет размер, на котором сдался, — человеку иначе нечего уменьшать")
+}
+
+// TestAGigapixelSourceIsREFUSED_FROM_ITS_HEADER_BEFORE_ANY_MONEY.
+//
+// ⚠ БАЙТОВЫЙ ПОТОЛОК ЭТОГО НЕ ЛОВИЛ, И В ЭТОМ ВЕСЬ ДЕФЕКТ. `freeformMaxSourceBytes` меряет СЖАТОЕ
+// (64 MiB), а в память ложится РАЗВЁРНУТОЕ: PNG в полторы сотни байт законно объявляет канву в
+// гигапиксель, и `png.Decode` попросил бы под неё десятки гигабайт в процессе, у которого
+// пол-гигабайта на всё. Умирал бы не этот прогон, а весь воркер вместе с чужими оплаченными
+// прогонами в соседних горутинах.
+//
+// ПРОБА РАЗЛИЧАЮЩАЯ ПО ПОСТРОЕНИЮ: у фикстуры нет растра под объявленную канву (pngHeaderSays), то
+// есть `png.Decode` на ней ПАДАЕТ. Значит `source_too_large` невозможно получить, если байты всё
+// же декодировали — декодировавшая редакция отдала бы обычную ошибку чтения и другой код.
+func TestAGigapixelSourceIsREFUSED_FROM_ITS_HEADER_BEFORE_ANY_MONEY(t *testing.T) {
+	bomb := pngHeaderSays(t, 40000, 40000)
+	require.Less(t, len(bomb), 4096, "бомба обязана быть маленькой — потолок байтов её не видит")
+
+	objs := &fakeObjects{byKey: map[string][]byte{"m/11.png": bomb}}
+	r := freeformRun(`{"freeform":{"preset":"free","items":[
+	  {"media_id":11,"role":"subject","texts":["this pocket"],
+	   "regions":[{"kind":"TECH_CARD_ANNOTATION_KIND_POLYGON","points":[` +
+		point("0.05", "0.05") + `,` + point("0.95", "0.05") + `,` + point("0.95", "0.95") + `,` +
+		point("0.05", "0.95") + `]}]}]}}`)
+
+	prov := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	st := &fakeStore{}
+	w := testWorker(st, media(11), newFakeSink(ContentTypePNG), Providers{Image: prov})
+	w.objects = objs
+
+	require.NoError(t, w.execute(context.Background(), r, "tok"))
+
+	require.Empty(t, prov.calls, "ни одного платного вызова: отказ вынесен при сборке задания")
+	require.Empty(t, st.started, "и ни одной открытой попытки — StartAttempt резервирует бюджет")
+	require.Len(t, st.failed, 1)
+	require.Equal(t, CodeSourceTooLarge, st.failed[0].ErrorCode)
+	require.Equal(t, "source_too_large", CodeSourceTooLarge)
+	require.False(t, st.failed[0].Retryable,
+		"строка медиа неизменна: следующий проход прочитает тот же заголовок")
+	require.Contains(t, st.failed[0].LastError, "40000×40000",
+		"отказ называет объявленный размер — человеку иначе нечем опознать виновную картинку")
+
+	// ⚠ И ЭТО НЕ job_too_large. Совет у них разный: там «снимите область или уменьшите набор»,
+	// здесь «замените вот этот кадр»; одно слово на два совета послало бы человека чинить не то.
+	require.NotEqual(t, CodeJobTooLarge, st.failed[0].ErrorCode)
+}
+
+// TestTheSourceCeilingIsTHE_SAME_NUMBER_EVERYWHERE — потолок исходника плейграунда, потолок
+// проверки альфы выреза и потолок бакета это ОДНО число.
+//
+// Копия разошлась бы молча и в ту сторону, в которую дороже: картинка, которую бакет отказался бы
+// хранить, была бы развёрнута в память ради подготовки платного вызова.
+func TestTheSourceCeilingIsTHE_SAME_NUMBER_EVERYWHERE(t *testing.T) {
+	side, _ := bucket.ImageBudgetCeilings()
+
+	_, err := freeformDecode(pngHeaderSays(t, side+1, 4))
+	require.ErrorIs(t, err, errFreeformSourceTooLarge)
+
+	// ЧЕСТНАЯ КАРТИНКА В БЮДЖЕТЕ ЧИТАЕТСЯ КАК ПРЕЖДЕ — иначе потолок был бы заглушкой на весь род.
+	img, err := freeformDecode(fixturePNG(t))
+	require.NoError(t, err)
+	require.Equal(t, 100, img.Bounds().Dx())
+
+	v := classify(err2(errFreeformSourceTooLarge))
+	require.False(t, v.Retryable)
+	require.Equal(t, CodeSourceTooLarge, v.Code)
+	require.Equal(t, entity.DesignAttemptFailed, v.State,
+		"денег не потрачено: сборка задания идёт до StartAttempt")
+}
+
+// err2 оборачивает сентинел так же, как это делает боевой код (%w плюс цифры): классификатор обязан
+// узнавать его СКВОЗЬ обёртку, иначе ветка зелена на голом сентинеле и мертва на том единственном
+// значении, которое реально приезжает с маршрута.
+func err2(sentinel error) error {
+	return fmt.Errorf("%w: its header declares 40000×40000 pixels", sentinel)
 }
 
 // TestAlphaIsMEASURED_NOT_ASSUMED_FROM_THE_TYPE.

@@ -81,6 +81,18 @@ const (
 	// `provider_response_too_large` — того же по звучанию отказа с ДРУГОЙ стороны провода и с уже
 	// потраченными деньгами.
 	CodeJobTooLarge = "job_too_large"
+
+	// CodeSourceTooLarge — ОДНА КАРТИНКА ПРОГОНА НЕ ЧИТАЕТСЯ ВОВСЕ, И НИ ОДИН ЦЕНТ НЕ УПЛАЧЕН.
+	// Заголовок объявляет больше пикселей, чем процесс разворачивает, и растр не трогали. Отдельное
+	// слово от `job_too_large` потому, что человеку из них следуют РАЗНЫЕ действия: там — снять
+	// область или уменьшить набор, здесь — заменить конкретный кадр. См. errFreeformSourceTooLarge.
+	CodeSourceTooLarge = "source_too_large"
+
+	// CodeSourceGone — ПРЕДПОСЫЛКА ПРЕСЕТА НЕ ПЕРЕЖИЛА РЕЗОЛВ МЕДИА, И ОТКАЗ ТОЖЕ БЕСПЛАТНЫЙ.
+	// Дверь спрашивала пресет у ПАРАМЕТРОВ, а сборка задания собирает его из ВЫЖИВШИХ строк медиа;
+	// картинка, удалённая между дверью и проходом, превращала выполнимую просьбу в оплаченную
+	// «как получится». См. errFreeformSourceGone в snapshot.go.
+	CodeSourceGone = "source_gone"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -135,6 +147,13 @@ func classify(err error) verdict {
 	// five identical refusals and hides the one thing a person can act on — the picture is too big.
 	case errors.Is(err, errFreeformJobTooLarge):
 		return verdict{Retryable: false, Code: CodeJobTooLarge, State: entity.DesignAttemptFailed}
+	// ─── ours: the same seam, one step earlier and about ONE picture rather than their sum. A
+	// source whose header declares more pixels than this process unpacks is refused before it is
+	// decoded — and therefore before any money, since buildJob runs before StartAttempt. Terminal
+	// for the same reason as its neighbour: the snapshot is frozen and the media row is immutable,
+	// so the next pass meets the very same header.
+	case errors.Is(err, errFreeformSourceTooLarge):
+		return verdict{Retryable: false, Code: CodeSourceTooLarge, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it
