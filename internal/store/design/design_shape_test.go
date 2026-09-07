@@ -317,18 +317,93 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 	}
 }
 
-// TestCardOutputsClassifyByRunKindNotPictureKind — род берётся у ПРОГОНА.
+// sqlKindSet — словарь, перечисленный в `<prefix>'a', 'b', …)`, прочитанный МНОЖЕСТВОМ.
+//
+// ⚠ ЗАЧЕМ РАЗБОР, А НЕ strings.Contains ПО ГОТОВОЙ СТРОКЕ. Побайтная цитата предиката проверяет
+// не членство, а ПОРЯДОК И ПРОБЕЛЫ: она краснеет на переставленных словах (поведение не
+// изменилось) и — что хуже — краснеет на ДОБАВЛЕННОМ роде, то есть требует править пробу при
+// каждом расширении словаря. Ровно это и случилось с плейграундом: цитата `…, 'recolor')` стала
+// ложной ровно тогда, когда список законно вырос. Проба обязана утверждать то, что несёт смысл, —
+// КАКИЕ роды здесь есть и каких нет.
+func sqlKindSet(t *testing.T, stmt, prefix string) map[string]bool {
+	t.Helper()
+	i := strings.Index(stmt, prefix)
+	if i < 0 {
+		t.Fatalf("the predicate has no %q branch at all", prefix)
+	}
+	rest := stmt[i+len(prefix):]
+	j := strings.Index(rest, ")")
+	if j < 0 {
+		t.Fatalf("the %q list is not closed", prefix)
+	}
+	out := map[string]bool{}
+	for _, w := range strings.Split(rest[:j], ",") {
+		if k := strings.Trim(strings.TrimSpace(w), "'"); k != "" {
+			out[k] = true
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("the %q list is empty", prefix)
+	}
+	return out
+}
+
+// TestCardOutputsClassifyByRunKindNotPictureKind — род берётся у ПРОГОНА, и СОСТАВ ОБЕИХ ВЕТОК
+// проверяется по членству.
 //
 // ЧТО ЭТО СТЕРЕЖЁТ (L-1). Перекрас рождает кадры рода `render` — это правда, на выходе фотография
 // изделия, — поэтому отбор по роду КАРТИНКИ смешал бы результаты ON MODEL с рендерами, и штамп в
 // ответе не смог бы их развести: у него был бы тот же `render`. Ветка `r.kind IN (...)` обязана
 // содержать `recolor`, а колонка штампа — приезжать из `r.kind`.
 //
-// МУТАЦИЯ: заменить `r.kind IN` на `p.kind IN` в предикате прогонной ветки.
+// ⚠ И ВТОРАЯ ВЕТКА ЗДЕСЬ НЕ УКРАШЕНИЕ. Кадр БЕЗ прогона отбирается по СВОЕМУ роду, и `freeform`/
+// `cutout` в этом списке были бы утверждением «такой кадр бывает загружен руками» — прямо
+// противоположным узкому предикату ручной загрузки (entity.IsDesignUploadKind). Два места, где
+// словарь ручной загрузки объявлен по-разному, разошлись бы молча: раздел показывал бы кадры,
+// которых дверь загрузки не пускает.
+//
+// МУТАЦИИ: заменить `r.kind IN` на `p.kind IN` в прогонной ветке; выкинуть `recolor` или любой из
+// двух родов плейграунда; дописать `freeform` в безпрогонную ветку; взять штамп из `p.kind`.
 func TestCardOutputsClassifyByRunKindNotPictureKind(t *testing.T) {
-	if !strings.Contains(designCardOutputsWhere, "r.kind IN ('render', 'threed', 'pattern', 'recolor')") {
-		t.Fatal("a picture that came out of a run is classified by the RUN's kind, recolor included")
+	byRun := sqlKindSet(t, designCardOutputsWhere, "r.kind IN (")
+	for _, kind := range []string{
+		entity.DesignRunKindRender, entity.DesignRunKindThreed, entity.DesignRunKindPattern,
+		entity.DesignRunKindRecolor, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+	} {
+		if !byRun[kind] {
+			t.Fatalf("a picture born by a %q run is an output of this card and must be in the "+
+				"run branch: a section that does not list it is a section where the person "+
+				"cannot find what the card paid for", kind)
+		}
 	}
+	// …и ровно эти. Флэт и вектор рождают ПЛОСКИЙ кадр верстака, а черновик идеи не рождает кадра
+	// вовсе; попав сюда, они смешали бы верстак с лентой выходов.
+	for _, kind := range []string{
+		entity.DesignRunKindFlat, entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
+	} {
+		if byRun[kind] {
+			t.Fatalf("a %q run does not produce a card OUTPUT: listing it here mixes the bench "+
+				"into the generated feed", kind)
+		}
+	}
+
+	byPicture := sqlKindSet(t, designCardOutputsWhere, "p.kind IN (")
+	for _, kind := range []string{entity.DesignPictureKindFreeform, entity.DesignPictureKindCutout} {
+		if byPicture[kind] {
+			t.Fatalf("%q exists only as the OUTPUT of a run — a picture of that kind with no run "+
+				"row cannot be uploaded by hand (entity.IsDesignUploadKind), and claiming "+
+				"otherwise here is a second, disagreeing copy of that vocabulary", kind)
+		}
+	}
+	for _, kind := range []string{
+		entity.DesignPictureKindRender, entity.DesignPictureKindThreed, entity.DesignPictureKindPattern,
+	} {
+		if !byPicture[kind] {
+			t.Fatalf("a hand-uploaded %q is an output of this card too — a plate that is not in "+
+				"the list cannot be chosen", kind)
+		}
+	}
+
 	if !strings.Contains(designListCardOutputs, "COALESCE(r.kind, '') AS run_kind") {
 		t.Fatal("the stamp's kind must come from the run row, not from the picture")
 	}
