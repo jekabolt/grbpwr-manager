@@ -552,6 +552,12 @@ func (a *App) Start(ctx context.Context) error {
 			// today `meshy/v7/multi-image-to-3d`. Both are reached DIRECTLY, because OpenRouter has
 			// no 3D modality to route to.
 			Threed: threed,
+			// cutout — background removal, the SAME fal client and the SAME FAL_KEY as the 3D
+			// route, and a different slug (FAL_MODEL_CUTOUT / fal.DefaultModelCutout, today
+			// `fal-ai/birefnet/v2`) with a tariff of its own (FAL_UNIT_USD_CUTOUT). It is a route
+			// rather than a fifth kind on Image because it is a different paid endpoint with a
+			// different unit of money — and because it sends no words at all.
+			Cutout: designgen.NewFalCutoutProvider(fal.New(a.c.Fal)),
 		})
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
