@@ -2039,6 +2039,15 @@ type (
 		// query the money door asks before reserving a run; an empty input answers empty without
 		// touching the base. Ids that no picture holds are simply absent from the answer.
 		MediaHeldDisplayOnly(ctx context.Context, mediaIDs []int) ([]int, error)
+		// MediaHeldHiddenOnly answers, for a set of media ids, WHICH of them the band holds ONLY
+		// as HIDDEN pictures — that is, which files the person has rejected everywhere they
+		// appear. The money door asks it beside MediaHeldDisplayOnly and for the same reason: a
+		// rejected picture must not reach a paid call. The predicate is «every holder is hidden»,
+		// not «some holder is hidden», because hidden is a statement about a PICTURE ROW rather
+		// than about the file — see the store for the full argument. Media no picture holds at
+		// all is absent from the answer, exactly as a freshly uploaded file is ownerless at the
+		// card boundary. An empty input answers empty without touching the base.
+		MediaHeldHiddenOnly(ctx context.Context, mediaIDs []int) ([]int, error)
 		// SetPictureSelected marks a picture as CHOSEN, and un-marks it (W-12). It is NOT the
 		// other side of HidePicture — hidden says «do not show me this», selected says «this is
 		// the one» — and nothing is exclusive: many pictures may be chosen at once.

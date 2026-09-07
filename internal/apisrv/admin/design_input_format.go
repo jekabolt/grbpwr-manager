@@ -304,6 +304,69 @@ func (s *Server) designRefuseDisplayOnlyInputs(ctx context.Context, refs []desig
 	return nil
 }
 
+// ═══ СПРЯТАННЫЙ КАДР — ЭТО ОТВЕРГНУТЫЙ КАДР, И ОН НЕ ПОКУПАЕТСЯ СНОВА ═══════════════════════════
+//
+// ⚠ ДЫРА БЫЛА ОБЩАЯ, А НЕ ТОЛЬКО У ПЛЕЙГРАУНДА, И ЭТО ГЛАВНОЕ ПРО НЕЁ. Ни один из пяти источников
+// входа не спрашивал про `hidden_at` ВООБЩЕ: ни `extra_input_media_ids`, ни ткани рецепта, ни карты
+// цвета, ни референсы, ни картинки плейграунда. «Спрятать» — единственный жест, которым человек
+// говорит про кадр «я его отверг» (HidePicture), и отвергнутый кадр, уехавший в платный вызов, —
+// это деньги за то, что уже забраковано, без единого следа в истории: снимок называет media_id, а
+// флаг живёт на кадре.
+//
+// ПОЭТОМУ ПРОВЕРКА ОДНА НА ВСЕ ИСТОЧНИКИ, В ТОЙ ЖЕ ТОЧКЕ И ТОЙ ЖЕ ФОРМЫ, ЧТО У «ТОЛЬКО ДЛЯ
+// ПОКАЗА»: один запрос на прогон по designRunInputMediaRefs, до резерва, с именем поля в отказе.
+// Заводить её отдельно для нового рода значило бы починить шестой путь и оставить пять.
+//
+// ⚠ ЧТО ЭТО МЕНЯЕТ В УЖЕ УЕХАВШЕМ ПОВЕДЕНИИ, НАЗВАНО ВСЛУХ. band.go про плиту верстака записал
+// долг дословно: «сегодня спрятанная плита в слоте кормит прогон… это не потеря денег, но и не то,
+// чего человек ждёт от „спрятать“». Здесь этот долг закрывается со стороны ДВЕРИ — такой прогон
+// теперь получает бесплатный отказ с именем поля вместо молчаливой отправки. Достижимо это
+// состояние почти только руками: hidePictureGuards ОТКАЗЫВАЕТ прятать кадр, стоящий в слоте
+// (ErrDesignInSlot), так что спрятанная плита в занятом слоте появляется лишь постановкой уже
+// спрятанного кадра.
+//
+// ⚠ И ПРЕДИКАТ ЗДЕСЬ НЕ ТОТ ЖЕ, ЧТО У display_only, ХОТЯ ФОРМА ТА ЖЕ. Тот флаг объявлен
+// утверждением о ФАЙЛЕ и потому спрашивается по медиа на всех карточках сразу; `hidden_at` — флаг
+// КАДРА, и один media законно лежит несколькими кадрами. Поэтому стор отвечает «ВСЕ держатели
+// спрятаны», а не «хоть один»: иначе прогон карточки A падал бы за то, что кто-то спрятал ту же
+// картинку на карточке B. Довод целиком — у MediaHeldHiddenOnly.
+
+// designRefuseHiddenInputs — сама дверь. refs — те же входы с источниками, что у соседа выше.
+func (s *Server) designRefuseHiddenInputs(ctx context.Context, refs []designInputMediaRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(refs))
+	for _, r := range refs {
+		ids = append(ids, r.ID)
+	}
+	held, err := s.repo.Design().MediaHeldHiddenOnly(ctx, ids)
+	if err != nil {
+		return designError(ctx, "failed to check whether the run's inputs are hidden pictures", err, nil)
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	heldSet := make(map[int]struct{}, len(held))
+	for _, id := range held {
+		heldSet[id] = struct{}{}
+	}
+	for _, ref := range refs {
+		if _, bad := heldSet[ref.ID]; bad {
+			return designRefusal(codes.FailedPrecondition, "hidden_input",
+				fmt.Sprintf("media %d is HIDDEN everywhere it appears on this band — hiding a picture is "+
+					"how this card says «I rejected it» — and this run would hand it to the provider. It "+
+					"came in as %s. Show the picture again, or name a different one. Nothing was reserved "+
+					"and nothing was charged", ref.ID, ref.Where),
+				map[string]string{
+					"media_id": strconv.Itoa(ref.ID),
+					"where":    ref.Where,
+				})
+		}
+	}
+	return nil
+}
+
 // designDisplayOnlyRefusal — текст отказа. Называет ТРИ вещи, как и сосед про формат: какой номер,
 // откуда он приехал (единственная подсказка, по которой человек чинит запрос) и что ничего не
 // зарезервировано и не списано.

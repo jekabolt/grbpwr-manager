@@ -929,6 +929,15 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseDisplayOnlyInputs(ctx, designRunInputMediaRefs(params, inputs)); err != nil {
 		return nil, err
 	}
+	// ─── И СПРЯТАННЫЙ КАДР — ТУДА ЖЕ, ПО ТЕМ ЖЕ ПЯТИ ИСТОЧНИКАМ И В ТОЙ ЖЕ ТОЧКЕ ───
+	//
+	// «Спрятать» — единственный жест, которым человек говорит про кадр «я его отверг»; отправить
+	// такой кадр в платный вызов значит заплатить за уже забракованное, и в истории от этого не
+	// остаётся ни следа. До этой двери про `hidden_at` не спрашивал НИ ОДИН из пяти источников —
+	// дыра была общая, а не только у плейграунда. Довод целиком — в шапке design_input_format.go.
+	if err := s.designRefuseHiddenInputs(ctx, designRunInputMediaRefs(params, inputs)); err != nil {
+		return nil, err
+	}
 	// ─── КАРТА ЦВЕТА, КОТОРАЯ НА САМОМ ДЕЛЕ ПЛИТА ИЛИ РЕФЕРЕНС ───
 	//
 	// Та же позиция и тот же довод, что у двух сторожей выше, и тот же СПИСОК ИСТОЧНИКОВ: вопрос
@@ -2387,6 +2396,12 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// И ТА ЖЕ ДВЕРЬ «ТОЛЬКО ДЛЯ ПОКАЗА» (0361, D-24), тоже до денег: медиа кадра, помеченного так,
 	// человек может положить на доску, и оно уехало бы в платный вызов, минуя полосу целиком.
 	if err := s.designRefuseDisplayOnlyInputs(ctx, designBoardMediaRefs(attachedIDs, boardURLs)); err != nil {
+		return nil, err
+	}
+	// И ТА ЖЕ ДВЕРЬ ПРО СПРЯТАННОЕ, по тому же доводу и на том же списке адресов: кадр, который
+	// человек отверг на полосе, лежит на доске тем же медиа и уехал бы в платный вызов, минуя
+	// полосу целиком.
+	if err := s.designRefuseHiddenInputs(ctx, designBoardMediaRefs(attachedIDs, boardURLs)); err != nil {
 		return nil, err
 	}
 

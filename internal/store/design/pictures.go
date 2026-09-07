@@ -867,3 +867,67 @@ func (s *Store) MediaHeldDisplayOnly(ctx context.Context, mediaIDs []int) ([]int
 	}
 	return out, nil
 }
+
+// MediaHeldHiddenOnly — КАКИЕ ИЗ НАЗВАННЫХ МЕДИА ЛЕЖАТ НА ПОЛОСЕ ТОЛЬКО СПРЯТАННЫМИ КАДРАМИ.
+//
+// «Спрятать» — это единственный жест, которым человек говорит про кадр «я его отверг»
+// (HidePicture). Отвергнутый кадр, уехавший в ПЛАТНЫЙ вызов, — это деньги, потраченные на то, что
+// уже забраковано, и никакого следа этого решения в истории не остаётся: снимок называет media_id,
+// а флаг живёт на кадре.
+//
+// ⚠ ПРЕДИКАТ — «ВСЕ ДЕРЖАТЕЛИ СПРЯТАНЫ», А НЕ «ХОТЬ ОДИН СПРЯТАН», И ЭТО НЕ СТРОГОСТЬ РАДИ
+// СТРОГОСТИ. Флаг стоит на КАДРЕ, а не на файле — в отличие от display_only, который прямо объявлен
+// утверждением о ФАЙЛЕ, — и один и тот же media законно лежит несколькими кадрами: на своей
+// карточке и на чужой, оригиналом и после разреза. Спрошенный «хоть один», этот вопрос отказывал бы
+// прогону карточки A за то, что кто-то спрятал ту же картинку на карточке B, — то есть был бы
+// сторожем, рубящим законный оплаченный прогон, а такой сторож хуже дыры. Спрошенный «все», он
+// говорит ровно то, что значит: этот файл на полосе больше нигде не показывается.
+//
+// МЕДИА, КОТОРОЕ НЕ ДЕРЖИТ НИ ОДИН КАДР, В ОТВЕТ НЕ ПОПАДАЕТ — и это то же решение, что у границы
+// карточки (AssertMediaNotForeign пропускает ничейное): только что загруженный файл ещё ничей, и
+// отказывать ему было бы отказом обычному порядку работы.
+//
+// Форма — дословно как у соседа (MediaHeldDisplayOnly): пустой вход отвечает пустотой не трогая
+// базу, нули и повторы выбрасываются здесь.
+func (s *Store) MediaHeldHiddenOnly(ctx context.Context, mediaIDs []int) ([]int, error) {
+	ids := make([]int, 0, len(mediaIDs))
+	seen := make(map[int]struct{}, len(mediaIDs))
+	for _, id := range mediaIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	type row struct {
+		MediaId int `db:"media_id"`
+	}
+	var out []int
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		rows, err := storeutil.QueryListNamed[row](ctx, rep.DB(), `
+			SELECT media_id FROM design_picture
+			WHERE media_id IN (:ids)
+			GROUP BY media_id
+			HAVING SUM(hidden_at IS NULL) = 0
+			ORDER BY media_id`,
+			map[string]any{"ids": ids})
+		if err != nil {
+			return fmt.Errorf("failed to check which media are held only by hidden pictures: %w", err)
+		}
+		out = make([]int, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.MediaId)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

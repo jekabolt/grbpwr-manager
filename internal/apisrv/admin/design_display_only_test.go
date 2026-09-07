@@ -31,16 +31,39 @@ import (
 
 const designDisplayOnlyMediaID = 8400
 
-// displayOnlyRig — стенд, у которого стор полосы отвечает, ЧТО из названных медиа помечено
-// «только для показа», и записывает, о чём его спросили.
-type displayOnlyRig struct {
+// inputStateRig — стенд, у которого стор полосы отвечает, ЧТО из названных медиа помечено
+// «только для показа» и что из них спрятано, и записывает, о чём его спросила КАЖДАЯ из двух
+// дверей.
+//
+// ⚠ ОДИН СТЕНД НА ОБЕ ДВЕРИ, А НЕ ДВА ПОХОЖИХ, И ЭТО ТО ЖЕ РЕШЕНИЕ, ЧТО У designStubNoDisplayOnly.
+// Двери стоят в одной точке, спрашивают одно множество входов (designRunInputMediaRefs) и обе
+// исполняются на КАЖДОЙ пробе соседки — значит копия стенда была бы вторым местом, где список
+// денежных дверей расходится с настоящим, и разошлась бы она молча: незаявленный вызов роняет
+// пробу по имени только там, где о нём вспомнили.
+type inputStateRig struct {
 	*designRunRig
-	asked []int
+	// asked / askedHidden — о чём спросили ДВЕ РАЗНЫЕ двери. Одно поле на обе не годится: проба
+	// полноты вопроса («спросили про все пять источников») тогда зеленела бы от соседки.
+	asked       []int
+	askedHidden []int
 }
 
-func newDisplayOnlyRig(t *testing.T, band *entity.DesignBand, held []int, withStartRun bool, override map[int]string) *displayOnlyRig {
+// newDisplayOnlyRig — стенд, на котором помечено «только для показа» ровно held, а спрятанного нет.
+func newDisplayOnlyRig(t *testing.T, band *entity.DesignBand, held []int, withStartRun bool, override map[int]string) *inputStateRig {
 	t.Helper()
-	rig := &displayOnlyRig{designRunRig: &designRunRig{
+	return newInputStateRig(t, band, held, nil, withStartRun, override)
+}
+
+// newHiddenInputRig — зеркало: спрятано ровно hidden, «только для показа» не помечено ничего.
+// Пробы этой двери лежат в design_hidden_input_test.go.
+func newHiddenInputRig(t *testing.T, band *entity.DesignBand, hidden []int, withStartRun bool, override map[int]string) *inputStateRig {
+	t.Helper()
+	return newInputStateRig(t, band, nil, hidden, withStartRun, override)
+}
+
+func newInputStateRig(t *testing.T, band *entity.DesignBand, displayHeld, hiddenHeld []int, withStartRun bool, override map[int]string) *inputStateRig {
+	t.Helper()
+	rig := &inputStateRig{designRunRig: &designRunRig{
 		repo:   mocks.NewMockRepository(t),
 		cards:  mocks.NewMockTechCards(t),
 		design: mocks.NewMockDesign(t),
@@ -62,7 +85,15 @@ func newDisplayOnlyRig(t *testing.T, band *entity.DesignBand, held []int, withSt
 	rig.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, mock.Anything).
 		RunAndReturn(func(_ context.Context, ids []int) ([]int, error) {
 			rig.asked = append(rig.asked, ids...)
-			return held, nil
+			return displayHeld, nil
+		}).Maybe()
+	// Соседняя денежная дверь той же формы — спрятанный кадр. На стенде «только для показа» она
+	// не держит ничего и обязана молчать, иначе те пробы мерили бы её; на своём стенде она и есть
+	// предмет замера.
+	rig.design.EXPECT().MediaHeldHiddenOnly(mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, ids []int) ([]int, error) {
+			rig.askedHidden = append(rig.askedHidden, ids...)
+			return hiddenHeld, nil
 		}).Maybe()
 	if withStartRun {
 		rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
