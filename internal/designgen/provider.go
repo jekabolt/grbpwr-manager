@@ -248,6 +248,13 @@ type Providers struct {
 	Vector Provider
 	// Threed serves the threed kind.
 	Threed Provider
+	// Cutout serves the cutout kind — background removal, a SEGMENTER rather than a generator.
+	//
+	// It is a route of its own and not a fifth passenger on Image for the one reason that decides
+	// every entry in this table: a different paid endpoint with a different unit of money and a
+	// different name in the history row. Nothing about the prompt would tell them apart, because
+	// this route has no prompt at all.
+	Cutout Provider
 }
 
 // forKind returns the route for a run kind, or an error naming the kind.
@@ -258,12 +265,22 @@ func (p Providers) forKind(kind string) (Provider, error) {
 	// Различаются они не транспортом, а ПРОМПТОМ и тем, КАКИЕ КАРТИНКИ уходят в КАКОЙ вызов, — и
 	// обе эти вещи уже живут в этом пакете (composePrompt, imageCalls). Второй Provider с тем же
 	// клиентом внутри дал бы второе имя провайдера в истории для одних и тех же денег.
+	//
+	// ПЛЕЙГРАУНД ЕДЕТ ТУДА ЖЕ, И ПО ТОЙ ЖЕ ПРИЧИНЕ: `freeform` — это тот же POST /api/v1/images с
+	// тем же ключом, отличающийся ровно промптом и набором ссылок. Пятый род в этой строке не
+	// добавляет системе ни одного нового платного маршрута.
 	case entity.DesignRunKindFlat, entity.DesignRunKindRender,
-		entity.DesignRunKindRecolor, entity.DesignRunKindPattern:
+		entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
+		entity.DesignRunKindFreeform:
 		if p.Image == nil {
 			return nil, fmt.Errorf("%w: no image route is wired", errRouteMissing)
 		}
 		return p.Image, nil
+	case entity.DesignRunKindCutout:
+		if p.Cutout == nil {
+			return nil, fmt.Errorf("%w: no cutout route is wired", errRouteMissing)
+		}
+		return p.Cutout, nil
 	case entity.DesignRunKindVector:
 		if p.Vector == nil {
 			return nil, fmt.Errorf("%w: no vector route is wired", errRouteMissing)

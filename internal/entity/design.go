@@ -234,6 +234,21 @@ const (
 	// («3D только после fabric render»), то есть карточка, на которой сгенерили только обои,
 	// начинает считаться готовой к сборке 3D. Своё имя не стоит ничего и закрывает оба случая.
 	DesignPictureKindPattern = "pattern"
+	// DesignPictureKindFreeform — ВЫХОД ПЛЕЙГРАУНДА: картинка, сделанная по словам человека из
+	// его же картинок, мимо верстака, рецепта и колорвея.
+	//
+	// ⚠ ИМЯ ЗАВЕДЕНО РАДИ ТОГО, ЧТОБЫ ЭТОТ КАДР НЕ ОКАЗАЛСЯ ФЛЭТОМ. `DesignPictureKindOfRun`
+	// роняет незнакомый род прогона во flat своим `default:`, и молчаливое падение сюда стоило бы
+	// дорого: кадр плейграунда попал бы в список, из которого кадр ставят в СЛОТ ВЕРСТАКА, то есть
+	// «перёд изделия» стал бы вольной картинкой. Своё имя закрывает случай и здесь, и в
+	// IsDesignBenchKind, куда род намеренно НЕ добавлен.
+	DesignPictureKindFreeform = "freeform"
+	// DesignPictureKindCutout — картинка С ВЫРЕЗАННЫМ ФОНОМ (PNG с альфой), выход рода `cutout`.
+	//
+	// Тоже не флэт и не рендер: изделие на прозрачном фоне — это исходник для вклейки, а не
+	// состояние изделия с какой-либо стороны. Отдельное имя даёт клиенту ещё и повод показывать
+	// такой кадр по-другому (грунт, `contain`), не заводя флага «есть альфа».
+	DesignPictureKindCutout = "cutout"
 )
 
 // IsDesignPictureKind сообщает, известен ли род кадра. Словарь растёт, CHECK в схеме намеренно
@@ -241,7 +256,7 @@ const (
 func IsDesignPictureKind(v string) bool {
 	switch v {
 	case DesignPictureKindFlat, DesignPictureKindRender, DesignPictureKindThreed,
-		DesignPictureKindPattern:
+		DesignPictureKindPattern, DesignPictureKindFreeform, DesignPictureKindCutout:
 		return true
 	}
 	return false
@@ -459,6 +474,20 @@ const (
 	// бесполезен. Поэтому род отдельный: у него единственный вход (одна картинка), единственный
 	// выход (одна плитка) и инструкция, которой нет ни у одного другого рода.
 	DesignRunKindPattern = "pattern"
+	// DesignRunKindFreeform — ПЛЕЙГРАУНД: свои картинки, размеченные области, свои слова.
+	//
+	// ЭТО ВТОРАЯ ДВЕРЬ К ТОМУ ЖЕ ПЛАТНОМУ ЭНДПОИНТУ, А НЕ ВТОРОЙ ДВИЖОК, и различие с рендером
+	// несущее: рендер СОБИРАЕТ фотографию из верстака, рецепта и колорвея карточки, плейграунд не
+	// читает НИЧЕГО из карточки — только те картинки, которые человек положил в прогон, и те
+	// слова, которые он написал. Поэтому род отдельный: у него свой список входов
+	// (`params.freeform.items`), свой абзац ремесла и ровно одна картинка на выходе.
+	DesignRunKindFreeform = "freeform"
+	// DesignRunKindCutout — ВЫРЕЗАТЬ ФОН у одной картинки (K-плейграунд, п.4 синтеза).
+	//
+	// Ни слов, ни областей: вход — ровно одна картинка, выход — она же с альфой. Род отдельный,
+	// потому что и провайдер отдельный (сегментация, не генерация), и цена своя, и результат
+	// обязан быть PNG побайтово.
+	DesignRunKindCutout = "cutout"
 )
 
 // IsDesignRunKind сообщает, известен ли род прогона.
@@ -466,7 +495,8 @@ func IsDesignRunKind(v string) bool {
 	switch v {
 	case DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed,
 		DesignRunKindVector, DesignRunKindDraftIdea,
-		DesignRunKindRecolor, DesignRunKindPattern:
+		DesignRunKindRecolor, DesignRunKindPattern,
+		DesignRunKindFreeform, DesignRunKindCutout:
 		return true
 	}
 	return false
@@ -489,9 +519,86 @@ func DesignPictureKindOfRun(runKind string) string {
 		return DesignPictureKindRender
 	case DesignRunKindPattern:
 		return DesignPictureKindPattern
+	// ⚠ ОБА РОДА ПЛЕЙГРАУНДА НАЗВАНЫ ЗДЕСЬ ЯВНО, И ЭТО НЕ ФОРМАЛЬНОСТЬ. `default:` ниже роняет
+	// незнакомый род во `flat` — молча и правдоподобно; кадр плейграунда, названный флэтом, встал
+	// бы в список кандидатов в слот верстака, а «перёд изделия» оказался бы вольной картинкой или
+	// вырезкой с прозрачным фоном. Строка стоит ноль, отсутствие строки стоит слот.
+	case DesignRunKindFreeform:
+		return DesignPictureKindFreeform
+	case DesignRunKindCutout:
+		return DesignPictureKindCutout
 	default:
 		return DesignPictureKindFlat
 	}
+}
+
+// ───────────────────────── форма плейграунда (род `freeform`) ─────────────────────────
+
+// Потолки формы плейграунда. Все три проверяются У ДВЕРИ, до денег и до провайдера.
+//
+// ⚠ ПОТОЛОК КАРТИНОК ЗДЕСЬ — НЕ ТОТ ПОТОЛОК, КОТОРЫЙ РЕШАЕТ. Провайдер принимает не более
+// `orimages.MaxInputReferences` ссылок, а одна размеченная область рождает ДВЕ ссылки (копия с
+// контурами + кроп области), поэтому арифметику «сколько ссылок получится» считает дверь
+// отдельной проверкой. Восемь здесь — про человека («столько картинок в один прогон осмысленно»),
+// а не про провайдера.
+const (
+	// MaxDesignFreeformItems — сколько картинок можно положить в один прогон плейграунда.
+	MaxDesignFreeformItems = 8
+	// MaxDesignFreeformRegionsPerItem — сколько областей можно разметить на одной картинке.
+	MaxDesignFreeformRegionsPerItem = 4
+	// MaxDesignFreeformTextRunes — потолок подписи к области (в РУНАХ, не байтах: кириллица).
+	MaxDesignFreeformTextRunes = 1000
+)
+
+// Пресеты плейграунда — СЛОВАРЬ СЕРВЕРА, а не строка клиента: пресет выбирает абзац ремесла
+// (freeformprompt.go), и абзац этот в UI не редактируется. Клиенту словарь уезжает списком в
+// GetDesignBand.freeform_presets, чтобы экран не знал наизусть того, чего сервер не умеет.
+const (
+	// DesignFreeformPresetFree — «делай по словам»: ремесло не диктует ничего сверх сказанного.
+	DesignFreeformPresetFree = "free"
+	// DesignFreeformPresetAddHardware — посадить фурнитуру с одной картинки в область другой.
+	DesignFreeformPresetAddHardware = "add_hardware"
+	// DesignFreeformPresetRepaintParts — перекрасить размеченные области (без области — всю вещь).
+	DesignFreeformPresetRepaintParts = "repaint_parts"
+)
+
+// FreeformPresets — порядок словаря такой, каким его читает человек на экране.
+//
+// ⚠ ВОЗВРАЩАЕТСЯ КОПИЯ, а не общий слайс: единственный читатель отдаёт его на провод, и общий
+// массив уехал бы туда же, где его смог бы переписать чужой аппенд.
+func FreeformPresets() []string {
+	return []string{
+		DesignFreeformPresetFree,
+		DesignFreeformPresetAddHardware,
+		DesignFreeformPresetRepaintParts,
+	}
+}
+
+// IsFreeformPreset сообщает, известен ли пресет. Пустой пресет НЕ законен: у прогона плейграунда
+// всегда есть абзац ремесла, и «никакого» среди них нет — есть `free`.
+func IsFreeformPreset(v string) bool {
+	switch v {
+	case DesignFreeformPresetFree, DesignFreeformPresetAddHardware, DesignFreeformPresetRepaintParts:
+		return true
+	}
+	return false
+}
+
+// Роли картинки в прогоне плейграунда. Роль — ПОДСКАЗКА РЕМЕСЛУ, кто есть кто среди картинок, а не
+// вторая ось: пустая роль законна и означает «просто картинка».
+const (
+	DesignFreeformRoleSubject  = "subject"
+	DesignFreeformRoleHardware = "hardware"
+	DesignFreeformRoleCloth    = "cloth"
+)
+
+// IsFreeformRole сообщает, законна ли роль картинки (пустая — законна).
+func IsFreeformRole(v string) bool {
+	switch v {
+	case "", DesignFreeformRoleSubject, DesignFreeformRoleHardware, DesignFreeformRoleCloth:
+		return true
+	}
+	return false
 }
 
 // Состояния попытки — СЛОВАРЬ ИЗ СХЕМЫ 0340 ДОСЛОВНО. `unknown` значит «деньги, возможно,
