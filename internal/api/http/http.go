@@ -649,8 +649,8 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // разбирают именно эту форму. Меняется РОВНО ОДИН бит — DiscardUnknown; остальные опции
 // воспроизводят дефолт v2.21.0 дословно.
 //
-// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь на 2026-08-21). Бандл admin-клиента СТАРШЕ последнего снятия
-// члена enum / поля теперь получает 400 вместо тихой порчи — это принятое поведение, а не
+// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь переснят 2026-09-08). Бандл admin-клиента СТАРШЕ последнего
+// снятия члена enum / поля теперь получает 400 вместо тихой порчи — это принятое поведение, а не
 // регрессия. Инвентарь по proto/admin/admin/admin.proto + proto/common/common/*.proto: 15
 // зарезервированных ИМЁН членов enum (TECH_CARD_PRESS_ACTION_OPEN, TECH_CARD_TOPSTITCH_MODE_WIDTH,
 // TECH_CARD_REINFORCEMENT_FUSIBLE_PATCH, TECH_CARD_REINFORCEMENT_FABRIC_STAY,
@@ -658,8 +658,22 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // TECH_CARD_THREAD_TENSION_OTHER, TECH_CARD_PRESS_TOWARD_SIDE, TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE,
 // TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT, TECH_CARD_CLEANING_KIND_CHALK_REMOVAL,
 // TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL, TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF,
-// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 112 пар (сообщение, зарезервированное ИМЯ поля).
-// Клиент ветки feat/operation-kinds-ui не эмитит НИ ОДНОГО из них: сгенерированные типы
+// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 116 пар (сообщение, зарезервированное ИМЯ поля).
+//
+// ЧЕТЫРЕ ПАРЫ ИЗ 116 ДОБАВИЛА ВОЛНА ЛЕНТЫ ДИЗАЙНА (уже в master): GetDesignBandResponse —
+// version_numbers, latest_version, journal (минты и версии листа сняты подсистемой целиком,
+// admin.proto:11874) и DesignBudget — cap (потолок генерации снят как понятие, design.proto:1368).
+// Ни одна из четырёх не может дать 400 НИ С КАКИМ бандлом, и это сильнее grep'а: строгость живёт
+// на разборе ЗАПРОСА, а обе несущие — только ОТВЕТЫ (GetDesignBandResponse не вход ни одной rpc;
+// DesignBudget стоит ровно в GetDesignBandResponse, StartDesignRunResponse, DraftDesignIdeaResponse
+// и никуда больше не вложен). Проверка по клиенту проведена всё равно, потому что «поле только в
+// ответе» — свойство сегодняшнего proto, а не вечная гарантия: ни feat/design-band-ui 4019d0a1, ни
+// origin/beta не объявляют этих ключей в сгенерированных типах и не пишут их руками, а ПРОД-бандл
+// admin.grbpwr.com /assets/index-BgsnzCbh.js (1 461 395 Б, sha256 06faf4c5…) содержит 0 ключей и
+// 0 строк-литералов на все четыре имени в обоих написаниях. Поимённая раскладка этой пересъёмки —
+// у retiredFieldNamePairs в marshaler_test.go.
+//
+// Клиент ветки feat/operation-kinds-ui не эмитит НИ ОДНОГО из ОСТАЛЬНЫХ: сгенерированные типы
 // src/api/proto-http/{admin,common}/index.ts не содержат ни одного зарезервированного ключа в
 // соответствующем сообщении, снятые члены встречаются ровно трижды — двумя комментариями в
 // генерённых файлах, картой ЧТЕНИЯ RETIRED_REINFORCEMENT (operation-options.ts:867-870, на провод
