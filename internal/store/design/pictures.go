@@ -43,8 +43,16 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		// значило ровно одно: рендер и 3D нельзя было завести РУКАМИ вовсе — а ручная загрузка
 		// (W-8) единственный путь, который работает всегда, в том числе когда генерации нет.
 		// Пустое читается как flat, поэтому старый вызывающий не заметил перемены.
-		if !entity.IsDesignPictureKind(entity.DesignKindOrFlat(it.Kind)) {
-			return nil, fmt.Errorf("%w: unknown picture kind %q", entity.ErrDesignInvalidArgument, it.Kind)
+		//
+		// ⚠ И СЛОВАРЬ ЗДЕСЬ УЖЕ СЛОВАРЯ КАДРОВ — IsDesignUploadKind, а не IsDesignPictureKind.
+		// `freeform` и `cutout` существуют только как ВЫХОД прогона (queue.go пишет их сам, и
+		// предикат выходов полосы на этом стоит); принятые здесь, они дали бы файлу провенанс
+		// прогона, которого не было, а вырезу — ещё и обход проверки альфы. Дверь API отказывает
+		// тем же предикатом и с именем элемента; эта проверка — последняя, и она обязана быть той
+		// же, иначе стор принял бы то, что дверь считает невыразимым.
+		if !entity.IsDesignUploadKind(entity.DesignKindOrFlat(it.Kind)) {
+			return nil, fmt.Errorf("%w: %q is not a kind of picture that can be uploaded by hand",
+				entity.ErrDesignInvalidArgument, entity.DesignKindOrFlat(it.Kind))
 		}
 		// КОЛОРВЕЙ — УТВЕРЖДЕНИЕ ЗАГРУЖАЮЩЕГО, как и род (0356): из пикселей его не восстановить.
 		// Флэту (и паттерну) значение ОТКАЗЫВАЕТСЯ, а не молча сбрасывается: чертёж изделия один

@@ -458,9 +458,21 @@ func (s *Server) RegisterDesignUpload(ctx context.Context, req *pb_admin.Registe
 		// пропускал цветной рендер во флэт-слот, и минт печатал его на ТЕХНИЧЕСКОМ ЛИСТЕ без
 		// единого отказа; (б) счётчик W-13 его не видел, дверь 3D рисовалась закрытой, а
 		// StartDesignRun(threed) отказывал — хотя рендер на карточке был.
-		if it.GetKind() != "" && !entity.IsDesignPictureKind(it.GetKind()) {
+		//
+		// ⚠ СЛОВАРЬ ЗДЕСЬ УЖЕ, ЧЕМ СЛОВАРЬ КАДРОВ, И ЭТО НЕ ПЕДАНТИЗМ. `freeform` и `cutout` — роды
+		// ВЫХОДА: их шапки прямо говорят, что таким кадром нельзя стать загрузкой руками, и на этом
+		// утверждении стоит запрос выходов полосы. До сужения непрозрачный JPEG, загруженный с
+		// `kind: "cutout"`, вставал в ленту кадром выреза — с провенансом «это вырезано» и без
+		// единого прохода проверки альфы, которая существует ровно затем, чтобы такую картинку не
+		// принять даже от поставщика. Довод целиком — у entity.IsDesignUploadKind.
+		if it.GetKind() != "" && !entity.IsDesignUploadKind(it.GetKind()) {
 			return nil, status.Errorf(codes.InvalidArgument,
-				"items.%d.kind %q is not a kind of design picture", i, it.GetKind())
+				"items.%d.kind %q is not a kind of picture that can be uploaded by hand: "+
+					"%s, %s, %s and %s are, while %s and %s exist only as the OUTPUT of a run",
+				i, it.GetKind(),
+				entity.DesignPictureKindFlat, entity.DesignPictureKindRender,
+				entity.DesignPictureKindThreed, entity.DesignPictureKindPattern,
+				entity.DesignPictureKindFreeform, entity.DesignPictureKindCutout)
 		}
 		// ОБЪЯВЛЕННОЕ МУЛЬТИВЬЮ (D-26) — ФОРМА ПРОВЕРЯЕТСЯ У ДВЕРИ, С ИМЕНЕМ ПОЛЯ. Стор проверяет то
 		// же самое (checkUploadCompositeViews) — он последнее место, которое ещё может отказать, — но

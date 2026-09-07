@@ -89,6 +89,53 @@ func TestRegisterDesignUploadRefusesAnUnknownKind(t *testing.T) {
 	require.Nil(t, rig.sent, "отказ у двери не доходит до стора")
 }
 
+// TestRegisterDesignUploadRefusesTheGeneratedONLY_KINDS.
+//
+// ⚠ ЭТО ПРОВЕНАНС, А НЕ ОПРЯТНОСТЬ СЛОВАРЯ. `freeform` и `cutout` объявлены родами ВЫХОДА: их
+// шапки прямо говорят, что таким кадром нельзя стать загрузкой руками, и на этом стоит предикат
+// выходов полосы. Ручная загрузка объявляет род САМА — значит непрозрачный JPEG, принесённый с
+// `kind: "cutout"`, вставал в ленту кадром выреза, с провенансом «это вырезано» и без единого
+// прохода проверки альфы, которая заведена ровно затем, чтобы такую картинку не принять даже от
+// поставщика. `freeform` тем же движением приписывал файлу прогон, которого не было.
+//
+// ОТКАЗ СТОИТ У ОБЕИХ ДВЕРЕЙ — здесь и в сторе (RegisterBatch), — и они спрашивают ОДИН предикат:
+// дверь называет элемент пачки, стор остаётся последним замком.
+func TestRegisterDesignUploadRefusesTheGeneratedONLY_KINDS(t *testing.T) {
+	for _, kind := range []string{entity.DesignPictureKindFreeform, entity.DesignPictureKindCutout} {
+		t.Run(kind, func(t *testing.T) {
+			rig := newDesignUploadRig(t)
+			_, err := rig.srv.RegisterDesignUpload(designRunCtx(), &pb_admin.RegisterDesignUploadRequest{
+				TechCardId:      designRunCardID,
+				ClientRequestId: "55555555-5555-5555-5555-555555555555",
+				Items:           []*pb_admin.DesignUploadItem{{MediaId: 501, Kind: kind}},
+			})
+			require.Error(t, err)
+			code, _ := errorReason(t, err)
+			require.Equal(t, codes.InvalidArgument, code)
+			require.Nil(t, rig.sent, "отказ у двери не доходит до стора")
+			require.Contains(t, err.Error(), "only as the OUTPUT of a run",
+				"человеку надо сказать не «неизвестный род», а почему именно этот род не его")
+
+			// ⚠ И ОН ПО-ПРЕЖНЕМУ РОД КАДРА — просто не род ЗАГРУЗКИ. Выход прогона пишет его сам
+			// (store/design/queue.go), и запретить его там значило бы сломать оба маршрута.
+			require.True(t, entity.IsDesignPictureKind(kind))
+			require.False(t, entity.IsDesignUploadKind(kind))
+		})
+	}
+
+	// ЧЕТЫРЕ ЗАКОННЫХ РОДА ЗАГРУЗКИ ПРОХОДЯТ КАК ПРЕЖДЕ — без этой половины проба была бы зелена и
+	// у предиката, отказывающего всему.
+	for _, kind := range []string{
+		entity.DesignPictureKindFlat, entity.DesignPictureKindRender,
+		entity.DesignPictureKindThreed, entity.DesignPictureKindPattern,
+	} {
+		require.Truef(t, entity.IsDesignUploadKind(kind), "kind %q is uploadable by hand", kind)
+	}
+	require.False(t, entity.IsDesignUploadKind(""),
+		"пустое значит «род не назван» и читается как flat ОДНИМ правилом (DesignKindOrFlat); "+
+			"пускать его сюда значило бы завести второе написание того же")
+}
+
 // ─────────────────────── F: род адреса верстака ───────────────────────
 
 // РОД АДРЕСА ДОЕЗЖАЕТ ДО СТОРА, И БЕЗ НЕГО ДВУХОСНОГО ВЕРСТАКА НЕТ ВОВСЕ.

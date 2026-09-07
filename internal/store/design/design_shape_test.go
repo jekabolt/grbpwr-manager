@@ -1,6 +1,7 @@
 package design
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -391,5 +392,58 @@ func TestCardOutputsAreCappedPerColorwayAndNewestFirst(t *testing.T) {
 	}
 	if !strings.HasSuffix(designListCardOutputs, "ORDER BY o.id DESC") {
 		t.Fatal("outputs reach the client newest first")
+	}
+}
+
+// TestRegisterBatchRefusesTheGeneratedONLY_KINDS — СТОР ПОСЛЕДНИЙ, КТО МОЖЕТ ОТКАЗАТЬ, И ОН
+// СПРАШИВАЕТ ТОТ ЖЕ ПРЕДИКАТ, ЧТО ДВЕРЬ.
+//
+// ⚠ БЕЗ БАЗЫ, И ЭТО НЕ УЛОВКА. Проверка входа стоит ДО s.txFunc — вся она про форму запроса, а не
+// про строки, — поэтому нулевой Store доходит до неё и не доходит до соединения. Ровно это и
+// проверяется заодно: отказ выносится ДО транзакции, то есть без единого касания базы.
+//
+// ЧТО ЭТО СТЕРЕЖЁТ. `freeform` и `cutout` объявлены родами ВЫХОДА («кадром такого рода нельзя
+// стать загрузкой руками»), и на этом утверждении стоит предикат выходов полосы. До сужения
+// непрозрачный JPEG, зарегистрированный руками с `kind: "cutout"`, вставал в ленту кадром выреза —
+// с провенансом «это вырезано» и мимо проверки альфы, которая существует затем, чтобы такую
+// картинку не принять даже от поставщика.
+//
+// МУТАЦИЯ: вернуть IsDesignPictureKind — оба рода снова принимаются.
+func TestRegisterBatchRefusesTheGeneratedONLY_KINDS(t *testing.T) {
+	for _, kind := range []string{entity.DesignPictureKindFreeform, entity.DesignPictureKindCutout} {
+		_, err := (&Store{}).RegisterBatch(context.Background(), entity.DesignBatchRegister{
+			TechCardId:      1,
+			ClientRequestId: "req-1",
+			Items:           []entity.DesignUploadItem{{MediaId: 501, Kind: kind}},
+		})
+		if err == nil {
+			t.Fatalf("kind %q is generated-only and must not be registerable by hand", kind)
+		}
+		if !errors.Is(err, entity.ErrDesignInvalidArgument) {
+			t.Fatalf("kind %q: refusal must be the store's own invalid-argument, got %v", kind, err)
+		}
+		if !strings.Contains(err.Error(), "uploaded by hand") {
+			t.Fatalf("kind %q: the refusal must say WHY, not just «unknown»: %v", kind, err)
+		}
+	}
+
+	// ЧЕТЫРЕ ЗАКОННЫХ РОДА ПРОХОДЯТ ФОРМУ И ИДУТ ДАЛЬШЕ — до транзакции, которой у нулевого Store
+	// нет. Без этой половины проба была бы зелена и у предиката, отказывающего всему.
+	for _, kind := range []string{
+		entity.DesignPictureKindFlat, entity.DesignPictureKindRender,
+		entity.DesignPictureKindThreed, entity.DesignPictureKindPattern, "",
+	} {
+		func() {
+			defer func() { _ = recover() }() // нулевой txFunc — это и есть «форма прошла»
+			_, err := (&Store{}).RegisterBatch(context.Background(), entity.DesignBatchRegister{
+				TechCardId:      1,
+				ClientRequestId: "req-1",
+				Items:           []entity.DesignUploadItem{{MediaId: 501, Kind: kind}},
+			})
+			if err != nil && errors.Is(err, entity.ErrDesignInvalidArgument) &&
+				strings.Contains(err.Error(), "uploaded by hand") {
+				t.Fatalf("kind %q is a legal manual upload and must pass the kind check", kind)
+			}
+		}()
 	}
 }

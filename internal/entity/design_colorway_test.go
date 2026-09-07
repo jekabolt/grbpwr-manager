@@ -92,3 +92,37 @@ func TestDesignColorwayOrNone(t *testing.T) {
 	require.Zero(t, DesignColorwayOrNone(sql.NullInt32{}))
 	require.Equal(t, 5, DesignColorwayOrNone(sql.NullInt32{Int32: 5, Valid: true}))
 }
+
+// TestUploadKindsAreNARROWER_THAN_PICTURE_KINDS — разбиение словаря кадров, и проверяется оно
+// вопросом «может ли член попасть в чужую половину молча?».
+//
+// ⚠ РОД — УТВЕРЖДЕНИЕ ЗАГРУЖАЮЩЕГО, ВОССТАНОВИТЬ ЕГО ИЗ ПИКСЕЛЕЙ НЕЧЕМ. Поэтому `freeform` и
+// `cutout`, объявленные родами ВЫХОДА («кадром такого рода нельзя стать загрузкой руками»), обязаны
+// быть невыразимы в ручной загрузке: JPEG без альфы, принесённый с `kind: "cutout"`, получил бы
+// провенанс «это вырезано» мимо всякой проверки альфы. Загрузка же самой ПЛИТКИ законна — она
+// просто не встаёт на верстак, и потому это ТРЕТИЙ список, а не второе имя первых двух.
+//
+// МУТАЦИЯ: приравнять IsDesignUploadKind к IsDesignPictureKind либо к IsDesignBenchKind.
+func TestUploadKindsAreNARROWER_THAN_PICTURE_KINDS(t *testing.T) {
+	for _, kind := range []string{
+		DesignPictureKindFlat, DesignPictureKindRender,
+		DesignPictureKindThreed, DesignPictureKindPattern,
+	} {
+		require.Truef(t, IsDesignUploadKind(kind), "%q приносят файлом — это обычный порядок работы", kind)
+		require.Truef(t, IsDesignPictureKind(kind), "и он же остаётся родом кадра")
+	}
+	for _, kind := range []string{DesignPictureKindFreeform, DesignPictureKindCutout} {
+		require.Falsef(t, IsDesignUploadKind(kind), "%q существует только как ВЫХОД прогона", kind)
+		require.Truef(t, IsDesignPictureKind(kind),
+			"но кадром он быть не перестаёт: выход прогона пишет этот род сам")
+	}
+
+	// ⚠ И ЭТО НЕ ВЕРСТАК. Плитка загружается руками и на сторону силуэта не встаёт; слить два
+	// списка значило бы либо запретить ручную плитку, либо пустить её в слот.
+	require.True(t, IsDesignUploadKind(DesignPictureKindPattern))
+	require.False(t, IsDesignBenchKind(DesignPictureKindPattern))
+
+	// Пустое — «род не назван», и читается оно flat'ом ОДНИМ правилом на всех ярусах.
+	require.False(t, IsDesignUploadKind(""))
+	require.True(t, IsDesignUploadKind(DesignKindOrFlat("")))
+}
