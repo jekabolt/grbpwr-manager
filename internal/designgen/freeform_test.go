@@ -14,7 +14,10 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // fakeObjects — бакет из памяти: ключ → байты. Ключ тот же, что построит
@@ -206,6 +209,51 @@ func TestAFreeformPromptPutsTheAskFirstAndTheCraftLast(t *testing.T) {
 	craft := strings.Index(job.Prompt, "Work from the words above")
 	refs := strings.Index(job.Prompt, "references:")
 	require.Greater(t, craft, refs, "the craft speaks after every human word")
+}
+
+// TestTheFrozenFreeformParamsAreREAD_BY_THE_NAMES_THE_DOOR_WRITES.
+//
+// ⚠ ЭТОТ ЧИТАТЕЛЬ УЗКИЙ И РУЧНОЙ, ЗНАЧИТ ОН МОЖЕТ РАЗОЙТИСЬ С ПИСАТЕЛЕМ МОЛЧА. `media_id`,
+// прочитанный как `mediaId`, — это НОЛЬ: картинка не уехала, ошибки нет, прогон успешен. Здесь
+// сообщение маршалится ТЕМ ЖЕ protojson с UseProtoNames, которым дверь пишет колонку `params`, и
+// разбирается настоящим parseParams: переименование поля в контракте краснит эту пробу вместо
+// того, чтобы через месяц дать пустой прогон за полную цену.
+func TestTheFrozenFreeformParamsAreREAD_BY_THE_NAMES_THE_DOOR_WRITES(t *testing.T) {
+	written := &pb_common.DesignRunParams{
+		Freeform: &pb_common.DesignFreeformParams{
+			Preset: entity.DesignFreeformPresetAddHardware,
+			Items: []*pb_common.DesignFreeformItem{{
+				MediaId: 11,
+				Role:    entity.DesignFreeformRoleSubject,
+				Texts:   []string{"the buckle goes here", "a jacket on a hanger"},
+				Regions: []*pb_common.TechCardAnnotation{{
+					Kind: pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON,
+					Points: []*pb_common.TechCardAnnotationPoint{
+						{X: &pb_decimal.Decimal{Value: "0.10"}, Y: &pb_decimal.Decimal{Value: "0.20"}},
+						{X: &pb_decimal.Decimal{Value: "0.40"}, Y: &pb_decimal.Decimal{Value: "0.20"}},
+						{X: &pb_decimal.Decimal{Value: "0.40"}, Y: &pb_decimal.Decimal{Value: "0.50"}},
+					},
+				}},
+			}},
+		},
+	}
+	raw, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(written)
+	require.NoError(t, err)
+
+	p := parseParams(entity.RawJSON(raw))
+	require.NotNil(t, p.Freeform, "the whole ask fell on the floor")
+	require.Equal(t, entity.DesignFreeformPresetAddHardware, p.Freeform.Preset)
+	require.Len(t, p.Freeform.Items, 1)
+	it := p.Freeform.Items[0]
+	require.Equal(t, 11, it.MediaID, "a media id read as zero is a picture that never travels")
+	require.Equal(t, entity.DesignFreeformRoleSubject, it.Role)
+	require.Equal(t, []string{"the buckle goes here", "a jacket on a hanger"}, it.Texts)
+	require.Len(t, it.Regions, 1)
+	require.Len(t, it.Regions[0].Points, 3)
+	// КООРДИНАТА ПРИЕЗЖАЕТ ОБЪЕКТОМ СО СТРОКОЙ ВНУТРИ, а не числом: прочитанная числом, она была бы
+	// нулём, то есть областью в левом верхнем углу — правдоподобной и всегда не той.
+	require.InDelta(t, 0.10, it.Regions[0].Points[0].X.f(), 1e-9)
+	require.InDelta(t, 0.20, it.Regions[0].Points[0].Y.f(), 1e-9)
 }
 
 // TestFreeformReferencesAreTheItemsAndNothingElse.
