@@ -282,7 +282,23 @@ func (c *Client) awaitCutout(ctx context.Context, model, requestID string, dst i
 		case err == nil:
 			switch Status(strings.ToUpper(strings.TrimSpace(st.Status))) {
 			case StatusCompleted:
-				return c.collectCutout(waitCtx, ctx, model, requestID, base, dst)
+				// ⚠ ЗАБОР РЕЗУЛЬТАТА ИДЁТ ПОД РОДИТЕЛЬСКИМ ctx, А НЕ ПОД waitCtx, И ЭТО ПРО ДЕНЬГИ.
+				//
+				// `waitCtx` — ПОТОЛОК ОЖИДАНИЯ, и к моменту COMPLETED от него могут остаться
+				// миллисекунды: задание, закончившееся у самого потолка, — самый обычный исход, ради
+				// которого потолок и поставлен щедрым. Конверт результата — это ТОТ ЗАПРОС, В
+				// КОТОРОМ ПРИЕЗЖАЕТ СПИСАНИЕ (x-fal-billable-units), и обрезанный истёкшим
+				// ожиданием он выбрасывал ОПЛАЧЕННУЮ картинку вместе со свидетельством о её цене:
+				// попытка закрывалась `provider_timeout` с NULL в колонке денег, хотя деньги ушли.
+				//
+				// ТОТ ЖЕ РАЗДЕЛ, ЧТО У СКАЧИВАНИЯ, И ПО ТОМУ ЖЕ ДОВОДУ — «потолок ограничивает
+				// ОЖИДАНИЕ, а не ЗАБОР». Половина этого правила здесь уже стояла (файл уходил под
+				// ctx), и ровно она делала пропуск незаметным: картинка иногда доезжала, а конверт
+				// перед ней — нет.
+				//
+				// БЕЗГРАНИЧНЫМ ЗАБОР ОТ ЭТОГО НЕ СТАНОВИТСЯ: каждый запрос управляющего плана
+				// ограничен своим HTTPTimeout (callJSON), а скачивание — своим.
+				return c.collectCutout(ctx, model, requestID, base, dst)
 			case StatusInQueue, StatusInProgress:
 				// Still being made. Fall through to the sleep.
 			case "":
@@ -320,10 +336,17 @@ func (c *Client) awaitCutout(ctx context.Context, model, requestID string, dst i
 
 // collectCutout reads the finished request's envelope — which is where fal reports the charge — and
 // downloads the picture. Everything from the result fetch onwards carries the money.
-func (c *Client) collectCutout(lookupCtx, fetchCtx context.Context, model, requestID, base string, dst io.Writer) (*CutoutResult, error) {
+//
+// ⚠ ОДИН КОНТЕКСТ НА ОБА ШАГА, И ЭТО СТРУКТУРНОЕ РЕШЕНИЕ, А НЕ УПРОЩЕНИЕ ПОДПИСИ. Раньше их было
+// два — «поиск» и «скачивание», — и единственный вызывающий передавал в первый почти истёкший
+// потолок ожидания: конверт с суммой списания погибал, картинка терялась, а в истории оставался
+// таймаут с пустой ценой. Пара параметров ровно это и позволяла выразить; одного параметра хватает,
+// чтобы такого вызова больше не существовало. Ожидание ограничено там, где ему место, — в цикле
+// опроса.
+func (c *Client) collectCutout(ctx context.Context, model, requestID, base string, dst io.Writer) (*CutoutResult, error) {
 	var out cutoutResultBody
 	var hdr http.Header
-	if err := c.callJSON(lookupCtx, http.MethodGet, base, nil, &out, &hdr); err != nil {
+	if err := c.callJSON(ctx, http.MethodGet, base, nil, &out, &hdr); err != nil {
 		// A COMPLETED request whose result the provider refuses to serve is the provider ending the
 		// job itself: terminal, and possibly billed. The charge cannot be read from a body we did
 		// not get.
@@ -344,7 +367,7 @@ func (c *Client) collectCutout(lookupCtx, fetchCtx context.Context, model, reque
 		BillableUnits: units,
 		UnitsAssumed:  assumed,
 	}
-	n, sum, err := c.fetch(fetchCtx, link, dst, maxCutoutBytes)
+	n, sum, err := c.fetch(ctx, link, dst, maxCutoutBytes)
 	if err != nil {
 		// A picture over maxCutoutBytes, or a transfer that died: made and billed either way. The
 		// bytes are lost; the money is not, and must not be.

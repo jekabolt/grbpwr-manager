@@ -37,6 +37,9 @@ type cutoutStub struct {
 	contentType string // what the provider calls the file it returns
 	noImageURL  bool   // a COMPLETED request whose answer carries no picture url
 	huge        bool   // serve more than maxCutoutBytes
+	// resultDelay задерживает КОНВЕРТ РЕЗУЛЬТАТА — тот запрос, в котором приезжает списание.
+	// Существует ради одной пробы: задание, доложившееся COMPLETED у самого потолка ожидания.
+	resultDelay time.Duration
 	submitCode  int    // non-zero: answer the submit with this status instead of a request id
 	payload     []byte // the picture
 
@@ -71,6 +74,9 @@ func (s *cutoutStub) handler(t *testing.T) http.HandlerFunc {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": string(st)})
 		case strings.Contains(r.URL.Path, "/requests/"):
+			if s.resultDelay > 0 {
+				time.Sleep(s.resultDelay)
+			}
 			if s.units != "" {
 				w.Header().Set(billableUnitsHeader, s.units)
 			}
@@ -285,6 +291,45 @@ func TestACutoutOverTheSizeCapIsREFUSED_NOT_TRUNCATED(t *testing.T) {
 	units, ok := Charge(err)
 	require.True(t, ok)
 	require.Equal(t, 1.0, units)
+}
+
+// TestACutoutFinishingAtTheCEILING_IS_STILL_COLLECTED.
+//
+// ⚠ ЭТО БЫЛА ПОТЕРЯ ОПЛАЧЕННОЙ КАРТИНКИ ВМЕСТЕ СО СВИДЕТЕЛЬСТВОМ О ЕЁ ЦЕНЕ. Потолок опроса
+// ограничивает ОЖИДАНИЕ; задание, доложившееся COMPLETED у самого потолка, — обычный исход, ради
+// которого потолок и ставят щедрым. Прежняя редакция отдавала почти истёкший waitCtx в запрос
+// КОНВЕРТА РЕЗУЛЬТАТА — того самого, в котором приезжает x-fal-billable-units, — и конверт погибал
+// по дедлайну: попытка закрывалась `provider_timeout` с NULL в колонке денег, хотя деньги ушли.
+// Половина правила («потолок ограничивает ожидание, а не забор») здесь уже стояла — файл уходил под
+// родительский ctx, — и ровно она делала пропуск незаметным.
+//
+// СТЕНД СТАВИТ ИМЕННО ЭТОТ РАЗРЫВ: статус отвечает COMPLETED сразу, конверт задерживается на 300 мс
+// при потолке опроса в 150 мс и HTTPTimeout в 2 с. Задержка ВЫШЕ остатка ожидания и НИЖЕ бюджета
+// одного запроса — то есть исход решает ровно то, какой контекст туда передан.
+func TestACutoutFinishingAtTheCEILING_IS_STILL_COLLECTED(t *testing.T) {
+	stub := &cutoutStub{units: "3", contentType: "image/png", payload: []byte("PNG-BYTES"),
+		resultDelay: 300 * time.Millisecond}
+	srv := httptest.NewServer(stub.handler(t))
+	defer srv.Close()
+
+	c := New(Config{
+		APIKey:       "test-key-not-a-real-one",
+		BaseURL:      srv.URL,
+		HTTPTimeout:  2 * time.Second,
+		PollInterval: 5 * time.Millisecond,
+		// ⚠ ПОТОЛОК ОЖИДАНИЯ КОРОЧЕ ЗАДЕРЖКИ КОНВЕРТА. Ровно то состояние, в котором прежняя
+		// редакция выбрасывала купленное.
+		PollTimeout: 150 * time.Millisecond,
+	})
+
+	var buf bytes.Buffer
+	res, err := removeBackground(c, context.Background(), "https://cdn.example/a.png", &buf)
+	require.NoError(t, err, "картинка куплена; потолок ОЖИДАНИЯ не имеет права выбрасывать её ЗАБОР")
+	require.Equal(t, "PNG-BYTES", buf.String())
+
+	// И СПИСАНИЕ ПРИЕХАЛО ВМЕСТЕ С НЕЙ: конверт — единственное место, где провайдер называет цену.
+	require.Equal(t, 3.0, res.BillableUnits)
+	require.False(t, res.UnitsAssumed, "провайдер назвал число сам, и это не наша оценка")
 }
 
 // TestAnUnfetchableSourceIsREFUSED_LOCALLY_FOR_FREE. A reference the provider cannot fetch is not
