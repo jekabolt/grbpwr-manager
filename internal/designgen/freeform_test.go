@@ -391,7 +391,7 @@ func TestTheAreaLetterIsPRINTED_INTO_THE_PIXELS(t *testing.T) {
 		diamondRegion("0.30", "0.20", "0.12", "0.12"),
 		diamondRegion("0.70", "0.65", "0.12", "0.12"),
 	}
-	uri, _, err := freeformOutlined(src, regions)
+	uri, err := freeformOutlined(src, regions, freeformMaxSide)
 	require.NoError(t, err)
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, "data:image/jpeg;base64,"))
 	require.NoError(t, err)
@@ -462,4 +462,136 @@ func TestTheAreaLetterIsPRINTED_INTO_THE_PIXELS(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ═══════════ БАЙТЫ СЧИТАЮТСЯ ДО ДЕНЕГ ═══════════
+
+// TestTheDerivedLadderStepsDownBeforeItRefuses.
+//
+// Лестница и отказ — ОДНА конструкция с двумя концами, и без каждого из них она вредна. Без ступени
+// вниз честный кадр 4000×4000 убивал бы прогон там, где хватило бы 1024. Без отказа в конце
+// лестница уводила бы качество вниз молча, и человек платил бы полную цену за кадр, собранный из
+// миниатюр.
+func TestTheDerivedLadderStepsDownBeforeItRefuses(t *testing.T) {
+	fat := strings.Repeat("x", freeformMaxDerivedBytes+1)
+	thin := strings.Repeat("x", 32)
+
+	var tried []int
+	got, err := freeformWithinBudget("the crop", func(side int) (string, error) {
+		tried = append(tried, side)
+		if side == freeformMaxSide {
+			return fat, nil
+		}
+		return thin, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, thin, got)
+	require.Equal(t, []int{freeformMaxSide, freeformFallbackSide}, tried,
+		"первый размер пробуется первым, ступень вниз — только когда он не влез")
+
+	tried = nil
+	_, err = freeformWithinBudget("the crop", func(side int) (string, error) {
+		tried = append(tried, side)
+		return fat, nil
+	})
+	require.ErrorIs(t, err, errFreeformJobTooLarge)
+	require.Contains(t, err.Error(), "1024", "отказ называет размер, на котором сдался")
+	require.Equal(t, []int{freeformMaxSide, freeformFallbackSide}, tried)
+
+	// ─── А ЭТО ВТОРОЙ ПОТОЛОК, И ОН НЕ ВЫВОДИТСЯ ИЗ ПЕРВОГО. Шестнадцать производных, каждая
+	// честно под своим потолком, дают двадцать четыре мегабайта в теле одного запроса.
+	var b jobBudget
+	require.NoError(t, b.add(strings.Repeat("x", freeformMaxJobBytes-1)))
+	err = b.add("xx")
+	require.ErrorIs(t, err, errFreeformJobTooLarge)
+	require.Contains(t, err.Error(), "mark fewer areas")
+}
+
+// noisePNG — САМЫЙ ТЯЖЁЛЫЙ PNG, КОТОРЫЙ БЫВАЕТ: шум не сжимается ничем, поэтому его вес это его
+// площадь. Один пиксель полупрозрачен, и это не мелочь — из-за него кроп остаётся PNG (альфу надо
+// довезти), то есть попадает в самый дорогой из путей.
+func noisePNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	seed := uint32(2463534242)
+	for i := 0; i < len(img.Pix); i += 4 {
+		seed ^= seed << 13
+		seed ^= seed >> 17
+		seed ^= seed << 5
+		img.Pix[i] = uint8(seed)
+		img.Pix[i+1] = uint8(seed >> 8)
+		img.Pix[i+2] = uint8(seed >> 16)
+		img.Pix[i+3] = 0xff
+	}
+	img.SetNRGBA(0, 0, color.NRGBA{A: 0x80})
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	return buf.Bytes()
+}
+
+// TestAnOversizedPlaygroundRunREFUSES_BEFORE_ANY_MONEY.
+//
+// ⚠ ЭТО ПРО ПАМЯТЬ ПРОЦЕССА, А НЕ ПРО ВЕЖЛИВОСТЬ К ПРОВАЙДЕРУ. Производная едет base64 внутри
+// JSON-тела: тело собирается целиком, кодируется целиком и держится до ответа — в процессе, у
+// которого пол-гигабайта на всё. Воркер, съевший память на своей картинке, уносит с собой чужой
+// ОПЛАЧЕННЫЙ прогон из соседней горутины.
+//
+// Проба держит обе половины отказа: он терминальный (повтор соберёт то же задание из того же
+// замороженного снимка) и он БЕСПЛАТНЫЙ — попытка не открыта, провайдер не позван, платить не за
+// что.
+func TestAnOversizedPlaygroundRunREFUSES_BEFORE_ANY_MONEY(t *testing.T) {
+	objs := &fakeObjects{byKey: map[string][]byte{"m/11.png": noisePNG(t, 4000, 4000)}}
+	r := freeformRun(`{"freeform":{"preset":"free","items":[
+	  {"media_id":11,"role":"subject","texts":["this pocket"],
+	   "regions":[{"kind":"TECH_CARD_ANNOTATION_KIND_POLYGON","points":[` +
+		point("0.05", "0.05") + `,` + point("0.95", "0.05") + `,` + point("0.95", "0.95") + `,` +
+		point("0.05", "0.95") + `]}]}]}}`)
+
+	prov := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	st := &fakeStore{}
+	w := testWorker(st, media(11), newFakeSink(ContentTypePNG), Providers{Image: prov})
+	w.objects = objs
+
+	require.NoError(t, w.execute(context.Background(), r, "tok"))
+
+	require.Empty(t, prov.calls, "ни одного платного вызова: отказ вынесен при сборке задания")
+	require.Empty(t, st.started, "и ни одной открытой попытки — StartAttempt резервирует бюджет")
+	require.Len(t, st.failed, 1)
+	require.Equal(t, CodeJobTooLarge, st.failed[0].ErrorCode)
+	require.False(t, st.failed[0].Retryable,
+		"снимок заморожен: следующий проход соберёт то же задание и упрётся в тот же потолок")
+	require.Contains(t, st.failed[0].LastError, "1024",
+		"отказ называет размер, на котором сдался, — человеку иначе нечего уменьшать")
+}
+
+// TestAlphaIsMEASURED_NOT_ASSUMED_FROM_THE_TYPE.
+//
+// Тип отвечает на вопрос «МОЖЕТ ли эта картинка нести альфу», и ответ «да» у любого фотоснимка,
+// загруженного PNG — то есть у большинства. Кроп такого снимка уезжал PNG'ом: втрое-впятеро больше
+// байтов при побайтово одинаковом содержании, и платит за них потолок тела запроса и память
+// процесса. При этом НАСТОЯЩАЯ прозрачность обязана остаться PNG — иначе вырезка, положенная в
+// плейграунд, теряет ровно то, ради чего её делали.
+func TestAlphaIsMEASURED_NOT_ASSUMED_FROM_THE_TYPE(t *testing.T) {
+	opaque := image.NewNRGBA(image.Rect(0, 0, 120, 120))
+	draw.Draw(opaque, opaque.Bounds(), image.NewUniform(color.NRGBA{R: 9, G: 40, B: 200, A: 255}),
+		image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, opaque))
+
+	region := diamondRegion("0.5", "0.5", "0.2", "0.2")
+	uri, err := freeformCrop(mustDecode(t, buf.Bytes()), region,
+		freeformSourceHasAlpha(mustDecode(t, buf.Bytes())), freeformMaxSide)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(uri, "data:image/jpeg;base64,"),
+		"PNG без единого прозрачного пикселя — это фотография, и PNG ей не нужен")
+
+	withAlpha := mustDecode(t, fixturePNG(t))
+	require.True(t, freeformSourceHasAlpha(withAlpha), "настоящая прозрачность остаётся прозрачностью")
+}
+
+func mustDecode(t *testing.T, raw []byte) image.Image {
+	t.Helper()
+	img, err := freeformDecode(raw)
+	require.NoError(t, err)
+	return img
 }

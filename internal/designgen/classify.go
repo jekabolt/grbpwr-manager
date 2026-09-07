@@ -74,6 +74,13 @@ const (
 	// что ответ был не такой формы, как заказ, — без него «модель вернула два варианта» нельзя
 	// узнать вообще ниоткуда: лишние байты никуда не записаны, и правильно, что не записаны.
 	CodeOverDelivery = "over_delivery"
+
+	// CodeJobTooLarge — ЗАДАНИЕ НЕ ВЛЕЗАЕТ В ПАМЯТЬ, И НИ ОДИН ЦЕНТ ЗА НЕГО НЕ УПЛАЧЕН. Производные
+	// плейграунда едут base64 внутри тела запроса и живут в процессе, у которого пол-гигабайта;
+	// отказ выносится при сборке задания, то есть до StartAttempt. Слово в строке отличает его от
+	// `provider_response_too_large` — того же по звучанию отказа с ДРУГОЙ стороны провода и с уже
+	// потраченными деньгами.
+	CodeJobTooLarge = "job_too_large"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -122,6 +129,12 @@ func classify(err error) verdict {
 		return verdict{Retryable: false, Code: CodeKindNotAvailable, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errSinkUnsupported):
 		return verdict{Retryable: false, Code: CodeOutputNotStorable, State: entity.DesignAttemptFailed}
+	// ─── ours: the job was refused while it was being BUILT, before StartAttempt and therefore
+	// before any money. Terminal because the snapshot is frozen: the next pass assembles the very
+	// same pictures out of the very same params and meets the very same ceiling, so a retry buys
+	// five identical refusals and hides the one thing a person can act on — the picture is too big.
+	case errors.Is(err, errFreeformJobTooLarge):
+		return verdict{Retryable: false, Code: CodeJobTooLarge, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it

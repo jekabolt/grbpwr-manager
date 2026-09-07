@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -68,6 +69,12 @@ const (
 	// читают целиком; больше — это байты base64, за которые платит размер запроса, а не качество
 	// ответа.
 	freeformMaxSide = 1536
+	// freeformFallbackSide — ПЕРВАЯ СТУПЕНЬ ВНИЗ, а не второе умолчание. Производная, не влезшая в
+	// свой потолок байтов на 1536, пересобирается на 1024 — и это честный обмен: 1024 всё ещё
+	// больше, чем модель видит после собственного ресайза, а байтов в ней вдвое с лишним меньше.
+	// Ступень одна: вторая, третья и четвёртая превратили бы отказ в бесшумную деградацию, при
+	// которой человек платит полную цену за кадр, собранный из миниатюр.
+	freeformFallbackSide = 1024
 	// freeformOutlineFraction — толщина контура долей ШИРИНЫ кадра. 0.6 % это ~9 px на 1536 —
 	// видно человеку и модели, но не закрывает того, что обводит.
 	freeformOutlineFraction = 0.006
@@ -78,7 +85,42 @@ const (
 	// freeformJPEGQuality — качество JPEG производных. 90 — предел, за которым растёт вес, а не
 	// различимость.
 	freeformJPEGQuality = 90
+
+	// ═══ ПОТОЛКИ БАЙТОВ, И ОНИ СТОЯТ ДО ДЕНЕГ ═══
+	//
+	// ⚠ ПОТОЛОК В 16 ССЫЛОК НЕ ОГРАНИЧИВАЕТ РАЗМЕР. Производная едет data-URI, то есть base64 ВНУТРИ
+	// JSON-тела запроса, и живёт в памяти процесса, у которого пол-гигабайта на всё: тело собирается
+	// целиком, кодируется целиком и держится до ответа. Шестнадцать ссылок по паре мегабайт — это
+	// не «чуть больше трафика», это OOM всего воркера, который унесёт с собой чужой оплаченный
+	// прогон в соседней горутине. Сам клиент картинок прямо называет base64 главным риском памяти.
+	//
+	// ОБА ЧИСЛА — БАЙТЫ ПОСЛЕ base64, то есть длина того, что реально уедет, а не размер картинки до
+	// кодирования: считать «в пикселях» здесь значит считать не то, что расходуется.
+
+	// freeformMaxDerivedBytes — потолок ОДНОЙ производной. 1.5 MiB это JPEG q90 полного кадра или
+	// PNG настоящей вырезки; всё, что толще, — либо шум, либо фотография, зря сохранённая PNG'ом
+	// (см. freeformSourceHasAlpha).
+	freeformMaxDerivedBytes = 1536 << 10
+	// freeformMaxJobBytes — потолок ВСЕХ производных одного задания. Шестнадцать ссылок в потолке
+	// формы × полтора мегабайта дали бы двадцать четыре: число здесь — не сумма потолков, а то,
+	// что процесс переживает, держа в себе тело запроса и ответ на него.
+	//
+	// Оригиналы в эту сумму не входят и входить не должны: они едут ССЫЛКАМИ по несколько десятков
+	// байт, а картинку по ним забирает провайдер, а не мы.
+	freeformMaxJobBytes = 12 << 20
 )
+
+// freeformSides — ЛЕСТНИЦА РАЗМЕРОВ ПРОИЗВОДНОЙ, сверху вниз. Порядок несущий: производная
+// собирается на первом размере, и следующий берётся, только если она не влезла в свой потолок.
+var freeformSides = []int{freeformMaxSide, freeformFallbackSide}
+
+// errFreeformJobTooLarge — ЗАДАНИЕ НЕ ВЛЕЗАЕТ В ПАМЯТЬ, И ОТКАЗ БЕСПЛАТНЫЙ.
+//
+// ⚠ ОН ТЕРМИНАЛЬНЫЙ, И ЭТО ГЛАВНОЕ ЕГО СВОЙСТВО. buildJob зовётся ДО StartAttempt, то есть до
+// движения денег; повтор соберёт РОВНО ТО ЖЕ задание из ровно того же замороженного снимка и упрётся
+// в тот же потолок — то есть купит пять одинаковых отказов, если счесть его погодой. Человеку
+// нужно другое: уменьшить картинку или снять с неё пару областей, и об этом говорит текст.
+var errFreeformJobTooLarge = errors.New("designgen: this playground run does not fit in memory")
 
 // freeformOutlineColours — ЦВЕТ ОБЛАСТИ ПО ЕЁ НОМЕРУ, и словарь тот же, которым карточка красит
 // свои выноски (TechCardAnnotationColor: red, blue, green, orange).
@@ -249,6 +291,7 @@ func deriveFreeform(ctx context.Context, objects objectFetcher, p runParams,
 	// ПРОИЗВОДНЫЕ ВСТАЮТ ПОСЛЕ ВСЕХ ОРИГИНАЛОВ, в порядке items: их номера в промпте — это их
 	// места в `job.References` после append'а, и другого счёта у этого пакета нет.
 	var out []derivedRef
+	var budget jobBudget
 	for _, it := range p.Freeform.Items {
 		if len(it.Regions) == 0 || it.MediaID <= 0 {
 			continue
@@ -267,19 +310,30 @@ func deriveFreeform(ctx context.Context, objects objectFetcher, p runParams,
 		if err != nil {
 			return nil, fmt.Errorf("designgen: cannot read image %d of a freeform run: %w", number, err)
 		}
-		marked, isPNG, err := freeformOutlined(src, it.Regions)
+		hasAlpha := freeformSourceHasAlpha(src)
+		marked, err := freeformWithinBudget(
+			fmt.Sprintf("the outlined copy of image %d", number),
+			func(side int) (string, error) { return freeformOutlined(src, it.Regions, side) })
 		if err != nil {
 			return nil, fmt.Errorf("designgen: cannot outline the areas of image %d: %w", number, err)
+		}
+		if err := budget.add(marked); err != nil {
+			return nil, err
 		}
 		out = append(out, derivedRef{
 			dataURI: marked,
 			caption: freeformOutlineCaption(number, it.Regions),
 		})
 		for r := range it.Regions {
-			crop, err := freeformCrop(src, it.Regions[r], isPNG)
+			crop, err := freeformWithinBudget(
+				fmt.Sprintf("the crop of area %s of image %d", freeformAreaLetter(r), number),
+				func(side int) (string, error) { return freeformCrop(src, it.Regions[r], hasAlpha, side) })
 			if err != nil {
 				return nil, fmt.Errorf("designgen: cannot crop area %s of image %d: %w",
 					freeformAreaLetter(r), number, err)
+			}
+			if err := budget.add(crop); err != nil {
+				return nil, err
 			}
 			out = append(out, derivedRef{
 				dataURI: crop,
@@ -288,6 +342,46 @@ func deriveFreeform(ctx context.Context, objects objectFetcher, p runParams,
 		}
 	}
 	return out, nil
+}
+
+// jobBudget — СКОЛЬКО БАЙТОВ ПРОИЗВОДНЫХ УЖЕ НАБРАНО. Считается на ходу и отказывает на первой же
+// производной, которая переполняет сумму: собирать остальные — это ещё несколько мегабайт в память
+// процесса, который и так решено не грузить.
+type jobBudget struct{ spent int }
+
+func (b *jobBudget) add(uri string) error {
+	b.spent += len(uri)
+	if b.spent > freeformMaxJobBytes {
+		return fmt.Errorf("%w: its pictures come to %d bytes of inline data against a ceiling of %d — "+
+			"use smaller pictures, or mark fewer areas on them",
+			errFreeformJobTooLarge, b.spent, freeformMaxJobBytes)
+	}
+	return nil
+}
+
+// freeformWithinBudget собирает производную НА ПЕРВОМ РАЗМЕРЕ, КОТОРЫЙ ВЛЕЗАЕТ В ПОТОЛОК.
+//
+// ⚠ ЛЕСТНИЦА ИДЁТ ПЕРЕД ОТКАЗОМ, А НЕ ВМЕСТО НЕГО, И ОБА КОНЦА ОБЯЗАТЕЛЬНЫ. Без ступени вниз
+// честный кадр 4000×4000 упирался бы в потолок и убивал прогон там, где хватило бы 1024. Без отказа
+// в конце лестница молча уводила бы качество вниз до любой глубины — и человек платил бы полную
+// цену за кадр, собранный из миниатюр, не зная об этом.
+func freeformWithinBudget(what string, build func(side int) (string, error)) (string, error) {
+	widest := 0
+	for _, side := range freeformSides {
+		uri, err := build(side)
+		if err != nil {
+			return "", err
+		}
+		if len(uri) <= freeformMaxDerivedBytes {
+			return uri, nil
+		}
+		if len(uri) > widest {
+			widest = len(uri)
+		}
+	}
+	return "", fmt.Errorf("%w: %s is %d bytes of inline data even at %d px, against a ceiling of %d — "+
+		"this picture has to get smaller before it can be sent",
+		errFreeformJobTooLarge, what, widest, freeformSides[len(freeformSides)-1], freeformMaxDerivedBytes)
 }
 
 // freeformTextForRegion — слова про эту область, если они есть. Пара позиционная (см. freeformItem).
@@ -379,13 +473,22 @@ func freeformDecode(raw []byte) (image.Image, error) {
 	}
 }
 
-// freeformSourceIsPNG — держит ли исходник альфу. Спрашивается у декодированной картинки, а не у
-// расширения: WebP с альфой декодируется в NRGBA ровно так же, как PNG, и терять её на кропе было
-// бы потерей ровно того, ради чего вырез существует.
-func freeformSourceIsPNG(src image.Image) bool {
+// freeformSourceHasAlpha — НЕСЁТ ЛИ ИСХОДНИК ПРОЗРАЧНОСТЬ НА САМОМ ДЕЛЕ.
+//
+// Спрашивается у декодированной картинки, а не у расширения: WebP с альфой декодируется в NRGBA
+// ровно так же, как PNG, и терять её на кропе было бы потерей ровно того, ради чего вырез
+// существует.
+//
+// ⚠ И ЭТО ИЗМЕРЕНИЕ ПИКСЕЛЕЙ, А НЕ ТИП. Тип отвечает на вопрос «МОЖЕТ ли эта картинка нести
+// альфу», и ответ «да» у ЛЮБОГО фотоснимка, загруженного PNG, — то есть у большинства. Кроп такого
+// снимка уезжал PNG'ом, а PNG фотографии это втрое-впятеро больше байтов, чем JPEG q90, при
+// побайтово одинаковом содержании: платит за них потолок тела запроса и память процесса, у
+// которого её пол-гигабайта. Сама проверка стоит один проход по пикселям и у прозрачной картинки —
+// у той, ради которой всё это, — заканчивается на первом же углу (hasTransparentPixel).
+func freeformSourceHasAlpha(src image.Image) bool {
 	switch src.(type) {
 	case *image.NRGBA, *image.RGBA, *image.NRGBA64, *image.RGBA64, *image.Paletted:
-		return true
+		return hasTransparentPixel(src)
 	}
 	return false
 }
@@ -397,9 +500,8 @@ func freeformSourceIsPNG(src image.Image) bool {
 // Это служебная картинка «посмотри сюда», а не материал, из которого что-то делают: её никто не
 // вклеивает и не сохраняет. Прозрачность на ней всё равно потерялась бы при отрисовке контуров, а
 // JPEG q90 против PNG — это втрое меньше base64 в теле запроса, у которого свой потолок.
-func freeformOutlined(src image.Image, regions []freeformRegion) (string, bool, error) {
-	hadAlpha := freeformSourceIsPNG(src)
-	scaled := freeformFit(src, freeformMaxSide)
+func freeformOutlined(src image.Image, regions []freeformRegion, side int) (string, error) {
+	scaled := freeformFit(src, side)
 	b := scaled.Bounds()
 	canvas := image.NewRGBA(b)
 	// БЕЛАЯ ПОДЛОЖКА ПОД ПРОЗРАЧНЫМ, а не чёрная: прозрачный PNG, слитый в JPEG без подложки,
@@ -424,9 +526,9 @@ func freeformOutlined(src image.Image, regions []freeformRegion) (string, bool, 
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, canvas, &jpeg.Options{Quality: freeformJPEGQuality}); err != nil {
-		return "", hadAlpha, err
+		return "", err
 	}
-	return freeformDataURI("image/jpeg", buf.Bytes()), hadAlpha, nil
+	return freeformDataURI("image/jpeg", buf.Bytes()), nil
 }
 
 // freeformStroke обводит один многоугольник ЗАМКНУТОЙ ломаной.
@@ -475,7 +577,7 @@ func freeformDot(dst *image.RGBA, x, y int, c color.RGBA, thickness int) {
 }
 
 // freeformCrop — КРОП ОБЛАСТИ С ПОЛЯМИ. PNG, если исходник держал альфу, иначе JPEG.
-func freeformCrop(src image.Image, region freeformRegion, keepAlpha bool) (string, error) {
+func freeformCrop(src image.Image, region freeformRegion, keepAlpha bool, side int) (string, error) {
 	b := src.Bounds()
 	minX, minY, maxX, maxY := freeformBBox(region)
 	// ПОЛЯ СЧИТАЮТСЯ ОТ РАЗМЕРА ОБЛАСТИ, а не от кадра: у пуговицы поле должно быть с пуговицу, а
@@ -501,7 +603,7 @@ func freeformCrop(src image.Image, region freeformRegion, keepAlpha bool) (strin
 	}
 	crop := image.NewNRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
 	draw.Draw(crop, crop.Bounds(), src, rect.Min, draw.Src)
-	scaled := freeformFit(crop, freeformMaxSide)
+	scaled := freeformFit(crop, side)
 
 	var buf bytes.Buffer
 	if keepAlpha {
