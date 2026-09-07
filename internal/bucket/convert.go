@@ -30,6 +30,37 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
 // allocating hundreds of MB. ~40 MP is generous for a storefront master image.
 const maxImagePixels = 40_000_000
 
+// ImageWithinBudget answers, from a picture's HEADER alone, whether it is small enough to decode.
+//
+// ⚠ ЭТО ЕДИНСТВЕННОЕ ЧИСЛО НА ВЕСЬ ПРОЦЕСС, И ИМЕННО ПОЭТОМУ ОНО ЭКСПОРТИРУЕТСЯ. Потолки здесь
+// стоят у ЗАГРУЗКИ, но декодирует чужие байты не только загрузка: маршрут выреза разбирает то, что
+// прислал поставщик (designgen/cutoutfal.go), а плейграунд — исходники, которые он читает из
+// бакета (designgen/freeform_derive.go). У каждого из них своя копия числа разошлась бы молча — и
+// разошлась бы в ту сторону, в которую дороже: картинка, которую здесь отказались бы хранить,
+// была бы там развёрнута в память процесса, у которого пол-гигабайта на всё.
+//
+// ОБА ПРЕДИКАТА, А НЕ ОДИН. Сторона ограничена отдельно от площади потому, что 12000×1 и 40 MP —
+// разные отказы: первый ломает ресайз и превью, второй — память. Картинка, прошедшая один и не
+// прошедший другой, существует, и пропустить её нельзя ни по одной из двух причин.
+//
+// Ноль и отрицательное — НЕ в бюджете: заголовок, объявивший такое, не картинка, и звать по нему
+// декодер незачем.
+func ImageWithinBudget(width, height int) bool {
+	if width <= 0 || height <= 0 {
+		return false
+	}
+	if width > maxImageDimension || height > maxImageDimension {
+		return false
+	}
+	return int64(width)*int64(height) <= maxImagePixels
+}
+
+// ImageBudgetCeilings names the two numbers ImageWithinBudget holds a picture to, so a refusal
+// can quote what it was measured against instead of accusing without a figure.
+func ImageBudgetCeilings() (maxSide int, maxPixels int64) {
+	return maxImageDimension, maxImagePixels
+}
+
 func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
 	ct := sniffImageType(raw)
 	if err := checkImagePixelBudget(ct, raw); err != nil {

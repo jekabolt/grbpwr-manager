@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -16,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"hash/crc32"
+
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
@@ -147,6 +151,43 @@ func encodePNG(t *testing.T, m image.Image) []byte {
 	var buf bytes.Buffer
 	require.NoError(t, png.Encode(&buf, m))
 	return buf.Bytes()
+}
+
+// pngHeaderSays — НАСТОЯЩИЙ PNG, ЧЕЙ ЗАГОЛОВОК ОБЪЯВЛЯЕТ ЧУЖОЙ РАЗМЕР.
+//
+// ⚠ ЭТО И ЕСТЬ ФОРМА БОМБЫ, И ОНА ЖЕ — РАЗЛИЧАЮЩИЙ ПРИЗНАК. Сжатых 30000×30000 в пробе не собрать:
+// честная такая картинка это гигабайты памяти ровно там, где мы доказываем, что их не тратим.
+// Поэтому берётся крошечный PNG, и в его IHDR переписываются ширина с высотой (CRC пересчитывается,
+// иначе заголовок не прочитает и DecodeConfig). Получается файл в полторы сотни байт, ОБЪЯВЛЯЮЩИЙ
+// гигапиксель, — ровно то, что присылает злонамеренный или сломанный поставщик.
+//
+// И у него есть свойство, ради которого он здесь: `png.Decode` на нём ПАДАЕТ (данных на объявленную
+// канву нет). Значит вердикт `tooLarge` физически невозможно получить, если растр всё-таки трогали:
+// декодировавшая редакция вернула бы «это не читаемый PNG», то есть жалобу про альфу. Убери потолок
+// — и проба покраснеет по СМЫСЛУ, а не по счётчику.
+func pngHeaderSays(t *testing.T, w, h int) []byte {
+	t.Helper()
+	raw := encodePNG(t, image.NewNRGBA(image.Rect(0, 0, 1, 1)))
+	// PNG: 8 байт сигнатуры, затем чанк IHDR — 4 байта длины, 4 байта типа, 13 байт данных, 4 CRC.
+	// Ширина и высота — первые восемь байт данных.
+	const ihdrData = 8 + 4 + 4
+	require.Greater(t, len(raw), ihdrData+13+4)
+	require.Equal(t, "IHDR", string(raw[12:16]), "первый чанк PNG обязан быть IHDR")
+	out := append([]byte(nil), raw...)
+	binary.BigEndian.PutUint32(out[ihdrData:], uint32(w))
+	binary.BigEndian.PutUint32(out[ihdrData+4:], uint32(h))
+	// CRC считается по ТИПУ ЧАНКА И ЕГО ДАННЫМ — без него декодер отвергнет заголовок как битый, и
+	// проба доказывала бы совсем другое.
+	crc := crc32.ChecksumIEEE(out[12 : ihdrData+13])
+	binary.BigEndian.PutUint32(out[ihdrData+13:], crc)
+
+	cfg, err := png.DecodeConfig(bytes.NewReader(out))
+	require.NoError(t, err, "заголовок обязан читаться, иначе проба меряет не то")
+	require.Equal(t, w, cfg.Width)
+	require.Equal(t, h, cfg.Height)
+	_, err = png.Decode(bytes.NewReader(out))
+	require.Error(t, err, "растра под объявленную канву здесь нет — и это то, что делает пробу различающей")
+	return out
 }
 
 func cutoutJob(refs ...string) Job {
@@ -335,6 +376,66 @@ func TestACutOutWithNoAlphaIsKEPT_AND_COMPLAINED_ABOUT(t *testing.T) {
 	require.Contains(t, err.Error(), "640", "32×20 = 640 pixels, and the count is the evidence")
 	require.Contains(t, err.Error(), "32×20")
 	require.Contains(t, err.Error(), "the picture was kept")
+}
+
+// TestACutOutTooBigToReadIsNOT_DECODED_AND_SAYS_SO.
+//
+// ⚠ ЭТО БЫЛА БОМБА ПОСЛЕ ОПЛАТЫ. Транспорт пускает файл до 25 MiB, а сжатый PNG объявляет канву
+// какого угодно размера: прежняя редакция звала `png.Decode` на байты ПОСТАВЩИКА без единого
+// потолка, то есть просила у процесса с пол-гигабайтом памяти десятки гигабайт — и уносила с собой
+// чужие оплаченные прогоны из соседних горутин.
+//
+// ЧТО ДОКАЗЫВАЕТСЯ: (1) вердикт — `cutout_too_large`, отдельным словом от «нет альфы», потому что
+// это ДРУГОЕ утверждение — мы не смотрели; (2) картинка при этом СОХРАНЕНА и оплачена, как у
+// соседа; (3) растр не трогали — см. довод у pngHeaderSays: декодировавшая редакция вернула бы
+// жалобу про нечитаемый PNG, а не про размер.
+func TestACutOutTooBigToReadIsNOT_DECODED_AND_SAYS_SO(t *testing.T) {
+	payload := pngHeaderSays(t, 30000, 30000)
+	require.Less(t, len(payload), 4096, "бомба обязана быть маленькой — в этом её вся суть")
+
+	st := newCutoutStand(t, payload)
+	out, err := cutoutPass(t, st.provider(), cutoutJob("https://cdn.example/a.png"))
+	require.Error(t, err)
+	require.ErrorIs(t, err, errCutoutTooLarge)
+	require.NotErrorIs(t, err, errCutoutNoAlpha,
+		"«не смотрели» и «прозрачности нет» — разные утверждения об одном оплаченном кадре")
+
+	// КАРТИНКА СОХРАНЕНА И ОПЛАЧЕНА — тот же шов, что у cutout_no_alpha: решение не смотреть приняли
+	// мы, а деньги ушли до того.
+	require.NotNil(t, out)
+	require.Len(t, out.Artifacts, 1)
+	require.Equal(t, payload, out.Artifacts[0].Bytes)
+	require.True(t, out.Price.Valid)
+
+	// ЦИФРЫ ЕДУТ С ЖАЛОБОЙ: без них «слишком велик» — обвинение, которое нечем проверить.
+	require.Contains(t, err.Error(), "30000×30000")
+	require.Contains(t, err.Error(), "the picture was kept")
+
+	// И КОД У НЕГО СВОЙ, ТЕРМИНАЛЬНЫЙ, ДОСТАВЛЕННЫЙ.
+	v := classify(err)
+	require.False(t, v.Retryable, "повтор купил бы ту же картинку и отказался бы читать её снова")
+	require.Equal(t, CodeCutoutTooLarge, v.Code)
+	require.Equal(t, "cutout_too_large", CodeCutoutTooLarge)
+	require.Equal(t, entity.DesignAttemptDelivered, v.State)
+}
+
+// TestTheAlphaCeilingIsTHE_BUCKETS_OWN — потолок здесь НЕ СВОЙ, и это несущее свойство.
+//
+// Картинка, которую бакет отказался бы хранить, не должна быть развёрнута в память ради вопроса про
+// альфу; две копии числа разошлись бы молча и в ту сторону, в которую дороже. Проба держит границу
+// с ОБЕИХ сторон: то, что бакет берёт, — измеряется; то, что он не берёт, — нет.
+func TestTheAlphaCeilingIsTHE_BUCKETS_OWN(t *testing.T) {
+	side, pixels := bucket.ImageBudgetCeilings()
+	require.True(t, bucket.ImageWithinBudget(side, 1), "сторона ровно в потолок ещё в бюджете")
+	require.False(t, bucket.ImageWithinBudget(side+1, 1), "на пиксель шире стороны — уже нет")
+	require.False(t, bucket.ImageWithinBudget(int(pixels/1000)+1, 1001), "площадь считается отдельно от стороны")
+
+	// ЧЕСТНАЯ КАРТИНКА В БЮДЖЕТЕ ИЗМЕРЯЕТСЯ КАК ПРЕЖДЕ — иначе потолок был бы не сторожем, а
+	// заглушкой на весь маршрут.
+	require.True(t, cutoutAlphaVerdict(pngWithAlpha(t, 32, 32)).hasAlpha)
+	require.False(t, cutoutAlphaVerdict(pngHeaderSays(t, side+1, 4)).hasAlpha)
+	require.True(t, cutoutAlphaVerdict(pngHeaderSays(t, side+1, 4)).tooLarge,
+		"сторона за потолком — тот же отказ мерить, что и площадь")
 }
 
 // TestAJPEGAnswerIsTHE_SAME_COMPLAINT. A JPEG cannot carry an alpha channel at all, so an answer in

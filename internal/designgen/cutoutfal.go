@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/shopspring/decimal"
@@ -42,6 +43,29 @@ const CodeCutoutNoAlpha = "cutout_no_alpha"
 // errPatternNotSeamless, потому что это тот же шов: картинка куплена, сохранена и показана, а
 // жалоба едет в строке попытки.
 var errCutoutNoAlpha = errors.New("designgen: the cut-out came back with nothing cut out")
+
+// CodeCutoutTooLarge — ВЫРЕЗ КУПЛЕН, А ИЗМЕРИТЬ ЕГО НЕЛЬЗЯ: заголовок объявляет больше пикселей,
+// чем этот процесс разворачивает.
+//
+// ⚠ ЭТО ТОЖЕ КОД ДОСТАВЛЕННОЙ ПОПЫТКИ, и по тому же доводу, что у cutout_no_alpha: байты пришли,
+// они оплачены, и решение «не смотреть» принято НАМИ. Отдельное слово вместо cutout_no_alpha нужно
+// потому, что это ДРУГОЕ утверждение: там прозрачности не нашли, здесь её не искали вовсе — и
+// человек, читающий строку, обязан различать «модель вернула непрозрачный кадр» и «кадр слишком
+// велик, чтобы его читать».
+const CodeCutoutTooLarge = "cutout_too_large"
+
+// errCutoutTooLarge is raised BESIDE the artifact, never instead of it — same seam as
+// errCutoutNoAlpha.
+//
+// ⚠ ЧТО ОН ЗАКРЫВАЕТ, И ЭТО БЫЛА БОМБА ПОСЛЕ ОПЛАТЫ. Проверка альфы декодировала байты ПОСТАВЩИКА
+// без единого потолка: транспорт пускает файл до 25 MiB (fal.maxCutoutBytes), а 25 MiB сжатого PNG
+// объявляют канву в гигапиксели — и `png.Decode` честно просил бы под неё десятки гигабайт в
+// процессе, у которого пол-гигабайта на всё. Умирал бы при этом не только этот прогон, а весь
+// воркер, унося чужие оплаченные прогоны из соседних горутин. Потолок читается из ЗАГОЛОВКА
+// (png.DecodeConfig), то есть из первых двух десятков байт, и он тот же, которым бакет меряет
+// всякую хранимую картинку (bucket.ImageWithinBudget): картинка, которую негде хранить, не должна
+// быть и развёрнута.
+var errCutoutTooLarge = errors.New("designgen: the cut-out is too large to read")
 
 // falCutoutProvider is the background-removal route (задача 3 — «прозрачные картинки»).
 //
@@ -179,7 +203,14 @@ func (p falCutoutProvider) Collect(ctx context.Context, job Job, requestID strin
 	// ─── DID ANYTHING ACTUALLY GET CUT OUT. The measurement, and the reason it may not fail the
 	// run, are in cutoutAlphaVerdict. Here it does one thing: it returns the artifact TOGETHER WITH
 	// the complaint — the shape settle() already implements, the same one errPatternNotSeamless uses.
-	if v := cutoutAlphaVerdict(raw); !v.hasAlpha {
+	//
+	// ДВЕ ЖАЛОБЫ, А НЕ ОДНА, И РАЗЛИЧИЕ НЕСУЩЕЕ: «прозрачности нет» — это ИЗМЕРЕНИЕ, «слишком
+	// велик» — это ОТКАЗ МЕРИТЬ. Свернув их в одно слово, строка истории утверждала бы про кадр
+	// то, чего никто не смотрел.
+	switch v := cutoutAlphaVerdict(raw); {
+	case v.tooLarge:
+		return out, fmt.Errorf("%w: %s; the picture was kept", errCutoutTooLarge, v.why)
+	case !v.hasAlpha:
 		// THE FIGURES TRAVEL WITH THE COMPLAINT. «There is no transparency» with nothing beside it
 		// is an accusation nobody can check against the picture they are looking at.
 		return out, fmt.Errorf("%w: %s; the picture was kept", errCutoutNoAlpha, v.why)
@@ -212,6 +243,10 @@ func cutoutSource(job Job) (string, error) {
 // differently from «the provider sent a JPEG», and only one of them is a configuration problem.
 type alphaVerdict struct {
 	hasAlpha bool
+	// tooLarge — ЗАГОЛОВОК ОБЪЯВИЛ БОЛЬШЕ, ЧЕМ ЭТОТ ПРОЦЕСС РАЗВОРАЧИВАЕТ, и растр не трогали
+	// вовсе. Третье состояние, а не `hasAlpha=false`: «прозрачности нет» и «мы не смотрели» — два
+	// разных утверждения об одном оплаченном кадре, и у них разные коды.
+	tooLarge bool
 	why      string
 }
 
@@ -226,15 +261,35 @@ type alphaVerdict struct {
 // ЧТО ОНА НЕ ДЕЛАЕТ: не судит о КАЧЕСТВЕ выреза. Ореол, съеденный рукав, обрезанная тень — это глаз
 // человека, и никакая арифметика по каналу их не назовёт. Она ловит ровно тот отказ, который виден
 // в момент покупки и который иначе обнаружился бы через две недели: прозрачности нет вовсе.
+// ⚠ ЗАГОЛОВОК ЧИТАЕТСЯ РАНЬШЕ РАСТРА, И ЭТО НЕ ПОРЯДОК СТРОК, А ГРАНИЦА ПАМЯТИ. Довод целиком — у
+// errCutoutTooLarge: байты пришли от поставщика, их до 25 MiB, и сжатый PNG объявляет канву какого
+// угодно размера. png.DecodeConfig стоит два десятка байт и отвечает на вопрос «стоит ли вообще
+// звать декодер» ДО того, как декодер попросит гигабайты.
 func cutoutAlphaVerdict(raw []byte) alphaVerdict {
 	if len(raw) == 0 {
 		return alphaVerdict{why: "the provider delivered no bytes"}
 	}
-	img, err := png.Decode(bytes.NewReader(raw))
+	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		// A FORMAT THAT CANNOT CARRY ALPHA IS THE SAME COMPLAINT, and it is the likeliest one: a
 		// JPEG answer to a background removal is a picture with the background painted in, and the
 		// run asked for `output_format: png` explicitly.
+		return alphaVerdict{why: fmt.Sprintf(
+			"the answer is not a readable PNG (%s, %d bytes), so it carries no alpha channel at all",
+			cutoutContentType(raw), len(raw))}
+	}
+	if !bucket.ImageWithinBudget(cfg.Width, cfg.Height) {
+		side, pixels := bucket.ImageBudgetCeilings()
+		return alphaVerdict{tooLarge: true, why: fmt.Sprintf(
+			"its header declares %d×%d pixels — past the %d px side and the %d pixel ceiling every "+
+				"stored picture is held to — so nothing was decoded and the alpha was never looked at",
+			cfg.Width, cfg.Height, side, pixels)}
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		// A HEADER THAT READ AND A RASTER THAT DID NOT: a truncated or corrupt body. Same sentence
+		// as the unreadable header above — from where a person stands, both are «this is not a PNG
+		// we could look into».
 		return alphaVerdict{why: fmt.Sprintf(
 			"the answer is not a readable PNG (%s, %d bytes), so it carries no alpha channel at all",
 			cutoutContentType(raw), len(raw))}

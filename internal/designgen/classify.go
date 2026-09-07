@@ -153,6 +153,14 @@ func classify(err error) verdict {
 	case errors.Is(err, errCutoutNoAlpha):
 		return verdict{Retryable: false, Code: CodeCutoutNoAlpha, State: entity.DesignAttemptDelivered}
 
+	// ─── ours: DELIVERED, AND DELIBERATELY NOT LOOKED INTO. The header of the bought picture
+	// declares more pixels than this process unpacks, so the alpha check refused to decode it. Same
+	// state and same non-retryability as the neighbour above, and for the sharper reason: the next
+	// pass would buy the same picture from the same model and refuse to read it again. See
+	// errCutoutTooLarge.
+	case errors.Is(err, errCutoutTooLarge):
+		return verdict{Retryable: false, Code: CodeCutoutTooLarge, State: entity.DesignAttemptDelivered}
+
 	// ─── ours: DELIVERED, AND WIDER THAN THE ORDER. The first picture is kept and filed, the rest
 	// were never uploaded. Not retryable for the plainest reason of all: the run got what it paid
 	// for, and a second pass would buy a second answer to a question already answered.
