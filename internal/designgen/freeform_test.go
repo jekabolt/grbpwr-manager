@@ -617,6 +617,79 @@ func TestAGigapixelSourceIsREFUSED_FROM_ITS_HEADER_BEFORE_ANY_MONEY(t *testing.T
 	require.NotEqual(t, CodeJobTooLarge, st.failed[0].ErrorCode)
 }
 
+// TestAddHardwareWithoutItsHardwareIsREFUSED_NOT_BOUGHT_AS_BEST_EFFORT.
+//
+// ⚠ ДВЕРЬ ЭТО НЕ ЛОВИЛА, И ПОЙМАТЬ НЕ МОГЛА. Она спрашивает ПАРАМЕТРЫ («названа ли картинка
+// фурнитуры»), а между дверью и проходом стоит время: строку медиа законно удаляют, и резолв
+// пропускает пропавшую МОЛЧА. `add_hardware`, потерявший фотографию фурнитуры, уезжал провайдеру
+// абзацем «возьми фурнитуру с картинки …» БЕЗ ЕДИНОЙ картинки фурнитуры — модель отвечает
+// правдоподобным кадром, деньги списаны, а в истории такой прогон неотличим от честного.
+//
+// Проба ставит ровно этот разрыв: снимок называет 11 (изделие с областью) и 12 (фурнитура), а
+// медиа знает только 11.
+func TestAddHardwareWithoutItsHardwareIsREFUSED_NOT_BOUGHT_AS_BEST_EFFORT(t *testing.T) {
+	objs := &fakeObjects{byKey: map[string][]byte{"m/11.png": fixturePNG(t), "m/12.png": fixturePNG(t)}}
+	r := freeformRun(`{"freeform":{"preset":"add_hardware","items":[
+	  {"media_id":11,"role":"subject","texts":["right here"],
+	   "regions":[{"kind":"TECH_CARD_ANNOTATION_KIND_POLYGON","points":[` +
+		point("0.6", "0.6") + `,` + point("0.9", "0.6") + `,` + point("0.9", "0.9") + `]}]},
+	  {"media_id":12,"role":"hardware"}]}}`)
+	r.Inputs = entity.RawJSON(`{"refs":[{"media_id":11},{"media_id":12}]}`)
+
+	prov := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	st := &fakeStore{}
+	// МЕДИА ЗНАЕТ ТОЛЬКО 11: строку 12 удалили между снимком и проходом.
+	w := testWorker(st, media(11), newFakeSink(ContentTypePNG), Providers{Image: prov})
+	w.objects = objs
+
+	require.NoError(t, w.execute(context.Background(), r, "tok"))
+
+	require.Empty(t, prov.calls, "предпосылка не исполнима — платить не за что")
+	require.Empty(t, st.started, "и попытку открывать не за что: StartAttempt резервирует бюджет")
+	require.Len(t, st.failed, 1)
+	require.Equal(t, CodeSourceGone, st.failed[0].ErrorCode)
+	require.Equal(t, "source_gone", CodeSourceGone)
+	require.False(t, st.failed[0].Retryable, "удалённая строка медиа не возвращается")
+	require.Contains(t, st.failed[0].LastError, "role=hardware",
+		"отказ называет ИМЕННО ту половину, которой не стало")
+
+	// ─── КОНТРОЛЬ: тот же прогон с ОБЕИМИ живыми картинками покупается как обычно. Без него проба
+	// была бы зелена и у сторожа, отказывающего всякому add_hardware.
+	ok := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	okStore := &fakeStore{}
+	w2 := testWorker(okStore, media(11, 12), newFakeSink(ContentTypePNG), Providers{Image: ok})
+	w2.objects = objs
+	require.NoError(t, w2.execute(context.Background(), r, "tok"))
+	require.Len(t, ok.calls, 1, "исполнимый add_hardware обязан по-прежнему уезжать провайдеру")
+}
+
+// TestAPlaygroundRunWhoseEveryPictureVanishedIsREFUSED — иначе это платная просьба «нарисуй по
+// словам», которую дверь отклонила бы как `no_source_picture`.
+func TestAPlaygroundRunWhoseEveryPictureVanishedIsREFUSED(t *testing.T) {
+	r := freeformRun(`{"freeform":{"preset":"free","items":[{"media_id":11},{"media_id":12}]}}`)
+	r.Inputs = entity.RawJSON(`{"refs":[{"media_id":11},{"media_id":12}]}`)
+
+	prov := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	st := &fakeStore{}
+	w := testWorker(st, media(), newFakeSink(ContentTypePNG), Providers{Image: prov})
+	w.objects = &fakeObjects{byKey: map[string][]byte{}}
+
+	require.NoError(t, w.execute(context.Background(), r, "tok"))
+	require.Empty(t, prov.calls)
+	require.Len(t, st.failed, 1)
+	require.Equal(t, CodeSourceGone, st.failed[0].ErrorCode)
+
+	// ⚠ А ПОТЕРЯ ОДНОЙ ИЗ ДВУХ У `free` — НЕ ОТКАЗ, И ЭТО НАМЕРЕННО. Ссылки там не связаны, и
+	// ронять исполнимый прогон за честную деградацию было бы сторожем дороже дыры.
+	ok := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	okStore := &fakeStore{}
+	w2 := testWorker(okStore, media(11), newFakeSink(ContentTypePNG), Providers{Image: ok})
+	w2.objects = &fakeObjects{byKey: map[string][]byte{"m/11.png": fixturePNG(t)}}
+	require.NoError(t, w2.execute(context.Background(), r, "tok"))
+	require.Len(t, ok.calls, 1)
+	require.Empty(t, okStore.failed)
+}
+
 // TestTheSourceCeilingIsTHE_SAME_NUMBER_EVERYWHERE — потолок исходника плейграунда, потолок
 // проверки альфы выреза и потолок бакета это ОДНО число.
 //

@@ -3,6 +3,7 @@ package designgen
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -1259,6 +1260,13 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	// сирот при каждом отказе и компенсацию, которую пришлось бы писать; а воспроизвести их можно
 	// в любой момент — области заморожены в params, исходник адресуется media_id.
 	if run.Kind == entity.DesignRunKindFreeform {
+		// ─── ПРЕДПОСЫЛКИ ПРЕСЕТА ПЕРЕСПРАШИВАЮТСЯ У ВЫЖИВШИХ КАРТИНОК, И ЭТО НЕ ПОВТОР ДВЕРИ ───
+		//
+		// Стоит ПЕРЕД окном и перед производными: обе они уже перестраивают `attached`, а вопрос
+		// здесь про то, что действительно доехало.
+		if err := freeformPrerequisitesSurvived(p, attached); err != nil {
+			return Job{}, err
+		}
 		// ─── ОКНО ГЕНЕРАЦИИ. Если этот прогон берёт окно (add_hardware по одной области), кадр
 		// целиком к модели НЕ ЕДЕТ ВОВСЕ: она увидит только кроп, а кадром ответ станет после
 		// вызова, вклейкой по замороженным координатам. Полный кадр рядом с кропом сделал бы всю
@@ -1293,6 +1301,85 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	// route that composed its own text would be a second composer to keep in step.
 	job.SurfaceSteer = surfaceSteer(ctx, p)
 	return job, nil
+}
+
+// errFreeformSourceGone — КАРТИНКА, БЕЗ КОТОРОЙ ЭТОТ ПРЕСЕТ НЕ ИСПОЛНИМ, НЕ ДОЕХАЛА, И ОТКАЗ
+// БЕСПЛАТНЫЙ.
+//
+// ⚠ ТЕРМИНАЛЬНЫЙ. Строку медиа удалили; следующий проход соберёт то же задание из того же
+// замороженного снимка и снова её не найдёт — то есть повтор покупает пять одинаковых отказов.
+var errFreeformSourceGone = errors.New("designgen: a picture this playground run needs is gone")
+
+// freeformPrerequisitesSurvived ПЕРЕСПРАШИВАЕТ ПРЕДПОСЫЛКИ ПРЕСЕТА У КАРТИНОК, КОТОРЫЕ ДЕЙСТВИТЕЛЬНО
+// ДОЕХАЛИ.
+//
+// ⚠ ЭТО НЕ ВТОРАЯ КОПИЯ ДВЕРИ, А ТОТ ЖЕ ВОПРОС ДРУГОМУ МНОЖЕСТВУ, И РАСХОЖДЕНИЕ СТОИЛО ДЕНЕГ.
+// Дверь (designRefuseUnworkableSources) спрашивает ПАРАМЕТРЫ: «названа ли картинка фурнитуры,
+// размечена ли область». Здесь спрашиваются ВЫЖИВШИЕ строки медиа — те, что пережили резолв. Между
+// дверью и проходом стоит время: картинку законно удаляют, и `resolve` пропускает пропавшую
+// МОЛЧА — правильно для рода, где каждая ссылка сама по себе, и разрушительно для пресета, у
+// которого ссылки СВЯЗАНЫ. Без этой проверки `add_hardware`, потерявший фотографию фурнитуры,
+// уезжал провайдеру абзацем «возьми фурнитуру с картинки …» БЕЗ ЕДИНОЙ картинки фурнитуры: модель
+// отвечает правдоподобным кадром, деньги списаны, а в истории такой прогон неотличим от честного.
+//
+// ⚠ И ОТКАЗ ЗДЕСЬ БЕСПЛАТНЫЙ РОВНО ПОТОМУ, ЧТО ОН ЗДЕСЬ. buildJob зовётся до StartAttempt — то есть
+// до движения денег. Тот же отказ на один шаг позже был бы отказом ПОСЛЕ покупки.
+//
+// ЧТО НЕ ПРОВЕРЯЕТСЯ: потеря ОДНОЙ картинки из нескольких у пресетов `free` и `repaint_parts`. Там
+// ссылки не связаны — «работай по словам и по этим картинкам», — и деградация честно видна в
+// подписях. Отказывать за неё значило бы ронять исполнимый прогон.
+func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
+	ff := p.Freeform
+	if ff == nil || len(ff.Items) == 0 {
+		return nil
+	}
+	alive := make(map[int]struct{}, len(attached))
+	for _, rc := range attached {
+		if rc.MediaID > 0 {
+			alive[rc.MediaID] = struct{}{}
+		}
+	}
+	named, survived := 0, 0
+	hardware, marked := 0, 0
+	for _, it := range ff.Items {
+		if it.MediaID <= 0 {
+			continue
+		}
+		named++
+		if _, ok := alive[it.MediaID]; !ok {
+			continue
+		}
+		survived++
+		if it.Role == entity.DesignFreeformRoleHardware {
+			hardware++
+			continue
+		}
+		// ОБЛАСТЬ ИЩЕТСЯ НА ЛЮБОЙ НЕ-ФУРНИТУРНОЙ КАРТИНКЕ, дословно как у двери: пустая роль
+		// законна («просто картинка»), и требовать её проставленной значило бы отказывать за
+		// неназванное имя там, где человек уже показал пальцем.
+		if len(it.Regions) > 0 {
+			marked++
+		}
+	}
+	// НИ ОДНА НЕ ДОЕХАЛА — это уже не плейграунд, а платная просьба «нарисуй по словам», которую
+	// дверь отклонила бы как `no_source_picture`.
+	if named > 0 && survived == 0 {
+		return fmt.Errorf("%w: this run names %d picture(s) and not one of them could be read any "+
+			"more — a playground run works ON the pictures put into it, and there are none left",
+			errFreeformSourceGone, named)
+	}
+	if ff.Preset != entity.DesignFreeformPresetAddHardware {
+		return nil
+	}
+	if hardware == 0 {
+		return fmt.Errorf("%w: «add hardware» puts the hardware from one picture onto another, and "+
+			"the picture marked role=hardware is no longer there", errFreeformSourceGone)
+	}
+	if marked == 0 {
+		return fmt.Errorf("%w: «add hardware» needs the place it goes, and the picture carrying the "+
+			"outlined area is no longer there", errFreeformSourceGone)
+	}
+	return nil
 }
 
 // recolorAttached is WHAT ONE RECOLOUR CALL SHOWS THE MODEL, which is not what the job carries.

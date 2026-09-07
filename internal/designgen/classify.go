@@ -154,6 +154,11 @@ func classify(err error) verdict {
 	// so the next pass meets the very same header.
 	case errors.Is(err, errFreeformSourceTooLarge):
 		return verdict{Retryable: false, Code: CodeSourceTooLarge, State: entity.DesignAttemptFailed}
+	// ─── ours: the preset's own prerequisite did not survive to the pass. Refused while the job was
+	// BUILT, so no money moved; terminal because the row that vanished does not come back and the
+	// snapshot is frozen. See freeformPrerequisitesSurvived.
+	case errors.Is(err, errFreeformSourceGone):
+		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it
