@@ -161,6 +161,16 @@ func TestEveryPlaygroundRefusalHappensBEFORE_ANY_MONEY(t *testing.T) {
 		}
 		require.Error(t, designRefuseMalformedFreeform(entity.DesignRunKindFreeform, p))
 	})
+	t.Run("the same picture twice", func(t *testing.T) {
+		// ⚠ ЭТО ОБХОД ПОТОЛКА ОБЛАСТЕЙ, А НЕ НЕОПРЯТНОСТЬ ЗАПРОСА. Четыре области объявлены НА
+		// КАРТИНКУ; две записи по четыре дали бы восемь — и восемь производных картинок в платном
+		// вызове, у которого свой потолок.
+		p := ffParams("free",
+			&pb_common.DesignFreeformItem{MediaId: 11, Regions: []*pb_common.TechCardAnnotation{ffRegion()}},
+			&pb_common.DesignFreeformItem{MediaId: 11, Regions: []*pb_common.TechCardAnnotation{ffRegion()}})
+		require.Equal(t, "duplicate_picture",
+			ffReason(t, designRefuseMalformedFreeform(entity.DesignRunKindFreeform, p)))
+	})
 	t.Run("no source picture", func(t *testing.T) {
 		require.Equal(t, "no_source_picture", ffReason(t,
 			designRefuseUnworkableSources(entity.DesignRunKindFreeform, "", ffParams("free"))))
@@ -198,10 +208,18 @@ func TestEveryPlaygroundRefusalHappensBEFORE_ANY_MONEY(t *testing.T) {
 		require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindCutout, "", one))
 		require.Equal(t, "cutout_takes_no_words",
 			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindCutout, "make it pretty", one)))
+		// ⚠ ВТОРАЯ ПОЛОВИНА ЭТОЙ ПРОВЕРКИ У ЖИВОЙ ДВЕРИ НЕДОСТИЖИМА, И ЭТО НАЗВАНО ВСЛУХ.
+		// Непустой `freeform` на роде «не freeform» ловится РАНЬШЕ, в
+		// designRefuseMalformedFreeform, словом `freeform_forbidden`; обе фразы верны и обе
+		// показывают на одно и то же поле. Сторож здесь остаётся вторым замком: он держит форму
+		// на случай, если порядок у двери когда-нибудь переставят.
 		wordy := &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11},
 			Freeform: &pb_common.DesignFreeformParams{Preset: "free"}}
 		require.Equal(t, "cutout_takes_no_words",
 			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindCutout, "", wordy)))
+		require.Equal(t, "freeform_forbidden",
+			ffReason(t, designRefuseMalformedFreeform(entity.DesignRunKindCutout, wordy)),
+			"the door refuses this shape one step earlier, and it names the same field")
 	})
 	t.Run("and the gate is silent for every other kind", func(t *testing.T) {
 		for _, kind := range []string{

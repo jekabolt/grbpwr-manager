@@ -111,11 +111,26 @@ func designRefuseMalformedFreeform(kind string, spoken *pb_common.DesignRunParam
 				len(spoken.GetExtraInputMediaIds())),
 			map[string]string{"extra": strconv.Itoa(len(spoken.GetExtraInputMediaIds()))})
 	}
+	// ⚠ ОДНА КАРТИНКА — ОДНА ЗАПИСЬ, И ЭТО НЕ АККУРАТНОСТЬ, А ПОТОЛОК ОБЛАСТЕЙ. Потолок в четыре
+	// области объявлен НА КАРТИНКУ; та же картинка, названная дважды по две области, обошла бы его
+	// молча — а обходится он в производные картинки, то есть в размер платного запроса. Плюс
+	// снимок дедуплицирует ссылки, а сборка задания — нет: прогон получил бы ДВЕ обведённые копии
+	// с подписями «image 1 with area A…», обе про один и тот же номер.
+	seen := make(map[int32]int, len(ff.GetItems()))
 	for i, it := range ff.GetItems() {
 		where := "params.freeform.items." + strconv.Itoa(i)
 		if it.GetMediaId() <= 0 {
 			return status.Errorf(codes.InvalidArgument, "%s.media_id must be a media id", where)
 		}
+		if first, dup := seen[it.GetMediaId()]; dup {
+			return designRefusal(codes.InvalidArgument, "duplicate_picture",
+				fmt.Sprintf("%s names picture %d, which params.freeform.items.%d already names: one "+
+					"picture is one entry, with up to %d marked areas on it. Nothing was reserved and "+
+					"nothing was charged", where, it.GetMediaId(), first,
+					entity.MaxDesignFreeformRegionsPerItem),
+				map[string]string{"media_id": strconv.Itoa(int(it.GetMediaId()))})
+		}
+		seen[it.GetMediaId()] = i
 		if !entity.IsFreeformRole(it.GetRole()) {
 			return designRefusal(codes.InvalidArgument, "unknown_role",
 				fmt.Sprintf("%s.role %q is not subject | hardware | cloth (empty is «just a picture»). "+
