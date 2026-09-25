@@ -40,6 +40,12 @@ const maxConcurrentCampaignTestSends = 2
 // goroutines and the account growing a bill.
 const maxConcurrentNoteFormats = 4
 
+// maxConcurrentEnhance bounds how many EnhanceText calls may be in flight at once. Same shape and
+// same reason as maxConcurrentNoteFormats: every call parks a goroutine on a paid third party, and
+// the button sits on every free-text field of every tech card. A fifth concurrent press is refused
+// at once (ResourceExhausted) rather than queued — «try again in a moment» beats a silent minute.
+const maxConcurrentEnhance = 4
+
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
@@ -105,6 +111,13 @@ type Server struct {
 	// channel makes the acquire fall to its default branch, so a Server built without this field
 	// refuses the RPC loudly instead of silently running with no ceiling at all.
 	noteFormatSem chan struct{}
+	// enhanceSem bounds concurrent EnhanceText calls (maxConcurrentEnhance). NOT nil-safe, on purpose
+	// and for the same reason as noteFormatSem: a Server built without it refuses the RPC loudly
+	// instead of running with no ceiling.
+	enhanceSem chan struct{}
+	// enhanceRuns is the per-admin hourly spend window in front of EnhanceText. Its zero value works
+	// (lazy limiter), like analysisRuns: a fence that bounds SPEND must not depend on New() having run.
+	enhanceRuns enhanceTextGuard
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer
@@ -176,6 +189,7 @@ func New(
 		embedAllowedHosts:    parseEmbedAllowedHosts(embedAllowedHosts),
 		aiOps:                aiOps,
 		noteFormatSem:        make(chan struct{}, maxConcurrentNoteFormats),
+		enhanceSem:           make(chan struct{}, maxConcurrentEnhance),
 		jpkTaxpayer:          jpkTaxpayer,
 	}, nil
 }

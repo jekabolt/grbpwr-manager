@@ -367,6 +367,10 @@ var methodRequirements = map[string]Requirement{
 	// нажатие ТРАТИТ ДЕНЬГИ ключа, а грант на трату — это грант авторинга, а не чтения. Раздать его
 	// всем, кто карточки читает, значило бы раздать кнопку с ценой.
 	"AnalyzeTechCardConstruction": wr(SectionTechCards),
+	// EnhanceText (T15) — the `ai ✦` rewrite of a card's free-text field. Stores nothing, and is a
+	// WRITE by the same precedent: a press spends the AI key, and rewriting a card's text is
+	// authoring it. The route is /api/admin/ai/enhance-text, but the grant is the card's.
+	"EnhanceText": wr(SectionTechCards),
 	// AddTechCardIssue пишет строку — тут спорить не о чем. Он работает и на ЗАМОРОЖЕННОЙ карточке
 	// (issues вне CONSTRUCTION-дайджеста), но замороженность карточки — не права: право одно и то
 	// же на всех состояниях, иначе роль зависела бы от стадии.

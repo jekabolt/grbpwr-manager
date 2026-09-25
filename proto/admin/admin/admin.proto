@@ -1712,6 +1712,30 @@ service AdminService {
     };
   }
 
+  // EnhanceText rewrites ONE free-text field of a tech card — improve (fix errors,
+  // clearer), expand (more detail) or shorten — for the small `ai ✦` button in the
+  // corner of the field (T15). Like FormatLibraryNoteMarkdown it is a SUGGESTION
+  // and persists NOTHING: the answer goes back as a string, the client puts it in
+  // the field with a short-lived undo, and the save is the field's ordinary write.
+  //
+  // What reaches the model is req.text plus req.context (card facts the client
+  // assembled), both as DATA in the user message. The field is a closed enum the
+  // server turns into its own phrase — no request string is ever placed in the
+  // system prompt. Capped (text ≤ 4000 runes, context ≤ 2000, answer ≤ max_runes,
+  // completion ≤ 1200 tokens) and fenced (4 in flight, 30 calls per admin per
+  // hour → ResourceExhausted).
+  //
+  // Classified as a WRITE on tech_cards although it stores nothing — precedent
+  // GenerateTechCardOperations / AnalyzeTechCardConstruction: a press spends the
+  // AI key, and a grant to spend is an authoring grant. The route sits under
+  // /api/admin/ai/, not /tech-card/, so it cannot be shadowed by /tech-card/{id}.
+  rpc EnhanceText(EnhanceTextRequest) returns (EnhanceTextResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/ai/enhance-text"
+      body: "*"
+    };
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -6893,6 +6917,55 @@ message FormatLibraryNoteMarkdownResponse {
   // The suggestion. It is not stored anywhere: accepting it replaces the editor's
   // BUFFER, and the write is a normal SaveLibraryNoteContent with its CAS.
   string content = 1;
+}
+
+// EnhanceTextMode is what the rewrite should do. UNKNOWN is refused
+// (InvalidArgument) — there is no default mode.
+enum EnhanceTextMode {
+  ENHANCE_TEXT_MODE_UNKNOWN = 0;
+  // Fix spelling and grammar, make it clearer and better organised; roughly the
+  // same length, every fact kept.
+  ENHANCE_TEXT_MODE_IMPROVE = 1;
+  // Add concrete, plausible detail a garment technologist would want; every fact
+  // kept; at most twice the length.
+  ENHANCE_TEXT_MODE_EXPAND = 2;
+  // Keep only what matters; at most half the length.
+  ENHANCE_TEXT_MODE_SHORTEN = 3;
+}
+
+// EnhanceTextField names WHICH field is being rewritten. It is an enum and not a
+// string on purpose (review M-07): the server maps it to its own fixed phrase in
+// the system prompt, so nothing the request carries can become an instruction.
+// UNKNOWN is refused (InvalidArgument).
+enum EnhanceTextField {
+  ENHANCE_TEXT_FIELD_UNKNOWN = 0;
+  ENHANCE_TEXT_FIELD_DESCRIPTION = 1; // moodboard description (the design concept)
+  ENHANCE_TEXT_FIELD_NOTE = 2; // tech-card note
+  ENHANCE_TEXT_FIELD_WORDS = 3; // WORDS: the garment description that briefs the flats
+  ENHANCE_TEXT_FIELD_SILHOUETTE = 4;
+  ENHANCE_TEXT_FIELD_FABRIC = 5;
+  ENHANCE_TEXT_FIELD_OTHER = 6; // any other free-text field
+}
+
+message EnhanceTextRequest {
+  // The text to rewrite: 1..4000 runes, not blank.
+  string text = 1;
+  EnhanceTextMode mode = 2;
+  EnhanceTextField field = 3;
+  // Facts of the card the model may use (category path, fit, age group,
+  // silhouette, fabric…), assembled by the client; ≤ 2000 runes, may be empty.
+  // Sent to the model as DATA, never as instructions.
+  string context = 4;
+  // The destination field's own limit, so the answer always fits it. 0 = 4000;
+  // anything else is clamped to [200, 4000]. A longer answer is cut at the last
+  // sentence end (. ! ?) inside the limit, or at the limit when there is none.
+  int32 max_runes = 5;
+}
+
+message EnhanceTextResponse {
+  // The rewritten text, trimmed, never empty, at most max_runes runes. Nothing is
+  // stored: applying it is the client's ordinary write of that field.
+  string text = 1;
 }
 
 message UpdateTaskRequest {
