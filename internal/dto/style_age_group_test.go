@@ -97,3 +97,33 @@ func TestColorwayMerchandisingEmitsAgeGroup(t *testing.T) {
 	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN,
 		buildColorwayDisplayPb(&entity.ColorwayDisplay{}).GetMerchandising().GetAgeGroup())
 }
+
+// TechCardListItem.age_group (29) is the list/board projection of the same fact. Both the admin
+// list (ListTechCards) and the development board (GetStylePipeline) build their rows through
+// ConvertEntityTechCardToListItemPb, so the board is checked through its own converter too — a row
+// that showed the age group in the list and dropped it on the board would be the same defect twice.
+func TestTechCardListItemEmitsAgeGroup(t *testing.T) {
+	tc := &entity.TechCard{}
+	tc.AgeGroup = entity.AgeGroupToddler
+	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TODDLER, ConvertEntityTechCardToListItemPb(tc).GetAgeGroup())
+
+	board := ConvertStylePipelineToPb([]entity.StylePipelineColumn{{
+		Stage: entity.TechCardStageProto,
+		Count: 1,
+		Cards: []entity.TechCard{*tc},
+	}})
+	require.Len(t, board.GetColumns(), 1)
+	require.Len(t, board.GetColumns()[0].GetCards(), 1)
+	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TODDLER, board.GetColumns()[0].GetCards()[0].GetAgeGroup())
+}
+
+// Unset (NULL read as "") is UNKNOWN on the row — never ADULT, which a list would then show as a fact
+// nobody stated. A token this build cannot map reads the same way.
+func TestTechCardListItemUnsetAgeGroupIsUnknown(t *testing.T) {
+	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN,
+		ConvertEntityTechCardToListItemPb(&entity.TechCard{}).GetAgeGroup())
+
+	stray := &entity.TechCard{}
+	stray.AgeGroup = "senior"
+	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN, ConvertEntityTechCardToListItemPb(stray).GetAgeGroup())
+}

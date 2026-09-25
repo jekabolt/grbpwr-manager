@@ -4364,4 +4364,9 @@ message TechCardListItem {
   // нет (такие существуют намеренно). Колонки-ссылки collection_id у тех-карты не существует —
   // её дропнула 0240 как мёртвую схему, поэтому фильтровать можно ТОЛЬКО по этой строке.
   string collection = 28;
+  // Age group of the style (0366), mirroring TechCard.age_group. Together with target_gender (7) it
+  // is the row's audience, so a list/board can label and group by it without an N+1 GetTechCard.
+  // Read-only here — written only via UpdateStyle. UNKNOWN = not set (NULL column) or a stored token
+  // this build cannot map; never a stand-in for ADULT.
+  AgeGroupEnum age_group = 29;
 }

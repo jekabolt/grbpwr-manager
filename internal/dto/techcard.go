@@ -2460,6 +2460,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		Status:        pbStringFromNull(tc.Status),
 		ApprovalState: pbTechCardApprovalState(tc.ApprovalState),
 		TargetGender:  pbGenderFromNull(tc.TargetGender),
+		AgeGroup:      ConvertEntityAgeGroupToPb(tc.AgeGroup), // 0366, read like TechCard.age_group: NULL/'' or an unmappable token → UNKNOWN, never ADULT
 		SkuSeason:     skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
 		CreatedAt:     timestamppb.New(tc.CreatedAt),
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
