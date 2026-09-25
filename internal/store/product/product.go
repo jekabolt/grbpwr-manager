@@ -1206,11 +1206,12 @@ type productQueryResult struct {
 	// unmarshalled into entity.ColorwayBodyInsert.CompositionEntries by toProduct, alongside (never
 	// instead of) the legacy plain-text Composition above. NULL/empty when the style has no
 	// style_composition rows yet.
-	CompositionEntriesJSON sql.NullString    `db:"composition_entries"`
-	TargetGender           entity.GenderEnum `db:"target_gender"`
-	Season                 entity.SeasonEnum `db:"season"`
-	Collection             string            `db:"collection"`
-	Fit                    sql.NullString    `db:"fit"`
+	CompositionEntriesJSON sql.NullString      `db:"composition_entries"`
+	TargetGender           entity.GenderEnum   `db:"target_gender"`
+	AgeGroup               entity.AgeGroupEnum `db:"age_group"`
+	Season                 entity.SeasonEnum   `db:"season"`
+	Collection             string              `db:"collection"`
+	Fit                    sql.NullString      `db:"fit"`
 
 	MinTier               int16 `db:"min_tier"`
 	HiddenForNonQualified bool  `db:"hidden_for_non_qualified"`
@@ -1316,6 +1317,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					Composition:           pqr.Composition,
 					CompositionEntries:    compositionEntries,
 					TargetGender:          pqr.TargetGender,
+					AgeGroup:              pqr.AgeGroup,
 					Season:                pqr.Season,
 					Fit:                   pqr.Fit,
 					MinTier:               pqr.MinTier,

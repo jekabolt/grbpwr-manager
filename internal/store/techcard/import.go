@@ -97,13 +97,17 @@ const (
 		SET acknowledged_at = NOW()
 		WHERE tech_card_id = :tech_card_id AND acknowledged_at IS NULL`
 
+	// age_group (0366) is left as it is — NULL, not set, on a freshly created card — when the
+	// archive states none: "" is «not stated», never a token to store. The same keep-when-empty
+	// rule UpdateStyle's unmasked path applies.
 	archiveImportStyleFactsQuery = `
 		UPDATE tech_card
 		SET fit = :fit,
 		    composition = JSON_QUOTE(:composition),
 		    care_instructions = :care_instructions,
 		    model_wears_height_cm = :model_wears_height_cm,
-		    model_wears_size_id = :model_wears_size_id
+		    model_wears_size_id = :model_wears_size_id,
+		    age_group = COALESCE(NULLIF(:age_group, ''), age_group)
 		WHERE id = :id`
 
 	archiveImportGradeBaseQuery = `UPDATE tech_card SET grade_base_size_id = :base WHERE id = :id`
@@ -612,8 +616,8 @@ func (s *Store) AcknowledgeTechCardImport(ctx context.Context, techCardID int) e
 
 // ────────────────────────────── style facts ──────────────────────────────
 
-// writeImportedStyleFacts writes the CATALOGUE half of the card — fit, composition, care and the
-// model-wears reference.
+// writeImportedStyleFacts writes the CATALOGUE half of the card — fit, composition, care, the
+// model-wears reference and the age group.
 //
 // They are written here, by hand, because no other create path writes them at all: those columns
 // belong to UpdateStyle (the sole writer of a style's catalogue facts), the tech-card converter
@@ -641,6 +645,7 @@ func writeImportedStyleFacts(ctx context.Context, db dependency.DB, id int,
 			"care_instructions":     f.CareInstructions,
 			"model_wears_height_cm": f.ModelWearsHeightCm,
 			"model_wears_size_id":   modelWearsSize,
+			"age_group":             string(f.AgeGroup),
 		}); err != nil {
 		return fmt.Errorf("write imported style facts of tech card %d: %w", id, err)
 	}

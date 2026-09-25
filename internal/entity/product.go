@@ -231,6 +231,88 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 	Unisex: true,
 }
 
+// AgeGroupEnum is a style's target age group (0366) — a catalogue fact beside TargetGender, stored
+// on tech_card.age_group and written only by UpdateStyle.
+//
+// The column is `VARCHAR(16) NULL` — NULL = not set, the honest state of every style that predates
+// the column, which is why there is neither a default nor a backfill: "adult" invented for them
+// would be a claim nobody made. There is no CHECK either: the vocabulary is enforced here, on the
+// write, where a refusal can name the field (an ADD CHECK would copy tech_card whole and
+// re-validate its entire history on deploy — see the header of 0366).
+//
+// The empty value is not a member: it is "no value" — NULL on read, UNKNOWN on the wire — which the
+// write path reads as "keep the stored one" when the mask does not name age_group (an unmasked full
+// replace included) and refuses when it does.
+type AgeGroupEnum string
+
+const (
+	AgeGroupAdult   AgeGroupEnum = "adult"
+	AgeGroupTeen    AgeGroupEnum = "teen"
+	AgeGroupKids    AgeGroupEnum = "kids"
+	AgeGroupToddler AgeGroupEnum = "toddler"
+	AgeGroupBaby    AgeGroupEnum = "baby"
+)
+
+// ValidAgeGroups is the canonical set of storable age groups, mirroring ValidProductTargetGenders.
+// It backs IsValidAgeGroup and the proto drift test (internal/dto TestAgeGroupEnumNoDrift). There is
+// no DB leg: the column carries no CHECK (0366), so this set IS the vocabulary.
+var ValidAgeGroups = map[AgeGroupEnum]bool{
+	AgeGroupAdult:   true,
+	AgeGroupTeen:    true,
+	AgeGroupKids:    true,
+	AgeGroupToddler: true,
+	AgeGroupBaby:    true,
+}
+
+func IsValidAgeGroup(ag AgeGroupEnum) bool {
+	return ValidAgeGroups[ag]
+}
+
+// ValidateStyleAgeGroup is the write rule for StylePatch.AgeGroup (0366), shared by the UpdateStyle
+// handler (which refuses before the store is reached) and the store (which refuses a direct caller).
+// named reports whether the update mask names age_group; fullReplace whether the write carries no
+// mask at all. Three cases:
+//   - the mask names age_group: the value is being written, so it must be a member — "" (the wire's
+//     UNKNOWN) is refused as required, anything else outside ValidAgeGroups as unknown;
+//   - unmasked full replace: "" keeps the stored value (every caller predating the field sends
+//     that, and its full replace must never blank an age group someone set), a non-empty value
+//     must be a member;
+//   - a mask that does not name age_group: nothing is written, nothing is checked.
+func ValidateStyleAgeGroup(ag AgeGroupEnum, named, fullReplace bool) *ValidationError {
+	if !named && !fullReplace {
+		return nil
+	}
+	if ag == "" {
+		if named {
+			return NewFieldViolation("age_group", "required", "",
+				"the update mask names age_group, so the patch must carry one of adult, teen, kids, toddler, baby")
+		}
+		return nil
+	}
+	if !IsValidAgeGroup(ag) {
+		return NewFieldViolation("age_group", "unknown_age_group", string(ag),
+			"use one of adult, teen, kids, toddler, baby")
+	}
+	return nil
+}
+
+// Scan mirrors GenderEnum.Scan: tech_card.age_group is `VARCHAR(16) NULL` (NULL = not set, 0366),
+// so an unset age group must read as empty instead of failing the whole row — one style nobody has
+// classified yet would otherwise 500 every multi-row catalogue read it appears in.
+func (ag *AgeGroupEnum) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*ag = ""
+	case string:
+		*ag = AgeGroupEnum(v)
+	case []byte:
+		*ag = AgeGroupEnum(v)
+	default:
+		return fmt.Errorf("cannot scan %T into AgeGroupEnum", src)
+	}
+	return nil
+}
+
 type ColorwayBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
 	Brand              string              `db:"brand" valid:"required"`
@@ -247,6 +329,7 @@ type ColorwayBodyInsert struct {
 	CareInstructions   sql.NullString      `db:"care_instructions" valid:"-"`
 	Composition        sql.NullString      `db:"composition" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
+	AgeGroup           AgeGroupEnum        `db:"age_group" valid:"-"` // style fact (0366), read-only: styleFieldsSet never binds it
 	Season             SeasonEnum          `db:"season" valid:"required"`
 	Collection         string              `db:"collection" valid:"-"`
 	Fit                sql.NullString      `db:"fit" valid:"-"`
@@ -299,6 +382,7 @@ type StylePatch struct {
 	SeasonYear         int
 	Collection         string
 	TargetGender       GenderEnum
+	AgeGroup           AgeGroupEnum // "" = none sent: a full replace keeps the stored value, a mask naming it refuses (0366)
 	Fit                sql.NullString
 	Composition        sql.NullString
 	CareInstructions   sql.NullString

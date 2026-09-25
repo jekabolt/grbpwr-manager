@@ -35,6 +35,55 @@ func TestGenderEnumNoDrift(t *testing.T) {
 	}
 }
 
+// TestAgeGroupEnumNoDrift is the same guard for the 0366 AgeGroupEnum, plus the inverse-table check
+// the later enums carry. It is the ONLY drift guard this enum has: tech_card.age_group deliberately
+// has no CHECK (0366), so there is no DB leg in internal/store/migrationlint — entity.ValidAgeGroups
+// IS the vocabulary, and a proto value added without it would reach the store as a refusal nobody
+// can satisfy.
+//
+// UNKNOWN is skipped rather than mapped, on the same rule as TechCardBomPurpose's UNSET: it is the
+// absence of a value, and it must stay out of both tables so it can only ever become "" (keep the
+// stored value on a full replace, refused when the mask names age_group) — never a stored token.
+func TestAgeGroupEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.AgeGroupEnum_name {
+		if pb_common.AgeGroupEnum(v) == pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN {
+			continue
+		}
+		protoValues++
+		ag, ok := ageGroupPbEntityMap[pb_common.AgeGroupEnum(v)]
+		if !ok {
+			t.Errorf("proto AgeGroupEnum %s has no entity mapping", name)
+			continue
+		}
+		if !entity.IsValidAgeGroup(ag) {
+			t.Errorf("proto AgeGroupEnum %s maps to invalid entity age group %q", name, ag)
+		}
+	}
+	if protoValues != len(ageGroupPbEntityMap) {
+		t.Errorf("proto age group values (%d) != entity mapping size (%d)", protoValues, len(ageGroupPbEntityMap))
+	}
+	if protoValues != len(entity.ValidAgeGroups) {
+		t.Errorf("proto age group values (%d) != entity.ValidAgeGroups (%d)", protoValues, len(entity.ValidAgeGroups))
+	}
+	if len(ageGroupEntityPbMap) != len(ageGroupPbEntityMap) {
+		t.Errorf("entity->proto table (%d) and proto->entity table (%d) differ in size", len(ageGroupEntityPbMap), len(ageGroupPbEntityMap))
+	}
+	// The read table must be a true inverse: ConvertEntityAgeGroupToPb reads it on every card and
+	// colourway read, and a missing entry there degrades a stored member to UNKNOWN on the wire.
+	for pb, ent := range ageGroupPbEntityMap {
+		if got := ageGroupEntityPbMap[ent]; got != pb {
+			t.Errorf("entity %q maps back to %s, want %s", ent, got, pb)
+		}
+	}
+	if _, ok := ageGroupPbEntityMap[pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN]; ok {
+		t.Error("UNKNOWN must not be in the proto->entity table: it would become a stored token")
+	}
+	if _, ok := ageGroupEntityPbMap[""]; ok {
+		t.Error(`"" must not be in the entity->proto table: it is no value, not a member`)
+	}
+}
+
 // TestSeasonEnumNoDrift is the same guard for SeasonEnum.
 func TestSeasonEnumNoDrift(t *testing.T) {
 	protoValues := 0

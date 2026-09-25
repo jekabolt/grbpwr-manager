@@ -3575,6 +3575,11 @@ message TechCard {
   string fit = 15;
   string composition = 16;
   string care_instructions = 17;
+  // age_group is a style catalogue fact like fit above (0366): stored on the tech_card row but
+  // WRITTEN via UpdateStyle (StylePatch.age_group), so it is a read-only projection here, surfaced
+  // for the constructor to display and edit-in-place. UNKNOWN = not set (NULL, the state of every
+  // style predating 0366 until someone picks one) or a stored token this build cannot map.
+  AgeGroupEnum age_group = 29;
   // care_entries is the STRUCTURED projection of care_instructions above, resolved against the
   // care_symbol dictionary and always in canonical print order. care_instructions keeps holding the
   // raw comma-joined codes; render entries when present and fall back to the string for rows that

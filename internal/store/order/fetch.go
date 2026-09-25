@@ -130,6 +130,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			sty.sub_category_id AS sub_category_id,
 			sty.type_id AS type_id,
 			sty.target_gender AS target_gender,
+			sty.age_group AS age_group,
 			p.preorder AS preorder
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id

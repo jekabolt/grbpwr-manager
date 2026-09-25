@@ -1218,6 +1218,15 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	})
 	fx.styleNo = rtMaxNumber(fx.seq)
 
+	// ── возрастная группа (0366): факт стиля, как fit — едет в card.json (§4.1 №29) и обязан
+	// приземлиться на импортированной карточке ТЕМ ЖЕ, а не NULL. AddTechCard её не пишет (её пишет
+	// только UpdateStyle), поэтому ставим прямо в строку: сам UpdateStyle здесь не годится — он же
+	// пересобирает структурный состав из BOM, и фикстура сдвинулась бы дальше одного проверяемого
+	// факта. Не-взрослое значение нарочно: пропажа поля на импорте читалась бы как NULL, а NULL
+	// против 'kids' сравнение A↔B увидит.
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET age_group = 'kids' WHERE id = ?", fx.cardID)
+	require.NoError(t, err)
+
 	// ── размерная таблица: обе оси именами (§5.1) ──
 	var meas1, meas2 int
 	rows, err := testDB.QueryContext(ctx, "SELECT id FROM measurement_name ORDER BY id LIMIT 2")
@@ -1425,6 +1434,13 @@ func TestTechCardArchiveRoundtrip(t *testing.T) {
 				"true — это и есть доказательство, что поле вычищает экспорт, а не фикстура; скоуп %q",
 			sc.GetScopeKey())
 	}
+
+	// Возрастная группа (§4.1 №29) проверяется и ДО нормализации, прямо: сравнение A↔B ниже
+	// равно-зелёно и тогда, когда поле пропало с обеих сторон.
+	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_KIDS, cardJSONA.GetAgeGroup(),
+		"экспорт A обязан нести возрастную группу источника")
+	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_KIDS, cardJSONB.GetAgeGroup(),
+		"импорт обязан записать возрастную группу: детский стиль после переезда — всё ещё детский")
 
 	rtRequireProtoEqual(t,
 		rtNormalizeCard(t, cardJSONA, canonA, "A"),

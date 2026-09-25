@@ -250,16 +250,20 @@ Four verdicts, and they are not synonyms:
 | 25 | `output_variants` | **cleared.** An auxiliary card's colour variants are warehouse buckets: `on_hand` is the source's current stock balance, and `material_id` names a catalogue row with no passport travelling beside it. What the card produces still travels — `tech_card.output_material_id` plus its passport in `materials/index.json` under `ref = output_material` (§5.4). The colour dimension over that article is declared by the receiving instance, in its own buckets. |
 | 26 | `markers` | travel as **summaries** and are **ignored**. The authority is `markers/index.json` plus the blobs (§5.7); a summary here carries the source's `id`, `tech_card_id`, `colorway_id` and `size_id`, and nothing remaps them because nothing reads them. |
 | 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** and the scope's `stale` verdict **cleared** — see «measured piece areas» below. |
+| 29 | `age_group` | travels and is **written** — see «style facts» below. `AGE_GROUP_ENUM_UNKNOWN` (every archive older than the field, and every source style nobody classified) is «not stated»: the imported card lands unset (NULL), never with a guessed group. |
 
-**Style facts (15/16/17/20/21) are WRITTEN, and that is not obvious.** `fit`, `composition`,
-`care_instructions` and the two `model_wears_*` are catalogue columns of `tech_card` that
-`UpdateStyle` owns on every other path — the tech-card create pipeline touches none of them. An
+**Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
+`care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`
+that `UpdateStyle` owns on every other path — the tech-card create pipeline touches none of them. An
 import that only ran the create pipeline would land a card whose fit, composition and care were
 silently blank, so the import writes them from this outer message. The three strings and the height
-are facts and travel verbatim (empty → NULL, the same rule the live path applies).
-`model_wears_size_id` is the one id among the five and goes through **`id_maps.sizes`** under the
-archive's three standing rules: `0` is «unset» and is never remapped; a value the manifest's table
-cannot place is a `size_unknown` hole and the reference lands NULL rather than pointing at whichever
+are facts and travel verbatim (empty → NULL, the same rule the live path applies). The age group is
+a fact too and travels verbatim; `UNKNOWN` is «not stated» and the imported card stays unset rather
+than receiving a guess, and a number the enum does not declare is an `archive_row_invalid` line
+(entity `card`) — the fact is dropped, never guessed. `model_wears_size_id` is the one id among the six and
+goes through **`id_maps.sizes`** under the archive's three standing rules: `0` is «unset» and is
+never remapped; a value the manifest's table cannot place is a `size_unknown` hole and the reference
+lands NULL rather than pointing at whichever
 local size happens to share the number; and the store additionally clears a size that is not in the
 imported card's OWN size range — «the model wears a size this style does not make» is either a
 foreign id worn as a local one or a fact about nothing. That last refusal is a

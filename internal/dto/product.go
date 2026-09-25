@@ -28,6 +28,24 @@ var (
 		pb_common.GenderEnum_GENDER_ENUM_FEMALE: entity.Female,
 		pb_common.GenderEnum_GENDER_ENUM_UNISEX: entity.Unisex,
 	}
+	// Age group (0366). UNKNOWN is deliberately absent from both tables: it is not a value but the
+	// absence of one, so it can only ever become "" (see ConvertPbAgeGroupToEntity), never a stored
+	// token. TestAgeGroupEnumNoDrift keeps the two tables, the proto enum and entity.ValidAgeGroups
+	// the same size and mutually inverse.
+	ageGroupEntityPbMap = map[entity.AgeGroupEnum]pb_common.AgeGroupEnum{
+		entity.AgeGroupAdult:   pb_common.AgeGroupEnum_AGE_GROUP_ENUM_ADULT,
+		entity.AgeGroupTeen:    pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TEEN,
+		entity.AgeGroupKids:    pb_common.AgeGroupEnum_AGE_GROUP_ENUM_KIDS,
+		entity.AgeGroupToddler: pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TODDLER,
+		entity.AgeGroupBaby:    pb_common.AgeGroupEnum_AGE_GROUP_ENUM_BABY,
+	}
+	ageGroupPbEntityMap = map[pb_common.AgeGroupEnum]entity.AgeGroupEnum{
+		pb_common.AgeGroupEnum_AGE_GROUP_ENUM_ADULT:   entity.AgeGroupAdult,
+		pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TEEN:    entity.AgeGroupTeen,
+		pb_common.AgeGroupEnum_AGE_GROUP_ENUM_KIDS:    entity.AgeGroupKids,
+		pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TODDLER: entity.AgeGroupToddler,
+		pb_common.AgeGroupEnum_AGE_GROUP_ENUM_BABY:    entity.AgeGroupBaby,
+	}
 	seasonEntityPbMap = map[entity.SeasonEnum]pb_common.SeasonEnum{
 		entity.SeasonSS: pb_common.SeasonEnum_SEASON_ENUM_SS,
 		entity.SeasonFW: pb_common.SeasonEnum_SEASON_ENUM_FW,
@@ -103,6 +121,33 @@ func ConvertEntityGenderToPbGenderEnum(entityGenderEnum entity.GenderEnum) (pb_c
 		return pb_common.GenderEnum_GENDER_ENUM_UNKNOWN, nil
 	}
 	return g, nil
+}
+
+// ConvertPbAgeGroupToEntity maps the wire age group to the stored token (0366). UNKNOWN maps to ""
+// with no error — "no value", which the write rule (entity.ValidateStyleAgeGroup) either refuses or
+// reads as "keep the stored one" depending on the mask. A number the enum does not declare is a
+// field-tagged refusal: it is neither a value nor the absence of one.
+func ConvertPbAgeGroupToEntity(pbAgeGroup pb_common.AgeGroupEnum) (entity.AgeGroupEnum, error) {
+	if pbAgeGroup == pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN {
+		return "", nil
+	}
+	ag, ok := ageGroupPbEntityMap[pbAgeGroup]
+	if !ok {
+		return "", entity.NewFieldViolation("age_group", "unknown_age_group", fmt.Sprintf("%d", int32(pbAgeGroup)),
+			"use one of AGE_GROUP_ENUM_ADULT, AGE_GROUP_ENUM_TEEN, AGE_GROUP_ENUM_KIDS, AGE_GROUP_ENUM_TODDLER, AGE_GROUP_ENUM_BABY")
+	}
+	return ag, nil
+}
+
+// ConvertEntityAgeGroupToPb maps a stored age group to the wire. "" (NULL: not set, 0366) and an
+// unrecognised token both read as UNKNOWN — never as a member: reading them back as ADULT would put
+// ADULT into the editor, and the next full-replace save would then write adult over the row without
+// anyone choosing it.
+func ConvertEntityAgeGroupToPb(ag entity.AgeGroupEnum) pb_common.AgeGroupEnum {
+	if pb, ok := ageGroupEntityPbMap[ag]; ok {
+		return pb
+	}
+	return pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN
 }
 
 func ConvertPbSeasonEnumToEntitySeasonEnum(pbSeasonEnum pb_common.SeasonEnum) (entity.SeasonEnum, error) {
@@ -247,9 +292,15 @@ func ConvertColorwayMediaIDs(ids []int32) []int {
 }
 
 // ConvertPbStylePatchToEntity converts the admin StylePatch write message into entity.StylePatch — the
-// catalogue-style facts owned solely by UpdateStyle (R4/§14.7).
-func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, seasonYear int32, collection string, targetGender pb_common.GenderEnum, fit, composition, careInstructions string, modelWearsHeightCm, modelWearsSizeID, topCategoryID, subCategoryID, typeID int32) (entity.StylePatch, error) {
+// catalogue-style facts owned solely by UpdateStyle (R4/§14.7). ageGroup UNKNOWN converts to "" and
+// is NOT an error here: whether "no age group" is acceptable depends on the update mask, which the
+// caller checks with entity.ValidateStyleAgeGroup.
+func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, seasonYear int32, collection string, targetGender pb_common.GenderEnum, ageGroup pb_common.AgeGroupEnum, fit, composition, careInstructions string, modelWearsHeightCm, modelWearsSizeID, topCategoryID, subCategoryID, typeID int32) (entity.StylePatch, error) {
 	tg, err := ConvertPbGenderEnumToEntityGenderEnum(targetGender)
+	if err != nil {
+		return entity.StylePatch{}, err
+	}
+	ag, err := ConvertPbAgeGroupToEntity(ageGroup)
 	if err != nil {
 		return entity.StylePatch{}, err
 	}
@@ -270,6 +321,7 @@ func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, seas
 		SeasonYear:         int(seasonYear),
 		Collection:         collection,
 		TargetGender:       tg,
+		AgeGroup:           ag,
 		Fit:                sql.NullString{String: fit, Valid: fit != ""},
 		Composition:        sql.NullString{String: composition, Valid: composition != ""},
 		CareInstructions:   sql.NullString{String: careInstructions, Valid: careInstructions != ""},
@@ -391,6 +443,7 @@ func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.Colorway
 			ModelWearsHeightCm: int32(bi.ModelWearsHeightCm.Int32),
 			ModelWearsSizeId:   int32(bi.ModelWearsSizeId.Int32),
 			TargetGender:       tg,
+			AgeGroup:           ConvertEntityAgeGroupToPb(bi.AgeGroup),
 			Season:             sn,
 			CareInstructions:   bi.CareInstructions.String,
 			CareEntries:        CareEntriesToPb(cache.GetCareIndex().Resolve(bi.CareInstructions.String, 0)),

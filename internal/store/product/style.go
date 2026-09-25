@@ -26,6 +26,9 @@ var styleFieldFragments = []struct{ key, frag string }{
 	{"season", "season_code = :seasonCode, season_year = COALESCE(NULLIF(:seasonYear, 0), season_year, YEAR(CURRENT_DATE)), season = CONCAT(:seasonCode, LPAD(MOD(COALESCE(NULLIF(:seasonYear, 0), season_year, YEAR(CURRENT_DATE)), 100), 2, '0'))"},
 	{"collection", "collection = :collection"},
 	{"targetgender", "target_gender = :targetGender"},
+	// Masked, the age group is written as sent — the write rule (entity.ValidateStyleAgeGroup) has
+	// already refused an empty or unknown token, so this can only ever store a member (0366).
+	{"agegroup", "age_group = :ageGroup"},
 	{"fit", "fit = :fit"},
 	{"composition", "composition = JSON_QUOTE(:composition)"},
 	{"careinstructions", "care_instructions = :careInstructions"},
@@ -65,6 +68,16 @@ var styleFieldFragments = []struct{ key, frag string }{
 // that is 0 when unset, so NULLIF(0, 0) is NULL; subCategoryId and typeId are sql.NullInt32 that
 // bind SQL NULL when unset, and NULLIF(NULL, 0) is likewise NULL.
 const styleCategoryIDFragment = `category_id = COALESCE(NULLIF(:typeId, 0), NULLIF(:subCategoryId, 0), NULLIF(:topCategoryId, 0), category_id)`
+
+// styleAgeGroupFullReplaceFragment is the age group's assignment on UpdateStyle's UNMASKED path
+// (0366). An empty bind — the wire's UNKNOWN, which is what every caller predating the field sends
+// — keeps the stored value; a member overwrites it.
+//
+// It is appended by styleSetColumns and deliberately NOT part of styleFieldsSet: that clause is
+// shared with the two colourway write paths (writeStyleFields, updateProduct), which bind from
+// entity.ColorwayBodyInsert and have no age group to send. Listing it there would make every
+// colourway save a writer of a fact only UpdateStyle owns.
+const styleAgeGroupFullReplaceFragment = `age_group = COALESCE(NULLIF(:ageGroup, ''), age_group)`
 
 // styleCategoryMaskKeys are the three normalized mask keys that together name ONE path through the
 // category tree. They are not independent facts and may only be masked as a set — see
@@ -111,6 +124,16 @@ func validateStyleCategoryMask(fields []string) error {
 			"name all three in the mask, or edit the category on the tech card instead")
 }
 
+// styleFieldsNamed reports whether the mask names the given normalized style-fact key.
+func styleFieldsNamed(fields []string, key string) bool {
+	for _, f := range fields {
+		if normalizeStyleField(f) == key {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeStyleField folds a field-mask path (snake_case from canonical FieldMask, or camelCase as the
 // admin client sends it) to the lowercase, underscore-free key used in styleFieldFragments — so
 // "target_gender", "targetGender" and "targetgender" all match.
@@ -127,8 +150,9 @@ func styleSetColumns(fields []string) (columns string, seasonWritten bool) {
 	if len(fields) == 0 {
 		// Legacy full-replace: the patch carries the whole triple, and styleFieldsSet already ends
 		// with styleCategoryIDFragment, so category_id is derived here too. Do NOT re-append it —
-		// that would assign the same column twice in one SET.
-		return styleFieldsSet, true
+		// that would assign the same column twice in one SET. The age group rides on top, in its
+		// keep-when-empty form (see styleAgeGroupFullReplaceFragment).
+		return styleFieldsSet + ",\n\t" + styleAgeGroupFullReplaceFragment, true
 	}
 	want := make(map[string]bool, len(fields))
 	for _, f := range fields {
@@ -168,6 +192,7 @@ func stylePatchParams(p entity.StylePatch) map[string]any {
 		"seasonYear":         p.SeasonYear,
 		"collection":         p.Collection,
 		"targetGender":       string(p.TargetGender),
+		"ageGroup":           string(p.AgeGroup),
 		"fit":                p.Fit,
 		"composition":        p.Composition,
 		"careInstructions":   p.CareInstructions,
@@ -180,20 +205,25 @@ func stylePatchParams(p entity.StylePatch) map[string]any {
 }
 
 // UpdateStyle is the SOLE writer of a style's catalogue facts (brand/sku_season/collection/
-// target_gender/fit/composition/care/model-wears/categories) — R4/§14.7. It is optimistically locked
-// on the shared tech_card.lock_version (entity.ErrTechCardConflict on a stale value or a concurrent
-// bump -> ABORTED; sql.ErrNoRows when the style is absent -> NOT_FOUND). A change to a SKU fact (the
-// season code) re-mints EVERY unfrozen sibling colourway in the same tx; if ANY sibling is SKU-frozen
-// (sku_locked_at set, has order/label history) the whole change is refused with
-// entity.ErrStyleFrozenSiblings (FAILED_PRECONDITION) — the official path is CloneStyleForSeason. PLM
-// facts (BOM/POM/ops/lifecycle) remain UpdateTechCard's; no fact is written by both. Returns the new
-// shared lock_version.
+// target_gender/age_group/fit/composition/care/model-wears/categories) — R4/§14.7. It is
+// optimistically locked on the shared tech_card.lock_version (entity.ErrTechCardConflict on a stale
+// value or a concurrent bump -> ABORTED; sql.ErrNoRows when the style is absent -> NOT_FOUND). A
+// change to a SKU fact (the season code) re-mints EVERY unfrozen sibling colourway in the same tx; if
+// ANY sibling is SKU-frozen (sku_locked_at set, has order/label history) the whole change is refused
+// with entity.ErrStyleFrozenSiblings (FAILED_PRECONDITION) — the official path is
+// CloneStyleForSeason. PLM facts (BOM/POM/ops/lifecycle) remain UpdateTechCard's; no fact is written
+// by both. Returns the new shared lock_version.
 func (s *Store) UpdateStyle(ctx context.Context, styleID, expectedLockVersion int, patch entity.StylePatch, fields []string) (int, error) {
 	// The category levels are one tree path and may only be masked as a set; a partial category mask is
 	// unsatisfiable rather than merely unsupported (see validateStyleCategoryMask). Checked before the
 	// tx opens — it is a pure statement about the request.
 	if err := validateStyleCategoryMask(fields); err != nil {
 		return 0, err
+	}
+	// The age group's write rule (0366) — the handler applies it first; this covers direct callers,
+	// so no path can store an empty or unknown token under a mask that names the column.
+	if ve := entity.ValidateStyleAgeGroup(patch.AgeGroup, styleFieldsNamed(fields, "agegroup"), len(fields) == 0); ve != nil {
+		return 0, ve
 	}
 	// Honor the field mask: only the named facts are written, the rest keep their stored value (nil/empty
 	// ⇒ legacy full-replace). This lets a partial editor — the tech card's fit/composition/care, the

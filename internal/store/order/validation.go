@@ -366,6 +366,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			SubCategoryId:   productBody.ProductBodyInsert.SubCategoryId,
 			TypeId:          productBody.ProductBodyInsert.TypeId,
 			TargetGender:    productBody.ProductBodyInsert.TargetGender,
+			AgeGroup:        productBody.ProductBodyInsert.AgeGroup,
 			Preorder:        productBody.ProductBodyInsert.Preorder,
 			Translations:    productBody.Translations,
 		}
@@ -479,6 +480,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			SubCategoryId:   pb.ProductBodyInsert.SubCategoryId,
 			TypeId:          pb.ProductBodyInsert.TypeId,
 			TargetGender:    pb.ProductBodyInsert.TargetGender,
+			AgeGroup:        pb.ProductBodyInsert.AgeGroup,
 			Preorder:        pb.ProductBodyInsert.Preorder,
 			Translations:    pb.Translations,
 		})

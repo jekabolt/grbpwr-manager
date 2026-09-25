@@ -30,12 +30,13 @@ func styleMaskHas(mask []string, field string) bool {
 	return false
 }
 
-// UpdateStyle writes a style's catalogue facts (brand/season/collection/gender/fit/composition/care/
-// model-wears/categories) — the sole writer of those facts (R4/§14.7). A stale expected_lock_version
-// is ABORTED; a SKU-fact (season) change with any SKU-frozen sibling colourway is FailedPrecondition
-// (clone for the new season instead); an unknown style is NotFound. The save also re-derives the
-// structural composition (S17) from the style's shell-fabric BOM — a fabric line whose own composition
-// does not sum to 100 is a field-tagged InvalidArgument (apierr), same as any other bad-input rejection.
+// UpdateStyle writes a style's catalogue facts (brand/season/collection/gender/age group/fit/
+// composition/care/model-wears/categories) — the sole writer of those facts (R4/§14.7). A stale
+// expected_lock_version is ABORTED; a SKU-fact (season) change with any SKU-frozen sibling colourway
+// is FailedPrecondition (clone for the new season instead); an unknown style is NotFound. The save
+// also re-derives the structural composition (S17) from the style's shell-fabric BOM — a fabric line
+// whose own composition does not sum to 100 is a field-tagged InvalidArgument (apierr), same as any
+// other bad-input rejection.
 func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleRequest) (*pb_admin.UpdateStyleResponse, error) {
 	if req.StyleId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "style_id is required")
@@ -49,6 +50,8 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 	mask := req.GetUpdateMask().GetPaths()
 	season, gender := p.GetSeason(), p.GetTargetGender()
 	seasonYear := p.GetSeasonYear()
+	ageGroup := p.GetAgeGroup()
+	ageGroupNamed := styleMaskHas(mask, "ageGroup")
 	if len(mask) > 0 {
 		if !styleMaskHas(mask, "season") {
 			season = pb_common.SeasonEnum_SEASON_ENUM_SS // placeholder; excluded from the write by the mask
@@ -58,6 +61,10 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 		}
 		if !styleMaskHas(mask, "targetGender") {
 			gender = pb_common.GenderEnum_GENDER_ENUM_UNISEX // placeholder; excluded from the write by the mask
+		}
+		if !ageGroupNamed {
+			// Excluded from the write by the mask, so neither its value nor its absence is checked.
+			ageGroup = pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN
 		}
 	}
 	// Care is validated and canonicalised HERE rather than in the store, because this is the only
@@ -88,11 +95,21 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 		}
 	}
 
-	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), season, seasonYear, p.GetCollection(), gender,
+	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), season, seasonYear, p.GetCollection(), gender, ageGroup,
 		p.GetFit(), p.GetComposition(), careInstructions,
 		p.GetModelWearsHeightCm(), p.GetModelWearsSizeId(), p.GetTopCategoryId(), p.GetSubCategoryId(), p.GetTypeId())
 	if err != nil {
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.Invalid(ve) // field-tagged (age_group) — bind it to the input
+		}
 		return nil, status.Errorf(codes.InvalidArgument, "invalid style patch: %v", err)
+	}
+	// Age group (0366): refused as missing when the mask names it; on an unmasked full replace
+	// UNKNOWN keeps the stored value. Checked here so the caller gets the field-tagged refusal
+	// without a store round-trip; the store applies the same rule to its direct callers.
+	if ve := entity.ValidateStyleAgeGroup(patch.AgeGroup, ageGroupNamed, len(mask) == 0); ve != nil {
+		return nil, apierr.Invalid(ve)
 	}
 	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch, mask)
 	if err != nil {

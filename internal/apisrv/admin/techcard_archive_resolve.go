@@ -1664,13 +1664,14 @@ func (r *tcimpResolver) reportUnknownEntries() {
 // handler would be holding a second, unsanitised message, and two copies of one translation drift.
 
 // resolveStyleFacts lifts the style's catalogue half off the outer message, translating the one id
-// among the five.
+// among the six.
 //
-// fit / composition / care_instructions / model_wears_* are UpdateStyle's columns — the tech-card
-// create pipeline writes none of them — so without this plan an imported card lands with its fit,
-// composition and care silently blank. The three strings and the height are facts, not references,
-// and travel verbatim; the empty-to-NULL rule is the one ConvertPbStylePatchToEntity applies on the
-// live path, so an imported style and an edited one store the same thing for "not stated".
+// fit / composition / care_instructions / model_wears_* / age_group are UpdateStyle's columns —
+// the tech-card create pipeline writes none of them — so without this plan an imported card lands
+// with its fit, composition and care silently blank. The three strings, the height and the age
+// group are facts, not references, and travel verbatim; the empty-to-NULL rule is the one
+// ConvertPbStylePatchToEntity applies on the live path, so an imported style and an edited one store
+// the same thing for "not stated".
 //
 // model_wears_size_id goes through r.sizeMapping BY HAND, under the walk's own three rules: 0 is
 // «unset» across the whole contract and is never remapped, a value the manifest's table cannot place
@@ -1686,6 +1687,19 @@ func (r *tcimpResolver) resolveStyleFacts() {
 		CareInstructions: tcimpNullString(c.GetCareInstructions()),
 		// 0 is «unknown» on the wire (techcard.proto, field 20) and NULL in the column.
 		ModelWearsHeightCm: sql.NullInt32{Int32: height, Valid: height != 0},
+	}
+
+	// The age group (field 29, 0366) is a fact like fit and travels verbatim. UNKNOWN — every archive
+	// older than the field, and every source style nobody classified — is «not stated» and lands as
+	// "", which the store leaves unset (NULL). A number the enum does not declare is not a value at
+	// all: the fact is dropped with a line, never guessed.
+	if ag, err := dto.ConvertPbAgeGroupToEntity(c.GetAgeGroup()); err == nil {
+		facts.AgeGroup = ag
+	} else {
+		r.hole(techcardarchive.EntityCard, "age_group",
+			techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+			fmt.Sprintf("the card's age group is %d, which is not a value of the format; the card "+
+				"imported without an age group — set it on the style here", int32(c.GetAgeGroup())))
 	}
 
 	if src := int64(c.GetModelWearsSizeId()); src != 0 {

@@ -4041,6 +4041,10 @@ type TechCardInsert struct {
 	// top/sub/type_category mirror the product taxonomy (all → category(id)); the legacy
 	// single category_id above is a separate optional tag and is untouched.
 	Fit sql.NullString `db:"fit"`
+	// AgeGroup is the style's target age group (0366) — a catalogue fact like Fit, READ here off
+	// the `SELECT *` ("" = NULL = not set) and written only by UpdateStyle: techCardHeaderColumns
+	// does not list it, so a tech-card save can never reset it and a new card starts unset.
+	AgeGroup AgeGroupEnum `db:"age_group"`
 	// Composition is the legacy free-text column (e.g. "100% Cotton"). M1 fix: always plain text on
 	// the wire — never overloaded with the structured composition, which is TechCard.CompositionEntries.
 	Composition        sql.NullString        `db:"composition"`

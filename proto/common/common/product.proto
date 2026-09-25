@@ -73,6 +73,20 @@ enum GenderEnum {
   GENDER_ENUM_UNISEX = 3;
 }
 
+// AgeGroupEnum is the style's target age group — a style fact like target_gender (0366).
+// Stored on the tech_card row as a lowercase token (adult/teen/kids/toddler/baby) and written only
+// through UpdateStyle (StylePatch.age_group). UNKNOWN is the absence of a value on the wire: a read
+// emits it for a style whose age group is not set (NULL — every style predating 0366 until someone
+// picks one) or holds a token this build cannot map; a write naming age_group refuses it.
+enum AgeGroupEnum {
+  AGE_GROUP_ENUM_UNKNOWN = 0;
+  AGE_GROUP_ENUM_ADULT = 1;
+  AGE_GROUP_ENUM_TEEN = 2;
+  AGE_GROUP_ENUM_KIDS = 3;
+  AGE_GROUP_ENUM_TODDLER = 4;
+  AGE_GROUP_ENUM_BABY = 5;
+}
+
 enum SeasonEnum {
   SEASON_ENUM_UNKNOWN = 0;
   SEASON_ENUM_SS = 1; // Spring/Summer
@@ -210,6 +224,9 @@ message ColorwayMerchandising {
   // still hold pre-ISO free text. OUTPUT-ONLY — care is written as the code string.
   repeated CareEntry care_entries = 24;
   GenderEnum target_gender = 15;
+  // age_group is resolved from the style like target_gender above (0366; output-only — written
+  // through UpdateStyle's StylePatch.age_group, never through a colourway write).
+  AgeGroupEnum age_group = 25;
   SeasonEnum season = 19;
   string collection = 17;
   string fit = 18;

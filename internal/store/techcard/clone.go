@@ -85,6 +85,10 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 		WHERE tech_card_id = :source`, params); err != nil {
 		return fmt.Errorf("copy cloned style grade rule: %w", err)
 	}
+	// The age group (0366) rides the same statement: like target_gender it is a fact about the
+	// garment, not the season, but unlike target_gender it is not on TechCardInsert (UpdateStyle
+	// owns it), so the converted payload cannot carry it — without this a kids style re-cut for
+	// the next season would silently come out unclassified. NULL copies as NULL: unset stays unset.
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE tech_card dst
 		JOIN tech_card src_card ON src_card.id = :source
@@ -95,9 +99,10 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 				WHERE z.tech_card_id = :target AND z.size_id = src_card.grade_base_size_id
 			) THEN src_card.grade_base_size_id
 			ELSE NULL
-		END
+		END,
+			dst.age_group = src_card.age_group
 		WHERE dst.id = :target`, params); err != nil {
-		return fmt.Errorf("copy cloned style grade base: %w", err)
+		return fmt.Errorf("copy cloned style grade base and age group: %w", err)
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO style_assembly

@@ -188,6 +188,7 @@ type OrderItem struct {
 	SubCategoryId  sql.NullInt32               `db:"sub_category_id"`
 	TypeId         sql.NullInt32               `db:"type_id"`
 	TargetGender   GenderEnum                  `db:"target_gender"`
+	AgeGroup       AgeGroupEnum                `db:"age_group"`            // style fact (0366), resolved from the style like TargetGender
 	SKU            string                      `db:"variant_sku_snapshot"` // R2: frozen variant SKU snapshot (was product_sku)
 	ProductBaseSKU string                      `db:"base_sku_snapshot"`    // R2: frozen base SKU snapshot (= variant SKU [:14])
 	Slug           string

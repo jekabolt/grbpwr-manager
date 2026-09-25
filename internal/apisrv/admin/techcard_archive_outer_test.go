@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
@@ -198,6 +199,7 @@ func TestResolveImportStyleFactsTravelVerbatim(t *testing.T) {
 			c.CareInstructions = "W30,B0,I2"
 			c.ModelWearsHeightCm = 184
 			c.ModelWearsSizeId = 4
+			c.AgeGroup = pb_common.AgeGroupEnum_AGE_GROUP_ENUM_KIDS
 		}
 
 		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
@@ -208,6 +210,8 @@ func TestResolveImportStyleFactsTravelVerbatim(t *testing.T) {
 		require.True(t, res.StylePlan.ModelWearsHeightCm.Valid)
 		require.EqualValues(t, 184, res.StylePlan.ModelWearsHeightCm.Int32)
 		require.EqualValues(t, 40, res.StylePlan.ModelWearsSizeId.Int32, "source 4 is «m», which is 40 here")
+		require.Equal(t, entity.AgeGroupKids, res.StylePlan.AgeGroup,
+			"the age group (29) is a fact like fit: a kids style must still be a kids style after the move")
 	})
 
 	t.Run("unstated", func(t *testing.T) {
@@ -220,11 +224,36 @@ func TestResolveImportStyleFactsTravelVerbatim(t *testing.T) {
 		require.False(t, res.StylePlan.CareInstructions.Valid)
 		require.False(t, res.StylePlan.ModelWearsHeightCm.Valid, "0 cm is «unknown» on the wire and NULL in the column, never a height")
 		require.False(t, res.StylePlan.ModelWearsSizeId.Valid)
+		require.Empty(t, res.StylePlan.AgeGroup,
+			"an archive older than the age group — or a source style nobody classified — states none, "+
+				"and the imported card must stay unset rather than receive a guess")
 		require.Empty(t, res.PieceAreaPlan, "a card with no measured areas plans none — and reports nothing, because nothing was lost")
 		require.Empty(t, tcimpHoles(res, techcardarchive.ReasonCompositionNotDerived),
 			"an archive that carries no fibre breakdown loses none, and a line about a loss that did "+
 				"not happen is the same noise as a missing line about one that did")
 	})
+}
+
+// An age group the format does not declare is not a value, and it is not guessed either: the fact is
+// dropped with a line in the report, and the card imports without it.
+func TestResolveImportUndeclaredAgeGroupIsDroppedWithALine(t *testing.T) {
+	s, _, _, _ := tcimpServer(t)
+	a := tcimpNewArchive()
+	a.outer = func(c *pb_common.TechCard) {
+		c.Fit = "regular"
+		c.AgeGroup = pb_common.AgeGroupEnum(42)
+	}
+
+	res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+	require.NoError(t, err, "one unreadable fact must not refuse the whole card")
+	require.Empty(t, res.StylePlan.AgeGroup)
+	require.Equal(t, "regular", res.StylePlan.Fit.String, "the rest of the style facts still travel")
+
+	holes := tcimpHoles(res, techcardarchive.ReasonArchiveRowInvalid)
+	require.Len(t, holes, 1)
+	require.Equal(t, techcardarchive.EntityCard, holes[0].Entity)
+	require.Equal(t, "age_group", holes[0].Ref)
+	require.Contains(t, holes[0].Detail, "42")
 }
 
 // The structured fibre breakdown (field 14) is the one thing on the outer message the import writes

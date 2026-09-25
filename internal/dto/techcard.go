@@ -1473,6 +1473,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		Fit:              pbStringFromNull(tc.Fit),
 		Composition:      pbStringFromNull(tc.Composition),
 		CareInstructions: pbStringFromNull(tc.CareInstructions),
+		// Target age group (0366): the same kind of UpdateStyle-written catalogue fact, read-only here.
+		AgeGroup: ConvertEntityAgeGroupToPb(tc.AgeGroup),
 		// Resolved against the care dictionary so the constructor renders symbols and names without
 		// shipping its own copy of the vocabulary. Language 0 = the English base: the admin is
 		// English-only. Empty for a row still holding pre-ISO free text, which is the client's cue to

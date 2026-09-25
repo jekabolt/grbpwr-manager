@@ -3967,6 +3967,12 @@ message StylePatch {
   // is a SKU fact like the code: it re-mints every unfrozen sibling colourway and is refused
   // outright when any sibling is SKU-frozen.
   int32 season_year = 13;
+  // Target age group — a style fact like target_gender (0366), masked under the "age_group" path
+  // (camelCase "ageGroup" matches too). UNKNOWN is refused when the mask names age_group. When the
+  // mask does not name it — an unmasked full replace included — UNKNOWN means "keep the stored
+  // value": that is the shape every caller predating this field sends, so an old client's full
+  // replace can neither reset a set age group nor invent one for an unset style.
+  common.AgeGroupEnum age_group = 14;
 }
 
 message UpdateStyleRequest {

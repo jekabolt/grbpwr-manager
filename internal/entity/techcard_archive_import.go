@@ -97,15 +97,19 @@ type TechCardArchiveImport struct {
 
 // TechCardArchiveStyleFacts is the style's catalogue half as the archive carries it.
 //
-// These five columns live on tech_card and are written by UpdateStyle on every other path — the
+// These six columns live on tech_card and are written by UpdateStyle on every other path — the
 // tech-card create pipeline does not touch them, so an import that only ran the create pipeline
 // would land a card whose fit, composition and care were silently blank. They are read off the
-// OUTER TechCard message of card.json (fields 15/16/17/20/21), not off its writable half.
+// OUTER TechCard message of card.json (fields 15/16/17/20/21/29), not off its writable half.
 type TechCardArchiveStyleFacts struct {
 	Fit                sql.NullString
 	Composition        sql.NullString
 	CareInstructions   sql.NullString
 	ModelWearsHeightCm sql.NullInt32
+	// AgeGroup (field 29, 0366) is "" when the archive does not state one — an archive older than
+	// the field, a source style nobody classified, or a value this base cannot read. The store then
+	// leaves the imported card unset (NULL) instead of writing an empty token.
+	AgeGroup AgeGroupEnum
 	// ModelWearsSizeId must be a size id of THIS base, remapped through manifest.id_maps.sizes like
 	// every other size in the archive — card.json carries the SOURCE's id in field 21 and nothing
 	// remaps it on the way here. The store CLEARS one that is not in the imported card's own size
