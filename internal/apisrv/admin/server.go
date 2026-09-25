@@ -273,6 +273,15 @@ func (s *Server) StopRevalidation(ctx context.Context) {
 	}
 }
 
+// StopRateLimiter ends the sweep goroutines of the admin's lazily built rate limiters — the per-admin
+// hourly windows in front of EnhanceText and AnalyzeTechCardConstruction (review ENH-03). App.Stop
+// calls it beside the frontend and auth StopRateLimiter, with the same contract: idempotent, and safe
+// on a limiter that was never built. A press that races the drain still meets a working window.
+func (s *Server) StopRateLimiter() {
+	s.enhanceRuns.stop()
+	s.analysisRuns.stop()
+}
+
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
 	switch pm {
 	case entity.CARD:

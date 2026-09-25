@@ -840,7 +840,7 @@ func (a *App) Stop(ctx context.Context) {
 		revalStopCancel()
 	}
 
-	// Terminate the in-memory rate-limiter cleanup goroutines (frontend + auth).
+	// Terminate the in-memory rate-limiter cleanup goroutines (frontend + auth + admin).
 	// They are effectively singletons living the whole process, but stopping them
 	// keeps lifecycle discipline consistent with the other background components.
 	if a.frontendS != nil {
@@ -848,6 +848,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	if a.authS != nil {
 		a.authS.StopRateLimiter()
+	}
+	if a.adminS != nil {
+		a.adminS.StopRateLimiter()
 	}
 
 	// Stop workers before closing DB — avoids panics and error storms from workers

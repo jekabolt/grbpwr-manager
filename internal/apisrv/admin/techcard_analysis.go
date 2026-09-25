@@ -228,6 +228,20 @@ type analysisRunGuard struct {
 	// nowFn is the clock, injectable so a test can prove the interval EXPIRES. A guard that never
 	// released a card would look identical to a correct one in every test that only presses twice.
 	nowFn func() time.Time
+	// stopped is set by stop() at shutdown (Server.StopRateLimiter, review ENH-03): the hourly
+	// limiter runs a sweep goroutine from the moment it is built. One built AFTER stop() — a press
+	// that raced the drain — is stopped at once; its window still holds, only the sweep never starts.
+	stopped bool
+}
+
+// stop ends the hourly limiter's sweep goroutine. Idempotent, and safe on a guard that never built one.
+func (g *analysisRunGuard) stop() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.stopped = true
+	if g.hourly != nil {
+		g.hourly.Stop()
+	}
 }
 
 // analysisRunsPruneAt is when the guard bothers to sweep. Below it the map is a rounding error; the
@@ -276,6 +290,9 @@ func (g *analysisRunGuard) begin(key analysisRunKey) (func(), error) {
 	st.running = true
 	if g.hourly == nil {
 		g.hourly = ratelimit.NewLimiter(analysisPerAdminWindow, analysisPerAdminRuns)
+		if g.stopped {
+			g.hourly.Stop()
+		}
 	}
 	limiter := g.hourly
 	g.mu.Unlock()

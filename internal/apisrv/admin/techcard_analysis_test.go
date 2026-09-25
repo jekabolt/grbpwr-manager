@@ -665,7 +665,10 @@ func tcaAnalysisStand(t *testing.T, card *entity.TechCard, client *openrouter.Cl
 	repo.EXPECT().TechCards().Return(tc).Maybe()
 	tc.EXPECT().GetTechCardById(mock.Anything, mock.Anything).Return(card, nil).Maybe()
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil).Maybe()
-	return &Server{repo: repo, aiOps: client}
+	s := &Server{repo: repo, aiOps: client}
+	// The hourly window's limiter runs a sweep goroutine once a press builds it; stop it as App.Stop does.
+	t.Cleanup(s.StopRateLimiter)
+	return s
 }
 
 // tcaAdminCtx is a scoped account WITH costing access, named. The name matters: raised_by and the

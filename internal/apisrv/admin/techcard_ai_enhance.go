@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,9 +91,16 @@ var enhanceFieldPhrases = map[pb_admin.EnhanceTextField]string{
 //
 // A VALUE FIELD OF Server WITH A LAZY LIMITER, like analysisRunGuard and for its reason: a fence that
 // bounds spend must exist even on a Server built as a bare struct literal.
+//
+// The limiter runs a sweep goroutine from the moment it is built, so the guard is STOPPABLE (review
+// ENH-03): Server.StopRateLimiter, called from App.Stop, ends it.
 type enhanceTextGuard struct {
 	mu     sync.Mutex
 	hourly *ratelimit.Limiter
+	// stopped is set by stop(). A limiter first built AFTER it — a press that raced the shutdown
+	// drain — is stopped at once. Its window still holds, because Allow prunes a key on every call;
+	// only the idle-key sweep never starts, so nothing outlives the process's own Stop.
+	stopped bool
 }
 
 // allow spends one of admin's hourly presses, or reports that there is none left.
@@ -100,10 +108,23 @@ func (g *enhanceTextGuard) allow(admin string) bool {
 	g.mu.Lock()
 	if g.hourly == nil {
 		g.hourly = ratelimit.NewLimiter(enhancePerAdminWindow, enhancePerAdminCalls)
+		if g.stopped {
+			g.hourly.Stop()
+		}
 	}
 	limiter := g.hourly
 	g.mu.Unlock()
 	return limiter.Allow(admin)
+}
+
+// stop ends the limiter's sweep goroutine. Idempotent, and safe on a guard that never built one.
+func (g *enhanceTextGuard) stop() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.stopped = true
+	if g.hourly != nil {
+		g.hourly.Stop()
+	}
 }
 
 // enhanceTextInput is a request that passed validation, with max_runes already clamped.
@@ -158,25 +179,35 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 		enhanceTextSystemPrompt(in), enhanceTextUserPrompt(in), false, enhanceMaxTokens)
 	took := time.Since(started)
 
-	// ONLY lengths, mode, field, timing, model and token counts are logged — never the text or the
-	// context: they are the card author's writing and have no business in the log stream.
+	// ONLY lengths, mode, field, timing, model, token counts and fixed status words are logged — never
+	// the text or the context: they are the card author's writing and have no business in the log.
 	logAttrs := []any{
 		slog.String("mode", mode), slog.String("field", field),
 		slog.Int("in_runes", in.textRunes), slog.Int("context_runes", in.ctxRunes),
 		slog.Int("max_runes", in.maxRunes), slog.Duration("took", took),
-		slog.String("model", s.aiOps.AnalysisModel()), slog.String("finish_reason", finishReason),
+		slog.String("model", s.aiOps.AnalysisModel()), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
 		slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
 	}
 	if err != nil {
-		if errors.Is(err, openrouter.ErrNotConfigured) {
+		// NEVER err.Error() (review ENH-01): the client folds the provider's own response text into
+		// it, and a provider that echoes the request echoes the card author's words. The log gets a
+		// fixed class, the HTTP status when there is one, and whether the call was already paid for;
+		// the gRPC code is decided by the same class, so the log and the answer cannot disagree.
+		class := enhanceErrClass(err)
+		if class == enhanceErrNotConfigured {
 			return nil, aiRefusal(aiReasonNotConfigured, enhanceTextNotConfiguredMsg, nil)
 		}
-		slog.Default().ErrorContext(ctx, "enhance text failed",
-			append(logAttrs, slog.String("base_url", s.aiOps.BaseURL()), slog.String("err", err.Error()))...)
-		if errors.Is(err, openrouter.ErrModelUnavailable) {
-			return nil, aiModelRefusal(enhanceTextModelUnavailableMsg, s.aiOps.AnalysisModel())
+		failAttrs := append(logAttrs, slog.String("err_class", class),
+			slog.Bool("provider_engaged", openrouter.ProviderEngaged(err)),
+			slog.String("base_url", s.aiOps.BaseURL()))
+		if code := providerHTTPStatus(err); code != 0 {
+			failAttrs = append(failAttrs, slog.Int("http_status", code))
 		}
-		if errors.Is(err, openrouter.ErrBudgetExhausted) || isEmptyModelAnswer(err) {
+		slog.Default().ErrorContext(ctx, "enhance text failed", failAttrs...)
+		switch class {
+		case enhanceErrModelUnavailable:
+			return nil, aiModelRefusal(enhanceTextModelUnavailableMsg, s.aiOps.AnalysisModel())
+		case enhanceErrBudgetExhausted, enhanceErrEmptyAnswer:
 			return nil, status.Error(codes.Internal, enhanceTextEmptyAnswerMsg)
 		}
 		return nil, status.Error(codes.Unavailable, "the text assistant is unavailable right now — try again in a moment")
@@ -190,27 +221,101 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 
 	// CUT OFF BY THE TOKEN CAP. A non-empty answer with finish_reason=length stopped where the budget
 	// ran out, i.e. mid-sentence; handed over as is, it would replace the field with a fragment. It is
-	// taken back to its last whole sentence — and when it holds none, there is nothing honest to hand
-	// over, so it is refused rather than applied.
+	// taken back to its last whole sentence INSIDE max_runes — and when there is none, there is nothing
+	// honest to hand over, so it is refused rather than applied (review ENH-02: a boundary found
+	// beyond max_runes used to pass here and then be raw-cut by the length rule, i.e. applied as the
+	// very fragment this branch exists to refuse).
+	//
+	// The search stops one rune short of the end: the last rune of a cut-off answer is where the budget
+	// ran out, not where a sentence ended, and a trailing '.' may be the «2.» of «2.5 cm». A boundary
+	// counts only when a rune follows it.
 	cutOff := strings.EqualFold(strings.TrimSpace(finishReason), "length")
+	var truncated bool
 	if cutOff {
 		r := []rune(out)
-		end := lastSentenceEnd(r, len(r))
+		end := lastSentenceEnd(r, min(len(r)-1, in.maxRunes))
 		if end == 0 {
-			slog.Default().ErrorContext(ctx, "enhance text was cut off before its first sentence ended", logAttrs...)
+			slog.Default().ErrorContext(ctx, "enhance text was cut off before a sentence ended inside the limit", logAttrs...)
 			return nil, status.Error(codes.Internal,
 				"the assistant ran out of room before finishing a sentence — the text is unchanged; try shorten, or a shorter text")
 		}
-		out = strings.TrimSpace(string(r[:end]))
+		out, truncated = strings.TrimSpace(string(r[:end])), true
+	} else {
+		out, truncated = truncateAtSentence(out, in.maxRunes)
 	}
-
-	out, truncated := truncateAtSentence(out, in.maxRunes)
 
 	slog.Default().InfoContext(ctx, "enhanced text",
 		append(logAttrs, slog.Int("out_runes", utf8.RuneCountInString(out)),
 			slog.Bool("cut_off", cutOff), slog.Bool("truncated", truncated))...)
 
 	return &pb_admin.EnhanceTextResponse{Text: out}, nil
+}
+
+// The fixed words a failed call is logged as (review ENH-01). Each is decided by a sentinel, by the
+// context, or by the client's own wording of a non-2xx answer — never by the provider's prose.
+const (
+	enhanceErrNotConfigured    = "not_configured"
+	enhanceErrModelUnavailable = "model_unavailable"
+	enhanceErrBudgetExhausted  = "budget_exhausted"
+	enhanceErrTooLarge         = "response_too_large"
+	enhanceErrTimeout          = "timeout"
+	enhanceErrCanceled         = "canceled"
+	enhanceErrProviderHTTP     = "provider_http_error"
+	enhanceErrEmptyAnswer      = "empty_answer"
+	enhanceErrProvider         = "provider_error"
+)
+
+// enhanceErrClass is the whole description of a failed call that reaches the log.
+//
+// The non-2xx check comes BEFORE the empty-answer one on purpose: isEmptyModelAnswer reads the
+// client's sentence, and a provider body that happens to say «no choices» must not turn a 502 into
+// «the model said nothing» (Internal) instead of weather (Unavailable).
+func enhanceErrClass(err error) string {
+	switch {
+	case errors.Is(err, openrouter.ErrNotConfigured):
+		return enhanceErrNotConfigured
+	case errors.Is(err, openrouter.ErrModelUnavailable):
+		return enhanceErrModelUnavailable
+	case errors.Is(err, openrouter.ErrBudgetExhausted):
+		return enhanceErrBudgetExhausted
+	case errors.Is(err, openrouter.ErrResponseTooLarge):
+		return enhanceErrTooLarge
+	case errors.Is(err, context.DeadlineExceeded):
+		return enhanceErrTimeout
+	case errors.Is(err, context.Canceled):
+		return enhanceErrCanceled
+	case providerHTTPStatus(err) != 0:
+		return enhanceErrProviderHTTP
+	case isEmptyModelAnswer(err):
+		return enhanceErrEmptyAnswer
+	}
+	return enhanceErrProvider
+}
+
+// providerHTTPStatusRe reads the status out of the openrouter client's OWN wording of a non-2xx answer,
+// «openrouter: API error (HTTP 429): <provider text>». It is anchored at the start, and the provider's
+// text only ever follows the colon, so nothing the provider echoed can forge it. The 404 form opens
+// with the ErrModelUnavailable sentence instead and is classified by that sentinel.
+var providerHTTPStatusRe = regexp.MustCompile(`^openrouter: API error \(HTTP ([0-9]{3})\):`)
+
+// providerHTTPStatus is the provider's HTTP status for a plain non-2xx failure, or 0.
+func providerHTTPStatus(err error) int {
+	m := providerHTTPStatusRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0
+	}
+	code, _ := strconv.Atoi(m[1])
+	return code
+}
+
+// enhanceLogFinishReason passes the known finish_reason words through and folds anything else into
+// "other": the field is the provider's, and the log takes nothing free-form from the provider.
+func enhanceLogFinishReason(fr string) string {
+	switch fr = strings.ToLower(strings.TrimSpace(fr)); fr {
+	case "", "stop", "length", "content_filter", "tool_calls", "error":
+		return fr
+	}
+	return "other"
 }
 
 // validateEnhanceTextRequest refuses what no model call should be spent on, field-tagged, and clamps
