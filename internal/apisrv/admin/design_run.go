@@ -886,6 +886,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseFreeformOverflow(kind, params); err != nil {
 		return nil, err
 	}
+	// The per-run engine (params.image): a word the engine table does not list is refused here,
+	// free, and a word it lists is priced by it below.
+	if err := s.designRefuseImageOptions(kind, params); err != nil {
+		return nil, err
+	}
 
 	inputs, fitAtLaunch, err := s.designRunInputs(ctx, src, parent)
 	if err != nil {
@@ -995,7 +1000,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		ProfileVersion:   designProfileVersion,
 		FitAtLaunch:      fitAtLaunch,
 		RequestedOutputs: outputs,
-		PriceEstimate:    designEstimateFor(kind, outputs),
+		PriceEstimate:    s.designEstimateForRun(kind, outputs, params, inputs),
 		Author:           designActor(ctx),
 		RerunOf:          designParentID(parent),
 		// Колорвей прогона — из ДЕЙСТВУЮЩИХ params (реран наследует родительские); стор в той же

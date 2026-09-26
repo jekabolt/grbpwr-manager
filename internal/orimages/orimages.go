@@ -279,6 +279,10 @@ type Request struct {
 	// gpt-image-2, so treat the ratio as unmeasured-but-similar rather than as gone. Whatever it
 	// is, it must agree with what the caller reserved — see designgen.Config.ImageQuality.
 	Quality string
+	// Resolution is the price dial of an engine that prices by SIZE rather than by quality (a
+	// per-run engine row whose tiers move `resolution`, designgen.EngineTable). None of the phase-2
+	// GPT Image rows sends it. Empty omits it.
+	Resolution string
 	// Background is "auto" | "opaque" on the DEFAULT model, and additionally "transparent" on
 	// gpt-image-1 / -1-mini. Empty omits it and leaves the provider's own default in force.
 	//
@@ -351,6 +355,7 @@ type imageRequestWire struct {
 	N                 int                  `json:"n,omitempty"`
 	AspectRatio       string               `json:"aspect_ratio,omitempty"`
 	Quality           string               `json:"quality,omitempty"`
+	Resolution        string               `json:"resolution,omitempty"`
 	Background        string               `json:"background,omitempty"`
 	OutputFormat      string               `json:"output_format,omitempty"`
 	OutputCompression *int                 `json:"output_compression,omitempty"`
@@ -524,6 +529,7 @@ func (c *Client) buildRequest(req Request) (imageRequestWire, error) {
 		N:                 req.N,
 		AspectRatio:       strings.TrimSpace(req.AspectRatio),
 		Quality:           strings.TrimSpace(req.Quality),
+		Resolution:        strings.TrimSpace(req.Resolution),
 		Background:        strings.TrimSpace(req.Background),
 		OutputFormat:      strings.TrimSpace(req.OutputFormat),
 		OutputCompression: req.OutputCompression,
@@ -761,7 +767,31 @@ func (c *Client) WarnIfModelRetired() {
 	if !c.Enabled() {
 		return // no key: nothing is calling the provider anyway
 	}
-	model := c.cfg.Model
+	c.WarnIfModelsRetired(c.cfg.Model)
+}
+
+// WarnIfModelsRetired is WarnIfModelRetired over every listed slug — the configured one and each
+// per-run engine the design door accepts. Each slug is probed once, in its own goroutine, under
+// the same rules: silence unless the verdict is clear.
+func (c *Client) WarnIfModelsRetired(slugs ...string) {
+	if !c.Enabled() {
+		return
+	}
+	seen := make(map[string]struct{}, len(slugs))
+	for _, s := range slugs {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		c.warnIfRetired(s)
+	}
+}
+
+func (c *Client) warnIfRetired(model string) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {

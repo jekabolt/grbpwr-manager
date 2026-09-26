@@ -1201,6 +1201,12 @@ func viewCallLabels(views, detailNames []string) []string {
 // не участвовала. Поэтому nil здесь — ошибка сборки, а не тихая деградация; всем прочим родам
 // хранилище не нужно вовсе, и они принимают nil.
 func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, run entity.DesignRun, quality string) (Job, error) {
+	return buildJobWith(ctx, media, objects, run, quality, EngineTable(""))
+}
+
+// buildJobWith is buildJob with the deployment's engine table (EngineTable(Config.ImageDefaultModel)),
+// which resolves a frozen params.image into the job's engine fields.
+func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetcher, run entity.DesignRun, quality string, engines []Engine) (Job, error) {
 	p := parseParams(run.Params)
 	in := parseInputs(run.Inputs)
 
@@ -1225,6 +1231,8 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	if p.Freeform != nil {
 		job.FreeformPreset = p.Freeform.Preset
 	}
+	// The per-run engine (phase 2). No block = today's configured slug and QualityFor's word.
+	applyImageOptions(&job, p.Image, engines)
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
 	// that actually attach, so the media has to be resolved BEFORE the prompt is composed. Both

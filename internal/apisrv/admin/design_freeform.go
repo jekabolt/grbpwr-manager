@@ -407,18 +407,7 @@ func designRefuseFreeformOverflow(kind string, params *pb_common.DesignRunParams
 	if kind != entity.DesignRunKindFreeform {
 		return nil
 	}
-	items := params.GetFreeform().GetItems()
-	pictures, regions, marked := 0, 0, 0
-	for _, it := range items {
-		if it.GetMediaId() <= 0 {
-			continue
-		}
-		pictures++
-		if n := len(it.GetRegions()); n > 0 {
-			regions += n
-			marked++
-		}
-	}
+	pictures, regions, marked := designFreeformImageCounts(params)
 	total := pictures + regions + marked
 	if total <= orimages.MaxInputReferences {
 		return nil

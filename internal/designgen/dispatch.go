@@ -61,7 +61,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		return w.failRun(ctx, run, token, err)
 	}
 
-	job, err := buildJob(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind))
+	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind), EngineTable(w.c.ImageDefaultModel))
 	if err != nil {
 		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
 		return w.failRun(ctx, run, token, err)

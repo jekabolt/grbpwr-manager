@@ -92,6 +92,10 @@ type Config struct {
 	// refuses IN WORDS, naming the variable, instead of quietly falling back to a provider the owner
 	// did not ask for and reporting success. Meshy stays one variable away.
 	ThreedProvider string `mapstructure:"threed_provider"`
+	// ImageDefaultModel is the image client's effective slug (orimages.Client.Model), set by app.go
+	// — never read from the environment a second time. It marks the default row of EngineTable,
+	// the engine a frozen params.image with no model is drawn by. '' = orimages.DefaultModel.
+	ImageDefaultModel string `mapstructure:"-"`
 }
 
 // Environment variable names. AutomaticEnv is switched off in this repo, so a name that is not

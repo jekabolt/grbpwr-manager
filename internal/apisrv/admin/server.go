@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
@@ -139,6 +140,10 @@ type Server struct {
 	// block that builds the worker, so a Server without the gate is a Server whose money flag is
 	// off and which therefore refuses every paid verb one check earlier.
 	designKindGate func(kind string) error
+	// designEngines is the per-run engine table (designgen.EngineTable, PLAYGROUND phase 2): the
+	// door validates and prices params.image against it, the band advertises it. Nil = no engine
+	// is offered, and the door refuses every params.image.
+	designEngines func() []designgen.Engine
 }
 
 // New creates a new server with admin handlers.

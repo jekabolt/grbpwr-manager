@@ -493,7 +493,14 @@ func (a *App) Start(ctx context.Context) error {
 	// a button. The probe returns immediately, refuses nothing, and stays silent when no key is
 	// set — so an untouched deployment sees no new line.
 	designImages := orimages.New(a.c.OpenRouterImages)
-	designImages.WarnIfModelRetired()
+	// The per-run engines (PLAYGROUND phase 2) are one table, keyed off the client's own slug; every
+	// slug in it is probed, since a person can pick any of them.
+	designEngines := designgen.EngineTable(designImages.Model())
+	designEngineSlugs := make([]string, 0, len(designEngines))
+	for _, e := range designEngines {
+		designEngineSlugs = append(designEngineSlugs, e.Slug)
+	}
+	designImages.WarnIfModelsRetired(designEngineSlugs...)
 
 	// The worker is GATED, and the gate means NOT CONSTRUCTED — the precedent is ACCOUNTING_ENABLED
 	// above. An inert feature must not be a worker that wakes every few seconds to ask an empty
@@ -517,6 +524,8 @@ func (a *App) Start(ctx context.Context) error {
 	// not equal the lower-case constant, so an un-normalised read would wire fal and log fal while
 	// the operator had asked for Meshy. Idempotent; New() applies it again.
 	designgen.Normalize(&designCfg)
+	// The worker resolves a frozen params.image against the same table the door checks it with.
+	designCfg.ImageDefaultModel = designImages.Model()
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
 		//
@@ -625,6 +634,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.dgw != nil {
 		adminS.SetDesignKindGate(a.dgw.PreflightKind)
 	}
+	// The engine table the worker resolves params.image with (designCfg.ImageDefaultModel above):
+	// the door validates and prices against it, the band advertises it. A table, not a gate — it
+	// spends nothing, and the money flag above has already closed every paid verb when it is off.
+	adminS.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable(designImages.Model()) })
 	a.adminS = adminS
 
 	var frontendS *frontend.Server

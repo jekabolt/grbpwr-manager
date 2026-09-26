@@ -3,6 +3,7 @@ package designgen
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
@@ -66,16 +67,22 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		// either one unchanged cannot end differently.
 		return nil, err
 	}
-	out := &Outcome{Model: p.c.Model()}
+	// A per-run engine names its own slug; the provenance says so even when the call fails.
+	out := &Outcome{Model: firstNonEmpty(job.Model, p.c.Model())}
 	cost := decimal.Zero
 	charged := false
 
 	for _, call := range calls {
 		res, err := p.c.Generate(ctx, orimages.Request{
+			// The per-run engine (params.image): every field empty on a run that named none, which
+			// is today's request byte for byte.
+			Model:           job.Model,
 			Prompt:          call.prompt,
 			N:               call.n,
 			Quality:         job.Quality,
-			Background:      backgroundFor(job.Kind),
+			Resolution:      job.Resolution,
+			AspectRatio:     job.AspectRatio,
+			Background:      firstNonEmpty(job.Background, backgroundFor(job.Kind)),
 			OutputFormat:    "png",
 			InputReferences: call.refs,
 		})
@@ -223,6 +230,12 @@ func imageCalls(job Job) ([]imageCall, error) {
 		// картинки, но между снимком и проходом строку медиа могли удалить, и повторять
 		// заведомо пустой запрос значит платить за отказ.
 		if len(job.References) == 0 {
+			// TEXT → IMAGE (tile 11): a `free` run with words and no picture is one legal call with
+			// no references — the door let it through only with a non-empty ask. Every other preset
+			// works ON a picture, and resolving none is still the terminal refusal above.
+			if job.FreeformPreset == entity.DesignFreeformPresetFree && strings.TrimSpace(job.Prompt) != "" {
+				return []imageCall{{prompt: job.Prompt, n: 1}}, nil
+			}
 			return nil, fmt.Errorf("%w: a playground run needs the pictures it works on, and this run "+
 				"resolved none", orimages.ErrBadRequest)
 		}
@@ -302,5 +315,15 @@ func backgroundFor(kind string) string {
 	// ЧЕЛОВЕКА: фон ответа обязан быть фоном исходника, а всякое значение, посланное отсюда, было
 	// бы указанием этот фон сменить — при просьбе «пришей сюда пуговицу». Убрать фон у него просят
 	// другим родом (cutout), у которого и провайдер другой.
+	return ""
+}
+
+// firstNonEmpty returns the first argument that is not blank.
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
 	return ""
 }
