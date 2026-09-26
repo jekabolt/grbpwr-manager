@@ -65,6 +65,12 @@ func (p falThreedProvider) Produces() []string { return []string{ContentTypeGLB,
 // the instant the submit returns means a worker that dies during the minutes hitem3d takes resumes
 // for nothing instead of buying a second model.
 func (p falThreedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
+	return p.execute(ctx, job, threedJobOptions(job))
+}
+
+// execute is Execute with the run's options stated rather than read, so a probe can drive the
+// options without the Job fields that B-core owns.
+func (p falThreedProvider) execute(ctx context.Context, job Job, opts threedOptions) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
@@ -72,10 +78,14 @@ func (p falThreedProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	if err != nil {
 		return nil, err
 	}
+	// THE RUN'S OWN OPTIONS, verbatim. Empty = today's constants, and the transport then writes the
+	// exact body it wrote before the options existed (TestBenchPlate3DBodyIsByteIdentical).
+	req.Texture, req.PBR, req.Quality = opts.Texture, opts.PBR, opts.Quality
 	// THE ONLY WORDS THIS ROUTE SENDS, and they describe the SURFACE — see Job.SurfaceSteer. On a
 	// model family with nowhere to put them (hitem3d) the transport drops them; that is why the
-	// history row asks AcceptsTexturePrompt rather than assuming the text travelled.
-	req.TexturePrompt = job.SurfaceSteer
+	// history row asks AcceptsTexturePrompt rather than assuming the text travelled. An UNTEXTURED
+	// build has no texturing stage to steer, so nothing is handed over at all (SentPrompt agrees).
+	req.TexturePrompt = steerFor(job.SurfaceSteer, opts)
 	if job.SurfaceSteer != "" && !p.c.AcceptsTexturePrompt() {
 		// ⚠ THE ONE PLACE THE TWO KINDS OF SILENCE ARE TOLD APART — see SentPrompt on why the
 		// COLUMN does not tell them apart and must not. «This run said nothing about its surface»
@@ -180,11 +190,14 @@ func falViews(job Job) (fal.Request3D, error) {
 // nowhere else: Execute logs it, because «the model has no text field» is a CONFIGURATION a person
 // can change (DESIGN_THREED_PROVIDER / FAL_MODEL_3D), while «the colourway says nothing» is a
 // property of the run, visible in its own params on the same panel.
+//
+// AN UNTEXTURED BUILD SENDS NO WORDS EITHER (texture_prompt «Requires should_texture»), and the
+// column says so by the same empty string — see threedSentSteer.
 func (p falThreedProvider) SentPrompt(job Job) string {
 	if !p.c.AcceptsTexturePrompt() {
 		return ""
 	}
-	return job.SurfaceSteer
+	return threedSentSteer(job)
 }
 
 // Collect is the FREE half: one status lookup, then — once the request has completed — the bytes.
@@ -212,7 +225,7 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		// money about an old model.
 		if units, ok := fal.Charge(err); ok {
 			model := fal.ChargedModel(err)
-			if usd := p.c.CostUSDFor(model, units); usd.IsPositive() {
+			if usd := p.c.CostUSDForQuality(model, units, threedJobOptions(job).Quality); usd.IsPositive() {
 				return &Outcome{
 					RequestID: requestID,
 					Model:     model,
@@ -232,7 +245,11 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	// can reconstruct from the row. What a build was worth is a property of the request, not of the
 	// configuration that outlived it.
 	out := &Outcome{RequestID: res.RequestID, Model: res.Model}
-	if usd := p.c.CostUSDFor(res.Model, res.BillableUnits); usd.IsPositive() {
+	// ⚠ AND AT THE BUILD'S OWN TIER. Without a tariff the charge is fal's published per-build price,
+	// and a detailed build («ultra mode») is $1.40, not $1.20: booking it at the standard price would
+	// understate real spend by the surcharge on every detailed run. The tier comes off the frozen
+	// params through the job, the same place the submit read it from.
+	if usd := p.c.CostUSDForQuality(res.Model, res.BillableUnits, threedJobOptions(job).Quality); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	} else {
 		out.Price = decimal.NullDecimal{}

@@ -133,6 +133,21 @@ const (
 	// when the door kept its own copy.
 	defaultRequestUSD = 1.20
 
+	// defaultDetailedRequestUSD is the same fallback for a DETAILED build (Request3D.Quality =
+	// QualityDetailed, which sends `geometry_resolution: "2k"`).
+	//
+	// ⚠ 1.40 IS fal's OWN «ULTRA MODE» PRICE for meshy v7 multi-image-to-3d, read on 2026-09-27 at
+	// https://fal.ai/models/meshy/v7/multi-image-to-3d/llms.txt («A textured model generated from
+	// multiple input images costs $1.20, or $1.40 with ultra mode enabled»). The page does not say
+	// in so many words that ultra mode IS `geometry_resolution: "2k"`; it is the only resolution dial
+	// the endpoint's schema has, and Meshy's own pricing names the 2k geometry surcharge «ultra».
+	// The inference is priced at the HIGH end on purpose: booking a detailed build at 1.20 would
+	// understate real spend, which is the failure this ledger exists to prevent.
+	//
+	// THERE IS NO UNTEXTURED FIGURE, AND NONE IS INVENTED. fal publishes only the textured price;
+	// an untextured build is therefore booked at the textured one — the safe end of the mistake.
+	defaultDetailedRequestUSD = 1.40
+
 	// maxAPIResponseBytes caps a control-plane JSON body. Queue envelopes are a few kilobytes.
 	maxAPIResponseBytes = 1 << 20
 
@@ -227,6 +242,24 @@ var ErrBadRequest = errors.New("fal: the provider refused the request")
 // as the face of the object; handing it a back plate produces a garment turned inside out, and
 // the run closes `done` with money spent and nothing in the history to tell it from an honest one.
 var ErrNoFrontView = errors.New("fal: a multi-view build needs at least the front view")
+
+// The per-run 3D options (DesignThreedParams.texture / pbr / quality, PLAYGROUND phase 2), spelled
+// exactly as the frozen params spell them. The EMPTY STRING is a legal value of every one of them
+// and means «not stated», i.e. today's constant: textured, no PBR, standard geometry. That is what
+// keeps every run frozen before the fields — and every bench-plate run — byte-identical on the wire.
+const (
+	OptionOn        = "on"
+	OptionOff       = "off"
+	QualityStandard = "standard"
+	QualityDetailed = "detailed"
+)
+
+// ErrBadOption is returned, LOCALLY and before any money, for a 3D option this transport cannot
+// send: an unknown word, or PBR on an untextured build (the provider documents enable_pbr as
+// «Requires should_texture to be true»). The door refuses both first; this is the second lock for a
+// frozen snapshot that reached the worker some other way. It wraps ErrBadRequest so the worker's
+// classifier reads it as the non-retryable «this request is wrong» it is.
+var ErrBadOption = fmt.Errorf("fal: a 3D option this route cannot send: %w", ErrBadRequest)
 
 // ErrBadImageURL is returned for a reference the provider could not fetch itself.
 var ErrBadImageURL = errors.New("fal: image references must be public http(s) urls or data: uris")
@@ -434,11 +467,26 @@ func EstimatedRequestUSD() decimal.Decimal { return EstimatedRequestUSDFor("") }
 // understates real spend in the ledger — the failure this whole accounting exists to prevent. A
 // slug nobody wrote down therefore gets the current estimate, not the cheapest one.
 func EstimatedRequestUSDFor(model string) decimal.Decimal {
+	return EstimatedRequestUSDForQuality(model, "")
+}
+
+// EstimatedRequestUSDForQuality is EstimatedRequestUSDFor AT THE BUILD'S OWN TIER: a detailed build
+// (quality = QualityDetailed) off the current family is fal's «ultra mode» price, every other value
+// — empty, standard, anything unknown — the standard one. A retired slug keeps its own single price:
+// it was never offered a tier, so a tier cannot move its money.
+//
+// ⚠ THE DOOR RESERVES AGAINST THIS AND THE COLLECT BOOKS AGAINST THIS, and that is why it is one
+// function: a detailed run reserved at 1.40 and booked at 1.20 (or the reverse) is the two-copies
+// defect EstimatedRequestUSD documents, reborn one dial later.
+func EstimatedRequestUSDForQuality(model, quality string) decimal.Decimal {
 	model = strings.Trim(strings.TrimSpace(model), "/")
 	for _, r := range retired3D {
 		if strings.EqualFold(model, r.Model) {
 			return decimal.NewFromFloat(r.RequestUSD)
 		}
+	}
+	if strings.TrimSpace(quality) == QualityDetailed {
+		return decimal.NewFromFloat(defaultDetailedRequestUSD)
 	}
 	return decimal.NewFromFloat(defaultRequestUSD)
 }
@@ -457,6 +505,16 @@ func (c *Client) CostUSD(units float64) decimal.Decimal { return c.CostUSDFor(""
 // UNCONFIGURED fallback varies by model, because only there does this package supply the number
 // itself.
 func (c *Client) CostUSDFor(model string, units float64) decimal.Decimal {
+	return c.CostUSDForQuality(model, units, "")
+}
+
+// CostUSDForQuality is CostUSDFor for a build of a stated tier — see EstimatedRequestUSDForQuality.
+//
+// ⚠ THE TIER MOVES ONLY THE UNCONFIGURED FALLBACK. With FAL_UNIT_USD set the charge is
+// `tariff × units`, and the units are the provider's own report of what the request cost — a
+// detailed build that bills more units is already priced higher by that arithmetic, and a second,
+// local surcharge on top would count the tier twice.
+func (c *Client) CostUSDForQuality(model string, units float64, quality string) decimal.Decimal {
 	if c == nil || units <= 0 {
 		return decimal.Zero
 	}
@@ -465,7 +523,7 @@ func (c *Client) CostUSDFor(model string, units float64) decimal.Decimal {
 	// выдуманный тариф даёт не оценку, а уверенное враньё, тем более убедительное, чем больше
 	// единиц вернул провайдер. Без тарифа отвечаем ОДНОЙ оценкой за сборку.
 	if c.cfg.UnitUSD <= 0 {
-		return EstimatedRequestUSDFor(model)
+		return EstimatedRequestUSDForQuality(model, quality)
 	}
 	return decimal.NewFromFloat(c.cfg.UnitUSD).Mul(decimal.NewFromFloat(units))
 }
@@ -500,6 +558,21 @@ type Request3D struct {
 	// pretending it travelled would be worse still — which is why AcceptsTexturePrompt exists, so
 	// the caller that WRITES DOWN what the provider was told can ask instead of assuming.
 	TexturePrompt string
+	// Texture / PBR / Quality are the run's own 3D options (PLAYGROUND phase 2): '' | on | off,
+	// '' | on | off, '' | standard | detailed. EMPTY IS TODAY'S CONSTANT for every one of them —
+	// textured, no PBR, the provider's standard geometry — so a request that states none of them is
+	// byte-identical to the body this transport sent before the fields existed.
+	//
+	// ⚠ THEY REACH THE MESHY FAMILY ONLY. hitem3d's body keeps its constants and the request is
+	// logged, exactly like TexturePrompt: the slug is retired and selectable only by FAL_MODEL_3D.
+	//
+	// ⚠ fal's meshy/v7 schema has NO `texture_resolution` and NO `ai_model` (read 2026-09-27 from
+	// https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=meshy/v7/multi-image-to-3d), so on
+	// this route «detailed» is `geometry_resolution: "2k"` and nothing else. The direct Meshy API has
+	// the texture dial too; see meshy.Request.
+	Texture string
+	PBR     string
+	Quality string
 }
 
 // Sink is where the bytes of a finished request go. Model is required; Thumbnail is optional and,
@@ -590,6 +663,11 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 		}
 	}
 
+	opts, err := resolveOptions(req)
+	if err != nil {
+		return "", err
+	}
+
 	var body any
 	if isMeshyFamily(model) {
 		// ⚠ THE NAMES ARE LOST HERE AND NOWHERE ELSE, AND THE FRONT IS INDEX 0 BY CONSTRUCTION.
@@ -604,14 +682,16 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 				urls = append(urls, v.url)
 			}
 		}
-		body = meshySubmitBody{
+		mb := meshySubmitBody{
 			ImageURLs: urls,
 			// A flat drawing becomes a garment only with its colour and print on it; an untextured
-			// mesh answers a different question than the one the designer asked.
-			ShouldTexture: true,
-			// PBR maps quadruple the download for lighting nuance a product tile does not show. The
-			// provider's own default is TRUE, so this field is STATED rather than omitted.
-			EnablePBR: false,
+			// mesh answers a different question than the one the designer asked — which is why
+			// «textured» is what an unstated option means. Texture = off is the person asking
+			// that different question on purpose.
+			ShouldTexture: opts.texture,
+			// PBR maps quadruple the download for lighting nuance a product tile does not show, so
+			// they are off unless the run asks. The field is STATED rather than omitted either way.
+			EnablePBR: opts.pbr,
 			// Safety checking is the provider's default and is left on: a refusal we can read is
 			// worth more than a surprise on somebody else's terms.
 			EnableSafetyChecker: true,
@@ -622,8 +702,31 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 			// (auto / 30000) are right for a garment shown in a browser, and a value stated here
 			// would freeze today's guess into every future build.
 		}
+		if !opts.texture {
+			// The schema says texture_prompt «Requires should_texture to be true». An untextured
+			// build has no texturing stage for the words to steer, so they do not travel — and the
+			// designgen route reports the same empty string as what was sent (SentPrompt).
+			mb.TexturePrompt = ""
+		}
+		if opts.detailed {
+			// fal's «ultra mode» ($1.40, see defaultDetailedRequestUSD). Omitted otherwise, so a
+			// standard build keeps the provider's own default and today's exact body.
+			mb.GeometryResolution = geometryResolution2K
+		}
+		body = mb
 	} else {
 		// The hitem3d body, unchanged: NAMED slots, and the text field it has nowhere to put.
+		//
+		// ⚠ AND THE PER-RUN OPTIONS ARE NOT MAPPED ONTO IT. hitem3d is retired (selectable only by
+		// FAL_MODEL_3D), its tiers are priced differently, and nobody has measured its
+		// `resolution` values against «detailed». The build goes out at today's constants and the
+		// gap is said out loud rather than papered over.
+		if opts.stated {
+			c.log.InfoContext(ctx, "3D: the configured model takes no per-run texture/PBR/quality "+
+				"options, so the run's options were not sent",
+				slog.String("model", model), slog.String("texture", req.Texture),
+				slog.String("pbr", req.PBR), slog.String("quality", req.Quality))
+		}
 		h := submitBody{
 			ExportFormat:        formatGLB,
 			EnableTexture:       true,
@@ -1102,6 +1205,56 @@ type meshySubmitBody struct {
 	EnablePBR           bool     `json:"enable_pbr"`
 	EnableSafetyChecker bool     `json:"enable_safety_checker"`
 	TexturePrompt       string   `json:"texture_prompt,omitempty"`
+	// GeometryResolution — `standard | 2k` on fal's schema; only ever sent as 2k (a detailed
+	// build) and OMITTED otherwise, which keeps a standard build's body byte-identical to the one
+	// this transport sent before the option existed.
+	GeometryResolution string `json:"geometry_resolution,omitempty"`
+}
+
+// geometryResolution2K is the one geometry_resolution value this transport sends. fal's schema:
+// «Geometry resolution. Multi-image generation does not support 4k.» enum standard | 2k.
+const geometryResolution2K = "2k"
+
+// falOptions is a Request3D's three options, read once and validated once.
+type falOptions struct {
+	texture, pbr, detailed bool
+	// stated — at least one option was given at all (for the hitem3d log line).
+	stated bool
+}
+
+// resolveOptions reads the three option words. The empty string is today's constant for each; an unknown word,
+// or PBR on an untextured build, is ErrBadOption — refused here, locally, before the submit that is
+// the payment.
+func resolveOptions(req Request3D) (falOptions, error) {
+	o := falOptions{texture: true}
+	switch t := strings.TrimSpace(req.Texture); t {
+	case "", OptionOn:
+	case OptionOff:
+		o.texture = false
+	default:
+		return falOptions{}, fmt.Errorf("%w: texture %q is not on | off", ErrBadOption, t)
+	}
+	switch v := strings.TrimSpace(req.PBR); v {
+	case "", OptionOff:
+	case OptionOn:
+		o.pbr = true
+	default:
+		return falOptions{}, fmt.Errorf("%w: pbr %q is not on | off", ErrBadOption, v)
+	}
+	switch q := strings.TrimSpace(req.Quality); q {
+	case "", QualityStandard:
+	case QualityDetailed:
+		o.detailed = true
+	default:
+		return falOptions{}, fmt.Errorf("%w: quality %q is not standard | detailed", ErrBadOption, q)
+	}
+	if o.pbr && !o.texture {
+		return falOptions{}, fmt.Errorf("%w: realistic materials (pbr) need a textured build — the "+
+			"provider documents enable_pbr as «Requires should_texture to be true»", ErrBadOption)
+	}
+	o.stated = strings.TrimSpace(req.Texture) != "" || strings.TrimSpace(req.PBR) != "" ||
+		strings.TrimSpace(req.Quality) != ""
+	return o, nil
 }
 
 type submitResponse struct {
