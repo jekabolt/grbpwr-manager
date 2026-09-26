@@ -2710,7 +2710,18 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// бесплатным он не является ни для кого, кроме нашей бухгалтерии.
 	var draft *pb_common.DesignConstructionDraft
 	if construction {
-		parsed, stats, perr := parseConstructionDraft(text, finishReason)
+		// ВЫБРОШЕННЫЕ ОТСУТСТВИЯ НАЗЫВАЮТСЯ ПО ОДНОМУ (O-32, D-33), на Debug: это факт про промпт
+		// («модель всё ещё пишет "no closures"»), а не тревога, и читается он по ключу и первым
+		// словам. Сколько их — в строке итога ниже (aspects_absent); ответ и канон их просто не
+		// содержат.
+		parsed, stats, perr := parseConstructionDraftTracing(text, finishReason,
+			func(key, aspect string) {
+				slog.Default().DebugContext(ctx, "design construction draft: absence aspect dropped",
+					slog.Int("tech_card_id", cardID),
+					slog.Int("run_id", run.Id),
+					slog.String("aspect_key", key),
+					slog.String("aspect_text", aiBoundedText(aspect, 120)))
+			})
 		// ⚠ СВЕРКА С НАШИМИ ДАННЫМИ — ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ, ДО ЗАПИСИ КАНОНА (B-25). Разбор чист и
 		// зовётся ещё раз на повторе, где ни словаря, ни свежей карточки быть не должно: сверка
 		// там пересматривала бы вчерашний оплаченный ответ сегодняшним словарём. Довод целиком —
@@ -2870,6 +2881,9 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("total_tokens", usage.Total),
 		slog.Int("aspects_custom", stats.AspectsCustom),
 		slog.Int("aspects_dropped", stats.AspectsDropped),
+		// aspects_absent — текст описывал отсутствие («no closures», «none») и выброшен (O-32).
+		// Ноль — правило 11 работает; растущее число — счёт к промпту.
+		slog.Int("aspects_absent", stats.AspectsAbsent),
 		slog.Int("callouts_dropped", stats.CalloutsDropped),
 		slog.Int("bom_dropped", stats.BomDropped),
 		slog.Int("missing_dropped", stats.MissingDropped),

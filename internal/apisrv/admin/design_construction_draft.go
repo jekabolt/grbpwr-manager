@@ -343,6 +343,65 @@ func designFoldToken(s string) string {
 	return b.String()
 }
 
+// ─────────────────────────── отсутствие — не аспект ───────────────────────────
+
+// designAbsenceOpeners — НАЧАЛА ФРАЗЫ, КОТОРЫМИ МОДЕЛЬ ОПИСЫВАЕТ ОТСУТСТВИЕ (O-32, D-33).
+//
+// Владелец получил FASTENING = «No visible closures; pull-on construction…» на изделии без застёжек:
+// правило 11 промпта велит такой ключ ПРОПУСТИТЬ, а этот список — сторож на случай, когда модель
+// правило не выполнила. Аспект, чей текст начинается с одного из этих слов, отвечает на вопрос
+// «есть ли на изделии X» словом «нет» — то есть говорит не про изделие, а про список ключей, — и
+// технологу предлагать нечего.
+//
+// ⚠ СПИСОК НАМЕРЕННО МАЛ И ПРОВЕРЯЕТ ТОЛЬКО НАЧАЛО ФРАЗЫ. Граница «коэрция против отказа» в этом
+// файле проходит по ФОРМЕ, а не по содержанию (решение 3 в шапке): «нет» вместо описания — это
+// форма отказа отвечать, а вот «ярлык — не деталь конструкции» (второй пример владельца) — уже
+// содержание, и его чинит промпт, а не разбор. Слово в середине фразы не считается: «hidden placket,
+// no visible stitching» описывает планку, а не отсутствие. Слово сверяется ПО ГРАНИЦЕ — «no » и
+// «none.» отсутствие, «notched lapel», «nonwoven interfacing» и «no-sew bonded hem» — детали.
+//
+// ⚠ ОДНО МЕСТО НА ВСЕ ЧТЕНИЯ: список читает и разбор аспектов, и разбор деталей для отдельного
+// рисунка (T33). Второй список рядом разошёлся бы с первым в первую же правку.
+var designAbsenceOpeners = []string{
+	"no", "none", "n/a", "not applicable", "does not apply", "not present",
+	"without", "there are no", "there is no", "nothing", "nil", "null",
+}
+
+// designIsAbsenceStatement — говорит ли текст «этого нет» вместо того, чтобы описывать деталь.
+//
+// Регистр не важен; ведущая пунктуация и кавычки снимаются («(none)», «— no closures»); после
+// слова обязана стоять ГРАНИЦА СЛОВА — конец строки, пробел, знак препинания или кавычка. Буква,
+// цифра и сцепляющая пунктуация («-», «/», «_») границей не считаются: иначе «notched», «no-sew»
+// и «no/low-stretch» читались бы как отсутствие.
+func designIsAbsenceStatement(text string) bool {
+	t := strings.TrimLeftFunc(strings.ToLower(strings.TrimSpace(text)), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for _, opener := range designAbsenceOpeners {
+		if !strings.HasPrefix(t, opener) {
+			continue
+		}
+		rest := t[len(opener):]
+		if rest == "" {
+			return true
+		}
+		r, _ := utf8.DecodeRuneInString(rest)
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-/_", r) {
+			return true
+		}
+	}
+	return false
+}
+
+// designAbsenceTrace — НАБЛЮДАТЕЛЬ ЗА ВЫБРОШЕННЫМИ ОТСУТСТВИЯМИ, а не второй канал ответа.
+//
+// Разбор чист и контекста не знает, а хендлер обязан НАЗВАТЬ в логе, что именно выброшено (на
+// Debug: это факт про промпт — «модель всё ещё пишет отсутствия», — и он читается по ключу и
+// первым словам). Счётчик в статистике говорит СКОЛЬКО, наблюдатель — ЧТО; список текстов внутри
+// статистики сломал бы правило «каждое поле — int, и каждое печатается» (TestConstructionDraftLog
+// PrintsEveryCounter). nil — законное значение: повтор и пробы ничего не наблюдают.
+type designAbsenceTrace func(key, text string)
+
 // ─────────────────────────── системный промпт ───────────────────────────
 
 // designConstructionSystemPrompt — РОЛЬ И ФОРМА ОТВЕТА.
@@ -388,6 +447,16 @@ func designFoldToken(s string) string {
 //     база СЧИТАЕТСЯ ИЗ ЭТОГО ПОТОЛКА целиком (design_run.go: designDraftIdeaConstructionBaseUSD),
 //     то есть колорвеи оплачены тем же числом, что и всё прочее в ответе, — и приписывать к базе
 //     больше нечего.
+//
+// ⚠ ВОЛНА 26.09 (O-32, D-33) — АСПЕКТ ТОЛЬКО КОГДА ОН ЕСТЬ, правило 11. Владелец дословно: после
+// генерации в CONSTRUCTION появился FASTENING с текстом «No visible closures; pull-on construction,
+// relying on jersey stretch for fit» — у изделия, в котором застёжек нет, — и AUX MATERIALS =
+// «Small woven brand/size label sewn at inner side seam», то есть ярлык: строка СПЕКИ, а не деталь
+// конструкции. Модель заполняла КАЖДЫЙ ключ из списка, потому что список ей дали, а разрешения
+// пропустить ключ — нет. Правило 11 даёт его вслух: аспект — это деталь конструкции, которая НА
+// ЭТОМ изделии ЕСТЬ; неприменимый ключ ПРОПУСКАЕТСЯ, отсутствие НЕ ОПИСЫВАЕТСЯ, а ярлыки/бирки
+// названы спецификацией по имени. Вторая половина починки — разбор (designIsAbsenceStatement):
+// просьба к модели без сторожа остаётся просьбой.
 const designConstructionSystemPrompt = "You are a garment technologist's assistant. " +
 	"You are shown the moodboard pictures, the designer's concept & construction description, and " +
 	"the notes pinned on the pictures — every note names its picture by number and the spot it " +
@@ -430,7 +499,13 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"prompt (empty when none is close); never invent a colour the board does not show.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
-	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show."
+	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
+	"11. An aspect is a construction or making detail that is actually on this garment. Include " +
+	"an aspect ONLY when the garment has it: OMIT any key that does not apply, and never write an " +
+	"entry that describes an absence (\"no closures\", \"none\", \"not applicable\"). Labels, hang " +
+	"tags, care labels, size labels and brand labels are BOM / specification items, never aspects: " +
+	"list them under \"bom\" when the pictures show them. \"auxMaterials\" means making aids that " +
+	"shape the garment — interfacing, fusing, tape, elastic — not labels."
 
 // ─────────────────────────── пользовательский промпт ───────────────────────────
 
@@ -509,7 +584,7 @@ func designConstructionUserPrompt(
 	// ─── 5. ТОКЕНЫ ───
 	b.WriteString("\nTokens — use these spellings exactly:\n")
 	b.WriteString("aspect keys: " + strings.Join(designConstructionAspectKeys, ", ") +
-		" (or a short custom key when none fits)\n")
+		" (or a short custom key when none fits; omit a key this garment does not have)\n")
 	b.WriteString("bom sections: " + strings.Join(designBomSectionTokens, ", ") + "\n")
 	b.WriteString("bom purposes (roll goods only): " + strings.Join(designBomPurposeTokens, ", ") + "\n")
 	b.WriteString("bom kinds (hardware / trims / decoration only): " +
@@ -785,8 +860,13 @@ func designCardAlreadySays(card *entity.TechCard) string {
 // «что-то пошло не так» без числа. Дрейф написания, приведённый молча (регистр, пробел, дефис),
 // сюда НЕ попадает: он утопил бы настоящие коэрции.
 type designConstructionStats struct {
-	AspectsCustom   int // ключ не из словаря — принят как самодельный
-	AspectsDropped  int // пустой ключ или пустой текст
+	AspectsCustom  int // ключ не из словаря — принят как самодельный
+	AspectsDropped int // пустой ключ или пустой текст
+	// AspectsAbsent — ТЕКСТ АСПЕКТА ОПИСЫВАЛ ОТСУТСТВИЕ («No visible closures…», «none», «n/a») и
+	// строка выброшена (O-32, D-33). Отдельно от AspectsDropped: пустая строка — брак формы, а
+	// отсутствие — модель ответила на ключ, который правило 11 велит пропустить; растущее число
+	// здесь — счёт к промпту, а не к разбору.
+	AspectsAbsent   int
 	CalloutsDropped int // строка без слов
 	BomDropped      int // строка без имени
 	MissingDropped  int
@@ -856,7 +936,7 @@ type designConstructionStats struct {
 // поправки; «модель ответила на незаданный вопрос» — факт про промпт, он печатается той же строкой
 // (callouts_unasked) и виден на уровне Info, где ему и место.
 func (s designConstructionStats) Coerced() bool {
-	return s.AspectsCustom+s.AspectsDropped+s.CalloutsDropped+s.BomDropped+s.MissingDropped+
+	return s.AspectsCustom+s.AspectsDropped+s.AspectsAbsent+s.CalloutsDropped+s.BomDropped+s.MissingDropped+
 		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped+
 		s.PairsCleared+s.NonScalars+s.FieldsDropped+
 		s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped+
@@ -1115,6 +1195,15 @@ type designRawSlotColour struct {
 // отвечает на вопрос, который здесь и задаётся: КЛЮЧ НАПИСАН ИЛИ НЕТ. «Написан и пуст» — законный
 // и полезный ответ, «не написан вовсе» — не наша форма.
 func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstructionDraft, designConstructionStats, error) {
+	return parseConstructionDraftTracing(raw, finishReason, nil)
+}
+
+// parseConstructionDraftTracing — тот же разбор, с наблюдателем за выброшенными отсутствиями
+// (designAbsenceTrace). Хендлер зовёт эту форму, чтобы назвать выброшенное в логе; всё прочее —
+// короткую.
+func parseConstructionDraftTracing(
+	raw, finishReason string, onAbsent designAbsenceTrace,
+) (*pb_common.DesignConstructionDraft, designConstructionStats, error) {
 	var stats designConstructionStats
 
 	if strings.EqualFold(strings.TrimSpace(finishReason), "length") {
@@ -1125,14 +1214,16 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 	if js == "" {
 		return nil, stats, fmt.Errorf("no JSON object in the model output (%q)", aiBoundedText(raw, 200))
 	}
-	out, err := designParseConstructionObject(js, &stats)
+	out, err := designParseConstructionObject(js, &stats, onAbsent)
 	return out, stats, err
 }
 
 // designParseConstructionObject — разбор УЖЕ ВЫДЕЛЕННОГО объекта. Отдельная функция ради второго
 // входа: повтор читает НАШ СОБСТВЕННЫЙ канонический JSON и не имеет права терпеть вокруг него прозу
 // (см. designConstructionDraftFromRun), а живой ответ модели — обязан.
-func designParseConstructionObject(js string, stats *designConstructionStats) (*pb_common.DesignConstructionDraft, error) {
+func designParseConstructionObject(
+	js string, stats *designConstructionStats, onAbsent designAbsenceTrace,
+) (*pb_common.DesignConstructionDraft, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(js), &fields); err != nil {
 		return nil, fmt.Errorf("the model output is not a construction draft: %v", err)
@@ -1160,8 +1251,19 @@ func designParseConstructionObject(js string, stats *designConstructionStats) (*
 	for _, a := range designListField[designRawAspect](fields, "aspects", stats) {
 		key := designTake(a.Key, stats)
 		text := designBoundedRunes(designTake(a.Text, stats), designConstructionMaxTextRunes, stats)
-		if key == "" || text == "" {
+		// ТЕКСТ ИЗ ОДНОЙ ПУНКТУАЦИИ («—», «-») — ПУСТОЙ: складка без единой буквы или цифры.
+		if key == "" || text == "" || designFoldToken(text) == "" {
 			stats.AspectsDropped++
+			continue
+		}
+		// ОТСУТСТВИЕ — НЕ АСПЕКТ (O-32, D-33). Выбрасывается ДО дедупа и ДО потолка списка: строка
+		// «No closures» не имеет права занять одно из десяти мест настоящей детали. Наблюдателю
+		// отдаётся ключ и текст ДО складки — так их прочтёт человек в логе.
+		if designIsAbsenceStatement(text) {
+			stats.AspectsAbsent++
+			if onAbsent != nil {
+				onAbsent(key, text)
+			}
 			continue
 		}
 		fold := designFoldToken(key)
@@ -1799,7 +1901,7 @@ func designConstructionDraftFromRun(outputText string) *pb_common.DesignConstruc
 		return nil
 	}
 	var stats designConstructionStats
-	draft, err := designParseConstructionObject(js, &stats)
+	draft, err := designParseConstructionObject(js, &stats, nil)
 	if err != nil {
 		return nil
 	}
