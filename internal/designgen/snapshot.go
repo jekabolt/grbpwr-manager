@@ -49,6 +49,18 @@ type runParams struct {
 	// no bench, no references, no card. A nil pointer on any other kind is the ordinary state —
 	// the door refuses the field to every kind but its own.
 	Freeform *freeformParams `json:"freeform"`
+	// Image is the per-run engine (DesignRunParams.image, PLAYGROUND phase 2). nil = the
+	// deployment's dial, which is every run frozen before the field.
+	Image *imageOptions `json:"image"`
+}
+
+// imageOptions — the per-run engine of an OpenRouter image kind. The door validated every value
+// against the engine table; the reader only carries them to Job.
+type imageOptions struct {
+	Model       string `json:"model"`
+	Quality     string `json:"quality"`
+	AspectRatio string `json:"aspect_ratio"`
+	Background  string `json:"background"`
 }
 
 // freeformParams / freeformItem / freeformRegion — ТОТ ЖЕ УЗКИЙ ЧИТАТЕЛЬ, ЧТО И ВСЁ ВЫШЕ: ровно
@@ -60,6 +72,23 @@ type runParams struct {
 type freeformParams struct {
 	Preset string         `json:"preset"`
 	Items  []freeformItem `json:"items"`
+	// Options — the preset's settings (DesignWorkflowOptions, phase 2). nil on every run frozen
+	// before the field and on a preset that reads none.
+	Options *workflowOptions `json:"options"`
+}
+
+// workflowOptions — DesignWorkflowOptions, flat: each preset reads its own fields and the door
+// refuses the rest (`option_not_read`). tryon: framing … product_colorway_id; add_logo:
+// logo_size; variations: creativity.
+type workflowOptions struct {
+	Framing           string `json:"framing"`
+	Angle             string `json:"angle"`
+	SceneMode         string `json:"scene_mode"`
+	SceneText         string `json:"scene_text"`
+	ModelID           int    `json:"model_id"`
+	ProductColorwayID int    `json:"product_colorway_id"`
+	LogoSize          string `json:"logo_size"`
+	Creativity        int    `json:"creativity"`
 }
 
 // freeformItem — ОДНА КАРТИНКА ПЛЕЙГРАУНДА со всем, что человек про неё сказал.
@@ -229,6 +258,19 @@ type threedParams struct {
 	// вторым таким же органом. Оно СТРОКА, а не enum, потому что словарь телосложений — вопрос
 	// формулировок, а enum заморозил бы сегодняшние слова в истории каждого замороженного прогона.
 	BodyType string `json:"body_type"`
+
+	// REFERENCE MODE (phase 2): 1..4 media ids, ordered front, back, left, right. Non-empty means
+	// the run reads no bench plate at all.
+	ReferenceMediaIDs []int `json:"reference_media_ids"`
+	// Texture / PBR: '' | on | off (strings, because a proto3 bool cannot say «not stated»);
+	// '' = on for texture, off for pbr. Quality: '' | standard | detailed. Follow: '' | photo |
+	// shape (not advertised in phase 2).
+	Texture string `json:"texture"`
+	PBR     string `json:"pbr"`
+	Quality string `json:"quality"`
+	Follow  string `json:"follow"`
+	// SurfaceHint — the person's own words about the surface; surfaceSteer carries them.
+	SurfaceHint string `json:"surface_hint"`
 }
 
 // runInputs is the frozen input snapshot.
@@ -987,6 +1029,10 @@ func surfaceSteer(ctx context.Context, p runParams) string {
 		if pres := oneLine(t.Presentation); pres != "" {
 			add("presentation " + pres)
 		}
+		// The person's own surface words (phase 2). Last, so the same bound applies to them.
+		if hint := oneLine(t.SurfaceHint); hint != "" {
+			add("surface: " + hint)
+		}
 	}
 	steer, dropped := joinSteer(parts)
 	if dropped > 0 {
@@ -1174,6 +1220,10 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	// дальше этой функции не едет. Нет блока pattern — пустой режим, то есть сегодняшний маршрут.
 	if p.Pattern != nil {
 		job.PatternMode = p.Pattern.Mode
+	}
+	// The preset travels for the money boundary: imageCalls lets a zero-picture `free` run through.
+	if p.Freeform != nil {
+		job.FreeformPreset = p.Freeform.Preset
 	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures

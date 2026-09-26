@@ -125,6 +125,15 @@ type Job struct {
 	Outputs int
 	// Quality is the price dial for the image route.
 	Quality string
+	// Model / AspectRatio / Resolution / Background — the per-run engine of an image route
+	// (params.image, phase 2). Empty = the route's own configuration, i.e. every run frozen
+	// before the field. Resolution is the dial of an engine that prices by size, not by quality.
+	Model       string
+	AspectRatio string
+	Resolution  string
+	Background  string
+	// FreeformPreset is params.freeform.preset of a playground run; empty on every other kind.
+	FreeformPreset string
 }
 
 // Artifact is one file a provider produced, already in memory and not yet stored.
