@@ -1,0 +1,121 @@
+package admin
+
+import (
+	"testing"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// ═══ STEP 3: СВОТЧ У ДВЕРИ — ЦВЕТ ОБЯЗАТЕЛЕН, КАРТИНОК 0–1, СЛОТ — ЭТОЙ КАРТОЧКИ ═══════════════
+
+// ОТКАЗЫ РЕЖИМА СВОТЧА — БЕСПЛАТНЫЕ И СВОИМИ СЛОВАМИ; РЕЖИМ ФОТОГРАФИИ НЕ ТРОНУТ.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: не различать режим (свотч из одного цвета получает one_source_picture);
+// принять свотч без цвета (модель вернёт ткань случайного оттенка за те же деньги); принять две
+// фактуры; прочесть неизвестный режим как image (дверь и воркер разошлись бы в том, что куплено).
+func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
+	swatch := func(colour *pb_common.DesignColourRecipe, refs ...int32) *pb_common.DesignRunParams {
+		return &pb_common.DesignRunParams{
+			ExtraInputMediaIds: refs,
+			Colour:             colour,
+			Pattern:            &pb_common.DesignPatternParams{Name: "black · outer", Mode: entity.DesignPatternModeSwatch},
+		}
+	}
+	image := func(mode string, refs ...int32) *pb_common.DesignRunParams {
+		return &pb_common.DesignRunParams{
+			ExtraInputMediaIds: refs,
+			Pattern:            &pb_common.DesignPatternParams{Name: "fabric 1", Mode: mode},
+		}
+	}
+	hex := &pb_common.DesignColourRecipe{Hex: "#C8102E"}
+	for _, tc := range []struct {
+		name   string
+		params *pb_common.DesignRunParams
+		reason string // "" = accepted
+	}{
+		{"swatch without a colour", swatch(nil), entity.DesignErrorCodeNoColour},
+		{"swatch with a blank colour", swatch(&pb_common.DesignColourRecipe{Hex: " ", Words: "  "}),
+			entity.DesignErrorCodeNoColour},
+		{"swatch from a hex alone", swatch(hex), ""},
+		{"swatch from a code alone", swatch(&pb_common.DesignColourRecipe{Code: "18-1664 TCX"}), ""},
+		{"swatch from words alone", swatch(&pb_common.DesignColourRecipe{Words: "Pantone Fiery Red"}), ""},
+		{"swatch with one texture", swatch(hex, 11), ""},
+		{"swatch with two textures", swatch(hex, 11, 12), entity.DesignErrorCodeOneTexturePicture},
+		{"image with no picture", image(entity.DesignPatternModeImage), "one_source_picture"},
+		{"legacy empty mode with two pictures", image("", 11, 12), "one_source_picture"},
+		{"image with one picture", image(entity.DesignPatternModeImage, 11), ""},
+		{"legacy empty mode with one picture", image("", 11), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.Equal(t, tc.reason, ffReason(t, err))
+		})
+	}
+
+	t.Run("an unknown mode is refused, not read as image", func(t *testing.T) {
+		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", image("photo", 11))
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+	})
+	t.Run("a swatch still needs its name", func(t *testing.T) {
+		p := swatch(hex)
+		p.Pattern.Name = " "
+		require.Equal(t, "pattern_name_required",
+			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "", p)))
+	})
+}
+
+// СЛОТ ПЛИТКИ — СТРОКА BOM ЭТОЙ КАРТОЧКИ, И ОТКАЗ ЧУЖОЙ — FailedPrecondition ДО РЕЗЕРВА.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать designRefuseForeignBomLine из StartDesignRun — прогон заплатит за
+// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки.
+func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
+	card := designMoodCard()
+	card.BomItems = []entity.TechCardBomItem{{Id: 902}, {Id: 903}}
+	for _, tc := range []struct {
+		name    string
+		bom     int32
+		code    codes.Code
+		reason  string
+		refused bool
+	}{
+		{"a line of this card", 902, codes.OK, "", false},
+		{"not made for a slot", 0, codes.OK, "", false},
+		{"a line of another card", 7777, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine, true},
+		{"a negative id", -3, codes.InvalidArgument, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, card, designBandWith(true))
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, mock.Anything, mock.Anything).
+				Return(nil).Maybe()
+			req := designStartRequest(entity.DesignRunKindPattern)
+			req.Params = &pb_common.DesignRunParams{
+				Colour: &pb_common.DesignColourRecipe{Hex: "#C8102E", Words: "Pantone Fiery Red · outer"},
+				Pattern: &pb_common.DesignPatternParams{
+					Name: "black · outer", Mode: entity.DesignPatternModeSwatch, BomItemId: tc.bom,
+				},
+			}
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			if !tc.refused {
+				require.NoError(t, err)
+				require.NotNil(t, rig.sent, "положительный контроль: свотч без картинки дошёл до стора")
+				return
+			}
+			require.Error(t, err)
+			require.Equal(t, tc.code, status.Code(err))
+			if tc.reason != "" {
+				require.Equal(t, tc.reason, ffReason(t, err))
+			}
+			require.Nil(t, rig.sent, "отказ обязан стоять ДО резерва")
+		})
+	}
+}

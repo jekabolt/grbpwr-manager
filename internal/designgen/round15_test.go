@@ -102,7 +102,7 @@ func TestThePatternCraftRECONSTRUCTS_THE_PRINT_AND_ANSWERS_THE_SCALE(t *testing.
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			low := strings.ToLower(patternCraft(tc.p))
+			low := strings.ToLower(patternCraft(tc.p, 1))
 			for _, must := range tc.contains {
 				require.Containsf(t, low, must, "the tile craft must say %q", must)
 			}

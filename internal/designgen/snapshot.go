@@ -113,6 +113,12 @@ func (d freeformDecimal) f() float64 {
 // 120 mm» are one claim rather than two that drift.
 type patternParams struct {
 	RepeatMM int `json:"repeat_mm"`
+	// Mode — ИЗ ЧЕГО СТРОИТСЯ ПЛИТКА (STEP 3): "" / "image" — из одной фотографии ткани (маршрут,
+	// которым замёрз каждый прогон до этого поля), "swatch" — из заявленного цвета, с 0–1
+	// референсом ФАКТУРЫ. Имя snake_case по той же причине, что у всего снимка: protojson пишет
+	// params с UseProtoNames. Режим меняет ДВА места и больше ничего: число картинок вызова
+	// (imageCalls) и абзац ремесла (patternCraft).
+	Mode string `json:"mode"`
 }
 
 type colourRecipe struct {
@@ -892,7 +898,10 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		if p.Pattern != nil {
 			pp = *p.Pattern
 		}
-		write("", patternCraft(pp))
+		// СКОЛЬКО КАРТИНОК РЕАЛЬНО УЕЗЖАЕТ — из `attached`, а не из снимка: абзац свотча говорит
+		// модели либо «фактура — с картинки», либо «картинки нет, сделай гладкую ткань», и сказать
+		// первое о картинке, которая не пережила резолв, значило бы дать указание ни о чём.
+		write("", patternCraft(pp, len(attached)))
 	// ПЛЕЙГРАУНД — ПЯТОЕ РЕМЕСЛО, И ОНО ПРОТИВОРЕЧИТ ВСЕМ ЧЕТЫРЁМ ОСТАЛЬНЫМ РОВНО ТЕМ, ЧЕГО НЕ
 	// ГОВОРИТ. Ни «чёрная линия на белом», ни «фотореалистично», ни «верни тот же кадр»: человек
 	// сказал сам, а абзац объясняет модели ТОЛЬКО устройство вложений — что обведено, где кроп и
@@ -1161,6 +1170,11 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 		Outputs:     run.RequestedOutputs,
 		Quality:     quality,
 	}
+	// РЕЖИМ ПАТТЕРНА ЕДЕТ В ЗАДАНИЕ, ПОТОМУ ЧТО ЕГО ЧИТАЕТ ДЕНЕЖНАЯ ГРАНИЦА (imageCalls), а снимок
+	// дальше этой функции не едет. Нет блока pattern — пустой режим, то есть сегодняшний маршрут.
+	if p.Pattern != nil {
+		job.PatternMode = p.Pattern.Mode
+	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
 	// that actually attach, so the media has to be resolved BEFORE the prompt is composed. Both
@@ -1183,7 +1197,8 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 		// ПАТТЕРН ДЕЙСТВУЕТ НА ОДНУ НАЗВАННУЮ КАРТИНКУ, И ТОЛЬКО НА НЕЁ. Довод целиком в
 		// source_inputs.go: плитку, собранную из двух лоскутов, невозможно состыковать саму с
 		// собой. Тканей у этого рода нет по построению — images.go отказывает всему, что не ровно
-		// одна ссылка.
+		// одна ссылка. У СВОТЧА (STEP 3) названная картинка — фактура, и их ноль или одна: тот же
+		// отбор, другое число у денежной границы.
 		list = sourcePictures(list, p)
 	}
 	if run.Kind == entity.DesignRunKindThreed {

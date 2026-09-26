@@ -70,7 +70,7 @@ func requireAssetOfCard(ctx context.Context, db dependency.DB, cardID, assetID i
 // refuseFullShelf — потолок полок карточки, посчитанный В ТРАНЗАКЦИИ ВЫЗЫВАЮЩЕГО.
 //
 // THE CEILING IS COUNTED IN THIS TRANSACTION, not before it. Counted outside, two people adding the
-// fortieth and forty-first cloth at the same moment both see 39.
+// last cloth and the one after it at the same moment both see one free place.
 //
 // ⚠ ОТДЕЛЬНОЙ ФУНКЦИЕЙ, ПОТОМУ ЧТО ПИСАТЕЛЕЙ ПОЛКИ СТАЛО ДВА. Второй — посадка плитки при закрытии
 // прогона паттерна (keepPatternTx, queue.go), и он приходит сюда через минуты после того, как

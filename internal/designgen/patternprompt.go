@@ -3,6 +3,8 @@ package designgen
 import (
 	"strconv"
 	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // patternCraft is the craft block of the PATTERN route (K-13): the paragraph that turns «here is a
@@ -51,32 +53,24 @@ import (
 // carries, and «take it from there» is an instruction, where saying nothing is not. Both error
 // directions are named, because «choose a sensible repeat» is what produces one motif blown up to
 // fill the square.
-func patternCraft(p patternParams) string {
+//
+// ═══ SWATCH MODE (STEP 3): THE SAME TILE, A DIFFERENT SOURCE ════════════════════════════════════
+//
+// With params.pattern.mode = "swatch" there is no photograph to reconstruct: the cloth is built
+// from the STATED colour and the cloth words, and the picture — zero or one of them — is a TEXTURE
+// reference. The wrap and the exclusions are shared word for word, because a swatch is laid out on
+// the render exactly as a tile is; the even field, the light and the source paragraph are replaced
+// by swatchCraft, and the repeat falls back to «natural scale» instead of «read it off the
+// picture». `pictures` is how many pictures actually attached; the image mode ignores it, and its
+// text is byte-identical to what every frozen prompt before this mode was composed from.
+func patternCraft(p patternParams, pictures int) string {
 	var b strings.Builder
-	b.WriteString("repeating tile:\n" +
-		"Produce ONE square tile that repeats seamlessly. The tile is the unit of a wallpaper-style " +
-		"repeat: laid out in a grid it must join to itself invisibly, so the right edge must continue " +
-		"exactly into the left edge and the bottom edge exactly into the top edge, with every motif " +
-		"that crosses a boundary completed on the opposite side.\n" +
-		"Fill the frame edge to edge. Strictly excluded: any border, frame, margin, matte, vignette, " +
-		"drop shadow, fade or rounded corner; any signature, watermark, logo, caption or text; any " +
-		"mock-up, garment, hanger, hand, surface or background the tile is shown ON — the output is " +
-		"the cloth itself, flat and face-on, and nothing else.\n" +
-		"Distribute the motif evenly across the whole square with no single focal object and no empty " +
-		"quarter: a tile with a centre announces its own grid the moment it is repeated.\n" +
-		"Light the tile flatly and evenly. Do not carry over the lighting of the source photograph — " +
-		"its gradient, its hot spots and its cast shadows become visible stripes once the tile is " +
-		"laid out.\n" +
-		"The reference picture is not the tile and must not be copied as a picture. It may be a " +
-		"photograph of real cloth — folded, crumpled, draped, hanging, seen at an angle, lit from " +
-		"one side, cropped in the middle of the motif — or a sketch of a print. Reconstruct the " +
-		"PRINT that cloth carries as it would look pressed flat and photographed face-on under even " +
-		"light: straighten the motif, complete what the folds and the crop hide, keep its " +
-		"proportions, its colours and the character of the material seen through it — the knit, the " +
-		"weave, the grain — and remove every trace of the crumpling: the folds, the creases, the " +
-		"highlights and the shadows they cast, the perspective. Take from the picture its motif, " +
-		"its palette and its material, and nothing else: not its crop, not its perspective, not " +
-		"its lighting, not its background.")
+	b.WriteString(patternWrapParagraph + patternExclusionParagraph)
+	if p.Mode == entity.DesignPatternModeSwatch {
+		b.WriteString(swatchCraft(pictures))
+	} else {
+		b.WriteString(patternEvenFieldParagraph + patternLightParagraph + patternSourceParagraph)
+	}
 
 	if p.RepeatMM > 0 {
 		// SCALE, NOT SIZE. See the doc comment: the pixels are a square either way; the millimetres
@@ -84,6 +78,14 @@ func patternCraft(p patternParams) string {
 		b.WriteString("\nDraw the motif at the scale of a " + strconv.Itoa(p.RepeatMM) +
 			" mm repeat on the finished garment: one whole tile covers " + strconv.Itoa(p.RepeatMM) +
 			" mm of cloth in each direction.")
+	} else if p.Mode == entity.DesignPatternModeSwatch {
+		// A SWATCH HAS NO SOURCE TO READ THE DENSITY FROM, so «take it from the picture» would point
+		// at nothing. The scale it needs is the scale of the cloth itself: its yarn and weave at the
+		// size they have on a real garment.
+		b.WriteString("\nShow the cloth at natural scale: one tile covers a hand-sized piece of the " +
+			"real fabric, so the weave or knit reads at the size it has on a finished garment — " +
+			"neither magnified into a close-up of single yarns nor shrunk into a flat, featureless " +
+			"fill.")
 	} else {
 		// THE DEFAULT SINCE ROUND 15. The number is gone from the screen; the question it answered
 		// is handed to the model together with the place to read the answer from.
@@ -93,5 +95,80 @@ func patternCraft(p patternParams) string {
 			"dissolves into texture. If the source shows the motif at a clear size against the " +
 			"cloth, keep that size.")
 	}
+	return b.String()
+}
+
+// The paragraphs of the tile craft, as constants so that the two modes share the WRAP and the
+// EXCLUSIONS word for word and the image mode stays byte-identical to what every frozen prompt of
+// history was composed from.
+const (
+	patternWrapParagraph = "repeating tile:\n" +
+		"Produce ONE square tile that repeats seamlessly. The tile is the unit of a wallpaper-style " +
+		"repeat: laid out in a grid it must join to itself invisibly, so the right edge must continue " +
+		"exactly into the left edge and the bottom edge exactly into the top edge, with every motif " +
+		"that crosses a boundary completed on the opposite side.\n"
+	patternExclusionParagraph = "Fill the frame edge to edge. Strictly excluded: any border, frame, margin, matte, vignette, " +
+		"drop shadow, fade or rounded corner; any signature, watermark, logo, caption or text; any " +
+		"mock-up, garment, hanger, hand, surface or background the tile is shown ON — the output is " +
+		"the cloth itself, flat and face-on, and nothing else.\n"
+	patternEvenFieldParagraph = "Distribute the motif evenly across the whole square with no single focal object and no empty " +
+		"quarter: a tile with a centre announces its own grid the moment it is repeated.\n"
+	patternLightParagraph = "Light the tile flatly and evenly. Do not carry over the lighting of the source photograph — " +
+		"its gradient, its hot spots and its cast shadows become visible stripes once the tile is " +
+		"laid out.\n"
+	patternSourceParagraph = "The reference picture is not the tile and must not be copied as a picture. It may be a " +
+		"photograph of real cloth — folded, crumpled, draped, hanging, seen at an angle, lit from " +
+		"one side, cropped in the middle of the motif — or a sketch of a print. Reconstruct the " +
+		"PRINT that cloth carries as it would look pressed flat and photographed face-on under even " +
+		"light: straighten the motif, complete what the folds and the crop hide, keep its " +
+		"proportions, its colours and the character of the material seen through it — the knit, the " +
+		"weave, the grain — and remove every trace of the crumpling: the folds, the creases, the " +
+		"highlights and the shadows they cast, the perspective. Take from the picture its motif, " +
+		"its palette and its material, and nothing else: not its crop, not its perspective, not " +
+		"its lighting, not its background."
+)
+
+// swatchCraft is the second half of the tile craft in SWATCH MODE (STEP 3): the cloth is built
+// from the STATED COLOUR and the cloth words, not reconstructed from a photograph.
+//
+// ⚠ THE COLOUR IS THE ONE THING IT MUST NOT INTERPRET. The client sends the Pantone's screen hex
+// in the `colour` block and the Pantone's name and code with the cloth words in `fabric in words`;
+// a model left to «pick a nice red» returns a red, and a swatch of the wrong red is worse than no
+// swatch — it goes into the render as the fabric of that colourway. So the value is to be matched,
+// across the whole square, and the words say so.
+//
+// ⚠ A TEXTURE REFERENCE CONTRIBUTES THE MATERIAL AND NOTHING ELSE. It is a photograph of some
+// cloth in some colour under some light; everything about it except how the cloth is built is a
+// contradiction of the stated colour or of the flat light, and the paragraph names each of them.
+//
+// ⚠ NO MOTIF UNLESS ONE IS NAMED. The tile craft's wrap and exclusions talk about motifs because
+// the image mode reconstructs a print; a plain cotton twill asked for «seamlessly» must not come
+// back printed, so the absence is stated rather than left for the model to infer.
+//
+// `pictures` is the count that ACTUALLY attached (composePrompt reads it off `attached`), so the
+// paragraph describes the call that happens rather than the one that was frozen.
+func swatchCraft(pictures int) string {
+	var b strings.Builder
+	b.WriteString("Keep the surface even across the whole square: the same weave, the same density and " +
+		"the same tone everywhere, no single focal spot and no darker or brighter quarter — a tile " +
+		"with a centre announces its own grid the moment it is repeated.\n")
+	b.WriteString("Light the tile flatly and evenly: no gradient, no hot spot, no cast shadow — each of " +
+		"them becomes a visible stripe once the tile is laid out.\n")
+	b.WriteString("This tile is a FABRIC SWATCH built from the colour and the cloth stated above, not " +
+		"from a photograph. The stated colour is the colour of the cloth itself: match the stated " +
+		"colour value exactly across the whole tile — not a tint of it, not a lighting effect on it, " +
+		"and not drifting lighter, darker, warmer or cooler anywhere in the square. Build the cloth " +
+		"the words describe: its material, its composition and its weight.")
+	if pictures > 0 {
+		b.WriteString(" The attached picture is a TEXTURE REFERENCE only: take from it the material " +
+			"— the weave or the knit, the grain, the yarn, the surface and how it catches light — and " +
+			"NOTHING of its colour, its lighting, its crop, its perspective or its background. Rebuild " +
+			"that material flat and face-on, in the stated colour.")
+	} else {
+		b.WriteString(" No picture is attached: render plain cloth of that material in that colour, " +
+			"with a believable weave or knit at natural scale — the texture of real fabric seen " +
+			"face-on, not a flat digital fill.")
+	}
+	b.WriteString(" Draw no motif, print, stripe or check unless the cloth words above name one.")
 	return b.String()
 }

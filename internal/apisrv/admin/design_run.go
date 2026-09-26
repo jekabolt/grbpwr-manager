@@ -772,6 +772,13 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseForeignPatternSource(cardID, req.GetParams(), band.Assets); err != nil {
 		return nil, err
 	}
+	// И ДЛЯ СЛОТА ПЛИТКИ (STEP 3): `params.pattern.bom_item_id` — строка BOM ЭТОЙ карточки, для
+	// которой делается свотч; при посадке пара (колорвей, слот) перепривязывается на новую плитку.
+	// Спрашивается с ГОВОРЯЩЕГО по тому же доводу: строку законно удаляют, а посадка на пропавший
+	// слот и так не падает — плитка просто садится непривязанной.
+	if err := designRefuseForeignBomLine(cardID, req.GetParams(), card.BomItems); err != nil {
+		return nil, err
+	}
 	// ─── ПОЛКА ПЕРЕПОЛНЕНА — ОТКАЗ ДО ДЕНЕГ, А НЕ ПОСЛЕ (J-12) ───
 	//
 	// Прогон паттерна ПОКУПАЕТ ПЛИТКУ И ТУТ ЖЕ САЖАЕТ ЕЁ НА ПОЛКУ. Если полка уже полна, посадка в
@@ -779,7 +786,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// узнает об этом ПОСЛЕ списания. Здесь это стоит одного отказа и ноля денег.
 	//
 	// ⚠ ЭТО ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА, А НЕ НАСТОЯЩАЯ, И ВТОРАЯ ВСЁ РАВНО НУЖНА. Между этим
-	// чтением и посадкой проходят минуты работы воркера, за которые сороковую полку заводит
+	// чтением и посадкой проходят минуты работы воркера, за которые последнюю полку заводит
 	// сосед; поэтому потолок считается ЕЩЁ РАЗ в транзакции посадки (store/design: keepPatternTx),
 	// и там его цена — уже купленная картинка без ассета и `error_code = 'library_full'` на
 	// закрытой строке. Одна из двух проверок без другой была бы либо TOCTOU, либо тратой денег на
@@ -1035,7 +1042,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 // модели с разных сторон» это ровно про несколько кадров, и каждый едет отдельным платным
 // вызовом. Паттерн берёт РОВНО ОДИН: плитка, склеенная из двух лоскутов, не стыкуется сама с
 // собой ни при каком раскладе, то есть бесполезна в том единственном смысле, ради которого её
-// заказывали.
+// заказывали. СВОТЧ (params.pattern.mode = swatch, STEP 3) берёт НОЛЬ ИЛИ ОДНУ — там картинка
+// уже не источник, а референс фактуры, а источник — заявленный цвет, без которого свотч не из
+// чего строить (`no_colour`).
 //
 // ⚠ И ПЕРЕКРАС ТРЕБУЕТ НАЗВАННОЙ ЦЕЛИ. «Поменяй цвет» без цели — это просьба, на которую модель
 // ответит чем угодно: вернётся тот же снимок в случайном оттенке, деньги списаны, а по истории
@@ -1134,12 +1143,48 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 			return err
 		}
 	case entity.DesignRunKindPattern:
-		if sources != 1 {
-			return designRefusal(codes.InvalidArgument, "one_source_picture",
-				fmt.Sprintf("a repeating tile is built from exactly one picture, and this run names %d: "+
-					"put that one picture in params.extra_input_media_ids. Nothing was reserved and "+
-					"nothing was charged", sources),
-				map[string]string{"named": strconv.Itoa(sources)})
+		// ─── ДВА РЕЖИМА ОДНОГО РОДА (STEP 3): ИЗ ЧЕГО СТРОИТСЯ ПЛИТКА ───
+		//
+		// Режим — поле просьбы, а не род: свотч остаётся бесшовной картинкой `pattern` с той же
+		// проверкой стыка, той же полкой и тем же абзацем рендера. Различается только источник
+		// ткани — и ровно это здесь и спрашивается, до денег.
+		//
+		// НЕИЗВЕСТНЫЙ РЕЖИМ — ОТКАЗ, А НЕ «ЧИТАЙ КАК image». Воркер различает режимы тем же
+		// словом; прогон, который дверь приняла бы за фотографию, а воркер — ни за что, заплатил бы
+		// за промпт, о котором никто не договаривался.
+		switch mode := params.GetPattern().GetMode(); mode {
+		case entity.DesignPatternModeSwatch:
+			// СВОТЧ СТРОИТСЯ ИЗ ЦВЕТА, И БЕЗ ЦВЕТА ЕГО НЕ ИЗ ЧЕГО СТРОИТЬ. Годится любое из трёх
+			// написаний — hex, код или слова: все три доезжают до промпта (блоки `colour` и
+			// `fabric in words`), а клиент шлёт экранный hex Pantone и его имя словами.
+			c := params.GetColour()
+			if strings.TrimSpace(c.GetHex()) == "" && strings.TrimSpace(c.GetCode()) == "" &&
+				strings.TrimSpace(c.GetWords()) == "" {
+				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeNoColour,
+					"a swatch is built from the colour you state, and this run states none: put a hex, "+
+						"a code or words in params.colour. Nothing was reserved and nothing was charged", nil)
+			}
+			// ОДНА ФАКТУРА НА ПЛИТКУ. Картинка здесь — референс материала, а не источник: две
+			// фактуры модель смешала бы в третью, которой нет ни у одной из них.
+			if sources > 1 {
+				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeOneTexturePicture,
+					fmt.Sprintf("a swatch takes at most one texture reference, and this run names %d: "+
+						"keep one picture in params.extra_input_media_ids, or none for plain cloth. "+
+						"Nothing was reserved and nothing was charged", sources),
+					map[string]string{"named": strconv.Itoa(sources)})
+			}
+		case "", entity.DesignPatternModeImage:
+			if sources != 1 {
+				return designRefusal(codes.InvalidArgument, "one_source_picture",
+					fmt.Sprintf("a repeating tile is built from exactly one picture, and this run names %d: "+
+						"put that one picture in params.extra_input_media_ids. Nothing was reserved and "+
+						"nothing was charged", sources),
+					map[string]string{"named": strconv.Itoa(sources)})
+			}
+		default:
+			return status.Errorf(codes.InvalidArgument,
+				"params.pattern.mode %q is neither %q (or empty) nor %q",
+				mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch)
 		}
 		name := strings.TrimSpace(params.GetPattern().GetName())
 		if name == "" {
@@ -1826,6 +1871,40 @@ func designRefuseForeignPatternSource(cardID int, spoken *pb_common.DesignRunPar
 		"params.pattern.source_asset_id %d is not a shelf row of tech card %d", id, cardID)
 }
 
+// designRefuseForeignBomLine держит КАРТОЧНУЮ половину адреса слота (STEP 3): строка BOM, для
+// которой делается плитка, обязана быть строкой ЭТОЙ карточки. Второго чтения не делает: карточка
+// уже прочитана дверью целиком, и её BomItems — это весь набор строк.
+//
+// ⚠ FailedPrecondition, А НЕ InvalidArgument, И ЭТО ТОТ ЖЕ ТОКЕН, ЧТО У SetDesignAssetBinding.
+// Запрос правильной формы, не годится СОСТОЯНИЕ — ровно класс foreign_colorway, — а одному факту
+// нельзя отвечать двумя кодами на двух дверях.
+//
+// СЕКЦИЯ СТРОКИ НЕ СУДИТСЯ: какие строки — слоты ткани, решает экран по своему прочтению BOM, а
+// правило здесь было бы второй копией этого прочтения. Сервер отвечает только «чья это строка».
+//
+// `spoken` — СООБЩЕНИЕ КЛИЕНТА: унаследованный слот рерана законно пропадает вместе со строкой BOM,
+// а посадка на пропавший слот не падает (store/design: bindKeptPatternTx).
+func designRefuseForeignBomLine(cardID int, spoken *pb_common.DesignRunParams, bom []entity.TechCardBomItem) error {
+	id := int(spoken.GetPattern().GetBomItemId())
+	if id == 0 {
+		// 0 = «не для слота»: каждый прогон-из-фотографии и каждый, замороженный до STEP 3.
+		return nil
+	}
+	if id < 0 {
+		return status.Errorf(codes.InvalidArgument,
+			"params.pattern.bom_item_id %d is not a BOM line id (0 = not made for a slot)", id)
+	}
+	for _, line := range bom {
+		if line.Id == id {
+			return nil
+		}
+	}
+	return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine,
+		fmt.Sprintf("params.pattern.bom_item_id %d is not a BOM line of tech card %d — a swatch is made "+
+			"for one of this card's slots. Nothing was reserved and nothing was charged", id, cardID),
+		map[string]string{"tech_card_id": strconv.Itoa(cardID), "bom_item_id": strconv.Itoa(id)})
+}
+
 // designClothMediaIDs — текстуры ВСЕХ тканей рецепта. Отдельной функцией, чтобы у места вызова
 // стоял список, а не цикл: границе карточки отдаётся один набор номеров, и дедупликацию с нулями
 // разбирает она сама.
@@ -2101,8 +2180,9 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 		// артефактом, а не отдельными кадрами полосы.
 		return 1
 	case entity.DesignRunKindPattern:
-		// ОДНА ПЛИТКА ИЗ ОДНОЙ КАРТИНКИ. Число здесь не выводится из длины списка входов ровно
-		// потому, что список обязан быть длиной один, и это проверено отдельно, у двери.
+		// ОДНА ПЛИТКА НА ПРОГОН. Число здесь не выводится из длины списка входов ровно потому, что
+		// список обязан быть длиной один (а у свотча — ноль или один, STEP 3), и это проверено
+		// отдельно, у двери: платный вызов в обоих режимах один.
 		return 1
 	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
 		// ═══ РОВНО ОДНА КАРТИНКА, И ЭТО СЛОВО ВЛАДЕЛЬЦА, А НЕ УМОЛЧАНИЕ ═══
