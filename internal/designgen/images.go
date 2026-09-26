@@ -184,6 +184,19 @@ func imageCalls(job Job) ([]imageCall, error) {
 		}
 		return calls, nil
 	case entity.DesignRunKindPattern:
+		// A SWATCH IS BUILT FROM THE STATED COLOUR, AND ITS PICTURE — IF ANY — IS A TEXTURE
+		// REFERENCE (STEP 3). Zero pictures is a legal, text-only call, exactly as the flat route
+		// already sends one; more than one is refused here for the reason the door refuses it
+		// (`one_texture_picture`): two textures blend into a third that neither of them is. The
+		// craft paragraph is written for what actually attached (composePrompt), so a texture
+		// that did not survive resolution simply makes this a plain-cloth call, not a refusal.
+		if job.PatternMode == entity.DesignPatternModeSwatch {
+			if len(job.References) > 1 {
+				return nil, fmt.Errorf("%w: a swatch takes at most one texture reference, and this run "+
+					"resolved %d", orimages.ErrBadRequest, len(job.References))
+			}
+			return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+		}
 		// ONE PICTURE IN, ONE TILE OUT. The door already refuses a pattern run that names anything
 		// other than exactly one source; this is the same rule at the money boundary, where the
 		// resolved list may be shorter than the frozen one (a media row can disappear between the

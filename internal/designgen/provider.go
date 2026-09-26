@@ -116,6 +116,11 @@ type Job struct {
 	// замораживаются один раз при сборке задания и путешествуют вместе с ним, а не пересчитываются
 	// по params во второй раз.
 	Window *GenerationWindow
+	// PatternMode is params.pattern.mode of a pattern run: "" or "image" (a tile from ONE source
+	// photograph) or "swatch" (a swatch built from the stated colour, with zero or one TEXTURE
+	// reference). It travels because imageCalls — the money boundary — counts the pictures by it;
+	// empty on every other kind.
+	PatternMode string
 	// Outputs is design_run.requested_outputs: how many pictures the history row expects.
 	Outputs int
 	// Quality is the price dial for the image route.

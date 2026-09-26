@@ -479,6 +479,7 @@ var methodRequirements = map[string]Requirement{
 	"UpsertDesignAsset":          wr(SectionTechCards),
 	"DeleteDesignAsset":          wr(SectionTechCards),
 	"SetDesignAssetColorway":     wr(SectionTechCards), // 0357: чья это ткань
+	"SetDesignAssetBinding":      wr(SectionTechCards), // 0368: ткань пары (колорвей, слот)
 	"SetDesignAssetPlacement":    wr(SectionTechCards),
 	"DeleteDesignAssetPlacement": wr(SectionTechCards),
 	"DeleteDesignDetailSlot":     wr(SectionTechCards),

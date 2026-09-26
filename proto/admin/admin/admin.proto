@@ -2876,7 +2876,8 @@ service AdminService {
   }
 
   // DeleteDesignAsset removes ONE shelf row and, with it, every mark it left on a flat — the marks
-  // are the asset's own statements about itself and have no meaning once it is gone. A pattern
+  // are the asset's own statements about itself and have no meaning once it is gone — and every
+  // (colourway, slot) it was the fabric of, which is left with no fabric chosen. A pattern
   // built from this asset SURVIVES with its parentage cleared; it still carries a picture and a
   // repeat, which is a usable instruction on its own.
   //
@@ -2911,6 +2912,42 @@ service AdminService {
   rpc SetDesignAssetColorway(SetDesignAssetColorwayRequest) returns (SetDesignAssetColorwayResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/asset/colorway"
+      body: "*"
+    };
+  }
+
+  // SetDesignAssetBinding says WHICH ASSET IS THE FABRIC OF ONE (COLOURWAY, SLOT): colourway N wears
+  // asset X on BOM roll-goods line M (see common.DesignAssetBinding). asset_id 0 takes the fabric
+  // off the pair, which is a real answer («nothing chosen for this slot yet»), not an omission;
+  // unbinding a pair that wears nothing is OK and changes nothing. SO IS UNBINDING A PAIR WHOSE BOM
+  // LINE NO LONGER EXISTS — the line was deleted, its bindings went with it by cascade, and the
+  // state the unbind asks for has already arrived: asset_id 0 on a vanished line answers OK
+  // (idempotent), not `foreign_bom_line`. BINDING (asset_id > 0) to a vanished line is still
+  // refused `foreign_bom_line`, and so is either call on a line that exists on ANOTHER card.
+  //
+  // SINGLE-SELECT PER PAIR, AND THE WRITE IS THE WHOLE STEAL: the pair is the row's unique key, so
+  // binding X to (N, M) replaces whatever (N, M) wore before, in one statement. One asset may serve
+  // any number of pairs — the same cloth as the outer of two colourways is one tile, not two.
+  //
+  // IT DOES NOT TOUCH DesignAsset.colorway_id. That column is the legacy whole-colourway fabric
+  // (SetDesignAssetColorway and the landing of a pattern run made WITHOUT a slot write it; a run
+  // made for a slot writes only the binding); a binding is a narrower fact of its own and the two
+  // live side by side.
+  //
+  // WHY A VERB OF ITS OWN: the reason SetDesignAssetColorway has one — UpsertDesignAsset is a full
+  // replace and would clear the choice on every unrelated save — and one more: the binding belongs
+  // to the PAIR, not to the asset, so it could not be a field of the asset at all.
+  //
+  // InvalidArgument `colorway_forbidden`: the asset is hardware (a zip is not what a slot is cut
+  // from). FailedPrecondition `foreign_colorway`: the colourway is not this card's.
+  // FailedPrecondition `foreign_bom_line`: the line is not one of this card's BOM lines — the
+  // server checks whose line it is, not which section it sits in (on an unbind, only a line that
+  // still exists is refused — see above). NotFound on an asset of another card, exactly like
+  // DeleteDesignAsset. InvalidArgument on a colorway_id or bom_item_id that is not positive, or a
+  // negative asset_id.
+  rpc SetDesignAssetBinding(SetDesignAssetBindingRequest) returns (SetDesignAssetBindingResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/asset/binding"
       body: "*"
     };
   }
@@ -12070,10 +12107,11 @@ message GetDesignBandResponse {
   // shelves in one frame, and a second read would let them disagree about which instant of the
   // card is on screen.
   //
-  // UNLIKE THE RUNS, THIS LIST IS NOT PAGED. A card's shelves are a handful of rows by
-  // construction — a garment made of forty cloths is not a garment — and the server caps them
-  // rather than paging them (UpsertDesignAsset refuses past the ceiling), so the count on the
-  // shelf wall is always the whole truth.
+  // UNLIKE THE RUNS, THIS LIST IS NOT PAGED. A card's shelves are bounded by construction: the
+  // server caps them at 120 rows (MaxDesignAssetsPerCard — the cloths of the garment plus the
+  // swatch candidates made per (colourway, slot) pair) rather than paging them (UpsertDesignAsset
+  // refuses past the ceiling, and a pattern run is refused `library_full` before it spends), so the
+  // count on the shelf wall is always the whole truth.
   repeated common.DesignAsset assets = 18;
   // EVERY MARK THOSE ASSETS LEFT ON THIS CARD'S FLATS, flat by flat. They come beside the assets
   // rather than nested inside them because the screen reads them the other way round — «what is
@@ -12192,6 +12230,19 @@ message GetDesignBandResponse {
   // sends nothing → the client draws NO PLAYGROUND cell on the rail. A binary that knows it sends at
   // least [] → the cell exists; an empty list means «nothing wired», and the screen says so.
   repeated string freeform_presets = 26;
+
+  // THE FABRIC OF EVERY (COLOURWAY, SLOT) OF THIS CARD — one row per bound pair (see
+  // common.DesignAssetBinding); a pair with no row has no fabric chosen.
+  //
+  // WHOLE CARD, NEVER NARROWED BY bench_colorway_id. The pattern step draws every colourway's slots
+  // on one screen, and the render step reads the bound fabrics of whichever colourway it is about
+  // to paint; a list cut down to the bench's colourway would blank all the others.
+  //
+  // ⚠ ABSENT ≠ EMPTY (the has_fabric_render / colour_plan doctrine). A server that knows this field
+  // always sends at least [] — «nothing bound yet»; NOTHING AT ALL means a binary older than the
+  // bindings, where SetDesignAssetBinding does not exist either, and a client must not draw the
+  // per-slot doors against it.
+  repeated common.DesignAssetBinding asset_bindings = 27;
 }
 
 message ListDesignRunsRequest {
@@ -12264,13 +12315,24 @@ message StartDesignRunRequest {
   //     target stated at all in params.colour, meaning neither a code, a hex, words, NOR a cloth
   //     carrying a picture («no_target_colour»); or a cloth named in words alone, with no picture
   //     to lay on the photograph and no colour either («cloth_without_picture»);
-  //   · pattern — anything other than exactly one picture in params.extra_input_media_ids
-  //     («one_source_picture»); no name in params.pattern.name («pattern_name_required»); or a card
-  //     whose asset shelves are already full, so the tile this run buys would have nowhere to land
-  //     («library_full», FailedPrecondition).
-  // Each of those is FailedPrecondition-shaped news in an InvalidArgument wrapper, except
-  // `library_full`, which IS FailedPrecondition: the request is incomplete, and the sentence says
-  // which half is missing.
+  //   · pattern — no name in params.pattern.name («pattern_name_required»); a card whose asset
+  //     shelves are already full, so the tile this run buys would have nowhere to land
+  //     («library_full», FailedPrecondition); a params.pattern.bom_item_id that is not a line of
+  //     THIS card's BOM («foreign_bom_line», FailedPrecondition — the sibling of foreign_colorway);
+  //     a NEGATIVE params.pattern.bom_item_id, which is not a BOM line id at all — 0 means «not
+  //     made for a slot» («bad_bom_line_id», InvalidArgument); and, by params.pattern.mode:
+  //       - "" / "image" — anything other than exactly one picture in
+  //         params.extra_input_media_ids («one_source_picture»);
+  //       - "swatch" — no colour stated in params.colour, meaning neither a hex, a code nor words
+  //         («no_colour»); or more than one picture in params.extra_input_media_ids, which in this
+  //         mode is a texture reference and not the source («one_texture_picture»);
+  //       - anything else — «unknown_pattern_mode» (InvalidArgument). An unknown mode is NOT read
+  //         as "image": the door and the worker would then disagree about what was bought.
+  // Each of those is FailedPrecondition-shaped news in an InvalidArgument wrapper — the request is
+  // incomplete, and the sentence says which half is missing — except `library_full` and
+  // `foreign_bom_line`, which ARE FailedPrecondition, and `bad_bom_line_id` and
+  // `unknown_pattern_mode`, which are InvalidArgument in the plain sense: the request is malformed,
+  // not incomplete.
   //
   // `freeform` AND `cutout` ARE THE PLAYGROUND, and they take this same door for the same reason:
   // both spend a key's money (the image key and FAL_KEY respectively), both are counted against the
@@ -12812,6 +12874,20 @@ message SetDesignAssetColorwayResponse {
   // The saved row, media included — the screen redraws the tile it just got back, and a bare
   // media_id would blank the swatch. No second projection: the shelf is re-read with the band.
   common.DesignAsset asset = 1;
+}
+
+// SetDesignAssetBindingRequest — «the fabric of colourway N on slot M is this asset». The card is
+// named in the path and every one of the three ids is checked against it: an asset, a colourway or
+// a BOM line of a DIFFERENT card is refused, never silently bound.
+message SetDesignAssetBindingRequest {
+  int32 tech_card_id = 1;
+  int32 colorway_id = 2; // product(id) of a colourway of this card; required
+  int32 bom_item_id = 3; // tech_card_bom_item(id) of this card — the slot; required
+  int32 asset_id = 4; // design_asset(id) of this card, kind fabric|pattern; 0 = unbind
+}
+
+message SetDesignAssetBindingResponse {
+  common.DesignAssetBinding binding = 1; // unset after an unbind
 }
 
 // DeleteDesignAssetPlacementRequest names BOTH the mark and the card it is being taken off.

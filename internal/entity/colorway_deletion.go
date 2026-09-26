@@ -79,6 +79,11 @@ const (
 	// (ON DELETE CASCADE): адрес `front@cw:5` без колорвея 5 недостижим ничем и остался бы вечным
 	// призраком в каждой выдаче. Кадры при этом НЕ уходят — они в сиротах ниже.
 	ColorwayCascadeDesignBenchSlot = "design_bench_slot"
+	// ТКАНЬ ПАРЫ (КОЛОРВЕЙ, СЛОТ), 0368 — ПЯТАЯ ССЫЛКА ПОЛОСЫ НА КОЛОРВЕЙ, и тоже каскад, по тому же
+	// доводу, что у слота верстака: связка — АДРЕС «что носит этот цвет на этом слоте», а не
+	// артефакт. Без колорвея её некому носить; сама плитка остаётся на полке карточки. Заведена
+	// одним движением с таблицей (урок 0356/0357): сетка 1451 CASCADE не видит вовсе.
+	ColorwayCascadeDesignAssetBinding = "design_asset_binding"
 
 	// Сироты — ON DELETE SET NULL. Ни блокер, ни каскад: запись переживёт удаление и потеряет
 	// колорвей. Третья категория существует потому, что первые две не описывают этот исход: строку
@@ -125,22 +130,23 @@ type ColorwayLayRef struct {
 
 // ColorwayCascadeCounts — сколько собственных строк колорвея уйдёт вместе с ним.
 type ColorwayCascadeCounts struct {
-	Variants         int // product_size
-	VariantPrices    int // product_size_price (B-grade)
-	Prices           int // product_price
-	Media            int // product_media
-	Tags             int // product_tag
-	Translations     int // product_translation
-	RecipeUsages     int // tech_card_colorway_usage
-	SizeConsumptions int // tech_card_colorway_usage_consumption — ЧЕРЕЗ строку рецепта (каскад второго уровня)
-	PieceMaterials   int // tech_card_piece_material
-	PackagingRecipes int // packaging_recipe
-	LabDipRounds     int // product_lab_dip_round
-	CostEvents       int // product_cost_event
-	Waitlist         int // product_waitlist
-	StockHistory     int // product_stock_change_history
-	StyleLinks       int // tech_card_product
-	DesignBenchSlots int // design_bench_slot.colorway_id (0356) — АДРЕС, уходит с колорвеем
+	Variants            int // product_size
+	VariantPrices       int // product_size_price (B-grade)
+	Prices              int // product_price
+	Media               int // product_media
+	Tags                int // product_tag
+	Translations        int // product_translation
+	RecipeUsages        int // tech_card_colorway_usage
+	SizeConsumptions    int // tech_card_colorway_usage_consumption — ЧЕРЕЗ строку рецепта (каскад второго уровня)
+	PieceMaterials      int // tech_card_piece_material
+	PackagingRecipes    int // packaging_recipe
+	LabDipRounds        int // product_lab_dip_round
+	CostEvents          int // product_cost_event
+	Waitlist            int // product_waitlist
+	StockHistory        int // product_stock_change_history
+	StyleLinks          int // tech_card_product
+	DesignBenchSlots    int // design_bench_slot.colorway_id (0356) — АДРЕС, уходит с колорвеем
+	DesignAssetBindings int // design_asset_binding.colorway_id (0368) — ткань слота, уходит с колорвеем
 }
 
 // ColorwayOrphanCounts — сколько ЧУЖИХ записей переживут удаление и потеряют колорвей.
@@ -319,6 +325,11 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeDesignBenchSlot, c.DesignBenchSlots,
 		"%d design bench slot (its render will no longer stand on that side)",
 		"%d design bench slots (their renders will no longer stand on those sides)")
+	// ТКАНИ СЛОТОВ ЭТОГО ЦВЕТА. Фраза называет последствие: плитки остаются на полке, но рендер
+	// этого цвета больше не знает, из чего сшит каждый слот.
+	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeDesignAssetBinding, c.DesignAssetBindings,
+		"%d fabric chosen for a slot (the tile stays on the shelf, the slot of this colourway loses it)",
+		"%d fabrics chosen for slots (the tiles stay on the shelf, the slots of this colourway lose them)")
 
 	// --- Сироты ------------------------------------------------------------------------------
 	// Раскладка, снятая ПОД этот колорвей, переживёт удаление и станет длиной, померенной ни на

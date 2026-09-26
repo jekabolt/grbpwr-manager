@@ -54,7 +54,8 @@ func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, col
 // и один колорвей носили бы две ткани на двух карточках, ровно то состояние, которое 0357
 // объявляет невыразимым.
 //
-// Пятую ссылку этот список тоже не заметит сам — его стережёт проба
+// Пятая ссылка (0368, design_asset_binding.colorway_id — ткань пары «колорвей, слот») вписана сюда
+// тем же движением, что и таблица. Шестую этот список тоже не заметит сам — его стережёт проба
 // TestDesignDBRelinkGuardCoversEveryColorwayHolder, которая читает FK из information_schema и
 // сверяет с ним ЭТОТ список. Список — единственное место, где перечисление живёт; проба — то, что
 // заставляет его быть полным.
@@ -74,6 +75,7 @@ var designColorwayHolders = []struct {
 	{"design_picture", "colorway_id", "picture", true},
 	{"design_bench_slot", "colorway_id", "bench slot", true},
 	{"design_asset", "colorway_id", "shelf asset", true},
+	{"design_asset_binding", "colorway_id", "slot fabric", true},
 }
 
 // DesignColorwayHolderColumns — пары (таблица, колонка) для схемной пробы.
@@ -107,9 +109,10 @@ func DesignColorwayDeletionCountedColumns() [][2]string {
 //
 // ─── ПОЧЕМУ ОТКАЗ, А НЕ ПЕРЕНОС ───
 //
-// Ось колорвея завела ЧЕТЫРЕ ссылки на product(id): design_run.colorway_id (для какого колорвея
+// Ось колорвея завела ПЯТЬ ссылок на product(id): design_run.colorway_id (для какого колорвея
 // прогон), design_picture.colorway_id (чей кадр), design_bench_slot.colorway_id (чей верстак) —
-// все три из 0356 — и design_asset.colorway_id (чья ткань, 0357). Все четыре висят на строках, у
+// все три из 0356 — design_asset.colorway_id (чья ткань, 0357) и design_asset_binding.colorway_id
+// (ткань какого слота, 0368). Все пять висят на строках, у
 // которых есть ВТОРОЙ владелец — tech_card_id ИСХОДНОЙ карточки. Перепривязка меняет product.style_id и не трогает ни одну из них, поэтому без
 // сторожа карточка A остаётся с рядами, называющими колорвей, который теперь принадлежит B, а
 // незакрытый прогон продолжает штамповать на A новые кадры чужого колорвея.

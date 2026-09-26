@@ -232,7 +232,7 @@ func TestAPatternIsBuiltFromEXACTLY_ONE_PICTURE(t *testing.T) {
 // a picture that merely looks patterned; the boundary has to be spelled out, and so does everything
 // that would put a visible edge into every cell of the grid.
 func TestThePatternCraftASKS_FOR_THE_WRAP_AND_FORBIDS_A_BORDER(t *testing.T) {
-	low := strings.ToLower(patternCraft(patternParams{}))
+	low := strings.ToLower(patternCraft(patternParams{}, 1))
 	for _, must := range []string{"right edge", "left edge", "bottom edge", "top edge", "seamless"} {
 		require.Containsf(t, low, must, "the wrap must be stated, not implied (%q)", must)
 	}
@@ -245,7 +245,7 @@ func TestThePatternCraftASKS_FOR_THE_WRAP_AND_FORBIDS_A_BORDER(t *testing.T) {
 
 	// THE REPEAT IS SAID ONLY WHEN IT IS KNOWN, and it is said as SCALE, not as a pixel size.
 	require.NotContains(t, low, " mm repeat")
-	require.Contains(t, strings.ToLower(patternCraft(patternParams{RepeatMM: 120})), "120 mm repeat")
+	require.Contains(t, strings.ToLower(patternCraft(patternParams{RepeatMM: 120}, 1)), "120 mm repeat")
 }
 
 // TestTheSeamMeasurementCATCHES_A_BORDER_AND_PASSES_A_WRAPPING_TILE.
