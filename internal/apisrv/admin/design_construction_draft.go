@@ -408,10 +408,17 @@ func designFoldToken(s string) string {
 // несёт ПОЛОЖИТЕЛЬНУЮ СВЯЗКУ (but, except, with, single, only, instead, just, then, запятая, точка с
 // запятой, тире, двоеточие), — это ОПИСАНИЕ, и оно остаётся, даже когда начинается со слова «нет».
 //
-// ⚠ И ПОЭТОМУ ПЕРВЫЙ ПРИМЕР ВЛАДЕЛЬЦА («No visible closures; pull-on construction, relying on jersey
-// stretch for fit») РАЗБОР БОЛЬШЕ НЕ ЛОВИТ: после точки с запятой в нём стоит описание. Его, как и
-// ярлык из второго примера, держит правило 11 промпта. Сторож здесь — сетка на голые заглушки и
-// короткие «нет», а не цензор смысла: цена ложного срабатывания — потерянная деталь конструкции,
+// ⚠ ТРЕТИЙ ПРЕДИКАТ — (в), КЛЮЧ ОТРИЦАЕТ СВОЙ ПРЕДМЕТ (правка координатора к ревью). Без него первый
+// пример владельца («No visible closures; pull-on construction, relying on jersey stretch for fit»
+// под FASTENING) оставался бы на совести правила 11: после точки с запятой стоит описание, и правило
+// (б) его бережёт — тем же жестом, которым бережёт «Without lining; single layer throughout». Но под
+// ключом fastening открывающее «no visible closures» — это ответ на вопрос ключа словом «нет», а
+// описание после связки — про то, ПОЧЕМУ застёжек нет, а не про застёжку. Поэтому (в) — с ключом:
+// первая клауза (до «; , : — –» или дефиса с пробелами) — короткое отрицание по (б), в ней — предмет
+// ключа (designAspectAbsenceNouns), а после связки о предмете больше ни слова → отсутствие. Тот же
+// текст под ключом без словаря (extraDetails, silhouette, самодельный «vent») остаётся описанием.
+// Ярлык из второго примера — по-прежнему содержание, и его держит правило 11. Сторож — сетка на
+// заглушки и «нет», а не цензор смысла: цена ложного срабатывания — потерянная деталь конструкции,
 // цена пропуска — одна лишняя строка, которую человек отвергнет щелчком.
 //
 // ⚠ ПРИМЕНЯЕТСЯ ТОЛЬКО К ЖИВОМУ ОТВЕТУ МОДЕЛИ (designParseLive; MAJOR 1). Повтор читает НАШ
@@ -436,6 +443,48 @@ var designFlatDetailSentinels = map[string]struct{}{
 	"no separate drawing needed": {}, "no separate drawings needed": {},
 	"no separate drawing": {}, "none needed": {},
 }
+
+// designAspectAbsenceNouns — (в) СЛОВАРЬ ПРЕДМЕТА КЛЮЧА: чем ключ «владеет». Аспект, который под этим
+// ключом ОТКРЫВАЕТСЯ отрицанием своего предмета («No visible closures; …» под fastening, «Without
+// lining; …» под lining), — отсутствие, сколько бы описания ни шло после связки. Тот же текст под
+// ключом без словаря (extraDetails, silhouette, fabric, самодельный) — описание, и (в) его не трогает.
+//
+// Ключи — складкой (designFoldToken): модель пишет «sleeve_cuff», «Cuffs», «cuff». Существительные —
+// в единственном числе, множественное узнаётся по «-s»/«-es». Таблица стоит рядом со словарём ключей
+// (designConstructionAspectKeys) намеренно: новый стандартный ключ без строки здесь — это ключ, чьё
+// «нет» разбор не узнаёт, и это видно глазом.
+//
+// ⚠ ОСТАТОК ПОСЛЕ СВЯЗКИ, НАЗЫВАЮЩИЙ ДРУГОЙ ПРЕДМЕТ ТОГО ЖЕ КЛЮЧА, СПАСАЕТ СТРОКУ: «No zipper; three
+// buttons at the placket» — описание застёжки, а не её отсутствие. (в) стреляет только когда после
+// отрицания предмета о предмете больше не сказано ничего.
+var designAspectAbsenceNouns = func() map[string][]string {
+	fastening := []string{"closure", "fastening", "fastener", "zip", "zipper", "button", "snap", "hook",
+		"velcro", "drawstring", "drawcord", "tie", "toggle", "clasp", "popper", "stud", "lace"}
+	lining := []string{"lining", "liner"}
+	pockets := []string{"pocket"}
+	collar := []string{"collar", "neckband", "neckline"}
+	cuffs := []string{"cuff"}
+	hem := []string{"hem", "hemline"}
+	topstitching := []string{"topstitch", "topstitching", "stitching"}
+	hardware := []string{"hardware", "eyelet", "grommet", "rivet", "buckle"}
+	aux := []string{"interfacing", "fusing", "tape", "elastic"}
+	src := map[string][]string{
+		"fastening": fastening, "fastenings": fastening,
+		"lining": lining, "linings": lining,
+		"pockets": pockets, "pocket": pockets,
+		"collar":     collar,
+		"sleeveCuff": cuffs, "cuffs": cuffs, "cuff": cuffs,
+		"hem": hem, "hems": hem,
+		"topstitching": topstitching,
+		"hardware":     hardware,
+		"auxMaterials": aux,
+	}
+	out := make(map[string][]string, len(src))
+	for key, nouns := range src {
+		out[designFoldToken(key)] = nouns
+	}
+	return out
+}()
 
 // designNegationOpeners — (б) открывающие слова КОРОТКОГО ЧИСТОГО ОТРИЦАНИЯ. Длинные раньше
 // коротких: «there is no» обязан узнаться прежде «no». «0» проверяется отдельно — см.
@@ -468,6 +517,11 @@ func designIsWordJoiner(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(designWordJoiners, r)
 }
 
+// designWordCore — слово без пунктуации по краям («closures;» → «closures», «(none)» → «none»).
+func designWordCore(w string) string {
+	return strings.TrimFunc(w, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
 // designAbsenceNormalize — ОДНА НОРМАЛИЗАЦИЯ НА ОБА ПРЕДИКАТА: нижний регистр, прямые апострофы
 // вместо типографских («aren’t» → «aren't»), обычный пробел вместо неразрывного, снятая метка
 // «<ключ>:» впереди («Fastening: N/A»), снятые пунктуация, кавычки и пробелы по краям.
@@ -491,6 +545,10 @@ func designStripLeadingLabel(t string) string {
 	if label == "" || len(strings.Fields(label)) > 3 {
 		return t
 	}
+	// «No collar: bound neckline» — не метка ключа, а отрицание с двоеточием; метка — ИМЯ ключа.
+	if designIsBareSentinel(label, nil) || designIsShortNegation(label) {
+		return t
+	}
 	for _, r := range label {
 		if !unicode.IsLetter(r) && !unicode.IsSpace(r) && !strings.ContainsRune(designWordJoiners, r) {
 			return t
@@ -499,11 +557,62 @@ func designStripLeadingLabel(t string) string {
 	return strings.TrimSpace(t[i+1:])
 }
 
-// designIsAbsentAspectText — текст аспекта говорит «этого нет» вместо того, чтобы описывать деталь:
-// правило (а) — голая заглушка, правило (б) — короткое чистое отрицание.
-func designIsAbsentAspectText(text string) bool {
+// designIsAbsentAspect — текст аспекта ПОД ЭТИМ КЛЮЧОМ говорит «этого нет» вместо того, чтобы
+// описывать деталь: (а) голая заглушка, (б) короткое чистое отрицание, (в) отрицание предмета ключа
+// в открывающей клаузе. Ключ — сырой, как написала модель; складывается здесь.
+func designIsAbsentAspect(key, text string) bool {
 	t := designAbsenceNormalize(text)
-	return designIsBareSentinel(t, nil) || designIsShortNegation(t)
+	return designIsBareSentinel(t, nil) || designIsShortNegation(t) ||
+		designIsKeyDenial(designFoldToken(key), t)
+}
+
+// designIsAbsentAspectText — то же БЕЗ ключа: только (а) и (б). Для табличных проб самих предикатов
+// и для текста, у которого ключа нет.
+func designIsAbsentAspectText(text string) bool { return designIsAbsentAspect("", text) }
+
+// designIsKeyDenial — правило (в) над нормализованным текстом: первая клауза — короткое отрицание по
+// (б), среди её слов — предмет ключа, а остаток о предмете молчит.
+func designIsKeyDenial(keyFold, t string) bool {
+	nouns, ok := designAspectAbsenceNouns[keyFold]
+	if !ok {
+		return false
+	}
+	first, rest := designFirstClause(t)
+	if !designIsShortNegation(first) {
+		return false
+	}
+	mentions := func(clause string) bool {
+		for _, w := range strings.Fields(clause) {
+			if designNounMatches(designWordCore(w), nouns) {
+				return true
+			}
+		}
+		return false
+	}
+	return mentions(first) && !mentions(rest)
+}
+
+// designFirstClause — то, чем текст ОТКРЫВАЕТСЯ: до первой связки («; , : — –» или дефис с
+// пробелами), и остаток после неё (со связкой впереди — designWordCore её снимет).
+func designFirstClause(t string) (first, rest string) {
+	cut := len(t)
+	if i := strings.IndexAny(t, designPositiveConnectorRunes); i >= 0 {
+		cut = i
+	}
+	if i := strings.Index(t, " - "); i >= 0 && i < cut {
+		cut = i
+	}
+	return strings.TrimSpace(t[:cut]), strings.TrimSpace(t[cut:])
+}
+
+// designNounMatches — слово целиком, в единственном или множественном числе.
+func designNounMatches(word string, nouns []string) bool {
+	for _, n := range nouns {
+		if word == n || word == n+"s" || word == n+"es" {
+			return true
+		}
+	}
+	return false
 }
 
 // designIsAbsentFlatDetailName — имя детали для отдельного рисунка — заглушка. ТОЛЬКО правило (а)
@@ -550,8 +659,7 @@ func designIsShortNegation(t string) bool {
 			return false
 		}
 		for _, w := range words {
-			w = strings.TrimFunc(w, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-			if _, connector := designPositiveConnectorWords[w]; connector {
+			if _, connector := designPositiveConnectorWords[designWordCore(w)]; connector {
 				return false
 			}
 		}
@@ -1494,8 +1602,9 @@ func designParseConstructionObject(
 		// client_request_id отдавал бы разное число аспектов до и после выката. Выбрасывается ДО
 		// дедупа и ДО потолка списка: «no closures» не имеет права занять одно из десяти мест
 		// настоящей детали. Наблюдателю — ТОЛЬКО КЛЮЧ, канонический либо обрезанный: текст аспекта
-		// выведен из слов человека на доске, и в лог он не едет.
-		if mode == designParseLive && designIsAbsentAspectText(text) {
+		// выведен из слов человека на доске, и в лог он не едет. Ключ едет в предикат ради правила
+		// (в): «no visible closures; …» под fastening — отсутствие, под extraDetails — описание.
+		if mode == designParseLive && designIsAbsentAspect(key, text) {
 			stats.AspectsAbsent++
 			if onAbsent != nil {
 				if standard {

@@ -15,11 +15,13 @@ package admin
 //     повтора читается как написан. Хендлер называет ключ выброшенного в логе; ответ и канон его
 //     не несут.
 //
-// ⚠ ОБА ПРИМЕРА ВЛАДЕЛЬЦА РАЗБОР НЕ ЛОВИТ, И ЭТО РЕШЕНИЕ РЕВЬЮ, А НЕ ПРОПУСК. Первый — «No visible
-// closures; ПУЛОВЕР…» — после точки с запятой несёт описание, и правило, которое выбрасывало бы его,
-// выбрасывало бы и «Without lining; single layer throughout» вместе с фактом «в один слой». Второй
-// (ярлык) — суждение о СОДЕРЖАНИИ. Оба держит правило 11 промпта; таблица ниже показывает это
-// честно, строкой с «absent: false».
+// ⚠ ПЕРВЫЙ ПРИМЕР ВЛАДЕЛЬЦА ЛОВИТ ТОЛЬКО ПРАВИЛО (в), И ТОЛЬКО ПОД СВОИМ КЛЮЧОМ. Без ключа «No visible
+// closures; pull-on construction…» — описание после точки с запятой, и правило (б) бережёт его тем же
+// жестом, которым бережёт «Without lining; single layer throughout»; под ключом fastening открывающее
+// «no visible closures» отрицает предмет ключа, остаток о застёжке молчит — отсутствие. Тот же
+// «Without lining; single layer throughout» под ключом lining — отсутствие, под extraDetails —
+// описание. Второй пример (ярлык) — суждение о СОДЕРЖАНИИ, его держит правило 11 промпта; таблица
+// показывает это честно, строкой с «absent: false».
 
 import (
 	"encoding/json"
@@ -62,9 +64,10 @@ func TestAbsenceStatementRule(t *testing.T) {
 		absent bool
 		why    string
 	}{
-		// ─── ДВА ПРИМЕРА ВЛАДЕЛЬЦА — ОБА ОСТАЮТСЯ, ИХ ДЕРЖИТ ПРАВИЛО 11 ПРОМПТА ───
+		// ─── ДВА ПРИМЕРА ВЛАДЕЛЬЦА БЕЗ КЛЮЧА — ОБА ОСТАЮТСЯ; первый под своим ключом ловит правило
+		// (в), см. TestKeyAwareAbsenceRule ───
 		{"No visible closures; pull-on construction, relying on jersey stretch for fit.", false,
-			"O-32 #1: после «;» стоит описание — то же правило, что бережёт «Without lining; single layer»"},
+			"O-32 #1 без ключа: после «;» стоит описание — то же правило, что бережёт «Without lining; single layer»"},
 		{"Small woven brand/size label sewn at inner side seam, visible in picture 1.", false,
 			"O-32 #2: ярлык — СОДЕРЖАНИЕ, его чинит правило 11"},
 
@@ -152,6 +155,68 @@ func TestAbsenceStatementRule(t *testing.T) {
 	}
 }
 
+// ПРАВИЛО (в) — КЛЮЧ ОТРИЦАЕТ СВОЙ ПРЕДМЕТ: тот же текст под одним ключом — отсутствие, под другим —
+// описание. Строки парами, чтобы ключ был единственной переменной.
+func TestKeyAwareAbsenceRule(t *testing.T) {
+	for _, tc := range []struct {
+		key    string
+		text   string
+		absent bool
+		why    string
+	}{
+		// ─── ДВА ПРИМЕРА ВЛАДЕЛЬЦА ПОД СВОИМИ КЛЮЧАМИ ───
+		{"fastening", "No visible closures; pull-on construction, relying on jersey stretch for fit.", true,
+			"O-32 #1: открывается отрицанием предмета ключа, остаток о застёжке молчит"},
+		{"auxMaterials", "Small woven brand/size label sewn at inner side seam, visible in picture 1.", false,
+			"O-32 #2: ярлык — содержание; держит правило 11"},
+
+		// ─── ОДИН ТЕКСТ, ДВА КЛЮЧА ───
+		{"lining", "Without lining; single layer throughout", true, "отсутствие подкладки — и есть ответ ключу"},
+		{"extraDetails", "Without lining; single layer throughout", false, "без словаря — описание, факт «в один слой»"},
+		{"extraDetails", "Without side seams — tubular-knit body", false, "без словаря"},
+		{"fastening", "Without side seams — tubular-knit body", false, "«seams» — не предмет ключа fastening"},
+		{"extraDetails", "No closures", true, "правило (б) ключа не требует"},
+		{"vent", "No vent; plain back", false, "самодельный ключ без словаря — правило (в) не стреляет"},
+		{"silhouette", "No waist seam; A-line", false, "ключ без словаря"},
+
+		// ─── ОСТАТОК, НАЗЫВАЮЩИЙ ДРУГОЙ ПРЕДМЕТ ТОГО ЖЕ КЛЮЧА, СПАСАЕТ СТРОКУ ───
+		{"fastening", "No zipper; three buttons at the placket", false, "описание застёжки, а не её отсутствие"},
+		{"fastening", "No buttons, just a tie", false, "«tie» — тоже застёжка"},
+		{"fastening", "No closures; elasticated waist", true, "«elastic» — предмет auxMaterials, не fastening"},
+		{"pockets", "No visible pockets — inseam pockets at the side seams", false, "остаток называет карманы"},
+		{"collar", "No collar: bound neckline, 1 cm", false,
+			"«no collar» — не метка ключа (двоеточие после отрицания); остаток называет neckline"},
+		{"hardware", "No eyelets; grommets instead", false, "grommet — тот же предмет"},
+
+		// ─── КАЖДЫЙ КЛЮЧ СЛОВАРЯ, ВКЛЮЧАЯ ЧУЖИЕ НАПИСАНИЯ ───
+		{"pockets", "No pockets; clean front", true, ""},
+		{"pocket", "No pockets; clean front", true, "ключ в единственном числе"},
+		{"collar", "No collar; raw edge", true, ""},
+		{"sleeveCuff", "No cuffs, plain hem", true, "«hem» — не предмет ключа cuffs"},
+		{"sleeve_cuff", "No cuffs, plain hem", true, "написание модели складывается"},
+		{"cuffs", "No cuff", true, ""},
+		{"hem", "No hem — raw cut edge", true, ""},
+		{"hems", "No hemline; raw cut", true, ""},
+		{"topstitching", "No topstitching; edges bound", true, ""},
+		{"topstitching", "No stitching visible; blind hem", true, ""},
+		{"hardware", "No hardware, all self-fabric", true, ""},
+		{"auxMaterials", "No interfacing; self-fabric facing", true, ""},
+		{"fastening", "Fastening: no closures; pull-on", true, "метка ключа снята, дальше (в)"},
+		{"fastenings", "There are no fastenings; pull-on", true, "ключ во множественном числе"},
+
+		// ─── ПРЕДЕЛЫ (в), НАЗВАННЫЕ ВСЛУХ ───
+		{"fastening", "None visible; likely pull-on", false, "в первой клаузе нет предмета — держит правило 11"},
+		{"fastening", "No visible closures at all on the front; pull-on", false, "пять слов — не короткое отрицание"},
+		{"fastening", "n/a — no pockets on this style", false, "первая клауза — заглушка, не отрицание с предметом"},
+		{"fastening", "Notched closure flap with two snaps", false, "граница слова; это деталь"},
+		{"fastening", "No-sew bonded closure tab", false, "«no-» сцеплено"},
+	} {
+		t.Run(tc.key+" / "+tc.text, func(t *testing.T) {
+			require.Equal(t, tc.absent, designIsAbsentAspect(tc.key, tc.text), "%s / %q: %s", tc.key, tc.text, tc.why)
+		})
+	}
+}
+
 // ИМЯ ДЕТАЛИ ДЛЯ ОТДЕЛЬНОГО РИСУНКА — ТОЛЬКО ГОЛАЯ ЗАГЛУШКА: имя — подпись, а не фраза.
 func TestFlatDetailNameSentinelRule(t *testing.T) {
 	for _, tc := range []struct {
@@ -183,7 +248,8 @@ func TestFlatDetailNameSentinelRule(t *testing.T) {
 func TestParseConstructionDraftDropsAbsenceAspectsAndKeepsRealOnes(t *testing.T) {
 	longCustom := strings.Repeat("k", 80)
 	aspects := []map[string]string{
-		{"key": "fastening", "text": "No closures"},
+		// Первый пример владельца ДОСЛОВНО: ловится правилом (в) под своим ключом.
+		{"key": "fastening", "text": "No visible closures; pull-on construction, relying on jersey stretch for fit."},
 		{"key": "pockets", "text": "None."},
 		{"key": "collar", "text": "Rib-knit crew neck, 2 cm, self-fabric"},
 		{"key": "auxMaterials", "text": "Small woven brand/size label sewn at inner side seam, visible in picture 1."},
