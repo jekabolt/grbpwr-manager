@@ -13,6 +13,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -68,17 +69,22 @@ func designFlattenEdit() *entity.DesignPicture {
 //
 // ВТОРАЯ ПОЛОВИНА — «рядом» остаётся рядом: запрос без поля доезжает нулём, то есть ровно тем, чем
 // флэттен был до поля. Без неё проба зеленела бы и на хендлере, подставляющем свою догадку.
+//
+// КЛЮЧ ЖЕСТА (0369) ЕДЕТ ТУДА ЖЕ, срезанным по краям. МУТАЦИЯ: выбросить ClientRequestId из сборки —
+// всё компилируется, повтор после потерянного ответа снова получает already_replaced на собственный
+// успех (или второго сиблинга).
 func TestFlattenDesignEditLayerCarriesTheReplaceTargetToTheStore(t *testing.T) {
 	t.Run("overwrite", func(t *testing.T) {
 		rig := newDesignFlattenRig(t, designFlattenEdit(), nil)
 		resp, err := rig.srv.FlattenDesignEditLayer(designRunCtx(), &pb_admin.FlattenDesignEditLayerRequest{
 			TechCardId: designRunCardID, LayerId: 5, ExpectedRev: 4, MediaId: 901, ReplacePictureId: 7,
+			ClientRequestId: "  k-1\t",
 		})
 		require.NoError(t, err)
 		require.NotNil(t, rig.sent)
 		require.Equal(t, entity.DesignEditLayerFlatten{
 			TechCardId: designRunCardID, LayerId: 5, ExpectedRev: 4, MediaId: 901,
-			ReplacePictureId: 7, Actor: "designer",
+			ReplacePictureId: 7, ClientRequestId: "k-1", Actor: "designer",
 		}, *rig.sent)
 		require.Equal(t, int32(12), resp.GetPicture().GetId())
 		require.Equal(t, int32(7), resp.GetPicture().GetDerivedFrom(), "правка — сиблинг оригинала")
@@ -91,7 +97,102 @@ func TestFlattenDesignEditLayerCarriesTheReplaceTargetToTheStore(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, rig.sent)
 		require.Zero(t, rig.sent.ReplacePictureId, "без поля правка подаётся рядом, как до поля")
+		require.Empty(t, rig.sent.ClientRequestId, "без ключа — без защиты от повтора, как до поля")
 	})
+}
+
+// already_replaced НЕСЁТ ГОЛОВУ ЦЕПОЧКИ — head_picture_id в метаданных ErrorInfo (O-53 review).
+//
+// Голова приходит из стора ТИПИЗИРОВАННОЙ ошибкой, завёрнутой в прозу, и перекладывается в метаданные
+// в одном месте — designError, — а не у каждой двери. Без неё «уже заменён» оставлял клиенту гадать,
+// чья правка встала на место.
+//
+// МУТАЦИИ: не звать designErrorFacts из designError (ключа нет); класть в ключ названный кадр вместо
+// головы. Вторая половина — контроль: голый сентинел без головы ключа не получает, то есть значение
+// берётся из ошибки, а не выдумывается.
+func TestFlattenAlreadyReplacedNamesTheHead(t *testing.T) {
+	rig := newDesignFlattenRig(t, nil,
+		fmt.Errorf("failed to flatten: %w", &entity.DesignReplacedError{PictureId: 7, HeadPictureId: 19}))
+	_, err := rig.srv.FlattenDesignEditLayer(designRunCtx(), &pb_admin.FlattenDesignEditLayerRequest{
+		TechCardId: designRunCardID, LayerId: 5, ExpectedRev: 4, MediaId: 901, ReplacePictureId: 7,
+	})
+	code, md := errorReason(t, err)
+	require.Equal(t, codes.FailedPrecondition, code)
+	require.Equal(t, "already_replaced", md["reason"])
+	require.Equal(t, "19", md["head_picture_id"], "голова цепочки, а не названный кадр")
+
+	rig = newDesignFlattenRig(t, nil, fmt.Errorf("%w: picture 7 (probe)", entity.ErrDesignAlreadyReplaced))
+	_, err = rig.srv.FlattenDesignEditLayer(designRunCtx(), &pb_admin.FlattenDesignEditLayerRequest{
+		TechCardId: designRunCardID, LayerId: 5, ExpectedRev: 4, MediaId: 901, ReplacePictureId: 7,
+	})
+	_, md = errorReason(t, err)
+	require.Equal(t, "already_replaced", md["reason"])
+	_, ok := md["head_picture_id"]
+	require.False(t, ok, "голова берётся из ошибки, а не выдумывается")
+}
+
+// КЛЮЧ ЖЕСТА НА ПРОВОДЕ — `clientRequestId`, и гейтвей, отвергающий неизвестные поля, его принимает.
+//
+// МУТАЦИЯ: переименовать поле в proto — клиент шлёт `clientRequestId`, гейтвей отвечает 400 на
+// каждый флэттен.
+func TestFlattenRequestTakesTheKeyOffTheWire(t *testing.T) {
+	var req pb_admin.FlattenDesignEditLayerRequest
+	require.NoError(t, protojson.UnmarshalOptions{DiscardUnknown: false}.Unmarshal(
+		[]byte(`{"techCardId":41,"layerId":5,"expectedRev":4,"mediaId":901,"replacePictureId":7,"clientRequestId":"k-1"}`),
+		&req))
+	require.Equal(t, "k-1", req.GetClientRequestId())
+}
+
+// designSplitWholeFrame — один кадр во весь лист: форма, которую designSplitRects пропускает.
+func designSplitWholeFrame() *pb_admin.DesignSplitFrame {
+	return &pb_admin.DesignSplitFrame{
+		X: &pb_decimal.Decimal{Value: "0"}, Y: &pb_decimal.Decimal{Value: "0"},
+		W: &pb_decimal.Decimal{Value: "1"}, H: &pb_decimal.Decimal{Value: "1"},
+		ViewKey: entity.DesignViewFront,
+	}
+}
+
+// ЗАМЕНЁННЫЙ ЛИСТ НЕ РЕЖЕТСЯ — И ОТКАЗ ЗВУЧИТ ДО БАЙТОВОЙ РАБОТЫ (O-53 review).
+//
+// Правило авторитетно в транзакции стора; хендлер повторяет его предпроверкой, чтобы не читать
+// оригинал, не резать и не заливать куски, которые тут же пришлось бы убирать. Отказ несёт голову
+// цепочки — та же, что даёт стор: обход один (entity.DesignAlreadyReplaced).
+//
+// ЧЕМ ДОКАЗАНО «ДО БАЙТОВ»: хранилище — мок без единого ожидания, и у листа есть файл с управляемым
+// адресом, так что без предпроверки хендлер пошёл бы читать оригинал и провалил пробу на первом же
+// вызове хранилища; SplitPicture у мока стора не ожидается тоже.
+//
+// МУТАЦИИ: снять предпроверку (неожиданный вызов хранилища); отдать в голову первую замену (12
+// вместо 19).
+func TestSplitDesignPictureRefusesAReplacedSheetBeforeTheBytes(t *testing.T) {
+	design := mocks.NewMockDesign(t)
+	repo := mocks.NewMockRepository(t)
+	repo.EXPECT().Design().Return(design).Maybe()
+	link := func(id, next int32) *entity.DesignPicture {
+		p := &entity.DesignPicture{
+			Id: int(id), TechCardId: designRunCardID, MediaId: 900 + int(id), Kind: entity.DesignPictureKindFlat,
+			Media: &entity.MediaFull{Id: 900 + int(id), MediaItem: entity.MediaItem{
+				FullSizeMediaURL: fmt.Sprintf("https://files.grbpwr.test/design/sheet-%d-og.png", id),
+			}},
+		}
+		if next > 0 {
+			p.ReplacedBy = sql.NullInt32{Int32: next, Valid: true}
+		}
+		return p
+	}
+	design.EXPECT().GetPicture(mock.Anything, 7).Return(link(7, 12), nil).Once()
+	design.EXPECT().GetPicture(mock.Anything, 12).Return(link(12, 19), nil).Once()
+	design.EXPECT().GetPicture(mock.Anything, 19).Return(link(19, 0), nil).Once()
+	srv := &Server{repo: repo, bucket: mocks.NewMockFileStore(t)}
+
+	_, err := srv.SplitDesignPicture(designRunCtx(), &pb_admin.SplitDesignPictureRequest{
+		PictureId: 7, ClientRequestId: "split-1",
+		Frames: []*pb_admin.DesignSplitFrame{designSplitWholeFrame()},
+	})
+	code, md := errorReason(t, err)
+	require.Equal(t, codes.FailedPrecondition, code)
+	require.Equal(t, "already_replaced", md["reason"])
+	require.Equal(t, "19", md["head_picture_id"])
 }
 
 // ТРИ ОТКАЗА ПЕРЕЗАПИСИ ДОЕЗЖАЮТ ДО КЛИЕНТА САМИМИ СОБОЙ.

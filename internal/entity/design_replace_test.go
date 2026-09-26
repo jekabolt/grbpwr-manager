@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,8 +29,8 @@ func replaceProbeBase(media int32) sql.NullInt32 { return sql.NullInt32{Int32: m
 
 // ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: без него каждая проба ниже зеленела бы и на правиле, отказывающем ВСЕГДА.
 //
-// Сюда же — кропы, которые в счёт не идут: вызывающий считает только видимые незаменённые, и ноль —
-// это «резать нечего», а не «не спросили».
+// Сюда же — кропы, которые в счёт не идут: вызывающий считает только видимые (заменённые своей
+// правкой — тоже, O-53 review), и ноль — это «резать нечего», а не «не спросили».
 func TestDesignReplaceRefusalLetsTheNamedOriginalThrough(t *testing.T) {
 	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(), 0))
 
@@ -117,4 +118,115 @@ func TestDesignReplaceRefusalOrder(t *testing.T) {
 	require.ErrorIs(t,
 		DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replacedAndCut, 3),
 		ErrDesignAlreadyReplaced)
+}
+
+// ─── ГОЛОВА ЦЕПОЧКИ ЗАМЕН (O-53 review) ───
+
+// replaceChain — кадры цепочки 7 → 12 → 19 (19 — голова) и загрузчик по ним, считающий обращения.
+func replaceChain() (map[int]DesignPicture, func(int) (DesignPicture, error), *int) {
+	link := func(id, next int) DesignPicture {
+		p := DesignPicture{Id: id, TechCardId: replaceProbeCard, MediaId: replaceProbeMedia + id}
+		if next > 0 {
+			p.ReplacedBy = sql.NullInt32{Int32: int32(next), Valid: true}
+		}
+		return p
+	}
+	chain := map[int]DesignPicture{7: link(7, 12), 12: link(12, 19), 19: link(19, 0)}
+	calls := 0
+	load := func(id int) (DesignPicture, error) {
+		calls++
+		p, ok := chain[id]
+		if !ok {
+			return DesignPicture{}, fmt.Errorf("%w: design picture %d", ErrDesignNotFound, id)
+		}
+		return p, nil
+	}
+	return chain, load, &calls
+}
+
+// ГОЛОВА — ПОСЛЕДНЕЕ ЗВЕНО, А НЕ ПЕРВАЯ ЗАМЕНА.
+//
+// МУТАЦИИ: вернуть replaced_by названного кадра вместо обхода (голова 12 вместо 19 — клиент открыл
+// бы промежуточную правку, которую уже перезаписали); не читать незаменённый кадр как голову самого
+// себя (лишнее чтение или ошибка на пустом месте).
+func TestDesignReplacementHeadFollowsTheChainToItsEnd(t *testing.T) {
+	chain, load, calls := replaceChain()
+
+	head, err := DesignReplacementHead(chain[7], load)
+	require.NoError(t, err)
+	require.Equal(t, 19, head.Id, "голова — звено с replaced_by = NULL, а не первая замена")
+	require.Equal(t, 2, *calls, "по одному чтению на звено")
+
+	*calls = 0
+	head, err = DesignReplacementHead(chain[19], load)
+	require.NoError(t, err)
+	require.Equal(t, 19, head.Id, "незаменённый кадр — сам себе голова")
+	require.Zero(t, *calls, "и читать для этого нечего")
+}
+
+// ПОРЧА ЦЕПОЧКИ — НЕ ОТКАЗ И НЕ not_found.
+//
+// МУТАЦИИ: убрать проверку «следующий новее» (кольцо 7 → 12 → 7 крутится до потолка вместо того,
+// чтобы быть названным на первом же шаге назад); завернуть ненайденное звено через %w (клиенту ушло
+// бы not_found про кадр, которого он не называл); потерять %w у ошибки чтения прочего рода (дедлок
+// 1213 перестал бы повторяться транзакцией).
+func TestDesignReplacementHeadNamesACorruptChain(t *testing.T) {
+	t.Run("ссылка назад", func(t *testing.T) {
+		chain, load, calls := replaceChain()
+		loop := chain[19]
+		loop.ReplacedBy = sql.NullInt32{Int32: 7, Valid: true}
+		chain[19] = loop
+		_, err := DesignReplacementHead(chain[7], load)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrDesignAlreadyReplaced)
+		require.NotErrorIs(t, err, ErrDesignNotFound)
+		require.Equal(t, 2, *calls, "шаг назад называется сразу, а не на потолке")
+	})
+	t.Run("звено не существует", func(t *testing.T) {
+		chain, load, _ := replaceChain()
+		delete(chain, 19)
+		_, err := DesignReplacementHead(chain[7], load)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrDesignNotFound, "not_found соврал бы о кадре, которого клиент не называл")
+		require.Contains(t, err.Error(), "19")
+	})
+	t.Run("чтение упало", func(t *testing.T) {
+		chain, _, _ := replaceChain()
+		transient := errors.New("Error 1213: Deadlock found when trying to get lock")
+		_, err := DesignReplacementHead(chain[7], func(int) (DesignPicture, error) { return DesignPicture{}, transient })
+		require.ErrorIs(t, err, transient, "ошибка чтения обязана остаться видимой для повтора транзакции")
+	})
+	t.Run("потолок", func(t *testing.T) {
+		// Бесконечная, но честно растущая цепочка: каждый кадр заменён следующим по id.
+		endless := func(id int) (DesignPicture, error) {
+			return DesignPicture{Id: id, ReplacedBy: sql.NullInt32{Int32: int32(id + 1), Valid: true}}, nil
+		}
+		start, _ := endless(1)
+		_, err := DesignReplacementHead(start, endless)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), fmt.Sprintf("link %d", DesignReplacementChainMax))
+	})
+}
+
+// ОТКАЗ already_replaced НЕСЁТ ГОЛОВУ — и остаётся already_replaced для всех, кто узнаёт его по
+// сентинелу (таблица отказов хендлера, пробы стора).
+//
+// МУТАЦИИ: убрать Unwrap (errors.Is перестаёт узнавать отказ — хендлер отдал бы Internal); класть в
+// HeadPictureId названный кадр или первую замену; вернуть отказ без головы, когда обход упал.
+func TestDesignAlreadyReplacedCarriesTheHead(t *testing.T) {
+	chain, load, _ := replaceChain()
+	err := DesignAlreadyReplaced(chain[7], load)
+	require.ErrorIs(t, err, ErrDesignAlreadyReplaced)
+	var replaced *DesignReplacedError
+	require.ErrorAs(t, fmt.Errorf("store: %w", err), &replaced, "голова переживает заворачивание")
+	require.Equal(t, 7, replaced.PictureId)
+	require.Equal(t, 19, replaced.HeadPictureId)
+	require.Contains(t, err.Error(), "already_replaced")
+	require.Contains(t, err.Error(), "picture 7")
+	require.Contains(t, err.Error(), "picture 19")
+
+	delete(chain, 19)
+	err = DesignAlreadyReplaced(chain[7], load)
+	require.Error(t, err)
+	require.False(t, errors.As(err, &replaced), "отказ без головы нарушил бы обещание head_picture_id")
 }

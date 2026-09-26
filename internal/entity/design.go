@@ -1522,7 +1522,12 @@ type DesignEditLayerFlatten struct {
 	// стоял, переезжает на правку, а сам кадр получает replaced_by — в одной транзакции; отказы —
 	// DesignReplaceRefusal.
 	ReplacePictureId int
-	Actor            string
+	// ClientRequestId — КЛЮЧ ИДЕМПОТЕНТНОСТИ ЖЕСТА (0369, design_picture.request_key). Пусто — без
+	// защиты от повтора, ровно как до поля. Непусто — повтор после потерянного ответа получает кадр,
+	// поданный первой попыткой, а не вторую правку и не already_replaced; тот же ключ, названный
+	// другим флэттеном этой карточки, — invalid_argument. Не длиннее DesignRequestKeyMaxRunes.
+	ClientRequestId string
+	Actor           string
 }
 
 // DesignReferenceRole — роль референса. Пустая Role СТИРАЕТ роль: «сторона не названа» это

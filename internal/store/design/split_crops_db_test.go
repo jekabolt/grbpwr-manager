@@ -21,6 +21,9 @@ import (
 // Предикат — designSheetCropsOf: глагол crop или легаси-пустой, видимый; заменённый кусок считается.
 // Форма предиката проверяется без базы (split_crops_test.go); здесь — строки.
 //
+// ЗАМЕНЁННЫЙ ЛИСТ НЕ РЕЖЕТСЯ ВОВСЕ (O-53 review): его место занято правкой, и разрез резал бы
+// пиксели, которых на экране больше нет. Отказ — already_replaced с головой цепочки.
+//
 // Запуск — тот же одноразовый контейнер, что и у соседних проб (см. шапку wave2_db_test.go); без
 // CI=1 каждая проба пропускается ДО открытия соединения.
 
@@ -58,33 +61,87 @@ func childrenOf(t *testing.T, raw *sql.DB, sheetID int) int {
 	return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE derived_from = ?`, sheetID)
 }
 
-// ПРАВКА ЛИСТА НЕ ЗАКРЫВАЕТ ЕГО РАЗРЕЗ — НИ РЯДОМ, НИ НА МЕСТЕ.
+// ПРАВКА ЛИСТА «РЯДОМ» НЕ ЗАКРЫВАЕТ ЕГО РАЗРЕЗ.
 //
 // МУТАЦИЯ: вернуть короткому замыканию голое `derived_from = :id AND hidden_at IS NULL` — разрез
 // отвечает правкой и не пишет ни одного куска.
+//
+// Правка «на месте» здесь больше не случай: лист, чьё место заняла правка, не режется вовсе — см.
+// TestDesignDBSplitOfAReplacedSheetIsRefusedWithTheHead. Здесь этот случай прежде благословлял
+// разрез заменённого листа (O-53 review).
 func TestDesignDBSplitIsNotBlockedByAnEditOfTheSheet(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		overwrite bool
-	}{{"save as new", false}, {"overwrite", true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			rep, raw := probeRepository(t)
-			card := probeCard(t, raw)
-			sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
-			original := 0
-			if tc.overwrite {
-				original = sheet.Id
-			}
-			edit := editProbe(t, rep, raw, sheet, original)
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	edit := editProbe(t, rep, raw, sheet, 0)
 
-			crops := splitProbe(t, rep, raw, sheet.Id, entity.DesignViewFront)
-			require.Len(t, crops, 1, "правка листа — не кусок: разрез обязан состояться")
-			require.Equal(t, entity.DesignDerivationCrop, crops[0].Derivation)
-			require.EqualValues(t, sheet.Id, crops[0].DerivedFrom.Int32)
-			require.NotEqual(t, edit.Id, crops[0].Id, "правка не выдаётся за кусок")
-			require.Equal(t, 2, childrenOf(t, raw, sheet.Id), "правка и один свежий кусок")
+	crops := splitProbe(t, rep, raw, sheet.Id, entity.DesignViewFront)
+	require.Len(t, crops, 1, "правка листа — не кусок: разрез обязан состояться")
+	require.Equal(t, entity.DesignDerivationCrop, crops[0].Derivation)
+	require.EqualValues(t, sheet.Id, crops[0].DerivedFrom.Int32)
+	require.NotEqual(t, edit.Id, crops[0].Id, "правка не выдаётся за кусок")
+	require.Equal(t, 2, childrenOf(t, raw, sheet.Id), "правка и один свежий кусок")
+}
+
+// ЗАМЕНЁННЫЙ ЛИСТ НЕ РЕЖЕТСЯ — ОТКАЗ НЕСЁТ ГОЛОВУ, И НЕ ПОДАНО НИЧЕГО (O-53 review).
+//
+// Сценарий ревью: лист перезаписан правкой (слот уехал на правку, лист подписан), и устаревшая
+// вкладка режет лист. Раньше разрез проходил — предикат кусков справедливо не видит правку — и
+// колода нарезалась из пикселей, которых на экране больше нет. Отказ стоит ДО короткого замыкания,
+// поэтому заменённый лист с видимыми старыми кусками отказывается тоже. Голова цепочки идёт вперёд
+// вместе с перезаписями; её саму резать можно.
+//
+// МУТАЦИИ: не проверять replaced_by (разрез проходит, у листа второй ребёнок); проверять после
+// короткого замыкания (последняя половина отвечает старыми кусками вместо отказа); класть в отказ
+// первую замену вместо головы.
+func TestDesignDBSplitOfAReplacedSheetIsRefusedWithTheHead(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	edit := editProbe(t, rep, raw, sheet, sheet.Id)
+
+	split := func(pictureID int) ([]entity.DesignPicture, error) {
+		return rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
+			PictureId: pictureID, ClientRequestId: uuid.NewString(), Actor: "probe",
+			Frames: []entity.DesignSplitFrame{{MediaId: probeMedia(t, raw), ViewKey: entity.DesignViewFront}},
 		})
 	}
+	_, err := split(sheet.Id)
+	requireHead(t, err, sheet.Id, edit.Id)
+	require.Equal(t, 1, childrenOf(t, raw, sheet.Id), "у листа только правка — ни одного куска")
+
+	edit2 := editProbe(t, rep, raw, *edit, edit.Id)
+	_, err = split(sheet.Id)
+	requireHead(t, err, sheet.Id, edit2.Id)
+
+	crops, err := split(edit2.Id)
+	require.NoError(t, err, "голову резать можно")
+	require.Len(t, crops, 1)
+	require.EqualValues(t, edit2.Id, crops[0].DerivedFrom.Int32)
+}
+
+// ЗАМЕНЁННЫЙ ЛИСТ СО СТАРЫМИ ВИДИМЫМИ КУСКАМИ — ТОЖЕ ОТКАЗ, А НЕ СТАРЫЕ КУСКИ.
+//
+// Перезапись разрезанного листа сторож cut_sheet не пустил бы, поэтому состояние собирается мимо
+// стора: лист подписан вручную. Так выглядит лист, чьи куски были спрятаны перед перезаписью и потом
+// возвращены, — и устаревшей вкладке нужен ответ «режь голову», а не куски кадра, на который она
+// смотреть не должна.
+func TestDesignDBSplitOfAReplacedSheetIgnoresItsOldCrops(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card := probeCard(t, raw)
+	sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	old := splitProbe(t, rep, raw, sheet.Id, entity.DesignViewFront)
+	require.Len(t, old, 1)
+	head := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	_, err := raw.Exec(`UPDATE design_picture SET replaced_by = ? WHERE id = ?`, head.Id, sheet.Id)
+	require.NoError(t, err)
+
+	_, err = rep.Design().SplitPicture(context.Background(), entity.DesignSplitRequest{
+		PictureId: sheet.Id, ClientRequestId: uuid.NewString(), Actor: "probe",
+		Frames: []entity.DesignSplitFrame{{MediaId: probeMedia(t, raw), ViewKey: entity.DesignViewFront}},
+	})
+	requireHead(t, err, sheet.Id, head.Id)
 }
 
 // ОТВЕТ СВЕЖЕГО РАЗРЕЗА — ТОЛЬКО ЕГО КУСКИ.

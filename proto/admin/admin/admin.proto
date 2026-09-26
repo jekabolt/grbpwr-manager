@@ -2789,8 +2789,15 @@ service AdminService {
   // original bytes. The crops are SIBLINGS OF THEIR SOURCE — they inherit its run_id or its
   // batch_id, whichever it has, and never get a history row of their own: no money was spent on
   // them. A crop of an uploaded composite therefore lands on the same upload shelf row.
-  // Idempotent by client_request_id. FailedPrecondition: not_composite. InvalidArgument for frames
-  // outside 0..1 or of zero area.
+  //
+  // IDEMPOTENT BY DERIVATION, NOT YET BY client_request_id: while the crops of an earlier cut of
+  // this picture are visible, a repeat returns THEM and cuts nothing. The key is required but not
+  // stored yet (backlog) — a retry that lands after those crops were hidden cuts again.
+  //
+  // A REPLACED PICTURE IS NOT CUT (O-53): FailedPrecondition already_replaced, whose ErrorInfo
+  // metadata carries head_picture_id — the head of its replacement chain, the picture a stale tab
+  // should cut instead. FailedPrecondition: not_composite. InvalidArgument for frames outside 0..1
+  // or of zero area.
   rpc SplitDesignPicture(SplitDesignPictureRequest) returns (SplitDesignPictureResponse) {
     option (google.api.http) = {
       post: "/api/admin/design/picture/{picture_id}/split"
@@ -2970,9 +2977,13 @@ service AdminService {
   // takes the named picture's place: the bench slot holding that picture moves onto the edit and
   // the picture is stamped replaced_by. The request field names the refusals.
   //
-  // Aborted: layer_rev_mismatch. FailedPrecondition: empty_layer, already_replaced, cut_sheet, and
-  // the placement refusals of SetDesignBenchSlot when the slot being moved refuses the edit.
-  // InvalidArgument: an unknown or foreign media_id, replace_mismatch.
+  // IDEMPOTENT BY client_request_id WHEN ONE IS SENT: a retry after a lost response answers with
+  // the picture the first attempt filed — see the request field.
+  //
+  // Aborted: layer_rev_mismatch. FailedPrecondition: empty_layer, already_replaced (ErrorInfo
+  // metadata head_picture_id), cut_sheet, and the placement refusals of SetDesignBenchSlot when the
+  // slot being moved refuses the edit. InvalidArgument: an unknown or foreign media_id,
+  // replace_mismatch, a client_request_id already spent on a different flatten.
   rpc FlattenDesignEditLayer(FlattenDesignEditLayerRequest) returns (FlattenDesignEditLayerResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}/flatten"
@@ -12552,13 +12563,39 @@ message FlattenDesignEditLayerRequest {
   // InvalidArgument: replace_mismatch — the picture is on another card, or it is not the picture
   // this layer is drawn over (its media is not the layer's base_media_id; a layer drawn from
   // nothing replaces nothing). FailedPrecondition: already_replaced — the picture has a
-  // replacement already, and a blind retry of an overwrite lands here BEFORE anything is filed.
-  // FailedPrecondition: cut_sheet — visible pieces are cut from this sheet, and they would stay cut
-  // from the original. NotFound — no such picture.
+  // replacement already; a retry of an overwrite WITHOUT client_request_id lands here BEFORE
+  // anything is filed, and the ErrorInfo metadata carries head_picture_id: the head of the
+  // picture's replacement chain, i.e. the picture standing in its place now. FailedPrecondition:
+  // cut_sheet — visible pieces are cut from this sheet, and they would stay cut from the original;
+  // a piece that was itself overwritten by an edit still counts, since that edit was drawn over the
+  // old pixels too. Hide those pieces before overwriting the sheet, or edit a piece instead of the
+  // sheet. NotFound — no such picture.
   //
   // ⚠ AN OLDER SERVER ANSWERS 400 TO THIS FIELD: the JSON gateway refuses unknown fields. Send it
   // only after a read has carried DesignPicture.replaced_by, which an older server never emits.
   int32 replace_picture_id = 5;
+  // IDEMPOTENCY KEY OF THIS GESTURE (O-53): one per click of «overwrite» or «save as new», a UUID
+  // being the intended shape; at most 64 characters, compared exactly, surrounding whitespace
+  // trimmed. A retry after a lost response, with the same key, returns the picture the first
+  // attempt filed — neither a second edit nor already_replaced.
+  //
+  // EMPTY = NO REPLAY PROTECTION, which is what this verb did before the field existed: a retry of
+  // «save as new» files a second sibling, and a retry of an overwrite is refused already_replaced
+  // with head_picture_id.
+  //
+  // THE KEY NAMES THE GESTURE, NOT THE BYTES. The replay is answered before the layer's rev is
+  // compared and before replace_picture_id is judged, so it succeeds even after a colleague saved
+  // the layer or overwrote the edit in turn — the picture then comes back with that replaced_by.
+  // media_id is not compared: a client that re-uploaded its raster for the retry gets the first
+  // attempt's picture, and the new upload stays unreferenced. The key lives within the tech card.
+  //
+  // InvalidArgument: a key over 64 characters; a key this card already spent on a DIFFERENT
+  // flatten — another expected_rev, another replace_picture_id, or the other mode (beside versus
+  // in the place of a picture).
+  //
+  // ⚠ SAME AGE AS replace_picture_id: an older server answers 400 to it, and a server that emits
+  // DesignPicture.replaced_by accepts it — both arrived in one release.
+  string client_request_id = 6;
 }
 
 message FlattenDesignEditLayerResponse {

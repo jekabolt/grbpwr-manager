@@ -133,7 +133,8 @@ var designRefusals = []struct {
 	// replace_mismatch — InvalidArgument: запрос назвал не тот кадр (чужая карточка, не та подложка
 	// слоя), и чинится он правкой запроса. Два других — FailedPrecondition того же класса, что
 	// live_crop_parent: запрос правильной формы, не годится СОСТОЯНИЕ — у кадра уже есть замена
-	// (сюда приходит и слепой повтор перезаписи) либо от листа отрезаны видимые куски.
+	// (сюда приходит повтор перезаписи без ключа и разрез заменённого листа; метаданные несут
+	// head_picture_id — см. designErrorFacts) либо от листа отрезаны видимые куски.
 	{entity.ErrDesignReplaceMismatch, codes.InvalidArgument, "replace_mismatch"},
 	{entity.ErrDesignAlreadyReplaced, codes.FailedPrecondition, "already_replaced"},
 	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
@@ -150,6 +151,9 @@ func designError(ctx context.Context, op string, err error, metadata map[string]
 		if errors.Is(err, r.err) {
 			st := status.New(r.code, err.Error())
 			md := map[string]string{"reason": r.reason}
+			for k, v := range designErrorFacts(err) {
+				md[k] = v
+			}
 			for k, v := range metadata {
 				md[k] = v
 			}
@@ -164,6 +168,22 @@ func designError(ctx context.Context, op string, err error, metadata map[string]
 	}
 	slog.Default().ErrorContext(ctx, op, slog.String("err", err.Error()))
 	return status.Errorf(codes.Internal, "%s", op)
+}
+
+// designErrorFacts — ТО, ЧТО ОТКАЗ НЕСЁТ САМ: поля типизированной ошибки стора, переложенные в
+// метаданные ErrorInfo. Живёт в designError, а не у каждой двери, потому что дверь, забывшая
+// переложить, отдала бы тот же отказ без ответа, — а already_replaced приходит в две двери
+// (перезапись и разрез) и из двух мест (транзакция стора и предпроверка хендлера).
+//
+// head_picture_id — голова цепочки замен: кадр, который стоит на месте названного сейчас. Без неё
+// «уже заменён» оставлял клиенту гадать, чья правка встала на место и не его ли это собственная,
+// потерявшая ответ.
+func designErrorFacts(err error) map[string]string {
+	var replaced *entity.DesignReplacedError
+	if errors.As(err, &replaced) {
+		return map[string]string{"head_picture_id": strconv.Itoa(replaced.HeadPictureId)}
+	}
+	return nil
 }
 
 // designSlotDetails is what rides along with slot_rev_mismatch. THE PLATE IS IN IT, not only its
@@ -612,7 +632,8 @@ func (s *Server) SaveDesignEditLayer(ctx context.Context, req *pb_admin.SaveDesi
 //
 // «OVERWRITE» (0368, O-53) is replace_picture_id, carried through as is: the guards, the slot move
 // and the replaced_by stamp are the store's, inside the flatten's own transaction, so a second copy
-// of any of them here could only disagree with it.
+// of any of them here could only disagree with it. client_request_id (0369) likewise: trimmed here
+// as every key of the band is, while the ceiling and the replay are the store's.
 func (s *Server) FlattenDesignEditLayer(ctx context.Context, req *pb_admin.FlattenDesignEditLayerRequest) (*pb_admin.FlattenDesignEditLayerResponse, error) {
 	pic, err := s.repo.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
 		TechCardId:       int(req.GetTechCardId()),
@@ -620,6 +641,7 @@ func (s *Server) FlattenDesignEditLayer(ctx context.Context, req *pb_admin.Flatt
 		ExpectedRev:      int(req.GetExpectedRev()),
 		MediaId:          int(req.GetMediaId()),
 		ReplacePictureId: int(req.GetReplacePictureId()),
+		ClientRequestId:  strings.TrimSpace(req.GetClientRequestId()),
 		Actor:            designActor(ctx),
 	})
 	if err != nil {
@@ -659,6 +681,9 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 	if len(req.GetFrames()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "a split needs at least one frame")
 	}
+	// ⚠ ТРЕБУЕТСЯ, НО НЕ ЧИТАЕТСЯ (бэклог, O-53 review): ключ доезжает до стора и там не хранится —
+	// идемпотентность разреза сегодня держится на его видимых кусках (см. TODO в SplitPicture).
+	// Требование оставлено намеренно: клиент ключ уже шлёт, и бэклогу есть что прочесть.
 	if strings.TrimSpace(req.GetClientRequestId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "client_request_id is required")
 	}
@@ -670,6 +695,21 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 	parent, err := s.repo.Design().GetPicture(ctx, int(req.GetPictureId()))
 	if err != nil {
 		return nil, designError(ctx, "failed to read the composite", err, nil)
+	}
+	// ЗАМЕНЁННЫЙ ЛИСТ НЕ РЕЖЕТСЯ (O-53 review) — ЗДЕСЬ ПРЕДПРОВЕРКА, А НЕ ПРАВИЛО. Правило стоит в
+	// транзакции SplitPicture и авторитетно; здесь оно повторено только затем, чтобы отказ прозвучал
+	// ДО байтовой работы — чтения оригинала, нарезки, заливки каждого куска и уборки их следом.
+	// Голова цепочки ищется тем же обходом, что и в сторе (entity.DesignAlreadyReplaced), только
+	// своими чтениями; лист, заменённый между этой проверкой и транзакцией, откажет уже стор.
+	if parent.ReplacedBy.Valid {
+		return nil, designError(ctx, "failed to split the design picture",
+			entity.DesignAlreadyReplaced(*parent, func(id int) (entity.DesignPicture, error) {
+				p, err := s.repo.Design().GetPicture(ctx, id)
+				if err != nil {
+					return entity.DesignPicture{}, err
+				}
+				return *p, nil
+			}), nil)
 	}
 	// COMPOSITENESS IS NOT A PRECONDITION, and the guard that demanded it was removed rather than
 	// relaxed, because it could never be satisfied.

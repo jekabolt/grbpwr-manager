@@ -137,14 +137,33 @@ func TestDesignDBOverwriteMovesTheSlotAndStampsTheOriginal(t *testing.T) {
 	require.Equal(t, edit.Id, front.Picture.Id, "верстак полосы рисует правку")
 }
 
-// СЛЕПОЙ ПОВТОР ПЕРЕЗАПИСИ ОТКАЗЫВАЕТСЯ ДО ВСТАВКИ.
+// probeRequestKey — ключ жеста, как он лёг в строку, мимо стора.
+func probeRequestKey(t *testing.T, raw *sql.DB, pictureID int) sql.NullString {
+	t.Helper()
+	var got sql.NullString
+	require.NoError(t, raw.QueryRow(`SELECT request_key FROM design_picture WHERE id = ?`, pictureID).Scan(&got))
+	return got
+}
+
+// requireHead — отказ already_replaced и голова, которую он несёт.
+func requireHead(t *testing.T, err error, named, head int) {
+	t.Helper()
+	require.ErrorIs(t, err, entity.ErrDesignAlreadyReplaced)
+	var replaced *entity.DesignReplacedError
+	require.ErrorAs(t, err, &replaced, "already_replaced обязан нести голову цепочки")
+	require.Equal(t, named, replaced.PictureId)
+	require.Equal(t, head, replaced.HeadPictureId)
+}
+
+// ПОВТОР ПЕРЕЗАПИСИ БЕЗ КЛЮЧА ОТКАЗЫВАЕТСЯ ДО ВСТАВКИ — И НАЗЫВАЕТ ГОЛОВУ.
 //
-// Флэттен без ключа идемпотентности: повтор «save as new» подаёт вторую правку (до-существующее,
-// бэклог). Повтор ПЕРЕЗАПИСИ обязан быть другим — оригинал уже подписан, и сторож
-// already_replaced стоит ДО вставки, поэтому второй правки нет, а слот не двигается второй раз.
+// Без ключа повтор неотличим от чужой перезаписи, и честный ответ ему — already_replaced: оригинал
+// уже подписан, сторож стоит ДО вставки, второй правки нет, слот второй раз не двигается. Отказ несёт
+// голову цепочки — после второй перезаписи это уже не первая правка, а вторая.
 //
-// МУТАЦИЯ: проверять заменённость после вставки (или не проверять вовсе) — строк становится больше.
-func TestDesignDBBlindOverwriteRetryFilesNothing(t *testing.T) {
+// МУТАЦИИ: проверять заменённость после вставки (или не проверять вовсе) — строк становится больше;
+// класть в отказ replaced_by названного кадра вместо головы — вторая половина краснеет.
+func TestDesignDBOverwriteRetryWithoutAKeyIsRefusedWithTheHead(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
 	p := newReplaceProbeSetup(t, rep, raw)
@@ -152,16 +171,164 @@ func TestDesignDBBlindOverwriteRetryFilesNothing(t *testing.T) {
 	req := p.overwrite(probeMedia(t, raw), p.sheet.Id)
 	edit, err := rep.Design().FlattenEditLayer(ctx, req)
 	require.NoError(t, err)
+	require.False(t, probeRequestKey(t, raw, edit.Id).Valid, "без ключа — NULL, а не пустая строка")
 	before := countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
 	_, revBefore, _ := probeSlotHolder(t, raw, p.slot.Id)
 
 	_, err = rep.Design().FlattenEditLayer(ctx, req)
-	require.ErrorIs(t, err, entity.ErrDesignAlreadyReplaced)
+	requireHead(t, err, p.sheet.Id, edit.Id)
 	require.Equal(t, before, countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card),
 		"повтор перезаписи не подаёт вторую правку")
 	holder, revAfter, _ := probeSlotHolder(t, raw, p.slot.Id)
 	require.EqualValues(t, edit.Id, holder.Int32)
 	require.Equal(t, revBefore, revAfter, "отказанный повтор слот не трогает")
+
+	// Правку перезаписывают в свою очередь — голова уезжает вперёд.
+	edit2 := editProbe(t, rep, raw, *edit, edit.Id)
+	_, err = rep.Design().FlattenEditLayer(ctx, req)
+	requireHead(t, err, p.sheet.Id, edit2.Id)
+}
+
+// ПОВТОР ПЕРЕЗАПИСИ С КЛЮЧОМ — УСПЕХ, И ОТВЕТ ЕМУ — ПРАВКА ПЕРВОЙ ПОПЫТКИ (0369).
+//
+// Ответ потерян, клиент повторяет тот же запрос с тем же ключом: он обязан получить ту же правку, а
+// не already_replaced на собственный успех. И получает её В ЛЮБОМ ПОСЛЕДУЮЩЕМ СОСТОЯНИИ: после того
+// как коллега сохранил слой (CAS по ревизии больше не сошёлся бы) и после того как правку
+// перезаписали в свою очередь (она приходит со своим replaced_by).
+//
+// МУТАЦИИ: не писать ключ во вставку (повтор получает already_replaced); искать повтор ПОСЛЕ сторожей
+// (повтор после сохранения слоя получает layer_rev_mismatch, после второй перезаписи —
+// already_replaced); отвечать головой вместо правки первой попытки (третья половина краснеет).
+func TestDesignDBOverwriteReplayWithTheKeyReturnsTheEdit(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+
+	req := p.overwrite(probeMedia(t, raw), p.sheet.Id)
+	req.ClientRequestId = uuid.NewString()
+	edit, err := rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, req.ClientRequestId, probeRequestKey(t, raw, edit.Id).String, "ключ лёг на правку")
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+	before := pictures()
+	_, revBefore, _ := probeSlotHolder(t, raw, p.slot.Id)
+
+	replay, err := rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err, "повтор с ключом — успех, а не already_replaced")
+	require.Equal(t, edit.Id, replay.Id)
+	require.NotNil(t, replay.Media, "ответ повтора — полный кадр, с медиа, как ответ первой попытки")
+	require.Equal(t, before, pictures(), "повтор не подаёт вторую правку")
+	_, revAfter, _ := probeSlotHolder(t, raw, p.slot.Id)
+	require.Equal(t, revBefore, revAfter, "повтор слот не двигает")
+
+	// Коллега сохранил слой: CAS первой попытки больше не сходится, повтор — всё равно тот же ответ.
+	_, err = rep.Design().SaveEditLayer(ctx, entity.DesignEditLayerSave{
+		TechCardId: p.card, LayerId: p.layer.Id, ExpectedRev: p.layer.Rev, Strokes: probeStrokes(), Actor: "colleague",
+	})
+	require.NoError(t, err)
+	replay, err = rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err, "повтор отвечается до CAS слоя")
+	require.Equal(t, edit.Id, replay.Id)
+
+	// Правку перезаписали: повтор получает СВОЮ правку — с её replaced_by, — а не чужую голову.
+	edit2 := editProbe(t, rep, raw, *edit, edit.Id)
+	replay, err = rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, edit.Id, replay.Id, "ответ повтору — кадр первой попытки, а не нынешняя голова")
+	require.EqualValues(t, edit2.Id, replay.ReplacedBy.Int32)
+	require.Equal(t, before+1, pictures(), "одна правка первой попытки и одна — второй перезаписи")
+}
+
+// ПОВТОР «SAVE AS NEW» С КЛЮЧОМ НЕ ПОДАЁТ ВТОРОГО СИБЛИНГА (0369).
+//
+// Контроль — тот же запрос без ключа: он подаёт второго сиблинга, как и до поля. Без контроля проба
+// зеленела бы и на флэттене, который не подаёт повторов вообще никогда.
+//
+// МУТАЦИИ: искать повтор только в режиме перезаписи (второй сиблинг); считать пустой ключ ключом
+// (контроль перестаёт подавать второго).
+func TestDesignDBSaveAsNewReplayWithTheKeyReturnsTheSibling(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+
+	req := p.overwrite(probeMedia(t, raw), 0)
+	req.ClientRequestId = uuid.NewString()
+	sibling, err := rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err)
+	before := pictures()
+	replay, err := rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, sibling.Id, replay.Id)
+	require.Equal(t, before, pictures(), "повтор с ключом не подаёт второго сиблинга")
+
+	blind := p.overwrite(probeMedia(t, raw), 0)
+	_, err = rep.Design().FlattenEditLayer(ctx, blind)
+	require.NoError(t, err)
+	_, err = rep.Design().FlattenEditLayer(ctx, blind)
+	require.NoError(t, err)
+	require.Equal(t, before+2, pictures(), "без ключа — поведение до поля: каждый повтор — сиблинг")
+}
+
+// КЛЮЧ, ПОТРАЧЕННЫЙ НА ДРУГОЙ ФЛЭТТЕН, — invalid_argument, И НИЧЕГО НЕ ПОДАНО.
+//
+// Тот же ключ под другим местом, другим режимом или другой ревизией — ошибка клиента, а не повтор:
+// вернуть ему чужой ответ значило бы соврать, что его жест исполнен. Ключ живёт в пределах
+// карточки: на другой карточке тот же ключ — просто новый жест.
+//
+// МУТАЦИИ: не сверять режим (перезапись под ключом «рядом» отвечает сиблингом, слот не двигается, а
+// клиент считает, что поставил правку на место); не сверять ревизию; искать ключ без карточки
+// (последняя половина краснеет).
+func TestDesignDBKeySpentOnAnotherFlattenIsRefused(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+	key := uuid.NewString()
+
+	beside := p.overwrite(probeMedia(t, raw), 0)
+	beside.ClientRequestId = key
+	_, err := rep.Design().FlattenEditLayer(ctx, beside)
+	require.NoError(t, err)
+	before := pictures()
+
+	t.Run("тот же ключ — перезапись", func(t *testing.T) {
+		req := p.overwrite(probeMedia(t, raw), p.sheet.Id)
+		req.ClientRequestId = key
+		_, err := rep.Design().FlattenEditLayer(ctx, req)
+		require.ErrorIs(t, err, entity.ErrDesignInvalidArgument)
+		require.Equal(t, before, pictures())
+		holder, rev, _ := probeSlotHolder(t, raw, p.slot.Id)
+		require.EqualValues(t, p.sheet.Id, holder.Int32, "слот не тронут")
+		require.Equal(t, p.slot.SlotRev, rev)
+		require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "оригинал не подписан")
+	})
+	t.Run("тот же ключ — другая ревизия", func(t *testing.T) {
+		saved, err := rep.Design().SaveEditLayer(ctx, entity.DesignEditLayerSave{
+			TechCardId: p.card, LayerId: p.layer.Id, ExpectedRev: p.layer.Rev, Strokes: probeStrokes(), Actor: "probe",
+		})
+		require.NoError(t, err)
+		req := p.overwrite(probeMedia(t, raw), 0)
+		req.ExpectedRev = saved.Rev
+		req.ClientRequestId = key
+		_, err = rep.Design().FlattenEditLayer(ctx, req)
+		require.ErrorIs(t, err, entity.ErrDesignInvalidArgument)
+		require.Equal(t, before, pictures())
+	})
+	t.Run("тот же ключ — другая карточка", func(t *testing.T) {
+		other := newReplaceProbeSetup(t, rep, raw)
+		req := other.overwrite(probeMedia(t, raw), 0)
+		req.ClientRequestId = key
+		pic, err := rep.Design().FlattenEditLayer(ctx, req)
+		require.NoError(t, err, "ключ живёт в пределах карточки")
+		require.Equal(t, other.card, pic.TechCardId)
+	})
 }
 
 // ЦЕПОЧКА: ПРАВКУ МОЖНО ПЕРЕЗАПИСАТЬ В СВОЮ ОЧЕРЕДЬ.
@@ -314,4 +481,30 @@ func TestDesignDBOverwriteRefusalsFileNothing(t *testing.T) {
 		require.NoError(t, err)
 		require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
 	})
+}
+
+// КУСОК, ПЕРЕЗАПИСАННЫЙ СВОЕЙ ПРАВКОЙ, ЛИСТ ДЕРЖИТ (O-53 review).
+//
+// Сценарий ревью дословно: лист разрезан на кусок, кусок перезаписан правкой, затем перезаписывают
+// лист. Правка куска нарезана из прежних пикселей листа, и перезапись листа оставила бы на экране
+// две живые ветки одного листа. Отказ — cut_sheet, и ничего не подано.
+//
+// МУТАЦИЯ: вернуть в designVisibleCropsOf `replaced_by IS NULL` — перезапись листа проходит.
+func TestDesignDBOverwriteOfASheetIsHeldByAnOverwrittenPiece(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	crops := splitProbe(t, rep, raw, p.sheet.Id, entity.DesignViewBack)
+	require.Len(t, crops, 1)
+	pieceEdit := editProbe(t, rep, raw, crops[0], crops[0].Id)
+	require.EqualValues(t, pieceEdit.Id, probeReplacedBy(t, raw, crops[0].Id).Int32, "кусок заменён своей правкой")
+
+	before := countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	_, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.ErrorIs(t, err, entity.ErrDesignCutSheet)
+	require.Equal(t, before, countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card))
+	holder, rev, _ := probeSlotHolder(t, raw, p.slot.Id)
+	require.EqualValues(t, p.sheet.Id, holder.Int32, "отказ не двигает слот")
+	require.Equal(t, p.slot.SlotRev, rev)
+	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует лист")
 }

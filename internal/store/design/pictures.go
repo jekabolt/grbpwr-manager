@@ -538,12 +538,19 @@ func runByID(ctx context.Context, db dependency.DB, id int) (entity.DesignRun, e
 // handler reads the original object, cuts it and uploads each frame — so all that is left here is
 // the derivation, in one transaction.
 //
-// ⚠ IDEMPOTENCY IS BY DERIVATION, NOT BY client_request_id, and that is forced rather than
-// chosen: design_picture has no column for a request id and none can be added from here. So the
-// rule is: if the parent already has crops that are still visible, THEY are returned and nothing
-// is cut again — which is exactly what a retried split needs. A deliberate RE-split is available
-// after the bad crops are hidden, so a wrong cut is not a dead end. The check and the insert are
-// in one SERIALIZABLE transaction, so a concurrent duplicate cannot slip between them.
+// ⚠ IDEMPOTENCY IS BY DERIVATION, NOT BY client_request_id. The rule is: if the parent already
+// has crops that are still visible, THEY are returned and nothing is cut again — which is exactly
+// what an IMMEDIATE retry needs. A deliberate RE-split is available after the bad crops are hidden,
+// so a wrong cut is not a dead end. The check and the insert are in one SERIALIZABLE transaction,
+// so a concurrent duplicate cannot slip between them.
+//
+// TODO(backlog, O-53 review): SplitDesignPictureRequest.client_request_id is REQUIRED by the
+// handler, carried here as req.ClientRequestId and documented as the idempotency key — and it is
+// NOT READ. A delayed retry that lands after the first cut's crops were hidden files a second,
+// permanent set. design_picture.request_key (0369, written today by FlattenEditLayer) is the column
+// for it: every crop of one cut signs itself with the key — the index on (tech_card_id,
+// request_key) is deliberately NOT unique for exactly this — and a replay answers with the crops
+// carrying the key, visible or not. Not done in this change.
 //
 // «CROPS» MEANS CROPS, NOT «ANY CHILD» (O-53 follow-up). derived_from is written by two verbs, and
 // the check used to read it without the verb: an EDIT of the sheet — a save-as-new flatten or an
@@ -564,6 +571,17 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		parent, err := pictureByID(ctx, db, req.PictureId)
 		if err != nil {
 			return err
+		}
+		// A REPLACED SHEET IS NOT CUT (O-53 review). Its place — its bench slot — belongs to the edit
+		// that replaced it, and a cut of it would deal the deck from pixels that are no longer on the
+		// screen: a stale tab splitting the original after an overwrite used to succeed, because the
+		// crop predicate below rightly ignores the edit sibling. THIS check is the authoritative one —
+		// the handler's preflight only saves the byte work — and it stands BEFORE the idempotent early
+		// return: a replaced sheet whose old crops are still visible is refused as well, since the
+		// answer a stale tab needs is «cut the head», not the crops of a picture it should not be
+		// looking at. The refusal carries the head of the chain.
+		if parent.ReplacedBy.Valid {
+			return designAlreadyReplaced(ctx, db, parent)
 		}
 		// A DISPLAY-ONLY SHEET IS NOT SPLIT «FOR THE PROMPT» (0361, D-24). The for_input flag is a
 		// promise to give every named crop a reference role — that is, to feed it to the model —
@@ -763,12 +781,13 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 // ложное «уже нарезано» — сегодняшнее поведение с сегодняшним выходом (спрятать лишнее и резать
 // снова), ложное «не нарезано» — второй комплект кусков, записанный навсегда (картинки не
 // удаляются). Ошибаться дешевле в первую сторону. Сторож cut_sheet в layer.go отвечает на ДРУГОЙ
-// вопрос («стоит ли на экране неотредактированный кусок оригинала») и легаси не считает — там
+// вопрос («стоит ли на экране кусок оригинала — сам или своей правкой») и легаси не считает — там
 // ложное «да» закрывало бы перезапись ложной причиной.
 //
-// ⚠ ЗАМЕНЁННЫЙ КУСОК — ВСЁ ЕЩЁ КУСОК, поэтому replaced_by здесь НЕ фильтруется, в отличие от
-// cut_sheet. Кусок, перезаписанный правкой (0368), стоит в ленте своей правкой — голова цепочки
-// лежит под той же строкой, — и лист от этого не становится ненарезанным. Отфильтровать его значило
+// ⚠ ЗАМЕНЁННЫЙ КУСОК — ВСЁ ЕЩЁ КУСОК, поэтому replaced_by здесь НЕ фильтруется — и с O-53 review не
+// фильтруется и в cut_sheet: два сторожа одного факта отвечают одинаково. Кусок, перезаписанный
+// правкой (0368), стоит в ленте своей правкой — голова цепочки лежит под той же строкой, — и лист от
+// этого не становится ненарезанным. Отфильтровать его значило
 // бы: лист, у которого правкой перезаписан КАЖДЫЙ кусок, режется повторно, и рядом с головами
 // прежних кусков ложится второй комплект — регрессия против сегодняшнего поведения, которое такие
 // куски считало. Короткое замыкание отдаёт заменённый кусок как есть; голову клиент находит по

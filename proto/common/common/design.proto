@@ -1025,6 +1025,10 @@ message DesignPicture {
   // in the original's place. Every link is filed under the SAME run or batch row as the original,
   // so a whole chain arrives inside one row of the band.
   //
+  // A REPLACED PICTURE IS NEITHER OVERWRITTEN AGAIN NOR CUT: FlattenDesignEditLayer with
+  // replace_picture_id and SplitDesignPicture both refuse it with already_replaced, and the
+  // ErrorInfo metadata names the head of its chain as head_picture_id.
+  //
   // ⚠ ABSENT — not 0 — on a server older than the field, and that absence is how a client knows
   // the server cannot replace a picture yet (FlattenDesignEditLayerRequest.replace_picture_id).
   int32 replaced_by = 21;

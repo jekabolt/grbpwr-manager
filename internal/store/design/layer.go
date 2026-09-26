@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -467,6 +468,16 @@ func designLayerIsEmpty(l entity.DesignEditLayer) bool {
 // THIS transaction the edit takes the original's place: the bench slot that held the original moves
 // onto the edit, and the original is stamped replaced_by (flattenTakeThePlaceOf). The guards are
 // read here too (flattenReplaceTarget): a refusal files nothing.
+//
+// ПОВТОР ПО КЛЮЧУ (0369, O-53 review). client_request_id — ключ ЖЕСТА: кадр, поданный под ним этой
+// карточкой, и есть ответ повтору, и ищется он ПЕРВЫМ делом в транзакции — до CAS слоя и до сторожей
+// перезаписи. Иначе повтор после потерянного ответа получал бы already_replaced (или
+// layer_rev_mismatch, если коллега успел сохранить слой) — отказ на собственный успех, — и клиент не
+// мог бы отличить его от чужой перезаписи. Ответ повтору — кадр первой попытки в его нынешнем
+// состоянии: если его самого уже перезаписали, он придёт со своим replaced_by. Ключ, уже потраченный
+// на ДРУГОЙ флэттен, — invalid_argument (flattenReplayRefusal), тем же приёмом, что у ImportVector.
+// Пустой ключ — поведение до поля: повтор «рядом» подаёт второго сиблинга, повтор перезаписи
+// получает already_replaced с головой.
 func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayerFlatten) (*entity.DesignPicture, error) {
 	if err := requireCard(req.TechCardId); err != nil {
 		return nil, err
@@ -481,9 +492,28 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		return nil, fmt.Errorf("%w: replace_picture_id %d is neither a picture nor 0 (file beside)",
 			entity.ErrDesignInvalidArgument, req.ReplacePictureId)
 	}
+	// Ключ меряется шириной колонки, и отказ звучит до транзакции. Пробелы по краям срезаются и здесь,
+	// а не только в хендлере: колонка сравнивает в utf8mb4_bin, у которой хвостовые пробелы не значат
+	// ничего, — «k» и «k » совпали бы в базе, разойдясь в Go.
+	key := strings.TrimSpace(req.ClientRequestId)
+	if n := utf8.RuneCountInString(key); n > entity.DesignRequestKeyMaxRunes {
+		return nil, fmt.Errorf("%w: client_request_id is %d characters, the ceiling is %d",
+			entity.ErrDesignInvalidArgument, n, entity.DesignRequestKeyMaxRunes)
+	}
 	var out entity.DesignPicture
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		// ─── 0. ПОВТОР ЖЕСТА (0369) — раньше всего остального, см. доку функции ───
+		if prior, ok, err := pictureByRequestKey(ctx, db, req.TechCardId, key); err != nil {
+			return err
+		} else if ok {
+			if err := flattenReplayRefusal(ctx, db, req, key, prior); err != nil {
+				return err
+			}
+			out = prior
+			return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
+		}
+
 		layer, err := layerByID(ctx, db, req.LayerId)
 		if err != nil {
 			return err
@@ -620,19 +650,21 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		if parent != nil {
 			derivation = entity.DesignDerivationFlatten
 		}
+		// request_key — ключ этого жеста (0369): им повтор находит этот кадр. NULL без ключа.
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
 				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
 				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev,
-				 display_only)
+				 display_only, request_key)
 			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
-			        :src, :mixed, :layer, :display_only)`,
+			        :src, :mixed, :layer, :display_only, :request_key)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
 				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
 				"derivation": derivation,
 				"src":        src, "mixed": mixed, "layer": layer.Rev,
 				"display_only": displayOnly,
+				"request_key":  nullStr(key),
 			})
 		if err != nil {
 			return fmt.Errorf("failed to file the flattened design layer: %w", err)
@@ -656,16 +688,22 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	return &out, nil
 }
 
-// designVisibleCropsOf — СКОЛЬКО ВИДИМЫХ НЕЗАМЕНЁННЫХ КУСКОВ отрезано от кадра (сторож cut_sheet).
+// designVisibleCropsOf — СКОЛЬКО ВИДИМЫХ КУСКОВ отрезано от кадра (сторож cut_sheet).
 //
 // ⚠ ГЛАГОЛ СПРАШИВАЕТСЯ, А НЕ ВЫВОДИТСЯ (0359): derived_from пишут и разрез, и правка, и правка
 // листа — ещё не разрез. Легаси-строка с пустым глаголом в счёт не идёт: бэкфилл 0359 оставил её
 // неклассифицированной, потому что доказать «кроп» было нечем, и назвать её куском здесь значило бы
-// вписать ту самую догадку. Спрятанный кусок и кусок, уже заменённый своей правкой, листа не держат:
-// первый не на экране, второй уже стоит правкой на своём месте.
+// вписать ту самую догадку. Спрятанный кусок листа не держит — его нет на экране.
+//
+// ⚠ ЗАМЕНЁННЫЙ КУСОК ЛИСТ ДЕРЖИТ (O-53 review), и фильтра по replaced_by здесь нет намеренно. Здесь
+// стоял `replaced_by IS NULL` с доводом «такой кусок уже стоит правкой на своём месте» — а ровно
+// поэтому он и держит: правка куска нарезана из прежних пикселей листа, и перезапись листа оставила
+// бы на экране две живые ветки одного листа — новый лист и правку старого куска. Тот же ответ даёт
+// разрез (designSheetCropsOf: заменённый кусок — всё ещё кусок), и два сторожа одного факта больше
+// не расходятся.
 const designVisibleCropsOf = `
 	SELECT COUNT(*) FROM design_picture
-	WHERE derived_from = :id AND derivation = :crop AND hidden_at IS NULL AND replaced_by IS NULL`
+	WHERE derived_from = :id AND derivation = :crop AND hidden_at IS NULL`
 
 // designStampReplacedBy — ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ. `replaced_by IS NULL` в WHERE — второй
 // пояс к чтению в той же SERIALIZABLE-транзакции (entity.DesignReplaceRefusal), а не повтор его:
@@ -677,12 +715,13 @@ const designStampReplacedBy = `
 	WHERE id = :id AND replaced_by IS NULL`
 
 // flattenReplaceTarget — ОРИГИНАЛ, ЧЬЁ МЕСТО ЗАНИМАЕТ ПРАВКА: читается и судится В ТРАНЗАКЦИИ
-// ФЛЭТТЕНА, до вставки. Отказ здесь не подаёт ничего — в том числе слепой повтор перезаписи, который
-// узнаёт себя по already_replaced.
+// ФЛЭТТЕНА, до вставки. Отказ здесь не подаёт ничего — в том числе повтор перезаписи без ключа,
+// который узнаёт себя по already_replaced и получает голову цепочки (повтор с ключом сюда не доходит).
 //
 // Несуществующий кадр — not_found (pictureByID), как у всех чтений полосы; существующий, но не тот —
 // replace_mismatch. Порядок остальных отказов — у entity.DesignReplaceRefusal, где он проверяется
-// без базы.
+// без базы; голову к already_replaced дописывает designAlreadyReplaced — это чтение, и в чистом
+// решении ему не место.
 func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, layer entity.DesignEditLayer) (entity.DesignPicture, error) {
 	original, err := pictureByID(ctx, db, req.ReplacePictureId)
 	if err != nil {
@@ -694,9 +733,21 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 		return original, fmt.Errorf("failed to count the visible pieces of design picture %d: %w", original.Id, err)
 	}
 	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, crops); err != nil {
+		if errors.Is(err, entity.ErrDesignAlreadyReplaced) {
+			return original, designAlreadyReplaced(ctx, db, original)
+		}
 		return original, err
 	}
 	return original, nil
+}
+
+// designAlreadyReplaced — ОТКАЗ already_replaced С ГОЛОВОЙ ЦЕПОЧКИ, прочитанной в ТОЙ ЖЕ транзакции,
+// что и сам отказ: голова из другого чтения могла бы уже не быть головой. Один на обе двери, которые
+// отказывают заменённому кадру, — перезапись и разрез.
+func designAlreadyReplaced(ctx context.Context, db dependency.DB, p entity.DesignPicture) error {
+	return entity.DesignAlreadyReplaced(p, func(id int) (entity.DesignPicture, error) {
+		return pictureByID(ctx, db, id)
+	})
 }
 
 // flattenTakeThePlaceOf — ПРАВКА ЗАНИМАЕТ МЕСТО ОРИГИНАЛА, в транзакции флэттена, после вставки.
@@ -740,10 +791,92 @@ func flattenTakeThePlaceOf(ctx context.Context, rep dependency.Repository, origi
 		return fmt.Errorf("failed to stamp design picture %d as replaced by %d: %w", original.Id, editID, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("%w: picture %d was replaced by another edit while this one was being filed",
-			entity.ErrDesignAlreadyReplaced, original.Id)
+		// Второй пояс сработал: чтение в начале транзакции видело NULL, UPDATE — уже нет. Отказ несёт
+		// голову так же, как несёт её первый пояс, — кадр перечитывается в этой же транзакции.
+		fresh, err := pictureByID(ctx, db, original.Id)
+		if err != nil {
+			return err
+		}
+		return designAlreadyReplaced(ctx, db, fresh)
 	}
 	return nil
+}
+
+// designPictureByRequestKey — КАДР, УЖЕ ПОДАННЫЙ ЭТОЙ КАРТОЧКОЙ ПОД КЛЮЧОМ (0369). Первый по id: ключ
+// в схеме не уникален намеренно — разрез однажды подпишет им ВСЕ свои куски (см. SplitPicture), —
+// а флэттен подписывает им ровно один кадр, потому что его повтор до вставки не доходит. Два
+// конкурентных повтора одного ключа под SERIALIZABLE читают один и тот же пробел индекса
+// (tech_card_id, request_key), и вставку получает один: второй ловит дедлок, транзакция повторяется
+// и находит кадр первого.
+const designPictureByRequestKey = `
+	SELECT * FROM design_picture
+	WHERE tech_card_id = :card AND request_key = :key
+	ORDER BY id LIMIT 1`
+
+// pictureByRequestKey — ПУСТОЙ КЛЮЧ НЕ СОВПАДАЕТ НИ С ЧЕМ, по доводу layerByRequestID: колонка NULL у
+// каждого кадра, поданного без ключа, и пустой ключ, совпавший с ними, сделал бы первую правку
+// карточки ответом на каждый флэттен.
+func pictureByRequestKey(ctx context.Context, db dependency.DB, cardID int, key string) (entity.DesignPicture, bool, error) {
+	var out entity.DesignPicture
+	if key == "" {
+		return out, false, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db, designPictureByRequestKey,
+		map[string]any{"card": cardID, "key": key})
+	if err != nil {
+		return out, false, fmt.Errorf("failed to look for a flatten already filed under client_request_id %q: %w", key, err)
+	}
+	if len(rows) == 0 {
+		return out, false, nil
+	}
+	return rows[0], true, nil
+}
+
+// flattenReplayRefusal — ОТВЕЧАЕТ ЛИ prior (кадр, уже поданный под этим ключом) НА ЭТОТ ЗАПРОС. nil —
+// да, это повтор, и ответ ему — prior.
+//
+// Сверяется то, что делает флэттен ТЕМ ЖЕ жестом, и ровно то, что можно сверить по кадру:
+//   - глагол: prior — флэттен, а не кусок разреза (ключ однажды будет и у разреза);
+//   - ревизия: prior растеризован из той ревизии слоя, которую эхом назвал запрос. Повтор несёт ту же
+//     expected_rev, что и первая попытка; другая ревизия — это ДРУГАЯ правка под старым ключом;
+//   - место: prior занял место ровно того кадра, который назван (replace_picture_id), либо не занял
+//     ничьего, если запрос — «рядом». «Занял» читается у родителя: родитель подписан prior-ом ⇔ prior
+//     подан перезаписью (штамп пишется один раз и не стирается).
+//
+// media_id НЕ сверяется, и это решение: ключ — это жест, а не байты. Клиент, перезаливший растр ради
+// повтора, получает кадр первой попытки, а его новая заливка остаётся ничьей — как после любого
+// отказанного флэттена. Отказать ему значило бы ответить ошибкой на законный повтор.
+func flattenReplayRefusal(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, key string, prior entity.DesignPicture) error {
+	refuse := func(format string, args ...any) error {
+		return fmt.Errorf("%w: client_request_id %q already filed picture %d, which %s",
+			entity.ErrDesignInvalidArgument, key, prior.Id, fmt.Sprintf(format, args...))
+	}
+	if prior.Derivation == entity.DesignDerivationCrop {
+		return refuse("is a crop, not a flatten")
+	}
+	if prior.LayerRev != req.ExpectedRev {
+		return refuse("was flattened from layer rev %d, not %d", prior.LayerRev, req.ExpectedRev)
+	}
+	tookThePlaceOf := 0
+	if prior.DerivedFrom.Valid {
+		parent, err := pictureByID(ctx, db, int(prior.DerivedFrom.Int32))
+		if err != nil {
+			return err
+		}
+		if parent.ReplacedBy.Valid && int(parent.ReplacedBy.Int32) == prior.Id {
+			tookThePlaceOf = parent.Id
+		}
+	}
+	switch {
+	case tookThePlaceOf == req.ReplacePictureId:
+		return nil
+	case tookThePlaceOf == 0:
+		return refuse("was filed beside its base, not in the place of picture %d", req.ReplacePictureId)
+	case req.ReplacePictureId == 0:
+		return refuse("took the place of picture %d, and this request files beside", tookThePlaceOf)
+	default:
+		return refuse("took the place of picture %d, not of picture %d", tookThePlaceOf, req.ReplacePictureId)
+	}
 }
 
 // layerByRequestID reads the layer a given client_request_id already filed, if any.

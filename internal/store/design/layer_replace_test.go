@@ -37,19 +37,81 @@ func TestReplacedByStampIsWrittenOnceOverNothing(t *testing.T) {
 	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12})
 }
 
-// СТОРОЖ cut_sheet СЧИТАЕТ ТОЛЬКО ВИДИМЫЕ НЕЗАМЕНЁННЫЕ КРОПЫ ЭТОГО КАДРА.
+// СТОРОЖ cut_sheet СЧИТАЕТ ВСЕ ВИДИМЫЕ КРОПЫ ЭТОГО КАДРА — И ЗАМЕНЁННЫЕ СВОЕЙ ПРАВКОЙ ТОЖЕ.
 //
 // МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять фильтр глагола (правка листа — не разрез, и лист, у которого есть
 // только флэттены, закрылся бы для перезаписи); снять hidden_at IS NULL (спрятанный кусок держал бы
-// лист навсегда); снять replaced_by IS NULL (кусок, уже заменённый своей правкой, держал бы лист).
-func TestVisibleCropsCountsOnlyVisibleUnreplacedCrops(t *testing.T) {
+// лист навсегда); ВЕРНУТЬ replaced_by IS NULL (O-53 review: лист, чей кусок перезаписан правкой,
+// снова перезаписывается, и на экране остаются две живые ветки одного листа — новый лист и правка
+// куска, нарезанного из прежних пикселей). Тот же ответ даёт предикат разреза — см.
+// TestSheetCropsAreCropsNotEdits.
+func TestVisibleCropsCountsEveryVisibleCrop(t *testing.T) {
 	q := designVisibleCropsOf
 	require.Contains(t, q, "derived_from = :id")
 	require.Contains(t, q, "derivation = :crop", "глагол спрашивается у колонки 0359, а не выводится")
 	require.Contains(t, q, "hidden_at IS NULL")
-	require.Contains(t, q, "replaced_by IS NULL")
+	require.NotContains(t, q, "replaced_by",
+		"кусок, заменённый своей правкой, лист держит: правка нарезана из прежних пикселей")
 
 	requireNamedQueryBinds(t, q, map[string]any{"id": 7, "crop": entity.DesignDerivationCrop})
+}
+
+// ПОВТОР ИЩЕТСЯ В ПРЕДЕЛАХ КАРТОЧКИ И ПО ТОЧНОМУ КЛЮЧУ (0369).
+//
+// МУТАЦИИ: потерять карточку в предикате (ключ чужой карточки отвечал бы на повтор этой — и индекс
+// (tech_card_id, request_key) перестал бы служить чтению); потерять порядок (при двух кадрах с одним
+// ключом — возможных только в обход стора — ответ стал бы броском монеты).
+func TestPictureByRequestKeyIsScopedToTheCard(t *testing.T) {
+	q := designPictureByRequestKey
+	where := q[strings.Index(q, "WHERE"):]
+	require.Contains(t, where, "tech_card_id = :card AND request_key = :key")
+	require.True(t, strings.HasSuffix(strings.TrimSpace(q), "ORDER BY id LIMIT 1"))
+	requireNamedQueryBinds(t, q, map[string]any{"card": 41, "key": "k-1"})
+}
+
+// ПУСТОЙ КЛЮЧ НЕ СОВПАДАЕТ НИ С ЧЕМ — И ДАЖЕ НЕ СПРАШИВАЕТ БАЗУ.
+//
+// МУТАЦИЯ: убрать ранний выход. Тогда пустая строка искалась бы ключом на каждом флэттене без ключа
+// (с NULL-колонкой она не совпала бы, и вред казался бы нулевым — до первой строки, где ключ пуст, а
+// не NULL). Проба ловит это nil-базой: чтение через неё паникует.
+func TestPictureByRequestKeyWithoutAKeyReadsNothing(t *testing.T) {
+	_, ok, err := pictureByRequestKey(context.Background(), nil, 41, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
+// КЛЮЧ МЕРЯЕТСЯ ШИРИНОЙ КОЛОНКИ, В СИМВОЛАХ, И ОТКАЗ ЗВУЧИТ ДО ТРАНЗАКЦИИ.
+//
+// VARCHAR(64) в utf8mb4 — 64 СИМВОЛА, а не байта: 64 кириллических буквы (128 байт) законны, 65 —
+// нет. Пробелы по краям срезаются до меры (колонка _bin хвостовых пробелов не различает).
+//
+// МУТАЦИИ: мерить байтами (64 «ж» отказываются); не мерить вовсе (65 доходят до транзакции и падают
+// там сырым 1406 «Data too long»); мерить до среза пробелов (ключ с отступом отказывается).
+func TestFlattenMeasuresTheKeyBeforeTheTransaction(t *testing.T) {
+	reached := false
+	s := &Store{txFunc: func(context.Context, func(context.Context, dependency.Repository) error) error {
+		reached = true
+		return nil
+	}}
+	flatten := func(key string) error {
+		reached = false
+		_, err := s.FlattenEditLayer(context.Background(), entity.DesignEditLayerFlatten{
+			TechCardId: 1, LayerId: 5, ExpectedRev: 2, MediaId: 9, ClientRequestId: key,
+		})
+		return err
+	}
+
+	require.ErrorIs(t, flatten(strings.Repeat("ж", entity.DesignRequestKeyMaxRunes+1)), entity.ErrDesignInvalidArgument)
+	require.False(t, reached, "длинный ключ обязан отказаться до транзакции")
+
+	for _, key := range []string{
+		"",
+		strings.Repeat("ж", entity.DesignRequestKeyMaxRunes),
+		"  " + strings.Repeat("k", entity.DesignRequestKeyMaxRunes) + "\t",
+	} {
+		require.NoError(t, flatten(key))
+		require.True(t, reached, "ключ %q обязан дойти до транзакции", key)
+	}
 }
 
 // ОТРИЦАТЕЛЬНОЕ МЕСТО ОТКАЗЫВАЕТСЯ ДО ТРАНЗАКЦИИ, А НЕ ЧИТАЕТСЯ НУЛЁМ.
