@@ -863,6 +863,12 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designParentID(parent), designParentParams(parent)); err != nil {
 		return nil, err
 	}
+	// …and it stays on the same PLAYGROUND tile: a spoken rerun may re-mark, re-word and reorder,
+	// never turn into another workflow [Codex 2].
+	if err := designRefuseRerunChangesWorkflow(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
 	// ГРАНИЦА КАРТОЧКИ ДЛЯ ШЕСТОГО СПИСКА. Картинки плейграунда уезжают поставщику ровно так же,
 	// как плиты, референсы и текстуры, значит и граница у них та же самая. ДЕЙСТВУЮЩИЕ параметры,
 	// а не сообщение клиента: строка media(id) под собой не исчезает (FK держат её RESTRICT'ом),
@@ -1078,46 +1084,10 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 	switch kind {
 	// ─── ПЛЕЙГРАУНД ───
 	case entity.DesignRunKindFreeform:
-		items := params.GetFreeform().GetItems()
-		if len(items) == 0 {
-			return designRefusal(codes.InvalidArgument, "no_source_picture",
-				"the playground works on the pictures you put in it: name them in "+
-					"params.freeform.items. Nothing was reserved and nothing was charged", nil)
+		// ONE TABLE PER PRESET (design_freeform.go): which pictures, which roles, which options.
+		if err := designRefuseUnworkableFreeform(ask, params); err != nil {
+			return err
 		}
-		// ⚠ ПРЕСЕТ ADD_HARDWARE ТРЕБУЕТ ОБЕИХ ПОЛОВИН, И ЭТО НЕ ПЕДАНТИЗМ: его абзац ремесла
-		// дословно говорит «возьми фурнитуру с картинки N и посади её в обведённую область
-		// картинки 1». Без картинки фурнитуры брать нечего, без области — сажать некуда, и в обоих
-		// случаях модель вернёт правдоподобный кадр, по которому в истории не отличить исполненную
-		// просьбу от неисполненной. Деньги при этом списаны.
-		if params.GetFreeform().GetPreset() == entity.DesignFreeformPresetAddHardware {
-			hardware, marked := 0, 0
-			for _, it := range items {
-				if it.GetRole() == entity.DesignFreeformRoleHardware {
-					hardware++
-					continue
-				}
-				// ОБЛАСТЬ ИЩЕТСЯ НА ЛЮБОЙ НЕ-ФУРНИТУРНОЙ КАРТИНКЕ, А НЕ ТОЛЬКО НА role=subject:
-				// роль пустая законна («просто картинка»), и требовать её проставленной значило бы
-				// отказывать за неназванное имя там, где человек уже показал пальцем.
-				if len(it.GetRegions()) > 0 {
-					marked++
-				}
-			}
-			if hardware == 0 {
-				return designRefusal(codes.InvalidArgument, "hardware_picture_required",
-					"«add hardware» puts the hardware from one picture onto another: mark the picture "+
-						"of the hardware with role=hardware in params.freeform.items. Nothing was "+
-						"reserved and nothing was charged", nil)
-			}
-			if marked == 0 {
-				return designRefusal(codes.InvalidArgument, "mark_the_area",
-					"«add hardware» needs the place it goes: outline an area on the picture the "+
-						"hardware is added to. Nothing was reserved and nothing was charged", nil)
-			}
-		}
-		// `repaint_parts` БЕЗ ОБЛАСТИ ЗАКОНЕН, и это сказано вслух, чтобы никто не «дочинил» его
-		// симметрично соседу: перекрасить всю вещь — обычная просьба, и абзац ремесла умеет её
-		// («repaint the whole garment»).
 	// ─── ВЫРЕЗ ФОНА ───
 	case entity.DesignRunKindCutout:
 		if sources != 1 {
