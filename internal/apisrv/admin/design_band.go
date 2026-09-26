@@ -128,7 +128,7 @@ var designRefusals = []struct {
 	// СОСТОЯНИЕ (один файл зарегистрирован на карточке под несколькими колорвеями, а слой не
 	// назвал, поверх которого из них рисовали).
 	{entity.ErrDesignAmbiguousFlattenBase, codes.FailedPrecondition, "ambiguous_flatten_base"},
-	// ─── «ПЕРЕЗАПИСАТЬ» ПРАВКОЙ (0368, O-53) ───
+	// ─── «ПЕРЕЗАПИСАТЬ» ПРАВКОЙ (0369, O-53) ───
 	//
 	// replace_mismatch — InvalidArgument: запрос назвал не тот кадр (чужая карточка, не та подложка
 	// слоя), и чинится он правкой запроса. Остальные — FailedPrecondition того же класса, что
@@ -634,9 +634,9 @@ func (s *Server) SaveDesignEditLayer(ctx context.Context, req *pb_admin.SaveDesi
 // UploadContentImage (Р-2), and it arrives as a media id. Deleting that media when the flatten is
 // refused would be an active harm — it would break the client's retry with the same id.
 //
-// «OVERWRITE» (0368, O-53) is replace_picture_id, carried through as is: the guards, the slot move
+// «OVERWRITE» (0369, O-53) is replace_picture_id, carried through as is: the guards, the slot move
 // and the replaced_by stamp are the store's, inside the flatten's own transaction, so a second copy
-// of any of them here could only disagree with it. client_request_id (0369) likewise: trimmed here
+// of any of them here could only disagree with it. client_request_id (0370) likewise: trimmed here
 // as every key of the band is, while the ceiling and the replay are the store's.
 func (s *Server) FlattenDesignEditLayer(ctx context.Context, req *pb_admin.FlattenDesignEditLayerRequest) (*pb_admin.FlattenDesignEditLayerResponse, error) {
 	pic, err := s.repo.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
@@ -1236,7 +1236,7 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		ColorwayId: int32(entity.DesignColorwayOrNone(p.ColorwayId)),
 		// ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24): виден в артефактах, не вход ни одного прогона.
 		DisplayOnly: p.DisplayOnly,
-		// ПРАВКА, ЗАНЯВШАЯ МЕСТО КАДРА (0368, O-53): 0 = не заменён, NULL колонки читается нулём.
+		// ПРАВКА, ЗАНЯВШАЯ МЕСТО КАДРА (0369, O-53): 0 = не заменён, NULL колонки читается нулём.
 		// Ноль уходит на провод ЯВНЫМ ключом (гейтвей эмитит незаполненные поля), и клиент отличает
 		// его от ОТСУТСТВИЯ ключа — так выглядит сервер старше поля, который заменять не умеет.
 		ReplacedBy: p.ReplacedBy.Int32,

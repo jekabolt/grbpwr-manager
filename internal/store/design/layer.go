@@ -463,13 +463,13 @@ func designLayerIsEmpty(l entity.DesignEditLayer) bool {
 // THE FLATTEN DOES NOT BUMP THE LAYER'S REV. It materialises a revision, it does not edit one —
 // bumping would invalidate every open editor's CAS token for a write that changed no stroke.
 //
-// «OVERWRITE» IS THIS SAME VERB (0368, O-53). With ReplacePictureId > 0 the named picture is the
+// «OVERWRITE» IS THIS SAME VERB (0369, O-53). With ReplacePictureId > 0 the named picture is the
 // parent, the edit is filed exactly as below — nothing is re-pixelled, nothing is hidden — and in
 // THIS transaction the edit takes the original's place: the bench slot that held the original moves
 // onto the edit, and the original is stamped replaced_by (flattenTakeThePlaceOf). The guards are
 // read here too (flattenReplaceTarget): a refusal files nothing.
 //
-// ПОВТОР ПО КЛЮЧУ (0369, O-53 review). client_request_id — ключ ЖЕСТА: кадр, поданный под ним этой
+// ПОВТОР ПО КЛЮЧУ (0370, O-53 review). client_request_id — ключ ЖЕСТА: кадр, поданный под ним этой
 // карточкой, и есть ответ повтору, и ищется он ПЕРВЫМ делом в транзакции — до CAS слоя и до сторожей
 // перезаписи. Иначе повтор после потерянного ответа получал бы already_replaced (или
 // layer_rev_mismatch, если коллега успел сохранить слой) — отказ на собственный успех, — и клиент не
@@ -503,7 +503,7 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	var out entity.DesignPicture
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
-		// ─── 0. ПОВТОР ЖЕСТА (0369) — раньше всего остального, см. доку функции ───
+		// ─── 0. ПОВТОР ЖЕСТА (0370) — раньше всего остального, см. доку функции ───
 		if prior, ok, err := pictureByRequestKey(ctx, db, req.TechCardId, key); err != nil {
 			return err
 		} else if ok {
@@ -558,7 +558,7 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// значило бы закрыть флэттен там, где он сегодня работает и никого не обманывает.
 		var parent *entity.DesignPicture
 		switch {
-		// «OVERWRITE» (0368, O-53): НАЗВАННЫЙ КАДР И ЕСТЬ РОДИТЕЛЬ, и обе ветки ниже при нём не
+		// «OVERWRITE» (0369, O-53): НАЗВАННЫЙ КАДР И ЕСТЬ РОДИТЕЛЬ, и обе ветки ниже при нём не
 		// спрашиваются. Правка занимает место ИМЕННО ЭТОГО кадра — его слот, его строку прогона, его
 		// род и колорвей, — поэтому наследовать ей положено у него, а не у source_picture_id слоя и не
 		// у «первой строки по id» того же файла. Тем же самым снимается и ambiguous_flatten_base:
@@ -650,8 +650,8 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		if parent != nil {
 			derivation = entity.DesignDerivationFlatten
 		}
-		// request_key — ключ этого жеста (0369): им повтор находит этот кадр. NULL без ключа.
-		// source_layer_id — слой, из которого кадр расплющен (0370), пара к layer_rev: им повтор
+		// request_key — ключ этого жеста (0370): им повтор находит этот кадр. NULL без ключа.
+		// source_layer_id — слой, из которого кадр расплющен (0371), пара к layer_rev: им повтор
 		// сверяет, что ключ назван ТЕМ ЖЕ слоем (entity.DesignFlattenReplayRefusal).
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
@@ -825,7 +825,7 @@ func flattenTakeThePlaceOf(ctx context.Context, rep dependency.Repository, origi
 	return nil
 }
 
-// designPictureByRequestKey — КАДР, УЖЕ ПОДАННЫЙ ЭТОЙ КАРТОЧКОЙ ПОД КЛЮЧОМ (0369). Первый по id: ключ
+// designPictureByRequestKey — КАДР, УЖЕ ПОДАННЫЙ ЭТОЙ КАРТОЧКОЙ ПОД КЛЮЧОМ (0370). Первый по id: ключ
 // в схеме не уникален намеренно — разрез однажды подпишет им ВСЕ свои куски (см. SplitPicture), —
 // а флэттен подписывает им ровно один кадр, потому что его повтор до вставки не доходит. Два
 // конкурентных повтора одного ключа под SERIALIZABLE читают один и тот же пробел индекса

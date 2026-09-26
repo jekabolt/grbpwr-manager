@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ПРОБЫ ПРАВИЛА «ПЕРЕЗАПИСАТЬ» (0368, O-53) — решения без базы.
+// ПРОБЫ ПРАВИЛА «ПЕРЕЗАПИСАТЬ» (0369, O-53) — решения без базы.
 //
 // Чтения (кадр, кадры его карточки) делает стор в транзакции флэттена, и они проверяются живыми
 // пробами internal/store/design/replace_db_test.go (одноразовый контейнер, CI=1). Здесь — то, что от
@@ -552,7 +552,7 @@ func TestDesignSplitHiddenRefusal(t *testing.T) {
 	require.Contains(t, err.Error(), "picture 7")
 }
 
-// ─── ПОВТОР ПО КЛЮЧУ ОТВЕЧАЕТ ТОЛЬКО ТОМУ ЖЕ ЖЕСТУ (0369/0370, O-53 review) ───
+// ─── ПОВТОР ПО КЛЮЧУ ОТВЕЧАЕТ ТОЛЬКО ТОМУ ЖЕ ЖЕСТУ (0370/0371, O-53 review) ───
 
 // replayPrior — кадр, поданный первой попыткой: флэттен слоя 5 на ревизии 4.
 func replayPrior() DesignPicture {
@@ -590,7 +590,7 @@ func TestDesignFlattenReplayOfTheSameGestureIsAReplay(t *testing.T) {
 // new» слоя L2 под ключом слоя L1 получал картинку L1 как свой успех.
 //
 // МУТАЦИИ: снять сверку слоя (оба подслучая «другой слой» проходят); читать отсутствие слоя как
-// совпадение (кадр до 0370 отвечает любому слою); снять сверку ревизии, глагола или места.
+// совпадение (кадр до 0371 отвечает любому слою); снять сверку ревизии, глагола или места.
 func TestDesignFlattenReplayRefusesAKeySpentElsewhere(t *testing.T) {
 	noLayer := replayPrior()
 	noLayer.SourceLayerId = sql.NullInt32{}

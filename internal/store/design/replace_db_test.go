@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ═══ «ПЕРЕЗАПИСАТЬ» ПРАВКОЙ — 0368, O-53 ═══════════════════════════════════════════════════════
+// ═══ «ПЕРЕЗАПИСАТЬ» ПРАВКОЙ — 0369, O-53 ═══════════════════════════════════════════════════════
 //
 // Владелец: после правки в воркбенче FLAT спрашивать «overwrite или save as new». Перезапись — ТОТ
 // ЖЕ флэттен: правка файлится сиблингом, ничего не перепикселивается и не прячется, а в той же
@@ -189,7 +189,7 @@ func TestDesignDBOverwriteRetryWithoutAKeyIsRefusedWithTheHead(t *testing.T) {
 	requireHead(t, err, p.sheet.Id, edit2.Id)
 }
 
-// ПОВТОР ПЕРЕЗАПИСИ С КЛЮЧОМ — УСПЕХ, И ОТВЕТ ЕМУ — ПРАВКА ПЕРВОЙ ПОПЫТКИ (0369).
+// ПОВТОР ПЕРЕЗАПИСИ С КЛЮЧОМ — УСПЕХ, И ОТВЕТ ЕМУ — ПРАВКА ПЕРВОЙ ПОПЫТКИ (0370).
 //
 // Ответ потерян, клиент повторяет тот же запрос с тем же ключом: он обязан получить ту же правку, а
 // не already_replaced на собственный успех. И получает её В ЛЮБОМ ПОСЛЕДУЮЩЕМ СОСТОЯНИИ: после того
@@ -241,7 +241,7 @@ func TestDesignDBOverwriteReplayWithTheKeyReturnsTheEdit(t *testing.T) {
 	require.Equal(t, before+1, pictures(), "одна правка первой попытки и одна — второй перезаписи")
 }
 
-// ПОВТОР «SAVE AS NEW» С КЛЮЧОМ НЕ ПОДАЁТ ВТОРОГО СИБЛИНГА (0369).
+// ПОВТОР «SAVE AS NEW» С КЛЮЧОМ НЕ ПОДАЁТ ВТОРОГО СИБЛИНГА (0370).
 //
 // Контроль — тот же запрос без ключа: он подаёт второго сиблинга, как и до поля. Без контроля проба
 // зеленела бы и на флэттене, который не подаёт повторов вообще никогда.
@@ -511,7 +511,7 @@ func TestDesignDBOverwriteOfASheetIsHeldByAnOverwrittenPiece(t *testing.T) {
 	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует лист")
 }
 
-// probeSourceLayer — слой, из которого кадр расплющен (0370), мимо стора.
+// probeSourceLayer — слой, из которого кадр расплющен (0371), мимо стора.
 func probeSourceLayer(t *testing.T, raw *sql.DB, pictureID int) sql.NullInt32 {
 	t.Helper()
 	var got sql.NullInt32
@@ -642,7 +642,7 @@ func TestDesignDBOverwriteOfASheetIsHeldByACropOfAHiddenHead(t *testing.T) {
 	require.EqualValues(t, sheetEdit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
 }
 
-// КЛЮЧ ПРИВЯЗАН К СЛОЮ — ДРУГОЙ СЛОЙ ТОЙ ЖЕ КАРТОЧКИ НА ТОЙ ЖЕ РЕВИЗИИ ОТВЕТА НЕ ПОЛУЧАЕТ (0370).
+// КЛЮЧ ПРИВЯЗАН К СЛОЮ — ДРУГОЙ СЛОЙ ТОЙ ЖЕ КАРТОЧКИ НА ТОЙ ЖЕ РЕВИЗИИ ОТВЕТА НЕ ПОЛУЧАЕТ (0371).
 //
 // Сценарий ревью: слои L1 и L2 одной карточки, оба на ревизии 1, над разными листами. «Save as new»
 // L1 под ключом K, затем тот же K от L2: раньше повтор отдавал кадр L1 как успех L2, не прочитав L2.

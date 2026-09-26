@@ -2061,7 +2061,7 @@ type (
 		SaveEditLayer(ctx context.Context, req entity.DesignEditLayerSave) (*entity.DesignEditLayer, error)
 		// FlattenEditLayer files an already-rasterised image as a picture, carrying
 		// derived_from, source_class and layer_rev, under CAS on the layer's rev. With
-		// ReplacePictureId (0368, O-53) the edit also takes that picture's place in the same
+		// ReplacePictureId (0369, O-53) the edit also takes that picture's place in the same
 		// transaction: its bench slot moves onto the edit and it is stamped replaced_by.
 		FlattenEditLayer(ctx context.Context, req entity.DesignEditLayerFlatten) (*entity.DesignPicture, error)
 		// ImportVector files an ALREADY-UPLOADED vector file as an edit layer: the media row keeps

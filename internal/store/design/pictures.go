@@ -547,7 +547,7 @@ func runByID(ctx context.Context, db dependency.DB, id int) (entity.DesignRun, e
 // TODO(backlog, O-53 review): SplitDesignPictureRequest.client_request_id is REQUIRED by the
 // handler, carried here as req.ClientRequestId and documented as the idempotency key — and it is
 // NOT READ. A delayed retry that lands after the first cut's crops were hidden files a second,
-// permanent set. design_picture.request_key (0369, written today by FlattenEditLayer) is the column
+// permanent set. design_picture.request_key (0370, written today by FlattenEditLayer) is the column
 // for it: every crop of one cut signs itself with the key — the index on (tech_card_id,
 // request_key) is deliberately NOT unique for exactly this — and a replay answers with the crops
 // carrying the key, visible or not. Not done in this change.
@@ -790,7 +790,7 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 // чтения SplitPicture — короткое замыкание повтора и ответ после свежего разреза.
 //
 // ⚠ ГЛАГОЛ СПРАШИВАЕТСЯ (0359). derived_from пишут и разрез, и правка; правка листа — рядом
-// (save as new) или на его месте (overwrite, 0368) — это НЕ кусок, и считать её куском значило
+// (save as new) или на его месте (overwrite, 0369) — это НЕ кусок, и считать её куском значило
 // навсегда закрыть лист для разреза: первая же правка отвечала бы «уже нарезано» самой собой.
 //
 // ЛЕГАСИ С ПУСТЫМ ГЛАГОЛОМ СЧИТАЕТСЯ КУСКОМ — как считалась до этой правки, и это выбор, а не
@@ -804,7 +804,7 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 //
 // ⚠ ЗАМЕНЁННЫЙ КУСОК — ВСЁ ЕЩЁ КУСОК, поэтому replaced_by здесь НЕ фильтруется — и с O-53 review не
 // фильтруется и в cut_sheet: два сторожа одного факта отвечают одинаково. Кусок, перезаписанный
-// правкой (0368), стоит в ленте своей правкой — голова цепочки лежит под той же строкой, — и лист от
+// правкой (0369), стоит в ленте своей правкой — голова цепочки лежит под той же строкой, — и лист от
 // этого не становится ненарезанным. Отфильтровать его значило
 // бы: лист, у которого правкой перезаписан КАЖДЫЙ кусок, режется повторно, и рядом с головами
 // прежних кусков ложится второй комплект — регрессия против сегодняшнего поведения, которое такие
