@@ -781,10 +781,20 @@ const DesignErrorCodeDisplayOnlyInput = "display_only_input"
 //     референс ФАКТУРЫ, а не источник, и двум фактурам в одной плитке промпт смысла не даёт.
 //   - DesignErrorCodeForeignBomLine — строка BOM не этой карточки. Сосед foreign_colorway: запрос
 //     правильной формы, не годится СОСТОЯНИЕ, поэтому FailedPrecondition на каждой двери.
+//
+// И два отказа ФОРМЫ того же запроса (InvalidArgument) — с токеном, как у соседей, чтобы экран
+// различал их по слову, а не по английской прозе:
+//
+//   - DesignErrorCodeUnknownPatternMode — params.pattern.mode ни ""/image, ни swatch. Не читается
+//     как image: дверь и воркер разошлись бы в том, что куплено.
+//   - DesignErrorCodeBadBomLineID — отрицательный params.pattern.bom_item_id: не id строки BOM
+//     вовсе (0 значит «не для слота»).
 const (
-	DesignErrorCodeNoColour          = "no_colour"
-	DesignErrorCodeOneTexturePicture = "one_texture_picture"
-	DesignErrorCodeForeignBomLine    = "foreign_bom_line"
+	DesignErrorCodeNoColour           = "no_colour"
+	DesignErrorCodeOneTexturePicture  = "one_texture_picture"
+	DesignErrorCodeForeignBomLine     = "foreign_bom_line"
+	DesignErrorCodeUnknownPatternMode = "unknown_pattern_mode"
+	DesignErrorCodeBadBomLineID       = "bad_bom_line_id"
 )
 
 // Режимы прогона паттерна — DesignPatternParams.mode (STEP 3). Пустая строка значит то же, что

@@ -50,6 +50,12 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 		{"legacy empty mode with two pictures", image("", 11, 12), "one_source_picture"},
 		{"image with one picture", image(entity.DesignPatternModeImage, 11), ""},
 		{"legacy empty mode with one picture", image("", 11), ""},
+		// НЕИЗВЕСТНЫЙ РЕЖИМ — ОТКАЗ СО СВОИМ СЛОВОМ, а не «читай как image»: дверь и воркер
+		// разошлись бы в том, что куплено.
+		{"an unknown mode is refused, not read as image", image("photo", 11),
+			entity.DesignErrorCodeUnknownPatternMode},
+		{"an unknown mode is refused even with no picture", image("photo"),
+			entity.DesignErrorCodeUnknownPatternMode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
@@ -62,10 +68,6 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 		})
 	}
 
-	t.Run("an unknown mode is refused, not read as image", func(t *testing.T) {
-		err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", image("photo", 11))
-		require.Equal(t, codes.InvalidArgument, status.Code(err))
-	})
 	t.Run("a swatch still needs its name", func(t *testing.T) {
 		p := swatch(hex)
 		p.Pattern.Name = " "
@@ -77,10 +79,17 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 // СЛОТ ПЛИТКИ — СТРОКА BOM ЭТОЙ КАРТОЧКИ, И ОТКАЗ ЧУЖОЙ — FailedPrecondition ДО РЕЗЕРВА.
 //
 // МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать designRefuseForeignBomLine из StartDesignRun — прогон заплатит за
-// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки.
+// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки. И вторая: начать
+// судить СЕКЦИЮ строки — фурнитура и нитки этой карточки проходят намеренно, какие строки слоты
+// ткани, решает экран по своему прочтению BOM.
 func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 	card := designMoodCard()
-	card.BomItems = []entity.TechCardBomItem{{Id: 902}, {Id: 903}}
+	card.BomItems = []entity.TechCardBomItem{
+		{Id: 902, Section: entity.BomSectionFabric},
+		{Id: 903, Section: entity.BomSectionLining},
+		{Id: 904, Section: entity.BomSectionHardware},
+		{Id: 905, Section: entity.BomSectionThread},
+	}
 	for _, tc := range []struct {
 		name    string
 		bom     int32
@@ -90,8 +99,10 @@ func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 	}{
 		{"a line of this card", 902, codes.OK, "", false},
 		{"not made for a slot", 0, codes.OK, "", false},
+		{"a hardware line of this card — the section is not judged", 904, codes.OK, "", false},
+		{"a thread line of this card — the section is not judged", 905, codes.OK, "", false},
 		{"a line of another card", 7777, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine, true},
-		{"a negative id", -3, codes.InvalidArgument, "", true},
+		{"a negative id", -3, codes.InvalidArgument, entity.DesignErrorCodeBadBomLineID, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newDesignRunRig(t, card, designBandWith(true))
@@ -112,9 +123,7 @@ func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 			}
 			require.Error(t, err)
 			require.Equal(t, tc.code, status.Code(err))
-			if tc.reason != "" {
-				require.Equal(t, tc.reason, ffReason(t, err))
-			}
+			require.Equal(t, tc.reason, ffReason(t, err), "каждый отказ двери называет себя словом")
 			require.Nil(t, rig.sent, "отказ обязан стоять ДО резерва")
 		})
 	}

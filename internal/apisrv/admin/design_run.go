@@ -1182,9 +1182,11 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 					map[string]string{"named": strconv.Itoa(sources)})
 			}
 		default:
-			return status.Errorf(codes.InvalidArgument,
-				"params.pattern.mode %q is neither %q (or empty) nor %q",
-				mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch)
+			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeUnknownPatternMode,
+				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty) nor %q. Nothing was "+
+					"reserved and nothing was charged",
+					mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch),
+				map[string]string{"mode": mode})
 		}
 		name := strings.TrimSpace(params.GetPattern().GetName())
 		if name == "" {
@@ -1891,8 +1893,10 @@ func designRefuseForeignBomLine(cardID int, spoken *pb_common.DesignRunParams, b
 		return nil
 	}
 	if id < 0 {
-		return status.Errorf(codes.InvalidArgument,
-			"params.pattern.bom_item_id %d is not a BOM line id (0 = not made for a slot)", id)
+		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeBadBomLineID,
+			fmt.Sprintf("params.pattern.bom_item_id %d is not a BOM line id (0 = not made for a slot). "+
+				"Nothing was reserved and nothing was charged", id),
+			map[string]string{"bom_item_id": strconv.Itoa(id)})
 	}
 	for _, line := range bom {
 		if line.Id == id {

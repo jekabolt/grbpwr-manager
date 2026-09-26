@@ -119,8 +119,8 @@ func insertAssetTx(ctx context.Context, db dependency.DB, params map[string]any)
 // в покое: повторное назначение того же ассета тому же колорвею обязано быть идемпотентным, а не
 // снять и вернуть.
 //
-// ⚠ ВТОРОЙ ЗВАТЕЛЬ — ПОСАДКА ПЛИТКИ (keepPatternTx), И ТАМ КРАЖА ОБЯЗАНА ИДТИ ДО ВСТАВКИ.
-// uq_design_asset_colorway (tech_card_id, colorway_id) — настоящий UNIQUE: вставить нового
+// ⚠ ВТОРОЙ ЗВАТЕЛЬ — ПОСАДКА ПЛИТКИ БЕЗ СЛОТА (keepPatternTx), И ТАМ КРАЖА ОБЯЗАНА ИДТИ ДО
+// ВСТАВКИ. uq_design_asset_colorway (tech_card_id, colorway_id) — настоящий UNIQUE: вставить нового
 // носителя, пока прежний ещё носит, значит получить 1062 на уже оплаченном прогоне. У ассета,
 // которого ещё нет, нет и id — отсюда keepID = 0, «не щадить никого»: строки с id 0 не бывает,
 // поэтому условие `id <> 0` истинно для всех и означает ровно «снять со всех».
@@ -166,9 +166,18 @@ func stealColorwayTx(ctx context.Context, db dependency.DB, cardID, colorwayID, 
 // ничего: имени взять негде, а выдуманное приехало бы в следующий промпт словом «pattern». Такие
 // плитки кладёт человек, как и раньше.
 //
-// STEP 3 (0368) ДОБАВИЛ ДВА ФАКТА И НЕ ТРОНУЛ НИ ОДНОГО ПРЕЖНЕГО: плитка запоминает код и hex
-// заявленного цвета, а плитка, сделанная для пары (колорвей, слот), становится тканью этой пары —
-// см. bindKeptPatternTx. Кража колорвея и его запись выше идут ровно как шли.
+// STEP 3 (0368) ДОБАВИЛ ДВА ФАКТА: плитка запоминает код и hex заявленного цвета, а плитка,
+// сделанная для пары (колорвей, слот), становится тканью этой пары — см. bindKeptPatternTx.
+//
+// ⚠ И У ПЛИТКИ СЛОТА ЛЕГАСИ-ЗАПИСИ НЕТ ВОВСЕ — ни кражи, ни UPDATE design_asset.colorway_id (ревью
+// STEP 3). Свотч слота — ткань ПАРЫ («white → outer»), а не всего колорвея: записать его в колонку
+// «ткань колорвея целиком» значило бы сказать неправду о подкладке того же цвета, а колонка —
+// single-select, так что при свотче на каждый слот она прыгала бы на «самый свежий свотч любого
+// слота» и отнимала колорвей у ткани, которую человек назначил руками. Колонка сегодня только
+// пишется: ни экран шага, ни промпт ткань из неё не выводят (читают её лишь сторожа — вердикт
+// удаления и перепривязка колорвея, N2 у Upsert), так что у слотового прогона ей нечего сообщать.
+// Прогон БЕЗ слота (bom_item_id 0 — каждый image-прогон и каждый, замороженный до STEP 3) крадёт и
+// пишет колорвей ровно как до 0368.
 func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, p designRunParams, mediaID int) error {
 	if p.Pattern == nil || mediaID <= 0 {
 		return nil
@@ -215,7 +224,9 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	// несуществующий id упала бы внешним ключом. Ноль здесь значит «плитка встаёт на полку ничьей»,
 	// ровно то же, что случилось со строкой прогона.
 	cw := entity.DesignColorwayOrNone(run.ColorwayId)
-	if cw > 0 {
+	// Плитка слота колорвей целиком не носит (см. шапку): ей нечего и красть.
+	slot := p.Pattern.BomItemId > 0
+	if cw > 0 && !slot {
 		if err := stealColorwayTx(ctx, db, run.TechCardId, cw, 0); err != nil {
 			return err
 		}
@@ -271,7 +282,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		return err
 	}
 	if cw == 0 {
-		if p.Pattern.BomItemId > 0 {
+		if slot {
 			// СДЕЛАНА ДЛЯ СЛОТА, НО КОЛОРВЕЯ У ПРОГОНА БОЛЬШЕ НЕТ (FK погасил колонку, пока прогон
 			// шёл) — пары, которую надо перепривязать, не существует. Плитка остаётся на полке.
 			slog.WarnContext(ctx, "design: pattern tile landed unbound — its colourway is gone",
@@ -279,6 +290,10 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 				slog.Int("bom_item_id", p.Pattern.BomItemId))
 		}
 		return nil
+	}
+	if slot {
+		// ТКАНЬ ПАРЫ, А НЕ КОЛОРВЕЯ: legacy-колонка остаётся NULL, пишется только связка.
+		return bindKeptPatternTx(ctx, db, run, cw, p.Pattern.BomItemId, id)
 	}
 	// ⚠ НОСКА — ОТДЕЛЬНЫМ UPDATE, И ЭТО НАМЕРЕННО. Колонки colorway_id НЕТ в общем INSERT, которым
 	// пользуется UpsertAsset, и её там не будет: держать её вне того оператора — это и есть
@@ -291,7 +306,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		map[string]any{"cw": cw, "id": id, "card": run.TechCardId}); err != nil {
 		return fmt.Errorf("failed to give the kept pattern of run %d to colourway %d: %w", run.Id, cw, err)
 	}
-	return bindKeptPatternTx(ctx, db, run, cw, p.Pattern.BomItemId, id)
+	return nil
 }
 
 // bindKeptPatternTx — ПЛИТКА, СДЕЛАННАЯ ДЛЯ ПАРЫ, СТАНОВИТСЯ ТКАНЬЮ ЭТОЙ ПАРЫ (STEP 3, 0368), в той
@@ -357,6 +372,17 @@ func bomLineOfCard(ctx context.Context, db dependency.DB, cardID, bomItemID int)
 	return n > 0, nil
 }
 
+// bomLineGone — нет ли строки BOM с этим id НИ У ОДНОЙ карточки. Нужна только снятию связки:
+// «пропала» (снимать нечего, OK) и «чужая» (foreign_bom_line) bomLineOfCard не различает.
+func bomLineGone(ctx context.Context, db dependency.DB, bomItemID int) (bool, error) {
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM tech_card_bom_item WHERE id = :bom`, map[string]any{"bom": bomItemID})
+	if err != nil {
+		return false, fmt.Errorf("failed to read BOM line %d: %w", bomItemID, err)
+	}
+	return n == 0, nil
+}
+
 // assetBindingUpsert — ЕДИНСТВЕННЫЙ оператор записи связки, на обоих писателях.
 //
 // UPSERT ПО КЛЮЧУ ПАРЫ, И ЭТО И ЕСТЬ SINGLE-SELECT. uq_design_asset_binding (colorway_id,
@@ -386,7 +412,9 @@ func upsertAssetBindingTx(ctx context.Context, db dependency.DB, cardID, cw, bom
 
 // SetAssetBinding says WHICH ASSET IS THE FABRIC OF ONE (COLOURWAY, SLOT) (0368); AssetId 0 takes
 // the fabric off the pair, and unbinding a pair that wears nothing is a success that changes
-// nothing — the state after the call is exactly the one asked for.
+// nothing — the state after the call is exactly the one asked for. The same holds for a pair whose
+// BOM line has since been DELETED (its binding went with it by cascade): the unbind answers OK
+// rather than foreign_bom_line. A line that still exists on ANOTHER card is refused either way.
 //
 // EVERY ONE OF THE THREE IDS IS CHECKED AGAINST THE CARD, in this transaction and in this order:
 // the asset (NotFound for another card's, colorway_forbidden for hardware — a zip is not what a
@@ -432,8 +460,22 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("%w: BOM line %d is not a line of tech card %d",
-				entity.ErrDesignForeignBomLine, req.BomItemId, req.TechCardId)
+			// СНЯТИЕ С ПРОПАВШЕЙ СТРОКИ — НЕ ОТКАЗ (ревью STEP 3). Строку BOM законно удаляют, пока
+			// экран открыт, и её пары уходят каскадом: состояние, о котором просит снятие, уже
+			// наступило, а foreign_bom_line сказал бы человеку «чужая строка» о строке, которой нет
+			// ни у кого. Поэтому пропавшая строка на снятии — тот же DELETE ниже (ничего не
+			// находит) и OK. Строка, которая ЕСТЬ, но у ДРУГОЙ карточки, отказывает и на снятии:
+			// адрес чужой пары — ошибка клиента, а не устаревший экран.
+			gone := false
+			if req.AssetId == 0 {
+				if gone, err = bomLineGone(ctx, db, req.BomItemId); err != nil {
+					return err
+				}
+			}
+			if !gone {
+				return fmt.Errorf("%w: BOM line %d is not a line of tech card %d",
+					entity.ErrDesignForeignBomLine, req.BomItemId, req.TechCardId)
+			}
 		}
 		pair := map[string]any{"cw": req.ColorwayId, "bom": req.BomItemId, "card": req.TechCardId}
 		if req.AssetId == 0 {

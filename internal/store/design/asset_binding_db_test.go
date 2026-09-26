@@ -1,9 +1,11 @@
 package design_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -170,17 +172,160 @@ func TestDesignDBAssetBindingRefusesForeignEnds(t *testing.T) {
 	require.Empty(t, bindingsOf(t, raw, card), "ни один отказ не оставил строки")
 }
 
+// СНЯТИЕ С ПРОПАВШЕЙ СТРОКИ BOM — OK: СОСТОЯНИЕ, О КОТОРОМ ПРОСЯТ, УЖЕ НАСТУПИЛО (ревью STEP 3).
+//
+// Строку удалили, пока экран был открыт, пара ушла каскадом, и человек жмёт «снять» на устаревшем
+// экране. foreign_bom_line сказал бы «чужая строка» о строке, которой нет ни у кого.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть отказ пропавшей строке на снятии; ослабить правило до «снятие не
+// спрашивает строку вовсе» (строка ДРУГОЙ карточки обязана отказывать и на снятии); пустить
+// привязку на пропавшую строку (FK уронил бы её 1452 — отказ обязан прийти раньше, словом).
+func TestDesignDBAssetBindingUnbindOfAVanishedLineIsOK(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	other, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	line := probeBomLine(t, raw, card, "fabric", "outer")
+	foreignLine := probeBomLine(t, raw, other, "fabric", "outer")
+	ctx := context.Background()
+
+	asset := probeAsset(t, rep, card, "twill")
+	set := func(bom, assetID int) (*entity.DesignAssetBinding, error) {
+		return rep.Design().SetAssetBinding(ctx, entity.DesignAssetBindingSet{
+			TechCardId: card, ColorwayId: cw, BomItemId: bom, AssetId: assetID, SetBy: "probe",
+		})
+	}
+	_, err := set(line, asset.Id)
+	require.NoError(t, err)
+	require.Equal(t, map[[2]int]int{{cw, line}: asset.Id}, bindingsOf(t, raw, card))
+
+	_, err = raw.Exec(`DELETE FROM tech_card_bom_item WHERE id = ?`, line)
+	require.NoError(t, err)
+	require.Empty(t, bindingsOf(t, raw, card), "пара ушла со строкой каскадом")
+
+	got, err := set(line, 0)
+	require.NoError(t, err, "снятие с пропавшей строки — то состояние, о котором просят")
+	require.Nil(t, got)
+	got, err = set(line, 0)
+	require.NoError(t, err, "и повтор тоже OK")
+	require.Nil(t, got)
+
+	require.ErrorIs(t, func() error { _, err := set(line, asset.Id); return err }(),
+		entity.ErrDesignForeignBomLine, "ПРИВЯЗАТЬ к пропавшей строке нельзя — это не снятие")
+	require.ErrorIs(t, func() error { _, err := set(foreignLine, 0); return err }(),
+		entity.ErrDesignForeignBomLine, "строка, которая есть у ДРУГОЙ карточки, отказывает и на снятии")
+	require.Empty(t, bindingsOf(t, raw, card))
+}
+
+// КАРТОЧКА БЕЗ ПРИВЯЗОК ОТДАЁТ [], А НЕ nil — И НЕ ЧУЖИЕ ПРИВЯЗКИ.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: убрать нормализацию nil → [] в listAssetBindings (провод скажет «этот
+// бинарь не знает привязок» вместо «ещё ничего не привязано»); потерять WHERE tech_card_id (полоса
+// свежей карточки понесёт пары соседа).
+func TestDesignDBAFreshCardBandCarriesAnEmptyBindingList(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	neighbour, _, _ := designProbeCard(t, rep, raw)
+	ctx := context.Background()
+
+	// У СОСЕДА ПРИВЯЗКА ЕСТЬ: пустота свежей карточки — это её пустота, а не пустота таблицы.
+	ncw := probeColorway(t, raw, neighbour, "BLK")
+	nline := probeBomLine(t, raw, neighbour, "fabric", "outer")
+	nasset := probeAsset(t, rep, neighbour, "twill")
+	_, err := rep.Design().SetAssetBinding(ctx, entity.DesignAssetBindingSet{
+		TechCardId: neighbour, ColorwayId: ncw, BomItemId: nline, AssetId: nasset.Id, SetBy: "probe",
+	})
+	require.NoError(t, err)
+
+	band, err := rep.Design().GetBand(ctx, card, 1)
+	require.NoError(t, err)
+	require.NotNil(t, band.AssetBindings, "пустое ≠ отсутствующее: свежая карточка отдаёт []")
+	require.Empty(t, band.AssetBindings)
+
+	band, err = rep.Design().GetBand(ctx, neighbour, 1)
+	require.NoError(t, err)
+	require.Len(t, band.AssetBindings, 1, "положительный контроль: у соседа пара читается")
+}
+
+// УДАЛЕНИЕ ПЛИТКИ, НОСИМОЙ ПАРАМИ: ВЫЗОВ УДАЁТСЯ, ЕЁ ПАРЫ УХОДЯТ, ЧУЖИЕ ОСТАЮТСЯ — И ЧИСЛО
+// СНЯТЫХ ПАР СОСЧИТАНО ДО УДАЛЕНИЯ.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: считать пары ПОСЛЕ оператора (каскад их уже унёс — в журнале 0 и записи
+// нет вовсе); считать по карточке, а не по ассету (в числе окажется пара соседней плитки); снимать
+// лишнее (пара другой плитки той же карточки обязана пережить удаление).
+func TestDesignDBDeletingABoundAssetUnbindsItsPairsCountedFirst(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	outer := probeBomLine(t, raw, card, "fabric", "outer")
+	lining := probeBomLine(t, raw, card, "lining", "lining")
+	pocket := probeBomLine(t, raw, card, "fabric", "pocket")
+	ctx := context.Background()
+
+	doomed := probeAsset(t, rep, card, "twill")
+	kept := probeAsset(t, rep, card, "poplin")
+	for bom, asset := range map[int]int{outer: doomed.Id, lining: doomed.Id, pocket: kept.Id} {
+		_, err := rep.Design().SetAssetBinding(ctx, entity.DesignAssetBindingSet{
+			TechCardId: card, ColorwayId: cw, BomItemId: bom, AssetId: asset, SetBy: "probe",
+		})
+		require.NoError(t, err)
+	}
+
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	removed, err := rep.Design().DeleteAsset(ctx, card, doomed.Id)
+	require.NoError(t, err, "плитка, носимая парами, удаляется: пары уходят каскадом")
+	require.Zero(t, removed, "меток на флетах у плитки не было")
+	require.Equal(t, map[[2]int]int{{cw, pocket}: kept.Id}, bindingsOf(t, raw, card),
+		"ушли ровно пары удалённой плитки")
+
+	type deleteLog struct {
+		Msg     string `json:"msg"`
+		AssetID int    `json:"asset_id"`
+		Removed int    `json:"removed_bindings"`
+	}
+	var said *deleteLog
+	for _, line := range bytes.Split(bytes.TrimSpace(logged.Bytes()), []byte("\n")) {
+		var e deleteLog
+		if json.Unmarshal(line, &e) == nil && e.AssetID == doomed.Id && strings.Contains(e.Msg, "slot fabrics") {
+			said = &e
+			break
+		}
+	}
+	require.NotNil(t, said, "удаление, снявшее ткань со слотов, обязано это сказать: %s", logged.String())
+	require.Equal(t, 2, said.Removed, "обе пары сосчитаны ДО оператора, после которого считать нечего")
+}
+
 // ПЛИТКА, СДЕЛАННАЯ ДЛЯ ПАРЫ, САДИТСЯ ТКАНЬЮ ЭТОЙ ПАРЫ — И ПОМНИТ СВОЙ ЦВЕТ.
 //
 // МУТАЦИИ, КОТОРЫЕ ЛОВИТ: не писать связку в keepPatternTx (свотч садится на полку, но слот его не
 // носит); писать связку «только если пусто» (второй свотч не перепривязывает пару); не писать
-// colour_code/colour_hex (свотч на полке — безымянный квадрат цвета).
+// colour_code/colour_hex (свотч на полке — безымянный квадрат цвета); вернуть слотовому прогону
+// легаси-кражу и запись design_asset.colorway_id (колонка прыгала бы на самый свежий свотч слота и
+// отнимала колорвей у ткани, назначенной руками).
 func TestDesignDBAPatternRunMadeForASlotBINDS_THE_PAIR(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
 	outer := probeBomLine(t, raw, card, "fabric", "outer")
 	resetBudget(t, raw)
+	ctx := context.Background()
+
+	// ТКАНЬ ВСЕГО КОЛОРВЕЯ, НАЗНАЧЕННАЯ РУКАМИ (legacy-колонка). Свотч слота её не отнимает.
+	legacy := probeAsset(t, rep, card, "old jersey")
+	_, err := rep.Design().SetAssetColorway(ctx, entity.DesignAssetColorwaySet{
+		TechCardId: card, AssetId: legacy.Id, ColorwayId: cw,
+	})
+	require.NoError(t, err)
+	colorwayOf := func(asset int) sql.NullInt64 {
+		t.Helper()
+		var v sql.NullInt64
+		require.NoError(t, raw.QueryRow(`SELECT colorway_id FROM design_asset WHERE id = ?`, asset).Scan(&v))
+		return v
+	}
 
 	land := func(name string) int {
 		started := patternRunWith(t, rep, card, cw, map[string]any{
@@ -196,6 +341,10 @@ func TestDesignDBAPatternRunMadeForASlotBINDS_THE_PAIR(t *testing.T) {
 
 	first := land("black · outer")
 	require.Equal(t, map[[2]int]int{{cw, outer}: first}, bindingsOf(t, raw, card))
+	// ⚠ LEGACY-КОЛОНКА НЕ ПРЫГАЕТ (ревью STEP 3): свотч слота — ткань ПАРЫ, а не колорвея целиком,
+	// поэтому ни кражи, ни записи design_asset.colorway_id у слотового прогона нет.
+	require.False(t, colorwayOf(first).Valid, "свотч слота не пишет себя тканью всего колорвея")
+	require.Equal(t, int64(cw), colorwayOf(legacy.Id).Int64, "и не отнимает колорвей у ткани, назначенной руками")
 	var code, hex sql.NullString
 	require.NoError(t, raw.QueryRow(`SELECT colour_code, colour_hex FROM design_asset WHERE id = ?`, first).
 		Scan(&code, &hex))
@@ -209,6 +358,9 @@ func TestDesignDBAPatternRunMadeForASlotBINDS_THE_PAIR(t *testing.T) {
 	var alive int
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM design_asset WHERE id = ?`, first).Scan(&alive))
 	require.Equal(t, 1, alive)
+	require.False(t, colorwayOf(second).Valid, "второй свотч слота — тоже только ткань пары")
+	require.Equal(t, int64(cw), colorwayOf(legacy.Id).Int64,
+		"legacy-колонка не перескакивает на «самый свежий свотч слота»")
 }
 
 // СЛОТ, ПРОПАВШИЙ МЕЖДУ ДВЕРЬЮ И ПРИЛЁТОМ, НЕ РОНЯЕТ ОПЛАЧЕННУЮ ПОСАДКУ.
