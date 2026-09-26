@@ -250,11 +250,11 @@ func freeformRetouchCraft(ff *freeformParams, attached []refCaption) string {
 	area := freeformAreaLetter(0)
 	var b strings.Builder
 	if w := freeformWindowNumber(attached); w > 0 {
-		b.WriteString("Image " + strconv.Itoa(w) + " is a CLOSE CROP around the marked area of a larger " +
-			"photograph, not an object of its own. Change only inside area " + area + ", as the words " +
-			"say; leave everything outside it pixel for pixel as it is. Return the SAME CROP, at the " +
-			"same framing and the same size: it is going to be fitted straight back into the " +
-			"photograph it was cut from. ")
+		b.WriteString("Image " + strconv.Itoa(w) + " is a CLOSE CROP around area " + area + " of a larger " +
+			"photograph, not an object of its own; its caption says where in the crop the area is. " +
+			"Change only inside area " + area + ", as the words say; leave everything outside it pixel " +
+			"for pixel as it is. Return the SAME CROP, at the same framing and the same size: it is " +
+			"going to be fitted straight back into the photograph it was cut from. ")
 	} else {
 		src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
 		b.WriteString("Change only area " + area + " on " + src + ", as the words say. Everything " +

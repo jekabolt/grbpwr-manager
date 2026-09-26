@@ -93,6 +93,10 @@ const (
 	// картинка, удалённая между дверью и проходом, превращала выполнимую просьбу в оплаченную
 	// «как получится». См. errFreeformSourceGone в snapshot.go.
 	CodeSourceGone = "source_gone"
+
+	// CodeSourceTooSmall — the picture a generation window is cut from is too small to cut (under
+	// windowMinSource px on a side). Free and terminal, like its neighbours.
+	CodeSourceTooSmall = "source_too_small"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -159,6 +163,8 @@ func classify(err error) verdict {
 	// snapshot is frozen. See freeformPrerequisitesSurvived.
 	case errors.Is(err, errFreeformSourceGone):
 		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errFreeformSourceTooSmall):
+		return verdict{Retryable: false, Code: CodeSourceTooSmall, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it

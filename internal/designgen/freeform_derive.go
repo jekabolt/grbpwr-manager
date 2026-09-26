@@ -635,7 +635,13 @@ func freeformDot(dst *image.RGBA, x, y int, c color.RGBA, thickness int) {
 
 // freeformCrop — КРОП ОБЛАСТИ С ПОЛЯМИ. PNG, если исходник держал альфу, иначе JPEG.
 func freeformCrop(src image.Image, region freeformRegion, keepAlpha bool, side int) (string, error) {
-	rect := freeformCropRect(src.Bounds(), region)
+	return freeformCropAt(src, freeformCropRect(src.Bounds(), region), keepAlpha, side)
+}
+
+// freeformCropAt — the same crop at a rectangle already computed (the generation window pads it,
+// window.go), so the cut and the paste-back read one rectangle.
+func freeformCropAt(src image.Image, rect image.Rectangle, keepAlpha bool, side int) (string, error) {
+	rect = rect.Intersect(src.Bounds())
 	if rect.Empty() {
 		return "", fmt.Errorf("the area lies outside the picture")
 	}

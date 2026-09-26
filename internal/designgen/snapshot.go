@@ -1403,8 +1403,16 @@ var errFreeformSourceGone = errors.New("designgen: a picture this playground run
 // подписях. Отказывать за неё значило бы ронять исполнимый прогон.
 func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 	ff := p.Freeform
-	if ff == nil || len(ff.Items) == 0 {
+	if ff == nil {
 		return nil
+	}
+	// PHASE 2: only `free` may run with no picture (text → image). Every other preset works ON a
+	// picture, so a frozen run that names none — the door refuses it — is refused here too, free.
+	if len(ff.Items) == 0 {
+		if ff.Preset == entity.DesignFreeformPresetFree || ff.Preset == "" {
+			return nil
+		}
+		return fmt.Errorf("%w: «%s» works on a picture, and this run names none", errFreeformSourceGone, ff.Preset)
 	}
 	alive := make(map[int]struct{}, len(attached))
 	for _, rc := range attached {
@@ -1414,6 +1422,7 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 	}
 	named, survived := 0, 0
 	hardware, marked := 0, 0
+	survivedAs := map[string]int{}
 	for _, it := range ff.Items {
 		if it.MediaID <= 0 {
 			continue
@@ -1423,6 +1432,7 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 			continue
 		}
 		survived++
+		survivedAs[it.Role]++
 		if it.Role == entity.DesignFreeformRoleHardware {
 			hardware++
 			continue
@@ -1441,6 +1451,36 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 			"more — a playground run works ON the pictures put into it, and there are none left",
 			errFreeformSourceGone, named)
 	}
+	// PHASE 2: presets whose pictures are LINKED — each one is named by number in the craft — need
+	// every named role to survive; the rest (one picture each) are covered by the check above.
+	gone := func(what string) error {
+		return fmt.Errorf("%w: «%s» needs %s, and it is no longer there", errFreeformSourceGone, ff.Preset, what)
+	}
+	switch ff.Preset {
+	case entity.DesignFreeformPresetTryon:
+		if survivedAs[entity.DesignFreeformRoleModel] == 0 {
+			return gone("the model photo")
+		}
+		if survivedAs[entity.DesignFreeformRoleProduct] == 0 {
+			return gone("the garment picture")
+		}
+		if ff.Options != nil && ff.Options.SceneMode == entity.DesignSceneModeReference &&
+			survivedAs[entity.DesignFreeformRoleScene] == 0 {
+			return gone("the scene picture")
+		}
+		return nil
+	case entity.DesignFreeformPresetAddLogo:
+		if survivedAs[entity.DesignFreeformRoleLogo] == 0 {
+			return gone("the logo picture")
+		}
+		if survived-survivedAs[entity.DesignFreeformRoleLogo] == 0 {
+			return gone("the garment picture")
+		}
+		return nil
+	}
+	// retouch / fabric_extract / ghost_mannequin / variations name exactly one picture (the door),
+	// so «it did not survive» is the named > 0 && survived == 0 check above, and «it names none» is
+	// the empty-items check at the top.
 	if ff.Preset != entity.DesignFreeformPresetAddHardware {
 		return nil
 	}

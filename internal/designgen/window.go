@@ -9,6 +9,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"math"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	xdraw "golang.org/x/image/draw"
@@ -147,9 +148,14 @@ func compositeWindow(src image.Image, win GenerationWindow, answer []byte) (Arti
 //     кадром.
 //   - ОБЛАСТЬ НА КАРТИНКЕ-ПРЕДМЕТЕ. Область, размеченная на самой фурнитуре, говорит «вот эта
 //     часть пряжки», а не «вот сюда»; окно по ней вклеило бы ответ в фотографию фурнитуры.
+//
+// PHASE 2: `retouch` takes the same window — its door guarantees one picture with one area, so
+// the plan is that area. The window is a crop-and-paste, NOT a mask: the whole padded rectangle
+// is replaced by the answer («the rectangle around your zone may change», the client says).
 func freeformWindowPlan(p runParams) *freeformWindow {
 	ff := p.Freeform
-	if ff == nil || ff.Preset != entity.DesignFreeformPresetAddHardware {
+	if ff == nil || (ff.Preset != entity.DesignFreeformPresetAddHardware &&
+		ff.Preset != entity.DesignFreeformPresetRetouch) {
 		return nil
 	}
 	var plan *freeformWindow
@@ -163,7 +169,8 @@ func freeformWindowPlan(p runParams) *freeformWindow {
 		if it.Role == entity.DesignFreeformRoleHardware || it.Role == entity.DesignFreeformRoleCloth {
 			return nil
 		}
-		plan = &freeformWindow{MediaID: it.MediaID, Region: it.Regions[0], Text: freeformTextForRegion(it, 0)}
+		plan = &freeformWindow{MediaID: it.MediaID, Region: it.Regions[0], Text: freeformTextForRegion(it, 0),
+			Preset: ff.Preset}
 	}
 	return plan
 }
@@ -173,6 +180,49 @@ type freeformWindow struct {
 	MediaID int
 	Region  freeformRegion
 	Text    string
+	Preset  string
+}
+
+// The window's minimum size [Codex 7]. A crop cut tight around a small area (a button, a stain)
+// is a few dozen pixels that the provider upscales into mush; each side is padded to at least
+// windowMinSide around the area's centre, inside the picture. A source under windowMinSource on
+// either side has nothing a window can be cut from, and is refused before money.
+const (
+	windowMinSide   = 512
+	windowMinSource = 64
+)
+
+// errFreeformSourceTooSmall — the picture a window is cut from is too small to cut. Terminal: the
+// snapshot and the media row are frozen, so the next pass meets the same picture.
+var errFreeformSourceTooSmall = errors.New("designgen: the picture of this playground run is too small for a generation window")
+
+// freeformWindowRect — THE WINDOW IN SOURCE PIXELS: the area's crop rectangle (freeformCropRect,
+// the same arithmetic as every other crop), each side grown to windowMinSide around its centre and
+// shifted back inside the picture; a picture smaller than that gives its whole side. This rectangle
+// is cut, sent and frozen as the paste-back frame — one rectangle, read three times.
+func freeformWindowRect(b image.Rectangle, region freeformRegion) image.Rectangle {
+	r := freeformCropRect(b, region)
+	grow := func(lo, hi, min, max int) (int, int) {
+		want := windowMinSide
+		if want > max-min {
+			want = max - min
+		}
+		if hi-lo >= want {
+			return lo, hi
+		}
+		lo = (lo+hi)/2 - want/2
+		hi = lo + want
+		if lo < min {
+			lo, hi = min, min+want
+		}
+		if hi > max {
+			lo, hi = max-want, max
+		}
+		return lo, hi
+	}
+	x0, x1 := grow(r.Min.X, r.Max.X, b.Min.X, b.Max.X)
+	y0, y1 := grow(r.Min.Y, r.Max.Y, b.Min.Y, b.Max.Y)
+	return image.Rect(x0, y0, x1, y1).Intersect(b)
 }
 
 // deriveFreeformWindow ЗАМЕНЯЕТ ПОЛНЫЙ КАДР ПРЕДМЕТА ЕГО КРОПОМ и морозит координаты вклейки.
@@ -207,13 +257,17 @@ func deriveFreeformWindow(ctx context.Context, objects objectFetcher, plan freef
 	if err != nil {
 		return nil, nil, fmt.Errorf("designgen: cannot read the picture a generation window crops: %w", err)
 	}
+	if b := src.Bounds(); b.Dx() < windowMinSource || b.Dy() < windowMinSource {
+		return nil, nil, fmt.Errorf("%w: it is %d×%d px, and a window needs at least %d px on each side",
+			errFreeformSourceTooSmall, b.Dx(), b.Dy(), windowMinSource)
+	}
 	keepAlpha := freeformSourceHasAlpha(src)
-	rect := freeformCropRect(src.Bounds(), plan.Region)
+	rect := freeformWindowRect(src.Bounds(), plan.Region)
 	if rect.Empty() {
 		return nil, nil, fmt.Errorf("designgen: the marked area lies outside its picture")
 	}
 	crop, err := freeformWithinBudget("the generation window", func(side int) (string, error) {
-		return freeformCrop(src, plan.Region, keepAlpha, side)
+		return freeformCropAt(src, rect, keepAlpha, side)
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("designgen: cannot crop the generation window: %w", err)
@@ -230,7 +284,14 @@ func deriveFreeformWindow(ctx context.Context, objects objectFetcher, plan freef
 
 	job.References = append(job.References, crop)
 	job.ReferenceViews = append(job.ReferenceViews, "")
-	attached = append(attached, refCaption{Caption: freeformWindowCaption(plan.Text), IsWindow: true})
+	// The crop carries no outline, and after the minimum-size padding the area is only part of it:
+	// both captions say where in the crop the area is.
+	span := freeformWindowSpan(rect, freeformCropRect(src.Bounds(), plan.Region))
+	caption := freeformWindowCaption(plan.Text, span)
+	if plan.Preset == entity.DesignFreeformPresetRetouch {
+		caption = freeformRetouchWindowCaption(plan.Text, span)
+	}
+	attached = append(attached, refCaption{Caption: caption, IsWindow: true})
 
 	return attached, &GenerationWindow{
 		SourceURL: srcURL,
@@ -243,8 +304,36 @@ func deriveFreeformWindow(ctx context.Context, objects objectFetcher, plan freef
 // freeformWindowCaption — подпись окна. Она обязана сказать, что это КРОП, а не отдельная вещь:
 // без этого модель читает крупный кусок ткани с петлёй как самостоятельный предмет и отвечает
 // натюрмортом.
-func freeformWindowCaption(text string) string {
+func freeformWindowCaption(text, span string) string {
 	c := "a close crop of the garment, around the place where the hardware goes"
+	if span != "" {
+		c += " (" + span + ")"
+	}
+	if text != "" {
+		c += " — «" + oneLine(text) + "»"
+	}
+	return c
+}
+
+// freeformWindowSpan — where the area lies inside the window, in percent of the window:
+// «the area spans 27–73% across and 27–73% down this crop».
+func freeformWindowSpan(window, area image.Rectangle) string {
+	w, h := window.Dx(), window.Dy()
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+	pct := func(v, lo, span int) int { return int(math.Round(float64(v-lo) * 100 / float64(span))) }
+	return fmt.Sprintf("the area spans %d–%d%% across and %d–%d%% down this crop",
+		pct(area.Min.X, window.Min.X, w), pct(area.Max.X, window.Min.X, w),
+		pct(area.Min.Y, window.Min.Y, h), pct(area.Max.Y, window.Min.Y, h))
+}
+
+// freeformRetouchWindowCaption — the retouch window's caption.
+func freeformRetouchWindowCaption(text, span string) string {
+	c := "a close crop of the picture around area A, the area to change"
+	if span != "" {
+		c += " (" + span + ")"
+	}
 	if text != "" {
 		c += " — «" + oneLine(text) + "»"
 	}

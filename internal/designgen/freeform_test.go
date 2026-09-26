@@ -355,8 +355,8 @@ func TestEveryPhase2ParamsFieldIsREAD_BY_ITS_SNAKE_CASE_NAME(t *testing.T) {
 // TestAPlaygroundJobCarriesItsPRESET — imageCalls (the money boundary) reads the preset off the
 // job, so it must survive buildJob; a non-freeform run carries none.
 func TestAPlaygroundJobCarriesItsPRESET(t *testing.T) {
-	r := freeformRun(`{"freeform":{"preset":"tryon","items":[{"media_id":11,"role":"model"}]}}`)
-	job, err := buildJob(context.Background(), media(11), &fakeObjects{byKey: map[string][]byte{}}, r, "medium")
+	r := freeformRun(`{"freeform":{"preset":"tryon","items":[{"media_id":11,"role":"model"},{"media_id":12,"role":"product"}]}}`)
+	job, err := buildJob(context.Background(), media(11, 12), &fakeObjects{byKey: map[string][]byte{}}, r, "medium")
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignFreeformPresetTryon, job.FreeformPreset)
 
