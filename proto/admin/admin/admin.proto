@@ -1713,8 +1713,9 @@ service AdminService {
   }
 
   // EnhanceText rewrites ONE free-text field of a tech card — improve (fix errors,
-  // clearer), expand (more detail) or shorten — for the small `ai ✦` button in the
-  // corner of the field (T15). Like FormatLibraryNoteMarkdown it is a SUGGESTION
+  // clearer), expand (more detail), shorten, or prompt (the text as an
+  // image-generation prompt, O-50) — for the small `ai ✦` button in the corner
+  // of the field (T15). Like FormatLibraryNoteMarkdown it is a SUGGESTION
   // and persists NOTHING: the answer goes back as a string, the client puts it in
   // the field with a short-lived undo, and the save is the field's ordinary write.
   //
@@ -6931,6 +6932,12 @@ enum EnhanceTextMode {
   ENHANCE_TEXT_MODE_EXPAND = 2;
   // Keep only what matters; at most half the length.
   ENHANCE_TEXT_MODE_SHORTEN = 3;
+  // Rewrite as a concise image-generation prompt (O-50): the garment type
+  // first, then silhouette, construction, material, colour and finish facts as
+  // comma-separated descriptors; every fact kept, none added; no marketing
+  // words, no negations (what the garment does NOT have is left out — an image
+  // model draws what a prompt names). Same language as the input.
+  ENHANCE_TEXT_MODE_PROMPT = 4;
 }
 
 // EnhanceTextField names WHICH field is being rewritten. It is an enum and not a
@@ -6958,7 +6965,8 @@ message EnhanceTextRequest {
   string context = 4;
   // The destination field's own limit, so the answer always fits it. 0 = 4000;
   // anything else is clamped to [200, 4000]. A longer answer is cut at the last
-  // sentence end (. ! ?) inside the limit, or at the limit when there is none.
+  // sentence end (. ! ?) inside the limit — for PROMPT, a list of descriptors,
+  // also at the last comma or semicolon — or at the limit when there is none.
   int32 max_runes = 5;
 }
 

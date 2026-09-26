@@ -79,3 +79,37 @@ func TestEnhanceTextRouteOnTheProductionAdminMux(t *testing.T) {
 		t.Fatalf("a refused body reached EnhanceText (calls=%d)", stub.calls)
 	}
 }
+
+// O-50: the fourth mode travels by its wire name, ENHANCE_TEXT_MODE_PROMPT. Before the enum had the
+// member, this very body was a 400 on this mux (an unknown enum name is refused like an unknown key).
+func TestEnhanceTextRouteTakesThePromptMode(t *testing.T) {
+	stub := &enhanceTextStub{}
+	mux := newAdminServeMux()
+	if err := pb_admin.RegisterAdminServiceHandlerServer(context.Background(), mux, stub); err != nil {
+		t.Fatalf("register admin handler: %v", err)
+	}
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	code, body := postEnhanceText(t, ts, `{"text":"boxy jacket, dropped shoulder, no logo","mode":"ENHANCE_TEXT_MODE_PROMPT",`+
+		`"field":"ENHANCE_TEXT_FIELD_DESCRIPTION","maxRunes":600}`)
+	if code != http.StatusOK {
+		t.Fatalf("status %d, body %s", code, body)
+	}
+	if stub.calls != 1 {
+		t.Fatalf("EnhanceText called %d times, want 1", stub.calls)
+	}
+	if got := stub.last; got.GetMode() != pb_admin.EnhanceTextMode_ENHANCE_TEXT_MODE_PROMPT ||
+		got.GetField() != pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_DESCRIPTION || got.GetMaxRunes() != 600 {
+		t.Fatalf("decoded request %+v", got)
+	}
+
+	// The enum is closed on this mux: a name that is not a member is still a 400, never a silent UNKNOWN.
+	code, body = postEnhanceText(t, ts, `{"text":"x","mode":"ENHANCE_TEXT_MODE_PROMPTIFY","field":"ENHANCE_TEXT_FIELD_NOTE"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("unknown mode name: status %d, body %s — want 400", code, body)
+	}
+	if stub.calls != 1 {
+		t.Fatalf("a refused body reached EnhanceText (calls=%d)", stub.calls)
+	}
+}
