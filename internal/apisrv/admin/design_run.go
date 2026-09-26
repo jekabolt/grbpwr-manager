@@ -495,7 +495,7 @@ var designDraftIdeaBaseUSD = decimal.Max(designDraftIdeaProseBaseUSD, designDraf
 // ПЕРЕКЛАДЫВАНИЕМ. Пока таблица потолков жила здесь, ЛИЗА ХЕНДЛЕРА (store/design.HandlerLeaseFor) не
 // могла её спросить — пакеты видят друг друга в другую сторону — и была выведена из ОДНОЙ ветки, из
 // entity.DesignConstructionMaxTokens. Сегодня это то же число; в день, когда у прозы появится свой
-// потолок выше 8000, бюджет вызова обогнал бы лизу, и один client_request_id заплатил бы дважды
+// потолок выше структурного, бюджет вызова обогнал бы лизу, и один client_request_id заплатил бы дважды
 // МОЛЧА. Теперь и цена, и время, и лиза спрашивают ОДНУ таблицу: entity.DesignDraftAnswerCeilings.
 //
 // Довод про то, ПОЧЕМУ У ПРОЗЫ ПОТОЛКА НЕТ (три несделанных решения владельца), уехал вместе с
@@ -2711,16 +2711,17 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	var draft *pb_common.DesignConstructionDraft
 	if construction {
 		// ВЫБРОШЕННЫЕ ОТСУТСТВИЯ НАЗЫВАЮТСЯ ПО ОДНОМУ (O-32, D-33), на Debug: это факт про промпт
-		// («модель всё ещё пишет "no closures"»), а не тревога, и читается он по ключу и первым
-		// словам. Сколько их — в строке итога ниже (aspects_absent); ответ и канон их просто не
-		// содержат.
+		// («модель всё ещё пишет "no closures" под ключом fastening»), а не тревога. В строке —
+		// идентификаторы и КЛЮЧ, и только ключ (словарный каноническим, самодельный обрезанным до
+		// 40 рун разбором): текст аспекта выведен из слов человека на доске, и в лог он не едет
+		// (ревью 26.09, MINOR). Сколько их — в строке итога ниже (aspects_absent); ответ и канон их
+		// просто не содержат.
 		parsed, stats, perr := parseConstructionDraftTracing(text, finishReason,
-			func(key, aspect string) {
+			func(key string) {
 				slog.Default().DebugContext(ctx, "design construction draft: absence aspect dropped",
 					slog.Int("tech_card_id", cardID),
 					slog.Int("run_id", run.Id),
-					slog.String("aspect_key", key),
-					slog.String("aspect_text", aiBoundedText(aspect, 120)))
+					slog.String("aspect_key", key))
 			})
 		// ⚠ СВЕРКА С НАШИМИ ДАННЫМИ — ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ, ДО ЗАПИСИ КАНОНА (B-25). Разбор чист и
 		// зовётся ещё раз на повторе, где ни словаря, ни свежей карточки быть не должно: сверка

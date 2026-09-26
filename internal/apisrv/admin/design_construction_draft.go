@@ -89,11 +89,20 @@ const (
 	// — та, что раньше называлась «обычным ответом», — уже не помещалась в 3000, то есть потолок
 	// отказывал не в аварии, а в штатном полном ответе.
 	//
-	// ⚠ ПЕРЕЗАМЕР 26.09 (O-33): в ту же форму вошёл список `flat_details` — до 6 деталей по 40 + 200
-	// рун. Худший ответ по всем потолкам (15 слотов на колорвей, все шесть деталей под потолок):
-	// плотный 15 838 Б ≈ 5 280 токенов, с отступами 21 764 Б ≈ 7 250. Запас над 8000 сжался до ~10%;
-	// следующий список в форме ответа обязан либо поднять потолок, либо ужаться сам. Замер живёт в
-	// TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer и краснеет раньше, чем прод.
+	// ⚠ ПЕРЕЗАМЕР 26.09 (ревью T32/T33, MAJOR 4) — И ПОТОЛОК 8000 → 10 000. Замер выше был «по всем
+	// потолкам» лишь на словах: силуэт и ткань несли ~212 байт, замысел — ноль, при принимаемых
+	// 2000 рунах на каждое; с ними ответ давал ≈9 100 токенов, то есть finish_reason=length на
+	// ПОЛНОМ ответе. Теперь у каждой строки есть предел, названный модели (правило 7) и держимый
+	// разбором (таблица designConstructionMax*Runes), цветов слота — 8, `flat_details` — 6 × (40 +
+	// 200), и замер заполняет КАЖДЫЙ предел ровно: плотный 20 839 Б ≈ 6 950 токенов, с отступами
+	// 24 917 Б ≈ 8 305. Под 8000 это −3.8 %; под 10 000 — запас 17 %.
+	//
+	// ПОЧЕМУ ПОТОЛОК, А НЕ ЕЩЁ ОДНО УЖАТИЕ. Удержать 8000 с запасом ≥ 15 % можно лишь так: 5 цветов
+	// слота, аспект 300 рун (≈45 слов вместо обещанных 60), записка 120, замысел 600, состав 40, цвет
+	// 30 — и запас 15.2 % на границе ошибки оценки. Это режет то, что человек читает, ради $0.03 на
+	// нажатие (2000 токенов × $15/M); цена структурной базы и бюджет вызова (+67 s) выводятся из
+	// entity.DesignConstructionMaxTokens тем же коммитом. Замер живёт в
+	// TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer и требует запас ≥ 15 %.
 	//
 	// ⚠ ПОТОЛОК ВЕСЬ УХОДИТ В ОТВЕТ, А НЕ В РАЗМЫШЛЕНИЕ: CompleteWithImages выключает `reasoning`
 	// ровно тогда, когда потолок задан (см. multimodal.go) — иначе думающая модель тратила бы этот
@@ -104,12 +113,38 @@ const (
 	// они расходились молча: см. довод у entity.DesignConstructionMaxTokens.
 	designConstructionMaxTokens = entity.DesignConstructionMaxTokens
 
-	// designConstructionMaxLongRunes — потолок «длинных» полей: силуэт, ткань, замысел. Ровно тот,
-	// что у соответствующих текстовых полей карточки (CONCEPT_MAX = 2000 на клиенте), потому что
-	// принятая строка едет именно туда и большая просто не сохранилась бы.
-	designConstructionMaxLongRunes = 2000
-	// designConstructionMaxTextRunes — потолок остальных строк: аспект, выноска, строка спеки,
-	// «что стоит приколоть». Это ОДНА мысль на строку, а не абзац.
+	// ─── ПОТОЛКИ ДЛИНЫ, КОТОРЫЕ ПРОМПТ НАЗЫВАЕТ ВСЛУХ (правило 7), А РАЗБОР ДЕРЖИТ (ревью 26.09) ───
+	//
+	// ⚠ ОДНА ТАБЛИЦА НА ТРЁХ ЧИТАТЕЛЕЙ: правило 7 промпта, разбор и замер потолка ответа
+	// (TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer). Пока «длинные» поля принимали
+	// 2000 рун каждое, а промпт о пределах молчал, замер «по всем потолкам» был неправдой: ответ,
+	// честно заполненный ДО НАШИХ ЖЕ пределов, давал ≈9 100 токенов при потолке 8 000 — то есть
+	// finish_reason=length и потерю всего оплаченного прогона. Предел, которого модель не знает, —
+	// не предел: он режет ответ молча ПОСЛЕ того, как за него заплачено. Поэтому каждое число ниже
+	// (i) названо модели в правиле 7, (ii) обрезается разбором с маркером и счётчиком Truncated,
+	// (iii) входит в замер, и TestConstructionPromptNamesTheSameLimitsTheParserHolds не даёт (i)
+	// и (ii) разойтись.
+	//
+	// Числа — не столбцы, а ЗАМЫСЕЛ ПОЛЯ: замысел — абзац (700), силуэт и ткань — по короткому
+	// абзацу (300), аспект — «одна мысль», ≈60 слов (400), записка «что приколоть» — одна строка
+	// (160). Строки спеки и цвета слотов — подписи, не описания. Все — в РУНАХ, потому что предел
+	// смысловой; байтовые потолки колонок (VARCHAR) стоят ниже по маршруту и остаются последним
+	// словом, хотя после рунных их уже не достичь (60 рун кириллицы — 121 байт при 255).
+	designConstructionMaxConceptRunes     = 700
+	designConstructionMaxSilhouetteRunes  = 300
+	designConstructionMaxFabricRunes      = 300
+	designConstructionMaxAspectRunes      = 400
+	designConstructionMaxMissingRunes     = 160
+	designConstructionMaxNameRunes        = 60 // bom.name и slot — имя строки спеки
+	designConstructionMaxCompositionRunes = 60 // «NN% fibre, NN% fibre»
+	designConstructionMaxColourRunes      = 40 // bom.colour, slot.colour — слова цвета
+	designConstructionMaxPantoneRunes     = 24 // «19-4005 TCX», с запасом на «PANTONE » впереди
+	designConstructionMaxColourCodeRunes  = 24 // код словаря либо имя цвета, которое сложит проверка; 24 руны кириллицы — 49 байт при varchar(64)
+	// designConstructionMaxTraceKeyRunes — САМОДЕЛЬНЫЙ ключ выброшенного отсутствия в строке лога.
+	// Лог получает ключ и только ключ; словарный — каноническим, самодельный — не длиннее подписи.
+	designConstructionMaxTraceKeyRunes = 40
+	// designConstructionMaxTextRunes — потолок ВЫНОСОК (поле 6): промпт их не просит с B-13, разбор
+	// жив ради повтора старых прогонов. В замер потолка они не входят — их нет в форме ответа.
 	designConstructionMaxTextRunes = 500
 	// ─── ПОТОЛКИ КОЛОНОК. СЧИТАЮТСЯ БАЙТЫ, А НЕ РУНЫ, И ЭТО НЕ ПЕДАНТИЗМ ───
 	//
@@ -162,9 +197,12 @@ const (
 	// СОЗДАЁТ ПРОДУКТ, и предложение, которое человек обязан просмотреть по одному, за четырьмя
 	// строками перестаёт быть предложением. Промпт просит 2–4; потолок — последнее слово.
 	designConstructionMaxColourways = 4
-	// ПЯТНАДЦАТЬ ЦВЕТОВ НА КОЛОРВЕЙ — РОВНО ПОТОЛОК СПЕКИ: слот берётся из строк спеки, и
-	// шестнадцатый цвет указывал бы на слот, которого предложение не называло.
-	designConstructionMaxColourwaySlots = 15
+	// ВОСЕМЬ ЦВЕТОВ НА КОЛОРВЕЙ, А НЕ ПОТОЛОК СПЕКИ (ревью 26.09). Слот берётся из строк спеки, и
+	// больше пятнадцати их быть не может — но ткани среди пятнадцати строк три–шесть (остальное
+	// нитка, фурнитура, ярлыки), а 4 × 15 подписанных слотов — это половина потолка ответа, купленная
+	// ради случая, которого не бывает. Восемь — с запасом над самой пёстрой спекой; девятый цвет
+	// считается (OverLimit), и правило 9 просит главные ткани первыми.
+	designConstructionMaxColourwaySlots = 8
 	// ИМЯ КОЛОРВЕЯ — 64 РУНЫ (сверх этого — потолок колонки tech_card_colorway.dev_name,
 	// varchar(255), в байтах). Это ПОДПИСЬ («Black / Bone»), а не описание: пикер колорвеев рисует
 	// её в одну строку, и длинное имя не читается ни там, ни в списке продукта.
@@ -360,51 +398,164 @@ func designFoldToken(s string) string {
 }
 
 // ─────────────────────────── отсутствие — не аспект ───────────────────────────
+//
+// ДВА ПРЕДИКАТА, И ГРАНИЦА МЕЖДУ НИМИ — ВЕСЬ СМЫСЛ (ревью 26.09 к O-32, MAJOR 2). Первая версия
+// сторожа выбрасывала любой текст, НАЧИНАЮЩИЙСЯ с «no / none / without…», и уносила настоящую
+// конструкцию: «Nothing but a raw-edge finish at the hem», «Without side seams — tubular-knit body»,
+// «Without lining; single layer throughout» (терялся факт «в один слой»). Отсутствие — это либо
+// ГОЛАЯ ЗАГЛУШКА («none», «n/a», «Fastening: N/A», «—»), либо КОРОТКОЕ ЧИСТОЕ ОТРИЦАНИЕ («no
+// closures», «there aren't any fastenings»); а всё, что длиннее четырёх слов после отрицания или
+// несёт ПОЛОЖИТЕЛЬНУЮ СВЯЗКУ (but, except, with, single, only, instead, just, then, запятая, точка с
+// запятой, тире, двоеточие), — это ОПИСАНИЕ, и оно остаётся, даже когда начинается со слова «нет».
+//
+// ⚠ И ПОЭТОМУ ПЕРВЫЙ ПРИМЕР ВЛАДЕЛЬЦА («No visible closures; pull-on construction, relying on jersey
+// stretch for fit») РАЗБОР БОЛЬШЕ НЕ ЛОВИТ: после точки с запятой в нём стоит описание. Его, как и
+// ярлык из второго примера, держит правило 11 промпта. Сторож здесь — сетка на голые заглушки и
+// короткие «нет», а не цензор смысла: цена ложного срабатывания — потерянная деталь конструкции,
+// цена пропуска — одна лишняя строка, которую человек отвергнет щелчком.
+//
+// ⚠ ПРИМЕНЯЕТСЯ ТОЛЬКО К ЖИВОМУ ОТВЕТУ МОДЕЛИ (designParseLive; MAJOR 1). Повтор читает НАШ
+// канонический JSON — то, что человек уже видел и за что заплачено, — и не имеет права прочитать
+// его иначе, чем в первый раз: прогон, сохранённый до этой волны с «No closures» в аспектах, обязан
+// вернуть его и сегодня, иначе один client_request_id отдаёт разное число аспектов до и после
+// выката, а `run.output_text` и `construction.aspects` в одном ответе противоречат друг другу.
 
-// designAbsenceOpeners — НАЧАЛА ФРАЗЫ, КОТОРЫМИ МОДЕЛЬ ОПИСЫВАЕТ ОТСУТСТВИЕ (O-32, D-33).
-//
-// Владелец получил FASTENING = «No visible closures; pull-on construction…» на изделии без застёжек:
-// правило 11 промпта велит такой ключ ПРОПУСТИТЬ, а этот список — сторож на случай, когда модель
-// правило не выполнила. Аспект, чей текст начинается с одного из этих слов, отвечает на вопрос
-// «есть ли на изделии X» словом «нет» — то есть говорит не про изделие, а про список ключей, — и
-// технологу предлагать нечего.
-//
-// ⚠ СПИСОК НАМЕРЕННО МАЛ И ПРОВЕРЯЕТ ТОЛЬКО НАЧАЛО ФРАЗЫ. Граница «коэрция против отказа» в этом
-// файле проходит по ФОРМЕ, а не по содержанию (решение 3 в шапке): «нет» вместо описания — это
-// форма отказа отвечать, а вот «ярлык — не деталь конструкции» (второй пример владельца) — уже
-// содержание, и его чинит промпт, а не разбор. Слово в середине фразы не считается: «hidden placket,
-// no visible stitching» описывает планку, а не отсутствие. Слово сверяется ПО ГРАНИЦЕ — «no » и
-// «none.» отсутствие, «notched lapel», «nonwoven interfacing» и «no-sew bonded hem» — детали.
-//
-// ⚠ ОДНО МЕСТО НА ВСЕ ЧТЕНИЯ: список читает и разбор аспектов, и разбор деталей для отдельного
-// рисунка (T33). Второй список рядом разошёлся бы с первым в первую же правку.
-var designAbsenceOpeners = []string{
-	"no", "none", "n/a", "not applicable", "does not apply", "not present",
-	"without", "there are no", "there is no", "nothing", "nil", "null",
+// designAbsenceSentinels — (а) ГОЛЫЕ ОТВЕТЫ-ЗАГЛУШКИ: весь текст — одно из этих слов, после снятия
+// метки «ключ:» впереди, пунктуации и кавычек по краям, в нижнем регистре. Пустой остаток («—»,
+// «-», «…») — тоже заглушка.
+var designAbsenceSentinels = map[string]struct{}{
+	"no": {}, "none": {}, "n/a": {}, "na": {}, "not applicable": {}, "does not apply": {},
+	"not present": {}, "absent": {}, "omitted": {}, "nothing": {}, "nil": {}, "null": {},
+	"zero": {}, "0": {},
 }
 
-// designIsAbsenceStatement — говорит ли текст «этого нет» вместо того, чтобы описывать деталь.
-//
-// Регистр не важен; ведущая пунктуация и кавычки снимаются («(none)», «— no closures»); после
-// слова обязана стоять ГРАНИЦА СЛОВА — конец строки, пробел, знак препинания или кавычка. Буква,
-// цифра и сцепляющая пунктуация («-», «/», «_») границей не считаются: иначе «notched», «no-sew»
-// и «no/low-stretch» читались бы как отсутствие.
-func designIsAbsenceStatement(text string) bool {
-	t := strings.TrimLeftFunc(strings.ToLower(strings.TrimSpace(text)), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	for _, opener := range designAbsenceOpeners {
+// designFlatDetailSentinels — заглушки, которыми модель отвечает на «какие детали рисовать отдельно»
+// вместо пустого списка. Имя детали проверяется ТОЛЬКО правилом (а) и этим списком: имя — подпись,
+// не фраза, и «Without side seams — tubular-knit body» — законное имя детали.
+var designFlatDetailSentinels = map[string]struct{}{
+	"no separate drawing needed": {}, "no separate drawings needed": {},
+	"no separate drawing": {}, "none needed": {},
+}
+
+// designNegationOpeners — (б) открывающие слова КОРОТКОГО ЧИСТОГО ОТРИЦАНИЯ. Длинные раньше
+// коротких: «there is no» обязан узнаться прежде «no». «0» проверяется отдельно — см.
+// designIsShortNegation: «0.5 cm hem allowance» — не отрицание.
+var designNegationOpeners = []string{
+	"there isn't any", "there aren't any", "there is no", "there are no",
+	"without", "nothing", "none", "not", "no", "zero", "0",
+}
+
+// designNegationMaxWords — сколько слов после открывающего ещё «чистое отрицание»: «no visible
+// closures at all» — четыре; пятое слово — уже описание.
+const designNegationMaxWords = 4
+
+// designPositiveConnectorWords / designPositiveConnectorRunes — ПОЛОЖИТЕЛЬНЫЕ СВЯЗКИ: после них
+// идёт описание, и текст остаётся целиком («Nothing but a raw-edge finish», «Without lining; single
+// layer throughout»). Тире — em (U+2014), en (U+2013) и дефис-минус с пробелами по бокам; дефис
+// внутри слова («raw-edge») связкой не считается.
+var designPositiveConnectorWords = map[string]struct{}{
+	"but": {}, "except": {}, "with": {}, "single": {}, "only": {}, "instead": {}, "just": {}, "then": {},
+}
+
+const designPositiveConnectorRunes = ",;:—–"
+
+// designWordJoiners — знаки, СЦЕПЛЯЮЩИЕ слово: сразу после открывающего слова они означают
+// продолжение, а не границу («no-sew», «no‑sew» с U+2011, «n/a», «no_sew»). U+2010…U+2013 — дефисы
+// и тире Юникода, которыми модели пишут «no‑sew» так же охотно, как ASCII-дефисом.
+const designWordJoiners = "-/_‐‑‒–"
+
+func designIsWordJoiner(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(designWordJoiners, r)
+}
+
+// designAbsenceNormalize — ОДНА НОРМАЛИЗАЦИЯ НА ОБА ПРЕДИКАТА: нижний регистр, прямые апострофы
+// вместо типографских («aren’t» → «aren't»), обычный пробел вместо неразрывного, снятая метка
+// «<ключ>:» впереди («Fastening: N/A»), снятые пунктуация, кавычки и пробелы по краям.
+func designAbsenceNormalize(text string) string {
+	t := strings.ToLower(strings.TrimSpace(text))
+	t = strings.NewReplacer("’", "'", "‘", "'", " ", " ").Replace(t)
+	t = designStripLeadingLabel(t)
+	return strings.TrimFunc(t, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+// designStripLeadingLabel снимает метку «<ключ>:» в начале текста — «Fastening: N/A», «sleeve /
+// cuff: none». Меткой считается ТОЛЬКО короткое имя ключа: до трёх слов из букв, пробелов и
+// сцепляющих знаков перед первым двоеточием. «There aren't any fastenings: pull-on» меткой не
+// является (четыре слова с апострофом), и его двоеточие остаётся связкой правила (б).
+func designStripLeadingLabel(t string) string {
+	i := strings.IndexByte(t, ':')
+	if i <= 0 {
+		return t
+	}
+	label := strings.TrimSpace(t[:i])
+	if label == "" || len(strings.Fields(label)) > 3 {
+		return t
+	}
+	for _, r := range label {
+		if !unicode.IsLetter(r) && !unicode.IsSpace(r) && !strings.ContainsRune(designWordJoiners, r) {
+			return t
+		}
+	}
+	return strings.TrimSpace(t[i+1:])
+}
+
+// designIsAbsentAspectText — текст аспекта говорит «этого нет» вместо того, чтобы описывать деталь:
+// правило (а) — голая заглушка, правило (б) — короткое чистое отрицание.
+func designIsAbsentAspectText(text string) bool {
+	t := designAbsenceNormalize(text)
+	return designIsBareSentinel(t, nil) || designIsShortNegation(t)
+}
+
+// designIsAbsentFlatDetailName — имя детали для отдельного рисунка — заглушка. ТОЛЬКО правило (а)
+// плюс заглушки флэта: имя — подпись, и любая фраза длиннее заглушки — это имя детали, а не отказ
+// отвечать («No closures» именем детали не бывает, но и выбрасывать его правилом (б) здесь незачем).
+func designIsAbsentFlatDetailName(name string) bool {
+	return designIsBareSentinel(designAbsenceNormalize(name), designFlatDetailSentinels)
+}
+
+// designIsBareSentinel — правило (а) над УЖЕ нормализованным текстом.
+func designIsBareSentinel(t string, extra map[string]struct{}) bool {
+	if t == "" {
+		return true // одна пунктуация: «—», «-», «…»
+	}
+	if _, ok := designAbsenceSentinels[t]; ok {
+		return true
+	}
+	_, ok := extra[t]
+	return ok
+}
+
+// designIsShortNegation — правило (б) над УЖЕ нормализованным текстом: открывающее слово отрицания,
+// за ним граница слова, не больше designNegationMaxWords слов и НИ ОДНОЙ положительной связки.
+func designIsShortNegation(t string) bool {
+	for _, opener := range designNegationOpeners {
 		if !strings.HasPrefix(t, opener) {
 			continue
 		}
 		rest := t[len(opener):]
-		if rest == "" {
-			return true
+		if rest != "" {
+			r, _ := utf8.DecodeRuneInString(rest)
+			if opener == "0" && !unicode.IsSpace(r) {
+				continue // «0.5 cm», «0-ply» — число, а не «ноль штук»
+			}
+			if designIsWordJoiner(r) {
+				continue // «notched», «nonwoven», «no-sew», «no‑sew», «zero-waste» — слово продолжается
+			}
 		}
-		r, _ := utf8.DecodeRuneInString(rest)
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-/_", r) {
-			return true
+		if strings.ContainsAny(rest, designPositiveConnectorRunes) || strings.Contains(rest, " - ") {
+			return false
 		}
+		words := strings.Fields(rest)
+		if len(words) > designNegationMaxWords {
+			return false
+		}
+		for _, w := range words {
+			w = strings.TrimFunc(w, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+			if _, connector := designPositiveConnectorWords[w]; connector {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -412,11 +563,27 @@ func designIsAbsenceStatement(text string) bool {
 // designAbsenceTrace — НАБЛЮДАТЕЛЬ ЗА ВЫБРОШЕННЫМИ ОТСУТСТВИЯМИ, а не второй канал ответа.
 //
 // Разбор чист и контекста не знает, а хендлер обязан НАЗВАТЬ в логе, что именно выброшено (на
-// Debug: это факт про промпт — «модель всё ещё пишет отсутствия», — и он читается по ключу и
-// первым словам). Счётчик в статистике говорит СКОЛЬКО, наблюдатель — ЧТО; список текстов внутри
-// статистики сломал бы правило «каждое поле — int, и каждое печатается» (TestConstructionDraftLog
-// PrintsEveryCounter). nil — законное значение: повтор и пробы ничего не наблюдают.
-type designAbsenceTrace func(key, text string)
+// Debug: это факт про промпт — «модель всё ещё пишет отсутствия»). Наблюдатель получает КЛЮЧ, И
+// ТОЛЬКО КЛЮЧ — словарный каноническим, самодельный обрезанным до designConstructionMaxTraceKeyRunes:
+// текст аспекта выведен из слов человека на доске, и в лог он не едет (ревью 26.09, MINOR).
+// Счётчик в статистике говорит СКОЛЬКО, наблюдатель — КАКОЙ КЛЮЧ; список внутри статистики сломал
+// бы правило «каждое поле — int, и каждое печатается» (TestConstructionDraftLogPrintsEveryCounter).
+// nil — законное значение: повтор и пробы ничего не наблюдают.
+type designAbsenceTrace func(key string)
+
+// designParseMode — ЧЕЙ ТЕКСТ ЧИТАЕТ РАЗБОР: живой ответ модели или наш канонический JSON.
+//
+// ⚠ ОДИН РАЗБОР, ДВА РЕЖИМА, И РАЗНИЦА — РОВНО СМЫСЛОВЫЕ СТОРОЖА. Форму (потолки, дедуп, обрезка,
+// словари токенов) проверяют оба: канон обязан читаться той же формой, которой был написан. А
+// сторожа СМЫСЛА — «этот текст описывает отсутствие», «это имя — заглушка» — только живой: канон
+// уже прошёл их перед записью, и прочитать сохранённое строже, чем в первый раз, значило бы отдать
+// на повторе не то, что человек видел (ревью 26.09, MAJOR 1).
+type designParseMode uint8
+
+const (
+	designParseCanonical designParseMode = iota // повтор: форма, и только форма
+	designParseLive                             // ответ модели: форма + смысловые сторожа
+)
 
 // ─────────────────────────── системный промпт ───────────────────────────
 
@@ -471,7 +638,7 @@ type designAbsenceTrace func(key, text string)
 // конструкции. Модель заполняла КАЖДЫЙ ключ из списка, потому что список ей дали, а разрешения
 // пропустить ключ — нет. Правило 11 даёт его вслух: аспект — это деталь конструкции, которая НА
 // ЭТОМ изделии ЕСТЬ; неприменимый ключ ПРОПУСКАЕТСЯ, отсутствие НЕ ОПИСЫВАЕТСЯ, а ярлыки/бирки
-// названы спецификацией по имени. Вторая половина починки — разбор (designIsAbsenceStatement):
+// названы спецификацией по имени. Вторая половина починки — разбор (designIsAbsentAspectText):
 // просьба к модели без сторожа остаётся просьбой.
 //
 // ⚠ ТА ЖЕ ВОЛНА (O-33, D-32) — ДЕТАЛИ ДЛЯ ОТДЕЛЬНОГО РИСУНКА, правило 12 и ключ `flat_details`.
@@ -481,6 +648,17 @@ type designAbsenceTrace func(key, text string)
 // вызова (второй прогон перечитывал бы те же картинки ради вопроса, входы которого этот ответ уже
 // держит) и отвечается отдельным ключом; пустой список — законный и ожидаемый ответ, и промпт
 // говорит это вслух. Стандартные элементы (подгибка, шов, отстрочка, ярлык) не перечисляются.
+//
+// ⚠ РЕВЬЮ 26.09 (Codex, T32/T33) — ТРИ ПРАВКИ РОЛИ. (1) Правило 7 называет ДЛИНУ каждого поля в
+// знаках: предел, которого модель не знает, режет ответ молча ПОСЛЕ оплаты, а полный ответ по
+// прежним пределам (2000 рун на замысел, силуэт и ткань) не влезал в потолок токенов вовсе (≈9 100
+// при 8 000). Числа — те же константы, что держит разбор и меряет TestConstructionAnswerCeiling
+// HoldsTheWorstRealisticAnswer; TestConstructionPromptNamesTheSameLimitsTheParserHolds не даёт им
+// разойтись. (2) Правило 12 больше не говорит «не повторяй аспекты»: необычный карман по правилу 3
+// — аспект, а по правилу 12 — деталь для рисунка, и буквальная модель, выполняя запрет, опускала бы
+// рисунок — ровно то, ради чего ключ заведён. Теперь: не превращать КАЖДЫЙ аспект в деталь
+// механически, но одна черта может быть в обоих. (3) Слотов цвета на колорвей — не больше восьми
+// (см. designConstructionMaxColourwaySlots).
 const designConstructionSystemPrompt = "You are a garment technologist's assistant. " +
 	"You are shown the moodboard pictures, the designer's concept & construction description, and " +
 	"the notes pinned on the pictures — every note names its picture by number and the spot it " +
@@ -515,12 +693,17 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"at most 60 words each.\n" +
 	"6. Do not repeat what the card already says — refine it or leave the field empty.\n" +
 	"7. Limits: at most 10 aspects, 15 bom lines, 8 missing notes, 6 flat details, 4 colourways " +
-	"of at most 15 slot colours each.\n" +
+	"of at most 8 slot colours each. Lengths, in characters — longer text is cut: \"concept\" 700; " +
+	"\"silhouette\" and \"fabric\" 300 each; an aspect 400 (about 60 words); a missing note 160; " +
+	"a flat detail \"name\" 40 and \"note\" 200; a bom \"name\" or \"composition\" 60, a " +
+	"\"colour\" 40, a Pantone code 24; a colourway \"name\" 64, its \"color_code\" 24; a slot " +
+	"\"colour\" 40.\n" +
 	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it " +
 	"empty.\n" +
 	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
-	"entry per combination, naming EVERY cloth slot from \"bom\" by its exact \"name\" with a " +
-	"Pantone TCX code and a hex; \"color_code\" is the closest code from the colour list in the " +
+	"entry per combination, naming every cloth slot from \"bom\" by its exact \"name\" (the main " +
+	"cloths first; at most 8) with a Pantone TCX code and a hex; \"color_code\" is the closest " +
+	"code from the colour list in the " +
 	"prompt (empty when none is close); never invent a colour the board does not show.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
@@ -536,8 +719,9 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"cuff, placket or vent, a hidden fastening detail, a hardware detail. Each entry: \"name\" " +
 	"(what it is, a few words) and \"note\" (what the drawing must show). If nothing needs a " +
 	"separate drawing, return an empty list. Do not list standard elements — plain hems, plain " +
-	"seams, topstitching, labels — and do not repeat \"aspects\": an aspect is a construction fact " +
-	"in words, a flat detail is a drawing that is needed."
+	"seams, topstitching, labels. Do not mechanically turn every aspect into a flat detail; a " +
+	"feature may appear in both when its construction fact belongs in \"aspects\" and it also " +
+	"needs its own drawing."
 
 // ─────────────────────────── пользовательский промпт ───────────────────────────
 
@@ -1244,9 +1428,9 @@ func parseConstructionDraft(raw, finishReason string) (*pb_common.DesignConstruc
 	return parseConstructionDraftTracing(raw, finishReason, nil)
 }
 
-// parseConstructionDraftTracing — тот же разбор, с наблюдателем за выброшенными отсутствиями
+// parseConstructionDraftTracing — тот же ЖИВОЙ разбор, с наблюдателем за выброшенными отсутствиями
 // (designAbsenceTrace). Хендлер зовёт эту форму, чтобы назвать выброшенное в логе; всё прочее —
-// короткую.
+// короткую. Обе — designParseLive: это ответ модели, и смысловые сторожа включены.
 func parseConstructionDraftTracing(
 	raw, finishReason string, onAbsent designAbsenceTrace,
 ) (*pb_common.DesignConstructionDraft, designConstructionStats, error) {
@@ -1260,15 +1444,16 @@ func parseConstructionDraftTracing(
 	if js == "" {
 		return nil, stats, fmt.Errorf("no JSON object in the model output (%q)", aiBoundedText(raw, 200))
 	}
-	out, err := designParseConstructionObject(js, &stats, onAbsent)
+	out, err := designParseConstructionObject(js, designParseLive, &stats, onAbsent)
 	return out, stats, err
 }
 
 // designParseConstructionObject — разбор УЖЕ ВЫДЕЛЕННОГО объекта. Отдельная функция ради второго
 // входа: повтор читает НАШ СОБСТВЕННЫЙ канонический JSON и не имеет права терпеть вокруг него прозу
-// (см. designConstructionDraftFromRun), а живой ответ модели — обязан.
+// (см. designConstructionDraftFromRun), а живой ответ модели — обязан. Режим (designParseMode)
+// включает или выключает смысловые сторожа; форма проверяется в обоих.
 func designParseConstructionObject(
-	js string, stats *designConstructionStats, onAbsent designAbsenceTrace,
+	js string, mode designParseMode, stats *designConstructionStats, onAbsent designAbsenceTrace,
 ) (*pb_common.DesignConstructionDraft, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(js), &fields); err != nil {
@@ -1286,9 +1471,9 @@ func designParseConstructionObject(
 	}
 
 	out := &pb_common.DesignConstructionDraft{
-		Silhouette: designBoundedRunes(designScalarField(fields, "silhouette", stats), designConstructionMaxLongRunes, stats),
-		Fabric:     designBoundedRunes(designScalarField(fields, "fabric", stats), designConstructionMaxLongRunes, stats),
-		Concept:    designBoundedRunes(designScalarField(fields, "concept", stats), designConstructionMaxLongRunes, stats),
+		Silhouette: designBoundedRunes(designScalarField(fields, "silhouette", stats), designConstructionMaxSilhouetteRunes, stats),
+		Fabric:     designBoundedRunes(designScalarField(fields, "fabric", stats), designConstructionMaxFabricRunes, stats),
+		Concept:    designBoundedRunes(designScalarField(fields, "concept", stats), designConstructionMaxConceptRunes, stats),
 		Fit:        designConstructionFitByFold[designFoldToken(designScalarField(fields, "fit", stats))],
 	}
 
@@ -1296,25 +1481,33 @@ func designParseConstructionObject(
 	seenAspect := make(map[string]struct{})
 	for _, a := range designListField[designRawAspect](fields, "aspects", stats) {
 		key := designTake(a.Key, stats)
-		text := designBoundedRunes(designTake(a.Text, stats), designConstructionMaxTextRunes, stats)
+		text := designBoundedRunes(designTake(a.Text, stats), designConstructionMaxAspectRunes, stats)
 		// ТЕКСТ ИЗ ОДНОЙ ПУНКТУАЦИИ («—», «-») — ПУСТОЙ: складка без единой буквы или цифры.
 		if key == "" || text == "" || designFoldToken(text) == "" {
 			stats.AspectsDropped++
 			continue
 		}
-		// ОТСУТСТВИЕ — НЕ АСПЕКТ (O-32, D-33). Выбрасывается ДО дедупа и ДО потолка списка: строка
-		// «No closures» не имеет права занять одно из десяти мест настоящей детали. Наблюдателю
-		// отдаётся ключ и текст ДО складки — так их прочтёт человек в логе.
-		if designIsAbsenceStatement(text) {
+		fold := designFoldToken(key)
+		canon, standard := designConstructionAspectByFold[fold]
+		// ОТСУТСТВИЕ — НЕ АСПЕКТ (O-32, D-33), И ТОЛЬКО У ЖИВОГО ОТВЕТА (ревью 26.09, MAJOR 1):
+		// канон повтора читается той же формой, но БЕЗ смысловых сторожей — иначе один и тот же
+		// client_request_id отдавал бы разное число аспектов до и после выката. Выбрасывается ДО
+		// дедупа и ДО потолка списка: «no closures» не имеет права занять одно из десяти мест
+		// настоящей детали. Наблюдателю — ТОЛЬКО КЛЮЧ, канонический либо обрезанный: текст аспекта
+		// выведен из слов человека на доске, и в лог он не едет.
+		if mode == designParseLive && designIsAbsentAspectText(text) {
 			stats.AspectsAbsent++
 			if onAbsent != nil {
-				onAbsent(key, text)
+				if standard {
+					onAbsent(canon)
+				} else {
+					onAbsent(aiBoundedText(key, designConstructionMaxTraceKeyRunes))
+				}
 			}
 			continue
 		}
-		fold := designFoldToken(key)
 		custom := false
-		if canon, ok := designConstructionAspectByFold[fold]; ok {
+		if standard {
 			key = canon
 		} else {
 			// САМОДЕЛЬНЫЙ КЛЮЧ ПРИНИМАЕТСЯ, А НЕ ОТВЕРГАЕТСЯ: редактор аспектов принимает такие
@@ -1350,16 +1543,18 @@ func designParseConstructionObject(
 	// отдельно», и обычный ответ на него — «ничего». Клиент делает DETAIL-слоты ИЗ ЭТОГО списка, а
 	// не из аспектов (пока делал из аспектов, у пуловера появлялся «DETAIL · FASTENING»).
 	//
-	// Имя-отсутствие («none», «no separate drawing needed») — та же форма отказа отвечать, что у
-	// аспекта, и то же правило (designIsAbsenceStatement): модели, которой велели вернуть пустой
-	// список, случается вернуть список из одного «none». Записка не обязательна — имя есть подпись
-	// слота, и без него строку нельзя ни принять, ни отвергнуть.
+	// Имя-заглушка («none», «n/a», «no separate drawing needed») — отказ отвечать, а не имя: модели,
+	// которой велели вернуть пустой список, случается вернуть список из одного «none». Имя
+	// проверяется ТОЛЬКО правилом голой заглушки (designIsAbsentFlatDetailName): имя — подпись, и
+	// «Without side seams — tubular-knit body» — законное имя детали. И только у живого ответа, по
+	// тому же доводу, что у аспектов. Записка не обязательна — имя есть подпись слота, и без него
+	// строку нельзя ни принять, ни отвергнуть.
 	seenFlat := make(map[string]struct{})
 	for _, d := range designListField[designRawFlatDetail](fields, "flat_details", stats) {
 		name := designBoundedRunes(designTake(d.Name, stats), designConstructionMaxFlatDetailNameRunes, stats)
 		note := designBoundedRunes(designTake(d.Note, stats), designConstructionMaxFlatDetailNoteRunes, stats)
 		fold := designFoldToken(name)
-		if fold == "" || designIsAbsenceStatement(name) {
+		if fold == "" || (mode == designParseLive && designIsAbsentFlatDetailName(name)) {
 			stats.FlatDetailsDropped++
 			continue
 		}
@@ -1416,7 +1611,11 @@ func designParseConstructionObject(
 	// ─── СПЕЦИФИКАЦИЯ ───
 	seenBom := make(map[string]struct{})
 	for _, l := range designListField[designRawBomLine](fields, "bom", stats) {
-		name := designBoundedBytes(designTake(l.Name, stats), designConstructionMaxVarchar255, stats)
+		// РУНЫ (правило 7), ЗАТЕМ БАЙТЫ (колонка): второй потолок после первого недостижим, но он —
+		// сторож колонки, а не смысла, и стоит на своём месте.
+		name := designBoundedBytes(
+			designBoundedRunes(designTake(l.Name, stats), designConstructionMaxNameRunes, stats),
+			designConstructionMaxVarchar255, stats)
 		if name == "" {
 			// СТРОКА СПЕКИ БЕЗ ИМЕНИ НЕ СОХРАНЯЕТСЯ ВОВСЕ (свободная строка обязана нести имя),
 			// поэтому её нечего и предлагать.
@@ -1442,12 +1641,18 @@ func designParseConstructionObject(
 		kind := designBomEnum(designTake(l.Kind, stats), designBomKindByFold, stats)
 		purpose, kind = designPairBomTokens(section, purpose, kind, stats)
 		line := &pb_common.DesignConstructionBomLine{
-			Name:        name,
-			Composition: designBoundedBytes(designTake(l.Composition, stats), designConstructionMaxVarchar255, stats),
-			Colour:      designBoundedBytes(colour, designConstructionMaxVarchar255, stats),
+			Name: name,
+			Composition: designBoundedBytes(
+				designBoundedRunes(designTake(l.Composition, stats), designConstructionMaxCompositionRunes, stats),
+				designConstructionMaxVarchar255, stats),
+			Colour: designBoundedBytes(
+				designBoundedRunes(colour, designConstructionMaxColourRunes, stats),
+				designConstructionMaxVarchar255, stats),
 			// PANTONE — varchar(64) (0363), и СВОЕГО СТОРОЖА В DTO У НЕГО НЕТ ВОВСЕ: длинная
 			// строка доезжала бы до MySQL и возвращалась сырым 1406, не назвав ни строки, ни поля.
-			Pantone: designBoundedBytes(designTake(l.Pantone, stats), designConstructionMaxVarchar64, stats),
+			Pantone: designBoundedBytes(
+				designBoundedRunes(designTake(l.Pantone, stats), designConstructionMaxPantoneRunes, stats),
+				designConstructionMaxVarchar64, stats),
 			Section: section,
 			Purpose: purpose,
 			Kind:    kind,
@@ -1470,7 +1675,7 @@ func designParseConstructionObject(
 	// ─── ЧТО СТОИТ ПРИКОЛОТЬ ───
 	seenMissing := make(map[string]struct{})
 	for _, m := range designListField[designLoose](fields, "missing", stats) {
-		text := designBoundedRunes(designTake(m, stats), designConstructionMaxTextRunes, stats)
+		text := designBoundedRunes(designTake(m, stats), designConstructionMaxMissingRunes, stats)
 		if text == "" {
 			stats.MissingDropped++
 			continue
@@ -1513,9 +1718,13 @@ func designParseConstructionObject(
 			Name: name,
 			// КОД ЕДЕТ СЫРЫМ И ПРОВЕРЯЕТСЯ ШАГОМ ВЫШЕ ПО МАРШРУТУ. Здесь он лишь обрезан по
 			// колонке словаря (varchar(64) с запасом: настоящий код — три знака).
-			ColorCode: designBoundedBytes(code, designConstructionMaxVarchar64, stats),
-			Pantone:   designBoundedBytes(designTake(c.Pantone, stats), designConstructionMaxVarchar64, stats),
-			Hex:       designHexColour(designTake(c.Hex, stats)),
+			ColorCode: designBoundedBytes(
+				designBoundedRunes(code, designConstructionMaxColourCodeRunes, stats),
+				designConstructionMaxVarchar64, stats),
+			Pantone: designBoundedBytes(
+				designBoundedRunes(designTake(c.Pantone, stats), designConstructionMaxPantoneRunes, stats),
+				designConstructionMaxVarchar64, stats),
+			Hex: designHexColour(designTake(c.Hex, stats)),
 		}
 		seenSlot := make(map[string]struct{}, len(c.Slots))
 		for _, rawSlot := range c.Slots {
@@ -1524,7 +1733,9 @@ func designParseConstructionObject(
 				stats.FieldsDropped++
 				continue
 			}
-			slot := designBoundedBytes(designTake(s.Slot, stats), designConstructionMaxVarchar255, stats)
+			slot := designBoundedBytes(
+				designBoundedRunes(designTake(s.Slot, stats), designConstructionMaxNameRunes, stats),
+				designConstructionMaxVarchar255, stats)
 			fold := designFoldToken(slot)
 			if fold == "" {
 				// ЦВЕТ БЕЗ СЛОТА НЕКУДА ПОЛОЖИТЬ: строка рецепта ключуется именем строки спеки.
@@ -1545,10 +1756,14 @@ func designParseConstructionObject(
 				colour = designTake(s.ColorUS, stats)
 			}
 			cw.Slots = append(cw.Slots, &pb_common.DesignColourwaySlotColour{
-				Slot:    slot,
-				Pantone: designBoundedBytes(designTake(s.Pantone, stats), designConstructionMaxVarchar64, stats),
-				Hex:     designHexColour(designTake(s.Hex, stats)),
-				Colour:  designBoundedBytes(colour, designConstructionMaxVarchar255, stats),
+				Slot: slot,
+				Pantone: designBoundedBytes(
+					designBoundedRunes(designTake(s.Pantone, stats), designConstructionMaxPantoneRunes, stats),
+					designConstructionMaxVarchar64, stats),
+				Hex: designHexColour(designTake(s.Hex, stats)),
+				Colour: designBoundedBytes(
+					designBoundedRunes(colour, designConstructionMaxColourRunes, stats),
+					designConstructionMaxVarchar255, stats),
 			})
 		}
 		if designColourwayIsEmpty(cw) {
@@ -1978,8 +2193,11 @@ func designConstructionDraftFromRun(outputText string) *pb_common.DesignConstruc
 	if !strings.HasPrefix(js, "{") || !strings.HasSuffix(js, "}") {
 		return nil
 	}
+	// ⚠ designParseCanonical: ФОРМА, И ТОЛЬКО ФОРМА. Смысловые сторожа (отсутствия, имена-заглушки)
+	// здесь выключены — канон уже прошёл их перед записью, и прочитать сохранённое строже, чем в
+	// первый раз, значило бы отдать на повторе не то, что человек видел (ревью 26.09, MAJOR 1).
 	var stats designConstructionStats
-	draft, err := designParseConstructionObject(js, &stats, nil)
+	draft, err := designParseConstructionObject(js, designParseCanonical, &stats, nil)
 	if err != nil {
 		return nil
 	}

@@ -37,8 +37,14 @@ func TestConstructionSystemPromptAsksWhichDetailsNeedTheirOwnDrawing(t *testing.
 	require.Contains(t, designConstructionSystemPrompt, "Do not list standard elements")
 	require.Contains(t, designConstructionSystemPrompt, "plain hems, plain seams, topstitching, labels")
 	require.Contains(t, designConstructionSystemPrompt, "6 flat details", "потолок назван в правиле 7")
-	// ОДИН ВЫЗОВ, ДВА ВОПРОСА: детали — не пересказ аспектов.
-	require.Contains(t, designConstructionSystemPrompt, "do not repeat \"aspects\"")
+	// ОДИН ВЫЗОВ, ДВА ВОПРОСА — И ОНИ НЕ ИСКЛЮЧАЮТ ДРУГ ДРУГА (ревью 26.09, MAJOR 3): необычный
+	// карман — аспект по правилу 3 И деталь для рисунка по правилу 12. Прежнее «do not repeat
+	// aspects» позволяло буквальной модели опустить рисунок.
+	require.NotContains(t, designConstructionSystemPrompt, "do not repeat \"aspects\"")
+	require.Contains(t, designConstructionSystemPrompt,
+		"Do not mechanically turn every aspect into a flat detail")
+	require.Contains(t, designConstructionSystemPrompt,
+		"a feature may appear in both when its construction fact belongs in \"aspects\" and it also needs its own drawing")
 }
 
 // ХОРОШИЙ ОТВЕТ: имя и записка доезжают; записка не обязательна.
@@ -130,7 +136,7 @@ func TestParseConstructionDraftCapsDedupesAndDropsFlatDetails(t *testing.T) {
 	require.True(t, strings.HasSuffix(got[1].GetName(), "…"), "обрезка маркируется, а не молчит")
 	require.Equal(t, 2, stats.Truncated)
 	for _, d := range got {
-		require.False(t, designIsAbsenceStatement(d.GetName()), "%q: отсутствие доехало до ответа", d.GetName())
+		require.False(t, designIsAbsentFlatDetailName(d.GetName()), "%q: заглушка доехала до ответа", d.GetName())
 		require.NotEmpty(t, d.GetName())
 	}
 }

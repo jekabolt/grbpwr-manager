@@ -49,6 +49,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shopspring/decimal"
 
@@ -305,71 +306,101 @@ func TestVerifyColourwaysKeepsOneProposalPerColourCode(t *testing.T) {
 // каждой строке спеки, до 15 выносок), а потолок никто не двигал. Проба, знающая размер ответа
 // числом, отстала бы ровно так же — здесь она пересчитывает его при КАЖДОЙ правке любого потолка.
 func TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer(t *testing.T) {
-	// ~4.3 знака на слово — измеренная средняя длина английского слова в такой прозе.
-	words := func(n int) string {
-		src := strings.Fields("the front placket is closed with five metal snaps set on a folded " +
-			"facing and the seam is topstitched twice at three millimetres from the edge to keep " +
-			"the fold flat under wear")
-		out := make([]string, 0, n)
-		for i := 0; i < n; i++ {
-			out = append(out, src[i%len(src)])
+	// КАЖДАЯ СТРОКА — РОВНО ПО СВОЕМУ ПОТОЛКУ, ИЗ ТЕХ ЖЕ КОНСТАНТ, ЧТО ДЕРЖИТ РАЗБОР И НАЗЫВАЕТ
+	// ПРАВИЛО 7 (ревью 26.09, MAJOR 4). Прежний замер клал ~212 байт в силуэт и ткань и ПУСТОЙ
+	// замысел при принимаемых 2000 рунах на каждое — «по всем потолкам» было неправдой примерно на
+	// 2 400 токенов. Здесь ничего не «реалистично»: списки — под потолок, строки — под потолок,
+	// токены словарей — самые длинные из словаря, самодельные ключи аспектов — под потолок колонки.
+	//
+	// ⚠ ЧЕГО ЗДЕСЬ НЕТ — ВЫНОСОК. Их нет в форме ответа с B-13; разбор терпит их только ради
+	// повтора старых прогонов, и модель, приславшая их вопреки форме, выходит за замер по своей
+	// воле, а не по нашей просьбе.
+	fill := func(n int) string { return strings.Repeat("x", n) }
+	unique := func(n, i int) string { return fmt.Sprintf("%0*d", n, i) } // под потолок и без дедупа
+	longest := func(tokens []string) string {
+		best := ""
+		for _, tok := range tokens {
+			if len(tok) > len(best) {
+				best = tok
+			}
 		}
-		return strings.Join(out, " ")
+		return best
 	}
 
 	names := make([]string, 0, designConstructionMaxBom)
 	bom := make([]any, 0, designConstructionMaxBom)
 	for i := 0; i < designConstructionMaxBom; i++ {
-		n := fmt.Sprintf("main fabric shell panel %d", i)
+		n := unique(designConstructionMaxNameRunes, i)
 		names = append(names, n)
 		bom = append(bom, map[string]any{
-			"section": "fabric", "purpose": "main", "kind": "", "name": n,
-			"composition": "80% cotton, 20% polyamide", "colour": "off white",
-			"pantone": "11-0601 TCX", "est_usage": 1.625, "unit": "m",
+			"section": longest(designBomSectionTokens), "purpose": longest(designBomPurposeTokens),
+			"kind": longest(designBomKindTokens), "name": n,
+			"composition": fill(designConstructionMaxCompositionRunes),
+			"colour":      fill(designConstructionMaxColourRunes),
+			"pantone":     fill(designConstructionMaxPantoneRunes),
+			"est_usage":   999999.999, "unit": longest(designUnitTokens),
 		})
 	}
 	aspects := make([]any, 0, designConstructionMaxAspects)
 	for i := 0; i < designConstructionMaxAspects; i++ {
-		// Правило 5 промпта: «at most 60 words each».
-		aspects = append(aspects, map[string]any{"key": "extraDetails", "text": words(60)})
+		aspects = append(aspects, map[string]any{
+			"key": unique(designConstructionMaxVarchar64, i), "text": fill(designConstructionMaxAspectRunes),
+		})
 	}
 	colourways := make([]any, 0, designConstructionMaxColourways)
 	for i := 0; i < designConstructionMaxColourways; i++ {
-		// Правило 9: «naming EVERY cloth slot» — потолок и есть худший случай.
 		slots := make([]any, 0, designConstructionMaxColourwaySlots)
 		for s := 0; s < designConstructionMaxColourwaySlots; s++ {
 			slots = append(slots, map[string]any{
-				"slot": names[s%len(names)], "pantone": "19-4005 TCX",
-				"hex": "#101010", "colour": "washed black",
+				"slot": names[s%len(names)], "pantone": fill(designConstructionMaxPantoneRunes),
+				"hex": "#101010", "colour": fill(designConstructionMaxColourRunes),
 			})
 		}
 		colourways = append(colourways, map[string]any{
-			"name": "Black / Bone / Ecru", "color_code": "BLK",
-			"pantone": "19-4005 TCX", "hex": "#101010", "slots": slots,
+			"name":       unique(designConstructionMaxColourwayNameRunes, i),
+			"color_code": fill(designConstructionMaxColourCodeRunes),
+			"pantone":    fill(designConstructionMaxPantoneRunes), "hex": "#101010", "slots": slots,
 		})
 	}
 	missing := make([]any, 0, designConstructionMaxMissing)
 	for i := 0; i < designConstructionMaxMissing; i++ {
-		missing = append(missing, words(18))
+		missing = append(missing, unique(designConstructionMaxMissingRunes, i))
 	}
-	// Правило 12 (O-33): до шести деталей для отдельного рисунка, имя ≤ 40 рун, записка ≤ 200 —
-	// ровно по потолкам, потому что замер обязан расти вместе с формой ответа.
 	flatDetails := make([]any, 0, designConstructionMaxFlatDetails)
 	for i := 0; i < designConstructionMaxFlatDetails; i++ {
 		flatDetails = append(flatDetails, map[string]any{
-			"name": strings.Repeat("n", designConstructionMaxFlatDetailNameRunes),
-			"note": strings.Repeat("w", designConstructionMaxFlatDetailNoteRunes),
+			"name": unique(designConstructionMaxFlatDetailNameRunes, i),
+			"note": fill(designConstructionMaxFlatDetailNoteRunes),
 		})
 	}
 
 	answer := map[string]any{
-		"silhouette": words(40), "fabric": words(40), "fit": "oversized", "concept": "",
+		"silhouette": fill(designConstructionMaxSilhouetteRunes), "fabric": fill(designConstructionMaxFabricRunes),
+		"fit": longest(designConstructionFits), "concept": fill(designConstructionMaxConceptRunes),
 		"aspects": aspects, "bom": bom, "colourways": colourways, "missing": missing,
 		"flat_details": flatDetails,
 	}
 
 	compact, err := json.Marshal(answer)
 	require.NoError(t, err)
+
+	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ САМОГО ЗАМЕРА: ответ лежит РОВНО на потолках — разбор принимает его
+	// целиком, ничего не режет и ничего не выбрасывает сверх списка. Иначе «все потолки» — слова.
+	parsed, stats, err := parseConstructionDraft(string(compact), "stop")
+	require.NoError(t, err)
+	require.Zero(t, stats.Truncated, "замер вышел за потолок строки — он меряет не наш предел")
+	require.Zero(t, stats.OverLimit, "замер вышел за потолок списка")
+	require.Zero(t, stats.Deduped)
+	require.Len(t, parsed.GetAspects(), designConstructionMaxAspects)
+	require.Len(t, parsed.GetBom(), designConstructionMaxBom)
+	require.Len(t, parsed.GetColourways(), designConstructionMaxColourways)
+	for _, cw := range parsed.GetColourways() {
+		require.Len(t, cw.GetSlots(), designConstructionMaxColourwaySlots)
+	}
+	require.Len(t, parsed.GetMissing(), designConstructionMaxMissing)
+	require.Len(t, parsed.GetFlatDetails(), designConstructionMaxFlatDetails)
+	require.Equal(t, designConstructionMaxConceptRunes, len(parsed.GetConcept()))
+
 	// ⚠ ОТСТУПЫ СЧИТАЮТСЯ. json-режим их не запрещает, и модели их ставят; ответ с отступами
 	// упирается в тот же потолок, что и плотный.
 	pretty, err := json.MarshalIndent(answer, "", "  ")
@@ -380,15 +411,111 @@ func TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer(t *testing.T) {
 	// бы занизить худший случай ровно там, где он и важен.
 	const bytesPerToken = 3
 	worst := len(pretty) / bytesPerToken
-	t.Logf("худший ответ по всем потолкам: плотный %d Б ≈ %d токенов, с отступами %d Б ≈ %d токенов",
-		len(compact), len(compact)/bytesPerToken, len(pretty), worst)
+	headroom := designConstructionMaxTokens - worst
+	t.Logf("худший ответ по ВСЕМ потолкам: плотный %d Б ≈ %d токенов, с отступами %d Б ≈ %d токенов; "+
+		"потолок %d, запас %d токенов (%.1f%%)",
+		len(compact), len(compact)/bytesPerToken, len(pretty), worst,
+		designConstructionMaxTokens, headroom, 100*float64(headroom)/float64(designConstructionMaxTokens))
 
 	require.Greater(t, worst, 3000,
 		"положительный контроль: если худший случай вдруг влезает в 3000, замер построен неверно")
-	require.GreaterOrEqual(t, designConstructionMaxTokens, worst,
-		"потолок ответа (%d) меньше худшего ответа по нашим же потолкам (≈%d токенов): "+
-			"finish_reason=length отказывает во ВСЁМ прогоне и всё равно платит",
+	// ≥ 15 % ЗАПАСА, А НЕ «ВЛЕЗАЕТ»: отношение байт/токен — оценка снизу, и модель, печатающая чуть
+	// иначе, не имеет права упереться в потолок. finish_reason=length отказывает во ВСЁМ прогоне и
+	// всё равно платит.
+	require.GreaterOrEqual(t, headroom*100, designConstructionMaxTokens*15,
+		"запас под потолком ответа (%d) меньше 15%%: худший ответ по нашим же потолкам ≈%d токенов",
 		designConstructionMaxTokens, worst)
+}
+
+// TestParseConstructionDraftEnforcesThePromptStatedLengths — ВТОРАЯ ПОЛОВИНА ТОГО ЖЕ ЗАМЕРА: каждый
+// предел, который правило 7 называет модели, разбор ДЕРЖИТ — с маркером обрезки и счётчиком. Предел
+// без сторожа — просьба, а замер по просьбе — не замер.
+func TestParseConstructionDraftEnforcesThePromptStatedLengths(t *testing.T) {
+	over := func(n int) string { return strings.Repeat("я", n+25) } // кириллица: рунный потолок, не байтовый
+	raw := fmt.Sprintf(`{"silhouette":%q,"fabric":%q,"concept":%q,
+	  "aspects":[{"key":"collar","text":%q}],
+	  "flat_details":[{"name":%q,"note":%q}],
+	  "missing":[%q],
+	  "bom":[{"section":"fabric","name":%q,"composition":%q,"colour":%q,"pantone":%q}],
+	  "colourways":[{"name":%q,"color_code":%q,"pantone":%q,"hex":"#000000",
+	    "slots":[{"slot":%q,"pantone":%q,"colour":%q}]}]}`,
+		over(designConstructionMaxSilhouetteRunes), over(designConstructionMaxFabricRunes), over(designConstructionMaxConceptRunes),
+		over(designConstructionMaxAspectRunes),
+		over(designConstructionMaxFlatDetailNameRunes), over(designConstructionMaxFlatDetailNoteRunes),
+		over(designConstructionMaxMissingRunes),
+		over(designConstructionMaxNameRunes), over(designConstructionMaxCompositionRunes),
+		over(designConstructionMaxColourRunes), over(designConstructionMaxPantoneRunes),
+		over(designConstructionMaxColourwayNameRunes), over(designConstructionMaxColourCodeRunes),
+		over(designConstructionMaxPantoneRunes),
+		over(designConstructionMaxNameRunes), over(designConstructionMaxPantoneRunes), over(designConstructionMaxColourRunes))
+
+	got, stats, err := parseConstructionDraft(raw, "stop")
+	require.NoError(t, err)
+	require.Len(t, got.GetColourways(), 1)
+	require.Len(t, got.GetColourways()[0].GetSlots(), 1)
+	require.Len(t, got.GetBom(), 1)
+	cw, slot, line := got.GetColourways()[0], got.GetColourways()[0].GetSlots()[0], got.GetBom()[0]
+
+	limits := []struct {
+		field string
+		value string
+		cap   int
+	}{
+		{"silhouette", got.GetSilhouette(), designConstructionMaxSilhouetteRunes},
+		{"fabric", got.GetFabric(), designConstructionMaxFabricRunes},
+		{"concept", got.GetConcept(), designConstructionMaxConceptRunes},
+		{"aspects[].text", got.GetAspects()[0].GetText(), designConstructionMaxAspectRunes},
+		{"flat_details[].name", got.GetFlatDetails()[0].GetName(), designConstructionMaxFlatDetailNameRunes},
+		{"flat_details[].note", got.GetFlatDetails()[0].GetNote(), designConstructionMaxFlatDetailNoteRunes},
+		{"missing[]", got.GetMissing()[0], designConstructionMaxMissingRunes},
+		{"bom[].name", line.GetName(), designConstructionMaxNameRunes},
+		{"bom[].composition", line.GetComposition(), designConstructionMaxCompositionRunes},
+		{"bom[].colour", line.GetColour(), designConstructionMaxColourRunes},
+		{"bom[].pantone", line.GetPantone(), designConstructionMaxPantoneRunes},
+		{"colourways[].name", cw.GetName(), designConstructionMaxColourwayNameRunes},
+		{"colourways[].color_code", cw.GetColorCode(), designConstructionMaxColourCodeRunes},
+		{"colourways[].pantone", cw.GetPantone(), designConstructionMaxPantoneRunes},
+		{"slots[].slot", slot.GetSlot(), designConstructionMaxNameRunes},
+		{"slots[].pantone", slot.GetPantone(), designConstructionMaxPantoneRunes},
+		{"slots[].colour", slot.GetColour(), designConstructionMaxColourRunes},
+	}
+	for _, tc := range limits {
+		require.Equal(t, tc.cap, utf8.RuneCountInString(tc.value), "%s: рунный потолок", tc.field)
+		require.True(t, strings.HasSuffix(tc.value, "…"), "%s: обрезка обязана быть помечена", tc.field)
+		require.True(t, utf8.ValidString(tc.value), tc.field)
+	}
+	// Каждая обрезка посчитана РОВНО ОДИН РАЗ: рунный потолок сработал, байтовый после него
+	// недостижим (60 рун кириллицы — 121 байт при 255, 24 — 49 при 64).
+	require.Equal(t, len(limits), stats.Truncated)
+}
+
+// TestConstructionPromptNamesTheSameLimitsTheParserHolds — ПРАВИЛО 7 И РАЗБОР ГОВОРЯТ ОДНИМИ
+// ЧИСЛАМИ. Промпт — литерал (его читает человек), константы — у разбора; эта проба — единственное,
+// что не даёт им разойтись в тот день, когда правят одно.
+func TestConstructionPromptNamesTheSameLimitsTheParserHolds(t *testing.T) {
+	require.Equal(t, designConstructionMaxSilhouetteRunes, designConstructionMaxFabricRunes,
+		"правило 7 называет силуэт и ткань одним числом")
+	require.Equal(t, designConstructionMaxNameRunes, designConstructionMaxCompositionRunes,
+		"правило 7 называет имя и состав одним числом")
+	for _, want := range []string{
+		fmt.Sprintf("at most %d aspects, %d bom lines, %d missing notes, %d flat details, %d colourways of at most %d slot colours each",
+			designConstructionMaxAspects, designConstructionMaxBom, designConstructionMaxMissing,
+			designConstructionMaxFlatDetails, designConstructionMaxColourways, designConstructionMaxColourwaySlots),
+		fmt.Sprintf("\"concept\" %d;", designConstructionMaxConceptRunes),
+		fmt.Sprintf("\"silhouette\" and \"fabric\" %d each;", designConstructionMaxSilhouetteRunes),
+		fmt.Sprintf("an aspect %d (", designConstructionMaxAspectRunes),
+		fmt.Sprintf("a missing note %d;", designConstructionMaxMissingRunes),
+		fmt.Sprintf("a flat detail \"name\" %d and \"note\" %d;",
+			designConstructionMaxFlatDetailNameRunes, designConstructionMaxFlatDetailNoteRunes),
+		fmt.Sprintf("a bom \"name\" or \"composition\" %d, a \"colour\" %d, a Pantone code %d;",
+			designConstructionMaxNameRunes, designConstructionMaxColourRunes, designConstructionMaxPantoneRunes),
+		fmt.Sprintf("a colourway \"name\" %d, its \"color_code\" %d;",
+			designConstructionMaxColourwayNameRunes, designConstructionMaxColourCodeRunes),
+		fmt.Sprintf("a slot \"colour\" %d.", designConstructionMaxColourRunes),
+		fmt.Sprintf("at most %d) with a Pantone", designConstructionMaxColourwaySlots),
+	} {
+		require.Contains(t, designConstructionSystemPrompt, want)
+	}
 }
 
 // TestConstructionCeilingBuysTheAnswerAndNotTheThinking — ПОТОЛОК И ВЫКЛЮЧЕННОЕ МЫШЛЕНИЕ — ОДИН

@@ -281,7 +281,7 @@ func TestParseConstructionDraftAcceptsBothSpellingsOfColour(t *testing.T) {
 // ПОТОЛКИ, ПОВТОРЫ И ПУСТЫЕ СТРОКИ.
 func TestParseConstructionDraftCapsDedupesAndDropsEmpties(t *testing.T) {
 	long := strings.Repeat("я", designConstructionMaxTextRunes+50)
-	veryLong := strings.Repeat("s", designConstructionMaxLongRunes+50)
+	veryLong := strings.Repeat("s", designConstructionMaxSilhouetteRunes+50)
 
 	aspects := make([]map[string]string, 0, designConstructionMaxAspects+5)
 	for i := 0; i < designConstructionMaxAspects+5; i++ {
@@ -309,7 +309,7 @@ func TestParseConstructionDraftCapsDedupesAndDropsEmpties(t *testing.T) {
 	draft, stats, perr := parseConstructionDraft(string(body), "stop")
 	require.NoError(t, perr)
 
-	require.Len(t, []rune(draft.GetSilhouette()), designConstructionMaxLongRunes)
+	require.Len(t, []rune(draft.GetSilhouette()), designConstructionMaxSilhouetteRunes)
 	require.Len(t, draft.GetAspects(), designConstructionMaxAspects, "потолок списка держит")
 	require.Equal(t, 5, stats.OverLimit)
 
@@ -998,9 +998,9 @@ func TestParseConstructionDraftCapsEveryValueByItsColumn(t *testing.T) {
 
 	// ⚠ ПОЛЯ КОЛОНКИ TEXT ОСТАЮТСЯ ПОД ПОТОЛКОМ РУН: там ограничение смысловое, а не про колонку.
 	longer, _, err := parseConstructionDraft(
-		`{"silhouette":"`+strings.Repeat("я", designConstructionMaxLongRunes+50)+`"}`, "stop")
+		`{"silhouette":"`+strings.Repeat("я", designConstructionMaxSilhouetteRunes+50)+`"}`, "stop")
 	require.NoError(t, err)
-	require.Equal(t, designConstructionMaxLongRunes, utf8.RuneCountInString(longer.GetSilhouette()))
+	require.Equal(t, designConstructionMaxSilhouetteRunes, utf8.RuneCountInString(longer.GetSilhouette()))
 }
 
 // НЕСКАЛЯР НА МЕСТЕ СКАЛЯРА — ЭТО ПУСТО, А НЕ ЗНАЧЕНИЕ СО СКОБКАМИ.
@@ -1329,7 +1329,7 @@ func TestParseConstructionDraftBoundsColourways(t *testing.T) {
 		require.Equal(t, "#0a0A0f", designHexColour(" #0a0A0f "))
 	})
 
-	t.Run("пятый колорвей и шестнадцатый цвет не влезают", func(t *testing.T) {
+	t.Run("пятый колорвей и цвет сверх потолка слотов не влезают", func(t *testing.T) {
 		var b strings.Builder
 		b.WriteString(`{"bom":[`)
 		for i := 0; i < 20; i++ {
