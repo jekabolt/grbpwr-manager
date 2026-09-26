@@ -195,6 +195,79 @@ func TestSplitDesignPictureRefusesAReplacedSheetBeforeTheBytes(t *testing.T) {
 	require.Equal(t, "19", md["head_picture_id"])
 }
 
+// СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ — И ОТКАЗ ЗВУЧИТ ДО БАЙТОВОЙ РАБОТЫ (O-53 review, раунд 3).
+//
+// Та же обвязка, что у заменённого листа выше: хранилище — мок без единого ожидания, у кадра есть
+// файл с управляемым адресом, SplitPicture у мока стора не ожидается. Без предпроверки хендлер пошёл
+// бы читать оригинал и провалил пробу на первом же вызове хранилища.
+//
+// Вторая половина — порядок: заменённый И спрятанный кадр получает already_replaced с головой, как в
+// транзакции стора, — устаревшей вкладке нужен ответ «режь голову», а не «кадр спрятан».
+//
+// МУТАЦИИ: снять предпроверку (неожиданный вызов хранилища); отдать hidden_plate или другой код
+// (краснеет reason или код); поставить проверку видимости раньше заменённости (вторая половина
+// получает hidden_picture без головы).
+func TestSplitDesignPictureRefusesAHiddenPictureBeforeTheBytes(t *testing.T) {
+	sheet := func(id int, hidden bool, next int32) *entity.DesignPicture {
+		p := &entity.DesignPicture{
+			Id: id, TechCardId: designRunCardID, MediaId: 900 + id, Kind: entity.DesignPictureKindFlat,
+			Media: &entity.MediaFull{Id: 900 + id, MediaItem: entity.MediaItem{
+				FullSizeMediaURL: fmt.Sprintf("https://files.grbpwr.test/design/sheet-%d-og.png", id),
+			}},
+		}
+		if hidden {
+			p.HiddenAt = sql.NullTime{Time: time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), Valid: true}
+		}
+		if next > 0 {
+			p.ReplacedBy = sql.NullInt32{Int32: next, Valid: true}
+		}
+		return p
+	}
+	split := func(t *testing.T, pictures ...*entity.DesignPicture) error {
+		design := mocks.NewMockDesign(t)
+		repo := mocks.NewMockRepository(t)
+		repo.EXPECT().Design().Return(design).Maybe()
+		for _, p := range pictures {
+			design.EXPECT().GetPicture(mock.Anything, p.Id).Return(p, nil).Once()
+		}
+		srv := &Server{repo: repo, bucket: mocks.NewMockFileStore(t)}
+		_, err := srv.SplitDesignPicture(designRunCtx(), &pb_admin.SplitDesignPictureRequest{
+			PictureId: int32(pictures[0].Id), ClientRequestId: "split-1",
+			Frames: []*pb_admin.DesignSplitFrame{designSplitWholeFrame()},
+		})
+		return err
+	}
+
+	t.Run("спрятанный кадр", func(t *testing.T) {
+		code, md := errorReason(t, split(t, sheet(7, true, 0)))
+		require.Equal(t, codes.FailedPrecondition, code)
+		require.Equal(t, "hidden_picture", md["reason"])
+		require.NotContains(t, md, "head_picture_id", "спрятанный, но не заменённый кадр головы не имеет")
+	})
+	t.Run("заменённый и спрятанный — сперва голова", func(t *testing.T) {
+		code, md := errorReason(t, split(t, sheet(7, true, 12), sheet(12, false, 0)))
+		require.Equal(t, codes.FailedPrecondition, code)
+		require.Equal(t, "already_replaced", md["reason"])
+		require.Equal(t, "12", md["head_picture_id"])
+	})
+}
+
+// hidden_picture СТОИТ В ТАБЛИЦЕ РОВНО ОДНОЙ СТРОКОЙ — И ЭТО НЕ СТРОКА hidden_plate.
+//
+// МУТАЦИЯ: сопоставить сентинел разреза токену постановки в слот (или добавить ему вторую строку) —
+// клиент показал бы «плиту нельзя поставить» на жест разреза.
+func TestSplitHiddenRefusalIsMappedOnce(t *testing.T) {
+	n := 0
+	for _, r := range designRefusals {
+		if r.err == entity.ErrDesignHiddenPicture {
+			n++
+			require.Equal(t, codes.FailedPrecondition, r.code)
+			require.Equal(t, "hidden_picture", r.reason)
+		}
+	}
+	require.Equal(t, 1, n)
+}
+
 // ТРИ ОТКАЗА ПЕРЕЗАПИСИ ДОЕЗЖАЮТ ДО КЛИЕНТА САМИМИ СОБОЙ.
 //
 // ЧТО ЛОВИТСЯ: sentinel, которого нет в таблице designRefusals, уходит на провод как codes.Internal

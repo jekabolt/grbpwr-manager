@@ -2,6 +2,7 @@ package design
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -15,8 +16,8 @@ import (
 //
 // Живая половина — переезд слота, штамп, отказы, повтор, цепочка, чтение полосы — лежит в
 // replace_db_test.go и ходит в одноразовый контейнер (CI=1). Решение сторожей и их порядок
-// проверены без базы в entity (design_replace_test.go). Здесь — то, что живёт в ФОРМЕ кода: два
-// оператора, которые держат факт, и отказ, который обязан прозвучать до транзакции.
+// проверены без базы в entity (design_replace_test.go). Здесь — то, что живёт в ФОРМЕ кода: операторы,
+// которые держат факт, и отказы, которые обязаны прозвучать до транзакции.
 
 // ШТАМП ПИШЕТСЯ ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ.
 //
@@ -37,28 +38,34 @@ func TestReplacedByStampIsWrittenOnceOverNothing(t *testing.T) {
 	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12})
 }
 
-// СТОРОЖ cut_sheet ЧИТАЕТ ВСЕ КРОПЫ ЭТОГО КАДРА — СПРЯТАННЫЕ И ЗАМЕНЁННЫЕ ТОЖЕ.
+// СТОРОЖ cut_sheet ЧИТАЕТ КАРТОЧКУ ОДНИМ SELECT — И ТОЛЬКО ПО КАРТОЧКЕ (O-53 review, раунд 3).
 //
-// Держит ли кусок лист, решает голова его цепочки замен (entity.DesignVisibleCropBranches, проверено
-// без базы в entity), поэтому чтение не фильтрует ни видимость, ни замену.
+// Стоит ли кусок, решает обход всей его ветки в памяти (entity.DesignStandingPieces, проверено без
+// базы в entity), поэтому чтение одно, а его предикат — одна карточка: ни видимости, ни замены, ни
+// глагола. Колонки — ровно entity.DesignBranchColumns, которые entity держит равными полям узла.
 //
-// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять фильтр глагола (правка листа — не разрез, и лист, у которого есть
-// только флэттены, закрылся бы для перезаписи); ВЕРНУТЬ hidden_at IS NULL (O-53 review, раунд 2:
-// спрятанный кусок, чья правка на виду, отпускал лист — сценарий устаревшей вкладки); ВЕРНУТЬ
-// replaced_by IS NULL (O-53 review: кусок, перезаписанный правкой, отпускал лист). Тот же ответ про
-// замену даёт предикат разреза — см. TestSheetCropsAreCropsNotEdits.
-func TestCutPiecesAreEveryCropOfTheSheet(t *testing.T) {
-	q := designCutPiecesOf
-	where := q[strings.Index(q, "WHERE"):]
-	require.Contains(t, where, "derived_from = :id")
-	require.Contains(t, where, "derivation = :crop", "глагол спрашивается у колонки 0359, а не выводится")
-	require.NotContains(t, where, "hidden_at",
-		"видимость судится по голове ветки: спрятанный кусок с видимой правкой лист держит")
-	require.NotContains(t, where, "replaced_by",
-		"кусок, заменённый своей правкой, лист держит: правка нарезана из прежних пикселей")
-	require.True(t, strings.HasSuffix(strings.TrimSpace(q), "ORDER BY id"))
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть фильтр видимости, замены или глагола (спрятанный кусок со стоящей
+// правкой или кусок, отрезанный от спрятанной головы, выпал бы из обхода, и лист ушёл бы под правку);
+// сузить чтение до детей листа (обход не увидел бы ни одного звена глубже куска); срезать чтение
+// LIMIT-ом (срезанная карточка выглядит как карточка без куска); читать `SELECT *` (весь ряд ради
+// пяти колонок, в транзакции записи).
+func TestCutSheetGuardReadsTheCardInOneSelect(t *testing.T) {
+	q := designBranchOfCard
+	up := strings.ToUpper(q)
+	require.Equal(t, 1, strings.Count(up, "SELECT"), "одно чтение, без подзапросов")
+	require.NotContains(t, up, "JOIN")
+	require.NotContains(t, up, "LIMIT", "срезанная карточка выглядит как карточка без куска")
 
-	requireNamedQueryBinds(t, q, map[string]any{"id": 7, "crop": entity.DesignDerivationCrop})
+	// Разбор словами, а не поиском подстроки: FROM сидит и внутри derived_from.
+	m := regexp.MustCompile(`(?s)^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)\s+WHERE\s+(.+?)\s+ORDER BY\s+(\w+)\s*$`).
+		FindStringSubmatch(q)
+	require.NotNil(t, m, "форма SELECT … FROM … WHERE … ORDER BY …: %q", q)
+	require.Equal(t, entity.DesignBranchColumns, m[1], "колонки — ровно поля узла обхода")
+	require.Equal(t, "design_picture", m[2])
+	require.Equal(t, "tech_card_id = :card", m[3], "ни видимости, ни замены, ни глагола — их судит обход")
+	require.Equal(t, "id", m[4])
+
+	requireNamedQueryBinds(t, q, map[string]any{"card": 41})
 }
 
 // ПОВТОР ИЩЕТСЯ В ПРЕДЕЛАХ КАРТОЧКИ И ПО ТОЧНОМУ КЛЮЧУ (0369).

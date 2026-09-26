@@ -552,6 +552,10 @@ func runByID(ctx context.Context, db dependency.DB, id int) (entity.DesignRun, e
 // request_key) is deliberately NOT unique for exactly this — and a replay answers with the crops
 // carrying the key, visible or not. Not done in this change.
 //
+// A REPLACED OR HIDDEN SHEET IS NOT CUT (O-53 review): already_replaced with the head of its chain
+// for a replaced one, hidden_picture for a hidden one. Both are read in the transaction, before the
+// idempotent early return.
+//
 // «CROPS» MEANS CROPS, NOT «ANY CHILD» (O-53 follow-up). derived_from is written by two verbs, and
 // the check used to read it without the verb: an EDIT of the sheet — a save-as-new flatten or an
 // overwrite — is a visible child too, so after the first edit this function returned the edit as
@@ -582,6 +586,20 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		// looking at. The refusal carries the head of the chain.
 		if parent.ReplacedBy.Valid {
 			return designAlreadyReplaced(ctx, db, parent)
+		}
+		// A HIDDEN SHEET IS NOT CUT (O-53 review, round 3). Crops are born visible, so a cut of a
+		// hidden picture hangs live pieces under a parent nobody can look at — the very state
+		// HidePicture refuses from the other side (live_crop_parent). And it was the door to a sheet
+		// overwritten from under its own pixels: split S into C, overwrite C with E, hide E, and a
+		// stale tab split the hidden E into a visible F, which the cut_sheet guard of that day could
+		// not see. THIS check is the authoritative one — the handler's preflight only saves the byte
+		// work — and like the one above it stands BEFORE the idempotent early return, so a hidden
+		// sheet whose old crops are visible again is refused as well instead of being answered with
+		// them. Crops already standing under a hidden parent (cut before this check, or un-hidden
+		// after the parent was hidden) are still judged by the cut_sheet guard, which walks the
+		// whole branch (entity.DesignStandingPieces).
+		if err := entity.DesignSplitHiddenRefusal(parent); err != nil {
+			return err
 		}
 		// A DISPLAY-ONLY SHEET IS NOT SPLIT «FOR THE PROMPT» (0361, D-24). The for_input flag is a
 		// promise to give every named crop a reference role — that is, to feed it to the model —

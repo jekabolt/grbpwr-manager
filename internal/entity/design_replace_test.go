@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,9 +13,9 @@ import (
 
 // ПРОБЫ ПРАВИЛА «ПЕРЕЗАПИСАТЬ» (0368, O-53) — решения без базы.
 //
-// Чтения (кадр, число его видимых кропов) делает стор в транзакции флэттена, и они проверяются
-// живыми пробами internal/store/design/replace_db_test.go (одноразовый контейнер, CI=1). Здесь —
-// то, что от базы не зависит: какой отказ звучит при каком состоянии и В КАКОМ ПОРЯДКЕ.
+// Чтения (кадр, кадры его карточки) делает стор в транзакции флэттена, и они проверяются живыми
+// пробами internal/store/design/replace_db_test.go (одноразовый контейнер, CI=1). Здесь — то, что от
+// базы не зависит: какой отказ звучит при каком состоянии, В КАКОМ ПОРЯДКЕ, и стоит ли кусок листа.
 
 const (
 	replaceProbeCard  = 41
@@ -29,8 +31,8 @@ func replaceProbeBase(media int32) sql.NullInt32 { return sql.NullInt32{Int32: m
 
 // ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: без него каждая проба ниже зеленела бы и на правиле, отказывающем ВСЕГДА.
 //
-// Сюда же — кропы, которые в счёт не идут: вызывающий считает только видимые (заменённые своей
-// правкой — тоже, O-53 review), и ноль — это «резать нечего», а не «не спросили».
+// Сюда же — кропы, которые в счёт не идут: вызывающий считает только стоящие (DesignStandingPieces),
+// и ноль — это «ни один кусок не стоит», а не «не спросили».
 func TestDesignReplaceRefusalLetsTheNamedOriginalThrough(t *testing.T) {
 	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(), 0))
 
@@ -231,90 +233,323 @@ func TestDesignAlreadyReplacedCarriesTheHead(t *testing.T) {
 	require.False(t, errors.As(err, &replaced), "отказ без головы нарушил бы обещание head_picture_id")
 }
 
-// ─── СТОРОЖ cut_sheet СУДИТ КУСОК ПО ГОЛОВЕ ВЕТКИ (O-53 review, раунд 2) ───
+// ─── СТОИТ ЛИ КУСОК: ВСЯ ВЕТКА (O-53 review, раунд 3) ───
 
-// cropBranch — кусок листа 7 и цепочка его замен: links[0] — сам кусок, дальше — правки по порядку,
-// hidden[i] — спрятано ли i-е звено. Возвращает кусок и загрузчик по всем звеньям.
-func cropBranch(firstID int, hidden ...bool) (DesignPicture, func(int) (DesignPicture, error)) {
-	chain := map[int]DesignPicture{}
-	for i, h := range hidden {
-		p := DesignPicture{Id: firstID + i, TechCardId: replaceProbeCard}
-		if i == 0 {
-			p.DerivedFrom = sql.NullInt32{Int32: 7, Valid: true}
-			p.Derivation = DesignDerivationCrop
-		} else {
-			p.DerivedFrom = sql.NullInt32{Int32: int32(firstID + i - 1), Valid: true}
-			p.Derivation = DesignDerivationFlatten
-		}
-		if i+1 < len(hidden) {
-			p.ReplacedBy = sql.NullInt32{Int32: int32(firstID + i + 1), Valid: true}
-		}
-		if h {
-			p.HiddenAt = sql.NullTime{Valid: true}
-		}
-		chain[p.Id] = p
+// standingSheet — лист, чьи куски судятся: 7, на виду, не заменён.
+const standingSheet = 7
+
+func shownNode(id int) DesignBranchNode { return DesignBranchNode{Id: id} }
+
+func hiddenNode(id int) DesignBranchNode {
+	return DesignBranchNode{Id: id, HiddenAt: sql.NullTime{Valid: true}}
+}
+
+// cutFrom — n отрезан от parent: кроп.
+func cutFrom(n DesignBranchNode, parent int) DesignBranchNode {
+	n.DerivedFrom = sql.NullInt32{Int32: int32(parent), Valid: true}
+	n.Derivation = DesignDerivationCrop
+	return n
+}
+
+// editOf — n — правка parent: флэттен. «На месте» его делает replacedBy у parent, без него — «рядом».
+func editOf(n DesignBranchNode, parent int) DesignBranchNode {
+	n.DerivedFrom = sql.NullInt32{Int32: int32(parent), Valid: true}
+	n.Derivation = DesignDerivationFlatten
+	return n
+}
+
+// legacyOf — n — ребёнок parent с пустым глаголом: строка, которую бэкфилл 0359 не классифицировал.
+func legacyOf(n DesignBranchNode, parent int) DesignBranchNode {
+	n.DerivedFrom = sql.NullInt32{Int32: int32(parent), Valid: true}
+	return n
+}
+
+// replacedBy — место n заняла правка next.
+func replacedBy(n DesignBranchNode, next int) DesignBranchNode {
+	n.ReplacedBy = sql.NullInt32{Int32: int32(next), Valid: true}
+	return n
+}
+
+// standingCard — все кадры карточки: лист 7, ветка случая и ШУМ, который не держит лист ни в одном
+// случае. В шуме на виду стоят правка листа «рядом» (8), легаси-ребёнок листа (9) и кусок ДРУГОГО
+// листа (4 от 3), а спрятанный кадр 2 ни к чему не привязан. Поэтому каждый случай «отпускает»
+// заодно проверяет, что обход не берёт куском правку, легаси или чужой кусок.
+func standingCard(branch ...DesignBranchNode) []DesignBranchNode {
+	nodes := []DesignBranchNode{
+		hiddenNode(2),
+		shownNode(3),
+		cutFrom(shownNode(4), 3),
+		shownNode(standingSheet),
+		editOf(shownNode(8), standingSheet),
+		legacyOf(shownNode(9), standingSheet),
 	}
-	return chain[firstID], func(id int) (DesignPicture, error) {
-		p, ok := chain[id]
-		if !ok {
-			return DesignPicture{}, fmt.Errorf("%w: design picture %d", ErrDesignNotFound, id)
-		}
-		return p, nil
+	return append(nodes, branch...)
+}
+
+// ЛИСТ ДЕРЖИТ КУСОК, ПОКА НА ЭКРАНЕ ХОТЬ ЧТО-ТО ИЗ ЕГО ВЕТКИ.
+//
+// Каждый случай — ОДИН кусок 10 и его ветка, и ответ сверяется по куску, а не по счёту: общий счёт
+// скрыл бы мутанта, у которого два неверных ответа складываются в верную сумму.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ:
+//   - судить кусок по его строке — «спрятанный кусок, правка на виду», «спрятаны C и E, F на виду»,
+//     «кусок куска», длинная ветка;
+//   - судить по голове цепочки замен (раунд 2) — «кусок на виду, правка спрятана», сценарий Codex,
+//     «спрятаны C и E», «кусок куска», «голова спрятана, промежуточная правка на виду»;
+//   - выбросить ребро разреза (идти только по replaced_by) — «спрятаны C и E», «кусок куска», длинная
+//     ветка;
+//   - брать куском любого ребёнка, а не кроп, — «правка куска рядом», «легаси-ребёнок куска» и шум
+//     standingCard в каждом отпускающем случае.
+func TestDesignStandingPiecesJudgeTheWholeBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		branch []DesignBranchNode
+		holds  bool
+	}{
+		{"кусок на виду", []DesignBranchNode{
+			cutFrom(shownNode(10), standingSheet),
+		}, true},
+		{"кусок спрятан, под ним ничего", []DesignBranchNode{
+			cutFrom(hiddenNode(10), standingSheet),
+		}, false},
+		{"кусок спрятан, его правка на виду — устаревшая вкладка раунда 2", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			editOf(shownNode(11), 10),
+		}, true},
+		{"кусок на виду, его правка спрятана — сам кусок стоит", []DesignBranchNode{
+			replacedBy(cutFrom(shownNode(10), standingSheet), 11),
+			editOf(hiddenNode(11), 10),
+		}, true},
+		{"сценарий Codex: C на виду, его правка E спрятана, F отрезан от E и на виду", []DesignBranchNode{
+			replacedBy(cutFrom(shownNode(10), standingSheet), 11),
+			editOf(hiddenNode(11), 10),
+			cutFrom(shownNode(12), 11),
+		}, true},
+		{"спрятаны C и E, F отрезан от спрятанной головы и на виду", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			editOf(hiddenNode(11), 10),
+			cutFrom(shownNode(12), 11),
+		}, true},
+		{"спрятано всё: C, E и F", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			editOf(hiddenNode(11), 10),
+			cutFrom(hiddenNode(12), 11),
+		}, false},
+		{"кусок куска на виду", []DesignBranchNode{
+			cutFrom(hiddenNode(10), standingSheet),
+			cutFrom(shownNode(11), 10),
+		}, true},
+		{"кусок куска спрятан", []DesignBranchNode{
+			cutFrom(hiddenNode(10), standingSheet),
+			cutFrom(hiddenNode(11), 10),
+		}, false},
+		{"правка куска рядом не держит", []DesignBranchNode{
+			cutFrom(hiddenNode(10), standingSheet),
+			editOf(shownNode(11), 10),
+		}, false},
+		{"легаси-ребёнок куска не держит", []DesignBranchNode{
+			cutFrom(hiddenNode(10), standingSheet),
+			legacyOf(shownNode(11), 10),
+		}, false},
+		{"две правки: голова спрятана, промежуточная на виду", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			replacedBy(editOf(shownNode(11), 10), 12),
+			editOf(hiddenNode(12), 11),
+		}, true},
+		{"две правки: первая спрятана, голова на виду", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			replacedBy(editOf(hiddenNode(11), 10), 12),
+			editOf(shownNode(12), 11),
+		}, true},
+		{"длинная ветка: замена, разрез, замена, разрез — на виду только последний", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			editOf(hiddenNode(11), 10),
+			replacedBy(cutFrom(hiddenNode(12), 11), 13),
+			editOf(hiddenNode(13), 12),
+			cutFrom(shownNode(14), 13),
+		}, true},
+		{"длинная ветка спрятана до конца", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			editOf(hiddenNode(11), 10),
+			replacedBy(cutFrom(hiddenNode(12), 11), 13),
+			editOf(hiddenNode(13), 12),
+			cutFrom(hiddenNode(14), 13),
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DesignStandingPieces(standingSheet, standingCard(tc.branch...))
+			require.NoError(t, err)
+			if tc.holds {
+				require.Equal(t, []int{10}, got, "кусок 10 стоит, и держит лист только он")
+			} else {
+				require.Empty(t, got, "от куска 10 на экране не осталось ничего")
+			}
+		})
 	}
 }
 
-// КУСОК ДЕРЖИТ ЛИСТ, ПОКА НА ЭКРАНЕ ГОЛОВА ЕГО ВЕТКИ — ЧЕМ БЫ НИ БЫЛИ ЗВЕНЬЯ ДО НЕЁ.
+// НЕСКОЛЬКО КУСКОВ СУДЯТСЯ КАЖДЫЙ СВОЕЙ ВЕТКОЙ, И ПОРЯДОК ВХОДА НЕ ЗНАЧИТ НИЧЕГО.
 //
-// Сценарий ревью — устаревшая вкладка: кусок C спрятан, спрятанный C перезаписан, правка E видима —
-// ветка держит лист. Обратный случай: кусок видим, но его правка спрятана — ветку сняли, лист
-// свободен. Каждый случай судится ОТДЕЛЬНО: общий счёт скрыл бы мутацию «судить по строке куска»,
-// при которой два неверных ответа складываются в верную сумму.
+// Ответ — ровно стоящие куски по возрастанию id, а не «первый стоящий» и не счёт.
+func TestDesignStandingPiecesNameEveryStandingPiece(t *testing.T) {
+	branch := []DesignBranchNode{
+		cutFrom(shownNode(30), standingSheet),
+		editOf(shownNode(21), 20),
+		cutFrom(hiddenNode(10), standingSheet),
+		replacedBy(cutFrom(hiddenNode(20), standingSheet), 21),
+	}
+	got, err := DesignStandingPieces(standingSheet, standingCard(branch...))
+	require.NoError(t, err)
+	require.Equal(t, []int{20, 30}, got)
+
+	nodes := standingCard(branch...)
+	for i, j := 0, len(nodes)-1; i < j; i, j = i+1, j-1 {
+		nodes[i], nodes[j] = nodes[j], nodes[i]
+	}
+	got, err = DesignStandingPieces(standingSheet, nodes)
+	require.NoError(t, err)
+	require.Equal(t, []int{20, 30}, got, "порядок строк SELECT ответа не меняет")
+}
+
+// ПОРЧА — ОШИБКА, А НЕ ОТВЕТ «ОТПУСКАЕТ».
 //
-// МУТАЦИИ: судить по строке куска (два средних случая меняются местами); судить по первой правке, а
-// не по голове (цепочка из двух правок со спрятанной первой); проглотить ошибку обхода нулём.
-func TestDesignVisibleCropBranchesJudgesEachPieceByItsHead(t *testing.T) {
+// Ни одна ошибка обхода не несёт сентинела полосы: клиенту Internal, а не cut_sheet и не not_found про
+// кадр, которого он не называл.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ:
+//   - проглотить потерянный кадр (считать его спрятанным и пустым) — «замена ведёт мимо карточки»
+//     отпускает лист;
+//   - снять сверку «ребро ведёт к новому кадру» — «ссылка на старый спрятанный кадр» уходит в чужой
+//     спрятанный кадр и отпускает лист;
+//   - снять visited — «кадр достигнут дважды» проходится дважды и отпускает лист (все рёбра там идут
+//     вперёд, и сверка порядка его не видит).
+func TestDesignStandingPiecesRefuseABrokenBranch(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		hidden []bool
-		holds  bool
+		branch []DesignBranchNode
+		names  string
 	}{
-		{"кусок на виду, не перезаписан", []bool{false}, true},
-		{"кусок спрятан, не перезаписан", []bool{true}, false},
-		{"кусок спрятан, его правка на виду — устаревшая вкладка", []bool{true, false}, true},
-		{"кусок на виду, его правка спрятана", []bool{false, true}, false},
-		{"две правки: первая спрятана, голова на виду", []bool{false, true, false}, true},
-		{"две правки: голова спрятана", []bool{true, false, true}, false},
+		{"замена ведёт мимо карточки", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 99),
+		}, "picture 99"},
+		{"замена ведёт назад, на сам лист", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), standingSheet),
+		}, "picture 7"},
+		{"ссылка на старый спрятанный кадр", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 2),
+		}, "picture 2"},
+		{"цикл замен", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			replacedBy(editOf(hiddenNode(11), 10), 10),
+		}, "picture 11"},
+		{"кадр достигнут дважды", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 12),
+			cutFrom(hiddenNode(11), 10),
+			cutFrom(hiddenNode(12), 11),
+		}, "picture 12 is reached twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			crop, load := cropBranch(10, tc.hidden...)
-			n, err := DesignVisibleCropBranches([]DesignPicture{crop}, load)
-			require.NoError(t, err)
-			want := 0
-			if tc.holds {
-				want = 1
+			got, err := DesignStandingPieces(standingSheet, standingCard(tc.branch...))
+			require.Error(t, err, "порча не выдаётся за ответ (%v)", got)
+			require.Contains(t, err.Error(), tc.names)
+			for _, sentinel := range []error{ErrDesignCutSheet, ErrDesignNotFound, ErrDesignInvalidArgument, ErrDesignAlreadyReplaced} {
+				require.NotErrorIs(t, err, sentinel, "порча — Internal, а не отказ полосы")
 			}
-			require.Equal(t, want, n)
 		})
 	}
 
-	// Несколько кусков считаются вместе, а порча цепочки — ошибка, а не «куска нет».
-	a, loadA := cropBranch(10, false)
-	b, loadB := cropBranch(20, true, false)
-	load := func(id int) (DesignPicture, error) {
-		if id >= 20 {
-			return loadB(id)
-		}
-		return loadA(id)
-	}
-	n, err := DesignVisibleCropBranches([]DesignPicture{a, b}, load)
-	require.NoError(t, err)
-	require.Equal(t, 2, n)
-
-	broken, _ := cropBranch(40, true, false)
-	_, err = DesignVisibleCropBranches([]DesignPicture{broken}, func(int) (DesignPicture, error) {
-		return DesignPicture{}, fmt.Errorf("%w: gone", ErrDesignNotFound)
+	t.Run("лист не прочитан", func(t *testing.T) {
+		_, err := DesignStandingPieces(standingSheet, []DesignBranchNode{cutFrom(shownNode(10), standingSheet)})
+		require.Error(t, err)
 	})
-	require.Error(t, err, "не прочли ветку — не значит, что куска нет: лист не уходит под правку по порче")
+
+	// Обратная сторона: ВИДИМЫЙ кусок держит лист, и порча за ним ответа не меняет — отказ закрывает
+	// дверь и без неё. Иначе потерянная ссылка превращала бы честный cut_sheet в Internal.
+	t.Run("порча за видимым кадром", func(t *testing.T) {
+		got, err := DesignStandingPieces(standingSheet, standingCard(
+			replacedBy(cutFrom(shownNode(10), standingSheet), 99),
+		))
+		require.NoError(t, err)
+		require.Equal(t, []int{10}, got)
+	})
+}
+
+// standingLine — кусок first листа 7 и n-1 спрятанных звеньев под ним, замена и разрез по очереди;
+// всё спрятано, так что обход обязан пройти ветку до конца.
+func standingLine(first, n int) []DesignBranchNode {
+	line := []DesignBranchNode{cutFrom(hiddenNode(first), standingSheet)}
+	for i := 1; i < n; i++ {
+		id, prev := first+i, first+i-1
+		if i%2 == 1 {
+			line[i-1] = replacedBy(line[i-1], id)
+			line = append(line, editOf(hiddenNode(id), prev))
+		} else {
+			line = append(line, cutFrom(hiddenNode(id), prev))
+		}
+	}
+	return line
+}
+
+// ПОТОЛОК — ОБЩИЙ НА ЗАПРОС, И ЛИСТ — ПЕРВЫЙ ИЗ НЕГО.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: потолок на ветку вместо запроса (два куска по половине потолка проходят);
+// сдвиг границы на единицу (ровно потолок отказывается либо потолок плюс один проходит).
+func TestDesignStandingPiecesStopAtTheTotalCeiling(t *testing.T) {
+	sheet := shownNode(standingSheet)
+	t.Run("ровно потолок", func(t *testing.T) {
+		nodes := append([]DesignBranchNode{sheet}, standingLine(10, DesignStandingNodesMax-1)...)
+		got, err := DesignStandingPieces(standingSheet, nodes)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+	t.Run("на один кадр больше", func(t *testing.T) {
+		nodes := append([]DesignBranchNode{sheet}, standingLine(10, DesignStandingNodesMax)...)
+		_, err := DesignStandingPieces(standingSheet, nodes)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), fmt.Sprintf("more than %d pictures", DesignStandingNodesMax))
+		require.NotErrorIs(t, err, ErrDesignCutSheet)
+	})
+	t.Run("два куска, каждый под потолком, вместе над ним", func(t *testing.T) {
+		half := DesignStandingNodesMax / 2
+		nodes := append([]DesignBranchNode{sheet}, standingLine(10, half)...)
+		nodes = append(nodes, standingLine(10+half, half)...)
+		_, err := DesignStandingPieces(standingSheet, nodes)
+		require.Error(t, err, "лист и две ветки по %d — это %d кадров", half, 1+2*half)
+		require.Contains(t, err.Error(), fmt.Sprintf("more than %d pictures", DesignStandingNodesMax))
+	})
+}
+
+// КОЛОНКИ ЗАПРОСА — РОВНО ПОЛЯ УЗЛА, В ТОМ ЖЕ ПОРЯДКЕ.
+//
+// МУТАЦИИ: выбросить колонку из DesignBranchColumns (sqlx молча оставил бы поле нулём — без
+// derivation, derived_from или replaced_by обход не видит рёбер и отпускает лист); завести поле, не
+// выбранное запросом.
+func TestDesignBranchColumnsAreTheNodeFields(t *testing.T) {
+	typ := reflect.TypeOf(DesignBranchNode{})
+	tags := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("db")
+		require.NotEmpty(t, tag, "поле %s без колонки", typ.Field(i).Name)
+		tags = append(tags, tag)
+	}
+	require.Equal(t, strings.Join(tags, ", "), DesignBranchColumns)
+}
+
+// СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ — СВОИМ СЛОВОМ, А НЕ hidden_plate.
+//
+// МУТАЦИИ: судить не по hidden_at (спрятанный проходит); отдать сентинел постановки в слот (клиент
+// показал бы «плиту нельзя поставить» на жест разреза).
+func TestDesignSplitHiddenRefusal(t *testing.T) {
+	shown := replaceProbeOriginal()
+	require.NoError(t, DesignSplitHiddenRefusal(shown))
+
+	hidden := replaceProbeOriginal()
+	hidden.HiddenAt = sql.NullTime{Valid: true}
+	err := DesignSplitHiddenRefusal(hidden)
+	require.ErrorIs(t, err, ErrDesignHiddenPicture)
+	require.NotErrorIs(t, err, ErrDesignHiddenPlate)
+	require.Contains(t, err.Error(), "hidden_picture")
+	require.Contains(t, err.Error(), "picture 7")
 }
 
 // ─── ПОВТОР ПО КЛЮЧУ ОТВЕЧАЕТ ТОЛЬКО ТОМУ ЖЕ ЖЕСТУ (0369/0370, O-53 review) ───

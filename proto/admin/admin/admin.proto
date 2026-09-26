@@ -2790,13 +2790,13 @@ service AdminService {
   // batch_id, whichever it has, and never get a history row of their own: no money was spent on
   // them. A crop of an uploaded composite therefore lands on the same upload shelf row.
   //
-  // THE PRECONDITION IS THE FRAMES, NOT COMPOSITENESS. Any picture of the band can be cut:
-  // composite_views is not consulted (nothing fills it in this wave, and a check on it refused every
-  // split that could reach it), and not_composite is never answered. What is checked is that every
-  // frame describes a rectangle inside the source — x, y, w and h are ordinary fractions from 0 to 1
-  // with at most six decimal places, w and h are above 0, x + w and y + h are at most 1 — and names a
-  // view of the garment or none. InvalidArgument: no frames, a frame that is not such a rectangle,
-  // an unknown view_key, a missing client_request_id.
+  // THE PRECONDITION IS THE FRAMES, NOT COMPOSITENESS. Any visible, unreplaced picture of the band
+  // can be cut: composite_views is not consulted (nothing fills it in this wave, and a check on it
+  // refused every split that could reach it), and not_composite is never answered. What is checked
+  // is that every frame describes a rectangle inside the source — x, y, w and h are ordinary
+  // fractions from 0 to 1 with at most six decimal places, w and h are above 0, x + w and y + h are
+  // at most 1 — and names a view of the garment or none. InvalidArgument: no frames, a frame that is
+  // not such a rectangle, an unknown view_key, a missing client_request_id.
   //
   // IDEMPOTENT BY DERIVATION, NOT YET BY client_request_id: while the crops of an earlier cut of
   // this picture are visible, a repeat returns THEM and cuts nothing. The key is required but not
@@ -2804,8 +2804,14 @@ service AdminService {
   //
   // A REPLACED PICTURE IS NOT CUT (O-53): FailedPrecondition already_replaced, whose ErrorInfo
   // metadata carries head_picture_id — the head of its replacement chain, the picture a stale tab
-  // should cut instead. FailedPrecondition display_only: for_input on a display-only picture. A
-  // plain FailedPrecondition when the picture's file is gone or cannot be read. NotFound — no such
+  // should cut instead. A HIDDEN PICTURE IS NOT CUT EITHER: FailedPrecondition hidden_picture. Its
+  // crops would be born visible under a parent nobody can see — the state HideDesignPicture refuses
+  // as live_crop_parent — and a crop of a hidden edit would hold the sheet that edit descends from
+  // against an overwrite (cut_sheet) through a branch the screen does not show. Show it first
+  // (HideDesignPicture with hidden = false). A picture both replaced and hidden gets
+  // already_replaced. Both refusals come before a repeat is answered with the crops of an earlier
+  // cut. FailedPrecondition display_only: for_input on a display-only picture. A plain
+  // FailedPrecondition when the picture's file is gone or cannot be read. NotFound — no such
   // picture.
   rpc SplitDesignPicture(SplitDesignPictureRequest) returns (SplitDesignPictureResponse) {
     option (google.api.http) = {
@@ -12443,8 +12449,8 @@ message DesignSplitFrame {
 }
 
 message SplitDesignPictureRequest {
-  // The picture to cut — any picture of the band: the frames, not composite_views, are the
-  // precondition (see the RPC).
+  // The picture to cut — any visible picture of the band that no edit has replaced: the frames, not
+  // composite_views, are the precondition (see the RPC).
   int32 picture_id = 1;
   string client_request_id = 2; // a retried split must not produce a second set of crops
   repeated DesignSplitFrame frames = 3;
@@ -12578,11 +12584,12 @@ message FlattenDesignEditLayerRequest {
   // anything is filed, and the ErrorInfo metadata carries head_picture_id: the head of the
   // picture's replacement chain, i.e. the picture standing in its place now. FailedPrecondition:
   // cut_sheet — pieces cut from this sheet still stand on screen, and they would stay cut from the
-  // original. A piece stands while the HEAD of its replacement chain is visible: a piece overwritten
-  // by an edit counts through that edit, even when the piece itself is hidden, since the edit was
-  // drawn over the old pixels too. Hide what stands of those pieces — the latest edit, or the piece
-  // itself when it was never overwritten — before overwriting the sheet, or edit a piece instead of
-  // the sheet. NotFound — no such picture.
+  // original. A piece stands while ANYTHING GROWN FROM IT is visible: the piece itself, an edit that
+  // took its place (replaced_by, followed to the end), a piece cut from any of those, and so on down
+  // the branch — every one of them was drawn from the sheet's old pixels. An edit filed beside a
+  // picture (no replace_picture_id) takes no place and holds nothing. Hide what stands of those
+  // branches before overwriting the sheet, or edit a piece instead of the sheet. NotFound — no such
+  // picture.
   //
   // ⚠ AN OLDER SERVER ANSWERS 400 TO THIS FIELD: the JSON gateway refuses unknown fields. Send it
   // only after a read has carried DesignPicture.replaced_by, which an older server never emits.

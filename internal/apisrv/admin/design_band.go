@@ -131,13 +131,17 @@ var designRefusals = []struct {
 	// ─── «ПЕРЕЗАПИСАТЬ» ПРАВКОЙ (0368, O-53) ───
 	//
 	// replace_mismatch — InvalidArgument: запрос назвал не тот кадр (чужая карточка, не та подложка
-	// слоя), и чинится он правкой запроса. Два других — FailedPrecondition того же класса, что
+	// слоя), и чинится он правкой запроса. Остальные — FailedPrecondition того же класса, что
 	// live_crop_parent: запрос правильной формы, не годится СОСТОЯНИЕ — у кадра уже есть замена
 	// (сюда приходит повтор перезаписи без ключа и разрез заменённого листа; метаданные несут
-	// head_picture_id — см. designErrorFacts) либо от листа отрезаны видимые куски.
+	// head_picture_id — см. designErrorFacts), от листа отрезаны куски, которые ещё стоят, либо
+	// режут спрятанный кадр (hidden_picture, O-53 review, раунд 3: его куски родились бы живыми под
+	// родителем, которого не видно). hidden_picture — не hidden_plate: тот отказывает постановке в
+	// слот, и клиенту это другая новость и другой экран.
 	{entity.ErrDesignReplaceMismatch, codes.InvalidArgument, "replace_mismatch"},
 	{entity.ErrDesignAlreadyReplaced, codes.FailedPrecondition, "already_replaced"},
 	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
+	{entity.ErrDesignHiddenPicture, codes.FailedPrecondition, "hidden_picture"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -710,6 +714,12 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 				}
 				return *p, nil
 			}), nil)
+	}
+	// СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ (O-53 review, раунд 3) — тоже предпроверка того же правила
+	// (entity.DesignSplitHiddenRefusal), авторитетного в транзакции SplitPicture, и в том же порядке:
+	// заменённый и спрятанный кадр получает already_replaced с головой.
+	if err := entity.DesignSplitHiddenRefusal(*parent); err != nil {
+		return nil, designError(ctx, "failed to split the design picture", err, nil)
 	}
 	// COMPOSITENESS IS NOT A PRECONDITION, and the guard that demanded it was removed rather than
 	// relaxed, because it could never be satisfied.

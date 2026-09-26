@@ -22,7 +22,8 @@ import (
 // Форма предиката проверяется без базы (split_crops_test.go); здесь — строки.
 //
 // ЗАМЕНЁННЫЙ ЛИСТ НЕ РЕЖЕТСЯ ВОВСЕ (O-53 review): его место занято правкой, и разрез резал бы
-// пиксели, которых на экране больше нет. Отказ — already_replaced с головой цепочки.
+// пиксели, которых на экране больше нет. Отказ — already_replaced с головой цепочки. СПРЯТАННЫЙ — тоже
+// (O-53 review, раунд 3): hidden_picture.
 //
 // Запуск — тот же одноразовый контейнер, что и у соседних проб (см. шапку wave2_db_test.go); без
 // CI=1 каждая проба пропускается ДО открытия соединения.
@@ -119,6 +120,69 @@ func TestDesignDBSplitOfAReplacedSheetIsRefusedWithTheHead(t *testing.T) {
 	require.NoError(t, err, "голову резать можно")
 	require.Len(t, crops, 1)
 	require.EqualValues(t, edit2.Id, crops[0].DerivedFrom.Int32)
+}
+
+// СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ — И НЕ ПОДАНО НИЧЕГО (O-53 review, раунд 3).
+//
+// Разрез спрятанного кадра вешал живые куски под родителя, которого не видно, и был дверью сценария
+// Codex: устаревшая вкладка резала спрятанную правку куска, и сторож перезаписи листа не видел
+// рождённый кусок (см. TestDesignDBOverwriteOfASheetIsHeldByACropOfAHiddenHead). Отказ —
+// hidden_picture, в транзакции и ДО короткого замыкания: спрятанный кадр, чей старый кусок снова на
+// виду, отказывается тоже, а не отвечает этим куском. Такое состояние собирается законными жестами —
+// спрятать кусок, спрятать кадр, вернуть кусок (показ не сторожится).
+//
+// МУТАЦИИ: не проверять hidden_at (у спрятанного кадра появляется кусок); проверять после короткого
+// замыкания (вторая половина отвечает старым куском вместо отказа); отдать hidden_plate.
+func TestDesignDBSplitOfAHiddenPictureIsRefused(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	split := func(t *testing.T, pictureID int) ([]entity.DesignPicture, error) {
+		t.Helper()
+		return rep.Design().SplitPicture(ctx, entity.DesignSplitRequest{
+			PictureId: pictureID, ClientRequestId: uuid.NewString(), Actor: "stale-tab",
+			Frames: []entity.DesignSplitFrame{{MediaId: probeMedia(t, raw), ViewKey: entity.DesignViewFront}},
+		})
+	}
+	hide := func(t *testing.T, id int, hidden bool) {
+		t.Helper()
+		_, err := rep.Design().HidePicture(ctx, id, hidden, "colleague")
+		require.NoError(t, err)
+	}
+	pictures := func(t *testing.T) int {
+		t.Helper()
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, card)
+	}
+
+	t.Run("спрятанный кадр", func(t *testing.T) {
+		sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+		hide(t, sheet.Id, true)
+		before := pictures(t)
+		_, err := split(t, sheet.Id)
+		require.ErrorIs(t, err, entity.ErrDesignHiddenPicture)
+		require.NotErrorIs(t, err, entity.ErrDesignHiddenPlate)
+		require.Equal(t, before, pictures(t), "отказ не подаёт ни одного куска")
+		require.Zero(t, childrenOf(t, raw, sheet.Id))
+	})
+	t.Run("спрятанный кадр со старым куском на виду — отказ, а не старый кусок", func(t *testing.T) {
+		sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+		old := splitProbe(t, rep, raw, sheet.Id, entity.DesignViewFront)
+		require.Len(t, old, 1)
+		hide(t, old[0].Id, true)
+		hide(t, sheet.Id, true)
+		hide(t, old[0].Id, false)
+
+		_, err := split(t, sheet.Id)
+		require.ErrorIs(t, err, entity.ErrDesignHiddenPicture)
+		require.Equal(t, 1, childrenOf(t, raw, sheet.Id), "второго комплекта нет")
+
+		// Положительный контроль: показанный кадр отвечает своим куском — отказ был про видимость.
+		hide(t, sheet.Id, false)
+		again, err := split(t, sheet.Id)
+		require.NoError(t, err)
+		require.Len(t, again, 1)
+		require.Equal(t, old[0].Id, again[0].Id)
+	})
 }
 
 // ЗАМЕНЁННЫЙ ЛИСТ СО СТАРЫМИ ВИДИМЫМИ КУСКАМИ — ТОЖЕ ОТКАЗ, А НЕ СТАРЫЕ КУСКИ.

@@ -412,7 +412,8 @@ func TestDesignDBOverwriteOfAnUnplacedPictureOnlyStamps(t *testing.T) {
 // Каждый отказ проверяется ДВАЖДЫ: словом и взглядом в таблицы — отказ без второй половины совместим
 // с правкой, которая всё-таки легла, и со слотом, который всё-таки уехал.
 //
-// Последний подслучай — положительный контроль фильтра «видимый»: спрятанный кусок лист не держит.
+// Последний подслучай — положительный контроль: спрятанный кусок, под которым ничего не стоит, лист
+// не держит.
 func TestDesignDBOverwriteRefusalsFileNothing(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -489,7 +490,8 @@ func TestDesignDBOverwriteRefusalsFileNothing(t *testing.T) {
 // лист. Правка куска нарезана из прежних пикселей листа, и перезапись листа оставила бы на экране
 // две живые ветки одного листа. Отказ — cut_sheet, и ничего не подано.
 //
-// МУТАЦИЯ: вернуть в designCutPiecesOf `replaced_by IS NULL` — перезапись листа проходит.
+// МУТАЦИЯ: вернуть в чтение сторожа (designBranchOfCard) `replaced_by IS NULL` — перезапись листа
+// проходит.
 func TestDesignDBOverwriteOfASheetIsHeldByAnOverwrittenPiece(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -522,11 +524,11 @@ func probeSourceLayer(t *testing.T, raw *sql.DB, pictureID int) sql.NullInt32 {
 // Дословно по ревью: лист S разрезан на кусок C; C открыт в редакторе; C спрятали; устаревшая вкладка
 // перезаписывает спрятанный C — правка E рождается видимой; затем перезаписывают S. Сторож смотрел
 // на строку C (спрятана) и пускал перезапись S, пока E, нарезанная из прежних пикселей S, стоит на
-// экране. Кусок судится по голове ветки: E на виду — лист держится. Положительный контроль:
-// спрятали голову E — ветки на экране нет, и лист свободен.
+// экране. Кусок судится всей веткой: E на виду — лист держится. Положительный контроль: спрятали E —
+// от ветки на экране не осталось ничего, и лист свободен.
 //
-// МУТАЦИЯ: судить кусок по его строке (вернуть hidden_at IS NULL в designCutPiecesOf или читать
-// HiddenAt куска вместо головы) — первая перезапись листа проходит.
+// МУТАЦИЯ: судить кусок по его строке (вернуть hidden_at IS NULL в чтение сторожа designBranchOfCard
+// или читать HiddenAt одного куска вместо его ветки) — первая перезапись листа проходит.
 func TestDesignDBOverwriteOfASheetIsHeldByAHiddenPieceWithAVisibleEdit(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -564,11 +566,79 @@ func TestDesignDBOverwriteOfASheetIsHeldByAHiddenPieceWithAVisibleEdit(t *testin
 	require.Equal(t, p.slot.SlotRev, rev)
 	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует лист")
 
-	// Голову ветки спрятали — на экране от куска не осталось ничего, и лист свободен.
+	// Правку спрятали — на экране от куска не осталось ничего, и лист свободен.
 	_, err = rep.Design().HidePicture(ctx, edit.Id, true, "colleague")
 	require.NoError(t, err)
 	sheetEdit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
-	require.NoError(t, err, "спрятанная голова ветку снимает")
+	require.NoError(t, err, "спрятанная ветка лист не держит")
+	require.EqualValues(t, sheetEdit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
+}
+
+// КУСОК, ОТРЕЗАННЫЙ ОТ СПРЯТАННОЙ ГОЛОВЫ, ДЕРЖИТ ЛИСТ — СЦЕНАРИЙ CODEX (O-53 review, раунд 3).
+//
+// Дословно по ревью: лист S разрезан на кусок C; C (вне слота) перезаписан правкой E; E спрятали;
+// устаревшая вкладка режет спрятанную E на F — F рождается видимой; затем перезаписывают S. Сторож
+// раунда 2 доходил по цепочке замен C до спрятанной головы E, считал ноль и пускал перезапись S, пока
+// F, нарезанная из прежних пикселей S, стоит на экране.
+//
+// Разрез спрятанной E теперь отказывается (TestDesignDBSplitOfAHiddenPictureIsRefused), поэтому то же
+// состояние собирается жестами, которые законны и сегодня: F режут от E, пока E на виду; прячут F,
+// затем E (видимых детей у E уже нет); возвращают F — показ не сторожится. Строки выходят ровно те,
+// что оставляла устаревшая вкладка: C на виду, E спрятана, F от E на виду.
+//
+// Затем прячут и сам C — теперь лист держит ТОЛЬКО F, через две спрятанные строки: этот случай
+// отпускали и суд по строке куска (раунд 1), и суд по голове цепочки (раунд 2). Положительный
+// контроль: спрятали F — на экране от ветки не осталось ничего, и перезапись листа проходит.
+//
+// МУТАЦИИ (entity.DesignStandingPieces): судить по голове цепочки; судить по строке куска; выбросить
+// ребро разреза — второй отказ становится перезаписью. Сузить чтение сторожа до кусков листа — тоже
+// краснеет: E и F не прочитаны, замена C ведёт мимо прочитанного, и второй отказ становится Internal.
+func TestDesignDBOverwriteOfASheetIsHeldByACropOfAHiddenHead(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	pictures := func(t *testing.T) int {
+		t.Helper()
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+	hide := func(t *testing.T, id int, hidden bool) {
+		t.Helper()
+		_, err := rep.Design().HidePicture(ctx, id, hidden, "colleague")
+		require.NoError(t, err)
+	}
+	requireHeld := func(t *testing.T, why string) {
+		t.Helper()
+		before := pictures(t)
+		_, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+		require.ErrorIs(t, err, entity.ErrDesignCutSheet, why)
+		require.Equal(t, before, pictures(t), "отказ не подаёт правку листа")
+		holder, rev, _ := probeSlotHolder(t, raw, p.slot.Id)
+		require.EqualValues(t, p.sheet.Id, holder.Int32, "отказ не двигает слот")
+		require.Equal(t, p.slot.SlotRev, rev)
+		require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует лист")
+	}
+
+	cut := splitProbe(t, rep, raw, p.sheet.Id, entity.DesignViewBack)
+	require.Len(t, cut, 1)
+	c := cut[0]
+	e := editProbe(t, rep, raw, c, c.Id)
+	require.EqualValues(t, e.Id, probeReplacedBy(t, raw, c.Id).Int32, "C заменён правкой E")
+	under := splitProbe(t, rep, raw, e.Id, entity.DesignViewBack)
+	require.Len(t, under, 1)
+	f := under[0]
+	require.EqualValues(t, e.Id, f.DerivedFrom.Int32, "F отрезан от E")
+	hide(t, f.Id, true)
+	hide(t, e.Id, true)
+	hide(t, f.Id, false)
+
+	requireHeld(t, "сценарий Codex: C на виду, E спрятана, F от E на виду")
+
+	hide(t, c.Id, true)
+	requireHeld(t, "C и E спрятаны, F от спрятанной головы на виду — лист держит F")
+
+	hide(t, f.Id, true)
+	sheetEdit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.NoError(t, err, "от ветки куска на экране не осталось ничего")
 	require.EqualValues(t, sheetEdit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
 }
 

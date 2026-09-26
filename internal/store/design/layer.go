@@ -691,26 +691,28 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	return &out, nil
 }
 
-// designCutPiecesOf — ВСЕ КУСКИ, ОТРЕЗАННЫЕ ОТ КАДРА, СПРЯТАННЫЕ ТОЖЕ (сторож cut_sheet). Держит ли кусок
-// лист, решает не его строка, а голова его цепочки замен — entity.DesignVisibleCropBranches, — поэтому
-// фильтров видимости и замены здесь нет, и оба их отсутствия несущие.
+// designBranchOfCard — ВСЕ КАДРЫ КАРТОЧКИ, КАКИМИ ИХ ВИДИТ СТОРОЖ cut_sheet: один SELECT в транзакции
+// флэттена, после которого обход (entity.DesignStandingPieces) базы не трогает (O-53 review, раунд
+// 3). Раньше сторож читал кадр за кадром по каждому звену каждого куска — N×L чтений внутри
+// SERIALIZABLE-транзакции записи.
 //
-// ⚠ ГЛАГОЛ СПРАШИВАЕТСЯ, А НЕ ВЫВОДИТСЯ (0359): derived_from пишут и разрез, и правка, и правка
-// листа — ещё не разрез. Легаси-строка с пустым глаголом в счёт не идёт: бэкфилл 0359 оставил её
-// неклассифицированной, потому что доказать «кроп» было нечем, и назвать её куском здесь значило бы
-// вписать ту самую догадку.
+// ⚠ ПО КАРТОЧКЕ, А НЕ ПО ВЕТКЕ И НЕ ПО СТРОКЕ ПРОГОНА. Кусок находится по derived_from своего
+// родителя, и кадр карточки, не попавший в чтение, выпал бы из обхода МОЛЧА — лист ушёл бы под
+// правку. Карточка — наименьшая граница, про которую это доказано: кроп и правка живут на карточке
+// своего родителя, и оба писателя это обеспечивают (разрез копирует карточку родителя, флэттен берёт
+// родителя только своей карточки). Кадр, на который ведёт replaced_by, но которого нет среди
+// прочитанных, — порча (Internal), а не «спрятан».
 //
-// ⚠ БЕЗ replaced_by IS NULL (O-53 review): кусок, перезаписанный правкой, лист держит — правка
-// нарезана из прежних пикселей листа, и перезапись листа оставила бы две живые ветки одного листа.
-// Тот же ответ даёт разрез (designSheetCropsOf: заменённый кусок — всё ещё кусок).
-//
-// ⚠ БЕЗ hidden_at IS NULL (O-53 review, раунд 2): здесь стоял фильтр видимости СТРОКИ куска, и его
-// обходила устаревшая вкладка — кусок C спрятан, спрятанный C перезаписан (правка E рождается
-// видимой), лист перезаписан поверх живой E. Видимость судится по голове ветки, а для этого нужен и
-// спрятанный кусок.
-const designCutPiecesOf = `
-	SELECT * FROM design_picture
-	WHERE derived_from = :id AND derivation = :crop
+// ⚠ НИ ОДНОГО ФИЛЬТРА, КРОМЕ КАРТОЧКИ: ни видимости (спрятанный кусок держит лист, если под ним стоит
+// правка или кусок), ни замены, ни глагола — глагол читает обход, отличая кроп от правки «рядом» и от
+// легаси. LIMIT нет тоже: срезанное чтение выглядело бы для обхода как карточка, в которой куска нет.
+// Под SERIALIZABLE это чтение ставит разделяемый замок на кадры карточки и на промежуток за ними:
+// разрез, прятанье или перезапись той же карточки в соседней транзакции ждёт либо ловит дедлок и
+// повторяется, но не проскакивает между этим чтением и штампом.
+const designBranchOfCard = `
+	SELECT ` + entity.DesignBranchColumns + `
+	FROM design_picture
+	WHERE tech_card_id = :card
 	ORDER BY id`
 
 // designStampReplacedBy — ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ. `replaced_by IS NULL` в WHERE — второй
@@ -731,10 +733,13 @@ const designStampReplacedBy = `
 // без базы; голову к already_replaced дописывает designAlreadyReplaced — это чтение, и в чистом
 // решении ему не место.
 //
-// КУСКИ СЧИТАЮТСЯ ПОСЛЕ ДВУХ ПЕРВЫХ ОТКАЗОВ, А НЕ ДО: счёт — это обход цепочки каждого куска, и
-// запрос, назвавший не тот кадр, не должен ни платить за него, ни получать вместо replace_mismatch
-// ошибку порченой цепочки чужого листа. Решение при этом одно — DesignReplaceRefusal зовётся с нулём
-// кусков, затем с их числом, и порядок отказов остаётся его.
+// КУСКИ СУДЯТСЯ ПОСЛЕ ДВУХ ПЕРВЫХ ОТКАЗОВ, А НЕ ДО: суд — это чтение всей карточки и обход ветки
+// каждого куска, и запрос, назвавший не тот кадр, не должен ни платить за него, ни получать вместо
+// replace_mismatch ошибку порченой ветки чужого листа. Решение при этом одно — DesignReplaceRefusal
+// зовётся с нулём кусков, затем с числом стоящих, и порядок отказов остаётся его.
+//
+// ОДНО ЧТЕНИЕ, ПОТОМ ПАМЯТЬ (O-53 review, раунд 3): кадры карточки читаются одним SELECT
+// (designBranchOfCard), и обход по ним базы не трогает, сколько бы кусков и звеньев ни было.
 func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, layer entity.DesignEditLayer) (entity.DesignPicture, error) {
 	original, err := pictureByID(ctx, db, req.ReplacePictureId)
 	if err != nil {
@@ -746,18 +751,17 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 		}
 		return original, err
 	}
-	pieces, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db, designCutPiecesOf,
-		map[string]any{"id": original.Id, "crop": entity.DesignDerivationCrop})
+	nodes, err := storeutil.QueryListNamed[entity.DesignBranchNode](ctx, db, designBranchOfCard,
+		map[string]any{"card": original.TechCardId})
 	if err != nil {
-		return original, fmt.Errorf("failed to read the pieces cut from design picture %d: %w", original.Id, err)
+		return original, fmt.Errorf("failed to read the pictures of tech card %d to judge the pieces of design picture %d: %w",
+			original.TechCardId, original.Id, err)
 	}
-	branches, err := entity.DesignVisibleCropBranches(pieces, func(id int) (entity.DesignPicture, error) {
-		return pictureByID(ctx, db, id)
-	})
+	standing, err := entity.DesignStandingPieces(original.Id, nodes)
 	if err != nil {
 		return original, err
 	}
-	return original, entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, branches)
+	return original, entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, len(standing))
 }
 
 // designAlreadyReplaced — ОТКАЗ already_replaced С ГОЛОВОЙ ЦЕПОЧКИ, прочитанной в ТОЙ ЖЕ транзакции,
