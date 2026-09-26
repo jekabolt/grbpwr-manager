@@ -89,6 +89,12 @@ const (
 	// — та, что раньше называлась «обычным ответом», — уже не помещалась в 3000, то есть потолок
 	// отказывал не в аварии, а в штатном полном ответе.
 	//
+	// ⚠ ПЕРЕЗАМЕР 26.09 (O-33): в ту же форму вошёл список `flat_details` — до 6 деталей по 40 + 200
+	// рун. Худший ответ по всем потолкам (15 слотов на колорвей, все шесть деталей под потолок):
+	// плотный 15 838 Б ≈ 5 280 токенов, с отступами 21 764 Б ≈ 7 250. Запас над 8000 сжался до ~10%;
+	// следующий список в форме ответа обязан либо поднять потолок, либо ужаться сам. Замер живёт в
+	// TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer и краснеет раньше, чем прод.
+	//
 	// ⚠ ПОТОЛОК ВЕСЬ УХОДИТ В ОТВЕТ, А НЕ В РАЗМЫШЛЕНИЕ: CompleteWithImages выключает `reasoning`
 	// ровно тогда, когда потолок задан (см. multimodal.go) — иначе думающая модель тратила бы этот
 	// же бюджет до ответа, и замер выше не значил бы ничего.
@@ -139,6 +145,16 @@ const (
 	designConstructionMaxCallouts = 15
 	designConstructionMaxBom      = 15
 	designConstructionMaxMissing  = 8
+
+	// ─── ПОТОЛКИ ДЕТАЛЕЙ ДЛЯ ОТДЕЛЬНОГО РИСУНКА (O-33, D-32) ───
+	//
+	// ШЕСТЬ, ПОТОМУ ЧТО КАЖДАЯ — ОТДЕЛЬНЫЙ ПЛАТНЫЙ ПРОГОН ФЛЭТА, который человек запускает по
+	// одному; список длиннее шести — это уже не «что стоит нарисовать отдельно», а «нарисуй всё».
+	// Имя — подпись слота на плитке, одна строка (40 рун); записка — «что должен показать рисунок»,
+	// одна мысль, не абзац (200 рун).
+	designConstructionMaxFlatDetails         = 6
+	designConstructionMaxFlatDetailNameRunes = 40
+	designConstructionMaxFlatDetailNoteRunes = 200
 
 	// ─── ПОТОЛКИ ПРЕДЛОЖЕННЫХ КОЛОРВЕЕВ (B-25) ───
 	//
@@ -457,6 +473,14 @@ type designAbsenceTrace func(key, text string)
 // ЭТОМ изделии ЕСТЬ; неприменимый ключ ПРОПУСКАЕТСЯ, отсутствие НЕ ОПИСЫВАЕТСЯ, а ярлыки/бирки
 // названы спецификацией по имени. Вторая половина починки — разбор (designIsAbsenceStatement):
 // просьба к модели без сторожа остаётся просьбой.
+//
+// ⚠ ТА ЖЕ ВОЛНА (O-33, D-32) — ДЕТАЛИ ДЛЯ ОТДЕЛЬНОГО РИСУНКА, правило 12 и ключ `flat_details`.
+// Клиент делал DETAIL-слот из КАЖДОГО аспекта — и у пуловера появлялся «DETAIL · FASTENING». Но
+// «какие детали заслуживают собственного рисунка» — ДРУГОЙ вопрос, чем «какая тут конструкция»,
+// и обычный ответ на него — «никакие». Поэтому он задаётся ОТДЕЛЬНОЙ инструкцией ТОГО ЖЕ платного
+// вызова (второй прогон перечитывал бы те же картинки ради вопроса, входы которого этот ответ уже
+// держит) и отвечается отдельным ключом; пустой список — законный и ожидаемый ответ, и промпт
+// говорит это вслух. Стандартные элементы (подгибка, шов, отстрочка, ярлык) не перечисляются.
 const designConstructionSystemPrompt = "You are a garment technologist's assistant. " +
 	"You are shown the moodboard pictures, the designer's concept & construction description, and " +
 	"the notes pinned on the pictures — every note names its picture by number and the spot it " +
@@ -471,6 +495,7 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"\"colourways\": [{\"name\": string, \"color_code\": string, \"pantone\": string, " +
 	"\"hex\": string, \"slots\": [{\"slot\": string, \"pantone\": string, \"hex\": string, " +
 	"\"colour\": string}]}], " +
+	"\"flat_details\": [{\"name\": string, \"note\": string}], " +
 	"\"missing\": [string]}\n" +
 	"Rules:\n" +
 	"1. Never invent a fabric, a colour, a measurement or a piece of hardware that the pictures do " +
@@ -489,8 +514,8 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"5. \"aspects\" use the keys given in the prompt, or a short custom key when none of them fits; " +
 	"at most 60 words each.\n" +
 	"6. Do not repeat what the card already says — refine it or leave the field empty.\n" +
-	"7. Limits: at most 10 aspects, 15 bom lines, 8 missing notes, 4 colourways of at most 15 " +
-	"slot colours each.\n" +
+	"7. Limits: at most 10 aspects, 15 bom lines, 8 missing notes, 6 flat details, 4 colourways " +
+	"of at most 15 slot colours each.\n" +
 	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it " +
 	"empty.\n" +
 	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
@@ -505,7 +530,14 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"entry that describes an absence (\"no closures\", \"none\", \"not applicable\"). Labels, hang " +
 	"tags, care labels, size labels and brand labels are BOM / specification items, never aspects: " +
 	"list them under \"bom\" when the pictures show them. \"auxMaterials\" means making aids that " +
-	"shape the garment — interfacing, fusing, tape, elastic — not labels."
+	"shape the garment — interfacing, fusing, tape, elastic — not labels.\n" +
+	"12. \"flat_details\": the details that need a drawing of their OWN because they cannot be " +
+	"understood from the front and back flats — an unusual pocket construction, a special collar, " +
+	"cuff, placket or vent, a hidden fastening detail, a hardware detail. Each entry: \"name\" " +
+	"(what it is, a few words) and \"note\" (what the drawing must show). If nothing needs a " +
+	"separate drawing, return an empty list. Do not list standard elements — plain hems, plain " +
+	"seams, topstitching, labels — and do not repeat \"aspects\": an aspect is a construction fact " +
+	"in words, a flat detail is a drawing that is needed."
 
 // ─────────────────────────── пользовательский промпт ───────────────────────────
 
@@ -870,11 +902,15 @@ type designConstructionStats struct {
 	CalloutsDropped int // строка без слов
 	BomDropped      int // строка без имени
 	MissingDropped  int
-	EnumsUnset      int // секция/назначение/вид не узнаны — строка сохранена, токен пуст
-	MaterialIDs     int // предложенный артикул обнулён (каталог не показывали)
-	Truncated       int // строка обрезана потолком (рун — у TEXT, байтов — у VARCHAR)
-	OverLimit       int // строки, не влезшие в потолок списка
-	Deduped         int
+	// FlatDetailsDropped — деталь для отдельного рисунка БЕЗ ИМЕНИ или с именем-отсутствием
+	// («none», «no separate drawing needed»): подпись слота — единственное, без чего строку нельзя
+	// ни принять, ни отвергнуть, а «none» — форма отказа отвечать, не имя детали (O-33).
+	FlatDetailsDropped int
+	EnumsUnset         int // секция/назначение/вид не узнаны — строка сохранена, токен пуст
+	MaterialIDs        int // предложенный артикул обнулён (каталог не показывали)
+	Truncated          int // строка обрезана потолком (рун — у TEXT, байтов — у VARCHAR)
+	OverLimit          int // строки, не влезшие в потолок списка
+	Deduped            int
 	// PairsCleared — токен, законный сам по себе, но НЕЗАКОННЫЙ В ЭТОЙ ПАРЕ, снят со строки
 	// (назначение не на рулонном, вид не в своей секции). Считается отдельно от EnumsUnset:
 	// «слово не узнано» чинит промпт, «пара невозможна» чинит вопрос, который мы задали.
@@ -937,6 +973,7 @@ type designConstructionStats struct {
 // (callouts_unasked) и виден на уровне Info, где ему и место.
 func (s designConstructionStats) Coerced() bool {
 	return s.AspectsCustom+s.AspectsDropped+s.AspectsAbsent+s.CalloutsDropped+s.BomDropped+s.MissingDropped+
+		s.FlatDetailsDropped+
 		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped+
 		s.PairsCleared+s.NonScalars+s.FieldsDropped+
 		s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped+
@@ -1047,8 +1084,11 @@ func designTake(l designLoose, stats *designConstructionStats) string {
 // ⚠ `callouts` ИЗ СПИСКА НЕ УБРАН, ХОТЯ ПРОМПТ ИХ БОЛЬШЕ НЕ ПРОСИТ (B-13). Список отвечает на
 // вопрос «это ответ по нашей схеме», а не «это то, что мы просили»: сохранённый до круга 20 прогон,
 // у которого содержательными оказались одни выноски, обязан читаться обратно на повторе.
+//
+// `flat_details` (O-33) — ДЕВЯТЫЙ, по тому же условию: ему есть куда лечь (DETAIL-слоты флэта).
 var designConstructionValueKeys = []string{
 	"silhouette", "fabric", "fit", "concept", "aspects", "callouts", "bom", "colourways",
+	"flat_details",
 }
 
 // designField читает ОДИН необязательный ключ, и НЕУДАЧА ОДНОГО КЛЮЧА НЕ РОНЯЕТ ОСТАЛЬНЫЕ.
@@ -1100,6 +1140,12 @@ func designListField[T any](fields map[string]json.RawMessage, key string, stats
 type designRawAspect struct {
 	Key  designLoose `json:"key"`
 	Text designLoose `json:"text"`
+}
+
+// designRawFlatDetail — ОДНА ДЕТАЛЬ ДЛЯ ОТДЕЛЬНОГО РИСУНКА, как её пишет модель (O-33).
+type designRawFlatDetail struct {
+	Name designLoose `json:"name"`
+	Note designLoose `json:"note"`
 }
 
 type designRawCallout struct {
@@ -1295,6 +1341,38 @@ func designParseConstructionObject(
 			stats.AspectsCustom++
 		}
 		out.Aspects = append(out.Aspects, &pb_common.DesignConstructionAspect{Key: key, Text: text})
+	}
+
+	// ─── ДЕТАЛИ ДЛЯ ОТДЕЛЬНОГО РИСУНКА (O-33, D-32) ───
+	//
+	// ЭТО НЕ АСПЕКТЫ, И РАЗНИЦА — ВЕСЬ СМЫСЛ КЛЮЧА. Аспект — факт конструкции словами; деталь для
+	// флэта — ответ на ДРУГОЙ вопрос: «что нельзя понять по фронту и спине и надо нарисовать
+	// отдельно», и обычный ответ на него — «ничего». Клиент делает DETAIL-слоты ИЗ ЭТОГО списка, а
+	// не из аспектов (пока делал из аспектов, у пуловера появлялся «DETAIL · FASTENING»).
+	//
+	// Имя-отсутствие («none», «no separate drawing needed») — та же форма отказа отвечать, что у
+	// аспекта, и то же правило (designIsAbsenceStatement): модели, которой велели вернуть пустой
+	// список, случается вернуть список из одного «none». Записка не обязательна — имя есть подпись
+	// слота, и без него строку нельзя ни принять, ни отвергнуть.
+	seenFlat := make(map[string]struct{})
+	for _, d := range designListField[designRawFlatDetail](fields, "flat_details", stats) {
+		name := designBoundedRunes(designTake(d.Name, stats), designConstructionMaxFlatDetailNameRunes, stats)
+		note := designBoundedRunes(designTake(d.Note, stats), designConstructionMaxFlatDetailNoteRunes, stats)
+		fold := designFoldToken(name)
+		if fold == "" || designIsAbsenceStatement(name) {
+			stats.FlatDetailsDropped++
+			continue
+		}
+		if _, dup := seenFlat[fold]; dup {
+			stats.Deduped++
+			continue
+		}
+		seenFlat[fold] = struct{}{}
+		if len(out.FlatDetails) >= designConstructionMaxFlatDetails {
+			stats.OverLimit++
+			continue
+		}
+		out.FlatDetails = append(out.FlatDetails, &pb_common.DesignFlatDetail{Name: name, Note: note})
 	}
 
 	// ─── ВЫНОСКИ ───

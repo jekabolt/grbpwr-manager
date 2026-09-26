@@ -352,10 +352,20 @@ func TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer(t *testing.T) {
 	for i := 0; i < designConstructionMaxMissing; i++ {
 		missing = append(missing, words(18))
 	}
+	// Правило 12 (O-33): до шести деталей для отдельного рисунка, имя ≤ 40 рун, записка ≤ 200 —
+	// ровно по потолкам, потому что замер обязан расти вместе с формой ответа.
+	flatDetails := make([]any, 0, designConstructionMaxFlatDetails)
+	for i := 0; i < designConstructionMaxFlatDetails; i++ {
+		flatDetails = append(flatDetails, map[string]any{
+			"name": strings.Repeat("n", designConstructionMaxFlatDetailNameRunes),
+			"note": strings.Repeat("w", designConstructionMaxFlatDetailNoteRunes),
+		})
+	}
 
 	answer := map[string]any{
 		"silhouette": words(40), "fabric": words(40), "fit": "oversized", "concept": "",
 		"aspects": aspects, "bom": bom, "colourways": colourways, "missing": missing,
+		"flat_details": flatDetails,
 	}
 
 	compact, err := json.Marshal(answer)

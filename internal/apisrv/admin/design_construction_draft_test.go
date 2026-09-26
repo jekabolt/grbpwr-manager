@@ -831,9 +831,11 @@ func TestConstructionDraftRoundTripsEveryShapeIncludingTheEmptyOnes(t *testing.T
 	  "aspects": [{"key": "sleeve / cuff", "text": "two-piece sleeve"}],
 	  "callouts": [{"feature": "storm flap", "details": "single layer", "dimensions": "80 mm"}],
 	  "bom": [{"section": "hardware", "kind": "zipper", "name": "front zip", "pantone": "19-4052"}],
+	  "flat_details": [{"name": "storm flap", "note": "single layer; how it is caught in the seam"}],
 	  "missing": ["picture 3 — the cuff"]
 	}`, "stop")
 	require.NoError(t, err)
+	require.Len(t, full.GetFlatDetails(), 1, "полный черновик несёт и детали для отдельного рисунка (O-33)")
 
 	for _, tc := range []struct {
 		name string

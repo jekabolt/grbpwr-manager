@@ -2887,6 +2887,8 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("callouts_dropped", stats.CalloutsDropped),
 		slog.Int("bom_dropped", stats.BomDropped),
 		slog.Int("missing_dropped", stats.MissingDropped),
+		// flat_details_dropped — деталь для отдельного рисунка без имени или с именем «none» (O-33).
+		slog.Int("flat_details_dropped", stats.FlatDetailsDropped),
 		slog.Int("enums_unset", stats.EnumsUnset),
 		slog.Int("material_ids_zeroed", stats.MaterialIDs),
 		slog.Int("truncated", stats.Truncated),
