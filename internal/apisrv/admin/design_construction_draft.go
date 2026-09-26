@@ -177,9 +177,10 @@ const (
 	designConstructionMaxAlreadyBytes     = 8 << 10 // 8 KiB на всю секцию
 	// designConstructionMaxSlotsToColour — СКОЛЬКО ИМЁН СЛОТОВ ЕДЕТ СЕКЦИЕЙ «Slots to colour»
 	// (O-44 п.2). Те же входные токены каждого нажатия, поэтому потолок есть; двадцать имён — с
-	// запасом над восемью цветами колорвея, так что слот, который правило 9 успевает окрасить, за
-	// потолок не выпадает, а об остальных говорит честный хвост «(+N more …)». Имя режется тем же
-	// рунным потолком, что строка «уже на карточке».
+	// запасом над восемью цветами колорвея, и список режется В ПОРЯДКЕ ПРИОРИТЕТА (главные ткани,
+	// нитка, остальное — см. designSlotsToColour), так что слот, который правило 9 успевает окрасить,
+	// за потолок не выпадает, а об остальных говорит честный хвост «(+N more …)». Имя идёт в мере
+	// разбора — designSlotName (60 рун).
 	designConstructionMaxSlotsToColour = 20
 
 	designConstructionMaxAspects  = 10
@@ -779,7 +780,14 @@ const (
 // bom», и модель честно красила одни ткани. Теперь оно просит каждый цветной слот карточки и ответа
 // — ткань, подклад, нитку, фурнитуру, отделку — с Pantone (TCX для ткани, TCX или C для остального),
 // а пользовательский промпт называет слоты карточки поимённо, секцией «Slots to colour»
-// (designSlotsToColour). Потолок в восемь цветов и «главные ткани первыми» остались как были.
+// (designSlotsToColour).
+//
+// ⚠ РЕВЬЮ O-44 (26.09, Codex) — ОДИН ПОРЯДОК НА СПИСОК И НА ПРАВИЛО. «Каждый цветной слот» при
+// потолке в восемь цветов — обещание, которого потолок не держит, а порядок «сначала все ткани»
+// выталкивал нитку за восьмёрку уже на девяти рулонных строках, а на двадцати — за сам список.
+// Теперь правило 9 и список говорят одно: не больше восьми, в порядке «главные ткани, нитка,
+// остальное», и список режется в этом же порядке (designSlotsToColour держит место нитке внутри
+// восьми). Имена списка — в мере разбора (designSlotName), чтобы эхо длинного имени привязалось.
 const designConstructionSystemPrompt = "You are a garment technologist's assistant. " +
 	"You are shown the moodboard pictures, the designer's concept & construction description, and " +
 	"the notes pinned on the pictures — every note names its picture by number and the spot it " +
@@ -822,12 +830,13 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it " +
 	"empty.\n" +
 	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
-	"entry per combination, naming every colour-bearing slot of the card and of \"bom\" — cloth, " +
-	"lining, thread, hardware, trims — by its exact name (the main cloths first; at most 8) with a " +
-	"Pantone code (TCX for cloth, TCX or C otherwise) and a hex; the card's own slots, when it has " +
-	"any, are listed in the prompt under \"Slots to colour\"; \"color_code\" is the closest code " +
-	"from the colour list in the prompt (empty when none is close); never invent a colour the " +
-	"board does not show.\n" +
+	"entry per combination, naming the colour-bearing slots of the card and of \"bom\" — cloth, " +
+	"lining, thread, hardware, trims — each by its exact name, at most 8, in this order: the main " +
+	"cloths, the thread, then the rest; each with a Pantone code (TCX for cloth, TCX or C " +
+	"otherwise) and a hex. The card's own slots, when it has any, are listed in the prompt under " +
+	"\"Slots to colour\" in that order and spelled as the answer must spell them; \"color_code\" " +
+	"is the closest code from the colour list in the prompt (empty when none is close); never " +
+	"invent a colour the board does not show.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
 	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
@@ -940,7 +949,8 @@ func designConstructionUserPrompt(
 	// Рядом со словарём цвета, потому что отвечают они на один вопрос — «чем и что красить в
 	// колорвее». Пустая карточка секции не получает: правило 9 и так велит красить слоты ответа.
 	if slots := designSlotsToColour(card); slots != "" {
-		b.WriteString("\nSlots to colour — the card's material slots; in every colourway name each " +
+		b.WriteString("\nSlots to colour — the card's material slots, in the order to colour them " +
+			"(the main cloths, the thread, then the rest); in every colourway name each " +
 			"colour-bearing one exactly as written here:\n" + slots)
 	}
 
@@ -1034,21 +1044,41 @@ func designBuildColourDictionary(colours []entity.Color) designColourDictionary 
 	return dict
 }
 
-// designCardSlotFolds — СКЛАДКИ ИМЁН СТРОК СПЕКИ, УЖЕ СТОЯЩИХ НА КАРТОЧКЕ.
+// designCardSlotFolds — СТРОКИ СПЕКИ, УЖЕ СТОЯЩИЕ НА КАРТОЧКЕ, ПО КЛЮЧУ ПРИВЯЗКИ (designSlotKey).
 //
 // Это половина ответа на вопрос «есть ли такой слот»; вторая половина — строки спеки САМОГО ОТВЕТА
 // (см. designVerifyColourways). Обе нужны: колорвей, предложенный в одном ответе со своими слотами,
 // обязан к ним привязаться ДО того, как человек их принял, а колорвей на карточку, где слоты уже
 // набраны руками, — к набранным.
-func designCardSlotFolds(card *entity.TechCard) map[string]struct{} {
-	out := make(map[string]struct{})
+//
+// ЗНАЧЕНИЕ — ПОЛНОЕ ИМЯ СТРОКИ, КОГДА МЕРА ЕГО ОБРЕЗАЕТ, ИНАЧЕ ПУСТО (ревью O-44, MINOR). Длинное имя
+// модель видит обрезанным и обрезанным же повторяет; клиент привязывает цвет к строке по складке
+// ПОЛНОГО имени, и обрезанное эхо у него не сложилось бы ни с чем. Поэтому проверка возвращает такому
+// слоту имя строки целиком. Имя в пределах меры не трогается: складка и так совпадает, а написание
+// ответа — его собственное. Имя длиннее колонки (255 байт) не возвращается: канон повтора режет по
+// колонке, и повтор разошёлся бы с первым ответом. Из дублей по ключу остаётся первая строка
+// карточки — та, что стоит в списке «Slots to colour».
+func designCardSlotFolds(card *entity.TechCard) map[string]string {
+	out := make(map[string]string)
 	if card == nil {
 		return out
 	}
+	var sink designConstructionStats
 	for _, item := range card.BomItems {
-		if fold := designFoldToken(item.Name); fold != "" {
-			out[fold] = struct{}{}
+		full := designOneLine(item.Name)
+		bounded := designSlotName(full, &sink)
+		key := designFoldToken(bounded)
+		if key == "" {
+			continue
 		}
+		if _, taken := out[key]; taken {
+			continue
+		}
+		restore := ""
+		if bounded != full && len(full) <= designConstructionMaxVarchar255 {
+			restore = full
+		}
+		out[key] = restore
 	}
 	return out
 }
@@ -1216,45 +1246,78 @@ func designCardAlreadySays(card *entity.TechCard) string {
 // thread, hardware, trims»): упаковку по имени модель отличает сама, а фильтр по секции здесь был бы
 // вторым, молчаливым мнением о том, что красить.
 //
-// ПОРЯДОК — ТОТ ЖЕ, ЧТО У ТАБЛИЦЫ MATERIAL SLOTS: ткани (рулонные секции), нитки, всё остальное;
-// внутри семейства — порядок карточки. Правило 9 просит главные ткани первыми и держит потолок в
-// восемь цветов, поэтому то, что стоит раньше, и будет окрашено, — и нитка стоит сразу за тканями.
+// ПОРЯДОК — ОДИН ДЕТЕРМИНИРОВАННЫЙ ПРИОРИТЕТ НА СПИСОК И НА ПРАВИЛО 9 (ревью O-44): главные ткани,
+// нитка, остальные рулонные, всё прочее; внутри ступени — порядок карточки. Правило 9 красит не
+// больше восьми слотов «в этом порядке», поэтому порядок списка и решает, что будет окрашено, — и
+// нитка обязана стоять внутри восьми. Прежний порядок (все ткани, за ними нитка) этого не обещал:
+// девять рулонных строк выталкивали нитку за восьмёрку, двадцать — за сам список.
+//
+//   - ГЛАВНЫЕ ТКАНИ — рулонные строки с назначением main (0265), не больше
+//     designConstructionMaxColourwaySlots − 1: восьмое место оставлено нитке, и главные сверх семи
+//     уходят к остальным рулонным. Карточка, где main не отмечена ни у одной строки (назначение
+//     необязательно, у старых карточек его нет), главной считает ПЕРВУЮ рулонную строку: «главные
+//     ткани первыми» обязано значить что-то и там.
+//   - НИТКА — все строки секции thread.
+//   - ОСТАЛЬНЫЕ РУЛОННЫЕ — подклад, дублерин, утеплитель, ткани без main.
+//   - ПРОЧЕЕ — фурнитура, отделка, ярлыки, упаковка.
 //
 // ТОЛЬКО ИМЕНА: строка на слот, без состава и цвета — те уже едут секцией «уже на карточке», и
-// дважды платить за них незачем. Дубли по складке схлопываются: привязка всё равно одна.
+// дважды платить за них незачем. ИМЯ — В МЕРЕ РАЗБОРА (designSlotName): длинное имя модель видит
+// ровно таким, каким разбор прочтёт её эхо, и привязка идёт по той же складке (designSlotKey). Дубли
+// по этой складке схлопываются — первая строка карточки остаётся: привязка всё равно одна.
 func designSlotsToColour(card *entity.TechCard) string {
 	if card == nil {
 		return ""
 	}
-	family := func(s entity.TechCardBomSection) int {
-		switch {
-		case entity.IsRollGoodsSection(s):
-			return 0
-		case s == entity.BomSectionThread:
-			return 1
-		default:
-			return 2
+	const (
+		tierMain = iota
+		tierThread
+		tierRoll
+		tierRest
+	)
+	isMain := func(item entity.TechCardBomItem) bool {
+		return entity.IsRollGoodsSection(item.Section) && item.Purpose.Valid &&
+			entity.TechCardBomPurpose(item.Purpose.String) == entity.BomPurposeMain
+	}
+	var sink designConstructionStats
+	marked := false
+	for _, item := range card.BomItems {
+		if isMain(item) && designSlotKey(item.Name) != "" {
+			marked = true
+			break
 		}
 	}
 	type slot struct {
-		name   string
-		family int
+		name string
+		tier int
 	}
 	seen := make(map[string]struct{}, len(card.BomItems))
 	slots := make([]slot, 0, len(card.BomItems))
+	mains := 0
 	for _, item := range card.BomItems {
-		name := aiBoundedText(designOneLine(item.Name), designConstructionMaxAlreadyLineRunes)
-		fold := designFoldToken(name)
-		if fold == "" {
+		name := designSlotName(item.Name, &sink)
+		key := designFoldToken(name)
+		if key == "" {
 			continue
 		}
-		if _, dup := seen[fold]; dup {
+		if _, dup := seen[key]; dup {
 			continue
 		}
-		seen[fold] = struct{}{}
-		slots = append(slots, slot{name: name, family: family(item.Section)})
+		seen[key] = struct{}{}
+		tier := tierRest
+		switch {
+		case entity.IsRollGoodsSection(item.Section):
+			tier = tierRoll
+			if (isMain(item) || (!marked && mains == 0)) && mains < designConstructionMaxColourwaySlots-1 {
+				tier = tierMain
+				mains++
+			}
+		case item.Section == entity.BomSectionThread:
+			tier = tierThread
+		}
+		slots = append(slots, slot{name: name, tier: tier})
 	}
-	sort.SliceStable(slots, func(i, j int) bool { return slots[i].family < slots[j].family })
+	sort.SliceStable(slots, func(i, j int) bool { return slots[i].tier < slots[j].tier })
 
 	var b strings.Builder
 	for i, s := range slots {
@@ -1265,6 +1328,25 @@ func designSlotsToColour(card *entity.TechCard) string {
 		b.WriteString("- " + s.name + "\n")
 	}
 	return b.String()
+}
+
+// designSlotName — ИМЯ СЛОТА В ЕДИНСТВЕННОЙ МЕРЕ (ревью O-44, MINOR): одна строка, не больше
+// designConstructionMaxNameRunes рун с маркером обрезки, не больше 255 байт. В этой мере имя уходит
+// в промпт (список «Slots to colour»), в ней же разбор читает эхо модели, и по складке этой меры
+// (designSlotKey) цвет привязывается к строке. Раньше список слал имя до 200 рун, а разбор резал эхо
+// на 60 — и цвет строки с именем в 61 знак отваливался на привязке: обрезанное эхо не складывалось с
+// полным именем. Мера одна на три места, поэтому разойтись им негде.
+func designSlotName(name string, stats *designConstructionStats) string {
+	return designBoundedBytes(
+		designBoundedRunes(designOneLine(name), designConstructionMaxNameRunes, stats),
+		designConstructionMaxVarchar255, stats)
+}
+
+// designSlotKey — КЛЮЧ ПРИВЯЗКИ ЦВЕТА К СЛОТУ: складка имени в мере designSlotName. Для имени в
+// пределах меры это та же складка, что и была (резать нечего, а пробелов складка не видит).
+func designSlotKey(name string) string {
+	var sink designConstructionStats
+	return designFoldToken(designSlotName(name, &sink))
 }
 
 // ─────────────────────────── разбор ответа ───────────────────────────
@@ -1934,9 +2016,17 @@ func designParseConstructionObject(
 				stats.FieldsDropped++
 				continue
 			}
-			slot := designBoundedBytes(
-				designBoundedRunes(designTake(s.Slot, stats), designConstructionMaxNameRunes, stats),
-				designConstructionMaxVarchar255, stats)
+			// ИМЯ СЛОТА — В МЕРЕ designSlotName: той же, в которой его показал промпт и по которой его
+			// привяжет проверка. КАНОН ПОВТОРА — ИСКЛЮЧЕНИЕ: проверка могла вернуть слоту ПОЛНОЕ имя
+			// строки карточки (designCardSlotFolds), и повтор обязан отдать его таким, каким его
+			// получил клиент, — в каноне режет только колонка, и ничего больше (канон, записанный до
+			// меры, тоже читается байт в байт).
+			var slot string
+			if mode == designParseCanonical {
+				slot = designBoundedBytes(designTake(s.Slot, stats), designConstructionMaxVarchar255, stats)
+			} else {
+				slot = designSlotName(designTake(s.Slot, stats), stats)
+			}
 			fold := designFoldToken(slot)
 			if fold == "" {
 				// ЦВЕТ БЕЗ СЛОТА НЕКУДА ПОЛОЖИТЬ: строка рецепта ключуется именем строки спеки.
@@ -2040,7 +2130,7 @@ func designHexColour(s string) string {
 func designVerifyColourways(
 	draft *pb_common.DesignConstructionDraft,
 	dict designColourDictionary,
-	cardSlots map[string]struct{},
+	cardSlots map[string]string,
 	stats *designConstructionStats,
 ) {
 	if draft == nil || len(draft.Colourways) == 0 {
@@ -2051,14 +2141,20 @@ func designVerifyColourways(
 	// Первое — потому что колорвей и его слоты приезжают одним ответом и человек примет их одним
 	// заходом; второе — потому что на карточке со набранной руками спекой предложение обязано
 	// лечь на неё, а не потребовать пересоздать слоты.
-	bound := make(map[string]struct{}, len(cardSlots)+len(draft.Bom))
-	for fold := range cardSlots {
-		bound[fold] = struct{}{}
-	}
+	//
+	// КЛЮЧ — designSlotKey, складка имени в мере разбора (ревью O-44, MINOR): эхо имени длиннее
+	// шестидесяти знаков разбор обрезал, и сложить его можно только с так же обрезанным именем
+	// строки. ЗНАЧЕНИЕ — имя, которое слот получает на проводе: у строки карточки, чьё имя мера
+	// обрезает, — её полное имя (см. designCardSlotFolds), у остальных пусто — имя остаётся, как его
+	// написал ответ. Строка карточки перекрывает строку ответа с тем же ключом.
+	bound := make(map[string]string, len(cardSlots)+len(draft.Bom))
 	for _, line := range draft.Bom {
-		if fold := designFoldToken(line.GetName()); fold != "" {
-			bound[fold] = struct{}{}
+		if key := designSlotKey(line.GetName()); key != "" {
+			bound[key] = ""
 		}
+	}
+	for key, full := range cardSlots {
+		bound[key] = full
 	}
 
 	// ─── ОДИН КОД — ОДИН КОЛОРВЕЙ ───
@@ -2090,9 +2186,13 @@ func designVerifyColourways(
 		// ─── ПРИВЯЗКА ЦВЕТОВ К СЛОТАМ ───
 		keptSlots := cw.Slots[:0]
 		for _, s := range cw.Slots {
-			if _, ok := bound[designFoldToken(s.GetSlot())]; !ok {
+			full, ok := bound[designSlotKey(s.GetSlot())]
+			if !ok {
 				stats.SlotColoursUnbound++
 				continue
+			}
+			if full != "" {
+				s.Slot = full
 			}
 			keptSlots = append(keptSlots, s)
 		}

@@ -265,7 +265,7 @@ func TestVerifyColourwaysKeepsOneProposalPerColourCode(t *testing.T) {
 		"дедуп разбора складывает «имя|код» ДО канонизации и обязан пропустить обе строки")
 
 	designVerifyColourways(draft, designBuildColourDictionary(draftProbeColours()),
-		map[string]struct{}{}, &stats)
+		map[string]string{}, &stats)
 
 	require.Len(t, draft.GetColourways(), 3, "строка остаётся — обнуляется только код")
 	require.Equal(t, "BLK", draft.GetColourways()[0].GetColorCode(),
@@ -287,7 +287,7 @@ func TestVerifyColourwaysKeepsOneProposalPerColourCode(t *testing.T) {
 	  ]}`, "stop")
 	require.NoError(t, err)
 	designVerifyColourways(dropped, designBuildColourDictionary(draftProbeColours()),
-		map[string]struct{}{}, &dstats)
+		map[string]string{}, &dstats)
 	require.Len(t, dropped.GetColourways(), 1, "безымянный и без привязанных слотов — подтверждать нечего")
 	require.Equal(t, "BLK", dropped.GetColourways()[0].GetColorCode(),
 		"код, освободившийся вместе с выброшенной строкой, остаётся свободным")
@@ -512,7 +512,8 @@ func TestConstructionPromptNamesTheSameLimitsTheParserHolds(t *testing.T) {
 		fmt.Sprintf("a colourway \"name\" %d, its \"color_code\" %d;",
 			designConstructionMaxColourwayNameRunes, designConstructionMaxColourCodeRunes),
 		fmt.Sprintf("a slot \"colour\" %d.", designConstructionMaxColourRunes),
-		fmt.Sprintf("at most %d) with a Pantone", designConstructionMaxColourwaySlots),
+		fmt.Sprintf("at most %d, in this order: the main cloths, the thread, then the rest;",
+			designConstructionMaxColourwaySlots),
 	} {
 		require.Contains(t, designConstructionSystemPrompt, want)
 	}

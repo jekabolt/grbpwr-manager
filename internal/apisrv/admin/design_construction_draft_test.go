@@ -1313,7 +1313,7 @@ func TestVerifyColourwaysNamesTheUnnamedAndDropsTheEmpty(t *testing.T) {
 	require.Len(t, draft.GetColourways(), 2)
 
 	designVerifyColourways(draft, designBuildColourDictionary(draftProbeColours()),
-		map[string]struct{}{}, &stats)
+		map[string]string{}, &stats)
 	require.Len(t, draft.GetColourways(), 2)
 	require.Equal(t, "Named", draft.GetColourways()[0].GetName())
 	// ПОДПИСЬ ПО ПОРЯДКУ В ОТВЕТЕ, А НЕ ПО СЧЁТУ БЕЗЫМЯННЫХ: «colourway 2» = второе предложение.

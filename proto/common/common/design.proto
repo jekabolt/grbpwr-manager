@@ -1476,7 +1476,9 @@ message DesignColourwayProposal {
   string hex = 4; // #RRGGBB screen approximation, or '' when the answer was not a hex
   // One entry per material slot the answer named. BOUND BY THE SLOT'S FOLDED NAME, never by index
   // or id: the same fold the BOM/slot table dedupes on, so a colourway proposed beside its slots
-  // binds to them and to hand-typed slots of the same name alike.
+  // binds to them and to hand-typed slots of the same name alike. At most 8, and the prompt asks
+  // for them in one order — the main cloths, the thread, then the rest — so that the cap falls on
+  // the rest rather than on the thread.
   repeated DesignColourwaySlotColour slots = 5;
 }
 
@@ -1484,7 +1486,10 @@ message DesignColourwayProposal {
 // thread, hardware or a trim, not only the cloths (O-44) — in the two spellings the recipe row
 // holds: a Pantone code (TCX for cloth, TCX or C otherwise) and the words a person reads.
 message DesignColourwaySlotColour {
-  string slot = 1; // the slot's NAME as the answer spelled it — never an index and never an id
+  // The slot's NAME — never an index and never an id — as the answer spelled it, with one
+  // exception: a card line whose name is longer than the 60 characters the prompt lists it with can
+  // only be echoed shortened, and the server puts that line's FULL name back, so the fold binds it.
+  string slot = 1;
   string pantone = 2; // → colorway recipe usages[].pantone
   string hex = 3; // #RRGGBB, or '' when the answer was not a hex
   string colour = 4; // words: «black», «bone white» → colorway recipe usages[].color
