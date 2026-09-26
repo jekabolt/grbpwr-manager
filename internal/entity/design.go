@@ -771,6 +771,33 @@ const DesignErrorCodeNoFrontRender = "no_front_render"
 // то, откуда оно приехало: человек чинит запрос, а не карточку.
 const DesignErrorCodeDisplayOnlyInput = "display_only_input"
 
+// Три отказа ПАТТЕРНА ДЛЯ СЛОТА (STEP 3): свотч из заявленного цвета и плитка, сделанная для пары
+// (колорвей, строка BOM). Константами по тому же доводу, что у DesignErrorCodeLibraryFull: слово
+// читает клиент, и два литерала в двух пакетах разошлись бы молча.
+//
+//   - DesignErrorCodeNoColour — свотч без цвета: в params.colour нет ни hex, ни кода, ни слов.
+//     Свотч СТРОИТСЯ из цвета, и без него модель вернёт ткань случайного оттенка за те же деньги.
+//   - DesignErrorCodeOneTexturePicture — у свотча больше одной картинки. В этом режиме картинка —
+//     референс ФАКТУРЫ, а не источник, и двум фактурам в одной плитке промпт смысла не даёт.
+//   - DesignErrorCodeForeignBomLine — строка BOM не этой карточки. Сосед foreign_colorway: запрос
+//     правильной формы, не годится СОСТОЯНИЕ, поэтому FailedPrecondition на каждой двери.
+const (
+	DesignErrorCodeNoColour          = "no_colour"
+	DesignErrorCodeOneTexturePicture = "one_texture_picture"
+	DesignErrorCodeForeignBomLine    = "foreign_bom_line"
+)
+
+// Режимы прогона паттерна — DesignPatternParams.mode (STEP 3). Пустая строка значит то же, что
+// `image`: так читается каждый прогон, замороженный до появления поля.
+//
+//   - DesignPatternModeImage — плитка из ОДНОЙ фотографии ткани (сегодняшний маршрут).
+//   - DesignPatternModeSwatch — свотч из ЗАЯВЛЕННОГО цвета (params.colour обязателен), с 0–1
+//     референсом ФАКТУРЫ, от которого берётся материал и переплетение, но не цвет.
+const (
+	DesignPatternModeImage  = "image"
+	DesignPatternModeSwatch = "swatch"
+)
+
 // DesignAssetKinds — три полки в том порядке, в каком их называет владелец: ткани, паттерны,
 // фурнитура. Порядок значим ровно настолько, насколько значим порядок полок на стене.
 var DesignAssetKinds = []string{DesignAssetKindFabric, DesignAssetKindPattern, DesignAssetKindHardware}
@@ -921,6 +948,11 @@ var (
 	// второй оси; и неатрибутированный рендер в именованном верстаке — тоже она: атрибуцию
 	// постановкой не выдумывают.
 	ErrDesignColorwayMismatch = errors.New("design: colorway_mismatch")
+	// ErrDesignForeignBomLine — названная строка BOM (слот ткани) не принадлежит этой карточке либо
+	// её нет вовсе. Тот же класс границы, что foreign_colorway: tech_card_id строки BOM и колорвея —
+	// колонки разных таблиц, и «пара одной карточки» схема выразить не может, поэтому проверяет Go
+	// в пишущей транзакции. Токен — DesignErrorCodeForeignBomLine.
+	ErrDesignForeignBomLine = errors.New("design: foreign_bom_line")
 	// ErrDesignAmbiguousFlattenBase — подложку слоя нельзя привязать к ОДНОЙ картинке: слой не
 	// назвал source_picture_id, а его base_media_id зарегистрирован на карточке НЕСКОЛЬКО раз, и
 	// эти регистрации не согласны о колорвее. Один файл законно бывает кадром двух колорвеев
@@ -1296,6 +1328,23 @@ type DesignAssetColorwaySet struct {
 	Actor      string
 }
 
+// DesignAssetBindingSet — «ткань колорвея N на слоте M — вот этот ассет» (0368).
+//
+// AssetId == 0 СНИМАЕТ ткань с пары, и это настоящий ответ («для этого слота ещё ничего не
+// выбрано»), а не отсутствие ответа. Снятие пары, которая ничего не носит, — не ошибка: состояние
+// после вызова ровно то, о котором просили.
+//
+// Все три id проверяются против TechCardId в пишущей транзакции: колорвей (foreign_colorway),
+// строка BOM (foreign_bom_line) и ассет (not_found, как у DeleteDesignAsset). Фурнитура тканью
+// слота не бывает — colorway_forbidden, тем же токеном, что у SetAssetColorway.
+type DesignAssetBindingSet struct {
+	TechCardId int
+	ColorwayId int
+	BomItemId  int
+	AssetId    int
+	SetBy      string
+}
+
 // DesignAssetPlacement — строка design_asset_placement (0354): ОДНА МЕТКА НА ОДНОМ ФЛЭТЕ,
 // говорящая, что вот этот ассет — вот здесь.
 //
@@ -1317,6 +1366,25 @@ type DesignAssetPlacement struct {
 	Note       sql.NullString `db:"note"`
 	SetBy      string         `db:"set_by"`
 	SetAt      time.Time      `db:"set_at"`
+}
+
+// DesignAssetBinding — строка design_asset_binding (0368): ТКАНЬ ОДНОЙ ПАРЫ (КОЛОРВЕЙ, СЛОТ).
+// Колорвей N носит ассет X на рулонной строке BOM M.
+//
+// ⚠ ОДНА СТРОКА НА ПАРУ, И ПАРА — КЛЮЧ, А НЕ АССЕТ. Одна плитка законно служит нескольким парам (та
+// же ткань — верх двух колорвеев), а у пары ткань ровно одна (UNIQUE colorway_id, bom_item_id);
+// повторный выбор — upsert, а не охота за прежним носителем. Legacy DesignAsset.ColorwayId — ткань
+// ВСЕГО колорвея — связкой не пишется и не читается.
+//
+// Умирает с любым из четырёх концов (FK CASCADE): карточкой, колорвеем, строкой BOM, ассетом.
+type DesignAssetBinding struct {
+	Id         int       `db:"id"`
+	TechCardId int       `db:"tech_card_id"`
+	ColorwayId int       `db:"colorway_id"`
+	BomItemId  int       `db:"bom_item_id"`
+	AssetId    int       `db:"asset_id"`
+	SetBy      string    `db:"set_by"`
+	SetAt      time.Time `db:"set_at"`
 }
 
 // DesignSettings — строка design_settings (singleton id=1).
@@ -1853,6 +1921,14 @@ type DesignBand struct {
 	// полки ради одной картинки.
 	Assets          []DesignAsset
 	AssetPlacements []DesignAssetPlacement
+	// AssetBindings — ТКАНИ ВСЕХ ПАР (КОЛОРВЕЙ, СЛОТ) КАРТОЧКИ (0368), в том же снимке, что и полки:
+	// связка называет ассет по id, и прочитанные порознь они разошлись бы во мнении о том, какая
+	// плитка существует. Вся карточка, не суженная верстаком: шаг паттерна рисует слоты всех
+	// колорвеев одним экраном. Не пагинируется — пар не больше, чем колорвеев на рулонные строки BOM.
+	//
+	// ⚠ nil НЕ ОТДАЁТСЯ: читатель полосы кладёт сюда [] при пустоте, потому что на проводе ПУСТОЙ
+	// список значит «ничего не выбрано», а ОТСУТСТВИЕ поля — «старый бинарь без связок».
+	AssetBindings []DesignAssetBinding
 
 	// Outputs / OutputsTotal / OutputsTotalByColorway — ГЕНЕРАТИВНЫЕ ВЫХОДЫ КАРТОЧКИ, а не выходы
 	// загруженной страницы. Роды render|threed|pattern|recolor, свежие первыми, вместе со штампом

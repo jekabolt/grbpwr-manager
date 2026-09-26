@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -164,6 +165,10 @@ func stealColorwayTx(ctx context.Context, db dependency.DB, cardID, colorwayID, 
 // ЧТО МОЛЧА НЕ ДЕЛАЕТСЯ. Прогон, замороженный до круга 15 (нет `params.pattern.name`), не сажает
 // ничего: имени взять негде, а выдуманное приехало бы в следующий промпт словом «pattern». Такие
 // плитки кладёт человек, как и раньше.
+//
+// STEP 3 (0368) ДОБАВИЛ ДВА ФАКТА И НЕ ТРОНУЛ НИ ОДНОГО ПРЕЖНЕГО: плитка запоминает код и hex
+// заявленного цвета, а плитка, сделанная для пары (колорвей, слот), становится тканью этой пары —
+// см. bindKeptPatternTx. Кража колорвея и его запись выше идут ровно как шли.
 func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, p designRunParams, mediaID int) error {
 	if p.Pattern == nil || mediaID <= 0 {
 		return nil
@@ -238,13 +243,23 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		}
 	}
 
+	// СВОТЧ ПОМНИТ СВОЙ ЦВЕТ (STEP 3). Код и hex заявленного цвета — те самые, из которых плитка
+	// построена, — ложатся в колонки ассета, которые до этого у посаженной плитки пустовали. Без них
+	// свотч «Pantone 18-1664» на полке был бы безымянным квадратом красного, и выбор ткани для слота
+	// шёл бы на глаз. Пустое — NULL, как у UpsertAsset: «не сказано» не записывается пустой строкой.
+	code, hex := "", ""
+	if c := p.Colour; c != nil {
+		code = keptColourFact(ctx, run.Id, "colour_code", c.Code, designAssetColourCodeMax)
+		hex = keptColourFact(ctx, run.Id, "colour_hex", c.Hex, designAssetColourHexMax)
+	}
+
 	id, err := insertAssetTx(ctx, db, map[string]any{
 		"card":        run.TechCardId,
 		"kind":        entity.DesignAssetKindPattern,
 		"name":        name,
 		"media":       nullInt(mediaID),
-		"colour_code": nil,
-		"colour_hex":  nil,
+		"colour_code": nullStr(code),
+		"colour_hex":  nullStr(hex),
 		"note":        nil,
 		"parent":      nullInt(parent),
 		"repeat_mm":   repeat,
@@ -256,6 +271,13 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		return err
 	}
 	if cw == 0 {
+		if p.Pattern.BomItemId > 0 {
+			// СДЕЛАНА ДЛЯ СЛОТА, НО КОЛОРВЕЯ У ПРОГОНА БОЛЬШЕ НЕТ (FK погасил колонку, пока прогон
+			// шёл) — пары, которую надо перепривязать, не существует. Плитка остаётся на полке.
+			slog.WarnContext(ctx, "design: pattern tile landed unbound — its colourway is gone",
+				slog.Int("run_id", run.Id), slog.Int("asset_id", id),
+				slog.Int("bom_item_id", p.Pattern.BomItemId))
+		}
 		return nil
 	}
 	// ⚠ НОСКА — ОТДЕЛЬНЫМ UPDATE, И ЭТО НАМЕРЕННО. Колонки colorway_id НЕТ в общем INSERT, которым
@@ -269,7 +291,178 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		map[string]any{"cw": cw, "id": id, "card": run.TechCardId}); err != nil {
 		return fmt.Errorf("failed to give the kept pattern of run %d to colourway %d: %w", run.Id, cw, err)
 	}
+	return bindKeptPatternTx(ctx, db, run, cw, p.Pattern.BomItemId, id)
+}
+
+// bindKeptPatternTx — ПЛИТКА, СДЕЛАННАЯ ДЛЯ ПАРЫ, СТАНОВИТСЯ ТКАНЬЮ ЭТОЙ ПАРЫ (STEP 3, 0368), в той
+// же транзакции, что её посадила.
+//
+// ПЕРЕПРИВЯЗКА, А НЕ «ЕСЛИ ПУСТО». Самый свежий свотч — ровно то, о чём человек только что попросил
+// и за что заплатил; прежние остаются на полке кандидатами и возвращаются руками
+// (SetDesignAssetBinding). Запись — тот же upsert, что у глагола: писателей два, оператор один.
+//
+// ⚠ СЛОТ ПРОВЕРЯЕТСЯ ЗДЕСЬ ЖЕ, И ПРОМАХ — НЕ ОТКАЗ. Дверь отказала чужой строке BOM ДО денег, но
+// между дверью и прилётом строку законно удаляют либо переносят, а вставка с висящим bom_item_id
+// упала бы внешним ключом и откатила ВСЮ оплаченную выдачу. Поэтому строка перечитывается в этой
+// SERIALIZABLE-транзакции (чтение ставит блокировку, и до коммита её не удалят), и пропавшая либо
+// чужая строка означает «плитка на полке, пара не перепривязана» с записью в журнал — ровно то, что
+// обещает контракт DesignPatternParams.bom_item_id. Ошибка же самой базы — не промах, а поломка, и
+// она уходит наверх, как у каждого оператора этой транзакции: дедлок повторяется всем замыканием.
+func bindKeptPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, cw, bomItemID, assetID int) error {
+	if bomItemID <= 0 {
+		return nil
+	}
+	ok, err := bomLineOfCard(ctx, db, run.TechCardId, bomItemID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		slog.WarnContext(ctx, "design: pattern tile landed unbound — its BOM line is not this card's any more",
+			slog.Int("run_id", run.Id), slog.Int("asset_id", assetID),
+			slog.Int("tech_card_id", run.TechCardId), slog.Int("bom_item_id", bomItemID))
+		return nil
+	}
+	return upsertAssetBindingTx(ctx, db, run.TechCardId, cw, bomItemID, assetID, run.Author)
+}
+
+// Ширины colour_code / colour_hex из 0354. Посадка не отказывает — она пишет оплаченный результат,
+// — поэтому значение, которое колонка не вмещает, НЕ пишется вовсе: строгий режим ответил бы 1406 и
+// уронил прилёт, а обрезанный код или hex — это уже другой цвет, то есть ложь на полке.
+const (
+	designAssetColourCodeMax = 32
+	designAssetColourHexMax  = 9
+)
+
+// keptColourFact — одна грань заявленного цвета, готовая лечь в колонку ассета: обрезанная по
+// краям, пустая при отсутствии и пустая же (с записью в журнал) при переполнении колонки.
+func keptColourFact(ctx context.Context, runID int, column, v string, maxRunes int) string {
+	v = strings.TrimSpace(v)
+	if n := len([]rune(v)); n > maxRunes {
+		slog.WarnContext(ctx, "design: stated colour does not fit the asset column, left empty",
+			slog.Int("run_id", runID), slog.String("column", column), slog.Int("runes", n))
+		return ""
+	}
+	return v
+}
+
+// bomLineOfCard — есть ли у карточки строка BOM с этим id. Одна проверка на обоих писателей связки
+// (глагол и посадка): «чья это строка» — не «в какой она секции», секцию сервер не судит.
+func bomLineOfCard(ctx context.Context, db dependency.DB, cardID, bomItemID int) (bool, error) {
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM tech_card_bom_item WHERE id = :bom AND tech_card_id = :card`,
+		map[string]any{"bom": bomItemID, "card": cardID})
+	if err != nil {
+		return false, fmt.Errorf("failed to read BOM line %d of tech card %d: %w", bomItemID, cardID, err)
+	}
+	return n > 0, nil
+}
+
+// assetBindingUpsert — ЕДИНСТВЕННЫЙ оператор записи связки, на обоих писателях.
+//
+// UPSERT ПО КЛЮЧУ ПАРЫ, И ЭТО И ЕСТЬ SINGLE-SELECT. uq_design_asset_binding (colorway_id,
+// bom_item_id) делает «две ткани у одной пары» невыразимым, а ON DUPLICATE KEY UPDATE превращает
+// повторный выбор в замену, а не в 1062. Чтения перед записью нет намеренно: «SELECT, строки нет,
+// INSERT» — это гонка двух выборов на 1062, которую клиент откатить не умеет.
+//
+// tech_card_id В ВЕТКЕ ДУБЛИКАТА НЕ ПЕРЕПИСЫВАЕТСЯ: пара уже принадлежит ровно одной карточке
+// (колорвей и строка BOM проверены на неё обоими писателями), переписывать нечего.
+const assetBindingUpsert = `
+	INSERT INTO design_asset_binding (tech_card_id, colorway_id, bom_item_id, asset_id, set_by, set_at)
+	VALUES (:card, :cw, :bom, :asset, :who, CURRENT_TIMESTAMP)
+	ON DUPLICATE KEY UPDATE
+		asset_id = VALUES(asset_id),
+		set_by   = VALUES(set_by),
+		set_at   = CURRENT_TIMESTAMP`
+
+func upsertAssetBindingTx(ctx context.Context, db dependency.DB, cardID, cw, bomItemID, assetID int, who string) error {
+	if err := storeutil.ExecNamed(ctx, db, assetBindingUpsert, map[string]any{
+		"card": cardID, "cw": cw, "bom": bomItemID, "asset": assetID, "who": who,
+	}); err != nil {
+		return fmt.Errorf("failed to bind asset %d to colourway %d on BOM line %d: %w",
+			assetID, cw, bomItemID, err)
+	}
 	return nil
+}
+
+// SetAssetBinding says WHICH ASSET IS THE FABRIC OF ONE (COLOURWAY, SLOT) (0368); AssetId 0 takes
+// the fabric off the pair, and unbinding a pair that wears nothing is a success that changes
+// nothing — the state after the call is exactly the one asked for.
+//
+// EVERY ONE OF THE THREE IDS IS CHECKED AGAINST THE CARD, in this transaction and in this order:
+// the asset (NotFound for another card's, colorway_forbidden for hardware — a zip is not what a
+// slot is cut from), the colourway (foreign_colorway) and the BOM line (foreign_bom_line). None of
+// the three is expressible in the schema: the four foreign keys are each satisfied by a row of ANY
+// card. The line's SECTION is not judged — which lines are cloth slots is the screen's reading of
+// the BOM, and a server rule here would be a second copy of it.
+//
+// IT DOES NOT TOUCH design_asset.colorway_id: that is the legacy whole-colourway fabric and has its
+// own verb (SetAssetColorway).
+func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindingSet) (*entity.DesignAssetBinding, error) {
+	if err := requireCard(req.TechCardId); err != nil {
+		return nil, err
+	}
+	if req.ColorwayId <= 0 {
+		return nil, fmt.Errorf("%w: a binding names the colourway it dresses", entity.ErrDesignInvalidArgument)
+	}
+	if req.BomItemId <= 0 {
+		return nil, fmt.Errorf("%w: a binding names the BOM line (the slot) it dresses", entity.ErrDesignInvalidArgument)
+	}
+	if req.AssetId < 0 {
+		return nil, fmt.Errorf("%w: asset_id must not be negative", entity.ErrDesignInvalidArgument)
+	}
+	var out *entity.DesignAssetBinding
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		out = nil
+		db := rep.DB()
+		if req.AssetId > 0 {
+			asset, err := requireAssetOfCard(ctx, db, req.TechCardId, req.AssetId)
+			if err != nil {
+				return err
+			}
+			if asset.Kind == entity.DesignAssetKindHardware {
+				return fmt.Errorf("%w: a %s asset cannot be the fabric of a slot",
+					entity.ErrDesignColorwayForbidden, asset.Kind)
+			}
+		}
+		if err := assertColorwayOfCard(ctx, db, req.TechCardId, req.ColorwayId); err != nil {
+			return err
+		}
+		ok, err := bomLineOfCard(ctx, db, req.TechCardId, req.BomItemId)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: BOM line %d is not a line of tech card %d",
+				entity.ErrDesignForeignBomLine, req.BomItemId, req.TechCardId)
+		}
+		pair := map[string]any{"cw": req.ColorwayId, "bom": req.BomItemId, "card": req.TechCardId}
+		if req.AssetId == 0 {
+			if err := storeutil.ExecNamed(ctx, db, `
+				DELETE FROM design_asset_binding
+				WHERE colorway_id = :cw AND bom_item_id = :bom AND tech_card_id = :card`, pair); err != nil {
+				return fmt.Errorf("failed to unbind colourway %d on BOM line %d: %w",
+					req.ColorwayId, req.BomItemId, err)
+			}
+			return nil
+		}
+		if err := upsertAssetBindingTx(ctx, db, req.TechCardId, req.ColorwayId, req.BomItemId,
+			req.AssetId, req.SetBy); err != nil {
+			return err
+		}
+		saved, err := storeutil.QueryNamedOne[entity.DesignAssetBinding](ctx, db, `
+			SELECT * FROM design_asset_binding
+			WHERE colorway_id = :cw AND bom_item_id = :bom AND tech_card_id = :card`, pair)
+		if err != nil {
+			return fmt.Errorf("failed to read the binding of colourway %d on BOM line %d back: %w",
+				req.ColorwayId, req.BomItemId, err)
+		}
+		out = &saved
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // UpsertAsset writes ONE shelf row — creating it when AssetId is 0, replacing it otherwise.
@@ -481,7 +674,9 @@ func (s *Store) SetAssetColorway(ctx context.Context, req entity.DesignAssetColo
 	return out, nil
 }
 
-// DeleteAsset removes ONE shelf row and reports how many marks on flats went with it.
+// DeleteAsset removes ONE shelf row and reports how many marks on flats went with it. Every
+// (colourway, slot) it was the fabric of (0368) goes with it by the same cascade; those are counted
+// in the same transaction, before the delete, and logged — the wire answer carries marks only.
 //
 // THE COUNT IS TAKEN BEFORE THE DELETE, and it has to be: the marks go with the row by
 // ON DELETE CASCADE, so after the statement there is nothing left to count. The number is not
@@ -502,9 +697,9 @@ func (s *Store) DeleteAsset(ctx context.Context, techCardID, assetID int) (int, 
 	if assetID <= 0 {
 		return 0, fmt.Errorf("%w: asset id is required", entity.ErrDesignInvalidArgument)
 	}
-	removed := 0
+	removed, unbound := 0, 0
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		removed = 0
+		removed, unbound = 0, 0
 		db := rep.DB()
 		asset, err := requireAssetOfCard(ctx, db, techCardID, assetID)
 		if err != nil {
@@ -516,15 +711,32 @@ func (s *Store) DeleteAsset(ctx context.Context, techCardID, assetID int) (int, 
 		if err != nil {
 			return fmt.Errorf("failed to count the marks of design asset %d: %w", asset.Id, err)
 		}
+		// ПАРЫ (КОЛОРВЕЙ, СЛОТ), ЧЬЕЙ ТКАНЬЮ ОН БЫЛ (0368), уходят тем же каскадом и считаются тем же
+		// способом — ДО оператора, после которого считать нечего.
+		bound, err := storeutil.QueryCountNamed(ctx, db,
+			`SELECT COUNT(*) FROM design_asset_binding WHERE asset_id = :asset`,
+			map[string]any{"asset": asset.Id})
+		if err != nil {
+			return fmt.Errorf("failed to count the slot bindings of design asset %d: %w", asset.Id, err)
+		}
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM design_asset WHERE id = :id`, map[string]any{"id": asset.Id}); err != nil {
 			return fmt.Errorf("failed to delete design asset %d: %w", asset.Id, err)
 		}
-		removed = n
+		removed, unbound = n, bound
 		return nil
 	})
 	if err != nil {
 		return 0, err
+	}
+	if unbound > 0 {
+		// На проводе у ответа одно число — метки (removed_placements), и контракт этой волны его не
+		// расширял: клиент видит связки ассета в самой полосе (asset_bindings) и называет их ДО
+		// вопроса. Здесь число остаётся в журнале — «слоты остались без ткани» не должно быть
+		// событием, о котором сервер промолчал.
+		slog.InfoContext(ctx, "design: asset deleted together with the slot fabrics it was",
+			slog.Int("tech_card_id", techCardID), slog.Int("asset_id", assetID),
+			slog.Int("removed_placements", removed), slog.Int("removed_bindings", unbound))
 	}
 	return removed, nil
 }
@@ -723,6 +935,22 @@ func listAssetPlacements(ctx context.Context, db dependency.DB, cardID int) ([]e
 		map[string]any{"card": cardID})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list design asset placements: %w", err)
+	}
+	return rows, nil
+}
+
+// listAssetBindings reads the fabric of every (colourway, slot) of this card (0368), never nil: an
+// empty card answers [] so the wire can say «nothing bound yet» rather than «this binary does not
+// know bindings». Ordered by colourway, then slot — the order the pattern step draws them in.
+func listAssetBindings(ctx context.Context, db dependency.DB, cardID int) ([]entity.DesignAssetBinding, error) {
+	rows, err := storeutil.QueryListNamed[entity.DesignAssetBinding](ctx, db, `
+		SELECT * FROM design_asset_binding WHERE tech_card_id = :card ORDER BY colorway_id, bom_item_id`,
+		map[string]any{"card": cardID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list design asset bindings: %w", err)
+	}
+	if rows == nil {
+		rows = []entity.DesignAssetBinding{}
 	}
 	return rows, nil
 }

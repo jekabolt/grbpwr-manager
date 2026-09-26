@@ -361,3 +361,26 @@ func TestClassifyColorwayDeletion_SoldFallsBackToLinesWhenOrdersAreZero(t *testi
 		t.Errorf("blocker must never say zero, got %q", e.Text)
 	}
 }
+
+// ТКАНЬ СЛОТА (0368) — КАСКАД, А НЕ СИРОТА И НЕ БЛОКЕР, и доезжает своим кодом и своим счётом.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: не завести запись для DesignAssetBindings (строка молча исчезает из
+// диалога: сетка 1451 CASCADE не видит) либо положить её к сиротам (оператору сказали бы, что ткань
+// «переживёт» удаление, хотя строка связки уходит вместе с колорвеем).
+func TestClassifyColorwayDeletion_SlotFabricsGoWithTheColourway(t *testing.T) {
+	v := ClassifyColorwayDeletion(factsOf(func(f *ColorwayDeletionFacts) {
+		f.Cascade.DesignAssetBindings = 3
+	}))
+	if !v.Deletable {
+		t.Fatal("a slot fabric is a cascade, not a blocker")
+	}
+	if len(v.Orphans) != 0 {
+		t.Fatalf("a slot fabric is not an orphan, got %v", reasons(v.Orphans))
+	}
+	if len(v.Cascade) != 1 || v.Cascade[0].Reason != ColorwayCascadeDesignAssetBinding || v.Cascade[0].Count != 3 {
+		t.Fatalf("cascade = %+v, want one %q entry of 3", v.Cascade, ColorwayCascadeDesignAssetBinding)
+	}
+	if !strings.Contains(v.Cascade[0].Text, "3 fabrics chosen for slots") {
+		t.Fatalf("the sentence must name the consequence, got %q", v.Cascade[0].Text)
+	}
+}

@@ -68,13 +68,28 @@ func (s *Server) SetDesignAssetColorway(ctx context.Context, req *pb_admin.SetDe
 	return &pb_admin.SetDesignAssetColorwayResponse{Asset: designAssetToPb(*asset)}, nil
 }
 
-// SetDesignAssetBinding says which asset is the fabric of one (colourway, slot); asset_id 0 unbinds.
+// SetDesignAssetBinding says which asset is the fabric of one (colourway, slot); asset_id 0 unbinds,
+// and the response then carries no binding.
 //
-// A PLACEHOLDER OF THE CONTRACT COMMIT: the rpc exists on the wire before the table and the store
-// behind it do, and until they land it answers Unimplemented rather than pretending to have
-// written something. The store-backed handler replaces it.
+// NO VALIDATION HERE, by the rule of this file: the id ranges, the kind guard, the three card
+// boundaries (asset → not_found, colourway → foreign_colorway, BOM line → foreign_bom_line) and the
+// single-select upsert all live in the store's transaction, and designError maps each sentinel to
+// the code its neighbours use. RBAC is the method table's (tech_cards:write), like every write here.
 func (s *Server) SetDesignAssetBinding(ctx context.Context, req *pb_admin.SetDesignAssetBindingRequest) (*pb_admin.SetDesignAssetBindingResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "set_design_asset_binding: not wired yet")
+	b, err := s.repo.Design().SetAssetBinding(ctx, entity.DesignAssetBindingSet{
+		TechCardId: int(req.GetTechCardId()),
+		ColorwayId: int(req.GetColorwayId()),
+		BomItemId:  int(req.GetBomItemId()),
+		AssetId:    int(req.GetAssetId()),
+		SetBy:      designActor(ctx),
+	})
+	if err != nil {
+		return nil, designError(ctx, "failed to set the fabric of the slot", err, nil)
+	}
+	if b == nil {
+		return &pb_admin.SetDesignAssetBindingResponse{}, nil
+	}
+	return &pb_admin.SetDesignAssetBindingResponse{Binding: designAssetBindingToPb(*b)}, nil
 }
 
 // DeleteDesignAsset removes ONE shelf row and reports how many marks went with it.
@@ -204,6 +219,28 @@ func designAssetToPb(a entity.DesignAsset) *pb_common.DesignAsset {
 		CreatedBy:  a.CreatedBy,
 		CreatedAt:  timestamppb.New(a.CreatedAt),
 		UpdatedAt:  timestamppb.New(a.UpdatedAt),
+	}
+}
+
+// designAssetBindingsToPb never returns nil: an empty card answers [] (see GetDesignBand for why
+// the difference between «empty» and «absent» is load-bearing on this field).
+func designAssetBindingsToPb(in []entity.DesignAssetBinding) []*pb_common.DesignAssetBinding {
+	out := make([]*pb_common.DesignAssetBinding, 0, len(in))
+	for _, b := range in {
+		out = append(out, designAssetBindingToPb(b))
+	}
+	return out
+}
+
+func designAssetBindingToPb(b entity.DesignAssetBinding) *pb_common.DesignAssetBinding {
+	return &pb_common.DesignAssetBinding{
+		Id:         int32(b.Id),
+		TechCardId: int32(b.TechCardId),
+		ColorwayId: int32(b.ColorwayId),
+		BomItemId:  int32(b.BomItemId),
+		AssetId:    int32(b.AssetId),
+		SetBy:      b.SetBy,
+		SetAt:      timestamppb.New(b.SetAt),
 	}
 }
 

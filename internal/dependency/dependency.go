@@ -2096,6 +2096,13 @@ type (
 		// entity.ErrDesignForeignColorway on a colourway of another card, entity.ErrDesignNotFound on
 		// an asset of another card.
 		SetAssetColorway(ctx context.Context, req entity.DesignAssetColorwaySet) (*entity.DesignAsset, error)
+		// SetAssetBinding says which asset is the fabric of one (colourway, BOM line) pair (0368);
+		// AssetId 0 unbinds, and unbinding a pair that wears nothing is OK. Single-select per pair
+		// (an upsert on the pair's unique key); design_asset.colorway_id is not touched.
+		// entity.ErrDesignColorwayForbidden on kind=hardware, entity.ErrDesignForeignColorway /
+		// entity.ErrDesignForeignBomLine on a colourway / BOM line of another card,
+		// entity.ErrDesignNotFound on an asset of another card. Returns nil after an unbind.
+		SetAssetBinding(ctx context.Context, req entity.DesignAssetBindingSet) (*entity.DesignAssetBinding, error)
 		// SetAssetPlacement puts ONE mark on ONE flat, or moves an existing one. Both ends are
 		// checked against the same card in the write transaction: design_asset_placement carries
 		// no tech_card_id, so its two foreign keys can each be satisfied by another style's row.

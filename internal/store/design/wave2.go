@@ -560,6 +560,16 @@ type designRunParams struct {
 	// ЗАМОРОЖЕНЫ: человек назвал плитку до денег, и переименование ассета завтра не имеет права
 	// переписать то, чем прогон был запущен.
 	Pattern *designRunPatternParams `json:"pattern"`
+	// Colour — ЗАЯВЛЕННЫЙ ЦВЕТ, тоже ровно для одного читателя: посадка плитки пишет его код и hex в
+	// colour_code/colour_hex ассета, чтобы свотч помнил свой Pantone (STEP 3). Слова и ткани рецепта
+	// стору не нужны — их читает промпт.
+	Colour *designRunColourParams `json:"colour"`
+}
+
+// designRunColourParams — две из граней DesignColourRecipe, которые ложатся в колонки ассета.
+type designRunColourParams struct {
+	Code string `json:"code"`
+	Hex  string `json:"hex"`
 }
 
 // designRunPatternParams — замороженная просьба прогона паттерна (DesignPatternParams).
@@ -571,6 +581,14 @@ type designRunPatternParams struct {
 	RepeatMM      int    `json:"repeat_mm"`
 	Name          string `json:"name"`
 	SourceAssetID int    `json:"source_asset_id"`
+	// Mode — "" / "image" (плитка из фотографии) или "swatch" (свотч из заявленного цвета).
+	// Посадке он не нужен — ассет одного рода в обоих режимах; поле читается, чтобы снимок стора и
+	// снимок воркера (designgen.patternParams) называли одни и те же грани просьбы.
+	Mode string `json:"mode"`
+	// BomItemId — слот, ДЛЯ КОТОРОГО сделана плитка (tech_card_bom_item.id этой карточки), вместе с
+	// колонкой run.colorway_id — адрес пары. Ненулевой — посадка перепривязывает пару на новый
+	// ассет (keepPatternTx); 0 — плитка ни для какого слота, как у всякого прогона до STEP 3.
+	BomItemId int `json:"bom_item_id"`
 }
 
 type designRunInputs struct {

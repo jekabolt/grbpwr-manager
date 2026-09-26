@@ -124,6 +124,10 @@ var designRefusals = []struct {
 	{entity.ErrDesignColorwayForbidden, codes.InvalidArgument, "colorway_forbidden"},
 	{entity.ErrDesignForeignColorway, codes.FailedPrecondition, "foreign_colorway"},
 	{entity.ErrDesignColorwayMismatch, codes.FailedPrecondition, "colorway_mismatch"},
+	// foreign_bom_line (0368) — сосед foreign_colorway и того же класса: строка BOM, названная
+	// слотом пары, не этой карточки. FailedPrecondition на КАЖДОЙ двери — и у SetDesignAssetBinding,
+	// и у денежной двери прогона паттерна, — одним токеном.
+	{entity.ErrDesignForeignBomLine, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine},
 	// ambiguous_flatten_base — FailedPrecondition того же класса: запрос правилен, не годится
 	// СОСТОЯНИЕ (один файл зарегистрирован на карточке под несколькими колорвеями, а слой не
 	// назвал, поверх которого из них рисовали).
@@ -239,6 +243,10 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// молчаливая потеря, которую ловит только проба формы ответа.
 		Assets:          designAssetsToPb(band.Assets),
 		AssetPlacements: designAssetPlacementsToPb(band.AssetPlacements),
+		// ТКАНИ ПАР (КОЛОРВЕЙ, СЛОТ), 0368 — ВСЯ КАРТОЧКА, bench_colorway_id ИХ НЕ СУЖАЕТ. Конвертер
+		// отдаёт [] при пустоте, и это несущее: на проводе пустой список значит «ничего не выбрано»,
+		// а отсутствие — «старый бинарь», против которого клиент не рисует двери слотов.
+		AssetBindings: designAssetBindingsToPb(band.AssetBindings),
 		// ВЫХОДЫ КАРТОЧКИ ЦЕЛИКОМ, А НЕ ВЫХОДЫ ЭТОЙ СТРАНИЦЫ (H-9). Раздел «рендеры этой
 		// карточки» читал `Runs` — двенадцать свежих строк ленты — и терял рендеры по одному:
 		// всякий прогон любого рода выталкивал из окна старый, а вместе с ним уходили и кропы,

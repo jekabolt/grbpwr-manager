@@ -339,6 +339,12 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if band.AssetPlacements, err = listAssetPlacements(ctx, db, cardID); err != nil {
 			return err
 		}
+		// THE FABRIC OF EVERY (COLOURWAY, SLOT), 0368, IN THE SAME SNAPSHOT AS THE SHELF IT POINTS
+		// INTO — read apart, a binding could name a tile the wall no longer holds. Whole card: the
+		// pattern step draws every colourway's slots on one screen.
+		if band.AssetBindings, err = listAssetBindings(ctx, db, cardID); err != nil {
+			return err
+		}
 		// Layers WITHOUT their strokes: 512 KB is the cap per LAYER and a card may hold several,
 		// so shipping them all would make every open of the tab cost megabytes to draw a list.
 		//

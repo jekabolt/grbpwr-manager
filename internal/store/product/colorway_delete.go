@@ -143,22 +143,23 @@ type colorwayDeletionFactsRow struct {
 	InventoryTargets int `db:"inventory_targets"`
 	Fittings         int `db:"fittings"`
 
-	Variants         int `db:"variants"`
-	VariantPrices    int `db:"variant_prices"`
-	Prices           int `db:"prices"`
-	Media            int `db:"media"`
-	Tags             int `db:"tags"`
-	Translations     int `db:"translations"`
-	RecipeUsages     int `db:"recipe_usages"`
-	SizeConsumptions int `db:"size_consumptions"`
-	PieceMaterials   int `db:"piece_materials"`
-	PackagingRecipes int `db:"packaging_recipes"`
-	LabDipRounds     int `db:"lab_dip_rounds"`
-	CostEvents       int `db:"cost_events"`
-	Waitlist         int `db:"waitlist"`
-	StockHistory     int `db:"stock_history"`
-	StyleLinks       int `db:"style_links"`
-	DesignBenchSlots int `db:"design_bench_slots"`
+	Variants            int `db:"variants"`
+	VariantPrices       int `db:"variant_prices"`
+	Prices              int `db:"prices"`
+	Media               int `db:"media"`
+	Tags                int `db:"tags"`
+	Translations        int `db:"translations"`
+	RecipeUsages        int `db:"recipe_usages"`
+	SizeConsumptions    int `db:"size_consumptions"`
+	PieceMaterials      int `db:"piece_materials"`
+	PackagingRecipes    int `db:"packaging_recipes"`
+	LabDipRounds        int `db:"lab_dip_rounds"`
+	CostEvents          int `db:"cost_events"`
+	Waitlist            int `db:"waitlist"`
+	StockHistory        int `db:"stock_history"`
+	StyleLinks          int `db:"style_links"`
+	DesignBenchSlots    int `db:"design_bench_slots"`
+	DesignAssetBindings int `db:"design_asset_bindings"`
 
 	Markers           int `db:"markers"`
 	MaterialMovements int `db:"material_movements"`
@@ -226,6 +227,7 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 			(SELECT COUNT(*) FROM tech_card_product tp WHERE tp.product_id = p.id) AS style_links,
 
 			(SELECT COUNT(*) FROM design_bench_slot s WHERE s.colorway_id = p.id) AS design_bench_slots,
+			(SELECT COUNT(*) FROM design_asset_binding b WHERE b.colorway_id = p.id) AS design_asset_bindings,
 
 			(SELECT COUNT(*) FROM tech_card_marker m WHERE m.colorway_id = p.id) AS markers,
 			(SELECT COUNT(*) FROM material_stock_movement msm WHERE msm.product_id = p.id) AS material_movements,
@@ -282,22 +284,23 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 		Fittings:         row.Fittings,
 		DesignRunsLive:   row.DesignRunsLive,
 		Cascade: entity.ColorwayCascadeCounts{
-			Variants:         row.Variants,
-			VariantPrices:    row.VariantPrices,
-			Prices:           row.Prices,
-			Media:            row.Media,
-			Tags:             row.Tags,
-			Translations:     row.Translations,
-			RecipeUsages:     row.RecipeUsages,
-			SizeConsumptions: row.SizeConsumptions,
-			PieceMaterials:   row.PieceMaterials,
-			PackagingRecipes: row.PackagingRecipes,
-			LabDipRounds:     row.LabDipRounds,
-			CostEvents:       row.CostEvents,
-			Waitlist:         row.Waitlist,
-			StockHistory:     row.StockHistory,
-			StyleLinks:       row.StyleLinks,
-			DesignBenchSlots: row.DesignBenchSlots,
+			Variants:            row.Variants,
+			VariantPrices:       row.VariantPrices,
+			Prices:              row.Prices,
+			Media:               row.Media,
+			Tags:                row.Tags,
+			Translations:        row.Translations,
+			RecipeUsages:        row.RecipeUsages,
+			SizeConsumptions:    row.SizeConsumptions,
+			PieceMaterials:      row.PieceMaterials,
+			PackagingRecipes:    row.PackagingRecipes,
+			LabDipRounds:        row.LabDipRounds,
+			CostEvents:          row.CostEvents,
+			Waitlist:            row.Waitlist,
+			StockHistory:        row.StockHistory,
+			StyleLinks:          row.StyleLinks,
+			DesignBenchSlots:    row.DesignBenchSlots,
+			DesignAssetBindings: row.DesignAssetBindings,
 		},
 		Orphans: entity.ColorwayOrphanCounts{
 			Markers:           row.Markers,
