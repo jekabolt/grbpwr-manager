@@ -204,12 +204,97 @@ const (
 	// бесплатных игр в соседней вкладке того же раздела.
 	//
 	// ОСТАТОЧНЫЙ ДОЛГ, НАЗВАННЫЙ ВСЛУХ: OutputsTotalByColorway на проводе остаётся ПОКОЛОРВЕЙНЫМ
-	// (сумма обеих секций) — это поле контракта, и менять его форму эта правка не станет. Значит
-	// подпись усечения по-прежнему не различает секции: для читателя, сузившего по `run_kind`, она
-	// и раньше была верхней оценкой. Закрывается это добавлением второго ключа на провод, то есть
-	// правкой контракта, и решаться должно отдельно.
+	// (сумма обеих секций) — это поле контракта, и менять его форму эта правка не станет. Для
+	// читателя, сузившего по плитке плейграунда, долг закрыт вторым полем провода —
+	// OutputsTotalByWorkflow (band 31), которое считается тем же выражением, что режет окно
+	// (designCardOutputsWorkflow).
+	//
+	// ⚠ PHASE 3: extend/inpaint join THIS list (and nothing else changes) — section 1 is «the
+	// playground's own pool, split per tile». recolor and threed stay in section 0 on purpose:
+	// their outputs keep colourway semantics (one pool per colourway, 04-DECISIONS D4), so tiles
+	// 4/5/12 can still be evicted by 60 renders of the same colourway — accepted, not missed.
 	designCardOutputsSection = `CASE WHEN COALESCE(r.kind, '') IN ('freeform', 'cutout') THEN 1 ELSE 0 END`
+
+	// designCardOutputsFabricPicture — «this recolor run sent at least one cloth WITH A PICTURE»:
+	// some params.colour.fabrics[i].media_id > 0. The SQL twin of the door's
+	// designAnyClothWithPicture (apisrv/admin/design_run.go), which is what entity.DesignWorkflowOf
+	// receives as hasFabricPicture — the rule is «a cloth with a picture», NOT «any cloth row»: a
+	// cloth stated in words alone (media_id 0) never reaches the model, so the run changed a colour.
+	//
+	// ⚠ WHY A REGEX AND NOT JSON_LENGTH OF THE PATH. `JSON_EXTRACT(params,
+	// '$.colour.fabrics[*].media_id')` is the array of every media_id KEY PRESENT (NULL when none),
+	// e.g. `[0, 12]`. Its LENGTH counts keys, not pictures: it says «swap» for an explicit
+	// `media_id: 0`, a negative id (the door's media boundary skips ids <= 0, so one can be frozen)
+	// and a JSON null — measured on MySQL 8.0.46 and 8.4.10, all three disagree with the Go rule. The regex asks
+	// the array's text for a number token that starts with 1-9 and is not preceded by '-' or a digit,
+	// i.e. «some element > 0» for integers (JSON forbids leading zeros, so `0` is the only zero);
+	// a quoted "15" (protojson accepts it) matches too, as Go reads it as 15.
+	// NULL (no params, no colour, no fabrics, no media_id keys) → REGEXP_LIKE(NULL) → NULL → the
+	// CASE below takes its ELSE, i.e. change_color, exactly like Go's false.
+	//
+	// ⚠ NO COLON ANYWHERE IN THIS TEXT: the statements go through sqlx named binding, and `:x`
+	// would become a bind parameter (so no `[[:<:]]` word boundaries).
+	designCardOutputsFabricPicture = `REGEXP_LIKE(CAST(JSON_EXTRACT(r.params, '$.colour.fabrics[*].media_id') AS CHAR), '(^|[^-0-9])[1-9]')`
+
+	// designCardOutputsWorkflow — THE run_workflow EXPRESSION: which PLAYGROUND tile an output
+	// belongs to. The SQL twin of entity.DesignWorkflowOf(kind, preset, hasFabricPicture) and it
+	// must read the same table (the twin is proved by
+	// apisrv/admin/design_feed_workflow_twin_test.go — statically against the Go table, and live on
+	// a throwaway MySQL when DESIGN_FEED_SQL_DSN is set):
+	//
+	//   - freeform: the frozen preset picks the tile; '' / NULL / missing freeform / NULL params /
+	//     free / add_hardware / repaint_parts / any unknown word → create_edit (ELSE), so a run can
+	//     never fall out of the grid. JSON_UNQUOTE returns utf8mb4_bin, so the match is
+	//     case-sensitive like Go's `switch`; a JSON null preset unquotes to 'null' → ELSE, correct.
+	//   - cutout → remove_background; threed → image_to_3d;
+	//   - recolor → swap_fabrics when a cloth carries a picture (designCardOutputsFabricPicture),
+	//     else change_color;
+	//   - every other kind, and a picture with no run (the LEFT JOIN gives NULL) → ''.
+	//
+	// ⚠ ONE EXPRESSION, THREE USES, NEVER A COPY AND NEVER AN ALIAS: it is the stamp
+	// (`AS run_workflow`), it is inside the window key (designCardOutputsWindowKey, spelled out in
+	// PARTITION BY — a same-SELECT alias is not what MySQL partitions by) and it is the count's
+	// group key. A second spelling that drifted by one preset would caption a tile with a number
+	// counted over other rows, or cut its window over other rows than the ones it stamps.
+	designCardOutputsWorkflow = `CASE COALESCE(r.kind, '')
+			WHEN 'freeform' THEN CASE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.params, '$.freeform.preset')), '')
+				WHEN 'tryon' THEN 'virtual_try_on'
+				WHEN 'fabric_extract' THEN 'fabric_to_image'
+				WHEN 'ghost_mannequin' THEN 'ghost_mannequin'
+				WHEN 'add_logo' THEN 'add_logo'
+				WHEN 'variations' THEN 'design_variations'
+				WHEN 'retouch' THEN 'retouch_zone'
+				ELSE 'create_edit' END
+			WHEN 'cutout' THEN 'remove_background'
+			WHEN 'recolor' THEN CASE WHEN ` + designCardOutputsFabricPicture + ` THEN 'swap_fabrics' ELSE 'change_color' END
+			WHEN 'threed' THEN 'image_to_3d'
+			ELSE '' END`
 )
+
+// designCardOutputsWindowKey — THE THIRD AXIS OF THE WINDOW: the workflow, but ONLY inside
+// section 1 (the playground's pool); the empty string everywhere else.
+//
+// WHY. Every playground run carries colourway 0, so all its tiles shared ONE window of 60 on
+// (0, section 1): a busy tile (sixty Create/Edit plays) evicted a quiet tile's results entirely and
+// that tile's panel came back empty — the same H-9 starvation the section axis was added to stop,
+// moved one axis down (04-DECISIONS D4). Splitting by workflow inside section 1 gives every tile its
+// own «newest 60». Section 0 is NOT split: recolor and threed keep the per-colourway pool they
+// share with renders (see designCardOutputsSection), which is why the key is empty there rather than
+// the workflow.
+//
+// ⚠ BUILT FROM ITS TWO PIECES, NEVER WRITTEN OUT: the builder derives it from the SAME section and
+// workflow text it stamps and groups by, so a window key that disagrees with the stamp is not
+// representable (the probes check the composition: design_shape_test.go, compile-only, and the
+// runnable apisrv/admin/design_feed_workflow_twin_test.go).
+//
+// THE COUNT REFINES THIS KEY, IT DOES NOT COPY IT. The count groups by the full workflow (so
+// OutputsTotalByWorkflow names recolor and threed tiles too — the contract of band 31 counts every
+// non-empty run_workflow), and the key is a function of (section, workflow): every window partition
+// is exactly a union of count groups, so per-colourway and per-workflow totals are both sums over
+// the same rows the window cuts.
+func designCardOutputsWindowKey(section, workflow string) string {
+	return `CASE WHEN ` + section + ` = 1 THEN ` + workflow + ` ELSE '' END`
+}
 
 // designListCardOutputs / designCountCardOutputsByColorway — список выходов и поколорвейный счёт,
 // СОБРАННЫЕ ОДНОЙ ФУНКЦИЕЙ ИЗ ОДНИХ КУСКОВ.
@@ -221,7 +306,8 @@ const (
 // проверяется по существу: проба зовёт его с ЧАСОВЫМИ вместо предиката и ключа и убеждается, что
 // в готовых запросах не осталось ни одного слова настоящего предиката (design_shape_test.go).
 var designListCardOutputs, designCountCardOutputsByColorway = designCardOutputsStatements(
-	designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway, designCardOutputsSection)
+	designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway, designCardOutputsSection,
+	designCardOutputsWorkflow)
 
 // designCardOutputsStatements строит оба запроса выходов из ОБЛАСТИ (FROM+WHERE) и ДВУХ КЛЮЧЕЙ
 // РАЗДЕЛА — колорвея и секции.
@@ -264,23 +350,44 @@ var designListCardOutputs, designCountCardOutputsByColorway = designCardOutputsS
 // ГРУППИРУЕТСЯ ТЕМИ ЖЕ ДВУМЯ. Ключ, разошедшийся между списком и счётом, подписал бы раздел
 // числом, посчитанным не по тем строкам; поэтому оба выражения приходят сюда параметрами и
 // подставляются в оба запроса, а поколорвейный итог складывается уже в Go (loadCardOutputs).
-func designCardOutputsStatements(scope, colorway, section string) (list, count string) {
+//
+// ⚠ PHASE 2 (PLAYGROUND): A THIRD WINDOW AXIS AND A STAMP, FROM ONE MORE PARAMETER. `workflow` is
+// designCardOutputsWorkflow; the builder spells it out THREE times and never lets anyone else:
+//
+//   - list: `<workflow> AS run_workflow` — the stamp each output carries;
+//   - list: PARTITION BY colorway, section, designCardOutputsWindowKey(section, workflow) — the
+//     FULL expression, never the `run_workflow` alias of the same SELECT;
+//   - count: `<workflow> AS workflow` and GROUP BY the same full expression.
+//
+// The count groups by the workflow itself, not by the window key: that is a REFINEMENT of the
+// window partition (the key is a function of section and workflow), so each window partition is
+// a union of count groups and both Go sums (per colourway, per workflow) stay exact.
+//
+// THE ACTIVE RUN IS NOT PINNED HERE, AND THAT IS STATED, NOT FORGOTTEN (05-CODEX-S02 §9). There is
+// no server-side union with «the run in progress»: a run still working has no outputs to list, and
+// its live placeholder is the client's, drawn from `runs` (the first history page of this same
+// read). A run that just finished owns the highest picture ids of its partition, and the window is
+// newest-first per (colourway, section, workflow-in-section-1) — so another tile's traffic can no
+// longer push it out (that is what the third axis buys); only newer outputs OF THE SAME TILE can.
+func designCardOutputsStatements(scope, colorway, section, workflow string) (list, count string) {
+	key := designCardOutputsWindowKey(section, workflow)
 	list = `
 		SELECT o.* FROM (
 			SELECT p.*,
 			       COALESCE(r.kind, '') AS run_kind,
 			       COALESCE(r.rrev, 0) AS run_rrev,
 			       COALESCE(r.colorway_id, 0) AS run_cw,
+			       ` + workflow + ` AS run_workflow,
 			       ROW_NUMBER() OVER (
-			           PARTITION BY ` + colorway + `, ` + section + `
+			           PARTITION BY ` + colorway + `, ` + section + `, ` + key + `
 			           ORDER BY p.id DESC
 			       ) AS rn` + scope + `
 		) o
 		WHERE o.rn <= :per_colorway
 		ORDER BY o.id DESC`
 	count = `
-		SELECT ` + colorway + ` AS colorway_id, ` + section + ` AS section, COUNT(*) AS n` + scope + `
-		GROUP BY ` + colorway + `, ` + section
+		SELECT ` + colorway + ` AS colorway_id, ` + section + ` AS section, ` + workflow + ` AS workflow, COUNT(*) AS n` + scope + `
+		GROUP BY ` + colorway + `, ` + section + `, ` + workflow
 	return list, count
 }
 
@@ -419,7 +526,7 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		// ВЫХОДЫ КАРТОЧКИ ЦЕЛИКОМ, В ЭТОМ ЖЕ СНИМКЕ. Раздел «рендеры этой карточки» и лента
 		// обязаны показывать ОДИН момент карточки; вторым чтением они разошлись бы ровно на те
 		// кадры, что родились между двумя запросами.
-		band.Outputs, band.OutputsTotal, band.OutputsTotalByColorway, err =
+		band.Outputs, band.OutputsTotal, band.OutputsTotalByColorway, band.OutputsTotalByWorkflow, err =
 			loadCardOutputs(ctx, rep, cardID)
 		if err != nil {
 			return err
@@ -458,7 +565,9 @@ type cardOutputRow struct {
 	RunKind string `db:"run_kind"`
 	RunRrev int    `db:"run_rrev"`
 	RunCw   int    `db:"run_cw"`
-	Rn      int    `db:"rn"`
+	// RunWorkflow — designCardOutputsWorkflow, the PLAYGROUND tile of this output ('' = none).
+	RunWorkflow string `db:"run_workflow"`
+	Rn          int    `db:"rn"`
 }
 
 // cardOutputCountRow — одна строка счёта: колорвей, СЕКЦИЯ и сколько их там.
@@ -466,10 +575,15 @@ type cardOutputRow struct {
 // Секция читается не ради провода, а ради того, чтобы счёт группировался ТЕМ ЖЕ ключом, каким
 // режется окно списка (см. designCardOutputsSection). Наружу она складывается: поле контракта
 // OutputsTotalByColorway поколорвейное, и эта правка его формы не меняет.
+//
+// Workflow — designCardOutputsWorkflow of the group (empty = no tile). The count groups by it so the
+// per-workflow total (OutputsTotalByWorkflow, band 31) is summed from the SAME rows the window
+// cuts; the colourway total still adds every workflow of the colourway together.
 type cardOutputCountRow struct {
-	ColorwayId int `db:"colorway_id"`
-	Section    int `db:"section"`
-	N          int `db:"n"`
+	ColorwayId int    `db:"colorway_id"`
+	Section    int    `db:"section"`
+	Workflow   string `db:"workflow"`
+	N          int    `db:"n"`
 }
 
 // loadCardOutputs читает ГЕНЕРАТИВНЫЕ ВЫХОДЫ ВСЕЙ КАРТОЧКИ вместе со штампом прогона у каждого,
@@ -491,27 +605,35 @@ type cardOutputCountRow struct {
 // другим условием либо вне снимка, он подписывал бы список, которого не видел. Карточный итог —
 // сумма тех же чисел, а не отдельный COUNT(*): второй запрос был бы вторым источником правды.
 func loadCardOutputs(ctx context.Context, rep dependency.Repository, cardID int) (
-	[]entity.DesignCardOutput, int, map[int]int, error,
+	[]entity.DesignCardOutput, int, map[int]int, map[string]int, error,
 ) {
 	db := rep.DB()
 	counts, err := storeutil.QueryListNamed[cardOutputCountRow](ctx, db,
 		designCountCardOutputsByColorway, map[string]any{"card": cardID})
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("failed to count design card outputs: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("failed to count design card outputs: %w", err)
 	}
 	// Секции СКЛАДЫВАЮТСЯ в поколорвейное число: на проводе OutputsTotalByColorway обещает «сколько
 	// выходов у этого колорвея ВСЕГО», и присваивание вместо сложения молча отдало бы число одной
 	// секции — последней, какую вернул MySQL.
 	byColorway := make(map[int]int, len(counts))
+	// PER WORKFLOW, THE SAME GROUPS SUMMED ACROSS COLOURWAYS AND SECTIONS. `+=`, not `=`, for the
+	// same reason as above: a workflow can own rows on several colourways (a crop keeps its
+	// parent's colourway), and assignment would report one of them. '' is «no tile» and is not a
+	// key of the wire map (band 31: outputs of no workflow are not counted there).
+	byWorkflow := make(map[string]int)
 	total := 0
 	for _, c := range counts {
 		byColorway[c.ColorwayId] += c.N
+		if c.Workflow != "" {
+			byWorkflow[c.Workflow] += c.N
+		}
 		total += c.N
 	}
 	rows, err := storeutil.QueryListNamed[cardOutputRow](ctx, db, designListCardOutputs,
 		map[string]any{"card": cardID, "per_colorway": MaxCardOutputsPerColorway})
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("failed to list design card outputs: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("failed to list design card outputs: %w", err)
 	}
 	out := make([]entity.DesignCardOutput, 0, len(rows))
 	for _, r := range rows {
@@ -523,6 +645,7 @@ func loadCardOutputs(ctx context.Context, rep dependency.Repository, cardID int)
 			RunKind:       r.RunKind,
 			RunRrev:       r.RunRrev,
 			RunColorwayId: r.RunCw,
+			RunWorkflow:   r.RunWorkflow,
 		})
 	}
 	// Файлы — ОДНИМ пакетом на весь список. Без этого у выхода есть id и нет миниатюры, то есть
@@ -532,9 +655,9 @@ func loadCardOutputs(ctx context.Context, rep dependency.Repository, cardID int)
 		flat = append(flat, &out[i].Picture)
 	}
 	if err := resolveMedia(ctx, rep, flat); err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, nil, err
 	}
-	return out, total, byColorway, nil
+	return out, total, byColorway, byWorkflow, nil
 }
 
 // ListRuns returns one page of the history WITH the pictures of that page. A flat picture list
