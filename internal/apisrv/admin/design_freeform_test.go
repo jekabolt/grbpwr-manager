@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -495,14 +496,22 @@ func TestGetDesignBandALWAYS_ANSWERS_ABOUT_THE_PLAYGROUND(t *testing.T) {
 	design := mocks.NewMockDesign(t)
 	repo.EXPECT().Design().Return(design).Maybe()
 	design.EXPECT().GetBand(mock.Anything, mock.Anything, mock.Anything).
-		Return(&entity.DesignBand{}, nil).Twice()
+		Return(&entity.DesignBand{}, nil).Times(3)
 
 	// ГЕНЕРАЦИЯ ВЫКЛЮЧЕНА: поле есть, список пуст и НЕ nil.
 	off := &Server{repo: repo}
+	off.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
 	resp, err := off.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
 	require.NoError(t, err)
 	require.NotNil(t, resp.GetFreeformPresets())
 	require.Empty(t, resp.GetFreeformPresets())
+	// Phase 2 (fields 28–30): present and empty on a closed server, never nil.
+	require.NotNil(t, resp.GetPlaygroundWorkflows())
+	require.Empty(t, resp.GetPlaygroundWorkflows())
+	require.NotNil(t, resp.GetImageModels())
+	require.Empty(t, resp.GetImageModels())
+	require.NotNil(t, resp.GetThreedOptions())
+	require.Empty(t, resp.GetThreedOptions())
 
 	// ГЕНЕРАЦИЯ ВКЛЮЧЕНА, МАРШРУТ ВЫРЕЗА НЕ ПОДКЛЮЧЁН: три пресета, четвёртой кнопки нет.
 	on := &Server{repo: repo}
@@ -522,6 +531,43 @@ func TestGetDesignBandALWAYS_ANSWERS_ABOUT_THE_PLAYGROUND(t *testing.T) {
 	// ⚠ И СЛОВАРЬ ЗДЕСЬ — ТОТ ЖЕ, ЧТО У ДВЕРИ. Кнопка, которой дверь не знает, — отказ по клику.
 	for _, preset := range entity.FreeformPresets() {
 		require.Truef(t, entity.IsFreeformPreset(preset), "preset %q is served but not accepted", preset)
+	}
+	// The tiles in grid order, without the closed cutout route and never extend_image; no engine
+	// table wired on this server → no picker.
+	want := []string{}
+	for _, w := range entity.PlaygroundWorkflows() {
+		if w != entity.DesignWorkflowRemoveBackground && w != entity.DesignWorkflowExtendImage {
+			want = append(want, w)
+		}
+	}
+	require.Equal(t, want, resp.GetPlaygroundWorkflows())
+	require.NotNil(t, resp.GetImageModels())
+	require.Empty(t, resp.GetImageModels())
+	require.Equal(t, []string{"texture", "pbr", "quality"}, resp.GetThreedOptions())
+
+	// EVERY ROUTE OPEN: band 26 is STILL the old three + cutout [Codex 10] — an old client draws
+	// every key of it as a chip — and the engines come with exactly one default.
+	all := &Server{repo: repo}
+	all.SetDesignGenerationEnabled(true)
+	all.SetDesignKindGate(func(string) error { return nil })
+	all.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	resp, err = all.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
+	require.NoError(t, err)
+	require.Equal(t, append(entity.FreeformPresets(), entity.DesignRunKindCutout), resp.GetFreeformPresets())
+	require.NotContains(t, resp.GetPlaygroundWorkflows(), entity.DesignWorkflowExtendImage)
+	require.Len(t, resp.GetPlaygroundWorkflows(), len(entity.PlaygroundWorkflows())-1)
+	defaults := 0
+	for _, m := range resp.GetImageModels() {
+		require.NotEmpty(t, m.GetQualities())
+		require.Contains(t, m.GetAspectRatios(), "auto")
+		if m.GetIsDefault() {
+			defaults++
+		}
+	}
+	require.Len(t, resp.GetImageModels(), len(designgen.EngineTable("")))
+	require.Equal(t, 1, defaults, "exactly one engine is the deployment's default")
+	for _, w := range resp.GetPlaygroundWorkflows() {
+		require.Truef(t, entity.IsDesignWorkflow(w), "%q is not a workflow key", w)
 	}
 }
 

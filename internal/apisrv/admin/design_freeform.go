@@ -8,6 +8,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
@@ -54,6 +55,86 @@ func (s *Server) designFreeformPresets() []string {
 		out = append(out, entity.DesignRunKindCutout)
 	}
 	return out
+}
+
+// designPlaygroundWorkflows — THE TILES THIS SERVER CAN RUN RIGHT NOW (band field 28), in the
+// owner's grid order, by the same ladder as the door: the money flag, then each route's own gate.
+// `freeform_presets` (band 26) keeps its three keys + cutout for old clients [Codex 10]; new
+// capability travels only here. Empty, never nil: present-and-empty is «this server knows the
+// playground and says not now», absent is «an old server».
+//
+// extend_image is never listed in phase 2 (no route). retouch_zone is: its window path is live.
+func (s *Server) designPlaygroundWorkflows() []string {
+	out := []string{}
+	if s.designGenerationGate() != nil {
+		return out
+	}
+	open := map[string]bool{}
+	if s.designKindGateCheck(entity.DesignRunKindFreeform) == nil {
+		for _, w := range []string{
+			entity.DesignWorkflowVirtualTryOn, entity.DesignWorkflowFabricToImage,
+			entity.DesignWorkflowGhostMannequin, entity.DesignWorkflowAddLogo,
+			entity.DesignWorkflowDesignVariations, entity.DesignWorkflowRetouchZone,
+			entity.DesignWorkflowCreateEdit,
+		} {
+			open[w] = true
+		}
+	}
+	if s.designKindGateCheck(entity.DesignRunKindRecolor) == nil {
+		open[entity.DesignWorkflowChangeColor] = true
+		open[entity.DesignWorkflowSwapFabrics] = true
+	}
+	if s.designKindGateCheck(entity.DesignRunKindCutout) == nil {
+		open[entity.DesignWorkflowRemoveBackground] = true
+	}
+	if s.designKindGateCheck(entity.DesignRunKindThreed) == nil {
+		open[entity.DesignWorkflowImageTo3D] = true
+	}
+	for _, w := range entity.PlaygroundWorkflows() {
+		if open[w] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// designImageModels — THE ENGINES THE DOOR ACCEPTS IN params.image (band field 29), off the same
+// table it validates and prices with. Empty (present) when the image route is closed or no table
+// is wired: the client then draws no picker and sends no `image`.
+func (s *Server) designImageModels() []*pb_admin.DesignImageModel {
+	out := []*pb_admin.DesignImageModel{}
+	if s.designGenerationGate() != nil {
+		return out
+	}
+	if s.designKindGateCheck(entity.DesignRunKindFreeform) != nil &&
+		s.designKindGateCheck(entity.DesignRunKindRender) != nil {
+		return out
+	}
+	for _, e := range s.designEngineTable() {
+		out = append(out, &pb_admin.DesignImageModel{
+			Slug:          e.Slug,
+			Label:         e.Label,
+			AspectRatios:  append([]string{}, e.Ratios...),
+			Qualities:     designEngineTierWords(e),
+			IsDefault:     e.IsDefault,
+			MaxReferences: int32(e.MaxRefs),
+			Backgrounds:   append([]string{}, e.Backgrounds...),
+		})
+	}
+	return out
+}
+
+// designThreedOptions — which DesignThreedParams options the wired 3D route honours (band field
+// 30). `follow` is never listed in phase 2 (the door refuses it: option_not_read).
+//
+// ⚠ texture / pbr / quality are honoured once B-09 (3D reference mode) is on this branch; the
+// list and that lane ship together.
+func (s *Server) designThreedOptions() []string {
+	out := []string{}
+	if s.designGenerationGate() != nil || s.designKindGateCheck(entity.DesignRunKindThreed) != nil {
+		return out
+	}
+	return append(out, "texture", "pbr", "quality")
 }
 
 // designRefuseMalformedFreeform — ФОРМА ПРОСЬБЫ ПЛЕЙГРАУНДА, и спрашивается она С ГОВОРЯЩЕГО.

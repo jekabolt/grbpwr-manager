@@ -323,6 +323,11 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// маршрут), и клиент не рисует ячейку вовсе — вместо того, чтобы пускать человека в отказ.
 		// Считается ОДНОЙ лестницей с дверью: см. designFreeformPresets.
 		FreeformPresets: s.designFreeformPresets(),
+		// PLAYGROUND phase 2 capabilities (fields 28–30): always present, [] when closed — the
+		// client gates each phase-2 form on the field's presence [Codex 10].
+		PlaygroundWorkflows: s.designPlaygroundWorkflows(),
+		ImageModels:         s.designImageModels(),
+		ThreedOptions:       s.designThreedOptions(),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —
