@@ -46,9 +46,224 @@ func freeformCraft(p runParams, attached []refCaption) string {
 		return freeformAddHardwareCraft(ff, attached)
 	case entity.DesignFreeformPresetRepaintParts:
 		return freeformRepaintCraft(ff, attached)
+	// PLAYGROUND phase 2: one paragraph per tile, every picture named by its NUMBER.
+	case entity.DesignFreeformPresetTryon:
+		return freeformTryonCraft(ff, attached)
+	case entity.DesignFreeformPresetFabricExtract:
+		return freeformFabricExtractCraft(ff, attached)
+	case entity.DesignFreeformPresetGhostMannequin:
+		return freeformGhostMannequinCraft(ff, attached)
+	case entity.DesignFreeformPresetAddLogo:
+		return freeformAddLogoCraft(ff, attached)
+	case entity.DesignFreeformPresetVariations:
+		return freeformVariationsCraft(ff, attached)
+	case entity.DesignFreeformPresetRetouch:
+		return freeformRetouchCraft(ff, attached)
 	default:
+		if len(attached) == 0 {
+			// TEXT → IMAGE (tile 11): there is no picture to read, and a paragraph about reading
+			// pictures would describe a call that does not exist.
+			return "Work from the words above. Return ONE picture."
+		}
 		return freeformFreeCraft()
 	}
+}
+
+// freeformReturnOne ends every phase-2 paragraph; the outline line is added only when some
+// picture of the run is marked (a paragraph about outlines on an unmarked run is noise).
+func freeformReturnOne(b *strings.Builder, ff *freeformParams) {
+	if freeformAnyMarked(ff) {
+		b.WriteString(freeformOutlineDisclaimer)
+		b.WriteString(". ")
+	}
+	b.WriteString("Return ONE picture.")
+}
+
+func freeformAnyMarked(ff *freeformParams) bool {
+	for _, it := range ff.Items {
+		if len(it.Regions) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func freeformOptions(ff *freeformParams) workflowOptions {
+	if ff.Options == nil {
+		return workflowOptions{}
+	}
+	return *ff.Options
+}
+
+// freeformTryonCraft — dress the person of the model photo in the product garment(s).
+//
+// The ask (the pose, if any) is already first in the prompt; this paragraph fixes WHO stays and
+// WHAT they wear, then the framing, the camera and the scene.
+func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
+	o := freeformOptions(ff)
+	model := freeformImageNumber(ff, attached, entity.DesignFreeformRoleModel)
+	var b strings.Builder
+	b.WriteString("Keep the person of ")
+	b.WriteString(freeformImageWord(model, "the model photo"))
+	b.WriteString(" exactly — face, skin tone, body and hair. Dress them in the garment of ")
+	b.WriteString(freeformImageList(freeformImageNumbers(ff, attached, entity.DesignFreeformRoleProduct),
+		"the product picture"))
+	b.WriteString(" — reproduce its cut, colour, print and seams as they are, worn the way that " +
+		"garment really sits on a body. ")
+	if w := freeformFramingWords(o.Framing); w != "" {
+		b.WriteString(w + " ")
+	}
+	if w := freeformAngleWords(o.Angle); w != "" {
+		b.WriteString(w + " ")
+	}
+	sceneText := oneLine(o.SceneText)
+	switch {
+	case o.SceneMode == entity.DesignSceneModeReference:
+		b.WriteString("The scene is ")
+		b.WriteString(freeformImageWord(freeformImageNumber(ff, attached, entity.DesignFreeformRoleScene),
+			"the scene picture"))
+		b.WriteString(": use it as the background and take its light. ")
+		if sceneText != "" {
+			b.WriteString("Scene: " + sceneText + ". ")
+		}
+	case sceneText != "":
+		b.WriteString("Scene: " + sceneText + ". ")
+	default:
+		b.WriteString("Keep the scene of the model photo. ")
+	}
+	freeformReturnOne(&b, ff)
+	return b.String()
+}
+
+// freeformFramingWords — the tryon framing as a sentence; auto and empty say nothing.
+func freeformFramingWords(v string) string {
+	switch v {
+	case entity.DesignFramingFullBody:
+		return "Frame it full-length, head to feet."
+	case entity.DesignFramingUpperBody:
+		return "Frame it from the waist up."
+	case entity.DesignFramingPortrait:
+		return "Frame it as a portrait: face and neck."
+	case entity.DesignFramingHands:
+		return "Frame it as a close-up of the hands."
+	case entity.DesignFramingFeet:
+		return "Frame it as a close-up of the feet."
+	case entity.DesignFramingProductDetail:
+		return "Frame it as a close view of the garment as worn."
+	}
+	return ""
+}
+
+// freeformAngleWords — the tryon camera angle as a sentence; auto and empty say nothing.
+func freeformAngleWords(v string) string {
+	switch v {
+	case entity.DesignAngleEyeLevel:
+		return "The camera is at eye level."
+	case entity.DesignAngleSlightlyAbove:
+		return "The camera is slightly above, looking a little down."
+	case entity.DesignAngleSlightlyBelow:
+		return "The camera is slightly below, looking a little up."
+	case entity.DesignAngleLowAngle:
+		return "A low angle, from the ground."
+	}
+	return ""
+}
+
+// freeformFabricExtractCraft — the cloth of one picture as a flat tileable swatch.
+func freeformFabricExtractCraft(ff *freeformParams, attached []refCaption) string {
+	var b strings.Builder
+	b.WriteString("From ")
+	b.WriteString(freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture"))
+	b.WriteString(" extract the fabric named in the words above (the main fabric if they name none) " +
+		"as a flat, evenly lit, front-on, seamless tileable swatch: no garment shape, no folds, no " +
+		"shadows — the cloth fills the whole frame. ")
+	freeformReturnOne(&b, ff)
+	return b.String()
+}
+
+// freeformGhostMannequinCraft — the garment of one picture as an invisible-body product shot.
+func freeformGhostMannequinCraft(ff *freeformParams, attached []refCaption) string {
+	src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
+	var b strings.Builder
+	b.WriteString("Recreate the garment of " + src + " (the one the words above name, if they name one) " +
+		"as a ghost-mannequin e-commerce shot: its worn 3D shape on an invisible body, the inside of the " +
+		"back neck visible, a pure white seamless background, front-on, soft studio light. Keep every " +
+		"seam, print and piece of hardware exactly as in " + src + ". ")
+	freeformReturnOne(&b, ff)
+	return b.String()
+}
+
+// freeformLogoWidthCM — the add_logo size as a width on the garment (empty = medium).
+func freeformLogoWidthCM(size string) string {
+	switch size {
+	case entity.DesignLogoSizeSmall:
+		return "6"
+	case entity.DesignLogoSizeLarge:
+		return "16"
+	}
+	return "10"
+}
+
+// freeformAddLogoCraft — the logo of one picture onto the garment of the other.
+func freeformAddLogoCraft(ff *freeformParams, attached []refCaption) string {
+	o := freeformOptions(ff)
+	garment := freeformImageWord(freeformImageNumber(ff, attached, ""), "the garment picture")
+	var b strings.Builder
+	b.WriteString("Place the logo of ")
+	b.WriteString(freeformImageWord(freeformImageNumber(ff, attached, entity.DesignFreeformRoleLogo),
+		"the logo picture"))
+	b.WriteString(" on the garment of " + garment + " at the place the words above say, about " +
+		freeformLogoWidthCM(o.LogoSize) + " cm wide. Keep its exact shape, colours and letterforms; let it " +
+		"follow the folds of the fabric and the light of the picture. Keep the rest of the picture as " +
+		"close to " + garment + " as you can. ")
+	freeformReturnOne(&b, ff)
+	return b.String()
+}
+
+// freeformVariationsCraft — a variation of one design; creativity 0..3 sets how far it may go.
+func freeformVariationsCraft(ff *freeformParams, attached []refCaption) string {
+	src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
+	var b strings.Builder
+	switch freeformOptions(ff).Creativity {
+	case 0:
+		b.WriteString("Make a faithful variation of the design in " + src + ": keep its silhouette, " +
+			"proportions and colours, and change only what the words above ask. ")
+	case 1:
+		b.WriteString("Make a variation of the design in " + src + ": keep its silhouette and palette, " +
+			"and reinterpret its details. ")
+	case 2:
+		b.WriteString("Make a variation of the design in " + src + ": keep the garment type and its " +
+			"mood, and be free with the cut, the length and the materials. ")
+	default:
+		b.WriteString("Use " + src + " only as inspiration for a new design. ")
+	}
+	freeformReturnOne(&b, ff)
+	return b.String()
+}
+
+// freeformRetouchCraft — change ONE marked zone of ONE picture.
+//
+// Phase 2 is a crop-and-paste window, not a mask (window.go): under a window the model sees only
+// the crop around the zone and the rest of the frame is restored pixel for pixel by our
+// composite; without one the model is asked, and may only partly comply.
+func freeformRetouchCraft(ff *freeformParams, attached []refCaption) string {
+	area := freeformAreaLetter(0)
+	var b strings.Builder
+	if w := freeformWindowNumber(attached); w > 0 {
+		b.WriteString("Image " + strconv.Itoa(w) + " is a CLOSE CROP around the marked area of a larger " +
+			"photograph, not an object of its own. Change only inside area " + area + ", as the words " +
+			"say; leave everything outside it pixel for pixel as it is. Return the SAME CROP, at the " +
+			"same framing and the same size: it is going to be fitted straight back into the " +
+			"photograph it was cut from. ")
+	} else {
+		src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
+		b.WriteString("Change only area " + area + " on " + src + ", as the words say. Everything " +
+			"outside the marked area stays pixel-identical to " + src + ": the same garment, the same " +
+			"background, the same light. ")
+	}
+	b.WriteString(freeformOutlineDisclaimer)
+	b.WriteString(". Return ONE picture.")
+	return b.String()
 }
 
 // freeformFreeCraft — «делай по словам».
@@ -200,11 +415,7 @@ func freeformImageNumber(ff *freeformParams, attached []refCaption, role string)
 		}
 	}
 	for _, it := range ff.Items {
-		match := it.Role == role
-		if role == "" {
-			match = it.Role != entity.DesignFreeformRoleHardware && it.Role != entity.DesignFreeformRoleCloth
-		}
-		if !match {
+		if !freeformRoleMatches(it.Role, role) {
 			continue
 		}
 		if n, ok := numberOf[it.MediaID]; ok {
@@ -212,6 +423,58 @@ func freeformImageNumber(ff *freeformParams, attached []refCaption, role string)
 		}
 	}
 	return 0
+}
+
+// freeformRoleMatches — an empty want asks for «the picture being worked on»: any role that is not a
+// supporting one (hardware, cloth, and the phase-2 model / product / scene / logo).
+func freeformRoleMatches(itemRole, want string) bool {
+	if want != "" {
+		return itemRole == want
+	}
+	switch itemRole {
+	case entity.DesignFreeformRoleHardware, entity.DesignFreeformRoleCloth,
+		entity.DesignFreeformRoleModel, entity.DesignFreeformRoleProduct,
+		entity.DesignFreeformRoleScene, entity.DesignFreeformRoleLogo:
+		return false
+	}
+	return true
+}
+
+// freeformImageNumbers — the number of EVERY attached picture of this role, in items order.
+func freeformImageNumbers(ff *freeformParams, attached []refCaption, role string) []int {
+	numberOf := make(map[int]int, len(attached))
+	for i, rc := range attached {
+		if rc.MediaID > 0 {
+			if _, dup := numberOf[rc.MediaID]; !dup {
+				numberOf[rc.MediaID] = i + 1
+			}
+		}
+	}
+	var out []int
+	for _, it := range ff.Items {
+		if !freeformRoleMatches(it.Role, role) {
+			continue
+		}
+		if n, ok := numberOf[it.MediaID]; ok {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// freeformImageList — «image 2», «images 2 and 3», «images 2, 3 and 4», or the fallback words.
+func freeformImageList(numbers []int, fallback string) string {
+	switch len(numbers) {
+	case 0:
+		return fallback
+	case 1:
+		return "image " + strconv.Itoa(numbers[0])
+	}
+	words := make([]string, len(numbers))
+	for i, n := range numbers {
+		words[i] = strconv.Itoa(n)
+	}
+	return "images " + strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }
 
 // freeformReferences — СПИСОК КАРТИНОК ПЛЕЙГРАУНДА, в порядке items, каждая со своей подписью.
@@ -258,6 +521,14 @@ func freeformItemCaption(it freeformItem) string {
 		parts = append(parts, "the cloth")
 	case entity.DesignFreeformRoleSubject:
 		parts = append(parts, "the picture being worked on")
+	case entity.DesignFreeformRoleModel:
+		parts = append(parts, "the model — keep this person exactly")
+	case entity.DesignFreeformRoleProduct:
+		parts = append(parts, "the garment to put on them")
+	case entity.DesignFreeformRoleScene:
+		parts = append(parts, "the scene")
+	case entity.DesignFreeformRoleLogo:
+		parts = append(parts, "the logo (PNG, keep exact)")
 	}
 	if whole := freeformWholePictureText(it); whole != "" {
 		parts = append(parts, oneLine(whole))
