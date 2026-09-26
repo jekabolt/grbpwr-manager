@@ -545,6 +545,12 @@ func runByID(ctx context.Context, db dependency.DB, id int) (entity.DesignRun, e
 // after the bad crops are hidden, so a wrong cut is not a dead end. The check and the insert are
 // in one SERIALIZABLE transaction, so a concurrent duplicate cannot slip between them.
 //
+// «CROPS» MEANS CROPS, NOT «ANY CHILD» (O-53 follow-up). derived_from is written by two verbs, and
+// the check used to read it without the verb: an EDIT of the sheet — a save-as-new flatten or an
+// overwrite — is a visible child too, so after the first edit this function returned the edit as
+// «the crops of an earlier cut» and cut nothing, for ever. Both reads here — the short-circuit and
+// the answer after a fresh cut — go through designSheetCropsOf, which asks the verb.
+//
 // Crops are SIBLINGS under the source's own row (same run_id, same batch_id): no money was spent
 // on a crop, and it belongs where its parent hangs.
 func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest) ([]entity.DesignPicture, error) {
@@ -574,8 +580,7 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		// no writer in this wave, so the check refused every split that could ever reach it.
 
 		existing, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db,
-			`SELECT * FROM design_picture WHERE derived_from = :id AND hidden_at IS NULL ORDER BY ordinal, id`,
-			map[string]any{"id": parent.Id})
+			designSheetCropsOf, designSheetCropsParams(parent.Id))
 		if err != nil {
 			return fmt.Errorf("failed to read existing crops of picture %d: %w", parent.Id, err)
 		}
@@ -724,9 +729,12 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 			}
 		}
 
+		// ОТВЕТ — КУСКИ ЭТОГО РАЗРЕЗА, тем же предикатом, что и короткое замыкание выше. Здесь
+		// стояло голое `derived_from = :id`, и в «кропы» ответа уезжали правки листа и его
+		// СПРЯТАННЫЕ старые куски. Короткое замыкание не пропустило сюда ни одного видимого куска,
+		// поэтому видимые куски после вставки — ровно только что нарезанные.
 		out, err = storeutil.QueryListNamed[entity.DesignPicture](ctx, db,
-			`SELECT * FROM design_picture WHERE derived_from = :id ORDER BY ordinal, id`,
-			map[string]any{"id": parent.Id})
+			designSheetCropsOf, designSheetCropsParams(parent.Id))
 		if err != nil {
 			return fmt.Errorf("failed to read crops of picture %d: %w", parent.Id, err)
 		}
@@ -740,6 +748,47 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		return nil, err
 	}
 	return out, nil
+}
+
+// designSheetCropsOf — КУСКИ ЛИСТА: то, чем разрез этого листа уже состоялся. Один предикат на оба
+// чтения SplitPicture — короткое замыкание повтора и ответ после свежего разреза.
+//
+// ⚠ ГЛАГОЛ СПРАШИВАЕТСЯ (0359). derived_from пишут и разрез, и правка; правка листа — рядом
+// (save as new) или на его месте (overwrite, 0368) — это НЕ кусок, и считать её куском значило
+// навсегда закрыть лист для разреза: первая же правка отвечала бы «уже нарезано» самой собой.
+//
+// ЛЕГАСИ С ПУСТЫМ ГЛАГОЛОМ СЧИТАЕТСЯ КУСКОМ — как считалась до этой правки, и это выбор, а не
+// пропуск. Бэкфилл 0359 оставил строку пустой ровно тогда, когда доказать «разрез» или «правку» было
+// нечем (родитель с layer_rev ≥ 1), то есть она МОЖЕТ быть куском. Цена двух ошибок несимметрична:
+// ложное «уже нарезано» — сегодняшнее поведение с сегодняшним выходом (спрятать лишнее и резать
+// снова), ложное «не нарезано» — второй комплект кусков, записанный навсегда (картинки не
+// удаляются). Ошибаться дешевле в первую сторону. Сторож cut_sheet в layer.go отвечает на ДРУГОЙ
+// вопрос («стоит ли на экране неотредактированный кусок оригинала») и легаси не считает — там
+// ложное «да» закрывало бы перезапись ложной причиной.
+//
+// ⚠ ЗАМЕНЁННЫЙ КУСОК — ВСЁ ЕЩЁ КУСОК, поэтому replaced_by здесь НЕ фильтруется, в отличие от
+// cut_sheet. Кусок, перезаписанный правкой (0368), стоит в ленте своей правкой — голова цепочки
+// лежит под той же строкой, — и лист от этого не становится ненарезанным. Отфильтровать его значило
+// бы: лист, у которого правкой перезаписан КАЖДЫЙ кусок, режется повторно, и рядом с головами
+// прежних кусков ложится второй комплект — регрессия против сегодняшнего поведения, которое такие
+// куски считало. Короткое замыкание отдаёт заменённый кусок как есть; голову клиент находит по
+// replaced_by.
+//
+// Спрятанный кусок не считается — это и есть объявленный выход «спрятать плохие куски и резать
+// снова».
+const designSheetCropsOf = `
+	SELECT * FROM design_picture
+	WHERE derived_from = :id AND derivation IN (:crop, :unclassified) AND hidden_at IS NULL
+	ORDER BY ordinal, id`
+
+// designSheetCropsParams — параметры designSheetCropsOf. Словарь глагола берётся из entity, а не
+// литералом в SQL: одно слово — одно место.
+func designSheetCropsParams(sheetID int) map[string]any {
+	return map[string]any{
+		"id":           sheetID,
+		"crop":         entity.DesignDerivationCrop,
+		"unclassified": entity.DesignDerivationNone,
+	}
 }
 
 // nextSiblingOrdinal is the first free ordinal under the parent's run or batch row.
