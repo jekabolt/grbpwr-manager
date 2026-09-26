@@ -230,3 +230,159 @@ func TestDesignAlreadyReplacedCarriesTheHead(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, errors.As(err, &replaced), "отказ без головы нарушил бы обещание head_picture_id")
 }
+
+// ─── СТОРОЖ cut_sheet СУДИТ КУСОК ПО ГОЛОВЕ ВЕТКИ (O-53 review, раунд 2) ───
+
+// cropBranch — кусок листа 7 и цепочка его замен: links[0] — сам кусок, дальше — правки по порядку,
+// hidden[i] — спрятано ли i-е звено. Возвращает кусок и загрузчик по всем звеньям.
+func cropBranch(firstID int, hidden ...bool) (DesignPicture, func(int) (DesignPicture, error)) {
+	chain := map[int]DesignPicture{}
+	for i, h := range hidden {
+		p := DesignPicture{Id: firstID + i, TechCardId: replaceProbeCard}
+		if i == 0 {
+			p.DerivedFrom = sql.NullInt32{Int32: 7, Valid: true}
+			p.Derivation = DesignDerivationCrop
+		} else {
+			p.DerivedFrom = sql.NullInt32{Int32: int32(firstID + i - 1), Valid: true}
+			p.Derivation = DesignDerivationFlatten
+		}
+		if i+1 < len(hidden) {
+			p.ReplacedBy = sql.NullInt32{Int32: int32(firstID + i + 1), Valid: true}
+		}
+		if h {
+			p.HiddenAt = sql.NullTime{Valid: true}
+		}
+		chain[p.Id] = p
+	}
+	return chain[firstID], func(id int) (DesignPicture, error) {
+		p, ok := chain[id]
+		if !ok {
+			return DesignPicture{}, fmt.Errorf("%w: design picture %d", ErrDesignNotFound, id)
+		}
+		return p, nil
+	}
+}
+
+// КУСОК ДЕРЖИТ ЛИСТ, ПОКА НА ЭКРАНЕ ГОЛОВА ЕГО ВЕТКИ — ЧЕМ БЫ НИ БЫЛИ ЗВЕНЬЯ ДО НЕЁ.
+//
+// Сценарий ревью — устаревшая вкладка: кусок C спрятан, спрятанный C перезаписан, правка E видима —
+// ветка держит лист. Обратный случай: кусок видим, но его правка спрятана — ветку сняли, лист
+// свободен. Каждый случай судится ОТДЕЛЬНО: общий счёт скрыл бы мутацию «судить по строке куска»,
+// при которой два неверных ответа складываются в верную сумму.
+//
+// МУТАЦИИ: судить по строке куска (два средних случая меняются местами); судить по первой правке, а
+// не по голове (цепочка из двух правок со спрятанной первой); проглотить ошибку обхода нулём.
+func TestDesignVisibleCropBranchesJudgesEachPieceByItsHead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hidden []bool
+		holds  bool
+	}{
+		{"кусок на виду, не перезаписан", []bool{false}, true},
+		{"кусок спрятан, не перезаписан", []bool{true}, false},
+		{"кусок спрятан, его правка на виду — устаревшая вкладка", []bool{true, false}, true},
+		{"кусок на виду, его правка спрятана", []bool{false, true}, false},
+		{"две правки: первая спрятана, голова на виду", []bool{false, true, false}, true},
+		{"две правки: голова спрятана", []bool{true, false, true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			crop, load := cropBranch(10, tc.hidden...)
+			n, err := DesignVisibleCropBranches([]DesignPicture{crop}, load)
+			require.NoError(t, err)
+			want := 0
+			if tc.holds {
+				want = 1
+			}
+			require.Equal(t, want, n)
+		})
+	}
+
+	// Несколько кусков считаются вместе, а порча цепочки — ошибка, а не «куска нет».
+	a, loadA := cropBranch(10, false)
+	b, loadB := cropBranch(20, true, false)
+	load := func(id int) (DesignPicture, error) {
+		if id >= 20 {
+			return loadB(id)
+		}
+		return loadA(id)
+	}
+	n, err := DesignVisibleCropBranches([]DesignPicture{a, b}, load)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	broken, _ := cropBranch(40, true, false)
+	_, err = DesignVisibleCropBranches([]DesignPicture{broken}, func(int) (DesignPicture, error) {
+		return DesignPicture{}, fmt.Errorf("%w: gone", ErrDesignNotFound)
+	})
+	require.Error(t, err, "не прочли ветку — не значит, что куска нет: лист не уходит под правку по порче")
+}
+
+// ─── ПОВТОР ПО КЛЮЧУ ОТВЕЧАЕТ ТОЛЬКО ТОМУ ЖЕ ЖЕСТУ (0369/0370, O-53 review) ───
+
+// replayPrior — кадр, поданный первой попыткой: флэттен слоя 5 на ревизии 4.
+func replayPrior() DesignPicture {
+	return DesignPicture{
+		Id: 12, TechCardId: replaceProbeCard, Derivation: DesignDerivationFlatten,
+		DerivedFrom:   sql.NullInt32{Int32: 7, Valid: true},
+		SourceLayerId: sql.NullInt32{Int32: 5, Valid: true}, LayerRev: 4,
+	}
+}
+
+func replayReq(layer, rev, replace int) DesignEditLayerFlatten {
+	return DesignEditLayerFlatten{
+		TechCardId: replaceProbeCard, LayerId: layer, ExpectedRev: rev, MediaId: 901,
+		ReplacePictureId: replace, ClientRequestId: "k-1",
+	}
+}
+
+// ПОВТОР ТОГО ЖЕ ЖЕСТА ПРОХОДИТ — В ОБОИХ РЕЖИМАХ И У СЛОЯ С ЧИСТОГО ЛИСТА.
+//
+// Положительный контроль: без него пробы отказов ниже зеленели бы и на правиле, отказывающем всегда.
+// media_id запроса намеренно не совпадает ни с чем — ключ это жест, а не байты.
+func TestDesignFlattenReplayOfTheSameGestureIsAReplay(t *testing.T) {
+	require.NoError(t, DesignFlattenReplayRefusal(replayReq(5, 4, 7), "k-1", replayPrior(), 7), "перезапись")
+	require.NoError(t, DesignFlattenReplayRefusal(replayReq(5, 4, 0), "k-1", replayPrior(), 0), "рядом")
+
+	root := replayPrior()
+	root.DerivedFrom, root.Derivation = sql.NullInt32{}, DesignDerivationNone
+	require.NoError(t, DesignFlattenReplayRefusal(replayReq(5, 4, 0), "k-1", root, 0),
+		"слой с чистого листа: у кадра нет родителя, есть слой")
+}
+
+// КЛЮЧ, ПОТРАЧЕННЫЙ НА ДРУГОЙ ФЛЭТТЕН, — invalid_argument, И КАЖДОЕ РАСХОЖДЕНИЕ НАЗЫВАЕТ СЕБЯ.
+//
+// Главный случай раунда 2 — ДРУГОЙ СЛОЙ НА ТОЙ ЖЕ РЕВИЗИИ, в обоих режимах: раньше повтор «save as
+// new» слоя L2 под ключом слоя L1 получал картинку L1 как свой успех.
+//
+// МУТАЦИИ: снять сверку слоя (оба подслучая «другой слой» проходят); читать отсутствие слоя как
+// совпадение (кадр до 0370 отвечает любому слою); снять сверку ревизии, глагола или места.
+func TestDesignFlattenReplayRefusesAKeySpentElsewhere(t *testing.T) {
+	noLayer := replayPrior()
+	noLayer.SourceLayerId = sql.NullInt32{}
+	crop := replayPrior()
+	crop.Derivation = DesignDerivationCrop
+
+	for _, tc := range []struct {
+		name  string
+		req   DesignEditLayerFlatten
+		prior DesignPicture
+		took  int
+		says  string
+	}{
+		{"другой слой, та же ревизия — рядом", replayReq(6, 4, 0), replayPrior(), 0, "from layer 5, not layer 6"},
+		{"другой слой, та же ревизия — перезапись", replayReq(6, 4, 7), replayPrior(), 7, "from layer 5, not layer 6"},
+		{"кадр без записанного слоя", replayReq(5, 4, 0), noLayer, 0, "records no layer"},
+		{"кусок разреза", replayReq(5, 4, 0), crop, 0, "is a crop"},
+		{"другая ревизия", replayReq(5, 5, 0), replayPrior(), 0, "layer rev 4, not 5"},
+		{"подан рядом, просят на место", replayReq(5, 4, 7), replayPrior(), 0, "filed beside"},
+		{"подан на место, просят рядом", replayReq(5, 4, 0), replayPrior(), 7, "this request files beside"},
+		{"подан на место другого кадра", replayReq(5, 4, 8), replayPrior(), 7, "not of picture 8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := DesignFlattenReplayRefusal(tc.req, "k-1", tc.prior, tc.took)
+			require.ErrorIs(t, err, ErrDesignInvalidArgument)
+			require.Contains(t, err.Error(), tc.says)
+			require.Contains(t, err.Error(), `client_request_id "k-1" already filed picture 12`)
+		})
+	}
+}

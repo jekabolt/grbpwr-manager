@@ -30,10 +30,11 @@ var (
 	// ОТКАЗ НЕСЁТ ГОЛОВУ ЦЕПОЧКИ (DesignReplacedError): «уже заменён» без ответа «чем» оставляло
 	// клиенту гадать, чья правка стоит на месте и не его ли это собственная, потерявшая ответ.
 	ErrDesignAlreadyReplaced = errors.New("design: already_replaced")
-	// ErrDesignCutSheet — от листа отрезаны видимые куски, и они остались бы вырезанными из
-	// ОРИГИНАЛА: на месте листа встала бы правка, а в колоде лежали бы куски прежних пикселей.
-	// Кусок, перезаписанный своей правкой, лист ДЕРЖИТ ТОЖЕ (O-53 review): правка стоит на его месте
-	// и нарезана из тех же прежних пикселей. Чинится правкой куска либо прятаньем куска, а не листа.
+	// ErrDesignCutSheet — от листа отрезаны куски, которые ещё стоят на экране, и они остались бы
+	// вырезанными из ОРИГИНАЛА: на месте листа встала бы правка, а в колоде лежали бы куски прежних
+	// пикселей. Кусок судится по ГОЛОВЕ своей цепочки замен (DesignVisibleCropBranches): кусок,
+	// перезаписанный правкой, лист держит, пока правка на виду, — даже если сам кусок спрятан.
+	// Чинится правкой куска либо прятаньем того, что от куска стоит на экране, а не листа.
 	ErrDesignCutSheet = errors.New("design: cut_sheet")
 )
 
@@ -108,9 +109,9 @@ func DesignAlreadyReplaced(p DesignPicture, load func(id int) (DesignPicture, er
 // DesignReplaceRefusal — МОЖЕТ ЛИ ПРАВКА СЛОЯ ЗАНЯТЬ МЕСТО КАДРА original. nil = может.
 //
 // Вход — то, что стор уже прочитал В ТРАНЗАКЦИИ ФЛЭТТЕНА: карточка запроса, base_media_id слоя, сам
-// кадр и число его видимых кропов. Чтение вне той транзакции было бы TOCTOU с именем
-// поприличнее, поэтому здесь нет ни одного запроса — только решение, и оно чистое ровно затем,
-// чтобы порядок отказов проверялся без базы.
+// кадр и число его кропов, чья ветка стоит на экране (DesignVisibleCropBranches). Чтение вне той
+// транзакции было бы TOCTOU с именем поприличнее, поэтому здесь нет ни одного запроса — только
+// решение, и оно чистое ровно затем, чтобы порядок отказов проверялся без базы.
 //
 // ⚠ ПОРЯДОК — ЧАСТЬ КОНТРАКТА, и он от «чинится запросом» к «чинится другим жестом»:
 //
@@ -121,10 +122,10 @@ func DesignAlreadyReplaced(p DesignPicture, load func(id int) (DesignPicture, er
 //  2. already_replaced — replaced_by уже стоит. Проверяется NULL-ность, а не знак, ровно как
 //     `replaced_by IS NULL` в самом UPDATE: два сторожа одного факта не расходятся ни на одной строке.
 //     Голову цепочки здесь не узнать — это чтение, — и стор дописывает её (DesignAlreadyReplaced).
-//  3. cut_sheet — у кадра есть видимые (hidden_at IS NULL) кропы, ЗАМЕНЁННЫЕ СВОЕЙ ПРАВКОЙ — ТОЖЕ
-//     (O-53 review): такой кусок стоит на экране правкой, нарезанной из прежних пикселей листа, и
-//     перезапись листа оставила бы две живые ветки одного листа. Спрятанный кроп в счёт не идёт —
-//     считает вызывающий.
+//  3. cut_sheet — у кадра есть кропы, чья ветка стоит на экране: видима ГОЛОВА цепочки замен куска
+//     (O-53 review, раунд 2). Правка куска нарезана из прежних пикселей листа, и перезапись листа
+//     оставила бы две живые ветки одного листа; спрятанная голова ветку снимает. Считает вызывающий —
+//     DesignVisibleCropBranches.
 func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original DesignPicture, visibleCrops int) error {
 	if original.TechCardId != cardID {
 		return fmt.Errorf("%w: picture %d belongs to tech card %d, not to %d",
@@ -147,4 +148,74 @@ func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original D
 			ErrDesignCutSheet, original.Id, visibleCrops)
 	}
 	return nil
+}
+
+// DesignVisibleCropBranches — СКОЛЬКО КУСКОВ ЛИСТА ЕЩЁ СТОИТ НА ЭКРАНЕ (сторож cut_sheet, O-53 review,
+// раунд 2). crops — ВСЕ кропы листа, спрятанные тоже; load читает кадр по id, как у
+// DesignReplacementHead.
+//
+// КУСОК СУДИТСЯ ПО ГОЛОВЕ СВОЕЙ ЦЕПОЧКИ ЗАМЕН, А НЕ ПО СОБСТВЕННОЙ СТРОКЕ. Сторож смотрел на строку
+// куска, и устаревшая вкладка обходила его так: лист S разрезан на кусок C, C открыт в редакторе, C
+// спрятали, вкладка перезаписывает спрятанный C (спрятанный оригинал перезаписывать можно, и правка E
+// рождается видимой), затем перезаписывают S — строка C спрятана, сторож молчит, и S уходит под
+// правку, пока E, нарезанная из прежних пикселей S, стоит на экране. На экране от ветки куска стоит
+// её ГОЛОВА: видимая голова держит лист, спрятанная — нет, чем бы ни были звенья до неё.
+//
+// Ошибка обхода — ошибка, а не ноль: «не смогли прочесть цепочку» не значит «куска нет», и лист не
+// уходит под правку по порче данных.
+func DesignVisibleCropBranches(crops []DesignPicture, load func(id int) (DesignPicture, error)) (int, error) {
+	n := 0
+	for _, c := range crops {
+		head, err := DesignReplacementHead(c, load)
+		if err != nil {
+			return 0, err
+		}
+		if !head.HiddenAt.Valid {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// DesignFlattenReplayRefusal — ОТВЕЧАЕТ ЛИ prior (кадр, уже поданный этой карточкой под ключом key) НА
+// ЗАПРОС req. nil — да, это повтор, и ответ ему — prior. tookThePlaceOf — чьё место prior занял: id
+// родителя, когда родитель подписан prior-ом (replaced_by = prior), иначе 0; это чтение, и его делает
+// стор, а решение — здесь, чтобы проверяться без базы.
+//
+// Сверяется то, что делает флэттен ТЕМ ЖЕ жестом, в порядке от «чужой глагол» к «не то место»:
+//   - глагол: prior — флэттен, а не кусок разреза (ключ однажды будет и у разреза);
+//   - СЛОЙ (0370, O-53 review, раунд 2): prior расплющен из того слоя, который назван. Без этой
+//     сверки два слоя одной карточки на одной ревизии делили ключ: «save as new» слоя L2 под ключом,
+//     уже потраченным на L1, получал картинку L1 как свой успех. Кадр без записанного слоя (флэттен до
+//     0370) под ключом появиться не может — ключ и слой пишутся одной вставкой, — и отказ здесь честнее,
+//     чем догадка;
+//   - ревизия: prior растеризован из той ревизии слоя, которую эхом назвал запрос;
+//   - место: prior занял место ровно названного кадра либо не занял ничьего, если запрос — «рядом».
+//
+// media_id НЕ сверяется, и это решение: ключ — это жест, а не байты. Каждое расхождение —
+// invalid_argument: клиент потратил ключ на другой запрос, и вернуть ему чужой ответ значило бы
+// соврать, что исполнен его.
+func DesignFlattenReplayRefusal(req DesignEditLayerFlatten, key string, prior DesignPicture, tookThePlaceOf int) error {
+	refuse := func(format string, args ...any) error {
+		return fmt.Errorf("%w: client_request_id %q already filed picture %d, which %s",
+			ErrDesignInvalidArgument, key, prior.Id, fmt.Sprintf(format, args...))
+	}
+	switch {
+	case prior.Derivation == DesignDerivationCrop:
+		return refuse("is a crop, not a flatten")
+	case !prior.SourceLayerId.Valid:
+		return refuse("records no layer it was flattened from, and this request names layer %d", req.LayerId)
+	case int(prior.SourceLayerId.Int32) != req.LayerId:
+		return refuse("was flattened from layer %d, not layer %d", prior.SourceLayerId.Int32, req.LayerId)
+	case prior.LayerRev != req.ExpectedRev:
+		return refuse("was flattened from layer rev %d, not %d", prior.LayerRev, req.ExpectedRev)
+	case tookThePlaceOf == req.ReplacePictureId:
+		return nil
+	case tookThePlaceOf == 0:
+		return refuse("was filed beside its base, not in the place of picture %d", req.ReplacePictureId)
+	case req.ReplacePictureId == 0:
+		return refuse("took the place of picture %d, and this request files beside", tookThePlaceOf)
+	default:
+		return refuse("took the place of picture %d, not of picture %d", tookThePlaceOf, req.ReplacePictureId)
+	}
 }

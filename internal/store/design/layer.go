@@ -651,13 +651,15 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 			derivation = entity.DesignDerivationFlatten
 		}
 		// request_key — ключ этого жеста (0369): им повтор находит этот кадр. NULL без ключа.
+		// source_layer_id — слой, из которого кадр расплющен (0370), пара к layer_rev: им повтор
+		// сверяет, что ключ назван ТЕМ ЖЕ слоем (entity.DesignFlattenReplayRefusal).
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
 				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
 				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev,
-				 display_only, request_key)
+				 display_only, request_key, source_layer_id)
 			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
-			        :src, :mixed, :layer, :display_only, :request_key)`,
+			        :src, :mixed, :layer, :display_only, :request_key, :source_layer)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
 				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
@@ -665,6 +667,7 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 				"src":        src, "mixed": mixed, "layer": layer.Rev,
 				"display_only": displayOnly,
 				"request_key":  nullStr(key),
+				"source_layer": layer.Id,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to file the flattened design layer: %w", err)
@@ -688,22 +691,27 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	return &out, nil
 }
 
-// designVisibleCropsOf — СКОЛЬКО ВИДИМЫХ КУСКОВ отрезано от кадра (сторож cut_sheet).
+// designCutPiecesOf — ВСЕ КУСКИ, ОТРЕЗАННЫЕ ОТ КАДРА, СПРЯТАННЫЕ ТОЖЕ (сторож cut_sheet). Держит ли кусок
+// лист, решает не его строка, а голова его цепочки замен — entity.DesignVisibleCropBranches, — поэтому
+// фильтров видимости и замены здесь нет, и оба их отсутствия несущие.
 //
 // ⚠ ГЛАГОЛ СПРАШИВАЕТСЯ, А НЕ ВЫВОДИТСЯ (0359): derived_from пишут и разрез, и правка, и правка
 // листа — ещё не разрез. Легаси-строка с пустым глаголом в счёт не идёт: бэкфилл 0359 оставил её
 // неклассифицированной, потому что доказать «кроп» было нечем, и назвать её куском здесь значило бы
-// вписать ту самую догадку. Спрятанный кусок листа не держит — его нет на экране.
+// вписать ту самую догадку.
 //
-// ⚠ ЗАМЕНЁННЫЙ КУСОК ЛИСТ ДЕРЖИТ (O-53 review), и фильтра по replaced_by здесь нет намеренно. Здесь
-// стоял `replaced_by IS NULL` с доводом «такой кусок уже стоит правкой на своём месте» — а ровно
-// поэтому он и держит: правка куска нарезана из прежних пикселей листа, и перезапись листа оставила
-// бы на экране две живые ветки одного листа — новый лист и правку старого куска. Тот же ответ даёт
-// разрез (designSheetCropsOf: заменённый кусок — всё ещё кусок), и два сторожа одного факта больше
-// не расходятся.
-const designVisibleCropsOf = `
-	SELECT COUNT(*) FROM design_picture
-	WHERE derived_from = :id AND derivation = :crop AND hidden_at IS NULL`
+// ⚠ БЕЗ replaced_by IS NULL (O-53 review): кусок, перезаписанный правкой, лист держит — правка
+// нарезана из прежних пикселей листа, и перезапись листа оставила бы две живые ветки одного листа.
+// Тот же ответ даёт разрез (designSheetCropsOf: заменённый кусок — всё ещё кусок).
+//
+// ⚠ БЕЗ hidden_at IS NULL (O-53 review, раунд 2): здесь стоял фильтр видимости СТРОКИ куска, и его
+// обходила устаревшая вкладка — кусок C спрятан, спрятанный C перезаписан (правка E рождается
+// видимой), лист перезаписан поверх живой E. Видимость судится по голове ветки, а для этого нужен и
+// спрятанный кусок.
+const designCutPiecesOf = `
+	SELECT * FROM design_picture
+	WHERE derived_from = :id AND derivation = :crop
+	ORDER BY id`
 
 // designStampReplacedBy — ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ. `replaced_by IS NULL` в WHERE — второй
 // пояс к чтению в той же SERIALIZABLE-транзакции (entity.DesignReplaceRefusal), а не повтор его:
@@ -722,23 +730,34 @@ const designStampReplacedBy = `
 // replace_mismatch. Порядок остальных отказов — у entity.DesignReplaceRefusal, где он проверяется
 // без базы; голову к already_replaced дописывает designAlreadyReplaced — это чтение, и в чистом
 // решении ему не место.
+//
+// КУСКИ СЧИТАЮТСЯ ПОСЛЕ ДВУХ ПЕРВЫХ ОТКАЗОВ, А НЕ ДО: счёт — это обход цепочки каждого куска, и
+// запрос, назвавший не тот кадр, не должен ни платить за него, ни получать вместо replace_mismatch
+// ошибку порченой цепочки чужого листа. Решение при этом одно — DesignReplaceRefusal зовётся с нулём
+// кусков, затем с их числом, и порядок отказов остаётся его.
 func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, layer entity.DesignEditLayer) (entity.DesignPicture, error) {
 	original, err := pictureByID(ctx, db, req.ReplacePictureId)
 	if err != nil {
 		return original, err
 	}
-	crops, err := storeutil.QueryCountNamed(ctx, db, designVisibleCropsOf,
-		map[string]any{"id": original.Id, "crop": entity.DesignDerivationCrop})
-	if err != nil {
-		return original, fmt.Errorf("failed to count the visible pieces of design picture %d: %w", original.Id, err)
-	}
-	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, crops); err != nil {
+	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, 0); err != nil {
 		if errors.Is(err, entity.ErrDesignAlreadyReplaced) {
 			return original, designAlreadyReplaced(ctx, db, original)
 		}
 		return original, err
 	}
-	return original, nil
+	pieces, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db, designCutPiecesOf,
+		map[string]any{"id": original.Id, "crop": entity.DesignDerivationCrop})
+	if err != nil {
+		return original, fmt.Errorf("failed to read the pieces cut from design picture %d: %w", original.Id, err)
+	}
+	branches, err := entity.DesignVisibleCropBranches(pieces, func(id int) (entity.DesignPicture, error) {
+		return pictureByID(ctx, db, id)
+	})
+	if err != nil {
+		return original, err
+	}
+	return original, entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, branches)
 }
 
 // designAlreadyReplaced — ОТКАЗ already_replaced С ГОЛОВОЙ ЦЕПОЧКИ, прочитанной в ТОЙ ЖЕ транзакции,
@@ -833,32 +852,13 @@ func pictureByRequestKey(ctx context.Context, db dependency.DB, cardID int, key 
 }
 
 // flattenReplayRefusal — ОТВЕЧАЕТ ЛИ prior (кадр, уже поданный под этим ключом) НА ЭТОТ ЗАПРОС. nil —
-// да, это повтор, и ответ ему — prior.
-//
-// Сверяется то, что делает флэттен ТЕМ ЖЕ жестом, и ровно то, что можно сверить по кадру:
-//   - глагол: prior — флэттен, а не кусок разреза (ключ однажды будет и у разреза);
-//   - ревизия: prior растеризован из той ревизии слоя, которую эхом назвал запрос. Повтор несёт ту же
-//     expected_rev, что и первая попытка; другая ревизия — это ДРУГАЯ правка под старым ключом;
-//   - место: prior занял место ровно того кадра, который назван (replace_picture_id), либо не занял
-//     ничьего, если запрос — «рядом». «Занял» читается у родителя: родитель подписан prior-ом ⇔ prior
-//     подан перезаписью (штамп пишется один раз и не стирается).
-//
-// media_id НЕ сверяется, и это решение: ключ — это жест, а не байты. Клиент, перезаливший растр ради
-// повтора, получает кадр первой попытки, а его новая заливка остаётся ничьей — как после любого
-// отказанного флэттена. Отказать ему значило бы ответить ошибкой на законный повтор.
+// да, это повтор, и ответ ему — prior. Решение — entity.DesignFlattenReplayRefusal (глагол, слой,
+// ревизия, место — и почему именно они); здесь только чтение, которого решению не хватает: чьё место
+// prior занял. «Занял» читается у родителя: родитель подписан prior-ом ⇔ prior подан перезаписью
+// (штамп пишется один раз и не стирается). Родителя куска не читаем — кусок отказывается и так.
 func flattenReplayRefusal(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, key string, prior entity.DesignPicture) error {
-	refuse := func(format string, args ...any) error {
-		return fmt.Errorf("%w: client_request_id %q already filed picture %d, which %s",
-			entity.ErrDesignInvalidArgument, key, prior.Id, fmt.Sprintf(format, args...))
-	}
-	if prior.Derivation == entity.DesignDerivationCrop {
-		return refuse("is a crop, not a flatten")
-	}
-	if prior.LayerRev != req.ExpectedRev {
-		return refuse("was flattened from layer rev %d, not %d", prior.LayerRev, req.ExpectedRev)
-	}
 	tookThePlaceOf := 0
-	if prior.DerivedFrom.Valid {
+	if prior.DerivedFrom.Valid && prior.Derivation != entity.DesignDerivationCrop {
 		parent, err := pictureByID(ctx, db, int(prior.DerivedFrom.Int32))
 		if err != nil {
 			return err
@@ -867,16 +867,7 @@ func flattenReplayRefusal(ctx context.Context, db dependency.DB, req entity.Desi
 			tookThePlaceOf = parent.Id
 		}
 	}
-	switch {
-	case tookThePlaceOf == req.ReplacePictureId:
-		return nil
-	case tookThePlaceOf == 0:
-		return refuse("was filed beside its base, not in the place of picture %d", req.ReplacePictureId)
-	case req.ReplacePictureId == 0:
-		return refuse("took the place of picture %d, and this request files beside", tookThePlaceOf)
-	default:
-		return refuse("took the place of picture %d, not of picture %d", tookThePlaceOf, req.ReplacePictureId)
-	}
+	return entity.DesignFlattenReplayRefusal(req, key, prior, tookThePlaceOf)
 }
 
 // layerByRequestID reads the layer a given client_request_id already filed, if any.

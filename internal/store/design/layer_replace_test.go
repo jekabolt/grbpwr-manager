@@ -37,21 +37,26 @@ func TestReplacedByStampIsWrittenOnceOverNothing(t *testing.T) {
 	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12})
 }
 
-// СТОРОЖ cut_sheet СЧИТАЕТ ВСЕ ВИДИМЫЕ КРОПЫ ЭТОГО КАДРА — И ЗАМЕНЁННЫЕ СВОЕЙ ПРАВКОЙ ТОЖЕ.
+// СТОРОЖ cut_sheet ЧИТАЕТ ВСЕ КРОПЫ ЭТОГО КАДРА — СПРЯТАННЫЕ И ЗАМЕНЁННЫЕ ТОЖЕ.
+//
+// Держит ли кусок лист, решает голова его цепочки замен (entity.DesignVisibleCropBranches, проверено
+// без базы в entity), поэтому чтение не фильтрует ни видимость, ни замену.
 //
 // МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять фильтр глагола (правка листа — не разрез, и лист, у которого есть
-// только флэттены, закрылся бы для перезаписи); снять hidden_at IS NULL (спрятанный кусок держал бы
-// лист навсегда); ВЕРНУТЬ replaced_by IS NULL (O-53 review: лист, чей кусок перезаписан правкой,
-// снова перезаписывается, и на экране остаются две живые ветки одного листа — новый лист и правка
-// куска, нарезанного из прежних пикселей). Тот же ответ даёт предикат разреза — см.
-// TestSheetCropsAreCropsNotEdits.
-func TestVisibleCropsCountsEveryVisibleCrop(t *testing.T) {
-	q := designVisibleCropsOf
-	require.Contains(t, q, "derived_from = :id")
-	require.Contains(t, q, "derivation = :crop", "глагол спрашивается у колонки 0359, а не выводится")
-	require.Contains(t, q, "hidden_at IS NULL")
-	require.NotContains(t, q, "replaced_by",
+// только флэттены, закрылся бы для перезаписи); ВЕРНУТЬ hidden_at IS NULL (O-53 review, раунд 2:
+// спрятанный кусок, чья правка на виду, отпускал лист — сценарий устаревшей вкладки); ВЕРНУТЬ
+// replaced_by IS NULL (O-53 review: кусок, перезаписанный правкой, отпускал лист). Тот же ответ про
+// замену даёт предикат разреза — см. TestSheetCropsAreCropsNotEdits.
+func TestCutPiecesAreEveryCropOfTheSheet(t *testing.T) {
+	q := designCutPiecesOf
+	where := q[strings.Index(q, "WHERE"):]
+	require.Contains(t, where, "derived_from = :id")
+	require.Contains(t, where, "derivation = :crop", "глагол спрашивается у колонки 0359, а не выводится")
+	require.NotContains(t, where, "hidden_at",
+		"видимость судится по голове ветки: спрятанный кусок с видимой правкой лист держит")
+	require.NotContains(t, where, "replaced_by",
 		"кусок, заменённый своей правкой, лист держит: правка нарезана из прежних пикселей")
+	require.True(t, strings.HasSuffix(strings.TrimSpace(q), "ORDER BY id"))
 
 	requireNamedQueryBinds(t, q, map[string]any{"id": 7, "crop": entity.DesignDerivationCrop})
 }

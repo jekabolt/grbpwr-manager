@@ -489,7 +489,7 @@ func TestDesignDBOverwriteRefusalsFileNothing(t *testing.T) {
 // лист. Правка куска нарезана из прежних пикселей листа, и перезапись листа оставила бы на экране
 // две живые ветки одного листа. Отказ — cut_sheet, и ничего не подано.
 //
-// МУТАЦИЯ: вернуть в designVisibleCropsOf `replaced_by IS NULL` — перезапись листа проходит.
+// МУТАЦИЯ: вернуть в designCutPiecesOf `replaced_by IS NULL` — перезапись листа проходит.
 func TestDesignDBOverwriteOfASheetIsHeldByAnOverwrittenPiece(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -507,4 +507,131 @@ func TestDesignDBOverwriteOfASheetIsHeldByAnOverwrittenPiece(t *testing.T) {
 	require.EqualValues(t, p.sheet.Id, holder.Int32, "отказ не двигает слот")
 	require.Equal(t, p.slot.SlotRev, rev)
 	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует лист")
+}
+
+// probeSourceLayer — слой, из которого кадр расплющен (0370), мимо стора.
+func probeSourceLayer(t *testing.T, raw *sql.DB, pictureID int) sql.NullInt32 {
+	t.Helper()
+	var got sql.NullInt32
+	require.NoError(t, raw.QueryRow(`SELECT source_layer_id FROM design_picture WHERE id = ?`, pictureID).Scan(&got))
+	return got
+}
+
+// СПРЯТАННЫЙ КУСОК С ВИДИМОЙ ПРАВКОЙ ЛИСТ ДЕРЖИТ — СЦЕНАРИЙ УСТАРЕВШЕЙ ВКЛАДКИ (O-53 review, раунд 2).
+//
+// Дословно по ревью: лист S разрезан на кусок C; C открыт в редакторе; C спрятали; устаревшая вкладка
+// перезаписывает спрятанный C — правка E рождается видимой; затем перезаписывают S. Сторож смотрел
+// на строку C (спрятана) и пускал перезапись S, пока E, нарезанная из прежних пикселей S, стоит на
+// экране. Кусок судится по голове ветки: E на виду — лист держится. Положительный контроль:
+// спрятали голову E — ветки на экране нет, и лист свободен.
+//
+// МУТАЦИЯ: судить кусок по его строке (вернуть hidden_at IS NULL в designCutPiecesOf или читать
+// HiddenAt куска вместо головы) — первая перезапись листа проходит.
+func TestDesignDBOverwriteOfASheetIsHeldByAHiddenPieceWithAVisibleEdit(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+
+	crops := splitProbe(t, rep, raw, p.sheet.Id, entity.DesignViewBack)
+	require.Len(t, crops, 1)
+	piece := crops[0]
+	// Кусок открыт в редакторе — слой поверх его файла.
+	pieceLayer, err := rep.Design().SaveEditLayer(ctx, entity.DesignEditLayerSave{
+		TechCardId: p.card, BaseMediaId: piece.MediaId, Strokes: probeStrokes(), Actor: "stale-tab",
+	})
+	require.NoError(t, err)
+	// Кусок прячут из другой вкладки.
+	_, err = rep.Design().HidePicture(ctx, piece.Id, true, "colleague")
+	require.NoError(t, err)
+	// Устаревшая вкладка перезаписывает спрятанный кусок: правка рождается видимой.
+	edit, err := rep.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
+		TechCardId: p.card, LayerId: pieceLayer.Id, ExpectedRev: pieceLayer.Rev,
+		MediaId: probeMedia(t, raw), ReplacePictureId: piece.Id, Actor: "stale-tab",
+	})
+	require.NoError(t, err)
+	require.False(t, edit.HiddenAt.Valid, "правка спрятанного куска рождается видимой")
+	require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, piece.Id).Int32)
+
+	before := pictures()
+	_, err = rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.ErrorIs(t, err, entity.ErrDesignCutSheet, "видимая голова ветки держит лист")
+	require.Equal(t, before, pictures(), "отказ не подаёт правку листа")
+	holder, rev, _ := probeSlotHolder(t, raw, p.slot.Id)
+	require.EqualValues(t, p.sheet.Id, holder.Int32, "отказ не двигает слот")
+	require.Equal(t, p.slot.SlotRev, rev)
+	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует лист")
+
+	// Голову ветки спрятали — на экране от куска не осталось ничего, и лист свободен.
+	_, err = rep.Design().HidePicture(ctx, edit.Id, true, "colleague")
+	require.NoError(t, err)
+	sheetEdit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.NoError(t, err, "спрятанная голова ветку снимает")
+	require.EqualValues(t, sheetEdit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
+}
+
+// КЛЮЧ ПРИВЯЗАН К СЛОЮ — ДРУГОЙ СЛОЙ ТОЙ ЖЕ КАРТОЧКИ НА ТОЙ ЖЕ РЕВИЗИИ ОТВЕТА НЕ ПОЛУЧАЕТ (0370).
+//
+// Сценарий ревью: слои L1 и L2 одной карточки, оба на ревизии 1, над разными листами. «Save as new»
+// L1 под ключом K, затем тот же K от L2: раньше повтор отдавал кадр L1 как успех L2, не прочитав L2.
+// Теперь кадр помнит свой слой (source_layer_id), и чужой слой получает invalid_argument, ничего не
+// подав. То же — в режиме перезаписи.
+//
+// МУТАЦИИ: не писать source_layer_id во вставку (первая проверка краснеет, а повтор того же слоя
+// отказывается — см. TestDesignDBOverwriteReplayWithTheKeyReturnsTheEdit); не сверять слой (оба
+// подслучая отдают чужой кадр и не краснеют на ошибке).
+func TestDesignDBKeyIsBoundToItsLayer(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	other := probePicture(t, rep, raw, p.card, entity.DesignPictureKindFlat)
+	layer2, err := rep.Design().SaveEditLayer(ctx, entity.DesignEditLayerSave{
+		TechCardId: p.card, BaseMediaId: other.MediaId, Strokes: probeStrokes(), Actor: "probe",
+	})
+	require.NoError(t, err)
+	require.Equal(t, p.layer.Rev, layer2.Rev, "оба слоя на одной ревизии — ровно сценарий ревью")
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+	fromLayer2 := func(replace int, key string) entity.DesignEditLayerFlatten {
+		return entity.DesignEditLayerFlatten{
+			TechCardId: p.card, LayerId: layer2.Id, ExpectedRev: layer2.Rev, MediaId: probeMedia(t, raw),
+			ReplacePictureId: replace, ClientRequestId: key, Actor: "overwriter",
+		}
+	}
+
+	t.Run("рядом", func(t *testing.T) {
+		key := uuid.NewString()
+		first := p.overwrite(probeMedia(t, raw), 0)
+		first.ClientRequestId = key
+		filed, err := rep.Design().FlattenEditLayer(ctx, first)
+		require.NoError(t, err)
+		require.EqualValues(t, p.layer.Id, probeSourceLayer(t, raw, filed.Id).Int32, "кадр помнит свой слой")
+
+		before := pictures()
+		_, err = rep.Design().FlattenEditLayer(ctx, fromLayer2(0, key))
+		require.ErrorIs(t, err, entity.ErrDesignInvalidArgument, "чужой слой не получает кадр L1 как свой успех")
+		require.Equal(t, before, pictures())
+	})
+	t.Run("на место", func(t *testing.T) {
+		key := uuid.NewString()
+		first := p.overwrite(probeMedia(t, raw), p.sheet.Id)
+		first.ClientRequestId = key
+		_, err := rep.Design().FlattenEditLayer(ctx, first)
+		require.NoError(t, err)
+
+		before := pictures()
+		_, err = rep.Design().FlattenEditLayer(ctx, fromLayer2(other.Id, key))
+		require.ErrorIs(t, err, entity.ErrDesignInvalidArgument)
+		require.Equal(t, before, pictures())
+		require.False(t, probeReplacedBy(t, raw, other.Id).Valid, "второй лист не подписан")
+	})
+	t.Run("без ключа слой L2 подаёт своё", func(t *testing.T) {
+		pic, err := rep.Design().FlattenEditLayer(ctx, fromLayer2(0, ""))
+		require.NoError(t, err)
+		require.EqualValues(t, layer2.Id, probeSourceLayer(t, raw, pic.Id).Int32)
+		require.EqualValues(t, other.Id, pic.DerivedFrom.Int32)
+	})
 }

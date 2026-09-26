@@ -2785,10 +2785,18 @@ service AdminService {
     };
   }
 
-  // SplitDesignPicture cuts a composite into per-view pictures SERVER-SIDE and LOSSLESSLY, from the
+  // SplitDesignPicture cuts a picture into per-view pictures SERVER-SIDE and LOSSLESSLY, from the
   // original bytes. The crops are SIBLINGS OF THEIR SOURCE — they inherit its run_id or its
   // batch_id, whichever it has, and never get a history row of their own: no money was spent on
   // them. A crop of an uploaded composite therefore lands on the same upload shelf row.
+  //
+  // THE PRECONDITION IS THE FRAMES, NOT COMPOSITENESS. Any picture of the band can be cut:
+  // composite_views is not consulted (nothing fills it in this wave, and a check on it refused every
+  // split that could reach it), and not_composite is never answered. What is checked is that every
+  // frame describes a rectangle inside the source — x, y, w and h are ordinary fractions from 0 to 1
+  // with at most six decimal places, w and h are above 0, x + w and y + h are at most 1 — and names a
+  // view of the garment or none. InvalidArgument: no frames, a frame that is not such a rectangle,
+  // an unknown view_key, a missing client_request_id.
   //
   // IDEMPOTENT BY DERIVATION, NOT YET BY client_request_id: while the crops of an earlier cut of
   // this picture are visible, a repeat returns THEM and cuts nothing. The key is required but not
@@ -2796,8 +2804,9 @@ service AdminService {
   //
   // A REPLACED PICTURE IS NOT CUT (O-53): FailedPrecondition already_replaced, whose ErrorInfo
   // metadata carries head_picture_id — the head of its replacement chain, the picture a stale tab
-  // should cut instead. FailedPrecondition: not_composite. InvalidArgument for frames outside 0..1
-  // or of zero area.
+  // should cut instead. FailedPrecondition display_only: for_input on a display-only picture. A
+  // plain FailedPrecondition when the picture's file is gone or cannot be read. NotFound — no such
+  // picture.
   rpc SplitDesignPicture(SplitDesignPictureRequest) returns (SplitDesignPictureResponse) {
     option (google.api.http) = {
       post: "/api/admin/design/picture/{picture_id}/split"
@@ -12434,7 +12443,9 @@ message DesignSplitFrame {
 }
 
 message SplitDesignPictureRequest {
-  int32 picture_id = 1; // must be a composite (composite_views non-empty), else not_composite
+  // The picture to cut — any picture of the band: the frames, not composite_views, are the
+  // precondition (see the RPC).
+  int32 picture_id = 1;
   string client_request_id = 2; // a retried split must not produce a second set of crops
   repeated DesignSplitFrame frames = 3;
   // WHETHER THE CROPS JOIN THE PROMPT. A cut names the views on the pieces either way; this says
@@ -12566,10 +12577,12 @@ message FlattenDesignEditLayerRequest {
   // replacement already; a retry of an overwrite WITHOUT client_request_id lands here BEFORE
   // anything is filed, and the ErrorInfo metadata carries head_picture_id: the head of the
   // picture's replacement chain, i.e. the picture standing in its place now. FailedPrecondition:
-  // cut_sheet — visible pieces are cut from this sheet, and they would stay cut from the original;
-  // a piece that was itself overwritten by an edit still counts, since that edit was drawn over the
-  // old pixels too. Hide those pieces before overwriting the sheet, or edit a piece instead of the
-  // sheet. NotFound — no such picture.
+  // cut_sheet — pieces cut from this sheet still stand on screen, and they would stay cut from the
+  // original. A piece stands while the HEAD of its replacement chain is visible: a piece overwritten
+  // by an edit counts through that edit, even when the piece itself is hidden, since the edit was
+  // drawn over the old pixels too. Hide what stands of those pieces — the latest edit, or the piece
+  // itself when it was never overwritten — before overwriting the sheet, or edit a piece instead of
+  // the sheet. NotFound — no such picture.
   //
   // ⚠ AN OLDER SERVER ANSWERS 400 TO THIS FIELD: the JSON gateway refuses unknown fields. Send it
   // only after a read has carried DesignPicture.replaced_by, which an older server never emits.
@@ -12590,8 +12603,9 @@ message FlattenDesignEditLayerRequest {
   // attempt's picture, and the new upload stays unreferenced. The key lives within the tech card.
   //
   // InvalidArgument: a key over 64 characters; a key this card already spent on a DIFFERENT
-  // flatten — another expected_rev, another replace_picture_id, or the other mode (beside versus
-  // in the place of a picture).
+  // flatten — another layer, another expected_rev, another replace_picture_id, or the other mode
+  // (beside versus in the place of a picture). The layer is compared by id: two layers of one card
+  // at the same rev do not share a key.
   //
   // ⚠ SAME AGE AS replace_picture_id: an older server answers 400 to it, and a server that emits
   // DesignPicture.replaced_by accepts it — both arrived in one release.
