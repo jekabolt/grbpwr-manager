@@ -175,6 +175,12 @@ const (
 	designConstructionMaxAlreadyRows      = 20
 	designConstructionMaxAlreadyLineRunes = 200
 	designConstructionMaxAlreadyBytes     = 8 << 10 // 8 KiB на всю секцию
+	// designConstructionMaxSlotsToColour — СКОЛЬКО ИМЁН СЛОТОВ ЕДЕТ СЕКЦИЕЙ «Slots to colour»
+	// (O-44 п.2). Те же входные токены каждого нажатия, поэтому потолок есть; двадцать имён — с
+	// запасом над восемью цветами колорвея, так что слот, который правило 9 успевает окрасить, за
+	// потолок не выпадает, а об остальных говорит честный хвост «(+N more …)». Имя режется тем же
+	// рунным потолком, что строка «уже на карточке».
+	designConstructionMaxSlotsToColour = 20
 
 	designConstructionMaxAspects  = 10
 	designConstructionMaxCallouts = 15
@@ -767,6 +773,13 @@ const (
 // рисунок — ровно то, ради чего ключ заведён. Теперь: не превращать КАЖДЫЙ аспект в деталь
 // механически, но одна черта может быть в обоих. (3) Слотов цвета на колорвей — не больше восьми
 // (см. designConstructionMaxColourwaySlots).
+//
+// ⚠ O-44 п.2 (26.09) — КОЛОРВЕЙ КРАСИТ КАЖДЫЙ ЦВЕТНОЙ СЛОТ, НИТКУ ТОЖЕ. Владелец: «в MATERIAL SLOTS
+// есть слот THREAD но в COLOURWAYS этого слота нету». Правило 9 просило красить «cloth slot from
+// bom», и модель честно красила одни ткани. Теперь оно просит каждый цветной слот карточки и ответа
+// — ткань, подклад, нитку, фурнитуру, отделку — с Pantone (TCX для ткани, TCX или C для остального),
+// а пользовательский промпт называет слоты карточки поимённо, секцией «Slots to colour»
+// (designSlotsToColour). Потолок в восемь цветов и «главные ткани первыми» остались как были.
 const designConstructionSystemPrompt = "You are a garment technologist's assistant. " +
 	"You are shown the moodboard pictures, the designer's concept & construction description, and " +
 	"the notes pinned on the pictures — every note names its picture by number and the spot it " +
@@ -809,10 +822,12 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it " +
 	"empty.\n" +
 	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
-	"entry per combination, naming every cloth slot from \"bom\" by its exact \"name\" (the main " +
-	"cloths first; at most 8) with a Pantone TCX code and a hex; \"color_code\" is the closest " +
-	"code from the colour list in the " +
-	"prompt (empty when none is close); never invent a colour the board does not show.\n" +
+	"entry per combination, naming every colour-bearing slot of the card and of \"bom\" — cloth, " +
+	"lining, thread, hardware, trims — by its exact name (the main cloths first; at most 8) with a " +
+	"Pantone code (TCX for cloth, TCX or C otherwise) and a hex; the card's own slots, when it has " +
+	"any, are listed in the prompt under \"Slots to colour\"; \"color_code\" is the closest code " +
+	"from the colour list in the prompt (empty when none is close); never invent a colour the " +
+	"board does not show.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
 	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
@@ -853,6 +868,9 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 //     Модель, которой словарь не показали, называет цвет словом, разбор обнуляет код, и человек
 //     получает предложение, которое нельзя подтвердить — то есть оплаченный список, ни одна
 //     строка которого не доводит до продукта.
+//   - СЛОТЫ ПОД ЦВЕТ (O-44 п.2) — слоты карточки поимённо, чтобы колорвей красил и нитку с
+//     фурнитурой, а не одни ткани, и называл их теми именами, по складке которых цвет
+//     привязывается (designSlotsToColour).
 //
 // ⚠ ЦВЕТА ПРИХОДЯТ ПАРАМЕТРОМ, А НЕ ЧИТАЮТСЯ ЗДЕСЬ. Функция остаётся ЧИСТОЙ: она не ходит ни в
 // стор, ни в кэш, и накрывается табличными пробами без обвязки. Тот же список хендлер отдаёт
@@ -916,6 +934,15 @@ func designConstructionUserPrompt(
 	b.WriteString("bom units (for \"unit\"): " + strings.Join(designUnitTokens, ", ") + "\n")
 	b.WriteString("fit: " + strings.Join(designConstructionFits, ", ") + "\n")
 	b.WriteString(designColourTokenLine(colours))
+
+	// ─── 6. СЛОТЫ ПОД ЦВЕТ (O-44 п.2) ───
+	//
+	// Рядом со словарём цвета, потому что отвечают они на один вопрос — «чем и что красить в
+	// колорвее». Пустая карточка секции не получает: правило 9 и так велит красить слоты ответа.
+	if slots := designSlotsToColour(card); slots != "" {
+		b.WriteString("\nSlots to colour — the card's material slots; in every colourway name each " +
+			"colour-bearing one exactly as written here:\n" + slots)
+	}
 
 	// ⚠ КАТАЛОГА НЕТ, И ЭТО ГОВОРИТСЯ ВСЛУХ. Модель, которой не сказали, что артикулов ей не дали,
 	// охотно придумает `material_id`; разбор его всё равно обнулит, но потраченные на выдумку
@@ -1172,6 +1199,71 @@ func designCardAlreadySays(card *entity.TechCard) string {
 	}
 	tail("bom lines", skipped)
 
+	return b.String()
+}
+
+// designSlotsToColour — СЛОТЫ КАРТОЧКИ, КОТОРЫЕ КОЛОРВЕЙ КРАСИТ, ПОИМЁННО (O-44 п.2).
+//
+// Владелец: «в MATERIAL SLOTS есть слот THREAD но в COLOURWAYS этого слота нету». Строки спеки
+// доезжали до модели ОДНОЙ дорогой — секцией «уже на карточке — не повторяй», то есть как запрет, а
+// не как список того, что красить; правило 9 при этом просило «cloth slots from bom», и модель
+// честно красила одни ткани. Этот список называет слоты карточки ТЕМИ ЖЕ ИМЕНАМИ, по складке
+// которых designVerifyColourways привязывает цвет: слот, названный моделью иначе, отвалился бы на
+// проверке и приехал бы счётчиком SlotColoursUnbound, а не цветом.
+//
+// ПЕРЕЧИСЛЯЮТСЯ ВСЕ СТРОКИ СПЕКИ — ровно то, что человек видит таблицей MATERIAL SLOTS (там строки
+// не фильтруются). Какая из них несёт цвет, решает правило 9 («colour-bearing — cloth, lining,
+// thread, hardware, trims»): упаковку по имени модель отличает сама, а фильтр по секции здесь был бы
+// вторым, молчаливым мнением о том, что красить.
+//
+// ПОРЯДОК — ТОТ ЖЕ, ЧТО У ТАБЛИЦЫ MATERIAL SLOTS: ткани (рулонные секции), нитки, всё остальное;
+// внутри семейства — порядок карточки. Правило 9 просит главные ткани первыми и держит потолок в
+// восемь цветов, поэтому то, что стоит раньше, и будет окрашено, — и нитка стоит сразу за тканями.
+//
+// ТОЛЬКО ИМЕНА: строка на слот, без состава и цвета — те уже едут секцией «уже на карточке», и
+// дважды платить за них незачем. Дубли по складке схлопываются: привязка всё равно одна.
+func designSlotsToColour(card *entity.TechCard) string {
+	if card == nil {
+		return ""
+	}
+	family := func(s entity.TechCardBomSection) int {
+		switch {
+		case entity.IsRollGoodsSection(s):
+			return 0
+		case s == entity.BomSectionThread:
+			return 1
+		default:
+			return 2
+		}
+	}
+	type slot struct {
+		name   string
+		family int
+	}
+	seen := make(map[string]struct{}, len(card.BomItems))
+	slots := make([]slot, 0, len(card.BomItems))
+	for _, item := range card.BomItems {
+		name := aiBoundedText(designOneLine(item.Name), designConstructionMaxAlreadyLineRunes)
+		fold := designFoldToken(name)
+		if fold == "" {
+			continue
+		}
+		if _, dup := seen[fold]; dup {
+			continue
+		}
+		seen[fold] = struct{}{}
+		slots = append(slots, slot{name: name, family: family(item.Section)})
+	}
+	sort.SliceStable(slots, func(i, j int) bool { return slots[i].family < slots[j].family })
+
+	var b strings.Builder
+	for i, s := range slots {
+		if i == designConstructionMaxSlotsToColour {
+			b.WriteString("- (+" + strconv.Itoa(len(slots)-i) + " more slots on the card, not listed)\n")
+			break
+		}
+		b.WriteString("- " + s.name + "\n")
+	}
 	return b.String()
 }
 

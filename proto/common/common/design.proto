@@ -1470,14 +1470,15 @@ message DesignColourwayProposal {
   string color_code = 2;
   string pantone = 3; // the swatch — the main cloth's Pantone, e.g. «19-4005 TCX», kept as typed
   string hex = 4; // #RRGGBB screen approximation, or '' when the answer was not a hex
-  // One entry per cloth slot the answer named. BOUND BY THE SLOT'S FOLDED NAME, never by index or
-  // id: the same fold the BOM/slot table dedupes on, so a colourway proposed beside its slots
+  // One entry per material slot the answer named. BOUND BY THE SLOT'S FOLDED NAME, never by index
+  // or id: the same fold the BOM/slot table dedupes on, so a colourway proposed beside its slots
   // binds to them and to hand-typed slots of the same name alike.
   repeated DesignColourwaySlotColour slots = 5;
 }
 
-// DesignColourwaySlotColour is one cloth slot wearing one colour, in the two spellings the recipe
-// row holds: a Pantone code and the words a person reads.
+// DesignColourwaySlotColour is one material slot of the card wearing one colour — cloth, lining,
+// thread, hardware or a trim, not only the cloths (O-44) — in the two spellings the recipe row
+// holds: a Pantone code (TCX for cloth, TCX or C otherwise) and the words a person reads.
 message DesignColourwaySlotColour {
   string slot = 1; // the slot's NAME as the answer spelled it — never an index and never an id
   string pantone = 2; // → colorway recipe usages[].pantone
