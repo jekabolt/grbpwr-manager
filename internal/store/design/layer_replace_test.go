@@ -38,34 +38,57 @@ func TestReplacedByStampIsWrittenOnceOverNothing(t *testing.T) {
 	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12})
 }
 
-// СТОРОЖ cut_sheet ЧИТАЕТ КАРТОЧКУ ОДНИМ SELECT — И ТОЛЬКО ПО КАРТОЧКЕ (O-53 review, раунд 3).
+// СТОРОЖ cut_sheet ЧИТАЕТ ВЕТКУ, А НЕ КАРТОЧКУ: ДВА ЗАПРОСА ПО id РОДИТЕЛЕЙ И ЦЕЛЕЙ (O-53 review, раунд 4).
 //
-// Стоит ли кусок, решает обход всей его ветки в памяти (entity.DesignStandingPieces, проверено без
-// базы в entity), поэтому чтение одно, а его предикат — одна карточка: ни видимости, ни замены, ни
-// глагола. Колонки — ровно entity.DesignBranchColumns, которые entity держит равными полям узла.
+// Уровни, куски по entity.DesignBranchChunk и общий потолок собирает entity.DesignLoadBranch —
+// проверено без базы в entity (TestDesignLoadBranch…). Здесь — форма двух запросов, которыми стор
+// ему отвечает: колонки — ровно entity.DesignBranchColumns, предикат — только id или derived_from с
+// глаголом, порядок по id, без LIMIT (потолок держит курсор designBranchRead).
 //
-// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть фильтр видимости, замены или глагола (спрятанный кусок со стоящей
-// правкой или кусок, отрезанный от спрятанной головы, выпал бы из обхода, и лист ушёл бы под правку);
-// сузить чтение до детей листа (обход не увидел бы ни одного звена глубже куска); срезать чтение
-// LIMIT-ом (срезанная карточка выглядит как карточка без куска); читать `SELECT *` (весь ряд ради
-// пяти колонок, в транзакции записи).
-func TestCutSheetGuardReadsTheCardInOneSelect(t *testing.T) {
-	q := designBranchOfCard
-	up := strings.ToUpper(q)
-	require.Equal(t, 1, strings.Count(up, "SELECT"), "одно чтение, без подзапросов")
-	require.NotContains(t, up, "JOIN")
-	require.NotContains(t, up, "LIMIT", "срезанная карточка выглядит как карточка без куска")
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть предикат карточки (кроп другой карточки с derived_from = лист снова
+// пропал бы из ветки молча — MINOR ревью раунда 4); вернуть фильтр видимости или замены (спрятанный
+// кусок со стоящей правкой выпал бы из ветки); снять глагол с кропов (в ветку поехали бы правки
+// «рядом» и легаси); добавить LIMIT (ORDER BY id LIMIT n толкает оптимизатор на проход PRIMARY — под
+// SERIALIZABLE это замок на всю таблицу); читать `SELECT *`.
+func TestBranchReadsNameParentsNotTheCard(t *testing.T) {
+	shape := regexp.MustCompile(`(?s)^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)\s+WHERE\s+(.+?)\s+ORDER BY\s+(\w+)\s*$`)
+	ids := make([]int, entity.DesignBranchChunk)
+	for i := range ids {
+		ids[i] = 100 + i
+	}
+	for _, tc := range []struct {
+		name   string
+		q      string
+		where  string
+		params map[string]any
+	}{
+		{"цели замен", designBranchByID, "id IN (:ids)", map[string]any{"ids": ids}},
+		{"кропы уровня", designBranchCropsOf, "derived_from IN (:ids) AND derivation = :crop",
+			map[string]any{"ids": ids, "crop": entity.DesignDerivationCrop}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := strings.ToUpper(tc.q)
+			require.Equal(t, 1, strings.Count(up, "SELECT"), "одно чтение, без подзапросов")
+			require.NotContains(t, up, "JOIN")
+			require.NotContains(t, up, "LIMIT", "потолок держит курсор, а не SQL")
+			require.NotContains(t, up, "TECH_CARD_ID =", "ни одного предиката карточки")
 
-	// Разбор словами, а не поиском подстроки: FROM сидит и внутри derived_from.
-	m := regexp.MustCompile(`(?s)^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)\s+WHERE\s+(.+?)\s+ORDER BY\s+(\w+)\s*$`).
-		FindStringSubmatch(q)
-	require.NotNil(t, m, "форма SELECT … FROM … WHERE … ORDER BY …: %q", q)
-	require.Equal(t, entity.DesignBranchColumns, m[1], "колонки — ровно поля узла обхода")
-	require.Equal(t, "design_picture", m[2])
-	require.Equal(t, "tech_card_id = :card", m[3], "ни видимости, ни замены, ни глагола — их судит обход")
-	require.Equal(t, "id", m[4])
+			// Разбор словами, а не поиском подстроки: FROM сидит и внутри derived_from.
+			m := shape.FindStringSubmatch(tc.q)
+			require.NotNil(t, m, "форма SELECT … FROM … WHERE … ORDER BY …: %q", tc.q)
+			require.Equal(t, entity.DesignBranchColumns, m[1], "колонки — ровно поля узла обхода")
+			require.Equal(t, "design_picture", m[2])
+			require.Equal(t, tc.where, m[3])
+			require.Equal(t, "id", m[4])
 
-	requireNamedQueryBinds(t, q, map[string]any{"card": 41})
+			// Полный кусок связывается целиком: DesignBranchChunk мест в IN и ни одного лишнего.
+			require.NotContains(t, tc.q, "--", "SQL comments do not belong in a named query")
+			expanded, args, err := storeutil.MakeQuery(tc.q, tc.params)
+			require.NoError(t, err)
+			require.Equal(t, strings.Count(expanded, "?"), len(args))
+			require.Len(t, args, len(tc.params)-1+entity.DesignBranchChunk)
+		})
+	}
 }
 
 // ПОВТОР ИЩЕТСЯ В ПРЕДЕЛАХ КАРТОЧКИ И ПО ТОЧНОМУ КЛЮЧУ (0370).

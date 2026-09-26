@@ -3,7 +3,9 @@ package design_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -490,7 +492,7 @@ func TestDesignDBOverwriteRefusalsFileNothing(t *testing.T) {
 // лист. Правка куска нарезана из прежних пикселей листа, и перезапись листа оставила бы на экране
 // две живые ветки одного листа. Отказ — cut_sheet, и ничего не подано.
 //
-// МУТАЦИЯ: вернуть в чтение сторожа (designBranchOfCard) `replaced_by IS NULL` — перезапись листа
+// МУТАЦИЯ: вернуть в чтение ветки (designBranchCropsOf) `replaced_by IS NULL` — перезапись листа
 // проходит.
 func TestDesignDBOverwriteOfASheetIsHeldByAnOverwrittenPiece(t *testing.T) {
 	rep, raw := probeRepository(t)
@@ -527,7 +529,7 @@ func probeSourceLayer(t *testing.T, raw *sql.DB, pictureID int) sql.NullInt32 {
 // экране. Кусок судится всей веткой: E на виду — лист держится. Положительный контроль: спрятали E —
 // от ветки на экране не осталось ничего, и лист свободен.
 //
-// МУТАЦИЯ: судить кусок по его строке (вернуть hidden_at IS NULL в чтение сторожа designBranchOfCard
+// МУТАЦИЯ: судить кусок по его строке (вернуть hidden_at IS NULL в чтение ветки designBranchCropsOf
 // или читать HiddenAt одного куска вместо его ветки) — первая перезапись листа проходит.
 func TestDesignDBOverwriteOfASheetIsHeldByAHiddenPieceWithAVisibleEdit(t *testing.T) {
 	rep, raw := probeRepository(t)
@@ -640,6 +642,88 @@ func TestDesignDBOverwriteOfASheetIsHeldByACropOfAHiddenHead(t *testing.T) {
 	sheetEdit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
 	require.NoError(t, err, "от ветки куска на экране не осталось ничего")
 	require.EqualValues(t, sheetEdit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
+}
+
+// ПЕРЕЗАПИСЬ ЛИСТА НЕ ЖДЁТ КАДРОВ КАРТОЧКИ ВНЕ ЕГО ВЕТКИ (O-53 review, раунд 4).
+//
+// Сторож cut_sheet раунда 3 читал все кадры карточки одним SELECT, и под SERIALIZABLE этот SELECT
+// ставил разделяемый замок на каждый кадр карточки: чужая транзакция, державшая любой кадр той же
+// карточки, останавливала перезапись до своего конца (или до innodb_lock_wait_timeout). Теперь ветка
+// читается уровнями по id родителей и целей, и кадры вне её не читаются вовсе.
+//
+// ЧЕМ ЭТО ДОКАЗАНО. Журнала запросов у стора нет, поэтому НАБОР запросов отсюда не проверить — его
+// проверяет entity (TestDesignLoadBranchReadsWhatTheWalkNeeds: какие id называет каждый вызов, и что
+// шум карточки не читается ни разу). Здесь проверено то, ради чего набор менялся, — след замков:
+// транзакция коллеги держит под эксклюзивным замком двадцать четыре посторонних корня той же
+// карточки (каждый — в своей пачке), и перезапись листа, у которого есть спрятанный кусок,
+// обязана пройти до конца, не дождавшись её.
+//
+// МУТАЦИЯ: вернуть чтение всей карточки — перезапись упирается в замки коллеги и не укладывается в
+// десять секунд (innodb_lock_wait_timeout по умолчанию — пятьдесят).
+func TestDesignDBOverwriteDoesNotLockTheRestOfTheCard(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	cut := splitProbe(t, rep, raw, p.sheet.Id, entity.DesignViewBack)
+	require.Len(t, cut, 1)
+	_, err := rep.Design().HidePicture(ctx, cut[0].Id, true, "probe")
+	require.NoError(t, err, "спрятанный кусок лист не держит — перезапись обязана пройти")
+
+	roots := make([]any, 0, 24)
+	for i := 0; i < 24; i++ {
+		roots = append(roots, probePicture(t, rep, raw, p.card, entity.DesignPictureKindFlat).Id)
+	}
+	media := probeMedia(t, raw)
+
+	colleague, err := raw.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = colleague.Rollback() }()
+	_, err = colleague.ExecContext(ctx,
+		`UPDATE design_picture SET selected = 1 WHERE id IN (?`+strings.Repeat(", ?", len(roots)-1)+`)`, roots...)
+	require.NoError(t, err)
+
+	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	edit, err := rep.Design().FlattenEditLayer(wait, p.overwrite(media, p.sheet.Id))
+	require.NoError(t, err, "перезапись не ждёт кадров вне ветки листа (ждала %v)", time.Since(started))
+	require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
+}
+
+// КРОП ЛИСТА НА ЧУЖОЙ КАРТОЧКЕ — ПОРЧА, И ПЕРЕЗАПИСЬ ПО НЕЙ НЕ ПРОХОДИТ (O-53 review, раунд 4).
+//
+// Ни один писатель такой строки не делает: разрез кладёт кроп на карточку родителя, а derived_from
+// без FK. Поэтому строка заводится напрямую: видимый кроп листа S, записанный на другую карточку.
+// Скан по карточке раунда 3 её не видел, и S уходил под правку молча. Теперь ветка читается по
+// derived_from без предиката карточки, кроп приходит, и обход называет его порчей: ошибка без
+// сентинела полосы (клиенту Internal), и не подано ничего.
+//
+// МУТАЦИИ: вернуть предикат карточки в чтение ветки (перезапись проходит); снять сверку карточки в
+// обходе (видимый кроп держит лист, и ответ — cut_sheet, будто кусок законный).
+func TestDesignDBOverwriteRefusesACropFiledOnAnotherCard(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	other := probeCard(t, raw)
+	_, err := raw.Exec(`INSERT INTO design_picture
+		(tech_card_id, media_id, ordinal, kind, derived_from, derivation, source_class, layer_rev)
+		VALUES (?, ?, 0, 'flat', ?, 'crop', 'uploaded', 0)`,
+		other, probeMedia(t, raw), p.sheet.Id)
+	require.NoError(t, err)
+
+	before := countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	_, err = rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "belongs to tech card")
+	for _, sentinel := range []error{entity.ErrDesignCutSheet, entity.ErrDesignNotFound,
+		entity.ErrDesignInvalidArgument, entity.ErrDesignAlreadyReplaced, entity.ErrDesignReplaceMismatch} {
+		require.NotErrorIs(t, err, sentinel, "порча — Internal, а не отказ полосы")
+	}
+	require.Equal(t, before, countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card))
+	holder, rev, _ := probeSlotHolder(t, raw, p.slot.Id)
+	require.EqualValues(t, p.sheet.Id, holder.Int32, "порча не двигает слот")
+	require.Equal(t, p.slot.SlotRev, rev)
+	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "порча не штампует лист")
 }
 
 // КЛЮЧ ПРИВЯЗАН К СЛОЮ — ДРУГОЙ СЛОЙ ТОЙ ЖЕ КАРТОЧКИ НА ТОЙ ЖЕ РЕВИЗИИ ОТВЕТА НЕ ПОЛУЧАЕТ (0371).

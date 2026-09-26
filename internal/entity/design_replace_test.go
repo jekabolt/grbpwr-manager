@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -238,10 +240,18 @@ func TestDesignAlreadyReplacedCarriesTheHead(t *testing.T) {
 // standingSheet — лист, чьи куски судятся: 7, на виду, не заменён.
 const standingSheet = 7
 
-func shownNode(id int) DesignBranchNode { return DesignBranchNode{Id: id} }
+func shownNode(id int) DesignBranchNode {
+	return DesignBranchNode{Id: id, TechCardId: replaceProbeCard}
+}
 
 func hiddenNode(id int) DesignBranchNode {
-	return DesignBranchNode{Id: id, HiddenAt: sql.NullTime{Valid: true}}
+	return DesignBranchNode{Id: id, TechCardId: replaceProbeCard, HiddenAt: sql.NullTime{Valid: true}}
+}
+
+// onCard — n лежит на карточке card: порча, которую ни один писатель не делает (раунд 4).
+func onCard(n DesignBranchNode, card int) DesignBranchNode {
+	n.TechCardId = card
+	return n
 }
 
 // cutFrom — n отрезан от parent: кроп.
@@ -286,26 +296,18 @@ func standingCard(branch ...DesignBranchNode) []DesignBranchNode {
 	return append(nodes, branch...)
 }
 
-// ЛИСТ ДЕРЖИТ КУСОК, ПОКА НА ЭКРАНЕ ХОТЬ ЧТО-ТО ИЗ ЕГО ВЕТКИ.
-//
-// Каждый случай — ОДИН кусок 10 и его ветка, и ответ сверяется по куску, а не по счёту: общий счёт
-// скрыл бы мутанта, у которого два неверных ответа складываются в верную сумму.
-//
-// МУТАЦИИ, КОТОРЫЕ ЛОВИТ:
-//   - судить кусок по его строке — «спрятанный кусок, правка на виду», «спрятаны C и E, F на виду»,
-//     «кусок куска», длинная ветка;
-//   - судить по голове цепочки замен (раунд 2) — «кусок на виду, правка спрятана», сценарий Codex,
-//     «спрятаны C и E», «кусок куска», «голова спрятана, промежуточная правка на виду»;
-//   - выбросить ребро разреза (идти только по replaced_by) — «спрятаны C и E», «кусок куска», длинная
-//     ветка;
-//   - брать куском любого ребёнка, а не кроп, — «правка куска рядом», «легаси-ребёнок куска» и шум
-//     standingCard в каждом отпускающем случае.
-func TestDesignStandingPiecesJudgeTheWholeBranch(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		branch []DesignBranchNode
-		holds  bool
-	}{
+// standingCase — один кусок 10 листа 7 и его ветка; holds — держит ли он лист.
+type standingCase struct {
+	name   string
+	branch []DesignBranchNode
+	holds  bool
+}
+
+// standingCases — таблица случаев «стоит ли кусок». Одна на две пробы: обход по всей карточке
+// (TestDesignStandingPiecesJudgeTheWholeBranch) и обход по тому, что прочитало чтение ветки
+// (TestDesignLoadBranchReadsWhatTheWalkNeeds), — ответы обязаны совпасть случай в случай.
+func standingCases() []standingCase {
+	return []standingCase{
 		{"кусок на виду", []DesignBranchNode{
 			cutFrom(shownNode(10), standingSheet),
 		}, true},
@@ -375,7 +377,25 @@ func TestDesignStandingPiecesJudgeTheWholeBranch(t *testing.T) {
 			editOf(hiddenNode(13), 12),
 			cutFrom(hiddenNode(14), 13),
 		}, false},
-	} {
+	}
+}
+
+// ЛИСТ ДЕРЖИТ КУСОК, ПОКА НА ЭКРАНЕ ХОТЬ ЧТО-ТО ИЗ ЕГО ВЕТКИ.
+//
+// Каждый случай — ОДИН кусок 10 и его ветка, и ответ сверяется по куску, а не по счёту: общий счёт
+// скрыл бы мутанта, у которого два неверных ответа складываются в верную сумму.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ:
+//   - судить кусок по его строке — «спрятанный кусок, правка на виду», «спрятаны C и E, F на виду»,
+//     «кусок куска», длинная ветка;
+//   - судить по голове цепочки замен (раунд 2) — «кусок на виду, правка спрятана», сценарий Codex,
+//     «спрятаны C и E», «кусок куска», «голова спрятана, промежуточная правка на виду»;
+//   - выбросить ребро разреза (идти только по replaced_by) — «спрятаны C и E», «кусок куска», длинная
+//     ветка;
+//   - брать куском любого ребёнка, а не кроп, — «правка куска рядом», «легаси-ребёнок куска» и шум
+//     standingCard в каждом отпускающем случае.
+func TestDesignStandingPiecesJudgeTheWholeBranch(t *testing.T) {
+	for _, tc := range standingCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := DesignStandingPieces(standingSheet, standingCard(tc.branch...))
 			require.NoError(t, err)
@@ -422,32 +442,11 @@ func TestDesignStandingPiecesNameEveryStandingPiece(t *testing.T) {
 //   - снять сверку «ребро ведёт к новому кадру» — «ссылка на старый спрятанный кадр» уходит в чужой
 //     спрятанный кадр и отпускает лист;
 //   - снять visited — «кадр достигнут дважды» проходится дважды и отпускает лист (все рёбра там идут
-//     вперёд, и сверка порядка его не видит).
+//     вперёд, и сверка порядка его не видит);
+//   - снять сверку карточки (раунд 4) — «видимый кусок другой карточки» держит лист молча, а
+//     «замена на кадр другой карточки» отпускает его.
 func TestDesignStandingPiecesRefuseABrokenBranch(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		branch []DesignBranchNode
-		names  string
-	}{
-		{"замена ведёт мимо карточки", []DesignBranchNode{
-			replacedBy(cutFrom(hiddenNode(10), standingSheet), 99),
-		}, "picture 99"},
-		{"замена ведёт назад, на сам лист", []DesignBranchNode{
-			replacedBy(cutFrom(hiddenNode(10), standingSheet), standingSheet),
-		}, "picture 7"},
-		{"ссылка на старый спрятанный кадр", []DesignBranchNode{
-			replacedBy(cutFrom(hiddenNode(10), standingSheet), 2),
-		}, "picture 2"},
-		{"цикл замен", []DesignBranchNode{
-			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
-			replacedBy(editOf(hiddenNode(11), 10), 10),
-		}, "picture 11"},
-		{"кадр достигнут дважды", []DesignBranchNode{
-			replacedBy(cutFrom(hiddenNode(10), standingSheet), 12),
-			cutFrom(hiddenNode(11), 10),
-			cutFrom(hiddenNode(12), 11),
-		}, "picture 12 is reached twice"},
-	} {
+	for _, tc := range brokenBranchCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := DesignStandingPieces(standingSheet, standingCard(tc.branch...))
 			require.Error(t, err, "порча не выдаётся за ответ (%v)", got)
@@ -472,6 +471,46 @@ func TestDesignStandingPiecesRefuseABrokenBranch(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []int{10}, got)
 	})
+}
+
+// brokenBranchCase — ветка куска 10 с порчей; names — что обязана назвать ошибка.
+type brokenBranchCase struct {
+	name   string
+	branch []DesignBranchNode
+	names  string
+}
+
+// brokenBranchCases — порча ветки. Одна таблица на обход по всей карточке и на обход по чтению ветки.
+func brokenBranchCases() []brokenBranchCase {
+	return []brokenBranchCase{
+		{"замена ведёт мимо карточки", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 99),
+		}, "picture 99"},
+		{"замена ведёт назад, на сам лист", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), standingSheet),
+		}, "picture 7"},
+		{"ссылка на старый спрятанный кадр", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 2),
+		}, "picture 2"},
+		{"цикл замен", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			replacedBy(editOf(hiddenNode(11), 10), 10),
+		}, "picture 11"},
+		{"кадр достигнут дважды", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 12),
+			cutFrom(hiddenNode(11), 10),
+			cutFrom(hiddenNode(12), 11),
+		}, "picture 12 is reached twice"},
+		// Раунд 4: кроп с derived_from = лист на ЧУЖОЙ карточке. Скан по карточке его не видел, и
+		// видимый кусок молча не держал лист; теперь он прочитан и назван.
+		{"видимый кусок другой карточки", []DesignBranchNode{
+			onCard(cutFrom(shownNode(10), standingSheet), replaceProbeCard+1),
+		}, "belongs to tech card 42"},
+		{"замена на кадр другой карточки", []DesignBranchNode{
+			replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+			onCard(editOf(hiddenNode(11), 10), replaceProbeCard+1),
+		}, "picture 11, reached from picture 10, belongs to tech card 42"},
+	}
 }
 
 // standingLine — кусок first листа 7 и n-1 спрятанных звеньев под ним, замена и разрез по очереди;
@@ -535,6 +574,28 @@ func TestDesignBranchColumnsAreTheNodeFields(t *testing.T) {
 	require.Equal(t, strings.Join(tags, ", "), DesignBranchColumns)
 }
 
+// ЛИСТ СТАНОВИТСЯ УЗЛОМ ОБХОДА ЦЕЛИКОМ: каждое поле узла взято из одноимённого поля кадра.
+//
+// МУТАЦИЯ: забыть поле в DesignBranchNodeOf — прежде всего tech_card_id (лист с карточкой 0 сделал бы
+// чужим каждый кадр своей ветки) или replaced_by.
+func TestDesignBranchNodeOfCopiesEveryField(t *testing.T) {
+	p := DesignPicture{
+		Id: 7, TechCardId: replaceProbeCard, Derivation: DesignDerivationCrop,
+		HiddenAt:    sql.NullTime{Time: time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), Valid: true},
+		ReplacedBy:  sql.NullInt32{Int32: 12, Valid: true},
+		DerivedFrom: sql.NullInt32{Int32: 3, Valid: true},
+	}
+	n := DesignBranchNodeOf(p)
+	nv, pv := reflect.ValueOf(n), reflect.ValueOf(p)
+	for i := 0; i < nv.NumField(); i++ {
+		name := nv.Type().Field(i).Name
+		src := pv.FieldByName(name)
+		require.True(t, src.IsValid(), "у кадра нет поля %s", name)
+		require.False(t, src.IsZero(), "проба обязана заполнить %s кадра", name)
+		require.Equal(t, src.Interface(), nv.Field(i).Interface(), "поле %s", name)
+	}
+}
+
 // СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ — СВОИМ СЛОВОМ, А НЕ hidden_plate.
 //
 // МУТАЦИИ: судить не по hidden_at (спрятанный проходит); отдать сентинел постановки в слот (клиент
@@ -550,6 +611,258 @@ func TestDesignSplitHiddenRefusal(t *testing.T) {
 	require.NotErrorIs(t, err, ErrDesignHiddenPlate)
 	require.Contains(t, err.Error(), "hidden_picture")
 	require.Contains(t, err.Error(), "picture 7")
+}
+
+// ─── ЧТЕНИЕ ВЕТКИ УРОВНЯМИ (O-53 review, раунд 4) ───
+
+// branchCall — один вызов чтения: какое чтение, какие id, какой limit.
+type branchCall struct {
+	read  string // "id" | "crops"
+	ids   []int
+	limit int
+}
+
+// branchTable — design_picture в памяти, отвечающая на DesignBranchReads так же, как SQL стора: БЕЗ
+// предиката карточки, по возрастанию id, не больше limit строк. calls — каждый вызов по порядку.
+type branchTable struct {
+	rows  map[int]DesignBranchNode
+	crops map[int][]DesignBranchNode // derived_from → кропы
+	calls []branchCall
+	fail  error
+}
+
+func newBranchTable(nodes ...DesignBranchNode) *branchTable {
+	b := &branchTable{rows: map[int]DesignBranchNode{}, crops: map[int][]DesignBranchNode{}}
+	for _, n := range nodes {
+		b.rows[n.Id] = n
+		if n.DerivedFrom.Valid && n.Derivation == DesignDerivationCrop {
+			parent := int(n.DerivedFrom.Int32)
+			b.crops[parent] = append(b.crops[parent], n)
+		}
+	}
+	return b
+}
+
+func (b *branchTable) reads() DesignBranchReads {
+	answer := func(read string, ids []int, limit int, rows []DesignBranchNode) ([]DesignBranchNode, error) {
+		b.calls = append(b.calls, branchCall{read: read, ids: append([]int(nil), ids...), limit: limit})
+		if b.fail != nil {
+			return nil, b.fail
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Id < rows[j].Id })
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+		return rows, nil
+	}
+	return DesignBranchReads{
+		ByID: func(ids []int, limit int) ([]DesignBranchNode, error) {
+			var rows []DesignBranchNode
+			for _, id := range ids {
+				if n, ok := b.rows[id]; ok {
+					rows = append(rows, n)
+				}
+			}
+			return answer("id", ids, limit, rows)
+		},
+		CropsOf: func(parents []int, limit int) ([]DesignBranchNode, error) {
+			var rows []DesignBranchNode
+			for _, p := range parents {
+				rows = append(rows, b.crops[p]...)
+			}
+			return answer("crops", parents, limit, rows)
+		},
+	}
+}
+
+// loadedIDs — id прочитанного набора, по возрастанию.
+func loadedIDs(nodes []DesignBranchNode) []int {
+	ids := make([]int, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.Id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// ЧТЕНИЕ ВЕТКИ ДАЁТ ОБХОДУ РОВНО ТО, ЧТО ЕМУ НУЖНО — И НИЧЕГО ИЗ ШУМА КАРТОЧКИ.
+//
+// Каждый случай обеих таблиц проходит дважды: обход по всей карточке и обход по набору, который
+// собрало чтение из той же карточки. Ответы обязаны совпасть — вердикт в случаях «стоит ли кусок» и
+// названная порча в случаях порчи, — а шум карточки (чужой лист 3 и его кусок 4, ничей спрятанный 2,
+// правка листа «рядом» 8, легаси-ребёнок листа 9) не читается ни разу, кроме случая, где на кадр 2
+// ведёт порченая замена.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: остановиться после первого уровня или не читать кропы глубже листа
+// («кусок куска на виду» отпускает лист — ребро разреза пропадает МОЛЧА, это единственное ребро,
+// потерю которого обход не видит); не читать замены (случаи со стоящей правкой отпускают лист или
+// падают потерянным кадром); читать детей без глагола (в набор попадают 8 и 9).
+func TestDesignLoadBranchReadsWhatTheWalkNeeds(t *testing.T) {
+	sheet := shownNode(standingSheet)
+	noise := []int{3, 4, 8, 9}
+	for _, tc := range standingCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			card := standingCard(tc.branch...)
+			loaded, err := DesignLoadBranch(sheet, newBranchTable(card...).reads())
+			require.NoError(t, err)
+			require.Equal(t, standingSheet, loaded[0].Id, "лист — первый в наборе")
+			ids := loadedIDs(loaded)
+			for _, id := range append(noise, 2) {
+				require.NotContains(t, ids, id, "шум карточки не читается")
+			}
+			whole, err := DesignStandingPieces(standingSheet, card)
+			require.NoError(t, err)
+			got, err := DesignStandingPieces(standingSheet, loaded)
+			require.NoError(t, err)
+			require.Equal(t, whole, got, "обход по прочитанному отвечает так же, как по всей карточке")
+		})
+	}
+	for _, tc := range brokenBranchCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			loaded, err := DesignLoadBranch(sheet, newBranchTable(standingCard(tc.branch...)...).reads())
+			require.NoError(t, err, "чтение порчу не судит — оно её дочитывает и останавливается")
+			for _, id := range noise {
+				require.NotContains(t, loadedIDs(loaded), id)
+			}
+			_, err = DesignStandingPieces(standingSheet, loaded)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.names)
+		})
+	}
+
+	// Сценарий Codex, прочитанный уровнями: C (10) и его замена E (11) спрятаны, F (12) отрезан от E.
+	codex := standingCard(
+		replacedBy(cutFrom(hiddenNode(10), standingSheet), 11),
+		editOf(hiddenNode(11), 10),
+		cutFrom(shownNode(12), 11),
+	)
+	table := newBranchTable(codex...)
+	loaded, err := DesignLoadBranch(sheet, table.reads())
+	require.NoError(t, err)
+	require.Equal(t, []int{7, 10, 11, 12}, loadedIDs(loaded))
+	require.Equal(t, []branchCall{
+		{read: "crops", ids: []int{7}, limit: DesignStandingNodesMax},
+		{read: "id", ids: []int{11}, limit: DesignStandingNodesMax - 1},
+		{read: "crops", ids: []int{10}, limit: DesignStandingNodesMax - 2},
+		{read: "crops", ids: []int{11}, limit: DesignStandingNodesMax - 2},
+		{read: "crops", ids: []int{12}, limit: DesignStandingNodesMax - 3},
+	}, table.calls, "уровень за уровнем: кропы листа, затем замены и кропы каждого нового уровня")
+}
+
+// ШИРОКИЙ УРОВЕНЬ ЧИТАЕТСЯ КУСКАМИ ПО DesignBranchChunk id.
+//
+// Лист с 2·DesignBranchChunk+1 спрятанными кусками, у каждого — спрятанная замена: на первом уровне
+// столько же целей замены и родителей кропов, на втором — родителей кропов. Каждый вызов называет не
+// больше DesignBranchChunk id, id идут по возрастанию, и вместе вызовы одного чтения покрывают
+// уровень целиком и без повторов. Сам кусок не шире eq_range_index_dive_limit MySQL по умолчанию —
+// см. DesignBranchChunk.
+//
+// МУТАЦИИ: снять разбиение (один вызов на весь уровень); поднять кусок выше 200.
+func TestDesignLoadBranchReadsInBoundedChunks(t *testing.T) {
+	require.LessOrEqual(t, DesignBranchChunk, 200, "сверх eq_range_index_dive_limit оценка IN идёт по статистике")
+	pieces := 2*DesignBranchChunk + 1
+	nodes := []DesignBranchNode{shownNode(standingSheet)}
+	var editIDs []int
+	for i := 0; i < pieces; i++ {
+		piece, edit := 10+2*i, 11+2*i
+		nodes = append(nodes,
+			replacedBy(cutFrom(hiddenNode(piece), standingSheet), edit),
+			editOf(hiddenNode(edit), piece))
+		editIDs = append(editIDs, edit)
+	}
+	table := newBranchTable(nodes...)
+	loaded, err := DesignLoadBranch(nodes[0], table.reads())
+	require.NoError(t, err)
+	require.Len(t, loaded, 1+2*pieces)
+
+	var sizes []string
+	var replaced []int
+	for _, c := range table.calls {
+		require.LessOrEqual(t, len(c.ids), DesignBranchChunk, "%s: %d id в одном запросе", c.read, len(c.ids))
+		require.True(t, sort.IntsAreSorted(c.ids))
+		sizes = append(sizes, fmt.Sprintf("%s:%d", c.read, len(c.ids)))
+		if c.read == "id" {
+			replaced = append(replaced, c.ids...)
+		}
+	}
+	full := func(read string) []string {
+		return []string{
+			fmt.Sprintf("%s:%d", read, DesignBranchChunk), fmt.Sprintf("%s:%d", read, DesignBranchChunk), read + ":1",
+		}
+	}
+	want := []string{"crops:1"}
+	want = append(want, full("id")...)
+	want = append(want, full("crops")...)
+	want = append(want, full("crops")...)
+	require.Equal(t, want, sizes)
+	require.Equal(t, editIDs, replaced, "цели замен прочитаны все, по разу")
+
+	got, err := DesignStandingPieces(standingSheet, loaded)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+// ОДИН ПОТОЛОК НА ВСЁ ЧТЕНИЕ, ЛИСТ ВКЛЮЧИТЕЛЬНО, И ОТКАЗ — НА ТОМ ЖЕ ШАГЕ.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: считать потолок на уровень (линия из одного кадра на уровень не упирается
+// ни в один уровень и дочитывается до конца); не сверять ответ с оставшимся местом (лишнее
+// принимается); сдвиг границы на единицу («ровно потолок» отказывает либо «на один больше» проходит);
+// читать дальше отказа (широкий уровень делает больше одного вызова).
+func TestDesignLoadBranchSharesOneCap(t *testing.T) {
+	sheet := shownNode(standingSheet)
+	t.Run("ровно потолок", func(t *testing.T) {
+		nodes := append([]DesignBranchNode{sheet}, standingLine(10, DesignStandingNodesMax-1)...)
+		loaded, err := DesignLoadBranch(sheet, newBranchTable(nodes...).reads())
+		require.NoError(t, err)
+		require.Len(t, loaded, DesignStandingNodesMax)
+	})
+	t.Run("на один кадр больше — по кадру на уровень", func(t *testing.T) {
+		nodes := append([]DesignBranchNode{sheet}, standingLine(10, DesignStandingNodesMax)...)
+		table := newBranchTable(nodes...)
+		_, err := DesignLoadBranch(sheet, table.reads())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), fmt.Sprintf("more than %d pictures", DesignStandingNodesMax))
+		require.NotErrorIs(t, err, ErrDesignCutSheet)
+		last := table.calls[len(table.calls)-1]
+		require.Equal(t, 1, last.limit, "последнее чтение просило одну строку сверх потолка — и получило её")
+	})
+	t.Run("широкий уровень над потолком — один вызов и отказ", func(t *testing.T) {
+		nodes := []DesignBranchNode{sheet}
+		for i := 0; i < DesignStandingNodesMax; i++ {
+			nodes = append(nodes, cutFrom(hiddenNode(10+i), standingSheet))
+		}
+		table := newBranchTable(nodes...)
+		_, err := DesignLoadBranch(sheet, table.reads())
+		require.Error(t, err)
+		require.Len(t, table.calls, 1, "дальше отказа не читается")
+		require.Equal(t, DesignStandingNodesMax, table.calls[0].limit, "место под потолком плюс одна строка")
+	})
+}
+
+// ЗАМЕНА САМОГО ЛИСТА НЕ ЧИТАЕТСЯ: в правило она не входит, а заменённый лист отказан раньше.
+//
+// МУТАЦИЯ: начинать уровни с листа как с обычного кадра — лишнее чтение 50 и её ветки под замком.
+func TestDesignLoadBranchSkipsTheSheetsOwnReplacement(t *testing.T) {
+	sheet := replacedBy(shownNode(standingSheet), 50)
+	table := newBranchTable(sheet, editOf(shownNode(50), standingSheet), cutFrom(hiddenNode(10), standingSheet))
+	loaded, err := DesignLoadBranch(sheet, table.reads())
+	require.NoError(t, err)
+	require.Equal(t, []int{7, 10}, loadedIDs(loaded))
+	for _, c := range table.calls {
+		require.NotContains(t, c.ids, 50)
+	}
+}
+
+// ОШИБКА ЧТЕНИЯ ВИДНА ПОВТОРУ ТРАНЗАКЦИИ.
+//
+// МУТАЦИЯ: завернуть ошибку чтения без %w — дедлок 1213 перестал бы повторяться.
+func TestDesignLoadBranchKeepsTheReadError(t *testing.T) {
+	transient := errors.New("Error 1213: Deadlock found when trying to get lock")
+	table := newBranchTable(shownNode(standingSheet))
+	table.fail = transient
+	_, err := DesignLoadBranch(shownNode(standingSheet), table.reads())
+	require.ErrorIs(t, err, transient)
+	require.Contains(t, err.Error(), "design picture 7")
 }
 
 // ─── ПОВТОР ПО КЛЮЧУ ОТВЕЧАЕТ ТОЛЬКО ТОМУ ЖЕ ЖЕСТУ (0370/0371, O-53 review) ───

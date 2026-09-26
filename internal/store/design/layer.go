@@ -691,29 +691,77 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	return &out, nil
 }
 
-// designBranchOfCard — ВСЕ КАДРЫ КАРТОЧКИ, КАКИМИ ИХ ВИДИТ СТОРОЖ cut_sheet: один SELECT в транзакции
-// флэттена, после которого обход (entity.DesignStandingPieces) базы не трогает (O-53 review, раунд
-// 3). Раньше сторож читал кадр за кадром по каждому звену каждого куска — N×L чтений внутри
-// SERIALIZABLE-транзакции записи.
+// ─── ЧТЕНИЕ ВЕТКИ ЛИСТА ДЛЯ СТОРОЖА cut_sheet (O-53 review, раунд 4) ───
 //
-// ⚠ ПО КАРТОЧКЕ, А НЕ ПО ВЕТКЕ И НЕ ПО СТРОКЕ ПРОГОНА. Кусок находится по derived_from своего
-// родителя, и кадр карточки, не попавший в чтение, выпал бы из обхода МОЛЧА — лист ушёл бы под
-// правку. Карточка — наименьшая граница, про которую это доказано: кроп и правка живут на карточке
-// своего родителя, и оба писателя это обеспечивают (разрез копирует карточку родителя, флэттен берёт
-// родителя только своей карточки). Кадр, на который ведёт replaced_by, но которого нет среди
-// прочитанных, — порча (Internal), а не «спрятан».
+// Два запроса, которыми entity.DesignLoadBranch собирает ветку уровнями: кропы кадров уровня (по
+// derived_from) и цели их замен (по id). Раунд 3 читал все кадры карточки одним SELECT, и под
+// SERIALIZABLE это разделяемый замок на каждый кадр карточки: прятанье, выбор, разрез и загрузка той
+// же карточки ждали перезаписи или ловили дедлок, а память росла вместе с карточкой. Теперь замок
+// ложится только на ветку: записи индекса derived_from (idx_design_picture_derived_from, 0340) с
+// промежутками — новый кроп под кадром ветки ждёт, а не проскакивает между чтением и штампом, — и
+// строки целей замен по первичному ключу.
 //
-// ⚠ НИ ОДНОГО ФИЛЬТРА, КРОМЕ КАРТОЧКИ: ни видимости (спрятанный кусок держит лист, если под ним стоит
-// правка или кусок), ни замены, ни глагола — глагол читает обход, отличая кроп от правки «рядом» и от
-// легаси. LIMIT нет тоже: срезанное чтение выглядело бы для обхода как карточка, в которой куска нет.
-// Под SERIALIZABLE это чтение ставит разделяемый замок на кадры карточки и на промежуток за ними:
-// разрез, прятанье или перезапись той же карточки в соседней транзакции ждёт либо ловит дедлок и
-// повторяется, но не проскакивает между этим чтением и штампом.
-const designBranchOfCard = `
+// ⚠ БЕЗ ПРЕДИКАТА КАРТОЧКИ. Родитель и цель названы глобально уникальными id, и кадр ДРУГОЙ карточки,
+// повисший на кадре ветки, обязан прийти — его называет обход (entity.DesignStandingPieces), а не
+// теряет чтение: скан по карточке раунда 3 такой кроп не видел вовсе.
+//
+// ⚠ ИНДЕКС НА replaced_by НЕ НУЖЕН, и 0369 его не заводит: ребро замены читается ВПЕРЁД — цель по
+// своему id, первичным ключом, — и ни один запрос не ищет строки ПО replaced_by.
+//
+// ⚠ LIMIT В SQL НЕТ НАМЕРЕННО. `ORDER BY id LIMIT n` искушает оптимизатор пройти PRIMARY по порядку
+// вместо диапазона derived_from, а под SERIALIZABLE такой проход — замок на всю таблицу. Потолок
+// держит курсор (designBranchRead): дальше limit-й строки ответ не читается.
+const (
+	designBranchByID = `
 	SELECT ` + entity.DesignBranchColumns + `
 	FROM design_picture
-	WHERE tech_card_id = :card
+	WHERE id IN (:ids)
 	ORDER BY id`
+	designBranchCropsOf = `
+	SELECT ` + entity.DesignBranchColumns + `
+	FROM design_picture
+	WHERE derived_from IN (:ids) AND derivation = :crop
+	ORDER BY id`
+)
+
+// designBranchReads — два чтения ветки в транзакции db для entity.DesignLoadBranch.
+func designBranchReads(ctx context.Context, db dependency.DB) entity.DesignBranchReads {
+	return entity.DesignBranchReads{
+		ByID: func(ids []int, limit int) ([]entity.DesignBranchNode, error) {
+			return designBranchRead(ctx, db, designBranchByID, map[string]any{"ids": ids}, limit)
+		},
+		CropsOf: func(parents []int, limit int) ([]entity.DesignBranchNode, error) {
+			return designBranchRead(ctx, db, designBranchCropsOf,
+				map[string]any{"ids": parents, "crop": entity.DesignDerivationCrop}, limit)
+		},
+	}
+}
+
+// designBranchRead — один запрос ветки, не больше limit строк: дальше limit-й строки курсор не
+// читается, и память чтения ограничена потолком, а не данными.
+func designBranchRead(ctx context.Context, db dependency.DB, q string, params map[string]any, limit int) ([]entity.DesignBranchNode, error) {
+	query, args, err := storeutil.MakeQuery(q, params)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query context: %w", err)
+	}
+	defer rows.Close()
+	var out []entity.DesignBranchNode
+	for len(out) < limit && rows.Next() {
+		var n entity.DesignBranchNode
+		if err := rows.StructScan(&n); err != nil {
+			return nil, fmt.Errorf("struct scan: %w", err)
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+	return out, nil
+}
 
 // designStampReplacedBy — ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ. `replaced_by IS NULL` в WHERE — второй
 // пояс к чтению в той же SERIALIZABLE-транзакции (entity.DesignReplaceRefusal), а не повтор его:
@@ -738,8 +786,10 @@ const designStampReplacedBy = `
 // replace_mismatch ошибку порченой ветки чужого листа. Решение при этом одно — DesignReplaceRefusal
 // зовётся с нулём кусков, затем с числом стоящих, и порядок отказов остаётся его.
 //
-// ОДНО ЧТЕНИЕ, ПОТОМ ПАМЯТЬ (O-53 review, раунд 3): кадры карточки читаются одним SELECT
-// (designBranchOfCard), и обход по ним базы не трогает, сколько бы кусков и звеньев ни было.
+// ЧТЕНИЕ ВЕТКИ, ПОТОМ ПАМЯТЬ (O-53 review, раунды 3–4): лист и то, что достижимо от его кусков,
+// читается уровнями (entity.DesignLoadBranch по designBranchReads — несколько маленьких чтений по
+// индексам, не больше entity.DesignBranchChunk id в запросе, один потолок на всё), и обход по
+// прочитанному базы не трогает.
 func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, layer entity.DesignEditLayer) (entity.DesignPicture, error) {
 	original, err := pictureByID(ctx, db, req.ReplacePictureId)
 	if err != nil {
@@ -751,11 +801,9 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 		}
 		return original, err
 	}
-	nodes, err := storeutil.QueryListNamed[entity.DesignBranchNode](ctx, db, designBranchOfCard,
-		map[string]any{"card": original.TechCardId})
+	nodes, err := entity.DesignLoadBranch(entity.DesignBranchNodeOf(original), designBranchReads(ctx, db))
 	if err != nil {
-		return original, fmt.Errorf("failed to read the pictures of tech card %d to judge the pieces of design picture %d: %w",
-			original.TechCardId, original.Id, err)
+		return original, err
 	}
 	standing, err := entity.DesignStandingPieces(original.Id, nodes)
 	if err != nil {
