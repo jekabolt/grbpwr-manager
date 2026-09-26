@@ -1011,6 +1011,23 @@ message DesignPicture {
   // `display_only_input` (a run or a draft, before the reserve). A run's own outputs are never
   // display-only: the flag is a statement about a file a person brought in, not about pixels.
   bool display_only = 20;
+  // THE EDIT THAT TOOK THIS PICTURE'S PLACE (O-53) — the id of the flatten filed by
+  // FlattenDesignEditLayer with replace_picture_id = this picture. 0 = not replaced. OUTPUT-ONLY:
+  // no request carries it, and no verb clears it (there is no «un-replace» in v1).
+  //
+  // A REPLACED PICTURE IS NOT HIDDEN AND NOT CHANGED. Its pixels, run row, crops, reference roles
+  // and hidden_at are exactly what they were; what moved is the bench slot that held it, which now
+  // holds the edit. The history keeps showing it — captioned «replaced by an edit» — and it can be
+  // put back into a slot like any other plate.
+  //
+  // A CHAIN, NOT A PAIR. The edit may be overwritten in its turn, so the ids form a chain whose
+  // HEAD is the one picture with replaced_by = 0; a view of «the latest generation» shows the head
+  // in the original's place. Every link is filed under the SAME run or batch row as the original,
+  // so a whole chain arrives inside one row of the band.
+  //
+  // ⚠ ABSENT — not 0 — on a server older than the field, and that absence is how a client knows
+  // the server cannot replace a picture yet (FlattenDesignEditLayerRequest.replace_picture_id).
+  int32 replaced_by = 21;
 }
 
 // DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the

@@ -128,6 +128,15 @@ var designRefusals = []struct {
 	// СОСТОЯНИЕ (один файл зарегистрирован на карточке под несколькими колорвеями, а слой не
 	// назвал, поверх которого из них рисовали).
 	{entity.ErrDesignAmbiguousFlattenBase, codes.FailedPrecondition, "ambiguous_flatten_base"},
+	// ─── «ПЕРЕЗАПИСАТЬ» ПРАВКОЙ (0368, O-53) ───
+	//
+	// replace_mismatch — InvalidArgument: запрос назвал не тот кадр (чужая карточка, не та подложка
+	// слоя), и чинится он правкой запроса. Два других — FailedPrecondition того же класса, что
+	// live_crop_parent: запрос правильной формы, не годится СОСТОЯНИЕ — у кадра уже есть замена
+	// (сюда приходит и слепой повтор перезаписи) либо от листа отрезаны видимые куски.
+	{entity.ErrDesignReplaceMismatch, codes.InvalidArgument, "replace_mismatch"},
+	{entity.ErrDesignAlreadyReplaced, codes.FailedPrecondition, "already_replaced"},
+	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -600,13 +609,18 @@ func (s *Server) SaveDesignEditLayer(ctx context.Context, req *pb_admin.SaveDesi
 // while SplitDesignPicture does: the raster was produced and uploaded by the client through
 // UploadContentImage (Р-2), and it arrives as a media id. Deleting that media when the flatten is
 // refused would be an active harm — it would break the client's retry with the same id.
+//
+// «OVERWRITE» (0368, O-53) is replace_picture_id, carried through as is: the guards, the slot move
+// and the replaced_by stamp are the store's, inside the flatten's own transaction, so a second copy
+// of any of them here could only disagree with it.
 func (s *Server) FlattenDesignEditLayer(ctx context.Context, req *pb_admin.FlattenDesignEditLayerRequest) (*pb_admin.FlattenDesignEditLayerResponse, error) {
 	pic, err := s.repo.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
-		TechCardId:  int(req.GetTechCardId()),
-		LayerId:     int(req.GetLayerId()),
-		ExpectedRev: int(req.GetExpectedRev()),
-		MediaId:     int(req.GetMediaId()),
-		Actor:       designActor(ctx),
+		TechCardId:       int(req.GetTechCardId()),
+		LayerId:          int(req.GetLayerId()),
+		ExpectedRev:      int(req.GetExpectedRev()),
+		MediaId:          int(req.GetMediaId()),
+		ReplacePictureId: int(req.GetReplacePictureId()),
+		Actor:            designActor(ctx),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to flatten the design edit layer", err, nil)
@@ -1172,7 +1186,11 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		ColorwayId: int32(entity.DesignColorwayOrNone(p.ColorwayId)),
 		// ТОЛЬКО ДЛЯ ПОКАЗА (0361, D-24): виден в артефактах, не вход ни одного прогона.
 		DisplayOnly: p.DisplayOnly,
-		CreatedAt:   timestamppb.New(p.CreatedAt),
+		// ПРАВКА, ЗАНЯВШАЯ МЕСТО КАДРА (0368, O-53): 0 = не заменён, NULL колонки читается нулём.
+		// Ноль уходит на провод ЯВНЫМ ключом (гейтвей эмитит незаполненные поля), и клиент отличает
+		// его от ОТСУТСТВИЯ ключа — так выглядит сервер старше поля, который заменять не умеет.
+		ReplacedBy: p.ReplacedBy.Int32,
+		CreatedAt:  timestamppb.New(p.CreatedAt),
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)

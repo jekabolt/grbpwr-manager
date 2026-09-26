@@ -2965,8 +2965,14 @@ service AdminService {
   // set does not weaken by moving the pixels to the client — it guards the INTENTION, not the
   // rendering.
   //
-  // Aborted: layer_rev_mismatch. FailedPrecondition: empty_layer. InvalidArgument: an unknown or
-  // foreign media_id.
+  // «OVERWRITE» IS THIS SAME VERB (O-53). With replace_picture_id the edit is still filed as a
+  // flatten sibling — nothing is re-pixelled, nothing is hidden — and in the same transaction it
+  // takes the named picture's place: the bench slot holding that picture moves onto the edit and
+  // the picture is stamped replaced_by. The request field names the refusals.
+  //
+  // Aborted: layer_rev_mismatch. FailedPrecondition: empty_layer, already_replaced, cut_sheet, and
+  // the placement refusals of SetDesignBenchSlot when the slot being moved refuses the edit.
+  // InvalidArgument: an unknown or foreign media_id, replace_mismatch.
   rpc FlattenDesignEditLayer(FlattenDesignEditLayerRequest) returns (FlattenDesignEditLayerResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}/flatten"
@@ -12525,6 +12531,34 @@ message FlattenDesignEditLayerRequest {
   // UploadContentImage. The server does not rasterise — see the RPC comment. It must belong to this
   // installation and not already be filed as another picture of this card.
   int32 media_id = 4;
+  // THE PICTURE THIS EDIT TAKES THE PLACE OF — the «overwrite» answer to «overwrite or save as
+  // new» (O-53). 0 = file the edit BESIDE its base, which is exactly what this verb did before the
+  // field existed; a client that never sends it keeps that behaviour byte for byte.
+  //
+  // NOTHING IS RE-PIXELLED AND NOTHING IS HIDDEN. The edit is filed as the same flatten sibling,
+  // under the same run or batch row, with this picture as its derived_from — and in the SAME
+  // transaction:
+  //   * the bench slot holding this picture, if any, moves onto the edit — slot_rev + 1, through
+  //     every placement guard of SetDesignBenchSlot (kind, colourway, hidden, display-only);
+  //   * this picture is stamped DesignPicture.replaced_by = the edit.
+  // Its pixels, its run row, its crops, its reference roles and its visibility stay what they were:
+  // the history still shows it, and putting it back into a slot is SetDesignBenchSlot as usual.
+  //
+  // THE MOVE ECHOES NO slot_rev, and that is not a gap in the compare-and-set. The move is decided
+  // by the server from the slot row it reads inside the transaction; the client requests no
+  // placement, so there is no stale intention to compare. A tab that still shows the original in
+  // that slot learns it from slot_rev_mismatch on its next placement.
+  //
+  // InvalidArgument: replace_mismatch — the picture is on another card, or it is not the picture
+  // this layer is drawn over (its media is not the layer's base_media_id; a layer drawn from
+  // nothing replaces nothing). FailedPrecondition: already_replaced — the picture has a
+  // replacement already, and a blind retry of an overwrite lands here BEFORE anything is filed.
+  // FailedPrecondition: cut_sheet — visible pieces are cut from this sheet, and they would stay cut
+  // from the original. NotFound — no such picture.
+  //
+  // ⚠ AN OLDER SERVER ANSWERS 400 TO THIS FIELD: the JSON gateway refuses unknown fields. Send it
+  // only after a read has carried DesignPicture.replaced_by, which an older server never emits.
+  int32 replace_picture_id = 5;
 }
 
 message FlattenDesignEditLayerResponse {
@@ -12533,6 +12567,9 @@ message FlattenDesignEditLayerResponse {
   // (base_media_id = 0) has no parent to inherit from, so its flatten is filed into a
   // single-picture BATCH, which is what puts it on the upload shelf and keeps it readable after a
   // reload.
+  //
+  // With replace_picture_id the base IS that picture, and the answer is still the edit alone: the
+  // moved slot and the stamped original arrive with the next read of the band.
   common.DesignPicture picture = 1;
 }
 

@@ -461,12 +461,25 @@ func designLayerIsEmpty(l entity.DesignEditLayer) bool {
 //
 // THE FLATTEN DOES NOT BUMP THE LAYER'S REV. It materialises a revision, it does not edit one —
 // bumping would invalidate every open editor's CAS token for a write that changed no stroke.
+//
+// «OVERWRITE» IS THIS SAME VERB (0368, O-53). With ReplacePictureId > 0 the named picture is the
+// parent, the edit is filed exactly as below — nothing is re-pixelled, nothing is hidden — and in
+// THIS transaction the edit takes the original's place: the bench slot that held the original moves
+// onto the edit, and the original is stamped replaced_by (flattenTakeThePlaceOf). The guards are
+// read here too (flattenReplaceTarget): a refusal files nothing.
 func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayerFlatten) (*entity.DesignPicture, error) {
 	if err := requireCard(req.TechCardId); err != nil {
 		return nil, err
 	}
 	if req.MediaId <= 0 {
 		return nil, fmt.Errorf("%w: a flatten needs the rasterised media", entity.ErrDesignInvalidArgument)
+	}
+	// Ноль — «подать рядом», положительное — кадр; отрицательное не значит ничего и отказывается
+	// ДО транзакции, а не читается нулём: молча подать рядом то, что просили поставить на место,
+	// значило бы ответить OK на просьбу, которую никто не исполнил.
+	if req.ReplacePictureId < 0 {
+		return nil, fmt.Errorf("%w: replace_picture_id %d is neither a picture nor 0 (file beside)",
+			entity.ErrDesignInvalidArgument, req.ReplacePictureId)
 	}
 	var out entity.DesignPicture
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -515,6 +528,18 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// значило бы закрыть флэттен там, где он сегодня работает и никого не обманывает.
 		var parent *entity.DesignPicture
 		switch {
+		// «OVERWRITE» (0368, O-53): НАЗВАННЫЙ КАДР И ЕСТЬ РОДИТЕЛЬ, и обе ветки ниже при нём не
+		// спрашиваются. Правка занимает место ИМЕННО ЭТОГО кадра — его слот, его строку прогона, его
+		// род и колорвей, — поэтому наследовать ей положено у него, а не у source_picture_id слоя и не
+		// у «первой строки по id» того же файла. Тем же самым снимается и ambiguous_flatten_base:
+		// регистрация, над которой рисовали, названа запросом, и гадать не о чем. Что названный кадр
+		// действительно лежит под слоем, сверяет flattenReplaceTarget — по base_media_id слоя.
+		case req.ReplacePictureId > 0:
+			original, err := flattenReplaceTarget(ctx, db, req, layer)
+			if err != nil {
+				return err
+			}
+			parent = &original
 		case layer.SourcePictureId.Valid && layer.SourcePictureId.Int32 > 0:
 			pic, err := pictureByID(ctx, db, int(layer.SourcePictureId.Int32))
 			if err != nil {
@@ -612,6 +637,13 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		if err != nil {
 			return fmt.Errorf("failed to file the flattened design layer: %w", err)
 		}
+		// «OVERWRITE»: правка уже подана сиблингом, теперь она занимает место оригинала — в ЭТОЙ
+		// транзакции, поэтому отказ любого сторожа постановки откатывает и саму подачу.
+		if req.ReplacePictureId > 0 {
+			if err := flattenTakeThePlaceOf(ctx, rep, *parent, id, req.Actor); err != nil {
+				return err
+			}
+		}
 		out, err = pictureByID(ctx, db, id)
 		if err != nil {
 			return err
@@ -622,6 +654,96 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		return nil, err
 	}
 	return &out, nil
+}
+
+// designVisibleCropsOf — СКОЛЬКО ВИДИМЫХ НЕЗАМЕНЁННЫХ КУСКОВ отрезано от кадра (сторож cut_sheet).
+//
+// ⚠ ГЛАГОЛ СПРАШИВАЕТСЯ, А НЕ ВЫВОДИТСЯ (0359): derived_from пишут и разрез, и правка, и правка
+// листа — ещё не разрез. Легаси-строка с пустым глаголом в счёт не идёт: бэкфилл 0359 оставил её
+// неклассифицированной, потому что доказать «кроп» было нечем, и назвать её куском здесь значило бы
+// вписать ту самую догадку. Спрятанный кусок и кусок, уже заменённый своей правкой, листа не держат:
+// первый не на экране, второй уже стоит правкой на своём месте.
+const designVisibleCropsOf = `
+	SELECT COUNT(*) FROM design_picture
+	WHERE derived_from = :id AND derivation = :crop AND hidden_at IS NULL AND replaced_by IS NULL`
+
+// designStampReplacedBy — ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ. `replaced_by IS NULL` в WHERE — второй
+// пояс к чтению в той же SERIALIZABLE-транзакции (entity.DesignReplaceRefusal), а не повтор его:
+// правило «замену не переписывают» дороже допущения об изоляции и стоит ровно одну строку. Ноль
+// затронутых строк — ОТКАЗ already_replaced, а не молчаливый успех, по тому же доводу, что у
+// adoptPictureIntoColorway.
+const designStampReplacedBy = `
+	UPDATE design_picture SET replaced_by = :edit
+	WHERE id = :id AND replaced_by IS NULL`
+
+// flattenReplaceTarget — ОРИГИНАЛ, ЧЬЁ МЕСТО ЗАНИМАЕТ ПРАВКА: читается и судится В ТРАНЗАКЦИИ
+// ФЛЭТТЕНА, до вставки. Отказ здесь не подаёт ничего — в том числе слепой повтор перезаписи, который
+// узнаёт себя по already_replaced.
+//
+// Несуществующий кадр — not_found (pictureByID), как у всех чтений полосы; существующий, но не тот —
+// replace_mismatch. Порядок остальных отказов — у entity.DesignReplaceRefusal, где он проверяется
+// без базы.
+func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.DesignEditLayerFlatten, layer entity.DesignEditLayer) (entity.DesignPicture, error) {
+	original, err := pictureByID(ctx, db, req.ReplacePictureId)
+	if err != nil {
+		return original, err
+	}
+	crops, err := storeutil.QueryCountNamed(ctx, db, designVisibleCropsOf,
+		map[string]any{"id": original.Id, "crop": entity.DesignDerivationCrop})
+	if err != nil {
+		return original, fmt.Errorf("failed to count the visible pieces of design picture %d: %w", original.Id, err)
+	}
+	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, crops); err != nil {
+		return original, err
+	}
+	return original, nil
+}
+
+// flattenTakeThePlaceOf — ПРАВКА ЗАНИМАЕТ МЕСТО ОРИГИНАЛА, в транзакции флэттена, после вставки.
+//
+// СЛОТ ПЕРЕЕЗЖАЕТ ЧЕРЕЗ setBenchSlotTx, А НЕ СВОИМ UPDATE. Вторая копия постановки разошлась бы с
+// первой — ровно довод, по которому setBenchSlotTx вынесен для RegisterBatch, — и потеряла бы
+// сторожей, которых здесь никто не повторит: род кадра против рода слота, колорвей (с усыновлением),
+// hidden, display-only, «плита уже стоит в другом слоте». Слот адресуется ПО ID: строка сама
+// называет свой верстак, и род с колорвеем берутся у неё.
+//
+// ⚠ ОЖИДАЕМАЯ РЕВИЗИЯ БЕРЁТСЯ ИЗ ЭТОЙ ЖЕ ТРАНЗАКЦИИ, А НЕ ОТ КЛИЕНТА, и это не дыра в CAS. CAS
+// слота стережёт НАМЕРЕНИЕ человека, смотревшего на старый экран; здесь постановку никто не
+// просил — её решает сервер по строке, прочитанной под замком SERIALIZABLE, и сравнивать не с чем.
+// Вкладка, которая всё ещё видит оригинал в слоте, узнает о переезде по slot_rev_mismatch на своей
+// следующей постановке — ревизия слота выросла на единицу.
+//
+// Слот, держащий оригинал, — не больше одного (uq_design_bench_picture); нет слота — переезжать
+// нечему, и оригинал только получает штамп.
+func flattenTakeThePlaceOf(ctx context.Context, rep dependency.Repository, original entity.DesignPicture, editID int, actor string) error {
+	db := rep.DB()
+	holders, err := storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db, `
+		SELECT * FROM design_bench_slot WHERE tech_card_id = :card AND picture_id = :pic`,
+		map[string]any{"card": original.TechCardId, "pic": original.Id})
+	if err != nil {
+		return fmt.Errorf("failed to find the bench slot of design picture %d: %w", original.Id, err)
+	}
+	for _, h := range holders {
+		if _, err := setBenchSlotTx(ctx, rep, entity.DesignBenchSlotSet{
+			TechCardId:      original.TechCardId,
+			Slot:            entity.DesignSlotRef{SlotId: h.Id},
+			PictureId:       editID,
+			ExpectedSlotRev: h.SlotRev,
+			Actor:           actor,
+		}); err != nil {
+			return err
+		}
+	}
+	n, err := storeutil.ExecNamedRows(ctx, db, designStampReplacedBy,
+		map[string]any{"id": original.Id, "edit": editID})
+	if err != nil {
+		return fmt.Errorf("failed to stamp design picture %d as replaced by %d: %w", original.Id, editID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: picture %d was replaced by another edit while this one was being filed",
+			entity.ErrDesignAlreadyReplaced, original.Id)
+	}
+	return nil
 }
 
 // layerByRequestID reads the layer a given client_request_id already filed, if any.
