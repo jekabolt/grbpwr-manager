@@ -68,6 +68,15 @@ func (s *Server) SetDesignAssetColorway(ctx context.Context, req *pb_admin.SetDe
 	return &pb_admin.SetDesignAssetColorwayResponse{Asset: designAssetToPb(*asset)}, nil
 }
 
+// SetDesignAssetBinding says which asset is the fabric of one (colourway, slot); asset_id 0 unbinds.
+//
+// A PLACEHOLDER OF THE CONTRACT COMMIT: the rpc exists on the wire before the table and the store
+// behind it do, and until they land it answers Unimplemented rather than pretending to have
+// written something. The store-backed handler replaces it.
+func (s *Server) SetDesignAssetBinding(ctx context.Context, req *pb_admin.SetDesignAssetBindingRequest) (*pb_admin.SetDesignAssetBindingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "set_design_asset_binding: not wired yet")
+}
+
 // DeleteDesignAsset removes ONE shelf row and reports how many marks went with it.
 //
 // ⚠ THE REQUEST NAMES THE CARD, AND THE CARD IS NOT A REPEATED FACT. The first version of this
