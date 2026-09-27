@@ -130,6 +130,19 @@ func objectKeyFromURL(rawURL string) (string, error) {
 }
 
 func (b *Bucket) managedObjectKeyFromURL(rawURL string) (string, error) {
+	return ManagedObjectKeyFromURL(b.Config, rawURL)
+}
+
+// ManagedObjectKeyFromURL is the HOST-CHECKED key of a media url: https, no userinfo, and a host
+// that is this bucket's CDN subdomain or its virtual-hosted origin — anything else is refused.
+// Exported for the readers that must turn a url into bytes WITHOUT fetching it (the Gemini chat
+// transport inlines pictures, and a url it could not vouch for would be a fetch of our choosing
+// on someone else's behalf); the key still passes GetManagedObject's segment gate afterwards.
+// A nil config manages no url.
+func ManagedObjectKeyFromURL(c *Config, rawURL string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("media url %q: no bucket is configured", rawURL)
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("parse media url %q: %w", rawURL, err)
@@ -137,11 +150,11 @@ func (b *Bucket) managedObjectKeyFromURL(rawURL string) (string, error) {
 	if u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return "", fmt.Errorf("media url %q is not a managed https url", rawURL)
 	}
-	cdnHost := configuredURLHost(b.SubdomainEndpoint)
-	endpointHost := configuredURLHost(b.S3Endpoint)
+	cdnHost := configuredURLHost(c.SubdomainEndpoint)
+	endpointHost := configuredURLHost(c.S3Endpoint)
 	originHost := ""
-	if b.S3BucketName != "" && endpointHost != "" {
-		originHost = strings.ToLower(b.S3BucketName + "." + endpointHost)
+	if c.S3BucketName != "" && endpointHost != "" {
+		originHost = strings.ToLower(c.S3BucketName + "." + endpointHost)
 	}
 	requestHost := strings.ToLower(u.Host)
 	if requestHost != cdnHost && requestHost != originHost {

@@ -128,6 +128,11 @@ type endpoint struct {
 	balance func(body []byte) (balance string, ok bool)
 	// notFoundIsOK — a 404 proves the key was accepted (runblob's status read of the zero uuid).
 	notFoundIsOK bool
+	// badKeyOn400 reads a 400's body for the provider's OWN machine mark of a refused key; nil = a
+	// 400 is a refused probe. Google answers a bad key with 400, not 401 — without this the badge
+	// would say "probe refused" for a key that is simply wrong. The mark decides the Code; the body
+	// is still never quoted (see the package comment).
+	badKeyOn400 func(body []byte) bool
 }
 
 // endpoints — every probe there is, one per (provider, key kind). A pair that is not here has no
@@ -141,7 +146,7 @@ var endpoints = map[probeKey]endpoint{
 		url: anthropicBase + "/v1/models", auth: authAnthropic,
 	},
 	{entity.AIProviderGoogle, entity.AIKeyAPI}: {
-		url: googleBase + "/v1beta/models?pageSize=1", auth: authGoogle,
+		url: googleBase + "/v1beta/models?pageSize=1", auth: authGoogle, badKeyOn400: googleKeyInvalid,
 	},
 	{entity.AIProviderOpenRouter, entity.AIKeyAPI}: {
 		url: openRouterBase + "/api/v1/key", auth: authBearer, balance: openRouterBalance,
@@ -273,15 +278,18 @@ func Probe(ctx context.Context, providerKey string, kind entity.AIKeyKind, key s
 	return classify(ep, resp.StatusCode, body)
 }
 
-// classify turns an answer into a verdict. It decides from the status code only; the body is read
-// for a balance on a 2xx and for nothing else — an error body is never classified on and never
-// quoted (see the package comment).
+// classify turns an answer into a verdict. It decides from the status code, with ONE exception: a
+// 400 of a provider that marks a bad key in the body (Google, badKeyOn400). The body is read for a
+// balance on a 2xx and for that mark and for nothing else — an error body is never quoted (see the
+// package comment).
 func classify(ep endpoint, status int, body []byte) Result {
 	switch {
 	case status >= 200 && status < 300:
 		return accepted(ep, body)
 	case status == http.StatusNotFound && ep.notFoundIsOK:
 		return Result{OK: true, Message: "key accepted"}
+	case status == http.StatusBadRequest && ep.badKeyOn400 != nil && ep.badKeyOn400(body):
+		return Result{Code: CodeKeyRejected, Message: "key rejected (http 400)"}
 	case status == http.StatusUnauthorized:
 		return Result{Code: CodeKeyRejected, Message: "key rejected (http 401)"}
 	case status == http.StatusForbidden:
@@ -324,6 +332,32 @@ func transportFailure(err error) Result {
 		return Result{Code: CodeUnreachable, Message: "probe cancelled"}
 	}
 	return Result{Code: CodeUnreachable, Message: "could not reach the provider"}
+}
+
+// googleKeyInvalid reports whether a Google 400 carries the bad-key mark: an error detail whose
+// reason is API_KEY_INVALID (google.rpc.ErrorInfo). Only the machine word is matched — never the
+// English message, which Google may reword — and nothing of the body leaves this function.
+//
+// UNVERIFIED (G-05): the body shape is written from memory —
+// {"error":{"code":400,"status":"INVALID_ARGUMENT","message":"API key not valid. …",
+// "details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID",…}]}}.
+func googleKeyInvalid(body []byte) bool {
+	var v struct {
+		Error *struct {
+			Details []struct {
+				Reason string `json:"reason"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.Error == nil {
+		return false
+	}
+	for _, d := range v.Error.Details {
+		if d.Reason == "API_KEY_INVALID" {
+			return true
+		}
+	}
+	return false
 }
 
 // ───────────────────────── balances ─────────────────────────
