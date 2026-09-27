@@ -1180,7 +1180,9 @@ message DesignPicture {
   int32 layer_rev = 13;
   // Reversible invisibility — the ONLY persistent verb for hiding a picture. The guards live in
   // HideDesignPicture: a plate in a slot, feeding a live run, or parenting a live crop cannot be
-  // hidden. A hidden picture is not cut either: SplitDesignPicture answers hidden_picture.
+  // hidden. A hidden picture is neither cut nor overwritten: SplitDesignPicture and
+  // FlattenDesignEditLayer with replace_picture_id answer hidden_picture (an edit of it is filed
+  // beside it instead — «save as new»).
   google.protobuf.Timestamp hidden_at = 14;
   string hidden_by = 15;
   google.protobuf.Timestamp created_at = 16;

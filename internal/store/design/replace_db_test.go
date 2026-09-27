@@ -491,6 +491,103 @@ func TestDesignDBOverwriteRefusalsFileNothing(t *testing.T) {
 	})
 }
 
+// СПРЯТАННЫЙ ОРИГИНАЛ НЕ ПЕРЕЗАПИСЫВАЕТСЯ, А ПРАВКА РЯДОМ С НИМ ЛОЖИТСЯ (27.09).
+//
+// Клиент закрывает «overwrite» над спрятанным кадром сам; отказ hidden_picture — задний пояс в
+// транзакции флэттена: перезапись сделала бы правку преемником кадра, которого на экране нет. Кадр
+// здесь вне слота — спрятанный в слоте не стоит (hide отказывает in_slot), — и прячется законным
+// жестом.
+//
+// Подслучаи идут по порядку и опираются друг на друга:
+//   - перезапись спрятанного кадра — hidden_picture с починкой в тексте, и не подано ничего: ни правки,
+//     ни штампа, ни слота; кадр как был спрятан;
+//   - «save as new» того же слоя проходит: правка ложится сиблингом спрятанного кадра, видимой, а кадр
+//     не подписан — этот отказ её не касается;
+//   - показанный кадр перезаписывается: отказ был про видимость (положительный контроль);
+//   - заменённый И спрятанный кадр — already_replaced с головой, а не hidden_picture: слепой повтор
+//     перезаписи узнаёт себя, хотя оригинал с тех пор спрятали.
+//
+// МУТАЦИИ: снять сторож (первая перезапись проходит и штампует кадр); применить его к «save as new»
+// (сиблинг отказывается); судить спрятанность раньше заменённости (последний подслучай получает
+// hidden_picture без головы).
+func TestDesignDBOverwriteOfAHiddenPictureIsRefused(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	sheet := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	layer, err := rep.Design().SaveEditLayer(ctx, entity.DesignEditLayerSave{
+		TechCardId: card, BaseMediaId: sheet.MediaId, Strokes: probeStrokes(), Actor: "probe",
+	})
+	require.NoError(t, err)
+	flatten := func(t *testing.T, original int) (*entity.DesignPicture, error) {
+		t.Helper()
+		return rep.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
+			TechCardId: card, LayerId: layer.Id, ExpectedRev: layer.Rev, MediaId: probeMedia(t, raw),
+			ReplacePictureId: original, Actor: "overwriter",
+		})
+	}
+	hide := func(t *testing.T, id int, hidden bool) {
+		t.Helper()
+		_, err := rep.Design().HidePicture(ctx, id, hidden, "colleague")
+		require.NoError(t, err)
+	}
+	isHidden := func(t *testing.T, id int) bool {
+		t.Helper()
+		var hidden bool
+		require.NoError(t, raw.QueryRow(`SELECT hidden_at IS NOT NULL FROM design_picture WHERE id = ?`, id).Scan(&hidden))
+		return hidden
+	}
+	pictures := func(t *testing.T) int {
+		t.Helper()
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, card)
+	}
+	hide(t, sheet.Id, true)
+
+	t.Run("перезапись спрятанного кадра — отказ, и не подано ничего", func(t *testing.T) {
+		before := pictures(t)
+		_, err := flatten(t, sheet.Id)
+		require.ErrorIs(t, err, entity.ErrDesignHiddenPicture)
+		require.NotErrorIs(t, err, entity.ErrDesignHiddenPlate)
+		require.Contains(t, err.Error(), "save the edit as a new picture")
+		require.Equal(t, before, pictures(t), "отказ не подаёт правку")
+		require.False(t, probeReplacedBy(t, raw, sheet.Id).Valid, "отказ не штампует оригинал")
+		require.True(t, isHidden(t, sheet.Id), "отказ не показывает кадр")
+		require.Zero(t, countRows(t, raw, `SELECT COUNT(*) FROM design_bench_slot WHERE tech_card_id = ?`, card),
+			"отказ ничего не ставит в слот")
+	})
+	var beside *entity.DesignPicture
+	t.Run("save as new спрятанного кадра проходит", func(t *testing.T) {
+		var err error
+		beside, err = flatten(t, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, sheet.Id, beside.DerivedFrom.Int32, "правка — сиблинг спрятанного кадра")
+		require.False(t, beside.HiddenAt.Valid, "правка рождается видимой")
+		require.False(t, probeReplacedBy(t, raw, sheet.Id).Valid, "рядом — значит рядом")
+		require.True(t, isHidden(t, sheet.Id))
+	})
+	var edit *entity.DesignPicture
+	t.Run("показанный кадр перезаписывается", func(t *testing.T) {
+		hide(t, sheet.Id, false)
+		var err error
+		edit, err = flatten(t, sheet.Id)
+		require.NoError(t, err, "отказ был про видимость")
+		require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, sheet.Id).Int32)
+	})
+	t.Run("заменённый и спрятанный — already_replaced с головой", func(t *testing.T) {
+		require.NotNil(t, beside, "подслучаи выше обязаны были подать обе правки")
+		require.NotNil(t, edit)
+		// Видимых детей у прячущегося кадра быть не должно (live_crop_parent): сперва прячут обе правки.
+		hide(t, beside.Id, true)
+		hide(t, edit.Id, true)
+		hide(t, sheet.Id, true)
+		before := pictures(t)
+		_, err := flatten(t, sheet.Id)
+		require.NotErrorIs(t, err, entity.ErrDesignHiddenPicture)
+		requireHead(t, err, sheet.Id, edit.Id)
+		require.Equal(t, before, pictures(t))
+	})
+}
+
 // КУСОК, ПЕРЕЗАПИСАННЫЙ СВОЕЙ ПРАВКОЙ, ЛИСТ ДЕРЖИТ (O-53 review).
 //
 // Сценарий ревью дословно: лист разрезан на кусок, кусок перезаписан правкой, затем перезаписывают
@@ -528,11 +625,17 @@ func probeSourceLayer(t *testing.T, raw *sql.DB, pictureID int) sql.NullInt32 {
 
 // СПРЯТАННЫЙ КУСОК С ВИДИМОЙ ПРАВКОЙ ЛИСТ ДЕРЖИТ — СЦЕНАРИЙ УСТАРЕВШЕЙ ВКЛАДКИ (O-53 review, раунд 2).
 //
-// Дословно по ревью: лист S разрезан на кусок C; C открыт в редакторе; C спрятали; устаревшая вкладка
+// По ревью: лист S разрезан на кусок C; C открыт в редакторе; C спрятали; устаревшая вкладка
 // перезаписывает спрятанный C — правка E рождается видимой; затем перезаписывают S. Сторож смотрел
 // на строку C (спрятана) и пускал перезапись S, пока E, нарезанная из прежних пикселей S, стоит на
 // экране. Кусок судится всей веткой: E на виду — лист держится. Положительный контроль: спрятали E —
 // от ветки на экране не осталось ничего, и лист свободен.
+//
+// Перезапись спрятанного C теперь отказывается (hidden_picture, 27.09) — первый шаг пробы это и
+// проверяет, — поэтому то же состояние собирается жестами, которые законны и сегодня: C показывают и
+// перезаписывают правкой E; прячут E, затем C (видимых детей у C уже нет); возвращают E — показ не
+// сторожится. Строки выходят ровно те, что оставляла устаревшая вкладка: C спрятан и заменён E, E на
+// виду.
 //
 // МУТАЦИЯ: судить кусок по его строке (вернуть hidden_at IS NULL в чтение ветки designBranchCropsOf
 // или читать HiddenAt одного куска вместо его ветки) — первая перезапись листа проходит.
@@ -543,6 +646,11 @@ func TestDesignDBOverwriteOfASheetIsHeldByAHiddenPieceWithAVisibleEdit(t *testin
 	pictures := func() int {
 		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
 	}
+	hide := func(t *testing.T, id int, hidden bool) {
+		t.Helper()
+		_, err := rep.Design().HidePicture(ctx, id, hidden, "colleague")
+		require.NoError(t, err)
+	}
 
 	crops := splitProbe(t, rep, raw, p.sheet.Id, entity.DesignViewBack)
 	require.Len(t, crops, 1)
@@ -552,19 +660,30 @@ func TestDesignDBOverwriteOfASheetIsHeldByAHiddenPieceWithAVisibleEdit(t *testin
 		TechCardId: p.card, BaseMediaId: piece.MediaId, Strokes: probeStrokes(), Actor: "stale-tab",
 	})
 	require.NoError(t, err)
-	// Кусок прячут из другой вкладки.
-	_, err = rep.Design().HidePicture(ctx, piece.Id, true, "colleague")
-	require.NoError(t, err)
-	// Устаревшая вкладка перезаписывает спрятанный кусок: правка рождается видимой.
-	edit, err := rep.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
-		TechCardId: p.card, LayerId: pieceLayer.Id, ExpectedRev: pieceLayer.Rev,
-		MediaId: probeMedia(t, raw), ReplacePictureId: piece.Id, Actor: "stale-tab",
-	})
-	require.NoError(t, err)
-	require.False(t, edit.HiddenAt.Valid, "правка спрятанного куска рождается видимой")
-	require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, piece.Id).Int32)
-
+	overwritePiece := func() (*entity.DesignPicture, error) {
+		return rep.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
+			TechCardId: p.card, LayerId: pieceLayer.Id, ExpectedRev: pieceLayer.Rev,
+			MediaId: probeMedia(t, raw), ReplacePictureId: piece.Id, Actor: "stale-tab",
+		})
+	}
+	// Кусок прячут из другой вкладки — и устаревшая вкладка его больше не перезапишет.
+	hide(t, piece.Id, true)
 	before := pictures()
+	_, err = overwritePiece()
+	require.ErrorIs(t, err, entity.ErrDesignHiddenPicture, "спрятанный кусок не перезаписывается")
+	require.Equal(t, before, pictures(), "отказ не подаёт правку куска")
+	require.False(t, probeReplacedBy(t, raw, piece.Id).Valid, "отказ не штампует кусок")
+
+	// То же состояние — законными жестами.
+	hide(t, piece.Id, false)
+	edit, err := overwritePiece()
+	require.NoError(t, err)
+	require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, piece.Id).Int32)
+	hide(t, edit.Id, true)
+	hide(t, piece.Id, true)
+	hide(t, edit.Id, false)
+
+	before = pictures()
 	_, err = rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
 	require.ErrorIs(t, err, entity.ErrDesignCutSheet, "видимая голова ветки держит лист")
 	require.Equal(t, before, pictures(), "отказ не подаёт правку листа")

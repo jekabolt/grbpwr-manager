@@ -109,7 +109,7 @@ func TestBranchReadsNameParentsNotTheCard(t *testing.T) {
 // ТЕХНИЧЕСКИЙ ЛИСТ ЧИТАЕТСЯ ПО КАРТОЧКЕ, ФАЙЛУ И СЛОВУ ЛИСТА — И ТОЛЬКО ТАК (27.09).
 //
 // Лист — строки tech_card_media с category = 'technical' (0092): их тех-пакет печатает плитами. Само
-// правило (отказ technical_sheet, его место между already_replaced и cut_sheet) проверено без базы в
+// правило (отказ technical_sheet, его место между hidden_picture и cut_sheet) проверено без базы в
 // entity; что отказ ничего не подаёт и что мудборд, лист чужой карточки и «save as new» перезапись
 // не держат — живой пробой replace_db_test.go (CI=1).
 //
