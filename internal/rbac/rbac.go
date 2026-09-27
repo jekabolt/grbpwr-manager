@@ -143,13 +143,25 @@ func ValidSection(key string) bool {
 }
 
 // Requirement is the section + minimum access level a method needs.
+//
+// SuperOnly narrows it further: the method is callable by a super account and by NOBODY else — not
+// by a scoped account holding Section at Access (or every section at write), and not by a legacy
+// pre-RBAC token either, although a legacy token is full access everywhere else. Section and Access
+// stay meaningful on a SuperOnly entry (they keep the classification test's invariants and say where
+// the method would live if it were ever delegated); the flag is what gates.
 type Requirement struct {
-	Section string
-	Access  entity.AccessLevel
+	Section   string
+	Access    entity.AccessLevel
+	SuperOnly bool
 }
 
-func rd(section string) Requirement { return Requirement{section, entity.AccessRead} }
-func wr(section string) Requirement { return Requirement{section, entity.AccessWrite} }
+func rd(section string) Requirement { return Requirement{Section: section, Access: entity.AccessRead} }
+func wr(section string) Requirement { return Requirement{Section: section, Access: entity.AccessWrite} }
+
+// wrSuper is wr(section) that only a super account may call (see Requirement.SuperOnly).
+func wrSuper(section string) Requirement {
+	return Requirement{Section: section, Access: entity.AccessWrite, SuperOnly: true}
+}
 
 // methodRequirements maps each mutating/reading admin method (bare method name,
 // without the service prefix) to the section + access it requires. Every method
@@ -789,6 +801,22 @@ var methodRequirements = map[string]Requirement{
 	"AddShipmentCarrier":      wr(SectionSettings),
 	"UpdateShipmentCarrier":   wr(SectionSettings),
 	"DeleteShipmentCarrier":   wr(SectionSettings),
+	// AI PROVIDERS PANEL — SUPER ONLY, reads included (owner decision D-03, ai-providers plan A8).
+	// These RPCs hand out and rotate the keys that spend the company's money at nine providers, move
+	// every AI feature between them, and show what each person spent. There is deliberately NO
+	// section for them: a grantable "ai" section would make key custody delegable, and the owner
+	// said it is not. They sit in SectionSettings only so the entry stays a valid Requirement;
+	// settings:write does NOT open them — SuperOnly is checked in Authorize before anything else.
+	//
+	// A legacy pre-RBAC token is refused here too, although it passes everywhere else: "full access"
+	// on such a token means "minted before permissions existed", not "is a super admin", and the
+	// panel's whole point is that exactly the supers hold the keys.
+	"GetAiProvidersConfig": wrSuper(SectionSettings),
+	"UpdateAiProvider":     wrSuper(SectionSettings),
+	"SetAiProviderKey":     wrSuper(SectionSettings),
+	"SetAiDefaults":        wrSuper(SectionSettings),
+	"SetAiRoute":           wrSuper(SectionSettings),
+	"GetAiSpendReport":     wrSuper(SectionSettings),
 	// support
 	"GetSupportTicketById":         rd(SectionSupport),
 	"GetSupportTicketByCaseNumber": rd(SectionSupport),
@@ -971,11 +999,16 @@ func ParsePermissions(perms []string) map[string]entity.AccessLevel {
 }
 
 // Authorize reports whether an account with the given super flag and parsed
-// permission map may call fullMethod. legacy tokens (pre-RBAC) and super accounts
-// are allowed everything; allowlisted methods are allowed for anyone
-// authenticated; unmapped methods are denied (fail closed).
+// permission map may call fullMethod. A SuperOnly method is allowed for a super
+// account and for nobody else — legacy tokens included. Otherwise legacy tokens
+// (pre-RBAC) and super accounts are allowed everything; allowlisted methods are
+// allowed for anyone authenticated; unmapped methods are denied (fail closed).
 func Authorize(fullMethod string, legacy, super bool, perms map[string]entity.AccessLevel) bool {
 	req, allowlisted, known := Lookup(fullMethod)
+	// FIRST, before the legacy/super bypass below: a legacy token is full access but it is NOT super.
+	if known && req.SuperOnly {
+		return super
+	}
 	if allowlisted || legacy || super {
 		return true
 	}

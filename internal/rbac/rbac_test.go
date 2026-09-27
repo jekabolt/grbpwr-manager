@@ -1,6 +1,8 @@
 package rbac
 
 import (
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -76,6 +78,10 @@ func TestNoStaleMappings(t *testing.T) {
 	}
 	for name := range methodRequirements {
 		if _, ok := live[name]; !ok {
+			if _, pending := pendingProtoMethods[name]; pending {
+				t.Logf("methodRequirements has %q ahead of the proto (lane P, P-01, adds it)", name)
+				continue
+			}
 			t.Errorf("methodRequirements has %q but AdminService has no such method", name)
 		}
 	}
@@ -83,6 +89,92 @@ func TestNoStaleMappings(t *testing.T) {
 		if _, ok := live[name]; !ok {
 			t.Errorf("allowlist has %q but AdminService has no such method", name)
 		}
+	}
+}
+
+// pendingProtoMethods are classified in methodRequirements BEFORE AdminService has them: the six AI
+// providers RPCs are being added to proto/admin by lane P (ai-providers task P-01) in parallel with
+// their classification (task B-19, lane B1), and they are classified first so that the moment they
+// are generated they are already super-only — an RPC that lands unclassified is denied to scoped
+// accounts but WIDE OPEN to a legacy token. TestNoStaleMappings tolerates exactly these names while
+// they are missing from the descriptor and nothing else; once lane P is merged the tolerance is a
+// no-op and this set should be deleted.
+var pendingProtoMethods = map[string]struct{}{
+	"GetAiProvidersConfig": {},
+	"UpdateAiProvider":     {},
+	"SetAiProviderKey":     {},
+	"SetAiDefaults":        {},
+	"SetAiRoute":           {},
+	"GetAiSpendReport":     {},
+}
+
+// aiProviderMethods are the six RPCs of the AI providers panel (ai-providers plan A5).
+var aiProviderMethods = []string{
+	"GetAiProvidersConfig",
+	"UpdateAiProvider",
+	"SetAiProviderKey",
+	"SetAiDefaults",
+	"SetAiRoute",
+	"GetAiSpendReport",
+}
+
+// TestAiMethodsAreSuperOnly is the owner's rule for the AI providers panel (plan A8, D-03): every one
+// of its six RPCs, the reads included, is callable by a super account and by nobody else. The two
+// callers that the rest of the RBAC lets through are the ones that matter here: a legacy pre-RBAC
+// token (full access everywhere else, but not super) and a scoped account holding the section the
+// entries are filed under (settings:write) — or, for that matter, every section at write.
+//
+// It also pins the SET of super-only methods to exactly these six, so the flag cannot quietly spread
+// to a method a legacy token is still entitled to, nor drop off one of the six.
+func TestAiMethodsAreSuperOnly(t *testing.T) {
+	everySectionWrite := make(map[string]entity.AccessLevel, len(catalog))
+	for _, s := range Sections() {
+		everySectionWrite[s.Key] = entity.AccessWrite
+	}
+	callers := []struct {
+		name   string
+		legacy bool
+		super  bool
+		perms  map[string]entity.AccessLevel
+		want   bool
+	}{
+		{"legacy full-access token", true, false, nil, false},
+		{"scoped settings:write", false, false, map[string]entity.AccessLevel{SectionSettings: entity.AccessWrite}, false},
+		{"scoped every section at write", false, false, everySectionWrite, false},
+		{"super", false, true, nil, true},
+	}
+	for _, m := range aiProviderMethods {
+		full := MethodPrefix + m
+		req, allowlisted, known := Lookup(full)
+		if allowlisted || !known {
+			t.Fatalf("%s must be classified in methodRequirements (allowlisted=%v, known=%v)", m, allowlisted, known)
+		}
+		if !req.SuperOnly {
+			t.Errorf("%s must be SuperOnly", m)
+		}
+		if !ValidSection(req.Section) || !req.Access.Valid() {
+			t.Errorf("%s maps to an invalid requirement %s:%s", m, req.Section, req.Access)
+		}
+		for _, c := range callers {
+			t.Run(m+"/"+c.name, func(t *testing.T) {
+				if got := Authorize(full, c.legacy, c.super, c.perms); got != c.want {
+					t.Errorf("Authorize(%s) for %s = %v, want %v", m, c.name, got, c.want)
+				}
+			})
+		}
+	}
+
+	var superOnly []string
+	for name, r := range methodRequirements {
+		if r.SuperOnly {
+			superOnly = append(superOnly, name)
+		}
+	}
+	sort.Strings(superOnly)
+	want := slices.Clone(aiProviderMethods)
+	sort.Strings(want)
+	if !slices.Equal(superOnly, want) {
+		t.Errorf("SuperOnly methods = %v, want exactly %v", superOnly, want)
 	}
 }
 
