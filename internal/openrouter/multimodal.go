@@ -9,8 +9,9 @@ package openrouter
 //
 // ⚠ AN EMPTY PICTURE LIST STILL SENDS A PARTS ARRAY (`[{"type":"text",…}]`), NOT A STRING — the bytes
 // these entry points always sent, pinned by a golden in multimodal_test.go. That is what
-// oaichat.Options{PartsAlways: true} is for: a provider-neutral ChatRequest with no pictures is a plain
-// text turn by the seam's contract, so the legacy shape has to be asked for.
+// oaichat.Options{PartsAlways: true} is for (and aiprov.ChatRequest.UserAsParts, its router-side twin):
+// a provider-neutral ChatRequest with no pictures is a plain text turn by the seam's contract, so the
+// legacy shape has to be asked for.
 
 import (
 	"context"

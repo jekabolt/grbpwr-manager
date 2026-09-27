@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -184,3 +185,83 @@ type wrapErr struct {
 
 func (w *wrapErr) Error() string { return w.msg }
 func (w *wrapErr) Unwrap() error { return w.err }
+
+// legacyReplay reads the system prompt, the user text, JSON mode and the ceiling back out of a
+// request body the router sent, so the pre-B-18 entry point can be asked the same question.
+func legacyReplay(t *testing.T, raw string) (sys, user string, jsonMode bool, maxTokens int) {
+	t.Helper()
+	var body struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		MaxTokens      int `json:"max_tokens"`
+		ResponseFormat *struct {
+			Type string `json:"type"`
+		} `json:"response_format"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &body))
+	for _, m := range body.Messages {
+		switch m.Role {
+		case "system":
+			require.NoError(t, json.Unmarshal(m.Content, &sys))
+		case "user":
+			var parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			require.NoError(t, json.Unmarshal(m.Content, &parts),
+				"the user turn is not a parts array: %s", m.Content)
+			require.Len(t, parts, 1, "no pictures: ONE text part")
+			user = parts[0].Text
+		}
+	}
+	return sys, user, body.ResponseFormat != nil && body.ResponseFormat.Type == "json_object", body.MaxTokens
+}
+
+// TestThePictureDoorsSendThePreB18BytesWithoutPictures (FIX-G2) — a word-only moodboard draft (prose
+// and structured) and an Ideas click with no media send, through the router, EXACTLY the bytes the
+// pre-B-18 entry points send for the same question (openrouter.CompleteWithImages /
+// CompleteWithImagesOn — still in the package, and what the doors called before the cutover): the
+// user turn as a one-element parts array, `[{"type":"text",…}]`, not a plain string.
+//
+// MUTATION (measured red): DraftDesignIdea / SuggestPrompts without UserAsParts → legacyReplay finds a
+// plain-string user turn; oaichat.Chat ignoring the flag → the same.
+func TestThePictureDoorsSendThePreB18BytesWithoutPictures(t *testing.T) {
+	words := designMoodCard()
+	words.Media, words.Callouts = nil, nil // the words stay (MoodNote); no picture reaches the wire
+
+	for _, tc := range []struct {
+		name string
+		req  *pb_admin.DraftDesignIdeaRequest
+	}{{"draft, prose", draftRequest()}, {"draft, structured", draftConstructionRequest()}} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDraftRigWithCard(t, http.StatusOK, constructionAnswer, words, nil, nil)
+			_, _ = rig.srv.DraftDesignIdea(designRunCtx(), tc.req) // the request bytes are the subject
+			routed := rig.stub.body
+			require.NotEmpty(t, routed, "the provider was not called")
+			require.Empty(t, rig.stub.imageURLs(t), "precondition: no picture on the wire")
+
+			sys, user, jsonMode, maxTokens := legacyReplay(t, routed)
+			legacy := openrouter.New(openrouter.Config{
+				APIKey: "test-key", BaseURL: rig.stub.srv.URL, Model: "anthropic/claude-sonnet-5",
+			})
+			_, _, _, err := legacy.CompleteWithImages(context.Background(), sys, user, nil, jsonMode, maxTokens)
+			require.NoError(t, err)
+			require.Equal(t, rig.stub.body, routed, "the router's draft request differs from the pre-B-18 bytes")
+		})
+	}
+
+	t.Run("ideas, no media", func(t *testing.T) {
+		client, rec := newSuggestFakeOR(t, openrouter.Config{}, suggestAnswer(goodIdeas))
+		_, err := newSuggestServer(t, client).SuggestPrompts(adminCtx("alice"), tryOnPose("x"))
+		require.NoError(t, err)
+		routed := rec.all()[0].Raw
+
+		sys, user, jsonMode, maxTokens := legacyReplay(t, routed)
+		_, _, _, err = client.CompleteWithImagesOn(context.Background(), openrouter.DefaultIdeasModel,
+			sys, user, nil, jsonMode, maxTokens)
+		require.NoError(t, err)
+		require.Equal(t, rec.all()[1].Raw, routed, "the router's Ideas request differs from the pre-B-18 bytes")
+	})
+}

@@ -169,7 +169,8 @@ type Options struct {
 	// PartsAlways sends the user turn as a list of parts EVEN WITH NO PICTURES —
 	// `[{"type":"text","text":…}]` instead of a plain string. openrouter.CompleteWithImages has always
 	// sent that shape for an empty moodboard, and its golden (multimodal_test.go) pins those bytes; a
-	// ChatRequest with no ImageURLs is, by the seam's own contract, a plain-string text turn.
+	// ChatRequest with no ImageURLs is a plain-string text turn unless it sets UserAsParts, which
+	// Chat turns into exactly this option.
 	PartsAlways bool
 }
 
@@ -188,7 +189,8 @@ type Reply struct {
 // error. The call was paid for and its size is known; dropping the usage with the answer is how a spend
 // vanished from the log before. Every other failure returns a nil result.
 func (c *Client) Chat(ctx context.Context, model string, req aiprov.ChatRequest) (*aiprov.ChatResult, error) {
-	reply, err := c.Send(ctx, model, req, Options{})
+	// ChatRequest.UserAsParts IS Options.PartsAlways: one code path for the legacy multimodal shape.
+	reply, err := c.Send(ctx, model, req, Options{PartsAlways: req.UserAsParts})
 	if reply == nil {
 		return nil, err
 	}

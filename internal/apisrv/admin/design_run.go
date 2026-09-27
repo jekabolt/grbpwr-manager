@@ -2848,15 +2848,16 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// anthropic/claude-sonnet-5 — модель мультимодальная. Второй слуг был бы вторым именем,
 	// которое однажды протухнет у поставщика молча.
 	//
-	// ЗАПРОС ТОТ ЖЕ, ЧТО СОБИРАЛ CompleteWithImages (B-18): картинки частями, json по флагу формы, и
-	// «кто ставит потолок, тот выключает мышление» — Effort "none" РОВНО тогда, когда потолок стоит
-	// (у прозы его нет, и её байты — контракт V-19: без потолка нет и `reasoning`). Одно отличие
-	// названо вслух: пустая доска уходит строкой, а не списком из одной текстовой части
-	// (ChatRequest без ImageURLs — это текстовый ход по контракту шва; принято, ручки нет).
+	// ЗАПРОС ТОТ ЖЕ, ЧТО СОБИРАЛ CompleteWithImages (B-18), БАЙТ В БАЙТ: ход пользователя частями даже
+	// без картинок (UserAsParts, FIX-G2), json по флагу формы, и «кто ставит потолок, тот выключает
+	// мышление» — Effort "none" РОВНО тогда, когда потолок стоит (у прозы его нет, и её байты — контракт
+	// V-19: без потолка нет и `reasoning`).
 	//
 	// ЗАПИСЬ В РЕГИСТРЕ AI (ai_usage_event) ПРИВЯЗАНА К ЭТОЙ ПОПЫТКЕ: WithRun кладёт (run, attempt)
 	// в контекст вызова, и строка каждого физического вызова цепочки несёт их (call_no 1, 2).
-	draftReq := aiprov.ChatRequest{System: systemPrompt, User: prompt, ImageURLs: boardURLs, JSONMode: construction}
+	draftReq := aiprov.ChatRequest{
+		System: systemPrompt, User: prompt, ImageURLs: boardURLs, UserAsParts: true, JSONMode: construction,
+	}
 	if maxTokens > 0 {
 		draftReq.MaxTokens, draftReq.Effort = maxTokens, "none"
 	}
