@@ -12,6 +12,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
@@ -84,6 +86,10 @@ type App struct {
 	ap  *acctposting.Worker
 	sr  *stripereconcile.Worker
 	fxw *fxsync.Worker
+	// aireg is the AI providers' live configuration (keys, enable switches, routes, breakers) and its
+	// config_version poller. Built right after the DB and never nil after a successful boot: every
+	// provider client's KeyFunc reads it.
+	aireg *registry.Registry
 	// dgw is the DESIGN band generation worker. NIL WHENEVER DESIGN_GENERATION_ENABLED IS OFF:
 	// a disabled feature is not a worker that ticks and finds nothing, it is a worker that was
 	// never built — the queue it drains costs money to drain.
@@ -150,6 +156,46 @@ func (a *App) Start(ctx context.Context) error {
 	// country change made on any instance. ctx is app-lifetime, so it stops on shutdown.
 	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
 		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval)
+	}
+
+	// ─── AI providers: the key registry every provider client reads its key through ───────────
+	//
+	// Right after the DB because the clients below are built with its KeyFuncs. A master key that
+	// is set but malformed is a BOOT ERROR: the operator meant to encrypt, and running on with
+	// every stored key unreadable would quietly fall back to env. An empty one is a warning:
+	// stored keys cannot be opened (the panel says "re-enter"), env keys answer exactly as before.
+	aiKeyRing, err := keyring.New(a.c.AI.KeysMasterKey)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "invalid AI_KEYS_MASTER_KEY",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	if !aiKeyRing.Enabled() {
+		slog.Default().WarnContext(ctx, "AI_KEYS_MASTER_KEY is not set: AI provider keys come from env only, "+
+			"a key stored in the database cannot be opened, and saving one is refused")
+	}
+	a.aireg = registry.New(a.db.AI(), aiKeyRing, registry.EnvKeys{
+		OpenRouter:       a.c.OpenRouter.APIKey,
+		OpenRouterImages: a.c.OpenRouterImages.APIKey,
+		Fal:              a.c.Fal.APIKey,
+		Meshy:            a.c.Meshy.APIKey,
+		Recraft:          a.c.Recraft.Direct.APIKey,
+	})
+	// The first reload is the boot log (one line per provider: enabled, key source, last4 — never
+	// the key). A failure here is a boot error: automigrate has created the tables by now, so a
+	// registry that cannot read them is a broken deploy, not a feature to degrade.
+	if err = a.aireg.Reload(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't load the AI provider configuration",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	if err = a.aireg.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start the AI provider registry poller",
+			slog.String("err", err.Error()),
+		)
+		return err
 	}
 
 	// House gross-margin target into the cache: every tech-card costing read resolves an effective
@@ -961,6 +1007,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.fxw != nil {
 		_ = a.fxw.Stop()
 	}
+	if a.aireg != nil {
+		_ = a.aireg.Stop()
+	}
 	// Inside the workers block, i.e. ABOVE a.db.Close(): a pass that has already paid a provider
 	// finishes writing the charge and the picture on a context that ignores cancellation, and Stop
 	// waits for it. Moving this below the close would turn a redeploy landing mid-generation into
@@ -1064,6 +1113,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.fxw != nil {
 		addWorker(a.fxw)
+	}
+	if a.aireg != nil {
+		addWorker(a.aireg)
 	}
 	if a.dgw != nil {
 		addWorker(a.dgw)
