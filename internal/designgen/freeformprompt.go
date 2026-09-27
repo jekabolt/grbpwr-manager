@@ -127,11 +127,17 @@ func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 		"except where the words above change them. Dress them in the garment of ")
 	products := freeformImageNumbers(ff, attached, entity.DesignFreeformRoleProduct)
 	productList := freeformImageList(products, "the product picture")
-	b.WriteString(productList + " — " + productList)
-	if len(products) > 1 {
-		b.WriteString(" are product pictures (a drawing, a render or a photo on white; views of the same garment)")
-	} else {
-		b.WriteString(" is a product picture (a drawing, a render or a photo on white)")
+	b.WriteString(productList + " — ")
+	switch {
+	case len(products) > 1:
+		b.WriteString(productList + " are product pictures (a drawing, a render or a photo on white; views of the same garment)")
+	case len(products) == 1:
+		b.WriteString(productList + " is a product picture (a drawing, a render or a photo on white)")
+	default:
+		// No number survived the media resolve: the fallback words already say «the product
+		// picture», so repeating them as a subject would read «the product picture is a product
+		// picture».
+		b.WriteString("a drawing, a render or a photo on white")
 	}
 	b.WriteString(": put that garment on the person at its real scale, " +
 		"draped the way that garment really sits on a body, and reproduce its cut, colour, print and " +

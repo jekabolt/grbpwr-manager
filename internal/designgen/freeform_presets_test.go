@@ -58,8 +58,9 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 		require.NotContains(t, one, "are product pictures")
 		// No product number known: the fallback words take the singular.
 		none := craftOf(t, `{"freeform":{"preset":"tryon","items":[{"media_id":11,"role":"model"}]}}`)
-		require.Contains(t, none, "Dress them in the garment of the product picture — the product picture is a "+
-			"product picture (a drawing, a render or a photo on white): put that garment")
+		require.Contains(t, none, "Dress them in the garment of the product picture — a drawing, a render or a "+
+			"photo on white: put that garment")
+		require.NotContains(t, none, "picture is a product picture", "the fallback is not a tautology")
 	})
 	t.Run("add_logo", func(t *testing.T) {
 		c := craftOf(t, `{"freeform":{"preset":"add_logo","items":[
