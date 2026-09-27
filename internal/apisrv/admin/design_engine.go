@@ -178,32 +178,46 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 	return n
 }
 
-// designEstimateForRun — THE RESERVE OF ONE RUN. A run that names an engine is priced by that
-// engine's absolute ceiling: ceiling(tier) × outputs + InputUSD × images per call × outputs
-// (requested_outputs IS the number of paid calls on every image kind: one per view, one per
-// photograph, one for the playground). A run that names none keeps designEstimateFor.
+// designEstimateForRun — THE RESERVE OF ONE RUN, from the engine table: ceiling(tier) × outputs +
+// InputUSD × images per call × outputs (requested_outputs IS the number of paid calls on every
+// image kind: one per view, one per photograph, one for the playground).
 //
-// ⚠ NEVER NULL FOR A RUN THE DOOR ACCEPTED: designRefuseImageOptions already refused a stated
-// engine the table does not list, so the lookup below cannot miss — and if it ever did, the
-// answer is the kind's own table price, not zero.
+//   - a run that NAMES an engine is priced by that engine and tier, and only by it — a named `low`
+//     is honestly cheaper than the kind's table, because `low` is what the worker sends;
+//   - a run that names none runs on the default engine at the deployment's dial, which the reserve
+//     cannot read, so it is priced at the default engine's TOP tier with its references — and never
+//     below the kind's own table (designEstimateFor), so no run reserves less than before the table;
+//   - a server with no engine table, and every non-image kind, keep designEstimateFor.
+//
+// ⚠ NEVER NULL FOR A RUN THE DOOR ACCEPTED: designRefuseImageOptions refused a stated engine the
+// table does not list, so the stated lookup cannot miss — and if it ever did, the answer is the
+// kind's own table price, not zero.
 //
 // Seam (B-09): kind threed prices by its options here, through designThreedCeilingUSDFor.
 func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot) decimal.NullDecimal {
-	img := params.GetImage()
-	if !designImageStated(img) || !designImageOptionsKind(kind) {
-		return designEstimateFor(kind, outputs)
+	base := designEstimateFor(kind, outputs)
+	if !designImageOptionsKind(kind) {
+		return base
 	}
-	engine, ok := designgen.FindEngine(s.designEngineTable(), img.GetModel())
+	img := params.GetImage()
+	stated := designImageStated(img)
+	model, tier := "", ""
+	if stated {
+		model, tier = img.GetModel(), strings.TrimSpace(img.GetQuality())
+	}
+	engine, ok := designgen.FindEngine(s.designEngineTable(), model)
 	if !ok {
-		return designEstimateFor(kind, outputs)
+		return base
 	}
 	if outputs < 1 {
 		outputs = 1
 	}
 	calls := decimal.NewFromInt(int64(outputs))
 	images := decimal.NewFromInt(int64(designImageCallImages(kind, params, inputs, engine.MaxRefs)))
-	total := engine.CeilingUSD(strings.TrimSpace(img.GetQuality())).Mul(calls).
-		Add(engine.InputUSD.Mul(images).Mul(calls))
+	total := engine.CeilingUSD(tier).Mul(calls).Add(engine.InputUSD.Mul(images).Mul(calls))
+	if !stated && base.Valid && base.Decimal.GreaterThan(total) {
+		return base
+	}
 	return decimal.NullDecimal{Decimal: total, Valid: true}
 }

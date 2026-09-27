@@ -129,12 +129,35 @@ func TestTheReserveOfANamedEngineIsITS_ABSOLUTE_CEILING(t *testing.T) {
 		require.Equal(t, "0.52", s.designEstimateForRun(entity.DesignRunKindRecolor, out, p, nil).Decimal.String())
 	})
 
-	t.Run("a run naming no engine keeps the kind's own price", func(t *testing.T) {
-		p := ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11})
-		require.Equal(t, designEstimateFor(entity.DesignRunKindFreeform, 1),
-			s.designEstimateForRun(entity.DesignRunKindFreeform, 1, p, nil))
+	t.Run("a run naming no engine: the default engine's top tier with references, never below the kind", func(t *testing.T) {
+		p := ffParams(entity.DesignFreeformPresetTryon,
+			&pb_common.DesignFreeformItem{MediaId: 11}, &pb_common.DesignFreeformItem{MediaId: 12})
+		require.Equal(t, "0.34", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, p, nil).Decimal.String(),
+			"0.32 + 2 pictures × 0.01")
+		for _, kind := range []string{
+			entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindRecolor,
+			entity.DesignRunKindPattern, entity.DesignRunKindFreeform,
+		} {
+			got := s.designEstimateForRun(kind, 1, &pb_common.DesignRunParams{}, nil)
+			require.Truef(t, got.Valid && got.Decimal.GreaterThanOrEqual(designEstimateFor(kind, 1).Decimal),
+				"%s reserves %s, under its own table %s", kind, got.Decimal, designEstimateFor(kind, 1).Decimal)
+		}
 		require.Equal(t, designEstimateFor(entity.DesignRunKindThreed, 1),
-			s.designEstimateForRun(entity.DesignRunKindThreed, 1, &pb_common.DesignRunParams{}, nil))
+			s.designEstimateForRun(entity.DesignRunKindThreed, 1, &pb_common.DesignRunParams{}, nil),
+			"a non-image kind keeps its own price")
+		require.Equal(t, designEstimateFor(entity.DesignRunKindFreeform, 1),
+			(&Server{}).designEstimateForRun(entity.DesignRunKindFreeform, 1, p, nil),
+			"no engine table: the kind's own price")
+
+		// A default engine cheaper than the kind's table never lowers the unnamed reserve.
+		cheap := &Server{}
+		cheap.SetDesignEngines(func() []designgen.Engine {
+			return []designgen.Engine{{Slug: "x/cheap", IsDefault: true, MaxRefs: 16,
+				InputUSD: decimal.Zero, Tiers: []designgen.Tier{{UI: "high", Dial: designgen.TierDialQuality,
+					Value: "high", CeilingUSD: decimal.RequireFromString("0.01")}}}}
+		})
+		require.Equal(t, designEstimateFor(entity.DesignRunKindRender, 1),
+			cheap.designEstimateForRun(entity.DesignRunKindRender, 1, &pb_common.DesignRunParams{}, nil))
 	})
 
 	t.Run("the top tier never reserves less than the path it replaces", func(t *testing.T) {
