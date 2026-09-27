@@ -250,6 +250,20 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: ""
+# AI_KEYS_MASTER_KEY seals the provider API keys an admin stores in admin -> AI providers
+# (AES-256-GCM; only the ciphertext reaches the database, so a dump is not a list of working keys).
+# Base64 of 32 random bytes (`openssl rand -base64 32`), a DIFFERENT value per environment. Declared
+# here so the requirement is visible, but intentionally committed EMPTY: a placeholder would be a
+# publicly-known key. Set it as a SECRET in the DO dashboard. While it is blank the panel cannot store
+# keys and every provider keeps running on its own env variable (OPENROUTER_API_KEY, FAL_KEY, ...);
+# boot is unaffected. A value that is not base64 of exactly 32 bytes is refused.
+# CAUTION: changing or blanking the live value makes every stored key unreadable at once (the panel
+# then asks for each key again), so the empty-SECRET caveat above is sharper here: never apply this
+# spec with `doctl apps update --spec`; deploy with `doctl apps create-deployment` only.
+- key: AI_KEYS_MASTER_KEY
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m

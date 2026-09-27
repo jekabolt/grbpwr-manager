@@ -136,6 +136,32 @@ type Config struct {
 	// binary must be able to carry this code without running it. See internal/designgen.
 	DesignGen    designgen.Config   `mapstructure:"design_generation"`
 	PatternToken PatternTokenConfig `mapstructure:"pattern_token"`
+	// AI is the provider-neutral AI layer (internal/aiprov): today only the master key that seals
+	// provider keys stored in the database. See AIConfig.
+	AI AIConfig `mapstructure:"ai"`
+}
+
+// AIConfig configures internal/aiprov.
+//
+// KeysMasterKey (AI_KEYS_MASTER_KEY) is the AES-256 master key of internal/aiprov/keyring: 32 random
+// bytes in standard base64 (`openssl rand -base64 32`), DIFFERENT per environment. It never reaches
+// the database — only the ciphertext of each provider key does, so a dump of ai_provider is not a
+// list of working keys. Empty is a valid state: keys stored in the admin panel cannot be written or
+// read and every provider runs on its env variable exactly as before. ⚠ Changing it makes every
+// stored key unreadable (the panel then asks for them again); it is not a rotation mechanism.
+type AIConfig struct {
+	KeysMasterKey string `mapstructure:"keys_master_key"`
+}
+
+// String renders the config with the master key redacted, so an accidental %v / %+v / %s of it —
+// in a log line, an error, or a test print — cannot leak it. Empty stays visibly empty: whether the
+// key is set at all is diagnostic.
+func (c AIConfig) String() string {
+	key := ""
+	if strings.TrimSpace(c.KeysMasterKey) != "" {
+		key = "***REDACTED***"
+	}
+	return fmt.Sprintf("config.AIConfig{KeysMasterKey:%s}", key)
 }
 
 // PatternTokenConfig configures the tokenized pattern read path (/api/p/{token}) that
@@ -770,4 +796,15 @@ func bindEnvVars() {
 	viper.BindEnv("fal.units_ceiling_outpaint", "FAL_UNITS_CEILING_OUTPAINT")
 	viper.BindEnv("fal.unit_usd_fill", "FAL_UNIT_USD_FILL")
 	viper.BindEnv("fal.units_ceiling_fill", "FAL_UNITS_CEILING_FILL")
+
+	// AI providers (internal/aiprov). AI_KEYS_MASTER_KEY is the master key that seals the provider
+	// keys an admin stores in the panel (base64 of 32 random bytes, one per environment). Unset =>
+	// the panel cannot store keys and every provider keeps reading its own env variable above;
+	// keyring.New refuses a value that is not base64 of exactly 32 bytes. Load-bearing in the same
+	// silent way as every line above: unbound, the variable set in the DO console reads as empty and
+	// the panel says "not set" on a deployment where it WAS set.
+	//
+	// ⚠️ Set IN THE DIGITALOCEAN CONSOLE, never pushed from .do/app.yaml: the spec carries it EMPTY,
+	// and applying the spec overwrites the live value — every stored key becomes unreadable at once.
+	viper.BindEnv("ai.keys_master_key", "AI_KEYS_MASTER_KEY")
 }
