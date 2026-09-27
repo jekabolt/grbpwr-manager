@@ -196,7 +196,7 @@ type Router struct {
 	log        *slog.Logger
 
 	warnMu sync.Mutex
-	warned map[string]uint64 // provider key → the config version its missing transport was warned at
+	warned map[string]uint64 // provider key → the HIGHEST config version its missing transport was warned at
 }
 
 // New builds the router over the registry's routes. ledger may be nil (nothing is recorded);
@@ -799,10 +799,15 @@ func failEnd(providerKey string, res *aiprov.ChatResult, err error, latency int)
 
 // warnNoTransport — once per provider per config version: the owner enabled a provider this build
 // has no chat adapter for. Its candidate is passed over; the log says so without flooding.
+//
+// THE MEMORY IS MONOTONIC (FIX-G4): it keeps the HIGHEST version warned at per provider and warns only
+// for a newer one. Chats run concurrently, each with the version of its own snapshot, so versions can
+// arrive out of order: a Chat that read v1, paused, and resumes after another warned at v2 must neither
+// warn again nor pull the memory back to v1 (the next v2 Chat would then warn a second time).
 func (r *Router) warnNoTransport(ctx context.Context, providerKey, purpose string, version uint64) {
 	r.warnMu.Lock()
 	v, seen := r.warned[providerKey]
-	if seen && v == version {
+	if seen && version <= v {
 		r.warnMu.Unlock()
 		return
 	}

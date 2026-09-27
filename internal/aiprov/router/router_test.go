@@ -1429,3 +1429,29 @@ func TestRouteHeadNamesAKeylessConfiguredRoute(t *testing.T) {
 	p, m = New(reg, nil, nil, off, 0).RouteHead(entity.AIPurposePlaygroundIdeas)
 	require.Empty(t, p+m, "the kill switch still names nothing")
 }
+
+// TestTheNoTransportWarningIsMonotonic (FIX-G4) — concurrent Chats bring their snapshots' versions out
+// of order: B warns at v2, then A (which read v1 before the reload and paused) resumes. A must not
+// warn, and must not pull the memory back to v1 — the next v2 Chat would warn a second time. A newer
+// version still warns.
+//
+// MUTATION (measured red): plain last-seen (`seen && v == version`, then overwrite) → A warns at v1 and
+// the next v2 warns again.
+func TestTheNoTransportWarningIsMonotonic(t *testing.T) {
+	r := NewSingle(entity.AIProviderOpenRouter, &chatter{}, "m")
+	var logs bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	warnings := func() int { return strings.Count(logs.String(), "no chat transport") }
+	ctx := context.Background()
+
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 2) // B, after the reload
+	require.Equal(t, 1, warnings())
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 1) // A resumes on its old list
+	require.Equal(t, 1, warnings(), "an older version than the one warned at is not news")
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 2) // the next v2 Chat
+	require.Equal(t, 1, warnings(), "the memory was not pulled back to v1")
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 3)
+	require.Equal(t, 2, warnings(), "a newer version is a new chance to be told")
+	r.warnNoTransport(ctx, entity.AIProviderApibost, entity.AIPurposeNoteMarkdown, 1)
+	require.Equal(t, 3, warnings(), "the memory is per provider")
+}
