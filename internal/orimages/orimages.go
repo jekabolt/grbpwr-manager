@@ -31,6 +31,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 const (
@@ -425,25 +428,34 @@ type imageResponseWire struct {
 // pictures that will not decode returns a non-nil *Result carrying Usage TOGETHER WITH the error:
 // the call was charged, and a ledger that records only successes under-reports spend in exactly the
 // case where spend was wasted. The caller writes the price and fails the run, publishing nothing.
-// Every other error path returns a nil result, because nothing reached the provider or nothing was
-// charged.
+// Every other error path returns a nil result: no usage came back to hand on. Whether money moved
+// anyway is not the result's to say — it is the CallError's Engaged, below.
+//
+// EVERY ERROR IS AN *aiprov.CallError (B-14), and its Engaged is the money fact the design worker and
+// the ledger read — never the sentinel: a refusal before the wire and any non-2xx are NOT engaged
+// (OpenRouter documents image generation as all-or-nothing — «fails and is not billed»); a round
+// trip that broke after the request was written, and every 2xx that did not become pictures, ARE.
+// The sentinels and the sentences stay exactly as they were, inside CallError.Err.
 func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 	if !c.Enabled() {
-		return nil, ErrNotConfigured
+		return nil, refused(aiprov.CodeNotConfigured, ErrNotConfigured)
 	}
 	wire, err := c.buildRequest(req)
 	if err != nil {
-		return nil, err
+		return nil, refused(aiprov.CodeBadRequest, err)
 	}
 	payload, err := json.Marshal(wire)
 	if err != nil {
-		return nil, fmt.Errorf("orimages: marshal request: %w", err)
+		return nil, refused(aiprov.CodeBadRequest, fmt.Errorf("orimages: marshal request: %w", err))
 	}
 
+	// THE ONE OBSERVER OF «BOUGHT / NOT BOUGHT», armed before the request exists so that the request
+	// carries it. See aiprov.ObserveWrite for why the boundary is read on the wire and not in prose.
+	ctx, wroteRequest := aiprov.ObserveWrite(ctx)
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/images"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("orimages: build request: %w", err)
+		return nil, refused(aiprov.CodeBadRequest, fmt.Errorf("orimages: build request: %w", err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey())
@@ -452,31 +464,54 @@ func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("orimages: request failed: %w", err)
+		// ONE SENTENCE ON BOTH SIDES OF THE BOUNDARY, A DIFFERENT FLAG. A deadline in the 170th second
+		// of waiting for the picture and a refused dial in the first arrive from Do looking alike; the
+		// write flag, not the prose, tells them apart. The first is paid-maybe and must never be
+		// retried — this line used to hand both to designgen as a bare error, whose default retries.
+		engaged := wroteRequest()
+		code := aiprov.Interruption(ctx, err)
+		return nil, fail(code, 0, engaged, !engaged && code != aiprov.CodeCanceled,
+			fmt.Errorf("orimages: request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
-	body, err := readCapped(resp.Body, c.cfg.MaxResponseBytes, "image response")
-	if err != nil {
-		return nil, fmt.Errorf("orimages: read response: %w", err)
+	status := resp.StatusCode
+	body, readErr := readCapped(resp.Body, c.cfg.MaxResponseBytes, "image response")
+	// THE STATUS IS JUDGED BEFORE THE BODY'S FATE, as oaichat.post does. A non-2xx is the provider's
+	// refusal at the gate — nothing was billed, whatever then happened to the error body (cut,
+	// oversized, timed out) — so it keeps its own sentinel and code; the unread body only costs the
+	// provider's sentence, and the sentence says so instead.
+	if status < 200 || status >= 300 {
+		if readErr != nil {
+			body = []byte("(the error body could not be read: " + readErr.Error() + ")")
+		}
+		code, retryable := aiprov.ClassifyStatus(status)
+		return nil, fail(code, status, false, retryable, classifyStatus(status, body))
 	}
-	if err := classifyStatus(resp.StatusCode, body); err != nil {
-		return nil, err
+	// ─── FROM HERE ON A 2xx: THE REQUEST WAS SERVED, AND THEREFORE BILLED. Nothing below is retryable.
+	if readErr != nil {
+		code := aiprov.CodeTooLarge
+		if !errors.Is(readErr, ErrResponseTooLarge) {
+			code = aiprov.Interruption(ctx, readErr)
+		}
+		return nil, fail(code, status, true, false, fmt.Errorf("orimages: read response: %w", readErr))
 	}
 
 	var ir imageResponseWire
 	if err := json.Unmarshal(body, &ir); err != nil {
-		return nil, fmt.Errorf("orimages: could not decode the image response envelope: %w", err)
+		return nil, fail(aiprov.CodeProviderError, status, true, false,
+			fmt.Errorf("orimages: could not decode the image response envelope: %w", err))
 	}
 	// A 200 whose body carries an error object: rare, but the chat side has seen it, and treating
 	// it as "no images" would blame the wrong thing.
 	if ir.Error != nil && strings.TrimSpace(ir.Error.Message) != "" {
-		return nil, fmt.Errorf("orimages: API error: %s", ir.Error.Message)
+		return nil, fail(aiprov.CodeProviderError, status, true, false,
+			fmt.Errorf("orimages: API error: %s", ir.Error.Message))
 	}
 	if len(ir.Data) == 0 {
 		// The usage rides along: this call was billed, and this is the only place that spend would
 		// otherwise vanish from.
-		return &Result{Model: wire.Model, Usage: ir.Usage}, ErrNoImages
+		return &Result{Model: wire.Model, Usage: ir.Usage}, fail(aiprov.CodeEmptyAnswer, status, true, false, ErrNoImages)
 	}
 
 	out := &Result{Model: wire.Model, Usage: ir.Usage, Images: make([]Image, 0, len(ir.Data))}
@@ -487,15 +522,35 @@ func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 			// the error, and the caller publishes nothing. Images are dropped rather than returned
 			// half-decoded, because a partial set is indistinguishable from a complete one once it
 			// leaves this function.
-			return &Result{Model: wire.Model, Usage: ir.Usage}, fmt.Errorf("orimages: image %d: %w", i+1, err)
+			return &Result{Model: wire.Model, Usage: ir.Usage}, fail(aiprov.CodeProviderError, status, true, false,
+				fmt.Errorf("orimages: image %d: %w", i+1, err))
 		}
 		if len(raw) == 0 {
-			return &Result{Model: wire.Model, Usage: ir.Usage}, fmt.Errorf("orimages: image %d carried no bytes", i+1)
+			return &Result{Model: wire.Model, Usage: ir.Usage}, fail(aiprov.CodeEmptyAnswer, status, true, false,
+				fmt.Errorf("orimages: image %d carried no bytes", i+1))
 		}
 		out.Images = append(out.Images, Image{Bytes: raw, MediaType: mediaTypeOf(d.MediaType, raw)})
 	}
 	return out, nil
 }
+
+// fail wraps today's error in the CallError every design transport returns (B-14). Provider is the
+// BILLING key: this client spends the OpenRouter account whatever slug it is handed — recraft's vector
+// route included, which is why recraft.translateORError keeps this error in its chain.
+func fail(code string, status int, engaged, retryable bool, err error) *aiprov.CallError {
+	return &aiprov.CallError{
+		Provider:   entity.AIProviderOpenRouter,
+		Code:       code,
+		HTTPStatus: status,
+		Engaged:    engaged,
+		Retryable:  retryable,
+		Err:        err,
+	}
+}
+
+// refused — a call this client declined before a request existed: nothing written, nothing billed,
+// and the identical call declines identically, so not retryable either.
+func refused(code string, err error) *aiprov.CallError { return fail(code, 0, false, false, err) }
 
 // buildRequest validates the caller's Request and turns it into the wire body. Validation happens
 // BEFORE the network on purpose: an out-of-range `n` or a nineteenth reference is our mistake, and
@@ -571,6 +626,10 @@ func validateReference(u string) error {
 }
 
 // classifyStatus turns an HTTP status into one of this package's sentinels, or nil for 2xx.
+//
+// SINCE B-14 IT BUILDS CallError.Err AND NOTHING ELSE: the Code and Retryable of the same failure come
+// from aiprov.ClassifyStatus (Generate), so the sentinel names the fault and the matrix decides the
+// retry — the two agree on every row here (a 408 is ErrProviderFailure, weather, on both sides).
 //
 // THE SPLIT IS BY STATUS, NOT BY MESSAGE TEXT, and it exists so a caller can answer one question
 // without reading English: may this be tried again, and would trying again cost money? 404, 401,

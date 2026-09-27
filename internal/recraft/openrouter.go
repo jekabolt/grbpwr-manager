@@ -127,7 +127,15 @@ func promptWithNegative(prompt, negative string) string {
 // stopped being true in the same wave: orimages now classifies 401/403 as ErrUnauthorized and 402
 // as ErrOutOfCredit. The rationale outlived its cause, and while it stood, every vector run against
 // a revoked key burned four retries over eight minutes and was filed as «provider unavailable» —
-// so the person on duty would go looking at the provider instead of at the key.
+// so the person on duty would go looking at the provider instead of at the key. The 400 outlived it
+// longer still: orimages.ErrBadRequest had no row here, fell to ErrProviderFailure below, and the
+// worker retried a request the provider's validator had already refused (B-14).
+//
+// ⚠ IT WRAPS, IT DOES NOT FLATTEN (B-14). Every row is "%w: %w": this package's sentinel first, for
+// the sentence and for errors.Is, and the shared client's error AFTER it, whole — because that error
+// is orimages' *aiprov.CallError, and its Engaged / HTTPStatus / Code are the money facts designgen's
+// classifier and ledger read. A "%v" here turned a post-write timeout back into prose and the worker
+// back into a double payer. The text is unchanged: %w prints exactly what %v printed.
 //
 // The mapping below is by SENTINEL, never by the provider's prose: matching a sentence is how a
 // reworded message silently reclassifies a fault.
@@ -136,22 +144,24 @@ func translateORError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, orimages.ErrNotConfigured):
-		return fmt.Errorf("%w: %v", ErrNotConfigured, err)
+		return fmt.Errorf("%w: %w", ErrNotConfigured, err)
 	case errors.Is(err, orimages.ErrModelUnavailable):
-		return fmt.Errorf("%w: %v", ErrModelUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrModelUnavailable, err)
 	case errors.Is(err, orimages.ErrUnauthorized):
-		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		return fmt.Errorf("%w: %w", ErrUnauthorized, err)
 	case errors.Is(err, orimages.ErrOutOfCredit):
-		return fmt.Errorf("%w: %v", ErrInsufficientCredits, err)
+		return fmt.Errorf("%w: %w", ErrInsufficientCredits, err)
 	case errors.Is(err, orimages.ErrRateLimited):
-		return fmt.Errorf("%w: %v", ErrRateLimited, err)
+		return fmt.Errorf("%w: %w", ErrRateLimited, err)
+	case errors.Is(err, orimages.ErrBadRequest):
+		return fmt.Errorf("%w: %w", ErrBadRequest, err)
 	case errors.Is(err, orimages.ErrNoImages):
-		return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	case errors.Is(err, orimages.ErrResponseTooLarge):
-		return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	case errors.Is(err, orimages.ErrProviderFailure):
-		return fmt.Errorf("%w: %v", ErrProviderFailure, err)
+		return fmt.Errorf("%w: %w", ErrProviderFailure, err)
 	default:
-		return fmt.Errorf("%w: %v", ErrProviderFailure, err)
+		return fmt.Errorf("%w: %w", ErrProviderFailure, err)
 	}
 }

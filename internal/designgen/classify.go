@@ -3,6 +3,7 @@ package designgen
 import (
 	"errors"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -176,16 +177,47 @@ type verdict struct {
 
 // classify maps a provider fault onto its verdict.
 //
+// ⚠ TWO SOURCES, EACH ANSWERING WHAT IT KNOWS (B-14). The SENTINEL names the fault — the Code a
+// person reads on the row, and a base State — and it is read first, by classifyBySentinel below. The
+// TRANSPORT'S *aiprov.CallError, when the chain carries one, then answers the two MONEY questions
+// itself: Retryable is its Retryable (a transport never calls an engaged failure retryable), and the
+// State is `unknown` when the request was written (Engaged — the provider may be billing it) and
+// `failed` when it provably was not. A sentinel cannot answer those: orimages' ErrProviderFailure was
+// both «a 5xx, nothing billed» and «the round trip broke after the write», and the one retry rule it
+// could carry paid the second case twice. A `delivered` verdict is never touched: the provider was
+// paid and the picture is on file, whatever the call's own error says.
+//
 // ⚠ THE FOUR TERMINAL-BY-MONEY CASES, NAMED. A rejected key (401/403), an exhausted balance (402),
 // a retired model slug and a request we built wrong all produce the SAME answer however many times
 // they are repeated. Letting the queue spend five attempts on them buys nothing and hides the real
 // cause behind a row that reads "failed after 5 attempts" instead of "the key was rejected".
 //
-// ⚠ THE DEFAULT LEANS RETRYABLE, ON PURPOSE. A transport failure — DNS, a reset connection, a
-// proxy hiccup — is reported by orimages as a plain wrapped error and by nobody as a sentinel, so
-// an unrecognised fault is most often weather. The money is bounded anyway: the attempt cap is the
+// ⚠ FOR A CallError THE TRANSPORT DECIDES; THE DEFAULT LEANS RETRYABLE ONLY FOR ERRORS NO TRANSPORT
+// SPOKE FOR. Before B-14 a transport failure — DNS, a reset connection, a proxy hiccup — reached this
+// function as a plain wrapped error, so an unrecognised fault was read as weather and retried, and a
+// deadline that expired AFTER the request was written was retried with it: a second payment for one
+// picture. Every design transport now says which side of the write it broke on, so the lean survives
+// only for the rare error nobody classified. The money is bounded anyway: the attempt cap is the
 // store's, and it is a money figure.
 func classify(err error) verdict {
+	v := classifyBySentinel(err)
+	ce, ok := aiprov.AsCallError(err)
+	if !ok || v.State == entity.DesignAttemptDelivered {
+		return v
+	}
+	v.Retryable = ce.Retryable
+	if ce.Engaged {
+		v.State = entity.DesignAttemptUnknown
+	} else {
+		v.State = entity.DesignAttemptFailed
+	}
+	return v
+}
+
+// classifyBySentinel is the sentinel half of classify: the Code, and the State and Retryable a fault
+// had before any transport said whether money moved. classify overrides the money answers from the
+// CallError; nothing else calls this.
+func classifyBySentinel(err error) verdict {
 	switch {
 	// ─── ours, G-03: a PAID job waiting for its route to come back. Retryable, before any attempt
 	// row (the resume is free). Its own word, because the store reads it as a WAIT that does not
@@ -369,6 +401,10 @@ func classify(err error) verdict {
 	// его провал стоил ноль и закрывается как `failed`. Про fal такого обещания нет: задание,
 	// упавшее ПОСЛЕ начала исполнения, вполне могло быть списано, а мы этого не узнаем — и
 	// `unknown` это ровно то слово схемы, которое значит «деньги, возможно, ушли, показать нечего».
+	// ⚠ С B-14 ЭТО БАЗОВЫЙ ОТВЕТ, А НЕ ПОСЛЕДНИЙ: fal.ErrTaskFailed приходит только из ответа 409/410,
+	// то есть с CallError транспорта, и classify ставит состояние по ЕГО Engaged. На опросе (GET) оно
+	// всегда false — строка сбора закрывается `failed`, она сама ничего не покупала; «деньги,
+	// возможно, ушли» остаётся на `accepted`-строке сабмита и в леджере (collectEnd → `unknown`).
 	case errors.Is(err, meshy.ErrTaskFailed):
 		return verdict{Retryable: false, Code: CodeTaskFailed, State: entity.DesignAttemptFailed}
 	case errors.Is(err, fal.ErrTaskFailed):
@@ -385,14 +421,49 @@ func classify(err error) verdict {
 	case errors.Is(err, meshy.ErrTimedOut), errors.Is(err, meshy.ErrNotReady),
 		errors.Is(err, fal.ErrTimedOut), errors.Is(err, fal.ErrNotReady):
 		return verdict{Retryable: true, Code: CodeProviderTimeout, State: entity.DesignAttemptUnknown}
+	// «The provider failed»: a 5xx (nothing billed — failed, retryable) or, for recraft direct, a
+	// round trip that broke (either side of the write). The CallError tells the two apart in classify;
+	// the base answer below is what an error no transport classified still gets.
 	case errors.Is(err, orimages.ErrProviderFailure), errors.Is(err, recraft.ErrProviderFailure):
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
-	// ⚠ RETRYABLE BY DEFAULT — so an ambiguous PAID submit must never reach this line bare. For fal
-	// that is the transport's job: only a 503 without a request id (an explicit «service
-	// unavailable» refusal) arrives here as a plain error; a 502/504 — a gateway that may have lost
-	// the queue's answer AFTER the enqueue — and every other 5xx on a submit arrive wrapped in
-	// fal.ErrSubmitUnconfirmed and stop at the terminal case above (G-03 r3, Codex BLOCKER 1).
+	// ─── no sentinel. A transport that spoke (CallError) names the code; its Retryable and Engaged
+	// are applied by classify. A fal 503 without a request id arrives here — the one explicit «service
+	// unavailable» refusal of a submit, not engaged, retryable; a 502/504 and every other 5xx on a
+	// submit arrive wrapped in fal.ErrSubmitUnconfirmed AND engaged, and stop at the terminal case
+	// above (G-03 r3, Codex BLOCKER 1).
 	default:
+		if ce, ok := aiprov.AsCallError(err); ok {
+			return verdict{Retryable: ce.Retryable, Code: codeOfCall(ce.Code), State: entity.DesignAttemptFailed}
+		}
+		// ⚠ RETRYABLE BY DEFAULT, and only here: an error no transport spoke for.
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
+	}
+}
+
+// codeOfCall names an unsentinelled transport failure in design_run.error_code's vocabulary from the
+// transport's own word (aiprov.Code*). A deadline, a cut connection and a 5xx are one word for the
+// person reading the row — the provider could not be reached or could not answer — and a caller's
+// cancellation is too: the row is about the provider, and the CallError has already said «do not
+// retry» for it.
+func codeOfCall(code string) string {
+	switch code {
+	case aiprov.CodeKeyRejected:
+		return CodeUnauthorized
+	case aiprov.CodeOutOfCredits:
+		return CodeOutOfCredit
+	case aiprov.CodeModelUnknown:
+		return CodeModelRetired
+	case aiprov.CodeRateLimited:
+		return CodeRateLimited
+	case aiprov.CodeBadRequest:
+		return CodeBadRequest
+	case aiprov.CodeEmptyAnswer, aiprov.CodeBudgetExhausted:
+		return CodeEmptyResponse
+	case aiprov.CodeTooLarge:
+		return CodeResponseTooLarge
+	case aiprov.CodeNotConfigured:
+		return CodeKindNotAvailable
+	default: // transport, timeout, provider_error, canceled, and a transport that named nothing
+		return CodeProviderUnavailable
 	}
 }

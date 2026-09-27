@@ -179,12 +179,18 @@ func TestAChargedImageFailureIsCHARGED_FAILED_AND_STILL_BOOKED(t *testing.T) {
 }
 
 // TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT — each shape orimages returns maps to one ledger
-// status, read off the real client against a stand (no engaged observer until B-14): a status the
-// client classified is `free` (OpenRouter bills image generation all-or-nothing), a bare transport
-// error is `unknown`, a 2xx with usage and no cost is `failed`.
+// status, read off the real client against a stand: a status the client classified is `free`
+// (OpenRouter bills image generation all-or-nothing), a 2xx with usage and no cost is `failed`.
 //
-// MUTATION (measured red→green): drop orimages.ErrProviderFailure from the free list → the 503 row
-// reads `unknown`.
+// B-14 CHANGED ONE ROW ON PURPOSE: a transport error BEFORE the write (the stand is closed — the dial
+// is refused, nothing left the process) used to read `unknown`, because the bare error could not say
+// which side of the write it broke on. The transport now says it (CallError.Engaged, observed on the
+// wire), so that row is `free`; the post-write half is
+// TestTheWriteIsTheMoneyBoundaryON_EVERY_DESIGN_TRANSPORT.
+// The 2xx row now carries its status (200): the CallError has the field the sentence never spelled.
+//
+// MUTATION (measured red→green): imageCallEnd's `case spoke && !ce.Engaged` removed → the 402 / 503 /
+// 401 and the refused-dial rows read `unknown`.
 func TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT(t *testing.T) {
 	stand := func(status int, body string) string {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -209,8 +215,8 @@ func TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT(t *testing.T) {
 		{"402 out of credit", stand(402, `{"error":{"message":"no credit"}}`), entity.AICallFree, intp(402), true},
 		{"503 unbilled by the provider's rule", stand(503, `{}`), entity.AICallFree, intp(503), true},
 		{"401 key rejected", stand(401, `{}`), entity.AICallFree, intp(401), true},
-		{"a transport error: nobody knows", deadURL, entity.AICallUnknown, nil, false},
-		{"200, usage, no cost, no picture", stand(200, `{"data":[],"usage":{"prompt_tokens":5}}`), entity.AICallFailed, nil, false},
+		{"a transport error before the write: nothing left, nothing billed", deadURL, entity.AICallFree, nil, true},
+		{"200, usage, no cost, no picture", stand(200, `{"data":[],"usage":{"prompt_tokens":5}}`), entity.AICallFailed, intp(200), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ai := &aiprovtest.Store{}
@@ -238,41 +244,57 @@ func TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT(t *testing.T) {
 func intp(v int) *int { return &v }
 
 // TestA408IsNEVER_BOOKED_FREE — Codex A4 #3: a server or gateway that answers 408 may already have
-// taken the whole body, run the generation and billed it (or queued an async task). The clients fold a
-// 408 into a refusal sentinel their mapping reads as `free`; the central rule (timeoutIsNotFree) takes
-// that back to `unknown`, engaged nobody-knows, cost NULL, source none — on every transport, and ONLY
-// for a 408: a validator's 4xx stays `free`. Each error below is spelled exactly as its client spells
-// it (orimages.classifyStatus, recraft.classifyStatus (direct), fal.statusErrorFrom,
-// meshy.statusError); the second half runs the real orimages / fal / Meshy clients against a 408 stand.
+// taken the whole body, run the generation and billed it (or queued an async task). A 408 is a non-2xx,
+// so its CallError is NOT engaged and every mapping reads it as `free`; the central rule
+// (timeoutIsNotFree) takes that back to `unknown`, engaged nobody-knows, cost NULL, source none — on
+// every transport, and ONLY for a 408: a validator's 4xx stays `free`.
+//
+// B-14 MOVED THE STATUS FROM THE SENTENCE TO THE FIELD, and this test with it. Each error below is a
+// CallError as its transport now raises it (HTTPStatus, not engaged, the matrix's code) around the
+// sentence its client spells; the second half runs the REAL orimages / recraft direct / fal / Meshy
+// clients against a 408 stand. The third half is the text fallback's funeral: a LOCAL refusal whose
+// words quote "HTTP 408" — no response arrived — stays `free`, because nothing reads text any more.
 //
 // MUTATIONS (measured red→green): timeoutIsNotFree returning `end` unchanged → every 408 case reads
 // `free`; the call removed from each of imageCallEnd / vectorCallEnd / falSubmitEnd / meshySubmitEnd
 // in turn → that transport's 408 cases read `free`, the other three stay green; the rule widened to
-// every status ≥ 400 → the validator controls (and the 401/402/503 image cases) read `unknown`.
+// every status ≥ 400 → the validator controls read `unknown`; httpStatusOf reading the sentence again
+// (the deleted `\bHTTP (\d{3})\b` branch restored) → every «the text is dead» row reads `unknown`.
 func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 	type mapping func(err error) entity.AICallEnd
 	image := func(err error) entity.AICallEnd { return imageCallEnd(nil, err) }
 	vector := func(err error) entity.AICallEnd { return vectorCallEnd(recraft.RouteDirect, nil, err) }
 	falSubmit := func(err error) entity.AICallEnd { return falSubmitEnd(err, decimal.NullDecimal{}) }
 	meshySubmit := func(err error) entity.AICallEnd { return meshySubmitEnd(err) }
+	// refusal — a non-2xx exactly as a design transport raises it since B-14.
+	refusal := func(provider string, status int, err error) error {
+		code, retryable := aiprov.ClassifyStatus(status)
+		return &aiprov.CallError{Provider: provider, Code: code, HTTPStatus: status, Retryable: retryable, Err: err}
+	}
 	for _, c := range []struct {
 		name      string
 		end       mapping
 		timeout   error // the client's 408
 		validator error // the same client's plain 4xx refusal: stays free
+		local     error // a refusal before the wire whose TEXT quotes a 408: stays free
 	}{
 		{"openrouter images", image,
-			fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrProviderFailure, 408, "request timeout"),
-			fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrBadRequest, 400, "bad schema")},
+			refusal(entity.AIProviderOpenRouter, 408, fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrProviderFailure, 408, "request timeout")),
+			refusal(entity.AIProviderOpenRouter, 400, fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrBadRequest, 400, "bad schema")),
+			&aiprov.CallError{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeBadRequest,
+				Err: errors.New("orimages: API error (HTTP 408): x")}},
 		{"recraft direct", vector,
-			fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 408, "request timeout"),
-			fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 422, "bad schema")},
+			refusal(entity.AIProviderRecraft, 408, fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 408, "request timeout")),
+			refusal(entity.AIProviderRecraft, 422, fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 422, "bad schema")),
+			fmt.Errorf("%w: the prompt quotes (HTTP 408) and was refused here", recraft.ErrBadRequest)},
 		{"fal submit", falSubmit,
-			fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 408, "request timeout"),
-			fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 422, "bad schema")},
+			refusal(entity.AIProviderFal, 408, fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 408, "request timeout")),
+			refusal(entity.AIProviderFal, 422, fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 422, "bad schema")),
+			fmt.Errorf("front view: %w (HTTP 408 in the address)", fal.ErrBadImageURL)},
 		{"meshy submit", meshySubmit,
-			fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 408, "request timeout"),
-			fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 400, "bad schema")},
+			refusal(entity.AIProviderMeshy, 408, fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 408, "request timeout")),
+			refusal(entity.AIProviderMeshy, 400, fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 400, "bad schema")),
+			fmt.Errorf("%w (got 9, HTTP 408 nowhere near a wire)", meshy.ErrImageCount)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			end := c.end(c.timeout)
@@ -285,6 +307,12 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 
 			end = c.end(c.validator)
 			require.Equal(t, entity.AICallFree, end.Status, "a validator's refusal stays free: the rule is 408 only")
+			require.NotNil(t, end.Engaged)
+			require.False(t, *end.Engaged)
+
+			end = c.end(c.local)
+			require.Equal(t, entity.AICallFree, end.Status, "the text fallback is dead: a sentence is not a response")
+			require.Nil(t, end.HTTPStatus, "no response arrived, so no status is booked")
 			require.NotNil(t, end.Engaged)
 			require.False(t, *end.Engaged)
 		})
@@ -315,6 +343,14 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 			entity.AIPurposeImageGenerate)
 		_, err := imageRoute(stand408(t).URL).Execute(context.Background(), job)
 		require.ErrorIs(t, err, orimages.ErrProviderFailure)
+		stored(t, ai)
+	})
+	t.Run("recraft direct, real client", func(t *testing.T) {
+		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindVector, Prompt: "a flat",
+			References: []string{"https://cdn.example/a.png"}}, entity.AIPurposeVector)
+		_, err := NewVectorProvider(recraft.New(recraft.Config{Route: string(recraft.RouteDirect),
+			Direct: recraft.DirectConfig{APIKey: "k", BaseURL: stand408(t).URL}}, nil)).Execute(context.Background(), job)
+		require.ErrorIs(t, err, recraft.ErrBadRequest)
 		stored(t, ai)
 	})
 	t.Run("fal submit, real client", func(t *testing.T) {
@@ -506,10 +542,12 @@ func TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW(t *te
 	logs := captureSlog(t)
 	st, ai := pass(true)
 
-	// The run: the collect failed for good, as it does today (commit D routes it to fal).
+	// The run: the collect failed for good, as it does today (commit D routes it to fal). B-14: the
+	// collect's own attempt closes `failed`, not `unknown` — Meshy's 404 answered a status GET, whose
+	// CallError is never engaged (the lookup bought nothing; fal's row below is where the money waits).
 	require.Len(t, st.finished, 1)
 	require.Equal(t, 2, st.finished[0].AttemptNo, "the collect's own attempt")
-	require.Equal(t, entity.DesignAttemptUnknown, st.finished[0].State)
+	require.Equal(t, entity.DesignAttemptFailed, st.finished[0].State)
 	require.Len(t, st.failed, 1)
 
 	// The ledger: fal's row untouched — still `accepted`, still unpriced, never offered a price.
@@ -858,9 +896,13 @@ func TestAVectorCallIsBOOKED_TO_THE_ACCOUNT_THAT_PAYS(t *testing.T) {
 	}{
 		{recraft.RouteOpenRouter, fakeVectorGen{usd: 0.08}, entity.AIProviderOpenRouter, entity.AICostProvider, "0.08", "", entity.AICallOK, false},
 		{recraft.RouteDirect, fakeVectorGen{usd: 0.04, credits: 40}, entity.AIProviderRecraft, entity.AICostUnits, "0.04", "40", entity.AICallOK, false},
-		{recraft.RouteOpenRouter, fakeVectorGen{err: fmt.Errorf("%w (HTTP 402): broke", recraft.ErrInsufficientCredits)},
+		// B-14: the fake transport speaks the contract the real ones do — a CallError saying whether the
+		// request was written. A refused 402 (not engaged) is free; a reset after the write is unknown.
+		{recraft.RouteOpenRouter, fakeVectorGen{err: &aiprov.CallError{Provider: entity.AIProviderOpenRouter,
+			Code: aiprov.CodeOutOfCredits, HTTPStatus: 402, Err: fmt.Errorf("%w (HTTP 402): broke", recraft.ErrInsufficientCredits)}},
 			entity.AIProviderOpenRouter, entity.AICostFree, "0", "", entity.AICallFree, false},
-		{recraft.RouteOpenRouter, fakeVectorGen{err: fmt.Errorf("%w: reset", recraft.ErrProviderFailure)},
+		{recraft.RouteOpenRouter, fakeVectorGen{err: &aiprov.CallError{Provider: entity.AIProviderOpenRouter,
+			Code: aiprov.CodeTransport, Engaged: true, Err: fmt.Errorf("%w: reset", recraft.ErrProviderFailure)}},
 			entity.AIProviderOpenRouter, entity.AICostNone, "", "", entity.AICallUnknown, true},
 	} {
 		t.Run(string(c.route)+"/"+c.wantStatus, func(t *testing.T) {
@@ -1048,8 +1090,11 @@ func TestATerminalCollectIsUNKNOWN_UNLESS_THE_PROVIDER_REFUNDED(t *testing.T) {
 		want string
 		http *int
 	}{
-		{"fal rejects the key on the status lookup", fmt.Errorf("%w (HTTP 401): nope", fal.ErrUnauthorized), entity.AICallUnknown, intp(401)},
-		{"fal forgot the request", fmt.Errorf("%w (HTTP 404): gone", fal.ErrRequestNotFound), entity.AICallUnknown, intp(404)},
+		// B-14: as fal's callJSON now raises them — a lookup's CallError, never engaged, the status a field.
+		{"fal rejects the key on the status lookup", &aiprov.CallError{Provider: entity.AIProviderFal, Code: aiprov.CodeKeyRejected,
+			HTTPStatus: 401, Err: fmt.Errorf("%w (HTTP 401): nope", fal.ErrUnauthorized)}, entity.AICallUnknown, intp(401)},
+		{"fal forgot the request", &aiprov.CallError{Provider: entity.AIProviderFal, Code: aiprov.CodeModelUnknown,
+			HTTPStatus: 404, Err: fmt.Errorf("%w (HTTP 404): gone", fal.ErrRequestNotFound)}, entity.AICallUnknown, intp(404)},
 		{"fal failed the task (it may have billed)", fal.ErrTaskFailed, entity.AICallUnknown, nil},
 		{"Meshy failed the task (Meshy refunds)", meshy.ErrTaskFailed, entity.AICallFailed, nil},
 	} {
