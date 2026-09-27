@@ -25,14 +25,39 @@ type ColorwayDevelopmentPatch struct {
 	LabDipRound        *int
 	LabDipRejectReason *string
 	DisplayOrder       *int
-	Actor              string // server-only authenticated username; never parsed from the wire
+	// Colours is the ordered palette (T45, product_colour): nil = leave the stored palette as it is;
+	// non-nil = replace it whole, by position (1…8 colours, already canonicalised by
+	// NormalizeColorwayPalette). Colours[0] is the main colour, and writing the palette mirrors it
+	// into Pantone / PantoneSystem / DevHex (the store does it, after the scalar merge, so the
+	// mirror wins over scalars sent in the same request). A palette edit never touches the
+	// per-slot recipe: that is ApplyColorwayPaletteToSlots, an explicit separate write.
+	Colours []ColorwayColour
+	// NameI18n writes per-language translations of the colourway name (product_colour_name_i18n),
+	// keyed by language id: a non-empty value upserts that language, "" deletes it (the storefront
+	// then falls back to the operator's name, Name above). nil/empty = leave them as they are.
+	NameI18n map[int]string
+	Actor    string // server-only authenticated username; never parsed from the wire
 }
 
 // IsEmpty reports whether the patch would change nothing, so the store can skip the work entirely.
 func (p *ColorwayDevelopmentPatch) IsEmpty() bool {
-	return p == nil || (p.DevCode == nil && p.Name == nil && p.LabDipStatus == nil && p.Comment == nil &&
-		p.Pantone == nil && p.PantoneSystem == nil && p.DevHex == nil && p.SwatchMediaId == nil &&
-		p.LabDipRound == nil && p.LabDipRejectReason == nil && p.DisplayOrder == nil)
+	return p == nil || (!p.HasScalars() && p.Colours == nil && len(p.NameI18n) == 0)
+}
+
+// HasScalars reports whether the patch changes any product.dev_* / lab_dip_* / pantone column —
+// the part applied as one merged UPDATE of the product row.
+func (p *ColorwayDevelopmentPatch) HasScalars() bool {
+	return p != nil && (p.DevCode != nil || p.Name != nil || p.LabDipStatus != nil || p.Comment != nil ||
+		p.Pantone != nil || p.PantoneSystem != nil || p.DevHex != nil || p.SwatchMediaId != nil ||
+		p.LabDipRound != nil || p.LabDipRejectReason != nil || p.DisplayOrder != nil)
+}
+
+// MainColour is the palette's first colour, or nil when the patch writes no palette.
+func (p *ColorwayDevelopmentPatch) MainColour() *ColorwayColour {
+	if p == nil || len(p.Colours) == 0 {
+		return nil
+	}
+	return &p.Colours[0]
 }
 
 // TouchesLabDip reports whether the patch changes any lab-dip field — i.e. whether the round journal

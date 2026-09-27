@@ -177,9 +177,14 @@ func convertDecimal(value string) (decimal.Decimal, error) {
 // convertMerchInsertToEntity converts the colourway-owned merchandising write message (R2/R4/R8) into
 // the colourway subset of entity.ColorwayBodyInsert. The style facts (brand/season/collection/gender/
 // fit/composition/care/model-wears/categories) were stripped from this message (§1.5) — they are the
-// Style's now and left zero here (written only through UpdateStyle). It validates color_code (3
-// uppercase chars, in the dictionary) and the optional hex override. countryCode (ISO, R9) is carried
-// into CountryOfOrigin, which the store resolves to the ISO country_code column.
+// Style's now and left zero here (written only through UpdateStyle). It validates a NON-EMPTY
+// color_code (3 uppercase chars, in the dictionary) and the optional hex override. countryCode (ISO,
+// R9) is carried into CountryOfOrigin, which the store resolves to the ISO country_code column.
+//
+// T45: color_code is the dictionary FAMILY and may arrive empty — ResolveColorwayFamily then proposes
+// it from the main colour's hex (create) or the store keeps the stored one (update). The
+// sku_color_token is carried upper-cased for the store's immutability echo guard; it is never a
+// write of the token.
 func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string) (entity.ColorwayBodyInsert, error) {
 	if m == nil {
 		return entity.ColorwayBodyInsert{}, fmt.Errorf("merchandising is nil")
@@ -196,14 +201,18 @@ func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countr
 		salePercentageValid = m.SalePercentage.Value != ""
 	}
 
-	if len(m.ColorCode) != 3 ||
-		m.ColorCode != strings.ToUpper(m.ColorCode) ||
-		strings.TrimSpace(m.ColorCode) != m.ColorCode {
-		return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code must be exactly 3 uppercase characters")
-	}
-	dictionaryColor, ok := cache.GetColorByCode(m.ColorCode)
-	if !ok {
-		return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code %q is not in the color dictionary", m.ColorCode)
+	var dictionaryColor entity.Color
+	if m.ColorCode != "" {
+		if len(m.ColorCode) != 3 ||
+			m.ColorCode != strings.ToUpper(m.ColorCode) ||
+			strings.TrimSpace(m.ColorCode) != m.ColorCode {
+			return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code must be exactly 3 uppercase characters")
+		}
+		var ok bool
+		dictionaryColor, ok = cache.GetColorByCode(m.ColorCode)
+		if !ok {
+			return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code %q is not in the color dictionary", m.ColorCode)
+		}
 	}
 	var colorHexOverride sql.NullString
 	if m.ColorHexOverride != nil {
@@ -225,11 +234,51 @@ func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countr
 		Preorder:         preorderTime,
 		Color:            dictionaryColor.Name,
 		ColorCode:        dictionaryColor.Code,
+		SkuColorToken:    strings.ToUpper(strings.TrimSpace(m.GetSkuColorToken())),
 		ColorHexOverride: colorHexOverride,
 		CountryOfOrigin:  countryCode,
 		SalePercentage:   decimal.NullDecimal{Decimal: salePercentage, Valid: salePercentageValid},
 		MinTier:          int16(m.MinTier),
 	}, nil
+}
+
+// ResolveColorwayFamily settles the dictionary FAMILY of a colourway write (T45, owner's decision
+// 4: the family is mandatory, and the server proposes the nearest one when the client sends none).
+//
+// A family the request named (prd.ColorCode, already validated) is kept. An empty one is proposed
+// from mainHex — the main colour's hex: the palette's first colour, else the development dev_hex —
+// as the NON-ARCHIVED dictionary colour nearest to it (entity.NearestColourFamily: OKLab, greys by
+// lightness, colours by hue first). With
+// no usable hex: required (CreateColorway) refuses with a field violation on
+// merchandising.color_code; not required (UpdateColorway) leaves it empty, which the store reads as
+// «keep the stored family».
+func ResolveColorwayFamily(prd *entity.ColorwayInsert, mainHex string, required bool) error {
+	if prd == nil || prd.ProductBodyInsert.ColorCode != "" {
+		return nil
+	}
+	if nearest, ok := entity.NearestColourFamily(mainHex, cache.GetColors()); ok {
+		prd.ProductBodyInsert.ColorCode = nearest.Code
+		prd.ProductBodyInsert.Color = nearest.Name
+		return nil
+	}
+	if !required {
+		return nil
+	}
+	return entity.NewFieldViolation("merchandising.color_code", "family_required", "",
+		"name the dictionary family (a colour code), or give the main colour a #RRGGBB hex "+
+			"(development.colours[0].hex or development.dev_hex) so the server can propose the nearest one")
+}
+
+// ColorwayMainHex is the hex a family is proposed from: the palette's main colour when the patch
+// writes a palette, else the development dev_hex it writes, else "".
+func ColorwayMainHex(dev *entity.ColorwayDevelopmentPatch) string {
+	if main := dev.MainColour(); main != nil {
+		return main.Hex
+	}
+	if dev != nil && dev.DevHex != nil {
+		return strings.TrimSpace(*dev.DevHex)
+	}
+	return ""
 }
 
 // BuildColorwayInsertEntity assembles the colourway-owned write entity from the decomposed
@@ -433,6 +482,10 @@ func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.Colorway
 			Preorder:           timestamppb.New(bi.Preorder.Time),
 			Brand:              bi.Brand,
 			ColorCode:          bi.ColorCode,
+			SkuColorToken:      bi.SkuColorToken,
+			Colours:            ColorwayColoursToPb(bi.Colours),
+			NameI18N:           ColorwayNameI18nToPb(bi.ColourNameI18n),
+			ColourName:         bi.Color,
 			DictionaryColor:    dictionaryColorToPb(bi.ColorCode),
 			ColorHexOverride:   optionalStringFromNull(bi.ColorHexOverride),
 			CountryOfOrigin:    bi.CountryOfOrigin,
@@ -487,6 +540,10 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 		ColorCode:   e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		PublishedAt: pbTimestampFromNullTime(e.Product.PublishedAt),
 		// lock_version (tech_card.lock_version) still needs entity plumbing — left unset here.
+
+		// T45: the SKU colour token beside the family. The detail read and every lifecycle
+		// transition answer through here; the paged list carries it too.
+		SkuColorToken: e.Product.ProductDisplay.ProductBody.ProductBodyInsert.SkuColorToken,
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
@@ -710,17 +767,18 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 	firstTranslationName := canonicalProductName(e.ProductDisplay.ProductBody.Translations)
 
 	pbProduct := &pb_common.Colorway{
-		Id:        int32(e.Id),
-		CreatedAt: timestamppb.New(e.CreatedAt),
-		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      slug.ProductPath(firstTranslationName, e.SKU),
-		BaseSku:   e.SKU,                                     // R8: renamed from Sku
-		Display:   buildColorwayDisplayPb(&e.ProductDisplay), // R8: renamed from ProductDisplay
-		Prices:    convertEntityPricesToPb(e.Prices),
-		SoldOut:   e.SoldOut,
-		Status:    pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),
-		StyleId:   int32(e.StyleId),
-		ColorCode: e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		Id:            int32(e.Id),
+		CreatedAt:     timestamppb.New(e.CreatedAt),
+		UpdatedAt:     timestamppb.New(e.UpdatedAt),
+		Slug:          slug.ProductPath(firstTranslationName, e.SKU),
+		BaseSku:       e.SKU,                                     // R8: renamed from Sku
+		Display:       buildColorwayDisplayPb(&e.ProductDisplay), // R8: renamed from ProductDisplay
+		Prices:        convertEntityPricesToPb(e.Prices),
+		SoldOut:       e.SoldOut,
+		Status:        pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),
+		StyleId:       int32(e.StyleId),
+		ColorCode:     e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		SkuColorToken: e.ProductDisplay.ProductBody.ProductBodyInsert.SkuColorToken,
 	}
 
 	return pbProduct, nil

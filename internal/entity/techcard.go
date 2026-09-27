@@ -1234,10 +1234,13 @@ func IsValidTechCardLabDipStatus(s TechCardLabDipStatus) bool {
 
 // TechCardColorway is a development colourway (Sheet «Колористика»).
 type TechCardColorway struct {
-	Id                 int                  `db:"id"`
-	Code               sql.NullString       `db:"code"`
-	Name               string               `db:"name"`
+	Id   int            `db:"id"`
+	Code sql.NullString `db:"code"`
+	Name string         `db:"name"`
+	// ColorCode is the dictionary FAMILY tag (T45); SkuColorToken is the SKU colour segment,
+	// COALESCE(sku_color_token, color_code) so a row an older binary inserted still reads a token.
 	ColorCode          string               `db:"color_code"`
+	SkuColorToken      string               `db:"sku_color_token"`
 	LabDipStatus       TechCardLabDipStatus `db:"lab_dip_status"`
 	ProductId          sql.NullInt32        `db:"product_id"`
 	Comment            sql.NullString       `db:"comment"`
@@ -1262,6 +1265,11 @@ type TechCardColorway struct {
 	// LabDipRounds is the colourway's lab-dip round journal (product_lab_dip_round), oldest first. The
 	// LabDip* scalars above are its latest entry.
 	LabDipRounds []ColorwayLabDipRound `db:"-"`
+	// Colours is the colourway's palette (product_colour, position order, T45); empty = a legacy
+	// single-colour colourway, whose colour is Pantone / Hex / the family as before. NameI18n is the
+	// per-language name (product_colour_name_i18n) keyed by language id.
+	Colours  []ColorwayColour `db:"-"`
+	NameI18n map[int]string   `db:"-"`
 	// BaseSku and Status are populated on the style read path (enrichMaterials) so GetStyle can emit
 	// the derived AdminColorwayRef (R1/§3.3). BaseSku is NULL for an unminted draft colourway.
 	BaseSku sql.NullString `db:"sku"`

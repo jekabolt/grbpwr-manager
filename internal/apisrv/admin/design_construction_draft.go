@@ -97,6 +97,12 @@ const (
 	// 200), и замер заполняет КАЖДЫЙ предел ровно: плотный 20 839 Б ≈ 6 950 токенов, с отступами
 	// 24 917 Б ≈ 8 305. Под 8000 это −3.8 %; под 10 000 — запас 17 %.
 	//
+	// T45 (27.09): палитра предложения — 4 цвета × (подпись 40 + пантон 24 + hex) на каждое из 4
+	// предложений, верхние pantone / hex из схемы ушли (они — зеркало colours[0]). Замер: плотный
+	// 22 371 Б ≈ 7 457 токенов, с отступами 27 309 Б ≈ 9 103. Под 10 000 — запас 9 %, поэтому
+	// потолок поднят до 11 000 (запас 17 %); ужать палитру до того же запаса можно было лишь до
+	// одного цвета, а это отменяет саму многоцветность.
+	//
 	// ПОЧЕМУ ПОТОЛОК, А НЕ ЕЩЁ ОДНО УЖАТИЕ. Удержать 8000 с запасом ≥ 15 % можно лишь так: 5 цветов
 	// слота, аспект 300 рун (≈45 слов вместо обещанных 60), записка 120, замысел 600, состав 40, цвет
 	// 30 — и запас 15.2 % на границе ошибки оценки. Это режет то, что человек читает, ради $0.03 на
@@ -210,6 +216,12 @@ const (
 	// ради случая, которого не бывает. Восемь — с запасом над самой пёстрой спекой; девятый цвет
 	// считается (OverLimit), и правило 9 просит главные ткани первыми.
 	designConstructionMaxColourwaySlots = 8
+	// ЧЕТЫРЕ ЦВЕТА ПАЛИТРЫ НА ПРЕДЛОЖЕНИЕ (T45, 27.09). Палитра колорвея — 1…8 цветов (решение
+	// владельца 5), но предложение модели — это «чем колорвей отличается от соседнего»: главная
+	// ткань и два-три акцента. Четвёрка держит потолок ответа (4 × 4 цвета по подписи и пантону —
+	// ≈900 токенов сверх прежнего худшего ответа, см. TestConstructionAnswerCeilingHoldsTheWorst
+	// RealisticAnswer); пятый цвет считается (OverLimit), а человек допишет его на вкладке.
+	designConstructionMaxColourwayColours = 4
 	// ИМЯ КОЛОРВЕЯ — 64 РУНЫ (сверх этого — потолок колонки tech_card_colorway.dev_name,
 	// varchar(255), в байтах). Это ПОДПИСЬ («Black / Bone»), а не описание: пикер колорвеев рисует
 	// её в одну строку, и длинное имя не читается ни там, ни в списке продукта.
@@ -798,8 +810,9 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"\"bom\": [{\"section\": string, \"purpose\": string, \"kind\": string, \"name\": string, " +
 	"\"composition\": string, \"colour\": string, \"pantone\": string, " +
 	"\"est_usage\": number, \"unit\": string}], " +
-	"\"colourways\": [{\"name\": string, \"color_code\": string, \"pantone\": string, " +
-	"\"hex\": string, \"slots\": [{\"slot\": string, \"pantone\": string, \"hex\": string, " +
+	"\"colourways\": [{\"name\": string, \"color_code\": string, " +
+	"\"colours\": [{\"label\": string, \"pantone\": string, \"hex\": string}], " +
+	"\"slots\": [{\"slot\": string, \"pantone\": string, \"hex\": string, " +
 	"\"colour\": string}]}], " +
 	"\"flat_details\": [{\"name\": string, \"note\": string}], " +
 	"\"missing\": [string]}\n" +
@@ -821,11 +834,11 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"at most 60 words each.\n" +
 	"6. Do not repeat what the card already says — refine it or leave the field empty.\n" +
 	"7. Limits: at most 10 aspects, 15 bom lines, 8 missing notes, 6 flat details, 4 colourways " +
-	"of at most 8 slot colours each. Lengths, in characters — longer text is cut: \"concept\" 700; " +
+	"of at most 4 colours and 8 slot colours each. Lengths, in characters — longer text is cut: \"concept\" 700; " +
 	"\"silhouette\" and \"fabric\" 300 each; an aspect 400 (about 60 words); a missing note 160; " +
 	"a flat detail \"name\" 40 and \"note\" 200; a bom \"name\" or \"composition\" 60, a " +
-	"\"colour\" 40, a Pantone code 24; a colourway \"name\" 64, its \"color_code\" 24; a slot " +
-	"\"colour\" 40.\n" +
+	"\"colour\" 40, a Pantone code 24; a colourway \"name\" 64, its \"color_code\" 24; a colour " +
+	"\"label\" 40; a slot \"colour\" 40.\n" +
 	"8. \"concept\" is answered ONLY when the prompt says the card has none; otherwise leave it " +
 	"empty.\n" +
 	"9. \"colourways\": 2 to 4 colour combinations the pictures and the description support — one " +
@@ -833,9 +846,11 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"lining, thread, hardware, trims — each by its exact name, at most 8, in this order: the main " +
 	"cloths, the thread, then the rest; each with a Pantone code (TCX for cloth, TCX or C " +
 	"otherwise) and a hex. The card's own slots, when it has any, are listed in the prompt under " +
-	"\"Slots to colour\" in that order and spelled as the answer must spell them; \"color_code\" " +
-	"is the closest code from the colour list in the prompt (empty when none is close); never " +
-	"invent a colour the board does not show.\n" +
+	"\"Slots to colour\" in that order and spelled as the answer must spell them. \"colours\" is " +
+	"the combination's palette: 1 to 4 distinct colours, the main cloth's colour first, each a " +
+	"Pantone code and a hex, or a short \"label\" when no Pantone code fits. \"color_code\" is " +
+	"the code from the colour list in the prompt closest to the MAIN colour (empty when none is " +
+	"close); several colourways may share a code. Never invent a colour the board does not show.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
 	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
@@ -1412,6 +1427,14 @@ type designConstructionStats struct {
 	// ColourwaysDropped — колорвей без имени и без единого привязанного цвета. Подтверждать нечего:
 	// продукт требует имени или хотя бы одного цвета, чтобы отличаться от соседнего.
 	ColourwaysDropped int
+	// ColoursDropped — цвет палитры предложения (T45) без подписи и без пантона: плашку hex нельзя
+	// ни проверить, ни сохранить (палитра требует одно из двух). Колорвей остаётся.
+	ColoursDropped int
+	// ColourFamiliesProposed — СЕМЕЙСТВО ПРЕДЛОЖЕНО СЕРВЕРОМ (T45): модель не назвала узнаваемого
+	// кода, и код словаря взят ближайшим к hex главного цвета (entity.NearestColourFamily).
+	// ⚠ НЕ ПОТЕРЯ И НЕ ПОПРАВКА — предложение сверх ответа, как CalloutsUnasked, поэтому в Coerced()
+	// не входит: Warn «was coerced» на ответе, которому мы ДОБАВИЛИ код, был бы неправдой.
+	ColourFamiliesProposed int
 	// BomEstDropped — ОЦЕНКА РАСХОДА СНЯТА СО СТРОКИ, А САМА СТРОКА ОСТАЛАСЬ (B-16). Модель пишет
 	// «about 2», «1,6», «1.5-2 m» — это не десятичное число, и положить его в DECIMAL(12,3) нельзя.
 	//
@@ -1441,7 +1464,7 @@ func (s designConstructionStats) Coerced() bool {
 		s.FlatDetailsDropped+
 		s.EnumsUnset+s.MaterialIDs+s.Truncated+s.OverLimit+s.Deduped+
 		s.PairsCleared+s.NonScalars+s.FieldsDropped+
-		s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped+
+		s.ColourCodesUnset+s.SlotColoursUnbound+s.ColourwaysDropped+s.ColoursDropped+
 		s.BomEstDropped+s.UnitsUnset > 0
 }
 
@@ -1672,13 +1695,32 @@ func (l *designLooseList) UnmarshalJSON(b []byte) error {
 // собственный канонический JSON пишет `color_code` (так поле названо в схеме — колонка словаря
 // называется `color_code`), а промпт, написанный по-британски, регулярно получает `colour_code`.
 // Приняв одно, мы теряли бы код у каждого второго ответа по орфографии.
+//
+// COLOURS И COLORS — ТО ЖЕ САМОЕ (T45): палитра, которую схема называет по-британски, а модель
+// регулярно пишет по-американски. Верхние pantone / hex — главный цвет в форме до T45: их пишет
+// модель, которая схему палитры не прочла, и они же лежат в каноне прогонов, отвеченных до T45.
 type designRawColourway struct {
 	Name       designLoose     `json:"name"`
 	ColorCode  designLoose     `json:"color_code"`
 	ColourCode designLoose     `json:"colour_code"`
 	Pantone    designLoose     `json:"pantone"`
 	Hex        designLoose     `json:"hex"`
+	Colours    designLooseList `json:"colours"`
+	ColorsUS   designLooseList `json:"colors"`
 	Slots      designLooseList `json:"slots"`
+}
+
+// designRawColour — один цвет палитры предложения (T45). Подпись приезжает под именем схемы
+// (`label`) или словами цвета, какими модель подписывает слоты (`colour` / `color`), — то же
+// терпение к орфографии, что у слота. `pantone_system` схема не спрашивает (книга пишется в коде:
+// «19-4005 TCX»), но наш канон пишет его ключом ColorwayColour, и повтор обязан его прочесть.
+type designRawColour struct {
+	Label         designLoose `json:"label"`
+	Colour        designLoose `json:"colour"`
+	ColorUS       designLoose `json:"color"`
+	Pantone       designLoose `json:"pantone"`
+	PantoneSystem designLoose `json:"pantone_system"`
+	Hex           designLoose `json:"hex"`
 }
 
 type designRawSlotColour struct {
@@ -2056,13 +2098,66 @@ func designParseConstructionObject(
 					designConstructionMaxVarchar255, stats),
 			})
 		}
+		// ─── ПАЛИТРА (T45) ───
+		//
+		// ТОЛЬКО ФОРМА, КАК И ВСЁ В ЭТОМ ЦИКЛЕ: потолки, пустые и повторы. Зеркало главного цвета в
+		// верхние pantone / hex и предложение семейства — живой шаг (designSettleColourwayPalettes):
+		// на повторе палитра читается из канона ровно такой, какой её получил клиент, а канон прогона,
+		// отвеченного до T45, палитры не несёт вовсе — и выдумывать её задним числом нельзя.
+		rawColours := c.Colours
+		if len(rawColours) == 0 {
+			rawColours = c.ColorsUS
+		}
+		seenColour := make(map[string]struct{}, len(rawColours))
+		for _, raw := range rawColours {
+			var rc designRawColour
+			if err := json.Unmarshal(raw, &rc); err != nil {
+				stats.FieldsDropped++
+				continue
+			}
+			label := designTake(rc.Label, stats)
+			if label == "" {
+				label = designTake(rc.Colour, stats)
+			}
+			if label == "" {
+				label = designTake(rc.ColorUS, stats)
+			}
+			// Подпись и пантон — в РУНАХ: колонки палитры (product_colour, 0375) считают знаки, а
+			// не байты, и 40 / 24 знака лежат внутри их 64.
+			colour := &pb_common.ColorwayColour{
+				Label:         designBoundedRunes(label, designConstructionMaxColourRunes, stats),
+				Pantone:       designBoundedRunes(designTake(rc.Pantone, stats), designConstructionMaxPantoneRunes, stats),
+				PantoneSystem: designColourBook(designTake(rc.PantoneSystem, stats)),
+				Hex:           designHexColour(designTake(rc.Hex, stats)),
+			}
+			if colour.Pantone == "" {
+				colour.PantoneSystem = "" // книга без кода не пишется (entity.NormalizeColorwayPalette)
+			}
+			if colour.Label == "" && colour.Pantone == "" {
+				// ЦВЕТ БЕЗ ИМЕНИ И БЕЗ КОДА — ОДНА ПЛАШКА hex, которую нельзя ни проверить, ни
+				// сохранить: палитра требует пантон или подпись.
+				stats.ColoursDropped++
+				continue
+			}
+			fold := designFoldToken(colour.Pantone + "|" + colour.Label)
+			if _, dup := seenColour[fold]; dup {
+				stats.Deduped++
+				continue
+			}
+			seenColour[fold] = struct{}{}
+			if len(cw.Colours) >= designConstructionMaxColourwayColours {
+				stats.OverLimit++
+				continue
+			}
+			cw.Colours = append(cw.Colours, colour)
+		}
 		if designColourwayIsEmpty(cw) {
 			stats.ColourwaysDropped++
 			continue
 		}
 		// ДЕДУП ПО СЛОЖЕННОМУ ИМЕНИ: два «Black / Bone» в одном ответе — это одно предложение,
-		// напечатанное дважды, и подтвердить их оба нельзя (второй CreateColorway отказал бы по
-		// занятому коду).
+		// напечатанное дважды, и подтвердив оба, человек завёл бы два одинаковых колорвея (с T45 —
+		// с двумя разными SKU-токенами: занятым код словаря больше не бывает).
 		fold := designFoldToken(cw.Name + "|" + cw.ColorCode)
 		if _, dup := seenColourway[fold]; dup {
 			stats.Deduped++
@@ -2085,8 +2180,23 @@ func designParseConstructionObject(
 // «пусто по всем полям»: имя без цветов — законный колорвей (цвета доставят на вкладке), цвета без
 // имени — тоже (сервер подпишет его «colourway N»). Пустое И то, и другое — строка, которая не
 // отличается от соседней ничем.
+//
+// T45: палитра — тоже содержание. Предложение из одних цветов подписывается «colourway N» и
+// подтверждается так же, как безымянное со слотами. Считаются только цвета, которые модель
+// НАЗВАЛА списком: главный цвет, выведенный из верхнего пантона (designSettleColourwayPalettes),
+// появляется после этой проверки и пустую строку не спасает — ровно как до T45.
 func designColourwayIsEmpty(c *pb_common.DesignColourwayProposal) bool {
-	return c.GetName() == "" && len(c.GetSlots()) == 0
+	return c.GetName() == "" && len(c.GetSlots()) == 0 && len(c.GetColours()) == 0
+}
+
+// designColourBook — книга Pantone из канона повтора: как записана, верхним регистром, не длиннее
+// колонки (8 знаков). Схема ответа её не спрашивает; значение, не похожее на книгу, читается пустым.
+func designColourBook(s string) string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	if s == "" || utf8.RuneCountInString(s) > entity.ColorwayColourSystemMaxRunes {
+		return ""
+	}
+	return s
 }
 
 // designHexColour — ЭКРАННОЕ ПРИБЛИЖЕНИЕ ЦВЕТА ИЛИ ПУСТО, ТРЕТЬЕГО НЕ ДАНО.
@@ -2156,17 +2266,15 @@ func designVerifyColourways(
 		bound[key] = full
 	}
 
-	// ─── ОДИН КОД — ОДИН КОЛОРВЕЙ ───
+	// ─── ОДИН КОД — СКОЛЬКО УГОДНО КОЛОРВЕЕВ (T45, 27.09) ───
 	//
-	// ⚠ ДЕДУП РАЗБОРА ЭТОГО НЕ ЛОВИТ, И НЕ МОЖЕТ. Он складывает «имя|код» ДО канонизации, а
-	// канонизация — она здесь — сводит РАЗНЫЕ написания к ОДНОМУ коду: «Black / Bone» и «Black /
-	// Ivory» обе выходят на BLK, и складки у них разные. Дальше `product` держит UNIQUE(style_id,
-	// color_code) (entity.ErrColorwayColorExists): человек подтверждает первое предложение — продукт
-	// создан, — подтверждает второе и получает отказ СЕРВЕРНЫМИ СЛОВАМИ про занятый код. Ровно от
-	// этого проверка ответа и стоит: комментарий к `color_code` в проводе обещает, что предложение
-	// либо подтверждается, либо честно приезжает без кода.
-	seenCode := make(map[string]struct{}, len(draft.Colourways))
-
+	// До T45 здесь стоял дедуп «один код — один колорвей»: `product` держал UNIQUE(style_id,
+	// color_code), и второе предложение с тем же кодом подтверждалось отказом сервера. С T45 код
+	// словаря — лишь СЕМЕЙСТВО (фильтр, сборка), уникален SKU-токен, который сервер чеканит сам
+	// (0376), а uniq_product_style_color снимает миграция 0377 — второй пуш T45 (D-69). «Black / Bone»
+	// и «Black / Ivory» — два законных колорвея одного семейства BLK, и снимать код со второго значило
+	// бы заставить человека выбирать руками то, что модель выбрала верно. Между пушами второе
+	// подтверждение того же семейства получает обычный отказ «exists» — черновик от этого не врёт.
 	kept := draft.Colourways[:0]
 	for _, cw := range draft.Colourways {
 		// ─── КОД СЛОВАРЯ ───
@@ -2202,21 +2310,6 @@ func designVerifyColourways(
 			continue
 		}
 
-		// ⚠ УНИКАЛЬНОСТЬ ПРОВЕРЯЕТСЯ ЗДЕСЬ, А НЕ ВЫШЕ, И ЭТО НЕСУЩЕЕ. Выброшенный колорвей не имеет
-		// права ЗАНЯТЬ код: сверив до строки «выбрасываем», мы обнулили бы код у живого предложения
-		// ради соседнего, которого в ответе уже нет.
-		//
-		// ПЕРВЫЙ ОСТАЁТСЯ, ПОСЛЕДУЮЩИЕ ТЕРЯЮТ КОД, А НЕ СТРОКУ — та же граница, что у одиночного
-		// промаха словаря выше, и считается она тем же счётчиком: с точки зрения человека оба
-		// случая — «код придётся выбрать самому». Порядок в ответе и есть предпочтение модели.
-		if cw.ColorCode != "" {
-			if _, dup := seenCode[cw.ColorCode]; dup {
-				cw.ColorCode = ""
-				stats.ColourCodesUnset++
-			} else {
-				seenCode[cw.ColorCode] = struct{}{}
-			}
-		}
 		kept = append(kept, cw)
 	}
 	draft.Colourways = kept
@@ -2229,6 +2322,49 @@ func designVerifyColourways(
 	for i, cw := range draft.Colourways {
 		if cw.Name == "" {
 			cw.Name = "colourway " + strconv.Itoa(i+1)
+		}
+	}
+}
+
+// designSettleColourwayPalettes — ПАЛИТРА И СЕМЕЙСТВО ПРЕДЛОЖЕНИЯ, ТРЕТИЙ ШАГ ЖИВОГО ОТВЕТА (T45).
+//
+// Зовётся ТАМ ЖЕ И ТАК ЖЕ, как designVerifyColourways, — один раз, на живом ответе, до записи
+// канона, с ТЕМ ЖЕ списком цветов, что уехал в промпт. На повторе палитра и код читаются из канона
+// ровно такими, какими их получил клиент: вчерашний ответ не пересчитывается сегодняшним словарём.
+//
+// ЧТО ДЕЛАЕТ, ПО ПОРЯДКУ, ДЛЯ КАЖДОГО ПРЕДЛОЖЕНИЯ:
+//
+//  1. ЗЕРКАЛО. Палитра названа — верхние pantone / hex становятся её главным цветом (colours[0]):
+//     клиент, написанный до T45, читает цвет предложения оттуда, и два источника одного цвета не
+//     имеют права разойтись. Палитра не названа, а верхний пантон есть (модель ответила формой до
+//     T45) — главный цвет палитры выводится из него: подтверждение шлёт development.colours, и
+//     предложение с пантоном не должно приезжать без палитры.
+//  2. СЕМЕЙСТВО. Код словаря не узнан или не назван — предлагается ближайший НЕАРХИВНЫЙ цвет
+//     словаря к hex главного цвета (entity.NearestColourFamily: OKLab, серые — по светлоте, цветные —
+//     прежде всего по тону) —
+//     та же мера, которой CreateColorway предлагает семейство колорвею, созданному без кода.
+//     Без hex код остаётся пустым: клиент спросит семейство у человека.
+func designSettleColourwayPalettes(draft *pb_common.DesignConstructionDraft, colours []entity.Color, stats *designConstructionStats) {
+	if draft == nil {
+		return
+	}
+	for _, cw := range draft.Colourways {
+		if len(cw.Colours) > 0 {
+			cw.Pantone = cw.Colours[0].GetPantone()
+			cw.Hex = cw.Colours[0].GetHex()
+		} else if cw.Pantone != "" {
+			cw.Colours = []*pb_common.ColorwayColour{{Pantone: cw.Pantone, Hex: cw.Hex}}
+		}
+		if cw.ColorCode != "" {
+			continue
+		}
+		hex := cw.Hex
+		if len(cw.Colours) > 0 && cw.Colours[0].GetHex() != "" {
+			hex = cw.Colours[0].GetHex()
+		}
+		if nearest, ok := entity.NearestColourFamily(hex, colours); ok {
+			cw.ColorCode = nearest.Code
+			stats.ColourFamiliesProposed++
 		}
 	}
 }

@@ -292,7 +292,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 	query := `
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
-		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
@@ -364,7 +364,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 	query := `
 	SELECT
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
-		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
@@ -435,7 +435,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 	query := `
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
-		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
@@ -506,7 +506,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	query := fmt.Sprintf(`
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
-		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, `+styleCompositionSelect+` AS composition, `+styleCompositionEntriesSelect+` AS composition_entries,
@@ -575,6 +575,8 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		measurements   []entity.ProductMeasurement
 		media          []entity.MediaFull
 		tags           []entity.ColorwayTag
+		palettes       map[int][]entity.ColorwayColour
+		nameI18n       map[int]map[int]string
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -638,6 +640,21 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		}
 		return nil
 	})
+	if showHidden {
+		// T45: the admin colourway read carries the palette and the per-language name. The storefront
+		// path (showHidden=false) projects StorefrontColorway, which carries neither, so it does not
+		// pay for them.
+		g.Go(func() error {
+			var e error
+			if palettes, e = ColorwayPalettesByID(gctx, s.DB, []int{pid}); e != nil {
+				return e
+			}
+			if nameI18n, e = ColorwayNameI18nByID(gctx, s.DB, []int{pid}); e != nil {
+				return e
+			}
+			return nil
+		})
+	}
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
@@ -656,6 +673,8 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	}
 
 	product.SoldOut = entity.SoldOutFromSizes(sizes)
+	product.ProductDisplay.ProductBody.ProductBodyInsert.Colours = palettes[pid]
+	product.ProductDisplay.ProductBody.ProductBodyInsert.ColourNameI18n = nameI18n[pid]
 
 	productInfo.Product = &product
 	productInfo.Sizes = sizes
@@ -676,7 +695,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 	baseQuery := `
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
-		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		COALESCE(sty.season_code, '') AS season, sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,

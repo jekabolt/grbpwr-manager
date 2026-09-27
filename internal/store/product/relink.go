@@ -174,12 +174,21 @@ func refuseRelinkWithDesignRows(ctx context.Context, db dependency.DB, colorwayI
 // A colourway that the SOURCE style's design band still names is refused outright
 // (entity.ErrColorwayHasDesignRows) — see refuseRelinkWithDesignRows for why moving those rows is
 // the wrong boundary.
+//
+// T45: the SKU colour token travels with the colourway and is unique per style, so a target style
+// that already holds it is refused BEFORE anything is written (entity.ErrColorwaySkuTokenTaken,
+// naming the token, the target style and the colourway holding it) — the token is immutable, so
+// the way out is another target, never a re-mint. Until 0377, a target already holding the
+// colourway's FAMILY is refused by uniq_product_style_color and answered as
+// entity.ErrColorwayFamilyTaken. A legacy row (token NULL) gets its token pinned before it moves.
 func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyleID, expectedColorwayVersion, expectedTargetStyleVersion int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cw, err := storeutil.QueryNamedOne[struct {
-			StyleID int   `db:"style_id"`
-			Status  uint8 `db:"lifecycle_status"`
-		}](ctx, rep.DB(), `SELECT style_id, lifecycle_status FROM product WHERE id = :id`, map[string]any{"id": colorwayID})
+			StyleID   int            `db:"style_id"`
+			Status    uint8          `db:"lifecycle_status"`
+			ColorCode string         `db:"color_code"`
+			Token     sql.NullString `db:"sku_color_token"`
+		}](ctx, rep.DB(), relinkColorwayQuery, map[string]any{"id": colorwayID})
 		if err != nil {
 			return err // sql.ErrNoRows -> NOT_FOUND upstream
 		}
@@ -212,15 +221,33 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		if err := refuseRelinkWithDesignRows(ctx, rep.DB(), colorwayID); err != nil {
 			return err
 		}
+		// T45: the token the colourway carries (a legacy row reads its color_code) must be free in the
+		// target — looked up here, inside the transaction and before any write, so a refusal leaves
+		// both styles untouched.
+		token := cw.ColorCode
+		if cw.Token.Valid && cw.Token.String != "" {
+			token = cw.Token.String
+		}
+		if err := refuseRelinkOntoHeldToken(ctx, rep.DB(), colorwayID, targetStyleID, token); err != nil {
+			return err
+		}
+		if !cw.Token.Valid || cw.Token.String == "" {
+			if err := storeutil.ExecNamed(ctx, rep.DB(), pinLegacySkuTokenQuery,
+				map[string]any{"token": token, "id": colorwayID}); err != nil {
+				return fmt.Errorf("pin sku colour token of colourway %d before relink: %w", colorwayID, err)
+			}
+		}
 		if err := detachRelinkedColorwayReferences(ctx, rep.DB(), colorwayID); err != nil {
 			return err
 		}
 		// Relink under a source-membership + still-draft guard, so a concurrent relink/publish is rejected.
-		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
-			`UPDATE product SET style_id = :target WHERE id = :id AND lifecycle_status = :draft AND style_id = :source`,
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), relinkMoveQuery,
 			map[string]any{"target": targetStyleID, "id": colorwayID, "draft": uint8(entity.ColorwayStatusDraft), "source": cw.StyleID})
 		if err != nil {
-			return fmt.Errorf("relink colourway %d to style %d: %w", colorwayID, targetStyleID, err)
+			// The backstop for a token that appeared in the target after the look above, and — until
+			// 0377 — for a target that already holds the colourway's family: an «exists», not a 500.
+			return fmt.Errorf("relink colourway %d to style %d: %w", colorwayID, targetStyleID,
+				colorwayDuplicate(err, targetStyleID, token, cw.ColorCode))
 		}
 		if rows != 1 {
 			return entity.ErrTechCardConflict
@@ -239,6 +266,37 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		return nil
 	})
 }
+
+// refuseRelinkOntoHeldToken refuses a relink whose target style already holds the colourway's SKU
+// colour token (COALESCE(sku_color_token, color_code): a legacy row there holds its code). The
+// refusal names the token, the target style and the colourway in the way — the three things the
+// operator needs, since the token is immutable and one of the two colourways has to go elsewhere.
+func refuseRelinkOntoHeldToken(ctx context.Context, db dependency.DB, colorwayID, targetStyleID int, token string) error {
+	holders, err := storeutil.QueryListNamed[struct {
+		ID int `db:"id"`
+	}](ctx, db, relinkTokenHolderQuery, map[string]any{"target": targetStyleID, "token": token, "id": colorwayID})
+	if err != nil {
+		return fmt.Errorf("check SKU colour token %s in style %d: %w", token, targetStyleID, err)
+	}
+	if len(holders) > 0 {
+		return fmt.Errorf("%w: SKU colour token %s is already held by colourway %d in style %d; the token "+
+			"never changes, so relink this colourway to a style without %s", entity.ErrColorwaySkuTokenTaken,
+			token, holders[0].ID, targetStyleID, token)
+	}
+	return nil
+}
+
+// The relink's statements, as package constants so the DB-free binding test holds them.
+const (
+	relinkColorwayQuery = `SELECT style_id, lifecycle_status, color_code, sku_color_token FROM product WHERE id = :id`
+	// The target's holder of the token, lowest id first so the refusal names the same colourway on
+	// every attempt.
+	relinkTokenHolderQuery = `
+		SELECT id FROM product
+		WHERE style_id = :target AND COALESCE(sku_color_token, color_code) = :token AND id <> :id
+		ORDER BY id LIMIT 1`
+	relinkMoveQuery = `UPDATE product SET style_id = :target WHERE id = :id AND lifecycle_status = :draft AND style_id = :source`
+)
 
 // styleLockVersion loads a style's shared optimistic-lock token (tech_card.lock_version); sql.ErrNoRows
 // when the style is absent.

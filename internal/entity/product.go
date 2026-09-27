@@ -74,9 +74,13 @@ type Size struct {
 	CountWomen int
 }
 
-// Color is a controlled colour dictionary entry. Code is exactly 3 chars and unique; it feeds the
-// colour segment of the SKU and is referenced by product.color_code and tech_card_colorway.color_code.
-// Hex is the base shade; product.color_hex may override it per product.
+// Color is a controlled colour dictionary entry. Code is exactly 3 chars and unique, and is
+// referenced by product.color_code — since T45 a colourway's FAMILY (filters, assembly matching),
+// which several colourways of one style may share once migration 0377 drops the family unique. The
+// SKU's colour segment is NOT read from here:
+// it is product.sku_color_token, minted once when the colourway is created (a pre-T45 colourway's
+// token is the code it had then). Hex is the base shade; product.color_hex may override it per
+// product.
 type Color struct {
 	ID         int            `db:"id"`
 	Code       string         `db:"code"`
@@ -314,10 +318,25 @@ func (ag *AgeGroupEnum) Scan(src any) error {
 }
 
 type ColorwayBodyInsert struct {
-	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
-	Brand              string              `db:"brand" valid:"required"`
-	Color              string              `db:"color" valid:"required"` // resolved dictionary name; never accepted from API
-	ColorCode          string              `db:"color_code" valid:"required"`
+	Preorder sql.NullTime `db:"preorder" valid:"-"`
+	Brand    string       `db:"brand" valid:"required"`
+	// Color is product.color, the name every legacy reader prints (orders, lays, run pack, the
+	// storefront cart): the colourway's own name (dev_name) once it carries a palette (T45), the
+	// dictionary family's name otherwise. Server-resolved; never accepted from the API.
+	Color string `db:"color" valid:"required"`
+	// ColorCode is the dictionary FAMILY tag (T45): mandatory, FK color(code), the key of the
+	// catalogue filter and of aux-output assembly matching. Several colourways of one style may
+	// share it. It is no longer the SKU segment — that is SkuColorToken.
+	ColorCode string `db:"color_code" valid:"required"`
+	// SkuColorToken is the colour segment of the SKU (product.sku_color_token, T45): minted by the
+	// server when the colourway is created, unique per style, immutable afterwards. Reads return it
+	// (COALESCE with color_code for a row an older binary inserted); on an update it is an ECHO
+	// guard only — empty or the stored value pass, any other value is refused.
+	SkuColorToken string `db:"sku_color_token" valid:"-"`
+	// Colours / ColourNameI18n are READ-ONLY projections of the palette and the per-language name
+	// (T45), filled by the admin colourway read. Writes travel on the development patch.
+	Colours            []ColorwayColour    `db:"-" valid:"-"`
+	ColourNameI18n     map[int]string      `db:"-" valid:"-"`
 	ColorHexOverride   sql.NullString      `db:"color_hex" valid:"-"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
@@ -453,6 +472,15 @@ type ColorwayInsert struct {
 	// (EUR), used for margin analytics. Invalid/NULL leaves the stored value unchanged
 	// on update. Never serialized on the storefront read path — write-only.
 	CostPrice decimal.NullDecimal `db:"cost_price" valid:"-"`
+	// RestoreSkuColorToken is a TRUSTED restore of a SKU colour token the colourway already had on
+	// another base — set only by the «create colourways from archive» action, never from the wire
+	// (a request naming merchandising.sku_color_token is refused: the server mints tokens). The
+	// create takes it verbatim when the style does not hold it and refuses with
+	// ErrColorwaySkuTokenTaken (an ErrColorwayColorExists) when it does, instead of minting another:
+	// the archive's idempotency lives in the token — a second press must land on «exists», not on a
+	// second colourway. An archive written before the token travelled (format 1.0) restores its
+	// color_code, which is what the token was then. Empty = mint as usual.
+	RestoreSkuColorToken string `db:"-" valid:"-"`
 }
 
 type ColorwayDisplay struct {

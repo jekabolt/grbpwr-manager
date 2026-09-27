@@ -23,6 +23,7 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -77,6 +78,15 @@ type colorwayCreateInput struct {
 	Tags                      []*pb_common.ColorwayTagInsert
 	Prices                    []*pb_common.ColorwayPriceInsert
 	Development               *pb_common.ColorwayDevelopmentInsert
+	// DevelopmentFields narrows Development to the leaves it names (update_mask semantics); nil =
+	// every leaf the block carries, which is what an RPC create means. The archive press names its
+	// three (name, colours, name_i18n) so the lab-dip half of the block is not written as «empty».
+	DevelopmentFields *fieldmaskpb.FieldMask
+	// RestoreSkuColorToken is the archive press's TRUSTED restore of the token the colourway had on
+	// its source base — see entity.ColorwayInsert.RestoreSkuColorToken. Not on the wire: the
+	// CreateColorway RPC never sets it, and a request naming merchandising.sku_color_token is refused
+	// below, so this is the only door a chosen token comes through.
+	RestoreSkuColorToken string
 }
 
 // errColorwayInvalid marks the converter's refusal — a colour code that is not three uppercase
@@ -98,15 +108,44 @@ var errColorwayInvalid = errors.New("invalid colourway")
 // The CAPABILITY gates are NOT here and must not move here: rejectEmbeddedColorwayUsages and the
 // costing:write check answer questions about the REQUEST and about who sent it, and a caller that
 // has no request and no cost to set would be asking them of nobody.
+//
+// T45 (owner's decisions 1 and 4): the SKU colour token is the server's to mint, so a request that
+// names one is refused (field violation merchandising.sku_color_token); the dictionary family is
+// mandatory, and an empty one is proposed from the main colour's hex (dto.ResolveColorwayFamily) —
+// refused with a field violation when there is no hex to go by. Both refusals are
+// *entity.ValidationError, which createColorwayStatus turns into InvalidArgument.
 func (s *Server) createColorway(ctx context.Context, in colorwayCreateInput) (int, error) {
 	prd, err := dto.BuildColorwayInsertEntity(in.Merchandising, in.CountryCode, in.ThumbnailMediaID,
 		in.SecondaryThumbnailMediaID, in.Translations, in.CostPrice)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", errColorwayInvalid, err)
 	}
+	if token := prd.ProductBodyInsert.SkuColorToken; token != "" {
+		return 0, entity.NewFieldViolation("merchandising.sku_color_token", "server_minted", token,
+			"leave it empty: the server mints the SKU colour token when the colourway is created, and it never changes")
+	}
+	dev, err := dto.ColorwayDevelopmentPatchFromPb(in.Development, in.DevelopmentFields)
+	if err != nil {
+		return 0, err
+	}
+	// A palette colourway carries its own name (owner's decision 3) — the store refuses it too, this
+	// just answers before the dictionary and the family are consulted.
+	if dev.MainColour() != nil {
+		name := ""
+		if dev.Name != nil {
+			name = *dev.Name
+		}
+		if ve := entity.CheckColorwayPaletteName(true, name, true); ve != nil {
+			return 0, ve
+		}
+	}
+	if err := dto.ResolveColorwayFamily(prd, dto.ColorwayMainHex(dev), true); err != nil {
+		return 0, err
+	}
+	prd.RestoreSkuColorToken = in.RestoreSkuColorToken
 	id, err := s.repo.Products().CreateColorway(ctx, in.StyleID, prd,
 		dto.ConvertColorwayMediaIDs(in.MediaIDs), dto.ConvertColorwayTags(in.Tags), dto.ConvertColorwayPrices(in.Prices),
-		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(in.Development, nil)))
+		stampColorwayDevelopmentActor(ctx, dev))
 	if err != nil {
 		return 0, err
 	}
@@ -124,6 +163,14 @@ func createColorwayStatus(ctx context.Context, err error) error {
 
 // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock (R2/R4). It
 // never touches style facts, variants, stock or the size chart.
+//
+// T45: an update_mask whose every path is under `development` (the lab-dip panel, the palette
+// editor, a name translation) writes the development block ALONE — merchandising is then neither
+// required nor read, and the store leaves the merch row, translations, media, tags and prices as
+// they are. Any other mask keeps the merchandising row a full replace, where an empty family
+// (merchandising.color_code) is proposed from the palette's main hex when this request writes a
+// palette, and otherwise keeps the stored family (the store does that). The SKU colour token is an
+// echo guard only (the store refuses a changed one).
 func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
 	if err := rejectEmbeddedColorwayUsages(req.GetDevelopment()); err != nil {
 		return nil, err
@@ -131,14 +178,26 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
-	// Translations/media/tags/prices are a sparse update in the store (empty slice = leave unchanged).
-	prd, err := dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
+	dev, err := dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
+		return nil, colorwayRequestError(err)
+	}
+	var prd *entity.ColorwayInsert // nil = a development-only write
+	if !dto.UpdateMaskIsDevelopmentOnly(req.GetUpdateMask()) {
+		// Translations/media/tags/prices are a sparse update in the store (empty slice = leave unchanged).
+		prd, err = dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
+		}
+		if main := dev.MainColour(); main != nil {
+			if err := dto.ResolveColorwayFamily(prd, main.Hex, false); err != nil {
+				return nil, colorwayRequestError(err)
+			}
+		}
 	}
 	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())))
+		stampColorwayDevelopmentActor(ctx, dev))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}
@@ -154,6 +213,17 @@ func stampColorwayDevelopmentActor(ctx context.Context, patch *entity.ColorwayDe
 		patch.Actor = authsrv.GetAdminUsername(ctx)
 	}
 	return patch
+}
+
+// colorwayRequestError answers a refusal of the REQUEST's own shape found before the store is
+// reached (a palette, a translation, a family). They are field-tagged *entity.ValidationError;
+// anything else is still the caller's input, so InvalidArgument either way.
+func colorwayRequestError(err error) error {
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
+	}
+	return status.Error(codes.InvalidArgument, err.Error())
 }
 
 func rejectEmbeddedColorwayUsages(dev *pb_common.ColorwayDevelopmentInsert) error {
@@ -193,6 +263,43 @@ func (s *Server) UpdateColorwayRecipe(ctx context.Context, req *pb_admin.UpdateC
 	// made pin/norm edits invisible in margins. Best-effort — the write above already succeeded.
 	s.reseedColorwayCostAfterRecipe(ctx, int(req.GetColorwayId()))
 	return &pb_admin.UpdateColorwayRecipeResponse{LockVersion: int32(newVersion)}, nil
+}
+
+// ApplyColorwayPaletteToSlots is the explicit «apply to slots» door (T45, owner's decision 7): the
+// named BOM-line slots of a colourway take colours from THAT colourway's saved palette. The palette
+// write itself (UpdateColorway development.colours) never reaches the recipe. Semantics are the
+// store's (TechCards.ApplyColorwayPaletteToSlots) and the RPC's doc in admin.proto.
+//
+// No cost reseed afterwards, unlike UpdateColorwayRecipe: a colour is not a cost input, and the one
+// row this may add carries no consumption and no pin.
+func (s *Server) ApplyColorwayPaletteToSlots(ctx context.Context, req *pb_admin.ApplyColorwayPaletteToSlotsRequest) (*pb_admin.ApplyColorwayPaletteToSlotsResponse, error) {
+	if req.GetColorwayId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id is required")
+	}
+	assignments, ve := entity.NormalizePaletteSlotAssignments(dto.ColorwayPaletteSlotAssignmentsFromPb(req.GetAssignments()))
+	if ve != nil {
+		return nil, apierr.Invalid(ve)
+	}
+	res, err := s.repo.TechCards().ApplyColorwayPaletteToSlots(ctx, int(req.GetColorwayId()),
+		int(req.GetExpectedColorwayVersion()), assignments)
+	if err != nil {
+		if errors.Is(err, entity.ErrColorwayNoPalette) {
+			return nil, apierr.FailedPrecondition(entity.NewFieldViolation("colorway_id", "no_palette",
+				fmt.Sprintf("colourway %d", req.GetColorwayId()),
+				"save the colourway's palette first (UpdateColorway development.colours), then apply it to slots"))
+		}
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		slog.Default().ErrorContext(ctx, "can't apply colourway palette to slots",
+			slog.Int("colorway_id", int(req.GetColorwayId())), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't apply the colourway palette to slots")
+	}
+	return &pb_admin.ApplyColorwayPaletteToSlotsResponse{
+		LockVersion: int32(res.LockVersion),
+		RowsUpdated: int32(res.RowsUpdated),
+		RowsCreated: int32(res.RowsCreated),
+	}, nil
 }
 
 // reseedColorwayCostAfterRecipe re-seeds ONE colourway's tech-card-sourced cost_price after its
@@ -242,7 +349,25 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 // colorwayWriteError maps a store colourway-write error to a gRPC status: absent style/colourway ->
 // NotFound; a stale optimistic version -> Aborted; a business precondition (duplicate colour, frozen)
 // -> FailedPrecondition; else Internal.
+//
+// T45: «duplicate colour» is two refusals since the token split — the SKU colour token is held
+// (entity.ErrColorwaySkuTokenTaken) or, until migration 0377, the style already holds the family
+// (entity.ErrColorwayFamilyTaken). The store names both; a RAW MySQL 1062 on either index that
+// reached here unnamed is classified the same way (entity.ColorwayDuplicateKey) instead of becoming
+// a 500 — the backstop's backstop.
 func colorwayWriteError(ctx context.Context, op string, id int, err error) error {
+	if !errors.Is(err, entity.ErrColorwayColorExists) {
+		if dup := entity.ColorwayDuplicateKey(err); dup != nil {
+			err = fmt.Errorf("%w: %w", dup, err)
+		}
+	}
+	// A field-tagged refusal (T45: a changed SKU token, a pantone that is the palette's mirror, an
+	// unknown translation language, a family nobody named) is the caller's to fix: InvalidArgument
+	// with the BadRequest detail, never a 500.
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Errorf(codes.NotFound, "colourway/style not found")

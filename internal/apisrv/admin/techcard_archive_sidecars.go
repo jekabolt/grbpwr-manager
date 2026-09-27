@@ -267,6 +267,12 @@ func (s *Server) collectArchiveSidecars(ctx context.Context, card *entity.TechCa
 	for _, m := range di.Measurements {
 		measurements[m.Id] = m.Name
 	}
+	// Colourway name translations travel by language CODE (format 1.1): an id means nothing in the
+	// base that reads the archive.
+	languages := make(map[int]string, len(di.Languages))
+	for _, l := range di.Languages {
+		languages[l.Id] = l.Code
+	}
 
 	sc := &archiveSidecars{spool: newArchiveSpool(), SizeNames: make(map[int]string)}
 	defer func() {
@@ -292,7 +298,7 @@ func (s *Server) collectArchiveSidecars(ctx context.Context, card *entity.TechCa
 	sc.Assembly = assembly
 	sc.Holes = append(sc.Holes, holes...)
 
-	colorways, holes := collectArchiveColorways(card, sizes, sc)
+	colorways, holes := collectArchiveColorways(card, sizes, languages, sc)
 	sc.Colorways = colorways
 	sc.Holes = append(sc.Holes, holes...)
 
@@ -490,7 +496,12 @@ func (s *Server) collectArchiveAssembly(ctx context.Context, card *entity.TechCa
 // нельзя забыть повторить в следующей правке.
 //
 // Лаб-дипы не едут: это переписка с красильней, а не спецификация вещи.
-func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, sc *archiveSidecars,
+//
+// T45 (формат 1.1): колорвей едет СО СВОЕЙ ИДЕНТИЧНОСТЬЮ — color_code теперь только СЕМЕЙСТВО
+// (фильтр), а SKU-токен (неизменяемый, уникальный в стиле) едет отдельным полем; с ним — имя,
+// переводы имени по КОДУ языка и палитра. Без токена импорт принял бы семейство за токен и завёл
+// бы «BLK» вместо «BKW» — другой SKU у той же вещи.
+func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, languages map[int]string, sc *archiveSidecars,
 ) ([]techcardarchive.ColorwayPayload, []techcardarchive.ExportHole) {
 	if len(card.Colorways) == 0 {
 		return []techcardarchive.ColorwayPayload{}, nil
@@ -505,7 +516,38 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, sc *ar
 	var holes []techcardarchive.ExportHole
 	for i := range card.Colorways {
 		cw := &card.Colorways[i]
-		ref := fmt.Sprintf("color_code=%s", cw.ColorCode)
+		identity := techcardarchive.ColorwayPayload{
+			ColorCode:     cw.ColorCode,
+			SkuColorToken: cw.SkuColorToken,
+			Name:          strings.TrimSpace(cw.Name),
+			Colours:       archiveColourLines(cw.Colours),
+		}
+		ref := techcardarchive.ColorwayRef(identity)
+		// Translations by language CODE, in id order so the file reads the same twice. A language
+		// id the dictionary cannot name is a hole, not a silent drop.
+		langIDs := make([]int, 0, len(cw.NameI18n))
+		for id := range cw.NameI18n {
+			langIDs = append(langIDs, id)
+		}
+		sort.Ints(langIDs)
+		for _, id := range langIDs {
+			name := strings.TrimSpace(cw.NameI18n[id])
+			if name == "" {
+				continue
+			}
+			code := strings.TrimSpace(languages[id])
+			if code == "" {
+				holes = append(holes, archiveHole(techcardarchive.EntityColorway, fmt.Sprintf("%s language_id=%d", ref, id),
+					techcardarchive.ReasonLanguageUnknown,
+					fmt.Sprintf("the colourway name's translation into language_id=%d has no language code in the "+
+						"dictionary; the translation is not exported", id)))
+				continue
+			}
+			if identity.NameI18n == nil {
+				identity.NameI18n = make(map[string]string, len(langIDs))
+			}
+			identity.NameI18n[code] = name
+		}
 
 		recipe := make([]techcardarchive.RecipeLine, 0, len(cw.Usages))
 		for j := range cw.Usages {
@@ -560,14 +602,27 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, sc *ar
 			}
 		}
 
-		out = append(out, techcardarchive.ColorwayPayload{
-			ColorCode:      cw.ColorCode,
-			BaseSKU:        cw.BaseSku.String,
-			Recipe:         recipe,
-			PieceMaterials: pieceMaterials,
-		})
+		identity.BaseSKU = cw.BaseSku.String
+		identity.Recipe = recipe
+		identity.PieceMaterials = pieceMaterials
+		out = append(out, identity)
 	}
 	return out, holes
+}
+
+// archiveColourLines is a colourway's palette as colorways.json carries it (format 1.1), main
+// colour first; nil for a single-colour colourway.
+func archiveColourLines(in []entity.ColorwayColour) []techcardarchive.ColourLine {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]techcardarchive.ColourLine, 0, len(in))
+	for _, c := range in {
+		out = append(out, techcardarchive.ColourLine{
+			Label: c.Label, Hex: c.Hex, Pantone: c.Pantone, PantoneSystem: c.PantoneSystem,
+		})
+	}
+	return out
 }
 
 // ────────────────────────────── materials/index.json ──────────────────────────────

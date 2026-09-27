@@ -13,6 +13,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -992,7 +993,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// product_id is simply c.id.
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
 		SELECT c.id, c.style_id AS tech_card_id, c.dev_code AS code, COALESCE(c.dev_name, '') AS name,
-		       c.color_code, COALESCE(c.lab_dip_status, 'pending') AS lab_dip_status, c.id AS product_id,
+		       c.color_code, COALESCE(c.sku_color_token, c.color_code) AS sku_color_token,
+		       COALESCE(c.lab_dip_status, 'pending') AS lab_dip_status, c.id AS product_id,
 		       COALESCE(c.sku, '') AS sku, c.lifecycle_status,
 		       c.dev_comment AS comment, c.pantone, c.pantone_system, c.dev_hex AS hex, c.swatch_media_id,
 		       c.lab_dip_round, c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason,
@@ -1092,6 +1094,21 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			if cw, ok := colorwayByID[r.ProductId]; ok {
 				cw.LabDipRounds = append(cw.LabDipRounds, r)
 			}
+		}
+
+		// T45: the palette (position order) and the per-language name of every colourway on the page,
+		// one query each. A colourway with no palette row stays a legacy single-colour one.
+		palettes, err := product.ColorwayPalettesByID(ctx, s.DB, colorwayIDs)
+		if err != nil {
+			return fmt.Errorf("can't load tech card colourway palettes: %w", err)
+		}
+		names, err := product.ColorwayNameI18nByID(ctx, s.DB, colorwayIDs)
+		if err != nil {
+			return fmt.Errorf("can't load tech card colourway names: %w", err)
+		}
+		for id, cw := range colorwayByID {
+			cw.Colours = palettes[id]
+			cw.NameI18n = names[id]
 		}
 	}
 

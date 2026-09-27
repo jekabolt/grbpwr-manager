@@ -203,7 +203,8 @@ func applyColorwayTransition(ctx context.Context, db dependency.DB, colorwayID i
 // ACTIVE (R6). It is one query so the whole checklist is evaluated together.
 type publishReadiness struct {
 	BaseSKUValid        bool           `db:"base_sku_valid"`
-	ColorCode           string         `db:"color_code"`
+	ColorCode           string         `db:"color_code"`      // the dictionary family (T45)
+	SkuColorToken       string         `db:"sku_color_token"` // the SKU colour segment (T45)
 	CountryOfOrigin     string         `db:"country_of_origin"`
 	SeasonCode          sql.NullString `db:"season_code"`
 	SeasonYear          sql.NullInt32  `db:"season_year"`
@@ -215,8 +216,9 @@ type publishReadiness struct {
 
 // checkColorwayPublishPreconditions enforces R6's DRAFT->ACTIVE rules: the colourway must be a fully
 // identified, sellable unit — a built base SKU, at least one variant with a valid SKU, a complete
-// sellable style (sku_season + model_no), a dictionary colour, a country, at least one price and a
-// default-language translation. All misses are collected so the operator sees the whole checklist.
+// sellable style (sku_season + model_no), a dictionary colour family, a well-formed SKU colour token
+// (T45), a country, at least one price and a default-language translation. All misses are collected
+// so the operator sees the whole checklist.
 //
 // Deliberately NOT gated here (documented deviation from the R6 checklist): customs (hs_code /
 // customs_description) is optional by design — it is only required for cross-border shipments and is
@@ -229,6 +231,7 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 		SELECT
 		  REGEXP_LIKE(COALESCE(p.sku, ''), :base_pattern, 'c') AS base_sku_valid,
 		  p.color_code       AS color_code,
+		  COALESCE(p.sku_color_token, p.color_code) AS sku_color_token,
 		  p.country_of_origin AS country_of_origin,
 		  sty.season_code    AS season_code,
 		  sty.season_year    AS season_year,
@@ -263,8 +266,14 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 	if !r.ModelNo.Valid {
 		missing = append(missing, "style has no model number")
 	}
+	// T45: two colour facts, two checks. The family is a dictionary tag and must be one; the SKU
+	// token is the colour segment and only has to have its shape (a custom token is not a dictionary
+	// code by design).
 	if err := validateColorCode(r.ColorCode); err != nil {
-		missing = append(missing, "colour code is not a valid dictionary code")
+		missing = append(missing, "colour family is not a valid dictionary code")
+	}
+	if !entity.IsValidSkuColorToken(r.SkuColorToken) {
+		missing = append(missing, "SKU colour token is not three characters A-Z/0-9")
 	}
 	if strings.TrimSpace(r.CountryOfOrigin) == "" {
 		missing = append(missing, "country of origin is empty")

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
@@ -17,6 +18,7 @@ import (
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,10 +31,16 @@ import (
 //
 // ЧЕТЫРЕ ВЕЩИ, О КОТОРЫХ ЗДЕСЬ ДУМАЛИ, И КАЖДАЯ СТОИЛА БЫ ДЕФЕКТА:
 //
-//   - ИДЕМПОТЕНТНОСТЬ ЖИВЁТ В ЦВЕТЕ, А НЕ В НАЖАТИИ. Уже стоящий на карточке color_code —
-//     это строка «exists» и пропуск, и такой же ответ даёт ПОЙМАННАЯ коллизия UNIQUE(style_id,
-//     color_code): между нашей проверкой и вставкой помещается чужой клик, и превращать его в 500
-//     значило бы наказывать человека за то, что он нажал дважды.
+//   - ИДЕМПОТЕНТНОСТЬ ЖИВЁТ В ЦВЕТЕ, А НЕ В НАЖАТИИ. Уже стоящий на карточке цвет — это строка
+//     «exists» и пропуск, и такой же ответ даёт ПОЙМАННАЯ коллизия уникальности: между нашей
+//     проверкой и вставкой помещается чужой клик, и превращать его в 500 значило бы наказывать
+//     человека за то, что он нажал дважды. С T45 (27.09) «цвет» колорвея — его SKU-токен
+//     (product.sku_color_token, UNIQUE(style_id, sku_color_token)), а color_code — лишь словарное
+//     семейство, которое могут делить два колорвея. Архив 1.1 везёт токен отдельным полем, архив
+//     1.0 — нет, и его color_code был токеном тогда (ColorwayPayload.Token). Занятость карточки
+//     читается по ТОКЕНАМ (tcacCardColour), а создание ВОССТАНАВЛИВАЕТ токен источника
+//     (RestoreSkuColorToken): занятый токен даёт тот же «exists», а не второй колорвей с
+//     начеканенным токеном; семейство проверяется отдельно — словарём этой базы.
 //   - ВЕРСИЯ КАРТОЧКИ ДВИЖЕТСЯ ПОД НОГАМИ. Каждая запись рецепта бампает tech_card.lock_version
 //     (colorway_recipe.go), поэтому оптимистичный токен читается ЗАНОВО перед каждым колорвеем, а
 //     не берётся один раз на весь цикл. Иначе второй цвет партии всегда падал бы в конфликт.
@@ -217,9 +225,13 @@ type tcacRun struct {
 	s          *Server
 	techCardID int
 
-	// colorwayIDByCode is the card's LIVE colour occupancy, upper-cased. It grows as colours are
-	// created, so a payload naming the same colour twice creates it once.
+	// colorwayIDByCode is the card's LIVE colour occupancy, upper-cased, keyed by SKU colour token
+	// (tcacCardColour, T45). It grows as colours are created, so a payload naming the same colour
+	// twice creates it once.
 	colorwayIDByCode map[string]int
+	// languageIDByCode is this base's language dictionary by lower-cased code: colourway name
+	// translations travel by code (format 1.1).
+	languageIDByCode map[string]int
 	bomKeys          map[string]bool
 	pieceKeys        map[string]bool
 	// sizeIDByName is this base's size dictionary; cardSizes is the imported card's own range. Both
@@ -276,7 +288,7 @@ func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey stri
 		decided:          make(map[string]bool, len(payloads)),
 	}
 	for i := range payloads {
-		run.colourRefs[tcacRef(payloads[i].ColorCode)] = true
+		run.colourRefs[techcardarchive.ColorwayRef(payloads[i])] = true
 	}
 	for _, l := range stored.Message().GetLines() {
 		if l.GetEntity() == techcardarchive.EntityColorway {
@@ -284,7 +296,7 @@ func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey stri
 		}
 	}
 	for i := range card.Colorways {
-		run.colorwayIDByCode[tcacColourKey(card.Colorways[i].ColorCode)] = card.Colorways[i].Id
+		run.colorwayIDByCode[tcacCardColour(&card.Colorways[i])] = card.Colorways[i].Id
 	}
 	for i := range card.BomItems {
 		if k := card.BomItems[i].LineKey; k != "" {
@@ -307,6 +319,10 @@ func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey stri
 	run.sizeIDByName = make(map[string]int, len(di.Sizes))
 	for _, sz := range di.Sizes {
 		run.sizeIDByName[tcimpKey(sz.Name)] = sz.Id
+	}
+	run.languageIDByCode = make(map[string]int, len(di.Languages))
+	for _, l := range di.Languages {
+		run.languageIDByCode[strings.ToLower(strings.TrimSpace(l.Code))] = l.Id
 	}
 
 	mats, err := s.repo.TechCards().ListMaterials(ctx, "", true)
@@ -403,11 +419,18 @@ func (s *Server) tcacPassports(ctx context.Context, objectKey string) (map[int64
 // auxiliary style and a card that vanished refuse every remaining colour identically, and answering
 // with a report full of the same line N times would bury the one sentence the operator needs.
 func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayload) error {
-	code := tcacColourKey(p.ColorCode)
-	ref := tcacRef(p.ColorCode)
-	if code == "" {
+	family := tcacColourKey(p.ColorCode)
+	code := tcacColourKey(p.Token()) // the colour a card OCCUPIES: its SKU colour token (T45)
+	ref := techcardarchive.ColorwayRef(p)
+	if family == "" {
 		r.skip(ref, techcardarchive.ReasonArchiveRowInvalid,
 			"the archive's colourway row names no colour, so there is nothing to create")
+		return nil
+	}
+	if !entity.IsValidSkuColorToken(code) {
+		r.skip(ref, techcardarchive.ReasonArchiveRowInvalid,
+			fmt.Sprintf("the archive's colourway row carries SKU colour token %q, which is not three letters or "+
+				"digits; a token is restored verbatim or not at all, so nothing was created", p.Token()))
 		return nil
 	}
 	if id, taken := r.colorwayIDByCode[code]; taken {
@@ -416,16 +439,32 @@ func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayloa
 	}
 
 	// Драфт и ничего кроме. Ни cost_price, ни prices, ни медиа, ни тегов, ни лаб-дипа: всё это
-	// либо деньги, либо ссылки на строки ЧУЖОЙ базы. Единственное, что архив удостоверяет о самом
-	// колорвее, — его код цвета; base_sku из payload сознательно НЕ едет, SKU минтится на
-	// публикации и только ею.
+	// либо деньги, либо ссылки на строки ЧУЖОЙ базы. Архив удостоверяет о самом колорвее его
+	// идентичность — семейство, SKU-токен, имя с переводами и палитру (1.1); base_sku из payload
+	// сознательно НЕ едет, SKU минтится на публикации и только ею — из восстановленного токена.
+	dev, mask, drops := r.development(ref, p)
 	colorwayID, err := r.s.createColorway(ctx, colorwayCreateInput{
-		StyleID:       r.techCardID,
-		Merchandising: &pb_common.ColorwayMerchandisingInsert{ColorCode: code},
+		StyleID:           r.techCardID,
+		Merchandising:     &pb_common.ColorwayMerchandisingInsert{ColorCode: family},
+		Development:       dev,
+		DevelopmentFields: mask,
+		// T45: the token the colourway had on its source, verbatim. A token the style already holds
+		// answers «exists» (ErrColorwaySkuTokenTaken), never a second colourway under a new token.
+		RestoreSkuColorToken: code,
 	})
 	switch {
 	case err == nil:
-	case errors.Is(err, entity.ErrColorwayColorExists) || tcacIsDuplicateColour(err):
+	case errors.Is(err, entity.ErrColorwayFamilyTaken):
+		// The TOKEN is free (the look above found no colourway holding it), the FAMILY is not, and
+		// this base still keeps one colourway per family in a style: uniq_product_style_color stands
+		// until migration 0377. Not «exists» — the card's colourway of that family is a DIFFERENT
+		// colourway (another token), and calling it this one would hang the archive's recipe on it.
+		r.skip(ref, techcardarchive.ReasonColorwayNotCreated,
+			fmt.Sprintf("this card already has a colourway of the %s family and this base still allows only one "+
+				"colourway per family in a style, so the archive's colourway %s was not created; press the button "+
+				"again once several colourways of one family are allowed (migration 0377)", family, code))
+		return nil
+	case errors.Is(err, entity.ErrColorwayColorExists) || entity.ColorwayDuplicateKey(err) != nil:
 		// ПОЙМАННАЯ КОЛЛИЗИЯ, а не 500. Проверка занятости цвета и вставка стоят в разных
 		// транзакциях (стор проверяет внутри своей, мы — по прочитанной карточке), и в зазор
 		// помещается второй клик по той же кнопке. Ответ обязан быть тем же, что и у заведомо
@@ -445,13 +484,18 @@ func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayloa
 		return nil
 	}
 
+	// What the identity could not carry is reported only now that the colourway EXISTS: a line
+	// about a dropped translation next to a colourway that was never created would be noise, and on
+	// a colour a previous press created it would be a second copy of that press's line.
+	r.holes = append(r.holes, drops...)
+
 	r.colorwayIDByCode[code] = colorwayID
 	r.created = append(r.created, int32(colorwayID))
 	r.decided[ref] = true
 
 	degraded := r.recipe(ctx, ref, colorwayID, p.Recipe)
 	lost := r.pieceMaterials(ctx, ref, colorwayID, p.PieceMaterials)
-	if degraded || lost {
+	if degraded || lost || len(drops) > 0 {
 		r.tally.Degraded++
 		return nil
 	}
@@ -546,8 +590,8 @@ func (r *tcacRun) supersedes(ref string) bool {
 //
 //   - a PHANTOM RACE. Somebody else's press committed between our read and our write; the colour is
 //     genuinely there, the operator has nothing to do, and a 500 would punish a double click.
-//   - an ARCHIVED colourway. The store's uniqueness pre-check counts every product row of the style
-//     (colorway_write.go: SELECT COUNT(*) … WHERE style_id AND color_code — no lifecycle filter),
+//   - an ARCHIVED colourway. The store's token check reads every product row of the style
+//     (colorway_palette.go styleSkuTokens — no lifecycle filter; a frozen SKU keeps its token),
 //     while the card read that fills colorwayIDByCode drops lifecycle_status = 4 (materials.go).
 //     So the code is occupied by a colourway the colourways tab does not list, and «this card
 //     already has a colourway of this colour» named nothing the operator could open and offered
@@ -567,9 +611,9 @@ func (r *tcacRun) taken(ctx context.Context, ref, code string, recipeRows int) {
 		r.standing(ref, id, recipeRows)
 	default:
 		r.skip(ref, techcardarchive.ReasonColorwayNotCreated,
-			fmt.Sprintf("colour %s is already taken on this card by a colourway the colourways tab does not "+
-				"show — an ARCHIVED one. Restore it (or delete it) and press the button again; nothing was "+
-				"created and the archive's recipe for this colour was not applied", code))
+			fmt.Sprintf("SKU colour token %s is already taken on this card by a colourway the colourways tab "+
+				"does not show — an ARCHIVED one. Restore it (or delete it) and press the button again; nothing "+
+				"was created and the archive's recipe for this colour was not applied", code))
 	}
 }
 
@@ -583,11 +627,112 @@ func (r *tcacRun) recheckColour(ctx context.Context, code string) (int, bool) {
 		return 0, false
 	}
 	for i := range card.Colorways {
-		if tcacColourKey(card.Colorways[i].ColorCode) == code {
+		if tcacCardColour(&card.Colorways[i]) == code {
 			return card.Colorways[i].Id, true
 		}
 	}
 	return 0, true
+}
+
+// tcacCardColour is the colour a card's colourway OCCUPIES for this feature: its SKU colour token
+// (T45) — the identity a 1.1 archive's sku_color_token names, and a 1.0 archive's color_code named
+// when it was written — and, for a row read without one, its color_code, which is the token such a
+// row reads everywhere else.
+func tcacCardColour(cw *entity.TechCardColorway) string {
+	if t := tcacColourKey(cw.SkuColorToken); t != "" {
+		return t
+	}
+	return tcacColourKey(cw.ColorCode)
+}
+
+// development is the part of a colourway's identity the draft is created WITH (format 1.1): its
+// name, its palette and the translations of its name — and ONLY those, named by an explicit mask,
+// because the development block is also the lab-dip block and lab dips do not travel (§5.3): with
+// no mask every lab-dip scalar would be written as «stated empty» and could open a round.
+//
+// What cannot land is not written and not fatal: it comes back as holes the caller records once
+// the colourway exists. A 1.0 payload has none of it, and the draft is created exactly as before.
+func (r *tcacRun) development(ref string, p techcardarchive.ColorwayPayload) (*pb_common.ColorwayDevelopmentInsert, *fieldmaskpb.FieldMask, []techcardarchive.ImportHole) {
+	var drops []techcardarchive.ImportHole
+	drop := func(subRef string, reason techcardarchive.Reason, detail string) {
+		drops = append(drops, techcardarchive.ImportHole{
+			Entity: techcardarchive.EntityColorway, Ref: subRef, Status: techcardarchive.StatusDegraded,
+			Reason: reason, Detail: detail,
+		})
+	}
+	dev := &pb_common.ColorwayDevelopmentInsert{}
+	var paths []string
+
+	name := strings.TrimSpace(p.Name)
+	if name != "" {
+		dev.Name = name
+		paths = append(paths, "development.name")
+	}
+
+	if len(p.Colours) > 0 {
+		colours := make([]entity.ColorwayColour, 0, len(p.Colours))
+		for _, c := range p.Colours {
+			colours = append(colours, entity.ColorwayColour{
+				Label: c.Label, Hex: c.Hex, Pantone: c.Pantone, PantoneSystem: c.PantoneSystem,
+			})
+		}
+		normalized, ve := entity.NormalizeColorwayPalette(colours, "colours")
+		switch {
+		case ve != nil:
+			drop(ref+" colours", techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the archive's palette is not a usable palette (%s); the colourway was created "+
+					"without it — enter the colours on the colourway by hand", ve.Message))
+		case name == "":
+			drop(ref+" colours", techcardarchive.ReasonArchiveRowInvalid,
+				"the archive's colourway carries a palette and no name, and a palette colourway carries its own "+
+					"name; the colourway was created without the palette — name it and enter the colours by hand")
+		default:
+			for _, c := range normalized {
+				dev.Colours = append(dev.Colours, &pb_common.ColorwayColour{
+					Label: c.Label, Hex: c.Hex, Pantone: c.Pantone, PantoneSystem: c.PantoneSystem,
+				})
+			}
+			paths = append(paths, "development.colours")
+		}
+	}
+
+	codes := make([]string, 0, len(p.NameI18n))
+	for code := range p.NameI18n {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes) // a report of a payload read twice reads the same twice
+	for _, code := range codes {
+		translated := strings.TrimSpace(p.NameI18n[code])
+		if translated == "" {
+			continue // an empty translation says nothing; the export never writes one
+		}
+		subRef := fmt.Sprintf("%s language=%s", ref, code)
+		langID, known := r.languageIDByCode[strings.ToLower(strings.TrimSpace(code))]
+		if !known {
+			drop(subRef, techcardarchive.ReasonLanguageUnknown,
+				fmt.Sprintf("the translation of the colourway name into %q was dropped: this base's language "+
+					"dictionary has no such language", code))
+			continue
+		}
+		if utf8.RuneCountInString(translated) > entity.ColorwayNameI18nMaxRunes {
+			drop(subRef, techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the translation into %q is longer than %d characters, which no base stores; it was "+
+					"dropped", code, entity.ColorwayNameI18nMaxRunes))
+			continue
+		}
+		if dev.NameI18N == nil {
+			dev.NameI18N = make(map[int32]string, len(codes))
+		}
+		dev.NameI18N[int32(langID)] = translated
+	}
+	if len(dev.NameI18N) > 0 {
+		paths = append(paths, "development.name_i18n")
+	}
+
+	if len(paths) == 0 {
+		return nil, nil, drops
+	}
+	return dev, &fieldmaskpb.FieldMask{Paths: paths}, drops
 }
 
 // recipe writes one colourway's material recipe and reports what it had to leave out. It returns
@@ -950,12 +1095,6 @@ func (r *tcacRun) decimalOf(rowRef, field, raw string) (decimal.NullDecimal, boo
 // case. It is what makes «blk» in a payload and «BLK» on the card one colour rather than two.
 func tcacColourKey(code string) string { return strings.ToUpper(strings.TrimSpace(code)) }
 
-// tcacRef names one colour in the report. VERBATIM from the payload and not through tcacColourKey,
-// because the commit's own line for the same colour is built from the same bytes
-// (resolveColorways) and the two have to be the same string — matching them is how a second press
-// knows what the first one said.
-func tcacRef(colorCode string) string { return fmt.Sprintf("color_code=%s", colorCode) }
-
 // tcacRowRef names one recipe row inside its colour, so a report line points at something an
 // operator can find. Both keys, because a slot legitimately appears twice: once for the garment
 // (the norm) and once per cut-piece (the material assignment).
@@ -992,20 +1131,6 @@ func tcacSortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// tcacIsDuplicateColour reports the raw UNIQUE(style_id, color_code) violation — the one the store's
-// own pre-check did not get to first. The store answers a duplicate it SAW with
-// entity.ErrColorwayColorExists; this catches the one that appeared between that check and the
-// INSERT, which is the same news and must not become a 500.
-func tcacIsDuplicateColour(err error) bool {
-	name, ok := tcciDuplicateKeyName(err)
-	if !ok {
-		return false
-	}
-	// The index is uniq_product_style_color; matched loosely because the name is schema history and
-	// this predicate must not go quiet if it is ever rebuilt under a longer name.
-	return strings.Contains(strings.ToLower(name), "color")
 }
 
 // tcacRefusal is the store's own sentence about why a colourway could not be created, bounded so

@@ -22,8 +22,12 @@ var ErrColorwayHasDesignRows = errors.New("colourway is used by the style's desi
 // CloneStyleForSeason. The API layer maps it to FailedPrecondition (R4).
 var ErrStyleFrozenSiblings = errors.New("style has SKU-frozen colourways; clone for the new season instead")
 
-// ErrColorwayColorExists is returned by CreateColorway when the (style_id, color_code) pair already
-// exists (UNIQUE, R1). The API layer maps it to FailedPrecondition.
+// ErrColorwayColorExists is the «this colour is already on the style» refusal, and the API layer
+// maps it to FailedPrecondition. Since T45 a colour on a style is its SKU colour TOKEN, not its
+// dictionary family, and two refusals answer errors.Is with it (colorway_unique.go):
+// ErrColorwaySkuTokenTaken — the token is held (a restored archive token, a relink into a style
+// holding it, a lost race) — and ErrColorwayFamilyTaken — a second colourway of one family on a
+// base where uniq_product_style_color still stands (until migration 0377).
 var ErrColorwayColorExists = errors.New("a colourway with this colour already exists for the style")
 
 // ErrColorwayNotSellable is the classification sentinel for a failed completeness gate on the →ACTIVE

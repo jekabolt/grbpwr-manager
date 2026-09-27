@@ -14,7 +14,9 @@ func TestColorwayBodyAcceptsOnlyDictionaryColorIdentity(t *testing.T) {
 		override *string
 		wantErr  string
 	}{
-		{name: "missing", wantErr: "color_code must be exactly 3 uppercase characters"},
+		// T45: an EMPTY code is no longer refused here — it is the family the server proposes
+		// (ResolveColorwayFamily) or, on update, keeps; see TestColorwayBodyAcceptsAnEmptyFamily.
+		{name: "short", code: "BL", wantErr: "color_code must be exactly 3 uppercase characters"},
 		{name: "lowercase", code: "blk", wantErr: "color_code must be exactly 3 uppercase characters"},
 		{name: "unknown", code: "ZZZ", wantErr: "is not in the color dictionary"},
 		{name: "invalid override", code: "BLK", override: stringPointer("black"), wantErr: "color_hex_override must be #RRGGBB"},

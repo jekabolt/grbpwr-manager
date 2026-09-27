@@ -225,7 +225,9 @@ func TestCoercedCountsOnlyWhatWasChanged(t *testing.T) {
 		name := v.Type().Field(i).Name
 		var one designConstructionStats
 		reflect.ValueOf(&one).Elem().Field(i).SetInt(1)
-		if name == "CalloutsUnasked" {
+		// CalloutsUnasked считает ПРИНЯТОЕ, ColourFamiliesProposed (T45) — ДОБАВЛЕННОЕ сервером:
+		// ни то, ни другое не потеря и не поправка.
+		if name == "CalloutsUnasked" || name == "ColourFamiliesProposed" {
 			require.False(t, one.Coerced(), "%s считает ПРИНЯТОЕ и не поднимает уровень", name)
 			continue
 		}
@@ -244,16 +246,17 @@ func TestCoercedCountsOnlyWhatWasChanged(t *testing.T) {
 		"тревога обязана нести своё число, иначе она «что-то пошло не так» без причины")
 }
 
-// ─────────────────────────── 3. ОДИН КОД — ОДИН КОЛОРВЕЙ ───────────────────────────
+// ─────────────────────────── 3. ОДИН КОД — СКОЛЬКО УГОДНО КОЛОРВЕЕВ (T45) ───────────────────────────
 
-// TestVerifyColourwaysKeepsOneProposalPerColourCode — ПОДТВЕРЖДЕНИЕ КОЛОРВЕЯ СОЗДАЁТ ПРОДУКТ.
+// TestVerifyColourwaysLetsProposalsShareAFamily — С T45 КОД СЛОВАРЯ ЛИШЬ СЕМЕЙСТВО.
 //
-// `product` держит UNIQUE(style_id, color_code) (entity.ErrColorwayColorExists). Дедуп разбора
-// складывает «имя|код» ДО канонизации и поэтому этого не ловит: «Black / Bone» и «Black / Ivory» —
-// две разные складки, а канонизируются обе в BLK. Человек подтверждал первое предложение, продукт
-// создавался, второе отказывало СЛОВАМИ СЕРВЕРА про занятый код — ровно то, ради предотвращения
-// чего проверка ответа и стоит.
-func TestVerifyColourwaysKeepsOneProposalPerColourCode(t *testing.T) {
+// До T45 `product` держал UNIQUE(style_id, color_code), и второе предложение того же кода теряло
+// код (подтверждение отказало бы). Миграция 0376 сняла эту уникальность: уникален SKU-токен, который
+// сервер чеканит сам, а семейство — тег фильтра, общий для «Black / Bone» и «Black / Ivory».
+//
+// МУТАЦИЯ: вернуть дедуп кода в designVerifyColourways — второй BLK снова потеряет код, и счётчик
+// ColourCodesUnset поднимет Warn на честном ответе.
+func TestVerifyColourwaysLetsProposalsShareAFamily(t *testing.T) {
 	// Оба имени указывают на один цвет словаря: «black» по имени и «BLK» по коду.
 	draft, stats, err := parseConstructionDraft(`{
 	  "bom": [{"name":"main fabric"}],
@@ -269,18 +272,14 @@ func TestVerifyColourwaysKeepsOneProposalPerColourCode(t *testing.T) {
 	designVerifyColourways(draft, designBuildColourDictionary(draftProbeColours()),
 		map[string]string{}, &stats)
 
-	require.Len(t, draft.GetColourways(), 3, "строка остаётся — обнуляется только код")
-	require.Equal(t, "BLK", draft.GetColourways()[0].GetColorCode(),
-		"первое предложение оставляет код за собой: порядок в ответе и есть предпочтение модели")
-	require.Equal(t, "", draft.GetColourways()[1].GetColorCode(),
-		"второй BLK не подтвердится — предложить его с кодом значит пообещать отказ сервера")
-	require.Equal(t, "OLV", draft.GetColourways()[2].GetColorCode(),
-		"чужой код не задет")
-	require.Equal(t, 1, stats.ColourCodesUnset,
-		"снятый код обязан быть посчитан — иначе «модель предлагает один цвет дважды» не видно")
+	require.Len(t, draft.GetColourways(), 3)
+	require.Equal(t, "BLK", draft.GetColourways()[0].GetColorCode())
+	require.Equal(t, "BLK", draft.GetColourways()[1].GetColorCode(),
+		"второе предложение семейства BLK сохраняет код: семейство общее, SKU-токены будут разные")
+	require.Equal(t, "OLV", draft.GetColourways()[2].GetColorCode(), "чужой код не задет")
+	require.Zero(t, stats.ColourCodesUnset, "общий код семейства — не промах словаря")
 
-	// ⚠ ВЫБРОШЕННЫЙ КОЛОРВЕЙ НЕ ИМЕЕТ ПРАВА ЗАНЯТЬ КОД. Сверив до строки «выбрасываем», мы обнулили
-	// бы код у ЖИВОГО предложения ради соседнего, которого в ответе уже нет.
+	// Выброшенное предложение не влияет на соседнее и после T45.
 	dropped, dstats, err := parseConstructionDraft(`{
 	  "bom": [{"name":"main fabric"}],
 	  "colourways": [
@@ -291,8 +290,7 @@ func TestVerifyColourwaysKeepsOneProposalPerColourCode(t *testing.T) {
 	designVerifyColourways(dropped, designBuildColourDictionary(draftProbeColours()),
 		map[string]string{}, &dstats)
 	require.Len(t, dropped.GetColourways(), 1, "безымянный и без привязанных слотов — подтверждать нечего")
-	require.Equal(t, "BLK", dropped.GetColourways()[0].GetColorCode(),
-		"код, освободившийся вместе с выброшенной строкой, остаётся свободным")
+	require.Equal(t, "BLK", dropped.GetColourways()[0].GetColorCode())
 }
 
 // ─────────────────────────── 4. ПОТОЛОК ОТВЕТА ───────────────────────────
@@ -358,10 +356,19 @@ func TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer(t *testing.T) {
 				"hex": "#101010", "colour": fill(designConstructionMaxColourRunes),
 			})
 		}
+		// T45: палитра — 4 цвета по потолку подписи и пантона. Верхние pantone / hex схема больше не
+		// просит (они — зеркало colours[0]), поэтому в худшем ответе их нет.
+		palette := make([]any, 0, designConstructionMaxColourwayColours)
+		for c := 0; c < designConstructionMaxColourwayColours; c++ {
+			palette = append(palette, map[string]any{
+				"label":   unique(designConstructionMaxColourRunes, c),
+				"pantone": fill(designConstructionMaxPantoneRunes), "hex": "#101010",
+			})
+		}
 		colourways = append(colourways, map[string]any{
 			"name":       unique(designConstructionMaxColourwayNameRunes, i),
 			"color_code": fill(designConstructionMaxColourCodeRunes),
-			"pantone":    fill(designConstructionMaxPantoneRunes), "hex": "#101010", "slots": slots,
+			"colours":    palette, "slots": slots,
 		})
 	}
 	missing := make([]any, 0, designConstructionMaxMissing)
@@ -398,6 +405,7 @@ func TestConstructionAnswerCeilingHoldsTheWorstRealisticAnswer(t *testing.T) {
 	require.Len(t, parsed.GetColourways(), designConstructionMaxColourways)
 	for _, cw := range parsed.GetColourways() {
 		require.Len(t, cw.GetSlots(), designConstructionMaxColourwaySlots)
+		require.Len(t, cw.GetColours(), designConstructionMaxColourwayColours)
 	}
 	require.Len(t, parsed.GetMissing(), designConstructionMaxMissing)
 	require.Len(t, parsed.GetFlatDetails(), designConstructionMaxFlatDetails)
@@ -440,6 +448,7 @@ func TestParseConstructionDraftEnforcesThePromptStatedLengths(t *testing.T) {
 	  "missing":[%q],
 	  "bom":[{"section":"fabric","name":%q,"composition":%q,"colour":%q,"pantone":%q}],
 	  "colourways":[{"name":%q,"color_code":%q,"pantone":%q,"hex":"#000000",
+	    "colours":[{"label":%q,"pantone":%q,"hex":"#000000"}],
 	    "slots":[{"slot":%q,"pantone":%q,"colour":%q}]}]}`,
 		over(designConstructionMaxSilhouetteRunes), over(designConstructionMaxFabricRunes), over(designConstructionMaxConceptRunes),
 		over(designConstructionMaxAspectRunes),
@@ -449,14 +458,17 @@ func TestParseConstructionDraftEnforcesThePromptStatedLengths(t *testing.T) {
 		over(designConstructionMaxColourRunes), over(designConstructionMaxPantoneRunes),
 		over(designConstructionMaxColourwayNameRunes), over(designConstructionMaxColourCodeRunes),
 		over(designConstructionMaxPantoneRunes),
+		over(designConstructionMaxColourRunes), over(designConstructionMaxPantoneRunes),
 		over(designConstructionMaxNameRunes), over(designConstructionMaxPantoneRunes), over(designConstructionMaxColourRunes))
 
 	got, stats, err := parseConstructionDraft(raw, "stop")
 	require.NoError(t, err)
 	require.Len(t, got.GetColourways(), 1)
 	require.Len(t, got.GetColourways()[0].GetSlots(), 1)
+	require.Len(t, got.GetColourways()[0].GetColours(), 1)
 	require.Len(t, got.GetBom(), 1)
 	cw, slot, line := got.GetColourways()[0], got.GetColourways()[0].GetSlots()[0], got.GetBom()[0]
+	colour := cw.GetColours()[0]
 
 	limits := []struct {
 		field string
@@ -477,6 +489,8 @@ func TestParseConstructionDraftEnforcesThePromptStatedLengths(t *testing.T) {
 		{"colourways[].name", cw.GetName(), designConstructionMaxColourwayNameRunes},
 		{"colourways[].color_code", cw.GetColorCode(), designConstructionMaxColourCodeRunes},
 		{"colourways[].pantone", cw.GetPantone(), designConstructionMaxPantoneRunes},
+		{"colourways[].colours[].label", colour.GetLabel(), designConstructionMaxColourRunes},
+		{"colourways[].colours[].pantone", colour.GetPantone(), designConstructionMaxPantoneRunes},
 		{"slots[].slot", slot.GetSlot(), designConstructionMaxNameRunes},
 		{"slots[].pantone", slot.GetPantone(), designConstructionMaxPantoneRunes},
 		{"slots[].colour", slot.GetColour(), designConstructionMaxColourRunes},
@@ -500,9 +514,10 @@ func TestConstructionPromptNamesTheSameLimitsTheParserHolds(t *testing.T) {
 	require.Equal(t, designConstructionMaxNameRunes, designConstructionMaxCompositionRunes,
 		"правило 7 называет имя и состав одним числом")
 	for _, want := range []string{
-		fmt.Sprintf("at most %d aspects, %d bom lines, %d missing notes, %d flat details, %d colourways of at most %d slot colours each",
+		fmt.Sprintf("at most %d aspects, %d bom lines, %d missing notes, %d flat details, %d colourways of at most %d colours and %d slot colours each",
 			designConstructionMaxAspects, designConstructionMaxBom, designConstructionMaxMissing,
-			designConstructionMaxFlatDetails, designConstructionMaxColourways, designConstructionMaxColourwaySlots),
+			designConstructionMaxFlatDetails, designConstructionMaxColourways,
+			designConstructionMaxColourwayColours, designConstructionMaxColourwaySlots),
 		fmt.Sprintf("\"concept\" %d;", designConstructionMaxConceptRunes),
 		fmt.Sprintf("\"silhouette\" and \"fabric\" %d each;", designConstructionMaxSilhouetteRunes),
 		fmt.Sprintf("an aspect %d (", designConstructionMaxAspectRunes),
@@ -511,8 +526,10 @@ func TestConstructionPromptNamesTheSameLimitsTheParserHolds(t *testing.T) {
 			designConstructionMaxFlatDetailNameRunes, designConstructionMaxFlatDetailNoteRunes),
 		fmt.Sprintf("a bom \"name\" or \"composition\" %d, a \"colour\" %d, a Pantone code %d;",
 			designConstructionMaxNameRunes, designConstructionMaxColourRunes, designConstructionMaxPantoneRunes),
-		fmt.Sprintf("a colourway \"name\" %d, its \"color_code\" %d;",
-			designConstructionMaxColourwayNameRunes, designConstructionMaxColourCodeRunes),
+		fmt.Sprintf("a colourway \"name\" %d, its \"color_code\" %d; a colour \"label\" %d;",
+			designConstructionMaxColourwayNameRunes, designConstructionMaxColourCodeRunes,
+			designConstructionMaxColourRunes),
+		fmt.Sprintf("1 to %d distinct colours, the main cloth's colour first", designConstructionMaxColourwayColours),
 		fmt.Sprintf("a slot \"colour\" %d.", designConstructionMaxColourRunes),
 		fmt.Sprintf("at most %d, in this order: the main cloths, the thread, then the rest;",
 			designConstructionMaxColourwaySlots),

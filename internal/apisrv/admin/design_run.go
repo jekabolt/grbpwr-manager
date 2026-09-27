@@ -2954,6 +2954,8 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// у designVerifyColourways.
 		designVerifyColourways(parsed, designBuildColourDictionary(colours),
 			designCardSlotFolds(card), &stats)
+		// T45: палитра предложения и его семейство — тем же списком цветов, тоже только здесь.
+		designSettleColourwayPalettes(parsed, colours, &stats)
 		s.designLogConstructionDraft(ctx, cardID, run.Id, model, provider, finishReason, usage, stats, perr)
 		if perr != nil {
 			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
@@ -3146,6 +3148,12 @@ func (s *Server) designLogConstructionDraft(
 		// видит; строка без счётчика — «что-то пошло не так» без числа.
 		slog.Int("bom_est_dropped", stats.BomEstDropped),
 		slog.Int("units_unset", stats.UnitsUnset),
+		// ─── T45 (27.09): ПАЛИТРА ПРЕДЛОЖЕНИЯ ───
+		// colours_dropped — цвет без подписи и без пантона (потеря, поднимает Warn);
+		// colour_families_proposed — код словаря, предложенный сервером по hex главного цвета
+		// (добавление, Warn не поднимает).
+		slog.Int("colours_dropped", stats.ColoursDropped),
+		slog.Int("colour_families_proposed", stats.ColourFamiliesProposed),
 	}
 	switch {
 	case err != nil:

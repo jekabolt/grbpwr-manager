@@ -21,12 +21,15 @@ func TestColorwayDevelopmentPatchIgnoresClientLabDipAudit(t *testing.T) {
 		"development.lab_dip_decided_at",
 		"development.lab_dip_decided_by",
 	}}
-	require.Nil(t, ColorwayDevelopmentPatchFromPb(forged, auditOnly),
+	auditPatch, err := ColorwayDevelopmentPatchFromPb(forged, auditOnly)
+	require.NoError(t, err)
+	require.Nil(t, auditPatch,
 		"client audit fields are read-only and cannot form a writable patch")
 
 	forged.LabDipStatus = pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_APPROVED
 	withStatus := &fieldmaskpb.FieldMask{Paths: append(auditOnly.Paths, "development.lab_dip_status")}
-	patch := ColorwayDevelopmentPatchFromPb(forged, withStatus)
+	patch, err := ColorwayDevelopmentPatchFromPb(forged, withStatus)
+	require.NoError(t, err)
 	require.NotNil(t, patch)
 	require.NotNil(t, patch.LabDipStatus, "the lifecycle transition remains writable")
 	require.Empty(t, patch.Actor, "the DTO never accepts an actor from the request")

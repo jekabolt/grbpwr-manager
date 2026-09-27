@@ -109,6 +109,9 @@ func tcacDictionary() *entity.DictionaryInfo {
 			{ID: 1, Code: "BLK", Name: "black"},
 			{ID: 2, Code: "OLV", Name: "olive"},
 		},
+		// Colourway name translations travel by language CODE (format 1.1); the ids here are this
+		// base's and deliberately not the source's.
+		Languages: []entity.Language{{Id: 1, Code: "en", IsDefault: true}, {Id: 7, Code: "fr"}},
 	}
 }
 
