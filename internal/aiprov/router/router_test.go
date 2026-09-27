@@ -1104,6 +1104,7 @@ func (k *keyedChatter) CompletionBase() time.Duration { return k.base }
 // per purpose (and the Ideas kill switch), as the registry-backed router has them.
 //
 // MUTATION: WithDefaults returns an option that does nothing → red (nothing callable).
+// MUTATION: SwitchedOff ignores the purpose (any purpose is off under IdeasOff) → red.
 func TestAStaticRouterReadsTheDefaults(t *testing.T) {
 	c := &chatter{}
 	r := NewSingle(entity.AIProviderOpenRouter, c, "", WithDefaults(testDefaults))
@@ -1116,7 +1117,12 @@ func TestAStaticRouterReadsTheDefaults(t *testing.T) {
 
 	off := testDefaults
 	off.IdeasOff = true
-	require.False(t, NewSingle(entity.AIProviderOpenRouter, c, "", WithDefaults(off)).Enabled(entity.AIPurposePlaygroundIdeas))
+	switchedOff := NewSingle(entity.AIProviderOpenRouter, c, "", WithDefaults(off))
+	require.False(t, switchedOff.Enabled(entity.AIPurposePlaygroundIdeas))
+	require.True(t, switchedOff.SwitchedOff(entity.AIPurposePlaygroundIdeas), "the door names the switch")
+	require.False(t, switchedOff.SwitchedOff(entity.AIPurposeNoteMarkdown), "the switch is the Ideas door's only")
+	require.False(t, r.SwitchedOff(entity.AIPurposePlaygroundIdeas))
+	require.False(t, (*Router)(nil).SwitchedOff(entity.AIPurposePlaygroundIdeas))
 }
 
 // TestAKeylessTransportIsPassedOver — a transport that has no key right now (oaichat.Enabled false:
@@ -1254,4 +1260,98 @@ func TestTheNoTransportWarningIsKeyedByTheListsOwnVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, warnings(), "the new version is a new chance to be told")
 	require.Contains(t, logs.String(), "config_version=2")
+}
+
+// urlChatter is a transport that also names its API root, as oaichat does.
+type urlChatter struct {
+	keyedChatter
+	url string
+}
+
+func (u *urlChatter) BaseURL() string { return u.url }
+
+// TestRouteHeadNamesTheWouldBeCallee — a door that could not call (no key right now) still logs the
+// provider and slug it WOULD have called; while something is callable, RouteHead is exactly
+// PrimaryProvider / PrimaryModel, never an earlier dead row.
+//
+// MUTATION: RouteHead reads only the callable list → red (keyless: "", "").
+// MUTATION: RouteHead reads the listed rows first → red (it names the keyless row over the live one).
+func TestRouteHeadNamesTheWouldBeCallee(t *testing.T) {
+	keyless := &keyedChatter{up: false}
+	one := NewSingle(entity.AIProviderOpenRouter, keyless, "", WithDefaults(testDefaults))
+	require.False(t, one.Enabled(entity.AIPurposeTechCardAnalysis))
+	require.Empty(t, one.PrimaryModel(entity.AIPurposeTechCardAnalysis), "precondition: nothing is callable")
+	p, m := one.RouteHead(entity.AIPurposeTechCardAnalysis)
+	require.Equal(t, entity.AIProviderOpenRouter, p)
+	require.Equal(t, slugAnalysis, m, "the default slug of the purpose is the one that would be called")
+
+	two := NewStatic([]StaticCandidate{
+		{ProviderKey: entity.AIProviderOpenRouter, Chatter: keyless, Model: "dead/row"},
+		{ProviderKey: entity.AIProviderOpenAI, Chatter: &keyedChatter{up: true}, Model: "gpt-5-mini"},
+	})
+	p, m = two.RouteHead(entity.AIPurposeNoteMarkdown)
+	require.Equal(t, two.PrimaryProvider(entity.AIPurposeNoteMarkdown), p)
+	require.Equal(t, "gpt-5-mini", m)
+
+	off := testDefaults
+	off.Ideas, off.IdeasOff = "", true
+	p, m = NewSingle(entity.AIProviderOpenRouter, keyless, "", WithDefaults(off)).RouteHead(entity.AIPurposePlaygroundIdeas)
+	require.Empty(t, p+m, "the kill switch names nothing")
+	p, m = (*Router)(nil).RouteHead(entity.AIPurposeNoteMarkdown)
+	require.Empty(t, p+m)
+}
+
+// TestBaseURLNamesTheTransportsRoot — the analysis log's base_url comes from the transport of the
+// provider that was (or would be) called, on a static route and on the registry's.
+//
+// MUTATION: BaseURL returns "" → red. MUTATION: the static branch reads r.transports → red.
+func TestBaseURLNamesTheTransportsRoot(t *testing.T) {
+	st := NewSingle(entity.AIProviderOpenRouter, &urlChatter{url: "https://static.example/v1"}, "m")
+	require.Equal(t, "https://static.example/v1", st.BaseURL(entity.AIProviderOpenRouter))
+	require.Empty(t, st.BaseURL(entity.AIProviderOpenAI), "no candidate of that provider")
+
+	rg := newRig(t, nil, testDefaults, 0)
+	reg := New(rg.reg, nil, map[string]aiprov.Chatter{
+		entity.AIProviderOpenRouter: &urlChatter{url: "https://or.example/api/v1"},
+		entity.AIProviderOpenAI:     &chatter{},
+	}, testDefaults, 0)
+	require.Equal(t, "https://or.example/api/v1", reg.BaseURL(" openrouter "))
+	require.Empty(t, reg.BaseURL(entity.AIProviderOpenAI), "a transport that does not say")
+	require.Empty(t, (*Router)(nil).BaseURL(entity.AIProviderOpenRouter))
+}
+
+// TestTheSameSlugTwiceIsNotAFallback — two rows naming the same provider and slug (the seeded Ideas
+// route when OPENROUTER_MODEL_IDEAS names the fallback slug itself) make ONE call: the second would
+// repeat the first one's refusal word for word. The lease counts it once too.
+//
+// MUTATION: Chat without the tried-set → red (two calls). MUTATION: callable without the listed-set →
+// red (ChainBudget counts two calls).
+func TestTheSameSlugTwiceIsNotAFallback(t *testing.T) {
+	c := &keyedChatter{up: true, base: time.Minute}
+	c.do = fails(errStatus(entity.AIProviderOpenRouter, 404))
+	d := testDefaults
+	d.Ideas = slugIdeasFB
+	r := NewStatic([]StaticCandidate{
+		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c},                     // '' → the default = slugIdeasFB
+		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c, Model: slugIdeasFB}, // the seeded position-2 row
+	}, WithDefaults(d))
+
+	_, err := r.Chat(context.Background(), entity.AIPurposePlaygroundIdeas, chatReq)
+	require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+	require.ErrorIs(t, err, aiprov.ErrModelUnavailable)
+	require.Equal(t, []string{slugIdeasFB}, c.models(), "the same slug is called once")
+	require.Equal(t, aiprov.CompletionBudget(time.Minute, 300), r.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
+
+	// A different slug on the same provider IS a fallback.
+	d.Ideas = slugIdeas
+	c2 := &keyedChatter{up: true, base: time.Minute}
+	c2.do = fails(errStatus(entity.AIProviderOpenRouter, 404))
+	r2 := NewStatic([]StaticCandidate{
+		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c2},
+		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c2, Model: slugIdeasFB},
+	}, WithDefaults(d))
+	_, err = r2.Chat(context.Background(), entity.AIPurposePlaygroundIdeas, chatReq)
+	require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+	require.Equal(t, []string{slugIdeas, slugIdeasFB}, c2.models())
+	require.Equal(t, 2*aiprov.CompletionBudget(time.Minute, 300), r2.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
 }

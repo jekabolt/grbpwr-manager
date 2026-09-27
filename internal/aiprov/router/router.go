@@ -291,16 +291,32 @@ func (r *Router) candidates(purpose string) ([]candidate, uint64) {
 
 // callable is the part of the route Chat would actually call, before the breaker has its say: a
 // transport that is up and a model. What Enabled, PrimaryProvider, ChainBudget and OpenRouterSlugs read.
+//
+// A provider and slug already listed higher up is not listed again (callKey): Chat never calls the
+// same pair twice in one chain, so the lease and the band must not count it either.
 func (r *Router) callable(purpose string) []candidate {
 	cands, _ := r.candidates(purpose)
 	out := cands[:0]
+	listed := map[string]bool{}
 	for _, c := range cands {
-		if r.canCall(purpose, c) {
-			out = append(out, c)
+		if !r.canCall(purpose, c) {
+			continue
 		}
+		key := callKey(c.ProviderKey, r.EffectiveModel(purpose, c.Candidate))
+		if listed[key] {
+			continue
+		}
+		listed[key] = true
+		out = append(out, c)
 	}
 	return out
 }
+
+// callKey is what makes two route rows THE SAME CALL: the provider and the slug. The seeded Ideas
+// route is openrouter + its default slug, then openrouter + openai/gpt-5-mini — and when
+// OPENROUTER_MODEL_IDEAS names gpt-5-mini itself, the second row would repeat the first call's
+// refusal word for word (the handler's retry before B-18 skipped exactly that case).
+func callKey(providerKey, model string) string { return providerKey + "\x00" + model }
 
 func (r *Router) canCall(purpose string, c candidate) bool {
 	return c.chatter != nil && transportUp(c.chatter) && r.EffectiveModel(purpose, c.Candidate) != ""
@@ -353,6 +369,13 @@ func (r *Router) EffectiveModel(purpose string, c registry.Candidate) string {
 	return d.slug(purpose)
 }
 
+// SwitchedOff reports that purpose is closed by an env kill switch — today only
+// OPENROUTER_MODEL_IDEAS=off (Defaults.IdeasOff) for chat.playground_ideas — so the door can name the
+// switch instead of calling the purpose unconfigured or paused. Nil-safe.
+func (r *Router) SwitchedOff(purpose string) bool {
+	return r != nil && purpose == entity.AIPurposePlaygroundIdeas && r.defaults.IdeasOff
+}
+
 // Enabled reports whether purpose has at least one candidate with a transport and a model — the
 // door every handler's "AI is not configured" refusal asks. Nil-safe.
 func (r *Router) Enabled(purpose string) bool { return len(r.callable(purpose)) > 0 }
@@ -376,18 +399,64 @@ func (r *Router) PrimaryModel(purpose string) string {
 	return ""
 }
 
+// RouteHead names the candidate a door would call first: PrimaryProvider / PrimaryModel while
+// something is callable, else the first candidate of the route that has a model, callable or not (no
+// key right now) — so the line of a door that could not call still names the provider and the slug it
+// WOULD have called. "", "" when the route names nothing (a registry drops a keyless provider before
+// the router sees it; the Ideas kill switch empties every slug). Nil-safe.
+func (r *Router) RouteHead(purpose string) (providerKey, model string) {
+	if c := r.callable(purpose); len(c) > 0 {
+		return c[0].ProviderKey, r.EffectiveModel(purpose, c[0].Candidate)
+	}
+	cands, _ := r.candidates(purpose)
+	for _, c := range cands {
+		if m := r.EffectiveModel(purpose, c.Candidate); m != "" {
+			return c.ProviderKey, m
+		}
+	}
+	return "", ""
+}
+
+// baseURLer is a transport that knows its API root (oaichat.Client.BaseURL).
+type baseURLer interface{ BaseURL() string }
+
+// BaseURL is the API root providerKey's transport calls, "" when it does not say. For LOG LINES only:
+// a 404 "model not found" can mean a dead slug OR a base URL pointing nowhere, and a line that names
+// only the slug sends the reader to the wrong knob. Nil-safe.
+func (r *Router) BaseURL(providerKey string) string {
+	if r == nil {
+		return ""
+	}
+	providerKey = strings.TrimSpace(providerKey)
+	var c aiprov.Chatter
+	if r.static != nil {
+		for _, s := range r.static {
+			if s.ProviderKey == providerKey {
+				c = s.Chatter
+				break
+			}
+		}
+	} else {
+		c = r.transports[providerKey]
+	}
+	if b, ok := c.(baseURLer); ok {
+		return b.BaseURL()
+	}
+	return ""
+}
+
 // ChainBudget is the longest a Chat for purpose may run with an answer ceiling of maxTokens: the sum
-// of each candidate's call budget (budget: its transport's base) over the candidates it may call — capped at
-// leasedChainCap for a purpose under a handler lease (Chat stops there too, so the lease and the
-// chain are the same number), and never less than ONE call: a route that gains a candidate between
-// the lease and the call must not find a lease of zero. design.HandlerLeaseFor takes it.
+// of each candidate's call budget (budget: its transport's base) over the candidates it may call —
+// capped at leasedChainCap for a purpose under a handler lease (Chat stops there too, so the lease
+// and the chain are the same number), and never less than ONE call: a route that gains a candidate
+// between the lease and the call must not find a lease of zero. design.HandlerLeaseFor takes it.
 //
 // ⚠ ONE SNAPSHOT EACH, AND THE GAP BETWEEN THEM IS KNOWN. The lease is sized from the route as it
 // stands now and Chat reads the route again when it runs; a callable candidate that APPEARS in
 // between (a route edit, or a breaker whose open window ends, in the handler's pre-call seconds) can
-// make the chain one call longer than the lease — up to the cap. Sizing every leased purpose at the cap would close it, and would also double today's
-// one-candidate draft-idea lease (a dead handler's row blocks the honest retry that much longer):
-// a behaviour change commit C does not make.
+// make the chain one call longer than the lease — up to the cap. Sizing every leased purpose at the
+// cap would close it, and would also double today's one-candidate draft-idea lease (a dead handler's
+// row blocks the honest retry that much longer): a behaviour change commit C does not make.
 func (r *Router) ChainBudget(purpose string, maxTokens int) time.Duration {
 	chain := r.callable(purpose)
 	if limit := chainCap(purpose); limit > 0 && len(chain) > limit {
@@ -463,6 +532,7 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 		firstEngaged error  // the first engaged failure the chain moved past (D-16)
 		refused      string // a provider whose breaker refused admission, when nothing else was called
 	)
+	tried := map[string]bool{} // callKey of every physical call so far
 	for _, c := range cands {
 		// The caller's context, between candidates: once it is done nothing more is tried.
 		if err := ctx.Err(); err != nil {
@@ -482,8 +552,8 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 			continue // keyless: a configuration state, not a missing adapter — no warning
 		}
 		model := r.EffectiveModel(purpose, c.Candidate)
-		if model == "" {
-			continue
+		if model == "" || tried[callKey(c.ProviderKey, model)] {
+			continue // no slug, or the same provider and slug again: a repeat, not a fallback
 		}
 		adm, admitted := r.admit(c.ProviderKey)
 		if !admitted {
@@ -491,6 +561,7 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 			continue
 		}
 
+		tried[callKey(c.ProviderKey, model)] = true
 		calls++
 		res, ownDeadline, err := r.call(ctx, purpose, c, model, adm, calls, prev, r.budget(c, req.MaxTokens), req)
 		prev = c.ProviderKey
