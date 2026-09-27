@@ -99,6 +99,13 @@ type Config struct {
 	// smoke measures one PBR build of each tier under the cap, the band does not advertise `pbr` and
 	// the door refuses pbr=on with option_not_read, for free (G-02, Fable M-3).
 	ThreedPBR bool `mapstructure:"threed_pbr"`
+	// EngineGemini / EngineSeedream list the phase-3 engine rows (B-16) — Gemini 3 Pro Image and
+	// Seedream 5 Pro — in EngineTable: the band advertises them, the door accepts and prices them.
+	// OFF BY DEFAULT (DESIGN_ENGINE_GEMINI, DESIGN_ENGINE_SEEDREAM), and that is the owner's money
+	// decision, not a taste: a Gemini 4K picture is ≈ $0.24 against GPT Image's ceilings, and a flag
+	// goes on only after the beta cost ledger (one call per tier, usage.cost against the ceilings).
+	EngineGemini   bool `mapstructure:"engine_gemini"`
+	EngineSeedream bool `mapstructure:"engine_seedream"`
 	// ImageDefaultModel is the image client's effective slug (orimages.Client.Model), set by app.go
 	// — never read from the environment a second time. It marks the default row of EngineTable,
 	// the engine a frozen params.image with no model is drawn by. '' = orimages.DefaultModel.
@@ -117,7 +124,14 @@ const (
 	EnvImageQualityFlat = "DESIGN_IMAGE_QUALITY_FLAT"
 	EnvThreedProvider   = "DESIGN_THREED_PROVIDER"
 	EnvThreedPBR        = "DESIGN_THREED_PBR"
+	EnvEngineGemini     = "DESIGN_ENGINE_GEMINI"
+	EnvEngineSeedream   = "DESIGN_ENGINE_SEEDREAM"
 )
+
+// EngineFlags — the flagged engine rows this configuration lists (EngineTable's second argument).
+func (c Config) EngineFlags() EngineFlags {
+	return EngineFlags{Gemini: c.EngineGemini, Seedream: c.EngineSeedream}
+}
 
 // ImageQualityMax is the top position of the provider's quality dial — the most this deployment can
 // ask a single picture to be worth.
@@ -298,6 +312,8 @@ func ConfigFromEnv() Config {
 		c.ThreedProvider = v
 	}
 	c.ThreedPBR = envBool(EnvThreedPBR, c.ThreedPBR)
+	c.EngineGemini = envBool(EnvEngineGemini, c.EngineGemini)
+	c.EngineSeedream = envBool(EnvEngineSeedream, c.EngineSeedream)
 	applyDefaults(&c)
 	return c
 }

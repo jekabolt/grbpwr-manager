@@ -30,6 +30,10 @@ func (p imageProvider) MissingCredential() string {
 
 // Produces is PNG and only PNG: the route asks for it explicitly, because a transparent flat needs
 // a format that carries transparency and jpeg silently does not.
+//
+// ⚠ A Gemini / Seedream row (B-16) takes no `output_format` (NoRouteDefaults), so its answer is
+// whatever raster the provider returns. The sink stores JPEG and WebP as well (bucket
+// CanStoreMediaType), so nothing is lost; this list stays the GPT route's promise.
 func (p imageProvider) Produces() []string { return []string{ContentTypePNG} }
 
 // Execute runs one pass over a raster job.
@@ -67,6 +71,31 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		// either one unchanged cannot end differently.
 		return nil, err
 	}
+	// THE ENGINE'S OWN SHAPE (B-16), read off the catalogue by the slug this call goes to. A slug the
+	// catalogue does not know (a custom OPENROUTER_MODEL_IMAGE) keeps today's request byte for byte.
+	background, format := firstNonEmpty(job.Background, backgroundFor(job.Kind)), "png"
+	if row, ok := catalogueEngine(firstNonEmpty(job.Model, p.c.Model())); ok {
+		if row.NoRouteDefaults {
+			// Neither key is in this slug's catalogue: the kind's `opaque` and the route's `png` are
+			// OUR defaults, not the person's words, and are not sent. A stated background was already
+			// refused at the door (Engine.Backgrounds); the sink files whatever raster comes back.
+			background, format = strings.TrimSpace(job.Background), ""
+		}
+		// FREE LOCKS BEFORE THE FIRST PAID CALL, over EVERY call: the engine's reference ceiling (the
+		// door counts flat / render / pattern references only as an upper bound and leaves them to
+		// the client's 16, which is above Gemini's and Seedream's 14) and its `n` range. A refusal
+		// halfway through the loop would come after money moved.
+		for _, call := range calls {
+			if row.MaxRefs > 0 && len(call.refs) > row.MaxRefs {
+				return nil, fmt.Errorf("%w: %d reference pictures in one call, and %s takes at most %d",
+					orimages.ErrBadRequest, len(call.refs), row.Label, row.MaxRefs)
+			}
+			if row.MaxN > 0 && call.n > row.MaxN {
+				return nil, fmt.Errorf("%w: n=%d in one call, and %s returns at most %d",
+					orimages.ErrBadRequest, call.n, row.Label, row.MaxN)
+			}
+		}
+	}
 	// A per-run engine names its own slug; the provenance says so even when the call fails.
 	out := &Outcome{Model: firstNonEmpty(job.Model, p.c.Model())}
 	cost := decimal.Zero
@@ -82,8 +111,8 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			Quality:         job.Quality,
 			Resolution:      job.Resolution,
 			AspectRatio:     job.AspectRatio,
-			Background:      firstNonEmpty(job.Background, backgroundFor(job.Kind)),
-			OutputFormat:    "png",
+			Background:      background,
+			OutputFormat:    format,
 			InputReferences: call.refs,
 		})
 		// THE PRICE IS TAKEN FIRST, BEFORE THE ERROR IS EVEN LOOKED AT. Both the empty-data case

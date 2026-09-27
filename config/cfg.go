@@ -692,6 +692,11 @@ func bindEnvVars() {
 	// and the 64 MiB cap refuses it AFTER the charge. Turn on (true) only after a beta smoke has
 	// measured one PBR build per tier under the cap — see designgen.Config.ThreedPBR.
 	viper.BindEnv("design_generation.threed_pbr", "DESIGN_THREED_PBR")
+	// THE PHASE-3 ENGINE ROWS (B-16): Gemini 3 Pro Image and Seedream 5 Pro in the per-run engine
+	// table. Off by default — each is the owner's money decision after the beta cost ledger; see
+	// designgen.Config.EngineGemini. Unbound, the owner turns one on and the picker never shows it.
+	viper.BindEnv("design_generation.engine_gemini", "DESIGN_ENGINE_GEMINI")
+	viper.BindEnv("design_generation.engine_seedream", "DESIGN_ENGINE_SEEDREAM")
 
 	// fal.ai (3D generation, K-10). A THIRD provider with a key of its own — nothing here falls back
 	// to an OpenRouter or a Meshy variable, because neither account can pay for a fal request.

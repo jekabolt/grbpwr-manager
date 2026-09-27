@@ -75,3 +75,19 @@ func TestGlobalDialStillMovesTheOtherKinds(t *testing.T) {
 	require.Equal(t, ImageQualityMax, c.QualityFor(entity.DesignRunKindFlat),
 		"общий дил вниз не обязан утаскивать флэт: у флэта свой")
 }
+
+// TestTheFlatsTopQualityDoesNotLEAK_INTO_A_RESOLUTION_ENGINE — B-16: the flat asks for the top of the
+// QUALITY dial (above), and a Gemini flat must carry its tier's resolution instead, with no quality
+// word at all (12-PROVIDERS §E: the catalogue lists no `quality` on the slug). MUTATION (measured red):
+// `job.Quality, job.Resolution = "", t.Value` → `job.Resolution = t.Value` in applyImageOptions.
+func TestTheFlatsTopQualityDoesNotLEAK_INTO_A_RESOLUTION_ENGINE(t *testing.T) {
+	img := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
+	w := testWorker(&fakeStore{}, nil, newFakeSink(ContentTypePNG), Providers{Image: img})
+	r := testRun(1, entity.DesignRunKindFlat)
+	r.Params = entity.RawJSON(`{"image":{"model":"google/gemini-3-pro-image","quality":"medium"}}`)
+
+	require.NoError(t, w.execute(context.Background(), r, "tok"))
+	require.Len(t, img.calls, 1)
+	require.Equal(t, "2K", img.calls[0].Resolution)
+	require.Empty(t, img.calls[0].Quality, "the flat's %q is a GPT word", ImageQualityMax)
+}
