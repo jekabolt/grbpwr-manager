@@ -35,9 +35,14 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 		require.Contains(t, c, "Keep the scene of the model photo")
 		require.NotContains(t, c, "outline", "an unmarked run is not told about outlines")
 		// 20-PROMPTS D5: the product picture is a RENDER on white, and several are ONE garment.
-		// MUTATION (measured red): the old «— reproduce its cut, colour, print and seams as they
-		// are, worn the way that garment really sits on a body.» with no product-picture sentence.
-		require.Contains(t, c, "garment of images 1 and 3: it is a product picture")
+		// MUTATIONS (measured red): the old «— reproduce its cut, colour, print and seams as they
+		// are, worn the way that garment really sits on a body.» with no product-picture sentence;
+		// the «: it is a product picture» wording (review MINOR 5 — «it» reads as the garment).
+		require.Contains(t, c, "Dress them in the garment of images 1 and 3 — each of those is a product picture "+
+			"(a drawing, a render or a photo on white; several are views of the same garment): put that garment "+
+			"on the person at its real scale, draped the way that garment really sits on a body, and reproduce "+
+			"its cut, colour, print and seams as they are.")
+		require.NotContains(t, c, "it is a product picture")
 		require.Contains(t, c, "views of the same garment")
 		require.Contains(t, c, "at its real scale")
 		require.Contains(t, c, "Light it with the light of the scene")
@@ -46,7 +51,7 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 		// One product picture is «image N», never «images N».
 		one := craftOf(t, `{"freeform":{"preset":"tryon","items":[
 		  {"media_id":11,"role":"model"},{"media_id":12,"role":"product"}]}}`)
-		require.Contains(t, one, "garment of image 2: it is a product picture")
+		require.Contains(t, one, "garment of image 2 — each of those is a product picture")
 	})
 	t.Run("add_logo", func(t *testing.T) {
 		c := craftOf(t, `{"freeform":{"preset":"add_logo","items":[

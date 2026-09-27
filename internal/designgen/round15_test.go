@@ -380,7 +380,7 @@ func TestARecolourCaptionsNUMBER_ONE_PHOTO_AND_THE_CLOTH_NOT_N_PHOTOS(t *testing
 			got := mk(tc.cloth)
 			require.Equal(t, tc.lines, strings.Count(got, "- image "),
 				"подписи описывают ОДИН вызов, а вызовов три одинаковых по форме")
-			require.Contains(t, got, "- image 1: the photograph being recoloured")
+			require.Contains(t, got, "- image 1: the source picture being recoloured")
 			if tc.cloth {
 				require.Contains(t, got, "- image 2: pattern tile")
 			}

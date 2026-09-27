@@ -3,6 +3,7 @@ package designgen
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -471,6 +472,47 @@ func TestARecolourNAMES_THE_GARMENT_FROM_THE_WORDS_AND_ASSUMES_NO_PERSON(t *test
 	require.Contains(t, cl, "the garment the words above name (the main garment when they name none) made of the cloth in image 2")
 	require.Contains(t, cl, "Parts the words above say to keep, and every other garment, keep their own cloth.")
 	require.NotContains(t, cl, "real person")
+}
+
+// TestARecolourOfAFlatIS_ONE_STORY_FROM_CAPTION_TO_CRAFT — review MAJOR 1 / MINOR 6. The craft test
+// above reads recolorCraft alone, which is why a caption still promising «the real photograph … the
+// same person» passed next to a craft that takes flats. This one reads the COMPOSED prompt buildJob
+// hands the provider, both branches (recolour and re-cloth), so a person or a photograph asserted by
+// ANY block is red. MUTATION (measured red): the old caption «the photograph being recoloured — the
+// real photograph this call must give back, with the same person, pose, framing, background and
+// lighting».
+func TestARecolourOfAFlatIS_ONE_STORY_FROM_CAPTION_TO_CRAFT(t *testing.T) {
+	const caption = "- image 1: the source picture being recoloured — return this same picture, preserving " +
+		"its presentation, crop and background, plus any lighting, person and pose that are present"
+	for _, tc := range []struct {
+		name   string
+		colour map[string]any
+		ids    []int
+		craft  string
+	}{
+		{"recolour", map[string]any{"code": "19-4052", "words": "Classic Blue"}, []int{77},
+			"You are given a picture of a garment — a photograph on a person or a mannequin, a flat drawing or a render."},
+		{"re-cloth", map[string]any{"code": "OLV", "fabric_media_id": 9,
+			"fabrics": []map[string]any{{"name": "check", "media_id": 9}}}, []int{77, 9},
+			"You are given a picture of a garment (image 1) — a photograph on a person or a mannequin, a flat drawing or a render — and a photograph of a cloth (image 2)."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := entity.DesignRun{
+				Id: 5, TechCardId: 41, Kind: entity.DesignRunKindRecolor,
+				Ask:    sql.NullString{String: "recolour the technical flat of this jacket", Valid: true},
+				Params: rawJSON(t, map[string]any{"extra_input_media_ids": []int{77}, "colour": tc.colour}),
+				Inputs: rawJSON(t, map[string]any{}),
+			}
+			job, err := buildJob(context.Background(), media(tc.ids...), nil, run, "medium")
+			require.NoError(t, err)
+			require.Len(t, job.References, 1)
+			require.Contains(t, job.Prompt, caption+"\n", "the source caption, whole, as its own line")
+			require.Contains(t, job.Prompt, tc.craft)
+			for _, f := range []string{"real photograph", "real person", "same person", "the photograph being recoloured"} {
+				require.NotContains(t, job.Prompt, f, "a flat has no person and is not a photograph")
+			}
+		})
+	}
 }
 
 // TestTheRecolourWordsBlockIsCOLOUR_IN_WORDS_AND_THE_RENDER_KEEPS_FABRIC_IN_WORDS — 20-PROMPTS §3.2.

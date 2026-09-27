@@ -285,20 +285,30 @@ func (p falFillProvider) SentPrompt(job Job) string { return fillPrompt(job.Prom
 // fillPromptSuffix — what every fill prompt says after the ask (20-PROMPTS §3.3).
 //
 // FLUX Fill's `prompt` is «the prompt to fill the masked part»: it PAINTS WHAT THE WORDS DESCRIBE,
-// it does not execute them (D2). A bare ask is often an operation — «remove the stain» — and a fill
-// model reads the noun, so it is as likely to paint a stain as to remove one. The suffix turns every
-// ask into a description of the zone: it names what the picture is (a garment photograph, so the
-// fill is cloth and not a painting of cloth), and says the zone CONTINUES the surrounding cloth —
-// material, weave, colour, scale, light — which is the result almost every retouch wants and the
-// one thing the crop alone does not tell the model. The ask stays first: it is the person's, and a
-// description model weights the start of its prompt most.
-const fillPromptSuffix = " — the painted zone of a photograph of a garment: the fill continues the " +
-	"surrounding cloth seamlessly, the same material, weave, colour, scale and lighting, photographic."
+// it does not execute them (D2). The suffix says what the picture is (a garment photograph, so the
+// fill is cloth and not a painting of cloth) and asks for the FINISHED RESULT inside the zone, blended
+// into the image around it — perspective, scale, focus, lighting, grain — which is the one thing the
+// crop alone does not tell the model. The ask stays first: it is the person's, and a description
+// model weights the start of its prompt most.
+//
+// ⚠ IT NAMES NO MATERIAL AND NO COLOUR (review MAJOR 2). The old suffix said the zone continues «the
+// same material, weave, colour» — true of «remove the stain», false of «a red patch pocket» on blue
+// denim or «a metal zip»: a later, stronger instruction to continue the blue denim, and the paid ask
+// is ignored. What must match the surroundings is how the picture was TAKEN, never what the ask adds.
+const fillPromptSuffix = " Show the finished result inside the painted zone of this garment photograph, " +
+	"blended naturally into the surrounding image: the same perspective, scale, focus, lighting and grain."
 
-// fillPrompt — the fal `prompt` of the mask route: the trimmed ask, then fillPromptSuffix. The empty
-// ask is refused by Execute on the BARE ask (words_required stays on the person's words), so the
-// suffix never reaches the provider alone.
-func fillPrompt(ask string) string { return strings.TrimSpace(ask) + fillPromptSuffix }
+// fillPrompt — the fal `prompt` of the mask route: the trimmed ask closed as a sentence (a full stop
+// added only when it does not already end on . ! or ?), then fillPromptSuffix. The empty ask is
+// refused by Execute on the BARE ask (words_required stays on the person's words), so the suffix never
+// reaches the provider alone.
+func fillPrompt(ask string) string {
+	ask = strings.TrimSpace(ask)
+	if !strings.HasSuffix(ask, ".") && !strings.HasSuffix(ask, "!") && !strings.HasSuffix(ask, "?") {
+		ask += "."
+	}
+	return ask + fillPromptSuffix
+}
 
 // fillFamily — the one family whose fill body was read on the provider's page (2026-09-27). Any other
 // FAL_MODEL_FILL is closed at the band and the door (FalRouteOf, G-03 Fable m-1) and refused here,

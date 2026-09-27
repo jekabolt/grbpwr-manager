@@ -110,7 +110,9 @@ func freeformOptions(ff *freeformParams) workflowOptions {
 // one line: several product pictures are views of ONE garment (not an outfit to layer); it goes on
 // at its real scale and drapes; it takes the scene's light; and the result is a PHOTOGRAPH like the
 // model photo, because the product picture is the only drawing in the call and would otherwise
-// pull the whole frame toward a render. None of these lines says «frame», «camera» or «angle»: an
+// pull the whole frame toward a render. The product sentence opens «each of those is a product
+// picture» and not «it is»: after «the garment of images 1 and 3», «it» reads as the GARMENT, and a
+// garment is not a picture (review MINOR 5). None of these lines says «frame», «camera» or «angle»: an
 // auto framing/angle must say nothing about them (TestTryonFRAMING_AND_ANGLE_ARE_WORDS_OR_NOTHING).
 func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 	o := freeformOptions(ff)
@@ -122,8 +124,8 @@ func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 		"except where the words above change them. Dress them in the garment of ")
 	b.WriteString(freeformImageList(freeformImageNumbers(ff, attached, entity.DesignFreeformRoleProduct),
 		"the product picture"))
-	b.WriteString(": it is a product picture (a drawing, a render or a photo on white, and several " +
-		"pictures are views of the same garment) — put that garment on the person at its real scale, " +
+	b.WriteString(" — each of those is a product picture (a drawing, a render or a photo on white; " +
+		"several are views of the same garment): put that garment on the person at its real scale, " +
 		"draped the way that garment really sits on a body, and reproduce its cut, colour, print and " +
 		"seams as they are. Light it with the light of the scene so it belongs to the photograph. ")
 	if w := freeformFramingWords(o.Framing); w != "" {
