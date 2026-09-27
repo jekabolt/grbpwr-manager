@@ -14,7 +14,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
-	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
@@ -427,8 +426,9 @@ func TestCandidates_DefaultFallsBackToOpenRouter(t *testing.T) {
 // takes the provider out of THAT capability only; five minutes later it is a candidate again (the
 // probe), and a success closes it.
 //
-// MUTATION: breakerOpen ignores the open window (State()==Open only) → red at the last step (the
-// provider never comes back).
+// MUTATION: probeBreaker.State ignores the open window (open stays open) → red at the window step
+// (the provider never comes back).
+// MUTATION: RecordSuccess returns without calling Success → red at the last step (still half-open).
 func TestCandidates_OpenBreakerSkippedUntilItsWindowPasses(t *testing.T) {
 	clk := newFakeClock()
 	cfg := seedConfig()
@@ -441,7 +441,7 @@ func TestCandidates_OpenBreakerSkippedUntilItsWindowPasses(t *testing.T) {
 	for range 3 {
 		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, transient)
 	}
-	require.Equal(t, circuitbreaker.StateOpen, r.Breaker(entity.AIProviderOpenRouter, entity.AICapabilityChat).State())
+	require.Equal(t, BreakerOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
 	require.Empty(t, r.Candidates(entity.AIPurposeTechCardEnhance))
 	require.Equal(t, BreakerOpen, state(t, r, entity.AIProviderOpenRouter).Breaker)
 	// The image capability of the same provider is untouched.
@@ -450,6 +450,13 @@ func TestCandidates_OpenBreakerSkippedUntilItsWindowPasses(t *testing.T) {
 	clk.advance(breakerConfig.OpenTimeout + time.Second)
 	require.Len(t, r.Candidates(entity.AIPurposeTechCardEnhance), 1, "past the window the provider is the probe")
 	require.Equal(t, BreakerHalfOpen, state(t, r, entity.AIProviderOpenRouter).Breaker)
+
+	// The probe goes through: a success closes it.
+	require.True(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	r.RecordSuccess(entity.AIProviderOpenRouter, entity.AICapabilityChat)
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	require.Equal(t, BreakerClosed, state(t, r, entity.AIProviderOpenRouter).Breaker)
+	require.Len(t, r.Candidates(entity.AIPurposeTechCardEnhance), 1)
 }
 
 // ───────────────────────── reload + poller ─────────────────────────
@@ -493,12 +500,12 @@ func TestReload_KeyChangeResetsThatProvidersBreakers(t *testing.T) {
 	blob := seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "rotated-fal-8888")
 	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderFal).APIKeyEnc = blob })
 	require.NoError(t, r.Reload(context.Background()))
-	require.Equal(t, circuitbreaker.StateClosed, r.Breaker(entity.AIProviderFal, entity.AICapabilityThreed).State())
-	require.Equal(t, circuitbreaker.StateOpen, r.Breaker(entity.AIProviderMeshy, entity.AICapabilityThreed).State(),
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderFal, entity.AICapabilityThreed))
+	require.Equal(t, BreakerOpen, r.BreakerState(entity.AIProviderMeshy, entity.AICapabilityThreed),
 		"another provider's breaker is not touched")
 
 	r.ResetBreakers(entity.AIProviderMeshy)
-	require.Equal(t, circuitbreaker.StateClosed, r.Breaker(entity.AIProviderMeshy, entity.AICapabilityThreed).State())
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderMeshy, entity.AICapabilityThreed))
 }
 
 // TestPoller_ReloadsOnVersionChangeOnly — a poll with an unchanged version reads the version and
@@ -574,14 +581,14 @@ func TestBackoffDelay(t *testing.T) {
 // MUTATION: drop `aiprov.Engaged(err)` → red at the second.
 func TestRecordFailure_IgnoresConfigAndEngagedErrors(t *testing.T) {
 	r, _, _ := newLoaded(t, testRing(t), seedConfig())
-	cb := r.Breaker(entity.AIProviderOpenRouter, entity.AICapabilityChat)
+	orChat := func() string { return r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat) }
 
 	for _, status := range []int{404, 401, 422} {
 		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat,
 			&aiprov.CallError{Provider: entity.AIProviderOpenRouter, Code: "model_unknown", HTTPStatus: status})
 	}
-	require.Equal(t, circuitbreaker.StateClosed, cb.State(), "configuration errors must not open the breaker")
-	require.Equal(t, 0, cb.Failures())
+	require.Equal(t, BreakerClosed, orChat(), "configuration errors must not open the breaker")
+	require.Nil(t, r.lookupBreaker(entity.AIProviderOpenRouter, entity.AICapabilityChat), "nor even count")
 
 	engaged := &aiprov.CallError{Provider: entity.AIProviderOpenRouter, Code: "timeout", Engaged: true, Retryable: true}
 	for range 3 {
@@ -590,19 +597,19 @@ func TestRecordFailure_IgnoresConfigAndEngagedErrors(t *testing.T) {
 		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat,
 			&aiprov.CallError{Retryable: true, Err: engaged})
 	}
-	require.Equal(t, circuitbreaker.StateClosed, cb.State(), "an engaged failure must not open the breaker")
+	require.Equal(t, BreakerClosed, orChat(), "an engaged failure must not open the breaker")
 
 	for range 3 {
 		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, errors.New("no verdict"))
 	}
 	r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, nil)
-	require.Equal(t, circuitbreaker.StateClosed, cb.State())
+	require.Equal(t, BreakerClosed, orChat())
 
 	for range 3 {
 		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat,
 			&aiprov.CallError{Provider: entity.AIProviderOpenRouter, HTTPStatus: 503, Retryable: true})
 	}
-	require.Equal(t, circuitbreaker.StateOpen, cb.State())
+	require.Equal(t, BreakerOpen, orChat())
 }
 
 // TestRecordSuccess_ClearsTheCount — two faults, a success, two faults: still closed.
@@ -620,7 +627,7 @@ func TestRecordSuccess_ClearsTheCount(t *testing.T) {
 	for range 2 {
 		r.RecordFailure(entity.AIProviderFal, entity.AICapabilityCutout, transient)
 	}
-	require.Equal(t, circuitbreaker.StateClosed, r.Breaker(entity.AIProviderFal, entity.AICapabilityCutout).State())
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderFal, entity.AICapabilityCutout))
 }
 
 // TestProviders_PanelOrderAndNoKeys — nine rows in the panel's order, and no field ever holds a key.
@@ -641,4 +648,195 @@ func TestProviders_PanelOrderAndNoKeys(t *testing.T) {
 	}
 	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderRunblob).KeySource)
 	require.Equal(t, "Europe/Warsaw", r.BudgetTimezone())
+}
+
+// ───────────────────────── one clock, one probe (Codex A1 #1) ─────────────────────────
+
+var (
+	transientFault = &aiprov.CallError{Provider: entity.AIProviderOpenRouter, HTTPStatus: 503, Retryable: true}
+	keyRejected    = &aiprov.CallError{Provider: entity.AIProviderOpenRouter, Code: "key_rejected", HTTPStatus: 401}
+	engagedFault   = &aiprov.CallError{Provider: entity.AIProviderOpenRouter, Code: "timeout", Engaged: true, Retryable: true}
+)
+
+// newOpenBreaker loads a registry on a fake clock and opens openrouter/chat with three transient
+// faults.
+func newOpenBreaker(t *testing.T) (*Registry, *fakeClock) {
+	t.Helper()
+	clk := newFakeClock()
+	r, _, _ := newLoaded(t, testRing(t), seedConfig(), WithClock(clk.now))
+	for range breakerConfig.MaxFailures {
+		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, transientFault)
+	}
+	require.Equal(t, BreakerOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	return r, clk
+}
+
+// admitted releases n callers at once on openrouter/chat's Admit and counts the ones let through.
+func admitted(r *Registry, n int) int {
+	var (
+		start sync.WaitGroup
+		done  sync.WaitGroup
+		yes   atomic.Int32
+	)
+	start.Add(1)
+	for range n {
+		done.Go(func() {
+			start.Wait()
+			if r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat) {
+				yes.Add(1)
+			}
+		})
+	}
+	start.Done()
+	done.Wait()
+	return int(yes.Load())
+}
+
+// TestBreaker_PastTheWindowExactlyOneProbe — open: nobody is admitted; past the window sixteen
+// concurrent callers ask and exactly ONE is let through (the probe); the rest keep being refused
+// while it is out. A provider that never failed is admitted and gets no breaker.
+//
+// MUTATION: Admit never sets probeInFlight (drop `b.probeInFlight = true`) → red: 16 admitted.
+// MUTATION: Admit judges the window with time.Since instead of the instant passed in (the old two
+// clocks) → red whatever the wall clock says: either the wall clock is past the window and the first
+// caller is let through while the registry clock says open, or it is not and nobody is ever the probe.
+// MUTATION: registry Admit uses breakerFor (creating) instead of lookupBreaker → red at the last line.
+func TestBreaker_PastTheWindowExactlyOneProbe(t *testing.T) {
+	r, clk := newOpenBreaker(t)
+	require.False(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat), "open: nobody")
+	require.Equal(t, 0, admitted(r, 16))
+
+	clk.advance(breakerConfig.OpenTimeout - time.Second)
+	require.Equal(t, 0, admitted(r, 16), "one second before the window ends: still nobody")
+
+	clk.advance(2 * time.Second)
+	require.Equal(t, BreakerHalfOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	require.Len(t, r.Candidates(entity.AIPurposeTechCardEnhance), 1, "half-open is still LISTED")
+	require.Equal(t, 1, admitted(r, 16), "past the window exactly one caller is the probe")
+	require.Equal(t, 0, admitted(r, 16), "while the probe is out, nobody else")
+
+	require.True(t, r.Admit(entity.AIProviderFal, entity.AICapabilityThreed), "no breaker: admitted")
+	require.Nil(t, r.lookupBreaker(entity.AIProviderFal, entity.AICapabilityThreed), "and none created")
+}
+
+// TestBreaker_ProbeSuccessClosesAndReservesNothing — the probe's RecordSuccess closes the breaker:
+// listed, closed, every caller admitted; and the NEXT outage gets a probe of its own — a reservation
+// left over from the last one would lock the provider out for good.
+//
+// MUTATION: Success does not set state closed → red (still half-open, the second caller refused).
+// MUTATION: Success does not clear probeInFlight → red at the second outage (nobody is ever the
+// probe again).
+func TestBreaker_ProbeSuccessClosesAndReservesNothing(t *testing.T) {
+	r, clk := newOpenBreaker(t)
+	clk.advance(breakerConfig.OpenTimeout)
+	require.True(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+
+	r.RecordSuccess(entity.AIProviderOpenRouter, entity.AICapabilityChat)
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	require.Len(t, r.Candidates(entity.AIPurposeTechCardEnhance), 1)
+	require.Equal(t, 2, admitted(r, 2), "closed: both callers")
+
+	for range breakerConfig.MaxFailures {
+		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, transientFault)
+	}
+	require.Equal(t, 0, admitted(r, 4))
+	clk.advance(breakerConfig.OpenTimeout)
+	require.Equal(t, 1, admitted(r, 16), "the next outage has its own probe")
+}
+
+// TestBreaker_ProbeFaultReopensForAFullWindow — a transient fault on the probe re-opens the breaker
+// for a FULL window counted from the probe's fault, not from the first opening; after it, again one
+// probe.
+//
+// MUTATION: Fault on half-open does not refresh openedAt → red: right after the probe failed the
+// breaker already reads half-open again (the old window had long passed).
+// MUTATION: Fault on half-open does not clear probeInFlight → red at the end (nobody is ever the
+// probe again).
+func TestBreaker_ProbeFaultReopensForAFullWindow(t *testing.T) {
+	r, clk := newOpenBreaker(t)
+	clk.advance(breakerConfig.OpenTimeout + time.Minute)
+	require.True(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+
+	r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, transientFault)
+	require.Equal(t, BreakerOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	require.Empty(t, r.Candidates(entity.AIPurposeTechCardEnhance))
+
+	clk.advance(time.Second)
+	require.False(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat), "a fresh window, not the old one")
+	clk.advance(breakerConfig.OpenTimeout - 2*time.Second)
+	require.False(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat), "one second before the new window ends")
+
+	clk.advance(time.Second)
+	require.Equal(t, 1, admitted(r, 16))
+}
+
+// TestBreaker_VerdictlessEndsReleaseTheProbe — a probe that ends in a configuration refusal (401),
+// in an error that is not a CallError, or with no call at all (Release) says nothing about the
+// provider: the breaker stays half-open, and the probe is FREED for the next caller — exactly one.
+//
+// MUTATION: RecordFailure returns early for a non-counting error instead of calling Release → red:
+// the provider stays reserved by a probe nobody runs, the next Admit is false.
+// MUTATION: probeBreaker.Release does nothing → red.
+func TestBreaker_VerdictlessEndsReleaseTheProbe(t *testing.T) {
+	r, clk := newOpenBreaker(t)
+	clk.advance(breakerConfig.OpenTimeout)
+
+	for _, end := range []struct {
+		name string
+		do   func()
+	}{
+		{"401", func() { r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, keyRejected) }},
+		{"no verdict", func() {
+			r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, errors.New("dial: no route"))
+		}},
+		{"no call", func() { r.Release(entity.AIProviderOpenRouter, entity.AICapabilityChat) }},
+	} {
+		require.Equal(t, 1, admitted(r, 16), "before %s", end.name)
+		end.do()
+		require.Equal(t, BreakerHalfOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat),
+			"%s neither closes nor re-opens it", end.name)
+	}
+	require.Equal(t, 1, admitted(r, 16), "freed each time, one probe each time")
+}
+
+// TestBreaker_EngagedEndReleasesAndNeverCounts — an engaged error on the probe may have cost money:
+// it is the ledger's business, never a breaker fault — it releases the probe like any verdict-less
+// end, and the breaker stays half-open (not re-opened). While closed it never opens it either.
+//
+// MUTATION: drop `aiprov.Engaged(err)` in RecordFailure → red: the engaged probe re-opens it.
+func TestBreaker_EngagedEndReleasesAndNeverCounts(t *testing.T) {
+	r, clk := newOpenBreaker(t)
+	clk.advance(breakerConfig.OpenTimeout)
+	require.True(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+
+	r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, engagedFault)
+	require.Equal(t, BreakerHalfOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	require.Equal(t, 1, admitted(r, 16), "released, not re-opened")
+
+	r.RecordSuccess(entity.AIProviderOpenRouter, entity.AICapabilityChat)
+	for range 2 * breakerConfig.MaxFailures {
+		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, engagedFault)
+	}
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+}
+
+// TestBreaker_ResetClosesAndUnreserves — ResetBreakers with the probe out: closed, everybody admitted,
+// and the next outage has its own probe (the old reservation is gone).
+//
+// MUTATION: probeBreaker.Reset does not clear probeInFlight → red at the last line.
+// MUTATION: probeBreaker.Reset does not set state closed → red (still half-open, one admitted).
+func TestBreaker_ResetClosesAndUnreserves(t *testing.T) {
+	r, clk := newOpenBreaker(t)
+	clk.advance(breakerConfig.OpenTimeout)
+	require.True(t, r.Admit(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+
+	r.ResetBreakers(entity.AIProviderOpenRouter)
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityChat))
+	require.Equal(t, 3, admitted(r, 3))
+
+	for range breakerConfig.MaxFailures {
+		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, transientFault)
+	}
+	clk.advance(breakerConfig.OpenTimeout)
+	require.Equal(t, 1, admitted(r, 16))
 }
