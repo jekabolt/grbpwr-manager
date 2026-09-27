@@ -2,10 +2,11 @@ package aiprov
 
 import "errors"
 
-// EngagedMarker is how a transport that does NOT yet speak CallError says "the request was written":
-// the openrouter chat client's engaged wrapper implements it. aiprov deliberately imports NO client
-// package (the clients will import aiprov when their transports are ported in commit C), so the
-// mark travels as an interface, not as a type.
+// EngagedMarker is how a transport that does NOT yet speak CallError says "the request was written".
+// Since B-11 nothing in the tree produces it — the openrouter chat client, its only producer, now
+// speaks CallError through oaichat — and it stays so a transport ported later can mark its errors
+// before it adopts CallError, without Engaged losing the answer. aiprov imports NO client package, so
+// the mark travels as an interface, not as a type.
 type EngagedMarker interface{ ProviderEngaged() bool }
 
 // Sentinels of the provider-neutral layer. They name the situation, never a provider: a transport's
@@ -118,9 +119,8 @@ func AsCallError(err error) (*CallError, bool) {
 
 // Engaged reports "money may have moved for this call": true when ANY *CallError in err's chain
 // (joined errors included) says Engaged, and ALSO when any error in the chain is an EngagedMarker
-// that answers true — the existing chat client marks its errors with its own wrapper and keeps
-// doing so until its transport is ported, and a caller that switched to this helper must not lose
-// that answer.
+// that answers true (a transport not yet speaking CallError). openrouter.ProviderEngaged IS this
+// function since B-11.
 //
 // ⚠ ANY, NOT FIRST. errors.As stops at the outermost CallError; a router that wraps a candidate's
 // engaged failure into its own non-engaged one, or joins several candidates' errors, would read

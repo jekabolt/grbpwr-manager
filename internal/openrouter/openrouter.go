@@ -6,6 +6,14 @@
 // The client is optional and degrades gracefully: when no API key is configured
 // Enabled() is false and GenerateOperations returns ErrNotConfigured, so the admin
 // service keeps working with the feature simply unavailable.
+//
+// THE WIRE IS NO LONGER HERE (B-11). Every chat call goes through the provider-neutral transport
+// internal/aiprov/oaichat (Dialect OpenRouter), built in New from this Config: the budget, the engaged
+// flag, the read ceiling, the status classification and the error sentences live there, once, for
+// every OpenAI-shaped provider. This package keeps what is OpenRouter's or the features' own: the
+// slugs and their env knobs, the prompts, the reasoning-effort policy per entry point, the operation
+// parser and the startup model probe (OpenRouter's endpoints API). Failures come back as
+// *aiprov.CallError — its Error() is the same sentence this client always wrote.
 package openrouter
 
 import (
@@ -20,7 +28,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/oaichat"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 const (
@@ -38,22 +50,12 @@ const (
 	// story of why it is a base and not a ceiling now live in aiprov (budget.go: DefaultBudgetBase) —
 	// one formula for every transport and for every lease that has to outlive a call.
 	defaultTimeout = aiprov.DefaultBudgetBase
-	// maxResponseBytes caps how much of an API response we read (defensive). It stays at 4 MiB
-	// because everything THIS package reads is text: a completion that big is already an order of
-	// magnitude past any prompt here, and raising it would only buy a bigger allocation on a
-	// 0.5 GiB box. What changed is what happens at the wall — see ErrResponseTooLarge: the cap
-	// refuses, it no longer trims in silence.
-	//
-	// GENERATED PICTURES DO NOT COME THROUGH HERE. A single base64 PNG is bigger than this whole
-	// ceiling, and it arrives on a DIFFERENT endpoint from a DIFFERENT catalogue — see
-	// internal/orimages, which carries its own (much larger, configurable) ceiling for exactly
-	// that reason. Raising this constant would not have made images fit; it would have made a
-	// text path allocate for a body it can never receive.
-	maxResponseBytes = 4 << 20 // 4 MiB
+	// maxResponseBytes caps how much of a response is read — the chat answer (in the transport:
+	// oaichat.MaxResponseBytes, whose comment carries the reasoning) and the model probe below, which
+	// reads through this package's own readCapped. One number for both, as before the move.
+	maxResponseBytes = oaichat.MaxResponseBytes
 	// maxOperations caps how many drafted operations we return (runaway guard).
 	maxOperations = 200
-	// generationTemperature keeps drafts fairly deterministic/consistent.
-	generationTemperature = 0.2
 	// modelProbeTimeout bounds the startup model probe. It is short on purpose: the probe is a
 	// courtesy, and a provider that is slow to answer at boot is not news worth waiting for.
 	modelProbeTimeout = 3 * time.Second
@@ -168,71 +170,19 @@ var ErrBudgetExhausted = aiprov.ErrBudgetExhausted
 // An alias of aiprov.ErrResponseTooLarge since B-11.
 var ErrResponseTooLarge = aiprov.ErrResponseTooLarge
 
-// ───────────────── ГРАНИЦА «КУПЛЕНО / НЕ КУПЛЕНО» ─────────────────
+// ProviderEngaged — «за этот вызов поставщику уже причитаются деньги»: the request was written to the
+// wire before the call failed, so the provider may be billing it.
 //
-// ProviderEngaged отвечает на ОДИН вопрос, у которого есть только два ответа: успел ли этот запрос
-// доехать до поставщика ДО того, как всё сломалось. Ответ — не диагностика, а ДЕНЬГИ: пока его не
-// было, вызывающий (design_run.go: designFailDraft) закрывал ЛЮБОЙ провал вызова ценой NULL, и
-// поставщик, уже напечатавший 22k входных токенов на доске из двенадцати кадров, попадал в регистр
-// нулём. Человек видел codes.Unavailable — новость, неотличимую от погоды, — жал ещё раз с новым
-// client_request_id и покупал тот же ноль второй раз. В регистре про эти деньги не было ни строки.
+// Since B-11 it is aiprov.Engaged: the transport (oaichat) sets CallError.Engaged from the httptrace
+// observer (aiprov.ObserveWrite), and the table of which failure falls on which side of the boundary
+// lives with it (oaichat.go: «ГРАНИЦА КУПЛЕНО / НЕ КУПЛЕНО»). The package's own engaged wrapper is gone —
+// nothing produces it any more.
 //
-// ⚠ ГРАНИЦА НАЙДЕНА НА ПРОВОДЕ, А НЕ В ПРОЗЕ ОШИБКИ, И ЭТО НЕСУЩЕЕ. Разобрать `*url.Error` по
-// словам («timeout», «connection reset», «context canceled») — ровно тот способ, которым такая
-// починка гниёт: строки ошибок net/http не контракт, они меняются между релизами Go и между
-// прокси, а промах в любую сторону — это либо выдуманные деньги, либо снова спрятанные. Поэтому
-// спрашивается САМ ТРАНСПОРТ: httptrace.WroteRequest срабатывает ровно тогда, когда запрос
-// (вместе с телом) ДОПИСАН в соединение, и несёт собственную ошибку записи. Записан целиком и без
-// ошибки — поставщик его получил и начал считать; не записан — не получил ничего.
-//
-// ЧТО ПО КАКУЮ СТОРОНУ ГРАНИЦЫ ОКАЗАЛОСЬ:
-//
-//	НЕ ВОВЛЕЧЁН (NULL в регистре — правда):
-//	  · ErrNotConfigured, пустой промпт, отказ сборки частей, marshal, build request — до провода;
-//	  · DNS, отказ в соединении, TLS, оборванная ЗАПИСЬ запроса — WroteRequest не сработал;
-//	  · ЛЮБОЙ non-2xx, включая 404/ErrModelUnavailable, 401, 402, 429. Это поставщик, ОТКАЗАВШИЙ НА
-//	    ВОРОТАХ, а отказ не тарифицируется. Здесь и только здесь граница выбрана НЕ в сторону
-//	    «записать»: протухший слуг модели (см. defaultModel) отвечает 404 за 0.2 с на КАЖДОЕ
-//	    нажатие, и пометить это тратой значило бы выдумать деньги ровно в тот день, когда фича
-//	    целиком мертва, — то есть соврать в ту же кассу, только в другую сторону.
-//
-//	ВОВЛЕЧЁН (деньги ушли, сумму знает вызывающий):
-//	  · запрос дописан, а дальше срок вышел / контекст отменён / край разорвал соединение —
-//	    поставщик считает прямо сейчас, а мы не узнаем, чем он кончил;
-//	  · тело ответа не дочиталось или переросло потолок (ErrResponseTooLarge) — ответ БЫЛ;
-//	  · 2xx, у которого конверт не разобрался, пуст, без choices или с error внутри — поставщик
-//	    принял запрос и отработал его.
-//
-// ⚠ ПОМЕТКА — ОБЁРТКА, А НЕ ВТОРОЙ СЕНТИНЕЛ, И ТЕКСТ ОШИБКИ ОНА НЕ ТРОГАЕТ. errors.Join склеил бы
-// две фразы через перевод строки, а эта ошибка доезжает до человека целиком (design_run.go:
-// designDraftCallError). Цепочка сохраняется: errors.Is(err, ErrBudgetExhausted) сквозь обёртку
-// по-прежнему верен.
-type engagedError struct{ err error }
-
-func (e *engagedError) Error() string { return e.err.Error() }
-func (e *engagedError) Unwrap() error { return e.err }
-
-// ProviderEngaged makes the wrapper an aiprov.EngagedMarker, so the provider-neutral layer reads
-// this client's "money may have moved" mark without importing this package (and this package may
-// later import aiprov without a cycle).
-func (e *engagedError) ProviderEngaged() bool { return e != nil }
-
-// engaged помечает ошибку как поднятую ПОСЛЕ того, как запрос доехал до поставщика.
-func engaged(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &engagedError{err: err}
-}
-
-// ProviderEngaged — «за этот вызов поставщику уже причитаются деньги».
-//
-// Отвечает false на nil и на всякую ошибку, поднятую до провода. Вызывающий, который на этом
-// ответе списывает, обязан списывать ВЕРХНЮЮ границу: сколько именно напечатал поставщик, здесь не
-// знает никто — usage приезжает в том самом ответе, которого не было.
+// Отвечает false на nil и на всякую ошибку, поднятую до провода. Вызывающий, который на этом ответе
+// списывает, обязан списывать ВЕРХНЮЮ границу: сколько именно напечатал поставщик, здесь не знает никто
+// — usage приезжает в том самом ответе, которого не было.
 func ProviderEngaged(err error) bool {
-	var e *engagedError
-	return errors.As(err, &e)
+	return aiprov.Engaged(err)
 }
 
 // readCapped reads at most limit bytes and REFUSES anything longer instead of handing back a
@@ -240,8 +190,8 @@ func ProviderEngaged(err error) bool {
 // body is exactly at the ceiling" and "the body is over it", and without it the two are
 // indistinguishable.
 //
-// `what` names the body in the error, so a log line says which of the package's two routes
-// (completion vs model probe) hit the wall.
+// Since B-11 only the model probe reads through it here; the chat answer is read by the transport's
+// own copy (oaichat.readCapped), with the same sentence. `what` names the body in the error.
 func readCapped(r io.Reader, limit int64, what string) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
@@ -287,10 +237,12 @@ type Config struct {
 // permanently-disabled client (Enabled() == false), so callers need not nil-check.
 type Client struct {
 	cfg Config
-	// budgetBase — БАЗА бюджета одного вызова (см. defaultTimeout): всё, что не есть печать ответа.
-	// Печать добавляется поверх, по запрошенному потолку токенов — CompletionBudget.
-	budgetBase time.Duration
-	http       *http.Client
+	// chat is THE transport every chat call goes through (oaichat, Dialect OpenRouter). It owns the
+	// budget base (CompletionBase delegates to it), the key read per request (KeyFunc = apiKey), the
+	// attribution headers and every failure's classification.
+	chat *oaichat.Client
+	// http serves the startup model probe only (checkModel); it has no Timeout of its own either.
+	http *http.Client
 }
 
 // New builds a client, applying defaults for model / base URL / timeout. It does
@@ -310,13 +262,32 @@ func New(cfg Config) *Client {
 	if base <= 0 {
 		base = defaultTimeout
 	}
-	// ⚠ У http.Client БОЛЬШЕ НЕТ СОБСТВЕННОГО Timeout, И ЭТО ОБЯЗАТЕЛЬНАЯ ПОЛОВИНА ПОЧИНКИ.
-	// http.Client.Timeout — это ОДНО число на все запросы клиента, поставленное до того, как стал
-	// известен размер ответа; именно оно и обрывало вызов, у которого потолок был поднят. Бюджет
-	// теперь ставится НА КАЖДЫЙ ЗАПРОС, из этой базы плюс время печати запрошенных токенов
-	// (postChatCompletion), а зонд модели носит свой короткий срок (checkModel). Ни одного маршрута
-	// без срока здесь не осталось — если появится новый, он обязан завести срок так же.
-	return &Client{cfg: cfg, budgetBase: base, http: &http.Client{}}
+	// ⚠ У http.Client НЕТ СОБСТВЕННОГО Timeout, И ЭТО ОБЯЗАТЕЛЬНАЯ ПОЛОВИНА ПОЧИНКИ. http.Client.Timeout
+	// — одно число на все запросы клиента, поставленное до того, как стал известен размер ответа;
+	// именно оно и обрывало вызов, у которого потолок был поднят. Бюджет чат-вызова ставится НА КАЖДЫЙ
+	// ЗАПРОС транспортом (oaichat.post: эта база плюс время печати запрошенных токенов), а зонд модели
+	// носит свой короткий срок (checkModel). Ни одного маршрута без срока здесь не осталось.
+	c := &Client{cfg: cfg, http: &http.Client{}}
+	c.chat = oaichat.New(oaichat.Config{
+		Provider:    entity.AIProviderOpenRouter,
+		BaseURL:     cfg.BaseURL,
+		Dialect:     oaichat.DialectOpenRouter,
+		KeyFunc:     c.apiKey,
+		HTTPTimeout: base,
+		Title:       "grbpwr-products-manager",
+		Referer:     "https://admin.grbpwr.com",
+	})
+	return c
+}
+
+// Transport is the chat transport this client calls through — for the AI router (B-18), so the
+// OpenRouter candidate it holds is THIS configuration (base URL, key func, budget base, attribution
+// headers) rather than a second one assembled elsewhere that can drift from it. Nil-safe (nil).
+func (c *Client) Transport() *oaichat.Client {
+	if c == nil {
+		return nil
+	}
+	return c.chat
 }
 
 // CompletionBudget — СКОЛЬКО ВРЕМЕНИ ИМЕЕТ ПРАВО ЗАНЯТЬ ОДИН ВЫЗОВ с потолком maxTokens. A one-line
@@ -334,20 +305,21 @@ func DefaultCompletionBudget(maxTokens int) time.Duration {
 	return aiprov.DefaultCompletionBudget(maxTokens)
 }
 
-// CompletionBase — БАЗА БЮДЖЕТА ЭТОГО КЛИЕНТА: ровно то число, которое postChatCompletion кладёт
+// CompletionBase — БАЗА БЮДЖЕТА ЭТОГО КЛИЕНТА: ровно то число, которое транспорт (oaichat) кладёт
 // в CompletionBudget на КАЖДОМ вызове. Nil-safe и zero-safe: и у выключенного клиента, и у
 // незаданного OPENROUTER_HTTP_TIMEOUT база кодовая, той же нормализацией, что в New.
 //
 // ⚠ ЭКСПОРТИРОВАНА РАДИ ОДНОГО ЧИТАТЕЛЯ — ТОГО, КТО ВЫДАЁТ ЛИЗУ ПОД ЭТОТ ВЫЗОВ. Лиза обязана
 // переживать вызов; «переживать» проверяемо только если оба числа приходят ИЗ ОДНОГО ПОЛЯ ОДНОГО
-// ОБЪЕКТА. Пока лиза считалась от defaultTimeout, а провод — от c.budgetBase, это были два числа
+// ОБЪЕКТА. Пока лиза считалась от defaultTimeout, а провод — от базы клиента, это были два числа
 // на оси, которую не спрашивала ни одна проба: они совпадали до тех пор, пока переменную
 // окружения не поставят, и разошлись бы МОЛЧА в день, когда её поставят.
 func (c *Client) CompletionBase() time.Duration {
-	if c == nil || c.budgetBase <= 0 {
+	if c == nil {
 		return defaultTimeout
 	}
-	return c.budgetBase
+	// The transport's own field — the one oaichat.post puts into CompletionBudget on every request.
+	return c.chat.CompletionBase()
 }
 
 // Enabled reports whether an API key is configured. Nil-safe.
@@ -689,65 +661,31 @@ func (b jsonBool) Ptr() *bool {
 	return &v
 }
 
-// --- OpenRouter wire types (OpenAI-compatible chat/completions) ---
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type responseFormat struct {
-	Type string `json:"type"`
-}
-
-// reasoningSpec is OpenRouter's `reasoning` object. Only ONE of effort/max_tokens may be set — the
-// provider documents them as alternatives, not as a pair. Omitted entirely (nil) the provider's own
-// default stands, which is what every feature except the analysis pass wants.
-type reasoningSpec struct {
-	Effort string `json:"effort,omitempty"`
-}
-
-type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	// MaxTokens caps the COMPLETION. Omitted when zero, which leaves the provider's own default in
-	// force — the behaviour every caller had before the field existed. The analysis pass sets it
-	// explicitly, because a default this codebase does not own is not a budget it can reason about.
-	MaxTokens      int             `json:"max_tokens,omitempty"`
-	Temperature    float64         `json:"temperature"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
-	// Reasoning is sent only by the analysis pass. Nil leaves the provider default in force, which
-	// is the behaviour every other caller had before the field existed.
-	Reasoning *reasoningSpec `json:"reasoning,omitempty"`
-}
-
+// apiError is the error object of an OpenRouter body; the model probe's non-2xx sentence reads it.
 type apiError struct {
 	Message string `json:"message"`
 	Code    any    `json:"code"`
 	Type    string `json:"type"`
 }
 
-type chatResponse struct {
-	Choices []struct {
-		Message      chatMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
-	} `json:"choices"`
-	Model string    `json:"model"`
-	Usage Usage     `json:"usage"`
-	Error *apiError `json:"error"`
-}
-
-// Usage is the token accounting the provider returns for one completion. The field names are the
-// OpenAI-compatible ones OpenRouter answers with; the Go names are shortened because the "_tokens"
-// suffix on a type called Usage says nothing.
+// Usage is the token accounting of one completion, as the legacy methods return it (B-18 moves the
+// callers to aiprov.ChatResult). The field names are the OpenAI-compatible ones OpenRouter answers
+// with; the Go names are shortened because the "_tokens" suffix on a type called Usage says nothing.
 //
-// A MISSING OR MISSPELLED TAG HERE IS SILENT: every field simply stays zero, the call still
-// succeeds, and the only symptom is that the price of every run reads as free in the log. That is
-// why the test asserts NON-ZERO numbers rather than "no error".
+// It is FILLED FROM THE TRANSPORT'S RESULT now (oaichat decodes the wire — and carries the warning that
+// a misspelled tag there is silent), and it grew three fields (B-11, additive) now that the request
+// asks OpenRouter for them (`usage:{include:true}`):
+//
+//	Cached     the part of Prompt served from the provider's cache;
+//	Reasoning  the part of Completion spent on thinking;
+//	Cost       OpenRouter's own charge in USD — NULL when absent or 0 (a 0 is not a known price).
 type Usage struct {
-	Prompt     int `json:"prompt_tokens"`
-	Completion int `json:"completion_tokens"`
-	Total      int `json:"total_tokens"`
+	Prompt     int                 `json:"prompt_tokens"`
+	Completion int                 `json:"completion_tokens"`
+	Total      int                 `json:"total_tokens"`
+	Cached     int                 `json:"cached_tokens"`
+	Reasoning  int                 `json:"reasoning_tokens"`
+	Cost       decimal.NullDecimal `json:"cost"`
 }
 
 // GenerateOperations asks the model to draft sewing operations for the given tech
@@ -761,15 +699,11 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 		return nil, fmt.Errorf("openrouter: description is required")
 	}
 
-	content, _, _, err := c.chat(ctx, chatRequest{
-		Model: c.cfg.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: buildUserPrompt(tcx, description)},
-		},
-		Temperature:    generationTemperature,
-		ResponseFormat: &responseFormat{Type: "json_object"},
-	})
+	content, _, _, err := c.send(ctx, c.cfg.Model, aiprov.ChatRequest{
+		System:   systemPrompt,
+		User:     buildUserPrompt(tcx, description),
+		JSONMode: true,
+	}, oaichat.Options{})
 	if err != nil {
 		return nil, err
 	}
@@ -792,9 +726,9 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 // exactly what it did before the response metadata existed — so callers that do not care about the
 // finish reason or the token bill keep the behaviour they had.
 func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool) (string, error) {
-	// nil reasoning: the provider default, i.e. exactly what these features did before the field
+	// No effort: the provider default, i.e. exactly what these features did before the field
 	// existed. Only the analysis pass has a budget tight enough to care.
-	text, _, _, err := c.complete(ctx, c.Model(), systemPrompt, userPrompt, jsonMode, 0, nil)
+	text, _, _, err := c.complete(ctx, c.Model(), systemPrompt, userPrompt, jsonMode, 0, "")
 	return text, err
 }
 
@@ -818,144 +752,50 @@ func (c *Client) CompleteWithMeta(ctx context.Context, systemPrompt, userPrompt 
 	// стояло тут до круга 19 и ровно поэтому черновик конструкции поставил потолок 3000, мышление
 	// не выключил и купил бы размышление вместо ответа.
 	return c.complete(ctx, c.AnalysisModel(), systemPrompt, userPrompt, jsonMode, maxTokens,
-		&reasoningSpec{Effort: analysisReasoningEffort})
+		analysisReasoningEffort)
 }
 
 // complete is the shared body of Complete and CompleteWithMeta: one place that decides the request
-// shape, so the slug, the temperature and the JSON-mode flag cannot drift between the two entry
-// points. The model is a parameter precisely because the two differ in that one value.
-func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt string, jsonMode bool, maxTokens int, reasoning *reasoningSpec) (string, string, Usage, error) {
+// shape, so the slug, the JSON-mode flag and the effort cannot drift between the two entry points.
+// The model is a parameter precisely because the two differ in that one value. effort "" = the
+// provider's default (no `reasoning` key on the wire).
+func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt string, jsonMode bool, maxTokens int, effort string) (string, string, Usage, error) {
 	if !c.Enabled() {
 		return "", "", Usage{}, ErrNotConfigured
 	}
-	req := chatRequest{
-		Model: model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-		Temperature: generationTemperature,
-	}
-	if jsonMode {
-		req.ResponseFormat = &responseFormat{Type: "json_object"}
-	}
-	if maxTokens > 0 {
-		req.MaxTokens = maxTokens
-	}
-	req.Reasoning = reasoning
-	return c.chat(ctx, req)
+	return c.send(ctx, model, aiprov.ChatRequest{
+		System:    systemPrompt,
+		User:      userPrompt,
+		JSONMode:  jsonMode,
+		MaxTokens: maxTokens, // <= 0 is omitted by the transport: the provider default stands
+		Effort:    effort,
+	}, oaichat.Options{})
 }
 
-// chat performs one chat/completions request from the TEXT-ONLY request shape and returns the
-// assistant message content plus the response metadata (finish reason, token usage), or a clear
-// error on transport failure, non-2xx status, or an empty/malformed envelope.
+// send is THE ONE DOOR of this package to the chat transport: GenerateOperations, Complete,
+// CompleteWithMeta and both picture entry points (multimodal.go) funnel through it, so the legacy
+// (text, finishReason, Usage, error) shape is assembled in exactly one place.
 //
-// GenerateOperations, Complete and CompleteWithMeta all funnel through it. The multimodal entry
-// point (see multimodal.go) has its OWN request struct — because the wire shape of `content` is
-// genuinely different there and merging the two would mean typing this one's Content as `any` —
-// but it shares the transport below, so the auth header, the 404 classification and the
-// response-size cap still live in exactly one place.
-func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, string, Usage, error) {
-	payload, err := json.Marshal(reqBody)
+// On an empty answer the transport returns the partial result WITH the error, and both ride out here
+// as they always did: the finish reason and the usage of a paid call that printed nothing. The
+// temperature (0.2), the wire shape, the budget and the error sentences are the transport's.
+func (c *Client) send(ctx context.Context, model string, req aiprov.ChatRequest, opt oaichat.Options) (string, string, Usage, error) {
+	reply, err := c.chat.Send(ctx, model, req, opt)
+	if reply == nil {
+		return "", "", Usage{}, err
+	}
+	usage := Usage{
+		Prompt:     reply.Usage.Prompt,
+		Completion: reply.Usage.Completion,
+		Total:      reply.TotalTokens,
+		Cached:     reply.Usage.Cached,
+		Reasoning:  reply.Usage.Reasoning,
+		Cost:       reply.CostUSD,
+	}
 	if err != nil {
-		return "", "", Usage{}, fmt.Errorf("openrouter: marshal request: %w", err)
+		return "", reply.FinishReason, usage, err
 	}
-	return c.postChatCompletion(ctx, payload, reqBody.MaxTokens)
-}
-
-// postChatCompletion is THE ONLY PLACE THIS PACKAGE TALKS TO /chat/completions. It takes an
-// already-marshalled body precisely so the two request shapes (text-only chatRequest, multimodal
-// multimodalRequest) can differ in structure without duplicating the auth header, the status
-// classification, the size ceiling or the envelope rules.
-//
-// ⚠ maxTokens ЕДЕТ ОТДЕЛЬНЫМ ПАРАМЕТРОМ РЯДОМ С УЖЕ ЗАКОДИРОВАННЫМ ТЕЛОМ, И ЭТО НЕ ДУБЛИРОВАНИЕ.
-// Тело здесь — байты, из которых число уже не достать иначе как разбором собственного JSON; а срок
-// вызова обязан считаться ИМЕННО ИЗ ЭТОГО ЧИСЛА и нигде больше. Оба вызывающих (chat и
-// CompleteWithImages) кладут в оба места одно и то же поле своей структуры, поэтому разъехаться им
-// негде — а тест TestTheAnswerCeilingBuysItsOwnTime следит, что срок действительно растёт.
-func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxTokens int) (string, string, Usage, error) {
-	// СРОК СТАВИТСЯ НА КАЖДЫЙ ЗАПРОС, А НЕ НА КЛИЕНТА: он зависит от того, сколько токенов у этого
-	// запроса попрошено, и никакое одно число на всех этого выразить не может. Срок вызывающего
-	// по-прежнему сильнее — context.WithTimeout не удлиняет чужой дедлайн, только укорачивает.
-	ctx, cancel := context.WithTimeout(ctx, CompletionBudget(c.budgetBase, maxTokens))
-	defer cancel()
-
-	// ⚠ ЕДИНСТВЕННЫЙ НАБЛЮДАТЕЛЬ ГРАНИЦЫ «КУПЛЕНО / НЕ КУПЛЕНО» (см. ProviderEngaged). Флаг
-	// поднимается ровно тогда, когда запрос ВМЕСТЕ С ТЕЛОМ дописан в соединение без ошибки, и
-	// сбрасывается на каждой новой попытке транспорта. Механика и все её ловушки — у aiprov.ObserveWrite.
-	ctx, wroteRequest := aiprov.ObserveWrite(ctx)
-
-	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return "", "", Usage{}, fmt.Errorf("openrouter: build request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey())
-	httpReq.Header.Set("X-Title", "grbpwr-products-manager")
-	httpReq.Header.Set("HTTP-Referer", "https://admin.grbpwr.com")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		// ТОТ ЖЕ ТЕКСТ ОШИБКИ ПО ОБЕ СТОРОНЫ ГРАНИЦЫ, РАЗНАЯ ТОЛЬКО ПОМЕТКА. Срок вышел на 143-й
-		// секунде ожидания ответа и «connection refused» на 0-й приезжают из Do неотличимо похоже
-		// — оба как *url.Error, — и решает между ними НЕ проза, а флаг записи.
-		failed := fmt.Errorf("openrouter: request failed: %w", err)
-		if wroteRequest() {
-			return "", "", Usage{}, engaged(failed)
-		}
-		return "", "", Usage{}, failed
-	}
-	defer resp.Body.Close()
-
-	// ОТВЕТ УЖЕ ЕДЕТ: заголовки пришли, значит поставщик отработал. Не дочитать его — наша беда,
-	// а не его бесплатность.
-	body, err := readCapped(resp.Body, maxResponseBytes, "chat/completions response")
-	if err != nil {
-		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: read response: %w", err))
-	}
-	// A 404 is the one non-2xx that is NOT weather — see ErrModelUnavailable. It is wrapped rather
-	// than replaced: the provider's own sentence and the status still reach the log, they simply
-	// stop being the thing a caller has to pattern-match to know a retry is pointless.
-	if resp.StatusCode == http.StatusNotFound {
-		return "", "", Usage{}, fmt.Errorf("openrouter: %w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
-	}
-	// ⚠ NON-2xx НЕ ПОМЕЧАЕТСЯ ВОВЛЕЧЁННЫМ, И ЭТО ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ГРАНИЦА ВЫБРАНА В СТОРОНУ
-	// НУЛЯ. Довод целиком — у ProviderEngaged: 401/402/404/429 — это ворота, а не счётчик.
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", Usage{}, fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
-	}
-	// ─── ОТСЮДА И НИЖЕ 2xx: ЗАПРОС ПРИНЯТ И ОТРАБОТАН, ЗНАЧИТ ОПЛАЧЕН ───
-	var cr chatResponse
-	if err := json.Unmarshal(body, &cr); err != nil {
-		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: could not decode API response envelope: %w", err))
-	}
-	if cr.Error != nil && strings.TrimSpace(cr.Error.Message) != "" {
-		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: API error: %s", cr.Error.Message))
-	}
-	if len(cr.Choices) == 0 {
-		return "", "", Usage{}, engaged(fmt.Errorf("openrouter: API response contained no choices"))
-	}
-	content := strings.TrimSpace(cr.Choices[0].Message.Content)
-	if content == "" {
-		// The usage still rides along: an empty message is not a free call, and the log line that
-		// reports the failure is the one place the spend would otherwise vanish from.
-		//
-		// EMPTY-BECAUSE-THE-BUDGET-RAN-OUT IS ITS OWN FAULT. finish_reason=length with no content
-		// says the cap was reached before a single character of answer — deterministic, and the
-		// caller owes the human "the setting is wrong", not "try again". Empty for any other reason
-		// stays an unclassified fault: it is genuinely a misbehaving provider.
-		//
-		// ⚠ ОБА ИСХОДА ПОМЕЧЕНЫ ВОВЛЕЧЁННЫМИ, И НА ПЕРВОМ ЭТО НИЧЕГО НЕ МЕНЯЕТ: вызывающий ловит
-		// ErrBudgetExhausted СВОЕЙ веткой и списывает там (design_run.go), до всякого вопроса про
-		// вовлечённость, — иначе один и тот же исход прошёл бы через две двери списания.
-		if strings.EqualFold(strings.TrimSpace(cr.Choices[0].FinishReason), "length") {
-			return "", cr.Choices[0].FinishReason, cr.Usage, engaged(fmt.Errorf(
-				"openrouter: %w (%d completion tokens spent, none of them answer)", ErrBudgetExhausted, cr.Usage.Completion))
-		}
-		return "", cr.Choices[0].FinishReason, cr.Usage, engaged(fmt.Errorf("openrouter: model returned an empty message"))
-	}
-	return content, cr.Choices[0].FinishReason, cr.Usage, nil
+	return reply.Text, reply.FinishReason, usage, nil
 }
 
 // parseResult extracts the JSON object from the model content (tolerating a ```json

@@ -72,7 +72,8 @@ func hangingProvider(t *testing.T) (url string, reached <-chan struct{}) {
 // правда о нём. ЭТО РАЗЛИЧАЮЩАЯ ПРОБА: без неё починка «списывать при обрыве» выродилась бы в
 // «списывать всегда», то есть в выдуманные деньги на каждом отказе соединения.
 //
-// МУТАЦИЯ: вернуть `engaged(failed)` безусловно (убрать проверку wrote.Load()) → краснеет.
+// МУТАЦИЯ (с B-11 — в транспорте, oaichat.post, ветка Do): `engaged := true` безусловно, мимо
+// wroteRequest() → краснеет.
 func TestARequestThatNeverLeftIsNotCharged(t *testing.T) {
 	c := New(Config{APIKey: "k", BaseURL: deadAddr(t), HTTPTimeout: 2 * time.Second})
 	_, _, _, err := c.CompleteWithImages(context.Background(), "sys", "user", nil, false, 0)
@@ -88,7 +89,7 @@ func TestARequestThatNeverLeftIsNotCharged(t *testing.T) {
 // Do приезжает ровно такой же *url.Error, как у отказанного соединения, — различает их только
 // флаг записи, поднятый httptrace.
 //
-// МУТАЦИЯ: убрать `engaged(...)` у ветки Do → краснеет.
+// МУТАЦИЯ (oaichat.post, ветка Do): `engaged := false` → краснеет.
 func TestARequestCutAfterItReachedTheProviderIsCharged(t *testing.T) {
 	url, reached := hangingProvider(t)
 	c := New(Config{APIKey: "k", BaseURL: url, HTTPTimeout: 200 * time.Millisecond})
@@ -127,7 +128,7 @@ func TestACancelledCallAfterTheRequestLeftIsCharged(t *testing.T) {
 // протухший слуг отвечает 404 на КАЖДОЕ нажатие, и пометить это тратой значило бы выдумать
 // деньги в тот день, когда фича мертва целиком.
 //
-// МУТАЦИЯ: обернуть ветку non-2xx в engaged(...) → краснеет.
+// МУТАЦИЯ (oaichat.statusError): пометить отказ Engaged → краснеет.
 func TestAProviderRefusalAtTheGateIsNotCharged(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized, http.StatusTooManyRequests} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +147,7 @@ func TestAProviderRefusalAtTheGateIsNotCharged(t *testing.T) {
 //
 // Поставщик принял запрос и отработал его; то, что конверт пуст или не разобрался, — наша беда.
 //
-// МУТАЦИЯ: снять engaged(...) с ветки «no choices» → краснеет.
+// МУТАЦИЯ (oaichat.post): ветка «no choices» не вовлечена → краснеет.
 func TestAnUnusable2xxIsStillCharged(t *testing.T) {
 	for name, body := range map[string]string{
 		"no choices":     `{"choices":[]}`,
@@ -221,7 +222,8 @@ func require4(t *testing.T, err error) {
 // Тогда Request.write возвращает ошибку, WroteRequest приезжает с info.Err != nil, и флаг не
 // поднимается ни разу. Недописанное тело поставщик не обрабатывает и счёта не выставляет.
 //
-// МУТАЦИЯ: поднимать флаг безусловно (убрать `if info.Err == nil`) → краснеет.
+// МУТАЦИЯ (aiprov.ObserveWrite): поднимать флаг безусловно (убрать `if info.Err == nil`) → краснеет —
+// НЕ ДЕТЕРМИНИРОВАННО: замерено 3 из 5 прогонов (и 2 из 3 на коде до B-11) — гонка RST и записи.
 func TestARequestCutMidWriteIsNotCharged(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -279,7 +281,7 @@ func TestARequestCutMidWriteIsNotCharged(t *testing.T) {
 // 401/402/404/429 (см. TestAProviderRefusalAtTheGateIsNotCharged), и завершение модели за ним не
 // покупалось.
 //
-// МУТАЦИЯ: убрать хук GetConn → краснеет.
+// МУТАЦИЯ (aiprov.ObserveWrite): убрать хук GetConn → краснеет.
 func TestTheEngagedFlagDescribesTheLastAttemptOnly(t *testing.T) {
 	dead := deadAddr(t)
 	wroteFirst := make(chan struct{})
