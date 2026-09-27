@@ -21,7 +21,9 @@ import (
 //  1. every statement parses as its own statement: PREPARE / EXECUTE / DEALLOCATE one per line
 //     (prod runs without multiStatements; a joined trio is error 1064 at boot);
 //  2. nothing is a CHECK (a retroactive CHECK validates the whole history and copies the table);
-//  3. 0375 only adds tables, IF NOT EXISTS, both cascading from product;
+//  3. 0375 only adds tables, IF NOT EXISTS, both cascading from product — and its Down refuses
+//     BEFORE its first DROP TABLE while either table holds a row (a palette and a translated
+//     name have no place in the pre-T45 schema);
 //  4. 0376 is ADDITIVE (D-69): it adds the token column NULLABLE (an older binary still inserts),
 //     backfills it from color_code without touching updated_at and adds the (style_id,
 //     sku_color_token) unique, every DDL behind an information_schema gate — and it does NOT drop
@@ -129,6 +131,52 @@ func TestColourwayPaletteMigrationOnlyAddsCascadingTables(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?i)PRIMARY\s+KEY\s*\(\s*product_id\s*,\s*language_id\s*\)`).MatchString(up) {
 		t.Errorf("%s: the translations are keyed (product_id, language_id)", t45PaletteMigration)
+	}
+}
+
+// TestColourwayPaletteMigrationDownRefusesFirst — property 3, the Down half (REVIEW-T45-codex-2). A
+// palette colour or a translated name has no place in the pre-T45 schema, so while either table holds
+// a row the Down refuses — one house refusal per table, each on the count its own table's gated
+// SELECT … INTO wrote — BEFORE its first DROP TABLE. A count runs only when its table exists: a
+// re-run after a partial Down must not fail with 1146 for the wrong reason.
+func TestColourwayPaletteMigrationDownRefusesFirst(t *testing.T) {
+	_, down := t45Sections(t, t45PaletteMigration)
+	for _, p := range t45DownRefusalProblems(down, 2) {
+		t.Errorf("%s: %s", t45PaletteMigration, p)
+	}
+	firstDrop := regexp.MustCompile(`(?i)\bDROP\s+TABLE\b`).FindStringIndex(down)
+	if firstDrop == nil {
+		t.Fatalf("%s: Down drops no table — the guard would prove nothing", t45PaletteMigration)
+	}
+	for _, table := range []string{"product_colour", "product_colour_name_i18n"} {
+		has := regexp.MustCompile(`(?is)SET\s+(@\w+)\s*:=\s*\(\s*SELECT\s+COUNT\(\*\)\s+FROM\s+information_schema\.TABLES\s+` +
+			`WHERE\s+TABLE_SCHEMA\s*=\s*DATABASE\(\)\s+AND\s+TABLE_NAME\s*=\s*'` + table + `'\s*\)`).FindStringSubmatch(down)
+		if has == nil {
+			t.Errorf("%s: Down does not look up whether %s exists before it counts its rows", t45PaletteMigration, table)
+			continue
+		}
+		count := regexp.MustCompile(`(?is)IF\(\s*` + regexp.QuoteMeta(has[1]) + `\s*=\s*0\s*,\s*'SELECT 0 INTO (@\w+)'\s*,\s*` +
+			`'SELECT COUNT\(\*\) INTO (@\w+) FROM ` + table + `'\s*\)`).FindStringSubmatchIndex(down)
+		if count == nil {
+			t.Errorf("%s: the row count of %s is not a prepared SELECT … INTO gated on the table existing", t45PaletteMigration, table)
+			continue
+		}
+		rows := down[count[2]:count[3]]
+		if other := down[count[4]:count[5]]; other != rows {
+			t.Errorf("%s: the %s gate writes %s when the table is missing but %s when it exists", t45PaletteMigration, table, rows, other)
+			continue
+		}
+		refusal := regexp.MustCompile(`(?is)IF\(\s*` + regexp.QuoteMeta(rows) + `\s*=\s*0\s*,\s*'SELECT 1'\s*,\s*` +
+			"CONCAT\\('SELECT `[^`']*',\\s*" + regexp.QuoteMeta(rows) + `\s*,`).FindStringIndex(down)
+		switch {
+		case refusal == nil:
+			t.Errorf("%s: no refusal reads %s, the row count of %s", t45PaletteMigration, rows, table)
+		case refusal[0] < count[0]:
+			t.Errorf("%s: the %s refusal comes before its count", t45PaletteMigration, table)
+		case refusal[0] > firstDrop[0]:
+			t.Errorf("%s: the %s refusal comes after the first DROP TABLE — the Down would destroy the rows it was "+
+				"meant to refuse over", t45PaletteMigration, table)
+		}
 	}
 }
 
@@ -256,5 +304,13 @@ func TestColourwayT45RefusalDetectorCatchesTamperedDowns(t *testing.T) {
 	}
 	if p := t45DownRefusalProblems(ddl, 1); len(p) == 0 {
 		t.Error("a Down without its refusal must be reported")
+	}
+	// 0375's Down drops its tables with a bare DROP TABLE, not a prepared ALTER: the same order rule.
+	drop := "DROP TABLE IF EXISTS product_colour;\n"
+	if p := t45DownRefusalProblems(refusal(" palette colours would be lost")+drop, 1); len(p) != 0 {
+		t.Errorf("a refusal above a bare DROP TABLE must pass, got %v", p)
+	}
+	if p := t45DownRefusalProblems(drop+refusal(" palette colours would be lost"), 1); len(p) == 0 {
+		t.Error("a refusal after a bare DROP TABLE must be reported")
 	}
 }

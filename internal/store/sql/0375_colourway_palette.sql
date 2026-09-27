@@ -20,6 +20,15 @@
 -- colourway, and DeleteColorwayByID must not grow a new blocker for them. No CHECK constraints
 -- (the palette rules are write-path validation). Idempotent — IF NOT EXISTS / IF EXISTS — so a
 -- re-run after a mid-file failure is a no-op.
+-- ---
+-- DOWN REFUSES BEFORE IT DROPS (D-69, REVIEW-T45-codex-2). A palette's colours and a translated name
+-- have no place in the pre-T45 schema, so a Down over rows would destroy them without a word. While
+-- either table holds a row, the Down stops before its first DROP with ERROR 1054 naming the count
+-- («0375 Down blocked: N palette colours would be lost»): the house refusal, a prepared SELECT of a
+-- backticked column whose name is the message (SIGNAL cannot be prepared; 0273, 0287, 0376). Empty
+-- them deliberately first — after keeping whatever must survive — and the Down goes through. Each
+-- count runs only when its table exists, so a re-run after a partial Down cannot fail with 1146 for
+-- the wrong reason.
 
 -- +migrate Up
 
@@ -45,6 +54,35 @@ CREATE TABLE IF NOT EXISTS product_colour_name_i18n (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT 'Colourway name per storefront language (T45); missing = the operator name';
 
 -- +migrate Down
+
+-- Refusals first: nothing is dropped while either table holds a row (ERROR 1054, see the header).
+SET @t45_has_palette := (SELECT COUNT(*) FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_colour');
+SET @ddl := IF(@t45_has_palette = 0, 'SELECT 0 INTO @t45_palette_rows',
+    'SELECT COUNT(*) INTO @t45_palette_rows FROM product_colour');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl := IF(@t45_palette_rows = 0, 'SELECT 1',
+    CONCAT('SELECT `0375 Down blocked: ', @t45_palette_rows, ' palette colours would be lost`'));
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @t45_has_name_i18n := (SELECT COUNT(*) FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_colour_name_i18n');
+SET @ddl := IF(@t45_has_name_i18n = 0, 'SELECT 0 INTO @t45_name_i18n_rows',
+    'SELECT COUNT(*) INTO @t45_name_i18n_rows FROM product_colour_name_i18n');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl := IF(@t45_name_i18n_rows = 0, 'SELECT 1',
+    CONCAT('SELECT `0375 Down blocked: ', @t45_name_i18n_rows, ' name translations would be lost`'));
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 DROP TABLE IF EXISTS product_colour_name_i18n;
 DROP TABLE IF EXISTS product_colour;
