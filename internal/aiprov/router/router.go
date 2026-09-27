@@ -552,8 +552,15 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 			continue // keyless: a configuration state, not a missing adapter — no warning
 		}
 		model := r.EffectiveModel(purpose, c.Candidate)
-		if model == "" || tried[callKey(c.ProviderKey, model)] {
-			continue // no slug, or the same provider and slug again: a repeat, not a fallback
+		if model == "" {
+			continue
+		}
+		if tried[callKey(c.ProviderKey, model)] {
+			// The same provider and slug again ("" resolved through the purpose's default on either
+			// side): a repeat, not a fallback — after a D-16 engaged timeout it would pay twice. No row.
+			r.log.DebugContext(ctx, "ai router: a candidate repeats a provider and slug this chain already called; skipped",
+				slog.String("purpose", purpose), slog.String("provider", c.ProviderKey), slog.String("model", model))
+			continue
 		}
 		adm, admitted := r.admit(c.ProviderKey)
 		if !admitted {

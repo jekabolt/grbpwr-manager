@@ -1319,38 +1319,51 @@ func TestBaseURLNamesTheTransportsRoot(t *testing.T) {
 	require.Empty(t, (*Router)(nil).BaseURL(entity.AIProviderOpenRouter))
 }
 
-// TestTheSameSlugTwiceIsNotAFallback — two rows naming the same provider and slug (the seeded Ideas
-// route when OPENROUTER_MODEL_IDEAS names the fallback slug itself) make ONE call: the second would
-// repeat the first one's refusal word for word. The lease counts it once too.
+// TestTheSameSlugTwiceIsNotAFallback — two rows naming the same provider and slug in effect (a ""
+// model resolved through the purpose's default on one side; the seeded Ideas route when
+// OPENROUTER_MODEL_IDEAS names the fallback slug itself) make ONE call: on a refusal the second would
+// repeat it word for word, after a D-16 engaged timeout it would pay twice. The lease counts it once.
 //
 // MUTATION: Chat without the tried-set → red (two calls). MUTATION: callable without the listed-set →
 // red (ChainBudget counts two calls).
 func TestTheSameSlugTwiceIsNotAFallback(t *testing.T) {
-	c := &keyedChatter{up: true, base: time.Minute}
-	c.do = fails(errStatus(entity.AIProviderOpenRouter, 404))
-	d := testDefaults
-	d.Ideas = slugIdeasFB
-	r := NewStatic([]StaticCandidate{
-		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c},                     // '' → the default = slugIdeasFB
-		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c, Model: slugIdeasFB}, // the seeded position-2 row
-	}, WithDefaults(d))
-
-	_, err := r.Chat(context.Background(), entity.AIPurposePlaygroundIdeas, chatReq)
-	require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
-	require.ErrorIs(t, err, aiprov.ErrModelUnavailable)
-	require.Equal(t, []string{slugIdeasFB}, c.models(), "the same slug is called once")
-	require.Equal(t, aiprov.CompletionBudget(time.Minute, 300), r.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
-
-	// A different slug on the same provider IS a fallback.
-	d.Ideas = slugIdeas
-	c2 := &keyedChatter{up: true, base: time.Minute}
-	c2.do = fails(errStatus(entity.AIProviderOpenRouter, 404))
-	r2 := NewStatic([]StaticCandidate{
-		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c2},
-		{ProviderKey: entity.AIProviderOpenRouter, Chatter: c2, Model: slugIdeasFB},
-	}, WithDefaults(d))
-	_, err = r2.Chat(context.Background(), entity.AIPurposePlaygroundIdeas, chatReq)
-	require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
-	require.Equal(t, []string{slugIdeas, slugIdeasFB}, c2.models())
-	require.Equal(t, 2*aiprov.CompletionBudget(time.Minute, 300), r2.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
+	t.Run("a refusal: the default resolved to the fallback slug", func(t *testing.T) {
+		c := &keyedChatter{up: true, base: time.Minute}
+		c.do = fails(errStatus(entity.AIProviderOpenRouter, 404))
+		d := testDefaults
+		d.Ideas = slugIdeasFB
+		r := NewStatic([]StaticCandidate{
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: c},                     // '' → the default = slugIdeasFB
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: c, Model: slugIdeasFB}, // the seeded position-2 row
+		}, WithDefaults(d))
+		_, err := r.Chat(context.Background(), entity.AIPurposePlaygroundIdeas, chatReq)
+		require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+		require.ErrorIs(t, err, aiprov.ErrModelUnavailable)
+		require.Equal(t, []string{slugIdeasFB}, c.models(), "the same slug is called once")
+		require.Equal(t, aiprov.CompletionBudget(time.Minute, 300), r.ChainBudget(entity.AIPurposePlaygroundIdeas, 300),
+			"the lease counts the repeat once")
+	})
+	t.Run("a D-16 engaged timeout: the same pair is not paid twice", func(t *testing.T) {
+		hung := &keyedChatter{up: true, base: time.Minute}
+		hung.do = fails(errEngagedTimeout(entity.AIProviderOpenRouter))
+		r := NewStatic([]StaticCandidate{
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: hung},                  // '' → the default Chat slug
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: hung, Model: slugChat}, // that very slug, by name
+		}, WithDefaults(testDefaults))
+		_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Equal(t, []string{slugChat}, hung.models(), "a hung call is not repeated on the same provider and slug")
+	})
+	t.Run("a different slug on the same provider IS a fallback", func(t *testing.T) {
+		c := &keyedChatter{up: true, base: time.Minute}
+		c.do = fails(errStatus(entity.AIProviderOpenRouter, 404))
+		r := NewStatic([]StaticCandidate{
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: c},
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: c, Model: slugIdeasFB},
+		}, WithDefaults(testDefaults))
+		_, err := r.Chat(context.Background(), entity.AIPurposePlaygroundIdeas, chatReq)
+		require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+		require.Equal(t, []string{slugIdeas, slugIdeasFB}, c.models())
+		require.Equal(t, 2*aiprov.CompletionBudget(time.Minute, 300), r.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
+	})
 }

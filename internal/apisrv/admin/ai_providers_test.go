@@ -21,6 +21,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/pricing"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/probe"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -796,6 +797,62 @@ func TestAiRouteLeavesModelRecordingToTheStore(t *testing.T) {
 	h2.ai.AssertNotCalled(t, "UpsertModel", mock.Anything, mock.Anything, mock.Anything)
 }
 
+// TestAiRouteFallbackSameAsPrimaryInEffectRefused (FIX-D P2) — "" as a model is the purpose's env
+// default on an openrouter row, resolved the way the router resolves it (router.EffectiveModel), so
+// «openrouter / ""» against «openrouter / <that very slug>» is the primary twice: the router would skip
+// the repeat and the route would show a fallback the runtime does not have. The same slug named for a
+// purpose whose default is ANOTHER slug is a real fallback.
+//
+// MUTATION IT CATCHES (measured red): aiSameCandidate compares the raw models (aiEffectiveSlug returns
+// its model argument) → "" and the default slug pass as different and the write goes through.
+func TestAiRouteFallbackSameAsPrimaryInEffectRefused(t *testing.T) {
+	const chatSlug, analysisSlug = "anthropic/claude-sonnet-5", "anthropic/claude-opus-5"
+	cand := func(p, m string) *pb_admin.AiRouteCandidate {
+		return &pb_admin.AiRouteCandidate{ProviderKey: p, Model: m}
+	}
+	withRouter := func(h *aiHarness) {
+		h.s.SetAIRouter(router.NewSingle(entity.AIProviderOpenRouter, nil, "",
+			router.WithDefaults(router.Defaults{Chat: chatSlug, Analysis: analysisSlug, Ideas: "google/x"})))
+	}
+	for _, c := range []struct {
+		name              string
+		primary, fallback *pb_admin.AiRouteCandidate
+		readsConfig       bool
+	}{
+		{"openrouter's default slug and that slug by name", cand("openrouter", ""), cand("openrouter", chatSlug), false},
+		{"that slug by name and openrouter's default slug", cand("openrouter", chatSlug), cand(" openrouter ", " "), false},
+		{"the default provider's default slug and the slug by name", cand("", ""), cand("openrouter", chatSlug), true},
+		{"the default provider twice, once by slug", cand("", chatSlug), cand("", ""), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAIHarness(t, aiHarnessOpt{})
+			withRouter(h)
+			if c.readsConfig {
+				cfg := h.cfg // version 7, default chat provider openrouter
+				h.ai.EXPECT().GetConfig(mock.Anything).Return(&cfg, nil).Once()
+			}
+			_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
+				Purpose: entity.AIPurposeNoteMarkdown, Primary: c.primary, Fallback: c.fallback, ExpectedVersion: aiTestVersion,
+			})
+			st := aiRequireCode(t, err, codes.InvalidArgument)
+			require.Equal(t, "fallback", aiViolationField(st))
+			require.Contains(t, st.Message(), "same_as_primary")
+		})
+	}
+
+	// Not the same: the chat slug is a real fallback for a purpose whose "" is the ANALYSIS slug.
+	h := newAIHarness(t, aiHarnessOpt{})
+	withRouter(h)
+	h.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeTechCardEnhance, mock.Anything, aiTestVersion, aiTestUser).
+		Return(nil).Once()
+	h.expectConfigRead(nil)
+	_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
+		Purpose: entity.AIPurposeTechCardEnhance, Primary: cand("openrouter", ""), Fallback: cand("openrouter", chatSlug),
+		ExpectedVersion: aiTestVersion,
+	})
+	require.NoError(t, err)
+}
+
 // TestAiRouteFallbackSameAsPrimaryRefused (Codex B #8) — a fallback that is the primary itself is
 // refused on the fallback field before anything is written; "" is the capability's default on both
 // sides. The registry drops an exact repeat, so such a route would show a fallback the runtime does
@@ -849,6 +906,8 @@ func TestAiRouteFallbackSameAsPrimaryRefused(t *testing.T) {
 		want              codes.Code
 	}{
 		{"another model", cand("openrouter", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-8"), 0, codes.OK},
+		// Two named slugs that differ need no default to tell them apart: no configuration read.
+		{"another model on the default", cand("", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-8"), 0, codes.OK},
 		{"the default and another provider", cand("", "x-ai/grok-9"), cand("apibost", "x-ai/grok-9"), aiTestVersion, codes.OK},
 		{"a stale page", cand("", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-9"), aiTestVersion + 1, codes.FailedPrecondition},
 	} {
@@ -873,6 +932,10 @@ func TestAiRouteFallbackSameAsPrimaryRefused(t *testing.T) {
 			})
 			if c.want == codes.OK {
 				require.NoError(t, err)
+				if c.storeVersion == 0 {
+					// The verdict needed no default: the one read is the page rebuilt after the write.
+					h.ai.AssertNumberOfCalls(t, "GetConfig", 1)
+				}
 				return
 			}
 			aiRequireCode(t, err, c.want)

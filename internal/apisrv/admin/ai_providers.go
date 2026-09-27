@@ -488,7 +488,7 @@ func (s *Server) SetAiRoute(ctx context.Context, req *pb_admin.SetAiRouteRequest
 		if err != nil {
 			return nil, err
 		}
-		same, err := s.aiSameCandidate(ctx, purpose.Capability, primary, fallback, req.GetExpectedVersion())
+		same, err := s.aiSameCandidate(ctx, purpose, primary, fallback, req.GetExpectedVersion())
 		if err != nil {
 			return nil, err
 		}
@@ -532,39 +532,55 @@ func aiRouteCandidate(field string, c *pb_admin.AiRouteCandidate, capability str
 	return entity.AIRouteCandidate{ProviderKey: provider, Model: model}, nil
 }
 
-// aiSameCandidate reports whether a route's fallback is its primary (Codex B #8): the same provider —
-// "" resolved to the capability's default on BOTH sides — and the same model. The registry drops an
-// exact repeat when it builds the candidate list, so such a fallback would be saved and shown while
-// the runtime has no fallback at all.
+// aiSameCandidate reports whether a route's fallback is its primary IN EFFECT (Codex B #8, FIX-D P2):
+// the same provider — "" resolved to the capability's default on BOTH sides — and the same slug — ""
+// resolved the way the router resolves it (aiEffectiveSlug: the purpose's env default for an
+// openrouter row). The router skips a repeat of a provider and slug in one chain, so such a fallback
+// would be saved and shown while the runtime has no fallback at all; «openrouter / ""» against
+// «openrouter / <the slug that "" becomes>» is exactly that.
 //
-// Only a comparison that hinges on the default reads the configuration, and its verdict counts only
-// when that read is the version the page saved against: the route write is a compare-and-swap on
-// expectedVersion, so at any other version the write is refused as stale anyway, and a default read
-// from another version is not the one the route would follow.
-func (s *Server) aiSameCandidate(ctx context.Context, capability string, primary, fallback entity.AIRouteCandidate, expectedVersion uint64) (bool, error) {
-	if primary.Model != fallback.Model {
-		return false, nil
+// Only a comparison that hinges on the default PROVIDER reads the configuration, and its verdict
+// counts only when that read is the version the page saved against: the route write is a
+// compare-and-swap on expectedVersion, so at any other version the write is refused as stale anyway,
+// and a default read from another version is not the one the route would follow.
+func (s *Server) aiSameCandidate(ctx context.Context, purpose aiprov.Purpose, primary, fallback entity.AIRouteCandidate, expectedVersion uint64) (bool, error) {
+	pp, fp := primary.ProviderKey, fallback.ProviderKey
+	if pp == fp && primary.Model == fallback.Model {
+		return true, nil // literally the same row, the default twice included
 	}
-	if primary.ProviderKey == fallback.ProviderKey {
-		return true, nil
+	if (pp != "" && fp != "" && pp != fp) ||
+		(primary.Model != "" && fallback.Model != "" && primary.Model != fallback.Model) {
+		return false, nil // two named providers, or two named slugs, that differ: no default can join them
 	}
-	if primary.ProviderKey != "" && fallback.ProviderKey != "" {
-		return false, nil
-	}
-	cfg, err := s.aiReadConfig(ctx)
-	if err != nil {
-		return false, err
-	}
-	if cfg.Settings.ConfigVersion != expectedVersion {
-		return false, nil
-	}
-	resolve := func(p string) string {
-		if p == "" {
-			return cfg.Settings.DefaultProviderFor(capability)
+	if pp == "" || fp == "" {
+		cfg, err := s.aiReadConfig(ctx)
+		if err != nil {
+			return false, err
 		}
-		return p
+		if cfg.Settings.ConfigVersion != expectedVersion {
+			return false, nil
+		}
+		if pp == "" {
+			pp = cfg.Settings.DefaultProviderFor(purpose.Capability)
+		}
+		if fp == "" {
+			fp = cfg.Settings.DefaultProviderFor(purpose.Capability)
+		}
+		if pp != fp {
+			return false, nil
+		}
 	}
-	return resolve(primary.ProviderKey) == resolve(fallback.ProviderKey), nil
+	return s.aiEffectiveSlug(purpose.Key, pp, primary.Model) == s.aiEffectiveSlug(purpose.Key, fp, fallback.Model), nil
+}
+
+// aiEffectiveSlug is the slug a route row is CALLED with: its own model, else the router's default for
+// the purpose on that provider (router.EffectiveModel — OPENROUTER_MODEL, _ANALYSIS, _IDEAS for an
+// openrouter row), else "" (a provider whose client picks its own default).
+func (s *Server) aiEffectiveSlug(purpose, providerKey, model string) string {
+	if m := s.ai.EffectiveModel(purpose, registry.Candidate{ProviderKey: providerKey, Model: model}); m != "" {
+		return m
+	}
+	return model
 }
 
 // ───────────────────────── helpers ─────────────────────────
