@@ -17,6 +17,15 @@ func engineServer() *Server {
 	return s
 }
 
+// designRefuseEngine — both engine doors as StartDesignRun asks them of a fresh (non-rerun) request,
+// where the spoken and the effective params are the same message.
+func designRefuseEngine(s *Server, kind string, p *pb_common.DesignRunParams) error {
+	if err := s.designRefuseImageOptions(kind, p); err != nil {
+		return err
+	}
+	return s.designRefuseImageReferenceCeiling(kind, p)
+}
+
 func withImage(p *pb_common.DesignRunParams, img *pb_common.DesignImageOptions) *pb_common.DesignRunParams {
 	p.Image = img
 	return p
@@ -62,7 +71,7 @@ func TestThePerRunEngineIsREFUSED_BY_THE_TABLE_BEFORE_MONEY(t *testing.T) {
 			"too_many_pictures"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, ffReason(t, s.designRefuseImageOptions(c.kind, c.params)))
+			require.Equal(t, c.want, ffReason(t, designRefuseEngine(s, c.kind, c.params)))
 		})
 	}
 
@@ -74,9 +83,9 @@ func TestThePerRunEngineIsREFUSED_BY_THE_TABLE_BEFORE_MONEY(t *testing.T) {
 			{Quality: "low"}, // the default engine
 			{Model: designgen.EngineGPTImage25, Background: "transparent", AspectRatio: "auto"},
 		} {
-			require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindFreeform, ff(img)))
+			require.NoError(t, designRefuseEngine(s, entity.DesignRunKindFreeform, ff(img)))
 		}
-		require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRecolor,
+		require.NoError(t, designRefuseEngine(s, entity.DesignRunKindRecolor,
 			withImage(recolorWithCloths(15), &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2})),
 			"one photograph and fifteen cloths is sixteen images: the ceiling, inclusive")
 	})
@@ -175,8 +184,8 @@ func TestTheReserveOfANamedEngineIsITS_ABSOLUTE_CEILING(t *testing.T) {
 
 	t.Run("every accepted engine and tier is priced", func(t *testing.T) {
 		custom := &Server{}
-		custom.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("acme/custom-image") })
-		for _, e := range designgen.EngineTable("acme/custom-image") {
+		custom.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable(designgen.EngineGPTImage25) })
+		for _, e := range designgen.EngineTable(designgen.EngineGPTImage25) {
 			for _, tier := range append(designEngineTierWords(e), "") {
 				p := withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
 					&pb_common.DesignImageOptions{Model: e.Slug, Quality: tier})
@@ -212,4 +221,92 @@ func TestStartDesignRunPRICES_AND_REFUSES_BY_THE_ENGINE(t *testing.T) {
 	_, err = bad.srv.StartDesignRun(designRunCtx(), req)
 	require.Equal(t, entity.DesignErrorCodeUnknownImageModel, ffReason(t, err))
 	require.Nil(t, bad.sent, "refused before the reserve")
+}
+
+// TestAnUnknownDefaultSlugOFFERS_NO_ENGINE — G-02 Codex 2 at the door and in the reserve: with an
+// OPENROUTER_MODEL_IMAGE the table has no row for, no engine is advertised or accepted, and an
+// unnamed run is reserved by the kind's own table — never priced as gpt-image-2.
+func TestAnUnknownDefaultSlugOFFERS_NO_ENGINE(t *testing.T) {
+	s := &Server{}
+	s.SetDesignGenerationEnabled(true)
+	s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("openai/gpt-image-1-mini") })
+	require.Empty(t, s.designImageModels())
+	require.NotNil(t, s.designImageModels(), "present-empty: the client draws no picker")
+	p := withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+		&pb_common.DesignImageOptions{AspectRatio: "21:9"})
+	require.Equal(t, entity.DesignErrorCodeUnknownImageModel, ffReason(t, designRefuseEngine(s, entity.DesignRunKindFreeform, p)),
+		"a ratio nobody knows the engine draws is not accepted")
+	require.Equal(t, designEstimateFor(entity.DesignRunKindFreeform, 1),
+		s.designEstimateForRun(entity.DesignRunKindFreeform, 1, ffParams(entity.DesignFreeformPresetFree,
+			&pb_common.DesignFreeformItem{MediaId: 11}), nil),
+		"an unnamed run is reserved by the kind's own table, not by a borrowed GPT row")
+}
+
+// TestAStatedEngineFREEZES_ITS_SLUG — G-02 Codex 5: a params.image with words and no model is stored
+// with the default row's slug, so a later OPENROUTER_MODEL_IMAGE move changes neither the run nor
+// its reruns; an absent / empty block stays the legacy deployment-default run. MUTATION (measured
+// red): drop the designFreezeImageModel call.
+func TestAStatedEngineFREEZES_ITS_SLUG(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		img  *pb_common.DesignImageOptions
+		want string // '' = no image block stored
+	}{
+		{"a ratio and no model", &pb_common.DesignImageOptions{AspectRatio: "3:4"}, designgen.EngineGPTImage2},
+		{"a tier and no model", &pb_common.DesignImageOptions{Quality: "low"}, designgen.EngineGPTImage2},
+		{"a named model stays", &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage25}, designgen.EngineGPTImage25},
+		{"no block stays legacy", nil, ""},
+		{"an empty block stays legacy", &pb_common.DesignImageOptions{}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+			rig.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+			req := designStartRequest(entity.DesignRunKindFreeform)
+			req.Params = withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}), c.img)
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			require.NoError(t, err)
+			var stored pb_common.DesignRunParams
+			require.NoError(t, designUnmarshalJSON(rig.sent.Params, &stored))
+			require.Equal(t, c.want, stored.GetImage().GetModel())
+		})
+	}
+}
+
+// TestTheEngineVocabularyIsASKED_OF_THE_SPEAKER — G-02 Fable m-5: a SILENT rerun of a run frozen
+// with a slug the table no longer lists passes the door (the worker sends its frozen words; the
+// reserve falls back to the kind's table), while a spoken rerun naming that slug is refused.
+// MUTATION (measured red): designRefuseImageOptions asked of the effective params again.
+func TestTheEngineVocabularyIsASKED_OF_THE_SPEAKER(t *testing.T) {
+	frozen := withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+		&pb_common.DesignImageOptions{Model: "openai/gpt-image-1", Quality: "high"})
+	parent := &entity.DesignRun{Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFreeform,
+		Params: pgMarshal(t, frozen)}
+	for _, c := range []struct {
+		name   string
+		spoken *pb_common.DesignRunParams
+		want   string
+	}{
+		{"silent rerun of a retired slug", nil, ""},
+		{"spoken rerun naming the retired slug", frozen, entity.DesignErrorCodeUnknownImageModel},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+			rig.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+			rig.design.EXPECT().GetRun(mock.Anything, parent.Id).Return(parent, nil).Maybe()
+			req := designStartRequest(entity.DesignRunKindFreeform)
+			req.RerunOfRunId = int32(parent.Id)
+			req.Params = c.spoken
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			if c.want == "" {
+				require.NoError(t, err)
+				require.True(t, rig.sent.PriceEstimate.Decimal.Equal(designEstimateFor(entity.DesignRunKindFreeform, 1).Decimal),
+					"an unlisted frozen slug is reserved by the kind's own table")
+				return
+			}
+			require.Equal(t, c.want, ffReason(t, err))
+			require.Nil(t, rig.sent)
+		})
+	}
 }

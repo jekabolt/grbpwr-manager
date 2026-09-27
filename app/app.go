@@ -500,7 +500,17 @@ func (a *App) Start(ctx context.Context) error {
 	for _, e := range designEngines {
 		designEngineSlugs = append(designEngineSlugs, e.Slug)
 	}
-	designImages.WarnIfModelsRetired(designEngineSlugs...)
+	// The client's own slug is probed even when it is not a row — it is still what every unnamed run
+	// is drawn by.
+	designImages.WarnIfModelsRetired(append(designEngineSlugs, designImages.Model())...)
+	if len(designEngines) == 0 {
+		// G-02 Codex 2: an OPENROUTER_MODEL_IMAGE the engine table has no row for offers no per-run
+		// engine (its ratios, reference ceiling and price are unknown) — said once, at boot.
+		slog.Default().WarnContext(ctx, "design generation: the image model is not in the engine table, "+
+			"so no per-run engine is offered (no picker; params.image refused; unnamed runs reserve the "+
+			"kind's own price)", slog.String("model", designImages.Model()),
+			slog.String("flag", "OPENROUTER_MODEL_IMAGE"))
+	}
 
 	// The worker is GATED, and the gate means NOT CONSTRUCTED — the precedent is ACCOUNTING_ENABLED
 	// above. An inert feature must not be a worker that wakes every few seconds to ask an empty

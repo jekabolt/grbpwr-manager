@@ -898,10 +898,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designThreedReferenceMediaIDs(params)...); err != nil {
 		return nil, err
 	}
-	// A try-on naming a model profile dresses a photo OF that model (EFFECTIVE params).
-	if err := s.designRefuseModelPhotoMismatch(ctx, kind, params); err != nil {
-		return nil, err
-	}
 
 	// ─── РОДЫ, У КОТОРЫХ ВХОД — КОНКРЕТНАЯ КАРТИНКА, А НЕ КОНТЕКСТ ───
 	//
@@ -917,10 +913,22 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		return nil, err
 	}
 	// The per-run engine (params.image): a word the engine table does not list is refused here,
-	// free, and a word it lists is priced by it below.
-	if err := s.designRefuseImageOptions(kind, params); err != nil {
+	// free, and a word it lists is priced by it below. The vocabulary is asked of the SPEAKER, the
+	// reference ceiling of the EFFECTIVE run (G-02, Fable m-5).
+	if err := s.designRefuseImageOptions(kind, req.GetParams()); err != nil {
 		return nil, err
 	}
+	if err := s.designRefuseImageReferenceCeiling(kind, params); err != nil {
+		return nil, err
+	}
+	// A try-on naming a model profile dresses a photo OF that model (EFFECTIVE params). A STORE
+	// READ, so it stands after every free refusal above (G-02, Fable m-7): a malformed try-on never
+	// touches the store.
+	if err := s.designRefuseModelPhotoMismatch(ctx, kind, params); err != nil {
+		return nil, err
+	}
+	// A stated engine freezes with its slug (G-02, Codex 5).
+	s.designFreezeImageModel(kind, params)
 
 	inputs, fitAtLaunch, err := s.designRunInputs(ctx, src, parent)
 	if err != nil {

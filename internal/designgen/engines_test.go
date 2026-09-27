@@ -17,7 +17,7 @@ import (
 // TestEveryEngineRowIsPRICED_AND_DRAWABLE — the rows the door accepts, the band advertises and the
 // reserve reads.
 func TestEveryEngineRowIsPRICED_AND_DRAWABLE(t *testing.T) {
-	for _, e := range EngineTable("acme/custom-image") {
+	for _, e := range EngineTable("") {
 		t.Run(e.Slug, func(t *testing.T) {
 			require.NotEmpty(t, e.Label)
 			require.NotEmpty(t, e.Tiers, "an engine with no tier cannot be priced")
@@ -77,20 +77,27 @@ func TestTheEngineTableMarksONE_DEFAULT_FIRST(t *testing.T) {
 	require.Equal(t, []string{EngineGPTImage25}, defaults(alt))
 	require.Equal(t, EngineGPTImage25, alt[0].Slug)
 
-	custom := EngineTable("acme/custom-image")
-	require.Len(t, custom, 3, "a foreign default slug adds its own row")
-	require.Equal(t, []string{"acme/custom-image"}, defaults(custom))
-	require.Equal(t, "acme/custom-image", custom[0].Label)
-	require.Equal(t, gptTiers(), custom[0].Tiers)
+	// G-02 Codex 2: a default slug the table does not know is NOT dressed as gpt-image-2 — its
+	// ratios, reference ceiling and price are unknown, so the table is empty (present, never nil):
+	// no picker, every params.image refused, unnamed runs on the kind's own price. MUTATION
+	// (measured red): the old synthesized GPT-shaped row for the custom slug.
+	custom := EngineTable("openai/gpt-image-1-mini")
+	require.NotNil(t, custom)
+	require.Empty(t, custom, "an unknown default slug advertises no engine")
+	_, ok := FindEngine(custom, "")
+	require.False(t, ok, "and has no default row to price an unnamed run by")
+	_, ok = FindEngine(custom, EngineGPTImage2)
+	require.False(t, ok, "nor any other row: the table is one decision, not a partial one")
 
-	e, ok := FindEngine(custom, "")
+	e, ok := FindEngine(std, "")
 	require.True(t, ok)
-	require.Equal(t, "acme/custom-image", e.Slug, "an empty model is the default engine")
-	_, ok = FindEngine(custom, "nobody/knows")
+	require.Equal(t, orimages.DefaultModel, e.Slug, "an empty model is the default engine")
+	_, ok = FindEngine(std, "nobody/knows")
 	require.False(t, ok)
 
-	custom[0].Ratios[0] = "mutated"
-	require.Equal(t, "auto", EngineTable("acme/custom-image")[0].Ratios[0], "a fresh table on every call")
+	std[0].Ratios[0] = "mutated"
+	require.Equal(t, "auto", EngineTable("")[0].Ratios[0], "a fresh table on every call")
+	require.Equal(t, "0.01", engineInputUSD.String(), "the per-reference reserve G-02 measures")
 }
 
 // TestAFrozenEngineREACHES_THE_JOB — params.image overrides the deployment's dial; an empty block

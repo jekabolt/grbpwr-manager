@@ -49,10 +49,15 @@ func designImageStated(o *pb_common.DesignImageOptions) bool {
 		strings.TrimSpace(o.GetAspectRatio()) != "" || strings.TrimSpace(o.GetBackground()) != "")
 }
 
-// designRefuseImageOptions — params.image against the engine table, on EFFECTIVE params (a rerun
-// inherits the engine of the run it repeats and is priced by it).
-func (s *Server) designRefuseImageOptions(kind string, params *pb_common.DesignRunParams) error {
-	img := params.GetImage()
+// designRefuseImageOptions — THE VOCABULARY of params.image against the engine table, asked of the
+// SPEAKER only (G-02, Fable m-5). The repo's own doctrine (designRefuseMalformedFreeform): a
+// vocabulary legally narrows — the plan itself foresees deleting `transparent` on a 400 — and a
+// frozen run must stay rerunnable. A silent rerun sends its frozen words verbatim (applyImageOptions)
+// and is priced by designEstimateForRun, which falls back to the kind's table for a slug the table no
+// longer lists. The REFERENCE CEILING is a different question — whether this call fits — and is
+// asked of the effective params (designRefuseImageReferenceCeiling).
+func (s *Server) designRefuseImageOptions(kind string, spoken *pb_common.DesignRunParams) error {
+	img := spoken.GetImage()
 	if !designImageStated(img) {
 		return nil
 	}
@@ -90,15 +95,28 @@ func (s *Server) designRefuseImageOptions(kind string, params *pb_common.DesignR
 				"nothing was charged", b, engine.Label),
 			map[string]string{"model": engine.Slug, "background": b})
 	}
-	// THE REFERENCE CEILING OF THE CHOSEN ENGINE. Counted per call, the way the worker builds it:
-	// a playground call carries every picture plus its crops and outlines, a recolour call one
-	// photograph plus the cloths. Flat / render / pattern are capped by the provider client itself.
+	return nil
+}
+
+// designRefuseImageReferenceCeiling — THE REFERENCE CEILING OF THE ENGINE THIS RUN WILL CALL, on
+// EFFECTIVE params: a rerun that does not fit one call does not fit it however it was spoken. The
+// engine is the effective one (params.image.model, or the default row); a slug the table no longer
+// lists has no ceiling to read here, and the provider's own (designRefuseFreeformOverflow) still
+// holds. Counted per call, the way the worker builds it (designImageCallImages).
+func (s *Server) designRefuseImageReferenceCeiling(kind string, params *pb_common.DesignRunParams) error {
+	if !designImageOptionsKind(kind) {
+		return nil
+	}
+	img := params.GetImage()
+	engine, ok := designgen.FindEngine(s.designEngineTable(), img.GetModel())
+	if !ok {
+		return nil
+	}
+	// Flat / render / pattern are capped by the provider client itself.
 	refs := 0
 	switch kind {
-	case entity.DesignRunKindFreeform:
-		refs = designFreeformCallImages(params)
-	case entity.DesignRunKindRecolor:
-		refs = designRecolorCallImages(params)
+	case entity.DesignRunKindFreeform, entity.DesignRunKindRecolor:
+		refs = designImageCallImages(kind, params, nil, 0)
 	}
 	if engine.MaxRefs > 0 && refs > engine.MaxRefs {
 		return designRefusal(codes.InvalidArgument, "too_many_pictures",
@@ -111,6 +129,23 @@ func (s *Server) designRefuseImageOptions(kind string, params *pb_common.DesignR
 			})
 	}
 	return nil
+}
+
+// designFreezeImageModel — A STATED ENGINE IS FROZEN WITH ITS SLUG (G-02, Codex 5). A params.image
+// that states anything (quality, ratio, background) but leaves `model` empty used to be stored as
+// is, and the worker filled the model from the deployment's CURRENT default — so the day
+// OPENROUTER_MODEL_IMAGE moves, the same frozen row (and every rerun of it) executes on another
+// engine with no provenance change. The door resolves the default row HERE, once, and the row
+// stores the slug it was priced by. A wholly absent / empty block stays the legacy «deployment
+// default» run. Called after every refusal, before the params are marshalled.
+func (s *Server) designFreezeImageModel(kind string, params *pb_common.DesignRunParams) {
+	img := params.GetImage()
+	if !designImageOptionsKind(kind) || !designImageStated(img) || strings.TrimSpace(img.GetModel()) != "" {
+		return
+	}
+	if e, ok := designgen.FindEngine(s.designEngineTable(), ""); ok {
+		img.Model = e.Slug
+	}
 }
 
 func designEngineTierWords(e designgen.Engine) []string {

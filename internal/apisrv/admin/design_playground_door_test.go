@@ -173,6 +173,11 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			params: O(P(entity.DesignFreeformPresetTryon, I(99, pgModel, 0), I(12, pgProduct, 0)),
 				&pb_common.DesignWorkflowOptions{ModelId: 5}),
 			setup: pgModels(profile, nil), want: entity.DesignErrorCodeModelPhotoMismatch},
+		// G-02 Fable m-7: the free shape table stands before the model-profile STORE READ — no
+		// Models() expectation here, so a read would fail the row.
+		{name: "tryon: a model id and no garment never reads the store", kind: entity.DesignRunKindFreeform,
+			params: O(P(entity.DesignFreeformPresetTryon, I(11, pgModel, 0)), &pb_common.DesignWorkflowOptions{ModelId: 5}),
+			want:   entity.DesignErrorCodeRoleRequired},
 		{name: "tryon: an unknown model profile", kind: entity.DesignRunKindFreeform,
 			params: O(tryon(), &pb_common.DesignWorkflowOptions{ModelId: 5}),
 			setup:  pgModels(nil, fmt.Errorf("get: %w", sql.ErrNoRows)), want: entity.DesignErrorCodeModelNotFound},

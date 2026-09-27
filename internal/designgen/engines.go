@@ -77,10 +77,16 @@ func gptTiers() []Tier {
 	}
 }
 
-// engineInputUSD — the reserve per reference picture.
-var engineInputUSD = decimal.RequireFromString("0.01")
+// EngineReferenceReserveUSD — the reserve per reference picture ONE call carries (input tokens),
+// on every engine row. $0.01 is a placeholder, not a measurement: OpenRouter forces
+// input_fidelity=high on gpt-image-2, whose per-picture input tokens are unpublished, so the G-02
+// beta smoke measures one `low` call with eight references (usage.cost) and this is the one number
+// that measurement replaces (Fable m-1). Accounting only — there is no daily cap (migration 0358).
+const EngineReferenceReserveUSD = "0.01"
 
-// gptEngine is the row shape of every GPT Image slug (and of a custom env slug, see EngineTable).
+var engineInputUSD = decimal.RequireFromString(EngineReferenceReserveUSD)
+
+// gptEngine is the row shape of every GPT Image slug.
 func gptEngine(slug, label string, backgrounds []string) Engine {
 	return Engine{
 		Slug:        slug,
@@ -96,9 +102,18 @@ func gptEngine(slug, label string, backgrounds []string) Engine {
 // EngineTable — the engines this deployment accepts, the default first and marked IsDefault.
 //
 // defaultSlug is the image client's effective slug (orimages.Client.Model); empty reads as
-// orimages.DefaultModel. A slug that is not a row (a custom OPENROUTER_MODEL_IMAGE) gets a row of
-// its own shaped like gpt-image-2 and labelled by its slug, so today's deployment stays
-// representable — and priced — whatever the env names.
+// orimages.DefaultModel.
+//
+// ⚠ A DEFAULT SLUG THAT IS NOT A ROW (a custom OPENROUTER_MODEL_IMAGE) EMPTIES THE TABLE (G-02,
+// Codex 2). It used to get a row shaped like gpt-image-2 — GPT ratios, 16 references, GPT ceilings —
+// under its own slug, so `openai/gpt-image-1-mini` was advertised with 21:9 (it draws 1:1 3:2 2:3
+// auto), accepted, reserved, and refused by the provider. Nothing here knows another model's ratios,
+// reference ceiling or price, and a guess wearing a table's authority is the defect. So the table
+// fails closed: the band advertises no engine (the client draws no picker and sends no
+// params.image), the door refuses any params.image (unknown_image_model), and an unnamed run is
+// reserved by the kind's own table (designEstimateFor) and sent exactly as before phase 2 — the
+// deployment default, no model/ratio/tier words. app.go warns at boot. Adding the slug's own
+// measured row here is how a new default gets its picker.
 //
 // A fresh slice on every call: the band puts it on the wire and the door filters it.
 func EngineTable(defaultSlug string) []Engine {
@@ -119,8 +134,7 @@ func EngineTable(defaultSlug string) []Engine {
 		}
 	}
 	if at < 0 {
-		rows = append(rows, gptEngine(def, def, nil))
-		at = len(rows) - 1
+		return []Engine{}
 	}
 	rows[at].IsDefault = true
 	out := make([]Engine, 0, len(rows))
