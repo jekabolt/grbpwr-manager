@@ -70,6 +70,18 @@ func (s *routeCfgStore) routeImagesTo(cands ...entity.AIRouteCandidate) {
 	s.cfg.Settings.ConfigVersion++
 }
 
+// switchProvider turns a provider on or off in the panel and bumps the version, as SetProvider does.
+func (s *routeCfgStore) switchProvider(pk string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.cfg.Providers {
+		if s.cfg.Providers[i].Key == pk {
+			s.cfg.Providers[i].Enabled = on
+		}
+	}
+	s.cfg.Settings.ConfigVersion++
+}
+
 // routeClock — the registry's one clock (the breaker window).
 type routeClock struct{ ns atomic.Int64 }
 
@@ -614,4 +626,195 @@ func TestTheWorkerRESOLVES_AGAINST_THE_DOOR_S_TABLE(t *testing.T) {
 	require.Equal(t, 1, calls, "read once per pickup")
 	require.Empty(t, img.calls, "the flag is off in the worker's table: refused before any money")
 	require.Equal(t, []string{CodeUnknownImageModel + " retry=false"}, failedCodes(st))
+}
+
+// ═══ B-13/A5 — AN OPEN BREAKER PAUSES THE ROUTE; IT NEVER CLOSES THE RUN (Codex REVIEW-CD P1) ═══
+
+// openImageBreaker records three transient, unengaged faults for pk's image capability — the third
+// opens its breaker for the registry's window, at the registry clock's now.
+func openImageBreaker(t *testing.T, rg *imageRouteRig, pk string) {
+	t.Helper()
+	weather := &aiprov.CallError{Provider: pk, Code: aiprov.CodeProviderError, HTTPStatus: 503, Retryable: true,
+		Err: errors.New("down")}
+	for i := 0; i < 3; i++ {
+		a, ok := rg.reg.Admit(pk, entity.AICapabilityImage)
+		require.True(t, ok)
+		rg.reg.RecordFailure(pk, entity.AICapabilityImage, a, weather)
+	}
+	require.Equal(t, registry.BreakerOpen, rg.reg.BreakerState(pk, entity.AICapabilityImage))
+}
+
+// switchableImageStand is OpenRouter's POST /images answering `status` (an error body) until the test
+// stores 200, then one PNG at $0.04.
+func switchableImageStand(t *testing.T, status int) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	var calls, answer atomic.Int32
+	answer.Store(int32(status))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if s := int(answer.Load()); s != http.StatusOK {
+			w.WriteHeader(s)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream is down"}}`))
+			return
+		}
+		fmt.Fprintf(w, `{"data":[{"b64_json":%q,"media_type":"image/png"}],"usage":{"cost":0.04}}`, pngB64)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls, &answer
+}
+
+// TestAnOpenBreakerPAUSES_THE_ROUTE_IT_NEVER_CLOSES_IT — the seeded one-candidate route, three bare
+// 503s: each is its own attempt (free, retryable, the store's back-off), and the third opens the image
+// breaker. The next pickup INSIDE the window finds nothing callable — and before A5 read that as «not
+// configured»: kind_not_available, terminal, the run closed before the breaker could let a probe
+// through. Now the route is PAUSED: the door still accepts (the route exists), the pickup re-queues
+// the run for the end of the window as provider_paused with NO attempt row (the paid ceiling, counted
+// from attempt rows, is untouched) and no call, and after the window the probe delivers.
+//
+// MUTATIONS (measured red→green): paused() answering nothing (held read as disabled) → pass 4 closes
+// kind_not_available retry=false; execute failing a paused run with the store's back-off (failRun)
+// instead of the window → NextAttempt is zero; classify without the errRoutePaused arm → the row reads
+// provider_unavailable, not provider_paused.
+func TestAnOpenBreakerPAUSES_THE_ROUTE_IT_NEVER_CLOSES_IT(t *testing.T) {
+	rg := newImageRouteRig(t, row(1, entity.AIProviderOpenRouter, ""))
+	srv, orCalls, answer := switchableImageStand(t, http.StatusServiceUnavailable)
+	st := &fakeStore{}
+	w := routedWorker(st, rg.reg, map[string]ImageTransport{entity.AIProviderOpenRouter: orClient(srv.URL)})
+	ai := withLedger(w)
+	run := testRun(90, entity.DesignRunKindFlat)
+
+	// ─── passes 1–3: weather, one attempt each; the third opens the breaker.
+	for i := 0; i < 3; i++ {
+		st.getRun = historyOf(st, run)
+		require.NoError(t, w.execute(context.Background(), run, "tok"))
+	}
+	require.EqualValues(t, 3, orCalls.Load())
+	require.Equal(t, []string{"openrouter_images", "openrouter_images", "openrouter_images"}, startedProviders(st))
+	require.Equal(t, []string{CodeProviderUnavailable + " retry=true", CodeProviderUnavailable + " retry=true",
+		CodeProviderUnavailable + " retry=true"}, failedCodes(st))
+	require.Equal(t, registry.BreakerOpen, rg.reg.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityImage))
+	require.Len(t, ai.Rows(), 3)
+
+	// ─── inside the window: the route exists, it is paused — never «not configured».
+	require.Empty(t, rg.reg.Candidates(entity.AIPurposeImageGenerate), "the registry lists nothing callable")
+	require.NoError(t, w.PreflightKind(entity.DesignRunKindFlat), "the door accepts: the route is configured")
+	msg := w.providers.Image.(CredentialNamer).MissingCredential()
+	require.Contains(t, msg, "paused after repeated failures")
+	require.Contains(t, msg, "openrouter")
+	require.NotContains(t, msg, "set it in admin", "a paused route does not send the owner to re-type a key")
+
+	// ─── pass 4: re-queued for the end of the window; no attempt row, no call, no ledger row.
+	st.getRun = historyOf(st, run)
+	require.NoError(t, w.execute(context.Background(), run, "tok"))
+	require.EqualValues(t, 3, orCalls.Load(), "nothing is sent while the breaker is open")
+	require.Len(t, st.started, 3, "no attempt row: the paid ceiling is not spent on a wait")
+	require.Len(t, ai.Rows(), 3, "no call, no ledger row")
+	require.Len(t, st.failed, 4)
+	require.Equal(t, CodeProviderPaused+" retry=true", failedCodes(st)[3])
+	require.Equal(t, w.now().Add(routePauseRequeue), st.failed[3].NextAttempt, "back at the end of the breaker window")
+	require.Contains(t, st.failed[3].LastError, "paused after repeated failures")
+	require.Contains(t, st.failed[3].LastError, "openrouter")
+
+	// ─── after the window: half-open, listed again; the probe goes out and delivers.
+	rg.clk.advance(routePauseRequeue)
+	answer.Store(http.StatusOK)
+	st.getRun = historyOf(st, run)
+	require.NoError(t, w.execute(context.Background(), run, "tok"))
+	require.EqualValues(t, 4, orCalls.Load())
+	require.Len(t, st.started, 4)
+	require.Len(t, st.completed, 1, "the run the breaker paused is delivered, not lost")
+	require.Equal(t, registry.BreakerClosed, rg.reg.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityImage),
+		"the probe's success closed the breaker")
+	rows := ai.Rows()
+	require.Len(t, rows, 4)
+	require.Equal(t, entity.AICallOK, rows[3].Status)
+}
+
+// TestAKeylessRouteSTILL_CLOSES_AS_NOT_CONFIGURED — the pause is ONLY «held by an open breaker, and
+// callable once it closes». A route whose provider is switched off in the panel (the registry drops
+// it from both lists, breaker or not), and a held provider whose transport has no key here, are
+// configuration: kind_not_available, terminal, before any attempt row — as before A5.
+//
+// MUTATIONS (measured red→green): paused() built from the configured route head (RouteHeadAt) instead
+// of BreakerHeld — «everything that has a row is paused» → the switched-off route re-queues as
+// provider_paused; paused() without the transport's Enabled check → the keyless transport re-queues.
+func TestAKeylessRouteSTILL_CLOSES_AS_NOT_CONFIGURED(t *testing.T) {
+	t.Run("the provider is switched off in the panel", func(t *testing.T) {
+		rg := newImageRouteRig(t, row(1, entity.AIProviderOpenAI, ""))
+		openImageBreaker(t, rg, entity.AIProviderOpenAI) // held first, then switched off: no longer a pause
+		rg.store.switchProvider(entity.AIProviderOpenAI, false)
+		rg.reload(t)
+		oa := &fakeImageTransport{model: "gpt-image-2"}
+		st := &fakeStore{}
+		w := routedWorker(st, rg.reg, map[string]ImageTransport{entity.AIProviderOpenAI: oa})
+
+		require.Error(t, w.PreflightKind(entity.DesignRunKindFlat), "the door refuses: nothing to wait for")
+		require.NoError(t, w.execute(context.Background(), testRun(91, entity.DesignRunKindFlat), "tok"))
+		require.Equal(t, []string{CodeKindNotAvailable + " retry=false"}, failedCodes(st))
+		require.Empty(t, st.started)
+		require.Zero(t, oa.n())
+		require.NotContains(t, st.failed[0].LastError, "paused")
+	})
+
+	t.Run("the held provider's transport has no key here", func(t *testing.T) {
+		rg := newImageRouteRig(t, row(1, entity.AIProviderOpenRouter, ""))
+		openImageBreaker(t, rg, entity.AIProviderOpenRouter)
+		or := &fakeImageTransport{model: orimages.DefaultModel, off: true}
+		st := &fakeStore{}
+		w := routedWorker(st, rg.reg, map[string]ImageTransport{entity.AIProviderOpenRouter: or})
+
+		require.NoError(t, w.execute(context.Background(), testRun(92, entity.DesignRunKindFlat), "tok"))
+		require.Equal(t, []string{CodeKindNotAvailable + " retry=false"}, failedCodes(st))
+		require.Empty(t, st.started)
+		msg := w.providers.Image.(CredentialNamer).MissingCredential()
+		require.Contains(t, msg, "no key for openrouter", "a keyless transport is named for its key, not paused")
+		require.NotContains(t, msg, "paused")
+	})
+}
+
+// TestAPausedCandidateWAITS_ONLY_FOR_A_SLUG_IT_DRAWS — the pause asks the held candidates the same
+// Serves question the callable ones answer: a run whose only drawing candidate is held waits; a run no
+// candidate would draw even with every breaker closed is refused now, paused or not; a callable
+// candidate that draws the slug is simply chosen.
+//
+// MUTATION (measured red→green): the held half without its Serves check → the slug nobody draws is
+// «paused» instead of unknown_image_model.
+func TestAPausedCandidateWAITS_ONLY_FOR_A_SLUG_IT_DRAWS(t *testing.T) {
+	rg := newImageRouteRig(t, row(1, entity.AIProviderOpenRouter, ""), row(2, entity.AIProviderOpenAI, ""))
+	or := &fakeImageTransport{model: EngineGPTImage2, only: map[string]bool{EngineGPTImage2: true}}
+	oa := &fakeImageTransport{model: "gpt-image-2", only: map[string]bool{EngineGemini3Pro: true}}
+	openImageBreaker(t, rg, entity.AIProviderOpenAI)
+	ch := NewRoutedImageProvider(rg.reg, map[string]ImageTransport{
+		entity.AIProviderOpenRouter: or, entity.AIProviderOpenAI: oa}, EngineGPTImage2).(Chooser)
+
+	_, err := ch.Choose(entity.DesignRunKindFlat, EngineGemini3Pro, nil)
+	require.ErrorIs(t, err, errRoutePaused, "the only candidate that draws it is held: a wait")
+	require.Contains(t, err.Error(), "openai")
+	require.Equal(t, CodeProviderPaused, classify(err).Code)
+	require.True(t, classify(err).Retryable)
+
+	_, err = ch.Choose(entity.DesignRunKindFlat, "vendor/nobody-draws-this", nil)
+	require.ErrorIs(t, err, errNoCandidateServes, "no candidate draws it with every breaker closed either")
+
+	got, err := ch.Choose(entity.DesignRunKindFlat, EngineGPTImage2, nil)
+	require.NoError(t, err)
+	require.Equal(t, "openrouter_images", got.Name())
+}
+
+// TestTheRoutePauseREQUEUES_FOR_THE_REGISTRY_S_WINDOW — routePauseRequeue repeats the registry's
+// breaker window (unexported there). This pins the copy to the registry's behaviour: held one instant
+// before routePauseRequeue has passed since the opening, listed (half-open, the probe's turn) at it.
+//
+// MUTATION (measured red→green): routePauseRequeue = time.Minute → still held at the re-queue moment,
+// i.e. the paused run would come back into another pause and spend another round.
+func TestTheRoutePauseREQUEUES_FOR_THE_REGISTRY_S_WINDOW(t *testing.T) {
+	rg := newImageRouteRig(t, row(1, entity.AIProviderOpenRouter, ""))
+	openImageBreaker(t, rg, entity.AIProviderOpenRouter)
+
+	rg.clk.advance(routePauseRequeue - time.Nanosecond)
+	require.Len(t, rg.reg.BreakerHeld(entity.AIPurposeImageGenerate), 1, "inside the window: held")
+	rg.clk.advance(time.Nanosecond)
+	require.Empty(t, rg.reg.BreakerHeld(entity.AIPurposeImageGenerate))
+	require.Len(t, rg.reg.Candidates(entity.AIPurposeImageGenerate), 1, "at the re-queue moment: listed, the probe's turn")
 }

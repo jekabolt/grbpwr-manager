@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
@@ -55,8 +56,10 @@ type Chooser interface {
 	// in tried — the provider names this round of the run has already opened attempts with.
 	//
 	// errChainExhausted: every serving candidate is in tried (the round is over — the worker starts
-	// the next one with an empty set). errNoCandidateServes: candidates exist and none serves the
-	// slug (terminal, unknown_image_model). errRouteMissing: nothing is callable at all.
+	// the next one with an empty set). errRoutePaused: nothing callable serves the slug, and a candidate
+	// that would is held by its open breaker (a wait: the worker re-queues the run with no attempt row).
+	// errNoCandidateServes: candidates exist and none serves the slug (terminal, unknown_image_model).
+	// errRouteMissing: nothing is callable at all, and nothing is paused either.
 	//
 	// ⚠ EVERY CANDIDATE IS ITS OWN ATTEMPT, AND THE ATTEMPT CAP IS THE STORE'S. A two-candidate chain
 	// spends two of designMaxPaidAttempts on one round; nothing here counts or raises that cap.
@@ -75,7 +78,26 @@ var (
 	// errNoCandidateServes — the route has callable candidates and not one of them draws the run's
 	// slug. Free (before StartAttempt) and terminal: the door's own word, unknown_image_model.
 	errNoCandidateServes = errors.New("designgen: no candidate of this route serves the run's image model")
+	// errRoutePaused — nothing of the route can be called right now ONLY because the breakers of the
+	// candidates that would draw the run are open (B-13/A5, Codex REVIEW-CD P1). Free (before
+	// StartAttempt) and retryable: provider_paused. The worker re-queues the run for the end of the
+	// breaker window without opening an attempt row; a person has nothing to fix.
+	errRoutePaused = errors.New("designgen: the image route is paused after repeated failures")
 )
+
+// routePauseRequeue is how far a paused run is put back: the registry's breaker window (registry
+// breakerConfig.OpenTimeout — three transient faults open a (provider, image) breaker for five
+// minutes, then ONE probe decides). The registry does not export the window or the instant a breaker
+// opened, so the number is repeated here and TestTheRoutePauseREQUEUES_FOR_THE_REGISTRY_S_WINDOW pins
+// it against the registry's own behaviour: a change there turns that test red, not this run silent.
+//
+// ⚠ THE WHOLE WINDOW, NOT A MINUTE, BECAUSE A PAUSED PICKUP SPENDS A ROUND. The store's ten-round
+// ceiling counts every FailRun that re-queues (only paid_collect_waiting is exempt, and only for a run
+// holding an accepted id); a one-minute re-queue would spend up to five rounds of ten per pause and a
+// second outage would close the run on the very ceiling this pause exists to keep it off. Re-queued at
+// now + the window, the next pickup finds the breaker half-open at the latest — one round per pause —
+// at the cost of up to one window of extra latency when the breaker had opened long before.
+const routePauseRequeue = 5 * time.Minute
 
 // routedImageProvider — see the section doc.
 type routedImageProvider struct {
@@ -138,6 +160,51 @@ func (p *routedImageProvider) candidates() []routeCandidate {
 	return out
 }
 
+// paused is the route's HELD half: the candidates the registry dropped ONLY because their breaker for
+// the image capability is open (registry.BreakerHeld: enabled, keyed, able to serve), reduced to the
+// ones this build could call once the window ends — a transport here, and that transport switched on.
+// A held row with no transport or with its transport off is NOT a pause: the breaker closing would
+// leave it just as uncallable, so the door's configuration sentence is the right one for it.
+//
+// ⚠ READ IT BEFORE candidates(), NOT AFTER. The two lists come from two registry walks, and a breaker
+// can change between them. The change time can make on its own is open → half-open (the window runs
+// out), which moves a row from held to listed: held first, listed second sees it in at least one of
+// the two. The other order could see it in neither and close a self-healing run as not configured —
+// the failure this half exists to prevent. (closed → open needs a fault, i.e. a concurrent image call
+// in the few instructions between the reads; the worker's runOnce is sequential.)
+func (p *routedImageProvider) paused() []routeCandidate {
+	if p == nil || p.reg == nil {
+		return nil
+	}
+	held := p.reg.BreakerHeld(entity.AIPurposeImageGenerate)
+	out := make([]routeCandidate, 0, len(held))
+	for _, c := range held {
+		t := p.transports[c.ProviderKey]
+		if t == nil || !t.Enabled() {
+			continue
+		}
+		out = append(out, routeCandidate{Candidate: c, t: t})
+	}
+	return out
+}
+
+// pausedNames — the providers of held, once each, in route order (the sentence a row and the door say).
+func pausedNames(held []routeCandidate) []string {
+	var names []string
+	for _, c := range held {
+		names = appendUnique(names, c.ProviderKey)
+	}
+	return names
+}
+
+// pausedSentence is what a paused route says, on the row and at the door: which providers wait, that
+// nothing needs configuring, and when the next pickup comes — never «no key», which sends the owner to
+// re-type a key that is fine.
+func pausedSentence(held []routeCandidate) string {
+	return fmt.Sprintf("image.generate is paused after repeated failures (%s: circuit breaker open); retrying "+
+		"by itself within %s — no key is missing", strings.Join(pausedNames(held), ", "), routePauseRequeue)
+}
+
 // warnNoTransport — once per provider per config version, as the router warns (router.warnNoTransport).
 //
 // THE MEMORY IS MONOTONIC, as the router's is (FIX-G4): passes and door checks read snapshots
@@ -167,17 +234,29 @@ func (p *routedImageProvider) candidate(c routeCandidate) imageProvider {
 // Name — see routedImageName: the slot's name, never an attempt row's.
 func (p *routedImageProvider) Name() string { return routedImageName }
 
-// Enabled — some candidate of the route is callable right now. False before the registry has a
-// snapshot (app.go refuses to boot without one), with no route rows, or when every routed provider is
-// switched off, keyless or without a transport here.
-func (p *routedImageProvider) Enabled() bool { return len(p.candidates()) > 0 }
+// Enabled — some candidate of the route is callable right now, OR PAUSED (held by its open breaker,
+// with a transport here that is on). False before the registry has a snapshot (app.go refuses to boot
+// without one), with no route rows, or when every routed provider is switched off, keyless or without
+// a transport here.
+//
+// ⚠ A PAUSED ROUTE IS ENABLED (B-13/A5, Codex REVIEW-CD P1). Enabled is the pre-flight's question
+// «is this route configured», and a false answer is terminal: kind_not_available, the run closed
+// before an attempt row, the reserve released. Three bare 503s open the image breaker for five
+// minutes; before A5 the next pickup inside that window found no candidate, read the route as
+// unconfigured and killed a run the breaker would have let through minutes later. The pause is
+// answered by Choose (errRoutePaused → a re-queue), not here.
+func (p *routedImageProvider) Enabled() bool {
+	return len(p.paused()) > 0 || len(p.candidates()) > 0
+}
 
-// Produces is the union of the candidates' content types (all PNG today: every candidate is the
-// image route over a transport that is asked for png).
+// Produces is the union of the content types of the callable and the paused candidates (all PNG
+// today: every candidate is the image route over a transport that is asked for png). The paused half
+// counts: the pre-flight's sink check must judge the route a paused run is waiting for, not pass
+// vacuously over an empty list.
 func (p *routedImageProvider) Produces() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, c := range p.candidates() {
+	for _, c := range append(p.paused(), p.candidates()...) {
 		for _, ct := range p.candidate(c).Produces() {
 			if !seen[ct] {
 				seen[ct] = true
@@ -188,10 +267,15 @@ func (p *routedImageProvider) Produces() []string {
 	return out
 }
 
-// MissingCredential is the door's sentence when no candidate is callable (see CredentialNamer). Two
-// different fixes, so two sentences: a route that names only providers this build cannot draw with is
-// fixed in the route; a route whose providers hold no key is fixed by the key.
+// MissingCredential is the door's sentence when no candidate is callable (see CredentialNamer). Three
+// different situations, so three sentences: a route PAUSED by its breakers is fixed by waiting (no key
+// is missing — «set a key» would send the owner to re-type one that works); a route that names only
+// providers this build cannot draw with is fixed in the route; a route whose providers hold no key is
+// fixed by the key.
 func (p *routedImageProvider) MissingCredential() string {
+	if held := p.paused(); len(held) > 0 {
+		return pausedSentence(held)
+	}
 	if p.reg != nil {
 		cands, _ := p.reg.CandidatesAt(entity.AIPurposeImageGenerate)
 		var without []string
@@ -239,8 +323,9 @@ func appendUnique(list []string, v string) []string {
 
 // Choose — see Chooser.
 func (p *routedImageProvider) Choose(kind, model string, tried map[string]bool) (Provider, error) {
+	held := p.paused() // FIRST — see paused
 	cands := p.candidates()
-	if len(cands) == 0 {
+	if len(cands) == 0 && len(held) == 0 {
 		return nil, fmt.Errorf("%w: the image.generate route has no callable candidate for a %s run — %s",
 			errRouteMissing, kind, p.MissingCredential())
 	}
@@ -259,11 +344,24 @@ func (p *routedImageProvider) Choose(kind, model string, tried map[string]bool) 
 		}
 		return prov, nil
 	}
-	if !served {
-		return nil, fmt.Errorf("%w: %q (a %s run) — no candidate of image.generate draws it. Nothing was sent and "+
-			"nothing was charged", errNoCandidateServes, strings.TrimSpace(model), kind)
+	if served {
+		return nil, errChainExhausted
 	}
-	return nil, errChainExhausted
+	// ⚠ NOTHING CALLABLE DRAWS THE SLUG — BUT A PAUSED CANDIDATE THAT WOULD IS A WAIT, NOT A REFUSAL.
+	// Checked with the same Serves question as the callable ones: a Gemini run whose only drawing
+	// candidate is held must come back after the window, and a run no candidate draws even when every
+	// breaker closes is refused now, whatever is paused.
+	var waiting []routeCandidate
+	for _, c := range held {
+		if c.t.Serves(firstNonEmpty(p.candidate(c).requested(model), p.envDefault)) {
+			waiting = append(waiting, c)
+		}
+	}
+	if len(waiting) > 0 {
+		return nil, fmt.Errorf("%w: %s. Nothing was sent and nothing was charged", errRoutePaused, pausedSentence(waiting))
+	}
+	return nil, fmt.Errorf("%w: %q (a %s run) — no candidate of image.generate draws it. Nothing was sent and "+
+		"nothing was charged", errNoCandidateServes, strings.TrimSpace(model), kind)
 }
 
 // Execute is the chooser's pick with nothing tried, for a caller that did not Choose first. The

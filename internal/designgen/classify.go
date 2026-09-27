@@ -157,6 +157,12 @@ const (
 	// CodeUnknownImageModel — the frozen engine is not on this deployment's table at the pickup (a
 	// B-16 flag went off): the door's own word for the same fact. Free and terminal.
 	CodeUnknownImageModel = entity.DesignErrorCodeUnknownImageModel
+
+	// CodeProviderPaused — the route's candidates that would draw the run are held by their open
+	// circuit breakers (errRoutePaused, B-13/A5). Free (no attempt row), retryable: the run comes back
+	// at the end of the breaker window. Its own word, not kind_not_available — that one tells a person
+	// to configure something, and here nothing is wrong with the configuration.
+	CodeProviderPaused = "provider_paused"
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -239,6 +245,11 @@ func classifyBySentinel(err error) verdict {
 	// ─── ours, G-03 r2: an earlier submit may still be live. Retryable, nothing spent.
 	case errors.Is(err, errSubmitSettling):
 		return verdict{Retryable: true, Code: CodeSubmitSettling, State: entity.DesignAttemptFailed}
+	// ─── ours, B-13/A5: every candidate that would draw the run is held by its open breaker.
+	// Retryable, before StartAttempt, nothing spent — the breaker heals itself, and the terminal
+	// kind_not_available it used to read as closed runs a few minutes of weather would have let through.
+	case errors.Is(err, errRoutePaused):
+		return verdict{Retryable: true, Code: CodeProviderPaused, State: entity.DesignAttemptFailed}
 	// ─── ours + fal + Meshy, G-03 / B-13/A1: a submit that may have been bought, with nothing on
 	// record to resume it by. FIRST among the provider cases: submitLost also wraps
 	// ErrUnexpectedResponse, and a 5xx would otherwise fall into the retryable default — both would
