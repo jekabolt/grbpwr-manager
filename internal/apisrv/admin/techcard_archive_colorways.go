@@ -29,10 +29,15 @@ import (
 //
 // ЧЕТЫРЕ ВЕЩИ, О КОТОРЫХ ЗДЕСЬ ДУМАЛИ, И КАЖДАЯ СТОИЛА БЫ ДЕФЕКТА:
 //
-//   - ИДЕМПОТЕНТНОСТЬ ЖИВЁТ В ЦВЕТЕ, А НЕ В НАЖАТИИ. Уже стоящий на карточке color_code —
-//     это строка «exists» и пропуск, и такой же ответ даёт ПОЙМАННАЯ коллизия UNIQUE(style_id,
-//     color_code): между нашей проверкой и вставкой помещается чужой клик, и превращать его в 500
-//     значило бы наказывать человека за то, что он нажал дважды.
+//   - ИДЕМПОТЕНТНОСТЬ ЖИВЁТ В ЦВЕТЕ, А НЕ В НАЖАТИИ. Уже стоящий на карточке цвет — это строка
+//     «exists» и пропуск, и такой же ответ даёт ПОЙМАННАЯ коллизия уникальности: между нашей
+//     проверкой и вставкой помещается чужой клик, и превращать его в 500 значило бы наказывать
+//     человека за то, что он нажал дважды. С T45 (27.09) «цвет» колорвея — его SKU-токен
+//     (product.sku_color_token, UNIQUE(style_id, sku_color_token)), а color_code — лишь словарное
+//     семейство, которое могут делить два колорвея. color_code архива — код эпохи, когда код и
+//     был токеном, поэтому занятость карточки читается по ТОКЕНАМ (tcacCardColour), а создание
+//     идёт с RefuseTakenColourToken: занятый токен даёт тот же «exists», а не второй колорвей с
+//     начеканенным токеном.
 //   - ВЕРСИЯ КАРТОЧКИ ДВИЖЕТСЯ ПОД НОГАМИ. Каждая запись рецепта бампает tech_card.lock_version
 //     (colorway_recipe.go), поэтому оптимистичный токен читается ЗАНОВО перед каждым колорвеем, а
 //     не берётся один раз на весь цикл. Иначе второй цвет партии всегда падал бы в конфликт.
@@ -217,8 +222,9 @@ type tcacRun struct {
 	s          *Server
 	techCardID int
 
-	// colorwayIDByCode is the card's LIVE colour occupancy, upper-cased. It grows as colours are
-	// created, so a payload naming the same colour twice creates it once.
+	// colorwayIDByCode is the card's LIVE colour occupancy, upper-cased, keyed by SKU colour token
+	// (tcacCardColour, T45). It grows as colours are created, so a payload naming the same colour
+	// twice creates it once.
 	colorwayIDByCode map[string]int
 	bomKeys          map[string]bool
 	pieceKeys        map[string]bool
@@ -284,7 +290,7 @@ func (s *Server) tcacPrepare(ctx context.Context, techCardID int, objectKey stri
 		}
 	}
 	for i := range card.Colorways {
-		run.colorwayIDByCode[tcacColourKey(card.Colorways[i].ColorCode)] = card.Colorways[i].Id
+		run.colorwayIDByCode[tcacCardColour(&card.Colorways[i])] = card.Colorways[i].Id
 	}
 	for i := range card.BomItems {
 		if k := card.BomItems[i].LineKey; k != "" {
@@ -422,6 +428,10 @@ func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayloa
 	colorwayID, err := r.s.createColorway(ctx, colorwayCreateInput{
 		StyleID:       r.techCardID,
 		Merchandising: &pb_common.ColorwayMerchandisingInsert{ColorCode: code},
+		// T45: the archive's colour is the SKU token it had on the source card. A token the style
+		// already holds must answer «exists» (ErrColorwayColorExists), not mint a second colourway
+		// of the same colour under another token.
+		RefuseTakenColourToken: true,
 	})
 	switch {
 	case err == nil:
@@ -546,8 +556,8 @@ func (r *tcacRun) supersedes(ref string) bool {
 //
 //   - a PHANTOM RACE. Somebody else's press committed between our read and our write; the colour is
 //     genuinely there, the operator has nothing to do, and a 500 would punish a double click.
-//   - an ARCHIVED colourway. The store's uniqueness pre-check counts every product row of the style
-//     (colorway_write.go: SELECT COUNT(*) … WHERE style_id AND color_code — no lifecycle filter),
+//   - an ARCHIVED colourway. The store's token check reads every product row of the style
+//     (colorway_palette.go styleSkuTokens — no lifecycle filter; a frozen SKU keeps its token),
 //     while the card read that fills colorwayIDByCode drops lifecycle_status = 4 (materials.go).
 //     So the code is occupied by a colourway the colourways tab does not list, and «this card
 //     already has a colourway of this colour» named nothing the operator could open and offered
@@ -583,11 +593,21 @@ func (r *tcacRun) recheckColour(ctx context.Context, code string) (int, bool) {
 		return 0, false
 	}
 	for i := range card.Colorways {
-		if tcacColourKey(card.Colorways[i].ColorCode) == code {
+		if tcacCardColour(&card.Colorways[i]) == code {
 			return card.Colorways[i].Id, true
 		}
 	}
 	return 0, true
+}
+
+// tcacCardColour is the colour a card's colourway OCCUPIES for this feature: its SKU colour token
+// (T45) — the identity an archive's color_code named when it was written — and, for a row read
+// without one, its color_code, which is the token such a row reads everywhere else.
+func tcacCardColour(cw *entity.TechCardColorway) string {
+	if t := tcacColourKey(cw.SkuColorToken); t != "" {
+		return t
+	}
+	return tcacColourKey(cw.ColorCode)
 }
 
 // recipe writes one colourway's material recipe and reports what it had to leave out. It returns
@@ -994,17 +1014,19 @@ func tcacSortedKeys(m map[string]string) []string {
 	return out
 }
 
-// tcacIsDuplicateColour reports the raw UNIQUE(style_id, color_code) violation — the one the store's
-// own pre-check did not get to first. The store answers a duplicate it SAW with
+// tcacIsDuplicateColour reports the raw uniqueness violation on a colourway's colour — the one the
+// store's own pre-check did not get to first. The store answers a duplicate it SAW with
 // entity.ErrColorwayColorExists; this catches the one that appeared between that check and the
-// INSERT, which is the same news and must not become a 500.
+// INSERT, which is the same news and must not become a 500. Since T45 the index is
+// uniq_product_style_sku_color_token (0376; before it, uniq_product_style_color).
 func tcacIsDuplicateColour(err error) bool {
 	name, ok := tcciDuplicateKeyName(err)
 	if !ok {
 		return false
 	}
-	// The index is uniq_product_style_color; matched loosely because the name is schema history and
-	// this predicate must not go quiet if it is ever rebuilt under a longer name.
+	// Matched loosely because the name is schema history and this predicate must not go quiet if
+	// it is ever rebuilt under a longer name: both the T45 token index and its predecessor say
+	// «color».
 	return strings.Contains(strings.ToLower(name), "color")
 }
 
