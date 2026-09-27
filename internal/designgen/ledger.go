@@ -303,7 +303,16 @@ func isAnyOf(err error, targets ...error) bool {
 }
 
 // timeoutIsNotFree — ONE RULE OVER EVERY TRANSPORT'S OWN MAPPING (Codex A4 #3): an HTTP 408 is not
-// proof that nothing was bought. A 408 is a non-2xx, so its CallError is NOT engaged (D-09) and the
+// proof that nothing was bought.
+//
+// ⚠ SINCE B-13/A3 IT IS A NET, NOT THE RULE. The four design transports now raise a 408 on their paid
+// POST as ENGAGED themselves (orimages, recraft direct; fal and Meshy as an unconfirmed submit), so the
+// mappings book it `unknown` by the transport's word — and, which is the half this rule could never
+// reach, the worker stops retrying it: the row used to say «money may have moved» while the next pass
+// bought again. What still arrives here as a not-engaged 408 is a 408 no transport vouched for — a
+// lookup never reaches these mappings, so today nothing does; the net stays for the next transport.
+//
+// The original reading, still true of such a 408: a non-2xx CallError is NOT engaged (D-09) and the
 // mappings below read it as `free`, as they read the refusal sentinel the clients fold it into
 // (orimages ErrProviderFailure, recraft direct / fal / Meshy ErrBadRequest). But a 408 is a server or
 // a gateway giving up on a request whose body it may already have taken: the generation may have run

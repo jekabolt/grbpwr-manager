@@ -35,7 +35,10 @@ import (
 //     submit and Meshy's create call (B-13/A1), where every 5xx but a bare 503 may have been
 //     enqueued: `unknown`, final;
 //   - 401 / 402 / 404 / 429 keep their codes and are booked `free`;
-//   - a real 408 is retryable weather for the worker and `unknown` for the ledger (timeoutIsNotFree).
+//   - a real 408 answering one of these paid POSTs is ENGAGED (B-13/A3): `unknown`, never retried,
+//     booked `unknown` — the server may have taken the whole body and billed it before giving up.
+//     (It used to be retryable weather for the worker while the ledger booked it `unknown`: the row
+//     said «money may have moved» and the next pass bought again.)
 //
 // MUTATIONS (each measured red→green): classify's CallError override removed (classifyBySentinel
 // returned as is) → the post-write rows turn retryable and the 5xx / pre-write rows `unknown`;
@@ -43,6 +46,12 @@ import (
 // `unknown`; falSubmitEnd reading `!spoke && …` only (the CallError's Engaged ignored) → fal's
 // post-write and 500/502/504 rows book `free`; meshySubmitEnd's `spoke && !ce.Engaged` arm removed →
 // the Meshy refusals book `unknown`.
+//
+// B-13/A3 MUTATIONS (each measured red→green): each transport's 408 arm reverted to «not engaged,
+// retryable» in turn (orimages / recraft direct: the `status == http.StatusRequestTimeout` branch
+// disabled; fal / Meshy: `|| status == http.StatusRequestTimeout` dropped from the submit arm) → that
+// transport's «a real 408» row goes red here and in TestA408IsNEVER_BOOKED_FREE, the other three stay
+// green.
 
 // designTransport is one paid call of the band, driven through its real client and route.
 type designTransport struct {
@@ -103,7 +112,7 @@ func designTransports() []designTransport {
 				return err, oneRow(t, ai)
 			},
 			code: map[int]string{401: CodeUnauthorized, 402: CodeOutOfCredit, 404: CodeModelRetired, 429: CodeRateLimited,
-				408: CodeBadRequest},
+				408: CodeSubmitUnconfirmed},
 		},
 		{
 			name: "meshy submit", billing: entity.AIProviderMeshy, unconfirmed5xx: true,
@@ -115,7 +124,7 @@ func designTransports() []designTransport {
 			},
 			// A 404 answering Meshy's POST is its generic 4xx (ErrBadRequest), as it was before B-14.
 			code: map[int]string{401: CodeUnauthorized, 402: CodeOutOfCredit, 404: CodeBadRequest, 429: CodeRateLimited,
-				408: CodeBadRequest},
+				408: CodeSubmitUnconfirmed},
 		},
 	}
 }
@@ -222,20 +231,23 @@ func TestTheWriteIsTheMoneyBoundaryON_EVERY_DESIGN_TRANSPORT(t *testing.T) {
 			})
 		}
 
-		t.Run(tr.name+": a real 408 is weather for the worker and unknown for the ledger", func(t *testing.T) {
+		t.Run(tr.name+": a real 408 is engaged — unknown for the worker AND the ledger, never retried (B-13/A3)", func(t *testing.T) {
 			err, row := tr.call(t, statusStand(t, http.StatusRequestTimeout), time.Second)
 			ce, ok := aiprov.AsCallError(err)
 			require.True(t, ok, "%v", err)
-			require.False(t, ce.Engaged)
+			require.True(t, ce.Engaged, "the server may have taken the whole body before it gave up")
+			require.False(t, ce.Retryable)
 			require.Equal(t, http.StatusRequestTimeout, ce.HTTPStatus)
 
 			v := classify(err)
 			require.Equal(t, tr.code[http.StatusRequestTimeout], v.Code, "the sentinel still names the code")
-			require.True(t, v.Retryable, "the matrix: a 408 is weather")
-			require.Equal(t, entity.DesignAttemptFailed, v.State)
+			require.False(t, v.Retryable, "a retry would buy a second answer beside a first nobody sees")
+			require.Equal(t, entity.DesignAttemptUnknown, v.State)
 
 			require.Equal(t, entity.AICallUnknown, row.Status, "a 408 proves nothing about the bill")
-			require.Nil(t, row.End.Engaged)
+			require.NotNil(t, row.End.Engaged)
+			require.True(t, *row.End.Engaged, "the transport says so now; the ledger no longer has to guess")
+			require.False(t, row.End.CostUSD.Valid, "unknown is NULL, never 0")
 			require.Equal(t, intp(http.StatusRequestTimeout), row.End.HTTPStatus)
 		})
 	}

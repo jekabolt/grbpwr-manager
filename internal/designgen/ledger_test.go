@@ -249,11 +249,14 @@ func intp(v int) *int { return &v }
 // (timeoutIsNotFree) takes that back to `unknown`, engaged nobody-knows, cost NULL, source none — on
 // every transport, and ONLY for a 408: a validator's 4xx stays `free`.
 //
-// B-14 MOVED THE STATUS FROM THE SENTENCE TO THE FIELD, and this test with it. Each error below is a
-// CallError as its transport now raises it (HTTPStatus, not engaged, the matrix's code) around the
-// sentence its client spells; the second half runs the REAL orimages / recraft direct / fal / Meshy
-// clients against a 408 stand. The third half is the text fallback's funeral: a LOCAL refusal whose
-// words quote "HTTP 408" — no response arrived — stays `free`, because nothing reads text any more.
+// B-14 MOVED THE STATUS FROM THE SENTENCE TO THE FIELD, and this test with it. Each error of the first
+// half is a CallError a transport COULD raise for a 408 (HTTPStatus, not engaged, the matrix's code) —
+// the net timeoutIsNotFree still spreads under every mapping. The second half runs the REAL orimages /
+// recraft direct / fal / Meshy clients against a 408 stand: since B-13/A3 each of them raises a 408 on
+// its paid POST as ENGAGED, so the row is `unknown` by the transport's own word (Engaged true) and the
+// attempt is `unknown` and never retried — the ledger and the worker finally say the same thing. The
+// third half is the text fallback's funeral: a LOCAL refusal whose words quote "HTTP 408" — no response
+// arrived — stays `free`, because nothing reads text any more.
 //
 // MUTATIONS (measured red→green): timeoutIsNotFree returning `end` unchanged → every 408 case reads
 // `free`; the call removed from each of imageCallEnd / vectorCallEnd / falSubmitEnd / meshySubmitEnd
@@ -333,7 +336,8 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 		rows := ai.Rows()
 		require.Len(t, rows, 1)
 		require.Equal(t, entity.AICallUnknown, rows[0].Status)
-		require.Nil(t, rows[0].End.Engaged)
+		require.NotNil(t, rows[0].End.Engaged, "B-13/A3: the transport says engaged itself")
+		require.True(t, *rows[0].End.Engaged)
 		require.False(t, rows[0].End.CostUSD.Valid, "unknown is NULL, never 0")
 		require.Equal(t, entity.AICostNone, rows[0].End.CostSource)
 		require.Equal(t, intp(408), rows[0].End.HTTPStatus)
@@ -343,6 +347,7 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 			entity.AIPurposeImageGenerate)
 		_, err := imageRoute(stand408(t).URL).Execute(context.Background(), job)
 		require.ErrorIs(t, err, orimages.ErrProviderFailure)
+		require.False(t, classify(err).Retryable, "B-13/A3: now also terminal")
 		stored(t, ai)
 	})
 	t.Run("recraft direct, real client", func(t *testing.T) {
@@ -351,21 +356,27 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 		_, err := NewVectorProvider(recraft.New(recraft.Config{Route: string(recraft.RouteDirect),
 			Direct: recraft.DirectConfig{APIKey: "k", BaseURL: stand408(t).URL}}, nil)).Execute(context.Background(), job)
 		require.ErrorIs(t, err, recraft.ErrBadRequest)
+		require.False(t, classify(err).Retryable, "B-13/A3: now also terminal")
 		stored(t, ai)
 	})
 	t.Run("fal submit, real client", func(t *testing.T) {
 		stand := newFalBuildStand(t)
 		stand.submitStatus = http.StatusRequestTimeout
-		w := steerWorker(t, &fakeStore{}, falRoute(t, stand.srv.URL, falMeshySlug))
+		st := &fakeStore{}
+		w := steerWorker(t, st, falRoute(t, stand.srv.URL, falMeshySlug))
 		ai := withLedger(w)
 		require.NoError(t, w.execute(context.Background(), steerRun(66), "tok"))
 		stored(t, ai)
+		require.Equal(t, []string{CodeSubmitUnconfirmed + " retry=false"}, failedCodes(st),
+			"B-13/A3: the run closes for reconciliation instead of buying a second build")
 	})
 	t.Run("meshy submit, real client", func(t *testing.T) {
 		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindThreed,
 			References: []string{"https://cdn.example/f.png"}}, entity.AIPurposeThreed)
 		_, err := newThreedSteerProvider(t, stand408(t).URL).Execute(context.Background(), job)
 		require.ErrorIs(t, err, meshy.ErrBadRequest)
+		require.ErrorIs(t, err, meshy.ErrSubmitUnconfirmed, "B-13/A3")
+		require.False(t, classify(err).Retryable, "B-13/A3: now also terminal")
 		stored(t, ai)
 	})
 }

@@ -30,6 +30,10 @@ import (
 // ErrSubmitUnconfirmed, as fal's is. MUTATION (measured red→green): the `fail(code, status, true,
 // false, err)` of the unconfirmed arm → `false, retryable` → the 500/502/504 and the id-naming 503
 // rows go red.
+//
+// B-13/A3 — a 408 on the create call is ENGAGED and unconfirmed too; a 408 on the status poll stays a
+// free, retryable read. MUTATION (measured red→green): the `|| status == http.StatusRequestTimeout`
+// dropped from the submit arm → the create-call 408 row goes red (the GET 408 row stays green).
 
 func meshyCallError(t *testing.T, err error, what string) *aiprov.CallError {
 	t.Helper()
@@ -78,7 +82,7 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 	})
 
 	t.Run("every refusal is NOT engaged and carries its status", func(t *testing.T) {
-		for _, status := range []int{400, 401, 402, 403, 404, 408, 422, 429, 503} {
+		for _, status := range []int{400, 401, 402, 403, 404, 422, 429, 503} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				writeStatus(w, status, map[string]string{"message": "said no"})
 			}))
@@ -93,7 +97,7 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 		}
 	})
 
-	t.Run("a 5xx on the create call other than a bare 503 is ENGAGED and unconfirmed (B-13/A1)", func(t *testing.T) {
+	t.Run("a 5xx other than a bare 503, or a 408, on the create call is ENGAGED and unconfirmed (B-13/A1, A3)", func(t *testing.T) {
 		for _, c := range []struct {
 			status int
 			body   string
@@ -101,6 +105,7 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 			{500, `{"message":"internal"}`},
 			{502, `{"message":"bad gateway"}`},
 			{504, `{"message":"gateway timeout"}`},
+			{408, `{"message":"request timeout"}`},             // B-13/A3: the server gave up after the body
 			{503, `{"result":"task-lost-1","message":"busy"}`}, // a 503 that names the task it created
 		} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -159,7 +164,7 @@ func TestCallJSON_ALookupIsNEVER_ENGAGED(t *testing.T) {
 	})
 
 	t.Run("every non-2xx and a garbled 2xx on the poll are not engaged", func(t *testing.T) {
-		for _, status := range []int{401, 404, 429, 500, 502, 504, 200} {
+		for _, status := range []int{401, 404, 408, 429, 500, 502, 504, 200} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
 				_, _ = io.WriteString(w, `<html>`)

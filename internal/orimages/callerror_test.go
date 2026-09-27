@@ -26,6 +26,10 @@ import (
 // branch → the post-write and the refused-dial cases go red; the non-2xx `fail(code, status, false,
 // …)` → `true` → every status row goes red; the status check moved back below the body read → the
 // unreadable-404 case reads ErrResponseTooLarge / too_large / engaged.
+//
+// B-13/A3 — a 408 on this paid POST is ENGAGED and final (the server may have rendered and billed the
+// picture before it gave up). MUTATION (measured red→green): the 408 arm's `fail(code, status, true,
+// false, …)` → `false, retryable` → the 408 case goes red.
 
 func mustCallError(t *testing.T, err error) *aiprov.CallError {
 	t.Helper()
@@ -81,8 +85,26 @@ func TestGenerate_TheWriteIsTheMoneyBoundary(t *testing.T) {
 		}
 	})
 
-	t.Run("every non-2xx is NOT engaged, carries its status, and is classified by the matrix", func(t *testing.T) {
-		for _, status := range []int{400, 401, 402, 403, 404, 408, 409, 422, 429, 500, 502, 503, 504} {
+	t.Run("a 408 is ENGAGED and never retried: the picture may exist on the far side (B-13/A3)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = io.WriteString(w, `{"error":{"message":"gave up"}}`)
+		}))
+		defer srv.Close()
+		res, err := New(Config{APIKey: "k", BaseURL: srv.URL}).Generate(context.Background(), Request{Prompt: "p"})
+		ce := mustCallError(t, err)
+		code, _ := aiprov.ClassifyStatus(http.StatusRequestTimeout)
+		if !ce.Engaged || ce.Retryable || ce.HTTPStatus != http.StatusRequestTimeout || ce.Code != code {
+			t.Fatalf("CallError = {engaged %v, retryable %v, status %d, code %q}, want {true, false, 408, %q}",
+				ce.Engaged, ce.Retryable, ce.HTTPStatus, ce.Code, code)
+		}
+		if res != nil || !errors.Is(err, ErrProviderFailure) || !strings.Contains(err.Error(), "gave up") {
+			t.Errorf("result %+v, err %q — nil result, today's sentinel and the provider's own words", res, err)
+		}
+	})
+
+	t.Run("every other non-2xx is NOT engaged, carries its status, and is classified by the matrix", func(t *testing.T) {
+		for _, status := range []int{400, 401, 402, 403, 404, 409, 422, 429, 500, 502, 503, 504} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
 				_, _ = io.WriteString(w, `{"error":{"message":"said no"}}`)

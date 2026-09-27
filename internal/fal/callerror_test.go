@@ -28,6 +28,11 @@ import (
 // → the post-write and refused-dial submit cases go red; the non-2xx `fail(code, status, false, …)` →
 // `true` → every refusal row goes red; `broken`'s GET arm → engaged → the GET 2xx case goes red; the
 // GET Do arm → `fail(code, 0, true, …)` → the GET timeout case goes red.
+//
+// B-13/A3 — a 408 answering a SUBMIT is ENGAGED and unconfirmed (the queue may hold the whole body);
+// a 408 answering a lookup stays a free, retryable read. MUTATION (measured red→green): the submit
+// arm's `status == http.StatusRequestTimeout` dropped → the submit-408 case goes red (and the GET-408
+// row stays green, which is the other half of the rule).
 
 func falCallError(t *testing.T, err error, what string) *aiprov.CallError {
 	t.Helper()
@@ -77,8 +82,8 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 		}
 	})
 
-	t.Run("every 4xx and the bare 503 are NOT engaged and carry their status", func(t *testing.T) {
-		for _, status := range []int{400, 401, 402, 403, 404, 408, 409, 410, 422, 429, 503} {
+	t.Run("every 4xx but a 408, and the bare 503, are NOT engaged and carry their status", func(t *testing.T) {
+		for _, status := range []int{400, 401, 402, 403, 404, 409, 410, 422, 429, 503} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
 				_, _ = io.WriteString(w, `{"detail":"said no"}`)
@@ -112,6 +117,25 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 				require.ErrorIsf(t, err, ErrSubmitUnconfirmed, "%s HTTP %d", route, status)
 			}
 			srv.Close()
+		}
+	})
+
+	t.Run("a 408 on a submit is ENGAGED and unconfirmed — the queue may hold the whole body (B-13/A3)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = io.WriteString(w, `{"detail":"gave up"}`)
+		}))
+		defer srv.Close()
+		code, _ := aiprov.ClassifyStatus(http.StatusRequestTimeout)
+		for route, submit := range submitAll(newGenericClient(srv.URL, Config{})) {
+			err := submit()
+			ce := falCallError(t, err, route)
+			require.Truef(t, ce.Engaged, "%s: a written submit the server gave up on may be queued", route)
+			require.Falsef(t, ce.Retryable, "%s", route)
+			require.Equalf(t, http.StatusRequestTimeout, ce.HTTPStatus, "%s", route)
+			require.Equalf(t, code, ce.Code, "%s", route)
+			require.ErrorIsf(t, err, ErrSubmitUnconfirmed, "%s", route)
+			require.ErrorIsf(t, err, ErrBadRequest, "%s: today's sentinel rides inside", route)
 		}
 	})
 

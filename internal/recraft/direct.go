@@ -253,8 +253,8 @@ func (c *DirectClient) postImageToImage(ctx context.Context, req GenerateRequest
 	//
 	// ⚠ THE SENTINEL AND THE CODE DISAGREE ON A 408, AND THAT IS LEFT SO ON PURPOSE. classifyStatus
 	// folds a 408 into ErrBadRequest (the word designgen writes on the row); the matrix calls it
-	// weather (provider_error, retryable), and the CallError is what decides the retry. The ledger
-	// still books a 408 `unknown`, never `free` (designgen.timeoutIsNotFree).
+	// weather (provider_error, retryable), and the CallError is what decides the retry — which, on
+	// this paid POST, is NEVER (B-13/A3, below).
 	if status < 200 || status >= 300 {
 		switch {
 		case readErr != nil:
@@ -263,6 +263,12 @@ func (c *DirectClient) postImageToImage(ctx context.Context, req GenerateRequest
 			body = []byte(fmt.Sprintf("(the error body exceeded %d bytes)", maxResponseBytes))
 		}
 		code, retryable := aiprov.ClassifyStatus(status)
+		if status == http.StatusRequestTimeout {
+			// ⚠ A 408 ON THE PAID POST IS ENGAGED AND FINAL (B-13/A3, Codex B-14 review P1 #1). A server
+			// or a gateway that gave up may have taken the whole body and generated — and billed — the
+			// vector first; a retry would pay for a second one. Engaged: attempt and ledger row `unknown`.
+			return nil, status, fail(code, status, true, false, classifyStatus(status, body))
+		}
 		return nil, status, fail(code, status, false, retryable, classifyStatus(status, body))
 	}
 	// ─── FROM HERE ON A 2xx: served, and therefore billed. Nothing below is retryable.

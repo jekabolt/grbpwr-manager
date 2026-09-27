@@ -275,8 +275,9 @@ var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 
 // ErrSubmitUnconfirmed — A SUBMIT WHOSE OUTCOME NOBODY KNOWS: the whole request left this process
 // (WroteRequest without an error) and no usable answer came back — a timeout, a reset connection, a
-// 5xx other than a bare 503 (a 502 and a 504 included, and any 5xx naming a request id), a 2xx that
-// could not be read or named no request id. fal MAY have queued the job and charged for it.
+// 5xx other than a bare 503 (a 502 and a 504 included, and any 5xx naming a request id), a 408 (B-13/A3:
+// a server that gave up may have taken the whole body first), a 2xx that could not be read or named no
+// request id. fal MAY have queued the job and charged for it.
 //
 // ⚠ IT IS NEVER RESUBMITTED AUTOMATICALLY (G-03, Codex 1). fal's queue documents no idempotency key
 // for a submit (https://fal.ai/docs/documentation/model-apis/inference/queue lists Authorization,
@@ -1534,17 +1535,20 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 		raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
 		// ⚠ THE SENTINEL AND THE CODE DISAGREE ON A 408, AND THAT IS LEFT SO ON PURPOSE (B-14).
 		// statusErrorFrom folds 408 (with 422 and every other unnamed 4xx) into ErrBadRequest, which is
-		// the word designgen writes on the row; the matrix calls a 408 weather (provider_error,
-		// retryable), and the CallError is what decides the retry. The ledger still books a 408
-		// `unknown`, never `free` (designgen.timeoutIsNotFree): a server that gave up may have taken
-		// the whole body first.
+		// the word inside; the matrix calls a 408 weather (provider_error, retryable) — true of a
+		// status poll, which stays so. On a SUBMIT the CallError overrides both (B-13/A3, below).
 		err := statusErrorFrom(status, raw, method, path)
 		code, retryable := aiprov.ClassifyStatus(status)
-		if submit && status >= 500 {
+		if submit && (status >= 500 || status == http.StatusRequestTimeout) {
 			// submitServerError stays the fal-side truth about a 5xx on a submit: a bare 503 is the
 			// queue refusing work (not engaged, retryable, as the matrix says); every other 5xx, and
-			// any 5xx naming a request id, may have been enqueued and billed — ENGAGED, the one
-			// non-2xx that is, because fal's gateway can lose the queue's answer after the enqueue.
+			// any 5xx naming a request id, may have been enqueued and billed — ENGAGED, because fal's
+			// gateway can lose the queue's answer after the enqueue.
+			//
+			// ⚠ AND A 408 WITH THEM (B-13/A3, Codex B-14 review P1 #1): a server or a gateway giving up
+			// on a request whose whole body it may already have taken. The job may be queued and billed
+			// behind it, and a retry would buy a second one beside a first whose id is gone — so it is
+			// ErrSubmitUnconfirmed like a 502, the row `unknown`, the run closed for reconciliation.
 			if err = submitServerError(status, raw, err); errors.Is(err, ErrSubmitUnconfirmed) {
 				return fail(code, status, true, false, err)
 			}
@@ -1644,7 +1648,8 @@ func submitRetryableStatus(code int) bool {
 	return code == http.StatusServiceUnavailable
 }
 
-// submitServerError classifies a 5xx that answered a SUBMIT (G-03 r2, Codex 2; r3, Codex BLOCKER 1).
+// submitServerError classifies a 5xx — or a 408 (B-13/A3), which it reads as unconfirmed like every
+// status that is not the bare 503 — that answered a SUBMIT (G-03 r2, Codex 2; r3, Codex BLOCKER 1).
 //
 //   - a body naming a request_id: the queue DID accept the job, whatever the status says — it is
 //     paid, and the id rides the error (ErrSubmitUnconfirmed, terminal) so last_error carries what

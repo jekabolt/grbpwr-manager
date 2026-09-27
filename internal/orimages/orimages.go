@@ -432,9 +432,10 @@ type imageResponseWire struct {
 // anyway is not the result's to say — it is the CallError's Engaged, below.
 //
 // EVERY ERROR IS AN *aiprov.CallError (B-14), and its Engaged is the money fact the design worker and
-// the ledger read — never the sentinel: a refusal before the wire and any non-2xx are NOT engaged
-// (OpenRouter documents image generation as all-or-nothing — «fails and is not billed»); a round
-// trip that broke after the request was written, and every 2xx that did not become pictures, ARE.
+// the ledger read — never the sentinel: a refusal before the wire and any non-2xx but a 408 are NOT
+// engaged (OpenRouter documents image generation as all-or-nothing — «fails and is not billed»); a
+// round trip that broke after the request was written, a 408, and every 2xx that did not become
+// pictures, ARE.
 // The sentinels and the sentences stay exactly as they were, inside CallError.Err.
 func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 	if !c.Enabled() {
@@ -486,6 +487,16 @@ func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 			body = []byte("(the error body could not be read: " + readErr.Error() + ")")
 		}
 		code, retryable := aiprov.ClassifyStatus(status)
+		if status == http.StatusRequestTimeout {
+			// ⚠ A 408 ON THE PAID POST IS ENGAGED AND FINAL (B-13/A3, Codex B-14 review P1 #1). A 408 is
+			// a server or a gateway giving up on a request whose body it may already have taken — the
+			// picture may have been rendered and billed on the far side of it. The matrix calls it
+			// weather (retryable), which is right for a chat call that costs cents and for a lookup,
+			// and wrong for this one: retried, the second POST is a second picture paid for beside a
+			// first nobody will ever see. The sentinel stays ErrProviderFailure (the row's word); the
+			// CallError says what the worker and the ledger do — `unknown`, never again.
+			return nil, fail(code, status, true, false, classifyStatus(status, body))
+		}
 		return nil, fail(code, status, false, retryable, classifyStatus(status, body))
 	}
 	// ─── FROM HERE ON A 2xx: THE REQUEST WAS SERVED, AND THEREFORE BILLED. Nothing below is retryable.
@@ -659,6 +670,10 @@ func classifyStatus(status int, body []byte) error {
 		// прежней: та жгла три попытки на постоянной ошибке, эта отнимает две попытки у ошибки,
 		// которая прошла бы сама. Повтор того же запроса после таймаута ЗАКОННО кончается иначе —
 		// это ровно определение погоды.
+		//
+		// ⚠ НО ПОВТОРА НЕ БУДЕТ, И РЕШАЕТ ЭТО НЕ СЕНТИНЕЛ (B-13/A3). Слово строки — по-прежнему
+		// ErrProviderFailure, а повтор решает CallError: 408 на платном POST — engaged и финальный,
+		// потому что сервер мог принять тело и нарисовать картинку раньше, чем сдался (см. Generate).
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrProviderFailure, status, apiErrorMessage(body))
 	case status >= 500:
 		return fmt.Errorf("%w: API error (HTTP %d): %s", ErrProviderFailure, status, apiErrorMessage(body))

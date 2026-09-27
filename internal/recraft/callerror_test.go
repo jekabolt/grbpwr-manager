@@ -26,6 +26,10 @@ import (
 // post-write and refused-dial cases go red; the non-2xx `fail(code, status, false, …)` → `true` →
 // every status row goes red; the status check moved back below the `truncated` refusal → the oversized
 // 404 reads ErrInvalidResponse / engaged.
+//
+// B-13/A3 — a 408 on this paid POST is ENGAGED and final (the vector may have been generated and
+// billed before the server gave up). MUTATION (measured red→green): the 408 arm's `fail(code, status,
+// true, false, …)` → `false, retryable` → the 408 case goes red.
 
 func directCallError(t *testing.T, err error, what string) *aiprov.CallError {
 	t.Helper()
@@ -78,8 +82,26 @@ func TestDirect_TheWriteIsTheMoneyBoundary(t *testing.T) {
 		}
 	})
 
-	t.Run("every non-2xx is NOT engaged and carries its status", func(t *testing.T) {
-		for _, status := range []int{400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504} {
+	t.Run("a 408 is ENGAGED and never retried: the vector may exist on the far side (B-13/A3)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = io.WriteString(w, `{"message":"gave up"}`)
+		}))
+		defer srv.Close()
+		err := directCall(srv.URL, time.Second)
+		ce := directCallError(t, err, "408")
+		code, _ := aiprov.ClassifyStatus(http.StatusRequestTimeout)
+		if !ce.Engaged || ce.Retryable || ce.HTTPStatus != http.StatusRequestTimeout || ce.Code != code {
+			t.Fatalf("CallError = {engaged %v, retryable %v, status %d, code %q}, want {true, false, 408, %q}",
+				ce.Engaged, ce.Retryable, ce.HTTPStatus, ce.Code, code)
+		}
+		if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "gave up") {
+			t.Errorf("today's sentinel and the provider's words ride inside: %v", err)
+		}
+	})
+
+	t.Run("every other non-2xx is NOT engaged and carries its status", func(t *testing.T) {
+		for _, status := range []int{400, 401, 402, 403, 404, 422, 429, 500, 502, 503, 504} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
 				_, _ = io.WriteString(w, `{"message":"said no"}`)
