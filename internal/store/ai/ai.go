@@ -840,33 +840,30 @@ func (s *Store) SweepDispatching(ctx context.Context, olderThan time.Time) (int6
 
 // ───────────────────────── report ─────────────────────────
 
-// spendByProvider — our ledger per provider beside the provider's own daily numbers.
-//
-// THEIR NUMBER IS SUMMED PER PROVIDER BEFORE THE JOIN. Joining the raw daily rows onto the ledger rows
-// would multiply every ledger row by the number of days the provider reported, and multiply their sum
-// by our call count.
+// spendByProvider — our ledger per provider.
 //
 // SUM(cost_usd) IS NEVER COALESCEd: a provider none of whose rows carries a price reports NULL, which
-// the page shows as unknown, not $0. Unpriced counts the rows that owe a number and have none.
+// the page shows as unknown, not $0. A `free` row carries a real 0 (aiprov.Ledger writes it), so a
+// provider whose only calls were free sums to a real 0 and says so. Unpriced counts the rows that owe
+// a number and have none.
 const spendByProvider = `
-	SELECT u.provider_key, u.our_usd, c.their_usd, u.calls, u.failed, u.unpriced
-	FROM (
-		SELECT provider_key,
-		       SUM(cost_usd) AS our_usd,
-		       COUNT(*) AS calls,
-		       SUM(CASE WHEN status IN ('free','failed','charged_failed','unknown') THEN 1 ELSE 0 END) AS failed,
-		       SUM(CASE WHEN cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') THEN 1 ELSE 0 END) AS unpriced
-		FROM ai_usage_event
-		WHERE day_local BETWEEN :from_day AND :to_day
-		GROUP BY provider_key
-	) u
-	LEFT JOIN (
-		SELECT provider_key, SUM(amount_usd) AS their_usd
-		FROM ai_provider_cost_daily
-		WHERE day BETWEEN :from_day AND :to_day
-		GROUP BY provider_key
-	) c ON c.provider_key = u.provider_key
-	ORDER BY u.provider_key`
+	SELECT provider_key,
+	       SUM(cost_usd) AS our_usd,
+	       COUNT(*) AS calls,
+	       SUM(CASE WHEN status IN ('free','failed','charged_failed','unknown') THEN 1 ELSE 0 END) AS failed,
+	       SUM(CASE WHEN cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') THEN 1 ELSE 0 END) AS unpriced
+	FROM ai_usage_event
+	WHERE day_local BETWEEN :from_day AND :to_day
+	GROUP BY provider_key`
+
+// spendTheirByProvider — the providers' own daily numbers (the reconcile worker's rows), summed per
+// provider. It is its own statement, not a JOIN onto the ledger side: SpendReport unions the two, so a
+// provider that billed us in the period while our ledger recorded no call still gets its line.
+const spendTheirByProvider = `
+	SELECT provider_key, SUM(amount_usd) AS their_usd
+	FROM ai_provider_cost_daily
+	WHERE day BETWEEN :from_day AND :to_day
+	GROUP BY provider_key`
 
 // spendByActor — who spent it, on what, where. actor_admin_id is MAX()ed, not grouped: the same
 // username may carry a NULL id on some rows (the lookup failed) and the id on others, and splitting
@@ -879,37 +876,96 @@ const spendByActor = `
 	GROUP BY actor, purpose, provider_key, model
 	ORDER BY actor, purpose, provider_key, model`
 
-// SpendReport sums the ledger over the inclusive day_local range.
+// ourSpendRow is one provider's line of our ledger (spendByProvider).
+type ourSpendRow struct {
+	ProviderKey string              `db:"provider_key"`
+	OurUSD      decimal.NullDecimal `db:"our_usd"`
+	Calls       int                 `db:"calls"`
+	Failed      int                 `db:"failed"`
+	Unpriced    int                 `db:"unpriced"`
+}
+
+// theirSpendRow is one provider's own number over the period (spendTheirByProvider).
+type theirSpendRow struct {
+	ProviderKey string              `db:"provider_key"`
+	TheirUSD    decimal.NullDecimal `db:"their_usd"`
+}
+
+// SpendReport sums the ledger over the inclusive day_local range, beside the providers' own numbers,
+// and names the timezone those days were counted in.
 //
 // Plain reads, deliberately outside any transaction: the store's transactions are SERIALIZABLE, whose
 // range locks on ai_usage_event would hold up every BeginCall landing in the reported period.
 func (s *Store) SpendReport(ctx context.Context, fromDay, toDay string) (*entity.AISpendReport, error) {
 	from, err := time.Parse(dayLayout, fromDay)
 	if err != nil {
-		return nil, entity.NewFieldViolation("from", "bad_day", "", "a calendar day, YYYY-MM-DD")
+		return nil, entity.NewFieldViolation("from_day", "bad_day", "", "a calendar day, YYYY-MM-DD")
 	}
 	to, err := time.Parse(dayLayout, toDay)
 	if err != nil {
-		return nil, entity.NewFieldViolation("to", "bad_day", "", "a calendar day, YYYY-MM-DD")
+		return nil, entity.NewFieldViolation("to_day", "bad_day", "", "a calendar day, YYYY-MM-DD")
 	}
 	if to.Before(from) {
-		return nil, entity.NewFieldViolation("to", "range_reversed", "", "the last day must not precede the first")
+		return nil, entity.NewFieldViolation("to_day", "range_reversed", "", "the last day must not precede the first")
 	}
 	params := map[string]any{"from_day": fromDay, "to_day": toDay}
 
-	var byProvider []entity.AISpendByProvider
-	if err := selectNamed(ctx, s.DB, &byProvider, spendByProvider, params); err != nil {
+	var ours []ourSpendRow
+	if err := selectNamed(ctx, s.DB, &ours, spendByProvider, params); err != nil {
 		return nil, fmt.Errorf("failed to report ai spend by provider: %w", err)
+	}
+	var theirs []theirSpendRow
+	if err := selectNamed(ctx, s.DB, &theirs, spendTheirByProvider, params); err != nil {
+		return nil, fmt.Errorf("failed to report ai spend by the providers' own numbers: %w", err)
 	}
 	var byActor []entity.AISpendByActor
 	if err := selectNamed(ctx, s.DB, &byActor, spendByActor, params); err != nil {
 		return nil, fmt.Errorf("failed to report ai spend by actor: %w", err)
 	}
+	tz, err := loadBudgetTimezone(ctx, s.DB)
+	if err != nil {
+		return nil, err
+	}
+	if tz = strings.TrimSpace(tz); tz == "" {
+		// The zone aiprov.Ledger stamps day_local in when the setting is blank.
+		tz = entity.DefaultBudgetTimezone
+	}
 
+	byProvider := unionSpendLines(ours, theirs)
 	rep := spendTotals(byProvider)
-	rep.FromDay, rep.ToDay = fromDay, toDay
+	rep.FromDay, rep.ToDay, rep.Timezone = fromDay, toDay, tz
 	rep.ByProvider, rep.ByActor = byProvider, byActor
 	return &rep, nil
+}
+
+// unionSpendLines is THE UNION of the two sides: a provider has a line when our ledger OR its own cost
+// API has anything in the period. Ours alone would drop a provider that billed us on days we recorded
+// no call — exactly the gap «their number» exists to show. A line with only their number keeps our
+// USD invalid (unknown) and zero calls. Lines come in entity.AIProviderKeys() order, a key a newer
+// build wrote after them, alphabetically.
+func unionSpendLines(ours []ourSpendRow, theirs []theirSpendRow) []entity.AISpendByProvider {
+	index := make(map[string]int, len(ours)+len(theirs))
+	lines := make([]entity.AISpendByProvider, 0, len(ours)+len(theirs))
+	at := func(key string) int {
+		i, ok := index[key]
+		if !ok {
+			i = len(lines)
+			index[key] = i
+			lines = append(lines, entity.AISpendByProvider{ProviderKey: key})
+		}
+		return i
+	}
+	for _, o := range ours {
+		i := at(o.ProviderKey)
+		lines[i].OurUSD, lines[i].Calls, lines[i].Failed, lines[i].Unpriced = o.OurUSD, o.Calls, o.Failed, o.Unpriced
+	}
+	for _, t := range theirs {
+		i := at(t.ProviderKey) // before indexing: at may append, and lines[at(k)] reads lines in an unspecified order
+		lines[i].TheirUSD = t.TheirUSD
+	}
+	byProvider := vocabCompare(entity.AIProviderKeys())
+	slices.SortStableFunc(lines, func(a, b entity.AISpendByProvider) int { return byProvider(a.ProviderKey, b.ProviderKey) })
+	return lines
 }
 
 // spendTotals folds the per-provider lines into the report's totals. The total USD stays NULL when no
