@@ -9,12 +9,13 @@ package openrouter
 // 3000 → 8000 в одиночку, и разрешённый ответ перестал успевать приехать за 60 s (133 ток/с против
 // замеренных ~60). Обрыв приходил ТРАНСПОРТНОЙ ошибкой, а вызывающий закрывал попытку ценой NULL.
 //
-// ⚠️ МУТАЦИИ, КОТОРЫМИ ФАЙЛ ПРОВЕРЕН (каждая прогнана, покраснела и откачена):
-//  1. `return base` в начале CompletionBudget (игнорировать max_tokens) → краснеет
+// ⚠️ МУТАЦИИ, КОТОРЫМИ ФАЙЛ ПРОВЕРЕН (каждая прогнана, покраснела и откачена). С B-11 формула живёт в
+// aiprov (budget.go), а срок ставит транспорт (oaichat.post); эти пробы гоняют их СКВОЗЬ этот клиент:
+//  1. `return base` в начале aiprov.CompletionBudget (игнорировать max_tokens) → краснеет
 //     TestTheAnswerCeilingBuysItsOwnTime и TestCompletionBudgetGrowsWithTheCeiling;
-//  2. убрать context.WithTimeout из postChatCompletion → краснеет
+//  2. заменить context.WithTimeout в oaichat.post на WithCancel → краснеет
 //     TestTheCallWithoutACeilingStillHasADeadline (срок вообще перестаёт действовать);
-//  3. вернуть http.Client{Timeout: base} и снять срок с запроса → краснеет
+//  3. срок в oaichat.post от одной базы (c.budgetBase вместо CompletionBudget) → краснеет
 //     TestTheAnswerCeilingBuysItsOwnTime (потолок снова не покупает времени).
 
 import (

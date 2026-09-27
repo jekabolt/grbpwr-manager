@@ -1,24 +1,57 @@
 package aiprov
 
-import (
-	"errors"
-	"strconv"
-	"strings"
-)
+import "errors"
 
-// EngagedMarker is how a transport that does NOT yet speak CallError says "the request was written":
-// the openrouter chat client's engaged wrapper implements it. aiprov deliberately imports NO client
-// package (the clients will import aiprov when their transports are ported in commit C), so the
-// mark travels as an interface, not as a type.
+// EngagedMarker is how a transport that does NOT yet speak CallError says "the request was written".
+// Since B-11 nothing in the tree produces it — the openrouter chat client, its only producer, now
+// speaks CallError through oaichat — and it stays so a transport ported later can mark its errors
+// before it adopts CallError, without Engaged losing the answer. aiprov imports NO client package, so
+// the mark travels as an interface, not as a type.
 type EngagedMarker interface{ ProviderEngaged() bool }
 
 // Sentinels of the provider-neutral layer. They name the situation, never a provider: a transport's
-// own sentinel (openrouter.ErrModelUnavailable, fal.ErrNotConfigured, …) travels inside CallError.Err.
+// own sentinel (fal.ErrNotConfigured, …) travels inside CallError.Err. The chat transport's four
+// (openrouter.ErrNotConfigured / ErrModelUnavailable / ErrBudgetExhausted / ErrResponseTooLarge) ARE
+// these — the openrouter vars are aliases since B-11 — so errors.Is answers from either name.
+//
+// ⚠ THE THREE A TRANSPORT RAISES MID-SENTENCE CARRY NO PREFIX, AND THAT IS WHAT KEEPS THE SENTENCES.
+// A transport writes them as "<provider>: %w: API error (HTTP 404): …" (oaichat), so the text a log
+// or a person reads is exactly the one the openrouter client wrote before the move — "openrouter: the
+// configured model is not available at the provider: API error (HTTP 404): …". An "ai: " prefix here
+// would print "openrouter: ai: …". The two the ROUTER raises on its own keep "ai: ".
 var (
 	ErrNotConfigured       = errors.New("ai: no enabled provider for this purpose")
-	ErrModelUnavailable    = errors.New("ai: model not served")
-	ErrBudgetExhausted     = errors.New("ai: answer budget exhausted")
 	ErrAllCandidatesFailed = errors.New("ai: every candidate failed")
+
+	// ErrModelUnavailable — the provider answered 404: the model slug is not served (retired, renamed,
+	// never existing) or, with a custom base URL, the endpoint is not there. Both are a SETTING, not
+	// weather; classified by status alone, never by the provider's prose.
+	ErrModelUnavailable = errors.New("the configured model is not available at the provider")
+	// ErrBudgetExhausted — finish_reason=length with NO content: the completion ceiling was spent
+	// (reasoning tokens count against it) before a single character of answer. Deterministic — the
+	// next press burns the same money for the same nothing — so it is a setting, not weather.
+	ErrBudgetExhausted = errors.New("the model spent the whole completion budget without answering")
+	// ErrResponseTooLarge — the response body exceeded the transport's read ceiling. The ceiling
+	// REFUSES rather than trims: a prefix that happens to parse would be a silently shortened answer.
+	ErrResponseTooLarge = errors.New("the provider's response exceeded the read ceiling")
+)
+
+// Codes of CallError.Code — the ledger's error_code and the provider badge's words. One vocabulary
+// for every transport, so the panel reads "key rejected" the same way whichever provider said it.
+const (
+	CodeKeyRejected     = "key_rejected"     // 401 / 403
+	CodeOutOfCredits    = "out_of_credits"   // 402
+	CodeModelUnknown    = "model_unknown"    // 404 (ErrModelUnavailable)
+	CodeBadRequest      = "bad_request"      // 400 / 422 / any other 4xx, and a request refused before the wire
+	CodeRateLimited     = "rate_limited"     // 429
+	CodeProviderError   = "provider_error"   // 5xx / 408, and a 2xx whose envelope is broken or carries an error
+	CodeTransport       = "transport"        // the HTTP round trip failed (no status)
+	CodeTimeout         = "timeout"          // a deadline expired — ours (the call budget) or the caller's
+	CodeCanceled        = "canceled"         // the CALLER cancelled (a closed tab); not the provider's fault
+	CodeTooLarge        = "too_large"        // ErrResponseTooLarge
+	CodeEmptyAnswer     = "empty_answer"     // a 2xx with no choices or an empty message
+	CodeBudgetExhausted = "budget_exhausted" // ErrBudgetExhausted
+	CodeNotConfigured   = "not_configured"   // no key (ErrNotConfigured)
 )
 
 // CallError is the ONE error shape every transport must return for a failed provider call (02-PLAN
@@ -45,38 +78,25 @@ type CallError struct {
 	Err        error
 }
 
-// Error renders "<provider> [<code>, HTTP <status>]: <err>", dropping the parts that are empty. The
-// wrapped error's text is kept verbatim: some of these errors reach a person, and the sentence a
-// transport wrote for them must survive the wrapping.
+// Error is the TRANSPORT'S OWN SENTENCE, verbatim — Err.Error() and nothing added. Code, HTTPStatus
+// and Engaged are FIELDS, read with AsCallError; they are not prose.
+//
+// ⚠ NOTHING IS PREPENDED ON PURPOSE (B-11). Some of these errors reach a person whole (design_run.go:
+// designDraftCallError), and some consumers still read the sentence until B-18 repoints them at the
+// fields — techcard_ai_enhance.go's providerHTTPStatusRe is anchored at the START of err.Error()
+// ("^openrouter: API error \(HTTP ([0-9]{3})\):"); a "[code, HTTP 502]" tag in front would blind it.
+// With no Err the text still names the provider, so a bare CallError is never an empty line.
 func (e *CallError) Error() string {
 	if e == nil {
 		return "<nil>"
 	}
-	var b strings.Builder
-	if e.Provider != "" {
-		b.WriteString(e.Provider)
-	} else {
-		b.WriteString("ai")
-	}
-	var tags []string
-	if e.Code != "" {
-		tags = append(tags, e.Code)
-	}
-	if e.HTTPStatus != 0 {
-		tags = append(tags, "HTTP "+strconv.Itoa(e.HTTPStatus))
-	}
-	if len(tags) > 0 {
-		b.WriteString(" [")
-		b.WriteString(strings.Join(tags, ", "))
-		b.WriteString("]")
-	}
-	b.WriteString(": ")
 	if e.Err != nil {
-		b.WriteString(e.Err.Error())
-	} else {
-		b.WriteString("call failed")
+		return e.Err.Error()
 	}
-	return b.String()
+	if e.Provider != "" {
+		return e.Provider + ": call failed"
+	}
+	return "ai: call failed"
 }
 
 // Unwrap exposes the transport's error, so errors.Is(err, openrouter.ErrModelUnavailable) and
@@ -99,9 +119,8 @@ func AsCallError(err error) (*CallError, bool) {
 
 // Engaged reports "money may have moved for this call": true when ANY *CallError in err's chain
 // (joined errors included) says Engaged, and ALSO when any error in the chain is an EngagedMarker
-// that answers true — the existing chat client marks its errors with its own wrapper and keeps
-// doing so until its transport is ported, and a caller that switched to this helper must not lose
-// that answer.
+// that answers true (a transport not yet speaking CallError). openrouter.ProviderEngaged IS this
+// function since B-11.
 //
 // ⚠ ANY, NOT FIRST. errors.As stops at the outermost CallError; a router that wraps a candidate's
 // engaged failure into its own non-engaged one, or joins several candidates' errors, would read

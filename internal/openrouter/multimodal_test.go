@@ -12,14 +12,10 @@ import (
 	"testing"
 )
 
-// contentIsStillAString is a COMPILE-TIME assertion, and it is the cheapest half of this file.
+// The COMPILE-TIME half of this guard (`var contentIsStillAString string = …Content`) moved with the
+// type it guards: the text turn is built by the transport since B-11 — see
+// internal/aiprov/oaichat/oaichat_test.go, textMessage.
 //
-// The whole hazard of adding multimodal input is the tempting edit: retype chatMessage.Content from
-// string to `any`. That edit compiles everywhere, changes no call site, and turns four live paid
-// features into runtime shapes nobody checks. If anyone ever makes it, this line stops being valid
-// Go and the package refuses to build — which is the only failure mode fast enough to matter.
-var contentIsStillAString string = chatMessage{}.Content
-
 // TestTextPathStillSendsAPlainStringContent is the other half: the type is one thing, the BYTES on
 // the wire are what the provider sees. The text features must keep sending `"content":"…"`, not an
 // array of parts.
@@ -326,6 +322,11 @@ func TestModelProbeCeilingIsLoudToo(t *testing.T) {
 // callers (DraftDesignIdea, the construction draft) after B-15 split the body into
 // completeWithImages: the shared slug, and reasoning "none" under a cap. A golden string, not a
 // field check: any reordering, new key or changed value is a new request to a live paid feature.
+//
+// B-11 CHANGED BOTH STRINGS DELIBERATELY BY ONE INSERTION AND NOTHING ELSE: `"usage":{"include":true}`
+// as the LAST key (OpenRouter's usage accounting — the charge and the cached / reasoning token counts
+// come back in the same answer). The transport moved to internal/aiprov/oaichat in the same change;
+// everything before that key is byte for byte what the old multimodalRequest sent.
 func TestCompleteWithImages_BytesUnchangedByTheOnRefactor(t *testing.T) {
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -343,8 +344,8 @@ func TestCompleteWithImages_BytesUnchangedByTheOnRefactor(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		`{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_tokens":900,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"none"}}`,
-		`{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"}]}],"temperature":0.2}`,
+		`{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_tokens":900,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"none"},"usage":{"include":true}}`,
+		`{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"}]}],"temperature":0.2,"usage":{"include":true}}`,
 	}
 	for i := range want {
 		if bodies[i] != want[i] {
@@ -369,7 +370,8 @@ func TestCompleteWithImagesOn(t *testing.T) {
 	if _, _, _, err := c.CompleteWithImagesOn(context.Background(), " openai/gpt-5-mini ", "sys", "u", []string{"https://x/1.png"}, true, 300); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"model":"openai/gpt-5-mini","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_tokens":300,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"minimal"}}`
+	// B-11: + `"usage":{"include":true}` as the last key, deliberately; nothing else changed.
+	want := `{"model":"openai/gpt-5-mini","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_tokens":300,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"minimal"},"usage":{"include":true}}`
 	if len(bodies) != 1 || bodies[0] != want {
 		t.Fatalf("got %v\nwant %s", bodies, want)
 	}

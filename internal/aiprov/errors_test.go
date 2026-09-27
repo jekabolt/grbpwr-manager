@@ -12,10 +12,11 @@ import (
 var errTransport = errors.New("upstream said no")
 
 // TestCallErrorUnwrapAndAs — the wrapper keeps the transport's sentinel reachable and is itself
-// findable through any number of %w layers.
+// findable through any number of %w layers; its text is the transport's sentence and nothing else.
 //
 // MUTATION: Unwrap returns nil → the errors.Is assertions go red; AsCallError drops its errors.As
-// and type-asserts the top error only → the wrapped lookup goes red.
+// and type-asserts the top error only → the wrapped lookup goes red. MUTATION: Error() prepends
+// "<provider> [<code>, HTTP <status>]: " again → the verbatim-sentence assertions go red.
 func TestCallErrorUnwrapAndAs(t *testing.T) {
 	ce := &CallError{Provider: "openai", Code: "key_rejected", HTTPStatus: 401, Err: errTransport}
 
@@ -39,9 +40,15 @@ func TestCallErrorUnwrapAndAs(t *testing.T) {
 	require.False(t, ok, "a typed-nil CallError is not an answer")
 	require.Nil(t, typedNil.Unwrap(), "Unwrap is nil-safe")
 
-	// The text keeps the transport's sentence verbatim and names provider, code and status.
-	require.Equal(t, "openai [key_rejected, HTTP 401]: upstream said no", ce.Error())
+	// The text IS the transport's sentence: Code and HTTPStatus are fields, not prose. A consumer that
+	// anchors on the sentence's start (techcard_ai_enhance.go: providerHTTPStatusRe) must see it first.
+	require.Equal(t, "upstream said no", ce.Error())
+	sentence := errors.New("openrouter: API error (HTTP 502): upstream is having a moment")
+	require.Equal(t, sentence.Error(),
+		(&CallError{Provider: "openrouter", Code: CodeProviderError, HTTPStatus: 502, Retryable: true, Err: sentence}).Error())
 	require.Equal(t, "ai: call failed", (&CallError{}).Error())
+	require.Equal(t, "openai: call failed", (&CallError{Provider: "openai"}).Error(), "no Err still names the provider")
+	require.Equal(t, "<nil>", typedNil.Error())
 }
 
 // TestEngagedCallError — the transport's flag is the answer, through wrapping and joining.
