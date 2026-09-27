@@ -28,8 +28,12 @@ type (
 		ContextStore
 		// CreateColorway creates a DRAFT colourway attached to an existing style (R2/R4 write
 		// decomposition): colourway-owned data only (merch row, translations, media, tags, prices), no
-		// style facts, variants or size chart. sql.ErrNoRows when the style is absent;
-		// entity.ErrColorwayColorExists on a duplicate (style_id, color_code). Returns the colourway id.
+		// style facts, variants or size chart. sql.ErrNoRows when the style is absent. T45: the SKU
+		// colour token is minted here (immutable, unique per style) — or restored verbatim from an
+		// archive (ColorwayInsert.RestoreSkuColorToken), entity.ErrColorwaySkuTokenTaken when the style
+		// holds it; color_code is only the dictionary family, and a second colourway of one family is
+		// entity.ErrColorwayFamilyTaken only while uniq_product_style_color stands (until migration
+		// 0377). Both are entity.ErrColorwayColorExists. Returns the colourway id.
 		CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error)
 		// UpdateColorway patches a colourway's own fields under an optimistic guard on the shared
 		// tech_card.lock_version (entity.ErrTechCardConflict on a stale value; sql.ErrNoRows when absent).

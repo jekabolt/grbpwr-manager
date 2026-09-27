@@ -36,8 +36,8 @@ import (
 //     (product.sku_color_token, UNIQUE(style_id, sku_color_token)), а color_code — лишь словарное
 //     семейство, которое могут делить два колорвея. color_code архива — код эпохи, когда код и
 //     был токеном, поэтому занятость карточки читается по ТОКЕНАМ (tcacCardColour), а создание
-//     идёт с RefuseTakenColourToken: занятый токен даёт тот же «exists», а не второй колорвей с
-//     начеканенным токеном.
+//     ВОССТАНАВЛИВАЕТ этот токен (RestoreSkuColorToken): занятый токен даёт тот же «exists», а не
+//     второй колорвей с начеканенным токеном.
 //   - ВЕРСИЯ КАРТОЧКИ ДВИЖЕТСЯ ПОД НОГАМИ. Каждая запись рецепта бампает tech_card.lock_version
 //     (colorway_recipe.go), поэтому оптимистичный токен читается ЗАНОВО перед каждым колорвеем, а
 //     не берётся один раз на весь цикл. Иначе второй цвет партии всегда падал бы в конфликт.
@@ -428,10 +428,10 @@ func (r *tcacRun) applyOne(ctx context.Context, p techcardarchive.ColorwayPayloa
 	colorwayID, err := r.s.createColorway(ctx, colorwayCreateInput{
 		StyleID:       r.techCardID,
 		Merchandising: &pb_common.ColorwayMerchandisingInsert{ColorCode: code},
-		// T45: the archive's colour is the SKU token it had on the source card. A token the style
-		// already holds must answer «exists» (ErrColorwayColorExists), not mint a second colourway
-		// of the same colour under another token.
-		RefuseTakenColourToken: true,
+		// T45: the archive's colour is the SKU token it had on the source card, restored verbatim.
+		// A token the style already holds answers «exists» (ErrColorwaySkuTokenTaken, an
+		// ErrColorwayColorExists), never a second colourway of the same colour under a new token.
+		RestoreSkuColorToken: code,
 	})
 	switch {
 	case err == nil:

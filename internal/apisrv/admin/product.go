@@ -23,6 +23,7 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -77,10 +78,15 @@ type colorwayCreateInput struct {
 	Tags                      []*pb_common.ColorwayTagInsert
 	Prices                    []*pb_common.ColorwayPriceInsert
 	Development               *pb_common.ColorwayDevelopmentInsert
-	// RefuseTakenColourToken keeps the pre-T45 «one colourway per colour» answer for a caller whose
-	// idempotency lives in the colour (the archive import) — see entity.ColorwayInsert. Not on the
-	// wire: CreateColorway never sets it.
-	RefuseTakenColourToken bool
+	// DevelopmentFields narrows Development to the leaves it names (update_mask semantics); nil =
+	// every leaf the block carries, which is what an RPC create means. The archive press names its
+	// three (name, colours, name_i18n) so the lab-dip half of the block is not written as «empty».
+	DevelopmentFields *fieldmaskpb.FieldMask
+	// RestoreSkuColorToken is the archive press's TRUSTED restore of the token the colourway had on
+	// its source base — see entity.ColorwayInsert.RestoreSkuColorToken. Not on the wire: the
+	// CreateColorway RPC never sets it, and a request naming merchandising.sku_color_token is refused
+	// below, so this is the only door a chosen token comes through.
+	RestoreSkuColorToken string
 }
 
 // errColorwayInvalid marks the converter's refusal — a colour code that is not three uppercase
@@ -118,14 +124,25 @@ func (s *Server) createColorway(ctx context.Context, in colorwayCreateInput) (in
 		return 0, entity.NewFieldViolation("merchandising.sku_color_token", "server_minted", token,
 			"leave it empty: the server mints the SKU colour token when the colourway is created, and it never changes")
 	}
-	dev, err := dto.ColorwayDevelopmentPatchFromPb(in.Development, nil)
+	dev, err := dto.ColorwayDevelopmentPatchFromPb(in.Development, in.DevelopmentFields)
 	if err != nil {
 		return 0, err
+	}
+	// A palette colourway carries its own name (owner's decision 3) — the store refuses it too, this
+	// just answers before the dictionary and the family are consulted.
+	if dev.MainColour() != nil {
+		name := ""
+		if dev.Name != nil {
+			name = *dev.Name
+		}
+		if ve := entity.CheckColorwayPaletteName(true, name, true); ve != nil {
+			return 0, ve
+		}
 	}
 	if err := dto.ResolveColorwayFamily(prd, dto.ColorwayMainHex(dev), true); err != nil {
 		return 0, err
 	}
-	prd.RefuseTakenColourToken = in.RefuseTakenColourToken
+	prd.RestoreSkuColorToken = in.RestoreSkuColorToken
 	id, err := s.repo.Products().CreateColorway(ctx, in.StyleID, prd,
 		dto.ConvertColorwayMediaIDs(in.MediaIDs), dto.ConvertColorwayTags(in.Tags), dto.ConvertColorwayPrices(in.Prices),
 		stampColorwayDevelopmentActor(ctx, dev))
@@ -332,7 +349,18 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 // colorwayWriteError maps a store colourway-write error to a gRPC status: absent style/colourway ->
 // NotFound; a stale optimistic version -> Aborted; a business precondition (duplicate colour, frozen)
 // -> FailedPrecondition; else Internal.
+//
+// T45: «duplicate colour» is two refusals since the token split — the SKU colour token is held
+// (entity.ErrColorwaySkuTokenTaken) or, until migration 0377, the style already holds the family
+// (entity.ErrColorwayFamilyTaken). The store names both; a RAW MySQL 1062 on either index that
+// reached here unnamed is classified the same way (entity.ColorwayDuplicateKey) instead of becoming
+// a 500 — the backstop's backstop.
 func colorwayWriteError(ctx context.Context, op string, id int, err error) error {
+	if !errors.Is(err, entity.ErrColorwayColorExists) {
+		if dup := entity.ColorwayDuplicateKey(err); dup != nil {
+			err = fmt.Errorf("%w: %w", dup, err)
+		}
+	}
 	// A field-tagged refusal (T45: a changed SKU token, a pantone that is the palette's mirror, an
 	// unknown translation language, a family nobody named) is the caller's to fix: InvalidArgument
 	// with the BadRequest detail, never a 500.

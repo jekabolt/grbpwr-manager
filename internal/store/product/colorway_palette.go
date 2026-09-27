@@ -19,7 +19,8 @@ import (
 // SERIALIZABLE with deadlock retry), so the token a create mints is decided against the style's
 // tokens as they are at commit time: two concurrent creates in one style serialise on the rows they
 // read, the loser retries and sees the winner's token. The unique index
-// uniq_product_style_sku_color_token (0376) is the last word either way.
+// uniq_product_style_sku_color_token (0376) is the last word either way, and its refusal reaches
+// the caller as entity.ErrColorwaySkuTokenTaken (colorwayDuplicate), not as a raw 1062.
 
 // styleSkuTokens returns every SKU colour token the style's colourways hold — ARCHIVED ones too:
 // a frozen SKU keeps its token for ever and the unique index covers every row. A row an older
@@ -69,12 +70,15 @@ func colorwayTokenName(prd *entity.ColorwayInsert, dev *entity.ColorwayDevelopme
 
 // decideNewColorwaySkuToken is the minting rule for a colourway being CREATED (owner's decision 1):
 //
+//   - a TRUSTED restore (prd.RestoreSkuColorToken, the archive press only) keeps the token the
+//     colourway had on its source base: taken verbatim when the style does not hold it, refused
+//     with entity.ErrColorwaySkuTokenTaken when it does — never re-minted, because the archive's
+//     idempotency lives in that token;
 //   - created WITHOUT a palette — the pre-T45 shape, every client that predates the palette — the
 //     token is the family's dictionary code, exactly what its SKU segment used to be, whenever the
-//     style does not hold it yet. When it does: a caller that set RefuseTakenColourToken gets
-//     entity.ErrColorwayColorExists (the archive import keeps its colour-keyed idempotency), every
-//     other caller gets a token minted from the name, so a second colourway of one family is no
-//     longer refused;
+//     style does not hold it yet; when it does, a token is minted from the name, so a second
+//     colourway of one family is not refused for its token (until 0377 the family unique still
+//     refuses it — see colorwayDuplicate);
 //   - created WITH a palette — the token is minted from the name (entity.MintColorwaySkuToken): not
 //     a token the style holds, not a dictionary code other than the colourway's own family.
 func decideNewColorwaySkuToken(ctx context.Context, db dependency.DB, styleID int, prd *entity.ColorwayInsert, dev *entity.ColorwayDevelopmentPatch) (string, error) {
@@ -83,13 +87,19 @@ func decideNewColorwaySkuToken(ctx context.Context, db dependency.DB, styleID in
 	if err != nil {
 		return "", err
 	}
-	if dev.MainColour() == nil {
-		if !taken[family] && entity.IsValidSkuColorToken(family) {
-			return family, nil
+	if restore := strings.ToUpper(strings.TrimSpace(prd.RestoreSkuColorToken)); restore != "" {
+		if !entity.IsValidSkuColorToken(restore) {
+			return "", entity.NewFieldViolation("merchandising.sku_color_token", "invalid_token", restore,
+				"a SKU colour token is three upper-case letters or digits")
 		}
-		if prd.RefuseTakenColourToken {
-			return "", entity.ErrColorwayColorExists
+		if taken[restore] {
+			return "", fmt.Errorf("%w: SKU colour token %s is already held by a colourway of style %d",
+				entity.ErrColorwaySkuTokenTaken, restore, styleID)
 		}
+		return restore, nil
+	}
+	if dev.MainColour() == nil && !taken[family] && entity.IsValidSkuColorToken(family) {
+		return family, nil
 	}
 	codes, err := dictionaryColourCodes(ctx, db)
 	if err != nil {
@@ -100,6 +110,56 @@ func decideNewColorwaySkuToken(ctx context.Context, db dependency.DB, styleID in
 		return "", fmt.Errorf("mint sku colour token for style %d: no free token", styleID)
 	}
 	return token, nil
+}
+
+// colorwayDuplicate turns MySQL's duplicate-key refusal on one of the per-style colourway indexes
+// into the refusal it is (entity.ColorwayDuplicateKey), naming the token or the family and the
+// style so the operator knows which colourway is in the way. Any other error is returned as is.
+//
+// The store looks before it writes (the token is chosen against every token the style holds, a
+// relink checks the target first), so this is the BACKSTOP: a write that lost a race, and — until
+// 0377 drops uniq_product_style_color — a second colourway of one family, which only the database
+// refuses. Either way it is an «exists», never an Internal. The raw error stays in the chain.
+func colorwayDuplicate(err error, styleID int, token, family string) error {
+	switch entity.ColorwayDuplicateKey(err) {
+	case entity.ErrColorwaySkuTokenTaken:
+		return fmt.Errorf("%w: SKU colour token %s is already held by another colourway of style %d: %w",
+			entity.ErrColorwaySkuTokenTaken, token, styleID, err)
+	case entity.ErrColorwayFamilyTaken:
+		return fmt.Errorf("%w: style %d already holds a colourway of the %s family, and this base still keeps "+
+			"one colourway per family in a style: %w", entity.ErrColorwayFamilyTaken, styleID, family, err)
+	}
+	return err
+}
+
+// checkPaletteNameOnUpdate applies entity.CheckColorwayPaletteName to an UPDATE, before anything is
+// written: the palette after the write is the patch's when it sends one, else the stored one; the
+// name after the write is the patch's when it sends one, else the stored one. The stored palette is
+// read only when the answer depends on it (a patch that sends a name but no palette).
+func checkPaletteNameOnUpdate(ctx context.Context, db dependency.DB, colorwayID int, storedName sql.NullString, dev *entity.ColorwayDevelopmentPatch) error {
+	if dev == nil || (dev.Colours == nil && dev.Name == nil) {
+		return nil // neither the palette nor the name moves
+	}
+	name := storedName.String
+	if dev.Name != nil {
+		name = *dev.Name
+	}
+	introducing := dev.Colours != nil
+	hasPalette := introducing
+	if !introducing {
+		if strings.TrimSpace(name) != "" {
+			return nil
+		}
+		has, err := colorwayHasPalette(ctx, db, colorwayID)
+		if err != nil {
+			return err
+		}
+		hasPalette = has
+	}
+	if ve := entity.CheckColorwayPaletteName(hasPalette, name, introducing); ve != nil {
+		return ve
+	}
+	return nil
 }
 
 // pinLegacySkuToken gives a colourway whose token is NULL — a row an older binary inserted during
@@ -130,7 +190,8 @@ func pinLegacySkuToken(ctx context.Context, db dependency.DB, colorwayID, styleI
 	}
 	if err := storeutil.ExecNamed(ctx, db, pinLegacySkuTokenQuery,
 		map[string]any{"token": pin, "id": colorwayID}); err != nil {
-		return "", fmt.Errorf("pin sku colour token of colourway %d: %w", colorwayID, err)
+		return "", fmt.Errorf("pin sku colour token of colourway %d: %w", colorwayID,
+			colorwayDuplicate(err, styleID, pin, colorCode))
 	}
 	return pin, nil
 }

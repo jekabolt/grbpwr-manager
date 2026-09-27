@@ -20,10 +20,14 @@ import (
 // are UpdateStyle's, R4/§14.7), creates NO variants (CreateVariant) and touches NO size chart
 // (UpdateStyleSizeChart). The style must exist (sql.ErrNoRows otherwise -> NOT_FOUND).
 //
-// T45: prd.ProductBodyInsert.ColorCode is the dictionary FAMILY (already resolved by the caller) and
-// may repeat a sibling's; the SKU colour token is minted here (decideNewColorwaySkuToken) and is
-// unique per style — entity.ErrColorwayColorExists only for a caller that asked for the pre-T45 rule
-// (RefuseTakenColourToken). The development block carries the palette and the name translations.
+// T45: prd.ProductBodyInsert.ColorCode is the dictionary FAMILY (already resolved by the caller); the
+// SKU colour token is minted here (decideNewColorwaySkuToken) and is unique per style — or restored
+// verbatim for the archive press (RestoreSkuColorToken), entity.ErrColorwaySkuTokenTaken when the
+// style holds it. Until migration 0377 drops uniq_product_style_color a family may NOT yet repeat
+// within a style, and that refusal arrives as entity.ErrColorwayFamilyTaken; both are
+// entity.ErrColorwayColorExists. The development block carries the palette and the name
+// translations, and a palette needs a name (entity.CheckColorwayPaletteName), refused before any
+// write.
 func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error) {
 	// R9: verify the in-memory dictionary is current before this dictionary-dependent write (the color
 	// name/SKU segment resolves color_code, the label reads country).
@@ -52,8 +56,18 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		if err := requireSellableStyle(ctx, rep.DB(), styleID); err != nil {
 			return err
 		}
-		// T45: the family (color_code) may repeat; the SKU colour token may not. It is minted here,
-		// inside the transaction, against every token the style holds (see decideNewColorwaySkuToken).
+		// T45: a palette colourway carries its own name — refused here, before the first write.
+		if dev.MainColour() != nil {
+			name := ""
+			if dev.Name != nil {
+				name = *dev.Name
+			}
+			if ve := entity.CheckColorwayPaletteName(true, name, true); ve != nil {
+				return ve
+			}
+		}
+		// T45: the SKU colour token is unique per style. It is minted here, inside the transaction,
+		// against every token the style holds (see decideNewColorwaySkuToken).
 		token, err := decideNewColorwaySkuToken(ctx, rep.DB(), styleID, prd, dev)
 		if err != nil {
 			return err
@@ -144,7 +158,11 @@ func requireSellableStyle(ctx context.Context, db dependency.DB, styleID int) er
 //   - an empty family (prd.ProductBodyInsert.ColorCode) keeps the stored one;
 //   - the SKU colour token is immutable: an echo that differs from the stored token is refused with a
 //     field violation, and a family change no longer moves the SKU (the SKU is built from the token);
-//   - a row an older binary inserted (token NULL) gets its token pinned first (pinLegacySkuToken).
+//   - a row an older binary inserted (token NULL) gets its token pinned first (pinLegacySkuToken);
+//   - a palette needs a name: giving a nameless colourway its first palette, or clearing the name of
+//     one that has a palette, is refused before any write (checkPaletteNameOnUpdate);
+//   - until migration 0377, a family change onto a sibling's family is refused by
+//     uniq_product_style_color, answered as entity.ErrColorwayFamilyTaken (colorwayDuplicate).
 func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error) {
 	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
 		return 0, fmt.Errorf("can't refresh dictionary before colourway update: %w", err)
@@ -188,6 +206,10 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 		if cur.LockVersion != expectedVersion {
 			return entity.ErrTechCardConflict
 		}
+		// T45: a palette colourway keeps a name — checked before the first write of this update.
+		if err := checkPaletteNameOnUpdate(ctx, rep.DB(), colorwayID, cur.DevName, dev); err != nil {
+			return err
+		}
 		// T45: the token must be settled before anything below can move the family.
 		token, err := pinLegacySkuToken(ctx, rep.DB(), colorwayID, cur.StyleID, cur.ColorCode, cur.SkuColorToken, cur.DevName)
 		if err != nil {
@@ -208,7 +230,8 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 			}
 			// Colourway-owned columns only — never style facts, variants or the chart.
 			if err := updateColorwayRow(ctx, rep.DB(), prd, colorwayID); err != nil {
-				return fmt.Errorf("can't update colourway %d: %w", colorwayID, err)
+				return fmt.Errorf("can't update colourway %d: %w", colorwayID,
+					colorwayDuplicate(err, cur.StyleID, token, prd.ProductBodyInsert.ColorCode))
 			}
 		}
 		// PLM/lab-dip block (dev_* / lab_dip_*), merged rather than replaced, plus the palette and the

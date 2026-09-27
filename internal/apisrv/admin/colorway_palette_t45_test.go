@@ -128,7 +128,7 @@ func TestCreateColorwayProposesTheFamilyFromThePalette(t *testing.T) {
 	require.Equal(t, "BLK", got.ProductBodyInsert.ColorCode, "a fabric black files under BLK, not NAV")
 	require.Equal(t, "black", got.ProductBodyInsert.Color)
 	require.Empty(t, got.ProductBodyInsert.SkuColorToken, "the token is minted by the store, inside its transaction")
-	require.False(t, got.RefuseTakenColourToken, "an RPC create never asks for the archive's pre-T45 rule")
+	require.Empty(t, got.RestoreSkuColorToken, "an RPC create never restores a token: only the archive press does")
 	require.Len(t, dev.Colours, 2)
 	require.Equal(t, "#2B2C30", dev.Colours[0].Hex)
 }
@@ -138,7 +138,8 @@ func TestCreateColorwayRefusesAFamilyItCannotPropose(t *testing.T) {
 	_, err := r.s.CreateColorway(context.Background(), &pb_admin.CreateColorwayRequest{
 		StyleId:       3,
 		Merchandising: &pb_common.ColorwayMerchandisingInsert{},
-		Development:   &pb_common.ColorwayDevelopmentInsert{Colours: []*pb_common.ColorwayColour{{Label: "undyed"}}},
+		// Named, so the one thing missing is a hex to propose the family from.
+		Development: &pb_common.ColorwayDevelopmentInsert{Name: "Undyed", Colours: []*pb_common.ColorwayColour{{Label: "undyed"}}},
 	})
 	fv := t45Violation(t, err, codes.InvalidArgument)
 	require.Equal(t, "merchandising.color_code", fv.GetField())
@@ -318,8 +319,8 @@ func TestApplyColorwayPaletteToSlotsMapsTheStoreAnswers(t *testing.T) {
 
 // Since T45 a card's colourway OCCUPIES its SKU token, not its family: a palette colourway of the
 // black family (token BKW) does not make an archive's BLK «already on the card», while a legacy
-// colourway whose family moved to GRY still holds its BLK token. The create asks for the pre-T45
-// refusal (RefuseTakenColourToken) so a token the style holds answers «exists».
+// colourway whose family moved to GRY still holds its BLK token. The create RESTORES the archive's
+// token (a 1.0 archive's color_code) so a token the style holds answers «exists».
 func TestApplyImportColorwaysReadsTheCardByToken(t *testing.T) {
 	t.Run("a shared family is not the same colour", func(t *testing.T) {
 		r := tcacServer(t)
@@ -337,7 +338,8 @@ func TestApplyImportColorwaysReadsTheCardByToken(t *testing.T) {
 			Run(func(_ context.Context, _ int, prd *entity.ColorwayInsert, _ []int,
 				_ []entity.ColorwayTagInsert, _ []entity.ColorwayPriceInsert, _ *entity.ColorwayDevelopmentPatch) {
 				created = prd
-			}).Return(0, entity.ErrColorwayColorExists).Once()
+			}).Return(0, fmt.Errorf("%w: SKU colour token BLK is already held by a colourway of style %d",
+			entity.ErrColorwaySkuTokenTaken, tcacCardID)).Once()
 		// The store refused (say, an archived BLK holds the token); the handler re-reads the card to
 		// tell a race from an archived colourway — and the card still shows no BLK TOKEN.
 		r.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, tcacCardID).Return(card, nil).Once()
@@ -346,7 +348,7 @@ func TestApplyImportColorwaysReadsTheCardByToken(t *testing.T) {
 		resp, err := r.apply(t)
 		require.NoError(t, err)
 		require.NotNil(t, created, "BKW is a different colour than the archive's BLK: the create is attempted")
-		require.True(t, created.RefuseTakenColourToken, "the archive keeps its colour-keyed idempotency")
+		require.Equal(t, "BLK", created.RestoreSkuColorToken, "a 1.0 archive's colour code was its token")
 		require.Equal(t, "BLK", created.ProductBodyInsert.ColorCode)
 		line := tcacLineFor(t, resp.GetReport(), "color_code=BLK", techcardarchive.ReasonColorwayNotCreated)
 		require.Contains(t, line.GetDetail(), "ARCHIVED", "a token held by no live colourway is the archived one")

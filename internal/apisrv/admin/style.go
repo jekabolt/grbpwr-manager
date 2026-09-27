@@ -235,7 +235,8 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 }
 
 // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4). A non-draft colourway is
-// FailedPrecondition; a stale version on either side is ABORTED; an unknown colourway/target is NotFound.
+// FailedPrecondition; a stale version on either side is ABORTED; an unknown colourway/target is NotFound;
+// a target already holding the colourway's SKU colour token (T45) is FailedPrecondition naming it.
 func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDraftColorwayRequest) (*pb_admin.RelinkDraftColorwayResponse, error) {
 	if req.ColorwayId <= 0 || req.TargetStyleId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "colorway_id and target_style_id are required")
@@ -256,6 +257,12 @@ func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDr
 				req.ColorwayId, err)
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "the colourway or a style was modified concurrently; reload and retry")
+		case errors.Is(err, entity.ErrColorwayColorExists), entity.ColorwayDuplicateKey(err) != nil:
+			// T45: the target already holds the colourway's SKU colour token (or, until migration 0377,
+			// its family). Operator-fixable — pick another target — and the store's sentence names the
+			// token, the target style and the colourway in the way, so it travels whole.
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"colourway %d cannot move to style %d: %v", req.ColorwayId, req.TargetStyleId, err)
 		default:
 			slog.Default().ErrorContext(ctx, "can't relink draft colourway", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't relink colourway: %v", err)

@@ -146,9 +146,26 @@ func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id i
 		return fmt.Errorf("can't refresh dictionary before product update: %w", err)
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err := updateProduct(ctx, rep.DB(), prd.Product, id)
+		// T45: the token is settled BEFORE the family can move — the same pin UpdateColorway makes.
+		// A row an older binary inserted (token NULL) reads COALESCE(sku_color_token, color_code),
+		// so without the pin a family change here would silently carry its SKU token along.
+		cur, err := storeutil.QueryNamedOne[struct {
+			StyleID       int            `db:"style_id"`
+			ColorCode     string         `db:"color_code"`
+			SkuColorToken sql.NullString `db:"sku_color_token"`
+			DevName       sql.NullString `db:"dev_name"`
+		}](ctx, rep.DB(), legacyUpdateProductCurrentQuery, map[string]any{"id": id})
 		if err != nil {
-			return fmt.Errorf("can't update product: %w", err)
+			return fmt.Errorf("can't read product %d before update: %w", id, err)
+		}
+		token, err := pinLegacySkuToken(ctx, rep.DB(), id, cur.StyleID, cur.ColorCode, cur.SkuColorToken, cur.DevName)
+		if err != nil {
+			return err
+		}
+		err = updateProduct(ctx, rep.DB(), prd.Product, id)
+		if err != nil {
+			return fmt.Errorf("can't update product: %w",
+				colorwayDuplicate(err, cur.StyleID, token, prd.Product.ProductBodyInsert.ColorCode))
 		}
 
 		err = insertProductTranslations(ctx, rep.DB(), id, prd.Product.Translations)
@@ -383,7 +400,8 @@ func secondaryMediaInput(v sql.NullInt32) int {
 
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId, lifecycleStatus int) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
-	// sizes exist. color_code is the required dictionary FK and is the sole color identity.
+	// sizes exist. color_code is the required dictionary FK — since T45 the colourway's FAMILY, not
+	// its identity: the SKU colour segment is sku_color_token (below), unique per style.
 	// style_id (PR6) is the product's style (colourway->style invariant); AddProduct synthesises one.
 	// A cost provided at create time is manual admin input, so stamp its provenance
 	// (source='manual', updated_at=now); no cost leaves the provenance columns NULL.
@@ -440,7 +458,12 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 
 	id, err := storeutil.ExecNamedLastId(ctx, db, query, params)
 	if err != nil {
-		return id, err
+		// A duplicate on the token or — until 0377 — the family unique is an «exists», not a 500.
+		token := product.ProductBodyInsert.SkuColorToken
+		if token == "" {
+			token = product.ProductBodyInsert.ColorCode
+		}
+		return id, colorwayDuplicate(err, styleId, token, product.ProductBodyInsert.ColorCode)
 	}
 
 	return id, nil
@@ -833,6 +856,10 @@ func updateColorwayRow(ctx context.Context, db dependency.DB, prd *entity.Colorw
 		"id":                   id,
 	})
 }
+
+// legacyUpdateProductCurrentQuery reads what UpdateProduct needs to pin a legacy row's SKU colour
+// token before the family moves (a package constant so the DB-free binding test holds it).
+const legacyUpdateProductCurrentQuery = `SELECT style_id, color_code, sku_color_token, dev_name FROM product WHERE id = :id`
 
 // updateProduct is the legacy coupled colourway update, retained as a store-level test fixture: it
 // writes the colourway row AND the garment-level style fields (writeStyleFields semantics). The

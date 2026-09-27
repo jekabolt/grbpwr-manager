@@ -74,7 +74,8 @@ func DictionaryRevisionsStale(dbRevs map[entity.DictionaryNamespace]int64) bool 
 
 // EnsureDictionaryFresh reloads the in-memory dictionary iff the DB revisions have moved past the
 // cached ones. It returns whether a reload happened. Call it before a dictionary-dependent write
-// (minting a SKU from color_code, saving a product with a collection/tag/country) and from the
+// (resolving a colourway's dictionary family and its name, minting a SKU colour token that must not
+// read as another family's code, saving a product with a collection/tag/country) and from the
 // background poller. It is safe to call concurrently; a redundant reload is harmless.
 func EnsureDictionaryFresh(ctx context.Context, revSrc DictionaryRevisionSource, infoSrc DictionaryInfoSource) (bool, error) {
 	dbRevs, err := revSrc.GetDictionaryRevisions(ctx)

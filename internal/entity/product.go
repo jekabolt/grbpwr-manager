@@ -74,9 +74,13 @@ type Size struct {
 	CountWomen int
 }
 
-// Color is a controlled colour dictionary entry. Code is exactly 3 chars and unique; it feeds the
-// colour segment of the SKU and is referenced by product.color_code and tech_card_colorway.color_code.
-// Hex is the base shade; product.color_hex may override it per product.
+// Color is a controlled colour dictionary entry. Code is exactly 3 chars and unique, and is
+// referenced by product.color_code — since T45 a colourway's FAMILY (filters, assembly matching),
+// which several colourways of one style may share once migration 0377 drops the family unique. The
+// SKU's colour segment is NOT read from here:
+// it is product.sku_color_token, minted once when the colourway is created (a pre-T45 colourway's
+// token is the code it had then). Hex is the base shade; product.color_hex may override it per
+// product.
 type Color struct {
 	ID         int            `db:"id"`
 	Code       string         `db:"code"`
@@ -468,13 +472,15 @@ type ColorwayInsert struct {
 	// (EUR), used for margin analytics. Invalid/NULL leaves the stored value unchanged
 	// on update. Never serialized on the storefront read path — write-only.
 	CostPrice decimal.NullDecimal `db:"cost_price" valid:"-"`
-	// RefuseTakenColourToken keeps the pre-T45 identity rule for a caller that depends on it: a
-	// colourway created WITHOUT a palette takes its dictionary code as its SKU token, and when the
-	// style already holds that token the create is refused with ErrColorwayColorExists instead of
-	// minting a different token. The «create colourways from archive» action sets it — its
-	// idempotency lives in the colour code (a second press must land on «exists», not on a second
-	// colourway). Every other caller leaves it false and gets a minted token on a collision.
-	RefuseTakenColourToken bool `db:"-" valid:"-"`
+	// RestoreSkuColorToken is a TRUSTED restore of a SKU colour token the colourway already had on
+	// another base — set only by the «create colourways from archive» action, never from the wire
+	// (a request naming merchandising.sku_color_token is refused: the server mints tokens). The
+	// create takes it verbatim when the style does not hold it and refuses with
+	// ErrColorwaySkuTokenTaken (an ErrColorwayColorExists) when it does, instead of minting another:
+	// the archive's idempotency lives in the token — a second press must land on «exists», not on a
+	// second colourway. An archive written before the token travelled (format 1.0) restores its
+	// color_code, which is what the token was then. Empty = mint as usual.
+	RestoreSkuColorToken string `db:"-" valid:"-"`
 }
 
 type ColorwayDisplay struct {

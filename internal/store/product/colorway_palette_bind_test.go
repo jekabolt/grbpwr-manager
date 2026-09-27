@@ -32,6 +32,11 @@ func TestColorwayPaletteQueriesBind(t *testing.T) {
 		{"display name", refreshColorwayDisplayNameQuery, map[string]any{"id": 1}, 1},
 		{"palettes", colorwayPaletteQuery, map[string]any{"ids": []int{4, 5}}, 2},
 		{"names", colorwayNameI18nQuery, map[string]any{"ids": []int{4, 5}}, 2},
+		// Round 2: the relink's token look and move, and the legacy update's pin read.
+		{"relink read", relinkColorwayQuery, map[string]any{"id": 1}, 1},
+		{"relink token holder", relinkTokenHolderQuery, map[string]any{"target": 1, "token": "BKW", "id": 2}, 3},
+		{"relink move", relinkMoveQuery, map[string]any{"target": 1, "id": 2, "draft": 1, "source": 3}, 4},
+		{"legacy update current", legacyUpdateProductCurrentQuery, map[string]any{"id": 1}, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

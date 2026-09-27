@@ -22,7 +22,9 @@ import (
 //   - the SKU segment is product.sku_color_token — minted by the server when the colourway is
 //     created and never changed afterwards (unique per style);
 //   - product.color_code stays, mandatory, as the dictionary FAMILY tag (filters, aux-output
-//     assembly matching); several colourways of one style may share a family;
+//     assembly matching); several colourways of one style may share a family once migration
+//     0377 drops uniq_product_style_color (the second T45 push — until then the family unique
+//     refuses the second one as ErrColorwayFamilyTaken);
 //   - the colour itself is an ordered palette of 1…8 colours (product_colour), each a Pantone code
 //     or a free label, with a hex for preview; the first colour is the main one and is mirrored into
 //     product.pantone / pantone_system / dev_hex for readers that predate the palette;
@@ -149,6 +151,27 @@ func NormalizeColorwayNameI18n(names map[int]string, field string) (map[int]stri
 		out[lang] = name
 	}
 	return out, nil
+}
+
+// CheckColorwayPaletteName is the rule that a colourway WITH a palette carries its own name (owner's
+// decision 3: a colourway is a name + its translations + a palette). Without one, product.color —
+// the name orders, lays and the storefront cart print — silently falls back to the family's
+// dictionary name, and a «black and white» colourway would read as «black» everywhere.
+//
+// hasPalette and name are the state AFTER the write; introducing says whether this write is the
+// one bringing the palette (a create with colours, a legacy colourway given its first palette) or
+// leaves a standing one (a rename), which is all that changes the words. nil = the rule holds.
+func CheckColorwayPaletteName(hasPalette bool, name string, introducing bool) *ValidationError {
+	if !hasPalette || strings.TrimSpace(name) != "" {
+		return nil
+	}
+	if introducing {
+		return NewFieldViolation("development.name", "name_required_with_palette", "",
+			"a colourway with a palette carries its own name — send development.name with the colours")
+	}
+	return NewFieldViolation("development.name", "name_required_with_palette", "",
+		"this colourway has a palette, and a palette colourway carries its own name — rename it instead "+
+			"of clearing the name")
 }
 
 // ─── nearest dictionary family (owner's decision 4) ───
