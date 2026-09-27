@@ -1187,7 +1187,7 @@ func TestAIStoreShapeSweepReportsWhatItSwept(t *testing.T) {
 // billed failure, are not configuration faults); binding a local-zone :since against the UTC column.
 func TestAIStoreShapeRecentFaultsReadsFailedCallsOfTheWindow(t *testing.T) {
 	flat := strings.Join(strings.Fields(recentFaults), " ")
-	for _, want := range []string{"status IN ('failed', 'free')", "occurred_at >= :since", "GROUP BY provider_key, error_code"} {
+	for _, want := range []string{"e.status IN ('failed', 'free')", "e.occurred_at >= :since", "GROUP BY e.provider_key, e.error_code"} {
 		if !strings.Contains(flat, want) {
 			t.Fatalf("recentFaults lost %q: %s", want, flat)
 		}
@@ -1209,6 +1209,49 @@ func TestAIStoreShapeRecentFaultsReadsFailedCallsOfTheWindow(t *testing.T) {
 	bound, ok := argOf(t, recentFaults, c.args, "since").(time.Time)
 	if !ok || !bound.Equal(since) || bound.Location() != time.UTC {
 		t.Fatalf(":since = %v, want %v in UTC", bound, since.UTC())
+	}
+}
+
+// TestAIStoreShapeKeyFaultsEndAtTheKeyWrite (Codex B #9) — a key-class fault older than the
+// provider's last api-key write is not counted: saving a working key (or clearing the stored one so the
+// env key answers) clears «key rejected» / «out of credits» at once instead of up to 24 hours later.
+//
+// MUTATIONS IT CATCHES: the bound dropped (the old key's refusals badge the new key); an inner JOIN (a
+// provider with no row loses every badge); the bound applied to a model fault (a route fix is not a key
+// write); a key word of the ledger's vocabulary missing from the bounded list (designgen's
+// provider_unauthorized would outlive the repair), or a word that is not a key fault added to it; the
+// admin key's write taken as the bound (it serves no call).
+func TestAIStoreShapeKeyFaultsEndAtTheKeyWrite(t *testing.T) {
+	flat := strings.Join(strings.Fields(recentFaults), " ")
+	for _, want := range []string{
+		"FROM ai_usage_event AS e LEFT JOIN ai_provider AS p ON p.provider_key = e.provider_key",
+		"AND p.api_key_updated_at IS NOT NULL AND e.occurred_at < p.api_key_updated_at)",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("recentFaults lost %q: %s", want, flat)
+		}
+	}
+	if strings.Contains(flat, "admin_key_updated_at") {
+		t.Fatalf("the admin key serves no call; its write must not bound the badge: %s", flat)
+	}
+	m := regexp.MustCompile(`AND NOT \(e\.error_code IN \(([^)]*)\) AND p\.api_key_updated_at`).FindStringSubmatch(flat)
+	if m == nil {
+		t.Fatalf("recentFaults has no key-fault bound: %s", flat)
+	}
+	var bounded []string
+	for _, w := range strings.Split(m[1], ",") {
+		bounded = append(bounded, strings.Trim(strings.TrimSpace(w), "'"))
+	}
+	var keyWords []string
+	for word, badge := range faultBadges {
+		if badge == faultKeyRejected || badge == faultOutOfCredits {
+			keyWords = append(keyWords, word)
+		}
+	}
+	slices.Sort(bounded)
+	slices.Sort(keyWords)
+	if !slices.Equal(bounded, keyWords) {
+		t.Fatalf("the key-fault bound covers %v; the key-class words of faultBadges are %v", bounded, keyWords)
 	}
 }
 

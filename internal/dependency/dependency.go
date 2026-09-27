@@ -1955,7 +1955,8 @@ type (
 		UpsertModel(ctx context.Context, m entity.AIModel, by string) error
 		// RecentFaults is the panel's provider badge: per provider, the most frequent configuration
 		// fault (key_rejected | out_of_credits | model_unknown) among its failed|free ledger rows since
-		// `since`. A provider with none is absent.
+		// `since` — a key fault only when it is newer than the provider's last api-key write. A provider
+		// with none is absent.
 		RecentFaults(ctx context.Context, since time.Time) (map[string]string, error)
 
 		// BeginCall inserts a ledger row with status 'dispatching' and returns its id.

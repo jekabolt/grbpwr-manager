@@ -778,11 +778,22 @@ var faultBadges = map[string]string{
 // `free` rows: a configuration refusal is never billed, so it never ends `charged_failed`, and an
 // `unknown` row is a call whose outcome nobody knows. idx_ai_usage_status (status, occurred_at) serves
 // the WHERE. The words are folded into badges in Go (faultBadges), so the vocabulary lives once.
+//
+// A KEY WRITE ENDS THE KEY'S FAULTS (Codex B #9). A key-class fault — the key refused, its account
+// empty: the words of faultBadges that map to key_rejected / out_of_credits — that occurred before the
+// provider's last api-key write (ai_provider.api_key_updated_at: a new key saved, or the stored one
+// cleared so the env key answers) is about a key no longer in force, and is not counted; the save's
+// own probe already says what the new key does. The LEFT JOIN keeps the plain window for a provider
+// with no row or no key write, and for every other fault: a model fault is not the key's and keeps
+// the plain window. The admin key serves no call and does not move this bound.
 const recentFaults = `
-	SELECT provider_key, error_code, COUNT(*) AS n, MAX(occurred_at) AS last_at
-	FROM ai_usage_event
-	WHERE status IN ('failed', 'free') AND occurred_at >= :since AND error_code IS NOT NULL
-	GROUP BY provider_key, error_code`
+	SELECT e.provider_key, e.error_code, COUNT(*) AS n, MAX(e.occurred_at) AS last_at
+	FROM ai_usage_event AS e
+	LEFT JOIN ai_provider AS p ON p.provider_key = e.provider_key
+	WHERE e.status IN ('failed', 'free') AND e.occurred_at >= :since AND e.error_code IS NOT NULL
+	  AND NOT (e.error_code IN ('key_rejected', 'out_of_credits', 'provider_unauthorized', 'provider_out_of_credit')
+	           AND p.api_key_updated_at IS NOT NULL AND e.occurred_at < p.api_key_updated_at)
+	GROUP BY e.provider_key, e.error_code`
 
 // faultRow is one (provider, error_code) count of the window.
 type faultRow struct {
@@ -793,8 +804,8 @@ type faultRow struct {
 }
 
 // RecentFaults returns, per provider, the badge of the most frequent configuration fault among its
-// failed calls since `since` (key_rejected | out_of_credits | model_unknown). A provider with no such
-// fault is absent from the map.
+// failed calls since `since` (key_rejected | out_of_credits | model_unknown); key faults count only
+// from the provider's last api-key write on. A provider with no such fault is absent from the map.
 func (s *Store) RecentFaults(ctx context.Context, since time.Time) (map[string]string, error) {
 	var rows []faultRow
 	if err := selectNamed(ctx, s.DB, &rows, recentFaults, map[string]any{"since": since.UTC()}); err != nil {
