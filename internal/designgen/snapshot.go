@@ -12,6 +12,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
+	"github.com/shopspring/decimal"
 )
 
 // Layouts of a run's output — the DesignRunParams.layout dictionary.
@@ -49,6 +50,34 @@ type runParams struct {
 	// no bench, no references, no card. A nil pointer on any other kind is the ordinary state —
 	// the door refuses the field to every kind but its own.
 	Freeform *freeformParams `json:"freeform"`
+	// Image is the per-run engine (DesignRunParams.image, PLAYGROUND phase 2). nil = the
+	// deployment's dial, which is every run frozen before the field.
+	Image *imageOptions `json:"image"`
+	// Extend / Inpaint — PLAYGROUND phase 3 (DesignRunParams.extend = 18 / inpaint = 17). nil on
+	// every other kind: the door refuses the blocks to every kind but their own.
+	Extend  *extendParams  `json:"extend"`
+	Inpaint *inpaintParams `json:"inpaint"`
+}
+
+// extendParams — DesignExtendParams: the target proportion of an extend run (the source travels in
+// extra_input_media_ids).
+type extendParams struct {
+	AspectRatio string `json:"aspect_ratio"`
+}
+
+// inpaintParams — DesignInpaintParams: the picture to repaint and its painted mask (white = repaint).
+type inpaintParams struct {
+	SourceMediaID int `json:"source_media_id"`
+	MaskMediaID   int `json:"mask_media_id"`
+}
+
+// imageOptions — the per-run engine of an OpenRouter image kind. The door validated every value
+// against the engine table; the reader only carries them to Job.
+type imageOptions struct {
+	Model       string `json:"model"`
+	Quality     string `json:"quality"`
+	AspectRatio string `json:"aspect_ratio"`
+	Background  string `json:"background"`
 }
 
 // freeformParams / freeformItem / freeformRegion — ТОТ ЖЕ УЗКИЙ ЧИТАТЕЛЬ, ЧТО И ВСЁ ВЫШЕ: ровно
@@ -60,6 +89,23 @@ type runParams struct {
 type freeformParams struct {
 	Preset string         `json:"preset"`
 	Items  []freeformItem `json:"items"`
+	// Options — the preset's settings (DesignWorkflowOptions, phase 2). nil on every run frozen
+	// before the field and on a preset that reads none.
+	Options *workflowOptions `json:"options"`
+}
+
+// workflowOptions — DesignWorkflowOptions, flat: each preset reads its own fields and the door
+// refuses the rest (`option_not_read`). tryon: framing … product_colorway_id; add_logo:
+// logo_size; variations: creativity.
+type workflowOptions struct {
+	Framing           string `json:"framing"`
+	Angle             string `json:"angle"`
+	SceneMode         string `json:"scene_mode"`
+	SceneText         string `json:"scene_text"`
+	ModelID           int    `json:"model_id"`
+	ProductColorwayID int    `json:"product_colorway_id"`
+	LogoSize          string `json:"logo_size"`
+	Creativity        int    `json:"creativity"`
 }
 
 // freeformItem — ОДНА КАРТИНКА ПЛЕЙГРАУНДА со всем, что человек про неё сказал.
@@ -229,6 +275,19 @@ type threedParams struct {
 	// вторым таким же органом. Оно СТРОКА, а не enum, потому что словарь телосложений — вопрос
 	// формулировок, а enum заморозил бы сегодняшние слова в истории каждого замороженного прогона.
 	BodyType string `json:"body_type"`
+
+	// REFERENCE MODE (phase 2): 1..4 media ids, ordered front, back, left, right. Non-empty means
+	// the run reads no bench plate at all.
+	ReferenceMediaIDs []int `json:"reference_media_ids"`
+	// Texture / PBR: '' | on | off (strings, because a proto3 bool cannot say «not stated»);
+	// '' = on for texture, off for pbr. Quality: '' | standard | detailed. Follow: '' | photo |
+	// shape (not advertised in phase 2).
+	Texture string `json:"texture"`
+	PBR     string `json:"pbr"`
+	Quality string `json:"quality"`
+	Follow  string `json:"follow"`
+	// SurfaceHint — the person's own words about the surface; surfaceSteer carries them.
+	SurfaceHint string `json:"surface_hint"`
 }
 
 // runInputs is the frozen input snapshot.
@@ -435,6 +494,26 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// items и есть контракт: «image 1» — это items[0], сказано в самом контракте (design.proto).
 	if kind == entity.DesignRunKindFreeform {
 		return freeformReferences(p)
+	}
+	// ─── EXTEND (phase 3): THE ONE NAMED PICTURE AND NOTHING ELSE. Like the cut-out it reads no
+	// card; unlike the cut-out it is said here, not inherited from the general walk — the plan below
+	// is derived from References[0], so «which picture» must not depend on what else a snapshot holds.
+	if kind == entity.DesignRunKindExtend {
+		var out []refCaption
+		for _, id := range p.ExtraInputMediaIDs {
+			if id > 0 {
+				out = append(out, refCaption{MediaID: id, Caption: "the picture to extend"})
+			}
+		}
+		return out
+	}
+	// ─── INPAINT (phase 3): THE ONE PICTURE TO RETOUCH. The mask is NOT a reference — it is where to
+	// paint, it travels as mask_url — so it joins the media batch in buildJob and never this list.
+	if kind == entity.DesignRunKindInpaint {
+		if p.Inpaint == nil || p.Inpaint.SourceMediaID <= 0 {
+			return nil
+		}
+		return []refCaption{{MediaID: p.Inpaint.SourceMediaID, Caption: "the picture to retouch"}}
 	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
@@ -987,6 +1066,10 @@ func surfaceSteer(ctx context.Context, p runParams) string {
 		if pres := oneLine(t.Presentation); pres != "" {
 			add("presentation " + pres)
 		}
+		// The person's own surface words (phase 2). Last, so the same bound applies to them.
+		if hint := oneLine(t.SurfaceHint); hint != "" {
+			add("surface: " + hint)
+		}
 	}
 	steer, dropped := joinSteer(parts)
 	if dropped > 0 {
@@ -1155,6 +1238,12 @@ func viewCallLabels(views, detailNames []string) []string {
 // не участвовала. Поэтому nil здесь — ошибка сборки, а не тихая деградация; всем прочим родам
 // хранилище не нужно вовсе, и они принимают nil.
 func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, run entity.DesignRun, quality string) (Job, error) {
+	return buildJobWith(ctx, media, objects, run, quality, EngineTable(""))
+}
+
+// buildJobWith is buildJob with the deployment's engine table (EngineTable(Config.ImageDefaultModel)),
+// which resolves a frozen params.image into the job's engine fields.
+func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetcher, run entity.DesignRun, quality string, engines []Engine) (Job, error) {
 	p := parseParams(run.Params)
 	in := parseInputs(run.Inputs)
 
@@ -1174,6 +1263,31 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	// дальше этой функции не едет. Нет блока pattern — пустой режим, то есть сегодняшний маршрут.
 	if p.Pattern != nil {
 		job.PatternMode = p.Pattern.Mode
+	}
+	// The preset travels for the money boundary: imageCalls lets a zero-picture `free` run through.
+	if p.Freeform != nil {
+		job.FreeformPreset = p.Freeform.Preset
+	}
+	// The per-run engine (phase 2). No block = today's configured slug and QualityFor's word.
+	applyImageOptions(&job, p.Image, engines)
+	// The 3D build options travel for the route AND for the money: the fal collect books a detailed
+	// build at its own tier (B-09).
+	if run.Kind == entity.DesignRunKindThreed {
+		o := threedOptionsOf(p)
+		job.ThreedTexture, job.ThreedPBR, job.ThreedQuality = o.Texture, o.PBR, o.Quality
+		if run.PriceEstimate.Valid {
+			n := run.RequestedOutputs
+			if n < 1 {
+				n = 1
+			}
+			job.ThreedReservedUSD = decimal.NullDecimal{
+				Decimal: run.PriceEstimate.Decimal.Div(decimal.NewFromInt(int64(n))), Valid: true,
+			}
+		}
+	}
+
+	if (run.Kind == entity.DesignRunKindExtend || run.Kind == entity.DesignRunKindInpaint) && run.PriceEstimate.Valid {
+		job.RouteReservedUSD = run.PriceEstimate
 	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
@@ -1206,9 +1320,15 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 		// threed_inputs.go: Meshy читает КАЖДУЮ присланную картинку как ВИД одного предмета и
 		// принимает их 1..4, поэтому референс карточки здесь либо убивает прогон отказом по числу,
 		// либо — что тише и дороже — сам становится «видом», и модель строится по чужой одежде.
-		list = threedPictures(list, in)
+		list = threedPicturesOf(list, in, p)
 	}
 	var attached []refCaption
+	// The mask of a retouch rides the SAME media batch as the picture (one moment in time: a row that
+	// vanished between two reads would give a job whose picture resolved and whose mask did not).
+	maskID, maskURL := 0, ""
+	if run.Kind == entity.DesignRunKindInpaint && p.Inpaint != nil {
+		maskID = p.Inpaint.MaskMediaID
+	}
 	if len(list) > 0 || len(cloths) > 0 {
 		// ОДИН ПОХОД В МЕДИА НА ОБА СПИСКА. Два запроса были бы двумя моментами времени: строка,
 		// исчезнувшая между ними, отдала бы задание, у которого ткань разрешилась, а фотография нет.
@@ -1219,9 +1339,15 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 		for _, rc := range cloths {
 			ids = append(ids, rc.MediaID)
 		}
+		if maskID > 0 {
+			ids = append(ids, maskID)
+		}
 		byID, err := media.GetMediaByIds(ctx, ids)
 		if err != nil {
 			return Job{}, fmt.Errorf("failed to resolve the input media of design run %d: %w", run.Id, err)
+		}
+		if m, ok := byID[maskID]; ok && maskID > 0 {
+			maskURL = strings.TrimSpace(m.FullSizeMediaURL)
 		}
 		resolve := func(rc refCaption) (string, bool) {
 			m, ok := byID[rc.MediaID]
@@ -1295,6 +1421,12 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 			if win != nil {
 				attached = d
 				job.Window = win
+				// ⚠ THE CROP DECIDES THE SHAPE, NOT params.image.aspect_ratio (G-02, Codex 6). The
+				// answer is scaled straight into the frozen rectangle (compositeWindow), so a stated
+				// ratio would buy a picture of another shape and squeeze it into the crop. The door
+				// refuses an explicit ratio on a windowed run; this is the second lock, for a run
+				// frozen before that door: no ratio is sent, and the provider answers the crop.
+				job.AspectRatio = ""
 			}
 		}
 		derived, err := deriveFreeform(ctx, objects, p, attached, job.References)
@@ -1310,7 +1442,31 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 			attached = append(attached, refCaption{Caption: d.caption})
 		}
 	}
-	job.Prompt = composePrompt(run, p, in, attached)
+	// ─── EXTEND (phase 3): THE PLAN IS FROZEN HERE, BEFORE THE MONEY. The source is decoded once to
+	// learn its size, the canvas and the per-side expansion are computed, the 3 MP cap applied — and
+	// a refusal here (the picture is gone, too small, or the target adds nothing) is free and
+	// terminal: buildJob runs before StartAttempt.
+	if run.Kind == entity.DesignRunKindExtend {
+		if err := deriveExtendPlan(ctx, objects, p, &job); err != nil {
+			return Job{}, err
+		}
+	}
+	// ─── INPAINT (phase 3): the picture and its mask are read, the mask checked (same size, something
+	// painted), both cut to the same padded crop — before the money, so every refusal is free.
+	if run.Kind == entity.DesignRunKindInpaint {
+		if err := deriveInpaintPlan(ctx, objects, maskURL, &job); err != nil {
+			return Job{}, err
+		}
+	}
+	switch run.Kind {
+	case entity.DesignRunKindInpaint:
+		// ⚠ composePrompt IS BYPASSED FOR THIS KIND, ON PURPOSE. The fill model takes plain words
+		// about the painted zone; a craft paragraph or a caption block would be text about pictures
+		// it is not shown. The prompt is the ask, verbatim — and SentPrompt records exactly this.
+		job.Prompt = strings.TrimSpace(run.Ask.String)
+	default:
+		job.Prompt = composePrompt(run, p, in, attached)
+	}
 	// COMPOSED FOR EVERY KIND, USED BY ONE. Deriving it here rather than inside the 3D route keeps
 	// every word this package sends coming out of the same reader of the same frozen snapshot; a
 	// route that composed its own text would be a second composer to keep in step.
@@ -1345,8 +1501,16 @@ var errFreeformSourceGone = errors.New("designgen: a picture this playground run
 // подписях. Отказывать за неё значило бы ронять исполнимый прогон.
 func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 	ff := p.Freeform
-	if ff == nil || len(ff.Items) == 0 {
+	if ff == nil {
 		return nil
+	}
+	// PHASE 2: only `free` may run with no picture (text → image). Every other preset works ON a
+	// picture, so a frozen run that names none — the door refuses it — is refused here too, free.
+	if len(ff.Items) == 0 {
+		if ff.Preset == entity.DesignFreeformPresetFree || ff.Preset == "" {
+			return nil
+		}
+		return fmt.Errorf("%w: «%s» works on a picture, and this run names none", errFreeformSourceGone, ff.Preset)
 	}
 	alive := make(map[int]struct{}, len(attached))
 	for _, rc := range attached {
@@ -1356,6 +1520,7 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 	}
 	named, survived := 0, 0
 	hardware, marked := 0, 0
+	survivedAs := map[string]int{}
 	for _, it := range ff.Items {
 		if it.MediaID <= 0 {
 			continue
@@ -1365,6 +1530,7 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 			continue
 		}
 		survived++
+		survivedAs[it.Role]++
 		if it.Role == entity.DesignFreeformRoleHardware {
 			hardware++
 			continue
@@ -1383,6 +1549,36 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 			"more — a playground run works ON the pictures put into it, and there are none left",
 			errFreeformSourceGone, named)
 	}
+	// PHASE 2: presets whose pictures are LINKED — each one is named by number in the craft — need
+	// every named role to survive; the rest (one picture each) are covered by the check above.
+	gone := func(what string) error {
+		return fmt.Errorf("%w: «%s» needs %s, and it is no longer there", errFreeformSourceGone, ff.Preset, what)
+	}
+	switch ff.Preset {
+	case entity.DesignFreeformPresetTryon:
+		if survivedAs[entity.DesignFreeformRoleModel] == 0 {
+			return gone("the model photo")
+		}
+		if survivedAs[entity.DesignFreeformRoleProduct] == 0 {
+			return gone("the garment picture")
+		}
+		if ff.Options != nil && ff.Options.SceneMode == entity.DesignSceneModeReference &&
+			survivedAs[entity.DesignFreeformRoleScene] == 0 {
+			return gone("the scene picture")
+		}
+		return nil
+	case entity.DesignFreeformPresetAddLogo:
+		if survivedAs[entity.DesignFreeformRoleLogo] == 0 {
+			return gone("the logo picture")
+		}
+		if survived-survivedAs[entity.DesignFreeformRoleLogo] == 0 {
+			return gone("the garment picture")
+		}
+		return nil
+	}
+	// retouch / fabric_extract / ghost_mannequin / variations name exactly one picture (the door),
+	// so «it did not survive» is the named > 0 && survived == 0 check above, and «it names none» is
+	// the empty-items check at the top.
 	if ff.Preset != entity.DesignFreeformPresetAddHardware {
 		return nil
 	}

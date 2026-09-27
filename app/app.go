@@ -493,7 +493,25 @@ func (a *App) Start(ctx context.Context) error {
 	// a button. The probe returns immediately, refuses nothing, and stays silent when no key is
 	// set — so an untouched deployment sees no new line.
 	designImages := orimages.New(a.c.OpenRouterImages)
-	designImages.WarnIfModelRetired()
+	// The per-run engines (PLAYGROUND phase 2) are one table, keyed off the client's own slug; every
+	// slug in it is probed, since a person can pick any of them.
+	// B-16: the Gemini / Seedream rows join the table (and the probe) only while their flag is on.
+	designEngines := designgen.EngineTable(designImages.Model(), a.c.DesignGen.EngineFlags())
+	designEngineSlugs := make([]string, 0, len(designEngines))
+	for _, e := range designEngines {
+		designEngineSlugs = append(designEngineSlugs, e.Slug)
+	}
+	// The client's own slug is probed even when it is not a row — it is still what every unnamed run
+	// is drawn by.
+	designImages.WarnIfModelsRetired(append(designEngineSlugs, designImages.Model())...)
+	if len(designEngines) == 0 {
+		// G-02 Codex 2: an OPENROUTER_MODEL_IMAGE the engine table has no row for offers no per-run
+		// engine (its ratios, reference ceiling and price are unknown) — said once, at boot.
+		slog.Default().WarnContext(ctx, "design generation: the image model is not in the engine table, "+
+			"so no per-run engine is offered (no picker; params.image refused; unnamed runs reserve the "+
+			"kind's own price)", slog.String("model", designImages.Model()),
+			slog.String("flag", "OPENROUTER_MODEL_IMAGE"))
+	}
 
 	// The worker is GATED, and the gate means NOT CONSTRUCTED — the precedent is ACCOUNTING_ENABLED
 	// above. An inert feature must not be a worker that wakes every few seconds to ask an empty
@@ -517,6 +535,15 @@ func (a *App) Start(ctx context.Context) error {
 	// not equal the lower-case constant, so an un-normalised read would wire fal and log fal while
 	// the operator had asked for Meshy. Idempotent; New() applies it again.
 	designgen.Normalize(&designCfg)
+	// The worker resolves a frozen params.image against the same table the door checks it with.
+	designCfg.ImageDefaultModel = designImages.Model()
+	// The configured 3D route as the door and the band see it (G-02): which build options it reads
+	// and what one build may book at this deployment's tariff. Built from the SAME client the worker
+	// is given below; wired only when the worker exists.
+	var designThreedRoute *designgen.ThreedRoute
+	// PLAYGROUND phase 3: the extend / inpaint route objects, built from the SAME fal client the
+	// worker's Outpaint / Fill providers get (one value for the band, the door and the reserve).
+	var designFalRoutes map[string]designgen.FalRoute
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
 		//
@@ -531,13 +558,39 @@ func (a *App) Start(ctx context.Context) error {
 		// refuses AT THE DOOR, in words, naming its variable (PreflightKind → MissingCredential) —
 		// which is what lets the owner tell «I have not set the key yet» from «the service is
 		// busy».
-		threed := designgen.NewFalThreedProvider(fal.New(a.c.Fal))
+		falThreed := fal.New(a.c.Fal)
+		threed := designgen.NewFalThreedProvider(falThreed)
 		if designCfg.ThreedProvider == designgen.ThreedProviderMeshy {
 			threed = designgen.NewThreedProvider(meshy.New(a.c.Meshy))
 		}
+		// THE SAME EXPRESSION THE WORKER ASKS BEFORE EVERY FRESH SUBMIT (ThreedRouteOf the wired
+		// provider at DESIGN_THREED_PBR), so the door and the pickup cannot read two routes.
+		route := designgen.ThreedRouteOf(threed, designCfg.ThreedPBR)
+		designThreedRoute = route
 		slog.Default().InfoContext(ctx, "design generation: 3D route wired",
 			slog.String("provider", designCfg.ThreedProvider),
-			slog.String("flag", designgen.EnvThreedProvider))
+			slog.String("flag", designgen.EnvThreedProvider),
+			slog.Any("build_options", route.Options),
+			slog.Bool("pbr", designCfg.ThreedPBR), slog.String("pbr_flag", designgen.EnvThreedPBR))
+		if why := route.Unbounded(); why != "" {
+			slog.Default().WarnContext(ctx, "design generation: the 3D door is closed — "+why)
+		}
+
+		// PLAYGROUND phase 3 — tile 9 (extend → fal outpaint) and tile 10's mask route (inpaint → fal
+		// fill): the SAME FAL_KEY, their own slugs (FAL_MODEL_OUTPAINT / FAL_MODEL_FILL) and tariffs.
+		// A tariff set without its units ceiling closes the kind at the door, in words.
+		falRoutes := fal.New(a.c.Fal)
+		designFalRoutes = map[string]designgen.FalRoute{}
+		for _, kind := range []string{entity.DesignRunKindExtend, entity.DesignRunKindInpaint} {
+			r, _ := designgen.FalRouteOf(falRoutes, kind)
+			designFalRoutes[kind] = r
+			slog.Default().InfoContext(ctx, "design generation: fal route wired",
+				slog.String("kind", kind), slog.String("model", r.Model),
+				slog.String("reserve_usd", r.Ceiling.String()), slog.Bool("bounded", r.Bounded))
+			if !r.Bounded {
+				slog.Default().WarnContext(ctx, "design generation: the "+kind+" door is closed — "+r.Unbounded)
+			}
+		}
 
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
 			// flat, render, recolor and pattern — the raster route. ONE endpoint and ONE key for
@@ -558,6 +611,12 @@ func (a *App) Start(ctx context.Context) error {
 			// rather than a fifth kind on Image because it is a different paid endpoint with a
 			// different unit of money — and because it sends no words at all.
 			Cutout: designgen.NewFalCutoutProvider(fal.New(a.c.Fal)),
+			// extend — tile 9 «Extend Image», fal's outpaint route (FAL_MODEL_OUTPAINT, default
+			// fal-ai/flux-2-pro/outpaint; fallback fal-ai/bria/expand).
+			Outpaint: designgen.NewFalOutpaintProvider(falRoutes),
+			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
+			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
+			Fill: designgen.NewFalFillProvider(falRoutes),
 		})
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
@@ -625,6 +684,18 @@ func (a *App) Start(ctx context.Context) error {
 	if a.dgw != nil {
 		adminS.SetDesignKindGate(a.dgw.PreflightKind)
 	}
+	if designThreedRoute != nil {
+		adminS.SetDesignThreedRoute(*designThreedRoute)
+	}
+	if designFalRoutes != nil {
+		adminS.SetDesignFalRoutes(designFalRoutes)
+	}
+	// The engine table the worker resolves params.image with (designCfg.ImageDefaultModel above):
+	// the door validates and prices against it, the band advertises it. A table, not a gate — it
+	// spends nothing, and the money flag above has already closed every paid verb when it is off.
+	adminS.SetDesignEngines(func() []designgen.Engine {
+		return designgen.EngineTable(designImages.Model(), designCfg.EngineFlags())
+	})
 	a.adminS = adminS
 
 	var frontendS *frontend.Server

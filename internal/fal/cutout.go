@@ -2,11 +2,11 @@ package fal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -203,7 +203,7 @@ func (c *Client) SubmitCutout(ctx context.Context, imageURL string) (string, err
 		// ⚠ ОПЛАЧЕНО И ПОТЕРЯНО. Сабмит принят, значит единицы списаны, а вернуть по нему нечего:
 		// без id ни забрать результат, ни возобновить. Отдельное слово нужно, чтобы этот исход не
 		// читался как обычный отказ транспорта.
-		return "", fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
+		return "", submitLost()
 	}
 	return id, nil
 }
@@ -238,143 +238,65 @@ func (c *Client) CollectCutout(ctx context.Context, requestID string, dst io.Wri
 	if requestID == "" {
 		return nil, fmt.Errorf("%w: collect was given no request id", ErrBadRequest)
 	}
-	return c.awaitCutout(ctx, c.ModelCutout(), requestID, dst)
+	return c.awaitFile(ctx, c.ModelCutout(), requestID, pickCutout, dst, maxCutoutBytes)
 }
 
-// awaitCutout polls the request until it completes, then downloads its picture.
+// CollectCutoutAt is CollectCutout polled at the slug the request was SUBMITTED to, not today's
+// FAL_MODEL_CUTOUT (G-03, Codex 2: the queue namespace is the slug's, and a slug moved between a paid
+// submit and its resume would poll another model's queue for it).
 //
-// IT DOES NOT SEARCH OTHER NAMESPACES the way the 3D wait does (locateRequest), and the omission is
-// reasoned rather than lazy: that search exists because a 3D build survives a deployment — it runs
-// for MINUTES after the submit, so a release that moves the default slug mid-flight orphans a paid
-// build. A cut-out is finished within the same second or two as its submit, so the window in which
-// a model move could strand one is the length of one request, and the machinery to cover it would
-// be a copy of the most delicate code in the package guarding a case that cannot really happen.
-func (c *Client) awaitCutout(ctx context.Context, model, requestID string, dst io.Writer) (*CutoutResult, error) {
-	base := "/" + queuePath(model) + "/requests/" + url.PathEscape(requestID)
-
-	// THE CEILING BOUNDS THE WAIT, NEVER THE FETCH — same split as Await, and for the same reason:
-	// a single ceiling over both would cut the download of a picture that finished in the last
-	// moment of the wait, spending the units and delivering nothing.
-	ceiling := c.cfg.PollTimeout
-	waitCtx, cancel := context.WithTimeout(ctx, ceiling)
-	defer cancel()
-
-	interval := cutoutFirstPoll
-	if p := c.PollInterval(); p < interval {
-		interval = p
-	}
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-
-	// A 404 IN THE FIRST MOMENTS IS A LAG, NOT AN ANSWER — see notFoundGrace. The first lookup has
-	// no pause in front of it and the submit IS the payment, so a read-after-write lag of a second
-	// would otherwise throw away a cut-out that was bought a second earlier.
-	grace := notFoundGrace
-	if half := ceiling / 2; grace > half {
-		grace = half
-	}
-	started := time.Now()
-
-	for {
-		var st statusResponse
-		err := c.callJSON(waitCtx, http.MethodGet, base+"/status", nil, &st, nil)
-		switch {
-		case err == nil:
-			switch Status(strings.ToUpper(strings.TrimSpace(st.Status))) {
-			case StatusCompleted:
-				// ⚠ ЗАБОР РЕЗУЛЬТАТА ИДЁТ ПОД РОДИТЕЛЬСКИМ ctx, А НЕ ПОД waitCtx, И ЭТО ПРО ДЕНЬГИ.
-				//
-				// `waitCtx` — ПОТОЛОК ОЖИДАНИЯ, и к моменту COMPLETED от него могут остаться
-				// миллисекунды: задание, закончившееся у самого потолка, — самый обычный исход, ради
-				// которого потолок и поставлен щедрым. Конверт результата — это ТОТ ЗАПРОС, В
-				// КОТОРОМ ПРИЕЗЖАЕТ СПИСАНИЕ (x-fal-billable-units), и обрезанный истёкшим
-				// ожиданием он выбрасывал ОПЛАЧЕННУЮ картинку вместе со свидетельством о её цене:
-				// попытка закрывалась `provider_timeout` с NULL в колонке денег, хотя деньги ушли.
-				//
-				// ТОТ ЖЕ РАЗДЕЛ, ЧТО У СКАЧИВАНИЯ, И ПО ТОМУ ЖЕ ДОВОДУ — «потолок ограничивает
-				// ОЖИДАНИЕ, а не ЗАБОР». Половина этого правила здесь уже стояла (файл уходил под
-				// ctx), и ровно она делала пропуск незаметным: картинка иногда доезжала, а конверт
-				// перед ней — нет.
-				//
-				// БЕЗГРАНИЧНЫМ ЗАБОР ОТ ЭТОГО НЕ СТАНОВИТСЯ: каждый запрос управляющего плана
-				// ограничен своим HTTPTimeout (callJSON), а скачивание — своим.
-				return c.collectCutout(ctx, model, requestID, base, dst)
-			case StatusInQueue, StatusInProgress:
-				// Still being made. Fall through to the sleep.
-			case "":
-				return nil, fmt.Errorf("%w: request %s came back with no status", ErrUnexpectedResponse, requestID)
-			default:
-				return nil, fmt.Errorf("%w: request %s has unknown status %q", ErrUnexpectedResponse, requestID, st.Status)
-			}
-		case errors.Is(err, ErrRequestNotFound) && time.Since(started) < grace:
-			// The queue has not caught up with its own submit yet.
+// An empty model is a LEGACY bare id (stored before the locator): today's slug first, then — on a 404
+// past the grace — the route's known namespaces (CutoutLegacyModels), G-03 r2, Codex 4.
+func (c *Client) CollectCutoutAt(ctx context.Context, model, requestID string, dst io.Writer) (*CutoutResult, error) {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		res, err := c.CollectCutout(ctx, requestID, dst)
+		legacy := c.CutoutLegacyModels()
+		if !errors.Is(err, ErrRequestNotFound) || len(legacy) < 2 {
+			return res, err
+		}
+		switch alt, out, cause := c.searchNamespaces(ctx, legacy[0], legacy[1:], strings.TrimSpace(requestID)); out {
+		case locateFound:
+			model = alt
+		case locateUnknown:
+			return nil, notFoundYetUnsure(requestID, legacy[0], cause)
 		default:
-			// A LOOKUP KILLED BY THE CEILING MUST READ AS A CEILING, not as a transport hiccup: the
-			// request is very probably alive, and the two verdicts point a worker in opposite
-			// directions.
-			if waitCtx.Err() != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
-				return nil, waitErr(ctx, requestID, ceiling)
-			}
-			return nil, err
-		}
-
-		select {
-		case <-waitCtx.Done():
-			return nil, waitErr(ctx, requestID, ceiling)
-		case <-timer.C:
-			// Back off towards the configured interval: a fast answer is caught at once, a slow one
-			// stops hammering the queue.
-			if next := interval * 2; next < c.PollInterval() {
-				interval = next
-			} else {
-				interval = c.PollInterval()
-			}
-			timer.Reset(interval)
+			return res, err
 		}
 	}
+	if !c.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	if dst == nil {
+		return nil, errors.New("fal: CollectCutout has nowhere to put the picture")
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, fmt.Errorf("%w: collect was given no request id", ErrBadRequest)
+	}
+	return c.awaitFile(ctx, model, requestID, pickCutout, dst, maxCutoutBytes)
 }
 
-// collectCutout reads the finished request's envelope — which is where fal reports the charge — and
-// downloads the picture. Everything from the result fetch onwards carries the money.
+// CutoutLegacyModels — every slug a BARE cut-out request id may have been queued under: today's
+// FAL_MODEL_CUTOUT first, then the code default. See RouteLegacyModels.
+func (c *Client) CutoutLegacyModels() []string {
+	return []string{c.ModelCutout(), DefaultModelCutout}
+}
+
+// pickCutout is PickImage under the cut-out's own sentinel: a completed matting request with no url
+// is ErrNoCutout (which wraps ErrNoModel through ErrNoFile's parent — see ErrNoCutout), so the
+// history keeps the word it has always carried.
 //
-// ⚠ ОДИН КОНТЕКСТ НА ОБА ШАГА, И ЭТО СТРУКТУРНОЕ РЕШЕНИЕ, А НЕ УПРОЩЕНИЕ ПОДПИСИ. Раньше их было
-// два — «поиск» и «скачивание», — и единственный вызывающий передавал в первый почти истёкший
-// потолок ожидания: конверт с суммой списания погибал, картинка терялась, а в истории оставался
-// таймаут с пустой ценой. Пара параметров ровно это и позволяла выразить; одного параметра хватает,
-// чтобы такого вызова больше не существовало. Ожидание ограничено там, где ему место, — в цикле
-// опроса.
-func (c *Client) collectCutout(ctx context.Context, model, requestID, base string, dst io.Writer) (*CutoutResult, error) {
-	var out cutoutResultBody
-	var hdr http.Header
-	if err := c.callJSON(ctx, http.MethodGet, base, nil, &out, &hdr); err != nil {
-		// A COMPLETED request whose result the provider refuses to serve is the provider ending the
-		// job itself: terminal, and possibly billed. The charge cannot be read from a body we did
-		// not get.
-		return nil, err
+// THE WAIT ITSELF IS awaitFile (generic.go) SINCE PLAYGROUND phase 3: the cut-out was the first
+// fal JSON route and carried its own copy of the queue code; the outpaint and fill routes would have
+// been the second and third copies. Same requests, same order, same money envelope — the cut-out
+// probes below are unchanged and still green.
+func pickCutout(body json.RawMessage) (string, string, error) {
+	u, ct, err := PickImage(body)
+	if errors.Is(err, ErrNoFile) {
+		return "", "", ErrNoCutout
 	}
-	units, assumed := billableUnits(hdr)
-	charged := func(err error) error { return chargedWith(err, units, requestID, model) }
-
-	link := strings.TrimSpace(out.Image.URL)
-	if link == "" {
-		return nil, charged(fmt.Errorf("%w: request %s", ErrNoCutout, requestID))
-	}
-
-	res := &CutoutResult{
-		RequestID:     requestID,
-		Model:         model,
-		ContentType:   strings.TrimSpace(out.Image.ContentType),
-		BillableUnits: units,
-		UnitsAssumed:  assumed,
-	}
-	n, sum, err := c.fetch(ctx, link, dst, maxCutoutBytes)
-	if err != nil {
-		// A picture over maxCutoutBytes, or a transfer that died: made and billed either way. The
-		// bytes are lost; the money is not, and must not be.
-		return nil, charged(fmt.Errorf("fal: downloading the cut-out of request %s: %w", requestID, err))
-	}
-	res.Bytes, res.SHA256 = n, sum
-	return res, nil
+	return u, ct, err
 }
 
 // --- wire types ---
@@ -384,14 +306,4 @@ type cutoutSubmitBody struct {
 	ImageURL         string `json:"image_url"`
 	OutputFormat     string `json:"output_format"`
 	RefineForeground bool   `json:"refine_foreground"`
-}
-
-// cutoutResultBody is the matting answer: one file under `image`.
-//
-// ⚠ ЭТО ОТДЕЛЬНЫЙ ТИП, А НЕ ПОЛЕ В resultBody, И РАЗДЕЛЕНИЕ ЗДЕСЬ ДЕШЕВЛЕ ОБЩНОСТИ. Общая структура
-// на два разных ответа значит, что каждый её читатель обязан знать, какие поля в ЕГО случае пусты
-// «законно», — а modelURL() уже отвечает на вопрос «какой из двух ключей нёс файл» для 3D, и третий
-// ключ с другим смыслом сделал бы этот ответ неверным молча.
-type cutoutResultBody struct {
-	Image falFile `json:"image"`
 }

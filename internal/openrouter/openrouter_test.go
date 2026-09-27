@@ -867,8 +867,10 @@ func TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce(t *testing.T) {
 		return append([]string{}, paths...)
 	}
 
+	// The subtests below pin the shared/analysis pair, so they switch the Ideas door off; the ideas
+	// slugs have subtests of their own at the end.
 	t.Run("both slugs are probed when the override differs", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "escalated/slug"}, 2)
+		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "escalated/slug", ModelIdeas: IdeasModelOff}, 2)
 		seen := map[string]bool{}
 		for _, p := range paths {
 			seen[p] = true
@@ -882,18 +884,60 @@ func TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce(t *testing.T) {
 	})
 
 	t.Run("one probe when the override repeats the shared slug", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "shared/slug"}, 1)
+		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "shared/slug", ModelIdeas: IdeasModelOff}, 1)
 		if paths[0] != "/models/shared/slug/endpoints" {
 			t.Errorf("probed %v", paths)
 		}
 	})
 
 	t.Run("one probe when no override is set", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug"}, 1)
+		paths := probe(t, Config{Model: "shared/slug", ModelIdeas: IdeasModelOff}, 1)
 		if paths[0] != "/models/shared/slug/endpoints" {
 			t.Errorf("probed %v", paths)
 		}
 	})
+
+	// PLAYGROUND B-15: the ideas slug and its fallback are baked in, so both are probed — a retired
+	// default would otherwise be found by the first person pressing Ideas.
+	// Mutation: drop the ideas block from effectiveModels → 1 probe, not 3 → red.
+	t.Run("the ideas default and its fallback are probed", func(t *testing.T) {
+		paths := probe(t, Config{Model: "shared/slug"}, 3)
+		want := []string{"/models/shared/slug/endpoints", "/models/" + DefaultIdeasModel + "/endpoints",
+			"/models/" + IdeasFallbackModel + "/endpoints"}
+		for i := range want {
+			if paths[i] != want[i] {
+				t.Errorf("probe %d = %q, want %q (all: %v)", i, paths[i], want[i], paths)
+			}
+		}
+	})
+	t.Run("an ideas override equal to the fallback is probed once", func(t *testing.T) {
+		probe(t, Config{Model: "shared/slug", ModelIdeas: IdeasFallbackModel}, 2)
+	})
+	t.Run("ideas off: neither ideas slug is probed", func(t *testing.T) {
+		paths := probe(t, Config{Model: "shared/slug", ModelIdeas: "Off"}, 1)
+		if paths[0] != "/models/shared/slug/endpoints" {
+			t.Errorf("probed %v", paths)
+		}
+	})
+}
+
+// TestIdeasModel pins the one place that decides what OPENROUTER_MODEL_IDEAS means.
+func TestIdeasModel(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", DefaultIdeasModel},
+		{"   ", DefaultIdeasModel},
+		{"off", ""},
+		{" OFF ", ""},
+		{"x/y", "x/y"},
+		{" x/y ", "x/y"},
+	} {
+		if got := New(Config{APIKey: "k", ModelIdeas: tc.in}).IdeasModel(); got != tc.want {
+			t.Errorf("IdeasModel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := (*Client)(nil).IdeasModel(); got != "" {
+		t.Errorf("nil client IdeasModel = %q", got)
+	}
 }
 
 // TestEmptyAnswerIsSplitByFinishReason pins the classification that reached production as its

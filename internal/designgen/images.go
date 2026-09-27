@@ -3,6 +3,7 @@ package designgen
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
@@ -29,6 +30,10 @@ func (p imageProvider) MissingCredential() string {
 
 // Produces is PNG and only PNG: the route asks for it explicitly, because a transparent flat needs
 // a format that carries transparency and jpeg silently does not.
+//
+// ⚠ A Gemini / Seedream row (B-16) takes no `output_format` (NoRouteDefaults), so its answer is
+// whatever raster the provider returns. The sink stores JPEG and WebP as well (bucket
+// CanStoreMediaType), so nothing is lost; this list stays the GPT route's promise.
 func (p imageProvider) Produces() []string { return []string{ContentTypePNG} }
 
 // Execute runs one pass over a raster job.
@@ -66,17 +71,48 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		// either one unchanged cannot end differently.
 		return nil, err
 	}
-	out := &Outcome{Model: p.c.Model()}
+	// THE ENGINE'S OWN SHAPE (B-16), read off the catalogue by the slug this call goes to. A slug the
+	// catalogue does not know (a custom OPENROUTER_MODEL_IMAGE) keeps today's request byte for byte.
+	background, format := firstNonEmpty(job.Background, backgroundFor(job.Kind)), "png"
+	if row, ok := catalogueEngine(firstNonEmpty(job.Model, p.c.Model())); ok {
+		if row.NoRouteDefaults {
+			// Neither key is in this slug's catalogue: the kind's `opaque` and the route's `png` are
+			// OUR defaults, not the person's words, and are not sent. A stated background was already
+			// refused at the door (Engine.Backgrounds); the sink files whatever raster comes back.
+			background, format = strings.TrimSpace(job.Background), ""
+		}
+		// FREE LOCKS BEFORE THE FIRST PAID CALL, over EVERY call: the engine's reference ceiling (the
+		// door counts flat / render / pattern references only as an upper bound and leaves them to
+		// the client's 16, which is above Gemini's and Seedream's 14) and its `n` range. A refusal
+		// halfway through the loop would come after money moved.
+		for _, call := range calls {
+			if row.MaxRefs > 0 && len(call.refs) > row.MaxRefs {
+				return nil, fmt.Errorf("%w: %d reference pictures in one call, and %s takes at most %d",
+					orimages.ErrBadRequest, len(call.refs), row.Label, row.MaxRefs)
+			}
+			if row.MaxN > 0 && call.n > row.MaxN {
+				return nil, fmt.Errorf("%w: n=%d in one call, and %s returns at most %d",
+					orimages.ErrBadRequest, call.n, row.Label, row.MaxN)
+			}
+		}
+	}
+	// A per-run engine names its own slug; the provenance says so even when the call fails.
+	out := &Outcome{Model: firstNonEmpty(job.Model, p.c.Model())}
 	cost := decimal.Zero
 	charged := false
 
 	for _, call := range calls {
 		res, err := p.c.Generate(ctx, orimages.Request{
+			// The per-run engine (params.image): every field empty on a run that named none, which
+			// is today's request byte for byte.
+			Model:           job.Model,
 			Prompt:          call.prompt,
 			N:               call.n,
 			Quality:         job.Quality,
-			Background:      backgroundFor(job.Kind),
-			OutputFormat:    "png",
+			Resolution:      job.Resolution,
+			AspectRatio:     job.AspectRatio,
+			Background:      background,
+			OutputFormat:    format,
 			InputReferences: call.refs,
 		})
 		// THE PRICE IS TAKEN FIRST, BEFORE THE ERROR IS EVEN LOOKED AT. Both the empty-data case
@@ -223,6 +259,12 @@ func imageCalls(job Job) ([]imageCall, error) {
 		// картинки, но между снимком и проходом строку медиа могли удалить, и повторять
 		// заведомо пустой запрос значит платить за отказ.
 		if len(job.References) == 0 {
+			// TEXT → IMAGE (tile 11): a `free` run with words and no picture is one legal call with
+			// no references — the door let it through only with a non-empty ask. Every other preset
+			// works ON a picture, and resolving none is still the terminal refusal above.
+			if job.FreeformPreset == entity.DesignFreeformPresetFree && strings.TrimSpace(job.Prompt) != "" {
+				return []imageCall{{prompt: job.Prompt, n: 1}}, nil
+			}
 			return nil, fmt.Errorf("%w: a playground run needs the pictures it works on, and this run "+
 				"resolved none", orimages.ErrBadRequest)
 		}
@@ -302,5 +344,15 @@ func backgroundFor(kind string) string {
 	// ЧЕЛОВЕКА: фон ответа обязан быть фоном исходника, а всякое значение, посланное отсюда, было
 	// бы указанием этот фон сменить — при просьбе «пришей сюда пуговицу». Убрать фон у него просят
 	// другим родом (cutout), у которого и провайдер другой.
+	return ""
+}
+
+// firstNonEmpty returns the first argument that is not blank.
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
 	return ""
 }

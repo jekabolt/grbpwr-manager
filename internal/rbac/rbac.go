@@ -371,6 +371,10 @@ var methodRequirements = map[string]Requirement{
 	// WRITE by the same precedent: a press spends the AI key, and rewriting a card's text is
 	// authoring it. The route is /api/admin/ai/enhance-text, but the grant is the card's.
 	"EnhanceText": wr(SectionTechCards),
+	// SuggestPrompts (B-15) — the `Ideas ▾` door of a PLAYGROUND prompt field. Stores nothing and
+	// is a WRITE by EnhanceText's precedent: a press spends the AI key (it draws the SAME 30/h
+	// window as EnhanceText), and it may read the card's pictures.
+	"SuggestPrompts": wr(SectionTechCards),
 	// AddTechCardIssue пишет строку — тут спорить не о чем. Он работает и на ЗАМОРОЖЕННОЙ карточке
 	// (issues вне CONSTRUCTION-дайджеста), но замороженность карточки — не права: право одно и то
 	// же на всех состояниях, иначе роль зависела бы от стадии.

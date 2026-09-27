@@ -33,6 +33,7 @@ func TestFalConfigFromEnv(t *testing.T) {
 	t.Setenv("FAL_UNIT_USD", "0.75")
 	t.Setenv("FAL_MODEL_CUTOUT", "vendor/matting/v9")
 	t.Setenv("FAL_UNIT_USD_CUTOUT", "0.045")
+	t.Setenv("FAL_UNITS_CEILING_3D", "3")
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err)
@@ -50,6 +51,8 @@ func TestFalConfigFromEnv(t *testing.T) {
 		"the download budget is separate from the poll ceiling on purpose — a fetch cut by the "+
 			"wait loses an artifact that is already paid for and whose link expires")
 	assert.InDelta(t, 0.75, cfg.Fal.UnitUSD, 1e-9)
+	assert.InDelta(t, 3, cfg.Fal.UnitsCeiling3D, 1e-9,
+		"FAL_UNITS_CEILING_3D sizes the 3D reservation under a tariff; unbound, a tariff closes the 3D door")
 
 	// ─── ВТОРОЙ МАРШРУТ ТОГО ЖЕ ТРАНСПОРТА: СВОЙ СЛАГ И СВОЙ ТАРИФ ───
 	assert.Equal(t, "vendor/matting/v9", cfg.Fal.ModelCutout,
@@ -158,4 +161,58 @@ func TestTheThreedRouteIsChosenByAWORD_AND_DEFAULTS_TO_FAL(t *testing.T) {
 func effectiveThreedProvider(c designgen.Config) string {
 	designgen.Normalize(&c)
 	return c.ThreedProvider
+}
+
+// TestTheGenericFalRoutesAreBOUND_ONE_VARIABLE_AT_A_TIME — PLAYGROUND phase 3 (B-12). Six new
+// variables, each set to a value nothing else produces, each asserted on the struct AND through the
+// constructor: an unbound variable reads as the default without a word, and the owner who typed a
+// tariff into the dashboard would believe the reserve was sized by it.
+func TestTheGenericFalRoutesAreBOUND_ONE_VARIABLE_AT_A_TIME(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+	t.Setenv("FAL_KEY", "fal-test-key")
+	t.Setenv("FAL_MODEL_OUTPAINT", "fal-ai/bria/expand")
+	t.Setenv("FAL_MODEL_FILL", "vendor/fill/v9")
+	t.Setenv("FAL_UNIT_USD_OUTPAINT", "0.011")
+	t.Setenv("FAL_UNITS_CEILING_OUTPAINT", "7")
+	t.Setenv("FAL_UNIT_USD_FILL", "0.013")
+	t.Setenv("FAL_UNITS_CEILING_FILL", "5")
+
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, "fal-ai/bria/expand", cfg.Fal.ModelOutpaint)
+	assert.Equal(t, "vendor/fill/v9", cfg.Fal.ModelFill)
+	assert.InDelta(t, 0.011, cfg.Fal.UnitUSDOutpaint, 1e-9)
+	assert.InDelta(t, 7, cfg.Fal.UnitsCeilingOutpaint, 1e-9)
+	assert.InDelta(t, 0.013, cfg.Fal.UnitUSDFill, 1e-9)
+	assert.InDelta(t, 5, cfg.Fal.UnitsCeilingFill, 1e-9)
+
+	c := fal.New(cfg.Fal)
+	assert.Equal(t, "fal-ai/bria/expand", c.ModelFor(fal.RouteOutpaint))
+	assert.Equal(t, "vendor/fill/v9", c.ModelFor(fal.RouteFill))
+	out, ok := c.RouteCeilingUSD(fal.RouteOutpaint)
+	assert.True(t, ok)
+	assert.Equal(t, "0.077", out.String(), "outpaint reserve = its own tariff × its own ceiling")
+	fill, ok := c.RouteCeilingUSD(fal.RouteFill)
+	assert.True(t, ok)
+	assert.Equal(t, "0.065", fill.String(), "fill reserve = its own tariff × its own ceiling")
+	assert.Equal(t, "0.022", c.CostRouteUSD(fal.RouteOutpaint, 2).String())
+	assert.Equal(t, "0.026", c.CostRouteUSD(fal.RouteFill, 2).String())
+}
+
+// TestTheGenericFalRoutesFALL_BACK_TO_THE_CODE_DEFAULTS — nothing set: the code slugs and the code
+// ceilings, and both reserves are bounded (the shape beta ships with).
+func TestTheGenericFalRoutesFALL_BACK_TO_THE_CODE_DEFAULTS(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+	t.Setenv("FAL_KEY", "fal-test-key")
+
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	c := fal.New(cfg.Fal)
+	assert.Equal(t, fal.DefaultModelOutpaint, c.ModelFor(fal.RouteOutpaint))
+	assert.Equal(t, fal.DefaultModelFill, c.ModelFor(fal.RouteFill))
+	for _, r := range []fal.Route{fal.RouteOutpaint, fal.RouteFill} {
+		got, ok := c.RouteCeilingUSD(r)
+		assert.True(t, ok, "no tariff → the code ceiling, bounded")
+		assert.Equal(t, fal.EstimatedRouteUSD(r).String(), got.String())
+	}
 }

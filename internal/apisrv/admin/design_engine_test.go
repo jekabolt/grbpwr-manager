@@ -1,0 +1,438 @@
+package admin
+
+import (
+	"testing"
+
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+func engineServer() *Server {
+	s := &Server{}
+	s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	return s
+}
+
+// designRefuseEngine — both engine doors as StartDesignRun asks them of a fresh (non-rerun) request,
+// where the spoken and the effective params are the same message.
+func designRefuseEngine(s *Server, kind string, p *pb_common.DesignRunParams) error {
+	if err := s.designRefuseImageOptions(kind, p); err != nil {
+		return err
+	}
+	return s.designRefuseImageReferenceCeiling(kind, p)
+}
+
+func withImage(p *pb_common.DesignRunParams, img *pb_common.DesignImageOptions) *pb_common.DesignRunParams {
+	p.Image = img
+	return p
+}
+
+// TestThePerRunEngineIsREFUSED_BY_THE_TABLE_BEFORE_MONEY — one row per shape, one machine word each.
+func TestThePerRunEngineIsREFUSED_BY_THE_TABLE_BEFORE_MONEY(t *testing.T) {
+	s := engineServer()
+	pic := &pb_common.DesignFreeformItem{MediaId: 11}
+	ff := func(img *pb_common.DesignImageOptions) *pb_common.DesignRunParams {
+		return withImage(ffParams(entity.DesignFreeformPresetFree, pic), img)
+	}
+	for _, c := range []struct {
+		name   string
+		kind   string
+		params *pb_common.DesignRunParams
+		want   string
+	}{
+		{"image on threed", entity.DesignRunKindThreed,
+			withImage(&pb_common.DesignRunParams{}, &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2}),
+			entity.DesignErrorCodeImageOptionsForbidden},
+		{"image on cutout", entity.DesignRunKindCutout,
+			withImage(&pb_common.DesignRunParams{}, &pb_common.DesignImageOptions{AspectRatio: "1:1"}),
+			entity.DesignErrorCodeImageOptionsForbidden},
+		{"image on vector", entity.DesignRunKindVector,
+			withImage(&pb_common.DesignRunParams{}, &pb_common.DesignImageOptions{Quality: "low"}),
+			entity.DesignErrorCodeImageOptionsForbidden},
+		{"unknown slug", entity.DesignRunKindFreeform,
+			ff(&pb_common.DesignImageOptions{Model: "google/gemini-3-pro-image"}),
+			entity.DesignErrorCodeUnknownImageModel},
+		{"xhigh is not offered", entity.DesignRunKindFreeform,
+			ff(&pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2, Quality: "xhigh"}),
+			entity.DesignErrorCodeQualityNotSupported},
+		{"a ratio the engine does not draw", entity.DesignRunKindRender,
+			withImage(&pb_common.DesignRunParams{}, &pb_common.DesignImageOptions{AspectRatio: "5:4"}),
+			entity.DesignErrorCodeAspectNotSupported},
+		{"transparent on gpt-image-2", entity.DesignRunKindFlat,
+			withImage(&pb_common.DesignRunParams{}, &pb_common.DesignImageOptions{
+				Model: designgen.EngineGPTImage2, Background: "transparent"}),
+			entity.DesignErrorCodeBackgroundNotSupported},
+		{"too many images for one recolour call", entity.DesignRunKindRecolor,
+			withImage(recolorWithCloths(16), &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2}),
+			"too_many_pictures"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, ffReason(t, designRefuseEngine(s, c.kind, c.params)))
+		})
+	}
+
+	t.Run("legal shapes pass", func(t *testing.T) {
+		for _, img := range []*pb_common.DesignImageOptions{
+			nil,
+			{},
+			{Model: designgen.EngineGPTImage2, Quality: "high", AspectRatio: "3:4"},
+			{Quality: "low"}, // the default engine
+			{Model: designgen.EngineGPTImage25, Background: "transparent", AspectRatio: "auto"},
+		} {
+			require.NoError(t, designRefuseEngine(s, entity.DesignRunKindFreeform, ff(img)))
+		}
+		require.NoError(t, designRefuseEngine(s, entity.DesignRunKindRecolor,
+			withImage(recolorWithCloths(15), &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2})),
+			"one photograph and fifteen cloths is sixteen images: the ceiling, inclusive")
+	})
+
+	t.Run("a server with no engine table takes no params.image", func(t *testing.T) {
+		require.Equal(t, entity.DesignErrorCodeUnknownImageModel, ffReason(t,
+			(&Server{}).designRefuseImageOptions(entity.DesignRunKindFreeform,
+				ff(&pb_common.DesignImageOptions{Quality: "low"}))))
+		require.NoError(t, (&Server{}).designRefuseImageOptions(entity.DesignRunKindFreeform, ff(nil)),
+			"no block is today's request, engines or not")
+	})
+}
+
+func recolorWithCloths(n int) *pb_common.DesignRunParams {
+	c := &pb_common.DesignColourRecipe{}
+	for i := 0; i < n; i++ {
+		c.Fabrics = append(c.Fabrics, &pb_common.DesignFabricUse{MediaId: int32(100 + i)})
+	}
+	if n > 0 {
+		c.FabricMediaId = 100 // the client's echo of the first cloth: counted once
+	}
+	return &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11}, Colour: c}
+}
+
+// TestTheReserveOfANamedEngineIsITS_ABSOLUTE_CEILING — ceiling × calls + $0.01 × images × calls.
+func TestTheReserveOfANamedEngineIsITS_ABSOLUTE_CEILING(t *testing.T) {
+	s := engineServer()
+	three := withImage(ffParams(entity.DesignFreeformPresetFree,
+		&pb_common.DesignFreeformItem{MediaId: 11},
+		&pb_common.DesignFreeformItem{MediaId: 12},
+		&pb_common.DesignFreeformItem{MediaId: 13}),
+		&pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2, Quality: "high"})
+
+	got := s.designEstimateForRun(entity.DesignRunKindFreeform, 1, three, nil)
+	require.True(t, got.Valid)
+	require.Equal(t, "0.35", got.Decimal.String(), "0.32 high + 3 × 0.01")
+
+	three.Image.Quality = "low"
+	require.Equal(t, "0.06", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, three, nil).Decimal.String())
+
+	three.Image.Quality = "" // unstated tier = the deployment's dial, which the reserve cannot read
+	require.Equal(t, "0.35", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, three, nil).Decimal.String())
+
+	// G-02 Codex 8: a WINDOWED run carries only its pictures — the marked picture is replaced by the
+	// crop, and no outlined copy or area crop is made. MUTATION (measured red): count
+	// pictures + regions + marked for a windowed run again.
+	t.Run("windowed runs count what is sent", func(t *testing.T) {
+		high := &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2, Quality: "high"}
+		retouch := withImage(ffParams(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1, "remove the stain")), high)
+		require.Equal(t, 1, designFreeformCallImages(retouch))
+		require.Equal(t, "0.33", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, retouch, nil).Decimal.String(),
+			"0.32 high + the one crop × 0.01")
+		hardware := withImage(ffParams(entity.DesignFreeformPresetAddHardware, ffItem(11, "", 1),
+			ffItem(12, entity.DesignFreeformRoleHardware, 0)), high)
+		require.Equal(t, 2, designFreeformCallImages(hardware), "the window crop + the hardware picture")
+		require.Equal(t, "0.34", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, hardware, nil).Decimal.String())
+		// Unwindowed control: two areas on one add_hardware picture → no window, every derivative sent.
+		twoAreas := withImage(ffParams(entity.DesignFreeformPresetAddHardware, ffItem(11, "", 2),
+			ffItem(12, entity.DesignFreeformRoleHardware, 0)), high)
+		require.Equal(t, 2+2+1, designFreeformCallImages(twoAreas))
+	})
+
+	t.Run("recolour: every call carries its photograph and the cloths", func(t *testing.T) {
+		p := withImage(recolorWithCloths(2), &pb_common.DesignImageOptions{Quality: "medium"})
+		p.ExtraInputMediaIds = []int32{11, 12, 13, 14}
+		out := designRequestedOutputs(entity.DesignRunKindRecolor, p)
+		require.Equal(t, 4, out)
+		// 4 × 0.10 + 4 calls × 3 images × 0.01
+		require.Equal(t, "0.52", s.designEstimateForRun(entity.DesignRunKindRecolor, out, p, nil).Decimal.String())
+	})
+
+	t.Run("a run naming no engine: the default engine's top tier with references, never below the kind", func(t *testing.T) {
+		p := ffParams(entity.DesignFreeformPresetTryon,
+			&pb_common.DesignFreeformItem{MediaId: 11}, &pb_common.DesignFreeformItem{MediaId: 12})
+		require.Equal(t, "0.34", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, p, nil).Decimal.String(),
+			"0.32 + 2 pictures × 0.01")
+		for _, kind := range []string{
+			entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindRecolor,
+			entity.DesignRunKindPattern, entity.DesignRunKindFreeform,
+		} {
+			got := s.designEstimateForRun(kind, 1, &pb_common.DesignRunParams{}, nil)
+			require.Truef(t, got.Valid && got.Decimal.GreaterThanOrEqual(designEstimateFor(kind, 1).Decimal),
+				"%s reserves %s, under its own table %s", kind, got.Decimal, designEstimateFor(kind, 1).Decimal)
+		}
+		require.Equal(t, designEstimateFor(entity.DesignRunKindThreed, 1),
+			s.designEstimateForRun(entity.DesignRunKindThreed, 1, &pb_common.DesignRunParams{}, nil),
+			"a non-image kind keeps its own price")
+		require.Equal(t, designEstimateFor(entity.DesignRunKindFreeform, 1),
+			(&Server{}).designEstimateForRun(entity.DesignRunKindFreeform, 1, p, nil),
+			"no engine table: the kind's own price")
+
+		// A default engine cheaper than the kind's table never lowers the unnamed reserve.
+		cheap := &Server{}
+		cheap.SetDesignEngines(func() []designgen.Engine {
+			return []designgen.Engine{{Slug: "x/cheap", IsDefault: true, MaxRefs: 16,
+				InputUSD: decimal.Zero, Tiers: []designgen.Tier{{UI: "high", Dial: designgen.TierDialQuality,
+					Value: "high", CeilingUSD: decimal.RequireFromString("0.01")}}}}
+		})
+		require.Equal(t, designEstimateFor(entity.DesignRunKindRender, 1),
+			cheap.designEstimateForRun(entity.DesignRunKindRender, 1, &pb_common.DesignRunParams{}, nil))
+	})
+
+	t.Run("the top tier never reserves less than the path it replaces", func(t *testing.T) {
+		for _, kind := range []string{
+			entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindRecolor,
+			entity.DesignRunKindPattern, entity.DesignRunKindFreeform,
+		} {
+			for _, e := range designgen.EngineTable("") {
+				ceiling := e.CeilingUSD("")
+				require.Truef(t, ceiling.GreaterThanOrEqual(designPriceEstimate[kind]),
+					"%s on %s reserves %s against today's %s", kind, e.Slug, ceiling, designPriceEstimate[kind])
+			}
+		}
+	})
+
+	t.Run("every accepted engine and tier is priced", func(t *testing.T) {
+		custom := &Server{}
+		custom.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable(designgen.EngineGPTImage25) })
+		for _, e := range designgen.EngineTable(designgen.EngineGPTImage25) {
+			for _, tier := range append(designEngineTierWords(e), "") {
+				p := withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+					&pb_common.DesignImageOptions{Model: e.Slug, Quality: tier})
+				require.NoError(t, custom.designRefuseImageOptions(entity.DesignRunKindFreeform, p))
+				got := custom.designEstimateForRun(entity.DesignRunKindFreeform, 1, p, nil)
+				require.Truef(t, got.Valid && got.Decimal.GreaterThan(decimal.Zero), "%s/%q is unpriced", e.Slug, tier)
+			}
+		}
+	})
+}
+
+// TestStartDesignRunPRICES_AND_REFUSES_BY_THE_ENGINE — the same two rules at the live door: the
+// row the store receives carries the engine's reserve, and a refused engine never reaches it.
+func TestStartDesignRunPRICES_AND_REFUSES_BY_THE_ENGINE(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	rig.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+	req := designStartRequest(entity.DesignRunKindFreeform)
+	req.Params = withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+		&pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2, Quality: "medium"})
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent)
+	require.True(t, rig.sent.PriceEstimate.Valid)
+	require.Equal(t, "0.11", rig.sent.PriceEstimate.Decimal.String(), "0.10 medium + 1 picture × 0.01")
+
+	bad := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	bad.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	bad.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+	req = designStartRequest(entity.DesignRunKindFreeform)
+	req.Params = withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+		&pb_common.DesignImageOptions{Model: "nobody/knows"})
+	_, err = bad.srv.StartDesignRun(designRunCtx(), req)
+	require.Equal(t, entity.DesignErrorCodeUnknownImageModel, ffReason(t, err))
+	require.Nil(t, bad.sent, "refused before the reserve")
+}
+
+// TestAnUnknownDefaultSlugOFFERS_NO_ENGINE — G-02 Codex 2 at the door and in the reserve: with an
+// OPENROUTER_MODEL_IMAGE the table has no row for, no engine is advertised or accepted, and an
+// unnamed run is reserved by the kind's own table — never priced as gpt-image-2.
+func TestAnUnknownDefaultSlugOFFERS_NO_ENGINE(t *testing.T) {
+	s := &Server{}
+	s.SetDesignGenerationEnabled(true)
+	s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("openai/gpt-image-1-mini") })
+	require.Empty(t, s.designImageModels())
+	require.NotNil(t, s.designImageModels(), "present-empty: the client draws no picker")
+	p := withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+		&pb_common.DesignImageOptions{AspectRatio: "21:9"})
+	require.Equal(t, entity.DesignErrorCodeUnknownImageModel, ffReason(t, designRefuseEngine(s, entity.DesignRunKindFreeform, p)),
+		"a ratio nobody knows the engine draws is not accepted")
+	require.Equal(t, designEstimateFor(entity.DesignRunKindFreeform, 1),
+		s.designEstimateForRun(entity.DesignRunKindFreeform, 1, ffParams(entity.DesignFreeformPresetFree,
+			&pb_common.DesignFreeformItem{MediaId: 11}), nil),
+		"an unnamed run is reserved by the kind's own table, not by a borrowed GPT row")
+}
+
+// TestAStatedEngineFREEZES_ITS_SLUG — G-02 Codex 5: a params.image with words and no model is stored
+// with the default row's slug, so a later OPENROUTER_MODEL_IMAGE move changes neither the run nor
+// its reruns; an absent / empty block stays the legacy deployment-default run. MUTATION (measured
+// red): drop the designFreezeImageModel call.
+func TestAStatedEngineFREEZES_ITS_SLUG(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		img  *pb_common.DesignImageOptions
+		want string // '' = no image block stored
+	}{
+		{"a ratio and no model", &pb_common.DesignImageOptions{AspectRatio: "3:4"}, designgen.EngineGPTImage2},
+		{"a tier and no model", &pb_common.DesignImageOptions{Quality: "low"}, designgen.EngineGPTImage2},
+		{"a named model stays", &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage25}, designgen.EngineGPTImage25},
+		{"no block stays legacy", nil, ""},
+		{"an empty block stays legacy", &pb_common.DesignImageOptions{}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+			rig.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+			req := designStartRequest(entity.DesignRunKindFreeform)
+			req.Params = withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}), c.img)
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			require.NoError(t, err)
+			var stored pb_common.DesignRunParams
+			require.NoError(t, designUnmarshalJSON(rig.sent.Params, &stored))
+			require.Equal(t, c.want, stored.GetImage().GetModel())
+		})
+	}
+}
+
+// TestTheEngineVocabularyIsASKED_OF_THE_SPEAKER — G-02 Fable m-5: a SILENT rerun of a run frozen
+// with a slug the table no longer lists passes the door (the worker sends its frozen words; the
+// reserve falls back to the kind's table), while a spoken rerun naming that slug is refused.
+// MUTATION (measured red): designRefuseImageOptions asked of the effective params again.
+func TestTheEngineVocabularyIsASKED_OF_THE_SPEAKER(t *testing.T) {
+	frozen := withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}),
+		&pb_common.DesignImageOptions{Model: "openai/gpt-image-1", Quality: "high"})
+	parent := &entity.DesignRun{Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFreeform,
+		Params: pgMarshal(t, frozen)}
+	for _, c := range []struct {
+		name   string
+		spoken *pb_common.DesignRunParams
+		want   string
+	}{
+		{"silent rerun of a retired slug", nil, ""},
+		{"spoken rerun naming the retired slug", frozen, entity.DesignErrorCodeUnknownImageModel},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+			rig.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+			rig.design.EXPECT().GetRun(mock.Anything, parent.Id).Return(parent, nil).Maybe()
+			req := designStartRequest(entity.DesignRunKindFreeform)
+			req.RerunOfRunId = int32(parent.Id)
+			req.Params = c.spoken
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			if c.want == "" {
+				require.NoError(t, err)
+				require.True(t, rig.sent.PriceEstimate.Decimal.Equal(designEstimateFor(entity.DesignRunKindFreeform, 1).Decimal),
+					"an unlisted frozen slug is reserved by the kind's own table")
+				return
+			}
+			require.Equal(t, c.want, ffReason(t, err))
+			require.Nil(t, rig.sent)
+		})
+	}
+}
+
+// TestTheFlaggedEnginesAtTHE_DOOR — B-16 with both flags on: `quality` on a resolution engine is a
+// tier word or quality_not_supported (Seedream has no medium); Gemini lists no `auto`; a stated
+// background is refused; and outputs_not_supported never refuses a run whose outputs are separate
+// n = 1 calls (a recolour's photographs, per_view views). MUTATION (measured red): drop the recolour
+// / per_view exclusion in designImageVariantsPerCall — a three-photo recolour on Gemini is refused.
+func TestTheFlaggedEnginesAtTHE_DOOR(t *testing.T) {
+	s := &Server{}
+	s.SetDesignEngines(func() []designgen.Engine {
+		return designgen.EngineTable("", designgen.EngineFlags{Gemini: true, Seedream: true})
+	})
+	pic := &pb_common.DesignFreeformItem{MediaId: 11}
+	ff := func(img *pb_common.DesignImageOptions) *pb_common.DesignRunParams {
+		return withImage(ffParams(entity.DesignFreeformPresetFree, pic), img)
+	}
+	refused := func(t *testing.T, err error, want string) {
+		t.Helper()
+		require.Equal(t, want, ffReason(t, err))
+	}
+
+	require.NoError(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "high", AspectRatio: "4:5"})))
+	require.NoError(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineSeedream5Pro, Quality: "low", AspectRatio: "9:21"})))
+	refused(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineSeedream5Pro, Quality: "medium"})),
+		entity.DesignErrorCodeQualityNotSupported)
+	refused(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, AspectRatio: "auto"})),
+		entity.DesignErrorCodeAspectNotSupported)
+	refused(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Background: "opaque"})),
+		entity.DesignErrorCodeBackgroundNotSupported)
+
+	gemini := &pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "low"}
+	recolor := withImage(&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{1, 2, 3}}, gemini)
+	require.Equal(t, 3, designRequestedOutputs(entity.DesignRunKindRecolor, recolor))
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRecolor, recolor),
+		"three photographs are three n = 1 calls, not n = 3")
+	perView := withImage(&pb_common.DesignRunParams{Layout: designLayoutPerView,
+		Views: []string{"front", "back", "side"}}, gemini)
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRender, perView),
+		"three views are three n = 1 calls")
+	require.Equal(t, 1, designImageVariantsPerCall(entity.DesignRunKindRender,
+		&pb_common.DesignRunParams{Layout: designLayoutOne, Views: []string{"front", "back"}}),
+		"a composite sheet is one picture")
+	// The door asks the SPOKEN params, before the layout is normalised: an unstated layout is the
+	// composite sheet (the door writes `one`, the worker reads it as one call), not n = views.
+	unstated := withImage(&pb_common.DesignRunParams{Views: []string{"front", "back"}}, gemini)
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRender, unstated),
+		"an unstated layout is one sheet, one n = 1 call")
+	// The fal kinds have no engine, flags on or off: params.image is refused before the table is read.
+	for _, kind := range []string{entity.DesignRunKindExtend, entity.DesignRunKindInpaint} {
+		refused(t, s.designRefuseImageOptions(kind, withImage(&pb_common.DesignRunParams{}, gemini)),
+			entity.DesignErrorCodeImageOptionsForbidden)
+	}
+
+	// Flags off: the same Gemini run is an unknown model, for free.
+	refused(t, designRefuseEngine(engineServer(), entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "high"})),
+		entity.DesignErrorCodeUnknownImageModel)
+}
+
+// TestTheP3BandCARRIES_32_33_AND_THE_FLAGGED_TABLE — the integration seam of B-13/B-15/B-16 on ONE
+// band: field 32 (run_kinds) present, field 33 (suggest_prompts_model) the Ideas slug with a key and
+// empty without, and image_models read from the same table the door checks (a flagged row the band
+// advertises is one the door accepts). MUTATIONS (measured red): drop the SuggestPromptsModel line
+// from GetDesignBand; build SetDesignEngines without the flags.
+func TestTheP3BandCARRIES_32_33_AND_THE_FLAGGED_TABLE(t *testing.T) {
+	band := func(ai *openrouter.Client, flags designgen.EngineFlags) (*Server, *pb_admin.GetDesignBandResponse) {
+		repo := mocks.NewMockRepository(t)
+		d := mocks.NewMockDesign(t)
+		repo.EXPECT().Design().Return(d).Maybe()
+		d.EXPECT().GetBand(mock.Anything, mock.Anything, mock.Anything).Return(&entity.DesignBand{}, nil).Maybe()
+		s := &Server{repo: repo, aiOps: ai}
+		s.SetDesignGenerationEnabled(true)
+		s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("", flags) })
+		resp, err := s.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
+		require.NoError(t, err)
+		require.NotNil(t, resp.GetRunKinds(), "field 32 present")
+		return s, resp
+	}
+	slugs := func(r *pb_admin.GetDesignBandResponse) []string {
+		out := []string{}
+		for _, m := range r.GetImageModels() {
+			out = append(out, m.GetSlug())
+		}
+		return out
+	}
+
+	s, on := band(openrouter.New(openrouter.Config{APIKey: "k"}), designgen.EngineFlags{Gemini: true, Seedream: true})
+	require.Equal(t, openrouter.DefaultIdeasModel, on.GetSuggestPromptsModel(), "field 33 with a key")
+	require.Contains(t, slugs(on), designgen.EngineGemini3Pro)
+	require.Contains(t, slugs(on), designgen.EngineSeedream5Pro)
+	gemini := &pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "high"}
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindFreeform,
+		withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}), gemini)),
+		"advertised by the band = accepted by the door")
+
+	_, off := band(nil, designgen.EngineFlags{})
+	require.Empty(t, off.GetSuggestPromptsModel(), "no AI client: the Ideas door is closed")
+	require.NotContains(t, slugs(off), designgen.EngineGemini3Pro)
+	require.NotContains(t, slugs(off), designgen.EngineSeedream5Pro)
+}

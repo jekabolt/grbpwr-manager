@@ -65,17 +65,36 @@ func (p falThreedProvider) Produces() []string { return []string{ContentTypeGLB,
 // the instant the submit returns means a worker that dies during the minutes hitem3d takes resumes
 // for nothing instead of buying a second model.
 func (p falThreedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
+	return p.execute(ctx, job, threedJobOptions(job))
+}
+
+// execute is Execute with the run's options stated rather than read, so a probe can drive the
+// options without the Job fields that B-core owns.
+func (p falThreedProvider) execute(ctx context.Context, job Job, opts threedOptions) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
+	}
+	// THE SLUG THIS BUILD IS BOUGHT UNDER, remembered with its id (G-03 r2, Codex 4) — see the
+	// locator in outpaint.go. The namespace search in fal.Await could not recover one custom
+	// FAL_MODEL_3D replaced by another; the locator does. Refused before the submit if it could not
+	// be stored.
+	model := p.c.Model()
+	if err := falLocatorFits(model); err != nil {
+		return nil, err
 	}
 	req, err := falViews(job)
 	if err != nil {
 		return nil, err
 	}
+	req.Model = model
+	// THE RUN'S OWN OPTIONS, verbatim. Empty = today's constants, and the transport then writes the
+	// exact body it wrote before the options existed (TestBenchPlate3DBodyIsByteIdentical).
+	req.Texture, req.PBR, req.Quality = opts.Texture, opts.PBR, opts.Quality
 	// THE ONLY WORDS THIS ROUTE SENDS, and they describe the SURFACE — see Job.SurfaceSteer. On a
 	// model family with nowhere to put them (hitem3d) the transport drops them; that is why the
-	// history row asks AcceptsTexturePrompt rather than assuming the text travelled.
-	req.TexturePrompt = job.SurfaceSteer
+	// history row asks AcceptsTexturePrompt rather than assuming the text travelled. An UNTEXTURED
+	// build has no texturing stage to steer, so nothing is handed over at all (SentPrompt agrees).
+	req.TexturePrompt = steerFor(job.SurfaceSteer, opts)
 	if job.SurfaceSteer != "" && !p.c.AcceptsTexturePrompt() {
 		// ⚠ THE ONE PLACE THE TWO KINDS OF SILENCE ARE TOLD APART — see SentPrompt on why the
 		// COLUMN does not tell them apart and must not. «This run said nothing about its surface»
@@ -93,7 +112,7 @@ func (p falThreedProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	// No price yet, and NULL is the schema's word for that. fal reports what a request billed on
 	// the RESULT fetch, so the charge is recorded by the collect — writing a zero here would say
 	// the model was free.
-	return &Outcome{RequestID: id, Model: p.c.Model(), Pending: true}, nil
+	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
 }
 
 // falViews turns the run's plates into the provider's NAMED slots.
@@ -180,11 +199,14 @@ func falViews(job Job) (fal.Request3D, error) {
 // nowhere else: Execute logs it, because «the model has no text field» is a CONFIGURATION a person
 // can change (DESIGN_THREED_PROVIDER / FAL_MODEL_3D), while «the colourway says nothing» is a
 // property of the run, visible in its own params on the same panel.
+//
+// AN UNTEXTURED BUILD SENDS NO WORDS EITHER (texture_prompt «Requires should_texture»), and the
+// column says so by the same empty string — see threedSentSteer.
 func (p falThreedProvider) SentPrompt(job Job) string {
 	if !p.c.AcceptsTexturePrompt() {
 		return ""
 	}
-	return job.SurfaceSteer
+	return threedSentSteer(job)
 }
 
 // Collect is the FREE half: one status lookup, then — once the request has completed — the bytes.
@@ -195,8 +217,11 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
+	// The locator's slug first (a bare legacy id: today's FAL_MODEL_3D, then the known namespaces).
+	// The row keeps reporting the LOCATOR it was handed, so one charge is keyed by one string.
+	slug, id := splitFalLocator(requestID)
 	var model, thumb bytes.Buffer
-	res, err := p.c.Await(ctx, requestID, fal.Sink{Model: &model, Thumbnail: &thumb})
+	res, err := p.c.AwaitAt(ctx, slug, id, fal.Sink{Model: &model, Thumbnail: &thumb})
 	if err != nil {
 		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as on the Meshy and vector
 		// routes: the transport attaches what a failed call billed when it knew, and Charge reads
@@ -212,7 +237,7 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		// money about an old model.
 		if units, ok := fal.Charge(err); ok {
 			model := fal.ChargedModel(err)
-			if usd := p.c.CostUSDFor(model, units); usd.IsPositive() {
+			if usd := p.c.CostUSDForQuality(model, units, threedJobOptions(job).Quality); usd.IsPositive() {
 				return &Outcome{
 					RequestID: requestID,
 					Model:     model,
@@ -231,12 +256,17 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	// ends up showing a price_actual that disagrees with its own price_estimate for a reason nobody
 	// can reconstruct from the row. What a build was worth is a property of the request, not of the
 	// configuration that outlived it.
-	out := &Outcome{RequestID: res.RequestID, Model: res.Model}
-	if usd := p.c.CostUSDFor(res.Model, res.BillableUnits); usd.IsPositive() {
+	out := &Outcome{RequestID: requestID, Model: res.Model}
+	// ⚠ AND AT THE BUILD'S OWN TIER. Without a tariff the charge is fal's published per-build price,
+	// and a detailed build («ultra mode») is $1.40, not $1.20: booking it at the standard price would
+	// understate real spend by the surcharge on every detailed run. The tier comes off the frozen
+	// params through the job, the same place the submit read it from.
+	if usd := p.c.CostUSDForQuality(res.Model, res.BillableUnits, threedJobOptions(job).Quality); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	} else {
 		out.Price = decimal.NullDecimal{}
 	}
+	logThreedCeilingBreach(ctx, p.c, job, requestID, res.BillableUnits, out.Price)
 	if res.UnitsAssumed {
 		// ⚠ SAID OUT LOUD, EVERY TIME. The ledger gets a number either way — a paid build recorded
 		// as free is the worse lie — but «the provider named this» and «we assumed one unit» are
@@ -262,4 +292,33 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		})
 	}
 	return out, nil
+}
+
+// logThreedCeilingBreach — what the collect says when fal billed more units than FAL_UNITS_CEILING_3D.
+//
+// ⚠ TWO CLAIMS, AND ONLY ONE OF THEM FOLLOWS FROM THE UNITS (G-02 r2, Codex 5). The door reserves
+// max(the static floor, tariff × ceiling), so billed units above the ceiling say only that the
+// CEILING is wrong — the static floor may still have covered the booking ($0.01 × 100 units = $1.00
+// under a $1.20 reservation). «The reservation was below its booking» is asserted only when the
+// booked charge actually exceeds what this run reserved per build; without a stored estimate the
+// claim is not made at all.
+func logThreedCeilingBreach(ctx context.Context, c *fal.Client, job Job, requestID string, units float64, booked decimal.NullDecimal) {
+	ceiling, ok := c.UnitsCeiling3D()
+	if !ok || units <= ceiling {
+		return
+	}
+	attrs := []any{
+		slog.Int("run_id", job.RunID), slog.String("request_id", requestID),
+		slog.Float64("units", units), slog.Float64("ceiling", ceiling),
+		slog.String("booked_usd", booked.Decimal.String()),
+	}
+	if job.ThreedReservedUSD.Valid && booked.Valid && booked.Decimal.GreaterThan(job.ThreedReservedUSD.Decimal) {
+		slog.Default().ErrorContext(ctx, "3D: fal billed more units than FAL_UNITS_CEILING_3D and the "+
+			"run's reservation was below its booking — raise the ceiling",
+			append(attrs, slog.String("reserved_usd", job.ThreedReservedUSD.Decimal.String()))...)
+		return
+	}
+	slog.Default().WarnContext(ctx, "3D: fal billed more units than FAL_UNITS_CEILING_3D — raise the "+
+		"ceiling (this run's reservation still covered the booking, or no reservation was recorded)",
+		attrs...)
 }

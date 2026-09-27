@@ -145,6 +145,22 @@ var ErrPromptTooLong = fmt.Errorf("meshy: texture_prompt is capped at %d charact
 // the request is the one failure category a retry provably cannot fix.
 var ErrBadRequest = errors.New("meshy: the provider refused the request")
 
+// The per-run 3D options (DesignThreedParams.texture / pbr / quality, PLAYGROUND phase 2), spelled
+// exactly as the frozen params spell them. The EMPTY STRING is a legal value of each and means «not
+// stated», i.e. today's constant: textured, no PBR, the provider's standard geometry and texture.
+const (
+	OptionOn        = "on"
+	OptionOff       = "off"
+	QualityStandard = "standard"
+	QualityDetailed = "detailed"
+)
+
+// ErrBadOption is returned, LOCALLY and before the submit that is the payment, for an option this
+// client cannot send: an unknown word, or PBR on an untextured task (Meshy: «enable_pbr … Requires
+// should_texture»). The door refuses both first. It wraps ErrBadRequest so the worker classifies it
+// as the non-retryable «this request is wrong» it is.
+var ErrBadOption = fmt.Errorf("meshy: a 3D option this route cannot send: %w", ErrBadRequest)
+
 // ErrBadImageURL is returned for a reference that is neither an http(s) url nor a data: uri. The
 // provider must be able to FETCH these itself, so a bucket key, a relative path or a file:// url is
 // a mistake worth catching here rather than as a provider-side failure minutes later.
@@ -354,6 +370,45 @@ func (c *Client) PollTimeout() time.Duration {
 	return c.cfg.PollTimeout
 }
 
+// Credits of one multi-image-to-3d task (https://docs.meshy.ai/en/api/pricing, read 2026-09-27):
+// «Mesh only: 20», «Mesh with 2K/4K textures: 30», «Ultra geometry surcharge: +5». The page names the
+// surcharge for Text to 3D Preview; it is taken for a detailed multi-image task as well — the safe
+// side of an estimate.
+const (
+	taskCreditsMeshOnly          = 20
+	taskCreditsTextured          = 30
+	taskCreditsDetailedSurcharge = 5
+)
+
+// EstimatedTaskCredits — the credits one task with these options is expected to consume
+// (texture ” | on | off, quality ” | standard | detailed; ” = today's textured standard build).
+func EstimatedTaskCredits(texture, quality string) int {
+	credits := taskCreditsTextured
+	if strings.TrimSpace(texture) == OptionOff {
+		credits = taskCreditsMeshOnly
+	}
+	if strings.TrimSpace(quality) == QualityDetailed {
+		credits += taskCreditsDetailedSurcharge
+	}
+	return credits
+}
+
+// EstimatedTaskUSD — EstimatedTaskCredits at the UNCONFIGURED credit rate (defaultCreditUSD). The
+// door's static floor reads it; a configured rate is TaskCeilingUSD.
+func EstimatedTaskUSD(texture, quality string) decimal.Decimal {
+	return decimal.NewFromFloat(defaultCreditUSD).Mul(decimal.NewFromInt(int64(EstimatedTaskCredits(texture, quality))))
+}
+
+// TaskCeilingUSD — EstimatedTaskCredits at THIS client's effective rate (MESHY_CREDIT_USD, or the
+// default): the number the door reserves for one task, priced by the same rate CostUSD books with
+// (G-02, Codex 4). Nil-safe: a nil client answers the default rate.
+func (c *Client) TaskCeilingUSD(texture, quality string) decimal.Decimal {
+	if c == nil {
+		return EstimatedTaskUSD(texture, quality)
+	}
+	return decimal.NewFromFloat(c.cfg.CreditUSD).Mul(decimal.NewFromInt(int64(EstimatedTaskCredits(texture, quality))))
+}
+
 // CostUSD converts consumed credits into money at the configured rate (MESHY_CREDIT_USD). It is
 // the only place that knows the conversion, so the price written into an attempt row and the price
 // shown on a button cannot drift apart.
@@ -378,6 +433,17 @@ type Request struct {
 	// AIModel optionally names the provider's generation model. Empty — the normal state — means
 	// the provider's own current default, deliberately: see doc.go on baked-in slugs.
 	AIModel string
+	// Texture / PBR / Quality are the run's own options: '' | on | off, '' | on | off,
+	// '' | standard | detailed. Empty is today's constant for each, so a request that states none
+	// of them sends the exact body this client sent before they existed.
+	//
+	// «detailed» = `geometry_resolution: "2k"` + `texture_resolution: "4k"` (Meshy docs,
+	// https://docs.meshy.ai/en/api/multi-image-to-3d, read 2026-09-27: geometry_resolution
+	// standard | 2k, «2k requires meshy-7.1 or latest»; texture_resolution 2k | 4k | 8k, default 2k).
+	// See Submit for why ai_model is NOT pinned and why 4k is dropped when PBR is on.
+	Texture string
+	PBR     string
+	Quality string
 }
 
 // Sink is where the bytes of a finished task go. Model is required. Thumbnail is optional and, if
@@ -433,6 +499,10 @@ func (c *Client) Submit(ctx context.Context, req Request) (string, error) {
 	if prompt := strings.TrimSpace(req.TexturePrompt); len([]rune(prompt)) > MaxTexturePrompt {
 		return "", fmt.Errorf("%w (got %d)", ErrPromptTooLong, len([]rune(prompt)))
 	}
+	opts, err := resolveOptions(req)
+	if err != nil {
+		return "", err
+	}
 	images := make([]string, 0, len(req.ImageURLs))
 	for i, raw := range req.ImageURLs {
 		u := strings.TrimSpace(raw)
@@ -447,13 +517,36 @@ func (c *Client) Submit(ctx context.Context, req Request) (string, error) {
 		// Exactly one format, always. The band shows GLB and only GLB.
 		TargetFormats: []string{formatGLB},
 		// A flat drawing becomes a garment only with its colour and print on it; an untextured
-		// mesh would answer a different question than the one the designer asked.
-		ShouldTexture: true,
-		// PBR maps quadruple the download for lighting nuance a product tile does not show.
-		EnablePBR:       false,
+		// mesh would answer a different question than the one the designer asked — which is why
+		// an unstated option means textured, and `off` is the person asking on purpose.
+		ShouldTexture: opts.texture,
+		// PBR maps quadruple the download for lighting nuance a product tile does not show, so
+		// they are off unless the run asks.
+		EnablePBR:       opts.pbr,
 		TexturePrompt:   strings.TrimSpace(req.TexturePrompt),
 		TargetPolycount: req.TargetPolycount,
 		AIModel:         strings.TrimSpace(req.AIModel),
+	}
+	if !opts.texture {
+		// texture_prompt steers the texturing stage, and an untextured task has none. The
+		// designgen route reports the same empty string as what it sent (SentPrompt).
+		body.TexturePrompt = ""
+	}
+	if opts.detailed {
+		// «Ultra» geometry: +5 credits (https://docs.meshy.ai/en/api/pricing).
+		//
+		// ⚠ ai_model IS NOT PINNED TO meshy-7.1, although 2k geometry «requires meshy-7.1 or
+		// latest»: the provider's default IS `latest`, and a baked-in slug is the thing doc.go
+		// forbids for the reason it gives. A caller that names AIModel still wins.
+		body.GeometryResolution = geometryResolution2K
+		// 4k texture costs the same 30 credits as 2k. ⚠ BUT NOT WITH PBR: four 4k maps (base
+		// colour, metallic, roughness, normal) are the one combination that plausibly crosses
+		// maxModelBytes, and that cap refuses the GLB AFTER the task has been paid for — a
+		// charged failure. Until one such build is measured, a PBR task keeps the provider's
+		// default 2k texture.
+		if opts.texture && !opts.pbr {
+			body.TextureResolution = textureResolution4K
+		}
 	}
 
 	var out struct {
@@ -663,6 +756,51 @@ type submitBody struct {
 	TexturePrompt   string   `json:"texture_prompt,omitempty"`
 	TargetPolycount int      `json:"target_polycount,omitempty"`
 	AIModel         string   `json:"ai_model,omitempty"`
+	// GeometryResolution / TextureResolution — sent only by a detailed task and OMITTED otherwise,
+	// which keeps a standard task's body byte-identical to the one sent before the option existed.
+	GeometryResolution string `json:"geometry_resolution,omitempty"`
+	TextureResolution  string `json:"texture_resolution,omitempty"`
+}
+
+// The only resolution values this client sends (Meshy docs: geometry_resolution standard | 2k,
+// texture_resolution 2k | 4k | 8k).
+const (
+	geometryResolution2K = "2k"
+	textureResolution4K  = "4k"
+)
+
+// meshyOptions is a Request's three options, read once and validated once.
+type meshyOptions struct{ texture, pbr, detailed bool }
+
+// resolveOptions reads the three option words. The empty string is today's constant for each; an
+// unknown word, or PBR on an untextured task, is ErrBadOption — refused locally, before the money.
+func resolveOptions(req Request) (meshyOptions, error) {
+	o := meshyOptions{texture: true}
+	switch t := strings.TrimSpace(req.Texture); t {
+	case "", OptionOn:
+	case OptionOff:
+		o.texture = false
+	default:
+		return meshyOptions{}, fmt.Errorf("%w: texture %q is not on | off", ErrBadOption, t)
+	}
+	switch v := strings.TrimSpace(req.PBR); v {
+	case "", OptionOff:
+	case OptionOn:
+		o.pbr = true
+	default:
+		return meshyOptions{}, fmt.Errorf("%w: pbr %q is not on | off", ErrBadOption, v)
+	}
+	switch q := strings.TrimSpace(req.Quality); q {
+	case "", QualityStandard:
+	case QualityDetailed:
+		o.detailed = true
+	default:
+		return meshyOptions{}, fmt.Errorf("%w: quality %q is not standard | detailed", ErrBadOption, q)
+	}
+	if o.pbr && !o.texture {
+		return meshyOptions{}, fmt.Errorf("%w: realistic materials (pbr) need a textured task", ErrBadOption)
+	}
+	return o, nil
 }
 
 // task is the retrieve-task payload, narrowed to what this client uses. The url fields are read

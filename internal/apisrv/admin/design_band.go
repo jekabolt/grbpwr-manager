@@ -298,6 +298,27 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		Outputs:                designCardOutputsToPb(band.Outputs),
 		OutputsTotal:           int32(band.OutputsTotal),
 		OutputsTotalByColorway: intMapToPb(band.OutputsTotalByColorway),
+		// OutputsTotalByWorkflow (band 31) — «newest 60 of N» on a PLAYGROUND tile: the true number of
+		// outputs per run_workflow, counted by the store with the SAME expression that stamps
+		// run_workflow and cuts the window (store/design designCardOutputsWorkflow). Drop this line and
+		// the band still answers 200 while every tile captions «of 0».
+		//
+		// ⚠ ONLY SECTION-1 TILES HAVE A WINDOW OF THEIR OWN (G-02, Fable m-8 — accepted, 06 §23.6).
+		// change_color, swap_fabrics and image_to_3d are counted here too, but their outputs are cut
+		// by the COLOURWAY window of section 0 (window key '' — store/design
+		// designCardOutputsWindowKey), which they share with each other. So «newest 60 of N» is true
+		// only for the section-1 tiles; on those three tiles the listed rows can be fewer than 60
+		// while N ≫ 60 — the client captions them «N in total», never «newest 60 of N».
+		//
+		// THE ACTIVE-RUN PIN NEEDS NOTHING HERE (Codex 9, checked 2026-09-27): the live placeholder is
+		// the client's — playground/results.tsx `pinned` filters `runs` (this response's first
+		// history page, design.DefaultRunPageLimit newest rows) by isRunLive. A run still working has
+		// no outputs to list, so no output window can drop it. The one residual: a run older than
+		// DefaultRunPageLimit newer runs of the same card leaves page 1 while still live — which takes
+		// that many presses queued behind it on a one-run-at-a-time worker, all of them live and all of
+		// them drawn. Accepted; a server union of active runs would have to be kept out of the
+		// history cursor, and nothing on the band needs it today.
+		OutputsTotalByWorkflow: intMapStringToPb(band.OutputsTotalByWorkflow),
 		// ЦВЕТОВОЙ ПЛАН (0364). nil = у карточки плана нет — ответ, а не молчание: клиент рисует
 		// дверь покраски по САМОМУ ПРИСУТСТВИЮ поля («этот сервер умеет план»), а его содержимое
 		// читает как состояние. Убери эту строку — полоса по-прежнему ответит 200, строка деталей
@@ -325,6 +346,19 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// маршрут), и клиент не рисует ячейку вовсе — вместо того, чтобы пускать человека в отказ.
 		// Считается ОДНОЙ лестницей с дверью: см. designFreeformPresets.
 		FreeformPresets: s.designFreeformPresets(),
+		// PLAYGROUND phase 2 capabilities (fields 28–30): always present, [] when closed — the
+		// client gates each phase-2 form on the field's presence [Codex 10].
+		PlaygroundWorkflows: s.designPlaygroundWorkflows(),
+		ImageModels:         s.designImageModels(),
+		ThreedOptions:       s.designThreedOptions(),
+		// PLAYGROUND phase 3 (field 32): the kinds the door accepts right now — always present, []
+		// when generation is off; ABSENT only on an older binary.
+		RunKinds: s.designRunKinds(),
+		// PLAYGROUND phase 3 (field 33, B-15): the slug SuggestPrompts answers with; empty when the
+		// Ideas door is closed (no OPENROUTER_API_KEY, or OPENROUTER_MODEL_IDEAS=off) — the client
+		// then draws the static Ideas list only. Drop this line and the band still answers 200 while
+		// every Ideas menu stays static on a server that can suggest.
+		SuggestPromptsModel: s.designSuggestPromptsModel(),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —
@@ -888,6 +922,17 @@ func (s *Server) designCompensateMedia(ctx context.Context, minted []*pb_common.
 // designFetchImage reads a managed object by the url stored on the media row and decodes it.
 // The key comes from a DB row and only from a DB row; the segment gate lives in the bucket.
 func (s *Server) designFetchImage(ctx context.Context, rawURL string) (image.Image, error) {
+	raw, err := s.designFetchObject(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return designDecodeImage(raw)
+}
+
+// designFetchObject — the BYTES of a managed object by the url stored on its media row, ≤
+// designSplitMaxSourceBytes. Split out of designFetchImage for the phase-3 mask door, which must see
+// the bytes (a verbatim PNG, not whatever decodes) before it decodes them.
+func (s *Server) designFetchObject(ctx context.Context, rawURL string) ([]byte, error) {
 	key, err := bucket.ObjectKeyFromStoredURL(rawURL)
 	if err != nil {
 		return nil, err
@@ -907,7 +952,7 @@ func (s *Server) designFetchImage(ctx context.Context, rawURL string) (image.Ima
 	if len(raw) > designSplitMaxSourceBytes {
 		return nil, fmt.Errorf("object %q is over the %d byte ceiling", key, designSplitMaxSourceBytes)
 	}
-	return designDecodeImage(raw)
+	return raw, nil
 }
 
 // designDecodeImage sniffs the format from the leading bytes rather than trusting anything
@@ -1292,6 +1337,7 @@ func designCardOutputsToPb(in []entity.DesignCardOutput) []*pb_common.DesignCard
 			RunRrev:       int32(o.RunRrev),
 			RunColorwayId: int32(o.RunColorwayId),
 			BatchId:       o.Picture.BatchId.Int32,
+			RunWorkflow:   o.RunWorkflow,
 		})
 	}
 	return out
@@ -1673,6 +1719,15 @@ func intMapToPb(in map[int]int) map[int32]int32 {
 	out := make(map[int32]int32, len(in))
 	for k, v := range in {
 		out[int32(k)] = int32(v)
+	}
+	return out
+}
+
+// intMapStringToPb — the same for a string-keyed count (OutputsTotalByWorkflow).
+func intMapStringToPb(in map[string]int) map[string]int32 {
+	out := make(map[string]int32, len(in))
+	for k, v := range in {
+		out[k] = int32(v)
 	}
 	return out
 }

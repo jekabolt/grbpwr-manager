@@ -584,6 +584,10 @@ func bindEnvVars() {
 	// override looks like, making a missing binding invisible until somebody wonders why the
 	// escalation did nothing.
 	viper.BindEnv("openrouter.model_analysis", "OPENROUTER_MODEL_ANALYSIS")
+	// OPENROUTER_MODEL_IDEAS is the slug of the PLAYGROUND `Ideas ▾` door (SuggestPrompts): unset =>
+	// openrouter.DefaultIdeasModel, `off` => the door is switched off. Explicit for the same reason
+	// as the line above: an unbound name reads as empty, and empty is the default.
+	viper.BindEnv("openrouter.model_ideas", "OPENROUTER_MODEL_IDEAS")
 	viper.BindEnv("openrouter.base_url", "OPENROUTER_BASE_URL")
 	viper.BindEnv("openrouter.http_timeout", "OPENROUTER_HTTP_TIMEOUT")
 
@@ -688,6 +692,15 @@ func bindEnvVars() {
 	// WHICH 3D PROVIDER GETS PAID: fal (default, the owner's own choice) | meshy. An unknown word
 	// falls back to the default and app.go logs the route it wired.
 	viper.BindEnv("design_generation.threed_provider", "DESIGN_THREED_PROVIDER")
+	// REALISTIC MATERIALS ON 3D (params.threed.pbr). Off by default: a PBR GLB's size is unmeasured
+	// and the 64 MiB cap refuses it AFTER the charge. Turn on (true) only after a beta smoke has
+	// measured one PBR build per tier under the cap — see designgen.Config.ThreedPBR.
+	viper.BindEnv("design_generation.threed_pbr", "DESIGN_THREED_PBR")
+	// THE PHASE-3 ENGINE ROWS (B-16): Gemini 3 Pro Image and Seedream 5 Pro in the per-run engine
+	// table. Off by default — each is the owner's money decision after the beta cost ledger; see
+	// designgen.Config.EngineGemini. Unbound, the owner turns one on and the picker never shows it.
+	viper.BindEnv("design_generation.engine_gemini", "DESIGN_ENGINE_GEMINI")
+	viper.BindEnv("design_generation.engine_seedream", "DESIGN_ENGINE_SEEDREAM")
 
 	// fal.ai (3D generation, K-10). A THIRD provider with a key of its own — nothing here falls back
 	// to an OpenRouter or a Meshy variable, because neither account can pay for a fal request.
@@ -740,4 +753,21 @@ func bindEnvVars() {
 	// number for both would price a two-cent cut-out at a dollar, or a dollar-plus turntable at two
 	// cents, depending only on which route the operator had in mind when they typed it.
 	viper.BindEnv("fal.unit_usd_cutout", "FAL_UNIT_USD_CUTOUT")
+	// The most billable units ONE 3D build may report. Read only when FAL_UNIT_USD is set: a build
+	// then books `FAL_UNIT_USD × units`, and the door reserves `FAL_UNIT_USD × this` so the
+	// reservation is never below the booking. A tariff WITHOUT this ceiling closes the 3D door in
+	// words (there is no number to reserve); unset both to book fal's published per-build price.
+	viper.BindEnv("fal.units_ceiling_3d", "FAL_UNITS_CEILING_3D")
+	// PLAYGROUND phase 3 — the generic JSON routes (fal/generic.go): tile 9 «Extend Image»
+	// (outpaint; empty => fal.DefaultModelOutpaint `fal-ai/flux-2-pro/outpaint`, the fallback is
+	// `fal-ai/bria/expand`) and tile 10's mask retouch (fill; empty => `fal-ai/flux-pro/v1/fill`).
+	// Each has its OWN tariff (units differ per model) and its OWN units ceiling: a tariff set
+	// without its ceiling closes that kind at the door (route_reserve_unbounded) — unset both to
+	// book the code ceiling per request ($0.12 outpaint, $0.15 fill).
+	viper.BindEnv("fal.model_outpaint", "FAL_MODEL_OUTPAINT")
+	viper.BindEnv("fal.model_fill", "FAL_MODEL_FILL")
+	viper.BindEnv("fal.unit_usd_outpaint", "FAL_UNIT_USD_OUTPAINT")
+	viper.BindEnv("fal.units_ceiling_outpaint", "FAL_UNITS_CEILING_OUTPAINT")
+	viper.BindEnv("fal.unit_usd_fill", "FAL_UNIT_USD_FILL")
+	viper.BindEnv("fal.units_ceiling_fill", "FAL_UNITS_CEILING_FILL")
 }

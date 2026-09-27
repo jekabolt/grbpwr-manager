@@ -44,6 +44,9 @@ type Worker struct {
 	// person's markup silently missing.
 	objects objectFetcher
 
+	// now is the pickup guard's clock (submitSettleGrace); nil = time.Now. Tests set it.
+	now func() time.Time
+
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup

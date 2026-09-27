@@ -129,10 +129,30 @@ func TestGenerate_OmitsUnsetFields(t *testing.T) {
 	if _, err := c.Generate(context.Background(), Request{Prompt: "p"}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	for _, absent := range []string{"aspect_ratio", "quality", "background", "output_format", "output_compression", "input_references", `"n"`} {
+	for _, absent := range []string{"aspect_ratio", "quality", "resolution", "background", "output_format", "output_compression", "input_references", `"n"`} {
 		if strings.Contains(gotBody, absent) {
 			t.Errorf("request body carries %s although the caller never set it: %s", absent, gotBody)
 		}
+	}
+}
+
+// TestGenerate_ResolutionReachesTheWire — the dial of an engine that prices by size travels
+// verbatim under its own key.
+func TestGenerate_ResolutionReachesTheWire(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		io.WriteString(w, okResponse("image/png"))
+	}))
+	defer srv.Close()
+
+	c := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if _, err := c.Generate(context.Background(), Request{Prompt: "p", Resolution: " 2K "}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(gotBody, `"resolution":"2K"`) {
+		t.Errorf("request body does not carry the resolution: %s", gotBody)
 	}
 }
 

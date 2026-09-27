@@ -1,6 +1,11 @@
 package designgen
 
-import "github.com/jekabolt/grbpwr-manager/internal/entity"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+)
 
 // ═══ ЧТО ИМЕННО УЕЗЖАЕТ В СБОРКУ 3D — И ПОЧЕМУ ЭТО НЕ «ВСЕ КАРТИНКИ ПРОГОНА» ═══════════════════
 //
@@ -89,4 +94,108 @@ func threedPictures(list []refCaption, in runInputs) []refCaption {
 		}
 	}
 	return out
+}
+
+// ═══ РЕЖИМ РЕФЕРЕНСА (PLAYGROUND phase 2, плитка 12 «Image to 3D») ══════════════════════════════
+//
+// `params.threed.reference_media_ids` — 1..4 картинки, которые человек САМ назвал видами изделия:
+// загрузка, файл библиотеки, результат другой плитки, плита верстака через Reuse. Непустой список
+// ПЕРЕКЛЮЧАЕТ ИСТОЧНИК ЦЕЛИКОМ: прогон не читает верстак вовсе (дверь не отбирает плит —
+// designSelectBench, — и `source_picture_ids` остаётся пустым), и воркер обязан сказать то же самое.
+//
+// ⚠ ВИДЫ СТАВЯТСЯ ПО ПОЗИЦИИ, И ЭТО ЕДИНСТВЕННОЕ ЧЕСТНОЕ ПРАВИЛО ЗДЕСЬ, а не лень. Контракт поля
+// дословно: «ordered front, back, left, right». У названной картинки нет слота, который знал бы
+// её сторону, — сторону знает только порядок, в котором человек её поставил. Поэтому первая —
+// `front`, и оба маршрута читают её лицом изделия; пятой позиции нет (дверь отказывает
+// `too_many_pictures` до денег), а если она всё же доехала в замороженном снимке, она уезжает БЕЗ
+// вида: fal-маршрут отказывает неименованной картинке (falViews), прямой Meshy — числом
+// (meshy.ErrImageCount). Молча отрезать хвост не может ни один из них.
+
+// threedReferenceViews — сторона каждой позиции `reference_media_ids`.
+var threedReferenceViews = []string{
+	entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL, entity.DesignViewSideR,
+}
+
+// threedReferenceMode — прогон назвал свои картинки сам. Один предикат на воркер; у двери — свой
+// (designThreedReferenceMode) над тем же полем того же сообщения.
+func threedReferenceMode(p runParams) bool {
+	return p.Threed != nil && len(p.Threed.ReferenceMediaIDs) > 0
+}
+
+// threedPicturesOf — картинки сборки 3D этого прогона.
+//
+// В РЕЖИМЕ РЕФЕРЕНСА ОНА НЕ СМОТРИТ НИ В `list`, НИ В `in.Slots`, и это несущее: референсы
+// карточки, `extra_input_media_ids` и плиты верстака — не виды того предмета, который человек
+// назвал, и любая из них, доехавшая сюда, стала бы «видом» чужой вещи (довод V-14 выше, дословно).
+// Без референсов — сегодняшний путь, байт в байт: threedPictures.
+func threedPicturesOf(list []refCaption, in runInputs, p runParams) []refCaption {
+	if !threedReferenceMode(p) {
+		return threedPictures(list, in)
+	}
+	return threedReferencePictures(p.Threed.ReferenceMediaIDs)
+}
+
+// threedReferencePictures — названные картинки в порядке человека, с видом по позиции и подписью
+// «reference view N». Номер в подписи — позиция в ЕГО списке, а не в выжившем: подпись описывает
+// то, что он назвал.
+func threedReferencePictures(ids []int) []refCaption {
+	out := make([]refCaption, 0, len(ids))
+	for i, id := range ids {
+		if id <= 0 {
+			// Дверь отказывает такому номеру; замороженный снимок, доехавший сюда иначе, теряет
+			// позицию, но НЕ сдвигает виды остальных — сторона принадлежит позиции.
+			continue
+		}
+		view := ""
+		if i < len(threedReferenceViews) {
+			view = threedReferenceViews[i]
+		}
+		out = append(out, refCaption{
+			MediaID: id,
+			Caption: fmt.Sprintf("reference view %d", i+1),
+			View:    view,
+		})
+	}
+	return out
+}
+
+// threedOptions — три опции сборки этого прогона: texture "" | on | off, pbr "" | on | off,
+// quality "" | standard | detailed. ПУСТАЯ СТРОКА — СЕГОДНЯШНЯЯ КОНСТАНТА у каждой (с текстурой, без PBR,
+// стандартная геометрия), поэтому прогон верстака и всякий прогон, замороженный до полей, уходит к
+// поставщику тем же телом байт в байт. Слова — те же, что у обоих транспортов (fal.Option*,
+// meshy.Option*), и едут к ним без перевода.
+type threedOptions struct {
+	Texture string
+	PBR     string
+	Quality string
+}
+
+// threedOptionsOf — опции из замороженных params.
+func threedOptionsOf(p runParams) threedOptions {
+	if p.Threed == nil {
+		return threedOptions{}
+	}
+	return threedOptions{
+		Texture: strings.TrimSpace(p.Threed.Texture),
+		PBR:     strings.TrimSpace(p.Threed.PBR),
+		Quality: strings.TrimSpace(p.Threed.Quality),
+	}
+}
+
+// untextured — сборка без текстуры. Ей нечем читать `texture_prompt` (у обоих поставщиков он
+// «Requires should_texture»), поэтому стир не уезжает — и SentPrompt обязан сказать то же самое.
+func (o threedOptions) untextured() bool { return o.Texture == "off" }
+
+// threedJobOptions — опции, которые маршрут 3D читает с задания.
+//
+// Поля Job.ThreedTexture / ThreedPBR / ThreedQuality живут в provider.go и заполняются в buildJob
+// (snapshot.go) из threedOptionsOf замороженных params — только у рода threed. Пустые поля =
+// сегодняшние константы, то есть сегодняшнее тело у прогона верстака и у всякого старого снимка.
+func threedJobOptions(job Job) threedOptions {
+	return threedOptions{Texture: job.ThreedTexture, PBR: job.ThreedPBR, Quality: job.ThreedQuality}
+}
+
+// threedSentSteer — какие слова этот прогон реально кладёт в texture_prompt.
+func threedSentSteer(job Job) string {
+	return steerFor(job.SurfaceSteer, threedJobOptions(job))
 }

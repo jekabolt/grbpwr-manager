@@ -250,6 +250,12 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	//
 	// ⚠ ЦИФРА ЖДЁТ ВЛАДЕЛЬЦА (PLAN-r4 §8 п.2), как и все остальные в этой таблице.
 	entity.DesignRunKindCutout: fal.EstimatedCutoutUSD(),
+	// PHASE 3 — THE fal JSON ROUTES TAKE THEIR NUMBER FROM THE PACKAGE THAT BOOKS THEM, like the
+	// cut-out: fal.EstimatedRouteUSD is the code ceiling of the worst plan the worker builds (the 3 MP
+	// extend canvas, the 1 MP fill crop) and exactly what the collect books with no tariff. A
+	// configured tariff raises the reserve through the route object (designFalRouteEstimate).
+	entity.DesignRunKindExtend:  fal.EstimatedRouteUSD(fal.RouteOutpaint),
+	entity.DesignRunKindInpaint: fal.EstimatedRouteUSD(fal.RouteFill),
 }
 
 // Базовые цены картиночных родов НА `medium` — том положении дила, которое стоит в
@@ -616,7 +622,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	kind := strings.TrimSpace(req.GetKind())
 	if !entity.IsDesignRunKind(kind) {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout", kind)
+			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint", kind)
 	}
 	// draft_idea ОТКАЗЫВАЕТСЯ ЗДЕСЬ, дословно по контракту. Текстовый прогон исполняется в
 	// хендлере синхронно и возвращает свой ответ; заведённый отсюда, он вернул бы строку
@@ -691,7 +697,8 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// каждой карточки, жившей до оси. Гейт стоит ПОСЛЕ designEffectiveParams намеренно: реран
 	// наследует колорвей из params родителя, и гейт по сырому запросу спрашивал бы не про тот
 	// верстак.
-	if kind == entity.DesignRunKindThreed {
+	// ⚠ 3D ИЗ НАЗВАННОЙ КАРТИНКИ (B-09) ВЕРСТАКА НЕ ЧИТАЕТ, и ворота верстака к нему не относятся.
+	if kind == entity.DesignRunKindThreed && !designThreedReferenceMode(params) {
 		cw := int(params.GetColorwayId())
 		if !designHasRenderForColorway(band.RenderBenchColorways, cw) {
 			return nil, designRefusal(codes.FailedPrecondition, "no_fabric_render",
@@ -881,6 +888,14 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseMalformedFreeform(kind, req.GetParams()); err != nil {
 		return nil, err
 	}
+	// PHASE 3: params.extend / params.inpaint on a kind that does not read them (spoken only).
+	if err := designRefuseMalformedRoutes(kind, req.GetParams()); err != nil {
+		return nil, err
+	}
+	// ФОРМА РЕЖИМА РЕФЕРЕНСА 3D И ОПЦИЙ СБОРКИ — у говорящего, тот же довод (B-09).
+	if err := designRefuseMalformedThreedReferences(kind, req.GetParams()); err != nil {
+		return nil, err
+	}
 	// ⚠ И РЕРАН ПЛЕЙГРАУНДА НЕ ВПРАВЕ ПОДМЕНИТЬ КАРТИНКИ. Ссылки снимка у него не сужаются, а
 	// пересобираются из `params` (designRunInputs), и этого хватало, чтобы повтор прогона над
 	// снимком 11 уехал с картинкой 88, сохранив `rerun_of`, — то есть чтобы строка истории
@@ -890,6 +905,31 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designParentID(parent), designParentParams(parent)); err != nil {
 		return nil, err
 	}
+	// …and a 3D rerun keeps its named pictures IN ORDER (the order is the view claim) — G-02 M-2.
+	if err := designRefuseThreedRerunReferenceSwap(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
+	// …and an extend / inpaint rerun keeps its picture (the inpaint mask may change) — G-03, Fable M-1.
+	if err := designRefuseFalRerunPictureSwap(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
+	// …and it stays on the same PLAYGROUND tile: a spoken rerun may re-mark, re-word and reorder,
+	// never turn into another workflow [Codex 2].
+	if err := designRefuseRerunChangesWorkflow(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
+	// THE CONFIGURED 3D ROUTE reads what the run pays for and has a reserve number (EFFECTIVE params:
+	// a capability, not a vocabulary) — G-02 Codex 3/4, Fable M-3. Free, before any store read.
+	if err := s.designRefuseThreedRoute(kind, params); err != nil {
+		return nil, err
+	}
+	// PHASE 3: an extend / inpaint route with no number to reserve is closed in words.
+	if err := s.designRefuseFalRouteUnbounded(kind); err != nil {
+		return nil, err
+	}
 	// ГРАНИЦА КАРТОЧКИ ДЛЯ ШЕСТОГО СПИСКА. Картинки плейграунда уезжают поставщику ровно так же,
 	// как плиты, референсы и текстуры, значит и граница у них та же самая. ДЕЙСТВУЮЩИЕ параметры,
 	// а не сообщение клиента: строка media(id) под собой не исчезает (FK держат её RESTRICT'ом),
@@ -897,6 +937,21 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// бывает — и унаследованная картинка уезжает поставщику ровно так же.
 	if err := s.designRefuseForeignMedia(ctx, cardID, "params.freeform.items.media_id",
 		designFreeformItemMediaIDs(params)...); err != nil {
+		return nil, err
+	}
+	// ГРАНИЦА КАРТОЧКИ ДЛЯ СЕДЬМОГО СПИСКА — названные картинки 3D уезжают поставщику видами (B-09).
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.threed.reference_media_ids",
+		designThreedReferenceMediaIDs(params)...); err != nil {
+		return nil, err
+	}
+	// PHASE 3: the mask retouch's picture and mask pass the same card boundary (a fresh upload
+	// belongs to nobody and passes, D2).
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.inpaint.source_media_id",
+		int(params.GetInpaint().GetSourceMediaId())); err != nil {
+		return nil, err
+	}
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.inpaint.mask_media_id",
+		int(params.GetInpaint().GetMaskMediaId())); err != nil {
 		return nil, err
 	}
 
@@ -913,6 +968,37 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseFreeformOverflow(kind, params); err != nil {
 		return nil, err
 	}
+	// The per-run engine (params.image): a word the engine table does not list is refused here,
+	// free, and a word it lists is priced by it below. The vocabulary is asked of the SPEAKER, the
+	// reference ceiling of the EFFECTIVE run (G-02, Fable m-5).
+	if err := s.designRefuseImageOptions(kind, req.GetParams()); err != nil {
+		return nil, err
+	}
+	if err := s.designRefuseImageReferenceCeiling(kind, params); err != nil {
+		return nil, err
+	}
+	// …and a try-on naming a product colourway dresses the person in that colourway's renders — free,
+	// off the band already loaded (G-02, Codex 10).
+	if err := designRefuseTryonProductNotColourwayRender(kind, req.GetParams(), band); err != nil {
+		return nil, err
+	}
+	// A try-on naming a model profile dresses a photo OF that model (EFFECTIVE params). A STORE
+	// READ, so it stands after every free refusal above (G-02, Fable m-7): a malformed try-on never
+	// touches the store.
+	if err := s.designRefuseModelPhotoMismatch(ctx, kind, params); err != nil {
+		return nil, err
+	}
+	// A windowed run's picture must be large enough to cut — its stored dimensions say so here,
+	// before the reservation (G-02, Codex 7). One media read, windowed runs only.
+	if err := s.designRefuseWindowSourceTooSmall(ctx, kind, params); err != nil {
+		return nil, err
+	}
+	// PHASE 3: the extend's source must be large enough and its target must add pixels.
+	if err := s.designRefuseExtendTarget(ctx, kind, params); err != nil {
+		return nil, err
+	}
+	// A stated engine freezes with its slug (G-02, Codex 5).
+	s.designFreezeImageModel(kind, params)
 
 	inputs, fitAtLaunch, err := s.designRunInputs(ctx, src, parent)
 	if err != nil {
@@ -939,8 +1025,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// котором стоит одна СПИНА: множество RenderBenchColorways считает занятые слоты, не различая
 	// сторон. Такой прогон резервировал и гарантированно падал у провайдера. Ни один законный 3D-
 	// прогон этим не задет: без переда провайдер не строит ничего ни в одном из двух маршрутов.
-	if err := designRefuseThreedWithoutFront(kind, cardID, params, inputs); err != nil {
-		return nil, err
+	if !designThreedReferenceMode(params) {
+		if err := designRefuseThreedWithoutFront(kind, cardID, params, inputs); err != nil {
+			return nil, err
+		}
 	}
 	// ─── ВХОД, КОТОРЫЙ НЕ КАРТИНКА, — ОТКАЗ ЗДЕСЬ, А НЕ ОПЛАЧЕННЫЙ ОТКАЗ У ПОСТАВЩИКА ───
 	//
@@ -978,6 +1066,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// «чем ещё является эта картинка» отвечается ровно по тем пяти местам, откуда медиа уезжает
 	// поставщику. Довод целиком — в шапке designRefuseColourMapAlsoAnInput.
 	if err := designRefuseColourMapAlsoAnInput(params, inputs); err != nil {
+		return nil, err
+	}
+	// PHASE 3: the mask itself — size, PNG, something painted — AFTER the media doors (foreign, not a
+	// picture, display-only, hidden) and still before StartRun.
+	if err := s.designRefuseUnusableMask(ctx, kind, params); err != nil {
 		return nil, err
 	}
 	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
@@ -1022,7 +1115,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		ProfileVersion:   designProfileVersion,
 		FitAtLaunch:      fitAtLaunch,
 		RequestedOutputs: outputs,
-		PriceEstimate:    designEstimateFor(kind, outputs),
+		PriceEstimate:    s.designEstimateForRun(kind, outputs, params, inputs),
 		Author:           designActor(ctx),
 		RerunOf:          designParentID(parent),
 		// Колорвей прогона — из ДЕЙСТВУЮЩИХ params (реран наследует родительские); стор в той же
@@ -1100,46 +1193,10 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 	switch kind {
 	// ─── ПЛЕЙГРАУНД ───
 	case entity.DesignRunKindFreeform:
-		items := params.GetFreeform().GetItems()
-		if len(items) == 0 {
-			return designRefusal(codes.InvalidArgument, "no_source_picture",
-				"the playground works on the pictures you put in it: name them in "+
-					"params.freeform.items. Nothing was reserved and nothing was charged", nil)
+		// ONE TABLE PER PRESET (design_freeform.go): which pictures, which roles, which options.
+		if err := designRefuseUnworkableFreeform(ask, params); err != nil {
+			return err
 		}
-		// ⚠ ПРЕСЕТ ADD_HARDWARE ТРЕБУЕТ ОБЕИХ ПОЛОВИН, И ЭТО НЕ ПЕДАНТИЗМ: его абзац ремесла
-		// дословно говорит «возьми фурнитуру с картинки N и посади её в обведённую область
-		// картинки 1». Без картинки фурнитуры брать нечего, без области — сажать некуда, и в обоих
-		// случаях модель вернёт правдоподобный кадр, по которому в истории не отличить исполненную
-		// просьбу от неисполненной. Деньги при этом списаны.
-		if params.GetFreeform().GetPreset() == entity.DesignFreeformPresetAddHardware {
-			hardware, marked := 0, 0
-			for _, it := range items {
-				if it.GetRole() == entity.DesignFreeformRoleHardware {
-					hardware++
-					continue
-				}
-				// ОБЛАСТЬ ИЩЕТСЯ НА ЛЮБОЙ НЕ-ФУРНИТУРНОЙ КАРТИНКЕ, А НЕ ТОЛЬКО НА role=subject:
-				// роль пустая законна («просто картинка»), и требовать её проставленной значило бы
-				// отказывать за неназванное имя там, где человек уже показал пальцем.
-				if len(it.GetRegions()) > 0 {
-					marked++
-				}
-			}
-			if hardware == 0 {
-				return designRefusal(codes.InvalidArgument, "hardware_picture_required",
-					"«add hardware» puts the hardware from one picture onto another: mark the picture "+
-						"of the hardware with role=hardware in params.freeform.items. Nothing was "+
-						"reserved and nothing was charged", nil)
-			}
-			if marked == 0 {
-				return designRefusal(codes.InvalidArgument, "mark_the_area",
-					"«add hardware» needs the place it goes: outline an area on the picture the "+
-						"hardware is added to. Nothing was reserved and nothing was charged", nil)
-			}
-		}
-		// `repaint_parts` БЕЗ ОБЛАСТИ ЗАКОНЕН, и это сказано вслух, чтобы никто не «дочинил» его
-		// симметрично соседу: перекрасить всю вещь — обычная просьба, и абзац ремесла умеет её
-		// («repaint the whole garment»).
 	// ─── ВЫРЕЗ ФОНА ───
 	case entity.DesignRunKindCutout:
 		if sources != 1 {
@@ -1159,6 +1216,16 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 				"cutting the background takes a picture and nothing else: there is no prompt on that "+
 					"route, so your words would go nowhere. Clear `ask` (and params.freeform) or use "+
 					"the playground instead. Nothing was reserved and nothing was charged", nil)
+		}
+	// ─── PHASE 3: EXTEND (tile 9) ───
+	case entity.DesignRunKindExtend:
+		if err := designRefuseUnworkableExtend(ask, params); err != nil {
+			return err
+		}
+	// ─── PHASE 3: THE MASK RETOUCH (tile 10's mask route) ───
+	case entity.DesignRunKindInpaint:
+		if err := designRefuseUnworkableInpaint(ask, params); err != nil {
+			return err
 		}
 	case entity.DesignRunKindRecolor:
 		if sources == 0 {
@@ -2215,7 +2282,8 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 		// список обязан быть длиной один (а у свотча — ноль или один, STEP 3), и это проверено
 		// отдельно, у двери: платный вызов в обоих режимах один.
 		return 1
-	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		// ═══ РОВНО ОДНА КАРТИНКА, И ЭТО СЛОВО ВЛАДЕЛЬЦА, А НЕ УМОЛЧАНИЕ ═══
 		//
 		// Плейграунд отвечает ОДНИМ кадром на одну просьбу: сколько бы картинок человек ни
@@ -3288,7 +3356,8 @@ type designInputSources struct {
 func designKindReadsTheCard(kind string) bool {
 	switch kind {
 	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
-		entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+		entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		return false
 	}
 	return true
@@ -3318,7 +3387,8 @@ func designKindReadsTheCard(kind string) bool {
 // bench» — и здесь это перестаёт быть обещанием экрана.
 func designKindReadsTheGarmentNote(kind string) bool {
 	switch kind {
-	case entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+	case entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		return false
 	}
 	return true
@@ -3352,7 +3422,7 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		Views:  src.Params.GetViews(),
 		Layout: src.Params.GetLayout(),
 	}
-	if src.Card != nil && designKindReadsTheGarmentNote(src.Kind) {
+	if src.Card != nil && designRunReadsTheGarmentNote(src.Kind, src.Params) {
 		out.Fit = src.Card.Fit.String
 		// ОПИСАНИЕ ИЗДЕЛИЯ (W-3) — «пишем общий коммент», который уходит в КАЖДЫЙ прогон.
 		// Замораживается КОПИЕЙ, а не джойном: правка описания завтра не имеет права переписать
@@ -3392,11 +3462,16 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		}
 		return out, nil
 	}
+	// PHASE 3: a mask retouch records the picture and the mask it sends — and nothing of the card.
+	if src.Kind == entity.DesignRunKindInpaint {
+		out.Refs = designInpaintRefs(src.Params)
+		return out, nil
+	}
 	// ⚠ ССЫЛКИ КАРТОЧКИ ЧИТАЕТ НЕ ВСЯКИЙ РОД (J-6), И ПРАВИЛО ЖИВЁТ В designKindReadsTheCard —
 	// одно на этот цикл и на отбор плит ниже. Цикл по `extra_input_media_ids` идёт ВСЕГДА: это и
 	// есть то, что человек назвал поимённо, и у перекраса с паттерном он единственный вход.
 	cardRefs := src.Refs
-	if !designKindReadsTheCard(src.Kind) {
+	if !designRunReadsTheCard(src.Kind, src.Params) {
 		cardRefs = nil
 	}
 	for _, r := range cardRefs {
@@ -3781,7 +3856,7 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 	// designAssembleInputs) оно не досталось вовсе, и снимок паттерна перечислял ссылки карточки
 	// как свои входы. Два написания одного правила расходятся молча; здесь они разошлись с самого
 	// начала.
-	if !designKindReadsTheCard(src.Kind) {
+	if !designRunReadsTheCard(src.Kind, src.Params) {
 		return nil, nil
 	}
 	want := entity.DesignPictureKindFlat
@@ -4002,7 +4077,9 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	// целиком, либо то, что клиент сказал сам, и оба случая уже прошли дверь.
 	if src.Kind == entity.DesignRunKindFreeform {
 		snap.Refs = designFreeformRefs(src.Params)
-	} else if !designKindReadsTheCard(src.Kind) {
+	} else if src.Kind == entity.DesignRunKindInpaint {
+		snap.Refs = designInpaintRefs(src.Params)
+	} else if !designRunReadsTheCard(src.Kind, src.Params) {
 		named := make(map[int32]struct{}, len(src.Params.GetExtraInputMediaIds()))
 		for _, id := range src.Params.GetExtraInputMediaIds() {
 			named[id] = struct{}{}
@@ -4015,7 +4092,7 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 		}
 		snap.Refs = kept
 	}
-	if !designKindReadsTheGarmentNote(src.Kind) {
+	if !designRunReadsTheGarmentNote(src.Kind, src.Params) {
 		snap.GarmentNote = ""
 		snap.Fit = ""
 	}

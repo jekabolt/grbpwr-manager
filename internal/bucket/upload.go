@@ -15,6 +15,10 @@ const (
 	// envelope. Base64 expands by exactly 4/3, so this is maxImagePayloadBytes×3/4 and the
 	// two paths admit the same pictures.
 	maxRawImagePayloadBytes = maxImagePayloadBytes / 4 * 3
+	// MaxVerbatimImageBytes — the verbatim path's byte ceiling, EXPORTED so a producer that encodes
+	// a picture for it (designgen's composites) can choose a format that will be accepted BEFORE the
+	// upload rather than learn it from a refusal after a paid generation.
+	MaxVerbatimImageBytes = maxRawImagePayloadBytes
 	// maxImageDimension is the maximum allowed width or height of a decoded image in pixels.
 	maxImageDimension = 12000
 	// maxVideoPayloadBytes is the maximum allowed size of a raw video payload.

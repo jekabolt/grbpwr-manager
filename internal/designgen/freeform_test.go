@@ -270,6 +270,116 @@ func TestTheFrozenFreeformParamsAreREAD_BY_THE_NAMES_THE_DOOR_WRITES(t *testing.
 	require.InDelta(t, 0.20, it.Regions[0].Points[0].Y.f(), 1e-9)
 }
 
+// TestEveryPhase2ParamsFieldIsREAD_BY_ITS_SNAKE_CASE_NAME [Codex 3].
+//
+// The reader drops decode mistakes silently, so a mistyped tag is a field that reads zero on a paid
+// run. Every phase-2 field is written non-zero through the door's own marshaller and read back.
+// The second half marshals with the protojson DEFAULT (camelCase) and requires every multi-word
+// field to read zero: proof that the snake_case tags, not luck, carry the value. Single-word keys
+// (model, quality, framing, …) are spelled the same both ways and cannot show that.
+func TestEveryPhase2ParamsFieldIsREAD_BY_ITS_SNAKE_CASE_NAME(t *testing.T) {
+	written := &pb_common.DesignRunParams{
+		Image: &pb_common.DesignImageOptions{
+			Model:       "openai/gpt-image-2",
+			Quality:     "high",
+			AspectRatio: "3:4",
+			Background:  "transparent",
+		},
+		Freeform: &pb_common.DesignFreeformParams{
+			Preset: entity.DesignFreeformPresetTryon,
+			Options: &pb_common.DesignWorkflowOptions{
+				Framing:           entity.DesignFramingUpperBody,
+				Angle:             entity.DesignAngleLowAngle,
+				SceneMode:         entity.DesignSceneModeReference,
+				SceneText:         "a concrete stairwell",
+				ModelId:           41,
+				ProductColorwayId: 42,
+				LogoSize:          entity.DesignLogoSizeLarge,
+				Creativity:        3,
+			},
+		},
+		Threed: &pb_common.DesignThreedParams{
+			ReferenceMediaIds: []int32{71, 72, 73, 74},
+			Texture:           "off",
+			Pbr:               "on",
+			Quality:           "detailed",
+			Follow:            "shape",
+			SurfaceHint:       "brushed wool, matte",
+		},
+	}
+
+	raw, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(written)
+	require.NoError(t, err)
+	p := parseParams(entity.RawJSON(raw))
+
+	require.NotNil(t, p.Image, "the per-run engine fell on the floor")
+	require.Equal(t, imageOptions{
+		Model: "openai/gpt-image-2", Quality: "high", AspectRatio: "3:4", Background: "transparent",
+	}, *p.Image)
+
+	require.NotNil(t, p.Freeform)
+	require.NotNil(t, p.Freeform.Options, "the preset's options fell on the floor")
+	require.Equal(t, workflowOptions{
+		Framing: "upper_body", Angle: "low_angle", SceneMode: "reference", SceneText: "a concrete stairwell",
+		ModelID: 41, ProductColorwayID: 42, LogoSize: "large", Creativity: 3,
+	}, *p.Freeform.Options)
+
+	require.NotNil(t, p.Threed)
+	require.Equal(t, []int{71, 72, 73, 74}, p.Threed.ReferenceMediaIDs, "order is front, back, left, right")
+	require.Equal(t, "off", p.Threed.Texture)
+	require.Equal(t, "on", p.Threed.PBR)
+	require.Equal(t, "detailed", p.Threed.Quality)
+	require.Equal(t, "shape", p.Threed.Follow)
+	require.Equal(t, "brushed wool, matte", p.Threed.SurfaceHint)
+
+	// The camelCase half: a writer switched to the protojson default must turn every multi-word
+	// field into zero here — if one still reads, its tag is not the snake_case name.
+	camel, err := protojson.Marshal(written)
+	require.NoError(t, err)
+	require.Contains(t, string(camel), `"aspectRatio"`, "the fixture must really be camelCase")
+	c := parseParams(entity.RawJSON(camel))
+	require.NotNil(t, c.Image)
+	require.Empty(t, c.Image.AspectRatio)
+	require.NotNil(t, c.Freeform)
+	require.NotNil(t, c.Freeform.Options)
+	require.Empty(t, c.Freeform.Options.SceneMode)
+	require.Empty(t, c.Freeform.Options.SceneText)
+	require.Zero(t, c.Freeform.Options.ModelID)
+	require.Zero(t, c.Freeform.Options.ProductColorwayID)
+	require.Empty(t, c.Freeform.Options.LogoSize)
+	require.NotNil(t, c.Threed)
+	require.Empty(t, c.Threed.ReferenceMediaIDs)
+	require.Empty(t, c.Threed.SurfaceHint)
+}
+
+// TestAPlaygroundJobCarriesItsPRESET — imageCalls (the money boundary) reads the preset off the
+// job, so it must survive buildJob; a non-freeform run carries none.
+func TestAPlaygroundJobCarriesItsPRESET(t *testing.T) {
+	r := freeformRun(`{"freeform":{"preset":"tryon","items":[{"media_id":11,"role":"model"},{"media_id":12,"role":"product"}]}}`)
+	job, err := buildJob(context.Background(), media(11, 12), &fakeObjects{byKey: map[string][]byte{}}, r, "medium")
+	require.NoError(t, err)
+	require.Equal(t, entity.DesignFreeformPresetTryon, job.FreeformPreset)
+
+	flat := testRun(2, entity.DesignRunKindFlat)
+	job, err = buildJob(context.Background(), media(), nil, flat, "medium")
+	require.NoError(t, err)
+	require.Empty(t, job.FreeformPreset)
+}
+
+// TestTheSurfaceSteerCarriesTHE_SURFACE_HINT — the person's own surface words reach the texturing
+// stage, after the presentation, inside the same bound; blank words add nothing.
+func TestTheSurfaceSteerCarriesTHE_SURFACE_HINT(t *testing.T) {
+	ctx := context.Background()
+	steer := surfaceSteer(ctx, runParams{Threed: &threedParams{Presentation: "air", SurfaceHint: "  brushed\nwool  "}})
+	require.Equal(t, "presentation air; surface: brushed wool", steer)
+
+	require.Equal(t, "", surfaceSteer(ctx, runParams{Threed: &threedParams{SurfaceHint: "   "}}))
+
+	long := strings.Repeat("wool ", 200)
+	require.LessOrEqual(t, len([]rune(surfaceSteer(ctx, runParams{Threed: &threedParams{SurfaceHint: long}}))),
+		steerCeiling, "the hint is bounded like every other part")
+}
+
 // TestFreeformReferencesAreTheItemsAndNothingElse.
 //
 // Ни плит верстака, ни ссылок карточки, ни тканей рецепта: снимок такого прогона их не носит, но

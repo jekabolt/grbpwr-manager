@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,6 +187,21 @@ const designPaidAttemptsSQL = `
 	             AND b.state = 'accepted'
 	             AND b.provider_request_id IS NOT NULL
 	             AND b.provider_request_id <> ''))`
+
+// hasAcceptedRequest — does the run hold an attempt fal ACCEPTED, with its request id on record: the
+// same fact designgen's acceptedRequestID resumes by, asked of the database.
+func hasAcceptedRequest(ctx context.Context, db dependency.DB, runID int) (bool, error) {
+	n, err := storeutil.QueryCountNamed(ctx, db, `
+		SELECT COUNT(*) FROM design_run_attempt
+		WHERE run_id = :run
+		  AND state = 'accepted'
+		  AND provider_request_id IS NOT NULL
+		  AND provider_request_id <> ''`, map[string]any{"run": runID})
+	if err != nil {
+		return false, fmt.Errorf("failed to read the accepted request of design run %d: %w", runID, err)
+	}
+	return n > 0, nil
+}
 
 // paidAttempts — то же число, вызовом.
 func paidAttempts(ctx context.Context, db dependency.DB, runID int) (int, error) {
@@ -611,6 +627,33 @@ func (s *Store) FinishAttempt(ctx context.Context, req entity.DesignAttemptFinis
 			return err
 		}
 		if attempt.FinishedAt.Valid {
+			// ⚠ «CLOSED» IS IDEMPOTENT SUCCESS ONLY WHEN THE SECOND CALL LOSES NOTHING (G-03 r2, Codex
+			// 3). A late worker's accepted id on a row a pickup already closed `unknown` is the more
+			// informative truth and is written onto it; a contradiction that would drop a paid id is
+			// refused loudly. The rule, and why, is entity.DesignLateAcceptedFinish.
+			upgrade, err := entity.DesignLateAcceptedFinish(attempt, req)
+			if err != nil || !upgrade {
+				return err
+			}
+			// No money moves: an accepted submit carries no price (the collect books the charge), and
+			// finished_at keeps the moment the row was first closed.
+			rows, err := storeutil.ExecNamedRows(ctx, db, `
+				UPDATE design_run_attempt
+				SET state = 'accepted',
+				    provider_request_id = :prid,
+				    error_code = NULL
+				WHERE run_id = :run AND attempt_no = :no AND finished_at IS NOT NULL
+				  AND state IN ('unknown', 'accepted')
+				  AND (provider_request_id IS NULL OR provider_request_id = '' OR provider_request_id = :prid)`,
+				map[string]any{"run": req.RunId, "no": req.AttemptNo, "prid": strings.TrimSpace(req.ProviderRequestId)})
+			if err != nil {
+				return fmt.Errorf("failed to write the late accepted request of design attempt %d of run %d: %w",
+					req.AttemptNo, req.RunId, err)
+			}
+			if rows == 0 {
+				return fmt.Errorf("%w: attempt %d of run %d changed while its late accepted request %q was written",
+					entity.ErrDesignAttemptConflict, req.AttemptNo, req.RunId, req.ProviderRequestId)
+			}
 			return nil
 		}
 		// ЦЕНА ДУБЛЯ НЕ ПИШЕТСЯ ВОВСЕ, а не просто «не двигает день»: price_actual считается как
@@ -989,12 +1032,33 @@ func (s *Store) FailRun(ctx context.Context, req entity.DesignRunFail) (*entity.
 		if err != nil {
 			return err
 		}
-		retry := req.Retryable && !cancelled &&
+		// ⚠ A PAID JOB WAITING FOR ITS ROUTE IS NOT FRESH WORK (G-03 r2, Codex 4). The worker names
+		// it (entity.DesignErrorCodePaidCollectWaiting) when an accepted id is on record and the
+		// route cannot collect it — FAL_KEY gone for longer than ten back-offs used to exhaust the
+		// round ceiling and close a bought job terminally, although no second purchase could come of
+		// waiting (a pass that finds an accepted id never submits). Such a run goes back to the queue
+		// at the CAPPED back-off and does not spend a round; the paid ceiling is not asked either,
+		// because nothing new is paid. Second lock: the code counts only on a run that really holds
+		// an accepted, id-bearing attempt.
+		waiting, err := entity.DesignPaidCollectWaits(req, cancelled, func() (bool, error) {
+			return hasAcceptedRequest(ctx, db, run.Id)
+		})
+		if err != nil {
+			return err
+		}
+		retry := waiting || (req.Retryable && !cancelled &&
 			paid < designMaxPaidAttempts &&
-			run.AttemptCount < designMaxRounds
+			run.AttemptCount < designMaxRounds)
 		next := req.NextAttempt
 		if next.IsZero() {
 			next = designNextAttemptAt(s.Now(), run.AttemptCount)
+			if waiting {
+				next = designNextAttemptAt(s.Now(), designMaxRounds)
+			}
+		}
+		roundCost := 1
+		if waiting {
+			roundCost = 0
 		}
 		lastError := req.LastError
 		if len(lastError) > designMaxErrorText {
@@ -1010,10 +1074,11 @@ func (s *Store) FailRun(ctx context.Context, req entity.DesignRunFail) (*entity.
 		)
 		if retry {
 			args["next"] = next.UTC()
+			args["round"] = roundCost
 			rows, err = storeutil.ExecNamedRows(ctx, db, `
 				UPDATE design_run
 				SET status = 'pending',
-				    attempt_count = attempt_count + 1,
+				    attempt_count = attempt_count + :round,
 				    next_attempt_at = :next,
 				    error_code = :code,
 				    last_error = :err,

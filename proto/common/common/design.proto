@@ -30,7 +30,8 @@ message DesignRun {
   int32 id = 1; // the row's address; the handle a human says out loud as «run 5»
   int32 tech_card_id = 2; // FK tech_card(id); which card's band this row belongs to
   // Which state of the studio produced this row: flat | render | threed | vector | draft_idea |
-  // recolor | pattern. Written by the client at start; immutable afterwards.
+  // recolor | pattern | freeform | cutout | extend | inpaint. Written by the client at start;
+  // immutable afterwards.
   //
   // `recolor` IS THE ON MODEL SECTION'S OWN VERB (K-17). The owner's ask — «мы можем загрузить фото
   // реальное на модели с разных сторон и нам можно будет поменять цвет вещи» — and the owner's own
@@ -53,6 +54,11 @@ message DesignRun {
   //
   // ImportDesignVector is NOT that verb and does not belong to this list: it files an SVG that
   // already exists and spends nothing.
+  //
+  // `extend` EXTENDS ONE PICTURE INTO A NEW PROPORTION on fal's outpaint route (params.extend + one
+  // params.extra_input_media_ids). `inpaint` REPAINTS ONE PAINTED ZONE of a picture on fal's fill
+  // route (params.inpaint + ask). Both are playground kinds: one output, colourway 0, section 1 of
+  // the window.
   string kind = 3;
   // OUTPUT-ONLY lifecycle: pending | running | done | failed | cancelled. A tile that is still
   // running renders differently from a finished one, so this is the field the band polls.
@@ -360,6 +366,66 @@ message DesignRunParams {
   // other kind with `freeform_forbidden`. The pictures a person laid on the playground travel HERE,
   // never in extra_input_media_ids (one list per fact — a run naming a picture in both is refused).
   DesignFreeformParams freeform = 15;
+
+  // THE PER-RUN ENGINE of every OpenRouter image kind: flat | render | recolor | pattern | freeform.
+  // Refused on threed | cutout | vector | extend | inpaint, whose routes are not OpenRouter images
+  // (`image_options_forbidden`). Absent or empty = the deployment's dial, exactly as before the
+  // field existed — which is what keeps every frozen run and every old client meaning what it meant.
+  //
+  // Offered only where GetDesignBandResponse.image_models is present; a client must not send it to a
+  // server that did not list any engine.
+  DesignImageOptions image = 16;
+
+  // THE MASK RETOUCH OF A PLAYGROUND RUN (kind=inpaint). Refused on every other kind (`inpaint_forbidden`).
+  DesignInpaintParams inpaint = 17;
+  // THE TARGET FORMAT OF AN EXTEND RUN (kind=extend). Refused on every other kind (`extend_forbidden`).
+  DesignExtendParams extend = 18;
+}
+
+// DesignImageOptions is the engine a person chose for ONE image run — the model and how it is asked
+// to draw. Every value is validated against the server's engine table before anything is reserved:
+// a slug the table does not hold is `unknown_image_model`, a tier the engine lacks is
+// `quality_not_supported`, a ratio it lacks is `aspect_not_supported`, a background it lacks is
+// `background_not_supported`. Frozen with the run like every other param, so a rerun repeats the
+// same engine without restating it.
+message DesignImageOptions {
+  // An OpenRouter slug from GetDesignBandResponse.image_models[].slug. '' = the deployment's default
+  // engine.
+  string model = 1;
+  // A UI tier word of that engine: low | medium | high (one of image_models[].qualities).
+  // '' = the engine's default tier.
+  string quality = 2;
+  // One of the engine's ratios (image_models[].aspect_ratios) or `auto`. '' = auto.
+  string aspect_ratio = 3;
+  // '' | transparent — only when the engine lists it in image_models[].backgrounds.
+  string background = 4;
+}
+
+// DesignInpaintParams — one picture of this card and its painted mask, a PNG of the SAME pixel size, white where the
+// picture changes, black elsewhere (the client paints it; UploadContentImage with preserve_original=true). Both are
+// validated BEFORE anything is reserved: `mask_required`, `mask_size_mismatch`, `mask_invalid` (not a readable PNG),
+// `mask_empty` (nothing painted). The words travel in StartDesignRunRequest.ask (`words_required` when blank).
+// The answer is a NEW picture beside the source, a lossless PNG: every pixel outside the mask is the source's own
+// decoded pixel (bit-exact for a PNG source; the decoded pixels of a JPEG/WebP one). Only an OPAQUE picture whose PNG
+// would EXCEED the store's verbatim ceiling (about 21 MB) is stored as JPEG instead — the best of q92 / q85 / q75
+// that fits. A picture with transparency is never stored as JPEG: past the ceiling the composite is not made and the
+// repainted crop is filed as delivered (`inpaint_not_composited`). The source may be at most 18 MP
+// (`source_too_large`).
+message DesignInpaintParams {
+  int32 source_media_id = 1; // FK media(id); a raster picture of this card or a fresh upload
+  int32 mask_media_id = 2; // FK media(id); the mask PNG, same width and height as the source
+}
+
+// DesignExtendParams — the final proportion of an extend (outpaint) run. The ONE source travels in
+// DesignRunParams.extra_input_media_ids (exactly one, `one_source_picture`); the route takes no words
+// (`extend_takes_no_words`). aspect_ratio ∈ 9:16 | 1:1 | 3:4 | 2:3 | 16:9 | 4:3 | 3:2 | 21:9 | 9:21 — never auto
+// (`extend_aspect_unknown`); a target that adds no pixels on either side is `target_aspect_must_extend`. The
+// server computes the per-side expansion, caps the canvas at 3 megapixels (downscaling the source first), and
+// re-composites the untouched source pixels into the answer, stored as a lossless PNG, so «the original is kept» is a
+// fact of the pixels: the source region is the source's own decoded pixels (at the scale the cap allows). The source
+// may be at most 18 MP (`source_too_large`).
+message DesignExtendParams {
+  string aspect_ratio = 1;
 }
 
 // DesignPatternParams is the frozen ask of a REPEATING-TILE run (kind=pattern, K-13).
@@ -448,11 +514,47 @@ message DesignPatternParams {
 // DesignRunParams.extra_input_media_ids — one list per fact — and a run naming a picture in both is
 // refused (`one_list_per_fact`) rather than quietly sending it twice.
 message DesignFreeformParams {
-  // free | add_hardware | repaint_parts — the server's own dictionary (designgen.FreeformPresets);
-  // `cutout` is NOT a preset of this kind: cutting the background is kind=cutout, another route.
+  // free | add_hardware | repaint_parts | tryon | fabric_extract | ghost_mannequin | add_logo |
+  // variations | retouch — the server's own dictionary (designgen.FreeformPresets); `cutout` is NOT
+  // a preset of this kind: cutting the background is kind=cutout, another route.
   string preset = 1;
   // 1..8 pictures, in the order they are numbered on screen and in the prompt («image 1» is items[0]).
   repeated DesignFreeformItem items = 2;
+  // The typed options of the chosen preset. Each preset reads only its own fields (named on each
+  // field of DesignWorkflowOptions); a field a preset does not read must be empty, and a stated one
+  // is refused `option_not_read` rather than silently dropped — nobody pays for a choice that was
+  // never sent.
+  DesignWorkflowOptions options = 3;
+}
+
+// DesignWorkflowOptions are the typed choices of a PLAYGROUND preset (DesignFreeformParams.options).
+//
+// FLAT ON PURPOSE, NO ONEOF. protojson materialises a oneof member from its zero value, so a oneof
+// here would turn «not stated» into «stated as empty» on the way through the gateway. Every field is
+// empty-means-not-stated instead, and the door refuses a field the chosen preset does not read
+// (`option_not_read`) and a word outside a field's vocabulary (`unknown_option`).
+message DesignWorkflowOptions {
+  // Read by `tryon`. auto | full_body | upper_body | portrait | hands | feet | product_detail.
+  // '' = auto.
+  string framing = 1;
+  // Read by `tryon`. auto | eye_level | slightly_above | slightly_below | low_angle. '' = auto.
+  string angle = 2;
+  // Read by `tryon`. edit | reference — whether the scene picture is edited in place or only
+  // referenced for its mood. '' = edit.
+  string scene_mode = 3;
+  // Read by `tryon`. Free words about the scene, ≤ 1000 runes.
+  string scene_text = 4;
+  // Read by `tryon`. FK model(id); 0 = no model profile named. PROVENANCE for the history: when > 0
+  // the door checks that the `model` item's media is a photograph of this model's profile
+  // (`model_photo_mismatch`; an id that does not exist is `model_not_found`).
+  int32 model_id = 5;
+  // Read by `tryon`. FK product(id) — the colourway whose render the product picture was taken
+  // from; 0 = not stated. Provenance only: the run itself still carries no colourway.
+  int32 product_colorway_id = 6;
+  // Read by `add_logo`. small | medium | large. '' = the preset's default.
+  string logo_size = 7;
+  // Read by `variations`. 0..3 — how far a variation may wander from the source (0 = closest).
+  int32 creativity = 8;
 }
 
 // DesignFreeformItem is ONE picture of a playground run, with the places on it a person marked and
@@ -471,7 +573,8 @@ message DesignFreeformItem {
   // What about this picture / these regions, ≤ 1000 runes. Regions and texts pair by index:
   // regions[i] is described by texts[i]; a text with no region describes the whole picture.
   repeated string texts = 3;
-  // '' | subject | hardware | cloth — what the preset expects this picture to be. Empty on `free`.
+  // '' | subject | hardware | cloth | model | product | scene | logo — what the preset expects this
+  // picture to be. Empty on `free`.
   string role = 4;
 }
 
@@ -845,6 +948,26 @@ message DesignThreedParams {
   // people writing the ask, and an enum would freeze today's four words into the contract and into
   // every already-frozen run's history.
   string body_type = 7;
+
+  // REFERENCE MODE: 1..4 media ids, ORDERED front, back, left, right — the order is the claim about
+  // which side each picture shows, so it is frozen as sent. When non-empty the run reads NO bench
+  // plate and `source_picture_ids` stays empty; more than 4 is `too_many_pictures`. Empty = today's
+  // behaviour, the bench's render plates.
+  repeated int32 reference_media_ids = 8;
+  // '' | on | off — whether the model is textured. '' = on. A STRING, not a bool: a proto3 bool
+  // cannot say «not stated», and «not stated» must keep meaning today's behaviour for every frozen
+  // run and every old client.
+  string texture = 9;
+  // '' | on | off — physically based materials. '' = off. A string for the same reason as `texture`.
+  string pbr = 10;
+  // '' | standard | detailed. '' = standard.
+  string quality = 11;
+  // '' | photo | shape — whether the surface follows the photograph or only the shape. Refused
+  // unless GetDesignBandResponse.threed_options advertises `follow`.
+  string follow = 12;
+  // Free words about the surface; they steer the texture. Refused (option_not_read) unless
+  // GetDesignBandResponse.threed_options advertises `surface_hint`, and on an untextured build.
+  string surface_hint = 13;
 }
 
 // DesignInputSnapshot is what the inputs WERE when the run started. Assembled by the SERVER only.
@@ -1177,8 +1300,8 @@ message DesignCardOutput {
   // FK design_run(id). 0 = no run: an uploaded picture, or a parentless flatten. It does NOT imply
   // «a run produced this picture» when non-zero — see the ancestry note above.
   int32 run_id = 2;
-  // render | threed | pattern | recolor | freeform | cutout — the kind of the RUN, never of the
-  // picture. "" when there is no run at all.
+  // render | threed | pattern | recolor | freeform | cutout | extend | inpaint — the kind of the
+  // RUN, never of the picture. "" when there is no run at all.
   string run_kind = 3;
   int32 run_rrev = 4; // the render revision of that run; 0 when there is no run
   // The run's colourway — product(id), 0 = unattributed or no run.
@@ -1190,6 +1313,10 @@ message DesignCardOutput {
   // with no run, where this field is 0 while the picture's own colourway is named and real.
   int32 run_colorway_id = 5;
   int32 batch_id = 6; // FK design_batch(id); 0 = not on a shelf (a run output, or a parentless flatten)
+  // The PLAYGROUND workflow key this output belongs to (virtual_try_on … image_to_3d, see
+  // GetDesignBandResponse.playground_workflows), derived by the server from the run's kind and
+  // frozen params. '' for a run of no workflow (render, pattern) or no run at all.
+  string run_workflow = 7;
 }
 
 // DesignReference is the ROLE of one reference image inside the band's prompt: which side of the

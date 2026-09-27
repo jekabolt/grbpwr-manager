@@ -138,6 +138,10 @@ func (p falCutoutProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	if err != nil {
 		return nil, err
 	}
+	model := p.c.ModelCutout()
+	if err := falLocatorFits(model); err != nil {
+		return nil, err
+	}
 	id, err := p.c.SubmitCutout(ctx, src)
 	if err != nil {
 		// ⚠ И ЗДЕСЬ ТОЖЕ БЫВАЮТ ДЕНЬГИ. Сабмит, принятый и не назвавший id, — оплачен: транспорт
@@ -147,7 +151,9 @@ func (p falCutoutProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 		}
 		return nil, err
 	}
-	return &Outcome{RequestID: id, Model: p.c.ModelCutout(), Pending: true}, nil
+	// The locator (G-03, Codex 2): the slug this request was queued under travels with its id, so a
+	// resume polls THAT namespace whatever FAL_MODEL_CUTOUT says by then.
+	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
 }
 
 // Collect is the FREE half: the wait, the download and the one question this route exists to
@@ -160,20 +166,22 @@ func (p falCutoutProvider) Collect(ctx context.Context, job Job, requestID strin
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
 
+	model, id := splitFalLocator(requestID)
 	var buf bytes.Buffer
-	res, err := p.c.CollectCutout(ctx, requestID, &buf)
+	res, err := p.c.CollectCutoutAt(ctx, model, id, &buf)
 	if err != nil {
 		// «ОПЛАЧЕНО, И НИЧЕГО ИЗ ЭТОГО НЕ ВЫШЛО» ИМЕЕТ ЗДЕСЬ НОСИТЕЛЯ, как на 3D и векторе:
 		// транспорт вешает на упавший вызов то, что он списал, когда знал. Без этого деньги
 		// терминального отказа исчезают — попытка закрывается с NULL-ценой, дневная книга не видит
 		// траты, и никто не может сказать, во что обошлись провалы.
 		if out := chargedCutoutOutcome(p.c, err); out != nil {
+			out.RequestID = requestID // the locator, so the collect row keys the same charge
 			return out, err
 		}
 		return nil, err
 	}
 
-	out := &Outcome{RequestID: res.RequestID, Model: res.Model}
+	out := &Outcome{RequestID: requestID, Model: res.Model}
 	if usd := p.c.CostCutoutUSD(res.BillableUnits); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	}

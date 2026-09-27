@@ -321,3 +321,65 @@ func TestModelProbeCeilingIsLoudToo(t *testing.T) {
 		t.Error("an oversized probe body must not produce a retirement verdict")
 	}
 }
+
+// TestCompleteWithImages_BytesUnchangedByTheOnRefactor pins the EXACT request body of today's
+// callers (DraftDesignIdea, the construction draft) after B-15 split the body into
+// completeWithImages: the shared slug, and reasoning "none" under a cap. A golden string, not a
+// field check: any reordering, new key or changed value is a new request to a live paid feature.
+func TestCompleteWithImages_BytesUnchangedByTheOnRefactor(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+	c := New(Config{APIKey: "k", Model: "shared/slug", BaseURL: srv.URL, ModelIdeas: "ideas/slug"})
+
+	if _, _, _, err := c.CompleteWithImages(context.Background(), "sys", "u", []string{"https://x/1.png"}, true, 900); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := c.CompleteWithImages(context.Background(), "sys", "u", nil, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_tokens":900,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"none"}}`,
+		`{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"}]}],"temperature":0.2}`,
+	}
+	for i := range want {
+		if bodies[i] != want[i] {
+			t.Errorf("request %d changed:\n got %s\nwant %s", i, bodies[i], want[i])
+		}
+	}
+}
+
+// TestCompleteWithImagesOn sends the NAMED slug and, under a cap, the least reasoning every model
+// accepts ("minimal" — a mandatory-reasoning slug rejects "none"). An empty slug never leaves.
+// Mutation: pass analysisReasoningEffort in CompleteWithImagesOn → "none" → red.
+func TestCompleteWithImagesOn(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+	c := New(Config{APIKey: "k", Model: "shared/slug", BaseURL: srv.URL})
+
+	if _, _, _, err := c.CompleteWithImagesOn(context.Background(), " openai/gpt-5-mini ", "sys", "u", []string{"https://x/1.png"}, true, 300); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"model":"openai/gpt-5-mini","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_tokens":300,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"minimal"}}`
+	if len(bodies) != 1 || bodies[0] != want {
+		t.Fatalf("got %v\nwant %s", bodies, want)
+	}
+	if _, _, _, err := c.CompleteWithImagesOn(context.Background(), "  ", "sys", "u", nil, true, 300); err == nil {
+		t.Error("an empty slug must be refused")
+	}
+	if _, _, _, err := New(Config{}).CompleteWithImagesOn(context.Background(), "m", "sys", "u", nil, true, 300); !errors.Is(err, ErrNotConfigured) {
+		t.Errorf("no key: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Errorf("a refused call reached the provider: %d bodies", len(bodies))
+	}
+}

@@ -31,6 +31,39 @@ var (
 	// записан ровно тот факт, что ответ был шире заказа, — иначе «в ленте один кадр, а сколько
 	// прислала модель» было бы неизвестно никому и никогда. См. narrowToOneOutput.
 	errOverDelivery = errors.New("designgen: the provider delivered more pictures than this run bought")
+	// errThreedOptionNotRead — the frozen run states a 3D option (texture off, pbr on, detailed, surface
+	// words) that the route this pass would pay does not read: the configuration moved between the
+	// door and the pickup. Raised before StartAttempt, so nothing is spent; terminal, because the
+	// frozen params and the configured route give the same answer on every pass.
+	errThreedOptionNotRead = errors.New("designgen: the configured 3D route does not read an option this run states")
+	// errAcceptedNotRecorded — an asynchronous route ACCEPTED a paid submit and the attempt row that
+	// would carry its id could not be written (G-03, Codex 1a). The id lives only in this pass's
+	// memory, so the pass fails closed: terminal, `submit_unconfirmed`, the id in last_error for a
+	// person to reconcile — never «carry on and hope», which leaves the next pickup free to buy the
+	// job again.
+	errAcceptedNotRecorded = errors.New("designgen: a paid submit was accepted and its request id could not be written down")
+	// errUnresolvedSubmit — the pickup found an earlier submit of this asynchronous run that never
+	// closed (`dispatching`, no finished_at) and no accepted id: the pass that sent it died between
+	// the POST and the write. Whether fal queued (and charged) it is unknown, so the run fails closed
+	// instead of submitting a second time (G-03, Codex 1a).
+	errUnresolvedSubmit = errors.New("designgen: an earlier submit of this run never closed; whether it was bought is unknown")
+	// errPaidCollectBlocked — a run whose job is ALREADY BOUGHT (an accepted id on record) cannot be
+	// collected on this pass because its route is off right now (FAL_KEY removed, the route
+	// unwired). The collect is free and the job is paid: this is weather for the run, retryable,
+	// never the terminal «kind not available» that would release the reserve over a paid result
+	// (G-03, Codex 2).
+	errPaidCollectBlocked = errors.New("designgen: a paid job cannot be collected while its route is off")
+	// errSubmitSettling — the pickup found an earlier submit still open (`dispatching`, no accepted
+	// id) that is YOUNGER than the longest a live pass could still be inside it (submitSettleGrace):
+	// lease expiry proves the old worker lost the claim, not that its paid call has stopped (G-03 r2,
+	// Codex 3). Closing it `unknown` now would race the late worker's accepted id; the run instead
+	// comes back once the grace has passed, when the row is either closed by its owner (accepted →
+	// a free collect) or provably abandoned (→ `submit_unconfirmed`). Retryable, nothing spent.
+	errSubmitSettling = errors.New("designgen: an earlier submit of this run may still be settling")
+	// errEngineSwitchedOff — the frozen engine is a flagged row (Gemini / Seedream) whose flag is off
+	// at the pickup (G-03, Codex 6). Refused before StartAttempt, so nothing is spent; terminal,
+	// the door's own word (`unknown_image_model`).
+	errEngineSwitchedOff = errors.New("designgen: the frozen engine is switched off on this deployment")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -93,6 +126,36 @@ const (
 	// картинка, удалённая между дверью и проходом, превращала выполнимую просьбу в оплаченную
 	// «как получится». См. errFreeformSourceGone в snapshot.go.
 	CodeSourceGone = "source_gone"
+
+	// CodeSourceTooSmall — the picture a generation window is cut from is too small to cut (under
+	// windowMinSource px on a side). Free and terminal, like its neighbours.
+	CodeSourceTooSmall = "source_too_small"
+
+	// CodeOptionNotRead — the configured 3D route would drop an option the run states (see
+	// errThreedOptionNotRead). The door's own word for the same fact (entity.DesignErrorCodeOptionNotRead),
+	// said again at the pickup because the configuration can move in between. Free and terminal.
+	CodeOptionNotRead = entity.DesignErrorCodeOptionNotRead
+
+	// CodeSubmitUnconfirmed — A PAID SUBMIT WHOSE OUTCOME IS UNKNOWN (G-03, Codex 1): the request may
+	// have reached the provider and been charged, and nothing on record says so for sure — a transport
+	// failure after the request was written, a 5xx or unreadable 2xx on the submit, an accepted id that
+	// could not be written down, or an earlier submit that never closed. Terminal (a retry could buy the
+	// job twice against one reservation), attempt state `unknown`; last_error carries whatever id is
+	// known. The owner reconciles it with the provider's own dashboard.
+	CodeSubmitUnconfirmed = "submit_unconfirmed"
+
+	// CodeSubmitSettling — the run waits for an earlier, possibly still live submit to close (see
+	// errSubmitSettling). Retryable; the run comes back at the end of the grace.
+	CodeSubmitSettling = "submit_settling"
+
+	// CodePaidCollectWaiting — a BOUGHT job waits for its route to come back (errPaidCollectBlocked).
+	// The store reads this word as a wait that spends no round of the ceiling — see
+	// entity.DesignErrorCodePaidCollectWaiting (G-03 r2, Codex 4).
+	CodePaidCollectWaiting = entity.DesignErrorCodePaidCollectWaiting
+
+	// CodeUnknownImageModel — the frozen engine is not on this deployment's table at the pickup (a
+	// B-16 flag went off): the door's own word for the same fact. Free and terminal.
+	CodeUnknownImageModel = entity.DesignErrorCodeUnknownImageModel
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -124,6 +187,23 @@ type verdict struct {
 // store's, and it is a money figure.
 func classify(err error) verdict {
 	switch {
+	// ─── ours, G-03: a PAID job waiting for its route to come back. Retryable, before any attempt
+	// row (the resume is free). Its own word, because the store reads it as a WAIT that does not
+	// spend the ten-round ceiling (G-03 r2, Codex 4): a key gone for longer than ten back-offs must
+	// not close a bought job.
+	case errors.Is(err, errPaidCollectBlocked):
+		return verdict{Retryable: true, Code: CodePaidCollectWaiting, State: entity.DesignAttemptFailed}
+	// ─── ours, G-03 r2: an earlier submit may still be live. Retryable, nothing spent.
+	case errors.Is(err, errSubmitSettling):
+		return verdict{Retryable: true, Code: CodeSubmitSettling, State: entity.DesignAttemptFailed}
+	// ─── ours + fal, G-03: a submit that may have been bought, with nothing on record to resume it
+	// by. FIRST among the provider cases: submitLost also wraps ErrUnexpectedResponse, and a 5xx
+	// would otherwise fall into the retryable default — both would read as «resubmit».
+	case errors.Is(err, errAcceptedNotRecorded), errors.Is(err, errUnresolvedSubmit),
+		errors.Is(err, fal.ErrSubmitUnconfirmed):
+		return verdict{Retryable: false, Code: CodeSubmitUnconfirmed, State: entity.DesignAttemptUnknown}
+	case errors.Is(err, errEngineSwitchedOff):
+		return verdict{Retryable: false, Code: CodeUnknownImageModel, State: entity.DesignAttemptFailed}
 	// ─── ours: DELIVERED, and then the STORE refused to file it. RETRY FORBIDDEN, and this one is
 	// the most expensive of the family to get wrong. The attempt is already recorded as delivered
 	// (the provider was paid before CompleteRun is ever called), so an unclassified refusal here
@@ -159,6 +239,25 @@ func classify(err error) verdict {
 	// snapshot is frozen. See freeformPrerequisitesSurvived.
 	case errors.Is(err, errFreeformSourceGone):
 		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errFreeformSourceTooSmall):
+		return verdict{Retryable: false, Code: CodeSourceTooSmall, State: entity.DesignAttemptFailed}
+	// ─── ours, phase 3: an extend whose frozen target adds no pixels to the picture actually read
+	// (the door's second lock, for a media row with no stored dimensions). Built before
+	// StartAttempt, so free; terminal because the snapshot and the picture are frozen.
+	case errors.Is(err, errExtendNothingToAdd):
+		return verdict{Retryable: false, Code: CodeTargetAspectMustExtend, State: entity.DesignAttemptFailed}
+	// ─── ours, phase 3: the mask of a retouch fails its second lock at build time (before
+	// StartAttempt, so free). Terminal: the mask row is immutable and the snapshot frozen.
+	case errors.Is(err, errInpaintMaskGone):
+		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errInpaintMaskMismatch):
+		return verdict{Retryable: false, Code: CodeMaskSizeMismatch, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errInpaintMaskEmpty):
+		return verdict{Retryable: false, Code: CodeMaskEmpty, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errInpaintMaskUnreadable):
+		return verdict{Retryable: false, Code: CodeMaskInvalid, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errThreedOptionNotRead):
+		return verdict{Retryable: false, Code: CodeOptionNotRead, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it
@@ -198,6 +297,14 @@ func classify(err error) verdict {
 	// again on the next pass, at the price of a second generation.
 	case errors.Is(err, errWindowNotComposited):
 		return verdict{Retryable: false, Code: CodeWindowNotComposited, State: entity.DesignAttemptDelivered}
+	// ─── ours, phase 3: the same seam for an extend — the canvas is bought and filed as delivered,
+	// the source could not be pasted back into it. Not retryable: the next pass would buy a second
+	// canvas and meet the same obstacle.
+	case errors.Is(err, errExtendNotComposited):
+		return verdict{Retryable: false, Code: CodeExtendNotComposited, State: entity.DesignAttemptDelivered}
+	// ─── ours, phase 3: the retouch crop is bought and filed; it could not go back through the mask.
+	case errors.Is(err, errInpaintNotComposited):
+		return verdict{Retryable: false, Code: CodeInpaintNotComposited, State: entity.DesignAttemptDelivered}
 
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.
@@ -280,6 +387,11 @@ func classify(err error) verdict {
 		return verdict{Retryable: true, Code: CodeProviderTimeout, State: entity.DesignAttemptUnknown}
 	case errors.Is(err, orimages.ErrProviderFailure), errors.Is(err, recraft.ErrProviderFailure):
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
+	// ⚠ RETRYABLE BY DEFAULT — so an ambiguous PAID submit must never reach this line bare. For fal
+	// that is the transport's job: only a 503 without a request id (an explicit «service
+	// unavailable» refusal) arrives here as a plain error; a 502/504 — a gateway that may have lost
+	// the queue's answer AFTER the enqueue — and every other 5xx on a submit arrive wrapped in
+	// fal.ErrSubmitUnconfirmed and stop at the terminal case above (G-03 r3, Codex BLOCKER 1).
 	default:
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
 	}

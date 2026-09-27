@@ -39,9 +39,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -132,6 +134,21 @@ const (
 	// unexported so that it can only be read that way. See EstimatedRequestUSD for what happened
 	// when the door kept its own copy.
 	defaultRequestUSD = 1.20
+
+	// defaultDetailedRequestUSD is the same fallback for a DETAILED build (Request3D.Quality =
+	// QualityDetailed, which sends `geometry_resolution: "2k"`).
+	//
+	// ⚠ 1.40 IS fal's OWN «ULTRA MODE» PRICE for meshy v7 multi-image-to-3d, read on 2026-09-27 at
+	// https://fal.ai/models/meshy/v7/multi-image-to-3d/llms.txt («A textured model generated from
+	// multiple input images costs $1.20, or $1.40 with ultra mode enabled»). The page does not say
+	// in so many words that ultra mode IS `geometry_resolution: "2k"`; it is the only resolution dial
+	// the endpoint's schema has, and Meshy's own pricing names the 2k geometry surcharge «ultra».
+	// The inference is priced at the HIGH end on purpose: booking a detailed build at 1.20 would
+	// understate real spend, which is the failure this ledger exists to prevent.
+	//
+	// THERE IS NO UNTEXTURED FIGURE, AND NONE IS INVENTED. fal publishes only the textured price;
+	// an untextured build is therefore booked at the textured one — the safe end of the mistake.
+	defaultDetailedRequestUSD = 1.40
 
 	// maxAPIResponseBytes caps a control-plane JSON body. Queue envelopes are a few kilobytes.
 	maxAPIResponseBytes = 1 << 20
@@ -228,6 +245,24 @@ var ErrBadRequest = errors.New("fal: the provider refused the request")
 // the run closes `done` with money spent and nothing in the history to tell it from an honest one.
 var ErrNoFrontView = errors.New("fal: a multi-view build needs at least the front view")
 
+// The per-run 3D options (DesignThreedParams.texture / pbr / quality, PLAYGROUND phase 2), spelled
+// exactly as the frozen params spell them. The EMPTY STRING is a legal value of every one of them
+// and means «not stated», i.e. today's constant: textured, no PBR, standard geometry. That is what
+// keeps every run frozen before the fields — and every bench-plate run — byte-identical on the wire.
+const (
+	OptionOn        = "on"
+	OptionOff       = "off"
+	QualityStandard = "standard"
+	QualityDetailed = "detailed"
+)
+
+// ErrBadOption is returned, LOCALLY and before any money, for a 3D option this transport cannot
+// send: an unknown word, or PBR on an untextured build (the provider documents enable_pbr as
+// «Requires should_texture to be true»). The door refuses both first; this is the second lock for a
+// frozen snapshot that reached the worker some other way. It wraps ErrBadRequest so the worker's
+// classifier reads it as the non-retryable «this request is wrong» it is.
+var ErrBadOption = fmt.Errorf("fal: a 3D option this route cannot send: %w", ErrBadRequest)
+
 // ErrBadImageURL is returned for a reference the provider could not fetch itself.
 var ErrBadImageURL = errors.New("fal: image references must be public http(s) urls or data: uris")
 
@@ -236,6 +271,30 @@ var ErrUnexpectedResponse = errors.New("fal: unreadable response from the provid
 
 // ErrTooLarge is returned when an artifact or an envelope exceeds its cap. Refusal, not truncation.
 var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
+
+// ErrSubmitUnconfirmed — A SUBMIT WHOSE OUTCOME NOBODY KNOWS: the whole request left this process
+// (WroteRequest without an error) and no usable answer came back — a timeout, a reset connection, a
+// 5xx other than a bare 503 (a 502 and a 504 included, and any 5xx naming a request id), a 2xx that
+// could not be read or named no request id. fal MAY have queued the job and charged for it.
+//
+// ⚠ IT IS NEVER RESUBMITTED AUTOMATICALLY (G-03, Codex 1). fal's queue documents no idempotency key
+// for a submit (https://fal.ai/docs/documentation/model-apis/inference/queue lists Authorization,
+// X-Fal-Request-Timeout, X-Fal-Runner-Hint, X-Fal-Queue-Priority, X-Fal-Store-IO, X-Fal-No-Retry,
+// X-Fal-Object-Lifecycle-Preference — nothing that deduplicates two submits; the `Idempotency-Key`
+// fal documents belongs to the platform's queue-flush endpoint, not to model submits). A retry of an
+// ambiguous submit is therefore a possible SECOND purchase of the same job against ONE reservation.
+// designgen classifies this terminal (`submit_unconfirmed`, attempt state `unknown`): the run fails
+// closed and the history says the charge must be reconciled with fal's dashboard.
+//
+// A submit whose request was never written in full (DNS, dial, TLS, a body write cut half-way) is
+// not this: fal holds no complete request it could enqueue, and it keeps its ordinary retryable
+// classification. Nor is a 503 without a request id — the one explicit refusal; see submitServerError.
+var ErrSubmitUnconfirmed = errors.New("fal: the submit may have reached the provider and its outcome is unknown")
+
+// submitLost — the 2xx submit that named no request id: accepted (so possibly paid) and unresumable.
+func submitLost() error {
+	return fmt.Errorf("%w: %w: submit returned no request id", ErrSubmitUnconfirmed, ErrUnexpectedResponse)
+}
 
 // ChargedError marks a failure the provider HAS ALREADY BILLED, and carries the charge.
 //
@@ -259,6 +318,10 @@ type ChargedError struct {
 	// provenance Result.Model carries, and needed for the same reason: a failed-but-billed call on
 	// a RECOVERED build must be priced as the model it was bought at, not as today's.
 	Model string
+	// Assumed — the provider sent NO billing header and Units is billableUnits' one assumed unit
+	// (G-03, Codex 3). A pricing side that can book a conservative ceiling instead reads this; one
+	// that cannot keeps the old reading (one unit), which is what it always did.
+	Assumed bool
 }
 
 func (e *ChargedError) Error() string {
@@ -274,6 +337,15 @@ func chargedWith(err error, units float64, requestID, model string) error {
 		return err
 	}
 	return &ChargedError{Err: err, Units: units, RequestID: requestID, Model: model}
+}
+
+// chargedAssumed — chargedWith, saying whether the units were read or assumed.
+func chargedAssumed(err error, units float64, assumed bool, requestID, model string) error {
+	out := chargedWith(err, units, requestID, model)
+	if ce, ok := out.(*ChargedError); ok {
+		ce.Assumed = assumed
+	}
+	return out
 }
 
 // ChargedModel is the slug a failed-but-billed call was polling, or «» when the error carries no
@@ -314,6 +386,22 @@ type Config struct {
 	// rather than a reuse of UnitUSD because the two routes' units differ by two orders of
 	// magnitude — see CostCutoutUSD. <=0 = defaultCutoutUSD per request.
 	UnitUSDCutout float64 `mapstructure:"unit_usd_cutout"` // FAL_UNIT_USD_CUTOUT
+	// UnitsCeiling3D is the most billable units ONE 3D build may report (FAL_UNITS_CEILING_3D). It
+	// matters only when UnitUSD is set: then a build books `UnitUSD × units`, and the door can
+	// reserve no less than that only if somebody states how many units a build may take. With a
+	// tariff and no ceiling the reservation has nothing to stand on, so the 3D door refuses in
+	// words (G-02, Codex 4) rather than reserving a number below the booking. <=0 = not stated.
+	UnitsCeiling3D float64 `mapstructure:"units_ceiling_3d"` // FAL_UNITS_CEILING_3D
+	// PLAYGROUND phase 3 — the generic JSON routes (generic.go). Each has its own slug and its own
+	// tariff for the reason the cut-out has (units differ per model), and its own units ceiling for
+	// the reason 3D has (a tariff without a ceiling leaves the reserve nothing to stand on — the door
+	// then refuses the kind: route_reserve_unbounded). Empty slug = the code default; <=0 = unset.
+	ModelOutpaint        string  `mapstructure:"model_outpaint"`         // FAL_MODEL_OUTPAINT
+	ModelFill            string  `mapstructure:"model_fill"`             // FAL_MODEL_FILL
+	UnitUSDOutpaint      float64 `mapstructure:"unit_usd_outpaint"`      // FAL_UNIT_USD_OUTPAINT
+	UnitsCeilingOutpaint float64 `mapstructure:"units_ceiling_outpaint"` // FAL_UNITS_CEILING_OUTPAINT
+	UnitUSDFill          float64 `mapstructure:"unit_usd_fill"`          // FAL_UNIT_USD_FILL
+	UnitsCeilingFill     float64 `mapstructure:"units_ceiling_fill"`     // FAL_UNITS_CEILING_FILL
 }
 
 // String renders the config with the API key redacted, so an accidental %v / %+v / %s of it — in a
@@ -326,9 +414,11 @@ func (c Config) String() string {
 		key = "***REDACTED***"
 	}
 	return fmt.Sprintf("fal.Config{APIKey:%s BaseURL:%s Model3D:%s ModelCutout:%s HTTPTimeout:%s "+
-		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v}",
+		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v UnitsCeiling3D:%v "+
+		"ModelOutpaint:%s ModelFill:%s UnitUSDOutpaint:%v UnitsCeilingOutpaint:%v UnitUSDFill:%v UnitsCeilingFill:%v}",
 		key, c.BaseURL, c.Model3D, c.ModelCutout, c.HTTPTimeout, c.PollInterval, c.PollTimeout,
-		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout)
+		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout, c.UnitsCeiling3D,
+		c.ModelOutpaint, c.ModelFill, c.UnitUSDOutpaint, c.UnitsCeilingOutpaint, c.UnitUSDFill, c.UnitsCeilingFill)
 }
 
 // Client is a configured fal queue client. A nil *Client is valid and permanently disabled, so
@@ -367,6 +457,15 @@ func New(cfg Config) *Client {
 	// оценкой ЗА ЗАПРОС. Подстановка доллара за единицу и была тем, что дало сто долларов.
 	if cfg.UnitUSD < 0 {
 		cfg.UnitUSD = 0
+	}
+	if cfg.UnitsCeiling3D < 0 {
+		cfg.UnitsCeiling3D = 0
+	}
+	// Same rule for the generic routes: a negative number is «unset», never a negative price.
+	for _, f := range []*float64{&cfg.UnitUSDOutpaint, &cfg.UnitsCeilingOutpaint, &cfg.UnitUSDFill, &cfg.UnitsCeilingFill} {
+		if *f < 0 {
+			*f = 0
+		}
 	}
 	return &Client{
 		// The shared http.Client carries NO Timeout of its own: every request below gets its
@@ -434,13 +533,68 @@ func EstimatedRequestUSD() decimal.Decimal { return EstimatedRequestUSDFor("") }
 // understates real spend in the ledger — the failure this whole accounting exists to prevent. A
 // slug nobody wrote down therefore gets the current estimate, not the cheapest one.
 func EstimatedRequestUSDFor(model string) decimal.Decimal {
+	return EstimatedRequestUSDForQuality(model, "")
+}
+
+// EstimatedRequestUSDForQuality is EstimatedRequestUSDFor AT THE BUILD'S OWN TIER: a detailed build
+// (quality = QualityDetailed) off the current family is fal's «ultra mode» price, every other value
+// — empty, standard, anything unknown — the standard one. A retired slug keeps its own single price:
+// it was never offered a tier, so a tier cannot move its money.
+//
+// ⚠ THE DOOR RESERVES AGAINST THIS AND THE COLLECT BOOKS AGAINST THIS, and that is why it is one
+// function: a detailed run reserved at 1.40 and booked at 1.20 (or the reverse) is the two-copies
+// defect EstimatedRequestUSD documents, reborn one dial later.
+func EstimatedRequestUSDForQuality(model, quality string) decimal.Decimal {
 	model = strings.Trim(strings.TrimSpace(model), "/")
 	for _, r := range retired3D {
 		if strings.EqualFold(model, r.Model) {
 			return decimal.NewFromFloat(r.RequestUSD)
 		}
 	}
+	if strings.TrimSpace(quality) == QualityDetailed {
+		return decimal.NewFromFloat(defaultDetailedRequestUSD)
+	}
 	return decimal.NewFromFloat(defaultRequestUSD)
+}
+
+// RequestCeilingUSDForQuality — THE MOST ONE 3D BUILD OF THIS TIER MAY BOOK ON THIS CLIENT, i.e. the
+// number the door must reserve so that the collect (CostUSDForQuality) never books more (G-02,
+// Codex 4). ok = false means there is no such number.
+//
+//   - no tariff (FAL_UNIT_USD unset): the collect books EstimatedRequestUSDForQuality(model, tier)
+//     whatever the units — the same function, so the reserve equals the booking exactly;
+//   - a tariff AND a stated units ceiling (FAL_UNITS_CEILING_3D): tariff × ceiling — the booking is
+//     tariff × reported units, bounded by the ceiling the operator stated;
+//   - a tariff and no ceiling: ok = false. The booking is tariff × whatever the provider reports
+//     (run 17 reported a hundred), and no reservation can be said to cover it.
+//
+// Nil-safe: a nil client answers the unconfigured estimate for the default model.
+func (c *Client) RequestCeilingUSDForQuality(quality string) (decimal.Decimal, bool) {
+	if c == nil || c.cfg.UnitUSD <= 0 {
+		return EstimatedRequestUSDForQuality(c.Model(), quality), true
+	}
+	if c.cfg.UnitsCeiling3D <= 0 {
+		return decimal.Zero, false
+	}
+	return decimal.NewFromFloat(c.cfg.UnitUSD).Mul(decimal.NewFromFloat(c.cfg.UnitsCeiling3D)), true
+}
+
+// UnitsCeiling3D — the stated units ceiling of one 3D build under a tariff (ok = false: no tariff,
+// or no ceiling stated). The collect compares a build's reported units with it and says so out loud
+// when the provider billed more than the reservation was sized for.
+func (c *Client) UnitsCeiling3D() (float64, bool) {
+	if c == nil || c.cfg.UnitUSD <= 0 || c.cfg.UnitsCeiling3D <= 0 {
+		return 0, false
+	}
+	return c.cfg.UnitsCeiling3D, true
+}
+
+// AcceptsBuildOptions reports whether the CONFIGURED 3D model reads the per-run build options
+// (Request3D.Texture / PBR / Quality). Only the meshy family does; the retired hitem3d body sends
+// fixed constants and drops them (Submit logs it). The band advertises no options and the door
+// refuses a non-default one on a route that answers false (G-02, Codex 3). Nil-safe.
+func (c *Client) AcceptsBuildOptions() bool {
+	return c != nil && isMeshyFamily(c.Model())
 }
 
 // CostUSD converts billable units into money at the configured rate (FAL_UNIT_USD). It is the only
@@ -457,6 +611,16 @@ func (c *Client) CostUSD(units float64) decimal.Decimal { return c.CostUSDFor(""
 // UNCONFIGURED fallback varies by model, because only there does this package supply the number
 // itself.
 func (c *Client) CostUSDFor(model string, units float64) decimal.Decimal {
+	return c.CostUSDForQuality(model, units, "")
+}
+
+// CostUSDForQuality is CostUSDFor for a build of a stated tier — see EstimatedRequestUSDForQuality.
+//
+// ⚠ THE TIER MOVES ONLY THE UNCONFIGURED FALLBACK. With FAL_UNIT_USD set the charge is
+// `tariff × units`, and the units are the provider's own report of what the request cost — a
+// detailed build that bills more units is already priced higher by that arithmetic, and a second,
+// local surcharge on top would count the tier twice.
+func (c *Client) CostUSDForQuality(model string, units float64, quality string) decimal.Decimal {
 	if c == nil || units <= 0 {
 		return decimal.Zero
 	}
@@ -465,7 +629,7 @@ func (c *Client) CostUSDFor(model string, units float64) decimal.Decimal {
 	// выдуманный тариф даёт не оценку, а уверенное враньё, тем более убедительное, чем больше
 	// единиц вернул провайдер. Без тарифа отвечаем ОДНОЙ оценкой за сборку.
 	if c.cfg.UnitUSD <= 0 {
-		return EstimatedRequestUSDFor(model)
+		return EstimatedRequestUSDForQuality(model, quality)
 	}
 	return decimal.NewFromFloat(c.cfg.UnitUSD).Mul(decimal.NewFromFloat(units))
 }
@@ -500,6 +664,21 @@ type Request3D struct {
 	// pretending it travelled would be worse still — which is why AcceptsTexturePrompt exists, so
 	// the caller that WRITES DOWN what the provider was told can ask instead of assuming.
 	TexturePrompt string
+	// Texture / PBR / Quality are the run's own 3D options (PLAYGROUND phase 2): '' | on | off,
+	// '' | on | off, '' | standard | detailed. EMPTY IS TODAY'S CONSTANT for every one of them —
+	// textured, no PBR, the provider's standard geometry — so a request that states none of them is
+	// byte-identical to the body this transport sent before the fields existed.
+	//
+	// ⚠ THEY REACH THE MESHY FAMILY ONLY. hitem3d's body keeps its constants and the request is
+	// logged, exactly like TexturePrompt: the slug is retired and selectable only by FAL_MODEL_3D.
+	//
+	// ⚠ fal's meshy/v7 schema has NO `texture_resolution` and NO `ai_model` (read 2026-09-27 from
+	// https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=meshy/v7/multi-image-to-3d), so on
+	// this route «detailed» is `geometry_resolution: "2k"` and nothing else. The direct Meshy API has
+	// the texture dial too; see meshy.Request.
+	Texture string
+	PBR     string
+	Quality string
 }
 
 // Sink is where the bytes of a finished request go. Model is required; Thumbnail is optional and,
@@ -590,6 +769,11 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 		}
 	}
 
+	opts, err := resolveOptions(req)
+	if err != nil {
+		return "", err
+	}
+
 	var body any
 	if isMeshyFamily(model) {
 		// ⚠ THE NAMES ARE LOST HERE AND NOWHERE ELSE, AND THE FRONT IS INDEX 0 BY CONSTRUCTION.
@@ -604,14 +788,16 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 				urls = append(urls, v.url)
 			}
 		}
-		body = meshySubmitBody{
+		mb := meshySubmitBody{
 			ImageURLs: urls,
 			// A flat drawing becomes a garment only with its colour and print on it; an untextured
-			// mesh answers a different question than the one the designer asked.
-			ShouldTexture: true,
-			// PBR maps quadruple the download for lighting nuance a product tile does not show. The
-			// provider's own default is TRUE, so this field is STATED rather than omitted.
-			EnablePBR: false,
+			// mesh answers a different question than the one the designer asked — which is why
+			// «textured» is what an unstated option means. Texture = off is the person asking
+			// that different question on purpose.
+			ShouldTexture: opts.texture,
+			// PBR maps quadruple the download for lighting nuance a product tile does not show, so
+			// they are off unless the run asks. The field is STATED rather than omitted either way.
+			EnablePBR: opts.pbr,
 			// Safety checking is the provider's default and is left on: a refusal we can read is
 			// worth more than a surprise on somebody else's terms.
 			EnableSafetyChecker: true,
@@ -622,8 +808,31 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 			// (auto / 30000) are right for a garment shown in a browser, and a value stated here
 			// would freeze today's guess into every future build.
 		}
+		if !opts.texture {
+			// The schema says texture_prompt «Requires should_texture to be true». An untextured
+			// build has no texturing stage for the words to steer, so they do not travel — and the
+			// designgen route reports the same empty string as what was sent (SentPrompt).
+			mb.TexturePrompt = ""
+		}
+		if opts.detailed {
+			// fal's «ultra mode» ($1.40, see defaultDetailedRequestUSD). Omitted otherwise, so a
+			// standard build keeps the provider's own default and today's exact body.
+			mb.GeometryResolution = geometryResolution2K
+		}
+		body = mb
 	} else {
 		// The hitem3d body, unchanged: NAMED slots, and the text field it has nowhere to put.
+		//
+		// ⚠ AND THE PER-RUN OPTIONS ARE NOT MAPPED ONTO IT. hitem3d is retired (selectable only by
+		// FAL_MODEL_3D), its tiers are priced differently, and nobody has measured its
+		// `resolution` values against «detailed». The build goes out at today's constants and the
+		// gap is said out loud rather than papered over.
+		if opts.stated {
+			c.log.InfoContext(ctx, "3D: the configured model takes no per-run texture/PBR/quality "+
+				"options, so the run's options were not sent",
+				slog.String("model", model), slog.String("texture", req.Texture),
+				slog.String("pbr", req.PBR), slog.String("quality", req.Quality))
+		}
 		h := submitBody{
 			ExportFormat:        formatGLB,
 			EnableTexture:       true,
@@ -643,7 +852,7 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 	}
 	id := strings.TrimSpace(out.RequestID)
 	if id == "" {
-		return "", fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
+		return "", submitLost()
 	}
 	// ⚠ THE DERIVED POLLING PATH IS CHECKED AGAINST THE PROVIDER'S OWN, ONCE, HERE. fal documents
 	// that a model id with a sub-path (`hitem3d/hi3d/v3.0/multi-view-to-3d`) is submitted whole but
@@ -698,6 +907,16 @@ func queuePath(model string) string {
 		return strings.Join(parts, "/")
 	}
 	return parts[0] + "/" + parts[1]
+}
+
+// QueueNamespace is the queue namespace a slug's requests are polled under (queuePath): what a
+// resume needs to find a request when only part of its locator can be stored. "" for "".
+func QueueNamespace(model string) string {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		return ""
+	}
+	return queuePath(model)
 }
 
 // retiredModel3D is every 3D slug this band has DEFAULTED to before the current one.
@@ -775,11 +994,20 @@ const (
 // a deployment that switched between the default and FAL_MODEL_3D. It does NOT cover one override
 // replaced by another — nobody recorded the first — and it says so here rather than pretending.
 func (c *Client) locateRequest(ctx context.Context, current, requestID string) (string, locateOutcome, error) {
-	tried := map[string]bool{queuePath(strings.Trim(strings.TrimSpace(current), "/")): true}
 	candidates := []string{DefaultModel3D, c.cfg.Model3D}
 	for _, r := range retired3D {
 		candidates = append(candidates, r.Model)
 	}
+	return c.searchNamespaces(ctx, current, candidates, requestID)
+}
+
+// searchNamespaces asks each candidate slug's queue namespace (skipping current's and repeats)
+// whether it knows requestID — locateRequest's search over any candidate list. Since G-03 r2 new
+// requests carry their slug in the locator; the search remains the recovery for the ids stored bare
+// before that (every generic route and the 3D route), over the namespaces the route is known to have
+// used (RouteLegacyModels, CutoutLegacyModels, retired3D).
+func (c *Client) searchNamespaces(ctx context.Context, current string, candidates []string, requestID string) (string, locateOutcome, error) {
+	tried := map[string]bool{queuePath(strings.Trim(strings.TrimSpace(current), "/")): true}
 	// THE FIRST TRANSIENT FAULT IS KEPT, NOT THE LAST, because it is the one closest to the model
 	// the caller was already polling — and because a caller that reports «could not be asked» has
 	// to be able to say WHY, in the provider's own words.
@@ -965,8 +1193,20 @@ func (c *Client) collect(lookupCtx, fetchCtx context.Context, model, requestID s
 // single ceiling over both would cut the download of a request that finished in the last second of
 // the wait — the units spent, the model built, and nothing to show but a link that expires.
 func (c *Client) Await(ctx context.Context, requestID string, dst Sink) (*Result, error) {
+	return c.AwaitAt(ctx, "", requestID, dst)
+}
+
+// AwaitAt is Await polled FIRST at the slug the request was SUBMITTED to (G-03 r2, Codex 4: the 3D
+// route now stores "<slug>#<id>" like the generic routes, so a custom FAL_MODEL_3D replaced by
+// another custom one no longer strands a paid build). An empty model is today's FAL_MODEL_3D — the
+// legacy bare-id path. A 404 that outlives the grace still searches the known namespaces either way.
+func (c *Client) AwaitAt(ctx context.Context, model, requestID string, dst Sink) (*Result, error) {
 	if !c.Enabled() {
 		return nil, ErrNotConfigured
+	}
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		model = c.cfg.Model3D
 	}
 	ceiling := c.cfg.PollTimeout
 	waitCtx, cancel := context.WithTimeout(ctx, ceiling)
@@ -988,7 +1228,6 @@ func (c *Client) Await(ctx context.Context, requestID string, dst Sink) (*Result
 	// outlives the grace is the one symptom of a model that moved under a build already paid for —
 	// and the answer to it is to poll where the build actually is. Searched at most ONCE per wait:
 	// a second search could only offer a namespace already tried, and would spin.
-	model := c.cfg.Model3D
 	searched := false
 
 	for {
@@ -1102,6 +1341,56 @@ type meshySubmitBody struct {
 	EnablePBR           bool     `json:"enable_pbr"`
 	EnableSafetyChecker bool     `json:"enable_safety_checker"`
 	TexturePrompt       string   `json:"texture_prompt,omitempty"`
+	// GeometryResolution — `standard | 2k` on fal's schema; only ever sent as 2k (a detailed
+	// build) and OMITTED otherwise, which keeps a standard build's body byte-identical to the one
+	// this transport sent before the option existed.
+	GeometryResolution string `json:"geometry_resolution,omitempty"`
+}
+
+// geometryResolution2K is the one geometry_resolution value this transport sends. fal's schema:
+// «Geometry resolution. Multi-image generation does not support 4k.» enum standard | 2k.
+const geometryResolution2K = "2k"
+
+// falOptions is a Request3D's three options, read once and validated once.
+type falOptions struct {
+	texture, pbr, detailed bool
+	// stated — at least one option was given at all (for the hitem3d log line).
+	stated bool
+}
+
+// resolveOptions reads the three option words. The empty string is today's constant for each; an unknown word,
+// or PBR on an untextured build, is ErrBadOption — refused here, locally, before the submit that is
+// the payment.
+func resolveOptions(req Request3D) (falOptions, error) {
+	o := falOptions{texture: true}
+	switch t := strings.TrimSpace(req.Texture); t {
+	case "", OptionOn:
+	case OptionOff:
+		o.texture = false
+	default:
+		return falOptions{}, fmt.Errorf("%w: texture %q is not on | off", ErrBadOption, t)
+	}
+	switch v := strings.TrimSpace(req.PBR); v {
+	case "", OptionOff:
+	case OptionOn:
+		o.pbr = true
+	default:
+		return falOptions{}, fmt.Errorf("%w: pbr %q is not on | off", ErrBadOption, v)
+	}
+	switch q := strings.TrimSpace(req.Quality); q {
+	case "", QualityStandard:
+	case QualityDetailed:
+		o.detailed = true
+	default:
+		return falOptions{}, fmt.Errorf("%w: quality %q is not standard | detailed", ErrBadOption, q)
+	}
+	if o.pbr && !o.texture {
+		return falOptions{}, fmt.Errorf("%w: realistic materials (pbr) need a textured build — the "+
+			"provider documents enable_pbr as «Requires should_texture to be true»", ErrBadOption)
+	}
+	o.stated = strings.TrimSpace(req.Texture) != "" || strings.TrimSpace(req.PBR) != "" ||
+		strings.TrimSpace(req.Quality) != ""
+	return o, nil
 }
 
 type submitResponse struct {
@@ -1172,14 +1461,63 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	// ⚠ EVERY POST ON THIS API IS A SUBMIT, i.e. A PAYMENT (G-03, Codex 1). Whether the WHOLE request
+	// left the process is the one fact that separates «nothing complete reached fal» (dial, DNS, TLS,
+	// a body write cut half-way — retryable) from «fal may have queued and charged it»
+	// (ErrSubmitUnconfirmed — never resubmitted). The Go transport itself never replays a written POST
+	// that carries no Idempotency-Key header (net/http Request.isReplayable), so no second copy leaves
+	// from below.
+	//
+	// ⚠ WroteRequest, NOT WroteHeaders (G-03 r2, Codex 2). WroteHeaders fires before a single byte of
+	// the JSON body is written: a reset while the body is still going out — a definite non-submission,
+	// fal holds an incomplete JSON it cannot enqueue — used to read as «maybe charged» and terminalize
+	// the run. WroteRequest fires once the body is written and carries the write's own error; only
+	// info.Err == nil marks the request as sent.
+	//
+	// WHAT IS STILL CONSERVATIVE, SAID OUT LOUD: net/http calls WroteRequest before the final flush of
+	// its 4 KiB buffer (writeLoop flushes after Request.write returns), so a request whose last
+	// buffered bytes fail to flush is read as sent. That errs toward «unconfirmed» — a lost run, never
+	// a second purchase — and is the same reading internal/openrouter measured and accepted.
+	//
+	// GetConn resets the flag: it fires once per transport attempt (a redirect, or the transport's
+	// own retry of a nothing-written request on a reused connection), so the flag describes the LAST
+	// attempt, not the union of all of them.
+	submit := method == http.MethodPost
+	var sent atomic.Bool
+	if submit {
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GetConn: func(string) { sent.Store(false) },
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					sent.Store(true)
+				}
+			},
+		}))
+	}
+	unconfirmed := func(err error) error {
+		if submit {
+			return fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err)
+		}
+		return err
+	}
+
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("fal: %s %s: %w", method, path, err)
+		err = fmt.Errorf("fal: %s %s: %w", method, path, err)
+		if sent.Load() {
+			return unconfirmed(err)
+		}
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return c.statusError(resp, method, path)
+		raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
+		err := statusErrorFrom(resp.StatusCode, raw, method, path)
+		if submit && resp.StatusCode >= 500 {
+			return submitServerError(resp.StatusCode, raw, err)
+		}
+		return err
 	}
 	if hdr != nil {
 		*hdr = resp.Header
@@ -1187,32 +1525,34 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 
 	raw, err := readCapped(resp.Body, maxAPIResponseBytes)
 	if err != nil {
-		return fmt.Errorf("fal: reading %s %s: %w", method, path, err)
+		return unconfirmed(fmt.Errorf("fal: reading %s %s: %w", method, path, err))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err)
+		return unconfirmed(fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
 	}
 	return nil
 }
 
-// statusError turns a non-2xx answer into the sentinel that says what to DO about it.
+// statusErrorFrom turns a non-2xx answer into the sentinel that says what to DO about it.
 //
 // ⚠ THE TWO 404s ARE DIFFERENT FAULTS AND MUST NOT SHARE A SENTENCE. A 404 on the SUBMIT path means
 // the model slug is gone — a setting to fix, and the exact failure that once took down both AI
 // features here while reading as a temporary outage. A 404 on the STATUS/RESULT path means the
 // request id is worthless — a run to abandon. They are told apart by the METHOD AND PATH, never by
 // the provider's English sentence, so a reworded message cannot silently reclassify either.
-func (c *Client) statusError(resp *http.Response, method, path string) error {
-	raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
+//
+// It takes the body already read: callJSON reads it once, because a 5xx answering a submit is also
+// searched for a request id (submitServerError).
+func statusErrorFrom(code int, raw []byte, method, path string) error {
 	detail := providerMessage(raw)
 
-	switch resp.StatusCode {
+	switch code {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, code, detail)
 	case http.StatusPaymentRequired:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, code, detail)
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, code, detail)
 	case http.StatusNotFound:
 		if strings.Contains(path, "/requests/") {
 			return fmt.Errorf("%w (HTTP 404): %s", ErrRequestNotFound, detail)
@@ -1220,15 +1560,57 @@ func (c *Client) statusError(resp *http.Response, method, path string) error {
 		return fmt.Errorf("%w (HTTP 404): %s — model %q", ErrModelUnavailable, detail, strings.TrimPrefix(path, "/"))
 	case http.StatusGone, http.StatusConflict:
 		// The provider ended the job itself. Terminal: nothing about it improves on a retry.
-		return fmt.Errorf("%w (HTTP %d): %s", ErrTaskFailed, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrTaskFailed, code, detail)
 	}
 	// EVERY OTHER 4xx IS «WE SENT SOMETHING WRONG», AND THAT IS NOT WEATHER — 422 above all, which
 	// is what fal answers to a payload its validator rejects. 5xx keeps the generic form: a server
 	// failing today may well answer tomorrow.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, resp.StatusCode, detail)
+	if code >= 400 && code < 500 {
+		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, code, detail)
 	}
-	return fmt.Errorf("fal: %s %s: HTTP %d: %s", method, path, resp.StatusCode, detail)
+	return fmt.Errorf("fal: %s %s: HTTP %d: %s", method, path, code, detail)
+}
+
+// submitRetryableStatus — the ONE 5xx answer to a SUBMIT that says the queue did not take the
+// request: 503 Service Unavailable, the queue refusing work outright. It is an explicit refusal —
+// the service is saying «not now», not «something went wrong on the way».
+//
+// ⚠ 502 AND 504 ARE NOT HERE, AND THAT IS DELIBERATE (G-03 r3, Codex BLOCKER 1). Both are a
+// GATEWAY's word about the hop behind it, and neither says in which direction the hop failed: a 504
+// is the gateway giving up waiting for the queue's ANSWER, a 502 is it receiving a broken one — and
+// the queue may have enqueued (and billed) the job before that answer was lost on its way back.
+// fal's own queue client retries 502/503/504 on a submit (fal-js libs/client/src/retry.ts), but a
+// client's retry policy is not a guarantee that acceptance was impossible, and fal documents no
+// submit idempotency key to make a duplicate harmless. So only the bare 503 is repeated; an
+// ambiguous gateway status is ErrSubmitUnconfirmed — it can lose a run, never buy the job twice.
+func submitRetryableStatus(code int) bool {
+	return code == http.StatusServiceUnavailable
+}
+
+// submitServerError classifies a 5xx that answered a SUBMIT (G-03 r2, Codex 2; r3, Codex BLOCKER 1).
+//
+//   - a body naming a request_id: the queue DID accept the job, whatever the status says — it is
+//     paid, and the id rides the error (ErrSubmitUnconfirmed, terminal) so last_error carries what
+//     a person reconciles by;
+//   - 503 without an id: an explicit «service unavailable» refusal (see submitRetryableStatus) — the
+//     ordinary retryable error;
+//   - every OTHER 5xx (500, 501, 502, 504, 505…): ErrSubmitUnconfirmed. A 500 is the queue's own
+//     handler failing, a 502/504 is a gateway losing the queue's answer — and nothing documents
+//     whether either happened before or after the enqueue; the conservative reading is the one that
+//     can only lose a run, never buy the job twice.
+func submitServerError(code int, raw []byte, err error) error {
+	var named struct {
+		RequestID string `json:"request_id"`
+	}
+	if json.Unmarshal(raw, &named) == nil {
+		if id := strings.TrimSpace(named.RequestID); id != "" {
+			return fmt.Errorf("%w: the answer named request %s: %w", ErrSubmitUnconfirmed, id, err)
+		}
+	}
+	if submitRetryableStatus(code) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err)
 }
 
 // providerMessage extracts the provider's own sentence from an error body, falling back to the raw

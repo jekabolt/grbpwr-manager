@@ -2,10 +2,13 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strconv"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -231,8 +234,14 @@ func TestEveryPlaygroundRefusalHappensBEFORE_ANY_MONEY(t *testing.T) {
 			ffReason(t, designRefuseMalformedFreeform(entity.DesignRunKindFreeform, p)))
 	})
 	t.Run("no source picture", func(t *testing.T) {
-		require.Equal(t, "no_source_picture", ffReason(t,
+		// Phase 2: `free` with no picture is text → image, legal with words; without words the
+		// refusal names what fixes it. The first-wave presets keep `no_source_picture`.
+		require.Equal(t, entity.DesignErrorCodeWordsRequired, ffReason(t,
 			designRefuseUnworkableSources(entity.DesignRunKindFreeform, "", ffParams("free"))))
+		require.NoError(t, designRefuseUnworkableSources(entity.DesignRunKindFreeform, "a red coat", ffParams("free")))
+		require.Equal(t, "no_source_picture", ffReason(t,
+			designRefuseUnworkableSources(entity.DesignRunKindFreeform, "x",
+				ffParams(entity.DesignFreeformPresetRepaintParts))))
 	})
 	t.Run("add_hardware without the hardware", func(t *testing.T) {
 		p := ffParams(entity.DesignFreeformPresetAddHardware,
@@ -489,14 +498,22 @@ func TestGetDesignBandALWAYS_ANSWERS_ABOUT_THE_PLAYGROUND(t *testing.T) {
 	design := mocks.NewMockDesign(t)
 	repo.EXPECT().Design().Return(design).Maybe()
 	design.EXPECT().GetBand(mock.Anything, mock.Anything, mock.Anything).
-		Return(&entity.DesignBand{}, nil).Twice()
+		Return(&entity.DesignBand{}, nil).Times(3)
 
 	// ГЕНЕРАЦИЯ ВЫКЛЮЧЕНА: поле есть, список пуст и НЕ nil.
 	off := &Server{repo: repo}
+	off.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
 	resp, err := off.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
 	require.NoError(t, err)
 	require.NotNil(t, resp.GetFreeformPresets())
 	require.Empty(t, resp.GetFreeformPresets())
+	// Phase 2 (fields 28–30): present and empty on a closed server, never nil.
+	require.NotNil(t, resp.GetPlaygroundWorkflows())
+	require.Empty(t, resp.GetPlaygroundWorkflows())
+	require.NotNil(t, resp.GetImageModels())
+	require.Empty(t, resp.GetImageModels())
+	require.NotNil(t, resp.GetThreedOptions())
+	require.Empty(t, resp.GetThreedOptions())
 
 	// ГЕНЕРАЦИЯ ВКЛЮЧЕНА, МАРШРУТ ВЫРЕЗА НЕ ПОДКЛЮЧЁН: три пресета, четвёртой кнопки нет.
 	on := &Server{repo: repo}
@@ -517,4 +534,322 @@ func TestGetDesignBandALWAYS_ANSWERS_ABOUT_THE_PLAYGROUND(t *testing.T) {
 	for _, preset := range entity.FreeformPresets() {
 		require.Truef(t, entity.IsFreeformPreset(preset), "preset %q is served but not accepted", preset)
 	}
+	// The tiles in grid order, without the closed cutout route and never extend_image; no engine
+	// table wired on this server → no picker.
+	want := []string{}
+	for _, w := range entity.PlaygroundWorkflows() {
+		if w != entity.DesignWorkflowRemoveBackground && w != entity.DesignWorkflowExtendImage {
+			want = append(want, w)
+		}
+	}
+	require.Equal(t, want, resp.GetPlaygroundWorkflows())
+	require.NotNil(t, resp.GetImageModels())
+	require.Empty(t, resp.GetImageModels())
+	// No 3D route wired on this server → no build option advertised (G-02: threed_options is read off
+	// the configured route; see TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE).
+	require.NotNil(t, resp.GetThreedOptions())
+	require.Empty(t, resp.GetThreedOptions())
+
+	// EVERY ROUTE OPEN: band 26 is STILL the old three + cutout [Codex 10] — an old client draws
+	// every key of it as a chip — and the engines come with exactly one default.
+	all := &Server{repo: repo}
+	all.SetDesignGenerationEnabled(true)
+	all.SetDesignKindGate(func(string) error { return nil })
+	all.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	resp, err = all.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
+	require.NoError(t, err)
+	require.Equal(t, append(entity.FreeformPresets(), entity.DesignRunKindCutout), resp.GetFreeformPresets())
+	require.NotContains(t, resp.GetPlaygroundWorkflows(), entity.DesignWorkflowExtendImage)
+	require.Len(t, resp.GetPlaygroundWorkflows(), len(entity.PlaygroundWorkflows())-1)
+	defaults := 0
+	for _, m := range resp.GetImageModels() {
+		require.NotEmpty(t, m.GetQualities())
+		require.Contains(t, m.GetAspectRatios(), "auto")
+		if m.GetIsDefault() {
+			defaults++
+		}
+	}
+	require.Len(t, resp.GetImageModels(), len(designgen.EngineTable("")))
+	require.Equal(t, 1, defaults, "exactly one engine is the deployment's default")
+	for _, w := range resp.GetPlaygroundWorkflows() {
+		require.Truef(t, entity.IsDesignWorkflow(w), "%q is not a workflow key", w)
+	}
+}
+
+// ─────────────────────── PLAYGROUND phase 2: the preset doors ───────────────────────
+
+func ffItem(id int32, role string, regions int, texts ...string) *pb_common.DesignFreeformItem {
+	it := &pb_common.DesignFreeformItem{MediaId: id, Role: role, Texts: texts}
+	for i := 0; i < regions; i++ {
+		it.Regions = append(it.Regions, ffRegion())
+	}
+	return it
+}
+
+func ffWithOptions(p *pb_common.DesignRunParams, o *pb_common.DesignWorkflowOptions) *pb_common.DesignRunParams {
+	p.Freeform.Options = o
+	return p
+}
+
+// TestEveryPresetHasITS_SHAPE_TABLE — one row per (preset, shape) → the machine word, all of them
+// before money. The interim state after B-01 (nine presets admitted, three with a shape) is closed
+// when every preset the door accepts has a role row here.
+func TestEveryPresetHasITS_SHAPE_TABLE(t *testing.T) {
+	for _, preset := range entity.FreeformPresetsAll() {
+		_, ok := designPresetRoles[preset]
+		require.Truef(t, ok, "preset %q is accepted by the door and has no role table", preset)
+	}
+
+	const (
+		model   = entity.DesignFreeformRoleModel
+		product = entity.DesignFreeformRoleProduct
+		scene   = entity.DesignFreeformRoleScene
+		logo    = entity.DesignFreeformRoleLogo
+	)
+	P := ffParams
+	O := ffWithOptions
+	for _, c := range []struct {
+		name   string
+		ask    string
+		params *pb_common.DesignRunParams
+		want   string // '' = legal
+	}{
+		{"free: words, no picture", "a red coat", P(entity.DesignFreeformPresetFree), ""},
+		{"free: nothing at all", "", P(entity.DesignFreeformPresetFree), entity.DesignErrorCodeWordsRequired},
+		{"free: a tryon role", "x", P(entity.DesignFreeformPresetFree, ffItem(11, model, 0)), "unknown_role"},
+
+		{"tryon: model + product", "", P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0), ffItem(12, product, 0)), ""},
+		{"tryon: no model", "", P(entity.DesignFreeformPresetTryon, ffItem(12, product, 0)), entity.DesignErrorCodeRoleRequired},
+		{"tryon: no product", "", P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0)), entity.DesignErrorCodeRoleRequired},
+		{"tryon: an unroled picture", "", P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0), ffItem(12, product, 0), ffItem(13, "", 0)), "unknown_role"},
+		{"tryon: five products", "", P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0),
+			ffItem(12, product, 0), ffItem(13, product, 0), ffItem(14, product, 0), ffItem(15, product, 0), ffItem(16, product, 0)),
+			"too_many_pictures"},
+		{"tryon: reference scene missing", "", O(P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0), ffItem(12, product, 0)),
+			&pb_common.DesignWorkflowOptions{SceneMode: entity.DesignSceneModeReference}), entity.DesignErrorCodeRoleRequired},
+		{"tryon: reference scene given", "", O(P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0), ffItem(12, product, 0), ffItem(13, scene, 0)),
+			&pb_common.DesignWorkflowOptions{SceneMode: entity.DesignSceneModeReference, Framing: entity.DesignFramingFullBody}), ""},
+		{"tryon: scene picture without reference mode", "", P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0), ffItem(12, product, 0), ffItem(13, scene, 0)),
+			entity.DesignErrorCodeOptionNotRead},
+
+		{"fabric_extract: one picture", "", P(entity.DesignFreeformPresetFabricExtract, ffItem(11, "", 0)), ""},
+		{"fabric_extract: two pictures", "", P(entity.DesignFreeformPresetFabricExtract, ffItem(11, "", 0), ffItem(12, "", 0)), entity.DesignErrorCodeOneSourcePicture},
+		{"ghost_mannequin: none", "x", P(entity.DesignFreeformPresetGhostMannequin), entity.DesignErrorCodeOneSourcePicture},
+		{"ghost_mannequin: a marked area", "", P(entity.DesignFreeformPresetGhostMannequin, ffItem(11, "", 1)), entity.DesignErrorCodeOneRegion},
+		{"variations: creativity read", "", O(P(entity.DesignFreeformPresetVariations, ffItem(11, entity.DesignFreeformRoleSubject, 0)),
+			&pb_common.DesignWorkflowOptions{Creativity: 2}), ""},
+
+		{"add_logo: garment + logo", "", O(P(entity.DesignFreeformPresetAddLogo, ffItem(11, "", 0), ffItem(12, logo, 0)),
+			&pb_common.DesignWorkflowOptions{LogoSize: entity.DesignLogoSizeSmall}), ""},
+		{"add_logo: no logo", "", P(entity.DesignFreeformPresetAddLogo, ffItem(11, "", 0)), entity.DesignErrorCodeRoleRequired},
+		{"add_logo: two logos", "", P(entity.DesignFreeformPresetAddLogo, ffItem(11, "", 0), ffItem(12, logo, 0), ffItem(13, logo, 0)), entity.DesignErrorCodeOneSourcePicture},
+		{"add_logo: two garments", "", P(entity.DesignFreeformPresetAddLogo, ffItem(11, "", 0), ffItem(12, "", 0), ffItem(13, logo, 0)), entity.DesignErrorCodeOneSourcePicture},
+		{"add_logo: a hardware picture", "", P(entity.DesignFreeformPresetAddLogo, ffItem(11, entity.DesignFreeformRoleHardware, 0), ffItem(12, logo, 0)), "unknown_role"},
+
+		{"retouch: one area with words", "", P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1, "remove the stain")), ""},
+		{"retouch: words in the ask", "remove the stain", P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1)), ""},
+		{"retouch: no words", "", P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1)), entity.DesignErrorCodeWordsRequired},
+		{"retouch: two areas", "x", P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 2)), entity.DesignErrorCodeOneRegion},
+		{"retouch: no area", "x", P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 0)), entity.DesignErrorCodeOneRegion},
+		{"retouch: two pictures", "x", P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1), ffItem(12, "", 0)), entity.DesignErrorCodeOneSourcePicture},
+		{"retouch: a cloth picture", "x", P(entity.DesignFreeformPresetRetouch, ffItem(11, entity.DesignFreeformRoleCloth, 1)), "unknown_role"},
+
+		{"option_not_read: logo_size on free", "x", O(P(entity.DesignFreeformPresetFree, ffItem(11, "", 0)),
+			&pb_common.DesignWorkflowOptions{LogoSize: entity.DesignLogoSizeLarge}), entity.DesignErrorCodeOptionNotRead},
+		{"option_not_read: creativity on tryon", "", O(P(entity.DesignFreeformPresetTryon, ffItem(11, model, 0), ffItem(12, product, 0)),
+			&pb_common.DesignWorkflowOptions{Creativity: 1}), entity.DesignErrorCodeOptionNotRead},
+		{"option_not_read: framing on retouch", "x", O(P(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1)),
+			&pb_common.DesignWorkflowOptions{Framing: entity.DesignFramingAuto}), entity.DesignErrorCodeOptionNotRead},
+
+		{"add_hardware as before", "", P(entity.DesignFreeformPresetAddHardware, ffItem(11, "", 0)), "hardware_picture_required"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := designRefuseUnworkableSources(entity.DesignRunKindFreeform, c.ask, c.params)
+			if c.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Equal(t, c.want, ffReason(t, err))
+		})
+	}
+}
+
+// TestTheOptionsVOCABULARY_IS_ASKED_OF_THE_SPEAKER — unknown words are refused by the spoken door.
+func TestTheOptionsVOCABULARY_IS_ASKED_OF_THE_SPEAKER(t *testing.T) {
+	tryon := func(o *pb_common.DesignWorkflowOptions) *pb_common.DesignRunParams {
+		return ffWithOptions(ffParams(entity.DesignFreeformPresetTryon,
+			ffItem(11, entity.DesignFreeformRoleModel, 0), ffItem(12, entity.DesignFreeformRoleProduct, 0)), o)
+	}
+	for field, o := range map[string]*pb_common.DesignWorkflowOptions{
+		"framing":             {Framing: "cowboy_shot"},
+		"angle":               {Angle: "dutch"},
+		"scene_mode":          {SceneMode: "replace"},
+		"logo_size":           {LogoSize: "huge"},
+		"creativity":          {Creativity: entity.MaxDesignCreativity + 1},
+		"model_id":            {ModelId: -1},
+		"product_colorway_id": {ProductColorwayId: -3},
+	} {
+		t.Run(field, func(t *testing.T) {
+			err := designRefuseMalformedFreeform(entity.DesignRunKindFreeform, tryon(o))
+			require.Equal(t, entity.DesignErrorCodeUnknownOption, ffReason(t, err))
+		})
+	}
+	require.NoError(t, designRefuseMalformedFreeform(entity.DesignRunKindFreeform, tryon(
+		&pb_common.DesignWorkflowOptions{Framing: entity.DesignFramingPortrait, Angle: entity.DesignAngleLowAngle,
+			SceneMode: entity.DesignSceneModeEdit, Creativity: entity.MaxDesignCreativity})))
+
+	t.Run("options on a foreign kind", func(t *testing.T) {
+		p := &pb_common.DesignRunParams{Freeform: &pb_common.DesignFreeformParams{
+			Options: &pb_common.DesignWorkflowOptions{LogoSize: "small"}}}
+		require.Equal(t, "freeform_forbidden", ffReason(t, designRefuseMalformedFreeform(entity.DesignRunKindRender, p)))
+	})
+	t.Run("unknown_preset lists the nine", func(t *testing.T) {
+		err := designRefuseMalformedFreeform(entity.DesignRunKindFreeform, ffParams("make_it_pop"))
+		require.Equal(t, "unknown_preset", ffReason(t, err))
+		for _, p := range entity.FreeformPresetsAll() {
+			require.Contains(t, err.Error(), p)
+		}
+	})
+}
+
+// TestARerunSTAYS_ON_ITS_TILE [Codex 2].
+func TestARerunSTAYS_ON_ITS_TILE(t *testing.T) {
+	marshal := func(p *pb_common.DesignRunParams) []byte {
+		b, err := designMarshalJSON(p)
+		require.NoError(t, err)
+		return b
+	}
+	free := ffParams(entity.DesignFreeformPresetFree, ffItem(11, "", 0), ffItem(12, "", 0))
+
+	t.Run("free → tryon", func(t *testing.T) {
+		spoken := ffParams(entity.DesignFreeformPresetTryon,
+			ffItem(11, entity.DesignFreeformRoleModel, 0), ffItem(12, entity.DesignFreeformRoleProduct, 0))
+		err := designRefuseRerunChangesWorkflow(entity.DesignRunKindFreeform, spoken, 900, marshal(free))
+		require.Equal(t, entity.DesignErrorCodeRerunChangesWorkflow, ffReason(t, err))
+	})
+	t.Run("same preset, items reordered", func(t *testing.T) {
+		spoken := ffParams(entity.DesignFreeformPresetFree, ffItem(12, "", 1, "here"), ffItem(11, "", 0))
+		require.NoError(t, designRefuseRerunChangesWorkflow(entity.DesignRunKindFreeform, spoken, 900, marshal(free)))
+	})
+	t.Run("add_hardware → repaint_parts stays create_edit", func(t *testing.T) {
+		spoken := ffParams(entity.DesignFreeformPresetRepaintParts, ffItem(11, "", 0))
+		parent := ffParams(entity.DesignFreeformPresetAddHardware, ffItem(11, "", 1))
+		require.NoError(t, designRefuseRerunChangesWorkflow(entity.DesignRunKindFreeform, spoken, 900, marshal(parent)))
+	})
+	t.Run("recolour gains a cloth picture", func(t *testing.T) {
+		parent := &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11},
+			Colour: &pb_common.DesignColourRecipe{Hex: "#112233"}}
+		spoken := &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{11},
+			Colour: &pb_common.DesignColourRecipe{Fabrics: []*pb_common.DesignFabricUse{{MediaId: 70}}, FabricMediaId: 70}}
+		err := designRefuseRerunChangesWorkflow(entity.DesignRunKindRecolor, spoken, 900, marshal(parent))
+		require.Equal(t, entity.DesignErrorCodeRerunChangesWorkflow, ffReason(t, err))
+	})
+	t.Run("a silent rerun and a fresh run are not asked", func(t *testing.T) {
+		require.NoError(t, designRefuseRerunChangesWorkflow(entity.DesignRunKindFreeform, nil, 900, marshal(free)))
+		require.NoError(t, designRefuseRerunChangesWorkflow(entity.DesignRunKindFreeform,
+			ffParams(entity.DesignFreeformPresetTryon), 0, nil))
+	})
+	t.Run("words-only rerun of a pictured run swaps its pictures", func(t *testing.T) {
+		err := designRefuseFreeformRerunPictureSwap(entity.DesignRunKindFreeform,
+			ffParams(entity.DesignFreeformPresetFree), 900, marshal(free))
+		require.Equal(t, "rerun_changes_pictures", ffReason(t, err))
+		require.Contains(t, err.Error(), "names none")
+		wordsOnly := marshal(ffParams(entity.DesignFreeformPresetFree))
+		require.NoError(t, designRefuseFreeformRerunPictureSwap(entity.DesignRunKindFreeform,
+			ffParams(entity.DesignFreeformPresetFree), 900, wordsOnly))
+		require.Equal(t, "rerun_changes_pictures", ffReason(t, designRefuseFreeformRerunPictureSwap(
+			entity.DesignRunKindFreeform, ffParams(entity.DesignFreeformPresetFree, ffItem(88, "", 0)), 900, wordsOnly)))
+	})
+}
+
+// TestStartDesignRunRefusesARerunThatCHANGES_ITS_TILE — the guard is wired at the live door.
+func TestStartDesignRunRefusesARerunThatCHANGES_ITS_TILE(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	rig.design.EXPECT().GetRun(mock.Anything, 12).Return(&entity.DesignRun{
+		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFreeform,
+		Params: entity.RawJSON(`{"freeform":{"preset":"free","items":[{"media_id":11},{"media_id":12}]}}`),
+	}, nil).Maybe()
+	req := designStartRequest(entity.DesignRunKindFreeform)
+	req.RerunOfRunId = 12
+	req.Params = ffParams(entity.DesignFreeformPresetTryon,
+		ffItem(11, entity.DesignFreeformRoleModel, 0), ffItem(12, entity.DesignFreeformRoleProduct, 0))
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.Equal(t, entity.DesignErrorCodeRerunChangesWorkflow, ffReason(t, err))
+	require.Nil(t, rig.sent)
+}
+
+// ─────────────────────── B-11: model-photo provenance ───────────────────────
+
+func tryonWithModel(modelID int32, modelMedia int32) *pb_common.DesignRunParams {
+	return ffWithOptions(ffParams(entity.DesignFreeformPresetTryon,
+		ffItem(modelMedia, entity.DesignFreeformRoleModel, 0), ffItem(12, entity.DesignFreeformRoleProduct, 0)),
+		&pb_common.DesignWorkflowOptions{ModelId: modelID})
+}
+
+// TestATryonDRESSES_A_PHOTO_OF_THE_NAMED_MODEL — thumbnail and gallery pass, anything else is a
+// mismatch, an unknown profile is named, and no model id means no read at all.
+func TestATryonDRESSES_A_PHOTO_OF_THE_NAMED_MODEL(t *testing.T) {
+	server := func(t *testing.T) (*Server, *mocks.MockModels) {
+		repo := mocks.NewMockRepository(t)
+		models := mocks.NewMockModels(t)
+		repo.EXPECT().Models().Return(models).Maybe()
+		return &Server{repo: repo}, models
+	}
+	profile := &entity.Model{Id: 5}
+	profile.ThumbnailId = sql.NullInt32{Int32: 70, Valid: true}
+	profile.MediaIds = []int{71, 72}
+
+	for _, c := range []struct {
+		name  string
+		media int32
+		want  string
+	}{
+		{"the thumbnail", 70, ""},
+		{"a gallery photo", 72, ""},
+		{"somebody else's photo", 99, entity.DesignErrorCodeModelPhotoMismatch},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, models := server(t)
+			models.EXPECT().GetModelById(mock.Anything, 5).Return(profile, nil).Once()
+			err := s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, tryonWithModel(5, c.media))
+			if c.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Equal(t, c.want, ffReason(t, err))
+		})
+	}
+	t.Run("an unknown profile", func(t *testing.T) {
+		s, models := server(t)
+		models.EXPECT().GetModelById(mock.Anything, 6).Return(nil, fmt.Errorf("get: %w", sql.ErrNoRows)).Once()
+		err := s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, tryonWithModel(6, 70))
+		require.Equal(t, entity.DesignErrorCodeModelNotFound, ffReason(t, err))
+	})
+	t.Run("no model id, or another preset: no read", func(t *testing.T) {
+		s, models := server(t)
+		require.NoError(t, s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, tryonWithModel(0, 99)))
+		other := ffWithOptions(ffParams(entity.DesignFreeformPresetFree, ffItem(99, "", 0)),
+			&pb_common.DesignWorkflowOptions{ModelId: 5})
+		require.NoError(t, s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, other),
+			"another preset refuses model_id elsewhere (option_not_read), without a read")
+		models.AssertNotCalled(t, "GetModelById", mock.Anything, mock.Anything)
+	})
+}
+
+// TestStartDesignRunRefusesATryonOnAFOREIGN_MODEL_PHOTO — the check is wired at the live door,
+// before the store.
+func TestStartDesignRunRefusesATryonOnAFOREIGN_MODEL_PHOTO(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	models := mocks.NewMockModels(t)
+	rig.repo.EXPECT().Models().Return(models).Maybe()
+	profile := &entity.Model{Id: 5}
+	profile.MediaIds = []int{71}
+	models.EXPECT().GetModelById(mock.Anything, 5).Return(profile, nil).Once()
+	rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+
+	req := designStartRequest(entity.DesignRunKindFreeform)
+	req.Params = tryonWithModel(5, 99)
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.Equal(t, entity.DesignErrorCodeModelPhotoMismatch, ffReason(t, err))
+	require.Nil(t, rig.sent)
 }

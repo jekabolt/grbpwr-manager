@@ -28,6 +28,9 @@ func TestDesignGenerationEnvBindings(t *testing.T) {
 	t.Setenv("DESIGN_WORKER_CLAIM_LEASE", "13m")
 	t.Setenv("DESIGN_WORKER_RUN_TIMEOUT", "6m")
 	t.Setenv("DESIGN_IMAGE_QUALITY", "high")
+	t.Setenv("DESIGN_THREED_PBR", "true")
+	t.Setenv("DESIGN_ENGINE_GEMINI", "true")
+	t.Setenv("DESIGN_ENGINE_SEEDREAM", "true")
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err)
@@ -42,6 +45,12 @@ func TestDesignGenerationEnvBindings(t *testing.T) {
 	assert.Equal(t, "high", cfg.DesignGen.ImageQuality,
 		"DESIGN_IMAGE_QUALITY is bound because it is a MONEY knob: it must move together with the "+
 			"handler's price estimate, and a value that silently fails to arrive breaks that pairing")
+	assert.True(t, cfg.DesignGen.ThreedPBR,
+		"DESIGN_THREED_PBR must reach the config: unbound, the owner turns PBR on and the band never offers it")
+	assert.True(t, cfg.DesignGen.EngineGemini,
+		"DESIGN_ENGINE_GEMINI must reach the config: unbound, the owner turns Gemini on and the picker never lists it")
+	assert.True(t, cfg.DesignGen.EngineSeedream,
+		"DESIGN_ENGINE_SEEDREAM must reach the config: unbound, the owner turns Seedream on and the picker never lists it")
 }
 
 // TestDesignGenerationUnsetIsAnHonestOff pins the other half. The default has to be OFF, because
@@ -55,4 +64,8 @@ func TestDesignGenerationUnsetIsAnHonestOff(t *testing.T) {
 
 	assert.False(t, cfg.DesignGen.Enabled,
 		"unset must read as off — the feature ships inert and is switched on deliberately")
+	assert.False(t, cfg.DesignGen.ThreedPBR,
+		"PBR on 3D is off until a beta smoke measures its GLB under the 64 MiB cap (G-02 M-3)")
+	assert.False(t, cfg.DesignGen.EngineGemini, "the Gemini row is the owner's money decision: off until turned on")
+	assert.False(t, cfg.DesignGen.EngineSeedream, "the Seedream row is the owner's money decision: off until turned on")
 }

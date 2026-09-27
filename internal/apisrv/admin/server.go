@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/shopspring/decimal"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
@@ -118,6 +120,10 @@ type Server struct {
 	// enhanceRuns is the per-admin hourly spend window in front of EnhanceText. Its zero value works
 	// (lazy limiter), like analysisRuns: a fence that bounds SPEND must not depend on New() having run.
 	enhanceRuns enhanceTextGuard
+	// suggestCache holds SuggestPrompts answers for ten minutes (design_suggest.go). Zero value works.
+	suggestCache suggestPromptsCache
+	// suggestFlight coalesces identical SuggestPrompts misses in flight (G-03, Codex 11). Zero value works.
+	suggestFlight singleflight.Group
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer
@@ -139,6 +145,20 @@ type Server struct {
 	// block that builds the worker, so a Server without the gate is a Server whose money flag is
 	// off and which therefore refuses every paid verb one check earlier.
 	designKindGate func(kind string) error
+	// designEngines is the per-run engine table (designgen.EngineTable, PLAYGROUND phase 2): the
+	// door validates and prices params.image against it, the band advertises it. Nil = no engine
+	// is offered, and the door refuses every params.image.
+	designEngines func() []designgen.Engine
+	// designThreedRoute is the CONFIGURED 3D route (designgen.FalThreedRoute / MeshyThreedRoute,
+	// app.go): which build options it reads and the most one build may book at this deployment's
+	// tariff. Nil = not wired (the generation worker is off, or a test): the band then advertises no
+	// build option and the door refuses a non-default one, and the reserve keeps the static table.
+	designThreedRoute *designgen.ThreedRoute
+	// designFalRoutes are the fal JSON routes of kind extend / inpaint (PLAYGROUND phase 3,
+	// designgen.FalRouteOf over the worker's own fal client, app.go): the band, the door and the
+	// reserve read one object. A kind with no entry is CLOSED (fail closed: nothing on the door knows
+	// what the worker would book).
+	designFalRoutes map[string]designgen.FalRoute
 }
 
 // New creates a new server with admin handlers.

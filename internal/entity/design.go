@@ -517,7 +517,33 @@ const (
 	// потому что и провайдер отдельный (сегментация, не генерация), и цена своя, и результат
 	// обязан быть PNG побайтово.
 	DesignRunKindCutout = "cutout"
+	// DesignRunKindExtend — EXTENDS ONE PICTURE INTO A NEW PROPORTION (tile 9, PLAYGROUND phase 3) on
+	// fal's outpaint route: params.extend + exactly one extra_input_media_ids, no words. One output,
+	// colourway 0, section 1 of the window; the untouched source pixels are re-composited into the
+	// answer and stored as a lossless PNG, so «the original is kept» is a fact of the pixels: the
+	// source region is the source's own DECODED pixels (at the scale the 3 MP cap allows), whatever
+	// the source's format.
+	DesignRunKindExtend = "extend"
+	// DesignRunKindInpaint — REPAINTS ONE PAINTED ZONE of a picture (tile 10's mask route, phase 3) on
+	// fal's fill route: params.inpaint (source + mask) + ask. One output, a lossless PNG: every pixel
+	// outside the mask is the source's own DECODED pixel (the composite goes through OUR mask only) —
+	// bit-exact for a PNG source, the decoded JPEG/WebP pixels otherwise. The one exception is an OPAQUE
+	// picture whose PNG would exceed the store's verbatim ceiling (≈ 21 MB): stored as the best JPEG
+	// that fits (q92, else q85, else q75). A picture with transparency is never flattened to JPEG —
+	// past the ceiling (as past every JPEG step) the composite is not made and the repainted crop is
+	// filed as delivered (inpaint_not_composited). The source may be at most 18 MP (source_too_large).
+	DesignRunKindInpaint = "inpaint"
 )
+
+// DesignRunKinds — every run kind, in a fixed order (the band's run_kinds keeps it). A copy on
+// every call.
+func DesignRunKinds() []string {
+	return []string{
+		DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed, DesignRunKindVector,
+		DesignRunKindDraftIdea, DesignRunKindRecolor, DesignRunKindPattern,
+		DesignRunKindFreeform, DesignRunKindCutout, DesignRunKindExtend, DesignRunKindInpaint,
+	}
+}
 
 // IsDesignRunKind сообщает, известен ли род прогона.
 func IsDesignRunKind(v string) bool {
@@ -525,7 +551,8 @@ func IsDesignRunKind(v string) bool {
 	case DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed,
 		DesignRunKindVector, DesignRunKindDraftIdea,
 		DesignRunKindRecolor, DesignRunKindPattern,
-		DesignRunKindFreeform, DesignRunKindCutout:
+		DesignRunKindFreeform, DesignRunKindCutout,
+		DesignRunKindExtend, DesignRunKindInpaint:
 		return true
 	}
 	return false
@@ -556,6 +583,11 @@ func DesignPictureKindOfRun(runKind string) string {
 		return DesignPictureKindFreeform
 	case DesignRunKindCutout:
 		return DesignPictureKindCutout
+	// PHASE 3: extend and inpaint are playground pictures too — named explicitly for the reason
+	// above (`default` drops an unknown kind into flat and a bench slot). They share the freeform
+	// picture kind: no new picture vocabulary, no bench axis, no colourway axis.
+	case DesignRunKindExtend, DesignRunKindInpaint:
+		return DesignPictureKindFreeform
 	default:
 		return DesignPictureKindFlat
 	}
@@ -589,6 +621,24 @@ const (
 	DesignFreeformPresetAddHardware = "add_hardware"
 	// DesignFreeformPresetRepaintParts — перекрасить размеченные области (без области — всю вещь).
 	DesignFreeformPresetRepaintParts = "repaint_parts"
+
+	// The PLAYGROUND presets (phase 2). Same paid endpoint, a different craft paragraph each.
+	// They are NOT in FreeformPresets(): an old client draws every key of band field 26 as a
+	// chip, so these travel only in GetDesignBandResponse.playground_workflows.
+
+	// DesignFreeformPresetTryon — dress the person of a model photo in the product garment.
+	DesignFreeformPresetTryon = "tryon"
+	// DesignFreeformPresetFabricExtract — a flat tileable swatch of the fabric in one picture.
+	DesignFreeformPresetFabricExtract = "fabric_extract"
+	// DesignFreeformPresetGhostMannequin — the garment as an invisible-body e-commerce shot.
+	DesignFreeformPresetGhostMannequin = "ghost_mannequin"
+	// DesignFreeformPresetAddLogo — place a logo picture on the garment of another picture.
+	DesignFreeformPresetAddLogo = "add_logo"
+	// DesignFreeformPresetVariations — a variation of one design, freedom set by creativity.
+	DesignFreeformPresetVariations = "variations"
+	// DesignFreeformPresetRetouch — change one marked zone of one picture (phase 2: the
+	// rectangle window around the zone, not a mask).
+	DesignFreeformPresetRetouch = "retouch"
 )
 
 // FreeformPresets — порядок словаря такой, каким его читает человек на экране.
@@ -603,11 +653,26 @@ func FreeformPresets() []string {
 	}
 }
 
+// FreeformPresetsAll — every preset the door accepts: the band-26 three first, then the
+// playground presets. A copy, for the same reason as FreeformPresets.
+func FreeformPresetsAll() []string {
+	return append(FreeformPresets(),
+		DesignFreeformPresetTryon,
+		DesignFreeformPresetFabricExtract,
+		DesignFreeformPresetGhostMannequin,
+		DesignFreeformPresetAddLogo,
+		DesignFreeformPresetVariations,
+		DesignFreeformPresetRetouch,
+	)
+}
+
 // IsFreeformPreset сообщает, известен ли пресет. Пустой пресет НЕ законен: у прогона плейграунда
 // всегда есть абзац ремесла, и «никакого» среди них нет — есть `free`.
 func IsFreeformPreset(v string) bool {
 	switch v {
-	case DesignFreeformPresetFree, DesignFreeformPresetAddHardware, DesignFreeformPresetRepaintParts:
+	case DesignFreeformPresetFree, DesignFreeformPresetAddHardware, DesignFreeformPresetRepaintParts,
+		DesignFreeformPresetTryon, DesignFreeformPresetFabricExtract, DesignFreeformPresetGhostMannequin,
+		DesignFreeformPresetAddLogo, DesignFreeformPresetVariations, DesignFreeformPresetRetouch:
 		return true
 	}
 	return false
@@ -619,12 +684,184 @@ const (
 	DesignFreeformRoleSubject  = "subject"
 	DesignFreeformRoleHardware = "hardware"
 	DesignFreeformRoleCloth    = "cloth"
+	// Playground roles (phase 2): model/product/scene are read by `tryon`, logo by `add_logo`.
+	DesignFreeformRoleModel   = "model"
+	DesignFreeformRoleProduct = "product"
+	DesignFreeformRoleScene   = "scene"
+	DesignFreeformRoleLogo    = "logo"
 )
 
 // IsFreeformRole сообщает, законна ли роль картинки (пустая — законна).
 func IsFreeformRole(v string) bool {
 	switch v {
-	case "", DesignFreeformRoleSubject, DesignFreeformRoleHardware, DesignFreeformRoleCloth:
+	case "", DesignFreeformRoleSubject, DesignFreeformRoleHardware, DesignFreeformRoleCloth,
+		DesignFreeformRoleModel, DesignFreeformRoleProduct, DesignFreeformRoleScene, DesignFreeformRoleLogo:
+		return true
+	}
+	return false
+}
+
+// ───────────────────────── PLAYGROUND workflows (the tile grid) ─────────────────────────
+
+// PLAYGROUND workflow keys — one per tile, the vocabulary of GetDesignBandResponse.playground_workflows
+// and DesignCardOutput.run_workflow. A workflow is NOT a run kind: it is derived from the kind and
+// the frozen preset (DesignWorkflowOf), never stored.
+const (
+	DesignWorkflowVirtualTryOn     = "virtual_try_on"
+	DesignWorkflowFabricToImage    = "fabric_to_image"
+	DesignWorkflowGhostMannequin   = "ghost_mannequin"
+	DesignWorkflowChangeColor      = "change_color"
+	DesignWorkflowSwapFabrics      = "swap_fabrics"
+	DesignWorkflowAddLogo          = "add_logo"
+	DesignWorkflowDesignVariations = "design_variations"
+	DesignWorkflowRemoveBackground = "remove_background"
+	DesignWorkflowExtendImage      = "extend_image"
+	DesignWorkflowRetouchZone      = "retouch_zone"
+	DesignWorkflowCreateEdit       = "create_edit"
+	DesignWorkflowImageTo3D        = "image_to_3d"
+)
+
+// PlaygroundWorkflows — every workflow key in the owner's grid order. A copy on every call:
+// the band filters it and puts it on the wire.
+func PlaygroundWorkflows() []string {
+	return []string{
+		DesignWorkflowVirtualTryOn,
+		DesignWorkflowFabricToImage,
+		DesignWorkflowGhostMannequin,
+		DesignWorkflowChangeColor,
+		DesignWorkflowSwapFabrics,
+		DesignWorkflowAddLogo,
+		DesignWorkflowDesignVariations,
+		DesignWorkflowRemoveBackground,
+		DesignWorkflowExtendImage,
+		DesignWorkflowRetouchZone,
+		DesignWorkflowCreateEdit,
+		DesignWorkflowImageTo3D,
+	}
+}
+
+// IsDesignWorkflow reports whether v is a workflow key (” is not).
+func IsDesignWorkflow(v string) bool {
+	for _, w := range PlaygroundWorkflows() {
+		if w == v {
+			return true
+		}
+	}
+	return false
+}
+
+// DesignWorkflowOf — THE one Go expression of the run_workflow stamp. The feed's SQL CASE
+// (store/design/band.go) is its twin and must read the same table; so does the rerun guard.
+//
+//   - freeform: the preset picks the tile; free, ”, add_hardware, repaint_parts (and any
+//     unknown preset) → create_edit, so a NULL/empty frozen preset never falls out of the grid;
+//   - cutout → remove_background; threed → image_to_3d; extend → extend_image; inpaint →
+//     retouch_zone (phase 3: tile 10's mask route shares the tile with the phase-2 window path);
+//   - recolor → swap_fabrics when some fabric carries a picture, else change_color;
+//   - every other kind (flat, render, pattern, vector, draft_idea) → ” (no tile).
+func DesignWorkflowOf(kind, preset string, hasFabricPicture bool) string {
+	switch kind {
+	case DesignRunKindFreeform:
+		switch preset {
+		case DesignFreeformPresetTryon:
+			return DesignWorkflowVirtualTryOn
+		case DesignFreeformPresetFabricExtract:
+			return DesignWorkflowFabricToImage
+		case DesignFreeformPresetGhostMannequin:
+			return DesignWorkflowGhostMannequin
+		case DesignFreeformPresetAddLogo:
+			return DesignWorkflowAddLogo
+		case DesignFreeformPresetVariations:
+			return DesignWorkflowDesignVariations
+		case DesignFreeformPresetRetouch:
+			return DesignWorkflowRetouchZone
+		default:
+			return DesignWorkflowCreateEdit
+		}
+	case DesignRunKindCutout:
+		return DesignWorkflowRemoveBackground
+	case DesignRunKindExtend:
+		return DesignWorkflowExtendImage
+	case DesignRunKindInpaint:
+		return DesignWorkflowRetouchZone
+	case DesignRunKindRecolor:
+		if hasFabricPicture {
+			return DesignWorkflowSwapFabrics
+		}
+		return DesignWorkflowChangeColor
+	case DesignRunKindThreed:
+		return DesignWorkflowImageTo3D
+	}
+	return ""
+}
+
+// Vocabularies of DesignWorkflowOptions (params.freeform.options). ” is legal everywhere and
+// means «not stated»; the door refuses a stated value outside the list with `unknown_option`.
+const (
+	DesignFramingAuto          = "auto"
+	DesignFramingFullBody      = "full_body"
+	DesignFramingUpperBody     = "upper_body"
+	DesignFramingPortrait      = "portrait"
+	DesignFramingHands         = "hands"
+	DesignFramingFeet          = "feet"
+	DesignFramingProductDetail = "product_detail"
+
+	DesignAngleAuto          = "auto"
+	DesignAngleEyeLevel      = "eye_level"
+	DesignAngleSlightlyAbove = "slightly_above"
+	DesignAngleSlightlyBelow = "slightly_below"
+	DesignAngleLowAngle      = "low_angle"
+
+	// DesignSceneModeEdit keeps the model photo's scene ('' reads as edit);
+	// DesignSceneModeReference takes the scene from a role=scene picture.
+	DesignSceneModeEdit      = "edit"
+	DesignSceneModeReference = "reference"
+
+	DesignLogoSizeSmall  = "small"
+	DesignLogoSizeMedium = "medium"
+	DesignLogoSizeLarge  = "large"
+)
+
+// MaxDesignCreativity — the top step of options.creativity (0 = faithful … 3 = inspiration only).
+const MaxDesignCreativity = 3
+
+// MaxDesignThreedReferences — how many reference views a 3D reference-mode run takes
+// (front, back, left, right, in that order).
+const MaxDesignThreedReferences = 4
+
+// IsDesignFraming reports whether v is a tryon framing (” is legal).
+func IsDesignFraming(v string) bool {
+	switch v {
+	case "", DesignFramingAuto, DesignFramingFullBody, DesignFramingUpperBody, DesignFramingPortrait,
+		DesignFramingHands, DesignFramingFeet, DesignFramingProductDetail:
+		return true
+	}
+	return false
+}
+
+// IsDesignAngle reports whether v is a tryon camera angle (” is legal).
+func IsDesignAngle(v string) bool {
+	switch v {
+	case "", DesignAngleAuto, DesignAngleEyeLevel, DesignAngleSlightlyAbove, DesignAngleSlightlyBelow,
+		DesignAngleLowAngle:
+		return true
+	}
+	return false
+}
+
+// IsDesignSceneMode reports whether v is a tryon scene mode (” is legal and means edit).
+func IsDesignSceneMode(v string) bool {
+	switch v {
+	case "", DesignSceneModeEdit, DesignSceneModeReference:
+		return true
+	}
+	return false
+}
+
+// IsDesignLogoSize reports whether v is an add_logo size (” is legal and means medium).
+func IsDesignLogoSize(v string) bool {
+	switch v {
+	case "", DesignLogoSizeSmall, DesignLogoSizeMedium, DesignLogoSizeLarge:
 		return true
 	}
 	return false
@@ -796,6 +1033,84 @@ const (
 	DesignErrorCodeUnknownPatternMode = "unknown_pattern_mode"
 	DesignErrorCodeBadBomLineID       = "bad_bom_line_id"
 )
+
+// PLAYGROUND phase-2 refusals (all InvalidArgument, all before money). Constants because the
+// client reads the word; the list is StartDesignRunRequest.kind's doc in admin.proto.
+const (
+	DesignErrorCodeRoleRequired           = "role_required"
+	DesignErrorCodeOneSourcePicture       = "one_source_picture"
+	DesignErrorCodeWordsRequired          = "words_required"
+	DesignErrorCodeOneRegion              = "one_region"
+	DesignErrorCodeUnknownOption          = "unknown_option"
+	DesignErrorCodeOptionNotRead          = "option_not_read"
+	DesignErrorCodeModelPhotoMismatch     = "model_photo_mismatch"
+	DesignErrorCodeModelNotFound          = "model_not_found"
+	DesignErrorCodeRerunChangesWorkflow   = "rerun_changes_workflow"
+	DesignErrorCodeUnknownImageModel      = "unknown_image_model"
+	DesignErrorCodeQualityNotSupported    = "quality_not_supported"
+	DesignErrorCodeAspectNotSupported     = "aspect_not_supported"
+	DesignErrorCodeBackgroundNotSupported = "background_not_supported"
+	DesignErrorCodeImageOptionsForbidden  = "image_options_forbidden"
+	// G-02 fixes. threed_reserve_unbounded is FailedPrecondition (a deployment setting, not the
+	// request): the configured 3D route has no number to reserve (fal with a tariff and no units
+	// ceiling). source_too_small is the worker's own word (designgen.CodeSourceTooSmall), said at the
+	// door when the stored dimensions already show it.
+	DesignErrorCodeThreedReserveUnbounded = "threed_reserve_unbounded"
+	DesignErrorCodeSourceTooSmall         = "source_too_small"
+	// product_not_colorway_render: a try-on naming options.product_colorway_id dresses the person in
+	// fabric renders OF THAT COLOURWAY (owner, tile 1); a role=product picture that is not one is
+	// refused, so the history never files one garment under another colourway's name.
+	DesignErrorCodeProductNotColorwayRender = "product_not_colorway_render"
+)
+
+// PLAYGROUND phase-3 refusals (tile 9 extend, tile 10's mask route). InvalidArgument except
+// route_reserve_unbounded (FailedPrecondition: a deployment setting — the fal tariff is set without
+// its units ceiling, so the reserve has no number). All before money.
+const (
+	DesignErrorCodeExtendTakesNoWords     = "extend_takes_no_words"
+	DesignErrorCodeExtendAspectUnknown    = "extend_aspect_unknown"
+	DesignErrorCodeTargetAspectMustExtend = "target_aspect_must_extend"
+	DesignErrorCodeExtendForbidden        = "extend_forbidden"
+	DesignErrorCodeInpaintForbidden       = "inpaint_forbidden"
+	DesignErrorCodeMaskRequired           = "mask_required"
+	DesignErrorCodeMaskSizeMismatch       = "mask_size_mismatch"
+	DesignErrorCodeMaskInvalid            = "mask_invalid"
+	DesignErrorCodeMaskEmpty              = "mask_empty"
+	DesignErrorCodeRouteReserveUnbounded  = "route_reserve_unbounded"
+	DesignErrorCodeNoSourcePicture        = "no_source_picture"
+	DesignErrorCodeOneListPerFact         = "one_list_per_fact"
+	// source_too_large (G-03 r2): an extend / inpaint source over the composite's working pixel cap
+	// (designgen.CompositeMaxSourcePixels), read off the stored size or the header — the worker's own
+	// word (designgen.CodeSourceTooLarge), said at the door before anything is reserved.
+	DesignErrorCodeSourceTooLarge = "source_too_large"
+)
+
+// DesignExtendRatios — the owner's nine target proportions of tile 9, width:height. Never `auto`:
+// an extend with no target adds nothing.
+func DesignExtendRatios() []string {
+	return []string{"9:16", "1:1", "3:4", "2:3", "16:9", "4:3", "3:2", "21:9", "9:21"}
+}
+
+// IsDesignExtendRatio reports whether r is one of DesignExtendRatios (empty and `auto` are not).
+func IsDesignExtendRatio(r string) bool {
+	_, ok := DesignExtendRatioValue(r)
+	return ok
+}
+
+// DesignExtendRatioValue — width / height of an extend ratio; ok = false outside the nine.
+func DesignExtendRatioValue(r string) (float64, bool) {
+	for _, v := range DesignExtendRatios() {
+		if v != r {
+			continue
+		}
+		var a, b int
+		if _, err := fmt.Sscanf(v, "%d:%d", &a, &b); err != nil || a <= 0 || b <= 0 {
+			return 0, false
+		}
+		return float64(a) / float64(b), true
+	}
+	return 0, false
+}
 
 // Режимы прогона паттерна — DesignPatternParams.mode (STEP 3). Пустая строка значит то же, что
 // `image`: так читается каждый прогон, замороженный до появления поля.
@@ -1856,6 +2171,9 @@ type DesignCardOutput struct {
 	RunKind       string
 	RunRrev       int
 	RunColorwayId int
+	// RunWorkflow — the PLAYGROUND tile this output belongs to (DesignWorkflowOf of the run's kind
+	// and frozen params); '' for a run of no workflow or no run.
+	RunWorkflow string
 }
 
 // DesignBand — вся полоса одним чтением. Агрегаты считаются В ТОЙ ЖЕ читающей транзакции, что
@@ -1990,6 +2308,9 @@ type DesignBand struct {
 	Outputs                []DesignCardOutput
 	OutputsTotal           int
 	OutputsTotalByColorway map[int]int
+	// OutputsTotalByWorkflow — outputs per non-empty RunWorkflow over the whole card (the
+	// «newest 60 of N» caption of a tile). Filled by the feed reader.
+	OutputsTotalByWorkflow map[string]int
 
 	Runs            []DesignRun
 	NextCursor      int

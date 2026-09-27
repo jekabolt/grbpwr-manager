@@ -138,8 +138,11 @@ func TestConfigFromEnvReadsEveryVariable(t *testing.T) {
 	t.Setenv(EnvClaimLease, "30m")
 	t.Setenv(EnvRunTimeout, "4m")
 	t.Setenv(EnvImageQuality, "high")
+	t.Setenv(EnvEngineGemini, "true")
+	t.Setenv(EnvEngineSeedream, "true")
 
 	c := ConfigFromEnv()
+	require.Equal(t, EngineFlags{Gemini: true, Seedream: true}, c.EngineFlags())
 	require.True(t, c.Enabled)
 	require.Equal(t, 9*time.Second, c.WorkerInterval)
 	require.Equal(t, 5, c.BatchSize)
@@ -155,6 +158,9 @@ func TestConfigFromEnvDefaultsToOff(t *testing.T) {
 	require.False(t, ConfigFromEnv().Enabled)
 	t.Setenv(EnvEnabled, "not-a-bool")
 	require.False(t, ConfigFromEnv().Enabled, "a typo must not switch a paid feature on")
+	require.Equal(t, EngineFlags{}, DefaultConfig().EngineFlags(), "both engine rows ship off")
+	t.Setenv(EnvEngineGemini, "yes-please")
+	require.False(t, ConfigFromEnv().EngineGemini, "a typo must not list a paid engine")
 }
 
 // TestBucketSinkAcceptsOnlyWhatTheBucketCanStore states a RELATION, not a list.
