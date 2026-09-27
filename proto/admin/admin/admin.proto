@@ -7030,8 +7030,10 @@ enum EnhanceTextMode {
   // or light is named (a material only when the text or the context states it);
   // filler is cut; at most 40 words. For a field the server's table marks as
   // describing a RESULT (the mask retouch), the answer describes what should be
-  // seen and drops the operation words. STEER without a known workflow/field
-  // pair is InvalidArgument (`workflow` / `field_key`, `unknown`).
+  // seen and drops the operation words. STEER takes `field` OTHER only (any
+  // other field: InvalidArgument on `field`, `steer_takes_other`), and STEER
+  // without a known workflow/field pair is InvalidArgument (`workflow` /
+  // `field_key`, `required` or `unknown`).
   ENHANCE_TEXT_MODE_STEER = 5;
 }
 
