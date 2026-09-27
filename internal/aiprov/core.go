@@ -1,7 +1,8 @@
 // Package aiprov is the provider-neutral layer of the AI stack: who asked for a call (actor.go), the
-// ONE error shape every transport returns for a failed call (errors.go), and the normalised usage
-// of a call (this file). Transports, the registry, the router and the ledger writer build on it; it
-// knows nothing about any of them.
+// ONE error shape every transport returns for a failed call (errors.go), the normalised usage of a
+// call (this file) and the ledger writer that books every physical call (ledger.go). Transports, the
+// registry and the router build on it; it knows nothing about any of them — and imports no client
+// package, directly or through a store package that does (see entity.BudgetDayKey).
 //
 // Subpackages:
 //

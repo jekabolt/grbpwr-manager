@@ -104,13 +104,18 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// the tick backs off, the row keeps its claim until the lease dies and ReviveExpiredRuns hands it
 	// back to the queue, where the next pass reads the history again.
 	pendingID := ""
+	// pendingAttempt — the attempt whose submit was accepted: its ledger row is the one the collect
+	// prices (B-07). 0 = not known (no ledger row to price).
+	pendingAttempt := 0
 	if async {
 		full, gerr := w.store.GetRun(ctx, run.Id)
 		if gerr != nil {
 			return w.abandon(ctx, run, fmt.Errorf("read attempts before submitting: %w", gerr))
 		}
 		if full != nil {
-			pendingID = acceptedRequestID(full.Attempts)
+			if a, ok := acceptedAttempt(full.Attempts); ok {
+				pendingID, pendingAttempt = a.ProviderRequestId.String, a.AttemptNo
+			}
 			// ⚠ AN EARLIER SUBMIT THAT NEVER CLOSED IS A POSSIBLE PURCHASE (G-03, Codex 1a). A
 			// `dispatching` attempt with no finished_at and no accepted id before it means a pass died
 			// between StartAttempt and the write that closes it — before the POST, during it, or after
@@ -213,6 +218,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 			// BEFORE the money is exactly why the store checks the claim here too.
 			return w.abandon(ctx, run, err)
 		}
+		// THE LEDGER'S SCOPE IS THE ATTEMPT JUST OPENED (B-07): every physical call Execute makes
+		// books its own row under (run, this attempt, call_no). Set on the local copy the route is
+		// handed; nil without a ledger, which records nothing.
+		job.Recorder = w.recorderFor(run, att.AttemptNo)
 		out, callErr := prov.Execute(ctx, job)
 
 		if async && callErr == nil && out != nil && out.Pending {
@@ -236,7 +245,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 					"not record it (%v) — the job may be running and billed; reconcile it with the provider",
 					errAcceptedNotRecorded, prov.Name(), out.RequestID, ferr))
 			}
-			pendingID = out.RequestID
+			pendingID, pendingAttempt = out.RequestID, att.AttemptNo
 		} else {
 			return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
 		}
@@ -272,6 +281,11 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	if err != nil {
 		return w.abandon(ctx, run, err)
 	}
+	// ⚠ THE COLLECT PRICES THE SUBMIT'S ROW, NOT ITS OWN (B-07). A collect is a free lookup and
+	// opens no ledger row; the money of the job sits on the row the submit opened, keyed by the
+	// SUBMIT's attempt — so the recorder is scoped to that attempt, not to `att`. A repeated collect
+	// finds the row already priced and changes nothing (PriceAcceptedCall moves only `accepted`).
+	job.Recorder = w.recorderFor(run, pendingAttempt)
 	out, callErr := collector.Collect(ctx, job, pendingID)
 	if out != nil && out.RequestID == "" {
 		out.RequestID = pendingID
@@ -689,12 +703,18 @@ func engineOffAtSubmit(job Job, table []Engine) error {
 // acceptedRequestID finds the newest attempt that was ACCEPTED by an asynchronous provider and
 // carries its task id — the id that makes the next lookup free.
 func acceptedRequestID(attempts []entity.DesignRunAttempt) string {
+	a, _ := acceptedAttempt(attempts)
+	return a.ProviderRequestId.String
+}
+
+// acceptedAttempt is that attempt itself: its number keys the ledger row the collect prices.
+func acceptedAttempt(attempts []entity.DesignRunAttempt) (entity.DesignRunAttempt, bool) {
 	for i := len(attempts) - 1; i >= 0; i-- {
 		a := attempts[i]
 		if a.State == entity.DesignAttemptAccepted && a.ProviderRequestId.Valid &&
 			a.ProviderRequestId.String != "" {
-			return a.ProviderRequestId.String
+			return a, true
 		}
 	}
-	return ""
+	return entity.DesignRunAttempt{}, false
 }

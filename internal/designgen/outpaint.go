@@ -403,14 +403,20 @@ func (p falOutpaintProvider) Execute(ctx context.Context, job Job) (*Outcome, er
 	if err != nil {
 		return nil, err
 	}
+	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07) — see threedfal.go.
+	h := job.beginCall(ctx, entity.AIProviderFal, model, 1)
 	id, err := p.c.SubmitJSON(ctx, model, body)
 	if err != nil {
 		if out := chargedRouteOutcome(p.c, fal.RouteOutpaint, job, err); out != nil {
+			job.finishCall(ctx, h, falSubmitEnd(err, out.Price))
 			return out, err
 		}
+		job.finishCall(ctx, h, falSubmitEnd(err, decimal.NullDecimal{}))
 		return nil, err
 	}
-	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
+	locator := falLocator(model, id)
+	job.finishCall(ctx, h, acceptedEnd(locator))
+	return &Outcome{RequestID: locator, Model: model, Pending: true, Provider: entity.AIProviderFal}, nil
 }
 
 // Collect is the FREE half: the wait, the download, the price. The composite is postProcess's.
@@ -525,14 +531,21 @@ func collectRouteFile(ctx context.Context, c *fal.Client, route fal.Route, job J
 	if err != nil {
 		if out := chargedRouteOutcome(c, route, job, err); out != nil {
 			out.RequestID = locator
+			job.recordCollect(ctx, out, err, chargedUnits(err), "unit", true)
 			return out, err
 		}
+		// A charge nobody could price is still a charge; otherwise still running, or failed for good.
+		_, charged := fal.Charge(err)
+		job.recordCollect(ctx, nil, err, chargedUnits(err), "unit", charged)
 		return nil, err
 	}
-	out := &Outcome{RequestID: locator, Model: res.Model}
+	out := &Outcome{RequestID: locator, Model: res.Model, Provider: entity.AIProviderFal}
 	if usd := c.CostRouteUSD(route, res.BillableUnits); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	}
+	// DELIVERED: the submit's `accepted` row is priced with the number the attempt books (B-07) —
+	// before the composite (postProcess), whose trouble is the attempt's complaint, not the call's.
+	job.recordCollect(ctx, out, nil, reportedUnits(res.BillableUnits, res.UnitsAssumed), "unit", false)
 	if res.UnitsAssumed {
 		slog.Default().WarnContext(ctx, string(route)+": fal reported no billable units; the attempt's price "+
 			"is this deployment's own per-request figure, not the provider's charge",

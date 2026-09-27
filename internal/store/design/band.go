@@ -963,15 +963,11 @@ func loadSettings(ctx context.Context, db dependency.DB) (entity.DesignSettings,
 // DesignBudgetDayKey is the day key of an instant in the organisation's timezone. Exported
 // because wave 2's StartRun reserves against exactly this key and the two must not compute it
 // differently.
+//
+// The body is entity.BudgetDayKey — the same function the AI ledger (aiprov) stamps day_local
+// with, moved there so aiprov never has to import this package (see its doc for the cycle).
 func DesignBudgetDayKey(now time.Time, tz string) string {
-	loc, err := time.LoadLocation(tz)
-	if err != nil || loc == nil {
-		// An unloadable zone name must not silently become the server's own local day, which
-		// would move the reset by hours without telling anyone. UTC is the neutral fallback and
-		// it is the one the column's own default day would agree with.
-		loc = time.UTC
-	}
-	return now.In(loc).Format("2006-01-02")
+	return entity.BudgetDayKey(now, tz)
 }
 
 func loadBudget(ctx context.Context, db dependency.DB, now time.Time) (entity.DesignBudget, error) {

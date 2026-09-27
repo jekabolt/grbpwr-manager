@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
@@ -600,6 +601,25 @@ func (a *App) Start(ctx context.Context) error {
 	// PLAYGROUND phase 3: the extend / inpaint route objects, built from the SAME fal client the
 	// worker's Outpaint / Fill providers get (one value for the band, the door and the reserve).
 	var designFalRoutes map[string]designgen.FalRoute
+
+	// ─── THE AI LEDGER (B-07): one ai_usage_event row per physical provider call, opened BEFORE
+	// the call. Built in BOTH branches below: the worker books every call it pays for and sweeps
+	// stale `dispatching` rows on its tick; with generation off, the reserve sweeper does the sweep.
+	//
+	// The day key is the organisation's day (design_settings.budget_timezone) AS THE REGISTRY
+	// CURRENTLY KNOWS IT: its snapshot carries the zone and its poller refreshes it every minute
+	// (B-09), so a zone edited in the admin reaches the ledger without a redeploy. "" (no snapshot
+	// yet — the boot Reload failed) falls back to the default zone, never to a boot error: the ledger
+	// is an observer of spend, and a missing bookkeeping setting must not keep the paid features down.
+	aiLedger := aiprov.NewLedger(a.db.AI(), func() string {
+		if tz := a.aireg.BudgetTimezone(); tz != "" {
+			return tz
+		}
+		return entity.DefaultBudgetTimezone
+	})
+	slog.Default().InfoContext(ctx, "ai ledger: every design provider call is booked to ai_usage_event",
+		slog.String("budget_timezone", a.aireg.BudgetTimezone()))
+
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
 		//
@@ -673,7 +693,7 @@ func (a *App) Start(ctx context.Context) error {
 			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
 			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
 			Fill: designgen.NewFalFillProvider(falRoutes),
-		})
+		}, designgen.WithLedger(aiLedger))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
 				slog.String("err", err.Error()),
@@ -693,7 +713,7 @@ func (a *App) Start(ctx context.Context) error {
 		// флага деплоем оставляет сирот с занятыми деньгами дня, и снять их некому никогда.
 		//
 		// Подметальщик не получает ни одного провайдера: потратить он не может физически.
-		a.dgs, err = designgen.NewSweeper(a.db)
+		a.dgs, err = designgen.NewSweeper(a.db, designgen.WithLedger(aiLedger))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design reserve sweeper",
 				slog.String("err", err.Error()),

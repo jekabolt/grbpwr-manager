@@ -13,6 +13,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
+	"github.com/shopspring/decimal"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -329,14 +330,20 @@ func (p falFillProvider) Execute(ctx context.Context, job Job) (*Outcome, error)
 	if err != nil {
 		return nil, err
 	}
+	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07) — see threedfal.go.
+	h := job.beginCall(ctx, entity.AIProviderFal, model, 1)
 	id, err := p.c.SubmitJSON(ctx, model, body)
 	if err != nil {
 		if out := chargedRouteOutcome(p.c, fal.RouteFill, job, err); out != nil {
+			job.finishCall(ctx, h, falSubmitEnd(err, out.Price))
 			return out, err
 		}
+		job.finishCall(ctx, h, falSubmitEnd(err, decimal.NullDecimal{}))
 		return nil, err
 	}
-	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
+	locator := falLocator(model, id)
+	job.finishCall(ctx, h, acceptedEnd(locator))
+	return &Outcome{RequestID: locator, Model: model, Pending: true, Provider: entity.AIProviderFal}, nil
 }
 
 // Collect is the FREE half. The composite through the mask is postProcess's.

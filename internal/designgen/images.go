@@ -5,16 +5,33 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/shopspring/decimal"
 )
 
 // imageProvider is the flat / render route: OpenRouter's image endpoint (internal/orimages).
-type imageProvider struct{ c *orimages.Client }
+//
+// providerKey is the BILLING transport the ledger books each call to (an entity.AIProvider* key):
+// the account that pays for POST /images, which today is OpenRouter's. Empty reads as openrouter.
+type imageProvider struct {
+	c           *orimages.Client
+	providerKey string
+}
 
 // NewImageProvider wires the raster route. A nil client is a disabled route, not a panic.
-func NewImageProvider(c *orimages.Client) Provider { return imageProvider{c: c} }
+func NewImageProvider(c *orimages.Client) Provider {
+	return imageProvider{c: c, providerKey: entity.AIProviderOpenRouter}
+}
+
+// billing is the ledger's provider_key for this route's calls.
+func (p imageProvider) billing() string {
+	if p.providerKey != "" {
+		return p.providerKey
+	}
+	return entity.AIProviderOpenRouter
+}
 
 func (p imageProvider) Name() string { return "openrouter_images" }
 
@@ -97,11 +114,16 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		}
 	}
 	// A per-run engine names its own slug; the provenance says so even when the call fails.
-	out := &Outcome{Model: firstNonEmpty(job.Model, p.c.Model())}
+	requested := firstNonEmpty(job.Model, p.c.Model())
+	out := &Outcome{Model: requested, Provider: p.billing()}
 	cost := decimal.Zero
 	charged := false
+	var usage aiprov.TokenUsage
 
-	for _, call := range calls {
+	for i, call := range calls {
+		// ONE LEDGER ROW PER PAID CALL, OPENED BEFORE IT LEAVES (B-07): a per_view flat of three
+		// views is three rows, call_no 1..3, under this one attempt. Nothing below reads it back.
+		h := job.beginCall(ctx, p.billing(), requested, i+1)
 		res, err := p.c.Generate(ctx, orimages.Request{
 			// The per-run engine (params.image): every field empty on a run that named none, which
 			// is today's request byte for byte.
@@ -115,6 +137,11 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			OutputFormat:    format,
 			InputReferences: call.refs,
 		})
+		job.finishCall(ctx, h, imageCallEnd(res, err))
+		if res != nil {
+			usage.Prompt += res.Usage.Prompt
+			usage.Completion += res.Usage.Completion
+		}
 		// THE PRICE IS TAKEN FIRST, BEFORE THE ERROR IS EVEN LOOKED AT. Both the empty-data case
 		// and the undecodable-image case return a *Result carrying Usage TOGETHER WITH the error:
 		// the call was billed, and a ledger that records only successes under-reports spend in
@@ -128,6 +155,7 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		}
 		if err != nil {
 			out.Price = decimal.NullDecimal{Decimal: cost, Valid: charged}
+			out.Usage = usageOrNil(usage)
 			return out, err
 		}
 		for _, img := range res.Images {
@@ -139,6 +167,7 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		}
 	}
 	out.Price = decimal.NullDecimal{Decimal: cost, Valid: charged}
+	out.Usage = usageOrNil(usage)
 	if len(out.Artifacts) == 0 {
 		// Reachable only through a call that reported success with an empty image list, which the
 		// client already refuses — kept because "success with nothing to file" must never close a
@@ -160,6 +189,14 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 		}
 	}
 	return out, nil
+}
+
+// usageOrNil — the pass's summed tokens, or nil when no call reported any.
+func usageOrNil(u aiprov.TokenUsage) *aiprov.TokenUsage {
+	if u == (aiprov.TokenUsage{}) {
+		return nil
+	}
+	return &u
 }
 
 // imageCall is one paid request: a prompt, how many variants of it, the pictures THIS call shows the

@@ -340,7 +340,7 @@ type AIDefaultsPatch struct {
 // AICallStart opens one ledger row (status dispatching) BEFORE the physical call.
 type AICallStart struct {
 	OccurredAt   time.Time // UTC
-	DayLocal     string    // YYYY-MM-DD, computed by the CALLER with design.DesignBudgetDayKey
+	DayLocal     string    // YYYY-MM-DD in the budget timezone (BudgetDayKey); aiprov.Ledger fills it when empty
 	ProviderKey  string    // the BILLING transport
 	Model        string    // the requested model
 	Purpose      string
