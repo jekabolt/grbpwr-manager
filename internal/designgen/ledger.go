@@ -81,7 +81,10 @@ const ledgerFinishSlack = 30 * time.Second
 // Option configures New and NewSweeper.
 type Option func(*options)
 
-type options struct{ ledger callLedger }
+type options struct {
+	ledger     callLedger
+	runTimeout time.Duration
+}
 
 // WithLedger books every physical provider call of the worker into the AI ledger, and has the
 // running ticker (the worker's, or the reserve sweeper's when generation is off) sweep rows left
@@ -93,6 +96,15 @@ func WithLedger(l *aiprov.Ledger) Option {
 			o.ledger = l
 		}
 	}
+}
+
+// WithRunTimeout hands the RESERVE SWEEPER the RunTimeout an enabled worker would run with, so its
+// ledger sweep cuts where the worker's does (ledgerSweepAgeFor; Codex A4 #4). Pass the NORMALISED
+// value — designgen.Normalize, the same designCfg app.go builds the worker from; zero/unset is
+// normalised here exactly as applyDefaults normalises it (DefaultConfig().RunTimeout). New ignores
+// it: the worker reads its own Config.RunTimeout.
+func WithRunTimeout(d time.Duration) Option {
+	return func(o *options) { o.runTimeout = d }
 }
 
 func applyOptions(opts []Option) options {
@@ -197,17 +209,36 @@ func sweepLedger(ctx context.Context, l ledgerSweeper, age time.Duration, who st
 	}
 }
 
-// workerLedgerSweepAge — the worker sweeps at fifteen minutes OR at the longest a live pass can hold
-// a row open, whichever is later. A call cannot outlive its pass (RunTimeout bounds its context) by
-// more than its Finish; sweeping a row sooner than that could turn a live call `unknown`, after which
-// its Finish — which only moves `dispatching` rows — would silently drop the real price. With the
-// defaults (RunTimeout 15 min) this is 15 min 30 s.
-func (w *Worker) workerLedgerSweepAge() time.Duration {
-	age := ledgerSweepAge
-	if w.c != nil && w.c.RunTimeout+ledgerFinishSlack > age {
-		age = w.c.RunTimeout + ledgerFinishSlack
+// ledgerSweepAgeFor — THE cut-off of the ledger sweep, for BOTH tickers (the worker's and the reserve
+// sweeper's; Codex A4 #4): fifteen minutes OR the longest a live pass can hold a row open, whichever
+// is later. A call cannot outlive its pass (RunTimeout bounds its context) by more than its Finish;
+// sweeping a row sooner than that could turn a live call `unknown`, after which its Finish — which
+// only moves `dispatching` rows — would silently drop the real price. One function, because two
+// tickers with two cut-offs is how an enabled→disabled rolling deploy swept the old instance's live
+// rows from the new one. With the defaults (RunTimeout 15 min) this is 15 min 30 s.
+func ledgerSweepAgeFor(runTimeout time.Duration) time.Duration {
+	if age := runTimeout + ledgerFinishSlack; age > ledgerSweepAge {
+		return age
 	}
-	return age
+	return ledgerSweepAge
+}
+
+// normalisedRunTimeout — an unset RunTimeout as applyDefaults reads it: the default's. A set one is
+// taken as given (the caller normalised it, and only ever downwards — a larger value only sweeps later).
+func normalisedRunTimeout(d time.Duration) time.Duration {
+	if d <= 0 {
+		return DefaultConfig().RunTimeout
+	}
+	return d
+}
+
+// workerLedgerSweepAge — the worker's cut-off: ledgerSweepAgeFor its own RunTimeout.
+func (w *Worker) workerLedgerSweepAge() time.Duration {
+	var runTimeout time.Duration
+	if w.c != nil {
+		runTimeout = w.c.RunTimeout
+	}
+	return ledgerSweepAgeFor(runTimeout)
 }
 
 // maybeSweepLedger runs the ledger sweep on the worker's tick at most once per ledgerSweepEvery.

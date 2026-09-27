@@ -713,7 +713,12 @@ func (a *App) Start(ctx context.Context) error {
 		// флага деплоем оставляет сирот с занятыми деньгами дня, и снять их некому никогда.
 		//
 		// Подметальщик не получает ни одного провайдера: потратить он не может физически.
-		a.dgs, err = designgen.NewSweeper(a.db, designgen.WithLedger(aiLedger))
+		//
+		// WithRunTimeout: the ledger sweep cuts where the worker's does (RunTimeout + finish slack) —
+		// on a rolling enabled→disabled deploy the old instance may still be inside a paid call whose
+		// row this one would otherwise call `unknown` (Codex A4 #4). designCfg is Normalize()d above.
+		a.dgs, err = designgen.NewSweeper(a.db, designgen.WithLedger(aiLedger),
+			designgen.WithRunTimeout(designCfg.RunTimeout))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design reserve sweeper",
 				slog.String("err", err.Error()),

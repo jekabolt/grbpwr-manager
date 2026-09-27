@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/aiprovtest"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -702,6 +704,70 @@ func TestTheSweeperCALLS_A_STALE_DISPATCHING_ROW_UNKNOWN(t *testing.T) {
 			"with the default 15 min RunTimeout, the pass bound wins over the plain 15 min")
 		w.c.RunTimeout = time.Minute
 		require.Equal(t, ledgerSweepAge, w.workerLedgerSweepAge())
+	})
+}
+
+// TestTheReserveSweeperCUTS_WHERE_THE_WORKER_CUTS — Codex A4 #4: during an enabled→disabled rolling
+// deploy the OLD instance's worker is still inside a paid call while the NEW instance's reserve
+// sweeper ticks. Built the way app.go builds it (NewSweeper, WithRunTimeout of the normalised
+// designCfg), the reserve sweeper cuts at the worker's own ledgerSweepAgeFor(RunTimeout): a row
+// younger than that is left `dispatching` for its Finish, an older one is called `unknown`. Unset,
+// the RunTimeout is the default's (15 min → 15 min 30 s), as applyDefaults would make it. And the
+// worker's cut-off for the same config is the same number.
+//
+// MUTATIONS (measured red→green): sweepOnce back on the flat ledgerSweepAge → both live rows are
+// swept; normalisedRunTimeout returning 0 unchanged → the unset case cuts at 15 min and sweeps its
+// live row; workerLedgerSweepAge back on a flat ledgerSweepAge → the equality fails.
+func TestTheReserveSweeperCUTS_WHERE_THE_WORKER_CUTS(t *testing.T) {
+	repoWith := func(t *testing.T, sweeps bool) *mocks.MockRepository {
+		design := mocks.NewMockDesign(t)
+		if sweeps {
+			design.EXPECT().ReviveExpiredRuns(mock.Anything).Return(0, nil).Once()
+		}
+		repo := mocks.NewMockRepository(t)
+		repo.EXPECT().Design().Return(design).Once()
+		return repo
+	}
+
+	for _, c := range []struct {
+		name       string
+		runTimeout time.Duration
+		cut        time.Duration
+	}{
+		{"RunTimeout 20 min cuts at 20 min 30 s", 20 * time.Minute, 20*time.Minute + 30*time.Second},
+		{"unset cuts at the default's 15 min 30 s", 0, 15*time.Minute + 30*time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ai := &aiprovtest.Store{}
+			now := time.Now()
+			start := func(age time.Duration) entity.AICallStart {
+				return entity.AICallStart{OccurredAt: now.Add(-age), ProviderKey: entity.AIProviderFal,
+					Purpose: entity.AIPurposeThreed, Actor: "im"}
+			}
+			// Past the flat 15 min, inside the worker's cut-off: a call the old instance may still finish.
+			live := ai.Seed(aiprovtest.Row{Status: entity.AICallDispatching, Start: start(c.cut - 20*time.Second)})
+			dead := ai.Seed(aiprovtest.Row{Status: entity.AICallDispatching, Start: start(c.cut + 20*time.Second)})
+
+			s, err := NewSweeper(repoWith(t, true), WithLedger(aiprov.NewLedger(ai, nil)), WithRunTimeout(c.runTimeout))
+			require.NoError(t, err)
+			s.sweepOnce(context.Background())
+
+			require.Equal(t, entity.AICallDispatching, ledgerStatus(ai, live),
+				"a row the worker's own pass may still hold is not the reserve sweeper's to close")
+			require.Equal(t, entity.AICallUnknown, ledgerStatus(ai, dead))
+		})
+	}
+
+	t.Run("the worker's cut-off is the helper's, and the reserve sweeper's", func(t *testing.T) {
+		c := Config{RunTimeout: 20 * time.Minute, ClaimLease: 30 * time.Minute}
+		Normalize(&c)
+		require.Equal(t, 20*time.Minute, c.RunTimeout, "a RunTimeout the lease covers is kept")
+		w := newWorker(&c, &fakeStore{}, fakeMedia{}, newFakeSink(ContentTypePNG), Providers{})
+		s, err := NewSweeper(repoWith(t, false), WithRunTimeout(c.RunTimeout))
+		require.NoError(t, err)
+		require.Equal(t, ledgerSweepAgeFor(c.RunTimeout), w.workerLedgerSweepAge())
+		require.Equal(t, w.workerLedgerSweepAge(), s.ledgerAge, "two tickers, one cut-off")
+		require.Equal(t, 20*time.Minute+30*time.Second, s.ledgerAge)
 	})
 }
 

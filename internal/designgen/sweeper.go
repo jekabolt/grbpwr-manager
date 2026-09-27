@@ -41,6 +41,11 @@ type Sweeper struct {
 	// this is the only ticker that runs, and rows a dying worker left `dispatching` must still
 	// become `unknown`. It spends nothing either. nil = no ledger.
 	ledger ledgerSweeper
+	// ledgerAge — the sweep's cut-off: THE WORKER'S, ledgerSweepAgeFor(RunTimeout) (Codex A4 #4). During
+	// an enabled→disabled rolling deploy the old instance's worker is still inside a paid call while
+	// this one sweeps; a shorter cut-off here would call its live row `unknown`, and its Finish (which
+	// moves only `dispatching`) would then drop the real price.
+	ledgerAge time.Duration
 
 	ctx     context.Context
 	stop    context.CancelFunc
@@ -70,16 +75,20 @@ const sweeperInterval = time.Minute
 // Провайдеров он не принимает НЕ ПО ЗАБЫВЧИВОСТИ: конструктор без них — это и есть доказательство,
 // что орган не может позвать модель.
 //
-// WithLedger добавляет на тот же тик подметание журнала AI: строки `dispatching` старше 15 минут
-// становятся `unknown` (B-07). Это тоже не трата — UPDATE по таблице учёта.
+// WithLedger добавляет на тот же тик подметание журнала AI: строки `dispatching` старше отсечки
+// воркера становятся `unknown` (B-07). Это тоже не трата — UPDATE по таблице учёта. Отсечка — та же,
+// что у воркера (ledgerSweepAgeFor): WithRunTimeout передаёт НОРМАЛИЗОВАННЫЙ RunTimeout того же
+// designCfg; без него — умолчание (15 мин 30 с).
 func NewSweeper(repo dependency.Repository, opts ...Option) (*Sweeper, error) {
 	if repo == nil {
 		return nil, fmt.Errorf("designgen: подметальщику резервов нечего подметать без репозитория")
 	}
 	s := newSweeper(repo.Design(), sweeperInterval)
-	if l := applyOptions(opts).ledger; l != nil {
-		s.ledger = l
+	o := applyOptions(opts)
+	if o.ledger != nil {
+		s.ledger = o.ledger
 	}
+	s.ledgerAge = ledgerSweepAgeFor(normalisedRunTimeout(o.runTimeout))
 	return s, nil
 }
 
@@ -88,7 +97,8 @@ func NewSweeper(repo dependency.Repository, opts ...Option) (*Sweeper, error) {
 // НИКОГДА НЕ ОТКРЫВАЕТ БАЗУ В ТЕСТЕ — вне CI TestMain стора читает продакшен-DSN и дропает все
 // таблицы.
 func newSweeper(store reserveSweeperStore, interval time.Duration) *Sweeper {
-	return &Sweeper{store: store, interval: interval}
+	return &Sweeper{store: store, interval: interval,
+		ledgerAge: ledgerSweepAgeFor(normalisedRunTimeout(0))}
 }
 
 func (s *Sweeper) Name() string { return sweeperName }
@@ -135,7 +145,7 @@ func (s *Sweeper) run(ctx context.Context) {
 func (s *Sweeper) sweepOnce(ctx context.Context) {
 	// The ledger half first and on its own: its failure is logged inside and must neither skip the
 	// reserve sweep below nor mark this organ unhealthy — the reserve is what it is responsible for.
-	sweepLedger(ctx, s.ledger, ledgerSweepAge, sweeperName)
+	sweepLedger(ctx, s.ledger, s.ledgerAge, sweeperName)
 
 	n, err := s.store.ReviveExpiredRuns(ctx)
 	if err != nil {
