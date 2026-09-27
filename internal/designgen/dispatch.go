@@ -105,8 +105,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// back to the queue, where the next pass reads the history again.
 	pendingID := ""
 	// pendingAttempt — the attempt whose submit was accepted: its ledger row is the one the collect
-	// prices (B-07). 0 = not known (no ledger row to price).
+	// prices (B-07). 0 = not known (no ledger row to price). pendingProvider — the route NAME that
+	// attempt stored (StartAttempt{Provider: prov.Name()}): only that route's collect may price it.
 	pendingAttempt := 0
+	pendingProvider := ""
 	if async {
 		full, gerr := w.store.GetRun(ctx, run.Id)
 		if gerr != nil {
@@ -114,7 +116,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		}
 		if full != nil {
 			if a, ok := acceptedAttempt(full.Attempts); ok {
-				pendingID, pendingAttempt = a.ProviderRequestId.String, a.AttemptNo
+				pendingID, pendingAttempt, pendingProvider = a.ProviderRequestId.String, a.AttemptNo, a.Provider
 			}
 			// ⚠ AN EARLIER SUBMIT THAT NEVER CLOSED IS A POSSIBLE PURCHASE (G-03, Codex 1a). A
 			// `dispatching` attempt with no finished_at and no accepted id before it means a pass died
@@ -245,7 +247,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 					"not record it (%v) — the job may be running and billed; reconcile it with the provider",
 					errAcceptedNotRecorded, prov.Name(), out.RequestID, ferr))
 			}
-			pendingID, pendingAttempt = out.RequestID, att.AttemptNo
+			pendingID, pendingAttempt, pendingProvider = out.RequestID, att.AttemptNo, prov.Name()
 		} else {
 			return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
 		}
@@ -285,7 +287,24 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// opens no ledger row; the money of the job sits on the row the submit opened, keyed by the
 	// SUBMIT's attempt — so the recorder is scoped to that attempt, not to `att`. A repeated collect
 	// finds the row already priced and changes nothing (PriceAcceptedCall moves only `accepted`).
-	job.Recorder = w.recorderFor(run, pendingAttempt)
+	//
+	// ⚠ AND ONLY THE ROUTE THAT ACCEPTED THE JOB MAY PRICE ITS ROW (Codex A4 #2). The attempt stored
+	// prov.Name() at submit; after a redeploy with another DESIGN_THREED_PROVIDER this pass's collector
+	// has never seen that locator, its lookup fails for good, and recordCollect would turn the other
+	// provider's `accepted` row `unknown` — IRREVERSIBLY, since PriceAcceptedCall moves only `accepted`
+	// rows and the real price could then never land. LEDGER-ONLY: the pass collects and fails exactly
+	// as it did before (routing the collect to the stored provider is commit D); only the recorder is
+	// withheld, and the row waits `accepted` for the provider that accepted it.
+	job.Recorder = nil
+	if pendingProvider == prov.Name() {
+		job.Recorder = w.recorderFor(run, pendingAttempt)
+	} else if w.ledger != nil {
+		slog.Default().WarnContext(ctx, "ai ledger: accepted by "+pendingProvider+", this deployment collects "+
+			"with "+prov.Name()+"; its ledger row stays accepted until the provider that accepted it collects",
+			slog.Int("run_id", run.Id), slog.Int("attempt_no", pendingAttempt),
+			slog.String("accepted_by", pendingProvider), slog.String("collector", prov.Name()),
+			slog.String("request_id", pendingID))
+	}
 	out, callErr := collector.Collect(ctx, job, pendingID)
 	if out != nil && out.RequestID == "" {
 		out.RequestID = pendingID

@@ -135,7 +135,7 @@ func TestABeginFailureLosesTheRowNotTheCall(t *testing.T) {
 // TestFinishRunsBeyondCancellationAndMeasuresTheCall — the pass's context is already cancelled when
 // the answer arrives (the provider was slow): the outcome is still written, under a bounded deadline,
 // with the latency of the call (not of our INSERT).
-// MUTATION: FinishCall on ctx instead of writeContext(ctx) → the write sees context.Canceled (red).
+// MUTATION: FinishCall on ctx instead of writeContext(ctx, …) → the write sees context.Canceled (red).
 func TestFinishRunsBeyondCancellationAndMeasuresTheCall(t *testing.T) {
 	st := &aiprovtest.Store{}
 	t0 := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
@@ -155,9 +155,129 @@ func TestFinishRunsBeyondCancellationAndMeasuresTheCall(t *testing.T) {
 	require.Equal(t, "finish", w[len(w)-1].Verb)
 	require.NoError(t, w[len(w)-1].CtxErr, "the write must not inherit the pass's cancellation")
 	require.True(t, w[len(w)-1].HasDL, "and it must be bounded")
-	require.LessOrEqual(t, time.Until(w[len(w)-1].Deadline), ledgerWriteTimeout)
+	require.LessOrEqual(t, time.Until(w[len(w)-1].Deadline), LedgerWriteTimeout)
 	require.NoError(t, w[0].CtxErr, "Begin is bounded and uncancelled too")
 	require.True(t, w[0].HasDL)
+	require.LessOrEqual(t, time.Until(w[0].Deadline), LedgerBeginTimeout, "and on the SHORT bound")
+}
+
+// blockingStore — the ledger store of a sick database: a verb told to block waits for its context
+// and for nothing else. release frees it when the test ends, so a MUTATED (unbounded) write fails
+// the test at its own limit instead of leaking a goroutine for ever.
+type blockingStore struct {
+	*aiprovtest.Store
+	blockBegin, blockFinish bool
+	release                 chan struct{}
+}
+
+func newBlockingStore(t *testing.T) *blockingStore {
+	t.Helper()
+	s := &blockingStore{Store: &aiprovtest.Store{}, release: make(chan struct{})}
+	t.Cleanup(func() { close(s.release) })
+	return s
+}
+
+func (s *blockingStore) hang(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.release:
+		return errors.New("released at the end of the test")
+	}
+}
+
+func (s *blockingStore) BeginCall(ctx context.Context, st entity.AICallStart) (int64, error) {
+	if s.blockBegin {
+		return 0, s.hang(ctx)
+	}
+	return s.Store.BeginCall(ctx, st)
+}
+
+func (s *blockingStore) FinishCall(ctx context.Context, id int64, e entity.AICallEnd) error {
+	if s.blockFinish {
+		return s.hang(ctx)
+	}
+	return s.Store.FinishCall(ctx, id, e)
+}
+
+// within runs f and fails the test when f has not returned by limit — the test's own deadline, far
+// above the bound under test and far below «for ever». It returns how long f took.
+func within(t *testing.T, limit time.Duration, f func()) time.Duration {
+	t.Helper()
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+		return time.Since(start)
+	case <-time.After(limit):
+		t.Fatalf("the ledger write held the paid call past %s: its own bound did not stop it", limit)
+		return 0
+	}
+}
+
+// TestABlockedBeginCostsThePaidCallAtMostTheBeginBound — Codex A4 #1: the database hangs on the
+// INSERT that must precede a paid call. The ledger gives the row up after beginTimeout — the SHORT
+// bound, not the write bound — and hands back a handle with ID 0, so the call leaves with the rest of
+// the run's deadline; the ERROR line is the row's only record and names it.
+// MUTATIONS (measured red→green): BeginCall on the caller's context, or on an unbounded
+// context.WithoutCancel → the store waits for ever, the test fails at its 2 s limit; BeginCall on
+// writeContext(ctx, l.writeTimeout) (10 s here) → the same.
+func TestABlockedBeginCostsThePaidCallAtMostTheBeginBound(t *testing.T) {
+	logs := captureLog(t)
+	st := newBlockingStore(t)
+	st.blockBegin = true
+	l := NewLedger(st, func() string { return "Europe/Warsaw" })
+	l.beginTimeout, l.writeTimeout = 50*time.Millisecond, 10*time.Second
+
+	var h *CallHandle
+	took := within(t, 2*time.Second, func() { h = l.Begin(context.Background(), designStart()) })
+	require.GreaterOrEqual(t, took, 50*time.Millisecond, "the bound is waited out, not skipped")
+	require.NotNil(t, h, "the call proceeds: a handle, not a refusal")
+	require.Zero(t, h.ID, "the row is lost")
+	require.False(t, h.Started.IsZero(), "and the call's latency still has a start")
+
+	out := logs.String()
+	require.Contains(t, out, "level=ERROR")
+	require.Contains(t, out, "its row is LOST")
+	for _, field := range []string{"run_id=7", "attempt_no=2", "call_no=2", "provider_key=openrouter",
+		"model=openai/gpt-image-2", "actor=im", `err="context deadline exceeded"`} {
+		require.Contains(t, out, field)
+	}
+}
+
+// TestABlockedFinishHoldsTheNextCallAtMostTheWriteBound — the same sick database on the UPDATE after
+// an answer: the next call of a multi-call attempt waits behind it, so Finish gives up after
+// writeTimeout and logs the outcome — its only record — at ERROR; the row stays `dispatching` for
+// the sweeper.
+// MUTATIONS (measured red→green): FinishCall on an unbounded context.WithoutCancel → the test fails
+// at its 2 s limit; FinishCall on writeContext(ctx, l.beginTimeout) (10 s here) → the same.
+func TestABlockedFinishHoldsTheNextCallAtMostTheWriteBound(t *testing.T) {
+	logs := captureLog(t)
+	st := newBlockingStore(t)
+	l := NewLedger(st, func() string { return "UTC" })
+	l.beginTimeout, l.writeTimeout = 10*time.Second, 50*time.Millisecond
+	h := l.Begin(context.Background(), designStart())
+	require.Positive(t, h.ID)
+
+	st.blockFinish = true
+	took := within(t, 2*time.Second, func() {
+		l.Finish(context.Background(), h, entity.AICallEnd{Status: entity.AICallOK, CostSource: entity.AICostProvider,
+			CostUSD: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.04"), Valid: true}, RequestID: "gen-9"})
+	})
+	require.GreaterOrEqual(t, took, 50*time.Millisecond)
+	require.Equal(t, entity.AICallDispatching, st.Rows()[0].Status, "left for the sweeper")
+
+	out := logs.String()
+	require.Contains(t, out, "level=ERROR")
+	require.Contains(t, out, "could not be written")
+	for _, field := range []string{"ledger_id=1", "status=ok", "cost_usd=0.04", "request_id=gen-9", "run_id=7",
+		`err="context deadline exceeded"`} {
+		require.Contains(t, out, field)
+	}
 }
 
 // TestAFreeCallCostsZeroNotNull — a `free` outcome (nothing was sent) is booked 0 / free / not

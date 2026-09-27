@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"strconv"
 	"time"
@@ -70,14 +71,20 @@ const ledgerSweepAge = 15 * time.Minute
 // sweeper's own interval) finds them as fast as they can exist.
 const ledgerSweepEvery = sweeperInterval
 
-// ledgerFinishSlack — how long past its pass a live call's Finish can still land: the ledger's own
-// write bound (aiprov ledgerWriteTimeout, 10 s) plus room.
+// ledgerFinishSlack — how long past its pass a live call's Finish can still land. A call cannot
+// outlive its pass (RunTimeout bounds the provider's context) and its Finish then waits at most the
+// ledger's write bound (aiprov.LedgerWriteTimeout, 5 s) — so this MUST STAY ≥ THAT BOUND, or a sweep
+// at RunTimeout + slack could call `unknown` a row whose real outcome is still on its way (Finish
+// moves only `dispatching` rows, and the price would be dropped). 30 s is the bound plus room.
 const ledgerFinishSlack = 30 * time.Second
 
 // Option configures New and NewSweeper.
 type Option func(*options)
 
-type options struct{ ledger callLedger }
+type options struct {
+	ledger     callLedger
+	runTimeout time.Duration
+}
 
 // WithLedger books every physical provider call of the worker into the AI ledger, and has the
 // running ticker (the worker's, or the reserve sweeper's when generation is off) sweep rows left
@@ -89,6 +96,15 @@ func WithLedger(l *aiprov.Ledger) Option {
 			o.ledger = l
 		}
 	}
+}
+
+// WithRunTimeout hands the RESERVE SWEEPER the RunTimeout an enabled worker would run with, so its
+// ledger sweep cuts where the worker's does (ledgerSweepAgeFor; Codex A4 #4). Pass the NORMALISED
+// value — designgen.Normalize, the same designCfg app.go builds the worker from; zero/unset is
+// normalised here exactly as applyDefaults normalises it (DefaultConfig().RunTimeout). New ignores
+// it: the worker reads its own Config.RunTimeout.
+func WithRunTimeout(d time.Duration) Option {
+	return func(o *options) { o.runTimeout = d }
 }
 
 func applyOptions(opts []Option) options {
@@ -193,17 +209,36 @@ func sweepLedger(ctx context.Context, l ledgerSweeper, age time.Duration, who st
 	}
 }
 
-// workerLedgerSweepAge — the worker sweeps at fifteen minutes OR at the longest a live pass can hold
-// a row open, whichever is later. A call cannot outlive its pass (RunTimeout bounds its context) by
-// more than its Finish; sweeping a row sooner than that could turn a live call `unknown`, after which
-// its Finish — which only moves `dispatching` rows — would silently drop the real price. With the
-// defaults (RunTimeout 15 min) this is 15 min 30 s.
-func (w *Worker) workerLedgerSweepAge() time.Duration {
-	age := ledgerSweepAge
-	if w.c != nil && w.c.RunTimeout+ledgerFinishSlack > age {
-		age = w.c.RunTimeout + ledgerFinishSlack
+// ledgerSweepAgeFor — THE cut-off of the ledger sweep, for BOTH tickers (the worker's and the reserve
+// sweeper's; Codex A4 #4): fifteen minutes OR the longest a live pass can hold a row open, whichever
+// is later. A call cannot outlive its pass (RunTimeout bounds its context) by more than its Finish;
+// sweeping a row sooner than that could turn a live call `unknown`, after which its Finish — which
+// only moves `dispatching` rows — would silently drop the real price. One function, because two
+// tickers with two cut-offs is how an enabled→disabled rolling deploy swept the old instance's live
+// rows from the new one. With the defaults (RunTimeout 15 min) this is 15 min 30 s.
+func ledgerSweepAgeFor(runTimeout time.Duration) time.Duration {
+	if age := runTimeout + ledgerFinishSlack; age > ledgerSweepAge {
+		return age
 	}
-	return age
+	return ledgerSweepAge
+}
+
+// normalisedRunTimeout — an unset RunTimeout as applyDefaults reads it: the default's. A set one is
+// taken as given (the caller normalised it, and only ever downwards — a larger value only sweeps later).
+func normalisedRunTimeout(d time.Duration) time.Duration {
+	if d <= 0 {
+		return DefaultConfig().RunTimeout
+	}
+	return d
+}
+
+// workerLedgerSweepAge — the worker's cut-off: ledgerSweepAgeFor its own RunTimeout.
+func (w *Worker) workerLedgerSweepAge() time.Duration {
+	var runTimeout time.Duration
+	if w.c != nil {
+		runTimeout = w.c.RunTimeout
+	}
+	return ledgerSweepAgeFor(runTimeout)
 }
 
 // maybeSweepLedger runs the ledger sweep on the worker's tick at most once per ledgerSweepEvery.
@@ -248,8 +283,9 @@ var httpStatusRe = regexp.MustCompile(`\bHTTP (\d{3})\b`)
 //
 // A CallError's own status wins (B-14 onwards). Before that, the status is read from the message
 // OUR OWN clients format — every classifyStatus / statusErrorFrom in internal/{orimages,recraft,fal,
-// meshy} writes "HTTP %d" before the provider's words — and it is a diagnostic column only: no
-// ledger status is decided from it.
+// meshy} writes "HTTP %d" before the provider's words. It is a diagnostic column, with ONE exception
+// that can only err towards reporting spend: timeoutIsNotFree reads a 408 to take back a `free`
+// (a misread status can turn `free` into `unknown`, never a paid call into a free one).
 func httpStatusOf(err error) *int {
 	if err == nil {
 		return nil
@@ -278,6 +314,28 @@ func isAnyOf(err error, targets ...error) bool {
 	return false
 }
 
+// timeoutIsNotFree — ONE RULE OVER EVERY TRANSPORT'S OWN MAPPING (Codex A4 #3): an HTTP 408 is not
+// proof that nothing was bought. The clients fold a 408 into a refusal sentinel — orimages into
+// ErrProviderFailure, recraft direct / fal / Meshy into their generic 4xx ErrBadRequest — and the
+// mappings below read those as `free`. But a 408 is a server or a gateway giving up on a request
+// whose body it may already have taken: the generation may have run and been billed, and on fal or
+// Meshy a task may have been queued that nobody will ever collect. No transport documents a 408 as
+// unbilled, so a `free` outcome carrying one becomes `unknown` — engaged nobody-knows, cost NULL,
+// source none. Over-reporting possible spend costs a line in the report; under-reporting it costs the
+// owner's trust in it. Applied by imageCallEnd, vectorCallEnd, falSubmitEnd and meshySubmitEnd AFTER
+// their own mapping; every other outcome passes through untouched.
+func timeoutIsNotFree(end entity.AICallEnd, err error) entity.AICallEnd {
+	if end.Status != entity.AICallFree {
+		return end
+	}
+	if s := httpStatusOf(err); s == nil || *s != http.StatusRequestTimeout {
+		return end
+	}
+	end.Status, end.Engaged = entity.AICallUnknown, nil
+	end.CostUSD, end.CostSource = decimal.NullDecimal{}, entity.AICostNone
+	return end
+}
+
 // withFailure stamps the machine word and the provider status of a failed call.
 func withFailure(end entity.AICallEnd, err error) entity.AICallEnd {
 	if err != nil {
@@ -293,7 +351,8 @@ func withFailure(end entity.AICallEnd, err error) entity.AICallEnd {
 //     image generation as all-or-nothing («fails and is not billed»), so no status error carries money;
 //   - failed: a 2xx came back with usage and no cost (billed-shaped, zero charge reported);
 //   - unknown: everything else — a bare transport error, a timeout, an unreadable 2xx — the request
-//     may have been written and billed.
+//     may have been written and billed; and a 408 the client folded into ErrProviderFailure
+//     (timeoutIsNotFree).
 func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
 	var end entity.AICallEnd
 	if res != nil {
@@ -322,7 +381,7 @@ func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
 	if !end.CostUSD.Valid && end.Status != entity.AICallFree {
 		end.CostSource = entity.AICostNone
 	}
-	return withFailure(end, err)
+	return timeoutIsNotFree(withFailure(end, err), err)
 }
 
 // recraftBillingKey — the provider whose account a vector call spends: through OpenRouter's image
@@ -357,7 +416,8 @@ func vectorPrice(end *entity.AICallEnd, route recraft.Route, usd, credits float6
 // errors into its own sentinels (translateORError), and ErrProviderFailure covers both «5xx» and
 // «transport failure» — so it is `unknown`, the transport's own word for it. A 2xx whose SVG was then
 // refused (ErrNotVector, ErrUnsafeSVG, ErrInvalidResponse without a charge) was billed at a price
-// nobody passed back: `unknown` too.
+// nobody passed back: `unknown` too; so is a direct-route 408 folded into ErrBadRequest
+// (timeoutIsNotFree).
 func vectorCallEnd(route recraft.Route, res *recraft.VectorResult, err error) entity.AICallEnd {
 	var end entity.AICallEnd
 	switch {
@@ -387,7 +447,7 @@ func vectorCallEnd(route recraft.Route, res *recraft.VectorResult, err error) en
 	if !end.CostUSD.Valid && end.Status != entity.AICallFree {
 		end.CostSource = entity.AICostNone
 	}
-	return withFailure(end, err)
+	return timeoutIsNotFree(withFailure(end, err), err)
 }
 
 // acceptedEnd — an asynchronous submit the provider accepted: the row waits, unpriced, for the
@@ -428,8 +488,9 @@ func chargedUnits(err error) *decimal.Decimal {
 // the one fact that matters (G-03): ErrSubmitUnconfirmed = the whole request left and no usable
 // answer came back — fal may have queued and billed it → `unknown`. Any other submit failure was
 // either refused before the write (local checks, a body cut half-way) or explicitly refused by the
-// provider (4xx, a bare 503) → `free`. A charge riding the error → `charged_failed`, priced with the
-// SAME number the attempt books (booked; invalid when the route books none).
+// provider (4xx, a bare 503) → `free` — except a 408, which is `unknown` (timeoutIsNotFree). A charge
+// riding the error → `charged_failed`, priced with the SAME number the attempt books (booked; invalid
+// when the route books none).
 func falSubmitEnd(err error, booked decimal.NullDecimal) entity.AICallEnd {
 	var end entity.AICallEnd
 	if _, ok := fal.Charge(err); ok {
@@ -448,12 +509,13 @@ func falSubmitEnd(err error, booked decimal.NullDecimal) entity.AICallEnd {
 		return withFailure(end, err)
 	}
 	end.Status, end.Engaged = entity.AICallFree, notEngaged()
-	return withFailure(end, err)
+	return timeoutIsNotFree(withFailure(end, err), err)
 }
 
 // meshySubmitEnd — a failed direct-Meshy submit. The Meshy client has no write observer: its own
-// local refusals and the statuses it names (401/403, 402, 429, other 4xx) carried no money →
-// `free`; a 5xx, a transport error or an unreadable 2xx may have created the task → `unknown`.
+// local refusals and the statuses it names (401/403, 402, 429, other 4xx but 408) carried no money →
+// `free`; a 5xx, a 408 (timeoutIsNotFree), a transport error or an unreadable 2xx may have created
+// the task → `unknown`.
 func meshySubmitEnd(err error) entity.AICallEnd {
 	var end entity.AICallEnd
 	if credits, ok := meshy.Charge(err); ok {
@@ -464,7 +526,7 @@ func meshySubmitEnd(err error) entity.AICallEnd {
 	if isAnyOf(err, meshy.ErrNotConfigured, meshy.ErrImageCount, meshy.ErrPromptTooLong, meshy.ErrBadRequest,
 		meshy.ErrBadImageURL, meshy.ErrUnauthorized, meshy.ErrOutOfCredit, meshy.ErrRateLimited) {
 		end.Status, end.Engaged = entity.AICallFree, notEngaged()
-		return withFailure(end, err)
+		return timeoutIsNotFree(withFailure(end, err), err)
 	}
 	end.Status, end.CostSource = entity.AICallUnknown, entity.AICostNone
 	return withFailure(end, err)

@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/aiprovtest"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -235,6 +237,103 @@ func TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT(t *testing.T) {
 
 func intp(v int) *int { return &v }
 
+// TestA408IsNEVER_BOOKED_FREE — Codex A4 #3: a server or gateway that answers 408 may already have
+// taken the whole body, run the generation and billed it (or queued an async task). The clients fold a
+// 408 into a refusal sentinel their mapping reads as `free`; the central rule (timeoutIsNotFree) takes
+// that back to `unknown`, engaged nobody-knows, cost NULL, source none — on every transport, and ONLY
+// for a 408: a validator's 4xx stays `free`. Each error below is spelled exactly as its client spells
+// it (orimages.classifyStatus, recraft.classifyStatus (direct), fal.statusErrorFrom,
+// meshy.statusError); the second half runs the real orimages / fal / Meshy clients against a 408 stand.
+//
+// MUTATIONS (measured red→green): timeoutIsNotFree returning `end` unchanged → every 408 case reads
+// `free`; the call removed from each of imageCallEnd / vectorCallEnd / falSubmitEnd / meshySubmitEnd
+// in turn → that transport's 408 cases read `free`, the other three stay green; the rule widened to
+// every status ≥ 400 → the validator controls (and the 401/402/503 image cases) read `unknown`.
+func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
+	type mapping func(err error) entity.AICallEnd
+	image := func(err error) entity.AICallEnd { return imageCallEnd(nil, err) }
+	vector := func(err error) entity.AICallEnd { return vectorCallEnd(recraft.RouteDirect, nil, err) }
+	falSubmit := func(err error) entity.AICallEnd { return falSubmitEnd(err, decimal.NullDecimal{}) }
+	meshySubmit := func(err error) entity.AICallEnd { return meshySubmitEnd(err) }
+	for _, c := range []struct {
+		name      string
+		end       mapping
+		timeout   error // the client's 408
+		validator error // the same client's plain 4xx refusal: stays free
+	}{
+		{"openrouter images", image,
+			fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrProviderFailure, 408, "request timeout"),
+			fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrBadRequest, 400, "bad schema")},
+		{"recraft direct", vector,
+			fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 408, "request timeout"),
+			fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 422, "bad schema")},
+		{"fal submit", falSubmit,
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 408, "request timeout"),
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 422, "bad schema")},
+		{"meshy submit", meshySubmit,
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 408, "request timeout"),
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 400, "bad schema")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			end := c.end(c.timeout)
+			require.Equal(t, entity.AICallUnknown, end.Status, "a 408 proves nothing about the bill")
+			require.Nil(t, end.Engaged, "nobody knows whether the request was written")
+			require.False(t, end.CostUSD.Valid, "unknown is NULL, never 0")
+			require.Equal(t, entity.AICostNone, end.CostSource)
+			require.Equal(t, intp(408), end.HTTPStatus)
+			require.Equal(t, classify(c.timeout).Code, end.ErrorCode, "the attempt's own word, unchanged")
+
+			end = c.end(c.validator)
+			require.Equal(t, entity.AICallFree, end.Status, "a validator's refusal stays free: the rule is 408 only")
+			require.NotNil(t, end.Engaged)
+			require.False(t, *end.Engaged)
+		})
+	}
+
+	// The real clients: each spells its own 408, and the row the ledger stores reads `unknown`.
+	stand408 := func(t *testing.T) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte(`{"error":{"message":"request timeout"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	stored := func(t *testing.T, ai *aiprovtest.Store) {
+		t.Helper()
+		rows := ai.Rows()
+		require.Len(t, rows, 1)
+		require.Equal(t, entity.AICallUnknown, rows[0].Status)
+		require.Nil(t, rows[0].End.Engaged)
+		require.False(t, rows[0].End.CostUSD.Valid, "unknown is NULL, never 0")
+		require.Equal(t, entity.AICostNone, rows[0].End.CostSource)
+		require.Equal(t, intp(408), rows[0].End.HTTPStatus)
+	}
+	t.Run("openrouter images, real client", func(t *testing.T) {
+		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindFlat, Prompt: "a flat", Layout: "one"},
+			entity.AIPurposeImageGenerate)
+		_, err := imageRoute(stand408(t).URL).Execute(context.Background(), job)
+		require.ErrorIs(t, err, orimages.ErrProviderFailure)
+		stored(t, ai)
+	})
+	t.Run("fal submit, real client", func(t *testing.T) {
+		stand := newFalBuildStand(t)
+		stand.submitStatus = http.StatusRequestTimeout
+		w := steerWorker(t, &fakeStore{}, falRoute(t, stand.srv.URL, falMeshySlug))
+		ai := withLedger(w)
+		require.NoError(t, w.execute(context.Background(), steerRun(66), "tok"))
+		stored(t, ai)
+	})
+	t.Run("meshy submit, real client", func(t *testing.T) {
+		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindThreed,
+			References: []string{"https://cdn.example/f.png"}}, entity.AIPurposeThreed)
+		_, err := newThreedSteerProvider(t, stand408(t).URL).Execute(context.Background(), job)
+		require.ErrorIs(t, err, meshy.ErrBadRequest)
+		stored(t, ai)
+	})
+}
+
 // falBuildStand — fal's queue for one 3D build: the submit answers req-1 (or `submitStatus`), the
 // status is COMPLETED, the result names one billable unit and the model file.
 type falBuildStand struct {
@@ -359,6 +458,80 @@ func TestAResumedCollectPRICES_THE_ROW_ITS_SUBMIT_OPENED(t *testing.T) {
 	require.NoError(t, w2.execute(context.Background(), run, "tok"))
 	require.Len(t, ai.Rows(), 1)
 	require.Equal(t, "1.2", ai.Rows()[0].End.CostUSD.Decimal.String())
+}
+
+// TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW — Codex A4 #2: fal accepted
+// attempt 1 (the history stores Provider "fal" and fal's locator); the deployment was switched to
+// DESIGN_THREED_PROVIDER=meshy before the next pickup. The Meshy collector is asked for fal's
+// locator, Meshy answers 404, the lookup fails for good — and the pass fails exactly as it does
+// without a ledger. The ledger row fal opened must still read `accepted` and unpriced: turning it
+// `unknown` here is irreversible (PriceAcceptedCall moves only `accepted`), and fal's real price
+// could never land. The one WARN line says whose row it is and who collected.
+//
+// MUTATION (measured red→green): the name guard dropped (`job.Recorder = w.recorderFor(run,
+// pendingAttempt)` unconditionally) → the row reads `unknown` (error_code empty_response).
+func TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW(t *testing.T) {
+	meshyStand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"no such task"}`))
+	}))
+	t.Cleanup(meshyStand.Close)
+	meshyRoute := NewThreedProvider(meshy.New(meshy.Config{APIKey: "k", BaseURL: meshyStand.URL,
+		HTTPTimeout: 2 * time.Second, PollInterval: 5 * time.Millisecond, PollTimeout: 40 * time.Millisecond,
+		DownloadTimeout: 2 * time.Second}))
+	require.NotEqual(t, ThreedProviderFal, meshyRoute.Name(), "the wired route is not the one that accepted")
+
+	run := steerRun(65)
+	run.Author = "im"
+	full := run
+	full.Attempts = []entity.DesignRunAttempt{{RunId: 65, AttemptNo: 1, Provider: ThreedProviderFal,
+		State: entity.DesignAttemptAccepted, ProviderRequestId: sql.NullString{String: falMeshySlug + "#req-1", Valid: true}}}
+
+	pass := func(withLedgerToo bool) (*fakeStore, *aiprovtest.Store) {
+		st := &fakeStore{getRun: &full, nextNo: 1}
+		w := steerWorker(t, st, meshyRoute)
+		var ai *aiprovtest.Store
+		if withLedgerToo {
+			ai = withLedger(w)
+			runID, attemptNo := 65, 1
+			ai.Seed(aiprovtest.Row{Status: entity.AICallAccepted, Start: entity.AICallStart{
+				OccurredAt: time.Now(), ProviderKey: entity.AIProviderFal, Model: falMeshySlug,
+				Purpose: entity.AIPurposeThreed, Actor: "im", RunID: &runID, AttemptNo: &attemptNo, CallNo: 1},
+				End: entity.AICallEnd{Status: entity.AICallAccepted, RequestID: falMeshySlug + "#req-1"}})
+		}
+		require.NoError(t, w.execute(context.Background(), run, "tok"))
+		return st, ai
+	}
+
+	logs := captureSlog(t)
+	st, ai := pass(true)
+
+	// The run: the collect failed for good, as it does today (commit D routes it to fal).
+	require.Len(t, st.finished, 1)
+	require.Equal(t, 2, st.finished[0].AttemptNo, "the collect's own attempt")
+	require.Equal(t, entity.DesignAttemptUnknown, st.finished[0].State)
+	require.Len(t, st.failed, 1)
+
+	// The ledger: fal's row untouched — still `accepted`, still unpriced, never offered a price.
+	rows := ai.Rows()
+	require.Len(t, rows, 1)
+	require.Equal(t, entity.AICallAccepted, rows[0].Status, "only the provider that accepted it may close it")
+	require.False(t, rows[0].End.CostUSD.Valid)
+	require.Empty(t, rows[0].End.ErrorCode)
+	for _, wr := range ai.Writes() {
+		require.NotEqual(t, "price", wr.Verb, "no collect by another provider reaches the row")
+	}
+	out := logs.String()
+	require.Contains(t, out, "level=WARN")
+	require.Contains(t, out, "accepted by fal, this deployment collects with meshy")
+	require.Contains(t, out, "run_id=65")
+	require.Equal(t, 1, strings.Count(out, "this deployment collects with"), "once per pass")
+
+	// LEDGER-ONLY: the same pass without a ledger writes exactly the same attempt and run rows.
+	stNo, _ := pass(false)
+	require.Equal(t, stNo.finished, st.finished, "the ledger must not change one field of an attempt")
+	require.Equal(t, stNo.started, st.started)
+	require.Equal(t, stNo.failed, st.failed)
 }
 
 // (4) TestAnUnconfirmedSubmitIsUNKNOWN — fal answers the submit with a 502: the request left whole
@@ -522,11 +695,79 @@ func TestTheSweeperCALLS_A_STALE_DISPATCHING_ROW_UNKNOWN(t *testing.T) {
 	})
 
 	t.Run("the worker never sweeps a row its own pass may still hold", func(t *testing.T) {
+		// The slack covers the longest a live call's Finish may still wait on the database after its
+		// pass (Codex A4 #1). MUTATION (measured red→green): ledgerFinishSlack = 3 * time.Second.
+		require.GreaterOrEqual(t, ledgerFinishSlack, aiprov.LedgerWriteTimeout,
+			"a Finish still inside its write bound must not find its row already swept")
 		w := testWorker(&fakeStore{}, nil, newFakeSink(ContentTypePNG), Providers{})
 		require.Equal(t, w.c.RunTimeout+ledgerFinishSlack, w.workerLedgerSweepAge(),
 			"with the default 15 min RunTimeout, the pass bound wins over the plain 15 min")
 		w.c.RunTimeout = time.Minute
 		require.Equal(t, ledgerSweepAge, w.workerLedgerSweepAge())
+	})
+}
+
+// TestTheReserveSweeperCUTS_WHERE_THE_WORKER_CUTS — Codex A4 #4: during an enabled→disabled rolling
+// deploy the OLD instance's worker is still inside a paid call while the NEW instance's reserve
+// sweeper ticks. Built the way app.go builds it (NewSweeper, WithRunTimeout of the normalised
+// designCfg), the reserve sweeper cuts at the worker's own ledgerSweepAgeFor(RunTimeout): a row
+// younger than that is left `dispatching` for its Finish, an older one is called `unknown`. Unset,
+// the RunTimeout is the default's (15 min → 15 min 30 s), as applyDefaults would make it. And the
+// worker's cut-off for the same config is the same number.
+//
+// MUTATIONS (measured red→green): sweepOnce back on the flat ledgerSweepAge → both live rows are
+// swept; normalisedRunTimeout returning 0 unchanged → the unset case cuts at 15 min and sweeps its
+// live row; workerLedgerSweepAge back on a flat ledgerSweepAge → the equality fails.
+func TestTheReserveSweeperCUTS_WHERE_THE_WORKER_CUTS(t *testing.T) {
+	repoWith := func(t *testing.T, sweeps bool) *mocks.MockRepository {
+		design := mocks.NewMockDesign(t)
+		if sweeps {
+			design.EXPECT().ReviveExpiredRuns(mock.Anything).Return(0, nil).Once()
+		}
+		repo := mocks.NewMockRepository(t)
+		repo.EXPECT().Design().Return(design).Once()
+		return repo
+	}
+
+	for _, c := range []struct {
+		name       string
+		runTimeout time.Duration
+		cut        time.Duration
+	}{
+		{"RunTimeout 20 min cuts at 20 min 30 s", 20 * time.Minute, 20*time.Minute + 30*time.Second},
+		{"unset cuts at the default's 15 min 30 s", 0, 15*time.Minute + 30*time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ai := &aiprovtest.Store{}
+			now := time.Now()
+			start := func(age time.Duration) entity.AICallStart {
+				return entity.AICallStart{OccurredAt: now.Add(-age), ProviderKey: entity.AIProviderFal,
+					Purpose: entity.AIPurposeThreed, Actor: "im"}
+			}
+			// Past the flat 15 min, inside the worker's cut-off: a call the old instance may still finish.
+			live := ai.Seed(aiprovtest.Row{Status: entity.AICallDispatching, Start: start(c.cut - 20*time.Second)})
+			dead := ai.Seed(aiprovtest.Row{Status: entity.AICallDispatching, Start: start(c.cut + 20*time.Second)})
+
+			s, err := NewSweeper(repoWith(t, true), WithLedger(aiprov.NewLedger(ai, nil)), WithRunTimeout(c.runTimeout))
+			require.NoError(t, err)
+			s.sweepOnce(context.Background())
+
+			require.Equal(t, entity.AICallDispatching, ledgerStatus(ai, live),
+				"a row the worker's own pass may still hold is not the reserve sweeper's to close")
+			require.Equal(t, entity.AICallUnknown, ledgerStatus(ai, dead))
+		})
+	}
+
+	t.Run("the worker's cut-off is the helper's, and the reserve sweeper's", func(t *testing.T) {
+		c := Config{RunTimeout: 20 * time.Minute, ClaimLease: 30 * time.Minute}
+		Normalize(&c)
+		require.Equal(t, 20*time.Minute, c.RunTimeout, "a RunTimeout the lease covers is kept")
+		w := newWorker(&c, &fakeStore{}, fakeMedia{}, newFakeSink(ContentTypePNG), Providers{})
+		s, err := NewSweeper(repoWith(t, false), WithRunTimeout(c.RunTimeout))
+		require.NoError(t, err)
+		require.Equal(t, ledgerSweepAgeFor(c.RunTimeout), w.workerLedgerSweepAge())
+		require.Equal(t, w.workerLedgerSweepAge(), s.ledgerAge, "two tickers, one cut-off")
+		require.Equal(t, 20*time.Minute+30*time.Second, s.ledgerAge)
 	})
 }
 
