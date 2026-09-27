@@ -749,4 +749,16 @@ func bindEnvVars() {
 	// reservation is never below the booking. A tariff WITHOUT this ceiling closes the 3D door in
 	// words (there is no number to reserve); unset both to book fal's published per-build price.
 	viper.BindEnv("fal.units_ceiling_3d", "FAL_UNITS_CEILING_3D")
+	// PLAYGROUND phase 3 — the generic JSON routes (fal/generic.go): tile 9 «Extend Image»
+	// (outpaint; empty => fal.DefaultModelOutpaint `fal-ai/flux-2-pro/outpaint`, the fallback is
+	// `fal-ai/bria/expand`) and tile 10's mask retouch (fill; empty => `fal-ai/flux-pro/v1/fill`).
+	// Each has its OWN tariff (units differ per model) and its OWN units ceiling: a tariff set
+	// without its ceiling closes that kind at the door (route_reserve_unbounded) — unset both to
+	// book the code ceiling per request ($0.12 outpaint, $0.15 fill).
+	viper.BindEnv("fal.model_outpaint", "FAL_MODEL_OUTPAINT")
+	viper.BindEnv("fal.model_fill", "FAL_MODEL_FILL")
+	viper.BindEnv("fal.unit_usd_outpaint", "FAL_UNIT_USD_OUTPAINT")
+	viper.BindEnv("fal.units_ceiling_outpaint", "FAL_UNITS_CEILING_OUTPAINT")
+	viper.BindEnv("fal.unit_usd_fill", "FAL_UNIT_USD_FILL")
+	viper.BindEnv("fal.units_ceiling_fill", "FAL_UNITS_CEILING_FILL")
 }

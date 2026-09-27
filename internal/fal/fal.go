@@ -353,6 +353,16 @@ type Config struct {
 	// tariff and no ceiling the reservation has nothing to stand on, so the 3D door refuses in
 	// words (G-02, Codex 4) rather than reserving a number below the booking. <=0 = not stated.
 	UnitsCeiling3D float64 `mapstructure:"units_ceiling_3d"` // FAL_UNITS_CEILING_3D
+	// PLAYGROUND phase 3 — the generic JSON routes (generic.go). Each has its own slug and its own
+	// tariff for the reason the cut-out has (units differ per model), and its own units ceiling for
+	// the reason 3D has (a tariff without a ceiling leaves the reserve nothing to stand on — the door
+	// then refuses the kind: route_reserve_unbounded). Empty slug = the code default; <=0 = unset.
+	ModelOutpaint        string  `mapstructure:"model_outpaint"`         // FAL_MODEL_OUTPAINT
+	ModelFill            string  `mapstructure:"model_fill"`             // FAL_MODEL_FILL
+	UnitUSDOutpaint      float64 `mapstructure:"unit_usd_outpaint"`      // FAL_UNIT_USD_OUTPAINT
+	UnitsCeilingOutpaint float64 `mapstructure:"units_ceiling_outpaint"` // FAL_UNITS_CEILING_OUTPAINT
+	UnitUSDFill          float64 `mapstructure:"unit_usd_fill"`          // FAL_UNIT_USD_FILL
+	UnitsCeilingFill     float64 `mapstructure:"units_ceiling_fill"`     // FAL_UNITS_CEILING_FILL
 }
 
 // String renders the config with the API key redacted, so an accidental %v / %+v / %s of it — in a
@@ -365,9 +375,11 @@ func (c Config) String() string {
 		key = "***REDACTED***"
 	}
 	return fmt.Sprintf("fal.Config{APIKey:%s BaseURL:%s Model3D:%s ModelCutout:%s HTTPTimeout:%s "+
-		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v UnitsCeiling3D:%v}",
+		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v UnitsCeiling3D:%v "+
+		"ModelOutpaint:%s ModelFill:%s UnitUSDOutpaint:%v UnitsCeilingOutpaint:%v UnitUSDFill:%v UnitsCeilingFill:%v}",
 		key, c.BaseURL, c.Model3D, c.ModelCutout, c.HTTPTimeout, c.PollInterval, c.PollTimeout,
-		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout, c.UnitsCeiling3D)
+		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout, c.UnitsCeiling3D,
+		c.ModelOutpaint, c.ModelFill, c.UnitUSDOutpaint, c.UnitsCeilingOutpaint, c.UnitUSDFill, c.UnitsCeilingFill)
 }
 
 // Client is a configured fal queue client. A nil *Client is valid and permanently disabled, so
@@ -409,6 +421,12 @@ func New(cfg Config) *Client {
 	}
 	if cfg.UnitsCeiling3D < 0 {
 		cfg.UnitsCeiling3D = 0
+	}
+	// Same rule for the generic routes: a negative number is «unset», never a negative price.
+	for _, f := range []*float64{&cfg.UnitUSDOutpaint, &cfg.UnitsCeilingOutpaint, &cfg.UnitUSDFill, &cfg.UnitsCeilingFill} {
+		if *f < 0 {
+			*f = 0
+		}
 	}
 	return &Client{
 		// The shared http.Client carries NO Timeout of its own: every request below gets its
