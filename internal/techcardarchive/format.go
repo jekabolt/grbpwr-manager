@@ -1,6 +1,9 @@
 package techcardarchive
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // FORMAT.md in this directory is the prose half of this file and the document both sides of the
 // feature are written against. Every constant and every struct below is a transcription of it; a
@@ -12,15 +15,19 @@ import "time"
 // from sliding in quietly.
 const (
 	FormatName            = "grbpwr-techcard-archive"
-	FormatVersion         = "1.0" // MAJOR.MINOR, see FormatMajor / FormatMinor
+	FormatVersion         = "1.1" // MAJOR.MINOR, see FormatMajor / FormatMinor
 	MoneyPolicyStrippedV1 = "stripped-v1"
 
 	// FormatMajor breaks parsing: an archive of another MAJOR is refused whole. FormatMinor is
 	// additive — a server reads every MINOR of its own MAJOR (card.json with DiscardUnknown,
 	// unknown files listed as unknown_entry). Parsing the string into the pair belongs to the
 	// reader; these are what it compares against.
+	//
+	// 1.1 (T45, 27.09) adds a colourway's own identity to colorways.json: its SKU colour token,
+	// its name with per-language translations and its palette (FORMAT.md §5.3). A 1.0 archive
+	// reads as before — its color_code was the token then.
 	FormatMajor = 1
-	FormatMinor = 0
+	FormatMinor = 1
 
 	// ArchiveNameTimeLayout formats the timestamp in the archive's own file name,
 	// techcard-<style_number>-<yyyymmdd-hhmm>.zip.
@@ -347,10 +354,61 @@ type AssemblyLink struct {
 // colourways and their recipes from it, and so a human can read what the source card's colourways
 // were. Until that action runs, the import reports colorways_not_applied.
 type ColorwayPayload struct {
-	ColorCode      string              `json:"color_code"`
+	// ColorCode is the colourway's dictionary FAMILY (the 17-colour tag filters read). In a 1.0
+	// archive it was also the colourway's SKU colour token — which is what an empty SkuColorToken
+	// says (Token).
+	ColorCode string `json:"color_code"`
+	// SkuColorToken is the SKU colour segment the colourway was minted with (1.1, T45): unique per
+	// style, never changed, restored verbatim by the press. Empty in a 1.0 archive.
+	SkuColorToken string `json:"sku_color_token,omitempty"`
+	// Name is the colourway's own name (development.name) and NameI18n its translations keyed by
+	// LANGUAGE CODE — a language id of the source base means nothing here (1.1).
+	Name     string            `json:"name,omitempty"`
+	NameI18n map[string]string `json:"name_i18n,omitempty"`
+	// Colours is the palette, the main colour first (1.1). Empty = a single-colour colourway whose
+	// colour is its family, as every colourway was before T45.
+	Colours        []ColourLine        `json:"colours,omitempty"`
 	BaseSKU        string              `json:"base_sku,omitempty"`
 	Recipe         []RecipeLine        `json:"recipe"`
 	PieceMaterials []PieceMaterialLine `json:"piece_materials"`
+}
+
+// ColourLine is one colour of a colourway palette (1.1): a Pantone code or a free label, the hex a
+// screen preview only.
+type ColourLine struct {
+	Label         string `json:"label,omitempty"`
+	Hex           string `json:"hex,omitempty"`
+	Pantone       string `json:"pantone,omitempty"`
+	PantoneSystem string `json:"pantone_system,omitempty"`
+}
+
+// Token is the SKU colour token the payload's colourway carried: its sku_color_token, or — in a
+// 1.0 archive, which has none — its color_code, which is what the token was when that archive was
+// written. Verbatim; the caller normalises.
+func (p ColorwayPayload) Token() string {
+	if strings.TrimSpace(p.SkuColorToken) != "" {
+		return p.SkuColorToken
+	}
+	return p.ColorCode
+}
+
+// ColorwayRef names one colourway in a report — the commit's colorways_not_applied line and every
+// line the «create colourways from archive» press writes about it — so both sides MUST build it
+// here: a second press finds what the first one said by comparing these strings.
+//
+// `color_code=<family>` while the token is the family (every 1.0 archive, every colourway created
+// before T45), `color_code=<family>,sku_color_token=<token>` when it is not — two colourways of one
+// family are two refs. The separator is a COMMA on purpose: a line about one row of a colour is its
+// ref plus a SPACE (` bom_line_key=…`), so the ref of `color_code=BLK` must never be a
+// space-prefix of another colour's. Verbatim from the payload, never normalised, because the
+// commit's own line is built from the same bytes.
+func ColorwayRef(p ColorwayPayload) string {
+	ref := "color_code=" + p.ColorCode
+	if token := strings.TrimSpace(p.SkuColorToken); token != "" &&
+		!strings.EqualFold(token, strings.TrimSpace(p.ColorCode)) {
+		ref += ",sku_color_token=" + p.SkuColorToken
+	}
+	return ref
 }
 
 // RecipeLine is one row of a colourway's material recipe. It addresses the card by the stable

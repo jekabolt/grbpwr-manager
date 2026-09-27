@@ -469,8 +469,8 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"on this report to build them as drafts with their recipes, or create them by hand — the " +
 			"archive's colour list is in the report for reference."},
 	ReasonColorwayExists: {StatusDegraded,
-		"This card already has a colourway of that colour, so nothing was created and its recipe was " +
-			"left alone. Nothing to do unless you WANT the archive's recipe on it — in that case " +
+		"This card already has this colourway — the same SKU colour token — so nothing was created " +
+			"and its recipe was left alone. Nothing to do unless you WANT the archive's recipe on it — in that case " +
 			"compare the two by hand; a button that overwrote a colourway somebody is working on " +
 			"would be the worse of the two mistakes."},
 	ReasonColorwayNotCreated: {StatusSkipped,
@@ -495,6 +495,12 @@ var reasonGuide = map[Reason]reasonGuidance{
 	ReasonNormMarkerLost: {StatusDegraded,
 		"The norm stands, the marker stamp behind it does not. Re-run the marker on this card if you " +
 			"need the geometry the norm came from."},
+
+	ReasonLanguageUnknown: {StatusDegraded,
+		"The colourway landed with its name; this one translation of it did not, because this base's " +
+			"language dictionary has no such language. Add the language if the storefront should " +
+			"speak it, then type the translation on the colourway by hand — pressing «create " +
+			"colourways from archive» again does not revisit a colourway it already created."},
 
 	ReasonStyleNumberTaken: {StatusDegraded,
 		"The style number from the archive is already in use here, so the card landed under a " +

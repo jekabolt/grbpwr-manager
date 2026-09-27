@@ -1,4 +1,4 @@
-# GRBPWR tech-card archive — format v1.0
+# GRBPWR tech-card archive — format v1.1
 
 The single source of truth for the tech-card ZIP: what an export writes and what an import is
 allowed to assume. Both sides read THIS file; `format.go` is its Go transcription and
@@ -87,7 +87,7 @@ top-level JSON files.
 ```json
 {
   "format": "grbpwr-techcard-archive",
-  "format_version": "1.0",
+  "format_version": "1.1",
   "exported_at": "2026-08-25T14:00:00Z",
   "exported_by": "im",
   "source": {
@@ -157,7 +157,12 @@ top-level JSON files.
 
 ## 3. Version and compatibility
 
-`format_version` is `"MAJOR.MINOR"`; v1 is `"1.0"`.
+`format_version` is `"MAJOR.MINOR"`; the current one is `"1.1"`.
+
+| version | what it added |
+| --- | --- |
+| `1.0` | the format |
+| `1.1` | T45 (27.09): a colourway's own identity in `colorways.json` — `sku_color_token`, `name`, `name_i18n`, `colours` (§5.3) |
 
 * **MAJOR mismatch = refusal of the whole import**, with words saying the archive is newer or
   older than this server. A MAJOR bump is what renaming a field, changing its meaning, or moving a
@@ -424,7 +429,14 @@ lost with nothing put in their place:
 [
   {
     "color_code": "BLK",
-    "base_sku": "GRB-SS26-014-BLK",
+    "sku_color_token": "BKW",
+    "name": "Black and White",
+    "name_i18n": {"fr": "Noir et blanc", "de": "Schwarz-Weiß"},
+    "colours": [
+      {"label": "black", "hex": "#2B2C30", "pantone": "19-4005", "pantone_system": "TCX"},
+      {"label": "white", "hex": "#F4F5F0"}
+    ],
+    "base_sku": "GRB-SS26-014-BKW",
     "recipe": [
       {
         "bom_line_key": "01J8ZC4Q0FQ8M6R0K2",
@@ -453,6 +465,24 @@ lost with nothing put in their place:
 ]
 ```
 
+* **Identity (1.1, T45).** `color_code` is the colourway's dictionary FAMILY — the filter tag;
+  two colourways of one style may share it. `sku_color_token` is its SKU colour segment: minted
+  once on the source, never changed, unique per style. The press restores the token VERBATIM
+  (never re-mints it), and a token the card already holds is `colorway_exists`: the colourway is
+  on the card. The family is validated separately, against THIS base's colour dictionary
+  (`colorway_not_created` when it is not there). An archive without `sku_color_token` — every 1.0
+  archive — reads as it always did: its `color_code` was the token then.
+* A colourway's lines in the report are keyed by `color_code=<family>` while the token is the
+  family, and by `color_code=<family>,sku_color_token=<token>` when it is not; lines about one of
+  its rows add ` <key>=…` after a space. The commit and the press build the same string.
+* `name` is the colourway's own name and `name_i18n` its translations, keyed by LANGUAGE CODE
+  (a language id means nothing in another base). A translation into a language this base does not
+  have is dropped with `language_unknown`; the colourway lands with everything else.
+* `colours` is the palette, the main colour first: 1 to 8 colours, each a Pantone code or a free
+  label, `hex` a preview only. A palette colourway carries its own name — a palette that arrives
+  without one, or breaks those rules, is not usable: it is dropped (`archive_row_invalid`) and the
+  colourway lands without it. The palette is not applied to the recipe's slots; the recipe row's
+  own `color` / `pantone` travel as they are.
 * Rows address the card by the stable `line_key` family, which travels verbatim and is valid on
   the imported card without any remap.
 * A row with a `piece_line_key` is a **material assignment** («деталь X кроится из артикула Y»),
@@ -678,12 +708,13 @@ explanation and the report action text.
 | `category_unknown` | the category path does not resolve — the card lands without a category |
 | `assembly_component_not_found` | the assembly component style number is not in the target base |
 | `colorways_not_applied` | colourways travelled as reference and were not created — the explicit «create colourways from archive» action builds them later |
-| `colorway_exists` | the card already carries a colourway of that colour — nothing was created and the standing recipe was left alone |
+| `colorway_exists` | the card already carries that colourway — the same SKU colour token (§5.3) — nothing was created and the standing recipe was left alone |
 | `colorway_not_created` | the draft colourway could not be created here at all — commonly the colour code is not in this base's colour dictionary; also an ARCHIVED colourway already holding the code, and a write the database went on refusing under contention |
 | `colorway_pin_lost` | the recipe row's material pin could not be re-resolved — the norm and the placement landed, the row takes the BOM line's own article |
 | `composition_not_derived` | the structured fibre breakdown travelled and was not written — it is derived here from the card's own fabric lines on every save |
 | `wastage_claim_degraded` | a wastage/consumption claim lost its provenance and reads as manual |
 | `norm_marker_lost` | the norm's marker stamp could not be re-sewn — the norm stands, the stamp does not |
+| `language_unknown` | a colourway name's translation is keyed by a language this base does not have — that translation is dropped (EXPORT side: a translation whose language the dictionary could not name) |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
@@ -695,10 +726,12 @@ which is the only question a reason code exists to answer:
 
 1. **This side is missing a reference** — `material_not_found`, `material_ambiguous`,
    `material_unit_mismatch`, `size_unknown`, `measurement_unknown`, `work_token_unknown`,
-   `category_unknown`, `assembly_component_not_found`, `norm_marker_lost`, `colorway_not_created`.
-   Closed HERE: add the article, the size, the measurement, the work, the category, the component,
-   the colour — or re-run the marker — and the card is whole. Importing the same archive again after
-   that finishes the job (for the colourways, pressing their button again).
+   `category_unknown`, `assembly_component_not_found`, `norm_marker_lost`, `colorway_not_created`,
+   `language_unknown`. Closed HERE: add the article, the size, the measurement, the work, the
+   category, the component, the colour, the language — or re-run the marker — and the card is
+   whole. Importing the same archive again after that finishes the job (for the colourways,
+   pressing their button again — except a dropped translation: the button does not revisit a
+   colourway it created, so that one is typed by hand).
 2. **The archive did not bring it** — `media_missing`, `media_object_missing`, `pattern_invalid`,
    `archive_row_invalid`, `colorway_pin_lost`. Nothing on this side closes any of them: the bytes
    never travelled, or travelled broken, or the row was already unusable when it was written, or the

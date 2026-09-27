@@ -77,13 +77,17 @@ const (
 
 	// ReasonColorwaysNotApplied — colourways travelled as reference and were not created.
 	ReasonColorwaysNotApplied Reason = "colorways_not_applied"
-	// ReasonColorwayExists — the card ALREADY carries a colourway of that colour, so the archive's
-	// one was not created and its recipe was not written over the standing one.
+	// ReasonColorwayExists — the card ALREADY carries that colourway, so the archive's one was not
+	// created and its recipe was not written over the standing one. «That colourway» is its SKU
+	// colour TOKEN (T45): the identity UNIQUE(style_id, sku_color_token) keeps, restored verbatim by
+	// the press. Its dictionary family is not an identity — two colourways of one style may share
+	// one — so a card holding the family under another token does not make the archive's colourway
+	// «exist». A 1.0 archive names no token; its color_code was the token then.
 	//
 	// This is what makes the «create colourways from archive» button idempotent, and it is a
-	// DEGRADATION rather than a skip on purpose: the colour IS on the card, so telling the operator
-	// «the row is not there» would send them to create a duplicate the UNIQUE(style_id, color_code)
-	// would refuse anyway. What is missing is only THIS archive's recipe for it — which nobody may
+	// DEGRADATION rather than a skip on purpose: the colourway IS on the card, so telling the
+	// operator «the row is not there» would send them to create a duplicate the token unique would
+	// refuse anyway. What is missing is only THIS archive's recipe for it — which nobody may
 	// silently write over a colourway somebody has already been working on.
 	ReasonColorwayExists Reason = "colorway_exists"
 	// ReasonColorwayNotCreated — the draft colourway could not be created in this base at all, so
@@ -134,6 +138,20 @@ const (
 	// ReasonNormMarkerLost — the norm's marker stamp could not be re-sewn: the norm stands, the
 	// stamp does not.
 	ReasonNormMarkerLost Reason = "norm_marker_lost"
+
+	// ReasonLanguageUnknown — a colourway name's translation is keyed by a language this base's
+	// language dictionary does not carry (1.1: translations travel by language CODE), so that one
+	// translation was dropped and the colourway landed with its name and every other translation.
+	// On the EXPORT side: a translation whose language id the dictionary could not name, so it did
+	// not travel at all.
+	//
+	// Its own code and not archive_row_invalid, whose contract is «the row was already broken when
+	// it was written» and sends the operator to the SOURCE: nothing is wrong with the archive's
+	// translation, this base simply has no such language. And not size_unknown or
+	// measurement_unknown, whose action texts send them to dictionaries that are in perfect order.
+	// It is closed HERE — add the language, then type the translation on the colourway by hand:
+	// pressing the button again does not revisit a colourway it already created.
+	ReasonLanguageUnknown Reason = "language_unknown"
 
 	// ReasonStyleNumberTaken — the style number already exists in the target base.
 	ReasonStyleNumberTaken Reason = "style_number_taken"

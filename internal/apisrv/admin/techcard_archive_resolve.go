@@ -1478,13 +1478,30 @@ func (r *tcimpResolver) resolveColorways() error {
 	r.out.ColorwaysRaw = json.RawMessage(raw)
 
 	for _, c := range payloads {
-		r.hole(techcardarchive.EntityColorway, fmt.Sprintf("color_code=%s", c.ColorCode),
+		// The ref is the press's too (techcardarchive.ColorwayRef): a second press finds what this
+		// line said by comparing the two strings.
+		r.hole(techcardarchive.EntityColorway, techcardarchive.ColorwayRef(c),
 			techcardarchive.StatusSkipped, techcardarchive.ReasonColorwaysNotApplied,
 			fmt.Sprintf("the source card's colourway %q (%d recipe rows) travelled as reference only; "+
-				"create it here and apply the archive's recipe when you need it", c.ColorCode, len(c.Recipe)))
+				"create it here and apply the archive's recipe when you need it", tcimpColourwayLabel(c), len(c.Recipe)))
 	}
 	r.out.Counters.AddSkipped(techcardarchive.EntityColorway, len(payloads))
 	return nil
+}
+
+// tcimpColourwayLabel is how a report sentence names one archived colourway: its name when it has
+// one, else its SKU colour token (a 1.0 archive: its colour code), with the family beside a token
+// that is not the family.
+func tcimpColourwayLabel(c techcardarchive.ColorwayPayload) string {
+	token := strings.TrimSpace(c.Token())
+	label := token
+	if !strings.EqualFold(token, strings.TrimSpace(c.ColorCode)) {
+		label = fmt.Sprintf("%s, %s family", token, c.ColorCode)
+	}
+	if name := strings.TrimSpace(c.Name); name != "" {
+		return fmt.Sprintf("%s (%s)", name, label)
+	}
+	return label
 }
 
 // ────────────────────────────── 11. markers ──────────────────────────────
