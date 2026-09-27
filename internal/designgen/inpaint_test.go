@@ -118,7 +118,8 @@ func TestTheInpaintCompositeCHANGES_ONLY_THE_PAINT(t *testing.T) {
 	require.Len(t, job.References, 1, "the mask is never a reference")
 	require.True(t, strings.HasPrefix(job.InpaintMask, "data:image/png;base64,"))
 	require.Equal(t, image.Rect(0, 0, 64, 64), job.Inpaint.Rect, "a 64 px picture gives its whole side")
-	require.True(t, job.Inpaint.EncodePNG, "a PNG source composites into a PNG")
+	require.Equal(t, image.Pt(64, 64), job.Inpaint.Crop, "the size the crop travels at")
+	require.True(t, strings.HasPrefix(job.References[0], "data:image/png;base64,"), "the crop is a lossless PNG")
 
 	answer := solidPNG(t, 64, 64, color.NRGBA{R: 255, A: 255})
 	prov := &fakeProvider{name: providerNameFalFill, out: &Outcome{

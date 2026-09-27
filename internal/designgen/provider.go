@@ -146,6 +146,9 @@ type Job struct {
 	// requested_outputs); invalid when the row carries no estimate. The fal collect compares the
 	// booked charge with it before saying the reservation was short (G-02 r2, Codex 5).
 	ThreedReservedUSD decimal.NullDecimal
+	// RouteReservedUSD — the same figure for an extend / inpaint run (one output): what the door
+	// reserved. The fal collect compares the booked charge with it (G-03, Codex 5 + 10).
+	RouteReservedUSD decimal.NullDecimal
 
 	// Extend is an extend run's plan (kind=extend, PLAYGROUND phase 3), frozen at build time BEFORE
 	// the money: the source size after the 3 MP cap, the canvas, where the source sits in it, the

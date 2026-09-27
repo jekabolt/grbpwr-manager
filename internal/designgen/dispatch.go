@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -58,14 +59,29 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// expression, asked twice — never two expressions.
 	prov, err := w.providers.preflight(w.sink, run.Kind)
 	if err != nil {
+		// ⚠ A PAID JOB IS NOT DISCARDED BECAUSE ITS ROUTE IS OFF RIGHT NOW (G-03, Codex 2). The
+		// refusal above is terminal and releases the reserve — right for a run that never paid, wrong
+		// for one whose submit fal already accepted: FAL_KEY removed for an hour would throw away
+		// work that is bought and collectable for free. So the attempt history is read first; an
+		// accepted id turns the refusal into a retryable wait (the store's round ceiling closes it if
+		// the route never returns), and an unreadable history abandons the pass, as below.
+		if full, gerr := w.store.GetRun(ctx, run.Id); gerr != nil {
+			return w.abandon(ctx, run, fmt.Errorf("read attempts before refusing the route: %w", gerr))
+		} else if full != nil {
+			if id := acceptedRequestID(full.Attempts); id != "" {
+				return w.failRun(ctx, run, token, fmt.Errorf("%w: request %s is paid and waits: %v",
+					errPaidCollectBlocked, id, err))
+			}
+		}
 		return w.failRun(ctx, run, token, err)
 	}
 
 	// The SAME table the door prices against and the band advertises (app.go SetDesignEngines):
-	// default slug + the B-16 flags. A frozen flagged slug the flags no longer list is still read off
-	// the catalogue (applyImageOptions), so a flag going off never re-routes a priced run.
-	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind),
-		EngineTable(w.c.ImageDefaultModel, w.c.EngineFlags()))
+	// default slug + the B-16 flags. A frozen flagged slug the flags no longer list is read off the
+	// catalogue (applyImageOptions) for its dial — and then REFUSED before any money below
+	// (engineOffAtSubmit): the flag is what the owner turns off to stop spending on that engine.
+	engines := EngineTable(w.c.ImageDefaultModel, w.c.EngineFlags())
+	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind), engines)
 	if err != nil {
 		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
 		return w.failRun(ctx, run, token, err)
@@ -93,6 +109,21 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		}
 		if full != nil {
 			pendingID = acceptedRequestID(full.Attempts)
+			// ⚠ AN EARLIER SUBMIT THAT NEVER CLOSED IS A POSSIBLE PURCHASE (G-03, Codex 1a). A
+			// `dispatching` attempt with no finished_at and no accepted id before it means a pass died
+			// between StartAttempt and the write that closes it — before the POST, during it, or after
+			// fal accepted it. Nobody can say which, and fal takes no idempotency key, so a fresh
+			// submit here could buy the job a second time against the same reservation. Fail closed.
+			if pendingID == "" {
+				if open, ok := unresolvedSubmit(full.Attempts); ok {
+					cause := fmt.Errorf("%w: attempt %d on %s opened at %s and never closed — the job may "+
+						"have been queued and billed; reconcile it with the provider before starting it again",
+						errUnresolvedSubmit, open.AttemptNo, open.Provider,
+						open.StartedAt.UTC().Format(time.RFC3339))
+					w.finishAttempt(ctx, run, open.AttemptNo, nil, cause, entity.DesignAttemptUnknown)
+					return w.failRun(ctx, run, token, cause)
+				}
+			}
 		}
 	}
 
@@ -144,6 +175,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		if err := w.threedUnreadAtSubmit(run, prov); err != nil {
 			return w.failRun(ctx, run, token, err)
 		}
+		// …and a flagged engine whose flag went off after the door froze the run is not paid for.
+		if err := engineOffAtSubmit(job, engines); err != nil {
+			return w.failRun(ctx, run, token, err)
+		}
 		if err := w.store.RecordRunPrompt(ctx, run.Id, token, recordedPrompt(prov, job)); err != nil {
 			return w.abandon(ctx, run, err)
 		}
@@ -169,9 +204,20 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 			//
 			// BEYOND CANCELLATION, like every other write that follows a payment: this id IS the
 			// resume, and losing it to an expired pass deadline means buying the model again.
+			//
+			// ⚠ AND IT IS A REQUIRED HANDOFF, NOT A BEST-EFFORT LOG LINE (G-03, Codex 1a). Were the
+			// write to fail and the pass carry on with the id in memory, a collect that then timed out
+			// (retryable) would hand the next pickup a run with no accepted id — and it would submit,
+			// that is BUY, again. So a failed write fails the pass CLOSED: terminal, the id in
+			// last_error for reconciliation. Should FailRun fail too, the attempt row stays open and
+			// the next pickup refuses it (unresolvedSubmit) — closed either way.
 			actx, acancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
-			w.finishAttempt(actx, run, att.AttemptNo, out, nil, entity.DesignAttemptAccepted)
-			acancel()
+			defer acancel()
+			if ferr := w.recordAttempt(actx, run, att.AttemptNo, out, nil, entity.DesignAttemptAccepted); ferr != nil {
+				return w.failRun(actx, run, token, fmt.Errorf("%w: %s accepted request %s and the attempt could "+
+					"not record it (%v) — the job may be running and billed; reconcile it with the provider",
+					errAcceptedNotRecorded, prov.Name(), out.RequestID, ferr))
+			}
 			pendingID = out.RequestID
 		} else {
 			return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
@@ -446,8 +492,14 @@ func (w *Worker) publish(ctx context.Context, run entity.DesignRun, out *Outcome
 
 // finishAttempt writes the money. Its failure is LOUD BUT NOT FATAL: the picture is already bought
 // and, further down, filed, and refusing to file it because the ledger write failed would turn one
-// lost number into one lost generation.
+// lost number into one lost generation. (The ONE write that is fatal — an accepted id — calls
+// recordAttempt itself; see execute.)
 func (w *Worker) finishAttempt(ctx context.Context, run entity.DesignRun, attemptNo int, out *Outcome, callErr error, state string) {
+	_ = w.recordAttempt(ctx, run, attemptNo, out, callErr, state)
+}
+
+// recordAttempt closes one attempt row and returns the store's answer (logged as well).
+func (w *Worker) recordAttempt(ctx context.Context, run entity.DesignRun, attemptNo int, out *Outcome, callErr error, state string) error {
 	req := entity.DesignAttemptFinish{
 		RunId:     run.Id,
 		AttemptNo: attemptNo,
@@ -465,7 +517,9 @@ func (w *Worker) finishAttempt(ctx context.Context, run entity.DesignRun, attemp
 		slog.Default().ErrorContext(ctx, "failed to record the money of a design attempt",
 			slog.Int("run_id", run.Id), slog.Int("attempt_no", attemptNo),
 			slog.String("state", state), slog.String("err", err.Error()))
+		return err
 	}
+	return nil
 }
 
 // failRun writes the failure down, letting the store decide the backoff.
@@ -535,6 +589,50 @@ func (w *Worker) sweep(ctx context.Context, minted []MintedMedia) {
 	for _, m := range minted {
 		w.sink.Drop(ctx, m)
 	}
+}
+
+// unresolvedSubmit finds an attempt that was opened and never closed: `dispatching`, no finished_at.
+// Read only when no accepted id exists — after an accepted submit, an open row is a collect that died
+// (free, resumed by the id), never a purchase.
+func unresolvedSubmit(attempts []entity.DesignRunAttempt) (entity.DesignRunAttempt, bool) {
+	for i := len(attempts) - 1; i >= 0; i-- {
+		a := attempts[i]
+		if a.State == entity.DesignAttemptDispatching && !a.FinishedAt.Valid {
+			return a, true
+		}
+	}
+	return entity.DesignRunAttempt{}, false
+}
+
+// engineOffAtSubmit — the frozen engine is a flagged row (Gemini / Seedream) that this deployment's
+// table no longer lists: its flag went off between the door and the pickup (G-03, Codex 6). The
+// flag is the owner's spend switch, so a queued run is refused here, before RecordRunPrompt and
+// StartAttempt — free and terminal — rather than paid for on a row nobody may start any more. A GPT
+// row, or a slug the catalogue does not know, is not this function's business (the door froze it and
+// applyImageOptions sends it verbatim).
+func engineOffAtSubmit(job Job, table []Engine) error {
+	slug := strings.TrimSpace(job.Model)
+	if slug == "" {
+		return nil
+	}
+	if _, listed := FindEngine(table, slug); listed {
+		return nil
+	}
+	e, known := catalogueEngine(slug)
+	if !known {
+		return nil
+	}
+	flag := ""
+	switch e.Slug {
+	case EngineGemini3Pro:
+		flag = EnvEngineGemini
+	case EngineSeedream5Pro:
+		flag = EnvEngineSeedream
+	default:
+		return nil
+	}
+	return fmt.Errorf("%w: %s (%s) was accepted while %s was on, and it is off now. Nothing was sent and "+
+		"nothing was charged", errEngineSwitchedOff, e.Label, e.Slug, flag)
 }
 
 // acceptedRequestID finds the newest attempt that was ACCEPTED by an asynchronous provider and

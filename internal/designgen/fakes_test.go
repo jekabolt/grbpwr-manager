@@ -26,16 +26,18 @@ type fakeStore struct {
 	getRun    *entity.DesignRun
 	getRunErr error
 
-	started    []entity.DesignAttemptStart
-	startErr   error
-	nextNo     int
-	finished   []entity.DesignAttemptFinish
-	finishErr  error
-	completed  []entity.DesignRunComplete
-	completeAs *entity.DesignRun
-	completeEr error
-	failed     []entity.DesignRunFail
-	failErr    error
+	started   []entity.DesignAttemptStart
+	startErr  error
+	nextNo    int
+	finished  []entity.DesignAttemptFinish
+	finishErr error
+	// finishErrOn — when set, only a FinishAttempt closing in this state fails with finishErr.
+	finishErrOn string
+	completed   []entity.DesignRunComplete
+	completeAs  *entity.DesignRun
+	completeEr  error
+	failed      []entity.DesignRunFail
+	failErr     error
 
 	// recordedPrompts is what RecordRunPrompt was handed; events is the ORDER the writing verbs
 	// were called in — the record-then-spend probes assert on it.
@@ -89,6 +91,9 @@ func (f *fakeStore) FinishAttempt(_ context.Context, req entity.DesignAttemptFin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.finished = append(f.finished, req)
+	if f.finishErrOn != "" && req.State != f.finishErrOn {
+		return nil
+	}
 	return f.finishErr
 }
 

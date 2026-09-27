@@ -363,10 +363,10 @@ func TestThePhase3CeilingsCOVER_THE_PUBLISHED_PRICE(t *testing.T) {
 	}
 }
 
-// TestAFrozenFlaggedEngineREACHES_THE_JOB — the worker's table is built WITHOUT flags (dispatch.go,
-// buildJob), yet a Gemini / Seedream run the door froze is sent its own resolution word and no quality
-// (engineCatalogue). MUTATION (measured red): drop the catalogueEngine fallback in applyImageOptions —
-// the job then carries Quality "medium" and no resolution.
+// TestAFrozenFlaggedEngineREACHES_THE_JOB — a Gemini / Seedream run the door froze is sent its own
+// resolution word and no quality while its flag is ON at the pickup (G-03, Codex 6: a flag that is off
+// at the pickup refuses the run — TestAFlagTurnedOffSTOPS_QUEUED_SPEND). MUTATION (measured red): drop
+// the resolution branch of applyImageOptions — the job then carries Quality "medium" and no resolution.
 func TestAFrozenFlaggedEngineREACHES_THE_JOB(t *testing.T) {
 	for _, c := range []struct {
 		params, model, resolution string
@@ -383,7 +383,7 @@ func TestAFrozenFlaggedEngineREACHES_THE_JOB(t *testing.T) {
 			r.Params = entity.RawJSON(c.params)
 			img := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
 			w := testWorker(&fakeStore{}, nil, newFakeSink(ContentTypePNG), Providers{Image: img})
-			require.Equal(t, EngineFlags{}, w.c.EngineFlags(), "the worker under test lists no flagged row")
+			w.c.EngineGemini, w.c.EngineSeedream = true, true
 			require.NoError(t, w.execute(context.Background(), r, "tok"))
 			require.Len(t, img.calls, 1)
 			j := img.calls[0]

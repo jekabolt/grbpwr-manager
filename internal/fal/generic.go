@@ -123,7 +123,7 @@ func (c *Client) SubmitJSON(ctx context.Context, model string, input any) (strin
 	id := strings.TrimSpace(sub.RequestID)
 	if id == "" {
 		// PAID AND LOST: the submit was accepted, and nothing identifies what it bought.
-		return "", fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
+		return "", submitLost()
 	}
 	c.checkQueuePath(ctx, model, id, sub.StatusURL)
 	return id, nil
@@ -265,12 +265,20 @@ func (c *Client) collectFile(ctx context.Context, model, requestID, base string,
 	var body json.RawMessage
 	var hdr http.Header
 	if err := c.callJSON(ctx, http.MethodGet, base, nil, &body, &hdr); err != nil {
-		// A COMPLETED request whose result the provider refuses to serve: terminal and possibly
-		// billed; the charge cannot be read from a body we did not get.
-		return nil, err
+		if hdr == nil {
+			// A COMPLETED request whose result the provider refuses to serve (non-2xx): terminal and
+			// possibly billed; no charge header came with the refusal.
+			return nil, err
+		}
+		// ⚠ A 2xx WHOSE BODY IS OVER THE CAP OR NOT JSON (G-03, Codex 3): the job was made and billed,
+		// and the charge travelled in the headers callJSON had already copied before reading the
+		// body. It rides the error — the units fal named, or (no header) the one assumed unit flagged
+		// Assumed so the pricing side books its conservative ceiling instead of a guess.
+		units, assumed := billableUnits(hdr)
+		return nil, chargedAssumed(err, units, assumed, requestID, model)
 	}
 	units, assumed := billableUnits(hdr)
-	charged := func(err error) error { return chargedWith(err, units, requestID, model) }
+	charged := func(err error) error { return chargedAssumed(err, units, assumed, requestID, model) }
 
 	link, contentType, err := pick(body)
 	if err != nil {

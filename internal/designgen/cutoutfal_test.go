@@ -333,7 +333,7 @@ func TestACutOutWithAlphaIsDELIVERED_AND_PRICED_AT_ITS_OWN_RATE(t *testing.T) {
 	require.False(t, out.Pending, "the COLLECT delivers; a pending outcome here would send the "+
 		"dispatcher back for a second lookup of a request it already has in its hands")
 
-	require.Equal(t, "cut-77", out.RequestID)
+	require.Equal(t, fal.DefaultModelCutout+"#cut-77", out.RequestID, "the locator: the slug it was queued under, and the id (G-03)")
 	require.Equal(t, fal.DefaultModelCutout, out.Model)
 
 	// ⚠ ЦЕНА ПО СВОЕМУ ТАРИФУ. Стенд настроен с двумя разными ставками именно для того, чтобы
@@ -571,7 +571,7 @@ func TestABilledCutoutFailureCARRIES_ITS_MONEY(t *testing.T) {
 	require.Equal(t, "0.09", out.Price.Decimal.String(), "3 units at FAL_UNIT_USD_CUTOUT=0.03")
 	// ⚠ И ИДЕНТИФИКАТОР ЗАПРОСА ТОЖЕ: маршрут синхронный, снаружи вызова id не существует, а
 	// списание в счёте fal иначе не с чем сопоставить.
-	require.Equal(t, "cut-77", out.RequestID)
+	require.Equal(t, fal.DefaultModelCutout+"#cut-77", out.RequestID)
 
 	// The verdict: paid, nothing to show, do not repeat.
 	require.False(t, classify(err).Retryable)
@@ -706,7 +706,7 @@ func TestACutoutIsNOT_BOUGHT_TWICE_AFTER_A_LOST_PASS(t *testing.T) {
 			accepted = f.ProviderRequestId
 		}
 	}
-	require.Equal(t, "cut-77", accepted,
+	require.Equal(t, fal.DefaultModelCutout+"#cut-77", accepted,
 		"попытка обязана закрыться `accepted` С ИДЕНТИФИКАТОРОМ: это единственный след оплаченного "+
 			"задания, и без него следующий проход начинает с нуля")
 

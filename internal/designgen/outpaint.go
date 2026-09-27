@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
@@ -90,10 +91,9 @@ type ExtendPlan struct {
 	ExpandTop, ExpandBottom, ExpandLeft, ExpandRight int
 	// Scale is Source / Original (1 = untouched: the stored url travels, nothing is re-encoded).
 	Scale float64
-	// KeepAlpha: the source carries real transparency. EncodePNG: the composite is a PNG (alpha, or a
-	// PNG source — so a PNG original's pixels come back byte-exact); otherwise JPEG q92.
+	// KeepAlpha: the source carries real transparency (said for the record; the composite is a
+	// lossless PNG whatever the source was — see encodeComposite).
 	KeepAlpha bool
-	EncodePNG bool
 }
 
 // ExtendTargetAddsNothing — THE SAME TEST the worker's plan applies, for the door: true when ratio
@@ -135,6 +135,15 @@ func extendGeometry(w, h int, r float64) (cw, ch, left, top int, adds bool) {
 // SOURCE down (never the answer up) until the canvas fits; the loop takes the floor so the product
 // never rounds back over the cap.
 func planExtend(w, h int, r float64) (ExtendPlan, error) {
+	return planExtendUnder(w, h, r, extendMaxPixels)
+}
+
+// planExtendUnder — planExtend under a canvas cap of maxPixels (≤ extendMaxPixels). deriveExtendPlan
+// lowers the cap only when the scaled source would not fit in one inline data URI (G-03, Codex 9).
+func planExtendUnder(w, h int, r float64, maxPixels int) (ExtendPlan, error) {
+	if maxPixels <= 0 || maxPixels > extendMaxPixels {
+		maxPixels = extendMaxPixels
+	}
 	if w <= 0 || h <= 0 || r <= 0 {
 		return ExtendPlan{}, fmt.Errorf("%w: a %d×%d picture has no proportion", errExtendNothingToAdd, w, h)
 	}
@@ -145,7 +154,7 @@ func planExtend(w, h int, r float64) (ExtendPlan, error) {
 			return ExtendPlan{}, fmt.Errorf("%w: the picture is %d×%d and the target is its own proportion",
 				errExtendNothingToAdd, w, h)
 		}
-		if cw*ch <= extendMaxPixels {
+		if cw*ch <= maxPixels {
 			return ExtendPlan{
 				Original:     image.Rect(0, 0, w, h),
 				Source:       image.Rect(0, 0, sw, sh),
@@ -158,13 +167,20 @@ func planExtend(w, h int, r float64) (ExtendPlan, error) {
 				Scale:        float64(sw) / float64(w),
 			}, nil
 		}
-		s := math.Sqrt(float64(extendMaxPixels) / float64(cw*ch))
+		s := math.Sqrt(float64(maxPixels) / float64(cw*ch))
 		sw = int(math.Max(1, math.Floor(float64(sw)*s)))
 		sh = int(math.Max(1, math.Floor(float64(sh)*s)))
 	}
 	return ExtendPlan{}, fmt.Errorf("%w: no canvas under %d pixels could be planned for %d×%d",
-		errFreeformJobTooLarge, extendMaxPixels, w, h)
+		errFreeformJobTooLarge, maxPixels, w, h)
 }
+
+// extendInlineCap — the largest data URI the scaled source may travel as: fal.MaxDataURIBytes. A var
+// only so a probe can reach the shrink loop with a small picture.
+var extendInlineCap = fal.MaxDataURIBytes
+
+// extendShrinkTries — how many times deriveExtendPlan lowers the canvas cap to fit the inline URI.
+const extendShrinkTries = 6
 
 // extendScaledSource — THE downscale, one function for the body and for the composite, so the pixels
 // pasted back are the pixels the model extended around.
@@ -197,7 +213,7 @@ func deriveExtendPlan(ctx context.Context, objects objectFetcher, p runParams, j
 		return fmt.Errorf("designgen: an extend run needs the picture it extends, and this worker has no object store")
 	}
 	srcURL := job.References[0]
-	src, isPNG, err := fetchStoredPicture(ctx, objects, srcURL)
+	src, _, err := fetchStoredPicture(ctx, objects, srcURL)
 	if err != nil {
 		return fmt.Errorf("designgen: cannot read the picture to extend: %w", err)
 	}
@@ -206,37 +222,46 @@ func deriveExtendPlan(ctx context.Context, objects objectFetcher, p runParams, j
 		return fmt.Errorf("%w: it is %d×%d px, and an extend needs at least %d px on each side",
 			errFreeformSourceTooSmall, b.Dx(), b.Dy(), windowMinSource)
 	}
-	plan, err := planExtend(b.Dx(), b.Dy(), r)
-	if err != nil {
-		return err
-	}
-	plan.Original = b
-	plan.SourceURL = srcURL
-	plan.KeepAlpha = freeformSourceHasAlpha(src)
-	plan.EncodePNG = plan.KeepAlpha || isPNG
-	if plan.Source.Size() != b.Size() {
-		scaled := extendScaledSource(src, plan.Source.Size())
-		var buf bytes.Buffer
-		mt := "image/jpeg"
-		if plan.KeepAlpha {
-			mt = "image/png"
-			err = png.Encode(&buf, scaled)
-		} else {
-			err = jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: freeformJPEGQuality})
-		}
+	keepAlpha := freeformSourceHasAlpha(src)
+	// ⚠ THE SCALED SOURCE TRAVELS AS A LOSSLESS PNG, ALPHA OR NOT (G-03, Codex 4). The composite
+	// pastes extendScaledSource(src, plan.Source) back over the canvas; the provider must have extended
+	// around EXACTLY those pixels, and a JPEG of them (the old opaque path) is a different raster — a
+	// seam along the paste line. PNG is bigger, so the canvas cap is lowered until the URI fits
+	// (G-03, Codex 9): the worker never refuses a picture for its inline size before trying smaller,
+	// and whatever it still refuses is refused here, in buildJob, before StartAttempt — free.
+	limit := extendMaxPixels
+	for try := 0; ; try++ {
+		plan, err := planExtendUnder(b.Dx(), b.Dy(), r, limit)
 		if err != nil {
+			return err
+		}
+		plan.Original = b
+		plan.SourceURL = srcURL
+		plan.KeepAlpha = keepAlpha
+		if plan.Source.Size() == b.Size() {
+			// Untouched: the stored url travels, nothing is re-encoded, no base64 in the body.
+			job.Extend = &plan
+			return nil
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, extendScaledSource(src, plan.Source.Size())); err != nil {
 			return fmt.Errorf("designgen: cannot encode the scaled picture to extend: %w", err)
 		}
-		uri := freeformDataURI(mt, buf.Bytes())
-		if len(uri) > fal.MaxDataURIBytes {
-			return fmt.Errorf("%w: the picture to extend is %d bytes of inline data at %d×%d, against a "+
-				"ceiling of %d — use a smaller picture", errFreeformJobTooLarge, len(uri),
-				plan.Source.Dx(), plan.Source.Dy(), fal.MaxDataURIBytes)
+		uri := freeformDataURI("image/png", buf.Bytes())
+		if len(uri) <= extendInlineCap {
+			job.References[0] = uri
+			job.Extend = &plan
+			return nil
 		}
-		job.References[0] = uri
+		if try+1 >= extendShrinkTries {
+			return fmt.Errorf("%w: the picture to extend is still %d bytes of inline data at %d×%d after %d "+
+				"smaller tries, against a ceiling of %d — use a smaller picture. Nothing was sent and nothing "+
+				"was charged", errFreeformJobTooLarge, len(uri), plan.Source.Dx(), plan.Source.Dy(), try+1,
+				extendInlineCap)
+		}
+		// A PNG's size follows its pixel count: lower the canvas by the overshoot, with a margin.
+		limit = int(float64(plan.Canvas.Dx()*plan.Canvas.Dy()) * float64(extendInlineCap) / float64(len(uri)) * 0.9)
 	}
-	job.Extend = &plan
-	return nil
 }
 
 // fetchStoredPicture reads a bucket object by its STORED url (same key rule and byte ceiling as
@@ -297,8 +322,9 @@ func (p falOutpaintProvider) Enabled() bool { return p.c != nil && p.c.Enabled()
 // owner to type a model where a key is missing.
 func (p falOutpaintProvider) MissingCredential() string { return "FAL_KEY is not set" }
 
-// Produces — what the composite may encode (PNG for alpha/PNG sources, JPEG otherwise) and what the
-// provider may return; the pre-flight must be able to store both.
+// Produces — what may be stored: the composite's lossless PNG, its JPEG fallback for a picture too
+// large for a PNG in the bucket (encodeComposite), and whatever the provider returned when the
+// composite could not be made; the pre-flight must be able to store both.
 func (p falOutpaintProvider) Produces() []string { return []string{ContentTypePNG, ContentTypeJPEG} }
 
 // SentPrompt — NOTHING: the outpaint body carries no words (the door refuses `ask` on this kind:
@@ -360,18 +386,21 @@ func (p falOutpaintProvider) Execute(ctx context.Context, job Job) (*Outcome, er
 			fal.ErrBadRequest)
 	}
 	model := p.c.ModelFor(fal.RouteOutpaint)
+	if err := falLocatorFits(model); err != nil {
+		return nil, err
+	}
 	body, err := outpaintBody(model, job.References[0], *job.Extend)
 	if err != nil {
 		return nil, err
 	}
 	id, err := p.c.SubmitJSON(ctx, model, body)
 	if err != nil {
-		if out := chargedRouteOutcome(p.c, fal.RouteOutpaint, err); out != nil {
+		if out := chargedRouteOutcome(p.c, fal.RouteOutpaint, job, err); out != nil {
 			return out, err
 		}
 		return nil, err
 	}
-	return &Outcome{RequestID: id, Model: model, Pending: true}, nil
+	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
 }
 
 // Collect is the FREE half: the wait, the download, the price. The composite is postProcess's.
@@ -393,18 +422,60 @@ func pickAnyImage(body json.RawMessage) (string, string, error) {
 	return fal.PickImage(body)
 }
 
-// collectRouteFile — the shared collect of the generic routes: one file, priced by the route's
-// tariff (CostRouteUSD), the assumption and an over-ceiling charge said out loud.
-func collectRouteFile(ctx context.Context, c *fal.Client, route fal.Route, job Job, requestID string) (*Outcome, error) {
+// ─── THE REQUEST LOCATOR (G-03, Codex 2) ───
+//
+// A fal request is found by TWO facts: the id and the namespace it was queued in (queuePath of the
+// slug it was SUBMITTED to). The attempt row has one column for them — provider_request_id — so the
+// accepted submit stores both, "<slug>#<id>", and the collect polls exactly that slug, whatever
+// FAL_MODEL_OUTPAINT / FAL_MODEL_FILL say by the time it runs (a slug move between the submit and a
+// resume used to poll bria's namespace for a flux request and lose the paid file). The collect row
+// reports the same locator, so chargeAlreadyBooked keys one charge by one string. A bare id (a row
+// written before this) is read against the current slug, as before.
+
+const falLocatorSep = "#"
+
+// falLocatorMaxSlug — the longest slug a locator carries: provider_request_id is VARCHAR(128) and a
+// fal request id is a 36-character UUID. A longer FAL_MODEL_* is refused before the submit (free),
+// never discovered as a failed accepted-write after it.
+const falLocatorMaxSlug = 80
+
+func falLocator(model, id string) string { return model + falLocatorSep + id }
+
+// splitFalLocator — (slug, id); slug "" for a bare id.
+func splitFalLocator(s string) (model, id string) {
+	if i := strings.LastIndex(s, falLocatorSep); i > 0 && i < len(s)-1 {
+		return s[:i], s[i+1:]
+	}
+	return "", s
+}
+
+func falLocatorFits(model string) error {
+	if len(model) > falLocatorMaxSlug {
+		return fmt.Errorf("%w: the slug %q is %d characters, and a request is remembered by slug and id in "+
+			"%d — this route will not submit what it could not resume", fal.ErrBadOption, model, len(model),
+			falLocatorMaxSlug+1+36)
+	}
+	return nil
+}
+
+// collectRouteFile — the shared collect of the generic routes: one file, polled at the slug the job
+// was SUBMITTED to (the locator), priced by the route's tariff (CostRouteUSD), the assumption and a
+// booking over the reservation said out loud.
+func collectRouteFile(ctx context.Context, c *fal.Client, route fal.Route, job Job, locator string) (*Outcome, error) {
+	model, id := splitFalLocator(locator)
+	if model == "" {
+		model = c.ModelFor(route)
+	}
 	var buf bytes.Buffer
-	res, err := c.CollectFile(ctx, c.ModelFor(route), requestID, pickAnyImage, &buf, 0)
+	res, err := c.CollectFile(ctx, model, id, pickAnyImage, &buf, 0)
 	if err != nil {
-		if out := chargedRouteOutcome(c, route, err); out != nil {
+		if out := chargedRouteOutcome(c, route, job, err); out != nil {
+			out.RequestID = locator
 			return out, err
 		}
 		return nil, err
 	}
-	out := &Outcome{RequestID: res.RequestID, Model: res.Model}
+	out := &Outcome{RequestID: locator, Model: res.Model}
 	if usd := c.CostRouteUSD(route, res.BillableUnits); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	}
@@ -414,26 +485,55 @@ func collectRouteFile(ctx context.Context, c *fal.Client, route fal.Route, job J
 			slog.Int("run_id", job.RunID), slog.String("request_id", res.RequestID),
 			slog.String("price_usd", out.Price.Decimal.String()), slog.String("knob", route.UnitUSDEnv()))
 	}
-	if ceiling, ok := c.RouteUnitsCeiling(route); ok && res.BillableUnits > ceiling {
-		slog.Default().ErrorContext(ctx, string(route)+": fal billed more units than the stated ceiling; the "+
-			"reservation was short of this charge",
-			slog.Int("run_id", job.RunID), slog.String("request_id", res.RequestID),
-			slog.Float64("units", res.BillableUnits), slog.Float64("ceiling", ceiling),
-			slog.String("knob", route.UnitsCeilingEnv()))
-	}
+	logRouteChargeOverReserve(ctx, c, route, job, locator, res.BillableUnits, out.Price)
 	raw := buf.Bytes()
 	out.Artifacts = append(out.Artifacts, Artifact{Bytes: raw, ContentType: cutoutContentType(raw)})
 	return out, nil
 }
 
+// logRouteChargeOverReserve — what the collect says when a booking may not fit what the run reserved
+// (G-03, Codex 5 + 10; the G-02 r2 wording of logThreedCeilingBreach). Two claims, and only one of
+// them follows from the units: the door reserves max(the kind's table, tariff × ceiling), so units
+// over FAL_UNITS_CEILING_* say only that the CEILING is wrong (the table may still cover the booking).
+// «The reservation was below its booking» is said — at ERROR — only when the booked money really
+// exceeds the run's own reserve; a provider that drew a bigger canvas than planned lands here too.
+func logRouteChargeOverReserve(ctx context.Context, c *fal.Client, route fal.Route, job Job, locator string,
+	units float64, booked decimal.NullDecimal) {
+	attrs := []any{
+		slog.Int("run_id", job.RunID), slog.String("request_id", locator),
+		slog.Float64("units", units), slog.String("booked_usd", booked.Decimal.String()),
+	}
+	if job.RouteReservedUSD.Valid && booked.Valid && booked.Decimal.GreaterThan(job.RouteReservedUSD.Decimal) {
+		slog.Default().ErrorContext(ctx, string(route)+": the booked charge is above this run's reservation — "+
+			"the reservation was below its booking; raise "+route.UnitsCeilingEnv()+" or check the canvas fal drew",
+			append(attrs, slog.String("reserved_usd", job.RouteReservedUSD.Decimal.String()))...)
+		return
+	}
+	if ceiling, ok := c.RouteUnitsCeiling(route); ok && units > ceiling {
+		slog.Default().WarnContext(ctx, string(route)+": fal billed more units than "+route.UnitsCeilingEnv()+
+			" — raise the ceiling (this run's reservation still covered the booking, or no reservation was recorded)",
+			append(attrs, slog.Float64("ceiling", ceiling))...)
+	}
+}
+
 // chargedRouteOutcome — a billed failure's Outcome, or nil when nobody said what it cost (NULL is not
 // zero; see chargedCutoutOutcome).
-func chargedRouteOutcome(c *fal.Client, route fal.Route, err error) *Outcome {
+//
+// ⚠ AN ASSUMED UNIT IS BOOKED AT THE ROUTE'S CEILING (G-03, Codex 3). A failure after a 2xx result
+// with no billing header carries fal's one assumed unit; under a tariff that is `tariff × 1`, which may
+// be well under what fal really billed for a multi-megapixel job. The conservative number is the one
+// the door reserved per run: the route's own bounded ceiling.
+func chargedRouteOutcome(c *fal.Client, route fal.Route, job Job, err error) *Outcome {
 	var ce *fal.ChargedError
 	if !errors.As(err, &ce) {
 		return nil
 	}
 	usd := c.CostRouteUSD(route, ce.Units)
+	if ce.Assumed {
+		if ceiling, ok := c.RouteCeilingUSD(route); ok && ceiling.GreaterThan(usd) {
+			usd = ceiling
+		}
+	}
 	if !usd.IsPositive() {
 		return nil
 	}
@@ -493,19 +593,38 @@ func compositeExtend(src image.Image, plan ExtendPlan, answer []byte) (Artifact,
 	}
 	sb := source.Bounds()
 	draw.Draw(dst, plan.Source.Add(plan.Offset), source, sb.Min, draw.Src)
+	return encodeComposite(dst)
+}
 
+// encodeComposite — THE STORED FORMAT OF A PHASE-3 COMPOSITE: a lossless PNG, so the source pixels the
+// composite keeps are the source's own DECODED pixels whatever the source's format was (G-03, Codex 4
+// = Fable m-5; the owner's fidelity over file size). Before this a JPEG / WebP source came back as a
+// q92 JPEG — every kept pixel re-encoded, and colours from the new zone bleeding over the mask edge
+// through JPEG's blocks. ONE exception, by size: a PNG over the bucket's verbatim ceiling
+// (bucket.MaxVerbatimImageBytes) would be refused by the upload AFTER the payment, so that picture is
+// stored as JPEG q92 instead (only a large inpaint can reach it — an extend canvas is ≤ 3 MP, i.e. ≤
+// 12 MB of RGBA). The fallback is logged.
+func encodeComposite(dst *image.NRGBA) (Artifact, error) {
 	var buf bytes.Buffer
-	if plan.EncodePNG {
-		if err := png.Encode(&buf, dst); err != nil {
-			return Artifact{}, err
-		}
+	if err := png.Encode(&buf, dst); err != nil {
+		return Artifact{}, err
+	}
+	if buf.Len() <= compositeMaxPNGBytes {
 		return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypePNG}, nil
 	}
+	pngLen := buf.Len()
+	buf.Reset()
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: compositeWindowJPEGQuality}); err != nil {
 		return Artifact{}, err
 	}
+	slog.Default().Warn("a composite is too large for a lossless PNG and is stored as JPEG q92",
+		slog.Int("png_bytes", pngLen), slog.Int("ceiling", compositeMaxPNGBytes),
+		slog.Int("width", dst.Bounds().Dx()), slog.Int("height", dst.Bounds().Dy()))
 	return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypeJPEG}, nil
 }
+
+// compositeMaxPNGBytes — see encodeComposite. A var only so a probe can reach the fallback.
+var compositeMaxPNGBytes = bucket.MaxVerbatimImageBytes
 
 // extendNearSize — a delivered side within max(16 px, 2 %) of the planned one.
 func extendNearSize(got, want int) bool {
@@ -528,8 +647,30 @@ type FalRoute struct {
 	Bounded bool
 	// Unbounded is the sentence the refusal says (the two variables named); '' when Bounded.
 	Unbounded string
-	// Flag is the units-ceiling variable to set.
+	// Flag is the variable to set: the units ceiling, or — Unsupported — the slug.
 	Flag string
+	// Unsupported — the configured slug is not a family this route builds a body for (G-03, Fable
+	// m-1). Bounded is false with it, so the band never advertises the tile, and the door refuses it
+	// as kind_not_available instead of reserving a run every press of which would fail.
+	Unsupported bool
+}
+
+// falRouteSlugSupported — the configured slug is a family whose body was read on the provider's pages.
+func falRouteSlugSupported(r fal.Route, model string) bool {
+	switch r {
+	case fal.RouteOutpaint:
+		return outpaintFamily(model) != ""
+	case fal.RouteFill:
+		return fillFamily(model) != ""
+	}
+	return false
+}
+
+func falRouteSlugs(r fal.Route) []string {
+	if r == fal.RouteOutpaint {
+		return []string{fal.DefaultModelOutpaint, "fal-ai/bria/expand"}
+	}
+	return []string{fal.DefaultModelFill}
 }
 
 // FalRouteOf — the route object of kind extend (outpaint) or inpaint (fill); ok = false for any other.
@@ -546,6 +687,12 @@ func FalRouteOf(c *fal.Client, kind string) (FalRoute, bool) {
 	ceiling, bounded := c.RouteCeilingUSD(r)
 	out := FalRoute{Kind: kind, Route: r, Model: c.ModelFor(r), Ceiling: ceiling, Bounded: bounded,
 		Flag: r.UnitsCeilingEnv()}
+	if !falRouteSlugSupported(r, out.Model) {
+		out.Bounded, out.Unsupported, out.Flag = false, true, r.ModelEnv()
+		out.Unbounded = r.ModelEnv() + " is " + strconv.Quote(out.Model) + ", a slug this route builds no request " +
+			"body for — set it to one of " + strings.Join(falRouteSlugs(r), " | ") + ", or unset it"
+		return out, true
+	}
 	if !bounded {
 		out.Unbounded = r.UnitUSDEnv() + " is set and " + r.UnitsCeilingEnv() + " is not: a run would book " +
 			r.UnitUSDEnv() + " × whatever units fal reports, and no reservation can cover that. Set " +

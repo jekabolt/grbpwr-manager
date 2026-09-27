@@ -250,9 +250,12 @@ func defaultCapable(e Engine) bool {
 //
 // FLAGS (B-16). The Gemini and Seedream rows are listed only while their flag is on; flags are
 // optional so a caller that passes none (buildJob, tests) sees the flags-off table — the fail-closed
-// direction. The worker's dispatch passes Config.EngineFlags(), the same flags app.go hands the door
-// and the band; either way it still reads a frozen flagged slug through engineCatalogue. Several EngineFlags are OR-ed. A flagged row is never the default (defaultCapable):
-// a Gemini / Seedream defaultSlug empties the table whatever the flags say.
+// direction. Several EngineFlags are OR-ed. The worker's dispatch passes Config.EngineFlags(), the
+// same flags app.go hands the door and the band: a frozen flagged slug is still READ through
+// engineCatalogue (its dial), and REFUSED before any money when its flag is off at the pickup
+// (engineOffAtSubmit, G-03 Codex 6 — the flag is the owner's spend switch). A flagged row is never
+// the default (defaultCapable): a Gemini / Seedream defaultSlug empties the table whatever the flags
+// say.
 //
 // A fresh slice on every call: the band puts it on the wire and the door filters it.
 func EngineTable(defaultSlug string, flags ...EngineFlags) []Engine {
@@ -395,9 +398,9 @@ func applyImageOptions(job *Job, o *imageOptions, table []Engine) {
 	ui := strings.TrimSpace(o.Quality)
 	e, known := FindEngine(table, job.Model)
 	if !known {
-		// A flagged row (B-16) the worker's table does not list — built without flags, or the flag
-		// went off after the door froze the run — still has its own dial: read it off the catalogue,
-		// never send a resolution engine the quality word.
+		// A flagged row (B-16) the table does not list (a caller that passed no flags) still has its
+		// own dial: read it off the catalogue, never send a resolution engine the quality word. The
+		// worker refuses such a run before the money when the flag is off (engineOffAtSubmit).
 		e, known = catalogueEngine(job.Model)
 	}
 	if !known {

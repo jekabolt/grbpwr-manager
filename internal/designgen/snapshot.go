@@ -1286,6 +1286,10 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		}
 	}
 
+	if (run.Kind == entity.DesignRunKindExtend || run.Kind == entity.DesignRunKindInpaint) && run.PriceEstimate.Valid {
+		job.RouteReservedUSD = run.PriceEstimate
+	}
+
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
 	// that actually attach, so the media has to be resolved BEFORE the prompt is composed. Both
 	// halves of each pair — the url and the caption — are appended by the SAME iteration of the

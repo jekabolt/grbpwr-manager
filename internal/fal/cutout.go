@@ -203,7 +203,7 @@ func (c *Client) SubmitCutout(ctx context.Context, imageURL string) (string, err
 		// ⚠ ОПЛАЧЕНО И ПОТЕРЯНО. Сабмит принят, значит единицы списаны, а вернуть по нему нечего:
 		// без id ни забрать результат, ни возобновить. Отдельное слово нужно, чтобы этот исход не
 		// читался как обычный отказ транспорта.
-		return "", fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
+		return "", submitLost()
 	}
 	return id, nil
 }
@@ -239,6 +239,27 @@ func (c *Client) CollectCutout(ctx context.Context, requestID string, dst io.Wri
 		return nil, fmt.Errorf("%w: collect was given no request id", ErrBadRequest)
 	}
 	return c.awaitFile(ctx, c.ModelCutout(), requestID, pickCutout, dst, maxCutoutBytes)
+}
+
+// CollectCutoutAt is CollectCutout polled at the slug the request was SUBMITTED to, not today's
+// FAL_MODEL_CUTOUT (G-03, Codex 2: the queue namespace is the slug's, and a slug moved between a paid
+// submit and its resume would poll another model's queue for it). An empty model is CollectCutout.
+func (c *Client) CollectCutoutAt(ctx context.Context, model, requestID string, dst io.Writer) (*CutoutResult, error) {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		return c.CollectCutout(ctx, requestID, dst)
+	}
+	if !c.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	if dst == nil {
+		return nil, errors.New("fal: CollectCutout has nowhere to put the picture")
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, fmt.Errorf("%w: collect was given no request id", ErrBadRequest)
+	}
+	return c.awaitFile(ctx, model, requestID, pickCutout, dst, maxCutoutBytes)
 }
 
 // pickCutout is PickImage under the cut-out's own sentinel: a completed matting request with no url

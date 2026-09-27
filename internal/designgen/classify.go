@@ -36,6 +36,27 @@ var (
 	// door and the pickup. Raised before StartAttempt, so nothing is spent; terminal, because the
 	// frozen params and the configured route give the same answer on every pass.
 	errThreedOptionNotRead = errors.New("designgen: the configured 3D route does not read an option this run states")
+	// errAcceptedNotRecorded — an asynchronous route ACCEPTED a paid submit and the attempt row that
+	// would carry its id could not be written (G-03, Codex 1a). The id lives only in this pass's
+	// memory, so the pass fails closed: terminal, `submit_unconfirmed`, the id in last_error for a
+	// person to reconcile — never «carry on and hope», which leaves the next pickup free to buy the
+	// job again.
+	errAcceptedNotRecorded = errors.New("designgen: a paid submit was accepted and its request id could not be written down")
+	// errUnresolvedSubmit — the pickup found an earlier submit of this asynchronous run that never
+	// closed (`dispatching`, no finished_at) and no accepted id: the pass that sent it died between
+	// the POST and the write. Whether fal queued (and charged) it is unknown, so the run fails closed
+	// instead of submitting a second time (G-03, Codex 1a).
+	errUnresolvedSubmit = errors.New("designgen: an earlier submit of this run never closed; whether it was bought is unknown")
+	// errPaidCollectBlocked — a run whose job is ALREADY BOUGHT (an accepted id on record) cannot be
+	// collected on this pass because its route is off right now (FAL_KEY removed, the route
+	// unwired). The collect is free and the job is paid: this is weather for the run, retryable,
+	// never the terminal «kind not available» that would release the reserve over a paid result
+	// (G-03, Codex 2).
+	errPaidCollectBlocked = errors.New("designgen: a paid job cannot be collected while its route is off")
+	// errEngineSwitchedOff — the frozen engine is a flagged row (Gemini / Seedream) whose flag is off
+	// at the pickup (G-03, Codex 6). Refused before StartAttempt, so nothing is spent; terminal,
+	// the door's own word (`unknown_image_model`).
+	errEngineSwitchedOff = errors.New("designgen: the frozen engine is switched off on this deployment")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -107,6 +128,18 @@ const (
 	// errThreedOptionNotRead). The door's own word for the same fact (entity.DesignErrorCodeOptionNotRead),
 	// said again at the pickup because the configuration can move in between. Free and terminal.
 	CodeOptionNotRead = entity.DesignErrorCodeOptionNotRead
+
+	// CodeSubmitUnconfirmed — A PAID SUBMIT WHOSE OUTCOME IS UNKNOWN (G-03, Codex 1): the request may
+	// have reached the provider and been charged, and nothing on record says so for sure — a transport
+	// failure after the request was written, a 5xx or unreadable 2xx on the submit, an accepted id that
+	// could not be written down, or an earlier submit that never closed. Terminal (a retry could buy the
+	// job twice against one reservation), attempt state `unknown`; last_error carries whatever id is
+	// known. The owner reconciles it with the provider's own dashboard.
+	CodeSubmitUnconfirmed = "submit_unconfirmed"
+
+	// CodeUnknownImageModel — the frozen engine is not on this deployment's table at the pickup (a
+	// B-16 flag went off): the door's own word for the same fact. Free and terminal.
+	CodeUnknownImageModel = entity.DesignErrorCodeUnknownImageModel
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -138,6 +171,18 @@ type verdict struct {
 // store's, and it is a money figure.
 func classify(err error) verdict {
 	switch {
+	// ─── ours, G-03: a PAID job waiting for its route to come back. Retryable, before any attempt
+	// row (the resume is free); the round ceiling in the store closes it if the route never returns.
+	case errors.Is(err, errPaidCollectBlocked):
+		return verdict{Retryable: true, Code: CodeKindNotAvailable, State: entity.DesignAttemptFailed}
+	// ─── ours + fal, G-03: a submit that may have been bought, with nothing on record to resume it
+	// by. FIRST among the provider cases: submitLost also wraps ErrUnexpectedResponse, and a 5xx
+	// would otherwise fall into the retryable default — both would read as «resubmit».
+	case errors.Is(err, errAcceptedNotRecorded), errors.Is(err, errUnresolvedSubmit),
+		errors.Is(err, fal.ErrSubmitUnconfirmed):
+		return verdict{Retryable: false, Code: CodeSubmitUnconfirmed, State: entity.DesignAttemptUnknown}
+	case errors.Is(err, errEngineSwitchedOff):
+		return verdict{Retryable: false, Code: CodeUnknownImageModel, State: entity.DesignAttemptFailed}
 	// ─── ours: DELIVERED, and then the STORE refused to file it. RETRY FORBIDDEN, and this one is
 	// the most expensive of the family to get wrong. The attempt is already recorded as delivered
 	// (the provider was paid before CompleteRun is ever called), so an unclassified refusal here

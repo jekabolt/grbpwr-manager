@@ -203,7 +203,7 @@ func TestTheOutpaintRouteSUBMITS_THEN_COLLECTS_FOR_FREE(t *testing.T) {
 	out, err := prov.Execute(context.Background(), job)
 	require.NoError(t, err)
 	require.True(t, out.Pending)
-	require.Equal(t, "out-1", out.RequestID)
+	require.Equal(t, fal.DefaultModelOutpaint+"#out-1", out.RequestID, "the locator: the slug it was SUBMITTED to, and the id")
 	require.Equal(t, fal.DefaultModelOutpaint, out.Model)
 	require.EqualValues(t, 250, stand.submitted["expand_left"])
 	require.EqualValues(t, 250, stand.submitted["expand_right"])
@@ -316,7 +316,7 @@ func TestAnExtendAnswerOfTheWrongSizeISKEPT_AND_COMPLAINED(t *testing.T) {
 	require.NoError(t, err)
 	plan.SourceURL = "https://cdn.example/m/11.png"
 	plan.Original = src.Bounds()
-	plan.KeepAlpha, plan.EncodePNG = true, true
+	plan.KeepAlpha = true
 
 	w := testWorker(&fakeStore{}, media(11), newFakeSink(ContentTypePNG), Providers{})
 	w.objects = &fakeObjects{byKey: map[string][]byte{"m/11.png": srcBytes}}
@@ -357,10 +357,9 @@ func TestABigExtendSendsTHE_SCALED_SOURCE(t *testing.T) {
 	require.NoError(t, deriveExtendPlan(context.Background(), objs, p, &job))
 	require.NotNil(t, job.Extend)
 	require.Less(t, job.Extend.Scale, 1.0)
-	require.True(t, strings.HasPrefix(job.References[0], "data:image/jpeg;base64,"),
-		"an opaque source travels as a JPEG data URI of the SCALED pixels")
+	require.True(t, strings.HasPrefix(job.References[0], "data:image/png;base64,"),
+		"the SCALED pixels travel as a lossless PNG, opaque or not — the raster the composite pastes (G-03)")
 	require.LessOrEqual(t, len(job.References[0]), fal.MaxDataURIBytes)
-	require.True(t, job.Extend.EncodePNG, "a PNG original composites into a PNG (byte-exact source region)")
 	require.Equal(t, "https://cdn.example/m/11.png", job.Extend.SourceURL, "the composite re-reads the ORIGINAL")
 
 	answer := solidPNG(t, job.Extend.Canvas.Dx(), job.Extend.Canvas.Dy(), color.NRGBA{R: 1, A: 255})

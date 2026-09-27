@@ -83,6 +83,7 @@ func TestGlobalDialStillMovesTheOtherKinds(t *testing.T) {
 func TestTheFlatsTopQualityDoesNotLEAK_INTO_A_RESOLUTION_ENGINE(t *testing.T) {
 	img := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
 	w := testWorker(&fakeStore{}, nil, newFakeSink(ContentTypePNG), Providers{Image: img})
+	w.c.EngineGemini = true // the flag is on at the pickup (off refuses the run: G-03, Codex 6)
 	r := testRun(1, entity.DesignRunKindFlat)
 	r.Params = entity.RawJSON(`{"image":{"model":"google/gemini-3-pro-image","quality":"medium"}}`)
 

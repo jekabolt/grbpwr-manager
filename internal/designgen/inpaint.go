@@ -8,7 +8,6 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"image/jpeg"
 	"image/png"
 	"math"
 	"strings"
@@ -82,9 +81,12 @@ type InpaintPlan struct {
 	Bounds, Rect image.Rectangle
 	// Scale — crop pixels / picture pixels (1 = the crop travels at full resolution).
 	Scale float64
-	// KeepAlpha: the picture carries transparency. EncodePNG: the composite is a PNG (alpha, or a
-	// PNG source — so a PNG original's untouched pixels come back byte-exact); else JPEG q92.
-	KeepAlpha, EncodePNG bool
+	// Crop — the size the crop (and its mask) TRAVELLED at: Rect × Scale. The answer is expected at
+	// this size; one of another size is a drift the composite names instead of hiding (G-03, Codex 5).
+	Crop image.Point
+	// KeepAlpha: the picture carries transparency (for the record; the composite is a lossless PNG
+	// whatever the picture was — encodeComposite).
+	KeepAlpha bool
 }
 
 // MaskPaintedPixels — how many pixels of a mask are painted (luma ≥ MaskThreshold). THE ONE
@@ -175,7 +177,7 @@ func deriveInpaintPlan(ctx context.Context, objects objectFetcher, maskURL strin
 		return fmt.Errorf("designgen: a mask retouch needs the picture and its mask, and this worker has no object store")
 	}
 	srcURL := job.References[0]
-	src, isPNG, err := fetchStoredPicture(ctx, objects, srcURL)
+	src, _, err := fetchStoredPicture(ctx, objects, srcURL)
 	if err != nil {
 		return fmt.Errorf("designgen: cannot read the picture to retouch: %w", err)
 	}
@@ -220,15 +222,12 @@ func deriveInpaintPlan(ctx context.Context, objects objectFetcher, maskURL strin
 		}
 	}
 
+	// ⚠ THE CROP TRAVELS AS A LOSSLESS PNG (G-03, Codex 4): the model paints inside the mask AROUND
+	// these pixels, and a JPEG of them is another raster than the one the composite keeps. ≤ 1 MP of
+	// RGBA is ≤ 4 MB before base64 (≤ 5.4 MB after), under fal.MaxDataURIBytes by construction.
 	var cbuf bytes.Buffer
-	mt := "image/jpeg"
-	if keepAlpha {
-		mt = "image/png"
-		err = png.Encode(&cbuf, crop)
-	} else {
-		err = jpeg.Encode(&cbuf, crop, &jpeg.Options{Quality: freeformJPEGQuality})
-	}
-	if err != nil {
+	const mt = "image/png"
+	if err := png.Encode(&cbuf, crop); err != nil {
 		return fmt.Errorf("designgen: cannot encode the retouch crop: %w", err)
 	}
 	var mbuf bytes.Buffer
@@ -248,8 +247,8 @@ func deriveInpaintPlan(ctx context.Context, objects objectFetcher, maskURL strin
 	job.ReferenceViews = []string{""}
 	job.InpaintMask = maskURI
 	job.Inpaint = &InpaintPlan{
-		SourceURL: srcURL, MaskURL: maskURL, Bounds: b, Rect: rect, Scale: scale,
-		KeepAlpha: keepAlpha, EncodePNG: keepAlpha || isPNG,
+		SourceURL: srcURL, MaskURL: maskURL, Bounds: b, Rect: rect, Scale: scale, Crop: size,
+		KeepAlpha: keepAlpha,
 	}
 	return nil
 }
@@ -275,9 +274,23 @@ func (p falFillProvider) Produces() []string { return []string{ContentTypePNG, C
 // what the provider read.
 func (p falFillProvider) SentPrompt(job Job) string { return job.Prompt }
 
+// fillFamily — the one family whose fill body was read on the provider's page (2026-09-27). Any other
+// FAL_MODEL_FILL is closed at the band and the door (FalRouteOf, G-03 Fable m-1) and refused here,
+// before the submit, as the second lock.
+func fillFamily(model string) string {
+	if strings.HasPrefix(model, "fal-ai/flux-pro/v1/fill") {
+		return "flux"
+	}
+	return ""
+}
+
 // fillBody — https://fal.ai/models/fal-ai/flux-pro/v1/fill/api (read 2026-09-27): prompt,
 // image_url, mask_url (same dimensions), num_images 1, output_format png, safety_tolerance "2".
-func fillBody(job Job) map[string]any {
+func fillBody(model string, job Job) (map[string]any, error) {
+	if fillFamily(model) == "" {
+		return nil, fmt.Errorf("%w: FAL_MODEL_FILL %q is not %s — this route builds no body for a slug it has "+
+			"not read", fal.ErrBadOption, model, fal.DefaultModelFill)
+	}
 	return map[string]any{
 		"prompt":           job.Prompt,
 		"image_url":        job.References[0],
@@ -285,7 +298,7 @@ func fillBody(job Job) map[string]any {
 		"num_images":       1,
 		"output_format":    "png",
 		"safety_tolerance": "2",
-	}
+	}, nil
 }
 
 // Execute SUBMITS the frozen crop and mask with the ask, and returns at once with the request id.
@@ -301,14 +314,21 @@ func (p falFillProvider) Execute(ctx context.Context, job Job) (*Outcome, error)
 			fal.ErrBadRequest)
 	}
 	model := p.c.ModelFor(fal.RouteFill)
-	id, err := p.c.SubmitJSON(ctx, model, fillBody(job))
+	if err := falLocatorFits(model); err != nil {
+		return nil, err
+	}
+	body, err := fillBody(model, job)
 	if err != nil {
-		if out := chargedRouteOutcome(p.c, fal.RouteFill, err); out != nil {
+		return nil, err
+	}
+	id, err := p.c.SubmitJSON(ctx, model, body)
+	if err != nil {
+		if out := chargedRouteOutcome(p.c, fal.RouteFill, job, err); out != nil {
 			return out, err
 		}
 		return nil, err
 	}
-	return &Outcome{RequestID: id, Model: model, Pending: true}, nil
+	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
 }
 
 // Collect is the FREE half. The composite through the mask is postProcess's.
@@ -360,26 +380,26 @@ func compositeInpaint(src, mask image.Image, plan InpaintPlan, answer []byte) (A
 	alpha, _ := inpaintMaskAlpha(mask)
 	alpha.Rect = alpha.Rect.Sub(mask.Bounds().Min).Add(src.Bounds().Min)
 
+	// ⚠ A DRIFT IS NAMED, NOT HIDDEN (G-03, Codex 5). The answer is expected at the size the crop
+	// travelled at (plan.Crop); a model that rounded it (within max(16 px, 2 %) a side — extend's own
+	// slack) is fitted, anything else is another picture than the one planned — its money may not be
+	// the money reserved, and scaling it into the crop would distort it silently. It is kept as
+	// delivered and the attempt says why (inpaint_not_composited).
+	ab := got.Bounds()
+	if want := plan.Crop; want.X > 0 && want.Y > 0 && ab.Size() != want &&
+		(!extendNearSize(ab.Dx(), want.X) || !extendNearSize(ab.Dy(), want.Y)) {
+		return Artifact{}, fmt.Errorf("the answer is %d×%d and the crop was sent at %d×%d — another size; "+
+			"the answer is kept as delivered", ab.Dx(), ab.Dy(), want.X, want.Y)
+	}
 	fittedAnswer := image.NewNRGBA(plan.Rect)
-	if got.Bounds().Size() == plan.Rect.Size() {
-		draw.Draw(fittedAnswer, plan.Rect, got, got.Bounds().Min, draw.Src)
+	if ab.Size() == plan.Rect.Size() {
+		draw.Draw(fittedAnswer, plan.Rect, got, ab.Min, draw.Src)
 	} else {
-		xdraw.CatmullRom.Scale(fittedAnswer, plan.Rect, got, got.Bounds(), xdraw.Src, nil)
+		xdraw.CatmullRom.Scale(fittedAnswer, plan.Rect, got, ab, xdraw.Src, nil)
 	}
 
 	dst := image.NewNRGBA(src.Bounds())
 	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
 	draw.DrawMask(dst, plan.Rect, fittedAnswer, plan.Rect.Min, alpha, plan.Rect.Min, draw.Over)
-
-	var buf bytes.Buffer
-	if plan.EncodePNG {
-		if err := png.Encode(&buf, dst); err != nil {
-			return Artifact{}, err
-		}
-		return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypePNG}, nil
-	}
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: compositeWindowJPEGQuality}); err != nil {
-		return Artifact{}, err
-	}
-	return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypeJPEG}, nil
+	return encodeComposite(dst)
 }

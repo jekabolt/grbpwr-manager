@@ -39,9 +39,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -270,6 +272,28 @@ var ErrUnexpectedResponse = errors.New("fal: unreadable response from the provid
 // ErrTooLarge is returned when an artifact or an envelope exceeds its cap. Refusal, not truncation.
 var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 
+// ErrSubmitUnconfirmed — A SUBMIT WHOSE OUTCOME NOBODY KNOWS: the request left this process (its
+// headers were written) and no usable answer came back — a timeout, a reset connection, a 5xx, a 2xx
+// that could not be read or named no request id. fal MAY have queued the job and charged for it.
+//
+// ⚠ IT IS NEVER RESUBMITTED AUTOMATICALLY (G-03, Codex 1). fal's queue documents no idempotency key
+// for a submit (https://fal.ai/docs/documentation/model-apis/inference/queue lists Authorization,
+// X-Fal-Request-Timeout, X-Fal-Runner-Hint, X-Fal-Queue-Priority, X-Fal-Store-IO, X-Fal-No-Retry,
+// X-Fal-Object-Lifecycle-Preference — nothing that deduplicates two submits; the `Idempotency-Key`
+// fal documents belongs to the platform's queue-flush endpoint, not to model submits). A retry of an
+// ambiguous submit is therefore a possible SECOND purchase of the same job against ONE reservation.
+// designgen classifies this terminal (`submit_unconfirmed`, attempt state `unknown`): the run fails
+// closed and the history says the charge must be reconciled with fal's dashboard.
+//
+// A submit refused BEFORE its headers were written (DNS, dial, TLS) is not this: nothing reached fal,
+// and it keeps its ordinary retryable classification.
+var ErrSubmitUnconfirmed = errors.New("fal: the submit may have reached the provider and its outcome is unknown")
+
+// submitLost — the 2xx submit that named no request id: accepted (so possibly paid) and unresumable.
+func submitLost() error {
+	return fmt.Errorf("%w: %w: submit returned no request id", ErrSubmitUnconfirmed, ErrUnexpectedResponse)
+}
+
 // ChargedError marks a failure the provider HAS ALREADY BILLED, and carries the charge.
 //
 // THE SHAPE IS meshy.ChargedError / recraft.ChargedError, DELIBERATELY. designgen's 3D pass already
@@ -292,6 +316,10 @@ type ChargedError struct {
 	// provenance Result.Model carries, and needed for the same reason: a failed-but-billed call on
 	// a RECOVERED build must be priced as the model it was bought at, not as today's.
 	Model string
+	// Assumed — the provider sent NO billing header and Units is billableUnits' one assumed unit
+	// (G-03, Codex 3). A pricing side that can book a conservative ceiling instead reads this; one
+	// that cannot keeps the old reading (one unit), which is what it always did.
+	Assumed bool
 }
 
 func (e *ChargedError) Error() string {
@@ -307,6 +335,15 @@ func chargedWith(err error, units float64, requestID, model string) error {
 		return err
 	}
 	return &ChargedError{Err: err, Units: units, RequestID: requestID, Model: model}
+}
+
+// chargedAssumed — chargedWith, saying whether the units were read or assumed.
+func chargedAssumed(err error, units float64, assumed bool, requestID, model string) error {
+	out := chargedWith(err, units, requestID, model)
+	if ce, ok := out.(*ChargedError); ok {
+		ce.Assumed = assumed
+	}
+	return out
 }
 
 // ChargedModel is the slug a failed-but-billed call was polling, or «» when the error carries no
@@ -813,7 +850,7 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 	}
 	id := strings.TrimSpace(out.RequestID)
 	if id == "" {
-		return "", fmt.Errorf("%w: submit returned no request id", ErrUnexpectedResponse)
+		return "", submitLost()
 	}
 	// ⚠ THE DERIVED POLLING PATH IS CHECKED AGAINST THE PROVIDER'S OWN, ONCE, HERE. fal documents
 	// that a model id with a sub-path (`hitem3d/hi3d/v3.0/multi-view-to-3d`) is submitted whole but
@@ -1392,14 +1429,43 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	// ⚠ EVERY POST ON THIS API IS A SUBMIT, i.e. A PAYMENT (G-03, Codex 1). Whether its headers left
+	// the process is the one fact that separates «nothing reached fal» (dial, DNS, TLS — retryable)
+	// from «fal may have queued and charged it» (ErrSubmitUnconfirmed — never resubmitted). The
+	// trace answers it; the Go transport itself never replays a written POST that carries no
+	// Idempotency-Key header (net/http Request.isReplayable), so no second copy leaves from below.
+	submit := method == http.MethodPost
+	var sent atomic.Bool
+	if submit {
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			WroteHeaders: func() { sent.Store(true) },
+		}))
+	}
+	unconfirmed := func(err error) error {
+		if submit {
+			return fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err)
+		}
+		return err
+	}
+
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("fal: %s %s: %w", method, path, err)
+		err = fmt.Errorf("fal: %s %s: %w", method, path, err)
+		if sent.Load() {
+			return unconfirmed(err)
+		}
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return c.statusError(resp, method, path)
+		err := c.statusError(resp, method, path)
+		if resp.StatusCode >= 500 {
+			// A server failure answering a submit does not say the job was NOT queued (a gateway 502/504
+			// in front of an enqueue that happened). A 4xx does: fal read the request and refused it.
+			return unconfirmed(err)
+		}
+		return err
 	}
 	if hdr != nil {
 		*hdr = resp.Header
@@ -1407,10 +1473,10 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 
 	raw, err := readCapped(resp.Body, maxAPIResponseBytes)
 	if err != nil {
-		return fmt.Errorf("fal: reading %s %s: %w", method, path, err)
+		return unconfirmed(fmt.Errorf("fal: reading %s %s: %w", method, path, err))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err)
+		return unconfirmed(fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
 	}
 	return nil
 }
