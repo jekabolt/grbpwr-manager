@@ -1035,12 +1035,14 @@ func argsOf(t *testing.T, named string, args []any, name string) []any {
 // name).
 func TestAIStoreShapeActorIsAttributedByIdAtWriteTime(t *testing.T) {
 	flat := strings.Join(strings.Fields(insertAICall), " ")
-	if !strings.Contains(flat, "COALESCE(:actor_admin_id, (SELECT id FROM admins WHERE username = :actor LIMIT 1))") {
+	if !strings.Contains(flat, "COALESCE(:actor_admin_id, CASE WHEN") ||
+		!strings.Contains(flat, "ELSE (SELECT id FROM admins WHERE username = :actor LIMIT 1) END)") {
 		t.Fatalf("the ledger INSERT must resolve a missing actor_admin_id from admins by the row's username: %s", flat)
 	}
 
-	// No id from the caller (designgen): the id binds NULL and every :actor — the column and the
-	// lookup — binds the row's username, so the database picks the id of the account that has it now.
+	// No id from the caller (designgen): the id binds NULL and every :actor — the column, the
+	// reserved-word test and the lookup — binds the row's username, so the database picks the id of
+	// the account that has it now.
 	db := &recDB{}
 	st := sampleStart()
 	st.ActorAdminID = nil
@@ -1052,8 +1054,8 @@ func TestAIStoreShapeActorIsAttributedByIdAtWriteTime(t *testing.T) {
 		t.Fatalf(":actor_admin_id = %#v with no id from the caller, want NULL (the lookup decides)", v)
 	}
 	actors := argsOf(t, insertAICall, c.args, "actor")
-	if len(actors) != 2 || actors[0] != "jeka" || actors[1] != "jeka" {
-		t.Fatalf(":actor bound %v, want the row's username for the column and for the lookup", actors)
+	if len(actors) != 3 || actors[0] != "jeka" || actors[1] != "jeka" || actors[2] != "jeka" {
+		t.Fatalf(":actor bound %v, want the row's username for the column, the reserved test and the lookup", actors)
 	}
 
 	// The report groups by the id, never folds it.
@@ -1063,6 +1065,49 @@ func TestAIStoreShapeActorIsAttributedByIdAtWriteTime(t *testing.T) {
 	}
 	if strings.Contains(strings.ToUpper(flat), "MAX(") {
 		t.Fatalf("spendByActor folds the account id: %s", flat)
+	}
+}
+
+// TestAIStoreShapeReservedActorsStayUnattributed (REVIEW-FIXD P2 #1).
+//
+// MUTATIONS IT CATCHES: dropping the CASE (an admin account named "system" or "unknown" takes the id
+// of every background call and every row whose path forgot WithActor — a person's spend line grows by
+// money nobody on it spent); a reserved word misspelt or renamed on one side only (the SQL and
+// entity.AIActorSystem / AIActorUnknown drift, and the misspelt word is looked up again); the CASE
+// testing anything but the row's own :actor.
+func TestAIStoreShapeReservedActorsStayUnattributed(t *testing.T) {
+	lit := func(v string) string { return "'" + v + "'" }
+	want := "COALESCE(:actor_admin_id, CASE WHEN :actor IN (" + lit(entity.AIActorSystem) + ", " + lit(entity.AIActorUnknown) +
+		") THEN NULL ELSE (SELECT id FROM admins WHERE username = :actor LIMIT 1) END)"
+	flat := strings.Join(strings.Fields(insertAICall), " ")
+	if !strings.Contains(flat, want) {
+		t.Fatalf("the ledger INSERT must never look up a reserved pseudo-actor:\n want %s\n in   %s", want, flat)
+	}
+	if n := strings.Count(strings.Join(paramNames(insertAICall), " ")+" ", "actor "); n != 3 {
+		t.Fatalf(":actor appears %d times, want 3: the column, the reserved test, the lookup", n)
+	}
+
+	// Both pseudo-actors with no id from the caller: the id binds NULL and all three :actor bind the
+	// pseudo-actor, so the CASE sees the word the row is written under.
+	for _, name := range []string{entity.AIActorSystem, entity.AIActorUnknown} {
+		if !entity.AIActorIsReserved(name) {
+			t.Fatalf("entity.AIActorIsReserved(%q) = false: CreateAccount would let an account take that name", name)
+		}
+		db := &recDB{}
+		st := sampleStart()
+		st.Actor, st.ActorAdminID = name, nil
+		if _, err := newRecStore(db, nil).BeginCall(context.Background(), st); err != nil {
+			t.Fatal(err)
+		}
+		c := findCall(t, db, "insertAICall")
+		if v := argOf(t, insertAICall, c.args, "actor_admin_id"); v != nil {
+			t.Fatalf("%s: :actor_admin_id = %#v, want NULL", name, v)
+		}
+		for i, v := range argsOf(t, insertAICall, c.args, "actor") {
+			if v != name {
+				t.Fatalf("%s: :actor #%d bound %#v, want %q", name, i+1, v, name)
+			}
+		}
 	}
 }
 

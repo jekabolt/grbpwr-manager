@@ -865,15 +865,22 @@ func pickFaults(rows []faultRow) map[string]string {
 // is thereby tied to the account that existed when the call was made — a deleted account's rows keep
 // its id, and a new account recreated under the same username gets a new id and none of the old
 // history. designgen's recorder names only a username, so this is where its rows get their id. No
-// such admin (system, unknown, a deleted account) leaves the id NULL: the report shows such rows as
-// their own line.
+// such admin (a deleted account) leaves the id NULL: the report shows such rows as their own line.
+//
+// The pseudo-actors entity.AIActorSystem / AIActorUnknown are NEVER looked up (REVIEW-FIXD P2 #1): a
+// background call must not land in a person's spend line because an account happens to be named
+// "system" or "unknown" (one made before CreateAccount refused the words, or through a path that does
+// not ask). The words are spelled here because a Go const cannot reach the SQL;
+// TestAIStoreShapeReservedActorsStayUnattributed pins them to the entity constants.
 const insertAICall = `
 	INSERT INTO ai_usage_event
 		(occurred_at, day_local, provider_key, model, purpose, actor, actor_admin_id,
 		 run_id, attempt_no, call_no, fallback_from, status, cost_source)
 	VALUES
 		(:occurred_at, :day_local, :provider_key, :model, :purpose, :actor,
-		 COALESCE(:actor_admin_id, (SELECT id FROM admins WHERE username = :actor LIMIT 1)),
+		 COALESCE(:actor_admin_id,
+		          CASE WHEN :actor IN ('system', 'unknown') THEN NULL
+		               ELSE (SELECT id FROM admins WHERE username = :actor LIMIT 1) END),
 		 :run_id, :attempt_no, :call_no, :fallback_from, 'dispatching', 'none')`
 
 // aiCallEndSet is the ONE finalisation of a ledger row, shared by FinishCall and PriceAcceptedCall.

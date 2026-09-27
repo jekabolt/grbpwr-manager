@@ -524,6 +524,12 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 	// oversized, timed out): it stays a not-engaged refusal with its own code and its 404 sentinel, so
 	// the router can still fall back (D-09). The body, when it did arrive, only lends the sentence.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if err != nil {
+			// readCapped hands back no body on a failed read, and a nil body reads as "" — the sentence
+			// would end in a dangling «API error (HTTP 404): » that hides WHY there is no excuse
+			// (REVIEW-FIXD P3 #5). apiErrorMessage takes this non-JSON text as the message, bounded.
+			body = []byte("response body unavailable: " + err.Error())
+		}
 		return nil, c.statusError(resp.StatusCode, body)
 	}
 	if err != nil {
