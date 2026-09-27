@@ -110,6 +110,32 @@ const (
 	// refuse to turn it off, and the empty answer would then come back as ErrBudgetExhausted rather
 	// than as silence.
 	analysisReasoningEffort = "none"
+	// leastReasoningEffort is what CompleteWithImagesOn asks for under a token ceiling: the LEAST
+	// reasoning every reasoning model ACCEPTS, not «none». A per-feature slug may be a model whose
+	// reasoning is MANDATORY — the live catalogue (GET https://openrouter.ai/api/v1/models,
+	// 2026-09-27) marks openai/gpt-5-mini `reasoning.mandatory: true`, and OpenRouter's reasoning
+	// docs (https://openrouter.ai/docs/use-cases/reasoning-tokens) say such a model REJECTS
+	// effort "none", while an effort a model lacks is mapped to its nearest supported level. So
+	// "minimal" is the one value that is never a 400: it is google/gemini-3.1-flash-lite's own
+	// default effort, and gpt-5-mini lists it.
+	leastReasoningEffort = "minimal"
+)
+
+// The slugs of the `Ideas ▾` door (SuggestPrompts, PLAYGROUND B-15).
+//
+// ⚠ A SECOND BAKED-IN SLUG, AND THE HEADER OF Config.ModelAnalysis EXPLAINS WHY THAT IS A HAZARD:
+// a constant rots silently at the provider. Three things keep this one from rotting silently —
+// WarnIfModelRetired probes it at boot (effectiveModels lists it and the fallback), a 404 on it
+// retries ONCE on IdeasFallbackModel, and OPENROUTER_MODEL_IDEAS replaces it without a deploy
+// (`off` switches the feature off). Both slugs were read on the live catalogue on 2026-09-27
+// (GET https://openrouter.ai/api/v1/models): gemini-3.1-flash-lite text+image→text, $0.25/M in,
+// $1.50/M out, $0.25/M image, 8 endpoints, response_format supported; gpt-5-mini text+image→text,
+// $0.25/M in, $2/M out, 4 endpoints, response_format supported, reasoning mandatory.
+const (
+	DefaultIdeasModel  = "google/gemini-3.1-flash-lite"
+	IdeasFallbackModel = "openai/gpt-5-mini"
+	// IdeasModelOff is the kill switch value of OPENROUTER_MODEL_IDEAS (case-insensitive).
+	IdeasModelOff = "off"
 )
 
 // ErrNotConfigured is returned when GenerateOperations is called with no API key.
@@ -259,6 +285,10 @@ type Config struct {
 	// intentionally off in this repo, so an unbound variable is silently empty — and silently empty
 	// is indistinguishable from the correct default, which is why the binding has its own test.
 	ModelAnalysis string `mapstructure:"model_analysis"`
+	// ModelIdeas is the slug of the PLAYGROUND `Ideas ▾` door (OPENROUTER_MODEL_IDEAS). Empty — the
+	// normal state — means DefaultIdeasModel; `off` switches the door off (IdeasModel() == "", and
+	// the band's suggest_prompts_model is empty). Resolved only by IdeasModel.
+	ModelIdeas string `mapstructure:"model_ideas"`
 }
 
 // Client is a configured OpenRouter chat client. A nil *Client is a valid,
@@ -283,6 +313,7 @@ func New(cfg Config) *Client {
 	// Trimmed, but NOT defaulted: empty stays empty and is resolved to the shared slug at read time
 	// by AnalysisModel, so there is exactly one place that decides what "unset" means.
 	cfg.ModelAnalysis = strings.TrimSpace(cfg.ModelAnalysis)
+	cfg.ModelIdeas = strings.TrimSpace(cfg.ModelIdeas)
 	base := cfg.HTTPTimeout
 	if base <= 0 {
 		base = defaultTimeout
@@ -393,29 +424,61 @@ type effectiveModel struct {
 	features string
 }
 
+// IdeasModel returns the slug the PLAYGROUND `Ideas ▾` door (SuggestPrompts) calls first:
+// OPENROUTER_MODEL_IDEAS when set, DefaultIdeasModel when unset, and "" when it is `off` (any
+// case) — "" means the door is OFF, and the band then says so with an empty suggest_prompts_model.
+// It does not look at the key: Enabled() is the other half of «is the door open», and the caller
+// asks both. Nil-safe.
+func (c *Client) IdeasModel() string {
+	if c == nil {
+		return ""
+	}
+	m := strings.TrimSpace(c.cfg.ModelIdeas)
+	switch {
+	case m == "":
+		return DefaultIdeasModel
+	case strings.EqualFold(m, IdeasModelOff):
+		return ""
+	}
+	return m
+}
+
 const (
 	sharedModelFeatures   = "note formatting, tech-card operation drafts and campaign auto-translation"
 	analysisModelFeatures = "tech-card construction analysis"
+	ideasModelFeatures    = "playground Ideas suggestions"
+	ideasFallbackFeatures = "playground Ideas suggestions (the fallback after a 404 on the ideas slug)"
 )
 
 // effectiveModels returns the DISTINCT slugs this client can send. It is a set on purpose: with
 // OPENROUTER_MODEL_ANALYSIS unset — again, the normal state — both roles are the same string, and
 // probing it twice would double the boot traffic and shout twice about a single fault.
+//
+// The Ideas door adds its slug AND its fallback (both baked in, both able to rot — see
+// DefaultIdeasModel), unless OPENROUTER_MODEL_IDEAS=off, when neither is ever called.
 func (c *Client) effectiveModels() []effectiveModel {
 	if c == nil {
 		return nil
 	}
-	shared := strings.TrimSpace(c.cfg.Model)
-	analysis := strings.TrimSpace(c.AnalysisModel())
-	if shared != "" && analysis == shared {
-		return []effectiveModel{{slug: shared, features: sharedModelFeatures + ", " + analysisModelFeatures}}
+	out := make([]effectiveModel, 0, 4)
+	add := func(slug, features string) {
+		slug = strings.TrimSpace(slug)
+		if slug == "" {
+			return
+		}
+		for i := range out {
+			if out[i].slug == slug {
+				out[i].features += ", " + features
+				return
+			}
+		}
+		out = append(out, effectiveModel{slug: slug, features: features})
 	}
-	out := make([]effectiveModel, 0, 2)
-	if shared != "" {
-		out = append(out, effectiveModel{slug: shared, features: sharedModelFeatures})
-	}
-	if analysis != "" {
-		out = append(out, effectiveModel{slug: analysis, features: analysisModelFeatures})
+	add(c.cfg.Model, sharedModelFeatures)
+	add(c.AnalysisModel(), analysisModelFeatures)
+	if ideas := c.IdeasModel(); ideas != "" {
+		add(ideas, ideasModelFeatures)
+		add(IdeasFallbackModel, ideasFallbackFeatures)
 	}
 	return out
 }

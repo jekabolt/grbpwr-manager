@@ -584,6 +584,10 @@ func bindEnvVars() {
 	// override looks like, making a missing binding invisible until somebody wonders why the
 	// escalation did nothing.
 	viper.BindEnv("openrouter.model_analysis", "OPENROUTER_MODEL_ANALYSIS")
+	// OPENROUTER_MODEL_IDEAS is the slug of the PLAYGROUND `Ideas ▾` door (SuggestPrompts): unset =>
+	// openrouter.DefaultIdeasModel, `off` => the door is switched off. Explicit for the same reason
+	// as the line above: an unbound name reads as empty, and empty is the default.
+	viper.BindEnv("openrouter.model_ideas", "OPENROUTER_MODEL_IDEAS")
 	viper.BindEnv("openrouter.base_url", "OPENROUTER_BASE_URL")
 	viper.BindEnv("openrouter.http_timeout", "OPENROUTER_HTTP_TIMEOUT")
 

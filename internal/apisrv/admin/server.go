@@ -119,6 +119,8 @@ type Server struct {
 	// enhanceRuns is the per-admin hourly spend window in front of EnhanceText. Its zero value works
 	// (lazy limiter), like analysisRuns: a fence that bounds SPEND must not depend on New() having run.
 	enhanceRuns enhanceTextGuard
+	// suggestCache holds SuggestPrompts answers for ten minutes (design_suggest.go). Zero value works.
+	suggestCache suggestPromptsCache
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer
