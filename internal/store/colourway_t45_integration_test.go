@@ -1,3 +1,5 @@
+//go:build integration
+
 package store
 
 import (
@@ -5,25 +7,44 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/probegate"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// T45 (27.09) — CONTAINER PROBE. Runs in CI (CI=1, a throwaway MySQL) against the migrated schema;
-// NEVER locally: a local run of this package points at a real database and drops tables.
+// T45 (27.09) — CONTAINER PROBE, and it cannot run by accident.
 //
-// What only a database can show: 0375/0376 applied (the token column, the unique swap, the two
-// tables), the SKU token minted inside CreateColorway's transaction against the style's tokens,
-// immutability on UpdateColorway, the palette written by position and mirrored into
-// pantone/pantone_system/dev_hex, product.color following the palette colourway's name, the
-// development-only write, the per-language names, the legacy-row pin, and the «apply to slots»
-// door against a real recipe.
+// This package's TestMain migrates whatever database its configuration names and then DROPS EVERY
+// TABLE of it; without CI set, that configuration is ../../config/config.toml — a real base. So this
+// file is built only with `-tags integration`, and its init() (which runs before TestMain opens a
+// connection) refuses the whole test binary unless the environment names a disposable container
+// database: CI set, GRBPWR_DISPOSABLE_DB equal to MYSQL_DATABASE, a name that says it is disposable
+// and is not a real base's, a local MYSQL_HOST (internal/store/probegate). The run that is meant:
+//
+//	CI=1 MYSQL_HOST=127.0.0.1 MYSQL_PORT=3306 MYSQL_USER=… MYSQL_PASSWORD=… \
+//	  MYSQL_DATABASE=grbpwr_test GRBPWR_DISPOSABLE_DB=grbpwr_test \
+//	  go test -tags integration -run ColourwayT45 ./internal/store/
+//
+// What only a database can show: 0375/0376 applied (the token column and its unique, the family
+// unique still standing until 0377, the two tables), the SKU token minted inside CreateColorway's
+// transaction against the style's tokens, immutability on UpdateColorway, the palette written by
+// position and mirrored into pantone/pantone_system/dev_hex, product.color following the palette
+// colourway's name, the development-only write, the per-language names, the legacy-row pin, and the
+// «apply to slots» door against a real recipe.
 // ─────────────────────────────────────────────────────────────────────────────
+
+func init() {
+	if err := probegate.Check(os.Getenv); err != nil {
+		fmt.Fprintf(os.Stderr, "internal/store: the integration probes refuse to start, nothing was opened: %v\n", err)
+		os.Exit(2)
+	}
+}
 
 func t45Store(ctx context.Context, t *testing.T) *MYSQLStore {
 	t.Helper()
@@ -110,9 +131,9 @@ func TestColourwayT45SchemaIsApplied(t *testing.T) {
 		"the token column is NULLABLE — an older binary's insert must not be refused")
 	require.Equal(t, 2, count(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
 		AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_sku_color_token' AND NON_UNIQUE = 0`))
-	require.Zero(t, count(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
-		AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color'`),
-		"two colourways of one style may share a family")
+	require.Equal(t, 2, count(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
+		AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color' AND NON_UNIQUE = 0`),
+		"0376 is additive (D-69): the family unique stands until 0377")
 	for _, table := range []string{"product_colour", "product_colour_name_i18n"} {
 		require.Equal(t, 1, count(`SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()
 			AND TABLE_NAME = ?`, table), table)
