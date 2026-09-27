@@ -91,7 +91,8 @@ func TestGetAiSpendReportRefusesABadPeriodBeforeTheStore(t *testing.T) {
 //
 // MUTATIONS IT CATCHES: our_usd / their_usd / usd / total_usd emitted from .Decimal regardless of
 // Valid (unknown arrives as "0"); a zero-call line filtered out (the provider that only billed us
-// disappears); actor_admin_id not carried; the provider order of the store reshuffled.
+// disappears); actor_admin_id not carried; the provider order of the store reshuffled; their_bucket_tz
+// not carried, or filled for a line with no number of theirs (D-17).
 func TestGetAiSpendReportMapsUnknownAsAbsent(t *testing.T) {
 	adminID := 7
 	rep := &entity.AISpendReport{
@@ -99,9 +100,9 @@ func TestGetAiSpendReportMapsUnknownAsAbsent(t *testing.T) {
 		TotalUSD: spendUSD("1.253000"), Calls: 9, Failed: 4, Unpriced: 2,
 		ByProvider: []entity.AISpendByProvider{
 			// present only through ai_provider_cost_daily: their number, ours unknown, no calls
-			{ProviderKey: "openai", TheirUSD: spendUSD("12.500000")},
+			{ProviderKey: "openai", TheirUSD: spendUSD("12.500000"), TheirBucketTZ: "UTC"},
 			// priced sum beside their number
-			{ProviderKey: "openrouter", OurUSD: spendUSD("1.253000"), TheirUSD: spendUSD("1.2"), Calls: 4, Failed: 1},
+			{ProviderKey: "openrouter", OurUSD: spendUSD("1.253000"), TheirUSD: spendUSD("1.2"), TheirBucketTZ: "UTC", Calls: 4, Failed: 1},
 			// only unpriced calls: ours unknown, unpriced counted
 			{ProviderKey: "fal", Calls: 2, Unpriced: 2},
 			// only free calls: a real zero
@@ -135,6 +136,7 @@ func TestGetAiSpendReportMapsUnknownAsAbsent(t *testing.T) {
 	openai := resp.ByProvider[0]
 	require.Nil(t, openai.OurUsd, "a provider with no ledger row has no number of ours: absent, never 0")
 	require.Equal(t, "12.5", openai.GetTheirUsd().GetValue())
+	require.Equal(t, "UTC", openai.GetTheirBucketTz(), "their days are labelled with their zone")
 	require.Zero(t, openai.Calls)
 
 	openrouter := resp.ByProvider[1]
@@ -146,6 +148,7 @@ func TestGetAiSpendReportMapsUnknownAsAbsent(t *testing.T) {
 	fal := resp.ByProvider[2]
 	require.Nil(t, fal.OurUsd, "only unpriced calls: our number is unknown")
 	require.Nil(t, fal.TheirUsd, "no cost API rows: their number is unknown")
+	require.Empty(t, fal.GetTheirBucketTz(), "no number of theirs, no zone of theirs")
 	require.Equal(t, int32(2), fal.Unpriced)
 
 	meshy := resp.ByProvider[3]

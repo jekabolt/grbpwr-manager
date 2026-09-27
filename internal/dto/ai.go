@@ -15,6 +15,9 @@ import (
 //
 // Every line is mapped, none filtered: a provider line with zero calls is the provider's own number
 // with nothing of ours beside it (the store's union), and dropping it would hide exactly that.
+//
+// their_bucket_tz travels beside their number (D-17): the zone THEIR days are days of, which the panel
+// labels («provider days (UTC)») against the report's own timezone instead of pretending the two agree.
 func AISpendReportToPb(r *entity.AISpendReport) *pb_admin.GetAiSpendReportResponse {
 	if r == nil {
 		return &pb_admin.GetAiSpendReportResponse{}
@@ -32,12 +35,13 @@ func AISpendReportToPb(r *entity.AISpendReport) *pb_admin.GetAiSpendReportRespon
 	}
 	for _, p := range r.ByProvider {
 		out.ByProvider = append(out.ByProvider, &pb_admin.AiSpendProviderRow{
-			ProviderKey: p.ProviderKey,
-			OurUsd:      pbDecimalFromNull(p.OurUSD),
-			TheirUsd:    pbDecimalFromNull(p.TheirUSD),
-			Calls:       int32(p.Calls),
-			Failed:      int32(p.Failed),
-			Unpriced:    int32(p.Unpriced),
+			ProviderKey:   p.ProviderKey,
+			OurUsd:        pbDecimalFromNull(p.OurUSD),
+			TheirUsd:      pbDecimalFromNull(p.TheirUSD),
+			TheirBucketTz: p.TheirBucketTZ,
+			Calls:         int32(p.Calls),
+			Failed:        int32(p.Failed),
+			Unpriced:      int32(p.Unpriced),
 		})
 	}
 	for _, a := range r.ByActor {
