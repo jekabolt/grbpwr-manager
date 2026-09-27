@@ -78,10 +78,6 @@ func TestNoStaleMappings(t *testing.T) {
 	}
 	for name := range methodRequirements {
 		if _, ok := live[name]; !ok {
-			if _, pending := pendingProtoMethods[name]; pending {
-				t.Logf("methodRequirements has %q ahead of the proto (lane P, P-01, adds it)", name)
-				continue
-			}
 			t.Errorf("methodRequirements has %q but AdminService has no such method", name)
 		}
 	}
@@ -90,22 +86,6 @@ func TestNoStaleMappings(t *testing.T) {
 			t.Errorf("allowlist has %q but AdminService has no such method", name)
 		}
 	}
-}
-
-// pendingProtoMethods are classified in methodRequirements BEFORE AdminService has them: the six AI
-// providers RPCs are being added to proto/admin by lane P (ai-providers task P-01) in parallel with
-// their classification (task B-19, lane B1), and they are classified first so that the moment they
-// are generated they are already super-only — an RPC that lands unclassified is denied to scoped
-// accounts but WIDE OPEN to a legacy token. TestNoStaleMappings tolerates exactly these names while
-// they are missing from the descriptor and nothing else; once lane P is merged the tolerance is a
-// no-op and this set should be deleted.
-var pendingProtoMethods = map[string]struct{}{
-	"GetAiProvidersConfig": {},
-	"UpdateAiProvider":     {},
-	"SetAiProviderKey":     {},
-	"SetAiDefaults":        {},
-	"SetAiRoute":           {},
-	"GetAiSpendReport":     {},
 }
 
 // aiProviderMethods are the six RPCs of the AI providers panel (ai-providers plan A5).
