@@ -37,9 +37,10 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 		// 20-PROMPTS D5: the product picture is a RENDER on white, and several are ONE garment.
 		// MUTATIONS (measured red): the old «— reproduce its cut, colour, print and seams as they
 		// are, worn the way that garment really sits on a body.» with no product-picture sentence;
-		// the «: it is a product picture» wording (review MINOR 5 — «it» reads as the garment).
-		require.Contains(t, c, "Dress them in the garment of images 1 and 3 — each of those is a product picture "+
-			"(a drawing, a render or a photo on white; several are views of the same garment): put that garment "+
+		// the «: it is a product picture» wording (review MINOR 5 — «it» reads as the garment); the
+		// plural sentence used for one picture (the len > 1 check turned into len > 0).
+		require.Contains(t, c, "Dress them in the garment of images 1 and 3 — images 1 and 3 are product pictures "+
+			"(a drawing, a render or a photo on white; views of the same garment): put that garment "+
 			"on the person at its real scale, draped the way that garment really sits on a body, and reproduce "+
 			"its cut, colour, print and seams as they are.")
 		require.NotContains(t, c, "it is a product picture")
@@ -51,7 +52,14 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 		// One product picture is «image N», never «images N».
 		one := craftOf(t, `{"freeform":{"preset":"tryon","items":[
 		  {"media_id":11,"role":"model"},{"media_id":12,"role":"product"}]}}`)
-		require.Contains(t, one, "garment of image 2 — each of those is a product picture")
+		require.Contains(t, one, "Dress them in the garment of image 2 — image 2 is a product picture "+
+			"(a drawing, a render or a photo on white): put that garment on the person at its real scale,")
+		require.NotContains(t, one, "views of the same garment", "one picture is not several views")
+		require.NotContains(t, one, "are product pictures")
+		// No product number known: the fallback words take the singular.
+		none := craftOf(t, `{"freeform":{"preset":"tryon","items":[{"media_id":11,"role":"model"}]}}`)
+		require.Contains(t, none, "Dress them in the garment of the product picture — the product picture is a "+
+			"product picture (a drawing, a render or a photo on white): put that garment")
 	})
 	t.Run("add_logo", func(t *testing.T) {
 		c := craftOf(t, `{"freeform":{"preset":"add_logo","items":[
