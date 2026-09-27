@@ -1105,8 +1105,14 @@ const spendByProvider = `
 // spendTheirByProvider — the providers' own daily numbers (the reconcile worker's rows), summed per
 // provider. It is its own statement, not a JOIN onto the ledger side: SpendReport unions the two, so a
 // provider that billed us in the period while our ledger recorded no call still gets its line.
+//
+// ONE PROVIDER, ONE ZONE (D-17). their_bucket_tz is MIN(bucket_tz) over the provider's rows, and the
+// statement groups by provider_key ALONE: grouping by the zone too would split a provider into two
+// partial lines the day its zone ever changed. The worker writes one zone per provider (a constant of
+// its adapter), so MIN only ever sees one value. The days are compared as the provider's own strings,
+// never shifted into ours.
 const spendTheirByProvider = `
-	SELECT provider_key, SUM(amount_usd) AS their_usd
+	SELECT provider_key, SUM(amount_usd) AS their_usd, MIN(bucket_tz) AS their_bucket_tz
 	FROM ai_provider_cost_daily
 	WHERE day BETWEEN :from_day AND :to_day
 	GROUP BY provider_key`
@@ -1135,8 +1141,9 @@ type ourSpendRow struct {
 
 // theirSpendRow is one provider's own number over the period (spendTheirByProvider).
 type theirSpendRow struct {
-	ProviderKey string              `db:"provider_key"`
-	TheirUSD    decimal.NullDecimal `db:"their_usd"`
+	ProviderKey   string              `db:"provider_key"`
+	TheirUSD      decimal.NullDecimal `db:"their_usd"`
+	TheirBucketTZ string              `db:"their_bucket_tz"`
 }
 
 // SpendReport sums the ledger over the inclusive day_local range, beside the providers' own numbers,
@@ -1223,7 +1230,7 @@ func unionSpendLines(ours []ourSpendRow, theirs []theirSpendRow) []entity.AISpen
 	}
 	for _, t := range theirs {
 		i := at(t.ProviderKey) // before indexing: at may append, and lines[at(k)] reads lines in an unspecified order
-		lines[i].TheirUSD = t.TheirUSD
+		lines[i].TheirUSD, lines[i].TheirBucketTZ = t.TheirUSD, t.TheirBucketTZ
 	}
 	byProvider := vocabCompare(entity.AIProviderKeys())
 	slices.SortStableFunc(lines, func(a, b entity.AISpendByProvider) int { return byProvider(a.ProviderKey, b.ProviderKey) })
@@ -1250,13 +1257,19 @@ func spendTotals(lines []entity.AISpendByProvider) entity.AISpendReport {
 	return rep
 }
 
+// upsertAICostDaily — a day fetched again replaces its row, zone included: the row says what the
+// provider said last.
 const upsertAICostDaily = `
-	INSERT INTO ai_provider_cost_daily (provider_key, day, amount_usd, currency, fetched_at)
-	VALUES (:provider_key, :day, :amount_usd, :currency, :fetched_at)
+	INSERT INTO ai_provider_cost_daily (provider_key, day, amount_usd, currency, bucket_tz, fetched_at)
+	VALUES (:provider_key, :day, :amount_usd, :currency, :bucket_tz, :fetched_at)
 	ON DUPLICATE KEY UPDATE
 		amount_usd = VALUES(amount_usd),
 		currency = VALUES(currency),
+		bucket_tz = VALUES(bucket_tz),
 		fetched_at = VALUES(fetched_at)`
+
+// costBucketTZMax is ai_provider_cost_daily.bucket_tz VARCHAR(32) (0379).
+const costBucketTZMax = 32
 
 func costDailyParams(r entity.AICostDaily, now time.Time) (map[string]any, error) {
 	if !entity.IsAIProviderKey(r.ProviderKey) {
@@ -1272,6 +1285,19 @@ func costDailyParams(r entity.AICostDaily, now time.Time) (map[string]any, error
 	if len(currency) != 3 {
 		return nil, fmt.Errorf("ai cost daily: currency %q is not a 3-letter code", r.Currency)
 	}
+	// "" is the column default, UTC — never '' in a NOT NULL column, which the panel would label as a
+	// zone nobody named. A name the zone database cannot load is refused rather than stored: the client
+	// labels the column by comparing this string with the organisation's zone.
+	tz := strings.TrimSpace(r.BucketTZ)
+	if tz == "" {
+		tz = entity.AICostBucketUTC
+	}
+	if len(tz) > costBucketTZMax {
+		return nil, fmt.Errorf("ai cost daily: bucket zone %q is longer than %d bytes", r.BucketTZ, costBucketTZMax)
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return nil, fmt.Errorf("ai cost daily: bucket zone %q is not a zone name", r.BucketTZ)
+	}
 	fetched := r.FetchedAt
 	if fetched.IsZero() {
 		fetched = now
@@ -1281,6 +1307,7 @@ func costDailyParams(r entity.AICostDaily, now time.Time) (map[string]any, error
 		"day":          r.Day,
 		"amount_usd":   r.AmountUSD,
 		"currency":     currency,
+		"bucket_tz":    tz,
 		"fetched_at":   fetched.UTC(),
 	}, nil
 }

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -322,7 +323,25 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 var (
 	createTableRe = regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE`)
 	adminsTableRe = regexp.MustCompile(`(?is)CREATE TABLE admins \((.*?)\n\);`)
+	// addColumnRe reads a guarded ALTER (the house shape: the DDL is a string PREPAREd only when
+	// information_schema says the column is missing) — table, column, and the column's type.
+	addColumnRe = regexp.MustCompile(`(?is)ALTER TABLE (\w+)\s+ADD COLUMN (\w+) ([^\n]+)`)
 )
+
+// alterMigrations add columns to the tables above after they were created.
+var alterMigrations = []string{"0379_ai_cost_daily_bucket_tz.sql"}
+
+// upSection is the part of a migration between "-- +migrate Up" and "-- +migrate Down": a DROP COLUMN
+// in Down must not read as a column.
+func upSection(t *testing.T, body string) string {
+	t.Helper()
+	up := strings.Index(body, "-- +migrate Up")
+	down := strings.Index(body, "-- +migrate Down")
+	if up < 0 || down < up {
+		t.Fatalf("a migration without its Up/Down sections")
+	}
+	return body[up:down]
+}
 
 // migrationColumns reads the tables this package touches straight from the migration files.
 func migrationColumns(t *testing.T) map[string]map[string]bool {
@@ -365,6 +384,23 @@ func migrationColumns(t *testing.T) map[string]map[string]bool {
 		}
 		tables["admins"] = cols
 	}
+	for _, f := range alterMigrations {
+		body, err := os.ReadFile(filepath.Join("..", "sql", f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		adds := addColumnRe.FindAllStringSubmatch(upSection(t, string(body)), -1)
+		if len(adds) == 0 {
+			t.Fatalf("sanity: %s adds no column — the extractor is broken", f)
+		}
+		for _, m := range adds {
+			tbl := strings.ToLower(m[1])
+			if tables[tbl] == nil {
+				t.Fatalf("%s alters %s, which no migration read here creates", f, tbl)
+			}
+			tables[tbl][strings.ToLower(m[2])] = true
+		}
+	}
 	for _, want := range []string{"design_settings", "ai_provider", "ai_model", "ai_route", "ai_settings",
 		"ai_usage_event", "ai_provider_cost_daily", "admins"} {
 		if len(tables[want]) == 0 {
@@ -384,7 +420,7 @@ var (
 	sqlWords     = map[string]bool{
 		"select": true, "from": true, "where": true, "and": true, "or": true, "not": true, "null": true,
 		"is": true, "in": true, "as": true, "on": true, "left": true, "join": true, "group": true,
-		"by": true, "order": true, "sum": true, "count": true, "max": true, "case": true, "when": true,
+		"by": true, "order": true, "sum": true, "count": true, "max": true, "min": true, "case": true, "when": true,
 		"then": true, "else": true, "end": true, "between": true, "coalesce": true, "if": true,
 		"update": true, "set": true, "insert": true, "ignore": true, "into": true, "values": true,
 		"delete": true, "duplicate": true, "key": true, "limit": true,
@@ -629,6 +665,83 @@ func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
 	}
 	if !strings.Contains(spendByProvider, "GROUP BY provider_key") {
 		t.Fatal("our side aggregates per provider")
+	}
+}
+
+// TestAIStoreShapeTheirNumberIsOneZonePerProvider (D-17, 0379).
+//
+// MUTATIONS IT CATCHES: the zone dropped from the select (sqlx.Unsafe leaves TheirBucketTZ "" and the
+// panel labels every provider as «no number»); GROUP BY provider_key, bucket_tz (a provider whose zone
+// ever changed splits into two partial lines, each with a fraction of their number, and the union keeps
+// only the last one it meets); the zone read per row instead of aggregated (MAX/MIN/ANY_VALUE dropped:
+// ONLY_FULL_GROUP_BY refuses the statement at the first report).
+func TestAIStoreShapeTheirNumberIsOneZonePerProvider(t *testing.T) {
+	if !strings.Contains(spendTheirByProvider, "MIN(bucket_tz) AS their_bucket_tz") {
+		t.Fatal("their zone is MIN(bucket_tz) per provider")
+	}
+	if !strings.HasSuffix(strings.TrimSpace(spendTheirByProvider), "GROUP BY provider_key") {
+		t.Fatal("their number groups by provider_key ALONE: one provider, one line, one zone")
+	}
+	if got := selectOutputs(t, spendTheirByProvider); !slices.Contains(got, "their_bucket_tz") {
+		t.Fatalf("their number produces %v, without the zone", got)
+	}
+}
+
+// TestAIStoreShapeCostDailyWritesItsZone (D-17, 0379).
+//
+// MUTATIONS IT CATCHES: bucket_tz missing from the insert (every row takes the column default, and a
+// provider that buckets in another zone is labelled UTC); the zone missing from ON DUPLICATE KEY UPDATE
+// (a refetched day keeps the zone of its first write); an empty zone bound as an empty string instead
+// of the default UTC; a zone longer than VARCHAR(32) or not a zone name reaching the database (strict
+// mode refuses the first mid-transaction, the second is stored and mislabels the column); the bound
+// drifting from the column 0379 creates.
+func TestAIStoreShapeCostDailyWritesItsZone(t *testing.T) {
+	if !strings.Contains(upsertAICostDaily, "bucket_tz = VALUES(bucket_tz)") {
+		t.Fatal("a refetched day must take the zone of the fetch that replaced it")
+	}
+	db := &recDB{}
+	err := newRecStore(db, nil).UpsertCostDaily(context.Background(), []entity.AICostDaily{
+		{ProviderKey: "openai", Day: "2026-09-26", AmountUSD: decimal.RequireFromString("3.5")},
+		{ProviderKey: "openrouter", Day: "2026-09-26", AmountUSD: decimal.RequireFromString("1"), BucketTZ: " Europe/Warsaw "},
+	})
+	if err != nil || len(db.calls) != 2 {
+		t.Fatalf("UpsertCostDaily: %v, %d statements", err, len(db.calls))
+	}
+	for i, want := range []string{"UTC", "Europe/Warsaw"} {
+		if got := argOf(t, upsertAICostDaily, db.calls[i].args, "bucket_tz"); got != want {
+			t.Fatalf("row %d :bucket_tz = %v, want %s", i, got, want)
+		}
+	}
+	// Each refusal by its own rule: the length is checked before the zone database is asked, so an
+	// over-long value is named as too long, not as a zone the host happens not to know.
+	for tz, why := range map[string]string{
+		"UTC+2":                 "not a zone name",
+		strings.Repeat("Z", 33): "longer than 32 bytes",
+	} {
+		r := entity.AICostDaily{ProviderKey: "openai", Day: "2026-09-26", BucketTZ: tz}
+		if _, err := costDailyParams(r, fixedNow); err == nil || !strings.Contains(err.Error(), why) {
+			t.Fatalf("bucket zone %q: %v, want a refusal saying %q", tz, err, why)
+		}
+	}
+
+	// The bound is the column: 0379 creates bucket_tz VARCHAR(costBucketTZMax) NOT NULL DEFAULT 'UTC',
+	// and the ALTER is guarded by information_schema (a re-run after a half-applied boot is a no-op).
+	body, err := os.ReadFile(filepath.Join("..", "sql", "0379_ai_cost_daily_bucket_tz.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := upSection(t, string(body))
+	m := addColumnRe.FindStringSubmatch(up)
+	if m == nil || m[1] != "ai_provider_cost_daily" || m[2] != "bucket_tz" {
+		t.Fatalf("0379 adds %v, want ai_provider_cost_daily.bucket_tz", m)
+	}
+	if want := "VARCHAR(" + strconv.Itoa(costBucketTZMax) + ") NOT NULL DEFAULT ''" + entity.AICostBucketUTC + "''"; !strings.HasPrefix(m[3], want) {
+		t.Fatalf("0379 declares %q, want it to start with %q", m[3], want)
+	}
+	for _, guard := range []string{"TABLE_NAME = 'ai_provider_cost_daily'", "COLUMN_NAME = 'bucket_tz'", "IF(@cd_bucket_tz = 0,"} {
+		if !strings.Contains(up, guard) {
+			t.Fatalf("0379's ALTER is not guarded: %q missing", guard)
+		}
 	}
 }
 
@@ -1601,8 +1714,8 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 				}
 			case *[]theirSpendRow:
 				*d = []theirSpendRow{
-					{ProviderKey: "openai", TheirUSD: usd("12.500000")},
-					{ProviderKey: "openrouter", TheirUSD: usd("1.200000")},
+					{ProviderKey: "openai", TheirUSD: usd("12.500000"), TheirBucketTZ: "UTC"},
+					{ProviderKey: "openrouter", TheirUSD: usd("1.200000"), TheirBucketTZ: "Europe/Warsaw"},
 				}
 			}
 			return nil
@@ -1635,8 +1748,13 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 		openrouter.Calls != 4 || openrouter.Failed != 1 {
 		t.Fatalf("both-sides line %+v", openrouter)
 	}
-	if fal := rep.ByProvider[2]; fal.OurUSD.Valid || fal.TheirUSD.Valid || fal.Unpriced != 2 {
-		t.Fatalf("unpriced-only line %+v, want both numbers unknown and 2 unpriced", fal)
+	if fal := rep.ByProvider[2]; fal.OurUSD.Valid || fal.TheirUSD.Valid || fal.Unpriced != 2 || fal.TheirBucketTZ != "" {
+		t.Fatalf("unpriced-only line %+v, want both numbers unknown, 2 unpriced and no zone of theirs", fal)
+	}
+	// D-17: each line carries the zone of ITS provider's days — not one zone for the report, and not
+	// the other provider's.
+	if openai.TheirBucketTZ != "UTC" || openrouter.TheirBucketTZ != "Europe/Warsaw" {
+		t.Fatalf("their zones %q / %q, want UTC / Europe/Warsaw", openai.TheirBucketTZ, openrouter.TheirBucketTZ)
 	}
 	if meshy := rep.ByProvider[3]; !meshy.OurUSD.Valid || !meshy.OurUSD.Decimal.IsZero() {
 		t.Fatalf("free-only line %+v, want a real 0", meshy)
