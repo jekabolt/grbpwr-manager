@@ -12449,8 +12449,12 @@ message StartDesignRunRequest {
   //     («one_list_per_fact»); a source under the minimum side («source_too_small»). A
   //     params.inpaint on any other kind is «inpaint_forbidden»;
   //   · either — the fal tariff of the wired route set without its units ceiling, so the reserve
-  //     would not be an absolute bound («route_reserve_unbounded», naming FAL_UNITS_CEILING_OUTPAINT
-  //     or FAL_UNITS_CEILING_FILL); any params.image («image_options_forbidden»).
+  //     would not be an absolute bound («route_reserve_unbounded», FailedPrecondition, naming
+  //     FAL_UNITS_CEILING_OUTPAINT or FAL_UNITS_CEILING_FILL); a FAL_MODEL_OUTPAINT / FAL_MODEL_FILL
+  //     slug the route builds no body for («kind_not_available», FailedPrecondition); a source id
+  //     with no media row («no_source_picture»); a mask that is the source's own file under another
+  //     id («mask_invalid»); a rerun naming another picture than its parent — the inpaint mask may
+  //     change («rerun_changes_pictures»); any params.image («image_options_forbidden»).
   // Neither kind reads the card, and neither states a colourway.
   //
   // THE PLAYGROUND PRESETS AND THE PER-RUN ENGINE refuse for free, before anything is reserved, too

@@ -520,11 +520,15 @@ const (
 	// DesignRunKindExtend — EXTENDS ONE PICTURE INTO A NEW PROPORTION (tile 9, PLAYGROUND phase 3) on
 	// fal's outpaint route: params.extend + exactly one extra_input_media_ids, no words. One output,
 	// colourway 0, section 1 of the window; the untouched source pixels are re-composited into the
-	// answer, so «the original is kept» is a fact of the bytes.
+	// answer and stored as a lossless PNG, so «the original is kept» is a fact of the pixels: the
+	// source region is the source's own DECODED pixels (at the scale the 3 MP cap allows), whatever
+	// the source's format.
 	DesignRunKindExtend = "extend"
 	// DesignRunKindInpaint — REPAINTS ONE PAINTED ZONE of a picture (tile 10's mask route, phase 3) on
-	// fal's fill route: params.inpaint (source + mask) + ask. One output; pixels outside the mask are
-	// the source's own bytes (the composite goes through OUR mask only).
+	// fal's fill route: params.inpaint (source + mask) + ask. One output, a lossless PNG: every pixel
+	// outside the mask is the source's own DECODED pixel (the composite goes through OUR mask only) —
+	// bit-exact for a PNG source, the decoded JPEG/WebP pixels otherwise. The one exception is a picture
+	// whose PNG would pass the store's verbatim ceiling (≈ 21 MB): stored as JPEG q92 instead.
 	DesignRunKindInpaint = "inpaint"
 )
 
