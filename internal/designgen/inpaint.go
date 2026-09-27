@@ -10,6 +10,8 @@ import (
 	"image/png"
 	"math"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
@@ -278,10 +280,49 @@ func (p falFillProvider) MissingCredential() string { return noKeySentence("fal"
 
 func (p falFillProvider) Produces() []string { return []string{ContentTypePNG, ContentTypeJPEG} }
 
-// SentPrompt — THE ASK, VERBATIM: that is exactly what the fill body's `prompt` carries (no craft
+// SentPrompt — THE COMPOSED FILL PROMPT, the same fillPrompt the body's `prompt` carries (no craft
 // paragraph, no captions — buildJob bypasses composePrompt for this kind), so the history row shows
-// what the provider read.
-func (p falFillProvider) SentPrompt(job Job) string { return job.Prompt }
+// what the provider read, suffix included, and not the bare ask it was built from.
+func (p falFillProvider) SentPrompt(job Job) string { return fillPrompt(job.Prompt) }
+
+// fillPromptSuffix — what every fill prompt says after the ask (20-PROMPTS §3.3).
+//
+// FLUX Fill's `prompt` is «the prompt to fill the masked part»: it PAINTS WHAT THE WORDS DESCRIBE,
+// it does not execute them (D2). The suffix says what the picture is (a garment photograph, so the
+// fill is cloth and not a painting of cloth) and asks for the FINISHED RESULT inside the zone, blended
+// into the image around it — perspective, scale, focus, lighting, grain — which is the one thing the
+// crop alone does not tell the model. The ask stays first: it is the person's, and a description
+// model weights the start of its prompt most.
+//
+// ⚠ IT NAMES NO MATERIAL AND NO COLOUR (review MAJOR 2). The old suffix said the zone continues «the
+// same material, weave, colour» — true of «remove the stain», false of «a red patch pocket» on blue
+// denim or «a metal zip»: a later, stronger instruction to continue the blue denim, and the paid ask
+// is ignored. What must match the surroundings is how the picture was TAKEN, never what the ask adds.
+const fillPromptSuffix = " Show the finished result inside the painted zone of this garment photograph, " +
+	"blended naturally into the surrounding image: the same perspective, scale, focus, lighting and grain."
+
+// fillPrompt — the fal `prompt` of the mask route: the trimmed ask closed as a sentence, then
+// fillPromptSuffix. The empty ask is refused by Execute on the BARE ask (words_required stays on the
+// person's words), so the suffix never reaches the provider alone.
+//
+// Closing the sentence (review r2 MINOR 2): trailing whitespace and a dangling , ; : are dropped
+// first («a red patch pocket,» must not become «pocket,. Show…»); then a full stop is added only
+// when the ask does not already end on terminal punctuation — . ! ? or … — looked for behind any
+// closing quotes or brackets, so «"a bow."» stays as written.
+func fillPrompt(ask string) string {
+	ask = strings.TrimRightFunc(ask, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(",;:", r)
+	})
+	ask = strings.TrimLeftFunc(ask, unicode.IsSpace)
+	last, _ := utf8.DecodeLastRuneInString(strings.TrimRight(ask, fillClosingMarks))
+	if !strings.ContainsRune(".!?…", last) {
+		ask += "."
+	}
+	return ask + fillPromptSuffix
+}
+
+// fillClosingMarks — what may stand after a sentence's terminal punctuation and still close it.
+const fillClosingMarks = "\"'»”’)"
 
 // fillFamily — the one family whose fill body was read on the provider's page (2026-09-27). Any other
 // FAL_MODEL_FILL is closed at the band and the door (FalRouteOf, G-03 Fable m-1) and refused here,
@@ -301,7 +342,7 @@ func fillBody(model string, job Job) (map[string]any, error) {
 			"not read", fal.ErrBadOption, model, fal.DefaultModelFill)
 	}
 	return map[string]any{
-		"prompt":           job.Prompt,
+		"prompt":           fillPrompt(job.Prompt),
 		"image_url":        job.References[0],
 		"mask_url":         job.InpaintMask,
 		"num_images":       1,
@@ -310,7 +351,7 @@ func fillBody(model string, job Job) (map[string]any, error) {
 	}, nil
 }
 
-// Execute SUBMITS the frozen crop and mask with the ask, and returns at once with the request id.
+// Execute SUBMITS the frozen crop and mask with the fill prompt, and returns at once with the request id.
 func (p falFillProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())

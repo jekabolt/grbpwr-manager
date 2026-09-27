@@ -3,6 +3,7 @@ package designgen
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -445,4 +446,107 @@ func rawJSON(t *testing.T, v any) entity.RawJSON {
 	raw, err := json.Marshal(v)
 	require.NoError(t, err)
 	return entity.RawJSON(raw)
+}
+
+// TestARecolourNAMES_THE_GARMENT_FROM_THE_WORDS_AND_ASSUMES_NO_PERSON — 20-PROMPTS D4. Tiles 4/5 take
+// flats and renders too, so the paragraph describes «a picture of a garment» and keeps «any person»;
+// and the ask is where a person says WHICH garment, so the target is the one the words above name.
+//
+// MUTATIONS (each measured red): the old recolour opening «You are given a real photograph of a
+// garment worn by a real person. Return THAT SAME PHOTOGRAPH with the garment recoloured…»; the old
+// re-cloth opening «… (image 1) and a photograph of a cloth (image 2). Return THAT SAME PHOTOGRAPH
+// with the garment made of the cloth in image 2…».
+func TestARecolourNAMES_THE_GARMENT_FROM_THE_WORDS_AND_ASSUMES_NO_PERSON(t *testing.T) {
+	re := recolorCraft(runParams{})
+	require.True(t, strings.HasPrefix(re, "recolour, not re-photograph:\n"))
+	require.Contains(t, re, "You are given a picture of a garment — a photograph on a person or a mannequin, a flat drawing or a render.")
+	require.Contains(t, re, "the garment the words above name (the main garment when they name none)")
+	require.Contains(t, re, "its colourway code, its name and its exact value")
+	require.Contains(t, re, "including the parts the words above say to keep")
+	require.Contains(t, re, "any person (face, skin, hair, hands)")
+	require.NotContains(t, re, "real person", "a flat has no person to keep")
+	require.Contains(t, re, "a colour that spills onto skin, hair or background", "the exclusion list stays")
+
+	cl := recolorCraft(runParams{Colour: &colourRecipe{Fabrics: []fabricUse{{Name: "check", MediaID: 9}}}})
+	require.True(t, strings.HasPrefix(cl, "re-cloth, not re-photograph:\n"))
+	require.Contains(t, cl, "You are given a picture of a garment (image 1) — a photograph on a person or a mannequin, a flat drawing or a render — and a photograph of a cloth (image 2).")
+	require.Contains(t, cl, "the garment the words above name (the main garment when they name none) made of the cloth in image 2")
+	require.Contains(t, cl, "Parts the words above say to keep, and every other garment, keep their own cloth.")
+	require.NotContains(t, cl, "real person")
+}
+
+// TestARecolourOfAFlatIS_ONE_STORY_FROM_CAPTION_TO_CRAFT — review MAJOR 1 / MINOR 6, r2 MINOR 3. The
+// craft test above reads recolorCraft alone, which is why a caption still promising «the real
+// photograph … the same person» passed next to a craft that takes flats. This one pins the WHOLE
+// composed prompt buildJob hands the provider, both branches (recolour and re-cloth), with
+// require.Equal: a sentence appended to any block — «Always return a studio photo with a wearer» —
+// is red, not only the phrases a forbidden list happens to name. The ask, the colour and the captions
+// come from the fixture; the crafts are written out in full on purpose (a craft built from
+// recolorCraft itself would move with the mutation it is meant to catch).
+// MUTATIONS (each measured red): the old caption «the photograph being recoloured — the real
+// photograph this call must give back, with the same person, pose, framing, background and
+// lighting»; a sentence appended to recolorCraft; a sentence appended to reclothCraft.
+func TestARecolourOfAFlatIS_ONE_STORY_FROM_CAPTION_TO_CRAFT(t *testing.T) {
+	const ask = "recolour the technical flat of this jacket"
+	const caption = "- image 1: the source picture being recoloured — return this same picture, preserving " +
+		"its presentation, crop and background, plus any lighting, person and pose that are present"
+	const recolourCraft = `recolour, not re-photograph:
+You are given a picture of a garment — a photograph on a person or a mannequin, a flat drawing or a render. Return THAT SAME PICTURE with the garment the words above name (the main garment when they name none) recoloured to the colour stated above — its colourway code, its name and its exact value — and change nothing else.
+Keep exactly as they are: any person (face, skin, hair, hands), the pose and the framing; the background and the floor; the lighting, its direction and its colour temperature; every other garment, part, shoe and accessory in the frame, including the parts the words above say to keep; the image's resolution, crop and aspect ratio.
+Keep the garment itself in every respect except its colour: the same cut, the same seams, topstitching, pockets, zips, buttons and labels, in the same places and at the same size.
+Carry the material through the change instead of painting over it. The weave and the surface texture must still read at the same scale; the folds, creases and drape must fall exactly where they fall now; the highlights and the shadows on the cloth must keep their shape and their strength, re-tinted to the new colour rather than flattened out. The result must look like the same garment cut from cloth dyed differently, never like a colour laid over a photograph.
+Strictly excluded: a different person, a different pose, a different background, a different crop, added or removed items, retouched skin, a smoothed or repainted surface, added logos or text, a colour that spills onto skin, hair or background.`
+	const reclothCraftText = `re-cloth, not re-photograph:
+You are given a picture of a garment (image 1) — a photograph on a person or a mannequin, a flat drawing or a render — and a photograph of a cloth (image 2). Return THAT SAME PICTURE with the garment the words above name (the main garment when they name none) made of the cloth in image 2, and change nothing else. Parts the words above say to keep, and every other garment, keep their own cloth.
+Keep exactly as they are: any person (face, skin, hair, hands), the pose and the framing; the background and the floor; the lighting, its direction and its colour temperature; every other garment, shoe and accessory in the frame; the image's resolution, crop and aspect ratio.
+Keep the garment's cut, seams, topstitching, pockets, zips, buttons and labels in the same places and at the same size.
+Lay the cloth ON the garment: its weave, surface and print must follow the folds, creases and drape exactly where they fall now, with the highlights and the shadows keeping their shape and their strength on the new cloth. The result must look like the same garment cut from a different cloth, never like a picture of cloth pasted over a photograph.
+The colour stated above, if any, governs the colour of the cloth: re-tint the cloth of image 2 to it and keep its motif, its weave and its scale.
+Strictly excluded: a different person, a different pose, a different background, a different crop; cloth laid over the skin, the hair or the background; a flat printed sticker instead of woven or knitted cloth; a smoothed or repainted surface; added or removed items; retouched skin; added logos or text.`
+	for _, tc := range []struct {
+		name   string
+		colour map[string]any
+		ids    []int
+		want   string
+	}{
+		{"recolour", map[string]any{"code": "19-4052", "words": "Classic Blue"}, []int{77},
+			ask + "\n\ncolour:\ncolourway 19-4052\n\ncolour in words:\nClassic Blue\n\nreferences:\n" +
+				caption + "\n\n" + recolourCraft},
+		{"re-cloth", map[string]any{"code": "OLV", "fabric_media_id": 9,
+			"fabrics": []map[string]any{{"name": "check", "media_id": 9}}}, []int{77, 9},
+			ask + "\n\ncolour:\ncolourway OLV\n\nreferences:\n" + caption + "\n" +
+				"- image 2: fabric photograph — the material this garment is made of: read its weave, texture, sheen and drape from here" +
+				"\n\n" + reclothCraftText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := entity.DesignRun{
+				Id: 5, TechCardId: 41, Kind: entity.DesignRunKindRecolor,
+				Ask:    sql.NullString{String: ask, Valid: true},
+				Params: rawJSON(t, map[string]any{"extra_input_media_ids": []int{77}, "colour": tc.colour}),
+				Inputs: rawJSON(t, map[string]any{}),
+			}
+			job, err := buildJob(context.Background(), media(tc.ids...), nil, run, "medium")
+			require.NoError(t, err)
+			require.Len(t, job.References, 1)
+			require.Equal(t, tc.want, job.Prompt)
+			for _, f := range []string{"real photograph", "real person", "same person", "the photograph being recoloured"} {
+				require.NotContains(t, job.Prompt, f, "a flat has no person and is not a photograph")
+			}
+		})
+	}
+}
+
+// TestTheRecolourWordsBlockIsCOLOUR_IN_WORDS_AND_THE_RENDER_KEEPS_FABRIC_IN_WORDS — 20-PROMPTS §3.2.
+// Tile 4 sends the Pantone's NAME as the words; under «fabric in words» it reads as a note about the
+// cloth. The render route keeps its label: its order of authority names «the `fabric in words`
+// block» in its own text. MUTATION (measured red): the kind check removed (always «fabric in words»).
+func TestTheRecolourWordsBlockIsCOLOUR_IN_WORDS_AND_THE_RENDER_KEEPS_FABRIC_IN_WORDS(t *testing.T) {
+	p := runParams{Colour: &colourRecipe{Code: "19-4052", Words: "Classic Blue"}}
+	recolour := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindRecolor}, p, runInputs{}, nil)
+	require.Contains(t, recolour, "colour in words:\nClassic Blue")
+	require.NotContains(t, recolour, "fabric in words")
+
+	render := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindRender}, p, runInputs{}, nil)
+	require.Contains(t, render, "fabric in words:\nClassic Blue")
+	require.NotContains(t, render, "colour in words")
 }

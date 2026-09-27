@@ -181,7 +181,8 @@ func TestAMaskThatFailsItsSecondLockIsREFUSED_BEFORE_ANY_SUBMIT(t *testing.T) {
 }
 
 // TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK — the body on a stand, the history's prompt is
-// the ask, the collect is priced by the fill route ($0.15 without a tariff).
+// the composed fill prompt the body carries (20-PROMPTS §3.3), the collect is priced by the fill
+// route ($0.15 without a tariff).
 func TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK(t *testing.T) {
 	var submitted map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -208,11 +209,14 @@ func TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK(t *testing.T) {
 		References: []string{"data:image/jpeg;base64,AAAA"}, InpaintMask: "data:image/png;base64,BBBB",
 		Inpaint: &InpaintPlan{Rect: image.Rect(0, 0, 64, 64)}}
 
-	require.Equal(t, "a brass button", recordedPrompt(prov, job), "the row shows what the provider read")
+	// MUTATION (measured red): SentPrompt returning the bare job.Prompt again — the row would show
+	// «a brass button» while the provider read the suffix too.
+	const sent = "a brass button." + fillPromptSuffix
+	require.Equal(t, sent, recordedPrompt(prov, job), "the row shows what the provider read")
 	out, err := prov.Execute(context.Background(), job)
 	require.NoError(t, err)
 	require.True(t, out.Pending)
-	require.Equal(t, map[string]any{"prompt": "a brass button", "image_url": "data:image/jpeg;base64,AAAA",
+	require.Equal(t, map[string]any{"prompt": sent, "image_url": "data:image/jpeg;base64,AAAA",
 		"mask_url": "data:image/png;base64,BBBB", "num_images": float64(1), "output_format": "png",
 		"safety_tolerance": "2"}, submitted)
 
@@ -221,10 +225,54 @@ func TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK(t *testing.T) {
 	require.Equal(t, "0.15", got.Price.Decimal.String())
 	require.Len(t, got.Artifacts, 1)
 
-	// No words: refused before the submit.
+	// No words: refused before the submit — on the BARE ask, so the suffix alone never travels.
+	// MUTATION (measured red): the refusal checking fillPrompt(job.Prompt), which is never empty.
 	job.Prompt = " "
 	_, err = prov.Execute(context.Background(), job)
 	require.ErrorIs(t, err, fal.ErrBadRequest)
+}
+
+// TestFillPromptDESCRIBES_THE_ZONE_AFTER_THE_ASK — 20-PROMPTS §3.3 (D2): FLUX Fill paints what its
+// prompt describes, so the ask is closed as a sentence and followed by the finished result blended
+// into the picture. The ask is trimmed and stays FIRST; a full stop is added only when the ask does
+// not already end on one (or on ! / ?). MUTATION (measured red): fillBody sending job.Prompt bare (the
+// stand above), the suffix text edited (this exact string), and the full stop added unconditionally.
+func TestFillPromptDESCRIBES_THE_ZONE_AFTER_THE_ASK(t *testing.T) {
+	require.Equal(t, "uncreased fabric continuing the surrounding cloth. Show the finished result inside the "+
+		"painted zone of this garment photograph, blended naturally into the surrounding image: the same "+
+		"perspective, scale, focus, lighting and grain.", fillPrompt("  uncreased fabric continuing the surrounding cloth \n"))
+	require.True(t, strings.HasPrefix(fillPrompt("a brass button"), "a brass button. Show the finished result"))
+	for _, ask := range []string{"remove the stain.", "a zip!", "a pocket here?"} {
+		require.Equal(t, ask+fillPromptSuffix, fillPrompt(" "+ask+" "), "no doubled full stop after %q", ask)
+	}
+
+	// Review r2 MINOR 2: a dangling , ; : is dropped before the full stop, not doubled into «,.»; an
+	// ellipsis is terminal; terminal punctuation behind a closing quote or bracket is terminal.
+	// MUTATIONS (each measured red): the , ; : trim removed; «…» taken out of the terminal set; the
+	// closing marks not looked behind.
+	for _, tc := range []struct{ ask, want string }{
+		{"a red patch pocket,", "a red patch pocket."},
+		{"a zip;", "a zip."},
+		{"a zip: ", "a zip."},
+		{"a zip , ;\n", "a zip."},
+		{"done…", "done…"},
+		{`"a bow."`, `"a bow."`},
+		{"«a bow!»", "«a bow!»"},
+		{"(a zip?)", "(a zip?)"},
+		{"'a bow.'", "'a bow.'"},
+		{`"a bow"`, `"a bow".`},
+		{"12.5 cm", "12.5 cm."},
+	} {
+		require.Equal(t, tc.want+fillPromptSuffix, fillPrompt(tc.ask), "ask %q", tc.ask)
+	}
+	require.Equal(t, "a red patch pocket. Show the finished result inside the painted zone of this garment "+
+		"photograph, blended naturally into the surrounding image: the same perspective, scale, focus, lighting "+
+		"and grain.", fillPrompt("a red patch pocket,"))
+
+	body, err := fillBody(fal.DefaultModelFill, Job{Prompt: " a brass button ", References: []string{"x"}, InpaintMask: "m"})
+	require.NoError(t, err)
+	require.Equal(t, falFillProvider{}.SentPrompt(Job{Prompt: " a brass button "}), body["prompt"],
+		"the history and the body carry one text")
 }
 
 // TestAnInpaintAnswerThatCannotGoBackIsKEPT_AND_COMPLAINED — the picture cannot be read back: the paid
@@ -243,4 +291,30 @@ func TestAnInpaintAnswerThatCannotGoBackIsKEPT_AND_COMPLAINED(t *testing.T) {
 	require.Equal(t, CodeInpaintNotComposited, v.Code)
 	require.Equal(t, entity.DesignAttemptDelivered, v.State)
 	require.False(t, v.Retryable)
+}
+
+// TestAFillOfAContrastingPartKEEPS_THE_ASK_AS_THE_LAST_WORD_ON_MATERIAL — review MAJOR 2 / MINOR 6.
+// «a red patch pocket» on blue denim: the old suffix followed it with «the same material, weave,
+// colour» — a later, stronger instruction to continue the denim, and the paid ask lost. Read through
+// buildJob and the body the provider is sent, not through fillPrompt alone. MUTATION (measured red):
+// the old suffix « — the painted zone of a photograph of a garment: the fill continues the surrounding
+// cloth seamlessly, the same material, weave, colour, scale and lighting, photographic.»
+func TestAFillOfAContrastingPartKEEPS_THE_ASK_AS_THE_LAST_WORD_ON_MATERIAL(t *testing.T) {
+	srcBytes, _ := gradientPNG(t, 64, 64)
+	objs := &fakeObjects{byKey: map[string][]byte{
+		"m/11.png": srcBytes,
+		"m/12.png": grayMask(t, 64, 64, image.Rect(20, 30, 30, 40)),
+	}}
+	job, err := buildJob(context.Background(), media(11, 12), objs, inpaintRun(" a red patch pocket "), "medium")
+	require.NoError(t, err)
+	body, err := fillBody(fal.DefaultModelFill, job)
+	require.NoError(t, err)
+	require.Equal(t, fillPrompt(job.Prompt), body["prompt"])
+	require.Equal(t, "a red patch pocket. Show the finished result inside the painted zone of this garment "+
+		"photograph, blended naturally into the surrounding image: the same perspective, scale, focus, lighting "+
+		"and grain.", body["prompt"])
+	require.Equal(t, body["prompt"], falFillProvider{}.SentPrompt(job), "the history row reads the same text")
+	for _, f := range []string{"same colour", "same material", "weave", "continues the surrounding cloth"} {
+		require.NotContains(t, body["prompt"], f, "nothing after the ask may overrule its colour or material")
+	}
 }

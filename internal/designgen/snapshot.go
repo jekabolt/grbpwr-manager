@@ -892,9 +892,19 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// if the prompt has already glued them into one sentence. Split here rather than in the render
 	// craft, because it is composePrompt that owns the shape of the human context and a second
 	// writer of the same fields is how two readers come to disagree.
+	//
+	// ON A RECOLOUR THE WORDS ARE LABELLED «colour in words» (20-PROMPTS §3.2). Tile 4 sends the
+	// Pantone's NAME there («Classic Blue»), and under «fabric in words» a model reads a colour name
+	// as a note about the cloth — or, worse, as licence to change the cloth. The render and pattern
+	// routes keep «fabric in words»: their crafts name that label in their own text (renderprompt's
+	// order of authority), and one kind check here cannot move a label a paragraph points at.
 	if c := p.Colour; c != nil {
 		write("colour", colourStatement(c))
-		write("fabric in words", c.Words)
+		wordsLabel := "fabric in words"
+		if run.Kind == entity.DesignRunKindRecolor {
+			wordsLabel = "colour in words"
+		}
+		write(wordsLabel, c.Words)
 	}
 	if t := p.Threed; t != nil {
 		var parts []string
@@ -1613,6 +1623,12 @@ func freeformPrerequisitesSurvived(p runParams, attached []refCaption) error {
 // photograph to name — there are N, one per call — so naming any of them would be a lie about the
 // other N-1. `imageNumberOf` is never asked about a recolour (only renderCraft asks, and a recolour
 // takes recolorCraft), so a zero id here cannot point anything at the wrong picture.
+//
+// ⚠ THE CAPTION ASSERTS NO PERSON AND NO PHOTOGRAPH (20-PROMPTS D4, review MAJOR 1). Tiles 4/5
+// recolour flats and renders too; a caption promising «the real photograph … the same person»
+// under a craft that says «a flat drawing or a render» is two contradictory descriptions of one
+// picture, and a model resolves that by photorealising the flat or inventing a wearer. So the
+// lighting, the person and the pose are kept only «that are present».
 func recolorAttached(photos int, cloths []refCaption) []refCaption {
 	if photos == 0 {
 		// Nothing to recolour: imageCalls refuses this job before any money moves. Whatever the
@@ -1621,8 +1637,8 @@ func recolorAttached(photos int, cloths []refCaption) []refCaption {
 	}
 	out := make([]refCaption, 0, 1+len(cloths))
 	out = append(out, refCaption{
-		Caption: "the photograph being recoloured — the real photograph this call must give back, " +
-			"with the same person, pose, framing, background and lighting",
+		Caption: "the source picture being recoloured — return this same picture, preserving its " +
+			"presentation, crop and background, plus any lighting, person and pose that are present",
 	})
 	return append(out, cloths...)
 }
