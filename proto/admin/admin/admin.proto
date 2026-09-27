@@ -12423,7 +12423,10 @@ message StartDesignRunRequest {
   //     no region marked on the subject («mark_the_area»); a picture named both in
   //     params.freeform.items and in params.extra_input_media_ids («one_list_per_fact»); more
   //     pictures than the snapshot's reference ceiling once the marked copies and the crops of the
-  //     regions are counted («too_many_pictures», with the numbers);
+  //     regions are counted («too_many_pictures», with the numbers); a run that takes a generation
+  //     window (`add_hardware` or `retouch` with exactly one marked area) whose picture is under the
+  //     minimum side («source_too_small») or over 18 MP, by its stored size or its header
+  //     («source_too_large») — the answer is pasted back into the whole picture;
   //   · cutout — anything other than exactly one picture in params.extra_input_media_ids
   //     («one_source_picture»); an `ask` or a params.freeform on a route that reads neither
   //     («cutout_takes_no_words») — a refusal rather than silence, so nobody pays for words that

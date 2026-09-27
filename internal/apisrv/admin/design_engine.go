@@ -238,7 +238,8 @@ func designFreeformWindowMediaID(params *pb_common.DesignRunParams) (int, bool) 
 // (G-02, Codex 7): refused here, BEFORE the reservation, with the worker's own word
 // (source_too_small). One media read, only for a windowed run. A row with no stored dimensions
 // (legacy, 0×0) is UNKNOWN, not small: it passes, and the worker — which decodes the picture — stays
-// the second lock (a free, terminal refusal before StartAttempt).
+// the second lock (a free, terminal refusal before StartAttempt). The same read refuses a windowed
+// freeform frame over designgen.CompositeMaxSourcePixels (source_too_large).
 func (s *Server) designRefuseWindowSourceTooSmall(ctx context.Context, kind string, params *pb_common.DesignRunParams) error {
 	var id int
 	switch kind {
@@ -262,8 +263,24 @@ func (s *Server) designRefuseWindowSourceTooSmall(ctx context.Context, kind stri
 		return designError(ctx, "failed to read the picture a generation window is cut from", err, nil)
 	}
 	m, ok := byID[id]
-	if !ok || m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
+	if !ok {
 		return nil
+	}
+	// ⚠ A GENERATION WINDOW IS PASTED BACK INTO ITS WHOLE FRAME AFTER THE PAYMENT, inside a 0.5 GB
+	// process (G-03 r2 follow-up): the frame is held to the composite's working pixel cap here, before
+	// the reservation — from its stored size, or, for a legacy row with none, from its header. (The
+	// inpaint source is capped by designRefuseUnusableMask, which reads its mask's header anyway.)
+	window := kind == entity.DesignRunKindFreeform
+	if m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
+		if window {
+			if w, h, ok := s.designStoredPictureHeader(ctx, m.FullSizeMediaURL); ok && designOverCompositeCap(w, h) {
+				return designRefuseSourceTooLarge(id, w, h, "a generation window")
+			}
+		}
+		return nil
+	}
+	if window && designOverCompositeCap(m.FullSizeWidth, m.FullSizeHeight) {
+		return designRefuseSourceTooLarge(id, m.FullSizeWidth, m.FullSizeHeight, "a generation window")
 	}
 	if min := designgen.WindowMinSourcePx; m.FullSizeWidth < min || m.FullSizeHeight < min {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeSourceTooSmall,

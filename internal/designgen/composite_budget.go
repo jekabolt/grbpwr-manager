@@ -17,7 +17,7 @@ import (
 
 // ═══════════════ THE MEMORY BUDGET OF A PHASE-3 COMPOSITE (G-03 r2, Codex BLOCKER 1) ═══════════════
 //
-// The extend and inpaint composites run AFTER the paid call, inside the one 0.5 GB backend process
+// The extend and inpaint composites — and the phase-2 generation window (window.go) — run AFTER the paid call, inside the one 0.5 GB backend process
 // (.do/app.yaml: apps-s-1vcpu-0.5gb, instance_count 1). An allocation failure there is not an error
 // a caller can classify: the Go runtime kills the whole process — the server, the other runs, and the
 // settle of THIS run's money — and the next pickup collects the same paid answer and dies again.
@@ -95,33 +95,107 @@ func decodeCompositeSource(raw []byte) (image.Image, error) {
 // into a 300 MB process. One explicit GC of a heap of pointer-free pixel buffers costs milliseconds.
 func releaseHeap() { runtime.GC() }
 
-// leanScale — Catmull-Rom from sr of src onto dr of dst, with NO scratch buffer: Kernel.Transform
-// computes each destination pixel from its source neighbourhood directly (the kernel widened by the
-// scale when shrinking, exactly as Kernel.Scale does), where Kernel.Scale's separable pass first
-// allocates dr.Dx() × sr.Dy() × 32 bytes. Only the pixels of dst ∩ dr are computed, so a band of dst
-// costs a band. Deterministic: the same call twice gives the same pixels (extendScaledSource relies
-// on it — the body and the composite must paste one raster).
+// leanScale — Catmull-Rom from sr of src onto dr of dst, with NO scratch buffer the size of the
+// source: Kernel.Transform computes each destination pixel from its source neighbourhood directly
+// (the kernel widened by the scale when shrinking, as Kernel.Scale does), where Kernel.Scale's
+// separable pass first allocates dr.Dx() × sr.Dy() × 32 bytes. Only the pixels of dst ∩ dr are
+// computed, so a band of dst costs a band. Deterministic: the same call twice gives the same pixels
+// (extendScaledSource relies on it — the body and the composite must paste one raster).
+//
+// TWO THINGS KEEP IT CHEAP, because a widened kernel computed per pixel costs (4 × factor)² taps:
+//   - a shrink by k ≥ 2 on both axes is first box-averaged by that integer k (boxReduce: one pass over
+//     the source, a result k² times smaller), so the kernel only ever finishes a shrink of < 2×;
+//   - the kernel always writes an *image.RGBA (x/image/draw's fast paths); another destination gets
+//     the result through a buffer of dst ∩ dr — never more than the pixels being written.
 func leanScale(dst draw.Image, dr image.Rectangle, src image.Image, sr image.Rectangle) {
 	if dr.Empty() || sr.Empty() {
 		return
 	}
-	kx := float64(dr.Dx()) / float64(sr.Dx())
-	ky := float64(dr.Dy()) / float64(sr.Dy())
-	s2d := f64.Aff3{
-		kx, 0, float64(dr.Min.X) - float64(sr.Min.X)*kx,
-		0, ky, float64(dr.Min.Y) - float64(sr.Min.Y)*ky,
+	region := dst.Bounds().Intersect(dr)
+	if region.Empty() {
+		return
 	}
-	// The transformed rectangle is dr up to float rounding; clip to dr so a rounding never touches
-	// the pixel beside it.
-	target := dst
-	if sub, ok := dst.(interface {
-		SubImage(image.Rectangle) image.Image
-	}); ok {
-		if d, ok := sub.SubImage(dr).(draw.Image); ok {
-			target = d
+	fx := float64(dr.Dx()) / float64(sr.Dx())
+	fy := float64(dr.Dy()) / float64(sr.Dy())
+	// s2d maps the ORIGINAL source coordinates onto dr; a box-reduced source is one pixel per k×k
+	// block starting at sr.Min, so its coordinate u is (x − sr.Min.X) / k.
+	s2d := f64.Aff3{
+		fx, 0, float64(dr.Min.X) - float64(sr.Min.X)*fx,
+		0, fy, float64(dr.Min.Y) - float64(sr.Min.Y)*fy,
+	}
+	from, fromRect := src, sr
+	if k := min(sr.Dx()/dr.Dx(), sr.Dy()/dr.Dy()); k >= 2 {
+		from = boxReduce(src, sr, k)
+		fromRect = from.Bounds()
+		s2d = f64.Aff3{fx * float64(k), 0, float64(dr.Min.X), 0, fy * float64(k), float64(dr.Min.Y)}
+	}
+	// The kernel writes only inside region: a float rounding of the transformed rectangle never
+	// touches the pixel beside it.
+	out, direct := dst.(*image.RGBA)
+	if direct {
+		out = out.SubImage(region).(*image.RGBA)
+	} else {
+		out = image.NewRGBA(region)
+	}
+	xdraw.CatmullRom.Transform(out, s2d, from, fromRect, xdraw.Src, nil)
+	if !direct {
+		draw.Draw(dst, region, out, region.Min, draw.Src)
+	}
+}
+
+// boxReduce — sr of src averaged over k×k blocks (premultiplied, so a transparent pixel adds no
+// colour), one pixel per block; the last row and column average the pixels they have. A result
+// k² times smaller than sr, made in one pass with one row of accumulators.
+func boxReduce(src image.Image, sr image.Rectangle, k int) *image.RGBA {
+	w := (sr.Dx() + k - 1) / k
+	h := (sr.Dy() + k - 1) / k
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	acc := make([]uint64, 4*w)
+	cnt := make([]uint64, w)
+	nrgba, isNRGBA := src.(*image.NRGBA)
+	rgba, isRGBA := src.(*image.RGBA)
+	rgba64, isRGBA64 := src.(image.RGBA64Image)
+	for oy := 0; oy < h; oy++ {
+		clear(acc)
+		clear(cnt)
+		y0 := sr.Min.Y + oy*k
+		y1 := min(y0+k, sr.Max.Y)
+		for y := y0; y < y1; y++ {
+			for x := sr.Min.X; x < sr.Max.X; x++ {
+				var r, g, b, a uint32
+				switch {
+				case isNRGBA:
+					i := nrgba.PixOffset(x, y)
+					p := nrgba.Pix[i : i+4 : i+4]
+					a = uint32(p[3]) * 0x101
+					r, g, b = uint32(p[0])*0x101*a/0xffff, uint32(p[1])*0x101*a/0xffff, uint32(p[2])*0x101*a/0xffff
+				case isRGBA:
+					i := rgba.PixOffset(x, y)
+					p := rgba.Pix[i : i+4 : i+4]
+					r, g, b, a = uint32(p[0])*0x101, uint32(p[1])*0x101, uint32(p[2])*0x101, uint32(p[3])*0x101
+				case isRGBA64:
+					c := rgba64.RGBA64At(x, y)
+					r, g, b, a = uint32(c.R), uint32(c.G), uint32(c.B), uint32(c.A)
+				default:
+					r, g, b, a = src.At(x, y).RGBA()
+				}
+				ox := (x - sr.Min.X) / k
+				acc[4*ox] += uint64(r)
+				acc[4*ox+1] += uint64(g)
+				acc[4*ox+2] += uint64(b)
+				acc[4*ox+3] += uint64(a)
+				cnt[ox]++
+			}
+		}
+		row := out.Pix[oy*out.Stride:]
+		for ox := 0; ox < w; ox++ {
+			n := cnt[ox]
+			for c := 0; c < 4; c++ {
+				row[4*ox+c] = uint8(((acc[4*ox+c] + n/2) / n) >> 8)
+			}
 		}
 	}
-	xdraw.CatmullRom.Transform(target, s2d, src, sr, xdraw.Src, nil)
+	return out
 }
 
 // compositeCanvas — the raster the composite draws into. A freshly decoded NRGBA / RGBA / NRGBA64 /
@@ -326,5 +400,29 @@ func pasteThroughMask(dst draw.Image, rect image.Rectangle, got image.Image, ab 
 			leanScale(band, rect, got, ab)
 		}
 		draw.DrawMask(dst, br, band, br.Min, alpha, br.Min, draw.Over)
+	}
+}
+
+// pasteReplacing — the window's paste: the answer (got, its own rectangle ab) scaled onto rect of dst,
+// band by band through one reused buffer, REPLACING what was there (draw.Src — the window is
+// replaced, not blended). Pixels outside rect are never written. An answer already at rect's size is
+// copied, not resampled.
+func pasteReplacing(dst draw.Image, rect image.Rectangle, got image.Image, ab image.Rectangle) {
+	same := ab.Size() == rect.Size()
+	rows := compositeBandRows
+	if rows > rect.Dy() {
+		rows = rect.Dy()
+	}
+	pix := make([]uint8, 4*rect.Dx()*rows)
+	for y0 := rect.Min.Y; y0 < rect.Max.Y; y0 += rows {
+		y1 := min(y0+rows, rect.Max.Y)
+		br := image.Rect(rect.Min.X, y0, rect.Max.X, y1)
+		band := &image.RGBA{Pix: pix[:4*br.Dx()*br.Dy()], Stride: 4 * br.Dx(), Rect: br}
+		if same {
+			draw.Draw(band, br, got, ab.Min.Add(br.Min.Sub(rect.Min)), draw.Src)
+		} else {
+			leanScale(band, rect, got, ab)
+		}
+		draw.Draw(dst, br, band, br.Min, draw.Src)
 	}
 }

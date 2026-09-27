@@ -127,15 +127,17 @@ func TestTheInpaintCompositeHAS_NO_FULL_SIZE_SCRATCH(t *testing.T) {
 }
 
 // TestTheExtendScaleHAS_NO_SCRATCH — the extend's downscale (the body before the money and the paste
-// after it) allocates its ≤ 3 MP result, not Kernel.Scale's size.X × source height × 32 bytes.
-// MUTATION (measured red): extendScaledSource back to xdraw.CatmullRom.Scale → +≈ 100 MB.
+// after it) allocates about its ≤ 3 MP result (≈ 27 MB here, box-reduced source and staging
+// included), not Kernel.Scale's size.X × source height × 32 bytes (≈ 154 MB).
+// MUTATION (measured red): extendScaledSource back to xdraw.CatmullRom.Scale → 154 MB.
 func TestTheExtendScaleHAS_NO_SCRATCH(t *testing.T) {
 	src := image.NewNRGBA(image.Rect(0, 0, 3000, 4000))
 	size := image.Pt(1200, 1600)
 	var out *image.NRGBA
 	alloc := totalAllocDuring(func() { out = extendScaledSource(src, size) })
 	require.Equal(t, size, out.Bounds().Size())
-	require.Less(t, alloc, uint64(4*size.X*size.Y)*2, "the result and a little more, got %d MB", alloc>>20)
+	// The result, its RGBA staging buffer and the 2× box-reduced source: under 4 results.
+	require.Less(t, alloc, uint64(4*size.X*size.Y)*4, "the result and a little more, got %d MB", alloc>>20)
 }
 
 // TestTheBandedPasteKEEPS_EVERY_BYTE_OUTSIDE_THE_PAINT — the scaled path (a crop over 1 MP travels

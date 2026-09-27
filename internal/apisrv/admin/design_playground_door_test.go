@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -55,6 +58,8 @@ var designPlaygroundDoorCodes = []string{
 	// try-on product that is not a render of its named colourway
 	entity.DesignErrorCodeThreedReserveUnbounded, entity.DesignErrorCodeSourceTooSmall,
 	entity.DesignErrorCodeProductNotColorwayRender,
+	// G-03 r2 follow-up: a windowed frame over the composite's working pixel cap
+	entity.DesignErrorCodeSourceTooLarge,
 	// the cloth-only recolour negative control
 	"cloth_without_picture",
 }
@@ -116,6 +121,21 @@ func pgMediaDims(id, w, h int) func(t *testing.T, rig *designRunRig) {
 		all[id] = entity.MediaFull{Id: id, MediaItem: entity.MediaItem{
 			FullSizeMediaURL: designPNGURL, FullSizeWidth: w, FullSizeHeight: h}}
 		media.EXPECT().GetMediaByIds(mock.Anything, mock.Anything).Return(all, nil).Maybe()
+	}
+}
+
+// pgMediaDimsObject — pgMediaDims whose bucket serves object(t) for any key (the header a legacy row
+// with no stored size is read by).
+func pgMediaDimsObject(id, w, h int, object func(t *testing.T) []byte) func(t *testing.T, rig *designRunRig) {
+	return func(t *testing.T, rig *designRunRig) {
+		pgMediaDims(id, w, h)(t, rig)
+		raw := object(t)
+		files := mocks.NewMockFileStore(t)
+		files.EXPECT().GetManagedObject(mock.Anything, mock.Anything).RunAndReturn(
+			func(_ context.Context, _ string) (io.ReadCloser, int64, error) {
+				return io.NopCloser(bytes.NewReader(raw)), int64(len(raw)), nil
+			}).Maybe()
+		rig.srv.bucket = files
 	}
 }
 
@@ -260,6 +280,23 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 		{name: "retouch: a legacy row with no stored size passes to the worker", kind: entity.DesignRunKindFreeform,
 			setup:  pgMediaDims(11, 0, 0),
 			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain"))},
+		// G-03 r2 follow-up: the window is pasted back into its whole frame after the money — a frame
+		// over the working pixel cap is refused before the reserve, by its stored size or its header.
+		{name: "retouch: an 18.006 MP frame", kind: entity.DesignRunKindFreeform, setup: pgMediaDims(11, 6000, 3001),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain")),
+			want:   entity.DesignErrorCodeSourceTooLarge},
+		{name: "retouch: exactly 18 MP passes", kind: entity.DesignRunKindFreeform, setup: pgMediaDims(11, 6000, 3000),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain"))},
+		{name: "retouch: a legacy row whose header is over the cap", kind: entity.DesignRunKindFreeform,
+			setup:  pgMediaDimsObject(11, 0, 0, func(t *testing.T) []byte { return pngHeaderOnly(t, 6000, 3001) }),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain")),
+			want:   entity.DesignErrorCodeSourceTooLarge},
+		{name: "retouch: a legacy row whose header is under the cap", kind: entity.DesignRunKindFreeform,
+			setup:  pgMediaDimsObject(11, 0, 0, func(t *testing.T) []byte { return pngHeaderOnly(t, 4000, 3000) }),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain"))},
+		{name: "free on a huge picture takes no window, so no cap", kind: entity.DesignRunKindFreeform,
+			setup:  pgMediaDims(11, 6000, 3001),
+			params: P(entity.DesignFreeformPresetFree, I(11, "", 1, "x"))},
 		{name: "free on a 60 px picture takes no window, so no minimum", kind: entity.DesignRunKindFreeform,
 			setup:  pgMediaDims(11, 60, 60),
 			params: P(entity.DesignFreeformPresetFree, I(11, "", 1, "x"))},

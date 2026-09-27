@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
-	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/webp"
 )
 
@@ -645,9 +644,19 @@ func freeformCropAt(src image.Image, rect image.Rectangle, keepAlpha bool, side 
 	if rect.Empty() {
 		return "", fmt.Errorf("the area lies outside the picture")
 	}
-	crop := image.NewNRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
-	draw.Draw(crop, crop.Bounds(), src, rect.Min, draw.Src)
-	scaled := freeformFit(crop, side)
+	// ⚠ NO FULL-SIZE COPY OF THE RECTANGLE (G-03 r2 follow-up): a retouch window can be most of a
+	// 40 MP frame, and the copy used to be made before the downscale. A rectangle that already fits
+	// the side is copied as it is (≤ side² pixels); a larger one is scaled straight out of the source.
+	var scaled image.Image
+	if w, h, fits := freeformFitSize(rect.Dx(), rect.Dy(), side); fits {
+		crop := image.NewNRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
+		draw.Draw(crop, crop.Bounds(), src, rect.Min, draw.Src)
+		scaled = crop
+	} else {
+		dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+		leanScale(dst, dst.Bounds(), src, rect)
+		scaled = dst
+	}
 
 	var buf bytes.Buffer
 	if keepAlpha {
@@ -708,21 +717,32 @@ func freeformBBox(region freeformRegion) (minX, minY, maxX, maxY float64) {
 
 // freeformFit уменьшает картинку до длинной стороны `max`. Меньшую НЕ увеличивает: растянутый
 // кроп не несёт ни одной новой детали, а весит вчетверо.
+//
+// leanScale, not Kernel.Scale (G-03 r2 follow-up): Scale's separable pass allocates max × source
+// height × 32 bytes of scratch — ≈ 590 MB for a 12000 px tall source fitted to 1536.
 func freeformFit(src image.Image, max int) image.Image {
 	b := src.Bounds()
-	long := b.Dx()
-	if b.Dy() > long {
-		long = b.Dy()
-	}
-	if long <= max || long == 0 {
+	w, h, fits := freeformFitSize(b.Dx(), b.Dy(), max)
+	if fits {
 		return src
 	}
-	scale := float64(max) / float64(long)
-	w := int(math.Max(1, math.Round(float64(b.Dx())*scale)))
-	h := int(math.Max(1, math.Round(float64(b.Dy())*scale)))
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, b, xdraw.Src, nil)
+	leanScale(dst, dst.Bounds(), src, b)
 	return dst
+}
+
+// freeformFitSize — the w×h a picture of that size is fitted to under a long side of max; fits =
+// true when it already is (it is never enlarged).
+func freeformFitSize(w, h, max int) (int, int, bool) {
+	long := w
+	if h > long {
+		long = h
+	}
+	if long <= max || long == 0 {
+		return w, h, true
+	}
+	scale := float64(max) / float64(long)
+	return int(math.Max(1, math.Round(float64(w)*scale))), int(math.Max(1, math.Round(float64(h)*scale))), false
 }
 
 func freeformDataURI(mediaType string, raw []byte) string {

@@ -1,18 +1,13 @@
 package designgen
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"image"
-	"image/draw"
-	"image/jpeg"
-	"image/png"
 	"math"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	xdraw "golang.org/x/image/draw"
 )
 
 // ═══════════════ ОКНО ГЕНЕРАЦИИ: КРОП ТУДА, КОМПОЗИТ ОБРАТНО ═══════════════
@@ -94,7 +89,14 @@ func (w *Worker) postProcess(ctx context.Context, job Job, out *Outcome) error {
 		return fmt.Errorf("%w: this worker has no object store to read the original frame from",
 			errWindowNotComposited)
 	}
-	src, err := freeformFetchImage(ctx, w.objects, job.Window.SourceURL)
+	// ⚠ AFTER THE MONEY, INSIDE THE ONE 0.5 GB PROCESS (G-03 r2 follow-up; composite_budget.go): the
+	// frame's header is held to CompositeMaxSourcePixels before a pixel is decoded — a frame planned
+	// before the cap existed is refused here, the bought crop kept as delivered, never an OOM.
+	raw, err := fetchStoredBytes(ctx, w.objects, job.Window.SourceURL)
+	if err != nil {
+		return fmt.Errorf("%w: the original frame could not be read back: %v", errWindowNotComposited, err)
+	}
+	src, err := decodeCompositeSource(raw)
 	if err != nil {
 		return fmt.Errorf("%w: the original frame could not be read back: %v", errWindowNotComposited, err)
 	}
@@ -109,7 +111,15 @@ func (w *Worker) postProcess(ctx context.Context, job Job, out *Outcome) error {
 	return nil
 }
 
-// compositeWindow draws the model's answer back into a copy of the original frame.
+// compositeWindow draws the model's answer back into the original frame.
+//
+// ⚠ BOUNDED BY CONSTRUCTION (G-03 r2 follow-up, the phase-3 budget in composite_budget.go): the
+// answer's header is capped before its pixels are decoded; the frame is drawn into IN PLACE when its
+// decoded form encodes losslessly (compositeCanvas — it is decoded for this call and shared with
+// nothing), else copied once; the answer is scaled into the window band by band (pasteReplacing,
+// leanScale — no dr.Dx() × sr.Dy() × 32-byte scratch, which a full-frame retouch window made hundreds
+// of MB); the encode stops at the bucket's ceiling (encodeComposite: a lossless PNG, a JPEG ladder
+// only for an opaque frame, never a JPEG of a frame with transparency).
 func compositeWindow(src image.Image, win GenerationWindow, answer []byte) (Artifact, error) {
 	if src.Bounds() != win.Bounds {
 		// ⚠ НЕ «ПОДГОНИМ МАСШТАБОМ». Замороженный прямоугольник назван в пикселях ЭТОГО кадра;
@@ -122,30 +132,22 @@ func compositeWindow(src image.Image, win GenerationWindow, answer []byte) (Arti
 	if rect.Empty() {
 		return Artifact{}, fmt.Errorf("the window %v lies outside the frame %v", win.Rect, src.Bounds())
 	}
+	// The answer's size is the provider's (it is scaled into the window whatever it is), so it is held
+	// to the same working cap as a frame, from its header.
+	if _, err := compositeSourceOverCap(answer); err != nil {
+		return Artifact{}, fmt.Errorf("the answer is not a picture this composite may decode: %w", err)
+	}
 	got, err := freeformDecode(answer)
 	if err != nil {
 		return Artifact{}, fmt.Errorf("the answer is not a readable picture: %w", err)
 	}
 
-	// КОПИЯ ИСХОДНИКА, А НЕ ЕГО ЖЕ БУФЕР: src может быть общим с чем угодно выше по стеку, а
-	// рисование по чужой памяти — это дефект, который проявляется где-то ещё.
-	dst := image.NewNRGBA(src.Bounds())
-	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
+	dst := compositeCanvas(src)
+	releaseHeap()
 	// Src, А НЕ Over: ответ ЗАМЕЩАЕТ окно, а не ложится поверх него полупрозрачно. Смешение с тем,
 	// что было под ним, дало бы призрак старой пуговицы под новой.
-	xdraw.CatmullRom.Scale(dst, rect, got, got.Bounds(), xdraw.Src, nil)
-
-	var buf bytes.Buffer
-	if win.KeepAlpha {
-		if err := png.Encode(&buf, dst); err != nil {
-			return Artifact{}, err
-		}
-		return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypePNG}, nil
-	}
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: compositeWindowJPEGQuality}); err != nil {
-		return Artifact{}, err
-	}
-	return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypeJPEG}, nil
+	pasteReplacing(dst, rect, got, got.Bounds())
+	return encodeComposite(dst, win.KeepAlpha)
 }
 
 // freeformWindowPlan — БЕРЁТ ЛИ ЭТОТ ПРОГОН ОКНО ГЕНЕРАЦИИ, и если да, то какое.
@@ -291,7 +293,14 @@ func deriveFreeformWindow(ctx context.Context, objects objectFetcher, plan freef
 			"and this worker has no object store to read it from")
 	}
 	srcURL := job.References[at]
-	src, err := freeformFetchImage(ctx, objects, srcURL)
+	// The frame's header against CompositeMaxSourcePixels before a pixel is decoded (G-03 r2
+	// follow-up): the answer is pasted back into this frame after the money, so a frame the composite
+	// may not hold is refused here — free and terminal (source_too_large), the door's second lock.
+	srcRaw, err := fetchStoredBytes(ctx, objects, srcURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("designgen: cannot read the picture a generation window crops: %w", err)
+	}
+	src, err := decodeCompositeSource(srcRaw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("designgen: cannot read the picture a generation window crops: %w", err)
 	}
