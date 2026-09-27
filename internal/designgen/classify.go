@@ -53,6 +53,13 @@ var (
 	// never the terminal «kind not available» that would release the reserve over a paid result
 	// (G-03, Codex 2).
 	errPaidCollectBlocked = errors.New("designgen: a paid job cannot be collected while its route is off")
+	// errSubmitSettling — the pickup found an earlier submit still open (`dispatching`, no accepted
+	// id) that is YOUNGER than the longest a live pass could still be inside it (submitSettleGrace):
+	// lease expiry proves the old worker lost the claim, not that its paid call has stopped (G-03 r2,
+	// Codex 3). Closing it `unknown` now would race the late worker's accepted id; the run instead
+	// comes back once the grace has passed, when the row is either closed by its owner (accepted →
+	// a free collect) or provably abandoned (→ `submit_unconfirmed`). Retryable, nothing spent.
+	errSubmitSettling = errors.New("designgen: an earlier submit of this run may still be settling")
 	// errEngineSwitchedOff — the frozen engine is a flagged row (Gemini / Seedream) whose flag is off
 	// at the pickup (G-03, Codex 6). Refused before StartAttempt, so nothing is spent; terminal,
 	// the door's own word (`unknown_image_model`).
@@ -137,6 +144,15 @@ const (
 	// known. The owner reconciles it with the provider's own dashboard.
 	CodeSubmitUnconfirmed = "submit_unconfirmed"
 
+	// CodeSubmitSettling — the run waits for an earlier, possibly still live submit to close (see
+	// errSubmitSettling). Retryable; the run comes back at the end of the grace.
+	CodeSubmitSettling = "submit_settling"
+
+	// CodePaidCollectWaiting — a BOUGHT job waits for its route to come back (errPaidCollectBlocked).
+	// The store reads this word as a wait that spends no round of the ceiling — see
+	// entity.DesignErrorCodePaidCollectWaiting (G-03 r2, Codex 4).
+	CodePaidCollectWaiting = entity.DesignErrorCodePaidCollectWaiting
+
 	// CodeUnknownImageModel — the frozen engine is not on this deployment's table at the pickup (a
 	// B-16 flag went off): the door's own word for the same fact. Free and terminal.
 	CodeUnknownImageModel = entity.DesignErrorCodeUnknownImageModel
@@ -172,9 +188,14 @@ type verdict struct {
 func classify(err error) verdict {
 	switch {
 	// ─── ours, G-03: a PAID job waiting for its route to come back. Retryable, before any attempt
-	// row (the resume is free); the round ceiling in the store closes it if the route never returns.
+	// row (the resume is free). Its own word, because the store reads it as a WAIT that does not
+	// spend the ten-round ceiling (G-03 r2, Codex 4): a key gone for longer than ten back-offs must
+	// not close a bought job.
 	case errors.Is(err, errPaidCollectBlocked):
-		return verdict{Retryable: true, Code: CodeKindNotAvailable, State: entity.DesignAttemptFailed}
+		return verdict{Retryable: true, Code: CodePaidCollectWaiting, State: entity.DesignAttemptFailed}
+	// ─── ours, G-03 r2: an earlier submit may still be live. Retryable, nothing spent.
+	case errors.Is(err, errSubmitSettling):
+		return verdict{Retryable: true, Code: CodeSubmitSettling, State: entity.DesignAttemptFailed}
 	// ─── ours + fal, G-03: a submit that may have been bought, with nothing on record to resume it
 	// by. FIRST among the provider cases: submitLost also wraps ErrUnexpectedResponse, and a 5xx
 	// would otherwise fall into the retryable default — both would read as «resubmit».

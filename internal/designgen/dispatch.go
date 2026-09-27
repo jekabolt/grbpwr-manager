@@ -63,8 +63,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		// refusal above is terminal and releases the reserve — right for a run that never paid, wrong
 		// for one whose submit fal already accepted: FAL_KEY removed for an hour would throw away
 		// work that is bought and collectable for free. So the attempt history is read first; an
-		// accepted id turns the refusal into a retryable wait (the store's round ceiling closes it if
-		// the route never returns), and an unreadable history abandons the pass, as below.
+		// accepted id turns the refusal into a retryable WAIT (`paid_collect_waiting`, which the
+		// store re-queues at the capped back-off WITHOUT spending the ten-round ceiling — G-03 r2,
+		// Codex 4: a key gone for longer than ten back-offs used to close a bought job; a person ends
+		// the wait by cancelling the run), and an unreadable history abandons the pass, as below.
 		if full, gerr := w.store.GetRun(ctx, run.Id); gerr != nil {
 			return w.abandon(ctx, run, fmt.Errorf("read attempts before refusing the route: %w", gerr))
 		} else if full != nil {
@@ -116,6 +118,21 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 			// submit here could buy the job a second time against the same reservation. Fail closed.
 			if pendingID == "" {
 				if open, ok := unresolvedSubmit(full.Attempts); ok {
+					// ⚠ BUT NOT WHILE ITS OWNER MAY STILL BE INSIDE IT (G-03 r2, Codex 3). This pass
+					// holds the claim because the previous one's LEASE expired — which proves it lost
+					// the row, not that its paid call has stopped. Closing the attempt `unknown` while
+					// that call can still answer races the late worker's accepted id. So a young open
+					// attempt is left alone and the run comes back when the grace is over; by then
+					// the row is either closed by its owner (an accepted id → a free collect) or
+					// provably abandoned (closed below). The store's late-finish rule
+					// (entity.DesignLateAcceptedFinish) is the second lock for a pause longer than
+					// any grace.
+					if settleBy := open.StartedAt.Add(w.submitSettleGrace()); w.clock().Before(settleBy) {
+						cause := fmt.Errorf("%w: attempt %d on %s opened at %s and may still be answering; "+
+							"looking again after %s", errSubmitSettling, open.AttemptNo, open.Provider,
+							open.StartedAt.UTC().Format(time.RFC3339), settleBy.UTC().Format(time.RFC3339))
+						return w.failRunAt(ctx, run, token, cause, settleBy)
+					}
 					cause := fmt.Errorf("%w: attempt %d on %s opened at %s and never closed — the job may "+
 						"have been queued and billed; reconcile it with the provider before starting it again",
 						errUnresolvedSubmit, open.AttemptNo, open.Provider,
@@ -213,6 +230,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 			// the next pickup refuses it (unresolvedSubmit) — closed either way.
 			actx, acancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 			defer acancel()
+			out.RequestID = fitRequestLocator(actx, run.Id, out.RequestID)
 			if ferr := w.recordAttempt(actx, run, att.AttemptNo, out, nil, entity.DesignAttemptAccepted); ferr != nil {
 				return w.failRun(actx, run, token, fmt.Errorf("%w: %s accepted request %s and the attempt could "+
 					"not record it (%v) — the job may be running and billed; reconcile it with the provider",
@@ -514,9 +532,12 @@ func (w *Worker) recordAttempt(ctx context.Context, run entity.DesignRun, attemp
 		req.ErrorCode = classify(callErr).Code
 	}
 	if err := w.store.FinishAttempt(ctx, req); err != nil {
+		// The request id rides the line: when this write is the ACCEPTED one, the log is the only
+		// place a paid id still exists if the run cannot be failed either (a lost claim).
 		slog.Default().ErrorContext(ctx, "failed to record the money of a design attempt",
 			slog.Int("run_id", run.Id), slog.Int("attempt_no", attemptNo),
-			slog.String("state", state), slog.String("err", err.Error()))
+			slog.String("state", state), slog.String("provider_request_id", req.ProviderRequestId),
+			slog.String("err", err.Error()))
 		return err
 	}
 	return nil
@@ -529,13 +550,21 @@ func (w *Worker) recordAttempt(ctx context.Context, run entity.DesignRun, attemp
 // policy and they live in exactly one place, in the store. A second copy of them in the worker
 // would be a second policy the day either one is edited.
 func (w *Worker) failRun(ctx context.Context, run entity.DesignRun, token string, cause error) error {
+	return w.failRunAt(ctx, run, token, cause, time.Time{})
+}
+
+// failRunAt is failRun with the next pickup named. Used ONLY where the moment is a fact rather than
+// a policy — the end of an open submit's settle grace — so the back-off exponent stays the store's.
+// Zero = the store's own back-off.
+func (w *Worker) failRunAt(ctx context.Context, run entity.DesignRun, token string, cause error, next time.Time) error {
 	v := classify(cause)
 	if _, err := w.store.FailRun(ctx, entity.DesignRunFail{
-		RunId:      run.Id,
-		ClaimToken: token,
-		ErrorCode:  v.Code,
-		LastError:  cause.Error(),
-		Retryable:  v.Retryable,
+		RunId:       run.Id,
+		ClaimToken:  token,
+		ErrorCode:   v.Code,
+		LastError:   cause.Error(),
+		Retryable:   v.Retryable,
+		NextAttempt: next,
 	}); err != nil {
 		return w.abandon(ctx, run, err)
 	}
@@ -589,6 +618,28 @@ func (w *Worker) sweep(ctx context.Context, minted []MintedMedia) {
 	for _, m := range minted {
 		w.sink.Drop(ctx, m)
 	}
+}
+
+// submitSettleGrace — how long after an attempt was OPENED its pass could still be inside the paid
+// call or the write that closes it. A cooperative pass is bounded by RunTimeout (its context) plus
+// settleTimeout (the accepted write runs beyond cancellation); the claim lease is longer than
+// RunTimeout by construction (applyDefaults keeps BatchSize × RunTimeout ≤ ¾ × ClaimLease), so
+// lease + settle covers it with room for a short stall. A crashed worker's run therefore waits at
+// most one extra round before its open attempt is closed `unknown`.
+func (w *Worker) submitSettleGrace() time.Duration {
+	lease := 20 * time.Minute
+	if w.c != nil && w.c.ClaimLease > 0 {
+		lease = w.c.ClaimLease
+	}
+	return lease + settleTimeout
+}
+
+// clock is the worker's «now»; a field so a probe can stand at a chosen moment.
+func (w *Worker) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 // unresolvedSubmit finds an attempt that was opened and never closed: `dispatching`, no finished_at.

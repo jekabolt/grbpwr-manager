@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,11 +42,12 @@ func submitAll(c *Client) map[string]func() error {
 }
 
 // TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE — a request fal read but answered with nothing
-// usable: a hang past the HTTP timeout, a 502, a 2xx without a request id, a 2xx that is not JSON.
-// The cut-out and the 3D submit ride the same callJSON, so the flaw — and the fix — are shared.
+// usable: a hang past the HTTP timeout, a 500, a 503 that nevertheless names a request id, a 2xx
+// without a request id, a 2xx that is not JSON. The cut-out and the 3D submit ride the same
+// callJSON, so the flaw — and the fix — are shared.
 // MUTATIONS (measured red): drop `sent.Store(true)` in callJSON → the «hang» rows lose the sentinel;
-// drop the `>= 500` wrap → the «502» rows; submitLost() back to a bare ErrUnexpectedResponse → the
-// «no id» rows.
+// drop the `>= 500` branch → the «500» and «503 with an id» rows; submitLost() back to a bare
+// ErrUnexpectedResponse → the «no id» rows.
 func TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -55,8 +57,12 @@ func TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE(t *testing.T) {
 			_, _ = io.ReadAll(r.Body)
 			time.Sleep(400 * time.Millisecond)
 		}},
-		{"a 502 from the gateway", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusBadGateway)
+		{"a 500 from the queue itself", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}},
+		{"a 503 that names a request id", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"request_id":"req-accepted-anyway","detail":"busy"}`)
 		}},
 		{"a 2xx without a request id", func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "IN_QUEUE"})
@@ -79,10 +85,15 @@ func TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE(t *testing.T) {
 }
 
 // TestADefiniteSubmitRefusalIsNOT_UNCONFIRMED — the positive controls: fal read the request and said
-// no (4xx), or nothing ever left the process (a dead address). Neither may be dressed as «maybe
-// charged»: the first keeps its terminal sentinel, the second stays retryable weather.
+// no (4xx), the gateway/queue said it did not take it (502/503/504 without an id — fal's own queue
+// client retries exactly these on a submit), or nothing ever left the process (a dead address). None
+// may be dressed as «maybe charged»: the 4xx keep their terminal sentinels, the rest stay retryable
+// weather.
+// MUTATION (measured red): submitRetryableStatus → always false → the 502/503/504 rows turn
+// unconfirmed (the G-03 r2 regression: every pre-enqueue 503 closed a cut-out or 3D run for good).
 func TestADefiniteSubmitRefusalIsNOT_UNCONFIRMED(t *testing.T) {
-	for _, code := range []int{http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusUnauthorized} {
+	for _, code := range []int{http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusUnauthorized,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(code)
 		}))
@@ -104,6 +115,51 @@ func TestADefiniteSubmitRefusalIsNOT_UNCONFIRMED(t *testing.T) {
 		require.Errorf(t, err, route)
 		require.NotErrorIsf(t, err, ErrSubmitUnconfirmed, "%s: nothing was written, so nothing was bought: %v", route, err)
 	}
+}
+
+// TestASubmitCutMidBodyIsNOT_UNCONFIRMED — G-03 r2, Codex 2: the headers went out, the JSON body did
+// not (the peer resets the connection while the body is still being written). fal holds no complete
+// request and cannot have queued or charged it, so this must stay the ordinary retryable error.
+// A raw listener that RSTs every connection on accept (SetLinger(0)) and an 8 MiB body — larger than
+// the transport's buffer and the kernel's send buffer — force the reset mid-write, the technique
+// internal/openrouter's TestARequestCutMidWriteIsNotCharged measured.
+// MUTATION (measured red): mark `sent` on WroteHeaders (the previous code) instead of WroteRequest
+// with a nil Err → ErrSubmitUnconfirmed.
+func TestASubmitCutMidBodyIsNOT_UNCONFIRMED(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	accepted := make(chan struct{}, 8)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	c := newGenericClient("http://"+ln.Addr().String(), Config{})
+	c.cfg.HTTPTimeout = 20 * time.Second
+	var out submitResponse
+	err = c.callJSON(context.Background(), http.MethodPost, "/fal-ai/flux-pro/v1/fill",
+		map[string]string{"prompt": strings.Repeat("x", 8<<20)}, &out, nil)
+	require.Error(t, err)
+	select {
+	case <-accepted:
+	default:
+		t.Fatal("the listener accepted nothing — the probe measures a dead address, not a cut body")
+	}
+	require.NotErrorIs(t, err, context.DeadlineExceeded, "the cut must arrive as a write error, not a timeout")
+	require.NotErrorIsf(t, err, ErrSubmitUnconfirmed, "the body never reached fal in full: %v", err)
 }
 
 // TestAStatusLookupIsNeverUNCONFIRMED — the sentinel is about PAYMENTS: a GET that hangs is a free

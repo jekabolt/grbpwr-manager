@@ -272,9 +272,10 @@ var ErrUnexpectedResponse = errors.New("fal: unreadable response from the provid
 // ErrTooLarge is returned when an artifact or an envelope exceeds its cap. Refusal, not truncation.
 var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 
-// ErrSubmitUnconfirmed — A SUBMIT WHOSE OUTCOME NOBODY KNOWS: the request left this process (its
-// headers were written) and no usable answer came back — a timeout, a reset connection, a 5xx, a 2xx
-// that could not be read or named no request id. fal MAY have queued the job and charged for it.
+// ErrSubmitUnconfirmed — A SUBMIT WHOSE OUTCOME NOBODY KNOWS: the whole request left this process
+// (WroteRequest without an error) and no usable answer came back — a timeout, a reset connection, a
+// 5xx other than 502/503/504 (or any 5xx naming a request id), a 2xx that could not be read or named
+// no request id. fal MAY have queued the job and charged for it.
 //
 // ⚠ IT IS NEVER RESUBMITTED AUTOMATICALLY (G-03, Codex 1). fal's queue documents no idempotency key
 // for a submit (https://fal.ai/docs/documentation/model-apis/inference/queue lists Authorization,
@@ -285,8 +286,9 @@ var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 // designgen classifies this terminal (`submit_unconfirmed`, attempt state `unknown`): the run fails
 // closed and the history says the charge must be reconciled with fal's dashboard.
 //
-// A submit refused BEFORE its headers were written (DNS, dial, TLS) is not this: nothing reached fal,
-// and it keeps its ordinary retryable classification.
+// A submit whose request was never written in full (DNS, dial, TLS, a body write cut half-way) is
+// not this: fal holds no complete request it could enqueue, and it keeps its ordinary retryable
+// classification. Nor is a 502/503/504 without a request id — see submitServerError.
 var ErrSubmitUnconfirmed = errors.New("fal: the submit may have reached the provider and its outcome is unknown")
 
 // submitLost — the 2xx submit that named no request id: accepted (so possibly paid) and unresumable.
@@ -907,6 +909,16 @@ func queuePath(model string) string {
 	return parts[0] + "/" + parts[1]
 }
 
+// QueueNamespace is the queue namespace a slug's requests are polled under (queuePath): what a
+// resume needs to find a request when only part of its locator can be stored. "" for "".
+func QueueNamespace(model string) string {
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		return ""
+	}
+	return queuePath(model)
+}
+
 // retiredModel3D is every 3D slug this band has DEFAULTED to before the current one.
 //
 // ⚠ IT IS A MONEY LIST, NOT A HISTORY NOTE. A submit is the payment; it closes its attempt
@@ -982,11 +994,20 @@ const (
 // a deployment that switched between the default and FAL_MODEL_3D. It does NOT cover one override
 // replaced by another — nobody recorded the first — and it says so here rather than pretending.
 func (c *Client) locateRequest(ctx context.Context, current, requestID string) (string, locateOutcome, error) {
-	tried := map[string]bool{queuePath(strings.Trim(strings.TrimSpace(current), "/")): true}
 	candidates := []string{DefaultModel3D, c.cfg.Model3D}
 	for _, r := range retired3D {
 		candidates = append(candidates, r.Model)
 	}
+	return c.searchNamespaces(ctx, current, candidates, requestID)
+}
+
+// searchNamespaces asks each candidate slug's queue namespace (skipping current's and repeats)
+// whether it knows requestID — locateRequest's search over any candidate list. Since G-03 r2 new
+// requests carry their slug in the locator; the search remains the recovery for the ids stored bare
+// before that (every generic route and the 3D route), over the namespaces the route is known to have
+// used (RouteLegacyModels, CutoutLegacyModels, retired3D).
+func (c *Client) searchNamespaces(ctx context.Context, current string, candidates []string, requestID string) (string, locateOutcome, error) {
+	tried := map[string]bool{queuePath(strings.Trim(strings.TrimSpace(current), "/")): true}
 	// THE FIRST TRANSIENT FAULT IS KEPT, NOT THE LAST, because it is the one closest to the model
 	// the caller was already polling — and because a caller that reports «could not be asked» has
 	// to be able to say WHY, in the provider's own words.
@@ -1172,8 +1193,20 @@ func (c *Client) collect(lookupCtx, fetchCtx context.Context, model, requestID s
 // single ceiling over both would cut the download of a request that finished in the last second of
 // the wait — the units spent, the model built, and nothing to show but a link that expires.
 func (c *Client) Await(ctx context.Context, requestID string, dst Sink) (*Result, error) {
+	return c.AwaitAt(ctx, "", requestID, dst)
+}
+
+// AwaitAt is Await polled FIRST at the slug the request was SUBMITTED to (G-03 r2, Codex 4: the 3D
+// route now stores "<slug>#<id>" like the generic routes, so a custom FAL_MODEL_3D replaced by
+// another custom one no longer strands a paid build). An empty model is today's FAL_MODEL_3D — the
+// legacy bare-id path. A 404 that outlives the grace still searches the known namespaces either way.
+func (c *Client) AwaitAt(ctx context.Context, model, requestID string, dst Sink) (*Result, error) {
 	if !c.Enabled() {
 		return nil, ErrNotConfigured
+	}
+	model = strings.Trim(strings.TrimSpace(model), "/")
+	if model == "" {
+		model = c.cfg.Model3D
 	}
 	ceiling := c.cfg.PollTimeout
 	waitCtx, cancel := context.WithTimeout(ctx, ceiling)
@@ -1195,7 +1228,6 @@ func (c *Client) Await(ctx context.Context, requestID string, dst Sink) (*Result
 	// outlives the grace is the one symptom of a model that moved under a build already paid for —
 	// and the answer to it is to poll where the build actually is. Searched at most ONCE per wait:
 	// a second search could only offer a namespace already tried, and would spin.
-	model := c.cfg.Model3D
 	searched := false
 
 	for {
@@ -1429,16 +1461,37 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// ⚠ EVERY POST ON THIS API IS A SUBMIT, i.e. A PAYMENT (G-03, Codex 1). Whether its headers left
-	// the process is the one fact that separates «nothing reached fal» (dial, DNS, TLS — retryable)
-	// from «fal may have queued and charged it» (ErrSubmitUnconfirmed — never resubmitted). The
-	// trace answers it; the Go transport itself never replays a written POST that carries no
-	// Idempotency-Key header (net/http Request.isReplayable), so no second copy leaves from below.
+	// ⚠ EVERY POST ON THIS API IS A SUBMIT, i.e. A PAYMENT (G-03, Codex 1). Whether the WHOLE request
+	// left the process is the one fact that separates «nothing complete reached fal» (dial, DNS, TLS,
+	// a body write cut half-way — retryable) from «fal may have queued and charged it»
+	// (ErrSubmitUnconfirmed — never resubmitted). The Go transport itself never replays a written POST
+	// that carries no Idempotency-Key header (net/http Request.isReplayable), so no second copy leaves
+	// from below.
+	//
+	// ⚠ WroteRequest, NOT WroteHeaders (G-03 r2, Codex 2). WroteHeaders fires before a single byte of
+	// the JSON body is written: a reset while the body is still going out — a definite non-submission,
+	// fal holds an incomplete JSON it cannot enqueue — used to read as «maybe charged» and terminalize
+	// the run. WroteRequest fires once the body is written and carries the write's own error; only
+	// info.Err == nil marks the request as sent.
+	//
+	// WHAT IS STILL CONSERVATIVE, SAID OUT LOUD: net/http calls WroteRequest before the final flush of
+	// its 4 KiB buffer (writeLoop flushes after Request.write returns), so a request whose last
+	// buffered bytes fail to flush is read as sent. That errs toward «unconfirmed» — a lost run, never
+	// a second purchase — and is the same reading internal/openrouter measured and accepted.
+	//
+	// GetConn resets the flag: it fires once per transport attempt (a redirect, or the transport's
+	// own retry of a nothing-written request on a reused connection), so the flag describes the LAST
+	// attempt, not the union of all of them.
 	submit := method == http.MethodPost
 	var sent atomic.Bool
 	if submit {
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-			WroteHeaders: func() { sent.Store(true) },
+			GetConn: func(string) { sent.Store(false) },
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					sent.Store(true)
+				}
+			},
 		}))
 	}
 	unconfirmed := func(err error) error {
@@ -1459,11 +1512,10 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		err := c.statusError(resp, method, path)
-		if resp.StatusCode >= 500 {
-			// A server failure answering a submit does not say the job was NOT queued (a gateway 502/504
-			// in front of an enqueue that happened). A 4xx does: fal read the request and refused it.
-			return unconfirmed(err)
+		raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
+		err := statusErrorFrom(resp.StatusCode, raw, method, path)
+		if submit && resp.StatusCode >= 500 {
+			return submitServerError(resp.StatusCode, raw, err)
 		}
 		return err
 	}
@@ -1481,24 +1533,26 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 	return nil
 }
 
-// statusError turns a non-2xx answer into the sentinel that says what to DO about it.
+// statusErrorFrom turns a non-2xx answer into the sentinel that says what to DO about it.
 //
 // ⚠ THE TWO 404s ARE DIFFERENT FAULTS AND MUST NOT SHARE A SENTENCE. A 404 on the SUBMIT path means
 // the model slug is gone — a setting to fix, and the exact failure that once took down both AI
 // features here while reading as a temporary outage. A 404 on the STATUS/RESULT path means the
 // request id is worthless — a run to abandon. They are told apart by the METHOD AND PATH, never by
 // the provider's English sentence, so a reworded message cannot silently reclassify either.
-func (c *Client) statusError(resp *http.Response, method, path string) error {
-	raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
+//
+// It takes the body already read: callJSON reads it once, because a 5xx answering a submit is also
+// searched for a request id (submitServerError).
+func statusErrorFrom(code int, raw []byte, method, path string) error {
 	detail := providerMessage(raw)
 
-	switch resp.StatusCode {
+	switch code {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, code, detail)
 	case http.StatusPaymentRequired:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, code, detail)
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, code, detail)
 	case http.StatusNotFound:
 		if strings.Contains(path, "/requests/") {
 			return fmt.Errorf("%w (HTTP 404): %s", ErrRequestNotFound, detail)
@@ -1506,15 +1560,53 @@ func (c *Client) statusError(resp *http.Response, method, path string) error {
 		return fmt.Errorf("%w (HTTP 404): %s — model %q", ErrModelUnavailable, detail, strings.TrimPrefix(path, "/"))
 	case http.StatusGone, http.StatusConflict:
 		// The provider ended the job itself. Terminal: nothing about it improves on a retry.
-		return fmt.Errorf("%w (HTTP %d): %s", ErrTaskFailed, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrTaskFailed, code, detail)
 	}
 	// EVERY OTHER 4xx IS «WE SENT SOMETHING WRONG», AND THAT IS NOT WEATHER — 422 above all, which
 	// is what fal answers to a payload its validator rejects. 5xx keeps the generic form: a server
 	// failing today may well answer tomorrow.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, resp.StatusCode, detail)
+	if code >= 400 && code < 500 {
+		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, code, detail)
 	}
-	return fmt.Errorf("fal: %s %s: HTTP %d: %s", method, path, resp.StatusCode, detail)
+	return fmt.Errorf("fal: %s %s: HTTP %d: %s", method, path, code, detail)
+}
+
+// submitRetryableStatus — the 5xx answers to a SUBMIT that say the queue did not take the request:
+// the gateway could not reach the queue (502), the queue is refusing work (503), the gateway gave
+// up before the queue answered (504). fal's own queue client retries exactly these three on a
+// submit (fal-js libs/client/src/retry.ts DEFAULT_RETRYABLE_STATUS_CODES, applied to queue.submit),
+// which is the provider's own statement that they are not an accepted job.
+func submitRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// submitServerError classifies a 5xx that answered a SUBMIT (G-03 r2, Codex 2).
+//
+//   - a body naming a request_id: the queue DID accept the job, whatever the status says — it is
+//     paid, and the id rides the error (ErrSubmitUnconfirmed, terminal) so last_error carries what
+//     a person reconciles by;
+//   - 502 / 503 / 504 without an id: the queue did not take it (see submitRetryableStatus) — the
+//     ordinary retryable error, as fal's own client treats it;
+//   - every OTHER 5xx (500, 501, 505…): ErrSubmitUnconfirmed. A 500 is the queue's own handler
+//     failing, and nothing documents whether it failed before or after the enqueue; the conservative
+//     reading is the one that can only lose a run, never buy the job twice.
+func submitServerError(code int, raw []byte, err error) error {
+	var named struct {
+		RequestID string `json:"request_id"`
+	}
+	if json.Unmarshal(raw, &named) == nil {
+		if id := strings.TrimSpace(named.RequestID); id != "" {
+			return fmt.Errorf("%w: the answer named request %s: %w", ErrSubmitUnconfirmed, id, err)
+		}
+	}
+	if submitRetryableStatus(code) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err)
 }
 
 // providerMessage extracts the provider's own sentence from an error body, falling back to the raw

@@ -71,6 +71,8 @@ func TestAnOpenSubmitAtPickupIsNOT_BOUGHT_AGAIN(t *testing.T) {
 	st := &fakeStore{getRun: &entity.DesignRun{Id: 4, Attempts: []entity.DesignRunAttempt{open}}}
 	prov := asyncFill(&Outcome{RequestID: "x#y", Pending: true}, nil)
 	w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{Threed: prov})
+	// Past the settle grace: the owner of the open row cannot still be inside its call.
+	w.now = func() time.Time { return open.StartedAt.Add(2 * time.Hour) }
 
 	require.NoError(t, w.execute(context.Background(), testRun(4, entity.DesignRunKindThreed), "tok"))
 	require.Empty(t, prov.calls, "NO second submit")
@@ -85,6 +87,7 @@ func TestAnOpenSubmitAtPickupIsNOT_BOUGHT_AGAIN(t *testing.T) {
 	st2 := &fakeStore{getRun: &entity.DesignRun{Id: 4, Attempts: []entity.DesignRunAttempt{closed}}}
 	prov2 := asyncFill(&Outcome{RequestID: "x#y", Pending: true}, nil)
 	w2 := testWorker(st2, nil, newFakeSink(ContentTypePNG), Providers{Threed: prov2})
+	w2.now = w.now
 	require.NoError(t, w2.execute(context.Background(), testRun(4, entity.DesignRunKindThreed), "tok"))
 	require.Len(t, prov2.calls, 1, "a submit that closed as a refusal is retried as before")
 }
@@ -124,7 +127,8 @@ func TestAPaidJobWAITS_FOR_ITS_ROUTE(t *testing.T) {
 	st := &fakeStore{getRun: paid}
 	w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{Threed: off})
 	require.NoError(t, w.execute(context.Background(), testRun(4, entity.DesignRunKindThreed), "tok"))
-	require.Equal(t, []string{CodeKindNotAvailable + " retry=true"}, failedCodes(st))
+	require.Equal(t, []string{CodePaidCollectWaiting + " retry=true"}, failedCodes(st),
+		"G-03 r2, Codex 4: the store reads this word as a wait that spends no round of the ceiling")
 	require.Empty(t, off.calls)
 	require.Empty(t, off.collectFor)
 

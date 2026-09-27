@@ -243,11 +243,26 @@ func (c *Client) CollectCutout(ctx context.Context, requestID string, dst io.Wri
 
 // CollectCutoutAt is CollectCutout polled at the slug the request was SUBMITTED to, not today's
 // FAL_MODEL_CUTOUT (G-03, Codex 2: the queue namespace is the slug's, and a slug moved between a paid
-// submit and its resume would poll another model's queue for it). An empty model is CollectCutout.
+// submit and its resume would poll another model's queue for it).
+//
+// An empty model is a LEGACY bare id (stored before the locator): today's slug first, then — on a 404
+// past the grace — the route's known namespaces (CutoutLegacyModels), G-03 r2, Codex 4.
 func (c *Client) CollectCutoutAt(ctx context.Context, model, requestID string, dst io.Writer) (*CutoutResult, error) {
 	model = strings.Trim(strings.TrimSpace(model), "/")
 	if model == "" {
-		return c.CollectCutout(ctx, requestID, dst)
+		res, err := c.CollectCutout(ctx, requestID, dst)
+		legacy := c.CutoutLegacyModels()
+		if !errors.Is(err, ErrRequestNotFound) || len(legacy) < 2 {
+			return res, err
+		}
+		switch alt, out, cause := c.searchNamespaces(ctx, legacy[0], legacy[1:], strings.TrimSpace(requestID)); out {
+		case locateFound:
+			model = alt
+		case locateUnknown:
+			return nil, notFoundYetUnsure(requestID, legacy[0], cause)
+		default:
+			return res, err
+		}
 	}
 	if !c.Enabled() {
 		return nil, ErrNotConfigured
@@ -260,6 +275,12 @@ func (c *Client) CollectCutoutAt(ctx context.Context, model, requestID string, d
 		return nil, fmt.Errorf("%w: collect was given no request id", ErrBadRequest)
 	}
 	return c.awaitFile(ctx, model, requestID, pickCutout, dst, maxCutoutBytes)
+}
+
+// CutoutLegacyModels — every slug a BARE cut-out request id may have been queued under: today's
+// FAL_MODEL_CUTOUT first, then the code default. See RouteLegacyModels.
+func (c *Client) CutoutLegacyModels() []string {
+	return []string{c.ModelCutout(), DefaultModelCutout}
 }
 
 // pickCutout is PickImage under the cut-out's own sentinel: a completed matting request with no url

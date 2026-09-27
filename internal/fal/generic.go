@@ -190,6 +190,43 @@ func (c *Client) CollectFile(ctx context.Context, model, requestID string, pick 
 	return c.awaitFile(ctx, model, requestID, pick, dst, maxBytes)
 }
 
+// CollectFileSearching is CollectFile over a request whose namespace is not certain — a LEGACY bare
+// id stored before the locator carried the slug (G-03 r2, Codex 4). models[0] is polled as
+// CollectFile would; a 404 that outlives the grace then asks the other candidates' namespaces once
+// (searchNamespaces) and collects where the id is found. An unfinished search (a candidate could not
+// be asked) is RETRYABLE, never the terminal «this id buys nothing».
+func (c *Client) CollectFileSearching(ctx context.Context, models []string, requestID string, pick FilePicker, dst io.Writer, maxBytes int64) (*FileResult, error) {
+	if len(models) == 0 {
+		return nil, fmt.Errorf("%w: collect was given no model slug", ErrBadRequest)
+	}
+	res, err := c.CollectFile(ctx, models[0], requestID, pick, dst, maxBytes)
+	if !errors.Is(err, ErrRequestNotFound) || len(models) == 1 {
+		return res, err
+	}
+	switch alt, out, cause := c.searchNamespaces(ctx, models[0], models[1:], strings.TrimSpace(requestID)); out {
+	case locateFound:
+		return c.CollectFile(ctx, alt, requestID, pick, dst, maxBytes)
+	case locateUnknown:
+		return nil, notFoundYetUnsure(requestID, models[0], cause)
+	}
+	return res, err
+}
+
+// RouteLegacyModels — every slug a BARE request id of this route may have been queued under: today's
+// (ModelFor) first, then the code default, then every slug the route accepts or has defaulted to.
+// Duplicates are harmless (searchNamespaces skips a namespace already asked). A slug is ADDED here
+// when a default moves off it, for the reason retired3D gives.
+func (c *Client) RouteLegacyModels(r Route) []string {
+	switch r {
+	case RouteOutpaint:
+		// bria/expand is the route's accepted alternative (designgen builds a body for it).
+		return []string{c.ModelFor(r), DefaultModelOutpaint, "fal-ai/bria/expand"}
+	case RouteFill:
+		return []string{c.ModelFor(r), DefaultModelFill}
+	}
+	return nil
+}
+
 // awaitFile polls the request until it completes, then downloads its file. See awaitCutout's old
 // argument (kept on the functions below): no search of other namespaces — these routes answer in
 // seconds, so the window in which a slug move could strand a paid request is one request long.

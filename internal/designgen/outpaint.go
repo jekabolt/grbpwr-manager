@@ -429,8 +429,10 @@ func pickAnyImage(body json.RawMessage) (string, string, error) {
 // accepted submit stores both, "<slug>#<id>", and the collect polls exactly that slug, whatever
 // FAL_MODEL_OUTPAINT / FAL_MODEL_FILL say by the time it runs (a slug move between the submit and a
 // resume used to poll bria's namespace for a flux request and lose the paid file). The collect row
-// reports the same locator, so chargeAlreadyBooked keys one charge by one string. A bare id (a row
-// written before this) is read against the current slug, as before.
+// reports the same locator, so chargeAlreadyBooked keys one charge by one string. The 3D route stores
+// the same form since G-03 r2. A bare id (a row written before this) is read against the current
+// slug and then the route's known namespaces (fal.RouteLegacyModels / CutoutLegacyModels /
+// retired3D) — G-03 r2, Codex 4.
 
 const falLocatorSep = "#"
 
@@ -449,6 +451,45 @@ func splitFalLocator(s string) (model, id string) {
 	return "", s
 }
 
+// providerRequestIDMax — design_run_attempt.provider_request_id is VARCHAR(128)
+// (internal/store/sql/0340_design_runs.sql). Bytes are counted: a fal locator is ASCII, and a byte
+// count can only be stricter than MySQL's character count.
+const providerRequestIDMax = 128
+
+// fitRequestLocator is the accepted locator as it will FIT the column (G-03 r2, Codex 8).
+//
+// falLocatorFits checks the SLUG before the submit; the id is fal's, and fal's schemas type it as a
+// string, not as a 36-character UUID. A longer id arriving AFTER the charge used to make the
+// accepted write fail — a paid job turned manual-reconcile over a column width. So the locator
+// degrades, each step still resumable, and says so at ERROR level with the full value and the run:
+//
+//  1. "<slug>#<id>" — the whole locator;
+//  2. "<namespace>#<id>" — the queue namespace (fal.QueueNamespace) is all a poll needs: the status
+//     and result paths are built from it, never from the full slug (a 3D price read off it falls
+//     back to the configured tariff);
+//  3. "<id>" — a bare id: the collect polls today's slug and then the route's known namespaces
+//     (the legacy path, collectRouteFile / CollectCutoutAt / fal.Await);
+//  4. nothing fits — the locator is returned whole, the accepted write refuses it, and the run fails
+//     closed (errAcceptedNotRecorded) with the id in last_error and in this log line.
+func fitRequestLocator(ctx context.Context, runID int, locator string) string {
+	if len(locator) <= providerRequestIDMax {
+		return locator
+	}
+	stored := locator
+	model, id := splitFalLocator(locator)
+	switch ns := fal.QueueNamespace(model); {
+	case model != "" && ns != "" && len(ns)+len(falLocatorSep)+len(id) <= providerRequestIDMax:
+		stored = ns + falLocatorSep + id
+	case len(id) <= providerRequestIDMax:
+		stored = id
+	}
+	slog.Default().ErrorContext(ctx, "design: an accepted request locator is longer than provider_request_id "+
+		"holds; a shorter, still resumable form is stored — keep this line to reconcile the paid job",
+		slog.Int("run_id", runID), slog.String("locator", locator), slog.String("stored", stored),
+		slog.Int("column_max", providerRequestIDMax))
+	return stored
+}
+
 func falLocatorFits(model string) error {
 	if len(model) > falLocatorMaxSlug {
 		return fmt.Errorf("%w: the slug %q is %d characters, and a request is remembered by slug and id in "+
@@ -463,11 +504,14 @@ func falLocatorFits(model string) error {
 // booking over the reservation said out loud.
 func collectRouteFile(ctx context.Context, c *fal.Client, route fal.Route, job Job, locator string) (*Outcome, error) {
 	model, id := splitFalLocator(locator)
+	models := []string{model}
 	if model == "" {
-		model = c.ModelFor(route)
+		// A BARE id — written before the locator existed (G-03 r2, Codex 4): today's slug first,
+		// then the namespaces this route is known to have used, instead of today's slug alone.
+		models = c.RouteLegacyModels(route)
 	}
 	var buf bytes.Buffer
-	res, err := c.CollectFile(ctx, model, id, pickAnyImage, &buf, 0)
+	res, err := c.CollectFileSearching(ctx, models, id, pickAnyImage, &buf, 0)
 	if err != nil {
 		if out := chargedRouteOutcome(c, route, job, err); out != nil {
 			out.RequestID = locator

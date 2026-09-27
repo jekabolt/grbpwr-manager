@@ -74,10 +74,19 @@ func (p falThreedProvider) execute(ctx context.Context, job Job, opts threedOpti
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
+	// THE SLUG THIS BUILD IS BOUGHT UNDER, remembered with its id (G-03 r2, Codex 4) — see the
+	// locator in outpaint.go. The namespace search in fal.Await could not recover one custom
+	// FAL_MODEL_3D replaced by another; the locator does. Refused before the submit if it could not
+	// be stored.
+	model := p.c.Model()
+	if err := falLocatorFits(model); err != nil {
+		return nil, err
+	}
 	req, err := falViews(job)
 	if err != nil {
 		return nil, err
 	}
+	req.Model = model
 	// THE RUN'S OWN OPTIONS, verbatim. Empty = today's constants, and the transport then writes the
 	// exact body it wrote before the options existed (TestBenchPlate3DBodyIsByteIdentical).
 	req.Texture, req.PBR, req.Quality = opts.Texture, opts.PBR, opts.Quality
@@ -103,7 +112,7 @@ func (p falThreedProvider) execute(ctx context.Context, job Job, opts threedOpti
 	// No price yet, and NULL is the schema's word for that. fal reports what a request billed on
 	// the RESULT fetch, so the charge is recorded by the collect — writing a zero here would say
 	// the model was free.
-	return &Outcome{RequestID: id, Model: p.c.Model(), Pending: true}, nil
+	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
 }
 
 // falViews turns the run's plates into the provider's NAMED slots.
@@ -208,8 +217,11 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
+	// The locator's slug first (a bare legacy id: today's FAL_MODEL_3D, then the known namespaces).
+	// The row keeps reporting the LOCATOR it was handed, so one charge is keyed by one string.
+	slug, id := splitFalLocator(requestID)
 	var model, thumb bytes.Buffer
-	res, err := p.c.Await(ctx, requestID, fal.Sink{Model: &model, Thumbnail: &thumb})
+	res, err := p.c.AwaitAt(ctx, slug, id, fal.Sink{Model: &model, Thumbnail: &thumb})
 	if err != nil {
 		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as on the Meshy and vector
 		// routes: the transport attaches what a failed call billed when it knew, and Charge reads
@@ -244,7 +256,7 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	// ends up showing a price_actual that disagrees with its own price_estimate for a reason nobody
 	// can reconstruct from the row. What a build was worth is a property of the request, not of the
 	// configuration that outlived it.
-	out := &Outcome{RequestID: res.RequestID, Model: res.Model}
+	out := &Outcome{RequestID: requestID, Model: res.Model}
 	// ⚠ AND AT THE BUILD'S OWN TIER. Without a tariff the charge is fal's published per-build price,
 	// and a detailed build («ultra mode») is $1.40, not $1.20: booking it at the standard price would
 	// understate real spend by the surcharge on every detailed run. The tier comes off the frozen
