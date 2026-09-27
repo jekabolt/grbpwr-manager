@@ -514,8 +514,9 @@ func falSubmitEnd(err error, booked decimal.NullDecimal) entity.AICallEnd {
 }
 
 // meshySubmitEnd — a failed direct-Meshy submit. Meshy's transport decides (B-14): a charge →
-// `charged_failed`; an ENGAGED CallError (a post-write break, a 2xx that named no task) → `unknown`;
-// NOT engaged (any non-2xx, a request never completely written) → `free`, except a 408 → `unknown`
+// `charged_failed`; an ENGAGED CallError (a post-write break, a 2xx that named no task, a 5xx other
+// than a bare 503 — meshy.ErrSubmitUnconfirmed, B-13/A1) → `unknown`; NOT engaged (any other non-2xx,
+// a request never completely written) → `free`, except a 408 → `unknown`
 // (timeoutIsNotFree). No CallError: the client's own pre-wire refusals (no key, the image count, the
 // prompt ceiling, an option or a reference it cannot send) → `free`; anything else → `unknown`.
 func meshySubmitEnd(err error) entity.AICallEnd {

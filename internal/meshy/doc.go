@@ -79,7 +79,9 @@
 //   - 402 → ErrOutOfCredit. An empty balance, said in the vocabulary the other providers already
 //     use. Unnamed, a drained account reads as "the provider is unavailable".
 //   - 401/403 → ErrUnauthorized, and any other 4xx → ErrBadRequest: we sent something the provider
-//     will refuse identically next time. 5xx stays weather, which is what it is.
+//     will refuse identically next time. A 5xx on a status lookup stays weather, which is what it
+//     is; on the CREATE call only a bare 503 is — every other 5xx may have created the task and is
+//     ErrSubmitUnconfirmed, never resubmitted (B-13/A1).
 //   - The two ceilings we can check ourselves — MaxImages and MaxTexturePrompt — are refused BEFORE
 //     the request leaves. A local refusal costs no round trip and cannot be mistaken for weather.
 //

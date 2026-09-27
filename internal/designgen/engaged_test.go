@@ -32,7 +32,8 @@ import (
 //     a second payment for one picture — is now `unknown`, NOT retryable, and booked `unknown`;
 //   - a refused dial BEFORE the write is `failed` and retryable, booked `free` (it was `unknown`);
 //   - a 5xx is `failed` and retryable, booked `free` (it was `unknown` twice over) — except fal's
-//     submit, where every 5xx but a bare 503 may have been enqueued: `unknown`, final;
+//     submit and Meshy's create call (B-13/A1), where every 5xx but a bare 503 may have been
+//     enqueued: `unknown`, final;
 //   - 401 / 402 / 404 / 429 keep their codes and are booked `free`;
 //   - a real 408 is retryable weather for the worker and `unknown` for the ledger (timeoutIsNotFree).
 //
@@ -52,7 +53,8 @@ type designTransport struct {
 	call func(t *testing.T, baseURL string, timeout time.Duration) (error, aiprovtest.Row)
 	// code is classify's word for a refusal with this status — «codes as today».
 	code map[int]string
-	// unconfirmed5xx — fal: a 5xx other than a bare 503 on a submit may have been enqueued.
+	// unconfirmed5xx — fal, Meshy (B-13/A1): a 5xx other than a bare 503 on a submit may have been
+	// enqueued.
 	unconfirmed5xx bool
 }
 
@@ -104,7 +106,7 @@ func designTransports() []designTransport {
 				408: CodeBadRequest},
 		},
 		{
-			name: "meshy submit", billing: entity.AIProviderMeshy,
+			name: "meshy submit", billing: entity.AIProviderMeshy, unconfirmed5xx: true,
 			call: func(t *testing.T, baseURL string, timeout time.Duration) (error, aiprovtest.Row) {
 				job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindThreed, References: ref}, entity.AIPurposeThreed)
 				_, err := NewThreedProvider(meshy.New(meshy.Config{APIKey: "k", BaseURL: baseURL, HTTPTimeout: timeout})).
@@ -183,8 +185,8 @@ func TestTheWriteIsTheMoneyBoundaryON_EVERY_DESIGN_TRANSPORT(t *testing.T) {
 				v := classify(err)
 
 				if tr.unconfirmed5xx && status != http.StatusServiceUnavailable {
-					// fal's own truth (G-03 r3): the gateway may have lost the queue's answer after the
-					// enqueue. Engaged, final, and booked as possibly spent.
+					// fal's own truth (G-03 r3), Meshy's since B-13/A1: the gateway may have lost the
+					// queue's answer after the enqueue. Engaged, final, and booked as possibly spent.
 					require.True(t, ce.Engaged)
 					require.False(t, v.Retryable)
 					require.Equal(t, CodeSubmitUnconfirmed, v.Code)

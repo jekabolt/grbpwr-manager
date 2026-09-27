@@ -228,11 +228,12 @@ func classifyBySentinel(err error) verdict {
 	// ─── ours, G-03 r2: an earlier submit may still be live. Retryable, nothing spent.
 	case errors.Is(err, errSubmitSettling):
 		return verdict{Retryable: true, Code: CodeSubmitSettling, State: entity.DesignAttemptFailed}
-	// ─── ours + fal, G-03: a submit that may have been bought, with nothing on record to resume it
-	// by. FIRST among the provider cases: submitLost also wraps ErrUnexpectedResponse, and a 5xx
-	// would otherwise fall into the retryable default — both would read as «resubmit».
+	// ─── ours + fal + Meshy, G-03 / B-13/A1: a submit that may have been bought, with nothing on
+	// record to resume it by. FIRST among the provider cases: submitLost also wraps
+	// ErrUnexpectedResponse, and a 5xx would otherwise fall into the retryable default — both would
+	// read as «resubmit». Meshy's create call joined on a 5xx other than a bare 503 (B-13/A1).
 	case errors.Is(err, errAcceptedNotRecorded), errors.Is(err, errUnresolvedSubmit),
-		errors.Is(err, fal.ErrSubmitUnconfirmed):
+		errors.Is(err, fal.ErrSubmitUnconfirmed), errors.Is(err, meshy.ErrSubmitUnconfirmed):
 		return verdict{Retryable: false, Code: CodeSubmitUnconfirmed, State: entity.DesignAttemptUnknown}
 	case errors.Is(err, errEngineSwitchedOff):
 		return verdict{Retryable: false, Code: CodeUnknownImageModel, State: entity.DesignAttemptFailed}

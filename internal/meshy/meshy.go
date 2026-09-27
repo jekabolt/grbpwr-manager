@@ -222,6 +222,21 @@ var ErrRateLimited = errors.New("meshy: rate limited by the provider")
 // unparsed answer as an empty one and call a running task pending forever.
 var ErrUnexpectedResponse = errors.New("meshy: unreadable response from the provider")
 
+// ErrSubmitUnconfirmed — A CREATE-TASK POST WHOSE OUTCOME NOBODY KNOWS, fal.ErrSubmitUnconfirmed's
+// twin: Meshy answered the create call with a 5xx other than a bare 503 (500, 502, 504 …), or with a
+// 5xx whose body names a task anyway. Meshy MAY have created the task and will bill it when it runs.
+//
+// ⚠ A GATEWAY'S 5xx IS NOT PROOF THAT NOTHING WAS QUEUED (B-13/A1, Codex B-14 review P1 #2). A 502 is
+// a gateway receiving a broken answer from the hop behind it, a 504 is it giving up waiting for that
+// answer, a 500 is the handler failing — and none of them says whether the task was created before
+// the answer was lost. The create call takes no idempotency key, so a retry of an ambiguous submit is
+// a possible SECOND task (and second debit) whose first twin can never be collected: its id is gone.
+// So the reading is the conservative one, as fal's is: ENGAGED, never resubmitted; designgen closes the
+// run `submit_unconfirmed` / `unknown` and the ledger row `unknown`, to be reconciled on Meshy's
+// dashboard. Only the bare 503 — «service unavailable», the one explicit refusal — stays free and
+// retryable. It can lose a run; it can never buy the model twice.
+var ErrSubmitUnconfirmed = errors.New("meshy: the create-task call may have reached the provider and its outcome is unknown")
+
 // ErrTooLarge is returned when an artifact exceeds its cap. Refusal, not truncation: see
 // maxModelBytes.
 var ErrTooLarge = errors.New("meshy: artifact is larger than the allowed maximum")
@@ -899,15 +914,27 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any)
 	}
 	if status != http.StatusOK && status != http.StatusCreated && status != http.StatusAccepted {
 		// ⚠ THE SENTINEL AND THE CODE DISAGREE ON A 408 (and on a 404 answering the POST), AND THAT IS
-		// LEFT SO ON PURPOSE (B-14). statusError folds both into ErrBadRequest, the word designgen writes
-		// on the row; the matrix calls a 408 weather (provider_error, retryable) and a 404 a model it
-		// does not know, and the CallError is what decides the retry. The ledger still books a 408
+		// LEFT SO ON PURPOSE (B-14). statusErrorFrom folds both into ErrBadRequest, the word designgen
+		// writes on the row; the matrix calls a 408 weather (provider_error, retryable) and a 404 a model
+		// it does not know, and the CallError is what decides the retry. The ledger still books a 408
 		// `unknown`, never `free` (designgen.timeoutIsNotFree).
-		err := c.statusError(resp, method, path)
+		//
+		// The body is read ONCE, here: a 5xx answering the create call is also searched for a task id
+		// (submitServerError).
+		raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
+		err := statusErrorFrom(status, raw, method, path)
 		code, retryable := aiprov.ClassifyStatus(status)
 		if status >= 200 && status < 300 {
 			// A 2xx this client does not read (204, 206…): an answer, not a refusal.
 			return broken(code, err)
+		}
+		if submit && status >= 500 {
+			// THE ONE NON-2xx THAT IS ENGAGED (B-13/A1): a 5xx on the create call other than a bare 503,
+			// or any 5xx naming a task, may have created and billed the task — see ErrSubmitUnconfirmed.
+			// Engaged and final, so the worker never buys a second task beside a first it cannot see.
+			if err = submitServerError(status, raw, err); errors.Is(err, ErrSubmitUnconfirmed) {
+				return fail(code, status, true, false, err)
+			}
 		}
 		return fail(code, status, false, retryable, err)
 	}
@@ -939,16 +966,16 @@ func fail(code string, status int, engaged, retryable bool, err error) *aiprov.C
 	}
 }
 
-// statusError turns a non-2xx answer into the sentinel that says what to DO about it: a rejected
+// statusErrorFrom turns a non-2xx answer into the sentinel that says what to DO about it: a rejected
 // key is a setting to fix, a 429 is a reason to wait, a 404 on a lookup means the id is worthless,
-// and everything else is weather with a status code attached.
-func (c *Client) statusError(resp *http.Response, method, path string) error {
-	raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
+// and everything else is weather with a status code attached. It takes the body already read:
+// callJSON reads it once, because a 5xx answering the create call is also searched for a task id.
+func statusErrorFrom(status int, raw []byte, method, path string) error {
 	detail := providerMessage(raw)
 
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrUnauthorized, status, detail)
 	case http.StatusPaymentRequired:
 		// 402 IS A DRAINED BALANCE, AND IT MUST NOT SHARE A ROAD WITH «BAD REQUEST» OR WITH
 		// WEATHER. Every other provider in this feature already names it — orimages.ErrOutOfCredit,
@@ -958,9 +985,9 @@ func (c *Client) statusError(resp *http.Response, method, path string) error {
 		// cap knocking on a till with nothing in it, while the history row said the provider was
 		// unavailable. Nothing about an empty balance improves on a retry, and the operator needs
 		// to read the word «credit», not the word «unavailable».
-		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrOutOfCredit, status, detail)
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, resp.StatusCode, detail)
+		return fmt.Errorf("%w (HTTP %d): %s", ErrRateLimited, status, detail)
 	case http.StatusNotFound:
 		if method == http.MethodGet {
 			return fmt.Errorf("%w (HTTP 404): %s", ErrTaskNotFound, detail)
@@ -970,10 +997,33 @@ func (c *Client) statusError(resp *http.Response, method, path string) error {
 	// generic sentence below meant the caller's classifier read it as a transient fault and spent
 	// the whole attempt cap re-sending a request the provider had already judged. 5xx keeps the
 	// generic form: a server that is failing today may well answer tomorrow.
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, resp.StatusCode, detail)
+	if status >= 400 && status < 500 {
+		return fmt.Errorf("%w: %s %s: HTTP %d: %s", ErrBadRequest, method, path, status, detail)
 	}
-	return fmt.Errorf("meshy: %s %s: HTTP %d: %s", method, path, resp.StatusCode, detail)
+	return fmt.Errorf("meshy: %s %s: HTTP %d: %s", method, path, status, detail)
+}
+
+// submitServerError classifies a 5xx that answered the CREATE-TASK POST, as fal's does (B-13/A1):
+//
+//   - a body naming a task (`result`): Meshy DID create it, whatever the status says — it is paid,
+//     and the id rides the error so last_error carries what a person reconciles by;
+//   - 503 without a task: the explicit «service unavailable» refusal — today's error, retryable;
+//   - every OTHER 5xx: ErrSubmitUnconfirmed — the gateway may have lost the answer after the create.
+//
+// Today's error (sentinel and sentence) stays inside in every case.
+func submitServerError(status int, raw []byte, err error) error {
+	var named struct {
+		Result string `json:"result"`
+	}
+	if json.Unmarshal(raw, &named) == nil {
+		if id := strings.TrimSpace(named.Result); id != "" {
+			return fmt.Errorf("%w: the answer named task %s: %w", ErrSubmitUnconfirmed, id, err)
+		}
+	}
+	if status == http.StatusServiceUnavailable {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err)
 }
 
 // providerMessage extracts the provider's own sentence from an error body, falling back to the raw

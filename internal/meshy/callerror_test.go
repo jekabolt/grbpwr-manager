@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,11 @@ import (
 // MUTATIONS (each measured red→green): `engaged := wroteRequest()` → `!wroteRequest()` → the
 // post-write and refused-dial cases go red; the non-2xx `fail(code, status, false, …)` → `true` →
 // every status row goes red; the GET Do arm → `fail(code, 0, true, …)` → the GET timeout case goes red.
+//
+// B-13/A1 — the create call's 5xx other than a bare 503 (and any 5xx naming a task) is ENGAGED and
+// ErrSubmitUnconfirmed, as fal's is. MUTATION (measured red→green): the `fail(code, status, true,
+// false, err)` of the unconfirmed arm → `false, retryable` → the 500/502/504 and the id-naming 503
+// rows go red.
 
 func meshyCallError(t *testing.T, err error, what string) *aiprov.CallError {
 	t.Helper()
@@ -71,8 +77,8 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 		}
 	})
 
-	t.Run("every non-2xx is NOT engaged and carries its status", func(t *testing.T) {
-		for _, status := range []int{400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504} {
+	t.Run("every refusal is NOT engaged and carries its status", func(t *testing.T) {
+		for _, status := range []int{400, 401, 402, 403, 404, 408, 422, 429, 503} {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				writeStatus(w, status, map[string]string{"message": "said no"})
 			}))
@@ -84,6 +90,39 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 				t.Errorf("HTTP %d: CallError = {engaged %v, status %d, code %q, retryable %v}, want {false, %d, %q, %v}",
 					status, ce.Engaged, ce.HTTPStatus, ce.Code, ce.Retryable, status, code, retryable)
 			}
+		}
+	})
+
+	t.Run("a 5xx on the create call other than a bare 503 is ENGAGED and unconfirmed (B-13/A1)", func(t *testing.T) {
+		for _, c := range []struct {
+			status int
+			body   string
+		}{
+			{500, `{"message":"internal"}`},
+			{502, `{"message":"bad gateway"}`},
+			{504, `{"message":"gateway timeout"}`},
+			{503, `{"result":"task-lost-1","message":"busy"}`}, // a 503 that names the task it created
+		} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(c.status)
+				_, _ = io.WriteString(w, c.body)
+			}))
+			err := submit(srv.URL, time.Second)
+			srv.Close()
+			ce := meshyCallError(t, err, http.StatusText(c.status))
+			if !ce.Engaged || ce.Retryable || ce.HTTPStatus != c.status || !errors.Is(err, ErrSubmitUnconfirmed) {
+				t.Errorf("HTTP %d %s: CallError = {engaged %v, retryable %v, status %d} %v, want {true, false, %d} + ErrSubmitUnconfirmed",
+					c.status, c.body, ce.Engaged, ce.Retryable, ce.HTTPStatus, err, c.status)
+			}
+		}
+		// The id rides the sentence: it is what a person reconciles by on Meshy's dashboard.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeStatus(w, http.StatusBadGateway, map[string]string{"result": "task-lost-2"})
+		}))
+		defer srv.Close()
+		if err := submit(srv.URL, time.Second); err == nil || !strings.Contains(err.Error(), "task-lost-2") {
+			t.Errorf("the named task must reach the error: %v", err)
 		}
 	})
 
