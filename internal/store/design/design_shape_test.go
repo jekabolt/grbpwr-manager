@@ -287,8 +287,34 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 		scopeSentinel    = "<<SCOPE-SENTINEL>>"
 		colorwaySentinel = "<<COLORWAY-SENTINEL>>"
 		sectionSentinel  = "<<SECTION-SENTINEL>>"
+		workflowSentinel = "<<WORKFLOW-SENTINEL>>"
 	)
-	list, count := designCardOutputsStatements(scopeSentinel, colorwaySentinel, sectionSentinel)
+	list, count := designCardOutputsStatements(scopeSentinel, colorwaySentinel, sectionSentinel,
+		workflowSentinel)
+
+	// ⚠ PHASE 2: THE WORKFLOW EXPRESSION, EXACT OCCURRENCES. Its text must reach each statement
+	// only through the parameter, and exactly where it is used — list: the stamp + inside the
+	// window key (2); count: the SELECT + the GROUP BY (2). The key itself is the composition of
+	// the section and workflow parameters, once in PARTITION BY.
+	// MUTATIONS: inline a copy of designCardOutputsWorkflow in the count's GROUP BY (count of the
+	// sentinel drops to 1 and 'tryon' appears); partition by the `run_workflow` alias (key count 0).
+	key := designCardOutputsWindowKey(sectionSentinel, workflowSentinel)
+	for name, want := range map[string]struct {
+		stmt          string
+		workflow, key int
+	}{"list": {list, 2, 1}, "count": {count, 2, 0}} {
+		if got := strings.Count(want.stmt, workflowSentinel); got != want.workflow {
+			t.Fatalf("%s carries the workflow expression %d times, want %d: the stamp, the window "+
+				"and the count are ONE expression passed in, never a copy", name, got, want.workflow)
+		}
+		if got := strings.Count(want.stmt, key); got != want.key {
+			t.Fatalf("%s carries the section-1 window key %d times, want %d", name, got, want.key)
+		}
+	}
+	if key != "CASE WHEN "+sectionSentinel+" = 1 THEN "+workflowSentinel+" ELSE '' END" {
+		t.Fatalf("the window key is the workflow INSIDE section 1 and '' elsewhere, built from the "+
+			"same two pieces: %q", key)
+	}
 
 	for name, stmt := range map[string]string{"list": list, "count": count} {
 		if strings.Count(stmt, scopeSentinel) != 1 {
@@ -308,7 +334,7 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 		// это вписанная вторая копия.
 		for _, inlined := range []string{
 			"design_picture p", "design_run r", "p.tech_card_id", "r.kind IN", "p.colorway_id",
-			"'freeform'", "'cutout'",
+			"'freeform'", "'cutout'", "'tryon'", "'swap_fabrics'", "JSON_EXTRACT",
 		} {
 			if strings.Contains(stmt, inlined) {
 				t.Fatalf("%s carries its OWN copy of %q instead of the shared piece: a second "+
@@ -319,7 +345,8 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 
 	// …и в бою собраны ровно те же два запроса из настоящих кусков.
 	gotList, gotCount := designCardOutputsStatements(
-		designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway, designCardOutputsSection)
+		designCardOutputsFrom+designCardOutputsWhere, designCardOutputsColorway, designCardOutputsSection,
+		designCardOutputsWorkflow)
 	if gotList != designListCardOutputs || gotCount != designCountCardOutputsByColorway {
 		t.Fatal("the statements the store actually runs must be what this builder produces from " +
 			"the shared pieces, or the probe above proves nothing about them")
@@ -463,17 +490,22 @@ func TestCardOutputsAreCappedPerColorwayAndNewestFirst(t *testing.T) {
 	flat := strings.Join(strings.Fields(designListCardOutputs), " ")
 	words := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	if !strings.Contains(flat, "ROW_NUMBER() OVER ( PARTITION BY "+
-		words(designCardOutputsColorway)+", "+words(designCardOutputsSection)+
+		words(designCardOutputsColorway)+", "+words(designCardOutputsSection)+", "+
+		words(designCardOutputsWindowKey(designCardOutputsSection, designCardOutputsWorkflow))+
 		" ORDER BY p.id DESC )") {
 		t.Fatal("the ceiling is spent PER COLOURWAY AND PER SECTION, newest first: a whole-card " +
 			"LIMIT drops the card's oldest rows and can empty one colourway's section entirely, " +
 			"and a colourway-only window lets sixty free playground pictures evict the paid " +
-			"renders that share the uncoloured section with them")
+			"renders that share the uncoloured section with them; and inside section 1 the " +
+			"window is cut PER WORKFLOW too (the FULL expression, not the run_workflow alias), " +
+			"or one busy playground tile empties every other tile's results")
 	}
 	if !strings.Contains(words(designCountCardOutputsByColorway),
-		"GROUP BY "+words(designCardOutputsColorway)+", "+words(designCardOutputsSection)) {
-		t.Fatal("the count is grouped by the SAME two keys the window is cut by, or the " +
-			"per-colourway total is summed from groups other than the ones that were truncated")
+		"GROUP BY "+words(designCardOutputsColorway)+", "+words(designCardOutputsSection)+", "+
+			words(designCardOutputsWorkflow)) {
+		t.Fatal("the count is grouped by the SAME keys the window is cut by (the workflow refines " +
+			"the section-1 key), or the per-colourway and per-workflow totals are summed from " +
+			"groups other than the ones that were truncated")
 	}
 	if !strings.Contains(designListCardOutputs, "WHERE o.rn <= :per_colorway") {
 		t.Fatal("the outputs list must carry the ceiling in the statement itself, as a parameter " +

@@ -116,6 +116,23 @@ const (
 	// целиком, и раздел RENDERS у клиента, сузившего по `run_kind`, приходил ПУСТЫМ. Имя константы
 	// осталось прежним, а тратится она теперь на (колорвей, секцию); худший ответ, соответственно,
 	// (колорвеи + 1) × 2 × 60.
+	//
+	// ⚠ PHASE 2 (PLAYGROUND, B-07): A THIRD AXIS, INSIDE SECTION 1 ONLY. The window is now cut by
+	// (colourway, section, workflow-in-section-1) — designCardOutputsWindowKey — so each playground
+	// tile keeps its own newest 60 and a busy tile can no longer empty a quiet one (04-DECISIONS D4).
+	// Section 0 (renders, recolor, threed, pattern, hand uploads) is NOT split: its key stays '' and
+	// it keeps one pool per colourway, exactly as above.
+	//
+	// THE BOUND, HONESTLY. Section 1 today holds the eight workflows freeform+cutout can stamp
+	// (seven freeform tiles + remove_background). Playground runs carry colourway 0 (the door refuses
+	// a colourway on them) and a crop inherits its parent's, so in practice the answer grows by at
+	// most 7 × 60 rows on colourway 0 alone: (colourways + 1) × 60 + 8 × 60. The theoretical ceiling,
+	// were section-1 pictures ever spread over colourways, is (colourways + 1) × (1 + 8) × 60. Phase 3
+	// adds extend/inpaint to section 1 (+2 workflows, same arithmetic).
+	//
+	// The name still says «per colourway»; the number is per window partition, and each partition's
+	// true size is on the wire — OutputsTotalByColorway (sum over its sections and workflows) and
+	// OutputsTotalByWorkflow (band 31, every non-empty run_workflow).
 	MaxCardOutputsPerColorway = 60
 )
 
