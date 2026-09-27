@@ -63,3 +63,27 @@ func TestOpenRouterAnalysisModelUnsetFallsBackToSharedSlug(t *testing.T) {
 	assert.Equal(t, "shared/slug", openrouter.New(cfg.OpenRouter).AnalysisModel(),
 		"empty override => the shared slug")
 }
+
+// TestOpenRouterIdeasModelFromEnv — the same proof for OPENROUTER_MODEL_IDEAS (PLAYGROUND B-15):
+// unbound, the variable reads as empty, which is ALSO the default — so the kill switch `off` would
+// silently do nothing. Set it and insist it arrives.
+// Mutation: delete the viper.BindEnv("openrouter.model_ideas", …) line → red.
+func TestOpenRouterIdeasModelFromEnv(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+
+	t.Setenv("OPENROUTER_MODEL_IDEAS", "off")
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, "off", cfg.OpenRouter.ModelIdeas)
+	assert.Empty(t, openrouter.New(cfg.OpenRouter).IdeasModel(), "off must switch the Ideas door off")
+
+	t.Setenv("OPENROUTER_MODEL_IDEAS", "x/ideas")
+	cfg, err = LoadConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, "x/ideas", openrouter.New(cfg.OpenRouter).IdeasModel())
+
+	t.Setenv("OPENROUTER_MODEL_IDEAS", "")
+	cfg, err = LoadConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, openrouter.DefaultIdeasModel, openrouter.New(cfg.OpenRouter).IdeasModel(), "unset => the default, on")
+}

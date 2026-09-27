@@ -129,6 +129,46 @@ func (c *Client) CompleteWithImages(
 	jsonMode bool,
 	maxTokens int,
 ) (text string, finishReason string, usage Usage, err error) {
+	return c.completeWithImages(ctx, c.Model(), analysisReasoningEffort, systemPrompt, userPrompt, imageURLs, jsonMode, maxTokens)
+}
+
+// CompleteWithImagesOn is CompleteWithImages on a NAMED slug (PLAYGROUND B-15: the Ideas door has a
+// slug of its own, OPENROUTER_MODEL_IDEAS, and a fallback). Same transport, same wire shape, same
+// validation — with ONE difference, and it is deliberate: under a token ceiling it asks for
+// leastReasoningEffort ("minimal"), not "none". A slug picked per feature may be a model whose
+// reasoning is mandatory (the fallback openai/gpt-5-mini is one), and such a model rejects "none"
+// outright; "minimal" is accepted everywhere and is the ideas default's own default. The CAP still
+// bounds the spend: reasoning tokens come out of max_tokens.
+//
+// An empty model is refused before anything is sent: "" would reach the provider as a 400 that
+// reads as the provider's fault rather than as ours.
+func (c *Client) CompleteWithImagesOn(
+	ctx context.Context,
+	model string,
+	systemPrompt, userPrompt string,
+	imageURLs []string,
+	jsonMode bool,
+	maxTokens int,
+) (text string, finishReason string, usage Usage, err error) {
+	if !c.Enabled() {
+		return "", "", Usage{}, ErrNotConfigured
+	}
+	if strings.TrimSpace(model) == "" {
+		return "", "", Usage{}, fmt.Errorf("openrouter: a completion needs a model slug")
+	}
+	return c.completeWithImages(ctx, strings.TrimSpace(model), leastReasoningEffort, systemPrompt, userPrompt, imageURLs, jsonMode, maxTokens)
+}
+
+// completeWithImages is the one body of both: the slug and the capped reasoning effort are the
+// only things the two callers choose.
+func (c *Client) completeWithImages(
+	ctx context.Context,
+	model, cappedEffort string,
+	systemPrompt, userPrompt string,
+	imageURLs []string,
+	jsonMode bool,
+	maxTokens int,
+) (text string, finishReason string, usage Usage, err error) {
 	if !c.Enabled() {
 		return "", "", Usage{}, ErrNotConfigured
 	}
@@ -141,7 +181,7 @@ func (c *Client) CompleteWithImages(
 	}
 
 	req := multimodalRequest{
-		Model: c.Model(),
+		Model: model,
 		Messages: []any{
 			// A plain-string system turn: identical bytes to what the text path sends.
 			chatMessage{Role: "system", Content: systemPrompt},
@@ -154,7 +194,7 @@ func (c *Client) CompleteWithImages(
 	}
 	if maxTokens > 0 {
 		req.MaxTokens = maxTokens
-		req.Reasoning = &reasoningSpec{Effort: analysisReasoningEffort}
+		req.Reasoning = &reasoningSpec{Effort: cappedEffort}
 	}
 
 	payload, err := json.Marshal(req)
