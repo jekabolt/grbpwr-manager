@@ -508,6 +508,46 @@ func TestBreakerHeld_ListsOnlyWhatTheOpenBreakerTookOut(t *testing.T) {
 	require.Nil(t, New(&fakeStore{}, testRing(t), testEnv).BreakerHeld(entity.AIPurposeTechCardEnhance), "nil before the first Reload")
 }
 
+// TestCandidatesAt_OneSnapshotForTheListAndItsVersion — the list and the version come from ONE load:
+// a reload that lands while the route is being walked (here: inside the walk's own clock read) does
+// not stamp the old list with the new version. The next call reads the new snapshot, both halves.
+//
+// MUTATION: CandidatesAt returns `listed, r.Version()` (a second read) → red (old list, version 2).
+func TestCandidatesAt_OneSnapshotForTheListAndItsVersion(t *testing.T) {
+	clk := newFakeClock()
+	cfg := seedConfig()
+	setRoute(&cfg, entity.AIPurposeTechCardEnhance,
+		entity.AIRouteCandidate{Position: 1, ProviderKey: entity.AIProviderOpenRouter, Model: "old/slug"})
+	var (
+		r      *Registry
+		fs     *fakeStore
+		reload atomic.Bool
+	)
+	hooked := func() time.Time {
+		if reload.CompareAndSwap(true, false) {
+			fs.edit(func(c *entity.AIConfig) {
+				setRoute(c, entity.AIPurposeTechCardEnhance,
+					entity.AIRouteCandidate{Position: 1, ProviderKey: entity.AIProviderOpenRouter, Model: "new/slug"})
+			})
+			require.NoError(t, r.Reload(context.Background()))
+		}
+		return clk.now()
+	}
+	r, fs, _ = newLoaded(t, testRing(t), cfg, WithClock(hooked))
+	require.Equal(t, uint64(1), r.Version())
+
+	reload.Store(true)
+	got, v := r.CandidatesAt(entity.AIPurposeTechCardEnhance)
+	require.Equal(t, uint64(2), r.Version(), "the reload did land during the walk")
+	require.Equal(t, "old/slug", got[0].Model)
+	require.Equal(t, uint64(1), v, "the version is the one the list was read from, not the one that landed meanwhile")
+
+	got, v = r.CandidatesAt(entity.AIPurposeTechCardEnhance)
+	require.Equal(t, "new/slug", got[0].Model)
+	require.Equal(t, uint64(2), v)
+	require.Equal(t, got, r.Candidates(entity.AIPurposeTechCardEnhance))
+}
+
 // ───────────────────────── reload + poller ─────────────────────────
 
 // TestReload_SwapsAtomically — a KeyFunc captured BEFORE a reload answers the NEW key after it; a

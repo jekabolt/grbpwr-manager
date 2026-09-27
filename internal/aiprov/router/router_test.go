@@ -1207,3 +1207,51 @@ func TestPausedTellsTheBreakerFromMissingConfig(t *testing.T) {
 	require.False(t, NewSingle(entity.AIProviderOpenRouter, &keyedChatter{}, "m").Paused(entity.AIPurposeNoteMarkdown),
 		"a static router has no breakers")
 }
+
+// TestTheNoTransportWarningIsKeyedByTheListsOwnVersion — the warn-once memory is keyed by the version
+// of the snapshot the candidates came from (registry.CandidatesAt). A reload that lands while the route
+// is being walked must not make the old list warn again under the new version; the next Chat, on the
+// new snapshot, warns once for it.
+//
+// MUTATION: router.candidates reads `r.reg.Candidates(purpose)` and then `r.reg.Version()` separately →
+// red (a second warning on the old list).
+func TestTheNoTransportWarningIsKeyedByTheListsOwnVersion(t *testing.T) {
+	ring := testRing(t)
+	st := &cfgStore{Store: &aiprovtest.Store{}, cfg: config(t, ring, map[string][]entity.AIRouteCandidate{
+		entity.AIPurposeNoteMarkdown: {at(1, entity.AIProviderAnthropic, "claude-sonnet-5"), at(2, entity.AIProviderOpenRouter, "")},
+	})}
+	clk := newClock()
+	var (
+		reg    *registry.Registry
+		reload atomic.Bool
+	)
+	hooked := func() time.Time {
+		if reload.CompareAndSwap(true, false) {
+			st.edit(func(*entity.AIConfig) {}) // a version bump, the same routes
+			require.NoError(t, reg.Reload(context.Background()))
+		}
+		return clk.now()
+	}
+	reg = registry.New(st, ring, registry.EnvKeys{OpenRouter: "env-openrouter-aaaa"}, registry.WithClock(hooked))
+	require.NoError(t, reg.Reload(context.Background()))
+	or := &chatter{}
+	r := New(reg, nil, map[string]aiprov.Chatter{entity.AIProviderOpenRouter: or}, testDefaults, 0)
+	var logs bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	warnings := func() int { return strings.Count(logs.String(), "no chat transport") }
+
+	_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.NoError(t, err)
+	require.Equal(t, 1, warnings())
+
+	reload.Store(true) // the reload lands inside the next Chat's walk of the route
+	_, err = r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), reg.Version(), "the reload did land")
+	require.Equal(t, 1, warnings(), "the old list was already warned about under its own version")
+
+	_, err = r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.NoError(t, err)
+	require.Equal(t, 2, warnings(), "the new version is a new chance to be told")
+	require.Contains(t, logs.String(), "config_version=2")
+}

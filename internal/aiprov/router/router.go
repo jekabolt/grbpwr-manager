@@ -262,8 +262,8 @@ type candidate struct {
 	chatter aiprov.Chatter
 }
 
-// candidates is the purpose's route as ONE snapshot, in order, with the config version it was read
-// at (0 for a static router).
+// candidates is the purpose's route as ONE snapshot, in order, with the config version of THAT
+// snapshot (registry.CandidatesAt — one load for both), 0 for a static router.
 func (r *Router) candidates(purpose string) ([]candidate, uint64) {
 	if r == nil || !isChatPurpose(purpose) {
 		return nil, 0
@@ -281,8 +281,7 @@ func (r *Router) candidates(purpose string) ([]candidate, uint64) {
 	if r.reg == nil {
 		return nil, 0
 	}
-	version := r.reg.Version()
-	regCands := r.reg.Candidates(purpose)
+	regCands, version := r.reg.CandidatesAt(purpose) // one snapshot: the list and the version it came from
 	out := make([]candidate, 0, len(regCands))
 	for _, c := range regCands {
 		out = append(out, candidate{Candidate: c, chatter: r.transports[c.ProviderKey]})

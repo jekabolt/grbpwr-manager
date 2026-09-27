@@ -448,8 +448,17 @@ func (r *Registry) AdminKey(providerKey string) string {
 // A HALF-OPEN PROVIDER IS LISTED, NOT ADMITTED. Listing reserves nothing: the caller asks Admit right
 // before the physical call to the candidate it picked, and only one caller gets the probe.
 func (r *Registry) Candidates(purpose string) []Candidate {
-	listed, _ := r.walk(purpose)
+	listed, _ := r.CandidatesAt(purpose)
 	return listed
+}
+
+// CandidatesAt is Candidates together with the config_version of the SAME snapshot the list was read
+// from — one atomic load for both. A caller that keys anything by version (the router warns once per
+// provider per version) must not read Version() separately: a reload between the two reads stamps the
+// list with a version it did not come from.
+func (r *Registry) CandidatesAt(purpose string) ([]Candidate, uint64) {
+	listed, _, version := r.walk(purpose)
+	return listed, version
 }
 
 // BreakerHeld lists the candidates Candidates dropped for ONE reason only: their breaker is open,
@@ -458,20 +467,21 @@ func (r *Registry) Candidates(purpose string) []Candidate {
 // not configured» (the first passes by itself in minutes, the second needs a person). Same order and
 // the same repeat rule as Candidates; nil before the first Reload.
 func (r *Registry) BreakerHeld(purpose string) []Candidate {
-	_, held := r.walk(purpose)
+	_, held, _ := r.walk(purpose)
 	return held
 }
 
-// walk is the one pass over a purpose's route both lists come from: listed = what Candidates
-// answers, held = what it dropped only because the breaker is open.
-func (r *Registry) walk(purpose string) (listed, held []Candidate) {
+// walk is the one pass over a purpose's route both lists come from, on ONE snapshot load: listed =
+// what Candidates answers, held = what it dropped only because the breaker is open, version = that
+// snapshot's config_version (0 before the first Reload).
+func (r *Registry) walk(purpose string) (listed, held []Candidate, version uint64) {
 	s := r.snap.Load()
 	if s == nil {
-		return nil, nil
+		return nil, nil, 0
 	}
 	capability := entity.AIPurposeCapability(purpose)
 	if capability == "" {
-		return nil, nil
+		return nil, nil, s.version
 	}
 	now := r.clock()
 	seen := map[string]bool{}
@@ -498,7 +508,7 @@ func (r *Registry) walk(purpose string) (listed, held []Candidate) {
 		}
 		listed = append(listed, cand)
 	}
-	return listed, held
+	return listed, held, s.version
 }
 
 func (s *snapshot) defaultProvider(capability string) string {
