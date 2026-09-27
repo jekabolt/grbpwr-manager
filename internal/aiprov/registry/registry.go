@@ -37,7 +37,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
-	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
@@ -68,16 +67,13 @@ const (
 	KeySourceUnreadable = "unreadable" // a stored key that does not open; the env key (if any) answers meanwhile
 )
 
-// Breaker states — ProviderState.Breaker, the circuitbreaker package's own words.
+// Breaker states — ProviderState.Breaker and BreakerState (breaker.go), in the circuitbreaker
+// package's own words.
 const (
 	BreakerClosed   = "closed"
 	BreakerOpen     = "open"
 	BreakerHalfOpen = "half-open"
 )
-
-// breakerConfig — one breaker per (provider, capability). Three transient faults open it for five
-// minutes; one probe then decides. Terminal faults never reach it (RecordFailure).
-var breakerConfig = circuitbreaker.Config{MaxFailures: 3, OpenTimeout: 5 * time.Minute, HalfOpenMaxRetries: 1}
 
 // EnvKeys are today's env values — the fallback when the database holds no key for a provider.
 //
@@ -118,7 +114,7 @@ func WithPollInterval(d time.Duration) Option {
 	}
 }
 
-// WithClock replaces time.Now for the breaker open window. Tests only.
+// WithClock replaces time.Now as the breakers' one clock (breaker.go). Tests only.
 func WithClock(f func() time.Time) Option {
 	return func(r *Registry) {
 		if f != nil {
@@ -145,16 +141,6 @@ type snapshot struct {
 	budgetTimezone string
 }
 
-// breakerEntry pairs a breaker with the moment (on the registry clock) it last opened. The
-// circuitbreaker package reopens itself only when somebody calls through it after OpenTimeout; a
-// Candidates that skipped every open breaker would therefore never let anybody through again. The
-// open window is judged here instead: past OpenTimeout the provider is a candidate again, and the
-// next RecordFailure / RecordSuccess is the probe that moves the breaker to half-open and on.
-type breakerEntry struct {
-	cb       *circuitbreaker.CircuitBreaker
-	openedAt atomic.Int64 // unix nanos; 0 = not open
-}
-
 // Registry — see the package doc.
 type Registry struct {
 	store dependency.AI
@@ -166,7 +152,7 @@ type Registry struct {
 	reloadMu sync.Mutex // serialises Reload: two reloads finishing out of order must not swap an older snapshot over a newer one
 
 	bmu      sync.Mutex
-	breakers map[string]*breakerEntry // key = providerKey + "/" + capability
+	breakers map[string]*probeBreaker // key = providerKey + "/" + capability
 
 	warnMu sync.Mutex
 	warned map[string]string // providerKey:kind → fingerprint of the unreadable blob already warned about
@@ -188,7 +174,7 @@ func New(store dependency.AI, ring *keyring.Ring, env EnvKeys, opts ...Option) *
 		ring:     ring,
 		env:      trimEnv(env),
 		log:      slog.Default(),
-		breakers: map[string]*breakerEntry{},
+		breakers: map[string]*probeBreaker{},
 		warned:   map[string]string{},
 		poll:     DefaultPollInterval,
 		clock:    time.Now,
@@ -451,8 +437,12 @@ func (r *Registry) AdminKey(providerKey string) string {
 // the capability's default provider (Settings.DefaultChat/ImageProviderKey, falling back to
 // openrouter; the other capabilities have no default and such a row is skipped); a provider that
 // cannot serve the purpose's capability, is disabled, has no effective key, or whose breaker for
-// that capability is open is skipped; an exact (provider, model) repeat is dropped. A candidate's
-// Model "" passes through — the client's own default. Nil before the first Reload.
+// that capability is open (inside its window) is skipped; an exact (provider, model) repeat is
+// dropped. A candidate's Model "" passes through — the client's own default. Nil before the first
+// Reload.
+//
+// A HALF-OPEN PROVIDER IS LISTED, NOT ADMITTED. Listing reserves nothing: the caller asks Admit right
+// before the physical call to the candidate it picked, and only one caller gets the probe.
 func (r *Registry) Candidates(purpose string) []Candidate {
 	s := r.snap.Load()
 	if s == nil {
@@ -462,6 +452,7 @@ func (r *Registry) Candidates(purpose string) []Candidate {
 	if capability == "" {
 		return nil
 	}
+	now := r.clock()
 	var out []Candidate
 	seen := map[string]bool{}
 	for _, c := range s.routes[purpose] {
@@ -475,7 +466,7 @@ func (r *Registry) Candidates(purpose string) []Candidate {
 		if r.effectiveKeyIn(s, pk, capability) == "" { // disabled or keyless
 			continue
 		}
-		if r.breakerOpen(pk, capability) {
+		if b := r.lookupBreaker(pk, capability); b != nil && b.State(now) == BreakerOpen {
 			continue
 		}
 		dup := pk + "\x00" + c.Model
@@ -531,58 +522,63 @@ func (r *Registry) Providers() []ProviderState {
 }
 
 // ───────────────────────── breakers ─────────────────────────
+//
+// One probeBreaker (breaker.go) per (provider, capability), created by the first transient fault. The
+// caller's side of the contract, in order: Candidates → Admit(the picked candidate) → the physical
+// call → exactly one of RecordSuccess / RecordFailure — or Release when it was admitted and did not
+// call after all. Every instant comes from r.clock(), the one clock.
 
 func breakerKey(providerKey, capability string) string { return providerKey + "/" + capability }
 
-// Breaker returns the breaker of (provider, capability), creating it on first use.
-func (r *Registry) Breaker(providerKey, capability string) *circuitbreaker.CircuitBreaker {
-	return r.breakerEntry(providerKey, capability).cb
-}
-
-func (r *Registry) breakerEntry(providerKey, capability string) *breakerEntry {
+// breakerFor returns the breaker of (provider, capability), creating it on first use. Only a fault
+// creates one: a provider that never failed has no entry and is closed by definition.
+func (r *Registry) breakerFor(providerKey, capability string) *probeBreaker {
 	key := breakerKey(providerKey, capability)
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
-	if e, ok := r.breakers[key]; ok {
-		return e
+	if b, ok := r.breakers[key]; ok {
+		return b
 	}
-	e := &breakerEntry{}
-	// The callback runs under the breaker's own lock: it touches nothing but its entry's atomic.
-	e.cb = circuitbreaker.New("ai:"+key, breakerConfig, func(_, to circuitbreaker.State, _ string) {
-		if to == circuitbreaker.StateOpen {
-			e.openedAt.Store(r.clock().UnixNano())
-		} else {
-			e.openedAt.Store(0)
-		}
-	})
-	r.breakers[key] = e
-	return e
+	b := &probeBreaker{state: BreakerClosed}
+	r.breakers[key] = b
+	return b
 }
 
-func (r *Registry) lookupBreaker(providerKey, capability string) *breakerEntry {
+func (r *Registry) lookupBreaker(providerKey, capability string) *probeBreaker {
 	r.bmu.Lock()
 	defer r.bmu.Unlock()
 	return r.breakers[breakerKey(providerKey, capability)]
 }
 
-// breakerOpen: open AND still inside its open window. Past the window the provider is a candidate
-// again (see breakerEntry).
-func (r *Registry) breakerOpen(providerKey, capability string) bool {
-	e := r.lookupBreaker(providerKey, capability)
-	return e != nil && e.state(r.clock()) == BreakerOpen
+// Admit asks for the physical call to (provider, capability) right now, right before making it: true
+// = go; false = its breaker is open, or half-open with its one probe already handed out — try the
+// next candidate. A provider with no breaker is admitted (and none is created). An admitted caller
+// MUST end with RecordSuccess, RecordFailure or Release: a half-open breaker stays reserved until it
+// does.
+func (r *Registry) Admit(providerKey, capability string) bool {
+	b := r.lookupBreaker(providerKey, capability)
+	if b == nil {
+		return true
+	}
+	return b.Admit(r.clock())
 }
 
-func (e *breakerEntry) state(now time.Time) string {
-	switch e.cb.State() {
-	case circuitbreaker.StateOpen:
-		if at := e.openedAt.Load(); at != 0 && now.Sub(time.Unix(0, at)) >= breakerConfig.OpenTimeout {
-			return BreakerHalfOpen // the next call is the probe
-		}
-		return BreakerOpen
-	case circuitbreaker.StateHalfOpen:
-		return BreakerHalfOpen
+// Release ends an admission that produced no verdict: the caller was admitted and made no call, or its
+// call ended in something RecordFailure would not count anyway. A half-open breaker frees its probe.
+func (r *Registry) Release(providerKey, capability string) {
+	if b := r.lookupBreaker(providerKey, capability); b != nil {
+		b.Release()
 	}
-	return BreakerClosed
+}
+
+// BreakerState is the state of (provider, capability) at the registry clock: closed | open |
+// half-open. It creates no breaker.
+func (r *Registry) BreakerState(providerKey, capability string) string {
+	b := r.lookupBreaker(providerKey, capability)
+	if b == nil {
+		return BreakerClosed
+	}
+	return b.State(r.clock())
 }
 
 // breakerState is the worst of a provider's breakers.
@@ -590,16 +586,16 @@ func (r *Registry) breakerState(providerKey string) string {
 	now := r.clock()
 	prefix := providerKey + "/"
 	r.bmu.Lock()
-	entries := make([]*breakerEntry, 0, 2)
-	for k, e := range r.breakers {
+	entries := make([]*probeBreaker, 0, 2)
+	for k, b := range r.breakers {
 		if strings.HasPrefix(k, prefix) {
-			entries = append(entries, e)
+			entries = append(entries, b)
 		}
 	}
 	r.bmu.Unlock()
 	worst := BreakerClosed
-	for _, e := range entries {
-		switch e.state(now) {
+	for _, b := range entries {
+		switch b.State(now) {
 		case BreakerOpen:
 			return BreakerOpen
 		case BreakerHalfOpen:
@@ -609,46 +605,43 @@ func (r *Registry) breakerState(providerKey string) string {
 	return worst
 }
 
-// RecordFailure feeds the (provider, capability) breaker ONLY with a transient fault nobody paid
-// for: a *aiprov.CallError that is Retryable and not Engaged. A configuration refusal (401/402/404/
-// 422 — not retryable) says nothing about the provider being down and must not open it for every
-// purpose; an engaged error may have cost money and is the ledger's business, not the breaker's; an
-// error that is not a CallError carries no verdict and is ignored.
+// RecordFailure ends an admitted call that failed. It COUNTS ONLY a transient fault nobody paid for:
+// a *aiprov.CallError that is Retryable and not Engaged. A configuration refusal (401/402/404/422 —
+// not retryable) says nothing about the provider being down and must not open it for every purpose;
+// an engaged error may have cost money and is the ledger's business, not the breaker's; an error that
+// is not a CallError carries no verdict. None of those three counts — but each still ENDS the call,
+// so a probe it was is released rather than left reserved.
 func (r *Registry) RecordFailure(providerKey, capability string, err error) {
 	ce, ok := aiprov.AsCallError(err)
 	if !ok || !ce.Retryable || aiprov.Engaged(err) {
+		r.Release(providerKey, capability)
 		return
 	}
-	e := r.breakerEntry(providerKey, capability)
-	_ = e.cb.Call(context.Background(), func(context.Context) error { return err })
+	r.breakerFor(providerKey, capability).Fault(r.clock())
 }
 
-// RecordSuccess tells the breaker a call went through: it clears the closed breaker's failure count
-// (so three faults a week apart never open it) and closes a probing one. A provider with no breaker
-// yet is left without one.
+// RecordSuccess ends an admitted call that went through: it clears the closed breaker's failure count
+// and closes a probing one. A provider with no breaker yet is left without one.
 func (r *Registry) RecordSuccess(providerKey, capability string) {
-	e := r.lookupBreaker(providerKey, capability)
-	if e == nil {
-		return
+	if b := r.lookupBreaker(providerKey, capability); b != nil {
+		b.Success()
 	}
-	_ = e.cb.Call(context.Background(), func(context.Context) error { return nil })
 }
 
-// ResetBreakers closes every breaker of a provider — after its key was written, and by Reload when
-// the effective key changed.
+// ResetBreakers closes every breaker of a provider and drops any probe reservation — after its key
+// was written, and by Reload when the effective key changed.
 func (r *Registry) ResetBreakers(providerKey string) {
 	prefix := providerKey + "/"
 	r.bmu.Lock()
-	entries := make([]*breakerEntry, 0, 2)
-	for k, e := range r.breakers {
+	entries := make([]*probeBreaker, 0, 2)
+	for k, b := range r.breakers {
 		if strings.HasPrefix(k, prefix) {
-			entries = append(entries, e)
+			entries = append(entries, b)
 		}
 	}
 	r.bmu.Unlock()
-	for _, e := range entries {
-		e.cb.Reset()
-		e.openedAt.Store(0)
+	for _, b := range entries {
+		b.Reset()
 	}
 }
 

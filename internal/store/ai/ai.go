@@ -4,7 +4,8 @@
 // Two halves with opposite rules. The CONFIG half is small, rare and written by one super admin at a
 // time: every write runs in one transaction that first moves ai_settings.config_version, so all
 // config writers serialise on that one row and the registry learns about the write by polling one
-// number. The LEDGER half is written on every provider call: single autocommit statements, never a
+// number; its one read (GetConfig) runs in one read-only snapshot, so it never returns a mix of two
+// versions. The LEDGER half is written on every provider call: single autocommit statements, never a
 // SERIALIZABLE transaction (whose range locks would make a report block the calls it is reporting on),
 // and no validation beyond what the columns cannot hold at all: a refused row is money unrecorded.
 //
@@ -37,14 +38,17 @@ type TxFunc func(ctx context.Context, f func(context.Context, dependency.Reposit
 // Store implements dependency.AI.
 type Store struct {
 	storeutil.Base
-	txFunc TxFunc
+	txFunc     TxFunc
+	readTxFunc TxFunc
 }
 
 var _ dependency.AI = (*Store)(nil)
 
-// New creates a new AI providers store.
-func New(base storeutil.Base, txFunc TxFunc) *Store {
-	return &Store{Base: base, txFunc: txFunc}
+// New creates a new AI providers store. readTxFunc is separate and load-bearing, as in store/design:
+// GetConfig reads its five tables inside it (store.readTx — REPEATABLE READ, read-only), one
+// snapshot, where the SERIALIZABLE txFunc would take a shared lock on every config row it reads.
+func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
+	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
 }
 
 const (
@@ -114,36 +118,58 @@ type routeRow struct {
 	entity.AIRouteCandidate
 }
 
-// GetConfig returns the whole configuration the registry snapshots.
+// GetConfig returns the whole configuration the registry snapshots — the data of ONE config_version.
 //
-// THE VERSION IS READ FIRST, AND THAT ORDER IS LOAD-BEARING. These reads are not one snapshot. A write
-// that commits between them makes the returned data NEWER than the returned version; the registry's
-// next poll then sees a higher version and reloads, so it converges. Reading the version LAST could
-// pair the OLD data with the NEW version, and the poller would never reload what it missed.
+// ONE SNAPSHOT (Codex A1 #2). As five autocommit reads, a write committed between two of them handed
+// the registry settings of one version and routes of the next — a configuration no version ever
+// described — and the registry published it until its next poll. Now the reads run inside readTxFunc
+// (store.readTx: REPEATABLE READ, read-only), where InnoDB answers every read from the one snapshot
+// the first read takes; every config writer moves config_version and its rows in ONE transaction, so
+// the snapshot holds all of a write or none of it, and the version returned describes exactly the rows
+// returned.
+//
+// THE VERSION IS STILL READ FIRST. Inside a snapshot the order is free; it is not where the runner is
+// SERIALIZABLE (store.go's transactional sub-stores pass Tx for both roles): there every read is a
+// locking read, and taking ai_settings first takes the row each writer takes first, so no write can
+// land between the reads.
 func (s *Store) GetConfig(ctx context.Context) (*entity.AIConfig, error) {
-	settings, err := loadSettings(ctx, s.DB)
+	var cfg *entity.AIConfig
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		cfg, err = readConfig(ctx, rep.DB())
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// readConfig is GetConfig's five reads on one handle — the snapshot's.
+func readConfig(ctx context.Context, db dependency.DB) (*entity.AIConfig, error) {
+	settings, err := loadSettings(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
 	var providers []entity.AIProvider
-	if err := selectNamed(ctx, s.DB, &providers, selectAIProviders, nil); err != nil {
+	if err := selectNamed(ctx, db, &providers, selectAIProviders, nil); err != nil {
 		return nil, fmt.Errorf("failed to read ai providers: %w", err)
 	}
 	byKey := vocabCompare(entity.AIProviderKeys())
 	slices.SortStableFunc(providers, func(a, b entity.AIProvider) int { return byKey(a.Key, b.Key) })
 
 	var models []entity.AIModel
-	if err := selectNamed(ctx, s.DB, &models, selectAIModels, nil); err != nil {
+	if err := selectNamed(ctx, db, &models, selectAIModels, nil); err != nil {
 		return nil, fmt.Errorf("failed to read ai models: %w", err)
 	}
 
 	var rows []routeRow
-	if err := selectNamed(ctx, s.DB, &rows, selectAIRoutes, nil); err != nil {
+	if err := selectNamed(ctx, db, &rows, selectAIRoutes, nil); err != nil {
 		return nil, fmt.Errorf("failed to read ai routes: %w", err)
 	}
 
-	tz, err := loadBudgetTimezone(ctx, s.DB)
+	tz, err := loadBudgetTimezone(ctx, db)
 	if err != nil {
 		return nil, err
 	}

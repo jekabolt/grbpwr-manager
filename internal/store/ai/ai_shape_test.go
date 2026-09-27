@@ -81,14 +81,17 @@ type recRepo struct {
 
 func (r recRepo) DB() dependency.DB { return r.db }
 
-// newRecStore wires the store exactly as store.go does, with the fake behind both the plain handle and
-// the transaction runner.
+// newRecStore wires the store exactly as store.go does, with the fake behind the plain handle and both
+// transaction runners (TestAIStoreShapeGetConfigIsOneSnapshot tells the three apart).
 func newRecStore(db *recDB, txCalls *int) *Store {
 	return New(storeutil.Base{DB: db, Now: func() time.Time { return fixedNow }},
 		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
 			if txCalls != nil {
 				*txCalls++
 			}
+			return f(ctx, recRepo{db: db})
+		},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
 			return f(ctx, recRepo{db: db})
 		})
 }
@@ -907,6 +910,38 @@ func TestAIStoreShapeFinishBindsNullForWhatItDoesNotKnow(t *testing.T) {
 	}
 }
 
+// TestAIStoreShapeValidZeroCostBindsZeroNotNull — a free call's VALID zero binds a non-NULL 0 through
+// both finalisations, so COALESCE(:cost_usd, cost_usd) writes the zero instead of keeping the row's
+// value: NULL (unpriced) on a dispatching row, the submit's figure on an accepted one.
+//
+// MUTATION IT CATCHES (Codex A1 #5): `if end.CostUSD.Valid && !end.CostUSD.Decimal.IsZero()` in
+// endCallParams — the zero binds NULL and a free call reads as unknown (or keeps a stale price).
+func TestAIStoreShapeValidZeroCostBindsZeroNotNull(t *testing.T) {
+	zero := decimal.NullDecimal{Decimal: decimal.Zero, Valid: true}
+	for _, tc := range []struct {
+		name, statementName, statement string
+		finish                         func(*Store) error
+	}{
+		{"FinishCall", "finishAICall", finishAICall, func(s *Store) error {
+			return s.FinishCall(context.Background(), 12,
+				entity.AICallEnd{Status: entity.AICallFree, CostUSD: zero, CostSource: entity.AICostFree})
+		}},
+		{"PriceAcceptedCall", "priceAcceptedAICall", priceAcceptedAICall, func(s *Store) error {
+			return s.PriceAcceptedCall(context.Background(), 41, 2, 1,
+				entity.AICallEnd{Status: entity.AICallOK, CostUSD: zero, CostSource: entity.AICostProvider})
+		}},
+	} {
+		db := &recDB{}
+		if err := tc.finish(newRecStore(db, nil)); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		bound := argOf(t, tc.statement, findCall(t, db, tc.statementName).args, "cost_usd")
+		if got, ok := bound.(decimal.Decimal); !ok || !got.IsZero() {
+			t.Errorf("%s: :cost_usd = %#v for a valid zero, want a non-NULL 0", tc.name, bound)
+		}
+	}
+}
+
 // TestAIStoreShapePriceAcceptedAddressesTheDesignCall.
 //
 // MUTATION IT CATCHES: binding the arguments to the wrong keys (attempt into call_no) — the collect
@@ -949,8 +984,9 @@ func TestAIStoreShapeSweepReportsWhatItSwept(t *testing.T) {
 
 // TestAIStoreShapeGetConfigReadsTheVersionFirst.
 //
-// MUTATIONS IT CATCHES: reading ai_settings AFTER the other tables (a write between the reads could
-// pair old data with the new version, and the poller would never reload it); failing — or reporting
+// MUTATIONS IT CATCHES: reading ai_settings AFTER the other tables (where the runner is SERIALIZABLE —
+// a transactional sub-store — the reads are locking reads, and ai_settings first is what keeps a
+// write from landing between them); failing — or reporting
 // version 0 — on a missing singleton; a missing design_settings row read as UTC (the ledger's days
 // would move by one or two hours against the design band's); routes not grouped per purpose or not
 // ordered by position; providers in table order rather than the panel's.
@@ -996,6 +1032,85 @@ func TestAIStoreShapeGetConfigReadsTheVersionFirst(t *testing.T) {
 	}
 	if v := cfg.Routes[1].Candidates; len(v) != 2 || v[0].Position != 1 || v[0].ProviderKey != "" || v[1].ProviderKey != "recraft" {
 		t.Fatalf("vector candidates %+v, want primary (default provider) then recraft", v)
+	}
+}
+
+// TestAIStoreShapeGetConfigIsOneSnapshot — every read GetConfig makes reaches the handle of ONE
+// read-only transaction, and the configuration returned is that handle's: version and rows together.
+// The plain handle and the write runner each get a fake of their own, which fails the test if touched.
+//
+// MUTATIONS IT CATCHES (Codex A1 #2): one read through s.DB — an autocommit read outside the snapshot,
+// so a write committed between two reads hands the registry a mix no config_version ever described;
+// GetConfig run in txFunc (SERIALIZABLE: a shared lock on every config row) instead of readTxFunc; a
+// read error swallowed inside the transaction (a half-read config returned as whole, and the
+// transaction committed instead of rolled back).
+func TestAIStoreShapeGetConfigIsOneSnapshot(t *testing.T) {
+	outside := func(dest any, q string, _ []any) error {
+		t.Errorf("a GetConfig read reached a handle outside the read snapshot: %q", firstLine(q))
+		return nil
+	}
+	plain := &recDB{onGet: outside, onSelect: outside}
+	var failProviders error
+	snap := &recDB{
+		onGet: func(dest any, q string, _ []any) error {
+			switch d := dest.(type) {
+			case *entity.AISettings:
+				*d = entity.AISettings{ConfigVersion: 8, DefaultChatProviderKey: "apibost", DefaultImageProviderKey: "openrouter"}
+			case *string:
+				*d = "Europe/Riga"
+			}
+			return nil
+		},
+		onSelect: func(dest any, q string, _ []any) error {
+			switch d := dest.(type) {
+			case *[]entity.AIProvider:
+				if failProviders != nil {
+					return failProviders
+				}
+				*d = []entity.AIProvider{{Key: "fal", Enabled: true}, {Key: "openrouter"}}
+			case *[]routeRow:
+				*d = []routeRow{{"threed", entity.AIRouteCandidate{Position: 1, ProviderKey: "fal"}}}
+			}
+			return nil
+		},
+	}
+	var writeTxs, readTxs int
+	var readTxErr error
+	s := New(storeutil.Base{DB: plain, Now: func() time.Time { return fixedNow }},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			writeTxs++
+			return f(ctx, recRepo{db: plain})
+		},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			readTxs++
+			readTxErr = f(ctx, recRepo{db: snap})
+			return readTxErr
+		})
+
+	cfg, err := s.GetConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readTxs != 1 || writeTxs != 0 || len(plain.calls) != 0 {
+		t.Fatalf("read transactions %d, write transactions %d, plain-handle calls %d; want 1, 0, 0",
+			readTxs, writeTxs, len(plain.calls))
+	}
+	want := []string{"selectAISettings", "selectAIProviders", "selectAIModels", "selectAIRoutes", "selectBudgetTimezone"}
+	if got := sequence(t, snap); !slices.Equal(got, want) {
+		t.Fatalf("inside the snapshot GetConfig read %v, want %v", got, want)
+	}
+	if cfg.Settings.ConfigVersion != 8 || cfg.Settings.DefaultChatProviderKey != "apibost" || cfg.BudgetTimezone != "Europe/Riga" ||
+		len(cfg.Providers) != 2 || cfg.Providers[0].Key != "openrouter" || len(cfg.Routes) != 1 || cfg.Routes[0].Purpose != "threed" {
+		t.Fatalf("GetConfig returned %+v, want the snapshot's version 8 and its rows", cfg)
+	}
+
+	failProviders = errors.New("lost connection")
+	cfg, err = s.GetConfig(context.Background())
+	if !errors.Is(err, failProviders) || cfg != nil {
+		t.Fatalf("a failed read returned (%v, %v); want (nil, the error)", cfg, err)
+	}
+	if !errors.Is(readTxErr, failProviders) {
+		t.Fatalf("the read transaction ended with %v; the error must reach it so it rolls back", readTxErr)
 	}
 }
 

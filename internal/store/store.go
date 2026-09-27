@@ -441,7 +441,8 @@ func initSubStores(ms *MYSQLStore) {
 	ms.sampleStore = sample.New(base, ms.Tx)
 	ms.patternObjectStore = patternobject.New(base)
 	ms.workshopStore = workshop.New(base, ms.Tx)
-	ms.aiStore = ai.New(base, ms.Tx)
+	// readTx: GetConfig reads the whole AI config in one REPEATABLE READ snapshot (see store/ai).
+	ms.aiStore = ai.New(base, ms.Tx, ms.readTx)
 	// readTx is a SECOND argument here and not a duplicate of Tx: GetBand runs its page and its
 	// aggregates inside one REPEATABLE READ snapshot, and a counter taken outside that snapshot
 	// would caption a page it disagrees with.
@@ -480,7 +481,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.sampleStore = sample.New(base, outerTx)
 	txStore.patternObjectStore = patternobject.New(base)
 	txStore.workshopStore = workshop.New(base, outerTx)
-	txStore.aiStore = ai.New(base, outerTx)
+	txStore.aiStore = ai.New(base, outerTx, outerTx)
 	// Inside a transaction both roles collapse onto outerTx, exactly as techcard does: a nested
 	// begin is not available, and the enclosing transaction is already the snapshot.
 	txStore.designStore = design.New(base, outerTx, outerTx)
