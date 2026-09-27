@@ -22,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/account"
 	"github.com/jekabolt/grbpwr-manager/internal/store/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/admin"
+	"github.com/jekabolt/grbpwr-manager/internal/store/ai"
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
 	"github.com/jekabolt/grbpwr-manager/internal/store/campaign"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
@@ -129,6 +130,7 @@ type MYSQLStore struct {
 	accounting         *accounting.Store
 	patternObjectStore *patternobject.Store
 	workshopStore      *workshop.Store
+	aiStore            *ai.Store
 	designStore        *design.Store
 }
 
@@ -439,6 +441,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.sampleStore = sample.New(base, ms.Tx)
 	ms.patternObjectStore = patternobject.New(base)
 	ms.workshopStore = workshop.New(base, ms.Tx)
+	ms.aiStore = ai.New(base, ms.Tx)
 	// readTx is a SECOND argument here and not a duplicate of Tx: GetBand runs its page and its
 	// aggregates inside one REPEATABLE READ snapshot, and a counter taken outside that snapshot
 	// would caption a page it disagrees with.
@@ -477,6 +480,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.sampleStore = sample.New(base, outerTx)
 	txStore.patternObjectStore = patternobject.New(base)
 	txStore.workshopStore = workshop.New(base, outerTx)
+	txStore.aiStore = ai.New(base, outerTx)
 	// Inside a transaction both roles collapse onto outerTx, exactly as techcard does: a nested
 	// begin is not available, and the enclosing transaction is already the snapshot.
 	txStore.designStore = design.New(base, outerTx, outerTx)
@@ -539,6 +543,7 @@ func (ms *MYSQLStore) Archive() dependency.Archive               { return ms.con
 func (ms *MYSQLStore) Media() dependency.Media                   { return ms.content }
 func (ms *MYSQLStore) Settings() dependency.Settings             { return ms.settingsStore }
 func (ms *MYSQLStore) Workshop() dependency.Workshop             { return ms.workshopStore }
+func (ms *MYSQLStore) AI() dependency.AI                         { return ms.aiStore }
 func (ms *MYSQLStore) Cache() dependency.Cache                   { return ms.settingsStore }
 func (ms *MYSQLStore) Dictionary() dependency.Dictionary         { return ms.dictionaryStore }
 func (ms *MYSQLStore) Mail() dependency.Mail                     { return ms.comm }
