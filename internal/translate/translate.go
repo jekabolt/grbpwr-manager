@@ -173,25 +173,9 @@ func parseItems(content string, n int) ([]string, error) {
 	return out, nil
 }
 
-func extractJSONObject(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```")
-		if i := strings.IndexByte(s, '\n'); i >= 0 {
-			s = s[i+1:]
-		}
-		if j := strings.LastIndex(s, "```"); j >= 0 {
-			s = s[:j]
-		}
-		s = strings.TrimSpace(s)
-	}
-	start := strings.IndexByte(s, '{')
-	end := strings.LastIndexByte(s, '}')
-	if start < 0 || end < 0 || end < start {
-		return ""
-	}
-	return s[start : end+1]
-}
+// extractJSONObject is aiprov.ExtractJSONObject (moved there in E1 so the Anthropic transport cuts
+// the answer the way this service always has); "" when the output carries no object.
+func extractJSONObject(s string) string { js, _ := aiprov.ExtractJSONObject(s); return js }
 
 var (
 	htmlTagRe     = regexp.MustCompile(`</?[A-Za-z][^>]*>`)
