@@ -3859,6 +3859,66 @@ service AdminService {
       body: "*"
     };
   }
+
+  // AI PROVIDERS
+  //
+  // admin → AI providers. Every RPC here is SuperOnly (rbac): keys, routes and the spend report are
+  // money. GetAiProvidersConfig is the ONE read the panel needs; every write returns the same config
+  // so the client never needs a follow-up read. expected_version is the optimistic lock
+  // (ai_settings.config_version): a stale page gets FailedPrecondition "reload" instead of overwriting.
+
+  // GetAiProvidersConfig returns the whole panel in one read: every provider of the registry (switch,
+  // key state, breaker, fault badge, models), the purposes with their routes, the two defaults and
+  // config_version. A key is never in it — only where it comes from and its last four characters.
+  rpc GetAiProvidersConfig(GetAiProvidersConfigRequest) returns (GetAiProvidersConfigResponse) {
+    option (google.api.http) = {get: "/api/admin/ai/providers"};
+  }
+
+  // UpdateAiProvider switches one provider on or off. Off stops new calls through it; its routes stay
+  // as they are and skip it until it is switched back on.
+  rpc UpdateAiProvider(UpdateAiProviderRequest) returns (UpdateAiProviderResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/ai/providers/{provider_key}"
+      body: "*"
+    };
+  }
+
+  // SetAiProviderKey stores (sealed with the server's master key) or clears one key slot of a
+  // provider: kind "api" is the key the calls are made with, kind "admin" the separate key a cost API
+  // needs (openai, anthropic, fal only). Saving probes the just-saved key with the provider's FREE
+  // endpoint and returns the result beside the config. The value is write-only: never echoed, never
+  // logged.
+  rpc SetAiProviderKey(SetAiProviderKeyRequest) returns (SetAiProviderKeyResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/ai/providers/{provider_key}/key"
+      body: "*"
+    };
+  }
+
+  // SetAiDefaults sets the default chat provider and the default image provider — what a route
+  // candidate with provider_key "" means for those two capabilities.
+  rpc SetAiDefaults(SetAiDefaultsRequest) returns (SetAiDefaultsResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/ai/defaults"
+      body: "*"
+    };
+  }
+
+  // SetAiRoute sets one purpose's route: the primary candidate and an optional fallback.
+  rpc SetAiRoute(SetAiRouteRequest) returns (SetAiRouteResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/ai/routes/{purpose}"
+      body: "*"
+    };
+  }
+
+  // GetAiSpendReport returns the AI spend over calendar days [from_day, to_day] in the org timezone:
+  // our number from the ledger (one row per physical call) by provider and by actor × purpose ×
+  // provider × model, and beside it, per provider, their number from the provider's cost API where
+  // one exists and a key is set.
+  rpc GetAiSpendReport(GetAiSpendReportRequest) returns (GetAiSpendReportResponse) {
+    option (google.api.http) = {get: "/api/admin/ai/spend"};
+  }
 }
 
 // DICITONARY
@@ -13092,4 +13152,181 @@ message DraftDesignIdeaResponse {
   // canonical JSON of this message — what the client was handed, not what the model happened to
   // type.
   common.DesignConstructionDraft construction = 3;
+}
+
+// AI PROVIDERS messages
+//
+// The wire of admin → AI providers. Vocabularies are lowercase strings, documented on the field that
+// carries them. Money is google.type.Decimal in USD and ABSENCE IS MEANINGFUL: an unset Decimal is
+// unknown (the screen shows —), never zero; a real zero is sent as a present "0". Strings use "" for
+// none.
+
+// AiRouteCandidate is one (provider, model) a purpose's call may go to.
+message AiRouteCandidate {
+  // "" = the capability's default provider — chat and image only
+  // (GetAiProvidersConfigResponse.default_chat_provider_key / default_image_provider_key); the other
+  // capabilities have no default, so their candidates name a provider.
+  string provider_key = 1;
+  string model = 2; // "" = the client's own default slug; a custom slug is any free text
+}
+
+// AiModelInfo is one model of a provider: curated (the pricing catalogue) or custom (an ai_model row —
+// a slug an admin typed into a route).
+message AiModelInfo {
+  string slug = 1;
+  string label = 2;
+  string kind = 3; // the capability it serves: chat | image | cutout | edit | threed | vector | video
+  bool custom = 4; // true = an ai_model row; false = the curated catalogue
+  bool priced = 5; // a price is on file for this slug
+}
+
+// AiProviderInfo is one provider of the registry as the panel shows it. No key value is ever here:
+// only where the answering key comes from, its last four characters and who stored it when.
+message AiProviderInfo {
+  string key = 1; // openai | anthropic | google | openrouter | apibost | fal | meshy | runblob | recraft
+  string label = 2;
+  bool enabled = 3;
+  // What a route may ask of it: chat | image | cutout | edit | threed | vector | video.
+  repeated string capabilities = 4;
+  // none | env | db | unreadable. unreadable = a stored key that does not open with the master key;
+  // the env key, if any, answers meanwhile.
+  string key_source = 5;
+  string key_last4 = 6; // of the key that ANSWERS (the env key's on unreadable); "" when none
+  string key_updated_by = 7; // the admin who stored the key; "" when no key is stored
+  google.protobuf.Timestamp key_updated_at = 8; // unset when no key is stored
+  bool admin_key_supported = 9; // openai, anthropic, fal only (their cost APIs need a separate key)
+  string admin_key_source = 10; // none | db | unreadable — no env fallback, no admin key ever lived in env
+  string admin_key_last4 = 11; // "" when none
+  string breaker = 12; // closed | open | half-open — the worst of the provider's breakers (the registry's words)
+  // The provider badge from the last 24 h of ledger rows: key_rejected | out_of_credits |
+  // model_unknown | "" (none).
+  string fault_code = 13;
+  // One short sentence or "": "via openrouter" (recraft on the OpenRouter route), "design generation
+  // is off on this server" (image/3D providers when DESIGN_GENERATION_ENABLED is false).
+  string note = 14;
+  repeated AiModelInfo models = 15; // curated (pricing catalogue) + custom (ai_model rows)
+}
+
+// AiPurposeInfo is one purpose — what a call is FOR — with its route.
+message AiPurposeInfo {
+  string key = 1; // ai_route.purpose: chat.note_markdown, image.generate, threed, …
+  string label = 2;
+  string hint = 3; // one short line under the label: where in the admin this purpose runs
+  string group = 4; // chat | images | 3d — the panel's heading
+  string capability = 5; // what its candidates must serve (see AiModelInfo.kind)
+  AiRouteCandidate primary = 6;
+  AiRouteCandidate fallback = 7; // absent = no fallback
+}
+
+message GetAiProvidersConfigRequest {}
+
+message GetAiProvidersConfigResponse {
+  repeated AiProviderInfo providers = 1; // in the panel's fixed order
+  repeated AiPurposeInfo purposes = 2; // in the panel's fixed order
+  string default_chat_provider_key = 3; // what provider_key "" means for a chat candidate
+  string default_image_provider_key = 4; // what provider_key "" means for an image candidate
+  uint64 config_version = 5; // send it back as expected_version on the next write
+  // false = AI_KEYS_MASTER_KEY is not set on this server: SetAiProviderKey refuses to store a key.
+  bool master_key_present = 6;
+  string timezone = 7; // the org timezone the spend report counts its days in, e.g. Europe/Warsaw
+  string price_version = 8; // the pricing catalogue the ledger prices with
+  bool design_generation_enabled = 9; // DESIGN_GENERATION_ENABLED on this server
+}
+
+// UpdateAiProviderRequest switches one provider; enabled is sent every time.
+message UpdateAiProviderRequest {
+  string provider_key = 1;
+  bool enabled = 2;
+  uint64 expected_version = 3;
+}
+
+message UpdateAiProviderResponse {
+  GetAiProvidersConfigResponse config = 1;
+}
+
+// AiProbeResult is what the provider's FREE endpoint said about a key the moment it was saved.
+message AiProbeResult {
+  bool ok = 1;
+  string code = 2; // key_rejected | out_of_credits | unreachable | "" (ok)
+  string message = 3; // one line for the screen
+  string balance = 4; // "24.50 USD", "1200 credits"; "" where the provider does not say
+}
+
+message SetAiProviderKeyRequest {
+  string provider_key = 1;
+  string kind = 2; // api | admin (admin: openai, anthropic, fal only)
+  string value = 3; // "" clears the slot; write-only — no response and no log ever carries it
+}
+
+message SetAiProviderKeyResponse {
+  AiProbeResult probe = 1; // unset when the slot was cleared: nothing to probe
+  GetAiProvidersConfigResponse config = 2;
+}
+
+// SetAiDefaultsRequest carries both defaults every time; "" leaves that one unchanged.
+message SetAiDefaultsRequest {
+  string chat_provider_key = 1;
+  string image_provider_key = 2;
+  uint64 expected_version = 3;
+}
+
+message SetAiDefaultsResponse {
+  GetAiProvidersConfigResponse config = 1;
+}
+
+message SetAiRouteRequest {
+  string purpose = 1;
+  AiRouteCandidate primary = 2; // required
+  AiRouteCandidate fallback = 3; // absent = no fallback
+  uint64 expected_version = 4;
+}
+
+message SetAiRouteResponse {
+  GetAiProvidersConfigResponse config = 1;
+}
+
+// GetAiSpendReportRequest names the period as calendar days. The presets (this month, last month,
+// last 7 days) are computed by the client; the server checks from_day ≤ to_day and a span of at most
+// 366 days.
+message GetAiSpendReportRequest {
+  string from_day = 1; // YYYY-MM-DD, inclusive, in the org timezone
+  string to_day = 2; // YYYY-MM-DD, inclusive, in the org timezone
+}
+
+// AiSpendProviderRow is one provider's line: our number from the ledger beside their number from the
+// provider's cost API. A provider with only their number in the period still has a line.
+message AiSpendProviderRow {
+  string provider_key = 1;
+  // absent = unknown (no priced call in the period); otherwise the sum of the priced calls —
+  // unpriced counts the rest.
+  google.type.Decimal our_usd = 2;
+  google.type.Decimal their_usd = 3; // absent = no key or no cost API
+  int32 calls = 4;
+  int32 failed = 5;
+  int32 unpriced = 6; // calls with no known cost; not in our_usd
+}
+
+// AiSpendActorRow is one actor × purpose × provider × model line of the period.
+message AiSpendActorRow {
+  // The admin login the calls were made for; "system" = a background worker; "unknown" = calls whose
+  // path carried no actor (a wiring defect, kept as its own line rather than folded into someone's).
+  string actor = 1;
+  int32 actor_admin_id = 2; // 0 = unresolved
+  string purpose = 3;
+  string provider_key = 4;
+  string model = 5;
+  google.type.Decimal usd = 6; // absent = unknown (no priced call in this line)
+  int32 calls = 7;
+}
+
+message GetAiSpendReportResponse {
+  string from_day = 1; // the period as served
+  string to_day = 2;
+  string timezone = 3; // the org timezone the days were counted in
+  google.type.Decimal total_usd = 4; // absent = unknown (no priced call in the period)
+  int32 calls = 5;
+  int32 failed = 6;
+  int32 unpriced = 7;
+  repeated AiSpendProviderRow by_provider = 8;
+  repeated AiSpendActorRow by_actor = 9;
 }
