@@ -283,6 +283,20 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			rerun:  parent(entity.DesignRunKindFreeform, P(entity.DesignFreeformPresetFree, I(11, "", 0), I(12, "", 0)))},
 		{name: "rerun: silent, inherits everything", kind: entity.DesignRunKindFreeform, params: nil,
 			rerun: parent(entity.DesignRunKindFreeform, tryon())},
+		// G-02 M-2: a 3D rerun keeps its named pictures IN ORDER (position = the side it shows).
+		{name: "rerun 3d: swaps a named picture", kind: entity.DesignRunKindThreed,
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 33}}),
+			rerun:  parent(entity.DesignRunKindThreed, pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}})),
+			want:   "rerun_changes_pictures"},
+		{name: "rerun 3d: the same pictures reordered (front ↔ back)", kind: entity.DesignRunKindThreed,
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{32, 31}}),
+			rerun:  parent(entity.DesignRunKindThreed, pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}})),
+			want:   "rerun_changes_pictures"},
+		{name: "rerun 3d: the same pictures, a new tier", kind: entity.DesignRunKindThreed,
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}, Quality: "detailed"}),
+			rerun:  parent(entity.DesignRunKindThreed, pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}}))},
+		{name: "rerun 3d: silent, inherits its pictures", kind: entity.DesignRunKindThreed, params: nil,
+			rerun: parent(entity.DesignRunKindThreed, pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}}))},
 	}
 }
 
@@ -303,6 +317,8 @@ func pgDropCalls(calls []*mock.Call, method string) []*mock.Call {
 //   - drop the card boundary over params.threed.reference_media_ids → «a picture of another card»;
 //   - drop the reference-ids loop of designRunInputMediaRefs → «a display-only picture»;
 //   - designRefuseRerunChangesWorkflow answering nil → both rerun_changes_workflow rows;
+//   - drop the designRefuseThreedRerunReferenceSwap call → both «rerun 3d» refusal rows (G-02 M-2);
+//   - compare the 3D lists as sets → «the same pictures reordered» (G-02 M-2);
 //   - designRefuseUnworkableRecolourCloth demanding a colour even with a pictured cloth → the legal
 //     cloth-only swap row (B-10 §6);
 //   - skip designRefuseModelPhotoMismatch → the three model-profile rows;

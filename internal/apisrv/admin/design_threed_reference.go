@@ -152,6 +152,73 @@ func designRefuseMalformedThreedReferences(kind string, spoken *pb_common.Design
 	return nil
 }
 
+// designRefuseThreedRerunReferenceSwap — A 3D RERUN BUILDS THE SAME OBJECT FROM THE SAME VIEWS
+// (G-02 M-2 = Codex 1; the unhonoured half of Codex S-02 correction 2).
+//
+// designRefuseFreeformRerunPictureSwap guards the playground only; a 3D rerun could swap its named
+// pictures and keep `rerun_of`: a new model filed under the old run's number. Money is right,
+// provenance is not — exactly the defect the freeform guard closes.
+//
+// ⚠ THE LISTS ARE COMPARED IN ORDER, NOT AS SETS, and that is the difference from the playground.
+// There the order is a caption number; here it is the VIEW CLAIM — position 0 is the front, 1 the
+// back, 2 left, 3 right (designgen ReferenceViews). [88,91] → [91,88] turns the garment round, so it
+// is a different build. Switching bench mode ↔ reference mode (an empty list on one side) is a
+// change too: a different source altogether.
+//
+// Asked of the SPEAKER: a silent rerun inherits the parent's params wholesale and cannot differ.
+// A spoken rerun REPLACES params wholesale (designEffectiveParams), so a spoken block that omits
+// `threed` IS a bench-mode rerun, and it is compared as one.
+func designRefuseThreedRerunReferenceSwap(kind string, spoken *pb_common.DesignRunParams,
+	parentID int, parentParams []byte) error {
+	if kind != entity.DesignRunKindThreed || spoken == nil || parentID <= 0 {
+		return nil
+	}
+	inherited := &pb_common.DesignRunParams{}
+	if len(parentParams) > 0 {
+		if err := designUnmarshalJSON(parentParams, inherited); err != nil {
+			return status.Errorf(codes.FailedPrecondition,
+				"run %d cannot be rerun: its stored parameters do not parse", parentID)
+		}
+	}
+	was, now := designThreedReferenceMediaIDs(inherited), designThreedReferenceMediaIDs(spoken)
+	same := len(was) == len(now)
+	for i := 0; same && i < len(was); i++ {
+		same = was[i] == now[i]
+	}
+	if same {
+		return nil
+	}
+	parentSet := make(map[int]struct{}, len(was))
+	for _, id := range was {
+		parentSet[id] = struct{}{}
+	}
+	childSet := make(map[int]struct{}, len(now))
+	for _, id := range now {
+		childSet[id] = struct{}{}
+	}
+	return designRefusal(codes.InvalidArgument, "rerun_changes_pictures",
+		fmt.Sprintf("a rerun repeats the run it points at: run %d built its 3D model from picture(s) %s "+
+			"(front, back, left, right in that order), and this one names %s. For a 3D build the order is "+
+			"which side each picture shows, so neither the pictures nor their order may change — start a "+
+			"new run instead of a rerun. Nothing was reserved and nothing was charged",
+			parentID, designJoinIDsOrBench(was), designJoinIDsOrBench(now)),
+		map[string]string{
+			"rerun_of": strconv.Itoa(parentID),
+			"added":    designJoinIDs(designSortedMissing(childSet, parentSet)),
+			"dropped":  designJoinIDs(designSortedMissing(parentSet, childSet)),
+			"was":      designJoinIDs(was),
+			"now":      designJoinIDs(now),
+		})
+}
+
+// designJoinIDsOrBench — designJoinIDs for a 3D sentence: an empty list is the render bench.
+func designJoinIDsOrBench(ids []int) string {
+	if len(ids) == 0 {
+		return "none (the render bench)"
+	}
+	return designJoinIDs(ids)
+}
+
 func designThreedWordIn(v string, words []string) bool {
 	for _, w := range words {
 		if v == w {

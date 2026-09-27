@@ -868,6 +868,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designParentID(parent), designParentParams(parent)); err != nil {
 		return nil, err
 	}
+	// …and a 3D rerun keeps its named pictures IN ORDER (the order is the view claim) — G-02 M-2.
+	if err := designRefuseThreedRerunReferenceSwap(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
 	// …and it stays on the same PLAYGROUND tile: a spoken rerun may re-mark, re-word and reorder,
 	// never turn into another workflow [Codex 2].
 	if err := designRefuseRerunChangesWorkflow(kind, req.GetParams(),
