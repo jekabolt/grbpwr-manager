@@ -338,14 +338,20 @@ type AIDefaultsPatch struct {
 // ───────────────────────── ledger rows ─────────────────────────
 
 // AICallStart opens one ledger row (status dispatching) BEFORE the physical call.
+//
+// ATTRIBUTION IS BY ACCOUNT ID, FIXED AT WRITE TIME (D-10). A nil ActorAdminID is not "nobody": the
+// store's INSERT resolves it from Actor there and then — the admins row carrying that username at the
+// moment of the call — so a row stays with the account that made it even after that account is
+// deleted and another is created under the same username. It stays NULL only when no admin carries
+// the username (system, unknown, an account already gone).
 type AICallStart struct {
 	OccurredAt   time.Time // UTC
 	DayLocal     string    // YYYY-MM-DD in the budget timezone (BudgetDayKey); aiprov.Ledger fills it when empty
 	ProviderKey  string    // the BILLING transport
 	Model        string    // the requested model
 	Purpose      string
-	Actor        string
-	ActorAdminID *int
+	Actor        string // the JWT username; aiprov.ActorSystem / ActorUnknown when nobody asked
+	ActorAdminID *int   // admins.id when the caller knows it; nil = the store resolves it (see above)
 	RunID        *int
 	AttemptNo    *int
 	CallNo       int // ≥ 1; 0 is read as 1

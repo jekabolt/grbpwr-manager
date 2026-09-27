@@ -317,7 +317,10 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 
 // ───────────────────────── the statements name real columns ─────────────────────────
 
-var createTableRe = regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE`)
+var (
+	createTableRe = regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE`)
+	adminsTableRe = regexp.MustCompile(`(?is)CREATE TABLE admins \((.*?)\n\);`)
+)
 
 // migrationColumns reads the tables this package touches straight from the migration files.
 func migrationColumns(t *testing.T) map[string]map[string]bool {
@@ -344,8 +347,24 @@ func migrationColumns(t *testing.T) map[string]map[string]bool {
 			tables[strings.ToLower(m[1])] = cols
 		}
 	}
+	// admins (0001): the ledger's INSERT resolves actor_admin_id by username. 0001 predates the
+	// IF NOT EXISTS / ENGINE shape, hence its own pattern; the columns read here are the two 0001
+	// created (id, username), which is all the store names.
+	body, err := os.ReadFile(filepath.Join("..", "sql", "0001_initial_setup.sql"))
+	if err != nil {
+		t.Fatalf("read 0001_initial_setup.sql: %v", err)
+	}
+	if m := adminsTableRe.FindStringSubmatch(string(body)); m != nil {
+		cols := map[string]bool{}
+		for _, line := range strings.Split(m[1], "\n") {
+			if fields := strings.Fields(line); len(fields) > 0 {
+				cols[strings.ToLower(fields[0])] = true
+			}
+		}
+		tables["admins"] = cols
+	}
 	for _, want := range []string{"design_settings", "ai_provider", "ai_model", "ai_route", "ai_settings",
-		"ai_usage_event", "ai_provider_cost_daily"} {
+		"ai_usage_event", "ai_provider_cost_daily", "admins"} {
 		if len(tables[want]) == 0 {
 			t.Fatalf("sanity: no columns parsed for %s — the extractor is broken", want)
 		}
@@ -366,7 +385,7 @@ var (
 		"by": true, "order": true, "sum": true, "count": true, "max": true, "case": true, "when": true,
 		"then": true, "else": true, "end": true, "between": true, "coalesce": true, "if": true,
 		"update": true, "set": true, "insert": true, "ignore": true, "into": true, "values": true,
-		"delete": true, "duplicate": true, "key": true,
+		"delete": true, "duplicate": true, "key": true, "limit": true,
 	}
 )
 
@@ -874,6 +893,63 @@ func TestAIStoreShapeBeginCallBindsTheRowItPromises(t *testing.T) {
 		if _, err := beginCallParams(bad); err == nil {
 			t.Fatalf("%s: a row the columns cannot hold was accepted", name)
 		}
+	}
+}
+
+// argsOf returns the value bound to EVERY occurrence of :name in a call of the named statement, in
+// order of appearance.
+func argsOf(t *testing.T, named string, args []any, name string) []any {
+	t.Helper()
+	names := paramNames(named)
+	if len(args) != len(names) {
+		t.Fatalf("%q: %d args bound for %d parameters", firstLine(named), len(args), len(names))
+	}
+	var out []any
+	for i, n := range names {
+		if n == name {
+			out = append(out, args[i])
+		}
+	}
+	return out
+}
+
+// TestAIStoreShapeActorIsAttributedByIdAtWriteTime (Codex B #2, D-10).
+//
+// MUTATIONS IT CATCHES: the INSERT binding :actor_admin_id alone (designgen's rows, whose recorder has
+// no id, stay NULL and are grouped by username only — a recreated account then inherits them); the
+// lookup keyed on anything but the row's own :actor; the report MAX()ing the id per username instead
+// of grouping by it (an old account's spend merged into, and labelled as, the new account of the same
+// name).
+func TestAIStoreShapeActorIsAttributedByIdAtWriteTime(t *testing.T) {
+	flat := strings.Join(strings.Fields(insertAICall), " ")
+	if !strings.Contains(flat, "COALESCE(:actor_admin_id, (SELECT id FROM admins WHERE username = :actor LIMIT 1))") {
+		t.Fatalf("the ledger INSERT must resolve a missing actor_admin_id from admins by the row's username: %s", flat)
+	}
+
+	// No id from the caller (designgen): the id binds NULL and every :actor — the column and the
+	// lookup — binds the row's username, so the database picks the id of the account that has it now.
+	db := &recDB{}
+	st := sampleStart()
+	st.ActorAdminID = nil
+	if _, err := newRecStore(db, nil).BeginCall(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	c := findCall(t, db, "insertAICall")
+	if v := argOf(t, insertAICall, c.args, "actor_admin_id"); v != nil {
+		t.Fatalf(":actor_admin_id = %#v with no id from the caller, want NULL (the lookup decides)", v)
+	}
+	actors := argsOf(t, insertAICall, c.args, "actor")
+	if len(actors) != 2 || actors[0] != "jeka" || actors[1] != "jeka" {
+		t.Fatalf(":actor bound %v, want the row's username for the column and for the lookup", actors)
+	}
+
+	// The report groups by the id, never folds it.
+	flat = strings.Join(strings.Fields(spendByActor), " ")
+	if !strings.Contains(flat, "GROUP BY actor_admin_id, actor, purpose, provider_key, model") {
+		t.Fatalf("spendByActor must group by the account id: %s", flat)
+	}
+	if strings.Contains(strings.ToUpper(flat), "MAX(") {
+		t.Fatalf("spendByActor folds the account id: %s", flat)
 	}
 }
 

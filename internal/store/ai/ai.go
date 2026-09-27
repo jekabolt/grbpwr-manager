@@ -780,12 +780,20 @@ func pickFaults(rows []faultRow) map[string]string {
 
 // ───────────────────────── ledger ─────────────────────────
 
+// insertAICall opens a ledger row. actor_admin_id is RESOLVED HERE, at write time (Codex B #2, D-10):
+// the caller's id when it has one, else the admins row that carries the actor's username NOW. A row
+// is thereby tied to the account that existed when the call was made — a deleted account's rows keep
+// its id, and a new account recreated under the same username gets a new id and none of the old
+// history. designgen's recorder names only a username, so this is where its rows get their id. No
+// such admin (system, unknown, a deleted account) leaves the id NULL: the report shows such rows as
+// their own line.
 const insertAICall = `
 	INSERT INTO ai_usage_event
 		(occurred_at, day_local, provider_key, model, purpose, actor, actor_admin_id,
 		 run_id, attempt_no, call_no, fallback_from, status, cost_source)
 	VALUES
-		(:occurred_at, :day_local, :provider_key, :model, :purpose, :actor, :actor_admin_id,
+		(:occurred_at, :day_local, :provider_key, :model, :purpose, :actor,
+		 COALESCE(:actor_admin_id, (SELECT id FROM admins WHERE username = :actor LIMIT 1)),
 		 :run_id, :attempt_no, :call_no, :fallback_from, 'dispatching', 'none')`
 
 // aiCallEndSet is the ONE finalisation of a ledger row, shared by FinishCall and PriceAcceptedCall.
@@ -1011,16 +1019,18 @@ const spendTheirByProvider = `
 	WHERE day BETWEEN :from_day AND :to_day
 	GROUP BY provider_key`
 
-// spendByActor — who spent it, on what, where. actor_admin_id is MAX()ed, not grouped: the same
-// username may carry a NULL id on some rows (the lookup failed) and the id on others, and splitting
-// one person into two lines for that would be noise.
+// spendByActor — who spent it, on what, where. THE ACCOUNT IS THE ID (D-10, Codex B #2): rows group
+// by actor_admin_id AND actor, so an account deleted and recreated under the same username is two
+// lines, never one line charging the new account with the old one's history (a MAX(actor_admin_id)
+// over the username did exactly that). A row whose id is NULL — no admin carried that username when
+// it was written: system, unknown, an account already gone — is a line of its own (wire id 0).
 const spendByActor = `
-	SELECT actor, MAX(actor_admin_id) AS actor_admin_id, purpose, provider_key, model,
+	SELECT actor, actor_admin_id, purpose, provider_key, model,
 	       SUM(cost_usd) AS usd, COUNT(*) AS calls
 	FROM ai_usage_event
 	WHERE day_local BETWEEN :from_day AND :to_day
-	GROUP BY actor, purpose, provider_key, model
-	ORDER BY actor, purpose, provider_key, model`
+	GROUP BY actor_admin_id, actor, purpose, provider_key, model
+	ORDER BY actor, actor_admin_id, purpose, provider_key, model`
 
 // ourSpendRow is one provider's line of our ledger (spendByProvider).
 type ourSpendRow struct {
