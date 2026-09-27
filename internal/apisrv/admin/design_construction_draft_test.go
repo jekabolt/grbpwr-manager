@@ -1172,7 +1172,7 @@ func TestDraftDesignIdeaRefusesABoardWhoseWordsTravelWithPicturesThatDidNot(t *t
 	// СТЕНД БЕЗ ЕДИНОГО ОЖИДАНИЯ StartRun — отказ обязан прийти ДО денег, и строгий мок это меряет.
 	srv := &Server{
 		repo: repo, designGenerationEnabled: true,
-		aiOps: openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"}),
+		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
 	}
 
 	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())

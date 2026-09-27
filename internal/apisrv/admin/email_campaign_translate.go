@@ -8,12 +8,13 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/translate"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -31,11 +32,12 @@ const (
 	maxCampaignTranslateStrings = 300
 
 	// campaignTranslateModelUnavailableMsg is the THIRD copy of the same fault, and the reason it
-	// exists: this feature rides the very same s.aiOps client and the very same model slug as the
-	// note assistant and the tech-card draft. When the provider retired the default slug all three
+	// exists: this feature rode the very same client and the very same model slug as the note
+	// assistant and the tech-card draft (since B-18: the same route default, chat.email_translate). When the provider retired the default slug all three
 	// died together — but only two of them said so. This one fell through to a nameless Internal,
 	// on the button nobody happened to press.
 	campaignTranslateModelUnavailableMsg = "campaign auto-translation is misconfigured: " + modelUnavailableAdviceMsg
+	campaignTranslateNotConfiguredMsg    = "translation is not configured: " + openRouterNoKeyMsg
 )
 
 var (
@@ -57,18 +59,22 @@ func (s *Server) AutoTranslateEmailCampaign(
 	if req.GetId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "campaign id is required")
 	}
-	translator := translate.New(s.aiOps)
+	const purpose = entity.AIPurposeEmailTranslate
+	translator := translate.New(s.ai.Completer(purpose))
 	if !translator.Enabled() {
-		return nil, aiRefusal(aiReasonNotConfigured, "translation is not configured: "+openRouterNoKeyMsg, nil)
+		return nil, s.aiOffRefusal(purpose, campaignTranslateNotConfiguredMsg)
 	}
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {
-		// model/base_url: the same blindness the other two consumers had. The slug reached the beta
+		// model/provider: the same blindness the other two consumers had. The slug reached the beta
 		// log only because the provider echoed it in its own sentence, which was luck, not design.
+		// The Completer answers text only, so the slug named is the route's first — the one called
+		// unless a fallback answered.
+		model := s.ai.PrimaryModel(purpose)
 		slog.ErrorContext(ctx, "auto-translate campaign failed",
-			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
+			slog.String("model", model), slog.String("provider", s.ai.PrimaryProvider(purpose)),
 			slog.String("err", err.Error()))
-		return nil, campaignTranslateError(err, s.aiOps.Model())
+		return nil, campaignTranslateError(err, model)
 	}
 	return &pb_admin.AutoTranslateEmailCampaignResponse{TranslatedCount: int32(n)}, nil
 }
@@ -82,8 +88,11 @@ func campaignTranslateError(err error, model string) error {
 	// FIRST, and disjoint from the rest: this one is not about the campaign at all. Every other
 	// branch here describes a row in the database; this describes a setting in the deployment, and
 	// no amount of editing the campaign will move it.
-	case errors.Is(err, openrouter.ErrModelUnavailable):
+	case errors.Is(err, aiprov.ErrModelUnavailable):
 		return aiModelRefusal(campaignTranslateModelUnavailableMsg, model)
+	// Paused is global too, and weather: every provider of the route held by its breaker.
+	case errors.Is(err, router.ErrPaused):
+		return aiPausedRefusal()
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, "email campaign not found")
 	case errors.Is(err, errCampaignNotDraft):
@@ -383,7 +392,7 @@ func autoTranslateCampaign(
 				// Returning here is also what keeps the campaign unsaved — no partial write, no
 				// blanked translations, and a refusal the caller can name (the %w is load-bearing:
 				// campaignTranslateError branches on this sentinel).
-				if errors.Is(err, openrouter.ErrModelUnavailable) {
+				if errors.Is(err, aiprov.ErrModelUnavailable) || errors.Is(err, router.ErrPaused) {
 					// The rollback carries NO production weight on this path, and the earlier
 					// version of this comment claimed otherwise. Nothing is saved here, and `full`
 					// is built fresh from the database inside this very call (Campaigns().

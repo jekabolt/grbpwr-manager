@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -39,8 +39,9 @@ import (
 //   - the admin's hourly window (30, SHARED with EnhanceText: one press here and one there draw one
 //     window) → ResourceExhausted.
 //
-// A 404 on the ideas slug retries ONCE on openrouter.IdeasFallbackModel; the answer names the slug
-// that answered.
+// A failure that moved no money (a 404 on the ideas slug above all) falls back to the route's next
+// row — the seeded position 2 is openrouter.IdeasFallbackModel (migration 0378, D-09: the old 404-only
+// retry became that route row); the answer names the slug that answered.
 const (
 	suggestMaxMediaIDs    = 2
 	suggestMaxTextRunes   = 2000
@@ -170,12 +171,14 @@ type suggestInput struct {
 
 // SuggestPrompts answers the `Ideas ▾` door. See the const block above for the order of limits.
 func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPromptsRequest) (*pb_admin.SuggestPromptsResponse, error) {
-	if !s.aiOps.Enabled() {
-		return nil, aiRefusal(aiReasonNotConfigured, suggestNotConfiguredMsg, nil)
-	}
-	model := s.aiOps.IdeasModel()
-	if model == "" {
-		return nil, aiRefusal(aiReasonNotConfigured, suggestSwitchedOffMsg, nil)
+	const purpose = entity.AIPurposePlaygroundIdeas
+	if !s.ai.Enabled(purpose) {
+		// OPENROUTER_MODEL_IDEAS=off closes the whole door (the route's fallback row included): the
+		// switch is named. Otherwise paused or not configured, each in its own words.
+		if s.ai.SwitchedOff(purpose) {
+			return nil, aiRefusal(aiReasonNotConfigured, suggestSwitchedOffMsg, nil)
+		}
+		return nil, s.aiOffRefusal(purpose, suggestNotConfiguredMsg)
 	}
 
 	in, ve := validateSuggestPromptsRequest(req)
@@ -218,12 +221,12 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 	// caller still leaves on ITS OWN ctx.Done (DoChan), and the flight's answer lands in the cache
 	// for whoever asks next.
 	ch := s.suggestFlight.DoChan(string(key[:]), func() (any, error) {
-		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), suggestFlightTimeout)
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.suggestFlightTimeout())
 		defer cancel()
 		if ideas, answered, ok := s.suggestCache.get(key, time.Now()); ok {
 			return suggestFlightAnswer{ideas: ideas, model: answered}, nil
 		}
-		return s.suggestCall(fctx, in, model, key, urls, logAttrs)
+		return s.suggestCall(fctx, in, key, urls, logAttrs)
 	})
 	var res singleflight.Result
 	select {
@@ -244,9 +247,16 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 }
 
 // suggestFlightTimeout — how long the shared flight may run once detached from the request that
-// started it: the provider call and its one 404 fallback, each under the client's own HTTP timeout
-// (openrouter's 60 s default), with a margin.
-const suggestFlightTimeout = 150 * time.Second
+// started it: the WHOLE chain the route may call (router.ChainBudget — each candidate's own budget,
+// OPENROUTER_HTTP_TIMEOUT included) plus suggestFlightMargin. It was a literal 150 s sized for «one
+// call and its one 404 retry» at the default base; a literal cuts a chain the day the base or the
+// route grows, and the cut call is paid anyway.
+func (s *Server) suggestFlightTimeout() time.Duration {
+	return s.ai.ChainBudget(entity.AIPurposePlaygroundIdeas, suggestMaxTokens) + suggestFlightMargin
+}
+
+// suggestFlightMargin — the flight's own work around the calls: the cache re-read and the fences.
+const suggestFlightMargin = 10 * time.Second
 
 // suggestFlightAnswer — what one flight hands every request that waited on it.
 type suggestFlightAnswer struct {
@@ -255,7 +265,8 @@ type suggestFlightAnswer struct {
 }
 
 // suggestCall — the fences and the ONE provider call of a cache miss (the singleflight leader's work).
-func (s *Server) suggestCall(ctx context.Context, in suggestInput, model string, key [32]byte, urls []string, logAttrs []any) (suggestFlightAnswer, error) {
+func (s *Server) suggestCall(ctx context.Context, in suggestInput, key [32]byte, urls []string, logAttrs []any) (suggestFlightAnswer, error) {
+	const purpose = entity.AIPurposePlaygroundIdeas
 	// The fences of EnhanceText, THE SAME ONES (not copies): one semaphore, one hourly window.
 	select {
 	case s.enhanceSem <- struct{}{}:
@@ -272,35 +283,46 @@ func (s *Server) suggestCall(ctx context.Context, in suggestInput, model string,
 	sys := suggestSystemPrompt(in)
 	user := suggestUserPrompt(in)
 	started := time.Now()
-	answered := model
-	raw, finishReason, usage, err := s.aiOps.CompleteWithImagesOn(ctx, model, sys, user, urls, true, suggestMaxTokens)
-	if errors.Is(err, openrouter.ErrModelUnavailable) && model != openrouter.IdeasFallbackModel {
-		// ONE retry, only on a 404: a 404 costs nothing and says «this slug is gone», which the
-		// fallback can answer; any other failure is weather or a fault the fallback would repeat.
-		slog.Default().WarnContext(ctx, "suggest prompts: ideas slug not served, retrying on the fallback",
-			slog.String("model", model), slog.String("fallback", openrouter.IdeasFallbackModel))
-		answered = openrouter.IdeasFallbackModel
-		raw, finishReason, usage, err = s.aiOps.CompleteWithImagesOn(ctx, answered, sys, user, urls, true, suggestMaxTokens)
+	// The request CompleteWithImagesOn sent: pictures as parts, json, the cap, and "minimal" — the
+	// least reasoning every model accepts (a fallback slug may reason mandatorily and refuse "none").
+	// THE 404 RETRY IS GONE (D-09): the route's next row is the fallback, and the router tries it on
+	// any failure that moved no money — the log line of the fallback is the router's.
+	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
+		System: sys, User: user, ImageURLs: urls,
+		JSONMode: true, MaxTokens: suggestMaxTokens, Effort: "minimal",
+	})
+	var (
+		raw, finishReason string
+		usage             aiprov.TokenUsage
+	)
+	if res != nil {
+		raw, finishReason, usage = res.Text, res.FinishReason, res.Usage
 	}
+	answered := s.aiModelOf(purpose, res)
 	logAttrs = append(logAttrs, slog.String("model", answered), slog.Bool("cache_hit", false),
 		slog.Duration("took", time.Since(started)), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
 		slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion))
 	if err != nil {
 		// NEVER err.Error(): the provider may echo the request (review ENH-01). A fixed class only.
 		class := enhanceErrClass(err)
+		if refusal, ok := aiUncalledRefusal(err, suggestNotConfiguredMsg); ok {
+			return suggestFlightAnswer{}, refusal
+		}
 		if class == enhanceErrNotConfigured {
 			return suggestFlightAnswer{}, aiRefusal(aiReasonNotConfigured, suggestNotConfiguredMsg, nil)
 		}
 		failAttrs := append(logAttrs, slog.String("err_class", class),
-			slog.Bool("provider_engaged", openrouter.ProviderEngaged(err)),
-			slog.String("base_url", s.aiOps.BaseURL()))
-		if code := providerHTTPStatus(err); code != 0 {
-			failAttrs = append(failAttrs, slog.Int("http_status", code))
+			slog.Bool("provider_engaged", aiprov.Engaged(err)),
+			slog.String("provider", s.aiProviderOf(purpose, res)))
+		if class == enhanceErrProviderHTTP {
+			failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
 		}
 		slog.Default().ErrorContext(ctx, "suggest prompts failed", failAttrs...)
 		switch class {
 		case enhanceErrModelUnavailable:
-			return suggestFlightAnswer{}, aiModelRefusal(suggestModelUnavailMsg, model)
+			// Every row of the route refused the slug (the exhausted error wraps the last 404): the
+			// sentence names the route's first slug, the one the door is known by.
+			return suggestFlightAnswer{}, aiModelRefusal(suggestModelUnavailMsg, s.ai.PrimaryModel(purpose))
 		case enhanceErrBudgetExhausted, enhanceErrEmptyAnswer:
 			return suggestFlightAnswer{}, status.Error(codes.Internal, suggestNothingMsg)
 		}
@@ -578,12 +600,14 @@ func (c *suggestPromptsCache) put(k [sha256.Size]byte, ideas []string, model str
 	c.entries[k] = suggestCacheEntry{ideas: append([]string(nil), ideas...), model: model, at: now}
 }
 
-// designSuggestPromptsModel is band field 33: the slug the Ideas door answers with, or empty when the
-// door is closed (no key, or OPENROUTER_MODEL_IDEAS=off). Read by design_band.go (B-fal applies
-// that line).
+// designSuggestPromptsModel is band field 33: the slug the Ideas door answers with first (the route's
+// primary — EffectiveModel of its first callable candidate), or empty when the door is closed (no
+// key, OPENROUTER_MODEL_IDEAS=off, or paused by its breakers). Read by design_band.go (B-fal
+// applies that line).
 func (s *Server) designSuggestPromptsModel() string {
-	if !s.aiOps.Enabled() {
+	const purpose = entity.AIPurposePlaygroundIdeas
+	if !s.ai.Enabled(purpose) {
 		return ""
 	}
-	return s.aiOps.IdeasModel()
+	return s.ai.PrimaryModel(purpose)
 }

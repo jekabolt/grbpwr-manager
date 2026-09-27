@@ -678,7 +678,7 @@ func newDraftIdeaRig(t *testing.T, client *openrouter.Client) *designRunRig {
 			Id:        designBoardMediaID,
 			MediaItem: entity.MediaItem{FullSizeMediaURL: designBoardMediaURL},
 		}}, nil).Maybe()
-	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true, aiOps: client}
+	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true, ai: newTestRouter(client)}
 	return rig
 }
 
@@ -1040,9 +1040,9 @@ func newDraftRigWithCard(
 	rig.srv = &Server{
 		repo:                    repo,
 		designGenerationEnabled: true,
-		aiOps: openrouter.New(openrouter.Config{
+		ai: newTestRouter(openrouter.New(openrouter.Config{
 			APIKey: "test-key", BaseURL: rig.stub.srv.URL, Model: "anthropic/claude-sonnet-5",
-		}),
+		})),
 	}
 	return rig
 }
@@ -1119,7 +1119,7 @@ func TestDraftDesignIdeaRefusesAnEmptyBoard(t *testing.T) {
 	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(bare, nil).Once()
 	srv := &Server{
 		repo: repo, designGenerationEnabled: true,
-		aiOps: openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"}),
+		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
 	}
 	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
 	require.Error(t, err)
@@ -1220,7 +1220,7 @@ func TestDraftDesignIdeaRefusesABoardOverTheImageCeiling(t *testing.T) {
 
 	srv := &Server{
 		repo: repo, designGenerationEnabled: true,
-		aiOps: openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"}),
+		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
 	}
 	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
 	require.Error(t, err)

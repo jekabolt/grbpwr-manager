@@ -198,7 +198,7 @@ func TestGetTechCardConstructionAuditReportsAiEnabled(t *testing.T) {
 	require.False(t, respOff.GetAiEnabled(), "an unconfigured deployment reports ai_enabled=false")
 
 	on := tcaStand(t, tcaCard(), nil, map[string]decimal.Decimal{})
-	on.aiOps = openrouter.New(openrouter.Config{APIKey: "k"})
+	on.ai = newTestRouter(openrouter.New(openrouter.Config{APIKey: "k"}))
 	respOn, err := on.GetTechCardConstructionAudit(context.Background(),
 		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
 	require.NoError(t, err)
@@ -665,7 +665,7 @@ func tcaAnalysisStand(t *testing.T, card *entity.TechCard, client *openrouter.Cl
 	repo.EXPECT().TechCards().Return(tc).Maybe()
 	tc.EXPECT().GetTechCardById(mock.Anything, mock.Anything).Return(card, nil).Maybe()
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil).Maybe()
-	s := &Server{repo: repo, aiOps: client}
+	s := &Server{repo: repo, ai: newTestRouter(client)}
 	// The hourly window's limiter runs a sweep goroutine once a press builds it; stop it as App.Stop does.
 	t.Cleanup(s.StopRateLimiter)
 	return s
@@ -911,7 +911,7 @@ func TestAnalyzeRefusalCostsNoCardRead(t *testing.T) {
 	repo.EXPECT().TechCards().Return(tc).Maybe()
 	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(tcaCard(), nil).Once()
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil).Maybe()
-	s := &Server{repo: repo, aiOps: client}
+	s := &Server{repo: repo, ai: newTestRouter(client)}
 	ctx := tcaAdminCtx("olga")
 
 	_, err := tcaAnalyze(ctx, s, 7)

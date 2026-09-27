@@ -15,6 +15,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
@@ -511,32 +512,12 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// OpenRouter client for AI tech-card operation drafting (#66), note markdown formatting and
-	// campaign auto-translation — one client, one model slug, three features. Nil-safe/disabled
-	// when OPENROUTER_API_KEY is unset, and each handler then reports it as not configured.
+	// OpenRouter chat client. Since B-18 it is two things: the TRANSPORT the AI router calls for
+	// every chat purpose routed to openrouter (aiOpsClient.Transport() — this very configuration:
+	// base URL, key func, budget base, attribution headers), and the legacy door of the one feature
+	// not moved onto the router (GenerateTechCardOperations, being deleted in a parallel session).
+	// Nil-safe/disabled when no key answers, and each door then reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
-	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
-	//
-	// Лиза строки черновика идеи обязана переживать платный вызов, а длину вызова задаёт БАЗА
-	// бюджета этого клиента — OPENROUTER_HTTP_TIMEOUT. Сойтись они больше не могут: лизу считает
-	// store/design.HandlerLeaseFor ИЗ ЭТОЙ ЖЕ базы (её приносит хендлер в DesignRunStart), поэтому
-	// отказывать на старте нечему и никакого «тихого зажима» здесь нет.
-	//
-	// Строка стоит ради другого: до неё утверждение «на бете переменная не задана» было ЗАМЕРОМ
-	// РУКАМИ на платформе — спек беты в .gitignore, из исходников его не проверить ничем, и
-	// протух бы этот замер в ту минуту, когда переменную поставят. Теперь тот же вопрос
-	// отвечается журналом живого процесса, без доступа к панели и без редеплоя.
-	slog.Default().InfoContext(ctx, "design idea draft: the paid call's budget base and the row's lease",
-		slog.String("flag", "OPENROUTER_HTTP_TIMEOUT"),
-		slog.Duration("completion_base", aiOpsClient.CompletionBase()),
-		slog.Duration("handler_lease", designstore.HandlerLeaseFor(
-			aiOpsClient.CompletionBase(), entity.DesignDraftAnswerCeilings()...)),
-	)
-	// Ask the provider once, in the background, whether that one slug is still served. It returns
-	// immediately, refuses nothing and can only write a log line — see WarnIfModelRetired. It is
-	// here because the alternative is how the last outage was found: by a person pressing a button
-	// weeks later, on one of the three features.
-	aiOpsClient.WarnIfModelRetired()
 
 	// ─── DESIGN band, generative half ─────────────────────────────────────────────────────────
 	//
@@ -619,6 +600,39 @@ func (a *App) Start(ctx context.Context) error {
 	})
 	slog.Default().InfoContext(ctx, "ai ledger: every design provider call is booked to ai_usage_event",
 		slog.String("budget_timezone", a.aireg.BudgetTimezone()))
+
+	// ─── THE AI ROUTER (B-18): the chat door of every AI feature but the operations draft ─────────
+	//
+	// One route per purpose (admin → AI providers), read from the registry's live snapshot; the
+	// candidates in order, a ledger row before every physical call, a fallback only where no money
+	// moved. Transports: openrouter only in commit C (OpenAI / apibost arrive in commit E). A route
+	// row with no model answers with today's env slugs (admin.AIRouterDefaults).
+	aiRouter := router.New(a.aireg, aiLedger,
+		map[string]aiprov.Chatter{entity.AIProviderOpenRouter: aiOpsClient.Transport()},
+		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())
+	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
+	//
+	// Лиза строки черновика идеи обязана переживать платную цепочку, а длину цепочки задают БАЗЫ
+	// бюджета транспортов её кандидатов — OPENROUTER_HTTP_TIMEOUT у openrouter. Сойтись они больше не
+	// могут: лизу считает store/design.HandlerLeaseFor ИЗ router.ChainBudget, который складывает те
+	// же базы (хендлер приносит её в DesignRunStart), поэтому отказывать на старте нечему.
+	//
+	// Строка стоит ради другого: утверждение «на бете переменная не задана» было ЗАМЕРОМ РУКАМИ на
+	// платформе — спек беты в .gitignore, — и протух бы этот замер в ту минуту, когда переменную
+	// поставят. Теперь тот же вопрос отвечается журналом живого процесса, без доступа к панели.
+	slog.Default().InfoContext(ctx, "design idea draft: the paid call's budget base and the row's lease",
+		slog.String("flag", "OPENROUTER_HTTP_TIMEOUT"),
+		slog.Duration("completion_base", aiOpsClient.CompletionBase()),
+		slog.Duration("chain_budget", aiRouter.ChainBudget(entity.AIPurposeDesignDraftIdea,
+			entity.DesignDraftLongestAnswerCeiling())),
+		slog.Duration("handler_lease", designstore.HandlerLeaseFor(aiRouter.ChainBudget(
+			entity.AIPurposeDesignDraftIdea, entity.DesignDraftLongestAnswerCeiling()))),
+	)
+	// Ask the provider once, in the background, whether every slug the routes will call on
+	// openrouter is still served. It returns immediately, refuses nothing and can only write a log
+	// line — see WarnIfRetired. It is here because the alternative is how the last outage was found:
+	// by a person pressing a button weeks later.
+	aiOpsClient.WarnIfRetired(ctx, aiRouter.OpenRouterSlugs())
 
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
@@ -781,6 +795,8 @@ func (a *App) Start(ctx context.Context) error {
 	// here at once) and the SAME ring it opens stored keys with (a key sealed by another master would
 	// read back "unreadable"). The recraft route is asked of recraft itself — RECRAFT_ROUTE's parse,
 	// typo fallback included, lives in one place.
+	// admin → the chat doors: the router built above, next to the registry and the ledger.
+	adminS.SetAIRouter(aiRouter)
 	adminS.SetAIProviders(admin.AIProvidersWiring{
 		Registry:             a.aireg,
 		KeyRing:              aiKeyRing,

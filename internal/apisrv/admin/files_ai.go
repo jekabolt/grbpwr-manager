@@ -8,8 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -86,8 +86,9 @@ func (s *Server) FormatLibraryNoteMarkdown(
 	// The not-configured check comes first on purpose: with no key nothing about this request can
 	// succeed, and "the assistant is not connected" is a truer answer than a complaint about the
 	// text the person wrote.
-	if !s.aiOps.Enabled() {
-		return nil, aiRefusal(aiReasonNotConfigured, noteFormatNotConfiguredMsg, nil)
+	const purpose = entity.AIPurposeNoteMarkdown
+	if !s.ai.Enabled(purpose) {
+		return nil, s.aiOffRefusal(purpose, noteFormatNotConfiguredMsg)
 	}
 
 	content := req.GetContent()
@@ -117,13 +118,14 @@ func (s *Server) FormatLibraryNoteMarkdown(
 	}
 
 	started := time.Now()
-	// jsonMode=false: the answer is a markdown document, not a JSON envelope. Temperature and
-	// timeout are the client's defaults (0.2 / 60 s).
-	raw, err := s.aiOps.Complete(ctx, noteFormatSystemPrompt, content, false)
+	// jsonMode=false: the answer is a markdown document, not a JSON envelope. No ceiling and no
+	// effort: the transport's defaults, exactly what openrouter.Complete sent before the router.
+	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{System: noteFormatSystemPrompt, User: content})
 	took := time.Since(started)
+	model := s.aiModelOf(purpose, res)
 	if err != nil {
-		if errors.Is(err, openrouter.ErrNotConfigured) {
-			return nil, aiRefusal(aiReasonNotConfigured, noteFormatNotConfiguredMsg, nil)
+		if refusal, ok := aiUncalledRefusal(err, noteFormatNotConfiguredMsg); ok {
+			return nil, refusal
 		}
 		// Only length, duration and the MODEL are logged. The note's text is the user's private
 		// writing and has no business in the log stream — but the effective slug does: when the
@@ -132,10 +134,10 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		// differently-worded provider message would have cost hours of diagnosis.
 		slog.Default().ErrorContext(ctx, "note markdown formatting failed",
 			slog.Int("in_runes", inRunes), slog.Duration("took", took),
-			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
+			slog.String("model", model), slog.String("provider", s.aiProviderOf(purpose, res)),
 			slog.String("err", err.Error()))
-		if errors.Is(err, openrouter.ErrModelUnavailable) {
-			return nil, aiModelRefusal(noteFormatModelUnavailableMsg, s.aiOps.Model())
+		if errors.Is(err, aiprov.ErrModelUnavailable) {
+			return nil, aiModelRefusal(noteFormatModelUnavailableMsg, model)
 		}
 		if isEmptyModelAnswer(err) {
 			return nil, status.Error(codes.Internal, "the assistant returned nothing to show — try again")
@@ -143,7 +145,7 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		return nil, status.Error(codes.Unavailable, "the markdown assistant is unavailable right now — try again in a moment")
 	}
 
-	formatted := strings.TrimSpace(stripWrappingCodeFence(raw))
+	formatted := strings.TrimSpace(stripWrappingCodeFence(res.Text))
 	if formatted == "" {
 		slog.Default().ErrorContext(ctx, "note markdown formatting returned an empty document",
 			slog.Int("in_runes", inRunes), slog.Duration("took", took))
@@ -166,17 +168,9 @@ func (s *Server) FormatLibraryNoteMarkdown(
 
 	slog.Default().InfoContext(ctx, "formatted library note markdown",
 		slog.Int("in_runes", inRunes), slog.Int("out_runes", utf8.RuneCountInString(formatted)),
-		slog.Duration("took", took), slog.String("model", s.aiOps.Model()))
+		slog.Duration("took", took), slog.String("model", model))
 
 	return &pb_admin.FormatLibraryNoteMarkdownResponse{Content: formatted}, nil
-}
-
-// isEmptyModelAnswer distinguishes "the model said nothing" from "the call failed". The client
-// package reports both as plain errors, so the sentinel is its wording; getting the split wrong
-// only changes Internal↔Unavailable, never whether the note survives.
-func isEmptyModelAnswer(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "empty message") || strings.Contains(msg, "no choices")
 }
 
 // stripWrappingCodeFence undoes the one model habit that would visibly break the result: wrapping

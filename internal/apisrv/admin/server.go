@@ -11,6 +11,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -107,7 +108,15 @@ type Server struct {
 	// aiOps drafts tech-card sewing operations from a plain-language description via
 	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
 	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
+	//
+	// ⚠ SINCE B-18 IT SERVES THAT ONE FEATURE ONLY. Every other chat door (enhance, analysis, note
+	// markdown, campaign translation, draft idea, playground ideas) calls through `ai`; the operations
+	// draft stays on the legacy client because the feature is being deleted in a parallel session.
 	aiOps *openrouter.Client
+	// ai is THE chat door (internal/aiprov/router): the route of each purpose, the fallback where no
+	// money moved, one ledger row per physical call. Set by SetAIRouter (ai_router.go); nil is a
+	// disabled router — every door then answers «not configured», never panics.
+	ai *router.Router
 	// analysisRuns is the spend fence in front of AnalyzeTechCardConstruction: who is running what,
 	// when they last ran it, and how many runs this account has bought in the last hour. Its zero
 	// value works — see analysisRunGuard for why that is deliberate rather than lazy.

@@ -10,10 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardanalysis"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -82,7 +83,7 @@ func (s *Server) GetTechCardConstructionAudit(ctx context.Context, req *pb_admin
 		// Enabled() is nil-safe, so an unconfigured deployment answers false rather than panicking.
 		// NEITHER THIS NOR THE FINGERPRINTS ARE REDACTED: a fingerprint is a hash of an assembly
 		// shape and this is a deployment fact. Neither is money.
-		AiEnabled: s.aiOps.Enabled(),
+		AiEnabled: s.ai.Enabled(entity.AIPurposeTechCardAnalysis),
 	}, nil
 }
 
@@ -333,10 +334,14 @@ func (g *analysisRunGuard) pruneLocked(now time.Time) {
 // the whole diagnosis: model + base_url separate "the slug is gone" from "the base URL points
 // nowhere", and usage says whether a failed run was also a paid one.
 type analysisRun struct {
-	cardID  int
-	status  string
-	model   string
-	baseURL string
+	cardID int
+	status string
+	// model is the slug the run is reported under: the route's first before the call (router.RouteHead,
+	// named even when there is no key), the one that answered after it (ChatResult.Model). provider
+	// likewise — the billing key — and baseURL is that provider's API root (router.BaseURL).
+	model    string
+	provider string
+	baseURL  string
 
 	findings     []techcardanalysis.Finding
 	notChecked   []string
@@ -344,7 +349,7 @@ type analysisRun struct {
 	fingerprints map[int32]string
 
 	stats techcardanalysis.VerifyStats
-	usage openrouter.Usage
+	usage aiprov.TokenUsage
 	took  time.Duration
 	// finishReason is the provider's own word for why the completion stopped. IT IS IN THE LOG
 	// BECAUSE ITS ABSENCE COST A DIAGNOSIS: the first live failure on prod was an empty answer with
@@ -379,7 +384,10 @@ func (s *Server) AnalyzeTechCardConstruction(ctx context.Context, req *pb_admin.
 	}
 	defer release()
 
-	run := analysisRun{cardID: cardID, model: s.aiOps.AnalysisModel(), baseURL: s.aiOps.BaseURL()}
+	const purpose = entity.AIPurposeTechCardAnalysis
+	run := analysisRun{cardID: cardID}
+	run.provider, run.model = s.ai.RouteHead(purpose)
+	run.baseURL = s.ai.BaseURL(run.provider)
 
 	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
 	if err != nil {
@@ -409,9 +417,14 @@ func (s *Server) AnalyzeTechCardConstruction(ctx context.Context, req *pb_admin.
 	audit := techcardanalysis.RunAudit(card, fx)
 	run.fingerprints = audit.Fingerprints
 
-	if !s.aiOps.Enabled() {
-		run.status = aiStatusNotConfigured
-		run.err = openrouter.ErrNotConfigured
+	if !s.ai.Enabled(purpose) {
+		// PAUSED IS WEATHER, NOT A SETTING: every provider of the route is held by its breaker after
+		// repeated failures, and it passes by itself. The panel's `failed` says «try again»; the
+		// ai_status vocabulary is the client's, so no new word is invented for it here.
+		run.status, run.err = aiStatusNotConfigured, aiprov.ErrNotConfigured
+		if s.ai.Paused(purpose) {
+			run.status, run.err = aiStatusFailed, router.ErrPaused
+		}
 		return s.finishAnalysis(ctx, run)
 	}
 
@@ -427,21 +440,37 @@ func (s *Server) AnalyzeTechCardConstruction(ctx context.Context, req *pb_admin.
 	}
 
 	started := time.Now()
-	raw, finishReason, usage, err := s.aiOps.CompleteWithMeta(
-		ctx, techcardanalysis.AnalysisSystemPrompt(), prompt, true, analysisMaxTokens)
+	// The request CompleteWithMeta sent: the Analysis slug (the purpose's default), json, the cap,
+	// thinking off (analysisReasoningEffort in openrouter: whoever sets a ceiling turns it off).
+	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
+		System: techcardanalysis.AnalysisSystemPrompt(), User: prompt,
+		JSONMode: true, MaxTokens: analysisMaxTokens, Effort: "none",
+	})
 	run.took = time.Since(started)
-	run.usage = usage
-	run.finishReason = finishReason
+	var raw, finishReason string
+	if res != nil {
+		// An engaged failure may hand back the partial result (an empty answer after the budget was
+		// spent): its usage and finish_reason are the bill and the diagnosis, and they are logged.
+		raw, finishReason = res.Text, res.FinishReason
+		run.usage, run.finishReason = res.Usage, res.FinishReason
+		run.model, run.provider = s.aiModelOf(purpose, res), s.aiProviderOf(purpose, res)
+		run.baseURL = s.ai.BaseURL(run.provider)
+	}
 	if err != nil {
 		run.err = err
 		// 404 is a configuration fault and everything else on this path is weather. The split is by
-		// SENTINEL, never by reading the provider's prose — see openrouter.ErrModelUnavailable.
-		run.status = aiStatusFailed
-		if errors.Is(err, openrouter.ErrModelUnavailable) {
+		// SENTINEL, never by reading the provider's prose — see aiprov.ErrModelUnavailable.
+		switch {
+		case errors.Is(err, router.ErrPaused):
+			run.status = aiStatusFailed
+		case errors.Is(err, aiprov.ErrNotConfigured):
+			run.status = aiStatusNotConfigured
+		case errors.Is(err, aiprov.ErrModelUnavailable):
 			run.status = aiStatusModelUnavailable
-		}
-		if errors.Is(err, openrouter.ErrBudgetExhausted) {
+		case errors.Is(err, aiprov.ErrBudgetExhausted):
 			run.status = aiStatusBudgetExhausted
+		default:
+			run.status = aiStatusFailed
 		}
 		return s.finishAnalysis(ctx, run)
 	}
@@ -541,6 +570,7 @@ func logAnalysisRun(ctx context.Context, run analysisRun) {
 		slog.Int("tech_card_id", run.cardID),
 		slog.String("ai_status", run.status),
 		slog.String("model", run.model),
+		slog.String("provider", run.provider),
 		slog.String("base_url", run.baseURL),
 		slog.Int("emitted", run.stats.Emitted),
 		slog.Int("dropped_bad_ref", run.stats.DroppedBadRef),
@@ -548,7 +578,9 @@ func logAnalysisRun(ctx context.Context, run analysisRun) {
 		slog.Int("truncated", run.stats.Truncated),
 		slog.Int("prompt_tokens", run.usage.Prompt),
 		slog.Int("completion_tokens", run.usage.Completion),
-		slog.Int("total_tokens", run.usage.Total),
+		// total = prompt + completion: the OpenAI-shaped convention every chat transport reports in
+		// (aiprov.TokenUsage carries the two parts, not the provider's own sum).
+		slog.Int("total_tokens", run.usage.Prompt+run.usage.Completion),
 		slog.String("finish_reason", run.finishReason),
 		slog.Duration("took", run.took),
 	}

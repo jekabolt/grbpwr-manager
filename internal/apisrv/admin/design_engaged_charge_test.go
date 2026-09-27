@@ -75,9 +75,9 @@ func deadModelAddr(t *testing.T) string {
 // пробы, а не удобство: обрыв по сроку и есть тот исход, который прежде стоил ноль.
 func pointDraftAt(t *testing.T, rig *draftRig, url string, budget time.Duration) {
 	t.Helper()
-	rig.srv.aiOps = openrouter.New(openrouter.Config{
+	rig.srv.ai = newTestRouter(openrouter.New(openrouter.Config{
 		APIKey: "test-key", BaseURL: url, Model: "anthropic/claude-sonnet-5", HTTPTimeout: budget,
-	})
+	}))
 }
 
 // ─────────────────────── ПОЛОВИНА ПЕРВАЯ: ОБРЫВ ПОСЛЕ ОТПРАВКИ ОПЛАЧЕН ───────────────────────

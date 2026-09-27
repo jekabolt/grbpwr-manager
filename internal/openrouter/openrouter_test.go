@@ -656,10 +656,10 @@ func TestCheckModel(t *testing.T) {
 	})
 }
 
-// TestWarnIfModelRetired pins the START-UP CONTRACT, which matters more here than the message:
+// TestWarnIfRetired pins the START-UP CONTRACT, which matters more here than the message:
 // this runs while the process is coming up, and a check that can block or crash a boot is a worse
 // defect than the one it reports.
-func TestWarnIfModelRetired(t *testing.T) {
+func TestWarnIfRetired(t *testing.T) {
 	t.Run("returns immediately and probes in the background", func(t *testing.T) {
 		hit := make(chan string, 1)
 		release := make(chan struct{})
@@ -673,7 +673,7 @@ func TestWarnIfModelRetired(t *testing.T) {
 
 		c := New(Config{APIKey: "k", Model: "m/x", BaseURL: srv.URL})
 		start := time.Now()
-		c.WarnIfModelRetired()
+		c.WarnIfRetired(context.Background(), []string{"m/x"})
 		if elapsed := time.Since(start); elapsed > time.Second {
 			t.Fatalf("start-up was blocked for %v", elapsed)
 		}
@@ -692,7 +692,7 @@ func TestWarnIfModelRetired(t *testing.T) {
 		called := make(chan struct{}, 1)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called <- struct{}{} }))
 		defer srv.Close()
-		New(Config{BaseURL: srv.URL}).WarnIfModelRetired()
+		New(Config{BaseURL: srv.URL}).WarnIfRetired(context.Background(), []string{"m/x"})
 		select {
 		case <-called:
 			t.Error("a disabled client must not probe at boot")
@@ -702,7 +702,7 @@ func TestWarnIfModelRetired(t *testing.T) {
 
 	t.Run("a nil client is a no-op, not a boot crash", func(t *testing.T) {
 		var c *Client
-		c.WarnIfModelRetired()
+		c.WarnIfRetired(context.Background(), []string{"m/x"})
 	})
 }
 
@@ -825,100 +825,52 @@ func TestAnalysisModel_UnsetOverrideMeansTheSharedSlug(t *testing.T) {
 	})
 }
 
-// TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce extends the boot warning to the SET of slugs
-// the client can send. A retired analysis slug is the same invisible fault as a retired shared one
-// — and probing a single slug twice, when the override happens to equal the shared value, would
-// shout twice about one fault and double the boot traffic.
-func TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce(t *testing.T) {
-	probe := func(t *testing.T, cfg Config, want int) []string {
-		t.Helper()
-		var mu sync.Mutex
-		paths := []string{}
-		done := make(chan struct{})
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mu.Lock()
-			paths = append(paths, r.URL.Path)
-			if len(paths) == want {
-				close(done)
-			}
-			mu.Unlock()
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"data":{"endpoints":[]}}`) // the retired shape: 200, zero endpoints
-		}))
-		defer srv.Close()
-
-		cfg.APIKey, cfg.BaseURL = "k", srv.URL
-		New(cfg).WarnIfModelRetired()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			mu.Lock()
-			got := append([]string{}, paths...)
-			mu.Unlock()
-			t.Fatalf("want %d probes, saw %v", want, got)
-		}
-		// Give a stray extra probe a chance to arrive before counting.
-		time.Sleep(200 * time.Millisecond)
+// TestWarnIfRetired_ProbesEveryListedSlugOnce — the probe asks about the slugs the ROUTER will call
+// (router.OpenRouterSlugs — its own test pins that the seeded routes list the shared, analysis, ideas
+// and ideas-fallback slugs), each once: a repeat would shout twice about one fault and double the boot
+// traffic, and a blank is not a slug. A cancelled boot context does not cancel the probes.
+//
+// MUTATION: WarnIfRetired drops the seen-set (probes every listed entry) → red (3 probes, not 2).
+// MUTATION: the probe context is ctx itself (not WithoutCancel) → red (a cancelled ctx probes nothing).
+func TestWarnIfRetired_ProbesEveryListedSlugOnce(t *testing.T) {
+	var mu sync.Mutex
+	paths := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		defer mu.Unlock()
-		if len(paths) != want {
-			t.Fatalf("want %d probes, got %d: %v", want, len(paths), paths)
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":{"endpoints":[]}}`) // the retired shape: 200, zero endpoints
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the boot context may be gone by the time the goroutine runs
+	New(Config{APIKey: "k", BaseURL: srv.URL}).WarnIfRetired(ctx,
+		[]string{"shared/slug", " ", DefaultIdeasModel, "shared/slug "})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(paths)
+		mu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
 		}
-		return append([]string{}, paths...)
+		time.Sleep(10 * time.Millisecond)
 	}
-
-	// The subtests below pin the shared/analysis pair, so they switch the Ideas door off; the ideas
-	// slugs have subtests of their own at the end.
-	t.Run("both slugs are probed when the override differs", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "escalated/slug", ModelIdeas: IdeasModelOff}, 2)
-		seen := map[string]bool{}
-		for _, p := range paths {
-			seen[p] = true
+	time.Sleep(200 * time.Millisecond) // give a stray extra probe a chance to arrive before counting
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"/models/shared/slug/endpoints", "/models/" + DefaultIdeasModel + "/endpoints"}
+	if len(paths) != len(want) {
+		t.Fatalf("want %v, got %v", want, paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Errorf("probe %d = %q, want %q (all: %v)", i, paths[i], want[i], paths)
 		}
-		if !seen["/models/shared/slug/endpoints"] {
-			t.Errorf("the shared slug was not probed: %v", paths)
-		}
-		if !seen["/models/escalated/slug/endpoints"] {
-			t.Errorf("the analysis slug was not probed — a retired override would stay invisible: %v", paths)
-		}
-	})
-
-	t.Run("one probe when the override repeats the shared slug", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "shared/slug", ModelIdeas: IdeasModelOff}, 1)
-		if paths[0] != "/models/shared/slug/endpoints" {
-			t.Errorf("probed %v", paths)
-		}
-	})
-
-	t.Run("one probe when no override is set", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug", ModelIdeas: IdeasModelOff}, 1)
-		if paths[0] != "/models/shared/slug/endpoints" {
-			t.Errorf("probed %v", paths)
-		}
-	})
-
-	// PLAYGROUND B-15: the ideas slug and its fallback are baked in, so both are probed — a retired
-	// default would otherwise be found by the first person pressing Ideas.
-	// Mutation: drop the ideas block from effectiveModels → 1 probe, not 3 → red.
-	t.Run("the ideas default and its fallback are probed", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug"}, 3)
-		want := []string{"/models/shared/slug/endpoints", "/models/" + DefaultIdeasModel + "/endpoints",
-			"/models/" + IdeasFallbackModel + "/endpoints"}
-		for i := range want {
-			if paths[i] != want[i] {
-				t.Errorf("probe %d = %q, want %q (all: %v)", i, paths[i], want[i], paths)
-			}
-		}
-	})
-	t.Run("an ideas override equal to the fallback is probed once", func(t *testing.T) {
-		probe(t, Config{Model: "shared/slug", ModelIdeas: IdeasFallbackModel}, 2)
-	})
-	t.Run("ideas off: neither ideas slug is probed", func(t *testing.T) {
-		paths := probe(t, Config{Model: "shared/slug", ModelIdeas: "Off"}, 1)
-		if paths[0] != "/models/shared/slug/endpoints" {
-			t.Errorf("probed %v", paths)
-		}
-	})
+	}
 }
 
 // TestIdeasModel pins the one place that decides what OPENROUTER_MODEL_IDEAS means.

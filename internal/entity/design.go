@@ -964,6 +964,27 @@ func DesignDraftAnswerCeilings() []int {
 	return out
 }
 
+// LongestAnswerCeiling is the largest of the answer ceilings (0 = none of them sets one). The lease of
+// a press is sized for its MOST EXPENSIVE branch, never for the branch this press took: a resume
+// (resumeHandlerRun) extends the lease of somebody else's row, opened — in general — by the other
+// branch. A function over a list, not a constant, so a probe can raise each position in turn and
+// require the answer to move (the lease tests do).
+func LongestAnswerCeiling(ceilings ...int) int {
+	longest := 0
+	for _, c := range ceilings {
+		if c > longest {
+			longest = c
+		}
+	}
+	return longest
+}
+
+// DesignDraftLongestAnswerCeiling — LongestAnswerCeiling over every branch of the draft-idea press:
+// the ceiling the handler's lease is sized by (apisrv/admin → router.ChainBudget → HandlerLeaseFor).
+func DesignDraftLongestAnswerCeiling() int {
+	return LongestAnswerCeiling(DesignDraftAnswerCeilings()...)
+}
+
 // Статусы прогона.
 const (
 	DesignRunPending   = "pending"

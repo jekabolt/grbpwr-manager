@@ -51,7 +51,7 @@ func echoResponse(transform func(id int, text string) string) func(string) (stri
 	}
 }
 
-func svc(f *fakeCompleter) *Service { return newWithCompleter(f) }
+func svc(f *fakeCompleter) *Service { return New(f) }
 
 func TestTranslateDisabled(t *testing.T) {
 	_, err := svc(&fakeCompleter{enabled: false}).Translate(context.Background(), "en", "fr", []string{"hi"})

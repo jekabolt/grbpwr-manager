@@ -328,7 +328,7 @@ func TestDraftIdeaWithAModelOnTheBoardIsRefusedBeforeTheReserve(t *testing.T) {
 	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
 	media.EXPECT().GetMediaByIds(mock.Anything, mock.Anything).
 		Return(designFormatMedia(nil), nil).Maybe()
-	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true, aiOps: client}
+	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true, ai: newTestRouter(client)}
 
 	_, err := rig.srv.DraftDesignIdea(designRunCtx(), &pb_admin.DraftDesignIdeaRequest{
 		TechCardId:      designRunCardID,

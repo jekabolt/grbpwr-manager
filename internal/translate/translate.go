@@ -1,5 +1,5 @@
 // Package translate localizes short marketing/UI strings between locales via an LLM
-// (OpenRouter), preserving inline HTML, URLs, interpolation placeholders and brand terms. It
+// (the AI router's chat.email_translate purpose), preserving inline HTML, URLs, interpolation placeholders and brand terms. It
 // backs the admin "auto-translate campaign" action: the admin authors a campaign in English and
 // this fills the other locales' block/subject translations for review before launch.
 package translate
@@ -12,12 +12,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 )
 
-// completer is the OpenRouter primitive the service needs (satisfied by *openrouter.Client),
-// narrowed so tests can supply a fake.
-type completer interface {
+// Completer is the one chat primitive the service needs: a text-in, text-out completion and whether
+// it can run at all. The AI router's door for the email-translation purpose is one
+// (router.Router.Completer(entity.AIPurposeEmailTranslate)); a test supplies a fake.
+type Completer interface {
 	Complete(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool) (string, error)
 	Enabled() bool
 }
@@ -25,14 +26,11 @@ type completer interface {
 // Service translates batches of strings between locales. A nil-backed service is valid and simply
 // disabled (Enabled() == false).
 type Service struct {
-	client completer
+	client Completer
 }
 
-// New builds a Service over an OpenRouter client (which may be a disabled/nil-key client).
-func New(client *openrouter.Client) *Service { return &Service{client: client} }
-
-// newWithCompleter is the test seam.
-func newWithCompleter(c completer) *Service { return &Service{client: c} }
+// New builds a Service over a completer (which may be a disabled one).
+func New(client Completer) *Service { return &Service{client: client} }
 
 // Enabled reports whether translation is configured (API key present).
 func (s *Service) Enabled() bool { return s != nil && s.client != nil && s.client.Enabled() }
@@ -79,7 +77,7 @@ type item struct {
 // chunks that did land.
 func (s *Service) Translate(ctx context.Context, sourceLocale, targetLocale string, items []string) ([]string, error) {
 	if !s.Enabled() {
-		return nil, openrouter.ErrNotConfigured
+		return nil, aiprov.ErrNotConfigured
 	}
 	out := append([]string(nil), items...)
 	if strings.EqualFold(sourceLocale, targetLocale) {

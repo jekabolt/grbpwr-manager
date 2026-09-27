@@ -146,7 +146,7 @@ func TestDraftDesignIdeaRefusesABoardThatSendsNothing(t *testing.T) {
 		Return(map[int]entity.MediaFull{}, nil).Once()
 	srv := &Server{
 		repo: repo, designGenerationEnabled: true,
-		aiOps: openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"}),
+		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
 	}
 
 	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())

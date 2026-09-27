@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/shopspring/decimal"
@@ -54,7 +55,7 @@ func TestDesignDBDraftIdeaLeavesTheFeedAndStaysInTheLedger(t *testing.T) {
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
 		// ЛИЗА ОБЯЗАТЕЛЬНА У ЭТОГО РОДА (см. design.HandlerLeaseFor): её считает тот, кто держит
 		// клиента поставщика, и стор отказывает просьбе без неё.
-		HandlerLease:  design.HandlerLeaseFor(0, entity.DesignDraftAnswerCeilings()...),
+		HandlerLease:  design.HandlerLeaseFor(aiprov.DefaultCompletionBudget(entity.DesignDraftLongestAnswerCeiling())),
 		PriceEstimate: decimal.NullDecimal{Decimal: draftEstimate, Valid: true},
 		Author:        "probe",
 	})

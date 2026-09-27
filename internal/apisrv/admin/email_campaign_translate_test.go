@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -358,7 +360,8 @@ func blockTrFor(trs []entity.EmailBlockTranslation, id int) entity.EmailBlockTra
 
 // TestCampaignTranslateErrorMapping — ТРЕТИЙ ПОТРЕБИТЕЛЬ ТОГО ЖЕ КЛИЕНТА.
 //
-// Авто-перевод кампаний ходит тем же `s.aiOps` и тем же слугом, что заметки и черновик операций:
+// Авто-перевод кампаний ходил тем же клиентом и тем же слугом, что заметки (с B-18 — через `s.ai`,
+// назначение chat.email_translate, тот же слуг по умолчанию):
 // когда провайдер снял слуг с обслуживания, эта кнопка умерла ровно тогда же. Две другие кнопки
 // уже отвечают «настройка», а эта проваливалась в `Internal, "can't auto-translate campaign"` —
 // то есть в следующий раз соврала бы одна из трёх, и именно та, по которой не жаловались.
@@ -381,6 +384,8 @@ func TestCampaignTranslateErrorMapping(t *testing.T) {
 	})
 
 	t.Run("остальные ветки не затенены", func(t *testing.T) {
+		pausedErr := fmt.Errorf("translate en→fr: %w",
+			fmt.Errorf("%w: %w", aiprov.ErrAllCandidatesFailed, router.ErrPaused))
 		for name, tc := range map[string]struct {
 			err  error
 			want codes.Code
@@ -389,6 +394,7 @@ func TestCampaignTranslateErrorMapping(t *testing.T) {
 			"не черновик":            {errCampaignNotDraft, codes.FailedPrecondition},
 			"правка во время работы": {errCampaignChangedDuringTranslate, codes.Aborted},
 			"ключа нет":              {openrouter.ErrNotConfigured, codes.Internal},
+			"провайдер на паузе":     {pausedErr, codes.Unavailable},
 			"всё остальное":          {errors.New("boom"), codes.Internal},
 		} {
 			t.Run(name, func(t *testing.T) {

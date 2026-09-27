@@ -406,7 +406,7 @@ func TestTheP3BandCARRIES_32_33_AND_THE_FLAGGED_TABLE(t *testing.T) {
 		d := mocks.NewMockDesign(t)
 		repo.EXPECT().Design().Return(d).Maybe()
 		d.EXPECT().GetBand(mock.Anything, mock.Anything, mock.Anything).Return(&entity.DesignBand{}, nil).Maybe()
-		s := &Server{repo: repo, aiOps: ai}
+		s := &Server{repo: repo, ai: newTestRouter(ai)}
 		s.SetDesignGenerationEnabled(true)
 		s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("", flags) })
 		resp, err := s.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})

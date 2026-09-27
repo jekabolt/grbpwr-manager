@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,10 +12,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -57,7 +57,8 @@ const (
 	enhanceTextNotConfiguredMsg = "the text assistant is not configured: " + openRouterNoKeyMsg
 	// The shared recipe (modelUnavailableAdviceMsg) plus the one fact that differs here: this RPC
 	// calls CompleteWithMeta, i.e. the ANALYSIS slug, so with OPENROUTER_MODEL_ANALYSIS set that is
-	// the knob to turn. aiModelRefusal names the slug that was actually called (AnalysisModel()).
+	// the knob to turn. aiModelRefusal names the slug that was actually called (s.aiModelOf: the
+	// answer's own, else the route's first — the Analysis default when the route names none).
 	enhanceTextModelUnavailableMsg = "the text assistant is misconfigured: " + modelUnavailableAdviceMsg +
 		" (this assistant uses OPENROUTER_MODEL_ANALYSIS instead when that is set)"
 	enhanceTextEmptyAnswerMsg = "the assistant returned nothing to use — the text is unchanged; try again"
@@ -185,9 +186,11 @@ type enhanceTextInput struct {
 // budget spent without an answer) → Internal. The provider's raw error text never leaves the server.
 func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextRequest) (*pb_admin.EnhanceTextResponse, error) {
 	// Not-configured first: with no key nothing about this request can succeed, and «the assistant is
-	// off» is a truer answer than a complaint about the text.
-	if !s.aiOps.Enabled() {
-		return nil, aiRefusal(aiReasonNotConfigured, enhanceTextNotConfiguredMsg, nil)
+	// off» is a truer answer than a complaint about the text. (Paused — every provider held by its
+	// breaker — answers here too, in its own words.)
+	const purpose = entity.AIPurposeTechCardEnhance
+	if !s.ai.Enabled(purpose) {
+		return nil, s.aiOffRefusal(purpose, enhanceTextNotConfiguredMsg)
 	}
 
 	in, ve := validateEnhanceTextRequest(req)
@@ -211,9 +214,21 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 
 	mode, field := enhanceModeWords[in.mode], in.field.String()
 	started := time.Now()
-	raw, finishReason, usage, err := s.aiOps.CompleteWithMeta(ctx,
-		enhanceTextSystemPrompt(in), enhanceTextUserPrompt(in), false, enhanceMaxTokens)
+	// The request CompleteWithMeta sent: the Analysis slug (the purpose's default), no json, the cap,
+	// thinking off (openrouter: analysisReasoningEffort — whoever sets a ceiling turns it off).
+	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
+		System: enhanceTextSystemPrompt(in), User: enhanceTextUserPrompt(in),
+		MaxTokens: enhanceMaxTokens, Effort: "none",
+	})
 	took := time.Since(started)
+	var (
+		raw, finishReason string
+		usage             aiprov.TokenUsage
+	)
+	if res != nil {
+		raw, finishReason, usage = res.Text, res.FinishReason, res.Usage
+	}
+	model := s.aiModelOf(purpose, res)
 
 	// ONLY lengths, mode, field, timing, model, token counts and fixed status words are logged — never
 	// the text or the context: they are the card author's writing and have no business in the log.
@@ -221,7 +236,7 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 		slog.String("mode", mode), slog.String("field", field),
 		slog.Int("in_runes", in.textRunes), slog.Int("context_runes", in.ctxRunes),
 		slog.Int("max_runes", in.maxRunes), slog.Duration("took", took),
-		slog.String("model", s.aiOps.AnalysisModel()), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
+		slog.String("model", model), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
 		slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
 	}
 	if err != nil {
@@ -230,19 +245,22 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 		// fixed class, the HTTP status when there is one, and whether the call was already paid for;
 		// the gRPC code is decided by the same class, so the log and the answer cannot disagree.
 		class := enhanceErrClass(err)
+		if refusal, ok := aiUncalledRefusal(err, enhanceTextNotConfiguredMsg); ok {
+			return nil, refusal
+		}
 		if class == enhanceErrNotConfigured {
 			return nil, aiRefusal(aiReasonNotConfigured, enhanceTextNotConfiguredMsg, nil)
 		}
 		failAttrs := append(logAttrs, slog.String("err_class", class),
-			slog.Bool("provider_engaged", openrouter.ProviderEngaged(err)),
-			slog.String("base_url", s.aiOps.BaseURL()))
-		if code := providerHTTPStatus(err); code != 0 {
-			failAttrs = append(failAttrs, slog.Int("http_status", code))
+			slog.Bool("provider_engaged", aiprov.Engaged(err)),
+			slog.String("provider", s.aiProviderOf(purpose, res)))
+		if class == enhanceErrProviderHTTP {
+			failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
 		}
 		slog.Default().ErrorContext(ctx, "enhance text failed", failAttrs...)
 		switch class {
 		case enhanceErrModelUnavailable:
-			return nil, aiModelRefusal(enhanceTextModelUnavailableMsg, s.aiOps.AnalysisModel())
+			return nil, aiModelRefusal(enhanceTextModelUnavailableMsg, model)
 		case enhanceErrBudgetExhausted, enhanceErrEmptyAnswer:
 			return nil, status.Error(codes.Internal, enhanceTextEmptyAnswerMsg)
 		}
@@ -292,9 +310,11 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 	return &pb_admin.EnhanceTextResponse{Text: out}, nil
 }
 
-// The fixed words a failed call is logged as (review ENH-01). Each is decided by a sentinel, by the
-// context, or by the client's own wording of a non-2xx answer — never by the provider's prose.
+// The fixed words a failed call is logged as (review ENH-01). Each is decided by the CallError's
+// fields (Code, HTTPStatus — B-18: never its sentence, which the router's exhausted wrap now leads),
+// by a sentinel, or by the context — never by the provider's prose.
 const (
+	enhanceErrPaused           = "paused"
 	enhanceErrNotConfigured    = "not_configured"
 	enhanceErrModelUnavailable = "model_unavailable"
 	enhanceErrBudgetExhausted  = "budget_exhausted"
@@ -308,45 +328,49 @@ const (
 
 // enhanceErrClass is the whole description of a failed call that reaches the log.
 //
-// The non-2xx check comes BEFORE the empty-answer one on purpose: isEmptyModelAnswer reads the
-// client's sentence, and a provider body that happens to say «no choices» must not turn a 502 into
-// «the model said nothing» (Internal) instead of weather (Unavailable).
+// BY FIELDS, NOT BY TEXT (B-18). The transport's CallError carries the fault word (Code) and the
+// provider's status; the router's exhausted error wraps it ("ai: every candidate failed: …") and
+// AsCallError still finds it. Nothing the provider wrote can forge a class: its body is only ever
+// inside Err's sentence, which is not read. A refusal (non-2xx) is provider_http_error unless its
+// code names it better (404 → model_unavailable); a 2xx that broke is provider_error or empty_answer
+// by its code — its 200 in HTTPStatus is not a refusal (providerHTTPStatus).
 func enhanceErrClass(err error) string {
 	switch {
-	case errors.Is(err, openrouter.ErrNotConfigured):
+	case errors.Is(err, router.ErrPaused):
+		return enhanceErrPaused
+	case errors.Is(err, aiprov.ErrNotConfigured):
 		return enhanceErrNotConfigured
-	case errors.Is(err, openrouter.ErrModelUnavailable):
+	}
+	ce, ok := aiprov.AsCallError(err)
+	if !ok {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return enhanceErrTimeout
+		case errors.Is(err, context.Canceled):
+			return enhanceErrCanceled
+		}
+		return enhanceErrProvider
+	}
+	switch ce.Code {
+	case aiprov.CodeNotConfigured:
+		return enhanceErrNotConfigured
+	case aiprov.CodeModelUnknown:
 		return enhanceErrModelUnavailable
-	case errors.Is(err, openrouter.ErrBudgetExhausted):
+	case aiprov.CodeBudgetExhausted:
 		return enhanceErrBudgetExhausted
-	case errors.Is(err, openrouter.ErrResponseTooLarge):
+	case aiprov.CodeTooLarge:
 		return enhanceErrTooLarge
-	case errors.Is(err, context.DeadlineExceeded):
+	case aiprov.CodeTimeout:
 		return enhanceErrTimeout
-	case errors.Is(err, context.Canceled):
+	case aiprov.CodeCanceled:
 		return enhanceErrCanceled
-	case providerHTTPStatus(err) != 0:
-		return enhanceErrProviderHTTP
-	case isEmptyModelAnswer(err):
+	case aiprov.CodeEmptyAnswer:
 		return enhanceErrEmptyAnswer
 	}
-	return enhanceErrProvider
-}
-
-// providerHTTPStatusRe reads the status out of the openrouter client's OWN wording of a non-2xx answer,
-// «openrouter: API error (HTTP 429): <provider text>». It is anchored at the start, and the provider's
-// text only ever follows the colon, so nothing the provider echoed can forge it. The 404 form opens
-// with the ErrModelUnavailable sentence instead and is classified by that sentinel.
-var providerHTTPStatusRe = regexp.MustCompile(`^openrouter: API error \(HTTP ([0-9]{3})\):`)
-
-// providerHTTPStatus is the provider's HTTP status for a plain non-2xx failure, or 0.
-func providerHTTPStatus(err error) int {
-	m := providerHTTPStatusRe.FindStringSubmatch(err.Error())
-	if m == nil {
-		return 0
+	if providerHTTPStatus(err) != 0 {
+		return enhanceErrProviderHTTP
 	}
-	code, _ := strconv.Atoi(m[1])
-	return code
+	return enhanceErrProvider
 }
 
 // enhanceLogFinishReason passes the known finish_reason words through and folds anything else into

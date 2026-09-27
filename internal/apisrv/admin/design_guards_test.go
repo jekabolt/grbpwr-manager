@@ -520,7 +520,7 @@ func TestDraftIdeaRefusesAMoodboardOverTheSnapshotCeiling(t *testing.T) {
 	// проба не даст, потому что потолок стоит РАНЬШЕ вызова модели.
 	srv := &Server{
 		repo: repo, designGenerationEnabled: true,
-		aiOps: openrouter.New(openrouter.Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}),
+		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"})),
 	}
 	_, err := srv.DraftDesignIdea(designGuardCtx(), &pb_admin.DraftDesignIdeaRequest{
 		TechCardId:      designGuardCardID,

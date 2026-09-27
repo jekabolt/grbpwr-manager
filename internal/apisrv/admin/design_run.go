@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
@@ -2383,7 +2384,7 @@ const draftIdeaSystemPrompt = "You are a fashion designer's assistant. " +
 	"do not mention — say what is missing instead."
 
 // draftIdeaNotConfiguredMsg / draftIdeaModelUnavailableMsg — те же две несводимые настройки, что
-// у остальных функций на s.aiOps, и те же слова: одна причина обязана звучать одинаково везде,
+// у остальных функций на AI-роутере (s.ai), и те же слова: одна причина обязана звучать одинаково везде,
 // иначе дежурный чинит две разные поломки вместо одной.
 const (
 	draftIdeaNotConfiguredMsg    = "drafting the idea is not configured: " + openRouterNoKeyMsg
@@ -2516,8 +2517,9 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if err := s.designGenerationGate(); err != nil {
 		return nil, err
 	}
-	if !s.aiOps.Enabled() {
-		return nil, aiRefusal(aiReasonNotConfigured, draftIdeaNotConfiguredMsg, nil)
+	const purpose = entity.AIPurposeDesignDraftIdea
+	if !s.ai.Enabled(purpose) {
+		return nil, s.aiOffRefusal(purpose, draftIdeaNotConfiguredMsg)
 	}
 
 	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
@@ -2689,10 +2691,12 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
 		PriceEstimate:    est,
 		Author:           designActor(ctx),
-		// ⚠ ЛИЗА СЧИТАЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ — И ТОЛЬКО ЗДЕСЬ — ВИДНЫ ОБА ЧИСЛА СРАЗУ.
-		// Она обязана переживать платный вызов, а длину вызова задают ДВЕ величины: потолок ответа
-		// (entity.DesignDraftAnswerCeilings) и БАЗА бюджета ТОГО клиента, который сейчас позвонит
-		// (s.aiOps.CompletionBase — ровно то поле, что postChatCompletion кладёт в CompletionBudget).
+		// ⚠ ЛИЗА СЧИТАЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ — И ТОЛЬКО ЗДЕСЬ — ВИДНЫ ВСЕ ЧИСЛА СРАЗУ.
+		// Она обязана переживать платную ЦЕПОЧКУ (B-18: основной кандидат маршрута и, при отказе без
+		// денег, запасной — роутер делает для этой цели не больше двух вызовов), а длину цепочки
+		// задают потолок ответа (entity.DesignDraftLongestAnswerCeiling) и БАЗА бюджета КАЖДОГО
+		// транспорта, который позвонит (oaichat.CompletionBase — ровно то поле, что транспорт кладёт в
+		// CompletionBudget на проводе). Сумму знает роутер: s.ai.ChainBudget.
 		// Стор конфигурацию процесса не видит; пока он считал лизу сам, он считал её от КОДОВОЙ базы
 		// в 60 s, и при заданном OPENROUTER_HTTP_TIMEOUT = 240 s вызов занимал 506.67 s против лизы в
 		// 416.67 s — на 90 s ВНУТРИ вызова строка была свободна, и повтор того же client_request_id
@@ -2703,7 +2707,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// говоря, другой веткой: сверка формы стоит ниже и только для ЗАКОНЧЕННОГО прогона. Взяв
 		// потолок этой ветки, мы продлевали бы чужую строку сроком, который её вызов не переживает.
 		HandlerLease: design.HandlerLeaseFor(
-			s.aiOps.CompletionBase(), entity.DesignDraftAnswerCeilings()...),
+			s.ai.ChainBudget(purpose, entity.DesignDraftLongestAnswerCeiling())),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to open the design idea draft", err, nil)
@@ -2817,10 +2821,14 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		prompt = designConstructionUserPrompt(card, mood, attachedIDs, colours)
 	}
 
+	// THE ATTEMPT NAMES THE PROVIDER THE ROUTER WILL CALL FIRST. A fallback may answer instead; the
+	// attempt row keeps the primary (it is written before the call), and the ledger rows — one per
+	// physical call, keyed by (run, attempt) below — carry the truth with their fallback_from.
+	primary := s.ai.PrimaryProvider(purpose)
 	attempt, err := s.repo.Design().StartAttempt(ctx, entity.DesignAttemptStart{
 		RunId:      run.Id,
 		ClaimToken: run.ClaimToken.String,
-		Provider:   "openrouter",
+		Provider:   primary,
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to open the idea draft attempt", err, nil)
@@ -2834,8 +2842,34 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// P-1 спеки владельца называет «OpenRouter, Sonnet», а defaultModel и есть
 	// anthropic/claude-sonnet-5 — модель мультимодальная. Второй слуг был бы вторым именем,
 	// которое однажды протухнет у поставщика молча.
-	text, finishReason, usage, callErr := s.aiOps.CompleteWithImages(
-		ctx, systemPrompt, prompt, boardURLs, construction, maxTokens)
+	//
+	// ЗАПРОС ТОТ ЖЕ, ЧТО СОБИРАЛ CompleteWithImages (B-18): картинки частями, json по флагу формы, и
+	// «кто ставит потолок, тот выключает мышление» — Effort "none" РОВНО тогда, когда потолок стоит
+	// (у прозы его нет, и её байты — контракт V-19: без потолка нет и `reasoning`). Одно отличие
+	// названо вслух: пустая доска уходит строкой, а не списком из одной текстовой части
+	// (ChatRequest без ImageURLs — это текстовый ход по контракту шва; принято, ручки нет).
+	//
+	// ЗАПИСЬ В РЕГИСТРЕ AI (ai_usage_event) ПРИВЯЗАНА К ЭТОЙ ПОПЫТКЕ: WithRun кладёт (run, attempt)
+	// в контекст вызова, и строка каждого физического вызова цепочки несёт их (call_no 1, 2).
+	draftReq := aiprov.ChatRequest{System: systemPrompt, User: prompt, ImageURLs: boardURLs, JSONMode: construction}
+	if maxTokens > 0 {
+		draftReq.MaxTokens, draftReq.Effort = maxTokens, "none"
+	}
+	res, callErr := s.ai.Chat(aiprov.WithRun(ctx, run.Id, attempt.AttemptNo), purpose, draftReq)
+	var (
+		text, finishReason string
+		usage              aiprov.TokenUsage
+	)
+	if res != nil {
+		text, finishReason, usage = res.Text, res.FinishReason, res.Usage
+		if res.Provider != primary {
+			slog.Default().WarnContext(ctx, "draft design idea: a fallback provider answered; the attempt names the primary",
+				slog.Int("run_id", run.Id), slog.Int("attempt_no", attempt.AttemptNo),
+				slog.String("attempt_provider", primary), slog.String("answered_by", res.Provider),
+				slog.String("model", res.Model))
+		}
+	}
+	model, provider := s.aiModelOf(purpose, res), s.aiProviderOf(purpose, res)
 	// ⚠ ЭТОТ СТОРОЖ НЕДОСТИЖИМ ПО ПОСТРОЕНИЮ, И ИМЕННО ПОЭТОМУ ЕГО NULL-ЦЕНА НЕ ДЫРА. Пустой ответ
 	// ловит и называет сам транспорт (postChatCompletion подрезает контент и отказывает — либо
 	// ErrBudgetExhausted, либо «empty message»), причём отказывает уже ПОМЕЧЕННЫМ вовлечённым, то
@@ -2854,7 +2888,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// ⚠ КОД ПРИЧИНЫ ОТДЕЛЬНЫЙ, ПО ТОМУ ЖЕ ДОВОДУ, ЧТО У `invalid_output` (см. designFailDraftAs):
 	// `provider_error` значит «ответа не было», а здесь ответ БЫЛ — пустой, оплаченный и
 	// детерминированный. Слепив их, мы получили бы график «поставщик падает» там, где на самом деле
-	// мал наш собственный потолок. Классификация — ПО СЕНТИНЕЛУ (openrouter.ErrBudgetExhausted),
+	// мал наш собственный потолок. Классификация — ПО СЕНТИНЕЛУ (aiprov.ErrBudgetExhausted),
 	// никогда по прозе поставщика; ровно так же это делает разбор тех-карты (techcard_analysis.go).
 	//
 	// ⚠ ДЕНЬГИ СПИСЫВАЮТСЯ, И ЭТО ВЫРАВНИВАНИЕ, А НЕ УЖЕСТОЧЕНИЕ. У ОДНОГО И ТОГО ЖЕ потолка два
@@ -2864,8 +2898,8 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// бюджет бесплатно» было бы способом, а не аварией. Ноль остаётся ровно там, где ответа не было
 	// ВОВСЕ: транспорт, 404, неверная настройка — см. designFailDraft.
 	if callErr != nil {
-		if errors.Is(callErr, openrouter.ErrBudgetExhausted) {
-			s.designLogConstructionDraft(ctx, cardID, run.Id, finishReason, usage,
+		if errors.Is(callErr, aiprov.ErrBudgetExhausted) {
+			s.designLogConstructionDraft(ctx, cardID, run.Id, model, provider, finishReason, usage,
 				designConstructionStats{}, callErr)
 			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
 				callErr, designReasonBudgetExhausted, est)
@@ -2878,7 +2912,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// единственная защита от второй двери. Поменяв их местами, мы получили бы `budget_exhausted`,
 		// закрытый как `provider_cut`, — и график «нам рвёт провод» там, где мал наш потолок.
 		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr, est)
-		return nil, s.designDraftCallError(ctx, cardID, callErr)
+		return nil, s.designDraftCallError(ctx, cardID, model, callErr)
 	}
 
 	// ─── ПРОВЕРКА СТРУКТУРНОГО ОТВЕТА ───
@@ -2908,7 +2942,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// у designVerifyColourways.
 		designVerifyColourways(parsed, designBuildColourDictionary(colours),
 			designCardSlotFolds(card), &stats)
-		s.designLogConstructionDraft(ctx, cardID, run.Id, finishReason, usage, stats, perr)
+		s.designLogConstructionDraft(ctx, cardID, run.Id, model, provider, finishReason, usage, stats, perr)
 		if perr != nil {
 			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
 				perr, designConstructionReasonInvalidOutput, est)
@@ -3047,18 +3081,19 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 // место, где видно фактический расход, — эта строка. Разойдясь, оценка и факт станут заметны
 // только отсюда.
 func (s *Server) designLogConstructionDraft(
-	ctx context.Context, cardID, runID int,
-	finishReason string, usage openrouter.Usage, stats designConstructionStats, err error,
+	ctx context.Context, cardID, runID int, model, provider string,
+	finishReason string, usage aiprov.TokenUsage, stats designConstructionStats, err error,
 ) {
 	attrs := []any{
 		slog.Int("tech_card_id", cardID),
 		slog.Int("run_id", runID),
-		slog.String("model", s.aiOps.Model()),
-		slog.String("base_url", s.aiOps.BaseURL()),
+		slog.String("model", model),
+		slog.String("provider", provider),
 		slog.String("finish_reason", finishReason),
 		slog.Int("prompt_tokens", usage.Prompt),
 		slog.Int("completion_tokens", usage.Completion),
-		slog.Int("total_tokens", usage.Total),
+		// total = prompt + completion: the OpenAI-shaped convention every chat transport reports in.
+		slog.Int("total_tokens", usage.Prompt+usage.Completion),
 		slog.Int("aspects_custom", stats.AspectsCustom),
 		slog.Int("aspects_dropped", stats.AspectsDropped),
 		// aspects_absent — текст описывал отсутствие («no closures», «none») и выброшен (O-32).
@@ -3177,7 +3212,7 @@ const designCloseWriteBudget = 5 * time.Second
 // codes.Unavailable — новость, неотличимую от погоды, — и жал ещё раз с новым client_request_id.
 // Денег в регистре не появлялось НИКОГДА.
 //
-// ⚠ РАЗЛИЧАЕТ openrouter.ProviderEngaged, А НЕ ПРОЗА ОШИБКИ. Довод целиком — у самой функции:
+// ⚠ РАЗЛИЧАЕТ aiprov.Engaged (флаг CallError, поднятый транспортом; B-18), А НЕ ПРОЗА ОШИБКИ. Довод целиком — у самой функции:
 // строки ошибок net/http не контракт, и сверка с ними — ровно тот способ, которым такая починка
 // гниёт молча. Здесь спрашивается флаг, поднятый httptrace на записи запроса в соединение.
 //
@@ -3199,7 +3234,7 @@ const designCloseWriteBudget = 5 * time.Second
 func (s *Server) designFailDraft(
 	ctx context.Context, run entity.DesignRun, attemptNo int, cause error, engagedPrice decimal.NullDecimal,
 ) {
-	if openrouter.ProviderEngaged(cause) {
+	if aiprov.Engaged(cause) {
 		s.designFailDraftAs(ctx, run, attemptNo, cause, designReasonProviderCut, engagedPrice)
 		return
 	}
@@ -3268,27 +3303,31 @@ func (s *Server) designFailDraftAs(
 }
 
 // designDraftCallError переводит провал вызова модели в отказ, который человек может починить.
-func (s *Server) designDraftCallError(ctx context.Context, cardID int, err error) error {
-	if errors.Is(err, openrouter.ErrNotConfigured) {
-		return aiRefusal(aiReasonNotConfigured, draftIdeaNotConfiguredMsg, nil)
+//
+// ⚠ ФРАЗА ДЛЯ ЧЕЛОВЕКА СОБИРАЕТСЯ ИЗ ПОЛЕЙ CallError (aiFaultWords), А НЕ ИЗ ТЕКСТА ОШИБКИ (B-18). Роутер
+// оборачивает исчерпанную цепочку («ai: every candidate failed: …»), а тело ответа поставщика внутри
+// текста может повторять доску — ни то, ни другое человеку не показывается; сам текст уезжает в лог.
+func (s *Server) designDraftCallError(ctx context.Context, cardID int, model string, err error) error {
+	if refusal, ok := aiUncalledRefusal(err, draftIdeaNotConfiguredMsg); ok {
+		return refusal
 	}
 	slog.Default().ErrorContext(ctx, "draft design idea: the model call failed",
-		slog.Int("tech_card_id", cardID), slog.String("model", s.aiOps.Model()),
-		slog.String("base_url", s.aiOps.BaseURL()), slog.String("err", err.Error()))
-	if errors.Is(err, openrouter.ErrModelUnavailable) {
-		return aiModelRefusal(draftIdeaModelUnavailableMsg, s.aiOps.Model())
+		slog.Int("tech_card_id", cardID), slog.String("model", model),
+		slog.String("err", err.Error()))
+	if errors.Is(err, aiprov.ErrModelUnavailable) {
+		return aiModelRefusal(draftIdeaModelUnavailableMsg, model)
 	}
 	// ⚠ ОБОРВАННЫЙ ПРОВОД ГОВОРИТ, ЧТО ОН СТОИЛ ДЕНЕГ, И ЭТО ПОЛОВИНА ПОЧИНКИ, А НЕ ВЕЖЛИВОСТЬ.
 	// Код остаётся Unavailable — совет «повторить» верен, обрыв действительно бывает погодой, — но
 	// молчащая погода и есть то, из-за чего одно нажатие превращалось в три: человек не мог знать,
 	// что за каждое уже заплачено. Регистр теперь это знает (designReasonProviderCut); фраза лишь
 	// показывает ему то же самое до того, как он нажмёт снова.
-	if openrouter.ProviderEngaged(err) {
+	if aiprov.Engaged(err) {
 		return status.Errorf(codes.Unavailable,
 			"the request reached the model and the connection broke before the answer came back, "+
-				"so this press was charged: %v", err)
+				"so this press was charged: %s", aiFaultWords(err))
 	}
-	return status.Errorf(codes.Unavailable, "drafting the idea failed: %v", err)
+	return status.Errorf(codes.Unavailable, "drafting the idea failed: %s", aiFaultWords(err))
 }
 
 // designReplayedFailure переводит УЖЕ ЗАКРЫТЫЙ ПРОВАЛОМ прогон в тот же отказ, который человек

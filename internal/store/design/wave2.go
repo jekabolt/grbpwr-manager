@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -81,7 +80,8 @@ import (
 // ту же кодовую базу.
 //
 // ПОЭТОМУ БАЗУ ПРИНОСИТ ВЫЗЫВАЮЩИЙ — В entity.DesignRunStart.HandlerLease, посчитанной
-// HandlerLeaseFor от openrouter.Client.CompletionBase() ТОГО клиента, который сделает вызов.
+// HandlerLeaseFor от router.ChainBudget: бюджета цепочки, сложенного из баз ТЕХ транспортов, которые
+// сделают вызов (B-18; до роутера — openrouter.Client.CompletionBase() одного клиента).
 // Стор конфигурацию процесса не видит и видеть не должен; тот, кто держит клиента, видит оба
 // числа сразу. Ноль у draft_idea — ОТКАЗ (см. StartRun), а не тихое умолчание: умолчание вернуло
 // бы ровно этот дефект.
@@ -91,25 +91,22 @@ import (
 // StartAttempt), и снимается закрывающей записью ПОСЛЕ разбора ответа. Вызов — самая длинная, но
 // не единственная её часть.
 //
-// HandlerLeaseFor — лиза при ДАННОЙ базе бюджета и ДАННОМ наборе потолков ответа: бюджет САМОГО
-// ДОРОГОГО из них плюс запас. Ноль в списке потолков («у ветки потолка нет») законен и означает
-// базу бюджета; неположительная база нормализуется той же кодовой умолчальной, что и в
-// openrouter.New — одна нормализация на обе стороны, иначе это снова два числа.
+// HandlerLeaseFor — лиза под ЦЕПОЧКУ платных вызовов, самый долгий прогон которой — chainBudget,
+// плюс запас на всё, что не есть сам вызов (designHandlerLeaseSlack).
 //
-// ⚠ ФУНКЦИЯ, А НЕ ВЫРАЖЕНИЕ В ОДНУ СТРОКУ, РАДИ ПРОБЫ. Пока лиза была выражением над одной
-// константой, «выведена из максимума» и «выведена из этой ветки» давали ОДНО И ТО ЖЕ ЧИСЛО, и
-// никакое сравнение значений их не различало. Здесь же и максимум, и базу можно СПРОСИТЬ
-// подставными аргументами: проба поднимает каждую позицию потолков по очереди и отдельно поднимает
-// БАЗУ, требуя, чтобы лиза сдвинулась на каждой, — то есть краснеет ровно тогда, когда анкер снова
-// садится на одну ветку или на кодовую базу.
-func HandlerLeaseFor(completionBase time.Duration, answerCeilings ...int) time.Duration {
-	longest := 0
-	for _, ceiling := range answerCeilings {
-		if ceiling > longest {
-			longest = ceiling
-		}
-	}
-	return openrouter.CompletionBudget(completionBase, longest) + designHandlerLeaseSlack
+// ⚠ С B-18 ВСЕ ТРИ ОСИ СЧИТАЕТ ВЫЗЫВАЮЩИЙ, И ЭТО ТА ЖЕ ПОЧИНКА, А НЕ ЕЁ ОТМЕНА. Вызов теперь
+// делает AI-роутер (internal/aiprov/router), а не один клиент: цепочка кандидатов маршрута
+// (основной и, при отказе без денег, запасной — не больше двух для этой лизы), каждый со СВОЕЙ базой
+// бюджета. Сумму знает только роутер — router.ChainBudget(purpose, самый длинный потолок): ПОТОЛОК
+// — entity.DesignDraftLongestAnswerCeiling (МАКСИМУМ по веткам), БАЗА — CompletionBase транспорта
+// каждого кандидата (тот же OPENROUTER_HTTP_TIMEOUT, что кладёт на провод oaichat), ЦЕПОЧКА —
+// кандидаты, которых Chat вправе позвать. Стор по-прежнему конфигурацию процесса не видит и видеть не
+// должен; ноль у draft_idea — ОТКАЗ (см. StartRun), но отсюда ноль не выходит: запас есть всегда.
+//
+// ⚠ ФУНКЦИЯ, А НЕ ВЫРАЖЕНИЕ В ОДНУ СТРОКУ, РАДИ ОДНОГО ЗАПАСА НА ВСЕХ: хендлер, лог загрузки
+// (app.go) и пробы складывают бюджет с ОДНИМ И ТЕМ ЖЕ designHandlerLeaseSlack, и разойтись ему негде.
+func HandlerLeaseFor(chainBudget time.Duration) time.Duration {
+	return chainBudget + designHandlerLeaseSlack
 }
 
 const (

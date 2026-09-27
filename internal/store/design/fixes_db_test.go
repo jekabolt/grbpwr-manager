@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/shopspring/decimal"
@@ -172,7 +173,7 @@ func TestDesignDBResumeOfAnAbandonedHandlerHasExactlyOneWinner(t *testing.T) {
 			// клиента поставщика, и стор отказывает просьбе без неё. Ноль базы = кодовое умолчание
 			// openrouter, ровно та же нормализация, что в openrouter.New. Истечение лизы эта проба
 			// всё равно форсирует руками (expireClaim), поэтому её длина здесь не несущая.
-			HandlerLease: design.HandlerLeaseFor(0, entity.DesignDraftAnswerCeilings()...),
+			HandlerLease: design.HandlerLeaseFor(aiprov.DefaultCompletionBudget(entity.DesignDraftLongestAnswerCeiling())),
 		})
 	}
 	first, err := start()

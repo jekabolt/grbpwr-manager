@@ -120,7 +120,7 @@ func enhanceStatusReply(code int, msg string) func(http.ResponseWriter) {
 // once built, so the test stops it the way App.Stop does (review ENH-03).
 func newEnhanceServer(t *testing.T, client *openrouter.Client) *Server {
 	t.Helper()
-	s := &Server{aiOps: client, enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
+	s := &Server{ai: newTestRouter(client), enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
 	t.Cleanup(s.StopRateLimiter)
 	return s
 }
@@ -282,7 +282,7 @@ func TestEnhanceTextBusyRefusesWithoutSpending(t *testing.T) {
 	require.Nil(t, s.enhanceRuns.hourly, "a press refused as busy must not take one of the admin's hourly calls")
 
 	// A Server built without the semaphore refuses loudly rather than running with no ceiling.
-	_, err = (&Server{aiOps: client}).EnhanceText(adminCtx("alice"), noteImprove("a note"))
+	_, err = (&Server{ai: newTestRouter(client)}).EnhanceText(adminCtx("alice"), noteImprove("a note"))
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	require.Empty(t, rec.all())
 }

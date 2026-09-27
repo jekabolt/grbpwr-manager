@@ -98,9 +98,10 @@ const (
 //
 // ⚠ A SECOND BAKED-IN SLUG, AND THE HEADER OF Config.ModelAnalysis EXPLAINS WHY THAT IS A HAZARD:
 // a constant rots silently at the provider. Three things keep this one from rotting silently —
-// WarnIfModelRetired probes it at boot (effectiveModels lists it and the fallback), a 404 on it
-// retries ONCE on IdeasFallbackModel, and OPENROUTER_MODEL_IDEAS replaces it without a deploy
-// (`off` switches the feature off). Both slugs were read on the live catalogue on 2026-09-27
+// WarnIfRetired probes it at boot (the router's OpenRouterSlugs lists it and the fallback), a
+// failure that moved no money falls back to the route's position-2 row, IdeasFallbackModel (migration
+// 0378; before B-18 a 404-only retry in the handler), and OPENROUTER_MODEL_IDEAS replaces it without
+// a deploy (`off` switches the feature off). Both slugs were read on the live catalogue on 2026-09-27
 // (GET https://openrouter.ai/api/v1/models): gemini-3.1-flash-lite text+image→text, $0.25/M in,
 // $1.50/M out, $0.25/M image, 8 endpoints, response_format supported; gpt-5-mini text+image→text,
 // $0.25/M in, $2/M out, 4 endpoints, response_format supported, reasoning mandatory.
@@ -361,14 +362,6 @@ func (c *Client) AnalysisModel() string {
 	return c.cfg.Model
 }
 
-// effectiveModel is one slug this client can actually send, paired with what stops working if the
-// provider no longer serves it. The pairing is the whole value of the boot warning: "a model is
-// gone" sends nobody anywhere, "tech-card analysis will refuse" does.
-type effectiveModel struct {
-	slug     string
-	features string
-}
-
 // IdeasModel returns the slug the PLAYGROUND `Ideas ▾` door (SuggestPrompts) calls first:
 // OPENROUTER_MODEL_IDEAS when set, DefaultIdeasModel when unset, and "" when it is `off` (any
 // case) — "" means the door is OFF, and the band then says so with an empty suggest_prompts_model.
@@ -386,46 +379,6 @@ func (c *Client) IdeasModel() string {
 		return ""
 	}
 	return m
-}
-
-const (
-	sharedModelFeatures   = "note formatting, tech-card operation drafts and campaign auto-translation"
-	analysisModelFeatures = "tech-card construction analysis"
-	ideasModelFeatures    = "playground Ideas suggestions"
-	ideasFallbackFeatures = "playground Ideas suggestions (the fallback after a 404 on the ideas slug)"
-)
-
-// effectiveModels returns the DISTINCT slugs this client can send. It is a set on purpose: with
-// OPENROUTER_MODEL_ANALYSIS unset — again, the normal state — both roles are the same string, and
-// probing it twice would double the boot traffic and shout twice about a single fault.
-//
-// The Ideas door adds its slug AND its fallback (both baked in, both able to rot — see
-// DefaultIdeasModel), unless OPENROUTER_MODEL_IDEAS=off, when neither is ever called.
-func (c *Client) effectiveModels() []effectiveModel {
-	if c == nil {
-		return nil
-	}
-	out := make([]effectiveModel, 0, 4)
-	add := func(slug, features string) {
-		slug = strings.TrimSpace(slug)
-		if slug == "" {
-			return
-		}
-		for i := range out {
-			if out[i].slug == slug {
-				out[i].features += ", " + features
-				return
-			}
-		}
-		out = append(out, effectiveModel{slug: slug, features: features})
-	}
-	add(c.cfg.Model, sharedModelFeatures)
-	add(c.AnalysisModel(), analysisModelFeatures)
-	if ideas := c.IdeasModel(); ideas != "" {
-		add(ideas, ideasModelFeatures)
-		add(IdeasFallbackModel, ideasFallbackFeatures)
-	}
-	return out
 }
 
 // BaseURL returns the effective API root. It exists for LOG LINES: a 404 can mean the model slug
@@ -912,7 +865,7 @@ func (c *Client) CheckModel(ctx context.Context) error {
 // same silence contract, from one body.
 func (c *Client) checkModel(ctx context.Context, model string) error {
 	// СВОЙ КОРОТКИЙ СРОК, И ОН ЖИВЁТ ЗДЕСЬ, А НЕ У ВЫЗЫВАЮЩЕГО. Раньше зонд был ограничен дважды:
-	// собственным сроком в WarnIfModelRetired и общим http.Client.Timeout. Второго больше нет (см.
+	// собственным сроком в WarnIfRetired и общим http.Client.Timeout. Второго больше нет (см.
 	// New), поэтому срок переехал в тело: экспортированный CheckModel зовут и с context.Background(),
 	// и зонд без срока — это боот, повисший на молчащем поставщике. Три секунды — то самое число,
 	// что стояло снаружи: зонд это любезность, и медленный ответ на нём не новость (modelProbeTimeout).
@@ -957,22 +910,38 @@ func (c *Client) checkModel(ctx context.Context, model string) error {
 	return nil
 }
 
-// WarnIfModelRetired probes EVERY effective model slug in the BACKGROUND and shouts in the log if the
-// provider serves no endpoint for it. It returns immediately and is safe to call from a start-up
-// path: the goroutine is owned here rather than by the caller precisely so no call site can forget
-// the `go`, the timeout, or the recover.
+// WarnIfRetired probes EVERY slug in slugs in the BACKGROUND and shouts in the log if the provider
+// serves no endpoint for it. The list is the AI router's (router.OpenRouterSlugs: the effective slug
+// of every openrouter candidate of a chat route — the env defaults the seeded routes answer with, the
+// Ideas fallback row, and any slug the owner typed into a route), so the probe asks about what the
+// buttons will actually call, not about this client's own three env values (B-18). Repeats and blanks
+// are dropped; the order is kept.
 //
-// It changes nothing and refuses nothing — the client keeps working and every feature keeps its own
-// error handling. Anything other than a clear verdict is silence: a boot that cannot reach the
-// network is not evidence that a model is gone, and a false alarm on that line would teach people
-// to ignore the true one.
-func (c *Client) WarnIfModelRetired() {
+// It returns immediately and is safe to call from a start-up path: the goroutine is owned here rather
+// than by the caller precisely so no call site can forget the `go`, the timeout, or the recover. It
+// changes nothing and refuses nothing — every feature keeps its own error handling, and the router
+// falls back past a dead slug where it can. Anything other than a clear verdict is silence: a boot
+// that cannot reach the network is not evidence that a model is gone, and a false alarm on that line
+// would teach people to ignore the true one. ctx carries the log's values only: each probe has its
+// own short timeout, detached from the caller's cancellation.
+func (c *Client) WarnIfRetired(ctx context.Context, slugs []string) {
 	if !c.Enabled() {
 		return // no key: nothing is calling the provider anyway, so there is nothing to warn about
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// The set is taken on the calling goroutine so the work is decided by the configuration as it
 	// stands at boot, not as it might be read later.
-	models := c.effectiveModels()
+	models := make([]string, 0, len(slugs))
+	seen := map[string]bool{}
+	for _, m := range slugs {
+		if m = strings.TrimSpace(m); m != "" && !seen[m] {
+			seen[m] = true
+			models = append(models, m)
+		}
+	}
+	base := context.WithoutCancel(ctx)
 	go func() {
 		// The probe touches only its own request; a panic here would still take the whole process
 		// down, and this runs at start-up. A check that can stop a deploy is worse than the fault
@@ -982,16 +951,16 @@ func (c *Client) WarnIfModelRetired() {
 				slog.Default().Warn("openrouter model probe panicked", slog.Any("recovered", r))
 			}
 		}()
-		// Sequential, each with its OWN short timeout: the slugs are one or two, the budget stays
+		// Sequential, each with its OWN short timeout: the slugs are a handful, the budget stays
 		// bounded per probe, and nothing downstream waits on any of it.
 		for _, m := range models {
 			func() {
-				ctx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
+				pctx, cancel := context.WithTimeout(base, modelProbeTimeout)
 				defer cancel()
-				if err := c.checkModel(ctx, m.slug); errors.Is(err, ErrModelUnavailable) {
-					slog.Default().Error(
-						"OPENROUTER MODEL IS NOT SERVED — the features on this slug will refuse",
-						slog.String("model", m.slug), slog.String("affects", m.features),
+				if err := c.checkModel(pctx, m); errors.Is(err, ErrModelUnavailable) {
+					slog.Default().ErrorContext(pctx,
+						"OPENROUTER MODEL IS NOT SERVED — the chat purposes routed to this slug will fall back or refuse",
+						slog.String("model", m), slog.String("affects", "every chat purpose whose route names it (admin → AI providers)"),
 						slog.String("base_url", c.BaseURL()), slog.String("err", err.Error()))
 				}
 			}()

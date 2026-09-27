@@ -104,10 +104,10 @@ func newFakeOpenRouter(t *testing.T, reply func(w http.ResponseWriter)) (*openro
 }
 
 // newNoteFormatServer собирает Server так же, как его собирает New: с семафором. Голый
-// &Server{aiOps: ...} здесь больше не годится, и это НАМЕРЕННО — семафор не nil-safe, потому что
+// &Server{ai: ...} здесь больше не годится, и это НАМЕРЕННО — семафор не nil-safe, потому что
 // nil-канал молча снял бы потолок, а не назвал бы отсутствие сборки.
 func newNoteFormatServer(client *openrouter.Client) *Server {
-	return &Server{aiOps: client, noteFormatSem: make(chan struct{}, maxConcurrentNoteFormats)}
+	return &Server{ai: newTestRouter(client), noteFormatSem: make(chan struct{}, maxConcurrentNoteFormats)}
 }
 
 // orReplyWithContent serves one well-formed completion carrying the given assistant message.
@@ -126,8 +126,8 @@ func orReplyWithContent(content string) func(http.ResponseWriter) {
 func TestFormatLibraryNoteMarkdownNotConfigured(t *testing.T) {
 	for name, s := range map[string]*Server{
 		"nil client":     {},
-		"client, no key": {aiOps: openrouter.New(openrouter.Config{})},
-		"key is blank":   {aiOps: openrouter.New(openrouter.Config{APIKey: "   "})},
+		"client, no key": {ai: newTestRouter(openrouter.New(openrouter.Config{}))},
+		"key is blank":   {ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "   "}))},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
@@ -288,7 +288,7 @@ func TestFormatLibraryNoteMarkdownIsBounded(t *testing.T) {
 		// Server, собранный мимо New, обязан отвечать отказом: тихая работа без потолка — это
 		// ровно та половина механики, которая выглядит рабочей.
 		client, calls := newFakeOpenRouter(t, orReplyWithContent("# ок"))
-		resp, err := (&Server{aiOps: client}).FormatLibraryNoteMarkdown(context.Background(),
+		resp, err := (&Server{ai: newTestRouter(client)}).FormatLibraryNoteMarkdown(context.Background(),
 			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
 		require.Nil(t, resp)
 		require.Equal(t, codes.ResourceExhausted, status.Code(err))

@@ -205,7 +205,7 @@ func TestADraftWithADisplayOnlyBoardPictureIsRefusedBeforeTheModelIsCalled(t *te
 	})
 
 	rig := newDisplayOnlyRig(t, designBandWith(true), []int{designBoardMediaID}, false, nil)
-	rig.srv.aiOps = client
+	rig.srv.ai = newTestRouter(client)
 
 	_, err := rig.srv.DraftDesignIdea(designRunCtx(), &pb_admin.DraftDesignIdeaRequest{
 		TechCardId:      designRunCardID,
