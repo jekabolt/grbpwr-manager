@@ -106,6 +106,28 @@ func TestBranchReadsNameParentsNotTheCard(t *testing.T) {
 	}
 }
 
+// ТЕХНИЧЕСКИЙ ЛИСТ ЧИТАЕТСЯ ПО КАРТОЧКЕ, ФАЙЛУ И СЛОВУ ЛИСТА — И ТОЛЬКО ТАК (27.09).
+//
+// Лист — строки tech_card_media с category = 'technical' (0092): их тех-пакет печатает плитами. Само
+// правило (отказ technical_sheet, его место между already_replaced и cut_sheet) проверено без базы в
+// entity; что отказ ничего не подаёт и что мудборд, лист чужой карточки и «save as new» перезапись
+// не держат — живой пробой replace_db_test.go (CI=1).
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять категорию (кадр на мудборде закрыл бы перезапись, хотя мудборд плит не
+// печатает); снять карточку (тот же файл на листе ЧУЖОЙ карточки закрыл бы перезапись здесь);
+// сравнивать не media_id; связать слово листа не с 'technical'.
+func TestTechnicalSheetReadNamesTheCardTheFileAndTheSheet(t *testing.T) {
+	require.Equal(t,
+		"SELECT COUNT(*) FROM tech_card_media WHERE tech_card_id = :card AND media_id = :media AND category = :technical",
+		strings.Join(strings.Fields(designTechnicalSheetRows), " "))
+	query, args, err := designTechnicalSheetQuery(41, 900)
+	require.NoError(t, err)
+	require.Equal(t,
+		"SELECT COUNT(*) FROM tech_card_media WHERE tech_card_id = ? AND media_id = ? AND category = ?",
+		strings.Join(strings.Fields(query), " "))
+	require.Equal(t, []any{41, 900, "technical"}, args, "карточка, файл и слово листа — в этом порядке")
+}
+
 // ПОВТОР ИЩЕТСЯ В ПРЕДЕЛАХ КАРТОЧКИ И ПО ТОЧНОМУ КЛЮЧУ (0370).
 //
 // МУТАЦИИ: потерять карточку в предикате (ключ чужой карточки отвечал бы на повтор этой — и индекс

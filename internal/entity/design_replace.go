@@ -16,7 +16,7 @@ import (
 //
 // ОТКАЗЫ ЖИВУТ РЯДОМ С ПРАВИЛОМ, КОТОРОЕ ИХ ПОДНИМАЕТ, по тому же праву, что
 // ErrDesignColourPlanRevMismatch: словарь на проводе один — таблица designRefusals в apisrv/admin, —
-// и каждый из трёх стоит в ней ровно одной строкой.
+// и каждый из них стоит в ней ровно одной строкой.
 var (
 	// ErrDesignReplaceMismatch — названный кадр НЕ ТОТ, поверх которого нарисован слой: он на
 	// другой карточке, либо его медиа не base_media_id слоя (слой, нарисованный с чистого листа, не
@@ -38,6 +38,14 @@ var (
 	// отрезанный от любого из них, и так до конца. Чинится правкой куска либо прятаньем того, что от
 	// куска стоит на экране, а не листа.
 	ErrDesignCutSheet = errors.New("design: cut_sheet")
+	// ErrDesignTechnicalSheet — медиа кадра стоит на ТЕХНИЧЕСКОМ ЛИСТЕ карточки (TechCard.
+	// technical_media — строки tech_card_media с category = 'technical'), 27.09. Лист уходит в
+	// тех-пакет своими плитами, и перезапись оставила бы на нём оригинал, а слот верстака отдала бы
+	// правке: тех-пакет напечатал бы ДВЕ плиты одного вида — прежнюю с листа и правку из слота, — а
+	// выноски листа остались бы приколоты к оригиналу. До этого отказа ловушку держал только снимок
+	// формы в клиенте. FailedPrecondition: чинится снятием кадра с листа (сейвом карточки) либо
+	// «save as new» — правка рядом ничьего места не занимает.
+	ErrDesignTechnicalSheet = errors.New("design: technical_sheet")
 	// ErrDesignHiddenPicture — разрез СПРЯТАННОГО кадра (O-53 review, раунд 3). Кропы рождаются
 	// видимыми, и разрез спрятанного кадра вешал бы живые куски под родителя, на которого никто не
 	// смотрит, — то самое состояние, от которого hide стережёт live_crop_parent, только с другой
@@ -115,12 +123,24 @@ func DesignAlreadyReplaced(p DesignPicture, load func(id int) (DesignPicture, er
 	return &DesignReplacedError{PictureId: p.Id, HeadPictureId: head.Id}
 }
 
+// DesignReplaceFacts — ТО, ЧТО СТОР ПРОЧИТАЛ О КАДРЕ В ТРАНЗАКЦИИ ФЛЭТТЕНА, кроме самого кадра.
+// Нулевое значение — «ещё не прочитано и ничего не держит»: стор зовёт DesignReplaceRefusal сначала
+// с ним (отказы, которым чтения не нужны, звучат до чтений), затем с тем, что прочитал, — и порядок
+// отказов остаётся здесь, а не в стороже.
+type DesignReplaceFacts struct {
+	// OnTechnicalSheet — медиа кадра стоит на техническом листе карточки запроса: строка
+	// tech_card_media этой карточки с category = 'technical' и media_id кадра.
+	OnTechnicalSheet bool
+	// StandingPieces — сколько кусков кадра ещё стоят (DesignStandingPieces).
+	StandingPieces int
+}
+
 // DesignReplaceRefusal — МОЖЕТ ЛИ ПРАВКА СЛОЯ ЗАНЯТЬ МЕСТО КАДРА original. nil = может.
 //
 // Вход — то, что стор уже прочитал В ТРАНЗАКЦИИ ФЛЭТТЕНА: карточка запроса, base_media_id слоя, сам
-// кадр и число его стоящих кусков (DesignStandingPieces). Чтение вне той транзакции было бы TOCTOU с
-// именем поприличнее, поэтому здесь нет ни одного запроса — только решение, и оно чистое ровно затем,
-// чтобы порядок отказов проверялся без базы.
+// кадр и факты о нём (DesignReplaceFacts: лист и стоящие куски). Чтение вне той транзакции было бы
+// TOCTOU с именем поприличнее, поэтому здесь нет ни одного запроса — только решение, и оно чистое
+// ровно затем, чтобы порядок отказов проверялся без базы.
 //
 // ⚠ ПОРЯДОК — ЧАСТЬ КОНТРАКТА, и он от «чинится запросом» к «чинится другим жестом»:
 //
@@ -131,11 +151,20 @@ func DesignAlreadyReplaced(p DesignPicture, load func(id int) (DesignPicture, er
 //  2. already_replaced — replaced_by уже стоит. Проверяется NULL-ность, а не знак, ровно как
 //     `replaced_by IS NULL` в самом UPDATE: два сторожа одного факта не расходятся ни на одной строке.
 //     Голову цепочки здесь не узнать — это чтение, — и стор дописывает её (DesignAlreadyReplaced).
-//  3. cut_sheet — у кадра есть кропы, которые ещё стоят: на экране хоть что-то из ветки куска (O-53
+//  3. technical_sheet — медиа кадра стоит на техническом листе карточки (27.09): лист печатается в
+//     тех-пакет, и после перезаписи в нём стояли бы две плиты одного вида. ПОСЛЕ already_replaced:
+//     повтор перезаписи без ключа обязан узнать себя по already_replaced с головой, даже если кадр
+//     успели поставить на лист после первой подачи. ДО cut_sheet: оба чинятся другим жестом, но лист
+//     отвечает одним чтением по индексу, а куски — чтением ветки уровнями, и запрос, который лист и
+//     так закрывает, за ветку не платит.
+//  4. cut_sheet — у кадра есть кропы, которые ещё стоят: на экране хоть что-то из ветки куска (O-53
 //     review, раунд 3). Правка куска и кусок, отрезанный от неё, нарезаны из прежних пикселей листа, и
 //     перезапись листа оставила бы две живые ветки одного листа. Считает вызывающий —
 //     DesignStandingPieces.
-func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original DesignPicture, standingPieces int) error {
+//
+// «SAVE AS NEW» СЮДА НЕ ПРИХОДИТ ВОВСЕ: правка рядом ничьего места не занимает, и ни один из четырёх
+// отказов её не касается — в том числе лист: кадр на листе остаётся на нём, а правка ложится рядом.
+func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original DesignPicture, facts DesignReplaceFacts) error {
 	if original.TechCardId != cardID {
 		return fmt.Errorf("%w: picture %d belongs to tech card %d, not to %d",
 			ErrDesignReplaceMismatch, original.Id, original.TechCardId, cardID)
@@ -152,9 +181,13 @@ func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original D
 		return fmt.Errorf("%w: picture %d was already replaced by picture %d",
 			ErrDesignAlreadyReplaced, original.Id, original.ReplacedBy.Int32)
 	}
-	if standingPieces > 0 {
+	if facts.OnTechnicalSheet {
+		return fmt.Errorf("%w: the original, picture %d, is on the card's technical sheet and would stay there beside the edit — "+
+			"take it off the sheet first, or save the edit as a new picture", ErrDesignTechnicalSheet, original.Id)
+	}
+	if facts.StandingPieces > 0 {
 		return fmt.Errorf("%w: picture %d is cut into %d piece(s) that still stand on screen, and they would stay cut from the original",
-			ErrDesignCutSheet, original.Id, standingPieces)
+			ErrDesignCutSheet, original.Id, facts.StandingPieces)
 	}
 	return nil
 }

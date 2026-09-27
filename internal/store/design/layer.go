@@ -813,10 +813,12 @@ const designStampReplacedBy = `
 // без базы; голову к already_replaced дописывает designAlreadyReplaced — это чтение, и в чистом
 // решении ему не место.
 //
-// КУСКИ СУДЯТСЯ ПОСЛЕ ДВУХ ПЕРВЫХ ОТКАЗОВ, А НЕ ДО: суд — это чтение всей карточки и обход ветки
-// каждого куска, и запрос, назвавший не тот кадр, не должен ни платить за него, ни получать вместо
-// replace_mismatch ошибку порченой ветки чужого листа. Решение при этом одно — DesignReplaceRefusal
-// зовётся с нулём кусков, затем с числом стоящих, и порядок отказов остаётся его.
+// ЧТЕНИЯ — ПОСЛЕ ДВУХ ПЕРВЫХ ОТКАЗОВ, А НЕ ДО, И ДЕШЁВОЕ РАНЬШЕ ДОРОГОГО. Запрос, назвавший не тот
+// кадр, не должен ни платить за чтения, ни получать вместо replace_mismatch ошибку порченой ветки
+// чужого листа. Затем — технический лист (одно чтение по индексу, designOnTechnicalSheet, 27.09), и
+// только потом куски: суд над ними — чтение ветки уровнями и обход каждого куска. Решение при этом
+// одно — DesignReplaceRefusal зовётся с нулевыми фактами, затем с листом, затем с числом стоящих
+// кусков, и порядок отказов остаётся его.
 //
 // ЧТЕНИЕ ВЕТКИ, ПОТОМ ПАМЯТЬ (O-53 review, раунды 3–4): лист и то, что достижимо от его кусков,
 // читается уровнями (entity.DesignLoadBranch по designBranchReads — несколько маленьких чтений по
@@ -827,10 +829,17 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 	if err != nil {
 		return original, err
 	}
-	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, 0); err != nil {
+	var facts entity.DesignReplaceFacts
+	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, facts); err != nil {
 		if errors.Is(err, entity.ErrDesignAlreadyReplaced) {
 			return original, designAlreadyReplaced(ctx, db, original)
 		}
+		return original, err
+	}
+	if facts.OnTechnicalSheet, err = designOnTechnicalSheet(ctx, db, req.TechCardId, original.MediaId); err != nil {
+		return original, err
+	}
+	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, facts); err != nil {
 		return original, err
 	}
 	nodes, err := entity.DesignLoadBranch(entity.DesignBranchNodeOf(original), designBranchReads(ctx, db))
@@ -841,7 +850,44 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 	if err != nil {
 		return original, err
 	}
-	return original, entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, len(standing))
+	facts.StandingPieces = len(standing)
+	return original, entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, facts)
+}
+
+// designTechnicalSheetRows — СТРОКИ ТЕХНИЧЕСКОГО ЛИСТА КАРТОЧКИ, ДЕРЖАЩИЕ МЕДИА (27.09): tech_card_media
+// с category = 'technical' — это TechCard.technical_media, список, из которого тех-пакет печатает
+// плиты и к медиа которого приколоты выноски листа. Мудборд (category = 'moodboard') плит не
+// печатает и перезапись не держит. Лист чужой карточки не спрашивается: печатается лист ЭТОЙ.
+const designTechnicalSheetRows = `
+	SELECT COUNT(*) FROM tech_card_media
+	WHERE tech_card_id = :card AND media_id = :media AND category = :technical`
+
+// designOnTechnicalSheet — СТОИТ ЛИ МЕДИА НА ТЕХНИЧЕСКОМ ЛИСТЕ КАРТОЧКИ (entity.ErrDesignTechnicalSheet).
+//
+// ЧИТАЕТСЯ В ТРАНЗАКЦИИ ФЛЭТТЕНА, И ЭТО И ЕСТЬ ЗАДНИЙ ПОЯС К ВОПРОСУ КЛИЕНТА: клиент закрывает
+// «overwrite» по снимку формы карточки, а сервер отвечает по сохранённому листу. Под SERIALIZABLE
+// чтение запирает найденные строки и промежуток, куда встала бы новая, — сейв карточки, ставящий
+// кадр на лист или снимающий его (он переписывает tech_card_media целиком), не проскакивает между
+// этим чтением и штампом: он ждёт перезаписи либо ловит дедлок, и транзакция повторяется.
+func designOnTechnicalSheet(ctx context.Context, db dependency.DB, card, media int) (bool, error) {
+	query, args, err := designTechnicalSheetQuery(card, media)
+	if err != nil {
+		return false, err
+	}
+	var n int
+	if err := db.QueryRowxContext(ctx, query, args...).Scan(&n); err != nil {
+		return false, fmt.Errorf("failed to read whether media %d is on the technical sheet of tech card %d: %w",
+			media, card, err)
+	}
+	return n > 0, nil
+}
+
+// designTechnicalSheetQuery — запрос листа с привязками: карточка, медиа и слово листа 'technical'
+// (0092). Отдельно от чтения, чтобы слова и привязки проверялись без базы.
+func designTechnicalSheetQuery(card, media int) (string, []any, error) {
+	return storeutil.MakeQuery(designTechnicalSheetRows, map[string]any{
+		"card": card, "media": media, "technical": string(entity.TechCardMediaCategoryTechnical),
+	})
 }
 
 // designAlreadyReplaced — ОТКАЗ already_replaced С ГОЛОВОЙ ЦЕПОЧКИ, прочитанной в ТОЙ ЖЕ транзакции,

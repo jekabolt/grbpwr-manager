@@ -727,6 +727,87 @@ func TestDesignDBOverwriteRefusesACropFiledOnAnotherCard(t *testing.T) {
 	require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "порча не штампует лист")
 }
 
+// КАДР НА ТЕХНИЧЕСКОМ ЛИСТЕ НЕ ПЕРЕЗАПИСЫВАЕТСЯ — И ОТКАЗ НЕ ПОДАЁТ НИЧЕГО (27.09).
+//
+// Лист — строки tech_card_media с category = 'technical' (TechCard.technical_media): тех-пакет
+// печатает их плитами, и перезапись оставила бы на листе оригинал, а слот верстака отдала бы правке —
+// две плиты FRONT в одном тех-пакете. Строка листа заводится напрямую, той формой, какой её кладёт
+// сейв карточки.
+//
+// Положительные контроли — в той же пробе, иначе она зеленела бы и на стороже, отказывающем всегда:
+//   - «save as new» того же кадра, пока он на листе, проходит: правка рядом ничьего места не занимает;
+//   - снятый с листа кадр перезаписывается, хотя тот же файл лежит на МУДБОРДЕ этой карточки и на
+//     техническом листе ДРУГОЙ — ни то, ни другое не лист этой карточки.
+//
+// И ПОРЯДОК В ТРАНЗАКЦИИ: заменённый кадр, который потом поставили на лист, получает already_replaced
+// с головой — слепой повтор перезаписи узнаёт себя по этому слову, а не по листу.
+//
+// МУТАЦИИ: снять сторож (перезапись проходит, слот уезжает); применить его и к «save as new»
+// (сиблинг отказывается); снять из чтения категорию или карточку (третий подслучай отказывает);
+// читать лист раньше, чем судится заменённость (последний подслучай получает technical_sheet).
+func TestDesignDBOverwriteRefusesAPictureOnTheTechnicalSheet(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	other := probeCard(t, raw)
+
+	// put кладёт файл листа p.sheet на список карточки card — так, как его кладёт сейв карточки.
+	put := func(t *testing.T, card int, category string) int64 {
+		t.Helper()
+		kind := map[string]string{"technical": "front", "moodboard": "moodboard"}[category]
+		res, err := raw.Exec(`INSERT INTO tech_card_media (tech_card_id, media_id, kind, category, display_order)
+			VALUES (?, ?, ?, ?, 0)`, card, p.sheet.MediaId, kind, category)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		return id
+	}
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+	onTheSheet := put(t, p.card, "technical")
+
+	t.Run("кадр на листе — отказ, и не подано ничего", func(t *testing.T) {
+		before := pictures()
+		_, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+		require.ErrorIs(t, err, entity.ErrDesignTechnicalSheet)
+		require.Contains(t, err.Error(), "take it off the sheet first, or save the edit as a new picture")
+		for _, other := range []error{entity.ErrDesignCutSheet, entity.ErrDesignAlreadyReplaced, entity.ErrDesignReplaceMismatch} {
+			require.NotErrorIs(t, err, other)
+		}
+		require.Equal(t, before, pictures(), "отказ не подаёт правку")
+		holder, rev, _ := probeSlotHolder(t, raw, p.slot.Id)
+		require.EqualValues(t, p.sheet.Id, holder.Int32, "отказ не двигает слот")
+		require.Equal(t, p.slot.SlotRev, rev)
+		require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "отказ не штампует оригинал")
+	})
+	t.Run("save as new того же кадра на листе проходит", func(t *testing.T) {
+		edit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), 0))
+		require.NoError(t, err)
+		require.EqualValues(t, p.sheet.Id, edit.DerivedFrom.Int32)
+		require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "рядом — значит рядом")
+	})
+	var edit *entity.DesignPicture
+	t.Run("снятый с листа кадр перезаписывается: мудборд и лист чужой карточки не держат", func(t *testing.T) {
+		_, err := raw.Exec(`DELETE FROM tech_card_media WHERE id = ?`, onTheSheet)
+		require.NoError(t, err)
+		put(t, p.card, "moodboard")
+		put(t, other, "technical")
+		edit, err = rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+		require.NoError(t, err)
+		require.EqualValues(t, edit.Id, probeReplacedBy(t, raw, p.sheet.Id).Int32)
+		holder, _, _ := probeSlotHolder(t, raw, p.slot.Id)
+		require.EqualValues(t, edit.Id, holder.Int32, "слот уехал на правку")
+	})
+	t.Run("заменённый кадр, поставленный на лист, — already_replaced с головой, а не лист", func(t *testing.T) {
+		require.NotNil(t, edit, "подслучай выше обязан был перезаписать кадр")
+		put(t, p.card, "technical")
+		_, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+		require.NotErrorIs(t, err, entity.ErrDesignTechnicalSheet)
+		requireHead(t, err, p.sheet.Id, edit.Id)
+	})
+}
+
 // КЛЮЧ ПРИВЯЗАН К СЛОЮ — ДРУГОЙ СЛОЙ ТОЙ ЖЕ КАРТОЧКИ НА ТОЙ ЖЕ РЕВИЗИИ ОТВЕТА НЕ ПОЛУЧАЕТ (0371).
 //
 // Сценарий ревью: слои L1 и L2 одной карточки, оба на ревизии 1, над разными листами. «Save as new»

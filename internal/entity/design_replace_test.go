@@ -34,25 +34,28 @@ func replaceProbeBase(media int32) sql.NullInt32 { return sql.NullInt32{Int32: m
 // ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: без него каждая проба ниже зеленела бы и на правиле, отказывающем ВСЕГДА.
 //
 // Сюда же — кропы, которые в счёт не идут: вызывающий считает только стоящие (DesignStandingPieces),
-// и ноль — это «ни один кусок не стоит», а не «не спросили».
+// и ноль — это «ни один кусок не стоит», а не «не спросили»; и кадр НЕ на листе — нулевые факты
+// значат «ничего не держит».
 func TestDesignReplaceRefusalLetsTheNamedOriginalThrough(t *testing.T) {
-	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(), 0))
+	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(),
+		DesignReplaceFacts{}))
 
 	// Кроп и правка кропа — законные оригиналы: «edit a piece instead» ведёт именно сюда.
 	piece := replaceProbeOriginal()
 	piece.DerivedFrom = sql.NullInt32{Int32: 3, Valid: true}
 	piece.Derivation = DesignDerivationCrop
-	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), piece, 0))
+	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), piece, DesignReplaceFacts{}))
 
 	// Спрятанный оригинал не отказывается: прятанье — другой ярус, и правило о нём не судит.
 	hidden := replaceProbeOriginal()
 	hidden.HiddenAt = sql.NullTime{Valid: true}
-	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), hidden, 0))
+	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), hidden, DesignReplaceFacts{}))
 }
 
 // КАЖДЫЙ ОТКАЗ НАЗЫВАЕТ СВОЁ, И ТОЛЬКО СВОЁ.
 //
-// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять любую из пяти проверок (подслучай становится nil); перепутать
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять любую из шести проверок (подслучай становится nil) — в том числе
+// лист (27.09: «кадр на техническом листе» проходит, и тех-пакет печатает две плиты); перепутать
 // сентинел (errors.Is подслучая краснеет); сравнивать медиа с чем-то кроме подложки слоя (случай
 // «другой файл» проходит); читать заменённость по знаку вместо NULL-ности (случай replaced_by = 0,
 // Valid — невозможный для писателя, но возможный для руки в базе — проходит мимо сторожа, которого
@@ -63,35 +66,37 @@ func TestDesignReplaceRefusalNamesEachRefusal(t *testing.T) {
 		card  int
 		base  sql.NullInt32
 		pic   func(DesignPicture) DesignPicture
-		crops int
+		facts DesignReplaceFacts
 		want  error
 	}{
 		{"кадр чужой карточки", replaceProbeCard + 1, replaceProbeBase(replaceProbeMedia),
-			func(p DesignPicture) DesignPicture { return p }, 0, ErrDesignReplaceMismatch},
+			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{}, ErrDesignReplaceMismatch},
 		{"слой нарисован с чистого листа", replaceProbeCard, sql.NullInt32{},
-			func(p DesignPicture) DesignPicture { return p }, 0, ErrDesignReplaceMismatch},
+			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{}, ErrDesignReplaceMismatch},
 		{"подложка слоя — ноль", replaceProbeCard, sql.NullInt32{Valid: true},
-			func(p DesignPicture) DesignPicture { return p }, 0, ErrDesignReplaceMismatch},
+			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{}, ErrDesignReplaceMismatch},
 		{"слой нарисован поверх другого файла", replaceProbeCard, replaceProbeBase(replaceProbeMedia + 1),
-			func(p DesignPicture) DesignPicture { return p }, 0, ErrDesignReplaceMismatch},
+			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{}, ErrDesignReplaceMismatch},
 		{"кадр уже заменён", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
 			func(p DesignPicture) DesignPicture {
 				p.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
 				return p
-			}, 0, ErrDesignAlreadyReplaced},
+			}, DesignReplaceFacts{}, ErrDesignAlreadyReplaced},
 		{"заменённость читается по NULL, а не по знаку", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
 			func(p DesignPicture) DesignPicture {
 				p.ReplacedBy = sql.NullInt32{Valid: true}
 				return p
-			}, 0, ErrDesignAlreadyReplaced},
+			}, DesignReplaceFacts{}, ErrDesignAlreadyReplaced},
+		{"кадр на техническом листе", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
+			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{OnTechnicalSheet: true}, ErrDesignTechnicalSheet},
 		{"лист разрезан", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
-			func(p DesignPicture) DesignPicture { return p }, 2, ErrDesignCutSheet},
+			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{StandingPieces: 2}, ErrDesignCutSheet},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := DesignReplaceRefusal(tc.card, tc.base, tc.pic(replaceProbeOriginal()), tc.crops)
+			err := DesignReplaceRefusal(tc.card, tc.base, tc.pic(replaceProbeOriginal()), tc.facts)
 			require.Error(t, err)
 			require.ErrorIs(t, err, tc.want)
-			for _, other := range []error{ErrDesignReplaceMismatch, ErrDesignAlreadyReplaced, ErrDesignCutSheet} {
+			for _, other := range []error{ErrDesignReplaceMismatch, ErrDesignAlreadyReplaced, ErrDesignTechnicalSheet, ErrDesignCutSheet} {
 				if !errors.Is(tc.want, other) {
 					require.NotErrorIs(t, err, other, "один отказ — одна причина на проводе")
 				}
@@ -100,28 +105,48 @@ func TestDesignReplaceRefusalNamesEachRefusal(t *testing.T) {
 	}
 }
 
+// ОТКАЗ ЛИСТА ГОВОРИТ, ЧТО СЛУЧИТСЯ И ЧТО ДЕЛАТЬ, — ТЕМ ЖЕ ГОЛОСОМ, ЧТО cut_sheet.
+//
+// Клиент показывает человеку слова сервера как есть (layerRefusalText), поэтому починка — в самом
+// отказе: снять кадр с листа или сохранить правку новой картинкой.
+func TestDesignReplaceRefusalTechnicalSheetSaysWhatToDo(t *testing.T) {
+	err := DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(),
+		DesignReplaceFacts{OnTechnicalSheet: true})
+	require.EqualError(t, err, "design: technical_sheet: the original, picture 7, is on the card's technical sheet and "+
+		"would stay there beside the edit — take it off the sheet first, or save the edit as a new picture")
+}
+
 // ПОРЯДОК ОТКАЗОВ: от «чинится запросом» к «чинится другим жестом».
 //
 // Кадр, у которого неверно ВСЁ сразу, обязан получить replace_mismatch: запрос, назвавший не тот
 // кадр, не должен выглядеть как «уже заменён» — клиент перечитал бы полосу и повторил ту же ошибку.
-// Заменённый И разрезанный — already_replaced: слепой повтор перезаписи узнаёт себя по этому слову,
-// даже если лист успели разрезать после первой подачи.
+// Заменённый, стоящий на листе И разрезанный — already_replaced: слепой повтор перезаписи узнаёт
+// себя по этому слову, даже если кадр после первой подачи успели поставить на лист или разрезать.
+// Стоящий на листе И разрезанный — technical_sheet: лист отвечает одним чтением, и запрос, который
+// он и так закрывает, за чтение ветки не платит.
 //
-// МУТАЦИЯ: переставить проверки — одна из двух половин краснеет.
+// МУТАЦИИ: переставить любые две соседние проверки — одна из трёх половин краснеет (лист раньше
+// already_replaced — вторая; лист после cut_sheet — третья).
 func TestDesignReplaceRefusalOrder(t *testing.T) {
+	everything := DesignReplaceFacts{OnTechnicalSheet: true, StandingPieces: 3}
+
 	everythingWrong := replaceProbeOriginal()
 	everythingWrong.TechCardId = replaceProbeCard + 1
 	everythingWrong.MediaId = replaceProbeMedia + 1
 	everythingWrong.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
 	require.ErrorIs(t,
-		DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), everythingWrong, 3),
+		DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), everythingWrong, everything),
 		ErrDesignReplaceMismatch)
 
-	replacedAndCut := replaceProbeOriginal()
-	replacedAndCut.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
-	require.ErrorIs(t,
-		DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replacedAndCut, 3),
-		ErrDesignAlreadyReplaced)
+	replacedOnTheSheetAndCut := replaceProbeOriginal()
+	replacedOnTheSheetAndCut.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
+	err := DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replacedOnTheSheetAndCut, everything)
+	require.ErrorIs(t, err, ErrDesignAlreadyReplaced)
+	require.NotErrorIs(t, err, ErrDesignTechnicalSheet)
+
+	err = DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(), everything)
+	require.ErrorIs(t, err, ErrDesignTechnicalSheet)
+	require.NotErrorIs(t, err, ErrDesignCutSheet)
 }
 
 // ─── ГОЛОВА ЦЕПОЧКИ ЗАМЕН (O-53 review) ───

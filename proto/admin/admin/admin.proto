@@ -3033,9 +3033,9 @@ service AdminService {
   // the picture the first attempt filed — see the request field.
   //
   // Aborted: layer_rev_mismatch. FailedPrecondition: empty_layer, already_replaced (ErrorInfo
-  // metadata head_picture_id), cut_sheet, and the placement refusals of SetDesignBenchSlot when the
-  // slot being moved refuses the edit. InvalidArgument: an unknown or foreign media_id,
-  // replace_mismatch, a client_request_id already spent on a different flatten.
+  // metadata head_picture_id), technical_sheet, cut_sheet, and the placement refusals of
+  // SetDesignBenchSlot when the slot being moved refuses the edit. InvalidArgument: an unknown or
+  // foreign media_id, replace_mismatch, a client_request_id already spent on a different flatten.
   rpc FlattenDesignEditLayer(FlattenDesignEditLayerRequest) returns (FlattenDesignEditLayerResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}/flatten"
@@ -12645,13 +12645,19 @@ message FlattenDesignEditLayerRequest {
   // replacement already; a retry of an overwrite WITHOUT client_request_id lands here BEFORE
   // anything is filed, and the ErrorInfo metadata carries head_picture_id: the head of the
   // picture's replacement chain, i.e. the picture standing in its place now. FailedPrecondition:
-  // cut_sheet — pieces cut from this sheet still stand on screen, and they would stay cut from the
-  // original. A piece stands while ANYTHING GROWN FROM IT is visible: the piece itself, an edit that
-  // took its place (replaced_by, followed to the end), a piece cut from any of those, and so on down
-  // the branch — every one of them was drawn from the sheet's old pixels. An edit filed beside a
-  // picture (no replace_picture_id) takes no place and holds nothing. Hide what stands of those
-  // branches before overwriting the sheet, or edit a piece instead of the sheet. NotFound — no such
-  // picture.
+  // technical_sheet — the picture's file is on the card's technical sheet (TechCard.technical_media
+  // as last SAVED, not the form being edited): the tech pack prints that sheet, so the original
+  // would stay on it beside the edit and the pack would carry two plates of one view, the sheet's
+  // callouts still pinned to the original. Take it off the sheet (and save the card) first, or save
+  // the edit as a new picture — a flatten beside takes no place, and this refusal never applies to
+  // it. FailedPrecondition: cut_sheet — pieces cut from this sheet still stand on screen, and they
+  // would stay cut from the original. A piece stands while ANYTHING GROWN FROM IT is visible: the
+  // piece itself, an edit that took its place (replaced_by, followed to the end), a piece cut from
+  // any of those, and so on down the branch — every one of them was drawn from the sheet's old
+  // pixels. An edit filed beside a picture (no replace_picture_id) takes no place and holds nothing.
+  // Hide what stands of those branches before overwriting the sheet, or edit a piece instead of the
+  // sheet. NotFound — no such picture. Judged in the order written: NotFound, replace_mismatch,
+  // already_replaced, technical_sheet, cut_sheet.
   //
   // ⚠ AN OLDER SERVER ANSWERS 400 TO THIS FIELD: the JSON gateway refuses unknown fields. Send it
   // only after a read has carried DesignPicture.replaced_by, which an older server never emits.

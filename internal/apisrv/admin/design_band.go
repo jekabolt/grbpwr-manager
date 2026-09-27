@@ -138,12 +138,14 @@ var designRefusals = []struct {
 	// слоя), и чинится он правкой запроса. Остальные — FailedPrecondition того же класса, что
 	// live_crop_parent: запрос правильной формы, не годится СОСТОЯНИЕ — у кадра уже есть замена
 	// (сюда приходит повтор перезаписи без ключа и разрез заменённого листа; метаданные несут
-	// head_picture_id — см. designErrorFacts), от листа отрезаны куски, которые ещё стоят, либо
-	// режут спрятанный кадр (hidden_picture, O-53 review, раунд 3: его куски родились бы живыми под
-	// родителем, которого не видно). hidden_picture — не hidden_plate: тот отказывает постановке в
-	// слот, и клиенту это другая новость и другой экран.
+	// head_picture_id — см. designErrorFacts), медиа кадра стоит на техническом листе карточки
+	// (technical_sheet, 27.09: тех-пакет напечатал бы две плиты одного вида), от листа отрезаны
+	// куски, которые ещё стоят, либо режут спрятанный кадр (hidden_picture, O-53 review, раунд 3: его
+	// куски родились бы живыми под родителем, которого не видно). hidden_picture — не hidden_plate:
+	// тот отказывает постановке в слот, и клиенту это другая новость и другой экран.
 	{entity.ErrDesignReplaceMismatch, codes.InvalidArgument, "replace_mismatch"},
 	{entity.ErrDesignAlreadyReplaced, codes.FailedPrecondition, "already_replaced"},
+	{entity.ErrDesignTechnicalSheet, codes.FailedPrecondition, "technical_sheet"},
 	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
 	{entity.ErrDesignHiddenPicture, codes.FailedPrecondition, "hidden_picture"},
 }
@@ -646,6 +648,13 @@ func (s *Server) SaveDesignEditLayer(ctx context.Context, req *pb_admin.SaveDesi
 // and the replaced_by stamp are the store's, inside the flatten's own transaction, so a second copy
 // of any of them here could only disagree with it. client_request_id (0370) likewise: trimmed here
 // as every key of the band is, while the ceiling and the replay are the store's.
+//
+// technical_sheet (27.09) IS THE STORE'S TOO, AND THIS HANDLER HAS NO PREFLIGHT FOR IT — ON PURPOSE.
+// A preflight exists to refuse before byte work, and there is none here: the client rasterised and
+// uploaded before this call. And a preflight would run BEFORE the store answers a replay by
+// client_request_id — the first thing its transaction does — so a retry of the person's own
+// successful overwrite could be refused (the defect 0370 removed). The rule is read where it holds:
+// inside the transaction, against the sheet as saved.
 func (s *Server) FlattenDesignEditLayer(ctx context.Context, req *pb_admin.FlattenDesignEditLayerRequest) (*pb_admin.FlattenDesignEditLayerResponse, error) {
 	pic, err := s.repo.Design().FlattenEditLayer(ctx, entity.DesignEditLayerFlatten{
 		TechCardId:       int(req.GetTechCardId()),

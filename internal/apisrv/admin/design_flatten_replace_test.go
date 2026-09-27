@@ -268,7 +268,7 @@ func TestSplitHiddenRefusalIsMappedOnce(t *testing.T) {
 	require.Equal(t, 1, n)
 }
 
-// ТРИ ОТКАЗА ПЕРЕЗАПИСИ ДОЕЗЖАЮТ ДО КЛИЕНТА САМИМИ СОБОЙ.
+// ЧЕТЫРЕ ОТКАЗА ПЕРЕЗАПИСИ ДОЕЗЖАЮТ ДО КЛИЕНТА САМИМИ СОБОЙ.
 //
 // ЧТО ЛОВИТСЯ: sentinel, которого нет в таблице designRefusals, уходит на провод как codes.Internal
 // «failed to …» ПЛЮС строка ERROR в лог. Для already_replaced это хуже поломки вида: клиент ветвится
@@ -278,8 +278,9 @@ func TestSplitHiddenRefusalIsMappedOnce(t *testing.T) {
 // Ошибка приходит из стора ЗАВЁРНУТОЙ в прозу — так, как её отдаёт стор, — потому что таблица
 // бесполезна, если путь до неё теряет sentinel.
 //
-// МУТАЦИИ: убрать любую из трёх строк из designRefusals (подслучай становится Internal без reason);
-// поменять код строки (подслучай краснеет на коде).
+// МУТАЦИИ: убрать любую из четырёх строк из designRefusals (подслучай становится Internal без reason —
+// у technical_sheet это «сервер сломался» вместо «сними кадр с листа»); поменять код строки
+// (подслучай краснеет на коде).
 func TestFlattenReplaceRefusalsReachTheClientAsThemselves(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -289,6 +290,7 @@ func TestFlattenReplaceRefusalsReachTheClientAsThemselves(t *testing.T) {
 	}{
 		{"не тот кадр", entity.ErrDesignReplaceMismatch, codes.InvalidArgument, "replace_mismatch"},
 		{"уже заменён", entity.ErrDesignAlreadyReplaced, codes.FailedPrecondition, "already_replaced"},
+		{"кадр на техническом листе", entity.ErrDesignTechnicalSheet, codes.FailedPrecondition, "technical_sheet"},
 		{"лист разрезан", entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,7 +314,8 @@ func TestFlattenReplaceRefusalsReachTheClientAsThemselves(t *testing.T) {
 // словарей был бы невидим, пока кто-нибудь не переставил бы их местами.
 func TestFlattenReplaceRefusalsAreMappedOnce(t *testing.T) {
 	for _, sentinel := range []error{
-		entity.ErrDesignReplaceMismatch, entity.ErrDesignAlreadyReplaced, entity.ErrDesignCutSheet,
+		entity.ErrDesignReplaceMismatch, entity.ErrDesignAlreadyReplaced, entity.ErrDesignTechnicalSheet,
+		entity.ErrDesignCutSheet,
 	} {
 		n := 0
 		for _, r := range designRefusals {
@@ -322,6 +325,34 @@ func TestFlattenReplaceRefusalsAreMappedOnce(t *testing.T) {
 		}
 		require.Equal(t, 1, n, "%v", sentinel)
 	}
+}
+
+// ЛИСТ СУДИТ ТОЛЬКО ТРАНЗАКЦИЯ СТОРА: ХЕНДЛЕР НИЧЕГО НЕ ЧИТАЕТ ДО НЕЁ (27.09).
+//
+// Предпроверки у флэттена нет намеренно (довод — у FlattenDesignEditLayer): байтовой работы здесь
+// нет, а чтение до стора встало бы перед ответом повтору по ключу и могло бы отказать человеку в его
+// собственном успехе. Проба держит это строгими моками: у хранилища ожидается ровно один вызов —
+// FlattenEditLayer с запросом как есть, — и любое чтение сверх него (кадр, карточка, её лист) роняет
+// пробу неожиданным вызовом. Отказ стора выходит на провод своим словом и с починкой в тексте.
+//
+// МУТАЦИЯ: завести в хендлере предпроверку листа (чтение кадра или карточки до стора) — неожиданный
+// вызов мока; отдать отказ без строки таблицы — Internal вместо technical_sheet.
+func TestFlattenTechnicalSheetIsJudgedByTheStoreAlone(t *testing.T) {
+	refusal := fmt.Errorf("failed to flatten: %w: the original, picture 7, is on the card's technical sheet and would "+
+		"stay there beside the edit — take it off the sheet first, or save the edit as a new picture",
+		entity.ErrDesignTechnicalSheet)
+	rig := newDesignFlattenRig(t, nil, refusal)
+	_, err := rig.srv.FlattenDesignEditLayer(designRunCtx(), &pb_admin.FlattenDesignEditLayerRequest{
+		TechCardId: designRunCardID, LayerId: 5, ExpectedRev: 4, MediaId: 901, ReplacePictureId: 7,
+		ClientRequestId: "k-1",
+	})
+	require.NotNil(t, rig.sent, "запрос дошёл до стора — никто не отказал раньше транзакции")
+	require.Equal(t, 7, rig.sent.ReplacePictureId)
+	require.Equal(t, "k-1", rig.sent.ClientRequestId, "повтор по ключу судит стор, раньше листа")
+	code, md := errorReason(t, err)
+	require.Equal(t, codes.FailedPrecondition, code)
+	require.Equal(t, "technical_sheet", md["reason"])
+	require.Contains(t, err.Error(), "take it off the sheet first, or save the edit as a new picture")
 }
 
 // replaced_by ВЫХОДИТ ИЗ КОНВЕРТЕРА — И ВЫХОДИТ ЯВНЫМ НУЛЁМ У НЕЗАМЕНЁННОГО.
