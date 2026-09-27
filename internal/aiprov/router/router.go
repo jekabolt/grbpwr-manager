@@ -405,13 +405,21 @@ func (r *Router) PrimaryModel(purpose string) string {
 }
 
 // RouteHead names the candidate a door would call first: PrimaryProvider / PrimaryModel while
-// something is callable, else the first candidate of the route that has a model, callable or not (no
-// key right now) — so the line of a door that could not call still names the provider and the slug it
-// WOULD have called. "", "" when the route names nothing (a registry drops a keyless provider before
-// the router sees it; the Ideas kill switch empties every slug). Nil-safe.
+// something is callable; else the route's CONFIGURED head (registry.RouteHeadAt — the first row as
+// saved, before the key and breaker filtering, so a keyless provider is still named) resolved through
+// EffectiveModel; else, for a static route, its first candidate with a model. The line of a door that
+// could not call therefore names the provider and the slug it WOULD have called. "", "" when the
+// route names nothing (the Ideas kill switch empties every slug). Nil-safe.
 func (r *Router) RouteHead(purpose string) (providerKey, model string) {
 	if c := r.callable(purpose); len(c) > 0 {
 		return c[0].ProviderKey, r.EffectiveModel(purpose, c[0].Candidate)
+	}
+	if r != nil && r.static == nil && r.reg != nil && isChatPurpose(purpose) {
+		if head, _, ok := r.reg.RouteHeadAt(purpose); ok {
+			if m := r.EffectiveModel(purpose, head); m != "" {
+				return head.ProviderKey, m
+			}
+		}
 	}
 	cands, _ := r.candidates(purpose)
 	for _, c := range cands {

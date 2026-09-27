@@ -51,6 +51,10 @@ func (s *seedCfgStore) ConfigVersion(context.Context) (uint64, error) {
 	return s.cfg.Settings.ConfigVersion, nil
 }
 
+// newSeededRouter is app.go's router over the 0373 seed: registry, breakers, the client's own transport.
+// The registry's env key follows the client's: a client with no key is a deployment with no
+// OPENROUTER_API_KEY, which the registry drops before the router sees the candidates — exactly as in
+// production, where the client reads its key through the registry's KeyFunc.
 func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 	t.Helper()
 	var cfg entity.AIConfig
@@ -64,7 +68,11 @@ func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 	cfg.Settings = entity.AISettings{ConfigVersion: 1,
 		DefaultChatProviderKey: entity.AIProviderOpenRouter, DefaultImageProviderKey: entity.AIProviderOpenRouter}
 	cfg.BudgetTimezone = "Europe/Warsaw"
-	reg := registry.New(&seedCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}, nil, registry.EnvKeys{OpenRouter: "test-key"})
+	var env registry.EnvKeys
+	if client.Enabled() {
+		env.OpenRouter = "test-key"
+	}
+	reg := registry.New(&seedCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}, nil, env)
 	require.NoError(t, reg.Reload(context.Background()))
 	return router.New(reg, nil, map[string]aiprov.Chatter{entity.AIProviderOpenRouter: client.Transport()},
 		AIRouterDefaults(client), client.CompletionBase())

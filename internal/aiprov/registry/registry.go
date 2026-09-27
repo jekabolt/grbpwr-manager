@@ -461,6 +461,36 @@ func (r *Registry) CandidatesAt(purpose string) ([]Candidate, uint64) {
 	return listed, version
 }
 
+// RouteHeadAt is the purpose's CONFIGURED head — the first route row, as the owner saved it, read
+// BEFORE the key and breaker filtering Candidates applies — with the config_version of the same
+// snapshot. A "" provider is the capability's default provider, and a row whose provider cannot serve
+// the capability (or has no default) is not a head, so the next row is taken. ok=false for an unknown
+// purpose, an empty route and before the first Reload.
+//
+// It exists for NAMING, never for calling: a door that could not call (no key saved, env key unset)
+// still says which slug and which API root it WOULD have used — the knob a person has to turn.
+func (r *Registry) RouteHeadAt(purpose string) (Candidate, uint64, bool) {
+	s := r.snap.Load()
+	if s == nil {
+		return Candidate{}, 0, false
+	}
+	capability := entity.AIPurposeCapability(purpose)
+	if capability == "" {
+		return Candidate{}, s.version, false
+	}
+	for _, c := range s.routes[purpose] {
+		pk := c.ProviderKey
+		if pk == "" {
+			pk = s.defaultProvider(capability)
+		}
+		if pk == "" || !entity.AIProviderServes(pk, capability) {
+			continue
+		}
+		return Candidate{ProviderKey: pk, Model: c.Model, Position: c.Position}, s.version, true
+	}
+	return Candidate{}, s.version, false
+}
+
 // BreakerHeld lists the candidates Candidates dropped for ONE reason only: their breaker is open,
 // inside its window — enabled, keyed, able to serve the purpose, and paused. It exists so a door
 // that finds nothing to call can tell «the provider is paused after repeated failures» from «AI is

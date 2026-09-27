@@ -1399,3 +1399,33 @@ func TestALeasedPurposeIsSizedForTheCap(t *testing.T) {
 	keyless := NewSingle(entity.AIProviderOpenRouter, &keyedChatter{up: false}, "m")
 	require.Equal(t, 2*aiprov.CompletionBudget(0, 8000), keyless.ChainBudget(draft, 8000))
 }
+
+// TestRouteHeadNamesAKeylessConfiguredRoute (FIX-G3) — on the REGISTRY-backed router (the one app.go
+// builds), a provider with no key is dropped before the router sees the candidates; RouteHead still
+// names the configured head (registry.RouteHeadAt) resolved through the defaults, and BaseURL names
+// its transport's root — what the analysis' no-key answer and log report.
+//
+// MUTATION (measured red): RouteHead without the RouteHeadAt fallback (the filtered list only) → "", "".
+func TestRouteHeadNamesAKeylessConfiguredRoute(t *testing.T) {
+	ring := testRing(t)
+	st := &cfgStore{Store: &aiprovtest.Store{}, cfg: config(t, ring, nil)}
+	reg := registry.New(st, ring, registry.EnvKeys{}) // no OPENROUTER_API_KEY, no key saved in the panel
+	require.NoError(t, reg.Reload(context.Background()))
+	r := New(reg, nil, map[string]aiprov.Chatter{
+		entity.AIProviderOpenRouter: &urlChatter{keyedChatter: keyedChatter{up: false}, url: "https://or.example/api/v1"},
+	}, testDefaults, 0)
+
+	require.Empty(t, reg.Candidates(entity.AIPurposeTechCardAnalysis), "precondition: the registry drops the keyless provider")
+	require.False(t, r.Enabled(entity.AIPurposeTechCardAnalysis))
+	require.Empty(t, r.PrimaryModel(entity.AIPurposeTechCardAnalysis))
+
+	p, m := r.RouteHead(entity.AIPurposeTechCardAnalysis)
+	require.Equal(t, entity.AIProviderOpenRouter, p)
+	require.Equal(t, slugAnalysis, m, "the seeded row names no model: the analysis default is the would-be slug")
+	require.Equal(t, "https://or.example/api/v1", r.BaseURL(p))
+
+	off := testDefaults
+	off.Ideas, off.IdeasOff = "", true
+	p, m = New(reg, nil, nil, off, 0).RouteHead(entity.AIPurposePlaygroundIdeas)
+	require.Empty(t, p+m, "the kill switch still names nothing")
+}
