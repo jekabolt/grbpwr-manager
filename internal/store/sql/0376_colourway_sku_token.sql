@@ -1,4 +1,4 @@
--- T45 (27.09) — the SKU colour segment leaves the colour dictionary.
+-- T45 (27.09) — the SKU colour segment leaves the colour dictionary. FIRST PUSH of two (D-69).
 -- Owner's decisions (06-COLOURWAYS-RESEARCH.md §7), items 1, 2 and 4.
 -- ---
 -- Until now product.color_code (FK into the 17-colour dictionary) was at once the colour, the SKU
@@ -6,8 +6,21 @@
 -- From here on:
 --   * product.sku_color_token CHAR(3) is the SKU segment — minted by the server when the colourway
 --     is created, never changed afterwards, unique per style (uniq_product_style_sku_color_token);
---   * product.color_code stays mandatory as the dictionary FAMILY tag (filters, assembly), and two
---     colourways of one style may share a family — which is why uniq_product_style_color goes.
+--   * product.color_code stays mandatory as the dictionary FAMILY tag (filters, assembly).
+-- ---
+-- THIS FILE IS ADDITIVE ONLY. uniq_product_style_color STAYS: dropping it — which is what lets two
+-- colourways of one style share a family — is 0377, a separate migration shipped in a separate,
+-- later push. Between the two pushes a second colourway of one family in a style is refused by that
+-- index (MySQL 1062), and the application answers it with its ordinary «a colourway with this colour
+-- already exists» (FailedPrecondition), never an Internal.
+--
+-- Rollback in that window: the schema stays readable and writable by the previous binary (the
+-- column is NULLABLE, nothing it uses is gone). The DATA is safe under it only while every token
+-- equals its family — true of every pre-T45 row and of every colourway created without a palette.
+-- A colourway created WITH a palette gets a token minted from its name («black and white» → BKW)
+-- already in this window, and an older binary re-derives an unfrozen SKU from color_code (…-BLK):
+-- once such a colourway exists, roll forward, not back. After 0377 a binary rollback past T45 is
+-- never safe (see its header).
 -- ---
 -- STEPS, each re-runnable (MySQL auto-commits DDL, a failed apply re-runs this file from the top):
 --   1. add the column, NULLABLE. An older binary (a rollback) inserts products without naming it,
@@ -16,10 +29,8 @@
 --   2. backfill the token from color_code. The SKUs of existing colourways therefore do not move.
 --      updated_at is assigned to itself so ON UPDATE CURRENT_TIMESTAMP does not stamp every product
 --      as edited today (the storefront uses it for freshness).
---   3. add the unique on (style_id, sku_color_token) BEFORE dropping the old one. Step 2 copies a
---      column that uniq_product_style_color kept unique per style, so this index cannot meet a
---      duplicate; and it can serve the style_id foreign key if nothing else did.
---   4. drop uniq_product_style_color.
+--   3. add the unique on (style_id, sku_color_token). Step 2 copies a column that
+--      uniq_product_style_color keeps unique per style, so this index cannot meet a duplicate.
 -- NULL tokens (rollback rows) do not collide in a MySQL unique index; the application pins them.
 -- No CHECK constraint. PREPARE / EXECUTE / DEALLOCATE one per line (no multiStatements on prod).
 
@@ -45,37 +56,56 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
-SET @t45_has_colour_uniq := (SELECT COUNT(*) FROM information_schema.STATISTICS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color');
-SET @ddl := IF(@t45_has_colour_uniq > 0,
-    'ALTER TABLE product DROP INDEX uniq_product_style_color',
-    'SELECT 1');
-PREPARE stmt FROM @ddl;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
 -- +migrate Down
--- The old unique comes back only when no style holds two colourways of one family — after T45 that
--- is legal data, and a Down must not fail on it. Then the style_id foreign key keeps an index
--- (idx_product_style_id normally serves it), the token unique goes, then the column.
+-- THE REFUSALS COME FIRST, BEFORE ANY DDL (precedent 0273 / 0287 Down). A Down that skipped what it
+-- could not restore and dropped the rest would leave a schema satisfying neither model — the token
+-- gone and the old unique not back. SIGNAL cannot be prepared («This command is not supported in the
+-- prepared statement protocol yet», MySQL 8.0.46), so a refusal is a SELECT of a column whose NAME
+-- is the message: ERROR 1054, deterministic, nothing dropped, and sql-migrate keeps its gorp row.
+-- Identifiers stop at 64 characters, so the text is short and ASCII (a 10-digit count still fits).
+--
+-- Two states the pre-T45 schema cannot hold, each a refusal:
+--   1. a style holding two colourways of one family — uniq_product_style_color cannot come back over
+--      them. 0377 Down refuses the same thing and runs first; this one guards a Down of 0376 alone.
+--   2. a colourway whose SKU token is not its family — a token minted from a name (BKW), or a
+--      legacy colourway whose family moved after T45 (family GRY, token BLK). Dropping the column
+--      loses that identity for good: a re-applied Up backfills the FAMILY over it, and a SKU frozen
+--      with the token would then carry a colour segment no column names. The count is read only when
+--      the column exists, so a re-run after a partial Down refuses for the right reason or not at all.
+-- What to do when one fires: for (1), re-family or delete all but one colourway per style and family;
+-- for (2), decide per colourway — delete the drafts, or accept the loss explicitly
+-- (UPDATE product SET sku_color_token = color_code …) — then run the Down again.
 
 SET @t45_family_dupes := (SELECT COUNT(*) FROM (
-    SELECT style_id FROM product GROUP BY style_id, color_code HAVING COUNT(*) > 1) d);
-SET @t45_has_colour_uniq_down := (SELECT COUNT(*) FROM information_schema.STATISTICS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color');
-SET @ddl := IF(@t45_has_colour_uniq_down = 0 AND @t45_family_dupes = 0,
-    'ALTER TABLE product ADD CONSTRAINT uniq_product_style_color UNIQUE (style_id, color_code)',
-    'SELECT 1');
+    SELECT 1 FROM product GROUP BY style_id, color_code HAVING COUNT(*) > 1) d);
+SET @ddl := IF(@t45_family_dupes = 0, 'SELECT 1',
+    CONCAT('SELECT `0376 Down blocked: ', @t45_family_dupes, ' families are shared within a style`'));
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
-SET @t45_style_idx := (SELECT COUNT(*) FROM information_schema.STATISTICS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
-      AND INDEX_NAME <> 'uniq_product_style_sku_color_token'
-      AND SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'style_id');
-SET @ddl := IF(@t45_style_idx = 0,
-    'ALTER TABLE product ADD INDEX idx_product_style_id (style_id)',
+SET @t45_has_token_down := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND COLUMN_NAME = 'sku_color_token');
+SET @ddl := IF(@t45_has_token_down = 0, 'SELECT 0 INTO @t45_minted',
+    'SELECT COUNT(*) INTO @t45_minted FROM product WHERE sku_color_token IS NOT NULL AND sku_color_token <> color_code');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl := IF(@t45_minted = 0, 'SELECT 1',
+    CONCAT('SELECT `0376 Down blocked: ', @t45_minted, ' SKU tokens differ from the family`'));
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- Then the pre-T45 shape, in the order that never leaves the style_id foreign key without an index
+-- (idx_product_style_id, 0138, serves it throughout): the family unique if it is absent (0377 Down
+-- normally put it back already; refusal 1 proved it fits), the token unique, the column.
+
+SET @t45_has_colour_uniq_down := (SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color');
+SET @ddl := IF(@t45_has_colour_uniq_down = 0,
+    'ALTER TABLE product ADD CONSTRAINT uniq_product_style_color UNIQUE (style_id, color_code)',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -90,8 +120,6 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
-SET @t45_has_token_down := (SELECT COUNT(*) FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND COLUMN_NAME = 'sku_color_token');
 SET @ddl := IF(@t45_has_token_down > 0,
     'ALTER TABLE product DROP COLUMN sku_color_token',
     'SELECT 1');
