@@ -441,7 +441,8 @@ func initSubStores(ms *MYSQLStore) {
 	ms.sampleStore = sample.New(base, ms.Tx)
 	ms.patternObjectStore = patternobject.New(base)
 	ms.workshopStore = workshop.New(base, ms.Tx)
-	// readTx: GetConfig reads the whole AI config in one REPEATABLE READ snapshot (see store/ai).
+	// readTx: GetConfig reads the whole AI config, and SpendReport its four reads, in one REPEATABLE
+	// READ snapshot each (see store/ai).
 	ms.aiStore = ai.New(base, ms.Tx, ms.readTx)
 	// readTx is a SECOND argument here and not a duplicate of Tx: GetBand runs its page and its
 	// aggregates inside one REPEATABLE READ snapshot, and a counter taken outside that snapshot

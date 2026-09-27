@@ -5,9 +5,11 @@
 // time: every write runs in one transaction that first moves ai_settings.config_version, so all
 // config writers serialise on that one row and the registry learns about the write by polling one
 // number; its one read (GetConfig) runs in one read-only snapshot, so it never returns a mix of two
-// versions. The LEDGER half is written on every provider call: single autocommit statements, never a
-// SERIALIZABLE transaction (whose range locks would make a report block the calls it is reporting on),
-// and no validation beyond what the columns cannot hold at all: a refused row is money unrecorded.
+// versions. The LEDGER half is written on every provider call: single autocommit statements, never
+// the SERIALIZABLE write runner (whose range locks would make a report block the calls it is reporting
+// on), and no validation beyond what the columns cannot hold at all: a refused row is money
+// unrecorded. Its one report (SpendReport) reads in the same read-only snapshot GetConfig uses, which
+// takes no locks at all.
 //
 // Every statement goes through storeutil.MakeQuery, the named-parameter builder the storeutil helpers
 // use, and reaches the handle through ExecContext / GetContext / SelectContext only — the three
@@ -45,8 +47,9 @@ type Store struct {
 var _ dependency.AI = (*Store)(nil)
 
 // New creates a new AI providers store. readTxFunc is separate and load-bearing, as in store/design:
-// GetConfig reads its five tables inside it (store.readTx — REPEATABLE READ, read-only), one
-// snapshot, where the SERIALIZABLE txFunc would take a shared lock on every config row it reads.
+// GetConfig reads its five tables and SpendReport its four reads inside it (store.readTx — REPEATABLE
+// READ, read-only), one snapshot each, where the SERIALIZABLE txFunc would take a shared lock on every
+// row it reads — on the ledger, range locks that would hold up every BeginCall of the period.
 func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
 }
@@ -1055,8 +1058,14 @@ type theirSpendRow struct {
 // SpendReport sums the ledger over the inclusive day_local range, beside the providers' own numbers,
 // and names the timezone those days were counted in.
 //
-// Plain reads, deliberately outside any transaction: the store's transactions are SERIALIZABLE, whose
-// range locks on ai_usage_event would hold up every BeginCall landing in the reported period.
+// ONE SNAPSHOT (Codex B #5). The four reads run inside readTxFunc (store.readTx: REPEATABLE READ,
+// read-only — GetConfig's runner), where InnoDB answers every read from the one snapshot the first
+// read takes. As four autocommit reads, a call finishing between the provider totals and the actor
+// rows made `calls` and `total_usd` disagree with the sum of by_actor in one response, and a
+// reconciliation write could land on one side only. The snapshot's reads are consistent NON-LOCKING
+// reads, so the report still holds up no BeginCall; the SERIALIZABLE txFunc, whose shared range locks
+// on ai_usage_event would, is never used here. Inside a transaction (NewInTx) the reads run in the
+// enclosing one.
 func (s *Store) SpendReport(ctx context.Context, fromDay, toDay string) (*entity.AISpendReport, error) {
 	from, err := time.Parse(dayLayout, fromDay)
 	if err != nil {
@@ -1071,19 +1080,27 @@ func (s *Store) SpendReport(ctx context.Context, fromDay, toDay string) (*entity
 	}
 	params := map[string]any{"from_day": fromDay, "to_day": toDay}
 
-	var ours []ourSpendRow
-	if err := selectNamed(ctx, s.DB, &ours, spendByProvider, params); err != nil {
-		return nil, fmt.Errorf("failed to report ai spend by provider: %w", err)
-	}
-	var theirs []theirSpendRow
-	if err := selectNamed(ctx, s.DB, &theirs, spendTheirByProvider, params); err != nil {
-		return nil, fmt.Errorf("failed to report ai spend by the providers' own numbers: %w", err)
-	}
-	var byActor []entity.AISpendByActor
-	if err := selectNamed(ctx, s.DB, &byActor, spendByActor, params); err != nil {
-		return nil, fmt.Errorf("failed to report ai spend by actor: %w", err)
-	}
-	tz, err := loadBudgetTimezone(ctx, s.DB)
+	var (
+		ours    []ourSpendRow
+		theirs  []theirSpendRow
+		byActor []entity.AISpendByActor
+		tz      string
+	)
+	err = s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		if err := selectNamed(ctx, db, &ours, spendByProvider, params); err != nil {
+			return fmt.Errorf("failed to report ai spend by provider: %w", err)
+		}
+		if err := selectNamed(ctx, db, &theirs, spendTheirByProvider, params); err != nil {
+			return fmt.Errorf("failed to report ai spend by the providers' own numbers: %w", err)
+		}
+		if err := selectNamed(ctx, db, &byActor, spendByActor, params); err != nil {
+			return fmt.Errorf("failed to report ai spend by actor: %w", err)
+		}
+		var err error
+		tz, err = loadBudgetTimezone(ctx, db)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}

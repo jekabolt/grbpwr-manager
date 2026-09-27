@@ -1468,6 +1468,105 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 	}
 }
 
+// TestAIStoreShapeSpendReportIsOneSnapshot (Codex B #5) — the report's four reads reach the handle of
+// ONE read-only transaction, and the report returned is that handle's; on a transactional repository
+// they reach the enclosing transaction and begin nothing. The plain handle and the write runner each
+// get a fake of their own, which fails the test if touched.
+//
+// MUTATIONS IT CATCHES: one read through s.DB — an autocommit read outside the snapshot, so a call
+// finishing between two reads makes one response disagree with itself (calls vs the sum of by_actor);
+// the report run in txFunc (SERIALIZABLE: shared range locks on the ledger, holding up every BeginCall
+// of the period); a read error swallowed inside the transaction.
+func TestAIStoreShapeSpendReportIsOneSnapshot(t *testing.T) {
+	outside := func(dest any, q string, _ []any) error {
+		t.Errorf("a SpendReport read reached a handle outside the read snapshot: %q", firstLine(q))
+		return nil
+	}
+	plain := &recDB{onGet: outside, onSelect: outside}
+	var failActors error
+	snap := &recDB{
+		onGet: func(dest any, _ string, _ []any) error {
+			if d, ok := dest.(*string); ok {
+				*d = "Europe/Riga"
+			}
+			return nil
+		},
+		onSelect: func(dest any, _ string, _ []any) error {
+			switch d := dest.(type) {
+			case *[]ourSpendRow:
+				*d = []ourSpendRow{{ProviderKey: "fal", OurUSD: decimal.NewNullDecimal(decimal.RequireFromString("2")), Calls: 3}}
+			case *[]theirSpendRow:
+				*d = []theirSpendRow{{ProviderKey: "fal", TheirUSD: decimal.NewNullDecimal(decimal.RequireFromString("2.1"))}}
+			case *[]entity.AISpendByActor:
+				if failActors != nil {
+					return failActors
+				}
+				*d = []entity.AISpendByActor{{Actor: "jeka", ActorAdminID: ptr(7), ProviderKey: "fal", Calls: 3}}
+			}
+			return nil
+		},
+	}
+	var writeTxs, readTxs int
+	var readTxErr error
+	s := New(storeutil.Base{DB: plain, Now: func() time.Time { return fixedNow }},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			writeTxs++
+			return f(ctx, recRepo{db: plain})
+		},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			readTxs++
+			readTxErr = f(ctx, recRepo{db: snap})
+			return readTxErr
+		})
+
+	rep, err := s.SpendReport(context.Background(), "2026-09-01", "2026-09-27")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readTxs != 1 || writeTxs != 0 || len(plain.calls) != 0 {
+		t.Fatalf("read transactions %d, write transactions %d, plain-handle calls %d; want 1, 0, 0",
+			readTxs, writeTxs, len(plain.calls))
+	}
+	want := []string{"spendByProvider", "spendTheirByProvider", "spendByActor", "selectBudgetTimezone"}
+	if got := sequence(t, snap); !slices.Equal(got, want) {
+		t.Fatalf("inside the snapshot SpendReport read %v, want %v", got, want)
+	}
+	if rep.Calls != 3 || len(rep.ByProvider) != 1 || !rep.ByProvider[0].TheirUSD.Valid || len(rep.ByActor) != 1 ||
+		rep.ByActor[0].Actor != "jeka" || rep.Timezone != "Europe/Riga" {
+		t.Fatalf("SpendReport returned %+v, want the snapshot's rows", rep)
+	}
+
+	failActors = errors.New("lost connection")
+	rep, err = s.SpendReport(context.Background(), "2026-09-01", "2026-09-27")
+	if !errors.Is(err, failActors) || rep != nil {
+		t.Fatalf("a failed read returned (%v, %v); want (nil, the error)", rep, err)
+	}
+	if !errors.Is(readTxErr, failActors) {
+		t.Fatalf("the read transaction ended with %v; the error must reach it so it rolls back", readTxErr)
+	}
+
+	// On a transactional repository: the enclosing transaction's handle, and no transaction begun.
+	failActors = nil
+	enclosing := &recDB{onGet: snap.onGet, onSelect: snap.onSelect}
+	other := &recDB{onGet: outside, onSelect: outside}
+	var begins int
+	inTx := NewInTx(storeutil.Base{DB: enclosing, Now: func() time.Time { return fixedNow }},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			begins++
+			return f(ctx, recRepo{db: other})
+		},
+		recRepo{db: enclosing})
+	if _, err := inTx.SpendReport(context.Background(), "2026-09-01", "2026-09-27"); err != nil {
+		t.Fatal(err)
+	}
+	if begins != 0 || len(other.calls) != 0 {
+		t.Fatalf("in a transaction SpendReport began %d transactions and read %d times elsewhere; want 0 and 0", begins, len(other.calls))
+	}
+	if got := sequence(t, enclosing); !slices.Equal(got, want) {
+		t.Fatalf("inside the enclosing transaction SpendReport read %v, want %v", got, want)
+	}
+}
+
 // TestAIStoreShapeCostDailyDefaultsAndRefusals.
 //
 // MUTATION IT CATCHES: an empty currency reaching CHAR(3) NOT NULL as ” (MySQL stores it; every
