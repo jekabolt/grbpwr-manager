@@ -51,6 +51,10 @@ func (p threedProvider) execute(ctx context.Context, job Job, opts threedOptions
 	if len(refs) == 0 {
 		return nil, fmt.Errorf("%w: a turntable needs at least the front view", meshy.ErrImageCount)
 	}
+	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07). The model is left empty: this
+	// route names none, and Meshy builds with its own default — the row says exactly what was asked.
+	h := job.beginCall(ctx, entity.AIProviderMeshy, "", 1)
+
 	// ORDER IS MEANING: the provider reads image_urls[0] as the primary frontal reference, which
 	// is why buildJob sorts the bench plates front, back, side_l, side_r before anything else.
 	//
@@ -80,12 +84,14 @@ func (p threedProvider) execute(ctx context.Context, job Job, opts threedOptions
 		Quality: opts.Quality,
 	})
 	if err != nil {
+		job.finishCall(ctx, h, meshySubmitEnd(err))
 		return nil, err
 	}
+	job.finishCall(ctx, h, acceptedEnd(id))
 	// No price yet, and NULL is the schema's word for that. Meshy reports consumed_credits on the
 	// finished task, so the charge is recorded by the collect — writing a zero here would say the
 	// model was free.
-	return &Outcome{RequestID: id, Pending: true}, nil
+	return &Outcome{RequestID: id, Pending: true, Provider: entity.AIProviderMeshy}, nil
 }
 
 // SentPrompt is what this route actually puts in front of the provider — see PromptCarrier.
@@ -135,21 +141,31 @@ func (p threedProvider) Collect(ctx context.Context, job Job, requestID string) 
 				// settle() expects: the price is written first, from the provider's own answer, and
 				// the run then fails with no artifacts. RequestID rides along so the ledger line
 				// names the task the money went to.
-				return &Outcome{
+				out := &Outcome{
 					RequestID: requestID,
 					Price:     decimal.NullDecimal{Decimal: usd, Valid: true},
-				}, err
+					Provider:  entity.AIProviderMeshy,
+				}
+				job.recordCollect(ctx, out, err, unitsOf(float64(credits)), "credit", true)
+				return out, err
 			}
+			job.recordCollect(ctx, nil, err, unitsOf(float64(credits)), "credit", true)
+			return nil, err
 		}
+		// Still building (the row stays `accepted`), or FAILED — which Meshy refunds (`failed`).
+		job.recordCollect(ctx, nil, err, nil, "", false)
 		return nil, err
 	}
 
-	out := &Outcome{RequestID: res.TaskID}
+	out := &Outcome{RequestID: res.TaskID, Provider: entity.AIProviderMeshy}
 	if usd := p.c.CostUSD(res.ConsumedCredits); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	} else {
 		out.Price = decimal.NullDecimal{}
 	}
+	// DELIVERED: the submit's `accepted` row is priced with the number the attempt books (B-07):
+	// consumed_credits × MESHY_CREDIT_USD, NULL when Meshy named no credits.
+	job.recordCollect(ctx, out, nil, unitsOf(float64(res.ConsumedCredits)), "credit", false)
 	out.Artifacts = append(out.Artifacts, Artifact{
 		Bytes:       model.Bytes(),
 		ContentType: ContentTypeGLB,

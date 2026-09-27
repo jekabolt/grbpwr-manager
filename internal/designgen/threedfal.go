@@ -105,14 +105,20 @@ func (p falThreedProvider) execute(ctx context.Context, job Job, opts threedOpti
 			slog.Int("run_id", job.RunID), slog.String("model", p.c.Model()),
 			slog.Int("steer_runes", len([]rune(job.SurfaceSteer))))
 	}
+	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07): `accepted` with the locator on
+	// success, the collect that delivers prices THIS row; ErrSubmitUnconfirmed is `unknown`.
+	h := job.beginCall(ctx, entity.AIProviderFal, model, 1)
 	id, err := p.c.Submit(ctx, req)
 	if err != nil {
+		job.finishCall(ctx, h, falSubmitEnd(err, decimal.NullDecimal{}))
 		return nil, err
 	}
+	locator := falLocator(model, id)
+	job.finishCall(ctx, h, acceptedEnd(locator))
 	// No price yet, and NULL is the schema's word for that. fal reports what a request billed on
 	// the RESULT fetch, so the charge is recorded by the collect — writing a zero here would say
 	// the model was free.
-	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
+	return &Outcome{RequestID: locator, Model: model, Pending: true, Provider: entity.AIProviderFal}, nil
 }
 
 // falViews turns the run's plates into the provider's NAMED slots.
@@ -238,13 +244,20 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		if units, ok := fal.Charge(err); ok {
 			model := fal.ChargedModel(err)
 			if usd := p.c.CostUSDForQuality(model, units, threedJobOptions(job).Quality); usd.IsPositive() {
-				return &Outcome{
+				out := &Outcome{
 					RequestID: requestID,
 					Model:     model,
 					Price:     decimal.NullDecimal{Decimal: usd, Valid: true},
-				}, err
+					Provider:  entity.AIProviderFal,
+				}
+				job.recordCollect(ctx, out, err, chargedUnits(err), "unit", true)
+				return out, err
 			}
+			job.recordCollect(ctx, &Outcome{Model: model}, err, chargedUnits(err), "unit", true)
+			return nil, err
 		}
+		// Still building (the row stays `accepted`), or finished without a word about money.
+		job.recordCollect(ctx, nil, err, nil, "", false)
 		return nil, err
 	}
 
@@ -256,7 +269,7 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	// ends up showing a price_actual that disagrees with its own price_estimate for a reason nobody
 	// can reconstruct from the row. What a build was worth is a property of the request, not of the
 	// configuration that outlived it.
-	out := &Outcome{RequestID: requestID, Model: res.Model}
+	out := &Outcome{RequestID: requestID, Model: res.Model, Provider: entity.AIProviderFal}
 	// ⚠ AND AT THE BUILD'S OWN TIER. Without a tariff the charge is fal's published per-build price,
 	// and a detailed build («ultra mode») is $1.40, not $1.20: booking it at the standard price would
 	// understate real spend by the surcharge on every detailed run. The tier comes off the frozen
@@ -267,6 +280,9 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		out.Price = decimal.NullDecimal{}
 	}
 	logThreedCeilingBreach(ctx, p.c, job, requestID, res.BillableUnits, out.Price)
+	// DELIVERED: the submit's `accepted` row is priced with the number the attempt books (B-07). The
+	// unit count is fal's own; an ASSUMED unit is not written as one (the price still is — see below).
+	job.recordCollect(ctx, out, nil, reportedUnits(res.BillableUnits, res.UnitsAssumed), "unit", false)
 	if res.UnitsAssumed {
 		// ⚠ SAID OUT LOUD, EVERY TIME. The ledger gets a number either way — a paid build recorded
 		// as free is the worse lie — but «the provider named this» and «we assumed one unit» are

@@ -37,6 +37,10 @@ import (
 type Sweeper struct {
 	store    reserveSweeperStore
 	interval time.Duration
+	// ledger — the AI ledger's stale-row sweep (B-07), on this same tick: while generation is off
+	// this is the only ticker that runs, and rows a dying worker left `dispatching` must still
+	// become `unknown`. It spends nothing either. nil = no ledger.
+	ledger ledgerSweeper
 
 	ctx     context.Context
 	stop    context.CancelFunc
@@ -65,11 +69,18 @@ const sweeperInterval = time.Minute
 //
 // Провайдеров он не принимает НЕ ПО ЗАБЫВЧИВОСТИ: конструктор без них — это и есть доказательство,
 // что орган не может позвать модель.
-func NewSweeper(repo dependency.Repository) (*Sweeper, error) {
+//
+// WithLedger добавляет на тот же тик подметание журнала AI: строки `dispatching` старше 15 минут
+// становятся `unknown` (B-07). Это тоже не трата — UPDATE по таблице учёта.
+func NewSweeper(repo dependency.Repository, opts ...Option) (*Sweeper, error) {
 	if repo == nil {
 		return nil, fmt.Errorf("designgen: подметальщику резервов нечего подметать без репозитория")
 	}
-	return newSweeper(repo.Design(), sweeperInterval), nil
+	s := newSweeper(repo.Design(), sweeperInterval)
+	if l := applyOptions(opts).ledger; l != nil {
+		s.ledger = l
+	}
+	return s, nil
 }
 
 // newSweeper — шов, которым пользуются пробы: тот же орган над поддельным стором и с интервалом,
@@ -122,6 +133,10 @@ func (s *Sweeper) run(ctx context.Context) {
 }
 
 func (s *Sweeper) sweepOnce(ctx context.Context) {
+	// The ledger half first and on its own: its failure is logged inside and must neither skip the
+	// reserve sweep below nor mark this organ unhealthy — the reserve is what it is responsible for.
+	sweepLedger(ctx, s.ledger, ledgerSweepAge, sweeperName)
+
 	n, err := s.store.ReviveExpiredRuns(ctx)
 	if err != nil {
 		// Ошибка подметания не гасит цикл: она почти всегда про базу, а следующая минута — новая

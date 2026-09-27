@@ -51,23 +51,30 @@ func (p vectorProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 		return nil, fmt.Errorf("%w: a vector redraw needs the approved raster it redraws", recraft.ErrBadRequest)
 	}
 
+	// ONE PAID CALL, ONE LEDGER ROW (B-07), booked to the account that pays: OpenRouter on the
+	// default route, Recraft only on RECRAFT_ROUTE=direct — the route name above stays the ROUTE.
+	route := p.c.Route()
+	h := job.beginCall(ctx, recraftBillingKey(route), p.c.Model(recraft.TierVector), 1)
 	res, err := p.c.ImageToImage(ctx, recraft.ImageToImageRequest{
 		Tier:   recraft.TierVector,
 		Prompt: job.Prompt,
 		Image:  recraft.ImageInput{URL: job.References[0]},
 	})
+	job.finishCall(ctx, h, vectorCallEnd(route, res, err))
 	if err != nil {
 		// «Оплачено, но не доехало» has a carrier here: the transport attaches what a failed call
 		// cost when it knew, and Charge reads it back. ok=false is NOT a charge of zero — it means
 		// nobody could say, and the ledger has to keep the difference.
 		if usd, _, ok := recraft.Charge(err); ok && usd > 0 {
-			return &Outcome{Price: decimal.NullDecimal{Decimal: decimal.NewFromFloat(usd), Valid: true}}, err
+			return &Outcome{Price: decimal.NullDecimal{Decimal: decimal.NewFromFloat(usd), Valid: true},
+				Provider: recraftBillingKey(route)}, err
 		}
 		return nil, err
 	}
 
 	out := &Outcome{
-		Model: res.Model,
+		Provider: recraftBillingKey(route),
+		Model:    res.Model,
 		Artifacts: []Artifact{{
 			Bytes:       res.SVG,
 			ContentType: res.ContentType,

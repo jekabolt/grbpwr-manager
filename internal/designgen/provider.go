@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 )
@@ -161,6 +162,12 @@ type Job struct {
 	// travels HERE and never in References: it is not a picture of the run, it is where to paint.
 	Inpaint     *InpaintPlan
 	InpaintMask string
+
+	// Recorder books this job's PHYSICAL provider calls into the AI ledger (B-07): one row per
+	// transport invocation, opened before it (see ledger.go). Set by the worker after StartAttempt,
+	// scoped to that attempt — for a collect, to the SUBMIT's attempt, whose row the collect prices.
+	// nil records nothing: every route behaves exactly as it did before the ledger existed.
+	Recorder CallRecorder
 }
 
 // Artifact is one file a provider produced, already in memory and not yet stored.
@@ -196,6 +203,12 @@ type Outcome struct {
 	// closes the attempt as `accepted` with RequestID, then collects — and a collect is free, so a
 	// worker that dies between the two costs nothing to resume.
 	Pending bool
+	// Provider is the BILLING transport of this pass (an entity.AIProvider* key: the account that
+	// pays — recraft through OpenRouter is "openrouter"), and Usage the tokens its calls reported,
+	// summed; nil when none did. Both are PROVENANCE for the ledger's side of the pass, set by the
+	// route: recordAttempt does not read them, and the attempt row stays the money truth of the run.
+	Provider string
+	Usage    *aiprov.TokenUsage
 }
 
 // Provider is one paid route out of this process.

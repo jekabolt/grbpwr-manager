@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/shopspring/decimal"
@@ -142,18 +143,24 @@ func (p falCutoutProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	if err := falLocatorFits(model); err != nil {
 		return nil, err
 	}
+	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07) — see threedfal.go.
+	h := job.beginCall(ctx, entity.AIProviderFal, model, 1)
 	id, err := p.c.SubmitCutout(ctx, src)
 	if err != nil {
 		// ⚠ И ЗДЕСЬ ТОЖЕ БЫВАЮТ ДЕНЬГИ. Сабмит, принятый и не назвавший id, — оплачен: транспорт
 		// вешает на такой отказ то, что он списал, когда знал, и без этого носителя трата исчезает.
 		if out := chargedCutoutOutcome(p.c, err); out != nil {
+			job.finishCall(ctx, h, falSubmitEnd(err, out.Price))
 			return out, err
 		}
+		job.finishCall(ctx, h, falSubmitEnd(err, decimal.NullDecimal{}))
 		return nil, err
 	}
 	// The locator (G-03, Codex 2): the slug this request was queued under travels with its id, so a
 	// resume polls THAT namespace whatever FAL_MODEL_CUTOUT says by then.
-	return &Outcome{RequestID: falLocator(model, id), Model: model, Pending: true}, nil
+	locator := falLocator(model, id)
+	job.finishCall(ctx, h, acceptedEnd(locator))
+	return &Outcome{RequestID: locator, Model: model, Pending: true, Provider: entity.AIProviderFal}, nil
 }
 
 // Collect is the FREE half: the wait, the download and the one question this route exists to
@@ -176,15 +183,22 @@ func (p falCutoutProvider) Collect(ctx context.Context, job Job, requestID strin
 		// траты, и никто не может сказать, во что обошлись провалы.
 		if out := chargedCutoutOutcome(p.c, err); out != nil {
 			out.RequestID = requestID // the locator, so the collect row keys the same charge
+			job.recordCollect(ctx, out, err, chargedUnits(err), "unit", true)
 			return out, err
 		}
+		// A charge nobody could price is still a charge; otherwise still running, or failed for good.
+		_, charged := fal.Charge(err)
+		job.recordCollect(ctx, nil, err, chargedUnits(err), "unit", charged)
 		return nil, err
 	}
 
-	out := &Outcome{RequestID: requestID, Model: res.Model}
+	out := &Outcome{RequestID: requestID, Model: res.Model, Provider: entity.AIProviderFal}
 	if usd := p.c.CostCutoutUSD(res.BillableUnits); usd.IsPositive() {
 		out.Price = decimal.NullDecimal{Decimal: usd, Valid: true}
 	}
+	// DELIVERED — priced BEFORE the alpha verdict below: a cut-out with nothing cut out is still a
+	// call the provider answered and billed (B-07); the complaint is the attempt's, not the ledger's.
+	job.recordCollect(ctx, out, nil, reportedUnits(res.BillableUnits, res.UnitsAssumed), "unit", false)
 	if res.UnitsAssumed {
 		// ⚠ SAID OUT LOUD, EVERY TIME — same rule as the 3D route. The ledger gets a number either
 		// way, because a paid cut-out recorded as free is the worse lie; but «the provider named

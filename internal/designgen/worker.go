@@ -47,6 +47,13 @@ type Worker struct {
 	// now is the pickup guard's clock (submitSettleGrace); nil = time.Now. Tests set it.
 	now func() time.Time
 
+	// ledger books every physical provider call (B-07, ledger.go); nil = no ledger, and then not
+	// one line of a pass differs from before it existed. Set by New (WithLedger) — newWorker, the
+	// tests' seam, keeps its signature, and a test that wants the ledger sets the field. The tick
+	// also sweeps its stale `dispatching` rows, at most once per ledgerSweepEvery (ledgerSweptAt).
+	ledger        callLedger
+	ledgerSweptAt time.Time
+
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
@@ -58,7 +65,9 @@ type Worker struct {
 // The caller is expected to have checked Config.Enabled first — see app.go, where a disabled
 // feature means the worker is never constructed at all. Start refuses a second time anyway, on the
 // principle that the safe failure mode for something that spends money is "does not run".
-func New(c *Config, repo dependency.Repository, files dependency.FileStore, providers Providers) (*Worker, error) {
+//
+// Options: WithLedger books every physical provider call into the AI ledger (B-07).
+func New(c *Config, repo dependency.Repository, files dependency.FileStore, providers Providers, opts ...Option) (*Worker, error) {
 	if c == nil {
 		d := DefaultConfig()
 		c = &d
@@ -74,6 +83,7 @@ func New(c *Config, repo dependency.Repository, files dependency.FileStore, prov
 	// ТОТ ЖЕ FileStore, ЧТО У ПРИЁМНИКА, И ЭТО НЕ ВТОРАЯ ЗАВИСИМОСТЬ. Приёмник им ПИШЕТ готовые
 	// картинки, производные плейграунда — ЧИТАЮТ исходные; один бакет, два глагола.
 	w.objects = files
+	w.ledger = applyOptions(opts).ledger
 	return w, nil
 }
 
@@ -169,6 +179,11 @@ func workerBackoff(failures int) time.Duration {
 // очереди воскресить строку, чей воркер жив и прямо сейчас за неё платит.
 func (w *Worker) runOnce(ctx context.Context) bool {
 	defer saferun.Recover(ctx, workerName)
+
+	// The AI ledger's stale `dispatching` rows (B-07). FIRST, so a tick that backs off below still
+	// swept; its failure is logged inside and never fails the tick — bookkeeping is not a reason to
+	// stop generating. At most once per ledgerSweepEvery; a no-op without a ledger.
+	w.maybeSweepLedger(ctx)
 
 	qctx, qcancel := context.WithTimeout(ctx, queueTimeout)
 	// Leases die with the workers that held them — a redeploy in the middle of a generation is the
