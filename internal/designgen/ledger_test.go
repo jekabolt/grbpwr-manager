@@ -1076,8 +1076,13 @@ var colorOpaque = color.NRGBA{R: 1, G: 2, B: 3, A: 255}
 // status GET, a request id the queue forgot) is `unknown`, never `failed`; only Meshy's FAILED task
 // (credits returned) is `failed`; a job still running writes nothing and the row stays `accepted`.
 //
-// MUTATION (measured red→green): collectEnd mapping through classify(err).State → the 401 row reads
-// `failed` (classify's word for the ATTEMPT, which paid nothing) and drops out of «unpriced».
+// B-14b (REVIEW-FIXD P2 #2): the refunded row carries a KNOWN zero — cost 0, source `provider` — so the
+// spend report does not count a refund as an unknown liability; every other terminal row stays NULL
+// (`none`), because nobody said what it cost.
+//
+// MUTATIONS (measured red→green): collectEnd mapping through classify(err).State → the 401 row reads
+// `failed` (classify's word for the ATTEMPT, which paid nothing) and drops out of «unpriced»; the
+// refund's known zero removed (the row left NULL) → the Meshy row fails the known-zero assertions.
 func TestATerminalCollectIsUNKNOWN_UNLESS_THE_PROVIDER_REFUNDED(t *testing.T) {
 	_, write := collectEnd(nil, fal.ErrNotReady, nil, "", false)
 	require.False(t, write, "still running: the next collect decides")
@@ -1085,24 +1090,32 @@ func TestATerminalCollectIsUNKNOWN_UNLESS_THE_PROVIDER_REFUNDED(t *testing.T) {
 	require.False(t, write)
 
 	for _, c := range []struct {
-		name string
-		err  error
-		want string
-		http *int
+		name     string
+		err      error
+		want     string
+		http     *int
+		refunded bool // the provider's own word: the credits are back, so the cost is a KNOWN 0
 	}{
 		// B-14: as fal's callJSON now raises them — a lookup's CallError, never engaged, the status a field.
 		{"fal rejects the key on the status lookup", &aiprov.CallError{Provider: entity.AIProviderFal, Code: aiprov.CodeKeyRejected,
-			HTTPStatus: 401, Err: fmt.Errorf("%w (HTTP 401): nope", fal.ErrUnauthorized)}, entity.AICallUnknown, intp(401)},
+			HTTPStatus: 401, Err: fmt.Errorf("%w (HTTP 401): nope", fal.ErrUnauthorized)}, entity.AICallUnknown, intp(401), false},
 		{"fal forgot the request", &aiprov.CallError{Provider: entity.AIProviderFal, Code: aiprov.CodeModelUnknown,
-			HTTPStatus: 404, Err: fmt.Errorf("%w (HTTP 404): gone", fal.ErrRequestNotFound)}, entity.AICallUnknown, intp(404)},
-		{"fal failed the task (it may have billed)", fal.ErrTaskFailed, entity.AICallUnknown, nil},
-		{"Meshy failed the task (Meshy refunds)", meshy.ErrTaskFailed, entity.AICallFailed, nil},
+			HTTPStatus: 404, Err: fmt.Errorf("%w (HTTP 404): gone", fal.ErrRequestNotFound)}, entity.AICallUnknown, intp(404), false},
+		{"fal failed the task (it may have billed)", fal.ErrTaskFailed, entity.AICallUnknown, nil, false},
+		{"Meshy failed the task (Meshy refunds)", meshy.ErrTaskFailed, entity.AICallFailed, nil, true},
 	} {
 		end, write := collectEnd(nil, c.err, nil, "", false)
 		require.True(t, write, c.name)
 		require.Equal(t, c.want, end.Status, c.name)
 		require.Equal(t, c.http, end.HTTPStatus, c.name)
-		require.False(t, end.CostUSD.Valid, "%s: no number is invented", c.name)
+		if c.refunded {
+			require.True(t, end.CostUSD.Valid, "%s: a refund is a KNOWN zero, not an unknown liability", c.name)
+			require.True(t, end.CostUSD.Decimal.IsZero(), c.name)
+			require.Equal(t, entity.AICostProvider, end.CostSource, "%s: the provider's own fact", c.name)
+		} else {
+			require.False(t, end.CostUSD.Valid, "%s: no number is invented", c.name)
+			require.Equal(t, entity.AICostNone, end.CostSource, c.name)
+		}
 		require.Equal(t, classify(c.err).Code, end.ErrorCode, c.name)
 	}
 }

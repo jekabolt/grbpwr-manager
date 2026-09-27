@@ -549,7 +549,14 @@ func meshySubmitEnd(err error) entity.AICallEnd {
 //   - failed WITH a charge               → charged_failed, priced;
 //   - still running / a transient lookup → nothing: the row stays `accepted`, the next collect decides;
 //   - failed for good, no charge         → `unknown`, with ONE exception: Meshy's FAILED task, which
-//     Meshy refunds (`failed`).
+//     Meshy refunds (`failed`, a KNOWN zero — see below).
+//
+// ⚠ A REFUND IS A PRICE, AND IT IS WRITTEN AS ONE (REVIEW-FIXD P2 #2). The spend report counts every
+// non-free row whose cost is NULL as an unknown liability — «money possibly gone» — so a refunded task
+// booked with a NULL cost would read as possible spend for ever. The refund is the provider's own
+// statement (meshy.ErrTaskFailed: «Meshy refunds the credits of a failed task»), so the row carries
+// cost 0, source `provider`. It is the ONLY outcome treated as refunded: fal documents no refund for a
+// job it ended (fal.ErrTaskFailed stays `unknown`), and a known zero is never inferred from silence.
 //
 // ⚠ NOT classify()'s attempt state, and the difference is money. The submit was ACCEPTED: the provider
 // took the job and bills it when it finishes, whether or not we ever look. A terminal lookup failure
@@ -577,6 +584,9 @@ func collectEnd(out *Outcome, err error, units *decimal.Decimal, unit string, ch
 		return entity.AICallEnd{}, false
 	case errors.Is(err, meshy.ErrTaskFailed):
 		end.Status = entity.AICallFailed
+		if !end.CostUSD.Valid {
+			end.CostUSD, end.CostSource = decimal.NewNullDecimal(decimal.Zero), entity.AICostProvider
+		}
 	default:
 		end.Status = entity.AICallUnknown
 	}
