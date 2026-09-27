@@ -86,7 +86,7 @@ type routedImageProvider struct {
 	envDefault string
 
 	warnMu sync.Mutex
-	warned map[string]uint64 // provider key → the config version its missing transport was warned at
+	warned map[string]uint64 // provider key → the HIGHEST config version its missing transport was warned at
 }
 
 // NewRoutedImageProvider is the image slot over the registry's image.generate route. transports maps a
@@ -139,10 +139,14 @@ func (p *routedImageProvider) candidates() []routeCandidate {
 }
 
 // warnNoTransport — once per provider per config version, as the router warns (router.warnNoTransport).
+//
+// THE MEMORY IS MONOTONIC, as the router's is (FIX-G4): passes and door checks read snapshots
+// concurrently, so versions arrive out of order — a read of v1 finishing after one of v2 warned must
+// neither warn again nor pull the memory back to v1 (the next v2 read would then warn a third time).
 func (p *routedImageProvider) warnNoTransport(providerKey string, version uint64) {
 	p.warnMu.Lock()
 	v, seen := p.warned[providerKey]
-	if seen && v == version {
+	if seen && version <= v {
 		p.warnMu.Unlock()
 		return
 	}

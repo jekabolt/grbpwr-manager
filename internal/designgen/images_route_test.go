@@ -219,8 +219,9 @@ func startedProviders(st *fakeStore) []string {
 // says so, a transport that is off or does not draw the slug is passed like a missing one, and a
 // provider with no transport in this build is skipped with ONE warning per config version.
 //
-// MUTATIONS (measured red→green): warnNoTransport warning on every call (the `seen && v == version`
-// early return removed) → «one warning per snapshot» reads 5; Choose ignoring `tried` → the second
+// MUTATIONS (measured red→green): warnNoTransport warning on every call (the `seen && version <= v`
+// early return removed) → «one warning per snapshot» reads 5; the memory back to last-seen (`==`) →
+// the stale-snapshot row warns twice (FIX-G4, mirrored from the router); Choose ignoring `tried` → the second
 // pick is openrouter again; Choose skipping the Serves check → the Gemini run picks openai and the
 // lone-openai run is not refused.
 func TestTheImageChooserWALKS_THE_ROUTE_IN_ORDER(t *testing.T) {
@@ -287,6 +288,17 @@ func TestTheImageChooserWALKS_THE_ROUTE_IN_ORDER(t *testing.T) {
 		rg.reload(t)
 		_, _ = ch.Choose(entity.DesignRunKindFlat, "", nil)
 		require.Equal(t, 2, strings.Count(logs.String(), "no image transport in this build"), "a new snapshot, a new warning")
+	})
+
+	t.Run("the warn-once memory is monotonic: a stale snapshot neither warns nor rolls it back", func(t *testing.T) {
+		logs := captureSlog(t)
+		rp := routed.(*routedImageProvider)
+		rp.warnNoTransport("apibost", 7)
+		rp.warnNoTransport("apibost", 6) // a pass that read the older snapshot finishes late
+		rp.warnNoTransport("apibost", 7)
+		require.Equal(t, 1, strings.Count(logs.String(), "provider=apibost"), logs.String())
+		rp.warnNoTransport("apibost", 8)
+		require.Equal(t, 2, strings.Count(logs.String(), "provider=apibost"), "a newer snapshot warns again")
 	})
 
 	t.Run("a route of providers this build cannot draw with is closed at the door, in words", func(t *testing.T) {
