@@ -12,10 +12,26 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// ledgerWriteTimeout bounds every ledger write. The writes are one-row statements; a database that
-// cannot take one in ten seconds is sick, and the paid call next to it must not wait longer than
-// that for a bookkeeping line.
-const ledgerWriteTimeout = 10 * time.Second
+// The two bounds of a ledger write (Codex A4 #1). Every write is a one-row statement that a healthy
+// database takes in milliseconds; the bounds say how much of a SICK database's time a paid call may
+// be made to pay for its bookkeeping.
+//
+// ⚠ THE PROVIDER'S DEADLINE IS THE RUN'S, AND THE LEDGER IS NOT ALLOWED TO EAT IT. A write runs
+// beyond the caller's cancellation (writeContext), so the pass's clock keeps running while it waits:
+// a Begin blocked for ten seconds used to hand the provider a context ten seconds shorter — on a
+// short RunTimeout, one already expired — and the call then failed locally, changing the run.
+//   - LedgerBeginTimeout stands BETWEEN the row and the request: the call cannot leave until its
+//     row is opened or given up on, so it is the SHORT one. Two seconds is the most a paid call may
+//     wait for bookkeeping; past it the row is lost (logged at ERROR with every field) and the call
+//     goes on with the rest of its budget.
+//   - LedgerWriteTimeout is every write AFTER an answer (Finish, PriceAccepted). It can still delay
+//     the NEXT call of a multi-call attempt, so it is bounded too — longer, because the outcome it
+//     carries is real money already spent. designgen's ledgerFinishSlack must stay ≥ it: the
+//     sweeper waits that long past a pass before it calls a live row `unknown`.
+const (
+	LedgerBeginTimeout = 2 * time.Second
+	LedgerWriteTimeout = 5 * time.Second
+)
 
 // Ledger writes ai_usage_event: ONE ROW PER PHYSICAL PROVIDER CALL, OPENED BEFORE THE CALL
 // (02-PLAN rev.1 A1).
@@ -41,12 +57,18 @@ type Ledger struct {
 	tz func() string
 	// clock is "now"; a field so a test can stand at a chosen instant.
 	clock func() time.Time
+	// beginTimeout bounds Begin's INSERT, writeTimeout every write after a call (Finish,
+	// PriceAccepted) — LedgerBeginTimeout / LedgerWriteTimeout; fields so a test can stand a blocked
+	// store against milliseconds instead of seconds.
+	beginTimeout time.Duration
+	writeTimeout time.Duration
 }
 
 // NewLedger builds the writer. tz may be nil (the default zone); store may be nil, and then every
 // method is a no-op — a deployment without the ledger tables must still generate.
 func NewLedger(store dependency.AI, tz func() string) *Ledger {
-	return &Ledger{store: store, tz: tz, clock: time.Now}
+	return &Ledger{store: store, tz: tz, clock: time.Now,
+		beginTimeout: LedgerBeginTimeout, writeTimeout: LedgerWriteTimeout}
 }
 
 // CallHandle is one opened row. ID 0 means the row could not be opened (the call still happened);
@@ -78,19 +100,27 @@ func (l *Ledger) timezone() string {
 
 // writeContext is the context every ledger write runs on: BEYOND the caller's cancellation (the
 // write follows or precedes real money, and a pass whose deadline just passed must still record
-// it — the settle pattern of designgen), and bounded, so a sick database costs a paid call at most
-// ledgerWriteTimeout.
-func writeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+// it — the settle pattern of designgen), and bounded by `bound`, because the caller's clock keeps
+// running while it waits: a sick database costs a paid call at most that bound, never the run's
+// own deadline. A bound ≤ 0 (a Ledger not built by NewLedger) is the write bound.
+func writeContext(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithTimeout(context.WithoutCancel(ctx), ledgerWriteTimeout)
+	if bound <= 0 {
+		bound = LedgerWriteTimeout
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), bound)
 }
 
 // Begin opens the row of ONE physical call, status `dispatching`, and must be called BEFORE the
 // request leaves. OccurredAt (UTC) and DayLocal (the organisation's day, entity.BudgetDayKey) are
 // filled when empty; a blank Actor becomes ActorUnknown with a warning — a money row is never
 // dropped for want of a name. A nil ledger returns nil (and Finish(nil) is a no-op).
+//
+// The INSERT waits at most beginTimeout (LedgerBeginTimeout), the SHORT bound: the request is held
+// until it returns, and whatever it waits comes out of the provider's deadline, which is the run's.
+// Past the bound the row is given up — ID 0, ERROR with every field — and the call proceeds.
 func (l *Ledger) Begin(ctx context.Context, s entity.AICallStart) *CallHandle {
 	if l.off() {
 		return nil
@@ -110,7 +140,7 @@ func (l *Ledger) Begin(ctx context.Context, s entity.AICallStart) *CallHandle {
 		s.Actor = ActorUnknown
 	}
 	h := &CallHandle{Start: s}
-	wctx, cancel := writeContext(ctx)
+	wctx, cancel := writeContext(ctx, l.beginTimeout)
 	id, err := l.store.BeginCall(wctx, s)
 	cancel()
 	// The call starts AFTER its row exists: latency measures the provider, not our INSERT.
@@ -127,8 +157,10 @@ func (l *Ledger) Begin(ctx context.Context, s entity.AICallStart) *CallHandle {
 
 // Finish closes the row Begin opened. LatencyMs is measured from the handle when the caller left it
 // nil; a `free` outcome is booked as cost 0 / source free (02-PLAN A1). The UPDATE runs beyond
-// cancellation, bounded. A handle with ID 0 (the row was never opened) is logged with every field —
-// start and outcome — at ERROR, because that line is the only place this call's money now exists.
+// cancellation, bounded by writeTimeout (LedgerWriteTimeout): the next call of a multi-call attempt
+// waits behind it, on the run's clock. A handle with ID 0 (the row was never opened) is logged with
+// every field — start and outcome — at ERROR, because that line is the only place this call's money
+// now exists; so is an outcome whose UPDATE failed or ran out of its bound.
 func (l *Ledger) Finish(ctx context.Context, h *CallHandle, e entity.AICallEnd) {
 	if l.off() || h == nil {
 		return
@@ -147,7 +179,7 @@ func (l *Ledger) Finish(ctx context.Context, h *CallHandle, e entity.AICallEnd) 
 			append(startAttrs(h.Start), endAttrs(e)...)...)
 		return
 	}
-	wctx, cancel := writeContext(ctx)
+	wctx, cancel := writeContext(ctx, l.writeTimeout)
 	defer cancel()
 	if err := l.store.FinishCall(wctx, h.ID, e); err != nil {
 		attrs := append([]any{slog.Int64("ledger_id", h.ID)}, startAttrs(h.Start)...)
@@ -161,14 +193,14 @@ func (l *Ledger) Finish(ctx context.Context, h *CallHandle, e entity.AICallEnd) 
 // PriceAccepted finalises the `accepted` row of an asynchronous submit — (runID, attemptNo, callNo)
 // is the SUBMIT's attempt, not the collect's — when its collect delivers or finally fails. A row
 // that is no longer `accepted` (a repeated, de-duplicated collect) is left alone by the store, so
-// calling this twice is harmless. Beyond cancellation, bounded; a store error logs ERROR with every
-// field.
+// calling this twice is harmless. Beyond cancellation, bounded by writeTimeout; a store error logs
+// ERROR with every field.
 func (l *Ledger) PriceAccepted(ctx context.Context, runID, attemptNo, callNo int, e entity.AICallEnd) {
 	if l.off() {
 		return
 	}
 	e = normaliseEnd(e)
-	wctx, cancel := writeContext(ctx)
+	wctx, cancel := writeContext(ctx, l.writeTimeout)
 	defer cancel()
 	if err := l.store.PriceAcceptedCall(wctx, runID, attemptNo, callNo, e); err != nil {
 		attrs := []any{slog.Int("run_id", runID), slog.Int("attempt_no", attemptNo), slog.Int("call_no", callNo)}

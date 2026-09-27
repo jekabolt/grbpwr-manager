@@ -522,6 +522,10 @@ func TestTheSweeperCALLS_A_STALE_DISPATCHING_ROW_UNKNOWN(t *testing.T) {
 	})
 
 	t.Run("the worker never sweeps a row its own pass may still hold", func(t *testing.T) {
+		// The slack covers the longest a live call's Finish may still wait on the database after its
+		// pass (Codex A4 #1). MUTATION (measured red→green): ledgerFinishSlack = 3 * time.Second.
+		require.GreaterOrEqual(t, ledgerFinishSlack, aiprov.LedgerWriteTimeout,
+			"a Finish still inside its write bound must not find its row already swept")
 		w := testWorker(&fakeStore{}, nil, newFakeSink(ContentTypePNG), Providers{})
 		require.Equal(t, w.c.RunTimeout+ledgerFinishSlack, w.workerLedgerSweepAge(),
 			"with the default 15 min RunTimeout, the pass bound wins over the plain 15 min")

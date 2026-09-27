@@ -70,8 +70,11 @@ const ledgerSweepAge = 15 * time.Minute
 // sweeper's own interval) finds them as fast as they can exist.
 const ledgerSweepEvery = sweeperInterval
 
-// ledgerFinishSlack — how long past its pass a live call's Finish can still land: the ledger's own
-// write bound (aiprov ledgerWriteTimeout, 10 s) plus room.
+// ledgerFinishSlack — how long past its pass a live call's Finish can still land. A call cannot
+// outlive its pass (RunTimeout bounds the provider's context) and its Finish then waits at most the
+// ledger's write bound (aiprov.LedgerWriteTimeout, 5 s) — so this MUST STAY ≥ THAT BOUND, or a sweep
+// at RunTimeout + slack could call `unknown` a row whose real outcome is still on its way (Finish
+// moves only `dispatching` rows, and the price would be dropped). 30 s is the bound plus room.
 const ledgerFinishSlack = 30 * time.Second
 
 // Option configures New and NewSweeper.
