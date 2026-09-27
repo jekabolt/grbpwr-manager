@@ -144,6 +144,16 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 				tried = nil
 				next, cerr = ch.Choose(run.Kind, job.Model, nil)
 			}
+			if errors.Is(cerr, errRoutePaused) {
+				// ⚠ PAUSED IS A WAIT, AND IT OPENS NO ATTEMPT ROW (B-13/A5, Codex REVIEW-CD P1). The
+				// candidates that would draw this run are held by their open breakers, which let a probe
+				// through by themselves when the window ends. Before StartAttempt, so no money and no
+				// row: the paid ceiling (counted from attempt rows) is untouched. The ten-round ceiling
+				// is not — the store exempts only paid_collect_waiting — so the pickup is named as the
+				// end of the breaker window, one round per pause (routePauseRequeue says why not sooner):
+				// the moment is a fact of the breaker, not the store's weather back-off.
+				return w.failRunAt(ctx, run, token, cerr, w.clock().Add(routePauseRequeue))
+			}
 			if cerr != nil {
 				// Nothing callable, or nothing that draws the frozen slug: before StartAttempt, so free,
 				// and terminal like every other pre-flight refusal.
@@ -684,7 +694,8 @@ func (w *Worker) failRun(ctx context.Context, run entity.DesignRun, token string
 }
 
 // failRunAt is failRun with the next pickup named. Used ONLY where the moment is a fact rather than
-// a policy — the end of an open submit's settle grace — so the back-off exponent stays the store's.
+// a policy — the end of an open submit's settle grace, the end of a paused route's breaker window
+// (B-13/A5) — so the back-off exponent stays the store's.
 // Zero = the store's own back-off.
 func (w *Worker) failRunAt(ctx context.Context, run entity.DesignRun, token string, cause error, next time.Time) error {
 	v := classify(cause)
