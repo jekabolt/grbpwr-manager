@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -50,6 +51,10 @@ func (s *seedCfgStore) ConfigVersion(context.Context) (uint64, error) {
 	return s.cfg.Settings.ConfigVersion, nil
 }
 
+// newSeededRouter is app.go's router over the 0373 seed: registry, breakers, the client's own transport.
+// The registry's env key follows the client's: a client with no key is a deployment with no
+// OPENROUTER_API_KEY, which the registry drops before the router sees the candidates — exactly as in
+// production, where the client reads its key through the registry's KeyFunc.
 func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 	t.Helper()
 	var cfg entity.AIConfig
@@ -63,7 +68,11 @@ func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 	cfg.Settings = entity.AISettings{ConfigVersion: 1,
 		DefaultChatProviderKey: entity.AIProviderOpenRouter, DefaultImageProviderKey: entity.AIProviderOpenRouter}
 	cfg.BudgetTimezone = "Europe/Warsaw"
-	reg := registry.New(&seedCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}, nil, registry.EnvKeys{OpenRouter: "test-key"})
+	var env registry.EnvKeys
+	if client.Enabled() {
+		env.OpenRouter = "test-key"
+	}
+	reg := registry.New(&seedCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}, nil, env)
 	require.NoError(t, reg.Reload(context.Background()))
 	return router.New(reg, nil, map[string]aiprov.Chatter{entity.AIProviderOpenRouter: client.Transport()},
 		AIRouterDefaults(client), client.CompletionBase())
@@ -184,3 +193,133 @@ type wrapErr struct {
 
 func (w *wrapErr) Error() string { return w.msg }
 func (w *wrapErr) Unwrap() error { return w.err }
+
+// legacyReplay reads the system prompt, the user text, JSON mode and the ceiling back out of a
+// request body the router sent, so the pre-B-18 entry point can be asked the same question.
+func legacyReplay(t *testing.T, raw string) (sys, user string, jsonMode bool, maxTokens int) {
+	t.Helper()
+	var body struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		MaxTokens      int `json:"max_tokens"`
+		ResponseFormat *struct {
+			Type string `json:"type"`
+		} `json:"response_format"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &body))
+	for _, m := range body.Messages {
+		switch m.Role {
+		case "system":
+			require.NoError(t, json.Unmarshal(m.Content, &sys))
+		case "user":
+			var parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			require.NoError(t, json.Unmarshal(m.Content, &parts),
+				"the user turn is not a parts array: %s", m.Content)
+			require.Len(t, parts, 1, "no pictures: ONE text part")
+			user = parts[0].Text
+		}
+	}
+	return sys, user, body.ResponseFormat != nil && body.ResponseFormat.Type == "json_object", body.MaxTokens
+}
+
+// TestThePictureDoorsSendThePreB18BytesWithoutPictures (FIX-G2) — a word-only moodboard draft (prose
+// and structured) and an Ideas click with no media send, through the router, EXACTLY the bytes the
+// pre-B-18 entry points send for the same question (openrouter.CompleteWithImages /
+// CompleteWithImagesOn — still in the package, and what the doors called before the cutover): the
+// user turn as a one-element parts array, `[{"type":"text",…}]`, not a plain string.
+//
+// MUTATION (measured red): DraftDesignIdea / SuggestPrompts without UserAsParts → legacyReplay finds a
+// plain-string user turn; oaichat.Chat ignoring the flag → the same.
+func TestThePictureDoorsSendThePreB18BytesWithoutPictures(t *testing.T) {
+	words := designMoodCard()
+	words.Media, words.Callouts = nil, nil // the words stay (MoodNote); no picture reaches the wire
+
+	for _, tc := range []struct {
+		name string
+		req  *pb_admin.DraftDesignIdeaRequest
+	}{{"draft, prose", draftRequest()}, {"draft, structured", draftConstructionRequest()}} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDraftRigWithCard(t, http.StatusOK, constructionAnswer, words, nil, nil)
+			_, _ = rig.srv.DraftDesignIdea(designRunCtx(), tc.req) // the request bytes are the subject
+			routed := rig.stub.body
+			require.NotEmpty(t, routed, "the provider was not called")
+			require.Empty(t, rig.stub.imageURLs(t), "precondition: no picture on the wire")
+
+			sys, user, jsonMode, maxTokens := legacyReplay(t, routed)
+			legacy := openrouter.New(openrouter.Config{
+				APIKey: "test-key", BaseURL: rig.stub.srv.URL, Model: "anthropic/claude-sonnet-5",
+			})
+			_, _, _, err := legacy.CompleteWithImages(context.Background(), sys, user, nil, jsonMode, maxTokens)
+			require.NoError(t, err)
+			require.Equal(t, rig.stub.body, routed, "the router's draft request differs from the pre-B-18 bytes")
+		})
+	}
+
+	t.Run("ideas, no media", func(t *testing.T) {
+		client, rec := newSuggestFakeOR(t, openrouter.Config{}, suggestAnswer(goodIdeas))
+		_, err := newSuggestServer(t, client).SuggestPrompts(adminCtx("alice"), tryOnPose("x"))
+		require.NoError(t, err)
+		routed := rec.all()[0].Raw
+
+		sys, user, jsonMode, maxTokens := legacyReplay(t, routed)
+		_, _, _, err = client.CompleteWithImagesOn(context.Background(), openrouter.DefaultIdeasModel,
+			sys, user, nil, jsonMode, maxTokens)
+		require.NoError(t, err)
+		require.Equal(t, rec.all()[1].Raw, routed, "the router's Ideas request differs from the pre-B-18 bytes")
+	})
+}
+
+// TestTheFailureLogsNameTheBaseURL (FIX-G5) — the failure record of every migrated door carries the
+// API root of the provider that failed (router.BaseURL of the answering provider, else the route
+// head) beside the slug: a 404 is a retired slug as often as an OPENROUTER_BASE_URL without the route,
+// and a record naming only the slug sends the reader to the wrong knob.
+//
+// MUTATION (measured red, per door): the base_url attribute dropped from that door's record.
+func TestTheFailureLogsNameTheBaseURL(t *testing.T) {
+	hasBaseURL := func(t *testing.T, sink *tcaLogSink, want string) {
+		t.Helper()
+		require.NotEmpty(t, want)
+		for _, rec := range sink.errors() {
+			if rec.Attrs["base_url"] == want {
+				return
+			}
+		}
+		require.Failf(t, "no failure record names the base URL", "want base_url=%s in %+v", want, sink.errors())
+	}
+	bad := enhanceStatusReply(http.StatusBadGateway, "upstream is having a moment")
+
+	t.Run("EnhanceText", func(t *testing.T) {
+		client, _ := newEnhanceFakeOR(t, bad)
+		sink := tcaCaptureLog(t)
+		_, err := newEnhanceServer(t, client).EnhanceText(adminCtx("alice"), noteImprove("a note"))
+		require.Error(t, err)
+		hasBaseURL(t, sink, client.BaseURL())
+	})
+	t.Run("FormatLibraryNoteMarkdown", func(t *testing.T) {
+		client, _ := newFakeOpenRouter(t, bad)
+		sink := tcaCaptureLog(t)
+		_, err := newNoteFormatServer(client).FormatLibraryNoteMarkdown(adminCtx("alice"),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "a note"})
+		require.Error(t, err)
+		hasBaseURL(t, sink, client.BaseURL())
+	})
+	t.Run("SuggestPrompts", func(t *testing.T) {
+		client, _ := newSuggestFakeOR(t, openrouter.Config{}, func(_ string, w http.ResponseWriter) { bad(w) })
+		sink := tcaCaptureLog(t)
+		_, err := newSuggestServer(t, client).SuggestPrompts(adminCtx("alice"), tryOnPose("x"))
+		require.Error(t, err)
+		hasBaseURL(t, sink, client.BaseURL())
+	})
+	t.Run("DraftDesignIdea", func(t *testing.T) {
+		rig := newDraftRig(t, http.StatusBadGateway, "")
+		sink := tcaCaptureLog(t)
+		_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+		require.Error(t, err)
+		hasBaseURL(t, sink, rig.stub.srv.URL)
+	})
+}

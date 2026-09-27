@@ -1197,3 +1197,48 @@ func TestProbeBreaker_OnlyTheProbeJudgesHalfOpen(t *testing.T) {
 	_, ok = b.Admit(now)
 	require.True(t, ok, "the probe's own release frees it")
 }
+
+// TestRouteHeadAt_IsTheConfiguredHeadBeforeKeyAndBreaker (FIX-G3) — the head is the first row as
+// saved: a disabled/keyless provider and a provider held by its breaker are still the head (Candidates
+// drops both); "" is the capability's default provider; a row whose provider cannot serve the purpose
+// is not a head; the version is the snapshot's own.
+//
+// MUTATION (measured red): RouteHeadAt reads the filtered list (walk's listed[0]) → the keyless head
+// is lost.
+func TestRouteHeadAt_IsTheConfiguredHeadBeforeKeyAndBreaker(t *testing.T) {
+	clk := newFakeClock()
+	cfg := seedConfig()
+	setRoute(&cfg, entity.AIPurposeTechCardAnalysis,
+		entity.AIRouteCandidate{Position: 1, ProviderKey: entity.AIProviderFal, Model: "not/chat"}, // cannot serve chat
+		entity.AIRouteCandidate{Position: 2, ProviderKey: entity.AIProviderOpenAI, Model: "gpt"},   // disabled in the seed
+		entity.AIRouteCandidate{Position: 3, ProviderKey: "", Model: ""},                           // the default: openrouter
+	)
+	setRoute(&cfg, entity.AIPurposeNoteMarkdown, entity.AIRouteCandidate{Position: 1, ProviderKey: "", Model: "x/y"})
+	r, _, _ := newLoaded(t, testRing(t), cfg, WithClock(clk.now))
+
+	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderOpenRouter, Position: 3}},
+		r.Candidates(entity.AIPurposeTechCardAnalysis), "precondition: the filtered list starts at the default")
+	head, version, ok := r.RouteHeadAt(entity.AIPurposeTechCardAnalysis)
+	require.True(t, ok)
+	require.Equal(t, Candidate{ProviderKey: entity.AIProviderOpenAI, Model: "gpt", Position: 2}, head,
+		"the configured head, keyless or not")
+	require.Equal(t, r.Version(), version)
+
+	head, _, ok = r.RouteHeadAt(entity.AIPurposeNoteMarkdown)
+	require.True(t, ok)
+	require.Equal(t, Candidate{ProviderKey: entity.AIProviderOpenRouter, Model: "x/y", Position: 1}, head, `"" is the default provider`)
+
+	transient := &aiprov.CallError{Provider: entity.AIProviderOpenRouter, HTTPStatus: 503, Retryable: true}
+	for range 3 {
+		call(t, r, entity.AIProviderOpenRouter, entity.AICapabilityChat, transient)
+	}
+	require.Empty(t, r.Candidates(entity.AIPurposeNoteMarkdown), "precondition: the breaker holds it")
+	head, _, ok = r.RouteHeadAt(entity.AIPurposeNoteMarkdown)
+	require.True(t, ok)
+	require.Equal(t, entity.AIProviderOpenRouter, head.ProviderKey, "a held provider is still the head")
+
+	_, _, ok = r.RouteHeadAt("chat.nothing")
+	require.False(t, ok, "an unknown purpose has no head")
+	_, _, ok = New(&fakeStore{}, testRing(t), testEnv).RouteHeadAt(entity.AIPurposeNoteMarkdown)
+	require.False(t, ok, "no head before the first Reload")
+}

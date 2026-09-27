@@ -664,7 +664,9 @@ func tcaAnalysisStand(t *testing.T, card *entity.TechCard, client *openrouter.Cl
 	repo.EXPECT().TechCards().Return(tc).Maybe()
 	tc.EXPECT().GetTechCardById(mock.Anything, mock.Anything).Return(card, nil).Maybe()
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil).Maybe()
-	s := &Server{repo: repo, ai: newTestRouter(client)}
+	// The REGISTRY-backed router (app.go's shape, FIX-G3): a keyless client is a provider the registry
+	// drops, so the no-key answer is measured where the production filtering happens.
+	s := &Server{repo: repo, ai: newSeededRouter(t, client)}
 	// The hourly window's limiter runs a sweep goroutine once a press builds it; stop it as App.Stop does.
 	t.Cleanup(s.StopRateLimiter)
 	return s
@@ -721,13 +723,18 @@ func TestAnalyzeTechCardConstructionModelHalfFailures(t *testing.T) {
 	t.Run("no key at all is not_configured, and nothing is called", func(t *testing.T) {
 		client, calls := tcaFakeModel(t, openrouter.Config{APIKey: " "}, tcaModelAnswer("{}", "stop"))
 		s := tcaAnalysisStand(t, tcaCard(), client)
+		sink := tcaCaptureLog(t)
 
 		resp, err := tcaAnalyze(tcaAdminCtx("olga"), s, 7)
 		require.NoError(t, err, "an unconfigured deployment must still answer 200 with the status")
 		require.Equal(t, aiStatusNotConfigured, resp.GetAiStatus())
 		require.Empty(t, resp.GetFindings())
 		require.Empty(t, *calls, "a deployment with no key must not reach the provider at all")
-		require.NotEmpty(t, resp.GetModel(), "the slug that WOULD be called is still named")
+		require.Equal(t, client.AnalysisModel(), resp.GetModel(), "the slug that WOULD be called is still named")
+		errs := sink.errors()
+		require.Len(t, errs, 1)
+		require.Equal(t, client.BaseURL(), errs[0].Attrs["base_url"],
+			"and the API root it would be called on: a 404 there is the base URL as often as the slug")
 	})
 
 	t.Run("a retired slug is model_unavailable and the slug is named", func(t *testing.T) {

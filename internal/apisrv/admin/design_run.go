@@ -2680,6 +2680,11 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// designDraftIdeaEstimate. Флаг сюда обязателен — прогон со снятым флагом не покупает ни
 	// колорвеев в ответе, ни словаря цвета в запросе, и платить за них не должен.
 	est := designDraftIdeaEstimate(len(attachedIDs), construction)
+	// ЛИЗА — ОДНО ЧИСЛО НА ДВЕ СТОРОНЫ (FIX-G1): его кладёт в строку StartRun (claim_expires_at =
+	// «сейчас» стора + лиза), и им же ограничен вызов ниже. leaseFrom берётся ДО StartRun, поэтому
+	// срок вызова (leaseFrom + лиза) не позже срока строки.
+	lease := design.HandlerLeaseFor(s.ai.ChainBudget(purpose, entity.DesignDraftLongestAnswerCeiling()))
+	leaseFrom := time.Now()
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:       cardID,
 		ClientRequestId:  clientRequestID,
@@ -2691,12 +2696,13 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
 		PriceEstimate:    est,
 		Author:           designActor(ctx),
-		// ⚠ ЛИЗА СЧИТАЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ — И ТОЛЬКО ЗДЕСЬ — ВИДНЫ ВСЕ ЧИСЛА СРАЗУ.
+		// ⚠ ЛИЗА (lease выше) СЧИТАЕТСЯ В ХЕНДЛЕРЕ, ПОТОМУ ЧТО ЗДЕСЬ ВИДНЫ ВСЕ ЧИСЛА СРАЗУ.
 		// Она обязана переживать платную ЦЕПОЧКУ (B-18: основной кандидат маршрута и, при отказе без
 		// денег, запасной — роутер делает для этой цели не больше двух вызовов), а длину цепочки
-		// задают потолок ответа (entity.DesignDraftLongestAnswerCeiling) и БАЗА бюджета КАЖДОГО
-		// транспорта, который позвонит (oaichat.CompletionBase — ровно то поле, что транспорт кладёт в
-		// CompletionBudget на проводе). Сумму знает роутер: s.ai.ChainBudget.
+		// задают потолок ответа (entity.DesignDraftLongestAnswerCeiling) и БАЗА бюджета транспорта
+		// (oaichat.CompletionBase — ровно то поле, что транспорт кладёт в CompletionBudget на проводе).
+		// Считает роутер, s.ai.ChainBudget, — и на ПОТОЛОК цепочки, а не на цепочку, видимую сейчас
+		// (FIX-G1): правка маршрута между лизой и вызовом может добавить второй вызов.
 		// Стор конфигурацию процесса не видит; пока он считал лизу сам, он считал её от КОДОВОЙ базы
 		// в 60 s, и при заданном OPENROUTER_HTTP_TIMEOUT = 240 s вызов занимал 506.67 s против лизы в
 		// 416.67 s — на 90 s ВНУТРИ вызова строка была свободна, и повтор того же client_request_id
@@ -2706,8 +2712,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// ещё и ПЕРЕХВАТ (resumeHandlerRun), а перехватывается ЧУЖАЯ строка — открытая, вообще
 		// говоря, другой веткой: сверка формы стоит ниже и только для ЗАКОНЧЕННОГО прогона. Взяв
 		// потолок этой ветки, мы продлевали бы чужую строку сроком, который её вызов не переживает.
-		HandlerLease: design.HandlerLeaseFor(
-			s.ai.ChainBudget(purpose, entity.DesignDraftLongestAnswerCeiling())),
+		HandlerLease: lease,
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to open the design idea draft", err, nil)
@@ -2843,19 +2848,26 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// anthropic/claude-sonnet-5 — модель мультимодальная. Второй слуг был бы вторым именем,
 	// которое однажды протухнет у поставщика молча.
 	//
-	// ЗАПРОС ТОТ ЖЕ, ЧТО СОБИРАЛ CompleteWithImages (B-18): картинки частями, json по флагу формы, и
-	// «кто ставит потолок, тот выключает мышление» — Effort "none" РОВНО тогда, когда потолок стоит
-	// (у прозы его нет, и её байты — контракт V-19: без потолка нет и `reasoning`). Одно отличие
-	// названо вслух: пустая доска уходит строкой, а не списком из одной текстовой части
-	// (ChatRequest без ImageURLs — это текстовый ход по контракту шва; принято, ручки нет).
+	// ЗАПРОС ТОТ ЖЕ, ЧТО СОБИРАЛ CompleteWithImages (B-18), БАЙТ В БАЙТ: ход пользователя частями даже
+	// без картинок (UserAsParts, FIX-G2), json по флагу формы, и «кто ставит потолок, тот выключает
+	// мышление» — Effort "none" РОВНО тогда, когда потолок стоит (у прозы его нет, и её байты — контракт
+	// V-19: без потолка нет и `reasoning`).
 	//
 	// ЗАПИСЬ В РЕГИСТРЕ AI (ai_usage_event) ПРИВЯЗАНА К ЭТОЙ ПОПЫТКЕ: WithRun кладёт (run, attempt)
 	// в контекст вызова, и строка каждого физического вызова цепочки несёт их (call_no 1, 2).
-	draftReq := aiprov.ChatRequest{System: systemPrompt, User: prompt, ImageURLs: boardURLs, JSONMode: construction}
+	draftReq := aiprov.ChatRequest{
+		System: systemPrompt, User: prompt, ImageURLs: boardURLs, UserAsParts: true, JSONMode: construction,
+	}
 	if maxTokens > 0 {
 		draftReq.MaxTokens, draftReq.Effort = maxTokens, "none"
 	}
-	res, callErr := s.ai.Chat(aiprov.WithRun(ctx, run.Id, attempt.AttemptNo), purpose, draftReq)
+	//
+	// ВЫЗОВ ПРИВЯЗАН К ЛИЗЕ (FIX-G1, пояс и подтяжки): роутер ограничивает каждый вызов своим бюджетом, а
+	// ChainBudget считает лизу на всю цепочку; этот срок держит инвариант и тогда, когда одно из чисел
+	// однажды разойдётся с другим, — строка не освобождается, пока оплаченная цепочка ещё идёт.
+	chatCtx, cancelChat := context.WithDeadline(aiprov.WithRun(ctx, run.Id, attempt.AttemptNo), leaseFrom.Add(lease))
+	res, callErr := s.ai.Chat(chatCtx, purpose, draftReq)
+	cancelChat()
 	var (
 		text, finishReason string
 		usage              aiprov.TokenUsage
@@ -2912,7 +2924,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// единственная защита от второй двери. Поменяв их местами, мы получили бы `budget_exhausted`,
 		// закрытый как `provider_cut`, — и график «нам рвёт провод» там, где мал наш потолок.
 		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr, est)
-		return nil, s.designDraftCallError(ctx, cardID, model, callErr)
+		return nil, s.designDraftCallError(ctx, cardID, model, provider, callErr)
 	}
 
 	// ─── ПРОВЕРКА СТРУКТУРНОГО ОТВЕТА ───
@@ -3089,6 +3101,7 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("run_id", runID),
 		slog.String("model", model),
 		slog.String("provider", provider),
+		slog.String("base_url", s.ai.BaseURL(provider)),
 		slog.String("finish_reason", finishReason),
 		slog.Int("prompt_tokens", usage.Prompt),
 		slog.Int("completion_tokens", usage.Completion),
@@ -3307,12 +3320,14 @@ func (s *Server) designFailDraftAs(
 // ⚠ ФРАЗА ДЛЯ ЧЕЛОВЕКА СОБИРАЕТСЯ ИЗ ПОЛЕЙ CallError (aiFaultWords), А НЕ ИЗ ТЕКСТА ОШИБКИ (B-18). Роутер
 // оборачивает исчерпанную цепочку («ai: every candidate failed: …»), а тело ответа поставщика внутри
 // текста может повторять доску — ни то, ни другое человеку не показывается; сам текст уезжает в лог.
-func (s *Server) designDraftCallError(ctx context.Context, cardID int, model string, err error) error {
+func (s *Server) designDraftCallError(ctx context.Context, cardID int, model, provider string, err error) error {
 	if refusal, ok := aiUncalledRefusal(err, draftIdeaNotConfiguredMsg); ok {
 		return refusal
 	}
+	// provider + base_url beside the slug: a 404 is a retired slug OR an API root without the route.
 	slog.Default().ErrorContext(ctx, "draft design idea: the model call failed",
 		slog.Int("tech_card_id", cardID), slog.String("model", model),
+		slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)),
 		slog.String("err", err.Error()))
 	if errors.Is(err, aiprov.ErrModelUnavailable) {
 		return aiModelRefusal(draftIdeaModelUnavailableMsg, model)

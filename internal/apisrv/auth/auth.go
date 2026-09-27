@@ -314,6 +314,12 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 	}
 
 	username := strings.ToLower(req.User.Username)
+	// The same door AddAccount (admin) closes: an account named after a ledger pseudo-actor
+	// («system», «unknown») would read as the author of every background AI call in the spend
+	// report. The bootstrap creates super accounts and must not open it either.
+	if entity.AIActorIsReserved(username) {
+		return nil, status.Errorf(codes.InvalidArgument, "this name is reserved for system activity")
+	}
 
 	pwHash, err := s.pwhash.HashPassword(req.User.Password)
 	if err != nil {

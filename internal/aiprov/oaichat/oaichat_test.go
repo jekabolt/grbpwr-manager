@@ -167,6 +167,33 @@ func TestRequestBytesPerDialect(t *testing.T) {
 	}
 }
 
+// TestChatHonoursUserAsParts (FIX-G2) — ChatRequest.UserAsParts through the ROUTER's entry point
+// (Chat, not Send) gives the legacy multimodal bytes: the same body Send writes with
+// Options{PartsAlways: true}, and a plain string without it. One code path, pinned against the other.
+//
+// MUTATION (measured red): Chat builds Options{} and ignores the flag → the parts row goes red.
+func TestChatHonoursUserAsParts(t *testing.T) {
+	const want = `{"model":"shared/slug","messages":[{"role":"system","content":"sys"},{"role":"user","content":[{"type":"text","text":"u"}]}],"max_tokens":300,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning":{"effort":"minimal"},"usage":{"include":true}}`
+	req := aiprov.ChatRequest{System: "sys", User: "u", JSONMode: true, MaxTokens: 300, Effort: "minimal"}
+
+	rec := &recorder{}
+	srv := rec.server(t, answer(okBody))
+	c := newOpenRouter(srv.URL)
+	_, err := c.Send(context.Background(), "shared/slug", req, Options{PartsAlways: true})
+	require.NoError(t, err)
+	parts := req
+	parts.UserAsParts = true
+	_, err = c.Chat(context.Background(), "shared/slug", parts)
+	require.NoError(t, err)
+	_, err = c.Chat(context.Background(), "shared/slug", req)
+	require.NoError(t, err)
+
+	require.Equal(t, 3, rec.count())
+	require.Equal(t, want, rec.bodies[0], "the legacy PartsAlways golden")
+	require.Equal(t, rec.bodies[0], rec.bodies[1], "UserAsParts through Chat is PartsAlways through Send, byte for byte")
+	require.Contains(t, rec.bodies[2], `{"role":"user","content":"u"}`, "without the flag: a plain-string text turn")
+}
+
 // TestHeadersPerDialect — the key per request as a Bearer, OpenRouter's attribution headers in that
 // dialect only.
 //
@@ -648,10 +675,12 @@ func TestTheReadCeilingRefusesByName(t *testing.T) {
 
 // TestARefusedStatusWithAnUnreadableBodyIsStillARefusal — a 404 whose error body runs past the read
 // ceiling (or is cut) is the provider's refusal at the gate: not engaged, the model-unknown code and
-// sentinel intact, so the router still falls back (Codex C review, P2).
+// sentinel intact, so the router still falls back (Codex C review, P2). Its sentence says the excuse
+// could not be read, and why (REVIEW-FIXD P3 #5).
 //
-// MUTATION: judge the body before the status (the old order) → red: Engaged true, Code too_large,
-// no ErrModelUnavailable.
+// MUTATIONS: judge the body before the status (the old order) → red: Engaged true, Code too_large,
+// no ErrModelUnavailable; pass the nil body on (the old statusError(status, nil)) → red: the sentence
+// ends in a dangling «API error (HTTP 404): ».
 func TestARefusedStatusWithAnUnreadableBodyIsStillARefusal(t *testing.T) {
 	rec := &recorder{}
 	huge := `{"error":{"message":"` + strings.Repeat("x", MaxResponseBytes+16) + `"}}`
@@ -667,6 +696,25 @@ func TestARefusedStatusWithAnUnreadableBodyIsStillARefusal(t *testing.T) {
 	require.False(t, ce.Retryable)
 	require.Equal(t, http.StatusNotFound, ce.HTTPStatus)
 	require.NotErrorIs(t, err, aiprov.ErrResponseTooLarge)
+	require.Equal(t, fmt.Sprintf("openrouter: %v: API error (HTTP 404): response body unavailable: "+
+		"openrouter: the provider's response exceeded the read ceiling: chat/completions response is larger than %d bytes",
+		aiprov.ErrModelUnavailable, MaxResponseBytes), err.Error(),
+		"the sentence names the unread excuse and why, never a dangling colon, never the oversized body")
+
+	// A body CUT mid-read (the connection drops before the declared length): the same refusal, and the
+	// sentence carries the transport's reason.
+	srv = rec.server(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"mess`))
+	})
+	_, err = newOpenRouter(srv.URL).Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	ce = callErr(t, err)
+	require.ErrorIs(t, err, aiprov.ErrModelUnavailable)
+	require.Equal(t, aiprov.CodeModelUnknown, ce.Code)
+	require.False(t, ce.Engaged)
+	require.Equal(t, http.StatusNotFound, ce.HTTPStatus)
+	require.Contains(t, err.Error(), "API error (HTTP 404): response body unavailable: unexpected EOF")
 }
 
 // TestOneKeyPerRequest — KeyFunc is read exactly once per Send, and the header carries that read

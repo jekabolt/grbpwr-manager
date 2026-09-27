@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -92,9 +93,10 @@ func TestTheHandlerLeaseFollowsTheConfiguredCallBudget(t *testing.T) {
 			"стенд настроен так, что настроенная и кодовая базы совпадают — ось не измеряется вовсе")
 		require.Greater(t, got, budget,
 			"лиза (%s) короче платного вызова при OPENROUTER_HTTP_TIMEOUT=%s (%s)", got, configured, budget)
-		require.Equal(t, designstore.HandlerLeaseFor(budget), got,
-			"лиза не равна той, что выводится из базы ЭТОГО транспорта — между строкой и проводом снова "+
-				"появилось второе число")
+		// Два вызова, хотя кандидат один (FIX-G1): лиза на ПОТОЛОК цепочки draft_idea.
+		require.Equal(t, designstore.HandlerLeaseFor(2*budget), got,
+			"лиза не равна той, что выводится из базы ЭТОГО транспорта на потолок цепочки — между строкой "+
+				"и проводом снова появилось второе число")
 	})
 
 	t.Run("two candidates, each at its own base", func(t *testing.T) {
@@ -103,11 +105,64 @@ func TestTheHandlerLeaseFollowsTheConfiguredCallBudget(t *testing.T) {
 			{ProviderKey: entity.AIProviderOpenRouter, Chatter: transport(configured), Model: "vendor/one"},
 			{ProviderKey: entity.AIProviderOpenRouter, Chatter: transport(second), Model: "vendor/two"},
 		}), "55555555-5555-5555-5555-555555555555")
-		chain := aiprov.CompletionBudget(configured, longest) + aiprov.CompletionBudget(second, longest)
+		// Потолок × самый долгий вызов (FIX-G1): второй кандидат мог бы стоять и первым после правки
+		// маршрута, поэтому оба вызова считаются по самому медленному транспорту.
+		chain := 2 * max(aiprov.CompletionBudget(configured, longest), aiprov.CompletionBudget(second, longest))
 		require.Equal(t, designstore.HandlerLeaseFor(chain), got,
 			"лиза не покрывает цепочку: основной выбрал свой срок, запасной звонит, а строка "+
 				"освобождается посреди второго вызова")
 	})
+}
+
+// leaseProbeChatter — транспорт, который запоминает срок контекста своего вызова, а базу бюджета
+// отдаёт через base(): так проба может вырастить бюджет вызова ПОСЛЕ того, как лиза посчитана.
+type leaseProbeChatter struct {
+	base     func() time.Duration
+	deadline time.Time
+	hasDL    bool
+}
+
+func (c *leaseProbeChatter) Chat(ctx context.Context, _ string, _ aiprov.ChatRequest) (*aiprov.ChatResult, error) {
+	c.deadline, c.hasDL = ctx.Deadline()
+	return &aiprov.ChatResult{Text: "A boxy coat with a storm flap.", FinishReason: "stop"}, nil
+}
+func (c *leaseProbeChatter) CompletionBase() time.Duration { return c.base() }
+func (c *leaseProbeChatter) Enabled() bool                 { return true }
+
+// ВЫЗОВ ЧЕРНОВИКА ОГРАНИЧЕН ЛИЗОЙ, КОТОРУЮ ХЕНДЛЕР ПОЛОЖИЛ В СТРОКУ (FIX-G1) — пояс и подтяжки.
+//
+// Роутер ограничивает каждый вызов своим бюджетом, и в согласованном мире лиза их переживает. Проба
+// разводит числа нарочно: при расчёте лизы транспорт отвечает базой в 1 s, а к моменту вызова — в 10 h
+// (любая будущая рассинхронизация, которой сегодня нет). Срок, с которым транспорт получает вызов,
+// обязан быть не позже «до StartRun + лиза»: иначе строка освободится посреди оплаченного вызова.
+//
+// МУТАЦИЯ (замерена красной): вызов без context.WithDeadline(…, leaseFrom.Add(lease)) → срок вызова
+// «сейчас + 10 h», далеко за лизой.
+func TestTheDraftChatIsBoundByTheLease(t *testing.T) {
+	rig := newDraftRig(t, http.StatusOK, "unused: the probe transport answers")
+	probe := &leaseProbeChatter{}
+	probe.base = func() time.Duration {
+		if rig.started.HandlerLease == 0 {
+			return time.Second // the lease is being sized
+		}
+		return 10 * time.Hour // the call: the transport's budget has outgrown the lease
+	}
+	rig.srv.ai = router.NewSingle(entity.AIProviderOpenRouter, probe, "vendor/draft")
+
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.NoError(t, err)
+	lease := rig.started.HandlerLease
+	require.NotZero(t, lease)
+	require.Less(t, lease, aiprov.CompletionBudget(10*time.Hour, 0),
+		"положительный контроль: собственный бюджет вызова роутера ушёл бы далеко за лизу")
+	require.True(t, probe.hasDL, "вызов без срока")
+	claimExpires := rig.startedAt.Add(lease) // what StartRun writes: its «now» + the lease
+	require.False(t, probe.deadline.After(claimExpires),
+		"срок вызова на %s позже срока строки: строка освободится посреди оплаченного вызова",
+		probe.deadline.Sub(claimExpires))
+	require.WithinDuration(t, claimExpires, probe.deadline, time.Second,
+		"срок вызова — это срок строки, а не что-то заметно короче: лиза и вызов — одно число")
+	require.Equal(t, "A boxy coat with a storm flap.", rig.completedText)
 }
 
 // ДВЕРЬ СТОРА ОТКАЗЫВАЕТ ТЕКСТОВОМУ ПРОГОНУ БЕЗ ЛИЗЫ — ГРОМКО, А НЕ УМОЛЧАНИЕМ.

@@ -131,10 +131,12 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		// provider retired the default model, the slug was visible in this line only because the
 		// provider happened to repeat it in its own sentence. That was luck, not design, and a
 		// differently-worded provider message would have cost hours of diagnosis.
+		// base_url beside the slug: a 404 is a retired slug OR an API root that does not have the route.
+		provider := s.aiProviderOf(purpose, res)
 		slog.Default().ErrorContext(ctx, "note markdown formatting failed",
 			slog.Int("in_runes", inRunes), slog.Duration("took", took),
-			slog.String("model", model), slog.String("provider", s.aiProviderOf(purpose, res)),
-			slog.String("err", err.Error()))
+			slog.String("model", model), slog.String("provider", provider),
+			slog.String("base_url", s.ai.BaseURL(provider)), slog.String("err", err.Error()))
 		if errors.Is(err, aiprov.ErrModelUnavailable) {
 			return nil, aiModelRefusal(noteFormatModelUnavailableMsg, model)
 		}

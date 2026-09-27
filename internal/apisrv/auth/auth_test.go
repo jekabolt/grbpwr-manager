@@ -438,3 +438,28 @@ func TestInterceptorAiMethodsAreSuperOnly(t *testing.T) {
 	}
 	assert.Greater(t, others, 100, "the descriptor walk must cover the whole AdminService")
 }
+
+// TestCreateRefusesReservedAIActors — the bootstrap door refuses the ledger's pseudo-actor names
+// before touching the store (FF-1: an admin named «system» would own every background call's spend).
+func TestCreateRefusesReservedAIActors(t *testing.T) {
+	as := mocks.NewMockAdmin(t)
+	c := &Config{
+		JWTSecret:                jwtSecret,
+		MasterPassword:           masterPassword,
+		PasswordHasherSaltSize:   16,
+		PasswordHasherIterations: 100000,
+		JWTTTL:                   "60m",
+	}
+	authsrv, err := New(c, as)
+	assert.NoError(t, err)
+	for _, name := range []string{"system", "unknown", "System", " UNKNOWN "} {
+		_, err := authsrv.Create(context.Background(), &pb_auth.CreateRequest{
+			MasterPassword: masterPassword,
+			User:           &pb_auth.User{Username: name, Password: password},
+		})
+		if assert.Error(t, err, name) {
+			assert.Equal(t, codes.InvalidArgument, status.Code(err), name)
+		}
+	}
+	as.AssertNotCalled(t, "AddAccount", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

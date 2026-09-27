@@ -283,12 +283,13 @@ func (s *Server) suggestCall(ctx context.Context, in suggestInput, key [32]byte,
 	sys := suggestSystemPrompt(in)
 	user := suggestUserPrompt(in)
 	started := time.Now()
-	// The request CompleteWithImagesOn sent: pictures as parts, json, the cap, and "minimal" — the
-	// least reasoning every model accepts (a fallback slug may reason mandatorily and refuse "none").
+	// The request CompleteWithImagesOn sent, byte for byte: the user turn as parts even with no pictures
+	// (UserAsParts, FIX-G2), json, the cap, and "minimal" — the least reasoning every model accepts (a
+	// fallback slug may reason mandatorily and refuse "none").
 	// THE 404 RETRY IS GONE (D-09): the route's next row is the fallback, and the router tries it on
 	// any failure that moved no money — the log line of the fallback is the router's.
 	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
-		System: sys, User: user, ImageURLs: urls,
+		System: sys, User: user, ImageURLs: urls, UserAsParts: true,
 		JSONMode: true, MaxTokens: suggestMaxTokens, Effort: "minimal",
 	})
 	var (
@@ -311,9 +312,10 @@ func (s *Server) suggestCall(ctx context.Context, in suggestInput, key [32]byte,
 		if class == enhanceErrNotConfigured {
 			return suggestFlightAnswer{}, aiRefusal(aiReasonNotConfigured, suggestNotConfiguredMsg, nil)
 		}
+		provider := s.aiProviderOf(purpose, res)
 		failAttrs := append(logAttrs, slog.String("err_class", class),
 			slog.Bool("provider_engaged", aiprov.Engaged(err)),
-			slog.String("provider", s.aiProviderOf(purpose, res)))
+			slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)))
 		if class == enhanceErrProviderHTTP {
 			failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
 		}

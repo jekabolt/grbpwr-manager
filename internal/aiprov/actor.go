@@ -3,6 +3,8 @@ package aiprov
 import (
 	"context"
 	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // Actor is WHO a provider call is made for — the "по аккаунтам" half of the spend report. Username
@@ -14,14 +16,16 @@ type Actor struct {
 	AdminID  *int
 }
 
-// Actor names that are not an admin login.
+// Actor names that are not an admin login. They are the entity constants, not copies: the store's
+// INSERT and CreateAccount treat exactly those words as reserved, and a second spelling here could
+// drift from them and hand a pseudo-actor's calls to a real account.
 const (
 	// ActorSystem — a call nobody pressed a button for: a background worker, a sweeper, a boot probe.
-	ActorSystem = "system"
+	ActorSystem = entity.AIActorSystem
 	// ActorUnknown — a call whose context carries no actor. It is a WIRING defect, not a person: a
 	// ledger row with this name says the path that made it forgot to call WithActor, and the report
 	// shows it as its own line instead of silently folding the money into somebody's total.
-	ActorUnknown = "unknown"
+	ActorUnknown = entity.AIActorUnknown
 )
 
 type actorContextKey struct{}

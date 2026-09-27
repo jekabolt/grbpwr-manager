@@ -14,7 +14,8 @@ import (
 // | "medium" | "high"); each transport spells it in its dialect (OpenRouter `reasoning.effort`,
 // OpenAI `reasoning_effort`) or drops it where the model has no such knob. MaxTokens 0 = no ceiling
 // (and no time bought for one — see CompletionBudget). ImageURLs non-empty makes the user turn a
-// list of parts; empty keeps it a plain string, byte for byte what the text path sent before.
+// list of parts; empty keeps it a plain string, byte for byte what the text path sent before —
+// unless UserAsParts asks for the parts shape anyway.
 type ChatRequest struct {
 	System    string
 	User      string
@@ -22,6 +23,12 @@ type ChatRequest struct {
 	JSONMode  bool
 	MaxTokens int
 	Effort    string
+	// UserAsParts sends the user turn in the legacy MULTIMODAL shape even with no pictures: a
+	// one-element parts array (`[{"type":"text","text":…}]`) instead of a plain string. It is the
+	// CALLER's wire contract, not a provider dialect — the picture-capable doors (the draft idea, the
+	// Ideas suggestions) have always sent that shape for a picture-less request, and a transport that
+	// speaks OpenAI-style content parts honours it (oaichat: Options.PartsAlways).
+	UserAsParts bool
 }
 
 // ChatResult is what came back, with the PROVENANCE the ledger books: Provider is the billing

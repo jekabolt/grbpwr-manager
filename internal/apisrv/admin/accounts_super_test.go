@@ -12,6 +12,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -172,4 +173,57 @@ func TestCreateAccountSuperOnlyFromSuper(t *testing.T) {
 
 func accountOf(username string, super bool) *entity.AdminAccount {
 	return &entity.AdminAccount{Admin: entity.Admin{Username: username, IsSuper: super}}
+}
+
+// TestCreateAccountRefusesReservedAIActors (REVIEW-FIXD P2 #1) — the AI ledger books background and
+// unattributed calls under "system" / "unknown"; an admin account with either name would share their
+// spend line. Mixed case and padding are the same name once normalizeUsername has run, so they are
+// refused too.
+//
+// MUTATION IT CATCHES: removing the AIActorIsReserved check from CreateAccount (the reserved names
+// reach AddAccount — the mock has no expectation for it and fails the test).
+func TestCreateAccountRefusesReservedAIActors(t *testing.T) {
+	ph, err := pwhash.New(16, 1000)
+	require.NoError(t, err)
+
+	for _, name := range []string{entity.AIActorSystem, entity.AIActorUnknown, "System", " UNKNOWN ", "sYsTeM"} {
+		t.Run(name, func(t *testing.T) {
+			// No expectations on repo: a refusal that came after the store call fails here.
+			s := &Server{repo: mocks.NewMockRepository(t), pwhash: ph}
+
+			_, err := s.CreateAccount(ctxAs("owner", true, nil),
+				&pb_admin.CreateAccountRequest{Username: name, Password: "long-enough-pw"})
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.Contains(t, status.Convert(err).Message(), "this name is reserved for system activity")
+			var fields []string
+			for _, d := range status.Convert(err).Details() {
+				if br, ok := d.(*errdetails.BadRequest); ok {
+					for _, fv := range br.GetFieldViolations() {
+						fields = append(fields, fv.GetField())
+					}
+				}
+			}
+			require.Equal(t, []string{"username"}, fields, "the refusal names the field it is about")
+		})
+	}
+
+	t.Run("a name that merely contains a reserved word is accepted", func(t *testing.T) {
+		admin := mocks.NewMockAdmin(t)
+		admin.EXPECT().AddAccount(mock.Anything, "systemadmin", mock.AnythingOfType("string"), false,
+			[]entity.AdminPermission{{Section: rbac.SectionOrders, Access: entity.AccessRead}}).
+			Return(nil).Once()
+		admin.EXPECT().GetAccountWithPermissions(mock.Anything, "systemadmin").
+			Return(accountOf("systemadmin", false), nil).Once()
+		repo := mocks.NewMockRepository(t)
+		repo.EXPECT().Admin().Return(admin)
+		s := &Server{repo: repo, pwhash: ph}
+
+		_, err := s.CreateAccount(ctxAs("owner", true, nil),
+			&pb_admin.CreateAccountRequest{
+				Username:    "SystemAdmin",
+				Password:    "long-enough-pw",
+				Permissions: []*pb_admin.AdminPermission{{Section: rbac.SectionOrders, Access: pb_admin.AccessLevel_ACCESS_LEVEL_READ}},
+			})
+		require.NoError(t, err)
+	})
 }

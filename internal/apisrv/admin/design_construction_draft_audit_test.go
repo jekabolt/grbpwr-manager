@@ -628,15 +628,16 @@ func TestConstructionCeilingCanPhysicallyArrive(t *testing.T) {
 //	          ПОДСТАВНОЙ таблицей;
 //	БАЗА    — база бюджета — CompletionBase ТРАНСПОРТА (OPENROUTER_HTTP_TIMEOUT, который oaichat
 //	          кладёт на провод), а не кодовая: у соседнего клиента она УЖЕ 240 s;
-//	ЦЕПОЧКА — маршрут из двух кандидатов — это до ДВУХ полных вызовов подряд (запасной зовётся и
-//	          после того, как основной выбрал свой срок целиком, D-16), и лиза обязана пережить оба;
-//	          третий кандидат лизу не удлиняет — роутер режет цепочку draft_idea на двух.
+//	ЦЕПОЧКА — до ДВУХ полных вызовов подряд (запасной зовётся и после того, как основной выбрал свой
+//	          срок целиком, D-16), и лиза обязана пережить оба — ДАЖЕ когда сейчас вызвать можно
+//	          одного (FIX-G1): правка маршрута между лизой и вызовом добавит второго. Лиза считается на
+//	          ПОТОЛОК роутера (два вызова), и третий кандидат её не удлиняет.
 //
 // МУТАЦИИ (замерены красными):
 //   - HandlerLeaseFor возвращает литерал `5 * time.Minute` → ось 1;
 //   - LongestAnswerCeiling отдаёт ceilings[len-1] вместо максимума → ось 2;
 //   - router.budget игнорирует CompletionBase транспорта (берёт свою базу) → ось 3;
-//   - ChainBudget берёт только первого кандидата → ось 4; снять chainCap → ось 4 (третий кандидат).
+//   - ChainBudget для цели с лизой отдаёт ОДИН вызов, а не потолок → ось 4 (один кандидат сейчас).
 func TestHandlerLeaseOutlivesTheLongestPaidCall(t *testing.T) {
 	ceilings := entity.DesignDraftAnswerCeilings()
 	require.Len(t, ceilings, len(entity.DesignDraftAnswerBranches()),
@@ -702,29 +703,30 @@ func TestHandlerLeaseOutlivesTheLongestPaidCall(t *testing.T) {
 		}
 	}
 
-	// ─── ОСЬ 3: ПОДНЯТАЯ БАЗА ТРАНСПОРТА ПОДНИМАЕТ ЛИЗУ РОВНО НА СТОЛЬКО ЖЕ — НА КАЖДЫЙ ВЫЗОВ ЦЕПОЧКИ ───
+	// ─── ОСЬ 3: ПОДНЯТАЯ БАЗА ТРАНСПОРТА ПОДНИМАЕТ ЛИЗУ РОВНО НА СТОЛЬКО ЖЕ — НА КАЖДЫЙ ВЫЗОВ ПОТОЛКА ───
 	// Равенство (а не «больше»): база входит в бюджет вызова слагаемым, любое другое поведение значит,
 	// что между лизой и проводом снова появилось второе число.
+	const draftChainCap = 2
 	for _, chain := range []int{1, 2} {
 		defaultLease := leaseAt(0, chain, longestCeiling)
 		require.Equal(t, defaultLease, leaseAt(openrouterDefaultBase, chain, longestCeiling),
 			"кодовая база в пробе (%s) разошлась с той, что openrouter.New берёт при незаданной переменной",
 			openrouterDefaultBase)
 		for _, bump := range []time.Duration{time.Second, 3 * time.Minute, time.Hour} {
-			require.Equal(t, defaultLease+time.Duration(chain)*bump,
+			require.Equal(t, defaultLease+draftChainCap*bump,
 				leaseAt(openrouterDefaultBase+bump, chain, longestCeiling),
 				"база транспорта поднята на %s (цепочка %d), а лиза сдвинулась не на столько же: "+
 					"OPENROUTER_HTTP_TIMEOUT удлиняет ТОЛЬКО вызов", bump, chain)
 		}
 	}
 
-	// ─── ОСЬ 4: ЦЕПОЧКА — ВТОРОЙ КАНДИДАТ ЭТО ЕЩЁ ОДИН ПОЛНЫЙ ПЛАТНЫЙ ВЫЗОВ, ТРЕТИЙ — НЕТ ───
-	one := leaseAt(0, 1, longestCeiling)
-	require.Equal(t, one+aiprov.CompletionBudget(openrouterDefaultBase, longestCeiling),
-		leaseAt(0, 2, longestCeiling),
-		"запасной кандидат не удлинил лизу на свой вызов: основной выбрал срок, запасной звонит, "+
-			"а строка освобождается посреди второго вызова")
-	require.Equal(t, leaseAt(0, 2, longestCeiling), leaseAt(0, 3, longestCeiling),
+	// ─── ОСЬ 4: ЦЕПОЧКА — ЛИЗА НА ПОТОЛОК: ДВА ПОЛНЫХ ВЫЗОВА, СКОЛЬКО БЫ КАНДИДАТОВ НИ БЫЛО СЕЙЧАС ───
+	capWorth := designstore.HandlerLeaseFor(draftChainCap * aiprov.CompletionBudget(openrouterDefaultBase, longestCeiling))
+	require.Equal(t, capWorth, leaseAt(0, 1, longestCeiling),
+		"один кандидат сейчас, а лиза на один вызов: правка маршрута до вызова добавит запасного, основной "+
+			"выберет срок, запасной позвонит — и строка освободится посреди второго вызова (FIX-G1)")
+	require.Equal(t, capWorth, leaseAt(0, 2, longestCeiling))
+	require.Equal(t, capWorth, leaseAt(0, 3, longestCeiling),
 		"третий кандидат удлинил лизу, хотя роутер не зовёт больше двух для draft_idea")
 }
 

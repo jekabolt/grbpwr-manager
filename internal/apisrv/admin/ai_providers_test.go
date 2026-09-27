@@ -433,23 +433,34 @@ func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 	require.False(t, cfg.GetMasterKeyPresent())
 }
 
-// TestAiConfigReloadsARegistryBehindTheStore.
+// TestAiConfigRetryConvergesOnTheSecondRead — the store rows are version 8, the registry is at 7 and
+// its source has since moved to 9 (a second write). The one reload brings the registry to 9, the store
+// is read again at 9, and the page is version 9 on both sides: openai's key cleared, and nobody named
+// as having set it.
 //
-// MUTATIONS IT CATCHES: dropping the version check — the page would show the new rows (another
-// instance's write) beside this instance's old key state until its next poll; retrying past the one
-// reload (a loop against a store that keeps moving); a mismatch that survives the reload passing
-// silently (no WARN naming both versions).
-func TestAiConfigReloadsARegistryBehindTheStore(t *testing.T) {
-	logs := aiCaptureLog(t)
+// MUTATIONS IT CATCHES: skipping the retry (the first mismatch refused at once — red here, no page);
+// re-reading only the registry (version 8 rows beside version 9 key state: «key: none» next to «set by
+// im»); retrying past the one reload (a loop against a store that keeps moving); dropping the version
+// check (version 8 rows beside the version 7 key state, «db ···1a2b»).
+func TestAiConfigRetryConvergesOnTheSecondRead(t *testing.T) {
 	h := newAIHarness(t, aiHarnessOpt{})
+	v8 := h.cfg
+	v8.Settings.ConfigVersion = aiTestVersion + 1
+	v9 := aiKeyCleared(v8)
+	h.store.set(v9) // the registry's source is already at 9; this registry has not polled
+	h.ai.EXPECT().GetConfig(mock.Anything).Return(&v8, nil).Once()
+	h.ai.EXPECT().GetConfig(mock.Anything).Return(&v9, nil).Once()
+	h.ai.EXPECT().RecentFaults(mock.Anything, mock.Anything).Return(nil, nil).Once()
 	before := h.store.reloads()
-	h.cfg.Settings.ConfigVersion = aiTestVersion + 1 // the store moved on; the registry's source did not
-	h.expectConfigRead(nil)
-	_, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
-	require.NoError(t, err, "a mismatch that survives the reload still builds the page")
+
+	cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+	require.NoError(t, err)
 	require.Equal(t, before+1, h.store.reloads(), "a registry behind the store is reloaded exactly once")
-	require.Contains(t, logs.String(), `"store_version":8`)
-	require.Contains(t, logs.String(), `"registry_version":7`)
+	require.Equal(t, aiTestVersion+2, cfg.GetConfigVersion(), "the second read's rows")
+	openai := aiProvider(t, cfg, "openai")
+	require.Equal(t, registry.KeySourceNone, openai.GetKeySource(), "the reloaded registry's key state")
+	require.Empty(t, openai.GetKeyLast4())
+	require.Empty(t, openai.GetKeyUpdatedBy(), "the cleared slot of the same version")
 
 	h2 := newAIHarness(t, aiHarnessOpt{})
 	before = h2.store.reloads()
@@ -457,6 +468,35 @@ func TestAiConfigReloadsARegistryBehindTheStore(t *testing.T) {
 	_, err = h2.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
 	require.NoError(t, err)
 	require.Equal(t, before, h2.store.reloads(), "an up-to-date registry is not reloaded on a read")
+}
+
+// TestAiConfigPersistentMismatchIsUnavailable (REVIEW-FIXD P2 #3) — the store rows are version 8 on
+// both reads and the registry's source stays at 7, so the reload leaves it at 7: the two sides never
+// meet. The read is refused with Unavailable and a WARN naming both versions; no page is built — the
+// badge read that precedes the view never happens (the mock has no expectation for it) and nothing is
+// returned.
+//
+// MUTATIONS IT CATCHES: rendering on the persistent mismatch (the pre-fix WARN-and-build: version 8
+// rows beside version 7's «db ···1a2b» — the badge read fails the mock and a page comes back); the WARN
+// dropped; skipping the retry (no reload).
+func TestAiConfigPersistentMismatchIsUnavailable(t *testing.T) {
+	logs := aiCaptureLog(t)
+	h := newAIHarness(t, aiHarnessOpt{})
+	v8 := h.cfg
+	v8.Settings.ConfigVersion = aiTestVersion + 1 // the store moved on; the registry's source did not
+	h.ai.EXPECT().GetConfig(mock.Anything).Return(&v8, nil).Times(2)
+	before := h.store.reloads()
+
+	resp, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+	st := aiRequireCode(t, err, codes.Unavailable)
+	require.Equal(t, "the AI configuration changed while it was being read; reload", st.Message())
+	require.Nil(t, resp, "no page joins two versions")
+	require.Equal(t, before+1, h.store.reloads(), "one reload before giving up")
+	_, regVersion := h.reg.ProvidersAt()
+	require.Equal(t, aiTestVersion, regVersion, "the registry stayed at 7 — the mismatch was real to the end")
+	require.Contains(t, logs.String(), "still describe different config versions after a reload")
+	require.Contains(t, logs.String(), `"store_version":8`)
+	require.Contains(t, logs.String(), `"registry_version":7`)
 }
 
 // aiKeyCleared is cfg one version on, with openai's stored api key cleared by somebody else: the

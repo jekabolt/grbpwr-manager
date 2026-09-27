@@ -925,7 +925,6 @@ func TestChatWithRunKeysEveryRow(t *testing.T) {
 // (a provider with no transport is not one), capped at two for the draft-idea handler lease, and
 // never below one call.
 //
-// MUTATION: ChainBudget without the chainCap clamp → red (3× on draft-idea).
 // MUTATION: ChainBudget counts r.candidates instead of r.callable → red (4× with anthropic).
 // MUTATION: ChainBudget without the n < 1 floor → red (0 on an empty route).
 func TestChainBudgetIsTheSumOfTheCallableChain(t *testing.T) {
@@ -1164,7 +1163,8 @@ func TestTheBudgetIsTheTransportsOwnBase(t *testing.T) {
 	r := NewSingle(entity.AIProviderOpenRouter, tr, "m")
 	want := aiprov.CompletionBudget(240*time.Second, 8000)
 	require.Equal(t, 240*time.Second+8000*time.Second/30, want)
-	require.Equal(t, want, r.ChainBudget(entity.AIPurposeDesignDraftIdea, 8000))
+	require.Equal(t, want, r.ChainBudget(entity.AIPurposeNoteMarkdown, 8000))
+	require.Equal(t, 2*want, r.ChainBudget(entity.AIPurposeDesignDraftIdea, 8000), "the lease: the cap's worth of THIS base")
 
 	before := time.Now()
 	_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, aiprov.ChatRequest{User: "u", MaxTokens: 8000})
@@ -1366,4 +1366,92 @@ func TestTheSameSlugTwiceIsNotAFallback(t *testing.T) {
 		require.Equal(t, []string{slugIdeas, slugIdeasFB}, c.models())
 		require.Equal(t, 2*aiprov.CompletionBudget(time.Minute, 300), r.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
 	})
+}
+
+// TestALeasedPurposeIsSizedForTheCap (FIX-G1) — the draft-idea lease covers the chain that CAN run,
+// not the chain callable when the lease is sized: cap (two) × the longest single call any candidate
+// could make — a candidate callable now, any transport the router holds (a route edit can add a
+// candidate on it between the lease and the call), or one call on the router's own base.
+//
+// MUTATION: the leased branch returns one call's worth (no cap multiplication) → red.
+// MUTATION: the leased branch ignores heldTransports → red (the 240 s transport not on the route).
+func TestALeasedPurposeIsSizedForTheCap(t *testing.T) {
+	const draft = entity.AIPurposeDesignDraftIdea
+	// One callable candidate, one held transport: two calls' worth anyway.
+	single := NewSingle(entity.AIProviderOpenRouter, &keyedChatter{up: true, base: time.Minute}, "m")
+	one := aiprov.CompletionBudget(time.Minute, 8000)
+	require.Equal(t, 2*one, single.ChainBudget(draft, 8000), "one callable candidate still leases the cap")
+	require.Equal(t, one, single.ChainBudget(entity.AIPurposeNoteMarkdown, 8000), "an unleased purpose: the chain seen")
+
+	// Registry-backed: only openrouter (60 s) is on the draft route, but the router also holds an
+	// openai transport whose calls run on 240 s — an owner can put it on the route before Chat runs.
+	rg := newRig(t, map[string][]entity.AIRouteCandidate{
+		draft: {at(1, entity.AIProviderOpenRouter, "")},
+	}, testDefaults, time.Minute)
+	held := New(rg.reg, nil, map[string]aiprov.Chatter{
+		entity.AIProviderOpenRouter: &keyedChatter{up: true, base: time.Minute},
+		entity.AIProviderOpenAI:     &keyedChatter{up: true, base: 240 * time.Second},
+	}, testDefaults, time.Minute)
+	require.Equal(t, 2*aiprov.CompletionBudget(240*time.Second, 8000), held.ChainBudget(draft, 8000),
+		"the longest call is the one on the slowest transport the route could gain")
+
+	// Nothing callable now (keyless): still the cap's worth on the router's own base, never zero.
+	keyless := NewSingle(entity.AIProviderOpenRouter, &keyedChatter{up: false}, "m")
+	require.Equal(t, 2*aiprov.CompletionBudget(0, 8000), keyless.ChainBudget(draft, 8000))
+}
+
+// TestRouteHeadNamesAKeylessConfiguredRoute (FIX-G3) — on the REGISTRY-backed router (the one app.go
+// builds), a provider with no key is dropped before the router sees the candidates; RouteHead still
+// names the configured head (registry.RouteHeadAt) resolved through the defaults, and BaseURL names
+// its transport's root — what the analysis' no-key answer and log report.
+//
+// MUTATION (measured red): RouteHead without the RouteHeadAt fallback (the filtered list only) → "", "".
+func TestRouteHeadNamesAKeylessConfiguredRoute(t *testing.T) {
+	ring := testRing(t)
+	st := &cfgStore{Store: &aiprovtest.Store{}, cfg: config(t, ring, nil)}
+	reg := registry.New(st, ring, registry.EnvKeys{}) // no OPENROUTER_API_KEY, no key saved in the panel
+	require.NoError(t, reg.Reload(context.Background()))
+	r := New(reg, nil, map[string]aiprov.Chatter{
+		entity.AIProviderOpenRouter: &urlChatter{keyedChatter: keyedChatter{up: false}, url: "https://or.example/api/v1"},
+	}, testDefaults, 0)
+
+	require.Empty(t, reg.Candidates(entity.AIPurposeTechCardAnalysis), "precondition: the registry drops the keyless provider")
+	require.False(t, r.Enabled(entity.AIPurposeTechCardAnalysis))
+	require.Empty(t, r.PrimaryModel(entity.AIPurposeTechCardAnalysis))
+
+	p, m := r.RouteHead(entity.AIPurposeTechCardAnalysis)
+	require.Equal(t, entity.AIProviderOpenRouter, p)
+	require.Equal(t, slugAnalysis, m, "the seeded row names no model: the analysis default is the would-be slug")
+	require.Equal(t, "https://or.example/api/v1", r.BaseURL(p))
+
+	off := testDefaults
+	off.Ideas, off.IdeasOff = "", true
+	p, m = New(reg, nil, nil, off, 0).RouteHead(entity.AIPurposePlaygroundIdeas)
+	require.Empty(t, p+m, "the kill switch still names nothing")
+}
+
+// TestTheNoTransportWarningIsMonotonic (FIX-G4) — concurrent Chats bring their snapshots' versions out
+// of order: B warns at v2, then A (which read v1 before the reload and paused) resumes. A must not
+// warn, and must not pull the memory back to v1 — the next v2 Chat would warn a second time. A newer
+// version still warns.
+//
+// MUTATION (measured red): plain last-seen (`seen && v == version`, then overwrite) → A warns at v1 and
+// the next v2 warns again.
+func TestTheNoTransportWarningIsMonotonic(t *testing.T) {
+	r := NewSingle(entity.AIProviderOpenRouter, &chatter{}, "m")
+	var logs bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	warnings := func() int { return strings.Count(logs.String(), "no chat transport") }
+	ctx := context.Background()
+
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 2) // B, after the reload
+	require.Equal(t, 1, warnings())
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 1) // A resumes on its old list
+	require.Equal(t, 1, warnings(), "an older version than the one warned at is not news")
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 2) // the next v2 Chat
+	require.Equal(t, 1, warnings(), "the memory was not pulled back to v1")
+	r.warnNoTransport(ctx, entity.AIProviderAnthropic, entity.AIPurposeNoteMarkdown, 3)
+	require.Equal(t, 2, warnings(), "a newer version is a new chance to be told")
+	r.warnNoTransport(ctx, entity.AIProviderApibost, entity.AIPurposeNoteMarkdown, 1)
+	require.Equal(t, 3, warnings(), "the memory is per provider")
 }
