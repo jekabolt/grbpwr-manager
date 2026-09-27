@@ -377,6 +377,7 @@ type AICallEnd struct {
 // when no row of its group carries a price: unknown is never shown as zero.
 type AISpendReport struct {
 	FromDay, ToDay string
+	Timezone       string // design_settings.budget_timezone: the zone the days are counted in
 	TotalUSD       decimal.NullDecimal
 	Calls          int
 	Failed         int

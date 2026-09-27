@@ -154,6 +154,7 @@ var statements = map[string]string{
 	"priceAcceptedAICall":      priceAcceptedAICall,
 	"sweepAIDispatching":       sweepAIDispatching,
 	"spendByProvider":          spendByProvider,
+	"spendTheirByProvider":     spendTheirByProvider,
 	"spendByActor":             spendByActor,
 	"upsertAICostDaily":        upsertAICostDaily,
 }
@@ -277,6 +278,7 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 		"priceAcceptedAICall":      priced,
 		"sweepAIDispatching":       {"older_than": fixedNow, "finished_at": fixedNow},
 		"spendByProvider":          {"from_day": "2026-09-01", "to_day": "2026-09-27"},
+		"spendTheirByProvider":     {"from_day": "2026-09-01", "to_day": "2026-09-27"},
 		"spendByActor":             {"from_day": "2026-09-01", "to_day": "2026-09-27"},
 		"upsertAICostDaily":        cost,
 	}
@@ -489,12 +491,13 @@ func TestAIStoreShapeSelectsFillEveryFieldTheyScanInto(t *testing.T) {
 		q   string
 		typ reflect.Type
 	}{
-		"selectAISettings":  {selectAISettings, reflect.TypeOf(entity.AISettings{})},
-		"selectAIProviders": {selectAIProviders, reflect.TypeOf(entity.AIProvider{})},
-		"selectAIModels":    {selectAIModels, reflect.TypeOf(entity.AIModel{})},
-		"selectAIRoutes":    {selectAIRoutes, reflect.TypeOf(routeRow{})},
-		"spendByProvider":   {spendByProvider, reflect.TypeOf(entity.AISpendByProvider{})},
-		"spendByActor":      {spendByActor, reflect.TypeOf(entity.AISpendByActor{})},
+		"selectAISettings":     {selectAISettings, reflect.TypeOf(entity.AISettings{})},
+		"selectAIProviders":    {selectAIProviders, reflect.TypeOf(entity.AIProvider{})},
+		"selectAIModels":       {selectAIModels, reflect.TypeOf(entity.AIModel{})},
+		"selectAIRoutes":       {selectAIRoutes, reflect.TypeOf(routeRow{})},
+		"spendByProvider":      {spendByProvider, reflect.TypeOf(ourSpendRow{})},
+		"spendTheirByProvider": {spendTheirByProvider, reflect.TypeOf(theirSpendRow{})},
+		"spendByActor":         {spendByActor, reflect.TypeOf(entity.AISpendByActor{})},
 	} {
 		got := selectOutputs(t, c.q)
 		want := dbTags(c.typ)
@@ -565,15 +568,21 @@ func TestAIStoreShapeLedgerUpdatesTouchOnlyTheirState(t *testing.T) {
 // TestAIStoreShapeSpendReportKeepsUnknownUnknown.
 //
 // MUTATIONS IT CATCHES: COALESCE(SUM(cost_usd), 0) (an unpriced provider would read $0.00 — the
-// exact lie 02-PLAN §7 forbids); joining raw ai_provider_cost_daily rows onto raw ledger rows (their
-// number multiplied by our call count and ours by their day count); a status dropped from the unpriced
-// list; a report without the day_local period.
+// exact lie 02-PLAN §7 forbids); their number read raw per day instead of summed per provider (one
+// line per reported day, each a partial number); their number JOINed back onto the ledger side (a
+// provider with no ledger row in the period loses its line again — unionSpendLines is where the two
+// meet); a status dropped from the unpriced list; a report without its period.
 func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
-	for name, q := range map[string]string{"by provider": spendByProvider, "by actor": spendByActor} {
+	for name, q := range map[string]string{"by provider": spendByProvider, "their number": spendTheirByProvider, "by actor": spendByActor} {
 		up := strings.ToUpper(q)
 		if strings.Contains(up, "COALESCE") || strings.Contains(up, "IFNULL") {
 			t.Fatalf("the report %s folds a NULL: unknown must stay unknown", name)
 		}
+		if strings.Contains(up, "JOIN") {
+			t.Fatalf("the report %s joins: the two sides meet in unionSpendLines, where neither can drop the other", name)
+		}
+	}
+	for name, q := range map[string]string{"by provider": spendByProvider, "by actor": spendByActor} {
 		if !strings.Contains(q, "WHERE day_local BETWEEN :from_day AND :to_day") {
 			t.Fatalf("the report %s is not bounded by the day_local period", name)
 		}
@@ -582,14 +591,12 @@ func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
 		"cost_usd IS NULL AND status IN ('"+entity.AICallOK+"','"+entity.AICallChargedFailed+"','"+entity.AICallUnknown+"')") {
 		t.Fatal("unpriced = cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') (02-PLAN A1)")
 	}
-	if !strings.Contains(spendByProvider, "SELECT provider_key, SUM(amount_usd) AS their_usd\n\t\tFROM ai_provider_cost_daily\n\t\tWHERE day BETWEEN :from_day AND :to_day\n\t\tGROUP BY provider_key\n\t) c") {
-		t.Fatal("their number must be summed per provider inside its own derived table before the join")
+	if !strings.Contains(spendTheirByProvider, "SUM(amount_usd) AS their_usd") ||
+		!strings.Contains(spendTheirByProvider, "FROM ai_provider_cost_daily\n\tWHERE day BETWEEN :from_day AND :to_day\n\tGROUP BY provider_key") {
+		t.Fatal("their number must be the period's daily rows summed per provider")
 	}
-	if strings.Count(spendByProvider, "GROUP BY provider_key") != 2 {
-		t.Fatal("both sides of the provider report aggregate per provider before they meet")
-	}
-	if !strings.Contains(spendByProvider, "LEFT JOIN") {
-		t.Fatal("a provider we spent on but that reports nothing must still appear (their number NULL)")
+	if !strings.Contains(spendByProvider, "GROUP BY provider_key") {
+		t.Fatal("our side aggregates per provider")
 	}
 }
 
@@ -1136,8 +1143,8 @@ func TestAIStoreShapeSpendTotalsKeepNull(t *testing.T) {
 	}
 
 	db := &recDB{onSelect: func(dest any, _ string, _ []any) error {
-		if d, ok := dest.(*[]entity.AISpendByProvider); ok {
-			*d = []entity.AISpendByProvider{{ProviderKey: "fal", Calls: 1, Unpriced: 1}}
+		if d, ok := dest.(*[]ourSpendRow); ok {
+			*d = []ourSpendRow{{ProviderKey: "fal", Calls: 1, Unpriced: 1}}
 		}
 		return nil
 	}}
@@ -1148,11 +1155,98 @@ func TestAIStoreShapeSpendTotalsKeepNull(t *testing.T) {
 	if rep.FromDay != "2026-09-01" || rep.ToDay != "2026-09-27" || rep.TotalUSD.Valid || rep.Calls != 1 {
 		t.Fatalf("report %+v", rep)
 	}
-	if got := sequence(t, db); !slices.Equal(got, []string{"spendByProvider", "spendByActor"}) {
+	if got := sequence(t, db); !slices.Equal(got, []string{"spendByProvider", "spendTheirByProvider", "spendByActor", "selectBudgetTimezone"}) {
 		t.Fatalf("the report sent %v", got)
 	}
-	if got := argOf(t, spendByProvider, db.calls[0].args, "to_day"); got != "2026-09-27" {
-		t.Fatalf(":to_day = %v", got)
+	for i, named := range []string{spendByProvider, spendTheirByProvider, spendByActor} {
+		if got := argOf(t, named, db.calls[i].args, "to_day"); got != "2026-09-27" {
+			t.Fatalf("%s: :to_day = %v", firstLine(named), got)
+		}
+		if got := argOf(t, named, db.calls[i].args, "from_day"); got != "2026-09-01" {
+			t.Fatalf("%s: :from_day = %v", firstLine(named), got)
+		}
+	}
+}
+
+// TestAIStoreShapeSpendReportUnionsBothSides — lane A1's note #2 (06-BRIEFS-B B-16).
+//
+// MUTATIONS IT CATCHES: dropping the union (their number attached only to providers our ledger has a
+// line for — openai, which billed us in the period while we recorded no call, disappears from the
+// report); dropping the sort (the lines arrive in the database's alphabetical order, not the panel's
+// provider order); their number counted into our total, or a their-only line given a valid our-USD of
+// zero (unknown shown as $0); the report not naming its timezone.
+func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
+	usd := func(v string) decimal.NullDecimal { return decimal.NewNullDecimal(decimal.RequireFromString(v)) }
+	db := &recDB{
+		onSelect: func(dest any, _ string, _ []any) error {
+			switch d := dest.(type) {
+			case *[]ourSpendRow: // GROUP BY order: alphabetical
+				*d = []ourSpendRow{
+					{ProviderKey: "fal", Calls: 2, Unpriced: 2},
+					{ProviderKey: "meshy", OurUSD: usd("0.000000"), Calls: 3, Failed: 3},
+					{ProviderKey: "openrouter", OurUSD: usd("1.253000"), Calls: 4, Failed: 1},
+					{ProviderKey: "zeta", OurUSD: usd("0.5"), Calls: 1},
+				}
+			case *[]theirSpendRow:
+				*d = []theirSpendRow{
+					{ProviderKey: "openai", TheirUSD: usd("12.500000")},
+					{ProviderKey: "openrouter", TheirUSD: usd("1.200000")},
+				}
+			}
+			return nil
+		},
+		onGet: func(dest any, _ string, _ []any) error {
+			if d, ok := dest.(*string); ok {
+				*d = "Europe/Warsaw"
+			}
+			return nil
+		},
+	}
+	rep, err := newRecStore(db, nil).SpendReport(context.Background(), "2026-09-01", "2026-09-27")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, l := range rep.ByProvider {
+		keys = append(keys, l.ProviderKey)
+	}
+	if want := []string{"openai", "openrouter", "fal", "meshy", "zeta"}; !slices.Equal(keys, want) {
+		t.Fatalf("lines %v, want %v (union of both sides, panel order, an unknown key last)", keys, want)
+	}
+	openai := rep.ByProvider[0]
+	if openai.OurUSD.Valid || !openai.TheirUSD.Valid || !openai.TheirUSD.Decimal.Equal(decimal.RequireFromString("12.5")) ||
+		openai.Calls != 0 || openai.Failed != 0 || openai.Unpriced != 0 {
+		t.Fatalf("their-only line %+v, want our unknown, their 12.5, no calls", openai)
+	}
+	openrouter := rep.ByProvider[1]
+	if !openrouter.OurUSD.Decimal.Equal(decimal.RequireFromString("1.253")) || !openrouter.TheirUSD.Decimal.Equal(decimal.RequireFromString("1.2")) ||
+		openrouter.Calls != 4 || openrouter.Failed != 1 {
+		t.Fatalf("both-sides line %+v", openrouter)
+	}
+	if fal := rep.ByProvider[2]; fal.OurUSD.Valid || fal.TheirUSD.Valid || fal.Unpriced != 2 {
+		t.Fatalf("unpriced-only line %+v, want both numbers unknown and 2 unpriced", fal)
+	}
+	if meshy := rep.ByProvider[3]; !meshy.OurUSD.Valid || !meshy.OurUSD.Decimal.IsZero() {
+		t.Fatalf("free-only line %+v, want a real 0", meshy)
+	}
+	if !rep.TotalUSD.Valid || !rep.TotalUSD.Decimal.Equal(decimal.RequireFromString("1.753")) {
+		t.Fatalf("total %v, want 1.753 (ours only: their 12.5 + 1.2 never enter it)", rep.TotalUSD)
+	}
+	if rep.Calls != 10 || rep.Failed != 4 || rep.Unpriced != 2 {
+		t.Fatalf("counts %d/%d/%d, want 10/4/2", rep.Calls, rep.Failed, rep.Unpriced)
+	}
+	if rep.Timezone != "Europe/Warsaw" {
+		t.Fatalf("timezone %q", rep.Timezone)
+	}
+
+	// A blank setting reads as the zone the ledger stamps day_local in when the setting is blank.
+	db.onGet = func(dest any, _ string, _ []any) error { *dest.(*string) = " "; return nil }
+	rep, err = newRecStore(db, nil).SpendReport(context.Background(), "2026-09-01", "2026-09-27")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Timezone != entity.DefaultBudgetTimezone {
+		t.Fatalf("blank timezone reported as %q", rep.Timezone)
 	}
 }
 
