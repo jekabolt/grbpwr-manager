@@ -128,6 +128,7 @@ func feedTwinKinds() []string {
 		entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindThreed,
 		entity.DesignRunKindVector, entity.DesignRunKindDraftIdea, entity.DesignRunKindRecolor,
 		entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
 		"", "unheard_of_kind",
 	}
 }
@@ -345,6 +346,9 @@ func TestFeedWorkflowSQLLiveOnThrowawayMySQL(t *testing.T) {
 		{7, "threed", nil, 0},
 		{8, "freeform", nil, 0},
 		{9, "freeform", s(`{"freeform":{"preset":"retouch"}}`), 5},
+		// PHASE 3: extend stamps its own tile; inpaint shares retouch_zone with run 9's window path.
+		{10, "extend", s(`{"extra_input_media_ids":[3],"extend":{"aspect_ratio":"16:9"}}`), 0},
+		{11, "inpaint", s(`{"inpaint":{"source_media_id":3,"mask_media_id":4}}`), 0},
 	}
 	for _, r := range runs {
 		var raw any
@@ -367,6 +371,8 @@ func TestFeedWorkflowSQLLiveOnThrowawayMySQL(t *testing.T) {
 		{120, 1, 6, "render", 0}, {121, 1, 6, "render", 0}, {122, 1, 7, "threed", 0}, {123, 1, 4, "render", 0},
 		{124, 1, 0, "render", 0},
 		{130, 1, 5, "render", 5}, {131, 1, 9, "freeform", 5}, {132, 1, 9, "freeform", 5},
+		{140, 1, 10, "freeform", 0}, {141, 1, 10, "freeform", 0}, {142, 1, 10, "freeform", 0},
+		{150, 1, 11, "freeform", 0}, {151, 1, 11, "freeform", 0},
 		{200, 2, 1, "freeform", 0},
 	}
 	for _, p := range pics {
@@ -404,7 +410,9 @@ func TestFeedWorkflowSQLLiveOnThrowawayMySQL(t *testing.T) {
 			stamp = goTwin(t, feedTwinCase{kind: r.kind, raw: r.raw})
 		}
 		section := 0
-		if kind == entity.DesignRunKindFreeform || kind == entity.DesignRunKindCutout {
+		switch kind {
+		case entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+			entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 			section = 1
 		}
 		model = append(model, modelRow{p.id, p.cw, section, stamp})

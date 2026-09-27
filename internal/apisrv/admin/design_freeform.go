@@ -66,7 +66,8 @@ func (s *Server) designFreeformPresets() []string {
 // capability travels only here. Empty, never nil: present-and-empty is «this server knows the
 // playground and says not now», absent is «an old server».
 //
-// extend_image is never listed in phase 2 (no route). retouch_zone is: its window path is live.
+// PHASE 3: extend_image is listed iff `extend` is in run_kinds (its route wired, keyed, bounded).
+// retouch_zone stays listed on the freeform gate (the phase-2 window path) OR on `inpaint`.
 func (s *Server) designPlaygroundWorkflows() []string {
 	out := []string{}
 	if s.designGenerationGate() != nil {
@@ -89,6 +90,13 @@ func (s *Server) designPlaygroundWorkflows() []string {
 	}
 	if s.designKindGateCheck(entity.DesignRunKindCutout) == nil {
 		open[entity.DesignWorkflowRemoveBackground] = true
+	}
+	// PHASE 3: the fal JSON routes — the gate AND a bounded reserve, the same ladder as run_kinds.
+	if s.designKindGateCheck(entity.DesignRunKindExtend) == nil && s.designFalRouteBounded(entity.DesignRunKindExtend) {
+		open[entity.DesignWorkflowExtendImage] = true
+	}
+	if s.designKindGateCheck(entity.DesignRunKindInpaint) == nil && s.designFalRouteBounded(entity.DesignRunKindInpaint) {
+		open[entity.DesignWorkflowRetouchZone] = true
 	}
 	// 3D also needs a reserve number: a wired route without one (fal with a tariff and no units
 	// ceiling) is refused by the door (threed_reserve_unbounded), so the tile is not drawn.

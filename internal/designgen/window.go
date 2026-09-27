@@ -75,7 +75,15 @@ const compositeWindowJPEGQuality = 92
 // ВОЗВРАЩАЕТ ЖАЛОБУ, А НЕ ОТКАЗ. Всё, что здесь может пойти не так, происходит ПОСЛЕ того, как
 // деньги ушли, и ни одна из этих причин не делает купленную картинку бесполезной.
 func (w *Worker) postProcess(ctx context.Context, job Job, out *Outcome) error {
-	if job.Window == nil || out == nil || len(out.Artifacts) == 0 {
+	if out == nil || len(out.Artifacts) == 0 {
+		return nil
+	}
+	// PHASE 3: an extend run's canvas gets its source pasted back (outpaint.go). The same seam as
+	// the window below: after the money, before publish, a complaint and never a refusal.
+	if job.Extend != nil {
+		return w.compositeExtendInto(ctx, *job.Extend, out)
+	}
+	if job.Window == nil {
 		return nil
 	}
 	if w.objects == nil {

@@ -349,6 +349,9 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		PlaygroundWorkflows: s.designPlaygroundWorkflows(),
 		ImageModels:         s.designImageModels(),
 		ThreedOptions:       s.designThreedOptions(),
+		// PLAYGROUND phase 3 (field 32): the kinds the door accepts right now — always present, []
+		// when generation is off; ABSENT only on an older binary.
+		RunKinds: s.designRunKinds(),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —

@@ -334,7 +334,7 @@ func TestCardOutputsCountAndListShareOnePredicate(t *testing.T) {
 		// это вписанная вторая копия.
 		for _, inlined := range []string{
 			"design_picture p", "design_run r", "p.tech_card_id", "r.kind IN", "p.colorway_id",
-			"'freeform'", "'cutout'", "'tryon'", "'swap_fabrics'", "JSON_EXTRACT",
+			"'freeform'", "'cutout'", "'extend'", "'inpaint'", "'tryon'", "'swap_fabrics'", "JSON_EXTRACT",
 		} {
 			if strings.Contains(stmt, inlined) {
 				t.Fatalf("%s carries its OWN copy of %q instead of the shared piece: a second "+

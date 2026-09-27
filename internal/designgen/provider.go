@@ -146,6 +146,12 @@ type Job struct {
 	// requested_outputs); invalid when the row carries no estimate. The fal collect compares the
 	// booked charge with it before saying the reservation was short (G-02 r2, Codex 5).
 	ThreedReservedUSD decimal.NullDecimal
+
+	// Extend is an extend run's plan (kind=extend, PLAYGROUND phase 3), frozen at build time BEFORE
+	// the money: the source size after the 3 MP cap, the canvas, where the source sits in it, the
+	// expansion per side. The route sends it, the composite reads it back — one plan, read twice.
+	// nil on every other kind.
+	Extend *ExtendPlan
 }
 
 // Artifact is one file a provider produced, already in memory and not yet stored.
@@ -289,6 +295,11 @@ type Providers struct {
 	// different name in the history row. Nothing about the prompt would tell them apart, because
 	// this route has no prompt at all.
 	Cutout Provider
+	// Outpaint serves kind=extend (tile 9, fal's outpaint route) and Fill serves kind=inpaint (tile
+	// 10's mask route, fal's fill route) — PLAYGROUND phase 3. Same fal client and FAL_KEY as the
+	// cut-out; different slugs, bodies and tariffs, so different routes.
+	Outpaint Provider
+	Fill     Provider
 }
 
 // forKind returns the route for a run kind, or an error naming the kind.
@@ -315,6 +326,16 @@ func (p Providers) forKind(kind string) (Provider, error) {
 			return nil, fmt.Errorf("%w: no cutout route is wired", errRouteMissing)
 		}
 		return p.Cutout, nil
+	case entity.DesignRunKindExtend:
+		if p.Outpaint == nil {
+			return nil, fmt.Errorf("%w: no outpaint route is wired", errRouteMissing)
+		}
+		return p.Outpaint, nil
+	case entity.DesignRunKindInpaint:
+		if p.Fill == nil {
+			return nil, fmt.Errorf("%w: no fill route is wired", errRouteMissing)
+		}
+		return p.Fill, nil
 	case entity.DesignRunKindVector:
 		if p.Vector == nil {
 			return nil, fmt.Errorf("%w: no vector route is wired", errRouteMissing)

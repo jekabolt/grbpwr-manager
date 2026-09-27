@@ -128,7 +128,9 @@ const (
 	// a colourway on them) and a crop inherits its parent's, so in practice the answer grows by at
 	// most 7 × 60 rows on colourway 0 alone: (colourways + 1) × 60 + 8 × 60. The theoretical ceiling,
 	// were section-1 pictures ever spread over colourways, is (colourways + 1) × (1 + 8) × 60. Phase 3
-	// adds extend/inpaint to section 1 (+2 workflows, same arithmetic).
+	// added extend/inpaint to section 1: extend stamps a NEW workflow (extend_image), inpaint shares
+	// retouch_zone with the phase-2 window path — so the section grows by ONE key, to nine workflows:
+	// (colourways + 1) × 60 + 9 × 60, theoretical ceiling (colourways + 1) × (1 + 9) × 60.
 	//
 	// The name still says «per colourway»; the number is per window partition, and each partition's
 	// true size is on the wire — OutputsTotalByColorway (sum over its sections and workflows) and

@@ -540,6 +540,9 @@ func (a *App) Start(ctx context.Context) error {
 	// and what one build may book at this deployment's tariff. Built from the SAME client the worker
 	// is given below; wired only when the worker exists.
 	var designThreedRoute *designgen.ThreedRoute
+	// PLAYGROUND phase 3: the extend / inpaint route objects, built from the SAME fal client the
+	// worker's Outpaint / Fill providers get (one value for the band, the door and the reserve).
+	var designFalRoutes map[string]designgen.FalRoute
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
 		//
@@ -572,6 +575,22 @@ func (a *App) Start(ctx context.Context) error {
 			slog.Default().WarnContext(ctx, "design generation: the 3D door is closed — "+why)
 		}
 
+		// PLAYGROUND phase 3 — tile 9 (extend → fal outpaint) and tile 10's mask route (inpaint → fal
+		// fill): the SAME FAL_KEY, their own slugs (FAL_MODEL_OUTPAINT / FAL_MODEL_FILL) and tariffs.
+		// A tariff set without its units ceiling closes the kind at the door, in words.
+		falRoutes := fal.New(a.c.Fal)
+		designFalRoutes = map[string]designgen.FalRoute{}
+		for _, kind := range []string{entity.DesignRunKindExtend, entity.DesignRunKindInpaint} {
+			r, _ := designgen.FalRouteOf(falRoutes, kind)
+			designFalRoutes[kind] = r
+			slog.Default().InfoContext(ctx, "design generation: fal route wired",
+				slog.String("kind", kind), slog.String("model", r.Model),
+				slog.String("reserve_usd", r.Ceiling.String()), slog.Bool("bounded", r.Bounded))
+			if !r.Bounded {
+				slog.Default().WarnContext(ctx, "design generation: the "+kind+" door is closed — "+r.Unbounded)
+			}
+		}
+
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
 			// flat, render, recolor and pattern — the raster route. ONE endpoint and ONE key for
 			// all four: they differ by prompt and by which pictures go into which paid call, both
@@ -591,6 +610,9 @@ func (a *App) Start(ctx context.Context) error {
 			// rather than a fifth kind on Image because it is a different paid endpoint with a
 			// different unit of money — and because it sends no words at all.
 			Cutout: designgen.NewFalCutoutProvider(fal.New(a.c.Fal)),
+			// extend — tile 9 «Extend Image», fal's outpaint route (FAL_MODEL_OUTPAINT, default
+			// fal-ai/flux-2-pro/outpaint; fallback fal-ai/bria/expand).
+			Outpaint: designgen.NewFalOutpaintProvider(falRoutes),
 		})
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
@@ -660,6 +682,9 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	if designThreedRoute != nil {
 		adminS.SetDesignThreedRoute(*designThreedRoute)
+	}
+	if designFalRoutes != nil {
+		adminS.SetDesignFalRoutes(designFalRoutes)
 	}
 	// The engine table the worker resolves params.image with (designCfg.ImageDefaultModel above):
 	// the door validates and prices against it, the band advertises it. A table, not a gate — it

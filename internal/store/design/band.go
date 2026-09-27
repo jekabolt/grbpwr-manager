@@ -162,7 +162,7 @@ const (
 		LEFT JOIN design_run r ON r.id = p.run_id`
 	designCardOutputsWhere = `
 		WHERE p.tech_card_id = :card
-		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor', 'freeform', 'cutout'))
+		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor', 'freeform', 'cutout', 'extend', 'inpaint'))
 		    OR (p.run_id IS NULL AND p.kind IN ('render', 'threed', 'pattern')))`
 	// designCardOutputsColorway — КЛЮЧ РАЗДЕЛА: колорвей САМОГО КАДРА, 0 = неатрибутированный.
 	//
@@ -209,11 +209,11 @@ const (
 	// OutputsTotalByWorkflow (band 31), которое считается тем же выражением, что режет окно
 	// (designCardOutputsWorkflow).
 	//
-	// ⚠ PHASE 3: extend/inpaint join THIS list (and nothing else changes) — section 1 is «the
+	// ⚠ PHASE 3: extend/inpaint JOINED this list (and nothing else changed) — section 1 is «the
 	// playground's own pool, split per tile». recolor and threed stay in section 0 on purpose:
 	// their outputs keep colourway semantics (one pool per colourway, 04-DECISIONS D4), so tiles
 	// 4/5/12 can still be evicted by 60 renders of the same colourway — accepted, not missed.
-	designCardOutputsSection = `CASE WHEN COALESCE(r.kind, '') IN ('freeform', 'cutout') THEN 1 ELSE 0 END`
+	designCardOutputsSection = `CASE WHEN COALESCE(r.kind, '') IN ('freeform', 'cutout', 'extend', 'inpaint') THEN 1 ELSE 0 END`
 
 	// designCardOutputsFabricPicture — «this recolor run sent at least one cloth WITH A PICTURE»:
 	// some params.colour.fabrics[i].media_id > 0. The SQL twin of the door's
@@ -246,7 +246,8 @@ const (
 	//     free / add_hardware / repaint_parts / any unknown word → create_edit (ELSE), so a run can
 	//     never fall out of the grid. JSON_UNQUOTE returns utf8mb4_bin, so the match is
 	//     case-sensitive like Go's `switch`; a JSON null preset unquotes to 'null' → ELSE, correct.
-	//   - cutout → remove_background; threed → image_to_3d;
+	//   - cutout → remove_background; threed → image_to_3d; extend → extend_image; inpaint →
+	//     retouch_zone (phase 3);
 	//   - recolor → swap_fabrics when a cloth carries a picture (designCardOutputsFabricPicture),
 	//     else change_color;
 	//   - every other kind, and a picture with no run (the LEFT JOIN gives NULL) → ''.
@@ -266,6 +267,8 @@ const (
 				WHEN 'retouch' THEN 'retouch_zone'
 				ELSE 'create_edit' END
 			WHEN 'cutout' THEN 'remove_background'
+			WHEN 'extend' THEN 'extend_image'
+			WHEN 'inpaint' THEN 'retouch_zone'
 			WHEN 'recolor' THEN CASE WHEN ` + designCardOutputsFabricPicture + ` THEN 'swap_fabrics' ELSE 'change_color' END
 			WHEN 'threed' THEN 'image_to_3d'
 			ELSE '' END`

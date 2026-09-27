@@ -149,6 +149,11 @@ type Server struct {
 	// tariff. Nil = not wired (the generation worker is off, or a test): the band then advertises no
 	// build option and the door refuses a non-default one, and the reserve keeps the static table.
 	designThreedRoute *designgen.ThreedRoute
+	// designFalRoutes are the fal JSON routes of kind extend / inpaint (PLAYGROUND phase 3,
+	// designgen.FalRouteOf over the worker's own fal client, app.go): the band, the door and the
+	// reserve read one object. A kind with no entry is CLOSED (fail closed: nothing on the door knows
+	// what the worker would book).
+	designFalRoutes map[string]designgen.FalRoute
 }
 
 // New creates a new server with admin handlers.

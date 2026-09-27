@@ -517,7 +517,26 @@ const (
 	// потому что и провайдер отдельный (сегментация, не генерация), и цена своя, и результат
 	// обязан быть PNG побайтово.
 	DesignRunKindCutout = "cutout"
+	// DesignRunKindExtend — EXTENDS ONE PICTURE INTO A NEW PROPORTION (tile 9, PLAYGROUND phase 3) on
+	// fal's outpaint route: params.extend + exactly one extra_input_media_ids, no words. One output,
+	// colourway 0, section 1 of the window; the untouched source pixels are re-composited into the
+	// answer, so «the original is kept» is a fact of the bytes.
+	DesignRunKindExtend = "extend"
+	// DesignRunKindInpaint — REPAINTS ONE PAINTED ZONE of a picture (tile 10's mask route, phase 3) on
+	// fal's fill route: params.inpaint (source + mask) + ask. One output; pixels outside the mask are
+	// the source's own bytes (the composite goes through OUR mask only).
+	DesignRunKindInpaint = "inpaint"
 )
+
+// DesignRunKinds — every run kind, in a fixed order (the band's run_kinds keeps it). A copy on
+// every call.
+func DesignRunKinds() []string {
+	return []string{
+		DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed, DesignRunKindVector,
+		DesignRunKindDraftIdea, DesignRunKindRecolor, DesignRunKindPattern,
+		DesignRunKindFreeform, DesignRunKindCutout, DesignRunKindExtend, DesignRunKindInpaint,
+	}
+}
 
 // IsDesignRunKind сообщает, известен ли род прогона.
 func IsDesignRunKind(v string) bool {
@@ -525,7 +544,8 @@ func IsDesignRunKind(v string) bool {
 	case DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed,
 		DesignRunKindVector, DesignRunKindDraftIdea,
 		DesignRunKindRecolor, DesignRunKindPattern,
-		DesignRunKindFreeform, DesignRunKindCutout:
+		DesignRunKindFreeform, DesignRunKindCutout,
+		DesignRunKindExtend, DesignRunKindInpaint:
 		return true
 	}
 	return false
@@ -556,6 +576,11 @@ func DesignPictureKindOfRun(runKind string) string {
 		return DesignPictureKindFreeform
 	case DesignRunKindCutout:
 		return DesignPictureKindCutout
+	// PHASE 3: extend and inpaint are playground pictures too — named explicitly for the reason
+	// above (`default` drops an unknown kind into flat and a bench slot). They share the freeform
+	// picture kind: no new picture vocabulary, no bench axis, no colourway axis.
+	case DesignRunKindExtend, DesignRunKindInpaint:
+		return DesignPictureKindFreeform
 	default:
 		return DesignPictureKindFlat
 	}
@@ -723,7 +748,8 @@ func IsDesignWorkflow(v string) bool {
 //
 //   - freeform: the preset picks the tile; free, ”, add_hardware, repaint_parts (and any
 //     unknown preset) → create_edit, so a NULL/empty frozen preset never falls out of the grid;
-//   - cutout → remove_background; threed → image_to_3d;
+//   - cutout → remove_background; threed → image_to_3d; extend → extend_image; inpaint →
+//     retouch_zone (phase 3: tile 10's mask route shares the tile with the phase-2 window path);
 //   - recolor → swap_fabrics when some fabric carries a picture, else change_color;
 //   - every other kind (flat, render, pattern, vector, draft_idea) → ” (no tile).
 func DesignWorkflowOf(kind, preset string, hasFabricPicture bool) string {
@@ -747,6 +773,10 @@ func DesignWorkflowOf(kind, preset string, hasFabricPicture bool) string {
 		}
 	case DesignRunKindCutout:
 		return DesignWorkflowRemoveBackground
+	case DesignRunKindExtend:
+		return DesignWorkflowExtendImage
+	case DesignRunKindInpaint:
+		return DesignWorkflowRetouchZone
 	case DesignRunKindRecolor:
 		if hasFabricPicture {
 			return DesignWorkflowSwapFabrics
@@ -1025,6 +1055,51 @@ const (
 	// refused, so the history never files one garment under another colourway's name.
 	DesignErrorCodeProductNotColorwayRender = "product_not_colorway_render"
 )
+
+// PLAYGROUND phase-3 refusals (tile 9 extend, tile 10's mask route). InvalidArgument except
+// route_reserve_unbounded (FailedPrecondition: a deployment setting — the fal tariff is set without
+// its units ceiling, so the reserve has no number). All before money.
+const (
+	DesignErrorCodeExtendTakesNoWords     = "extend_takes_no_words"
+	DesignErrorCodeExtendAspectUnknown    = "extend_aspect_unknown"
+	DesignErrorCodeTargetAspectMustExtend = "target_aspect_must_extend"
+	DesignErrorCodeExtendForbidden        = "extend_forbidden"
+	DesignErrorCodeInpaintForbidden       = "inpaint_forbidden"
+	DesignErrorCodeMaskRequired           = "mask_required"
+	DesignErrorCodeMaskSizeMismatch       = "mask_size_mismatch"
+	DesignErrorCodeMaskInvalid            = "mask_invalid"
+	DesignErrorCodeMaskEmpty              = "mask_empty"
+	DesignErrorCodeRouteReserveUnbounded  = "route_reserve_unbounded"
+	DesignErrorCodeNoSourcePicture        = "no_source_picture"
+	DesignErrorCodeOneListPerFact         = "one_list_per_fact"
+)
+
+// DesignExtendRatios — the owner's nine target proportions of tile 9, width:height. Never `auto`:
+// an extend with no target adds nothing.
+func DesignExtendRatios() []string {
+	return []string{"9:16", "1:1", "3:4", "2:3", "16:9", "4:3", "3:2", "21:9", "9:21"}
+}
+
+// IsDesignExtendRatio reports whether r is one of DesignExtendRatios (empty and `auto` are not).
+func IsDesignExtendRatio(r string) bool {
+	_, ok := DesignExtendRatioValue(r)
+	return ok
+}
+
+// DesignExtendRatioValue — width / height of an extend ratio; ok = false outside the nine.
+func DesignExtendRatioValue(r string) (float64, bool) {
+	for _, v := range DesignExtendRatios() {
+		if v != r {
+			continue
+		}
+		var a, b int
+		if _, err := fmt.Sscanf(v, "%d:%d", &a, &b); err != nil || a <= 0 || b <= 0 {
+			return 0, false
+		}
+		return float64(a) / float64(b), true
+	}
+	return 0, false
+}
 
 // Режимы прогона паттерна — DesignPatternParams.mode (STEP 3). Пустая строка значит то же, что
 // `image`: так читается каждый прогон, замороженный до появления поля.

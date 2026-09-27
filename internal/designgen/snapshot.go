@@ -53,6 +53,22 @@ type runParams struct {
 	// Image is the per-run engine (DesignRunParams.image, PLAYGROUND phase 2). nil = the
 	// deployment's dial, which is every run frozen before the field.
 	Image *imageOptions `json:"image"`
+	// Extend / Inpaint — PLAYGROUND phase 3 (DesignRunParams.extend = 18 / inpaint = 17). nil on
+	// every other kind: the door refuses the blocks to every kind but their own.
+	Extend  *extendParams  `json:"extend"`
+	Inpaint *inpaintParams `json:"inpaint"`
+}
+
+// extendParams — DesignExtendParams: the target proportion of an extend run (the source travels in
+// extra_input_media_ids).
+type extendParams struct {
+	AspectRatio string `json:"aspect_ratio"`
+}
+
+// inpaintParams — DesignInpaintParams: the picture to repaint and its painted mask (white = repaint).
+type inpaintParams struct {
+	SourceMediaID int `json:"source_media_id"`
+	MaskMediaID   int `json:"mask_media_id"`
 }
 
 // imageOptions — the per-run engine of an OpenRouter image kind. The door validated every value
@@ -478,6 +494,18 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// items и есть контракт: «image 1» — это items[0], сказано в самом контракте (design.proto).
 	if kind == entity.DesignRunKindFreeform {
 		return freeformReferences(p)
+	}
+	// ─── EXTEND (phase 3): THE ONE NAMED PICTURE AND NOTHING ELSE. Like the cut-out it reads no
+	// card; unlike the cut-out it is said here, not inherited from the general walk — the plan below
+	// is derived from References[0], so «which picture» must not depend on what else a snapshot holds.
+	if kind == entity.DesignRunKindExtend {
+		var out []refCaption
+		for _, id := range p.ExtraInputMediaIDs {
+			if id > 0 {
+				out = append(out, refCaption{MediaID: id, Caption: "the picture to extend"})
+			}
+		}
+		return out
 	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
@@ -1388,6 +1416,15 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 			// Единственный читатель id в подписях — renderCraft (imageNumberOf), а плейграунд
 			// берёт другое ремесло, так что ноль здесь ни на что не может указать неверно.
 			attached = append(attached, refCaption{Caption: d.caption})
+		}
+	}
+	// ─── EXTEND (phase 3): THE PLAN IS FROZEN HERE, BEFORE THE MONEY. The source is decoded once to
+	// learn its size, the canvas and the per-side expansion are computed, the 3 MP cap applied — and
+	// a refusal here (the picture is gone, too small, or the target adds nothing) is free and
+	// terminal: buildJob runs before StartAttempt.
+	if run.Kind == entity.DesignRunKindExtend {
+		if err := deriveExtendPlan(ctx, objects, p, &job); err != nil {
+			return Job{}, err
 		}
 	}
 	job.Prompt = composePrompt(run, p, in, attached)

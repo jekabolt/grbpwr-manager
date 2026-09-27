@@ -250,6 +250,12 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	//
 	// ⚠ ЦИФРА ЖДЁТ ВЛАДЕЛЬЦА (PLAN-r4 §8 п.2), как и все остальные в этой таблице.
 	entity.DesignRunKindCutout: fal.EstimatedCutoutUSD(),
+	// PHASE 3 — THE fal JSON ROUTES TAKE THEIR NUMBER FROM THE PACKAGE THAT BOOKS THEM, like the
+	// cut-out: fal.EstimatedRouteUSD is the code ceiling of the worst plan the worker builds (the 3 MP
+	// extend canvas, the 1 MP fill crop) and exactly what the collect books with no tariff. A
+	// configured tariff raises the reserve through the route object (designFalRouteEstimate).
+	entity.DesignRunKindExtend:  fal.EstimatedRouteUSD(fal.RouteOutpaint),
+	entity.DesignRunKindInpaint: fal.EstimatedRouteUSD(fal.RouteFill),
 }
 
 // Базовые цены картиночных родов НА `medium` — том положении дила, которое стоит в
@@ -616,7 +622,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	kind := strings.TrimSpace(req.GetKind())
 	if !entity.IsDesignRunKind(kind) {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout", kind)
+			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint", kind)
 	}
 	// draft_idea ОТКАЗЫВАЕТСЯ ЗДЕСЬ, дословно по контракту. Текстовый прогон исполняется в
 	// хендлере синхронно и возвращает свой ответ; заведённый отсюда, он вернул бы строку
@@ -882,6 +888,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseMalformedFreeform(kind, req.GetParams()); err != nil {
 		return nil, err
 	}
+	// PHASE 3: params.extend / params.inpaint on a kind that does not read them (spoken only).
+	if err := designRefuseMalformedRoutes(kind, req.GetParams()); err != nil {
+		return nil, err
+	}
 	// ФОРМА РЕЖИМА РЕФЕРЕНСА 3D И ОПЦИЙ СБОРКИ — у говорящего, тот же довод (B-09).
 	if err := designRefuseMalformedThreedReferences(kind, req.GetParams()); err != nil {
 		return nil, err
@@ -911,6 +921,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseThreedRoute(kind, params); err != nil {
 		return nil, err
 	}
+	// PHASE 3: an extend / inpaint route with no number to reserve is closed in words.
+	if err := s.designRefuseFalRouteUnbounded(kind); err != nil {
+		return nil, err
+	}
 	// ГРАНИЦА КАРТОЧКИ ДЛЯ ШЕСТОГО СПИСКА. Картинки плейграунда уезжают поставщику ровно так же,
 	// как плиты, референсы и текстуры, значит и граница у них та же самая. ДЕЙСТВУЮЩИЕ параметры,
 	// а не сообщение клиента: строка media(id) под собой не исчезает (FK держат её RESTRICT'ом),
@@ -923,6 +937,16 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// ГРАНИЦА КАРТОЧКИ ДЛЯ СЕДЬМОГО СПИСКА — названные картинки 3D уезжают поставщику видами (B-09).
 	if err := s.designRefuseForeignMedia(ctx, cardID, "params.threed.reference_media_ids",
 		designThreedReferenceMediaIDs(params)...); err != nil {
+		return nil, err
+	}
+	// PHASE 3: the mask retouch's picture and mask pass the same card boundary (a fresh upload
+	// belongs to nobody and passes, D2).
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.inpaint.source_media_id",
+		int(params.GetInpaint().GetSourceMediaId())); err != nil {
+		return nil, err
+	}
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.inpaint.mask_media_id",
+		int(params.GetInpaint().GetMaskMediaId())); err != nil {
 		return nil, err
 	}
 
@@ -962,6 +986,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// A windowed run's picture must be large enough to cut — its stored dimensions say so here,
 	// before the reservation (G-02, Codex 7). One media read, windowed runs only.
 	if err := s.designRefuseWindowSourceTooSmall(ctx, kind, params); err != nil {
+		return nil, err
+	}
+	// PHASE 3: the extend's source must be large enough and its target must add pixels.
+	if err := s.designRefuseExtendTarget(ctx, kind, params); err != nil {
 		return nil, err
 	}
 	// A stated engine freezes with its slug (G-02, Codex 5).
@@ -1178,6 +1206,11 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 				"cutting the background takes a picture and nothing else: there is no prompt on that "+
 					"route, so your words would go nowhere. Clear `ask` (and params.freeform) or use "+
 					"the playground instead. Nothing was reserved and nothing was charged", nil)
+		}
+	// ─── PHASE 3: EXTEND (tile 9) ───
+	case entity.DesignRunKindExtend:
+		if err := designRefuseUnworkableExtend(ask, params); err != nil {
+			return err
 		}
 	case entity.DesignRunKindRecolor:
 		if sources == 0 {
@@ -2234,7 +2267,8 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 		// список обязан быть длиной один (а у свотча — ноль или один, STEP 3), и это проверено
 		// отдельно, у двери: платный вызов в обоих режимах один.
 		return 1
-	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		// ═══ РОВНО ОДНА КАРТИНКА, И ЭТО СЛОВО ВЛАДЕЛЬЦА, А НЕ УМОЛЧАНИЕ ═══
 		//
 		// Плейграунд отвечает ОДНИМ кадром на одну просьбу: сколько бы картинок человек ни
@@ -3307,7 +3341,8 @@ type designInputSources struct {
 func designKindReadsTheCard(kind string) bool {
 	switch kind {
 	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
-		entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+		entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		return false
 	}
 	return true
@@ -3337,7 +3372,8 @@ func designKindReadsTheCard(kind string) bool {
 // bench» — и здесь это перестаёт быть обещанием экрана.
 func designKindReadsTheGarmentNote(kind string) bool {
 	switch kind {
-	case entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+	case entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		return false
 	}
 	return true

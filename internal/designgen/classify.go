@@ -175,6 +175,11 @@ func classify(err error) verdict {
 		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errFreeformSourceTooSmall):
 		return verdict{Retryable: false, Code: CodeSourceTooSmall, State: entity.DesignAttemptFailed}
+	// ─── ours, phase 3: an extend whose frozen target adds no pixels to the picture actually read
+	// (the door's second lock, for a media row with no stored dimensions). Built before
+	// StartAttempt, so free; terminal because the snapshot and the picture are frozen.
+	case errors.Is(err, errExtendNothingToAdd):
+		return verdict{Retryable: false, Code: CodeTargetAspectMustExtend, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errThreedOptionNotRead):
 		return verdict{Retryable: false, Code: CodeOptionNotRead, State: entity.DesignAttemptFailed}
 
@@ -216,6 +221,11 @@ func classify(err error) verdict {
 	// again on the next pass, at the price of a second generation.
 	case errors.Is(err, errWindowNotComposited):
 		return verdict{Retryable: false, Code: CodeWindowNotComposited, State: entity.DesignAttemptDelivered}
+	// ─── ours, phase 3: the same seam for an extend — the canvas is bought and filed as delivered,
+	// the source could not be pasted back into it. Not retryable: the next pass would buy a second
+	// canvas and meet the same obstacle.
+	case errors.Is(err, errExtendNotComposited):
+		return verdict{Retryable: false, Code: CodeExtendNotComposited, State: entity.DesignAttemptDelivered}
 
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.

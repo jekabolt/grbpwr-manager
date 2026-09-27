@@ -306,6 +306,10 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot) decimal.NullDecimal {
 	base := designEstimateFor(kind, outputs)
+	// PHASE 3: extend / inpaint reserve max(table, the route's own ceiling) — designFalRouteEstimate.
+	if e, ok := s.designFalRouteEstimate(kind, outputs); ok {
+		return e
+	}
 	// 3D reserves by ITS OWN options (texture off / detailed = fal «ultra», $1.40), B-09. With the
 	// default options this is exactly designThreedCeilingUSD() × outputs — the kind's table row.
 	if e, ok := s.designThreedRunEstimate(kind, params, outputs); ok {

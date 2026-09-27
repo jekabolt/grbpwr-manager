@@ -406,7 +406,8 @@ func narrowToOneOutput(kind string, out *Outcome) int {
 // честное false и не наследует чужого потолка, пока кто-нибудь не напишет его сюда руками.
 func designKindBuysOnePicture(kind string) bool {
 	switch kind {
-	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout:
+	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
 		return true
 	default:
 		return false
