@@ -203,7 +203,7 @@ func (c *Client) SubmitCutout(ctx context.Context, imageURL string) (string, err
 		// ⚠ ОПЛАЧЕНО И ПОТЕРЯНО. Сабмит принят, значит единицы списаны, а вернуть по нему нечего:
 		// без id ни забрать результат, ни возобновить. Отдельное слово нужно, чтобы этот исход не
 		// читался как обычный отказ транспорта.
-		return "", submitLost()
+		return "", submitLost(sub.httpStatus)
 	}
 	return id, nil
 }

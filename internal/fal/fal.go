@@ -294,10 +294,14 @@ var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 var ErrSubmitUnconfirmed = errors.New("fal: the submit may have reached the provider and its outcome is unknown")
 
 // submitLost — the 2xx submit that named no request id: accepted (so possibly paid) and unresumable.
-// ENGAGED, like every 2xx that did not become a usable answer. Its HTTPStatus is 0: callJSON has
-// already returned by the time the missing id is noticed, and the status was a 2xx anyway.
-func submitLost() error {
-	return fail(aiprov.CodeProviderError, 0, true, false,
+// ENGAGED, like every 2xx that did not become a usable answer.
+//
+// status is the 2xx the answer came with (submitResponse.httpStatus, stamped by callJSON), and it is
+// carried because the contract says HTTPStatus is the response's status, 0 ONLY when no response
+// arrived (B-13/A4, Codex B-14 review P3 #4): a 0 here made «fal accepted it and named nothing» read
+// in the ledger's http_status exactly like «the connection died before any answer».
+func submitLost(status int) error {
+	return fail(aiprov.CodeProviderError, status, true, false,
 		fmt.Errorf("%w: %w: submit returned no request id", ErrSubmitUnconfirmed, ErrUnexpectedResponse))
 }
 
@@ -871,7 +875,7 @@ func (c *Client) Submit(ctx context.Context, req Request3D) (string, error) {
 	}
 	id := strings.TrimSpace(out.RequestID)
 	if id == "" {
-		return "", submitLost()
+		return "", submitLost(out.httpStatus)
 	}
 	// ⚠ THE DERIVED POLLING PATH IS CHECKED AGAINST THE PROVIDER'S OWN, ONCE, HERE. fal documents
 	// that a model id with a sub-path (`hitem3d/hi3d/v3.0/multi-view-to-3d`) is submitted whole but
@@ -1417,7 +1421,17 @@ type submitResponse struct {
 	StatusURL   string `json:"status_url"`
 	ResponseURL string `json:"response_url"`
 	CancelURL   string `json:"cancel_url"`
+	// httpStatus — the 2xx this answer arrived with, stamped by callJSON (statusStamped); what
+	// submitLost books when the answer names no request id (B-13/A4).
+	httpStatus int
 }
+
+func (s *submitResponse) stampStatus(status int) { s.httpStatus = status }
+
+// statusStamped is an answer that keeps the 2xx it arrived with. callJSON stamps it after a clean
+// decode, so a caller that finds the answer unusable (no id) can still report the response's real
+// status instead of a 0 that means «no response at all».
+type statusStamped interface{ stampStatus(status int) }
 
 type statusResponse struct {
 	Status        string `json:"status"`
@@ -1577,6 +1591,9 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return broken(aiprov.CodeProviderError, fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
+	}
+	if s, ok := out.(statusStamped); ok {
+		s.stampStatus(status)
 	}
 	return nil
 }

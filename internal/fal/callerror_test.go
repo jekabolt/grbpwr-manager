@@ -33,6 +33,11 @@ import (
 // a 408 answering a lookup stays a free, retryable read. MUTATION (measured red→green): the submit
 // arm's `status == http.StatusRequestTimeout` dropped → the submit-408 case goes red (and the GET-408
 // row stays green, which is the other half of the rule).
+//
+// B-13/A4 — a 2xx submit that names no request id is booked with ITS status (200/201/202), not 0: the
+// contract's 0 means «no response arrived». MUTATION (measured red→green): `submitLost(out.httpStatus)`
+// / `submitLost(sub.httpStatus)` → `submitLost(0)` at the three sites → every route of the no-id row
+// goes red.
 
 func falCallError(t *testing.T, err error, what string) *aiprov.CallError {
 	t.Helper()
@@ -136,6 +141,24 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 			require.Equalf(t, code, ce.Code, "%s", route)
 			require.ErrorIsf(t, err, ErrSubmitUnconfirmed, "%s", route)
 			require.ErrorIsf(t, err, ErrBadRequest, "%s: today's sentinel rides inside", route)
+		}
+	})
+
+	t.Run("a 2xx submit that names no request id carries ITS status, not 0 (B-13/A4)", func(t *testing.T) {
+		for _, status := range []int{http.StatusOK, http.StatusCreated, http.StatusAccepted} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"status":"IN_QUEUE"}`)
+			}))
+			for route, submit := range submitAll(newGenericClient(srv.URL, Config{})) {
+				err := submit()
+				ce := falCallError(t, err, route)
+				require.Truef(t, ce.Engaged, "%s %d", route, status)
+				require.Equalf(t, status, ce.HTTPStatus, "%s: the answer arrived, and its status is the fact", route)
+				require.ErrorIsf(t, err, ErrSubmitUnconfirmed, "%s %d", route, status)
+				require.ErrorIsf(t, err, ErrUnexpectedResponse, "%s %d", route, status)
+			}
+			srv.Close()
 		}
 	})
 

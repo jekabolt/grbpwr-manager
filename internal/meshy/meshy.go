@@ -582,21 +582,33 @@ func (c *Client) Submit(ctx context.Context, req Request) (string, error) {
 		}
 	}
 
-	var out struct {
-		Result string `json:"result"`
-	}
+	var out createResponse
 	if err := c.callJSON(ctx, http.MethodPost, multiImagePath, body, &out); err != nil {
 		return "", err
 	}
 	id := strings.TrimSpace(out.Result)
 	if id == "" {
 		// ACCEPTED AND UNRESUMABLE: the create call answered 2xx, so the task may exist and be billed,
-		// and nothing names it. Engaged; the status was a 2xx that callJSON has already consumed.
-		return "", fail(aiprov.CodeProviderError, 0, true, false,
+		// and nothing names it. Engaged — and booked with the 2xx it came with (B-13/A4): a 0 would read
+		// in the ledger's http_status as «no answer arrived», which is the opposite of what happened.
+		return "", fail(aiprov.CodeProviderError, out.httpStatus, true, false,
 			fmt.Errorf("%w: submit returned no task id", ErrUnexpectedResponse))
 	}
 	return id, nil
 }
+
+// createResponse is the create-task answer. httpStatus is the 2xx it arrived with, stamped by callJSON
+// (statusStamped), so an answer that names no task is still booked with its real status (B-13/A4,
+// Codex B-14 review P3 #4 — HTTPStatus is 0 only when no response arrived).
+type createResponse struct {
+	Result     string `json:"result"`
+	httpStatus int
+}
+
+func (r *createResponse) stampStatus(status int) { r.httpStatus = status }
+
+// statusStamped is an answer that keeps the 2xx it arrived with; callJSON stamps it after a clean decode.
+type statusStamped interface{ stampStatus(status int) }
 
 // Collect performs ONE status lookup and, when the task has succeeded, downloads the artifacts
 // into dst BEFORE returning. It is the whole answer to the expiring-link trap: there is no moment
@@ -955,6 +967,9 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return broken(aiprov.CodeProviderError, fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
+	}
+	if s, ok := out.(statusStamped); ok {
+		s.stampStatus(status)
 	}
 	return nil
 }

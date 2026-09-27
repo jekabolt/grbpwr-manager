@@ -123,7 +123,7 @@ func (c *Client) SubmitJSON(ctx context.Context, model string, input any) (strin
 	id := strings.TrimSpace(sub.RequestID)
 	if id == "" {
 		// PAID AND LOST: the submit was accepted, and nothing identifies what it bought.
-		return "", submitLost()
+		return "", submitLost(sub.httpStatus)
 	}
 	c.checkQueuePath(ctx, model, id, sub.StatusURL)
 	return id, nil

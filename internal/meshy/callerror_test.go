@@ -34,6 +34,10 @@ import (
 // B-13/A3 — a 408 on the create call is ENGAGED and unconfirmed too; a 408 on the status poll stays a
 // free, retryable read. MUTATION (measured red→green): the `|| status == http.StatusRequestTimeout`
 // dropped from the submit arm → the create-call 408 row goes red (the GET 408 row stays green).
+//
+// B-13/A4 — a 2xx create answer that names no task is booked with ITS status (200/201/202), not 0.
+// MUTATION (measured red→green): `fail(…, out.httpStatus, …)` → `fail(…, 0, …)` in Submit → the no-task
+// row goes red.
 
 func meshyCallError(t *testing.T, err error, what string) *aiprov.CallError {
 	t.Helper()
@@ -128,6 +132,22 @@ func TestCallJSON_TheSubmitIsTheMoneyBoundary(t *testing.T) {
 		defer srv.Close()
 		if err := submit(srv.URL, time.Second); err == nil || !strings.Contains(err.Error(), "task-lost-2") {
 			t.Errorf("the named task must reach the error: %v", err)
+		}
+	})
+
+	t.Run("a 2xx that names no task carries ITS status, not 0 (B-13/A4)", func(t *testing.T) {
+		for _, status := range []int{http.StatusOK, http.StatusCreated, http.StatusAccepted} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"result":""}`)
+			}))
+			err := submit(srv.URL, time.Second)
+			srv.Close()
+			ce := meshyCallError(t, err, http.StatusText(status))
+			if !ce.Engaged || ce.HTTPStatus != status || !errors.Is(err, ErrUnexpectedResponse) {
+				t.Errorf("HTTP %d no task: CallError = {engaged %v, status %d} %v, want {true, %d} + ErrUnexpectedResponse",
+					status, ce.Engaged, ce.HTTPStatus, err, status)
+			}
 		}
 	})
 
