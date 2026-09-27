@@ -39,6 +39,11 @@ func (p threedProvider) Produces() []string { return []string{ContentTypeGLB, Co
 // means a worker that dies during the minutes Meshy takes to build the model resumes for nothing —
 // the next pass reads the id off the attempt row and collects, instead of buying a second model.
 func (p threedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
+	return p.execute(ctx, job, threedJobOptions(job))
+}
+
+// execute is Execute with the run's options stated rather than read — see falThreedProvider.execute.
+func (p threedProvider) execute(ctx context.Context, job Job, opts threedOptions) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: MESHY_API_KEY is not set", errProviderDisabled)
 	}
@@ -66,7 +71,13 @@ func (p threedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 		// the numbered reference captions. The steer is now composed for this field rather than
 		// amputated to fit it, so no cut is needed and none is made: meshy.Submit refuses above the
 		// ceiling locally, before the network and before any money.
-		TexturePrompt: job.SurfaceSteer,
+		//
+		// An UNTEXTURED task has no texturing stage, so it is handed no words (SentPrompt agrees).
+		TexturePrompt: steerFor(job.SurfaceSteer, opts),
+		// The run's own options, verbatim; empty = today's constants and today's exact body.
+		Texture: opts.Texture,
+		PBR:     opts.PBR,
+		Quality: opts.Quality,
 	})
 	if err != nil {
 		return nil, err
@@ -85,7 +96,17 @@ func (p threedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 // it DID read (the garment note about the back, the numbered captions) were the ones that had no
 // business reaching a texturing stage at all. Both halves are fixed by composing for the field
 // instead of amputating to it: the steer is what goes out, and the steer is what is written down.
-func (p threedProvider) SentPrompt(job Job) string { return job.SurfaceSteer }
+//
+// An untextured task sends no words, and the column says so — see threedSentSteer.
+func (p threedProvider) SentPrompt(job Job) string { return threedSentSteer(job) }
+
+// steerFor — the steer as it travels under these options: nothing for an untextured build.
+func steerFor(steer string, opts threedOptions) string {
+	if opts.untextured() {
+		return ""
+	}
+	return steer
+}
 
 // Collect is the FREE half: one status lookup and, once the task has succeeded, the bytes.
 //

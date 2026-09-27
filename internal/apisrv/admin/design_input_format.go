@@ -113,6 +113,12 @@ func designRunInputMediaRefs(params *pb_common.DesignRunParams, inputs *pb_commo
 	for i, it := range params.GetFreeform().GetItems() {
 		add(int(it.GetMediaId()), "params.freeform.items."+strconv.Itoa(i)+".media_id")
 	}
+	// ⚠ СЕДЬМОЙ ИСТОЧНИК — НАЗВАННЫЕ КАРТИНКИ 3D (режим референса, PLAYGROUND phase 2), и он
+	// добавлен вместе с полем по тому же доводу, что у плейграунда: они уезжают поставщику видами
+	// изделия, значит «вход не картинка», «только для показа» и «спрятан» обязаны их видеть.
+	for i, id := range params.GetThreed().GetReferenceMediaIds() {
+		add(int(id), "params.threed.reference_media_ids."+strconv.Itoa(i))
+	}
 	add(int(params.GetColour().GetFabricMediaId()), "params.colour.fabric_media_id")
 	for i, f := range params.GetColour().GetFabrics() {
 		add(int(f.GetMediaId()), "params.colour.fabrics."+strconv.Itoa(i)+".media_id")
