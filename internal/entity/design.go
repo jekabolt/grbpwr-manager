@@ -527,8 +527,11 @@ const (
 	// DesignRunKindInpaint — REPAINTS ONE PAINTED ZONE of a picture (tile 10's mask route, phase 3) on
 	// fal's fill route: params.inpaint (source + mask) + ask. One output, a lossless PNG: every pixel
 	// outside the mask is the source's own DECODED pixel (the composite goes through OUR mask only) —
-	// bit-exact for a PNG source, the decoded JPEG/WebP pixels otherwise. The one exception is a picture
-	// whose PNG would pass the store's verbatim ceiling (≈ 21 MB): stored as JPEG q92 instead.
+	// bit-exact for a PNG source, the decoded JPEG/WebP pixels otherwise. The one exception is an OPAQUE
+	// picture whose PNG would exceed the store's verbatim ceiling (≈ 21 MB): stored as the best JPEG
+	// that fits (q92, else q85, else q75). A picture with transparency is never flattened to JPEG —
+	// past the ceiling (as past every JPEG step) the composite is not made and the repainted crop is
+	// filed as delivered (inpaint_not_composited). The source may be at most 18 MP (source_too_large).
 	DesignRunKindInpaint = "inpaint"
 )
 
@@ -1076,6 +1079,10 @@ const (
 	DesignErrorCodeRouteReserveUnbounded  = "route_reserve_unbounded"
 	DesignErrorCodeNoSourcePicture        = "no_source_picture"
 	DesignErrorCodeOneListPerFact         = "one_list_per_fact"
+	// source_too_large (G-03 r2): an extend / inpaint source over the composite's working pixel cap
+	// (designgen.CompositeMaxSourcePixels), read off the stored size or the header — the worker's own
+	// word (designgen.CodeSourceTooLarge), said at the door before anything is reserved.
+	DesignErrorCodeSourceTooLarge = "source_too_large"
 )
 
 // DesignExtendRatios — the owner's nine target proportions of tile 9, width:height. Never `auto`:

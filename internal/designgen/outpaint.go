@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
-	"image/jpeg"
 	"image/png"
 	"io"
 	"log/slog"
@@ -20,7 +19,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/shopspring/decimal"
-	xdraw "golang.org/x/image/draw"
 )
 
 // ═══════════════ TILE 9 «EXTEND IMAGE» — kind=extend on fal's outpaint route (PLAYGROUND phase 3) ═══════════════
@@ -184,9 +182,12 @@ const extendShrinkTries = 6
 
 // extendScaledSource — THE downscale, one function for the body and for the composite, so the pixels
 // pasted back are the pixels the model extended around.
+//
+// leanScale, not Kernel.Scale (G-03 r2, Codex 1): the separable Scale allocates size.X × source
+// height × 32 bytes of scratch (≈ 180 MB for a 40 MP source), before and after the payment alike.
 func extendScaledSource(src image.Image, size image.Point) *image.NRGBA {
 	dst := image.NewNRGBA(image.Rect(0, 0, size.X, size.Y))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
+	leanScale(dst, dst.Bounds(), src, src.Bounds())
 	return dst
 }
 
@@ -213,8 +214,17 @@ func deriveExtendPlan(ctx context.Context, objects objectFetcher, p runParams, j
 		return fmt.Errorf("designgen: an extend run needs the picture it extends, and this worker has no object store")
 	}
 	srcURL := job.References[0]
-	src, _, err := fetchStoredPicture(ctx, objects, srcURL)
+	// The header against CompositeMaxSourcePixels before a pixel is decoded (G-03 r2, Codex 1): free,
+	// terminal source_too_large — the door's second lock, for a row with no stored dimensions.
+	srcRaw, err := fetchStoredBytes(ctx, objects, srcURL)
 	if err != nil {
+		return fmt.Errorf("designgen: cannot read the picture to extend: %w", err)
+	}
+	src, err := decodeCompositeSource(srcRaw)
+	if err != nil {
+		if errors.Is(err, errFreeformSourceTooLarge) {
+			return err
+		}
 		return fmt.Errorf("designgen: cannot read the picture to extend: %w", err)
 	}
 	b := src.Bounds()
@@ -544,11 +554,20 @@ func chargedRouteOutcome(c *fal.Client, route fal.Route, job Job, err error) *Ou
 
 // compositeExtendInto re-reads the source and pastes it over the bought canvas. A complaint, never a
 // refusal: the money is spent, and the canvas is useful as it came.
+//
+// Bounded like the inpaint composite (G-03 r2, Codex 1; composite_budget.go): the source's header is
+// capped before its pixels are decoded, the answer's header is checked against the planned canvas
+// before its pixels are, the source is scaled without a scratch buffer and dropped before the canvas
+// is made, and the encode stops at the bucket's ceiling.
 func (w *Worker) compositeExtendInto(ctx context.Context, plan ExtendPlan, out *Outcome) error {
 	if w.objects == nil {
 		return fmt.Errorf("%w: this worker has no object store to read the source from", errExtendNotComposited)
 	}
-	src, _, err := fetchStoredPicture(ctx, w.objects, plan.SourceURL)
+	raw, err := fetchStoredBytes(ctx, w.objects, plan.SourceURL)
+	if err != nil {
+		return fmt.Errorf("%w: the source could not be read back: %v", errExtendNotComposited, err)
+	}
+	src, err := decodeCompositeSource(raw)
 	if err != nil {
 		return fmt.Errorf("%w: the source could not be read back: %v", errExtendNotComposited, err)
 	}
@@ -568,13 +587,24 @@ func compositeExtend(src image.Image, plan ExtendPlan, answer []byte) (Artifact,
 		return Artifact{}, fmt.Errorf("the source read back is %v, and the plan was made against %v",
 			src.Bounds(), plan.Original)
 	}
-	got, err := freeformDecode(answer)
+	acfg, err := freeformDecodeConfig(answer)
 	if err != nil {
 		return Artifact{}, fmt.Errorf("the answer is not a readable picture: %w", err)
+	}
+	if (acfg.Width != plan.Canvas.Dx() || acfg.Height != plan.Canvas.Dy()) &&
+		(!extendNearSize(acfg.Width, plan.Canvas.Dx()) || !extendNearSize(acfg.Height, plan.Canvas.Dy())) {
+		return Artifact{}, fmt.Errorf("the answer is %d×%d and the canvas was planned at %d×%d — "+
+			"another size; the canvas is kept as delivered", acfg.Width, acfg.Height,
+			plan.Canvas.Dx(), plan.Canvas.Dy())
 	}
 	var source image.Image = src
 	if plan.Source.Size() != src.Bounds().Size() {
 		source = extendScaledSource(src, plan.Source.Size())
+		releaseHeap()
+	}
+	got, err := freeformDecode(answer)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("the answer is not a readable picture: %w", err)
 	}
 
 	dst := image.NewNRGBA(plan.Canvas)
@@ -582,49 +612,16 @@ func compositeExtend(src image.Image, plan ExtendPlan, answer []byte) (Artifact,
 	if ab.Size() == plan.Canvas.Size() {
 		draw.Draw(dst, dst.Bounds(), got, ab.Min, draw.Src)
 	} else {
-		if !extendNearSize(ab.Dx(), plan.Canvas.Dx()) || !extendNearSize(ab.Dy(), plan.Canvas.Dy()) {
-			return Artifact{}, fmt.Errorf("the answer is %d×%d and the canvas was planned at %d×%d — "+
-				"another size; the canvas is kept as delivered", ab.Dx(), ab.Dy(),
-				plan.Canvas.Dx(), plan.Canvas.Dy())
-		}
 		// A model that rounded its canvas (a multiple of 16 px): fitted to the plan, then the source
 		// goes on top exactly where it was planned.
-		xdraw.CatmullRom.Scale(dst, dst.Bounds(), got, ab, xdraw.Src, nil)
+		leanScale(dst, dst.Bounds(), got, ab)
 	}
 	sb := source.Bounds()
 	draw.Draw(dst, plan.Source.Add(plan.Offset), source, sb.Min, draw.Src)
-	return encodeComposite(dst)
+	return encodeComposite(dst, plan.KeepAlpha)
 }
 
-// encodeComposite — THE STORED FORMAT OF A PHASE-3 COMPOSITE: a lossless PNG, so the source pixels the
-// composite keeps are the source's own DECODED pixels whatever the source's format was (G-03, Codex 4
-// = Fable m-5; the owner's fidelity over file size). Before this a JPEG / WebP source came back as a
-// q92 JPEG — every kept pixel re-encoded, and colours from the new zone bleeding over the mask edge
-// through JPEG's blocks. ONE exception, by size: a PNG over the bucket's verbatim ceiling
-// (bucket.MaxVerbatimImageBytes) would be refused by the upload AFTER the payment, so that picture is
-// stored as JPEG q92 instead (only a large inpaint can reach it — an extend canvas is ≤ 3 MP, i.e. ≤
-// 12 MB of RGBA). The fallback is logged.
-func encodeComposite(dst *image.NRGBA) (Artifact, error) {
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, dst); err != nil {
-		return Artifact{}, err
-	}
-	if buf.Len() <= compositeMaxPNGBytes {
-		return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypePNG}, nil
-	}
-	pngLen := buf.Len()
-	buf.Reset()
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: compositeWindowJPEGQuality}); err != nil {
-		return Artifact{}, err
-	}
-	slog.Default().Warn("a composite is too large for a lossless PNG and is stored as JPEG q92",
-		slog.Int("png_bytes", pngLen), slog.Int("ceiling", compositeMaxPNGBytes),
-		slog.Int("width", dst.Bounds().Dx()), slog.Int("height", dst.Bounds().Dy()))
-	return Artifact{Bytes: buf.Bytes(), ContentType: ContentTypeJPEG}, nil
-}
-
-// compositeMaxPNGBytes — see encodeComposite. A var only so a probe can reach the fallback.
-var compositeMaxPNGBytes = bucket.MaxVerbatimImageBytes
+// encodeComposite, the stored format of a composite and its bounded fallbacks: composite_budget.go.
 
 // extendNearSize — a delivered side within max(16 px, 2 %) of the planned one.
 func extendNearSize(got, want int) bool {

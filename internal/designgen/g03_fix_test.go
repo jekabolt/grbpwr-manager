@@ -294,14 +294,19 @@ func TestAJPEGSourceKeepsITS_OWN_DECODED_PIXELS(t *testing.T) {
 			}
 		}
 	})
-	t.Run("too large for a PNG in the bucket: JPEG, said out loud", func(t *testing.T) {
+	t.Run("too large for a PNG in the bucket: an opaque picture becomes a JPEG that fits", func(t *testing.T) {
 		keep := compositeMaxPNGBytes
-		compositeMaxPNGBytes = 10
+		var jq bytes.Buffer
+		require.NoError(t, jpeg.Encode(&jq, decoded, &jpeg.Options{Quality: 92}))
+		compositeMaxPNGBytes = jq.Len() // the q92 JPEG fits exactly; the lossless PNG does not
 		defer func() { compositeMaxPNGBytes = keep }()
-		dst := image.NewNRGBA(image.Rect(0, 0, 8, 8))
-		art, err := encodeComposite(dst)
+		art, err := encodeComposite(decoded, false)
 		require.NoError(t, err)
 		require.Equal(t, ContentTypeJPEG, art.ContentType)
+		require.LessOrEqual(t, len(art.Bytes), compositeMaxPNGBytes)
+		// A transparent one never does (G-03 r2, Codex 5): TestAnOversizedCompositeNEVER_DROPS_ALPHA_AND_NEVER_OVERSHOOTS.
+		_, err = encodeComposite(noiseImage(200, 300, 0x80), false)
+		require.ErrorIs(t, err, errCompositeTooLarge)
 	})
 }
 

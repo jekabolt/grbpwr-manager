@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"image/png"
+	"io"
 	"strconv"
 	"strings"
 
@@ -114,6 +115,10 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 		return sameFile
 	}
 	srcKnown := src.FullSizeWidth > 0 && src.FullSizeHeight > 0
+	// ⚠ THE WORKING PIXEL CAP, FROM THE STORED SIZE, BEFORE ANY READ (G-03 r2, Codex BLOCKER 1).
+	if srcKnown && designOverCompositeCap(src.FullSizeWidth, src.FullSizeHeight) {
+		return designRefuseSourceTooLarge(srcID, src.FullSizeWidth, src.FullSizeHeight, "a retouch")
+	}
 	if srcKnown && m.FullSizeWidth > 0 && m.FullSizeHeight > 0 &&
 		(m.FullSizeWidth != src.FullSizeWidth || m.FullSizeHeight != src.FullSizeHeight) {
 		return mismatch(dims(src.FullSizeWidth, src.FullSizeHeight), dims(m.FullSizeWidth, m.FullSizeHeight))
@@ -130,6 +135,17 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 		if strings.EqualFold(hex.EncodeToString(sum[:]), src.ContentHash.String) {
 			return sameFile
 		}
+	} else if strings.TrimSpace(src.FullSizeMediaURL) != "" {
+		// ⚠ A LEGACY SOURCE ROW HAS NO STORED HASH (G-03 r2, Codex 7): its OBJECT is compared with the
+		// mask's bytes instead — by size first (the store says it without a byte read), then byte for
+		// byte, reading at most len(mask) + 1 bytes of it.
+		same, err := s.designObjectHoldsBytes(ctx, src.FullSizeMediaURL, raw)
+		if err != nil {
+			return designError(ctx, "failed to read the picture of a retouch", err, nil)
+		}
+		if same {
+			return sameFile
+		}
 	}
 	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
@@ -140,6 +156,11 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 	}
 	if srcKnown && (cfg.Width != src.FullSizeWidth || cfg.Height != src.FullSizeHeight) {
 		return mismatch(dims(src.FullSizeWidth, src.FullSizeHeight), dims(cfg.Width, cfg.Height))
+	}
+	// The mask is the picture's size (the worker refuses any other, free): a mask header over the cap
+	// is the picture's own size when the row does not state one.
+	if designOverCompositeCap(cfg.Width, cfg.Height) {
+		return designRefuseSourceTooLarge(srcID, cfg.Width, cfg.Height, "a retouch")
 	}
 	// ⚠ THE RPC DECODES A MASK OF AT MOST designMaskDoorMaxPixels (G-03, Fable m-2). A mask is the size
 	// of its picture — up to 40 MP by the bucket's budget, 160 MB of NRGBA per call, several admins at
@@ -159,6 +180,50 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 			map[string]string{"mask_media_id": strconv.Itoa(maskID)})
 	}
 	return nil
+}
+
+// designOverCompositeCap — w×h past the composite's working pixel cap (designgen.CompositeMaxSourcePixels,
+// the worker's own number).
+func designOverCompositeCap(w, h int) bool {
+	return int64(w)*int64(h) > designgen.CompositeMaxSourcePixels
+}
+
+// designRefuseSourceTooLarge — the source of an extend / inpaint is over the working pixel cap (G-03 r2,
+// Codex BLOCKER 1). The composite of such a picture runs after the payment inside a 0.5 GB process;
+// refused here, from its stored size or its header, before anything is reserved.
+func designRefuseSourceTooLarge(id, w, h int, what string) error {
+	capMP := strconv.FormatFloat(float64(designgen.CompositeMaxSourcePixels)/1e6, 'f', -1, 64)
+	return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeSourceTooLarge,
+		fmt.Sprintf("picture %d is %d×%d px (%.1f MP), and %s works on at most %s MP — downscale it and upload "+
+			"it again. Nothing was reserved and nothing was charged", id, w, h, float64(w)*float64(h)/1e6, what, capMP),
+		map[string]string{
+			"media_id":   strconv.Itoa(id),
+			"width":      strconv.Itoa(w),
+			"height":     strconv.Itoa(h),
+			"max_pixels": strconv.Itoa(designgen.CompositeMaxSourcePixels),
+		})
+}
+
+// designObjectHoldsBytes — whether the managed object at rawURL is exactly want: false at once when the
+// store reports another size, else a read of at most len(want)+1 bytes compared byte for byte.
+func (s *Server) designObjectHoldsBytes(ctx context.Context, rawURL string, want []byte) (bool, error) {
+	key, err := bucket.ObjectKeyFromStoredURL(rawURL)
+	if err != nil {
+		return false, err
+	}
+	rc, size, err := s.bucket.GetManagedObject(ctx, key)
+	if err != nil {
+		return false, fmt.Errorf("object %q: %w", key, err)
+	}
+	defer rc.Close()
+	if size >= 0 && size != int64(len(want)) {
+		return false, nil
+	}
+	got, err := io.ReadAll(io.LimitReader(rc, int64(len(want))+1))
+	if err != nil {
+		return false, fmt.Errorf("read object %q: %w", key, err)
+	}
+	return bytes.Equal(got, want), nil
 }
 
 // designInpaintRefs — the snapshot's record of what a mask retouch sends: the picture and its mask,

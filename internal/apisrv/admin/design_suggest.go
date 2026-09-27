@@ -19,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -167,23 +168,44 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 	// singleflight makes the FIRST of them the only one that passes the fences and calls; the others
 	// wait for it and share its answer (or its refusal). The leader re-reads the cache first — a
 	// flight that landed between our miss and our turn is a hit.
-	v, err, shared := s.suggestFlight.Do(string(key[:]), func() (any, error) {
+	//
+	// ⚠ THE FLIGHT BELONGS TO NOBODY'S REQUEST (G-03 r2, Codex 9). Its context is the leader's
+	// WITHOUT its cancellation (context.WithoutCancel keeps the admin name the hourly window reads)
+	// under its own suggestFlightTimeout: the leader closing its tab no longer aborts the one call
+	// every follower waits on — the followers used to receive the leader's «canceled», and a retry
+	// could pay the provider a second time for an answer the first call had already bought. Each
+	// caller still leaves on ITS OWN ctx.Done (DoChan), and the flight's answer lands in the cache
+	// for whoever asks next.
+	ch := s.suggestFlight.DoChan(string(key[:]), func() (any, error) {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), suggestFlightTimeout)
+		defer cancel()
 		if ideas, answered, ok := s.suggestCache.get(key, time.Now()); ok {
 			return suggestFlightAnswer{ideas: ideas, model: answered}, nil
 		}
-		return s.suggestCall(ctx, in, model, key, urls, logAttrs)
+		return s.suggestCall(fctx, in, model, key, urls, logAttrs)
 	})
-	if err != nil {
-		return nil, err
+	var res singleflight.Result
+	select {
+	case res = <-ch:
+	case <-ctx.Done():
+		return nil, status.FromContextError(ctx.Err()).Err()
 	}
-	ans := v.(suggestFlightAnswer)
-	if shared {
+	if res.Err != nil {
+		return nil, res.Err
+	}
+	ans := res.Val.(suggestFlightAnswer)
+	if shared := res.Shared; shared {
 		slog.Default().InfoContext(ctx, "suggested prompts",
 			append(logAttrs, slog.String("model", ans.model), slog.Bool("cache_hit", false),
 				slog.Bool("shared_flight", true), slog.Int("ideas", len(ans.ideas)))...)
 	}
 	return &pb_admin.SuggestPromptsResponse{Ideas: append([]string(nil), ans.ideas...), Model: ans.model}, nil
 }
+
+// suggestFlightTimeout — how long the shared flight may run once detached from the request that
+// started it: the provider call and its one 404 fallback, each under the client's own HTTP timeout
+// (openrouter's 60 s default), with a margin.
+const suggestFlightTimeout = 150 * time.Second
 
 // suggestFlightAnswer — what one flight hands every request that waited on it.
 type suggestFlightAnswer struct {
