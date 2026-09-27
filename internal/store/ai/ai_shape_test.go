@@ -594,7 +594,8 @@ func TestAIStoreShapeLedgerUpdatesTouchOnlyTheirState(t *testing.T) {
 // exact lie 02-PLAN §7 forbids); their number read raw per day instead of summed per provider (one
 // line per reported day, each a partial number); their number JOINed back onto the ledger side (a
 // provider with no ledger row in the period loses its line again — unionSpendLines is where the two
-// meet); a status dropped from the unpriced list; a report without its period.
+// meet); unpriced counted over a status list instead of "not free" (accepted, dispatching and failed
+// rows with no cost vanish from the counter — Codex B #3); a report without its period.
 func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
 	for name, q := range map[string]string{"by provider": spendByProvider, "their number": spendTheirByProvider, "by actor": spendByActor} {
 		up := strings.ToUpper(q)
@@ -610,9 +611,15 @@ func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
 			t.Fatalf("the report %s is not bounded by the day_local period", name)
 		}
 	}
+	// Codex B #3: unpriced is every counted row with no known cost except a free one — accepted and
+	// dispatching (an unknown liability) and failed included. The old list ('ok','charged_failed',
+	// 'unknown') left a submitted fal job at calls=1, no USD and unpriced=0.
 	if !strings.Contains(spendByProvider,
-		"cost_usd IS NULL AND status IN ('"+entity.AICallOK+"','"+entity.AICallChargedFailed+"','"+entity.AICallUnknown+"')") {
-		t.Fatal("unpriced = cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') (02-PLAN A1)")
+		"SUM(CASE WHEN cost_usd IS NULL AND status <> '"+entity.AICallFree+"' THEN 1 ELSE 0 END) AS unpriced") {
+		t.Fatal("unpriced = SUM(CASE WHEN cost_usd IS NULL AND status <> 'free' …) — every counted row without a known cost that is not free")
+	}
+	if strings.Contains(spendByProvider, "cost_usd IS NULL AND status IN") {
+		t.Fatal("unpriced lists the statuses it includes: every status left out is dropped from the counter")
 	}
 	if !strings.Contains(spendTheirByProvider, "SUM(amount_usd) AS their_usd") ||
 		!strings.Contains(spendTheirByProvider, "FROM ai_provider_cost_daily\n\tWHERE day BETWEEN :from_day AND :to_day\n\tGROUP BY provider_key") {

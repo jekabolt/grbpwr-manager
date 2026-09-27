@@ -998,14 +998,19 @@ func (s *Store) SweepDispatching(ctx context.Context, olderThan time.Time) (int6
 //
 // SUM(cost_usd) IS NEVER COALESCEd: a provider none of whose rows carries a price reports NULL, which
 // the page shows as unknown, not $0. A `free` row carries a real 0 (aiprov.Ledger writes it), so a
-// provider whose only calls were free sums to a real 0 and says so. Unpriced counts the rows that owe
-// a number and have none.
+// provider whose only calls were free sums to a real 0 and says so.
+//
+// UNPRICED = EVERY COUNTED ROW WITHOUT A KNOWN COST THAT IS NOT `free` (Codex B #3) — the wire's
+// "calls with no known cost", over the same rows `calls` counts. That includes `accepted` and
+// `dispatching` (an async job submitted and not yet collected, a call in flight: an unknown liability,
+// not a zero) and `failed` (the request was written and no charge was reported — which is not the
+// same as known to be free). A status list here would drop every status it forgot, silently.
 const spendByProvider = `
 	SELECT provider_key,
 	       SUM(cost_usd) AS our_usd,
 	       COUNT(*) AS calls,
 	       SUM(CASE WHEN status IN ('free','failed','charged_failed','unknown') THEN 1 ELSE 0 END) AS failed,
-	       SUM(CASE WHEN cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') THEN 1 ELSE 0 END) AS unpriced
+	       SUM(CASE WHEN cost_usd IS NULL AND status <> 'free' THEN 1 ELSE 0 END) AS unpriced
 	FROM ai_usage_event
 	WHERE day_local BETWEEN :from_day AND :to_day
 	GROUP BY provider_key`
