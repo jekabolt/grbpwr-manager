@@ -3,7 +3,9 @@ package design_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -801,10 +803,258 @@ func TestDesignDBOverwriteRefusesAPictureOnTheTechnicalSheet(t *testing.T) {
 	})
 	t.Run("заменённый кадр, поставленный на лист, — already_replaced с головой, а не лист", func(t *testing.T) {
 		require.NotNil(t, edit, "подслучай выше обязан был перезаписать кадр")
+		// Строка кладётся МИМО СТОРА: сейв карточки такой лист больше не собирает (D-57,
+		// TestDesignDBCardSaveRefusesAReplacedPictureOnTheSheet). Это лист, собранный до сторожа, —
+		// и ровно на нём порядок отказов ещё виден.
 		put(t, p.card, "technical")
 		_, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
 		require.NotErrorIs(t, err, entity.ErrDesignTechnicalSheet)
 		requireHead(t, err, p.sheet.Id, edit.Id)
+	})
+}
+
+// ═══ ЗЕРКАЛО technical_sheet НА СЕЙВЕ КАРТОЧКИ (27.09, D-57) ═══════════════════════════════════
+//
+// Инвариант один на две двери: на техническом листе карточки нет файла её заменённого кадра.
+// Перезапись держит его отказом technical_sheet, сейв — поимённым отказом replaced_picture
+// (entity.DesignSheetReplacedRefusal). Пробы ниже ходят НАСТОЯЩИМИ путями обеих дверей: сейв —
+// через rep.TechCards().UpdateTechCard (SERIALIZABLE-обёртка с повтором 1213/1205), перезапись —
+// через rep.Design().FlattenEditLayer.
+
+// onSheet / onBoard — строка сейва: лист и мудборд.
+func onSheet(media int) entity.TechCardMediaItem {
+	return entity.TechCardMediaItem{MediaId: media, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront}
+}
+
+func onBoard(media int) entity.TechCardMediaItem {
+	return entity.TechCardMediaItem{MediaId: media, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaMoodboard}
+}
+
+// probeSheetPayload — карточка, прочитанная стором, с этим списком медиа, и версия, от которой её
+// сохранять. Сейв — полная замена списка, поэтому список пробы и есть лист после сейва.
+func probeSheetPayload(t *testing.T, rep dependency.Repository, card int, media ...entity.TechCardMediaItem) (*entity.TechCardInsert, int) {
+	t.Helper()
+	tc, err := rep.TechCards().GetTechCardById(context.Background(), card)
+	require.NoError(t, err)
+	payload := tc.TechCardInsert
+	payload.Media = media
+	return &payload, tc.LockVersion
+}
+
+// probeSaveSheet — сейв карточки настоящим путём. Ошибка возвращается, а не проверяется: отказ и
+// есть то, о чём пробы спрашивают.
+func probeSaveSheet(t *testing.T, rep dependency.Repository, card int, media ...entity.TechCardMediaItem) error {
+	t.Helper()
+	payload, version := probeSheetPayload(t, rep, card, media...)
+	return rep.TechCards().UpdateTechCard(context.Background(), card, payload, version)
+}
+
+// requireSheetRefusal — поимённый отказ сейва: строка листа (с нуля на проводе, с единицы человеку)
+// и голова цепочки, которую он называет.
+func requireSheetRefusal(t *testing.T, err error, item, head int) {
+	t.Helper()
+	var ve *entity.ValidationError
+	require.ErrorAs(t, err, &ve, "отказ сейва — поимённый ValidationError, а не Internal и не конфликт")
+	require.Equal(t, fmt.Sprintf("technical_media[%d].media_id", item), ve.Field)
+	require.Equal(t, entity.DesignSheetReplacedReason, ve.Reason)
+	require.Equal(t, fmt.Sprintf("technical sheet item %d: this drawing was replaced by picture #%d — "+
+		"put the replacement on the sheet, or take this one off", item+1, head), ve.HowToFix)
+}
+
+// probeSheetRows — строки листа карточки с этим файлом, мимо стора.
+func probeSheetRows(t *testing.T, raw *sql.DB, card, media int) int {
+	t.Helper()
+	return countRows(t, raw, `SELECT COUNT(*) FROM tech_card_media
+		WHERE tech_card_id = ? AND media_id = ? AND category = 'technical'`, card, media)
+}
+
+// probeReplacedOnSheet — сам инвариант, в строках: файлы листа карточки, принадлежащие её
+// заменённым кадрам. Обязан быть нулём после любого исхода любой пары операций.
+func probeReplacedOnSheet(t *testing.T, raw *sql.DB, card int) int {
+	t.Helper()
+	return countRows(t, raw, `SELECT COUNT(*) FROM tech_card_media m
+		JOIN design_picture p ON p.tech_card_id = m.tech_card_id AND p.media_id = m.media_id
+		WHERE m.tech_card_id = ? AND m.category = 'technical' AND p.replaced_by IS NOT NULL`, card)
+}
+
+// probeLockVersion — версия карточки, мимо стора.
+func probeLockVersion(t *testing.T, raw *sql.DB, card int) int {
+	t.Helper()
+	var v int
+	require.NoError(t, raw.QueryRow(`SELECT lock_version FROM tech_card WHERE id = ?`, card).Scan(&v))
+	return v
+}
+
+// ПОВТОР ПО КЛЮЧУ ОТВЕЧАЕТСЯ РАНЬШЕ ЛИСТА (D-57).
+//
+// Перезапись с ключом прошла, ответ потерян, а файл оригинала тем временем оказался на листе. Сейв
+// карточки поставить его туда больше не может (сторож D-57, проба ниже), поэтому строка кладётся мимо
+// стора: это лист, собранный до сторожа, и ровно на нём порядок виден. Повтор того же ключа обязан
+// получить правку первой попытки, а не technical_sheet: ответ «файл на листе» на собственный успех
+// оставил бы клиента с правкой, о которой он не знает. Контроль — тот же запрос без ключа: он не
+// повтор, и ему отвечает already_replaced с головой (раньше листа по порядку отказов).
+//
+// МУТАЦИЯ: читать лист раньше, чем искать повтор по ключу, — повтор получает technical_sheet.
+func TestDesignDBOverwriteReplayWithTheKeyOutranksTheSheet(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	pictures := func() int {
+		return countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+	}
+
+	req := p.overwrite(probeMedia(t, raw), p.sheet.Id)
+	req.ClientRequestId = uuid.NewString()
+	edit, err := rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err)
+	before := pictures()
+
+	_, err = raw.Exec(`INSERT INTO tech_card_media (tech_card_id, media_id, kind, category, display_order)
+		VALUES (?, ?, 'front', 'technical', 0)`, p.card, p.sheet.MediaId)
+	require.NoError(t, err)
+
+	replay, err := rep.Design().FlattenEditLayer(ctx, req)
+	require.NoError(t, err, "повтор с ключом — успех, а не technical_sheet")
+	require.Equal(t, edit.Id, replay.Id, "ответ повтору — правка первой попытки")
+	require.Equal(t, before, pictures(), "повтор не подаёт второй правки")
+
+	noKey := req
+	noKey.ClientRequestId = ""
+	_, err = rep.Design().FlattenEditLayer(ctx, noKey)
+	require.NotErrorIs(t, err, entity.ErrDesignTechnicalSheet)
+	requireHead(t, err, p.sheet.Id, edit.Id)
+}
+
+// ДВА ПОРЯДКА И ГОНКА: СЕЙВ ЛИСТА ПРОТИВ ПЕРЕЗАПИСИ — ВСЕГДА РОВНО ОДИН ПРОХОДИТ (D-57).
+//
+// Сейв первым — перезапись видит файл на листе (technical_sheet). Перезапись первой — сейв видит
+// замену (replaced_picture, строка и голова). Гонка — обе двери отпущены одним сигналом, и порядок
+// решает база; проба не угадывает, кто выиграет, и утверждает только то, что верно при ЛЮБОМ
+// исходе и при любом числе повторов 1213/1205 внутри обёрток: ровно одна операция прошла, вторая
+// отказала своим отказом, и инвариант в строках цел. Повтор жертвы дедлока перечитывает всё
+// заново — именно поэтому сторож стоит в транзакции сейва, а не перед ней.
+//
+// МУТАЦИИ: снять сторож сейва (порядок «перезапись первой» проходит, гонка то и дело кончается
+// двумя успехами); читать на другом хендле (гонка кончается двумя успехами); перенести сторож после
+// переписи детей (то же — под повтором жертвы).
+func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+
+	t.Run("сейв первым — перезапись получает technical_sheet", func(t *testing.T) {
+		p := newReplaceProbeSetup(t, rep, raw)
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(p.sheet.MediaId)))
+		pictures := countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card)
+
+		_, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+		require.ErrorIs(t, err, entity.ErrDesignTechnicalSheet)
+		require.Equal(t, pictures, countRows(t, raw, `SELECT COUNT(*) FROM design_picture WHERE tech_card_id = ?`, p.card),
+			"отказ не подаёт правку")
+		require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid)
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, p.sheet.MediaId), "лист сейва на месте")
+	})
+
+	t.Run("перезапись первой — сейв получает replaced_picture и не пишет ничего", func(t *testing.T) {
+		p := newReplaceProbeSetup(t, rep, raw)
+		edit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+		require.NoError(t, err)
+		version := probeLockVersion(t, raw, p.card)
+
+		requireSheetRefusal(t, probeSaveSheet(t, rep, p.card, onSheet(p.sheet.MediaId)), 0, edit.Id)
+		require.Equal(t, version, probeLockVersion(t, raw, p.card), "отказ откатывает и шапку")
+		require.Zero(t, probeSheetRows(t, raw, p.card, p.sheet.MediaId))
+	})
+
+	t.Run("гонка — ровно одна проходит, и лист не держит заменённый файл", func(t *testing.T) {
+		outcomes := map[string]int{}
+		for round := 0; round < 8; round++ {
+			p := newReplaceProbeSetup(t, rep, raw)
+			media := probeMedia(t, raw)
+			payload, version := probeSheetPayload(t, rep, p.card, onSheet(p.sheet.MediaId))
+
+			var (
+				wg               sync.WaitGroup
+				saveErr, flatErr error
+				edit             *entity.DesignPicture
+			)
+			start := make(chan struct{})
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				saveErr = rep.TechCards().UpdateTechCard(ctx, p.card, payload, version)
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				edit, flatErr = rep.Design().FlattenEditLayer(ctx, p.overwrite(media, p.sheet.Id))
+			}()
+			close(start)
+			wg.Wait()
+
+			switch {
+			case saveErr == nil && flatErr == nil:
+				t.Fatalf("round %d: both committed — the sheet holds the file of replaced picture %d", round, p.sheet.Id)
+			case saveErr == nil:
+				require.ErrorIs(t, flatErr, entity.ErrDesignTechnicalSheet, "round %d", round)
+				require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "round %d", round)
+				require.Equal(t, 1, probeSheetRows(t, raw, p.card, p.sheet.MediaId), "round %d", round)
+				outcomes["save won"]++
+			case flatErr == nil:
+				requireSheetRefusal(t, saveErr, 0, edit.Id)
+				require.Zero(t, probeSheetRows(t, raw, p.card, p.sheet.MediaId), "round %d", round)
+				outcomes["overwrite won"]++
+			default:
+				t.Fatalf("round %d: both refused — save: %v; overwrite: %v", round, saveErr, flatErr)
+			}
+			require.Zero(t, probeReplacedOnSheet(t, raw, p.card), "round %d: инвариант в строках", round)
+		}
+		t.Logf("outcomes: %v", outcomes)
+	})
+}
+
+// СЕЙВ КАРТОЧКИ НЕ СТАВИТ НА ЛИСТ ФАЙЛ ЗАМЕНЁННОГО КАДРА — И ТОЛЬКО ЕГО (D-57).
+//
+// МУТАЦИИ: снять сторож (первый подслучай сохраняется); проверять и мудборд (третий отказывает); не
+// смотреть на replaced_by (второй отказывает: голова — кадр этой карточки); не смотреть на карточку
+// (четвёртый отказывает); назвать не голову (пятый называет первую правку).
+func TestDesignDBCardSaveRefusesAReplacedPictureOnTheSheet(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	edit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.NoError(t, err)
+	// Чужая карточка со своим заменённым кадром.
+	q := newReplaceProbeSetup(t, rep, raw)
+	_, err = rep.Design().FlattenEditLayer(ctx, q.overwrite(probeMedia(t, raw), q.sheet.Id))
+	require.NoError(t, err)
+
+	t.Run("файл заменённого кадра вторым на листе — отказ с местом и головой, и не записано ничего", func(t *testing.T) {
+		first := probeMedia(t, raw)
+		version := probeLockVersion(t, raw, p.card)
+		err := probeSaveSheet(t, rep, p.card, onBoard(probeMedia(t, raw)), onSheet(first), onSheet(p.sheet.MediaId))
+		requireSheetRefusal(t, err, 1, edit.Id)
+		require.Equal(t, version, probeLockVersion(t, raw, p.card), "отказ откатывает шапку")
+		require.Zero(t, probeSheetRows(t, raw, p.card, first), "и строку листа перед отказавшей")
+	})
+	t.Run("голова цепочки на листе проходит", func(t *testing.T) {
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(edit.MediaId)))
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, edit.MediaId))
+	})
+	t.Run("тот же файл на мудборде проходит", func(t *testing.T) {
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onBoard(p.sheet.MediaId), onSheet(edit.MediaId)))
+	})
+	t.Run("заменённый кадр чужой карточки этот лист не держит", func(t *testing.T) {
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(q.sheet.MediaId)))
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, q.sheet.MediaId))
+	})
+	t.Run("голова уехала вперёд — отказ называет новую", func(t *testing.T) {
+		// Лист пуст, иначе перезапись правки сама получила бы technical_sheet.
+		require.NoError(t, probeSaveSheet(t, rep, p.card))
+		edit2 := editProbe(t, rep, raw, *edit, edit.Id)
+		requireSheetRefusal(t, probeSaveSheet(t, rep, p.card, onSheet(p.sheet.MediaId)), 0, edit2.Id)
+		requireSheetRefusal(t, probeSaveSheet(t, rep, p.card, onSheet(edit.MediaId)), 0, edit2.Id)
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(edit2.MediaId)))
 	})
 }
 

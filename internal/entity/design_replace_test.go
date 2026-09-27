@@ -260,6 +260,126 @@ func TestDesignAlreadyReplacedCarriesTheHead(t *testing.T) {
 	require.False(t, errors.As(err, &replaced), "отказ без головы нарушил бы обещание head_picture_id")
 }
 
+// ─── ЗЕРКАЛО technical_sheet НА СЕЙВЕ КАРТОЧКИ (27.09, D-57) ───
+
+// sheetItem / boardItem — строки входящего сейва: лист и мудборд, как их собирает dto.
+func sheetItem(media int) TechCardMediaItem {
+	return TechCardMediaItem{MediaId: media, Category: TechCardMediaCategoryTechnical, Kind: TechCardMediaFront}
+}
+
+func boardItem(media int) TechCardMediaItem {
+	return TechCardMediaItem{MediaId: media, Category: TechCardMediaCategoryMoodboard, Kind: TechCardMediaMoodboard}
+}
+
+// ОТКАЗ НАЗЫВАЕТ СТРОКУ ЛИСТА И ГОЛОВУ ЦЕПОЧКИ — ТЕМ КАНАЛОМ, КОТОРЫМ СЕЙВ УЖЕ ОТКАЗЫВАЕТ ПОИМЁННО.
+//
+// Кадр 7 заменён: 7 → 12 → 19. Его файл стоит ВТОРЫМ на листе и ещё раз на мудборде, а перед листом в
+// списке сейва идут два файла мудборда — ровно как dto склеивает списки.
+//
+// МУТАЦИИ: назвать первую замену вместо головы (#12); считать место по общему списку, а не по листу
+// (technical_media[3]); отдать человеку номер с нуля («item 1»); отказать строкой без поля (клиент не
+// пришпилил бы отказ к плите и не открыл бы ARTIFACTS).
+func TestDesignSheetReplacedRefusalNamesTheItemAndTheHead(t *testing.T) {
+	chain, load, _ := replaceChain()
+	replacedMedia := chain[7].MediaId
+	media := []TechCardMediaItem{boardItem(500), boardItem(replacedMedia), sheetItem(600), sheetItem(replacedMedia)}
+
+	err := DesignSheetReplacedRefusal(replaceProbeCard, media, []DesignPicture{chain[7]}, load)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve, "поимённый отказ сейва — ValidationError, а не второй канал")
+	require.Equal(t, "technical_media[1].media_id", ve.Field)
+	require.Equal(t, DesignSheetReplacedReason, ve.Reason)
+	require.Equal(t, "replaced_picture", ve.Reason, "код причины на проводе не меняется молча")
+	require.Empty(t, ve.Conflicting)
+	require.Equal(t, "technical sheet item 2: this drawing was replaced by picture #19 — "+
+		"put the replacement on the sheet, or take this one off", ve.HowToFix)
+	require.Equal(t, "technical_media[1].media_id: replaced_picture; technical sheet item 2: this drawing was "+
+		"replaced by picture #19 — put the replacement on the sheet, or take this one off", ve.Error())
+}
+
+// ЛИСТ ДЕРЖИТ ТОЛЬКО ЗАМЕНЁННЫЙ КАДР ЭТОЙ КАРТОЧКИ, И ТОЛЬКО НА ЛИСТЕ.
+//
+// Положительный контроль первым: те же входы с файлом заменённого кадра на листе отказывают — без него
+// каждая половина ниже зеленела бы и на стороже, который не отказывает никогда.
+//
+// МУТАЦИИ: проверять и мудборд (половина «мудборд»); не смотреть на replaced_by (голова 19 — кадр
+// этой карточки с тем же правом на лист, что у любого живого кадра, — отказывала бы); не смотреть на
+// карточку (заменённый кадр чужой карточки закрывал бы свой файл на этом листе).
+func TestDesignSheetReplacedRefusalLetsTheRestThrough(t *testing.T) {
+	chain, load, _ := replaceChain()
+	replaced := chain[7]
+	foreign := DesignPicture{Id: 40, TechCardId: replaceProbeCard + 1, MediaId: 4040,
+		ReplacedBy: sql.NullInt32{Int32: 41, Valid: true}}
+	read := []DesignPicture{replaced, chain[19], foreign}
+
+	require.Error(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(replaced.MediaId)}, read, load),
+		"контроль: заменённый кадр этой карточки на листе — отказ")
+
+	for _, tc := range []struct {
+		name  string
+		media []TechCardMediaItem
+	}{
+		{"мудборд", []TechCardMediaItem{boardItem(replaced.MediaId), sheetItem(600)}},
+		{"голова цепочки на листе", []TechCardMediaItem{sheetItem(chain[19].MediaId)}},
+		{"заменённый кадр чужой карточки", []TechCardMediaItem{sheetItem(foreign.MediaId)}},
+		{"пустой сейв", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, tc.media, read, load))
+		})
+	}
+	t.Run("ничего не заменено — и цепочку не читать", func(t *testing.T) {
+		_, load, calls := replaceChain()
+		require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(replaced.MediaId)}, nil, load))
+		require.Zero(t, *calls)
+	})
+}
+
+// ОДИН ФАЙЛ У ДВУХ ЗАМЕНЁННЫХ КАДРОВ — НАЗЫВАЕТСЯ СТАРШИЙ, В КАКОМ БЫ ПОРЯДКЕ ИХ НИ ПРОЧЛИ.
+//
+// МУТАЦИЯ: брать первый прочитанный — голова начинала бы зависеть от плана запроса.
+func TestDesignSheetReplacedRefusalNamesTheOlderPictureOfOneFile(t *testing.T) {
+	chain, load, _ := replaceChain()
+	younger := DesignPicture{Id: 30, TechCardId: replaceProbeCard, MediaId: chain[7].MediaId,
+		ReplacedBy: sql.NullInt32{Int32: 31, Valid: true}}
+	chain[31] = DesignPicture{Id: 31, TechCardId: replaceProbeCard, MediaId: 3131}
+	for _, read := range [][]DesignPicture{{younger, chain[7]}, {chain[7], younger}} {
+		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, read, load)
+		var ve *ValidationError
+		require.ErrorAs(t, err, &ve)
+		require.Contains(t, ve.HowToFix, "replaced by picture #19")
+	}
+}
+
+// ПОРЧА ЦЕПОЧКИ — НЕ ПОИМЁННЫЙ ОТКАЗ, А ОШИБКА ЧТЕНИЯ ОСТАЁТСЯ ВИДИМОЙ ДЛЯ ПОВТОРА.
+//
+// МУТАЦИИ: отказать поимённо с головой, которую не удалось прочесть (человеку ушло бы «замените на
+// #0»); потерять %w у ошибки чтения (дедлок 1213 перестал бы повторяться транзакцией сейва).
+func TestDesignSheetReplacedRefusalKeepsCorruptionAndReadErrors(t *testing.T) {
+	chain, load, _ := replaceChain()
+	delete(chain, 19)
+	err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, []DesignPicture{chain[7]}, load)
+	require.Error(t, err)
+	var ve *ValidationError
+	require.False(t, errors.As(err, &ve), "порча цепочки — не то, что человек чинит на листе")
+	require.NotErrorIs(t, err, ErrDesignNotFound)
+
+	chain, _, _ = replaceChain()
+	transient := errors.New("Error 1213: Deadlock found when trying to get lock")
+	err = DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, []DesignPicture{chain[7]},
+		func(int) (DesignPicture, error) { return DesignPicture{}, transient })
+	require.ErrorIs(t, err, transient)
+}
+
+// ЧТЕНИЕ СПРАШИВАЕТ ТОЛЬКО ФАЙЛЫ ЛИСТА, КАЖДЫЙ ОДИН РАЗ, В ПОРЯДКЕ ЛИСТА.
+//
+// МУТАЦИЯ: спрашивать и мудборд — стор читал и запирал бы кадры, которые правило не судит.
+func TestDesignSheetMediaIdsAskOnlyTheSheet(t *testing.T) {
+	require.Equal(t, []int{600, 900, 700},
+		DesignSheetMediaIds([]TechCardMediaItem{boardItem(500), sheetItem(600), boardItem(900), sheetItem(900), sheetItem(600), sheetItem(700)}))
+	require.Empty(t, DesignSheetMediaIds([]TechCardMediaItem{boardItem(500)}))
+}
+
 // ─── СТОИТ ЛИ КУСОК: ВСЯ ВЕТКА (O-53 review, раунд 3) ───
 
 // standingSheet — лист, чьи куски судятся: 7, на виду, не заменён.

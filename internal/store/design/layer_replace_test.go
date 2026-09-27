@@ -115,15 +115,16 @@ func TestBranchReadsNameParentsNotTheCard(t *testing.T) {
 //
 // МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять категорию (кадр на мудборде закрыл бы перезапись, хотя мудборд плит не
 // печатает); снять карточку (тот же файл на листе ЧУЖОЙ карточки закрыл бы перезапись здесь);
-// сравнивать не media_id; связать слово листа не с 'technical'.
+// сравнивать не media_id; связать слово листа не с 'technical'; вернуть COUNT(*) (D-57: ответ «да»
+// досчитывал и запирал бы все строки файла на листе).
 func TestTechnicalSheetReadNamesTheCardTheFileAndTheSheet(t *testing.T) {
 	require.Equal(t,
-		"SELECT COUNT(*) FROM tech_card_media WHERE tech_card_id = :card AND media_id = :media AND category = :technical",
+		"SELECT EXISTS ( SELECT 1 FROM tech_card_media WHERE tech_card_id = :card AND media_id = :media AND category = :technical )",
 		strings.Join(strings.Fields(designTechnicalSheetRows), " "))
 	query, args, err := designTechnicalSheetQuery(41, 900)
 	require.NoError(t, err)
 	require.Equal(t,
-		"SELECT COUNT(*) FROM tech_card_media WHERE tech_card_id = ? AND media_id = ? AND category = ?",
+		"SELECT EXISTS ( SELECT 1 FROM tech_card_media WHERE tech_card_id = ? AND media_id = ? AND category = ? )",
 		strings.Join(strings.Fields(query), " "))
 	require.Equal(t, []any{41, 900, "technical"}, args, "карточка, файл и слово листа — в этом порядке")
 }

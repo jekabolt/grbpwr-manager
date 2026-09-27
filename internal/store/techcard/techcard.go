@@ -450,6 +450,16 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 				fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
 		}
 	}
+	// THE TECHNICAL SHEET NEVER CARRIES THE FILE OF A REPLACED PICTURE OF THIS CARD (27.09, D-57) —
+	// the save-side half of the invariant FlattenEditLayer keeps with technical_sheet. It has to live
+	// HERE, in this transaction and before the children are rewritten: the flatten does not bump
+	// lock_version, so a form opened before an overwrite still saves at a matching version, and a
+	// deadlock victim retried by txFunc re-runs this read against whatever committed meanwhile.
+	// Either order then closes: save first — the flatten sees the file on the sheet; flatten first —
+	// this read sees the replacement and refuses item N with the head of its chain.
+	if err := refuseReplacedPicturesOnTheSheet(ctx, rep.DB(), id, tc.Media); err != nil {
+		return nil, err
+	}
 
 	// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 	s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)

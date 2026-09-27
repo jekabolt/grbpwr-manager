@@ -854,13 +854,21 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 	return original, entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, facts)
 }
 
-// designTechnicalSheetRows — СТРОКИ ТЕХНИЧЕСКОГО ЛИСТА КАРТОЧКИ, ДЕРЖАЩИЕ МЕДИА (27.09): tech_card_media
-// с category = 'technical' — это TechCard.technical_media, список, из которого тех-пакет печатает
-// плиты и к медиа которого приколоты выноски листа. Мудборд (category = 'moodboard') плит не
-// печатает и перезапись не держит. Лист чужой карточки не спрашивается: печатается лист ЭТОЙ.
+// designTechnicalSheetRows — ЕСТЬ ЛИ НА ТЕХНИЧЕСКОМ ЛИСТЕ КАРТОЧКИ СТРОКА С ЭТИМ МЕДИА (27.09):
+// tech_card_media с category = 'technical' — это TechCard.technical_media, список, из которого
+// тех-пакет печатает плиты и к медиа которого приколоты выноски листа. Мудборд (category =
+// 'moodboard') плит не печатает и перезапись не держит. Лист чужой карточки не спрашивается:
+// печатается лист ЭТОЙ.
+//
+// EXISTS, А НЕ COUNT(*) (D-57): вопрос — «есть ли», и ответ «да» не требует досчитывать остальные
+// строки того же файла (и запирать их). Ответ «нет» запирает под SERIALIZABLE промежуток индекса
+// idx_tech_card_media_sheet (0372), куда встала бы такая строка, — ровно тот, куда её вставил бы
+// сейв карточки.
 const designTechnicalSheetRows = `
-	SELECT COUNT(*) FROM tech_card_media
-	WHERE tech_card_id = :card AND media_id = :media AND category = :technical`
+	SELECT EXISTS (
+		SELECT 1 FROM tech_card_media
+		WHERE tech_card_id = :card AND media_id = :media AND category = :technical
+	)`
 
 // designOnTechnicalSheet — СТОИТ ЛИ МЕДИА НА ТЕХНИЧЕСКОМ ЛИСТЕ КАРТОЧКИ (entity.ErrDesignTechnicalSheet).
 //
@@ -874,12 +882,12 @@ func designOnTechnicalSheet(ctx context.Context, db dependency.DB, card, media i
 	if err != nil {
 		return false, err
 	}
-	var n int
-	if err := db.QueryRowxContext(ctx, query, args...).Scan(&n); err != nil {
+	var on int
+	if err := db.QueryRowxContext(ctx, query, args...).Scan(&on); err != nil {
 		return false, fmt.Errorf("failed to read whether media %d is on the technical sheet of tech card %d: %w",
 			media, card, err)
 	}
-	return n > 0, nil
+	return on == 1, nil
 }
 
 // designTechnicalSheetQuery — запрос листа с привязками: карточка, медиа и слово листа 'technical'

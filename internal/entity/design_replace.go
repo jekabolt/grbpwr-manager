@@ -192,6 +192,93 @@ func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original D
 	return nil
 }
 
+// ─── ЗЕРКАЛО technical_sheet: СЕЙВ КАРТОЧКИ НЕ СТАВИТ НА ЛИСТ ЗАМЕНЁННЫЙ КАДР (27.09, D-57) ───
+//
+// technical_sheet сторожит инвариант с одной стороны: перезапись не штампует кадр, чьё медиа стоит на
+// листе. Другая сторона — сейв карточки, и до этого сторожа она была открыта: tech_card_media
+// переписывается сейвом целиком, флэттен lock_version карточки не трогает, поэтому форма, открытая
+// до перезаписи, клала файл заменённого кадра на лист как ни в чём не бывало — а жертва дедлока,
+// повторённая транзакцией, могла закоммитить то же самое уже ПОСЛЕ флэттена. Инвариант один на обе
+// двери, и он про ФАЙЛЫ, потому что лист держит медиа, а не кадры:
+//
+//	на техническом листе карточки нет медиа кадра этой карточки, у которого стоит replaced_by.
+//
+// Обе проверки читают в своей SERIALIZABLE-транзакции, и порядок закрывается любой: сейв первым —
+// флэттен видит файл на листе (technical_sheet); флэттен первым — сейв видит замену (этот отказ).
+//
+// ⚠ ДВЕ РЕГИСТРАЦИИ ОДНОГО ФАЙЛА. Если тот же файл держит ещё и незаменённый кадр карточки, отказ
+// всё равно звучит — ровно как technical_sheet отказывает перезаписи, не спрашивая, чей ещё это
+// файл: строка листа называет файл, а не кадр, и «чья это плита» на ней не записано.
+
+// DesignSheetReplacedReason — код причины поимённого отказа сейва карточки (ValidationError →
+// google.rpc.BadRequest FieldViolation; клиент читает его префиксом описания — violationReason).
+// Один на весь код: стор отказывает им, пробы узнают по нему отказ.
+const DesignSheetReplacedReason = "replaced_picture"
+
+// DesignSheetMediaIds — файлы технического листа из входящего сейва, без повторов, в порядке листа.
+// Мудборд не спрашивается: он плит не печатает, и перезапись он не держит (technical_sheet тоже).
+func DesignSheetMediaIds(media []TechCardMediaItem) []int {
+	seen := make(map[int]bool, len(media))
+	var ids []int
+	for _, m := range media {
+		if m.Category != TechCardMediaCategoryTechnical || seen[m.MediaId] {
+			continue
+		}
+		seen[m.MediaId] = true
+		ids = append(ids, m.MediaId)
+	}
+	return ids
+}
+
+// DesignSheetReplacedRefusal — МОЖЕТ ЛИ СЕЙВ КАРТОЧКИ cardID ПОСТАВИТЬ НА ТЕХНИЧЕСКИЙ ЛИСТ ЭТИ
+// ФАЙЛЫ. nil = может.
+//
+// media — входящий список сейва (мудборд и лист вместе, как их собирает dto); replaced — кадры,
+// прочитанные стором в транзакции сейва по файлам листа (заменённые кадры этой карточки); load
+// читает звено цепочки там же. Решение здесь, чтения — у стора: правило проверяется без базы.
+//
+// ОТКАЗ — ТОТ ЖЕ КАНАЛ, ЧТО У ОСТАЛЬНЫХ ПОИМЁННЫХ ОТКАЗОВ СЕЙВА (NewFieldViolation, как
+// kind_not_available_yet в dto на той же строке листа): поле technical_media[i].media_id, где i —
+// место в списке листа с нуля, как его пишет dto; человеку — номер с единицы и голова цепочки замен,
+// то есть кадр, который стоит на месте этого сейчас. Первый такой файл в порядке листа: канал несёт
+// одно нарушение.
+//
+// Кадр другой карточки не держит (лист печатает свою карточку), незаменённый — тоже; порча цепочки —
+// не отказ, а ошибка без сентинела (DesignReplacementHead): клиенту Internal, дежурному строка в логе.
+func DesignSheetReplacedRefusal(cardID int, media []TechCardMediaItem, replaced []DesignPicture, load func(id int) (DesignPicture, error)) error {
+	byMedia := make(map[int]DesignPicture, len(replaced))
+	for _, p := range replaced {
+		if p.TechCardId != cardID || !p.ReplacedBy.Valid {
+			continue
+		}
+		// Тот же файл у двух заменённых кадров: называется старший — ответ не зависит от порядка
+		// строк, в котором их прочитали.
+		if held, ok := byMedia[p.MediaId]; !ok || p.Id < held.Id {
+			byMedia[p.MediaId] = p
+		}
+	}
+	if len(byMedia) == 0 {
+		return nil
+	}
+	item := 0
+	for _, m := range media {
+		if m.Category != TechCardMediaCategoryTechnical {
+			continue
+		}
+		if p, ok := byMedia[m.MediaId]; ok {
+			head, err := DesignReplacementHead(p, load)
+			if err != nil {
+				return err
+			}
+			return NewFieldViolation(fmt.Sprintf("technical_media[%d].media_id", item), DesignSheetReplacedReason, "",
+				fmt.Sprintf("technical sheet item %d: this drawing was replaced by picture #%d — "+
+					"put the replacement on the sheet, or take this one off", item+1, head.Id))
+		}
+		item++
+	}
+	return nil
+}
+
 // ─── СТОИТ ЛИ КУСОК: ВСЯ ВЕТКА, А НЕ ГОЛОВА И НЕ СТРОКА (O-53 review, раунд 3) ───
 
 // DesignStandingNodesMax — СКОЛЬКО КАДРОВ ОДИН ЗАПРОС ЧИТАЕТ И ОБХОДИТ, СУДЯ КУСКИ ЛИСТА. Потолок
