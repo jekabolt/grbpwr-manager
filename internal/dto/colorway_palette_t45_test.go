@@ -197,3 +197,16 @@ func TestTechCardColorwayRefCarriesTheT45Facts(t *testing.T) {
 	require.Equal(t, "white", refs[0].GetColours()[1].GetLabel())
 	require.Equal(t, "noir et blanc", refs[0].GetNameI18N()[2])
 }
+
+// The full projection — GetColorwayByID and every lifecycle transition answer through it — carries
+// the SKU colour token beside the family, as the paged list does (REVIEW-T45 finding 4). MUTATION:
+// drop the SkuColorToken line in ConvertToPbProductFull — the case reads "".
+func TestConvertToPbProductFullCarriesTheSkuColorToken(t *testing.T) {
+	full := &entity.ColorwayFull{Product: &entity.Colorway{Id: 41, StyleId: 9}}
+	body := &full.Product.ProductDisplay.ProductBody.ProductBodyInsert
+	body.ColorCode, body.SkuColorToken = "BLK", "BKW"
+	pb, err := ConvertToPbProductFull(full)
+	require.NoError(t, err)
+	require.Equal(t, "BLK", pb.GetColorway().GetColorCode(), "the family")
+	require.Equal(t, "BKW", pb.GetColorway().GetSkuColorToken(), "the SKU segment, top-level")
+}

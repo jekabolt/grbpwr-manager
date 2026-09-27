@@ -540,6 +540,10 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 		ColorCode:   e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		PublishedAt: pbTimestampFromNullTime(e.Product.PublishedAt),
 		// lock_version (tech_card.lock_version) still needs entity plumbing — left unset here.
+
+		// T45: the SKU colour token beside the family. The detail read and every lifecycle
+		// transition answer through here; the paged list carries it too.
+		SkuColorToken: e.Product.ProductDisplay.ProductBody.ProductBodyInsert.SkuColorToken,
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
