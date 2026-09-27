@@ -285,7 +285,8 @@ func feedTwinCases(t *testing.T) []feedTwinCase {
 }
 
 // goTwin is what the Go side computes from the SAME frozen bytes: decode as the band decodes
-// (designUnmarshalJSON), then the door's rule.
+// (designUnmarshalJSON), then the door's rule — designWorkflowOf ITSELF, the very function the
+// rerun guard (designRefuseRerunChangesWorkflow) asks, not a re-spelling of it.
 func goTwin(t *testing.T, c feedTwinCase) string {
 	t.Helper()
 	p := &pb_common.DesignRunParams{}
@@ -294,7 +295,7 @@ func goTwin(t *testing.T, c feedTwinCase) string {
 	if c.raw != nil && strings.TrimSpace(*c.raw) != "null" {
 		require.NoError(t, designUnmarshalJSON([]byte(*c.raw), p), c.name)
 	}
-	return entity.DesignWorkflowOf(c.kind, p.GetFreeform().GetPreset(), designAnyClothWithPicture(p.GetColour()))
+	return designWorkflowOf(c.kind, p)
 }
 
 func TestFeedWorkflowSQLLiveOnThrowawayMySQL(t *testing.T) {

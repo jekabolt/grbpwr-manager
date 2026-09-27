@@ -296,6 +296,11 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		Outputs:                designCardOutputsToPb(band.Outputs),
 		OutputsTotal:           int32(band.OutputsTotal),
 		OutputsTotalByColorway: intMapToPb(band.OutputsTotalByColorway),
+		// OutputsTotalByWorkflow (band 31) — «newest 60 of N» on a PLAYGROUND tile: the true number of
+		// outputs per run_workflow, counted by the store with the SAME expression that stamps
+		// run_workflow and cuts the window (store/design designCardOutputsWorkflow). Drop this line and
+		// the band still answers 200 while every tile captions «of 0».
+		OutputsTotalByWorkflow: intMapStringToPb(band.OutputsTotalByWorkflow),
 		// ЦВЕТОВОЙ ПЛАН (0364). nil = у карточки плана нет — ответ, а не молчание: клиент рисует
 		// дверь покраски по САМОМУ ПРИСУТСТВИЮ поля («этот сервер умеет план»), а его содержимое
 		// читает как состояние. Убери эту строку — полоса по-прежнему ответит 200, строка деталей
@@ -1288,6 +1293,7 @@ func designCardOutputsToPb(in []entity.DesignCardOutput) []*pb_common.DesignCard
 			RunRrev:       int32(o.RunRrev),
 			RunColorwayId: int32(o.RunColorwayId),
 			BatchId:       o.Picture.BatchId.Int32,
+			RunWorkflow:   o.RunWorkflow,
 		})
 	}
 	return out
@@ -1669,6 +1675,15 @@ func intMapToPb(in map[int]int) map[int32]int32 {
 	out := make(map[int32]int32, len(in))
 	for k, v := range in {
 		out[int32(k)] = int32(v)
+	}
+	return out
+}
+
+// intMapStringToPb — the same for a string-keyed count (OutputsTotalByWorkflow).
+func intMapStringToPb(in map[string]int) map[string]int32 {
+	out := make(map[string]int32, len(in))
+	for k, v := range in {
+		out[k] = int32(v)
 	}
 	return out
 }

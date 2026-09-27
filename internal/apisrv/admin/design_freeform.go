@@ -130,8 +130,12 @@ func (s *Server) designImageModels() []*pb_admin.DesignImageModel {
 // designThreedOptions — which DesignThreedParams options the wired 3D route honours (band field
 // 30). `follow` is never listed in phase 2 (the door refuses it: option_not_read).
 //
-// ⚠ texture / pbr / quality are honoured once B-09 (3D reference mode) is on this branch; the
-// list and that lane ship together.
+// texture / pbr / quality are honoured end to end (B-09): the door checks their words
+// (designRefuseMalformedThreedReferences), the reserve prices them (designThreedRunEstimate),
+// buildJob freezes them into Job.Threed*, and both 3D routes send them (fal meshy family →
+// should_texture / enable_pbr / geometry_resolution; direct Meshy likewise). The one route that
+// drops them is the retired hitem3d slug, reachable only through a FAL_MODEL_3D override — it
+// logs the dropped options, exactly as it logs a dropped texture_prompt.
 func (s *Server) designThreedOptions() []string {
 	out := []string{}
 	if s.designGenerationGate() != nil || s.designKindGateCheck(entity.DesignRunKindThreed) != nil {

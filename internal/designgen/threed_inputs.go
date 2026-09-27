@@ -188,13 +188,11 @@ func (o threedOptions) untextured() bool { return o.Texture == "off" }
 
 // threedJobOptions — опции, которые маршрут 3D читает с задания.
 //
-// ⚠ ИНТЕГРАЦИЯ (B-core, строка 7 брифа B-09). Поля Job.ThreedTexture / ThreedPBR / ThreedQuality
-// живут в provider.go и заполняются в buildJob (snapshot.go) — оба файла принадлежат B-core. До
-// того, как их добавят, функция отвечает НУЛЁМ, то есть сегодняшними константами, и маршруты
-// отправляют сегодняшнее тело. Патч интеграции заменяет тело этой функции на чтение трёх полей.
+// Поля Job.ThreedTexture / ThreedPBR / ThreedQuality живут в provider.go и заполняются в buildJob
+// (snapshot.go) из threedOptionsOf замороженных params — только у рода threed. Пустые поля =
+// сегодняшние константы, то есть сегодняшнее тело у прогона верстака и у всякого старого снимка.
 func threedJobOptions(job Job) threedOptions {
-	_ = job
-	return threedOptions{}
+	return threedOptions{Texture: job.ThreedTexture, PBR: job.ThreedPBR, Quality: job.ThreedQuality}
 }
 
 // threedSentSteer — какие слова этот прогон реально кладёт в texture_prompt.

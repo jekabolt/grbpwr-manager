@@ -691,7 +691,8 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// каждой карточки, жившей до оси. Гейт стоит ПОСЛЕ designEffectiveParams намеренно: реран
 	// наследует колорвей из params родителя, и гейт по сырому запросу спрашивал бы не про тот
 	// верстак.
-	if kind == entity.DesignRunKindThreed {
+	// ⚠ 3D ИЗ НАЗВАННОЙ КАРТИНКИ (B-09) ВЕРСТАКА НЕ ЧИТАЕТ, и ворота верстака к нему не относятся.
+	if kind == entity.DesignRunKindThreed && !designThreedReferenceMode(params) {
 		cw := int(params.GetColorwayId())
 		if !designHasRenderForColorway(band.RenderBenchColorways, cw) {
 			return nil, designRefusal(codes.FailedPrecondition, "no_fabric_render",
@@ -854,6 +855,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseMalformedFreeform(kind, req.GetParams()); err != nil {
 		return nil, err
 	}
+	// ФОРМА РЕЖИМА РЕФЕРЕНСА 3D И ОПЦИЙ СБОРКИ — у говорящего, тот же довод (B-09).
+	if err := designRefuseMalformedThreedReferences(kind, req.GetParams()); err != nil {
+		return nil, err
+	}
 	// ⚠ И РЕРАН ПЛЕЙГРАУНДА НЕ ВПРАВЕ ПОДМЕНИТЬ КАРТИНКИ. Ссылки снимка у него не сужаются, а
 	// пересобираются из `params` (designRunInputs), и этого хватало, чтобы повтор прогона над
 	// снимком 11 уехал с картинкой 88, сохранив `rerun_of`, — то есть чтобы строка истории
@@ -876,6 +881,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// бывает — и унаследованная картинка уезжает поставщику ровно так же.
 	if err := s.designRefuseForeignMedia(ctx, cardID, "params.freeform.items.media_id",
 		designFreeformItemMediaIDs(params)...); err != nil {
+		return nil, err
+	}
+	// ГРАНИЦА КАРТОЧКИ ДЛЯ СЕДЬМОГО СПИСКА — названные картинки 3D уезжают поставщику видами (B-09).
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.threed.reference_media_ids",
+		designThreedReferenceMediaIDs(params)...); err != nil {
 		return nil, err
 	}
 	// A try-on naming a model profile dresses a photo OF that model (EFFECTIVE params).
@@ -927,8 +937,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// котором стоит одна СПИНА: множество RenderBenchColorways считает занятые слоты, не различая
 	// сторон. Такой прогон резервировал и гарантированно падал у провайдера. Ни один законный 3D-
 	// прогон этим не задет: без переда провайдер не строит ничего ни в одном из двух маршрутов.
-	if err := designRefuseThreedWithoutFront(kind, cardID, params, inputs); err != nil {
-		return nil, err
+	if !designThreedReferenceMode(params) {
+		if err := designRefuseThreedWithoutFront(kind, cardID, params, inputs); err != nil {
+			return nil, err
+		}
 	}
 	// ─── ВХОД, КОТОРЫЙ НЕ КАРТИНКА, — ОТКАЗ ЗДЕСЬ, А НЕ ОПЛАЧЕННЫЙ ОТКАЗ У ПОСТАВЩИКА ───
 	//
@@ -3348,7 +3360,7 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// одно на этот цикл и на отбор плит ниже. Цикл по `extra_input_media_ids` идёт ВСЕГДА: это и
 	// есть то, что человек назвал поимённо, и у перекраса с паттерном он единственный вход.
 	cardRefs := src.Refs
-	if !designKindReadsTheCard(src.Kind) {
+	if !designRunReadsTheCard(src.Kind, src.Params) {
 		cardRefs = nil
 	}
 	for _, r := range cardRefs {
@@ -3733,7 +3745,7 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 	// designAssembleInputs) оно не досталось вовсе, и снимок паттерна перечислял ссылки карточки
 	// как свои входы. Два написания одного правила расходятся молча; здесь они разошлись с самого
 	// начала.
-	if !designKindReadsTheCard(src.Kind) {
+	if !designRunReadsTheCard(src.Kind, src.Params) {
 		return nil, nil
 	}
 	want := entity.DesignPictureKindFlat
@@ -3954,7 +3966,7 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	// целиком, либо то, что клиент сказал сам, и оба случая уже прошли дверь.
 	if src.Kind == entity.DesignRunKindFreeform {
 		snap.Refs = designFreeformRefs(src.Params)
-	} else if !designKindReadsTheCard(src.Kind) {
+	} else if !designRunReadsTheCard(src.Kind, src.Params) {
 		named := make(map[int32]struct{}, len(src.Params.GetExtraInputMediaIds()))
 		for _, id := range src.Params.GetExtraInputMediaIds() {
 			named[id] = struct{}{}

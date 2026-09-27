@@ -193,10 +193,15 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 // table does not list, so the stated lookup cannot miss — and if it ever did, the answer is the
 // kind's own table price, not zero.
 //
-// Seam (B-09): kind threed prices by its options here, through designThreedCeilingUSDFor.
+// Kind threed prices by its options (B-09), through designThreedRunEstimate → designThreedCeilingUSDFor.
 func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot) decimal.NullDecimal {
 	base := designEstimateFor(kind, outputs)
+	// 3D reserves by ITS OWN options (texture off / detailed = fal «ultra», $1.40), B-09. With the
+	// default options this is exactly designThreedCeilingUSD() × outputs — the kind's table row.
+	if e, ok := designThreedRunEstimate(kind, params, outputs); ok {
+		return e
+	}
 	if !designImageOptionsKind(kind) {
 		return base
 	}

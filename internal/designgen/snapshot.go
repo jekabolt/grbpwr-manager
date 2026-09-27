@@ -1233,6 +1233,12 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 	}
 	// The per-run engine (phase 2). No block = today's configured slug and QualityFor's word.
 	applyImageOptions(&job, p.Image, engines)
+	// The 3D build options travel for the route AND for the money: the fal collect books a detailed
+	// build at its own tier (B-09).
+	if run.Kind == entity.DesignRunKindThreed {
+		o := threedOptionsOf(p)
+		job.ThreedTexture, job.ThreedPBR, job.ThreedQuality = o.Texture, o.PBR, o.Quality
+	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
 	// that actually attach, so the media has to be resolved BEFORE the prompt is composed. Both
@@ -1264,7 +1270,7 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		// threed_inputs.go: Meshy читает КАЖДУЮ присланную картинку как ВИД одного предмета и
 		// принимает их 1..4, поэтому референс карточки здесь либо убивает прогон отказом по числу,
 		// либо — что тише и дороже — сам становится «видом», и модель строится по чужой одежде.
-		list = threedPictures(list, in)
+		list = threedPicturesOf(list, in, p)
 	}
 	var attached []refCaption
 	if len(list) > 0 || len(cloths) > 0 {

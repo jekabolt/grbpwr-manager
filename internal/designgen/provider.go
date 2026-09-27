@@ -134,6 +134,14 @@ type Job struct {
 	Background  string
 	// FreeformPreset is params.freeform.preset of a playground run; empty on every other kind.
 	FreeformPreset string
+	// ThreedTexture / ThreedPBR / ThreedQuality — params.threed.texture / pbr / quality of a 3D
+	// run (PLAYGROUND phase 2, B-09): '' | on | off, '' | on | off, '' | standard | detailed.
+	// Empty = today's constants, i.e. every bench-plate run and every run frozen before the fields.
+	// The 3D routes read them through threedJobOptions; the fal collect prices a detailed build by
+	// them.
+	ThreedTexture string
+	ThreedPBR     string
+	ThreedQuality string
 }
 
 // Artifact is one file a provider produced, already in memory and not yet stored.
