@@ -796,6 +796,90 @@ func TestAiRouteLeavesModelRecordingToTheStore(t *testing.T) {
 	h2.ai.AssertNotCalled(t, "UpsertModel", mock.Anything, mock.Anything, mock.Anything)
 }
 
+// TestAiRouteFallbackSameAsPrimaryRefused (Codex B #8) — a fallback that is the primary itself is
+// refused on the fallback field before anything is written; "" is the capability's default on both
+// sides. The registry drops an exact repeat, so such a route would show a fallback the runtime does
+// not have. The refusals run against a mock with no write expectation (and, where no default is
+// needed, no read expectation either: the verdict is reached without one).
+//
+// MUTATIONS IT CATCHES: no check (the write goes through: the mock fails on SetRoute); providers
+// compared raw, without resolving "" ("" vs openrouter, openrouter being the chat default, passes); ""
+// resolved against a configuration of another version than the page's (a stale page is refused as a
+// duplicate on a default it never saw, instead of being told to reload).
+func TestAiRouteFallbackSameAsPrimaryRefused(t *testing.T) {
+	cand := func(p, m string) *pb_admin.AiRouteCandidate {
+		return &pb_admin.AiRouteCandidate{ProviderKey: p, Model: m}
+	}
+	for _, c := range []struct {
+		name              string
+		primary, fallback *pb_admin.AiRouteCandidate
+		readsConfig       bool
+	}{
+		{"the same provider and model", cand("openrouter", "x-ai/grok-9"), cand(" openrouter ", " x-ai/grok-9 "), false},
+		{"the default twice, same model", cand("", "x-ai/grok-9"), cand("", "x-ai/grok-9"), false},
+		{"the default twice, no model", cand("", ""), cand("", ""), false},
+		{"the default and the default by name", cand("", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-9"), true},
+		{"the default by name and the default", cand("openrouter", ""), cand("", ""), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAIHarness(t, aiHarnessOpt{})
+			if c.readsConfig {
+				cfg := h.cfg // version 7, default chat provider openrouter
+				h.ai.EXPECT().GetConfig(mock.Anything).Return(&cfg, nil).Once()
+			}
+			before := h.store.reloads()
+			_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
+				Purpose: entity.AIPurposeNoteMarkdown, Primary: c.primary, Fallback: c.fallback, ExpectedVersion: aiTestVersion,
+			})
+			st := aiRequireCode(t, err, codes.InvalidArgument)
+			require.Equal(t, "fallback", aiViolationField(st))
+			require.Contains(t, st.Message(), "same_as_primary")
+			require.Equal(t, before, h.store.reloads(), "nothing written, nothing reloaded")
+		})
+	}
+
+	// Not the same: a different model; "" against a provider that is not the default; and "" against
+	// the default by name on a page that is stale — the configuration read is version 8, the page saved
+	// against 7, so no verdict is drawn from a default the page never saw and the store's
+	// compare-and-swap answers "reload".
+	for _, c := range []struct {
+		name              string
+		primary, fallback *pb_admin.AiRouteCandidate
+		storeVersion      uint64
+		want              codes.Code
+	}{
+		{"another model", cand("openrouter", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-8"), 0, codes.OK},
+		{"the default and another provider", cand("", "x-ai/grok-9"), cand("apibost", "x-ai/grok-9"), aiTestVersion, codes.OK},
+		{"a stale page", cand("", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-9"), aiTestVersion + 1, codes.FailedPrecondition},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAIHarness(t, aiHarnessOpt{})
+			if c.storeVersion != 0 {
+				cfg := h.cfg
+				cfg.Settings.ConfigVersion = c.storeVersion
+				h.ai.EXPECT().GetConfig(mock.Anything).Return(&cfg, nil).Once()
+			}
+			var storeErr error
+			if c.want == codes.FailedPrecondition {
+				storeErr = entity.ErrAIVersionConflict
+			}
+			h.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeNoteMarkdown, mock.Anything, aiTestVersion, aiTestUser).
+				Return(storeErr).Once()
+			if c.want == codes.OK {
+				h.expectConfigRead(nil)
+			}
+			_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
+				Purpose: entity.AIPurposeNoteMarkdown, Primary: c.primary, Fallback: c.fallback, ExpectedVersion: aiTestVersion,
+			})
+			if c.want == codes.OK {
+				require.NoError(t, err)
+				return
+			}
+			aiRequireCode(t, err, c.want)
+		})
+	}
+}
+
 // ───────────────────────── keys ─────────────────────────
 
 // aiCaptureLog routes slog.Default into a buffer for the test (the registry built afterwards logs

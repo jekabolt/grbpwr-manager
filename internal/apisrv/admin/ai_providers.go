@@ -460,10 +460,11 @@ func (s *Server) SetAiDefaults(ctx context.Context, req *pb_admin.SetAiDefaultsR
 	return &pb_admin.SetAiDefaultsResponse{Config: cfg}, nil
 }
 
-// SetAiRoute sets one purpose's route: the primary and an optional fallback. The store records every
-// slug the route names in ai_model INSIDE the route's own checked transaction (Codex B #6): the route
-// and its models commit together or not at all, a stale page records nothing, and a "" provider's slug
-// is filed under the default that transaction read — the one the route follows.
+// SetAiRoute sets one purpose's route: the primary and an optional fallback, which must not be the
+// primary itself (aiSameCandidate). The store records every slug the route names in ai_model INSIDE
+// the route's own checked transaction (Codex B #6): the route and its models commit together or not
+// at all, a stale page records nothing, and a "" provider's slug is filed under the default that
+// transaction read — the one the route follows.
 func (s *Server) SetAiRoute(ctx context.Context, req *pb_admin.SetAiRouteRequest) (*pb_admin.SetAiRouteResponse, error) {
 	if err := s.aiPanelReady(); err != nil {
 		return nil, err
@@ -486,6 +487,14 @@ func (s *Server) SetAiRoute(ctx context.Context, req *pb_admin.SetAiRouteRequest
 		fallback, err := aiRouteCandidate("fallback", req.GetFallback(), purpose.Capability)
 		if err != nil {
 			return nil, err
+		}
+		same, err := s.aiSameCandidate(ctx, purpose.Capability, primary, fallback, req.GetExpectedVersion())
+		if err != nil {
+			return nil, err
+		}
+		if same {
+			return nil, apierr.Invalid(entity.NewFieldViolation("fallback", "same_as_primary", "",
+				"the fallback is the primary itself; choose another provider or model, or no fallback"))
 		}
 		fallback.Position = 2
 		cands = append(cands, fallback)
@@ -521,6 +530,41 @@ func aiRouteCandidate(field string, c *pb_admin.AiRouteCandidate, capability str
 			"model_too_long", "", "a model slug is at most 128 characters"))
 	}
 	return entity.AIRouteCandidate{ProviderKey: provider, Model: model}, nil
+}
+
+// aiSameCandidate reports whether a route's fallback is its primary (Codex B #8): the same provider —
+// "" resolved to the capability's default on BOTH sides — and the same model. The registry drops an
+// exact repeat when it builds the candidate list, so such a fallback would be saved and shown while
+// the runtime has no fallback at all.
+//
+// Only a comparison that hinges on the default reads the configuration, and its verdict counts only
+// when that read is the version the page saved against: the route write is a compare-and-swap on
+// expectedVersion, so at any other version the write is refused as stale anyway, and a default read
+// from another version is not the one the route would follow.
+func (s *Server) aiSameCandidate(ctx context.Context, capability string, primary, fallback entity.AIRouteCandidate, expectedVersion uint64) (bool, error) {
+	if primary.Model != fallback.Model {
+		return false, nil
+	}
+	if primary.ProviderKey == fallback.ProviderKey {
+		return true, nil
+	}
+	if primary.ProviderKey != "" && fallback.ProviderKey != "" {
+		return false, nil
+	}
+	cfg, err := s.aiReadConfig(ctx)
+	if err != nil {
+		return false, err
+	}
+	if cfg.Settings.ConfigVersion != expectedVersion {
+		return false, nil
+	}
+	resolve := func(p string) string {
+		if p == "" {
+			return cfg.Settings.DefaultProviderFor(capability)
+		}
+		return p
+	}
+	return resolve(primary.ProviderKey) == resolve(fallback.ProviderKey), nil
 }
 
 // ───────────────────────── helpers ─────────────────────────
