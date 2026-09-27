@@ -31,6 +31,11 @@ var (
 	// записан ровно тот факт, что ответ был шире заказа, — иначе «в ленте один кадр, а сколько
 	// прислала модель» было бы неизвестно никому и никогда. См. narrowToOneOutput.
 	errOverDelivery = errors.New("designgen: the provider delivered more pictures than this run bought")
+	// errThreedOptionNotRead — the frozen run states a 3D option (texture off, pbr on, detailed, surface
+	// words) that the route this pass would pay does not read: the configuration moved between the
+	// door and the pickup. Raised before StartAttempt, so nothing is spent; terminal, because the
+	// frozen params and the configured route give the same answer on every pass.
+	errThreedOptionNotRead = errors.New("designgen: the configured 3D route does not read an option this run states")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -97,6 +102,11 @@ const (
 	// CodeSourceTooSmall — the picture a generation window is cut from is too small to cut (under
 	// windowMinSource px on a side). Free and terminal, like its neighbours.
 	CodeSourceTooSmall = "source_too_small"
+
+	// CodeOptionNotRead — the configured 3D route would drop an option the run states (see
+	// errThreedOptionNotRead). The door's own word for the same fact (entity.DesignErrorCodeOptionNotRead),
+	// said again at the pickup because the configuration can move in between. Free and terminal.
+	CodeOptionNotRead = entity.DesignErrorCodeOptionNotRead
 )
 
 // verdict is the three separate answers a failure has to give.
@@ -165,6 +175,8 @@ func classify(err error) verdict {
 		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errFreeformSourceTooSmall):
 		return verdict{Retryable: false, Code: CodeSourceTooSmall, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errThreedOptionNotRead):
+		return verdict{Retryable: false, Code: CodeOptionNotRead, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it

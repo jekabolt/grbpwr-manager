@@ -556,13 +556,13 @@ func (a *App) Start(ctx context.Context) error {
 		// busy».
 		falThreed := fal.New(a.c.Fal)
 		threed := designgen.NewFalThreedProvider(falThreed)
-		route := designgen.FalThreedRoute(falThreed, designCfg.ThreedPBR)
 		if designCfg.ThreedProvider == designgen.ThreedProviderMeshy {
-			meshyThreed := meshy.New(a.c.Meshy)
-			threed = designgen.NewThreedProvider(meshyThreed)
-			route = designgen.MeshyThreedRoute(meshyThreed, designCfg.ThreedPBR)
+			threed = designgen.NewThreedProvider(meshy.New(a.c.Meshy))
 		}
-		designThreedRoute = &route
+		// THE SAME EXPRESSION THE WORKER ASKS BEFORE EVERY FRESH SUBMIT (ThreedRouteOf the wired
+		// provider at DESIGN_THREED_PBR), so the door and the pickup cannot read two routes.
+		route := designgen.ThreedRouteOf(threed, designCfg.ThreedPBR)
+		designThreedRoute = route
 		slog.Default().InfoContext(ctx, "design generation: 3D route wired",
 			slog.String("provider", designCfg.ThreedProvider),
 			slog.String("flag", designgen.EnvThreedProvider),

@@ -133,8 +133,9 @@ func (s *Server) designImageModels() []*pb_admin.DesignImageModel {
 // field 30), read off the same designgen.ThreedRoute the door refuses with (designRefuseThreedRoute)
 // — one value for the band, the door and the reserve (G-02, Codex 3 = Fable m-4).
 //
-//   - fal meshy family / direct Meshy: texture, quality — and pbr only with DESIGN_THREED_PBR on
-//     (its GLB size is unmeasured and the 64 MiB cap fails after the charge, Fable M-3);
+//   - fal meshy family / direct Meshy: texture, quality, surface_hint — and pbr only with
+//     DESIGN_THREED_PBR on (its GLB size is unmeasured and the 64 MiB cap fails after the charge,
+//     Fable M-3);
 //   - the retired hitem3d slug (a FAL_MODEL_3D override): none — its body sends fixed constants;
 //   - no route wired, or a route with no reserve number: none.
 //

@@ -262,24 +262,6 @@ func (s *Server) designThreedRouteReserveBounded() bool {
 	return s.designThreedRoute == nil || s.designThreedRoute.Unbounded() == ""
 }
 
-// designThreedNonDefault — the build options this run states with a value that CHANGES the build
-// (texture off, pbr on, quality detailed), in band order. A value equal to the route's own constant
-// (texture on, pbr off, quality standard, or empty) asks for what every route does anyway, so it is
-// never refused — only an option the route would DROP is.
-func designThreedNonDefault(t *pb_common.DesignThreedParams) []string {
-	out := []string{}
-	if t.GetTexture() == fal.OptionOff {
-		out = append(out, designgen.ThreedOptionTexture)
-	}
-	if t.GetPbr() == fal.OptionOn {
-		out = append(out, designgen.ThreedOptionPBR)
-	}
-	if t.GetQuality() == fal.QualityDetailed {
-		out = append(out, designgen.ThreedOptionQuality)
-	}
-	return out
-}
-
 // designRefuseThreedRoute — THE CONFIGURED ROUTE MUST READ WHAT THE RUN PAYS FOR, AND ITS RESERVE MUST
 // HAVE A NUMBER. On EFFECTIVE params, and deliberately so: this is not vocabulary (which narrows
 // legally and is asked of the speaker only) but the route's capability, like the kind gate — a
@@ -290,7 +272,8 @@ func designThreedNonDefault(t *pb_common.DesignThreedParams) []string {
 //   - a wired route with no reserve number → threed_reserve_unbounded (FailedPrecondition, the
 //     setting named);
 //   - a non-default option the route does not read → option_not_read (pbr: DESIGN_THREED_PBR is off;
-//     texture / quality: the configured model takes no build options, i.e. the hitem3d override);
+//     texture / quality: the configured model takes no build options, i.e. the hitem3d override;
+//     surface_hint: the model has no text field, or the build is untextured);
 //   - no route wired → no option is read (fail closed: nothing on the door knows what would travel).
 func (s *Server) designRefuseThreedRoute(kind string, params *pb_common.DesignRunParams) error {
 	if kind != entity.DesignRunKindThreed {
@@ -305,15 +288,12 @@ func (s *Server) designRefuseThreedRoute(kind string, params *pb_common.DesignRu
 				map[string]string{"provider": r.Provider})
 		}
 	}
-	for _, o := range designThreedNonDefault(params.GetThreed()) {
-		if r != nil && r.Honours(o) {
-			continue
-		}
-		why := "the configured 3D model takes no per-run build options, so it would be dropped"
-		if o == designgen.ThreedOptionPBR && (r == nil || r.Honours(designgen.ThreedOptionTexture)) {
-			why = "realistic materials are off on this server (DESIGN_THREED_PBR) until their model " +
-				"size is measured under the 64 MiB cap"
-		}
+	// THE SAME EXPRESSION THE WORKER ASKS AGAIN BEFORE A FRESH SUBMIT (designgen.ThreedUnread): a
+	// value equal to the route's own constant asks for nothing and is never refused; an option the
+	// route would DROP — including surface words on a model with no text field or on an untextured
+	// build (G-02 r2, Codex 2) — is.
+	t := params.GetThreed()
+	if o, why := designgen.ThreedUnread(r, t.GetTexture(), t.GetPbr(), t.GetQuality(), t.GetSurfaceHint()); o != "" {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeOptionNotRead,
 			fmt.Sprintf("params.threed.%s: %s — leave it empty (see the band's threed_options). "+
 				"Nothing was reserved and nothing was charged", o, why),

@@ -142,6 +142,10 @@ type Job struct {
 	ThreedTexture string
 	ThreedPBR     string
 	ThreedQuality string
+	// ThreedReservedUSD — what the door reserved for ONE build of this 3D run (price_estimate over
+	// requested_outputs); invalid when the row carries no estimate. The fal collect compares the
+	// booked charge with it before saying the reservation was short (G-02 r2, Codex 5).
+	ThreedReservedUSD decimal.NullDecimal
 }
 
 // Artifact is one file a provider produced, already in memory and not yet stored.

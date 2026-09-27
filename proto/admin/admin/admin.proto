@@ -12261,9 +12261,11 @@ message GetDesignBandResponse {
   // THE ENGINES THE DOOR ACCEPTS in common.DesignRunParams.image, from the server's engine table.
   // ABSENT = this server takes no per-run engine: draw no picker and send no `image`.
   repeated DesignImageModel image_models = 29;
-  // WHICH OPTIONS THE WIRED 3D ROUTE HONOURS, from texture | pbr | quality | follow. A row of
-  // common.DesignThreedParams whose word is not listed here is not drawn (and `follow` is refused
-  // when stated). ABSENT = none of them; the 3D form is today's.
+  // WHICH OPTIONS THE WIRED 3D ROUTE HONOURS, from texture | pbr | quality | surface_hint | follow.
+  // A row of common.DesignThreedParams whose word is not listed here is not drawn (and a non-default
+  // value of it is refused as option_not_read when stated — also by the worker at pickup, should the
+  // route change in between). surface_hint is listed only where the model has a text field, and is
+  // refused on an untextured build. ABSENT = none of them; the 3D form is today's.
   repeated string threed_options = 30;
   // HOW MANY OUTPUTS EACH PLAYGROUND WORKFLOW HAS IN TOTAL — key: common.DesignCardOutput
   // .run_workflow, value: the true count over the whole card, uncapped, in the same read and by the

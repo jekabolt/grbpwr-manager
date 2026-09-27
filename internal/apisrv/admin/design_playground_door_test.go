@@ -310,6 +310,21 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			setup:  pgRoute(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)),
 			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Quality: "detailed"}),
 			want:   entity.DesignErrorCodeOptionNotRead},
+		// G-02 r2 Codex 2: surface words need a model with a text field AND a textured build.
+		{name: "3d: surface words on the hitem3d route", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, SurfaceHint: "matte red cotton"}),
+			want:   entity.DesignErrorCodeOptionNotRead},
+		{name: "3d: surface words on an untextured build", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Texture: "off", SurfaceHint: "matte red cotton"}),
+			want:   entity.DesignErrorCodeOptionNotRead},
+		{name: "3d: surface words on a textured meshy build", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, SurfaceHint: "matte red cotton"})},
+		{name: "3d: blank surface words are no words", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, SurfaceHint: "   "})},
 		{name: "3d: no route wired reads no option", kind: entity.DesignRunKindThreed,
 			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Texture: "off"}),
 			want:   entity.DesignErrorCodeOptionNotRead},
@@ -687,7 +702,7 @@ func TestTheCapabilityListsFOLLOW_EACH_GATE(t *testing.T) {
 			if kind == entity.DesignRunKindThreed {
 				require.Empty(t, resp.GetThreedOptions())
 			} else {
-				require.Equal(t, []string{"texture", "pbr", "quality"}, resp.GetThreedOptions())
+				require.Equal(t, []string{"texture", "pbr", "quality", "surface_hint"}, resp.GetThreedOptions())
 			}
 			require.NotEmpty(t, resp.GetImageModels(), "one image route open keeps the picker")
 		})
@@ -777,10 +792,11 @@ func TestTheThreedReserveGOES_THROUGH_THE_RUN_ESTIMATE(t *testing.T) {
 // TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE — band field 30 is read off the wired route
 // (Codex 3 = Fable m-4, Fable M-3): the hitem3d override advertises nothing, pbr appears only with
 // DESIGN_THREED_PBR, direct Meshy reads everything, and a route with no reserve number (a tariff
-// without FAL_UNITS_CEILING_3D) draws neither the options nor the tile. MUTATIONS (each measured
-// red): designThreedOptions returning the three words regardless of the route; FalThreedRoute
-// ignoring AcceptsBuildOptions; threedRouteOptions ignoring the pbr flag; designPlaygroundWorkflows
-// ignoring designThreedRouteReserveBounded.
+// without FAL_UNITS_CEILING_3D) draws neither the options nor the tile. surface_hint is listed exactly
+// where the model has a text field (G-02 r2, Codex 2). MUTATIONS (each measured red):
+// designThreedOptions returning the three words regardless of the route; FalThreedRoute ignoring
+// AcceptsBuildOptions; threedRouteOptions ignoring the pbr flag; designPlaygroundWorkflows ignoring
+// designThreedRouteReserveBounded; FalThreedRoute ignoring AcceptsTexturePrompt.
 func TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE(t *testing.T) {
 	band := func(route *designgen.ThreedRoute) *pb_admin.GetDesignBandResponse {
 		repo := mocks.NewMockRepository(t)
@@ -806,14 +822,14 @@ func TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE(t *testing.T) {
 		tile  bool
 	}{
 		{"no route wired", nil, []string{}, true},
-		{"fal meshy, pbr off (the default)", route(pgFalRoute(fal.Config{}, false)), []string{"texture", "quality"}, true},
-		{"fal meshy, pbr on", route(pgFalRoute(fal.Config{}, true)), []string{"texture", "pbr", "quality"}, true},
+		{"fal meshy, pbr off (the default)", route(pgFalRoute(fal.Config{}, false)), []string{"texture", "quality", "surface_hint"}, true},
+		{"fal meshy, pbr on", route(pgFalRoute(fal.Config{}, true)), []string{"texture", "pbr", "quality", "surface_hint"}, true},
 		{"fal hitem3d override", route(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)), []string{}, true},
 		{"direct meshy, pbr off", route(designgen.MeshyThreedRoute(meshy.New(meshy.Config{APIKey: "k"}), false)),
-			[]string{"texture", "quality"}, true},
+			[]string{"texture", "quality", "surface_hint"}, true},
 		{"fal tariff without a units ceiling", route(pgFalRoute(fal.Config{UnitUSD: 0.5}, true)), []string{}, false},
 		{"fal tariff with a units ceiling", route(pgFalRoute(fal.Config{UnitUSD: 0.5, UnitsCeiling3D: 3}, false)),
-			[]string{"texture", "quality"}, true},
+			[]string{"texture", "quality", "surface_hint"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			resp := band(c.route)

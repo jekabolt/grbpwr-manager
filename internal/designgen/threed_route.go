@@ -1,6 +1,8 @@
 package designgen
 
 import (
+	"strings"
+
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/shopspring/decimal"
@@ -28,6 +30,10 @@ const (
 	ThreedOptionTexture = "texture"
 	ThreedOptionPBR     = "pbr"
 	ThreedOptionQuality = "quality"
+	// ThreedOptionSurfaceHint — the person's own words about the surface (params.threed.surface_hint).
+	// A route reads them only when its model has a text field (the meshy family; never the hitem3d
+	// override), and only on a TEXTURED build — an untextured one has no stage to hand them to.
+	ThreedOptionSurfaceHint = "surface_hint"
 )
 
 // ThreedRoute — what the configured 3D route honours, and the most one build of it may book.
@@ -71,17 +77,79 @@ func (r ThreedRoute) Unbounded() string {
 }
 
 // threedRouteOptions — texture and quality when the route reads build options at all; pbr only when
-// the deployment has also turned it on (DESIGN_THREED_PBR).
-func threedRouteOptions(readsOptions, pbr bool) []string {
+// the deployment has also turned it on (DESIGN_THREED_PBR); surface_hint when the model has a text
+// field to carry it.
+func threedRouteOptions(readsOptions, pbr, readsText bool) []string {
 	out := []string{}
-	if !readsOptions {
-		return out
+	if readsOptions {
+		out = append(out, ThreedOptionTexture)
+		if pbr {
+			out = append(out, ThreedOptionPBR)
+		}
+		out = append(out, ThreedOptionQuality)
 	}
-	out = append(out, ThreedOptionTexture)
-	if pbr {
-		out = append(out, ThreedOptionPBR)
+	if readsText {
+		out = append(out, ThreedOptionSurfaceHint)
 	}
-	return append(out, ThreedOptionQuality)
+	return out
+}
+
+// ═══ WHAT A RUN STATES THAT THE ROUTE WOULD DROP (G-02 r2, Codex 1 + 2) ═══
+//
+// ONE EXPRESSION, ASKED TWICE: by the door on the run's effective params before anything is reserved
+// (designRefuseThreedRoute), and by the worker on the frozen params right before a FRESH submit
+// (dispatch.go). Between the two lie a redeploy and a changed configuration — FAL_MODEL_3D moved to
+// the hitem3d override, DESIGN_THREED_PBR turned off — and a run accepted under the old route must
+// not be paid for under the new one with its options silently dropped.
+
+// ThreedUnread — the first option these values state that route r would NOT read, with the reason in
+// words; option == "" when the route reads everything stated. A value equal to the route's own
+// constant (texture on, pbr off, quality standard, empty) asks for nothing, so it is never unread.
+//
+// r == nil is a deployment with no 3D route wired: nothing is read (fail closed).
+func ThreedUnread(r *ThreedRoute, texture, pbr, quality, surfaceHint string) (option, why string) {
+	honours := func(o string) bool { return r != nil && r.Honours(o) }
+	noOptions := "the configured 3D model takes no per-run build options, so it would be dropped"
+	if strings.TrimSpace(texture) == fal.OptionOff && !honours(ThreedOptionTexture) {
+		return ThreedOptionTexture, noOptions
+	}
+	if strings.TrimSpace(pbr) == fal.OptionOn && !honours(ThreedOptionPBR) {
+		if r == nil || r.Honours(ThreedOptionTexture) {
+			return ThreedOptionPBR, "realistic materials are off on this server (DESIGN_THREED_PBR) until " +
+				"their model size is measured under the 64 MiB cap"
+		}
+		return ThreedOptionPBR, noOptions
+	}
+	if strings.TrimSpace(quality) == fal.QualityDetailed && !honours(ThreedOptionQuality) {
+		return ThreedOptionQuality, noOptions
+	}
+	if strings.TrimSpace(surfaceHint) != "" {
+		if !honours(ThreedOptionSurfaceHint) {
+			return ThreedOptionSurfaceHint, "the configured 3D model has no text field, so these words " +
+				"would reach no provider"
+		}
+		if strings.TrimSpace(texture) == fal.OptionOff {
+			return ThreedOptionSurfaceHint, "an untextured build has no texturing stage to read these " +
+				"words — turn texture on, or leave the hint empty"
+		}
+	}
+	return "", ""
+}
+
+// ThreedRouteOf — the route a wired 3D provider IS, read off the same client it pays with; nil for a
+// provider that is neither of the two routes (nothing is known about what it reads). app.go hands
+// this value to the door, and the worker asks it again before every fresh submit.
+func ThreedRouteOf(p Provider, pbr bool) *ThreedRoute {
+	var r ThreedRoute
+	switch v := p.(type) {
+	case falThreedProvider:
+		r = FalThreedRoute(v.c, pbr)
+	case threedProvider:
+		r = MeshyThreedRoute(v.c, pbr)
+	default:
+		return nil
+	}
+	return &r
 }
 
 // FalThreedRoute — the fal route as configured: options only on the meshy family
@@ -91,7 +159,7 @@ func threedRouteOptions(readsOptions, pbr bool) []string {
 func FalThreedRoute(c *fal.Client, pbr bool) ThreedRoute {
 	return ThreedRoute{
 		Provider: ThreedProviderFal,
-		Options:  threedRouteOptions(c.AcceptsBuildOptions(), pbr),
+		Options:  threedRouteOptions(c.AcceptsBuildOptions(), pbr, c.AcceptsTexturePrompt()),
 		ceiling: func(_, quality string) (decimal.Decimal, bool) {
 			return c.RequestCeilingUSDForQuality(quality)
 		},
@@ -101,12 +169,12 @@ func FalThreedRoute(c *fal.Client, pbr bool) ThreedRoute {
 	}
 }
 
-// MeshyThreedRoute — the direct Meshy route: it reads all build options, and one task is priced by
+// MeshyThreedRoute — the direct Meshy route: it reads all build options and the surface words, and one task is priced by
 // its published credits at THIS client's rate (MESHY_CREDIT_USD) — the rate CostUSD books with.
 func MeshyThreedRoute(c *meshy.Client, pbr bool) ThreedRoute {
 	return ThreedRoute{
 		Provider: ThreedProviderMeshy,
-		Options:  threedRouteOptions(true, pbr),
+		Options:  threedRouteOptions(true, pbr, true),
 		ceiling: func(texture, quality string) (decimal.Decimal, bool) {
 			return c.TaskCeilingUSD(texture, quality), true
 		},

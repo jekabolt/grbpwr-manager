@@ -254,15 +254,7 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	} else {
 		out.Price = decimal.NullDecimal{}
 	}
-	if ceiling, ok := p.c.UnitsCeiling3D(); ok && res.BillableUnits > ceiling {
-		// ⚠ THE RESERVATION WAS SIZED BY FAL_UNITS_CEILING_3D (fal.RequestCeilingUSDForQuality), and
-		// the provider billed more. The booking stays the provider's truth; the ceiling is wrong, and
-		// this line is how the operator learns it.
-		slog.Default().ErrorContext(ctx, "3D: fal billed more units than FAL_UNITS_CEILING_3D; the "+
-			"run's reservation was below its booking — raise the ceiling",
-			slog.Int("run_id", job.RunID), slog.String("request_id", requestID),
-			slog.Float64("units", res.BillableUnits), slog.Float64("ceiling", ceiling))
-	}
+	logThreedCeilingBreach(ctx, p.c, job, requestID, res.BillableUnits, out.Price)
 	if res.UnitsAssumed {
 		// ⚠ SAID OUT LOUD, EVERY TIME. The ledger gets a number either way — a paid build recorded
 		// as free is the worse lie — but «the provider named this» and «we assumed one unit» are
@@ -288,4 +280,33 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 		})
 	}
 	return out, nil
+}
+
+// logThreedCeilingBreach — what the collect says when fal billed more units than FAL_UNITS_CEILING_3D.
+//
+// ⚠ TWO CLAIMS, AND ONLY ONE OF THEM FOLLOWS FROM THE UNITS (G-02 r2, Codex 5). The door reserves
+// max(the static floor, tariff × ceiling), so billed units above the ceiling say only that the
+// CEILING is wrong — the static floor may still have covered the booking ($0.01 × 100 units = $1.00
+// under a $1.20 reservation). «The reservation was below its booking» is asserted only when the
+// booked charge actually exceeds what this run reserved per build; without a stored estimate the
+// claim is not made at all.
+func logThreedCeilingBreach(ctx context.Context, c *fal.Client, job Job, requestID string, units float64, booked decimal.NullDecimal) {
+	ceiling, ok := c.UnitsCeiling3D()
+	if !ok || units <= ceiling {
+		return
+	}
+	attrs := []any{
+		slog.Int("run_id", job.RunID), slog.String("request_id", requestID),
+		slog.Float64("units", units), slog.Float64("ceiling", ceiling),
+		slog.String("booked_usd", booked.Decimal.String()),
+	}
+	if job.ThreedReservedUSD.Valid && booked.Valid && booked.Decimal.GreaterThan(job.ThreedReservedUSD.Decimal) {
+		slog.Default().ErrorContext(ctx, "3D: fal billed more units than FAL_UNITS_CEILING_3D and the "+
+			"run's reservation was below its booking — raise the ceiling",
+			append(attrs, slog.String("reserved_usd", job.ThreedReservedUSD.Decimal.String()))...)
+		return
+	}
+	slog.Default().WarnContext(ctx, "3D: fal billed more units than FAL_UNITS_CEILING_3D — raise the "+
+		"ceiling (this run's reservation still covered the booking, or no reservation was recorded)",
+		attrs...)
 }

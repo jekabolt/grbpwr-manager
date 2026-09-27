@@ -12,6 +12,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
+	"github.com/shopspring/decimal"
 )
 
 // Layouts of a run's output — the DesignRunParams.layout dictionary.
@@ -1238,6 +1239,15 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 	if run.Kind == entity.DesignRunKindThreed {
 		o := threedOptionsOf(p)
 		job.ThreedTexture, job.ThreedPBR, job.ThreedQuality = o.Texture, o.PBR, o.Quality
+		if run.PriceEstimate.Valid {
+			n := run.RequestedOutputs
+			if n < 1 {
+				n = 1
+			}
+			job.ThreedReservedUSD = decimal.NullDecimal{
+				Decimal: run.PriceEstimate.Decimal.Div(decimal.NewFromInt(int64(n))), Valid: true,
+			}
+		}
 	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures

@@ -120,6 +120,17 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// слова хуже пустой колонки: пустая колонка ничего не утверждает, а эта выглядела уликой.
 	// Теперь маршрут отвечает за свой текст сам: стир — или пусто, если слов не несёт.
 	if pendingID == "" {
+		// ─── THE ROUTE MUST STILL READ WHAT THE RUN PAID FOR (G-02 r2, Codex 1 + 2). The door asked
+		// designgen.ThreedUnread of the route configured WHEN THE RUN WAS CREATED; this asks it of the
+		// route this pass would PAY — after a redeploy to the hitem3d override or with
+		// DESIGN_THREED_PBR turned off, a detailed / untextured / pbr / worded run would be bought
+		// with its options silently dropped (or, for pbr, sent to the unmeasured size cap). Only a
+		// FRESH submit is refused: an accepted request above is already paid and is collected.
+		// Before RecordRunPrompt and StartAttempt, so nothing is spent; terminal, and failRun's
+		// terminal transition releases the reservation like every other pre-call refusal.
+		if err := w.threedUnreadAtSubmit(run, prov); err != nil {
+			return w.failRun(ctx, run, token, err)
+		}
 		if err := w.store.RecordRunPrompt(ctx, run.Id, token, recordedPrompt(prov, job)); err != nil {
 			return w.abandon(ctx, run, err)
 		}
@@ -189,6 +200,27 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		out.RequestID = pendingID
 	}
 	return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
+}
+
+// threedUnreadAtSubmit — the worker's half of the route check: the frozen params of a threed run
+// against the route this pass is about to pay (ThreedRouteOf the wired provider, at this deployment's
+// DESIGN_THREED_PBR). nil for every other kind and for a run the route reads in full.
+func (w *Worker) threedUnreadAtSubmit(run entity.DesignRun, prov Provider) error {
+	if run.Kind != entity.DesignRunKindThreed {
+		return nil
+	}
+	p := parseParams(run.Params)
+	o := threedOptionsOf(p)
+	hint := ""
+	if p.Threed != nil {
+		hint = p.Threed.SurfaceHint
+	}
+	pbr := w.c != nil && w.c.ThreedPBR
+	if opt, why := ThreedUnread(ThreedRouteOf(prov, pbr), o.Texture, o.PBR, o.Quality, hint); opt != "" {
+		return fmt.Errorf("%w: params.threed.%s: %s. Nothing was submitted and nothing was charged",
+			errThreedOptionNotRead, opt, why)
+	}
+	return nil
 }
 
 // settle records the money, stores the bytes and closes the run.
