@@ -427,6 +427,10 @@ func TechCardCostBlockers(tc *entity.TechCard, fx CostingFx) []string {
 			}
 			colour := strings.TrimSpace(cw.Name)
 			if colour == "" {
+				// T45: the SKU token names ONE colourway of the style; the family code may be shared.
+				colour = cw.SkuColorToken
+			}
+			if colour == "" {
 				colour = cw.ColorCode
 			}
 			out = append(out, fabric+" ("+colour+"): "+entity.AreaEstimateRefusalText(e.refusal))

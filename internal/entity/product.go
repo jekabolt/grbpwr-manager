@@ -314,10 +314,25 @@ func (ag *AgeGroupEnum) Scan(src any) error {
 }
 
 type ColorwayBodyInsert struct {
-	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
-	Brand              string              `db:"brand" valid:"required"`
-	Color              string              `db:"color" valid:"required"` // resolved dictionary name; never accepted from API
-	ColorCode          string              `db:"color_code" valid:"required"`
+	Preorder sql.NullTime `db:"preorder" valid:"-"`
+	Brand    string       `db:"brand" valid:"required"`
+	// Color is product.color, the name every legacy reader prints (orders, lays, run pack, the
+	// storefront cart): the colourway's own name (dev_name) once it carries a palette (T45), the
+	// dictionary family's name otherwise. Server-resolved; never accepted from the API.
+	Color string `db:"color" valid:"required"`
+	// ColorCode is the dictionary FAMILY tag (T45): mandatory, FK color(code), the key of the
+	// catalogue filter and of aux-output assembly matching. Several colourways of one style may
+	// share it. It is no longer the SKU segment — that is SkuColorToken.
+	ColorCode string `db:"color_code" valid:"required"`
+	// SkuColorToken is the colour segment of the SKU (product.sku_color_token, T45): minted by the
+	// server when the colourway is created, unique per style, immutable afterwards. Reads return it
+	// (COALESCE with color_code for a row an older binary inserted); on an update it is an ECHO
+	// guard only — empty or the stored value pass, any other value is refused.
+	SkuColorToken string `db:"sku_color_token" valid:"-"`
+	// Colours / ColourNameI18n are READ-ONLY projections of the palette and the per-language name
+	// (T45), filled by the admin colourway read. Writes travel on the development patch.
+	Colours            []ColorwayColour    `db:"-" valid:"-"`
+	ColourNameI18n     map[int]string      `db:"-" valid:"-"`
 	ColorHexOverride   sql.NullString      `db:"color_hex" valid:"-"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
@@ -453,6 +468,13 @@ type ColorwayInsert struct {
 	// (EUR), used for margin analytics. Invalid/NULL leaves the stored value unchanged
 	// on update. Never serialized on the storefront read path — write-only.
 	CostPrice decimal.NullDecimal `db:"cost_price" valid:"-"`
+	// RefuseTakenColourToken keeps the pre-T45 identity rule for a caller that depends on it: a
+	// colourway created WITHOUT a palette takes its dictionary code as its SKU token, and when the
+	// style already holds that token the create is refused with ErrColorwayColorExists instead of
+	// minting a different token. The «create colourways from archive» action sets it — its
+	// idempotency lives in the colour code (a second press must land on «exists», not on a second
+	// colourway). Every other caller leaves it false and gets a minted token on a collision.
+	RefuseTakenColourToken bool `db:"-" valid:"-"`
 }
 
 type ColorwayDisplay struct {

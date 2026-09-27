@@ -3447,6 +3447,11 @@ func techCardColorwayRefsToPb(tc *entity.TechCard, orderQtyBySize map[int]int, f
 			PantoneSystem: c.PantoneSystem.String,
 			DevHex:        c.Hex.String,
 			SwatchMediaId: c.SwatchMediaId.Int32,
+			// T45: the SKU token, the palette (empty = a legacy single-colour colourway, whose colour
+			// is still pantone / dev_hex / the family) and the per-language name.
+			SkuColorToken: c.SkuColorToken,
+			Colours:       ColorwayColoursToPb(c.Colours),
+			NameI18N:      ColorwayNameI18nToPb(c.NameI18n),
 		}
 		if c.LabDipSubmittedAt.Valid {
 			ref.LabDipSubmittedAt = timestamppb.New(c.LabDipSubmittedAt.Time)

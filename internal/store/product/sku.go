@@ -52,8 +52,9 @@ const (
 )
 
 // colorCodePattern is the canonical shape of a colour segment: exactly 3 uppercase alphanumerics
-// (R7/R9). This is a FORMAT check only — dictionary membership is a store-resolver concern
-// (validateColorCode in sku_resolve.go), not something the pure builder can verify.
+// (R7/R9). This is a FORMAT check only. Since T45 the segment is the colourway's sku_color_token,
+// which is not a dictionary code by definition, so the resolver checks its shape too and nothing
+// more (resolveSegments in sku_resolve.go).
 var colorCodePattern = regexp.MustCompile(`^[A-Z0-9]{3}$`)
 
 // SKUSegments are the resolved, dictionary-checked inputs for one product's SKU. The store resolver
@@ -62,7 +63,7 @@ type SKUSegments struct {
 	Season    entity.SeasonEnum // SS/FW/PF/RC; must be canonical — no fallback in the strict builder
 	Year      int               // full year, e.g. 2026; must be 2000..2099
 	ModelNo   int               // must be 1..99999
-	ColorCode string            // resolved dictionary code; must be exactly 3 uppercase alphanumerics
+	ColorCode string            // the colourway's SKU colour token (T45); exactly 3 uppercase alphanumerics
 }
 
 // ModelNoCeilingLevel classifies how close a model number is to exhausting the fixed 5-digit width

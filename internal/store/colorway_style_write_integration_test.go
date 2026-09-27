@@ -89,7 +89,8 @@ func newColorwayInsert(colorCode, colorName, name string, mediaID, langID int, p
 
 // TestCreateColorway is the acceptance test for the R2/R4 write-decomposition CreateColorway: it
 // attaches a DRAFT, unminted colourway to an EXISTING style, writing only colourway-owned data, and
-// enforces UNIQUE(style_id, color_code) (R1) and an existing style (NOT_FOUND otherwise).
+// enforces the per-style SKU-token uniqueness (T45; before it UNIQUE(style_id, color_code), R1) and
+// an existing style (NOT_FOUND otherwise).
 func TestCreateColorway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -145,10 +146,27 @@ func TestCreateColorway(t *testing.T) {
 	require.True(t, seededBreakdown.Valid)
 	require.JSONEq(t, breakdown.String, seededBreakdown.String)
 
-	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.
-	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
-	_, err = s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
+	// T45 (0376): the per-style uniqueness moved from the dictionary FAMILY (color_code) to the SKU
+	// colour token. The first BLK colourway took BLK as its token (a colourway created without a
+	// palette keeps its dictionary code as the token when it is free, so pre-T45 SKUs do not move).
+	var firstToken string
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT sku_color_token FROM product WHERE id = ?`, colorwayID).Scan(&firstToken))
+	require.Equal(t, "BLK", firstToken)
+	// A caller that asks for the pre-T45 rule (the archive import) is refused on the taken token…
+	strict := newColorwayInsert("BLK", "black", "TCW1-BLACK-STRICT", mediaID, langID, prices)
+	strict.RefuseTakenColourToken = true
+	_, err = s.Products().CreateColorway(ctx, styleID, strict, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.ErrorIs(t, err, entity.ErrColorwayColorExists)
+	// …and every other caller gets a second colourway of the SAME family with a token minted from its
+	// name («black» → BLK is taken → BLC), never a dictionary code of another family.
+	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
+	dupID, err := s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", dupID) }()
+	var dupFamily, dupToken string
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT color_code, sku_color_token FROM product WHERE id = ?`, dupID).Scan(&dupFamily, &dupToken))
+	require.Equal(t, "BLK", dupFamily, "two colourways of one style may share a family")
+	require.Equal(t, "BLC", dupToken)
 
 	// Mint the first colourway's SKU before creating a second one. product.sku is `VARCHAR(255) NOT
 	// NULL UNIQUE` (0001) and CreateColorway inserts the literal '' (by design — "no SKU is minted"

@@ -37,8 +37,13 @@ type colorwayDevRow struct {
 // dropped — the admin's lab-dip panel wrote into nothing. The write is a MERGE rather than a
 // replace because no read path returns the dev identity fields (dev_code/name/pantone/swatch), so a
 // caller editing a lab-dip decision has no way to echo them back and a full replace would erase them.
-func applyColorwayDevelopment(ctx context.Context, db dependency.DB, colorwayID int, patch *entity.ColorwayDevelopmentPatch) error {
-	if patch.IsEmpty() {
+//
+// guardMirror (T45) is set when the colourway has a palette and the patch writes none: pantone /
+// pantone_system / dev_hex are then the palette's mirror, and a patch that would CHANGE them is
+// refused with a field violation (an unchanged echo passes). The palette itself, and the name
+// translations, are applied by applyColorwayDevelopmentBlock, which is the entry point.
+func applyColorwayDevelopment(ctx context.Context, db dependency.DB, colorwayID int, patch *entity.ColorwayDevelopmentPatch, guardMirror bool) error {
+	if !patch.HasScalars() {
 		return nil
 	}
 	cur, err := storeutil.QueryNamedOne[colorwayDevRow](ctx, db, `
@@ -86,6 +91,22 @@ func applyColorwayDevelopment(ctx context.Context, db dependency.DB, colorwayID 
 	}
 	if patch.DisplayOrder != nil {
 		next.DisplayOrder = *patch.DisplayOrder
+	}
+	if guardMirror {
+		for _, f := range []struct {
+			field     string
+			cur, next sql.NullString
+		}{
+			{"development.pantone", cur.Pantone, next.Pantone},
+			{"development.pantone_system", cur.PantoneSystem, next.PantoneSystem},
+			{"development.dev_hex", cur.DevHex, next.DevHex},
+		} {
+			if f.cur != f.next {
+				return entity.NewFieldViolation(f.field, "derived_from_palette", f.next.String,
+					"this colourway has a palette, and pantone / pantone_system / dev_hex mirror its main "+
+						"colour; send development.colours (the main colour first) instead")
+			}
+		}
 	}
 	next = stampLabDipTransitionAudit(cur, next, patch.Actor)
 

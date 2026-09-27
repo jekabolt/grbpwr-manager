@@ -412,10 +412,13 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		return 0, err
 	}
 
+	// T45: sku_color_token is the SKU colour segment. CreateColorway minted it (the caller filled
+	// SkuColorToken); the legacy coupled AddProduct fixture did not, and there the token is the
+	// dictionary code, exactly what the segment was before the column existed.
 	query := `
 	INSERT INTO product
-	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, country_code, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES (NULL, :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, :lifecycleStatus, :minTier, :costPrice,
+	(sku, style_id, preorder, color, color_code, sku_color_token, color_hex, country_of_origin, country_code, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES (NULL, :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, COALESCE(NULLIF(:skuColorToken, ''), :colorCode), :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, :lifecycleStatus, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
@@ -424,6 +427,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		"lifecycleStatus":      lifecycleStatus,
 		"preorder":             product.ProductBodyInsert.Preorder,
 		"colorCode":            product.ProductBodyInsert.ColorCode,
+		"skuColorToken":        product.ProductBodyInsert.SkuColorToken,
 		"colorHexOverride":     product.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
 		"countryCode":          countryCode,
@@ -1192,6 +1196,7 @@ type productQueryResult struct {
 	SKU                string              `db:"sku"`
 	Color              string              `db:"color"`
 	ColorCode          string              `db:"color_code"`
+	SkuColorToken      string              `db:"sku_color_token"` // COALESCE(sku_color_token, color_code) (T45)
 	ColorHexOverride   sql.NullString      `db:"color_hex"`
 	CountryOfOrigin    string              `db:"country_of_origin"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage"`
@@ -1305,6 +1310,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					Collection:            pqr.Collection,
 					Color:                 pqr.Color,
 					ColorCode:             pqr.ColorCode,
+					SkuColorToken:         pqr.SkuColorToken,
 					ColorHexOverride:      pqr.ColorHexOverride,
 					CountryOfOrigin:       pqr.CountryOfOrigin,
 					SalePercentage:        pqr.SalePercentage,

@@ -104,9 +104,13 @@ func (s *Server) createColorway(ctx context.Context, in colorwayCreateInput) (in
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", errColorwayInvalid, err)
 	}
+	dev, err := dto.ColorwayDevelopmentPatchFromPb(in.Development, nil)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", errColorwayInvalid, err)
+	}
 	id, err := s.repo.Products().CreateColorway(ctx, in.StyleID, prd,
 		dto.ConvertColorwayMediaIDs(in.MediaIDs), dto.ConvertColorwayTags(in.Tags), dto.ConvertColorwayPrices(in.Prices),
-		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(in.Development, nil)))
+		stampColorwayDevelopmentActor(ctx, dev))
 	if err != nil {
 		return 0, err
 	}
@@ -136,9 +140,13 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
+	dev, err := dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
+	}
 	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())))
+		stampColorwayDevelopmentActor(ctx, dev))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}

@@ -14,18 +14,20 @@ import (
 )
 
 // productSKUFacts is everything MintProductSKUs needs to build a product's SKU. There is exactly ONE
-// source for every segment: the product carries its own colour (color_code), and the season + model
-// number come from the product's style (product.style_id -> tech_card). The old styled/standalone fork
-// and the tech_card_colorway/MIN(cw.id) detour are gone — a colourway can no longer show one style and
-// mint its SKU from another (fixes the split-brain, problem 011).
+// source for every segment: the product carries its own colour token (sku_color_token, T45), and the
+// season + model number come from the product's style (product.style_id -> tech_card). The old
+// styled/standalone fork and the tech_card_colorway/MIN(cw.id) detour are gone — a colourway can no
+// longer show one style and mint its SKU from another (fixes the split-brain, problem 011).
 type productSKUFacts struct {
-	ID         int            `db:"id"`
-	StyleID    int            `db:"style_id"`
-	ColorCode  string         `db:"color_code"` // colourway's dictionary code (on the product)
-	LockedAt   sql.NullTime   `db:"sku_locked_at"`
-	SeasonCode sql.NullString `db:"season_code"` // style sku_season code (SS/FW/PF/RC)
-	SeasonYear sql.NullInt32  `db:"season_year"` // style sku_season year
-	ModelNo    sql.NullInt32  `db:"model_no"`    // style model number (allocated on demand when NULL)
+	ID      int `db:"id"`
+	StyleID int `db:"style_id"`
+	// SkuColorToken is the colour segment (T45): the token minted on create, immutable. A row an older
+	// binary inserted reads its color_code, which is what that binary minted with.
+	SkuColorToken string         `db:"sku_color_token"`
+	LockedAt      sql.NullTime   `db:"sku_locked_at"`
+	SeasonCode    sql.NullString `db:"season_code"` // style sku_season code (SS/FW/PF/RC)
+	SeasonYear    sql.NullInt32  `db:"season_year"` // style sku_season year
+	ModelNo       sql.NullInt32  `db:"model_no"`    // style model number (allocated on demand when NULL)
 }
 
 // loadProductSKUFacts reads the facts for one product from its single authoritative style link
@@ -34,7 +36,7 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 	const q = `
 		SELECT p.id            AS id,
 		       p.style_id      AS style_id,
-		       p.color_code    AS color_code,
+		       COALESCE(p.sku_color_token, p.color_code) AS sku_color_token,
 		       p.sku_locked_at AS sku_locked_at,
 		       sty.season_code AS season_code,
 		       sty.season_year AS season_year,
@@ -51,8 +53,14 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 
 // resolveSegments turns the raw facts into the generator's SKUSegments along the single style path:
 // season + model number from the style (product.style_id), colour from the product. It ensures the
-// style has a model number (allocating one when missing) and requires the FK-backed colour dictionary
-// code. It may write model_no back onto the style, so it takes db and runs inside the caller's tx.
+// style has a model number (allocating one when missing) and requires a well-formed colour token.
+// It may write model_no back onto the style, so it takes db and runs inside the caller's tx.
+//
+// T45: the colour segment is the product's sku_color_token and is checked for SHAPE only
+// ([A-Z0-9]{3}). It is no longer a dictionary code by definition — a custom colourway's token
+// («black and white» → BKW) is deliberately NOT one — so dictionary membership would refuse every
+// colourway the palette model creates. The dictionary family (color_code) is checked where it is
+// meant, on the publish gate.
 func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) (SKUSegments, error) {
 	var seg SKUSegments
 	if !f.SeasonCode.Valid || !f.SeasonYear.Valid {
@@ -70,10 +78,10 @@ func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) 
 	}
 	seg.ModelNo = modelNo
 
-	if err := validateColorCode(f.ColorCode); err != nil {
-		return seg, fmt.Errorf("product %d: %w", f.ID, err)
+	if !entity.IsValidSkuColorToken(f.SkuColorToken) {
+		return seg, fmt.Errorf("product %d: sku colour token %q is not canonical", f.ID, f.SkuColorToken)
 	}
-	seg.ColorCode = f.ColorCode
+	seg.ColorCode = f.SkuColorToken
 	return seg, nil
 }
 
@@ -87,6 +95,8 @@ func validateSKUSeason(code entity.SeasonEnum, year int) error {
 	return nil
 }
 
+// validateColorCode checks a dictionary FAMILY code: canonical shape and present in the dictionary.
+// Since T45 it guards the family (the publish gate), never the SKU segment.
 func validateColorCode(code string) error {
 	if len(code) != 3 || code != strings.ToUpper(code) || strings.TrimSpace(code) != code {
 		return fmt.Errorf("color_code %q is not canonical", code)

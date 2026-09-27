@@ -194,10 +194,14 @@ type colorwayDeletionFactsRow struct {
 //
 // Пояснения живут в Go-комментариях, а не внутри SQL: двоеточие в '--' комментарии ломает
 // именованную привязку sqlx («could not find name in map»).
+//
+// МЕТКА НЕОПУБЛИКОВАННОГО КОЛОРВЕЯ — имя и SKU-токен (T45): токен уникален в стиле, а код словаря
+// с T45 лишь семейство, которое два колорвея могут делить, и «Black (BLK)» дважды не назвал бы,
+// о каком из них речь. Строка, вставленная старым бинарём (токен NULL), читает свой код, как везде.
 func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID int) (*entity.ColorwayDeletionFacts, error) {
 	row, err := storeutil.QueryNamedOne[colorwayDeletionFactsRow](ctx, db, `
 		SELECT
-			COALESCE(NULLIF(p.sku, ''), CONCAT(COALESCE(p.color, ''), ' (', COALESCE(p.color_code, ''), ')')) AS label,
+			COALESCE(NULLIF(p.sku, ''), CONCAT(COALESCE(p.color, ''), ' (', COALESCE(p.sku_color_token, p.color_code, ''), ')')) AS label,
 			(SELECT COUNT(DISTINCT oi.order_id) FROM order_item oi
 				WHERE oi.product_id = p.id
 				   OR oi.variant_id IN (SELECT ps.id FROM product_size ps WHERE ps.product_id = p.id)) AS orders,
