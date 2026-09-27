@@ -557,3 +557,53 @@ func TestTransportFailureClasses(t *testing.T) {
 	require.Equal(t, CodeUnreachable, transportFailure(errors.New("dial tcp: connection refused")).Code)
 	require.Equal(t, "probe cancelled", transportFailure(&url.Error{Op: "Get", URL: "x", Err: context.Canceled}).Message)
 }
+
+// TestProbeGoogleBadKeyOn400 (E2): Google refuses a bad key with HTTP 400 and the machine mark
+// API_KEY_INVALID in the body, not with a 401 — the badge must say "key rejected", with the
+// package's own fixed sentence and nothing of the body. The mark is matched as a detail's reason
+// only: a 400 that merely talks about an API key, any other Google 400, and the same body from
+// another provider stay a refused probe.
+//
+// UNVERIFIED (G-05): googleBadKey is Google's 400 as written from memory.
+//
+// MUTATIONS (each measured red → green): the badKeyOn400 row removed from classify → the
+// API_KEY_INVALID row reads "probe refused (http 400)"; the row calling googleKeyInvalid(body) for
+// every endpoint instead of ep.badKeyOn400 → the openai row goes red; googleKeyInvalid also
+// accepting a body that contains "API key" → the "message only" row goes red.
+func TestProbeGoogleBadKeyOn400(t *testing.T) {
+	groups := strings.Join(fragments(fakeKey, 6), " ")
+	googleBadKey := `{"error":{"code":400,"message":"API key not valid. Please pass a valid API key. ` + groups + `",` +
+		`"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",` +
+		`"reason":"API_KEY_INVALID","domain":"googleapis.com","metadata":{"service":"generativelanguage.googleapis.com"}}]}}`
+	for _, tc := range []struct {
+		name     string
+		provider string
+		body     string
+		want     Result
+	}{
+		{"google, API_KEY_INVALID", entity.AIProviderGoogle, googleBadKey,
+			Result{Code: CodeKeyRejected, Message: "key rejected (http 400)"}},
+		{"google, another 400", entity.AIProviderGoogle,
+			`{"error":{"code":400,"message":"Invalid value at 'page_size'","status":"INVALID_ARGUMENT"}}`,
+			Result{Message: "probe refused (http 400)"}},
+		{"google, message only, no mark", entity.AIProviderGoogle,
+			`{"error":{"code":400,"message":"API key not valid.","status":"INVALID_ARGUMENT"}}`,
+			Result{Message: "probe refused (http 400)"}},
+		{"google, not json", entity.AIProviderGoogle, `API_KEY_INVALID`,
+			Result{Message: "probe refused (http 400)"}},
+		{"openai, the same body", entity.AIProviderOpenAI, googleBadKey,
+			Result{Message: "probe refused (http 400)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, http.StatusBadRequest, tc.body)
+			res := Probe(context.Background(), tc.provider, entity.AIKeyAPI, fakeKey, r.client())
+			require.Len(t, r.requests(), 1)
+			require.Equal(t, tc.want, res)
+			requireNoKey(t, res.Message)
+			low := strings.ToLower(res.Message)
+			for _, w := range []string{"valid", "api_key", "page_size", "googleapis"} {
+				require.NotContains(t, low, w, "the provider's words reached the message %q", res.Message)
+			}
+		})
+	}
+}
