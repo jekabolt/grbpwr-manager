@@ -393,7 +393,12 @@ func TestDesignSheetReplacedRefusalKeepsCorruptionAndReadErrors(t *testing.T) {
 //
 // МУТАЦИИ: снять сверку с сохранённым (снова судится весь входящий лист — первые две половины
 // отказывают); сравнивать множества, а не счёт (одна унаследованная строка разрешает вторую копию —
-// третья половина проходит); назвать первое вхождение вместо добавленного (третья называет item 1).
+// третья половина проходит); назвать первое вхождение файла вместо первого СВЕРХ сохранённого числа
+// (третья называет item 1).
+//
+// МЕСТО, А НЕ ЛИЧНОСТЬ. Называется первое вхождение сверх сохранённого числа в порядке технического
+// списка: у строк листа нет ключа, и копию, вставленную ПЕРЕД прежней, отказ называет по месту второй
+// (последняя половина держит этот контракт, чтобы он не поменялся молча).
 func TestDesignSheetReplacedRefusalJudgesTheTransition(t *testing.T) {
 	chain, load, _ := replaceChain()
 	m := chain[7].MediaId
@@ -412,7 +417,7 @@ func TestDesignSheetReplacedRefusalJudgesTheTransition(t *testing.T) {
 			require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, tc.media, legacy, read, load))
 		})
 	}
-	t.Run("вторая копия — отказ добавленному вхождению", func(t *testing.T) {
+	t.Run("вторая копия — отказ первому вхождению сверх сохранённого числа", func(t *testing.T) {
 		for _, media := range [][]TechCardMediaItem{
 			{sheetItem(m), sheetItem(600), sheetItem(m)},
 			{sheetItem(600), sheetItem(m), sheetItem(m)},
@@ -423,6 +428,16 @@ func TestDesignSheetReplacedRefusalJudgesTheTransition(t *testing.T) {
 			require.Equal(t, "technical_media[2].media_id", ve.Field, "называется вхождение сверх сохранённого числа")
 			require.Contains(t, ve.HowToFix, "technical sheet item 3: this drawing was replaced by picture #19")
 		}
+	})
+	t.Run("новая копия ВПЕРЕДИ прежней — названа вторая по месту", func(t *testing.T) {
+		added := sheetItem(m)
+		added.Kind = TechCardMediaBack // человек положил новую копию первой, другим видом
+		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{added, sheetItem(m)}, legacy, read, load)
+		var ve *ValidationError
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, "technical_media[1].media_id", ve.Field,
+			"первое вхождение сверх сохранённого числа в порядке списка — место, а не личность копии")
+		require.Contains(t, ve.HowToFix, "technical sheet item 2: this drawing was replaced by picture #19")
 	})
 	t.Run("снятый файл обратно не встаёт", func(t *testing.T) {
 		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(600), sheetItem(m)},

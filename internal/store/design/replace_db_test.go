@@ -15,7 +15,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
-	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 )
 
@@ -819,7 +818,8 @@ func TestDesignDBOverwriteRefusesAPictureOnTheTechnicalSheet(t *testing.T) {
 
 // ═══ ЗЕРКАЛО technical_sheet НА СЕЙВЕ КАРТОЧКИ (27.09, D-57) ═══════════════════════════════════
 //
-// Инвариант один на две двери: на техническом листе карточки нет файла её заменённого кадра.
+// Инвариант один на две двери: ни одна не добавляет на технический лист карточки новое или лишнее
+// вхождение файла её заменённого кадра (строки листа, собранного до сторожа, живут, пока их не снимут).
 // Перезапись держит его отказом technical_sheet, сейв — поимённым отказом replaced_picture
 // (entity.DesignSheetReplacedRefusal). Пробы ниже ходят НАСТОЯЩИМИ путями обеих дверей: сейв —
 // через rep.TechCards().UpdateTechCard (SERIALIZABLE-обёртка с повтором 1213/1205), перезапись —
@@ -936,6 +936,11 @@ func TestDesignDBOverwriteReplayWithTheKeyOutranksTheSheet(t *testing.T) {
 // СВОИ экземпляры обоих сторов над обёрткой репозитория (rep.Tx — та же SERIALIZABLE с повтором
 // 1213/1205), чей колбэк получает хендл, который ОДИН раз, на первой попытке, останавливается сразу
 // после названного чтения и ждёт сигнала. Кода продукта это не касается.
+//
+// ТОЧКА СТОИТ ПОСЛЕ ПРОЧИТАННОГО ЗНАЧЕНИЯ. Оба чтения идут вызовами, которые возвращаются уже с
+// разобранным результатом: SelectContext вычитывает все строки в dest, GetContext — скаляр (чтение
+// листа перезаписи, designOnTechnicalSheet, идёт им). Точка после QueryRowxContext стояла бы между
+// запросом и Scan — не барьер после чтения.
 
 // checkpointDB — хендл транзакции, останавливающийся после чтения, которое называет at.
 type checkpointDB struct {
@@ -952,12 +957,12 @@ func (c checkpointDB) SelectContext(ctx context.Context, dest any, query string,
 	return err
 }
 
-func (c checkpointDB) QueryRowxContext(ctx context.Context, query string, args ...any) *sqlx.Row {
-	row := c.DB.QueryRowxContext(ctx, query, args...)
+func (c checkpointDB) GetContext(ctx context.Context, dest any, query string, args ...any) error {
+	err := c.DB.GetContext(ctx, dest, query, args...)
 	if c.at(query) {
 		c.stop()
 	}
-	return row
+	return err
 }
 
 // checkpointRep — репозиторий транзакции с этим хендлом вместо своего.
@@ -1030,17 +1035,32 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 		sheetRead := func(q string) bool {
 			return strings.Contains(q, "SELECT EXISTS") && strings.Contains(q, "FROM tech_card_media")
 		}
-		outcomes := map[string]int{}
-		for round := 0; round < 3; round++ {
+		// Раунд целиком ограничен: обе операции идут под контекстом с дедлайном, контрольные точки и
+		// результаты ждутся select'ом с таймером, точка сама отпускает на отмене контекста. Зависшая
+		// база роняет пробу, а не вешает прогон; безусловного ожидания здесь нет.
+		race := func(t *testing.T, round int) string {
 			p := newReplaceProbeSetup(t, rep, raw)
 			media := probeMedia(t, raw)
 			payload, version := probeSheetPayload(t, rep, p.card, onSheet(p.sheet.MediaId))
 
+			opCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			defer cancel()
 			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseAll()
 			saveRead, flatRead := make(chan struct{}), make(chan struct{})
 			var saveOnce, flatOnce sync.Once
 			hold := func(once *sync.Once, reached chan struct{}) func() {
-				return func() { once.Do(func() { close(reached); <-release }) }
+				return func() {
+					once.Do(func() {
+						close(reached)
+						select {
+						case <-release:
+						case <-opCtx.Done():
+						}
+					})
+				}
 			}
 			base := storeutil.Base{DB: rep.DB(), Now: time.Now}
 			saveTx := checkpointTx(rep, guardRead, hold(&saveOnce, saveRead))
@@ -1048,34 +1068,51 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 			cards := techcard.New(base, saveTx, saveTx, func() dependency.Repository { return rep })
 			band := design.New(base, flatTx, flatTx)
 
-			var (
-				wg               sync.WaitGroup
-				saveErr, flatErr error
-				edit             *entity.DesignPicture
-			)
-			wg.Add(2)
+			type result struct {
+				save bool
+				err  error
+				edit *entity.DesignPicture
+			}
+			results := make(chan result, 2) // буфер: опоздавшая операция не блокируется на упавшей пробе
 			go func() {
-				defer wg.Done()
-				saveErr = cards.UpdateTechCard(ctx, p.card, payload, version)
+				err := cards.UpdateTechCard(opCtx, p.card, payload, version)
+				results <- result{save: true, err: err}
 			}()
 			go func() {
-				defer wg.Done()
-				edit, flatErr = band.FlattenEditLayer(ctx, p.overwrite(media, p.sheet.Id))
+				edit, err := band.FlattenEditLayer(opCtx, p.overwrite(media, p.sheet.Id))
+				results <- result{err: err, edit: edit}
 			}()
+
 			forced := true
-			deadline := time.NewTimer(30 * time.Second)
+			checkpointsDue := time.NewTimer(30 * time.Second)
+			defer checkpointsDue.Stop()
 		checkpoints:
 			for _, reached := range []chan struct{}{saveRead, flatRead} {
 				select {
 				case <-reached:
-				case <-deadline.C:
+				case <-checkpointsDue.C:
 					forced = false
 					break checkpoints
 				}
 			}
-			deadline.Stop()
-			close(release)
-			wg.Wait()
+			releaseAll()
+
+			var saveErr, flatErr error
+			var edit *entity.DesignPicture
+			resultsDue := time.NewTimer(100 * time.Second)
+			defer resultsDue.Stop()
+			for got := 0; got < 2; got++ {
+				select {
+				case r := <-results:
+					if r.save {
+						saveErr = r.err
+					} else {
+						flatErr, edit = r.err, r.edit
+					}
+				case <-resultsDue.C:
+					t.Fatalf("round %d: the save and the overwrite did not both return in time", round)
+				}
+			}
 			require.True(t, forced, "round %d: the two reads did not both happen before either write", round)
 
 			switch {
@@ -1085,15 +1122,20 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 				require.ErrorIs(t, flatErr, entity.ErrDesignTechnicalSheet, "round %d", round)
 				require.False(t, probeReplacedBy(t, raw, p.sheet.Id).Valid, "round %d", round)
 				require.Equal(t, 1, probeSheetRows(t, raw, p.card, p.sheet.MediaId), "round %d", round)
-				outcomes["save won"]++
+				require.Zero(t, probeReplacedOnSheet(t, raw, p.card), "round %d: инвариант в строках", round)
+				return "save won"
 			case flatErr == nil:
 				requireSheetRefusal(t, saveErr, 0, edit.Id)
 				require.Zero(t, probeSheetRows(t, raw, p.card, p.sheet.MediaId), "round %d", round)
-				outcomes["overwrite won"]++
-			default:
-				t.Fatalf("round %d: both refused — save: %v; overwrite: %v", round, saveErr, flatErr)
+				require.Zero(t, probeReplacedOnSheet(t, raw, p.card), "round %d: инвариант в строках", round)
+				return "overwrite won"
 			}
-			require.Zero(t, probeReplacedOnSheet(t, raw, p.card), "round %d: инвариант в строках", round)
+			t.Fatalf("round %d: both refused — save: %v; overwrite: %v", round, saveErr, flatErr)
+			return ""
+		}
+		outcomes := map[string]int{}
+		for round := 0; round < 3; round++ {
+			outcomes[race(t, round)]++
 		}
 		t.Logf("outcomes: %v", outcomes)
 	})
@@ -1134,7 +1176,7 @@ func TestDesignDBCardSaveJudgesTheSheetTransition(t *testing.T) {
 		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(other), onSheet(legacy)))
 		require.Equal(t, 1, probeSheetRows(t, raw, p.card, legacy))
 	})
-	t.Run("вторая копия — отказ добавленному вхождению, и не записано ничего", func(t *testing.T) {
+	t.Run("вторая копия — отказ первому вхождению сверх сохранённого, и не записано ничего", func(t *testing.T) {
 		version := probeLockVersion(t, raw, p.card)
 		err := probeSaveSheet(t, rep, p.card, onSheet(legacy), onSheet(other), onSheet(legacy))
 		requireSheetRefusal(t, err, 2, edit.Id)

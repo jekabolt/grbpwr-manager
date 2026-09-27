@@ -882,8 +882,11 @@ func designOnTechnicalSheet(ctx context.Context, db dependency.DB, card, media i
 	if err != nil {
 		return false, err
 	}
+	// GetContext, а не QueryRowxContext + Scan: значение прочитано ДО возврата из вызова хендла, и
+	// всё, что оборачивает хендл (контрольная точка пробы), стоит уже после чтения, а не между
+	// запросом и разбором строки.
 	var on int
-	if err := db.QueryRowxContext(ctx, query, args...).Scan(&on); err != nil {
+	if err := db.GetContext(ctx, &on, query, args...); err != nil {
 		return false, fmt.Errorf("failed to read whether media %d is on the technical sheet of tech card %d: %w",
 			media, card, err)
 	}
