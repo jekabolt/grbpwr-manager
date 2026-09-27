@@ -11,6 +11,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ═══ PLAYGROUND phase 3 — THE fal JSON ROUTES AT THE DOOR (kind=extend, kind=inpaint) ═══
@@ -55,6 +56,14 @@ func (s *Server) designRefuseFalRouteUnbounded(kind string) error {
 			fmt.Sprintf("a %s run cannot be started: no fal route is wired for it on this server. Nothing "+
 				"was reserved and nothing was charged", kind),
 			map[string]string{"kind": kind})
+	}
+	if r.Unsupported {
+		// A FAL_MODEL_* slug this binary builds no body for (G-03, Fable m-1): not a money question —
+		// the route cannot be sent at all, so the kind is not available, and the band does not list it.
+		return designRefusal(codes.FailedPrecondition, designReasonKindUnavailable,
+			fmt.Sprintf("a %s run cannot be started on this deployment: %s. Nothing was reserved and nothing "+
+				"was charged", kind, r.Unbounded),
+			map[string]string{"kind": kind, "flag": r.Flag})
 	}
 	if !r.Bounded {
 		return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeRouteReserveUnbounded,
@@ -171,18 +180,24 @@ func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, para
 		return designError(ctx, "failed to read the picture an extend grows", err, nil)
 	}
 	m, ok := byID[id]
-	if !ok || m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
+	if !ok {
+		// ⚠ «NO ROW» IS NOT «A LEGACY ROW WITH NO DIMENSIONS» (G-03, Codex 8). A legacy row exists and
+		// the worker can still decode it; an id with no row at all can only reach the worker's
+		// source_gone — after the reservation. Refused here, free.
+		return designRefuseMissingSource(id, "params.extra_input_media_ids")
+	}
+	if m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
 		return nil
 	}
-	if min := designgen.WindowMinSourcePx; m.FullSizeWidth < min || m.FullSizeHeight < min {
+	if minSide := designgen.WindowMinSourcePx; m.FullSizeWidth < minSide || m.FullSizeHeight < minSide {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeSourceTooSmall,
 			fmt.Sprintf("picture %d is %d×%d px, and an extend needs at least %d px on each side — use a larger "+
-				"picture. Nothing was reserved and nothing was charged", id, m.FullSizeWidth, m.FullSizeHeight, min),
+				"picture. Nothing was reserved and nothing was charged", id, m.FullSizeWidth, m.FullSizeHeight, minSide),
 			map[string]string{
 				"media_id": strconv.Itoa(id),
 				"width":    strconv.Itoa(m.FullSizeWidth),
 				"height":   strconv.Itoa(m.FullSizeHeight),
-				"minimum":  strconv.Itoa(min),
+				"minimum":  strconv.Itoa(minSide),
 			})
 	}
 	target := strings.TrimSpace(params.GetExtend().GetAspectRatio())
@@ -194,4 +209,85 @@ func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, para
 			map[string]string{"source": src, "target": target})
 	}
 	return nil
+}
+
+// designRefuseMissingSource — the one picture an extend / inpaint works on names no media row
+// (G-03, Codex 8). Free, before the reservation; the worker's source_gone stays for a deletion that
+// races the pickup.
+func designRefuseMissingSource(id int, field string) error {
+	return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeNoSourcePicture,
+		fmt.Sprintf("%s names picture %d, and there is no such picture — upload it or pick one of this card's. "+
+			"Nothing was reserved and nothing was charged", field, id),
+		map[string]string{"media_id": strconv.Itoa(id), "why": "the picture does not exist"})
+}
+
+// designRefuseFalRerunPictureSwap — A RERUN OF AN EXTEND / INPAINT REPEATS ITS PICTURE (G-03, Fable
+// M-1; the G-02 M-2 defect, third instance — designRefuseFreeformRerunPictureSwap and
+// designRefuseThreedRerunReferenceSwap are the other two). A spoken rerun replaces the parent's
+// params whole, so without this a rerun of extend run 5 (picture 88) naming picture 91 went out under
+// `rerun_of = 5`: the money right, the provenance a lie.
+//
+//   - extend: the source (params.extra_input_media_ids) may not change;
+//   - inpaint: the SOURCE may not change; the mask may — it is the «area», which the freeform doctrine
+//     lets a rerun re-mark (a retouch repeated with a corrected paint is the same picture, retouched).
+//
+// Asked of the SPEAKER only (a silent rerun inherits the parent whole); a spoken rerun that names no
+// source is somebody else's refusal (one_source_picture / no_source_picture).
+func designRefuseFalRerunPictureSwap(kind string, spoken *pb_common.DesignRunParams, parentID int, parentParams []byte) error {
+	if !designFalRouteKind(kind) || spoken == nil || parentID <= 0 {
+		return nil
+	}
+	inherited := &pb_common.DesignRunParams{}
+	if len(parentParams) > 0 {
+		if err := designUnmarshalJSON(parentParams, inherited); err != nil {
+			return status.Errorf(codes.FailedPrecondition,
+				"run %d cannot be rerun: its stored parameters do not parse", parentID)
+		}
+	}
+	var was, now []int
+	switch kind {
+	case entity.DesignRunKindExtend:
+		for _, id := range spoken.GetExtraInputMediaIds() {
+			now = append(now, int(id))
+		}
+		for _, id := range inherited.GetExtraInputMediaIds() {
+			was = append(was, int(id))
+		}
+	case entity.DesignRunKindInpaint:
+		if id := spoken.GetInpaint().GetSourceMediaId(); id > 0 {
+			now = []int{int(id)}
+		}
+		if id := inherited.GetInpaint().GetSourceMediaId(); id > 0 {
+			was = []int{int(id)}
+		}
+	}
+	if len(now) == 0 {
+		return nil
+	}
+	parentSet := make(map[int]struct{}, len(was))
+	for _, id := range was {
+		parentSet[id] = struct{}{}
+	}
+	childSet := make(map[int]struct{}, len(now))
+	for _, id := range now {
+		childSet[id] = struct{}{}
+	}
+	added := designSortedMissing(childSet, parentSet)
+	dropped := designSortedMissing(parentSet, childSet)
+	if len(added) == 0 && len(dropped) == 0 {
+		return nil
+	}
+	what := "extended"
+	if kind == entity.DesignRunKindInpaint {
+		what = "retouched (the mask may change on a rerun; the picture may not)"
+	}
+	return designRefusal(codes.InvalidArgument, "rerun_changes_pictures",
+		fmt.Sprintf("a rerun repeats the run it points at: run %d %s picture %s, and this one names %s — start "+
+			"a new run instead of a rerun. Nothing was reserved and nothing was charged",
+			parentID, what, designJoinIDsOrNone(was), designJoinIDsOrNone(now)),
+		map[string]string{
+			"rerun_of": strconv.Itoa(parentID),
+			"added":    designJoinIDs(added),
+			"dropped":  designJoinIDs(dropped),
+		})
 }

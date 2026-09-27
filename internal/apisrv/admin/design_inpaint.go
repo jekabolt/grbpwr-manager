@@ -3,6 +3,8 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image/png"
 	"strconv"
@@ -54,6 +56,10 @@ func designRefuseUnworkableInpaint(ask string, params *pb_common.DesignRunParams
 	return nil
 }
 
+// designMaskDoorMaxPixels — the largest mask the door decodes (12 MP: ≤ 48 MB of NRGBA, 12 MB for the
+// grey PNG the client paints). See designRefuseUnusableMask.
+const designMaskDoorMaxPixels = 12_000_000
+
 // designRefuseUnusableMask — THE MASK ITSELF, read once, before the reservation:
 //
 //   - both rows' stored full-size dimensions, when stated, must agree → mask_size_mismatch;
@@ -90,11 +96,23 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 	}
 	dims := func(w, h int) string { return strconv.Itoa(w) + "x" + strconv.Itoa(h) }
 
+	src, ok := byID[srcID]
+	if !ok {
+		return designRefuseMissingSource(srcID, "params.inpaint.source_media_id") // G-03, Codex 8
+	}
 	m, ok := byID[maskID]
 	if !ok || strings.TrimSpace(m.FullSizeMediaURL) == "" {
 		return invalid("the mask picture does not exist")
 	}
-	src := byID[srcID]
+	// ⚠ «THE MASK IS THE PICTURE» IS A FACT OF THE CONTENT, NOT OF THE ID (G-03, Codex 7). The same
+	// bright PNG uploaded twice is two rows with one content hash, and passes every other check (the
+	// size agrees, it is a PNG, its bright pixels «paint» it). The stored hashes are compared first;
+	// the mask's own bytes are hashed below for a row that has none.
+	sameFile := invalid("it is the picture itself under another id (the same file) — the mask is a separate PNG, white where the picture changes")
+	if m.ContentHash.Valid && src.ContentHash.Valid && m.ContentHash.String != "" &&
+		strings.EqualFold(m.ContentHash.String, src.ContentHash.String) {
+		return sameFile
+	}
 	srcKnown := src.FullSizeWidth > 0 && src.FullSizeHeight > 0
 	if srcKnown && m.FullSizeWidth > 0 && m.FullSizeHeight > 0 &&
 		(m.FullSizeWidth != src.FullSizeWidth || m.FullSizeHeight != src.FullSizeHeight) {
@@ -107,6 +125,12 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 	if len(raw) < 8 || !bytes.Equal(raw[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}) {
 		return invalid("it is not a PNG (upload it verbatim, not re-encoded)")
 	}
+	if src.ContentHash.Valid && src.ContentHash.String != "" {
+		sum := sha256.Sum256(raw)
+		if strings.EqualFold(hex.EncodeToString(sum[:]), src.ContentHash.String) {
+			return sameFile
+		}
+	}
 	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		return invalid("it is not a readable PNG")
@@ -116,6 +140,13 @@ func (s *Server) designRefuseUnusableMask(ctx context.Context, kind string, para
 	}
 	if srcKnown && (cfg.Width != src.FullSizeWidth || cfg.Height != src.FullSizeHeight) {
 		return mismatch(dims(src.FullSizeWidth, src.FullSizeHeight), dims(cfg.Width, cfg.Height))
+	}
+	// ⚠ THE RPC DECODES A MASK OF AT MOST designMaskDoorMaxPixels (G-03, Fable m-2). A mask is the size
+	// of its picture — up to 40 MP by the bucket's budget, 160 MB of NRGBA per call, several admins at
+	// once. Past the cap the door stops at the header (PNG, size, budget: all checked above) and the
+	// worker's second lock decides «nothing painted» — free and terminal there too, only a tick later.
+	if int64(cfg.Width)*int64(cfg.Height) > designMaskDoorMaxPixels {
+		return nil
 	}
 	img, err := png.Decode(bytes.NewReader(raw))
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/shopspring/decimal"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"sync"
 
@@ -121,6 +122,8 @@ type Server struct {
 	enhanceRuns enhanceTextGuard
 	// suggestCache holds SuggestPrompts answers for ten minutes (design_suggest.go). Zero value works.
 	suggestCache suggestPromptsCache
+	// suggestFlight coalesces identical SuggestPrompts misses in flight (G-03, Codex 11). Zero value works.
+	suggestFlight singleflight.Group
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer

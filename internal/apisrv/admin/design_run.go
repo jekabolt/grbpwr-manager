@@ -910,6 +910,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designParentID(parent), designParentParams(parent)); err != nil {
 		return nil, err
 	}
+	// …and an extend / inpaint rerun keeps its picture (the inpaint mask may change) — G-03, Fable M-1.
+	if err := designRefuseFalRerunPictureSwap(kind, req.GetParams(),
+		designParentID(parent), designParentParams(parent)); err != nil {
+		return nil, err
+	}
 	// …and it stays on the same PLAYGROUND tile: a spoken rerun may re-mark, re-word and reorder,
 	// never turn into another workflow [Codex 2].
 	if err := designRefuseRerunChangesWorkflow(kind, req.GetParams(),

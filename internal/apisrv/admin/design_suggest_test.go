@@ -699,3 +699,44 @@ func TestSuggestPromptsRouteReachesTheHandler(t *testing.T) {
 	require.Equal(t, "coat", stub.last.GetContext())
 	require.Equal(t, "dusk", stub.last.GetText())
 }
+
+// TestIdenticalSuggestMissesINFLIGHT_COST_ONE_CALL — G-03, Codex 11: four identical presses that all
+// miss the cache before the first answer lands make ONE provider call and take ONE hourly token and
+// one slot; every one of them gets the answer. MUTATION (measured red): call s.suggestCall directly
+// instead of through s.suggestFlight.Do → four calls, four tokens.
+func TestIdenticalSuggestMissesINFLIGHT_COST_ONE_CALL(t *testing.T) {
+	arrived := make(chan struct{}, 8)
+	release := make(chan struct{})
+	client, rec := newSuggestFakeOR(t, openrouter.Config{}, func(model string, w http.ResponseWriter) {
+		arrived <- struct{}{}
+		<-release
+		enhanceReply(goodIdeas, "stop")(w)
+	})
+	s := newSuggestServer(t, client)
+
+	const n = 4
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	got := make([]*pb_admin.SuggestPromptsResponse, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], errs[i] = s.SuggestPrompts(adminCtx("alice"), tryOnPose("hand on hip"))
+		}(i)
+	}
+	<-arrived
+	time.Sleep(150 * time.Millisecond) // the other three reach the flight and wait on it
+	close(release)
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		require.NoError(t, errs[i], "press %d", i)
+		require.Len(t, got[i].GetIdeas(), 3, "press %d shares the answer", i)
+	}
+	require.Len(t, rec.all(), 1, "one provider call for one question")
+	for i := 1; i < enhancePerAdminCalls; i++ {
+		require.True(t, s.enhanceRuns.allow("alice"), "token %d is still free", i+1)
+	}
+	require.False(t, s.enhanceRuns.allow("alice"), "exactly one token was taken by the flight")
+}

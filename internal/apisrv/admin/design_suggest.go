@@ -161,15 +161,47 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 		return &pb_admin.SuggestPromptsResponse{Ideas: ideas, Model: answered}, nil
 	}
 
+	// ⚠ IDENTICAL MISSES IN FLIGHT SHARE ONE CALL (G-03, Codex 11). The cache stores answers, not
+	// work in progress: four identical presses arriving before the first answer all missed, took four
+	// slots and four of the hour's tokens, and paid the provider four times for one answer. A keyed
+	// singleflight makes the FIRST of them the only one that passes the fences and calls; the others
+	// wait for it and share its answer (or its refusal). The leader re-reads the cache first — a
+	// flight that landed between our miss and our turn is a hit.
+	v, err, shared := s.suggestFlight.Do(string(key[:]), func() (any, error) {
+		if ideas, answered, ok := s.suggestCache.get(key, time.Now()); ok {
+			return suggestFlightAnswer{ideas: ideas, model: answered}, nil
+		}
+		return s.suggestCall(ctx, in, model, key, urls, logAttrs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	ans := v.(suggestFlightAnswer)
+	if shared {
+		slog.Default().InfoContext(ctx, "suggested prompts",
+			append(logAttrs, slog.String("model", ans.model), slog.Bool("cache_hit", false),
+				slog.Bool("shared_flight", true), slog.Int("ideas", len(ans.ideas)))...)
+	}
+	return &pb_admin.SuggestPromptsResponse{Ideas: append([]string(nil), ans.ideas...), Model: ans.model}, nil
+}
+
+// suggestFlightAnswer — what one flight hands every request that waited on it.
+type suggestFlightAnswer struct {
+	ideas []string
+	model string
+}
+
+// suggestCall — the fences and the ONE provider call of a cache miss (the singleflight leader's work).
+func (s *Server) suggestCall(ctx context.Context, in suggestInput, model string, key [32]byte, urls []string, logAttrs []any) (suggestFlightAnswer, error) {
 	// The fences of EnhanceText, THE SAME ONES (not copies): one semaphore, one hourly window.
 	select {
 	case s.enhanceSem <- struct{}{}:
 		defer func() { <-s.enhanceSem }()
 	default:
-		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
+		return suggestFlightAnswer{}, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
 	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
-		return nil, status.Errorf(codes.ResourceExhausted,
+		return suggestFlightAnswer{}, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas and text improvements share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)
 	}
@@ -194,7 +226,7 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 		// NEVER err.Error(): the provider may echo the request (review ENH-01). A fixed class only.
 		class := enhanceErrClass(err)
 		if class == enhanceErrNotConfigured {
-			return nil, aiRefusal(aiReasonNotConfigured, suggestNotConfiguredMsg, nil)
+			return suggestFlightAnswer{}, aiRefusal(aiReasonNotConfigured, suggestNotConfiguredMsg, nil)
 		}
 		failAttrs := append(logAttrs, slog.String("err_class", class),
 			slog.Bool("provider_engaged", openrouter.ProviderEngaged(err)),
@@ -205,21 +237,21 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 		slog.Default().ErrorContext(ctx, "suggest prompts failed", failAttrs...)
 		switch class {
 		case enhanceErrModelUnavailable:
-			return nil, aiModelRefusal(suggestModelUnavailMsg, model)
+			return suggestFlightAnswer{}, aiModelRefusal(suggestModelUnavailMsg, model)
 		case enhanceErrBudgetExhausted, enhanceErrEmptyAnswer:
-			return nil, status.Error(codes.Internal, suggestNothingMsg)
+			return suggestFlightAnswer{}, status.Error(codes.Internal, suggestNothingMsg)
 		}
-		return nil, status.Error(codes.Unavailable, "the assistant is unavailable right now — try again in a moment")
+		return suggestFlightAnswer{}, status.Error(codes.Unavailable, "the assistant is unavailable right now — try again in a moment")
 	}
 
 	ideas := parseSuggestedIdeas(raw)
 	if len(ideas) == 0 {
 		slog.Default().ErrorContext(ctx, "suggest prompts: nothing usable in the answer", append(logAttrs, slog.Int("ideas", 0))...)
-		return nil, status.Error(codes.Internal, suggestNothingMsg)
+		return suggestFlightAnswer{}, status.Error(codes.Internal, suggestNothingMsg)
 	}
 	s.suggestCache.put(key, ideas, answered, time.Now())
 	slog.Default().InfoContext(ctx, "suggested prompts", append(logAttrs, slog.Int("ideas", len(ideas)))...)
-	return &pb_admin.SuggestPromptsResponse{Ideas: append([]string(nil), ideas...), Model: answered}, nil
+	return suggestFlightAnswer{ideas: ideas, model: answered}, nil
 }
 
 // validateSuggestPromptsRequest refuses what no call should be spent on, field-tagged.
