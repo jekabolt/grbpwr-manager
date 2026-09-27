@@ -351,9 +351,8 @@ var methodRequirements = map[string]Requirement{
 	"DeleteSampleSubstitution": wr(SectionFittings),
 	"ListSampleSubstitutions":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard":             wr(SectionTechCards),
-	"GenerateTechCardOperations": wr(SectionTechCards), // AI-assisted authoring (POST); tech-card write
-	"SuggestStyleNumber":         rd(SectionTechCards), // Q1: propose the next style number for a season
+	"CreateTechCard":     wr(SectionTechCards),
+	"SuggestStyleNumber": rd(SectionTechCards), // Q1: propose the next style number for a season
 	// Q5 role assignments. The lightweight admin picker they were assigned from (ListAdmins) used to
 	// live here on the argument "a role-assigner needs tech_cards, not accounts"; it has since grown
 	// three more callers in sections that do not contain tech cards, so it moved to the allowlist —
@@ -367,17 +366,17 @@ var methodRequirements = map[string]Requirement{
 	"ListTechCards":                rd(SectionTechCards),
 	"GetStylePipeline":             rd(SectionTechCards),
 	"GetTechCardReadiness":         rd(SectionTechCards),
-	// CONSTRUCTION-аудит (машинный слой): rd, не wr, и это НЕ описка рядом с
-	// GenerateTechCardOperations, который стоит на записи. Тот тратит деньги ключа и пишет черновик
-	// операций — авторинг. Этот только пересчитывает уже сохранённую карточку и ничего не выводит,
-	// чего внимательный читатель той же карточки не вывел бы сам. Повесить его на запись значило бы
-	// отнять аудит у роли, которая карточки читает, но не правит, — то есть ровно у того, кому
-	// «что здесь не так» и нужно. Его LLM-брат (волна 2) классифицируется wr отдельно.
+	// CONSTRUCTION-аудит (машинный слой): rd, не wr, и это НЕ описка рядом с AI-методами этой
+	// секции, которые стоят на записи. Те тратят деньги ключа — это авторинг. Этот только
+	// пересчитывает уже сохранённую карточку и ничего не выводит, чего внимательный читатель той же
+	// карточки не вывел бы сам. Повесить его на запись значило бы отнять аудит у роли, которая
+	// карточки читает, но не правит, — то есть ровно у того, кому «что здесь не так» и нужно. Его
+	// LLM-брат (волна 2) классифицируется wr отдельно.
 	"GetTechCardConstructionAudit": rd(SectionTechCards),
-	// Его LLM-брат и узкий файлинг находки — ЗАПИСЬ, по прецеденту GenerateTechCardOperations.
-	// AnalyzeTechCardConstruction ничего не сохраняет, и «не пишет — значит чтение» здесь неверно:
-	// нажатие ТРАТИТ ДЕНЬГИ ключа, а грант на трату — это грант авторинга, а не чтения. Раздать его
-	// всем, кто карточки читает, значило бы раздать кнопку с ценой.
+	// Его LLM-брат и узкий файлинг находки — ЗАПИСЬ, и это правило для всякого AI-метода: платное
+	// нажатие — авторинг. AnalyzeTechCardConstruction ничего не сохраняет, и «не пишет — значит
+	// чтение» здесь неверно: нажатие ТРАТИТ ДЕНЬГИ ключа, а грант на трату — это грант авторинга, а
+	// не чтения. Раздать его всем, кто карточки читает, значило бы раздать кнопку с ценой.
 	"AnalyzeTechCardConstruction": wr(SectionTechCards),
 	// EnhanceText (T15) — the `ai ✦` rewrite of a card's free-text field. Stores nothing, and is a
 	// WRITE by the same precedent: a press spends the AI key, and rewriting a card's text is
@@ -472,8 +471,8 @@ var methodRequirements = map[string]Requirement{
 	// штрихов; право то же самое — это содержимое той же карточки, просто взятое поштучно.
 	"GetDesignEditLayer": rd(SectionTechCards),
 	// ВСЁ ПИШУЩЕЕ И ВСЁ ТРАТЯЩЕЕ — write, включая те методы, которые «просто прячут» или «просто
-	// помечают». Прецедент рядом: GenerateTechCardOperations и AnalyzeTechCardConstruction стоят на
-	// записи именно потому, что тратят деньги ключа, а не потому, что сохраняют строку.
+	// помечают». Прецедент рядом: AnalyzeTechCardConstruction и EnhanceText стоят на записи именно
+	// потому, что тратят деньги ключа, а не потому, что сохраняют строку.
 	//
 	// StartDesignRun и DraftDesignIdea — платные вызовы: право их звать это право выставить
 	// организации счёт, и на чтении им места нет ни при каких обстоятельствах.
@@ -746,11 +745,12 @@ var methodRequirements = map[string]Requirement{
 	"CreateLibraryNote":      wr(SectionFiles),
 	"GetLibraryNoteContent":  rd(SectionFiles),
 	"SaveLibraryNoteContent": wr(SectionFiles),
-	// AI-ФОРМАТИРОВАНИЕ ТЕКСТА ЗАМЕТКИ — files:WRITE, хотя сервер не сохраняет ни байта: прецедент
-	// GenerateTechCardOperations, где AI-авторинг классифицирован как запись. Довод не формальный: метод
-	// существует, чтобы породить содержимое, которое человек примет в буфер и сохранит, и читатель
-	// библиотеки не должен уметь запустить авторинг. Заодно это единственный тормоз расхода на модель —
-	// платный вызов не должен быть доступен всякому, у кого есть files:read.
+	// AI-ФОРМАТИРОВАНИЕ ТЕКСТА ЗАМЕТКИ — files:WRITE, хотя сервер не сохраняет ни байта: то же
+	// правило, что у EnhanceText и AnalyzeTechCardConstruction, где AI-авторинг классифицирован как
+	// запись. Довод не формальный: метод существует, чтобы породить содержимое, которое человек примет
+	// в буфер и сохранит, и читатель библиотеки не должен уметь запустить авторинг. Заодно это
+	// единственный тормоз расхода на модель — платный вызов не должен быть доступен всякому, у кого
+	// есть files:read.
 	"FormatLibraryNoteMarkdown": wr(SectionFiles),
 	// task archive + checklist
 	"ArchiveTask":              wr(SectionTasks),
