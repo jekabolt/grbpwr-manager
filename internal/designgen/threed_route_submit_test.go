@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -151,6 +152,78 @@ func TestAnAcceptedBuildIsCOLLECTED_NOT_REFUSED(t *testing.T) {
 	for _, f := range st.failed {
 		require.NotEqual(t, CodeOptionNotRead, f.ErrorCode, "an already-paid build must not be refused")
 	}
+}
+
+// ═══ G-02 r3 (Codex 1): AN UNREADABLE ATTEMPT HISTORY FAILS CLOSED ═══
+//
+// requireNothingHappened — the pass touched neither the provider nor a single writing verb, and it
+// reported the failure to the tick instead of swallowing it (so the tick backs off, the row keeps its
+// claim until the lease dies, and ReviveExpiredRuns hands it back to the queue).
+func requireNothingHappened(t *testing.T, st *fakeStore, body chan string, err, cause error) {
+	t.Helper()
+	select {
+	case raw := <-body:
+		t.Fatalf("the provider was called although the attempt history was unreadable: %s", raw)
+	default:
+	}
+	require.Error(t, err, "the pass must report the failure so the tick backs off")
+	require.ErrorIs(t, err, cause)
+	require.Empty(t, st.failed, "no FailRun: the run must stay retryable, its reservation held")
+	require.Empty(t, st.started, "no attempt row: nothing may be spent")
+	require.Empty(t, st.recordedPrompts, "nothing was sent, so no prompt is recorded")
+	require.Empty(t, st.events, "not one writing verb")
+	require.Empty(t, st.completed)
+	require.Empty(t, st.finished)
+}
+
+// TestAnUnreadableHistoryDOES_NOT_REFUSE_A_PAID_BUILD — Codex's scenario: a detailed build was
+// submitted (and paid) under fal meshy, the deployment moved to the hitem3d override, and one GetRun
+// fails. Read as "fresh", the route guard failed the run terminally as option_not_read and FailRun
+// released its reservation — the paid result was never collected. MUTATION (measured red): restore
+// the old log-and-continue on a GetRun error in execute.
+func TestAnUnreadableHistoryDOES_NOT_REFUSE_A_PAID_BUILD(t *testing.T) {
+	stand := newFalSubmitStand(t)
+	cause := errors.New("pictures: connection reset")
+	// The store could not answer, so it returns no run: the accepted attempt below exists in the
+	// database, and nothing this pass can see says so.
+	st := &fakeStore{getRunErr: cause}
+	run := routeRun(43, `{"quality": "detailed"}`)
+	w := routeWorker(t, st, falRoute(t, stand.srv.URL, hitemSlug), false)
+
+	err := w.execute(context.Background(), run, "tok")
+	requireNothingHappened(t, st, stand.body, err, cause)
+
+	// The tick-level consequence: the batch is reported as failed (backoff), not as a success that
+	// closed the run.
+	st.claimReturn = []entity.DesignRun{run}
+	require.False(t, w.runOnce(context.Background()), "the tick must back off")
+	require.Empty(t, st.failed, "still no FailRun after a full tick")
+
+	// And the next pass, once the history reads, collects the paid request for free.
+	full := run
+	full.Attempts = []entity.DesignRunAttempt{{
+		AttemptNo: 1, State: entity.DesignAttemptAccepted,
+		ProviderRequestId: sql.NullString{String: "req-old", Valid: true},
+	}}
+	st.getRun, st.getRunErr = &full, nil
+	_ = w.execute(context.Background(), run, "tok")
+	require.Len(t, st.started, 1, "the retried pass opens the free collect")
+	for _, f := range st.failed {
+		require.NotEqual(t, CodeOptionNotRead, f.ErrorCode, "an already-paid build must not be refused")
+	}
+}
+
+// TestAnUnreadableHistoryDOES_NOT_SUBMIT — the same failure on a run whose route WOULD read it: the
+// pass cannot tell a fresh run from one already paid, so it must not buy the build (a second time,
+// possibly). MUTATION (measured red): the same log-and-continue — then this pass submits and pays.
+func TestAnUnreadableHistoryDOES_NOT_SUBMIT(t *testing.T) {
+	stand := newFalSubmitStand(t)
+	cause := errors.New("attempts: i/o timeout")
+	st := &fakeStore{getRunErr: cause}
+	w := routeWorker(t, st, falRoute(t, stand.srv.URL, "meshy/v7/multi-image-to-3d"), false)
+
+	err := w.execute(context.Background(), routeRun(44, `{"quality": "detailed"}`), "tok")
+	requireNothingHappened(t, st, stand.body, err, cause)
 }
 
 // TestThreedUnreadNAMES_THE_DROPPED_OPTION — the shared expression, unit by unit (the door asks the

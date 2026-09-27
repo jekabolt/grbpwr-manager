@@ -73,12 +73,21 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// `accepted` carries the provider's task id, and looking that task up is FREE. Reading it
 	// before submitting is the difference between resuming a job after a crash and buying it
 	// twice.
+	//
+	// ⚠ FAIL CLOSED (G-02 r3, Codex 1). When the attempt history cannot be read, this pass does NOT
+	// know whether the run was already paid for, so it must neither submit nor refuse: "fresh" would
+	// either buy the build a second time or, through the route guard below, fail an already-paid
+	// request terminally and release its reservation with the result never collected. The pass is
+	// abandoned through the same door as a failed RecordRunPrompt / StartAttempt: nothing is written,
+	// the tick backs off, the row keeps its claim until the lease dies and ReviveExpiredRuns hands it
+	// back to the queue, where the next pass reads the history again.
 	pendingID := ""
 	if async {
-		if full, gerr := w.store.GetRun(ctx, run.Id); gerr != nil {
-			slog.Default().WarnContext(ctx, "could not read the attempts of a design run; treating it as fresh",
-				slog.Int("run_id", run.Id), slog.String("err", gerr.Error()))
-		} else if full != nil {
+		full, gerr := w.store.GetRun(ctx, run.Id)
+		if gerr != nil {
+			return w.abandon(ctx, run, fmt.Errorf("read attempts before submitting: %w", gerr))
+		}
+		if full != nil {
 			pendingID = acceptedRequestID(full.Attempts)
 		}
 	}
