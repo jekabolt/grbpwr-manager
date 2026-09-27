@@ -36,6 +36,8 @@ func replaceProbeBase(media int32) sql.NullInt32 { return sql.NullInt32{Int32: m
 // Сюда же — кропы, которые в счёт не идут: вызывающий считает только стоящие (DesignStandingPieces),
 // и ноль — это «ни один кусок не стоит», а не «не спросили»; и кадр НЕ на листе — нулевые факты
 // значат «ничего не держит».
+//
+// Спрятанного оригинала здесь больше нет (27.09): он — отказ hidden_picture, и его пробы — ниже.
 func TestDesignReplaceRefusalLetsTheNamedOriginalThrough(t *testing.T) {
 	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(),
 		DesignReplaceFacts{}))
@@ -45,17 +47,13 @@ func TestDesignReplaceRefusalLetsTheNamedOriginalThrough(t *testing.T) {
 	piece.DerivedFrom = sql.NullInt32{Int32: 3, Valid: true}
 	piece.Derivation = DesignDerivationCrop
 	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), piece, DesignReplaceFacts{}))
-
-	// Спрятанный оригинал не отказывается: прятанье — другой ярус, и правило о нём не судит.
-	hidden := replaceProbeOriginal()
-	hidden.HiddenAt = sql.NullTime{Valid: true}
-	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), hidden, DesignReplaceFacts{}))
 }
 
 // КАЖДЫЙ ОТКАЗ НАЗЫВАЕТ СВОЁ, И ТОЛЬКО СВОЁ.
 //
-// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять любую из шести проверок (подслучай становится nil) — в том числе
-// лист (27.09: «кадр на техническом листе» проходит, и тех-пакет печатает две плиты); перепутать
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: снять любую из семи проверок (подслучай становится nil) — в том числе
+// лист (27.09: «кадр на техническом листе» проходит, и тех-пакет печатает две плиты) и спрятанность
+// (27.09: «оригинал спрятан» проходит, и правка встаёт преемником убранного кадра); перепутать
 // сентинел (errors.Is подслучая краснеет); сравнивать медиа с чем-то кроме подложки слоя (случай
 // «другой файл» проходит); читать заменённость по знаку вместо NULL-ности (случай replaced_by = 0,
 // Valid — невозможный для писателя, но возможный для руки в базе — проходит мимо сторожа, которого
@@ -87,6 +85,11 @@ func TestDesignReplaceRefusalNamesEachRefusal(t *testing.T) {
 				p.ReplacedBy = sql.NullInt32{Valid: true}
 				return p
 			}, DesignReplaceFacts{}, ErrDesignAlreadyReplaced},
+		{"оригинал спрятан", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
+			func(p DesignPicture) DesignPicture {
+				p.HiddenAt = sql.NullTime{Time: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), Valid: true}
+				return p
+			}, DesignReplaceFacts{}, ErrDesignHiddenPicture},
 		{"кадр на техническом листе", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
 			func(p DesignPicture) DesignPicture { return p }, DesignReplaceFacts{OnTechnicalSheet: true}, ErrDesignTechnicalSheet},
 		{"лист разрезан", replaceProbeCard, replaceProbeBase(replaceProbeMedia),
@@ -96,7 +99,8 @@ func TestDesignReplaceRefusalNamesEachRefusal(t *testing.T) {
 			err := DesignReplaceRefusal(tc.card, tc.base, tc.pic(replaceProbeOriginal()), tc.facts)
 			require.Error(t, err)
 			require.ErrorIs(t, err, tc.want)
-			for _, other := range []error{ErrDesignReplaceMismatch, ErrDesignAlreadyReplaced, ErrDesignTechnicalSheet, ErrDesignCutSheet} {
+			for _, other := range []error{ErrDesignReplaceMismatch, ErrDesignAlreadyReplaced, ErrDesignHiddenPicture,
+				ErrDesignTechnicalSheet, ErrDesignCutSheet, ErrDesignHiddenPlate} {
 				if !errors.Is(tc.want, other) {
 					require.NotErrorIs(t, err, other, "один отказ — одна причина на проводе")
 				}
@@ -116,37 +120,98 @@ func TestDesignReplaceRefusalTechnicalSheetSaysWhatToDo(t *testing.T) {
 		"would stay there beside the edit — take it off the sheet first, or save the edit as a new picture")
 }
 
+// ОТКАЗ СПРЯТАННОМУ ОРИГИНАЛУ ГОВОРИТ, ЧТО ДЕЛАТЬ, — ТЕМ ЖЕ ГОЛОСОМ, ЧТО ЛИСТ (27.09).
+//
+// Клиент показывает слова сервера как есть, поэтому починка — в самом отказе: сохранить правку новой
+// картинкой. Сентинел — тот же, что у разреза спрятанного кадра, и на проводе одно слово
+// hidden_picture; hidden_plate — отказ постановке в слот, клиенту другая новость.
+//
+// МУТАЦИИ: отдать hidden_plate (краснеет NotErrorIs); потерять починку или номер кадра (EqualError).
+func TestDesignReplaceRefusalHiddenSaysWhatToDo(t *testing.T) {
+	hidden := replaceProbeOriginal()
+	hidden.HiddenAt = sql.NullTime{Time: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), Valid: true}
+	err := DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), hidden, DesignReplaceFacts{})
+	require.ErrorIs(t, err, ErrDesignHiddenPicture)
+	require.NotErrorIs(t, err, ErrDesignHiddenPlate)
+	require.EqualError(t, err, "design: hidden_picture: the original, picture 7, is hidden — an edit cannot take "+
+		"a hidden picture's place; save the edit as a new picture")
+}
+
 // ПОРЯДОК ОТКАЗОВ: от «чинится запросом» к «чинится другим жестом».
 //
 // Кадр, у которого неверно ВСЁ сразу, обязан получить replace_mismatch: запрос, назвавший не тот
 // кадр, не должен выглядеть как «уже заменён» — клиент перечитал бы полосу и повторил ту же ошибку.
-// Заменённый, стоящий на листе И разрезанный — already_replaced: слепой повтор перезаписи узнаёт
-// себя по этому слову, даже если кадр после первой подачи успели поставить на лист или разрезать.
-// Стоящий на листе И разрезанный — technical_sheet: лист отвечает одним чтением, и запрос, который
-// он и так закрывает, за чтение ветки не платит.
+// Заменённый, спрятанный, стоящий на листе И разрезанный — already_replaced: слепой повтор перезаписи
+// узнаёт себя по этому слову, даже если кадр после первой подачи успели спрятать, поставить на лист
+// или разрезать. Спрятанный, стоящий на листе И разрезанный — hidden_picture: отказу, которому чтение
+// не нужно, чтения не положено. Стоящий на листе И разрезанный — technical_sheet: лист отвечает одним
+// чтением, и запрос, который он и так закрывает, за чтение ветки не платит.
 //
-// МУТАЦИИ: переставить любые две соседние проверки — одна из трёх половин краснеет (лист раньше
-// already_replaced — вторая; лист после cut_sheet — третья).
+// МУТАЦИИ: переставить любые две соседние проверки — одна из половин краснеет (спрятанность раньше
+// already_replaced — вторая; спрятанность после листа — третья; лист после cut_sheet — четвёртая).
 func TestDesignReplaceRefusalOrder(t *testing.T) {
 	everything := DesignReplaceFacts{OnTechnicalSheet: true, StandingPieces: 3}
+	hiddenAt := sql.NullTime{Time: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), Valid: true}
 
 	everythingWrong := replaceProbeOriginal()
 	everythingWrong.TechCardId = replaceProbeCard + 1
 	everythingWrong.MediaId = replaceProbeMedia + 1
 	everythingWrong.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
+	everythingWrong.HiddenAt = hiddenAt
 	require.ErrorIs(t,
 		DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), everythingWrong, everything),
 		ErrDesignReplaceMismatch)
 
-	replacedOnTheSheetAndCut := replaceProbeOriginal()
-	replacedOnTheSheetAndCut.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
-	err := DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replacedOnTheSheetAndCut, everything)
+	replacedHiddenOnTheSheetAndCut := replaceProbeOriginal()
+	replacedHiddenOnTheSheetAndCut.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
+	replacedHiddenOnTheSheetAndCut.HiddenAt = hiddenAt
+	err := DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replacedHiddenOnTheSheetAndCut, everything)
 	require.ErrorIs(t, err, ErrDesignAlreadyReplaced)
+	require.NotErrorIs(t, err, ErrDesignHiddenPicture)
 	require.NotErrorIs(t, err, ErrDesignTechnicalSheet)
+
+	hiddenOnTheSheetAndCut := replaceProbeOriginal()
+	hiddenOnTheSheetAndCut.HiddenAt = hiddenAt
+	err = DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), hiddenOnTheSheetAndCut, everything)
+	require.ErrorIs(t, err, ErrDesignHiddenPicture)
+	require.NotErrorIs(t, err, ErrDesignTechnicalSheet)
+	require.NotErrorIs(t, err, ErrDesignCutSheet)
 
 	err = DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaceProbeOriginal(), everything)
 	require.ErrorIs(t, err, ErrDesignTechnicalSheet)
 	require.NotErrorIs(t, err, ErrDesignCutSheet)
+}
+
+// СПРЯТАННОСТЬ ЗВУЧИТ В ПЕРВОМ ПРОХОДЕ, А ЗАМЕНЁННОСТЬ ДЕРЖИТ ГОЛОВУ И ПОД НЕЙ (27.09).
+//
+// Стор зовёт DesignReplaceRefusal сначала с нулевыми фактами — до единого чтения — и already_replaced
+// из этого прохода дописывает головой (DesignAlreadyReplaced). Проба проходит тот же путь: спрятанный
+// кадр отказан уже с нулевыми фактами (листу и веткам спрашиваться незачем), а спрятанный И
+// заменённый получает already_replaced с головой цепочки — повтор перезаписи без ключа находит
+// правку, которую уже подал, хотя оригинал с тех пор спрятали.
+//
+// МУТАЦИИ: судить спрятанность только с прочитанными фактами (первый проход пропускает спрятанный
+// кадр); поставить её раньше заменённости (второй случай теряет голову).
+func TestDesignReplaceRefusalHiddenIsJudgedBeforeAnyRead(t *testing.T) {
+	hiddenAt := sql.NullTime{Time: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC), Valid: true}
+
+	hidden := replaceProbeOriginal()
+	hidden.HiddenAt = hiddenAt
+	require.ErrorIs(t,
+		DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), hidden, DesignReplaceFacts{}),
+		ErrDesignHiddenPicture, "нулевые факты: чтения ещё не было, а отказ уже звучит")
+
+	chain, load, _ := replaceChain()
+	hiddenReplaced := chain[7]
+	hiddenReplaced.HiddenAt = hiddenAt
+	err := DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(int32(hiddenReplaced.MediaId)), hiddenReplaced,
+		DesignReplaceFacts{})
+	require.ErrorIs(t, err, ErrDesignAlreadyReplaced)
+	require.NotErrorIs(t, err, ErrDesignHiddenPicture)
+	var replaced *DesignReplacedError
+	require.ErrorAs(t, DesignAlreadyReplaced(hiddenReplaced, load), &replaced)
+	require.Equal(t, 7, replaced.PictureId)
+	require.Equal(t, 19, replaced.HeadPictureId, "спрятанность не отнимает у повтора голову")
 }
 
 // ─── ГОЛОВА ЦЕПОЧКИ ЗАМЕН (O-53 review) ───
