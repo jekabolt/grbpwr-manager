@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -83,6 +84,21 @@ func (s *Server) designRefuseImageOptions(kind string, spoken *pb_common.DesignR
 				map[string]string{"model": engine.Slug, "quality": q})
 		}
 	}
+	// ⚠ A WINDOWED RUN TAKES THE CROP'S SHAPE (G-02, Codex 6). The answer is scaled straight into
+	// the frozen crop (designgen compositeWindow), so an explicit ratio would buy a picture of another
+	// shape and squeeze it into the rectangle. REFUSED rather than silently ignored: the person chose
+	// a format, and dropping it without a word is the «accepted, did nothing» the doors exist to
+	// prevent; the worker also sends no ratio on a windowed run (the lock for runs frozen before this).
+	// '' and `auto` ask for nothing and pass.
+	if r := strings.TrimSpace(img.GetAspectRatio()); r != "" && r != "auto" {
+		if _, windowed := designFreeformWindowMediaID(spoken); windowed {
+			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeAspectNotSupported,
+				fmt.Sprintf("params.image.aspect_ratio %q: this run edits a crop around its marked area and "+
+					"fits the answer back into it, so the crop decides the shape — leave the format empty. "+
+					"Nothing was reserved and nothing was charged", r),
+				map[string]string{"model": engine.Slug, "aspect_ratio": r, "why": "window"})
+		}
+	}
 	if r := strings.TrimSpace(img.GetAspectRatio()); !engine.Accepts(r) {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeAspectNotSupported,
 			fmt.Sprintf("params.image.aspect_ratio %q is not a ratio %s draws (%s). Nothing was reserved "+
@@ -157,11 +173,69 @@ func designEngineTierWords(e designgen.Engine) []string {
 }
 
 // designFreeformCallImages — how many images the ONE playground call carries: each picture, a crop
-// per marked area and an outlined copy per marked picture (the designRefuseFreeformOverflow
-// arithmetic, which reads this same function).
+// per marked area and an outlined copy per marked picture.
+//
+// ⚠ A WINDOWED RUN CARRIES ONLY ITS PICTURES (G-02, Codex 8). When the worker takes a generation
+// window (designgen.FreeformWindowMediaID — its own decision, asked here, not copied), the marked
+// picture is REPLACED by the window crop and its outlined copy and area crop are never made
+// (deriveFreeformWindow + deriveFreeform's skip): retouch sends one image, add_hardware the crop plus
+// its hardware pictures. Counting the phantom three overstated the reserve ($0.35 for a $0.33 call).
 func designFreeformCallImages(params *pb_common.DesignRunParams) int {
 	pictures, regions, marked := designFreeformImageCounts(params)
+	if _, windowed := designFreeformWindowMediaID(params); windowed {
+		return pictures
+	}
 	return pictures + regions + marked
+}
+
+// designFreeformWindowMediaID — whether the worker will cut a generation window for these params,
+// and from which picture: designgen's own predicate over the params as they will be frozen.
+func designFreeformWindowMediaID(params *pb_common.DesignRunParams) (int, bool) {
+	if len(params.GetFreeform().GetItems()) == 0 {
+		return 0, false
+	}
+	raw, err := designMarshalJSON(params)
+	if err != nil {
+		return 0, false
+	}
+	return designgen.FreeformWindowMediaID(entity.RawJSON(raw))
+}
+
+// designRefuseWindowSourceTooSmall — A WINDOW CANNOT BE CUT FROM A PICTURE UNDER
+// designgen.WindowMinSourcePx ON EITHER SIDE, and the stored full-size dimensions already say so
+// (G-02, Codex 7): refused here, BEFORE the reservation, with the worker's own word
+// (source_too_small). One media read, only for a windowed run. A row with no stored dimensions
+// (legacy, 0×0) is UNKNOWN, not small: it passes, and the worker — which decodes the picture — stays
+// the second lock (a free, terminal refusal before StartAttempt).
+func (s *Server) designRefuseWindowSourceTooSmall(ctx context.Context, kind string, params *pb_common.DesignRunParams) error {
+	if kind != entity.DesignRunKindFreeform {
+		return nil
+	}
+	id, ok := designFreeformWindowMediaID(params)
+	if !ok {
+		return nil
+	}
+	byID, err := s.repo.Media().GetMediaByIds(ctx, []int{id})
+	if err != nil {
+		return designError(ctx, "failed to read the picture a generation window is cut from", err, nil)
+	}
+	m, ok := byID[id]
+	if !ok || m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
+		return nil
+	}
+	if min := designgen.WindowMinSourcePx; m.FullSizeWidth < min || m.FullSizeHeight < min {
+		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeSourceTooSmall,
+			fmt.Sprintf("picture %d is %d×%d px, and the area is cut out of it at least %d px on each side "+
+				"— use a larger picture. Nothing was reserved and nothing was charged",
+				id, m.FullSizeWidth, m.FullSizeHeight, min),
+			map[string]string{
+				"media_id": strconv.Itoa(id),
+				"width":    strconv.Itoa(m.FullSizeWidth),
+				"height":   strconv.Itoa(m.FullSizeHeight),
+				"minimum":  strconv.Itoa(min),
+			})
+	}
+	return nil
 }
 
 func designFreeformImageCounts(params *pb_common.DesignRunParams) (pictures, regions, marked int) {

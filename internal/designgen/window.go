@@ -192,6 +192,26 @@ const (
 	windowMinSource = 64
 )
 
+// WindowMinSourcePx — windowMinSource for the door: the admin refuses a windowed run whose stored
+// full-size dimensions are already under it, BEFORE the reservation (G-02, Codex 7). The worker's own
+// check (deriveFreeformWindow) stays the second lock — it reads the decoded picture, and a legacy
+// media row with no stored dimensions reaches only it.
+const WindowMinSourcePx = windowMinSource
+
+// FreeformWindowMediaID — THE WORKER'S OWN WINDOW DECISION for these frozen params
+// (freeformWindowPlan over parseParams): ok = true when the run takes a generation window, with the
+// media id the window is cut from. The door asks THIS rather than a copy of the rule (G-02, Codex
+// 6/7/8): whether a window forms decides how many images the call carries (the reserve), whether an
+// output ratio can be honoured (a window is fitted back into its crop), and which picture must be
+// large enough to cut.
+func FreeformWindowMediaID(raw entity.RawJSON) (int, bool) {
+	plan := freeformWindowPlan(parseParams(raw))
+	if plan == nil {
+		return 0, false
+	}
+	return plan.MediaID, true
+}
+
 // errFreeformSourceTooSmall — the picture a window is cut from is too small to cut. Terminal: the
 // snapshot and the media row are frozen, so the next pass meets the same picture.
 var errFreeformSourceTooSmall = errors.New("designgen: the picture of this playground run is too small for a generation window")

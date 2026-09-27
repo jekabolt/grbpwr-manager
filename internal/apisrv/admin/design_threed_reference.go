@@ -57,6 +57,20 @@ func designRunReadsTheCard(kind string, p *pb_common.DesignRunParams) bool {
 	return designKindReadsTheCard(kind)
 }
 
+// designRunReadsTheGarmentNote — designKindReadsTheGarmentNote ДЛЯ ЭТОГО ПРОГОНА (G-02, Fable m-3).
+//
+// 3D в режиме референса строится из картинок, которые человек назвал сам, — это не обязательно
+// изделие карточки (Reuse'нутая картинка чужой вещи — законный вход плитки 12). Описание изделия
+// и посадка карточки уезжают в texture_prompt (surface steer), и такой прогон получал «olive shirt,
+// spread collar» про вещь, которой на картинке нет. Тот же довод, что у designRunReadsTheCard:
+// спрашивать род недостаточно, спрашивать надо прогон.
+func designRunReadsTheGarmentNote(kind string, p *pb_common.DesignRunParams) bool {
+	if kind == entity.DesignRunKindThreed && designThreedReferenceMode(p) {
+		return false
+	}
+	return designKindReadsTheGarmentNote(kind)
+}
+
 // designThreedReferenceMediaIDs — названные картинки как []int, для границы карточки
 // (designRefuseForeignMedia).
 func designThreedReferenceMediaIDs(p *pb_common.DesignRunParams) []int {

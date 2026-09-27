@@ -129,6 +129,25 @@ func TestTheReserveOfANamedEngineIsITS_ABSOLUTE_CEILING(t *testing.T) {
 	three.Image.Quality = "" // unstated tier = the deployment's dial, which the reserve cannot read
 	require.Equal(t, "0.35", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, three, nil).Decimal.String())
 
+	// G-02 Codex 8: a WINDOWED run carries only its pictures — the marked picture is replaced by the
+	// crop, and no outlined copy or area crop is made. MUTATION (measured red): count
+	// pictures + regions + marked for a windowed run again.
+	t.Run("windowed runs count what is sent", func(t *testing.T) {
+		high := &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2, Quality: "high"}
+		retouch := withImage(ffParams(entity.DesignFreeformPresetRetouch, ffItem(11, "", 1, "remove the stain")), high)
+		require.Equal(t, 1, designFreeformCallImages(retouch))
+		require.Equal(t, "0.33", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, retouch, nil).Decimal.String(),
+			"0.32 high + the one crop × 0.01")
+		hardware := withImage(ffParams(entity.DesignFreeformPresetAddHardware, ffItem(11, "", 1),
+			ffItem(12, entity.DesignFreeformRoleHardware, 0)), high)
+		require.Equal(t, 2, designFreeformCallImages(hardware), "the window crop + the hardware picture")
+		require.Equal(t, "0.34", s.designEstimateForRun(entity.DesignRunKindFreeform, 1, hardware, nil).Decimal.String())
+		// Unwindowed control: two areas on one add_hardware picture → no window, every derivative sent.
+		twoAreas := withImage(ffParams(entity.DesignFreeformPresetAddHardware, ffItem(11, "", 2),
+			ffItem(12, entity.DesignFreeformRoleHardware, 0)), high)
+		require.Equal(t, 2+2+1, designFreeformCallImages(twoAreas))
+	})
+
 	t.Run("recolour: every call carries its photograph and the cloths", func(t *testing.T) {
 		p := withImage(recolorWithCloths(2), &pb_common.DesignImageOptions{Quality: "medium"})
 		p.ExtraInputMediaIds = []int32{11, 12, 13, 14}

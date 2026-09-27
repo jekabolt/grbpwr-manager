@@ -51,8 +51,8 @@ var designPlaygroundDoorCodes = []string{
 	entity.DesignErrorCodeImageOptionsForbidden,
 	// §12 3D reference mode (+ the card boundary and the input doors over the new id list)
 	"threed_forbidden", "duplicate_picture", "foreign_media", entity.DesignErrorCodeDisplayOnlyInput,
-	// G-02: the configured 3D route has no reserve number
-	entity.DesignErrorCodeThreedReserveUnbounded,
+	// G-02: the configured 3D route has no reserve number; a window's picture too small to cut
+	entity.DesignErrorCodeThreedReserveUnbounded, entity.DesignErrorCodeSourceTooSmall,
 	// the cloth-only recolour negative control
 	"cloth_without_picture",
 }
@@ -101,6 +101,20 @@ func pgFalRoute(cfg fal.Config, pbr bool) designgen.ThreedRoute {
 // pgRoute wires a 3D route into the rig.
 func pgRoute(r designgen.ThreedRoute) func(t *testing.T, rig *designRunRig) {
 	return func(t *testing.T, rig *designRunRig) { rig.srv.SetDesignThreedRoute(r) }
+}
+
+// pgMediaDims — the rig's media store answers picture `id` with these stored full-size dimensions
+// (every other picture as designFormatMedia: dimensions unknown).
+func pgMediaDims(id, w, h int) func(t *testing.T, rig *designRunRig) {
+	return func(t *testing.T, rig *designRunRig) {
+		rig.repo.ExpectedCalls = pgDropCalls(rig.repo.ExpectedCalls, "Media")
+		media := mocks.NewMockMedia(t)
+		rig.repo.EXPECT().Media().Return(media).Maybe()
+		all := designFormatMedia(nil)
+		all[id] = entity.MediaFull{Id: id, MediaItem: entity.MediaItem{
+			FullSizeMediaURL: designPNGURL, FullSizeWidth: w, FullSizeHeight: h}}
+		media.EXPECT().GetMediaByIds(mock.Anything, mock.Anything).Return(all, nil).Maybe()
+	}
 }
 
 // pgHitemSlug — the retired hitem3d slug, reachable only through a FAL_MODEL_3D override.
@@ -218,6 +232,30 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain"))},
 		{name: "retouch: no words", kind: entity.DesignRunKindFreeform,
 			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1)), want: entity.DesignErrorCodeWordsRequired},
+		// G-02 Codex 6: a windowed run takes the crop's shape — an explicit ratio is refused, auto passes.
+		{name: "retouch: an explicit format", kind: entity.DesignRunKindFreeform, setup: pgEngines,
+			params: withImage(P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain")),
+				&pb_common.DesignImageOptions{AspectRatio: "21:9"}),
+			want: entity.DesignErrorCodeAspectNotSupported},
+		{name: "retouch: format auto", kind: entity.DesignRunKindFreeform, setup: pgEngines,
+			params: withImage(P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain")),
+				&pb_common.DesignImageOptions{AspectRatio: "auto"})},
+		{name: "free with one area: an explicit format is honoured (no window)", kind: entity.DesignRunKindFreeform,
+			setup: pgEngines,
+			params: withImage(P(entity.DesignFreeformPresetFree, I(11, "", 1, "x")),
+				&pb_common.DesignImageOptions{AspectRatio: "21:9"})},
+		// G-02 Codex 7: the stored dimensions refuse a picture too small to cut, before the reserve.
+		{name: "retouch: a 60 px wide picture", kind: entity.DesignRunKindFreeform, setup: pgMediaDims(11, 60, 400),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain")),
+			want:   entity.DesignErrorCodeSourceTooSmall},
+		{name: "retouch: 64 px is the floor, inclusive", kind: entity.DesignRunKindFreeform, setup: pgMediaDims(11, 64, 64),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain"))},
+		{name: "retouch: a legacy row with no stored size passes to the worker", kind: entity.DesignRunKindFreeform,
+			setup:  pgMediaDims(11, 0, 0),
+			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 1, "remove the stain"))},
+		{name: "free on a 60 px picture takes no window, so no minimum", kind: entity.DesignRunKindFreeform,
+			setup:  pgMediaDims(11, 60, 60),
+			params: P(entity.DesignFreeformPresetFree, I(11, "", 1, "x"))},
 		{name: "retouch: two areas", kind: entity.DesignRunKindFreeform,
 			params: P(entity.DesignFreeformPresetRetouch, I(11, "", 2, "x")), want: entity.DesignErrorCodeOneRegion},
 

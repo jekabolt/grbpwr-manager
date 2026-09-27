@@ -1359,6 +1359,12 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 			if win != nil {
 				attached = d
 				job.Window = win
+				// ⚠ THE CROP DECIDES THE SHAPE, NOT params.image.aspect_ratio (G-02, Codex 6). The
+				// answer is scaled straight into the frozen rectangle (compositeWindow), so a stated
+				// ratio would buy a picture of another shape and squeeze it into the crop. The door
+				// refuses an explicit ratio on a windowed run; this is the second lock, for a run
+				// frozen before that door: no ratio is sent, and the provider answers the crop.
+				job.AspectRatio = ""
 			}
 		}
 		derived, err := deriveFreeform(ctx, objects, p, attached, job.References)

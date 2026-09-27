@@ -260,12 +260,16 @@ func freeformRetouchCraft(ff *freeformParams, attached []refCaption) string {
 			"Change only inside area " + area + ", as the words say; leave everything outside it pixel " +
 			"for pixel as it is. Return the SAME CROP, at the same framing and the same size: it is " +
 			"going to be fitted straight back into the photograph it was cut from. ")
-	} else {
-		src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
-		b.WriteString("Change only area " + area + " on " + src + ", as the words say. Everything " +
-			"outside the marked area stays pixel-identical to " + src + ": the same garment, the same " +
-			"background, the same light. ")
+		// NO OUTLINE DISCLAIMER HERE (G-02, Fable m-6): the crop carries no outline and no letter —
+		// the area is located only by the caption's percentages — so a sentence about outlines
+		// would describe a picture the model was not given.
+		b.WriteString("Return ONE picture.")
+		return b.String()
 	}
+	src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
+	b.WriteString("Change only area " + area + " on " + src + ", as the words say. Everything " +
+		"outside the marked area stays pixel-identical to " + src + ": the same garment, the same " +
+		"background, the same light. ")
 	b.WriteString(freeformOutlineDisclaimer)
 	b.WriteString(". Return ONE picture.")
 	return b.String()

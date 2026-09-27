@@ -927,6 +927,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseModelPhotoMismatch(ctx, kind, params); err != nil {
 		return nil, err
 	}
+	// A windowed run's picture must be large enough to cut — its stored dimensions say so here,
+	// before the reservation (G-02, Codex 7). One media read, windowed runs only.
+	if err := s.designRefuseWindowSourceTooSmall(ctx, kind, params); err != nil {
+		return nil, err
+	}
 	// A stated engine freezes with its slug (G-02, Codex 5).
 	s.designFreezeImageModel(kind, params)
 
@@ -3334,7 +3339,7 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		Views:  src.Params.GetViews(),
 		Layout: src.Params.GetLayout(),
 	}
-	if src.Card != nil && designKindReadsTheGarmentNote(src.Kind) {
+	if src.Card != nil && designRunReadsTheGarmentNote(src.Kind, src.Params) {
 		out.Fit = src.Card.Fit.String
 		// ОПИСАНИЕ ИЗДЕЛИЯ (W-3) — «пишем общий коммент», который уходит в КАЖДЫЙ прогон.
 		// Замораживается КОПИЕЙ, а не джойном: правка описания завтра не имеет права переписать
@@ -3997,7 +4002,7 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 		}
 		snap.Refs = kept
 	}
-	if !designKindReadsTheGarmentNote(src.Kind) {
+	if !designRunReadsTheGarmentNote(src.Kind, src.Params) {
 		snap.GarmentNote = ""
 		snap.Fit = ""
 	}

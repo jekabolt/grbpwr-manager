@@ -328,6 +328,35 @@ func TestARetouchIsTHE_PADDED_RECTANGLE_CROPPED_AND_PASTED_BACK(t *testing.T) {
 	}
 }
 
+// TestAWindowedRunSENDS_NO_RATIO — G-02 Codex 6, the worker's lock: the answer is scaled into the
+// frozen crop, so a ratio frozen on the run (before the door refused it) is not sent — the crop
+// decides the shape. An unwindowed run keeps its ratio. MUTATION (measured red): drop the
+// `job.AspectRatio = ""` line in buildJob's window branch.
+func TestAWindowedRunSENDS_NO_RATIO(t *testing.T) {
+	objs := &fakeObjects{byKey: map[string][]byte{"m/11.png": windowFixture(t)}}
+	r := retouchRun()
+	r.Params = entity.RawJSON(strings.TrimSuffix(string(r.Params), "}") +
+		`,"image":{"model":"openai/gpt-image-2","aspect_ratio":"21:9"}}`)
+	job, err := buildJob(context.Background(), media(11), objs, r, "medium")
+	require.NoError(t, err)
+	require.NotNil(t, job.Window)
+	require.Empty(t, job.AspectRatio, "a windowed answer takes the crop's shape")
+
+	free := testRun(1, entity.DesignRunKindFreeform)
+	free.Params = entity.RawJSON(`{"freeform":{"preset":"free","items":[{"media_id":11}]},` +
+		`"image":{"model":"openai/gpt-image-2","aspect_ratio":"21:9"}}`)
+	job, err = buildJob(context.Background(), media(11), objs, free, "medium")
+	require.NoError(t, err)
+	require.Nil(t, job.Window)
+	require.Equal(t, "21:9", job.AspectRatio, "an unwindowed run keeps its ratio")
+
+	id, ok := FreeformWindowMediaID(r.Params)
+	require.True(t, ok)
+	require.Equal(t, 11, id)
+	_, ok = FreeformWindowMediaID(free.Params)
+	require.False(t, ok)
+}
+
 // TestAWindowOnATinyPictureIsREFUSED_FREE — under windowMinSource px there is nothing to cut; the
 // refusal happens while the job is built, before money, and is terminal.
 func TestAWindowOnATinyPictureIsREFUSED_FREE(t *testing.T) {

@@ -109,6 +109,10 @@ func TestRetouchKEEPS_EVERYTHING_OUTSIDE_THE_AREA(t *testing.T) {
 	require.Contains(t, w, "outside")
 	require.Contains(t, w, "pixel")
 	require.Contains(t, w, "SAME CROP")
+	// G-02 Fable m-6: the window carries no outline, so no outline disclaimer. MUTATION (measured
+	// red): the disclaimer appended after both branches again.
+	require.NotContains(t, w, freeformOutlineDisclaimer, "a crop with no outline is not told about outlines")
+	require.True(t, strings.HasSuffix(w, "Return ONE picture."))
 }
 
 // TestTheNewRolesAreCAPTIONED — a picture's caption says what it is in the ask.
