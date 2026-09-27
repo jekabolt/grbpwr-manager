@@ -646,6 +646,51 @@ func TestTheReadCeilingRefusesByName(t *testing.T) {
 		"chat/completions response is larger than %d bytes", MaxResponseBytes), err.Error())
 }
 
+// TestARefusedStatusWithAnUnreadableBodyIsStillARefusal — a 404 whose error body runs past the read
+// ceiling (or is cut) is the provider's refusal at the gate: not engaged, the model-unknown code and
+// sentinel intact, so the router still falls back (Codex C review, P2).
+//
+// MUTATION: judge the body before the status (the old order) → red: Engaged true, Code too_large,
+// no ErrModelUnavailable.
+func TestARefusedStatusWithAnUnreadableBodyIsStillARefusal(t *testing.T) {
+	rec := &recorder{}
+	huge := `{"error":{"message":"` + strings.Repeat("x", MaxResponseBytes+16) + `"}}`
+	srv := rec.server(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(huge))
+	})
+	_, err := newOpenRouter(srv.URL).Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	ce := callErr(t, err)
+	require.ErrorIs(t, err, aiprov.ErrModelUnavailable)
+	require.Equal(t, aiprov.CodeModelUnknown, ce.Code)
+	require.False(t, ce.Engaged, "a refusal at the gate moved no money, however long its excuse")
+	require.False(t, ce.Retryable)
+	require.Equal(t, http.StatusNotFound, ce.HTTPStatus)
+	require.NotErrorIs(t, err, aiprov.ErrResponseTooLarge)
+}
+
+// TestOneKeyPerRequest — KeyFunc is read exactly once per Send, and the header carries that read
+// (Codex C review, P3): a rotation between two reads inside one request must be impossible.
+//
+// MUTATION: read the key again for the header → red: two reads, and the header carries the second.
+func TestOneKeyPerRequest(t *testing.T) {
+	reads := 0
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer srv.Close()
+	c := New(Config{Provider: "openrouter", BaseURL: srv.URL, Dialect: DialectOpenRouter, KeyFunc: func() string {
+		reads++
+		return fmt.Sprintf("k%d", reads)
+	}})
+	_, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	require.NoError(t, err)
+	require.Equal(t, 1, reads, "one read per request")
+	require.Equal(t, "Bearer k1", seen)
+}
+
 // ─── refusals before the wire ───────────────────────────────────────────────────────────────────
 
 // TestRefusalsBeforeTheWire — every case is OUR mistake or our missing key; none reaches the provider,
