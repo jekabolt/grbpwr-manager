@@ -777,6 +777,15 @@ func (a *App) Start(ctx context.Context) error {
 	adminS.SetDesignEngines(func() []designgen.Engine {
 		return designgen.EngineTable(designImages.Model(), designCfg.EngineFlags())
 	})
+	// admin → AI providers: the SAME registry every client reads its key through (a write reloads it
+	// here at once) and the SAME ring it opens stored keys with (a key sealed by another master would
+	// read back "unreadable"). The recraft route is asked of recraft itself — RECRAFT_ROUTE's parse,
+	// typo fallback included, lives in one place.
+	adminS.SetAIProviders(admin.AIProvidersWiring{
+		Registry:             a.aireg,
+		KeyRing:              aiKeyRing,
+		RecraftViaOpenRouter: recraft.New(a.c.Recraft, nil).Route() == recraft.RouteOpenRouter,
+	})
 	a.adminS = adminS
 
 	var frontendS *frontend.Server
