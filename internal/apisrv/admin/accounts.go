@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -112,6 +113,11 @@ func (s *Server) ListAccounts(ctx context.Context, _ *pb_admin.ListAccountsReque
 // every section gate, and it alone may call the super-only methods (the AI providers panel). The
 // check sits before any validation or store call, so the refusal does not depend on the rest of the
 // request.
+//
+// The AI ledger's pseudo-actors (entity.AIActorSystem, AIActorUnknown) are refused as a username
+// (REVIEW-FIXD P2 #1): the ledger books every background or unattributed call under those words, so
+// an account carrying one would share a spend line with calls nobody on it made. The ledger INSERT
+// never resolves the words to an id either; this closes the door such an account would come in by.
 func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountRequest) (*pb_admin.CreateAccountResponse, error) {
 	if az, _ := authsrv.GetAdminAuthz(ctx); req.IsSuper && !az.FullAccess() {
 		return nil, status.Error(codes.PermissionDenied, "only a super admin may grant super access")
@@ -119,6 +125,10 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 	username := normalizeUsername(req.Username)
 	if username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if entity.AIActorIsReserved(username) {
+		return nil, apierr.Invalid(entity.NewFieldViolation("username", "reserved", "",
+			"this name is reserved for system activity"))
 	}
 	if len(req.Password) < minAdminPasswordLen {
 		return nil, status.Errorf(codes.InvalidArgument, "password must be at least %d characters", minAdminPasswordLen)

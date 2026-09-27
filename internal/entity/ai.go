@@ -358,20 +358,43 @@ type AIDefaultsPatch struct {
 
 // ───────────────────────── ledger rows ─────────────────────────
 
+// Ledger actors that are not an admin login — ai_usage_event.actor when nobody asked. They are
+// RESERVED: the ledger INSERT never looks them up in admins (the two words are spelled again in
+// store/ai insertAICall, where a Go const cannot reach; its shape test pins them to these), and
+// CreateAccount refuses them as a username. Without both, an account named "system" would take the
+// id of every background call and show it as that person's spend.
+const (
+	// AIActorSystem — a call nobody pressed a button for: a background worker, a sweeper, a boot probe.
+	AIActorSystem = "system"
+	// AIActorUnknown — a call whose context carries no actor: a wiring defect, not a person.
+	AIActorUnknown = "unknown"
+)
+
+// AIActorIsReserved reports whether name is one of the ledger's pseudo-actors, compared the way a
+// username is stored (trimmed, lower-cased), so "System " cannot slip past as a different account.
+func AIActorIsReserved(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case AIActorSystem, AIActorUnknown:
+		return true
+	}
+	return false
+}
+
 // AICallStart opens one ledger row (status dispatching) BEFORE the physical call.
 //
 // ATTRIBUTION IS BY ACCOUNT ID, FIXED AT WRITE TIME (D-10). A nil ActorAdminID is not "nobody": the
 // store's INSERT resolves it from Actor there and then — the admins row carrying that username at the
 // moment of the call — so a row stays with the account that made it even after that account is
-// deleted and another is created under the same username. It stays NULL only when no admin carries
-// the username (system, unknown, an account already gone).
+// deleted and another is created under the same username. It stays NULL for a reserved pseudo-actor
+// (AIActorSystem, AIActorUnknown — never looked up) and when no admin carries the username (an
+// account already gone).
 type AICallStart struct {
 	OccurredAt   time.Time // UTC
 	DayLocal     string    // YYYY-MM-DD in the budget timezone (BudgetDayKey); aiprov.Ledger fills it when empty
 	ProviderKey  string    // the BILLING transport
 	Model        string    // the requested model
 	Purpose      string
-	Actor        string // the JWT username; aiprov.ActorSystem / ActorUnknown when nobody asked
+	Actor        string // the JWT username; AIActorSystem / AIActorUnknown when nobody asked
 	ActorAdminID *int   // admins.id when the caller knows it; nil = the store resolves it (see above)
 	RunID        *int
 	AttemptNo    *int
