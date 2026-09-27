@@ -24,7 +24,13 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 	t.Run("tryon", func(t *testing.T) {
 		c := craftOf(t, `{"freeform":{"preset":"tryon","items":[
 		  {"media_id":12,"role":"product"},{"media_id":11,"role":"model"},{"media_id":13,"role":"product"}]}}`)
-		require.Contains(t, c, "Keep the person of image 2 exactly")
+		require.Contains(t, c, "Keep the identity of the person of image 2 — the same face and skin tone")
+		// G-02 M-1: tile 1's field is «Modify physical features & pose», so body, hair and pose are
+		// kept only where the words do not change them — never «exactly». MUTATION (measured red):
+		// the old «Keep the person of image N exactly — face, skin tone, body and hair.»
+		require.Contains(t, c, "body, hair and pose stay as in the photo except where the words above change them")
+		require.NotContains(t, c, "exactly — face", "the identity clause must not freeze body and hair")
+		require.NotContains(t, c, "body and hair.", "body and hair are not frozen unconditionally")
 		require.Contains(t, c, "garment of images 1 and 3")
 		require.Contains(t, c, "Keep the scene of the model photo")
 		require.NotContains(t, c, "outline", "an unmarked run is not told about outlines")
@@ -108,7 +114,7 @@ func TestRetouchKEEPS_EVERYTHING_OUTSIDE_THE_AREA(t *testing.T) {
 // TestTheNewRolesAreCAPTIONED — a picture's caption says what it is in the ask.
 func TestTheNewRolesAreCAPTIONED(t *testing.T) {
 	for role, want := range map[string]string{
-		entity.DesignFreeformRoleModel:   "the model — keep this person exactly",
+		entity.DesignFreeformRoleModel:   "the model — keep this person's identity",
 		entity.DesignFreeformRoleProduct: "the garment to put on them",
 		entity.DesignFreeformRoleScene:   "the scene",
 		entity.DesignFreeformRoleLogo:    "the logo (PNG, keep exact)",

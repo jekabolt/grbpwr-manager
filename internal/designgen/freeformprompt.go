@@ -97,15 +97,20 @@ func freeformOptions(ff *freeformParams) workflowOptions {
 
 // freeformTryonCraft — dress the person of the model photo in the product garment(s).
 //
-// The ask (the pose, if any) is already first in the prompt; this paragraph fixes WHO stays and
-// WHAT they wear, then the framing, the camera and the scene.
+// The ask is already first in the prompt, and on tile 1 it is the owner's field «Modify physical
+// features & pose» — so the words above may legitimately change the body, the hair and the pose.
+// This paragraph therefore fixes only the IDENTITY (face, skin tone) unconditionally, keeps body,
+// hair and pose as in the photo UNLESS the words change them, and then says WHAT they wear, the
+// framing, the camera and the scene. «Keep … exactly — body and hair» here would contradict the ask
+// it follows, and the history could not say which of the two the model honoured (G-02 M-1).
 func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 	o := freeformOptions(ff)
 	model := freeformImageNumber(ff, attached, entity.DesignFreeformRoleModel)
 	var b strings.Builder
-	b.WriteString("Keep the person of ")
+	b.WriteString("Keep the identity of the person of ")
 	b.WriteString(freeformImageWord(model, "the model photo"))
-	b.WriteString(" exactly — face, skin tone, body and hair. Dress them in the garment of ")
+	b.WriteString(" — the same face and skin tone; their body, hair and pose stay as in the photo " +
+		"except where the words above change them. Dress them in the garment of ")
 	b.WriteString(freeformImageList(freeformImageNumbers(ff, attached, entity.DesignFreeformRoleProduct),
 		"the product picture"))
 	b.WriteString(" — reproduce its cut, colour, print and seams as they are, worn the way that " +
@@ -522,7 +527,7 @@ func freeformItemCaption(it freeformItem) string {
 	case entity.DesignFreeformRoleSubject:
 		parts = append(parts, "the picture being worked on")
 	case entity.DesignFreeformRoleModel:
-		parts = append(parts, "the model — keep this person exactly")
+		parts = append(parts, "the model — keep this person's identity")
 	case entity.DesignFreeformRoleProduct:
 		parts = append(parts, "the garment to put on them")
 	case entity.DesignFreeformRoleScene:
