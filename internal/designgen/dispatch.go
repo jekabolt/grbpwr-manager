@@ -61,7 +61,11 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		return w.failRun(ctx, run, token, err)
 	}
 
-	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind), EngineTable(w.c.ImageDefaultModel))
+	// The SAME table the door prices against and the band advertises (app.go SetDesignEngines):
+	// default slug + the B-16 flags. A frozen flagged slug the flags no longer list is still read off
+	// the catalogue (applyImageOptions), so a flag going off never re-routes a priced run.
+	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind),
+		EngineTable(w.c.ImageDefaultModel, w.c.EngineFlags()))
 	if err != nil {
 		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
 		return w.failRun(ctx, run, token, err)

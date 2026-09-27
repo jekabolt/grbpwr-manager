@@ -352,6 +352,11 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// PLAYGROUND phase 3 (field 32): the kinds the door accepts right now — always present, []
 		// when generation is off; ABSENT only on an older binary.
 		RunKinds: s.designRunKinds(),
+		// PLAYGROUND phase 3 (field 33, B-15): the slug SuggestPrompts answers with; empty when the
+		// Ideas door is closed (no OPENROUTER_API_KEY, or OPENROUTER_MODEL_IDEAS=off) — the client
+		// then draws the static Ideas list only. Drop this line and the band still answers 200 while
+		// every Ideas menu stays static on a server that can suggest.
+		SuggestPromptsModel: s.designSuggestPromptsModel(),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —

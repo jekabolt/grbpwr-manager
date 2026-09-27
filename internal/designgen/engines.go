@@ -249,9 +249,9 @@ func defaultCapable(e Engine) bool {
 // measured row here is how a new default gets its picker.
 //
 // FLAGS (B-16). The Gemini and Seedream rows are listed only while their flag is on; flags are
-// optional so a caller that passes none (the worker's dispatch, buildJob) sees the flags-off table —
-// the fail-closed direction — and the worker still reads a frozen flagged slug through
-// engineCatalogue. Several EngineFlags are OR-ed. A flagged row is never the default (defaultCapable):
+// optional so a caller that passes none (buildJob, tests) sees the flags-off table — the fail-closed
+// direction. The worker's dispatch passes Config.EngineFlags(), the same flags app.go hands the door
+// and the band; either way it still reads a frozen flagged slug through engineCatalogue. Several EngineFlags are OR-ed. A flagged row is never the default (defaultCapable):
 // a Gemini / Seedream defaultSlug empties the table whatever the flags say.
 //
 // A fresh slice on every call: the band puts it on the wire and the door filters it.

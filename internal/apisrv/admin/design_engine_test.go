@@ -3,8 +3,11 @@ package admin
 import (
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
@@ -328,4 +331,108 @@ func TestTheEngineVocabularyIsASKED_OF_THE_SPEAKER(t *testing.T) {
 			require.Nil(t, rig.sent)
 		})
 	}
+}
+
+// TestTheFlaggedEnginesAtTHE_DOOR — B-16 with both flags on: `quality` on a resolution engine is a
+// tier word or quality_not_supported (Seedream has no medium); Gemini lists no `auto`; a stated
+// background is refused; and outputs_not_supported never refuses a run whose outputs are separate
+// n = 1 calls (a recolour's photographs, per_view views). MUTATION (measured red): drop the recolour
+// / per_view exclusion in designImageVariantsPerCall — a three-photo recolour on Gemini is refused.
+func TestTheFlaggedEnginesAtTHE_DOOR(t *testing.T) {
+	s := &Server{}
+	s.SetDesignEngines(func() []designgen.Engine {
+		return designgen.EngineTable("", designgen.EngineFlags{Gemini: true, Seedream: true})
+	})
+	pic := &pb_common.DesignFreeformItem{MediaId: 11}
+	ff := func(img *pb_common.DesignImageOptions) *pb_common.DesignRunParams {
+		return withImage(ffParams(entity.DesignFreeformPresetFree, pic), img)
+	}
+	refused := func(t *testing.T, err error, want string) {
+		t.Helper()
+		require.Equal(t, want, ffReason(t, err))
+	}
+
+	require.NoError(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "high", AspectRatio: "4:5"})))
+	require.NoError(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineSeedream5Pro, Quality: "low", AspectRatio: "9:21"})))
+	refused(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineSeedream5Pro, Quality: "medium"})),
+		entity.DesignErrorCodeQualityNotSupported)
+	refused(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, AspectRatio: "auto"})),
+		entity.DesignErrorCodeAspectNotSupported)
+	refused(t, designRefuseEngine(s, entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Background: "opaque"})),
+		entity.DesignErrorCodeBackgroundNotSupported)
+
+	gemini := &pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "low"}
+	recolor := withImage(&pb_common.DesignRunParams{ExtraInputMediaIds: []int32{1, 2, 3}}, gemini)
+	require.Equal(t, 3, designRequestedOutputs(entity.DesignRunKindRecolor, recolor))
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRecolor, recolor),
+		"three photographs are three n = 1 calls, not n = 3")
+	perView := withImage(&pb_common.DesignRunParams{Layout: designLayoutPerView,
+		Views: []string{"front", "back", "side"}}, gemini)
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRender, perView),
+		"three views are three n = 1 calls")
+	require.Equal(t, 1, designImageVariantsPerCall(entity.DesignRunKindRender,
+		&pb_common.DesignRunParams{Layout: designLayoutOne, Views: []string{"front", "back"}}),
+		"a composite sheet is one picture")
+	// The door asks the SPOKEN params, before the layout is normalised: an unstated layout is the
+	// composite sheet (the door writes `one`, the worker reads it as one call), not n = views.
+	unstated := withImage(&pb_common.DesignRunParams{Views: []string{"front", "back"}}, gemini)
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindRender, unstated),
+		"an unstated layout is one sheet, one n = 1 call")
+	// The fal kinds have no engine, flags on or off: params.image is refused before the table is read.
+	for _, kind := range []string{entity.DesignRunKindExtend, entity.DesignRunKindInpaint} {
+		refused(t, s.designRefuseImageOptions(kind, withImage(&pb_common.DesignRunParams{}, gemini)),
+			entity.DesignErrorCodeImageOptionsForbidden)
+	}
+
+	// Flags off: the same Gemini run is an unknown model, for free.
+	refused(t, designRefuseEngine(engineServer(), entity.DesignRunKindFreeform,
+		ff(&pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "high"})),
+		entity.DesignErrorCodeUnknownImageModel)
+}
+
+// TestTheP3BandCARRIES_32_33_AND_THE_FLAGGED_TABLE — the integration seam of B-13/B-15/B-16 on ONE
+// band: field 32 (run_kinds) present, field 33 (suggest_prompts_model) the Ideas slug with a key and
+// empty without, and image_models read from the same table the door checks (a flagged row the band
+// advertises is one the door accepts). MUTATIONS (measured red): drop the SuggestPromptsModel line
+// from GetDesignBand; build SetDesignEngines without the flags.
+func TestTheP3BandCARRIES_32_33_AND_THE_FLAGGED_TABLE(t *testing.T) {
+	band := func(ai *openrouter.Client, flags designgen.EngineFlags) (*Server, *pb_admin.GetDesignBandResponse) {
+		repo := mocks.NewMockRepository(t)
+		d := mocks.NewMockDesign(t)
+		repo.EXPECT().Design().Return(d).Maybe()
+		d.EXPECT().GetBand(mock.Anything, mock.Anything, mock.Anything).Return(&entity.DesignBand{}, nil).Maybe()
+		s := &Server{repo: repo, aiOps: ai}
+		s.SetDesignGenerationEnabled(true)
+		s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("", flags) })
+		resp, err := s.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
+		require.NoError(t, err)
+		require.NotNil(t, resp.GetRunKinds(), "field 32 present")
+		return s, resp
+	}
+	slugs := func(r *pb_admin.GetDesignBandResponse) []string {
+		out := []string{}
+		for _, m := range r.GetImageModels() {
+			out = append(out, m.GetSlug())
+		}
+		return out
+	}
+
+	s, on := band(openrouter.New(openrouter.Config{APIKey: "k"}), designgen.EngineFlags{Gemini: true, Seedream: true})
+	require.Equal(t, openrouter.DefaultIdeasModel, on.GetSuggestPromptsModel(), "field 33 with a key")
+	require.Contains(t, slugs(on), designgen.EngineGemini3Pro)
+	require.Contains(t, slugs(on), designgen.EngineSeedream5Pro)
+	gemini := &pb_common.DesignImageOptions{Model: designgen.EngineGemini3Pro, Quality: "high"}
+	require.NoError(t, s.designRefuseImageOptions(entity.DesignRunKindFreeform,
+		withImage(ffParams(entity.DesignFreeformPresetFree, &pb_common.DesignFreeformItem{MediaId: 11}), gemini)),
+		"advertised by the band = accepted by the door")
+
+	_, off := band(nil, designgen.EngineFlags{})
+	require.Empty(t, off.GetSuggestPromptsModel(), "no AI client: the Ideas door is closed")
+	require.NotContains(t, slugs(off), designgen.EngineGemini3Pro)
+	require.NotContains(t, slugs(off), designgen.EngineSeedream5Pro)
 }

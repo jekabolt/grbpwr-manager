@@ -11,6 +11,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 )
 
 // ═══ THE PER-RUN ENGINE AT THE DOOR (params.image, PLAYGROUND phase 2) ═══
@@ -83,6 +84,17 @@ func (s *Server) designRefuseImageOptions(kind string, spoken *pb_common.DesignR
 					"nothing was charged", q, engine.Label, strings.Join(designEngineTierWords(engine), " | ")),
 				map[string]string{"model": engine.Slug, "quality": q})
 		}
+	}
+	// ⚠ ONE CALL MAY NOT ASK FOR MORE PICTURES THAN THE ENGINE RETURNS (B-16: `n` is 1..1 on Gemini
+	// and Seedream). Only outputs that are variants of ONE call count: a recolour's photographs and a
+	// per_view sheet are one n = 1 call each (designgen imageCalls), so they are never refused here.
+	// Every route builds n = 1 today, so this is the door's lock for the day a «variants» count
+	// arrives; the image route refuses the same thing for free before paying (designgen images.go).
+	if n := designImageVariantsPerCall(kind, spoken); engine.MaxN > 0 && n > engine.MaxN {
+		return designRefusal(codes.InvalidArgument, "outputs_not_supported",
+			fmt.Sprintf("this run asks %s for %d pictures in one call and it returns at most %d. Nothing "+
+				"was reserved and nothing was charged", engine.Label, n, engine.MaxN),
+			map[string]string{"model": engine.Slug, "outputs": strconv.Itoa(n), "max": strconv.Itoa(engine.MaxN)})
 	}
 	// ⚠ A WINDOWED RUN TAKES THE CROP'S SHAPE (G-02, Codex 6). The answer is scaled straight into
 	// the frozen crop (designgen compositeWindow), so an explicit ratio would buy a picture of another
@@ -162,6 +174,26 @@ func (s *Server) designFreezeImageModel(kind string, params *pb_common.DesignRun
 	if e, ok := designgen.FindEngine(s.designEngineTable(), ""); ok {
 		img.Model = e.Slug
 	}
+}
+
+// designImageVariantsPerCall — how many pictures ONE provider call of this run asks for: the
+// requested outputs when they are variants of one call, 1 when each output is its own call (a
+// recolour's photographs, a per_view sheet's views).
+//
+// ⚠ IT READS THE SPOKEN PARAMS, BEFORE THE DOOR WRITES `one` INTO AN EMPTY LAYOUT (design_run.go),
+// so an unstated layout is counted as what it becomes — the composite sheet, one picture — never as
+// len(views): designRequestedOutputs reads "" as per-view and would refuse a two-view render on an
+// n = 1 engine that the worker draws as ONE n = 1 call (designgen imageCalls: unspecified = one).
+func designImageVariantsPerCall(kind string, params *pb_common.DesignRunParams) int {
+	switch {
+	case kind == entity.DesignRunKindRecolor, params.GetLayout() == designLayoutPerView:
+		return 1
+	case params.GetLayout() == "":
+		cp := proto.Clone(params).(*pb_common.DesignRunParams)
+		cp.Layout = designLayoutOne
+		return designRequestedOutputs(kind, cp)
+	}
+	return designRequestedOutputs(kind, params)
 }
 
 func designEngineTierWords(e designgen.Engine) []string {

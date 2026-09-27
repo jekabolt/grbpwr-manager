@@ -495,7 +495,8 @@ func (a *App) Start(ctx context.Context) error {
 	designImages := orimages.New(a.c.OpenRouterImages)
 	// The per-run engines (PLAYGROUND phase 2) are one table, keyed off the client's own slug; every
 	// slug in it is probed, since a person can pick any of them.
-	designEngines := designgen.EngineTable(designImages.Model())
+	// B-16: the Gemini / Seedream rows join the table (and the probe) only while their flag is on.
+	designEngines := designgen.EngineTable(designImages.Model(), a.c.DesignGen.EngineFlags())
 	designEngineSlugs := make([]string, 0, len(designEngines))
 	for _, e := range designEngines {
 		designEngineSlugs = append(designEngineSlugs, e.Slug)
@@ -692,7 +693,9 @@ func (a *App) Start(ctx context.Context) error {
 	// The engine table the worker resolves params.image with (designCfg.ImageDefaultModel above):
 	// the door validates and prices against it, the band advertises it. A table, not a gate — it
 	// spends nothing, and the money flag above has already closed every paid verb when it is off.
-	adminS.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable(designImages.Model()) })
+	adminS.SetDesignEngines(func() []designgen.Engine {
+		return designgen.EngineTable(designImages.Model(), designCfg.EngineFlags())
+	})
 	a.adminS = adminS
 
 	var frontendS *frontend.Server
