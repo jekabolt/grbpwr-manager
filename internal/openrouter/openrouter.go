@@ -278,9 +278,10 @@ type Config struct {
 	Model       string        `mapstructure:"model"`        // OPENROUTER_MODEL; empty = defaultModel
 	BaseURL     string        `mapstructure:"base_url"`     // OPENROUTER_BASE_URL; empty = defaultBaseURL
 	HTTPTimeout time.Duration `mapstructure:"http_timeout"` // OPENROUTER_HTTP_TIMEOUT; <=0 = defaultTimeout
-	// ModelAnalysis is the OPTIONAL slug for the tech-card analysis pass (OPENROUTER_MODEL_ANALYSIS).
-	// EMPTY IS THE NORMAL STATE and means "the shared slug": the override exists so escalating the
-	// quality of that one pass costs an env var instead of a deploy.
+	// ModelAnalysis is the OPTIONAL slug of CompleteWithMeta's callers — the tech-card analysis pass
+	// and EnhanceText (OPENROUTER_MODEL_ANALYSIS). EMPTY IS THE NORMAL STATE and means "the shared
+	// slug": the override exists so escalating the quality of those calls costs an env var instead
+	// of a deploy.
 	//
 	// IT DELIBERATELY HAS NO DEFAULT CONSTANT OF ITS OWN. A second baked-in slug would be a second
 	// thing that rots silently at the provider, and one such constant (defaultModel) already carries
@@ -418,9 +419,9 @@ func (c *Client) Model() string {
 	return c.cfg.Model
 }
 
-// AnalysisModel returns the effective model slug for the tech-card analysis pass: the optional
-// OPENROUTER_MODEL_ANALYSIS override, or the shared slug when that override is unset — which is the
-// normal state on every deployment. Nil-safe.
+// AnalysisModel returns the effective model slug of CompleteWithMeta — the tech-card analysis pass
+// and EnhanceText: the optional OPENROUTER_MODEL_ANALYSIS override, or the shared slug when that
+// override is unset — which is the normal state on every deployment. Nil-safe.
 //
 // Callers that REPORT which model answered (the analysis response carries the slug so a
 // "model_unavailable" verdict names the knob to turn) must use this, not Model(), or the panel will
@@ -464,7 +465,7 @@ func (c *Client) IdeasModel() string {
 
 const (
 	sharedModelFeatures   = "note formatting, design idea drafts and campaign auto-translation"
-	analysisModelFeatures = "tech-card construction analysis"
+	analysisModelFeatures = "tech-card construction analysis and EnhanceText (the ai ✦ rewrite)"
 	ideasModelFeatures    = "playground Ideas suggestions"
 	ideasFallbackFeatures = "playground Ideas suggestions (the fallback after a 404 on the ideas slug)"
 )
@@ -587,8 +588,9 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 	return text, err
 }
 
-// CompleteWithMeta runs a single chat completion for the TECH-CARD ANALYSIS pass and returns the
-// assistant content together with what the caller needs in order to judge it.
+// CompleteWithMeta runs a single chat completion for the TECH-CARD ANALYSIS pass (and for
+// EnhanceText, which needs the same finish reason and token bill) and returns the assistant content
+// together with what the caller needs in order to judge it.
 //
 // WHY THE METADATA IS NOT OPTIONAL. Without finishReason a reply truncated by the token cap is
 // indistinguishable from a model that emitted broken JSON, and those two owe the human different
@@ -597,9 +599,9 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 //
 // maxTokens caps the completion; <= 0 omits the field and leaves the provider default in force.
 //
-// THE SLUG IS AnalysisModel(), NOT Model(). This method exists for the analysis pass, and
-// OPENROUTER_MODEL_ANALYSIS exists to escalate exactly that pass without dragging the features
-// behind Complete onto a different model. With the override unset the two are the same string.
+// THE SLUG IS AnalysisModel(), NOT Model(). OPENROUTER_MODEL_ANALYSIS exists to escalate the calls
+// made through this method without dragging the features behind Complete onto a different model.
+// With the override unset the two are the same string.
 func (c *Client) CompleteWithMeta(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (text string, finishReason string, usage Usage, err error) {
 	// ONE OF THE TWO CALLERS THAT SET `reasoning`, and for the same reason: see
 	// analysisReasoningEffort. Мышление выключено там, где стоит ПОТОЛОК ТОКЕНОВ, — этот пас и

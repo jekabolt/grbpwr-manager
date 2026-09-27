@@ -24,9 +24,7 @@ import (
 //   - three small helpers other handlers borrow: resolveCategoryName (the analysis prompt),
 //     decimalOrEmpty (the archive sidecars) and aiBoundedText (the design construction draft).
 //
-// The file used to be the home of the «generate operations from description» AI draft and of
-// everything that existed only for it. That feature was removed on 27.09 (O-66); what is left here
-// is exactly what other features still call.
+// Nothing here is a feature of its own: every symbol in this file has callers in other handlers.
 
 // openRouterNoKeyMsg is THE ONE sentence for "the chat client has no key", shared by every feature
 // that rides s.aiOps: where a key goes (the admin panel's AI providers page — keys are read through
@@ -65,8 +63,8 @@ const modelUnavailableAdviceMsg = "the provider serves no endpoint for model %q 
 const (
 	// aiErrorDomain scopes the reasons below. Stable: a client branches on the pair.
 	aiErrorDomain = "ai.grbpwr.com"
-	// aiReasonNotConfigured — no OPENROUTER_API_KEY. On beta this is a deployment fact, not a
-	// fault, and a client is right to stay quiet about it.
+	// aiReasonNotConfigured — no key (see openRouterNoKeyMsg for where one goes). On beta this is a
+	// deployment fact, not a fault, and a client is right to stay quiet about it.
 	aiReasonNotConfigured = "AI_NOT_CONFIGURED"
 	// aiReasonModelUnavailable — the key is set and the provider serves no endpoint for the
 	// configured slug. This one IS a fault and a client should look like it.

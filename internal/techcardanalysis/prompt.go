@@ -192,11 +192,8 @@ func buildAnalysisSystemPrompt() string {
 // promptDict renders a vocabulary in its reading order, dropping the tokens the model must not
 // answer with.
 //
-// ТРИ СТРОКИ, ПРОДУБЛИРОВАННЫЕ ОСОЗНАННО (design §7, «либо продублировать три строки в пакете»).
-// Оригинал жил в internal/openrouter/prompt.go неэкспортируемым; экспортировать его ради одного
-// вызова значило бы связать пакет анализа с пакетом генератора, чей системный промпт жил своей
-// жизнью и переписывался другими фазами. Генератор операций удалён 27.09 вместе с оригиналом, и эта
-// копия теперь единственная — синхронизировать её не с чем.
+// СВОЯ У ПАКЕТА АНАЛИЗА (design §7) и ни с чем не синхронизируется: функция без состояния, а её
+// контракт — «перечисли токены через запятую».
 func promptDict(tokens []string, drop ...string) string {
 	out := make([]string, 0, len(tokens))
 	for _, t := range tokens {

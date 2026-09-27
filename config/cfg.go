@@ -600,15 +600,18 @@ func bindEnvVars() {
 	viper.BindEnv("ga4.circuit_breaker.half_open_max_retries", "GA4_CIRCUIT_BREAKER_HALF_OPEN_MAX_RETRIES")
 
 	// OpenRouter (the admin AI text features: note formatting, campaign auto-translation, the design
-	// idea draft, EnhanceText, SuggestPrompts, the construction analysis). OPENROUTER_API_KEY is
-	// required to enable them; unset => each degrades to a clear "not configured" answer.
+	// idea draft, EnhanceText, SuggestPrompts, the construction analysis). OPENROUTER_API_KEY is the
+	// env fallback of their key: the AI providers registry answers with a key stored in admin → AI
+	// providers first, so an empty value here does not by itself disable them. Only with no key from
+	// either source (or openrouter switched off in the panel) does each degrade to a clear "not
+	// configured" answer.
 	// OPENROUTER_MODEL / BASE_URL / HTTP_TIMEOUT are optional overrides (sane defaults applied).
 	viper.BindEnv("openrouter.api_key", "OPENROUTER_API_KEY")
 	viper.BindEnv("openrouter.model", "OPENROUTER_MODEL")
-	// OPENROUTER_MODEL_ANALYSIS is the optional per-feature slug for the tech-card analysis pass
-	// (empty => the shared slug). It needs this line to exist at all: AutomaticEnv is off above on
-	// purpose, so an unbound name reads as empty — which is also exactly what a correct unset
-	// override looks like, making a missing binding invisible until somebody wonders why the
+	// OPENROUTER_MODEL_ANALYSIS is the optional per-feature slug of the tech-card analysis pass and
+	// EnhanceText (empty => the shared slug). It needs this line to exist at all: AutomaticEnv is
+	// off above on purpose, so an unbound name reads as empty — which is also exactly what a correct
+	// unset override looks like, making a missing binding invisible until somebody wonders why the
 	// escalation did nothing.
 	viper.BindEnv("openrouter.model_analysis", "OPENROUTER_MODEL_ANALYSIS")
 	// OPENROUTER_MODEL_IDEAS is the slug of the PLAYGROUND `Ideas ▾` door (SuggestPrompts): unset =>

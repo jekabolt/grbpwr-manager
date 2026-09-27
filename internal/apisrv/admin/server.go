@@ -103,8 +103,10 @@ type Server struct {
 	embedAllowedHosts []string
 	// aiOps is the OpenRouter chat client behind the admin AI text features — note formatting,
 	// campaign auto-translation, the design idea draft, EnhanceText, SuggestPrompts and the
-	// construction analysis. It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so each of
-	// them degrades to a clear "not configured" answer instead of failing.
+	// construction analysis. It is nil-safe, and disabled only while it has no key: the AI providers
+	// registry answers with a key stored in admin → AI providers, else OPENROUTER_API_KEY, and with
+	// none while openrouter is switched off there. Disabled, each of them degrades to a clear "not
+	// configured" answer instead of failing.
 	aiOps *openrouter.Client
 	// analysisRuns is the spend fence in front of AnalyzeTechCardConstruction: who is running what,
 	// when they last ran it, and how many runs this account has bought in the last hour. Its zero

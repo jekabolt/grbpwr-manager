@@ -329,11 +329,9 @@ func parseModelOutput(raw string) (modelOutput, error) {
 // extractAnalysisJSON returns the outermost {...} object in s, first stripping a Markdown code
 // fence — fences and surrounding prose are tolerated (§8, «фенсы и проза терпимы»).
 //
-// ПИСАЛАСЬ КАК ПОВТОР ЛОГИКИ openrouter.extractJSON, А НЕ ВЫЗОВ ЕЁ: та была неэкспортируема, а
-// экспортировать её ради этого пакета значило бы поменять чужой файл, который тогда правили
-// параллельные задачи (§6 «Заборы» — та же причина, по которой aiBoundedText здесь копия). Оригинал
-// удалён 27.09 вместе с генератором операций, чьи ответы он разбирал, так что требование «поведение
-// обязано совпадать» снято: эта функция теперь единственная, и сверять её больше не с чем.
+// ЭТО ЕДИНСТВЕННЫЙ РАЗБОР ОТВЕТА АНАЛИЗА, и живёт он здесь, а не в internal/openrouter: транспорт не
+// знает форм ответов своих потребителей, каждый разбирает свой ответ сам (§6 «Заборы» — та же
+// причина, по которой aiBoundedText здесь своя копия).
 func extractAnalysisJSON(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```") {

@@ -30,11 +30,11 @@ const (
 	// sequential model requests inside one RPC.
 	maxCampaignTranslateStrings = 300
 
-	// campaignTranslateModelUnavailableMsg is the THIRD copy of the same fault, and the reason it
+	// campaignTranslateModelUnavailableMsg is this feature's copy of the same fault, and the reason it
 	// exists: this feature rides the very same s.aiOps client and the very same model slug as the
-	// note assistant and the tech-card draft. When the provider retired the default slug all three
-	// died together — but only two of them said so. This one fell through to a nameless Internal,
-	// on the button nobody happened to press.
+	// note assistant and the design idea draft, so when the provider retires that slug they all die
+	// together. Without its own sentence this one fell through to a nameless Internal, on the button
+	// nobody happened to press.
 	campaignTranslateModelUnavailableMsg = "campaign auto-translation is misconfigured: " + modelUnavailableAdviceMsg
 )
 
@@ -63,8 +63,9 @@ func (s *Server) AutoTranslateEmailCampaign(
 	}
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {
-		// model/base_url: the same blindness the other two consumers had. The slug reached the beta
-		// log only because the provider echoed it in its own sentence, which was luck, not design.
+		// model/base_url: the same blindness the other consumers of this client had. The slug reached
+		// the beta log only because the provider echoed it in its own sentence, which was luck, not
+		// design.
 		slog.ErrorContext(ctx, "auto-translate campaign failed",
 			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
 			slog.String("err", err.Error()))

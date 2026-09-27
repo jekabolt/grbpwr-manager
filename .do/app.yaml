@@ -242,7 +242,9 @@ envs:
   value: ""
 # OpenRouter powers the admin AI text features: AutoTranslateEmailCampaign (campaign builder),
 # FormatLibraryNoteMarkdown (notes), DraftDesignIdea, EnhanceText, SuggestPrompts and
-# AnalyzeTechCardConstruction. While the key is blank each answers "not configured"
+# AnalyzeTechCardConstruction. This env key is the FALLBACK: a key stored in admin -> AI providers
+# wins over it, so a blank value here does not by itself switch them off. Only with no key from
+# either source (or with openrouter switched off in the panel) does each answer "not configured"
 # (FailedPrecondition AI_NOT_CONFIGURED; the analysis reports it as ai_status instead); boot is
 # unaffected (app.go builds a nil-key-tolerant client). MODEL / BASE_URL / HTTP_TIMEOUT are
 # optional overrides and are deliberately left to the code defaults. Same empty-SECRET caveat

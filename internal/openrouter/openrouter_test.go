@@ -550,6 +550,53 @@ func TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce(t *testing.T) {
 	})
 }
 
+// TestEffectiveModels_NameWhatStopsWorking pins the `affects` half of the boot warning: every slug
+// the client can send is listed with the features that refuse once the provider stops serving it. A
+// feature missing from its slug's label turns the one log line meant to send somebody to the right
+// button into a line about the wrong ones — EnhanceText rides CompleteWithMeta, so it lives on the
+// analysis slug and has to be named there.
+//
+// Mutation: drop EnhanceText from analysisModelFeatures → red.
+func TestEffectiveModels_NameWhatStopsWorking(t *testing.T) {
+	type want struct {
+		slug     string
+		features []string
+	}
+	check := func(t *testing.T, cfg Config, wants []want) {
+		t.Helper()
+		got := New(cfg).effectiveModels()
+		if len(got) != len(wants) {
+			t.Fatalf("effectiveModels() = %+v, want %d slugs", got, len(wants))
+		}
+		for i, w := range wants {
+			if got[i].slug != w.slug {
+				t.Errorf("slug %d = %q, want %q", i, got[i].slug, w.slug)
+			}
+			for _, f := range w.features {
+				if !strings.Contains(got[i].features, f) {
+					t.Errorf("slug %q affects %q — %q is missing", got[i].slug, got[i].features, f)
+				}
+			}
+		}
+	}
+	shared := []string{"note formatting", "design idea drafts", "campaign auto-translation"}
+	analysis := []string{"tech-card construction analysis", "EnhanceText"}
+
+	t.Run("four distinct slugs, four labels", func(t *testing.T) {
+		check(t, Config{APIKey: "k", Model: "shared/slug", ModelAnalysis: "escalated/slug"}, []want{
+			{"shared/slug", shared},
+			{"escalated/slug", analysis},
+			{DefaultIdeasModel, []string{"playground Ideas suggestions"}},
+			{IdeasFallbackModel, []string{"playground Ideas suggestions", "fallback"}},
+		})
+	})
+	t.Run("no analysis override: the shared slug carries both labels", func(t *testing.T) {
+		check(t, Config{APIKey: "k", Model: "shared/slug", ModelIdeas: IdeasModelOff}, []want{
+			{"shared/slug", append(append([]string{}, shared...), analysis...)},
+		})
+	})
+}
+
 // TestIdeasModel pins the one place that decides what OPENROUTER_MODEL_IDEAS means.
 func TestIdeasModel(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
@@ -629,7 +676,7 @@ func TestEmptyAnswerIsSplitByFinishReason(t *testing.T) {
 //
 // AND IT SAYS IT NOWHERE ELSE. Complete backs note formatting and campaign translation, which never
 // had a `reasoning` field and must keep the provider default: sending it from the shared path would
-// change three features to fix one.
+// change two features to fix one.
 func TestAnalysisPassTurnsExtendedThinkingOff(t *testing.T) {
 	body := func(t *testing.T, call func(*Client, context.Context) error) string {
 		t.Helper()
@@ -661,6 +708,6 @@ func TestAnalysisPassTurnsExtendedThinkingOff(t *testing.T) {
 		return err
 	})
 	if strings.Contains(shared, `"reasoning"`) {
-		t.Errorf("the shared path must not carry a reasoning field — three features hang off it: %s", shared)
+		t.Errorf("the shared path must not carry a reasoning field — note formatting and campaign translation hang off it: %s", shared)
 	}
 }
