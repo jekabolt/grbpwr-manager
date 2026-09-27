@@ -32,6 +32,10 @@ import (
 // MUTATIONS (measured red→green): classify returning classifyBySentinel(err) unchanged → every
 // CallError row but the delivered one goes red; the Engaged → `unknown` arm inverted → the engaged
 // rows read `failed`; the delivered guard dropped → the storage row reads `failed`, retryable.
+//
+// B-13/A2 — a cancellation before the write is the worker's own shutdown, not a verdict on the run:
+// retried. MUTATION (measured red→green): the `|| (!ce.Engaged && ce.Code == aiprov.CodeCanceled)`
+// override dropped → the pre-write cancel row reads not retryable (a redeploy closed the run).
 func TestClassifyIsAMoneyDecision(t *testing.T) {
 	type callErr = aiprov.CallError
 	for _, c := range []struct {
@@ -127,10 +131,16 @@ func TestClassifyIsAMoneyDecision(t *testing.T) {
 			&callErr{Provider: entity.AIProviderMeshy, Code: aiprov.CodeKeyRejected, HTTPStatus: 401,
 				Err: fmt.Errorf("%w (HTTP 401): nope", meshy.ErrUnauthorized)},
 			false, CodeUnauthorized, entity.DesignAttemptFailed},
-		{"the caller left before the write: not the provider's fault, not retried",
+		// B-13/A2: the transport says «not retryable» for its breaker and the chat fallback; for this
+		// worker the canceller is its own Stop, nothing was written, and the run must survive the deploy.
+		{"the worker was stopped before the write: nothing moved, the next pass retries",
 			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeCanceled,
 				Err: fmt.Errorf("orimages: request failed: %w", context.Canceled)},
-			false, CodeProviderUnavailable, entity.DesignAttemptFailed},
+			true, CodeProviderUnavailable, entity.DesignAttemptFailed},
+		{"a cancel AFTER the write stays final: the provider may be billing it",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeCanceled, Engaged: true,
+				Err: fmt.Errorf("orimages: request failed: %w", context.Canceled)},
+			false, CodeProviderUnavailable, entity.DesignAttemptUnknown},
 		{"an unsentinelled 429 is named by the transport's code",
 			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeRateLimited, HTTPStatus: 429, Retryable: true,
 				Err: errors.New("fal: something the switch does not know")},

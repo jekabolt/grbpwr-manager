@@ -192,6 +192,17 @@ type verdict struct {
 // they are repeated. Letting the queue spend five attempts on them buys nothing and hides the real
 // cause behind a row that reads "failed after 5 attempts" instead of "the key was rejected".
 //
+// ⚠ ONE EXCEPTION TO «THE TRANSPORT DECIDES RETRYABLE»: A CANCELLATION BEFORE THE WRITE (B-13/A2,
+// Codex B-14 review P2 #3). Every transport calls a caller's cancel not retryable, and it is right to,
+// for ITS readers: the registry's breaker must not count it (the provider did nothing wrong) and the
+// chat router must not fall through to the next candidate for a caller who has already left. In THIS
+// worker the canceller is the worker itself — Stop on a redeploy cancels the pass — and the run's
+// owner has not left at all. A cancel that landed after StartAttempt and before the request was
+// written moved no money and nobody saw the request; closing the run terminally for it would throw
+// away a job the next instance could run. So an unengaged `canceled` is retried here (the attempt
+// closes `failed`, the queue picks the run up again); an engaged one — the request was written, the
+// provider may be billing it — stays final like every engaged failure.
+//
 // ⚠ FOR A CallError THE TRANSPORT DECIDES; THE DEFAULT LEANS RETRYABLE ONLY FOR ERRORS NO TRANSPORT
 // SPOKE FOR. Before B-14 a transport failure — DNS, a reset connection, a proxy hiccup — reached this
 // function as a plain wrapped error, so an unrecognised fault was read as weather and retried, and a
@@ -205,7 +216,7 @@ func classify(err error) verdict {
 	if !ok || v.State == entity.DesignAttemptDelivered {
 		return v
 	}
-	v.Retryable = ce.Retryable
+	v.Retryable = ce.Retryable || (!ce.Engaged && ce.Code == aiprov.CodeCanceled)
 	if ce.Engaged {
 		v.State = entity.DesignAttemptUnknown
 	} else {
