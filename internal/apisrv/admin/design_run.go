@@ -921,6 +921,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseImageReferenceCeiling(kind, params); err != nil {
 		return nil, err
 	}
+	// …and a try-on naming a product colourway dresses the person in that colourway's renders — free,
+	// off the band already loaded (G-02, Codex 10).
+	if err := designRefuseTryonProductNotColourwayRender(kind, req.GetParams(), band); err != nil {
+		return nil, err
+	}
 	// A try-on naming a model profile dresses a photo OF that model (EFFECTIVE params). A STORE
 	// READ, so it stands after every free refusal above (G-02, Fable m-7): a malformed try-on never
 	// touches the store.

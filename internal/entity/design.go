@@ -1020,6 +1020,10 @@ const (
 	// door when the stored dimensions already show it.
 	DesignErrorCodeThreedReserveUnbounded = "threed_reserve_unbounded"
 	DesignErrorCodeSourceTooSmall         = "source_too_small"
+	// product_not_colorway_render: a try-on naming options.product_colorway_id dresses the person in
+	// fabric renders OF THAT COLOURWAY (owner, tile 1); a role=product picture that is not one is
+	// refused, so the history never files one garment under another colourway's name.
+	DesignErrorCodeProductNotColorwayRender = "product_not_colorway_render"
 )
 
 // Режимы прогона паттерна — DesignPatternParams.mode (STEP 3). Пустая строка значит то же, что

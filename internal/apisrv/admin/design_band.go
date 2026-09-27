@@ -300,6 +300,22 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// outputs per run_workflow, counted by the store with the SAME expression that stamps
 		// run_workflow and cuts the window (store/design designCardOutputsWorkflow). Drop this line and
 		// the band still answers 200 while every tile captions «of 0».
+		//
+		// ⚠ ONLY SECTION-1 TILES HAVE A WINDOW OF THEIR OWN (G-02, Fable m-8 — accepted, 06 §23.6).
+		// change_color, swap_fabrics and image_to_3d are counted here too, but their outputs are cut
+		// by the COLOURWAY window of section 0 (window key '' — store/design
+		// designCardOutputsWindowKey), which they share with each other. So «newest 60 of N» is true
+		// only for the section-1 tiles; on those three tiles the listed rows can be fewer than 60
+		// while N ≫ 60 — the client captions them «N in total», never «newest 60 of N».
+		//
+		// THE ACTIVE-RUN PIN NEEDS NOTHING HERE (Codex 9, checked 2026-09-27): the live placeholder is
+		// the client's — playground/results.tsx `pinned` filters `runs` (this response's first
+		// history page, design.DefaultRunPageLimit newest rows) by isRunLive. A run still working has
+		// no outputs to list, so no output window can drop it. The one residual: a run older than
+		// DefaultRunPageLimit newer runs of the same card leaves page 1 while still live — which takes
+		// that many presses queued behind it on a one-run-at-a-time worker, all of them live and all of
+		// them drawn. Accepted; a server union of active runs would have to be kept out of the
+		// history cursor, and nothing on the band needs it today.
 		OutputsTotalByWorkflow: intMapStringToPb(band.OutputsTotalByWorkflow),
 		// ЦВЕТОВОЙ ПЛАН (0364). nil = у карточки плана нет — ответ, а не молчание: клиент рисует
 		// дверь покраски по САМОМУ ПРИСУТСТВИЮ поля («этот сервер умеет план»), а его содержимое

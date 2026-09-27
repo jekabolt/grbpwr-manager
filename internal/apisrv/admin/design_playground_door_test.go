@@ -51,8 +51,10 @@ var designPlaygroundDoorCodes = []string{
 	entity.DesignErrorCodeImageOptionsForbidden,
 	// §12 3D reference mode (+ the card boundary and the input doors over the new id list)
 	"threed_forbidden", "duplicate_picture", "foreign_media", entity.DesignErrorCodeDisplayOnlyInput,
-	// G-02: the configured 3D route has no reserve number; a window's picture too small to cut
+	// G-02: the configured 3D route has no reserve number; a window's picture too small to cut; a
+	// try-on product that is not a render of its named colourway
 	entity.DesignErrorCodeThreedReserveUnbounded, entity.DesignErrorCodeSourceTooSmall,
+	entity.DesignErrorCodeProductNotColorwayRender,
 	// the cloth-only recolour negative control
 	"cloth_without_picture",
 }
@@ -187,6 +189,11 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			params: O(P(entity.DesignFreeformPresetTryon, I(99, pgModel, 0), I(12, pgProduct, 0)),
 				&pb_common.DesignWorkflowOptions{ModelId: 5}),
 			setup: pgModels(profile, nil), want: entity.DesignErrorCodeModelPhotoMismatch},
+		// G-02 Codex 10: a named product colourway must be the colourway of the product's render;
+		// this band has no render at all (legal rows: TestATryonsProductColourwayIsVERIFIED).
+		{name: "tryon: a product colourway the band has no render of", kind: entity.DesignRunKindFreeform,
+			params: O(tryon(), &pb_common.DesignWorkflowOptions{ProductColorwayId: 999999}),
+			want:   entity.DesignErrorCodeProductNotColorwayRender},
 		// G-02 Fable m-7: the free shape table stands before the model-profile STORE READ — no
 		// Models() expectation here, so a read would fail the row.
 		{name: "tryon: a model id and no garment never reads the store", kind: entity.DesignRunKindFreeform,
@@ -866,6 +873,73 @@ func TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING(t *testing.T) {
 				require.Truef(t, got.Decimal.GreaterThanOrEqual(designThreedCeilingUSDFor(o.texture, o.quality)),
 					"%+v: never below today's static number", o)
 			}
+		})
+	}
+}
+
+// TestATryonsProductColourwayIsVERIFIED — G-02 Codex 10: options.product_colorway_id names a
+// colourway whose FABRIC RENDER each role=product picture is, read off the band the door already
+// loaded (whole-card outputs and the render bench). 0 claims nothing; a silent rerun inherits a
+// verified claim. MUTATIONS (each measured red): drop the designRefuseTryonProductNotColourwayRender
+// call (the three refusals pass); ignore the colourway (the other-colourway row passes); ignore the
+// render bench (the bench row is refused).
+func TestATryonsProductColourwayIsVERIFIED(t *testing.T) {
+	band := func() *entity.DesignBand {
+		b := designBandWith(true)
+		pic := func(media, cw int, kind string) entity.DesignPicture {
+			p := entity.DesignPicture{Id: 7000 + media, TechCardId: designRunCardID, MediaId: media, Kind: kind}
+			if cw > 0 {
+				p.ColorwayId = sql.NullInt32{Int32: int32(cw), Valid: true}
+			}
+			return p
+		}
+		b.Outputs = append(b.Outputs,
+			entity.DesignCardOutput{Picture: pic(12, 7, entity.DesignPictureKindRender)},
+			entity.DesignCardOutput{Picture: pic(13, 8, entity.DesignPictureKindRender)},
+			entity.DesignCardOutput{Picture: pic(15, 7, entity.DesignPictureKindFlat)})
+		slot := pic(14, 0, entity.DesignPictureKindRender)
+		b.Bench = append(b.Bench, entity.DesignBenchSlot{Id: 77, TechCardId: designRunCardID,
+			ViewKey: entity.DesignViewFront, Kind: entity.DesignPictureKindRender,
+			ColorwayId: sql.NullInt32{Int32: 7, Valid: true}, Picture: &slot})
+		return b
+	}
+	tryon := func(product int32, cw int32) *pb_common.DesignRunParams {
+		return ffWithOptions(ffParams(entity.DesignFreeformPresetTryon, ffItem(11, pgModel, 0), ffItem(product, pgProduct, 0)),
+			&pb_common.DesignWorkflowOptions{ProductColorwayId: cw})
+	}
+	for _, c := range []struct {
+		name   string
+		params *pb_common.DesignRunParams
+		rerun  *entity.DesignRun
+		want   string
+	}{
+		{"a render of the named colourway", tryon(12, 7), nil, ""},
+		{"a render-bench plate of the named colourway", tryon(14, 7), nil, ""},
+		{"no colourway named claims nothing", tryon(99, 0), nil, ""},
+		{"a render of another colourway", tryon(13, 7), nil, entity.DesignErrorCodeProductNotColorwayRender},
+		{"a flat of the named colourway", tryon(15, 7), nil, entity.DesignErrorCodeProductNotColorwayRender},
+		{"a picture that is no render at all", tryon(99, 7), nil, entity.DesignErrorCodeProductNotColorwayRender},
+		{"a silent rerun inherits its verified claim", nil,
+			&entity.DesignRun{Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFreeform,
+				Params: pgMarshal(t, tryon(99, 7))}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, designMoodCard(), band())
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+			req := designStartRequest(entity.DesignRunKindFreeform)
+			req.Params = c.params
+			if c.rerun != nil {
+				req.RerunOfRunId = int32(c.rerun.Id)
+				rig.design.EXPECT().GetRun(mock.Anything, c.rerun.Id).Return(c.rerun, nil).Maybe()
+			}
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			if c.want == "" {
+				require.NoError(t, err)
+				require.NotNil(t, rig.sent)
+				return
+			}
+			require.Equal(t, c.want, ffReason(t, err))
+			require.Nil(t, rig.sent)
 		})
 	}
 }

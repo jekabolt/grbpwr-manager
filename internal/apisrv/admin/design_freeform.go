@@ -915,6 +915,63 @@ func designFreeformRefs(params *pb_common.DesignRunParams) []*pb_common.DesignIn
 	return out
 }
 
+// designRefuseTryonProductNotColourwayRender — A TRY-ON NAMING A PRODUCT COLOURWAY DRESSES THE
+// PERSON IN THAT COLOURWAY'S FABRIC RENDERS (G-02, Codex 10). The owner's tile 1 field is «продукт
+// колорвей из наших колорвеев из фабрик рендер»: the product picture comes from the fabric renders
+// of one of this card's colourways, and options.product_colorway_id is that colourway — provenance
+// the history shows («worn: colourway X»). Accepting any id (999999) beside any card picture would
+// file one garment under another colourway's name.
+//
+// FREE: it reads the band StartDesignRun already loaded (the bench and the whole-card outputs — the
+// same pools the client's colourway-render picker draws from, cardPictureGroups), no second read.
+// Every role=product item must be a picture of kind `render` of colourway X there (its own
+// colorway_id, or a render-bench slot of X). X therefore also names a colourway of THIS card: a
+// colourway of another card has no render on this band.
+//
+// ASKED OF THE SPEAKER (the same boundary as the other provenance words): a silent rerun inherits a
+// claim this door verified when it was spoken, with the same pictures (the picture-swap guard), and
+// a render that has since left the 60-newest window must not make it unrerunnable. 0 = no colourway
+// claimed (the client sends it for a colourway-less render): nothing to verify.
+func designRefuseTryonProductNotColourwayRender(kind string, spoken *pb_common.DesignRunParams, band *entity.DesignBand) error {
+	ff := spoken.GetFreeform()
+	cw := int(ff.GetOptions().GetProductColorwayId())
+	if kind != entity.DesignRunKindFreeform || ff.GetPreset() != entity.DesignFreeformPresetTryon || cw <= 0 {
+		return nil
+	}
+	renders := map[int]bool{}
+	isRenderOf := func(p *entity.DesignPicture) bool {
+		return p != nil && p.Kind == entity.DesignPictureKindRender && p.ColorwayId.Valid && int(p.ColorwayId.Int32) == cw
+	}
+	if band != nil {
+		for i := range band.Outputs {
+			if p := &band.Outputs[i].Picture; isRenderOf(p) {
+				renders[p.MediaId] = true
+			}
+		}
+		for _, slot := range band.Bench {
+			p := slot.Picture
+			if p == nil || p.Kind != entity.DesignPictureKindRender {
+				continue
+			}
+			if isRenderOf(p) || (slot.Kind == entity.DesignPictureKindRender && slot.ColorwayId.Valid &&
+				int(slot.ColorwayId.Int32) == cw) {
+				renders[p.MediaId] = true
+			}
+		}
+	}
+	for i, it := range ff.GetItems() {
+		if it.GetRole() != entity.DesignFreeformRoleProduct || renders[int(it.GetMediaId())] {
+			continue
+		}
+		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeProductNotColorwayRender,
+			fmt.Sprintf("params.freeform.items.%d (picture %d) is not a fabric render of colourway %d of this "+
+				"card — pick the garment from that colourway's renders, or clear product_colorway_id. "+
+				"Nothing was reserved and nothing was charged", i, it.GetMediaId(), cw),
+			map[string]string{"product_colorway_id": strconv.Itoa(cw), "media_id": strconv.Itoa(int(it.GetMediaId()))})
+	}
+	return nil
+}
+
 // designRefuseModelPhotoMismatch — A TRY-ON THAT NAMES A MODEL PROFILE DRESSES A PHOTO OF THAT
 // MODEL. options.model_id is provenance the history will show («worn by …»); a role=model picture
 // that is not one of that profile's photos (its thumbnail or gallery) would file one person's
