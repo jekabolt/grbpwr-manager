@@ -514,6 +514,17 @@ func (r *Registry) DefaultImageSlug() string {
 
 // Providers is every known provider in the panel's order, as of the current snapshot.
 func (r *Registry) Providers() []ProviderState {
+	states, _ := r.ProvidersAt()
+	return states
+}
+
+// ProvidersAt is Providers together with the config_version of the snapshot those states were rendered
+// from — both from ONE snapshot load (Codex B #7). Version() and Providers() called one after the other
+// load the snapshot twice, and a Reload between the two pairs one version's number with another
+// version's key state; a caller that joins the states with store rows of a known version (the panel)
+// needs the version the states really describe. 0 before the first Reload. The breaker column is live,
+// not part of any snapshot.
+func (r *Registry) ProvidersAt() ([]ProviderState, uint64) {
 	s := r.snap.Load()
 	keys := entity.AIProviderKeys()
 	out := make([]ProviderState, 0, len(keys))
@@ -522,7 +533,11 @@ func (r *Registry) Providers() []ProviderState {
 		st.Breaker = r.breakerState(k)
 		out = append(out, st)
 	}
-	return out
+	var version uint64
+	if s != nil {
+		version = s.version
+	}
+	return out, version
 }
 
 // ───────────────────────── breakers ─────────────────────────

@@ -17,11 +17,10 @@ import (
 
 const (
 	// noteFormatNotConfiguredMsg is the single, clear message returned when OpenRouter is not
-	// configured (no OPENROUTER_API_KEY). Kept as one const — like aiOpsNotConfiguredMsg for
-	// tech-card operations — so the pre-check and the client-level ErrNotConfigured path report
-	// identically. On beta the key is unset BY DESIGN, so this is the answer that path returns
-	// every time: the client turns it into the "assistant not connected" state and the note
-	// itself keeps working.
+	// configured (no key — openRouterNoKeyMsg says where one goes). Kept as one const so the
+	// pre-check and the client-level ErrNotConfigured path report identically. On beta the key is
+	// unset BY DESIGN, so this is the answer that path returns every time: the client turns it into
+	// the "assistant not connected" state and the note itself keeps working.
 	noteFormatNotConfiguredMsg = "markdown assistant is not configured: " + openRouterNoKeyMsg
 
 	// noteFormatModelUnavailableMsg is the OTHER misconfiguration, and it exists because the first
@@ -31,8 +30,8 @@ const (
 	// promised the fault was temporary.
 	//
 	// So this one names the SETTING, in the same shape as the missing key above. The recipe itself
-	// is modelUnavailableAdviceMsg, shared with the two other features on this client — see there
-	// for why it names two knobs and why the base URL's value stays in the log.
+	// is modelUnavailableAdviceMsg, shared with the other features on this client — see there for
+	// why it names two knobs and why the base URL's value stays in the log.
 	noteFormatModelUnavailableMsg = "markdown assistant is misconfigured: " + modelUnavailableAdviceMsg
 
 	// maxNoteFormatRunes caps what one call may format. It is the mockup's `toolong` threshold

@@ -14,9 +14,11 @@
 // (and a server-side request to wherever that is). Tests reach their httptest servers through the
 // http.Client they pass, never through a knob in this package.
 //
-// ⚠ NO KEY MATERIAL LEAVES THIS PACKAGE. Result.Message is built from this package's own sentences,
-// a status code and — for an unexplained 4xx only — the provider's own sentence with anything that
-// could be a key scrubbed out (some providers quote the key they refused, masked or not).
+// ⚠ NO KEY MATERIAL LEAVES THIS PACKAGE, AND NO PROVIDER TEXT EITHER. Result.Message is always one
+// of this package's own fixed sentences, at most with the HTTP status code in it. Nothing the provider
+// wrote is forwarded — not even scrubbed (Codex B #1): a provider that quotes the refused key back in
+// short groups ("ABCDE 12345 FGHIJ …") passes every word filter, and the fragments add up to the key.
+// A person who needs the provider's own words reads them at the provider, with the key in hand.
 package probe
 
 import (
@@ -30,7 +32,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -71,7 +72,8 @@ const (
 	// models is tens of kilobytes at most and is read only to be drained.
 	maxBody = 64 << 10
 
-	// maxMessage is the longest Result.Message, in bytes.
+	// maxMessage bounds Result.Message, in bytes. Every message is a fixed sentence far below it; the
+	// tests hold each one to the bound.
 	maxMessage = 120
 )
 
@@ -265,12 +267,13 @@ func Probe(ctx context.Context, providerKey string, kind entity.AIKeyKind, key s
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	return classify(ep, resp.StatusCode, body, key)
+	return classify(ep, resp.StatusCode, body)
 }
 
 // classify turns an answer into a verdict. It decides from the status code only; the body is read
-// for a balance (2xx) and quoted for an unexplained 4xx, never used to classify.
-func classify(ep endpoint, status int, body []byte, key string) Result {
+// for a balance on a 2xx and for nothing else — an error body is never classified on and never
+// quoted (see the package comment).
+func classify(ep endpoint, status int, body []byte) Result {
 	switch {
 	case status >= 200 && status < 300:
 		return accepted(ep, body)
@@ -288,11 +291,7 @@ func classify(ep endpoint, status int, body []byte, key string) Result {
 	case status >= 500:
 		return Result{Code: CodeUnreachable, Message: fmt.Sprintf("provider error (http %d)", status)}
 	case status >= 400:
-		msg := fmt.Sprintf("probe refused (http %d)", status)
-		if s := providerSentence(body, key); s != "" {
-			msg += ": " + s
-		}
-		return Result{Message: clip(msg)}
+		return Result{Message: fmt.Sprintf("probe refused (http %d)", status)}
 	case status >= 300:
 		return Result{Message: fmt.Sprintf("unexpected redirect (http %d)", status)}
 	}
@@ -421,74 +420,4 @@ func headerSafe(key string) bool {
 		}
 	}
 	return true
-}
-
-// tokenLike matches a run that could be a secret: 20+ key-alphabet characters in a row.
-var tokenLike = regexp.MustCompile(`[A-Za-z0-9_\-]{20,}`)
-
-// providerSentence is the provider's own sentence from an error body, scrubbed and lowercased, or ""
-// when there is none. A word is dropped when it contains the key, its first or last characters, a
-// masked run ("***") or anything token-shaped: OpenAI, for one, quotes the key it refused.
-func providerSentence(body []byte, key string) string {
-	s := errorText(body)
-	if s == "" {
-		return ""
-	}
-	var prefix, suffix string
-	if len(key) >= 8 {
-		prefix, suffix = key[:6], key[len(key)-4:]
-	}
-	words := strings.Fields(s)
-	for i, w := range words {
-		if strings.Contains(w, key) || strings.Contains(w, "**") || tokenLike.MatchString(w) ||
-			(prefix != "" && (strings.Contains(w, prefix) || strings.Contains(w, suffix))) {
-			words[i] = "[redacted]"
-		}
-	}
-	return strings.ToLower(strings.Join(words, " "))
-}
-
-// errorText pulls the sentence out of the common error shapes: {"error":{"message"}},
-// {"error":"…"}, {"message":"…"}, {"detail":"…"}; a short plain-text body as it is; nothing for
-// HTML or anything else.
-func errorText(body []byte) string {
-	var v struct {
-		Error   json.RawMessage `json:"error"`
-		Message string          `json:"message"`
-		Detail  json.RawMessage `json:"detail"`
-	}
-	if json.Unmarshal(body, &v) == nil {
-		var nested struct {
-			Message string `json:"message"`
-		}
-		var flat string
-		switch {
-		case json.Unmarshal(v.Error, &nested) == nil && strings.TrimSpace(nested.Message) != "":
-			return strings.TrimSpace(nested.Message)
-		case json.Unmarshal(v.Error, &flat) == nil && strings.TrimSpace(flat) != "":
-			return strings.TrimSpace(flat)
-		case strings.TrimSpace(v.Message) != "":
-			return strings.TrimSpace(v.Message)
-		case json.Unmarshal(v.Detail, &flat) == nil && strings.TrimSpace(flat) != "":
-			return strings.TrimSpace(flat)
-		}
-		return ""
-	}
-	s := strings.TrimSpace(string(body))
-	if s == "" || strings.HasPrefix(s, "<") {
-		return ""
-	}
-	return s
-}
-
-// clip cuts s to maxMessage bytes on a rune boundary, marking the cut.
-func clip(s string) string {
-	if len(s) <= maxMessage {
-		return s
-	}
-	cut := maxMessage - len("…")
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…"
 }

@@ -5,9 +5,11 @@
 // time: every write runs in one transaction that first moves ai_settings.config_version, so all
 // config writers serialise on that one row and the registry learns about the write by polling one
 // number; its one read (GetConfig) runs in one read-only snapshot, so it never returns a mix of two
-// versions. The LEDGER half is written on every provider call: single autocommit statements, never a
-// SERIALIZABLE transaction (whose range locks would make a report block the calls it is reporting on),
-// and no validation beyond what the columns cannot hold at all: a refused row is money unrecorded.
+// versions. The LEDGER half is written on every provider call: single autocommit statements, never
+// the SERIALIZABLE write runner (whose range locks would make a report block the calls it is reporting
+// on), and no validation beyond what the columns cannot hold at all: a refused row is money
+// unrecorded. Its one report (SpendReport) reads in the same read-only snapshot GetConfig uses, which
+// takes no locks at all.
 //
 // Every statement goes through storeutil.MakeQuery, the named-parameter builder the storeutil helpers
 // use, and reaches the handle through ExecContext / GetContext / SelectContext only — the three
@@ -45,8 +47,9 @@ type Store struct {
 var _ dependency.AI = (*Store)(nil)
 
 // New creates a new AI providers store. readTxFunc is separate and load-bearing, as in store/design:
-// GetConfig reads its five tables inside it (store.readTx — REPEATABLE READ, read-only), one
-// snapshot, where the SERIALIZABLE txFunc would take a shared lock on every config row it reads.
+// GetConfig reads its five tables and SpendReport its four reads inside it (store.readTx — REPEATABLE
+// READ, read-only), one snapshot each, where the SERIALIZABLE txFunc would take a shared lock on every
+// row it reads — on the ledger, range locks that would hold up every BeginCall of the period.
 func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
 }
@@ -599,12 +602,32 @@ func normaliseRoute(purpose string, candidates []entity.AIRouteCandidate) ([]ent
 	return out, nil
 }
 
-// SetRoute replaces the purpose's whole route in one transaction, compare-and-swap.
+// insertAIModelIfAbsent records a slug typed into a route. An existing row — its label, kind and
+// disabled flag somebody chose — is left exactly as it is: the no-op ON DUPLICATE KEY UPDATE changes
+// nothing (and, unlike INSERT IGNORE, downgrades no other error to a warning).
+const insertAIModelIfAbsent = `
+	INSERT INTO ai_model (provider_key, model, label, kind, disabled, updated_by)
+	VALUES (:provider_key, :model, '', :kind, 0, :by)
+	ON DUPLICATE KEY UPDATE provider_key = provider_key`
+
+// SetRoute replaces the purpose's whole route in one transaction, compare-and-swap, and records in
+// ai_model every slug the route names — IN THE SAME TRANSACTION, under the same one version bump
+// (Codex B #6). Recorded afterwards, in a transaction of its own, a slug whose provider is "" was
+// resolved against a default read in yet another snapshot: a SetAiDefaults committed in between left
+// the route following the new default and the slug listed under the old one, and the unchecked bump of
+// that second write landed after the other admin's checked one. Here the provider "" means is read
+// from the ai_settings row this transaction has already locked (bumpVersion goes first), so it is the
+// default the route will follow.
+//
+// Every named slug is recorded, catalogue or not: the store does not know the pricing catalogue (it
+// must not import it). The panel's view decides what is custom — a row whose slug the catalogue names
+// is the catalogue's entry, listed once (admin aiModels).
 func (s *Store) SetRoute(ctx context.Context, purpose string, candidates []entity.AIRouteCandidate, expectedVersion uint64, by string) error {
 	route, err := normaliseRoute(purpose, candidates)
 	if err != nil {
 		return err
 	}
+	capability := entity.AIPurposeCapability(purpose)
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		if err := bumpVersion(ctx, rep.DB(), &expectedVersion, by); err != nil {
 			return err
@@ -623,8 +646,53 @@ func (s *Store) SetRoute(ctx context.Context, purpose string, candidates []entit
 				return fmt.Errorf("failed to write ai route %q position %d: %w", purpose, c.Position, err)
 			}
 		}
-		return nil
+		return recordRouteModels(ctx, rep.DB(), capability, route, by)
 	})
+}
+
+// recordRouteModels is SetRoute's ai_model half, on the route transaction's handle: one
+// insertAIModelIfAbsent per distinct (provider, model) the route names. A candidate with no model
+// names none; a "" provider is the capability's default as the settings row of THIS transaction holds
+// it (read only when some candidate needs it); a capability with no default provider, or a provider
+// that cannot serve the capability, records nothing — the registry skips such a candidate too.
+func recordRouteModels(ctx context.Context, db dependency.DB, capability string, route []entity.AIRouteCandidate, by string) error {
+	var settings *entity.AISettings
+	seen := map[string]bool{}
+	for _, c := range route {
+		if c.Model == "" {
+			continue
+		}
+		provider := c.ProviderKey
+		if provider == "" {
+			if capability != entity.AICapabilityChat && capability != entity.AICapabilityImage {
+				continue
+			}
+			if settings == nil {
+				st, err := loadSettings(ctx, db)
+				if err != nil {
+					return err
+				}
+				settings = &st
+			}
+			provider = settings.DefaultProviderFor(capability)
+		}
+		if !entity.IsAIProviderKey(provider) || !entity.AIProviderServes(provider, capability) {
+			continue
+		}
+		if seen[provider+"\x00"+c.Model] {
+			continue
+		}
+		seen[provider+"\x00"+c.Model] = true
+		if _, err := execNamed(ctx, db, insertAIModelIfAbsent, map[string]any{
+			"provider_key": provider,
+			"model":        c.Model,
+			"kind":         capability,
+			"by":           by,
+		}); err != nil {
+			return fmt.Errorf("failed to record ai model %s/%s: %w", provider, c.Model, err)
+		}
+	}
+	return nil
 }
 
 const upsertAIModel = `
@@ -636,9 +704,10 @@ const upsertAIModel = `
 		disabled = VALUES(disabled),
 		updated_by = VALUES(updated_by)`
 
-// UpsertModel records a custom slug typed into a route and bumps the version WITHOUT a check (the
-// model list is part of the snapshot, so it must move the version; it has no page of its own to be
-// stale against).
+// UpsertModel writes one ai_model row (label, kind and disabled included) and bumps the version
+// WITHOUT a check (the model list is part of the snapshot, so it must move the version; it has no page
+// of its own to be stale against). A slug typed into a route is NOT recorded through here: SetRoute
+// records it inside the route's own checked transaction.
 func (s *Store) UpsertModel(ctx context.Context, m entity.AIModel, by string) error {
 	if err := validateProviderKey("provider_key", m.ProviderKey); err != nil {
 		return err
@@ -709,11 +778,22 @@ var faultBadges = map[string]string{
 // `free` rows: a configuration refusal is never billed, so it never ends `charged_failed`, and an
 // `unknown` row is a call whose outcome nobody knows. idx_ai_usage_status (status, occurred_at) serves
 // the WHERE. The words are folded into badges in Go (faultBadges), so the vocabulary lives once.
+//
+// A KEY WRITE ENDS THE KEY'S FAULTS (Codex B #9). A key-class fault — the key refused, its account
+// empty: the words of faultBadges that map to key_rejected / out_of_credits — that occurred before the
+// provider's last api-key write (ai_provider.api_key_updated_at: a new key saved, or the stored one
+// cleared so the env key answers) is about a key no longer in force, and is not counted; the save's
+// own probe already says what the new key does. The LEFT JOIN keeps the plain window for a provider
+// with no row or no key write, and for every other fault: a model fault is not the key's and keeps
+// the plain window. The admin key serves no call and does not move this bound.
 const recentFaults = `
-	SELECT provider_key, error_code, COUNT(*) AS n, MAX(occurred_at) AS last_at
-	FROM ai_usage_event
-	WHERE status IN ('failed', 'free') AND occurred_at >= :since AND error_code IS NOT NULL
-	GROUP BY provider_key, error_code`
+	SELECT e.provider_key, e.error_code, COUNT(*) AS n, MAX(e.occurred_at) AS last_at
+	FROM ai_usage_event AS e
+	LEFT JOIN ai_provider AS p ON p.provider_key = e.provider_key
+	WHERE e.status IN ('failed', 'free') AND e.occurred_at >= :since AND e.error_code IS NOT NULL
+	  AND NOT (e.error_code IN ('key_rejected', 'out_of_credits', 'provider_unauthorized', 'provider_out_of_credit')
+	           AND p.api_key_updated_at IS NOT NULL AND e.occurred_at < p.api_key_updated_at)
+	GROUP BY e.provider_key, e.error_code`
 
 // faultRow is one (provider, error_code) count of the window.
 type faultRow struct {
@@ -724,8 +804,8 @@ type faultRow struct {
 }
 
 // RecentFaults returns, per provider, the badge of the most frequent configuration fault among its
-// failed calls since `since` (key_rejected | out_of_credits | model_unknown). A provider with no such
-// fault is absent from the map.
+// failed calls since `since` (key_rejected | out_of_credits | model_unknown); key faults count only
+// from the provider's last api-key write on. A provider with no such fault is absent from the map.
 func (s *Store) RecentFaults(ctx context.Context, since time.Time) (map[string]string, error) {
 	var rows []faultRow
 	if err := selectNamed(ctx, s.DB, &rows, recentFaults, map[string]any{"since": since.UTC()}); err != nil {
@@ -780,12 +860,20 @@ func pickFaults(rows []faultRow) map[string]string {
 
 // ───────────────────────── ledger ─────────────────────────
 
+// insertAICall opens a ledger row. actor_admin_id is RESOLVED HERE, at write time (Codex B #2, D-10):
+// the caller's id when it has one, else the admins row that carries the actor's username NOW. A row
+// is thereby tied to the account that existed when the call was made — a deleted account's rows keep
+// its id, and a new account recreated under the same username gets a new id and none of the old
+// history. designgen's recorder names only a username, so this is where its rows get their id. No
+// such admin (system, unknown, a deleted account) leaves the id NULL: the report shows such rows as
+// their own line.
 const insertAICall = `
 	INSERT INTO ai_usage_event
 		(occurred_at, day_local, provider_key, model, purpose, actor, actor_admin_id,
 		 run_id, attempt_no, call_no, fallback_from, status, cost_source)
 	VALUES
-		(:occurred_at, :day_local, :provider_key, :model, :purpose, :actor, :actor_admin_id,
+		(:occurred_at, :day_local, :provider_key, :model, :purpose, :actor,
+		 COALESCE(:actor_admin_id, (SELECT id FROM admins WHERE username = :actor LIMIT 1)),
 		 :run_id, :attempt_no, :call_no, :fallback_from, 'dispatching', 'none')`
 
 // aiCallEndSet is the ONE finalisation of a ledger row, shared by FinishCall and PriceAcceptedCall.
@@ -990,14 +1078,19 @@ func (s *Store) SweepDispatching(ctx context.Context, olderThan time.Time) (int6
 //
 // SUM(cost_usd) IS NEVER COALESCEd: a provider none of whose rows carries a price reports NULL, which
 // the page shows as unknown, not $0. A `free` row carries a real 0 (aiprov.Ledger writes it), so a
-// provider whose only calls were free sums to a real 0 and says so. Unpriced counts the rows that owe
-// a number and have none.
+// provider whose only calls were free sums to a real 0 and says so.
+//
+// UNPRICED = EVERY COUNTED ROW WITHOUT A KNOWN COST THAT IS NOT `free` (Codex B #3) — the wire's
+// "calls with no known cost", over the same rows `calls` counts. That includes `accepted` and
+// `dispatching` (an async job submitted and not yet collected, a call in flight: an unknown liability,
+// not a zero) and `failed` (the request was written and no charge was reported — which is not the
+// same as known to be free). A status list here would drop every status it forgot, silently.
 const spendByProvider = `
 	SELECT provider_key,
 	       SUM(cost_usd) AS our_usd,
 	       COUNT(*) AS calls,
 	       SUM(CASE WHEN status IN ('free','failed','charged_failed','unknown') THEN 1 ELSE 0 END) AS failed,
-	       SUM(CASE WHEN cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') THEN 1 ELSE 0 END) AS unpriced
+	       SUM(CASE WHEN cost_usd IS NULL AND status <> 'free' THEN 1 ELSE 0 END) AS unpriced
 	FROM ai_usage_event
 	WHERE day_local BETWEEN :from_day AND :to_day
 	GROUP BY provider_key`
@@ -1011,16 +1104,18 @@ const spendTheirByProvider = `
 	WHERE day BETWEEN :from_day AND :to_day
 	GROUP BY provider_key`
 
-// spendByActor — who spent it, on what, where. actor_admin_id is MAX()ed, not grouped: the same
-// username may carry a NULL id on some rows (the lookup failed) and the id on others, and splitting
-// one person into two lines for that would be noise.
+// spendByActor — who spent it, on what, where. THE ACCOUNT IS THE ID (D-10, Codex B #2): rows group
+// by actor_admin_id AND actor, so an account deleted and recreated under the same username is two
+// lines, never one line charging the new account with the old one's history (a MAX(actor_admin_id)
+// over the username did exactly that). A row whose id is NULL — no admin carried that username when
+// it was written: system, unknown, an account already gone — is a line of its own (wire id 0).
 const spendByActor = `
-	SELECT actor, MAX(actor_admin_id) AS actor_admin_id, purpose, provider_key, model,
+	SELECT actor, actor_admin_id, purpose, provider_key, model,
 	       SUM(cost_usd) AS usd, COUNT(*) AS calls
 	FROM ai_usage_event
 	WHERE day_local BETWEEN :from_day AND :to_day
-	GROUP BY actor, purpose, provider_key, model
-	ORDER BY actor, purpose, provider_key, model`
+	GROUP BY actor_admin_id, actor, purpose, provider_key, model
+	ORDER BY actor, actor_admin_id, purpose, provider_key, model`
 
 // ourSpendRow is one provider's line of our ledger (spendByProvider).
 type ourSpendRow struct {
@@ -1040,8 +1135,14 @@ type theirSpendRow struct {
 // SpendReport sums the ledger over the inclusive day_local range, beside the providers' own numbers,
 // and names the timezone those days were counted in.
 //
-// Plain reads, deliberately outside any transaction: the store's transactions are SERIALIZABLE, whose
-// range locks on ai_usage_event would hold up every BeginCall landing in the reported period.
+// ONE SNAPSHOT (Codex B #5). The four reads run inside readTxFunc (store.readTx: REPEATABLE READ,
+// read-only — GetConfig's runner), where InnoDB answers every read from the one snapshot the first
+// read takes. As four autocommit reads, a call finishing between the provider totals and the actor
+// rows made `calls` and `total_usd` disagree with the sum of by_actor in one response, and a
+// reconciliation write could land on one side only. The snapshot's reads are consistent NON-LOCKING
+// reads, so the report still holds up no BeginCall; the SERIALIZABLE txFunc, whose shared range locks
+// on ai_usage_event would, is never used here. Inside a transaction (NewInTx) the reads run in the
+// enclosing one.
 func (s *Store) SpendReport(ctx context.Context, fromDay, toDay string) (*entity.AISpendReport, error) {
 	from, err := time.Parse(dayLayout, fromDay)
 	if err != nil {
@@ -1056,19 +1157,27 @@ func (s *Store) SpendReport(ctx context.Context, fromDay, toDay string) (*entity
 	}
 	params := map[string]any{"from_day": fromDay, "to_day": toDay}
 
-	var ours []ourSpendRow
-	if err := selectNamed(ctx, s.DB, &ours, spendByProvider, params); err != nil {
-		return nil, fmt.Errorf("failed to report ai spend by provider: %w", err)
-	}
-	var theirs []theirSpendRow
-	if err := selectNamed(ctx, s.DB, &theirs, spendTheirByProvider, params); err != nil {
-		return nil, fmt.Errorf("failed to report ai spend by the providers' own numbers: %w", err)
-	}
-	var byActor []entity.AISpendByActor
-	if err := selectNamed(ctx, s.DB, &byActor, spendByActor, params); err != nil {
-		return nil, fmt.Errorf("failed to report ai spend by actor: %w", err)
-	}
-	tz, err := loadBudgetTimezone(ctx, s.DB)
+	var (
+		ours    []ourSpendRow
+		theirs  []theirSpendRow
+		byActor []entity.AISpendByActor
+		tz      string
+	)
+	err = s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		if err := selectNamed(ctx, db, &ours, spendByProvider, params); err != nil {
+			return fmt.Errorf("failed to report ai spend by provider: %w", err)
+		}
+		if err := selectNamed(ctx, db, &theirs, spendTheirByProvider, params); err != nil {
+			return fmt.Errorf("failed to report ai spend by the providers' own numbers: %w", err)
+		}
+		if err := selectNamed(ctx, db, &byActor, spendByActor, params); err != nil {
+			return fmt.Errorf("failed to report ai spend by actor: %w", err)
+		}
+		var err error
+		tz, err = loadBudgetTimezone(ctx, db)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -435,48 +436,71 @@ func TestUnusableKey(t *testing.T) {
 	}
 }
 
-// TestProviderSentenceIsScrubbed: an unexplained 4xx quotes the provider — never the key it quotes.
-func TestProviderSentenceIsScrubbed(t *testing.T) {
-	leaky := []string{
-		`{"error":{"message":"Incorrect API key provided: fake-k****WXYZ. You can find your API key at https://example.test/keys."}}`,
-		`{"message":"bad key ` + fakeKey + `"}`,
-		`{"detail":"key ...WXYZ is invalid"}`,
-		`{"error":"key fake-key-for is not valid"}`,
-		`key ` + fakeKey + ` is not valid`,
-		`{"error":{"message":"token sk0123456789abcdefghijklmnop is revoked"}}`,
-		`{"error":{"message":"key sk-****1234 is revoked"}}`,
+// cannedRT answers every request with one response and makes no connection: the verdict is decided
+// from the status and the body alone, so this needs no server.
+type cannedRT struct {
+	status int
+	body   string
+}
+
+func (c cannedRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: c.status, Body: io.NopCloser(strings.NewReader(c.body)),
+		Header: http.Header{"Content-Type": {"application/json"}}, Request: r,
+	}, nil
+}
+
+// fragments cuts s into runs of n characters — the shape of a key a provider quotes back in groups.
+func fragments(s string, n int) []string {
+	var out []string
+	for len(s) > n {
+		out = append(out, s[:n])
+		s = s[n:]
 	}
-	for _, body := range leaky {
-		r := newRig(t, http.StatusBadRequest, body)
-		res := Probe(context.Background(), entity.AIProviderOpenAI, entity.AIKeyAPI, fakeKey, r.client())
-		require.False(t, res.OK)
-		require.Empty(t, res.Code)
-		require.True(t, strings.HasPrefix(res.Message, "probe refused (http 400): "), res.Message)
-		require.Contains(t, res.Message, "[redacted]", body)
-		requireNoKey(t, res.Message)
-		require.NotContains(t, res.Message, "sk0123456789")
-		require.NotContains(t, res.Message, "**")
+	return append(out, s)
+}
+
+// TestProbeNeverForwardsProviderText (Codex B #1): whatever an error body says, Result.Message is the
+// package's own fixed sentence. A body that quotes the key in 6-character groups carries every
+// character of it past any word filter (the old scrubber dropped only a word holding the whole key, its
+// first six or its last four characters, `**` or a 20-character token — four of these groups passed);
+// a harmless sentence is not quoted either, because no filter can tell the two apart.
+//
+// MUTATION IT CATCHES: forwarding the body (or any sentence pulled out of it) into the message — the
+// scrubbed providerSentence this replaced included.
+func TestProbeNeverForwardsProviderText(t *testing.T) {
+	groups := fragments(fakeKey, 6)
+	spaced := strings.Join(groups, " ")
+	bodies := []string{
+		`{"error":{"message":"Incorrect API key provided: ` + spaced + `. Check your key."}}`,
+		`{"error":"key ` + spaced + ` is not valid"}`,
+		`{"message":"key ` + spaced + ` is not valid"}`,
+		`{"detail":"key ` + spaced + ` is not valid"}`,
+		`key ` + spaced + ` is not valid`,
+		`{"error":{"message":"Unknown parameter: pageSize"}}`,
 	}
-
-	// a key too short to have a prefix and a suffix is still never quoted back
-	const short = "Zq7!Zq7"
-	r := newRig(t, http.StatusBadRequest, `{"message":"key Zq7!Zq7 is invalid"}`)
-	res := Probe(context.Background(), entity.AIProviderOpenAI, entity.AIKeyAPI, short, r.client())
-	require.Equal(t, Result{Message: "probe refused (http 400): key [redacted] is invalid"}, res)
-
-	// a harmless sentence is quoted, lowercased
-	r = newRig(t, http.StatusBadRequest, `{"error":{"message":"Unknown parameter: pageSize"}}`)
-	res = Probe(context.Background(), entity.AIProviderGoogle, entity.AIKeyAPI, fakeKey, r.client())
-	require.Equal(t, Result{Message: "probe refused (http 400): unknown parameter: pagesize"}, res)
-
-	// an HTML page is not quoted; a long sentence is clipped
-	r = newRig(t, http.StatusBadRequest, "<html><body>nginx</body></html>")
-	res = Probe(context.Background(), entity.AIProviderGoogle, entity.AIKeyAPI, fakeKey, r.client())
-	require.Equal(t, "probe refused (http 400)", res.Message)
-	r = newRig(t, http.StatusBadRequest, `{"message":"`+strings.Repeat("too long ", 40)+`"}`)
-	res = Probe(context.Background(), entity.AIProviderGoogle, entity.AIKeyAPI, fakeKey, r.client())
-	require.Len(t, res.Message, maxMessage)
-	require.True(t, strings.HasSuffix(res.Message, "…"))
+	for _, status := range []int{400, 401, 402, 403, 404, 409, 422, 500, 503} {
+		for _, body := range bodies {
+			res := Probe(context.Background(), entity.AIProviderOpenAI, entity.AIKeyAPI, fakeKey,
+				&http.Client{Transport: cannedRT{status: status, body: body}})
+			switch {
+			case status >= 500:
+				require.Equal(t, fmt.Sprintf("provider error (http %d)", status), res.Message)
+			case status == 401 || status == 402 || status == 403:
+				// the three mapped refusals keep their own sentences
+			default:
+				require.Equal(t, fmt.Sprintf("probe refused (http %d)", status), res.Message, "body %s", body)
+			}
+			requireNoKey(t, res.Message)
+			low := strings.ToLower(res.Message)
+			for _, g := range groups {
+				require.NotContains(t, low, strings.ToLower(g), "status %d: a group of the key reached the message %q", status, res.Message)
+			}
+			for _, w := range []string{"incorrect", "valid", "pagesize", "parameter", "check your key"} {
+				require.NotContains(t, low, w, "status %d: the provider's words reached the message %q", status, res.Message)
+			}
+		}
+	}
 }
 
 // TestBalances: what each balance endpoint's body turns into.

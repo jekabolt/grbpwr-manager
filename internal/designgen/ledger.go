@@ -145,9 +145,9 @@ func (r runRecorder) PriceAccepted(ctx context.Context, callNo int, end entity.A
 // recorderFor is the recorder of one attempt of one run, or nil when the worker has no ledger.
 //
 // The actor is design_run.author — the JWT username of whoever pressed GENERATE, the same string
-// the admin interceptor puts in aiprov.Actor. ActorAdminID stays nil in this lane: the cached
-// username → admin id lookup arrives with the interceptor (B-05); the report MAX()es the id per
-// username, so rows written without it still group with the person.
+// the admin interceptor puts in aiprov.Actor. ActorAdminID stays nil here: the ledger's INSERT
+// resolves it from that username at write time (store/ai insertAICall), so these rows carry the
+// account's id like every other.
 func (w *Worker) recorderFor(run entity.DesignRun, attemptNo int) CallRecorder {
 	if w.ledger == nil || attemptNo < 1 {
 		return nil
