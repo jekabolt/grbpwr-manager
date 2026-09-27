@@ -89,6 +89,9 @@ func (f *fakeStore) SetRoute(context.Context, string, []entity.AIRouteCandidate,
 	return errNotUsed
 }
 func (f *fakeStore) UpsertModel(context.Context, entity.AIModel, string) error { return errNotUsed }
+func (f *fakeStore) RecentFaults(context.Context, time.Time) (map[string]string, error) {
+	return nil, errNotUsed
+}
 func (f *fakeStore) BeginCall(context.Context, entity.AICallStart) (int64, error) {
 	return 0, errNotUsed
 }

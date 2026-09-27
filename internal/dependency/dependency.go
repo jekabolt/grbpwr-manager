@@ -1951,6 +1951,10 @@ type (
 		SetRoute(ctx context.Context, purpose string, candidates []entity.AIRouteCandidate, expectedVersion uint64, by string) error
 		// UpsertModel records a custom slug typed into a route (no UI CRUD); bumps without a check.
 		UpsertModel(ctx context.Context, m entity.AIModel, by string) error
+		// RecentFaults is the panel's provider badge: per provider, the most frequent configuration
+		// fault (key_rejected | out_of_credits | model_unknown) among its failed|free ledger rows since
+		// `since`. A provider with none is absent.
+		RecentFaults(ctx context.Context, since time.Time) (map[string]string, error)
 
 		// BeginCall inserts a ledger row with status 'dispatching' and returns its id.
 		BeginCall(ctx context.Context, start entity.AICallStart) (int64, error)
