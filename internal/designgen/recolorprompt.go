@@ -32,9 +32,19 @@ import (
 // it is the whole reason the owner chose generation over a filter.
 //
 // THE COLOUR ITSELF IS NOT REPEATED HERE. It is already stated above, by composePrompt, in the
-// `colour` and `fabric in words` blocks — one writer of the human's colour, exactly as on the render
+// `colour` and `colour in words` blocks — one writer of the human's colour, exactly as on the render
 // route. Restating it in this paragraph would make two sentences that disagree the day either one is
-// edited.
+// edited. It only POINTS at them — «its colourway code, its name and its exact value» — so the model
+// reads the Pantone name (tile 4 sends it in words, 20-PROMPTS D3) as part of the colour and not as
+// a note about the cloth.
+//
+// ⚠ «A PICTURE OF A GARMENT», NOT «A REAL PHOTOGRAPH WORN BY A REAL PERSON» (20-PROMPTS D4). Tiles
+// 4/5 take any design picture — a flat, a render on white, a ghost-mannequin shot — and a paragraph
+// that asserts a person tells the model to keep a face the picture does not have, which it resolves
+// by inventing one. So the kinds are listed and the person is kept as «any person». And the target
+// is «the garment the words above name»: the ask is the one place a person says «the shirt only,
+// keep the trousers», and the old «the garment» ignored it; «the parts the words above say to keep»
+// joins the keep-list for the same reason.
 func recolorCraft(p runParams) string {
 	// ⚠ TWO CRAFTS, CHOSEN BY WHETHER A CLOTH WITH A PICTURE TRAVELS (J-31). They are not variants
 	// of one paragraph: one says «the same garment cut from cloth dyed differently», the other says
@@ -51,12 +61,14 @@ func recolorCraft(p runParams) string {
 	}
 	var b strings.Builder
 	b.WriteString("recolour, not re-photograph:\n" +
-		"You are given a real photograph of a garment worn by a real person. Return THAT SAME " +
-		"PHOTOGRAPH with the garment recoloured to the colour stated above, and change nothing else.\n" +
-		"Keep exactly as they are: the person, their face, their skin, their hair and their hands; " +
-		"the pose and the framing; the background and the floor; the lighting, its direction and its " +
-		"colour temperature; every other garment, shoe and accessory in the frame; the image's " +
-		"resolution, crop and aspect ratio.\n" +
+		"You are given a picture of a garment — a photograph on a person or a mannequin, a flat " +
+		"drawing or a render. Return THAT SAME PICTURE with the garment the words above name (the " +
+		"main garment when they name none) recoloured to the colour stated above — its colourway " +
+		"code, its name and its exact value — and change nothing else.\n" +
+		"Keep exactly as they are: any person (face, skin, hair, hands), the pose and the framing; " +
+		"the background and the floor; the lighting, its direction and its colour temperature; every " +
+		"other garment, part, shoe and accessory in the frame, including the parts the words above " +
+		"say to keep; the image's resolution, crop and aspect ratio.\n" +
 		"Keep the garment itself in every respect except its colour: the same cut, the same seams, " +
 		"topstitching, pockets, zips, buttons and labels, in the same places and at the same size.\n" +
 		"Carry the material through the change instead of painting over it. The weave and the surface " +
@@ -102,6 +114,12 @@ func recolorCraft(p runParams) string {
 // the highlights and shadows keep their shape on the new surface. That is the same argument
 // recolorCraft makes about a colour, applied one level up.
 //
+// THE OPENING SAYS «A PICTURE OF A GARMENT» AND «THE GARMENT THE WORDS ABOVE NAME» for the reasons
+// recolorCraft gives (20-PROMPTS D4): tile 5 takes flats and renders too, and the ask is where a
+// person says which garment changes cloth. «Parts the words above say to keep … keep their own
+// cloth» is its own sentence here because a re-cloth, unlike a recolour, is naturally partial —
+// «the body in the check, the collar stays black».
+//
 // THE COLOUR, WHEN ONE IS ALSO STATED, RE-TINTS THE CLOTH RATHER THAN COMPETING WITH IT. That is
 // the render route's own order of authority (renderprompt: the photograph governs the material, the
 // picked colour governs the colour), said here in one sentence so the two routes cannot drift into
@@ -109,13 +127,14 @@ func recolorCraft(p runParams) string {
 func reclothCraft(cloths []fabricUse) string {
 	var b strings.Builder
 	b.WriteString("re-cloth, not re-photograph:\n" +
-		"You are given a real photograph of a garment worn by a real person (image 1) and a " +
-		"photograph of a cloth (image 2). Return THAT SAME PHOTOGRAPH with the garment made of the " +
-		"cloth in image 2, and change nothing else.\n" +
-		"Keep exactly as they are: the person, their face, their skin, their hair and their hands; " +
-		"the pose and the framing; the background and the floor; the lighting, its direction and its " +
-		"colour temperature; every other garment, shoe and accessory in the frame; the image's " +
-		"resolution, crop and aspect ratio.\n" +
+		"You are given a picture of a garment (image 1) — a photograph on a person or a mannequin, a " +
+		"flat drawing or a render — and a photograph of a cloth (image 2). Return THAT SAME PICTURE " +
+		"with the garment the words above name (the main garment when they name none) made of the " +
+		"cloth in image 2, and change nothing else. Parts the words above say to keep, and every " +
+		"other garment, keep their own cloth.\n" +
+		"Keep exactly as they are: any person (face, skin, hair, hands), the pose and the framing; " +
+		"the background and the floor; the lighting, its direction and its colour temperature; every " +
+		"other garment, shoe and accessory in the frame; the image's resolution, crop and aspect ratio.\n" +
 		"Keep the garment's cut, seams, topstitching, pockets, zips, buttons and labels in the same " +
 		"places and at the same size.\n" +
 		"Lay the cloth ON the garment: its weave, surface and print must follow the folds, creases " +

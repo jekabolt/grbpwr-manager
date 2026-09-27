@@ -181,7 +181,8 @@ func TestAMaskThatFailsItsSecondLockIsREFUSED_BEFORE_ANY_SUBMIT(t *testing.T) {
 }
 
 // TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK — the body on a stand, the history's prompt is
-// the ask, the collect is priced by the fill route ($0.15 without a tariff).
+// the composed fill prompt the body carries (20-PROMPTS §3.3), the collect is priced by the fill
+// route ($0.15 without a tariff).
 func TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK(t *testing.T) {
 	var submitted map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -208,11 +209,14 @@ func TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK(t *testing.T) {
 		References: []string{"data:image/jpeg;base64,AAAA"}, InpaintMask: "data:image/png;base64,BBBB",
 		Inpaint: &InpaintPlan{Rect: image.Rect(0, 0, 64, 64)}}
 
-	require.Equal(t, "a brass button", recordedPrompt(prov, job), "the row shows what the provider read")
+	// MUTATION (measured red): SentPrompt returning the bare job.Prompt again — the row would show
+	// «a brass button» while the provider read the suffix too.
+	const sent = "a brass button" + fillPromptSuffix
+	require.Equal(t, sent, recordedPrompt(prov, job), "the row shows what the provider read")
 	out, err := prov.Execute(context.Background(), job)
 	require.NoError(t, err)
 	require.True(t, out.Pending)
-	require.Equal(t, map[string]any{"prompt": "a brass button", "image_url": "data:image/jpeg;base64,AAAA",
+	require.Equal(t, map[string]any{"prompt": sent, "image_url": "data:image/jpeg;base64,AAAA",
 		"mask_url": "data:image/png;base64,BBBB", "num_images": float64(1), "output_format": "png",
 		"safety_tolerance": "2"}, submitted)
 
@@ -221,10 +225,27 @@ func TestTheFillRouteSENDS_THE_ASK_THE_CROP_AND_THE_MASK(t *testing.T) {
 	require.Equal(t, "0.15", got.Price.Decimal.String())
 	require.Len(t, got.Artifacts, 1)
 
-	// No words: refused before the submit.
+	// No words: refused before the submit — on the BARE ask, so the suffix alone never travels.
+	// MUTATION (measured red): the refusal checking fillPrompt(job.Prompt), which is never empty.
 	job.Prompt = " "
 	_, err = prov.Execute(context.Background(), job)
 	require.ErrorIs(t, err, fal.ErrBadRequest)
+}
+
+// TestFillPromptDESCRIBES_THE_ZONE_AFTER_THE_ASK — 20-PROMPTS §3.3 (D2): FLUX Fill paints what its
+// prompt describes, so the ask is followed by a description of the zone as continuing cloth. The ask
+// is trimmed and stays FIRST. MUTATION (measured red): fillBody sending job.Prompt bare (the stand
+// above), and the suffix text edited (this exact string).
+func TestFillPromptDESCRIBES_THE_ZONE_AFTER_THE_ASK(t *testing.T) {
+	require.Equal(t, "uncreased fabric continuing the surrounding cloth — the painted zone of a photograph of a "+
+		"garment: the fill continues the surrounding cloth seamlessly, the same material, weave, colour, scale "+
+		"and lighting, photographic.", fillPrompt("  uncreased fabric continuing the surrounding cloth \n"))
+	require.True(t, strings.HasPrefix(fillPrompt("a brass button"), "a brass button — the painted zone"))
+
+	body, err := fillBody(fal.DefaultModelFill, Job{Prompt: " a brass button ", References: []string{"x"}, InpaintMask: "m"})
+	require.NoError(t, err)
+	require.Equal(t, falFillProvider{}.SentPrompt(Job{Prompt: " a brass button "}), body["prompt"],
+		"the history and the body carry one text")
 }
 
 // TestAnInpaintAnswerThatCannotGoBackIsKEPT_AND_COMPLAINED — the picture cannot be read back: the paid

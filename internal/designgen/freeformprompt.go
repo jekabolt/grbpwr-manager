@@ -103,6 +103,15 @@ func freeformOptions(ff *freeformParams) workflowOptions {
 // hair and pose as in the photo UNLESS the words change them, and then says WHAT they wear, the
 // framing, the camera and the scene. «Keep … exactly — body and hair» here would contradict the ask
 // it follows, and the history could not say which of the two the model honoured (G-02 M-1).
+//
+// The product picture is a colourway RENDER — a flat, a render or a photo on white — not a worn
+// photo, so the paragraph says so (20-PROMPTS D5): a model not told what the picture IS pastes the
+// flat on as a sticker, at the flat's scale and in the flat's studio light. Hence four facts, each
+// one line: several product pictures are views of ONE garment (not an outfit to layer); it goes on
+// at its real scale and drapes; it takes the scene's light; and the result is a PHOTOGRAPH like the
+// model photo, because the product picture is the only drawing in the call and would otherwise
+// pull the whole frame toward a render. None of these lines says «frame», «camera» or «angle»: an
+// auto framing/angle must say nothing about them (TestTryonFRAMING_AND_ANGLE_ARE_WORDS_OR_NOTHING).
 func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 	o := freeformOptions(ff)
 	model := freeformImageNumber(ff, attached, entity.DesignFreeformRoleModel)
@@ -113,8 +122,10 @@ func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 		"except where the words above change them. Dress them in the garment of ")
 	b.WriteString(freeformImageList(freeformImageNumbers(ff, attached, entity.DesignFreeformRoleProduct),
 		"the product picture"))
-	b.WriteString(" — reproduce its cut, colour, print and seams as they are, worn the way that " +
-		"garment really sits on a body. ")
+	b.WriteString(": it is a product picture (a drawing, a render or a photo on white, and several " +
+		"pictures are views of the same garment) — put that garment on the person at its real scale, " +
+		"draped the way that garment really sits on a body, and reproduce its cut, colour, print and " +
+		"seams as they are. Light it with the light of the scene so it belongs to the photograph. ")
 	if w := freeformFramingWords(o.Framing); w != "" {
 		b.WriteString(w + " ")
 	}
@@ -136,6 +147,7 @@ func freeformTryonCraft(ff *freeformParams, attached []refCaption) string {
 	default:
 		b.WriteString("Keep the scene of the model photo. ")
 	}
+	b.WriteString("The result is a photograph with the same lens and realism as the model photo. ")
 	freeformReturnOne(&b, ff)
 	return b.String()
 }
@@ -175,25 +187,41 @@ func freeformAngleWords(v string) string {
 }
 
 // freeformFabricExtractCraft — the cloth of one picture as a flat tileable swatch.
+//
+// The swatch is an ASSET, not a picture of cloth (20-PROMPTS D6): it is tiled onto patterns and
+// renders later, so what makes it usable is that the print keeps its true colours and SCALE (a
+// motif enlarged to fill the frame reads as a different print once tiled) and that at least one
+// full repeat sits in the frame (half a repeat cannot tile without a visible seam). «nothing else
+// in the picture» replaces the old «no garment shape, no folds, no shadows» list: one positive
+// rule covers the hanger, the label and the hand the list forgot.
 func freeformFabricExtractCraft(ff *freeformParams, attached []refCaption) string {
 	var b strings.Builder
 	b.WriteString("From ")
 	b.WriteString(freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture"))
 	b.WriteString(" extract the fabric named in the words above (the main fabric if they name none) " +
-		"as a flat, evenly lit, front-on, seamless tileable swatch: no garment shape, no folds, no " +
-		"shadows — the cloth fills the whole frame. ")
+		"as a flat, evenly lit, front-on, seamless tileable swatch: the cloth lies perfectly flat and " +
+		"fills the whole frame, nothing else in the picture. Keep the print's true colours, motif and " +
+		"scale and the weave or knit as it is; centre at least one full repeat so the swatch tiles " +
+		"without a visible seam. ")
 	freeformReturnOne(&b, ff)
 	return b.String()
 }
 
 // freeformGhostMannequinCraft — the garment of one picture as an invisible-body product shot.
+//
+// The catalogue facts that separate a usable shot from a pretty one (20-PROMPTS D6): the inner
+// back neck AND the label (the one detail a ghost shot exists to show), centred with a small margin
+// (the site crops to a fixed box, and a garment touching the edge loses a sleeve there), true
+// colours (the shot sells the colourway). The closing negatives name what these models actually
+// leave in: the mannequin itself, the hanger, a hand at the hem, a drop shadow on the white.
 func freeformGhostMannequinCraft(ff *freeformParams, attached []refCaption) string {
 	src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
 	var b strings.Builder
 	b.WriteString("Recreate the garment of " + src + " (the one the words above name, if they name one) " +
 		"as a ghost-mannequin e-commerce shot: its worn 3D shape on an invisible body, the inside of the " +
-		"back neck visible, a pure white seamless background, front-on, soft studio light. Keep every " +
-		"seam, print and piece of hardware exactly as in " + src + ". ")
+		"back neck and the label visible, front-on and centred with a small margin, on a pure white " +
+		"seamless background, soft studio light, true colours. Keep every seam, print and piece of " +
+		"hardware exactly as in " + src + "; no mannequin, hanger, body parts or shadow on the background. ")
 	freeformReturnOne(&b, ff)
 	return b.String()
 }
@@ -210,6 +238,13 @@ func freeformLogoWidthCM(size string) string {
 }
 
 // freeformAddLogoCraft — the logo of one picture onto the garment of the other.
+//
+// The logo PNG arrives with its own background, and a model told only «place the logo» pastes that
+// background too — a white box on a black tee (20-PROMPTS D6). So the paragraph says HOW it is on
+// the cloth (a print or embroidery, i.e. part of the fabric, not a sticker over it), that its
+// background is transparent with no box or patch, and that it is not stretched: the width in cm
+// is the one size fact, and a model fitting a wide wordmark into a pocket squeezes it instead of
+// scaling it.
 func freeformAddLogoCraft(ff *freeformParams, attached []refCaption) string {
 	o := freeformOptions(ff)
 	garment := freeformImageWord(freeformImageNumber(ff, attached, ""), "the garment picture")
@@ -218,14 +253,20 @@ func freeformAddLogoCraft(ff *freeformParams, attached []refCaption) string {
 	b.WriteString(freeformImageWord(freeformImageNumber(ff, attached, entity.DesignFreeformRoleLogo),
 		"the logo picture"))
 	b.WriteString(" on the garment of " + garment + " at the place the words above say, about " +
-		freeformLogoWidthCM(o.LogoSize) + " cm wide. Keep its exact shape, colours and letterforms; let it " +
-		"follow the folds of the fabric and the light of the picture. Keep the rest of the picture as " +
-		"close to " + garment + " as you can. ")
+		freeformLogoWidthCM(o.LogoSize) + " cm wide, applied as a print or embroidery on the cloth: its " +
+		"background is transparent (no box or patch around it), its exact shape, colours and letterforms " +
+		"are kept, it is not stretched, and it follows the folds of the fabric and takes the light of the " +
+		"picture. Keep the rest of the picture as close to " + garment + " as you can. ")
 	freeformReturnOne(&b, ff)
 	return b.String()
 }
 
 // freeformVariationsCraft — a variation of one design; creativity 0..3 sets how far it may go.
+//
+// Every level ends with the same presentation sentence (20-PROMPTS D7): the creativity step moves
+// the DESIGN, never the picture. Without it a variation of a flat comes back as a photo on a
+// street, and the two can no longer be compared side by side — which is the whole point of the
+// tile. The sentence names the source by number, like the level sentence before it.
 func freeformVariationsCraft(ff *freeformParams, attached []refCaption) string {
 	src := freeformImageWord(freeformImageNumber(ff, attached, ""), "the picture")
 	var b strings.Builder
@@ -242,6 +283,8 @@ func freeformVariationsCraft(ff *freeformParams, attached []refCaption) string {
 	default:
 		b.WriteString("Use " + src + " only as inspiration for a new design. ")
 	}
+	b.WriteString("Show it the same way as " + src + " — the same kind of picture (a drawing, a render " +
+		"or a photo), the same view and the same background — so the two read side by side. ")
 	freeformReturnOne(&b, ff)
 	return b.String()
 }

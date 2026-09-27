@@ -892,9 +892,19 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// if the prompt has already glued them into one sentence. Split here rather than in the render
 	// craft, because it is composePrompt that owns the shape of the human context and a second
 	// writer of the same fields is how two readers come to disagree.
+	//
+	// ON A RECOLOUR THE WORDS ARE LABELLED «colour in words» (20-PROMPTS §3.2). Tile 4 sends the
+	// Pantone's NAME there («Classic Blue»), and under «fabric in words» a model reads a colour name
+	// as a note about the cloth — or, worse, as licence to change the cloth. The render and pattern
+	// routes keep «fabric in words»: their crafts name that label in their own text (renderprompt's
+	// order of authority), and one kind check here cannot move a label a paragraph points at.
 	if c := p.Colour; c != nil {
 		write("colour", colourStatement(c))
-		write("fabric in words", c.Words)
+		wordsLabel := "fabric in words"
+		if run.Kind == entity.DesignRunKindRecolor {
+			wordsLabel = "colour in words"
+		}
+		write(wordsLabel, c.Words)
 	}
 	if t := p.Threed; t != nil {
 		var parts []string

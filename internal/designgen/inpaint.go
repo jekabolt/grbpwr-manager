@@ -277,10 +277,28 @@ func (p falFillProvider) MissingCredential() string { return "FAL_KEY is not set
 
 func (p falFillProvider) Produces() []string { return []string{ContentTypePNG, ContentTypeJPEG} }
 
-// SentPrompt — THE ASK, VERBATIM: that is exactly what the fill body's `prompt` carries (no craft
+// SentPrompt — THE COMPOSED FILL PROMPT, the same fillPrompt the body's `prompt` carries (no craft
 // paragraph, no captions — buildJob bypasses composePrompt for this kind), so the history row shows
-// what the provider read.
-func (p falFillProvider) SentPrompt(job Job) string { return job.Prompt }
+// what the provider read, suffix included, and not the bare ask it was built from.
+func (p falFillProvider) SentPrompt(job Job) string { return fillPrompt(job.Prompt) }
+
+// fillPromptSuffix — what every fill prompt says after the ask (20-PROMPTS §3.3).
+//
+// FLUX Fill's `prompt` is «the prompt to fill the masked part»: it PAINTS WHAT THE WORDS DESCRIBE,
+// it does not execute them (D2). A bare ask is often an operation — «remove the stain» — and a fill
+// model reads the noun, so it is as likely to paint a stain as to remove one. The suffix turns every
+// ask into a description of the zone: it names what the picture is (a garment photograph, so the
+// fill is cloth and not a painting of cloth), and says the zone CONTINUES the surrounding cloth —
+// material, weave, colour, scale, light — which is the result almost every retouch wants and the
+// one thing the crop alone does not tell the model. The ask stays first: it is the person's, and a
+// description model weights the start of its prompt most.
+const fillPromptSuffix = " — the painted zone of a photograph of a garment: the fill continues the " +
+	"surrounding cloth seamlessly, the same material, weave, colour, scale and lighting, photographic."
+
+// fillPrompt — the fal `prompt` of the mask route: the trimmed ask, then fillPromptSuffix. The empty
+// ask is refused by Execute on the BARE ask (words_required stays on the person's words), so the
+// suffix never reaches the provider alone.
+func fillPrompt(ask string) string { return strings.TrimSpace(ask) + fillPromptSuffix }
 
 // fillFamily — the one family whose fill body was read on the provider's page (2026-09-27). Any other
 // FAL_MODEL_FILL is closed at the band and the door (FalRouteOf, G-03 Fable m-1) and refused here,
@@ -300,7 +318,7 @@ func fillBody(model string, job Job) (map[string]any, error) {
 			"not read", fal.ErrBadOption, model, fal.DefaultModelFill)
 	}
 	return map[string]any{
-		"prompt":           job.Prompt,
+		"prompt":           fillPrompt(job.Prompt),
 		"image_url":        job.References[0],
 		"mask_url":         job.InpaintMask,
 		"num_images":       1,
@@ -309,7 +327,7 @@ func fillBody(model string, job Job) (map[string]any, error) {
 	}, nil
 }
 
-// Execute SUBMITS the frozen crop and mask with the ask, and returns at once with the request id.
+// Execute SUBMITS the frozen crop and mask with the fill prompt, and returns at once with the request id.
 func (p falFillProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())

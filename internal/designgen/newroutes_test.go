@@ -445,3 +445,45 @@ func rawJSON(t *testing.T, v any) entity.RawJSON {
 	require.NoError(t, err)
 	return entity.RawJSON(raw)
 }
+
+// TestARecolourNAMES_THE_GARMENT_FROM_THE_WORDS_AND_ASSUMES_NO_PERSON — 20-PROMPTS D4. Tiles 4/5 take
+// flats and renders too, so the paragraph describes «a picture of a garment» and keeps «any person»;
+// and the ask is where a person says WHICH garment, so the target is the one the words above name.
+//
+// MUTATIONS (each measured red): the old recolour opening «You are given a real photograph of a
+// garment worn by a real person. Return THAT SAME PHOTOGRAPH with the garment recoloured…»; the old
+// re-cloth opening «… (image 1) and a photograph of a cloth (image 2). Return THAT SAME PHOTOGRAPH
+// with the garment made of the cloth in image 2…».
+func TestARecolourNAMES_THE_GARMENT_FROM_THE_WORDS_AND_ASSUMES_NO_PERSON(t *testing.T) {
+	re := recolorCraft(runParams{})
+	require.True(t, strings.HasPrefix(re, "recolour, not re-photograph:\n"))
+	require.Contains(t, re, "You are given a picture of a garment — a photograph on a person or a mannequin, a flat drawing or a render.")
+	require.Contains(t, re, "the garment the words above name (the main garment when they name none)")
+	require.Contains(t, re, "its colourway code, its name and its exact value")
+	require.Contains(t, re, "including the parts the words above say to keep")
+	require.Contains(t, re, "any person (face, skin, hair, hands)")
+	require.NotContains(t, re, "real person", "a flat has no person to keep")
+	require.Contains(t, re, "a colour that spills onto skin, hair or background", "the exclusion list stays")
+
+	cl := recolorCraft(runParams{Colour: &colourRecipe{Fabrics: []fabricUse{{Name: "check", MediaID: 9}}}})
+	require.True(t, strings.HasPrefix(cl, "re-cloth, not re-photograph:\n"))
+	require.Contains(t, cl, "You are given a picture of a garment (image 1) — a photograph on a person or a mannequin, a flat drawing or a render — and a photograph of a cloth (image 2).")
+	require.Contains(t, cl, "the garment the words above name (the main garment when they name none) made of the cloth in image 2")
+	require.Contains(t, cl, "Parts the words above say to keep, and every other garment, keep their own cloth.")
+	require.NotContains(t, cl, "real person")
+}
+
+// TestTheRecolourWordsBlockIsCOLOUR_IN_WORDS_AND_THE_RENDER_KEEPS_FABRIC_IN_WORDS — 20-PROMPTS §3.2.
+// Tile 4 sends the Pantone's NAME as the words; under «fabric in words» it reads as a note about the
+// cloth. The render route keeps its label: its order of authority names «the `fabric in words`
+// block» in its own text. MUTATION (measured red): the kind check removed (always «fabric in words»).
+func TestTheRecolourWordsBlockIsCOLOUR_IN_WORDS_AND_THE_RENDER_KEEPS_FABRIC_IN_WORDS(t *testing.T) {
+	p := runParams{Colour: &colourRecipe{Code: "19-4052", Words: "Classic Blue"}}
+	recolour := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindRecolor}, p, runInputs{}, nil)
+	require.Contains(t, recolour, "colour in words:\nClassic Blue")
+	require.NotContains(t, recolour, "fabric in words")
+
+	render := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindRender}, p, runInputs{}, nil)
+	require.Contains(t, render, "fabric in words:\nClassic Blue")
+	require.NotContains(t, render, "colour in words")
+}
