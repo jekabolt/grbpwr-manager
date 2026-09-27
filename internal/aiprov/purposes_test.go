@@ -11,8 +11,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// seededPurposes reads the purposes 0373 seeds into ai_route straight from the migration file: the
-// catalogue must describe what the database holds, not what this package believes it holds.
+// seededPurposes reads the purposes 0373 seeds into ai_route straight from the migration file, less
+// every purpose a later migration's Up section retires with `DELETE FROM ai_route WHERE purpose = '…';`
+// (0378: the operations draft, O-66): the catalogue must describe what the database holds, not what
+// this package believes it holds.
 func seededPurposes(t *testing.T) []string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("..", "store", "sql", "0373_ai_providers.sql"))
@@ -31,7 +33,51 @@ func seededPurposes(t *testing.T) []string {
 	if len(out) == 0 {
 		t.Fatal("sanity: the ai_route seed parsed to no purposes")
 	}
+	return slices.DeleteFunc(out, func(p string) bool { return slices.Contains(retiredPurposes(t), p) })
+}
+
+// retiredPurposes — the purposes the Up sections of the migrations after 0373 delete from ai_route
+// outright (a whole purpose, not one of its rows).
+func retiredPurposes(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("..", "store", "sql", "0*.sql"))
+	if err != nil {
+		t.Fatalf("glob migrations: %v", err)
+	}
+	retire := regexp.MustCompile(`DELETE FROM ai_route WHERE purpose = '([^']+)';`)
+	var out []string
+	for _, f := range files {
+		if filepath.Base(f) <= "0373" {
+			continue
+		}
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		up, _, _ := strings.Cut(string(body), "-- +migrate Down")
+		for _, m := range retire.FindAllStringSubmatch(up, -1) {
+			out = append(out, m[1])
+		}
+	}
 	return out
+}
+
+// TestTheOperationsDraftPurposeIsRetired — the purpose is gone from all four places at once: 0378's Up
+// deletes its route (the extractor above sees it), the seed as this package reads it, the entity
+// vocabulary, and the panel's catalogue. Any one left behind is a label or a route for nothing.
+func TestTheOperationsDraftPurposeIsRetired(t *testing.T) {
+	require := func(ok bool, msg string) {
+		t.Helper()
+		if !ok {
+			t.Fatal(msg)
+		}
+	}
+	require(slices.Contains(retiredPurposes(t), "chat.techcard_operations_draft"),
+		"0378's Up must delete the operations draft's route")
+	require(!slices.Contains(seededPurposes(t), "chat.techcard_operations_draft"), "a retired purpose is not seeded")
+	require(!entity.IsAIPurpose("chat.techcard_operations_draft"), "a retired purpose is not a purpose")
+	_, ok := PurposeInfo("chat.techcard_operations_draft")
+	require(!ok, "the panel's catalogue has no row for a retired purpose")
 }
 
 // TestAIPurposesCatalogueCoversEverySeededPurpose.

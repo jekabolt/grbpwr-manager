@@ -20,10 +20,9 @@ type Purpose struct {
 	Key, Label, Hint, Group, Capability string
 }
 
-// purposes — one row per purpose seeded in 0373 (ai_route), in entity.AIPurposes()'s order.
+// purposes — one row per purpose seeded in 0373 (ai_route) and not retired since (0378 deletes the
+// operations draft's route with its feature, O-66), in entity.AIPurposes()'s order.
 var purposes = []Purpose{
-	{entity.AIPurposeTechCardOperationsDraft, "operations draft",
-		"tech card → operations: drafts the sewing operations from a description", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeTechCardEnhance, "text enhance",
 		"the ✦ button on a tech card's text fields", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeTechCardAnalysis, "construction analysis",

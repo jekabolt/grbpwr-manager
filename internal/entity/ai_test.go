@@ -75,26 +75,26 @@ func TestAIShapeProviderCapabilitiesMatchTheContract(t *testing.T) {
 	}
 }
 
-// TestAIShapePurposesAreThePlansThirteen pins 02-PLAN §4.1 and the purpose → capability map.
+// TestAIShapePurposesAreThePlansTwelve pins 02-PLAN §4.1 — less the retired operations draft (O-66,
+// 0378) — and the purpose → capability map.
 //
 // MUTATION IT CATCHES: a purpose added to AIPurposes without a capability (IsAIPurpose is derived from
 // the capability map, so it would read as unknown and every SetRoute would refuse it), or image.extend
 // mapped to `image` (fal serves it, but so would openrouter — a route the transport cannot run).
-func TestAIShapePurposesAreThePlansThirteen(t *testing.T) {
+func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 	want := map[string]string{
-		"chat.techcard_operations_draft": AICapabilityChat,
-		"chat.techcard_enhance":          AICapabilityChat,
-		"chat.techcard_analysis":         AICapabilityChat,
-		"chat.note_markdown":             AICapabilityChat,
-		"chat.email_translate":           AICapabilityChat,
-		"chat.design_draft_idea":         AICapabilityChat,
-		"chat.playground_ideas":          AICapabilityChat,
-		"image.generate":                 AICapabilityImage,
-		"image.cutout":                   AICapabilityCutout,
-		"image.extend":                   AICapabilityEdit,
-		"image.inpaint":                  AICapabilityEdit,
-		"threed":                         AICapabilityThreed,
-		"vector":                         AICapabilityVector,
+		"chat.techcard_enhance":  AICapabilityChat,
+		"chat.techcard_analysis": AICapabilityChat,
+		"chat.note_markdown":     AICapabilityChat,
+		"chat.email_translate":   AICapabilityChat,
+		"chat.design_draft_idea": AICapabilityChat,
+		"chat.playground_ideas":  AICapabilityChat,
+		"image.generate":         AICapabilityImage,
+		"image.cutout":           AICapabilityCutout,
+		"image.extend":           AICapabilityEdit,
+		"image.inpaint":          AICapabilityEdit,
+		"threed":                 AICapabilityThreed,
+		"vector":                 AICapabilityVector,
 	}
 	got := AIPurposes()
 	if len(got) != len(want) {
@@ -112,7 +112,8 @@ func TestAIShapePurposesAreThePlansThirteen(t *testing.T) {
 			t.Fatalf("AIPurposeCapability(%q) = %q, want %q", p, AIPurposeCapability(p), c)
 		}
 	}
-	for _, p := range []string{"", "chat", "image.flat", "video", "chat.techcard_operations_draft "} {
+	// chat.techcard_operations_draft is retired (O-66, 0378): a route naming it is refused like any word.
+	for _, p := range []string{"", "chat", "image.flat", "video", "chat.techcard_enhance ", "chat.techcard_operations_draft"} {
 		if IsAIPurpose(p) {
 			t.Fatalf("IsAIPurpose(%q) = true", p)
 		}

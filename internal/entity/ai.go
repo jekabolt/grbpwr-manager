@@ -107,28 +107,28 @@ func AIProviderServes(key, capability string) bool {
 	return false
 }
 
-// Purposes — ai_route.purpose and ai_usage_event.purpose; exactly 02-PLAN §4.1. There is no video
-// purpose until the owner names one (D-05).
+// Purposes — ai_route.purpose and ai_usage_event.purpose; 02-PLAN §4.1 less
+// chat.techcard_operations_draft, retired with its button (O-66; migration 0378 deletes its seeded
+// route row). There is no video purpose until the owner names one (D-05).
 const (
-	AIPurposeTechCardOperationsDraft = "chat.techcard_operations_draft"
-	AIPurposeTechCardEnhance         = "chat.techcard_enhance"
-	AIPurposeTechCardAnalysis        = "chat.techcard_analysis"
-	AIPurposeNoteMarkdown            = "chat.note_markdown"
-	AIPurposeEmailTranslate          = "chat.email_translate"
-	AIPurposeDesignDraftIdea         = "chat.design_draft_idea"
-	AIPurposePlaygroundIdeas         = "chat.playground_ideas"
-	AIPurposeImageGenerate           = "image.generate"
-	AIPurposeImageCutout             = "image.cutout"
-	AIPurposeImageExtend             = "image.extend"
-	AIPurposeImageInpaint            = "image.inpaint"
-	AIPurposeThreed                  = "threed"
-	AIPurposeVector                  = "vector"
+	AIPurposeTechCardEnhance  = "chat.techcard_enhance"
+	AIPurposeTechCardAnalysis = "chat.techcard_analysis"
+	AIPurposeNoteMarkdown     = "chat.note_markdown"
+	AIPurposeEmailTranslate   = "chat.email_translate"
+	AIPurposeDesignDraftIdea  = "chat.design_draft_idea"
+	AIPurposePlaygroundIdeas  = "chat.playground_ideas"
+	AIPurposeImageGenerate    = "image.generate"
+	AIPurposeImageCutout      = "image.cutout"
+	AIPurposeImageExtend      = "image.extend"
+	AIPurposeImageInpaint     = "image.inpaint"
+	AIPurposeThreed           = "threed"
+	AIPurposeVector           = "vector"
 )
 
 // AIPurposes — every purpose, in the panel's fixed order. A copy on every call.
 func AIPurposes() []string {
 	return []string{
-		AIPurposeTechCardOperationsDraft, AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
+		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
 		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposePlaygroundIdeas,
 		AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVector,
@@ -143,7 +143,7 @@ func IsAIPurpose(v string) bool {
 // AIPurposeCapability — the capability a purpose needs; "" for an unknown purpose.
 func AIPurposeCapability(p string) string {
 	switch p {
-	case AIPurposeTechCardOperationsDraft, AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
+	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
 		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposePlaygroundIdeas:
 		return AICapabilityChat
 	case AIPurposeImageGenerate:

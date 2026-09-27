@@ -841,14 +841,13 @@ func TestEffectiveModelKeepsTodaysEnvSemantics(t *testing.T) {
 		return registry.Candidate{ProviderKey: entity.AIProviderOpenRouter, Model: m}
 	}
 	for purpose, want := range map[string]string{
-		entity.AIPurposeTechCardOperationsDraft: slugChat,
-		entity.AIPurposeTechCardEnhance:         slugAnalysis,
-		entity.AIPurposeTechCardAnalysis:        slugAnalysis,
-		entity.AIPurposeNoteMarkdown:            slugChat,
-		entity.AIPurposeEmailTranslate:          slugChat,
-		entity.AIPurposeDesignDraftIdea:         slugChat,
-		entity.AIPurposePlaygroundIdeas:         slugIdeas,
-		entity.AIPurposeImageGenerate:           "",
+		entity.AIPurposeTechCardEnhance:  slugAnalysis,
+		entity.AIPurposeTechCardAnalysis: slugAnalysis,
+		entity.AIPurposeNoteMarkdown:     slugChat,
+		entity.AIPurposeEmailTranslate:   slugChat,
+		entity.AIPurposeDesignDraftIdea:  slugChat,
+		entity.AIPurposePlaygroundIdeas:  slugIdeas,
+		entity.AIPurposeImageGenerate:    "",
 	} {
 		require.Equal(t, want, r.EffectiveModel(purpose, or("")), purpose)
 		require.Equal(t, "x/y", r.EffectiveModel(purpose, or(" x/y ")), purpose)
