@@ -196,7 +196,7 @@ func TestPricingCatalogueMatchesTheBrief(t *testing.T) {
 		{"openrouter", "anthropic/claude-sonnet-5", "3", "15", ""},
 		{"openrouter", "anthropic/claude-opus-5", "5", "25", ""},
 		{"openrouter", "openai/gpt-5-mini", "0.25", "2", ""},
-		{"openrouter", "google/gemini-3.1-flash-lite", "0.25", "1.5", ""},
+		{"openrouter", "google/gemini-3.1-flash-lite", "", "", ""},
 		{"openrouter", "openai/gpt-image-2", "", "", "0.053"},
 		{"openrouter", "openai/gpt-image-2.5-sunburst", "", "", "0.013"},
 		{"openrouter", "google/gemini-3-pro-image", "", "", "0.134"},

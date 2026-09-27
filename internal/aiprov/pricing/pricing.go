@@ -123,8 +123,11 @@ var catalogue = map[string][]Model{
 			"OpenRouter price $5/M in, $25/M out, recorded on the live tech-card analysis run 2026-08-25"+orFallback),
 		chat(entity.AIProviderOpenRouter, "openai/gpt-5-mini", "GPT-5 mini", "0.25", "2",
 			srcORModels+": $0.25/M in, $2/M out"+orFallback),
-		chat(entity.AIProviderOpenRouter, "google/gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", "0.25", "1.50",
-			"internal/openrouter/openrouter.go:131-133 — live read of GET https://openrouter.ai/api/v1/models on 2026-09-27 ($0.25/M in, $1.50/M out)"+orFallback),
+		// Unpriced ON PURPOSE (06-BRIEFS-A curated table; Codex review A1 #3): OpenRouter's usage.cost
+		// prices every call it answers, and a call it does not price must read «—», not a number this
+		// deployment made up. A live read of /api/v1/models is not a curated source.
+		unpricedRow(entity.AIProviderOpenRouter, "google/gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", KindChat,
+			"unpriced — no curated price by 2026-09-27 ("+srcBrief+")"+orFallback),
 		image(entity.AIProviderOpenRouter, "openai/gpt-image-2", "GPT Image 2", "0.053", srcORGPTImage2+orFallback),
 		image(entity.AIProviderOpenRouter, "openai/gpt-image-2.5-sunburst", "GPT Image 2.5", "0.013", srcGPTImage25+orFallback),
 		image(entity.AIProviderOpenRouter, "google/gemini-3-pro-image", "Gemini 3 Pro Image", "0.134", srcGemini3ProImage+orFallback),
