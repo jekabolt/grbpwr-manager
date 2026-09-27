@@ -230,6 +230,11 @@ type engagedError struct{ err error }
 func (e *engagedError) Error() string { return e.err.Error() }
 func (e *engagedError) Unwrap() error { return e.err }
 
+// ProviderEngaged makes the wrapper an aiprov.EngagedMarker, so the provider-neutral layer reads
+// this client's "money may have moved" mark without importing this package (and this package may
+// later import aiprov without a cycle).
+func (e *engagedError) ProviderEngaged() bool { return e != nil }
+
 // engaged помечает ошибку как поднятую ПОСЛЕ того, как запрос доехал до поставщика.
 func engaged(err error) error {
 	if err == nil {

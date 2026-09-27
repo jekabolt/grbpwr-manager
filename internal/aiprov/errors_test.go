@@ -4,14 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 )
 
 var errTransport = errors.New("upstream said no")
@@ -72,35 +67,4 @@ func TestEngagedCallError(t *testing.T) {
 	joined := errors.Join(ErrAllCandidatesFailed, gate, fmt.Errorf("second: %w", engaged))
 	require.True(t, Engaged(joined))
 	require.False(t, Engaged(errors.Join(ErrAllCandidatesFailed, gate)))
-}
-
-// TestEngagedOpenRouterError — the old helper's answer is kept: a REAL engaged error of the
-// existing chat client (a 2xx whose envelope carries no choices — accepted, therefore billed) is
-// engaged here too, and its gate refusal (401) is not.
-//
-// MUTATION: drop the `return openrouter.ProviderEngaged(err)` line (return false) → red.
-func TestEngagedOpenRouterError(t *testing.T) {
-	ok2xx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[]}`))
-	}))
-	defer ok2xx.Close()
-	c := openrouter.New(openrouter.Config{APIKey: "k", BaseURL: ok2xx.URL, HTTPTimeout: 2 * time.Second})
-	_, _, _, err := c.CompleteWithImages(context.Background(), "sys", "user", nil, false, 0)
-	require.Error(t, err)
-	require.True(t, openrouter.ProviderEngaged(err), "precondition: the old helper calls it engaged")
-	require.True(t, Engaged(err))
-	require.True(t, Engaged(fmt.Errorf("draft: %w", err)))
-	_, isCallErr := AsCallError(err)
-	require.False(t, isCallErr, "the old client does not speak CallError yet — that is the point")
-
-	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"message":"no auth"}}`))
-	}))
-	defer refused.Close()
-	c = openrouter.New(openrouter.Config{APIKey: "k", BaseURL: refused.URL, HTTPTimeout: 2 * time.Second})
-	_, _, _, err = c.CompleteWithImages(context.Background(), "sys", "user", nil, false, 0)
-	require.Error(t, err)
-	require.False(t, Engaged(err), "a 401 is a refusal at the gate, not a charge")
 }

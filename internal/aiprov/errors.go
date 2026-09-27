@@ -4,12 +4,13 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-
-	// ⚠ ONE-WAY IMPORT: aiprov reads openrouter's engaged mark (Engaged below), so openrouter can
-	// never import aiprov — the day its errors should become aiprov's, the alias has to point the
-	// other way (aiprov.ErrX = openrouter.ErrX) or both have to move to a leaf package.
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 )
+
+// EngagedMarker is how a transport that does NOT yet speak CallError says "the request was written":
+// the openrouter chat client's engaged wrapper implements it. aiprov deliberately imports NO client
+// package (the clients will import aiprov when their transports are ported in commit C), so the
+// mark travels as an interface, not as a type.
+type EngagedMarker interface{ ProviderEngaged() bool }
 
 // Sentinels of the provider-neutral layer. They name the situation, never a provider: a transport's
 // own sentinel (openrouter.ErrModelUnavailable, fal.ErrNotConfigured, …) travels inside CallError.Err.
@@ -97,9 +98,10 @@ func AsCallError(err error) (*CallError, bool) {
 }
 
 // Engaged reports "money may have moved for this call": true when ANY *CallError in err's chain
-// (joined errors included) says Engaged, and ALSO when openrouter.ProviderEngaged(err) does — the
-// existing chat client marks its errors with its own wrapper and keeps doing so until its transport
-// is ported, and a caller that switched to this helper must not lose that answer.
+// (joined errors included) says Engaged, and ALSO when any error in the chain is an EngagedMarker
+// that answers true — the existing chat client marks its errors with its own wrapper and keeps
+// doing so until its transport is ported, and a caller that switched to this helper must not lose
+// that answer.
 //
 // ⚠ ANY, NOT FIRST. errors.As stops at the outermost CallError; a router that wraps a candidate's
 // engaged failure into its own non-engaged one, or joins several candidates' errors, would read
@@ -112,7 +114,8 @@ func Engaged(err error) bool {
 	if anyEngagedCallError(err) {
 		return true
 	}
-	return openrouter.ProviderEngaged(err)
+	var m EngagedMarker
+	return errors.As(err, &m) && m != nil && m.ProviderEngaged()
 }
 
 func anyEngagedCallError(err error) bool {

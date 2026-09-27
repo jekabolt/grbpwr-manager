@@ -113,10 +113,9 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	for _, c := range []struct{ provider, slug string }{
 		{entity.AIProviderOpenAI, "gpt-9000"},
 		{"nonexistent", "gpt-5-mini"},
-		{entity.AIProviderOpenAI, "openai/gpt-5-mini"}, // an OpenRouter slug on the direct provider
-		{entity.AIProviderOpenRouter, "gpt-5-mini"},    // and the reverse
-		{entity.AIProviderGoogle, "gemini-3.1-flash-lite"},
-		{entity.AIProviderOpenRouter, "google/gemini-3.1-flash-lite"},
+		{entity.AIProviderOpenAI, "openai/gpt-5-mini"},     // an OpenRouter slug on the direct provider
+		{entity.AIProviderOpenRouter, "gpt-5-mini"},        // and the reverse
+		{entity.AIProviderGoogle, "gemini-3.1-flash-lite"}, // the OpenRouter row IS priced (live read in openrouter.go:131-133)
 		{entity.AIProviderFal, "fal-ai/birefnet/v2"},
 		{entity.AIProviderMeshy, "meshy-5"},
 		{entity.AIProviderRecraft, "recraftv3"},
@@ -197,7 +196,7 @@ func TestPricingCatalogueMatchesTheBrief(t *testing.T) {
 		{"openrouter", "anthropic/claude-sonnet-5", "3", "15", ""},
 		{"openrouter", "anthropic/claude-opus-5", "5", "25", ""},
 		{"openrouter", "openai/gpt-5-mini", "0.25", "2", ""},
-		{"openrouter", "google/gemini-3.1-flash-lite", "", "", ""},
+		{"openrouter", "google/gemini-3.1-flash-lite", "0.25", "1.5", ""},
 		{"openrouter", "openai/gpt-image-2", "", "", "0.053"},
 		{"openrouter", "openai/gpt-image-2.5-sunburst", "", "", "0.013"},
 		{"openrouter", "google/gemini-3-pro-image", "", "", "0.134"},
