@@ -387,6 +387,11 @@ func classify(err error) verdict {
 		return verdict{Retryable: true, Code: CodeProviderTimeout, State: entity.DesignAttemptUnknown}
 	case errors.Is(err, orimages.ErrProviderFailure), errors.Is(err, recraft.ErrProviderFailure):
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
+	// ⚠ RETRYABLE BY DEFAULT — so an ambiguous PAID submit must never reach this line bare. For fal
+	// that is the transport's job: only a 503 without a request id (an explicit «service
+	// unavailable» refusal) arrives here as a plain error; a 502/504 — a gateway that may have lost
+	// the queue's answer AFTER the enqueue — and every other 5xx on a submit arrive wrapped in
+	// fal.ErrSubmitUnconfirmed and stop at the terminal case above (G-03 r3, Codex BLOCKER 1).
 	default:
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
 	}

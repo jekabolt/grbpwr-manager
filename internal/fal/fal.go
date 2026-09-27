@@ -274,8 +274,8 @@ var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 
 // ErrSubmitUnconfirmed — A SUBMIT WHOSE OUTCOME NOBODY KNOWS: the whole request left this process
 // (WroteRequest without an error) and no usable answer came back — a timeout, a reset connection, a
-// 5xx other than 502/503/504 (or any 5xx naming a request id), a 2xx that could not be read or named
-// no request id. fal MAY have queued the job and charged for it.
+// 5xx other than a bare 503 (a 502 and a 504 included, and any 5xx naming a request id), a 2xx that
+// could not be read or named no request id. fal MAY have queued the job and charged for it.
 //
 // ⚠ IT IS NEVER RESUBMITTED AUTOMATICALLY (G-03, Codex 1). fal's queue documents no idempotency key
 // for a submit (https://fal.ai/docs/documentation/model-apis/inference/queue lists Authorization,
@@ -288,7 +288,7 @@ var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 //
 // A submit whose request was never written in full (DNS, dial, TLS, a body write cut half-way) is
 // not this: fal holds no complete request it could enqueue, and it keeps its ordinary retryable
-// classification. Nor is a 502/503/504 without a request id — see submitServerError.
+// classification. Nor is a 503 without a request id — the one explicit refusal; see submitServerError.
 var ErrSubmitUnconfirmed = errors.New("fal: the submit may have reached the provider and its outcome is unknown")
 
 // submitLost — the 2xx submit that named no request id: accepted (so possibly paid) and unresumable.
@@ -1571,29 +1571,33 @@ func statusErrorFrom(code int, raw []byte, method, path string) error {
 	return fmt.Errorf("fal: %s %s: HTTP %d: %s", method, path, code, detail)
 }
 
-// submitRetryableStatus — the 5xx answers to a SUBMIT that say the queue did not take the request:
-// the gateway could not reach the queue (502), the queue is refusing work (503), the gateway gave
-// up before the queue answered (504). fal's own queue client retries exactly these three on a
-// submit (fal-js libs/client/src/retry.ts DEFAULT_RETRYABLE_STATUS_CODES, applied to queue.submit),
-// which is the provider's own statement that they are not an accepted job.
+// submitRetryableStatus — the ONE 5xx answer to a SUBMIT that says the queue did not take the
+// request: 503 Service Unavailable, the queue refusing work outright. It is an explicit refusal —
+// the service is saying «not now», not «something went wrong on the way».
+//
+// ⚠ 502 AND 504 ARE NOT HERE, AND THAT IS DELIBERATE (G-03 r3, Codex BLOCKER 1). Both are a
+// GATEWAY's word about the hop behind it, and neither says in which direction the hop failed: a 504
+// is the gateway giving up waiting for the queue's ANSWER, a 502 is it receiving a broken one — and
+// the queue may have enqueued (and billed) the job before that answer was lost on its way back.
+// fal's own queue client retries 502/503/504 on a submit (fal-js libs/client/src/retry.ts), but a
+// client's retry policy is not a guarantee that acceptance was impossible, and fal documents no
+// submit idempotency key to make a duplicate harmless. So only the bare 503 is repeated; an
+// ambiguous gateway status is ErrSubmitUnconfirmed — it can lose a run, never buy the job twice.
 func submitRetryableStatus(code int) bool {
-	switch code {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	}
-	return false
+	return code == http.StatusServiceUnavailable
 }
 
-// submitServerError classifies a 5xx that answered a SUBMIT (G-03 r2, Codex 2).
+// submitServerError classifies a 5xx that answered a SUBMIT (G-03 r2, Codex 2; r3, Codex BLOCKER 1).
 //
 //   - a body naming a request_id: the queue DID accept the job, whatever the status says — it is
 //     paid, and the id rides the error (ErrSubmitUnconfirmed, terminal) so last_error carries what
 //     a person reconciles by;
-//   - 502 / 503 / 504 without an id: the queue did not take it (see submitRetryableStatus) — the
-//     ordinary retryable error, as fal's own client treats it;
-//   - every OTHER 5xx (500, 501, 505…): ErrSubmitUnconfirmed. A 500 is the queue's own handler
-//     failing, and nothing documents whether it failed before or after the enqueue; the conservative
-//     reading is the one that can only lose a run, never buy the job twice.
+//   - 503 without an id: an explicit «service unavailable» refusal (see submitRetryableStatus) — the
+//     ordinary retryable error;
+//   - every OTHER 5xx (500, 501, 502, 504, 505…): ErrSubmitUnconfirmed. A 500 is the queue's own
+//     handler failing, a 502/504 is a gateway losing the queue's answer — and nothing documents
+//     whether either happened before or after the enqueue; the conservative reading is the one that
+//     can only lose a run, never buy the job twice.
 func submitServerError(code int, raw []byte, err error) error {
 	var named struct {
 		RequestID string `json:"request_id"`

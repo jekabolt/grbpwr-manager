@@ -108,26 +108,57 @@ func releaseHeap() { runtime.GC() }
 //   - the kernel always writes an *image.RGBA (x/image/draw's fast paths); another destination gets
 //     the result through a buffer of dst ∩ dr — never more than the pixels being written.
 func leanScale(dst draw.Image, dr image.Rectangle, src image.Image, sr image.Rectangle) {
+	newLeanScaler(dr, src, sr).scaleInto(dst)
+}
+
+// leanScaler — one leanScale split in two: the source side (the box pre-reduction, done ONCE) and the
+// destination side (the kernel over whatever part of dr a band covers, done per band).
+//
+// ⚠ WHY THE SPLIT (G-03 r3, Codex MAJOR 3): the banded pastes used to call leanScale once per band,
+// and every call rebuilt the WHOLE box-reduced source — a 4096² answer fitted into 2048² paid 32 full
+// reductions (≈ 536 M source-pixel visits, ≈ 512 MiB of cumulative scratch) after the money. Now the
+// paste builds one scaler before its band loop and every band reuses its reduced source. The pixels
+// are the same as the per-band calls': each band ran the same Transform over the same reduced raster
+// with the same matrix; only the rebuild is gone. The reduced raster is the one a single leanScale
+// already allocated — sr / k² with k = ⌊min(sr/dr)⌋, so under 2× dr on the tighter axis — live for
+// the paste instead of re-made per band: the peak is unchanged, the churn is gone.
+type leanScaler struct {
+	dr       image.Rectangle
+	from     image.Image
+	fromRect image.Rectangle
+	s2d      f64.Aff3
+	empty    bool
+}
+
+func newLeanScaler(dr image.Rectangle, src image.Image, sr image.Rectangle) leanScaler {
 	if dr.Empty() || sr.Empty() {
-		return
-	}
-	region := dst.Bounds().Intersect(dr)
-	if region.Empty() {
-		return
+		return leanScaler{empty: true}
 	}
 	fx := float64(dr.Dx()) / float64(sr.Dx())
 	fy := float64(dr.Dy()) / float64(sr.Dy())
 	// s2d maps the ORIGINAL source coordinates onto dr; a box-reduced source is one pixel per k×k
 	// block starting at sr.Min, so its coordinate u is (x − sr.Min.X) / k.
-	s2d := f64.Aff3{
+	ls := leanScaler{dr: dr, from: src, fromRect: sr, s2d: f64.Aff3{
 		fx, 0, float64(dr.Min.X) - float64(sr.Min.X)*fx,
 		0, fy, float64(dr.Min.Y) - float64(sr.Min.Y)*fy,
-	}
-	from, fromRect := src, sr
+	}}
 	if k := min(sr.Dx()/dr.Dx(), sr.Dy()/dr.Dy()); k >= 2 {
-		from = boxReduce(src, sr, k)
-		fromRect = from.Bounds()
-		s2d = f64.Aff3{fx * float64(k), 0, float64(dr.Min.X), 0, fy * float64(k), float64(dr.Min.Y)}
+		ls.from = boxReduce(src, sr, k)
+		ls.fromRect = ls.from.Bounds()
+		ls.s2d = f64.Aff3{fx * float64(k), 0, float64(dr.Min.X), 0, fy * float64(k), float64(dr.Min.Y)}
+	}
+	return ls
+}
+
+// scaleInto — the kernel onto dst ∩ dr: only the pixels dst holds are computed, so a band of dr
+// costs a band.
+func (ls leanScaler) scaleInto(dst draw.Image) {
+	if ls.empty {
+		return
+	}
+	region := dst.Bounds().Intersect(ls.dr)
+	if region.Empty() {
+		return
 	}
 	// The kernel writes only inside region: a float rounding of the transformed rectangle never
 	// touches the pixel beside it.
@@ -137,7 +168,7 @@ func leanScale(dst draw.Image, dr image.Rectangle, src image.Image, sr image.Rec
 	} else {
 		out = image.NewRGBA(region)
 	}
-	xdraw.CatmullRom.Transform(out, s2d, from, fromRect, xdraw.Src, nil)
+	xdraw.CatmullRom.Transform(out, ls.s2d, ls.from, ls.fromRect, xdraw.Src, nil)
 	if !direct {
 		draw.Draw(dst, region, out, region.Min, draw.Src)
 	}
@@ -291,7 +322,7 @@ func encodeComposite(img image.Image, keepAlpha bool) (Artifact, error) {
 		return Artifact{}, err
 	}
 	if keepAlpha || !compositeOpaque(img) {
-		return Artifact{}, fmt.Errorf("%w: its lossless PNG passes the store's %d-byte ceiling, and the picture "+
+		return Artifact{}, fmt.Errorf("%w: its lossless PNG exceeds the store's %d-byte ceiling, and the picture "+
 			"carries transparency, which a JPEG would destroy — the answer is kept as delivered",
 			errCompositeTooLarge, compositeMaxPNGBytes)
 	}
@@ -386,6 +417,11 @@ func pasteThroughMask(dst draw.Image, rect image.Rectangle, got image.Image, ab 
 	if rows > rect.Dy() {
 		rows = rect.Dy()
 	}
+	// ONE box pre-reduction for the whole paste, reused by every band (G-03 r3, Codex MAJOR 3).
+	var scaler leanScaler
+	if !same {
+		scaler = newLeanScaler(rect, got, ab)
+	}
 	pix := make([]uint8, 4*rect.Dx()*rows)
 	for y0 := rect.Min.Y; y0 < rect.Max.Y; y0 += rows {
 		y1 := y0 + rows
@@ -397,7 +433,7 @@ func pasteThroughMask(dst draw.Image, rect image.Rectangle, got image.Image, ab 
 		if same {
 			draw.Draw(band, br, got, ab.Min.Add(br.Min.Sub(rect.Min)), draw.Src)
 		} else {
-			leanScale(band, rect, got, ab)
+			scaler.scaleInto(band)
 		}
 		draw.DrawMask(dst, br, band, br.Min, alpha, br.Min, draw.Over)
 	}
@@ -413,6 +449,11 @@ func pasteReplacing(dst draw.Image, rect image.Rectangle, got image.Image, ab im
 	if rows > rect.Dy() {
 		rows = rect.Dy()
 	}
+	// ONE box pre-reduction for the whole paste, reused by every band (G-03 r3, Codex MAJOR 3).
+	var scaler leanScaler
+	if !same {
+		scaler = newLeanScaler(rect, got, ab)
+	}
 	pix := make([]uint8, 4*rect.Dx()*rows)
 	for y0 := rect.Min.Y; y0 < rect.Max.Y; y0 += rows {
 		y1 := min(y0+rows, rect.Max.Y)
@@ -421,7 +462,7 @@ func pasteReplacing(dst draw.Image, rect image.Rectangle, got image.Image, ab im
 		if same {
 			draw.Draw(band, br, got, ab.Min.Add(br.Min.Sub(rect.Min)), draw.Src)
 		} else {
-			leanScale(band, rect, got, ab)
+			scaler.scaleInto(band)
 		}
 		draw.Draw(dst, br, band, br.Min, draw.Src)
 	}

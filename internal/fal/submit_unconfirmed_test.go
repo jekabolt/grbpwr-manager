@@ -42,12 +42,13 @@ func submitAll(c *Client) map[string]func() error {
 }
 
 // TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE — a request fal read but answered with nothing
-// usable: a hang past the HTTP timeout, a 500, a 503 that nevertheless names a request id, a 2xx
-// without a request id, a 2xx that is not JSON. The cut-out and the 3D submit ride the same
-// callJSON, so the flaw — and the fix — are shared.
+// usable: a hang past the HTTP timeout, a 500, a 502 or 504 from a gateway (G-03 r3), a 503 that
+// nevertheless names a request id, a 2xx without a request id, a 2xx that is not JSON. The cut-out
+// and the 3D submit ride the same callJSON, so the flaw — and the fix — are shared.
 // MUTATIONS (measured red): drop `sent.Store(true)` in callJSON → the «hang» rows lose the sentinel;
-// drop the `>= 500` branch → the «500» and «503 with an id» rows; submitLost() back to a bare
-// ErrUnexpectedResponse → the «no id» rows.
+// drop the `>= 500` branch → the «500», «502», «504» and «503 with an id» rows; submitRetryableStatus
+// back to 502/503/504 → the «502» and «504» rows; submitLost() back to a bare ErrUnexpectedResponse →
+// the «no id» rows.
 func TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -59,6 +60,15 @@ func TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE(t *testing.T) {
 		}},
 		{"a 500 from the queue itself", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
+		}},
+		// G-03 r3, Codex BLOCKER 1: a gateway status says the hop failed, not in which direction — the
+		// queue may have enqueued the job before its answer was lost on the way back.
+		{"a 502 from a gateway, no request id", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}},
+		{"a 504 from a gateway, no request id", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_, _ = io.WriteString(w, `{"detail":"upstream request timeout"}`)
 		}},
 		{"a 503 that names a request id", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -85,15 +95,15 @@ func TestAnAmbiguousSubmitIsUNCONFIRMED_ON_EVERY_ROUTE(t *testing.T) {
 }
 
 // TestADefiniteSubmitRefusalIsNOT_UNCONFIRMED — the positive controls: fal read the request and said
-// no (4xx), the gateway/queue said it did not take it (502/503/504 without an id — fal's own queue
-// client retries exactly these on a submit), or nothing ever left the process (a dead address). None
-// may be dressed as «maybe charged»: the 4xx keep their terminal sentinels, the rest stay retryable
-// weather.
-// MUTATION (measured red): submitRetryableStatus → always false → the 502/503/504 rows turn
-// unconfirmed (the G-03 r2 regression: every pre-enqueue 503 closed a cut-out or 3D run for good).
+// no (4xx), the queue refused it outright (a 503 without an id — «service unavailable», the one
+// explicit 5xx refusal; 502/504 are ambiguous gateway statuses and live in the unconfirmed table
+// above since G-03 r3), or nothing ever left the process (a dead address). None may be dressed as
+// «maybe charged»: the 4xx keep their terminal sentinels, the rest stay retryable weather.
+// MUTATION (measured red): submitRetryableStatus → always false → the 503 row turns unconfirmed (the
+// G-03 r2 regression: every pre-enqueue 503 closed a cut-out or 3D run for good).
 func TestADefiniteSubmitRefusalIsNOT_UNCONFIRMED(t *testing.T) {
 	for _, code := range []int{http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusUnauthorized,
-		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		http.StatusServiceUnavailable} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(code)
 		}))
