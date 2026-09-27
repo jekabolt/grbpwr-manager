@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,6 +68,13 @@ func (s *aiCfgStore) reloads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.getConfig
+}
+
+// set replaces the configuration the registry reads — another instance's write.
+func (s *aiCfgStore) set(cfg entity.AIConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg
 }
 
 const (
@@ -199,6 +207,7 @@ type aiHarness struct {
 type aiHarnessOpt struct {
 	ring             *keyring.Ring // nil = a ring with a master key
 	designGeneration bool
+	clock            func() time.Time // the registry's clock; nil = time.Now
 }
 
 func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
@@ -212,7 +221,7 @@ func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
 	store := &aiCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}
 	reg := registry.New(store, cfgRing, registry.EnvKeys{
 		OpenRouter: aiEnvOpenRouter, OpenRouterImages: aiEnvOpenRouter, Fal: aiEnvFal, Recraft: aiEnvRecraft,
-	})
+	}, registry.WithClock(o.clock))
 	require.NoError(t, reg.Reload(context.Background()))
 
 	repo := mocks.NewMockRepository(t)
@@ -425,16 +434,21 @@ func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 
 // TestAiConfigReloadsARegistryBehindTheStore.
 //
-// MUTATION IT CATCHES: dropping the version check — the page would show the new rows (another
-// instance's write) beside this instance's old key state until its next poll.
+// MUTATIONS IT CATCHES: dropping the version check — the page would show the new rows (another
+// instance's write) beside this instance's old key state until its next poll; retrying past the one
+// reload (a loop against a store that keeps moving); a mismatch that survives the reload passing
+// silently (no WARN naming both versions).
 func TestAiConfigReloadsARegistryBehindTheStore(t *testing.T) {
+	logs := aiCaptureLog(t)
 	h := newAIHarness(t, aiHarnessOpt{})
 	before := h.store.reloads()
-	h.cfg.Settings.ConfigVersion = aiTestVersion + 1 // the store moved on; the registry did not
+	h.cfg.Settings.ConfigVersion = aiTestVersion + 1 // the store moved on; the registry's source did not
 	h.expectConfigRead(nil)
 	_, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
-	require.NoError(t, err)
-	require.Equal(t, before+1, h.store.reloads(), "a registry behind the store is reloaded once")
+	require.NoError(t, err, "a mismatch that survives the reload still builds the page")
+	require.Equal(t, before+1, h.store.reloads(), "a registry behind the store is reloaded exactly once")
+	require.Contains(t, logs.String(), `"store_version":8`)
+	require.Contains(t, logs.String(), `"registry_version":7`)
 
 	h2 := newAIHarness(t, aiHarnessOpt{})
 	before = h2.store.reloads()
@@ -442,6 +456,114 @@ func TestAiConfigReloadsARegistryBehindTheStore(t *testing.T) {
 	_, err = h2.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
 	require.NoError(t, err)
 	require.Equal(t, before, h2.store.reloads(), "an up-to-date registry is not reloaded on a read")
+}
+
+// aiKeyCleared is cfg one version on, with openai's stored api key cleared by somebody else: the
+// registry then answers openai with no key at all (openai has no env key here).
+func aiKeyCleared(cfg entity.AIConfig) entity.AIConfig {
+	next := cfg
+	next.Providers = slices.Clone(cfg.Providers)
+	for i := range next.Providers {
+		if next.Providers[i].Key == entity.AIProviderOpenAI {
+			next.Providers[i].APIKeyEnc, next.Providers[i].APIKeyLast4 = nil, ""
+			next.Providers[i].APIKeyUpdatedBy = "someone-else"
+		}
+	}
+	next.Settings.ConfigVersion++
+	return next
+}
+
+// TestAiConfigJoinsOneVersion (Codex B #7) — the panel's store rows and registry key state always
+// describe ONE config_version.
+//
+// MUTATIONS IT CATCHES: the pre-fix shape — Version() compared first, the registry's Providers() read
+// after the badges — red in "a reload during the badge read" (the old version's rows beside the new
+// version's key state: «key: none» next to «set by im»); Providers() and Version() read side by side
+// instead of ProvidersAt — red in "a reload while the key state renders" (the states of one snapshot,
+// the number of the next: a needless reload, then the new states beside the old rows); only the
+// registry re-read after the reload — red in "rows read just before a write" (the old rows stay).
+func TestAiConfigJoinsOneVersion(t *testing.T) {
+	t.Run("registry one version behind: one reload, then both sides of the new version", func(t *testing.T) {
+		h := newAIHarness(t, aiHarnessOpt{})
+		next := aiKeyCleared(h.cfg)
+		h.store.set(next) // another instance wrote; this registry has not polled yet
+		h.cfg = next
+		before := h.store.reloads()
+		h.expectConfigRead(nil)
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		require.Equal(t, before+1, h.store.reloads(), "exactly one reload")
+		require.Equal(t, aiTestVersion+1, cfg.GetConfigVersion())
+		openai := aiProvider(t, cfg, "openai")
+		require.Equal(t, registry.KeySourceNone, openai.GetKeySource())
+		require.Empty(t, openai.GetKeyLast4())
+		require.Empty(t, openai.GetKeyUpdatedBy(), "the cleared slot of the same version")
+	})
+
+	t.Run("rows read just before a write the registry already has: both are read again", func(t *testing.T) {
+		h := newAIHarness(t, aiHarnessOpt{})
+		next := aiKeyCleared(h.cfg)
+		old := h.cfg
+		h.ai.EXPECT().GetConfig(mock.Anything).Return(&old, nil).Once() // the read before the write
+		h.ai.EXPECT().GetConfig(mock.Anything).Return(&next, nil).Once()
+		h.ai.EXPECT().RecentFaults(mock.Anything, mock.Anything).Return(nil, nil).Once()
+		h.store.set(next)
+		require.NoError(t, h.reg.Reload(context.Background())) // this instance wrote it, and reloaded
+		before := h.store.reloads()
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		require.Equal(t, before+1, h.store.reloads(), "exactly one reload")
+		require.Equal(t, aiTestVersion+1, cfg.GetConfigVersion(), "the store is read again, not only the registry")
+		openai := aiProvider(t, cfg, "openai")
+		require.Equal(t, registry.KeySourceNone, openai.GetKeySource())
+		require.Empty(t, openai.GetKeyUpdatedBy())
+	})
+
+	// In the next two the store rows are version 7 (openai's key stored by im) and another writer
+	// clears that key and reloads THIS registry to version 8 in the middle of the read. The page must
+	// be version 7 throughout: key from the database, ···1a2b, set by im.
+	consistent := func(t *testing.T, cfg *pb_admin.GetAiProvidersConfigResponse) {
+		t.Helper()
+		require.Equal(t, aiTestVersion, cfg.GetConfigVersion())
+		openai := aiProvider(t, cfg, "openai")
+		require.Equal(t, registry.KeySourceDB, openai.GetKeySource(), "key state of the rows' own version")
+		require.Equal(t, "1a2b", openai.GetKeyLast4())
+		require.Equal(t, aiTestUser, openai.GetKeyUpdatedBy())
+	}
+	swap := func(t *testing.T, h *aiHarness) {
+		h.store.set(aiKeyCleared(h.cfg))
+		require.NoError(t, h.reg.Reload(context.Background()))
+	}
+
+	t.Run("a reload during the badge read", func(t *testing.T) {
+		h := newAIHarness(t, aiHarnessOpt{})
+		c := h.cfg
+		h.ai.EXPECT().GetConfig(mock.Anything).Return(&c, nil)
+		h.ai.EXPECT().RecentFaults(mock.Anything, mock.Anything).
+			Run(func(context.Context, time.Time) { swap(t, h) }).Return(nil, nil).Once()
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		consistent(t, cfg)
+	})
+
+	t.Run("a reload while the key state renders", func(t *testing.T) {
+		var (
+			h     *aiHarness
+			armed atomic.Bool
+		)
+		h = newAIHarness(t, aiHarnessOpt{clock: func() time.Time {
+			if armed.CompareAndSwap(true, false) {
+				swap(t, h) // the registry reads its clock while it renders the key state
+			}
+			return time.Now()
+		}})
+		h.expectConfigRead(nil)
+		armed.Store(true)
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		require.False(t, armed.Load(), "the swap must have happened inside the read")
+		consistent(t, cfg)
+	})
 }
 
 // ───────────────────────── writes ─────────────────────────

@@ -99,25 +99,33 @@ func (s *Server) GetAiProvidersConfig(ctx context.Context, _ *pb_admin.GetAiProv
 
 // aiProvidersConfig is THE config builder: GetAiProvidersConfig and every write answer with it.
 //
-// The rows come from the store (fresh); what the registry knows — which key answers, its last four,
-// the breakers — from the registry's snapshot. When the two disagree on config_version, another
-// instance wrote since this one's last poll, and the snapshot is reloaded first so the page never
-// shows the new rows beside the old key state. A failed reload or a failed badge read degrades (the
-// poller catches up; no badge) rather than failing the page — after a write, failing here would tell
-// the admin a save that happened did not.
+// ONE VERSION ON BOTH SIDES (Codex B #7). The rows come from the store (fresh); what the registry knows
+// — which key answers, its last four, whether a stored admin key opens — from a registry snapshot.
+// The two are joined only when they describe the SAME config_version: ProvidersAt hands out the states
+// together with the version of the one snapshot they were rendered from (Version() and Providers()
+// side by side could straddle a concurrent Reload). When the versions differ — another instance wrote
+// since this one's last poll, or a reload raced this read — the registry is reloaded and BOTH are read
+// again, once. Still different (a write landed in between again, or the reload failed) → the page is
+// built anyway and a WARN names both versions: failing the read would tell the admin, after a write,
+// that a save which happened did not; the poller converges. A failed badge read degrades to no badge.
 func (s *Server) aiProvidersConfig(ctx context.Context) (*pb_admin.GetAiProvidersConfigResponse, error) {
-	cfg, err := s.repo.AI().GetConfig(ctx)
-	if err == nil && cfg == nil {
-		err = errors.New("the store returned no configuration")
-	}
+	cfg, err := s.aiReadConfig(ctx)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't read the ai provider configuration", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't read the AI provider configuration; reload")
+		return nil, err
 	}
-	if cfg.Settings.ConfigVersion != s.aiReg.Version() {
+	states, regVersion := s.aiReg.ProvidersAt()
+	if regVersion != cfg.Settings.ConfigVersion {
 		if err := s.aiReg.Reload(ctx); err != nil {
 			slog.Default().WarnContext(ctx, "ai registry: reload for the panel failed; key state may lag until the next poll",
 				slog.String("err", err.Error()))
+		}
+		if cfg, err = s.aiReadConfig(ctx); err != nil {
+			return nil, err
+		}
+		states, regVersion = s.aiReg.ProvidersAt()
+		if regVersion != cfg.Settings.ConfigVersion {
+			slog.Default().WarnContext(ctx, "ai panel: the registry and the store still describe different config versions after a reload; the key state shown may lag until the next poll",
+				slog.Uint64("store_version", cfg.Settings.ConfigVersion), slog.Uint64("registry_version", regVersion))
 		}
 	}
 	faults, err := s.repo.AI().RecentFaults(ctx, time.Now().Add(-aiFaultWindow))
@@ -126,11 +134,24 @@ func (s *Server) aiProvidersConfig(ctx context.Context) (*pb_admin.GetAiProvider
 			slog.String("err", err.Error()))
 		faults = nil
 	}
-	return dto.AIConfigToPb(aiConfigView(cfg, s.aiReg.Providers(), faults, aiViewFlags{
+	return dto.AIConfigToPb(aiConfigView(cfg, states, faults, aiViewFlags{
 		masterKeyPresent:        s.aiKeyRing.Enabled(),
 		designGenerationEnabled: s.designGenerationEnabled,
 		recraftViaOpenRouter:    s.aiRecraftViaOpenRouter,
 	})), nil
+}
+
+// aiReadConfig is the store's configuration, or the panel's read error.
+func (s *Server) aiReadConfig(ctx context.Context) (*entity.AIConfig, error) {
+	cfg, err := s.repo.AI().GetConfig(ctx)
+	if err == nil && cfg == nil {
+		err = errors.New("the store returned no configuration")
+	}
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't read the ai provider configuration", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't read the AI provider configuration; reload")
+	}
+	return cfg, nil
 }
 
 // aiViewFlags — the server facts the view needs besides the rows.
