@@ -7,10 +7,11 @@
 // in the middle of a chain changes the next Chat, never the one in flight, so a chain can neither
 // skip a candidate nor try one twice because the owner saved a route while it ran.
 //
-// CANDIDATES IN ORDER, AND FOUR REASONS TO PASS ONE BY WITHOUT A CALL. The registry already dropped
+// CANDIDATES IN ORDER, AND FIVE REASONS TO PASS ONE BY WITHOUT A CALL. The registry already dropped
 // the disabled, the keyless and the breaker-open. The router passes over, without a row: a provider
 // with no chat transport in this build (the owner enabled it before its adapter exists — one WARN per
-// provider per config version, not one per press); a candidate whose effective model is "" (the
+// provider per config version, not one per press); a transport that reports no key right now (a
+// static route has no registry to drop it); a candidate whose effective model is "" (the
 // purpose is switched off for it — OPENROUTER_MODEL_IDEAS=off); one whose breaker refuses Admit
 // (half-open, its one probe already out); and, for a purpose under a handler lease, every candidate
 // past the chain cap (chainCap — the lease is sized for that many calls and no more).
@@ -30,6 +31,8 @@
 //	failure, engaged, anything else          unknown ³       RecordFailure ¹    TERMINAL: return it
 //	failure that is not a CallError          unknown ³       RecordFailure ¹    TERMINAL (engaged assumed)
 //	every candidate failed or was skipped    —               —                  ErrAllCandidatesFailed wrapping the last
+//	nothing called: every provider held by   —               —                  ErrAllCandidatesFailed wrapping ErrPaused
+//	  its breaker (open, or probe out)
 //	no candidate at all / none callable      —               —                  aiprov.ErrNotConfigured
 //
 //	¹ the registry's one rule decides what counts: only a Retryable, NOT engaged CallError is a
@@ -74,9 +77,11 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// codeTimeout is CallError.Code for a deadline that expired (aiprov.CodeTimeout once B-11 lands; the
-// word is the transport's vocabulary, spelled here so this package builds before it).
-const codeTimeout = "timeout"
+// ErrPaused is what Chat wraps (inside aiprov.ErrAllCandidatesFailed) when nothing was called because
+// every provider that could serve the purpose is held by its circuit breaker — open after repeated
+// failures, or half-open with its one probe already out. It is weather that passes by itself in
+// minutes, and a door must not read it as «AI is not configured».
+var ErrPaused = errors.New("ai: the providers of this purpose are paused after repeated failures")
 
 // leasedChainCap is how many physical calls ONE Chat may make for a purpose whose handler holds a
 // lease over the call (draft-idea: design_run's HandlerLease). The lease is sized by ChainBudget
@@ -154,6 +159,29 @@ func WithClock(f func() time.Time) Option {
 	}
 }
 
+// WithDefaults sets the default slug table — the seam a static router (NewSingle / NewStatic) needs
+// to answer a candidate with no model the way the registry-backed one does in production.
+func WithDefaults(d Defaults) Option {
+	return func(r *Router) { r.defaults = d }
+}
+
+// budgetBaser is a transport that knows the base of its own call budget (oaichat.Client.CompletionBase:
+// the OPENROUTER_HTTP_TIMEOUT it bounds every request with).
+type budgetBaser interface{ CompletionBase() time.Duration }
+
+// enabler is a transport that knows whether it has a key right now (oaichat.Client.Enabled).
+type enabler interface{ Enabled() bool }
+
+// transportUp — a transport that says it has no key is passed over like a keyless provider: the
+// registry has already dropped those for a registry-backed route (the transport reads the same key
+// func), and a static route has no registry to do it.
+func transportUp(c aiprov.Chatter) bool {
+	if e, ok := c.(enabler); ok {
+		return e.Enabled()
+	}
+	return true
+}
+
 // Router — see the package doc. Safe for concurrent use; everything but the warn-once memory is
 // fixed at construction.
 type Router struct {
@@ -172,8 +200,10 @@ type Router struct {
 }
 
 // New builds the router over the registry's routes. ledger may be nil (nothing is recorded);
-// transports maps a provider key to its chat transport; budgetBase is the BASE of every call's time
-// budget (aiprov.CompletionBudget; <= 0 = the default base).
+// transports maps a provider key to its chat transport; budgetBase is the BASE of a call's time
+// budget (aiprov.CompletionBudget; <= 0 = the default base) for a transport that does not report its
+// own — one that does (oaichat: CompletionBase) is bounded by ITS base, so the router's bound, the
+// transport's bound and ChainBudget's lease read one field of one object.
 func New(reg *registry.Registry, ledger *aiprov.Ledger, transports map[string]aiprov.Chatter,
 	defaults Defaults, budgetBase time.Duration, opts ...Option) *Router {
 	t := make(map[string]aiprov.Chatter, len(transports))
@@ -261,16 +291,46 @@ func (r *Router) candidates(purpose string) ([]candidate, uint64) {
 }
 
 // callable is the part of the route Chat would actually call, before the breaker has its say: a
-// transport and a model. What Enabled, PrimaryProvider, ChainBudget and OpenRouterSlugs read.
+// transport that is up and a model. What Enabled, PrimaryProvider, ChainBudget and OpenRouterSlugs read.
 func (r *Router) callable(purpose string) []candidate {
 	cands, _ := r.candidates(purpose)
 	out := cands[:0]
 	for _, c := range cands {
-		if c.chatter != nil && r.EffectiveModel(purpose, c.Candidate) != "" {
+		if r.canCall(purpose, c) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+func (r *Router) canCall(purpose string, c candidate) bool {
+	return c.chatter != nil && transportUp(c.chatter) && r.EffectiveModel(purpose, c.Candidate) != ""
+}
+
+// budget is ONE call's time budget on candidate c: aiprov.CompletionBudget over the transport's own
+// base when it reports one, else over the router's.
+func (r *Router) budget(c candidate, maxTokens int) time.Duration {
+	base := r.budgetBase
+	if b, ok := c.chatter.(budgetBaser); ok {
+		base = b.CompletionBase()
+	}
+	return aiprov.CompletionBudget(base, maxTokens)
+}
+
+// Paused reports that purpose has nothing to call ONLY because its breakers hold it: Enabled is
+// false, and at least one provider that WOULD be called (a transport that is up, a model) is dropped
+// by an open breaker. The door that refuses then says «paused after repeated failures, try again in a
+// few minutes» instead of «not configured». Always false for a static router (no breakers). Nil-safe.
+func (r *Router) Paused(purpose string) bool {
+	if r == nil || r.reg == nil || !isChatPurpose(purpose) || r.Enabled(purpose) {
+		return false
+	}
+	for _, h := range r.reg.BreakerHeld(purpose) {
+		if r.canCall(purpose, candidate{Candidate: h, chatter: r.transports[h.ProviderKey]}) {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveModel is the slug candidate is called with for purpose: the route row's own model when it
@@ -318,7 +378,7 @@ func (r *Router) PrimaryModel(purpose string) string {
 }
 
 // ChainBudget is the longest a Chat for purpose may run with an answer ceiling of maxTokens: the sum
-// of aiprov.CompletionBudget(budgetBase, maxTokens) over the candidates it may call — capped at
+// of each candidate's call budget (budget: its transport's base) over the candidates it may call — capped at
 // leasedChainCap for a purpose under a handler lease (Chat stops there too, so the lease and the
 // chain are the same number), and never less than ONE call: a route that gains a candidate between
 // the lease and the call must not find a lease of zero. design.HandlerLeaseFor takes it.
@@ -330,18 +390,23 @@ func (r *Router) PrimaryModel(purpose string) string {
 // one-candidate draft-idea lease (a dead handler's row blocks the honest retry that much longer):
 // a behaviour change commit C does not make.
 func (r *Router) ChainBudget(purpose string, maxTokens int) time.Duration {
-	var base time.Duration
-	if r != nil {
-		base = r.budgetBase
+	chain := r.callable(purpose)
+	if limit := chainCap(purpose); limit > 0 && len(chain) > limit {
+		chain = chain[:limit]
 	}
-	n := len(r.callable(purpose))
-	if limit := chainCap(purpose); limit > 0 && n > limit {
-		n = limit
+	if len(chain) == 0 {
+		// Nothing callable now: one call's worth on the router's own base, never zero.
+		var base time.Duration
+		if r != nil {
+			base = r.budgetBase
+		}
+		return aiprov.CompletionBudget(base, maxTokens)
 	}
-	if n < 1 {
-		n = 1
+	var sum time.Duration
+	for _, c := range chain {
+		sum += r.budget(c, maxTokens)
 	}
-	return time.Duration(n) * aiprov.CompletionBudget(base, maxTokens)
+	return sum
 }
 
 // OpenRouterSlugs lists every slug an openrouter candidate of a chat purpose is called with, sorted
@@ -375,8 +440,9 @@ func (r *Router) OpenRouterSlugs() []string {
 //     Is aiprov.ErrAllCandidatesFailed and wraps the LAST call's error, so errors.Is(err,
 //     aiprov.ErrModelUnavailable) and AsCallError still answer the handlers' doors; if an earlier call
 //     of the chain engaged (D-16) that error is wrapped too, so aiprov.Engaged(err) stays true;
-//   - aiprov.ErrNotConfigured when the purpose has no callable candidate, or ErrAllCandidatesFailed
-//     naming the breaker when the only ones there were refused admission;
+//   - aiprov.ErrNotConfigured when the purpose has no callable candidate; ErrAllCandidatesFailed
+//     wrapping ErrPaused when the only ones there are held by their breakers (open, or refused
+//     admission while a probe is out);
 //   - the caller's context error when it was done before the first call.
 func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatRequest) (*aiprov.ChatResult, error) {
 	if ctx == nil {
@@ -384,9 +450,11 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 	}
 	cands, version := r.candidates(purpose)
 	if len(cands) == 0 {
+		if r.Paused(purpose) {
+			return nil, fmt.Errorf("%w: %w", aiprov.ErrAllCandidatesFailed, ErrPaused)
+		}
 		return nil, aiprov.ErrNotConfigured
 	}
-	budget := aiprov.CompletionBudget(r.budgetBase, req.MaxTokens)
 	limit := chainCap(purpose)
 
 	var (
@@ -411,6 +479,9 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 			r.warnNoTransport(ctx, c.ProviderKey, purpose, version)
 			continue
 		}
+		if !transportUp(c.chatter) {
+			continue // keyless: a configuration state, not a missing adapter — no warning
+		}
 		model := r.EffectiveModel(purpose, c.Candidate)
 		if model == "" {
 			continue
@@ -422,7 +493,7 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 		}
 
 		calls++
-		res, ownDeadline, err := r.call(ctx, purpose, c, model, adm, calls, prev, budget, req)
+		res, ownDeadline, err := r.call(ctx, purpose, c, model, adm, calls, prev, r.budget(c, req.MaxTokens), req)
 		prev = c.ProviderKey
 		if err == nil {
 			return res, nil
@@ -431,7 +502,7 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 		ce, isCE := aiprov.AsCallError(err)
 		if !isCE || aiprov.Engaged(err) {
 			// Engaged (or unclassified, which is read as engaged): money may have moved.
-			hung := ownDeadline || (isCE && ce.Code == codeTimeout)
+			hung := ownDeadline || (isCE && ce.Code == aiprov.CodeTimeout)
 			if !hung || !advancesAfterEngagedTimeout(purpose) {
 				return res, err // TERMINAL
 			}
@@ -450,8 +521,8 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 	}
 	if last == nil {
 		if refused != "" {
-			return nil, fmt.Errorf("%w: %s refused the call (its circuit breaker is probing or open)",
-				aiprov.ErrAllCandidatesFailed, refused)
+			return nil, fmt.Errorf("%w: %w (%s: its circuit breaker is probing or open)",
+				aiprov.ErrAllCandidatesFailed, ErrPaused, refused)
 		}
 		return nil, aiprov.ErrNotConfigured
 	}

@@ -448,16 +448,32 @@ func (r *Registry) AdminKey(providerKey string) string {
 // A HALF-OPEN PROVIDER IS LISTED, NOT ADMITTED. Listing reserves nothing: the caller asks Admit right
 // before the physical call to the candidate it picked, and only one caller gets the probe.
 func (r *Registry) Candidates(purpose string) []Candidate {
+	listed, _ := r.walk(purpose)
+	return listed
+}
+
+// BreakerHeld lists the candidates Candidates dropped for ONE reason only: their breaker is open,
+// inside its window — enabled, keyed, able to serve the purpose, and paused. It exists so a door
+// that finds nothing to call can tell «the provider is paused after repeated failures» from «AI is
+// not configured» (the first passes by itself in minutes, the second needs a person). Same order and
+// the same repeat rule as Candidates; nil before the first Reload.
+func (r *Registry) BreakerHeld(purpose string) []Candidate {
+	_, held := r.walk(purpose)
+	return held
+}
+
+// walk is the one pass over a purpose's route both lists come from: listed = what Candidates
+// answers, held = what it dropped only because the breaker is open.
+func (r *Registry) walk(purpose string) (listed, held []Candidate) {
 	s := r.snap.Load()
 	if s == nil {
-		return nil
+		return nil, nil
 	}
 	capability := entity.AIPurposeCapability(purpose)
 	if capability == "" {
-		return nil
+		return nil, nil
 	}
 	now := r.clock()
-	var out []Candidate
 	seen := map[string]bool{}
 	for _, c := range s.routes[purpose] {
 		pk := c.ProviderKey
@@ -470,17 +486,19 @@ func (r *Registry) Candidates(purpose string) []Candidate {
 		if r.effectiveKeyIn(s, pk, capability) == "" { // disabled or keyless
 			continue
 		}
-		if b := r.lookupBreaker(pk, capability); b != nil && b.State(now) == BreakerOpen {
-			continue
-		}
 		dup := pk + "\x00" + c.Model
 		if seen[dup] {
 			continue
 		}
 		seen[dup] = true
-		out = append(out, Candidate{ProviderKey: pk, Model: c.Model, Position: c.Position})
+		cand := Candidate{ProviderKey: pk, Model: c.Model, Position: c.Position}
+		if b := r.lookupBreaker(pk, capability); b != nil && b.State(now) == BreakerOpen {
+			held = append(held, cand)
+			continue
+		}
+		listed = append(listed, cand)
 	}
-	return out
+	return listed, held
 }
 
 func (s *snapshot) defaultProvider(capability string) string {

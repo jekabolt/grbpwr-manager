@@ -156,7 +156,7 @@ func errEngaged(pk string) *aiprov.CallError {
 }
 
 func errEngagedTimeout(pk string) *aiprov.CallError {
-	return &aiprov.CallError{Provider: pk, Code: codeTimeout, Engaged: true,
+	return &aiprov.CallError{Provider: pk, Code: aiprov.CodeTimeout, Engaged: true,
 		Err: fmt.Errorf("%s: request failed: %w", pk, context.DeadlineExceeded)}
 }
 
@@ -597,7 +597,7 @@ func TestChatEngagedTimeoutAdvances(t *testing.T) {
 	rows := rg.rows()
 	require.Len(t, rows, 2)
 	require.Equal(t, entity.AICallUnknown, rows[0].Status)
-	require.Equal(t, codeTimeout, rows[0].End.ErrorCode)
+	require.Equal(t, aiprov.CodeTimeout, rows[0].End.ErrorCode)
 	require.True(t, *rows[0].End.Engaged)
 	require.False(t, rows[0].End.CostUSD.Valid)
 	require.Equal(t, entity.AICallOK, rows[1].Status)
@@ -650,7 +650,7 @@ func TestChatStopsOnTheCallersTimeout(t *testing.T) {
 	_, err := rg.router.Chat(ctx, entity.AIPurposeNoteMarkdown, chatReq)
 	ce, ok := aiprov.AsCallError(err)
 	require.True(t, ok)
-	require.Equal(t, codeTimeout, ce.Code)
+	require.Equal(t, aiprov.CodeTimeout, ce.Code)
 	require.NotErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
 	require.Zero(t, rg.oa.n(), "the caller left; no second candidate")
 	require.Len(t, rg.rows(), 1)
@@ -765,6 +765,7 @@ func TestChatSkipsAProviderItsBreakerRefuses(t *testing.T) {
 	require.NoError(t, rg.reg.Reload(context.Background()))
 	_, err = rg.router.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
 	require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+	require.ErrorIs(t, err, ErrPaused, "a probe held elsewhere is a pause, not a missing setting")
 	require.Contains(t, err.Error(), "circuit breaker")
 	require.Equal(t, calls, rg.or.n())
 }
@@ -1083,4 +1084,126 @@ func TestNilLedgerAndNilRouter(t *testing.T) {
 	require.False(t, r.Enabled(entity.AIPurposeNoteMarkdown))
 	require.Empty(t, r.PrimaryProvider(entity.AIPurposeNoteMarkdown))
 	require.Empty(t, r.OpenRouterSlugs())
+}
+
+// ───────────────────────── B-18 additions ─────────────────────────
+
+// keyedChatter is a fake transport that also answers the two questions oaichat answers: is there a
+// key right now, and what is the base of its call budget.
+type keyedChatter struct {
+	chatter
+	up   bool
+	base time.Duration
+}
+
+func (k *keyedChatter) Enabled() bool                 { return k.up }
+func (k *keyedChatter) CompletionBase() time.Duration { return k.base }
+
+// TestAStaticRouterReadsTheDefaults — the handler rigs build a static router whose one openrouter
+// candidate names no slug, exactly like the seeded routes; WithDefaults gives it today's env slugs
+// per purpose (and the Ideas kill switch), as the registry-backed router has them.
+//
+// MUTATION: WithDefaults returns an option that does nothing → red (nothing callable).
+func TestAStaticRouterReadsTheDefaults(t *testing.T) {
+	c := &chatter{}
+	r := NewSingle(entity.AIProviderOpenRouter, c, "", WithDefaults(testDefaults))
+	_, err := r.Chat(context.Background(), entity.AIPurposeTechCardEnhance, chatReq)
+	require.NoError(t, err)
+	_, err = r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.NoError(t, err)
+	require.Equal(t, []string{slugAnalysis, slugChat}, c.models())
+	require.Equal(t, slugIdeas, r.PrimaryModel(entity.AIPurposePlaygroundIdeas))
+
+	off := testDefaults
+	off.IdeasOff = true
+	require.False(t, NewSingle(entity.AIProviderOpenRouter, c, "", WithDefaults(off)).Enabled(entity.AIPurposePlaygroundIdeas))
+}
+
+// TestAKeylessTransportIsPassedOver — a transport that has no key right now (oaichat.Enabled false:
+// no OPENROUTER_API_KEY, or the provider switched off in the panel) is passed over like a keyless
+// provider: the purpose is not enabled, nothing is called, and the log does not call it a missing
+// adapter. On a longer route the next candidate answers as the first call.
+//
+// MUTATION: transportUp always true → red (the keyless transport is called).
+func TestAKeylessTransportIsPassedOver(t *testing.T) {
+	keyless := &keyedChatter{up: false}
+	r := NewSingle(entity.AIProviderOpenRouter, keyless, "m")
+	var logs bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	require.False(t, r.Enabled(entity.AIPurposeNoteMarkdown))
+	require.Empty(t, r.PrimaryProvider(entity.AIPurposeNoteMarkdown))
+	_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.ErrorIs(t, err, aiprov.ErrNotConfigured)
+	require.Zero(t, keyless.n())
+	require.NotContains(t, logs.String(), "no chat transport")
+
+	next := &keyedChatter{up: true}
+	two := NewStatic([]StaticCandidate{
+		{ProviderKey: entity.AIProviderOpenRouter, Chatter: keyless, Model: "m"},
+		{ProviderKey: entity.AIProviderOpenAI, Chatter: next, Model: "gpt"},
+	})
+	res, err := two.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.NoError(t, err)
+	require.Equal(t, entity.AIProviderOpenAI, res.Provider)
+	require.Zero(t, keyless.n())
+	require.Equal(t, entity.AIProviderOpenAI, two.PrimaryProvider(entity.AIPurposeNoteMarkdown))
+}
+
+// TestTheBudgetIsTheTransportsOwnBase — a transport that reports its base (OPENROUTER_HTTP_TIMEOUT
+// through oaichat.CompletionBase) bounds its calls and the lease by THAT base, not the router's: the
+// lease and the wire read one field of one object, and cannot drift when the env variable is set.
+//
+// MUTATION: budget ignores budgetBaser (always r.budgetBase) → red (60 s base instead of 240 s).
+func TestTheBudgetIsTheTransportsOwnBase(t *testing.T) {
+	tr := &keyedChatter{up: true, base: 240 * time.Second}
+	r := NewSingle(entity.AIProviderOpenRouter, tr, "m")
+	want := aiprov.CompletionBudget(240*time.Second, 8000)
+	require.Equal(t, 240*time.Second+8000*time.Second/30, want)
+	require.Equal(t, want, r.ChainBudget(entity.AIPurposeDesignDraftIdea, 8000))
+
+	before := time.Now()
+	_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, aiprov.ChatRequest{User: "u", MaxTokens: 8000})
+	require.NoError(t, err)
+	require.True(t, tr.calls[0].hasDL)
+	require.InDelta(t, want.Seconds(), tr.calls[0].deadline.Sub(before).Seconds(), 1.0)
+}
+
+// TestPausedTellsTheBreakerFromMissingConfig — three transient faults open the only provider's
+// breaker: the purpose is not enabled, but it is PAUSED, and Chat says so (ErrPaused inside the
+// exhausted error, not ErrNotConfigured) without calling anybody. A purpose with no model is not
+// paused, it is off; past the window the provider is back and nothing is paused.
+//
+// MUTATION: Paused always false → red.
+// MUTATION: Chat's empty-route branch returns ErrNotConfigured without asking Paused → red.
+func TestPausedTellsTheBreakerFromMissingConfig(t *testing.T) {
+	rg := newRig(t, nil, testDefaults, 0)
+	rg.or.do = fails(errStatus(entity.AIProviderOpenRouter, 503))
+	for range 3 {
+		_, err := rg.router.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+		require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+	}
+	calls := rg.or.n()
+	require.False(t, rg.router.Enabled(entity.AIPurposeNoteMarkdown))
+	require.True(t, rg.router.Paused(entity.AIPurposeNoteMarkdown))
+
+	_, err := rg.router.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.ErrorIs(t, err, ErrPaused)
+	require.ErrorIs(t, err, aiprov.ErrAllCandidatesFailed)
+	require.NotErrorIs(t, err, aiprov.ErrNotConfigured)
+	require.Equal(t, calls, rg.or.n(), "a paused provider is not called")
+
+	// Off is not paused: the same open breaker, a purpose with no slug for it.
+	noSlug := testDefaults
+	noSlug.Chat = ""
+	off := New(rg.reg, nil, map[string]aiprov.Chatter{entity.AIProviderOpenRouter: rg.or}, noSlug, 0)
+	require.False(t, off.Paused(entity.AIPurposeNoteMarkdown))
+	_, err = off.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.ErrorIs(t, err, aiprov.ErrNotConfigured)
+
+	rg.clk.advance(5*time.Minute + time.Second)
+	require.True(t, rg.router.Enabled(entity.AIPurposeNoteMarkdown))
+	require.False(t, rg.router.Paused(entity.AIPurposeNoteMarkdown))
+	require.False(t, (*Router)(nil).Paused(entity.AIPurposeNoteMarkdown))
+	require.False(t, NewSingle(entity.AIProviderOpenRouter, &keyedChatter{}, "m").Paused(entity.AIPurposeNoteMarkdown),
+		"a static router has no breakers")
 }

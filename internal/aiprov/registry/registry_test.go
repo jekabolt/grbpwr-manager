@@ -477,6 +477,37 @@ func TestCandidates_OpenBreakerSkippedUntilItsWindowPasses(t *testing.T) {
 	require.Len(t, r.Candidates(entity.AIPurposeTechCardEnhance), 1)
 }
 
+// TestBreakerHeld_ListsOnlyWhatTheOpenBreakerTookOut — a door that finds no candidate asks this to
+// tell «paused after repeated failures» from «not configured»: while the breaker is open the provider
+// is held (and only it — a disabled or keyless provider is not), past the window it is listed again
+// and held no more.
+//
+// MUTATION: walk appends a breaker-open candidate to neither list → red (held empty while open).
+// MUTATION: walk puts a disabled provider's candidate in held → red (fal listed as held).
+func TestBreakerHeld_ListsOnlyWhatTheOpenBreakerTookOut(t *testing.T) {
+	clk := newFakeClock()
+	cfg := seedConfig()
+	setRoute(&cfg, entity.AIPurposeTechCardEnhance,
+		entity.AIRouteCandidate{Position: 1, ProviderKey: entity.AIProviderOpenRouter, Model: "a/b"},
+		entity.AIRouteCandidate{Position: 2, ProviderKey: entity.AIProviderOpenAI, Model: "gpt"}, // disabled in the seed
+	)
+	r, _, _ := newLoaded(t, testRing(t), cfg, WithClock(clk.now))
+	require.Empty(t, r.BreakerHeld(entity.AIPurposeTechCardEnhance), "nothing is held while every breaker is closed")
+
+	transient := &aiprov.CallError{Provider: entity.AIProviderOpenRouter, HTTPStatus: 503, Retryable: true}
+	for range 3 {
+		call(t, r, entity.AIProviderOpenRouter, entity.AICapabilityChat, transient)
+	}
+	require.Empty(t, r.Candidates(entity.AIPurposeTechCardEnhance))
+	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderOpenRouter, Model: "a/b", Position: 1}},
+		r.BreakerHeld(entity.AIPurposeTechCardEnhance), "held: the open breaker, not the disabled provider")
+
+	clk.advance(breakerConfig.OpenTimeout + time.Second)
+	require.Len(t, r.Candidates(entity.AIPurposeTechCardEnhance), 1)
+	require.Empty(t, r.BreakerHeld(entity.AIPurposeTechCardEnhance), "past the window it is listed, not held")
+	require.Nil(t, New(&fakeStore{}, testRing(t), testEnv).BreakerHeld(entity.AIPurposeTechCardEnhance), "nil before the first Reload")
+}
+
 // ───────────────────────── reload + poller ─────────────────────────
 
 // TestReload_SwapsAtomically — a KeyFunc captured BEFORE a reload answers the NEW key after it; a
