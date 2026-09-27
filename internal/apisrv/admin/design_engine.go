@@ -208,11 +208,21 @@ func designFreeformWindowMediaID(params *pb_common.DesignRunParams) (int, bool) 
 // (legacy, 0×0) is UNKNOWN, not small: it passes, and the worker — which decodes the picture — stays
 // the second lock (a free, terminal refusal before StartAttempt).
 func (s *Server) designRefuseWindowSourceTooSmall(ctx context.Context, kind string, params *pb_common.DesignRunParams) error {
-	if kind != entity.DesignRunKindFreeform {
-		return nil
-	}
-	id, ok := designFreeformWindowMediaID(params)
-	if !ok {
+	var id int
+	switch kind {
+	case entity.DesignRunKindFreeform:
+		wid, ok := designFreeformWindowMediaID(params)
+		if !ok {
+			return nil
+		}
+		id = wid
+	case entity.DesignRunKindInpaint:
+		// PHASE 3: the mask retouch cuts a padded crop out of its picture — the same minimum.
+		id = int(params.GetInpaint().GetSourceMediaId())
+		if id <= 0 {
+			return nil
+		}
+	default:
 		return nil
 	}
 	byID, err := s.repo.Media().GetMediaByIds(ctx, []int{id})

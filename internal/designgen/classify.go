@@ -180,6 +180,16 @@ func classify(err error) verdict {
 	// StartAttempt, so free; terminal because the snapshot and the picture are frozen.
 	case errors.Is(err, errExtendNothingToAdd):
 		return verdict{Retryable: false, Code: CodeTargetAspectMustExtend, State: entity.DesignAttemptFailed}
+	// ─── ours, phase 3: the mask of a retouch fails its second lock at build time (before
+	// StartAttempt, so free). Terminal: the mask row is immutable and the snapshot frozen.
+	case errors.Is(err, errInpaintMaskGone):
+		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errInpaintMaskMismatch):
+		return verdict{Retryable: false, Code: CodeMaskSizeMismatch, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errInpaintMaskEmpty):
+		return verdict{Retryable: false, Code: CodeMaskEmpty, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errInpaintMaskUnreadable):
+		return verdict{Retryable: false, Code: CodeMaskInvalid, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errThreedOptionNotRead):
 		return verdict{Retryable: false, Code: CodeOptionNotRead, State: entity.DesignAttemptFailed}
 
@@ -226,6 +236,9 @@ func classify(err error) verdict {
 	// canvas and meet the same obstacle.
 	case errors.Is(err, errExtendNotComposited):
 		return verdict{Retryable: false, Code: CodeExtendNotComposited, State: entity.DesignAttemptDelivered}
+	// ─── ours, phase 3: the retouch crop is bought and filed; it could not go back through the mask.
+	case errors.Is(err, errInpaintNotComposited):
+		return verdict{Retryable: false, Code: CodeInpaintNotComposited, State: entity.DesignAttemptDelivered}
 
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.

@@ -908,6 +908,17 @@ func (s *Server) designCompensateMedia(ctx context.Context, minted []*pb_common.
 // designFetchImage reads a managed object by the url stored on the media row and decodes it.
 // The key comes from a DB row and only from a DB row; the segment gate lives in the bucket.
 func (s *Server) designFetchImage(ctx context.Context, rawURL string) (image.Image, error) {
+	raw, err := s.designFetchObject(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return designDecodeImage(raw)
+}
+
+// designFetchObject — the BYTES of a managed object by the url stored on its media row, ≤
+// designSplitMaxSourceBytes. Split out of designFetchImage for the phase-3 mask door, which must see
+// the bytes (a verbatim PNG, not whatever decodes) before it decodes them.
+func (s *Server) designFetchObject(ctx context.Context, rawURL string) ([]byte, error) {
 	key, err := bucket.ObjectKeyFromStoredURL(rawURL)
 	if err != nil {
 		return nil, err
@@ -927,7 +938,7 @@ func (s *Server) designFetchImage(ctx context.Context, rawURL string) (image.Ima
 	if len(raw) > designSplitMaxSourceBytes {
 		return nil, fmt.Errorf("object %q is over the %d byte ceiling", key, designSplitMaxSourceBytes)
 	}
-	return designDecodeImage(raw)
+	return raw, nil
 }
 
 // designDecodeImage sniffs the format from the leading bytes rather than trusting anything

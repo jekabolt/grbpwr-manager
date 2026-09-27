@@ -613,6 +613,9 @@ func (a *App) Start(ctx context.Context) error {
 			// extend — tile 9 «Extend Image», fal's outpaint route (FAL_MODEL_OUTPAINT, default
 			// fal-ai/flux-2-pro/outpaint; fallback fal-ai/bria/expand).
 			Outpaint: designgen.NewFalOutpaintProvider(falRoutes),
+			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
+			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
+			Fill: designgen.NewFalFillProvider(falRoutes),
 		})
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",

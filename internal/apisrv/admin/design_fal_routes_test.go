@@ -45,6 +45,7 @@ type falDoorRow struct {
 	setup  []func(t *testing.T, rig *designRunRig)
 	want   string // '' = legal
 	price  string // legal rows: the reserve
+	why    string // refusals: a substring of the `why` metadata, when the code alone does not tell
 }
 
 func falDoorRows() []falDoorRow {

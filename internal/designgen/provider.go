@@ -152,6 +152,12 @@ type Job struct {
 	// expansion per side. The route sends it, the composite reads it back — one plan, read twice.
 	// nil on every other kind.
 	Extend *ExtendPlan
+
+	// Inpaint is a mask retouch's plan (kind=inpaint, phase 3), frozen before the money; InpaintMask
+	// is the mask crop as a PNG data URI, the same size as References[0] (the picture crop). The mask
+	// travels HERE and never in References: it is not a picture of the run, it is where to paint.
+	Inpaint     *InpaintPlan
+	InpaintMask string
 }
 
 // Artifact is one file a provider produced, already in memory and not yet stored.

@@ -1063,6 +1063,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseColourMapAlsoAnInput(params, inputs); err != nil {
 		return nil, err
 	}
+	// PHASE 3: the mask itself — size, PNG, something painted — AFTER the media doors (foreign, not a
+	// picture, display-only, hidden) and still before StartRun.
+	if err := s.designRefuseUnusableMask(ctx, kind, params); err != nil {
+		return nil, err
+	}
 	// ⚠ ПЛИТЫ ШТАМПУЮТСЯ ДО КОДИРОВКИ ПАРАМЕТРОВ — порядок здесь несущий, а не стилистический:
 	// иначе в колонку уедет то, что прислал клиент.
 	designStampSourcePictures(kind, params, designRunPlates(src, parent))
@@ -1210,6 +1215,11 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 	// ─── PHASE 3: EXTEND (tile 9) ───
 	case entity.DesignRunKindExtend:
 		if err := designRefuseUnworkableExtend(ask, params); err != nil {
+			return err
+		}
+	// ─── PHASE 3: THE MASK RETOUCH (tile 10's mask route) ───
+	case entity.DesignRunKindInpaint:
+		if err := designRefuseUnworkableInpaint(ask, params); err != nil {
 			return err
 		}
 	case entity.DesignRunKindRecolor:
@@ -3447,6 +3457,11 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		}
 		return out, nil
 	}
+	// PHASE 3: a mask retouch records the picture and the mask it sends — and nothing of the card.
+	if src.Kind == entity.DesignRunKindInpaint {
+		out.Refs = designInpaintRefs(src.Params)
+		return out, nil
+	}
 	// ⚠ ССЫЛКИ КАРТОЧКИ ЧИТАЕТ НЕ ВСЯКИЙ РОД (J-6), И ПРАВИЛО ЖИВЁТ В designKindReadsTheCard —
 	// одно на этот цикл и на отбор плит ниже. Цикл по `extra_input_media_ids` идёт ВСЕГДА: это и
 	// есть то, что человек назвал поимённо, и у перекраса с паттерном он единственный вход.
@@ -4057,6 +4072,8 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 	// целиком, либо то, что клиент сказал сам, и оба случая уже прошли дверь.
 	if src.Kind == entity.DesignRunKindFreeform {
 		snap.Refs = designFreeformRefs(src.Params)
+	} else if src.Kind == entity.DesignRunKindInpaint {
+		snap.Refs = designInpaintRefs(src.Params)
 	} else if !designRunReadsTheCard(src.Kind, src.Params) {
 		named := make(map[int32]struct{}, len(src.Params.GetExtraInputMediaIds()))
 		for _, id := range src.Params.GetExtraInputMediaIds() {

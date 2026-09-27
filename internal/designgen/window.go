@@ -83,6 +83,10 @@ func (w *Worker) postProcess(ctx context.Context, job Job, out *Outcome) error {
 	if job.Extend != nil {
 		return w.compositeExtendInto(ctx, *job.Extend, out)
 	}
+	// PHASE 3: a mask retouch's crop goes back through OUR mask only (inpaint.go).
+	if job.Inpaint != nil {
+		return w.compositeInpaintInto(ctx, *job.Inpaint, out)
+	}
 	if job.Window == nil {
 		return nil
 	}
@@ -229,9 +233,15 @@ var errFreeformSourceTooSmall = errors.New("designgen: the picture of this playg
 // shifted back inside the picture; a picture smaller than that gives its whole side. This rectangle
 // is cut, sent and frozen as the paste-back frame — one rectangle, read three times.
 func freeformWindowRect(b image.Rectangle, region freeformRegion) image.Rectangle {
-	r := freeformCropRect(b, region)
+	return padRect(b, freeformCropRect(b, region), windowMinSide)
+}
+
+// padRect — r grown so each side is at least minSide (centred, shifted back inside b; a picture
+// smaller than that gives its whole side). Lifted out of freeformWindowRect: the window and the
+// inpaint crop pad by ONE rule.
+func padRect(b, r image.Rectangle, minSide int) image.Rectangle {
 	grow := func(lo, hi, min, max int) (int, int) {
-		want := windowMinSide
+		want := minSide
 		if want > max-min {
 			want = max - min
 		}

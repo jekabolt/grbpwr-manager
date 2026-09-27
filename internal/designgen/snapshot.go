@@ -507,6 +507,14 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		}
 		return out
 	}
+	// ─── INPAINT (phase 3): THE ONE PICTURE TO RETOUCH. The mask is NOT a reference — it is where to
+	// paint, it travels as mask_url — so it joins the media batch in buildJob and never this list.
+	if kind == entity.DesignRunKindInpaint {
+		if p.Inpaint == nil || p.Inpaint.SourceMediaID <= 0 {
+			return nil
+		}
+		return []refCaption{{MediaID: p.Inpaint.SourceMediaID, Caption: "the picture to retouch"}}
+	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
 		return viewRank(slots[i].ViewKey) < viewRank(slots[j].ViewKey)
@@ -1311,6 +1319,12 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		list = threedPicturesOf(list, in, p)
 	}
 	var attached []refCaption
+	// The mask of a retouch rides the SAME media batch as the picture (one moment in time: a row that
+	// vanished between two reads would give a job whose picture resolved and whose mask did not).
+	maskID, maskURL := 0, ""
+	if run.Kind == entity.DesignRunKindInpaint && p.Inpaint != nil {
+		maskID = p.Inpaint.MaskMediaID
+	}
 	if len(list) > 0 || len(cloths) > 0 {
 		// ОДИН ПОХОД В МЕДИА НА ОБА СПИСКА. Два запроса были бы двумя моментами времени: строка,
 		// исчезнувшая между ними, отдала бы задание, у которого ткань разрешилась, а фотография нет.
@@ -1321,9 +1335,15 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		for _, rc := range cloths {
 			ids = append(ids, rc.MediaID)
 		}
+		if maskID > 0 {
+			ids = append(ids, maskID)
+		}
 		byID, err := media.GetMediaByIds(ctx, ids)
 		if err != nil {
 			return Job{}, fmt.Errorf("failed to resolve the input media of design run %d: %w", run.Id, err)
+		}
+		if m, ok := byID[maskID]; ok && maskID > 0 {
+			maskURL = strings.TrimSpace(m.FullSizeMediaURL)
 		}
 		resolve := func(rc refCaption) (string, bool) {
 			m, ok := byID[rc.MediaID]
@@ -1427,7 +1447,22 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 			return Job{}, err
 		}
 	}
-	job.Prompt = composePrompt(run, p, in, attached)
+	// ─── INPAINT (phase 3): the picture and its mask are read, the mask checked (same size, something
+	// painted), both cut to the same padded crop — before the money, so every refusal is free.
+	if run.Kind == entity.DesignRunKindInpaint {
+		if err := deriveInpaintPlan(ctx, objects, maskURL, &job); err != nil {
+			return Job{}, err
+		}
+	}
+	switch run.Kind {
+	case entity.DesignRunKindInpaint:
+		// ⚠ composePrompt IS BYPASSED FOR THIS KIND, ON PURPOSE. The fill model takes plain words
+		// about the painted zone; a craft paragraph or a caption block would be text about pictures
+		// it is not shown. The prompt is the ask, verbatim — and SentPrompt records exactly this.
+		job.Prompt = strings.TrimSpace(run.Ask.String)
+	default:
+		job.Prompt = composePrompt(run, p, in, attached)
+	}
 	// COMPOSED FOR EVERY KIND, USED BY ONE. Deriving it here rather than inside the 3D route keeps
 	// every word this package sends coming out of the same reader of the same frozen snapshot; a
 	// route that composed its own text would be a second composer to keep in step.
