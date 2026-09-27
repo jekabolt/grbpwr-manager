@@ -1,8 +1,11 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -187,7 +190,17 @@ func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, para
 		return designRefuseMissingSource(id, "params.extra_input_media_ids")
 	}
 	if m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
+		// ⚠ A LEGACY ROW STATES NO SIZE, SO ITS HEADER IS READ (G-03 r2, Codex BLOCKER 1): the one
+		// question the door cannot leave to the worker is the working pixel cap — past it the composite
+		// would run after the payment in a 0.5 GB process. Header only, no pixel decoded; a header this
+		// door cannot read is left to the worker's own header check (free, terminal source_too_large).
+		if w, h, ok := s.designStoredPictureHeader(ctx, m.FullSizeMediaURL); ok && designOverCompositeCap(w, h) {
+			return designRefuseSourceTooLarge(id, w, h, "an extend")
+		}
 		return nil
+	}
+	if designOverCompositeCap(m.FullSizeWidth, m.FullSizeHeight) {
+		return designRefuseSourceTooLarge(id, m.FullSizeWidth, m.FullSizeHeight, "an extend")
 	}
 	if minSide := designgen.WindowMinSourcePx; m.FullSizeWidth < minSide || m.FullSizeHeight < minSide {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeSourceTooSmall,
@@ -209,6 +222,25 @@ func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, para
 			map[string]string{"source": src, "target": target})
 	}
 	return nil
+}
+
+// designStoredPictureHeader — the width and height a stored picture's header declares (PNG, JPEG, WebP,
+// GIF), read without decoding a pixel; ok = false when the object cannot be read or its header parsed.
+func (s *Server) designStoredPictureHeader(ctx context.Context, rawURL string) (w, h int, ok bool) {
+	if strings.TrimSpace(rawURL) == "" || s.bucket == nil {
+		return 0, 0, false
+	}
+	raw, err := s.designFetchObject(ctx, rawURL)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "extend door: the header of a picture with no stored size could not be read; "+
+			"the worker checks it again", slog.String("err", err.Error()))
+		return 0, 0, false
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return 0, 0, false
+	}
+	return cfg.Width, cfg.Height, true
 }
 
 // designRefuseMissingSource — the one picture an extend / inpaint works on names no media row

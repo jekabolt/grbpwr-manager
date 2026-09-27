@@ -406,8 +406,11 @@ message DesignImageOptions {
 // validated BEFORE anything is reserved: `mask_required`, `mask_size_mismatch`, `mask_invalid` (not a readable PNG),
 // `mask_empty` (nothing painted). The words travel in StartDesignRunRequest.ask (`words_required` when blank).
 // The answer is a NEW picture beside the source, a lossless PNG: every pixel outside the mask is the source's own
-// decoded pixel (bit-exact for a PNG source; the decoded pixels of a JPEG/WebP one). Only a picture whose PNG would
-// pass the store's verbatim ceiling (about 21 MB) is stored as JPEG q92 instead.
+// decoded pixel (bit-exact for a PNG source; the decoded pixels of a JPEG/WebP one). Only an OPAQUE picture whose PNG
+// would EXCEED the store's verbatim ceiling (about 21 MB) is stored as JPEG instead — the best of q92 / q85 / q75
+// that fits. A picture with transparency is never stored as JPEG: past the ceiling the composite is not made and the
+// repainted crop is filed as delivered (`inpaint_not_composited`). The source may be at most 18 MP
+// (`source_too_large`).
 message DesignInpaintParams {
   int32 source_media_id = 1; // FK media(id); a raster picture of this card or a fresh upload
   int32 mask_media_id = 2; // FK media(id); the mask PNG, same width and height as the source
@@ -419,7 +422,8 @@ message DesignInpaintParams {
 // (`extend_aspect_unknown`); a target that adds no pixels on either side is `target_aspect_must_extend`. The
 // server computes the per-side expansion, caps the canvas at 3 megapixels (downscaling the source first), and
 // re-composites the untouched source pixels into the answer, stored as a lossless PNG, so «the original is kept» is a
-// fact of the pixels: the source region is the source's own decoded pixels (at the scale the cap allows).
+// fact of the pixels: the source region is the source's own decoded pixels (at the scale the cap allows). The source
+// may be at most 18 MP (`source_too_large`).
 message DesignExtendParams {
   string aspect_ratio = 1;
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	"image/png"
 	"math"
 	"strings"
@@ -108,22 +107,6 @@ func maskPainted(c color.Color) bool {
 	return color.GrayModel.Convert(c).(color.Gray).Y >= MaskThreshold
 }
 
-// inpaintMaskAlpha — the mask as a 0/255 alpha at its own bounds, and the painted bounding box.
-func inpaintMaskAlpha(img image.Image) (*image.Alpha, image.Rectangle) {
-	b := img.Bounds()
-	a := image.NewAlpha(b)
-	box := image.Rectangle{}
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			if maskPainted(img.At(x, y)) {
-				a.SetAlpha(x, y, color.Alpha{A: 0xff})
-				box = box.Union(image.Rect(x, y, x+1, y+1))
-			}
-		}
-	}
-	return a, box
-}
-
 // inpaintRect — the crop around a painted box: +25 % of the box on each side, then padRect to
 // inpaintMinSide, inside the picture.
 func inpaintRect(b, box image.Rectangle) image.Rectangle {
@@ -156,6 +139,11 @@ func readInpaintMask(ctx context.Context, objects objectFetcher, maskURL string)
 	if !isPNGBytes(raw) {
 		return nil, fmt.Errorf("%w: its bytes are %s", errInpaintMaskUnreadable, cutoutContentType(raw))
 	}
+	// The mask is the picture's size, so it is held to the picture's working cap (G-03 r2, Codex 1):
+	// a mask past it belongs to a picture no composite here may decode.
+	if _, err := compositeSourceOverCap(raw); err != nil {
+		return nil, fmt.Errorf("%w: %v", errInpaintMaskUnreadable, err)
+	}
 	img, err := freeformDecode(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errInpaintMaskUnreadable, err)
@@ -177,11 +165,22 @@ func deriveInpaintPlan(ctx context.Context, objects objectFetcher, maskURL strin
 		return fmt.Errorf("designgen: a mask retouch needs the picture and its mask, and this worker has no object store")
 	}
 	srcURL := job.References[0]
-	src, _, err := fetchStoredPicture(ctx, objects, srcURL)
+	// ⚠ HEADER FIRST, PIXELS LAST, ONE BIG RASTER AT A TIME (G-03 r2, Codex 1). The picture's header
+	// is checked against CompositeMaxSourcePixels before anything is decoded (free, terminal:
+	// source_too_large — buildJob runs before StartAttempt); the mask is decoded, measured and cut to
+	// the crop, and DROPPED before the picture is decoded; neither is ever copied at full size.
+	srcRaw, err := fetchStoredBytes(ctx, objects, srcURL)
 	if err != nil {
 		return fmt.Errorf("designgen: cannot read the picture to retouch: %w", err)
 	}
-	b := src.Bounds()
+	cfg, err := compositeSourceOverCap(srcRaw)
+	if err != nil {
+		if errors.Is(err, errFreeformSourceTooLarge) {
+			return err
+		}
+		return fmt.Errorf("designgen: cannot read the picture to retouch: %w", err)
+	}
+	b := image.Rect(0, 0, cfg.Width, cfg.Height)
 	if b.Dx() < windowMinSource || b.Dy() < windowMinSource {
 		return fmt.Errorf("%w: it is %d×%d px, and a retouch needs at least %d px on each side",
 			errFreeformSourceTooSmall, b.Dx(), b.Dy(), windowMinSource)
@@ -197,22 +196,19 @@ func deriveInpaintPlan(ctx context.Context, objects objectFetcher, maskURL strin
 		return fmt.Errorf("%w: the picture is %d×%d and the mask %d×%d", errInpaintMaskMismatch,
 			b.Dx(), b.Dy(), mask.Bounds().Dx(), mask.Bounds().Dy())
 	}
-	alpha, box := inpaintMaskAlpha(mask)
+	box := maskPaintedBox(mask)
 	if box.Empty() {
 		return fmt.Errorf("%w: every pixel is below the paint threshold", errInpaintMaskEmpty)
 	}
-	// The mask is read at its own origin; the picture's is (0,0) for every decoder we have, but the
-	// arithmetic below is in PICTURE coordinates, so the box is moved there explicitly.
+	// The mask is read at its own origin; the arithmetic below is in PICTURE coordinates (0,0 for
+	// every decoder we have), so the box is moved there explicitly.
 	box = box.Sub(mask.Bounds().Min).Add(b.Min)
-	alpha.Rect = alpha.Rect.Sub(mask.Bounds().Min).Add(b.Min)
 
 	rect := inpaintRect(b, box)
 	size, scale := inpaintCropSize(rect)
-	keepAlpha := freeformSourceHasAlpha(src)
 
-	crop := image.NewNRGBA(image.Rect(0, 0, size.X, size.Y))
-	xdraw.CatmullRom.Scale(crop, crop.Bounds(), src, rect, xdraw.Src, nil)
 	maskCrop := image.NewGray(image.Rect(0, 0, size.X, size.Y))
+	alpha := maskAlphaOver(mask, b.Min, rect)
 	xdraw.NearestNeighbor.Scale(maskCrop, maskCrop.Bounds(), alpha, rect, xdraw.Src, nil)
 	for i, v := range maskCrop.Pix { // re-threshold: nearest-neighbour never invents a grey, but say so
 		if v >= MaskThreshold {
@@ -221,6 +217,18 @@ func deriveInpaintPlan(ctx context.Context, objects objectFetcher, maskURL strin
 			maskCrop.Pix[i] = 0
 		}
 	}
+	releaseHeap()
+
+	src, err := freeformDecode(srcRaw)
+	if err != nil {
+		return fmt.Errorf("designgen: cannot read the picture to retouch: %w", err)
+	}
+	if src.Bounds() != b {
+		return fmt.Errorf("designgen: the picture to retouch decoded at %v, its header said %v", src.Bounds(), b)
+	}
+	keepAlpha := freeformSourceHasAlpha(src)
+	crop := image.NewNRGBA(image.Rect(0, 0, size.X, size.Y))
+	leanScale(crop, crop.Bounds(), src, rect)
 
 	// ⚠ THE CROP TRAVELS AS A LOSSLESS PNG (G-03, Codex 4): the model paints inside the mask AROUND
 	// these pixels, and a JPEG of them is another raster than the one the composite keeps. ≤ 1 MP of
@@ -341,65 +349,84 @@ func (p falFillProvider) Collect(ctx context.Context, job Job, requestID string)
 
 // ─────────────────────────── the composite ───────────────────────────
 
-// compositeInpaintInto re-reads the picture and its mask and pastes the answer through the mask. A
+// compositeInpaintInto re-reads the mask and the picture and pastes the answer through the mask. A
 // complaint, never a refusal: the money is spent.
+//
+// ⚠ IT RUNS AFTER THE PAYMENT, INSIDE THE ONE 0.5 GB PROCESS (G-03 r2, Codex BLOCKER 1), and is
+// bounded by construction (composite_budget.go): every raster's header is checked before its pixels
+// are decoded; the answer is checked against the planned crop before it is decoded; the mask becomes
+// one byte per pixel of the crop rectangle and is dropped before the picture is decoded; the picture
+// is drawn into in place (or copied once, when its decoded form cannot be encoded losslessly); the
+// answer is scaled into the rectangle band by band — no full-size scratch; the PNG encode stops at the
+// bucket's ceiling. Any refusal on the way is errInpaintNotComposited: the paid crop is filed as
+// delivered, terminal — never an OOM that would kill the settle of this very run and every pickup
+// after it.
 func (w *Worker) compositeInpaintInto(ctx context.Context, plan InpaintPlan, out *Outcome) error {
 	if w.objects == nil {
 		return fmt.Errorf("%w: this worker has no object store to read the picture from", errInpaintNotComposited)
 	}
-	src, _, err := fetchStoredPicture(ctx, w.objects, plan.SourceURL)
-	if err != nil {
-		return fmt.Errorf("%w: the picture could not be read back: %v", errInpaintNotComposited, err)
-	}
-	mask, err := readInpaintMask(ctx, w.objects, plan.MaskURL)
-	if err != nil {
-		return fmt.Errorf("%w: the mask could not be read back: %v", errInpaintNotComposited, err)
-	}
-	fitted, err := compositeInpaint(src, mask, plan, out.Artifacts[0].Bytes)
+	art, err := w.compositeInpaint(ctx, plan, out.Artifacts[0].Bytes)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errInpaintNotComposited, err)
 	}
-	out.Artifacts[0] = fitted
+	out.Artifacts[0] = art
 	return nil
 }
 
-// compositeInpaint — dst = a copy of the picture; the answer (scaled into Rect when its size
-// differs) is drawn with draw.DrawMask under OUR alpha and draw.Over: where the alpha is 0 — every
-// pixel outside the paint — Over leaves the copy's bytes untouched by construction.
-func compositeInpaint(src, mask image.Image, plan InpaintPlan, answer []byte) (Artifact, error) {
-	if src.Bounds() != plan.Bounds {
-		return Artifact{}, fmt.Errorf("the picture read back is %v, and the plan was made against %v", src.Bounds(), plan.Bounds)
-	}
-	if mask.Bounds().Size() != src.Bounds().Size() {
-		return Artifact{}, fmt.Errorf("the mask read back is %v, the picture %v", mask.Bounds(), src.Bounds())
-	}
-	got, err := freeformDecode(answer)
+// compositeInpaint — the stages of the paste, in the order that keeps one large raster alive at a
+// time. dst is the picture's own decoded raster (or its one NRGBA copy); the answer (scaled into Rect
+// when its size differs) goes in under OUR alpha with draw.Over: where the alpha is 0 — every pixel
+// outside the paint — Over leaves dst's bytes untouched by construction.
+func (w *Worker) compositeInpaint(ctx context.Context, plan InpaintPlan, answer []byte) (Artifact, error) {
+	// 1. The answer: its header against the size the crop travelled at, before a pixel of it.
+	acfg, err := freeformDecodeConfig(answer)
 	if err != nil {
 		return Artifact{}, fmt.Errorf("the answer is not a readable picture: %w", err)
 	}
-	alpha, _ := inpaintMaskAlpha(mask)
-	alpha.Rect = alpha.Rect.Sub(mask.Bounds().Min).Add(src.Bounds().Min)
-
 	// ⚠ A DRIFT IS NAMED, NOT HIDDEN (G-03, Codex 5). The answer is expected at the size the crop
 	// travelled at (plan.Crop); a model that rounded it (within max(16 px, 2 %) a side — extend's own
 	// slack) is fitted, anything else is another picture than the one planned — its money may not be
 	// the money reserved, and scaling it into the crop would distort it silently. It is kept as
 	// delivered and the attempt says why (inpaint_not_composited).
-	ab := got.Bounds()
-	if want := plan.Crop; want.X > 0 && want.Y > 0 && ab.Size() != want &&
-		(!extendNearSize(ab.Dx(), want.X) || !extendNearSize(ab.Dy(), want.Y)) {
+	if want := plan.Crop; want.X > 0 && want.Y > 0 && image.Pt(acfg.Width, acfg.Height) != want &&
+		(!extendNearSize(acfg.Width, want.X) || !extendNearSize(acfg.Height, want.Y)) {
 		return Artifact{}, fmt.Errorf("the answer is %d×%d and the crop was sent at %d×%d — another size; "+
-			"the answer is kept as delivered", ab.Dx(), ab.Dy(), want.X, want.Y)
+			"the answer is kept as delivered", acfg.Width, acfg.Height, want.X, want.Y)
 	}
-	fittedAnswer := image.NewNRGBA(plan.Rect)
-	if ab.Size() == plan.Rect.Size() {
-		draw.Draw(fittedAnswer, plan.Rect, got, ab.Min, draw.Src)
-	} else {
-		xdraw.CatmullRom.Scale(fittedAnswer, plan.Rect, got, ab, xdraw.Src, nil)
+	if !plan.Rect.In(plan.Bounds) || plan.Rect.Empty() {
+		return Artifact{}, fmt.Errorf("the planned crop %v is not inside the picture %v", plan.Rect, plan.Bounds)
+	}
+	got, err := freeformDecode(answer)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("the answer is not a readable picture: %w", err)
 	}
 
-	dst := image.NewNRGBA(src.Bounds())
-	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
-	draw.DrawMask(dst, plan.Rect, fittedAnswer, plan.Rect.Min, alpha, plan.Rect.Min, draw.Over)
-	return encodeComposite(dst)
+	// 2. The mask → one byte per pixel of the crop rectangle; the decoded mask is dropped.
+	mask, err := readInpaintMask(ctx, w.objects, plan.MaskURL)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("the mask could not be read back: %v", err)
+	}
+	if mask.Bounds().Size() != plan.Bounds.Size() {
+		return Artifact{}, fmt.Errorf("the mask read back is %v, the picture was planned at %v", mask.Bounds(), plan.Bounds)
+	}
+	alpha := maskAlphaOver(mask, plan.Bounds.Min, plan.Rect)
+	releaseHeap()
+
+	// 3. The picture, header-capped, decoded, and drawn into.
+	raw, err := fetchStoredBytes(ctx, w.objects, plan.SourceURL)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("the picture could not be read back: %v", err)
+	}
+	src, err := decodeCompositeSource(raw)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("the picture could not be read back: %v", err)
+	}
+	if src.Bounds() != plan.Bounds {
+		return Artifact{}, fmt.Errorf("the picture read back is %v, and the plan was made against %v", src.Bounds(), plan.Bounds)
+	}
+	dst := compositeCanvas(src)
+	releaseHeap()
+
+	pasteThroughMask(dst, plan.Rect, got, got.Bounds(), alpha)
+	return encodeComposite(dst, plan.KeepAlpha)
 }

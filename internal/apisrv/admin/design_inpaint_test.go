@@ -9,6 +9,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
@@ -50,13 +51,27 @@ func inpaintRig(srcW, srcH, maskW, maskH int, mask []byte) func(t *testing.T, ri
 		all[inpaintMaskID] = entity.MediaFull{Id: inpaintMaskID, MediaItem: entity.MediaItem{
 			FullSizeMediaURL: inpaintMaskURL, FullSizeWidth: maskW, FullSizeHeight: maskH}}
 		media.EXPECT().GetMediaByIds(mock.Anything, mock.Anything).Return(all, nil).Maybe()
-		files := mocks.NewMockFileStore(t)
-		files.EXPECT().GetManagedObject(mock.Anything, mock.Anything).RunAndReturn(
-			func(_ context.Context, _ string) (io.ReadCloser, int64, error) {
-				return io.NopCloser(bytes.NewReader(mask)), int64(len(mask)), nil
-			}).Maybe()
-		rig.srv.bucket = files
+		rig.srv.bucket = maskKeyedFiles(t, mask)
 	}
+}
+
+// maskKeyedFiles — a bucket that serves `mask` at the mask's key and ANOTHER file (the picture's own
+// bytes, never the mask's) at every other key: since G-03 r2 (Codex 7) the door compares a legacy
+// picture's object with the mask's bytes, so a rig serving one file everywhere would be a picture
+// uploaded twice.
+func maskKeyedFiles(t *testing.T, mask []byte) *mocks.MockFileStore {
+	maskKey, err := bucket.ObjectKeyFromStoredURL(inpaintMaskURL)
+	require.NoError(t, err)
+	picture := []byte("the picture's own file, not the mask")
+	files := mocks.NewMockFileStore(t)
+	files.EXPECT().GetManagedObject(mock.Anything, mock.Anything).RunAndReturn(
+		func(_ context.Context, key string) (io.ReadCloser, int64, error) {
+			if key == maskKey {
+				return io.NopCloser(bytes.NewReader(mask)), int64(len(mask)), nil
+			}
+			return io.NopCloser(bytes.NewReader(picture)), int64(len(picture)), nil
+		}).Maybe()
+	return files
 }
 
 func inpaintParams(src, mask int32) *pb_common.DesignRunParams {

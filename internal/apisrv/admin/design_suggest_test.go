@@ -740,3 +740,73 @@ func TestIdenticalSuggestMissesINFLIGHT_COST_ONE_CALL(t *testing.T) {
 	}
 	require.False(t, s.enhanceRuns.allow("alice"), "exactly one token was taken by the flight")
 }
+
+// TestSuggestFlightOUTLIVES_ITS_LEADER — G-03 r2, Codex 9: the leader of a shared flight disconnects
+// while the provider is still answering. The one call must go on (its context is detached from the
+// leader's), the follower that is still connected must get the answer, and the leader itself must
+// leave at once with its own cancellation instead of waiting. A follower that disconnects leaves early
+// too. MUTATION (measured red): run the flight under the leader's ctx (suggestCall(ctx, …) instead of
+// fctx) → the follower receives the leader's cancellation.
+func TestSuggestFlightOUTLIVES_ITS_LEADER(t *testing.T) {
+	arrived := make(chan struct{}, 8)
+	release := make(chan struct{})
+	client, rec := newSuggestFakeOR(t, openrouter.Config{}, func(model string, w http.ResponseWriter) {
+		arrived <- struct{}{}
+		<-release
+		enhanceReply(goodIdeas, "stop")(w)
+	})
+	s := newSuggestServer(t, client)
+
+	leaderCtx, cancelLeader := context.WithCancel(adminCtx("alice"))
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := s.SuggestPrompts(leaderCtx, tryOnPose("hand on hip"))
+		leaderDone <- err
+	}()
+	<-arrived // the leader's flight is at the provider
+
+	followerDone := make(chan struct{})
+	var followerResp *pb_admin.SuggestPromptsResponse
+	var followerErr error
+	go func() {
+		defer close(followerDone)
+		followerResp, followerErr = s.SuggestPrompts(adminCtx("alice"), tryOnPose("hand on hip"))
+	}()
+	quitterCtx, cancelQuitter := context.WithCancel(adminCtx("alice"))
+	quitterDone := make(chan error, 1)
+	go func() {
+		_, err := s.SuggestPrompts(quitterCtx, tryOnPose("hand on hip"))
+		quitterDone <- err
+	}()
+	time.Sleep(150 * time.Millisecond) // both join the flight
+
+	cancelLeader()
+	select {
+	case err := <-leaderDone:
+		require.Equal(t, codes.Canceled, status.Code(err), "the leader leaves on its own cancellation")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the leader waited for the flight instead of leaving on its own ctx")
+	}
+	cancelQuitter()
+	select {
+	case err := <-quitterDone:
+		require.Equal(t, codes.Canceled, status.Code(err))
+	case <-time.After(2 * time.Second):
+		t.Fatal("a follower that disconnected did not leave")
+	}
+	time.Sleep(100 * time.Millisecond) // a canceled HTTP call (the mutation) would have failed by now
+	close(release)
+	<-followerDone
+	require.NoError(t, followerErr, "the connected follower gets the flight's answer, not the leader's cancellation")
+	require.Len(t, followerResp.GetIdeas(), 3)
+	require.Len(t, rec.all(), 1, "still one provider call")
+	_, _, hit := s.suggestCache.get(suggestCacheKey(mustSuggestInput(t, tryOnPose("hand on hip"))), time.Now())
+	require.True(t, hit, "the flight's answer is cached for the next asker")
+}
+
+func mustSuggestInput(t *testing.T, req *pb_admin.SuggestPromptsRequest) suggestInput {
+	t.Helper()
+	in, ve := validateSuggestPromptsRequest(req)
+	require.Nil(t, ve)
+	return in
+}

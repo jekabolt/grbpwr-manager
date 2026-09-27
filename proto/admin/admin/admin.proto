@@ -12439,15 +12439,16 @@ message StartDesignRunRequest {
   //     («extend_takes_no_words»); a params.extend.aspect_ratio outside the nine targets, `auto`
   //     and '' included («extend_aspect_unknown»); a target within 0.5 % of the source's own
   //     proportion, which adds no pixels on either side («target_aspect_must_extend»); a source
-  //     under the minimum side («source_too_small»). A params.extend on any other kind is
-  //     «extend_forbidden»;
+  //     under the minimum side («source_too_small»); a source over 18 MP, by its stored size or its
+  //     header («source_too_large»). A params.extend on any other kind is «extend_forbidden»;
   //   · inpaint — no params.inpaint.source_media_id («no_source_picture»); no
   //     params.inpaint.mask_media_id («mask_required»); a mask whose width and height differ from
   //     the source's («mask_size_mismatch»); a mask that is not a readable PNG, or is the source
   //     itself («mask_invalid»); a mask with nothing painted («mask_empty»); a blank `ask`
   //     («words_required»); a params.freeform or params.extra_input_media_ids beside it
-  //     («one_list_per_fact»); a source under the minimum side («source_too_small»). A
-  //     params.inpaint on any other kind is «inpaint_forbidden»;
+  //     («one_list_per_fact»); a source under the minimum side («source_too_small»); a source
+  //     (or its mask) over 18 MP («source_too_large»). A params.inpaint on any other kind is
+  //     «inpaint_forbidden»;
   //   · either — the fal tariff of the wired route set without its units ceiling, so the reserve
   //     would not be an absolute bound («route_reserve_unbounded», FailedPrecondition, naming
   //     FAL_UNITS_CEILING_OUTPAINT or FAL_UNITS_CEILING_FILL); a FAL_MODEL_OUTPAINT / FAL_MODEL_FILL

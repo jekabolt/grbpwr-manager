@@ -5,22 +5,44 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
+	"hash/crc32"
 	"io"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 )
 
 // ═══ G-03 fix pass — the door side: Fable M-1, m-1, m-2; Codex 7, 8 ═══
 
 // falMedia — the rig's media store answers exactly `rows` (no defaults: an id missing here has no
-// row), and its bucket serves `object` for any key.
+// row), and its bucket serves `object` at the mask's key and the picture's own other bytes elsewhere
+// (maskKeyedFiles).
 func falMedia(rows map[int]entity.MediaFull, object []byte) func(t *testing.T, rig *designRunRig) {
+	return falMediaFiles(rows, func(t *testing.T) dependency.FileStore { return maskKeyedFiles(t, object) })
+}
+
+// falMediaOneFile — the same rig whose bucket serves `object` for EVERY key: the picture and the mask
+// are one file uploaded twice.
+func falMediaOneFile(rows map[int]entity.MediaFull, object []byte) func(t *testing.T, rig *designRunRig) {
+	return falMediaFiles(rows, func(t *testing.T) dependency.FileStore {
+		files := mocks.NewMockFileStore(t)
+		files.EXPECT().GetManagedObject(mock.Anything, mock.Anything).RunAndReturn(
+			func(_ context.Context, _ string) (io.ReadCloser, int64, error) {
+				return io.NopCloser(bytes.NewReader(object)), int64(len(object)), nil
+			}).Maybe()
+		return files
+	})
+}
+
+func falMediaFiles(rows map[int]entity.MediaFull, files func(t *testing.T) dependency.FileStore) func(t *testing.T, rig *designRunRig) {
 	return func(t *testing.T, rig *designRunRig) {
 		rig.repo.ExpectedCalls = pgDropCalls(rig.repo.ExpectedCalls, "Media")
 		media := mocks.NewMockMedia(t)
@@ -35,12 +57,7 @@ func falMedia(rows map[int]entity.MediaFull, object []byte) func(t *testing.T, r
 				}
 				return out, nil
 			}).Maybe()
-		files := mocks.NewMockFileStore(t)
-		files.EXPECT().GetManagedObject(mock.Anything, mock.Anything).RunAndReturn(
-			func(_ context.Context, _ string) (io.ReadCloser, int64, error) {
-				return io.NopCloser(bytes.NewReader(object)), int64(len(object)), nil
-			}).Maybe()
-		rig.srv.bucket = files
+		rig.srv.bucket = files(t)
 	}
 }
 
@@ -209,4 +226,113 @@ func TestAnExtendOrInpaintRerunMAY_NOT_SWAP_ITS_PICTURE(t *testing.T) {
 	_, err = rig.srv.StartDesignRun(designRunCtx(), req)
 	require.Equal(t, "rerun_changes_pictures", ffReason(t, err))
 	require.Nil(t, rig.sent, "nothing reserved")
+}
+
+// pngHeaderOnly — the 8-byte signature and an IHDR declaring w×h (CRC recomputed), no pixel data: a
+// header the door reads and no decoder could ever expand. Proves the door refuses by the header.
+func pngHeaderOnly(t *testing.T, w, h int) []byte {
+	t.Helper()
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], uint32(w))
+	binary.BigEndian.PutUint32(ihdr[4:8], uint32(h))
+	ihdr[8], ihdr[9] = 8, 0 // 8-bit greyscale
+	var b bytes.Buffer
+	b.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'})
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(ihdr)))
+	chunk := append([]byte("IHDR"), ihdr...)
+	b.Write(chunk)
+	_ = binary.Write(&b, binary.BigEndian, crc32.ChecksumIEEE(chunk))
+	return b.Bytes()
+}
+
+// TestTheR2DoorRowsREFUSE_BEFORE_THE_STORE — G-03 r2 at the live door: the working pixel cap
+// (designgen.CompositeMaxSourcePixels, Codex BLOCKER 1) from the stored size or the header, and the
+// same-file mask of a LEGACY source that has no stored hash (Codex 7). Every row through the real
+// StartDesignRun; a refusal never reaches StartRun, so nothing is reserved.
+// MUTATIONS (measured red): designOverCompositeCap always false → the four source_too_large rows reach
+// the store; drop the legacy-object comparison → the «uploaded twice» row reaches the store.
+func TestTheR2DoorRowsREFUSE_BEFORE_THE_STORE(t *testing.T) {
+	routes := withFalRoutes(fal.Config{})
+	type setup = func(*testing.T, *designRunRig)
+	good := maskPNG(t, 64, 64, 10)
+	rows := []falDoorRow{
+		{name: "inpaint: the picture's stored size is over the cap", kind: entity.DesignRunKindInpaint, ask: "x",
+			params: inpaintParams(inpaintSourceID, inpaintMaskID),
+			setup: []setup{routes, falMedia(map[int]entity.MediaFull{
+				inpaintSourceID: pngRow(inpaintSourceID, 6000, 3001, designPNGURL, "ab12"),
+				inpaintMaskID:   pngRow(inpaintMaskID, 6000, 3001, inpaintMaskURL, ""),
+			}, good)},
+			want: entity.DesignErrorCodeSourceTooLarge},
+		{name: "inpaint: no stored size, the mask's header is over the cap", kind: entity.DesignRunKindInpaint, ask: "x",
+			params: inpaintParams(inpaintSourceID, inpaintMaskID),
+			setup: []setup{routes, falMedia(map[int]entity.MediaFull{
+				inpaintSourceID: pngRow(inpaintSourceID, 0, 0, designPNGURL, "ab12"),
+				inpaintMaskID:   pngRow(inpaintMaskID, 0, 0, inpaintMaskURL, ""),
+			}, pngHeaderOnly(t, 6000, 3001))},
+			want: entity.DesignErrorCodeSourceTooLarge},
+		{name: "extend: the picture's stored size is over the cap", kind: entity.DesignRunKindExtend,
+			params: extendParams("21:9", designRefMediaID),
+			setup: []setup{routes, falMedia(map[int]entity.MediaFull{
+				designRefMediaID: pngRow(designRefMediaID, 6000, 3001, designPNGURL, "")}, nil)},
+			want: entity.DesignErrorCodeSourceTooLarge},
+		{name: "extend: a legacy row with no size, its header over the cap", kind: entity.DesignRunKindExtend,
+			params: extendParams("21:9", designRefMediaID),
+			setup: []setup{routes, falMediaOneFile(map[int]entity.MediaFull{
+				designRefMediaID: pngRow(designRefMediaID, 0, 0, designPNGURL, "")}, pngHeaderOnly(t, 6000, 3001))},
+			want: entity.DesignErrorCodeSourceTooLarge},
+		{name: "extend: exactly at the cap passes", kind: entity.DesignRunKindExtend,
+			params: extendParams("21:9", designRefMediaID),
+			setup: []setup{routes, falMedia(map[int]entity.MediaFull{
+				designRefMediaID: pngRow(designRefMediaID, 6000, 3000, designPNGURL, "")}, nil)},
+			price: "0.12"},
+		{name: "extend: a legacy row whose header is under the cap passes", kind: entity.DesignRunKindExtend,
+			params: extendParams("21:9", designRefMediaID),
+			setup: []setup{routes, falMediaOneFile(map[int]entity.MediaFull{
+				designRefMediaID: pngRow(designRefMediaID, 0, 0, designPNGURL, "")}, pngHeaderOnly(t, 4000, 3000))},
+			price: "0.12"},
+		{name: "inpaint: a legacy picture with no hash and a mask that is the same file uploaded twice",
+			kind: entity.DesignRunKindInpaint, ask: "x", params: inpaintParams(inpaintSourceID, inpaintMaskID),
+			setup: []setup{routes, falMediaOneFile(map[int]entity.MediaFull{
+				inpaintSourceID: pngRow(inpaintSourceID, 64, 64, designPNGURL, ""),
+				inpaintMaskID:   pngRow(inpaintMaskID, 64, 64, inpaintMaskURL, ""),
+			}, good)},
+			want: entity.DesignErrorCodeMaskInvalid, why: "the picture itself"},
+		{name: "inpaint: a legacy picture with no hash and a different mask passes", kind: entity.DesignRunKindInpaint,
+			ask: "x", params: inpaintParams(inpaintSourceID, inpaintMaskID),
+			setup: []setup{routes, falMedia(map[int]entity.MediaFull{
+				inpaintSourceID: pngRow(inpaintSourceID, 64, 64, designPNGURL, ""),
+				inpaintMaskID:   pngRow(inpaintMaskID, 64, 64, inpaintMaskURL, ""),
+			}, good)},
+			price: "0.15"},
+	}
+	for _, c := range rows {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+			for _, s := range c.setup {
+				s(t, rig)
+			}
+			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+			req := designStartRequest(c.kind)
+			req.Params = c.params
+			req.Ask = c.ask
+			_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+			if c.want == "" {
+				require.NoError(t, err)
+				require.NotNil(t, rig.sent)
+				require.Equal(t, c.price, rig.sent.PriceEstimate.Decimal.String())
+				return
+			}
+			code, md := errorReason(t, err)
+			require.Equalf(t, c.want, md["reason"], "%v", err)
+			if c.why != "" {
+				require.Contains(t, md["why"], c.why)
+			}
+			if c.want == entity.DesignErrorCodeSourceTooLarge {
+				require.Equal(t, "18000000", md["max_pixels"])
+				require.Equal(t, codes.InvalidArgument, code)
+				require.Contains(t, err.Error(), "at most 18 MP")
+			}
+			require.Nil(t, rig.sent, "refused before the store: nothing reserved")
+		})
+	}
 }
