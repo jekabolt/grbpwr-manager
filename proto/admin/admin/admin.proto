@@ -1737,6 +1737,20 @@ service AdminService {
     };
   }
 
+  // SuggestPrompts — the `Ideas ▾` door of a PLAYGROUND prompt field: 3–5 short starting phrases for one field of one
+  // workflow, from the field's purpose, the card facts the client attaches, the text so far and at most two pictures
+  // (their thumbnails). Nothing is stored; the answer is cached in memory for ten minutes per identical request.
+  // Limits, in order: no key → FailedPrecondition AI_NOT_CONFIGURED; unknown workflow/field, > 2 media ids, context or
+  // text over 2000 runes → InvalidArgument; media not of this card / display-only / hidden → the run door's own
+  // refusals; 4 in flight and 30 calls per admin per hour SHARED with EnhanceText → ResourceExhausted.
+  // Classified as a WRITE on tech_cards, like EnhanceText (a press spends the AI key).
+  rpc SuggestPrompts(SuggestPromptsRequest) returns (SuggestPromptsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/ai/suggest-prompts"
+      body: "*"
+    };
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -7045,6 +7059,20 @@ message EnhanceTextResponse {
   string text = 1;
 }
 
+message SuggestPromptsRequest {
+  int32 tech_card_id = 1; // the card the pictures belong to (media door, D2)
+  string workflow = 2; // a GetDesignBandResponse.playground_workflows key
+  string field = 3; // the field key of that workflow's prompt (server table = client ideas.ts keys)
+  repeated int32 media_ids = 4; // ≤ 2 pictures the field is about (a reference, the model photo)
+  string context = 5; // card facts, ≤ 2000 runes, DATA never instructions
+  string text = 6; // what is typed so far, ≤ 2000 runes, may be empty
+}
+
+message SuggestPromptsResponse {
+  repeated string ideas = 1; // 3..5 phrases, ≤ 12 words each, trimmed, distinct
+  string model = 2; // the slug that answered
+}
+
 message UpdateTaskRequest {
   int32 id = 1;
   common.TaskInsert task = 2; // content only; board/status/position change via MoveTask, not here
@@ -12273,6 +12301,15 @@ message GetDesignBandResponse {
   // workflow with no outputs is simply absent from the map, read a missing key as 0. Outputs of no
   // workflow (run_workflow '') are not counted here.
   map<string, int32> outputs_total_by_workflow = 31;
+  // THE RUN KINDS StartDesignRun ACCEPTS ON THIS BINARY RIGHT NOW — the same designKindGate ladder as the door and as
+  // playground_workflows: a kind is here only where its route is wired, has its key and a bounded reserve. Keys from
+  // common.DesignRun.kind. A client reads MEMBERSHIP (`inpaint` present → the mask retouch route; `extend` present →
+  // Extend Image), never the order. ⚠ ABSENT ≠ EMPTY: absent = a binary older than phase 3 (draw the phase-2 forms);
+  // present-and-empty = generation is off.
+  repeated string run_kinds = 32;
+  // THE MODEL SuggestPrompts ANSWERS WITH ('' = the assistant is not configured: draw the static Ideas list only).
+  // ABSENT = a binary without SuggestPrompts.
+  string suggest_prompts_model = 33;
 }
 
 // DesignImageModel is ONE engine the image door accepts (GetDesignBandResponse.image_models) and
@@ -12341,8 +12378,8 @@ message StartDesignRunRequest {
   // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
   // one payment.
   string client_request_id = 2;
-  // flat | render | threed | vector | recolor | pattern | freeform | cutout. `draft_idea` is
-  // REFUSED here with
+  // flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint.
+  // `draft_idea` is REFUSED here with
   // InvalidArgument: a text run executes inline and returns its answer, so it has its own verb
   // (DraftDesignIdea) rather than a shared one that would return a pending row nobody ever polls.
   //
@@ -12395,6 +12432,27 @@ message StartDesignRunRequest {
   // card: no references, no bench plates, no garment description, no colourway (a positive
   // params.colorway_id is still `colorway_forbidden`).
   //
+  // `extend` AND `inpaint` ARE PLAYGROUND KINDS on fal (FAL_KEY), one picture each, and refuse for
+  // free, before anything is reserved:
+  //   · extend — anything other than exactly one picture in params.extra_input_media_ids
+  //     («one_source_picture»); an `ask` or a params.freeform on a route that reads no words
+  //     («extend_takes_no_words»); a params.extend.aspect_ratio outside the nine targets, `auto`
+  //     and '' included («extend_aspect_unknown»); a target within 0.5 % of the source's own
+  //     proportion, which adds no pixels on either side («target_aspect_must_extend»); a source
+  //     under the minimum side («source_too_small»). A params.extend on any other kind is
+  //     «extend_forbidden»;
+  //   · inpaint — no params.inpaint.source_media_id («no_source_picture»); no
+  //     params.inpaint.mask_media_id («mask_required»); a mask whose width and height differ from
+  //     the source's («mask_size_mismatch»); a mask that is not a readable PNG, or is the source
+  //     itself («mask_invalid»); a mask with nothing painted («mask_empty»); a blank `ask`
+  //     («words_required»); a params.freeform or params.extra_input_media_ids beside it
+  //     («one_list_per_fact»); a source under the minimum side («source_too_small»). A
+  //     params.inpaint on any other kind is «inpaint_forbidden»;
+  //   · either — the fal tariff of the wired route set without its units ceiling, so the reserve
+  //     would not be an absolute bound («route_reserve_unbounded», naming FAL_UNITS_CEILING_OUTPAINT
+  //     or FAL_UNITS_CEILING_FILL); any params.image («image_options_forbidden»).
+  // Neither kind reads the card, and neither states a colourway.
+  //
   // THE PLAYGROUND PRESETS AND THE PER-RUN ENGINE refuse for free, before anything is reserved, too
   // (InvalidArgument unless noted):
   //   · a preset missing a picture of the role it needs («role_required»); a preset that takes
@@ -12410,7 +12468,7 @@ message StartDesignRunRequest {
   //   · params.image — a slug the engine table does not hold («unknown_image_model»), a tier, ratio
   //     or background the chosen engine does not list («quality_not_supported»,
   //     «aspect_not_supported», «background_not_supported»), or any params.image on threed | cutout
-  //     | vector («image_options_forbidden»);
+  //     | vector | extend | inpaint («image_options_forbidden»);
   //   · threed — more than 4 params.threed.reference_media_ids («too_many_pictures»).
   string kind = 3;
   string ask = 4; // the delta phrase; may be empty

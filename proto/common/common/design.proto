@@ -30,7 +30,8 @@ message DesignRun {
   int32 id = 1; // the row's address; the handle a human says out loud as «run 5»
   int32 tech_card_id = 2; // FK tech_card(id); which card's band this row belongs to
   // Which state of the studio produced this row: flat | render | threed | vector | draft_idea |
-  // recolor | pattern | freeform | cutout. Written by the client at start; immutable afterwards.
+  // recolor | pattern | freeform | cutout | extend | inpaint. Written by the client at start;
+  // immutable afterwards.
   //
   // `recolor` IS THE ON MODEL SECTION'S OWN VERB (K-17). The owner's ask — «мы можем загрузить фото
   // реальное на модели с разных сторон и нам можно будет поменять цвет вещи» — and the owner's own
@@ -53,6 +54,11 @@ message DesignRun {
   //
   // ImportDesignVector is NOT that verb and does not belong to this list: it files an SVG that
   // already exists and spends nothing.
+  //
+  // `extend` EXTENDS ONE PICTURE INTO A NEW PROPORTION on fal's outpaint route (params.extend + one
+  // params.extra_input_media_ids). `inpaint` REPAINTS ONE PAINTED ZONE of a picture on fal's fill
+  // route (params.inpaint + ask). Both are playground kinds: one output, colourway 0, section 1 of
+  // the window.
   string kind = 3;
   // OUTPUT-ONLY lifecycle: pending | running | done | failed | cancelled. A tile that is still
   // running renders differently from a finished one, so this is the field the band polls.
@@ -362,13 +368,18 @@ message DesignRunParams {
   DesignFreeformParams freeform = 15;
 
   // THE PER-RUN ENGINE of every OpenRouter image kind: flat | render | recolor | pattern | freeform.
-  // Refused on threed | cutout | vector, whose routes are not OpenRouter images
+  // Refused on threed | cutout | vector | extend | inpaint, whose routes are not OpenRouter images
   // (`image_options_forbidden`). Absent or empty = the deployment's dial, exactly as before the
   // field existed — which is what keeps every frozen run and every old client meaning what it meant.
   //
   // Offered only where GetDesignBandResponse.image_models is present; a client must not send it to a
   // server that did not list any engine.
   DesignImageOptions image = 16;
+
+  // THE MASK RETOUCH OF A PLAYGROUND RUN (kind=inpaint). Refused on every other kind (`inpaint_forbidden`).
+  DesignInpaintParams inpaint = 17;
+  // THE TARGET FORMAT OF AN EXTEND RUN (kind=extend). Refused on every other kind (`extend_forbidden`).
+  DesignExtendParams extend = 18;
 }
 
 // DesignImageOptions is the engine a person chose for ONE image run — the model and how it is asked
@@ -388,6 +399,26 @@ message DesignImageOptions {
   string aspect_ratio = 3;
   // '' | transparent — only when the engine lists it in image_models[].backgrounds.
   string background = 4;
+}
+
+// DesignInpaintParams — one picture of this card and its painted mask, a PNG of the SAME pixel size, white where the
+// picture changes, black elsewhere (the client paints it; UploadContentImage with preserve_original=true). Both are
+// validated BEFORE anything is reserved: `mask_required`, `mask_size_mismatch`, `mask_invalid` (not a readable PNG),
+// `mask_empty` (nothing painted). The words travel in StartDesignRunRequest.ask (`words_required` when blank).
+// The answer is a NEW picture beside the source; pixels outside the mask are the source's own bytes.
+message DesignInpaintParams {
+  int32 source_media_id = 1; // FK media(id); a raster picture of this card or a fresh upload
+  int32 mask_media_id = 2; // FK media(id); the mask PNG, same width and height as the source
+}
+
+// DesignExtendParams — the final proportion of an extend (outpaint) run. The ONE source travels in
+// DesignRunParams.extra_input_media_ids (exactly one, `one_source_picture`); the route takes no words
+// (`extend_takes_no_words`). aspect_ratio ∈ 9:16 | 1:1 | 3:4 | 2:3 | 16:9 | 4:3 | 3:2 | 21:9 | 9:21 — never auto
+// (`extend_aspect_unknown`); a target that adds no pixels on either side is `target_aspect_must_extend`. The
+// server computes the per-side expansion, caps the canvas at 3 megapixels (downscaling the source first), and
+// re-composites the untouched source pixels into the answer, so «the original is kept» is a fact of the bytes.
+message DesignExtendParams {
+  string aspect_ratio = 1;
 }
 
 // DesignPatternParams is the frozen ask of a REPEATING-TILE run (kind=pattern, K-13).
@@ -1262,8 +1293,8 @@ message DesignCardOutput {
   // FK design_run(id). 0 = no run: an uploaded picture, or a parentless flatten. It does NOT imply
   // «a run produced this picture» when non-zero — see the ancestry note above.
   int32 run_id = 2;
-  // render | threed | pattern | recolor | freeform | cutout — the kind of the RUN, never of the
-  // picture. "" when there is no run at all.
+  // render | threed | pattern | recolor | freeform | cutout | extend | inpaint — the kind of the
+  // RUN, never of the picture. "" when there is no run at all.
   string run_kind = 3;
   int32 run_rrev = 4; // the render revision of that run; 0 when there is no run
   // The run's colourway — product(id), 0 = unattributed or no run.
