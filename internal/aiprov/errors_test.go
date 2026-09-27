@@ -40,8 +40,8 @@ func TestCallErrorUnwrapAndAs(t *testing.T) {
 	require.False(t, ok, "a typed-nil CallError is not an answer")
 	require.Nil(t, typedNil.Unwrap(), "Unwrap is nil-safe")
 
-	// The text IS the transport's sentence: Code and HTTPStatus are fields, not prose. A consumer that
-	// anchors on the sentence's start (techcard_ai_enhance.go: providerHTTPStatusRe) must see it first.
+	// The text IS the transport's sentence: Code and HTTPStatus are fields, not prose, and nothing is
+	// put in front of the transport's words.
 	require.Equal(t, "upstream said no", ce.Error())
 	sentence := errors.New("openrouter: API error (HTTP 502): upstream is having a moment")
 	require.Equal(t, sentence.Error(),

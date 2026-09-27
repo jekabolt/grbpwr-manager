@@ -575,8 +575,8 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 // The SENTENCES are the ones the openrouter client wrote before the move: a 404 opens with the
 // ErrModelUnavailable sentence (a setting, not weather — "the configured model is not available at the
 // provider: API error (HTTP 404): …"); every other status is the bare "<provider>: API error (HTTP n):
-// <provider text>", which techcard_ai_enhance.go's providerHTTPStatusRe reads from the START of the
-// string until B-18 moves it onto the fields. The provider's text only ever follows that colon.
+// <provider text>" (before B-18 a consumer read the status from the start of that string; since B-18
+// every consumer reads CallError.HTTPStatus). The provider's text only ever follows that colon.
 func (c *Client) statusError(status int, body []byte) error {
 	p := c.provider()
 	code, retryable := classifyStatus(status)

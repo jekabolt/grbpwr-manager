@@ -81,11 +81,11 @@ type CallError struct {
 // Error is the TRANSPORT'S OWN SENTENCE, verbatim — Err.Error() and nothing added. Code, HTTPStatus
 // and Engaged are FIELDS, read with AsCallError; they are not prose.
 //
-// ⚠ NOTHING IS PREPENDED ON PURPOSE (B-11). Some of these errors reach a person whole (design_run.go:
-// designDraftCallError), and some consumers still read the sentence until B-18 repoints them at the
-// fields — techcard_ai_enhance.go's providerHTTPStatusRe is anchored at the START of err.Error()
-// ("^openrouter: API error \(HTTP ([0-9]{3})\):"); a "[code, HTTP 502]" tag in front would blind it.
-// With no Err the text still names the provider, so a bare CallError is never an empty line.
+// ⚠ NOTHING IS PREPENDED ON PURPOSE (B-11). Until B-18 some consumers read this sentence (a regex
+// anchored at its start); since B-18 every consumer reads the fields and none shows the sentence to a
+// person (admin: aiFaultWords), but a log line still carries the transport's own words, and a tag in
+// front would only make them harder to grep. With no Err the text still names the provider, so a
+// bare CallError is never an empty line.
 func (e *CallError) Error() string {
 	if e == nil {
 		return "<nil>"
