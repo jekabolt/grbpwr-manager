@@ -442,13 +442,12 @@ func TestAIRefusalsCarryAMachineReadableReason(t *testing.T) {
 			"один reason на обе причины вернул бы ровно ту неразличимость, ради которой всё это")
 	})
 
-	t.Run("остальные два потребителя того же клиента — тот же reason", func(t *testing.T) {
-		// Клиент один на троих, и различать причину на одном экране, оставив два других слепыми,
+	t.Run("другие потребители того же клиента — тот же reason", func(t *testing.T) {
+		// Клиент один на всех, и различать причину на одном экране, оставив остальные слепыми,
 		// значило бы повторить ту же историю на следующей кнопке.
 		client, _ := newFakeOpenRouter(t, deadProvider)
-		_, tcErr := aiOpsServer(t, client).GenerateTechCardOperations(context.Background(),
-			&pb_admin.GenerateTechCardOperationsRequest{TechCardId: 7, Description: "sew it"})
-		require.Equal(t, aiReasonModelUnavailable, aiReasonOf(t, tcErr))
+		_, enhanceErr := newEnhanceServer(t, client).EnhanceText(adminCtx("alice"), noteImprove("текст"))
+		require.Equal(t, aiReasonModelUnavailable, aiReasonOf(t, enhanceErr))
 
 		campErr := campaignTranslateError(
 			fmt.Errorf("translate en→fr: %w", openrouter.ErrModelUnavailable), "m/x")

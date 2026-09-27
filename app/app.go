@@ -512,11 +512,13 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// OpenRouter chat client. Since B-18 it is two things: the TRANSPORT the AI router calls for
-	// every chat purpose routed to openrouter (aiOpsClient.Transport() — this very configuration:
-	// base URL, key func, budget base, attribution headers), and the legacy door of the one feature
-	// not moved onto the router (GenerateTechCardOperations, being deleted in a parallel session).
-	// Nil-safe/disabled when no key answers, and each door then reports it as not configured.
+	// OpenRouter chat client. Since B-18 it is the TRANSPORT the AI router calls for every chat
+	// purpose routed to openrouter (aiOpsClient.Transport() — this very configuration: base URL, the
+	// key read per request through the registry's KeyFunc wired above (a key stored in admin → AI
+	// providers, else OPENROUTER_API_KEY), budget base, attribution headers) and the source of the
+	// router's default slugs (admin.AIRouterDefaults: OPENROUTER_MODEL, _ANALYSIS, _IDEAS). With no
+	// key from either source, or with openrouter switched off in the panel, the transport is passed
+	// over and each door reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
 
 	// ─── DESIGN band, generative half ─────────────────────────────────────────────────────────
@@ -747,7 +749,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, aiOpsClient, jpk.Taxpayer{
+	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, jpk.Taxpayer{
 		NIP:       a.c.JPK.NIP,
 		FullName:  a.c.JPK.FullName,
 		Email:     a.c.JPK.Email,

@@ -151,6 +151,7 @@ var statements = map[string]string{
 	"deleteAIRoute":            deleteAIRoute,
 	"insertAIRouteCandidate":   insertAIRouteCandidate,
 	"upsertAIModel":            upsertAIModel,
+	"insertAIModelIfAbsent":    insertAIModelIfAbsent,
 	"insertAICall":             insertAICall,
 	"finishAICall":             finishAICall,
 	"priceAcceptedAICall":      priceAcceptedAICall,
@@ -276,6 +277,7 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 		"deleteAIRoute":            {"purpose": "vector"},
 		"insertAIRouteCandidate":   {"purpose": "vector", "position": 1, "provider_key": "", "model": "", "by": "jeka"},
 		"upsertAIModel":            {"provider_key": "fal", "model": "x", "label": "", "kind": "threed", "disabled": false, "by": "jeka"},
+		"insertAIModelIfAbsent":    {"provider_key": "fal", "model": "x", "kind": "threed", "by": "jeka"},
 		"insertAICall":             begin,
 		"finishAICall":             finish,
 		"priceAcceptedAICall":      priced,
@@ -317,7 +319,10 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 
 // ───────────────────────── the statements name real columns ─────────────────────────
 
-var createTableRe = regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE`)
+var (
+	createTableRe = regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\) ENGINE`)
+	adminsTableRe = regexp.MustCompile(`(?is)CREATE TABLE admins \((.*?)\n\);`)
+)
 
 // migrationColumns reads the tables this package touches straight from the migration files.
 func migrationColumns(t *testing.T) map[string]map[string]bool {
@@ -344,8 +349,24 @@ func migrationColumns(t *testing.T) map[string]map[string]bool {
 			tables[strings.ToLower(m[1])] = cols
 		}
 	}
+	// admins (0001): the ledger's INSERT resolves actor_admin_id by username. 0001 predates the
+	// IF NOT EXISTS / ENGINE shape, hence its own pattern; the columns read here are the two 0001
+	// created (id, username), which is all the store names.
+	body, err := os.ReadFile(filepath.Join("..", "sql", "0001_initial_setup.sql"))
+	if err != nil {
+		t.Fatalf("read 0001_initial_setup.sql: %v", err)
+	}
+	if m := adminsTableRe.FindStringSubmatch(string(body)); m != nil {
+		cols := map[string]bool{}
+		for _, line := range strings.Split(m[1], "\n") {
+			if fields := strings.Fields(line); len(fields) > 0 {
+				cols[strings.ToLower(fields[0])] = true
+			}
+		}
+		tables["admins"] = cols
+	}
 	for _, want := range []string{"design_settings", "ai_provider", "ai_model", "ai_route", "ai_settings",
-		"ai_usage_event", "ai_provider_cost_daily"} {
+		"ai_usage_event", "ai_provider_cost_daily", "admins"} {
 		if len(tables[want]) == 0 {
 			t.Fatalf("sanity: no columns parsed for %s — the extractor is broken", want)
 		}
@@ -366,7 +387,7 @@ var (
 		"by": true, "order": true, "sum": true, "count": true, "max": true, "case": true, "when": true,
 		"then": true, "else": true, "end": true, "between": true, "coalesce": true, "if": true,
 		"update": true, "set": true, "insert": true, "ignore": true, "into": true, "values": true,
-		"delete": true, "duplicate": true, "key": true,
+		"delete": true, "duplicate": true, "key": true, "limit": true,
 	}
 )
 
@@ -575,7 +596,8 @@ func TestAIStoreShapeLedgerUpdatesTouchOnlyTheirState(t *testing.T) {
 // exact lie 02-PLAN §7 forbids); their number read raw per day instead of summed per provider (one
 // line per reported day, each a partial number); their number JOINed back onto the ledger side (a
 // provider with no ledger row in the period loses its line again — unionSpendLines is where the two
-// meet); a status dropped from the unpriced list; a report without its period.
+// meet); unpriced counted over a status list instead of "not free" (accepted, dispatching and failed
+// rows with no cost vanish from the counter — Codex B #3); a report without its period.
 func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
 	for name, q := range map[string]string{"by provider": spendByProvider, "their number": spendTheirByProvider, "by actor": spendByActor} {
 		up := strings.ToUpper(q)
@@ -591,9 +613,15 @@ func TestAIStoreShapeSpendReportKeepsUnknownUnknown(t *testing.T) {
 			t.Fatalf("the report %s is not bounded by the day_local period", name)
 		}
 	}
+	// Codex B #3: unpriced is every counted row with no known cost except a free one — accepted and
+	// dispatching (an unknown liability) and failed included. The old list ('ok','charged_failed',
+	// 'unknown') left a submitted fal job at calls=1, no USD and unpriced=0.
 	if !strings.Contains(spendByProvider,
-		"cost_usd IS NULL AND status IN ('"+entity.AICallOK+"','"+entity.AICallChargedFailed+"','"+entity.AICallUnknown+"')") {
-		t.Fatal("unpriced = cost_usd IS NULL AND status IN ('ok','charged_failed','unknown') (02-PLAN A1)")
+		"SUM(CASE WHEN cost_usd IS NULL AND status <> '"+entity.AICallFree+"' THEN 1 ELSE 0 END) AS unpriced") {
+		t.Fatal("unpriced = SUM(CASE WHEN cost_usd IS NULL AND status <> 'free' …) — every counted row without a known cost that is not free")
+	}
+	if strings.Contains(spendByProvider, "cost_usd IS NULL AND status IN") {
+		t.Fatal("unpriced lists the statuses it includes: every status left out is dropped from the counter")
 	}
 	if !strings.Contains(spendTheirByProvider, "SUM(amount_usd) AS their_usd") ||
 		!strings.Contains(spendTheirByProvider, "FROM ai_provider_cost_daily\n\tWHERE day BETWEEN :from_day AND :to_day\n\tGROUP BY provider_key") {
@@ -652,7 +680,7 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 			return s.SetRoute(ctx, entity.AIPurposeThreed, []entity.AIRouteCandidate{
 				{Position: 9, ProviderKey: "meshy"}, {Position: 3, ProviderKey: "fal", Model: " fal-ai/trellis "},
 			}, 7, "jeka")
-		}, []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate"}},
+		}, []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate", "insertAIModelIfAbsent"}},
 		{"UpsertModel", func(s *Store) error {
 			return s.UpsertModel(ctx, entity.AIModel{ProviderKey: "openrouter", Model: "x/y", Kind: "chat"}, "jeka")
 		}, []string{"bumpConfigVersion", "upsertAIModel"}},
@@ -675,7 +703,7 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 		}
 		if st.name == "SetRoute" {
 			var got []string
-			for _, c := range db.calls[2:] {
+			for _, c := range db.calls[2:4] {
 				got = append(got, argOf(t, insertAIRouteCandidate, c.args, "provider_key").(string)+"@"+
 					argOf(t, insertAIRouteCandidate, c.args, "model").(string)+"#"+
 					string(rune('0'+argOf(t, insertAIRouteCandidate, c.args, "position").(int))))
@@ -694,6 +722,110 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestAIStoreShapeRouteAndItsModelsCommitTogether (Codex B #6) — SetRoute records the slugs its route
+// names in the SAME transaction as the route, after it, under the one checked bump; a "" provider is
+// the default the settings row of THAT transaction holds; a stale page records nothing. The plain
+// handle is a fake of its own that fails the test if touched.
+//
+// MUTATIONS IT CATCHES: the model rows written outside the route's transaction (on s.DB, or in a
+// transaction of their own — the handler's old aiRecordCustomModels: a default changed in between files
+// the slug under a provider the route no longer follows); the default read outside the transaction,
+// or hardcoded to openrouter; a slug recorded twice; a model-less candidate or a capability with no
+// default recorded under a guessed provider; a model row written for a stale page.
+func TestAIStoreShapeRouteAndItsModelsCommitTogether(t *testing.T) {
+	ctx := context.Background()
+	outside := func(q string) {
+		t.Errorf("a SetRoute statement reached a handle outside its transaction: %q", firstLine(q))
+	}
+	plain := &recDB{
+		onExec:   func(q string, _ []any) (sql.Result, error) { outside(q); return recResult{rows: 1}, nil },
+		onGet:    func(_ any, q string, _ []any) error { outside(q); return nil },
+		onSelect: func(_ any, q string, _ []any) error { outside(q); return nil },
+	}
+	run := func(tx *recDB, purpose string, cands []entity.AIRouteCandidate) (int, error) {
+		t.Helper()
+		txs := 0
+		s := New(storeutil.Base{DB: plain, Now: func() time.Time { return fixedNow }},
+			func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+				txs++
+				return f(ctx, recRepo{db: tx})
+			},
+			func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+				t.Error("SetRoute ran in the read-only runner")
+				return f(ctx, recRepo{db: plain})
+			})
+		return txs, s.SetRoute(ctx, purpose, cands, 7, "jeka")
+	}
+	settingsGet := func(dest any, _ string, _ []any) error {
+		if d, ok := dest.(*entity.AISettings); ok {
+			*d = entity.AISettings{ConfigVersion: 7, DefaultChatProviderKey: "apibost", DefaultImageProviderKey: "google"}
+		}
+		return nil
+	}
+
+	// chat: "" = the transaction's default chat provider (apibost, not openrouter); the explicit slug is
+	// recorded as named; a model-less candidate and a repeat record nothing.
+	tx := &recDB{onGet: settingsGet}
+	txs, err := run(tx, entity.AIPurposeNoteMarkdown, []entity.AIRouteCandidate{
+		{ProviderKey: "", Model: " custom/chat-1 "},
+		{ProviderKey: "openrouter", Model: "x-ai/grok-9"},
+		{ProviderKey: "openrouter"},
+		{ProviderKey: "apibost", Model: "custom/chat-1"},
+	})
+	if err != nil || txs != 1 || len(plain.calls) != 0 {
+		t.Fatalf("SetRoute = %v in %d transactions, %d plain-handle statements; want nil, 1, 0", err, txs, len(plain.calls))
+	}
+	want := []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate",
+		"insertAIRouteCandidate", "insertAIRouteCandidate", "selectAISettings", "insertAIModelIfAbsent", "insertAIModelIfAbsent"}
+	if got := sequence(t, tx); !slices.Equal(got, want) {
+		t.Fatalf("SetRoute sent %v, want %v", got, want)
+	}
+	var recorded []string
+	for _, c := range tx.calls[7:] {
+		recorded = append(recorded, modelCall(t, c.args))
+	}
+	if want := []string{"apibost/custom/chat-1 chat by jeka", "openrouter/x-ai/grok-9 chat by jeka"}; !slices.Equal(recorded, want) {
+		t.Fatalf("recorded %v, want %v (\"\" = the transaction's default; every named slug once)", recorded, want)
+	}
+
+	// image: "" = the default IMAGE provider of the same row.
+	tx = &recDB{onGet: settingsGet}
+	if _, err := run(tx, entity.AIPurposeImageGenerate, []entity.AIRouteCandidate{{Model: "google/nano-banana"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelCall(t, findCall(t, tx, "insertAIModelIfAbsent").args); got != "google/google/nano-banana image by jeka" {
+		t.Fatalf("image slug recorded as %q, want it under the default image provider", got)
+	}
+
+	// threed: "" has no default — nothing is recorded, and no settings are read for it.
+	tx = &recDB{onGet: settingsGet}
+	if _, err := run(tx, entity.AIPurposeThreed, []entity.AIRouteCandidate{{Model: "somewhere/3d"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sequence(t, tx), []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate"}; !slices.Equal(got, want) {
+		t.Fatalf("a slug with no provider to file it under sent %v, want %v", got, want)
+	}
+
+	// A stale page: the bump loses, nothing — route or model — is written.
+	tx = &recDB{
+		onExec: func(string, []any) (sql.Result, error) { return recResult{rows: 0}, nil },
+		onGet:  func(dest any, _ string, _ []any) error { *(dest.(*int)) = 1; return nil },
+	}
+	if _, err := run(tx, entity.AIPurposeNoteMarkdown, []entity.AIRouteCandidate{{ProviderKey: "openrouter", Model: "x/y"}}); !errors.Is(err, entity.ErrAIVersionConflict) {
+		t.Fatalf("a stale page returned %v, want ErrAIVersionConflict", err)
+	}
+	if got, want := sequence(t, tx), []string{"bumpConfigVersionChecked", "countAISettings"}; !slices.Equal(got, want) {
+		t.Fatalf("a stale page sent %v, want %v and nothing after", got, want)
+	}
+}
+
+// modelCall renders one insertAIModelIfAbsent call as "provider/model kind by who".
+func modelCall(t *testing.T, args []any) string {
+	t.Helper()
+	a := func(n string) string { return argOf(t, insertAIModelIfAbsent, args, n).(string) }
+	return a("provider_key") + "/" + a("model") + " " + a("kind") + " by " + a("by")
 }
 
 // TestAIStoreShapeClearingAKeyWritesNullAndStillSaysWho.
@@ -877,6 +1009,63 @@ func TestAIStoreShapeBeginCallBindsTheRowItPromises(t *testing.T) {
 	}
 }
 
+// argsOf returns the value bound to EVERY occurrence of :name in a call of the named statement, in
+// order of appearance.
+func argsOf(t *testing.T, named string, args []any, name string) []any {
+	t.Helper()
+	names := paramNames(named)
+	if len(args) != len(names) {
+		t.Fatalf("%q: %d args bound for %d parameters", firstLine(named), len(args), len(names))
+	}
+	var out []any
+	for i, n := range names {
+		if n == name {
+			out = append(out, args[i])
+		}
+	}
+	return out
+}
+
+// TestAIStoreShapeActorIsAttributedByIdAtWriteTime (Codex B #2, D-10).
+//
+// MUTATIONS IT CATCHES: the INSERT binding :actor_admin_id alone (designgen's rows, whose recorder has
+// no id, stay NULL and are grouped by username only — a recreated account then inherits them); the
+// lookup keyed on anything but the row's own :actor; the report MAX()ing the id per username instead
+// of grouping by it (an old account's spend merged into, and labelled as, the new account of the same
+// name).
+func TestAIStoreShapeActorIsAttributedByIdAtWriteTime(t *testing.T) {
+	flat := strings.Join(strings.Fields(insertAICall), " ")
+	if !strings.Contains(flat, "COALESCE(:actor_admin_id, (SELECT id FROM admins WHERE username = :actor LIMIT 1))") {
+		t.Fatalf("the ledger INSERT must resolve a missing actor_admin_id from admins by the row's username: %s", flat)
+	}
+
+	// No id from the caller (designgen): the id binds NULL and every :actor — the column and the
+	// lookup — binds the row's username, so the database picks the id of the account that has it now.
+	db := &recDB{}
+	st := sampleStart()
+	st.ActorAdminID = nil
+	if _, err := newRecStore(db, nil).BeginCall(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	c := findCall(t, db, "insertAICall")
+	if v := argOf(t, insertAICall, c.args, "actor_admin_id"); v != nil {
+		t.Fatalf(":actor_admin_id = %#v with no id from the caller, want NULL (the lookup decides)", v)
+	}
+	actors := argsOf(t, insertAICall, c.args, "actor")
+	if len(actors) != 2 || actors[0] != "jeka" || actors[1] != "jeka" {
+		t.Fatalf(":actor bound %v, want the row's username for the column and for the lookup", actors)
+	}
+
+	// The report groups by the id, never folds it.
+	flat = strings.Join(strings.Fields(spendByActor), " ")
+	if !strings.Contains(flat, "GROUP BY actor_admin_id, actor, purpose, provider_key, model") {
+		t.Fatalf("spendByActor must group by the account id: %s", flat)
+	}
+	if strings.Contains(strings.ToUpper(flat), "MAX(") {
+		t.Fatalf("spendByActor folds the account id: %s", flat)
+	}
+}
+
 // TestAIStoreShapeFinishBindsNullForWhatItDoesNotKnow.
 //
 // MUTATIONS IT CATCHES: binding "" or 0 for an absent value — COALESCE keeps only on NULL, so an ""
@@ -998,7 +1187,7 @@ func TestAIStoreShapeSweepReportsWhatItSwept(t *testing.T) {
 // billed failure, are not configuration faults); binding a local-zone :since against the UTC column.
 func TestAIStoreShapeRecentFaultsReadsFailedCallsOfTheWindow(t *testing.T) {
 	flat := strings.Join(strings.Fields(recentFaults), " ")
-	for _, want := range []string{"status IN ('failed', 'free')", "occurred_at >= :since", "GROUP BY provider_key, error_code"} {
+	for _, want := range []string{"e.status IN ('failed', 'free')", "e.occurred_at >= :since", "GROUP BY e.provider_key, e.error_code"} {
 		if !strings.Contains(flat, want) {
 			t.Fatalf("recentFaults lost %q: %s", want, flat)
 		}
@@ -1020,6 +1209,49 @@ func TestAIStoreShapeRecentFaultsReadsFailedCallsOfTheWindow(t *testing.T) {
 	bound, ok := argOf(t, recentFaults, c.args, "since").(time.Time)
 	if !ok || !bound.Equal(since) || bound.Location() != time.UTC {
 		t.Fatalf(":since = %v, want %v in UTC", bound, since.UTC())
+	}
+}
+
+// TestAIStoreShapeKeyFaultsEndAtTheKeyWrite (Codex B #9) — a key-class fault older than the
+// provider's last api-key write is not counted: saving a working key (or clearing the stored one so the
+// env key answers) clears «key rejected» / «out of credits» at once instead of up to 24 hours later.
+//
+// MUTATIONS IT CATCHES: the bound dropped (the old key's refusals badge the new key); an inner JOIN (a
+// provider with no row loses every badge); the bound applied to a model fault (a route fix is not a key
+// write); a key word of the ledger's vocabulary missing from the bounded list (designgen's
+// provider_unauthorized would outlive the repair), or a word that is not a key fault added to it; the
+// admin key's write taken as the bound (it serves no call).
+func TestAIStoreShapeKeyFaultsEndAtTheKeyWrite(t *testing.T) {
+	flat := strings.Join(strings.Fields(recentFaults), " ")
+	for _, want := range []string{
+		"FROM ai_usage_event AS e LEFT JOIN ai_provider AS p ON p.provider_key = e.provider_key",
+		"AND p.api_key_updated_at IS NOT NULL AND e.occurred_at < p.api_key_updated_at)",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("recentFaults lost %q: %s", want, flat)
+		}
+	}
+	if strings.Contains(flat, "admin_key_updated_at") {
+		t.Fatalf("the admin key serves no call; its write must not bound the badge: %s", flat)
+	}
+	m := regexp.MustCompile(`AND NOT \(e\.error_code IN \(([^)]*)\) AND p\.api_key_updated_at`).FindStringSubmatch(flat)
+	if m == nil {
+		t.Fatalf("recentFaults has no key-fault bound: %s", flat)
+	}
+	var bounded []string
+	for _, w := range strings.Split(m[1], ",") {
+		bounded = append(bounded, strings.Trim(strings.TrimSpace(w), "'"))
+	}
+	var keyWords []string
+	for word, badge := range faultBadges {
+		if badge == faultKeyRejected || badge == faultOutOfCredits {
+			keyWords = append(keyWords, word)
+		}
+	}
+	slices.Sort(bounded)
+	slices.Sort(keyWords)
+	if !slices.Equal(bounded, keyWords) {
+		t.Fatalf("the key-fault bound covers %v; the key-class words of faultBadges are %v", bounded, keyWords)
 	}
 }
 
@@ -1382,6 +1614,105 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 	}
 	if rep.Timezone != entity.DefaultBudgetTimezone {
 		t.Fatalf("blank timezone reported as %q", rep.Timezone)
+	}
+}
+
+// TestAIStoreShapeSpendReportIsOneSnapshot (Codex B #5) — the report's four reads reach the handle of
+// ONE read-only transaction, and the report returned is that handle's; on a transactional repository
+// they reach the enclosing transaction and begin nothing. The plain handle and the write runner each
+// get a fake of their own, which fails the test if touched.
+//
+// MUTATIONS IT CATCHES: one read through s.DB — an autocommit read outside the snapshot, so a call
+// finishing between two reads makes one response disagree with itself (calls vs the sum of by_actor);
+// the report run in txFunc (SERIALIZABLE: shared range locks on the ledger, holding up every BeginCall
+// of the period); a read error swallowed inside the transaction.
+func TestAIStoreShapeSpendReportIsOneSnapshot(t *testing.T) {
+	outside := func(dest any, q string, _ []any) error {
+		t.Errorf("a SpendReport read reached a handle outside the read snapshot: %q", firstLine(q))
+		return nil
+	}
+	plain := &recDB{onGet: outside, onSelect: outside}
+	var failActors error
+	snap := &recDB{
+		onGet: func(dest any, _ string, _ []any) error {
+			if d, ok := dest.(*string); ok {
+				*d = "Europe/Riga"
+			}
+			return nil
+		},
+		onSelect: func(dest any, _ string, _ []any) error {
+			switch d := dest.(type) {
+			case *[]ourSpendRow:
+				*d = []ourSpendRow{{ProviderKey: "fal", OurUSD: decimal.NewNullDecimal(decimal.RequireFromString("2")), Calls: 3}}
+			case *[]theirSpendRow:
+				*d = []theirSpendRow{{ProviderKey: "fal", TheirUSD: decimal.NewNullDecimal(decimal.RequireFromString("2.1"))}}
+			case *[]entity.AISpendByActor:
+				if failActors != nil {
+					return failActors
+				}
+				*d = []entity.AISpendByActor{{Actor: "jeka", ActorAdminID: ptr(7), ProviderKey: "fal", Calls: 3}}
+			}
+			return nil
+		},
+	}
+	var writeTxs, readTxs int
+	var readTxErr error
+	s := New(storeutil.Base{DB: plain, Now: func() time.Time { return fixedNow }},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			writeTxs++
+			return f(ctx, recRepo{db: plain})
+		},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			readTxs++
+			readTxErr = f(ctx, recRepo{db: snap})
+			return readTxErr
+		})
+
+	rep, err := s.SpendReport(context.Background(), "2026-09-01", "2026-09-27")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readTxs != 1 || writeTxs != 0 || len(plain.calls) != 0 {
+		t.Fatalf("read transactions %d, write transactions %d, plain-handle calls %d; want 1, 0, 0",
+			readTxs, writeTxs, len(plain.calls))
+	}
+	want := []string{"spendByProvider", "spendTheirByProvider", "spendByActor", "selectBudgetTimezone"}
+	if got := sequence(t, snap); !slices.Equal(got, want) {
+		t.Fatalf("inside the snapshot SpendReport read %v, want %v", got, want)
+	}
+	if rep.Calls != 3 || len(rep.ByProvider) != 1 || !rep.ByProvider[0].TheirUSD.Valid || len(rep.ByActor) != 1 ||
+		rep.ByActor[0].Actor != "jeka" || rep.Timezone != "Europe/Riga" {
+		t.Fatalf("SpendReport returned %+v, want the snapshot's rows", rep)
+	}
+
+	failActors = errors.New("lost connection")
+	rep, err = s.SpendReport(context.Background(), "2026-09-01", "2026-09-27")
+	if !errors.Is(err, failActors) || rep != nil {
+		t.Fatalf("a failed read returned (%v, %v); want (nil, the error)", rep, err)
+	}
+	if !errors.Is(readTxErr, failActors) {
+		t.Fatalf("the read transaction ended with %v; the error must reach it so it rolls back", readTxErr)
+	}
+
+	// On a transactional repository: the enclosing transaction's handle, and no transaction begun.
+	failActors = nil
+	enclosing := &recDB{onGet: snap.onGet, onSelect: snap.onSelect}
+	other := &recDB{onGet: outside, onSelect: outside}
+	var begins int
+	inTx := NewInTx(storeutil.Base{DB: enclosing, Now: func() time.Time { return fixedNow }},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			begins++
+			return f(ctx, recRepo{db: other})
+		},
+		recRepo{db: enclosing})
+	if _, err := inTx.SpendReport(context.Background(), "2026-09-01", "2026-09-27"); err != nil {
+		t.Fatal(err)
+	}
+	if begins != 0 || len(other.calls) != 0 {
+		t.Fatalf("in a transaction SpendReport began %d transactions and read %d times elsewhere; want 0 and 0", begins, len(other.calls))
+	}
+	if got := sequence(t, enclosing); !slices.Equal(got, want) {
+		t.Fatalf("inside the enclosing transaction SpendReport read %v, want %v", got, want)
 	}
 }
 

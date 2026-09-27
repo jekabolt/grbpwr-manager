@@ -20,7 +20,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
 
-// newTestRouter is the chat door the handler test rigs used to get from `aiOps: client`: one fixed
+// newTestRouter is the chat door every handler test rig builds from its fake OpenRouter client: one fixed
 // OpenRouter candidate over the client's OWN transport (the configured *oaichat.Client app.go
 // registers, not a rebuilt one), with the client's env slugs as the default table — so a rig's
 // openrouter.Config{Model, AnalysisModel, IdeasModel, HTTPTimeout} reaches the wire exactly as before.

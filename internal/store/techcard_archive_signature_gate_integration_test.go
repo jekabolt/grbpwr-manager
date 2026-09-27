@@ -142,7 +142,7 @@ func TestTechCardArchiveSignatureGate(t *testing.T) {
 
 	bucket := newSigGateBucket()
 	srv, err := admin.New(s, bucket, nil, nil, nil, nil, nil, nil, nil, nil,
-		entity.LabelAddress{}, "", "", nil, jpk.Taxpayer{}, decimal.Zero)
+		entity.LabelAddress{}, "", "", jpk.Taxpayer{}, decimal.Zero)
 	require.NoError(t, err)
 
 	// ── the fixture, in the ONE order a released card can be built in ──────────────────────────

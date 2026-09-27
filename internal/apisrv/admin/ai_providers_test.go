@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,6 +68,13 @@ func (s *aiCfgStore) reloads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.getConfig
+}
+
+// set replaces the configuration the registry reads — another instance's write.
+func (s *aiCfgStore) set(cfg entity.AIConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg
 }
 
 const (
@@ -199,6 +207,7 @@ type aiHarness struct {
 type aiHarnessOpt struct {
 	ring             *keyring.Ring // nil = a ring with a master key
 	designGeneration bool
+	clock            func() time.Time // the registry's clock; nil = time.Now
 }
 
 func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
@@ -212,7 +221,7 @@ func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
 	store := &aiCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}
 	reg := registry.New(store, cfgRing, registry.EnvKeys{
 		OpenRouter: aiEnvOpenRouter, OpenRouterImages: aiEnvOpenRouter, Fal: aiEnvFal, Recraft: aiEnvRecraft,
-	})
+	}, registry.WithClock(o.clock))
 	require.NoError(t, reg.Reload(context.Background()))
 
 	repo := mocks.NewMockRepository(t)
@@ -425,16 +434,21 @@ func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 
 // TestAiConfigReloadsARegistryBehindTheStore.
 //
-// MUTATION IT CATCHES: dropping the version check — the page would show the new rows (another
-// instance's write) beside this instance's old key state until its next poll.
+// MUTATIONS IT CATCHES: dropping the version check — the page would show the new rows (another
+// instance's write) beside this instance's old key state until its next poll; retrying past the one
+// reload (a loop against a store that keeps moving); a mismatch that survives the reload passing
+// silently (no WARN naming both versions).
 func TestAiConfigReloadsARegistryBehindTheStore(t *testing.T) {
+	logs := aiCaptureLog(t)
 	h := newAIHarness(t, aiHarnessOpt{})
 	before := h.store.reloads()
-	h.cfg.Settings.ConfigVersion = aiTestVersion + 1 // the store moved on; the registry did not
+	h.cfg.Settings.ConfigVersion = aiTestVersion + 1 // the store moved on; the registry's source did not
 	h.expectConfigRead(nil)
 	_, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
-	require.NoError(t, err)
-	require.Equal(t, before+1, h.store.reloads(), "a registry behind the store is reloaded once")
+	require.NoError(t, err, "a mismatch that survives the reload still builds the page")
+	require.Equal(t, before+1, h.store.reloads(), "a registry behind the store is reloaded exactly once")
+	require.Contains(t, logs.String(), `"store_version":8`)
+	require.Contains(t, logs.String(), `"registry_version":7`)
 
 	h2 := newAIHarness(t, aiHarnessOpt{})
 	before = h2.store.reloads()
@@ -442,6 +456,114 @@ func TestAiConfigReloadsARegistryBehindTheStore(t *testing.T) {
 	_, err = h2.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
 	require.NoError(t, err)
 	require.Equal(t, before, h2.store.reloads(), "an up-to-date registry is not reloaded on a read")
+}
+
+// aiKeyCleared is cfg one version on, with openai's stored api key cleared by somebody else: the
+// registry then answers openai with no key at all (openai has no env key here).
+func aiKeyCleared(cfg entity.AIConfig) entity.AIConfig {
+	next := cfg
+	next.Providers = slices.Clone(cfg.Providers)
+	for i := range next.Providers {
+		if next.Providers[i].Key == entity.AIProviderOpenAI {
+			next.Providers[i].APIKeyEnc, next.Providers[i].APIKeyLast4 = nil, ""
+			next.Providers[i].APIKeyUpdatedBy = "someone-else"
+		}
+	}
+	next.Settings.ConfigVersion++
+	return next
+}
+
+// TestAiConfigJoinsOneVersion (Codex B #7) — the panel's store rows and registry key state always
+// describe ONE config_version.
+//
+// MUTATIONS IT CATCHES: the pre-fix shape — Version() compared first, the registry's Providers() read
+// after the badges — red in "a reload during the badge read" (the old version's rows beside the new
+// version's key state: «key: none» next to «set by im»); Providers() and Version() read side by side
+// instead of ProvidersAt — red in "a reload while the key state renders" (the states of one snapshot,
+// the number of the next: a needless reload, then the new states beside the old rows); only the
+// registry re-read after the reload — red in "rows read just before a write" (the old rows stay).
+func TestAiConfigJoinsOneVersion(t *testing.T) {
+	t.Run("registry one version behind: one reload, then both sides of the new version", func(t *testing.T) {
+		h := newAIHarness(t, aiHarnessOpt{})
+		next := aiKeyCleared(h.cfg)
+		h.store.set(next) // another instance wrote; this registry has not polled yet
+		h.cfg = next
+		before := h.store.reloads()
+		h.expectConfigRead(nil)
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		require.Equal(t, before+1, h.store.reloads(), "exactly one reload")
+		require.Equal(t, aiTestVersion+1, cfg.GetConfigVersion())
+		openai := aiProvider(t, cfg, "openai")
+		require.Equal(t, registry.KeySourceNone, openai.GetKeySource())
+		require.Empty(t, openai.GetKeyLast4())
+		require.Empty(t, openai.GetKeyUpdatedBy(), "the cleared slot of the same version")
+	})
+
+	t.Run("rows read just before a write the registry already has: both are read again", func(t *testing.T) {
+		h := newAIHarness(t, aiHarnessOpt{})
+		next := aiKeyCleared(h.cfg)
+		old := h.cfg
+		h.ai.EXPECT().GetConfig(mock.Anything).Return(&old, nil).Once() // the read before the write
+		h.ai.EXPECT().GetConfig(mock.Anything).Return(&next, nil).Once()
+		h.ai.EXPECT().RecentFaults(mock.Anything, mock.Anything).Return(nil, nil).Once()
+		h.store.set(next)
+		require.NoError(t, h.reg.Reload(context.Background())) // this instance wrote it, and reloaded
+		before := h.store.reloads()
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		require.Equal(t, before+1, h.store.reloads(), "exactly one reload")
+		require.Equal(t, aiTestVersion+1, cfg.GetConfigVersion(), "the store is read again, not only the registry")
+		openai := aiProvider(t, cfg, "openai")
+		require.Equal(t, registry.KeySourceNone, openai.GetKeySource())
+		require.Empty(t, openai.GetKeyUpdatedBy())
+	})
+
+	// In the next two the store rows are version 7 (openai's key stored by im) and another writer
+	// clears that key and reloads THIS registry to version 8 in the middle of the read. The page must
+	// be version 7 throughout: key from the database, ···1a2b, set by im.
+	consistent := func(t *testing.T, cfg *pb_admin.GetAiProvidersConfigResponse) {
+		t.Helper()
+		require.Equal(t, aiTestVersion, cfg.GetConfigVersion())
+		openai := aiProvider(t, cfg, "openai")
+		require.Equal(t, registry.KeySourceDB, openai.GetKeySource(), "key state of the rows' own version")
+		require.Equal(t, "1a2b", openai.GetKeyLast4())
+		require.Equal(t, aiTestUser, openai.GetKeyUpdatedBy())
+	}
+	swap := func(t *testing.T, h *aiHarness) {
+		h.store.set(aiKeyCleared(h.cfg))
+		require.NoError(t, h.reg.Reload(context.Background()))
+	}
+
+	t.Run("a reload during the badge read", func(t *testing.T) {
+		h := newAIHarness(t, aiHarnessOpt{})
+		c := h.cfg
+		h.ai.EXPECT().GetConfig(mock.Anything).Return(&c, nil)
+		h.ai.EXPECT().RecentFaults(mock.Anything, mock.Anything).
+			Run(func(context.Context, time.Time) { swap(t, h) }).Return(nil, nil).Once()
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		consistent(t, cfg)
+	})
+
+	t.Run("a reload while the key state renders", func(t *testing.T) {
+		var (
+			h     *aiHarness
+			armed atomic.Bool
+		)
+		h = newAIHarness(t, aiHarnessOpt{clock: func() time.Time {
+			if armed.CompareAndSwap(true, false) {
+				swap(t, h) // the registry reads its clock while it renders the key state
+			}
+			return time.Now()
+		}})
+		h.expectConfigRead(nil)
+		armed.Store(true)
+		cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+		require.NoError(t, err)
+		require.False(t, armed.Load(), "the swap must have happened inside the read")
+		consistent(t, cfg)
+	})
 }
 
 // ───────────────────────── writes ─────────────────────────
@@ -470,7 +592,7 @@ func TestAiProviderSwitchWritesAndAnswersConfig(t *testing.T) {
 //
 // MUTATIONS IT CATCHES: mapping ErrAIVersionConflict to Internal / Aborted, or losing the "reload"
 // words; building (or reloading) the config after a lost compare-and-swap — the mock has no read
-// expectations; recording a custom slug before the route write is known to have landed (no
+// expectations; a slug recorded by the handler instead of inside the store's route transaction (no
 // UpsertModel expectation either).
 func TestAiProviderStalePageIsFailedPrecondition(t *testing.T) {
 	conflict := fmt.Errorf("tx: %w", entity.ErrAIVersionConflict)
@@ -630,35 +752,33 @@ func TestAiDefaultsEmptyLeavesUnchanged(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestAiRouteCustomSlugUpsertedAfterRoute.
+// TestAiRouteLeavesModelRecordingToTheStore (Codex B #6) — the handler hands the route's candidates,
+// trimmed and positioned, to the store's ONE checked SetRoute and records nothing itself: the store
+// files every named slug in ai_model inside that transaction. The mock has no UpsertModel expectation,
+// so a call fails the test; AssertNotCalled says so in words.
 //
-// MUTATIONS IT CATCHES: the custom-model record moved before the checked SetRoute (the order below);
-// a "" provider's slug recorded under "" instead of the capability's default; a slug the catalogue
-// names, or one ai_model already holds, recorded again (each record bumps config_version).
-func TestAiRouteCustomSlugUpsertedAfterRoute(t *testing.T) {
+// MUTATIONS IT CATCHES: the handler's own after-the-fact UpsertModel coming back (a second, unchecked
+// transaction whose "" provider was resolved in a third snapshot — a default changed in between files
+// the slug under a provider the route no longer follows); the candidates not reaching the store as
+// entered (a "" provider replaced by a guess, the fallback dropped, the model untrimmed).
+func TestAiRouteLeavesModelRecordingToTheStore(t *testing.T) {
 	h := newAIHarness(t, aiHarnessOpt{})
-	var order []string
 	h.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeNoteMarkdown, []entity.AIRouteCandidate{
 		{Position: 1, ProviderKey: "", Model: "custom/chat-1"},
 		{Position: 2, ProviderKey: "openrouter", Model: "x-ai/grok-9"},
-	}, aiTestVersion, aiTestUser).Run(func(context.Context, string, []entity.AIRouteCandidate, uint64, string) {
-		order = append(order, "SetRoute")
-	}).Return(nil).Once()
-	h.ai.EXPECT().UpsertModel(mock.Anything, entity.AIModel{ProviderKey: "openrouter", Model: "custom/chat-1", Kind: "chat"}, aiTestUser).
-		Run(func(context.Context, entity.AIModel, string) { order = append(order, "UpsertModel") }).
-		Return(nil).Once()
+	}, aiTestVersion, aiTestUser).Return(nil).Once()
 	h.expectConfigRead(nil)
 
 	_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
 		Purpose:         " " + entity.AIPurposeNoteMarkdown + " ",
 		Primary:         &pb_admin.AiRouteCandidate{ProviderKey: "", Model: " custom/chat-1 "},
-		Fallback:        &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "x-ai/grok-9"}, // already an ai_model row
+		Fallback:        &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "x-ai/grok-9"},
 		ExpectedVersion: aiTestVersion,
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"SetRoute", "UpsertModel"}, order)
+	h.ai.AssertNotCalled(t, "UpsertModel", mock.Anything, mock.Anything, mock.Anything)
 
-	// A catalogue slug is not recorded: the mock has no second UpsertModel.
+	// A slug the catalogue names, and a model-less route: the same single write, nothing else.
 	h2 := newAIHarness(t, aiHarnessOpt{})
 	h2.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeThreed, []entity.AIRouteCandidate{
 		{Position: 1, ProviderKey: "meshy", Model: ""},
@@ -673,6 +793,91 @@ func TestAiRouteCustomSlugUpsertedAfterRoute(t *testing.T) {
 	_, err = h2.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{Purpose: entity.AIPurposeImageGenerate,
 		Primary: &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "openai/gpt-image-2"}, ExpectedVersion: aiTestVersion})
 	require.NoError(t, err)
+	h2.ai.AssertNotCalled(t, "UpsertModel", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestAiRouteFallbackSameAsPrimaryRefused (Codex B #8) — a fallback that is the primary itself is
+// refused on the fallback field before anything is written; "" is the capability's default on both
+// sides. The registry drops an exact repeat, so such a route would show a fallback the runtime does
+// not have. The refusals run against a mock with no write expectation (and, where no default is
+// needed, no read expectation either: the verdict is reached without one).
+//
+// MUTATIONS IT CATCHES: no check (the write goes through: the mock fails on SetRoute); providers
+// compared raw, without resolving "" ("" vs openrouter, openrouter being the chat default, passes); ""
+// resolved against a configuration of another version than the page's (a stale page is refused as a
+// duplicate on a default it never saw, instead of being told to reload).
+func TestAiRouteFallbackSameAsPrimaryRefused(t *testing.T) {
+	cand := func(p, m string) *pb_admin.AiRouteCandidate {
+		return &pb_admin.AiRouteCandidate{ProviderKey: p, Model: m}
+	}
+	for _, c := range []struct {
+		name              string
+		primary, fallback *pb_admin.AiRouteCandidate
+		readsConfig       bool
+	}{
+		{"the same provider and model", cand("openrouter", "x-ai/grok-9"), cand(" openrouter ", " x-ai/grok-9 "), false},
+		{"the default twice, same model", cand("", "x-ai/grok-9"), cand("", "x-ai/grok-9"), false},
+		{"the default twice, no model", cand("", ""), cand("", ""), false},
+		{"the default and the default by name", cand("", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-9"), true},
+		{"the default by name and the default", cand("openrouter", ""), cand("", ""), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAIHarness(t, aiHarnessOpt{})
+			if c.readsConfig {
+				cfg := h.cfg // version 7, default chat provider openrouter
+				h.ai.EXPECT().GetConfig(mock.Anything).Return(&cfg, nil).Once()
+			}
+			before := h.store.reloads()
+			_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
+				Purpose: entity.AIPurposeNoteMarkdown, Primary: c.primary, Fallback: c.fallback, ExpectedVersion: aiTestVersion,
+			})
+			st := aiRequireCode(t, err, codes.InvalidArgument)
+			require.Equal(t, "fallback", aiViolationField(st))
+			require.Contains(t, st.Message(), "same_as_primary")
+			require.Equal(t, before, h.store.reloads(), "nothing written, nothing reloaded")
+		})
+	}
+
+	// Not the same: a different model; "" against a provider that is not the default; and "" against
+	// the default by name on a page that is stale — the configuration read is version 8, the page saved
+	// against 7, so no verdict is drawn from a default the page never saw and the store's
+	// compare-and-swap answers "reload".
+	for _, c := range []struct {
+		name              string
+		primary, fallback *pb_admin.AiRouteCandidate
+		storeVersion      uint64
+		want              codes.Code
+	}{
+		{"another model", cand("openrouter", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-8"), 0, codes.OK},
+		{"the default and another provider", cand("", "x-ai/grok-9"), cand("apibost", "x-ai/grok-9"), aiTestVersion, codes.OK},
+		{"a stale page", cand("", "x-ai/grok-9"), cand("openrouter", "x-ai/grok-9"), aiTestVersion + 1, codes.FailedPrecondition},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAIHarness(t, aiHarnessOpt{})
+			if c.storeVersion != 0 {
+				cfg := h.cfg
+				cfg.Settings.ConfigVersion = c.storeVersion
+				h.ai.EXPECT().GetConfig(mock.Anything).Return(&cfg, nil).Once()
+			}
+			var storeErr error
+			if c.want == codes.FailedPrecondition {
+				storeErr = entity.ErrAIVersionConflict
+			}
+			h.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeNoteMarkdown, mock.Anything, aiTestVersion, aiTestUser).
+				Return(storeErr).Once()
+			if c.want == codes.OK {
+				h.expectConfigRead(nil)
+			}
+			_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
+				Purpose: entity.AIPurposeNoteMarkdown, Primary: c.primary, Fallback: c.fallback, ExpectedVersion: aiTestVersion,
+			})
+			if c.want == codes.OK {
+				require.NoError(t, err)
+				return
+			}
+			aiRequireCode(t, err, c.want)
+		})
+	}
 }
 
 // ───────────────────────── keys ─────────────────────────

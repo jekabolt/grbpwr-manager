@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -316,6 +317,26 @@ type AISettings struct {
 	UpdatedAt               time.Time `db:"updated_at"`
 }
 
+// DefaultProviderFor is the provider a route candidate's "" names for capability under these
+// settings: the stored default chat / image provider, openrouter when it is blank, and "" for a
+// capability that has no default. It is the registry's rule (registry snapshot.defaultProvider); the
+// store resolves a route's slugs with it and the panel compares a route's two candidates with it.
+func (s AISettings) DefaultProviderFor(capability string) string {
+	var k string
+	switch capability {
+	case AICapabilityChat:
+		k = s.DefaultChatProviderKey
+	case AICapabilityImage:
+		k = s.DefaultImageProviderKey
+	default:
+		return ""
+	}
+	if k = strings.TrimSpace(k); k != "" {
+		return k
+	}
+	return AIProviderOpenRouter
+}
+
 // AIConfig is the whole configuration the registry snapshots, as of Settings.ConfigVersion.
 type AIConfig struct {
 	Providers      []AIProvider
@@ -338,14 +359,20 @@ type AIDefaultsPatch struct {
 // ───────────────────────── ledger rows ─────────────────────────
 
 // AICallStart opens one ledger row (status dispatching) BEFORE the physical call.
+//
+// ATTRIBUTION IS BY ACCOUNT ID, FIXED AT WRITE TIME (D-10). A nil ActorAdminID is not "nobody": the
+// store's INSERT resolves it from Actor there and then — the admins row carrying that username at the
+// moment of the call — so a row stays with the account that made it even after that account is
+// deleted and another is created under the same username. It stays NULL only when no admin carries
+// the username (system, unknown, an account already gone).
 type AICallStart struct {
 	OccurredAt   time.Time // UTC
 	DayLocal     string    // YYYY-MM-DD in the budget timezone (BudgetDayKey); aiprov.Ledger fills it when empty
 	ProviderKey  string    // the BILLING transport
 	Model        string    // the requested model
 	Purpose      string
-	Actor        string
-	ActorAdminID *int
+	Actor        string // the JWT username; aiprov.ActorSystem / ActorUnknown when nobody asked
+	ActorAdminID *int   // admins.id when the caller knows it; nil = the store resolves it (see above)
 	RunID        *int
 	AttemptNo    *int
 	CallNo       int // ≥ 1; 0 is read as 1

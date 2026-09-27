@@ -21,7 +21,6 @@ import (
 // FormatLibraryNoteMarkdown, AutoTranslateEmailCampaign, DraftDesignIdea and SuggestPrompts. Each names
 // its PURPOSE (entity.AIPurpose*) and the router picks the provider and the slug from the route the
 // owner set in admin → AI providers, falls back where no money moved, and books a ledger row per call.
-// GenerateTechCardOperations alone stays on s.aiOps (it is being deleted in a parallel session).
 //
 // WHAT THE DOORS READ, AND WHAT THEY NO LONGER READ. A failure is judged by the *aiprov.CallError's
 // FIELDS (Code, HTTPStatus, Engaged) through aiprov.AsCallError — never by its sentence: the router

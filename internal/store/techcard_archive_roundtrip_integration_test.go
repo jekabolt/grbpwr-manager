@@ -345,7 +345,7 @@ func newRTRig(t *testing.T, ctx context.Context) *rtRig {
 	objs := newRTObjects()
 	fs := newRTBucket(t, s.Media(), objs)
 	srv, err := admin.New(s, fs, nil, nil, nil, nil, nil, nil, nil, nil,
-		entity.LabelAddress{}, "", "", nil, jpk.Taxpayer{}, decimal.Zero)
+		entity.LabelAddress{}, "", "", jpk.Taxpayer{}, decimal.Zero)
 	require.NoError(t, err)
 
 	return &rtRig{store: s, srv: srv, objs: objs, ctx: ctx}

@@ -304,8 +304,7 @@ func tcaCardWithNOperations(n int) *entity.TechCard {
 //
 // It refuses rather than truncates on purpose. An audit of the first 200 steps of a 260-step route
 // would report "the route never packs" about a route that packs at step 240 — a confident, wrong
-// verdict is worse than an honest refusal. (openrouter.maxOperations does truncate; it slices a
-// generator's OUTPUT and is a different thing wearing a similar name.)
+// verdict is worse than an honest refusal.
 func TestGetTechCardConstructionAuditInputGate(t *testing.T) {
 	t.Run("at the ceiling it runs", func(t *testing.T) {
 		s := tcaStand(t, tcaCardWithNOperations(techcardanalysis.MaxAnalysisOperations), nil, map[string]decimal.Decimal{})
@@ -714,9 +713,10 @@ func TestAnalyzeTechCardConstructionHappyPath(t *testing.T) {
 // TestAnalyzeTechCardConstructionModelHalfFailures walks every way the model half can fail and pins
 // BOTH halves of the §4 inversion: a 200, and a status that names the fault.
 //
-// The inversion is the point. GenerateTechCardOperations answers FailedPrecondition without a key
-// because it has nothing at all to return; here the machine section is already drawn, and turning
-// the whole tab red over a retired slug would hide a working report behind a broken one.
+// The inversion is the point. The AI RPCs that are nothing but the model (EnhanceText,
+// FormatLibraryNoteMarkdown) answer FailedPrecondition without a key because they have nothing at
+// all to return; here the machine section is already drawn, and turning the whole tab red over a
+// retired slug would hide a working report behind a broken one.
 func TestAnalyzeTechCardConstructionModelHalfFailures(t *testing.T) {
 	t.Run("no key at all is not_configured, and nothing is called", func(t *testing.T) {
 		client, calls := tcaFakeModel(t, openrouter.Config{APIKey: " "}, tcaModelAnswer("{}", "stop"))
@@ -1249,8 +1249,9 @@ func TestAnalyzeRejectsABadId(t *testing.T) {
 // answers PermissionDenied for every scoped account, in production only.
 //
 // WRITE, not read, and for two different reasons. AddTechCardIssue writes a row. Analyze writes
-// nothing at all — but a press SPENDS THE KEY, and a grant to spend is an authoring grant. The
-// precedent is GenerateTechCardOperations, classified wr for exactly that argument.
+// nothing at all — but a press SPENDS THE KEY, and a grant to spend is an authoring grant. Every
+// other paid AI method on tech cards (EnhanceText, SuggestPrompts, DraftDesignIdea) is classified wr
+// for exactly that argument.
 func TestWaveTwoMethodsAreUnderTechCardWrite(t *testing.T) {
 	for _, name := range []string{"AnalyzeTechCardConstruction", "AddTechCardIssue"} {
 		t.Run(name, func(t *testing.T) {

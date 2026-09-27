@@ -31,11 +31,12 @@ const (
 	// sequential model requests inside one RPC.
 	maxCampaignTranslateStrings = 300
 
-	// campaignTranslateModelUnavailableMsg is the THIRD copy of the same fault, and the reason it
-	// exists: this feature rode the very same client and the very same model slug as the note
-	// assistant and the tech-card draft (since B-18: the same route default, chat.email_translate). When the provider retired the default slug all three
-	// died together — but only two of them said so. This one fell through to a nameless Internal,
-	// on the button nobody happened to press.
+	// campaignTranslateModelUnavailableMsg is this feature's copy of the same fault, and the reason it
+	// exists: this feature calls the same provider and, with the route rows naming no model, the very
+	// same default slug as the note assistant and the design idea draft (since B-18 through the AI
+	// router, purpose chat.email_translate), so when the provider retires that slug they all die
+	// together. Without its own sentence this one fell through to a nameless Internal, on the button
+	// nobody happened to press.
 	campaignTranslateModelUnavailableMsg = "campaign auto-translation is misconfigured: " + modelUnavailableAdviceMsg
 	campaignTranslateNotConfiguredMsg    = "translation is not configured: " + openRouterNoKeyMsg
 )
@@ -66,14 +67,14 @@ func (s *Server) AutoTranslateEmailCampaign(
 	}
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {
-		// model/provider: the same blindness the other two consumers had. The slug reached the beta
-		// log only because the provider echoed it in its own sentence, which was luck, not design.
-		// The Completer answers text only, so the slug named is the route's first — the one called
-		// unless a fallback answered.
-		model := s.ai.PrimaryModel(purpose)
+		// model/provider/base_url: the same blindness the other consumers had. The slug reached the
+		// beta log only because the provider echoed it in its own sentence, which was luck, not design.
+		// The Completer answers text only, so the slug named is the route's first (router.RouteHead) —
+		// on a failure the whole chain was tried, and the first row is the knob to look at.
+		provider, model := s.ai.RouteHead(purpose)
 		slog.ErrorContext(ctx, "auto-translate campaign failed",
-			slog.String("model", model), slog.String("provider", s.ai.PrimaryProvider(purpose)),
-			slog.String("err", err.Error()))
+			slog.String("model", model), slog.String("provider", provider),
+			slog.String("base_url", s.ai.BaseURL(provider)), slog.String("err", err.Error()))
 		return nil, campaignTranslateError(err, model)
 	}
 	return &pb_admin.AutoTranslateEmailCampaignResponse{TranslatedCount: int32(n)}, nil

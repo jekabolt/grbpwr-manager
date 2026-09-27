@@ -240,9 +240,12 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: ""
-# OpenRouter powers two AI features: AutoTranslateEmailCampaign (campaign builder) and
-# GenerateTechCardOperations (tech-card drafting). Both hard-fail with FailedPrecondition
-# "translation is not configured (OPENROUTER_API_KEY unset)" while the key is blank; boot is
+# OpenRouter powers the admin AI text features: AutoTranslateEmailCampaign (campaign builder),
+# FormatLibraryNoteMarkdown (notes), DraftDesignIdea, EnhanceText, SuggestPrompts and
+# AnalyzeTechCardConstruction. This env key is the FALLBACK: a key stored in admin -> AI providers
+# wins over it, so a blank value here does not by itself switch them off. Only with no key from
+# either source (or with openrouter switched off in the panel) does each answer "not configured"
+# (FailedPrecondition AI_NOT_CONFIGURED; the analysis reports it as ai_status instead); boot is
 # unaffected (app.go builds a nil-key-tolerant client). MODEL / BASE_URL / HTTP_TIMEOUT are
 # optional overrides and are deliberately left to the code defaults. Same empty-SECRET caveat
 # as above applies when applying this spec with `doctl apps update`.

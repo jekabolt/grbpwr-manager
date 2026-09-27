@@ -21,7 +21,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
-	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
@@ -105,14 +104,6 @@ type Server struct {
 	// embedAllowedHosts restricts the hosts allowed as hero EMBED iframe sources.
 	// Empty means any https host is accepted (scheme/format validation still applies).
 	embedAllowedHosts []string
-	// aiOps drafts tech-card sewing operations from a plain-language description via
-	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
-	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
-	//
-	// ⚠ SINCE B-18 IT SERVES THAT ONE FEATURE ONLY. Every other chat door (enhance, analysis, note
-	// markdown, campaign translation, draft idea, playground ideas) calls through `ai`; the operations
-	// draft stays on the legacy client because the feature is being deleted in a parallel session.
-	aiOps *openrouter.Client
 	// ai is THE chat door (internal/aiprov/router): the route of each purpose, the fallback where no
 	// money moved, one ledger row per physical call. Set by SetAIRouter (ai_router.go); nil is a
 	// disabled router — every door then answers «not configured», never panics.
@@ -196,7 +187,6 @@ func New(
 	shipFrom entity.LabelAddress,
 	embedAllowedHosts string,
 	campaignTestRecipients string,
-	aiOps *openrouter.Client,
 	jpkTaxpayer jpk.Taxpayer,
 	defectNormalLossRate decimal.Decimal,
 ) (*Server, error) {
@@ -227,7 +217,6 @@ func New(
 		revalCancel:          revalCancel,
 		defectNormalLossRate: defectNormalLossRate,
 		embedAllowedHosts:    parseEmbedAllowedHosts(embedAllowedHosts),
-		aiOps:                aiOps,
 		noteFormatSem:        make(chan struct{}, maxConcurrentNoteFormats),
 		enhanceSem:           make(chan struct{}, maxConcurrentEnhance),
 		jpkTaxpayer:          jpkTaxpayer,

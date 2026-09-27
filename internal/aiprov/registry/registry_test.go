@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -739,6 +740,65 @@ func TestProviders_PanelOrderAndNoKeys(t *testing.T) {
 	}
 	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderRunblob).KeySource)
 	require.Equal(t, "Europe/Warsaw", r.BudgetTimezone())
+}
+
+// TestProvidersAt_OneSnapshot (Codex B #7) — the states and the version ProvidersAt returns describe
+// the SAME snapshot, even when a Reload swaps the snapshot while the states are being rendered (here
+// from inside the breaker clock, which rendering reads once per provider); and the pair returned is a
+// value — the swap after it changes neither.
+//
+// MUTATION IT CATCHES: the version read by a second load after the states (`return out, r.Version()`,
+// i.e. Providers() + Version() side by side) — the old key state paired with the new number.
+func TestProvidersAt_OneSnapshot(t *testing.T) {
+	ring := testRing(t)
+	cfg := seedConfig()
+	provider(&cfg, entity.AIProviderOpenAI).APIKeyEnc = seal(t, ring, entity.AIProviderOpenAI, entity.AIKeyAPI, "db-openai-1111")
+	var (
+		armed atomic.Bool
+		r     *Registry
+		fs    *fakeStore
+	)
+	clk := newFakeClock()
+	r, fs, _ = newLoaded(t, ring, cfg, WithClock(func() time.Time {
+		if armed.CompareAndSwap(true, false) {
+			// another writer clears the stored key and this instance reloads, mid-render
+			fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderOpenAI).APIKeyEnc = nil })
+			require.NoError(t, r.Reload(context.Background()))
+		}
+		return clk.now()
+	}))
+	openaiOf := func(states []ProviderState) ProviderState {
+		for _, st := range states {
+			if st.Key == entity.AIProviderOpenAI {
+				return st
+			}
+		}
+		t.Fatal("no openai state")
+		return ProviderState{}
+	}
+
+	armed.Store(true)
+	states, v := r.ProvidersAt()
+	require.False(t, armed.Load(), "the swap must have happened inside the call")
+	require.Equal(t, uint64(1), v, "the version of the snapshot the states were rendered from")
+	require.Equal(t, KeySourceDB, openaiOf(states).KeySource)
+	require.Equal(t, "1111", openaiOf(states).KeyLast4)
+
+	// The registry has moved on; the pair already returned has not.
+	require.Equal(t, uint64(2), r.Version())
+	require.Equal(t, uint64(1), v)
+	require.Equal(t, KeySourceDB, openaiOf(states).KeySource)
+	states, v = r.ProvidersAt()
+	require.Equal(t, uint64(2), v)
+	require.Equal(t, KeySourceNone, openaiOf(states).KeySource)
+	require.Empty(t, openaiOf(states).KeyLast4)
+	require.Equal(t, states, r.Providers(), "Providers is ProvidersAt's states")
+
+	// Before the first Reload: version 0, the env picture.
+	states, v = New(&fakeStore{cfg: seedConfig()}, ring, testEnv).ProvidersAt()
+	require.Zero(t, v)
+	require.Len(t, states, len(entity.AIProviderKeys()))
+	require.Equal(t, KeySourceEnv, states[slices.Index(entity.AIProviderKeys(), entity.AIProviderFal)].KeySource)
 }
 
 // ───────────────────────── one clock, one probe (Codex A1 #1) ─────────────────────────
