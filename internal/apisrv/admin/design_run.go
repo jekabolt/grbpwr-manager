@@ -2924,7 +2924,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// единственная защита от второй двери. Поменяв их местами, мы получили бы `budget_exhausted`,
 		// закрытый как `provider_cut`, — и график «нам рвёт провод» там, где мал наш потолок.
 		s.designFailDraft(ctx, run, attempt.AttemptNo, callErr, est)
-		return nil, s.designDraftCallError(ctx, cardID, model, callErr)
+		return nil, s.designDraftCallError(ctx, cardID, model, provider, callErr)
 	}
 
 	// ─── ПРОВЕРКА СТРУКТУРНОГО ОТВЕТА ───
@@ -3101,6 +3101,7 @@ func (s *Server) designLogConstructionDraft(
 		slog.Int("run_id", runID),
 		slog.String("model", model),
 		slog.String("provider", provider),
+		slog.String("base_url", s.ai.BaseURL(provider)),
 		slog.String("finish_reason", finishReason),
 		slog.Int("prompt_tokens", usage.Prompt),
 		slog.Int("completion_tokens", usage.Completion),
@@ -3319,12 +3320,14 @@ func (s *Server) designFailDraftAs(
 // ⚠ ФРАЗА ДЛЯ ЧЕЛОВЕКА СОБИРАЕТСЯ ИЗ ПОЛЕЙ CallError (aiFaultWords), А НЕ ИЗ ТЕКСТА ОШИБКИ (B-18). Роутер
 // оборачивает исчерпанную цепочку («ai: every candidate failed: …»), а тело ответа поставщика внутри
 // текста может повторять доску — ни то, ни другое человеку не показывается; сам текст уезжает в лог.
-func (s *Server) designDraftCallError(ctx context.Context, cardID int, model string, err error) error {
+func (s *Server) designDraftCallError(ctx context.Context, cardID int, model, provider string, err error) error {
 	if refusal, ok := aiUncalledRefusal(err, draftIdeaNotConfiguredMsg); ok {
 		return refusal
 	}
+	// provider + base_url beside the slug: a 404 is a retired slug OR an API root without the route.
 	slog.Default().ErrorContext(ctx, "draft design idea: the model call failed",
 		slog.Int("tech_card_id", cardID), slog.String("model", model),
+		slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)),
 		slog.String("err", err.Error()))
 	if errors.Is(err, aiprov.ErrModelUnavailable) {
 		return aiModelRefusal(draftIdeaModelUnavailableMsg, model)

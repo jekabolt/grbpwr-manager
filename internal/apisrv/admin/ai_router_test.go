@@ -273,3 +273,53 @@ func TestThePictureDoorsSendThePreB18BytesWithoutPictures(t *testing.T) {
 		require.Equal(t, rec.all()[1].Raw, routed, "the router's Ideas request differs from the pre-B-18 bytes")
 	})
 }
+
+// TestTheFailureLogsNameTheBaseURL (FIX-G5) — the failure record of every migrated door carries the
+// API root of the provider that failed (router.BaseURL of the answering provider, else the route
+// head) beside the slug: a 404 is a retired slug as often as an OPENROUTER_BASE_URL without the route,
+// and a record naming only the slug sends the reader to the wrong knob.
+//
+// MUTATION (measured red, per door): the base_url attribute dropped from that door's record.
+func TestTheFailureLogsNameTheBaseURL(t *testing.T) {
+	hasBaseURL := func(t *testing.T, sink *tcaLogSink, want string) {
+		t.Helper()
+		require.NotEmpty(t, want)
+		for _, rec := range sink.errors() {
+			if rec.Attrs["base_url"] == want {
+				return
+			}
+		}
+		require.Failf(t, "no failure record names the base URL", "want base_url=%s in %+v", want, sink.errors())
+	}
+	bad := enhanceStatusReply(http.StatusBadGateway, "upstream is having a moment")
+
+	t.Run("EnhanceText", func(t *testing.T) {
+		client, _ := newEnhanceFakeOR(t, bad)
+		sink := tcaCaptureLog(t)
+		_, err := newEnhanceServer(t, client).EnhanceText(adminCtx("alice"), noteImprove("a note"))
+		require.Error(t, err)
+		hasBaseURL(t, sink, client.BaseURL())
+	})
+	t.Run("FormatLibraryNoteMarkdown", func(t *testing.T) {
+		client, _ := newFakeOpenRouter(t, bad)
+		sink := tcaCaptureLog(t)
+		_, err := newNoteFormatServer(client).FormatLibraryNoteMarkdown(adminCtx("alice"),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "a note"})
+		require.Error(t, err)
+		hasBaseURL(t, sink, client.BaseURL())
+	})
+	t.Run("SuggestPrompts", func(t *testing.T) {
+		client, _ := newSuggestFakeOR(t, openrouter.Config{}, func(_ string, w http.ResponseWriter) { bad(w) })
+		sink := tcaCaptureLog(t)
+		_, err := newSuggestServer(t, client).SuggestPrompts(adminCtx("alice"), tryOnPose("x"))
+		require.Error(t, err)
+		hasBaseURL(t, sink, client.BaseURL())
+	})
+	t.Run("DraftDesignIdea", func(t *testing.T) {
+		rig := newDraftRig(t, http.StatusBadGateway, "")
+		sink := tcaCaptureLog(t)
+		_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+		require.Error(t, err)
+		hasBaseURL(t, sink, rig.stub.srv.URL)
+	})
+}

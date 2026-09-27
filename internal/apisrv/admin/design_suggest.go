@@ -312,9 +312,10 @@ func (s *Server) suggestCall(ctx context.Context, in suggestInput, key [32]byte,
 		if class == enhanceErrNotConfigured {
 			return suggestFlightAnswer{}, aiRefusal(aiReasonNotConfigured, suggestNotConfiguredMsg, nil)
 		}
+		provider := s.aiProviderOf(purpose, res)
 		failAttrs := append(logAttrs, slog.String("err_class", class),
 			slog.Bool("provider_engaged", aiprov.Engaged(err)),
-			slog.String("provider", s.aiProviderOf(purpose, res)))
+			slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)))
 		if class == enhanceErrProviderHTTP {
 			failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
 		}

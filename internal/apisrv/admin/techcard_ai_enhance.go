@@ -251,9 +251,10 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 		if class == enhanceErrNotConfigured {
 			return nil, aiRefusal(aiReasonNotConfigured, enhanceTextNotConfiguredMsg, nil)
 		}
+		provider := s.aiProviderOf(purpose, res)
 		failAttrs := append(logAttrs, slog.String("err_class", class),
 			slog.Bool("provider_engaged", aiprov.Engaged(err)),
-			slog.String("provider", s.aiProviderOf(purpose, res)))
+			slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)))
 		if class == enhanceErrProviderHTTP {
 			failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
 		}
