@@ -8,6 +8,7 @@
 //
 //	keyring/  AES-256-GCM seal/open of provider keys stored in the database (master key from env)
 //	pricing/  the curated per-(provider, model) price table and token → USD
+//	oaichat/  the chat transport of every OpenAI-shaped API (OpenRouter, OpenAI, apibost dialects)
 package aiprov
 
 // TokenUsage is the normalised usage of one call.
