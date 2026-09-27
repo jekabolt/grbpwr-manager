@@ -6,23 +6,41 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/shopspring/decimal"
 )
 
-// imageProvider is the flat / render route: OpenRouter's image endpoint (internal/orimages).
+// imageProvider is the flat / render route over ONE image transport: OpenRouter's image endpoint
+// (internal/orimages) today, whichever provider's transport a routed candidate names since B-13.
 //
 // providerKey is the BILLING transport the ledger books each call to (an entity.AIProvider* key):
-// the account that pays for POST /images, which today is OpenRouter's. Empty reads as openrouter.
+// the account that pays for the picture — OpenRouter's for orimages. Empty reads as openrouter.
+//
+// routeModel is the candidate's route slug (admin → AI providers, image.generate) — "" = the
+// transport's own default. It is the slug of a run that FROZE NONE: a frozen params.image.model is
+// canonical and wins (see requested). breakers, when set, is the registry the per-call admission is
+// asked of (B-13: the router's contract, one physical call at a time); nil = no breaker (the legacy
+// NewImageProvider route, tests).
 type imageProvider struct {
-	c           *orimages.Client
+	t           ImageTransport
 	providerKey string
+	routeModel  string
+	breakers    *registry.Registry
 }
 
-// NewImageProvider wires the raster route. A nil client is a disabled route, not a panic.
+// NewImageProvider wires the raster route over the OpenRouter image client alone — no registry, no
+// breaker, no route model: the shape every run had before B-13, kept for the tests and for a caller
+// with no registry. A nil client is a disabled route, not a panic.
 func NewImageProvider(c *orimages.Client) Provider {
-	return imageProvider{c: c, providerKey: entity.AIProviderOpenRouter}
+	p := imageProvider{providerKey: entity.AIProviderOpenRouter}
+	if c != nil {
+		// ⚠ ONLY A NON-NIL CLIENT BECOMES THE INTERFACE: a typed nil *orimages.Client inside a non-nil
+		// ImageTransport would pass `p.t != nil` and reach a method the nil receiver may not survive.
+		p.t = c
+	}
+	return p
 }
 
 // billing is the ledger's provider_key for this route's calls.
@@ -33,16 +51,70 @@ func (p imageProvider) billing() string {
 	return entity.AIProviderOpenRouter
 }
 
-func (p imageProvider) Name() string { return "openrouter_images" }
+// Name is the provider key + "_images": what the attempt row stores, and therefore what the chooser
+// reads back as «this candidate was tried». OpenRouter's stays `openrouter_images`, the word every row
+// written before B-13 already carries.
+func (p imageProvider) Name() string { return p.billing() + "_images" }
 
-func (p imageProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
+func (p imageProvider) Enabled() bool { return p.t != nil && p.t.Enabled() }
 
 // MissingCredential is the sentence the DOOR shows when the route is off — see CredentialNamer.
 // Both names are given because config/cfg.go binds them in that order: the dedicated one wins, the
 // shared account key is the fallback, and a deployment that already translates email needs no new
-// secret at all to draw pictures.
+// secret at all to draw pictures. Another provider's transport (commit F) has no env variable of this
+// band's to name; the panel is where its key lives.
 func (p imageProvider) MissingCredential() string {
+	if p.billing() != entity.AIProviderOpenRouter {
+		return "no key for " + p.billing() + " — set it in admin → AI providers"
+	}
 	return noKeySentence("openrouter", "OPENROUTER_IMAGES_API_KEY / OPENROUTER_API_KEY")
+}
+
+// requested is the slug a call of this job goes to: the run's frozen engine, else the route row's
+// model, else the transport's own default. The frozen slug wins because it is what the door priced
+// and the person picked; the route's model only fills the silence of a run that named none.
+func (p imageProvider) requested(jobModel string) string {
+	def := ""
+	if p.t != nil {
+		def = p.t.Model()
+	}
+	return firstNonEmpty(jobModel, p.routeModel, def)
+}
+
+// admit asks the breaker for ONE physical call (registry.Admit — the router's contract, B-18): false
+// = the provider's breaker is open, or half-open with its one probe already out. No breaker, no
+// question.
+func (p imageProvider) admit() (registry.Admission, bool) {
+	if p.breakers == nil {
+		return registry.Admission{}, true
+	}
+	return p.breakers.Admit(p.billing(), entity.AICapabilityImage)
+}
+
+// endCall closes the admission of a call that WAS made: success clears the breaker; a failure is
+// counted only when the registry's one rule says so (a retryable CallError that was not engaged).
+func (p imageProvider) endCall(a registry.Admission, err error) {
+	if p.breakers == nil {
+		return
+	}
+	if err == nil {
+		p.breakers.RecordSuccess(p.billing(), entity.AICapabilityImage, a)
+		return
+	}
+	p.breakers.RecordFailure(p.billing(), entity.AICapabilityImage, a, err)
+}
+
+// refusedByBreaker is the failure of a call the breaker would not let out. NOT ENGAGED — nothing
+// left the process — and RETRYABLE, so the worker's settle advances the chain past this candidate
+// (and a one-candidate route backs off and asks again): the provider is paused, not wrong.
+func (p imageProvider) refusedByBreaker() error {
+	return &aiprov.CallError{
+		Provider:  p.billing(),
+		Code:      aiprov.CodeRateLimited,
+		Engaged:   false,
+		Retryable: true,
+		Err:       fmt.Errorf("%s refused the call (its circuit breaker is probing or open)", p.billing()),
+	}
 }
 
 // Produces is PNG and only PNG: the route asks for it explicitly, because a transparent flat needs
@@ -91,7 +163,9 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	// THE ENGINE'S OWN SHAPE (B-16), read off the catalogue by the slug this call goes to. A slug the
 	// catalogue does not know (a custom OPENROUTER_MODEL_IMAGE) keeps today's request byte for byte.
 	background, format := firstNonEmpty(job.Background, backgroundFor(job.Kind)), "png"
-	if row, ok := catalogueEngine(firstNonEmpty(job.Model, p.c.Model())); ok {
+	// A per-run engine names its own slug; the provenance says so even when the call fails.
+	requested := p.requested(job.Model)
+	if row, ok := catalogueEngine(requested); ok {
 		if row.NoRouteDefaults {
 			// Neither key is in this slug's catalogue: the kind's `opaque` and the route's `png` are
 			// OUR defaults, not the person's words, and are not sent. A stated background was already
@@ -113,21 +187,29 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			}
 		}
 	}
-	// A per-run engine names its own slug; the provenance says so even when the call fails.
-	requested := firstNonEmpty(job.Model, p.c.Model())
 	out := &Outcome{Model: requested, Provider: p.billing()}
 	cost := decimal.Zero
 	charged := false
 	var usage aiprov.TokenUsage
 
 	for i, call := range calls {
+		// THE BREAKER IS ASKED PER PHYSICAL CALL, AS THE ROUTER ASKS IT (B-13): admission right
+		// before the call, and exactly one end after it. A refusal is a call that never left — no
+		// ledger row (nothing was called), and on call 2 of 3 the first picture comes back with the
+		// refusal like any other partial.
+		adm, admitted := p.admit()
+		if !admitted {
+			out.Price = decimal.NullDecimal{Decimal: cost, Valid: charged}
+			out.Usage = usageOrNil(usage)
+			return out, p.refusedByBreaker()
+		}
 		// ONE LEDGER ROW PER PAID CALL, OPENED BEFORE IT LEAVES (B-07): a per_view flat of three
 		// views is three rows, call_no 1..3, under this one attempt. Nothing below reads it back.
 		h := job.beginCall(ctx, p.billing(), requested, i+1)
-		res, err := p.c.Generate(ctx, orimages.Request{
-			// The per-run engine (params.image): every field empty on a run that named none, which
-			// is today's request byte for byte.
-			Model:           job.Model,
+		res, err := p.t.Generate(ctx, orimages.Request{
+			// The per-run engine (params.image), else the route row's slug: every field empty on a run
+			// that named none under a route row that names none — today's request byte for byte.
+			Model:           firstNonEmpty(job.Model, p.routeModel),
 			Prompt:          call.prompt,
 			N:               call.n,
 			Quality:         job.Quality,
@@ -138,6 +220,7 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			InputReferences: call.refs,
 		})
 		job.finishCall(ctx, h, imageCallEnd(res, err))
+		p.endCall(adm, err)
 		if res != nil {
 			usage.Prompt += res.Usage.Prompt
 			usage.Completion += res.Usage.Completion

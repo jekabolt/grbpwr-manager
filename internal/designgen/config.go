@@ -106,10 +106,12 @@ type Config struct {
 	// goes on only after the beta cost ledger (one call per tier, usage.cost against the ceilings).
 	EngineGemini   bool `mapstructure:"engine_gemini"`
 	EngineSeedream bool `mapstructure:"engine_seedream"`
-	// ImageDefaultModel is the image client's effective slug (orimages.Client.Model), set by app.go
-	// — never read from the environment a second time. It marks the default row of EngineTable,
-	// the engine a frozen params.image with no model is drawn by. '' = orimages.DefaultModel.
-	ImageDefaultModel string `mapstructure:"-"`
+	// Engines is the engine table the worker resolves a frozen params.image with and refuses a
+	// switched-off engine by (dispatch.go) — THE SAME FUNCTION the door prices against (app.go hands
+	// EngineTableFunc to both, B-13), read at every pickup, so a default moved in the panel reaches the
+	// worker and the door together. nil (a worker built without app.go: tests) = EngineTable over
+	// orimages.DefaultModel and this Config's EngineFlags.
+	Engines func() []Engine `mapstructure:"-"`
 }
 
 // Environment variable names. AutomaticEnv is switched off in this repo, so a name that is not

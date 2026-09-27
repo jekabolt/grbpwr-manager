@@ -3,6 +3,7 @@ package designgen
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -304,7 +305,9 @@ type Collector interface {
 // the store excludes it from the claim predicate for the same reason: a worker that picked it up
 // would pay a second time for an answer the person already has.
 type Providers struct {
-	// Image serves flat and render.
+	// Image serves flat, render, recolor, pattern and freeform. Since B-13 app.go wires the ROUTED
+	// provider here (NewRoutedImageProvider): a Chooser, whose concrete candidate is what each pass
+	// pays and records (dispatch.go).
 	Image Provider
 	// Vector serves the vector kind.
 	Vector Provider
@@ -322,6 +325,27 @@ type Providers struct {
 	// cut-out; different slugs, bodies and tariffs, so different routes.
 	Outpaint Provider
 	Fill     Provider
+
+	// Also — providers the worker CONSTRUCTED but does not route any kind to right now: the 3D engine
+	// DESIGN_THREED_PROVIDER did not pick (B-13). They are never chosen for a fresh run; they exist so
+	// a job one of them ACCEPTED before a switch is collected by it, for free — the collect goes to the
+	// provider the accepted attempt names (byName), never to whoever is wired for the kind today.
+	Also []Provider
+}
+
+// byName finds the provider the worker knows under an attempt row's name: the six slots, then Also.
+// It is how a paid, accepted job reaches the provider that accepted it (REVIEW-A4 #2).
+func (p Providers) byName(name string) (Provider, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, false
+	}
+	for _, prov := range append([]Provider{p.Image, p.Vector, p.Threed, p.Cutout, p.Outpaint, p.Fill}, p.Also...) {
+		if prov != nil && prov.Name() == name {
+			return prov, true
+		}
+	}
+	return nil, false
 }
 
 // forKind returns the route for a run kind, or an error naming the kind.
@@ -418,27 +442,37 @@ func (p Providers) preflight(sink MediaSink, kind string) (Provider, error) {
 	if err != nil {
 		return nil, refuse(err)
 	}
+	if err := routeReady(sink, prov); err != nil {
+		return nil, refuse(err)
+	}
+	return prov, nil
+}
+
+// routeReady is the provider half of the pre-flight: credentials, and somewhere to put what it
+// returns. preflight asks it of the kind's route; the resume of an accepted job asks it of the STORED
+// provider (dispatch.go resumeRoute) — one expression, whichever provider the pass is about to use.
+func routeReady(sink MediaSink, prov Provider) error {
 	if !prov.Enabled() {
 		// THE SENTENCE NAMES THE SETTING, because this is the sentence that reaches the screen —
 		// see CredentialNamer. "the provider for this run kind is not configured: fal" and
 		// "…: fal — FAL_KEY is not set" are the same refusal; only the second one tells the person
 		// who just typed a key whether they typed the right one.
-		return nil, refuse(fmt.Errorf("%w: %s — %s", errProviderDisabled, prov.Name(), missingCredential(prov)))
+		return fmt.Errorf("%w: %s — %s", errProviderDisabled, prov.Name(), missingCredential(prov))
 	}
 	if sink == nil {
 		// A worker cannot reach this (New refuses a nil bucket); a caller assembling the gate by
 		// hand can. "I cannot tell whether the output is storable" must not read as "it is".
-		return nil, refuse(fmt.Errorf("%w: %s has no sink to store its output", errSinkUnsupported, prov.Name()))
+		return fmt.Errorf("%w: %s has no sink to store its output", errSinkUnsupported, prov.Name())
 	}
 	for _, ct := range prov.Produces() {
 		if !sink.Accepts(ct) {
 			// ⚠ THE GUARD THAT SAVES REAL MONEY. A route whose output the sink cannot store would
 			// otherwise be paid for on every pass and refused by the upload every single time —
 			// five times per run, for as long as the mismatch lives.
-			return nil, refuse(fmt.Errorf("%w: %s returns %s", errSinkUnsupported, prov.Name(), ct))
+			return fmt.Errorf("%w: %s returns %s", errSinkUnsupported, prov.Name(), ct)
 		}
 	}
-	return prov, nil
+	return nil
 }
 
 // PreflightKind is the DOOR'S copy of the question the pass asks first: would a run of this kind be

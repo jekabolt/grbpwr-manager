@@ -507,18 +507,28 @@ func TestAResumedCollectPRICES_THE_ROW_ITS_SUBMIT_OPENED(t *testing.T) {
 	require.Equal(t, "1.2", ai.Rows()[0].End.CostUSD.Decimal.String())
 }
 
-// TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW — Codex A4 #2: fal accepted
-// attempt 1 (the history stores Provider "fal" and fal's locator); the deployment was switched to
-// DESIGN_THREED_PROVIDER=meshy before the next pickup. The Meshy collector is asked for fal's
-// locator, Meshy answers 404, the lookup fails for good — and the pass fails exactly as it does
-// without a ledger. The ledger row fal opened must still read `accepted` and unpriced: turning it
-// `unknown` here is irreversible (PriceAcceptedCall moves only `accepted`), and fal's real price
-// could never land. The one WARN line says whose row it is and who collected.
+// TestACollectAfterAProviderSwitchGOES_TO_THE_STORED_PROVIDER — REVIEW-A4 #2, closed by B-13: fal
+// accepted attempt 1 (the history stores Provider "fal" and fal's locator); the deployment was switched
+// to DESIGN_THREED_PROVIDER=meshy before the next pickup, so Meshy is the kind's route and fal is only
+// CONSTRUCTED (Providers.Also, as app.go wires it).
 //
-// MUTATION (measured red→green): the name guard dropped (`job.Recorder = w.recorderFor(run,
-// pendingAttempt)` unconditionally) → the row reads `unknown` (error_code empty_response).
-func TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW(t *testing.T) {
+// This test used to pin the OLD behaviour — the Meshy collector asked for fal's locator, failed for
+// good, and the ledger row was merely withheld (`accepted` for ever, the run closed as lost). Rewritten
+// for B-13: the collect goes to the STORED provider, fal delivers, and fal's row is priced `ok` at the
+// number the collect's attempt books. Meshy is never asked anything.
+//
+// The two refusals of the same resume: the stored provider is constructed but now KEYLESS → the paid
+// job waits (`paid_collect_waiting`, retryable, nothing called); no provider of that name is
+// constructed at all → `kind_not_available`, the name in the sentence, nothing called.
+//
+// MUTATIONS (measured red→green): resumeRoute returning the kind's route (w.providers.preflight)
+// instead of byName(a.Provider) → the Meshy stand is asked, the run fails and fal's row stays
+// `accepted`; byName skipping Also → `kind_not_available` instead of the delivered build; routeReady
+// dropped from the named branch → the keyless fal is asked to collect instead of the run waiting.
+func TestACollectAfterAProviderSwitchGOES_TO_THE_STORED_PROVIDER(t *testing.T) {
+	var meshyAsked atomic.Int32
 	meshyStand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		meshyAsked.Add(1)
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"no such task"}`))
 	}))
@@ -530,57 +540,75 @@ func TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW(t *te
 
 	run := steerRun(65)
 	run.Author = "im"
-	full := run
-	full.Attempts = []entity.DesignRunAttempt{{RunId: 65, AttemptNo: 1, Provider: ThreedProviderFal,
-		State: entity.DesignAttemptAccepted, ProviderRequestId: sql.NullString{String: falMeshySlug + "#req-1", Valid: true}}}
+	accepted := func(provider string) entity.DesignRun {
+		full := run
+		full.Attempts = []entity.DesignRunAttempt{{RunId: 65, AttemptNo: 1, Provider: provider,
+			State: entity.DesignAttemptAccepted, ProviderRequestId: sql.NullString{String: falMeshySlug + "#req-1", Valid: true}}}
+		return full
+	}
+	seedFalRow := func(ai *aiprovtest.Store) {
+		runID, attemptNo := 65, 1
+		ai.Seed(aiprovtest.Row{Status: entity.AICallAccepted, Start: entity.AICallStart{
+			OccurredAt: time.Now(), ProviderKey: entity.AIProviderFal, Model: falMeshySlug,
+			Purpose: entity.AIPurposeThreed, Actor: "im", RunID: &runID, AttemptNo: &attemptNo, CallNo: 1},
+			End: entity.AICallEnd{Status: entity.AICallAccepted, RequestID: falMeshySlug + "#req-1"}})
+	}
 
-	pass := func(withLedgerToo bool) (*fakeStore, *aiprovtest.Store) {
+	t.Run("the collect goes to fal, which accepted it, and prices fal's row", func(t *testing.T) {
+		stand := newFalBuildStand(t)
+		full := accepted(ThreedProviderFal)
 		st := &fakeStore{getRun: &full, nextNo: 1}
 		w := steerWorker(t, st, meshyRoute)
-		var ai *aiprovtest.Store
-		if withLedgerToo {
-			ai = withLedger(w)
-			runID, attemptNo := 65, 1
-			ai.Seed(aiprovtest.Row{Status: entity.AICallAccepted, Start: entity.AICallStart{
-				OccurredAt: time.Now(), ProviderKey: entity.AIProviderFal, Model: falMeshySlug,
-				Purpose: entity.AIPurposeThreed, Actor: "im", RunID: &runID, AttemptNo: &attemptNo, CallNo: 1},
-				End: entity.AICallEnd{Status: entity.AICallAccepted, RequestID: falMeshySlug + "#req-1"}})
-		}
+		w.providers.Also = []Provider{falRoute(t, stand.srv.URL, falMeshySlug)}
+		ai := withLedger(w)
+		seedFalRow(ai)
+
 		require.NoError(t, w.execute(context.Background(), run, "tok"))
-		return st, ai
-	}
+		require.Zero(t, meshyAsked.Load(), "the wired route has never seen this locator and is not asked")
+		require.Zero(t, stand.posts.Load(), "a resume never submits")
 
-	logs := captureSlog(t)
-	st, ai := pass(true)
+		require.Len(t, st.started, 1)
+		require.Equal(t, ThreedProviderFal, st.started[0].Provider, "the collect's attempt names the provider that collected")
+		require.Len(t, st.finished, 1)
+		require.Equal(t, 2, st.finished[0].AttemptNo, "the collect's own attempt")
+		require.Equal(t, entity.DesignAttemptDelivered, st.finished[0].State)
+		require.Equal(t, "1.2", st.finished[0].Price.Decimal.String())
+		require.Len(t, st.completed, 1)
+		require.Empty(t, st.failed)
 
-	// The run: the collect failed for good, as it does today (commit D routes it to fal). B-14: the
-	// collect's own attempt closes `failed`, not `unknown` — Meshy's 404 answered a status GET, whose
-	// CallError is never engaged (the lookup bought nothing; fal's row below is where the money waits).
-	require.Len(t, st.finished, 1)
-	require.Equal(t, 2, st.finished[0].AttemptNo, "the collect's own attempt")
-	require.Equal(t, entity.DesignAttemptFailed, st.finished[0].State)
-	require.Len(t, st.failed, 1)
+		rows := ai.Rows()
+		require.Len(t, rows, 1)
+		require.Equal(t, entity.AICallOK, rows[0].Status, "fal's own row, priced by fal's collect")
+		require.Equal(t, "1.2", rows[0].End.CostUSD.Decimal.String(), "the number the attempt books")
+	})
 
-	// The ledger: fal's row untouched — still `accepted`, still unpriced, never offered a price.
-	rows := ai.Rows()
-	require.Len(t, rows, 1)
-	require.Equal(t, entity.AICallAccepted, rows[0].Status, "only the provider that accepted it may close it")
-	require.False(t, rows[0].End.CostUSD.Valid)
-	require.Empty(t, rows[0].End.ErrorCode)
-	for _, wr := range ai.Writes() {
-		require.NotEqual(t, "price", wr.Verb, "no collect by another provider reaches the row")
-	}
-	out := logs.String()
-	require.Contains(t, out, "level=WARN")
-	require.Contains(t, out, "accepted by fal, this deployment collects with meshy")
-	require.Contains(t, out, "run_id=65")
-	require.Equal(t, 1, strings.Count(out, "this deployment collects with"), "once per pass")
+	t.Run("the provider that accepted it is keyless now: the paid job WAITS", func(t *testing.T) {
+		stand := newFalBuildStand(t)
+		full := accepted(ThreedProviderFal)
+		st := &fakeStore{getRun: &full, nextNo: 1}
+		w := steerWorker(t, st, meshyRoute)
+		w.providers.Also = []Provider{NewFalThreedProvider(fal.New(fal.Config{BaseURL: stand.srv.URL, Model3D: falMeshySlug}))}
 
-	// LEDGER-ONLY: the same pass without a ledger writes exactly the same attempt and run rows.
-	stNo, _ := pass(false)
-	require.Equal(t, stNo.finished, st.finished, "the ledger must not change one field of an attempt")
-	require.Equal(t, stNo.started, st.started)
-	require.Equal(t, stNo.failed, st.failed)
+		require.NoError(t, w.execute(context.Background(), run, "tok"))
+		require.Equal(t, []string{CodePaidCollectWaiting + " retry=true"}, failedCodes(st),
+			"a bought job waits for its provider; it is never re-submitted elsewhere")
+		require.Empty(t, st.started, "nothing is called: no attempt row")
+		require.Zero(t, meshyAsked.Load())
+		require.Zero(t, stand.posts.Load())
+	})
+
+	t.Run("no provider of that name is constructed: refused by name, nothing called", func(t *testing.T) {
+		full := accepted("hitem3d_direct")
+		st := &fakeStore{getRun: &full, nextNo: 1}
+		w := steerWorker(t, st, meshyRoute)
+
+		require.NoError(t, w.execute(context.Background(), run, "tok"))
+		require.Equal(t, []string{CodeKindNotAvailable + " retry=false"}, failedCodes(st))
+		require.Contains(t, st.failed[0].LastError, "hitem3d_direct", "the sentence names the provider that holds the job")
+		require.Contains(t, st.failed[0].LastError, falMeshySlug+"#req-1", "and the request to reconcile")
+		require.Empty(t, st.started)
+		require.Zero(t, meshyAsked.Load())
+	})
 }
 
 // (4) TestAnUnconfirmedSubmitIsUNKNOWN — fal answers the submit with a 502: the request left whole

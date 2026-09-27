@@ -240,6 +240,13 @@ func (c *Client) apiKey() string {
 	return strings.TrimSpace(c.cfg.APIKey)
 }
 
+// Serves reports whether this client can draw slug — designgen.ImageTransport. Every engine of the
+// band's catalogue is an OpenRouter image slug, and a slug OpenRouter does not know is its own 404
+// (ErrModelUnavailable), so this client serves any non-empty slug. Nil-safe.
+func (c *Client) Serves(slug string) bool {
+	return c != nil && strings.TrimSpace(slug) != ""
+}
+
 // Model returns the effective image model slug (for response provenance). Nil-safe.
 func (c *Client) Model() string {
 	if c == nil {

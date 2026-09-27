@@ -49,52 +49,11 @@ type mediaResolver interface {
 // the pass could not even record what happened, which is the only thing worth backing the whole
 // tick off for.
 func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string) error {
-	// ─── PRE-FLIGHT. Everything here happens BEFORE an attempt row exists, therefore before any
-	// money can move. Each of these refusals is permanent by nature: no number of retries wires a
-	// route, hands over an API key or teaches the bucket a new file type.
-	//
-	// IT IS THE SAME CALL THE HANDLER ALREADY MADE AT THE DOOR (PreflightKind), and it is repeated
-	// here rather than trusted: the door answered when the run was created, this answers when it is
-	// executed, and between the two lie a redeploy, a rotated key and a changed configuration. One
-	// expression, asked twice — never two expressions.
-	prov, err := w.providers.preflight(w.sink, run.Kind)
-	if err != nil {
-		// ⚠ A PAID JOB IS NOT DISCARDED BECAUSE ITS ROUTE IS OFF RIGHT NOW (G-03, Codex 2). The
-		// refusal above is terminal and releases the reserve — right for a run that never paid, wrong
-		// for one whose submit fal already accepted: FAL_KEY removed for an hour would throw away
-		// work that is bought and collectable for free. So the attempt history is read first; an
-		// accepted id turns the refusal into a retryable WAIT (`paid_collect_waiting`, which the
-		// store re-queues at the capped back-off WITHOUT spending the ten-round ceiling — G-03 r2,
-		// Codex 4: a key gone for longer than ten back-offs used to close a bought job; a person ends
-		// the wait by cancelling the run), and an unreadable history abandons the pass, as below.
-		if full, gerr := w.store.GetRun(ctx, run.Id); gerr != nil {
-			return w.abandon(ctx, run, fmt.Errorf("read attempts before refusing the route: %w", gerr))
-		} else if full != nil {
-			if id := acceptedRequestID(full.Attempts); id != "" {
-				return w.failRun(ctx, run, token, fmt.Errorf("%w: request %s is paid and waits: %v",
-					errPaidCollectBlocked, id, err))
-			}
-		}
-		return w.failRun(ctx, run, token, err)
-	}
-
-	// The SAME table the door prices against and the band advertises (app.go SetDesignEngines):
-	// default slug + the B-16 flags. A frozen flagged slug the flags no longer list is read off the
-	// catalogue (applyImageOptions) for its dial — and then REFUSED before any money below
-	// (engineOffAtSubmit): the flag is what the owner turns off to stop spending on that engine.
-	engines := EngineTable(w.c.ImageDefaultModel, w.c.EngineFlags())
-	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind), engines)
-	if err != nil {
-		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
-		return w.failRun(ctx, run, token, err)
-	}
-
-	collector, async := prov.(Collector)
-
-	// ─── RESUME. An asynchronous route may already have been paid: an attempt closed as
-	// `accepted` carries the provider's task id, and looking that task up is FREE. Reading it
-	// before submitting is the difference between resuming a job after a crash and buying it
-	// twice.
+	// ─── THE ATTEMPT HISTORY FIRST, FOR EVERY KIND (B-13). Two decisions below are read off it before
+	// any provider is picked: WHICH PROVIDER a paid, accepted job belongs to (its collect goes there,
+	// whatever is wired for the kind today), and which candidates of a routed kind this run's current
+	// round has already paid (the chooser moves past them). It used to be read by the asynchronous
+	// kinds only; a sync route has nothing to resume, but it now has a chain to walk.
 	//
 	// ⚠ FAIL CLOSED (G-02 r3, Codex 1). When the attempt history cannot be read, this pass does NOT
 	// know whether the run was already paid for, so it must neither submit nor refuse: "fresh" would
@@ -103,51 +62,128 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// abandoned through the same door as a failed RecordRunPrompt / StartAttempt: nothing is written,
 	// the tick backs off, the row keeps its claim until the lease dies and ReviveExpiredRuns hands it
 	// back to the queue, where the next pass reads the history again.
-	pendingID := ""
+	full, gerr := w.store.GetRun(ctx, run.Id)
+	if gerr != nil {
+		return w.abandon(ctx, run, fmt.Errorf("read attempts before choosing a route: %w", gerr))
+	}
+	var attempts []entity.DesignRunAttempt
+	if full != nil {
+		attempts = full.Attempts
+	}
+
+	// ─── RESUME. An asynchronous route may already have been paid: an attempt closed as `accepted`
+	// carries the provider's task id, and looking that task up is FREE. Reading it before submitting
+	// is the difference between resuming a job after a crash and buying it twice.
+	//
 	// pendingAttempt — the attempt whose submit was accepted: its ledger row is the one the collect
-	// prices (B-07). 0 = not known (no ledger row to price). pendingProvider — the route NAME that
-	// attempt stored (StartAttempt{Provider: prov.Name()}): only that route's collect may price it.
-	pendingAttempt := 0
-	pendingProvider := ""
-	if async {
-		full, gerr := w.store.GetRun(ctx, run.Id)
-		if gerr != nil {
-			return w.abandon(ctx, run, fmt.Errorf("read attempts before submitting: %w", gerr))
+	// prices (B-07). 0 = not known (no ledger row to price). pendingNamed — that attempt NAMES its
+	// provider, and the collector below is the provider of that name (resumeRoute): only then may the
+	// collect price its row.
+	var (
+		prov           Provider
+		err            error
+		pendingID      string
+		pendingAttempt int
+		pendingNamed   bool
+	)
+	if a, ok := acceptedAttempt(attempts); ok {
+		// ⚠ THE COLLECTOR IS THE PROVIDER THAT ACCEPTED THE JOB, NOT THE ONE WIRED FOR THE KIND NOW
+		// (B-13; REVIEW-A4 #2). After a switch of DESIGN_THREED_PROVIDER the wired route has never seen
+		// this locator: its lookup failed for good and the run sat `accepted` for ever. resumeRoute
+		// looks the stored name up over every provider the worker constructed (Providers.byName) and
+		// pre-flights THAT one. A refusal is a WAIT, never a re-submit (G-03, Codex 2): FAL_KEY removed
+		// for an hour must not throw away a job that is bought and collectable for free — the accepted
+		// id turns the refusal into `paid_collect_waiting`, which the store re-queues at the capped
+		// back-off WITHOUT spending the ten-round ceiling (G-03 r2, Codex 4); a person ends the wait by
+		// cancelling the run.
+		if prov, err = w.resumeRoute(run, a); err != nil {
+			return w.failRun(ctx, run, token, err)
 		}
-		if full != nil {
-			if a, ok := acceptedAttempt(full.Attempts); ok {
-				pendingID, pendingAttempt, pendingProvider = a.ProviderRequestId.String, a.AttemptNo, a.Provider
+		pendingID, pendingAttempt = a.ProviderRequestId.String, a.AttemptNo
+		pendingNamed = strings.TrimSpace(a.Provider) != ""
+	} else {
+		// ─── PRE-FLIGHT. Everything here happens BEFORE an attempt row exists, therefore before any
+		// money can move. Each of these refusals is permanent by nature: no number of retries wires a
+		// route, hands over an API key or teaches the bucket a new file type.
+		//
+		// IT IS THE SAME CALL THE HANDLER ALREADY MADE AT THE DOOR (PreflightKind), and it is repeated
+		// here rather than trusted: the door answered when the run was created, this answers when it is
+		// executed, and between the two lie a redeploy, a rotated key and a changed configuration. One
+		// expression, asked twice — never two expressions.
+		if prov, err = w.providers.preflight(w.sink, run.Kind); err != nil {
+			return w.failRun(ctx, run, token, err)
+		}
+	}
+
+	// The SAME table the door prices against and the band advertises (app.go hands EngineTableFunc to
+	// both, B-13): the route's default slug + the B-16 flags. A frozen flagged slug the flags no longer
+	// list is read off the catalogue (applyImageOptions) for its dial — and then REFUSED before any
+	// money below (engineOffAtSubmit): the flag is what the owner turns off to stop spending on that
+	// engine.
+	engines := w.engines()
+	job, err := buildJobWith(ctx, w.media, w.objects, run, w.c.QualityFor(run.Kind), engines)
+	if err != nil {
+		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
+		return w.failRun(ctx, run, token, err)
+	}
+
+	// chain is the routed kind's fallback state for settle; nil for every route that is not a Chooser
+	// and for a resume (a collect never falls back: the job is bought).
+	var chain *candidateChain
+	if pendingID == "" {
+		// ─── THE CANDIDATE (B-13). A routed kind (Providers.Image since B-13) pays ONE candidate per
+		// pass: the first of the live route, in position order, that this run's current round has not
+		// opened an attempt with (roundTried). A round that is over — every serving candidate paid once,
+		// the store's back-off since — starts again at the top. The concrete candidate is what the
+		// attempt row, the prompt record, the pre-flights below and the payment all see; the routed slot
+		// itself never pays.
+		if ch, ok := prov.(Chooser); ok {
+			tried := roundTried(attempts)
+			next, cerr := ch.Choose(run.Kind, job.Model, tried)
+			if errors.Is(cerr, errChainExhausted) {
+				tried = nil
+				next, cerr = ch.Choose(run.Kind, job.Model, nil)
 			}
-			// ⚠ AN EARLIER SUBMIT THAT NEVER CLOSED IS A POSSIBLE PURCHASE (G-03, Codex 1a). A
-			// `dispatching` attempt with no finished_at and no accepted id before it means a pass died
-			// between StartAttempt and the write that closes it — before the POST, during it, or after
-			// fal accepted it. Nobody can say which, and fal takes no idempotency key, so a fresh
-			// submit here could buy the job a second time against the same reservation. Fail closed.
-			if pendingID == "" {
-				if open, ok := unresolvedSubmit(full.Attempts); ok {
-					// ⚠ BUT NOT WHILE ITS OWNER MAY STILL BE INSIDE IT (G-03 r2, Codex 3). This pass
-					// holds the claim because the previous one's LEASE expired — which proves it lost
-					// the row, not that its paid call has stopped. Closing the attempt `unknown` while
-					// that call can still answer races the late worker's accepted id. So a young open
-					// attempt is left alone and the run comes back when the grace is over; by then
-					// the row is either closed by its owner (an accepted id → a free collect) or
-					// provably abandoned (closed below). The store's late-finish rule
-					// (entity.DesignLateAcceptedFinish) is the second lock for a pause longer than
-					// any grace.
-					if settleBy := open.StartedAt.Add(w.submitSettleGrace()); w.clock().Before(settleBy) {
-						cause := fmt.Errorf("%w: attempt %d on %s opened at %s and may still be answering; "+
-							"looking again after %s", errSubmitSettling, open.AttemptNo, open.Provider,
-							open.StartedAt.UTC().Format(time.RFC3339), settleBy.UTC().Format(time.RFC3339))
-						return w.failRunAt(ctx, run, token, cause, settleBy)
-					}
-					cause := fmt.Errorf("%w: attempt %d on %s opened at %s and never closed — the job may "+
-						"have been queued and billed; reconcile it with the provider before starting it again",
-						errUnresolvedSubmit, open.AttemptNo, open.Provider,
-						open.StartedAt.UTC().Format(time.RFC3339))
-					w.finishAttempt(ctx, run, open.AttemptNo, nil, cause, entity.DesignAttemptUnknown)
-					return w.failRun(ctx, run, token, cause)
-				}
+			if cerr != nil {
+				// Nothing callable, or nothing that draws the frozen slug: before StartAttempt, so free,
+				// and terminal like every other pre-flight refusal.
+				return w.failRun(ctx, run, token, cerr)
 			}
+			prov = next
+			chain = newCandidateChain(ch, run.Kind, job.Model, tried, prov.Name())
+		}
+	}
+
+	collector, async := prov.(Collector)
+
+	if async && pendingID == "" {
+		// ⚠ AN EARLIER SUBMIT THAT NEVER CLOSED IS A POSSIBLE PURCHASE (G-03, Codex 1a). A
+		// `dispatching` attempt with no finished_at and no accepted id before it means a pass died
+		// between StartAttempt and the write that closes it — before the POST, during it, or after
+		// fal accepted it. Nobody can say which, and fal takes no idempotency key, so a fresh
+		// submit here could buy the job a second time against the same reservation. Fail closed.
+		if open, ok := unresolvedSubmit(attempts); ok {
+			// ⚠ BUT NOT WHILE ITS OWNER MAY STILL BE INSIDE IT (G-03 r2, Codex 3). This pass
+			// holds the claim because the previous one's LEASE expired — which proves it lost
+			// the row, not that its paid call has stopped. Closing the attempt `unknown` while
+			// that call can still answer races the late worker's accepted id. So a young open
+			// attempt is left alone and the run comes back when the grace is over; by then
+			// the row is either closed by its owner (an accepted id → a free collect) or
+			// provably abandoned (closed below). The store's late-finish rule
+			// (entity.DesignLateAcceptedFinish) is the second lock for a pause longer than
+			// any grace.
+			if settleBy := open.StartedAt.Add(w.submitSettleGrace()); w.clock().Before(settleBy) {
+				cause := fmt.Errorf("%w: attempt %d on %s opened at %s and may still be answering; "+
+					"looking again after %s", errSubmitSettling, open.AttemptNo, open.Provider,
+					open.StartedAt.UTC().Format(time.RFC3339), settleBy.UTC().Format(time.RFC3339))
+				return w.failRunAt(ctx, run, token, cause, settleBy)
+			}
+			cause := fmt.Errorf("%w: attempt %d on %s opened at %s and never closed — the job may "+
+				"have been queued and billed; reconcile it with the provider before starting it again",
+				errUnresolvedSubmit, open.AttemptNo, open.Provider,
+				open.StartedAt.UTC().Format(time.RFC3339))
+			w.finishAttempt(ctx, run, open.AttemptNo, nil, cause, entity.DesignAttemptUnknown)
+			return w.failRun(ctx, run, token, cause)
 		}
 	}
 
@@ -213,6 +249,8 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// network call that takes tens of seconds.
 	if pendingID == "" {
 		att, err := w.store.StartAttempt(ctx, entity.DesignAttemptStart{
+			// THE CONCRETE NAME (B-13): the chosen candidate's (`<provider>_images`), never the routed
+			// slot's — the next pass reads it back as «tried», a collect as «who accepted this».
 			RunId: run.Id, ClaimToken: token, Provider: prov.Name(),
 		})
 		if err != nil {
@@ -247,9 +285,9 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 					"not record it (%v) — the job may be running and billed; reconcile it with the provider",
 					errAcceptedNotRecorded, prov.Name(), out.RequestID, ferr))
 			}
-			pendingID, pendingAttempt, pendingProvider = out.RequestID, att.AttemptNo, prov.Name()
+			pendingID, pendingAttempt, pendingNamed = out.RequestID, att.AttemptNo, true
 		} else {
-			return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
+			return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr, chain)
 		}
 	}
 
@@ -271,9 +309,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	//
 	// So `accepted` + the task id is not bookkeeping: it is the token both of those decisions read.
 	if collector == nil {
-		// Unreachable today: pendingID is only ever set on a route that implements Collector. It is
-		// written down anyway because the alternative to a refusal here is a nil dereference on a
-		// run that has ALREADY BEEN PAID FOR, and a panic leaves it claimed until its lease dies.
+		// Unreachable today: pendingID is only ever set on a route that implements Collector (a
+		// fresh Pending answer, or resumeRoute, which refuses a stored provider that cannot collect).
+		// It is written down anyway because the alternative to a refusal here is a nil dereference
+		// on a run that has ALREADY BEEN PAID FOR, and a panic leaves it claimed until its lease dies.
 		return w.failRun(ctx, run, token,
 			fmt.Errorf("%w: %s accepted task %s but cannot collect it", errRouteMissing, prov.Name(), pendingID))
 	}
@@ -288,28 +327,73 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 	// SUBMIT's attempt — so the recorder is scoped to that attempt, not to `att`. A repeated collect
 	// finds the row already priced and changes nothing (PriceAcceptedCall moves only `accepted`).
 	//
-	// ⚠ AND ONLY THE ROUTE THAT ACCEPTED THE JOB MAY PRICE ITS ROW (Codex A4 #2). The attempt stored
-	// prov.Name() at submit; after a redeploy with another DESIGN_THREED_PROVIDER this pass's collector
-	// has never seen that locator, its lookup fails for good, and recordCollect would turn the other
+	// ⚠ AND ONLY THE ROUTE THAT ACCEPTED THE JOB MAY PRICE ITS ROW (Codex A4 #2) — which, since B-13,
+	// is the route collecting it BY CONSTRUCTION: a resume collects with the provider the accepted
+	// attempt names (resumeRoute), and a fresh submit collects with the provider that just submitted.
+	// A collector that had never seen the locator used to fail its lookup for good and turn another
 	// provider's `accepted` row `unknown` — IRREVERSIBLY, since PriceAcceptedCall moves only `accepted`
-	// rows and the real price could then never land. LEDGER-ONLY: the pass collects and fails exactly
-	// as it did before (routing the collect to the stored provider is commit D); only the recorder is
-	// withheld, and the row waits `accepted` for the provider that accepted it.
+	// rows. The one row still withheld is a NAMELESS accepted attempt (written before the column was
+	// filled): the kind's route collects it, and nothing proves that route accepted it, so its row
+	// waits `accepted` rather than be priced by a guess.
 	job.Recorder = nil
-	if pendingProvider == prov.Name() {
+	if pendingNamed {
 		job.Recorder = w.recorderFor(run, pendingAttempt)
-	} else if w.ledger != nil {
-		slog.Default().WarnContext(ctx, "ai ledger: accepted by "+pendingProvider+", this deployment collects "+
-			"with "+prov.Name()+"; its ledger row stays accepted until the provider that accepted it collects",
-			slog.Int("run_id", run.Id), slog.Int("attempt_no", pendingAttempt),
-			slog.String("accepted_by", pendingProvider), slog.String("collector", prov.Name()),
-			slog.String("request_id", pendingID))
 	}
 	out, callErr := collector.Collect(ctx, job, pendingID)
 	if out != nil && out.RequestID == "" {
 		out.RequestID = pendingID
 	}
-	return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr)
+	return w.settle(ctx, job, run, token, att.AttemptNo, out, callErr, nil)
+}
+
+// resumeRoute is the provider that collects an ACCEPTED job (B-13): the one whose name the accepted
+// attempt stored, looked up over every provider this worker constructed (Providers.byName — the six
+// slots and Also), and pre-flighted like any route this pass is about to use (routeReady).
+//
+//   - not ready (keyless, switched off, output the sink cannot keep) → errPaidCollectBlocked: a paid
+//     job WAITS for its provider (`paid_collect_waiting`), it is never re-submitted elsewhere;
+//   - no provider of that name → errRouteMissing, the name in the sentence: this build no longer
+//     constructs the provider that holds the job, and a person has to reconcile it with the provider;
+//   - a NAMELESS row (written before the attempt stored its provider) → the kind's route, as before
+//     B-13 — the only reading such a row ever had.
+func (w *Worker) resumeRoute(run entity.DesignRun, a entity.DesignRunAttempt) (Provider, error) {
+	id := a.ProviderRequestId.String
+	var prov Provider
+	if name := strings.TrimSpace(a.Provider); name == "" {
+		p, err := w.providers.preflight(w.sink, run.Kind)
+		if err != nil {
+			return nil, fmt.Errorf("%w: request %s is paid and waits: %v", errPaidCollectBlocked, id, err)
+		}
+		prov = p
+	} else {
+		p, ok := w.providers.byName(name)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s accepted request %s, and this deployment constructs no route named %s — "+
+				"reconcile the job with the provider", errRouteMissing, name, id, name)
+		}
+		if err := routeReady(w.sink, p); err != nil {
+			return nil, fmt.Errorf("%w: request %s is paid and waits: %v", errPaidCollectBlocked, id, err)
+		}
+		prov = p
+	}
+	if _, ok := prov.(Collector); !ok {
+		return nil, fmt.Errorf("%w: %s accepted task %s but cannot collect it", errRouteMissing, prov.Name(), id)
+	}
+	return prov, nil
+}
+
+// engines is the engine table of this pickup: Config.Engines (app.go: the live route's default, the
+// door's own function), else EngineTable over orimages.DefaultModel and this Config's flags — the
+// table every worker built without app.go (the tests) resolves against.
+func (w *Worker) engines() []Engine {
+	if w.c != nil && w.c.Engines != nil {
+		return w.c.Engines()
+	}
+	var flags EngineFlags
+	if w.c != nil {
+		flags = w.c.EngineFlags()
+	}
+	return EngineTable("", flags)
 }
 
 // threedUnreadAtSubmit — the worker's half of the route check: the frozen params of a threed run
@@ -338,7 +422,10 @@ func (w *Worker) threedUnreadAtSubmit(run entity.DesignRun, prov Provider) error
 // ORDER IS THE ARGUMENT. The charge is written FIRST, from the provider's answer alone, because it
 // is already real and nothing that happens afterwards can make it less so — a bucket that refuses
 // the bytes does not refund the generation. Only then are the bytes uploaded and the run closed.
-func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, token string, attemptNo int, out *Outcome, callErr error) error {
+//
+// chain is the routed kind's fallback (B-13): nil for every other route and for a collect.
+func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, token string, attemptNo int,
+	out *Outcome, callErr error, chain *candidateChain) error {
 	// The pass may be running on a context whose deadline has already passed — a long provider
 	// call is exactly the case. Everything from here on is short, and losing it would lose the
 	// paid result, so it runs beyond cancellation.
@@ -399,6 +486,16 @@ func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, toke
 	w.finishAttempt(sctx, run, attemptNo, out, callErr, state)
 
 	if artifacts == 0 {
+		// ─── THE FALLBACK (B-13). The transport PROVED nothing was bought — a CallError, not engaged
+		// (chain.next is the one place that decides which failures qualify) — and the route has a
+		// candidate this round has not tried: the run goes straight back to the queue, and the next
+		// pass pays that candidate on a fresh attempt row. For terminal codes too: a 401 or a 402 on
+		// one provider says nothing about the next (D-09). Everything else — an engaged failure, an
+		// error no transport spoke for, a round with nobody left — takes today's path exactly: the
+		// store's back-off for weather, a closed run for the terminal.
+		if next, ok := chain.next(callErr); ok {
+			return w.advanceCandidate(sctx, run, token, callErr, chain.from, next.Name())
+		}
 		return w.failRun(sctx, run, token, callErr)
 	}
 	if callErr != nil {
@@ -608,6 +705,31 @@ func (w *Worker) failRunAt(ctx context.Context, run entity.DesignRun, token stri
 	return nil
 }
 
+// advanceCandidate re-queues a run for the NEXT candidate of its route, now (B-13): retryable
+// whatever the failure's own verdict — the failure was the candidate's, and it moved no money — with
+// the next pickup named as this instant, because the wait of a back-off is for weather, and the next
+// candidate has had none. The code and the sentence are the failed candidate's (the history row says
+// what happened to it); the log line names both ends of the step.
+//
+// The store's two ceilings still apply unchanged: a fallback is an attempt like any other.
+func (w *Worker) advanceCandidate(ctx context.Context, run entity.DesignRun, token string, cause error, from, to string) error {
+	v := classify(cause)
+	if _, err := w.store.FailRun(ctx, entity.DesignRunFail{
+		RunId:       run.Id,
+		ClaimToken:  token,
+		ErrorCode:   v.Code,
+		LastError:   cause.Error(),
+		Retryable:   true,
+		NextAttempt: w.clock(),
+	}); err != nil {
+		return w.abandon(ctx, run, err)
+	}
+	slog.Default().InfoContext(ctx, "designgen: candidate advanced",
+		slog.Int("run_id", run.Id), slog.String("from", from), slog.String("to", to),
+		slog.String("code", v.Code))
+	return nil
+}
+
 // designResultRefused — отверг ли СТОР саму выдачу (в отличие от «строка уже не наша»).
 //
 // Обе половины детерминированы и обе куплены: род кадра, который не может нести колорвей задания
@@ -719,14 +841,11 @@ func engineOffAtSubmit(job Job, table []Engine) error {
 		"nothing was charged", errEngineSwitchedOff, e.Label, e.Slug, flag)
 }
 
-// acceptedRequestID finds the newest attempt that was ACCEPTED by an asynchronous provider and
-// carries its task id — the id that makes the next lookup free.
-func acceptedRequestID(attempts []entity.DesignRunAttempt) string {
-	a, _ := acceptedAttempt(attempts)
-	return a.ProviderRequestId.String
-}
-
-// acceptedAttempt is that attempt itself: its number keys the ledger row the collect prices.
+// acceptedAttempt finds the newest attempt that was ACCEPTED by an asynchronous provider and carries
+// its task id — the id that makes the next lookup free (the store's comments still call this fact
+// «acceptedRequestID», the helper it replaced in B-13). The whole attempt, because a resume needs
+// three of its fields: the id, the number (it keys the ledger row the collect prices) and the provider
+// name (it picks the collector — resumeRoute).
 func acceptedAttempt(attempts []entity.DesignRunAttempt) (entity.DesignRunAttempt, bool) {
 	for i := len(attempts) - 1; i >= 0; i-- {
 		a := attempts[i]

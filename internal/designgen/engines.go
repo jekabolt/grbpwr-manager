@@ -250,8 +250,8 @@ func defaultCapable(e Engine) bool {
 //
 // FLAGS (B-16). The Gemini and Seedream rows are listed only while their flag is on; flags are
 // optional so a caller that passes none (buildJob, tests) sees the flags-off table — the fail-closed
-// direction. Several EngineFlags are OR-ed. The worker's dispatch passes Config.EngineFlags(), the
-// same flags app.go hands the door and the band: a frozen flagged slug is still READ through
+// direction. Several EngineFlags are OR-ed. The worker's dispatch reads Config.Engines — app.go's
+// EngineTableFunc over Config.EngineFlags(), the same function it hands the door and the band (B-13): a frozen flagged slug is still READ through
 // engineCatalogue (its dial), and REFUSED before any money when its flag is off at the pickup
 // (engineOffAtSubmit, G-03 Codex 6 — the flag is the owner's spend switch). A flagged row is never
 // the default (defaultCapable): a Gemini / Seedream defaultSlug empties the table whatever the flags

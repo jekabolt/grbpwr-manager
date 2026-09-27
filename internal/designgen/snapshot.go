@@ -1251,7 +1251,7 @@ func buildJob(ctx context.Context, media mediaResolver, objects objectFetcher, r
 	return buildJobWith(ctx, media, objects, run, quality, EngineTable(""))
 }
 
-// buildJobWith is buildJob with the deployment's engine table (EngineTable(Config.ImageDefaultModel)),
+// buildJobWith is buildJob with the deployment's engine table (Worker.engines: Config.Engines, B-13),
 // which resolves a frozen params.image into the job's engine fields.
 func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetcher, run entity.DesignRun, quality string, engines []Engine) (Job, error) {
 	p := parseParams(run.Params)

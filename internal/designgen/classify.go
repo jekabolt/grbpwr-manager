@@ -246,7 +246,10 @@ func classifyBySentinel(err error) verdict {
 	case errors.Is(err, errAcceptedNotRecorded), errors.Is(err, errUnresolvedSubmit),
 		errors.Is(err, fal.ErrSubmitUnconfirmed), errors.Is(err, meshy.ErrSubmitUnconfirmed):
 		return verdict{Retryable: false, Code: CodeSubmitUnconfirmed, State: entity.DesignAttemptUnknown}
-	case errors.Is(err, errEngineSwitchedOff):
+	// ─── ours: the frozen engine cannot be drawn here — its flag went off (G-03, Codex 6), or no
+	// candidate of the image route serves its slug (B-13). Before StartAttempt, free, terminal: the
+	// door's own word for the same fact.
+	case errors.Is(err, errEngineSwitchedOff), errors.Is(err, errNoCandidateServes):
 		return verdict{Retryable: false, Code: CodeUnknownImageModel, State: entity.DesignAttemptFailed}
 	// ─── ours: DELIVERED, and then the STORE refused to file it. RETRY FORBIDDEN, and this one is
 	// the most expensive of the family to get wrong. The attempt is already recorded as delivered

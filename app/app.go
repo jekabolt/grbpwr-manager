@@ -575,8 +575,11 @@ func (a *App) Start(ctx context.Context) error {
 	// not equal the lower-case constant, so an un-normalised read would wire fal and log fal while
 	// the operator had asked for Meshy. Idempotent; New() applies it again.
 	designgen.Normalize(&designCfg)
-	// The worker resolves a frozen params.image against the same table the door checks it with.
-	designCfg.ImageDefaultModel = designImages.Model()
+	// The worker resolves a frozen params.image against the same table the door checks it with — ONE
+	// function, handed to both (B-13): the image.generate route's first model when it is a row the table
+	// can default to, else the image client's env slug (a typo in the panel keeps the picker, with one
+	// warning per slug). WarnIfModelsRetired above keeps probing the env table at boot.
+	designCfg.Engines = designgen.EngineTableFunc(a.aireg, designImages.Model(), designCfg.EngineFlags())
 	// The configured 3D route as the door and the band see it (G-02): which build options it reads
 	// and what one build may book at this deployment's tariff. Built from the SAME client the worker
 	// is given below; wired only when the worker exists.
@@ -651,9 +654,16 @@ func (a *App) Start(ctx context.Context) error {
 		// which is what lets the owner tell «I have not set the key yet» from «the service is
 		// busy».
 		falThreed := fal.New(a.c.Fal)
-		threed := designgen.NewFalThreedProvider(falThreed)
+		// ⚠ BOTH 3D ROUTES ARE CONSTRUCTED, AND THE ONE NOT ROUTED GOES TO Providers.Also (B-13). A job
+		// the other vendor ACCEPTED before a switch of DESIGN_THREED_PROVIDER is paid and collectable
+		// for free — by that vendor only: the worker collects with the provider the accepted attempt
+		// names. Constructing it asks nothing of it (meshy.New is a struct; keyless = Enabled false, and
+		// such a job WAITS as `paid_collect_waiting` until its key is back).
+		falThreedRoute := designgen.NewFalThreedProvider(falThreed)
+		meshyThreedRoute := designgen.NewThreedProvider(meshy.New(a.c.Meshy))
+		threed, unroutedThreed := falThreedRoute, meshyThreedRoute
 		if designCfg.ThreedProvider == designgen.ThreedProviderMeshy {
-			threed = designgen.NewThreedProvider(meshy.New(a.c.Meshy))
+			threed, unroutedThreed = meshyThreedRoute, falThreedRoute
 		}
 		// THE SAME EXPRESSION THE WORKER ASKS BEFORE EVERY FRESH SUBMIT (ThreedRouteOf the wired
 		// provider at DESIGN_THREED_PBR), so the door and the pickup cannot read two routes.
@@ -685,10 +695,13 @@ func (a *App) Start(ctx context.Context) error {
 		}
 
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
-			// flat, render, recolor and pattern — the raster route. ONE endpoint and ONE key for
-			// all four: they differ by prompt and by which pictures go into which paid call, both
-			// of which live inside designgen.
-			Image: designgen.NewImageProvider(designImages),
+			// flat, render, recolor, pattern and freeform — the raster route. They differ by prompt and
+			// by which pictures go into which paid call, both of which live inside designgen. Since B-13
+			// the slot is the ROUTE (admin → AI providers, image.generate): each pass pays one
+			// candidate of it, a candidate that failed without money moving hands the run to the next
+			// one on a fresh attempt. Transports: openrouter only (commit F adds OpenAI).
+			Image: designgen.NewRoutedImageProvider(a.aireg,
+				map[string]designgen.ImageTransport{entity.AIProviderOpenRouter: designImages}, designImages.Model()),
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
 			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
@@ -709,6 +722,9 @@ func (a *App) Start(ctx context.Context) error {
 			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
 			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
 			Fill: designgen.NewFalFillProvider(falRoutes),
+			// The 3D route DESIGN_THREED_PROVIDER did not pick — never chosen for a fresh run, kept so
+			// it can collect what it accepted before the switch (see above).
+			Also: []designgen.Provider{unroutedThreed},
 		}, designgen.WithLedger(aiLedger))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
@@ -787,12 +803,11 @@ func (a *App) Start(ctx context.Context) error {
 	if designFalRoutes != nil {
 		adminS.SetDesignFalRoutes(designFalRoutes)
 	}
-	// The engine table the worker resolves params.image with (designCfg.ImageDefaultModel above):
-	// the door validates and prices against it, the band advertises it. A table, not a gate — it
-	// spends nothing, and the money flag above has already closed every paid verb when it is off.
-	adminS.SetDesignEngines(func() []designgen.Engine {
-		return designgen.EngineTable(designImages.Model(), designCfg.EngineFlags())
-	})
+	// The engine table the worker resolves params.image with (designCfg.Engines above — the SAME
+	// function): the door validates and prices against it, the band advertises it. A table, not a
+	// gate — it spends nothing, and the money flag above has already closed every paid verb when it
+	// is off.
+	adminS.SetDesignEngines(designCfg.Engines)
 	// admin → AI providers: the SAME registry every client reads its key through (a write reloads it
 	// here at once) and the SAME ring it opens stored keys with (a key sealed by another master would
 	// read back "unreadable"). The recraft route is asked of recraft itself — RECRAFT_ROUTE's parse,
