@@ -12,6 +12,7 @@ import (
 	authjwt "github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -351,4 +352,89 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 			assert.Equal(t, codes.PermissionDenied, status.Code(err))
 		})
 	}
+}
+
+// TestInterceptorAiMethodsAreSuperOnly drives the real interceptor with real tokens over the six AI
+// providers RPCs (ai-providers plan A8, D-03: super-only, reads included) and over EVERY other
+// AdminService method.
+//
+// The two halves guard the two ways the SuperOnly check can be wrong. Missing (or placed after the
+// legacy/super bypass), a legacy pre-RBAC token — full access, but not a super — walks into the key
+// custody panel. Too wide, it takes away the full access legacy tokens still have everywhere else,
+// and sessions minted before RBAC start failing on ordinary screens.
+func TestInterceptorAiMethodsAreSuperOnly(t *testing.T) {
+	as := mocks.NewMockAdmin(t)
+	c := &Config{
+		JWTSecret:                jwtSecret,
+		MasterPassword:           masterPassword,
+		PasswordHasherSaltSize:   16,
+		PasswordHasherIterations: 100000,
+		JWTTTL:                   "60m",
+	}
+	authsrv, err := New(c, as)
+	assert.NoError(t, err)
+	as.EXPECT().GetAdminByUsername(mock.Anything, mock.Anything).Return(&entity.Admin{Id: 1}, nil).Maybe()
+	interceptor := authsrv.UnaryAdminAuthInterceptor()
+
+	legacyTok, err := authjwt.NewTokenWithSubject(authsrv.JwtAuth, time.Hour, "legacy")
+	assert.NoError(t, err)
+	settingsWriter, err := authjwt.NewAdminToken(authsrv.JwtAuth, time.Hour, "u", false, []string{"settings:write"}, nil)
+	assert.NoError(t, err)
+	superTok, err := authjwt.NewAdminToken(authsrv.JwtAuth, time.Hour, "s", true, nil, nil)
+	assert.NoError(t, err)
+
+	// call reports the interceptor's error and whether the handler behind it ran.
+	call := func(token, method string) (bool, error) {
+		reached := false
+		handler := func(ctx context.Context, req any) (any, error) { reached = true; return "ok", nil }
+		md := metadata.New(map[string]string{
+			strings.ToLower(AuthMetadataKey): "Bearer " + token,
+		})
+		ctx := metadata.NewIncomingContext(context.Background(), md)
+		_, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, handler)
+		return reached, err
+	}
+
+	// By name, not from the rbac map: the promise is about these six RPCs, whatever the map says.
+	aiMethods := map[string]struct{}{
+		"GetAiProvidersConfig": {},
+		"UpdateAiProvider":     {},
+		"SetAiProviderKey":     {},
+		"SetAiDefaults":        {},
+		"SetAiRoute":           {},
+		"GetAiSpendReport":     {},
+	}
+	for name := range aiMethods {
+		method := "/admin.AdminService/" + name
+		t.Run(name+"/legacy token denied", func(t *testing.T) {
+			reached, err := call(legacyTok, method)
+			assert.Equal(t, codes.PermissionDenied, status.Code(err))
+			assert.False(t, reached)
+		})
+		t.Run(name+"/scoped settings:write denied", func(t *testing.T) {
+			reached, err := call(settingsWriter, method)
+			assert.Equal(t, codes.PermissionDenied, status.Code(err))
+			assert.False(t, reached)
+		})
+		t.Run(name+"/super allowed", func(t *testing.T) {
+			reached, err := call(superTok, method)
+			assert.NoError(t, err)
+			assert.True(t, reached)
+		})
+	}
+
+	// Every other method: the legacy token keeps the full access it always had.
+	others := 0
+	for _, m := range pb_admin.AdminService_ServiceDesc.Methods {
+		if _, ai := aiMethods[m.MethodName]; ai {
+			continue
+		}
+		others++
+		reached, err := call(legacyTok, "/admin.AdminService/"+m.MethodName)
+		if !assert.NoError(t, err, "legacy token must keep full access to %s", m.MethodName) {
+			continue
+		}
+		assert.True(t, reached, "legacy token must reach the handler of %s", m.MethodName)
+	}
+	assert.Greater(t, others, 100, "the descriptor walk must cover the whole AdminService")
 }
