@@ -49,9 +49,11 @@ func (p falThreedProvider) Name() string { return ThreedProviderFal }
 func (p falThreedProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 
 // MissingCredential is the sentence the DOOR shows when the route is off — see CredentialNamer. It
-// is the same wording fal.ErrNotConfigured carries, because a person who reads one and then the
-// other must not have to work out that they are the same fact.
-func (p falThreedProvider) MissingCredential() string { return "FAL_KEY is not set" }
+// names the same variable fal.ErrNotConfigured names, so a person who reads one and then the other
+// sees the same fact; the door also says where a key goes now that the panel holds keys. (The
+// client's own sentinel keeps its shorter wording: it is pinned by the fal package's tests and only
+// surfaces when the key vanishes between the door and the call.)
+func (p falThreedProvider) MissingCredential() string { return noKeySentence("fal", "FAL_KEY") }
 
 // Produces names BOTH artifacts, because the pass refuses up front unless the sink can store every
 // one of them: the model itself, and the raster thumbnail that stands in for it wherever a list has

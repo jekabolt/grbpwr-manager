@@ -402,6 +402,11 @@ type Config struct {
 	UnitsCeilingOutpaint float64 `mapstructure:"units_ceiling_outpaint"` // FAL_UNITS_CEILING_OUTPAINT
 	UnitUSDFill          float64 `mapstructure:"unit_usd_fill"`          // FAL_UNIT_USD_FILL
 	UnitsCeilingFill     float64 `mapstructure:"units_ceiling_fill"`     // FAL_UNITS_CEILING_FILL
+	// KeyFunc, when set, is asked for the key on EVERY request and by Enabled(): it is the AI
+	// providers registry's hook (internal/aiprov/registry), so a key saved in the admin panel — or
+	// a provider switched off there — takes effect on the next request without a redeploy. "" means
+	// disabled. nil = APIKey above, exactly as before. Never serialised, never printed.
+	KeyFunc func() string `mapstructure:"-"`
 }
 
 // String renders the config with the API key redacted, so an accidental %v / %+v / %s of it — in a
@@ -478,7 +483,16 @@ func New(cfg Config) *Client {
 }
 
 // Enabled reports whether an API key is configured. Nil-safe.
-func (c *Client) Enabled() bool { return c != nil && c.cfg.APIKey != "" }
+func (c *Client) Enabled() bool { return c != nil && c.apiKey() != "" }
+
+// apiKey is the key a request is built with: Config.KeyFunc when wired (read per call, so a
+// rotation reaches the next submit), else Config.APIKey (trimmed in New).
+func (c *Client) apiKey() string {
+	if c.cfg.KeyFunc != nil {
+		return strings.TrimSpace(c.cfg.KeyFunc())
+	}
+	return c.cfg.APIKey
+}
 
 // Model returns the effective 3D slug (provenance for the attempt row). Nil-safe.
 func (c *Client) Model() string {
@@ -1455,7 +1469,7 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 		return fmt.Errorf("fal: building request: %w", err)
 	}
 	// fal's own scheme: `Authorization: Key <FAL_KEY>`, not Bearer.
-	req.Header.Set("Authorization", "Key "+c.cfg.APIKey)
+	req.Header.Set("Authorization", "Key "+c.apiKey())
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")

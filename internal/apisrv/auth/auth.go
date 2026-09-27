@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
 
 	"github.com/go-chi/jwtauth/v5"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -61,6 +63,27 @@ type Server struct {
 	c               *Config
 	masterHash      string
 	rateLimiter     *authRateLimiter
+
+	// adminIDs caches username → admins.id for the AI ledger's actor (see adminIDFor): string →
+	// adminIDEntry. adminIDTTL is its window, now its clock (a field so a test can move it).
+	adminIDs   sync.Map
+	adminIDTTL time.Duration
+	now        func() time.Time
+}
+
+// adminIDCacheTTL is how long one username → admin id answer — or one failed lookup — is reused.
+// The id only labels AI ledger rows beside the username (which stays the primary actor key), so a
+// five-minute-old answer costs nothing, while a lookup on every admin RPC would put a DB round trip
+// in front of every handler.
+const adminIDCacheTTL = 5 * time.Minute
+
+// adminIDLookupTimeout bounds the one lookup per window, so a slow DB delays an admin RPC by at most
+// this much before the call goes on with the username alone.
+const adminIDLookupTimeout = 2 * time.Second
+
+type adminIDEntry struct {
+	id      *int // nil = unknown (no such admin, or the lookup failed)
+	expires time.Time
 }
 
 // authRateLimiter throttles brute-force attempts against the admin auth RPCs.
@@ -169,6 +192,8 @@ func New(c *Config, ar dependency.Admin) (*Server, error) {
 		c:               c,
 		masterHash:      hash,
 		rateLimiter:     newAuthRateLimiter(),
+		adminIDTTL:      adminIDCacheTTL,
+		now:             time.Now,
 	}
 
 	return s, nil
@@ -547,8 +572,64 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 		}
 		if sub != "" {
 			ctx = PutAdminUsername(ctx, sub)
+			// WHO a provider call is made for — the AI spend ledger's actor. The username is what
+			// design_run.author already stores; the id survives a rename. A failed id lookup never
+			// fails the RPC: the actor then carries the username alone.
+			ctx = aiprov.WithActor(ctx, aiprov.Actor{Username: sub, AdminID: s.adminIDFor(ctx, sub)})
 		}
 		ctx = putAdminAuthz(ctx, AdminAuthz{Legacy: legacy, Super: super, Perms: perms})
 		return handler(ctx, req)
 	}
+}
+
+// adminIDFor returns username's admins.id for the AI actor, nil when it is not known. One lookup per
+// username per adminIDCacheTTL: the answer is cached, and so is a failure (no such admin — a deleted
+// account, a legacy token's subject — or a DB error), which is logged once per window instead of on
+// every RPC. A lookup that failed only because the RPC itself was cancelled is neither cached nor
+// logged: the next request asks again. Never returns an error.
+func (s *Server) adminIDFor(ctx context.Context, username string) *int {
+	if s.adminRepository == nil {
+		return nil
+	}
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	if v, ok := s.adminIDs.Load(username); ok {
+		if e := v.(adminIDEntry); now.Before(e.expires) {
+			return copyIntPtr(e.id)
+		}
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, adminIDLookupTimeout)
+	defer cancel()
+	var id *int
+	admin, err := s.adminRepository.GetAdminByUsername(lookupCtx, username)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return nil
+	case err != nil:
+		slog.Default().WarnContext(ctx, "ai actor: admin id lookup failed; AI ledger rows carry the username only",
+			slog.String("username", username),
+			slog.Duration("retry_after", s.adminIDTTL),
+			slog.String("err", err.Error()),
+		)
+	case admin == nil:
+		slog.Default().WarnContext(ctx, "ai actor: no admin row for the username; AI ledger rows carry the username only",
+			slog.String("username", username),
+			slog.Duration("retry_after", s.adminIDTTL),
+		)
+	default:
+		v := admin.Id
+		id = &v
+	}
+	s.adminIDs.Store(username, adminIDEntry{id: id, expires: now.Add(s.adminIDTTL)})
+	return copyIntPtr(id)
+}
+
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

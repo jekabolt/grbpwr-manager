@@ -43,6 +43,11 @@ type DirectConfig struct {
 	// CreditUSD — RECRAFT_CREDIT_USD; <=0 = defaultCreditUSD. Only converts the reported credits
 	// into money; the raw credit count is reported unconverted alongside it.
 	CreditUSD float64 `mapstructure:"credit_usd"`
+	// KeyFunc, when set, is asked for the key on EVERY request and by Enabled(): it is the AI
+	// providers registry's hook (internal/aiprov/registry), so a key saved in the admin panel — or
+	// a provider switched off there — takes effect on the next request without a redeploy. "" means
+	// disabled. nil = APIKey above, exactly as before. Never serialised, never printed.
+	KeyFunc func() string `mapstructure:"-"`
 }
 
 const (
@@ -115,7 +120,16 @@ func newDirectClient(cfg DirectConfig) *DirectClient {
 func NewDirect(cfg DirectConfig) *DirectClient { return newDirectClient(cfg) }
 
 // Enabled reports whether an API key is configured. Nil-safe.
-func (c *DirectClient) Enabled() bool { return c != nil && c.cfg.APIKey != "" }
+func (c *DirectClient) Enabled() bool { return c != nil && c.apiKey() != "" }
+
+// apiKey is the key a request is built with: DirectConfig.KeyFunc when wired (read per call, so a
+// rotation reaches the next request), else DirectConfig.APIKey (trimmed in newDirectClient).
+func (c *DirectClient) apiKey() string {
+	if c.cfg.KeyFunc != nil {
+		return strings.TrimSpace(c.cfg.KeyFunc())
+	}
+	return c.cfg.APIKey
+}
 
 // BaseURL returns the effective API root. It exists for LOG LINES: a 404 can mean the model id is
 // gone or that the base URL points at something without this route, and a log naming only the model
@@ -286,7 +300,7 @@ func (c *DirectClient) buildRequest(ctx context.Context, req GenerateRequest, st
 	if err != nil {
 		return nil, fmt.Errorf("recraft: building request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey())
 	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Accept", "application/json")
 	return httpReq, nil

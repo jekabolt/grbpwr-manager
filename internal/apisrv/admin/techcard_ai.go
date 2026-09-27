@@ -21,10 +21,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// openRouterNoKeyMsg is THE ONE sentence for "the chat client has no key", shared by every feature
+// that rides s.aiOps: where a key goes (the admin panel's AI providers page — keys are read through
+// the AI providers registry) and the env variable that still works as the fallback. It says the
+// same for openrouter switched off in the panel: the handler only knows the client has no key.
+const openRouterNoKeyMsg = "no key for openrouter — set it in admin → AI providers (or OPENROUTER_API_KEY)"
+
 // aiOpsNotConfiguredMsg is the single, clear message returned when the OpenRouter
-// integration is not configured (no OPENROUTER_API_KEY). Kept as one const so the
+// integration is not configured (no key). Kept as one const so the
 // pre-check and the client-level ErrNotConfigured path report identically.
-const aiOpsNotConfiguredMsg = "AI operations generation is not configured (set OPENROUTER_API_KEY)"
+const aiOpsNotConfiguredMsg = "AI operations generation is not configured: " + openRouterNoKeyMsg
 
 // modelUnavailableAdviceMsg is THE ONE RECIPE for openrouter.ErrModelUnavailable, shared by every
 // feature that rides s.aiOps — the note assistant, this draft, and campaign auto-translation. It

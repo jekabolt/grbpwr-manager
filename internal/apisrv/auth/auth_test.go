@@ -178,6 +178,9 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 	}
 	authsrv, err := New(c, as)
 	assert.NoError(t, err)
+	// The interceptor looks the admin id up for the AI actor (actor_test.go pins that); here it is
+	// scenery.
+	as.EXPECT().GetAdminByUsername(mock.Anything, mock.Anything).Return(&entity.Admin{Id: 1}, nil).Maybe()
 
 	interceptor := authsrv.UnaryAdminAuthInterceptor()
 
@@ -293,6 +296,7 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 	}
 	authsrv, err := New(c, as)
 	assert.NoError(t, err)
+	as.EXPECT().GetAdminByUsername(mock.Anything, mock.Anything).Return(&entity.Admin{Id: 1}, nil).Maybe()
 	interceptor := authsrv.UnaryAdminAuthInterceptor()
 
 	mint := func(super bool, perms []string) string {

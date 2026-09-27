@@ -25,7 +25,9 @@ func (p threedProvider) Name() string { return "meshy" }
 func (p threedProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 
 // MissingCredential is the sentence the DOOR shows when the route is off — see CredentialNamer.
-func (p threedProvider) MissingCredential() string { return "MESHY_API_KEY is not set" }
+func (p threedProvider) MissingCredential() string {
+	return noKeySentence("meshy", "MESHY_API_KEY")
+}
 
 // Produces names BOTH artifacts, because the pass refuses up front unless the sink can store every
 // one of them: the model itself, and the raster thumbnail that stands in for it wherever a list
@@ -45,7 +47,7 @@ func (p threedProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 // execute is Execute with the run's options stated rather than read — see falThreedProvider.execute.
 func (p threedProvider) execute(ctx context.Context, job Job, opts threedOptions) (*Outcome, error) {
 	if !p.Enabled() {
-		return nil, fmt.Errorf("%w: MESHY_API_KEY is not set", errProviderDisabled)
+		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
 	refs := job.References
 	if len(refs) == 0 {
@@ -116,7 +118,7 @@ func steerFor(steer string, opts threedOptions) string {
 // buffers on its way to the bucket.
 func (p threedProvider) Collect(ctx context.Context, job Job, requestID string) (*Outcome, error) {
 	if !p.Enabled() {
-		return nil, fmt.Errorf("%w: MESHY_API_KEY is not set", errProviderDisabled)
+		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
 	var model, thumb bytes.Buffer
 	res, err := p.c.Await(ctx, requestID, meshy.Sink{Model: &model, Thumbnail: &thumb})

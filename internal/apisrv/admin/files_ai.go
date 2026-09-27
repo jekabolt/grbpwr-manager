@@ -22,7 +22,7 @@ const (
 	// identically. On beta the key is unset BY DESIGN, so this is the answer that path returns
 	// every time: the client turns it into the "assistant not connected" state and the note
 	// itself keeps working.
-	noteFormatNotConfiguredMsg = "markdown assistant is not configured (set OPENROUTER_API_KEY)"
+	noteFormatNotConfiguredMsg = "markdown assistant is not configured: " + openRouterNoKeyMsg
 
 	// noteFormatModelUnavailableMsg is the OTHER misconfiguration, and it exists because the first
 	// version of this handler did not have it: when the provider retired the configured model slug,
