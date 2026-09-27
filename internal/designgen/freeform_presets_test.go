@@ -24,6 +24,17 @@ func TestEachPresetNAMES_ITS_PICTURES_BY_NUMBER(t *testing.T) {
 	t.Run("tryon", func(t *testing.T) {
 		c := craftOf(t, `{"freeform":{"preset":"tryon","items":[
 		  {"media_id":12,"role":"product"},{"media_id":11,"role":"model"},{"media_id":13,"role":"product"}]}}`)
+		// Review r2 MINOR 3: the WHOLE craft of this two-product fixture, so a sentence appended to
+		// freeformTryonCraft is red and not only a phrase the Contains lines below happen to name.
+		// MUTATION (measured red): a sentence appended before freeformReturnOne.
+		require.Equal(t, "Keep the identity of the person of image 2 — the same face and skin tone; their body, "+
+			"hair and pose stay as in the photo except where the words above change them. Dress them in the "+
+			"garment of images 1 and 3 — images 1 and 3 are product pictures (a drawing, a render or a photo on "+
+			"white; views of the same garment): put that garment on the person at its real scale, draped the way "+
+			"that garment really sits on a body, and reproduce its cut, colour, print and seams as they are. "+
+			"Light it with the light of the scene so it belongs to the photograph. Keep the scene of the model "+
+			"photo. The result is a photograph with the same lens and realism as the model photo. Return ONE "+
+			"picture.", c)
 		require.Contains(t, c, "Keep the identity of the person of image 2 — the same face and skin tone")
 		// G-02 M-1: tile 1's field is «Modify physical features & pose», so body, hair and pose are
 		// kept only where the words do not change them — never «exactly». MUTATION (measured red):

@@ -392,8 +392,18 @@ func validateEnhanceTextRequest(req *pb_admin.EnhanceTextRequest) (enhanceTextIn
 	// STEER NAMES A (workflow, field_key) PAIR OF THE SERVER'S TABLE, and the system prompt is built
 	// from that row alone (enhanceSteerClause). A missing or unknown pair is refused before any spend:
 	// without it there is no honest way to say what the field is for. Every other mode ignores both.
+	//
+	// ⚠ STEER TAKES field = OTHER AND NOTHING ELSE (review r2 MAJOR 1): the system prompt names the
+	// enum's field first («Rewrite the TEXT for the field …») and the pair's field second. OTHER's
+	// phrase is the generic one, so the pair is the only specific identity; DESCRIPTION + retouch
+	// zone would tell the model «moodboard description» and «retouch zone» at once, and it would
+	// pick one on a paid call.
 	var workflow, fieldKey string
 	if mode == pb_admin.EnhanceTextMode_ENHANCE_TEXT_MODE_STEER {
+		if field != pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_OTHER {
+			return enhanceTextInput{}, entity.NewFieldViolation("field", "steer_takes_other", "",
+				"steer rewrites a playground prompt field: send field OTHER with the workflow / field_key pair")
+		}
 		workflow = strings.TrimSpace(req.GetWorkflow())
 		if workflow == "" {
 			return enhanceTextInput{}, entity.NewFieldViolation("workflow", "required", "", "name the playground tool whose field is being rewritten")

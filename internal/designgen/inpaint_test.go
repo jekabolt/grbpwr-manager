@@ -246,6 +246,29 @@ func TestFillPromptDESCRIBES_THE_ZONE_AFTER_THE_ASK(t *testing.T) {
 		require.Equal(t, ask+fillPromptSuffix, fillPrompt(" "+ask+" "), "no doubled full stop after %q", ask)
 	}
 
+	// Review r2 MINOR 2: a dangling , ; : is dropped before the full stop, not doubled into «,.»; an
+	// ellipsis is terminal; terminal punctuation behind a closing quote or bracket is terminal.
+	// MUTATIONS (each measured red): the , ; : trim removed; «…» taken out of the terminal set; the
+	// closing marks not looked behind.
+	for _, tc := range []struct{ ask, want string }{
+		{"a red patch pocket,", "a red patch pocket."},
+		{"a zip;", "a zip."},
+		{"a zip: ", "a zip."},
+		{"a zip , ;\n", "a zip."},
+		{"done…", "done…"},
+		{`"a bow."`, `"a bow."`},
+		{"«a bow!»", "«a bow!»"},
+		{"(a zip?)", "(a zip?)"},
+		{"'a bow.'", "'a bow.'"},
+		{`"a bow"`, `"a bow".`},
+		{"12.5 cm", "12.5 cm."},
+	} {
+		require.Equal(t, tc.want+fillPromptSuffix, fillPrompt(tc.ask), "ask %q", tc.ask)
+	}
+	require.Equal(t, "a red patch pocket. Show the finished result inside the painted zone of this garment "+
+		"photograph, blended naturally into the surrounding image: the same perspective, scale, focus, lighting "+
+		"and grain.", fillPrompt("a red patch pocket,"))
+
 	body, err := fillBody(fal.DefaultModelFill, Job{Prompt: " a brass button ", References: []string{"x"}, InpaintMask: "m"})
 	require.NoError(t, err)
 	require.Equal(t, falFillProvider{}.SentPrompt(Job{Prompt: " a brass button "}), body["prompt"],

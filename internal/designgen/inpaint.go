@@ -10,6 +10,8 @@ import (
 	"image/png"
 	"math"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
@@ -298,17 +300,28 @@ func (p falFillProvider) SentPrompt(job Job) string { return fillPrompt(job.Prom
 const fillPromptSuffix = " Show the finished result inside the painted zone of this garment photograph, " +
 	"blended naturally into the surrounding image: the same perspective, scale, focus, lighting and grain."
 
-// fillPrompt — the fal `prompt` of the mask route: the trimmed ask closed as a sentence (a full stop
-// added only when it does not already end on . ! or ?), then fillPromptSuffix. The empty ask is
-// refused by Execute on the BARE ask (words_required stays on the person's words), so the suffix never
-// reaches the provider alone.
+// fillPrompt — the fal `prompt` of the mask route: the trimmed ask closed as a sentence, then
+// fillPromptSuffix. The empty ask is refused by Execute on the BARE ask (words_required stays on the
+// person's words), so the suffix never reaches the provider alone.
+//
+// Closing the sentence (review r2 MINOR 2): trailing whitespace and a dangling , ; : are dropped
+// first («a red patch pocket,» must not become «pocket,. Show…»); then a full stop is added only
+// when the ask does not already end on terminal punctuation — . ! ? or … — looked for behind any
+// closing quotes or brackets, so «"a bow."» stays as written.
 func fillPrompt(ask string) string {
-	ask = strings.TrimSpace(ask)
-	if !strings.HasSuffix(ask, ".") && !strings.HasSuffix(ask, "!") && !strings.HasSuffix(ask, "?") {
+	ask = strings.TrimRightFunc(ask, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(",;:", r)
+	})
+	ask = strings.TrimLeftFunc(ask, unicode.IsSpace)
+	last, _ := utf8.DecodeLastRuneInString(strings.TrimRight(ask, fillClosingMarks))
+	if !strings.ContainsRune(".!?…", last) {
 		ask += "."
 	}
 	return ask + fillPromptSuffix
 }
+
+// fillClosingMarks — what may stand after a sentence's terminal punctuation and still close it.
+const fillClosingMarks = "\"'»”’)"
 
 // fillFamily — the one family whose fill body was read on the provider's page (2026-09-27). Any other
 // FAL_MODEL_FILL is closed at the band and the door (FalRouteOf, G-03 Fable m-1) and refused here,
