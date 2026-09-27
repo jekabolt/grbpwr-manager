@@ -15,12 +15,18 @@
 -- already exists» (FailedPrecondition), never an Internal.
 --
 -- Rollback in that window: the schema stays readable and writable by the previous binary (the
--- column is NULLABLE, nothing it uses is gone). The DATA is safe under it only while every token
--- equals its family — true of every pre-T45 row and of every colourway created without a palette.
--- A colourway created WITH a palette gets a token minted from its name («black and white» → BKW)
--- already in this window, and an older binary re-derives an unfrozen SKU from color_code (…-BLK):
--- once such a colourway exists, roll forward, not back. After 0377 a binary rollback past T45 is
--- never safe (see its header).
+-- column is NULLABLE, nothing it uses is gone). The DATA is safe under it only while EVERY token
+-- equals its family: an older binary re-derives an unfrozen SKU from color_code (…-BLK), so the
+-- first row whose token and family differ closes the window, however it got there. This binary
+-- writes such rows already in this window, for example:
+--   * a colourway created with a palette — its token is minted from its name («black and white» →
+--     BKW);
+--   * a family edit on an existing colourway — color_code moves, the token stays frozen;
+--   * an archive restore — the token comes back verbatim from its source, palette or not.
+-- So before any binary rollback past T45 this must return 0 (0376 Down refuses on the same count):
+--     SELECT COUNT(*) FROM product WHERE sku_color_token IS NOT NULL AND sku_color_token <> color_code;
+-- Anything above 0: roll forward, not back. After 0377 a binary rollback past T45 is never safe
+-- (see its header).
 -- ---
 -- STEPS, each re-runnable (MySQL auto-commits DDL, a failed apply re-runs this file from the top):
 --   1. add the column, NULLABLE. An older binary (a rollback) inserts products without naming it,
