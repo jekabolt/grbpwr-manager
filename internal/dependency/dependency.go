@@ -1929,6 +1929,44 @@ type (
 		UpdateSettings(ctx context.Context, patch entity.WorkshopSettingsPatch, updatedBy string) (*entity.WorkshopSettings, error)
 	}
 
+	// AI is the AI providers store (0373 config, 0374 ledger): which provider is on and with which
+	// (encrypted) key, which provider answers which purpose, and one ledger row per physical call.
+	//
+	// Every config write bumps ai_settings.config_version in the SAME transaction; the registry polls
+	// ConfigVersion and reloads GetConfig when it moved. A write that names expectedVersion fails with
+	// entity.ErrAIVersionConflict when somebody else saved first. SetProviderKey and UpsertModel bump
+	// WITHOUT the check, so a caller that also makes a checked write in the same request must make
+	// the checked one first.
+	AI interface {
+		GetConfig(ctx context.Context) (*entity.AIConfig, error)
+		ConfigVersion(ctx context.Context) (uint64, error)
+		// UpdateProvider bumps config_version in the same tx; ErrAIVersionConflict on mismatch.
+		UpdateProvider(ctx context.Context, key string, patch entity.AIProviderPatch, expectedVersion uint64, by string) error
+		// SetProviderKey stores ciphertext; enc == nil (or empty) clears the slot. Bumps the version
+		// without a check: a key write must never be blocked by a stale page.
+		SetProviderKey(ctx context.Context, key string, kind entity.AIKeyKind, enc []byte, last4 string, by string) error
+		SetDefaults(ctx context.Context, patch entity.AIDefaultsPatch, expectedVersion uint64, by string) error
+		// SetRoute replaces the purpose's whole route inside one tx (DELETE purpose; INSERT positions
+		// 1..n in candidate order).
+		SetRoute(ctx context.Context, purpose string, candidates []entity.AIRouteCandidate, expectedVersion uint64, by string) error
+		// UpsertModel records a custom slug typed into a route (no UI CRUD); bumps without a check.
+		UpsertModel(ctx context.Context, m entity.AIModel, by string) error
+
+		// BeginCall inserts a ledger row with status 'dispatching' and returns its id.
+		BeginCall(ctx context.Context, start entity.AICallStart) (int64, error)
+		// FinishCall finalises a 'dispatching' row; an already-finished row is left alone (nil).
+		FinishCall(ctx context.Context, id int64, end entity.AICallEnd) error
+		// PriceAcceptedCall finalises the 'accepted' row of (run, attempt, call); otherwise nil.
+		PriceAcceptedCall(ctx context.Context, runID, attemptNo, callNo int, end entity.AICallEnd) error
+		// SweepDispatching turns 'dispatching' rows that occurred before olderThan into 'unknown'
+		// (error_code 'sweeper') and returns how many.
+		SweepDispatching(ctx context.Context, olderThan time.Time) (int64, error)
+		// SpendReport sums the ledger over day_local BETWEEN fromDay AND toDay (inclusive, YYYY-MM-DD).
+		SpendReport(ctx context.Context, fromDay, toDay string) (*entity.AISpendReport, error)
+		// UpsertCostDaily writes the providers' own daily numbers (reconciliation).
+		UpsertCostDaily(ctx context.Context, rows []entity.AICostDaily) error
+	}
+
 	// PatternObjects manages pattern_object_access rows — per-object revocation epoch,
 	// expiry policy and coarse access stats behind the tokenized pattern read path
 	// /api/p/{token}. Rows are created lazily; a missing row means default access state.
@@ -2161,6 +2199,7 @@ type (
 		Media() Media
 		Settings() Settings
 		Workshop() Workshop
+		AI() AI
 		Support() Support
 		Language() Language
 		PatternObjects() PatternObjects
