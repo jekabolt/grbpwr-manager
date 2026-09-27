@@ -17,10 +17,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptrace"
 	"strings"
-	"sync/atomic"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 )
 
 const (
@@ -33,40 +33,11 @@ const (
 	defaultModel = "anthropic/claude-sonnet-5"
 	// defaultBaseURL is the OpenRouter API root (OpenAI-compatible).
 	defaultBaseURL = "https://openrouter.ai/api/v1"
-	// defaultTimeout is the BASE of a call's budget, not the whole of it: connect, upload, the
-	// provider fetching whatever pictures the request points at, and time-to-first-token. The time
-	// the ANSWER takes to print is ADDED on top by CompletionBudget — see minCompletionTokPerSec.
-	//
-	// ⚠ ЭТО БОЛЬШЕ НЕ ПОТОЛОК ВСЕГО ВЫЗОВА, И ЭТО ПОЧИНКА, А НЕ ПЕРЕИМЕНОВАНИЕ. Пока 60 s были
-	// потолком целиком, потолок токенов и бюджет времени были ДВУМЯ независимыми числами, связанными
-	// только просьбой в комментарии — «в этом порядке, и ни одно без другого» (analysisReasoningEffort
-	// ниже). Просьба не удержала: designConstructionMaxTokens подняли 3000 → 8000 в одиночку, и с того
-	// дня ответ, который потолок РАЗРЕШИЛ, физически не успевал приехать — 8000 токенов за 60 s это
-	// 133 ток/с при замеренных здесь же ~60 (см. analysisReasoningEffort: 2500 токенов за 42 s).
-	//
-	// ⚠ ЧЕМ КОНЧАЛСЯ РАЗРЫВ. Клиент рвал соединение на 60-й секунде, ошибка приезжала транспортная —
-	// то есть НЕ ErrBudgetExhausted, — и вызывающий (design_run.go: designFailDraft) закрывал попытку
-	// ЦЕНОЙ NULL: поставщик напечатал 22k входных и 5–7k выходных токенов, регистр записал НОЛЬ, а
-	// человек увидел codes.Unavailable, неотличимое от погоды, и нажал ещё раз. Это ровно тот дефект,
-	// который круг 19 чинил у двери finish_reason; он вернулся через дверь транспорта.
-	//
-	// ПОЭТОМУ СВЯЗЬ ТЕПЕРЬ ВЫВЕДЕНА, А НЕ ЗАПИСАНА: бюджет времени СЧИТАЕТСЯ ИЗ `max_tokens` того же
-	// запроса, в единственном месте, которое этот `max_tokens` на провод и кладёт. Поднять потолок,
-	// забыв про время, больше нельзя — их складывает одна функция.
-	defaultTimeout = 60 * time.Second
-	// minCompletionTokPerSec — КОНСЕРВАТИВНЫЙ НИЖНИЙ ПРЕДЕЛ скорости печати ответа, из которого
-	// считается добавка ко времени: печать `max_tokens` токенов не может занять больше, чем
-	// max_tokens / minCompletionTokPerSec, иначе поставщик просто болен.
-	//
-	// ЧИСЛО ЗАМЕРЕНО И ПОДЕЛЕНО НАДВОЕ. Единственный живой замер в этом репозитории — 2500 токенов
-	// завершения за 42 s ≈ 60 ток/с (analysisReasoningEffort). Двукратный запас на плохой день у
-	// поставщика даёт 30. Больше брать нельзя: таймаут, который срабатывает на ЗДОРОВОМ вызове,
-	// покупает ноль за полную цену — именно это здесь и чинится.
-	//
-	// ⚠ ЗАПАС ИДЁТ В СТОРОНУ ОЖИДАНИЯ, А НЕ ОБРЫВА, И ЭТО НЕСУЩЕЕ РЕШЕНИЕ. Лишняя минута ожидания
-	// стоит человеку минуты; оборванный вызов стоит денег поставщику, нуля в регистре и второго
-	// нажатия. Цены этих двух ошибок несравнимы, поэтому предел занижен нарочно.
-	minCompletionTokPerSec = 30
+	// defaultTimeout is the BASE of a call's budget (connect, upload, pictures, time-to-first-token);
+	// the time the answer takes to print is added on top by CompletionBudget. The number and the whole
+	// story of why it is a base and not a ceiling now live in aiprov (budget.go: DefaultBudgetBase) —
+	// one formula for every transport and for every lease that has to outlive a call.
+	defaultTimeout = aiprov.DefaultBudgetBase
 	// maxResponseBytes caps how much of an API response we read (defensive). It stays at 4 MiB
 	// because everything THIS package reads is text: a completion that big is already an order of
 	// magnitude past any prompt here, and raising it would only buy a bigger allocation on a
@@ -140,7 +111,11 @@ const (
 
 // ErrNotConfigured is returned when GenerateOperations is called with no API key.
 // Callers should surface it as a clear "not configured" precondition failure.
-var ErrNotConfigured = errors.New("openrouter: OPENROUTER_API_KEY is not set")
+//
+// It IS aiprov.ErrNotConfigured (an alias since B-11), so errors.Is answers from either name — and
+// its text is aiprov's: nothing asserts the old "OPENROUTER_API_KEY is not set" sentence, and every
+// handler answers the human with its own recipe (techcard_ai.go: openRouterNoKeyMsg).
+var ErrNotConfigured = aiprov.ErrNotConfigured
 
 // ErrModelUnavailable is returned when the provider answers 404: the configured model slug is not
 // served by it — retired, renamed, or never existing — or, with a custom OPENROUTER_BASE_URL, the
@@ -155,7 +130,10 @@ var ErrNotConfigured = errors.New("openrouter: OPENROUTER_API_KEY is not set")
 // somebody to read OPENROUTER_MODEL once. The opposite direction is what actually shipped: a
 // retired slug reported as weather, retried forever by a person the interface had promised it was
 // temporary.
-var ErrModelUnavailable = errors.New("openrouter: the configured model is not available at the provider")
+//
+// An alias of aiprov.ErrModelUnavailable since B-11; the sentence keeps its "openrouter: " prefix
+// because the transport writes it in front of the sentinel.
+var ErrModelUnavailable = aiprov.ErrModelUnavailable
 
 // ErrBudgetExhausted is returned when the model spends the whole completion budget and hands back
 // an EMPTY message — finish_reason=length with no content at all.
@@ -171,7 +149,9 @@ var ErrModelUnavailable = errors.New("openrouter: the configured model is not av
 // The distinction from a TRUNCATED answer is finish_reason plus emptiness: content that got cut
 // off is a short review and the verifier refuses it on its own terms; NO content means the budget
 // never reached the answer.
-var ErrBudgetExhausted = errors.New("openrouter: the model spent the whole completion budget without answering")
+//
+// An alias of aiprov.ErrBudgetExhausted since B-11.
+var ErrBudgetExhausted = aiprov.ErrBudgetExhausted
 
 // ErrResponseTooLarge is returned when the provider's response body exceeds the read ceiling.
 //
@@ -184,7 +164,9 @@ var ErrBudgetExhausted = errors.New("openrouter: the model spent the whole compl
 //
 // So the cap now REFUSES rather than trims: too big is a fault with a name, and the name says
 // which knob (the ceiling) is the one to turn.
-var ErrResponseTooLarge = errors.New("openrouter: the provider's response exceeded the read ceiling")
+//
+// An alias of aiprov.ErrResponseTooLarge since B-11.
+var ErrResponseTooLarge = aiprov.ErrResponseTooLarge
 
 // ───────────────── ГРАНИЦА «КУПЛЕНО / НЕ КУПЛЕНО» ─────────────────
 //
@@ -266,7 +248,7 @@ func readCapped(r io.Reader, limit int64, what string) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrResponseTooLarge, what, limit)
+		return nil, fmt.Errorf("openrouter: %w: %s is larger than %d bytes", ErrResponseTooLarge, what, limit)
 	}
 	return body, nil
 }
@@ -337,47 +319,19 @@ func New(cfg Config) *Client {
 	return &Client{cfg: cfg, budgetBase: base, http: &http.Client{}}
 }
 
-// CompletionBudget — СКОЛЬКО ВРЕМЕНИ ИМЕЕТ ПРАВО ЗАНЯТЬ ОДИН ВЫЗОВ, у которого попрошен потолок
-// maxTokens: база (соединение, загрузка, картинки, время до первого токена) плюс время печати
-// самого ответа при консервативной скорости minCompletionTokPerSec.
-//
-// ⚠ ЭКСПОРТИРОВАНА РАДИ ОДНОГО: ЧТОБЫ ТОТ, КТО СТАВИТ ПОТОЛОК, МОГ СПРОСИТЬ ПРО СВОЁ ВРЕМЯ. Потолок
-// живёт у вызывающего (design_construction_draft.go: designConstructionMaxTokens), время — здесь, и
-// раньше между ними не было ничего, кроме просьбы в комментарии. Теперь у вызывающего есть тест,
-// который спрашивает эту функцию тем же числом и краснеет, если ответ физически не успевает.
-//
-// maxTokens <= 0 значит «потолка нет»: провайдер печатает по своему усмотрению, добавлять нечего, и
-// бюджет остаётся базой — ровно то поведение, что было у всего пакета до этой починки.
+// CompletionBudget — СКОЛЬКО ВРЕМЕНИ ИМЕЕТ ПРАВО ЗАНЯТЬ ОДИН ВЫЗОВ с потолком maxTokens. A one-line
+// delegate to aiprov.CompletionBudget since B-11: the formula moved to the provider-neutral layer so
+// every transport and every lease ask the same one. Kept here because store/design.HandlerLeaseFor and
+// the handlers' lease tests ask it by this name.
 func CompletionBudget(base time.Duration, maxTokens int) time.Duration {
-	if base <= 0 {
-		base = defaultTimeout
-	}
-	if maxTokens <= 0 {
-		return base
-	}
-	// Целочисленно и через time.Second, а не float: секунда на minCompletionTokPerSec токенов.
-	printing := time.Duration(maxTokens) * time.Second / minCompletionTokPerSec
-	return base + printing
+	return aiprov.CompletionBudget(base, maxTokens)
 }
 
-// DefaultCompletionBudget — CompletionBudget при НЕЗАДАННОМ OPENROUTER_HTTP_TIMEOUT. Отдельная
-// дверь потому, что вызывающий, который хочет проверить свой потолок, не обязан знать про
-// конфигурацию процесса — а солгать себе, подставив базу побольше, ему было бы легко.
-//
-// ⚠ ЭТО НЕ ДВЕРЬ ДЛЯ ТОГО, КТО ВЫДАЁТ ЛИЗУ ПОД ЖИВОЙ ВЫЗОВ, И ТЕПЕРЬ ЭТО СКАЗАНО ВСЛУХ. Здесь
-// стоял замер «на бете и на проде OPENROUTER_HTTP_TIMEOUT не задана (проверено руками
-// 2026-09-04)», и он был ЧЕСТНЫМ, но НЕСУЩИМ: пока лиза хендлера считалась ОТСЮДА, а провод — из
-// cfg.HTTPTimeout, инвариант «лиза переживает вызов» держался ровно на том, что переменную никто
-// не поставил. Она уже задана у соседнего клиента (OPENROUTER_IMAGES_HTTP_TIMEOUT = 240 s), и
-// арифметика на этом числе такова: бюджет 240 + 8000/30 = 506.67 s против лизы в 416.67 s — то
-// есть на 90 s ВНУТРИ платного вызова строка уже свободна, и повтор того же client_request_id
-// платит второй раз. Ломается всё, начиная с базы в 150 s.
-//
-// ПОЭТОМУ ЛИЗА БОЛЬШЕ ЭТУ ФУНКЦИЮ НЕ СПРАШИВАЕТ: она выводится из CompletionBase() ТОГО КЛИЕНТА,
-// который и сделает вызов (store/design.HandlerLeaseFor ← apisrv/admin). Здесь осталась дверь для
-// проб и для того, кто сверяет ПОТОЛОК с базой по умолчанию, не имея под рукой процесса.
+// DefaultCompletionBudget — CompletionBudget при НЕЗАДАННОМ OPENROUTER_HTTP_TIMEOUT; a delegate to
+// aiprov.DefaultCompletionBudget. ⚠ NOT the door for a lease under a live call — that one derives from
+// CompletionBase() of the client that makes the call (see aiprov.DefaultCompletionBudget for why).
 func DefaultCompletionBudget(maxTokens int) time.Duration {
-	return CompletionBudget(defaultTimeout, maxTokens)
+	return aiprov.DefaultCompletionBudget(maxTokens)
 }
 
 // CompletionBase — БАЗА БЮДЖЕТА ЭТОГО КЛИЕНТА: ровно то число, которое postChatCompletion кладёт
@@ -927,48 +881,9 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 	defer cancel()
 
 	// ⚠ ЕДИНСТВЕННЫЙ НАБЛЮДАТЕЛЬ ГРАНИЦЫ «КУПЛЕНО / НЕ КУПЛЕНО» (см. ProviderEngaged). Флаг
-	// поднимается ровно тогда, когда запрос ВМЕСТЕ С ТЕЛОМ дописан в соединение без ошибки: с этой
-	// секунды поставщик его получил и начал считать, и всё, что сломается дальше, сломается уже за
-	// наши деньги. Оборванная запись (info.Err != nil) флага НЕ поднимает — недописанное тело
-	// поставщик не обрабатывает.
-	//
-	// atomic, а не голый bool, и это не перестраховка: при истёкшем сроке Do возвращается из
-	// ОДНОЙ горутины, пока пишущая горутина транспорта ещё жива, и гонка тут была бы настоящей.
-	//
-	// ⚠ И ФЛАГ ОПИСЫВАЕТ ПОСЛЕДНЮЮ ПОПЫТКУ, А НЕ ОБЪЕДИНЕНИЕ ВСЕХ. Без сброса на GetConn он был
-	// МОНОТОННЫМ ИЛИ по попыткам транспорта, и это выдумывало деньги двумя дорогами:
-	//
-	//  1. WroteRequest СРАБАТЫВАЕТ ДО ТОГО, КАК БАЙТЫ ПОКИНУЛИ ПРОЦЕСС. Request.write ставит хук
-	//     defer'ом на СВОЙ именованный возврат (net/http/request.go), а pc.bw.Flush() зовётся
-	//     ПОСЛЕ неё, уже в writeLoop. Запрос, целиком уместившийся в 4 KiB bufio.Writer, поднимает
-	//     флаг, ни разу не коснувшись сокета; если Flush затем падает, не записав НИ БАЙТА,
-	//     транспорт заворачивает это в nothingWrittenError и — тело у нас bytes.Reader, значит
-	//     GetBody != nil — ПРОЗРАЧНО ПОВТОРЯЕТ запрос. Флаг между попытками не сбрасывался.
-	//  2. ЛЮБАЯ ДРУГАЯ ПОВТОРНАЯ ПОПЫТКА ОСТАВЛЯЛА ЕГО ПОДНЯТЫМ НАВСЕГДА: GOAWAY выше
-	//     LastStreamID, REFUSED_STREAM, протухшее соединение из пула (http.Client без своего
-	//     Transport берёт DefaultTransport с 90-секундным пулом, так что два нажатия внутри
-	//     полутора минут переиспользуют соединение, которое поставщик мог уже закрыть).
-	//
-	// GetConn СРАБАТЫВАЕТ РОВНО ОДИН РАЗ НА ПОПЫТКУ ТРАНСПОРТА — первой строкой Transport.getConn,
-	// то есть до выбора соединения из пула и до дозвона, и http/2 зовёт его же из своего пула на
-	// каждом круге RoundTripOpt. Поэтому он и выбран точкой сброса.
-	//
-	// ⚠ РЕДИРЕКТ ТОЖЕ СБРАСЫВАЕТ, И ЭТО ВЕРНО, А НЕ ПОБОЧНО. Client.do проводит редирект через
-	// новый RoundTrip (трасса живёт в контексте и переезжает вместе с ним), значит флаг описывает
-	// ПОСЛЕДНИЙ запрос. Ответ 3xx — это ВОРОТА, а не счётчик, ровно как 401/402/404/429 (см.
-	// ProviderEngaged): дописанный запрос, на который шлюз ответил «иди туда», ничего не купил.
-	//
-	// ⚠ ЧЕГО ЗДЕСЬ НАМЕРЕННО НЕТ: РАЗБОРА ПРОЗЫ ОШИБКИ. Довод у ProviderEngaged и не меняется —
-	// строки net/http не контракт. Сброс спрашивает ТОТ ЖЕ транспорт, что и подъём.
-	var wrote atomic.Bool
-	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		GetConn: func(string) { wrote.Store(false) },
-		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			if info.Err == nil {
-				wrote.Store(true)
-			}
-		},
-	})
+	// поднимается ровно тогда, когда запрос ВМЕСТЕ С ТЕЛОМ дописан в соединение без ошибки, и
+	// сбрасывается на каждой новой попытке транспорта. Механика и все её ловушки — у aiprov.ObserveWrite.
+	ctx, wroteRequest := aiprov.ObserveWrite(ctx)
 
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
@@ -986,7 +901,7 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 		// секунде ожидания ответа и «connection refused» на 0-й приезжают из Do неотличимо похоже
 		// — оба как *url.Error, — и решает между ними НЕ проза, а флаг записи.
 		failed := fmt.Errorf("openrouter: request failed: %w", err)
-		if wrote.Load() {
+		if wroteRequest() {
 			return "", "", Usage{}, engaged(failed)
 		}
 		return "", "", Usage{}, failed
@@ -1003,7 +918,7 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 	// than replaced: the provider's own sentence and the status still reach the log, they simply
 	// stop being the thing a caller has to pattern-match to know a retry is pointless.
 	if resp.StatusCode == http.StatusNotFound {
-		return "", "", Usage{}, fmt.Errorf("%w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
+		return "", "", Usage{}, fmt.Errorf("openrouter: %w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
 	}
 	// ⚠ NON-2xx НЕ ПОМЕЧАЕТСЯ ВОВЛЕЧЁННЫМ, И ЭТО ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ГРАНИЦА ВЫБРАНА В СТОРОНУ
 	// НУЛЯ. Довод целиком — у ProviderEngaged: 401/402/404/429 — это ворота, а не счётчик.
@@ -1036,7 +951,7 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 		// вовлечённость, — иначе один и тот же исход прошёл бы через две двери списания.
 		if strings.EqualFold(strings.TrimSpace(cr.Choices[0].FinishReason), "length") {
 			return "", cr.Choices[0].FinishReason, cr.Usage, engaged(fmt.Errorf(
-				"%w (%d completion tokens spent, none of them answer)", ErrBudgetExhausted, cr.Usage.Completion))
+				"openrouter: %w (%d completion tokens spent, none of them answer)", ErrBudgetExhausted, cr.Usage.Completion))
 		}
 		return "", cr.Choices[0].FinishReason, cr.Usage, engaged(fmt.Errorf("openrouter: model returned an empty message"))
 	}
@@ -1184,7 +1099,7 @@ func (c *Client) checkModel(ctx context.Context, model string) error {
 		return fmt.Errorf("openrouter: read model probe: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: %q is not a model the provider knows", ErrModelUnavailable, model)
+		return fmt.Errorf("openrouter: %w: %q is not a model the provider knows", ErrModelUnavailable, model)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("openrouter: model probe (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
@@ -1197,7 +1112,7 @@ func (c *Client) checkModel(ctx context.Context, model string) error {
 		return fmt.Errorf("openrouter: model probe carried no endpoints field")
 	}
 	if len(*mr.Data.Endpoints) == 0 {
-		return fmt.Errorf("%w: %q has no live endpoints at the provider", ErrModelUnavailable, model)
+		return fmt.Errorf("openrouter: %w: %q has no live endpoints at the provider", ErrModelUnavailable, model)
 	}
 	return nil
 }
