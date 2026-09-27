@@ -316,9 +316,7 @@ func (w *designStandingWalk) stands(piece int) (bool, error) {
 
 // visit — кадр, в который ведёт ребро, либо порча, которая не выдаётся за ответ.
 func (w *designStandingWalk) visit(l designStandingLink) (DesignBranchNode, error) {
-	broken := func(format string, args ...any) error {
-		return fmt.Errorf("design picture %d: the branch of its pieces is broken: %s", w.sheet, fmt.Sprintf(format, args...))
-	}
+	broken := func(format string, args ...any) error { return designBranchBroken(w.sheet, format, args...) }
 	if l.to <= l.from {
 		return DesignBranchNode{}, broken("picture %d links to picture %d, which is not newer", l.from, l.to)
 	}
@@ -330,14 +328,30 @@ func (w *designStandingWalk) visit(l designStandingLink) (DesignBranchNode, erro
 		return DesignBranchNode{}, broken("picture %d links to picture %d, which was not read", l.from, l.to)
 	}
 	if n.TechCardId != w.card {
-		return DesignBranchNode{}, broken("picture %d, reached from picture %d, belongs to tech card %d, not to tech card %d",
-			l.to, l.from, n.TechCardId, w.card)
+		return DesignBranchNode{}, designBranchForeign(w.sheet, w.card, l.from, n)
 	}
 	if len(w.visited) >= DesignStandingNodesMax {
-		return DesignBranchNode{}, broken("more than %d pictures would be read", DesignStandingNodesMax)
+		return DesignBranchNode{}, designBranchOverCeiling(w.sheet)
 	}
 	w.visited[l.to] = struct{}{}
 	return n, nil
+}
+
+// designBranchBroken — ПОРЧА ВЕТКИ кусков листа sheet: ошибка без сентинела (клиенту Internal). Одна
+// на обход и на чтение ветки: порча называется одними словами, кто бы её ни нашёл.
+func designBranchBroken(sheet int, format string, args ...any) error {
+	return fmt.Errorf("design picture %d: the branch of its pieces is broken: %s", sheet, fmt.Sprintf(format, args...))
+}
+
+// designBranchForeign — кадр n ДРУГОЙ карточки (не card), достигнутый из кадра from.
+func designBranchForeign(sheet, card, from int, n DesignBranchNode) error {
+	return designBranchBroken(sheet, "picture %d, reached from picture %d, belongs to tech card %d, not to tech card %d",
+		n.Id, from, n.TechCardId, card)
+}
+
+// designBranchOverCeiling — кадров на запрос больше DesignStandingNodesMax.
+func designBranchOverCeiling(sheet int) error {
+	return designBranchBroken(sheet, "more than %d pictures would be read", DesignStandingNodesMax)
 }
 
 // ─── ЧТЕНИЕ ВЕТКИ: ОТ КУСКОВ ЛИСТА ВНИЗ, УРОВНЯМИ (O-53 review, раунд 4) ───
@@ -345,20 +359,26 @@ func (w *designStandingWalk) visit(l designStandingLink) (DesignBranchNode, erro
 // DesignBranchChunk — СКОЛЬКО id НАЗЫВАЕТ ОДНО ЧТЕНИЕ ВЕТКИ. Список IN ограничен, чтобы ни один
 // запрос не рос вместе с веткой: широкий уровень читается несколькими запросами, а не одним.
 //
-// 200, А НЕ БОЛЬШЕ: это eq_range_index_dive_limit MySQL по умолчанию. До него оптимизатор меряет
-// каждое значение IN погружением в индекс derived_from и видит, что строк мало; сверх него он берёт
-// среднее из статистики, а у derived_from она кривая — корни ветвей лежат одной NULL-группой, и
-// среднее на значение раздуто. Раздутая оценка толкает его к полному проходу таблицы, а полный
-// проход под SERIALIZABLE — замок на всю design_picture: ровно то, от чего чтение уровнями уходит.
-const DesignBranchChunk = 200
+// 199, А НЕ 200 (O-53 review, раунд 5): при eq_range_index_dive_limit = 200 (умолчание MySQL)
+// оптимизатор меряет значения IN погружениями в индекс, только пока равенств МЕНЬШЕ предела, — то
+// есть до 199 включительно; с 200-го он берёт среднее из статистики, а у derived_from она кривая —
+// корни ветвей лежат одной NULL-группой, и среднее на значение раздуто. Раздутая оценка толкала бы
+// его к полному проходу таблицы, а полный проход под SERIALIZABLE — замок на всю design_picture.
+// Индекс кропов теперь назван и в самом запросе (FORCE INDEX, стор — designBranchCropsOf); кусок —
+// второй пояс к нему: оценка остаётся замером, а не догадкой, и ширина IN не растёт с веткой.
+const DesignBranchChunk = 199
 
 // DesignBranchReads — ДВА ЧТЕНИЯ, из которых DesignLoadBranch собирает ветку. Каждый вызов — ОДИН
-// запрос: не больше DesignBranchChunk id, строки по возрастанию id, и не больше limit строк
-// (дальше курсор не читается: потолок держит память, а не только ответ).
+// запрос: не больше DesignBranchChunk id и не больше limit строк, и limit стоит В САМОМ SQL (LIMIT,
+// O-53 review, раунд 5). Одной остановки курсора мало: драйвер, закрывая курсор, дочитывает ответ до
+// конца, и сервер сканировал бы, слал и под SERIALIZABLE запирал всё, что подошло, — потолок держал
+// бы только память Go. Курсор дальше limit-й строки по-прежнему не читается — второй пояс. Порядок
+// строк чтению не важен: набор от него не зависит.
 //
 // ⚠ БЕЗ ПРЕДИКАТА КАРТОЧКИ. id и derived_from называют строки однозначно на всю таблицу, и кадр
-// другой карточки, повисший на кадре ветки, обязан быть прочитан — иначе обход не увидел бы его и
-// промолчал; судит его обход (DesignStandingPieces), а не чтение.
+// другой карточки, повисший на кадре ветки, обязан быть прочитан — иначе его не увидел бы никто и
+// порча прошла бы молча; прочитанный, он отказывается тут же (DesignLoadBranch, раунд 5) теми
+// словами, что сказал бы обход.
 type DesignBranchReads struct {
 	// ByID — кадры с этими id: цели replaced_by.
 	ByID func(ids []int, limit int) ([]DesignBranchNode, error)
@@ -367,16 +387,32 @@ type DesignBranchReads struct {
 	CropsOf func(parents []int, limit int) ([]DesignBranchNode, error)
 }
 
-// DesignLoadBranch — ЛИСТ И ВСЁ, ЧТО ДОСТИЖИМО ОТ ЕГО КУСКОВ по кропам и заменам: ровно тот набор,
-// который читает DesignStandingPieces. Лист — первый в ответе.
+// DesignLoadBranch — ЛИСТ И ВСЁ, ЧТО ОБХОД ПРОЙДЁТ ОТ ЕГО КУСКОВ по кропам и заменам: ровно тот
+// набор, который читает DesignStandingPieces. Лист — первый в ответе.
 //
 // ПОЧЕМУ УРОВНЯМИ, А НЕ ВСЯ КАРТОЧКА (O-53 review, раунд 4). Раунд 3 читал все кадры карточки одним
 // SELECT, и под SERIALIZABLE это разделяемый замок на каждый кадр карточки: прятанье, выбор, разрез
 // и загрузка той же карточки ждали перезаписи или ловили дедлок, а память росла с карточкой, пока
 // потолок проверялся уже после чтения. Теперь читается только ветка: уровень 0 — кропы листа, затем
-// для каждого нового уровня — цели replaced_by его кадров (по id) и кропы его кадров (по
-// derived_from), пока уровень не добавит ничего. Замены самого листа в правиле нет (заменённый лист
-// отказан already_replaced раньше), и она не читается.
+// для каждого нового уровня — цели replaced_by его СПРЯТАННЫХ кадров (по id) и кропы его СПРЯТАННЫХ
+// кадров (по derived_from), пока уровень не добавит ничего. Замены самого листа в правиле нет
+// (заменённый лист отказан already_replaced раньше), и она не читается.
+//
+// КАДР НА ВИДУ — КОНЕЦ ЧТЕНИЯ ЗА НИМ (раунд 5). Обход решает кусок на первом видимом кадре и дальше
+// не идёт, поэтому ни замена видимого кадра, ни его кропы не читаются. Иначе чтение упиралось бы в
+// потолок там, куда обход не смотрит, — видимый кусок с 8191 законной перезаписью за ним (перезапись
+// ничего не прячет) отказывал бы Internal вместо честного cut_sheet, — и запирало бы кадры, которые
+// ничего не решают. Кропы листа читаются всегда: судятся именно они.
+//
+// КАДР ДРУГОЙ КАРТОЧКИ — ОТКАЗ НА ЧТЕНИИ (раунд 5), теми же словами, что сказал бы обход, и прежде
+// чем прочитано хоть что-то за ним: его замена и его кропы — это уже чужая карточка.
+//
+// РЕШЕНИЕ ТО ЖЕ, ЧТО У ОБХОДА ПО ВСЕЙ ТАБЛИЦЕ, ВСЕГДА: лист отпущен ровно тогда, когда каждый
+// достижимый кадр спрятан, свой и прочитан, а тогда чтение и обход проходят один и тот же набор.
+// Разниться может только РОД отказа, и только там, где обход нашёл бы видимый кадр раньше, чем порчу
+// или потолок: чужой кадр за стоящим куском, либо спрятанный кусок, у которого видимая замена и
+// тысячи спрятанных кропов, — обход сказал бы cut_sheet, чтение говорит Internal. Дверь закрыта в
+// обоих случаях.
 //
 // ОДИН ПОТОЛОК НА ЗАПРОС: DesignStandingNodesMax, лист включительно, на все уровни и все чтения
 // вместе. Чтение, вернувшее больше, чем осталось места, — отказ на этом же шаге (ошибка без
@@ -391,17 +427,22 @@ type DesignBranchReads struct {
 func DesignLoadBranch(sheet DesignBranchNode, reads DesignBranchReads) ([]DesignBranchNode, error) {
 	l := designBranchLoad{
 		sheet: sheet.Id,
+		card:  sheet.TechCardId,
 		seen:  map[int]struct{}{sheet.Id: {}},
 		nodes: []DesignBranchNode{sheet},
 	}
-	frontier, err := l.read(reads.CropsOf, "crops", []int{sheet.Id})
+	frontier, err := l.read(reads.CropsOf, "crops", []int{sheet.Id}, designCropParent)
 	if err != nil {
 		return nil, err
 	}
 	for len(frontier) > 0 {
-		var targets []int
-		wanted := map[int]struct{}{}
+		var targets, parents []int
+		replacing := map[int]int{} // цель замены → кадр уровня, чья это замена
 		for _, n := range frontier {
+			if !n.HiddenAt.Valid {
+				continue // на виду: обход решает кусок здесь, и за этим кадром не читается ничего
+			}
+			parents = append(parents, n.Id)
 			if !n.ReplacedBy.Valid {
 				continue
 			}
@@ -409,21 +450,18 @@ func DesignLoadBranch(sheet DesignBranchNode, reads DesignBranchReads) ([]Design
 			if _, done := l.seen[t]; done {
 				continue
 			}
-			if _, dup := wanted[t]; dup {
+			if _, dup := replacing[t]; dup {
 				continue
 			}
-			wanted[t] = struct{}{}
+			replacing[t] = n.Id
 			targets = append(targets, t)
 		}
-		replacements, err := l.read(reads.ByID, "replacements", targets)
+		replacements, err := l.read(reads.ByID, "replacements", targets,
+			func(r DesignBranchNode) int { return replacing[r.Id] })
 		if err != nil {
 			return nil, err
 		}
-		parents := make([]int, 0, len(frontier))
-		for _, n := range frontier {
-			parents = append(parents, n.Id)
-		}
-		crops, err := l.read(reads.CropsOf, "crops", parents)
+		crops, err := l.read(reads.CropsOf, "crops", parents, designCropParent)
 		if err != nil {
 			return nil, err
 		}
@@ -432,17 +470,23 @@ func DesignLoadBranch(sheet DesignBranchNode, reads DesignBranchReads) ([]Design
 	return l.nodes, nil
 }
 
+// designCropParent — кадр, из которого чтение пришло к кропу r: его родитель.
+func designCropParent(r DesignBranchNode) int { return int(r.DerivedFrom.Int32) }
+
 // designBranchLoad — одно чтение ветки на запрос: набор и потолок общие для всех уровней.
 type designBranchLoad struct {
 	sheet int
+	card  int // карточка листа: кадр другой карточки — порча, и чтение отказывает на нём
 	seen  map[int]struct{}
 	nodes []DesignBranchNode
 }
 
 // read — один шаг уровня: ids кусками по DesignBranchChunk, по возрастанию; новые кадры — в набор и
 // в ответ. limit каждого вызова — место, оставшееся под потолком, плюс одна строка: пришла лишняя —
-// потолок пройден, и чтение отказывает, не читая дальше.
-func (l *designBranchLoad) read(read func(ids []int, limit int) ([]DesignBranchNode, error), what string, ids []int) ([]DesignBranchNode, error) {
+// потолок пройден, и чтение отказывает, не читая дальше. Новый кадр другой карточки — отказ тут же
+// (designBranchForeign); from называет кадр, из которого чтение к нему пришло.
+func (l *designBranchLoad) read(read func(ids []int, limit int) ([]DesignBranchNode, error), what string, ids []int,
+	from func(DesignBranchNode) int) ([]DesignBranchNode, error) {
 	ids = append([]int(nil), ids...)
 	sort.Ints(ids)
 	var fresh []DesignBranchNode
@@ -454,12 +498,14 @@ func (l *designBranchLoad) read(read func(ids []int, limit int) ([]DesignBranchN
 			return nil, fmt.Errorf("failed to read the %s in the branch of design picture %d: %w", what, l.sheet, err)
 		}
 		if len(rows) > room {
-			return nil, fmt.Errorf("design picture %d: the branch of its pieces is broken: more than %d pictures would be read",
-				l.sheet, DesignStandingNodesMax)
+			return nil, designBranchOverCeiling(l.sheet)
 		}
 		for _, r := range rows {
 			if _, done := l.seen[r.Id]; done {
 				continue
+			}
+			if r.TechCardId != l.card {
+				return nil, designBranchForeign(l.sheet, l.card, from(r), r)
 			}
 			l.seen[r.Id] = struct{}{}
 			l.nodes = append(l.nodes, r)
