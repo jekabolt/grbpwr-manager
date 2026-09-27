@@ -235,6 +235,103 @@ func TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT(t *testing.T) {
 
 func intp(v int) *int { return &v }
 
+// TestA408IsNEVER_BOOKED_FREE — Codex A4 #3: a server or gateway that answers 408 may already have
+// taken the whole body, run the generation and billed it (or queued an async task). The clients fold a
+// 408 into a refusal sentinel their mapping reads as `free`; the central rule (timeoutIsNotFree) takes
+// that back to `unknown`, engaged nobody-knows, cost NULL, source none — on every transport, and ONLY
+// for a 408: a validator's 4xx stays `free`. Each error below is spelled exactly as its client spells
+// it (orimages.classifyStatus, recraft.classifyStatus (direct), fal.statusErrorFrom,
+// meshy.statusError); the second half runs the real orimages / fal / Meshy clients against a 408 stand.
+//
+// MUTATIONS (measured red→green): timeoutIsNotFree returning `end` unchanged → every 408 case reads
+// `free`; the call removed from each of imageCallEnd / vectorCallEnd / falSubmitEnd / meshySubmitEnd
+// in turn → that transport's 408 cases read `free`, the other three stay green; the rule widened to
+// every status ≥ 400 → the validator controls (and the 401/402/503 image cases) read `unknown`.
+func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
+	type mapping func(err error) entity.AICallEnd
+	image := func(err error) entity.AICallEnd { return imageCallEnd(nil, err) }
+	vector := func(err error) entity.AICallEnd { return vectorCallEnd(recraft.RouteDirect, nil, err) }
+	falSubmit := func(err error) entity.AICallEnd { return falSubmitEnd(err, decimal.NullDecimal{}) }
+	meshySubmit := func(err error) entity.AICallEnd { return meshySubmitEnd(err) }
+	for _, c := range []struct {
+		name      string
+		end       mapping
+		timeout   error // the client's 408
+		validator error // the same client's plain 4xx refusal: stays free
+	}{
+		{"openrouter images", image,
+			fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrProviderFailure, 408, "request timeout"),
+			fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrBadRequest, 400, "bad schema")},
+		{"recraft direct", vector,
+			fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 408, "request timeout"),
+			fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 422, "bad schema")},
+		{"fal submit", falSubmit,
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 408, "request timeout"),
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 422, "bad schema")},
+		{"meshy submit", meshySubmit,
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 408, "request timeout"),
+			fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 400, "bad schema")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			end := c.end(c.timeout)
+			require.Equal(t, entity.AICallUnknown, end.Status, "a 408 proves nothing about the bill")
+			require.Nil(t, end.Engaged, "nobody knows whether the request was written")
+			require.False(t, end.CostUSD.Valid, "unknown is NULL, never 0")
+			require.Equal(t, entity.AICostNone, end.CostSource)
+			require.Equal(t, intp(408), end.HTTPStatus)
+			require.Equal(t, classify(c.timeout).Code, end.ErrorCode, "the attempt's own word, unchanged")
+
+			end = c.end(c.validator)
+			require.Equal(t, entity.AICallFree, end.Status, "a validator's refusal stays free: the rule is 408 only")
+			require.NotNil(t, end.Engaged)
+			require.False(t, *end.Engaged)
+		})
+	}
+
+	// The real clients: each spells its own 408, and the row the ledger stores reads `unknown`.
+	stand408 := func(t *testing.T) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte(`{"error":{"message":"request timeout"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	stored := func(t *testing.T, ai *aiprovtest.Store) {
+		t.Helper()
+		rows := ai.Rows()
+		require.Len(t, rows, 1)
+		require.Equal(t, entity.AICallUnknown, rows[0].Status)
+		require.Nil(t, rows[0].End.Engaged)
+		require.False(t, rows[0].End.CostUSD.Valid, "unknown is NULL, never 0")
+		require.Equal(t, entity.AICostNone, rows[0].End.CostSource)
+		require.Equal(t, intp(408), rows[0].End.HTTPStatus)
+	}
+	t.Run("openrouter images, real client", func(t *testing.T) {
+		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindFlat, Prompt: "a flat", Layout: "one"},
+			entity.AIPurposeImageGenerate)
+		_, err := imageRoute(stand408(t).URL).Execute(context.Background(), job)
+		require.ErrorIs(t, err, orimages.ErrProviderFailure)
+		stored(t, ai)
+	})
+	t.Run("fal submit, real client", func(t *testing.T) {
+		stand := newFalBuildStand(t)
+		stand.submitStatus = http.StatusRequestTimeout
+		w := steerWorker(t, &fakeStore{}, falRoute(t, stand.srv.URL, falMeshySlug))
+		ai := withLedger(w)
+		require.NoError(t, w.execute(context.Background(), steerRun(66), "tok"))
+		stored(t, ai)
+	})
+	t.Run("meshy submit, real client", func(t *testing.T) {
+		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindThreed,
+			References: []string{"https://cdn.example/f.png"}}, entity.AIPurposeThreed)
+		_, err := newThreedSteerProvider(t, stand408(t).URL).Execute(context.Background(), job)
+		require.ErrorIs(t, err, meshy.ErrBadRequest)
+		stored(t, ai)
+	})
+}
+
 // falBuildStand — fal's queue for one 3D build: the submit answers req-1 (or `submitStatus`), the
 // status is COMPLETED, the result names one billable unit and the model file.
 type falBuildStand struct {
