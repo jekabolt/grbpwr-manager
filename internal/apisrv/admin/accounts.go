@@ -106,7 +106,16 @@ func (s *Server) ListAccounts(ctx context.Context, _ *pb_admin.ListAccountsReque
 }
 
 // CreateAccount creates a scoped or super admin account.
+//
+// Only a full-access caller may create a SUPER account (security audit P1 #2): the interceptor lets
+// any accounts:write holder in, and a super account is everything accounts:write is not — it passes
+// every section gate, and it alone may call the super-only methods (the AI providers panel). The
+// check sits before any validation or store call, so the refusal does not depend on the rest of the
+// request.
 func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountRequest) (*pb_admin.CreateAccountResponse, error) {
+	if az, _ := authsrv.GetAdminAuthz(ctx); req.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, "only a super admin may grant super access")
+	}
 	username := normalizeUsername(req.Username)
 	if username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
@@ -141,7 +150,17 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 }
 
 // UpdateAccountPermissions replaces an account's super flag and permission set.
+//
+// is_super=true is accepted only from a full-access caller (security audit P1 #2: an accounts:write
+// holder sent it for their OWN username and came back a super after the next login). The guard is on
+// the request, not on the transition: a scoped caller may not send is_super=true even for an account
+// that is already super — for such a target that call would change nothing anyway (a super's section
+// grants are dropped), and refusing before the store read keeps the check free of lookups.
+// ensureNotLastSuper below is a different guard (against demoting the last super) and stays as is.
 func (s *Server) UpdateAccountPermissions(ctx context.Context, req *pb_admin.UpdateAccountPermissionsRequest) (*pb_admin.UpdateAccountPermissionsResponse, error) {
+	if az, _ := authsrv.GetAdminAuthz(ctx); req.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, "only a super admin may grant super access")
+	}
 	username := normalizeUsername(req.Username)
 	if username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
