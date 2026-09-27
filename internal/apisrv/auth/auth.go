@@ -23,6 +23,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -65,10 +66,12 @@ type Server struct {
 	rateLimiter     *authRateLimiter
 
 	// adminIDs caches username → admins.id for the AI ledger's actor (see adminIDFor): string →
-	// adminIDEntry. adminIDTTL is its window, now its clock (a field so a test can move it).
-	adminIDs   sync.Map
-	adminIDTTL time.Duration
-	now        func() time.Time
+	// adminIDEntry. adminIDFlight coalesces concurrent misses of one username into one lookup.
+	// adminIDTTL is its window, now its clock (a field so a test can move it).
+	adminIDs      sync.Map
+	adminIDFlight singleflight.Group
+	adminIDTTL    time.Duration
+	now           func() time.Time
 }
 
 // adminIDCacheTTL is how long one username → admin id answer — or one failed lookup — is reused.
@@ -585,28 +588,62 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 // adminIDFor returns username's admins.id for the AI actor, nil when it is not known. One lookup per
 // username per adminIDCacheTTL: the answer is cached, and so is a failure (no such admin — a deleted
 // account, a legacy token's subject — or a DB error), which is logged once per window instead of on
-// every RPC. A lookup that failed only because the RPC itself was cancelled is neither cached nor
-// logged: the next request asks again. Never returns an error.
+// every RPC. Never returns an error.
+//
+// CONCURRENT MISSES SHARE ONE LOOKUP (Codex A1 #4). The cache alone kept "one lookup, one warning"
+// only for callers that came one after another: admin RPCs of one username that missed together each
+// looked up, and each warned, before any of them stored. They now join one singleflight flight per
+// username, and the flight re-checks the cache before it looks up (lookupAdminID).
+//
+// A request already cancelled on arrival asks nothing and gets nil; nothing is cached for it.
 func (s *Server) adminIDFor(ctx context.Context, username string) *int {
 	if s.adminRepository == nil {
 		return nil
 	}
-	now := time.Now()
-	if s.now != nil {
-		now = s.now()
+	if id, ok := s.cachedAdminID(username); ok {
+		return id
 	}
-	if v, ok := s.adminIDs.Load(username); ok {
-		if e := v.(adminIDEntry); now.Before(e.expires) {
-			return copyIntPtr(e.id)
-		}
+	if ctx.Err() != nil {
+		return nil
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, adminIDLookupTimeout)
+	v, _, _ := s.adminIDFlight.Do(username, func() (any, error) {
+		return s.lookupAdminID(ctx, username), nil
+	})
+	return copyIntPtr(v.(*int))
+}
+
+// cachedAdminID is the cached answer for username while its window lasts.
+func (s *Server) cachedAdminID(username string) (*int, bool) {
+	v, ok := s.adminIDs.Load(username)
+	if !ok {
+		return nil, false
+	}
+	if e := v.(adminIDEntry); s.clockNow().Before(e.expires) {
+		return copyIntPtr(e.id), true
+	}
+	return nil, false
+}
+
+// lookupAdminID is the body of one flight: the lookup — and its one warning — for username, stored
+// for the window.
+//
+// THE CACHE IS CHECKED AGAIN FIRST. A caller that missed the cache an instant before the previous
+// flight stored its answer starts a flight of its own once that one is gone; without this check it
+// would look up (and warn) a second time in the same window.
+//
+// THE LOOKUP IS DETACHED FROM THE CALLER'S CANCELLATION (values kept, adminIDLookupTimeout bounds
+// it). Its answer is shared by every caller in the flight and cached for the window, so it must not
+// depend on the one request that happened to start it: a cancelled starter would otherwise hand all
+// the others a nil id and cache that failure for five minutes.
+func (s *Server) lookupAdminID(ctx context.Context, username string) *int {
+	if id, ok := s.cachedAdminID(username); ok {
+		return id
+	}
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminIDLookupTimeout)
 	defer cancel()
 	var id *int
 	admin, err := s.adminRepository.GetAdminByUsername(lookupCtx, username)
 	switch {
-	case err != nil && ctx.Err() != nil:
-		return nil
 	case err != nil:
 		slog.Default().WarnContext(ctx, "ai actor: admin id lookup failed; AI ledger rows carry the username only",
 			slog.String("username", username),
@@ -622,8 +659,15 @@ func (s *Server) adminIDFor(ctx context.Context, username string) *int {
 		v := admin.Id
 		id = &v
 	}
-	s.adminIDs.Store(username, adminIDEntry{id: id, expires: now.Add(s.adminIDTTL)})
+	s.adminIDs.Store(username, adminIDEntry{id: id, expires: s.clockNow().Add(s.adminIDTTL)})
 	return copyIntPtr(id)
+}
+
+func (s *Server) clockNow() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 func copyIntPtr(p *int) *int {

@@ -28,12 +28,21 @@ type countingAdmins struct {
 	calls map[string]int
 	ids   map[string]int
 	err   error
+	// hold, when set, runs inside every lookup after it is counted (n = that username's calls so far)
+	// and before it answers — the concurrency tests park lookups there.
+	hold func(n int)
 }
 
 func (f *countingAdmins) GetAdminByUsername(ctx context.Context, username string) (*entity.Admin, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls[username]++
+	n, hold := f.calls[username], f.hold
+	f.mu.Unlock()
+	if hold != nil {
+		hold(n)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -197,4 +206,165 @@ func TestInterceptorActorLookupOnlyOnAdminRPCs(t *testing.T) {
 	a, _ = h.call(t, context.Background(), "alice", adminMethod)
 	require.NotNil(t, a.AdminID, "a cancelled request must not cache a nil id for the next one")
 	require.Equal(t, 42, *a.AdminID)
+}
+
+// ───────────────────────── concurrent misses (Codex A1 #4) ─────────────────────────
+
+// authed is ctx carrying a fresh admin token for username, minted on the test goroutine.
+func (h *actorHarness) authed(t *testing.T, ctx context.Context, username string) context.Context {
+	t.Helper()
+	tok, err := authjwt.NewAdminToken(h.srv.JwtAuth, time.Hour, username, true, nil, nil)
+	require.NoError(t, err)
+	return metadata.NewIncomingContext(ctx, metadata.New(map[string]string{
+		strings.ToLower(AuthMetadataKey): "Bearer " + tok,
+	}))
+}
+
+// push is one admin RPC through the interceptor, safe off the test goroutine: the admin id the
+// handler saw, whether the handler ran, and the interceptor's error.
+func (h *actorHarness) push(ctx context.Context) (*int, bool, error) {
+	var id *int
+	called := false
+	_, err := h.srv.UnaryAdminAuthInterceptor()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: adminMethod},
+		func(ctx context.Context, _ any) (any, error) {
+			called = true
+			id = aiprov.ActorFrom(ctx).AdminID
+			return "ok", nil
+		})
+	return id, called, err
+}
+
+// concurrently releases n RPCs of username at once (a start barrier) and returns what each saw. Every
+// lookup is held until all n are inside the repository — which only happens when nothing coalesces
+// them — or until settle has passed, long enough for the other callers to join the one lookup.
+func (h *actorHarness) concurrently(t *testing.T, username string, n int) []*int {
+	t.Helper()
+	const settle = 250 * time.Millisecond
+	allInside := make(chan struct{})
+	h.store.mu.Lock()
+	h.store.hold = func(k int) {
+		if k == n {
+			close(allInside)
+		}
+		select {
+		case <-allInside:
+		case <-time.After(settle):
+		}
+	}
+	h.store.mu.Unlock()
+	t.Cleanup(func() { h.store.mu.Lock(); h.store.hold = nil; h.store.mu.Unlock() })
+
+	ctx := h.authed(t, context.Background(), username)
+	ids := make([]*int, n)
+	called := make([]bool, n)
+	errs := make([]error, n)
+	var start, done sync.WaitGroup
+	start.Add(1)
+	for i := range n {
+		done.Go(func() {
+			start.Wait()
+			ids[i], called[i], errs[i] = h.push(ctx)
+		})
+	}
+	start.Done()
+	done.Wait()
+	for i := range n {
+		require.NoError(t, errs[i], "the actor lookup must never fail the RPC")
+		require.True(t, called[i], "every caller proceeds to its handler")
+	}
+	return ids
+}
+
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &logs
+}
+
+// TestInterceptorActorConcurrentMissesShareOneLookup — twenty admin RPCs of one username arriving
+// together on an empty cache: ONE repository call, every handler sees the id, nothing is warned.
+//
+// MUTATION: adminIDFor calls s.lookupAdminID directly instead of through adminIDFlight.Do → red: 20
+// repository calls.
+func TestInterceptorActorConcurrentMissesShareOneLookup(t *testing.T) {
+	logs := captureLogs(t)
+	h := newActorHarness(t)
+
+	ids := h.concurrently(t, "alice", 20)
+	require.Equal(t, 1, h.store.callsFor("alice"), "concurrent misses of one username share one lookup")
+	for _, id := range ids {
+		require.NotNil(t, id)
+		require.Equal(t, 42, *id)
+	}
+	require.NotContains(t, logs.String(), "ai actor:")
+}
+
+// TestInterceptorActorConcurrentFailureWarnsOnce — the same twenty on a failing repository: ONE
+// lookup, ONE warning line, and all twenty handlers run with a nil admin id.
+//
+// MUTATION: adminIDFor calls s.lookupAdminID directly instead of through adminIDFlight.Do → red: 20
+// repository calls and 20 warnings.
+func TestInterceptorActorConcurrentFailureWarnsOnce(t *testing.T) {
+	logs := captureLogs(t)
+	h := newActorHarness(t)
+	h.store.err = errors.New("db is down")
+
+	for _, id := range h.concurrently(t, "bob", 20) {
+		require.Nil(t, id)
+	}
+	require.Equal(t, 1, h.store.callsFor("bob"))
+	require.Equal(t, 1, strings.Count(logs.String(), "ai actor: admin id lookup failed"), logs.String())
+}
+
+// TestAdminIDFlightRechecksTheCache — a flight that finds a fresh answer already cached (stored by the
+// flight before it, after this caller missed) returns it and looks nothing up.
+//
+// MUTATION: drop the cachedAdminID re-check at the top of lookupAdminID → red: a second lookup.
+func TestAdminIDFlightRechecksTheCache(t *testing.T) {
+	h := newActorHarness(t)
+	id := 42
+	h.srv.adminIDs.Store("alice", adminIDEntry{id: &id, expires: h.now.Add(time.Minute)})
+
+	got := h.srv.lookupAdminID(context.Background(), "alice")
+	require.NotNil(t, got)
+	require.Equal(t, 42, *got)
+	require.Equal(t, 0, h.store.total(), "an answer cached by the previous flight is not looked up again")
+}
+
+// TestInterceptorActorLookupOutlivesItsStartersCancellation — the request that started the lookup is
+// cancelled while the lookup is in flight: the lookup still answers and is cached, so the next
+// request gets the id with no second lookup and nothing is warned.
+//
+// MUTATION: run the lookup on the caller's ctx (drop context.WithoutCancel) → red: the starter's
+// cancellation fails the shared lookup, and a nil id is cached (and warned) for the whole window.
+func TestInterceptorActorLookupOutlivesItsStartersCancellation(t *testing.T) {
+	logs := captureLogs(t)
+	h := newActorHarness(t)
+	inside, proceed := make(chan struct{}), make(chan struct{})
+	h.store.hold = func(int) {
+		close(inside)
+		<-proceed
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	starter := h.authed(t, ctx, "alice")
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_, _, _ = h.push(starter)
+	}()
+	<-inside
+	cancel()
+	close(proceed)
+	<-finished
+	h.store.hold = nil
+
+	a, _ := h.call(t, context.Background(), "alice", adminMethod)
+	require.NotNil(t, a.AdminID, "the starter's cancellation must not decide the answer for everybody")
+	require.Equal(t, 42, *a.AdminID)
+	require.Equal(t, 1, h.store.callsFor("alice"))
+	require.NotContains(t, logs.String(), "ai actor:")
 }
