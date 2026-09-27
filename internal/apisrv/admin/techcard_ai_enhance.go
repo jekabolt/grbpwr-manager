@@ -54,7 +54,7 @@ const (
 	enhancePerAdminWindow = time.Hour
 	enhancePerAdminCalls  = 30
 
-	enhanceTextNotConfiguredMsg = "the text assistant is not configured (set OPENROUTER_API_KEY)"
+	enhanceTextNotConfiguredMsg = "the text assistant is not configured: " + openRouterNoKeyMsg
 	// The shared recipe (modelUnavailableAdviceMsg) plus the one fact that differs here: this RPC
 	// calls CompleteWithMeta, i.e. the ANALYSIS slug, so with OPENROUTER_MODEL_ANALYSIS set that is
 	// the knob to turn. aiModelRefusal names the slug that was actually called (AnalysisModel()).

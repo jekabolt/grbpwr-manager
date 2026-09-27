@@ -49,7 +49,7 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 		kind string
 		want string
 	}{
-		{entity.DesignRunKindThreed, "FAL_KEY is not set"},
+		{entity.DesignRunKindThreed, "no key for fal — set it in admin → AI providers (or FAL_KEY)"},
 		{entity.DesignRunKindFlat, "OPENROUTER_IMAGES_API_KEY"},
 		{entity.DesignRunKindRender, "OPENROUTER_IMAGES_API_KEY"},
 		{entity.DesignRunKindRecolor, "OPENROUTER_IMAGES_API_KEY"},
@@ -75,7 +75,8 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 	// AND THE MESHY ROUTE KEEPS ITS OWN NAME, so switching DESIGN_THREED_PROVIDER switches the
 	// sentence too — an operator told to set FAL_KEY on a Meshy deployment would set the wrong one.
 	m := newWorker(&Config{}, nil, nil, allSink{}, Providers{Threed: NewThreedProvider(nil)})
-	require.Contains(t, m.PreflightKind(entity.DesignRunKindThreed).Error(), "MESHY_API_KEY is not set")
+	require.Contains(t, m.PreflightKind(entity.DesignRunKindThreed).Error(),
+		"no key for meshy — set it in admin → AI providers (or MESHY_API_KEY)")
 }
 
 // ─────────────────────── K-10: THE NAMED VIEWS ───────────────────────

@@ -273,7 +273,7 @@ func (p falFillProvider) Name() string { return providerNameFalFill }
 
 func (p falFillProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 
-func (p falFillProvider) MissingCredential() string { return "FAL_KEY is not set" }
+func (p falFillProvider) MissingCredential() string { return noKeySentence("fal", "FAL_KEY") }
 
 func (p falFillProvider) Produces() []string { return []string{ContentTypePNG, ContentTypeJPEG} }
 

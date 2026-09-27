@@ -197,6 +197,16 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	// Every provider client reads its key through the registry: a key saved in the panel, or a
+	// provider switched off there, reaches the next request without a redeploy. Set on the config
+	// itself, ONCE, so every constructor below — fal.New is called three times — gets the hook and
+	// a fourth one added later cannot forget it. The images client has its own func: the same
+	// openrouter row, with OPENROUTER_IMAGES_API_KEY as its env fallback.
+	a.c.OpenRouter.KeyFunc = a.aireg.KeyFunc(entity.AIProviderOpenRouter)
+	a.c.OpenRouterImages.KeyFunc = a.aireg.OpenRouterImagesKeyFunc()
+	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
+	a.c.Meshy.KeyFunc = a.aireg.KeyFunc(entity.AIProviderMeshy)
+	a.c.Recraft.Direct.KeyFunc = a.aireg.KeyFunc(entity.AIProviderRecraft)
 
 	// House gross-margin target into the cache: every tech-card costing read resolves an effective
 	// target against it, so it is loaded once here rather than queried per read (UpsertAlertSettings

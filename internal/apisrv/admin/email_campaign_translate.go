@@ -59,7 +59,7 @@ func (s *Server) AutoTranslateEmailCampaign(
 	}
 	translator := translate.New(s.aiOps)
 	if !translator.Enabled() {
-		return nil, aiRefusal(aiReasonNotConfigured, "translation is not configured (OPENROUTER_API_KEY unset)", nil)
+		return nil, aiRefusal(aiReasonNotConfigured, "translation is not configured: "+openRouterNoKeyMsg, nil)
 	}
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {

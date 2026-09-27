@@ -294,6 +294,11 @@ type Config struct {
 	// normal state — means DefaultIdeasModel; `off` switches the door off (IdeasModel() == "", and
 	// the band's suggest_prompts_model is empty). Resolved only by IdeasModel.
 	ModelIdeas string `mapstructure:"model_ideas"`
+	// KeyFunc, when set, is asked for the key on EVERY request and by Enabled(): it is the AI
+	// providers registry's hook (internal/aiprov/registry), so a key saved in the admin panel — or
+	// a provider switched off there — takes effect on the next request without a redeploy. "" means
+	// disabled. nil = APIKey above, exactly as before. Never serialised, never printed.
+	KeyFunc func() string `mapstructure:"-"`
 }
 
 // Client is a configured OpenRouter chat client. A nil *Client is a valid,
@@ -393,7 +398,16 @@ func (c *Client) CompletionBase() time.Duration {
 
 // Enabled reports whether an API key is configured. Nil-safe.
 func (c *Client) Enabled() bool {
-	return c != nil && strings.TrimSpace(c.cfg.APIKey) != ""
+	return c != nil && c.apiKey() != ""
+}
+
+// apiKey is the key a request is built with: Config.KeyFunc when wired (read per call, so a
+// rotation reaches the next request), else Config.APIKey.
+func (c *Client) apiKey() string {
+	if c.cfg.KeyFunc != nil {
+		return strings.TrimSpace(c.cfg.KeyFunc())
+	}
+	return strings.TrimSpace(c.cfg.APIKey)
 }
 
 // Model returns the effective model id (for response provenance). Nil-safe.
@@ -962,7 +976,7 @@ func (c *Client) postChatCompletion(ctx context.Context, payload []byte, maxToke
 		return "", "", Usage{}, fmt.Errorf("openrouter: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.cfg.APIKey))
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey())
 	httpReq.Header.Set("X-Title", "grbpwr-products-manager")
 	httpReq.Header.Set("HTTP-Referer", "https://admin.grbpwr.com")
 

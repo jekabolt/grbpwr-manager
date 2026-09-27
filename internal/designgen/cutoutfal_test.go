@@ -205,17 +205,18 @@ func cutoutJob(refs ...string) Job {
 // TestTheCutoutRouteWithNoKeyNAMES_THE_VARIABLE.
 //
 // ⚠ ЭТУ ФРАЗУ ЧЕЛОВЕК ЧИТАЕТ НА ЭКРАНЕ. «the provider for this run kind is not configured» — факт о
-// процессе; «FAL_KEY is not set» — факт, с которым можно что-то сделать. Владелец, только что
-// вбивший ключ в дашборд, обязан понять по кнопке, тот ли ключ был нужен.
+// процессе; «no key for fal — set it in admin → AI providers (or FAL_KEY)» — факт, с которым можно
+// что-то сделать: где ключ хранится теперь (панель) и какая переменная всё ещё работает. Владелец,
+// только что вбивший ключ, обязан понять по кнопке, тот ли ключ был нужен.
 func TestTheCutoutRouteWithNoKeyNAMES_THE_VARIABLE(t *testing.T) {
 	p := NewFalCutoutProvider(nil) // no credentials — a fresh deployment
 	require.False(t, p.Enabled())
-	require.Equal(t, "FAL_KEY is not set", missingCredential(p),
+	require.Equal(t, "no key for fal — set it in admin → AI providers (or FAL_KEY)", missingCredential(p),
 		"the door asks the route which setting it lacks; a generic sentence sends the owner looking")
 
 	_, err := p.Execute(context.Background(), cutoutJob("https://cdn.example/a.png"))
 	require.ErrorIs(t, err, errProviderDisabled)
-	require.Contains(t, err.Error(), "FAL_KEY is not set")
+	require.Contains(t, err.Error(), "no key for fal — set it in admin → AI providers (or FAL_KEY)")
 
 	// The pre-flight verdict of a route with no key is «this kind is not available», settled before
 	// any money can move.
@@ -234,7 +235,7 @@ func TestTheCutoutKindREFUSES_AT_THE_DOOR_NAMING_FAL_KEY(t *testing.T) {
 	w := newWorker(&Config{}, nil, nil, allSink{}, Providers{Cutout: NewFalCutoutProvider(nil)})
 	err := w.PreflightKind(entity.DesignRunKindCutout)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "FAL_KEY is not set",
+	require.Contains(t, err.Error(), "no key for fal — set it in admin → AI providers (or FAL_KEY)",
 		"«the provider for this run kind is not configured: fal_cutout» does not tell the owner "+
 			"who has just typed a key whether that was the missing piece")
 	var refusal *KindRefusal

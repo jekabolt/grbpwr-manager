@@ -330,7 +330,7 @@ func (p falOutpaintProvider) Enabled() bool { return p.c != nil && p.c.Enabled()
 
 // MissingCredential — the same key as every fal route; naming a slug variable here would send the
 // owner to type a model where a key is missing.
-func (p falOutpaintProvider) MissingCredential() string { return "FAL_KEY is not set" }
+func (p falOutpaintProvider) MissingCredential() string { return noKeySentence("fal", "FAL_KEY") }
 
 // Produces — what may be stored: the composite's lossless PNG, its JPEG fallback for a picture too
 // large for a PNG in the bucket (encodeComposite), and whatever the provider returned when the

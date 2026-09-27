@@ -191,6 +191,11 @@ type Config struct {
 	// MaxResponseBytes is the read ceiling (OPENROUTER_IMAGES_MAX_RESPONSE_BYTES); <= 0 =
 	// defaultMaxResponseBytes.
 	MaxResponseBytes int64 `mapstructure:"max_response_bytes"`
+	// KeyFunc, when set, is asked for the key on EVERY request and by Enabled(): it is the AI
+	// providers registry's hook (internal/aiprov/registry), so a key saved in the admin panel — or
+	// a provider switched off there — takes effect on the next request without a redeploy. "" means
+	// disabled. nil = APIKey above, exactly as before. Never serialised, never printed.
+	KeyFunc func() string `mapstructure:"-"`
 }
 
 // Client is a configured OpenRouter image client. A nil *Client is a valid, permanently-disabled
@@ -220,7 +225,16 @@ func New(cfg Config) *Client {
 
 // Enabled reports whether an API key is configured. Nil-safe.
 func (c *Client) Enabled() bool {
-	return c != nil && strings.TrimSpace(c.cfg.APIKey) != ""
+	return c != nil && c.apiKey() != ""
+}
+
+// apiKey is the key a request is built with: Config.KeyFunc when wired (read per call, so a
+// rotation reaches the next request), else Config.APIKey.
+func (c *Client) apiKey() string {
+	if c.cfg.KeyFunc != nil {
+		return strings.TrimSpace(c.cfg.KeyFunc())
+	}
+	return strings.TrimSpace(c.cfg.APIKey)
 }
 
 // Model returns the effective image model slug (for response provenance). Nil-safe.
@@ -432,7 +446,7 @@ func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("orimages: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.cfg.APIKey))
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey())
 	httpReq.Header.Set("X-Title", "grbpwr-products-manager")
 	httpReq.Header.Set("HTTP-Referer", "https://admin.grbpwr.com")
 

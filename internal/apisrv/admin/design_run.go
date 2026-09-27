@@ -2386,7 +2386,7 @@ const draftIdeaSystemPrompt = "You are a fashion designer's assistant. " +
 // у остальных функций на s.aiOps, и те же слова: одна причина обязана звучать одинаково везде,
 // иначе дежурный чинит две разные поломки вместо одной.
 const (
-	draftIdeaNotConfiguredMsg    = "drafting the idea is not configured (set OPENROUTER_API_KEY)"
+	draftIdeaNotConfiguredMsg    = "drafting the idea is not configured: " + openRouterNoKeyMsg
 	draftIdeaModelUnavailableMsg = "drafting the idea is misconfigured: " + modelUnavailableAdviceMsg
 )
 

@@ -104,7 +104,7 @@ func (p falCutoutProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 // ⚠ И ЭТО ТОТ ЖЕ КЛЮЧ, ЧТО У 3D, ХОТЯ МАРШРУТ ДРУГОЙ. Здесь нет второго секрета: FAL_KEY открывает
 // оба слага, и назвать в отказе что-нибудь вроде «FAL_MODEL_CUTOUT» значило бы послать владельца
 // вписывать модель туда, где не хватает ключа.
-func (p falCutoutProvider) MissingCredential() string { return "FAL_KEY is not set" }
+func (p falCutoutProvider) MissingCredential() string { return noKeySentence("fal", "FAL_KEY") }
 
 // Produces names what this route ASKS FOR and what the pre-flight must therefore be able to store:
 // a PNG, because PNG is the only format in this band that carries an alpha channel, and the alpha

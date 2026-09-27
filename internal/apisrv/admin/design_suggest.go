@@ -55,7 +55,7 @@ const (
 	suggestCacheTTL     = 10 * time.Minute
 	suggestCacheEntries = 256
 
-	suggestNotConfiguredMsg = "the ideas assistant is not configured (set OPENROUTER_API_KEY)"
+	suggestNotConfiguredMsg = "the ideas assistant is not configured: " + openRouterNoKeyMsg
 	suggestSwitchedOffMsg   = "the ideas assistant is switched off on this server (OPENROUTER_MODEL_IDEAS=off)"
 	suggestModelUnavailMsg  = "the ideas assistant is misconfigured: the provider serves no endpoint for model %q " +
 		"(nor for the fallback " + openrouter.IdeasFallbackModel + ") — check OPENROUTER_MODEL_IDEAS, and " +

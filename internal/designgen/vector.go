@@ -27,7 +27,8 @@ func (p vectorProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 // borrows the OpenRouter image key, and RECRAFT_ROUTE=direct uses Recraft's own. Naming only one of
 // them would send an operator to set a variable that this deployment does not read.
 func (p vectorProvider) MissingCredential() string {
-	return "neither OPENROUTER_API_KEY (the default transport) nor RECRAFT_API_KEY (RECRAFT_ROUTE=direct) is set"
+	return noKeySentence("openrouter (the default transport) or recraft (RECRAFT_ROUTE=direct)",
+		"OPENROUTER_API_KEY / RECRAFT_API_KEY")
 }
 
 func (p vectorProvider) Produces() []string { return []string{ContentTypeSVG} }

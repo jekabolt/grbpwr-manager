@@ -25,7 +25,7 @@ func (p imageProvider) Enabled() bool { return p.c != nil && p.c.Enabled() }
 // shared account key is the fallback, and a deployment that already translates email needs no new
 // secret at all to draw pictures.
 func (p imageProvider) MissingCredential() string {
-	return "OPENROUTER_IMAGES_API_KEY (or OPENROUTER_API_KEY) is not set"
+	return noKeySentence("openrouter", "OPENROUTER_IMAGES_API_KEY / OPENROUTER_API_KEY")
 }
 
 // Produces is PNG and only PNG: the route asks for it explicitly, because a transparent flat needs
