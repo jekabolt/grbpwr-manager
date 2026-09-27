@@ -1,11 +1,13 @@
 // Package openrouter is a small client for the OpenRouter chat/completions API
-// (https://openrouter.ai). It drafts structured garment sewing operations from a
-// plain-language description, grounded in a tech card's pieces + BOM + type, for a
-// technologist to review, edit and save.
+// (https://openrouter.ai). It carries the admin AI text features — note formatting, campaign
+// auto-translation, the design idea draft, the tech-card construction analysis, the `ai ✦`
+// rewrite and the playground Ideas door — through a few generic entry points (Complete,
+// CompleteWithMeta, CompleteWithImages, CompleteWithImagesOn). Each feature owns its prompt and
+// the reading of its answer; this package owns the wire.
 //
 // The client is optional and degrades gracefully: when no API key is configured
-// Enabled() is false and GenerateOperations returns ErrNotConfigured, so the admin
-// service keeps working with the feature simply unavailable.
+// Enabled() is false and every entry point returns ErrNotConfigured, so the admin
+// service keeps working with those features simply unavailable.
 //
 // THE WIRE IS NO LONGER HERE (B-11). Every chat call goes through the provider-neutral transport
 // internal/aiprov/oaichat (Dialect OpenRouter), built in New from this Config: the budget, the engaged
@@ -17,7 +19,6 @@
 package openrouter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,8 +55,6 @@ const (
 	// oaichat.MaxResponseBytes, whose comment carries the reasoning) and the model probe below, which
 	// reads through this package's own readCapped. One number for both, as before the move.
 	maxResponseBytes = oaichat.MaxResponseBytes
-	// maxOperations caps how many drafted operations we return (runaway guard).
-	maxOperations = 200
 	// modelProbeTimeout bounds the startup model probe. It is short on purpose: the probe is a
 	// courtesy, and a provider that is slow to answer at boot is not news worth waiting for.
 	modelProbeTimeout = 3 * time.Second
@@ -111,7 +110,7 @@ const (
 	IdeasModelOff = "off"
 )
 
-// ErrNotConfigured is returned when GenerateOperations is called with no API key.
+// ErrNotConfigured is returned by every entry point when no API key is set.
 // Callers should surface it as a clear "not configured" precondition failure.
 //
 // It IS aiprov.ErrNotConfigured (an alias since B-11), so errors.Is answers from either name — and
@@ -210,9 +209,10 @@ type Config struct {
 	Model       string        `mapstructure:"model"`        // OPENROUTER_MODEL; empty = defaultModel
 	BaseURL     string        `mapstructure:"base_url"`     // OPENROUTER_BASE_URL; empty = defaultBaseURL
 	HTTPTimeout time.Duration `mapstructure:"http_timeout"` // OPENROUTER_HTTP_TIMEOUT; <=0 = defaultTimeout
-	// ModelAnalysis is the OPTIONAL slug for the tech-card analysis pass (OPENROUTER_MODEL_ANALYSIS).
-	// EMPTY IS THE NORMAL STATE and means "the shared slug": the override exists so escalating the
-	// quality of that one pass costs an env var instead of a deploy.
+	// ModelAnalysis is the OPTIONAL slug of CompleteWithMeta's callers — the tech-card analysis pass
+	// and EnhanceText (OPENROUTER_MODEL_ANALYSIS). EMPTY IS THE NORMAL STATE and means "the shared
+	// slug": the override exists so escalating the quality of those calls costs an env var instead
+	// of a deploy.
 	//
 	// IT DELIBERATELY HAS NO DEFAULT CONSTANT OF ITS OWN. A second baked-in slug would be a second
 	// thing that rots silently at the provider, and one such constant (defaultModel) already carries
@@ -344,9 +344,9 @@ func (c *Client) Model() string {
 	return c.cfg.Model
 }
 
-// AnalysisModel returns the effective model slug for the tech-card analysis pass: the optional
-// OPENROUTER_MODEL_ANALYSIS override, or the shared slug when that override is unset — which is the
-// normal state on every deployment. Nil-safe.
+// AnalysisModel returns the effective model slug of CompleteWithMeta — the tech-card analysis pass
+// and EnhanceText: the optional OPENROUTER_MODEL_ANALYSIS override, or the shared slug when that
+// override is unset — which is the normal state on every deployment. Nil-safe.
 //
 // Callers that REPORT which model answered (the analysis response carries the slug so a
 // "model_unavailable" verdict names the knob to turn) must use this, not Model(), or the panel will
@@ -389,8 +389,8 @@ func (c *Client) IdeasModel() string {
 }
 
 const (
-	sharedModelFeatures   = "note formatting, tech-card operation drafts and campaign auto-translation"
-	analysisModelFeatures = "tech-card construction analysis"
+	sharedModelFeatures   = "note formatting, design idea drafts and campaign auto-translation"
+	analysisModelFeatures = "tech-card construction analysis and EnhanceText (the ai ✦ rewrite)"
 	ideasModelFeatures    = "playground Ideas suggestions"
 	ideasFallbackFeatures = "playground Ideas suggestions (the fallback after a 404 on the ideas slug)"
 )
@@ -438,230 +438,6 @@ func (c *Client) BaseURL() string {
 	return c.cfg.BaseURL
 }
 
-// TechCardContext is the tech-card knowledge fed to the model as grounding: the
-// style header plus its cut-pieces and BOM. The caller builds it from the store.
-type TechCardContext struct {
-	TechCardID   int
-	StyleName    string
-	StyleNumber  string
-	Category     string // resolved garment type / category name
-	Gender       string
-	Brand        string
-	Notes        string
-	Concept      string
-	Pieces       []PieceContext
-	BOM          []BOMItemContext
-	Construction *ConstructionContext
-	// Works — КАТАЛОГ РАБОТ (0329/0331), уже отфильтрованный от снятых пунктов вызывающим. Он не
-	// свойство карточки, а словарь, и едет тем же сообщением по одной причине: словарь читается из
-	// БАЗЫ, а системный промпт этого пакета собирается один раз на процесс из статических словарей
-	// entity. Пустой срез — законное состояние («этот сервер каталога не загрузил»), и промпт тогда
-	// не говорит о работах ВОВСЕ: спросить токен, не показав списка, значило бы попросить выдумать.
-	Works []WorkContext
-	// RequiredSeamAllowanceMm is the card's allowance standard in MILLIMETRES ("" = none set). Stated
-	// so a draft does not propose per-step allowances that contradict the card.
-	RequiredSeamAllowanceMm string
-}
-
-// PieceContext is one structural cut-piece of the garment.
-type PieceContext struct {
-	Name             string
-	PiecesPerGarment int
-	// CutSymmetry is the 0275 marking (identical|mirrored|fold), EMPTY when the piece is not marked.
-	// Empty must stay empty in the prompt: telling the model "identical" about a piece nobody has
-	// classified would invent a fact for it to reason from, and this context exists to describe the
-	// card, not to guess at it.
-	CutSymmetry string
-	Grainline   string
-	Fused       bool
-	Note        string
-}
-
-// BOMItemContext is one bill-of-materials line (fabric / thread / trim / …).
-type BOMItemContext struct {
-	Section     string
-	Name        string
-	Composition string
-	Color       string
-	Spec        string
-	Supplier    string
-}
-
-// ConstructionContext is the card's DEFAULTS, if any — what a drafted step inherits rather than
-// restates. Empty strings stay empty in the prompt: naming a default nobody configured would invent
-// a fact for the model to reason from.
-//
-// MachineProfiles / PressProfiles are the card's equipment park, ALREADY RENDERED as one summary
-// line each («overlock: 4 threads, ballpoint needle Nm 90, 4 st/cm»). They replace the single
-// OverlockThreadCount, which could only ever describe one overlock on a card that may run several —
-// and, more to the point, a step now says «machine» + «on an overlock», so the park is what tells
-// the model which machines this style is actually sewn on and which settings it may leave out.
-//
-// The lines carry NO profile keys, and never will: the model does not create profiles and cannot
-// pick between two identical overlocks — it answers with the machine or the equipment TYPE. The
-// caller attaches the profile afterwards, and only where that type names exactly one of them — for a
-// pressing line, exactly one FOR THE STEP'S PROCESS, since a profile declared for ironing is not a
-// fusing recipe and is not attached to a fusing step. Where the question has several answers, the
-// rendered line says so (the caller marks it) and the prompt then asks for the settings outright
-// instead of promising an inheritance nothing would deliver.
-type ConstructionContext struct {
-	DefaultSeamClass     string
-	DefaultStitchesPerCm string
-	MachineProfiles      []string
-	PressProfiles        []string
-}
-
-// WorkContext is one row of the work catalog as the prompt shows it: WHAT the step is, in the word
-// a technologist says at the machine.
-//
-// СИНОНИМЫ ЗДЕСЬ — НЕСУЩАЯ ЧАСТЬ, А НЕ УКРАШЕНИЕ. Вход этой функции — РЕЧЬ ТЕХНОЛОГА («подогнуть
-// низ московским», «поставить закрепку»), и ярлык каталога написан по-английски. Без цеховых слов
-// модели пришлось бы переводить с русского на английский и обратно угадывать токен — то есть ровно
-// тот способ, которым сто прод-строк оказались в неразличимой свалке. С ними задача становится
-// СОПОСТАВЛЕНИЕМ: слово из описания стоит в списке рядом с токеном.
-//
-// Verb и Machines едут не для красоты: работа НЕСЁТ глагол, и правила когерентности 0330 отвергают
-// шаг, чей глагол ей не равен, а при machine_mode = ask — и машинку вне её списка. Модель, которая
-// видит и то и другое, отвечает согласованно; модель, которая видит один токен, — как повезёт.
-type WorkContext struct {
-	Token string
-	Label string
-	Verb  string
-	// Machines пуст у работ, у которых ось «на чём» не машинная вовсе (ВТО, фурнитура, финиш), и у
-	// работ режима fixed он несёт ровно одну машинку — ту, что и так следует из работы.
-	Machines []string
-	Syn      []string
-}
-
-// Operation is one drafted sewing operation as returned by the model. Numeric-ish fields are
-// captured as jsonNum (tolerating both JSON numbers and strings); the caller parses/validates them
-// when mapping to the persisted operation shape.
-//
-// EVERY DESCRIPTIVE FIELD IS NOW A DICTIONARY TOKEN, and that is the point of the shape: the old
-// struct held twelve bare strings, so the model answered «оверлок 4-нит.» or «overlock 4 thread» or
-// anything else, and whatever came back was stored verbatim because there was nothing to check it
-// against. A token either resolves to an enum value or becomes UNKNOWN for a human to fix.
-//
-// The two axes are why machine_type exists beside operation_type: the type says WHAT the step does
-// (machine work, pressing, fusing, handwork) and the machine says WHAT IT IS DONE ON. One word could
-// not carry both, which is why a draft used to answer «overlock» and leave the ВТО steps with no
-// vocabulary at all — a press step had nothing to say about the iron, the temperature or the cloth.
-type Operation struct {
-	OperationNumber  jsonNum `json:"operation_number"`
-	OperationType    string  `json:"operation_type"`
-	Zone             string  `json:"zone"`
-	SeamClass        string  `json:"seam_class"`
-	StitchesPerCm    jsonNum `json:"stitches_per_cm"`
-	SeamAllowanceMm  jsonNum `json:"seam_allowance_mm"`
-	TopstitchMode    string  `json:"topstitch_mode"`
-	TopstitchWidthMm jsonNum `json:"topstitch_width_mm"`
-	TopstitchRows    jsonNum `json:"topstitch_rows"`
-	AttachmentKind   string  `json:"attachment_kind"`
-	SmvMinutes       jsonNum `json:"smv_minutes"`
-	CalloutNumber    jsonNum `json:"callout_number"`
-	Note             string  `json:"note"`
-
-	// Work — ТРЕТЬЯ ОСЬ ШАГА (0330): КАКАЯ это работа, токеном каталога. Строка, а не член
-	// перечисления, ровно по той же причине, по которой она строка на проводе: каталог — ДАННЫЕ,
-	// он растёт INSERT-миграцией, а незнакомый член enum protojson выбросил бы молча.
-	//
-	// Выдуманный токен здесь стоит ровно одно поле: вызывающий сверяет его с каталогом и на промах
-	// оставляет работу пустой, не трогая остальной шаг. Промпт просит об этом прямо — «назови
-	// работу токеном или промолчи».
-	Work string `json:"work"`
-
-	// The machine step: «on what», plus the settings that deviate from the card's profile.
-	MachineType   string  `json:"machine_type"`
-	ThreadCount   jsonNum `json:"thread_count"`
-	NeedleType    string  `json:"needle_type"`
-	NeedleSizeNm  jsonNum `json:"needle_size_nm"`
-	ThreadTension string  `json:"thread_tension"`
-	// The qualifier that makes the scale usable. The scale is CLOSED (looser / normal / tighter /
-	// other) precisely because a free string could not be compared between two machines — and
-	// «other» is then an answer with nothing in it unless this field travels beside it. Without the
-	// field in the shape the model has no way to say what «other» meant, and a model that says it
-	// anyway has the sentence silently dropped by the decoder.
-	ThreadTensionNote string  `json:"thread_tension_note"`
-	StitchWidthMm     jsonNum `json:"stitch_width_mm"` // zigzag amplitude / overlock bite, NOT the topstitch width
-
-	// The ВТО block: press / press_open / fusing. No profile key here either — see ConstructionContext.
-	PressEquipment    string  `json:"press_equipment"`
-	PressTemperatureC jsonNum `json:"press_temperature_c"`
-	PressDwellSec     jsonNum `json:"press_dwell_sec"`
-	PressPressureNCm2 jsonNum `json:"press_pressure_n_cm2"` // pressure on the cloth, N/cm²
-	// Three-valued, hence jsonBool and not bool: absent = the model said nothing, false = «без пара»,
-	// which is a real instruction a two-valued field would quietly turn back into a default.
-	PressSteam jsonBool `json:"press_steam"`
-	PressCloth string   `json:"press_cloth"`
-}
-
-// Result is the parsed model output: drafted operations plus optional free-text notes.
-type Result struct {
-	Operations []Operation `json:"operations"`
-	Notes      string      `json:"notes"`
-}
-
-// jsonNum captures a JSON number OR string as its literal string form, so a model
-// that emits 0.5 and one that emits "0.5" both decode. Empty when null/absent.
-type jsonNum string
-
-// UnmarshalJSON accepts a JSON number, a JSON string, or null.
-func (n *jsonNum) UnmarshalJSON(b []byte) error {
-	b = bytes.TrimSpace(b)
-	if len(b) == 0 || string(b) == "null" {
-		*n = ""
-		return nil
-	}
-	if b[0] == '"' {
-		var s string
-		if err := json.Unmarshal(b, &s); err != nil {
-			return err
-		}
-		*n = jsonNum(strings.TrimSpace(s))
-		return nil
-	}
-	*n = jsonNum(strings.TrimSpace(string(b)))
-	return nil
-}
-
-// String returns the captured literal (canonical-ish; the caller validates).
-func (n jsonNum) String() string { return string(n) }
-
-// jsonBool is an OPTIONAL boolean with presence: it has to hold «not stated», «yes» and «no» as
-// three answers, because press_steam does.
-//
-// It NEVER fails to unmarshal, and that is the point rather than laxity: a plain *bool would return
-// an UnmarshalTypeError on `"press_steam": "yes"`, and json.Unmarshal reports that for the whole
-// document — one hedged word in one step would throw away the entire draft. Anything unrecognised
-// is simply «not stated», which is what an unanswered question means everywhere else in this file.
-type jsonBool struct {
-	set   bool
-	value bool
-}
-
-// UnmarshalJSON accepts true/false, the same words quoted, the usual yes/no/1/0 spellings, and null.
-func (b *jsonBool) UnmarshalJSON(data []byte) error {
-	*b = jsonBool{}
-	s := strings.ToLower(strings.Trim(strings.TrimSpace(string(data)), `"`))
-	switch strings.TrimSpace(s) {
-	case "true", "yes", "y", "1", "on":
-		*b = jsonBool{set: true, value: true}
-	case "false", "no", "n", "0", "off":
-		*b = jsonBool{set: true, value: false}
-	}
-	return nil
-}
-
-// Ptr renders the three states as the wire's optional bool: nil when the model said nothing.
-func (b jsonBool) Ptr() *bool {
-	if !b.set {
-		return nil
-	}
-	v := b.value
-	return &v
-}
-
-// apiError is the error object of an OpenRouter body; the model probe's non-2xx sentence reads it.
 type apiError struct {
 	Message string `json:"message"`
 	Code    any    `json:"code"`
@@ -688,36 +464,6 @@ type Usage struct {
 	Cost       decimal.NullDecimal `json:"cost"`
 }
 
-// GenerateOperations asks the model to draft sewing operations for the given tech
-// card context and free-text description. It returns a clear error on: missing key
-// (ErrNotConfigured), transport failure, non-2xx API response, or malformed JSON.
-func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, description string) (*Result, error) {
-	if !c.Enabled() {
-		return nil, ErrNotConfigured
-	}
-	if strings.TrimSpace(description) == "" {
-		return nil, fmt.Errorf("openrouter: description is required")
-	}
-
-	content, _, _, err := c.send(ctx, c.cfg.Model, aiprov.ChatRequest{
-		System:   systemPrompt,
-		User:     buildUserPrompt(tcx, description),
-		JSONMode: true,
-	}, oaichat.Options{})
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := parseResult(content)
-	if err != nil {
-		return nil, err
-	}
-	if len(result.Operations) > maxOperations {
-		result.Operations = result.Operations[:maxOperations]
-	}
-	return result, nil
-}
-
 // Complete runs a single chat completion and returns the assistant's raw message content. It is
 // the generic primitive behind feature-specific methods (e.g. translation). jsonMode requests a
 // JSON-object response from the model. Returns ErrNotConfigured when no API key is set.
@@ -732,8 +478,9 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 	return text, err
 }
 
-// CompleteWithMeta runs a single chat completion for the TECH-CARD ANALYSIS pass and returns the
-// assistant content together with what the caller needs in order to judge it.
+// CompleteWithMeta runs a single chat completion for the TECH-CARD ANALYSIS pass (and for
+// EnhanceText, which needs the same finish reason and token bill) and returns the assistant content
+// together with what the caller needs in order to judge it.
 //
 // WHY THE METADATA IS NOT OPTIONAL. Without finishReason a reply truncated by the token cap is
 // indistinguishable from a model that emitted broken JSON, and those two owe the human different
@@ -742,9 +489,9 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 //
 // maxTokens caps the completion; <= 0 omits the field and leaves the provider default in force.
 //
-// THE SLUG IS AnalysisModel(), NOT Model(). This method exists for the analysis pass, and
-// OPENROUTER_MODEL_ANALYSIS exists to escalate exactly that pass without dragging the features
-// behind Complete onto a different model. With the override unset the two are the same string.
+// THE SLUG IS AnalysisModel(), NOT Model(). OPENROUTER_MODEL_ANALYSIS exists to escalate the calls
+// made through this method without dragging the features behind Complete onto a different model.
+// With the override unset the two are the same string.
 func (c *Client) CompleteWithMeta(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (text string, finishReason string, usage Usage, err error) {
 	// ONE OF THE TWO CALLERS THAT SET `reasoning`, and for the same reason: see
 	// analysisReasoningEffort. Мышление выключено там, где стоит ПОТОЛОК ТОКЕНОВ, — этот пас и
@@ -772,7 +519,7 @@ func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt s
 	}, oaichat.Options{})
 }
 
-// send is THE ONE DOOR of this package to the chat transport: GenerateOperations, Complete,
+// send is THE ONE DOOR of this package to the chat transport: Complete,
 // CompleteWithMeta and both picture entry points (multimodal.go) funnel through it, so the legacy
 // (text, finishReason, Usage, error) shape is assembled in exactly one place.
 //
@@ -796,42 +543,6 @@ func (c *Client) send(ctx context.Context, model string, req aiprov.ChatRequest,
 		return "", reply.FinishReason, usage, err
 	}
 	return reply.Text, reply.FinishReason, usage, nil
-}
-
-// parseResult extracts the JSON object from the model content (tolerating a ```json
-// fenced block or surrounding prose) and unmarshals it into a Result.
-func parseResult(content string) (*Result, error) {
-	js := extractJSON(content)
-	if js == "" {
-		return nil, fmt.Errorf("openrouter: model output contained no JSON object: %q", truncate(content, 200))
-	}
-	var r Result
-	if err := json.Unmarshal([]byte(js), &r); err != nil {
-		return nil, fmt.Errorf("openrouter: model output was not valid operations JSON: %w", err)
-	}
-	return &r, nil
-}
-
-// extractJSON returns the outermost {...} object in s, first stripping a Markdown
-// code fence if the model wrapped the JSON in one. Returns "" when no object found.
-func extractJSON(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```")
-		if i := strings.IndexByte(s, '\n'); i >= 0 {
-			s = s[i+1:] // drop an optional language tag line (e.g. "json")
-		}
-		if j := strings.LastIndex(s, "```"); j >= 0 {
-			s = s[:j]
-		}
-		s = strings.TrimSpace(s)
-	}
-	start := strings.IndexByte(s, '{')
-	end := strings.LastIndexByte(s, '}')
-	if start < 0 || end < 0 || end < start {
-		return ""
-	}
-	return s[start : end+1]
 }
 
 // apiErrorMessage best-effort pulls a human message out of an OpenRouter error body,

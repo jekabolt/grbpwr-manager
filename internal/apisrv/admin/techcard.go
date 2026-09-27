@@ -828,9 +828,8 @@ func machineCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.Te
 		// операции пишутся полной заменой, — поэтому перенести хранимое, как переносится разметка
 		// детали, невозможно, и единственной формой защиты остался бы отказ без права на ошибку.
 		//
-		// Оба реальных пути потери закрыты в источнике: «заменить весь список» ИИ-черновиком теперь
-		// называет число шагов с машинками ДО нажатия, а до-0306 черновики выметаются версией ключа
-		// хранилища. Остаётся скрипт и сидер — их потеря становится СЧИТАЕМОЙ здесь, а не
+		// Путь потери из клиента закрыт в источнике: до-0306 черновики выметаются версией ключа
+		// хранилища. Остаются скрипт и сидер — их потеря становится СЧИТАЕМОЙ здесь, а не
 		// невидимой. Если счётчик когда-нибудь начнёт расти, это и будет доводом за флаг намерения.
 		if storedHasMachineFacts(stored) && !payloadSpeaksMachineFields(pb) {
 			slog.Default().Warn("machine gate: aware payload drops stored machine/pressing facts",
@@ -1060,9 +1059,8 @@ func resolveFusingPressProfile(o *entity.TechCardOperation,
 			// THE KEY IS NOT A BYPASS AROUND THE PROCESS. Step 3 has always refused a profile
 			// declared for pressing, and step 2 used to take whatever the key pointed at — so the
 			// same park answered one question two ways, and the softer answer was reachable by
-			// simply putting a key on the step. It is reachable BY THE SERVER: the AI mapper
-			// attaches a profile to a drafted step, and attaching an ironing profile to a fusing
-			// step handed this gate a ВТО temperature to approve дублирование with. A mismatch
+			// simply putting a key on the step — a technologist picking the wrong row is enough, and
+			// the gate is then handed a ВТО temperature to approve дублирование with. A mismatch
 			// resolves to «not set» and never falls through to step 3: the step names THIS profile,
 			// and quietly signing it off against a different one is a second wrong answer.
 			if !pressProfileFitsStep(&presses[i], entity.OpTypeFusing) {
@@ -1095,8 +1093,8 @@ func resolveFusingPressProfile(o *entity.TechCardOperation,
 // however well the equipment matches — same machine, different program, and the difference shows up
 // as a delamination after the first wash rather than at the press.
 //
-// It was written out twice, and the copies drifted (see the caller above and aiSolePressProfiles):
-// wherever the process was dropped from the question, the answer silently widened.
+// Keep it the only spelling of the rule: a second copy is how it drifted before — wherever the
+// process was dropped from the question, the answer silently widened.
 func pressProfileFitsStep(p *entity.TechCardPressProfile, stepType entity.TechCardOperationType) bool {
 	return !p.PressOperationType.Valid || p.PressOperationType.String == string(stepType)
 }

@@ -26,7 +26,7 @@ func TestKeyFunc_SwapChangesTheNextRequestsAuthorization(t *testing.T) {
 		auths = append(auths, r.Header.Get("Authorization"))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"model":"stub-model","choices":[{"message":{"role":"assistant","content":"{\"operations\":[{\"zone\":\"shoulder\",\"operation_type\":\"lockstitch\",\"smv_minutes\":0.5}],\"notes\":\"ok\"}"}}]}`)
+		io.WriteString(w, `{"model":"stub-model","choices":[{"message":{"role":"assistant","content":"{\"ok\":true}"}}]}`)
 	}))
 	defer srv.Close()
 
@@ -35,7 +35,7 @@ func TestKeyFunc_SwapChangesTheNextRequestsAuthorization(t *testing.T) {
 	c := New(Config{APIKey: "env-key", BaseURL: srv.URL, KeyFunc: func() string { return key.Load().(string) }})
 
 	call := func() error {
-		_, err := c.GenerateOperations(context.Background(), sampleContext(), "assemble it")
+		_, err := c.Complete(context.Background(), "sys", "assemble it", true)
 		return err
 	}
 	if err := call(); err != nil {
