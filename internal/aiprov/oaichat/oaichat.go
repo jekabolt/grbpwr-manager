@@ -150,7 +150,7 @@ func (c *Client) CompletionBase() time.Duration {
 }
 
 func (c *Client) key() string {
-	if c.cfg.KeyFunc == nil {
+	if c == nil || c.cfg.KeyFunc == nil {
 		return ""
 	}
 	return strings.TrimSpace(c.cfg.KeyFunc())
@@ -198,7 +198,11 @@ func (c *Client) Chat(ctx context.Context, model string, req aiprov.ChatRequest)
 
 // Send is Chat with Options and the wire-level Reply. Same failure contract as Chat.
 func (c *Client) Send(ctx context.Context, model string, req aiprov.ChatRequest, opt Options) (*Reply, error) {
-	if !c.Enabled() {
+	// ONE KEY PER REQUEST (Codex C review, P3): the key is read exactly once here and travels with the
+	// request; a rotation or a switch-off that lands mid-flight changes the NEXT request, never the
+	// Authorization header of this one.
+	key := c.key()
+	if key == "" {
 		return nil, c.fail(aiprov.CodeNotConfigured, 0, false, false,
 			fmt.Errorf("%s: no API key is set: %w", c.provider(), aiprov.ErrNotConfigured))
 	}
@@ -211,7 +215,7 @@ func (c *Client) Send(ctx context.Context, model string, req aiprov.ChatRequest,
 	if err != nil {
 		return nil, c.fail(aiprov.CodeBadRequest, 0, false, false, err)
 	}
-	return c.post(ctx, model, payload, ceiling)
+	return c.post(ctx, model, payload, ceiling, key)
 }
 
 // ─── request ─────────────────────────────────────────────────────────────────────────────────────
@@ -476,7 +480,7 @@ type apiError struct {
 
 // post is THE ONLY PLACE THE STACK TALKS TO /chat/completions. ceiling is the max_tokens that went on
 // the wire (buildRequest returns it), and the call's deadline is computed from it and nowhere else.
-func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling int) (*Reply, error) {
+func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling int, key string) (*Reply, error) {
 	p := c.provider()
 	// СРОК СТАВИТСЯ НА КАЖДЫЙ ЗАПРОС, А НЕ НА КЛИЕНТА: он зависит от того, сколько токенов у этого
 	// запроса попрошено, и никакое одно число на всех этого выразить не может. Срок вызывающего
@@ -491,7 +495,7 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 		return nil, c.fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("%s: build request: %w", p, err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.key())
+	httpReq.Header.Set("Authorization", "Bearer "+key)
 	if c.cfg.Dialect == DialectOpenRouter {
 		if c.cfg.Title != "" {
 			httpReq.Header.Set("X-Title", c.cfg.Title)
@@ -516,15 +520,19 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 	// ОТВЕТ УЖЕ ЕДЕТ: заголовки пришли, значит поставщик отработал. Не дочитать его — наша беда, а не
 	// его бесплатность.
 	body, err := readCapped(resp.Body, MaxResponseBytes, "chat/completions response", p)
+	// THE STATUS IS JUDGED BEFORE THE BODY'S FATE (Codex C review, P2). A non-2xx is the provider's
+	// refusal at the gate — no money moved, whatever happened to the error body afterwards (cut,
+	// oversized, timed out): it stays a not-engaged refusal with its own code and its 404 sentinel, so
+	// the router can still fall back (D-09). The body, when it did arrive, only lends the sentence.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, c.statusError(resp.StatusCode, body)
+	}
 	if err != nil {
 		code := aiprov.CodeTooLarge
 		if !errors.Is(err, aiprov.ErrResponseTooLarge) {
 			code = interruption(ctx, err)
 		}
 		return nil, c.fail(code, resp.StatusCode, true, false, fmt.Errorf("%s: read response: %w", p, err))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, c.statusError(resp.StatusCode, body)
 	}
 
 	// ─── ОТСЮДА И НИЖЕ 2xx: ЗАПРОС ПРИНЯТ И ОТРАБОТАН, ЗНАЧИТ ОПЛАЧЕН ───
