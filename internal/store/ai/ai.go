@@ -680,6 +680,104 @@ func (s *Store) UpsertModel(ctx context.Context, m entity.AIModel, by string) er
 	})
 }
 
+// ───────────────────────── provider faults (the panel's badge) ─────────────────────────
+
+// The badge words — AiProviderInfo.fault_code. A badge says CONFIGURATION, never weather: the key is
+// refused, the account is empty, the model is not served. Each repeats identically however often it
+// is retried, which is why a person has to see it even when a fallback served the request (D-09).
+const (
+	faultKeyRejected  = "key_rejected"
+	faultOutOfCredits = "out_of_credits"
+	faultModelUnknown = "model_unknown"
+)
+
+// faultBadges maps the error_code words the ledger holds onto the badge. Two writers fill
+// error_code: designgen's classify (designgen/classify.go Code*: provider_unauthorized = 401/403,
+// provider_out_of_credit = 402, provider_model_retired = a 404 on the model) and aiprov.CallError.Code
+// (key_rejected, out_of_credits, model_unknown). Every other word — a timeout, a 5xx, a rate limit, a
+// request we built wrong, the sweeper's — has no badge.
+var faultBadges = map[string]string{
+	"provider_unauthorized":  faultKeyRejected,
+	faultKeyRejected:         faultKeyRejected,
+	"provider_out_of_credit": faultOutOfCredits,
+	faultOutOfCredits:        faultOutOfCredits,
+	"provider_model_retired": faultModelUnknown,
+	faultModelUnknown:        faultModelUnknown,
+}
+
+// recentFaults counts the failed calls of the window per (provider, error_code). Only `failed` and
+// `free` rows: a configuration refusal is never billed, so it never ends `charged_failed`, and an
+// `unknown` row is a call whose outcome nobody knows. idx_ai_usage_status (status, occurred_at) serves
+// the WHERE. The words are folded into badges in Go (faultBadges), so the vocabulary lives once.
+const recentFaults = `
+	SELECT provider_key, error_code, COUNT(*) AS n, MAX(occurred_at) AS last_at
+	FROM ai_usage_event
+	WHERE status IN ('failed', 'free') AND occurred_at >= :since AND error_code IS NOT NULL
+	GROUP BY provider_key, error_code`
+
+// faultRow is one (provider, error_code) count of the window.
+type faultRow struct {
+	ProviderKey string    `db:"provider_key"`
+	ErrorCode   string    `db:"error_code"`
+	N           int       `db:"n"`
+	LastAt      time.Time `db:"last_at"`
+}
+
+// RecentFaults returns, per provider, the badge of the most frequent configuration fault among its
+// failed calls since `since` (key_rejected | out_of_credits | model_unknown). A provider with no such
+// fault is absent from the map.
+func (s *Store) RecentFaults(ctx context.Context, since time.Time) (map[string]string, error) {
+	var rows []faultRow
+	if err := selectNamed(ctx, s.DB, &rows, recentFaults, map[string]any{"since": since.UTC()}); err != nil {
+		return nil, fmt.Errorf("failed to read recent ai faults: %w", err)
+	}
+	return pickFaults(rows), nil
+}
+
+// pickFaults folds the counts into one badge per provider: the badge with the most calls (two words
+// of one badge add up); a tie goes to the badge seen last, then to the alphabetically first, so the
+// answer never depends on the order the rows arrived in.
+func pickFaults(rows []faultRow) map[string]string {
+	type tally struct {
+		n    int
+		last time.Time
+	}
+	per := map[string]map[string]*tally{}
+	for _, r := range rows {
+		badge, ok := faultBadges[r.ErrorCode]
+		if !ok || r.N <= 0 {
+			continue
+		}
+		if per[r.ProviderKey] == nil {
+			per[r.ProviderKey] = map[string]*tally{}
+		}
+		t := per[r.ProviderKey][badge]
+		if t == nil {
+			t = &tally{}
+			per[r.ProviderKey][badge] = t
+		}
+		t.n += r.N
+		if r.LastAt.After(t.last) {
+			t.last = r.LastAt
+		}
+	}
+	out := make(map[string]string, len(per))
+	for provider, badges := range per {
+		var best string
+		var bt *tally
+		for badge, t := range badges {
+			switch {
+			case bt == nil, t.n > bt.n,
+				t.n == bt.n && t.last.After(bt.last),
+				t.n == bt.n && t.last.Equal(bt.last) && badge < best:
+				best, bt = badge, t
+			}
+		}
+		out[provider] = best
+	}
+	return out
+}
+
 // ───────────────────────── ledger ─────────────────────────
 
 const insertAICall = `

@@ -293,6 +293,9 @@ func (s *Store) SetRoute(context.Context, string, []entity.AIRouteCandidate, uin
 	return nil
 }
 func (s *Store) UpsertModel(context.Context, entity.AIModel, string) error { return nil }
+func (s *Store) RecentFaults(context.Context, time.Time) (map[string]string, error) {
+	return nil, nil
+}
 func (s *Store) SpendReport(_ context.Context, fromDay, toDay string) (*entity.AISpendReport, error) {
 	return &entity.AISpendReport{FromDay: fromDay, ToDay: toDay}, nil
 }

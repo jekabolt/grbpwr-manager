@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -137,6 +138,7 @@ var statements = map[string]string{
 	"selectAIModels":           selectAIModels,
 	"selectAIRoutes":           selectAIRoutes,
 	"selectBudgetTimezone":     selectBudgetTimezone,
+	"recentFaults":             recentFaults,
 	"bumpConfigVersionChecked": bumpConfigVersionChecked,
 	"bumpConfigVersion":        bumpConfigVersion,
 	"countAISettings":          countAISettings,
@@ -261,6 +263,7 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 		"selectAIModels":           nil,
 		"selectAIRoutes":           nil,
 		"selectBudgetTimezone":     nil,
+		"recentFaults":             {"since": fixedNow},
 		"countAISettings":          nil,
 		"ensureAISettings":         nil,
 		"bumpConfigVersionChecked": {"by": "jeka", "expected_version": uint64(3)},
@@ -495,6 +498,7 @@ func TestAIStoreShapeSelectsFillEveryFieldTheyScanInto(t *testing.T) {
 		"selectAIProviders":    {selectAIProviders, reflect.TypeOf(entity.AIProvider{})},
 		"selectAIModels":       {selectAIModels, reflect.TypeOf(entity.AIModel{})},
 		"selectAIRoutes":       {selectAIRoutes, reflect.TypeOf(routeRow{})},
+		"recentFaults":         {recentFaults, reflect.TypeOf(faultRow{})},
 		"spendByProvider":      {spendByProvider, reflect.TypeOf(ourSpendRow{})},
 		"spendTheirByProvider": {spendTheirByProvider, reflect.TypeOf(theirSpendRow{})},
 		"spendByActor":         {spendByActor, reflect.TypeOf(entity.AISpendByActor{})},
@@ -984,6 +988,83 @@ func TestAIStoreShapeSweepReportsWhatItSwept(t *testing.T) {
 	}
 	if got := argOf(t, sweepAIDispatching, c.args, "finished_at"); got != fixedNow {
 		t.Fatalf(":finished_at = %v, want the store clock", got)
+	}
+}
+
+// TestAIStoreShapeRecentFaultsReadsFailedCallsOfTheWindow.
+//
+// MUTATIONS IT CATCHES: dropping the window (`occurred_at >= :since`: a key rejected last month would
+// badge the provider forever); counting `ok` or `charged_failed` rows (a healthy provider's calls, or a
+// billed failure, are not configuration faults); binding a local-zone :since against the UTC column.
+func TestAIStoreShapeRecentFaultsReadsFailedCallsOfTheWindow(t *testing.T) {
+	flat := strings.Join(strings.Fields(recentFaults), " ")
+	for _, want := range []string{"status IN ('failed', 'free')", "occurred_at >= :since", "GROUP BY provider_key, error_code"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("recentFaults lost %q: %s", want, flat)
+		}
+	}
+	db := &recDB{onSelect: func(dest any, _ string, _ []any) error {
+		*(dest.(*[]faultRow)) = []faultRow{{ProviderKey: "fal", ErrorCode: "provider_out_of_credit", N: 1, LastAt: fixedNow}}
+		return nil
+	}}
+	warsaw := time.FixedZone("CEST", 2*60*60)
+	since := fixedNow.Add(-24 * time.Hour).In(warsaw)
+	got, err := newRecStore(db, nil).RecentFaults(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["fal"] != faultOutOfCredits || len(got) != 1 {
+		t.Fatalf("RecentFaults = %v, want fal → out_of_credits", got)
+	}
+	c := findCall(t, db, "recentFaults")
+	bound, ok := argOf(t, recentFaults, c.args, "since").(time.Time)
+	if !ok || !bound.Equal(since) || bound.Location() != time.UTC {
+		t.Fatalf(":since = %v, want %v in UTC", bound, since.UTC())
+	}
+}
+
+// TestAIStoreShapeRecentFaultsPicksTheBadge.
+//
+// MUTATIONS IT CATCHES: a word of the ledger's vocabulary that maps to no badge (designgen writes
+// provider_unauthorized — a key rejected there would never show); weather (a timeout, a 5xx) badging a
+// provider; the two words of one badge not added up; a tie decided by map order.
+func TestAIStoreShapeRecentFaultsPicksTheBadge(t *testing.T) {
+	// The words designgen writes are ITS constants — a rename there must go red here.
+	for word, badge := range map[string]string{
+		designgen.CodeUnauthorized: faultKeyRejected,
+		designgen.CodeOutOfCredit:  faultOutOfCredits,
+		designgen.CodeModelRetired: faultModelUnknown,
+	} {
+		if faultBadges[word] != badge {
+			t.Fatalf("designgen writes %q and it maps to %q, want %q", word, faultBadges[word], badge)
+		}
+	}
+	for _, weather := range []string{designgen.CodeProviderTimeout, designgen.CodeProviderUnavailable,
+		designgen.CodeRateLimited, designgen.CodeBadRequest, entity.AICallErrorSweeper} {
+		if b, ok := faultBadges[weather]; ok {
+			t.Fatalf("%q is weather or a request fault and must not badge a provider (got %q)", weather, b)
+		}
+	}
+
+	earlier, later := fixedNow.Add(-2*time.Hour), fixedNow.Add(-time.Hour)
+	got := pickFaults([]faultRow{
+		// openai: ten timeouts outnumber three rejections, and the rejections still win — weather has no badge.
+		{"openai", designgen.CodeProviderTimeout, 10, later},
+		{"openai", designgen.CodeUnauthorized, 2, earlier},
+		{"openai", faultKeyRejected, 1, earlier},
+		{"openai", designgen.CodeOutOfCredit, 2, later},
+		// fal: a tie on count goes to the badge seen last.
+		{"fal", designgen.CodeOutOfCredit, 2, earlier},
+		{"fal", designgen.CodeModelRetired, 2, later},
+		// meshy: only weather — no badge.
+		{"meshy", designgen.CodeProviderUnavailable, 4, later},
+		// recraft: a full tie goes to the alphabetically first badge, whatever the row order.
+		{"recraft", faultOutOfCredits, 1, later},
+		{"recraft", faultKeyRejected, 1, later},
+	})
+	want := map[string]string{"openai": faultKeyRejected, "fal": faultModelUnknown, "recraft": faultKeyRejected}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pickFaults = %v, want %v", got, want)
 	}
 }
 
