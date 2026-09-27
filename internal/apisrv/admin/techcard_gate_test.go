@@ -421,9 +421,8 @@ func TestUpdateTechCardApprovesFusingResolvedThroughTheLadder(t *testing.T) {
 // TestUpdateTechCardRefusesApprovingFusingThroughAPressingProfileNamedByKey closes the hole step 2
 // of the ladder used to be. Step 3 always refused a profile declared for pressing; step 2 took
 // whatever the key pointed at, so the same park answered one question two ways and the softer answer
-// was reachable by simply putting a key on the step — including BY THE SERVER, which is how it was
-// actually reached: the AI mapper attached the card's only ironing profile of the дублирующий пресс
-// to a drafted fusing step, and the gate then read that profile's temperature and dwell back out
+// was reachable by simply putting a key on the step: a fusing step pointed at the card's only ironing
+// profile of the дублирующий пресс, and the gate read that profile's temperature and dwell back out
 // through the key and approved. Дублирование on an ironing program, signed.
 func TestUpdateTechCardRefusesApprovingFusingThroughAPressingProfileNamedByKey(t *testing.T) {
 	ironing := gateFusingPressProfile(gateFusingKeyA, 150, 3,

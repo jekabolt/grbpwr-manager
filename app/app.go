@@ -511,9 +511,14 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// OpenRouter client for AI tech-card operation drafting (#66), note markdown formatting and
-	// campaign auto-translation — one client, one model slug, three features. Nil-safe/disabled
-	// when OPENROUTER_API_KEY is unset, and each handler then reports it as not configured.
+	// OpenRouter chat client for the admin AI text features — note markdown formatting, campaign
+	// auto-translation, the design idea draft, EnhanceText, SuggestPrompts and the construction
+	// analysis: one client, the shared slug (OPENROUTER_MODEL) plus the per-feature slugs of
+	// CompleteWithMeta (the analysis and EnhanceText) and the Ideas door. Its key is read per request
+	// through the registry's KeyFunc wired above — a key stored in admin → AI providers, else
+	// OPENROUTER_API_KEY — so an empty env key alone does not switch it off. With no key from either
+	// source, or with openrouter switched off in the panel, the client is disabled and each handler
+	// reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
 	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
 	//
@@ -532,10 +537,12 @@ func (a *App) Start(ctx context.Context) error {
 		slog.Duration("handler_lease", designstore.HandlerLeaseFor(
 			aiOpsClient.CompletionBase(), entity.DesignDraftAnswerCeilings()...)),
 	)
-	// Ask the provider once, in the background, whether that one slug is still served. It returns
-	// immediately, refuses nothing and can only write a log line — see WarnIfModelRetired. It is
-	// here because the alternative is how the last outage was found: by a person pressing a button
-	// weeks later, on one of the three features.
+	// Ask the provider once, in the background, whether every slug this client can send is still
+	// served — the shared one, the analysis override when it differs, and the Ideas door's default
+	// and fallback: up to four distinct slugs, each logged with the features that stop on it. It
+	// returns immediately, refuses nothing and can only write log lines — see WarnIfModelRetired. It
+	// is here because the alternative is how the last outage was found: by a person pressing a
+	// button weeks later.
 	aiOpsClient.WarnIfModelRetired()
 
 	// ─── DESIGN band, generative half ─────────────────────────────────────────────────────────

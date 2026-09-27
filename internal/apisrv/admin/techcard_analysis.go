@@ -53,10 +53,10 @@ func (s *Server) GetTechCardConstructionAudit(ctx context.Context, req *pb_admin
 	}
 
 	// INPUT GATE. techcardanalysis.MaxAnalysisOperations is the ceiling, and it is read from the
-	// analyzer rather than re-declared here precisely so there is only one of it. It is NOT
-	// openrouter.maxOperations: that one silently slices the generator's OUTPUT, this one refuses an
-	// oversized INPUT out loud. Refusing beats truncating — an audit of the first 200 steps of a
-	// 260-step card would report "the route never packs" about a route that packs at step 240.
+	// analyzer rather than re-declared here precisely so there is only one of it. It refuses an
+	// oversized INPUT out loud rather than slicing it. Refusing beats truncating — an audit of the
+	// first 200 steps of a 260-step card would report "the route never packs" about a route that
+	// packs at step 240.
 	if len(card.Operations) > techcardanalysis.MaxAnalysisOperations {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"tech card has %d operations; the construction analysis handles at most %d",

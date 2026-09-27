@@ -1703,8 +1703,9 @@ service AdminService {
   // the predicate stands. Adding file_id «for the logs» would create an RPC that
   // takes a file id past the predicate.
   //
-  // Classified as a WRITE (files:write) although it stores nothing — precedent
-  // GenerateTechCardOperations: AI-assisted authoring is authoring.
+  // Classified as a WRITE (files:write) although it stores nothing — the rule
+  // EnhanceText and AnalyzeTechCardConstruction follow too: AI-assisted
+  // authoring is authoring.
   rpc FormatLibraryNoteMarkdown(FormatLibraryNoteMarkdownRequest) returns (FormatLibraryNoteMarkdownResponse) {
     option (google.api.http) = {
       post: "/api/admin/files/note/format"
@@ -1727,9 +1728,9 @@ service AdminService {
   // hour → ResourceExhausted).
   //
   // Classified as a WRITE on tech_cards although it stores nothing — precedent
-  // GenerateTechCardOperations / AnalyzeTechCardConstruction: a press spends the
-  // AI key, and a grant to spend is an authoring grant. The route sits under
-  // /api/admin/ai/, not /tech-card/, so it cannot be shadowed by /tech-card/{id}.
+  // AnalyzeTechCardConstruction: a press spends the AI key, and a grant to spend
+  // is an authoring grant. The route sits under /api/admin/ai/, not /tech-card/,
+  // so it cannot be shadowed by /tech-card/{id}.
   rpc EnhanceText(EnhanceTextRequest) returns (EnhanceTextResponse) {
     option (google.api.http) = {
       post: "/api/admin/ai/enhance-text"
@@ -1971,17 +1972,6 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/pipeline"};
   }
 
-  // GenerateTechCardOperations drafts structured sewing operations from a plain-language
-  // description via OpenRouter, grounded in the card's pieces + BOM + type. It only PROPOSES a
-  // draft for a technologist to review, edit and save through UpdateTechCard — it persists nothing.
-  // Requires OPENROUTER_API_KEY; unconfigured it returns FailedPrecondition (degrades gracefully).
-  rpc GenerateTechCardOperations(GenerateTechCardOperationsRequest) returns (GenerateTechCardOperationsResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/tech-card/operations/generate"
-      body: "*"
-    };
-  }
-
   // GetTechCardConstructionAudit — THE MACHINE LAYER of the CONSTRUCTION review: a deterministic
   // audit of the SAVED card (route dictionaries, BOM chains, prices, release readiness) plus the
   // recomputed ground truth of its assembly graph. No AI, no key, no rate limit, no money — the
@@ -2013,10 +2003,10 @@ service AdminService {
   //
   // AN AI FAILURE IS NOT AN RPC FAILURE. Every way this can go wrong — no key, a retired model
   // slug, a timeout, output that is not usable — arrives as `ai_status` with HTTP 200 and an empty
-  // findings list. That is the deliberate INVERSE of GenerateTechCardOperations, which answers
-  // FailedPrecondition without a key because without the model it has nothing at all to return.
-  // Here the deterministic half of the review is already rendered, so a status the panel can name
-  // beats an error that blanks the tab.
+  // findings list. That is the deliberate INVERSE of the AI RPCs that are nothing but the model
+  // (EnhanceText, FormatLibraryNoteMarkdown), which answer FailedPrecondition without a key because
+  // without the model they have nothing at all to return. Here the deterministic half of the review
+  // is already rendered, so a status the panel can name beats an error that blanks the tab.
   //
   // IT SPENDS MONEY ON EVERY PRESS, which is why it is classified wr(tech_cards) while its machine
   // sibling is rd, and why three limits stand in front of the call: one run per admin per card at a
@@ -2406,7 +2396,7 @@ service AdminService {
   //
   // Read-only: writes nothing. POST rather than GET because the input carries a GRID
   // (colourway × size × quantity), a repeating structure a query string has no honest
-  // representation of. The read-only-POST precedent in this service is GenerateTechCardOperations.
+  // representation of. The other read-only POST of this kind is GetTechCardConstructionAudit.
   //
   // THE RESPONSE ALWAYS LISTS EVERY CHECK, INCLUDING THE ONES THAT PASSED. A list of refusals alone
   // never tells the operator WHAT the gate checks — and without that, the day blocking mode is
@@ -9166,23 +9156,6 @@ message UpdateTechCardRequest {
 }
 
 message UpdateTechCardResponse {}
-
-// GenerateTechCardOperationsRequest asks the AI to draft sewing operations for a tech card from a
-// free-text description. tech_card_id supplies grounding context (the card's pieces, BOM and type
-// are loaded server-side, read-only); description is the technologist's plain-language brief.
-message GenerateTechCardOperationsRequest {
-  int32 tech_card_id = 1; // context only; the card is loaded to ground the model, never modified
-  string description = 2; // free-text description of how the garment is assembled (required)
-}
-
-// GenerateTechCardOperationsResponse is a PROPOSED draft: operations in the exact shape the card
-// stores (common.TechCardOperation), for the technologist to review, edit and save via
-// UpdateTechCard. This call persists nothing itself.
-message GenerateTechCardOperationsResponse {
-  repeated common.TechCardOperation operations = 1; // drafted operations (unsaved proposal)
-  string model = 2; // the model that produced the draft (provenance)
-  string notes = 3; // optional model notes / assumptions for the reviewer
-}
 
 // GetTechCardConstructionAuditRequest — which saved card to audit. Nothing else: the machine layer
 // has no options, and a report you can configure is a report whose two runs cannot be compared.
