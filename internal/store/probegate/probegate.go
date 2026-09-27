@@ -16,8 +16,9 @@
 //     the target cannot drift apart;
 //   - the name carries a disposable marker (test, probe, ci, scratch, tmp, disposable) and is not one
 //     of the names a real base goes by;
-//   - MYSQL_HOST is local: loopback, or a single-label container name (a managed database always has
-//     a dotted host name).
+//   - MYSQL_HOST is local: loopback (localhost, 127.0.0.0/8, ::1) or one of the CI service names in
+//     ciServiceHosts — an explicit list, never a pattern: a bare name like «prod-db» goes through the
+//     machine's DNS search domains and can resolve to a remote server (REVIEW-T45-codex-2).
 //
 // The package imports no driver and opens nothing; its own tests run without a database.
 package probegate
@@ -48,8 +49,10 @@ var productionWords = []string{"prod", "beta", "live", "master", "main"}
 // between separators.
 var disposableMarker = regexp.MustCompile(`(^|[_\-.])(test|tests|probe|probes|ci|scratch|tmp|disposable)([_\-.]|\d|$)`)
 
-// containerHost is a single-label host name — a docker-compose / CI service («mysql», «db»).
-var containerHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+// ciServiceHosts are the container service names a CI job reaches its throwaway MySQL by (the label
+// of a docker-compose or GitHub Actions service). Named one by one: any other bare host name is
+// refused, because the resolver may complete it with a search domain and land on a real server.
+var ciServiceHosts = map[string]bool{"mysql": true, "db": true}
 
 // Check returns nil when the environment names a disposable database the probes may migrate, write
 // and drop, and a refusal saying what is missing otherwise. getenv is os.Getenv in a probe file.
@@ -82,13 +85,14 @@ func Check(getenv func(string) string) error {
 	}
 	host := strings.ToLower(strings.TrimSpace(getenv("MYSQL_HOST")))
 	if !localHost(host) {
-		return fmt.Errorf("MYSQL_HOST=%q is not local: the probes run against a container (loopback, or a "+
-			"single-label service name such as «mysql»), never a managed database", host)
+		return fmt.Errorf("MYSQL_HOST=%q is not local: the probes run against a container reached by loopback "+
+			"(localhost, 127.0.0.1, ::1) or by a CI service name (mysql, db), never any other host", host)
 	}
 	return nil
 }
 
-// localHost accepts loopback (by name or address) and a single-label container name.
+// localHost accepts loopback (by name or address) and the CI service names in ciServiceHosts —
+// nothing else, however local a bare name looks.
 func localHost(host string) bool {
 	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	if host == "" {
@@ -100,5 +104,5 @@ func localHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
 	}
-	return containerHost.MatchString(host)
+	return ciServiceHosts[host]
 }

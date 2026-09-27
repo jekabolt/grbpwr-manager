@@ -25,6 +25,9 @@ func TestCheckPassesADisposableContainerDatabase(t *testing.T) {
 		nil,
 		{"MYSQL_HOST": "localhost"},
 		{"MYSQL_HOST": "mysql"},
+		{"MYSQL_HOST": "db"},
+		{"MYSQL_HOST": "MySQL"},
+		{"MYSQL_HOST": "127.0.0.2"},
 		{"MYSQL_HOST": "::1"},
 		{"MYSQL_HOST": "[::1]"},
 		{EnvDisposableDB: "probe", "MYSQL_DATABASE": "probe"},
@@ -56,6 +59,12 @@ func TestCheckRefusesAnythingElse(t *testing.T) {
 		{"a managed host", map[string]string{"MYSQL_HOST": "db-mysql-fra1-12345-do-user-1-0.b.db.ondigitalocean.com"}, "is not local"},
 		{"a remote address", map[string]string{"MYSQL_HOST": "10.0.0.5"}, "is not local"},
 		{"no host", map[string]string{"MYSQL_HOST": ""}, "is not local"},
+		// A bare name is not local: the resolver may complete it with a search domain
+		// (REVIEW-T45-codex-2). Only the named CI services pass.
+		{"a bare name outside the list", map[string]string{"MYSQL_HOST": "prod-db"}, "is not local"},
+		{"a bare name that starts like a service", map[string]string{"MYSQL_HOST": "mysql2"}, "is not local"},
+		{"a bare name that ends like a service", map[string]string{"MYSQL_HOST": "grbpwr-db"}, "is not local"},
+		{"a service name under a domain", map[string]string{"MYSQL_HOST": "mysql.internal"}, "is not local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := Check(env(tc.over))
