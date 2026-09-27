@@ -910,6 +910,38 @@ func TestAIStoreShapeFinishBindsNullForWhatItDoesNotKnow(t *testing.T) {
 	}
 }
 
+// TestAIStoreShapeValidZeroCostBindsZeroNotNull — a free call's VALID zero binds a non-NULL 0 through
+// both finalisations, so COALESCE(:cost_usd, cost_usd) writes the zero instead of keeping the row's
+// value: NULL (unpriced) on a dispatching row, the submit's figure on an accepted one.
+//
+// MUTATION IT CATCHES (Codex A1 #5): `if end.CostUSD.Valid && !end.CostUSD.Decimal.IsZero()` in
+// endCallParams — the zero binds NULL and a free call reads as unknown (or keeps a stale price).
+func TestAIStoreShapeValidZeroCostBindsZeroNotNull(t *testing.T) {
+	zero := decimal.NullDecimal{Decimal: decimal.Zero, Valid: true}
+	for _, tc := range []struct {
+		name, statementName, statement string
+		finish                         func(*Store) error
+	}{
+		{"FinishCall", "finishAICall", finishAICall, func(s *Store) error {
+			return s.FinishCall(context.Background(), 12,
+				entity.AICallEnd{Status: entity.AICallFree, CostUSD: zero, CostSource: entity.AICostFree})
+		}},
+		{"PriceAcceptedCall", "priceAcceptedAICall", priceAcceptedAICall, func(s *Store) error {
+			return s.PriceAcceptedCall(context.Background(), 41, 2, 1,
+				entity.AICallEnd{Status: entity.AICallOK, CostUSD: zero, CostSource: entity.AICostProvider})
+		}},
+	} {
+		db := &recDB{}
+		if err := tc.finish(newRecStore(db, nil)); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		bound := argOf(t, tc.statement, findCall(t, db, tc.statementName).args, "cost_usd")
+		if got, ok := bound.(decimal.Decimal); !ok || !got.IsZero() {
+			t.Errorf("%s: :cost_usd = %#v for a valid zero, want a non-NULL 0", tc.name, bound)
+		}
+	}
+}
+
 // TestAIStoreShapePriceAcceptedAddressesTheDesignCall.
 //
 // MUTATION IT CATCHES: binding the arguments to the wrong keys (attempt into call_no) — the collect
