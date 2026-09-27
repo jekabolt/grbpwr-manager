@@ -33,8 +33,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
+
+	hosts "github.com/jekabolt/grbpwr-manager/internal/aiprov/endpoints"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // Codes of Result.Code — the provider badge's words; "" when none fits (the key may be fine and the
@@ -77,17 +79,18 @@ const (
 	maxMessage = 120
 )
 
-// Base URLs — constants on purpose; see the package comment.
+// Base URLs — constants on purpose (aiprov/endpoints holds them for every transport; see the
+// package comment).
 const (
-	openAIBase     = "https://api.openai.com"
-	anthropicBase  = "https://api.anthropic.com"
-	googleBase     = "https://generativelanguage.googleapis.com"
-	openRouterBase = "https://openrouter.ai"
-	apibostBase    = "https://apibost.com"
-	falBase        = "https://api.fal.ai"
-	meshyBase      = "https://api.meshy.ai"
-	runblobBase    = "https://platform.runblob.io"
-	recraftBase    = "https://external.api.recraft.ai"
+	openAIBase     = hosts.OpenAIHost
+	anthropicBase  = hosts.AnthropicHost
+	googleBase     = hosts.GoogleHost
+	openRouterBase = hosts.OpenRouterHost
+	apibostBase    = hosts.ApibostHost
+	falBase        = hosts.FalHost
+	meshyBase      = hosts.MeshyHost
+	runblobBase    = hosts.RunblobHost
+	recraftBase    = hosts.RecraftHost
 
 	// anthropicVersion is the API version header every Anthropic request carries.
 	anthropicVersion = "2023-06-01"
