@@ -11,8 +11,9 @@ import (
 	"github.com/rubenv/sql-migrate/sqlparse"
 )
 
-// GUARDS OVER THE T45 MIGRATIONS (27.09): 0375 (palette + per-language name) and 0376 (the SKU
-// colour token leaves the dictionary). Like every guard in this package they read the files as
+// GUARDS OVER THE T45 MIGRATIONS (27.09): 0375 (palette + per-language name), 0376 (the SKU colour
+// token leaves the dictionary) and 0377 (the family unique goes — the second push, D-69). Like every
+// guard in this package they read the files as
 // text and through the SAME parser the application runs at boot; they do not apply Up or Down —
 // that is the container probe's job (internal/store/colourway_t45_integration_test.go, built only
 // with -tags integration and refused outside a named disposable database). The load-bearing
@@ -30,7 +31,10 @@ import (
 //     uniq_product_style_color: that destructive step is a later migration in a later push;
 //  5. 0376 Down refuses BEFORE any DDL when the data holds what the pre-T45 schema cannot (a family
 //     shared within a style, a token that is not its family), with a message that fits a MySQL
-//     identifier.
+//     identifier;
+//  6. 0377 is the destructive half ALONE: one gated DROP INDEX uniq_product_style_color and nothing
+//     else, a Down that refuses a shared family before it restores the unique, and a header that
+//     forbids a binary rollback past T45 — and no other file drops that index.
 
 const (
 	t45PaletteMigration = "0375_colourway_palette.sql"
@@ -71,7 +75,7 @@ func TestColourwayT45MigrationsParseOneStatementEach(t *testing.T) {
 	// A statement HEAD: at the start of the parsed statement or right after a semicolon inside it.
 	// («DEALLOCATE PREPARE stmt» is one head, not two.)
 	trio := regexp.MustCompile(`(?i)(^|;)\s*(PREPARE|EXECUTE|DEALLOCATE)\b`)
-	for _, name := range []string{t45PaletteMigration, t45TokenMigration} {
+	for _, name := range []string{t45PaletteMigration, t45TokenMigration, t45DropMigration} {
 		parsed := t45Parse(t, name)
 		if len(parsed.UpStatements) == 0 {
 			t.Fatalf("%s: Up has no statement", name)
@@ -95,7 +99,7 @@ func TestColourwayT45MigrationsParseOneStatementEach(t *testing.T) {
 
 // TestColourwayT45MigrationsHaveNoCheck — property 2.
 func TestColourwayT45MigrationsHaveNoCheck(t *testing.T) {
-	for _, name := range []string{t45PaletteMigration, t45TokenMigration} {
+	for _, name := range []string{t45PaletteMigration, t45TokenMigration, t45DropMigration} {
 		up, down := t45Sections(t, name)
 		for _, part := range []string{up, down} {
 			if regexp.MustCompile(`(?i)\bCHECK\s*\(`).MatchString(part) || addCheckRe.MatchString(part) {
@@ -312,5 +316,71 @@ func TestColourwayT45RefusalDetectorCatchesTamperedDowns(t *testing.T) {
 	}
 	if p := t45DownRefusalProblems(drop+refusal(" palette colours would be lost"), 1); len(p) == 0 {
 		t.Error("a refusal after a bare DROP TABLE must be reported")
+	}
+}
+
+// ─── 0377, the second T45 push: the destructive half, alone (D-69) ───
+
+// t45DropMigration drops uniq_product_style_color and nothing else. It ships in its own push, after
+// the first one is live, and it is the point after which the binary must not be rolled back past
+// T45 — which is why its guards are about what it does NOT do as much as about what it does.
+const t45DropMigration = "0377_colourway_family_unique_drop.sql"
+
+// TestColourwayFamilyUniqueDropIsAloneAndGuarded — property 6: 0377's Up is exactly one gated DDL,
+// the drop of uniq_product_style_color (no data touched, nothing else dropped); its Down refuses a
+// family shared within a style BEFORE it re-adds the unique; its header says the binary must not be
+// rolled back past T45 once it has run.
+func TestColourwayFamilyUniqueDropIsAloneAndGuarded(t *testing.T) {
+	parsed := t45Parse(t, t45DropMigration)
+	if len(parsed.UpStatements) != 5 {
+		t.Errorf("%s: %d Up statements, want 5 (one gated DDL) — the destructive push carries nothing else",
+			t45DropMigration, len(parsed.UpStatements))
+	}
+	up, down := t45Sections(t, t45DropMigration)
+
+	ddl := regexp.MustCompile(`(?i)'\s*(ALTER|CREATE|DROP|RENAME|TRUNCATE)\b[^']*'`).FindAllString(up, -1)
+	if len(ddl) != 1 || !regexp.MustCompile(`(?i)^'\s*ALTER\s+TABLE\s+product\s+DROP\s+INDEX\s+uniq_product_style_color\s*'$`).MatchString(ddl[0]) {
+		t.Errorf("%s: Up must be exactly the drop of uniq_product_style_color, got %q", t45DropMigration, ddl)
+	}
+	if regexp.MustCompile(`(?i)\bUPDATE\s+\w+\s+SET\b|\bDELETE\s+FROM\b|\bINSERT\s+INTO\b`).MatchString(up) {
+		t.Errorf("%s: Up touches rows — it drops an index and nothing else", t45DropMigration)
+	}
+	if !regexp.MustCompile(`(?is)information_schema\.STATISTICS.*?INDEX_NAME\s*=\s*'uniq_product_style_color'.*?IF\(\s*@\w+\s*>\s*0\s*,\s*'ALTER TABLE product DROP INDEX uniq_product_style_color'`).MatchString(up) {
+		t.Errorf("%s: the drop is not behind its information_schema gate — a re-run would stop the boot", t45DropMigration)
+	}
+
+	for _, p := range t45DownRefusalProblems(down, 1) {
+		t.Errorf("%s: %s", t45DropMigration, p)
+	}
+	refusal := regexp.MustCompile(`(?is)GROUP\s+BY\s+style_id\s*,\s*color_code\s+HAVING\s+COUNT\(\*\)\s*>\s*1`).FindStringIndex(down)
+	restore := regexp.MustCompile(`(?i)ADD\s+CONSTRAINT\s+uniq_product_style_color\s+UNIQUE\s*\(\s*style_id\s*,\s*color_code\s*\)`).FindStringIndex(down)
+	if refusal == nil || restore == nil || refusal[0] > restore[0] {
+		t.Errorf("%s: Down must count families shared within a style, refuse on them, and only then restore the unique", t45DropMigration)
+	}
+
+	if body := readMigrationFile(t, t45DropMigration); !strings.Contains(body, "MUST NOT BE ROLLED BACK PAST T45") {
+		t.Errorf("%s: the header must say the binary is not rolled back past T45 once this has run", t45DropMigration)
+	}
+}
+
+// Before 0377 nothing drops the family unique: the destructive step lives in exactly one file.
+func TestColourwayFamilyUniqueIsDroppedByOneFileOnly(t *testing.T) {
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationsDir, err)
+	}
+	drop := regexp.MustCompile(`(?i)DROP\s+(INDEX|KEY)\s+uniq_product_style_color\b`)
+	var droppers []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		up, _, _ := strings.Cut(readMigrationFile(t, e.Name()), "-- +migrate Down")
+		if drop.MatchString(sqlOnly(up)) {
+			droppers = append(droppers, e.Name())
+		}
+	}
+	if len(droppers) != 1 || droppers[0] != t45DropMigration {
+		t.Errorf("uniq_product_style_color must be dropped by %s alone, got %v", t45DropMigration, droppers)
 	}
 }

@@ -32,8 +32,8 @@ import (
 //	  MYSQL_DATABASE=grbpwr_test GRBPWR_DISPOSABLE_DB=grbpwr_test \
 //	  go test -tags integration -run ColourwayT45 ./internal/store/
 //
-// What only a database can show: 0375/0376 applied (the token column and its unique, the family
-// unique still standing until 0377, the two tables), the SKU token minted inside CreateColorway's
+// What only a database can show: 0375/0376/0377 applied (the token column and its unique, the
+// family unique gone, the two tables), the SKU token minted inside CreateColorway's
 // transaction against the style's tokens and a restored one refused when held, immutability on
 // UpdateColorway, the palette written by position and mirrored into pantone/pantone_system/dev_hex,
 // product.color following the palette colourway's name — which a palette requires — the
@@ -133,9 +133,9 @@ func TestColourwayT45SchemaIsApplied(t *testing.T) {
 		"the token column is NULLABLE — an older binary's insert must not be refused")
 	require.Equal(t, 2, count(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
 		AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_sku_color_token' AND NON_UNIQUE = 0`))
-	require.Equal(t, 2, count(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
-		AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color' AND NON_UNIQUE = 0`),
-		"0376 is additive (D-69): the family unique stands until 0377")
+	require.Zero(t, count(`SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
+		AND TABLE_NAME = 'product' AND INDEX_NAME = 'uniq_product_style_color'`),
+		"0377 dropped the family unique: two colourways of one style may share a family")
 	for _, table := range []string{"product_colour", "product_colour_name_i18n"} {
 		require.Equal(t, 1, count(`SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()
 			AND TABLE_NAME = ?`, table), table)
@@ -145,9 +145,8 @@ func TestColourwayT45SchemaIsApplied(t *testing.T) {
 		AND TABLE_NAME = 'product' AND COLUMN_NAME = 'style_id' AND SEQ_IN_INDEX = 1`))
 }
 
-// Owner's decisions 1, 2, 4: the token is minted in the store, a palette colourway prints its own
-// name, and the main colour is mirrored for the pre-T45 readers. Until 0377 the family is still
-// unique per style, and a second colourway of one family is the ordinary «exists».
+// Owner's decisions 1, 2, 4: the token is minted in the store, a family may repeat (0377), a palette
+// colourway prints its own name, and the main colour is mirrored for the pre-T45 readers.
 func TestColourwayT45CreateMintsTheTokenAndWritesThePalette(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -165,12 +164,15 @@ func TestColourwayT45CreateMintsTheTokenAndWritesThePalette(t *testing.T) {
 	require.Equal(t, "black", legacy.Color, "a legacy colourway still prints its family's dictionary name")
 	require.Empty(t, t45Palette(ctx, t, legacyID))
 
-	// A second colourway of the SAME family in the SAME style: until 0377 the family unique refuses
-	// it, and the refusal is the ordinary «exists», not a raw 1062.
-	_, err = s.Products().CreateColorway(ctx, styleID, newColorwayInsert("BLK", "black", "T45C-2", mediaID, langID, prices),
+	// A second colourway of the SAME family in the SAME style (0377 dropped the family unique): its
+	// token is minted from its name, since BLK is taken — never another family's code.
+	secondID, err := s.Products().CreateColorway(ctx, styleID, newColorwayInsert("BLK", "black", "T45C-2", mediaID, langID, prices),
 		[]int{mediaID}, nil, prices, nil)
-	require.ErrorIs(t, err, entity.ErrColorwayFamilyTaken)
-	require.ErrorIs(t, err, entity.ErrColorwayColorExists)
+	require.NoError(t, err)
+	t45DeleteProduct(t, secondID)
+	second := t45ReadRow(ctx, t, secondID)
+	require.Equal(t, "BLK", second.ColorCode, "two colourways of one style share the family")
+	require.Equal(t, "BLC", second.Token)
 
 	// A trusted restore (the archive press) of a token the style holds is refused on the TOKEN…
 	strict := newColorwayInsert("WHT", "white", "T45C-S", mediaID, langID, prices)
@@ -494,8 +496,7 @@ func TestColourwayT45ApplyPaletteToSlots(t *testing.T) {
 
 // The relink carries the colourway's immutable SKU token into the target style, where it must be
 // free: a target already holding it is refused BEFORE anything is written, naming the token, the
-// target and the colourway in the way. Until 0377 a target already holding the FAMILY is refused by
-// uniq_product_style_color — as the «exists» it is, not a raw 1062, and with nothing moved.
+// target and the colourway in the way. A target that merely holds the FAMILY takes it (0377).
 func TestColourwayT45RelinkRefusesAHeldToken(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -531,8 +532,8 @@ func TestColourwayT45RelinkRefusesAHeldToken(t *testing.T) {
 	require.Equal(t, srcLV, t45LockVersion(ctx, t, src))
 	require.Equal(t, tgtLV, t45LockVersion(ctx, t, tgt))
 
-	// The family backstop: a legacy BLK colourway (token BLK) into a target whose BLK-family colourway
-	// holds another token. The token is free there; until 0377 the family is not.
+	// A legacy BLK colourway (token BLK) into a target whose BLK-family colourway holds another token:
+	// the token is free there, and since 0377 a shared family is no obstacle.
 	legacySrc := insertSeasonedTestStyle(ctx, t, "T45L-LS", "SS", "SS26", 2026)
 	legacy, err := s.Products().CreateColorway(ctx, legacySrc, newColorwayInsert("BLK", "black", "T45L-L", mediaID, langID, prices),
 		[]int{mediaID}, nil, prices, nil)
@@ -547,13 +548,10 @@ func TestColourwayT45RelinkRefusesAHeldToken(t *testing.T) {
 	require.NotEqual(t, "BLK", t45ReadRow(ctx, t, famHolder).Token)
 
 	lsLV, ftLV := t45LockVersion(ctx, t, legacySrc), t45LockVersion(ctx, t, famTgt)
-	err = s.Products().RelinkDraftColorway(ctx, legacy, famTgt, lsLV, ftLV)
-	require.ErrorIs(t, err, entity.ErrColorwayFamilyTaken)
-	require.ErrorIs(t, err, entity.ErrColorwayColorExists)
+	require.NoError(t, s.Products().RelinkDraftColorway(ctx, legacy, famTgt, lsLV, ftLV))
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, legacy).Scan(&styleNow))
-	require.Equal(t, legacySrc, styleNow, "the refused move rolled back whole")
-	require.Equal(t, lsLV, t45LockVersion(ctx, t, legacySrc))
-	require.Equal(t, ftLV, t45LockVersion(ctx, t, famTgt))
+	require.Equal(t, famTgt, styleNow)
+	require.Equal(t, "BLK", t45ReadRow(ctx, t, legacy).Token, "the token travels with the colourway")
 }
 
 // The legacy coupled UpdateProduct (a store fixture path) pins a NULL token before it moves the

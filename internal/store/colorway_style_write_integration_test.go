@@ -89,8 +89,8 @@ func newColorwayInsert(colorCode, colorName, name string, mediaID, langID int, p
 
 // TestCreateColorway is the acceptance test for the R2/R4 write-decomposition CreateColorway: it
 // attaches a DRAFT, unminted colourway to an EXISTING style, writing only colourway-owned data, and
-// enforces the per-style SKU-token uniqueness (T45) — with UNIQUE(style_id, color_code) (R1) still
-// standing until migration 0377 — and an existing style (NOT_FOUND otherwise).
+// enforces the per-style SKU-token uniqueness (T45; before it — and until migration 0377 —
+// UNIQUE(style_id, color_code), R1) and an existing style (NOT_FOUND otherwise).
 func TestCreateColorway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -158,14 +158,17 @@ func TestCreateColorway(t *testing.T) {
 	_, err = s.Products().CreateColorway(ctx, styleID, strict, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.ErrorIs(t, err, entity.ErrColorwaySkuTokenTaken)
 	require.ErrorIs(t, err, entity.ErrColorwayColorExists)
-	// …and, until 0377 drops uniq_product_style_color (D-69: the second push), a second colourway of
-	// the SAME family is still refused by the family unique — as the ordinary «exists», never a raw
-	// 1062. Its token would have been minted from its name (BLK is taken → BLC); the INSERT is what
-	// the database refuses.
+	// …and, since 0377 dropped uniq_product_style_color, every other caller gets a second colourway
+	// of the SAME family with a token minted from its name («black» → BLK is taken → BLC), never a
+	// dictionary code of another family.
 	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
-	_, err = s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
-	require.ErrorIs(t, err, entity.ErrColorwayFamilyTaken)
-	require.ErrorIs(t, err, entity.ErrColorwayColorExists)
+	dupID, err := s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", dupID) }()
+	var dupFamily, dupToken string
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT color_code, sku_color_token FROM product WHERE id = ?`, dupID).Scan(&dupFamily, &dupToken))
+	require.Equal(t, "BLK", dupFamily, "two colourways of one style may share a family")
+	require.Equal(t, "BLC", dupToken)
 
 	// Mint the first colourway's SKU before creating a second one. product.sku is `VARCHAR(255) NOT
 	// NULL UNIQUE` (0001) and CreateColorway inserts the literal '' (by design — "no SKU is minted"
