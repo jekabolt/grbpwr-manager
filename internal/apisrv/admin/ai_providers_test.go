@@ -293,7 +293,7 @@ func aiViolationField(st *status.Status) string {
 func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	h := newAIHarness(t, aiHarnessOpt{designGeneration: true})
 	for i := 0; i < 3; i++ { // three transient faults open meshy's 3D breaker
-		h.reg.RecordFailure(entity.AIProviderMeshy, entity.AICapabilityThreed,
+		h.reg.RecordFailure(entity.AIProviderMeshy, entity.AICapabilityThreed, registry.Admission{},
 			&aiprov.CallError{Provider: "meshy", Retryable: true, Err: fmt.Errorf("503")})
 	}
 	h.expectConfigRead(map[string]string{"fal": "out_of_credits"})
@@ -699,7 +699,7 @@ func TestAiKeyNeverEchoedAndProbedAsSaved(t *testing.T) {
 	logs := aiCaptureLog(t)
 	h := newAIHarness(t, aiHarnessOpt{})
 	for i := 0; i < 3; i++ {
-		h.reg.RecordFailure(entity.AIProviderOpenAI, entity.AICapabilityChat,
+		h.reg.RecordFailure(entity.AIProviderOpenAI, entity.AICapabilityChat, registry.Admission{},
 			&aiprov.CallError{Provider: "openai", Retryable: true, Err: fmt.Errorf("503")})
 	}
 	require.Equal(t, registry.BreakerOpen, h.reg.BreakerState(entity.AIProviderOpenAI, entity.AICapabilityChat))
@@ -751,7 +751,7 @@ func TestAiKeyNeverEchoedAndProbedAsSaved(t *testing.T) {
 func TestAiKeyAdminKindProbesTheCostAPI(t *testing.T) {
 	h := newAIHarness(t, aiHarnessOpt{})
 	for i := 0; i < 3; i++ {
-		h.reg.RecordFailure(entity.AIProviderOpenAI, entity.AICapabilityChat,
+		h.reg.RecordFailure(entity.AIProviderOpenAI, entity.AICapabilityChat, registry.Admission{},
 			&aiprov.CallError{Provider: "openai", Retryable: true, Err: fmt.Errorf("503")})
 	}
 	h.probe.status = http.StatusForbidden
