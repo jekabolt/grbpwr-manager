@@ -151,6 +151,7 @@ var statements = map[string]string{
 	"deleteAIRoute":            deleteAIRoute,
 	"insertAIRouteCandidate":   insertAIRouteCandidate,
 	"upsertAIModel":            upsertAIModel,
+	"insertAIModelIfAbsent":    insertAIModelIfAbsent,
 	"insertAICall":             insertAICall,
 	"finishAICall":             finishAICall,
 	"priceAcceptedAICall":      priceAcceptedAICall,
@@ -276,6 +277,7 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 		"deleteAIRoute":            {"purpose": "vector"},
 		"insertAIRouteCandidate":   {"purpose": "vector", "position": 1, "provider_key": "", "model": "", "by": "jeka"},
 		"upsertAIModel":            {"provider_key": "fal", "model": "x", "label": "", "kind": "threed", "disabled": false, "by": "jeka"},
+		"insertAIModelIfAbsent":    {"provider_key": "fal", "model": "x", "kind": "threed", "by": "jeka"},
 		"insertAICall":             begin,
 		"finishAICall":             finish,
 		"priceAcceptedAICall":      priced,
@@ -678,7 +680,7 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 			return s.SetRoute(ctx, entity.AIPurposeThreed, []entity.AIRouteCandidate{
 				{Position: 9, ProviderKey: "meshy"}, {Position: 3, ProviderKey: "fal", Model: " fal-ai/trellis "},
 			}, 7, "jeka")
-		}, []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate"}},
+		}, []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate", "insertAIModelIfAbsent"}},
 		{"UpsertModel", func(s *Store) error {
 			return s.UpsertModel(ctx, entity.AIModel{ProviderKey: "openrouter", Model: "x/y", Kind: "chat"}, "jeka")
 		}, []string{"bumpConfigVersion", "upsertAIModel"}},
@@ -701,7 +703,7 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 		}
 		if st.name == "SetRoute" {
 			var got []string
-			for _, c := range db.calls[2:] {
+			for _, c := range db.calls[2:4] {
 				got = append(got, argOf(t, insertAIRouteCandidate, c.args, "provider_key").(string)+"@"+
 					argOf(t, insertAIRouteCandidate, c.args, "model").(string)+"#"+
 					string(rune('0'+argOf(t, insertAIRouteCandidate, c.args, "position").(int))))
@@ -720,6 +722,110 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestAIStoreShapeRouteAndItsModelsCommitTogether (Codex B #6) — SetRoute records the slugs its route
+// names in the SAME transaction as the route, after it, under the one checked bump; a "" provider is
+// the default the settings row of THAT transaction holds; a stale page records nothing. The plain
+// handle is a fake of its own that fails the test if touched.
+//
+// MUTATIONS IT CATCHES: the model rows written outside the route's transaction (on s.DB, or in a
+// transaction of their own — the handler's old aiRecordCustomModels: a default changed in between files
+// the slug under a provider the route no longer follows); the default read outside the transaction,
+// or hardcoded to openrouter; a slug recorded twice; a model-less candidate or a capability with no
+// default recorded under a guessed provider; a model row written for a stale page.
+func TestAIStoreShapeRouteAndItsModelsCommitTogether(t *testing.T) {
+	ctx := context.Background()
+	outside := func(q string) {
+		t.Errorf("a SetRoute statement reached a handle outside its transaction: %q", firstLine(q))
+	}
+	plain := &recDB{
+		onExec:   func(q string, _ []any) (sql.Result, error) { outside(q); return recResult{rows: 1}, nil },
+		onGet:    func(_ any, q string, _ []any) error { outside(q); return nil },
+		onSelect: func(_ any, q string, _ []any) error { outside(q); return nil },
+	}
+	run := func(tx *recDB, purpose string, cands []entity.AIRouteCandidate) (int, error) {
+		t.Helper()
+		txs := 0
+		s := New(storeutil.Base{DB: plain, Now: func() time.Time { return fixedNow }},
+			func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+				txs++
+				return f(ctx, recRepo{db: tx})
+			},
+			func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+				t.Error("SetRoute ran in the read-only runner")
+				return f(ctx, recRepo{db: plain})
+			})
+		return txs, s.SetRoute(ctx, purpose, cands, 7, "jeka")
+	}
+	settingsGet := func(dest any, _ string, _ []any) error {
+		if d, ok := dest.(*entity.AISettings); ok {
+			*d = entity.AISettings{ConfigVersion: 7, DefaultChatProviderKey: "apibost", DefaultImageProviderKey: "google"}
+		}
+		return nil
+	}
+
+	// chat: "" = the transaction's default chat provider (apibost, not openrouter); the explicit slug is
+	// recorded as named; a model-less candidate and a repeat record nothing.
+	tx := &recDB{onGet: settingsGet}
+	txs, err := run(tx, entity.AIPurposeNoteMarkdown, []entity.AIRouteCandidate{
+		{ProviderKey: "", Model: " custom/chat-1 "},
+		{ProviderKey: "openrouter", Model: "x-ai/grok-9"},
+		{ProviderKey: "openrouter"},
+		{ProviderKey: "apibost", Model: "custom/chat-1"},
+	})
+	if err != nil || txs != 1 || len(plain.calls) != 0 {
+		t.Fatalf("SetRoute = %v in %d transactions, %d plain-handle statements; want nil, 1, 0", err, txs, len(plain.calls))
+	}
+	want := []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate",
+		"insertAIRouteCandidate", "insertAIRouteCandidate", "selectAISettings", "insertAIModelIfAbsent", "insertAIModelIfAbsent"}
+	if got := sequence(t, tx); !slices.Equal(got, want) {
+		t.Fatalf("SetRoute sent %v, want %v", got, want)
+	}
+	var recorded []string
+	for _, c := range tx.calls[7:] {
+		recorded = append(recorded, modelCall(t, c.args))
+	}
+	if want := []string{"apibost/custom/chat-1 chat by jeka", "openrouter/x-ai/grok-9 chat by jeka"}; !slices.Equal(recorded, want) {
+		t.Fatalf("recorded %v, want %v (\"\" = the transaction's default; every named slug once)", recorded, want)
+	}
+
+	// image: "" = the default IMAGE provider of the same row.
+	tx = &recDB{onGet: settingsGet}
+	if _, err := run(tx, entity.AIPurposeImageGenerate, []entity.AIRouteCandidate{{Model: "google/nano-banana"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelCall(t, findCall(t, tx, "insertAIModelIfAbsent").args); got != "google/google/nano-banana image by jeka" {
+		t.Fatalf("image slug recorded as %q, want it under the default image provider", got)
+	}
+
+	// threed: "" has no default — nothing is recorded, and no settings are read for it.
+	tx = &recDB{onGet: settingsGet}
+	if _, err := run(tx, entity.AIPurposeThreed, []entity.AIRouteCandidate{{Model: "somewhere/3d"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sequence(t, tx), []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate"}; !slices.Equal(got, want) {
+		t.Fatalf("a slug with no provider to file it under sent %v, want %v", got, want)
+	}
+
+	// A stale page: the bump loses, nothing — route or model — is written.
+	tx = &recDB{
+		onExec: func(string, []any) (sql.Result, error) { return recResult{rows: 0}, nil },
+		onGet:  func(dest any, _ string, _ []any) error { *(dest.(*int)) = 1; return nil },
+	}
+	if _, err := run(tx, entity.AIPurposeNoteMarkdown, []entity.AIRouteCandidate{{ProviderKey: "openrouter", Model: "x/y"}}); !errors.Is(err, entity.ErrAIVersionConflict) {
+		t.Fatalf("a stale page returned %v, want ErrAIVersionConflict", err)
+	}
+	if got, want := sequence(t, tx), []string{"bumpConfigVersionChecked", "countAISettings"}; !slices.Equal(got, want) {
+		t.Fatalf("a stale page sent %v, want %v and nothing after", got, want)
+	}
+}
+
+// modelCall renders one insertAIModelIfAbsent call as "provider/model kind by who".
+func modelCall(t *testing.T, args []any) string {
+	t.Helper()
+	a := func(n string) string { return argOf(t, insertAIModelIfAbsent, args, n).(string) }
+	return a("provider_key") + "/" + a("model") + " " + a("kind") + " by " + a("by")
 }
 
 // TestAIStoreShapeClearingAKeyWritesNullAndStillSaysWho.

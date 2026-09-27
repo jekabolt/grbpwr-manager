@@ -254,7 +254,9 @@ func aiProviderNote(provider string, f aiViewFlags) string {
 }
 
 // aiModels is a provider's model list: the curated catalogue first (priced = a rate is on file), then
-// the custom ai_model rows the catalogue does not already name.
+// the ai_model rows the catalogue does not already name. CUSTOM IS DECIDED HERE: SetRoute records
+// every slug a route names in ai_model (the store does not know the catalogue), so a row whose slug
+// the catalogue names is the catalogue's entry, listed once and not as custom.
 func aiModels(provider string, custom []entity.AIModel) []dto.AIModelView {
 	cat := pricing.Catalogue(provider)
 	out := make([]dto.AIModelView, 0, len(cat)+len(custom))
@@ -437,9 +439,10 @@ func (s *Server) SetAiDefaults(ctx context.Context, req *pb_admin.SetAiDefaultsR
 	return &pb_admin.SetAiDefaultsResponse{Config: cfg}, nil
 }
 
-// SetAiRoute sets one purpose's route: the primary and an optional fallback. A model slug the
-// catalogue does not know is recorded in ai_model as custom — AFTER the checked route write, so a
-// stale page records nothing.
+// SetAiRoute sets one purpose's route: the primary and an optional fallback. The store records every
+// slug the route names in ai_model INSIDE the route's own checked transaction (Codex B #6): the route
+// and its models commit together or not at all, a stale page records nothing, and a "" provider's slug
+// is filed under the default that transaction read — the one the route follows.
 func (s *Server) SetAiRoute(ctx context.Context, req *pb_admin.SetAiRouteRequest) (*pb_admin.SetAiRouteResponse, error) {
 	if err := s.aiPanelReady(); err != nil {
 		return nil, err
@@ -472,7 +475,6 @@ func (s *Server) SetAiRoute(ctx context.Context, req *pb_admin.SetAiRouteRequest
 	}
 	slog.Default().InfoContext(ctx, "ai route set",
 		slog.String("purpose", purpose.Key), slog.Any("candidates", cands), slog.String("by", by))
-	s.aiRecordCustomModels(ctx, purpose.Capability, cands, by)
 	cfg, err := s.aiAfterWrite(ctx)
 	if err != nil {
 		return nil, err
@@ -498,64 +500,6 @@ func aiRouteCandidate(field string, c *pb_admin.AiRouteCandidate, capability str
 			"model_too_long", "", "a model slug is at most 128 characters"))
 	}
 	return entity.AIRouteCandidate{ProviderKey: provider, Model: model}, nil
-}
-
-// aiRecordCustomModels records in ai_model every slug of the saved route that the catalogue of its
-// provider does not name and ai_model does not hold yet ("" provider = the capability's default at the
-// moment of saving). The route is already saved: a failure here is logged and the slug simply does not
-// appear in the model list — failing the RPC would tell the admin a saved route was not.
-func (s *Server) aiRecordCustomModels(ctx context.Context, capability string, cands []entity.AIRouteCandidate, by string) {
-	var named []entity.AIRouteCandidate
-	for _, c := range cands {
-		if c.Model != "" {
-			named = append(named, c)
-		}
-	}
-	if len(named) == 0 {
-		return
-	}
-	cfg, err := s.repo.AI().GetConfig(ctx)
-	if err != nil || cfg == nil {
-		slog.Default().WarnContext(ctx, "can't read the ai configuration to record custom models; the route is saved",
-			slog.Any("err", err))
-		return
-	}
-	known := map[string]bool{}
-	for _, m := range cfg.Models {
-		if !m.Disabled {
-			known[m.ProviderKey+"\x00"+m.Model] = true
-		}
-	}
-	for _, c := range named {
-		provider := c.ProviderKey
-		if provider == "" {
-			provider = aiDefaultProvider(cfg.Settings, capability)
-		}
-		if _, ok := pricing.Lookup(provider, c.Model); ok || known[provider+"\x00"+c.Model] {
-			continue
-		}
-		known[provider+"\x00"+c.Model] = true
-		if err := s.repo.AI().UpsertModel(ctx, entity.AIModel{ProviderKey: provider, Model: c.Model, Kind: capability}, by); err != nil {
-			slog.Default().ErrorContext(ctx, "can't record a custom ai model; the route is saved",
-				slog.String("provider", provider), slog.String("model", c.Model), slog.String("err", err.Error()))
-		}
-	}
-}
-
-// aiDefaultProvider is what provider "" means for capability — the registry's own rule
-// (registry.snapshot.defaultProvider): the stored default, else openrouter.
-func aiDefaultProvider(st entity.AISettings, capability string) string {
-	var k string
-	switch capability {
-	case entity.AICapabilityChat:
-		k = st.DefaultChatProviderKey
-	case entity.AICapabilityImage:
-		k = st.DefaultImageProviderKey
-	}
-	if k = strings.TrimSpace(k); k != "" {
-		return k
-	}
-	return entity.AIProviderOpenRouter
 }
 
 // ───────────────────────── helpers ─────────────────────────

@@ -602,12 +602,32 @@ func normaliseRoute(purpose string, candidates []entity.AIRouteCandidate) ([]ent
 	return out, nil
 }
 
-// SetRoute replaces the purpose's whole route in one transaction, compare-and-swap.
+// insertAIModelIfAbsent records a slug typed into a route. An existing row — its label, kind and
+// disabled flag somebody chose — is left exactly as it is: the no-op ON DUPLICATE KEY UPDATE changes
+// nothing (and, unlike INSERT IGNORE, downgrades no other error to a warning).
+const insertAIModelIfAbsent = `
+	INSERT INTO ai_model (provider_key, model, label, kind, disabled, updated_by)
+	VALUES (:provider_key, :model, '', :kind, 0, :by)
+	ON DUPLICATE KEY UPDATE provider_key = provider_key`
+
+// SetRoute replaces the purpose's whole route in one transaction, compare-and-swap, and records in
+// ai_model every slug the route names — IN THE SAME TRANSACTION, under the same one version bump
+// (Codex B #6). Recorded afterwards, in a transaction of its own, a slug whose provider is "" was
+// resolved against a default read in yet another snapshot: a SetAiDefaults committed in between left
+// the route following the new default and the slug listed under the old one, and the unchecked bump of
+// that second write landed after the other admin's checked one. Here the provider "" means is read
+// from the ai_settings row this transaction has already locked (bumpVersion goes first), so it is the
+// default the route will follow.
+//
+// Every named slug is recorded, catalogue or not: the store does not know the pricing catalogue (it
+// must not import it). The panel's view decides what is custom — a row whose slug the catalogue names
+// is the catalogue's entry, listed once (admin aiModels).
 func (s *Store) SetRoute(ctx context.Context, purpose string, candidates []entity.AIRouteCandidate, expectedVersion uint64, by string) error {
 	route, err := normaliseRoute(purpose, candidates)
 	if err != nil {
 		return err
 	}
+	capability := entity.AIPurposeCapability(purpose)
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		if err := bumpVersion(ctx, rep.DB(), &expectedVersion, by); err != nil {
 			return err
@@ -626,8 +646,53 @@ func (s *Store) SetRoute(ctx context.Context, purpose string, candidates []entit
 				return fmt.Errorf("failed to write ai route %q position %d: %w", purpose, c.Position, err)
 			}
 		}
-		return nil
+		return recordRouteModels(ctx, rep.DB(), capability, route, by)
 	})
+}
+
+// recordRouteModels is SetRoute's ai_model half, on the route transaction's handle: one
+// insertAIModelIfAbsent per distinct (provider, model) the route names. A candidate with no model
+// names none; a "" provider is the capability's default as the settings row of THIS transaction holds
+// it (read only when some candidate needs it); a capability with no default provider, or a provider
+// that cannot serve the capability, records nothing — the registry skips such a candidate too.
+func recordRouteModels(ctx context.Context, db dependency.DB, capability string, route []entity.AIRouteCandidate, by string) error {
+	var settings *entity.AISettings
+	seen := map[string]bool{}
+	for _, c := range route {
+		if c.Model == "" {
+			continue
+		}
+		provider := c.ProviderKey
+		if provider == "" {
+			if capability != entity.AICapabilityChat && capability != entity.AICapabilityImage {
+				continue
+			}
+			if settings == nil {
+				st, err := loadSettings(ctx, db)
+				if err != nil {
+					return err
+				}
+				settings = &st
+			}
+			provider = settings.DefaultProviderFor(capability)
+		}
+		if !entity.IsAIProviderKey(provider) || !entity.AIProviderServes(provider, capability) {
+			continue
+		}
+		if seen[provider+"\x00"+c.Model] {
+			continue
+		}
+		seen[provider+"\x00"+c.Model] = true
+		if _, err := execNamed(ctx, db, insertAIModelIfAbsent, map[string]any{
+			"provider_key": provider,
+			"model":        c.Model,
+			"kind":         capability,
+			"by":           by,
+		}); err != nil {
+			return fmt.Errorf("failed to record ai model %s/%s: %w", provider, c.Model, err)
+		}
+	}
+	return nil
 }
 
 const upsertAIModel = `
@@ -639,9 +704,10 @@ const upsertAIModel = `
 		disabled = VALUES(disabled),
 		updated_by = VALUES(updated_by)`
 
-// UpsertModel records a custom slug typed into a route and bumps the version WITHOUT a check (the
-// model list is part of the snapshot, so it must move the version; it has no page of its own to be
-// stale against).
+// UpsertModel writes one ai_model row (label, kind and disabled included) and bumps the version
+// WITHOUT a check (the model list is part of the snapshot, so it must move the version; it has no page
+// of its own to be stale against). A slug typed into a route is NOT recorded through here: SetRoute
+// records it inside the route's own checked transaction.
 func (s *Store) UpsertModel(ctx context.Context, m entity.AIModel, by string) error {
 	if err := validateProviderKey("provider_key", m.ProviderKey); err != nil {
 		return err

@@ -1947,9 +1947,11 @@ type (
 		SetProviderKey(ctx context.Context, key string, kind entity.AIKeyKind, enc []byte, last4 string, by string) error
 		SetDefaults(ctx context.Context, patch entity.AIDefaultsPatch, expectedVersion uint64, by string) error
 		// SetRoute replaces the purpose's whole route inside one tx (DELETE purpose; INSERT positions
-		// 1..n in candidate order).
+		// 1..n in candidate order) and, in that same tx, records every slug the route names in ai_model
+		// (a "" provider resolved from the tx's own settings read; an existing row left as it is).
 		SetRoute(ctx context.Context, purpose string, candidates []entity.AIRouteCandidate, expectedVersion uint64, by string) error
-		// UpsertModel records a custom slug typed into a route (no UI CRUD); bumps without a check.
+		// UpsertModel writes one ai_model row (no UI CRUD); bumps without a check. Route slugs are
+		// recorded by SetRoute, not here.
 		UpsertModel(ctx context.Context, m entity.AIModel, by string) error
 		// RecentFaults is the panel's provider badge: per provider, the most frequent configuration
 		// fault (key_rejected | out_of_credits | model_unknown) among its failed|free ledger rows since

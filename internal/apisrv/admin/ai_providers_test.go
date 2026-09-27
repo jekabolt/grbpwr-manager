@@ -470,7 +470,7 @@ func TestAiProviderSwitchWritesAndAnswersConfig(t *testing.T) {
 //
 // MUTATIONS IT CATCHES: mapping ErrAIVersionConflict to Internal / Aborted, or losing the "reload"
 // words; building (or reloading) the config after a lost compare-and-swap — the mock has no read
-// expectations; recording a custom slug before the route write is known to have landed (no
+// expectations; a slug recorded by the handler instead of inside the store's route transaction (no
 // UpsertModel expectation either).
 func TestAiProviderStalePageIsFailedPrecondition(t *testing.T) {
 	conflict := fmt.Errorf("tx: %w", entity.ErrAIVersionConflict)
@@ -630,35 +630,33 @@ func TestAiDefaultsEmptyLeavesUnchanged(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestAiRouteCustomSlugUpsertedAfterRoute.
+// TestAiRouteLeavesModelRecordingToTheStore (Codex B #6) — the handler hands the route's candidates,
+// trimmed and positioned, to the store's ONE checked SetRoute and records nothing itself: the store
+// files every named slug in ai_model inside that transaction. The mock has no UpsertModel expectation,
+// so a call fails the test; AssertNotCalled says so in words.
 //
-// MUTATIONS IT CATCHES: the custom-model record moved before the checked SetRoute (the order below);
-// a "" provider's slug recorded under "" instead of the capability's default; a slug the catalogue
-// names, or one ai_model already holds, recorded again (each record bumps config_version).
-func TestAiRouteCustomSlugUpsertedAfterRoute(t *testing.T) {
+// MUTATIONS IT CATCHES: the handler's own after-the-fact UpsertModel coming back (a second, unchecked
+// transaction whose "" provider was resolved in a third snapshot — a default changed in between files
+// the slug under a provider the route no longer follows); the candidates not reaching the store as
+// entered (a "" provider replaced by a guess, the fallback dropped, the model untrimmed).
+func TestAiRouteLeavesModelRecordingToTheStore(t *testing.T) {
 	h := newAIHarness(t, aiHarnessOpt{})
-	var order []string
 	h.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeNoteMarkdown, []entity.AIRouteCandidate{
 		{Position: 1, ProviderKey: "", Model: "custom/chat-1"},
 		{Position: 2, ProviderKey: "openrouter", Model: "x-ai/grok-9"},
-	}, aiTestVersion, aiTestUser).Run(func(context.Context, string, []entity.AIRouteCandidate, uint64, string) {
-		order = append(order, "SetRoute")
-	}).Return(nil).Once()
-	h.ai.EXPECT().UpsertModel(mock.Anything, entity.AIModel{ProviderKey: "openrouter", Model: "custom/chat-1", Kind: "chat"}, aiTestUser).
-		Run(func(context.Context, entity.AIModel, string) { order = append(order, "UpsertModel") }).
-		Return(nil).Once()
+	}, aiTestVersion, aiTestUser).Return(nil).Once()
 	h.expectConfigRead(nil)
 
 	_, err := h.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{
 		Purpose:         " " + entity.AIPurposeNoteMarkdown + " ",
 		Primary:         &pb_admin.AiRouteCandidate{ProviderKey: "", Model: " custom/chat-1 "},
-		Fallback:        &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "x-ai/grok-9"}, // already an ai_model row
+		Fallback:        &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "x-ai/grok-9"},
 		ExpectedVersion: aiTestVersion,
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"SetRoute", "UpsertModel"}, order)
+	h.ai.AssertNotCalled(t, "UpsertModel", mock.Anything, mock.Anything, mock.Anything)
 
-	// A catalogue slug is not recorded: the mock has no second UpsertModel.
+	// A slug the catalogue names, and a model-less route: the same single write, nothing else.
 	h2 := newAIHarness(t, aiHarnessOpt{})
 	h2.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeThreed, []entity.AIRouteCandidate{
 		{Position: 1, ProviderKey: "meshy", Model: ""},
@@ -673,6 +671,7 @@ func TestAiRouteCustomSlugUpsertedAfterRoute(t *testing.T) {
 	_, err = h2.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{Purpose: entity.AIPurposeImageGenerate,
 		Primary: &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "openai/gpt-image-2"}, ExpectedVersion: aiTestVersion})
 	require.NoError(t, err)
+	h2.ai.AssertNotCalled(t, "UpsertModel", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // ───────────────────────── keys ─────────────────────────

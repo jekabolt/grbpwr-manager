@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -314,6 +315,26 @@ type AISettings struct {
 	DefaultImageProviderKey string    `db:"default_image_provider_key"`
 	UpdatedBy               string    `db:"updated_by"`
 	UpdatedAt               time.Time `db:"updated_at"`
+}
+
+// DefaultProviderFor is the provider a route candidate's "" names for capability under these
+// settings: the stored default chat / image provider, openrouter when it is blank, and "" for a
+// capability that has no default. It is the registry's rule (registry snapshot.defaultProvider); the
+// store resolves a route's slugs with it and the panel compares a route's two candidates with it.
+func (s AISettings) DefaultProviderFor(capability string) string {
+	var k string
+	switch capability {
+	case AICapabilityChat:
+		k = s.DefaultChatProviderKey
+	case AICapabilityImage:
+		k = s.DefaultImageProviderKey
+	default:
+		return ""
+	}
+	if k = strings.TrimSpace(k); k != "" {
+		return k
+	}
+	return AIProviderOpenRouter
 }
 
 // AIConfig is the whole configuration the registry snapshots, as of Settings.ConfigVersion.
