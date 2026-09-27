@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -259,9 +257,13 @@ func (w *Worker) maybeSweepLedger(ctx context.Context) {
 // ─────────────────────────── outcomes: transport → ledger row ───────────────────────────
 //
 // ⚠ ONE FUNCTION PER TRANSPORT, BECAUSE «WAS THE REQUEST WRITTEN, AND DID MONEY MOVE» IS EACH
-// TRANSPORT'S OWN FACT. Until B-14 gives every transport aiprov.CallError{Engaged, HTTPStatus}, the
-// answer is read off each client's existing sentinels — the same ones classify() reads — and where
-// a sentinel cannot tell «before the write» from «after», the row says `unknown`: over-reporting
+// TRANSPORT'S OWN FACT — and since B-14 each transport STATES it: every failed call of orimages, recraft
+// direct, fal and Meshy carries an aiprov.CallError whose Engaged is read here, never the sentinel. Not
+// engaged (a refusal before the wire, any non-2xx) is `free`; engaged (a post-write break, a 2xx that
+// did not become an answer) is `unknown` — or what the transport's own money rule says beside it (a
+// charge riding the error, fal's unconfirmed submit). An error that carries NO CallError is one no
+// transport spoke for: where a route's own pre-wire refusals are bare sentinels (recraft's adapter,
+// fal's and Meshy's local checks) they stay `free`; anything else is `unknown` — over-reporting
 // possible spend costs a line in the report, under-reporting it costs the owner's trust in it.
 
 // engaged / notEngaged — the two known answers to «was the request written»; nil is «nobody knows».
@@ -275,34 +277,20 @@ func usdOf(v float64) decimal.NullDecimal {
 	return decimal.NullDecimal{Decimal: decimal.NewFromFloat(v), Valid: true}
 }
 
-// httpStatusRe finds the provider status our clients spell into their errors: "(HTTP 402)" in
-// orimages / recraft / fal / meshy sentinels, "HTTP 502:" in the generic 5xx forms.
-var httpStatusRe = regexp.MustCompile(`\bHTTP (\d{3})\b`)
-
-// httpStatusOf is the provider's HTTP status carried by a failed call, or nil.
+// httpStatusOf is the provider's HTTP status carried by a failed call — CallError.HTTPStatus, the
+// transport's own field — or nil.
 //
-// A CallError's own status wins (B-14 onwards). Before that, the status is read from the message
-// OUR OWN clients format — every classifyStatus / statusErrorFrom in internal/{orimages,recraft,fal,
-// meshy} writes "HTTP %d" before the provider's words. It is a diagnostic column, with ONE exception
-// that can only err towards reporting spend: timeoutIsNotFree reads a 408 to take back a `free`
-// (a misread status can turn `free` into `unknown`, never a paid call into a free one).
+// ⚠ THE TEXT IS NOT READ ANY MORE, AND THAT IS THE FIX (Codex FIX P3, B-14). Until the transports
+// carried the status as a field, it was parsed out of the sentence OUR clients format ("(HTTP 402)",
+// "HTTP 502:"). A sentence is not a contract: a local refusal whose words happened to quote a 408, or a
+// provider message echoing one, would have turned a free row `unknown` through timeoutIsNotFree. The
+// field is set only from a response that actually arrived.
 func httpStatusOf(err error) *int {
-	if err == nil {
-		return nil
-	}
 	if ce, ok := aiprov.AsCallError(err); ok && ce.HTTPStatus != 0 {
 		s := ce.HTTPStatus
 		return &s
 	}
-	m := httpStatusRe.FindStringSubmatch(err.Error())
-	if m == nil {
-		return nil
-	}
-	s, convErr := strconv.Atoi(m[1])
-	if convErr != nil {
-		return nil
-	}
-	return &s
+	return nil
 }
 
 func isAnyOf(err error, targets ...error) bool {
@@ -315,15 +303,16 @@ func isAnyOf(err error, targets ...error) bool {
 }
 
 // timeoutIsNotFree — ONE RULE OVER EVERY TRANSPORT'S OWN MAPPING (Codex A4 #3): an HTTP 408 is not
-// proof that nothing was bought. The clients fold a 408 into a refusal sentinel — orimages into
-// ErrProviderFailure, recraft direct / fal / Meshy into their generic 4xx ErrBadRequest — and the
-// mappings below read those as `free`. But a 408 is a server or a gateway giving up on a request
-// whose body it may already have taken: the generation may have run and been billed, and on fal or
-// Meshy a task may have been queued that nobody will ever collect. No transport documents a 408 as
-// unbilled, so a `free` outcome carrying one becomes `unknown` — engaged nobody-knows, cost NULL,
-// source none. Over-reporting possible spend costs a line in the report; under-reporting it costs the
-// owner's trust in it. Applied by imageCallEnd, vectorCallEnd, falSubmitEnd and meshySubmitEnd AFTER
-// their own mapping; every other outcome passes through untouched.
+// proof that nothing was bought. A 408 is a non-2xx, so its CallError is NOT engaged (D-09) and the
+// mappings below read it as `free`, as they read the refusal sentinel the clients fold it into
+// (orimages ErrProviderFailure, recraft direct / fal / Meshy ErrBadRequest). But a 408 is a server or
+// a gateway giving up on a request whose body it may already have taken: the generation may have run
+// and been billed, and on fal or Meshy a task may have been queued that nobody will ever collect. No
+// transport documents a 408 as unbilled, so a `free` outcome carrying one becomes `unknown` — engaged
+// nobody-knows, cost NULL, source none. Over-reporting possible spend costs a line in the report;
+// under-reporting it costs the owner's trust in it. Applied by imageCallEnd, vectorCallEnd,
+// falSubmitEnd and meshySubmitEnd AFTER their own mapping; every other outcome passes through
+// untouched. The 408 is read from CallError.HTTPStatus — a response that arrived — never from text.
 func timeoutIsNotFree(end entity.AICallEnd, err error) entity.AICallEnd {
 	if end.Status != entity.AICallFree {
 		return end
@@ -345,14 +334,14 @@ func withFailure(end entity.AICallEnd, err error) entity.AICallEnd {
 	return end
 }
 
-// imageCallEnd — one orimages.Generate (images.go). orimages has no engaged observer yet (B-14), so:
+// imageCallEnd — one orimages.Generate (images.go). The transport's CallError decides (B-14):
 //   - charged_failed: the call failed and the provider reported a cost (Result rides with the error);
-//   - free: the client's own local refusal, or a non-2xx the client classified — OpenRouter documents
-//     image generation as all-or-nothing («fails and is not billed»), so no status error carries money;
-//   - failed: a 2xx came back with usage and no cost (billed-shaped, zero charge reported);
-//   - unknown: everything else — a bare transport error, a timeout, an unreadable 2xx — the request
-//     may have been written and billed; and a 408 the client folded into ErrProviderFailure
-//     (timeoutIsNotFree).
+//   - free: the CallError is NOT engaged, whatever its sentinel — a refusal before the wire, or any
+//     non-2xx (OpenRouter documents image generation as all-or-nothing, «fails and is not billed»),
+//     except a 408, which is `unknown` (timeoutIsNotFree);
+//   - failed: engaged, and a 2xx came back with usage and no cost (billed-shaped, zero charge reported);
+//   - unknown: engaged otherwise — a deadline or a reset AFTER the request was written, an unreadable
+//     2xx — and, last resort, an error that carries no CallError at all.
 func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
 	var end entity.AICallEnd
 	if res != nil {
@@ -365,16 +354,18 @@ func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
 			end.CostUSD, end.CostSource = cost, entity.AICostProvider
 		}
 	}
+	ce, spoke := aiprov.AsCallError(err)
 	switch {
 	case err == nil:
 		end.Status, end.Engaged = entity.AICallOK, engaged()
 	case end.CostUSD.Valid:
 		end.Status, end.Engaged = entity.AICallChargedFailed, engaged()
-	case isAnyOf(err, orimages.ErrNotConfigured, orimages.ErrBadRequest, orimages.ErrUnauthorized,
-		orimages.ErrOutOfCredit, orimages.ErrModelUnavailable, orimages.ErrRateLimited, orimages.ErrProviderFailure):
+	case spoke && !ce.Engaged:
 		end.Status, end.Engaged = entity.AICallFree, notEngaged()
-	case res != nil:
+	case spoke && res != nil:
 		end.Status, end.Engaged = entity.AICallFailed, engaged()
+	case spoke:
+		end.Status, end.Engaged = entity.AICallUnknown, engaged()
 	default:
 		end.Status = entity.AICallUnknown
 	}
@@ -412,14 +403,17 @@ func vectorPrice(end *entity.AICallEnd, route recraft.Route, usd, credits float6
 	}
 }
 
-// vectorCallEnd — one recraft ImageToImage (vector.go). recraft flattens the OpenRouter client's
-// errors into its own sentinels (translateORError), and ErrProviderFailure covers both «5xx» and
-// «transport failure» — so it is `unknown`, the transport's own word for it. A 2xx whose SVG was then
-// refused (ErrNotVector, ErrUnsafeSVG, ErrInvalidResponse without a charge) was billed at a price
-// nobody passed back: `unknown` too; so is a direct-route 408 folded into ErrBadRequest
-// (timeoutIsNotFree).
+// vectorCallEnd — one recraft ImageToImage (vector.go). Both routes carry a CallError since B-14: the
+// OpenRouter route keeps orimages' own through translateORError (which wraps, never flattens), the
+// direct route raises recraft's. Not engaged → `free` (a 408 → `unknown`, timeoutIsNotFree); engaged →
+// `unknown` — a post-write break, or a 2xx whose picture never became a usable SVG. An error with NO
+// CallError is one no transport spoke for: the adapter's own pre-wire refusals (ErrNotConfigured,
+// ErrBadRequest — a missing prompt, a strength the route has no dial for) stay `free`; anything else
+// — a delivered answer the SVG inspector then refused (ErrNotVector, ErrUnsafeSVG) — was billed at a
+// price nobody passed back: `unknown`.
 func vectorCallEnd(route recraft.Route, res *recraft.VectorResult, err error) entity.AICallEnd {
 	var end entity.AICallEnd
+	ce, spoke := aiprov.AsCallError(err)
 	switch {
 	case err == nil:
 		end.Status, end.Engaged = entity.AICallOK, engaged()
@@ -437,12 +431,16 @@ func vectorCallEnd(route recraft.Route, res *recraft.VectorResult, err error) en
 			}
 			break
 		}
-		if isAnyOf(err, recraft.ErrNotConfigured, recraft.ErrBadRequest, recraft.ErrUnauthorized,
-			recraft.ErrInsufficientCredits, recraft.ErrRateLimited, recraft.ErrModelUnavailable) {
+		switch {
+		case spoke && !ce.Engaged:
 			end.Status, end.Engaged = entity.AICallFree, notEngaged()
-			break
+		case spoke:
+			end.Status, end.Engaged = entity.AICallUnknown, engaged()
+		case isAnyOf(err, recraft.ErrNotConfigured, recraft.ErrBadRequest):
+			end.Status, end.Engaged = entity.AICallFree, notEngaged()
+		default:
+			end.Status = entity.AICallUnknown
 		}
-		end.Status = entity.AICallUnknown
 	}
 	if !end.CostUSD.Valid && end.Status != entity.AICallFree {
 		end.CostSource = entity.AICostNone
@@ -484,13 +482,15 @@ func chargedUnits(err error) *decimal.Decimal {
 	return reportedUnits(ce.Units, ce.Assumed)
 }
 
-// falSubmitEnd — a failed fal submit (3D, cutout, outpaint, fill). fal's transport already decides
-// the one fact that matters (G-03): ErrSubmitUnconfirmed = the whole request left and no usable
-// answer came back — fal may have queued and billed it → `unknown`. Any other submit failure was
-// either refused before the write (local checks, a body cut half-way) or explicitly refused by the
-// provider (4xx, a bare 503) → `free` — except a 408, which is `unknown` (timeoutIsNotFree). A charge
-// riding the error → `charged_failed`, priced with the SAME number the attempt books (booked; invalid
-// when the route books none).
+// falSubmitEnd — a failed fal submit (3D, cutout, outpaint, fill). fal's transport decides (B-14): a
+// charge riding the error → `charged_failed`, priced with the SAME number the attempt books (booked;
+// invalid when the route books none); an ENGAGED CallError → `unknown` — the whole request left and no
+// usable answer came back (ErrSubmitUnconfirmed: a post-write break, a 5xx other than a bare 503, a 2xx
+// without an id), fal may have queued and billed it; a CallError NOT engaged → `free` — explicitly
+// refused (4xx, a bare 503) or never completely written — except a 408, which is `unknown`
+// (timeoutIsNotFree). No CallError at all is the client's own pre-wire refusal (no key, no front view,
+// an unfetchable reference, an option this route cannot send) → `free`; an ErrSubmitUnconfirmed that
+// somehow arrived without one still reads `unknown`.
 func falSubmitEnd(err error, booked decimal.NullDecimal) entity.AICallEnd {
 	var end entity.AICallEnd
 	if _, ok := fal.Charge(err); ok {
@@ -504,7 +504,8 @@ func falSubmitEnd(err error, booked decimal.NullDecimal) entity.AICallEnd {
 		}
 		return withFailure(end, err)
 	}
-	if errors.Is(err, fal.ErrSubmitUnconfirmed) {
+	ce, spoke := aiprov.AsCallError(err)
+	if (spoke && ce.Engaged) || (!spoke && errors.Is(err, fal.ErrSubmitUnconfirmed)) {
 		end.Status, end.Engaged, end.CostSource = entity.AICallUnknown, engaged(), entity.AICostNone
 		return withFailure(end, err)
 	}
@@ -512,10 +513,11 @@ func falSubmitEnd(err error, booked decimal.NullDecimal) entity.AICallEnd {
 	return timeoutIsNotFree(withFailure(end, err), err)
 }
 
-// meshySubmitEnd — a failed direct-Meshy submit. The Meshy client has no write observer: its own
-// local refusals and the statuses it names (401/403, 402, 429, other 4xx but 408) carried no money →
-// `free`; a 5xx, a 408 (timeoutIsNotFree), a transport error or an unreadable 2xx may have created
-// the task → `unknown`.
+// meshySubmitEnd — a failed direct-Meshy submit. Meshy's transport decides (B-14): a charge →
+// `charged_failed`; an ENGAGED CallError (a post-write break, a 2xx that named no task) → `unknown`;
+// NOT engaged (any non-2xx, a request never completely written) → `free`, except a 408 → `unknown`
+// (timeoutIsNotFree). No CallError: the client's own pre-wire refusals (no key, the image count, the
+// prompt ceiling, an option or a reference it cannot send) → `free`; anything else → `unknown`.
 func meshySubmitEnd(err error) entity.AICallEnd {
 	var end entity.AICallEnd
 	if credits, ok := meshy.Charge(err); ok {
@@ -523,10 +525,16 @@ func meshySubmitEnd(err error) entity.AICallEnd {
 		end.Units, end.Unit, end.CostSource = unitsOf(float64(credits)), "credit", entity.AICostNone
 		return withFailure(end, err)
 	}
-	if isAnyOf(err, meshy.ErrNotConfigured, meshy.ErrImageCount, meshy.ErrPromptTooLong, meshy.ErrBadRequest,
-		meshy.ErrBadImageURL, meshy.ErrUnauthorized, meshy.ErrOutOfCredit, meshy.ErrRateLimited) {
+	ce, spoke := aiprov.AsCallError(err)
+	switch {
+	case spoke && !ce.Engaged,
+		!spoke && isAnyOf(err, meshy.ErrNotConfigured, meshy.ErrImageCount, meshy.ErrPromptTooLong,
+			meshy.ErrBadRequest, meshy.ErrBadImageURL):
 		end.Status, end.Engaged = entity.AICallFree, notEngaged()
 		return timeoutIsNotFree(withFailure(end, err), err)
+	case spoke:
+		end.Status, end.Engaged, end.CostSource = entity.AICallUnknown, engaged(), entity.AICostNone
+		return withFailure(end, err)
 	}
 	end.Status, end.CostSource = entity.AICallUnknown, entity.AICostNone
 	return withFailure(end, err)
@@ -541,7 +549,14 @@ func meshySubmitEnd(err error) entity.AICallEnd {
 //   - failed WITH a charge               → charged_failed, priced;
 //   - still running / a transient lookup → nothing: the row stays `accepted`, the next collect decides;
 //   - failed for good, no charge         → `unknown`, with ONE exception: Meshy's FAILED task, which
-//     Meshy refunds (`failed`).
+//     Meshy refunds (`failed`, a KNOWN zero — see below).
+//
+// ⚠ A REFUND IS A PRICE, AND IT IS WRITTEN AS ONE (REVIEW-FIXD P2 #2). The spend report counts every
+// non-free row whose cost is NULL as an unknown liability — «money possibly gone» — so a refunded task
+// booked with a NULL cost would read as possible spend for ever. The refund is the provider's own
+// statement (meshy.ErrTaskFailed: «Meshy refunds the credits of a failed task»), so the row carries
+// cost 0, source `provider`. It is the ONLY outcome treated as refunded: fal documents no refund for a
+// job it ended (fal.ErrTaskFailed stays `unknown`), and a known zero is never inferred from silence.
 //
 // ⚠ NOT classify()'s attempt state, and the difference is money. The submit was ACCEPTED: the provider
 // took the job and bills it when it finishes, whether or not we ever look. A terminal lookup failure
@@ -569,6 +584,9 @@ func collectEnd(out *Outcome, err error, units *decimal.Decimal, unit string, ch
 		return entity.AICallEnd{}, false
 	case errors.Is(err, meshy.ErrTaskFailed):
 		end.Status = entity.AICallFailed
+		if !end.CostUSD.Valid {
+			end.CostUSD, end.CostSource = decimal.NewNullDecimal(decimal.Zero), entity.AICostProvider
+		}
 	default:
 		end.Status = entity.AICallUnknown
 	}

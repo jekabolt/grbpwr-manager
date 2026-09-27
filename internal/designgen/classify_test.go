@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/recraft"
@@ -20,7 +22,18 @@ import (
 // a job that would have worked on the next tick. The two are asserted separately from the attempt
 // STATE, because a billed failure and an unbilled one are the same verdict and different rows in
 // the ledger.
+//
+// B-14: the bare-sentinel rows below are the SENTINEL half — what an error no transport spoke for
+// still gets. The CallError rows at the end are how the design transports' failures actually arrive
+// now, and on those the transport answers the money questions: a 5xx is `failed` and retryable (was
+// `unknown`), an engaged envelope error and a post-write deadline are `unknown` and NOT retryable (the
+// deadline was retryable — a second payment), a pre-write failure is `failed` and retryable.
+//
+// MUTATIONS (measured red→green): classify returning classifyBySentinel(err) unchanged → every
+// CallError row but the delivered one goes red; the Engaged → `unknown` arm inverted → the engaged
+// rows read `failed`; the delivered guard dropped → the storage row reads `failed`, retryable.
 func TestClassifyIsAMoneyDecision(t *testing.T) {
+	type callErr = aiprov.CallError
 	for _, c := range []struct {
 		name  string
 		err   error
@@ -66,9 +79,66 @@ func TestClassifyIsAMoneyDecision(t *testing.T) {
 		{"no key", errProviderDisabled, false, CodeKindNotAvailable, entity.DesignAttemptFailed},
 		{"nowhere to store it", errSinkUnsupported, false, CodeOutputNotStorable, entity.DesignAttemptFailed},
 		{"delivered then storage refused", errStorageFailed, false, CodeStorageFailed, entity.DesignAttemptDelivered},
-		// An unrecognised fault is most often transport weather — orimages reports a dead
-		// connection as a plain wrapped error and as no sentinel at all.
+		// An error NO TRANSPORT SPOKE FOR keeps the old lean: most often weather. Since B-14 the design
+		// transports never produce one; the row pins the fallback, not a live path.
 		{"unclassified", errors.New("connection reset by peer"), true, CodeProviderUnavailable, entity.DesignAttemptUnknown},
+
+		// ─── B-14: the transport's CallError answers the money questions ───
+		{"image 5xx: refused at the gate, nothing billed",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeProviderError, HTTPStatus: 503, Retryable: true,
+				Err: fmt.Errorf("%w: API error (HTTP 503): down", orimages.ErrProviderFailure)},
+			true, CodeProviderUnavailable, entity.DesignAttemptFailed},
+		{"image envelope broken after a 2xx: billed, never again",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeProviderError, HTTPStatus: 200, Engaged: true,
+				Err: errors.New("orimages: could not decode the image response envelope: unexpected EOF")},
+			false, CodeProviderUnavailable, entity.DesignAttemptUnknown},
+		{"image deadline AFTER the write: maybe billed, never again",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeTimeout, Engaged: true,
+				Err: fmt.Errorf("orimages: request failed: %w", context.DeadlineExceeded)},
+			false, CodeProviderUnavailable, entity.DesignAttemptUnknown},
+		{"image dial refused BEFORE the write: free to try again",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeTransport, Retryable: true,
+				Err: errors.New("orimages: request failed: dial tcp: connection refused")},
+			true, CodeProviderUnavailable, entity.DesignAttemptFailed},
+		{"image empty after a 2xx keeps its sentinel's word",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeEmptyAnswer, HTTPStatus: 200, Engaged: true, Err: orimages.ErrNoImages},
+			false, CodeEmptyResponse, entity.DesignAttemptUnknown},
+		{"recraft direct reset after the write keeps ErrProviderFailure, loses the retry",
+			&callErr{Provider: entity.AIProviderRecraft, Code: aiprov.CodeTransport, Engaged: true,
+				Err: fmt.Errorf("%w: connection reset", recraft.ErrProviderFailure)},
+			false, CodeProviderUnavailable, entity.DesignAttemptUnknown},
+		{"a 408: the sentinel names the code, the matrix decides the retry",
+			&callErr{Provider: entity.AIProviderRecraft, Code: aiprov.CodeProviderError, HTTPStatus: 408, Retryable: true,
+				Err: fmt.Errorf("%w (HTTP 408): timeout", recraft.ErrBadRequest)},
+			true, CodeBadRequest, entity.DesignAttemptFailed},
+		{"fal bare 503 on a submit: no sentinel, the transport's word",
+			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeProviderError, HTTPStatus: 503, Retryable: true,
+				Err: errors.New("fal: POST /meshy/v7/multi-image-to-3d: HTTP 503: busy")},
+			true, CodeProviderUnavailable, entity.DesignAttemptFailed},
+		{"fal 502 on a submit: unconfirmed and engaged",
+			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeProviderError, HTTPStatus: 502, Engaged: true,
+				Err: fmt.Errorf("%w: fal: POST /x: HTTP 502: bad gateway", fal.ErrSubmitUnconfirmed)},
+			false, CodeSubmitUnconfirmed, entity.DesignAttemptUnknown},
+		{"fal status poll 502: a lookup, never engaged, retried for free",
+			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeProviderError, HTTPStatus: 502, Retryable: true,
+				Err: errors.New("fal: GET /meshy/v7/requests/r/status: HTTP 502: bad gateway")},
+			true, CodeProviderUnavailable, entity.DesignAttemptFailed},
+		{"meshy 401 on a submit: the setting, not the weather",
+			&callErr{Provider: entity.AIProviderMeshy, Code: aiprov.CodeKeyRejected, HTTPStatus: 401,
+				Err: fmt.Errorf("%w (HTTP 401): nope", meshy.ErrUnauthorized)},
+			false, CodeUnauthorized, entity.DesignAttemptFailed},
+		{"the caller left before the write: not the provider's fault, not retried",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeCanceled,
+				Err: fmt.Errorf("orimages: request failed: %w", context.Canceled)},
+			false, CodeProviderUnavailable, entity.DesignAttemptFailed},
+		{"an unsentinelled 429 is named by the transport's code",
+			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeRateLimited, HTTPStatus: 429, Retryable: true,
+				Err: errors.New("fal: something the switch does not know")},
+			true, CodeRateLimited, entity.DesignAttemptFailed},
+		{"a delivered verdict is never touched",
+			fmt.Errorf("%w: %w", errStorageFailed, &callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeTransport, Retryable: true,
+				Err: errors.New("bucket unreachable")}),
+			false, CodeStorageFailed, entity.DesignAttemptDelivered},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// Wrapped, because that is how every one of them actually arrives.

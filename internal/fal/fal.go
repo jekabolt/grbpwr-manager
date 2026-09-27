@@ -39,14 +39,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 const (
@@ -292,8 +293,11 @@ var ErrTooLarge = errors.New("fal: artifact is larger than the allowed maximum")
 var ErrSubmitUnconfirmed = errors.New("fal: the submit may have reached the provider and its outcome is unknown")
 
 // submitLost — the 2xx submit that named no request id: accepted (so possibly paid) and unresumable.
+// ENGAGED, like every 2xx that did not become a usable answer. Its HTTPStatus is 0: callJSON has
+// already returned by the time the missing id is noticed, and the status was a 2xx anyway.
 func submitLost() error {
-	return fmt.Errorf("%w: %w: submit returned no request id", ErrSubmitUnconfirmed, ErrUnexpectedResponse)
+	return fail(aiprov.CodeProviderError, 0, true, false,
+		fmt.Errorf("%w: %w: submit returned no request id", ErrSubmitUnconfirmed, ErrUnexpectedResponse))
 }
 
 // ChargedError marks a failure the provider HAS ALREADY BILLED, and carries the charge.
@@ -1451,22 +1455,57 @@ func (r resultBody) modelURL() string {
 
 // callJSON performs one control-plane request against the queue API and decodes its JSON answer.
 // When hdr is non-nil it receives the response headers, which is how the billing header is read.
+//
+// EVERY ERROR IT RETURNS IS AN *aiprov.CallError (B-14) wrapping today's error, sentinel and sentence
+// untouched: Provider fal, HTTPStatus the answer's status (0 when none arrived), and Engaged — the
+// money fact designgen's classifier and ledger read instead of the sentinels.
+//
+// ⚠ ENGAGED IS ONLY EVER TRUE ON A POST, BECAUSE EVERY POST ON THIS API IS A SUBMIT, i.e. A PAYMENT
+// (G-03, Codex 1), and a GET is a lookup of a job paid for at ITS submit. A status poll or a result
+// fetch that fails — timed out, cut, garbled — moved no money whatever happened to it, and it stays
+// RETRYABLE: looking again is free, and a poll read as «maybe paid» would close a bought job as lost.
+// On a submit, whether the WHOLE request left the process is the one fact that separates «nothing
+// complete reached fal» (dial, DNS, TLS, a body write cut half-way — retryable) from «fal may have
+// queued and charged it» (ErrSubmitUnconfirmed — never resubmitted). The Go transport itself never
+// replays a written POST that carries no Idempotency-Key header (net/http Request.isReplayable), so no
+// second copy leaves from below.
+//
+// THE FACT IS aiprov.ObserveWrite's, the one observer every transport of the stack shares. This
+// function used to carry its own copy of the same trace (B-14 removed it); a transport that rolls its
+// own is a transport whose engaged flag drifts from the others'. What the copy had learnt, the shared
+// one does too:
+//
+//   - ⚠ WroteRequest, NOT WroteHeaders (G-03 r2, Codex 2). WroteHeaders fires before a single byte of
+//     the JSON body is written: a reset while the body is still going out — a definite non-submission,
+//     fal holds an incomplete JSON it cannot enqueue — used to read as «maybe charged» and terminalize
+//     the run. WroteRequest fires once the body is written and carries the write's own error; only
+//     info.Err == nil marks the request as sent.
+//   - GetConn resets the flag: it fires once per transport attempt (a redirect, or the transport's own
+//     retry of a nothing-written request on a reused connection), so the flag describes the LAST
+//     attempt, not the union of all of them.
+//
+// WHAT IS STILL CONSERVATIVE, SAID OUT LOUD: net/http calls WroteRequest before the final flush of
+// its 4 KiB buffer (writeLoop flushes after Request.write returns), so a request whose last buffered
+// bytes fail to flush is read as sent. That errs toward «unconfirmed» — a lost run, never a second
+// purchase — and is the same reading internal/openrouter measured and accepted.
 func (c *Client) callJSON(ctx context.Context, method, path string, in, out any, hdr *http.Header) error {
+	submit := method == http.MethodPost
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
 		if err != nil {
-			return fmt.Errorf("fal: encoding request: %w", err)
+			return fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("fal: encoding request: %w", err))
 		}
 		body = bytes.NewReader(raw)
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, c.cfg.HTTPTimeout)
 	defer cancel()
+	reqCtx, wroteRequest := aiprov.ObserveWrite(reqCtx)
 
 	req, err := http.NewRequestWithContext(reqCtx, method, c.cfg.BaseURL+path, body)
 	if err != nil {
-		return fmt.Errorf("fal: building request: %w", err)
+		return fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("fal: building request: %w", err))
 	}
 	// fal's own scheme: `Authorization: Key <FAL_KEY>`, not Bearer.
 	req.Header.Set("Authorization", "Key "+c.apiKey())
@@ -1475,76 +1514,80 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any,
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// ⚠ EVERY POST ON THIS API IS A SUBMIT, i.e. A PAYMENT (G-03, Codex 1). Whether the WHOLE request
-	// left the process is the one fact that separates «nothing complete reached fal» (dial, DNS, TLS,
-	// a body write cut half-way — retryable) from «fal may have queued and charged it»
-	// (ErrSubmitUnconfirmed — never resubmitted). The Go transport itself never replays a written POST
-	// that carries no Idempotency-Key header (net/http Request.isReplayable), so no second copy leaves
-	// from below.
-	//
-	// ⚠ WroteRequest, NOT WroteHeaders (G-03 r2, Codex 2). WroteHeaders fires before a single byte of
-	// the JSON body is written: a reset while the body is still going out — a definite non-submission,
-	// fal holds an incomplete JSON it cannot enqueue — used to read as «maybe charged» and terminalize
-	// the run. WroteRequest fires once the body is written and carries the write's own error; only
-	// info.Err == nil marks the request as sent.
-	//
-	// WHAT IS STILL CONSERVATIVE, SAID OUT LOUD: net/http calls WroteRequest before the final flush of
-	// its 4 KiB buffer (writeLoop flushes after Request.write returns), so a request whose last
-	// buffered bytes fail to flush is read as sent. That errs toward «unconfirmed» — a lost run, never
-	// a second purchase — and is the same reading internal/openrouter measured and accepted.
-	//
-	// GetConn resets the flag: it fires once per transport attempt (a redirect, or the transport's
-	// own retry of a nothing-written request on a reused connection), so the flag describes the LAST
-	// attempt, not the union of all of them.
-	submit := method == http.MethodPost
-	var sent atomic.Bool
-	if submit {
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-			GetConn: func(string) { sent.Store(false) },
-			WroteRequest: func(info httptrace.WroteRequestInfo) {
-				if info.Err == nil {
-					sent.Store(true)
-				}
-			},
-		}))
-	}
-	unconfirmed := func(err error) error {
-		if submit {
-			return fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err)
-		}
-		return err
-	}
-
 	resp, err := c.http.Do(req)
 	if err != nil {
 		err = fmt.Errorf("fal: %s %s: %w", method, path, err)
-		if sent.Load() {
-			return unconfirmed(err)
+		code := aiprov.Interruption(reqCtx, err)
+		switch {
+		case !submit:
+			return fail(code, 0, false, true, err)
+		case wroteRequest():
+			return fail(code, 0, true, false, fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err))
+		default:
+			return fail(code, 0, false, code != aiprov.CodeCanceled, err)
 		}
-		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	status := resp.StatusCode
+	if status < 200 || status > 299 {
 		raw, _ := readCapped(resp.Body, maxErrorBodyBytes)
-		err := statusErrorFrom(resp.StatusCode, raw, method, path)
-		if submit && resp.StatusCode >= 500 {
-			return submitServerError(resp.StatusCode, raw, err)
+		// ⚠ THE SENTINEL AND THE CODE DISAGREE ON A 408, AND THAT IS LEFT SO ON PURPOSE (B-14).
+		// statusErrorFrom folds 408 (with 422 and every other unnamed 4xx) into ErrBadRequest, which is
+		// the word designgen writes on the row; the matrix calls a 408 weather (provider_error,
+		// retryable), and the CallError is what decides the retry. The ledger still books a 408
+		// `unknown`, never `free` (designgen.timeoutIsNotFree): a server that gave up may have taken
+		// the whole body first.
+		err := statusErrorFrom(status, raw, method, path)
+		code, retryable := aiprov.ClassifyStatus(status)
+		if submit && status >= 500 {
+			// submitServerError stays the fal-side truth about a 5xx on a submit: a bare 503 is the
+			// queue refusing work (not engaged, retryable, as the matrix says); every other 5xx, and
+			// any 5xx naming a request id, may have been enqueued and billed — ENGAGED, the one
+			// non-2xx that is, because fal's gateway can lose the queue's answer after the enqueue.
+			if err = submitServerError(status, raw, err); errors.Is(err, ErrSubmitUnconfirmed) {
+				return fail(code, status, true, false, err)
+			}
 		}
-		return err
+		return fail(code, status, false, retryable, err)
 	}
 	if hdr != nil {
 		*hdr = resp.Header
 	}
 
+	// ─── FROM HERE ON A 2xx. On a submit the queue accepted SOMETHING, so whatever breaks now breaks
+	// after the payment: engaged, never resubmitted. On a lookup it is a free read that can be redone.
+	broken := func(code string, err error) error {
+		if submit {
+			return fail(code, status, true, false, fmt.Errorf("%w: %w", ErrSubmitUnconfirmed, err))
+		}
+		return fail(code, status, false, true, err)
+	}
 	raw, err := readCapped(resp.Body, maxAPIResponseBytes)
 	if err != nil {
-		return unconfirmed(fmt.Errorf("fal: reading %s %s: %w", method, path, err))
+		code := aiprov.CodeTooLarge
+		if !errors.Is(err, ErrTooLarge) {
+			code = aiprov.Interruption(reqCtx, err)
+		}
+		return broken(code, fmt.Errorf("fal: reading %s %s: %w", method, path, err))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return unconfirmed(fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
+		return broken(aiprov.CodeProviderError, fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
 	}
 	return nil
+}
+
+// fail wraps today's error in the CallError every design transport returns (B-14). Provider is the
+// billing key; the classification (Code, Retryable) is aiprov.ClassifyStatus / aiprov.Interruption's.
+func fail(code string, status int, engaged, retryable bool, err error) *aiprov.CallError {
+	return &aiprov.CallError{
+		Provider:   entity.AIProviderFal,
+		Code:       code,
+		HTTPStatus: status,
+		Engaged:    engaged,
+		Retryable:  retryable,
+		Err:        err,
+	}
 }
 
 // statusErrorFrom turns a non-2xx answer into the sentinel that says what to DO about it.

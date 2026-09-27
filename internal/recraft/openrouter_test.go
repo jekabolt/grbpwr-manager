@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 )
 
@@ -177,6 +179,9 @@ func TestOpenRouter_ErrorTranslation(t *testing.T) {
 		{http.StatusUnauthorized, ErrUnauthorized},
 		{http.StatusForbidden, ErrUnauthorized},
 		{http.StatusPaymentRequired, ErrInsufficientCredits},
+		// B-14: a 400 had no row and fell to ErrProviderFailure, which the worker retries — the same
+		// refused body sent again. The validator's refusal is our request, and it says so.
+		{http.StatusBadRequest, ErrBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
@@ -188,6 +193,16 @@ func TestOpenRouter_ErrorTranslation(t *testing.T) {
 			_, err := orService(t, srv.URL).ImageToImage(context.Background(), redrawRequest())
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("HTTP %d gave %v, want %v", tc.status, err, tc.want)
+			}
+			// B-14: the translation WRAPS — orimages' CallError survives it with the facts the
+			// worker reads: the OpenRouter account, the status, and a refusal that moved no money.
+			ce, ok := aiprov.AsCallError(err)
+			if !ok {
+				t.Fatalf("HTTP %d: the shared client's CallError was flattened away: %v", tc.status, err)
+			}
+			if ce.Provider != entity.AIProviderOpenRouter || ce.HTTPStatus != tc.status || ce.Engaged {
+				t.Fatalf("HTTP %d: CallError = {provider %q, status %d, engaged %v}, want {openrouter, %d, false}",
+					tc.status, ce.Provider, ce.HTTPStatus, ce.Engaged, tc.status)
 			}
 		})
 	}

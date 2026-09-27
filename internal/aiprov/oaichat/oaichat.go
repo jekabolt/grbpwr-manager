@@ -33,7 +33,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -589,53 +588,12 @@ func (c *Client) statusError(status int, body []byte) error {
 	return c.fail(code, status, false, retryable, err)
 }
 
-// classifyStatus is the status → (Code, Retryable) table, one row per case on purpose (each row has a
-// test and a measured mutation). Retryable = the SAME request may succeed later and nobody paid for
-// this one: 408, 429, 5xx. Every other 4xx is the provider refusing the request WE built, or our key or
-// balance — re-sending it cannot end differently (orimages.classifyStatus learnt that the expensive way).
-func classifyStatus(status int) (code string, retryable bool) {
-	switch {
-	case status == http.StatusUnauthorized:
-		return aiprov.CodeKeyRejected, false
-	case status == http.StatusForbidden:
-		return aiprov.CodeKeyRejected, false
-	case status == http.StatusPaymentRequired:
-		return aiprov.CodeOutOfCredits, false
-	case status == http.StatusNotFound:
-		return aiprov.CodeModelUnknown, false
-	case status == http.StatusRequestTimeout:
-		// Named before the generic 4xx row, or that row takes it and a transient timeout becomes a
-		// terminal refusal from the first attempt.
-		return aiprov.CodeProviderError, true
-	case status == http.StatusTooManyRequests:
-		return aiprov.CodeRateLimited, true
-	case status >= 500:
-		return aiprov.CodeProviderError, true
-	case status >= 400:
-		// 400, 422 and any 4xx not named above: the request we built.
-		return aiprov.CodeBadRequest, false
-	default:
-		// A 1xx/3xx that reached us unfollowed: not a refusal we can name, not weather we can bet on.
-		return aiprov.CodeProviderError, false
-	}
-}
+// classifyStatus is aiprov.ClassifyStatus — the ONE status matrix since B-14, moved up so the design
+// transports read a status the way this one does. Kept as a delegate so the table's tests stay here.
+func classifyStatus(status int) (code string, retryable bool) { return aiprov.ClassifyStatus(status) }
 
-// interruption names a round trip that did not complete: our budget or the caller's deadline
-// (timeout), the caller leaving (canceled — never the provider's fault, never fed to the breaker), or
-// anything else on the wire (transport). Decided by typed errors and the context, not by prose.
-func interruption(ctx context.Context, err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return aiprov.CodeTimeout
-	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
-		return aiprov.CodeCanceled
-	}
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
-		return aiprov.CodeTimeout
-	}
-	return aiprov.CodeTransport
-}
+// interruption is aiprov.Interruption (B-14), kept as a delegate for the same reason.
+func interruption(ctx context.Context, err error) string { return aiprov.Interruption(ctx, err) }
 
 func (c *Client) fail(code string, status int, engaged, retryable bool, err error) *aiprov.CallError {
 	return &aiprov.CallError{

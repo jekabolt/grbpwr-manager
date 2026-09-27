@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // DirectClient is the FALLBACK transport: Recraft's own API, spoken directly.
@@ -157,38 +160,45 @@ func (c *DirectClient) CreditsUSD(credits float64) float64 {
 // it. Retrying is the worker's decision, taken against `next_attempt_at` with a cap of two, and
 // with the previous attempt recorded — including the `unknown` case where we were charged for a
 // picture that never reached us.
+//
+// EVERY ERROR IS AN *aiprov.CallError (B-14) — Provider recraft, the billing key of this route — and
+// its Engaged is the money fact designgen reads: a refusal here or at the provider's gate is not
+// engaged; a round trip broken after the write, and everything that fails once a 2xx arrived, is.
 func (c *DirectClient) GenerateImage(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
 	if !c.Enabled() {
-		return nil, fmt.Errorf("%w: RECRAFT_API_KEY is not set", ErrNotConfigured)
+		return nil, refused(aiprov.CodeNotConfigured, fmt.Errorf("%w: RECRAFT_API_KEY is not set", ErrNotConfigured))
 	}
 	if strings.TrimSpace(req.Model) == "" {
-		return nil, fmt.Errorf("%w: no model id given", ErrBadRequest)
+		return nil, refused(aiprov.CodeBadRequest, fmt.Errorf("%w: no model id given", ErrBadRequest))
 	}
 	if req.Image.IsEmpty() {
-		return nil, fmt.Errorf("%w: imageToImage needs an input image", ErrBadRequest)
+		return nil, refused(aiprov.CodeBadRequest, fmt.Errorf("%w: imageToImage needs an input image", ErrBadRequest))
 	}
 	strength := defaultStrength
 	if req.Strength != nil {
 		strength = *req.Strength
 	}
 	if strength < 0 || strength > 1 {
-		return nil, fmt.Errorf("%w: strength %.3f is outside [0,1]", ErrBadRequest, strength)
+		return nil, refused(aiprov.CodeBadRequest, fmt.Errorf("%w: strength %.3f is outside [0,1]", ErrBadRequest, strength))
 	}
 
-	env, err := c.postImageToImage(ctx, req, strength)
+	env, status, err := c.postImageToImage(ctx, req, strength)
 	if err != nil {
 		return nil, err
 	}
 	// MONEY FIRST. Everything below this line happens AFTER the provider billed us: an envelope
 	// with no image, an undecodable payload, a link that will not open. The run still fails, but
-	// the charge is real and rides out with the error (see ChargedError).
-	charged := func(err error) error { return wrapCharged(err, c.CreditsUSD(env.Credits), env.Credits, req.Model) }
+	// the charge is real and rides out with the error (see ChargedError) — WRAPPING the engaged
+	// CallError, as fal's does, so Charge() and aiprov.AsCallError both still find what they read.
+	charged := func(code string, err error) error {
+		return wrapCharged(fail(code, status, true, false, err), c.CreditsUSD(env.Credits), env.Credits, req.Model)
+	}
 	if len(env.Data) == 0 {
-		return nil, charged(fmt.Errorf("%w: the response carries no image", ErrInvalidResponse))
+		return nil, charged(aiprov.CodeEmptyAnswer, fmt.Errorf("%w: the response carries no image", ErrInvalidResponse))
 	}
 	raw, contentType, sourceURL, err := c.materialize(ctx, env.Data[0])
 	if err != nil {
-		return nil, charged(err)
+		return nil, charged(aiprov.CodeProviderError, err)
 	}
 	return &GenerateResponse{
 		Bytes:       raw,
@@ -214,34 +224,79 @@ type apiImage struct {
 	ImageID string `json:"image_id"`
 }
 
-func (c *DirectClient) postImageToImage(ctx context.Context, req GenerateRequest, strength float64) (*apiEnvelope, error) {
+// postImageToImage is THE paid round trip. It returns the envelope and the 2xx status it came with,
+// or a CallError.
+func (c *DirectClient) postImageToImage(ctx context.Context, req GenerateRequest, strength float64) (*apiEnvelope, int, error) {
+	// THE ONE OBSERVER OF «BOUGHT / NOT BOUGHT» (aiprov.ObserveWrite), armed before the request exists.
+	ctx, wroteRequest := aiprov.ObserveWrite(ctx)
 	httpReq, err := c.buildRequest(ctx, req, strength)
 	if err != nil {
-		return nil, err
+		return nil, 0, refused(aiprov.CodeBadRequest, err)
 	}
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		// Transport failure: the request may or may not have been served and billed. Say so.
-		return nil, fmt.Errorf("%w: %v", ErrProviderFailure, err)
+		// Transport failure. The SENTINEL stays ErrProviderFailure — «we do not know whether it was
+		// billed» is still the sentence — but the CallError now knows which side of the write it broke
+		// on: before it, nothing reached Recraft and a retry is free; after it, a retry may pay twice.
+		engaged := wroteRequest()
+		code := aiprov.Interruption(ctx, err)
+		return nil, 0, fail(code, 0, engaged, !engaged && code != aiprov.CodeCanceled,
+			fmt.Errorf("%w: %v", ErrProviderFailure, err))
 	}
 	defer resp.Body.Close()
 
-	body, truncated, err := readCapped(resp.Body, maxResponseBytes)
-	if err != nil {
-		return nil, fmt.Errorf("%w: reading response: %v", ErrProviderFailure, err)
+	status := resp.StatusCode
+	body, truncated, readErr := readCapped(resp.Body, maxResponseBytes)
+	// THE STATUS IS JUDGED BEFORE THE BODY'S FATE (oaichat.post). A non-2xx is a refusal at the gate
+	// and keeps its sentinel and its code whatever happened to the error body; an unread body only
+	// costs the provider's sentence, and the sentence says so.
+	//
+	// ⚠ THE SENTINEL AND THE CODE DISAGREE ON A 408, AND THAT IS LEFT SO ON PURPOSE. classifyStatus
+	// folds a 408 into ErrBadRequest (the word designgen writes on the row); the matrix calls it
+	// weather (provider_error, retryable), and the CallError is what decides the retry. The ledger
+	// still books a 408 `unknown`, never `free` (designgen.timeoutIsNotFree).
+	if status < 200 || status >= 300 {
+		switch {
+		case readErr != nil:
+			body = []byte("(the error body could not be read: " + readErr.Error() + ")")
+		case truncated:
+			body = []byte(fmt.Sprintf("(the error body exceeded %d bytes)", maxResponseBytes))
+		}
+		code, retryable := aiprov.ClassifyStatus(status)
+		return nil, status, fail(code, status, false, retryable, classifyStatus(status, body))
+	}
+	// ─── FROM HERE ON A 2xx: served, and therefore billed. Nothing below is retryable.
+	if readErr != nil {
+		return nil, status, fail(aiprov.Interruption(ctx, readErr), status, true, false,
+			fmt.Errorf("%w: reading response: %v", ErrProviderFailure, readErr))
 	}
 	if truncated {
-		return nil, fmt.Errorf("%w: response exceeded %d bytes", ErrInvalidResponse, maxResponseBytes)
-	}
-	if err := classifyStatus(resp.StatusCode, body); err != nil {
-		return nil, err
+		return nil, status, fail(aiprov.CodeTooLarge, status, true, false,
+			fmt.Errorf("%w: response exceeded %d bytes", ErrInvalidResponse, maxResponseBytes))
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return nil, status, fail(aiprov.CodeProviderError, status, true, false, fmt.Errorf("%w: %v", ErrInvalidResponse, err))
 	}
-	return &env, nil
+	return &env, status, nil
 }
+
+// fail wraps today's error in the CallError every design transport returns (B-14). Provider is the
+// billing key of THIS route — Recraft's own account; the OpenRouter route carries orimages' CallError.
+func fail(code string, status int, engaged, retryable bool, err error) *aiprov.CallError {
+	return &aiprov.CallError{
+		Provider:   entity.AIProviderRecraft,
+		Code:       code,
+		HTTPStatus: status,
+		Engaged:    engaged,
+		Retryable:  retryable,
+		Err:        err,
+	}
+}
+
+// refused — a call this transport declined before a request existed: nothing written, nothing billed,
+// and the identical call declines identically.
+func refused(code string, err error) *aiprov.CallError { return fail(code, 0, false, false, err) }
 
 // buildRequest assembles the imageToImage call: JSON when the provider can fetch the picture itself
 // (the cheap path), multipart when we have to hand over the bytes.
@@ -425,7 +480,9 @@ func readCapped(r io.Reader, limit int64) (data []byte, truncated bool, err erro
 
 // classifyStatus maps an HTTP status onto one of the package sentinels. BY STATUS ALONE: the
 // provider's prose is quoted into the message for a human to read, never matched on to decide what
-// happened, so a reworded message cannot silently reclassify a fault.
+// happened, so a reworded message cannot silently reclassify a fault. Since B-14 it builds
+// CallError.Err only; Code and Retryable are aiprov.ClassifyStatus's (see postImageToImage for the
+// one row where the two disagree, the 408).
 func classifyStatus(status int, body []byte) error {
 	if status >= 200 && status < 300 {
 		return nil

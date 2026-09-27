@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 const (
@@ -571,7 +574,10 @@ func (c *Client) Submit(ctx context.Context, req Request) (string, error) {
 	}
 	id := strings.TrimSpace(out.Result)
 	if id == "" {
-		return "", fmt.Errorf("%w: submit returned no task id", ErrUnexpectedResponse)
+		// ACCEPTED AND UNRESUMABLE: the create call answered 2xx, so the task may exist and be billed,
+		// and nothing names it. Engaged; the status was a 2xx that callJSON has already consumed.
+		return "", fail(aiprov.CodeProviderError, 0, true, false,
+			fmt.Errorf("%w: submit returned no task id", ErrUnexpectedResponse))
 	}
 	return id, nil
 }
@@ -834,22 +840,35 @@ type task struct {
 }
 
 // callJSON performs one control-plane request against the Meshy API and decodes its JSON answer.
+//
+// EVERY ERROR IT RETURNS IS AN *aiprov.CallError (B-14) wrapping today's error, sentinel and sentence
+// untouched: Provider meshy, HTTPStatus the answer's status (0 when none arrived), and Engaged — the
+// money fact designgen's classifier and ledger read instead of the sentinels. The rule is fal's:
+//
+//   - ENGAGED ONLY ON THE POST, the create-task call that spends the credits. A GET — the status poll
+//     — is a lookup of a task paid for at ITS submit; whatever happens to it, it moved no money and
+//     stays retryable (looking again is free, and a poll read as «maybe paid» closes a bought task);
+//   - on the POST, a round trip that broke AFTER the request was written (aiprov.ObserveWrite) and
+//     every 2xx that did not become a task id are engaged: Meshy may have created the task;
+//   - ANY non-2xx is not engaged (D-09: a refusal at the gate), classified by aiprov.ClassifyStatus.
 func (c *Client) callJSON(ctx context.Context, method, path string, in, out any) error {
+	submit := method == http.MethodPost
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
 		if err != nil {
-			return fmt.Errorf("meshy: encoding request: %w", err)
+			return fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("meshy: encoding request: %w", err))
 		}
 		body = bytes.NewReader(raw)
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, c.cfg.HTTPTimeout)
 	defer cancel()
+	reqCtx, wroteRequest := aiprov.ObserveWrite(reqCtx)
 
 	req, err := http.NewRequestWithContext(reqCtx, method, c.cfg.BaseURL+path, body)
 	if err != nil {
-		return fmt.Errorf("meshy: building request: %w", err)
+		return fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("meshy: building request: %w", err))
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey())
 	req.Header.Set("Accept", "application/json")
@@ -859,22 +878,65 @@ func (c *Client) callJSON(ctx context.Context, method, path string, in, out any)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("meshy: %s %s: %w", method, path, err)
+		err = fmt.Errorf("meshy: %s %s: %w", method, path, err)
+		code := aiprov.Interruption(reqCtx, err)
+		if !submit {
+			return fail(code, 0, false, true, err)
+		}
+		engaged := wroteRequest()
+		return fail(code, 0, engaged, !engaged && code != aiprov.CodeCanceled, err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
-		return c.statusError(resp, method, path)
+	// ─── FROM A 2xx ON, a submit was accepted and possibly billed: whatever breaks now is engaged and
+	// never resubmitted. A lookup is a free read that can be redone.
+	status := resp.StatusCode
+	broken := func(code string, err error) error {
+		if submit {
+			return fail(code, status, true, false, err)
+		}
+		return fail(code, status, false, true, err)
+	}
+	if status != http.StatusOK && status != http.StatusCreated && status != http.StatusAccepted {
+		// ⚠ THE SENTINEL AND THE CODE DISAGREE ON A 408 (and on a 404 answering the POST), AND THAT IS
+		// LEFT SO ON PURPOSE (B-14). statusError folds both into ErrBadRequest, the word designgen writes
+		// on the row; the matrix calls a 408 weather (provider_error, retryable) and a 404 a model it
+		// does not know, and the CallError is what decides the retry. The ledger still books a 408
+		// `unknown`, never `free` (designgen.timeoutIsNotFree).
+		err := c.statusError(resp, method, path)
+		code, retryable := aiprov.ClassifyStatus(status)
+		if status >= 200 && status < 300 {
+			// A 2xx this client does not read (204, 206…): an answer, not a refusal.
+			return broken(code, err)
+		}
+		return fail(code, status, false, retryable, err)
 	}
 
 	raw, err := readCapped(resp.Body, maxAPIResponseBytes)
 	if err != nil {
-		return fmt.Errorf("meshy: reading %s %s: %w", method, path, err)
+		code := aiprov.CodeTooLarge
+		if !errors.Is(err, ErrTooLarge) {
+			code = aiprov.Interruption(reqCtx, err)
+		}
+		return broken(code, fmt.Errorf("meshy: reading %s %s: %w", method, path, err))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err)
+		return broken(aiprov.CodeProviderError, fmt.Errorf("%w: %s %s: %v", ErrUnexpectedResponse, method, path, err))
 	}
 	return nil
+}
+
+// fail wraps today's error in the CallError every design transport returns (B-14). Provider is the
+// billing key; the classification (Code, Retryable) is aiprov.ClassifyStatus / aiprov.Interruption's.
+func fail(code string, status int, engaged, retryable bool, err error) *aiprov.CallError {
+	return &aiprov.CallError{
+		Provider:   entity.AIProviderMeshy,
+		Code:       code,
+		HTTPStatus: status,
+		Engaged:    engaged,
+		Retryable:  retryable,
+		Err:        err,
+	}
 }
 
 // statusError turns a non-2xx answer into the sentinel that says what to DO about it: a rejected
