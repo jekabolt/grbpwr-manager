@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -235,21 +236,79 @@ func designThreedUnknownOption(field, value, allowed string) error {
 		map[string]string{"field": field, "value": value})
 }
 
+// ─────────────────────────── the configured route (G-02, Codex 3 + 4, Fable M-3) ───────────────────────────
+
+// SetDesignThreedRoute wires the configured 3D route (app.go, beside SetDesignEngines).
+func (s *Server) SetDesignThreedRoute(r designgen.ThreedRoute) { s.designThreedRoute = &r }
+
+// designThreedRouteReserveBounded — false only when a route IS wired and has no number to reserve
+// (fal with FAL_UNIT_USD and no FAL_UNITS_CEILING_3D). The band then lists no image_to_3d and the
+// door refuses every 3D run in words.
+func (s *Server) designThreedRouteReserveBounded() bool {
+	return s.designThreedRoute == nil || s.designThreedRoute.Unbounded() == ""
+}
+
+// designThreedNonDefault — the build options this run states with a value that CHANGES the build
+// (texture off, pbr on, quality detailed), in band order. A value equal to the route's own constant
+// (texture on, pbr off, quality standard, or empty) asks for what every route does anyway, so it is
+// never refused — only an option the route would DROP is.
+func designThreedNonDefault(t *pb_common.DesignThreedParams) []string {
+	out := []string{}
+	if t.GetTexture() == fal.OptionOff {
+		out = append(out, designgen.ThreedOptionTexture)
+	}
+	if t.GetPbr() == fal.OptionOn {
+		out = append(out, designgen.ThreedOptionPBR)
+	}
+	if t.GetQuality() == fal.QualityDetailed {
+		out = append(out, designgen.ThreedOptionQuality)
+	}
+	return out
+}
+
+// designRefuseThreedRoute — THE CONFIGURED ROUTE MUST READ WHAT THE RUN PAYS FOR, AND ITS RESERVE MUST
+// HAVE A NUMBER. On EFFECTIVE params, and deliberately so: this is not vocabulary (which narrows
+// legally and is asked of the speaker only) but the route's capability, like the kind gate — a
+// silent rerun of a run frozen with pbr=on, on a deployment where PBR is off or the model is the
+// hitem3d override, would pay for an option the route drops or for the unmeasured GLB. Free: before
+// StartRun.
+//
+//   - a wired route with no reserve number → threed_reserve_unbounded (FailedPrecondition, the
+//     setting named);
+//   - a non-default option the route does not read → option_not_read (pbr: DESIGN_THREED_PBR is off;
+//     texture / quality: the configured model takes no build options, i.e. the hitem3d override);
+//   - no route wired → no option is read (fail closed: nothing on the door knows what would travel).
+func (s *Server) designRefuseThreedRoute(kind string, params *pb_common.DesignRunParams) error {
+	if kind != entity.DesignRunKindThreed {
+		return nil
+	}
+	r := s.designThreedRoute
+	if r != nil {
+		if why := r.Unbounded(); why != "" {
+			return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeThreedReserveUnbounded,
+				"a 3D build cannot be reserved on this deployment: "+why+". Nothing was reserved and "+
+					"nothing was charged",
+				map[string]string{"provider": r.Provider})
+		}
+	}
+	for _, o := range designThreedNonDefault(params.GetThreed()) {
+		if r != nil && r.Honours(o) {
+			continue
+		}
+		why := "the configured 3D model takes no per-run build options, so it would be dropped"
+		if o == designgen.ThreedOptionPBR && (r == nil || r.Honours(designgen.ThreedOptionTexture)) {
+			why = "realistic materials are off on this server (DESIGN_THREED_PBR) until their model " +
+				"size is measured under the 64 MiB cap"
+		}
+		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeOptionNotRead,
+			fmt.Sprintf("params.threed.%s: %s — leave it empty (see the band's threed_options). "+
+				"Nothing was reserved and nothing was charged", o, why),
+			map[string]string{"field": o})
+	}
+	return nil
+}
+
 // ─────────────────────────── цена сборки по её опциям ───────────────────────────
-
-// designMeshyCreditUSD и кредиты задания — прямой маршрут Meshy (https://docs.meshy.ai/en/api/pricing,
-// прочитано 2026-09-27): multi-image-to-3d «Mesh only: 20», «Mesh with 2K textures: 30», «Mesh with
-// 4K textures: 30», «Ultra geometry surcharge: +5». Страница называет надбавку для Text to 3D
-// Preview; здесь она берётся и для detailed multi-image — оценка, а не счёт, и ошибается она в
-// безопасную сторону. $0.02 — meshy.defaultCreditUSD, та же догадка, что у designMeshyTaskCeilingUSD
-// (30 × 0.02 = 0.60): курс кредита — env-дил, которого дверь не видит.
-var designMeshyCreditUSD = decimal.RequireFromString("0.02")
-
-const (
-	designMeshyMeshOnlyCredits   = 20
-	designMeshyTexturedCredits   = 30
-	designMeshyDetailedSurcharge = 5
-)
 
 // designThreedCeilingUSDFor — резерв ОДНОЙ сборки 3D при этих опциях: самый дорогой из двух
 // маршрутов, по тому же доводу, что у designThreedCeilingUSD (дверь не знает, какой включён).
@@ -264,22 +323,24 @@ func designThreedCeilingUSDFor(texture, quality string) decimal.Decimal {
 	return decimal.Max(fal.EstimatedRequestUSDForQuality("", quality), designMeshyTaskUSDFor(texture, quality))
 }
 
-// designMeshyTaskUSDFor — оценка прямого маршрута Meshy при этих опциях. С опциями по умолчанию —
-// ровно designMeshyTaskCeilingUSD (30 кредитов).
+// designMeshyTaskUSDFor — оценка прямого маршрута Meshy при этих опциях ПО КУРСУ ПО УМОЛЧАНИЮ
+// (meshy.EstimatedTaskUSD: опубликованные кредиты × $0.02). С опциями по умолчанию — ровно
+// designMeshyTaskCeilingUSD (30 кредитов). Настроенный курс (MESHY_CREDIT_USD) читает маршрут
+// (designThreedRunEstimate), а не эта статическая нижняя граница.
 func designMeshyTaskUSDFor(texture, quality string) decimal.Decimal {
-	credits := designMeshyTexturedCredits
-	if texture == fal.OptionOff {
-		credits = designMeshyMeshOnlyCredits
-	}
-	if quality == fal.QualityDetailed {
-		credits += designMeshyDetailedSurcharge
-	}
-	return designMeshyCreditUSD.Mul(decimal.NewFromInt(int64(credits)))
+	return meshy.EstimatedTaskUSD(texture, quality)
 }
 
 // designThreedRunEstimate — оценка прогона 3D ПО ЕГО ОПЦИЯМ; ok = false для всякого другого рода
 // (там отвечает designEstimateFor). Читает ДЕЙСТВУЮЩИЕ параметры: реран платит за то, что повторяет.
-func designThreedRunEstimate(kind string, params *pb_common.DesignRunParams, outputs int) (decimal.NullDecimal, bool) {
+//
+// ⚠ И ПО ТАРИФУ НАСТРОЕННОГО МАРШРУТА (G-02, Codex 4). Статический потолок выше считает Meshy по
+// $0.02 за кредит и fal по опубликованной цене без тарифа, а собирать деньги будет collect по
+// НАСТРОЕННОМУ тарифу (MESHY_CREDIT_USD; FAL_UNIT_USD × единицы). Поэтому резерв —
+// max(статический потолок, потолок маршрута): никогда не ниже сегодняшнего числа и никогда не ниже
+// того, что запишет collect. Маршрут без числа (fal с тарифом и без FAL_UNITS_CEILING_3D) сюда не
+// доходит — его отказывает designRefuseThreedRoute до резерва.
+func (s *Server) designThreedRunEstimate(kind string, params *pb_common.DesignRunParams, outputs int) (decimal.NullDecimal, bool) {
 	if kind != entity.DesignRunKindThreed {
 		return decimal.NullDecimal{}, false
 	}
@@ -288,5 +349,10 @@ func designThreedRunEstimate(kind string, params *pb_common.DesignRunParams, out
 	}
 	t := params.GetThreed()
 	per := designThreedCeilingUSDFor(t.GetTexture(), t.GetQuality())
+	if r := s.designThreedRoute; r != nil {
+		if c, ok := r.CeilingUSD(t.GetTexture(), t.GetQuality()); ok {
+			per = decimal.Max(per, c)
+		}
+	}
 	return decimal.NullDecimal{Decimal: per.Mul(decimal.NewFromInt(int64(outputs))), Valid: true}, true
 }

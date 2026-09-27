@@ -199,7 +199,7 @@ func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_commo
 	base := designEstimateFor(kind, outputs)
 	// 3D reserves by ITS OWN options (texture off / detailed = fal «ultra», $1.40), B-09. With the
 	// default options this is exactly designThreedCeilingUSD() × outputs — the kind's table row.
-	if e, ok := designThreedRunEstimate(kind, params, outputs); ok {
+	if e, ok := s.designThreedRunEstimate(kind, params, outputs); ok {
 		return e
 	}
 	if !designImageOptionsKind(kind) {

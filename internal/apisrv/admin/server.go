@@ -144,6 +144,11 @@ type Server struct {
 	// door validates and prices params.image against it, the band advertises it. Nil = no engine
 	// is offered, and the door refuses every params.image.
 	designEngines func() []designgen.Engine
+	// designThreedRoute is the CONFIGURED 3D route (designgen.FalThreedRoute / MeshyThreedRoute,
+	// app.go): which build options it reads and the most one build may book at this deployment's
+	// tariff. Nil = not wired (the generation worker is off, or a test): the band then advertises no
+	// build option and the door refuses a non-default one, and the reserve keeps the static table.
+	designThreedRoute *designgen.ThreedRoute
 }
 
 // New creates a new server with admin handlers.

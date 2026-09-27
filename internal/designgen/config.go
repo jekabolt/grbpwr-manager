@@ -92,6 +92,13 @@ type Config struct {
 	// refuses IN WORDS, naming the variable, instead of quietly falling back to a provider the owner
 	// did not ask for and reporting success. Meshy stays one variable away.
 	ThreedProvider string `mapstructure:"threed_provider"`
+	// ThreedPBR lets a 3D run ask for realistic materials (params.threed.pbr = on). OFF BY DEFAULT
+	// (DESIGN_THREED_PBR), and that is a money decision, not a taste: a PBR build carries extra maps,
+	// its GLB size on fal meshy/v7 (standard and detailed geometry) is UNMEASURED, and the transport
+	// refuses a model over 64 MiB AFTER the build has been charged (fal.maxModelBytes). Until a beta
+	// smoke measures one PBR build of each tier under the cap, the band does not advertise `pbr` and
+	// the door refuses pbr=on with option_not_read, for free (G-02, Fable M-3).
+	ThreedPBR bool `mapstructure:"threed_pbr"`
 	// ImageDefaultModel is the image client's effective slug (orimages.Client.Model), set by app.go
 	// — never read from the environment a second time. It marks the default row of EngineTable,
 	// the engine a frozen params.image with no model is drawn by. '' = orimages.DefaultModel.
@@ -109,6 +116,7 @@ const (
 	EnvImageQuality     = "DESIGN_IMAGE_QUALITY"
 	EnvImageQualityFlat = "DESIGN_IMAGE_QUALITY_FLAT"
 	EnvThreedProvider   = "DESIGN_THREED_PROVIDER"
+	EnvThreedPBR        = "DESIGN_THREED_PBR"
 )
 
 // ImageQualityMax is the top position of the provider's quality dial — the most this deployment can
@@ -289,6 +297,7 @@ func ConfigFromEnv() Config {
 	if v := strings.TrimSpace(os.Getenv(EnvThreedProvider)); v != "" {
 		c.ThreedProvider = v
 	}
+	c.ThreedPBR = envBool(EnvThreedPBR, c.ThreedPBR)
 	applyDefaults(&c)
 	return c
 }

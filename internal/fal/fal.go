@@ -347,6 +347,12 @@ type Config struct {
 	// rather than a reuse of UnitUSD because the two routes' units differ by two orders of
 	// magnitude — see CostCutoutUSD. <=0 = defaultCutoutUSD per request.
 	UnitUSDCutout float64 `mapstructure:"unit_usd_cutout"` // FAL_UNIT_USD_CUTOUT
+	// UnitsCeiling3D is the most billable units ONE 3D build may report (FAL_UNITS_CEILING_3D). It
+	// matters only when UnitUSD is set: then a build books `UnitUSD × units`, and the door can
+	// reserve no less than that only if somebody states how many units a build may take. With a
+	// tariff and no ceiling the reservation has nothing to stand on, so the 3D door refuses in
+	// words (G-02, Codex 4) rather than reserving a number below the booking. <=0 = not stated.
+	UnitsCeiling3D float64 `mapstructure:"units_ceiling_3d"` // FAL_UNITS_CEILING_3D
 }
 
 // String renders the config with the API key redacted, so an accidental %v / %+v / %s of it — in a
@@ -359,9 +365,9 @@ func (c Config) String() string {
 		key = "***REDACTED***"
 	}
 	return fmt.Sprintf("fal.Config{APIKey:%s BaseURL:%s Model3D:%s ModelCutout:%s HTTPTimeout:%s "+
-		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v}",
+		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v UnitsCeiling3D:%v}",
 		key, c.BaseURL, c.Model3D, c.ModelCutout, c.HTTPTimeout, c.PollInterval, c.PollTimeout,
-		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout)
+		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout, c.UnitsCeiling3D)
 }
 
 // Client is a configured fal queue client. A nil *Client is valid and permanently disabled, so
@@ -400,6 +406,9 @@ func New(cfg Config) *Client {
 	// оценкой ЗА ЗАПРОС. Подстановка доллара за единицу и была тем, что дало сто долларов.
 	if cfg.UnitUSD < 0 {
 		cfg.UnitUSD = 0
+	}
+	if cfg.UnitsCeiling3D < 0 {
+		cfg.UnitsCeiling3D = 0
 	}
 	return &Client{
 		// The shared http.Client carries NO Timeout of its own: every request below gets its
@@ -489,6 +498,46 @@ func EstimatedRequestUSDForQuality(model, quality string) decimal.Decimal {
 		return decimal.NewFromFloat(defaultDetailedRequestUSD)
 	}
 	return decimal.NewFromFloat(defaultRequestUSD)
+}
+
+// RequestCeilingUSDForQuality — THE MOST ONE 3D BUILD OF THIS TIER MAY BOOK ON THIS CLIENT, i.e. the
+// number the door must reserve so that the collect (CostUSDForQuality) never books more (G-02,
+// Codex 4). ok = false means there is no such number.
+//
+//   - no tariff (FAL_UNIT_USD unset): the collect books EstimatedRequestUSDForQuality(model, tier)
+//     whatever the units — the same function, so the reserve equals the booking exactly;
+//   - a tariff AND a stated units ceiling (FAL_UNITS_CEILING_3D): tariff × ceiling — the booking is
+//     tariff × reported units, bounded by the ceiling the operator stated;
+//   - a tariff and no ceiling: ok = false. The booking is tariff × whatever the provider reports
+//     (run 17 reported a hundred), and no reservation can be said to cover it.
+//
+// Nil-safe: a nil client answers the unconfigured estimate for the default model.
+func (c *Client) RequestCeilingUSDForQuality(quality string) (decimal.Decimal, bool) {
+	if c == nil || c.cfg.UnitUSD <= 0 {
+		return EstimatedRequestUSDForQuality(c.Model(), quality), true
+	}
+	if c.cfg.UnitsCeiling3D <= 0 {
+		return decimal.Zero, false
+	}
+	return decimal.NewFromFloat(c.cfg.UnitUSD).Mul(decimal.NewFromFloat(c.cfg.UnitsCeiling3D)), true
+}
+
+// UnitsCeiling3D — the stated units ceiling of one 3D build under a tariff (ok = false: no tariff,
+// or no ceiling stated). The collect compares a build's reported units with it and says so out loud
+// when the provider billed more than the reservation was sized for.
+func (c *Client) UnitsCeiling3D() (float64, bool) {
+	if c == nil || c.cfg.UnitUSD <= 0 || c.cfg.UnitsCeiling3D <= 0 {
+		return 0, false
+	}
+	return c.cfg.UnitsCeiling3D, true
+}
+
+// AcceptsBuildOptions reports whether the CONFIGURED 3D model reads the per-run build options
+// (Request3D.Texture / PBR / Quality). Only the meshy family does; the retired hitem3d body sends
+// fixed constants and drops them (Submit logs it). The band advertises no options and the door
+// refuses a non-default one on a route that answers false (G-02, Codex 3). Nil-safe.
+func (c *Client) AcceptsBuildOptions() bool {
+	return c != nil && isMeshyFamily(c.Model())
 }
 
 // CostUSD converts billable units into money at the configured rate (FAL_UNIT_USD). It is the only

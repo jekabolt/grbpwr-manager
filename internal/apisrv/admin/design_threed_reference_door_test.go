@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ func designThreedReferenceRequest(q string) *pb_common.DesignRunParams {
 // ворот :694 — no_fabric_render, красно; снять пропуск в designSelectBench — слоты в снимке, красно.
 func TestAReferenceRunNeedsNoFabricRender(t *testing.T) {
 	rig := newDesignRunRig(t, designMoodCard(), designBandWith(false))
+	rig.srv.SetDesignThreedRoute(pgFalRoute(fal.Config{}, false)) // the default fal meshy route reads quality
 	rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
 	req := designStartRequest(entity.DesignRunKindThreed)
 	req.Params = designThreedReferenceRequest("detailed")

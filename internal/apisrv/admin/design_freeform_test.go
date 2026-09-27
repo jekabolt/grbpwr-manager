@@ -545,7 +545,10 @@ func TestGetDesignBandALWAYS_ANSWERS_ABOUT_THE_PLAYGROUND(t *testing.T) {
 	require.Equal(t, want, resp.GetPlaygroundWorkflows())
 	require.NotNil(t, resp.GetImageModels())
 	require.Empty(t, resp.GetImageModels())
-	require.Equal(t, []string{"texture", "pbr", "quality"}, resp.GetThreedOptions())
+	// No 3D route wired on this server → no build option advertised (G-02: threed_options is read off
+	// the configured route; see TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE).
+	require.NotNil(t, resp.GetThreedOptions())
+	require.Empty(t, resp.GetThreedOptions())
 
 	// EVERY ROUTE OPEN: band 26 is STILL the old three + cutout [Codex 10] — an old client draws
 	// every key of it as a chip — and the engines come with exactly one default.

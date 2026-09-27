@@ -143,10 +143,10 @@ func TestTheDefaultThreedCeilingIsToday(t *testing.T) {
 	require.True(t, designThreedCeilingUSDFor("", "").Equal(designThreedCeilingUSD()),
 		"%s != %s", designThreedCeilingUSDFor("", ""), designThreedCeilingUSD())
 	require.True(t, designThreedCeilingUSDFor("on", "standard").Equal(designThreedCeilingUSD()))
-	est, ok := designThreedRunEstimate(entity.DesignRunKindThreed, &pb_common.DesignRunParams{}, 1)
+	est, ok := (&Server{}).designThreedRunEstimate(entity.DesignRunKindThreed, &pb_common.DesignRunParams{}, 1)
 	require.True(t, ok)
 	require.True(t, est.Decimal.Equal(designEstimateFor(entity.DesignRunKindThreed, 1).Decimal))
-	_, ok = designThreedRunEstimate(entity.DesignRunKindRender, nil, 1)
+	_, ok = (&Server{}).designThreedRunEstimate(entity.DesignRunKindRender, nil, 1)
 	require.False(t, ok, "чужой род оценивает designEstimateFor")
 }
 
@@ -170,7 +170,7 @@ func TestADetailedReservationCoversADetailedCharge(t *testing.T) {
 	require.Equal(t, "1.4", designThreedCeilingUSDFor("", "detailed").String())
 	require.Equal(t, "1.2", designThreedCeilingUSDFor("off", "").String(),
 		"fal публикует только цену с текстурой; меньшего числа не выдумываем")
-	est, ok := designThreedRunEstimate(entity.DesignRunKindThreed,
+	est, ok := (&Server{}).designThreedRunEstimate(entity.DesignRunKindThreed,
 		threedParams(&pb_common.DesignThreedParams{Quality: "detailed"}), 1)
 	require.True(t, ok)
 	require.Equal(t, "1.4", est.Decimal.String())

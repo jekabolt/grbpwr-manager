@@ -879,6 +879,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designParentID(parent), designParentParams(parent)); err != nil {
 		return nil, err
 	}
+	// THE CONFIGURED 3D ROUTE reads what the run pays for and has a reserve number (EFFECTIVE params:
+	// a capability, not a vocabulary) — G-02 Codex 3/4, Fable M-3. Free, before any store read.
+	if err := s.designRefuseThreedRoute(kind, params); err != nil {
+		return nil, err
+	}
 	// ГРАНИЦА КАРТОЧКИ ДЛЯ ШЕСТОГО СПИСКА. Картинки плейграунда уезжают поставщику ровно так же,
 	// как плиты, референсы и текстуры, значит и граница у них та же самая. ДЕЙСТВУЮЩИЕ параметры,
 	// а не сообщение клиента: строка media(id) под собой не исчезает (FK держат её RESTRICT'ом),

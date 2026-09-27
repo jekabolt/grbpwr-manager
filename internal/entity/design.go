@@ -1014,6 +1014,12 @@ const (
 	DesignErrorCodeAspectNotSupported     = "aspect_not_supported"
 	DesignErrorCodeBackgroundNotSupported = "background_not_supported"
 	DesignErrorCodeImageOptionsForbidden  = "image_options_forbidden"
+	// G-02 fixes. threed_reserve_unbounded is FailedPrecondition (a deployment setting, not the
+	// request): the configured 3D route has no number to reserve (fal with a tariff and no units
+	// ceiling). source_too_small is the worker's own word (designgen.CodeSourceTooSmall), said at the
+	// door when the stored dimensions already show it.
+	DesignErrorCodeThreedReserveUnbounded = "threed_reserve_unbounded"
+	DesignErrorCodeSourceTooSmall         = "source_too_small"
 )
 
 // Режимы прогона паттерна — DesignPatternParams.mode (STEP 3). Пустая строка значит то же, что

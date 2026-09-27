@@ -33,6 +33,7 @@ func TestFalConfigFromEnv(t *testing.T) {
 	t.Setenv("FAL_UNIT_USD", "0.75")
 	t.Setenv("FAL_MODEL_CUTOUT", "vendor/matting/v9")
 	t.Setenv("FAL_UNIT_USD_CUTOUT", "0.045")
+	t.Setenv("FAL_UNITS_CEILING_3D", "3")
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err)
@@ -50,6 +51,8 @@ func TestFalConfigFromEnv(t *testing.T) {
 		"the download budget is separate from the poll ceiling on purpose — a fetch cut by the "+
 			"wait loses an artifact that is already paid for and whose link expires")
 	assert.InDelta(t, 0.75, cfg.Fal.UnitUSD, 1e-9)
+	assert.InDelta(t, 3, cfg.Fal.UnitsCeiling3D, 1e-9,
+		"FAL_UNITS_CEILING_3D sizes the 3D reservation under a tariff; unbound, a tariff closes the 3D door")
 
 	// ─── ВТОРОЙ МАРШРУТ ТОГО ЖЕ ТРАНСПОРТА: СВОЙ СЛАГ И СВОЙ ТАРИФ ───
 	assert.Equal(t, "vendor/matting/v9", cfg.Fal.ModelCutout,

@@ -90,7 +90,9 @@ func (s *Server) designPlaygroundWorkflows() []string {
 	if s.designKindGateCheck(entity.DesignRunKindCutout) == nil {
 		open[entity.DesignWorkflowRemoveBackground] = true
 	}
-	if s.designKindGateCheck(entity.DesignRunKindThreed) == nil {
+	// 3D also needs a reserve number: a wired route without one (fal with a tariff and no units
+	// ceiling) is refused by the door (threed_reserve_unbounded), so the tile is not drawn.
+	if s.designKindGateCheck(entity.DesignRunKindThreed) == nil && s.designThreedRouteReserveBounded() {
 		open[entity.DesignWorkflowImageTo3D] = true
 	}
 	for _, w := range entity.PlaygroundWorkflows() {
@@ -127,21 +129,25 @@ func (s *Server) designImageModels() []*pb_admin.DesignImageModel {
 	return out
 }
 
-// designThreedOptions — which DesignThreedParams options the wired 3D route honours (band field
-// 30). `follow` is never listed in phase 2 (the door refuses it: option_not_read).
+// designThreedOptions — which DesignThreedParams options the CONFIGURED 3D route honours (band
+// field 30), read off the same designgen.ThreedRoute the door refuses with (designRefuseThreedRoute)
+// — one value for the band, the door and the reserve (G-02, Codex 3 = Fable m-4).
 //
-// texture / pbr / quality are honoured end to end (B-09): the door checks their words
-// (designRefuseMalformedThreedReferences), the reserve prices them (designThreedRunEstimate),
-// buildJob freezes them into Job.Threed*, and both 3D routes send them (fal meshy family →
-// should_texture / enable_pbr / geometry_resolution; direct Meshy likewise). The one route that
-// drops them is the retired hitem3d slug, reachable only through a FAL_MODEL_3D override — it
-// logs the dropped options, exactly as it logs a dropped texture_prompt.
+//   - fal meshy family / direct Meshy: texture, quality — and pbr only with DESIGN_THREED_PBR on
+//     (its GLB size is unmeasured and the 64 MiB cap fails after the charge, Fable M-3);
+//   - the retired hitem3d slug (a FAL_MODEL_3D override): none — its body sends fixed constants;
+//   - no route wired, or a route with no reserve number: none.
+//
+// `follow` is never listed in phase 2 (the door refuses it: option_not_read).
 func (s *Server) designThreedOptions() []string {
 	out := []string{}
 	if s.designGenerationGate() != nil || s.designKindGateCheck(entity.DesignRunKindThreed) != nil {
 		return out
 	}
-	return append(out, "texture", "pbr", "quality")
+	if s.designThreedRoute == nil || !s.designThreedRouteReserveBounded() {
+		return out
+	}
+	return append(out, s.designThreedRoute.Options...)
 }
 
 // designRefuseMalformedFreeform — ФОРМА ПРОСЬБЫ ПЛЕЙГРАУНДА, и спрашивается она С ГОВОРЯЩЕГО.

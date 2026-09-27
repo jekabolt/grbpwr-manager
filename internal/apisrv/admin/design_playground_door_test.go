@@ -12,9 +12,12 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
+	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/status"
@@ -48,6 +51,8 @@ var designPlaygroundDoorCodes = []string{
 	entity.DesignErrorCodeImageOptionsForbidden,
 	// §12 3D reference mode (+ the card boundary and the input doors over the new id list)
 	"threed_forbidden", "duplicate_picture", "foreign_media", entity.DesignErrorCodeDisplayOnlyInput,
+	// G-02: the configured 3D route has no reserve number
+	entity.DesignErrorCodeThreedReserveUnbounded,
 	// the cloth-only recolour negative control
 	"cloth_without_picture",
 }
@@ -86,6 +91,20 @@ func pgModels(profile *entity.Model, err error) func(t *testing.T, rig *designRu
 func pgEngines(t *testing.T, rig *designRunRig) {
 	rig.srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
 }
+
+// pgFalRoute — the fal 3D route as app.go builds it (an API key, the given overrides).
+func pgFalRoute(cfg fal.Config, pbr bool) designgen.ThreedRoute {
+	cfg.APIKey = "k"
+	return designgen.FalThreedRoute(fal.New(cfg), pbr)
+}
+
+// pgRoute wires a 3D route into the rig.
+func pgRoute(r designgen.ThreedRoute) func(t *testing.T, rig *designRunRig) {
+	return func(t *testing.T, rig *designRunRig) { rig.srv.SetDesignThreedRoute(r) }
+}
+
+// pgHitemSlug — the retired hitem3d slug, reachable only through a FAL_MODEL_3D override.
+const pgHitemSlug = "hitem3d/hi3d/v3.0/multi-view-to-3d"
 
 func pgThreed(t *pb_common.DesignThreedParams) *pb_common.DesignRunParams {
 	return &pb_common.DesignRunParams{Threed: t}
@@ -223,7 +242,35 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 
 		// ─── tile 12 image_to_3d, reference mode ───
 		{name: "3d: two named pictures, detailed", kind: entity.DesignRunKindThreed,
-			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}, Quality: "detailed", Pbr: "on"})},
+			setup:  pgRoute(pgFalRoute(fal.Config{}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}, Quality: "detailed", Texture: "off"})},
+		// G-02 M-3: pbr is advertised and read only with DESIGN_THREED_PBR on.
+		{name: "3d: pbr with DESIGN_THREED_PBR off", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Pbr: "on"}),
+			want:   entity.DesignErrorCodeOptionNotRead},
+		{name: "3d: pbr with DESIGN_THREED_PBR on", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{}, true)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Pbr: "on"})},
+		{name: "3d: pbr off stated is today's build, never refused", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Pbr: "off", Texture: "on", Quality: "standard"})},
+		// G-02 Codex 3: the hitem3d override reads no build option.
+		{name: "3d: detailed on the hitem3d route", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Quality: "detailed"}),
+			want:   entity.DesignErrorCodeOptionNotRead},
+		{name: "3d: no route wired reads no option", kind: entity.DesignRunKindThreed,
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Texture: "off"}),
+			want:   entity.DesignErrorCodeOptionNotRead},
+		// G-02 Codex 4: a tariff with no units ceiling has no number to reserve.
+		{name: "3d: FAL_UNIT_USD without FAL_UNITS_CEILING_3D", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{UnitUSD: 0.5}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}}),
+			want:   entity.DesignErrorCodeThreedReserveUnbounded},
+		{name: "3d: FAL_UNIT_USD with FAL_UNITS_CEILING_3D", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{UnitUSD: 0.5, UnitsCeiling3D: 4}, false)),
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}})},
 		{name: "3d: five named pictures", kind: entity.DesignRunKindThreed,
 			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32, 33, 34, 35}}),
 			want:   "too_many_pictures"},
@@ -293,6 +340,7 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			rerun:  parent(entity.DesignRunKindThreed, pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}})),
 			want:   "rerun_changes_pictures"},
 		{name: "rerun 3d: the same pictures, a new tier", kind: entity.DesignRunKindThreed,
+			setup:  pgRoute(pgFalRoute(fal.Config{}, false)),
 			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}, Quality: "detailed"}),
 			rerun:  parent(entity.DesignRunKindThreed, pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 32}}))},
 		{name: "rerun 3d: silent, inherits its pictures", kind: entity.DesignRunKindThreed, params: nil,
@@ -554,6 +602,7 @@ func TestTheCapabilityListsFOLLOW_EACH_GATE(t *testing.T) {
 		s := &Server{repo: repo}
 		s.SetDesignGenerationEnabled(true)
 		s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+		s.SetDesignThreedRoute(pgFalRoute(fal.Config{}, true))
 		s.SetDesignKindGate(func(kind string) error {
 			for _, c := range closed {
 				if c == kind {
@@ -670,5 +719,110 @@ func TestTheThreedReserveGOES_THROUGH_THE_RUN_ESTIMATE(t *testing.T) {
 			got := s.designEstimateForRun(kind, 1, &pb_common.DesignRunParams{}, nil)
 			require.Truef(t, got.Valid && got.Decimal.IsPositive(), "%s: %v", kind, got)
 		}
+	}
+}
+
+// ─────────────── G-02: the configured 3D route on the band and in the reserve ───────────────
+
+// TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE — band field 30 is read off the wired route
+// (Codex 3 = Fable m-4, Fable M-3): the hitem3d override advertises nothing, pbr appears only with
+// DESIGN_THREED_PBR, direct Meshy reads everything, and a route with no reserve number (a tariff
+// without FAL_UNITS_CEILING_3D) draws neither the options nor the tile. MUTATIONS (each measured
+// red): designThreedOptions returning the three words regardless of the route; FalThreedRoute
+// ignoring AcceptsBuildOptions; threedRouteOptions ignoring the pbr flag; designPlaygroundWorkflows
+// ignoring designThreedRouteReserveBounded.
+func TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE(t *testing.T) {
+	band := func(route *designgen.ThreedRoute) *pb_admin.GetDesignBandResponse {
+		repo := mocks.NewMockRepository(t)
+		d := mocks.NewMockDesign(t)
+		repo.EXPECT().Design().Return(d).Maybe()
+		d.EXPECT().GetBand(mock.Anything, mock.Anything, mock.Anything).Return(&entity.DesignBand{}, nil).Once()
+		s := &Server{repo: repo}
+		s.SetDesignGenerationEnabled(true)
+		s.SetDesignKindGate(func(string) error { return nil })
+		if route != nil {
+			s.SetDesignThreedRoute(*route)
+		}
+		resp, err := s.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
+		require.NoError(t, err)
+		require.NotNil(t, resp.GetThreedOptions(), "present-empty, never absent")
+		return resp
+	}
+	route := func(r designgen.ThreedRoute) *designgen.ThreedRoute { return &r }
+	for _, c := range []struct {
+		name  string
+		route *designgen.ThreedRoute
+		want  []string
+		tile  bool
+	}{
+		{"no route wired", nil, []string{}, true},
+		{"fal meshy, pbr off (the default)", route(pgFalRoute(fal.Config{}, false)), []string{"texture", "quality"}, true},
+		{"fal meshy, pbr on", route(pgFalRoute(fal.Config{}, true)), []string{"texture", "pbr", "quality"}, true},
+		{"fal hitem3d override", route(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)), []string{}, true},
+		{"direct meshy, pbr off", route(designgen.MeshyThreedRoute(meshy.New(meshy.Config{APIKey: "k"}), false)),
+			[]string{"texture", "quality"}, true},
+		{"fal tariff without a units ceiling", route(pgFalRoute(fal.Config{UnitUSD: 0.5}, true)), []string{}, false},
+		{"fal tariff with a units ceiling", route(pgFalRoute(fal.Config{UnitUSD: 0.5, UnitsCeiling3D: 3}, false)),
+			[]string{"texture", "quality"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resp := band(c.route)
+			require.Equal(t, c.want, resp.GetThreedOptions())
+			require.Equal(t, c.tile, pgContains(resp.GetPlaygroundWorkflows(), entity.DesignWorkflowImageTo3D))
+		})
+	}
+}
+
+func pgContains(list []string, w string) bool {
+	for _, v := range list {
+		if v == w {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING — Codex 4: the reserve reads the tariff of
+// the wired route and is never below what that route's collect books for the same build (Meshy:
+// CostUSD of the published credits at MESHY_CREDIT_USD; fal with a tariff: tariff × the stated units
+// ceiling; fal without one: the published per-build price), and never below today's static number.
+// MUTATIONS (each measured red): designThreedRunEstimate ignoring the route (Meshy at $0.05 reserves
+// 1.2 against a 1.5 booking); MeshyThreedRoute pricing at the default rate; RequestCeilingUSDForQuality
+// ignoring the units ceiling.
+func TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING(t *testing.T) {
+	meshyC := meshy.New(meshy.Config{APIKey: "k", CreditUSD: 0.05})
+	falTariff := fal.New(fal.Config{APIKey: "k", UnitUSD: 0.5, UnitsCeiling3D: 4})
+	falFlat := fal.New(fal.Config{APIKey: "k"})
+	opts := []struct{ texture, quality string }{{"", ""}, {"off", ""}, {"", "detailed"}, {"off", "detailed"}}
+	for _, c := range []struct {
+		name    string
+		route   designgen.ThreedRoute
+		booking func(texture, quality string) decimal.Decimal
+		want    map[string]string // texture|quality → reserve
+	}{
+		{"direct meshy at $0.05 a credit", designgen.MeshyThreedRoute(meshyC, false),
+			func(tx, q string) decimal.Decimal { return meshyC.CostUSD(meshy.EstimatedTaskCredits(tx, q)) },
+			map[string]string{"|": "1.5", "off|": "1.2", "|detailed": "1.75", "off|detailed": "1.4"}},
+		{"fal with a tariff and a units ceiling", designgen.FalThreedRoute(falTariff, false),
+			func(_, q string) decimal.Decimal { return falTariff.CostUSDForQuality("", 4, q) },
+			map[string]string{"|": "2", "off|": "2", "|detailed": "2", "off|detailed": "2"}},
+		{"fal without a tariff", designgen.FalThreedRoute(falFlat, false),
+			func(_, q string) decimal.Decimal { return falFlat.CostUSDForQuality("", 100, q) },
+			map[string]string{"|": "1.2", "off|": "1.2", "|detailed": "1.4", "off|detailed": "1.4"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := &Server{}
+			s.SetDesignThreedRoute(c.route)
+			for _, o := range opts {
+				p := pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Texture: o.texture, Quality: o.quality})
+				got := s.designEstimateForRun(entity.DesignRunKindThreed, 1, p, nil)
+				require.True(t, got.Valid)
+				require.Equalf(t, c.want[o.texture+"|"+o.quality], got.Decimal.String(), "%+v", o)
+				require.Truef(t, got.Decimal.GreaterThanOrEqual(c.booking(o.texture, o.quality)),
+					"%+v: reserve %s < booking %s", o, got.Decimal, c.booking(o.texture, o.quality))
+				require.Truef(t, got.Decimal.GreaterThanOrEqual(designThreedCeilingUSDFor(o.texture, o.quality)),
+					"%+v: never below today's static number", o)
+			}
+		})
 	}
 }

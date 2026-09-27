@@ -370,6 +370,45 @@ func (c *Client) PollTimeout() time.Duration {
 	return c.cfg.PollTimeout
 }
 
+// Credits of one multi-image-to-3d task (https://docs.meshy.ai/en/api/pricing, read 2026-09-27):
+// «Mesh only: 20», «Mesh with 2K/4K textures: 30», «Ultra geometry surcharge: +5». The page names the
+// surcharge for Text to 3D Preview; it is taken for a detailed multi-image task as well — the safe
+// side of an estimate.
+const (
+	taskCreditsMeshOnly          = 20
+	taskCreditsTextured          = 30
+	taskCreditsDetailedSurcharge = 5
+)
+
+// EstimatedTaskCredits — the credits one task with these options is expected to consume
+// (texture ” | on | off, quality ” | standard | detailed; ” = today's textured standard build).
+func EstimatedTaskCredits(texture, quality string) int {
+	credits := taskCreditsTextured
+	if strings.TrimSpace(texture) == OptionOff {
+		credits = taskCreditsMeshOnly
+	}
+	if strings.TrimSpace(quality) == QualityDetailed {
+		credits += taskCreditsDetailedSurcharge
+	}
+	return credits
+}
+
+// EstimatedTaskUSD — EstimatedTaskCredits at the UNCONFIGURED credit rate (defaultCreditUSD). The
+// door's static floor reads it; a configured rate is TaskCeilingUSD.
+func EstimatedTaskUSD(texture, quality string) decimal.Decimal {
+	return decimal.NewFromFloat(defaultCreditUSD).Mul(decimal.NewFromInt(int64(EstimatedTaskCredits(texture, quality))))
+}
+
+// TaskCeilingUSD — EstimatedTaskCredits at THIS client's effective rate (MESHY_CREDIT_USD, or the
+// default): the number the door reserves for one task, priced by the same rate CostUSD books with
+// (G-02, Codex 4). Nil-safe: a nil client answers the default rate.
+func (c *Client) TaskCeilingUSD(texture, quality string) decimal.Decimal {
+	if c == nil {
+		return EstimatedTaskUSD(texture, quality)
+	}
+	return decimal.NewFromFloat(c.cfg.CreditUSD).Mul(decimal.NewFromInt(int64(EstimatedTaskCredits(texture, quality))))
+}
+
 // CostUSD converts consumed credits into money at the configured rate (MESHY_CREDIT_USD). It is
 // the only place that knows the conversion, so the price written into an attempt row and the price
 // shown on a button cannot drift apart.

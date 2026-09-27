@@ -526,6 +526,10 @@ func (a *App) Start(ctx context.Context) error {
 	designgen.Normalize(&designCfg)
 	// The worker resolves a frozen params.image against the same table the door checks it with.
 	designCfg.ImageDefaultModel = designImages.Model()
+	// The configured 3D route as the door and the band see it (G-02): which build options it reads
+	// and what one build may book at this deployment's tariff. Built from the SAME client the worker
+	// is given below; wired only when the worker exists.
+	var designThreedRoute *designgen.ThreedRoute
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
 		//
@@ -540,13 +544,23 @@ func (a *App) Start(ctx context.Context) error {
 		// refuses AT THE DOOR, in words, naming its variable (PreflightKind → MissingCredential) —
 		// which is what lets the owner tell «I have not set the key yet» from «the service is
 		// busy».
-		threed := designgen.NewFalThreedProvider(fal.New(a.c.Fal))
+		falThreed := fal.New(a.c.Fal)
+		threed := designgen.NewFalThreedProvider(falThreed)
+		route := designgen.FalThreedRoute(falThreed, designCfg.ThreedPBR)
 		if designCfg.ThreedProvider == designgen.ThreedProviderMeshy {
-			threed = designgen.NewThreedProvider(meshy.New(a.c.Meshy))
+			meshyThreed := meshy.New(a.c.Meshy)
+			threed = designgen.NewThreedProvider(meshyThreed)
+			route = designgen.MeshyThreedRoute(meshyThreed, designCfg.ThreedPBR)
 		}
+		designThreedRoute = &route
 		slog.Default().InfoContext(ctx, "design generation: 3D route wired",
 			slog.String("provider", designCfg.ThreedProvider),
-			slog.String("flag", designgen.EnvThreedProvider))
+			slog.String("flag", designgen.EnvThreedProvider),
+			slog.Any("build_options", route.Options),
+			slog.Bool("pbr", designCfg.ThreedPBR), slog.String("pbr_flag", designgen.EnvThreedPBR))
+		if why := route.Unbounded(); why != "" {
+			slog.Default().WarnContext(ctx, "design generation: the 3D door is closed — "+why)
+		}
 
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
 			// flat, render, recolor and pattern — the raster route. ONE endpoint and ONE key for
@@ -633,6 +647,9 @@ func (a *App) Start(ctx context.Context) error {
 	// every paid verb.
 	if a.dgw != nil {
 		adminS.SetDesignKindGate(a.dgw.PreflightKind)
+	}
+	if designThreedRoute != nil {
+		adminS.SetDesignThreedRoute(*designThreedRoute)
 	}
 	// The engine table the worker resolves params.image with (designCfg.ImageDefaultModel above):
 	// the door validates and prices against it, the band advertises it. A table, not a gate — it

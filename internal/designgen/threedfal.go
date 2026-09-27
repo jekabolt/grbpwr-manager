@@ -254,6 +254,15 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	} else {
 		out.Price = decimal.NullDecimal{}
 	}
+	if ceiling, ok := p.c.UnitsCeiling3D(); ok && res.BillableUnits > ceiling {
+		// ⚠ THE RESERVATION WAS SIZED BY FAL_UNITS_CEILING_3D (fal.RequestCeilingUSDForQuality), and
+		// the provider billed more. The booking stays the provider's truth; the ceiling is wrong, and
+		// this line is how the operator learns it.
+		slog.Default().ErrorContext(ctx, "3D: fal billed more units than FAL_UNITS_CEILING_3D; the "+
+			"run's reservation was below its booking — raise the ceiling",
+			slog.Int("run_id", job.RunID), slog.String("request_id", requestID),
+			slog.Float64("units", res.BillableUnits), slog.Float64("ceiling", ceiling))
+	}
 	if res.UnitsAssumed {
 		// ⚠ SAID OUT LOUD, EVERY TIME. The ledger gets a number either way — a paid build recorded
 		// as free is the worse lie — but «the provider named this» and «we assumed one unit» are
