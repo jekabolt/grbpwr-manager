@@ -101,9 +101,10 @@ type Server struct {
 	// embedAllowedHosts restricts the hosts allowed as hero EMBED iframe sources.
 	// Empty means any https host is accepted (scheme/format validation still applies).
 	embedAllowedHosts []string
-	// aiOps drafts tech-card sewing operations from a plain-language description via
-	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
-	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
+	// aiOps is the OpenRouter chat client behind the admin AI text features — note formatting,
+	// campaign auto-translation, the design idea draft, EnhanceText, SuggestPrompts and the
+	// construction analysis. It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so each of
+	// them degrades to a clear "not configured" answer instead of failing.
 	aiOps *openrouter.Client
 	// analysisRuns is the spend fence in front of AnalyzeTechCardConstruction: who is running what,
 	// when they last ran it, and how many runs this account has bought in the last hour. Its zero

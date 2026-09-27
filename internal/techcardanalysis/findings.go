@@ -27,9 +27,8 @@ import (
 // the one the gate reads — and a second copy of the number in the handler is exactly how two
 // ceilings come to disagree.
 //
-// It is NOT openrouter.maxOperations. That one silently slices the GENERATOR's OUTPUT; this one
-// refuses an oversized INPUT out loud. Sharing either the constant or the semantics would make a
-// change to one silently move the other.
+// It refuses an oversized INPUT out loud and never slices it — see the handler's input gate for why
+// refusing beats truncating.
 const MaxAnalysisOperations = 200
 
 // Finding source (design §4, TechCardAnalysisFinding.source).

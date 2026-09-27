@@ -511,9 +511,11 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// OpenRouter client for AI tech-card operation drafting (#66), note markdown formatting and
-	// campaign auto-translation — one client, one model slug, three features. Nil-safe/disabled
-	// when OPENROUTER_API_KEY is unset, and each handler then reports it as not configured.
+	// OpenRouter chat client for the admin AI text features — note markdown formatting, campaign
+	// auto-translation, the design idea draft, EnhanceText, SuggestPrompts and the construction
+	// analysis: one client, the shared slug (OPENROUTER_MODEL) plus the per-feature slugs of the
+	// analysis and the Ideas door. Nil-safe/disabled when OPENROUTER_API_KEY is unset, and each
+	// handler then reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
 	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
 	//

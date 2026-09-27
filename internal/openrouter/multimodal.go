@@ -6,8 +6,8 @@ package openrouter
 //
 // The obvious edit is to retype chatMessage.Content from `string` to `any` and let each caller put
 // either a string or a slice of parts in it. It is also the edit that breaks the live features
-// silently. Content is a string today at four call sites — operation drafting, note formatting,
-// campaign translation and the tech-card analysis pass — and `any` makes every one of them compile
+// silently. Content is a string at every text call site — note formatting, campaign translation,
+// the `ai ✦` rewrite and the tech-card analysis pass — and `any` makes every one of them compile
 // unchanged while removing the compiler's ability to say what shape they send. From then on a
 // mistake in any caller is a runtime JSON shape the provider rejects with a 400, in a feature
 // nobody was editing at the time. The tech-card analysis pass in particular is a paid call whose

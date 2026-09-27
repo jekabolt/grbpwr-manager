@@ -599,8 +599,9 @@ func bindEnvVars() {
 	viper.BindEnv("ga4.circuit_breaker.open_timeout", "GA4_CIRCUIT_BREAKER_OPEN_TIMEOUT")
 	viper.BindEnv("ga4.circuit_breaker.half_open_max_retries", "GA4_CIRCUIT_BREAKER_HALF_OPEN_MAX_RETRIES")
 
-	// OpenRouter (AI tech-card operation drafting, #66). OPENROUTER_API_KEY is required to
-	// enable the feature; unset => it degrades to a clear "not configured" precondition error.
+	// OpenRouter (the admin AI text features: note formatting, campaign auto-translation, the design
+	// idea draft, EnhanceText, SuggestPrompts, the construction analysis). OPENROUTER_API_KEY is
+	// required to enable them; unset => each degrades to a clear "not configured" answer.
 	// OPENROUTER_MODEL / BASE_URL / HTTP_TIMEOUT are optional overrides (sane defaults applied).
 	viper.BindEnv("openrouter.api_key", "OPENROUTER_API_KEY")
 	viper.BindEnv("openrouter.model", "OPENROUTER_MODEL")
