@@ -51,6 +51,25 @@ func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
 }
 
+// NewInTx builds the AI store of a TRANSACTIONAL repository — store.go's initSubStoresForTx, with
+// enclosing the transaction's own repository. Its writes keep txFunc, as every sub-store there does;
+// GetConfig reads through enclosing and begins nothing (Codex second review, P2). txFunc there is
+// the ROOT store's Tx, so a read run in it opened a SECOND transaction on another connection: blind
+// to the enclosing transaction's uncommitted writes, and waiting on its locks until the context
+// expired. Before the one-snapshot read, GetConfig read s.DB — which on that path IS the enclosing
+// transaction; this keeps it there.
+func NewInTx(base storeutil.Base, txFunc TxFunc, enclosing dependency.Repository) *Store {
+	return New(base, txFunc, sameTx(enclosing))
+}
+
+// sameTx is a runner that begins nothing: f runs on rep, inside whatever transaction rep already is,
+// and its error is returned to the caller that owns that transaction.
+func sameTx(rep dependency.Repository) TxFunc {
+	return func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+		return f(ctx, rep)
+	}
+}
+
 const (
 	// defaultBudgetTimezone is design_settings.budget_timezone's column default (0344) and the
 	// fallback store/design uses when that singleton is missing: the ledger's days and the design
@@ -128,10 +147,13 @@ type routeRow struct {
 // the snapshot holds all of a write or none of it, and the version returned describes exactly the rows
 // returned.
 //
-// THE VERSION IS STILL READ FIRST. Inside a snapshot the order is free; it is not where the runner is
-// SERIALIZABLE (store.go's transactional sub-stores pass Tx for both roles): there every read is a
-// locking read, and taking ai_settings first takes the row each writer takes first, so no write can
-// land between the reads.
+// INSIDE A TRANSACTION (NewInTx) the reads run in the ENCLOSING transaction, not in a new one: they
+// see what that transaction has written so far, and begin no second transaction that would wait on
+// its locks.
+//
+// THE VERSION IS STILL READ FIRST. Inside a snapshot the order is free; it is not where the enclosing
+// transaction is SERIALIZABLE (db.Tx's): there every read is a locking read, and taking ai_settings
+// first takes the row each writer takes first, so no write can land between the reads.
 func (s *Store) GetConfig(ctx context.Context) (*entity.AIConfig, error) {
 	var cfg *entity.AIConfig
 	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

@@ -1121,6 +1121,60 @@ func TestAIStoreShapeGetConfigIsOneSnapshot(t *testing.T) {
 	}
 }
 
+// TestAIStoreShapeGetConfigInATransactionReadsThroughIt — on a TRANSACTIONAL repository GetConfig's
+// five reads reach the ENCLOSING transaction's handle, return what that transaction holds (here: a
+// version its callback has just written and not committed), and begin no transaction: the write
+// runner there is the ROOT store's Tx, a second transaction on another connection.
+//
+// store.go's initSubStoresForTx is not reachable from here — package store's own tests need a live
+// database — so this drives NewInTx, the constructor that line calls, with the three roles faked: the
+// plain handle and the enclosing repository are the SAME fake, exactly as on that path (base.DB is
+// the transaction's ltx), and the write runner hands out a fake of its own that fails if read.
+//
+// MUTATION IT CATCHES (Codex second review, P2): NewInTx passing txFunc for the read role — the old
+// ai.New(base, outerTx, outerTx) — → one begin observed, and the reads land on the other connection.
+func TestAIStoreShapeGetConfigInATransactionReadsThroughIt(t *testing.T) {
+	elsewhere := func(dest any, q string, _ []any) error {
+		t.Errorf("a GetConfig read left the enclosing transaction: %q", firstLine(q))
+		return nil
+	}
+	other := &recDB{onGet: elsewhere, onSelect: elsewhere}
+	enclosing := &recDB{
+		onGet: func(dest any, q string, _ []any) error {
+			switch d := dest.(type) {
+			case *entity.AISettings:
+				*d = entity.AISettings{ConfigVersion: 9, DefaultChatProviderKey: "openrouter", DefaultImageProviderKey: "openrouter"}
+			case *string:
+				*d = "Europe/Riga"
+			}
+			return nil
+		},
+	}
+	var begins int
+	s := NewInTx(storeutil.Base{DB: enclosing, Now: func() time.Time { return fixedNow }},
+		func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+			begins++
+			return f(ctx, recRepo{db: other})
+		},
+		recRepo{db: enclosing})
+
+	cfg, err := s.GetConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if begins != 0 || len(other.calls) != 0 {
+		t.Fatalf("GetConfig began %d transactions and read %d times elsewhere; want 0 and 0", begins, len(other.calls))
+	}
+	want := []string{"selectAISettings", "selectAIProviders", "selectAIModels", "selectAIRoutes", "selectBudgetTimezone"}
+	if got := sequence(t, enclosing); !slices.Equal(got, want) {
+		t.Fatalf("inside the enclosing transaction GetConfig read %v, want %v", got, want)
+	}
+	if cfg.Settings.ConfigVersion != 9 || cfg.BudgetTimezone != "Europe/Riga" {
+		t.Fatalf("GetConfig returned version %d / %q, want the enclosing transaction's 9 / Europe/Riga",
+			cfg.Settings.ConfigVersion, cfg.BudgetTimezone)
+	}
+}
+
 // TestAIStoreShapeSpendTotalsKeepNull.
 //
 // MUTATION IT CATCHES: starting the total from a VALID zero — a period with only unpriced calls would

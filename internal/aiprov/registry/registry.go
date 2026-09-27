@@ -18,6 +18,10 @@
 // other instance learns from the poller, which compares ai_settings.config_version every 60 s and
 // reloads only when it moved.
 //
+// BREAKERS (breaker.go). A caller's contract, in order: Candidates → Admit(the picked candidate) →
+// the physical call → exactly one of RecordSuccess / RecordFailure / Release, WITH THE ADMISSION
+// Admit handed out — an end acts only on the admission it completes.
+//
 // This package imports no client package. The clients (openrouter, orimages, fal, meshy, recraft)
 // get a plain `KeyFunc func() string` in their Config and never import aiprov either.
 package registry
@@ -524,9 +528,11 @@ func (r *Registry) Providers() []ProviderState {
 // ───────────────────────── breakers ─────────────────────────
 //
 // One probeBreaker (breaker.go) per (provider, capability), created by the first transient fault. The
-// caller's side of the contract, in order: Candidates → Admit(the picked candidate) → the physical
-// call → exactly one of RecordSuccess / RecordFailure — or Release when it was admitted and did not
-// call after all. Every instant comes from r.clock(), the one clock.
+// caller's side of the contract, in order: Candidates → Admit(the picked candidate), which hands out
+// an Admission → the physical call → exactly one of RecordSuccess / RecordFailure — or Release when
+// it was admitted and did not call after all — each WITH THAT ADMISSION: an end only acts on the
+// admission it completes (a straggler from before an opening or a reset is ignored). Every instant
+// comes from r.clock(), the one clock.
 
 func breakerKey(providerKey, capability string) string { return providerKey + "/" + capability }
 
@@ -552,22 +558,24 @@ func (r *Registry) lookupBreaker(providerKey, capability string) *probeBreaker {
 
 // Admit asks for the physical call to (provider, capability) right now, right before making it: true
 // = go; false = its breaker is open, or half-open with its one probe already handed out — try the
-// next candidate. A provider with no breaker is admitted (and none is created). An admitted caller
-// MUST end with RecordSuccess, RecordFailure or Release: a half-open breaker stays reserved until it
-// does.
-func (r *Registry) Admit(providerKey, capability string) bool {
+// next candidate. A provider with no breaker is admitted with the zero Admission (and none is
+// created); breaker.go says why a fault made with it still counts. An admitted caller MUST end with
+// RecordSuccess, RecordFailure or Release, passing back the Admission it got here: a half-open
+// breaker stays reserved until its probe does.
+func (r *Registry) Admit(providerKey, capability string) (Admission, bool) {
 	b := r.lookupBreaker(providerKey, capability)
 	if b == nil {
-		return true
+		return Admission{}, true
 	}
 	return b.Admit(r.clock())
 }
 
-// Release ends an admission that produced no verdict: the caller was admitted and made no call, or its
-// call ended in something RecordFailure would not count anyway. A half-open breaker frees its probe.
-func (r *Registry) Release(providerKey, capability string) {
+// Release ends admission a without a verdict: the caller was admitted and made no call, or its call
+// ended in something RecordFailure would not count anyway. A half-open breaker frees its probe when
+// a is the admission holding it.
+func (r *Registry) Release(providerKey, capability string, a Admission) {
 	if b := r.lookupBreaker(providerKey, capability); b != nil {
-		b.Release()
+		b.Release(a)
 	}
 }
 
@@ -610,26 +618,29 @@ func (r *Registry) breakerState(providerKey string) string {
 // not retryable) says nothing about the provider being down and must not open it for every purpose;
 // an engaged error may have cost money and is the ledger's business, not the breaker's; an error that
 // is not a CallError carries no verdict. None of those three counts — but each still ENDS the call,
-// so a probe it was is released rather than left reserved.
-func (r *Registry) RecordFailure(providerKey, capability string, err error) {
+// so a probe it was is released rather than left reserved. a is the Admission Admit handed out (the
+// zero one when there was no breaker); a counted fault creates the breaker when there is none yet.
+func (r *Registry) RecordFailure(providerKey, capability string, a Admission, err error) {
 	ce, ok := aiprov.AsCallError(err)
 	if !ok || !ce.Retryable || aiprov.Engaged(err) {
-		r.Release(providerKey, capability)
+		r.Release(providerKey, capability, a)
 		return
 	}
-	r.breakerFor(providerKey, capability).Fault(r.clock())
+	r.breakerFor(providerKey, capability).Fault(a, r.clock())
 }
 
-// RecordSuccess ends an admitted call that went through: it clears the closed breaker's failure count
-// and closes a probing one. A provider with no breaker yet is left without one.
-func (r *Registry) RecordSuccess(providerKey, capability string) {
+// RecordSuccess ends admission a, whose call went through: it clears the closed breaker's failure
+// count, and closes a probing one when a holds the probe. A provider with no breaker yet is left
+// without one.
+func (r *Registry) RecordSuccess(providerKey, capability string, a Admission) {
 	if b := r.lookupBreaker(providerKey, capability); b != nil {
-		b.Success()
+		b.Success(a)
 	}
 }
 
 // ResetBreakers closes every breaker of a provider and drops any probe reservation — after its key
-// was written, and by Reload when the effective key changed.
+// was written, and by Reload when the effective key changed. It retires every Admission handed out
+// before it, so a call still running on the old key cannot count against the new one.
 func (r *Registry) ResetBreakers(providerKey string) {
 	prefix := providerKey + "/"
 	r.bmu.Lock()

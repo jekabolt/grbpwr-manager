@@ -481,7 +481,9 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.sampleStore = sample.New(base, outerTx)
 	txStore.patternObjectStore = patternobject.New(base)
 	txStore.workshopStore = workshop.New(base, outerTx)
-	txStore.aiStore = ai.New(base, outerTx, outerTx)
+	// NOT outerTx for the read role: outerTx is the ROOT store's Tx (txBegin), a second transaction on
+	// another connection. GetConfig reads through txStore itself — the enclosing transaction.
+	txStore.aiStore = ai.NewInTx(base, outerTx, txStore)
 	// Inside a transaction both roles collapse onto outerTx, exactly as techcard does: a nested
 	// begin is not available, and the enclosing transaction is already the snapshot.
 	txStore.designStore = design.New(base, outerTx, outerTx)
