@@ -361,6 +361,80 @@ func TestAResumedCollectPRICES_THE_ROW_ITS_SUBMIT_OPENED(t *testing.T) {
 	require.Equal(t, "1.2", ai.Rows()[0].End.CostUSD.Decimal.String())
 }
 
+// TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW — Codex A4 #2: fal accepted
+// attempt 1 (the history stores Provider "fal" and fal's locator); the deployment was switched to
+// DESIGN_THREED_PROVIDER=meshy before the next pickup. The Meshy collector is asked for fal's
+// locator, Meshy answers 404, the lookup fails for good — and the pass fails exactly as it does
+// without a ledger. The ledger row fal opened must still read `accepted` and unpriced: turning it
+// `unknown` here is irreversible (PriceAcceptedCall moves only `accepted`), and fal's real price
+// could never land. The one WARN line says whose row it is and who collected.
+//
+// MUTATION (measured red→green): the name guard dropped (`job.Recorder = w.recorderFor(run,
+// pendingAttempt)` unconditionally) → the row reads `unknown` (error_code empty_response).
+func TestACollectByAnotherProviderNEVER_PRICES_THE_ACCEPTING_PROVIDERS_ROW(t *testing.T) {
+	meshyStand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"no such task"}`))
+	}))
+	t.Cleanup(meshyStand.Close)
+	meshyRoute := NewThreedProvider(meshy.New(meshy.Config{APIKey: "k", BaseURL: meshyStand.URL,
+		HTTPTimeout: 2 * time.Second, PollInterval: 5 * time.Millisecond, PollTimeout: 40 * time.Millisecond,
+		DownloadTimeout: 2 * time.Second}))
+	require.NotEqual(t, ThreedProviderFal, meshyRoute.Name(), "the wired route is not the one that accepted")
+
+	run := steerRun(65)
+	run.Author = "im"
+	full := run
+	full.Attempts = []entity.DesignRunAttempt{{RunId: 65, AttemptNo: 1, Provider: ThreedProviderFal,
+		State: entity.DesignAttemptAccepted, ProviderRequestId: sql.NullString{String: falMeshySlug + "#req-1", Valid: true}}}
+
+	pass := func(withLedgerToo bool) (*fakeStore, *aiprovtest.Store) {
+		st := &fakeStore{getRun: &full, nextNo: 1}
+		w := steerWorker(t, st, meshyRoute)
+		var ai *aiprovtest.Store
+		if withLedgerToo {
+			ai = withLedger(w)
+			runID, attemptNo := 65, 1
+			ai.Seed(aiprovtest.Row{Status: entity.AICallAccepted, Start: entity.AICallStart{
+				OccurredAt: time.Now(), ProviderKey: entity.AIProviderFal, Model: falMeshySlug,
+				Purpose: entity.AIPurposeThreed, Actor: "im", RunID: &runID, AttemptNo: &attemptNo, CallNo: 1},
+				End: entity.AICallEnd{Status: entity.AICallAccepted, RequestID: falMeshySlug + "#req-1"}})
+		}
+		require.NoError(t, w.execute(context.Background(), run, "tok"))
+		return st, ai
+	}
+
+	logs := captureSlog(t)
+	st, ai := pass(true)
+
+	// The run: the collect failed for good, as it does today (commit D routes it to fal).
+	require.Len(t, st.finished, 1)
+	require.Equal(t, 2, st.finished[0].AttemptNo, "the collect's own attempt")
+	require.Equal(t, entity.DesignAttemptUnknown, st.finished[0].State)
+	require.Len(t, st.failed, 1)
+
+	// The ledger: fal's row untouched — still `accepted`, still unpriced, never offered a price.
+	rows := ai.Rows()
+	require.Len(t, rows, 1)
+	require.Equal(t, entity.AICallAccepted, rows[0].Status, "only the provider that accepted it may close it")
+	require.False(t, rows[0].End.CostUSD.Valid)
+	require.Empty(t, rows[0].End.ErrorCode)
+	for _, wr := range ai.Writes() {
+		require.NotEqual(t, "price", wr.Verb, "no collect by another provider reaches the row")
+	}
+	out := logs.String()
+	require.Contains(t, out, "level=WARN")
+	require.Contains(t, out, "accepted by fal, this deployment collects with meshy")
+	require.Contains(t, out, "run_id=65")
+	require.Equal(t, 1, strings.Count(out, "this deployment collects with"), "once per pass")
+
+	// LEDGER-ONLY: the same pass without a ledger writes exactly the same attempt and run rows.
+	stNo, _ := pass(false)
+	require.Equal(t, stNo.finished, st.finished, "the ledger must not change one field of an attempt")
+	require.Equal(t, stNo.started, st.started)
+	require.Equal(t, stNo.failed, st.failed)
+}
+
 // (4) TestAnUnconfirmedSubmitIsUNKNOWN — fal answers the submit with a 502: the request left whole
 // and nothing usable came back (ErrSubmitUnconfirmed). The row is `unknown`, engaged, NULL-priced,
 // with the status and the attempt's own word.
