@@ -73,7 +73,7 @@ ON DUPLICATE KEY UPDATE provider_key = provider_key;
 
 CREATE TABLE IF NOT EXISTS ai_model (
     provider_key VARCHAR(32) NOT NULL,
-    model VARCHAR(128) NOT NULL COMMENT 'the slug exactly as the provider spells it',
+    model VARCHAR(128) COLLATE utf8mb4_bin NOT NULL COMMENT 'the slug exactly as the provider spells it; binary collation so two slugs differing only in case are two rows, as at the provider',
     label VARCHAR(128) NOT NULL DEFAULT '',
     kind VARCHAR(16) NOT NULL COMMENT 'capability, entity.AICapabilities; closed in Go',
     disabled TINYINT(1) NOT NULL DEFAULT 0,
