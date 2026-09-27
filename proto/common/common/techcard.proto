@@ -454,6 +454,33 @@ message ColorwayDevelopmentInsert {
   string lab_dip_reject_reason = 13;
   repeated TechCardColorwayUsage usages = 14; // material recipe (bom_item_index into the owning style's BOM)
   int32 display_order = 15;
+  // The colourway's palette, the main colour first (T45; owner's decisions 5 and 6): 1 to 8
+  // colours, each a Pantone code or a free label, hex for preview (see ColorwayColour).
+  //
+  // WRITE SEMANTICS — replace-all by position, sparse like the rest of UpdateColorway:
+  //   - empty (and not named by update_mask) = leave the stored palette as it is — an old client
+  //     that never heard of colours cannot wipe it;
+  //   - non-empty = the new palette, whole. Writing it mirrors colours[0] into pantone /
+  //     pantone_system / dev_hex above (values sent for those three in the same request are
+  //     overwritten by the mirror);
+  //   - update_mask path `development.colours` naming an EMPTY list is refused: a palette holds at
+  //     least one colour.
+  // On a colourway that HAS a palette, changing pantone / pantone_system / dev_hex without sending
+  // colours is refused (they are the palette's mirror): edit colours instead.
+  //
+  // A palette edit NEVER touches the per-slot recipe (owner's decision 7); colouring slots from
+  // the palette is the explicit ApplyColorwayPaletteToSlots call.
+  //
+  // A colourway with a palette also changes what product.color (the name orders, lays and the
+  // storefront cart print) holds: the colourway's name (`name` above) instead of the family's
+  // dictionary name.
+  repeated common.ColorwayColour colours = 16;
+  // Translations of the colourway name (`name` above) per storefront language, keyed by Language.id
+  // (T45, owner's decision 3). An UPSERT, never a replace: a non-empty value writes that language, ""
+  // deletes it (the reader then falls back to `name`), a language absent from the map is left as it
+  // is. Empty map = no change. Mask path `development.name_i18n`. At most 128 characters per name;
+  // an unknown language id is refused.
+  map<int32, string> name_i18n = 17;
 }
 
 // ColorwayLabDipRound is ONE round of the lab-dip approval loop, as it actually happens: a dyehouse
@@ -519,6 +546,8 @@ message StyleSizeChart {
 message AdminColorwayRef {
   int32 colorway_id = 1;
   string base_sku = 2;
+  // The dictionary FAMILY tag (T45): mandatory, the catalogue-filter and assembly key; several
+  // colourways of one style may share it. The SKU colour segment is sku_color_token.
   string color_code = 3;
   ColorwayLifecycleStatus status = 4;
   // usages is this colourway's material recipe (H1 fix, WS3/S2-S3): the constructor view of a
@@ -651,6 +680,18 @@ message AdminColorwayRef {
   // ею не засевается, чек-лист релиза её не называет, план материалов её не видит. Публикация
   // ШИРЕ множества, которое СЧИТАЕТСЯ, — и это разделение намеренное.
   repeated TechCardSlotAreaEstimate shadow_area_estimates = 27;
+  // OUTPUT-ONLY. The SKU colour token (T45): three characters [A-Z0-9], minted by the server when
+  // the colourway was created, unique within the style, never changed afterwards. The colour
+  // segment of base_sku once the colourway is published. Pre-T45 colourways carry their old
+  // dictionary code here, so their SKUs did not move.
+  string sku_color_token = 28;
+  // OUTPUT-ONLY. The palette, main colour first (T45) — see ColorwayDevelopmentInsert.colours.
+  // EMPTY for a legacy single-colour colourway: read its colour from pantone / dev_hex above, then
+  // from the dictionary family (color_code), exactly as before T45.
+  repeated common.ColorwayColour colours = 29;
+  // OUTPUT-ONLY. The colourway name (dev_name) per storefront language, keyed by Language.id (T45).
+  // A language missing here reads dev_name.
+  map<int32, string> name_i18n = 30;
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge

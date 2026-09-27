@@ -200,6 +200,7 @@ var methodRequirements = map[string]Requirement{
 	"RelinkDraftColorway":             wr(SectionProducts), // R4: move a draft colourway to another style
 	"CloneStyleForSeason":             wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
+	"ApplyColorwayPaletteToSlots":     wr(SectionProducts), // T45: the explicit «apply to slots» door — a recipe write
 	"GetColorwayCustoms":              rd(SectionProducts),
 	"SetColorwayCustoms":              wr(SectionProducts),
 	"ListStockChangeHistory":          rd(SectionProducts),

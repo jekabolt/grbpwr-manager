@@ -3,6 +3,10 @@ syntax = "proto3";
 package common;
 
 import "common/media.proto";
+// ColorwayColour (the palette entry of a colourway, T45) is declared once, next to the colourway
+// itself, and a proposed palette is the same message as the saved one. No cycle: product.proto
+// imports neither techcard.proto nor this file.
+import "common/product.proto";
 // The DESIGN band marks up moodboard references, and it marks them up with the ONE annotation
 // primitive the whole system draws with: TechCardAnnotation, its kinds, its points and its palette
 // are declared in techcard.proto and reused here verbatim. There is no DesignAnnotationKind and
@@ -1666,30 +1670,43 @@ message DesignFlatDetail {
   string note = 2; // what the drawing must show / why the flats are not enough; may be empty
 }
 
-// DesignColourwayProposal is ONE proposed colourway: what to call it, which dictionary colour it
-// is, what the swatch looks like, and which Pantone goes on which cloth slot.
+// DesignColourwayProposal is ONE proposed colourway: what to call it, its palette, which
+// dictionary family it is filed under, and which Pantone goes on which material slot.
 //
-// THE SHAPE IS EXACTLY WHAT THE COLORWAYS TAB ALREADY NEEDS AND NOTHING MORE. `color_code` is what
-// CreateColorway requires (a colourway is a product and a product needs a dictionary colour);
-// name / pantone / hex are the colourway's own development row; `slots` are the recipe rows keyed
-// by the BOM line the slot's NAME folds onto. Nothing is invented for the wire that the tab does
-// not already draw.
+// THE SHAPE IS WHAT CreateColorway + UpdateColorwayRecipe TAKE. name / colours become the
+// colourway's development name and palette (CreateColorway development.name / development.colours);
+// `color_code` is its family (merchandising.color_code); `slots` are the recipe rows keyed by the
+// BOM line the slot's NAME folds onto. pantone / hex are the main colour, kept for clients that
+// predate the palette (T45).
 message DesignColourwayProposal {
   string name = 1; // dev name, «Black / Bone»; the server names an unnamed one «colourway N»
-  // A code the SERVER VERIFIED against the colour dictionary, or '' when none was close.
+  // The dictionary FAMILY of the main colour (T45). Either a code the SERVER VERIFIED against the
+  // colour dictionary, or — when the answer named none the dictionary knows — the nearest
+  // non-archived dictionary colour to the main colour's hex (colours[0].hex, else hex), by the same
+  // measure CreateColorway uses (see ColorwayMerchandisingInsert.color_code). Several proposals may
+  // share a family: a family is a filter tag, not the SKU, and confirming both creates two
+  // colourways with two different SKU tokens.
   //
-  // ⚠ '' IS A LEGAL ANSWER AND THE CLIENT MUST ASK FOR A CODE. A model that names a colour we do
-  // not stock produces a proposal that cannot become a product; an unverified code would produce
-  // one that fails at CreateColorway with the server's own words instead of ours.
+  // '' only when there was neither a verified code nor a hex to go by — the client then asks for
+  // the family, or sends CreateColorway with an empty color_code and a palette hex.
   string color_code = 2;
-  string pantone = 3; // the swatch — the main cloth's Pantone, e.g. «19-4005 TCX», kept as typed
-  string hex = 4; // #RRGGBB screen approximation, or '' when the answer was not a hex
+  // The main colour's Pantone, e.g. «19-4005 TCX», kept as typed — colours[0].pantone (T45; mirrored
+  // from the palette for clients that predate it).
+  string pantone = 3;
+  // #RRGGBB screen approximation of the main colour — colours[0].hex — or '' when the answer was not a hex.
+  string hex = 4;
   // One entry per material slot the answer named. BOUND BY THE SLOT'S FOLDED NAME, never by index
   // or id: the same fold the BOM/slot table dedupes on, so a colourway proposed beside its slots
   // binds to them and to hand-typed slots of the same name alike. At most 8, and the prompt asks
   // for them in one order — the main cloths, the thread, then the rest — so that the cap falls on
   // the rest rather than on the thread.
   repeated DesignColourwaySlotColour slots = 5;
+  // The proposed palette (T45): 1 to 4 colours, the main one first — the colour of the main cloth.
+  // Each is a Pantone code (TCX for cloth) or, when no Pantone fits, a short label, with a hex
+  // (ColorwayColour; label ≤ 40 characters, pantone ≤ 24). Confirming the proposal sends it as
+  // CreateColorway development.colours. A proposal read back from a run recorded before T45 carries
+  // no colours: use pantone / hex above.
+  repeated ColorwayColour colours = 6;
 }
 
 // DesignColourwaySlotColour is one material slot of the card wearing one colour — cloth, lining,

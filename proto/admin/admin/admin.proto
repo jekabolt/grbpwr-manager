@@ -208,7 +208,9 @@ service AdminService {
 
   // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock
   // (expected_colorway_version = the shared tech_card.lock_version). It never touches style facts,
-  // variants, stock or the size chart (R2/R4).
+  // variants, stock or the size chart (R2/R4). An update_mask whose every path is under
+  // `development` (a lab-dip decision, a palette edit, a name translation) writes ONLY the
+  // development block: merchandising may then be omitted and is not read (T45).
   rpc UpdateColorway(UpdateColorwayRequest) returns (UpdateColorwayResponse) {
     option (google.api.http) = {
       patch: "/api/admin/colorways/{colorway_id}"
@@ -224,6 +226,34 @@ service AdminService {
   rpc UpdateColorwayRecipe(UpdateColorwayRecipeRequest) returns (UpdateColorwayRecipeResponse) {
     option (google.api.http) = {
       put: "/api/admin/colorways/{colorway_id}/recipe"
+      body: "*"
+    };
+  }
+
+  // ApplyColorwayPaletteToSlots is the explicit «apply to slots» door (T45, owner's decision 7):
+  // it colours the named material slots of a colourway from THAT colourway's saved palette.
+  // Editing the palette (UpdateColorway development.colours) never touches the per-slot recipe —
+  // this call is the only way a palette colour reaches it, and only for the slots it names.
+  //
+  // For each assignment, every GARMENT-LEVEL recipe row of that BOM line (tech_card_colorway_usage
+  // with no cut-piece, neither by id nor by the legacy piece position) takes color := the palette
+  // colour's label and pantone := its Pantone code, with the book appended when the code does not
+  // already end with it («19-4052» + TCX -> «19-4052 TCX»). Either may become empty: a label-only
+  // colour clears the Pantone and vice versa. A slot with no garment-level row gets one that holds
+  // only the colour (manual provenance, no consumption, no pin) — the row the COLORWAYS tab creates
+  // for a coloured slot. Nothing else of the recipe moves: consumption, quantity, pins, norm stamps
+  // and per-piece rows stay as they are, so this is safe where the full-replace
+  // UpdateColorwayRecipe would need the whole recipe echoed back. Rows are matched by their BOM
+  // line id; a legacy row that names its line only by position is not recoloured.
+  //
+  // Optimistically locked on the shared tech_card.lock_version (stale -> ABORTED), refused on a
+  // released card (FailedPrecondition). InvalidArgument with a field violation for an unknown
+  // bom_line_key (assignments[i].bom_line_key), a position the palette does not have
+  // (assignments[i].colour_position) or a slot named twice; FailedPrecondition when the colourway
+  // has no palette yet.
+  rpc ApplyColorwayPaletteToSlots(ApplyColorwayPaletteToSlotsRequest) returns (ApplyColorwayPaletteToSlotsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/palette/apply"
       body: "*"
     };
   }
@@ -4051,10 +4081,14 @@ message MediaUsageRef {
 // optimistic lock.
 message CreateColorwayRequest {
   int32 style_id = 1; // the single style relation (R4); the colourway attaches to an existing style
-  reserved 2; // color_code is carried by merchandising.color_code (§1.5, the sole write identity)
+  reserved 2; // color_code is carried by merchandising.color_code (the dictionary family, T45)
   reserved "color_code";
+  // merchandising.color_code is the dictionary FAMILY (may be "" — the server then proposes it from
+  // the main colour's hex); merchandising.sku_color_token must be empty — the server mints the token.
   common.ColorwayMerchandisingInsert merchandising = 3;
-  common.ColorwayDevelopmentInsert development = 4; // dev/lab-dip; recipe persistence lands with T-A (existing gap)
+  // dev/lab-dip block plus, since T45, the colourway's name (name), palette (colours) and name
+  // translations (name_i18n). usages are refused here — the recipe is UpdateColorwayRecipe's.
+  common.ColorwayDevelopmentInsert development = 4;
   int32 thumbnail_media_id = 5;
   int32 secondary_thumbnail_media_id = 6;
   repeated int32 media_ids = 7;
@@ -4078,6 +4112,12 @@ message UpdateColorwayRequest {
   repeated int32 media_ids = 5;
   repeated common.ColorwayTagInsert tags = 6;
   repeated common.ColorwayPriceInsert prices = 7;
+  // Paths under `development.` select development leaves (e.g. development.lab_dip_status,
+  // development.colours, development.name_i18n; snake_case or camelCase); no mask writes every
+  // development leaf the request carries. A mask whose EVERY path is under `development` writes
+  // the development block alone: merchandising, media, tags, prices, thumbnails, cost, country and
+  // translations are then not read (merchandising may be omitted). Any other mask, or none, keeps
+  // the merchandising row a full replace, as before.
   google.protobuf.FieldMask update_mask = 8;
   int32 thumbnail_media_id = 9;
   int32 secondary_thumbnail_media_id = 10;
@@ -4100,6 +4140,28 @@ message UpdateColorwayRecipeRequest {
 
 message UpdateColorwayRecipeResponse {
   int32 lock_version = 1; // the new shared lock_version after the recipe write
+}
+
+// ColorwayPaletteSlotAssignment names ONE material slot and the palette colour it takes (T45).
+message ColorwayPaletteSlotAssignment {
+  // The style's BOM line (the slot) by its stable line_key, as TechCardBomItem.line_key reads.
+  string bom_line_key = 1;
+  // 0-based position in the colourway's SAVED palette (AdminColorwayRef.colours; 0 = the main colour).
+  int32 colour_position = 2;
+}
+
+message ApplyColorwayPaletteToSlotsRequest {
+  int32 colorway_id = 1;
+  // The shared tech_card.lock_version (R4) — AdminColorwayRef.lock_version; a mismatch -> ABORTED.
+  int32 expected_colorway_version = 2;
+  // 1 to 64 assignments, at most one per bom_line_key.
+  repeated ColorwayPaletteSlotAssignment assignments = 3;
+}
+
+message ApplyColorwayPaletteToSlotsResponse {
+  int32 lock_version = 1; // the new shared lock_version after the write
+  int32 rows_updated = 2; // garment-level recipe rows the colour was written to (one already wearing it counts)
+  int32 rows_created = 3; // colour-only garment-level rows added for slots that had none
 }
 
 // StylePatch is the narrow set of catalogue-style facts UpdateStyle owns (R4/§14.7-8). It deliberately

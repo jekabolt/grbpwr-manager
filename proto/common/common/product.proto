@@ -51,14 +51,37 @@ message CategorySizeSystem {
   SizeSkuSystem sku_system = 4;
 }
 
-// Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it feeds the
-// colour segment of the SKU and is referenced by product.color_code.
+// Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it is the
+// FAMILY a colourway is filed under (product.color_code, catalogue filter, aux-output assembly).
+// Since T45 it no longer feeds the SKU: the SKU colour segment is the colourway's own
+// sku_color_token. A colourway created before T45 kept its dictionary code as that token, so its
+// SKU did not change.
 message Color {
   int32 id = 1;
   string code = 2;
   string name = 3;
   string hex = 4;
   bool archived = 5; // R9: controlled dictionary; a used code archives, never deletes.
+}
+
+// ColorwayColour is one colour of a colourway's palette (T45, table product_colour). A palette is
+// ordered: the first colour is the MAIN one — thumbnails and single-colour readers use it, and the
+// server mirrors it into the colourway's development pantone / pantone_system / dev_hex.
+//
+// A colour is a Pantone code OR a free label (at least one of the two); hex is only a screen
+// preview. On writes values are trimmed, hex and pantone_system upper-cased; limits are those of
+// the columns (label 64, pantone 64, pantone_system 8 characters).
+message ColorwayColour {
+  // Free words for the colour («bone white»). Required when pantone is empty.
+  string label = 1;
+  // Screen preview "#RRGGBB", or "" when none is known. Never authoritative — the Pantone code is.
+  string hex = 2;
+  // The Pantone code as typed («19-4005 TCX», «Black 6 C»), free text: the Pantone catalogue is not
+  // a dictionary here. Required when label is empty.
+  string pantone = 3;
+  // The Pantone book the code is from (TCX, TPG, C, …). Only together with pantone — a system
+  // without a code is refused.
+  string pantone_system = 4;
 }
 
 message MeasurementName {
@@ -153,8 +176,13 @@ message Colorway {
   ColorwayLifecycleStatus status = 9;
   int32 style_id = 10; // R4: the single style relation (product.style_id)
   int32 lock_version = 11; // R2/R4: optimistic lock token (shared tech_card.lock_version)
-  string color_code = 12; // R1: colourway-owned colour identity (FK Dictionary.colors)
+  // The dictionary FAMILY tag (FK Dictionary.colors), T45: what the catalogue filter and aux-output
+  // assembly match on. Several colourways of one style may share it. Not the SKU segment any more.
+  string color_code = 12;
   google.protobuf.Timestamp published_at = 13; // R6: audit of first publish (not the status source)
+  // OUTPUT-ONLY. The colour segment of the SKU (T45): three characters [A-Z0-9] the server minted
+  // when the colourway was created, unique within the style and never changed afterwards.
+  string sku_color_token = 14;
 }
 
 // ColorwayMerchandisingInsert (R8: renamed from ColorwayBodyInsert) carries the colourway-owned
@@ -193,12 +221,38 @@ message ColorwayMerchandisingInsert {
   reserved "season"; // -> style.sku_season (R4)
   // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
   int32 min_tier = 20;
-  // REQUIRED canonical FK to Dictionary.colors; the sole color/SKU identity on writes.
+  // The dictionary FAMILY tag (FK Dictionary.colors), MANDATORY on every colourway (T45, owner's
+  // decision 4): the filter and assembly key. It is no longer the SKU identity — see sku_color_token
+  // — so two colourways of one style may share a family.
+  //
+  // CreateColorway: a dictionary code, or "" to let the server propose the family — the
+  // non-archived dictionary colour nearest to the main colour's hex (development.colours[0].hex,
+  // else development.dev_hex), in OKLab: a grey-scale colour is compared with the grey-scale
+  // families by lightness, a chromatic one with the chromatic families by hue first, then lightness
+  // and chroma (so a fabric black such as 19-4005 TCX files under BLK, not NAV). With no hex to go
+  // by, "" is refused (InvalidArgument, merchandising.color_code, family_required).
+  // UpdateColorway: a dictionary code replaces the family; "" proposes it again from the request's
+  // development.colours[0].hex when the request carries a palette, and otherwise keeps the stored
+  // family. A code must be exactly three upper-case characters present in the dictionary.
   string color_code = 21;
   // OUTPUT-ONLY resolved dictionary entry. Ignored on write.
   Color dictionary_color = 22;
   // country_code is the ISO 3166-1 alpha-2 manufacture country (R9; FK Country dict). Colourway-owned.
   string country_code = 23;
+  // The SKU colour token (T45) is minted by the SERVER and immutable. On CreateColorway it must be
+  // empty (a value is refused: InvalidArgument, field merchandising.sku_color_token). On
+  // UpdateColorway it is an echo guard only: empty or the stored token pass, any other value is
+  // refused (InvalidArgument, reason immutable). Read it from ColorwayMerchandising / Colorway /
+  // AdminColorwayRef.
+  //
+  // How the server mints it: a colourway created WITH a palette (development.colours) gets a token
+  // read from its name (dev name, else the main colour's label, else the family name) —
+  // «Black» → BLK, «black and white» → BKW — that is not already a token of the style and not a
+  // dictionary code other than its own family. A colourway created WITHOUT a palette (the
+  // pre-T45 shape: a dictionary code only) takes its dictionary code as the token when the style
+  // does not hold it yet, exactly as its SKU segment used to be, and a token read from its name
+  // otherwise.
+  string sku_color_token = 24;
 }
 
 // ColorwayMerchandising is the admin/internal READ projection of a colourway's display fields: the
@@ -231,9 +285,23 @@ message ColorwayMerchandising {
   string collection = 17;
   string fit = 18;
   int32 min_tier = 20;
+  // The dictionary FAMILY tag (T45) — see ColorwayMerchandisingInsert.color_code.
   string color_code = 21;
   Color dictionary_color = 22;
   string country_code = 23;
+  // The SKU colour token (T45): minted on create, immutable, unique within the style.
+  string sku_color_token = 26;
+  // The colourway's palette in order, the main colour first (T45). EMPTY for a legacy
+  // single-colour colourway: its colour then reads as before — the development pantone / dev_hex,
+  // else dictionary_color. Returned by GetColorwayByID; paged lists leave it empty.
+  repeated ColorwayColour colours = 27;
+  // The colourway name per storefront language, keyed by Language.id (T45). A language missing
+  // here reads colour_name. Returned by GetColorwayByID; paged lists leave it empty.
+  map<int32, string> name_i18n = 28;
+  // product.color — the name legacy readers print (orders, lays, run pack, the storefront cart):
+  // the colourway's own name (development.name) once it has a palette, the family's dictionary
+  // name otherwise.
+  string colour_name = 29;
 }
 
 message ColorwayDisplay {
