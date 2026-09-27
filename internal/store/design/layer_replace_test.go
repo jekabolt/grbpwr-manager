@@ -38,55 +38,70 @@ func TestReplacedByStampIsWrittenOnceOverNothing(t *testing.T) {
 	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12})
 }
 
-// СТОРОЖ cut_sheet ЧИТАЕТ ВЕТКУ, А НЕ КАРТОЧКУ: ДВА ЗАПРОСА ПО id РОДИТЕЛЕЙ И ЦЕЛЕЙ (O-53 review, раунд 4).
+// СТОРОЖ cut_sheet ЧИТАЕТ ВЕТКУ, А НЕ КАРТОЧКУ: ДВА ЗАПРОСА ПО id РОДИТЕЛЕЙ И ЦЕЛЕЙ (O-53 review,
+// раунды 4–5).
 //
 // Уровни, куски по entity.DesignBranchChunk и общий потолок собирает entity.DesignLoadBranch —
 // проверено без базы в entity (TestDesignLoadBranch…). Здесь — форма двух запросов, которыми стор
 // ему отвечает: колонки — ровно entity.DesignBranchColumns, предикат — только id или derived_from с
-// глаголом, порядок по id, без LIMIT (потолок держит курсор designBranchRead).
+// глаголом, у кропов — названный индекс derived_from и порядок самого этого индекса, у обоих — LIMIT,
+// связанный ровно с limit чтения (место под потолком плюс одна строка). План оптимизатора и замки
+// отсюда не видны — только то, что запрос их не оставляет на волю оценки.
 //
 // МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть предикат карточки (кроп другой карточки с derived_from = лист снова
 // пропал бы из ветки молча — MINOR ревью раунда 4); вернуть фильтр видимости или замены (спрятанный
 // кусок со стоящей правкой выпал бы из ветки); снять глагол с кропов (в ветку поехали бы правки
-// «рядом» и легаси); добавить LIMIT (ORDER BY id LIMIT n толкает оптимизатор на проход PRIMARY — под
-// SERIALIZABLE это замок на всю таблицу); читать `SELECT *`.
+// «рядом» и легаси); снять LIMIT с любого из двух (раунд 5: сервер снова сканировал бы, слал и запирал
+// всё, что подошло, а потолок держал бы только память Go); снять FORCE INDEX с кропов (`ORDER BY …
+// LIMIT` вправе увести оптимизатор в проход PRIMARY — замок на всю таблицу); сортировать кропы по id
+// (filesort читает всех детей куска до первой строки, и LIMIT снова не останавливает скан); связать
+// LIMIT не с limit (на единицу меньше — и кусок ветки отрезается молча); читать `SELECT *`.
 func TestBranchReadsNameParentsNotTheCard(t *testing.T) {
-	shape := regexp.MustCompile(`(?s)^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)\s+WHERE\s+(.+?)\s+ORDER BY\s+(\w+)\s*$`)
+	shape := regexp.MustCompile(`(?s)^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+FORCE INDEX \((\w+)\))?\s+WHERE\s+(.+?)\s+ORDER BY\s+(.+?)\s+LIMIT\s+:(\w+)\s*$`)
 	ids := make([]int, entity.DesignBranchChunk)
 	for i := range ids {
 		ids[i] = 100 + i
 	}
+	// Самый широкий limit, какой просит чтение ветки: всё место под потолком после листа плюс одна строка.
+	const limit = entity.DesignStandingNodesMax
 	for _, tc := range []struct {
 		name   string
 		q      string
+		index  string
 		where  string
+		order  string
 		params map[string]any
 	}{
-		{"цели замен", designBranchByID, "id IN (:ids)", map[string]any{"ids": ids}},
-		{"кропы уровня", designBranchCropsOf, "derived_from IN (:ids) AND derivation = :crop",
+		{"цели замен", designBranchByID, "", "id IN (:ids)", "id", map[string]any{"ids": ids}},
+		{"кропы уровня", designBranchCropsOf, "idx_design_picture_derived_from",
+			"derived_from IN (:ids) AND derivation = :crop", "derived_from, id",
 			map[string]any{"ids": ids, "crop": entity.DesignDerivationCrop}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			up := strings.ToUpper(tc.q)
 			require.Equal(t, 1, strings.Count(up, "SELECT"), "одно чтение, без подзапросов")
 			require.NotContains(t, up, "JOIN")
-			require.NotContains(t, up, "LIMIT", "потолок держит курсор, а не SQL")
 			require.NotContains(t, up, "TECH_CARD_ID =", "ни одного предиката карточки")
 
 			// Разбор словами, а не поиском подстроки: FROM сидит и внутри derived_from.
 			m := shape.FindStringSubmatch(tc.q)
-			require.NotNil(t, m, "форма SELECT … FROM … WHERE … ORDER BY …: %q", tc.q)
+			require.NotNil(t, m, "форма SELECT … FROM … [FORCE INDEX (…)] WHERE … ORDER BY … LIMIT :…: %q", tc.q)
 			require.Equal(t, entity.DesignBranchColumns, m[1], "колонки — ровно поля узла обхода")
 			require.Equal(t, "design_picture", m[2])
-			require.Equal(t, tc.where, m[3])
-			require.Equal(t, "id", m[4])
+			require.Equal(t, tc.index, m[3], "кропы — по названному индексу derived_from, цели — по PRIMARY без подсказки")
+			require.Equal(t, tc.where, m[4])
+			require.Equal(t, tc.order, m[5], "порядок — порядок индекса: иначе filesort, и LIMIT не останавливает скан")
+			require.Equal(t, "room_plus_one", m[6])
 
-			// Полный кусок связывается целиком: DesignBranchChunk мест в IN и ни одного лишнего.
+			// Полный кусок связывается целиком: DesignBranchChunk мест в IN, и LIMIT — последним, ровно limit.
 			require.NotContains(t, tc.q, "--", "SQL comments do not belong in a named query")
-			expanded, args, err := storeutil.MakeQuery(tc.q, tc.params)
+			require.NotContains(t, tc.params, "room_plus_one", "связку LIMIT добавляет designBranchQuery, а не вызывающий")
+			expanded, args, err := designBranchQuery(tc.q, tc.params, limit)
 			require.NoError(t, err)
 			require.Equal(t, strings.Count(expanded, "?"), len(args))
-			require.Len(t, args, len(tc.params)-1+entity.DesignBranchChunk)
+			require.Len(t, args, len(tc.params)-1+entity.DesignBranchChunk+1)
+			require.True(t, strings.HasSuffix(strings.TrimSpace(expanded), "LIMIT ?"), "%q", expanded)
+			require.Equal(t, limit, args[len(args)-1], "LIMIT — ровно limit чтения: место под потолком плюс одна строка")
 		})
 	}
 }

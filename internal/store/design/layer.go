@@ -691,7 +691,7 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	return &out, nil
 }
 
-// ─── ЧТЕНИЕ ВЕТКИ ЛИСТА ДЛЯ СТОРОЖА cut_sheet (O-53 review, раунд 4) ───
+// ─── ЧТЕНИЕ ВЕТКИ ЛИСТА ДЛЯ СТОРОЖА cut_sheet (O-53 review, раунды 4–5) ───
 //
 // Два запроса, которыми entity.DesignLoadBranch собирает ветку уровнями: кропы кадров уровня (по
 // derived_from) и цели их замен (по id). Раунд 3 читал все кадры карточки одним SELECT, и под
@@ -702,26 +702,45 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 // строки целей замен по первичному ключу.
 //
 // ⚠ БЕЗ ПРЕДИКАТА КАРТОЧКИ. Родитель и цель названы глобально уникальными id, и кадр ДРУГОЙ карточки,
-// повисший на кадре ветки, обязан прийти — его называет обход (entity.DesignStandingPieces), а не
-// теряет чтение: скан по карточке раунда 3 такой кроп не видел вовсе.
+// повисший на кадре ветки, обязан прийти — его называет чтение ветки (entity.DesignLoadBranch), а не
+// теряет запрос: скан по карточке раунда 3 такой кроп не видел вовсе.
 //
 // ⚠ ИНДЕКС НА replaced_by НЕ НУЖЕН, и 0369 его не заводит: ребро замены читается ВПЕРЁД — цель по
 // своему id, первичным ключом, — и ни один запрос не ищет строки ПО replaced_by.
 //
-// ⚠ LIMIT В SQL НЕТ НАМЕРЕННО. `ORDER BY id LIMIT n` искушает оптимизатор пройти PRIMARY по порядку
-// вместо диапазона derived_from, а под SERIALIZABLE такой проход — замок на всю таблицу. Потолок
-// держит курсор (designBranchRead): дальше limit-й строки ответ не читается.
+// ⚠ ПОТОЛОК СТОИТ В САМОМ SQL: LIMIT :room_plus_one (раунд 5). Одна остановка курсора держала только
+// память Go: go-sql-driver/mysql, закрывая курсор, дочитывает ответ до конца, и сервер сканировал,
+// слал и под SERIALIZABLE запирал всё, что подошло. Теперь сервер останавливает скан на limit-й
+// подходящей строке — это место под потолком плюс одна (designBranchQuery): пришла лишняя — потолок
+// пройден, и чтение ветки отказывает. Когда лишней нет, диапазоны дочитаны до конца, и замок на
+// промежутках тот же, что без LIMIT: ответ, по которому судится перезапись, полон.
+//
+// ⚠ ПЛАН КРОПОВ НАЗВАН, А НЕ УГАДАН: FORCE INDEX (idx_design_picture_derived_from). Без подсказки
+// `ORDER BY … LIMIT n` вправе увести оптимизатор в проход PRIMARY по порядку id — ради того, чтобы не
+// сортировать, — а такой проход под SERIALIZABLE запирает всю таблицу. Порядок кропов — derived_from,
+// id, и это тоже план, а не вкус: это порядок самого индекса (к ключу вторичного индекса InnoDB
+// приписан первичный), в котором читаются диапазоны IN, так что сортировки нет и LIMIT останавливает
+// скан. `ORDER BY id` при двух и больше родителях потребовал бы filesort, а filesort читает и
+// запирает всех детей куска, прежде чем отдать первую строку, — LIMIT снова держал бы только ответ.
+// Цели замен читаются по PRIMARY без подсказки: `id IN (…) ORDER BY id` — диапазоны первичного ключа
+// в их собственном порядке, и строк в ответе не больше, чем id в куске.
+//
+// ОСТАТОК, КОТОРЫЙ LIMIT НЕ СНИМАЕТ: derivation в индекс не входит, и правки «рядом» и легаси-дети
+// кадров ветки сканируются (и запираются) по дороге к кропам, хотя в ответ и в счёт не идут. Снять его
+// может только составной индекс (derived_from, derivation) — миграция, а не запрос.
 const (
 	designBranchByID = `
 	SELECT ` + entity.DesignBranchColumns + `
 	FROM design_picture
 	WHERE id IN (:ids)
-	ORDER BY id`
+	ORDER BY id
+	LIMIT :room_plus_one`
 	designBranchCropsOf = `
 	SELECT ` + entity.DesignBranchColumns + `
-	FROM design_picture
+	FROM design_picture FORCE INDEX (idx_design_picture_derived_from)
 	WHERE derived_from IN (:ids) AND derivation = :crop
-	ORDER BY id`
+	ORDER BY derived_from, id
+	LIMIT :room_plus_one`
 )
 
 // designBranchReads — два чтения ветки в транзакции db для entity.DesignLoadBranch.
@@ -737,10 +756,10 @@ func designBranchReads(ctx context.Context, db dependency.DB) entity.DesignBranc
 	}
 }
 
-// designBranchRead — один запрос ветки, не больше limit строк: дальше limit-й строки курсор не
-// читается, и память чтения ограничена потолком, а не данными.
+// designBranchRead — один запрос ветки, не больше limit строк: LIMIT стоит в самом SQL
+// (designBranchQuery), а курсор дальше limit-й строки не читается — второй пояс к нему.
 func designBranchRead(ctx context.Context, db dependency.DB, q string, params map[string]any, limit int) ([]entity.DesignBranchNode, error) {
-	query, args, err := storeutil.MakeQuery(q, params)
+	query, args, err := designBranchQuery(q, params, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -761,6 +780,19 @@ func designBranchRead(ctx context.Context, db dependency.DB, q string, params ma
 		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
 	return out, nil
+}
+
+// designBranchQuery — запрос ветки с привязками: :room_plus_one — ровно limit, место под потолком плюс
+// одна строка (entity.DesignLoadBranch). Лишняя строка — единственный способ узнать, что потолок
+// пройден: LIMIT на единицу меньше молча отрезал бы кусок ветки, и обход отпустил бы лист, не увидев
+// того, что его держит.
+func designBranchQuery(q string, params map[string]any, limit int) (string, []any, error) {
+	bound := make(map[string]any, len(params)+1)
+	for k, v := range params {
+		bound[k] = v
+	}
+	bound["room_plus_one"] = limit
+	return storeutil.MakeQuery(q, bound)
 }
 
 // designStampReplacedBy — ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ. `replaced_by IS NULL` в WHERE — второй

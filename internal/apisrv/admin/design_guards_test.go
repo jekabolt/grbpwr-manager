@@ -339,6 +339,94 @@ func TestEveryNamedInputIsChecked(t *testing.T) {
 	require.Nil(t, rig.sent)
 }
 
+// ИСТОЧНИК ПАТТЕРНА БЕРЁТСЯ ИЗ ОБЩЕЙ БИБЛИОТЕКИ; ТА ЖЕ КАРТИНКА В РЕНДЕРЕ — ПО-ПРЕЖНЕМУ ОТКАЗ.
+//
+// ЗАМЕРЕНО НА БЕТЕ: фото, выбранное пикером медиатеки в блоке IMAGE TO FABRIC, получало
+// `foreign_media: media 218 belongs to another tech card, not to 38`. Вход паттерна — картинка
+// МАТЕРИАЛА (фотография, из которой вынимают плитку, или фактура свотча), а правило «не чужое»
+// держит картинки ИЗДЕЛИЯ — довод целиком у двери и в шапке refuseForeignMedia.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть проверку extra паттерну (краснеют image, легаси-режим и свотч);
+// снять её у всех родов (краснеют рендер и перекрас — там названная картинка изображает ВЕЩЬ);
+// расширить исключение на ткань рецепта паттерна (краснеет последняя строка — снимается ОДИН
+// список, а не всё, что паттерн назвал).
+func TestAPatternSourceMayComeFromTheSharedLibrary(t *testing.T) {
+	// Картинка, которую держит ДРУГАЯ карточка: стор ответил бы про неё foreign_media.
+	const shared = 218
+	colour := func() *pb_common.DesignColourRecipe {
+		return &pb_common.DesignColourRecipe{Hex: "#C8102E", Words: "Pantone Fiery Red"}
+	}
+	for _, tc := range []struct {
+		name   string
+		kind   string
+		params *pb_common.DesignRunParams
+		field  string // "" = проходит границу карточки
+	}{
+		{"pattern, image mode: the source photograph is held by another card",
+			entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+				ExtraInputMediaIds: []int32{shared},
+				Pattern:            &pb_common.DesignPatternParams{Name: "jersey", Mode: entity.DesignPatternModeImage},
+			}, ""},
+		{"pattern, legacy empty mode reads as image and passes the same way",
+			entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+				ExtraInputMediaIds: []int32{shared},
+				Pattern:            &pb_common.DesignPatternParams{Name: "jersey"},
+			}, ""},
+		{"pattern, swatch mode: the texture reference is held by another card",
+			entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+				ExtraInputMediaIds: []int32{shared},
+				Colour:             colour(),
+				Pattern:            &pb_common.DesignPatternParams{Name: "red · outer", Mode: entity.DesignPatternModeSwatch},
+			}, ""},
+		{"render with the same picture in extra inputs is still refused",
+			entity.DesignRunKindRender, &pb_common.DesignRunParams{
+				ExtraInputMediaIds: []int32{shared},
+			}, "params.extra_input_media_ids"},
+		{"recolor with the same picture as its photograph is still refused",
+			entity.DesignRunKindRecolor, &pb_common.DesignRunParams{
+				ExtraInputMediaIds: []int32{shared},
+				Colour:             colour(),
+			}, "params.extra_input_media_ids"},
+		{"pattern: a cloth photo of another card in the colour recipe is still refused",
+			entity.DesignRunKindPattern, &pb_common.DesignRunParams{
+				Colour: &pb_common.DesignColourRecipe{
+					Hex: "#C8102E", Words: "Pantone Fiery Red", FabricMediaId: shared,
+				},
+				Pattern: &pb_common.DesignPatternParams{Name: "red · outer", Mode: entity.DesignPatternModeSwatch},
+			}, "params.colour.fabric_media_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
+			rig.foreign[shared] = true
+			req := designGuardStart(tc.kind)
+			req.Params = tc.params
+			_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+
+			if tc.field != "" {
+				require.Error(t, err)
+				code, md := errorReason(t, err)
+				require.Equal(t, codes.FailedPrecondition, code)
+				require.Equal(t, "foreign_media", md["reason"])
+				require.Equal(t, tc.field, md["field"], "отказ обязан назвать поле, которое чинить")
+				require.Nil(t, rig.sent, "отказ обязан стоять ДО резерва")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, rig.sent, "источник паттерна из библиотеки обязан доехать до стора")
+			// ИСКЛЮЧЕНИЕ — В ВОПРОСЕ, А НЕ В ОТВЕТЕ: дверь о картинке материала не спрашивает вовсе.
+			require.NotContains(t, rig.asked, shared)
+			// И КАРТИНКА ЗАМЁРЗЛА В СНИМКЕ — то есть уедет поставщику, а не выпала молча.
+			snap := &pb_common.DesignInputSnapshot{}
+			require.NoError(t, designUnmarshalJSON(rig.sent.Inputs, snap))
+			got := make([]int32, 0, len(snap.GetRefs()))
+			for _, r := range snap.GetRefs() {
+				got = append(got, r.GetMediaId())
+			}
+			require.Equal(t, []int32{shared}, got)
+		})
+	}
+}
+
 // ─────────────────────── 5. ПОТОЛКИ ───────────────────────
 
 // ОПИСАНИЕ ИЗДЕЛИЯ ИМЕЕТ ПОТОЛОК, И ЭТО ОТКАЗ, А НЕ ОБРЕЗКА.
