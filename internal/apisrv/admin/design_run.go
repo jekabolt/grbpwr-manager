@@ -2680,6 +2680,11 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// designDraftIdeaEstimate. Флаг сюда обязателен — прогон со снятым флагом не покупает ни
 	// колорвеев в ответе, ни словаря цвета в запросе, и платить за них не должен.
 	est := designDraftIdeaEstimate(len(attachedIDs), construction)
+	// ЛИЗА — ОДНО ЧИСЛО НА ДВЕ СТОРОНЫ (FIX-G1): его кладёт в строку StartRun (claim_expires_at =
+	// «сейчас» стора + лиза), и им же ограничен вызов ниже. leaseFrom берётся ДО StartRun, поэтому
+	// срок вызова (leaseFrom + лиза) не позже срока строки.
+	lease := design.HandlerLeaseFor(s.ai.ChainBudget(purpose, entity.DesignDraftLongestAnswerCeiling()))
+	leaseFrom := time.Now()
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:       cardID,
 		ClientRequestId:  clientRequestID,
@@ -2691,12 +2696,13 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
 		PriceEstimate:    est,
 		Author:           designActor(ctx),
-		// ⚠ ЛИЗА СЧИТАЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ — И ТОЛЬКО ЗДЕСЬ — ВИДНЫ ВСЕ ЧИСЛА СРАЗУ.
+		// ⚠ ЛИЗА (lease выше) СЧИТАЕТСЯ В ХЕНДЛЕРЕ, ПОТОМУ ЧТО ЗДЕСЬ ВИДНЫ ВСЕ ЧИСЛА СРАЗУ.
 		// Она обязана переживать платную ЦЕПОЧКУ (B-18: основной кандидат маршрута и, при отказе без
 		// денег, запасной — роутер делает для этой цели не больше двух вызовов), а длину цепочки
-		// задают потолок ответа (entity.DesignDraftLongestAnswerCeiling) и БАЗА бюджета КАЖДОГО
-		// транспорта, который позвонит (oaichat.CompletionBase — ровно то поле, что транспорт кладёт в
-		// CompletionBudget на проводе). Сумму знает роутер: s.ai.ChainBudget.
+		// задают потолок ответа (entity.DesignDraftLongestAnswerCeiling) и БАЗА бюджета транспорта
+		// (oaichat.CompletionBase — ровно то поле, что транспорт кладёт в CompletionBudget на проводе).
+		// Считает роутер, s.ai.ChainBudget, — и на ПОТОЛОК цепочки, а не на цепочку, видимую сейчас
+		// (FIX-G1): правка маршрута между лизой и вызовом может добавить второй вызов.
 		// Стор конфигурацию процесса не видит; пока он считал лизу сам, он считал её от КОДОВОЙ базы
 		// в 60 s, и при заданном OPENROUTER_HTTP_TIMEOUT = 240 s вызов занимал 506.67 s против лизы в
 		// 416.67 s — на 90 s ВНУТРИ вызова строка была свободна, и повтор того же client_request_id
@@ -2706,8 +2712,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// ещё и ПЕРЕХВАТ (resumeHandlerRun), а перехватывается ЧУЖАЯ строка — открытая, вообще
 		// говоря, другой веткой: сверка формы стоит ниже и только для ЗАКОНЧЕННОГО прогона. Взяв
 		// потолок этой ветки, мы продлевали бы чужую строку сроком, который её вызов не переживает.
-		HandlerLease: design.HandlerLeaseFor(
-			s.ai.ChainBudget(purpose, entity.DesignDraftLongestAnswerCeiling())),
+		HandlerLease: lease,
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to open the design idea draft", err, nil)
@@ -2855,7 +2860,13 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	if maxTokens > 0 {
 		draftReq.MaxTokens, draftReq.Effort = maxTokens, "none"
 	}
-	res, callErr := s.ai.Chat(aiprov.WithRun(ctx, run.Id, attempt.AttemptNo), purpose, draftReq)
+	//
+	// ВЫЗОВ ПРИВЯЗАН К ЛИЗЕ (FIX-G1, пояс и подтяжки): роутер ограничивает каждый вызов своим бюджетом, а
+	// ChainBudget считает лизу на всю цепочку; этот срок держит инвариант и тогда, когда одно из чисел
+	// однажды разойдётся с другим, — строка не освобождается, пока оплаченная цепочка ещё идёт.
+	chatCtx, cancelChat := context.WithDeadline(aiprov.WithRun(ctx, run.Id, attempt.AttemptNo), leaseFrom.Add(lease))
+	res, callErr := s.ai.Chat(chatCtx, purpose, draftReq)
+	cancelChat()
 	var (
 		text, finishReason string
 		usage              aiprov.TokenUsage

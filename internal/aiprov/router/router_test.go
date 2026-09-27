@@ -925,7 +925,6 @@ func TestChatWithRunKeysEveryRow(t *testing.T) {
 // (a provider with no transport is not one), capped at two for the draft-idea handler lease, and
 // never below one call.
 //
-// MUTATION: ChainBudget without the chainCap clamp → red (3× on draft-idea).
 // MUTATION: ChainBudget counts r.candidates instead of r.callable → red (4× with anthropic).
 // MUTATION: ChainBudget without the n < 1 floor → red (0 on an empty route).
 func TestChainBudgetIsTheSumOfTheCallableChain(t *testing.T) {
@@ -1164,7 +1163,8 @@ func TestTheBudgetIsTheTransportsOwnBase(t *testing.T) {
 	r := NewSingle(entity.AIProviderOpenRouter, tr, "m")
 	want := aiprov.CompletionBudget(240*time.Second, 8000)
 	require.Equal(t, 240*time.Second+8000*time.Second/30, want)
-	require.Equal(t, want, r.ChainBudget(entity.AIPurposeDesignDraftIdea, 8000))
+	require.Equal(t, want, r.ChainBudget(entity.AIPurposeNoteMarkdown, 8000))
+	require.Equal(t, 2*want, r.ChainBudget(entity.AIPurposeDesignDraftIdea, 8000), "the lease: the cap's worth of THIS base")
 
 	before := time.Now()
 	_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, aiprov.ChatRequest{User: "u", MaxTokens: 8000})
@@ -1366,4 +1366,36 @@ func TestTheSameSlugTwiceIsNotAFallback(t *testing.T) {
 		require.Equal(t, []string{slugIdeas, slugIdeasFB}, c.models())
 		require.Equal(t, 2*aiprov.CompletionBudget(time.Minute, 300), r.ChainBudget(entity.AIPurposePlaygroundIdeas, 300))
 	})
+}
+
+// TestALeasedPurposeIsSizedForTheCap (FIX-G1) — the draft-idea lease covers the chain that CAN run,
+// not the chain callable when the lease is sized: cap (two) × the longest single call any candidate
+// could make — a candidate callable now, any transport the router holds (a route edit can add a
+// candidate on it between the lease and the call), or one call on the router's own base.
+//
+// MUTATION: the leased branch returns one call's worth (no cap multiplication) → red.
+// MUTATION: the leased branch ignores heldTransports → red (the 240 s transport not on the route).
+func TestALeasedPurposeIsSizedForTheCap(t *testing.T) {
+	const draft = entity.AIPurposeDesignDraftIdea
+	// One callable candidate, one held transport: two calls' worth anyway.
+	single := NewSingle(entity.AIProviderOpenRouter, &keyedChatter{up: true, base: time.Minute}, "m")
+	one := aiprov.CompletionBudget(time.Minute, 8000)
+	require.Equal(t, 2*one, single.ChainBudget(draft, 8000), "one callable candidate still leases the cap")
+	require.Equal(t, one, single.ChainBudget(entity.AIPurposeNoteMarkdown, 8000), "an unleased purpose: the chain seen")
+
+	// Registry-backed: only openrouter (60 s) is on the draft route, but the router also holds an
+	// openai transport whose calls run on 240 s — an owner can put it on the route before Chat runs.
+	rg := newRig(t, map[string][]entity.AIRouteCandidate{
+		draft: {at(1, entity.AIProviderOpenRouter, "")},
+	}, testDefaults, time.Minute)
+	held := New(rg.reg, nil, map[string]aiprov.Chatter{
+		entity.AIProviderOpenRouter: &keyedChatter{up: true, base: time.Minute},
+		entity.AIProviderOpenAI:     &keyedChatter{up: true, base: 240 * time.Second},
+	}, testDefaults, time.Minute)
+	require.Equal(t, 2*aiprov.CompletionBudget(240*time.Second, 8000), held.ChainBudget(draft, 8000),
+		"the longest call is the one on the slowest transport the route could gain")
+
+	// Nothing callable now (keyless): still the cap's worth on the router's own base, never zero.
+	keyless := NewSingle(entity.AIProviderOpenRouter, &keyedChatter{up: false}, "m")
+	require.Equal(t, 2*aiprov.CompletionBudget(0, 8000), keyless.ChainBudget(draft, 8000))
 }

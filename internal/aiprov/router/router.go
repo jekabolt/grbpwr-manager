@@ -325,8 +325,13 @@ func (r *Router) canCall(purpose string, c candidate) bool {
 // budget is ONE call's time budget on candidate c: aiprov.CompletionBudget over the transport's own
 // base when it reports one, else over the router's.
 func (r *Router) budget(c candidate, maxTokens int) time.Duration {
+	return r.chatterBudget(c.chatter, maxTokens)
+}
+
+// chatterBudget is budget for a transport rather than a route entry.
+func (r *Router) chatterBudget(ch aiprov.Chatter, maxTokens int) time.Duration {
 	base := r.budgetBase
-	if b, ok := c.chatter.(budgetBaser); ok {
+	if b, ok := ch.(budgetBaser); ok {
 		base = b.CompletionBase()
 	}
 	return aiprov.CompletionBudget(base, maxTokens)
@@ -445,36 +450,70 @@ func (r *Router) BaseURL(providerKey string) string {
 	return ""
 }
 
-// ChainBudget is the longest a Chat for purpose may run with an answer ceiling of maxTokens: the sum
-// of each candidate's call budget (budget: its transport's base) over the candidates it may call —
-// capped at leasedChainCap for a purpose under a handler lease (Chat stops there too, so the lease
-// and the chain are the same number), and never less than ONE call: a route that gains a candidate
-// between the lease and the call must not find a lease of zero. design.HandlerLeaseFor takes it.
+// ChainBudget is the longest a Chat for purpose may run with an answer ceiling of maxTokens, and what
+// design.HandlerLeaseFor takes for a leased purpose.
 //
-// ⚠ ONE SNAPSHOT EACH, AND THE GAP BETWEEN THEM IS KNOWN. The lease is sized from the route as it
-// stands now and Chat reads the route again when it runs; a callable candidate that APPEARS in
-// between (a route edit, or a breaker whose open window ends, in the handler's pre-call seconds) can
-// make the chain one call longer than the lease — up to the cap. Sizing every leased purpose at the
-// cap would close it, and would also double today's one-candidate draft-idea lease (a dead handler's
-// row blocks the honest retry that much longer): a behaviour change commit C does not make.
+// A LEASED PURPOSE (chainCap > 0, draft-idea) IS SIZED FOR THE CAP, NOT FOR THE CHAIN CALLABLE NOW:
+// cap × the longest single call any candidate could make — the budget of every candidate callable now,
+// of every transport this router holds (a route edit can only add a candidate on one of them), and
+// of one call on the router's own base, whichever is longest. The lease is sized from the route as it
+// stands now and Chat reads the route again when it runs; a candidate that APPEARS in between (a route
+// edit, a breaker whose open window ends, a key saved in the handler's pre-call seconds) would make
+// the chain one call longer than a lease sized from the chain seen here — and the same
+// client_request_id could be reclaimed while the paid chain still runs. Sized at the cap, the gap is
+// closed: Chat never makes more than cap calls, each within the longest budget counted here. The price
+// is a longer stale claim after a crash (twice today's one-candidate lease), which only delays an
+// honest retry; the opposite error pays twice.
+//
+// Any other purpose: the sum of each callable candidate's call budget (budget: its transport's base),
+// never less than ONE call on the router's own base.
 func (r *Router) ChainBudget(purpose string, maxTokens int) time.Duration {
+	var base time.Duration
+	if r != nil {
+		base = r.budgetBase
+	}
+	oneCall := aiprov.CompletionBudget(base, maxTokens)
 	chain := r.callable(purpose)
-	if limit := chainCap(purpose); limit > 0 && len(chain) > limit {
-		chain = chain[:limit]
+	if limit := chainCap(purpose); limit > 0 {
+		longest := oneCall
+		for _, c := range chain {
+			longest = max(longest, r.budget(c, maxTokens))
+		}
+		for _, ch := range r.heldTransports() {
+			longest = max(longest, r.chatterBudget(ch, maxTokens))
+		}
+		return time.Duration(limit) * longest
 	}
 	if len(chain) == 0 {
-		// Nothing callable now: one call's worth on the router's own base, never zero.
-		var base time.Duration
-		if r != nil {
-			base = r.budgetBase
-		}
-		return aiprov.CompletionBudget(base, maxTokens)
+		return oneCall // nothing callable now: one call's worth on the router's own base, never zero
 	}
 	var sum time.Duration
 	for _, c := range chain {
 		sum += r.budget(c, maxTokens)
 	}
 	return sum
+}
+
+// heldTransports is every transport this router can call: the registry-backed router's transports
+// map, or a static route's own chatters.
+func (r *Router) heldTransports() []aiprov.Chatter {
+	if r == nil {
+		return nil
+	}
+	if r.static != nil {
+		out := make([]aiprov.Chatter, 0, len(r.static))
+		for _, s := range r.static {
+			if s.Chatter != nil {
+				out = append(out, s.Chatter)
+			}
+		}
+		return out
+	}
+	out := make([]aiprov.Chatter, 0, len(r.transports))
+	for _, ch := range r.transports {
+		out = append(out, ch)
+	}
+	return out
 }
 
 // OpenRouterSlugs lists every slug an openrouter candidate of a chat purpose is called with, sorted
