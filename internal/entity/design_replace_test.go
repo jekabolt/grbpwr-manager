@@ -198,7 +198,8 @@ func TestDesignReplacementHeadFollowsTheChainToItsEnd(t *testing.T) {
 // МУТАЦИИ: убрать проверку «следующий новее» (кольцо 7 → 12 → 7 крутится до потолка вместо того,
 // чтобы быть названным на первом же шаге назад); завернуть ненайденное звено через %w (клиенту ушло
 // бы not_found про кадр, которого он не называл); потерять %w у ошибки чтения прочего рода (дедлок
-// 1213 перестал бы повторяться транзакцией).
+// 1213 перестал бы повторяться транзакцией); снять сверку карточки звена (голова чужой карточки
+// ушла бы человеку как «picture #N стоит на месте вашего»).
 func TestDesignReplacementHeadNamesACorruptChain(t *testing.T) {
 	t.Run("ссылка назад", func(t *testing.T) {
 		chain, load, calls := replaceChain()
@@ -218,6 +219,20 @@ func TestDesignReplacementHeadNamesACorruptChain(t *testing.T) {
 		require.Error(t, err)
 		require.NotErrorIs(t, err, ErrDesignNotFound, "not_found соврал бы о кадре, которого клиент не называл")
 		require.Contains(t, err.Error(), "19")
+	})
+	t.Run("звено чужой карточки", func(t *testing.T) {
+		chain, load, _ := replaceChain()
+		foreign := chain[19]
+		foreign.TechCardId = replaceProbeCard + 1
+		chain[19] = foreign
+		_, err := DesignReplacementHead(chain[7], load)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrDesignAlreadyReplaced)
+		require.NotErrorIs(t, err, ErrDesignNotFound)
+		require.Contains(t, err.Error(), "leaves tech card 41 at picture 19")
+		require.Error(t, DesignAlreadyReplaced(chain[7], load), "и отказ already_replaced с чужой головой не собирается")
+		var replaced *DesignReplacedError
+		require.False(t, errors.As(DesignAlreadyReplaced(chain[7], load), &replaced))
 	})
 	t.Run("чтение упало", func(t *testing.T) {
 		chain, _, _ := replaceChain()
@@ -284,7 +299,7 @@ func TestDesignSheetReplacedRefusalNamesTheItemAndTheHead(t *testing.T) {
 	replacedMedia := chain[7].MediaId
 	media := []TechCardMediaItem{boardItem(500), boardItem(replacedMedia), sheetItem(600), sheetItem(replacedMedia)}
 
-	err := DesignSheetReplacedRefusal(replaceProbeCard, media, []DesignPicture{chain[7]}, load)
+	err := DesignSheetReplacedRefusal(replaceProbeCard, media, nil, []DesignPicture{chain[7]}, load)
 	var ve *ValidationError
 	require.ErrorAs(t, err, &ve, "поимённый отказ сейва — ValidationError, а не второй канал")
 	require.Equal(t, "technical_media[1].media_id", ve.Field)
@@ -312,7 +327,7 @@ func TestDesignSheetReplacedRefusalLetsTheRestThrough(t *testing.T) {
 		ReplacedBy: sql.NullInt32{Int32: 41, Valid: true}}
 	read := []DesignPicture{replaced, chain[19], foreign}
 
-	require.Error(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(replaced.MediaId)}, read, load),
+	require.Error(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(replaced.MediaId)}, nil, read, load),
 		"контроль: заменённый кадр этой карточки на листе — отказ")
 
 	for _, tc := range []struct {
@@ -325,12 +340,12 @@ func TestDesignSheetReplacedRefusalLetsTheRestThrough(t *testing.T) {
 		{"пустой сейв", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, tc.media, read, load))
+			require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, tc.media, nil, read, load))
 		})
 	}
 	t.Run("ничего не заменено — и цепочку не читать", func(t *testing.T) {
 		_, load, calls := replaceChain()
-		require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(replaced.MediaId)}, nil, load))
+		require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(replaced.MediaId)}, nil, nil, load))
 		require.Zero(t, *calls)
 	})
 }
@@ -344,7 +359,7 @@ func TestDesignSheetReplacedRefusalNamesTheOlderPictureOfOneFile(t *testing.T) {
 		ReplacedBy: sql.NullInt32{Int32: 31, Valid: true}}
 	chain[31] = DesignPicture{Id: 31, TechCardId: replaceProbeCard, MediaId: 3131}
 	for _, read := range [][]DesignPicture{{younger, chain[7]}, {chain[7], younger}} {
-		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, read, load)
+		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, nil, read, load)
 		var ve *ValidationError
 		require.ErrorAs(t, err, &ve)
 		require.Contains(t, ve.HowToFix, "replaced by picture #19")
@@ -358,7 +373,7 @@ func TestDesignSheetReplacedRefusalNamesTheOlderPictureOfOneFile(t *testing.T) {
 func TestDesignSheetReplacedRefusalKeepsCorruptionAndReadErrors(t *testing.T) {
 	chain, load, _ := replaceChain()
 	delete(chain, 19)
-	err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, []DesignPicture{chain[7]}, load)
+	err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, nil, []DesignPicture{chain[7]}, load)
 	require.Error(t, err)
 	var ve *ValidationError
 	require.False(t, errors.As(err, &ve), "порча цепочки — не то, что человек чинит на листе")
@@ -366,9 +381,60 @@ func TestDesignSheetReplacedRefusalKeepsCorruptionAndReadErrors(t *testing.T) {
 
 	chain, _, _ = replaceChain()
 	transient := errors.New("Error 1213: Deadlock found when trying to get lock")
-	err = DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, []DesignPicture{chain[7]},
+	err = DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(chain[7].MediaId)}, nil, []DesignPicture{chain[7]},
 		func(int) (DesignPicture, error) { return DesignPicture{}, transient })
 	require.ErrorIs(t, err, transient)
+}
+
+// СЕЙВ СУДИТ ПЕРЕХОД: УНАСЛЕДОВАННЫЙ ЛИСТ СОХРАНЯЕТСЯ, НОВОЕ ВХОЖДЕНИЕ ОТКАЗЫВАЕТ (D-57, раунд 3).
+//
+// Файл M заменённого кадра 7 уже стоит на листе один раз — лист собран до сторожа. Проба ведёт
+// его через жизнь карточки: сохранить как есть, переставить, добавить вторую копию, снять, вернуть.
+//
+// МУТАЦИИ: снять сверку с сохранённым (снова судится весь входящий лист — первые две половины
+// отказывают); сравнивать множества, а не счёт (одна унаследованная строка разрешает вторую копию —
+// третья половина проходит); назвать первое вхождение вместо добавленного (третья называет item 1).
+func TestDesignSheetReplacedRefusalJudgesTheTransition(t *testing.T) {
+	chain, load, _ := replaceChain()
+	m := chain[7].MediaId
+	read := []DesignPicture{chain[7]}
+	legacy := map[int]int{m: 1}
+
+	for _, tc := range []struct {
+		name  string
+		media []TechCardMediaItem
+	}{
+		{"унаследованная строка как есть", []TechCardMediaItem{sheetItem(m)}},
+		{"переставлена за другой файл", []TechCardMediaItem{sheetItem(600), sheetItem(m)}},
+		{"снята", []TechCardMediaItem{sheetItem(600)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, tc.media, legacy, read, load))
+		})
+	}
+	t.Run("вторая копия — отказ добавленному вхождению", func(t *testing.T) {
+		for _, media := range [][]TechCardMediaItem{
+			{sheetItem(m), sheetItem(600), sheetItem(m)},
+			{sheetItem(600), sheetItem(m), sheetItem(m)},
+		} {
+			err := DesignSheetReplacedRefusal(replaceProbeCard, media, legacy, read, load)
+			var ve *ValidationError
+			require.ErrorAs(t, err, &ve)
+			require.Equal(t, "technical_media[2].media_id", ve.Field, "называется вхождение сверх сохранённого числа")
+			require.Contains(t, ve.HowToFix, "technical sheet item 3: this drawing was replaced by picture #19")
+		}
+	})
+	t.Run("снятый файл обратно не встаёт", func(t *testing.T) {
+		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(600), sheetItem(m)},
+			map[int]int{600: 1}, read, load)
+		var ve *ValidationError
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, "technical_media[1].media_id", ve.Field)
+	})
+	t.Run("сохранённое число другого файла ничего не разрешает", func(t *testing.T) {
+		err := DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(m)}, map[int]int{600: 5}, read, load)
+		require.Error(t, err)
+	})
 }
 
 // ЧТЕНИЕ СПРАШИВАЕТ ТОЛЬКО ФАЙЛЫ ЛИСТА, КАЖДЫЙ ОДИН РАЗ, В ПОРЯДКЕ ЛИСТА.

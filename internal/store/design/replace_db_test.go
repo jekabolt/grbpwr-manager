@@ -12,6 +12,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/design"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 )
 
@@ -869,7 +873,8 @@ func probeSheetRows(t *testing.T, raw *sql.DB, card, media int) int {
 }
 
 // probeReplacedOnSheet — сам инвариант, в строках: файлы листа карточки, принадлежащие её
-// заменённым кадрам. Обязан быть нулём после любого исхода любой пары операций.
+// заменённым кадрам. На карточке без унаследованного листа (собранного до сторожа) обязан быть нулём
+// после любого исхода любой пары операций.
 func probeReplacedOnSheet(t *testing.T, raw *sql.DB, card int) int {
 	t.Helper()
 	return countRows(t, raw, `SELECT COUNT(*) FROM tech_card_media m
@@ -925,18 +930,71 @@ func TestDesignDBOverwriteReplayWithTheKeyOutranksTheSheet(t *testing.T) {
 	requireHead(t, err, p.sheet.Id, edit.Id)
 }
 
-// ДВА ПОРЯДКА И ГОНКА: СЕЙВ ЛИСТА ПРОТИВ ПЕРЕЗАПИСИ — ВСЕГДА РОВНО ОДИН ПРОХОДИТ (D-57).
+// ─── КОНТРОЛЬНАЯ ТОЧКА ВНУТРИ ТРАНЗАКЦИИ ───
+//
+// Стор принимает обёртку транзакции конструктором (techcard.New / design.New), поэтому проба строит
+// СВОИ экземпляры обоих сторов над обёрткой репозитория (rep.Tx — та же SERIALIZABLE с повтором
+// 1213/1205), чей колбэк получает хендл, который ОДИН раз, на первой попытке, останавливается сразу
+// после названного чтения и ждёт сигнала. Кода продукта это не касается.
+
+// checkpointDB — хендл транзакции, останавливающийся после чтения, которое называет at.
+type checkpointDB struct {
+	dependency.DB
+	at   func(query string) bool
+	stop func()
+}
+
+func (c checkpointDB) SelectContext(ctx context.Context, dest any, query string, args ...any) error {
+	err := c.DB.SelectContext(ctx, dest, query, args...)
+	if c.at(query) {
+		c.stop()
+	}
+	return err
+}
+
+func (c checkpointDB) QueryRowxContext(ctx context.Context, query string, args ...any) *sqlx.Row {
+	row := c.DB.QueryRowxContext(ctx, query, args...)
+	if c.at(query) {
+		c.stop()
+	}
+	return row
+}
+
+// checkpointRep — репозиторий транзакции с этим хендлом вместо своего.
+type checkpointRep struct {
+	dependency.Repository
+	db dependency.DB
+}
+
+func (c checkpointRep) DB() dependency.DB { return c.db }
+
+// checkpointTx — rep.Tx, чей колбэк видит checkpointDB.
+func checkpointTx(rep dependency.Repository, at func(string) bool, stop func()) func(context.Context, func(context.Context, dependency.Repository) error) error {
+	return func(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+		return rep.Tx(ctx, func(ctx context.Context, txRep dependency.Repository) error {
+			return f(ctx, checkpointRep{Repository: txRep, db: checkpointDB{DB: txRep.DB(), at: at, stop: stop}})
+		})
+	}
+}
+
+// ДВА ПОРЯДКА И ВЫНУЖДЕННОЕ ПЕРЕПЛЕТЕНИЕ: СЕЙВ ЛИСТА ПРОТИВ ПЕРЕЗАПИСИ — РОВНО ОДИН ПРОХОДИТ (D-57).
 //
 // Сейв первым — перезапись видит файл на листе (technical_sheet). Перезапись первой — сейв видит
-// замену (replaced_picture, строка и голова). Гонка — обе двери отпущены одним сигналом, и порядок
-// решает база; проба не угадывает, кто выиграет, и утверждает только то, что верно при ЛЮБОМ
-// исходе и при любом числе повторов 1213/1205 внутри обёрток: ровно одна операция прошла, вторая
-// отказала своим отказом, и инвариант в строках цел. Повтор жертвы дедлока перечитывает всё
-// заново — именно поэтому сторож стоит в транзакции сейва, а не перед ней.
+// замену (replaced_picture, строка и голова). Третий подслучай — то, чего два последовательных не
+// покажут: обе двери ПРОЧИТАЛИ чистое состояние (сейв — кадры листа, перезапись — лист), и ни одна
+// ещё не писала. Контрольные точки держат обе транзакции ровно там, пока обе не дойдут, и отпускают
+// вместе; дальше каждая упирается в замок чтения другой — SERIALIZABLE-замки, взятые этими чтениями,
+// — и InnoDB выбирает жертву дедлока. Какую — решает база, и проба это не угадывает: она утверждает
+// только то, что верно при любой жертве и при любом числе повторов внутри обёрток. Жертва перечитывает
+// всё заново на повторе (точка на повторе уже не держит) и отказывает своим отказом; ровно одна
+// операция проходит; инвариант в строках цел.
 //
-// МУТАЦИИ: снять сторож сейва (порядок «перезапись первой» проходит, гонка то и дело кончается
-// двумя успехами); читать на другом хендле (гонка кончается двумя успехами); перенести сторож после
-// переписи детей (то же — под повтором жертвы).
+// Если одна из точек не достигнута за отведённое время, проба КРАСНЕЕТ, а не молча проходит
+// последовательным порядком: её смысл — именно переплетение.
+//
+// МУТАЦИИ: снять сторож сейва (порядок «перезапись первой» проходит, переплетение кончается двумя
+// успехами); читать кадры сейва на другом хендле (переплетение кончается двумя успехами — чтение без
+// замка не мешает штампу).
 func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
@@ -965,32 +1023,60 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 		require.Zero(t, probeSheetRows(t, raw, p.card, p.sheet.MediaId))
 	})
 
-	t.Run("гонка — ровно одна проходит, и лист не держит заменённый файл", func(t *testing.T) {
+	t.Run("обе двери прочитали, ни одна не писала — ровно одна проходит", func(t *testing.T) {
+		guardRead := func(q string) bool {
+			return strings.Contains(q, "FROM design_picture") && strings.Contains(q, "replaced_by IS NOT NULL")
+		}
+		sheetRead := func(q string) bool {
+			return strings.Contains(q, "SELECT EXISTS") && strings.Contains(q, "FROM tech_card_media")
+		}
 		outcomes := map[string]int{}
-		for round := 0; round < 8; round++ {
+		for round := 0; round < 3; round++ {
 			p := newReplaceProbeSetup(t, rep, raw)
 			media := probeMedia(t, raw)
 			payload, version := probeSheetPayload(t, rep, p.card, onSheet(p.sheet.MediaId))
+
+			release := make(chan struct{})
+			saveRead, flatRead := make(chan struct{}), make(chan struct{})
+			var saveOnce, flatOnce sync.Once
+			hold := func(once *sync.Once, reached chan struct{}) func() {
+				return func() { once.Do(func() { close(reached); <-release }) }
+			}
+			base := storeutil.Base{DB: rep.DB(), Now: time.Now}
+			saveTx := checkpointTx(rep, guardRead, hold(&saveOnce, saveRead))
+			flatTx := checkpointTx(rep, sheetRead, hold(&flatOnce, flatRead))
+			cards := techcard.New(base, saveTx, saveTx, func() dependency.Repository { return rep })
+			band := design.New(base, flatTx, flatTx)
 
 			var (
 				wg               sync.WaitGroup
 				saveErr, flatErr error
 				edit             *entity.DesignPicture
 			)
-			start := make(chan struct{})
 			wg.Add(2)
 			go func() {
 				defer wg.Done()
-				<-start
-				saveErr = rep.TechCards().UpdateTechCard(ctx, p.card, payload, version)
+				saveErr = cards.UpdateTechCard(ctx, p.card, payload, version)
 			}()
 			go func() {
 				defer wg.Done()
-				<-start
-				edit, flatErr = rep.Design().FlattenEditLayer(ctx, p.overwrite(media, p.sheet.Id))
+				edit, flatErr = band.FlattenEditLayer(ctx, p.overwrite(media, p.sheet.Id))
 			}()
-			close(start)
+			forced := true
+			deadline := time.NewTimer(30 * time.Second)
+		checkpoints:
+			for _, reached := range []chan struct{}{saveRead, flatRead} {
+				select {
+				case <-reached:
+				case <-deadline.C:
+					forced = false
+					break checkpoints
+				}
+			}
+			deadline.Stop()
+			close(release)
 			wg.Wait()
+			require.True(t, forced, "round %d: the two reads did not both happen before either write", round)
 
 			switch {
 			case saveErr == nil && flatErr == nil:
@@ -1010,6 +1096,60 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 			require.Zero(t, probeReplacedOnSheet(t, raw, p.card), "round %d: инвариант в строках", round)
 		}
 		t.Logf("outcomes: %v", outcomes)
+	})
+}
+
+// СЕЙВ СУДИТ ПЕРЕХОД: УНАСЛЕДОВАННЫЙ ЛИСТ СОХРАНЯЕТСЯ, НОВОЕ ВХОЖДЕНИЕ ОТКАЗЫВАЕТ (D-57, раунд 3).
+//
+// Лист, собранный до сторожа, держит файл заменённого кадра — на бете такое возможно: перезапись
+// уехала раньше technical_sheet. Строка кладётся мимо стора (так её оставил сейв до сторожа), и
+// карточка проживает через настоящий сейв всё, что с ней делают: правку другого поля при
+// нетронутом листе, перестановку, вторую копию файла, снятие и возврат, голову цепочки.
+//
+// МУТАЦИИ: судить весь входящий лист (первая половина отказывает — карточка несохраняема); сравнивать
+// множества (третья проходит — одна унаследованная строка разрешила вторую копию); читать сохранённый
+// лист после переписи (все вхождения выглядят унаследованными — третья и четвёртая проходят).
+func TestDesignDBCardSaveJudgesTheSheetTransition(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	p := newReplaceProbeSetup(t, rep, raw)
+	edit, err := rep.Design().FlattenEditLayer(ctx, p.overwrite(probeMedia(t, raw), p.sheet.Id))
+	require.NoError(t, err)
+	_, err = raw.Exec(`INSERT INTO tech_card_media (tech_card_id, media_id, kind, category, display_order)
+		VALUES (?, ?, 'front', 'technical', 0)`, p.card, p.sheet.MediaId)
+	require.NoError(t, err)
+	other := probeMedia(t, raw)
+	legacy := p.sheet.MediaId
+
+	t.Run("лист как есть, правка другого поля — проходит", func(t *testing.T) {
+		payload, version := probeSheetPayload(t, rep, p.card, onSheet(legacy))
+		payload.Notes = sql.NullString{String: "edited beside a legacy sheet", Valid: true}
+		require.NoError(t, rep.TechCards().UpdateTechCard(ctx, p.card, payload, version))
+		var notes sql.NullString
+		require.NoError(t, raw.QueryRow(`SELECT notes FROM tech_card WHERE id = ?`, p.card).Scan(&notes))
+		require.Equal(t, "edited beside a legacy sheet", notes.String, "правка легла")
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, legacy), "унаследованная строка на месте")
+	})
+	t.Run("переставлен за другой файл — проходит", func(t *testing.T) {
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(other), onSheet(legacy)))
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, legacy))
+	})
+	t.Run("вторая копия — отказ добавленному вхождению, и не записано ничего", func(t *testing.T) {
+		version := probeLockVersion(t, raw, p.card)
+		err := probeSaveSheet(t, rep, p.card, onSheet(legacy), onSheet(other), onSheet(legacy))
+		requireSheetRefusal(t, err, 2, edit.Id)
+		require.Equal(t, version, probeLockVersion(t, raw, p.card))
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, legacy))
+	})
+	t.Run("снят — и обратно не встаёт", func(t *testing.T) {
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(other)))
+		require.Zero(t, probeSheetRows(t, raw, p.card, legacy))
+		requireSheetRefusal(t, probeSaveSheet(t, rep, p.card, onSheet(other), onSheet(legacy)), 1, edit.Id)
+		require.Zero(t, probeSheetRows(t, raw, p.card, legacy))
+	})
+	t.Run("голова цепочки — проходит", func(t *testing.T) {
+		require.NoError(t, probeSaveSheet(t, rep, p.card, onSheet(other), onSheet(edit.MediaId)))
+		require.Equal(t, 1, probeSheetRows(t, raw, p.card, edit.MediaId))
 	})
 }
 

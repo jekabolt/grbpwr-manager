@@ -450,13 +450,15 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 				fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
 		}
 	}
-	// THE TECHNICAL SHEET NEVER CARRIES THE FILE OF A REPLACED PICTURE OF THIS CARD (27.09, D-57) —
-	// the save-side half of the invariant FlattenEditLayer keeps with technical_sheet. It has to live
-	// HERE, in this transaction and before the children are rewritten: the flatten does not bump
+	// THE SAVE DOES NOT ADD THE FILE OF A REPLACED PICTURE OF THIS CARD TO THE TECHNICAL SHEET (27.09,
+	// D-57) — the save-side half of the invariant FlattenEditLayer keeps with technical_sheet. It is a
+	// transition rule: an occurrence beyond what the stored sheet already holds is refused (item N, with
+	// the head of the chain); an inherited one keeps saving. Why HERE: the flatten does not bump
 	// lock_version, so a form opened before an overwrite still saves at a matching version, and a
-	// deadlock victim retried by txFunc re-runs this read against whatever committed meanwhile.
-	// Either order then closes: save first — the flatten sees the file on the sheet; flatten first —
-	// this read sees the replacement and refuses item N with the head of its chain.
+	// deadlock victim retried by txFunc re-runs these reads against whatever committed meanwhile — so
+	// the reads belong to this transaction; and the stored count is the sheet the DELETE loop below is
+	// about to rewrite, so it has to be read before that loop. Ahead of the header UPDATE is a choice
+	// (a refused save writes nothing at all), not a requirement.
 	if err := refuseReplacedPicturesOnTheSheet(ctx, rep.DB(), id, tc.Media); err != nil {
 		return nil, err
 	}

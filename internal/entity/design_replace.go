@@ -87,10 +87,15 @@ func (e *DesignReplacedError) Unwrap() error { return ErrDesignAlreadyReplaced }
 // чтением; обход один, чтобы два обхода не разошлись в том, что считать порчей.
 //
 // ПОРЧА НЕ ВЫДАЁТСЯ ЗА ОТКАЗ. Ссылка назад (id следующего не больше текущего), цепочка длиннее
-// DesignReplacementChainMax и ссылка на несуществующий кадр — ошибка БЕЗ сентинела полосы: клиенту
-// Internal, дежурному строка в логе. not_found здесь соврал бы о кадре, которого клиент не называл.
-// Ошибка чтения прочего рода заворачивается через %w — дедлок 1213 обязан остаться видимым для
-// повтора транзакции.
+// DesignReplacementChainMax, ссылка на несуществующий кадр и звено ЧУЖОЙ карточки — ошибка БЕЗ
+// сентинела полосы: клиенту Internal, дежурному строка в логе. not_found здесь соврал бы о кадре,
+// которого клиент не называл. Ошибка чтения прочего рода заворачивается через %w — дедлок 1213
+// обязан остаться видимым для повтора транзакции.
+//
+// ЗВЕНО ЧУЖОЙ КАРТОЧКИ (D-57, раунд 3). Правка всегда файлится на карточке оригинала, но у
+// replaced_by нет внешнего ключа, и испорченная ссылка на кадр другой карточки с бОльшим id прошла бы
+// проверку «следующий новее» — и отказ назвал бы человеку чужую картинку как ту, что стоит на месте
+// его чертежа. Каждое прочитанное звено сверяется с карточкой названного кадра.
 func DesignReplacementHead(p DesignPicture, load func(id int) (DesignPicture, error)) (DesignPicture, error) {
 	head := p
 	for hops := 0; head.ReplacedBy.Valid; hops++ {
@@ -106,6 +111,10 @@ func DesignReplacementHead(p DesignPicture, load func(id int) (DesignPicture, er
 					p.Id, next)
 			}
 			return head, fmt.Errorf("failed to follow the replacement chain of design picture %d: %w", p.Id, err)
+		}
+		if n.TechCardId != p.TechCardId {
+			return head, fmt.Errorf("design picture %d: the replacement chain leaves tech card %d at picture %d, which belongs to tech card %d",
+				p.Id, p.TechCardId, n.Id, n.TechCardId)
 		}
 		head = n
 	}
@@ -201,10 +210,24 @@ func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original D
 // повторённая транзакцией, могла закоммитить то же самое уже ПОСЛЕ флэттена. Инвариант один на обе
 // двери, и он про ФАЙЛЫ, потому что лист держит медиа, а не кадры:
 //
-//	на техническом листе карточки нет медиа кадра этой карточки, у которого стоит replaced_by.
+//	ни одна дверь не ДОБАВЛЯЕТ на технический лист карточки файл кадра этой карточки, у которого
+//	стоит replaced_by: перезапись не штампует кадр, чей файл на листе; сейв не кладёт на лист
+//	вхождение файла заменённого кадра сверх того, что там уже стоит.
+//
+// Для всего, что записано после сторожа, это и есть «на листе нет файла заменённого кадра». Строки,
+// оставшиеся от листа, собранного ДО сторожа, живут, пока их не снимут, — см. ниже, почему не иначе.
 //
 // Обе проверки читают в своей SERIALIZABLE-транзакции, и порядок закрывается любой: сейв первым —
 // флэттен видит файл на листе (technical_sheet); флэттен первым — сейв видит замену (этот отказ).
+//
+// СЕЙВ СУДИТ ПЕРЕХОД, А НЕ СОСТОЯНИЕ (D-57, раунд 3). Лист, собранный ДО сторожа, законно держит
+// такой файл (на бете перезапись уехала раньше technical_sheet), и сторож «всего входящего листа»
+// делал бы такую карточку несохраняемой целиком: каждый автосейв и правка любого другого поля
+// отказывали бы, а инвариант от отказа не чинился. Поэтому отказ получает только вхождение файла
+// заменённого кадра СВЕРХ того числа, сколько раз он уже стоит на листе, — новое или добавленное.
+// Счёт, а не множество: одна унаследованная строка не разрешает второй копии. Снятый с листа файл
+// обратно не встаёт: после снятия его число ноль. Голову цепочки сервер сам на лист НЕ ставит —
+// выноски листа приколоты в координатах оригинала, и заменить файл значит решить за человека.
 //
 // ⚠ ДВЕ РЕГИСТРАЦИИ ОДНОГО ФАЙЛА. Если тот же файл держит ещё и незаменённый кадр карточки, отказ
 // всё равно звучит — ровно как technical_sheet отказывает перезаписи, не спрашивая, чей ещё это
@@ -233,19 +256,22 @@ func DesignSheetMediaIds(media []TechCardMediaItem) []int {
 // DesignSheetReplacedRefusal — МОЖЕТ ЛИ СЕЙВ КАРТОЧКИ cardID ПОСТАВИТЬ НА ТЕХНИЧЕСКИЙ ЛИСТ ЭТИ
 // ФАЙЛЫ. nil = может.
 //
-// media — входящий список сейва (мудборд и лист вместе, как их собирает dto); replaced — кадры,
-// прочитанные стором в транзакции сейва по файлам листа (заменённые кадры этой карточки); load
-// читает звено цепочки там же. Решение здесь, чтения — у стора: правило проверяется без базы.
+// media — входящий список сейва (мудборд и лист вместе, как их собирает dto); stored — сколько раз
+// каждый файл стоит на листе карточки СЕЙЧАС (строки tech_card_media с category = 'technical',
+// прочитанные стором в транзакции сейва ДО их переписи; отсутствующий ключ — ноль); replaced —
+// кадры, прочитанные там же по файлам листа (заменённые кадры этой карточки); load читает звено
+// цепочки там же. Решение здесь, чтения — у стора: правило проверяется без базы.
 //
 // ОТКАЗ — ТОТ ЖЕ КАНАЛ, ЧТО У ОСТАЛЬНЫХ ПОИМЁННЫХ ОТКАЗОВ СЕЙВА (NewFieldViolation, как
 // kind_not_available_yet в dto на той же строке листа): поле technical_media[i].media_id, где i —
 // место в списке листа с нуля, как его пишет dto; человеку — номер с единицы и голова цепочки замен,
-// то есть кадр, который стоит на месте этого сейчас. Первый такой файл в порядке листа: канал несёт
-// одно нарушение.
+// то есть кадр, который стоит на месте этого сейчас. Называется ПЕРВОЕ вхождение сверх сохранённого
+// числа в порядке листа: при числе ноль — первое вхождение файла, при одной унаследованной строке —
+// второе, то есть добавленное. Канал несёт одно нарушение.
 //
 // Кадр другой карточки не держит (лист печатает свою карточку), незаменённый — тоже; порча цепочки —
 // не отказ, а ошибка без сентинела (DesignReplacementHead): клиенту Internal, дежурному строка в логе.
-func DesignSheetReplacedRefusal(cardID int, media []TechCardMediaItem, replaced []DesignPicture, load func(id int) (DesignPicture, error)) error {
+func DesignSheetReplacedRefusal(cardID int, media []TechCardMediaItem, stored map[int]int, replaced []DesignPicture, load func(id int) (DesignPicture, error)) error {
 	byMedia := make(map[int]DesignPicture, len(replaced))
 	for _, p := range replaced {
 		if p.TechCardId != cardID || !p.ReplacedBy.Valid {
@@ -260,19 +286,24 @@ func DesignSheetReplacedRefusal(cardID int, media []TechCardMediaItem, replaced 
 	if len(byMedia) == 0 {
 		return nil
 	}
+	seen := make(map[int]int, len(byMedia))
 	item := 0
 	for _, m := range media {
 		if m.Category != TechCardMediaCategoryTechnical {
 			continue
 		}
 		if p, ok := byMedia[m.MediaId]; ok {
-			head, err := DesignReplacementHead(p, load)
-			if err != nil {
-				return err
+			seen[m.MediaId]++
+			// Вхождения в пределах сохранённого числа — лист, каким он уже стоит: их сейв не судит.
+			if seen[m.MediaId] > stored[m.MediaId] {
+				head, err := DesignReplacementHead(p, load)
+				if err != nil {
+					return err
+				}
+				return NewFieldViolation(fmt.Sprintf("technical_media[%d].media_id", item), DesignSheetReplacedReason, "",
+					fmt.Sprintf("technical sheet item %d: this drawing was replaced by picture #%d — "+
+						"put the replacement on the sheet, or take this one off", item+1, head.Id))
 			}
-			return NewFieldViolation(fmt.Sprintf("technical_media[%d].media_id", item), DesignSheetReplacedReason, "",
-				fmt.Sprintf("technical sheet item %d: this drawing was replaced by picture #%d — "+
-					"put the replacement on the sheet, or take this one off", item+1, head.Id))
 		}
 		item++
 	}
