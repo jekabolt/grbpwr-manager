@@ -105,9 +105,13 @@ func (s *Server) GetAiProvidersConfig(ctx context.Context, _ *pb_admin.GetAiProv
 // together with the version of the one snapshot they were rendered from (Version() and Providers()
 // side by side could straddle a concurrent Reload). When the versions differ — another instance wrote
 // since this one's last poll, or a reload raced this read — the registry is reloaded and BOTH are read
-// again, once. Still different (a write landed in between again, or the reload failed) → the page is
-// built anyway and a WARN names both versions: failing the read would tell the admin, after a write,
-// that a save which happened did not; the poller converges. A failed badge read degrades to no badge.
+// again, once. Still different → a WARN names both versions and the read is refused with Unavailable
+// (REVIEW-FIXD P2 #3), never built: a page that joins two versions shows, beside one version's rows, a
+// key source and last four that are not the key answering (a cleared key still «set», or the reverse).
+// Only two things keep the versions apart past the retry: a Reload that failed — it fails only when
+// its own read of the same database fails — or a second write landing inside this one read; either
+// way the answer is the admin's «reload», and after a write the reloaded page shows the save. A
+// failed badge read degrades to no badge.
 func (s *Server) aiProvidersConfig(ctx context.Context) (*pb_admin.GetAiProvidersConfigResponse, error) {
 	cfg, err := s.aiReadConfig(ctx)
 	if err != nil {
@@ -124,8 +128,9 @@ func (s *Server) aiProvidersConfig(ctx context.Context) (*pb_admin.GetAiProvider
 		}
 		states, regVersion = s.aiReg.ProvidersAt()
 		if regVersion != cfg.Settings.ConfigVersion {
-			slog.Default().WarnContext(ctx, "ai panel: the registry and the store still describe different config versions after a reload; the key state shown may lag until the next poll",
+			slog.Default().WarnContext(ctx, "ai panel: the registry and the store still describe different config versions after a reload; the read is refused rather than joining them",
 				slog.Uint64("store_version", cfg.Settings.ConfigVersion), slog.Uint64("registry_version", regVersion))
+			return nil, status.Error(codes.Unavailable, "the AI configuration changed while it was being read; reload")
 		}
 	}
 	faults, err := s.repo.AI().RecentFaults(ctx, time.Now().Add(-aiFaultWindow))
