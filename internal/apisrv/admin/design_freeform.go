@@ -1,6 +1,9 @@
 package admin
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -900,4 +903,48 @@ func designFreeformRefs(params *pb_common.DesignRunParams) []*pb_common.DesignIn
 		out = append(out, ref)
 	}
 	return out
+}
+
+// designRefuseModelPhotoMismatch — A TRY-ON THAT NAMES A MODEL PROFILE DRESSES A PHOTO OF THAT
+// MODEL. options.model_id is provenance the history will show («worn by …»); a role=model picture
+// that is not one of that profile's photos (its thumbnail or gallery) would file one person's
+// picture under another's name. One read, only for tryon with a model id (every other preset
+// refuses the field: option_not_read); the media door (designRefuseForeignMedia) is not widened —
+// the item passed it first (D2).
+func (s *Server) designRefuseModelPhotoMismatch(ctx context.Context, kind string, params *pb_common.DesignRunParams) error {
+	ff := params.GetFreeform()
+	id := int(ff.GetOptions().GetModelId())
+	if kind != entity.DesignRunKindFreeform || ff.GetPreset() != entity.DesignFreeformPresetTryon || id <= 0 {
+		return nil
+	}
+	m, err := s.repo.Models().GetModelById(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeModelNotFound,
+				fmt.Sprintf("params.freeform.options.model_id %d is not a model profile. Nothing was "+
+					"reserved and nothing was charged", id),
+				map[string]string{"model_id": strconv.Itoa(id)})
+		}
+		return designError(ctx, "failed to read the model profile of a try-on", err, nil)
+	}
+	allowed := map[int]struct{}{}
+	if m.ThumbnailId.Valid && m.ThumbnailId.Int32 > 0 {
+		allowed[int(m.ThumbnailId.Int32)] = struct{}{}
+	}
+	for _, mid := range m.MediaIds {
+		allowed[mid] = struct{}{}
+	}
+	for i, it := range ff.GetItems() {
+		if it.GetRole() != entity.DesignFreeformRoleModel {
+			continue
+		}
+		if _, ok := allowed[int(it.GetMediaId())]; !ok {
+			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeModelPhotoMismatch,
+				fmt.Sprintf("params.freeform.items.%d (picture %d) is not a photo of model %d — pick one "+
+					"of that profile's photos, or clear model_id. Nothing was reserved and nothing was "+
+					"charged", i, it.GetMediaId(), id),
+				map[string]string{"model_id": strconv.Itoa(id), "media_id": strconv.Itoa(int(it.GetMediaId()))})
+		}
+	}
+	return nil
 }

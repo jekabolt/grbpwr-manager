@@ -878,6 +878,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designFreeformItemMediaIDs(params)...); err != nil {
 		return nil, err
 	}
+	// A try-on naming a model profile dresses a photo OF that model (EFFECTIVE params).
+	if err := s.designRefuseModelPhotoMismatch(ctx, kind, params); err != nil {
+		return nil, err
+	}
 
 	// ─── РОДЫ, У КОТОРЫХ ВХОД — КОНКРЕТНАЯ КАРТИНКА, А НЕ КОНТЕКСТ ───
 	//

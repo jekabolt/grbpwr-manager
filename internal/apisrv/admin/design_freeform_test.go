@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -770,5 +772,81 @@ func TestStartDesignRunRefusesARerunThatCHANGES_ITS_TILE(t *testing.T) {
 		ffItem(11, entity.DesignFreeformRoleModel, 0), ffItem(12, entity.DesignFreeformRoleProduct, 0))
 	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
 	require.Equal(t, entity.DesignErrorCodeRerunChangesWorkflow, ffReason(t, err))
+	require.Nil(t, rig.sent)
+}
+
+// ─────────────────────── B-11: model-photo provenance ───────────────────────
+
+func tryonWithModel(modelID int32, modelMedia int32) *pb_common.DesignRunParams {
+	return ffWithOptions(ffParams(entity.DesignFreeformPresetTryon,
+		ffItem(modelMedia, entity.DesignFreeformRoleModel, 0), ffItem(12, entity.DesignFreeformRoleProduct, 0)),
+		&pb_common.DesignWorkflowOptions{ModelId: modelID})
+}
+
+// TestATryonDRESSES_A_PHOTO_OF_THE_NAMED_MODEL — thumbnail and gallery pass, anything else is a
+// mismatch, an unknown profile is named, and no model id means no read at all.
+func TestATryonDRESSES_A_PHOTO_OF_THE_NAMED_MODEL(t *testing.T) {
+	server := func(t *testing.T) (*Server, *mocks.MockModels) {
+		repo := mocks.NewMockRepository(t)
+		models := mocks.NewMockModels(t)
+		repo.EXPECT().Models().Return(models).Maybe()
+		return &Server{repo: repo}, models
+	}
+	profile := &entity.Model{Id: 5}
+	profile.ThumbnailId = sql.NullInt32{Int32: 70, Valid: true}
+	profile.MediaIds = []int{71, 72}
+
+	for _, c := range []struct {
+		name  string
+		media int32
+		want  string
+	}{
+		{"the thumbnail", 70, ""},
+		{"a gallery photo", 72, ""},
+		{"somebody else's photo", 99, entity.DesignErrorCodeModelPhotoMismatch},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, models := server(t)
+			models.EXPECT().GetModelById(mock.Anything, 5).Return(profile, nil).Once()
+			err := s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, tryonWithModel(5, c.media))
+			if c.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Equal(t, c.want, ffReason(t, err))
+		})
+	}
+	t.Run("an unknown profile", func(t *testing.T) {
+		s, models := server(t)
+		models.EXPECT().GetModelById(mock.Anything, 6).Return(nil, fmt.Errorf("get: %w", sql.ErrNoRows)).Once()
+		err := s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, tryonWithModel(6, 70))
+		require.Equal(t, entity.DesignErrorCodeModelNotFound, ffReason(t, err))
+	})
+	t.Run("no model id, or another preset: no read", func(t *testing.T) {
+		s, models := server(t)
+		require.NoError(t, s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, tryonWithModel(0, 99)))
+		other := ffWithOptions(ffParams(entity.DesignFreeformPresetFree, ffItem(99, "", 0)),
+			&pb_common.DesignWorkflowOptions{ModelId: 5})
+		require.NoError(t, s.designRefuseModelPhotoMismatch(designRunCtx(), entity.DesignRunKindFreeform, other),
+			"another preset refuses model_id elsewhere (option_not_read), without a read")
+		models.AssertNotCalled(t, "GetModelById", mock.Anything, mock.Anything)
+	})
+}
+
+// TestStartDesignRunRefusesATryonOnAFOREIGN_MODEL_PHOTO — the check is wired at the live door,
+// before the store.
+func TestStartDesignRunRefusesATryonOnAFOREIGN_MODEL_PHOTO(t *testing.T) {
+	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
+	models := mocks.NewMockModels(t)
+	rig.repo.EXPECT().Models().Return(models).Maybe()
+	profile := &entity.Model{Id: 5}
+	profile.MediaIds = []int{71}
+	models.EXPECT().GetModelById(mock.Anything, 5).Return(profile, nil).Once()
+	rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).Return(nil).Maybe()
+
+	req := designStartRequest(entity.DesignRunKindFreeform)
+	req.Params = tryonWithModel(5, 99)
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.Equal(t, entity.DesignErrorCodeModelPhotoMismatch, ffReason(t, err))
 	require.Nil(t, rig.sent)
 }
