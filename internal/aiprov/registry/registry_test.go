@@ -996,6 +996,30 @@ func TestBreaker_ResetRetiresEveryAdmission(t *testing.T) {
 	require.Equal(t, BreakerOpen, orChatState(r), "a success on the old key wiped the new key's faults")
 }
 
+// TestBreaker_RotationRetiresZeroAdmissions — no breaker exists; three calls are admitted with the
+// zero Admission on the OLD key; the key rotates (ResetBreakers); their transient faults arrive
+// afterwards and must NOT open the breaker for the NEW key — while the new key's own three faults
+// still do (Codex FIX-C review, P2).
+//
+// MUTATION: ResetBreakers resets only the entries that exist → red: the three old faults create a
+// generation-0 breaker and open it.
+func TestBreaker_RotationRetiresZeroAdmissions(t *testing.T) {
+	r, _, _ := newLoaded(t, testRing(t), seedConfig(), WithClock(newFakeClock().now))
+	old := admitAll(r, breakerConfig.MaxFailures)
+	require.Len(t, old, breakerConfig.MaxFailures)
+	r.ResetBreakers(entity.AIProviderOpenRouter)
+	for _, a := range old {
+		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, a, transientFault)
+	}
+	require.Equal(t, BreakerClosed, orChatState(r), "faults of calls admitted before the rotation opened the new key's breaker")
+	fresh := admitAll(r, breakerConfig.MaxFailures)
+	require.Len(t, fresh, breakerConfig.MaxFailures)
+	for _, a := range fresh {
+		r.RecordFailure(entity.AIProviderOpenRouter, entity.AICapabilityChat, a, transientFault)
+	}
+	require.Equal(t, BreakerOpen, orChatState(r), "the new key's own faults must still open it")
+}
+
 // TestBreaker_ZeroAdmissionCountsOnANeverOpenedBreaker — the first outage ever: no breaker exists, so
 // three callers are admitted with the zero Admission; their three transient faults must create the
 // breaker and open it. The zero Admission is accepted exactly while the breaker has never opened nor

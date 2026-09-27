@@ -642,6 +642,14 @@ func (r *Registry) RecordSuccess(providerKey, capability string, a Admission) {
 // was written, and by Reload when the effective key changed. It retires every Admission handed out
 // before it, so a call still running on the old key cannot count against the new one.
 func (r *Registry) ResetBreakers(providerKey string) {
+	// EVERY capability the provider serves, CREATED when absent (Codex FIX-C P2). A call admitted with
+	// the zero Admission — no breaker existed yet — before the rotation must not count its fault
+	// against the FRESH key: three old-key 429s in flight at the rotation would otherwise create a
+	// generation-0 breaker and open it for five minutes. Creating the entry here moves its generation
+	// past 0, so every zero admission is stale by the time it ends.
+	for _, capability := range entity.AIProviderCapabilities(providerKey) {
+		r.breakerFor(providerKey, capability).Reset()
+	}
 	prefix := providerKey + "/"
 	r.bmu.Lock()
 	entries := make([]*probeBreaker, 0, 2)
