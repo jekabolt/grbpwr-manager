@@ -27,14 +27,13 @@ import (
 // STRICT: a field it expects and does not find refuses the whole fetch (logged, nothing written) — a
 // renamed field must fail loudly, never sum to a zero that reads as their number.
 const (
-	openAICostsURL    = hosts.OpenAIHost + "/v1/organization/costs"
-	anthropicCostURL  = hosts.AnthropicHost + "/v1/organizations/cost_report"
-	falUsageURL       = hosts.FalHost + "/v1/models/usage"
-	openRouterKeyURL  = hosts.OpenRouterHost + "/api/v1/key"
-	anthropicVersion  = "2023-06-01" // the header every Anthropic request carries (as the probe)
-	dayLayout         = "2006-01-02"
-	maxBody           = 1 << 20 // a two-day cost report is a few KiB; a page of per-model rows stays far below
-	midnightGuardSpan = 2 * time.Minute
+	openAICostsURL   = hosts.OpenAIHost + "/v1/organization/costs"
+	anthropicCostURL = hosts.AnthropicHost + "/v1/organizations/cost_report"
+	falUsageURL      = hosts.FalHost + "/v1/models/usage"
+	openRouterKeyURL = hosts.OpenRouterHost + "/api/v1/key"
+	anthropicVersion = "2023-06-01" // the header every Anthropic request carries (as the probe)
+	dayLayout        = "2006-01-02"
+	maxBody          = 1 << 20 // a two-day cost report is a few KiB; a page of per-model rows stays far below
 )
 
 // auth is how a provider wants the key.
@@ -72,11 +71,15 @@ type adapter struct {
 	url   string
 	query func(window) string
 	auth  auth
-	// parse turns a 2xx body into provider days. Anything it does not recognise is an error.
+	// parse turns a 2xx body into provider days (a daily adapter). Anything it does not recognise is
+	// an error.
 	parse func(body []byte, win window) ([]dayAmount, error)
-	// runningTotal — the answer is the running total of the CURRENT UTC day (OpenRouter), not a
-	// closed bucket: it is refused when the request straddles a UTC midnight (errAcrossMidnight).
-	runningTotal bool
+	// cumulative — the answer is not a day but a counter that only grows over the key's life
+	// (OpenRouter's data.usage), read by usage. Its days are made by the worker: the difference of two
+	// readings taken right after consecutive LOCAL midnights, against a base persisted between them
+	// (midnight.go, D-17, B-30).
+	cumulative bool
+	usage      func(body []byte) (decimal.Decimal, error)
 }
 
 // adapters — every provider with a cost API, in the panel's provider order.
@@ -91,7 +94,7 @@ var adapters = []adapter{
 	},
 	{
 		provider: entity.AIProviderOpenRouter, kind: entity.AIKeyAPI, auth: authBearer,
-		url: openRouterKeyURL, parse: parseOpenRouterKey, runningTotal: true,
+		url: openRouterKeyURL, cumulative: true, usage: parseOpenRouterKey,
 	},
 	{
 		provider: entity.AIProviderFal, kind: entity.AIKeyAdmin, auth: authFal,
@@ -158,25 +161,21 @@ func httpClient(c *http.Client) *http.Client {
 	return &cp
 }
 
-// errAcrossMidnight — a running-total answer that may belong to either of two UTC days. Not a
-// failure: the next tick asks again. Written, it could overwrite a day's last snapshot with the first
-// minutes of the next day.
-var errAcrossMidnight = errors.New("the request straddled a UTC midnight")
-
-// fetch makes ONE GET and parses its answer. The status is judged before the body; a non-2xx, a
-// redirect, a body over maxBody or a shape the parser does not know is an error, and no error carries
-// the key or any text the provider wrote.
-func (w *Worker) fetch(ctx context.Context, a adapter, key string) ([]dayAmount, error) {
+// fetch makes ONE GET and returns its 2xx body with the window it asked about (win.at is the instant
+// the request was built — the instant a cumulative reading is dated at). The status is judged before
+// the body; a non-2xx, a redirect or a body over maxBody is an error, and no error carries the key or
+// any text the provider wrote. The caller parses: a shape its parser does not know is an error too.
+func (w *Worker) fetch(ctx context.Context, a adapter, key string) ([]byte, window, error) {
+	win := windowAt(w.now())
 	if !headerSafe(key) {
-		return nil, fmt.Errorf("%s: the stored key is not a header value (spaces or control characters)", a.provider)
+		return nil, win, fmt.Errorf("%s: the stored key is not a header value (spaces or control characters)", a.provider)
 	}
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	win := windowAt(w.now())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.target(win), nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: the request could not be built", a.provider)
+		return nil, win, fmt.Errorf("%s: the request could not be built", a.provider)
 	}
 	req.Header.Set("Accept", "application/json")
 	switch a.auth {
@@ -192,38 +191,31 @@ func (w *Worker) fetch(ctx context.Context, a adapter, key string) ([]dayAmount,
 	resp, err := w.client.Do(req)
 	if err != nil {
 		// net/http's error names the URL (no key in it: keys travel in headers) and the cause.
-		return nil, fmt.Errorf("%s: cost api unreachable: %w", a.provider, err)
+		return nil, win, fmt.Errorf("%s: cost api unreachable: %w", a.provider, err)
 	}
 	defer resp.Body.Close()
-	answered := w.now().UTC()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// The body is not read: an error body is never quoted (it can echo the refused key).
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-			return nil, fmt.Errorf("%s: cost api answered http %d; redirects are not followed", a.provider, resp.StatusCode)
+			return nil, win, fmt.Errorf("%s: cost api answered http %d; redirects are not followed", a.provider, resp.StatusCode)
 		}
-		return nil, fmt.Errorf("%s: cost api answered http %d", a.provider, resp.StatusCode)
+		return nil, win, fmt.Errorf("%s: cost api answered http %d", a.provider, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s: cost api answer could not be read: %w", a.provider, err)
+		return nil, win, fmt.Errorf("%s: cost api answer could not be read: %w", a.provider, err)
 	}
 	if len(body) > maxBody {
-		return nil, fmt.Errorf("%s: cost api answer is larger than %d bytes", a.provider, maxBody)
+		return nil, win, fmt.Errorf("%s: cost api answer is larger than %d bytes", a.provider, maxBody)
 	}
-	if a.runningTotal && utcDay(win.at.Add(-midnightGuardSpan)) != utcDay(answered.Add(midnightGuardSpan)) {
-		// The provider evaluated «today» somewhere in [built, answered] on a clock that may differ
-		// from ours; if that span (± the guard) touches two UTC days, the total may be either's.
-		return nil, errAcrossMidnight
-	}
-	days, err := a.parse(body, win)
-	if err != nil {
-		return nil, fmt.Errorf("%s: cost api answer not understood: %w", a.provider, err)
-	}
-	return days, nil
+	return body, win, nil
 }
 
-func utcDay(t time.Time) string { return t.UTC().Format(dayLayout) }
+// notUnderstood is the error of a 2xx body its parser refused.
+func notUnderstood(a adapter, err error) error {
+	return fmt.Errorf("%s: cost api answer not understood: %w", a.provider, err)
+}
 
 // headerSafe — printable ASCII with no spaces, the only shape a key has and the only one net/http puts
 // in a header unchanged (probe.headerSafe).
@@ -456,36 +448,39 @@ func parseFalUsage(body []byte, win window) ([]dayAmount, error) {
 	return inWindow(buckets, win)
 }
 
-// parseOpenRouterKey reads GET /api/v1/key: data.usage_daily, the USD this key has spent in the
-// CURRENT UTC day so far — one row, today's.
+// parseOpenRouterKey reads GET /api/v1/key: data.usage, the USD this KEY has spent since it was issued
+// — a cumulative counter, not a day. The worker makes the days (midnight.go): the difference of two
+// readings taken right after consecutive LOCAL midnights, written under the day they enclose with
+// bucket_tz = the organisation's zone (D-17, B-30). This replaces commit E's reading of usage_daily
+// (the running total of the CURRENT UTC day, labelled UTC, with up to one tick of each day's end never
+// seen — Codex REVIEW-E #3): usage_daily is still in the answer and read by nothing.
 //
-// ⚠ NOT D-17's MECHANISM, AND KNOWINGLY SO (Codex REVIEW-E #3 → B-30). D-17 proposed the diff of two
-// cumulative `usage` snapshots taken right after LOCAL midnight, written under the previous local day
-// with bucket_tz Europe/Warsaw — exact, and in the ledger's own days. That needs the previous snapshot
-// persisted across restarts (a deploy is a restart) and a counter-reset rule for a rotated key: a table
-// of its own (0380). Commit E ships the honest approximation: the provider's own UTC-day running total,
-// labelled UTC like every other row here, with up to one tick of each day's end unseen. B-30 replaces
-// it; until then the column reads «their usd · utc days» for OpenRouter and the D-17 hint applies.
-//
-// UNVERIFIED (G-05): {"data":{"label":"…","usage":<USD>,"usage_daily":<USD>,"usage_weekly":…,
-// "usage_monthly":…,"limit":…,"limit_remaining":…}}. It is THIS KEY's spend: calls made with another
-// key (OPENROUTER_IMAGES_API_KEY when it differs from the chat key and no key is stored in the panel)
-// are not in it, and neither are calls another app makes with the same key.
-func parseOpenRouterKey(body []byte, win window) ([]dayAmount, error) {
+// UNVERIFIED (G-06): {"data":{"label":"…","usage":<USD>,"usage_daily":<USD>,"usage_weekly":…,
+// "usage_monthly":…,"limit":…,"limit_remaining":…}} — `usage` as the key's all-time spend in USD is
+// the docs' key response as read, not a recorded live answer. It is THIS KEY's spend: calls made with
+// another key (OPENROUTER_IMAGES_API_KEY when it differs from the chat key and no key is stored in the
+// panel) are not in it, and neither are calls another app makes with the same key. Another key is
+// another counter: the worker takes a new base when the key changes or the counter goes down.
+func parseOpenRouterKey(body []byte) (decimal.Decimal, error) {
 	var v struct {
 		Data *struct {
-			UsageDaily *json.Number `json:"usage_daily"`
+			Usage *json.Number `json:"usage"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &v); err != nil {
-		return nil, err
+		return decimal.Zero, err
 	}
 	if v.Data == nil {
-		return nil, errors.New("no data object")
+		return decimal.Zero, errors.New("no data object")
 	}
-	usd, err := amountOf(v.Data.UsageDaily, "", "usage_daily")
+	usd, err := amountOf(v.Data.Usage, "", "usage")
 	if err != nil {
-		return nil, err
+		return decimal.Zero, err
 	}
-	return []dayAmount{{day: win.today.Format(dayLayout), usd: usd}}, nil
+	if usd.IsNegative() {
+		// A counter of spend never goes below zero; a negative one is a shape this parser does not
+		// know, and diffed it would write a day of negative spend.
+		return decimal.Zero, errors.New("a negative usage is not a spend counter")
+	}
+	return usd, nil
 }

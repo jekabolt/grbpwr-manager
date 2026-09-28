@@ -220,8 +220,10 @@ func (a *App) Start(ctx context.Context) error {
 	var reconcileAfterAdminKeySave func(context.Context, string)
 	if a.c.AIReconcile.Enabled {
 		// The registry is the one key policy: AdminKey for openai/anthropic/fal, and the
-		// enabled-gated KeyFunc result for openrouter. reconcile documents why they differ.
-		a.aiRecon = reconcile.New(a.c.AIReconcile, a.db.AI(), a.aireg)
+		// enabled-gated KeyFunc result for openrouter. reconcile documents why they differ. It is
+		// also the zone (design_settings.budget_timezone) whose midnights close OpenRouter's days,
+		// and the store keeps both their numbers and OpenRouter's base across restarts (B-30).
+		a.aiRecon = reconcile.New(a.c.AIReconcile, a.db.AI(), a.db.AI(), a.aireg)
 		reconcileAfterAdminKeySave = func(ctx context.Context, provider string) {
 			if err := a.aiRecon.RunNow(ctx, provider); err != nil {
 				slog.Default().WarnContext(ctx, "AI cost reconciliation after admin-key save failed",
