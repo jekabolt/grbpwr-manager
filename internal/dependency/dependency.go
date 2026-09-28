@@ -1981,6 +1981,11 @@ type (
 		SpendReport(ctx context.Context, fromDay, toDay string) (*entity.AISpendReport, error)
 		// UpsertCostDaily writes the providers' own daily numbers (reconciliation).
 		UpsertCostDaily(ctx context.Context, rows []entity.AICostDaily) error
+		// GetUsageSnapshot reads the base a cumulative provider's day is measured from (0380);
+		// nil, nil when the provider has none yet.
+		GetUsageSnapshot(ctx context.Context, provider string) (*entity.AIUsageSnapshot, error)
+		// PutUsageSnapshot replaces the provider's base (one row per provider).
+		PutUsageSnapshot(ctx context.Context, s entity.AIUsageSnapshot) error
 	}
 
 	// PatternObjects manages pattern_object_access rows — per-object revocation epoch,

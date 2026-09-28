@@ -300,3 +300,7 @@ func (s *Store) SpendReport(_ context.Context, fromDay, toDay string) (*entity.A
 	return &entity.AISpendReport{FromDay: fromDay, ToDay: toDay}, nil
 }
 func (s *Store) UpsertCostDaily(context.Context, []entity.AICostDaily) error { return nil }
+func (s *Store) GetUsageSnapshot(context.Context, string) (*entity.AIUsageSnapshot, error) {
+	return nil, nil
+}
+func (s *Store) PutUsageSnapshot(context.Context, entity.AIUsageSnapshot) error { return nil }

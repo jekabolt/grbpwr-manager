@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	hosts "github.com/jekabolt/grbpwr-manager/internal/aiprov/endpoints"
@@ -26,8 +27,18 @@ import (
 // Every test names the mutation that turns it red. No test here reaches a provider or a database: the
 // client delivers every request to an httptest server, and the store is a recorder.
 
-// fixedNow — 10:30 UTC on 28.09: yesterday = 27.09, today = 28.09, tomorrow = 29.09.
+// fixedNow — 10:30 UTC on 28.09: yesterday = 27.09, today = 28.09, tomorrow = 29.09 (12:30 CEST, the
+// same local day in Europe/Warsaw).
 var fixedNow = time.Date(2026, 9, 28, 10, 30, 0, 0, time.UTC)
+
+// warsaw is the budget zone every KeySource here answers unless a test says otherwise.
+var warsaw = func() *time.Location {
+	loc, err := time.LoadLocation("Europe/Warsaw")
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}()
 
 // The four keys, distinct per provider so a test can tell which one went where.
 const (
@@ -72,10 +83,19 @@ const falUsageBody = `{"next_cursor":null,"has_more":false,"time_series":[
  {"bucket":"2026-09-29T00:00:00Z","results":[]}
 ]}`
 
-// openRouterKeyBody — GET /api/v1/key: usage_daily is the running total of the current UTC day.
-// UNVERIFIED (G-05).
+// openRouterKeyBody — GET /api/v1/key: usage is the key's CUMULATIVE spend (B-30 reads it; usage_daily,
+// the running total of the current UTC day, is in the answer and read by nothing).
+// UNVERIFIED (G-06): `usage` as the key's all-time USD is the docs' key response as read.
 const openRouterKeyBody = `{"data":{"label":"grbpwr","usage":42.1,"usage_daily":1.234,"usage_weekly":7.5,` +
 	`"usage_monthly":30.2,"limit":null,"limit_remaining":null,"is_free_tier":false}}`
+
+// openRouterPath is the path the rig answers OpenRouter's key on.
+const openRouterPath = "/api/v1/key"
+
+// usageAnswer is OpenRouter's key answer with its cumulative counter at usd. UNVERIFIED (G-06).
+func usageAnswer(usd string) answer {
+	return answer{status: http.StatusOK, body: `{"data":{"label":"grbpwr","usage":` + usd + `,"usage_daily":0.5,"limit":null}}`}
+}
 
 type wantRow struct{ day, usd string }
 
@@ -86,6 +106,7 @@ type fixture struct {
 	headers  map[string]string
 	body     string
 	rows     []wantRow
+	zone     string // the bucket_tz its rows are written with
 }
 
 func fixtures() []fixture {
@@ -93,19 +114,20 @@ func fixtures() []fixture {
 		{entity.AIProviderOpenAI, "/v1/organization/costs",
 			"https://api.openai.com/v1/organization/costs?start_time=1790467200&bucket_width=1d&limit=2",
 			map[string]string{"Authorization": "Bearer " + openAIAdminKey},
-			openAICostsBody, []wantRow{{"2026-09-27", "1.294568"}, {"2026-09-28", "0"}}},
+			openAICostsBody, []wantRow{{"2026-09-27", "1.294568"}, {"2026-09-28", "0"}}, "UTC"},
 		{entity.AIProviderAnthropic, "/v1/organizations/cost_report",
 			"https://api.anthropic.com/v1/organizations/cost_report?starting_at=2026-09-27T00:00:00Z&ending_at=2026-09-29T00:00:00Z&bucket_width=1d",
 			map[string]string{"X-Api-Key": anthropicAdminKey, "Anthropic-Version": "2023-06-01"},
-			anthropicCostBody, []wantRow{{"2026-09-27", "124.006789"}, {"2026-09-28", "0.1"}}},
+			anthropicCostBody, []wantRow{{"2026-09-27", "124.006789"}, {"2026-09-28", "0.1"}}, "UTC"},
 		{entity.AIProviderOpenRouter, "/api/v1/key",
 			"https://openrouter.ai/api/v1/key",
 			map[string]string{"Authorization": "Bearer " + openRouterAPIKey},
-			openRouterKeyBody, []wantRow{{"2026-09-28", "1.234"}}},
+			// against seededSnaps' base of 40 taken at 28.09's local midnight: today's partial, 42.1 − 40
+			openRouterKeyBody, []wantRow{{"2026-09-28", "2.1"}}, "Europe/Warsaw"},
 		{entity.AIProviderFal, "/v1/models/usage",
 			"https://api.fal.ai/v1/models/usage?start=2026-09-27T00:00:00Z&end=2026-09-29T00:00:00Z&timeframe=day&timezone=UTC",
 			map[string]string{"Authorization": "Key " + falAdminKey},
-			falUsageBody, []wantRow{{"2026-09-27", "1.53"}, {"2026-09-28", "0.25"}}},
+			falUsageBody, []wantRow{{"2026-09-27", "1.53"}, {"2026-09-28", "0.25"}}, "UTC"},
 	}
 }
 
@@ -218,12 +240,14 @@ func (r *rig) requests() []sent {
 	return append([]sent(nil), r.sent...)
 }
 
-// keys is a KeySource that records which slot was asked for which provider.
+// keys is a KeySource that records which slot was asked for which provider. Its budget zone is
+// Europe/Warsaw until setZone says otherwise.
 type keys struct {
 	mu         sync.Mutex
 	admin, api map[string]string
 	askedAdmin []string
 	askedAPI   []string
+	zone       *string
 }
 
 func allKeys() *keys {
@@ -267,10 +291,90 @@ func (k *keys) KeyFunc(p string) func() string {
 	}
 }
 
+func (k *keys) BudgetTimezone() string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.zone == nil {
+		return "Europe/Warsaw"
+	}
+	return *k.zone
+}
+
+func (k *keys) setZone(z string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.zone = &z
+}
+
 func (k *keys) set(admin, api map[string]string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.admin, k.api = admin, api
+}
+
+// recSnaps is a SnapshotStore that keeps the bases in memory and records every Get and Put; getErr /
+// putErr fail every call while set.
+type recSnaps struct {
+	mu             sync.Mutex
+	rows           map[string]entity.AIUsageSnapshot
+	gets           []string
+	puts           []entity.AIUsageSnapshot
+	getErr, putErr error
+	notify         chan entity.AIUsageSnapshot
+}
+
+func newSnaps(seed ...entity.AIUsageSnapshot) *recSnaps {
+	s := &recSnaps{rows: map[string]entity.AIUsageSnapshot{}, notify: make(chan entity.AIUsageSnapshot, 64)}
+	for _, b := range seed {
+		s.rows[b.ProviderKey] = b
+	}
+	return s
+}
+
+// openRouterBase is a base of OpenRouter's counter at usd, opening day in Europe/Warsaw.
+func openRouterBase(usd, day string) entity.AIUsageSnapshot {
+	d, err := time.ParseInLocation(dayLayout, day, warsaw)
+	if err != nil {
+		panic(err)
+	}
+	return entity.AIUsageSnapshot{ProviderKey: entity.AIProviderOpenRouter, UsageUSD: decimal.RequireFromString(usd),
+		Day: day, BucketTZ: "Europe/Warsaw", TakenAt: d.Add(midnightGrace).UTC()}
+}
+
+// seededSnaps holds a base of 40 taken at 28.09's local midnight, so a reading at fixedNow is today's
+// partial — the tests of the adapters and the loop see OpenRouter write a row like the others.
+func seededSnaps() *recSnaps { return newSnaps(openRouterBase("40", "2026-09-28")) }
+
+func (s *recSnaps) GetUsageSnapshot(_ context.Context, provider string) (*entity.AIUsageSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gets = append(s.gets, provider)
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	row, ok := s.rows[provider]
+	if !ok {
+		return nil, nil
+	}
+	return &row, nil
+}
+
+func (s *recSnaps) PutUsageSnapshot(_ context.Context, sn entity.AIUsageSnapshot) error {
+	s.mu.Lock()
+	s.puts = append(s.puts, sn)
+	err := s.putErr
+	if err == nil {
+		s.rows[sn.ProviderKey] = sn
+	}
+	s.mu.Unlock()
+	s.notify <- sn
+	return err
+}
+
+func (s *recSnaps) recorded() (gets []string, puts []entity.AIUsageSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.gets...), append([]entity.AIUsageSnapshot(nil), s.puts...)
 }
 
 // recStore records every UpsertCostDaily; fail(n) answers the n-th call (1-based).
@@ -330,11 +434,16 @@ func captureLogs(t *testing.T) *syncBuffer {
 	return b
 }
 
+// newWorker builds a worker on the rig with seededSnaps (OpenRouter has a base: its reading is a row).
 func newWorker(r *rig, st *recStore, k KeySource, clock func() time.Time) *Worker {
+	return newWorkerWith(r, st, seededSnaps(), k, clock)
+}
+
+func newWorkerWith(r *rig, st *recStore, sn SnapshotStore, k KeySource, clock func() time.Time) *Worker {
 	if clock == nil {
 		clock = func() time.Time { return fixedNow }
 	}
-	return New(Config{Enabled: true}, st, k, WithClock(clock), WithHTTPClient(r.client()))
+	return New(Config{Enabled: true}, st, sn, k, WithClock(clock), WithHTTPClient(r.client()))
 }
 
 // requireNoKeyMaterial fails when s carries any key or the parts of one a provider quotes back.
@@ -347,18 +456,43 @@ func requireNoKeyMaterial(t *testing.T, s string) {
 	}
 }
 
+// clock is a settable fake clock the loop goroutines and the test share.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newClock(t time.Time) *clock { return &clock{t: t} }
+
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *clock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = t
+}
+
 // ───────────────────────── the adapters ─────────────────────────
 
 // TestFixturesBecomeRows — per provider: ONE GET to the exact URL with exactly its auth, no body, a
 // deadline within fetchTimeout, and the fixture's bytes become exactly its rows: the provider's UTC
-// day, the amount in USD rounded to the column's six places, currency USD, bucket_tz UTC, fetched_at
-// = the clock.
+// day (OpenRouter: the local day, against its base), the amount in USD rounded to the column's six
+// places, currency USD, bucket_tz as the fixture says, fetched_at = the clock.
 //
 // MUTATIONS IT CATCHES: Anthropic's cents not divided by 100 (124.006789 → 12400.6789); an OpenAI
 // bucket day read in the server's local zone; the fal row named `cost` ignored (28.09 → 0 or refused);
-// OpenRouter's number filed under yesterday; the amounts not rounded (1.29456789 reaches DECIMAL(12,6)
-// for the server to cut); a wrong query (start_time of today, ending_at = today, a missing
-// bucket_width); the admin key sent as x-api-key to OpenAI or as Bearer to fal; the zone left "".
+// OpenRouter's counter written raw instead of against its base; the amounts not rounded (1.29456789
+// reaches DECIMAL(12,6) for the server to cut); a wrong query (start_time of today, ending_at = today,
+// a missing bucket_width); the admin key sent as x-api-key to OpenAI or as Bearer to fal; the zone
+// left "", or OpenRouter's labelled UTC.
+//
+// MUTATION (B-30, measured red → restored green): OpenRouter's row written with
+// BucketTZ entity.AICostBucketUTC instead of the budget zone → the openrouter subtest turns red (the
+// panel would label its local days «utc days»).
 func TestFixturesBecomeRows(t *testing.T) {
 	for _, f := range fixtures() {
 		t.Run(f.provider, func(t *testing.T) {
@@ -392,7 +526,7 @@ func TestFixturesBecomeRows(t *testing.T) {
 			for _, row := range calls[0] {
 				require.Equal(t, f.provider, row.ProviderKey)
 				require.Equal(t, "USD", row.Currency)
-				require.Equal(t, "UTC", row.BucketTZ)
+				require.Equal(t, f.zone, row.BucketTZ)
 				require.Equal(t, fixedNow, row.FetchedAt)
 				rows = append(rows, wantRow{row.Day, row.AmountUSD.String()})
 			}
@@ -473,25 +607,33 @@ func shapeFailures(provider string) []failure {
 	case entity.AIProviderOpenRouter:
 		return []failure{
 			{"no data", answer{status: 200, body: `{"error":"x"}`}, "no data object"},
-			{"no usage_daily", answer{status: 200, body: `{"data":{"usage":42.1}}`}, "without its amount"},
-			{"usage_daily null", answer{status: 200, body: `{"data":{"usage_daily":null}}`}, "without its amount"},
+			// usage_daily alone is commit E's number, not the counter B-30 diffs: absent usage refuses.
+			{"no usage", answer{status: 200, body: `{"data":{"usage_daily":1.234}}`}, "a usage without its amount"},
+			{"usage null", answer{status: 200, body: `{"data":{"usage":null,"usage_daily":1}}`}, "a usage without its amount"},
+			{"usage not a number", answer{status: 200, body: `{"data":{"usage":"lots"}}`}, "not understood"},
+			{"negative usage", answer{status: 200, body: `{"data":{"usage":-3.5}}`}, "not a spend counter"},
 			// A body just over the cap: valid JSON, so only the cap refuses it.
-			{"over the cap", answer{status: 200, body: `{"data":{"label":"` + strings.Repeat("x", maxBody) + `","usage_daily":1}}`}, "larger than"},
+			{"over the cap", answer{status: 200, body: `{"data":{"label":"` + strings.Repeat("x", maxBody) + `","usage":1}}`}, "larger than"},
 		}
 	}
 	return nil
 }
 
 // TestAFailedFetchWritesNothing — every refused, unreadable, partial or unknown answer: nothing is
-// written for that provider, the tick is not clean, the tracker holds the error, one line says
-// `reconcile: <provider> fetch failed`, and neither that line nor the error carries key material or
-// the provider's words.
+// written for that provider — no day and, for OpenRouter, no base (its base is not even read) — the
+// tick is not clean, the tracker holds the error, one line says `reconcile: <provider> fetch failed`,
+// and neither that line nor the error carries key material or the provider's words.
 //
 // MUTATIONS IT CATCHES: a write despite a failed parse (a partial sum stored as their number); the
 // has_more check dropped (the first page's sum stored as the day's); a redirect followed (the key
 // sent to Location — two requests); a result without an amount read as zero; a non-USD amount summed
 // as dollars; a bucket off a UTC midnight labelled UTC; the body cap dropped; an error body quoted
 // into the log (it echoes the key here); MarkSuccess on a failed tick.
+//
+// MUTATION (B-30, measured red → restored green): parseOpenRouterKey's field tagged `usage_daily`
+// again instead of `usage` → the «no usage» and «usage null» answers read as a counter of 1.234 / 1:
+// below the base of 40, the restart rule re-bases OpenRouter onto commit E's daily number and the tick
+// reads clean — both openrouter subtests turn red.
 func TestAFailedFetchWritesNothing(t *testing.T) {
 	for _, f := range fixtures() {
 		for _, c := range append(genericFailures(), shapeFailures(f.provider)...) {
@@ -500,11 +642,15 @@ func TestAFailedFetchWritesNothing(t *testing.T) {
 				r := newRig(t)
 				r.answer(f.path, c.answer)
 				st := newRecStore()
-				w := newWorker(r, st, only(f.provider), nil)
+				sn := seededSnaps()
+				w := newWorkerWith(r, st, sn, only(f.provider), nil)
 
 				require.False(t, w.runOnce(context.Background()))
 				require.Len(t, r.requests(), 1, "one request, and a redirect is not followed")
 				require.Empty(t, st.written(), "a failed fetch writes nothing")
+				gets, puts := sn.recorded()
+				require.Empty(t, gets, "a failed fetch does not reach the base")
+				require.Empty(t, puts, "a failed fetch is not a base")
 				require.True(t, w.LastSuccess().IsZero())
 				require.Contains(t, w.LastError(), f.provider+": ")
 				require.Contains(t, w.LastError(), c.want)
@@ -548,7 +694,7 @@ func TestOneProviderFailingDoesNotStopTheOthers(t *testing.T) {
 func TestAPanickingTickIsAFailedTick(t *testing.T) {
 	logs := captureLogs(t)
 	r := newRig(t)
-	w := New(Config{Enabled: true}, panickingStore{}, only(entity.AIProviderOpenAI),
+	w := New(Config{Enabled: true}, panickingStore{}, seededSnaps(), only(entity.AIProviderOpenAI),
 		WithClock(func() time.Time { return fixedNow }), WithHTTPClient(r.client()))
 
 	require.False(t, w.runOnce(context.Background()), "a panicking tick is not a clean one")
@@ -631,54 +777,6 @@ func TestEachAPIReadsItsOwnKey(t *testing.T) {
 	require.Equal(t, probed, admin)
 }
 
-// TestOpenRouterSnapshotAcrossMidnight — the running total is not written when the request straddles
-// a UTC midnight (± the guard): it may be either day's. The skip is not a failure.
-//
-// MUTATIONS IT CATCHES: the guard dropped (at 23:59:30 an answer computed after midnight — the new
-// day's first cents — overwrites the old day's last snapshot for good); the guard reading only the
-// build time (a slow answer that crosses midnight is written); the skip counted as a failure (a
-// «fetch failed» line and a backoff every night).
-func TestOpenRouterSnapshotAcrossMidnight(t *testing.T) {
-	late := time.Date(2026, 9, 28, 23, 59, 0, 0, time.UTC)
-	early := time.Date(2026, 9, 29, 0, 1, 0, 0, time.UTC)
-	slowStart := time.Date(2026, 9, 28, 23, 40, 0, 0, time.UTC)
-	for name, clock := range map[string]func() time.Time{
-		"built a minute before midnight": func() time.Time { return late },
-		"built a minute after midnight":  func() time.Time { return early },
-		"answered after midnight": func() func() time.Time {
-			var mu sync.Mutex
-			reads := 0
-			return func() time.Time {
-				mu.Lock()
-				defer mu.Unlock()
-				reads++
-				if reads == 1 {
-					return slowStart // the request is built
-				}
-				return early // the answer arrives
-			}
-		}(),
-	} {
-		t.Run(name, func(t *testing.T) {
-			r := newRig(t)
-			st := newRecStore()
-			w := newWorker(r, st, only(entity.AIProviderOpenRouter), clock)
-			require.True(t, w.runOnce(context.Background()), "a skipped snapshot is not a failure")
-			require.Len(t, r.requests(), 1)
-			require.Empty(t, st.written())
-			require.Empty(t, w.LastError())
-		})
-	}
-
-	// Far from midnight the same answer is today's row.
-	r := newRig(t)
-	st := newRecStore()
-	w := newWorker(r, st, only(entity.AIProviderOpenRouter), func() time.Time { return time.Date(2026, 9, 28, 23, 50, 0, 0, time.UTC) })
-	require.True(t, w.runOnce(context.Background()))
-	require.Len(t, st.written(), 1)
-	require.Equal(t, "2026-09-28", st.written()[0][0].Day)
-}
-
 // paidCall matches a path that buys something (probe.TestNoProbeIsAPaidCall).
 var paidCall = regexp.MustCompile(`chat/completions|/messages|generate|generations|/queue|fal\.run`)
 
@@ -719,10 +817,10 @@ func TestEveryFetchIsAFreeReadOfAConstantHost(t *testing.T) {
 	require.Equal(t, []string{"anthropic", "fal", "openai", "openrouter"}, keysOf)
 
 	own := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return nil }}
-	w := New(Config{}, newRecStore(), &keys{}, WithHTTPClient(own))
+	w := New(Config{}, newRecStore(), newSnaps(), &keys{}, WithHTTPClient(own))
 	require.ErrorIs(t, w.client.CheckRedirect(nil, nil), http.ErrUseLastResponse)
 	require.NoError(t, own.CheckRedirect(nil, nil), "the caller's client is not changed")
-	require.ErrorIs(t, New(Config{}, newRecStore(), &keys{}).client.CheckRedirect(nil, nil), http.ErrUseLastResponse)
+	require.ErrorIs(t, New(Config{}, newRecStore(), newSnaps(), &keys{}).client.CheckRedirect(nil, nil), http.ErrUseLastResponse)
 }
 
 // TestAKeyThatIsNotAHeaderIsRefusedBeforeARequest.
@@ -760,7 +858,7 @@ func TestTickLoopRunsAtStartThenOnTicksAndBacksOff(t *testing.T) {
 		}
 		return nil
 	}
-	w := New(Config{Enabled: true, Interval: 3 * time.Hour}, st, only(entity.AIProviderOpenRouter),
+	w := New(Config{Enabled: true, Interval: 3 * time.Hour}, st, seededSnaps(), only(entity.AIProviderOpenRouter),
 		WithClock(func() time.Time { return fixedNow }), WithHTTPClient(r.client()))
 
 	ticks := make(chan time.Time)
@@ -854,8 +952,8 @@ func TestBackoffGrowsAndIsCapped(t *testing.T) {
 // variable); a zero Interval passed to NewTicker (it panics at boot).
 func TestDefaults(t *testing.T) {
 	require.Equal(t, Config{Enabled: true, Interval: time.Hour}, DefaultConfig())
-	require.Equal(t, time.Hour, New(Config{Enabled: true}, newRecStore(), &keys{}).c.Interval)
-	require.Equal(t, "ai-reconcile", New(Config{}, nil, nil).Name())
+	require.Equal(t, time.Hour, New(Config{Enabled: true}, newRecStore(), newSnaps(), &keys{}).c.Interval)
+	require.Equal(t, "ai-reconcile", New(Config{}, nil, nil, nil).Name())
 }
 
 // ───────────────────────── RunNow ─────────────────────────
@@ -967,6 +1065,8 @@ func (g *gatedKeys) AdminKey(p string) string {
 }
 
 func (g *gatedKeys) KeyFunc(string) func() string { return func() string { return "" } }
+
+func (g *gatedKeys) BudgetTimezone() string { return "Europe/Warsaw" }
 
 // TestTheNewestKeysNumberLandsLast (Codex REVIEW-E #4) — a tick is reading the OLD admin key when an
 // admin saves a NEW one and the after-save RunNow fires. Whatever the order of the two fetches, the

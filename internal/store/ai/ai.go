@@ -1,5 +1,6 @@
 // Package ai implements the AI providers store: the configuration of 0373 (ai_provider, ai_model,
-// ai_route, ai_settings) and the ledger of 0374 (ai_usage_event, ai_provider_cost_daily).
+// ai_route, ai_settings), the ledger of 0374 (ai_usage_event, ai_provider_cost_daily) and the base of
+// OpenRouter's cumulative counter of 0380 (ai_provider_usage_snapshot).
 //
 // Two halves with opposite rules. The CONFIG half is small, rare and written by one super admin at a
 // time: every write runs in one transaction that first moves ai_settings.config_version, so all
@@ -1334,6 +1335,113 @@ func (s *Store) UpsertCostDaily(ctx context.Context, rows []entity.AICostDaily) 
 		}
 		return nil
 	})
+}
+
+// ───────────────────────── the base of a cumulative counter (0380) ─────────────────────────
+
+// selectAIUsageSnapshot reads one provider's base.
+const selectAIUsageSnapshot = `
+	SELECT provider_key, usage_usd, day, bucket_tz, taken_at
+	FROM ai_provider_usage_snapshot
+	WHERE provider_key = :provider_key`
+
+// upsertAIUsageSnapshot — one row per provider, replaced whole: a base is one reading, and a row that
+// kept the old day beside a new usage would diff the next day against a number of another day.
+const upsertAIUsageSnapshot = `
+	INSERT INTO ai_provider_usage_snapshot (provider_key, usage_usd, day, bucket_tz, taken_at)
+	VALUES (:provider_key, :usage_usd, :day, :bucket_tz, :taken_at)
+	ON DUPLICATE KEY UPDATE
+		usage_usd = VALUES(usage_usd),
+		day = VALUES(day),
+		bucket_tz = VALUES(bucket_tz),
+		taken_at = VALUES(taken_at)`
+
+// usageSnapshotRow is the scan target of selectAIUsageSnapshot. day is a DATE: with parseTime=true the
+// driver hands it over as a time.Time at midnight, and a string field would receive its RFC 3339 form
+// ("2026-09-28T00:00:00Z"), which is not a day any comparison expects.
+type usageSnapshotRow struct {
+	ProviderKey string          `db:"provider_key"`
+	UsageUSD    decimal.Decimal `db:"usage_usd"`
+	Day         time.Time       `db:"day"`
+	BucketTZ    string          `db:"bucket_tz"`
+	TakenAt     time.Time       `db:"taken_at"`
+}
+
+// usageSnapshotBound is DECIMAL(14,6)'s ceiling (0380): eight integer digits.
+var usageSnapshotBound = decimal.New(1, 8)
+
+// usageSnapshotParams binds a base, or refuses it. Every refusal is a bug in the caller, never a
+// reading to clip: a base that is not the number read would move every day diffed against it.
+func usageSnapshotParams(sn entity.AIUsageSnapshot, now time.Time) (map[string]any, error) {
+	if !entity.IsAIProviderKey(sn.ProviderKey) {
+		return nil, fmt.Errorf("ai usage snapshot: unknown provider %q", sn.ProviderKey)
+	}
+	if _, err := time.Parse(dayLayout, sn.Day); err != nil {
+		return nil, fmt.Errorf("ai usage snapshot: day %q is not YYYY-MM-DD", sn.Day)
+	}
+	// Six places: what the column holds. Rounded here so the base stored is the base the worker
+	// diffed against, not one the server rounded after it.
+	usage := sn.UsageUSD.Round(6)
+	if usage.IsNegative() || usage.GreaterThanOrEqual(usageSnapshotBound) {
+		return nil, fmt.Errorf("ai usage snapshot: usage %s is outside DECIMAL(14,6) or negative", usage)
+	}
+	// The zone is REQUIRED (no column default): a base names the midnight it was read at, and a base of
+	// an unnamed zone could not be told from one of today's zone.
+	tz := strings.TrimSpace(sn.BucketTZ)
+	if tz == "" || len(tz) > costBucketTZMax {
+		return nil, fmt.Errorf("ai usage snapshot: bucket zone %q is empty or longer than %d bytes", sn.BucketTZ, costBucketTZMax)
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return nil, fmt.Errorf("ai usage snapshot: bucket zone %q is not a zone name", sn.BucketTZ)
+	}
+	taken := sn.TakenAt
+	if taken.IsZero() {
+		taken = now
+	}
+	return map[string]any{
+		"provider_key": sn.ProviderKey,
+		"usage_usd":    usage,
+		"day":          sn.Day,
+		"bucket_tz":    tz,
+		"taken_at":     taken.UTC(),
+	}, nil
+}
+
+// GetUsageSnapshot reads the provider's base; nil, nil when it has none yet (the first reading ever).
+// One autocommit read: the row is one statement's worth, and the worker's own lock orders its reads
+// and writes.
+func (s *Store) GetUsageSnapshot(ctx context.Context, provider string) (*entity.AIUsageSnapshot, error) {
+	if !entity.IsAIProviderKey(provider) {
+		return nil, fmt.Errorf("ai usage snapshot: unknown provider %q", provider)
+	}
+	var row usageSnapshotRow
+	if err := getNamed(ctx, s.DB, &row, selectAIUsageSnapshot, map[string]any{"provider_key": provider}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read the usage base of %s: %w", provider, err)
+	}
+	return &entity.AIUsageSnapshot{
+		ProviderKey: row.ProviderKey,
+		UsageUSD:    row.UsageUSD,
+		// The DATE's own calendar day, in whatever location the driver parsed it: no conversion, so the
+		// day read is the day written.
+		Day:      row.Day.Format(dayLayout),
+		BucketTZ: row.BucketTZ,
+		TakenAt:  row.TakenAt.UTC(),
+	}, nil
+}
+
+// PutUsageSnapshot replaces the provider's base in one statement.
+func (s *Store) PutUsageSnapshot(ctx context.Context, sn entity.AIUsageSnapshot) error {
+	p, err := usageSnapshotParams(sn, s.Now())
+	if err != nil {
+		return err
+	}
+	if _, err := execNamed(ctx, s.DB, upsertAIUsageSnapshot, p); err != nil {
+		return fmt.Errorf("failed to write the usage base of %s: %w", sn.ProviderKey, err)
+	}
+	return nil
 }
 
 // ───────────────────────── helpers ─────────────────────────

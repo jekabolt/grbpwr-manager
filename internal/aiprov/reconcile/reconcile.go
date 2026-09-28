@@ -5,19 +5,20 @@
 //
 // Four providers have something to read: OpenAI (/v1/organization/costs), Anthropic (cost_report) and
 // fal (/v1/models/usage) with the reconciliation key an admin stores in the panel (kind admin), and
-// OpenRouter (/api/v1/key usage_daily) with its ordinary API key. Google, meshy, apibost, runblob and
+// OpenRouter (/api/v1/key data.usage) with its ordinary API key. Google, meshy, apibost, runblob and
 // recraft-direct have no cost API here: their line is the ledger alone.
 //
 // THE KEY RULE IS DELIBERATE: OpenAI, Anthropic and fal read Registry.AdminKey(provider), which is
 // not gated by the provider's enabled switch because old spend still needs reconciling; OpenRouter
 // reads Registry.KeyFunc(openrouter)(), the enabled-gated key that actually pays for its calls.
 //
-// ⚠ THIS WORKER WRITES ai_provider_cost_daily AND NOTHING ELSE. It never touches the ledger
-// (ai_usage_event): their number sits beside ours, it never corrects it. A fetch that fails, answers
-// a shape this package does not know, or says «there is more» writes NOTHING for that provider — a
-// partial or misread number presented as theirs is exactly the lie the column exists to catch.
+// ⚠ THIS WORKER WRITES ai_provider_cost_daily AND, FOR OPENROUTER, ITS BASE IN
+// ai_provider_usage_snapshot — NOTHING ELSE. It never touches the ledger (ai_usage_event): their
+// number sits beside ours, it never corrects it. A fetch that fails, answers a shape this package does
+// not know, or says «there is more» writes NOTHING for that provider — a partial or misread number
+// presented as theirs is exactly the lie the column exists to catch.
 //
-// ⚠ ONE GET PER PROVIDER PER TICK, TO A CONSTANT URL, REDIRECTS REFUSED. The hosts are
+// ⚠ ONE GET PER PROVIDER PER READING, TO A CONSTANT URL, REDIRECTS REFUSED. The hosts are
 // aiprov/endpoints' constants; no row, env variable or argument names another one (a host that can be
 // edited is a place a key can be sent). net/http drops Authorization on a cross-host redirect but
 // forwards x-api-key, so no redirect is followed at all. Tests reach in-memory httptest handlers
@@ -27,15 +28,22 @@
 // request header; errors name the provider and the HTTP status, never the key, and an error body is
 // never read at all (a provider refusing a key may quote it back).
 //
-// DAYS ARE THE PROVIDER'S (D-17). Every API here buckets by UTC day, and a row keeps that day with
-// bucket_tz 'UTC'; nothing is shifted into the organisation's zone. OpenRouter has no per-day history:
-// usage_daily is the running total of the CURRENT UTC day, so its row for today is re-written every
-// tick and the day's final number is its last snapshot before midnight UTC — with the default hourly
-// tick, up to an hour of each OpenRouter day is never seen.
+// DAYS ARE THE PROVIDER'S (D-17). OpenAI, Anthropic and fal bucket by UTC day, and their rows keep
+// that day with bucket_tz 'UTC'; nothing is shifted into the organisation's zone. OpenRouter has no
+// per-day history at all, only a CUMULATIVE counter (data.usage: the key's spend since it was issued),
+// so its days are made here, exactly as D-17 wrote them (B-30, midnight.go): a second clock reads the
+// counter 30 s after every LOCAL midnight (design_settings.budget_timezone — the ledger's own days),
+// writes reading − base under the day just closed with bucket_tz = that zone, and keeps the reading as
+// the next day's base in ai_provider_usage_snapshot, which outlives a deploy. Between midnights the
+// hourly tick re-writes today's running partial (reading − base). A reading that cannot be diffed
+// honestly — the first one ever, a counter that went down (a rotated key), another key, a base of
+// another zone, a midnight that was missed — writes nothing and becomes the base; a missed midnight
+// leaves the day before at its last hourly partial rather than split a later reading by a guess.
 package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,8 +61,8 @@ const Name = "ai-reconcile"
 
 const (
 	// defaultInterval — one fetch per provider an hour. The admin-key APIs answer yesterday and
-	// today, so an hour is only how soon today's partial number moves; for OpenRouter it is also how
-	// much of each day's end is never seen (see the package comment).
+	// today, and OpenRouter's today is a running partial until its midnight reading closes it, so an
+	// hour is only how soon today's partial number moves.
 	defaultInterval = time.Hour
 
 	// tickTimeout bounds one tick — every provider's fetch and write — so a stuck request can
@@ -92,25 +100,36 @@ func DefaultConfig() Config {
 	return Config{Enabled: true, Interval: defaultInterval}
 }
 
-// CostStore writes the providers' own daily numbers (dependency.AI satisfies it). It is the only
-// store this package may reach.
+// CostStore writes the providers' own daily numbers (dependency.AI satisfies it). It and SnapshotStore
+// are the only stores this package may reach.
 type CostStore interface {
 	UpsertCostDaily(ctx context.Context, rows []entity.AICostDaily) error
 }
 
-// KeySource answers the keys (registry.Registry satisfies it). AdminKey is NOT gated by the provider's
-// enabled switch — switching a provider off stops new spend, not the need to reconcile the spend
-// already made. KeyFunc IS gated (and falls back to env): OpenRouter's number is read with the key
-// that pays for its calls, and a provider switched off in the panel is not asked for anything with it.
+// SnapshotStore keeps the base a cumulative provider's days are diffed against (0380; dependency.AI
+// satisfies it). Get answers nil, nil when the provider has none yet.
+type SnapshotStore interface {
+	GetUsageSnapshot(ctx context.Context, provider string) (*entity.AIUsageSnapshot, error)
+	PutUsageSnapshot(ctx context.Context, s entity.AIUsageSnapshot) error
+}
+
+// KeySource answers the keys and the organisation's zone (registry.Registry satisfies it). AdminKey is
+// NOT gated by the provider's enabled switch — switching a provider off stops new spend, not the need
+// to reconcile the spend already made. KeyFunc IS gated (and falls back to env): OpenRouter's number is
+// read with the key that pays for its calls, and a provider switched off in the panel is not asked for
+// anything with it. BudgetTimezone is design_settings.budget_timezone as the registry knows it now:
+// the zone whose midnights close OpenRouter's days ("" = the default zone, the ledger's rule).
 type KeySource interface {
 	AdminKey(providerKey string) string
 	KeyFunc(providerKey string) func() string
+	BudgetTimezone() string
 }
 
 // Option adjusts a Worker (tests: the clock, the HTTP client, the loop's timers).
 type Option func(*Worker)
 
-// WithClock sets "now" — the day the fetches ask about and the fetched_at they stamp.
+// WithClock sets "now" — the day the fetches ask about, the local day a cumulative reading belongs to,
+// the midnight the closing reading is armed for, and the fetched_at / taken_at they stamp.
 func WithClock(now func() time.Time) Option {
 	return func(w *Worker) {
 		if now != nil {
@@ -127,16 +146,20 @@ func WithHTTPClient(c *http.Client) Option {
 
 // Worker periodically reconciles every provider with a cost API and a key.
 type Worker struct {
-	c      Config
-	store  CostStore
-	keys   KeySource
-	now    func() time.Time
-	client *http.Client
+	c         Config
+	store     CostStore
+	snapshots SnapshotStore
+	keys      KeySource
+	now       func() time.Time
+	client    *http.Client
 
-	// newTicker / newTimer are the loop's clocks; tests replace them to drive ticks and observe the
-	// backoff without waiting for either.
+	// newTicker / newTimer are the hourly loop's clocks; tests replace them to drive ticks and observe
+	// the backoff without waiting for either.
 	newTicker func(time.Duration) (<-chan time.Time, func())
 	newTimer  func(time.Duration) (<-chan time.Time, func() bool)
+	// newMidnightTimer is the second clock's (runMidnights): one timer per local midnight. A knob of
+	// its own, so a test drives the midnight without meeting the backoff's timers, and the reverse.
+	newMidnightTimer func(time.Duration) (<-chan time.Time, func() bool)
 
 	// mu guards ctx/stop and the admission of RunNow: a run is admitted only while the worker is
 	// running, and counted in wg under the same lock, so Stop's Wait sees every run that got in.
@@ -146,8 +169,18 @@ type Worker struct {
 	wg   sync.WaitGroup
 
 	// fetchMu lets ONE provider fetch-and-write happen at a time. A tick and an after-save RunNow of
-	// the same provider would otherwise race, and the older answer could land last.
+	// the same provider would otherwise race, and the older answer could land last; for OpenRouter the
+	// hourly tick and the midnight reading would also race over the base.
 	fetchMu sync.Mutex
+	// keyPrints — per cumulative provider, the SHA-256 of the key its counter was last read with
+	// (guarded by fetchMu; never logged). Another key is another counter: diffed against this one's
+	// base, a key with a longer history would add that history to today.
+	keyPrints map[string][sha256.Size]byte
+
+	// logged is the last value logged per condition (once): a condition that holds reading after
+	// reading — a zone that does not load — is logged when it starts, not every hour.
+	onceMu sync.Mutex
+	logged map[string]string
 
 	tracker health.Tracker
 }
@@ -162,26 +195,31 @@ func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 // LastError is the last failure recorded (a fetch or a write), "" after a clean tick.
 func (w *Worker) LastError() string { return w.tracker.LastError() }
 
-// New builds the worker. keys is read on every fetch, so a key saved in the panel is used by the next
-// one without a restart.
-func New(c Config, store CostStore, keys KeySource, opts ...Option) *Worker {
+// New builds the worker. keys is read on every fetch, so a key saved in the panel — or a zone edited
+// in design settings — is used by the next reading without a restart.
+func New(c Config, store CostStore, snapshots SnapshotStore, keys KeySource, opts ...Option) *Worker {
 	if c.Interval <= 0 {
 		c.Interval = defaultInterval
 	}
+	realTimer := func(d time.Duration) (<-chan time.Time, func() bool) {
+		t := time.NewTimer(d)
+		return t.C, t.Stop
+	}
 	w := &Worker{
-		c:      c,
-		store:  store,
-		keys:   keys,
-		now:    time.Now,
-		client: defaultClient,
+		c:         c,
+		store:     store,
+		snapshots: snapshots,
+		keys:      keys,
+		now:       time.Now,
+		client:    defaultClient,
 		newTicker: func(d time.Duration) (<-chan time.Time, func()) {
 			t := time.NewTicker(d)
 			return t.C, t.Stop
 		},
-		newTimer: func(d time.Duration) (<-chan time.Time, func() bool) {
-			t := time.NewTimer(d)
-			return t.C, t.Stop
-		},
+		newTimer:         realTimer,
+		newMidnightTimer: realTimer,
+		keyPrints:        map[string][sha256.Size]byte{},
+		logged:           map[string]string{},
 	}
 	for _, o := range opts {
 		o(w)
@@ -189,7 +227,8 @@ func New(c Config, store CostStore, keys KeySource, opts ...Option) *Worker {
 	return w
 }
 
-// Start launches the loop: one tick at once, then one per Interval.
+// Start launches the two clocks: the hourly loop (one tick at once, then one per Interval) and the
+// midnight loop (one closing reading per local midnight, runMidnights). Stop ends both.
 func (w *Worker) Start(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -200,6 +239,9 @@ func (w *Worker) Start(ctx context.Context) error {
 	runCtx := w.ctx
 	w.wg.Go(func() {
 		w.run(runCtx)
+	})
+	w.wg.Go(func() {
+		w.runMidnights(runCtx)
 	})
 	return nil
 }
@@ -346,8 +388,9 @@ func (w *Worker) admit(ctx context.Context) (context.Context, func(), error) {
 }
 
 // reconcile fetches one provider and writes its days. No key = nothing to ask, not a failure. A
-// failed fetch or write logs `reconcile: <provider> fetch failed` / `… upsert failed`, marks the
-// tracker, and — for a fetch — writes nothing.
+// failed fetch or write logs `reconcile: <provider> fetch failed` / `… upsert failed` (a cumulative
+// provider also `… snapshot read failed` / `… snapshot write failed`), marks the tracker, and — for a
+// fetch — writes nothing.
 func (w *Worker) reconcile(ctx context.Context, a adapter) error {
 	// THE KEY IS READ UNDER THE SAME LOCK AS THE FETCH AND THE WRITE (Codex REVIEW-E #4). Read before
 	// it, a tick could hold the OLD key while an admin saves a new one and the after-save RunNow
@@ -362,17 +405,17 @@ func (w *Worker) reconcile(ctx context.Context, a adapter) error {
 		return nil
 	}
 
-	days, err := w.fetch(ctx, a, key)
-	if errors.Is(err, errAcrossMidnight) {
-		slog.Default().InfoContext(ctx, "reconcile: "+a.provider+" snapshot skipped: the request straddled a UTC midnight",
-			slog.String("provider", a.provider))
-		return nil
+	if a.cumulative {
+		return w.reconcileCumulative(ctx, a, key)
 	}
+
+	body, win, err := w.fetch(ctx, a, key)
 	if err != nil {
-		w.tracker.MarkError(err)
-		slog.Default().ErrorContext(ctx, "reconcile: "+a.provider+" fetch failed",
-			slog.String("provider", a.provider), slog.String("err", err.Error()))
-		return err
+		return w.failed(ctx, a, "fetch", err)
+	}
+	days, err := a.parse(body, win)
+	if err != nil {
+		return w.failed(ctx, a, "fetch", notUnderstood(a, err))
 	}
 	if len(days) == 0 {
 		slog.Default().DebugContext(ctx, "reconcile: no provider day to write", slog.String("provider", a.provider))
@@ -394,14 +437,28 @@ func (w *Worker) reconcile(ctx context.Context, a adapter) error {
 		})
 	}
 	if err := w.store.UpsertCostDaily(ctx, rows); err != nil {
-		w.tracker.MarkError(err)
-		slog.Default().ErrorContext(ctx, "reconcile: "+a.provider+" upsert failed",
-			slog.String("provider", a.provider), slog.String("err", err.Error()))
-		return err
+		return w.failed(ctx, a, "upsert", err)
 	}
 	slog.Default().DebugContext(ctx, "reconcile: provider days written",
 		slog.String("provider", a.provider), slog.Int("days", len(rows)))
 	return nil
+}
+
+// failed marks the tracker and logs `reconcile: <provider> <what> failed`; it returns err.
+func (w *Worker) failed(ctx context.Context, a adapter, what string, err error) error {
+	w.tracker.MarkError(err)
+	slog.Default().ErrorContext(ctx, "reconcile: "+a.provider+" "+what+" failed",
+		slog.String("provider", a.provider), slog.String("err", err.Error()))
+	return err
+}
+
+// once reports whether value is new for kind, and remembers it.
+func (w *Worker) once(kind, value string) bool {
+	w.onceMu.Lock()
+	defer w.onceMu.Unlock()
+	prev, ok := w.logged[kind]
+	w.logged[kind] = value
+	return !ok || prev != value
 }
 
 // keyOf reads the key the adapter's API takes: the reconciliation key (not gated by enabled) or the

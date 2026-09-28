@@ -1,21 +1,23 @@
 -- AI providers wave (28.09), commit E, B-28/B-29 — THE ZONE A PROVIDER'S OWN DAY IS COUNTED IN (D-17).
 --
 -- ai_provider_cost_daily.day (0374) is the day AS THE PROVIDER BUCKETS IT, and that is not our day. The
--- ledger counts days in design_settings.budget_timezone (Europe/Warsaw); every cost API the
--- reconciliation worker reads buckets by UTC day: OpenAI /v1/organization/costs and Anthropic
--- cost_report with bucket_width=1d, fal /v1/models/usage per day, and OpenRouter, which has no per-day
--- history at all, only usage_daily on /api/v1/key = the running total of the CURRENT UTC day. The
--- worker snapshots that total every tick into today's UTC row, so the day's final number is its last
--- snapshot before midnight UTC: with the default hourly tick, up to an hour of each OpenRouter day is
--- never seen.
+-- ledger counts days in design_settings.budget_timezone (Europe/Warsaw); the cost APIs with day buckets
+-- bucket by UTC day: OpenAI /v1/organization/costs and Anthropic cost_report with bucket_width=1d, fal
+-- /v1/models/usage per day. OpenRouter has no per-day history at all, only a cumulative counter
+-- (data.usage on /api/v1/key). Since B-30 (0380) the worker makes its days itself, exactly in OUR
+-- days: the difference of two readings taken 30 s after consecutive LOCAL midnights, written with
+-- bucket_tz = design_settings.budget_timezone. (Commit E first wrote usage_daily, the running total of
+-- the CURRENT UTC day, as a UTC row; the rows it wrote keep bucket_tz 'UTC' and say so.)
 --
 -- NOT RE-BUCKETED. Moving their number onto our days would need hourly buckets, which not every API has,
 -- and a synthetic split would present a guess as their number. The row keeps the provider's day and says
 -- which zone it is a day of; the report returns that zone per provider (their_bucket_tz) and the panel
--- labels the column «provider days (UTC)» with the hint that a provider day can differ from a local day
--- by up to two hours at each end. The column exists to catch DRIFT, which shows over a week or a month.
+-- labels each provider's number «utc days» or «local days» by it, with the hint that a UTC day can
+-- differ from a local day by up to two hours at each end. The column exists to catch DRIFT, which shows
+-- over a week or a month.
 --
--- VARCHAR(32), NOT NULL, DEFAULT 'UTC': an IANA zone name, closed in Go (the worker writes 'UTC' only);
+-- VARCHAR(32), NOT NULL, DEFAULT 'UTC': an IANA zone name, closed in Go (the worker writes 'UTC', and the
+-- budget zone for OpenRouter's days);
 -- the default is also the truth for every row written before this file — each was a UTC bucket. No
 -- ENUM, no CHECK (the house rule for vocabularies and for existing tables).
 --
