@@ -78,6 +78,43 @@ func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 		AIRouterDefaults(client), client.CompletionBase())
 }
 
+// TestAIRouterDefaultsKeepSeededOpenRouterEnvSlugs — B-23 adds defaults for direct providers, but the
+// 0373 seed is still (openrouter, "") for every purpose. Those rows must keep resolving to the same
+// per-purpose env slugs as before: shared for ordinary chat, analysis for its two doors, ideas for the
+// playground. ByProvider contains the four priced direct defaults and deliberately no OpenRouter row.
+//
+// MUTATIONS (each measured red → restored green): EffectiveModel consults ByProvider for openrouter
+// instead of the env fields → every seeded row loses its slug; AIRouterDefaults omits ByProvider → the
+// four direct-provider assertions fail.
+func TestAIRouterDefaultsKeepSeededOpenRouterEnvSlugs(t *testing.T) {
+	client := openrouter.New(openrouter.Config{
+		APIKey: "test-key", Model: "env/chat", ModelAnalysis: "env/analysis", ModelIdeas: "env/ideas",
+	})
+	d := AIRouterDefaults(client)
+	require.Equal(t, map[string]string{
+		entity.AIProviderOpenAI:    "gpt-5-mini",
+		entity.AIProviderAnthropic: "claude-sonnet-5",
+		entity.AIProviderGoogle:    "gemini-2.5-flash",
+		entity.AIProviderApibost:   "claude-sonnet-5",
+	}, d.ByProvider)
+	require.NotContains(t, d.ByProvider, entity.AIProviderOpenRouter,
+		"openrouter owns three env defaults; a direct-provider default must never replace them")
+
+	ai := newSeededRouter(t, client)
+	for purpose, want := range map[string]string{
+		entity.AIPurposeNoteMarkdown:     "env/chat",
+		entity.AIPurposeEmailTranslate:   "env/chat",
+		entity.AIPurposeDesignDraftIdea:  "env/chat",
+		entity.AIPurposeTechCardEnhance:  "env/analysis",
+		entity.AIPurposeTechCardAnalysis: "env/analysis",
+		entity.AIPurposePlaygroundIdeas:  "env/ideas",
+	} {
+		provider, model := ai.RouteHead(purpose)
+		require.Equal(t, entity.AIProviderOpenRouter, provider, purpose)
+		require.Equal(t, want, model, purpose)
+	}
+}
+
 // TestEveryChatDoorSaysPausedWhenTheBreakerHoldsTheProvider — three transient faults open the
 // provider's breaker; until its window passes every chat door refuses in ONE sentence, «paused …
 // try again in a few minutes» (Unavailable, AI_PAUSED), never «not configured»: nothing about the
