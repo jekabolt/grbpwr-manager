@@ -7,12 +7,15 @@
 // already on the wire keeps the header it was built with and the next one uses the new key; nobody
 // ever sees half a reload.
 //
-// THE KEY RULE (02-PLAN S-2): the effective key is the database key when one is stored and opens,
-// else today's env variable; a provider row with enabled=0 WINS over both — "" is returned, and a
-// client whose KeyFunc answers "" reports itself disabled. An env key is never copied into the
-// database. A stored key that does not open (wrong master, row swapped, no master at all) never
-// stops the registry: the provider is reported as KeySource "unreadable", the env key answers
-// meanwhile, and one warning is logged per unreadable blob.
+// THE KEY RULE (02-PLAN S-2, tightened by B-33): the effective key is the database key — the one an
+// admin saved in admin → AI providers — when it is stored and opens; nothing else ever answers. A
+// provider row with enabled=0 WINS over it — "" is returned, and a client whose KeyFunc answers ""
+// reports itself disabled. The env variables (EnvKeys) are read ONCE, at boot, by ImportEnvKeys: a
+// value whose panel slot is empty is sealed and stored as if the admin had pasted it, and from that
+// boot on the variables are dead weight the operator deletes. A stored key that does not open
+// (wrong master, row swapped, no master at all) never stops the registry: the provider is reported
+// as KeySource "unreadable", it answers "" until a person re-enters the key, and one warning is
+// logged per unreadable blob.
 //
 // HOT RELOAD ACROSS INSTANCES. The instance that handles a write RPC calls Reload itself; every
 // other instance learns from the poller, which compares ai_settings.config_version every 60 s and
@@ -65,10 +68,13 @@ const backoffCapFactor = 10
 
 // Key sources — ProviderState.KeySource.
 const (
-	KeySourceDB         = "db"         // a stored key opened with the master key
-	KeySourceEnv        = "env"        // no stored key; today's env variable answers
-	KeySourceNone       = "none"       // neither
-	KeySourceUnreadable = "unreadable" // a stored key that does not open; the env key (if any) answers meanwhile
+	KeySourceDB   = "db"   // a stored key opened with the master key
+	KeySourceNone = "none" // no stored key: nothing answers
+	// KeySourceEnv is LEGACY (B-33): no snapshot produces it any more — the env variables are
+	// imported at boot, never read at call time. The constant stays for the wire and the client's
+	// switch, which still name it.
+	KeySourceEnv        = "env"
+	KeySourceUnreadable = "unreadable" // a stored key that does not open; nothing answers until it is re-entered
 )
 
 // Breaker states — ProviderState.Breaker and BreakerState (breaker.go), in the circuitbreaker
@@ -79,12 +85,12 @@ const (
 	BreakerHalfOpen = "half-open"
 )
 
-// EnvKeys are today's env values — the fallback when the database holds no key for a provider.
+// EnvKeys are the env values as the process booted — the INPUT of the one-time import
+// (ImportEnvKeys) and nothing else: no KeyFunc reads them (B-33).
 //
-// OpenRouterImages is the image client's own env key (OPENROUTER_IMAGES_API_KEY, which config/cfg.go
-// already falls back to OPENROUTER_API_KEY). ONE provider row serves both OpenRouter clients, so a
-// stored openrouter key answers for both; the images env value is consulted only when there is no
-// stored key — which keeps a deployment whose two env values differ exactly as it is today.
+// OpenRouterImages (OPENROUTER_IMAGES_API_KEY, which config/cfg.go already falls back to
+// OPENROUTER_API_KEY) is never imported: ONE provider row serves both OpenRouter clients, so the
+// chat variable is the one that lands in the slot. A differing images value is only warned about.
 type EnvKeys struct {
 	OpenRouter, OpenRouterImages, Fal, Meshy, Recraft string
 }
@@ -101,7 +107,7 @@ type ProviderState struct {
 	Key         string
 	Enabled     bool
 	KeySource   string // KeySourceDB | KeySourceEnv | KeySourceNone | KeySourceUnreadable
-	KeyLast4    string // last four characters of the key that ANSWERS (env on "unreadable"); "" when none
+	KeyLast4    string // last four characters of the stored key that opened; "" when none or unreadable
 	AdminKeySet bool   // a reconciliation key is stored and opens
 	Breaker     string // the worst of the provider's breakers: open > half-open > closed
 }
@@ -170,8 +176,8 @@ type Registry struct {
 	wg   sync.WaitGroup
 }
 
-// New builds a registry. Nothing is read until Reload; before it, every KeyFunc answers the env key
-// (today's behaviour) and Candidates answers nothing.
+// New builds a registry. Nothing is read until Reload; before it, every KeyFunc answers "" (no
+// snapshot = no key; the env values are never a fallback, B-33) and Candidates answers nothing.
 func New(store dependency.AI, ring *keyring.Ring, env EnvKeys, opts ...Option) *Registry {
 	r := &Registry{
 		store:    store,
@@ -224,7 +230,7 @@ func (r *Registry) Reload(ctx context.Context) error {
 
 	for _, key := range entity.AIProviderKeys() {
 		before, after := r.stateIn(prev, key), r.stateIn(next, key)
-		if prev != nil && r.effectiveKeyIn(prev, key, "") != r.effectiveKeyIn(next, key, "") {
+		if prev != nil && r.effectiveKeyIn(prev, key) != r.effectiveKeyIn(next, key) {
 			r.ResetBreakers(key)
 		}
 		if prev == nil || before != after {
@@ -259,8 +265,6 @@ func (r *Registry) build(ctx context.Context, cfg *entity.AIConfig) *snapshot {
 			ps.dbKey, ps.keySource = dbKey, KeySourceDB
 		case unreadable:
 			ps.keySource = KeySourceUnreadable
-		case r.envKey(p.Key, "") != "":
-			ps.keySource = KeySourceEnv
 		default:
 			ps.keySource = KeySourceNone
 		}
@@ -300,15 +304,12 @@ func (r *Registry) open(ctx context.Context, providerKey string, kind entity.AIK
 	r.warned[slot] = fp
 	r.warnMu.Unlock()
 	if !already {
-		fallback := KeySourceNone
-		if kind == entity.AIKeyAPI && r.envKey(providerKey, "") != "" {
-			fallback = KeySourceEnv
-		}
 		// err names the AAD ("fal:api") or the missing master; it carries no byte of the blob.
-		r.log.WarnContext(ctx, "ai provider key is stored but does not open — re-enter it; the env key answers meanwhile",
+		// Since B-33 nothing answers for the provider until a person re-enters the key — there is
+		// no env fallback to soften this — so the line says exactly where to go.
+		r.log.WarnContext(ctx, "ai provider key is stored but does not open — re-enter it in admin → AI providers",
 			slog.String("provider", providerKey),
 			slog.String("kind", string(kind)),
-			slog.String("fallback", fallback),
 			slog.String("err", err.Error()),
 		)
 	}
@@ -321,14 +322,26 @@ func (r *Registry) forgetWarning(slot string) {
 	r.warnMu.Unlock()
 }
 
-// envKey is today's env value for a provider. capability picks the OpenRouter image client's own
-// variable; every other provider has one.
-func (r *Registry) envKey(providerKey, capability string) string {
+// ───────────────────────── the one-time env import (B-33) ─────────────────────────
+
+// envImports are the four variables the import reads, in the panel's order, each with the provider
+// row it lands in. OPENROUTER_IMAGES_API_KEY is deliberately absent — one openrouter row serves both
+// OpenRouter clients (EnvKeys) — and no other provider ever had an env variable.
+var envImports = []struct{ provider, variable string }{
+	{entity.AIProviderOpenRouter, "OPENROUTER_API_KEY"},
+	{entity.AIProviderFal, "FAL_KEY"},
+	{entity.AIProviderMeshy, "MESHY_API_KEY"},
+	{entity.AIProviderRecraft, "RECRAFT_API_KEY"},
+}
+
+// EnvImportedBy is the updated_by the panel shows for a key the import stored — a name no admin
+// has, so «set by env-import» reads as what it is.
+const EnvImportedBy = "env-import"
+
+// envValue is the booted env value of one importable provider; "" for every other provider.
+func (r *Registry) envValue(providerKey string) string {
 	switch providerKey {
 	case entity.AIProviderOpenRouter:
-		if capability == entity.AICapabilityImage {
-			return r.env.OpenRouterImages
-		}
 		return r.env.OpenRouter
 	case entity.AIProviderFal:
 		return r.env.Fal
@@ -340,27 +353,93 @@ func (r *Registry) envKey(providerKey, capability string) string {
 	return ""
 }
 
-// effectiveKeyIn is THE key rule, on one snapshot:
-//   - no snapshot yet (never reloaded) → the env key, exactly today's behaviour;
-//   - a provider with no row → the env key (the migration seeds all nine rows; a missing one is not
-//     an enabled=0 and must not silently switch a working feature off);
-//   - enabled=0 → "" — it WINS over the stored key and over env;
-//   - else the stored key when it opened, else env.
-func (r *Registry) effectiveKeyIn(s *snapshot, providerKey, capability string) string {
+// ImportEnvKeys is the boot-time bridge from the old key source to the only one (B-33): for each
+// provider whose env variable is set and whose panel api slot is EMPTY (no blob at all), the value is
+// sealed exactly as the admin handler seals a pasted key (keyring.SealProviderKey, the same AAD) and
+// stored with updated_by EnvImportedBy. Returns the providers it stored.
+//
+// Runs ONCE per boot, BEFORE the first Reload — so the boot snapshot already carries the imported
+// keys and a deployment that had its keys in env never serves a keyless request — and after the DB is
+// up. A slot that already holds a blob, readable or not, is left alone in silence: the panel's key
+// wins, even a broken one (a person re-enters it; overwriting it with the env value would resurrect
+// a key the admin may have rotated away). Without a master key nothing can be sealed: one ERROR line
+// says so and nothing is imported or used — the env values are not a fallback any more.
+// OPENROUTER_IMAGES_API_KEY is never imported; when it differs from OPENROUTER_API_KEY one WARN names
+// the variable. No line ever carries a key: last4 only.
+func (r *Registry) ImportEnvKeys(ctx context.Context) (imported []string, err error) {
+	if !r.ring.Enabled() {
+		r.log.ErrorContext(ctx, "AI_KEYS_MASTER_KEY is not set: env keys are no longer read; "+
+			"set it and save the keys in admin → AI providers")
+		return nil, nil
+	}
+	cfg, err := r.store.GetConfig(ctx)
+	if err == nil && cfg == nil {
+		err = errors.New("the store returned no configuration")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ai registry: env import: %w", err)
+	}
+	rows := make(map[string]entity.AIProvider, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		rows[p.Key] = p
+	}
+	for _, imp := range envImports {
+		value := r.envValue(imp.provider)
+		if value == "" {
+			continue
+		}
+		row, ok := rows[imp.provider]
+		if !ok {
+			// The migration seeds every row; a missing one is a broken deploy, not a slot to create.
+			r.log.WarnContext(ctx, "ai provider has no row; its env key is not imported",
+				slog.String("provider", imp.provider), slog.String("variable", imp.variable))
+			continue
+		}
+		if len(row.APIKeyEnc) > 0 {
+			continue // the panel's key wins, readable or not
+		}
+		enc, last4, err := r.ring.SealProviderKey(imp.provider, string(entity.AIKeyAPI), value)
+		if err != nil {
+			return imported, fmt.Errorf("ai registry: env import: seal %s key: %w", imp.provider, err)
+		}
+		if err := r.store.SetProviderKey(ctx, imp.provider, entity.AIKeyAPI, enc, last4, EnvImportedBy); err != nil {
+			return imported, fmt.Errorf("ai registry: env import: store %s key: %w", imp.provider, err)
+		}
+		r.log.InfoContext(ctx, fmt.Sprintf("ai provider %s: env key imported into the panel (last4 %s) — delete %s from the app spec",
+			imp.provider, last4, imp.variable),
+			slog.String("provider", imp.provider),
+			slog.String("variable", imp.variable),
+			slog.String("key_last4", last4),
+		)
+		imported = append(imported, imp.provider)
+	}
+	if r.env.OpenRouterImages != "" && r.env.OpenRouterImages != r.env.OpenRouter {
+		r.log.WarnContext(ctx, "OPENROUTER_IMAGES_API_KEY differs from OPENROUTER_API_KEY and is not imported: "+
+			"one openrouter row serves both clients — save the key pictures should use in admin → AI providers, "+
+			"then delete the variable from the app spec",
+			slog.String("provider", entity.AIProviderOpenRouter),
+			slog.String("variable", "OPENROUTER_IMAGES_API_KEY"),
+		)
+	}
+	return imported, nil
+}
+
+// effectiveKeyIn is THE key rule, on one snapshot (B-33: the database is the only source):
+//   - no snapshot yet (never reloaded) → "" — a call before the boot Reload has no key; the boot
+//     order (import → Reload → clients wired) makes that window unreachable in the app;
+//   - a provider with no row → "" (the migration seeds all nine rows; a missing one is a broken
+//     deploy, and inventing a key for it would hide that);
+//   - enabled=0 → "" — it WINS over the stored key;
+//   - else the stored key when it opened, else "" (unreadable or empty: re-enter it in the panel).
+func (r *Registry) effectiveKeyIn(s *snapshot, providerKey string) string {
 	if s == nil {
-		return r.envKey(providerKey, capability)
-	}
-	p, ok := s.providers[providerKey]
-	if !ok {
-		return r.envKey(providerKey, capability)
-	}
-	if !p.enabled {
 		return ""
 	}
-	if p.dbKey != "" {
-		return p.dbKey
+	p, ok := s.providers[providerKey]
+	if !ok || !p.enabled {
+		return ""
 	}
-	return r.envKey(providerKey, capability)
+	return p.dbKey
 }
 
 // stateIn renders a provider's ProviderState from one snapshot, the breaker column aside.
@@ -371,23 +450,16 @@ func (r *Registry) stateIn(s *snapshot, providerKey string) ProviderState {
 	if s != nil {
 		p, ok = s.providers[providerKey]
 	}
-	switch {
-	case ok:
+	if ok {
 		st.Enabled = p.enabled
 		st.KeySource = p.keySource
 		st.AdminKeySet = p.adminKey != ""
-	case r.envKey(providerKey, "") != "":
-		st.KeySource = KeySourceEnv
-	default:
+		// The last four of the stored key that opened — computed as if enabled, so a switched-off
+		// provider still shows which key it would use. "" for an unreadable blob: nothing answers.
+		st.KeyLast4 = keyring.Last4(p.dbKey)
+	} else {
 		st.KeySource = KeySourceNone
 	}
-	// The last four of the key that ANSWERS when the provider is on — computed as if enabled, so a
-	// switched-off provider still shows which key it would use.
-	answering := r.envKey(providerKey, "")
-	if ok && p.dbKey != "" {
-		answering = p.dbKey
-	}
-	st.KeyLast4 = keyring.Last4(answering)
 	return st
 }
 
@@ -411,20 +483,19 @@ func (r *Registry) BudgetTimezone() string {
 }
 
 // KeyFunc returns the hook a client's Config.KeyFunc takes. It reads the CURRENT snapshot on every
-// call: "" when the provider is disabled (enabled=0 wins over env), else the stored key, else the
-// env key. Capture it once at wiring time; a Reload changes what it answers, not the func.
+// call: "" when the provider is disabled (enabled=0 wins over the stored key), else the stored key,
+// else "" — never an env variable (B-33). Capture it once at wiring time; a Reload changes what it
+// answers, not the func.
 func (r *Registry) KeyFunc(providerKey string) func() string {
-	return func() string { return r.effectiveKeyIn(r.snap.Load(), providerKey, "") }
+	return func() string { return r.effectiveKeyIn(r.snap.Load(), providerKey) }
 }
 
-// OpenRouterImagesKeyFunc is KeyFunc("openrouter") for the OpenRouter IMAGE client: the same row,
-// the same stored key and the same enabled switch, but with OPENROUTER_IMAGES_API_KEY (already
-// falling back to OPENROUTER_API_KEY in config) as its env fallback — so a deployment whose two env
-// values differ keeps paying for pictures with the key it pays with today.
+// OpenRouterImagesKeyFunc is KeyFunc("openrouter") for the OpenRouter IMAGE client. Since B-33 it is
+// the chat client's answer exactly — one row, one stored key, one switch; the separate env fallback
+// (OPENROUTER_IMAGES_API_KEY) it once carried is gone. It stays a func of its own so the wiring in
+// app.go keeps naming which client it hands the key to.
 func (r *Registry) OpenRouterImagesKeyFunc() func() string {
-	return func() string {
-		return r.effectiveKeyIn(r.snap.Load(), entity.AIProviderOpenRouter, entity.AICapabilityImage)
-	}
+	return r.KeyFunc(entity.AIProviderOpenRouter)
 }
 
 // AdminKey is the stored reconciliation key of a provider ("" when none or unreadable). It is NOT
@@ -523,7 +594,7 @@ func (r *Registry) walk(purpose string) (listed, held []Candidate, version uint6
 		if pk == "" || !entity.AIProviderServes(pk, capability) {
 			continue
 		}
-		if r.effectiveKeyIn(s, pk, capability) == "" { // disabled or keyless
+		if r.effectiveKeyIn(s, pk) == "" { // disabled or keyless
 			continue
 		}
 		dup := pk + "\x00" + c.Model

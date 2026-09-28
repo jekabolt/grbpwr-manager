@@ -267,6 +267,9 @@ func TestCanStoreMediaTypeIsTheOneAnswerBothPathsGive(t *testing.T) {
 				_, err = b.UploadContentNonRaster(ctx, []byte(cleanSVG), ct, "design", "probe-"+strings.NewReplacer("/", "-", "+", "-").Replace(ct))
 			case contentTypeGLB:
 				_, err = b.UploadContentNonRaster(ctx, makeGLB(t), ct, "design", "probe-glb")
+			case contentTypeMP4, contentTypeWEBM:
+				// B-32: the video door — the bytes must pass the container sniff of the real path.
+				_, err = b.UploadContentVideo(ctx, makeVideoOfType(ContentType(ct)), "design", "probe-video", ct)
 			default:
 				_, err = b.UploadContentImageVerbatim(ctx, makeRasterOfType(t, ContentType(ct)), "design", "probe-raster")
 			}
@@ -275,11 +278,21 @@ func TestCanStoreMediaTypeIsTheOneAnswerBothPathsGive(t *testing.T) {
 			require.NotZero(t, store.puts)
 		})
 	}
-	for _, ct := range []string{"application/pdf", "image/heic", "video/mp4", "", "text/html"} {
+	for _, ct := range []string{"application/pdf", "image/heic", "video/quicktime", "", "text/html"} {
 		require.Falsef(t, CanStoreMediaType(ct), "%q has no media storage path here", ct)
 	}
 	require.True(t, CanStoreMediaType("IMAGE/SVG+XML; charset=utf-8"),
 		"casing and parameters are cosmetic, not a different type")
+}
+
+// makeVideoOfType — the smallest payload sniffVideoType reads as the container: the `ftyp` box of an
+// mp4, the EBML magic of a webm. The video path stores verbatim and decodes nothing, so a header is a
+// whole file to it.
+func makeVideoOfType(ct ContentType) []byte {
+	if ct == contentTypeWEBM {
+		return []byte{0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	return []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0}
 }
 
 // inspectForTest is the same check the storage path runs, called directly so the size probe reads

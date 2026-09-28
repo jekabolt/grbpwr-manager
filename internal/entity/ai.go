@@ -77,8 +77,9 @@ func IsAICapability(v string) bool {
 // AIProviderCapabilities — what one provider can serve; nil for an unknown key. A copy on every call.
 //
 // This is what a route may ASK of a provider, not what is wired today: every chat provider has a
-// transport since commit E (openai/apibost through oaichat, anthropic, google through gemini), runblob's
-// adapter exists but no purpose routes to it (D-05), and a provider without a key is refused by the
+// transport since commit E (openai/apibost through oaichat, anthropic, google through gemini), runblob
+// draws image.generate through its image transport since B-31 and serves the video purpose since B-32
+// (the playground's video tile; D-05 superseded 28.09), and a provider without a key is refused by the
 // registry as keyless/disabled rather than by this table.
 func AIProviderCapabilities(key string) []string {
 	switch key {
@@ -91,7 +92,9 @@ func AIProviderCapabilities(key string) []string {
 	case AIProviderMeshy:
 		return []string{AICapabilityThreed}
 	case AIProviderRunblob:
-		return []string{AICapabilityVideo}
+		// image first: it is the capability with a purpose today (image.generate, B-31); video is what
+		// the adapter was built for and what G2's purpose routes.
+		return []string{AICapabilityImage, AICapabilityVideo}
 	case AIProviderRecraft:
 		return []string{AICapabilityVector}
 	}
@@ -110,7 +113,8 @@ func AIProviderServes(key, capability string) bool {
 
 // Purposes — ai_route.purpose and ai_usage_event.purpose; 02-PLAN §4.1 less
 // chat.techcard_operations_draft, retired with its button (O-66; migration 0378 deletes its seeded
-// route row). There is no video purpose until the owner names one (D-05).
+// route row), plus video.generate — the purpose the owner named on 28.09 («в runblob есть и видео и
+// фото — делай и то и то»; B-32, seeded by 0384 → runblob): a short clip from one picture of a card.
 const (
 	AIPurposeTechCardEnhance  = "chat.techcard_enhance"
 	AIPurposeTechCardAnalysis = "chat.techcard_analysis"
@@ -123,6 +127,7 @@ const (
 	AIPurposeImageExtend      = "image.extend"
 	AIPurposeImageInpaint     = "image.inpaint"
 	AIPurposeThreed           = "threed"
+	AIPurposeVideoGenerate    = "video.generate"
 	AIPurposeVector           = "vector"
 )
 
@@ -132,7 +137,7 @@ func AIPurposes() []string {
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
 		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposePlaygroundIdeas,
 		AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
-		AIPurposeThreed, AIPurposeVector,
+		AIPurposeThreed, AIPurposeVideoGenerate, AIPurposeVector,
 	}
 }
 
@@ -155,6 +160,8 @@ func AIPurposeCapability(p string) string {
 		return AICapabilityEdit
 	case AIPurposeThreed:
 		return AICapabilityThreed
+	case AIPurposeVideoGenerate:
+		return AICapabilityVideo
 	case AIPurposeVector:
 		return AICapabilityVector
 	}
@@ -179,6 +186,8 @@ func AIPurposeOfRunKind(kind string) string {
 		return AIPurposeImageInpaint
 	case DesignRunKindThreed:
 		return AIPurposeThreed
+	case DesignRunKindVideo:
+		return AIPurposeVideoGenerate
 	case DesignRunKindVector:
 		return AIPurposeVector
 	case DesignRunKindDraftIdea:

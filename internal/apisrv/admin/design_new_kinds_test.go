@@ -32,6 +32,7 @@ func TestEVERY_RUN_KIND_THE_DOOR_ACCEPTS_HAS_A_PRICE(t *testing.T) {
 		entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
 		entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
 		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
+		entity.DesignRunKindVideo, // B-32
 	} {
 		require.Truef(t, entity.IsDesignRunKind(kind), "kind %q left the vocabulary", kind)
 		est := designEstimateFor(kind, 1)

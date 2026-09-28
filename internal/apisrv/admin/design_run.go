@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
@@ -257,6 +258,11 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	// configured tariff raises the reserve through the route object (designFalRouteEstimate).
 	entity.DesignRunKindExtend:  fal.EstimatedRouteUSD(fal.RouteOutpaint),
 	entity.DesignRunKindInpaint: fal.EstimatedRouteUSD(fal.RouteFill),
+	// B-32 — THE VIDEO CLIP RESERVES THE CONFIGURED CEILING (RUNBLOB_VIDEO_CEILING_USD, read live through
+	// designVideoRunEstimate); this row is its default, the same constant the worker's config supplies
+	// when the variable is unset. runblob prices the clip at submit («their number»); the reserve is the
+	// most one clip may cost, not its expectation.
+	entity.DesignRunKindVideo: decimal.RequireFromString(designgen.DefaultVideoCeilingUSD),
 }
 
 // Базовые цены картиночных родов НА `medium` — том положении дила, которое стоит в
@@ -623,7 +629,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	kind := strings.TrimSpace(req.GetKind())
 	if !entity.IsDesignRunKind(kind) {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint", kind)
+			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint | video", kind)
 	}
 	// draft_idea ОТКАЗЫВАЕТСЯ ЗДЕСЬ, дословно по контракту. Текстовый прогон исполняется в
 	// хендлере синхронно и возвращает свой ответ; заведённый отсюда, он вернул бы строку
@@ -955,6 +961,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		int(params.GetInpaint().GetMaskMediaId())); err != nil {
 		return nil, err
 	}
+	// B-32: the video's one picture passes the same card boundary (a fresh upload passes, D2).
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.video.source_media_id",
+		int(params.GetVideo().GetSourceMediaId())); err != nil {
+		return nil, err
+	}
 
 	// ─── РОДЫ, У КОТОРЫХ ВХОД — КОНКРЕТНАЯ КАРТИНКА, А НЕ КОНТЕКСТ ───
 	//
@@ -1000,6 +1011,8 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	}
 	// A stated engine freezes with its slug (G-02, Codex 5).
 	s.designFreezeImageModel(kind, params)
+	// A video run freezes the Kling slug it is bought with (B-32).
+	s.designFreezeVideoModel(kind, params)
 
 	inputs, fitAtLaunch, err := s.designRunInputs(ctx, src, parent)
 	if err != nil {
@@ -1226,6 +1239,11 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 	// ─── PHASE 3: THE MASK RETOUCH (tile 10's mask route) ───
 	case entity.DesignRunKindInpaint:
 		if err := designRefuseUnworkableInpaint(ask, params); err != nil {
+			return err
+		}
+	// ─── B-32: THE VIDEO CLIP (the «Image to Video» tile) ───
+	case entity.DesignRunKindVideo:
+		if err := designRefuseUnworkableVideo(ask, params); err != nil {
 			return err
 		}
 	case entity.DesignRunKindRecolor:
@@ -2284,7 +2302,9 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 		// отдельно, у двери: платный вызов в обоих режимах один.
 		return 1
 	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
-		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
+		// B-32: one clip per run — the route submits one Kling job and files one mp4.
+		entity.DesignRunKindVideo:
 		// ═══ РОВНО ОДНА КАРТИНКА, И ЭТО СЛОВО ВЛАДЕЛЬЦА, А НЕ УМОЛЧАНИЕ ═══
 		//
 		// Плейграунд отвечает ОДНИМ кадром на одну просьбу: сколько бы картинок человек ни
@@ -3419,7 +3439,8 @@ func designKindReadsTheCard(kind string) bool {
 	switch kind {
 	case entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
 		entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
-		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
+		entity.DesignRunKindVideo:
 		return false
 	}
 	return true
@@ -3450,7 +3471,7 @@ func designKindReadsTheCard(kind string) bool {
 func designKindReadsTheGarmentNote(kind string) bool {
 	switch kind {
 	case entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
-		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint, entity.DesignRunKindVideo:
 		return false
 	}
 	return true
@@ -3527,6 +3548,11 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// PHASE 3: a mask retouch records the picture and the mask it sends — and nothing of the card.
 	if src.Kind == entity.DesignRunKindInpaint {
 		out.Refs = designInpaintRefs(src.Params)
+		return out, nil
+	}
+	// B-32: a video run records the one picture it animates — and nothing of the card.
+	if src.Kind == entity.DesignRunKindVideo {
+		out.Refs = designVideoRefs(src.Params)
 		return out, nil
 	}
 	// ⚠ ССЫЛКИ КАРТОЧКИ ЧИТАЕТ НЕ ВСЯКИЙ РОД (J-6), И ПРАВИЛО ЖИВЁТ В designKindReadsTheCard —
@@ -4141,6 +4167,8 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 		snap.Refs = designFreeformRefs(src.Params)
 	} else if src.Kind == entity.DesignRunKindInpaint {
 		snap.Refs = designInpaintRefs(src.Params)
+	} else if src.Kind == entity.DesignRunKindVideo {
+		snap.Refs = designVideoRefs(src.Params)
 	} else if !designRunReadsTheCard(src.Kind, src.Params) {
 		named := make(map[int32]struct{}, len(src.Params.GetExtraInputMediaIds()))
 		for _, id := range src.Params.GetExtraInputMediaIds() {

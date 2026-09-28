@@ -76,6 +76,9 @@ overlaid by **environment variables, which take precedence**. Each setting is bo
   `db.CA_CERT`. The runtime image ships the cert at `/etc/grbpwr-products-manager/certs/ca-certificate.crt`.
 - When adding a new config field: add it to the struct in `config/cfg.go` (+ the relevant package `Config`),
   add a `viper.BindEnv` line, and set it in `.do/app.yaml` / `.do/app-beta.yaml`.
+- AI provider keys (OpenRouter, fal, Meshy, Recraft, …) are NOT config: the only key source is the key an admin
+  saved in admin → AI providers (sealed under `AI_KEYS_MASTER_KEY`, which is therefore required); the old env
+  variables are read once at boot for a one-time import into the panel and never at call time (B-33).
 
 ## Database / migrations
 

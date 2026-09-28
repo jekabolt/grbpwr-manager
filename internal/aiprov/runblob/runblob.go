@@ -1,14 +1,13 @@
-// Package runblob is the adapter for runblob.io, a video-first generation aggregator: one POST to
-// {endpoints.RunblobHost}/v1/{family}/generate submits a generation and answers with its price, one
-// GET to /v1/{family}/generations/{id} reads its status. The key comes only from the admin panel
+// Package runblob is the adapter for runblob.io, a generation aggregator (video AND pictures): one
+// POST to {endpoints.RunblobHost}/v1/{path}/generate submits a generation and answers with its price,
+// one GET to /v1/{path}/generations/{id} reads its status. The key comes only from the admin panel
 // (registry KeyFunc; there is no env key for this provider, R-05).
 //
-// ⚠ NOTHING CALLS IT YET, AND THAT IS THE DECISION (D-05). None of the shop's purposes is video, and
-// the image families runblob advertises are not in its docs; the owner names the first video purpose
-// later (B-27b). Until then this package is the key's other half: the probe checks the key, this
-// adapter is what a future caller will pay through, and Submission.PriceUSD is the number that caller
-// books as entity.AICostProvider — the provider's own price, returned at submit time. No ledger call,
-// no route, no designgen wiring lives here.
+// WHO CALLS IT. Since B-31 the image transport of this package (images.go, designgen.ImageTransport)
+// pays image.generate runs through Submit/Status when the panel routes that purpose to runblob; the
+// VIDEO half still has no purpose (D-05 as amended by 06-BRIEFS-G: G2 names `video.generate`). The
+// adapter itself knows no purpose and writes no ledger row: Submission.PriceUSD is the number a caller
+// books as entity.AICostProvider — the provider's own price, returned at submit time.
 //
 // It is a port of the chat transports' guards, not a chat transport (a generation is not a
 // completion; aiprov.Chatter does not fit), and every guard they learnt is here once more:
@@ -18,22 +17,24 @@
 //     nothing and is never engaged, whatever happens to it;
 //   - the READ CEILING — MaxResponseBytes, refused by name, never trimmed;
 //   - the STATUS CLASSIFICATION — aiprov.ClassifyStatus, by status alone, with ONE split by method:
-//     a 404 on the submit is the family (a setting: aiprov.ErrModelUnavailable), a 404 on the status
+//     a 404 on the submit is the path (a setting: aiprov.ErrModelUnavailable), a 404 on the status
 //     read is the generation id (ErrGenerationNotFound, code not_found) — the probe reads exactly that
 //     404 on the zero uuid as «key accepted», so the two must never share a word;
 //   - the SENTENCES — "runblob: API error (HTTP 401): Invalid API key", the provider's `detail`
 //     bounded and never carrying the key;
 //   - REDIRECTS REFUSED — the Bearer key and the caller's prompt have one destination;
-//   - the PATH — the family comes from a closed list and the id must be a uuid, both checked before
-//     the wire, so no argument can steer the request (and the key) to another path.
+//   - the PATH — the family path comes from a closed list and the id must be a uuid, both checked
+//     before the wire, so no argument can steer the request (and the key) to another path.
 //
 // Every failure is an *aiprov.CallError; its Error() is the sentence, its fields are the facts.
 //
-// ⚠ WIRE SHAPES: only the Kling family is documented (11-PROVIDER-RESEARCH.md §runblob, read
-// 2026-09-27) — Bearer auth; POST /v1/kling/generate → 201 {generation_id, status:"pending",
-// price:"0.2900" | "calculating", description}; GET /v1/kling/generations/{id} → {status, video_url,
-// model, error}; 401 {"detail":"Invalid API key"}. Everything else is marked UNVERIFIED (G-06) where it
-// is used, and G-06 checks it live with the owner's key before a caller is written.
+// ⚠ WIRE SHAPES (runblob-specs/kling.json + the Nano Banana docs page, read 2026-09-28; the Kling
+// video page read 2026-09-27): Bearer auth; POST /v1/{path}/generate → 201 {generation_id |
+// task_uuid (Nano Banana), status:"pending", price:"0.2900" | "calculating", description}; GET
+// /v1/{path}/generations/{id} → {status, video_url | image_url | result_image_url, model, message,
+// error}; 401 {"detail":"Invalid API key"}; 402 {"detail":"INSUFFICIENT_CREDITS"}; statuses pending |
+// processing | completed | failed, a failed job REFUNDED. Everything not on those pages is marked
+// UNVERIFIED (G-06) where it is used, and G-06 checks it live with the owner's key.
 package runblob
 
 import (
@@ -56,15 +57,29 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// Families — the {family} segment of the path. A CLOSED list: the caller owns the family's body (this
-// adapter knows no family's fields), but not the path the key is sent to.
+// Family paths — what stands between /v1/ and /generate | /generations/{id}. A CLOSED list: the
+// caller owns the family's body (this adapter knows no family's fields), but not the path the key is
+// sent to. One family is one path: `kling` (video) and `kling/o1-photo` (a picture) are two entries,
+// two bodies, two answers — never a family plus a free-text sub-path.
 const (
-	// FamilyKling — documented (14 models, kling_2.5_turbo the default).
+	// FamilyKling — video (runblob-specs/kling.json: 14 models, kling_2.5_turbo the default). The
+	// answer's id is generation_id, its result video_url.
 	FamilyKling = "kling"
 	// FamilyVeo — UNVERIFIED (G-06): named on runblob's landing page (veo-3-fast / veo-3-quality,
 	// POST /v1/veo/generate), absent from the docs nav on 2026-09-27.
 	FamilyVeo = "veo"
+	// PathGemini — Nano Banana pictures (the docs page read 2026-09-28): POST /v1/gemini/generate
+	// answers {task_uuid, status, price}; GET /v1/gemini/generations/{task_uuid} answers
+	// {task_uuid, status, prompt, result_image_url | null, message | null}. ONE picture per task.
+	PathGemini = "gemini"
+	// PathKlingO1Photo / PathKlingO3Photo — Kolors pictures (runblob-specs/kling.json): generation_id
+	// on the submit, image_url on the status read.
+	PathKlingO1Photo = "kling/o1-photo"
+	PathKlingO3Photo = "kling/o3-photo"
 )
+
+// knownPaths — the closed list, in the order the refusal sentence names it.
+var knownPaths = []string{PathGemini, FamilyKling, PathKlingO1Photo, PathKlingO3Photo, FamilyVeo}
 
 const (
 	// MaxResponseBytes caps how much of a response is read (the chat transports' number): every answer
@@ -90,10 +105,11 @@ const (
 var ErrGenerationNotFound = errors.New("no such generation")
 
 var (
-	// familyShape is the character set of a path segment that cannot climb out of /v1/{family}/: no
-	// slash, no dot, no query, no percent. Checked BEFORE the closed list, so a family added to the list
-	// later with a bad spelling is still refused, not sent.
-	familyShape = regexp.MustCompile(`^[a-z0-9_]+$`)
+	// pathShape is the character set of a family path that cannot climb out of /v1/: one segment of
+	// lower-case letters, digits and underscores, optionally ONE sub-segment that may also carry a
+	// hyphen (o1-photo) — no dot, no query, no percent, no empty segment. Checked BEFORE the closed
+	// list, so a path added to the list later with a bad spelling is still refused, not sent.
+	pathShape = regexp.MustCompile(`^[a-z0-9_]+(/[a-z0-9_-]+)?$`)
 	// uuidShape is a generation id (the probe's zero uuid is this shape). UNVERIFIED (G-06): that
 	// runblob's generation_id is a uuid — the docs name the field, not its format; the probe was built
 	// on the same assumption.
@@ -107,12 +123,18 @@ var (
 //	             Never serialised, never printed;
 //	HTTPTimeout  the deadline of every request (a submit answers at once with a pending generation;
 //	             nothing prints, so nothing is added to it); <= 0 = aiprov.DefaultBudgetBase.
+//	Transport    the http.RoundTripper every request goes through; nil = net/http's default. It is
+//	             the seam for a stand in ANOTHER package's test (designgen's route tests cannot reach
+//	             this package's private base): a RoundTripper that redirects platform.runblob.io to
+//	             an httptest server. It is not a URL: nothing in config, env or the panel can set
+//	             it, and every request is still BUILT against endpoints.RunblobHost.
 //
 // No base URL: the host is endpoints.RunblobHost, a constant — an editable base URL is a place a key
 // can be sent.
 type Config struct {
 	KeyFunc     func() string
 	HTTPTimeout time.Duration
+	Transport   http.RoundTripper
 }
 
 // Client is the configured adapter. A nil *Client is valid and permanently disabled.
@@ -136,7 +158,7 @@ func New(cfg Config) *Client {
 		cfg:        cfg,
 		base:       endpoints.RunblobHost,
 		budgetBase: base,
-		http:       &http.Client{CheckRedirect: refuseRedirect},
+		http:       &http.Client{Transport: cfg.Transport, CheckRedirect: refuseRedirect},
 	}
 }
 
@@ -183,7 +205,7 @@ func (c *Client) key() string {
 
 // Submission is an accepted submit: what was bought and how to find it again.
 //
-//	ID           generation_id — a uuid, the id Status reads;
+//	ID           generation_id (Kling, veo) or task_uuid (Nano Banana) — a uuid, the id Status reads;
 //	Status       the provider's word at submit time ("pending");
 //	PriceUSD     the provider's price for THIS generation, in USD — what a caller books as
 //	             entity.AICostProvider. NULL when the provider did not state it ("calculating",
@@ -198,26 +220,29 @@ type Submission struct {
 	Engaged     bool
 }
 
-// submitResponse is the documented 201 body. price is RAW: a string ("0.2900", "calculating"), maybe
-// a number or null (UNVERIFIED (G-06): only the string forms are documented) — parsePrice reads each.
+// submitResponse is the documented 201 body. The id arrives under ONE of two names — generation_id
+// (Kling, veo) or task_uuid (Nano Banana) — and the adapter reads whichever is present. price is RAW:
+// a string ("0.2900", "calculating"), maybe a number or null (UNVERIFIED (G-06): only the string forms
+// are documented) — parsePrice reads each.
 type submitResponse struct {
 	GenerationID string          `json:"generation_id"`
+	TaskUUID     string          `json:"task_uuid"`
 	Status       string          `json:"status"`
 	Price        json.RawMessage `json:"price"`
 	Description  string          `json:"description"`
 }
 
-// Submit posts body as one generation of family: POST {base}/v1/{family}/generate.
+// Submit posts body as one generation of the family at path: POST {base}/v1/{path}/generate.
 //
 // body is the family's request as the caller built it (model, prompt, duration, callback_url, …) and
 // goes on the wire as JSON, keys sorted — this adapter adds no field and removes none.
 //
-// ⚠ ON AN ENGAGED FAILURE WHOSE ANSWER DECODED — a 2xx with no generation_id, an id that is not a
-// uuid, a price that is not a number — Submit returns BOTH the partial Submission (PriceUSD when it
-// was readable, ID when it was usable) AND the error: the provider accepted the request and may be
-// billing it, and a caller that drops the partial drops the price with it. Every other failure — an
-// engaged one whose answer did not decode included — returns a nil Submission.
-func (c *Client) Submit(ctx context.Context, family string, body map[string]any) (*Submission, error) {
+// ⚠ ON AN ENGAGED FAILURE WHOSE ANSWER DECODED — a 2xx with no id, an id that is not a uuid, a
+// price that is not a number — Submit returns BOTH the partial Submission (PriceUSD when it was
+// readable, ID when it was usable) AND the error: the provider accepted the request and may be billing
+// it, and a caller that drops the partial drops the price with it. Every other failure — an engaged
+// one whose answer did not decode included — returns a nil Submission.
+func (c *Client) Submit(ctx context.Context, path string, body map[string]any) (*Submission, error) {
 	// ONE KEY PER REQUEST: read exactly once here and carried to the header; a rotation or a switch-off
 	// that lands mid-flight changes the NEXT request, never the Authorization of this one.
 	key := c.key()
@@ -225,21 +250,21 @@ func (c *Client) Submit(ctx context.Context, family string, body map[string]any)
 		return nil, fail(aiprov.CodeNotConfigured, 0, false, false,
 			fmt.Errorf("%s: no API key is set: %w", provider, aiprov.ErrNotConfigured))
 	}
-	if err := validFamily(family); err != nil {
+	if err := validPath(path); err != nil {
 		return nil, fail(aiprov.CodeBadRequest, 0, false, false, err)
 	}
 	if len(body) == 0 {
 		// An empty generate is a 422 at best — our missing value, booked as the provider's refusal.
 		return nil, fail(aiprov.CodeBadRequest, 0, false, false,
-			fmt.Errorf("%s: a %s generation needs a request body", provider, family))
+			fmt.Errorf("%s: a %s generation needs a request body", provider, path))
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fail(aiprov.CodeBadRequest, 0, false, false,
-			fmt.Errorf("%s: marshal %s request: %w", provider, family, err))
+			fmt.Errorf("%s: marshal %s request: %w", provider, path, err))
 	}
 
-	status, raw, err := c.exchange(ctx, http.MethodPost, "/v1/"+family+"/generate", payload, key)
+	status, raw, err := c.exchange(ctx, http.MethodPost, "/v1/"+path+"/generate", payload, key)
 	if err != nil {
 		return nil, err
 	}
@@ -248,10 +273,10 @@ func (c *Client) Submit(ctx context.Context, family string, body map[string]any)
 	var sr submitResponse
 	if err := json.Unmarshal(raw, &sr); err != nil {
 		return nil, fail(aiprov.CodeProviderError, status, true, false,
-			fmt.Errorf("%s: could not decode the %s submit answer: %w", provider, family, err))
+			fmt.Errorf("%s: could not decode the %s submit answer: %w", provider, path, err))
 	}
 	sub := &Submission{
-		ID:          strings.TrimSpace(sr.GenerationID),
+		ID:          firstNonBlank(sr.GenerationID, sr.TaskUUID),
 		Status:      strings.TrimSpace(sr.Status),
 		Description: sr.Description,
 		Engaged:     true,
@@ -262,21 +287,31 @@ func (c *Client) Submit(ctx context.Context, family string, body map[string]any)
 	case sub.ID == "":
 		// The job may have been queued and billed, and there is no id to find it by.
 		return sub, fail(aiprov.CodeEmptyAnswer, status, true, false,
-			fmt.Errorf("%s: the %s submit was accepted (HTTP %d) with no generation_id", provider, family, status))
+			fmt.Errorf("%s: the %s submit was accepted (HTTP %d) with no generation_id / task_uuid", provider, path, status))
 	case !uuidShape.MatchString(sub.ID):
 		// An id Status would refuse before the wire is an id nobody can poll: the job is lost at the
 		// moment it was bought, and the caller must hear it now, not at the first poll.
 		id := sub.ID
 		sub.ID = ""
 		return sub, fail(aiprov.CodeProviderError, status, true, false,
-			fmt.Errorf("%s: the %s submit returned a generation_id that is not a uuid: %q", provider, family, boundedMessage(id, key)))
+			fmt.Errorf("%s: the %s submit returned an id that is not a uuid: %q", provider, path, boundedMessage(id, key)))
 	case priceErr != nil:
 		// The generation IS running (the id is good); only its price is unreadable. The partial carries
 		// the id, so the caller can still poll it — and books no number rather than a wrong one.
 		return sub, fail(aiprov.CodeProviderError, status, true, false,
-			fmt.Errorf("%s: the %s submit answered with %s", provider, family, boundedMessage(priceErr.Error(), key)))
+			fmt.Errorf("%s: the %s submit answered with %s", provider, path, boundedMessage(priceErr.Error(), key)))
 	}
 	return sub, nil
+}
+
+// firstNonBlank — the first argument that is not blank, trimmed.
+func firstNonBlank(vs ...string) string {
+	for _, v := range vs {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // parsePrice reads the submit's price into a KNOWN USD amount, NULL, or an error.
@@ -320,41 +355,76 @@ func parsePrice(raw json.RawMessage) (decimal.NullDecimal, error) {
 
 // ─── status ──────────────────────────────────────────────────────────────────────────────────────
 
+// Status words (runblob-specs/kling.json `conventions.statuses`; the Nano Banana page lists the same
+// four). A failed job is REFUNDED («Your balance is automatically refunded on any failed task»).
+const (
+	StatusPending    = "pending"
+	StatusProcessing = "processing"
+	StatusCompleted  = "completed"
+	StatusFailed     = "failed"
+)
+
 // Generation is one status read.
 //
-//	Status    the provider's word ("pending", …; UNVERIFIED (G-06): the full set — the docs show the
-//	          field, and "pending" at submit);
-//	VideoURL  the result, once there is one;
-//	Model     the model that ran it (kling_2.5_turbo, …);
-//	Error     the provider's failure text, bounded and scrubbed of the key; "" when none.
+//	Status    the provider's word — pending | processing | completed | failed;
+//	VideoURL  a video result, once there is one (video_url);
+//	ImageURL  a picture result, once there is one — image_url (Kling photo) or result_image_url (Nano
+//	          Banana), whichever the family answers with; ResultURL picks the one that is set;
+//	Model     the model that ran it (kling_2.5_turbo, kling-o1-photo, …);
+//	Message   the provider's `message`: the error CODE of a failed job (TIMEOUT,
+//	          CONTENT_POLICY_VIOLATION, …) on Nano Banana; null when none. Bounded, key-scrubbed;
+//	Error     the provider's `error` text (the Kling video page's field), bounded and scrubbed of the
+//	          key; "" when none. Failure joins the two for a sentence.
 type Generation struct {
 	Status   string
 	VideoURL string
+	ImageURL string
 	Model    string
+	Message  string
 	Error    string
 }
 
-// generationResponse is the documented status body. error is RAW: null, a string, or (UNVERIFIED
-// (G-06)) an object — errorText reads each without failing the envelope.
-type generationResponse struct {
-	Status   string          `json:"status"`
-	VideoURL string          `json:"video_url"`
-	Model    string          `json:"model"`
-	Error    json.RawMessage `json:"error"`
+// ResultURL is the one result address a completed generation carries — the video's or the picture's.
+func (g *Generation) ResultURL() string {
+	if g == nil {
+		return ""
+	}
+	return firstNonBlank(g.VideoURL, g.ImageURL)
 }
 
-// Status reads generation id of family: GET {base}/v1/{family}/generations/{id}.
+// Failure is what a failed generation said about itself: `error` when set, else `message` (the
+// code), else "".
+func (g *Generation) Failure() string {
+	if g == nil {
+		return ""
+	}
+	return firstNonBlank(g.Error, g.Message)
+}
+
+// generationResponse is the documented status body across the families. error and message are RAW:
+// null, a string, or (UNVERIFIED (G-06)) an object — errorText reads each without failing the envelope.
+type generationResponse struct {
+	Status         string          `json:"status"`
+	VideoURL       string          `json:"video_url"`
+	ImageURL       string          `json:"image_url"`
+	ResultImageURL string          `json:"result_image_url"`
+	Model          string          `json:"model"`
+	Message        json.RawMessage `json:"message"`
+	Error          json.RawMessage `json:"error"`
+}
+
+// Status reads generation id of the family at path: GET {base}/v1/{path}/generations/{id}.
 //
 // NEVER ENGAGED: a GET buys nothing — the generation was paid for at ITS submit, and a status read
 // that failed (timed out, cut, garbled) moved no money whatever happened to it. Such a failure is
 // retryable (looking again is free), unless the caller left or the provider refused the read itself.
-func (c *Client) Status(ctx context.Context, family, id string) (*Generation, error) {
+func (c *Client) Status(ctx context.Context, path, id string) (*Generation, error) {
 	key := c.key()
 	if key == "" {
 		return nil, fail(aiprov.CodeNotConfigured, 0, false, false,
 			fmt.Errorf("%s: no API key is set: %w", provider, aiprov.ErrNotConfigured))
 	}
-	if err := validFamily(family); err != nil {
+	if err := validPath(path); err != nil {
 		return nil, fail(aiprov.CodeBadRequest, 0, false, false, err)
 	}
 	if !uuidShape.MatchString(id) {
@@ -363,25 +433,27 @@ func (c *Client) Status(ctx context.Context, family, id string) (*Generation, er
 			fmt.Errorf("%s: a generation id must be a uuid, got %q", provider, truncate(id, 40)))
 	}
 
-	status, raw, err := c.exchange(ctx, http.MethodGet, "/v1/"+family+"/generations/"+id, nil, key)
+	status, raw, err := c.exchange(ctx, http.MethodGet, "/v1/"+path+"/generations/"+id, nil, key)
 	if err != nil {
 		return nil, err
 	}
 	var gr generationResponse
 	if err := json.Unmarshal(raw, &gr); err != nil {
 		return nil, fail(aiprov.CodeProviderError, status, false, true,
-			fmt.Errorf("%s: could not decode the %s status answer: %w", provider, family, err))
+			fmt.Errorf("%s: could not decode the %s status answer: %w", provider, path, err))
 	}
 	g := &Generation{
 		Status:   strings.TrimSpace(gr.Status),
 		VideoURL: strings.TrimSpace(gr.VideoURL),
+		ImageURL: firstNonBlank(gr.ImageURL, gr.ResultImageURL),
 		Model:    strings.TrimSpace(gr.Model),
+		Message:  errorText(gr.Message, key),
 		Error:    errorText(gr.Error, key),
 	}
 	if g.Status == "" {
 		// A status read that names no status cannot be acted on; free, so looking again is the answer.
 		return nil, fail(aiprov.CodeEmptyAnswer, status, false, true,
-			fmt.Errorf("%s: the %s status answer (HTTP %d) carries no status", provider, family, status))
+			fmt.Errorf("%s: the %s status answer (HTTP %d) carries no status", provider, path, status))
 	}
 	return g, nil
 }
@@ -471,14 +543,16 @@ func what(submit bool) string {
 
 // statusError classifies a non-2xx answer BY STATUS ALONE (aiprov.ClassifyStatus). None is engaged. The
 // two 404s are told apart by the METHOD, never by the provider's English: on the submit it is the
-// family (a setting — ErrModelUnavailable, model_unknown), on the status read it is the id (a run to
+// path (a setting — ErrModelUnavailable, model_unknown), on the status read it is the id (a run to
 // abandon — ErrGenerationNotFound, not_found).
 //
 // ⚠ THE ONE DOUBT, SAID OUT LOUD: a 5xx on a SUBMIT is classified as the matrix says — not engaged,
 // retryable. internal/fal learnt (G-03) that a gateway can lose the queue's answer AFTER the enqueue
-// and books every 5xx but a bare 503 (and a 408) on its submit as engaged. runblob's gateway behaviour
-// is unknown (G-06); with no caller (D-05) nothing resubmits today, and the caller B-27b writes must
-// decide this before it retries a submit.
+// and books every 5xx but a bare 503 (and a 408) on its submit as engaged. runblob documents its own
+// 500 as REFUNDED («Internal error / upload failure. Charge is refunded», runblob-specs/kling.json
+// errors.http.500), which is the matrix's reading; the gateway in front of it is not documented
+// (G-06). The image transport (images.go) never resubmits on its own: a not-engaged failure hands the
+// run to the route's next candidate on a fresh attempt, exactly as the matrix promises.
 func statusError(submit bool, status int, body []byte, key string) error {
 	code, retryable := aiprov.ClassifyStatus(status)
 	msg := apiErrorMessage(body, key)
@@ -506,17 +580,19 @@ func fail(code string, status int, engaged, retryable bool, err error) *aiprov.C
 	}
 }
 
-// validFamily refuses a family that is not a plain path segment or not on the closed list — before the
-// wire, so a typo or an injected "kling/../x" never carries the key anywhere.
-func validFamily(family string) error {
-	if !familyShape.MatchString(family) {
-		return fmt.Errorf("%s: a family is lower-case letters, digits and underscores, got %q", provider, truncate(family, 40))
+// validPath refuses a family path that is not of the plain shape or not on the closed list — before
+// the wire, so a typo or an injected "kling/../x" never carries the key anywhere.
+func validPath(path string) error {
+	if !pathShape.MatchString(path) {
+		return fmt.Errorf("%s: a family path is lower-case letters, digits and underscores, with at most one "+
+			"/sub-segment, got %q", provider, truncate(path, 40))
 	}
-	switch family {
-	case FamilyKling, FamilyVeo:
-		return nil
+	for _, known := range knownPaths {
+		if path == known {
+			return nil
+		}
 	}
-	return fmt.Errorf("%s: unknown family %q (known: %s, %s)", provider, family, FamilyKling, FamilyVeo)
+	return fmt.Errorf("%s: unknown family path %q (known: %s)", provider, path, strings.Join(knownPaths, ", "))
 }
 
 // readCapped reads at most limit bytes and REFUSES anything longer instead of handing back a prefix

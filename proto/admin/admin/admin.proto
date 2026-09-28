@@ -12543,8 +12543,8 @@ message StartDesignRunRequest {
   // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
   // one payment.
   string client_request_id = 2;
-  // flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint.
-  // `draft_idea` is REFUSED here with
+  // flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint |
+  // video. `draft_idea` is REFUSED here with
   // InvalidArgument: a text run executes inline and returns its answer, so it has its own verb
   // (DraftDesignIdea) rather than a shared one that would return a pending row nobody ever polls.
   //
@@ -12641,8 +12641,14 @@ message StartDesignRunRequest {
   //   · params.image — a slug the engine table does not hold («unknown_image_model»), a tier, ratio
   //     or background the chosen engine does not list («quality_not_supported»,
   //     «aspect_not_supported», «background_not_supported»), or any params.image on threed | cutout
-  //     | vector | extend | inpaint («image_options_forbidden»);
-  //   · threed — more than 4 params.threed.reference_media_ids («too_many_pictures»).
+  //     | vector | extend | inpaint | video («image_options_forbidden»);
+  //   · threed — more than 4 params.threed.reference_media_ids («too_many_pictures»);
+  //   · video (B-32) — no params.video.source_media_id («one_source_picture»); no words
+  //     («words_required»); words past 2500 characters (InvalidArgument); a duration other than 5
+  //     or a model that is not a `kling_*` slug («unknown_option»); params.video on any other kind
+  //     («video_forbidden»); the source must be a picture of this card (or a fresh upload) that the
+  //     provider can read — a model or a video is refused (`input_not_a_picture`). FailedPrecondition
+  //     `kind_not_available` names runblob's missing key, before anything is reserved.
   string kind = 3;
   string ask = 4; // the delta phrase; may be empty
   // What is being asked for; at most 8 KB encoded. The INPUTS are not here and cannot be: the

@@ -34,8 +34,8 @@ message DesignRun {
   int32 id = 1; // the row's address; the handle a human says out loud as «run 5»
   int32 tech_card_id = 2; // FK tech_card(id); which card's band this row belongs to
   // Which state of the studio produced this row: flat | render | threed | vector | draft_idea |
-  // recolor | pattern | freeform | cutout | extend | inpaint. Written by the client at start;
-  // immutable afterwards.
+  // recolor | pattern | freeform | cutout | extend | inpaint | video. Written by the client at
+  // start; immutable afterwards.
   //
   // `recolor` IS THE ON MODEL SECTION'S OWN VERB (K-17). The owner's ask — «мы можем загрузить фото
   // реальное на модели с разных сторон и нам можно будет поменять цвет вещи» — and the owner's own
@@ -384,6 +384,23 @@ message DesignRunParams {
   DesignInpaintParams inpaint = 17;
   // THE TARGET FORMAT OF AN EXTEND RUN (kind=extend). Refused on every other kind (`extend_forbidden`).
   DesignExtendParams extend = 18;
+  // THE SOURCE PICTURE OF A VIDEO RUN (kind=video, B-32). Refused on every other kind (`video_forbidden`).
+  DesignVideoParams video = 19;
+}
+
+// DesignVideoParams is the frozen ask of a VIDEO run (kind=video, the playground's «Image to Video»,
+// B-32): a short clip animated from ONE picture of the card by runblob's Kling image-to-video route.
+//
+// ONE PICTURE, ONE CLIP. The source travels HERE (`source_media_id`), never in extra_input_media_ids
+// (one list per fact); the words are `ask` — REQUIRED, since Kling takes a prompt of 1–2500
+// characters («words_required» when empty, InvalidArgument past 2500). The clip's length is fixed at
+// 5 seconds today (`duration` 0 or 5; any other number is «unknown_option»), and the model is the
+// route row's Kling slug (admin → AI providers → video.generate), frozen by the server when the run
+// starts; a model the client states must be a `kling_*` slug («unknown_option»).
+message DesignVideoParams {
+  int32 source_media_id = 1; // FK media(id); a raster picture of this card or a fresh upload — read as the first frame
+  int32 duration = 2; // seconds; 0 = the server's own (5). Only 5 today
+  string model = 3; // the Kling slug the clip is bought with; frozen by the server from the route row when empty
 }
 
 // DesignImageOptions is the engine a person chose for ONE image run — the model and how it is asked
@@ -1119,7 +1136,11 @@ message DesignPicture {
   int32 run_id = 4; // FK design_run(id); set for GENERATED pictures, 0 for uploaded ones
   int32 batch_id = 5; // FK design_batch(id); set for UPLOADED pictures, 0 for generated ones
   int32 ordinal = 6; // position within its run/batch; stable, and the key of idempotent insertion
-  // flat | render | threed | pattern | freeform | cutout.
+  // flat | render | threed | pattern | freeform | cutout | video.
+  //
+  // `video` is the clip a VIDEO run made (kind=video, B-32): an mp4 whose media row points every
+  // variant at the one object. Never a plate, never an input of another run (the door refuses a
+  // video as a picture), and never uploaded by hand — it exists only as the OUTPUT of a run.
   //
   // `freeform` and `cutout` are the outputs of the PLAYGROUND (kind=freeform / kind=cutout). They
   // are named apart for the same reason `pattern` is: neither is a plate. A playground picture that

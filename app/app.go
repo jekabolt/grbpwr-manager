@@ -101,8 +101,9 @@ type App struct {
 	// config_version poller. Built right after the DB and never nil after a successful boot: every
 	// provider client's KeyFunc reads it.
 	aireg *registry.Registry
-	// runblob is the video aggregator's adapter (B-27): built at boot, read by NOTHING yet — no
-	// purpose routes to it until the owner names a video one (D-05, B-27b). Never nil after boot.
+	// runblob is the generation aggregator's adapter (B-27): built at boot; the image.generate route
+	// pays pictures through its image transport (B-31), and no video purpose routes to it until G2
+	// names one. Never nil after boot.
 	runblob *runblob.Client
 	// dgw is the DESIGN band generation worker. NIL WHENEVER DESIGN_GENERATION_ENABLED IS OFF:
 	// a disabled feature is not a worker that ticks and finds nothing, it is a worker that was
@@ -176,8 +177,9 @@ func (a *App) Start(ctx context.Context) error {
 	//
 	// Right after the DB because the clients below are built with its KeyFuncs. A master key that
 	// is set but malformed is a BOOT ERROR: the operator meant to encrypt, and running on with
-	// every stored key unreadable would quietly fall back to env. An empty one is a warning:
-	// stored keys cannot be opened (the panel says "re-enter"), env keys answer exactly as before.
+	// every stored key unreadable would leave every provider keyless without saying why. An empty
+	// one is not a boot error but nothing can be called: since B-33 the panel is the ONLY key
+	// source and env keys are never read — ImportEnvKeys logs the one ERROR line that says so.
 	aiKeyRing, err := keyring.New(a.c.AI.KeysMasterKey)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "invalid AI_KEYS_MASTER_KEY",
@@ -185,10 +187,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
-	if !aiKeyRing.Enabled() {
-		slog.Default().WarnContext(ctx, "AI_KEYS_MASTER_KEY is not set: AI provider keys come from env only, "+
-			"a key stored in the database cannot be opened, and saving one is refused")
-	}
+	// The env values are handed over for ONE purpose: the boot import below. No KeyFunc reads them.
 	a.aireg = registry.New(a.db.AI(), aiKeyRing, registry.EnvKeys{
 		OpenRouter:       a.c.OpenRouter.APIKey,
 		OpenRouterImages: a.c.OpenRouterImages.APIKey,
@@ -196,6 +195,18 @@ func (a *App) Start(ctx context.Context) error {
 		Meshy:            a.c.Meshy.APIKey,
 		Recraft:          a.c.Recraft.Direct.APIKey,
 	})
+	// B-33: a key still living in an env variable is moved into the panel here, ONCE, BEFORE the
+	// first Reload — a value whose panel slot is empty is sealed and stored as if an admin had
+	// pasted it, so the boot snapshot already carries it and a deployment that kept its keys in env
+	// never serves a keyless request. After this boot the variables are dead weight the operator
+	// deletes from the app spec (the log line per import says which). A store error here is a
+	// boot error for the same reason the Reload's is.
+	if _, err = a.aireg.ImportEnvKeys(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't import the env AI provider keys into the panel",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
 	// The first reload is the boot log (one line per provider: enabled, key source, last4 — never
 	// the key). A failure here is a boot error: automigrate has created the tables by now, so a
 	// registry that cannot read them is a broken deploy, not a feature to degrade.
@@ -214,8 +225,8 @@ func (a *App) Start(ctx context.Context) error {
 	// Every provider client reads its key through the registry: a key saved in the panel, or a
 	// provider switched off there, reaches the next request without a redeploy. Set on the config
 	// itself, ONCE, so every constructor below — fal.New is called three times — gets the hook and
-	// a fourth one added later cannot forget it. The images client has its own func: the same
-	// openrouter row, with OPENROUTER_IMAGES_API_KEY as its env fallback.
+	// a fourth one added later cannot forget it. The images client's func is the same openrouter
+	// answer (one row, one stored key; no env fallback since B-33) under its own name.
 	a.c.OpenRouter.KeyFunc = a.aireg.KeyFunc(entity.AIProviderOpenRouter)
 	a.c.OpenRouterImages.KeyFunc = a.aireg.OpenRouterImagesKeyFunc()
 	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
@@ -623,6 +634,9 @@ func (a *App) Start(ctx context.Context) error {
 	// Outpaint / Fill providers get, at the route row's model (B-24) — one function for the band, the
 	// door and the reserve.
 	var designFalRoutes func() map[string]designgen.FalRoute
+	// B-32: the video route as the door and the worker read it — the panel's `video.generate` head
+	// row's Kling slug and RUNBLOB_VIDEO_CEILING_USD per clip; wired only when the worker exists.
+	var designVideoRoute func() designgen.VideoRoute
 
 	// ─── THE AI LEDGER (B-07): one ai_usage_event row per physical provider call, opened BEFORE
 	// the call. Built in BOTH branches below: the worker books every call it pays for and sweeps
@@ -672,17 +686,17 @@ func (a *App) Start(ctx context.Context) error {
 			},
 		}),
 	}
-	// runblob (B-27): the adapter beside the chat transports, with the panel's key — and no caller.
-	// It is not a chatter (a generation is not a completion), no purpose routes to it (D-05: none of
-	// the shop's purposes is video until the owner names one), and no ledger row is written for it:
-	// Submission.PriceUSD is the number the future caller (B-27b) books as the provider's own. The one
-	// line below is how a deployment says the adapter is there and whether its key is set — never
-	// the key.
+	// runblob (B-27): the adapter beside the chat transports, with the panel's key. It is not a
+	// chatter (a generation is not a completion). Its ONE caller today is the image transport the
+	// designgen block below hands to the image.generate route (B-31: runblob.NewImages) — a picture is
+	// paid there and the ledger books Submission.PriceUSD as the provider's own number; the video half
+	// waits for the purpose G2 names. The one line below is how a deployment says the adapter is there
+	// and whether its key is set — never the key.
 	a.runblob = runblob.New(runblob.Config{
 		KeyFunc: a.aireg.KeyFunc(entity.AIProviderRunblob), HTTPTimeout: aiprov.DefaultBudgetBase,
 	})
-	slog.Default().InfoContext(ctx, "runblob: adapter constructed; no purpose routes to it (D-05)",
-		slog.Bool("enabled", a.runblob.Enabled()))
+	slog.Default().InfoContext(ctx, "runblob: adapter constructed; image.generate may route to it (B-31) and "+
+		"video.generate routes to it (B-32, the playground's video tile)", slog.Bool("enabled", a.runblob.Enabled()))
 	aiRouter := router.New(a.aireg, aiLedger,
 		chatTransports,
 		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())
@@ -792,14 +806,29 @@ func (a *App) Start(ctx context.Context) error {
 			}
 		}
 
+		// B-32 — the video route: runblob's Kling image-to-video over the adapter built above (the
+		// panel's key), the slug off the `video.generate` route row, the reserve off the config.
+		designVideoRoute = designgen.VideoRouteFunc(a.aireg, designCfg.VideoCeiling())
+		{
+			r := designVideoRoute()
+			slog.Default().InfoContext(ctx, "design generation: video route wired (runblob kling image-to-video)",
+				slog.String("model", r.Model), slog.String("reserve_usd", r.CeilingUSD.String()),
+				slog.String("knob", designgen.EnvVideoCeilingUSD), slog.Bool("keyed", a.runblob.Enabled()))
+		}
+
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
 			// flat, render, recolor, pattern and freeform — the raster route. They differ by prompt and
 			// by which pictures go into which paid call, both of which live inside designgen. Since B-13
 			// the slot is the ROUTE (admin → AI providers, image.generate): each pass pays one
 			// candidate of it, a candidate that failed without money moving hands the run to the next
-			// one on a fresh attempt. Transports: openrouter only (commit F adds OpenAI).
+			// one on a fresh attempt. Transports: openrouter (the env default) and runblob (B-31: Nano
+			// Banana and the Kling photo endpoints through the panel's key — submit, free poll, download;
+			// the ledger takes runblob's own submit price as cost_source provider).
 			Image: designgen.NewRoutedImageProvider(a.aireg,
-				map[string]designgen.ImageTransport{entity.AIProviderOpenRouter: designImages}, designImages.Model()),
+				map[string]designgen.ImageTransport{
+					entity.AIProviderOpenRouter: designImages,
+					entity.AIProviderRunblob:    runblob.NewImages(a.runblob),
+				}, designImages.Model()),
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
 			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
@@ -819,6 +848,9 @@ func (a *App) Start(ctx context.Context) error {
 			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
 			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
 			Fill: designgen.NewFalFillProvider(falRoutes),
+			// video — the playground's «Image to Video» tile (B-32): runblob's Kling image-to-video, paid
+			// on the panel's runblob key, priced by runblob at submit, one clip per run.
+			Video: designgen.NewVideoProvider(a.runblob, designVideoRoute),
 			// BOTH boot-time 3D providers — never chosen for a fresh run, kept so each collects what it
 			// accepted, whatever the route says now (see above).
 			Also: []designgen.Provider{falThreedRoute, meshyThreedRoute},
@@ -899,6 +931,9 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	if designFalRoutes != nil {
 		adminS.SetDesignFalRoutes(designFalRoutes)
+	}
+	if designVideoRoute != nil {
+		adminS.SetDesignVideoRoute(designVideoRoute)
 	}
 	// The engine table the worker resolves params.image with (designCfg.Engines above — the SAME
 	// function): the door validates and prices against it, the band advertises it. A table, not a

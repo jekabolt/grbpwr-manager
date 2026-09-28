@@ -298,7 +298,7 @@ func aiViolationField(st *status.Status) string {
 // TestAiConfigJoinsStoreRegistryAndBadges.
 //
 // MUTATIONS IT CATCHES: key source / last4 read from the store row instead of the registry (fal would
-// say "db ···ster" while the env key answers); "set by" shown for a cleared slot (meshy); the admin key
+// say "db ···ster" while nothing answers); "set by" shown for a cleared slot (meshy); the admin key
 // source not derived (anthropic); the breaker or the badge dropped; a disabled custom model listed, or a
 // custom row duplicating a catalogue slug listed twice; the fallback of a single-candidate route
 // invented; any version / default / flag not passed through.
@@ -334,7 +334,7 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 
 	fal := aiProvider(t, cfg, "fal")
 	require.Equal(t, registry.KeySourceUnreadable, fal.GetKeySource(), "sealed under another master")
-	require.Equal(t, "5678", fal.GetKeyLast4(), "the last four of the key that ANSWERS: env")
+	require.Equal(t, "", fal.GetKeyLast4(), "nothing answers for an unreadable key — env is not a fallback (B-33)")
 	require.Equal(t, "someone", fal.GetKeyUpdatedBy(), "a key is stored, if unreadable")
 	require.Equal(t, "out_of_credits", fal.GetFaultCode())
 
@@ -350,7 +350,8 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	require.Equal(t, registry.KeySourceDB, anthropic.GetAdminKeySource())
 	require.Equal(t, "9z9z", anthropic.GetAdminKeyLast4())
 
-	require.Equal(t, registry.KeySourceEnv, aiProvider(t, cfg, "recraft").GetKeySource())
+	require.Equal(t, registry.KeySourceNone, aiProvider(t, cfg, "recraft").GetKeySource(),
+		"RECRAFT_API_KEY is set in this harness and is never a key source (B-33)")
 	require.Equal(t, "via openrouter", aiProvider(t, cfg, "recraft").GetNote())
 	require.Empty(t, aiProvider(t, cfg, "openrouter").GetNote())
 
@@ -425,10 +426,12 @@ func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 
 	cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
 	require.NoError(t, err)
-	for _, k := range []string{"openai", "google", "openrouter", "apibost", "fal", "meshy", "recraft"} {
+	// runblob is in the design list since B-31 (it serves image): with generation off, an image.generate
+	// route to it is as idle as one to openrouter.
+	for _, k := range []string{"openai", "google", "openrouter", "apibost", "fal", "meshy", "recraft", "runblob"} {
 		require.Equal(t, aiNoteDesignOff, aiProvider(t, cfg, k).GetNote(), k)
 	}
-	for _, k := range []string{"anthropic", "runblob"} {
+	for _, k := range []string{"anthropic"} {
 		require.Empty(t, aiProvider(t, cfg, k).GetNote(), k)
 	}
 	require.False(t, cfg.GetDesignGenerationEnabled())

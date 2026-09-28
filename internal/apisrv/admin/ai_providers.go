@@ -431,7 +431,9 @@ func (s *Server) SetAiProviderKey(ctx context.Context, req *pb_admin.SetAiProvid
 	if !s.aiKeyRing.Enabled() {
 		return nil, status.Error(codes.FailedPrecondition, aiNoMasterKeyMessage)
 	}
-	enc, err := s.aiKeyRing.Seal(value, keyring.AAD(key, string(kind)))
+	// The one seal path the boot import also takes (keyring.SealProviderKey): the same AAD, the
+	// same last4 — a blob one writer stores, the other's reader opens.
+	enc, last4, err := s.aiKeyRing.SealProviderKey(key, string(kind), value)
 	if err != nil {
 		if errors.Is(err, keyring.ErrNoMasterKey) {
 			return nil, status.Error(codes.FailedPrecondition, aiNoMasterKeyMessage)
@@ -441,7 +443,6 @@ func (s *Server) SetAiProviderKey(ctx context.Context, req *pb_admin.SetAiProvid
 			slog.String("provider", key), slog.String("kind", string(kind)), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't seal the key; try again")
 	}
-	last4 := keyring.Last4(value)
 	if err := s.repo.AI().SetProviderKey(ctx, key, kind, enc, last4, by); err != nil {
 		return nil, aiWriteError(ctx, "store an ai provider key", err)
 	}

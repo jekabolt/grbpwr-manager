@@ -30,7 +30,7 @@ import (
 // that calls the AI router: where a key goes (the admin panel's AI providers page — keys are read
 // through the AI providers registry) and the env variable that still works as the fallback. It says the
 // same for openrouter switched off in the panel: the handler only knows the client has no key.
-const openRouterNoKeyMsg = "no key for openrouter — set it in admin → AI providers (or OPENROUTER_API_KEY)"
+const openRouterNoKeyMsg = "no key for openrouter — save it in admin → AI providers"
 
 // modelUnavailableAdviceMsg is THE ONE RECIPE for openrouter.ErrModelUnavailable, shared by every
 // feature that calls the AI router — the note assistant, campaign auto-translation, the design idea

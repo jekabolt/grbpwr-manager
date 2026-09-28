@@ -617,7 +617,9 @@ func narrowToOneOutput(kind string, out *Outcome) int {
 func designKindBuysOnePicture(kind string) bool {
 	switch kind {
 	case entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
-		entity.DesignRunKindExtend, entity.DesignRunKindInpaint:
+		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
+		// B-32: one clip per run — the door sells one and the route returns one mp4.
+		entity.DesignRunKindVideo:
 		return true
 	default:
 		return false

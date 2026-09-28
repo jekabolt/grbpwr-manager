@@ -65,6 +65,16 @@ var nonRasterTypes = map[string]struct{}{
 	ContentTypeGLB: {},
 }
 
+// videoTypes — the THIRD door (B-32): a clip is neither a raster (no pixels to derive variants from)
+// nor a non-raster media file (that path inspects SVG / GLB headers), it is what the bucket's own
+// video path stores — one verbatim object, sniffed against its declared container, every variant
+// url the same object. Which door a type goes through is this package's business; the bucket's
+// StorableMediaTypes says whether it can be kept at all.
+var videoTypes = map[string]struct{}{
+	ContentTypeMP4:  {},
+	ContentTypeWEBM: {},
+}
+
 // Accepts ASKS THE BUCKET rather than remembering what it once said.
 //
 // ⚠ THIS USED TO BE A COPY OF THE BUCKET'S RULE, AND THE COPY IS WHAT THE WHOLE DEFECT WAS. While
@@ -82,7 +92,8 @@ func (s *bucketSink) Accepts(contentType string) bool {
 		return false
 	}
 	_, nonRaster := nonRasterTypes[ct]
-	return nonRaster || isRasterMediaType(ct)
+	_, video := videoTypes[ct]
+	return nonRaster || video || isRasterMediaType(ct)
 }
 
 // isRasterMediaType names the types this sink hands to the verbatim picture path. It is the
@@ -121,6 +132,11 @@ func (s *bucketSink) Put(ctx context.Context, raw []byte, contentType, name stri
 func (s *bucketSink) upload(ctx context.Context, raw []byte, ct, name string) (*pb_common.MediaFull, error) {
 	if _, ok := nonRasterTypes[ct]; ok {
 		return s.files.UploadContentNonRaster(ctx, raw, ct, designMediaFolder, name)
+	}
+	if _, ok := videoTypes[ct]; ok {
+		// The bucket sniffs the container against the declared type and refuses a mismatch (a
+		// mislabelled payload is refused, never re-routed) — the same discipline as the two doors above.
+		return s.files.UploadContentVideo(ctx, raw, designMediaFolder, name, ct)
 	}
 	if isRasterMediaType(ct) {
 		return s.files.UploadContentImageVerbatim(ctx, raw, designMediaFolder, name)

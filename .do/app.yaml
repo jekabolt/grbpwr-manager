@@ -240,26 +240,23 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: ""
-# OpenRouter powers the admin AI text features: AutoTranslateEmailCampaign (campaign builder),
-# FormatLibraryNoteMarkdown (notes), DraftDesignIdea, EnhanceText, SuggestPrompts and
-# AnalyzeTechCardConstruction. This env key is the FALLBACK: a key stored in admin -> AI providers
-# wins over it, so a blank value here does not by itself switch them off. Only with no key from
-# either source (or with openrouter switched off in the panel) does each answer "not configured"
-# (FailedPrecondition AI_NOT_CONFIGURED; the analysis reports it as ai_status instead); boot is
-# unaffected (app.go builds a nil-key-tolerant client). MODEL / BASE_URL / HTTP_TIMEOUT are
-# optional overrides and are deliberately left to the code defaults. Same empty-SECRET caveat
-# as above applies when applying this spec with `doctl apps update`.
-- key: OPENROUTER_API_KEY
-  scope: RUN_TIME
-  type: SECRET
-  value: ""
+# AI provider keys (OpenRouter for the admin AI text features — AutoTranslateEmailCampaign,
+# FormatLibraryNoteMarkdown, DraftDesignIdea, EnhanceText, SuggestPrompts, AnalyzeTechCardConstruction;
+# fal, Meshy, Recraft for the design band) LIVE IN THE PANEL: admin -> AI providers, sealed under
+# AI_KEYS_MASTER_KEY below. No env variable is a key source any more (B-33). The old variables
+# (OPENROUTER_API_KEY, OPENROUTER_IMAGES_API_KEY, FAL_KEY, MESHY_API_KEY, RECRAFT_API_KEY) are read
+# ONCE at boot, for the import into the panel of a value whose panel slot is still empty; after the
+# first boot that logs «env key imported into the panel» they can be deleted from the dashboard.
+# They are deliberately no longer declared here.
+#
 # AI_KEYS_MASTER_KEY seals the provider API keys an admin stores in admin -> AI providers
 # (AES-256-GCM; only the ciphertext reaches the database, so a dump is not a list of working keys).
 # Base64 of 32 random bytes (`openssl rand -base64 32`), a DIFFERENT value per environment. Declared
 # here so the requirement is visible, but intentionally committed EMPTY: a placeholder would be a
-# publicly-known key. Set it as a SECRET in the DO dashboard. While it is blank the panel cannot store
-# keys and every provider keeps running on its own env variable (OPENROUTER_API_KEY, FAL_KEY, ...);
-# boot is unaffected. A value that is not base64 of exactly 32 bytes is refused.
+# publicly-known key. Set it as a SECRET in the DO dashboard. It is REQUIRED: while it is blank the
+# panel cannot store keys, the boot import has nowhere to put the env values, and NO provider can be
+# called (boot logs one ERROR line and continues). A value that is not base64 of exactly 32 bytes is
+# refused.
 # CAUTION: changing or blanking the live value makes every stored key unreadable at once (the panel
 # then asks for each key again), so the empty-SECRET caveat above is sharper here: never apply this
 # spec with `doctl apps update --spec`; deploy with `doctl apps create-deployment` only.
@@ -267,6 +264,13 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: ""
+# RUNBLOB_VIDEO_CEILING_USD (B-32) — what ONE video clip of the playground's «Image to Video» tile
+# reserves against the day (runblob Kling image-to-video; the seeded route is video.generate → runblob).
+# runblob prices the clip at submit (kling_2.5_turbo, 5 s ≈ $0.29); a price above this is logged, never
+# refused — after the 201 the money has moved. Raise it when a route row names a dearer kling_* slug.
+- key: RUNBLOB_VIDEO_CEILING_USD
+  scope: RUN_TIME
+  value: "1.50"
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
