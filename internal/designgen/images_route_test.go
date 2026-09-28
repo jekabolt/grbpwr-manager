@@ -248,35 +248,35 @@ func TestTheImageChooserWALKS_THE_ROUTE_IN_ORDER(t *testing.T) {
 	require.True(t, routed.Enabled())
 	require.Equal(t, []string{ContentTypePNG}, routed.Produces())
 
-	p, err := ch.Choose(entity.DesignRunKindFlat, "", nil)
+	p, err := ch.Choose(Job{Kind: entity.DesignRunKindFlat}, nil)
 	require.NoError(t, err)
 	require.Equal(t, "openrouter_images", p.Name(), "the primary first; OpenRouter keeps today's row name")
 
-	p, err = ch.Choose(entity.DesignRunKindFlat, "", map[string]bool{"openrouter_images": true})
+	p, err = ch.Choose(Job{Kind: entity.DesignRunKindFlat}, map[string]bool{"openrouter_images": true})
 	require.NoError(t, err)
 	require.Equal(t, "openai_images", p.Name(), "tried skips to the fallback")
 
-	_, err = ch.Choose(entity.DesignRunKindFlat, "", map[string]bool{"openrouter_images": true, "openai_images": true})
+	_, err = ch.Choose(Job{Kind: entity.DesignRunKindFlat}, map[string]bool{"openrouter_images": true, "openai_images": true})
 	require.ErrorIs(t, err, errChainExhausted, "both tried: the round is over")
 
 	t.Run("a transport that is off is passed over", func(t *testing.T) {
 		or.off = true
 		defer func() { or.off = false }()
-		p, err := ch.Choose(entity.DesignRunKindFlat, "", nil)
+		p, err := ch.Choose(Job{Kind: entity.DesignRunKindFlat}, nil)
 		require.NoError(t, err)
 		require.Equal(t, "openai_images", p.Name())
 	})
 
 	t.Run("a candidate that does not draw the frozen slug is passed like a missing transport", func(t *testing.T) {
-		p, err := ch.Choose(entity.DesignRunKindFlat, EngineGemini3Pro, nil)
+		p, err := ch.Choose(Job{Kind: entity.DesignRunKindFlat, Model: EngineGemini3Pro}, nil)
 		require.NoError(t, err)
 		require.Equal(t, "openrouter_images", p.Name())
-		_, err = ch.Choose(entity.DesignRunKindFlat, EngineGemini3Pro, map[string]bool{"openrouter_images": true})
+		_, err = ch.Choose(Job{Kind: entity.DesignRunKindFlat, Model: EngineGemini3Pro}, map[string]bool{"openrouter_images": true})
 		require.ErrorIs(t, err, errChainExhausted, "openai does not draw Gemini: nobody left in this round")
 
 		or.off = true
 		defer func() { or.off = false }()
-		_, err = ch.Choose(entity.DesignRunKindFlat, EngineGemini3Pro, nil)
+		_, err = ch.Choose(Job{Kind: entity.DesignRunKindFlat, Model: EngineGemini3Pro}, nil)
 		require.ErrorIs(t, err, errNoCandidateServes)
 		v := classify(err)
 		require.Equal(t, CodeUnknownImageModel, v.Code, "the door's own word")
@@ -288,7 +288,7 @@ func TestTheImageChooserWALKS_THE_ROUTE_IN_ORDER(t *testing.T) {
 		rg.store.routeImagesTo(row(1, entity.AIProviderGoogle, ""), row(2, entity.AIProviderOpenRouter, ""))
 		rg.reload(t)
 		for i := 0; i < 5; i++ {
-			p, err := ch.Choose(entity.DesignRunKindFlat, "", nil)
+			p, err := ch.Choose(Job{Kind: entity.DesignRunKindFlat}, nil)
 			require.NoError(t, err)
 			require.Equal(t, "openrouter_images", p.Name())
 			require.True(t, routed.Enabled())
@@ -298,7 +298,7 @@ func TestTheImageChooserWALKS_THE_ROUTE_IN_ORDER(t *testing.T) {
 
 		rg.store.routeImagesTo(row(1, entity.AIProviderGoogle, ""), row(2, entity.AIProviderOpenRouter, ""))
 		rg.reload(t)
-		_, _ = ch.Choose(entity.DesignRunKindFlat, "", nil)
+		_, _ = ch.Choose(Job{Kind: entity.DesignRunKindFlat}, nil)
 		require.Equal(t, 2, strings.Count(logs.String(), "no image transport in this build"), "a new snapshot, a new warning")
 	})
 
@@ -347,7 +347,7 @@ func TestTheRouteSlugFILLS_ONLY_A_RUN_THAT_NAMED_NONE(t *testing.T) {
 			rg := newImageRouteRig(t, row(1, entity.AIProviderOpenRouter, c.routeModel))
 			or := &fakeImageTransport{model: orimages.DefaultModel}
 			routed := NewRoutedImageProvider(rg.reg, map[string]ImageTransport{entity.AIProviderOpenRouter: or}, orimages.DefaultModel)
-			p, err := routed.(Chooser).Choose(entity.DesignRunKindFlat, c.frozen, nil)
+			p, err := routed.(Chooser).Choose(Job{Kind: entity.DesignRunKindFlat, Model: c.frozen}, nil)
 			require.NoError(t, err)
 			out, err := p.Execute(context.Background(), Job{Kind: entity.DesignRunKindFlat, Prompt: "a flat", Model: c.frozen})
 			require.NoError(t, err)
@@ -788,16 +788,16 @@ func TestAPausedCandidateWAITS_ONLY_FOR_A_SLUG_IT_DRAWS(t *testing.T) {
 	ch := NewRoutedImageProvider(rg.reg, map[string]ImageTransport{
 		entity.AIProviderOpenRouter: or, entity.AIProviderOpenAI: oa}, EngineGPTImage2).(Chooser)
 
-	_, err := ch.Choose(entity.DesignRunKindFlat, EngineGemini3Pro, nil)
+	_, err := ch.Choose(Job{Kind: entity.DesignRunKindFlat, Model: EngineGemini3Pro}, nil)
 	require.ErrorIs(t, err, errRoutePaused, "the only candidate that draws it is held: a wait")
 	require.Contains(t, err.Error(), "openai")
 	require.Equal(t, CodeProviderPaused, classify(err).Code)
 	require.True(t, classify(err).Retryable)
 
-	_, err = ch.Choose(entity.DesignRunKindFlat, "vendor/nobody-draws-this", nil)
+	_, err = ch.Choose(Job{Kind: entity.DesignRunKindFlat, Model: "vendor/nobody-draws-this"}, nil)
 	require.ErrorIs(t, err, errNoCandidateServes, "no candidate draws it with every breaker closed either")
 
-	got, err := ch.Choose(entity.DesignRunKindFlat, EngineGPTImage2, nil)
+	got, err := ch.Choose(Job{Kind: entity.DesignRunKindFlat, Model: EngineGPTImage2}, nil)
 	require.NoError(t, err)
 	require.Equal(t, "openrouter_images", got.Name())
 }

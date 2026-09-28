@@ -52,8 +52,10 @@ type ImageTransport interface {
 // Chooser is a route with more than one candidate: the worker asks it for the provider THIS pass pays.
 type Chooser interface {
 	// Choose returns the first candidate, in route position order, that is callable (a transport,
-	// switched on), serves the run's slug (model = the frozen params.image.model, "" = none) and is not
-	// in tried — the provider names this round of the run has already opened attempts with.
+	// switched on), serves the run and is not in tried — the provider names this round of the run has
+	// already opened attempts with. The image route reads job.Kind and job.Model (the frozen
+	// params.image.model, "" = none); the 3D route (B-24) reads the job's stated build options. The
+	// whole Job travels so each route reads what it needs off ONE value the worker built.
 	//
 	// errChainExhausted: every serving candidate is in tried (the round is over — the worker starts
 	// the next one with an empty set). errRoutePaused: nothing callable serves the slug, and a candidate
@@ -67,7 +69,7 @@ type Chooser interface {
 	// Two candidates of ONE provider share its name (`openrouter_images`), so once that name is in
 	// tried the second is skipped with the first: the attempt row names the provider, not the slug,
 	// and the refusals that advance a chain (401, 402, a breaker) are the account's, not the model's.
-	Choose(kind, model string, tried map[string]bool) (Provider, error)
+	Choose(job Job, tried map[string]bool) (Provider, error)
 }
 
 var (
@@ -201,8 +203,14 @@ func pausedNames(held []routeCandidate) []string {
 // nothing needs configuring, and when the next pickup comes — never «no key», which sends the owner to
 // re-type a key that is fine.
 func pausedSentence(held []routeCandidate) string {
-	return fmt.Sprintf("image.generate is paused after repeated failures (%s: circuit breaker open); retrying "+
-		"by itself within %s — no key is missing", strings.Join(pausedNames(held), ", "), routePauseRequeue)
+	return routePausedSentence(entity.AIPurposeImageGenerate, pausedNames(held))
+}
+
+// routePausedSentence — pausedSentence for any routed purpose (the 3D route says it too, B-24): one
+// wording, so a person reading a paused image run and a paused 3D run reads one fact.
+func routePausedSentence(purpose string, providers []string) string {
+	return fmt.Sprintf("%s is paused after repeated failures (%s: circuit breaker open); retrying "+
+		"by itself within %s — no key is missing", purpose, strings.Join(providers, ", "), routePauseRequeue)
 }
 
 // warnNoTransport — once per provider per config version, as the router warns (router.warnNoTransport).
@@ -321,8 +329,9 @@ func appendUnique(list []string, v string) []string {
 	return append(list, v)
 }
 
-// Choose — see Chooser.
-func (p *routedImageProvider) Choose(kind, model string, tried map[string]bool) (Provider, error) {
+// Choose — see Chooser. The image route reads the run's kind and its frozen slug off the job.
+func (p *routedImageProvider) Choose(job Job, tried map[string]bool) (Provider, error) {
+	kind, model := job.Kind, job.Model
 	held := p.paused() // FIRST — see paused
 	cands := p.candidates()
 	if len(cands) == 0 && len(held) == 0 {
@@ -369,7 +378,7 @@ func (p *routedImageProvider) Choose(kind, model string, tried map[string]bool) 
 // the provider; this exists so the slot is still a whole Provider. ONE candidate, ONE pass — never a
 // walk down the chain.
 func (p *routedImageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
-	prov, err := p.Choose(job.Kind, job.Model, nil)
+	prov, err := p.Choose(job, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -401,22 +410,23 @@ func roundTried(attempts []entity.DesignRunAttempt) map[string]bool {
 }
 
 // candidateChain is what settle needs to decide «fall back now»: the chooser the pass chose with, the
-// run's kind and frozen slug, and the round's tried set INCLUDING the candidate this pass paid.
+// job it chose for (the image route reads its kind and frozen slug, the 3D route its stated options),
+// and the round's tried set INCLUDING the candidate this pass paid.
 type candidateChain struct {
-	chooser     Chooser
-	kind, model string
-	tried       map[string]bool
-	from        string
+	chooser Chooser
+	job     Job
+	tried   map[string]bool
+	from    string
 }
 
 // newCandidateChain — the chain after a pass that paid `from`, in a round that had tried `tried`.
-func newCandidateChain(ch Chooser, kind, model string, tried map[string]bool, from string) *candidateChain {
+func newCandidateChain(ch Chooser, job Job, tried map[string]bool, from string) *candidateChain {
 	next := make(map[string]bool, len(tried)+1)
 	for k, v := range tried {
 		next[k] = v
 	}
 	next[from] = true
-	return &candidateChain{chooser: ch, kind: kind, model: model, tried: next, from: from}
+	return &candidateChain{chooser: ch, job: job, tried: next, from: from}
 }
 
 // next is the candidate the run falls back to after callErr, or false.
@@ -433,7 +443,7 @@ func (c *candidateChain) next(callErr error) (Provider, bool) {
 	if _, spoke := aiprov.AsCallError(callErr); !spoke || aiprov.Engaged(callErr) {
 		return nil, false
 	}
-	prov, err := c.chooser.Choose(c.kind, c.model, c.tried)
+	prov, err := c.chooser.Choose(c.job, c.tried)
 	if err != nil {
 		return nil, false
 	}
