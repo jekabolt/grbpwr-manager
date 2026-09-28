@@ -78,8 +78,9 @@ func IsAICapability(v string) bool {
 //
 // This is what a route may ASK of a provider, not what is wired today: every chat provider has a
 // transport since commit E (openai/apibost through oaichat, anthropic, google through gemini), runblob
-// serves the video purpose since B-32 (the playground's video tile; D-05 superseded 28.09), and a
-// provider without a key is refused by the registry as keyless/disabled rather than by this table.
+// draws image.generate through its image transport since B-31 and serves the video purpose since B-32
+// (the playground's video tile; D-05 superseded 28.09), and a provider without a key is refused by the
+// registry as keyless/disabled rather than by this table.
 func AIProviderCapabilities(key string) []string {
 	switch key {
 	case AIProviderOpenAI, AIProviderGoogle, AIProviderOpenRouter, AIProviderApibost:
@@ -91,7 +92,9 @@ func AIProviderCapabilities(key string) []string {
 	case AIProviderMeshy:
 		return []string{AICapabilityThreed}
 	case AIProviderRunblob:
-		return []string{AICapabilityVideo}
+		// image first: it is the capability with a purpose today (image.generate, B-31); video is what
+		// the adapter was built for and what G2's purpose routes.
+		return []string{AICapabilityImage, AICapabilityVideo}
 	case AIProviderRecraft:
 		return []string{AICapabilityVector}
 	}

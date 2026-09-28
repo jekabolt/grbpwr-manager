@@ -1,0 +1,253 @@
+{
+ "languages": [
+  "en",
+  "fr",
+  "de",
+  "it",
+  "es",
+  "pt",
+  "nl",
+  "pl",
+  "cn",
+  "jp"
+ ],
+ "fibers": [
+  {
+   "code": "COT",
+   "name_en": "Cotton",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "COTTON",
+    "fr": "COTON",
+    "de": "BAUMWOLLE",
+    "it": "COTONE",
+    "es": "ALGODÓN",
+    "pt": "ALGODÃO",
+    "nl": "KATOEN",
+    "pl": "BAWEŁNA",
+    "cn": "棉",
+    "jp": "綿"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "WOL",
+   "name_en": "Wool",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "WOOL",
+    "fr": "LAINE",
+    "de": "WOLLE",
+    "it": "LANA",
+    "es": "LANA",
+    "pt": "LÃ",
+    "nl": "WOL",
+    "pl": "WEŁNA",
+    "cn": "羊毛",
+    "jp": "毛"
+   },
+   "low_confidence": [
+    "jp"
+   ]
+  },
+  {
+   "code": "POL",
+   "name_en": "Polyester",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "POLYESTER",
+    "fr": "POLYESTER",
+    "de": "POLYESTER",
+    "it": "POLIESTERE",
+    "es": "POLIÉSTER",
+    "pt": "POLIÉSTER",
+    "nl": "POLYESTER",
+    "pl": "POLIESTER",
+    "cn": "聚酯纤维",
+    "jp": "ポリエステル"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "ELS",
+   "name_en": "Elastane",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "ELASTANE",
+    "fr": "ÉLASTHANNE",
+    "de": "ELASTHAN",
+    "it": "ELASTAN",
+    "es": "ELASTANO",
+    "pt": "ELASTANO",
+    "nl": "ELASTAAN",
+    "pl": "ELASTAN",
+    "cn": "氨纶",
+    "jp": "ポリウレタン"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "ELA",
+   "name_en": "Elastane",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "ELASTANE",
+    "fr": "ÉLASTHANNE",
+    "de": "ELASTHAN",
+    "it": "ELASTAN",
+    "es": "ELASTANO",
+    "pt": "ELASTANO",
+    "nl": "ELASTAAN",
+    "pl": "ELASTAN",
+    "cn": "氨纶",
+    "jp": "ポリウレタン"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "VIS",
+   "name_en": "Viscose",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "VISCOSE",
+    "fr": "VISCOSE",
+    "de": "VISKOSE",
+    "it": "VISCOSA",
+    "es": "VISCOSA",
+    "pt": "VISCOSE",
+    "nl": "VISCOSE",
+    "pl": "WISKOZA",
+    "cn": "粘纤",
+    "jp": "レーヨン"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "SLK",
+   "name_en": "Silk",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "SILK",
+    "fr": "SOIE",
+    "de": "SEIDE",
+    "it": "SETA",
+    "es": "SEDA",
+    "pt": "SEDA",
+    "nl": "ZIJDE",
+    "pl": "JEDWAB",
+    "cn": "桑蚕丝",
+    "jp": "絹"
+   },
+   "low_confidence": [
+    "cn"
+   ]
+  },
+  {
+   "code": "LIN",
+   "name_en": "Linen",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "LINEN",
+    "fr": "LIN",
+    "de": "LEINEN",
+    "it": "LINO",
+    "es": "LINO",
+    "pt": "LINHO",
+    "nl": "LINNEN",
+    "pl": "LEN",
+    "cn": "亚麻",
+    "jp": "麻"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "NYL",
+   "name_en": "Nylon",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "POLYAMIDE",
+    "fr": "POLYAMIDE",
+    "de": "POLYAMID",
+    "it": "POLIAMMIDE",
+    "es": "POLIAMIDA",
+    "pt": "POLIAMIDA",
+    "nl": "POLYAMIDE",
+    "pl": "POLIAMID",
+    "cn": "锦纶",
+    "jp": "ポリアミド"
+   },
+   "low_confidence": []
+  },
+  {
+   "code": "CSH",
+   "name_en": "Cashmere",
+   "archived": false,
+   "non_textile_animal": false,
+   "names": {
+    "en": "CASHMERE",
+    "fr": "CACHEMIRE",
+    "de": "KASCHMIR",
+    "it": "CASHMERE",
+    "es": "CACHEMIR",
+    "pt": "CAXEMIRA",
+    "nl": "KASJMIER",
+    "pl": "KASZMIR",
+    "cn": "山羊绒",
+    "jp": "カシミヤ"
+   },
+   "low_confidence": [
+    "pt",
+    "nl"
+   ]
+  },
+  {
+   "code": "LEA",
+   "name_en": "Leather",
+   "archived": false,
+   "non_textile_animal": true,
+   "names": {
+    "en": "LEATHER",
+    "fr": "CUIR",
+    "de": "LEDER",
+    "it": "PELLE",
+    "es": "PIEL",
+    "pt": "COURO",
+    "nl": "LEER",
+    "pl": "SKÓRA",
+    "cn": "皮革",
+    "jp": "革"
+   },
+   "low_confidence": []
+  }
+ ],
+ "non_textile_animal_phrase": {
+  "en": "CONTAINS NON-TEXTILE PARTS OF ANIMAL ORIGIN",
+  "fr": "CONTIENT DES PARTIES NON TEXTILES D'ORIGINE ANIMALE",
+  "de": "ENTHÄLT NICHTTEXTILE TEILE TIERISCHEN URSPRUNGS",
+  "it": "CONTIENE PARTI NON TESSILI DI ORIGINE ANIMALE",
+  "es": "CONTIENE PARTES NO TEXTILES DE ORIGEN ANIMAL",
+  "pt": "CONTÉM PARTES NÃO TÊXTEIS DE ORIGEM ANIMAL",
+  "nl": "BEVAT NIET-TEXTIELDELEN VAN DIERLIJKE OORSPRONG",
+  "pl": "ZAWIERA NIETEKSTYLNE CZĘŚCI POCHODZENIA ZWIERZĘCEGO",
+  "cn": "含有动物源性非纺织部分",
+  "jp": "動物由来の非繊維部分を含む"
+ },
+ "parts_en": [
+  "SHELL",
+  "BODY LINING",
+  "SLEEVE LINING",
+  "POCKET LINING",
+  "HOOD LINING",
+  "FILLING",
+  "TRIM"
+ ]
+}

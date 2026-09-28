@@ -312,7 +312,7 @@ func (p *videoProvider) Collect(ctx context.Context, job Job, requestID string) 
 	case "pending", "processing":
 		return nil, fmt.Errorf("%w: generation %s is %s", errVideoNotReady, id, g.Status)
 	case "failed":
-		err := fmt.Errorf("%w: generation %s: %s", errVideoFailed, id, videoReason(g.Error))
+		err := fmt.Errorf("%w: generation %s: %s", errVideoFailed, id, videoReason(g.Failure()))
 		job.priceAcceptedIfSet(ctx, videoCollectEnd(nil, err, price))
 		return nil, err
 	case "completed":

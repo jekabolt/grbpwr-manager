@@ -387,6 +387,29 @@ enum TechCardBomKind {
   TECH_CARD_BOM_KIND_TOTE_BAG = 57; // шоппер — section=packaging
 }
 
+// TechCardBomLabelPart — В КАКУЮ ЧАСТЬ СОСТАВНИКА (care label) идёт состав этой строки: SHELL,
+// BODY LINING, SLEEVE LINING … Свойство ЛЕНТЫ, а не геометрии и не закупки, поэтому отдельная ось
+// рядом с purpose/kind, а не их производная: подкладка рукава и подкладка стана — обе
+// purpose=LINING, но на ленте это две колонки.
+//
+// UNSPECIFIED (0) = «авто»: хранится NULL, и дефолт части по section/purpose считает КЛИЕНТ
+// (defaultLabelPart), а не сервер. Хранимый NULL честно значит «не решали», поэтому смена правила
+// дефолта не требует миграции данных. NOT_ON_LABEL — явное «на ленту не идёт» (молния, пуговица),
+// в отличие от UNSPECIFIED, которое ленту не исключает.
+//
+// Mirrors entity.ValidTechCardBomLabelParts and the DB CHECK chk_bom_item_label_part.
+enum TechCardBomLabelPart {
+  TECH_CARD_BOM_LABEL_PART_UNSPECIFIED = 0; // авто: клиент выводит из section/purpose
+  TECH_CARD_BOM_LABEL_PART_SHELL = 1; // верх
+  TECH_CARD_BOM_LABEL_PART_BODY_LINING = 2; // подкладка стана
+  TECH_CARD_BOM_LABEL_PART_SLEEVE_LINING = 3; // подкладка рукава
+  TECH_CARD_BOM_LABEL_PART_POCKET_LINING = 4; // подкладка кармана / карманка
+  TECH_CARD_BOM_LABEL_PART_HOOD_LINING = 5; // подкладка капюшона
+  TECH_CARD_BOM_LABEL_PART_FILLING = 6; // утеплитель / наполнитель
+  TECH_CARD_BOM_LABEL_PART_TRIM = 7; // отделка
+  TECH_CARD_BOM_LABEL_PART_NOT_ON_LABEL = 8; // на ленту не идёт
+}
+
 // TechCardLabDipStatus is the lab-dip approval lifecycle of a colourway.
 enum TechCardLabDipStatus {
   TECH_CARD_LAB_DIP_STATUS_UNKNOWN = 0; // defaults to PENDING on write
@@ -1000,6 +1023,16 @@ message TechCardBomItem {
   // ОЧИСТИТЬ можно ТОЛЬКО явным Decimal{value:""}. Присутствие здесь одиночное: у оценки нет
   // второй половины, в отличие от счётной пары.
   google.type.Decimal est_usage = 44;
+  // ЧАСТЬ СОСТАВНИКА (care labels) — see TechCardBomLabelPart. UNSPECIFIED = «авто»: сервер хранит
+  // NULL, дефолт по section/purpose выводит клиент. Валидации по секции нет: часть — свойство
+  // ленты, любой раздел может попасть на этикетку явно. В дайджест подписи MATERIALS НЕ входит
+  // (как kind).
+  //
+  // OPTIONAL — тот же протокол «нет на проводе = не трогай», что у purpose/kind: карточка
+  // сохраняется целиком, и вкладка со старым бандлом, которая про поле не знает, иначе прислала бы
+  // proto3-дефолт UNSPECIFIED и стёрла бы выбор части у ВСЕХ строк карточки. Явно присланный
+  // UNSPECIFIED (поле присутствует) очищает в NULL.
+  optional TechCardBomLabelPart label_part = 45;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
