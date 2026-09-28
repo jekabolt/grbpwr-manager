@@ -8,8 +8,8 @@
 //   node scripts/care-labels/seed-from-json.mjs --check internal/store/sql/NNNN_fiber_label_translation.sql [json]
 //       → код 1, если блок между маркерами в миграции не совпадает побайтно со сгенерированным
 //
-// По умолчанию JSON берётся из ../tmp/plans/care-labels/fiber-translations.json относительно корня
-// репозитория (рабочая папка планов лежит рядом с клоном).
+// По умолчанию JSON берётся из scripts/care-labels/fiber-translations.json (в репозитории) относительно корня
+// репозитория.
 //
 // Форма строки — INSERT IGNORE … SELECT … FROM fiber WHERE code = …, по строке на пару
 // (волокно, язык): код из JSON, которого нет в базе (на проде может не быть ELA), даёт ноль строк —
@@ -30,7 +30,7 @@ const BEGIN = '-- BEGIN generated seed: scripts/care-labels/seed-from-json.mjs (
 const END = '-- END generated seed';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const defaultJSON = resolve(repoRoot, '..', 'tmp', 'plans', 'care-labels', 'fiber-translations.json');
+const defaultJSON = resolve(repoRoot, 'scripts', 'care-labels', 'fiber-translations.json');
 
 function fail(msg) {
   process.stderr.write(`seed-from-json: ${msg}\n`);
