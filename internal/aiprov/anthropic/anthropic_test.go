@@ -500,7 +500,9 @@ func TestAWrittenRequestThatTimesOutIsEngaged(t *testing.T) {
 	url, reached := hangingProvider(t)
 	c := newAt(url, 200*time.Millisecond)
 	start := time.Now()
-	res, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	// MaxTokens 1: the ceiling on the wire buys 33 ms on top of the base. The point here is the budget
+	// EXPIRING, not its size — with no ceiling DefaultMaxTokens would buy 136 s (wireCeiling).
+	res, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u", MaxTokens: 1})
 	require.Less(t, time.Since(start), 5*time.Second, "the call must end on its own budget")
 	select {
 	case <-reached:
@@ -560,7 +562,8 @@ func TestADeadlineBeforeTheWriteIsNotEngagedAndRetryable(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}}
-	_, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	// MaxTokens 1: the point is the budget expiring before the write, not its size (wireCeiling).
+	_, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u", MaxTokens: 1})
 	ce := callErr(t, err)
 	require.False(t, ce.Engaged)
 	require.True(t, ce.Retryable)
@@ -673,25 +676,28 @@ func slowProvider(t *testing.T, delay time.Duration) *httptest.Server {
 	return srv
 }
 
-// TestTheCallersCeilingBuysItsOwnTime — the same slow provider, the same tiny base; the ONLY difference
-// is the caller's ceiling. With none, DefaultMaxTokens still goes on the wire but buys NO time: the
-// budget is the base, exactly what the router grants this call (router.budget) — so the call is cut.
-// With 8000 tokens the printing time is added and the same provider makes it.
+// TestTheWireCeilingBuysItsOwnTime — the same slow provider, the same tiny base; what differs is the
+// ceiling ON THE WIRE. With no caller ceiling DefaultMaxTokens goes on the wire and buys its printing
+// time (4096/30 s), so the slow answer makes it; with a ceiling of one token the budget is the base
+// plus 33 ms, and the same provider is cut. The router grants the same number through WireCeiling
+// (router.TestTheBudgetIsTheWireCeiling).
 //
-// MUTATIONS: the budget derived from the wire's ceiling (DefaultMaxTokens when none) → the first half
-// goes red (136 s bought that the router never grants); post uses c.budgetBase alone → the second half
-// goes red; context.WithTimeout removed from post → the first half goes red.
-func TestTheCallersCeilingBuysItsOwnTime(t *testing.T) {
+// MUTATIONS (Codex REVIEW-E #2; each measured red → restored green): the budget derived from
+// req.MaxTokens (the caller's zero) → the first half goes red (cut at 40 ms); post uses c.budgetBase
+// alone → the first half goes red; context.WithTimeout removed from post → the second half goes red.
+func TestTheWireCeilingBuysItsOwnTime(t *testing.T) {
 	srv := slowProvider(t, 300*time.Millisecond)
 	c := newAt(srv.URL, 40*time.Millisecond)
 
-	_, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
-	ce := callErr(t, err)
-	require.Equal(t, aiprov.CodeTimeout, ce.Code, "no ceiling: the budget is the base (40 ms) against a 300 ms answer")
-
-	res, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u", MaxTokens: 8000})
-	require.NoError(t, err, "the caller's ceiling must buy its own printing time")
+	res, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	require.NoError(t, err, "no caller ceiling: DefaultMaxTokens is on the wire and buys its time")
 	require.Equal(t, "ok", res.Text)
+	require.Equal(t, DefaultMaxTokens, c.WireCeiling(0), "what the router is told")
+	require.Equal(t, 8000, c.WireCeiling(8000), "the caller's own ceiling wins")
+
+	_, err = c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u", MaxTokens: 1})
+	ce := callErr(t, err)
+	require.Equal(t, aiprov.CodeTimeout, ce.Code, "a one-token ceiling buys 33 ms over the 40 ms base against a 300 ms answer")
 }
 
 // TestTheReadCeilingRefusesByName — exactly at the ceiling works; one byte over is refused as

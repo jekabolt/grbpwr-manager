@@ -939,3 +939,82 @@ func TestStopCancelsAndWaitsForARunNow(t *testing.T) {
 	}
 	require.Empty(t, st.written())
 }
+
+// gatedKeys — a KeySource whose FIRST admin-key read blocks until gate closes and answers old; every
+// later read answers new. It stands for an admin saving a new key while a tick is under way.
+type gatedKeys struct {
+	mu       sync.Mutex
+	reads    int
+	entered  chan struct{}
+	gate     chan struct{}
+	old, new string
+}
+
+func (g *gatedKeys) AdminKey(p string) string {
+	if p != entity.AIProviderOpenAI {
+		return ""
+	}
+	g.mu.Lock()
+	g.reads++
+	first := g.reads == 1
+	g.mu.Unlock()
+	if first {
+		g.entered <- struct{}{}
+		<-g.gate
+		return g.old
+	}
+	return g.new
+}
+
+func (g *gatedKeys) KeyFunc(string) func() string { return func() string { return "" } }
+
+// TestTheNewestKeysNumberLandsLast (Codex REVIEW-E #4) — a tick is reading the OLD admin key when an
+// admin saves a NEW one and the after-save RunNow fires. Whatever the order of the two fetches, the
+// row that stands at the end is the NEW key's: the key is read under the same lock as the fetch and
+// the write, so the run that fetches later reads the newer key.
+//
+// MUTATION (measured red → restored green): keyOf read before fetchMu.Lock → RunNow, not held back by a
+// lock the tick does not yet hold, writes the new key's number FIRST and the tick's old number lands
+// last: the written order flips from [old, new] to [new, old].
+func TestTheNewestKeysNumberLandsLast(t *testing.T) {
+	const oldKey, newKey = "sk-admin-old", "sk-admin-new"
+	r := newRig(t)
+	r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		amount := "0"
+		switch req.Header.Get("Authorization") {
+		case "Bearer " + oldKey:
+			amount = "1"
+		case "Bearer " + newKey:
+			amount = "2"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"page","data":[{"object":"bucket","start_time":1790467200,"end_time":1790553600,`+
+			`"results":[{"object":"organization.costs.result","amount":{"value":`+amount+`,"currency":"usd"}}]}],"has_more":false,"next_page":null}`)
+	})
+	ks := &gatedKeys{entered: make(chan struct{}, 1), gate: make(chan struct{}), old: oldKey, new: newKey}
+	st := newRecStore()
+	w := newWorker(r, st, ks, nil)
+	// Start's first tick is the tick under way: it blocks inside the old key's read.
+	require.NoError(t, w.Start(context.Background()))
+	t.Cleanup(func() { _ = w.Stop() })
+	<-ks.entered
+
+	// The admin's save: RunNow with the new key while the tick still holds the old one.
+	done := make(chan error, 1)
+	go func() { done <- w.RunNow(context.Background(), entity.AIProviderOpenAI) }()
+	time.Sleep(50 * time.Millisecond) // long enough for a RunNow the lock does NOT hold back to write first
+	close(ks.gate)
+
+	require.NoError(t, <-done)
+	for range 2 {
+		select {
+		case <-st.notify:
+		case <-time.After(5 * time.Second):
+			t.Fatal("two writes expected: the tick's and RunNow's")
+		}
+	}
+	writes := st.written()
+	require.Len(t, writes, 2)
+	require.Equal(t, "1", writes[0][0].AmountUSD.String(), "the tick, with the old key, writes first")
+	require.Equal(t, "2", writes[1][0].AmountUSD.String(), "the new key's number lands last")
+}

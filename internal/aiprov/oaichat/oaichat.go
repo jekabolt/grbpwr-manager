@@ -592,7 +592,7 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 			// (REVIEW-FIXD P3 #5). apiErrorMessage takes this non-JSON text as the message, bounded.
 			body = []byte("response body unavailable: " + err.Error())
 		}
-		return nil, c.statusError(resp.StatusCode, body)
+		return nil, c.statusError(resp.StatusCode, body, key)
 	}
 	if err != nil {
 		code := aiprov.CodeTooLarge
@@ -611,7 +611,7 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 	}
 	if cr.Error != nil && strings.TrimSpace(cr.Error.Message) != "" {
 		return nil, c.fail(aiprov.CodeProviderError, status, true, false,
-			fmt.Errorf("%s: API error: %s", p, cr.Error.Message))
+			fmt.Errorf("%s: API error: %s", p, boundedMessage(cr.Error.Message, key)))
 	}
 	if len(cr.Choices) == 0 {
 		return nil, c.fail(aiprov.CodeEmptyAnswer, status, true, false,
@@ -644,14 +644,14 @@ func (c *Client) post(ctx context.Context, model string, payload []byte, ceiling
 // provider: API error (HTTP 404): …"); every other status is the bare "<provider>: API error (HTTP n):
 // <provider text>" (before B-18 a consumer read the status from the start of that string; since B-18
 // every consumer reads CallError.HTTPStatus). The provider's text only ever follows that colon.
-func (c *Client) statusError(status int, body []byte) error {
+func (c *Client) statusError(status int, body []byte, key string) error {
 	p := c.provider()
 	code, retryable := classifyStatus(status)
 	var err error
 	if status == http.StatusNotFound {
-		err = fmt.Errorf("%s: %w: API error (HTTP %d): %s", p, aiprov.ErrModelUnavailable, status, apiErrorMessage(body))
+		err = fmt.Errorf("%s: %w: API error (HTTP %d): %s", p, aiprov.ErrModelUnavailable, status, apiErrorMessage(body, key))
 	} else {
-		err = fmt.Errorf("%s: API error (HTTP %d): %s", p, status, apiErrorMessage(body))
+		err = fmt.Errorf("%s: API error (HTTP %d): %s", p, status, apiErrorMessage(body, key))
 	}
 	return c.fail(code, status, false, retryable, err)
 }
@@ -758,21 +758,36 @@ func readCapped(r io.Reader, limit int64, what, provider string) ([]byte, error)
 }
 
 // apiErrorMessage best-effort pulls a human message out of an error body, falling back to the raw
-// (truncated) body when it is not the expected shape.
-func apiErrorMessage(body []byte) string {
+// body when it is not the expected shape; either way bounded and scrubbed of the request's key.
+func apiErrorMessage(body []byte, key string) string {
 	var env struct {
 		Error   *apiError `json:"error"`
 		Message string    `json:"message"`
 	}
 	if err := json.Unmarshal(body, &env); err == nil {
 		if env.Error != nil && strings.TrimSpace(env.Error.Message) != "" {
-			return env.Error.Message
+			return boundedMessage(env.Error.Message, key)
 		}
 		if strings.TrimSpace(env.Message) != "" {
-			return env.Message
+			return boundedMessage(env.Message, key)
 		}
 	}
-	return truncate(strings.TrimSpace(string(body)), 300)
+	return boundedMessage(string(body), key)
+}
+
+// boundedMessage is the provider's text as a sentence may carry it: the request's key scrubbed FIRST
+// (a cut made before the scrub could leave a prefix of the key standing), then at most 300 bytes.
+//
+// ⚠ A GATEWAY THAT ECHOES THE REQUEST'S HEADERS IN ITS ERROR PAGE MUST NOT PUT THE KEY INTO A LOG LINE
+// (Codex REVIEW-E #1). apibost fronts other vendors and OpenAI-compatible proxies quote the refused
+// Authorization header back; the admin doors log err.Error() verbatim, and a ledger row keeps the
+// sentence. anthropic and gemini scrub the same way; this transport did not until now.
+func boundedMessage(msg, key string) string {
+	msg = strings.TrimSpace(msg)
+	if key != "" {
+		msg = strings.ReplaceAll(msg, key, "[key]")
+	}
+	return truncate(msg, 300)
 }
 
 func truncate(s string, n int) string {
