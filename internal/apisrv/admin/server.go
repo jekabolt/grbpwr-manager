@@ -162,7 +162,7 @@ type Server struct {
 	// reserve read one object. A kind with no entry is CLOSED (fail closed: nothing on the door knows
 	// what the worker would book).
 	designFalRoutes map[string]designgen.FalRoute
-	// aiReg, aiKeyRing, aiRecraftViaOpenRouter, aiProbeClient — the admin → AI providers panel
+	// aiReg, aiKeyRing, aiRecraftViaOpenRouter, aiProbeClient, aiReconcile — the admin → AI providers panel
 	// (ai_providers.go, SetAIProviders). aiReg nil = not wired: the five RPCs refuse with
 	// FailedPrecondition. A nil/disabled aiKeyRing refuses to store a key and says which variable
 	// is missing.
@@ -170,6 +170,9 @@ type Server struct {
 	aiKeyRing              *keyring.Ring
 	aiRecraftViaOpenRouter bool
 	aiProbeClient          *http.Client
+	// aiReconcile starts one provider's cost fetch after an accepted admin-key save. Nil means the
+	// worker is intentionally disabled; the handler then has no detached side effect.
+	aiReconcile func(context.Context, string)
 }
 
 // New creates a new server with admin handlers.

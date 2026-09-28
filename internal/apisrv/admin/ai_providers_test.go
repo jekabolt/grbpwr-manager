@@ -209,6 +209,7 @@ type aiHarnessOpt struct {
 	ring             *keyring.Ring // nil = a ring with a master key
 	designGeneration bool
 	clock            func() time.Time // the registry's clock; nil = time.Now
+	reconcile        func(context.Context, string)
 }
 
 func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
@@ -234,7 +235,7 @@ func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
 	s.SetDesignGenerationEnabled(o.designGeneration)
 	s.SetAIProviders(AIProvidersWiring{
 		Registry: reg, KeyRing: ring, RecraftViaOpenRouter: true,
-		ProbeClient: &http.Client{Transport: pr},
+		ProbeClient: &http.Client{Transport: pr}, Reconcile: o.reconcile,
 	})
 	return &aiHarness{s: s, ai: ai, reg: reg, store: store, cfg: cfg, ring: ring, probe: pr}
 }
@@ -1073,6 +1074,79 @@ func TestAiKeyAdminKindProbesTheCostAPI(t *testing.T) {
 	require.False(t, resp.GetProbe().GetOk())
 	require.Equal(t, probe.CodeKeyRejected, resp.GetProbe().GetCode())
 	require.Equal(t, registry.BreakerOpen, h.reg.BreakerState(entity.AIProviderOpenAI, entity.AICapabilityChat))
+}
+
+// TestAiAdminKeyReconcilesOnlyAfterAnAcceptedProbe — the saved reconciliation key gets an immediate
+// detached fetch only when the provider accepted it. API keys use the hourly worker; a refused admin
+// key is kept (so the admin can see and replace it) but is never used for a cost fetch.
+//
+// MUTATION IT CATCHES: drop `res.OK` from the trigger condition → the refused-probe case records a
+// call and turns red.
+func TestAiAdminKeyReconcilesOnlyAfterAnAcceptedProbe(t *testing.T) {
+	t.Run("accepted admin key", func(t *testing.T) {
+		var calls atomic.Int32
+		release := make(chan struct{})
+		type record struct {
+			provider    string
+			err         error
+			deadline    time.Time
+			hasDeadline bool
+		}
+		recorded := make(chan record, 1)
+		h := newAIHarness(t, aiHarnessOpt{reconcile: func(ctx context.Context, provider string) {
+			calls.Add(1)
+			<-release
+			deadline, ok := ctx.Deadline()
+			recorded <- record{provider: provider, err: ctx.Err(), deadline: deadline, hasDeadline: ok}
+		}})
+		h.ai.EXPECT().SetProviderKey(mock.Anything, "openai", entity.AIKeyAdmin, mock.Anything, "cost", aiTestUser).Return(nil).Once()
+		h.expectConfigRead(nil)
+
+		ctx, cancel := context.WithCancel(aiCtx())
+		_, err := h.s.SetAiProviderKey(ctx, &pb_admin.SetAiProviderKeyRequest{
+			ProviderKey: "openai", Kind: "admin", Value: "sk-admin-key-cost",
+		})
+		require.NoError(t, err)
+		cancel() // the detached run must survive the request ending
+		close(release)
+
+		select {
+		case got := <-recorded:
+			require.Equal(t, "openai", got.provider)
+			require.NoError(t, got.err)
+			require.True(t, got.hasDeadline)
+			require.WithinDuration(t, time.Now().Add(time.Minute), got.deadline, 5*time.Second)
+		case <-time.After(5 * time.Second):
+			t.Fatal("the accepted admin key did not trigger reconciliation")
+		}
+		require.Equal(t, int32(1), calls.Load())
+	})
+
+	for _, tc := range []struct {
+		name, kind string
+		probe      int
+	}{
+		{name: "refused admin key", kind: "admin", probe: http.StatusForbidden},
+		{name: "accepted api key", kind: "api", probe: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := make(chan string, 1)
+			h := newAIHarness(t, aiHarnessOpt{reconcile: func(_ context.Context, provider string) { called <- provider }})
+			h.probe.status = tc.probe
+			h.ai.EXPECT().SetProviderKey(mock.Anything, "openai", entity.AIKeyKind(tc.kind), mock.Anything, "cost", aiTestUser).Return(nil).Once()
+			h.expectConfigRead(nil)
+
+			_, err := h.s.SetAiProviderKey(aiCtx(), &pb_admin.SetAiProviderKeyRequest{
+				ProviderKey: "openai", Kind: tc.kind, Value: "sk-admin-key-cost",
+			})
+			require.NoError(t, err)
+			select {
+			case provider := <-called:
+				t.Fatalf("unexpected reconciliation for %s", provider)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
 }
 
 // TestAiKeyClearDoesNotProbe.
