@@ -30,7 +30,7 @@ func TestFiberDictionaryCRUD(t *testing.T) {
 	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, `DELETE FROM fiber WHERE code = ?`, code) })
 
 	// Create: a lower-case input is normalised to the canonical upper-case code, revision advances.
-	f, rev, err := d.CreateFiber(ctx, "z"+code[1:], "Test Fibre", 0)
+	f, rev, err := d.CreateFiber(ctx, "z"+code[1:], "Test Fibre", nil, 0)
 	require.NoError(t, err)
 	require.Equal(t, code, f.Code, "code is upper-cased/trimmed")
 	require.Equal(t, "Test Fibre", f.Name)
@@ -47,7 +47,7 @@ func TestFiberDictionaryCRUD(t *testing.T) {
 	require.True(t, containsFiber(di.Fibers, code, false), "new fibre is in the dictionary payload")
 
 	// A stale expected_version is rejected (optimistic concurrency on the namespace revision).
-	_, _, err = d.CreateFiber(ctx, code+"X", "Other", 999999)
+	_, _, err = d.CreateFiber(ctx, code+"X", "Other", nil, 999999)
 	require.Error(t, err, "stale expected_version must be rejected")
 
 	// Archive: revision advances again.

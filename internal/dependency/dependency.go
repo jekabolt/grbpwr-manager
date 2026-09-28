@@ -2264,8 +2264,11 @@ type (
 		ArchiveTag(ctx context.Context, id int, expectedVersion int64) (int64, error)
 
 		ListFibers(ctx context.Context, includeArchived bool) ([]entity.Fiber, error)
-		CreateFiber(ctx context.Context, code, name string, expectedVersion int64) (entity.Fiber, int64, error)
+		CreateFiber(ctx context.Context, code, name string, labelNames map[string]string, expectedVersion int64) (entity.Fiber, int64, error)
 		ArchiveFiber(ctx context.Context, code string, expectedVersion int64) (int64, error)
+		// UpsertFiberLabelTranslations replaces the fibre's care-label names as a whole set (labelNames
+		// already normalised) and sets animal_non_textile when the pointer is non-nil.
+		UpsertFiberLabelTranslations(ctx context.Context, code string, labelNames map[string]string, animalNonTextile *bool, expectedVersion int64) (entity.Fiber, int64, error)
 
 		ListCountries(ctx context.Context, activeOnly bool) ([]entity.Country, error)
 		SetCountryActive(ctx context.Context, code string, active bool, expectedVersion int64) (int64, error)

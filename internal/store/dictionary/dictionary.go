@@ -8,6 +8,7 @@ package dictionary
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -331,7 +332,7 @@ func (s *Store) ArchiveTag(ctx context.Context, id int, expectedVersion int64) (
 
 // ListFibers returns fibre dictionary entries; archived entries only when requested.
 func (s *Store) ListFibers(ctx context.Context, includeArchived bool) ([]entity.Fiber, error) {
-	q := `SELECT code, name, archived_at FROM fiber`
+	q := `SELECT code, name, archived_at, animal_non_textile FROM fiber`
 	if !includeArchived {
 		q += ` WHERE archived_at IS NULL`
 	}
@@ -344,9 +345,10 @@ func (s *Store) ListFibers(ctx context.Context, includeArchived bool) ([]entity.
 }
 
 // CreateFiber inserts a new fibre. The code is normalised (upper-case, trimmed) and validated
-// ([A-Z0-9]{1,8}); uniqueness is enforced by the table primary key. Returns the created entry and the
-// new fibre revision.
-func (s *Store) CreateFiber(ctx context.Context, code, name string, expectedVersion int64) (entity.Fiber, int64, error) {
+// ([A-Z0-9]{1,8}); uniqueness is enforced by the table primary key. labelNames are the optional
+// care-label names (already normalised by entity.NormalizeFiberLabelTranslations; nil = none) and
+// ride the same transaction. Returns the created entry and the new fibre revision.
+func (s *Store) CreateFiber(ctx context.Context, code, name string, labelNames map[string]string, expectedVersion int64) (entity.Fiber, int64, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if err := entity.ValidateFiberCode(code); err != nil {
 		return entity.Fiber{}, 0, err
@@ -362,10 +364,83 @@ func (s *Store) CreateFiber(ctx context.Context, code, name string, expectedVers
 			map[string]any{"code": code, "name": name}); err != nil {
 			return fmt.Errorf("insert fibre: %w", err)
 		}
-		created = entity.Fiber{Code: code, Name: name}
+		if err := insertFiberLabelNames(ctx, rep, code, labelNames); err != nil {
+			return err
+		}
+		created = entity.Fiber{Code: code, Name: name, LabelTranslations: labelNames}
 		return nil
 	})
 	return created, rev, err
+}
+
+// UpsertFiberLabelTranslations replaces a fibre's care-label names as a whole set: every stored
+// language is deleted and labelNames (already normalised — see entity.NormalizeFiberLabelTranslations,
+// which drops empty names) is inserted, so a language left out or sent empty disappears. A non-nil
+// animalNonTextile sets the flag; nil leaves it. All of it, and the revision bump, is one
+// transaction. Returns the fibre as stored after the write.
+func (s *Store) UpsertFiberLabelTranslations(ctx context.Context, code string, labelNames map[string]string, animalNonTextile *bool, expectedVersion int64) (entity.Fiber, int64, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if err := entity.ValidateFiberCode(code); err != nil {
+		return entity.Fiber{}, 0, err
+	}
+	var out entity.Fiber
+	rev, err := s.mutateWithRevision(ctx, entity.DictNamespaceFiber, expectedVersion, func(ctx context.Context, rep dependency.Repository) error {
+		// FOR UPDATE: the fibre row is the anchor of the set; locking it keeps a concurrent archive or
+		// flag write from interleaving with the delete-then-insert below.
+		f, err := storeutil.QueryNamedOne[entity.Fiber](ctx, rep.DB(),
+			`SELECT code, name, archived_at, animal_non_textile FROM fiber WHERE code = :code FOR UPDATE`,
+			map[string]any{"code": code})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("fibre %q not found", code)
+			}
+			return fmt.Errorf("load fibre %q: %w", code, err)
+		}
+		if animalNonTextile != nil {
+			if err := storeutil.ExecNamed(ctx, rep.DB(),
+				`UPDATE fiber SET animal_non_textile = :flag WHERE code = :code`,
+				map[string]any{"code": code, "flag": *animalNonTextile}); err != nil {
+				return fmt.Errorf("set fibre animal_non_textile: %w", err)
+			}
+			f.AnimalNonTextile = *animalNonTextile
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM fiber_label_translation WHERE fiber_code = :code`,
+			map[string]any{"code": code}); err != nil {
+			return fmt.Errorf("clear fibre label translations: %w", err)
+		}
+		if err := insertFiberLabelNames(ctx, rep, code, labelNames); err != nil {
+			return err
+		}
+		f.LabelTranslations = labelNames
+		out = f
+		return nil
+	})
+	return out, rev, err
+}
+
+// insertFiberLabelNames writes one fiber_label_translation row per language, in the label's language
+// order so the statement sequence is deterministic. A language outside entity.LabelLangs is refused
+// here too (the CHECK would refuse it anyway, but with 3819 and no field address).
+func insertFiberLabelNames(ctx context.Context, rep dependency.Repository, code string, labelNames map[string]string) error {
+	for lang := range labelNames {
+		if !entity.IsLabelLang(lang) {
+			return entity.NewFieldViolation("translations", "unknown_label_lang", lang,
+				"use one of "+strings.Join(entity.LabelLangs, " "))
+		}
+	}
+	for _, lang := range entity.LabelLangs {
+		name, ok := labelNames[lang]
+		if !ok || strings.TrimSpace(name) == "" {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`INSERT INTO fiber_label_translation (fiber_code, label_lang, name) VALUES (:code, :lang, :name)`,
+			map[string]any{"code": code, "lang": lang, "name": name}); err != nil {
+			return fmt.Errorf("insert fibre label translation %s/%s: %w", code, lang, err)
+		}
+	}
+	return nil
 }
 
 // ArchiveFiber soft-deletes a fibre (R9 archive-not-delete). The row and its composition FK references

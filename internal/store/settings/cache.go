@@ -155,11 +155,42 @@ func (s *Store) getCareSymbols(ctx context.Context) ([]entity.CareSymbol, error)
 // getFibers returns the controlled fibre vocabulary (S17/P0.4), ordered by code. Archived entries are
 // included (flagged via archived_at) so the admin composition editor can show/filter them client-side,
 // mirroring how the colour dictionary surfaces its full set to the picker.
+//
+// Care-label names come from fiber_label_translation in a second query and are stitched by code in
+// Go — the same shape as getCareSymbols — so the fibre row type stays flat.
 func (s *Store) getFibers(ctx context.Context) ([]entity.Fiber, error) {
-	query := `SELECT code, name, archived_at FROM fiber ORDER BY code`
+	query := `SELECT code, name, archived_at, animal_non_textile FROM fiber ORDER BY code`
 	fibers, err := storeutil.QueryListNamed[entity.Fiber](ctx, s.DB, query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get fibers: %w", err)
+	}
+	if len(fibers) == 0 {
+		return fibers, nil
+	}
+
+	const translationsQuery = `SELECT fiber_code, label_lang, name FROM fiber_label_translation`
+	type fiberLabelRow struct {
+		FiberCode string `db:"fiber_code"`
+		LabelLang string `db:"label_lang"`
+		Name      string `db:"name"`
+	}
+	rows, err := storeutil.QueryListNamed[fiberLabelRow](ctx, s.DB, translationsQuery, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get fiber label translations: %w", err)
+	}
+	byCode := make(map[string]int, len(fibers))
+	for i := range fibers {
+		byCode[fibers[i].Code] = i
+	}
+	for _, r := range rows {
+		i, ok := byCode[r.FiberCode]
+		if !ok {
+			continue
+		}
+		if fibers[i].LabelTranslations == nil {
+			fibers[i].LabelTranslations = make(map[string]string, len(entity.LabelLangs))
+		}
+		fibers[i].LabelTranslations[r.LabelLang] = r.Name
 	}
 	return fibers, nil
 }

@@ -227,6 +227,8 @@ var methodRequirements = map[string]Requirement{
 	"ArchiveFiber":      wr(SectionDictionaries),
 	"ListCountries":     rd(SectionDictionaries),
 	"SetCountryActive":  wr(SectionDictionaries),
+	// care labels: fibre names on the label + animal_non_textile flag
+	"UpsertFiberLabelTranslations": wr(SectionDictionaries),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),

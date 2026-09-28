@@ -565,6 +565,15 @@ service AdminService {
       body: "*"
     };
   }
+  // UpsertFiberLabelTranslations replaces a fibre's care-label names as a whole set (a language not
+  // sent, or sent with an empty name, is removed) and, when animal_non_textile is present, sets the
+  // flag. Bumps the fiber dictionary revision like every other fibre mutation.
+  rpc UpsertFiberLabelTranslations(UpsertFiberLabelTranslationsRequest) returns (UpsertFiberLabelTranslationsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/fibers/{code}/label-translations"
+      body: "*"
+    };
+  }
 
   rpc ListCountries(ListCountriesRequest) returns (ListCountriesResponse) {
     option (google.api.http) = {get: "/api/admin/dictionaries/countries"};
@@ -4611,6 +4620,9 @@ message CreateFiberRequest {
   string code = 1; // stable short key, uppercased server-side (COT/POL/…)
   string name = 2; // display name
   uint64 expected_version = 3;
+  // Optional care-label names for the new fibre (closed label language list; an empty name is
+  // skipped). Omitted = the fibre starts with none and the label screen reports the holes.
+  repeated common.FiberLabelTranslation translations = 4;
 }
 message CreateFiberResponse {
   common.Fiber fiber = 1;
@@ -4622,6 +4634,19 @@ message ArchiveFiberRequest {
 }
 message ArchiveFiberResponse {
   common.DictionaryRevision revision = 1;
+}
+message UpsertFiberLabelTranslationsRequest {
+  string code = 1;
+  // The complete set after the call: languages from the closed care-label list, each at most once;
+  // an empty name (or a language left out) deletes that language's row.
+  repeated common.FiberLabelTranslation translations = 2;
+  uint64 expected_version = 3;
+  // Absent = leave the flag as it is; present = set it.
+  optional bool animal_non_textile = 4;
+}
+message UpsertFiberLabelTranslationsResponse {
+  common.Fiber fiber = 1;
+  common.DictionaryRevision revision = 2;
 }
 
 message ListCountriesRequest {

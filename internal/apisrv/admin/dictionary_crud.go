@@ -13,7 +13,9 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -53,9 +55,11 @@ func pbTagDict(t entity.TagDict) *pb_common.Tag {
 
 func pbFiber(f entity.Fiber) *pb_common.Fiber {
 	return &pb_common.Fiber{
-		Code:     f.Code,
-		Name:     f.Name,
-		Archived: f.ArchivedAt.Valid,
+		Code:             f.Code,
+		Name:             f.Name,
+		Archived:         f.ArchivedAt.Valid,
+		Translations:     dto.ConvertFiberLabelTranslationsToPb(f.LabelTranslations),
+		AnimalNonTextile: f.AnimalNonTextile,
 	}
 }
 
@@ -78,6 +82,12 @@ func pbDictRevision(ns entity.DictionaryNamespace, rev int64) *pb_common.Diction
 // two contract-level failures (stale version, in-use code) and descriptive wrapped errors otherwise;
 // user-input failures (missing name, bad code, not found) are surfaced as InvalidArgument/NotFound.
 func dictMutationError(ctx context.Context, op string, err error) error {
+	// A field-tagged violation (unknown care-label language, duplicate language…) carries its own
+	// address; surface it as a BadRequest FieldViolation, not a prose-matched status.
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
+	}
 	switch {
 	case errors.Is(err, entity.ErrDictionaryVersionConflict):
 		return status.Errorf(codes.Aborted, "%s: %v", op, err)
@@ -240,7 +250,14 @@ func (s *Server) ArchiveTag(ctx context.Context, req *pb_admin.ArchiveTagRequest
 // ---- Fiber (controlled fibre vocabulary, S17/P0.4) -------------------------
 
 func (s *Server) CreateFiber(ctx context.Context, req *pb_admin.CreateFiberRequest) (*pb_admin.CreateFiberResponse, error) {
-	f, rev, err := s.repo.Dictionary().CreateFiber(ctx, req.GetCode(), req.GetName(), int64(req.GetExpectedVersion()))
+	var labelNames map[string]string
+	if len(req.GetTranslations()) > 0 {
+		var err error
+		if labelNames, err = entity.NormalizeFiberLabelTranslations(dto.ConvertPbFiberLabelTranslations(req.GetTranslations())); err != nil {
+			return nil, dictMutationError(ctx, "create fibre", err)
+		}
+	}
+	f, rev, err := s.repo.Dictionary().CreateFiber(ctx, req.GetCode(), req.GetName(), labelNames, int64(req.GetExpectedVersion()))
 	if err != nil {
 		return nil, dictMutationError(ctx, "create fibre", err)
 	}
@@ -255,6 +272,27 @@ func (s *Server) ArchiveFiber(ctx context.Context, req *pb_admin.ArchiveFiberReq
 	}
 	s.refreshDictionaryCache(ctx)
 	return &pb_admin.ArchiveFiberResponse{Revision: pbDictRevision(entity.DictNamespaceFiber, rev)}, nil
+}
+
+// UpsertFiberLabelTranslations replaces a fibre's care-label names as a whole set and optionally sets
+// its animal_non_textile flag. The set is validated before the store is touched: a language outside
+// the closed label list, or one sent twice, is a field violation addressed to translations[i].
+func (s *Server) UpsertFiberLabelTranslations(ctx context.Context, req *pb_admin.UpsertFiberLabelTranslationsRequest) (*pb_admin.UpsertFiberLabelTranslationsResponse, error) {
+	labelNames, err := entity.NormalizeFiberLabelTranslations(dto.ConvertPbFiberLabelTranslations(req.GetTranslations()))
+	if err != nil {
+		return nil, dictMutationError(ctx, "upsert fibre label translations", err)
+	}
+	var animal *bool
+	if req.AnimalNonTextile != nil {
+		v := req.GetAnimalNonTextile()
+		animal = &v
+	}
+	f, rev, err := s.repo.Dictionary().UpsertFiberLabelTranslations(ctx, req.GetCode(), labelNames, animal, int64(req.GetExpectedVersion()))
+	if err != nil {
+		return nil, dictMutationError(ctx, "upsert fibre label translations", err)
+	}
+	s.refreshDictionaryCache(ctx)
+	return &pb_admin.UpsertFiberLabelTranslationsResponse{Fiber: pbFiber(f), Revision: pbDictRevision(entity.DictNamespaceFiber, rev)}, nil
 }
 
 // ---- Country (closed dictionary: set-active only) --------------------------

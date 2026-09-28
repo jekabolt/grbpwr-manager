@@ -67,6 +67,21 @@ message Fiber {
   string code = 1; // stable short key (public), e.g. COT
   string name = 2; // display name, e.g. Cotton
   bool archived = 3;
+  // Names printed on the care label, one per label language that has one (order: the closed label
+  // language list en fr de it es pt nl pl cn jp). A missing language is a hole the label screen
+  // reports; the full set ships with the dictionary and the client picks, as CareSymbol.translations.
+  repeated FiberLabelTranslation translations = 4;
+  // Non-textile part of animal origin (leather, fur): a label with this fibre prints the
+  // "contains non-textile parts of animal origin" phrase (EU 1007/2011 Art. 12).
+  bool animal_non_textile = 5;
+}
+
+// FiberLabelTranslation is a fibre name in one care-label language. label_lang is from the CLOSED
+// care-label list en fr de it es pt nl pl cn jp — not a storefront language code (Japanese is `jp`
+// here, and ES/PT/NL/PL are not storefront languages at all).
+message FiberLabelTranslation {
+  string label_lang = 1;
+  string name = 2;
 }
 
 // CareSymbol is one entry of the controlled ISO 3758 care vocabulary — the dictionary a style's

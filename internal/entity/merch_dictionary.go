@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // DictionaryNamespace identifies a controlled dictionary for cache-revision tracking. Each namespace
@@ -59,6 +60,69 @@ type Fiber struct {
 	Code       string       `db:"code"`
 	Name       string       `db:"name"`
 	ArchivedAt sql.NullTime `db:"archived_at"`
+	// AnimalNonTextile — не-текстильная часть животного происхождения (кожа, мех): составник с таким
+	// волокном печатает фразу ст. 12 регламента ЕС 1007/2011.
+	AnimalNonTextile bool `db:"animal_non_textile"`
+	// LabelTranslations — имя волокна на ленте по языку из LabelLangs (таблица
+	// fiber_label_translation). Отсутствующий язык = дыра, которую показывает экран составников.
+	LabelTranslations map[string]string `db:"-"`
+}
+
+// LabelLangs — ЗАКРЫТЫЙ список языков ленты составника в порядке строк на ленте. Это не
+// language.code витрины (там японский `ja`, и нет ES/PT/NL/PL); тот же список стоит CHECK'ом в
+// миграции fiber_label_translation и константой LABEL_LANGS в клиенте.
+var LabelLangs = []string{"en", "fr", "de", "it", "es", "pt", "nl", "pl", "cn", "jp"}
+
+// fiberLabelNameMax — fiber_label_translation.name VARCHAR(64), в символах.
+const fiberLabelNameMax = 64
+
+// IsLabelLang сообщает, входит ли код в закрытый список языков ленты (регистр значим: 'EN' — нет).
+func IsLabelLang(lang string) bool {
+	for _, l := range LabelLangs {
+		if l == lang {
+			return true
+		}
+	}
+	return false
+}
+
+// FiberLabelTranslation — одно имя волокна на одном языке ленты, как пришло с провода.
+type FiberLabelTranslation struct {
+	LabelLang string
+	Name      string
+}
+
+// NormalizeFiberLabelTranslations проверяет присланный набор имён волокна для ленты и сворачивает
+// его в карту язык → имя. Язык обрезается по краям и приводится к нижнему регистру, затем обязан
+// входить в LabelLangs; язык дважды — ошибка (какое из двух имён верное, угадывать нельзя). Имя
+// обрезается; пустое имя означает «удалить язык» и в карту не попадает; длиннее 64 символов —
+// ошибка. Ошибки — field violation с адресом translations[i].
+func NormalizeFiberLabelTranslations(in []FiberLabelTranslation) (map[string]string, error) {
+	out := make(map[string]string, len(in))
+	seen := make(map[string]int, len(in))
+	for i, t := range in {
+		lang := strings.ToLower(strings.TrimSpace(t.LabelLang))
+		field := fmt.Sprintf("translations[%d].label_lang", i)
+		if !IsLabelLang(lang) {
+			return nil, NewFieldViolation(field, "unknown_label_lang", t.LabelLang,
+				"use one of "+strings.Join(LabelLangs, " "))
+		}
+		if j, dup := seen[lang]; dup {
+			return nil, NewFieldViolation(field, "duplicate_label_lang", fmt.Sprintf("translations[%d]", j),
+				"send each label language at most once")
+		}
+		seen[lang] = i
+		name := strings.TrimSpace(t.Name)
+		if name == "" {
+			continue
+		}
+		if utf8.RuneCountInString(name) > fiberLabelNameMax {
+			return nil, NewFieldViolation(fmt.Sprintf("translations[%d].name", i), "label_name_too_long", "",
+				fmt.Sprintf("at most %d characters", fiberLabelNameMax))
+		}
+		out[lang] = name
+	}
+	return out, nil
 }
 
 // Country is a controlled ISO 3166-1 alpha-2 dictionary entry (R9). The dictionary is CLOSED: the admin
