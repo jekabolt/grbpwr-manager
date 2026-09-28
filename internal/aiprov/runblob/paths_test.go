@@ -123,9 +123,10 @@ func TestStatusReadsEveryResultField(t *testing.T) {
 // TestPathShapeIsClosed — the new paths pass, and everything that is not exactly one of the five is
 // refused before the wire: a second sub-segment, a known family with a stray sub-path, a dot, a query.
 //
-// MUTATION (measured red → green): pathShape's sub-segment group made `(/[^/]+)?` → "kling/../x" is
-// no longer refused by shape and reaches the closed-list check with the same answer, but
-// "kling/o1-photo?x=1" … the query row red.
+// MUTATION (measured red → green): the closed-list walk of validPath short-circuited to `return nil`
+// after the shape check → "kling/o1" (a well-shaped path nobody serves) reaches the stand → red. (The
+// shape regex widened to `(/[^/]+)?` alone stays green: the closed list behind it refuses the same
+// paths — the regex is the second lock, measured as such.)
 func TestPathShapeIsClosed(t *testing.T) {
 	for _, p := range knownPaths {
 		require.NoError(t, validPath(p), p)
