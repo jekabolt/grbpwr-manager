@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
@@ -99,6 +100,7 @@ type Config struct {
 	Accounting         acctposting.Config        `mapstructure:"accounting"`
 	StripeReconcile    stripereconcile.Config    `mapstructure:"stripe_reconcile"`
 	FxSync             fxsync.Config             `mapstructure:"fx_sync"`
+	AIReconcile        reconcile.Config          `mapstructure:"ai_reconcile"`
 	Rates              RatesConfig               `mapstructure:"rates"`
 	Security           SecurityConfig            `mapstructure:"security"`
 	JPK                JPKConfig                 `mapstructure:"jpk"`
@@ -202,6 +204,9 @@ func LoadConfigForReadOnlyTooling(cfgFile string) (*Config, error) {
 
 func loadConfig(cfgFile string, validate func(*Config) error) (*Config, error) {
 	viper.SetConfigType("toml")
+	reconcileDefaults := reconcile.DefaultConfig()
+	viper.SetDefault("ai_reconcile.enabled", reconcileDefaults.Enabled)
+	viper.SetDefault("ai_reconcile.interval", reconcileDefaults.Interval)
 
 	// bindEnvVars is the single source of truth for env-var names. viper.AutomaticEnv
 	// plus a "."->"__" key replacer previously ALSO exposed a second double-underscore
@@ -811,4 +816,10 @@ func bindEnvVars() {
 	// ⚠️ Set IN THE DIGITALOCEAN CONSOLE, never pushed from .do/app.yaml: the spec carries it EMPTY,
 	// and applying the spec overwrites the live value — every stored key becomes unreadable at once.
 	viper.BindEnv("ai.keys_master_key", "AI_KEYS_MASTER_KEY")
+
+	// Provider cost reconciliation is safe-on by default: every request is a free report read, and
+	// an absent provider key means no request. These variables exist for an operational kill switch
+	// and cadence changes without a deploy; the defaults come from reconcile.DefaultConfig above.
+	viper.BindEnv("ai_reconcile.enabled", "AI_RECONCILE_ENABLED")
+	viper.BindEnv("ai_reconcile.interval", "AI_RECONCILE_INTERVAL")
 }

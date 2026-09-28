@@ -437,13 +437,18 @@ type AISpendReport struct {
 }
 
 // AISpendByProvider — our ledger's number beside the provider's own (ai_provider_cost_daily).
+//
+// TheirBucketTZ is the zone THEIR days are days of (ai_provider_cost_daily.bucket_tz, D-17): "UTC" for
+// every cost API today, "" when the period has no row of theirs. Our days are the report's Timezone;
+// the two are labelled side by side, never re-bucketed.
 type AISpendByProvider struct {
-	ProviderKey string              `db:"provider_key"`
-	OurUSD      decimal.NullDecimal `db:"our_usd"`
-	TheirUSD    decimal.NullDecimal `db:"their_usd"`
-	Calls       int                 `db:"calls"`
-	Failed      int                 `db:"failed"`
-	Unpriced    int                 `db:"unpriced"`
+	ProviderKey   string              `db:"provider_key"`
+	OurUSD        decimal.NullDecimal `db:"our_usd"`
+	TheirUSD      decimal.NullDecimal `db:"their_usd"`
+	TheirBucketTZ string              `db:"their_bucket_tz"`
+	Calls         int                 `db:"calls"`
+	Failed        int                 `db:"failed"`
+	Unpriced      int                 `db:"unpriced"`
 }
 
 // AISpendByActor — who spent it, on what, through which provider and model.
@@ -458,10 +463,18 @@ type AISpendByActor struct {
 }
 
 // AICostDaily is one ai_provider_cost_daily row: the provider's own number for one day.
+//
+// Day is the provider's bucket AS IT REPORTS IT, and BucketTZ names the zone that day is a day of
+// (D-17, 0379): "" = UTC, the zone of every cost API the reconciliation worker reads.
 type AICostDaily struct {
 	ProviderKey string
-	Day         string // YYYY-MM-DD
+	Day         string // YYYY-MM-DD, in BucketTZ
 	AmountUSD   decimal.Decimal
 	Currency    string // "" = USD
+	BucketTZ    string // "" = UTC
 	FetchedAt   time.Time
 }
+
+// AICostBucketUTC is the bucket zone of every provider cost API today (ai_provider_cost_daily.bucket_tz
+// default, 0379).
+const AICostBucketUTC = "UTC"

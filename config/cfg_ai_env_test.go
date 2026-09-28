@@ -4,11 +4,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
 )
 
 // TestAIKeysMasterKeyFromEnv proves the BINDING of AI_KEYS_MASTER_KEY.
@@ -73,4 +75,33 @@ func TestAIConfigStringRedactsTheMasterKey(t *testing.T) {
 	}
 	assert.NotContains(t, fmt.Sprintf("%+v", Config{AI: c}), master, "nested in Config, too")
 	assert.Equal(t, "config.AIConfig{KeysMasterKey:}", AIConfig{}.String())
+}
+
+// TestAIReconcileFromEnv proves both explicit bindings. AutomaticEnv is off: without either line,
+// the operator's kill switch or cadence silently reads as the default.
+//
+// MUTATION: delete the AI_RECONCILE_INTERVAL BindEnv line → red (17m reads as the default hour).
+func TestAIReconcileFromEnv(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+	t.Setenv("AI_RECONCILE_ENABLED", "false")
+	t.Setenv("AI_RECONCILE_INTERVAL", "17m")
+
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, reconcile.Config{Enabled: false, Interval: 17 * time.Minute}, cfg.AIReconcile)
+}
+
+// TestAIReconcileDefaults — absent variables mean on, hourly. Enabled cannot rely on Go's zero value:
+// false would make the worker disappear silently from every deployment until an operator finds a
+// switch they were never told they had to set.
+//
+// MUTATION: set the ai_reconcile.enabled viper default to false → red.
+func TestAIReconcileDefaults(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+	t.Setenv("AI_RECONCILE_ENABLED", "")
+	t.Setenv("AI_RECONCILE_INTERVAL", "")
+
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, reconcile.DefaultConfig(), cfg.AIReconcile)
 }

@@ -13339,6 +13339,10 @@ message AiSpendProviderRow {
   int32 calls = 4;
   int32 failed = 5;
   int32 unpriced = 6; // calls with no known cost; not in our_usd
+  // the zone their days are days of (ai_provider_cost_daily.bucket_tz, D-17): "UTC" for every cost
+  // API today; "" when their_usd is absent. Their days are the provider's own buckets, never shifted
+  // into ours (timezone): a provider day can differ from a local day by up to two hours at each end.
+  string their_bucket_tz = 7;
 }
 
 // AiSpendActorRow is one actor × purpose × provider × model line of the period.

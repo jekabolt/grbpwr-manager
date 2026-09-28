@@ -18,6 +18,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/gemini"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/oaichat"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
@@ -92,6 +93,9 @@ type App struct {
 	ap  *acctposting.Worker
 	sr  *stripereconcile.Worker
 	fxw *fxsync.Worker
+	// aiRecon fetches each provider's own daily cost report. Nil only when the explicit
+	// AI_RECONCILE_ENABLED kill switch is off; it must stop before both the registry and DB.
+	aiRecon *reconcile.Worker
 	// aireg is the AI providers' live configuration (keys, enable switches, routes, breakers) and its
 	// config_version poller. Built right after the DB and never nil after a successful boot: every
 	// provider client's KeyFunc reads it.
@@ -213,6 +217,18 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
 	a.c.Meshy.KeyFunc = a.aireg.KeyFunc(entity.AIProviderMeshy)
 	a.c.Recraft.Direct.KeyFunc = a.aireg.KeyFunc(entity.AIProviderRecraft)
+	var reconcileAfterAdminKeySave func(context.Context, string)
+	if a.c.AIReconcile.Enabled {
+		// The registry is the one key policy: AdminKey for openai/anthropic/fal, and the
+		// enabled-gated KeyFunc result for openrouter. reconcile documents why they differ.
+		a.aiRecon = reconcile.New(a.c.AIReconcile, a.db.AI(), a.aireg)
+		reconcileAfterAdminKeySave = func(ctx context.Context, provider string) {
+			if err := a.aiRecon.RunNow(ctx, provider); err != nil {
+				slog.Default().WarnContext(ctx, "AI cost reconciliation after admin-key save failed",
+					slog.String("provider", provider), slog.String("err", err.Error()))
+			}
+		}
+	}
 
 	// House gross-margin target into the cache: every tech-card costing read resolves an effective
 	// target against it, so it is loaded once here rather than queried per read (UpsertAlertSettings
@@ -320,6 +336,14 @@ func (a *App) Start(ctx context.Context) error {
 		a.fxw = fxsync.New(&a.c.FxSync, a.db.TechCards())
 		if err = a.fxw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start fx sync worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+	}
+	if a.aiRecon != nil {
+		if err = a.aiRecon.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start AI cost reconciliation worker",
 				slog.String("err", err.Error()),
 			)
 			return err
@@ -847,6 +871,7 @@ func (a *App) Start(ctx context.Context) error {
 		Registry:             a.aireg,
 		KeyRing:              aiKeyRing,
 		RecraftViaOpenRouter: recraft.New(a.c.Recraft, nil).Route() == recraft.RouteOpenRouter,
+		Reconcile:            reconcileAfterAdminKeySave,
 	})
 	a.adminS = adminS
 
@@ -1113,6 +1138,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.fxw != nil {
 		_ = a.fxw.Stop()
 	}
+	if a.aiRecon != nil {
+		_ = a.aiRecon.Stop()
+	}
 	if a.aireg != nil {
 		_ = a.aireg.Stop()
 	}
@@ -1219,6 +1247,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.fxw != nil {
 		addWorker(a.fxw)
+	}
+	if a.aiRecon != nil {
+		addWorker(a.aiRecon)
 	}
 	if a.aireg != nil {
 		addWorker(a.aireg)

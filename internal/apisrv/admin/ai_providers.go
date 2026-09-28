@@ -69,6 +69,9 @@ type AIProvidersWiring struct {
 	RecraftViaOpenRouter bool
 	// ProbeClient is the http.Client a key probe uses; nil = the probe package's default (8 s).
 	ProbeClient *http.Client
+	// Reconcile runs one provider's cost fetch after an accepted admin-key save. Nil = no worker;
+	// existing Server tests and deliberately-disabled deployments keep doing nothing.
+	Reconcile func(ctx context.Context, provider string)
 }
 
 // SetAIProviders wires the AI providers panel. A Server without it refuses the five RPCs with
@@ -78,6 +81,7 @@ func (s *Server) SetAIProviders(w AIProvidersWiring) {
 	s.aiKeyRing = w.KeyRing
 	s.aiRecraftViaOpenRouter = w.RecraftViaOpenRouter
 	s.aiProbeClient = w.ProbeClient
+	s.aiReconcile = w.Reconcile
 }
 
 func (s *Server) aiPanelReady() error {
@@ -406,6 +410,16 @@ func (s *Server) SetAiProviderKey(ctx context.Context, req *pb_admin.SetAiProvid
 	slog.Default().InfoContext(ctx, "ai provider key saved",
 		slog.String("provider", key), slog.String("kind", string(kind)), slog.String("last4", last4),
 		slog.String("by", by), slog.Bool("probe_ok", res.OK), slog.String("probe_code", res.Code))
+	reconcile := s.aiReconcile
+	if kind == entity.AIKeyAdmin && res.OK && reconcile != nil {
+		// The RPC may end the moment this goroutine starts. Keep its values for tracing, detach its
+		// cancellation, and impose a worker-sized deadline so a provider cannot outlive shutdown.
+		go func() {
+			runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			reconcile(runCtx, key)
+		}()
+	}
 
 	cfg, err := s.aiProvidersConfig(ctx)
 	if err != nil {
