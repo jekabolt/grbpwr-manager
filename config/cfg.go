@@ -605,11 +605,11 @@ func bindEnvVars() {
 	viper.BindEnv("ga4.circuit_breaker.half_open_max_retries", "GA4_CIRCUIT_BREAKER_HALF_OPEN_MAX_RETRIES")
 
 	// OpenRouter (the admin AI text features: note formatting, campaign auto-translation, the design
-	// idea draft, EnhanceText, SuggestPrompts, the construction analysis). OPENROUTER_API_KEY is the
-	// env fallback of their key: the AI providers registry answers with a key stored in admin → AI
-	// providers first, so an empty value here does not by itself disable them. Only with no key from
-	// either source (or openrouter switched off in the panel) does each degrade to a clear "not
-	// configured" answer.
+	// idea draft, EnhanceText, SuggestPrompts, the construction analysis). OPENROUTER_API_KEY is read
+	// at boot for the one-time import into the panel (admin → AI providers) and is never a runtime
+	// key source since B-33: the key that answers a call is the one stored in the panel, and a
+	// deployment whose panel slot is filled may delete the variable. With no stored key (or
+	// openrouter switched off in the panel) each feature degrades to a clear "not configured" answer.
 	// OPENROUTER_MODEL / BASE_URL / HTTP_TIMEOUT are optional overrides (sane defaults applied).
 	viper.BindEnv("openrouter.api_key", "OPENROUTER_API_KEY")
 	viper.BindEnv("openrouter.model", "OPENROUTER_MODEL")
@@ -633,8 +633,10 @@ func bindEnvVars() {
 	//
 	// KEY AND ROOT FALL BACK TO THE CHAT ONES, in that order: it is one OpenRouter account, so a
 	// working deployment needs NO new secret to turn pictures on. The dedicated names exist only so
-	// picture spend can later be moved to its own key, or the images route to its own proxy,
-	// without touching code. viper takes the FIRST variable of the list that is set.
+	// the images route can later go to its own proxy without touching code. viper takes the FIRST
+	// variable of the list that is set. OPENROUTER_IMAGES_API_KEY is read at boot only and is NOT
+	// imported into the panel (one openrouter row serves both clients; a value differing from
+	// OPENROUTER_API_KEY is warned about at boot); never a runtime key source since B-33.
 	viper.BindEnv("openrouter_images.api_key", "OPENROUTER_IMAGES_API_KEY", "OPENROUTER_API_KEY")
 	viper.BindEnv("openrouter_images.base_url", "OPENROUTER_IMAGES_BASE_URL", "OPENROUTER_BASE_URL")
 	// The image slug. Empty => orimages.DefaultModel (openai/gpt-image-2 — the raster half of
@@ -663,8 +665,10 @@ func bindEnvVars() {
 	// ⚠️ These are set IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml: pushing the spec
 	// deploys prod and overwrites live SECRET values with the empty ones in the file.
 
-	// MESHY_API_KEY is the whole switch. Unset => the client is disabled and StartRun must refuse a
-	// 3D run outright rather than queue one nobody can execute.
+	// MESHY_API_KEY is read at boot for the one-time import into the panel (admin → AI providers)
+	// and is never a runtime key source since B-33: the client's key comes from the registry, and
+	// with none stored the client is disabled and StartRun refuses a 3D run outright rather than
+	// queue one nobody can execute.
 	viper.BindEnv("meshy.api_key", "MESHY_API_KEY")
 	// The API root. Exists for tests and a possible regional host, not as a knob to turn.
 	viper.BindEnv("meshy.base_url", "MESHY_BASE_URL")
@@ -701,8 +705,10 @@ func bindEnvVars() {
 	// this repo has already lost every AI feature to exactly that once.
 	viper.BindEnv("recraft.model_vector", "RECRAFT_MODEL_VECTOR")
 	viper.BindEnv("recraft.model_vector_pro", "RECRAFT_MODEL_VECTOR_PRO")
-	// The fallback route's own credentials. RECRAFT_API_KEY is its whole switch: unset, the direct
-	// route is disabled and the service refuses up front rather than queueing a run nobody can run.
+	// The fallback route's own credentials. RECRAFT_API_KEY is read at boot for the one-time import
+	// into the panel (admin → AI providers) and is never a runtime key source since B-33: with no
+	// stored key the direct route is disabled and the service refuses up front rather than queueing
+	// a run nobody can run.
 	viper.BindEnv("recraft.direct.api_key", "RECRAFT_API_KEY")
 	viper.BindEnv("recraft.direct.base_url", "RECRAFT_BASE_URL")
 	viper.BindEnv("recraft.direct.http_timeout", "RECRAFT_HTTP_TIMEOUT")
@@ -749,8 +755,9 @@ func bindEnvVars() {
 	// ⚠️ These are set IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml: pushing the spec deploys
 	// prod and overwrites live SECRET values with the empty ones in the file.
 
-	// FAL_KEY is the whole switch. Unset => the client is disabled and StartDesignRun refuses a
-	// threed run IN WORDS, naming this variable, before anything is reserved or charged.
+	// FAL_KEY is read at boot for the one-time import into the panel (admin → AI providers) and is
+	// never a runtime key source since B-33: with no stored key the client is disabled and
+	// StartDesignRun refuses a threed run IN WORDS, before anything is reserved or charged.
 	viper.BindEnv("fal.api_key", "FAL_KEY")
 	// The queue root. Empty => https://queue.fal.run. For tests and a proxy, not a knob.
 	viper.BindEnv("fal.base_url", "FAL_BASE_URL")
@@ -807,11 +814,12 @@ func bindEnvVars() {
 	viper.BindEnv("fal.units_ceiling_fill", "FAL_UNITS_CEILING_FILL")
 
 	// AI providers (internal/aiprov). AI_KEYS_MASTER_KEY is the master key that seals the provider
-	// keys an admin stores in the panel (base64 of 32 random bytes, one per environment). Unset =>
-	// the panel cannot store keys and every provider keeps reading its own env variable above;
-	// keyring.New refuses a value that is not base64 of exactly 32 bytes. Load-bearing in the same
-	// silent way as every line above: unbound, the variable set in the DO console reads as empty and
-	// the panel says "not set" on a deployment where it WAS set.
+	// keys an admin stores in the panel (base64 of 32 random bytes, one per environment). REQUIRED
+	// since B-33: the panel is the only key source, so unset means the panel cannot store keys, the
+	// boot import has nowhere to put the env values, and NO provider can be called (one ERROR line at
+	// boot says so). keyring.New refuses a value that is not base64 of exactly 32 bytes. Load-bearing
+	// in the same silent way as every line above: unbound, the variable set in the DO console reads
+	// as empty and the panel says "not set" on a deployment where it WAS set.
 	//
 	// ⚠️ Set IN THE DIGITALOCEAN CONSOLE, never pushed from .do/app.yaml: the spec carries it EMPTY,
 	// and applying the spec overwrites the live value — every stored key becomes unreadable at once.

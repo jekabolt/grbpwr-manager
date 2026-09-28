@@ -122,6 +122,23 @@ func (r *Ring) Open(blob []byte, aad string) (string, error) {
 	return string(plain), nil
 }
 
+// SealProviderKey is THE ONE WAY a provider key enters the store: sealed under the row-and-column
+// AAD, with the last four characters kept for display. Both writers — the admin handler
+// (SetAiProviderKey) and the registry's one-time env import (B-33) — go through it, so the two can
+// never disagree on the AAD and leave a blob the other cannot open. value is trimmed here; "" is
+// refused because a sealed empty string would read as «a key is stored» while nothing answers.
+func (r *Ring) SealProviderKey(providerKey string, kind string, value string) (enc []byte, last4 string, err error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, "", errors.New("keyring: an empty key is not sealed; clear the slot instead")
+	}
+	enc, err = r.Seal(value, AAD(providerKey, kind))
+	if err != nil {
+		return nil, "", err
+	}
+	return enc, Last4(value), nil
+}
+
 // Last4 returns the last four characters of s for display ("set ···1a2b"), "" when s is shorter
 // than four. Counted in runes, so a multi-byte tail is never cut in half.
 func Last4(s string) string {

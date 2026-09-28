@@ -198,13 +198,15 @@ func at(pos int, pk, model string) entity.AIRouteCandidate {
 // config: openrouter on with its env key; openai, apibost and anthropic on with sealed database keys
 // (anthropic has NO transport in the rig — the "enabled before its adapter exists" provider); every
 // other provider off. Routes: every purpose at position 1 on openrouter with no model (the 0373 seed),
-// the playground door's position-2 row, then the test's own routes replace whole purposes.
+// the playground door's position-2 row, then the test's own routes replace whole purposes. Every
+// keyed provider — openrouter included — has its key STORED: since B-33 the registry reads no env
+// variable, so the EnvKeys handed to registry.New below are the boot import's input and nothing more.
 func config(t *testing.T, ring *keyring.Ring, routes map[string][]entity.AIRouteCandidate) entity.AIConfig {
 	t.Helper()
-	keyed := map[string]bool{entity.AIProviderOpenAI: true, entity.AIProviderApibost: true, entity.AIProviderAnthropic: true}
+	keyed := map[string]bool{entity.AIProviderOpenRouter: true, entity.AIProviderOpenAI: true, entity.AIProviderApibost: true, entity.AIProviderAnthropic: true}
 	var cfg entity.AIConfig
 	for _, k := range entity.AIProviderKeys() {
-		p := entity.AIProvider{Key: k, Label: k, Enabled: k == entity.AIProviderOpenRouter || keyed[k]}
+		p := entity.AIProvider{Key: k, Label: k, Enabled: keyed[k]}
 		if keyed[k] {
 			blob, err := ring.Seal("sk-"+k+"-test-1234", keyring.AAD(k, string(entity.AIKeyAPI)))
 			require.NoError(t, err)
@@ -1499,8 +1501,14 @@ func TestALeasedPurposeIsSizedForTheCap(t *testing.T) {
 // MUTATION (measured red): RouteHead without the RouteHeadAt fallback (the filtered list only) → "", "".
 func TestRouteHeadNamesAKeylessConfiguredRoute(t *testing.T) {
 	ring := testRing(t)
-	st := &cfgStore{Store: &aiprovtest.Store{}, cfg: config(t, ring, nil)}
-	reg := registry.New(st, ring, registry.EnvKeys{}) // no OPENROUTER_API_KEY, no key saved in the panel
+	cfg := config(t, ring, nil)
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Key == entity.AIProviderOpenRouter {
+			cfg.Providers[i].APIKeyEnc = nil // no key saved in the panel — the only source since B-33
+		}
+	}
+	st := &cfgStore{Store: &aiprovtest.Store{}, cfg: cfg}
+	reg := registry.New(st, ring, registry.EnvKeys{OpenRouter: "env-openrouter-aaaa"}) // set and, since B-33, never read
 	require.NoError(t, reg.Reload(context.Background()))
 	r := New(reg, nil, map[string]aiprov.Chatter{
 		entity.AIProviderOpenRouter: &urlChatter{keyedChatter: keyedChatter{up: false}, url: "https://or.example/api/v1"},

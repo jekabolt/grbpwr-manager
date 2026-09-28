@@ -52,14 +52,20 @@ func (s *seedCfgStore) ConfigVersion(context.Context) (uint64, error) {
 }
 
 // newSeededRouter is app.go's router over the 0373 seed: registry, breakers, the client's own transport.
-// The registry's env key follows the client's: a client with no key is a deployment with no
-// OPENROUTER_API_KEY, which the registry drops before the router sees the candidates — exactly as in
-// production, where the client reads its key through the registry's KeyFunc.
+// The registry's STORED key follows the client's: a client with no key is a deployment whose panel
+// slot is empty, which the registry drops before the router sees the candidates — exactly as in
+// production, where the client reads its key through the registry's KeyFunc. Since B-33 the key is
+// sealed into the openrouter row; no env variable is a key source, so EnvKeys here stays empty.
 func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 	t.Helper()
+	ring := aiTestRing(t, 7)
 	var cfg entity.AIConfig
 	for _, k := range entity.AIProviderKeys() {
-		cfg.Providers = append(cfg.Providers, entity.AIProvider{Key: k, Label: k, Enabled: k == entity.AIProviderOpenRouter})
+		p := entity.AIProvider{Key: k, Label: k, Enabled: k == entity.AIProviderOpenRouter}
+		if k == entity.AIProviderOpenRouter && client.Enabled() {
+			p.APIKeyEnc = aiSeal(t, ring, k, entity.AIKeyAPI, "test-key")
+		}
+		cfg.Providers = append(cfg.Providers, p)
 	}
 	for _, p := range entity.AIPurposes() {
 		cfg.Routes = append(cfg.Routes, entity.AIRoute{Purpose: p,
@@ -68,11 +74,7 @@ func newSeededRouter(t *testing.T, client *openrouter.Client) *router.Router {
 	cfg.Settings = entity.AISettings{ConfigVersion: 1,
 		DefaultChatProviderKey: entity.AIProviderOpenRouter, DefaultImageProviderKey: entity.AIProviderOpenRouter}
 	cfg.BudgetTimezone = "Europe/Warsaw"
-	var env registry.EnvKeys
-	if client.Enabled() {
-		env.OpenRouter = "test-key"
-	}
-	reg := registry.New(&seedCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}, nil, env)
+	reg := registry.New(&seedCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}, ring, registry.EnvKeys{})
 	require.NoError(t, reg.Reload(context.Background()))
 	return router.New(reg, nil, map[string]aiprov.Chatter{entity.AIProviderOpenRouter: client.Transport()},
 		AIRouterDefaults(client), client.CompletionBase())

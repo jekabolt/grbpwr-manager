@@ -164,7 +164,9 @@ func TestEnhanceTextNotConfigured(t *testing.T) {
 				require.Nil(t, resp)
 				require.Equal(t, codes.FailedPrecondition, status.Code(err), "%v", err)
 				require.Equal(t, aiReasonNotConfigured, aiReasonOf(t, err))
-				require.Contains(t, status.Convert(err).Message(), "OPENROUTER_API_KEY")
+				// B-33: the recipe names the one place a key goes, never a dead env variable.
+				require.Contains(t, status.Convert(err).Message(), "save it in admin → AI providers")
+				require.NotContains(t, status.Convert(err).Message(), "OPENROUTER_API_KEY")
 			}
 		})
 	}

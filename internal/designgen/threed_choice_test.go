@@ -43,8 +43,9 @@ func (s *routeCfgStore) routeTo(purpose string, cands ...entity.AIRouteCandidate
 	s.cfg.Settings.ConfigVersion++
 }
 
-// newThreedRouteRig: fal and meshy on with their env keys, openrouter on; `threed` routed to cands (none =
-// a route with no rows); every other purpose keeps the seed.
+// newThreedRouteRig: fal, meshy and openrouter on with STORED keys (the only key source since B-33;
+// the EnvKeys below are the boot import's input, never read at call time); `threed` routed to cands
+// (none = a route with no rows); every other purpose keeps the seed.
 func newThreedRouteRig(t *testing.T, cands ...entity.AIRouteCandidate) *imageRouteRig {
 	t.Helper()
 	ring, err := keyring.New(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
@@ -52,7 +53,13 @@ func newThreedRouteRig(t *testing.T, cands ...entity.AIRouteCandidate) *imageRou
 	var cfg entity.AIConfig
 	for _, k := range entity.AIProviderKeys() {
 		on := k == entity.AIProviderOpenRouter || k == entity.AIProviderFal || k == entity.AIProviderMeshy
-		cfg.Providers = append(cfg.Providers, entity.AIProvider{Key: k, Label: k, Enabled: on})
+		p := entity.AIProvider{Key: k, Label: k, Enabled: on}
+		if on {
+			blob, err := ring.Seal("db-"+k+"-test-1234", keyring.AAD(k, string(entity.AIKeyAPI)))
+			require.NoError(t, err)
+			p.APIKeyEnc = blob
+		}
+		cfg.Providers = append(cfg.Providers, p)
 	}
 	for _, purpose := range entity.AIPurposes() {
 		rc := []entity.AIRouteCandidate{row(1, entity.AIProviderOpenRouter, "")}

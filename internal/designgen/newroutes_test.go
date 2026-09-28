@@ -50,22 +50,26 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 		kind string
 		want string
 	}{
-		{entity.DesignRunKindThreed, "no key for fal — set it in admin → AI providers (or FAL_KEY)"},
-		{entity.DesignRunKindFlat, "OPENROUTER_IMAGES_API_KEY"},
-		{entity.DesignRunKindRender, "OPENROUTER_IMAGES_API_KEY"},
-		{entity.DesignRunKindRecolor, "OPENROUTER_IMAGES_API_KEY"},
-		{entity.DesignRunKindPattern, "OPENROUTER_IMAGES_API_KEY"},
+		// B-33: the sentence names the PROVIDER and the one place its key goes (admin → AI providers);
+		// the env variable it once offered as an alternative is dead and must not be named.
+		{entity.DesignRunKindThreed, "no key for fal — save it in admin → AI providers"},
+		{entity.DesignRunKindFlat, "no key for openrouter — save it in admin → AI providers"},
+		{entity.DesignRunKindRender, "no key for openrouter — save it in admin → AI providers"},
+		{entity.DesignRunKindRecolor, "no key for openrouter — save it in admin → AI providers"},
+		{entity.DesignRunKindPattern, "no key for openrouter — save it in admin → AI providers"},
 		// ПЛЕЙГРАУНД ЕДЕТ К ТОМУ ЖЕ КЛЮЧУ, и это его единственная зависимость: `freeform` — пятый
 		// род на маршруте картинок, а не свой провайдер. Строка здесь держит и это тоже: род,
 		// названный у двери, но не попавший в forKind, отказал бы словами «no image route», то
 		// есть человеку, который ключ как раз ввёл.
-		{entity.DesignRunKindFreeform, "OPENROUTER_IMAGES_API_KEY"},
-		{entity.DesignRunKindVector, "RECRAFT_API_KEY"},
+		{entity.DesignRunKindFreeform, "no key for openrouter — save it in admin → AI providers"},
+		// RECRAFT_ROUTE is a route switch, not a key: it may stay in the sentence.
+		{entity.DesignRunKindVector, "no key for openrouter (the default transport) or recraft (RECRAFT_ROUTE=direct) — save it in admin → AI providers"},
 	} {
 		err := w.PreflightKind(tc.kind)
 		require.Errorf(t, err, "kind %s", tc.kind)
 		require.Containsf(t, err.Error(), tc.want,
-			"kind %s must name the setting a person can act on, not just the route", tc.kind)
+			"kind %s must name the provider and the place a person can act on, not just the route", tc.kind)
+		require.NotContainsf(t, err.Error(), "_KEY", "kind %s must not send a person to a dead env variable", tc.kind)
 
 		var named *KindRefusal
 		require.ErrorAs(t, err, &named)
@@ -77,7 +81,7 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 	// sentence too — an operator told to set FAL_KEY on a Meshy deployment would set the wrong one.
 	m := newWorker(&Config{}, nil, nil, allSink{}, Providers{Threed: NewThreedProvider(nil)})
 	require.Contains(t, m.PreflightKind(entity.DesignRunKindThreed).Error(),
-		"no key for meshy — set it in admin → AI providers (or MESHY_API_KEY)")
+		"no key for meshy — save it in admin → AI providers")
 }
 
 // ─────────────────────── K-10: THE NAMED VIEWS ───────────────────────

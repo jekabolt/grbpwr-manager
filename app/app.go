@@ -177,8 +177,9 @@ func (a *App) Start(ctx context.Context) error {
 	//
 	// Right after the DB because the clients below are built with its KeyFuncs. A master key that
 	// is set but malformed is a BOOT ERROR: the operator meant to encrypt, and running on with
-	// every stored key unreadable would quietly fall back to env. An empty one is a warning:
-	// stored keys cannot be opened (the panel says "re-enter"), env keys answer exactly as before.
+	// every stored key unreadable would leave every provider keyless without saying why. An empty
+	// one is not a boot error but nothing can be called: since B-33 the panel is the ONLY key
+	// source and env keys are never read — ImportEnvKeys logs the one ERROR line that says so.
 	aiKeyRing, err := keyring.New(a.c.AI.KeysMasterKey)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "invalid AI_KEYS_MASTER_KEY",
@@ -186,10 +187,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
-	if !aiKeyRing.Enabled() {
-		slog.Default().WarnContext(ctx, "AI_KEYS_MASTER_KEY is not set: AI provider keys come from env only, "+
-			"a key stored in the database cannot be opened, and saving one is refused")
-	}
+	// The env values are handed over for ONE purpose: the boot import below. No KeyFunc reads them.
 	a.aireg = registry.New(a.db.AI(), aiKeyRing, registry.EnvKeys{
 		OpenRouter:       a.c.OpenRouter.APIKey,
 		OpenRouterImages: a.c.OpenRouterImages.APIKey,
@@ -197,6 +195,18 @@ func (a *App) Start(ctx context.Context) error {
 		Meshy:            a.c.Meshy.APIKey,
 		Recraft:          a.c.Recraft.Direct.APIKey,
 	})
+	// B-33: a key still living in an env variable is moved into the panel here, ONCE, BEFORE the
+	// first Reload — a value whose panel slot is empty is sealed and stored as if an admin had
+	// pasted it, so the boot snapshot already carries it and a deployment that kept its keys in env
+	// never serves a keyless request. After this boot the variables are dead weight the operator
+	// deletes from the app spec (the log line per import says which). A store error here is a
+	// boot error for the same reason the Reload's is.
+	if _, err = a.aireg.ImportEnvKeys(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't import the env AI provider keys into the panel",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
 	// The first reload is the boot log (one line per provider: enabled, key source, last4 — never
 	// the key). A failure here is a boot error: automigrate has created the tables by now, so a
 	// registry that cannot read them is a broken deploy, not a feature to degrade.
@@ -215,8 +225,8 @@ func (a *App) Start(ctx context.Context) error {
 	// Every provider client reads its key through the registry: a key saved in the panel, or a
 	// provider switched off there, reaches the next request without a redeploy. Set on the config
 	// itself, ONCE, so every constructor below — fal.New is called three times — gets the hook and
-	// a fourth one added later cannot forget it. The images client has its own func: the same
-	// openrouter row, with OPENROUTER_IMAGES_API_KEY as its env fallback.
+	// a fourth one added later cannot forget it. The images client's func is the same openrouter
+	// answer (one row, one stored key; no env fallback since B-33) under its own name.
 	a.c.OpenRouter.KeyFunc = a.aireg.KeyFunc(entity.AIProviderOpenRouter)
 	a.c.OpenRouterImages.KeyFunc = a.aireg.OpenRouterImagesKeyFunc()
 	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
