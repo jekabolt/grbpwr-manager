@@ -421,3 +421,47 @@ func TestMidnightTimerIsArmedForTheLocalMidnight(t *testing.T) {
 	fire <- clk.now()
 	require.Equal(t, time.Hour, next(), "no zone to count midnights in: look again in an Interval")
 }
+
+// TestOpenRouterClosingRowIsRetriedInPlace — Codex REVIEW-F2 P1-2: the closing write fails once (a deadlock,
+// a lock wait) and lands on the second try, inside the same reading: the day is closed, the base advances,
+// the tick is clean. When every try fails the base still advances (today must not lose its hours) and the
+// tick is an error — the day keeps its last partial, as before.
+//
+// MUTATION (measured red→green): the retry loop removed → one upsert call, the tick fails, 28.09 is never
+// closed.
+func TestOpenRouterClosingRowIsRetriedInPlace(t *testing.T) {
+	sn := newSnaps(openRouterBase("10", "2026-09-28"))
+	w, _, st := openRouterWorker(t, "30", sn, newClock(at(2026, 9, 29, 0, 0, 30)))
+	w.closingRetry = 0
+	st.fail = func(n int) error {
+		if n == 1 {
+			return errors.New("deadlock found when trying to get lock")
+		}
+		return nil
+	}
+	require.True(t, w.runOnce(context.Background()))
+	require.Equal(t, []string{"2026-09-28=20@Europe/Warsaw", "2026-09-28=20@Europe/Warsaw"}, rowsOf(st),
+		"the same closing row, written on the second try")
+	_, puts := sn.recorded()
+	require.Len(t, puts, 1)
+	require.Equal(t, "2026-09-29", puts[0].Day)
+	require.Equal(t, "30", puts[0].UsageUSD.String())
+
+	sn = newSnaps(openRouterBase("10", "2026-09-28"))
+	w, _, st = openRouterWorker(t, "30", sn, newClock(at(2026, 9, 29, 0, 0, 30)))
+	w.closingRetry = 0
+	st.fail = func(int) error { return errors.New("deadlock found when trying to get lock") }
+	require.False(t, w.runOnce(context.Background()))
+	require.Len(t, st.written(), closingWriteTries, "every try, then the day is given up")
+	_, puts = sn.recorded()
+	require.Len(t, puts, 1, "the base still advances: today must not lose its hours")
+	require.Contains(t, w.LastError(), "deadlock")
+
+	// An hourly partial is NOT retried: the next hour re-writes it anyway.
+	sn = newSnaps(openRouterBase("10", "2026-09-28"))
+	w, _, st = openRouterWorker(t, "12", sn, newClock(at(2026, 9, 28, 9, 0, 0)))
+	w.closingRetry = 0
+	st.fail = func(int) error { return errors.New("deadlock found when trying to get lock") }
+	require.False(t, w.runOnce(context.Background()))
+	require.Len(t, st.written(), 1)
+}

@@ -6,6 +6,11 @@ import (
 
 	"log/slog"
 
+	// ⚠ THE RUNTIME IMAGE (alpine, Dockerfile) SHIPS NO tzdata: without this embed time.LoadLocation("Europe/Warsaw")
+	// fails on beta and prod, and every local-day computation (the design budget day, entity/budget_day.go; the
+	// OpenRouter midnight diff, aiprov/reconcile) is either refused or silently UTC. Seen live on beta 28.09 (commit F).
+	_ "time/tzdata"
+
 	"github.com/spf13/cobra"
 )
 

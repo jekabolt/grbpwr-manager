@@ -139,6 +139,10 @@ func threedFactoriesAt(falCfg fal.Config, m *meshy.Client) map[string]func(strin
 	}
 }
 
+// reservedThreed — a reservation wide enough for every candidate of these rigs: since FIX-F2 a fresh 3D
+// submit with no reservation is refused before Choose looks at the route.
+var reservedThreed = decimal.NullDecimal{Valid: true, Decimal: decimal.RequireFromString("5")}
+
 func meshyAt(baseURL string) *meshy.Client {
 	return meshy.New(meshy.Config{APIKey: "k", BaseURL: baseURL})
 }
@@ -160,11 +164,11 @@ func TestTheThreedChooserWALKS_THE_ROUTE_IN_ORDER(t *testing.T) {
 	require.True(t, routed.Enabled())
 	require.Equal(t, []string{ContentTypeGLB, ContentTypePNG}, routed.Produces())
 
-	p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderFal, p.Name(), "position 1 first, whatever DESIGN_THREED_PROVIDER says")
 
-	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, map[string]bool{ThreedProviderFal: true})
+	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, map[string]bool{ThreedProviderFal: true})
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderMeshy, p.Name(), "tried skips to the fallback")
 	_, isCollector := p.(Collector)
@@ -182,7 +186,7 @@ func TestAnExhaustedThreedRoundSAYS_SO(t *testing.T) {
 	rg := newThreedRouteRig(t, row(1, entity.AIProviderFal, ""), row(2, entity.AIProviderMeshy, ""))
 	ch := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(falCfgAt("http://127.0.0.1:1"), meshyAt("http://127.0.0.1:1")),
 		false, ThreedProviderFal).(Chooser)
-	_, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed},
+	_, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed},
 		map[string]bool{ThreedProviderFal: true, ThreedProviderMeshy: true})
 	require.ErrorIs(t, err, errChainExhausted)
 }
@@ -198,16 +202,16 @@ func TestTheEnvProviderIsTheCandidateONLY_WITHOUT_ROWS(t *testing.T) {
 		false, ThreedProviderMeshy)
 	ch := routed.(Chooser)
 	require.True(t, routed.Enabled())
-	p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderMeshy, p.Name(), "no rows: the env default")
 
 	rg.store.routeTo(entity.AIPurposeThreed, row(1, entity.AIProviderFal, ""))
 	rg.reload(t)
-	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderFal, p.Name(), "rows: the route, not the env")
-	_, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, map[string]bool{ThreedProviderFal: true})
+	_, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, map[string]bool{ThreedProviderFal: true})
 	require.ErrorIs(t, err, errChainExhausted, "the env default is not appended to a routed chain")
 }
 
@@ -227,7 +231,7 @@ func TestAnUnboundedThreedCandidateIS_SKIPPED(t *testing.T) {
 	logs := captureSlog(t)
 
 	for i := 0; i < 3; i++ {
-		p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+		p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 		require.NoError(t, err)
 		require.Equal(t, ThreedProviderMeshy, p.Name(), "the unbounded primary is never paid")
 	}
@@ -245,7 +249,7 @@ func TestAnUnboundedThreedCandidateIS_SKIPPED(t *testing.T) {
 	require.Equal(t, ThreedProviderFal, v.Head.Provider)
 	_, ok := v.CeilingUSD("", "")
 	require.False(t, ok, "nothing to reserve on")
-	_, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	_, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.ErrorIs(t, err, errRouteMissing, "the worker never pays an unbounded route")
 	require.Contains(t, err.Error(), "FAL_UNITS_CEILING_3D")
 }
@@ -259,12 +263,12 @@ func TestAThreedCandidateThatDropsAnOptionIS_SKIPPED(t *testing.T) {
 	rg := newThreedRouteRig(t, row(1, entity.AIProviderFal, hitemSlug), row(2, entity.AIProviderMeshy, ""))
 	ch := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(falCfgAt("http://127.0.0.1:1"), meshyAt("http://127.0.0.1:1")),
 		false, ThreedProviderFal).(Chooser)
-	detailed := Job{Kind: entity.DesignRunKindThreed, ThreedQuality: fal.QualityDetailed}
+	detailed := Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed, ThreedQuality: fal.QualityDetailed}
 
 	p, err := ch.Choose(detailed, nil)
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderMeshy, p.Name())
-	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderFal, p.Name(), "a run stating nothing is read by the hitem3d row")
 
@@ -304,7 +308,7 @@ func TestAPausedThreedRouteWAITS(t *testing.T) {
 	ch := routed.(Chooser)
 	openThreedBreaker(t, rg.reg, entity.AIProviderFal)
 
-	_, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	_, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.ErrorIs(t, err, errRoutePaused)
 	require.Contains(t, err.Error(), "threed is paused after repeated failures (fal: circuit breaker open)")
 	v := classify(err)
@@ -318,7 +322,7 @@ func TestAPausedThreedRouteWAITS(t *testing.T) {
 
 	rg.store.routeTo(entity.AIPurposeThreed, row(1, entity.AIProviderFal, ""), row(2, entity.AIProviderMeshy, ""))
 	rg.reload(t)
-	p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	p, err := ch.Choose(Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed}, nil)
 	require.NoError(t, err)
 	require.Equal(t, ThreedProviderMeshy, p.Name(), "the held primary is passed; the fallback pays")
 }
@@ -350,7 +354,7 @@ func TestTheThreedCandidateKEEPS_THE_BREAKER_BOOKS(t *testing.T) {
 	rg := newThreedRouteRig(t, row(1, entity.AIProviderFal, ""))
 	ch := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(falCfgAt(stand.srv.URL), meshyAt("http://127.0.0.1:1")),
 		false, ThreedProviderFal).(Chooser)
-	job := Job{Kind: entity.DesignRunKindThreed, References: []string{"https://cdn.example/m/21.png"},
+	job := Job{Kind: entity.DesignRunKindThreed, ThreedReservedUSD: reservedThreed, References: []string{"https://cdn.example/m/21.png"},
 		ReferenceViews: []string{entity.DesignViewFront}}
 	cand, err := ch.Choose(job, nil)
 	require.NoError(t, err)
@@ -458,7 +462,7 @@ func TestA402OnFalPAYS_MESHY_ON_THE_NEXT_PASS(t *testing.T) {
 	routed := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(falCfgAt(falStand.srv.URL), m), false, ThreedProviderFal)
 	st := &fakeStore{}
 	w := threedWorker(st, routed)
-	run := steerRun(90)
+	run := reservedSteerRun(90)
 	logs := captureSlog(t)
 
 	require.NoError(t, w.execute(context.Background(), run, "tok"))
@@ -499,7 +503,7 @@ func TestAnEngagedFalTimeoutNEVER_FALLS_BACK(t *testing.T) {
 	routed := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(cfg, meshyAt(meshyStand.srv.URL)), false, ThreedProviderFal)
 	st := &fakeStore{}
 	w := threedWorker(st, routed)
-	run := steerRun(91)
+	run := reservedSteerRun(91)
 
 	require.NoError(t, w.execute(context.Background(), run, "tok"))
 	require.Equal(t, 1, falStand.posts())
@@ -525,7 +529,7 @@ func TestAResumeAfterARouteEditCOLLECTS_WITH_THE_STORED_PROVIDER(t *testing.T) {
 	routed := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(falCfg, m), false, ThreedProviderFal)
 	st := &fakeStore{}
 	w := threedWorker(st, routed, NewFalThreedProvider(fal.New(falCfg)), NewThreedProvider(m))
-	run := steerRun(92)
+	run := reservedSteerRun(92)
 	full := run
 	full.Attempts = []entity.DesignRunAttempt{{
 		AttemptNo: 1, Provider: ThreedProviderMeshy, State: entity.DesignAttemptAccepted,
@@ -558,7 +562,7 @@ func TestTheThreedCandidateRECORDS_WHAT_IT_SENDS(t *testing.T) {
 	w := threedWorker(st, routed)
 	ai := withLedger(w)
 
-	_ = w.execute(context.Background(), steerRun(93), "tok")
+	_ = w.execute(context.Background(), reservedSteerRun(93), "tok")
 	require.Len(t, st.recordedPrompts, 1)
 	require.NotEmpty(t, st.recordedPrompts[0])
 	require.NotContains(t, st.recordedPrompts[0], "crossed straps", "the surface steer, not the composed prompt")
@@ -597,7 +601,7 @@ func TestADearerCandidateNEVER_EXCEEDS_THE_RESERVATION(t *testing.T) {
 	v := classify(err)
 	require.Equal(t, CodeThreedReserveShort, v.Code)
 	require.False(t, v.Retryable)
-	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
-	require.NoError(t, err, "a run with no reservation (pre-B-24 rows) is chosen as before")
-	require.Equal(t, ThreedProviderMeshy, p.Name())
+	_, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	require.ErrorIs(t, err, errThreedReserveShort, "a run with no reservation is never paid (Codex REVIEW-F2 P1-3)")
+	require.Contains(t, err.Error(), "carries no reservation")
 }

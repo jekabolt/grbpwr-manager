@@ -158,7 +158,18 @@ func (w *Worker) reconcileCumulative(ctx context.Context, a adapter, key string)
 			ProviderKey: a.provider, Day: v.row.day, AmountUSD: v.row.usd.Round(6), Currency: "USD",
 			BucketTZ: zone, FetchedAt: w.now().UTC(),
 		}
-		if err := w.store.UpsertCostDaily(ctx, []entity.AICostDaily{row}); err != nil {
+		err := w.store.UpsertCostDaily(ctx, []entity.AICostDaily{row})
+		// ⚠ A CLOSING ROW IS RETRIED IN PLACE (Codex REVIEW-F2 P1-2). The base below advances whether or not
+		// this write landed, and a closed day nobody wrote is never revisited: the next reading finds
+		// today's base and re-writes today. So a transient store fault at midnight gets a few more tries
+		// right here, inside the closing window, before the day is given up to its last hourly partial.
+		for try := 1; err != nil && v.rebase && try < closingWriteTries; try++ {
+			if !w.pause(ctx, w.closingRetry) {
+				break
+			}
+			err = w.store.UpsertCostDaily(ctx, []entity.AICostDaily{row})
+		}
+		if err != nil {
 			errs = append(errs, w.failed(ctx, a, "upsert", err))
 		}
 	}
@@ -178,6 +189,28 @@ func (w *Worker) reconcileCumulative(ctx context.Context, a adapter, key string)
 	}
 	w.keyPrints[a.provider] = fp
 	return nil
+}
+
+// closingWriteTries / closingRetryDelay — how often and how far apart a closing row's write is tried
+// before the day keeps its last partial: three tries over ten seconds, well inside the closing window.
+const (
+	closingWriteTries = 3
+	closingRetryDelay = 5 * time.Second
+)
+
+// pause waits d or until ctx ends; false when ctx ended first.
+func (w *Worker) pause(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // zone is the organisation's budget zone as the key source knows it now, loaded. "" (the registry

@@ -160,6 +160,9 @@ type Worker struct {
 	// newMidnightTimer is the second clock's (runMidnights): one timer per local midnight. A knob of
 	// its own, so a test drives the midnight without meeting the backoff's timers, and the reverse.
 	newMidnightTimer func(time.Duration) (<-chan time.Time, func() bool)
+	// closingRetry is the pause between the in-place retries of a CLOSING day's write (midnight.go,
+	// Codex REVIEW-F2 P1-2); tests set it to 0.
+	closingRetry time.Duration
 
 	// mu guards ctx/stop and the admission of RunNow: a run is admitted only while the worker is
 	// running, and counted in wg under the same lock, so Stop's Wait sees every run that got in.
@@ -218,6 +221,7 @@ func New(c Config, store CostStore, snapshots SnapshotStore, keys KeySource, opt
 		},
 		newTimer:         realTimer,
 		newMidnightTimer: realTimer,
+		closingRetry:     closingRetryDelay,
 		keyPrints:        map[string][sha256.Size]byte{},
 		logged:           map[string]string{},
 	}

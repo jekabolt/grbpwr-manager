@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -144,6 +145,14 @@ func steerRun(id int) entity.DesignRun {
 	    {"view_key": "back", "media_id": 22}
 	  ]
 	}`)
+	return r
+}
+
+// reservedSteerRun — steerRun с резервом двери (price_estimate): с FIX-F2 свежий 3D-сабмит без резерва
+// отказывается ДО чтения маршрута (Codex REVIEW-F2 P1-3), а маршрутизируемые пробы платят через Choose.
+func reservedSteerRun(id int) entity.DesignRun {
+	r := steerRun(id)
+	r.PriceEstimate = decimal.NullDecimal{Valid: true, Decimal: decimal.RequireFromString("5")}
 	return r
 }
 

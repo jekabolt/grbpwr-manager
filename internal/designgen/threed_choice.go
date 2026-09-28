@@ -395,6 +395,14 @@ func (p *routedThreedProvider) Choose(job Job, tried map[string]bool) (Provider,
 	if len(r.listed) == 0 && len(r.held) == 0 {
 		return nil, fmt.Errorf("%w: the threed route has no callable candidate — %s", errRouteMissing, p.missingIn(r))
 	}
+	if !job.ThreedReservedUSD.Valid {
+		// ⚠ NO RESERVATION, NO SUBMIT (Codex REVIEW-F2 P1-3). The door prices every 3D run (designPriceEstimate
+		// has a threed entry), so a fresh submit with no reserved number is a row from before the door priced
+		// 3D builds, or a corrupt one: paying it would spend outside the daily budget. Terminal and free; a
+		// resume never comes through Choose (the job is bought).
+		return nil, fmt.Errorf("%w: this run carries no reservation for a 3D build — it was queued before the door "+
+			"priced 3D builds; start it again. Nothing was submitted and nothing was charged", errThreedReserveShort)
+	}
 	served := false
 	var opt, why string
 	over := 0 // candidates skipped because one build would book more than the run's reservation
@@ -408,7 +416,7 @@ func (p *routedThreedProvider) Choose(job Job, tried map[string]bool) (Provider,
 		// ⚠ THE RESERVATION IS THE CEILING (Codex REVIEW-F1 #1). The door reserved the MAX over the chain
 		// it saw; a route edited since (a dearer candidate added, a price raised) must not pay above that
 		// number on this run: such a candidate is skipped free, before any row is opened.
-		if job.ThreedReservedUSD.Valid && c.route != nil {
+		if c.route != nil {
 			if top, ok := c.route.CeilingUSD(job.ThreedTexture, job.ThreedQuality); ok && top.GreaterThan(job.ThreedReservedUSD.Decimal) {
 				over++
 				continue
