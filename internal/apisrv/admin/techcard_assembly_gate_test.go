@@ -48,6 +48,14 @@ func storedWithUnits() *entity.TechCard {
 	return storedCard(entity.TechCardOperation{OutputUnitKey: sql.NullString{String: "SHELL", Valid: true}})
 }
 
+// storedDanglingOnly — карточка, у которой от разметки остался один вход-узел без производителя:
+// ключ детали, которой больше нет, ClassifyAssemblyInputs записал узлом (B-03).
+func storedDanglingOnly() *entity.TechCard {
+	return storedCard(entity.TechCardOperation{
+		AssemblyInputs: []entity.OperationInput{{Kind: entity.AssemblyInputUnit, Key: "GONE"}},
+	})
+}
+
 func storedPlain() *entity.TechCard {
 	return storedCard(entity.TechCardOperation{PieceLineKeys: []string{"FR", "BK"}})
 }
@@ -112,6 +120,20 @@ func TestAssemblyGateTruthTable(t *testing.T) {
 			stored: storedWithUnits(), pb: asmPayload(true, true, opWithUnit("SHELL")),
 			wantWire: codes.InvalidArgument, wantStored: codes.OK,
 		},
+		{
+			// B-03: карточка, у которой от разметки остался лишь висячий вход-узел (деталь удалена),
+			// не размечена — обычная осведомлённая запись без узлов проходит, а не упирается в бекстоп.
+			name:   "только висячий вход-узел в хранилище, обычная запись без узлов",
+			stored: storedDanglingOnly(), pb: asmPayload(true, false, opAwareNoUnits()),
+			wantWire: codes.OK, wantStored: codes.OK,
+		},
+		{
+			// И снимать там нечего: намерение против неразмеченной карточки отвергается, как в
+			// клетке «stored нет | aware есть | TRUE».
+			name:   "только висячий вход-узел в хранилище, cleared без предмета",
+			stored: storedDanglingOnly(), pb: asmPayload(true, true, opAwareNoUnits()),
+			wantWire: codes.OK, wantStored: codes.InvalidArgument,
+		},
 	}
 
 	for _, c := range cases {
@@ -136,11 +158,24 @@ func TestStoredHasAssemblyFactsIgnoresPieceLinks(t *testing.T) {
 	if !storedHasAssemblyFacts(storedWithUnits()) {
 		t.Error("карточка с выходным узлом не считана размеченной")
 	}
-	unitInput := storedCard(entity.TechCardOperation{
+	// B-03 (27.09): вход-узел БЕЗ производителя — остаток от удалённой детали, а не разметка.
+	// Считать его фактом значило отказывать без выхода: payload после снятия плашки «piece
+	// deleted» узлов не несёт, а кнопка снятия разметки смотрит на выходные ключи и спрятана.
+	dangling := storedCard(entity.TechCardOperation{
 		AssemblyInputs: []entity.OperationInput{{Kind: entity.AssemblyInputUnit, Key: "SHELL"}},
 	})
-	if !storedHasAssemblyFacts(unitInput) {
-		t.Error("вход-узел не считан фактом сборки")
+	if storedHasAssemblyFacts(dangling) {
+		t.Error("висячий вход-узел ошибочно считан фактом сборки")
+	}
+	// Вход-узел С производителем — разметка, и отвечает за неё выходной ключ производителя.
+	produced := storedCard(
+		entity.TechCardOperation{OutputUnitKey: sql.NullString{String: "SHELL", Valid: true}},
+		entity.TechCardOperation{
+			AssemblyInputs: []entity.OperationInput{{Kind: entity.AssemblyInputUnit, Key: "SHELL"}},
+		},
+	)
+	if !storedHasAssemblyFacts(produced) {
+		t.Error("узел с производителем не считан разметкой")
 	}
 	if storedHasAssemblyFacts(nil) {
 		t.Error("nil-карточка не может нести фактов")
