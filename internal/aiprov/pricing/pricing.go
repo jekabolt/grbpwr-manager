@@ -89,9 +89,19 @@ const (
 	orFallback = " — fallback only: OpenRouter's usage.cost wins"
 )
 
-// catalogue — the curated rows, in the order of the brief. fal, meshy, recraft and runblob have no
-// rows on purpose: their money arrives as units / credits / a provider price (fal tariffs,
-// MESHY_CREDIT_USD, recraft credits, runblob's `price`) and is priced by their callers.
+// srcRunblob — runblob's image families, as the panel lists them. UNPRICED ON PURPOSE: runblob states
+// the price of EVERY generation at submit (Submission.PriceUSD — «0.0210», «0.0290»), and the image
+// transport books that number as cost_source provider; a rate here would be a second number that
+// disagrees the day runblob edits its page. The slugs are the transport's (runblob.ImageSlugs; a test
+// there pins the two lists together).
+const srcRunblob = "unpriced — runblob states its price per generation at submit (Submission.PriceUSD, " +
+	"booked as cost_source provider); tmp/plans/ai-providers/runblob-specs/kling.json and the Nano Banana " +
+	"docs page, read 2026-09-28"
+
+// catalogue — the curated rows, in the order of the brief. fal, meshy and recraft have no rows on
+// purpose: their money arrives as units / credits (fal tariffs, MESHY_CREDIT_USD, recraft credits) and
+// is priced by their callers. runblob's rows are LISTED and UNPRICED (srcRunblob): the panel needs the
+// eight slugs to offer on image.generate, and the ledger takes runblob's own number.
 var catalogue = map[string][]Model{
 	entity.AIProviderOpenAI: {
 		chat(entity.AIProviderOpenAI, "gpt-5.2", "GPT-5.2", "1.25", "10",
@@ -145,6 +155,16 @@ var catalogue = map[string][]Model{
 		image(entity.AIProviderApibost, "dall-e-3", "DALL·E 3", "0.04", srcApibost),
 		image(entity.AIProviderApibost, "flux-kontext-pro", "FLUX Kontext Pro", "0.08", srcApibost),
 		image(entity.AIProviderApibost, "gemini-2.5-flash-image", "Gemini 2.5 Flash Image", "0.02", srcApibost),
+	},
+	entity.AIProviderRunblob: {
+		unpricedRow(entity.AIProviderRunblob, "gemini/standard", "Nano Banana (standard)", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "gemini/pro", "Nano Banana Pro", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "gemini/v2", "Nano Banana 2", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "gemini/v2_lite", "Nano Banana 2 Lite", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "gemini/pro_vip", "Nano Banana Pro VIP", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "gemini/v2_vip", "Nano Banana 2 VIP", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "kling/o1-photo", "Kling O1 Photo", KindImage, srcRunblob),
+		unpricedRow(entity.AIProviderRunblob, "kling/o3-photo", "Kling O3 Photo", KindImage, srcRunblob),
 	},
 }
 

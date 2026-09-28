@@ -41,7 +41,8 @@ func TestAIShapeProviderKeysAreTheNineAndClosed(t *testing.T) {
 // TestAIShapeProviderCapabilitiesMatchTheContract pins the table of 06-BRIEFS-A.
 //
 // MUTATION IT CATCHES: dropping `edit` from fal (image.extend / image.inpaint would then refuse the
-// only provider that serves them today) or giving anthropic `image`.
+// only provider that serves them today), giving anthropic `image`, or dropping `image` from runblob
+// (B-31: the panel could no longer name it on image.generate).
 func TestAIShapeProviderCapabilitiesMatchTheContract(t *testing.T) {
 	want := map[string][]string{
 		AIProviderOpenAI:     {AICapabilityChat, AICapabilityImage},
@@ -51,7 +52,7 @@ func TestAIShapeProviderCapabilitiesMatchTheContract(t *testing.T) {
 		AIProviderApibost:    {AICapabilityChat, AICapabilityImage},
 		AIProviderFal:        {AICapabilityImage, AICapabilityCutout, AICapabilityEdit, AICapabilityThreed},
 		AIProviderMeshy:      {AICapabilityThreed},
-		AIProviderRunblob:    {AICapabilityVideo},
+		AIProviderRunblob:    {AICapabilityImage, AICapabilityVideo},
 		AIProviderRecraft:    {AICapabilityVector},
 	}
 	for k, caps := range want {

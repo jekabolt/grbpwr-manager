@@ -101,8 +101,9 @@ type App struct {
 	// config_version poller. Built right after the DB and never nil after a successful boot: every
 	// provider client's KeyFunc reads it.
 	aireg *registry.Registry
-	// runblob is the video aggregator's adapter (B-27): built at boot, read by NOTHING yet — no
-	// purpose routes to it until the owner names a video one (D-05, B-27b). Never nil after boot.
+	// runblob is the generation aggregator's adapter (B-27): built at boot; the image.generate route
+	// pays pictures through its image transport (B-31), and no video purpose routes to it until G2
+	// names one. Never nil after boot.
 	runblob *runblob.Client
 	// dgw is the DESIGN band generation worker. NIL WHENEVER DESIGN_GENERATION_ENABLED IS OFF:
 	// a disabled feature is not a worker that ticks and finds nothing, it is a worker that was
@@ -672,16 +673,16 @@ func (a *App) Start(ctx context.Context) error {
 			},
 		}),
 	}
-	// runblob (B-27): the adapter beside the chat transports, with the panel's key — and no caller.
-	// It is not a chatter (a generation is not a completion), no purpose routes to it (D-05: none of
-	// the shop's purposes is video until the owner names one), and no ledger row is written for it:
-	// Submission.PriceUSD is the number the future caller (B-27b) books as the provider's own. The one
-	// line below is how a deployment says the adapter is there and whether its key is set — never
-	// the key.
+	// runblob (B-27): the adapter beside the chat transports, with the panel's key. It is not a
+	// chatter (a generation is not a completion). Its ONE caller today is the image transport the
+	// designgen block below hands to the image.generate route (B-31: runblob.NewImages) — a picture is
+	// paid there and the ledger books Submission.PriceUSD as the provider's own number; the video half
+	// waits for the purpose G2 names. The one line below is how a deployment says the adapter is there
+	// and whether its key is set — never the key.
 	a.runblob = runblob.New(runblob.Config{
 		KeyFunc: a.aireg.KeyFunc(entity.AIProviderRunblob), HTTPTimeout: aiprov.DefaultBudgetBase,
 	})
-	slog.Default().InfoContext(ctx, "runblob: adapter constructed; no purpose routes to it (D-05)",
+	slog.Default().InfoContext(ctx, "runblob: adapter constructed; image.generate may route to it (B-31), no video purpose yet",
 		slog.Bool("enabled", a.runblob.Enabled()))
 	aiRouter := router.New(a.aireg, aiLedger,
 		chatTransports,
@@ -797,9 +798,14 @@ func (a *App) Start(ctx context.Context) error {
 			// by which pictures go into which paid call, both of which live inside designgen. Since B-13
 			// the slot is the ROUTE (admin → AI providers, image.generate): each pass pays one
 			// candidate of it, a candidate that failed without money moving hands the run to the next
-			// one on a fresh attempt. Transports: openrouter only (commit F adds OpenAI).
+			// one on a fresh attempt. Transports: openrouter (the env default) and runblob (B-31: Nano
+			// Banana and the Kling photo endpoints through the panel's key — submit, free poll, download;
+			// the ledger takes runblob's own submit price as cost_source provider).
 			Image: designgen.NewRoutedImageProvider(a.aireg,
-				map[string]designgen.ImageTransport{entity.AIProviderOpenRouter: designImages}, designImages.Model()),
+				map[string]designgen.ImageTransport{
+					entity.AIProviderOpenRouter: designImages,
+					entity.AIProviderRunblob:    runblob.NewImages(a.runblob),
+				}, designImages.Model()),
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
 			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
