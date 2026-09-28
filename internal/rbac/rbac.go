@@ -482,6 +482,9 @@ var methodRequirements = map[string]Requirement{
 	"CancelDesignRun":   wr(SectionTechCards),
 	"ArchiveDesignRun":  wr(SectionTechCards),
 	"HideDesignPicture": wr(SectionTechCards),
+	// «Удалить насовсем» (O-68, D-74) — та же запись о карточке, что «спрятать», только необратимая;
+	// право то же: кто может прятать кроп, тот может его и стереть. Денег не тратит.
+	"DeleteDesignPicture": wr(SectionTechCards),
 	// «Выбран» — такое же дешёвое обратимое утверждение о картинке, как «спрятан»,
 	// и права у них одни: кто может прятать, тот может и выбирать.
 	"SetDesignPictureSelected": wr(SectionTechCards),

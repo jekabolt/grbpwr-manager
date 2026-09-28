@@ -2786,6 +2786,31 @@ service AdminService {
     };
   }
 
+  // DeleteDesignPicture removes a DERIVED picture FOR GOOD — a crop, or an edit of a crop — with
+  // everything cut or flattened from it and with the files behind them (O-68, D-74). It is the
+  // one verb on a picture that is NOT reversible, and that is why it is narrow: only a picture
+  // with a derived_from may go. The plate a run produced or a hand upload has no such door —
+  // FailedPrecondition picture_is_root — it can be hidden, never deleted. NotFound
+  // picture_not_found for an id nobody has. A hidden picture and a picture standing in a bench
+  // slot go the same way (the slot is emptied and kept); HideDesignPicture's guards do not apply.
+  //
+  // WHAT GOES, IN ONE TRANSACTION: the picture and its descendants by derived_from, children
+  // first; the edit layer of this card whose base is one of their media (the layer cannot be
+  // opened without its base); the asset placements on those pictures. What the schema SETS NULL:
+  // the bench slot holding one of them, the vector origin of a layer drawn from one of them.
+  //
+  // THE FILES GO AFTER THE COMMIT, BEST-EFFORT, PER MEDIA, and the answer says what happened to
+  // each: deleted_media_ids — the media row went and its objects (full size, compressed,
+  // thumbnail) were removed; kept_media_ids — the row stayed because something else still holds
+  // the file (the files library, another card, a second role on this card), OR the objects could
+  // not be removed (logged). The pictures are gone either way.
+  rpc DeleteDesignPicture(DeleteDesignPictureRequest) returns (DeleteDesignPictureResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/delete"
+      body: "*"
+    };
+  }
+
   // SetDesignPictureSelected marks a picture as CHOSEN (owner requirement W-12: «мы так же можем
   // маркать 3д рендеры как выбранные»). It is a verb of its own and deliberately NOT a flag on
   // HideDesignPicture: hidden says "do not show me this", selected says "this is the one" — the
@@ -12648,6 +12673,23 @@ message HideDesignPictureRequest {
 
 message HideDesignPictureResponse {
   common.DesignPicture picture = 1;
+}
+
+message DeleteDesignPictureRequest {
+  int32 picture_id = 1;
+}
+
+message DeleteDesignPictureResponse {
+  // Every picture row that went, in the order the rows went: descendants first, the named
+  // picture last. The count minus one is «its N cut pieces».
+  repeated int32 deleted_picture_ids = 1;
+  // Media whose row is gone AND whose objects were removed from storage.
+  repeated int32 deleted_media_ids = 2;
+  // Media that is still there: its row is held by something else (the files library, another
+  // card, a second role on this card) — or the row went but its objects could not be removed,
+  // which is logged. Distinct from deleted_media_ids; every media of a deleted picture is in
+  // exactly one of the two lists.
+  repeated int32 kept_media_ids = 3;
 }
 
 message SetDesignPictureSelectedRequest {
