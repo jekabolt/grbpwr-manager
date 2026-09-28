@@ -107,6 +107,10 @@ func (f *fakeStore) SpendReport(context.Context, string, string) (*entity.AISpen
 	return nil, errNotUsed
 }
 func (f *fakeStore) UpsertCostDaily(context.Context, []entity.AICostDaily) error { return errNotUsed }
+func (f *fakeStore) GetUsageSnapshot(context.Context, string) (*entity.AIUsageSnapshot, error) {
+	return nil, errNotUsed
+}
+func (f *fakeStore) PutUsageSnapshot(context.Context, entity.AIUsageSnapshot) error { return errNotUsed }
 
 // fakeClock is a settable clock for the breaker window.
 type fakeClock struct{ ns atomic.Int64 }

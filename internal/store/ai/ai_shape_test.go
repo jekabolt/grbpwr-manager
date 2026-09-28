@@ -161,6 +161,8 @@ var statements = map[string]string{
 	"spendTheirByProvider":     spendTheirByProvider,
 	"spendByActor":             spendByActor,
 	"upsertAICostDaily":        upsertAICostDaily,
+	"selectAIUsageSnapshot":    selectAIUsageSnapshot,
+	"upsertAIUsageSnapshot":    upsertAIUsageSnapshot,
 }
 
 // nameOf maps a statement that reached the fake back to its constant's name.
@@ -259,6 +261,11 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	base, err := usageSnapshotParams(entity.AIUsageSnapshot{ProviderKey: "openrouter", UsageUSD: decimal.RequireFromString("42.1"),
+		Day: "2026-09-27", BucketTZ: "Europe/Warsaw"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := map[string]map[string]any{
 		"selectAISettings":         nil,
 		"selectAIProviders":        nil,
@@ -287,6 +294,8 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 		"spendTheirByProvider":     {"from_day": "2026-09-01", "to_day": "2026-09-27"},
 		"spendByActor":             {"from_day": "2026-09-01", "to_day": "2026-09-27"},
 		"upsertAICostDaily":        cost,
+		"selectAIUsageSnapshot":    {"provider_key": "openrouter"},
+		"upsertAIUsageSnapshot":    base,
 	}
 	if len(cases) != len(statements) {
 		t.Fatalf("%d statements, %d cases: a statement is untested", len(statements), len(cases))
@@ -347,7 +356,8 @@ func upSection(t *testing.T, body string) string {
 func migrationColumns(t *testing.T) map[string]map[string]bool {
 	t.Helper()
 	tables := map[string]map[string]bool{}
-	for _, f := range []string{"0344_design_budget.sql", "0373_ai_providers.sql", "0374_ai_usage.sql"} {
+	for _, f := range []string{"0344_design_budget.sql", "0373_ai_providers.sql", "0374_ai_usage.sql",
+		usageSnapshotMigration} {
 		body, err := os.ReadFile(filepath.Join("..", "sql", f))
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
@@ -402,7 +412,7 @@ func migrationColumns(t *testing.T) map[string]map[string]bool {
 		}
 	}
 	for _, want := range []string{"design_settings", "ai_provider", "ai_model", "ai_route", "ai_settings",
-		"ai_usage_event", "ai_provider_cost_daily", "admins"} {
+		"ai_usage_event", "ai_provider_cost_daily", "ai_provider_usage_snapshot", "admins"} {
 		if len(tables[want]) == 0 {
 			t.Fatalf("sanity: no columns parsed for %s — the extractor is broken", want)
 		}
@@ -551,14 +561,15 @@ func TestAIStoreShapeSelectsFillEveryFieldTheyScanInto(t *testing.T) {
 		q   string
 		typ reflect.Type
 	}{
-		"selectAISettings":     {selectAISettings, reflect.TypeOf(entity.AISettings{})},
-		"selectAIProviders":    {selectAIProviders, reflect.TypeOf(entity.AIProvider{})},
-		"selectAIModels":       {selectAIModels, reflect.TypeOf(entity.AIModel{})},
-		"selectAIRoutes":       {selectAIRoutes, reflect.TypeOf(routeRow{})},
-		"recentFaults":         {recentFaults, reflect.TypeOf(faultRow{})},
-		"spendByProvider":      {spendByProvider, reflect.TypeOf(ourSpendRow{})},
-		"spendTheirByProvider": {spendTheirByProvider, reflect.TypeOf(theirSpendRow{})},
-		"spendByActor":         {spendByActor, reflect.TypeOf(entity.AISpendByActor{})},
+		"selectAISettings":      {selectAISettings, reflect.TypeOf(entity.AISettings{})},
+		"selectAIProviders":     {selectAIProviders, reflect.TypeOf(entity.AIProvider{})},
+		"selectAIModels":        {selectAIModels, reflect.TypeOf(entity.AIModel{})},
+		"selectAIRoutes":        {selectAIRoutes, reflect.TypeOf(routeRow{})},
+		"recentFaults":          {recentFaults, reflect.TypeOf(faultRow{})},
+		"spendByProvider":       {spendByProvider, reflect.TypeOf(ourSpendRow{})},
+		"spendTheirByProvider":  {spendTheirByProvider, reflect.TypeOf(theirSpendRow{})},
+		"spendByActor":          {spendByActor, reflect.TypeOf(entity.AISpendByActor{})},
+		"selectAIUsageSnapshot": {selectAIUsageSnapshot, reflect.TypeOf(usageSnapshotRow{})},
 	} {
 		got := selectOutputs(t, c.q)
 		want := dbTags(c.typ)
@@ -1912,5 +1923,135 @@ func TestAIStoreShapeCostDailyDefaultsAndRefusals(t *testing.T) {
 		if _, err := costDailyParams(r, fixedNow); err == nil {
 			t.Fatalf("%s was accepted", name)
 		}
+	}
+}
+
+// ───────────────────────── the base of a cumulative counter (0380, B-30) ─────────────────────────
+
+// usageSnapshotMigration creates ai_provider_usage_snapshot.
+const usageSnapshotMigration = "0380_ai_provider_usage_snapshot.sql"
+
+// TestAIStoreShapeUsageSnapshotIsOneBasePerProvider (D-17, B-30).
+//
+// The base OpenRouter's day is diffed against: one row per provider, replaced WHOLE, read back as the
+// same day string it was written with, and refused rather than clipped.
+//
+// MUTATION (measured red → restored green): `day = VALUES(day),` dropped from ON DUPLICATE KEY UPDATE —
+// a midnight's Put would keep yesterday's day beside today's usage, and the next hour would diff today
+// against a base the worker reads as yesterday's (the missed-midnight rule, every day).
+func TestAIStoreShapeUsageSnapshotIsOneBasePerProvider(t *testing.T) {
+	for _, col := range []string{"usage_usd", "day", "bucket_tz", "taken_at"} {
+		if !strings.Contains(upsertAIUsageSnapshot, col+" = VALUES("+col+")") {
+			t.Fatalf("a Put must replace %s: a base is one reading, never a mix of two", col)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(selectAIUsageSnapshot), "WHERE provider_key = :provider_key") {
+		t.Fatal("a Get reads one provider's row")
+	}
+
+	// Put binds the reading as the column holds it: six places, the zone trimmed, taken_at in UTC.
+	db := &recDB{}
+	st := newRecStore(db, nil)
+	warsaw, err := time.LoadLocation("Europe/Warsaw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := time.Date(2026, 9, 28, 0, 0, 30, 0, warsaw)
+	if err := st.PutUsageSnapshot(context.Background(), entity.AIUsageSnapshot{ProviderKey: "openrouter",
+		UsageUSD: decimal.RequireFromString("42.12345678"), Day: "2026-09-28", BucketTZ: " Europe/Warsaw ", TakenAt: taken}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sequence(t, db); !slices.Equal(got, []string{"upsertAIUsageSnapshot"}) {
+		t.Fatalf("Put ran %v, want one upsert", got)
+	}
+	args := db.calls[0].args
+	for name, want := range map[string]any{
+		"provider_key": "openrouter", "day": "2026-09-28", "bucket_tz": "Europe/Warsaw", "taken_at": taken.UTC(),
+	} {
+		if got := argOf(t, upsertAIUsageSnapshot, args, name); got != want {
+			t.Fatalf(":%s = %v, want %v", name, got, want)
+		}
+	}
+	if got := argOf(t, upsertAIUsageSnapshot, args, "usage_usd").(decimal.Decimal); got.String() != "42.123457" {
+		t.Fatalf(":usage_usd = %s, want 42.123457 (the column's six places)", got)
+	}
+	// A zero taken_at is the store's clock, never 0000-00-00.
+	db = &recDB{}
+	if err := newRecStore(db, nil).PutUsageSnapshot(context.Background(), entity.AIUsageSnapshot{ProviderKey: "openrouter",
+		UsageUSD: decimal.Zero, Day: "2026-09-28", BucketTZ: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := argOf(t, upsertAIUsageSnapshot, db.calls[0].args, "taken_at"); got != fixedNow {
+		t.Fatalf(":taken_at = %v, want the store clock", got)
+	}
+
+	// Refused before the database: every one of these would move the days diffed against it.
+	for name, sn := range map[string]entity.AIUsageSnapshot{
+		"unknown provider": {ProviderKey: "aws", Day: "2026-09-28", BucketTZ: "UTC"},
+		"bad day":          {ProviderKey: "openrouter", Day: "28.09.2026", BucketTZ: "UTC"},
+		"no zone":          {ProviderKey: "openrouter", Day: "2026-09-28"},
+		"not a zone":       {ProviderKey: "openrouter", Day: "2026-09-28", BucketTZ: "UTC+2"},
+		"zone too long":    {ProviderKey: "openrouter", Day: "2026-09-28", BucketTZ: strings.Repeat("Z", 33)},
+		"negative":         {ProviderKey: "openrouter", Day: "2026-09-28", BucketTZ: "UTC", UsageUSD: decimal.RequireFromString("-0.01")},
+		"over the column":  {ProviderKey: "openrouter", Day: "2026-09-28", BucketTZ: "UTC", UsageUSD: decimal.RequireFromString("100000000")},
+	} {
+		db := &recDB{}
+		if err := newRecStore(db, nil).PutUsageSnapshot(context.Background(), sn); err == nil || len(db.calls) != 0 {
+			t.Fatalf("%s: %v, %d statements; want a refusal and none", name, err, len(db.calls))
+		}
+	}
+
+	// Get: no row is (nil, nil) — the first reading ever, not an error.
+	db = &recDB{onGet: func(any, string, []any) error { return sql.ErrNoRows }}
+	got, err := newRecStore(db, nil).GetUsageSnapshot(context.Background(), "openrouter")
+	if err != nil || got != nil {
+		t.Fatalf("no row: %v, %v; want nil, nil", got, err)
+	}
+	if arg := argOf(t, selectAIUsageSnapshot, db.calls[0].args, "provider_key"); arg != "openrouter" {
+		t.Fatalf(":provider_key = %v", arg)
+	}
+	// A row: the DATE comes back as the driver hands it (a time.Time at midnight) and leaves as the
+	// same calendar day, whatever location the driver parsed it in.
+	db = &recDB{onGet: func(dest any, _ string, _ []any) error {
+		*dest.(*usageSnapshotRow) = usageSnapshotRow{ProviderKey: "openrouter", UsageUSD: decimal.RequireFromString("30"),
+			Day: time.Date(2026, 9, 29, 0, 0, 0, 0, warsaw), BucketTZ: "Europe/Warsaw", TakenAt: taken}
+		return nil
+	}}
+	got, err = newRecStore(db, nil).GetUsageSnapshot(context.Background(), "openrouter")
+	if err != nil || got == nil {
+		t.Fatalf("a row: %v, %v", got, err)
+	}
+	if got.Day != "2026-09-29" || got.UsageUSD.String() != "30" || got.BucketTZ != "Europe/Warsaw" || !got.TakenAt.Equal(taken) {
+		t.Fatalf("read %+v", *got)
+	}
+	if _, err := newRecStore(&recDB{}, nil).GetUsageSnapshot(context.Background(), "aws"); err == nil {
+		t.Fatal("an unknown provider is refused before the database")
+	}
+	db = &recDB{onGet: func(any, string, []any) error { return errors.New("connection reset") }}
+	if _, err := newRecStore(db, nil).GetUsageSnapshot(context.Background(), "openrouter"); err == nil ||
+		!strings.Contains(err.Error(), "connection reset") {
+		t.Fatalf("a failed read is an error, never «no base»: %v", err)
+	}
+
+	// The bounds are the columns 0380 creates, and the table is created idempotently.
+	body, err := os.ReadFile(filepath.Join("..", "sql", usageSnapshotMigration))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := upSection(t, string(body))
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS ai_provider_usage_snapshot (",
+		"provider_key VARCHAR(32) NOT NULL PRIMARY KEY,",
+		"usage_usd DECIMAL(14,6) NOT NULL",
+		"day DATE NOT NULL",
+		"bucket_tz VARCHAR(" + strconv.Itoa(costBucketTZMax) + ") NOT NULL",
+		"taken_at DATETIME(6) NOT NULL",
+	} {
+		if !strings.Contains(up, want) {
+			t.Fatalf("0380 lacks %q", want)
+		}
+	}
+	if !usageSnapshotBound.Equal(decimal.New(1, 14-6)) {
+		t.Fatalf("the usage bound %s is not DECIMAL(14,6)'s", usageSnapshotBound)
 	}
 }
