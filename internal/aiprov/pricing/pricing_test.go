@@ -128,9 +128,36 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	got, src := Price(entity.AIProviderOpenAI, "gpt-5-mini", Usage{})
 	requireNone(t, got, src) // usage missing is not a free call
 
-	for _, p := range []string{entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft, entity.AIProviderRunblob} {
-		require.Empty(t, Catalogue(p), "%s is priced by units/credits/its own price, not by this table", p)
+	for _, p := range []string{entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft} {
+		require.Empty(t, Catalogue(p), "%s is priced by units/credits, not by this table", p)
 	}
+	// runblob (B-31): LISTED so the panel can offer the eight image slugs, UNPRICED so the ledger takes
+	// runblob's own submit price and never a number this table made up.
+	for _, m := range Catalogue(entity.AIProviderRunblob) {
+		got, src := Price(entity.AIProviderRunblob, m.Slug, Usage{Units: decimal.NewNullDecimal(decimal.NewFromInt(1)), Unit: "image"})
+		requireNone(t, got, src)
+	}
+}
+
+// TestPricingRunblobRowsAreListedUnpriced — the eight image slugs of runblob's transport are in the
+// catalogue as image rows with no rate: the panel lists them (priced=false), the ledger books the
+// provider's own price (cost_source provider) and never a table number.
+//
+// MUTATION (measured red→green): give "gemini/standard" a PerCallUSD of "0.021" → red (a rate that
+// would silently disagree with runblob's own price); drop the kling/o3-photo row → red.
+func TestPricingRunblobRowsAreListedUnpriced(t *testing.T) {
+	rows := Catalogue(entity.AIProviderRunblob)
+	slugs := make([]string, 0, len(rows))
+	for _, m := range rows {
+		slugs = append(slugs, m.Slug)
+		require.Equal(t, KindImage, m.Kind, m.Slug)
+		require.False(t, m.PerCallUSD.Valid, "%s: runblob's price is per call, from the submit, never a table rate", m.Slug)
+		require.False(t, m.InputUSDPer1M.Valid || m.OutputUSDPer1M.Valid, m.Slug)
+		require.True(t, strings.HasPrefix(m.Source, "unpriced"), m.Slug)
+		require.Contains(t, m.Source, "cost_source provider", m.Slug)
+	}
+	require.Equal(t, []string{"gemini/standard", "gemini/pro", "gemini/v2", "gemini/v2_lite", "gemini/pro_vip", "gemini/v2_vip",
+		"kling/o1-photo", "kling/o3-photo"}, slugs)
 }
 
 // TestPricingEveryRowHasSource — every row says where its number came from; an unpriced row says
@@ -172,7 +199,7 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 			require.Equal(t, m, got)
 		}
 	}
-	require.Equal(t, 27, total, "the brief's catalogue has 27 rows")
+	require.Equal(t, 35, total, "the brief's catalogue has 27 rows + runblob's 8 unpriced image slugs (B-31)")
 }
 
 // TestPricingCatalogueMatchesTheBrief — the curated numbers, one by one, as 06-BRIEFS-A lists them
