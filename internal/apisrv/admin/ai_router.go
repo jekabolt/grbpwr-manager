@@ -11,7 +11,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/pricing"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 )
 
@@ -32,17 +34,27 @@ import (
 // «not configured» (the router is nil-safe), nothing panics.
 func (s *Server) SetAIRouter(r *router.Router) { s.ai = r }
 
-// AIRouterDefaults is the router's default-slug table from the OpenRouter client's env: the slug a
-// route row with no model is called with, per purpose — today's OPENROUTER_MODEL /
-// OPENROUTER_MODEL_ANALYSIS / OPENROUTER_MODEL_IDEAS, so the seeded routes (an empty model) answer
-// exactly as the buttons did before the router. app.go and the handler test rigs build it here.
+// AIRouterDefaults is the router's default-slug table. OpenRouter keeps its per-purpose env slugs —
+// today's OPENROUTER_MODEL / OPENROUTER_MODEL_ANALYSIS / OPENROUTER_MODEL_IDEAS — so the seeded
+// routes (an empty model) answer exactly as the buttons did before the router. Every direct chat
+// provider gets pricing.DefaultChatSlug: an explicit, priced slug chosen for price rather than power,
+// so a model-less row saved in the panel is callable and its ledger row can be priced.
 //
 // IdeasOff is OPENROUTER_MODEL_IDEAS=off: IdeasModel() answers "" for that and only for that (unset is
 // the default slug), so "" is read as the switch — and it closes the whole Ideas door, the seeded
 // fallback row included (router.Defaults).
 func AIRouterDefaults(c *openrouter.Client) router.Defaults {
 	ideas := c.IdeasModel()
-	return router.Defaults{Chat: c.Model(), Analysis: c.AnalysisModel(), Ideas: ideas, IdeasOff: ideas == ""}
+	byProvider := make(map[string]string)
+	for _, provider := range entity.AIProviderKeys() {
+		if slug, ok := pricing.DefaultChatSlug(provider); ok {
+			byProvider[provider] = slug
+		}
+	}
+	return router.Defaults{
+		Chat: c.Model(), Analysis: c.AnalysisModel(), Ideas: ideas, IdeasOff: ideas == "",
+		ByProvider: byProvider,
+	}
 }
 
 const (

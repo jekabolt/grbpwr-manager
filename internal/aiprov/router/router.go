@@ -55,8 +55,8 @@
 // caller's context is done no further candidate is tried; the last error is returned.
 //
 // This package imports the registry and the ledger, and no transport: transports come in as
-// aiprov.Chatter values keyed by provider (oaichat for openrouter today; openai and apibost in
-// commit E).
+// aiprov.Chatter values keyed by provider (oaichat for openrouter, openai and apibost; anthropic and
+// gemini for anthropic and google — all five wired in app.go since B-23).
 package router
 
 import (
@@ -109,19 +109,30 @@ func isChatPurpose(purpose string) bool {
 // answer for it is already "no".
 func advancesAfterEngagedTimeout(purpose string) bool { return isChatPurpose(purpose) }
 
-// Defaults is the per-purpose default slug table for a candidate whose route row names no model
-// (an empty ai_route.model): today's env semantics, built in app.go from cfg.OpenRouter — Chat =
-// Model(), Analysis = AnalysisModel(), Ideas = IdeasModel(), IdeasOff = OPENROUTER_MODEL_IDEAS is
-// `off`. They are OPENROUTER slugs and answer only for openrouter candidates; another provider with
-// no model has no default yet (commit E) and is passed over.
+// Defaults is the default slug table for a candidate whose route row names no model (an empty
+// ai_route.model), built by admin.AIRouterDefaults.
+//
+// Chat / Analysis / Ideas are today's env semantics, from cfg.OpenRouter — Chat = Model(), Analysis
+// = AnalysisModel(), Ideas = IdeasModel(), IdeasOff = OPENROUTER_MODEL_IDEAS is `off`. They are
+// OPENROUTER slugs, per purpose, and answer only for openrouter candidates: an OpenRouter slug
+// ("anthropic/claude-sonnet-5") sent to a direct provider is a 404 booked as a dead model.
+//
+// ByProvider is the default of every OTHER chat provider — provider key → one chat slug for every
+// chat purpose (pricing.DefaultChatSlug: openai gpt-5-mini, anthropic claude-sonnet-5, google
+// gemini-2.5-flash, apibost claude-sonnet-5). Before B-23 a direct provider's row with no model
+// resolved to "" and was silently passed over on every press although the panel showed it saved.
+// A provider missing from the map still resolves to "" and is passed over, as before. It is never
+// read for openrouter (its defaults are the env slugs above) and never for a non-chat purpose (its
+// values are chat slugs).
 //
 // IdeasOff is the kill switch of the whole `Ideas ▾` door, not only of its default: with it set no
 // candidate of chat.playground_ideas is called, the seeded position-2 row with its own slug included
 // — today `off` means neither the slug nor its fallback is ever called, and that must survive the
-// fallback becoming a route row.
+// fallback becoming a route row (and a direct provider's defaulted row joining it).
 type Defaults struct {
 	Chat, Analysis, Ideas string
 	IdeasOff              bool
+	ByProvider            map[string]string
 }
 
 // slug is the default for purpose: Analysis for the two tech-card analysis purposes, Ideas for the
@@ -354,7 +365,8 @@ func (r *Router) Paused(purpose string) bool {
 }
 
 // EffectiveModel is the slug candidate is called with for purpose: the route row's own model when it
-// names one, else the Defaults slug for the purpose (openrouter candidates only — see Defaults); ""
+// names one; else, on openrouter, the env slug of the purpose (Defaults.Chat / Analysis / Ideas); on
+// any other provider, that provider's default chat slug (Defaults.ByProvider) for a chat purpose. ""
 // means the purpose is switched off for this candidate. Every candidate of chat.playground_ideas
 // answers "" while Defaults.IdeasOff is set.
 func (r *Router) EffectiveModel(purpose string, c registry.Candidate) string {
@@ -368,8 +380,12 @@ func (r *Router) EffectiveModel(purpose string, c registry.Candidate) string {
 	if m := strings.TrimSpace(c.Model); m != "" {
 		return m
 	}
-	if strings.TrimSpace(c.ProviderKey) != entity.AIProviderOpenRouter {
-		return ""
+	provider := strings.TrimSpace(c.ProviderKey)
+	if provider != entity.AIProviderOpenRouter {
+		if !isChatPurpose(purpose) {
+			return ""
+		}
+		return strings.TrimSpace(d.ByProvider[provider])
 	}
 	return d.slug(purpose)
 }

@@ -13,7 +13,11 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/anthropic"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/endpoints"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/gemini"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/oaichat"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
@@ -610,10 +614,34 @@ func (a *App) Start(ctx context.Context) error {
 	//
 	// One route per purpose (admin → AI providers), read from the registry's live snapshot; the
 	// candidates in order, a ledger row before every physical call, a fallback only where no money
-	// moved. Transports: openrouter only in commit C (OpenAI / apibost arrive in commit E). A route
-	// row with no model answers with today's env slugs (admin.AIRouterDefaults).
+	// moved. Every chat provider has its own transport; all direct-provider keys come only from the
+	// live panel registry. An unnamed OpenRouter row keeps today's per-purpose env slug, while an
+	// unnamed direct-provider row gets its priced provider default (admin.AIRouterDefaults).
+	chatTransports := map[string]aiprov.Chatter{
+		entity.AIProviderOpenRouter: aiOpsClient.Transport(),
+		entity.AIProviderOpenAI: oaichat.New(oaichat.Config{
+			Provider: entity.AIProviderOpenAI, BaseURL: endpoints.OpenAIAPIBase,
+			Dialect: oaichat.DialectOpenAI, KeyFunc: a.aireg.KeyFunc(entity.AIProviderOpenAI),
+			HTTPTimeout: aiprov.DefaultBudgetBase,
+		}),
+		entity.AIProviderApibost: oaichat.New(oaichat.Config{
+			Provider: entity.AIProviderApibost, BaseURL: endpoints.ApibostAPIBase,
+			Dialect: oaichat.DialectOpenAI, KeyFunc: a.aireg.KeyFunc(entity.AIProviderApibost),
+			HTTPTimeout: aiprov.DefaultBudgetBase,
+		}),
+		entity.AIProviderAnthropic: anthropic.New(anthropic.Config{
+			KeyFunc: a.aireg.KeyFunc(entity.AIProviderAnthropic), HTTPTimeout: aiprov.DefaultBudgetBase,
+		}),
+		entity.AIProviderGoogle: gemini.New(gemini.Config{
+			KeyFunc: a.aireg.KeyFunc(entity.AIProviderGoogle), HTTPTimeout: aiprov.DefaultBudgetBase,
+			Objects: a.b,
+			KeyFromURL: func(rawURL string) (string, error) {
+				return bucket.ManagedObjectKeyFromURL(&a.c.Bucket, rawURL)
+			},
+		}),
+	}
 	aiRouter := router.New(a.aireg, aiLedger,
-		map[string]aiprov.Chatter{entity.AIProviderOpenRouter: aiOpsClient.Transport()},
+		chatTransports,
 		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())
 	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
 	//

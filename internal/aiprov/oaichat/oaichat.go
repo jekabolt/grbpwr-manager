@@ -1,5 +1,5 @@
 // Package oaichat is THE transport for every OpenAI-shaped chat completions API this stack talks to:
-// OpenRouter today, OpenAI and apibost once they are wired (commit E). One POST to
+// OpenRouter, OpenAI and apibost (the last two wired in commit E, B-23). One POST to
 // {base}/chat/completions, spoken in two dialects that differ in a handful of request keys and one
 // response field — and in NOTHING that decides money or time.
 //
@@ -21,7 +21,10 @@
 //   - the STATUS CLASSIFICATION — by status alone, never by the provider's prose (404 is a setting,
 //     429/5xx are weather, 401/402/403 are refusals at the gate);
 //   - the SENTENCES — "<provider>: API error (HTTP 502): …" is what logs, people and (until B-18) one
-//     regex read; the sentinels travel inside them for errors.Is.
+//     regex read; the sentinels travel inside them for errors.Is;
+//   - REDIRECTS REFUSED, in both dialects (refuseRedirect): the key and the prompt have exactly one
+//     destination, the configured base URL, and a Location header is somebody else's choice of a
+//     second one.
 //
 // Every failure is an *aiprov.CallError; its Error() is the sentence, its fields are the facts.
 package oaichat
@@ -51,8 +54,10 @@ const (
 	// DialectOpenRouter — `max_tokens`, `reasoning:{effort}`, `usage:{include:true}` (the provider's
 	// charge comes back as usage.cost, in USD), and the X-Title / HTTP-Referer attribution headers.
 	DialectOpenRouter Dialect = "openrouter"
-	// DialectOpenAI — `max_completion_tokens`, `reasoning_effort`, no usage object, no attribution
-	// headers. apibost speaks it too.
+	// DialectOpenAI — `max_completion_tokens`, `reasoning_effort` (spelled through openAIEffort), NO
+	// `temperature` (openAISendsTemperature), no usage object, no attribution headers. apibost speaks
+	// it too, so an apibost call loses temperature and has its effort word rewritten the same way —
+	// one dialect, one set of rules, whichever model apibost puts behind it.
 	DialectOpenAI Dialect = "openai"
 )
 
@@ -74,9 +79,47 @@ const (
 	// carries its own, much larger ceiling for exactly that reason).
 	MaxResponseBytes = 4 << 20 // 4 MiB
 
-	// temperature keeps answers fairly deterministic and consistent; the same on both dialects.
+	// temperature keeps answers fairly deterministic and consistent. Sent in the OpenRouter dialect
+	// always (its bytes are pinned) and in the OpenAI dialect only while openAISendsTemperature says so.
 	temperature = 0.2
+
+	// openAISendsTemperature — whether the OpenAI dialect puts `temperature` on the wire at all.
+	//
+	// UNVERIFIED (G-05), from memory: the gpt-5 family and the o-series refuse a non-default
+	// temperature on chat completions with a 400. A 400 is a refusal at the gate — not engaged, so
+	// the router falls back and nobody pays — but a refusal on EVERY call is a route that never
+	// answers from its primary: a permanent fallback is an outage with extra steps. Omitting the key
+	// leaves the provider's default, which every OpenAI-shaped model accepts. One constant to flip if
+	// G-05 shows a routed model that honours 0.2 and answers worse without it; the field keeps its
+	// place in openAIRequest, so flipping it back restores the pre-E3 bytes exactly.
+	openAISendsTemperature = false
 )
+
+// openAIEffort spells the router's effort word the way OpenAI's chat completions accept it; a word
+// that is not a key here passes through as asked (the provider judges it, as before B-23).
+//
+// UNVERIFIED (G-05), from memory: the gpt-5 / gpt-5-mini generation takes minimal | low | medium |
+// high and refuses "none" with a 400 (only later models added it) — and "none" is exactly what the
+// callers that want no thinking send today (note markdown, the draft idea). The same 400 reasoning as
+// openAISendsTemperature: a refusal on every call is a permanent fallback. "minimal" is the nearest
+// word every one of them accepts. ONE TABLE, so G-05's answer is one line: if the routed model takes
+// "none", delete that row.
+var openAIEffort = map[string]string{
+	"none":    "minimal",
+	"minimal": "minimal",
+	"low":     "low",
+	"medium":  "medium",
+	"high":    "high",
+}
+
+// openAIEffortWord is req.Effort in the OpenAI dialect: the table's spelling, else the word as asked;
+// "" stays "" (no reasoning_effort key at all — the provider's default).
+func openAIEffortWord(effort string) string {
+	if w, ok := openAIEffort[effort]; ok {
+		return w
+	}
+	return effort
+}
 
 // Config configures one transport for ONE provider account.
 //
@@ -121,8 +164,17 @@ func New(cfg Config) *Client {
 	if base <= 0 {
 		base = aiprov.DefaultBudgetBase
 	}
-	return &Client{cfg: cfg, budgetBase: base, http: &http.Client{}}
+	return &Client{cfg: cfg, budgetBase: base, http: &http.Client{CheckRedirect: refuseRedirect}}
 }
+
+// refuseRedirect keeps a redirect as the answer instead of following it (probe.refuseRedirect, same
+// reason; anthropic and gemini carry the same line). net/http drops Authorization on a redirect to a
+// host outside the original domain, so the Bearer of these dialects mostly would not travel — but a
+// subdomain keeps it, and a 307/308 re-POSTs the whole prompt (an author's text) to wherever Location
+// points either way. A request that has exactly one legitimate destination has no reason to go to a
+// second. The 3xx comes back as a not-engaged refusal (aiprov.ClassifyStatus: provider_error, not
+// retryable) whose sentence names its status.
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // Enabled reports whether a key is configured right now. Nil-safe.
 func (c *Client) Enabled() bool {
@@ -294,12 +346,16 @@ type openRouterRequest struct {
 // 2026-09-27): max_tokens "is now deprecated in favor of `max_completion_tokens`, and is not compatible
 // with o-series models"; max_completion_tokens is "an upper bound … including visible output tokens and
 // reasoning tokens". The same file lists reasoning_effort values none | minimal | low | medium | high |
-// xhigh | max, "not all reasoning models support every value" — the word is passed through as asked.
+// xhigh | max, "not all reasoning models support every value" — which is why the word goes through
+// openAIEffort instead of as asked.
+//
+// Temperature is a POINTER so "not sent" is a state of its own (nil, omitted) rather than 0 — a zero
+// on the wire is a temperature, and the fully greedy one at that. See openAISendsTemperature.
 type openAIRequest struct {
 	Model               string          `json:"model"`
 	Messages            []any           `json:"messages"`
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
-	Temperature         float64         `json:"temperature"`
+	Temperature         *float64        `json:"temperature,omitempty"`
 	ResponseFormat      *responseFormat `json:"response_format,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 }
@@ -347,14 +403,18 @@ func (c *Client) buildRequest(model string, req aiprov.ChatRequest, opt Options)
 		}
 		body = r
 	default:
-		body = openAIRequest{
+		r := openAIRequest{
 			Model:               model,
 			Messages:            messages,
 			MaxCompletionTokens: ceiling,
-			Temperature:         temperature,
 			ResponseFormat:      format,
-			ReasoningEffort:     req.Effort,
+			ReasoningEffort:     openAIEffortWord(req.Effort),
 		}
+		if openAISendsTemperature {
+			t := temperature
+			r.Temperature = &t
+		}
+		body = r
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

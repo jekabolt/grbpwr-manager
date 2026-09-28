@@ -78,6 +78,11 @@ func newOpenAI(url string) *Client {
 	})
 }
 
+// newApibost is apibost as app.go wires it: the OpenAI dialect under its own provider key.
+func newApibost(url string) *Client {
+	return New(Config{Provider: "apibost", BaseURL: url, Dialect: DialectOpenAI, KeyFunc: key("k"), HTTPTimeout: 2 * time.Second})
+}
+
 func callErr(t *testing.T, err error) *aiprov.CallError {
 	t.Helper()
 	require.Error(t, err)
@@ -91,22 +96,28 @@ func callErr(t *testing.T, err error) *aiprov.CallError {
 // TestRequestBytesPerDialect pins the EXACT body of each dialect. Golden strings, not field checks: any
 // reordering, new key or changed value is a new request to a live paid feature.
 //
-// OpenRouter: today's openrouter bytes + `"usage":{"include":true}` LAST. OpenAI: max_completion_tokens,
-// reasoning_effort, no usage object.
+// OpenRouter: today's openrouter bytes + `"usage":{"include":true}` LAST — UNCHANGED by B-23, byte for
+// byte. OpenAI (and apibost, the same dialect): max_completion_tokens, reasoning_effort spelled through
+// openAIEffort ("none" → "minimal"), NO temperature, no usage object.
 //
 // MUTATIONS (each measured red → restored green): move Usage above Reasoning in openRouterRequest →
 // the OpenRouter rows; send `max_tokens` in openAIRequest → the OpenAI rows; drop the `if req.Effort
 // != ""` guard (always send reasoning) → the plain OpenRouter row; PartsAlways ignored → the "parts
-// with no pictures" row.
+// with no pictures" row. B-23: openAISendsTemperature = true → every OpenAI and apibost row; the
+// "none" row of openAIEffort deleted → the two "effort none" rows (OpenAI, apibost); THE OPENROUTER PIN:
+// openRouterRequest.Reasoning built from openAIEffortWord(req.Effort) → the "openrouter … effort" row
+// (it asks "none" and must still send "none"); the temperature key dropped from openRouterRequest
+// (tag `json:"-"`, the OpenAI omission applied to both dialects) → every OpenRouter row.
 func TestRequestBytesPerDialect(t *testing.T) {
 	const sys = `{"role":"system","content":"sys"}`
 	cases := []struct {
-		name   string
-		openAI bool
-		model  string
-		req    aiprov.ChatRequest
-		opt    Options
-		want   string
+		name    string
+		openAI  bool
+		apibost bool
+		model   string
+		req     aiprov.ChatRequest
+		opt     Options
+		want    string
 	}{
 		{
 			name: "openrouter text, provider defaults", model: "shared/slug",
@@ -137,17 +148,32 @@ func TestRequestBytesPerDialect(t *testing.T) {
 		{
 			name: "openai text, provider defaults", openAI: true, model: "gpt-5-mini",
 			req:  aiprov.ChatRequest{System: "sys", User: "u"},
-			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}],"temperature":0.2}`,
+			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}]}`,
 		},
 		{
 			name: "openai text, json + ceiling + effort", openAI: true, model: "gpt-5-mini",
 			req:  aiprov.ChatRequest{System: "sys", User: "u", JSONMode: true, MaxTokens: 900, Effort: "low"},
-			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}],"max_completion_tokens":900,"temperature":0.2,"response_format":{"type":"json_object"},"reasoning_effort":"low"}`,
+			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}],"max_completion_tokens":900,"response_format":{"type":"json_object"},"reasoning_effort":"low"}`,
 		},
 		{
 			name: "openai pictures", openAI: true, model: "gpt-5-mini",
 			req:  aiprov.ChatRequest{System: "sys", User: "u", ImageURLs: []string{"https://x/1.png"}, MaxTokens: 300, Effort: "minimal"},
-			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_completion_tokens":300,"temperature":0.2,"reasoning_effort":"minimal"}`,
+			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":[{"type":"text","text":"u"},{"type":"image_url","image_url":{"url":"https://x/1.png"}}]}],"max_completion_tokens":300,"reasoning_effort":"minimal"}`,
+		},
+		{
+			name: "openai effort none is spelled minimal", openAI: true, model: "gpt-5-mini",
+			req:  aiprov.ChatRequest{System: "sys", User: "u", JSONMode: true, MaxTokens: 2500, Effort: "none"},
+			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}],"max_completion_tokens":2500,"response_format":{"type":"json_object"},"reasoning_effort":"minimal"}`,
+		},
+		{
+			name: "openai effort outside the table passes through as asked", openAI: true, model: "gpt-5.2",
+			req:  aiprov.ChatRequest{System: "sys", User: "u", Effort: "xhigh"},
+			want: `{"model":"gpt-5.2","messages":[` + sys + `,{"role":"user","content":"u"}],"reasoning_effort":"xhigh"}`,
+		},
+		{
+			name: "apibost is the openai dialect: no temperature, effort none spelled minimal", apibost: true, model: "claude-sonnet-5",
+			req:  aiprov.ChatRequest{System: "sys", User: "u", JSONMode: true, MaxTokens: 2500, Effort: "none"},
+			want: `{"model":"claude-sonnet-5","messages":[` + sys + `,{"role":"user","content":"u"}],"max_completion_tokens":2500,"response_format":{"type":"json_object"},"reasoning_effort":"minimal"}`,
 		},
 	}
 	for _, tc := range cases {
@@ -155,8 +181,11 @@ func TestRequestBytesPerDialect(t *testing.T) {
 			rec := &recorder{}
 			srv := rec.server(t, answer(okBody))
 			c := newOpenRouter(srv.URL + "/")
-			if tc.openAI {
+			switch {
+			case tc.openAI:
 				c = newOpenAI(srv.URL)
+			case tc.apibost:
+				c = newApibost(srv.URL)
 			}
 			_, err := c.Send(context.Background(), tc.model, tc.req, tc.opt)
 			require.NoError(t, err)
@@ -195,10 +224,10 @@ func TestChatHonoursUserAsParts(t *testing.T) {
 }
 
 // TestHeadersPerDialect — the key per request as a Bearer, OpenRouter's attribution headers in that
-// dialect only.
+// dialect only; apibost (the OpenAI dialect under its own key) gets exactly OpenAI's header set.
 //
 // MUTATION: drop the `c.cfg.Dialect == DialectOpenRouter` guard around the attribution headers → the
-// OpenAI half goes red.
+// OpenAI half goes red (and the apibost half with it, once its config names a Title).
 func TestHeadersPerDialect(t *testing.T) {
 	rec := &recorder{}
 	srv := rec.server(t, answer(okBody))
@@ -207,16 +236,56 @@ func TestHeadersPerDialect(t *testing.T) {
 	require.NoError(t, err)
 	_, err = newOpenAI(srv.URL).Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
 	require.NoError(t, err)
+	ab := newApibost(srv.URL)
+	ab.cfg.Title, ab.cfg.Referer = "must-not-be-sent", "https://must-not-be-sent"
+	_, err = ab.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+	require.NoError(t, err)
 
-	or, oai := rec.headers[0], rec.headers[1]
+	or, oai, abh := rec.headers[0], rec.headers[1], rec.headers[2]
 	require.Equal(t, "Bearer k", or.Get("Authorization"))
 	require.Equal(t, "application/json", or.Get("Content-Type"))
 	require.Equal(t, "grbpwr-products-manager", or.Get("X-Title"))
 	require.Equal(t, "https://admin.grbpwr.com", or.Get("HTTP-Referer"))
 
-	require.Equal(t, "Bearer k", oai.Get("Authorization"))
-	require.Empty(t, oai.Get("X-Title"), "OpenAI gets no OpenRouter attribution")
-	require.Empty(t, oai.Get("HTTP-Referer"))
+	for name, h := range map[string]http.Header{"openai": oai, "apibost": abh} {
+		require.Equal(t, "Bearer k", h.Get("Authorization"), name)
+		require.Equal(t, "application/json", h.Get("Content-Type"), name)
+		require.Empty(t, h.Get("X-Title"), "%s gets no OpenRouter attribution", name)
+		require.Empty(t, h.Get("HTTP-Referer"), name)
+	}
+}
+
+// TestRedirectsAreRefused — in BOTH dialects a 3xx is the answer, never followed: the request (the
+// prompt, and on a same-domain hop the key) must not travel to wherever Location points. The 3xx is
+// a not-engaged refusal with its status in the field and the sentence.
+//
+// MUTATION: New builds &http.Client{} without CheckRedirect → red in both rows: the second host
+// receives the re-POSTed request (a 307 keeps the method and the body).
+func TestRedirectsAreRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(url string) *Client
+	}{{"openrouter", newOpenRouter}, {"openai", newOpenAI}} {
+		t.Run(tc.name, func(t *testing.T) {
+			elsewhere := &recorder{}
+			target := elsewhere.server(t, answer(okBody))
+			rec := &recorder{}
+			srv := rec.server(t, func(w http.ResponseWriter) {
+				w.Header().Set("Location", target.URL+"/chat/completions")
+				w.WriteHeader(http.StatusTemporaryRedirect)
+			})
+			res, err := tc.build(srv.URL).Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+			require.Nil(t, res)
+			ce := callErr(t, err)
+			require.Equal(t, http.StatusTemporaryRedirect, ce.HTTPStatus)
+			require.Equal(t, aiprov.CodeProviderError, ce.Code)
+			require.False(t, ce.Engaged, "a redirect is a refusal at the gate")
+			require.False(t, ce.Retryable, "a redirect does not go away by asking again")
+			require.True(t, strings.HasPrefix(err.Error(), tc.name+": API error (HTTP 307): "), err.Error())
+			require.Equal(t, 1, rec.count())
+			require.Zero(t, elsewhere.count(), "the redirect was followed: the request went to another host")
+		})
+	}
 }
 
 // TestKeyFuncIsReadPerRequest — a key saved in the admin panel reaches the NEXT request; "" disables
