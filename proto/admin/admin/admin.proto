@@ -13353,6 +13353,12 @@ message SetAiDefaultsRequest {
   string chat_provider_key = 1;
   string image_provider_key = 2;
   uint64 expected_version = 3;
+  // apply_to_routes — with the default(s) named above, every purpose of that capability is re-pointed
+  // at it IN THE SAME WRITE: its primary becomes the "default" candidate (provider "", model ""), and a
+  // fallback that would then be the primary itself (provider "" or the new default, model "") is
+  // dropped; any other fallback stays. Without it only the default moves and routes set to "default"
+  // follow, as before. The panel asks before sending it (28.09).
+  bool apply_to_routes = 4;
 }
 
 message SetAiDefaultsResponse {
