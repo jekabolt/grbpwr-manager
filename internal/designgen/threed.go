@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -15,10 +16,23 @@ import (
 // It is the one place the band departs from "everything through OpenRouter", and not by
 // preference: OpenRouter has no 3D modality at all — `3d` is not a value its catalogue accepts —
 // so there is nothing there to route to.
-type threedProvider struct{ c *meshy.Client }
+//
+// aiModel is the route row's model (admin → AI providers, threed, B-24): it becomes the request's
+// ai_model. "" — the seeded row and every boot-time provider — sends no ai_model, i.e. Meshy's own
+// current default, byte for byte the body this route sent before the panel owned it.
+type threedProvider struct {
+	c       *meshy.Client
+	aiModel string
+}
 
 // NewThreedProvider wires the 3D route. A nil client is a disabled route.
 func NewThreedProvider(c *meshy.Client) Provider { return threedProvider{c: c} }
+
+// NewMeshyThreedProvider is NewThreedProvider asking for a named Meshy model (the route row's; "" =
+// the provider's default) — what the 3D chooser builds per candidate (B-24).
+func NewMeshyThreedProvider(c *meshy.Client, aiModel string) Provider {
+	return threedProvider{c: c, aiModel: strings.TrimSpace(aiModel)}
+}
 
 func (p threedProvider) Name() string { return "meshy" }
 
@@ -53,9 +67,9 @@ func (p threedProvider) execute(ctx context.Context, job Job, opts threedOptions
 	if len(refs) == 0 {
 		return nil, fmt.Errorf("%w: a turntable needs at least the front view", meshy.ErrImageCount)
 	}
-	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07). The model is left empty: this
-	// route names none, and Meshy builds with its own default — the row says exactly what was asked.
-	h := job.beginCall(ctx, entity.AIProviderMeshy, "", 1)
+	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07). The model is what was ASKED: the
+	// route row's ai_model, or empty when it names none and Meshy builds with its own default.
+	h := job.beginCall(ctx, entity.AIProviderMeshy, p.aiModel, 1)
 
 	// ORDER IS MEANING: the provider reads image_urls[0] as the primary frontal reference, which
 	// is why buildJob sorts the bench plates front, back, side_l, side_r before anything else.
@@ -84,6 +98,8 @@ func (p threedProvider) execute(ctx context.Context, job Job, opts threedOptions
 		Texture: opts.Texture,
 		PBR:     opts.PBR,
 		Quality: opts.Quality,
+		// The route row's model (B-24); "" = today's body, no ai_model on the wire.
+		AIModel: p.aiModel,
 	})
 	if err != nil {
 		job.finishCall(ctx, h, meshySubmitEnd(err))

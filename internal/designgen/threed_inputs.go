@@ -182,6 +182,16 @@ func threedOptionsOf(p runParams) threedOptions {
 	}
 }
 
+// threedSurfaceHintOf — params.threed.surface_hint как его заморозил прогон, без обрезки (ThreedUnread
+// обрезает сам). Одно выражение для buildJob (Job.ThreedSurfaceHint, его читает выбор кандидата 3D) и
+// для проверки перед сабмитом (threedUnreadAtSubmit): два вопроса к маршруту — одни и те же слова.
+func threedSurfaceHintOf(p runParams) string {
+	if p.Threed == nil {
+		return ""
+	}
+	return p.Threed.SurfaceHint
+}
+
 // untextured — сборка без текстуры. Ей нечем читать `texture_prompt` (у обоих поставщиков он
 // «Requires should_texture»), поэтому стир не уезжает — и SentPrompt обязан сказать то же самое.
 func (o threedOptions) untextured() bool { return o.Texture == "off" }

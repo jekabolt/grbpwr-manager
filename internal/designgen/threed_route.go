@@ -137,8 +137,9 @@ func ThreedUnread(r *ThreedRoute, texture, pbr, quality, surfaceHint string) (op
 }
 
 // ThreedRouteOf — the route a wired 3D provider IS, read off the same client it pays with; nil for a
-// provider that is neither of the two routes (nothing is known about what it reads). app.go hands
-// this value to the door, and the worker asks it again before every fresh submit.
+// provider that is neither of the two routes (nothing is known about what it reads). The 3D chooser
+// (threed_choice.go) reads it per candidate for the door's View, and the worker asks it again of the
+// candidate it is about to pay, before every fresh submit — a candidate is the route of its inner provider.
 func ThreedRouteOf(p Provider, pbr bool) *ThreedRoute {
 	var r ThreedRoute
 	switch v := p.(type) {
@@ -146,6 +147,8 @@ func ThreedRouteOf(p Provider, pbr bool) *ThreedRoute {
 		r = FalThreedRoute(v.c, pbr)
 	case threedProvider:
 		r = MeshyThreedRoute(v.c, pbr)
+	case threedCandidate:
+		return ThreedRouteOf(v.inner, pbr)
 	default:
 		return nil
 	}

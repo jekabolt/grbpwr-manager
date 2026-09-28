@@ -112,6 +112,10 @@ type Config struct {
 	// worker and the door together. nil (a worker built without app.go: tests) = EngineTable over
 	// orimages.DefaultModel and this Config's EngineFlags.
 	Engines func() []Engine `mapstructure:"-"`
+	// FalRouteModel is the route row's slug of an extend / inpaint / cutout run (B-24: app.go hands
+	// FalRouteModel over the live registry — the expression the door's FalRoutesFunc reads); "" = the
+	// env slug. Nil = the env slug always (the tests, a worker built without app.go).
+	FalRouteModel func(kind string) string `mapstructure:"-"`
 }
 
 // Environment variable names. AutomaticEnv is switched off in this repo, so a name that is not

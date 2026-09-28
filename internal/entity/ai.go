@@ -76,8 +76,9 @@ func IsAICapability(v string) bool {
 
 // AIProviderCapabilities — what one provider can serve; nil for an unknown key. A copy on every call.
 //
-// This is what a route may ASK of a provider, not what is wired today: openai, anthropic, google,
-// apibost and runblob have no transport until later commits, and a route to them is refused by the
+// This is what a route may ASK of a provider, not what is wired today: every chat provider has a
+// transport since commit E (openai/apibost through oaichat, anthropic, google through gemini), runblob's
+// adapter exists but no purpose routes to it (D-05), and a provider without a key is refused by the
 // registry as keyless/disabled rather than by this table.
 func AIProviderCapabilities(key string) []string {
 	switch key {

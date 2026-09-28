@@ -105,9 +105,16 @@ func pgFalRoute(cfg fal.Config, pbr bool) designgen.ThreedRoute {
 	return designgen.FalThreedRoute(fal.New(cfg), pbr)
 }
 
+// pgThreedView — the door's live-route function over a FIXED one-candidate route (B-24: the door reads
+// designgen.ThreedRouteView; designgen.ThreedViewOf is that view for one route).
+func pgThreedView(r designgen.ThreedRoute) func() designgen.ThreedRouteView {
+	v := designgen.ThreedViewOf(r)
+	return func() designgen.ThreedRouteView { return v }
+}
+
 // pgRoute wires a 3D route into the rig.
 func pgRoute(r designgen.ThreedRoute) func(t *testing.T, rig *designRunRig) {
-	return func(t *testing.T, rig *designRunRig) { rig.srv.SetDesignThreedRoute(r) }
+	return func(t *testing.T, rig *designRunRig) { rig.srv.SetDesignThreedRoute(pgThreedView(r)) }
 }
 
 // pgMediaDims — the rig's media store answers picture `id` with these stored full-size dimensions
@@ -704,7 +711,7 @@ func TestTheCapabilityListsFOLLOW_EACH_GATE(t *testing.T) {
 		s := &Server{repo: repo}
 		s.SetDesignGenerationEnabled(true)
 		s.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
-		s.SetDesignThreedRoute(pgFalRoute(fal.Config{}, true))
+		s.SetDesignThreedRoute(pgThreedView(pgFalRoute(fal.Config{}, true)))
 		s.SetDesignKindGate(func(kind string) error {
 			for _, c := range closed {
 				if c == kind {
@@ -844,7 +851,7 @@ func TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE(t *testing.T) {
 		s.SetDesignGenerationEnabled(true)
 		s.SetDesignKindGate(func(string) error { return nil })
 		if route != nil {
-			s.SetDesignThreedRoute(*route)
+			s.SetDesignThreedRoute(pgThreedView(*route))
 		}
 		resp, err := s.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{TechCardId: 7})
 		require.NoError(t, err)
@@ -874,6 +881,42 @@ func TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE(t *testing.T) {
 			require.Equal(t, c.tile, pgContains(resp.GetPlaygroundWorkflows(), entity.DesignWorkflowImageTo3D))
 		})
 	}
+}
+
+// TestTheThreedDoorREADS_THE_ROUTE_LIVE — B-24: the door holds a FUNCTION of the live `threed` route, not
+// a value read at boot. A route edit (the view swapped under the same setter, as a panel save swaps the
+// registry snapshot) reaches the band's options, the option refusal, the closed door and the reserve on
+// the very next request, without re-wiring.
+//
+// MUTATION (measured red→green): SetDesignThreedRoute evaluating view() once and keeping the value → the
+// band keeps fal meshy's options after the route moved to the hitem3d slug.
+func TestTheThreedDoorREADS_THE_ROUTE_LIVE(t *testing.T) {
+	cur := designgen.ThreedViewOf(pgFalRoute(fal.Config{}, false))
+	s := &Server{}
+	s.SetDesignGenerationEnabled(true)
+	s.SetDesignKindGate(func(string) error { return nil })
+	s.SetDesignThreedRoute(func() designgen.ThreedRouteView { return cur })
+	detailed := pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Quality: "detailed"})
+	plain := pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}})
+
+	require.Equal(t, []string{"texture", "quality", "surface_hint"}, s.designThreedOptions())
+	require.NoError(t, s.designRefuseThreedRoute(entity.DesignRunKindThreed, detailed))
+
+	cur = designgen.ThreedViewOf(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, false))
+	require.Empty(t, s.designThreedOptions(), "the hitem3d row reads no options")
+	_, md := errorReason(t, s.designRefuseThreedRoute(entity.DesignRunKindThreed, detailed))
+	require.Equal(t, entity.DesignErrorCodeOptionNotRead, md["reason"])
+
+	cur = designgen.ThreedViewOf(pgFalRoute(fal.Config{UnitUSD: 0.5}, false))
+	require.False(t, s.designThreedRouteReserveBounded())
+	_, md = errorReason(t, s.designRefuseThreedRoute(entity.DesignRunKindThreed, plain))
+	require.Equal(t, entity.DesignErrorCodeThreedReserveUnbounded, md["reason"])
+	require.Equal(t, "fal", md["provider"])
+
+	cur = designgen.ThreedViewOf(designgen.MeshyThreedRoute(meshy.New(meshy.Config{APIKey: "k", CreditUSD: 0.05}), false))
+	require.True(t, s.designThreedRouteReserveBounded())
+	require.Equal(t, "1.5", s.designEstimateForRun(entity.DesignRunKindThreed, 1, plain, nil).Decimal.String(),
+		"the reserve reads the route's ceiling now, not the boot one")
 }
 
 func pgContains(list []string, w string) bool {
@@ -915,7 +958,7 @@ func TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := &Server{}
-			s.SetDesignThreedRoute(c.route)
+			s.SetDesignThreedRoute(pgThreedView(c.route))
 			for _, o := range opts {
 				p := pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31}, Texture: o.texture, Quality: o.quality})
 				got := s.designEstimateForRun(entity.DesignRunKindThreed, 1, p, nil)

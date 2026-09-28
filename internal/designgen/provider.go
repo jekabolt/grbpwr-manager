@@ -144,6 +144,11 @@ type Job struct {
 	ThreedTexture string
 	ThreedPBR     string
 	ThreedQuality string
+	// ThreedSurfaceHint — params.threed.surface_hint as the run froze it (B-24): with the three above,
+	// the FOUR values the 3D chooser hands ThreedUnread for each candidate, and the same four the
+	// worker's pre-submit check reads off the params (threedUnreadAtSubmit) — one reading, two askers.
+	// It is the person's raw words; the text a route SENDS is SurfaceSteer.
+	ThreedSurfaceHint string
 	// ThreedReservedUSD — what the door reserved for ONE build of this 3D run (price_estimate over
 	// requested_outputs); invalid when the row carries no estimate. The fal collect compares the
 	// booked charge with it before saying the reservation was short (G-02 r2, Codex 5).
@@ -326,10 +331,12 @@ type Providers struct {
 	Outpaint Provider
 	Fill     Provider
 
-	// Also — providers the worker CONSTRUCTED but does not route any kind to right now: the 3D engine
-	// DESIGN_THREED_PROVIDER did not pick (B-13). They are never chosen for a fresh run; they exist so
-	// a job one of them ACCEPTED before a switch is collected by it, for free — the collect goes to the
-	// provider the accepted attempt names (byName), never to whoever is wired for the kind today.
+	// Also — providers the worker CONSTRUCTED but does not route any kind to directly: since B-24 BOTH
+	// boot-time 3D providers (fal at the env slug, meshy), because the Threed slot is the panel's route
+	// (named "threed", never an attempt row's name). They are never chosen for a fresh run; they exist
+	// so a job one of them ACCEPTED — under any route row, before any route edit — is collected by it,
+	// for free: the collect goes to the provider the accepted attempt names (byName), never to
+	// whoever the route puts first today.
 	Also []Provider
 }
 
