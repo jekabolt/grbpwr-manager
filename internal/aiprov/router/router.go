@@ -180,6 +180,13 @@ func WithDefaults(d Defaults) Option {
 // the OPENROUTER_HTTP_TIMEOUT it bounds every request with).
 type budgetBaser interface{ CompletionBase() time.Duration }
 
+// wireCeilinger is a transport that puts a ceiling on the wire when the caller names none
+// (anthropic.Client.WireCeiling: max_tokens is mandatory there, DefaultMaxTokens fills it). The router
+// budgets and leases by THAT number: the deadline it grants must be the one the wire buys, or a
+// healthy long answer is cut as an engaged timeout and, on a chat purpose (D-16), paid a second time
+// by the fallback (Codex REVIEW-E #2). A transport without it is budgeted from the caller's number.
+type wireCeilinger interface{ WireCeiling(maxTokens int) int }
+
 // enabler is a transport that knows whether it has a key right now (oaichat.Client.Enabled).
 type enabler interface{ Enabled() bool }
 
@@ -334,7 +341,8 @@ func (r *Router) canCall(purpose string, c candidate) bool {
 }
 
 // budget is ONE call's time budget on candidate c: aiprov.CompletionBudget over the transport's own
-// base when it reports one, else over the router's.
+// base when it reports one, else over the router's — and over the ceiling the transport puts on the
+// wire when it fills one for a caller that named none (wireCeilinger).
 func (r *Router) budget(c candidate, maxTokens int) time.Duration {
 	return r.chatterBudget(c.chatter, maxTokens)
 }
@@ -344,6 +352,9 @@ func (r *Router) chatterBudget(ch aiprov.Chatter, maxTokens int) time.Duration {
 	base := r.budgetBase
 	if b, ok := ch.(budgetBaser); ok {
 		base = b.CompletionBase()
+	}
+	if w, ok := ch.(wireCeilinger); ok {
+		maxTokens = w.WireCeiling(maxTokens)
 	}
 	return aiprov.CompletionBudget(base, maxTokens)
 }

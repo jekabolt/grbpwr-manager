@@ -349,13 +349,18 @@ func (w *Worker) admit(ctx context.Context) (context.Context, func(), error) {
 // failed fetch or write logs `reconcile: <provider> fetch failed` / `… upsert failed`, marks the
 // tracker, and — for a fetch — writes nothing.
 func (w *Worker) reconcile(ctx context.Context, a adapter) error {
+	// THE KEY IS READ UNDER THE SAME LOCK AS THE FETCH AND THE WRITE (Codex REVIEW-E #4). Read before
+	// it, a tick could hold the OLD key while an admin saves a new one and the after-save RunNow
+	// fetches with it — the tick's later fetch with the old key would then land LAST, and the report
+	// would show the old account's total under the provider until the next tick. Under the lock,
+	// whoever fetches later reads the newer key.
+	w.fetchMu.Lock()
+	defer w.fetchMu.Unlock()
+
 	key := w.keyOf(a)
 	if key == "" {
 		return nil
 	}
-
-	w.fetchMu.Lock()
-	defer w.fetchMu.Unlock()
 
 	days, err := w.fetch(ctx, a, key)
 	if errors.Is(err, errAcrossMidnight) {

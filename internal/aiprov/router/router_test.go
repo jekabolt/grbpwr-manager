@@ -1546,3 +1546,43 @@ func TestTheNoTransportWarningIsMonotonic(t *testing.T) {
 	r.warnNoTransport(ctx, entity.AIProviderApibost, entity.AIPurposeNoteMarkdown, 1)
 	require.Equal(t, 3, warnings(), "the memory is per provider")
 }
+
+// wireChatter is a transport that fills the ceiling itself when the caller names none (anthropic).
+type wireChatter struct {
+	keyedChatter
+	wire int
+}
+
+func (w *wireChatter) WireCeiling(maxTokens int) int {
+	if maxTokens <= 0 {
+		return w.wire
+	}
+	return maxTokens
+}
+
+// TestTheBudgetIsTheWireCeiling (Codex REVIEW-E #2) — a transport that puts DefaultMaxTokens on the
+// wire when the caller names no ceiling (anthropic) is budgeted and leased for THAT ceiling: the
+// deadline the router grants is the one the wire buys. A caller's own ceiling is unchanged, and a
+// transport that fills none is budgeted from the caller's number as before.
+//
+// MUTATION: chatterBudget ignores wireCeilinger → red (the base alone for a caller ceiling of 0).
+func TestTheBudgetIsTheWireCeiling(t *testing.T) {
+	tr := &wireChatter{keyedChatter: keyedChatter{up: true, base: time.Minute}, wire: 4096}
+	r := NewSingle(entity.AIProviderAnthropic, tr, "m")
+	want := aiprov.CompletionBudget(time.Minute, 4096)
+	require.Equal(t, time.Minute+4096*time.Second/30, want)
+	require.Equal(t, want, r.ChainBudget(entity.AIPurposeNoteMarkdown, 0), "no caller ceiling: the wire's")
+	require.Equal(t, 2*want, r.ChainBudget(entity.AIPurposeDesignDraftIdea, 0), "the lease: the cap's worth of the wire's ceiling")
+	require.Equal(t, aiprov.CompletionBudget(time.Minute, 8000), r.ChainBudget(entity.AIPurposeNoteMarkdown, 8000),
+		"the caller's own ceiling wins")
+
+	before := time.Now()
+	_, err := r.Chat(context.Background(), entity.AIPurposeNoteMarkdown, aiprov.ChatRequest{User: "u"})
+	require.NoError(t, err)
+	require.True(t, tr.calls[0].hasDL)
+	require.InDelta(t, want.Seconds(), tr.calls[0].deadline.Sub(before).Seconds(), 1.0)
+
+	plain := NewSingle(entity.AIProviderOpenRouter, &keyedChatter{up: true, base: time.Minute}, "m")
+	require.Equal(t, aiprov.CompletionBudget(time.Minute, 0), plain.ChainBudget(entity.AIPurposeNoteMarkdown, 0),
+		"a transport that fills no ceiling: the caller's zero, the base alone")
+}

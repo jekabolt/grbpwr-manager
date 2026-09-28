@@ -5,8 +5,8 @@
 // It is a port of oaichat, not a variant of it, and every guard oaichat learnt the expensive way is
 // here once more, on purpose, with the same words:
 //
-//   - the TIME BUDGET of every request — aiprov.CompletionBudget(base, the caller's ceiling), set per
-//     request (see post: why the ceiling that buys time is the caller's, not DefaultMaxTokens);
+//   - the TIME BUDGET of every request — aiprov.CompletionBudget(base, the ceiling ON THE WIRE), set
+//     per request and granted by the router through WireCeiling (see post);
 //   - the ENGAGED boundary — aiprov.ObserveWrite, and oaichat's table of which failure falls on which
 //     side (a non-2xx is a refusal at the gate; a written request that then broke, and any 2xx, are
 //     engaged);
@@ -50,8 +50,9 @@ const (
 	// DefaultMaxTokens fills max_tokens when the caller set no ceiling. Anthropic REQUIRES the field
 	// (a request without it is a 400 — our fault, booked as bad_request, the route dead): the callers
 	// that pass no ceiling today — note markdown, email translate — get 4096, above anything those
-	// features have ever printed. It is a guard against a runaway answer, NOT a request to print that
-	// much — see post for why it buys no time.
+	// features have ever printed. It is a guard against a runaway answer, not a request to print that
+	// much — but it IS what goes on the wire, so it is what buys the call's time (wireCeiling, post)
+	// and what the router grants (WireCeiling).
 	//
 	// ⚠ ON CLAUDE SONNET 5 / OPUS 5 / FABLE, OMITTING `thinking` RUNS ADAPTIVE THINKING (UNVERIFIED
 	// (G-05), bundled docs): its tokens count against this ceiling and bill as output. A call whose
@@ -269,10 +270,7 @@ func buildRequest(model string, req aiprov.ChatRequest) ([]byte, error) {
 	if req.JSONMode {
 		system = withJSONInstruction(system)
 	}
-	ceiling := req.MaxTokens
-	if ceiling <= 0 {
-		ceiling = DefaultMaxTokens
-	}
+	ceiling := wireCeiling(req.MaxTokens)
 	payload, err := json.Marshal(messagesRequest{
 		Model:     model,
 		MaxTokens: ceiling,
@@ -284,6 +282,24 @@ func buildRequest(model string, req aiprov.ChatRequest) ([]byte, error) {
 	}
 	return payload, nil
 }
+
+// wireCeiling is the max_tokens that goes on the wire for a caller's ceiling: the caller's when it
+// named one, DefaultMaxTokens when it did not (Anthropic requires the field). ONE function for the
+// request body and for the time budget, so the two cannot disagree.
+func wireCeiling(maxTokens int) int {
+	if maxTokens <= 0 {
+		return DefaultMaxTokens
+	}
+	return maxTokens
+}
+
+// WireCeiling is wireCeiling for the router (router.wireCeilinger): the router bounds a call by
+// aiprov.CompletionBudget(CompletionBase(), WireCeiling(req.MaxTokens)) and sizes a lease the same
+// way, so the deadline it grants is the one this transport buys. Budgeted from the caller's zero
+// while asking for 4096 tokens, a healthy long answer at the provider's pace ran past the 60 s base
+// as an ENGAGED timeout — a paid answer thrown away and, on a chat purpose (D-16), a fallback paid a
+// second time (Codex REVIEW-E #2).
+func (c *Client) WireCeiling(maxTokens int) int { return wireCeiling(maxTokens) }
 
 // withJSONInstruction appends JSONInstruction after the caller's system prompt, byte for byte, or is
 // the whole system prompt when the caller sent none.
@@ -416,13 +432,12 @@ type apiError struct {
 
 // post is THE ONLY PLACE THIS TRANSPORT TALKS TO /v1/messages.
 func (c *Client) post(ctx context.Context, model string, payload []byte, req aiprov.ChatRequest, key string) (*aiprov.ChatResult, error) {
-	// THE BUDGET IS BOUGHT BY THE CALLER'S CEILING, NOT BY DefaultMaxTokens, AND THAT IS WHAT KEEPS THE
-	// WIRE AND THE ROUTER ON ONE NUMBER. The router bounds each call by CompletionBudget(CompletionBase(),
-	// req.MaxTokens) and sizes the draft lease the same way; buying 4096 tokens' worth of time here for
-	// a caller that asked for no ceiling would be 136 s the router never grants — its deadline would cut
-	// first, and this number would lie. The callers with no ceiling run on the base, as they do on
-	// OpenRouter today. The caller's deadline still wins: WithTimeout only ever shortens it.
-	ctx, cancel := context.WithTimeout(ctx, aiprov.CompletionBudget(c.budgetBase, req.MaxTokens))
+	// THE BUDGET IS BOUGHT BY THE CEILING ON THE WIRE — the caller's, or DefaultMaxTokens when it named
+	// none — AND THE ROUTER GRANTS THE SAME NUMBER (WireCeiling), which is what keeps the wire and the
+	// router on one number. Budgeting from the caller's zero while asking the provider for 4096 tokens
+	// cut a healthy long answer as an engaged timeout (Codex REVIEW-E #2). The caller's deadline still
+	// wins: WithTimeout only ever shortens it.
+	ctx, cancel := context.WithTimeout(ctx, aiprov.CompletionBudget(c.budgetBase, wireCeiling(req.MaxTokens)))
 	defer cancel()
 	ctx, wroteRequest := aiprov.ObserveWrite(ctx)
 
