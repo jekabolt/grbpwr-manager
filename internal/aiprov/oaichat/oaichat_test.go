@@ -878,3 +878,36 @@ func TestChatIsTheChatterSeam(t *testing.T) {
 	require.Equal(t, &aiprov.ChatResult{Text: "ok", FinishReason: "stop", Provider: "openrouter", Model: "m", RequestID: "gen-1", Engaged: true}, res)
 	require.False(t, errors.Is(err, aiprov.ErrNotConfigured))
 }
+
+// TestAnEchoedKeyNeverReachesTheSentence (Codex REVIEW-E #1) — a gateway that quotes the request's
+// Authorization header back in its error message (apibost fronts other vendors; proxies do this) must
+// not put the key into CallError.Error(), which the admin doors log verbatim: scrubbed to [key] on a
+// refusal (non-2xx) AND on a 2xx that carries an embedded error.
+//
+// MUTATIONS (each measured red → restored green): apiErrorMessage returning the message unscrubbed →
+// the 401 half goes red; the 2xx embedded-error sentence formatted from cr.Error.Message directly →
+// the 200 half goes red.
+func TestAnEchoedKeyNeverReachesTheSentence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{{"refused at the gate", 401}, {"embedded in a 2xx", 200}} {
+		t.Run(tc.name, func(t *testing.T) {
+			const secret = "sk-echoed-secret-0123" // distinctive: a one-letter key would match inside "[key]"
+			rec := &recorder{}
+			srv := rec.server(t, func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"error":{"message":"Authorization: Bearer `+secret+` was refused by upstream"}}`)
+			})
+			c := New(Config{Provider: "apibost", BaseURL: srv.URL, Dialect: DialectOpenAI, KeyFunc: key(secret), HTTPTimeout: 2 * time.Second})
+			key := secret
+			_, err := c.Chat(context.Background(), "m", aiprov.ChatRequest{System: "s", User: "u"})
+			ce := callErr(t, err)
+			require.NotContains(t, err.Error(), key, "the key must never be in the sentence")
+			require.Contains(t, err.Error(), "[key]")
+			require.NotContains(t, fmt.Sprintf("%+v", ce), key)
+			require.Equal(t, tc.status, ce.HTTPStatus)
+		})
+	}
+}

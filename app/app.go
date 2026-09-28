@@ -21,6 +21,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/runblob"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
@@ -100,6 +101,9 @@ type App struct {
 	// config_version poller. Built right after the DB and never nil after a successful boot: every
 	// provider client's KeyFunc reads it.
 	aireg *registry.Registry
+	// runblob is the video aggregator's adapter (B-27): built at boot, read by NOTHING yet — no
+	// purpose routes to it until the owner names a video one (D-05, B-27b). Never nil after boot.
+	runblob *runblob.Client
 	// dgw is the DESIGN band generation worker. NIL WHENEVER DESIGN_GENERATION_ENABLED IS OFF:
 	// a disabled feature is not a worker that ticks and finds nothing, it is a worker that was
 	// never built — the queue it drains costs money to drain.
@@ -666,6 +670,17 @@ func (a *App) Start(ctx context.Context) error {
 			},
 		}),
 	}
+	// runblob (B-27): the adapter beside the chat transports, with the panel's key — and no caller.
+	// It is not a chatter (a generation is not a completion), no purpose routes to it (D-05: none of
+	// the shop's purposes is video until the owner names one), and no ledger row is written for it:
+	// Submission.PriceUSD is the number the future caller (B-27b) books as the provider's own. The one
+	// line below is how a deployment says the adapter is there and whether its key is set — never
+	// the key.
+	a.runblob = runblob.New(runblob.Config{
+		KeyFunc: a.aireg.KeyFunc(entity.AIProviderRunblob), HTTPTimeout: aiprov.DefaultBudgetBase,
+	})
+	slog.Default().InfoContext(ctx, "runblob: adapter constructed; no purpose routes to it (D-05)",
+		slog.Bool("enabled", a.runblob.Enabled()))
 	aiRouter := router.New(a.aireg, aiLedger,
 		chatTransports,
 		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())

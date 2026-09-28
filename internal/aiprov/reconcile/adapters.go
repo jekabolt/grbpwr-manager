@@ -459,6 +459,14 @@ func parseFalUsage(body []byte, win window) ([]dayAmount, error) {
 // parseOpenRouterKey reads GET /api/v1/key: data.usage_daily, the USD this key has spent in the
 // CURRENT UTC day so far — one row, today's.
 //
+// ⚠ NOT D-17's MECHANISM, AND KNOWINGLY SO (Codex REVIEW-E #3 → B-30). D-17 proposed the diff of two
+// cumulative `usage` snapshots taken right after LOCAL midnight, written under the previous local day
+// with bucket_tz Europe/Warsaw — exact, and in the ledger's own days. That needs the previous snapshot
+// persisted across restarts (a deploy is a restart) and a counter-reset rule for a rotated key: a table
+// of its own (0380). Commit E ships the honest approximation: the provider's own UTC-day running total,
+// labelled UTC like every other row here, with up to one tick of each day's end unseen. B-30 replaces
+// it; until then the column reads «their usd · utc days» for OpenRouter and the D-17 hint applies.
+//
 // UNVERIFIED (G-05): {"data":{"label":"…","usage":<USD>,"usage_daily":<USD>,"usage_weekly":…,
 // "usage_monthly":…,"limit":…,"limit_remaining":…}}. It is THIS KEY's spend: calls made with another
 // key (OPENROUTER_IMAGES_API_KEY when it differs from the chat key and no key is stored in the panel)
