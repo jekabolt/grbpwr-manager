@@ -252,14 +252,31 @@ func designThreedUnknownOption(field, value, allowed string) error {
 
 // ─────────────────────────── the configured route (G-02, Codex 3 + 4, Fable M-3) ───────────────────────────
 
-// SetDesignThreedRoute wires the configured 3D route (app.go, beside SetDesignEngines).
-func (s *Server) SetDesignThreedRoute(r designgen.ThreedRoute) { s.designThreedRoute = &r }
+// SetDesignThreedRoute wires the live 3D route (app.go, beside SetDesignEngines): the panel's `threed`
+// route as designgen reads it (B-24).
+//
+// ⚠ EVERY READER CALLS view ITSELF — one registry snapshot per reader, not one per request. A route
+// edited between two readers of one StartDesignRun (the refusal and the reserve) can pair one version's
+// options with the next version's ceiling; the worker asks ThreedUnread again of the candidate it is
+// about to pay before every fresh submit (dispatch.go), and the reserve is the max over the chain, so
+// such a run is refused free or reserved at least what its payer books — never paid for a dropped option.
+func (s *Server) SetDesignThreedRoute(view func() designgen.ThreedRouteView) {
+	s.designThreedRoute = view
+}
 
-// designThreedRouteReserveBounded — false only when a route IS wired and has no number to reserve
-// (fal with FAL_UNIT_USD and no FAL_UNITS_CEILING_3D). The band then lists no image_to_3d and the
-// door refuses every 3D run in words.
+// designThreedView — the live view; the zero view (no head, no ceiling, open) when nothing is wired.
+func (s *Server) designThreedView() designgen.ThreedRouteView {
+	if s.designThreedRoute == nil {
+		return designgen.ThreedRouteView{}
+	}
+	return s.designThreedRoute()
+}
+
+// designThreedRouteReserveBounded — false only when the route's door is CLOSED: nothing on it can be
+// called or is paused, and its configured head has no number to reserve (fal with FAL_UNIT_USD and no
+// FAL_UNITS_CEILING_3D). The band then lists no image_to_3d and the door refuses every 3D run in words.
 func (s *Server) designThreedRouteReserveBounded() bool {
-	return s.designThreedRoute == nil || s.designThreedRoute.Unbounded() == ""
+	return s.designThreedView().Closed == ""
 }
 
 // designRefuseThreedRoute — THE CONFIGURED ROUTE MUST READ WHAT THE RUN PAYS FOR, AND ITS RESERVE MUST
@@ -279,14 +296,17 @@ func (s *Server) designRefuseThreedRoute(kind string, params *pb_common.DesignRu
 	if kind != entity.DesignRunKindThreed {
 		return nil
 	}
-	r := s.designThreedRoute
-	if r != nil {
-		if why := r.Unbounded(); why != "" {
-			return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeThreedReserveUnbounded,
-				"a 3D build cannot be reserved on this deployment: "+why+". Nothing was reserved and "+
-					"nothing was charged",
-				map[string]string{"provider": r.Provider})
+	v := s.designThreedView()
+	r := v.Head
+	if why := v.Closed; why != "" {
+		provider := ""
+		if r != nil {
+			provider = r.Provider
 		}
+		return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeThreedReserveUnbounded,
+			"a 3D build cannot be reserved on this deployment: "+why+". Nothing was reserved and "+
+				"nothing was charged",
+			map[string]string{"provider": provider})
 	}
 	// THE SAME EXPRESSION THE WORKER ASKS AGAIN BEFORE A FRESH SUBMIT (designgen.ThreedUnread): a
 	// value equal to the route's own constant asks for nothing and is never refused; an option the
@@ -343,10 +363,10 @@ func (s *Server) designThreedRunEstimate(kind string, params *pb_common.DesignRu
 	}
 	t := params.GetThreed()
 	per := designThreedCeilingUSDFor(t.GetTexture(), t.GetQuality())
-	if r := s.designThreedRoute; r != nil {
-		if c, ok := r.CeilingUSD(t.GetTexture(), t.GetQuality()); ok {
-			per = decimal.Max(per, c)
-		}
+	// The chain's ceiling (B-24): the max over every callable or paused candidate — the reserve covers
+	// whichever of them ends up paying.
+	if c, ok := s.designThreedView().CeilingUSD(t.GetTexture(), t.GetQuality()); ok {
+		per = decimal.Max(per, c)
 	}
 	return decimal.NullDecimal{Decimal: per.Mul(decimal.NewFromInt(int64(outputs))), Valid: true}, true
 }

@@ -139,13 +139,14 @@ func (p falCutoutProvider) Execute(ctx context.Context, job Job) (*Outcome, erro
 	if err != nil {
 		return nil, err
 	}
-	model := p.c.ModelCutout()
+	// The route row's slug (job.Model, B-24) before FAL_MODEL_CUTOUT.
+	model := firstNonEmpty(job.Model, p.c.ModelCutout())
 	if err := falLocatorFits(model); err != nil {
 		return nil, err
 	}
 	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07) — see threedfal.go.
 	h := job.beginCall(ctx, entity.AIProviderFal, model, 1)
-	id, err := p.c.SubmitCutout(ctx, src)
+	id, err := p.c.SubmitCutoutAt(ctx, model, src)
 	if err != nil {
 		// ⚠ И ЗДЕСЬ ТОЖЕ БЫВАЮТ ДЕНЬГИ. Сабмит, принятый и не назвавший id, — оплачен: транспорт
 		// вешает на такой отказ то, что он списал, когда знал, и без этого носителя трата исчезает.

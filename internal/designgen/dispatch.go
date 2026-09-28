@@ -126,6 +126,12 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
 		return w.failRun(ctx, run, token, err)
 	}
+	// THE fal ROWS' MODEL (B-24): an extend / inpaint / cutout run that froze no slug goes to its route
+	// row's model, read at the pickup from the expression the door priced and gated with — the images'
+	// rule: the frozen slug wins, else the row's, else the client's env default.
+	if job.Model == "" && w.c != nil && w.c.FalRouteModel != nil {
+		job.Model = w.c.FalRouteModel(run.Kind)
+	}
 
 	// chain is the routed kind's fallback state for settle; nil for every route that is not a Chooser
 	// and for a resume (a collect never falls back: the job is bought).
@@ -139,10 +145,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		// itself never pays.
 		if ch, ok := prov.(Chooser); ok {
 			tried := roundTried(attempts)
-			next, cerr := ch.Choose(run.Kind, job.Model, tried)
+			next, cerr := ch.Choose(job, tried)
 			if errors.Is(cerr, errChainExhausted) {
 				tried = nil
-				next, cerr = ch.Choose(run.Kind, job.Model, nil)
+				next, cerr = ch.Choose(job, nil)
 			}
 			if errors.Is(cerr, errRoutePaused) {
 				// ⚠ PAUSED IS A WAIT, AND IT OPENS NO ATTEMPT ROW (B-13/A5, Codex REVIEW-CD P1). The
@@ -160,7 +166,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 				return w.failRun(ctx, run, token, cerr)
 			}
 			prov = next
-			chain = newCandidateChain(ch, run.Kind, job.Model, tried, prov.Name())
+			chain = newCandidateChain(ch, job, tried, prov.Name())
 		}
 	}
 
@@ -415,12 +421,8 @@ func (w *Worker) threedUnreadAtSubmit(run entity.DesignRun, prov Provider) error
 	}
 	p := parseParams(run.Params)
 	o := threedOptionsOf(p)
-	hint := ""
-	if p.Threed != nil {
-		hint = p.Threed.SurfaceHint
-	}
 	pbr := w.c != nil && w.c.ThreedPBR
-	if opt, why := ThreedUnread(ThreedRouteOf(prov, pbr), o.Texture, o.PBR, o.Quality, hint); opt != "" {
+	if opt, why := ThreedUnread(ThreedRouteOf(prov, pbr), o.Texture, o.PBR, o.Quality, threedSurfaceHintOf(p)); opt != "" {
 		return fmt.Errorf("%w: params.threed.%s: %s. Nothing was submitted and nothing was charged",
 			errThreedOptionNotRead, opt, why)
 	}

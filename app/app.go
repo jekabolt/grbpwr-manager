@@ -612,13 +612,15 @@ func (a *App) Start(ctx context.Context) error {
 	// can default to, else the image client's env slug (a typo in the panel keeps the picker, with one
 	// warning per slug). WarnIfModelsRetired above keeps probing the env table at boot.
 	designCfg.Engines = designgen.EngineTableFunc(a.aireg, designImages.Model(), designCfg.EngineFlags())
-	// The configured 3D route as the door and the band see it (G-02): which build options it reads
-	// and what one build may book at this deployment's tariff. Built from the SAME client the worker
-	// is given below; wired only when the worker exists.
-	var designThreedRoute *designgen.ThreedRoute
-	// PLAYGROUND phase 3: the extend / inpaint route objects, built from the SAME fal client the
-	// worker's Outpaint / Fill providers get (one value for the band, the door and the reserve).
-	var designFalRoutes map[string]designgen.FalRoute
+	// The live 3D route as the door and the band see it (G-02; B-24: the panel's `threed` route): which
+	// build options its head reads, what one build may book anywhere on the chain, and whether the door
+	// is closed. The View of the SAME routed provider the worker is given below; wired only when the
+	// worker exists.
+	var designThreedView func() designgen.ThreedRouteView
+	// PLAYGROUND phase 3: the extend / inpaint route objects, off the SAME fal config the worker's
+	// Outpaint / Fill providers get, at the route row's model (B-24) — one function for the band, the
+	// door and the reserve.
+	var designFalRoutes func() map[string]designgen.FalRoute
 
 	// ─── THE AI LEDGER (B-07): one ai_usage_event row per physical provider call, opened BEFORE
 	// the call. Built in BOTH branches below: the worker books every call it pays for and sweeps
@@ -708,52 +710,78 @@ func (a *App) Start(ctx context.Context) error {
 	aiOpsClient.WarnIfRetired(ctx, aiRouter.OpenRouterSlugs())
 
 	if designCfg.Enabled {
-		// ─── WHICH 3D ROUTE GETS PAID, DECIDED BY A WORD SOMEBODY WROTE DOWN ────────────────────
+		// ─── WHICH 3D ROUTE GETS PAID: THE PANEL'S `threed` ROUTE (B-24) ─────────────────────────
 		//
-		// DESIGN_THREED_PROVIDER, defaulting to `fal` — the provider the owner named. It is NOT
-		// inferred from which key happens to be present: that rule would move the owner's money
-		// between two vendors as a side effect of typing a key into a dashboard. designgen's
-		// applyDefaults has already normalised an unknown word to the default; this line is where
-		// the effective choice is SAID OUT LOUD, once per boot, so «which vendor is this bill from»
-		// is answerable from the logs and not only from an attempt row.
+		// Every fresh build pays the FIRST callable candidate of admin → AI providers → threed (fal |
+		// meshy, position order; a row's model is fal's slug / Meshy's ai_model); a candidate that
+		// failed without engaging hands the run to the next one on a fresh attempt, an open breaker
+		// pauses the route. DESIGN_THREED_PROVIDER (defaulting to `fal`, normalised by designgen) is the
+		// candidate ONLY when the route has no rows — the seeded route is `threed → fal`, so the panel,
+		// not the env, now decides which vendor a bill is from, and this block says both out loud once
+		// per boot.
 		//
-		// Neither client is asked for a key here. A route with no credentials is a route that
-		// refuses AT THE DOOR, in words, naming its variable (PreflightKind → MissingCredential) —
-		// which is what lets the owner tell «I have not set the key yet» from «the service is
-		// busy».
-		falThreed := fal.New(a.c.Fal)
-		// ⚠ BOTH 3D ROUTES ARE CONSTRUCTED, AND THE ONE NOT ROUTED GOES TO Providers.Also (B-13). A job
-		// the other vendor ACCEPTED before a switch of DESIGN_THREED_PROVIDER is paid and collectable
-		// for free — by that vendor only: the worker collects with the provider the accepted attempt
-		// names. Constructing it asks nothing of it (meshy.New is a struct; keyless = Enabled false, and
-		// such a job WAITS as `paid_collect_waiting` until its key is back).
-		falThreedRoute := designgen.NewFalThreedProvider(falThreed)
-		meshyThreedRoute := designgen.NewThreedProvider(meshy.New(a.c.Meshy))
-		threed, unroutedThreed := falThreedRoute, meshyThreedRoute
-		if designCfg.ThreedProvider == designgen.ThreedProviderMeshy {
-			threed, unroutedThreed = meshyThreedRoute, falThreedRoute
+		// Neither client is asked for a key here. A route with no credentials refuses AT THE DOOR, in
+		// words, naming its variable (PreflightKind → MissingCredential).
+		meshyThreedClient := meshy.New(a.c.Meshy)
+		threedFactories := map[string]func(model string) designgen.Provider{
+			// fal at the row's slug: fal.New is a struct build, so a candidate per choice is cheap; the
+			// row's model overrides FAL_MODEL_3D and nothing else of the fal config.
+			designgen.ThreedProviderFal: func(model string) designgen.Provider {
+				cfg := a.c.Fal
+				if m := strings.TrimSpace(model); m != "" {
+					cfg.Model3D = m
+				}
+				return designgen.NewFalThreedProvider(fal.New(cfg))
+			},
+			// meshy asking for the row's ai_model ("" = Meshy's own default, today's body).
+			designgen.ThreedProviderMeshy: func(model string) designgen.Provider {
+				return designgen.NewMeshyThreedProvider(meshyThreedClient, model)
+			},
 		}
-		// THE SAME EXPRESSION THE WORKER ASKS BEFORE EVERY FRESH SUBMIT (ThreedRouteOf the wired
-		// provider at DESIGN_THREED_PBR), so the door and the pickup cannot read two routes.
-		route := designgen.ThreedRouteOf(threed, designCfg.ThreedPBR)
-		designThreedRoute = route
-		slog.Default().InfoContext(ctx, "design generation: 3D route wired",
-			slog.String("provider", designCfg.ThreedProvider),
+		routedThreed := designgen.NewRoutedThreedProvider(a.aireg, threedFactories, designCfg.ThreedPBR,
+			designCfg.ThreedProvider)
+		designThreedView = routedThreed.View
+		// ⚠ BOTH BOOT-TIME 3D PROVIDERS ARE CONSTRUCTED AND GO TO Providers.Also (B-13, B-24). A job either
+		// vendor ACCEPTED — under any route row, before any route edit — is paid and collectable for free
+		// by that vendor only: the worker collects with the provider the accepted attempt names (the
+		// Threed slot's own name is "threed", never an attempt row's). A fal locator carries the slug it
+		// was bought at, so the env-slug fal client collects a build bought under any row's model.
+		falThreedRoute := designgen.NewFalThreedProvider(fal.New(a.c.Fal))
+		meshyThreedRoute := designgen.NewThreedProvider(meshyThreedClient)
+		// The env default's own options, as before B-24: what a route with no rows would read.
+		var envOptions []string
+		if f := threedFactories[designCfg.ThreedProvider]; f != nil {
+			if r := designgen.ThreedRouteOf(f(""), designCfg.ThreedPBR); r != nil {
+				envOptions = r.Options
+			}
+		}
+		view := routedThreed.View()
+		headProvider := ""
+		if view.Head != nil {
+			headProvider = view.Head.Provider
+		}
+		slog.Default().InfoContext(ctx, "design generation: 3D route = the panel's threed route; env fallback "+
+			designCfg.ThreedProvider,
+			slog.String("route_head", headProvider),
+			slog.String("env_fallback", designCfg.ThreedProvider),
 			slog.String("flag", designgen.EnvThreedProvider),
-			slog.Any("build_options", route.Options),
+			slog.Any("env_build_options", envOptions),
 			slog.Bool("pbr", designCfg.ThreedPBR), slog.String("pbr_flag", designgen.EnvThreedPBR))
-		if why := route.Unbounded(); why != "" {
-			slog.Default().WarnContext(ctx, "design generation: the 3D door is closed — "+why)
+		if view.Closed != "" {
+			slog.Default().WarnContext(ctx, "design generation: the 3D door is closed — "+view.Closed)
 		}
 
 		// PLAYGROUND phase 3 — tile 9 (extend → fal outpaint) and tile 10's mask route (inpaint → fal
-		// fill): the SAME FAL_KEY, their own slugs (FAL_MODEL_OUTPAINT / FAL_MODEL_FILL) and tariffs.
-		// A tariff set without its units ceiling closes the kind at the door, in words.
+		// fill): the SAME FAL_KEY, their own slugs and tariffs. The slug is the route row's model
+		// (admin → AI providers, image.extend / image.inpaint, B-24), else FAL_MODEL_OUTPAINT / FILL;
+		// the worker reads the same expression (FalRouteModel) for extend / inpaint / cutout runs. A
+		// tariff set without its units ceiling closes the kind at the door, in words.
 		falRoutes := fal.New(a.c.Fal)
-		designFalRoutes = map[string]designgen.FalRoute{}
+		designFalRoutes = designgen.FalRoutesFunc(a.aireg, a.c.Fal)
+		designCfg.FalRouteModel = func(kind string) string { return designgen.FalRouteModel(a.aireg, kind) }
+		bootFalRoutes := designFalRoutes()
 		for _, kind := range []string{entity.DesignRunKindExtend, entity.DesignRunKindInpaint} {
-			r, _ := designgen.FalRouteOf(falRoutes, kind)
-			designFalRoutes[kind] = r
+			r := bootFalRoutes[kind]
 			slog.Default().InfoContext(ctx, "design generation: fal route wired",
 				slog.String("kind", kind), slog.String("model", r.Model),
 				slog.String("reserve_usd", r.Ceiling.String()), slog.Bool("bounded", r.Bounded))
@@ -773,11 +801,10 @@ func (a *App) Start(ctx context.Context) error {
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
 			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
-			// threed — fal.ai's queue by default (K-10), Meshy's own API behind the same slot on
-			// request. Which MODEL the fal route asks for is FAL_MODEL_3D / fal.DefaultModel3D,
-			// today `meshy/v7/multi-image-to-3d`. Both are reached DIRECTLY, because OpenRouter has
-			// no 3D modality to route to.
-			Threed: threed,
+			// threed — the panel's `threed` route (B-24): fal.ai's queue and Meshy's own API, both reached
+			// DIRECTLY because OpenRouter has no 3D modality to route to. A fal row with no model asks
+			// for FAL_MODEL_3D / fal.DefaultModel3D, today `meshy/v7/multi-image-to-3d`.
+			Threed: routedThreed,
 			// cutout — background removal, the SAME fal client and the SAME FAL_KEY as the 3D
 			// route, and a different slug (FAL_MODEL_CUTOUT / fal.DefaultModelCutout, today
 			// `fal-ai/birefnet/v2`) with a tariff of its own (FAL_UNIT_USD_CUTOUT). It is a route
@@ -790,9 +817,9 @@ func (a *App) Start(ctx context.Context) error {
 			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
 			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
 			Fill: designgen.NewFalFillProvider(falRoutes),
-			// The 3D route DESIGN_THREED_PROVIDER did not pick — never chosen for a fresh run, kept so
-			// it can collect what it accepted before the switch (see above).
-			Also: []designgen.Provider{unroutedThreed},
+			// BOTH boot-time 3D providers — never chosen for a fresh run, kept so each collects what it
+			// accepted, whatever the route says now (see above).
+			Also: []designgen.Provider{falThreedRoute, meshyThreedRoute},
 		}, designgen.WithLedger(aiLedger))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",
@@ -865,8 +892,8 @@ func (a *App) Start(ctx context.Context) error {
 	if a.dgw != nil {
 		adminS.SetDesignKindGate(a.dgw.PreflightKind)
 	}
-	if designThreedRoute != nil {
-		adminS.SetDesignThreedRoute(*designThreedRoute)
+	if designThreedView != nil {
+		adminS.SetDesignThreedRoute(designThreedView)
 	}
 	if designFalRoutes != nil {
 		adminS.SetDesignFalRoutes(designFalRoutes)

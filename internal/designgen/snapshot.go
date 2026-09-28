@@ -1285,6 +1285,7 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 	if run.Kind == entity.DesignRunKindThreed {
 		o := threedOptionsOf(p)
 		job.ThreedTexture, job.ThreedPBR, job.ThreedQuality = o.Texture, o.PBR, o.Quality
+		job.ThreedSurfaceHint = threedSurfaceHintOf(p)
 		if run.PriceEstimate.Valid {
 			n := run.RequestedOutputs
 			if n < 1 {

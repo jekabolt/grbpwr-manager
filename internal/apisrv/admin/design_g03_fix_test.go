@@ -179,7 +179,7 @@ func TestTheG03DoorRowsREFUSE_BEFORE_THE_STORE(t *testing.T) {
 // has no body, exactly as it omits an unbounded one.
 func TestAForeignFalSlugIsNOT_ADVERTISED(t *testing.T) {
 	s := &Server{}
-	s.SetDesignFalRoutes(falRoutesFor(fal.Config{ModelOutpaint: "fal-ai/ideogram/v3/reframe"}))
+	s.SetDesignFalRoutes(fixedFalRoutes(falRoutesFor(fal.Config{ModelOutpaint: "fal-ai/ideogram/v3/reframe"})))
 	require.False(t, s.designFalRouteBounded(entity.DesignRunKindExtend))
 	require.True(t, s.designFalRouteBounded(entity.DesignRunKindInpaint))
 }

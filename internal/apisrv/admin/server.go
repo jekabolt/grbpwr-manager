@@ -152,16 +152,18 @@ type Server struct {
 	// door validates and prices params.image against it, the band advertises it. Nil = no engine
 	// is offered, and the door refuses every params.image.
 	designEngines func() []designgen.Engine
-	// designThreedRoute is the CONFIGURED 3D route (designgen.FalThreedRoute / MeshyThreedRoute,
-	// app.go): which build options it reads and the most one build may book at this deployment's
-	// tariff. Nil = not wired (the generation worker is off, or a test): the band then advertises no
-	// build option and the door refuses a non-default one, and the reserve keeps the static table.
-	designThreedRoute *designgen.ThreedRoute
-	// designFalRoutes are the fal JSON routes of kind extend / inpaint (PLAYGROUND phase 3,
-	// designgen.FalRouteOf over the worker's own fal client, app.go): the band, the door and the
-	// reserve read one object. A kind with no entry is CLOSED (fail closed: nothing on the door knows
-	// what the worker would book).
-	designFalRoutes map[string]designgen.FalRoute
+	// designThreedRoute is the LIVE 3D route as the door reads it (B-24: the panel's `threed` route,
+	// designgen.NewRoutedThreedProvider(...).View, app.go): which build options its head reads, the most
+	// one build may book anywhere on the chain at this deployment's tariff, and whether the door is
+	// closed. A function, asked afresh by every reader. Nil = not wired (the generation worker is off, or
+	// a test): the band then advertises no build option and the door refuses a non-default one, and the
+	// reserve keeps the static table.
+	designThreedRoute func() designgen.ThreedRouteView
+	// designFalRoutes are the fal JSON routes of kind extend / inpaint (PLAYGROUND phase 3; B-24: at the
+	// route row's model, designgen.FalRoutesFunc over the live registry, app.go): the band, the door and
+	// the reserve read one object, asked afresh by every reader. Nil, or a kind with no entry, is CLOSED
+	// (fail closed: nothing on the door knows what the worker would book).
+	designFalRoutes func() map[string]designgen.FalRoute
 	// aiReg, aiKeyRing, aiRecraftViaOpenRouter, aiProbeClient, aiReconcile — the admin → AI providers panel
 	// (ai_providers.go, SetAIProviders). aiReg nil = not wired: the five RPCs refuse with
 	// FailedPrecondition. A nil/disabled aiKeyRing refuses to store a key and says which variable

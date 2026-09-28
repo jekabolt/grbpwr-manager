@@ -176,6 +176,15 @@ func (c *Client) CostCutoutUSD(units float64) decimal.Decimal {
 // строке попытки и закрывает двойное списание насовсем: id закрывает попытку `accepted`, а сбор по
 // нему бесплатен.
 func (c *Client) SubmitCutout(ctx context.Context, imageURL string) (string, error) {
+	return c.SubmitCutoutAt(ctx, c.ModelCutout(), imageURL)
+}
+
+// SubmitCutoutAt is SubmitCutout into a NAMED matting queue — the image.cutout route row's model (B-24),
+// "" = ModelCutout(). The body is the same: every slug this route has run on reads image_url.
+func (c *Client) SubmitCutoutAt(ctx context.Context, model, imageURL string) (string, error) {
+	if model = strings.Trim(strings.TrimSpace(model), "/"); model == "" {
+		model = c.ModelCutout()
+	}
 	if !c.Enabled() {
 		return "", ErrNotConfigured
 	}
@@ -187,7 +196,7 @@ func (c *Client) SubmitCutout(ctx context.Context, imageURL string) (string, err
 	}
 
 	var sub submitResponse
-	if err := c.callJSON(ctx, http.MethodPost, "/"+c.ModelCutout(), cutoutSubmitBody{
+	if err := c.callJSON(ctx, http.MethodPost, "/"+model, cutoutSubmitBody{
 		ImageURL:     imageURL,
 		OutputFormat: cutoutOutputFormat,
 		// ⚠ ЭТО НЕ КОСМЕТИКА. Без доводки переднего плана альфа по краю несёт ЦВЕТ ФОНА, и вырез,

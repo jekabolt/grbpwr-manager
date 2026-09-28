@@ -363,7 +363,8 @@ func (p falFillProvider) Execute(ctx context.Context, job Job) (*Outcome, error)
 		return nil, fmt.Errorf("%w: a mask retouch needs the words of what to paint (the door's words_required)",
 			fal.ErrBadRequest)
 	}
-	model := p.c.ModelFor(fal.RouteFill)
+	// The route row's slug (job.Model, B-24) before FAL_MODEL_FILL — see falOutpaintProvider.Execute.
+	model := firstNonEmpty(job.Model, p.c.ModelFor(fal.RouteFill))
 	if err := falLocatorFits(model); err != nil {
 		return nil, err
 	}

@@ -137,9 +137,9 @@ func (s *Server) designImageModels() []*pb_admin.DesignImageModel {
 	return out
 }
 
-// designThreedOptions — which DesignThreedParams options the CONFIGURED 3D route honours (band
-// field 30), read off the same designgen.ThreedRoute the door refuses with (designRefuseThreedRoute)
-// — one value for the band, the door and the reserve (G-02, Codex 3 = Fable m-4).
+// designThreedOptions — which DesignThreedParams options the LIVE 3D route's head honours (band field
+// 30), read off the same designgen.ThreedRouteView the door refuses with (designRefuseThreedRoute) —
+// one value for the band, the door and the reserve (G-02, Codex 3 = Fable m-4; B-24: the panel's route).
 //
 //   - fal meshy family / direct Meshy: texture, quality, surface_hint — and pbr only with
 //     DESIGN_THREED_PBR on (its GLB size is unmeasured and the 64 MiB cap fails after the charge,
@@ -153,10 +153,11 @@ func (s *Server) designThreedOptions() []string {
 	if s.designGenerationGate() != nil || s.designKindGateCheck(entity.DesignRunKindThreed) != nil {
 		return out
 	}
-	if s.designThreedRoute == nil || !s.designThreedRouteReserveBounded() {
+	v := s.designThreedView()
+	if v.Head == nil || v.Closed != "" {
 		return out
 	}
-	return append(out, s.designThreedRoute.Options...)
+	return append(out, v.Head.Options...)
 }
 
 // designRefuseMalformedFreeform — ФОРМА ПРОСЬБЫ ПЛЕЙГРАУНДА, и спрашивается она С ГОВОРЯЩЕГО.

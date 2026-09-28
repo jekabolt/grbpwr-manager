@@ -18,6 +18,11 @@ import (
 
 // falRoutesFor — the route objects exactly as app.go builds them (designgen.FalRouteOf over one fal
 // client with a key and the given tariff settings).
+// fixedFalRoutes — the door's live-route function over a fixed set of route objects.
+func fixedFalRoutes(routes map[string]designgen.FalRoute) func() map[string]designgen.FalRoute {
+	return func() map[string]designgen.FalRoute { return routes }
+}
+
 func falRoutesFor(cfg fal.Config) map[string]designgen.FalRoute {
 	cfg.APIKey = "k"
 	c := fal.New(cfg)
@@ -30,7 +35,7 @@ func falRoutesFor(cfg fal.Config) map[string]designgen.FalRoute {
 }
 
 func withFalRoutes(cfg fal.Config) func(t *testing.T, rig *designRunRig) {
-	return func(t *testing.T, rig *designRunRig) { rig.srv.SetDesignFalRoutes(falRoutesFor(cfg)) }
+	return func(t *testing.T, rig *designRunRig) { rig.srv.SetDesignFalRoutes(fixedFalRoutes(falRoutesFor(cfg))) }
 }
 
 func extendParams(ratio string, ids ...int32) *pb_common.DesignRunParams {
@@ -149,7 +154,7 @@ func TestRunKindsLISTS_A_FAL_KIND_ONLY_WITH_A_BOUNDED_ROUTE(t *testing.T) {
 		s := &Server{repo: repo}
 		s.SetDesignGenerationEnabled(enabled)
 		if routes != nil {
-			s.SetDesignFalRoutes(routes)
+			s.SetDesignFalRoutes(fixedFalRoutes(routes))
 		}
 		s.SetDesignKindGate(func(kind string) error {
 			for _, c := range closed {
