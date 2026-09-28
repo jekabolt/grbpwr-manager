@@ -1279,6 +1279,9 @@ type productQueryResult struct {
 	LifecycleStatus             entity.ColorwayStatus `db:"lifecycle_status"`
 	StyleId                     int                   `db:"style_id"`
 	PublishedAt                 sql.NullTime          `db:"published_at"`
+	// The style's shared optimistic-lock token (R2/R4), read off the tech_card join — what the admin
+	// echoes back as expected_colorway_version / expected_lock_version on every colourway-scoped write.
+	LockVersion int `db:"lock_version"`
 }
 
 func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslationInsert) entity.Colorway {
@@ -1329,6 +1332,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 		LifecycleStatus: pqr.LifecycleStatus,
 		StyleId:         pqr.StyleId,
 		PublishedAt:     pqr.PublishedAt,
+		LockVersion:     pqr.LockVersion,
 		ProductDisplay: entity.ColorwayDisplay{
 			ProductBody: entity.ColorwayBody{
 				ProductBodyInsert: entity.ColorwayBodyInsert{

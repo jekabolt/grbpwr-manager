@@ -434,6 +434,9 @@ type Colorway struct {
 	SoldOut         bool            // Indicates if product is sold out (all sizes have quantity <= 0)
 	LifecycleStatus ColorwayStatus  `db:"lifecycle_status"` // stored lifecycle: draft/active/hidden/archived (R6)
 	StyleId         int             `db:"style_id"`         // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
+	// LockVersion is the style's shared tech_card.lock_version (R2/R4): the optimistic token every
+	// colourway-scoped write (UpdateColorway, UpdateStyle, variants, size chart) expects echoed back.
+	LockVersion int `db:"lock_version"`
 }
 
 // IsPubliclyVisible reports whether the product is exposed on the storefront: only ACTIVE colourways

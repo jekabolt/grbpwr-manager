@@ -539,7 +539,9 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 		StyleId:     int32(e.Product.StyleId), // R4: the single style relation
 		ColorCode:   e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		PublishedAt: pbTimestampFromNullTime(e.Product.PublishedAt),
-		// lock_version (tech_card.lock_version) still needs entity plumbing — left unset here.
+		// R2/R4: the style's shared tech_card.lock_version — the token the admin echoes into
+		// UpdateColorwayRequest.expected_colorway_version and the style/variant/size-chart writes.
+		LockVersion: int32(e.Product.LockVersion),
 
 		// T45: the SKU colour token beside the family. The detail read and every lifecycle
 		// transition answer through here; the paged list carries it too.
@@ -779,6 +781,7 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 		StyleId:       int32(e.StyleId),
 		ColorCode:     e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		SkuColorToken: e.ProductDisplay.ProductBody.ProductBodyInsert.SkuColorToken,
+		LockVersion:   int32(e.LockVersion),
 	}
 
 	return pbProduct, nil
