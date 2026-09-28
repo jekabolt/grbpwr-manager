@@ -103,6 +103,11 @@ func (s *Server) designPlaygroundWorkflows() []string {
 	if s.designKindGateCheck(entity.DesignRunKindThreed) == nil && s.designThreedRouteReserveBounded() {
 		open[entity.DesignWorkflowImageTo3D] = true
 	}
+	// B-32: the video tile — the gate alone (the reserve is a configured number, always bounded): a
+	// keyless runblob closes it as kind_not_available, and the grid draws it dimmed with that reason.
+	if s.designKindGateCheck(entity.DesignRunKindVideo) == nil {
+		open[entity.DesignWorkflowImageToVideo] = true
+	}
 	for _, w := range entity.PlaygroundWorkflows() {
 		if open[w] {
 			out = append(out, w)

@@ -123,6 +123,9 @@ func designRunInputMediaRefs(params *pb_common.DesignRunParams, inputs *pb_commo
 	// so «not a picture», «display only» and «hidden» must see both.
 	add(int(params.GetInpaint().GetSourceMediaId()), "params.inpaint.source_media_id")
 	add(int(params.GetInpaint().GetMaskMediaId()), "params.inpaint.mask_media_id")
+	// B-32: the video's first frame travels to Kling as image_url, so «not a picture» (a .glb, another
+	// clip), «display only» and «hidden» must see it.
+	add(int(params.GetVideo().GetSourceMediaId()), "params.video.source_media_id")
 	add(int(params.GetColour().GetFabricMediaId()), "params.colour.fabric_media_id")
 	for i, f := range params.GetColour().GetFabrics() {
 		add(int(f.GetMediaId()), "params.colour.fabrics."+strconv.Itoa(i)+".media_id")

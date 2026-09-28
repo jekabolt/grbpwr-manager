@@ -405,6 +405,7 @@ func TestCardOutputsClassifyByRunKindNotPictureKind(t *testing.T) {
 	for _, kind := range []string{
 		entity.DesignRunKindRender, entity.DesignRunKindThreed, entity.DesignRunKindPattern,
 		entity.DesignRunKindRecolor, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
+		entity.DesignRunKindVideo, // B-32: the clip is an output of the card like every other run's
 	} {
 		if !byRun[kind] {
 			t.Fatalf("a picture born by a %q run is an output of this card and must be in the "+
@@ -424,7 +425,7 @@ func TestCardOutputsClassifyByRunKindNotPictureKind(t *testing.T) {
 	}
 
 	byPicture := sqlKindSet(t, designCardOutputsWhere, "p.kind IN (")
-	for _, kind := range []string{entity.DesignPictureKindFreeform, entity.DesignPictureKindCutout} {
+	for _, kind := range []string{entity.DesignPictureKindFreeform, entity.DesignPictureKindCutout, entity.DesignPictureKindVideo} {
 		if byPicture[kind] {
 			t.Fatalf("%q exists only as the OUTPUT of a run — a picture of that kind with no run "+
 				"row cannot be uploaded by hand (entity.IsDesignUploadKind), and claiming "+

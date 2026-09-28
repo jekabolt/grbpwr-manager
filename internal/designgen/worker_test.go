@@ -225,6 +225,10 @@ func TestEveryAcceptedTypeHasADoorBehindIt(t *testing.T) {
 				// content type — the one the browser will obey — from it.
 				fs.EXPECT().UploadContentNonRaster(mock.Anything, mock.Anything, ct,
 					designMediaFolder, mock.Anything).Return(minted, nil).Once()
+			} else if _, video := videoTypes[ct]; video {
+				// B-32: the THIRD door — the bucket's own video path, the container sniffed against ct.
+				fs.EXPECT().UploadContentVideo(mock.Anything, mock.Anything,
+					designMediaFolder, mock.Anything, ct).Return(minted, nil).Once()
 			} else {
 				fs.EXPECT().UploadContentImageVerbatim(mock.Anything, mock.Anything,
 					designMediaFolder, mock.Anything).Return(minted, nil).Once()
@@ -240,7 +244,7 @@ func TestEveryAcceptedTypeHasADoorBehindIt(t *testing.T) {
 // TestARefusedTypeNeverReachesTheBucket. The refusal has to happen HERE, in front of the file
 // store: reaching it means the bytes were bought first.
 func TestARefusedTypeNeverReachesTheBucket(t *testing.T) {
-	for _, ct := range []string{"application/pdf", "video/mp4", "text/html", ""} {
+	for _, ct := range []string{"application/pdf", "video/quicktime", "text/html", ""} {
 		// A mock with no expectations at all: any call to it fails this test by name.
 		fs := mocks.NewMockFileStore(t)
 		_, err := (&bucketSink{files: fs}).Put(context.Background(), []byte("bytes"), ct, "run-1-0")

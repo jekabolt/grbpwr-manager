@@ -634,6 +634,9 @@ func (a *App) Start(ctx context.Context) error {
 	// Outpaint / Fill providers get, at the route row's model (B-24) — one function for the band, the
 	// door and the reserve.
 	var designFalRoutes func() map[string]designgen.FalRoute
+	// B-32: the video route as the door and the worker read it — the panel's `video.generate` head
+	// row's Kling slug and RUNBLOB_VIDEO_CEILING_USD per clip; wired only when the worker exists.
+	var designVideoRoute func() designgen.VideoRoute
 
 	// ─── THE AI LEDGER (B-07): one ai_usage_event row per physical provider call, opened BEFORE
 	// the call. Built in BOTH branches below: the worker books every call it pays for and sweeps
@@ -692,8 +695,8 @@ func (a *App) Start(ctx context.Context) error {
 	a.runblob = runblob.New(runblob.Config{
 		KeyFunc: a.aireg.KeyFunc(entity.AIProviderRunblob), HTTPTimeout: aiprov.DefaultBudgetBase,
 	})
-	slog.Default().InfoContext(ctx, "runblob: adapter constructed; image.generate may route to it (B-31), no video purpose yet",
-		slog.Bool("enabled", a.runblob.Enabled()))
+	slog.Default().InfoContext(ctx, "runblob: adapter constructed; image.generate may route to it (B-31) and "+
+		"video.generate routes to it (B-32, the playground's video tile)", slog.Bool("enabled", a.runblob.Enabled()))
 	aiRouter := router.New(a.aireg, aiLedger,
 		chatTransports,
 		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())
@@ -803,6 +806,16 @@ func (a *App) Start(ctx context.Context) error {
 			}
 		}
 
+		// B-32 — the video route: runblob's Kling image-to-video over the adapter built above (the
+		// panel's key), the slug off the `video.generate` route row, the reserve off the config.
+		designVideoRoute = designgen.VideoRouteFunc(a.aireg, designCfg.VideoCeiling())
+		{
+			r := designVideoRoute()
+			slog.Default().InfoContext(ctx, "design generation: video route wired (runblob kling image-to-video)",
+				slog.String("model", r.Model), slog.String("reserve_usd", r.CeilingUSD.String()),
+				slog.String("knob", designgen.EnvVideoCeilingUSD), slog.Bool("keyed", a.runblob.Enabled()))
+		}
+
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
 			// flat, render, recolor, pattern and freeform — the raster route. They differ by prompt and
 			// by which pictures go into which paid call, both of which live inside designgen. Since B-13
@@ -835,6 +848,9 @@ func (a *App) Start(ctx context.Context) error {
 			// inpaint — tile 10's mask route, fal's fill route (FAL_MODEL_FILL, default
 			// fal-ai/flux-pro/v1/fill); the composite goes through OUR mask only.
 			Fill: designgen.NewFalFillProvider(falRoutes),
+			// video — the playground's «Image to Video» tile (B-32): runblob's Kling image-to-video, paid
+			// on the panel's runblob key, priced by runblob at submit, one clip per run.
+			Video: designgen.NewVideoProvider(a.runblob, designVideoRoute),
 			// BOTH boot-time 3D providers — never chosen for a fresh run, kept so each collects what it
 			// accepted, whatever the route says now (see above).
 			Also: []designgen.Provider{falThreedRoute, meshyThreedRoute},
@@ -915,6 +931,9 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	if designFalRoutes != nil {
 		adminS.SetDesignFalRoutes(designFalRoutes)
+	}
+	if designVideoRoute != nil {
+		adminS.SetDesignVideoRoute(designVideoRoute)
 	}
 	// The engine table the worker resolves params.image with (designCfg.Engines above — the SAME
 	// function): the door validates and prices against it, the band advertises it. A table, not a

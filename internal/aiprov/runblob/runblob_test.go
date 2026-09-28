@@ -149,15 +149,16 @@ func TestSurface(t *testing.T) {
 	require.Equal(t, aiprov.CodeNotConfigured, callErr(t, err).Code)
 }
 
-// TestOnlyImageGenerateRoutesToRunblob — B-31 as a fact of the vocabulary: runblob serves image and
-// video; image.generate is the ONE purpose that asks for either today, so it is the one route row
-// naming runblob the store accepts (provider_cannot_serve otherwise) and the registry lists. The video
-// purpose is G2's (video.generate); when it lands this test names two purposes, on purpose.
+// TestOnlyTheTwoRunblobPurposesRouteToRunblob — B-31 + B-32 as a fact of the vocabulary: runblob serves
+// image and video; image.generate (B-31, pictures) and video.generate (B-32, the playground's clip) are
+// the two purposes that ask for either, so they are the two route rows naming runblob the store accepts
+// (provider_cannot_serve otherwise) and the registry lists; every other purpose routed to it would be
+// paid on a key the owner saved for pictures and clips.
 //
-// MUTATION (measured red → green): AICapabilityImage dropped from runblob's row of
+// MUTATIONS (measured red → green): AICapabilityImage dropped from runblob's row of
 // entity.AIProviderCapabilities → red (image.generate no longer routable); AICapabilityChat added → red
 // (every chat purpose would route to an adapter that cannot complete).
-func TestOnlyImageGenerateRoutesToRunblob(t *testing.T) {
+func TestOnlyTheTwoRunblobPurposesRouteToRunblob(t *testing.T) {
 	require.Equal(t, []string{entity.AICapabilityImage, entity.AICapabilityVideo},
 		entity.AIProviderCapabilities(New(Config{}).Provider()))
 	var routable []string
@@ -168,8 +169,8 @@ func TestOnlyImageGenerateRoutesToRunblob(t *testing.T) {
 			routable = append(routable, purpose)
 		}
 	}
-	require.Equal(t, []string{entity.AIPurposeImageGenerate}, routable,
-		"runblob draws pictures (B-31) and nothing else until G2 names the video purpose")
+	require.Equal(t, []string{entity.AIPurposeImageGenerate, entity.AIPurposeVideoGenerate}, routable,
+		"runblob draws pictures (B-31) and clips (B-32) and nothing else")
 }
 
 // ─── goldens ─────────────────────────────────────────────────────────────────────────────────────

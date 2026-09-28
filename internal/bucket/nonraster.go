@@ -65,7 +65,8 @@ const (
 
 // mediaStorableTypes is the answer to one question: "does a file of this content type have a media
 // storage path in this package at all?" Four raster types through UploadContentImageVerbatim, two
-// non-raster ones through UploadContentNonRaster.
+// non-raster ones through UploadContentNonRaster, two video containers through UploadContentVideo
+// (B-32: the design worker's video route stores an mp4 through it).
 //
 // ⚠ IT IS EXPORTED (CanStoreMediaType / StorableMediaTypes) BECAUSE SOMEBODY HAS TO DECIDE BEFORE
 // THEY HAVE THE BYTES. The design worker must know whether a route's output can be kept BEFORE it
@@ -83,6 +84,8 @@ var mediaStorableTypes = map[ContentType]struct{}{
 	contentTypeGIF:  {},
 	contentTypeSVG:  {},
 	contentTypeGLB:  {},
+	contentTypeMP4:  {},
+	contentTypeWEBM: {},
 }
 
 // CanStoreMediaType reports whether a file of this content type has a media storage path here.

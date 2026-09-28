@@ -357,9 +357,10 @@ func TestEveryStorableTypeIsClassifiedForTheVendor(t *testing.T) {
 	require.NotEmpty(t, storable)
 
 	unreadable := designUnreadableStorableTypes()
-	require.Equal(t, []string{"model/gltf-binary"}, unreadable,
-		"из хранимых типов поставщику не годится ровно модель; SVG пущен НАМЕРЕННО — см. "+
-			"designVendorReadableMediaTypes и TestAVectorOutputOnTheBenchStillStarts")
+	require.Equal(t, []string{"model/gltf-binary", "video/mp4", "video/webm"}, unreadable,
+		"из хранимых типов поставщику не годятся модель и оба видео-контейнера (B-32: клип — выход, "+
+			"не вход); SVG пущен НАМЕРЕННО — см. designVendorReadableMediaTypes и "+
+			"TestAVectorOutputOnTheBenchStillStarts")
 
 	for _, ct := range storable {
 		_, readable := designVendorReadableMediaTypes[ct]

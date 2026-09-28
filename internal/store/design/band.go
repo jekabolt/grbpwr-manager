@@ -162,7 +162,7 @@ const (
 		LEFT JOIN design_run r ON r.id = p.run_id`
 	designCardOutputsWhere = `
 		WHERE p.tech_card_id = :card
-		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor', 'freeform', 'cutout', 'extend', 'inpaint'))
+		  AND ((p.run_id IS NOT NULL AND r.kind IN ('render', 'threed', 'pattern', 'recolor', 'freeform', 'cutout', 'extend', 'inpaint', 'video'))
 		    OR (p.run_id IS NULL AND p.kind IN ('render', 'threed', 'pattern')))`
 	// designCardOutputsColorway — КЛЮЧ РАЗДЕЛА: колорвей САМОГО КАДРА, 0 = неатрибутированный.
 	//

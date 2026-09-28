@@ -142,6 +142,13 @@ func designRefuseMalformedRoutes(kind string, spoken *pb_common.DesignRunParams)
 				"reads it; this is a %s run. Nothing was reserved and nothing was charged", kind),
 			map[string]string{"kind": kind})
 	}
+	// B-32: params.video on a kind that does not read it — a source picture the worker would ignore.
+	if kind != entity.DesignRunKindVideo && spoken.GetVideo() != nil {
+		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeVideoForbidden,
+			fmt.Sprintf("params.video is the picture of a video run and only a video run reads it; this "+
+				"is a %s run. Nothing was reserved and nothing was charged", kind),
+			map[string]string{"kind": kind})
+	}
 	return nil
 }
 

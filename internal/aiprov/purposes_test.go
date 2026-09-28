@@ -33,7 +33,40 @@ func seededPurposes(t *testing.T) []string {
 	if len(out) == 0 {
 		t.Fatal("sanity: the ai_route seed parsed to no purposes")
 	}
+	out = append(out, addedPurposes(t)...)
 	return slices.DeleteFunc(out, func(p string) bool { return slices.Contains(retiredPurposes(t), p) })
+}
+
+// addedPurposes — the purposes the Up sections of the migrations after 0373 seed a PRIMARY row for
+// (`INSERT IGNORE INTO ai_route … ('<purpose>', 1, …`): 0384's video.generate (B-32). A position-2 row
+// of an existing purpose (0378's ideas fallback) is not a new purpose and is not read.
+func addedPurposes(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("..", "store", "sql", "0*.sql"))
+	if err != nil {
+		t.Fatalf("glob migrations: %v", err)
+	}
+	seed := regexp.MustCompile(`(?s)INSERT IGNORE INTO ai_route \(purpose, position, provider_key, model\) VALUES(.*?);`)
+	primary := regexp.MustCompile(`\('([^']+)', 1,`)
+	var out []string
+	for _, f := range files {
+		if filepath.Base(f) <= "0373" {
+			continue
+		}
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		up, _, _ := strings.Cut(string(body), "-- +migrate Down")
+		for _, ins := range seed.FindAllStringSubmatch(up, -1) {
+			for _, m := range primary.FindAllStringSubmatch(ins[1], -1) {
+				if !slices.Contains(out, m[1]) {
+					out = append(out, m[1])
+				}
+			}
+		}
+	}
+	return out
 }
 
 // retiredPurposes — the purposes the Up sections of the migrations after 0373 delete from ai_route
@@ -127,6 +160,9 @@ func TestAIPurposesCatalogueRowsAgreeWithTheVocabulary(t *testing.T) {
 		case entity.AICapabilityChat:
 			wantGroup = PurposeGroupChat
 		case entity.AICapabilityThreed:
+			wantGroup = PurposeGroup3D
+		case entity.AICapabilityVideo:
+			// B-32: the clip sits under the 3d heading («3d & video» on the panel), not among the images.
 			wantGroup = PurposeGroup3D
 		}
 		if p.Group != wantGroup {
