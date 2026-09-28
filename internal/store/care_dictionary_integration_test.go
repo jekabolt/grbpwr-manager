@@ -27,7 +27,7 @@ func TestCareDictionaryLoad(t *testing.T) {
 	di, err := s.Cache().GetDictionaryInfo(ctx)
 	require.NoError(t, err, "load dictionary")
 	symbols := di.CareSymbols
-	require.Len(t, symbols, 39, "the full ISO 3758 set the picker offers")
+	require.Len(t, symbols, 40, "the full ISO 3758 set the picker offers (39 from 0217 + IA from 0383)")
 
 	byCode := make(map[string]entity.CareSymbol, len(symbols))
 	for _, s := range symbols {
@@ -41,7 +41,7 @@ func TestCareDictionaryLoad(t *testing.T) {
 			"MWN", "MW30", "MW40", "MW50", "MW60", "GW", "VGW", "HW", "DNW",
 			"BA", "NCB", "DNB",
 			"TDN", "TDL", "TDM", "TDH", "DNTD", "LD", "DF", "DD", "DIS", "LDS", "DFS", "DDS",
-			"IL", "IM", "IH", "DNS", "DNI",
+			"IA", "IL", "IM", "IH", "DNS", "DNI",
 			"DCAS", "DCPS", "DCASE", "GDC", "VGDC", "DNDC",
 			"PWC", "GPWC", "VGPWC", "DNWC",
 		} {
