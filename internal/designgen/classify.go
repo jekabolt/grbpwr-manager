@@ -37,6 +37,11 @@ var (
 	// door and the pickup. Raised before StartAttempt, so nothing is spent; terminal, because the
 	// frozen params and the configured route give the same answer on every pass.
 	errThreedOptionNotRead = errors.New("designgen: the configured 3D route does not read an option this run states")
+	// errThreedReserveShort — every reading candidate of the 3D route would book more than the door
+	// reserved for this run: the route was edited (a dearer candidate, a raised price) between the door
+	// and the pickup (Codex REVIEW-F1 #1). Before StartAttempt, so free; terminal, because the frozen
+	// reservation never grows — the owner starts the run again and the door reserves anew.
+	errThreedReserveShort = errors.New("designgen: the 3D route would book more than this run reserved")
 	// errAcceptedNotRecorded — an asynchronous route ACCEPTED a paid submit and the attempt row that
 	// would carry its id could not be written (G-03, Codex 1a). The id lives only in this pass's
 	// memory, so the pass fails closed: terminal, `submit_unconfirmed`, the id in last_error for a
@@ -136,6 +141,9 @@ const (
 	// errThreedOptionNotRead). The door's own word for the same fact (entity.DesignErrorCodeOptionNotRead),
 	// said again at the pickup because the configuration can move in between. Free and terminal.
 	CodeOptionNotRead = entity.DesignErrorCodeOptionNotRead
+	// CodeThreedReserveShort — the 3D route would book above the run's reservation (errThreedReserveShort):
+	// the door's word for «no reserve number covers this route», reused for «the number is too small».
+	CodeThreedReserveShort = entity.DesignErrorCodeThreedReserveUnbounded
 
 	// CodeSubmitUnconfirmed — A PAID SUBMIT WHOSE OUTCOME IS UNKNOWN (G-03, Codex 1): the request may
 	// have reached the provider and been charged, and nothing on record says so for sure — a transport
@@ -316,6 +324,8 @@ func classifyBySentinel(err error) verdict {
 		return verdict{Retryable: false, Code: CodeMaskInvalid, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errThreedOptionNotRead):
 		return verdict{Retryable: false, Code: CodeOptionNotRead, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errThreedReserveShort):
+		return verdict{Retryable: false, Code: CodeThreedReserveShort, State: entity.DesignAttemptFailed}
 
 	// ─── ours: DELIVERED, AND THE PICTURE IS KEPT. The tile was bought and filed; what failed is a
 	// property of the picture, not of the call. Retrying is forbidden for the ordinary reason — it

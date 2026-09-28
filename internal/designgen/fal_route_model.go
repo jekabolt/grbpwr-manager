@@ -1,8 +1,11 @@
 package designgen
 
 import (
+	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -40,8 +43,27 @@ func FalRouteModel(reg *registry.Registry, kind string) string {
 	if !ok || head.ProviderKey != entity.AIProviderFal {
 		return ""
 	}
-	return strings.Trim(strings.TrimSpace(head.Model), "/")
+	m := strings.Trim(strings.TrimSpace(head.Model), "/")
+	if m != "" && !falSlugRe.MatchString(m) {
+		// ⚠ THE SLUG IS A REQUEST PATH (Codex REVIEW-F1 #4): a row's model is POSTed as /<model> under the
+		// fal key, so anything but a plain owner/model[/variant] slug — "../x", a query, a dot segment —
+		// never reaches the wire. The env slug serves instead, and the panel is told once per slug.
+		if _, warned := falSlugWarned.LoadOrStore(purpose+"\x00"+m, true); !warned {
+			slog.Default().Warn("design generation: the route's model is not a fal slug; the env slug serves instead",
+				slog.String("purpose", purpose), slog.String("model", m))
+		}
+		return ""
+	}
+	return m
 }
+
+// falSlugRe — the shape of a fal model slug: two or more lowercase segments of letters, digits, dots,
+// underscores and dashes, joined by single slashes, no segment starting or ending in a dot (so no "."
+// or ".." segment) and nothing a URL would read as query, fragment or escape.
+var falSlugRe = regexp.MustCompile(`^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:/[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)+$`)
+
+// falSlugWarned — (purpose, slug) pairs already warned about; a bad slug is read on every door and pickup.
+var falSlugWarned sync.Map
 
 // FalRoutesFunc — the door's extend / inpaint route objects off the LIVE route: FalRouteOf over a fal
 // client whose ModelOutpaint / ModelFill is the row's model (cfg's own slug when the row names none). A

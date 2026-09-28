@@ -397,12 +397,22 @@ func (p *routedThreedProvider) Choose(job Job, tried map[string]bool) (Provider,
 	}
 	served := false
 	var opt, why string
+	over := 0 // candidates skipped because one build would book more than the run's reservation
 	for _, c := range r.listed {
 		if o, w := c.unread(job); o != "" {
 			if opt == "" {
 				opt, why = o, w
 			}
 			continue
+		}
+		// ⚠ THE RESERVATION IS THE CEILING (Codex REVIEW-F1 #1). The door reserved the MAX over the chain
+		// it saw; a route edited since (a dearer candidate added, a price raised) must not pay above that
+		// number on this run: such a candidate is skipped free, before any row is opened.
+		if job.ThreedReservedUSD.Valid && c.route != nil {
+			if top, ok := c.route.CeilingUSD(job.ThreedTexture, job.ThreedQuality); ok && top.GreaterThan(job.ThreedReservedUSD.Decimal) {
+				over++
+				continue
+			}
 		}
 		served = true
 		if tried[c.Name()] {
@@ -412,6 +422,11 @@ func (p *routedThreedProvider) Choose(job Job, tried map[string]bool) (Provider,
 	}
 	if served {
 		return nil, errChainExhausted
+	}
+	if over > 0 && opt == "" {
+		return nil, fmt.Errorf("%w: every candidate of the threed route that reads this run would book more than the "+
+			"%s USD reserved for it — the route was edited after the run was priced; start the run again. Nothing was "+
+			"submitted and nothing was charged", errThreedReserveShort, job.ThreedReservedUSD.Decimal.String())
 	}
 	var waiting []threedCandidate
 	for _, c := range r.held {

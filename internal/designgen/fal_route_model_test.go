@@ -88,3 +88,22 @@ func TestTheCutoutRowsModelIS_THE_QUEUE(t *testing.T) {
 	require.Equal(t, []string{"POST /fal-ai/birefnet/v2-heavy"}, stand.requests())
 	require.Equal(t, "fal-ai/birefnet/v2-heavy#cut-1", out.RequestID)
 }
+
+// TestABadRowSlugIS_NOT_A_PATH — Codex REVIEW-F1 #4: a row's model is POSTed as a path under the fal key, so
+// only a plain owner/model[/variant] slug ever comes out of FalRouteModel; anything else is the env slug.
+//
+// MUTATION (measured red→green): falSlugRe not consulted → "../x" comes back as the model.
+func TestABadRowSlugIS_NOT_A_PATH(t *testing.T) {
+	rg := newThreedRouteRig(t)
+	for _, bad := range []string{"../x", "fal-ai/../x", "acme/model?x=1", "acme/model#f", "acme/./model",
+		"acme", "Acme/Model", "acme//model", "acme/mo del", "acme/model%2e%2e"} {
+		rg.store.routeTo(entity.AIPurposeImageExtend, row(1, entity.AIProviderFal, bad))
+		rg.reload(t)
+		require.Empty(t, FalRouteModel(rg.reg, entity.DesignRunKindExtend), bad)
+	}
+	for _, good := range []string{"fal-ai/flux-2-pro/outpaint", "fal-ai/birefnet/v2", "acme/model-v1.5_x"} {
+		rg.store.routeTo(entity.AIPurposeImageExtend, row(1, entity.AIProviderFal, "/"+good+"/"))
+		rg.reload(t)
+		require.Equal(t, good, FalRouteModel(rg.reg, entity.DesignRunKindExtend))
+	}
+}

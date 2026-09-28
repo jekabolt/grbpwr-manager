@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
@@ -567,4 +568,36 @@ func TestTheThreedCandidateRECORDS_WHAT_IT_SENDS(t *testing.T) {
 	rows := ai.Rows()
 	require.NotEmpty(t, rows)
 	require.Equal(t, "meshy-6", rows[0].Start.Model, "the ledger row names what was asked")
+}
+
+// TestADearerCandidateNEVER_EXCEEDS_THE_RESERVATION — Codex REVIEW-F1 #1: the door reserved 1.20 (fal alone);
+// meshy (30 credits × $0.05 = 1.50) joined the route since. fal is still chosen; meshy is skipped as over the
+// reservation; a route of meshy alone refuses free and terminal (threed_reserve_unbounded), never pays 1.50
+// against 1.20.
+//
+// MUTATION (measured red→green): the `over` skip in Choose removed → meshy is chosen for the 1.20 run.
+func TestADearerCandidateNEVER_EXCEEDS_THE_RESERVATION(t *testing.T) {
+	rg := newThreedRouteRig(t, row(1, entity.AIProviderFal, ""), row(2, entity.AIProviderMeshy, ""))
+	m := meshy.New(meshy.Config{APIKey: "k", BaseURL: "http://127.0.0.1:1", CreditUSD: 0.05})
+	ch := NewRoutedThreedProvider(rg.reg, threedFactoriesAt(falCfgAt("http://127.0.0.1:1"), m), false, ThreedProviderFal).(Chooser)
+	reserved := Job{Kind: entity.DesignRunKindThreed,
+		ThreedReservedUSD: decimal.NullDecimal{Valid: true, Decimal: decimal.RequireFromString("1.20")}}
+
+	p, err := ch.Choose(reserved, nil)
+	require.NoError(t, err)
+	require.Equal(t, ThreedProviderFal, p.Name())
+	_, err = ch.Choose(reserved, map[string]bool{ThreedProviderFal: true})
+	require.ErrorIs(t, err, errChainExhausted, "meshy at 1.50 is not a fallback for a 1.20 reservation")
+
+	rg.store.routeTo(entity.AIPurposeThreed, row(1, entity.AIProviderMeshy, ""))
+	rg.reload(t)
+	_, err = ch.Choose(reserved, nil)
+	require.ErrorIs(t, err, errThreedReserveShort)
+	require.Contains(t, err.Error(), "more than the 1.2 USD reserved")
+	v := classify(err)
+	require.Equal(t, CodeThreedReserveShort, v.Code)
+	require.False(t, v.Retryable)
+	p, err = ch.Choose(Job{Kind: entity.DesignRunKindThreed}, nil)
+	require.NoError(t, err, "a run with no reservation (pre-B-24 rows) is chosen as before")
+	require.Equal(t, ThreedProviderMeshy, p.Name())
 }
