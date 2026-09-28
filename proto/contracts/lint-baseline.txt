@@ -19,6 +19,7 @@ ENUM_ZERO_VALUE_SUFFIX|proto/common/common/production.proto|Enum zero value name
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/production.proto|Enum zero value name \"PRODUCTION_LAY_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/techcard.proto|Enum zero value name \"TECH_CARD_ANNOTATION_CAPS_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/techcard.proto|Enum zero value name \"TECH_CARD_BOM_KIND_UNSET\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/techcard.proto|Enum zero value name \"TECH_CARD_BOM_LABEL_PART_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/techcard.proto|Enum zero value name \"TECH_CARD_BOM_PURPOSE_UNSET\" should be suffixed with \"_UNKNOWN\".
 IMPORT_USED|proto/common/common/language.proto|Import \"google/protobuf/timestamp.proto\" is unused.
 PACKAGE_VERSION_SUFFIX|proto/admin/admin/admin.proto|Package name \"admin\" should be suffixed with a correctly formed version, such as \"admin.v1\".

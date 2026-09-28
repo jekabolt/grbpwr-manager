@@ -1163,6 +1163,38 @@ func BomKindHomeSection(k TechCardBomKind) (TechCardBomSection, bool) {
 	return s, ok
 }
 
+// TechCardBomLabelPart — в какую часть составника (care label) идёт состав строки BOM (миграция
+// *_bom_item_label_part.sql). Свойство ЛЕНТЫ: отдельная ось рядом с Purpose/Kind, без
+// пары с секцией — любой раздел может попасть на этикетку явно. INVALID (NULL) = «авто»: дефолт по
+// section/purpose считает клиент, сервер хранит только явный выбор.
+//
+// Mirrors the common.TechCardBomLabelPart proto enum and the chk_bom_item_label_part DB CHECK.
+type TechCardBomLabelPart string
+
+const (
+	BomLabelPartShell        TechCardBomLabelPart = "shell"         // верх
+	BomLabelPartBodyLining   TechCardBomLabelPart = "body_lining"   // подкладка стана
+	BomLabelPartSleeveLining TechCardBomLabelPart = "sleeve_lining" // подкладка рукава
+	BomLabelPartPocketLining TechCardBomLabelPart = "pocket_lining" // подкладка кармана
+	BomLabelPartHoodLining   TechCardBomLabelPart = "hood_lining"   // подкладка капюшона
+	BomLabelPartFilling      TechCardBomLabelPart = "filling"       // утеплитель / наполнитель
+	BomLabelPartTrim         TechCardBomLabelPart = "trim"          // отделка
+	BomLabelPartNotOnLabel   TechCardBomLabelPart = "not_on_label"  // явно не идёт на ленту
+)
+
+// ValidTechCardBomLabelParts is the set of accepted label parts. Kept in lockstep with the DB CHECK
+// by TestBomLabelPartDBCheckNoDrift and with the proto enum by TestBomLabelPartEnumNoDrift.
+var ValidTechCardBomLabelParts = map[TechCardBomLabelPart]bool{
+	BomLabelPartShell:        true,
+	BomLabelPartBodyLining:   true,
+	BomLabelPartSleeveLining: true,
+	BomLabelPartPocketLining: true,
+	BomLabelPartHoodLining:   true,
+	BomLabelPartFilling:      true,
+	BomLabelPartTrim:         true,
+	BomLabelPartNotOnLabel:   true,
+}
+
 // TechCardLabDipStatus is the lab-dip lifecycle of a colourway. Mirrors the
 // common.TechCardLabDipStatus proto enum; stored in tech_card_colorway.lab_dip_status.
 type TechCardLabDipStatus string
@@ -1775,6 +1807,13 @@ type TechCardBomItem struct {
 	// chk_bom_item_kind_note enforces it — so the note can never quietly become a 52nd kind.
 	KindNote        sql.NullString `db:"kind_note"`
 	KindNoteOmitted bool           `db:"-"`
+	// LabelPart — часть составника (care label), в которую идёт состав строки; см.
+	// TechCardBomLabelPart. INVALID (NULL) = «авто»: дефолт по section/purpose выводит клиент.
+	// LabelPartOmitted — поле ОТСУТСТВОВАЛО на проводе: тот же НЕГАТИВНЫЙ смысл и та же причина, что
+	// у KindOmitted (вкладка со старым бандлом поля не шлёт, и её сейв не должен стирать выбор у
+	// всех строк карточки). Нулевое значение = «пиши как обычно».
+	LabelPart        sql.NullString `db:"label_part"`
+	LabelPartOmitted bool           `db:"-"`
 	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
 	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
 	IsSample        bool           `db:"is_sample"`
