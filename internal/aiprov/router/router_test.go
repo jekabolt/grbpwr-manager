@@ -770,13 +770,38 @@ func TestChatSkipsAProviderItsBreakerRefuses(t *testing.T) {
 	require.Equal(t, calls, rg.or.n())
 }
 
-// TestChatSkipsAProviderWithNoTransport — the owner enabled a provider this build has no adapter for
-// (anthropic, first on the route): it is passed over, the next candidate answers as the FIRST call,
-// and the log says so once per provider per config version — not once per press.
+// TestChatSkipsAProviderWithNoTransport — the owner enabled a provider this build has no adapter for:
+// it is passed over, the next candidate answers as the FIRST call, and the log says so once per
+// provider per config version — not once per press.
 //
-// MUTATION: the no-transport branch returns ErrNotConfigured instead of continuing → red.
+// SINCE B-23 PRODUCTION HAS NO SUCH PROVIDER: app.go wires a chat transport for every provider that
+// serves chat (openrouter, openai, apibost, anthropic, google), so the branch guards the day a
+// provider joins the vocabulary before its adapter. It is exercised two ways. The registry half keeps
+// the rig as it is — the rig's router holds no anthropic transport, so anthropic stands in for that
+// provider (a key the vocabulary does not know cannot reach the router through the registry: walk
+// drops any provider that does not serve chat, runblob included). The static half uses a provider key
+// that exists nowhere, "acme", with no transport at all.
+//
+// MUTATION: the no-transport branch returns ErrNotConfigured instead of continuing → red (both halves).
 // MUTATION: warnNoTransport without its seen/version check → red (two lines for one version).
 func TestChatSkipsAProviderWithNoTransport(t *testing.T) {
+	t.Run("a static route naming a provider key that exists nowhere", func(t *testing.T) {
+		or := &chatter{}
+		st := NewStatic([]StaticCandidate{
+			{ProviderKey: "acme", Model: "acme-1"}, // no Chatter: no transport for this key
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: or, Model: "m"},
+		})
+		logs := &bytes.Buffer{}
+		st.log = slog.New(slog.NewTextHandler(logs, nil))
+		require.Equal(t, entity.AIProviderOpenRouter, st.PrimaryProvider(entity.AIPurposeNoteMarkdown))
+		res, err := st.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+		require.NoError(t, err)
+		require.Equal(t, entity.AIProviderOpenRouter, res.Provider)
+		require.Equal(t, []string{"m"}, or.models())
+		require.Contains(t, logs.String(), "provider=acme")
+		require.Equal(t, 1, strings.Count(logs.String(), "no chat transport"))
+	})
+
 	rg := newRig(t, map[string][]entity.AIRouteCandidate{entity.AIPurposeNoteMarkdown: {
 		at(1, entity.AIProviderAnthropic, "claude-sonnet-5"), at(2, entity.AIProviderOpenRouter, ""),
 	}}, testDefaults, 0)
@@ -805,9 +830,10 @@ func TestChatSkipsAProviderWithNoTransport(t *testing.T) {
 }
 
 // TestChatSkipsACandidateWithNoModel — a candidate whose effective model is "" is switched off for
-// the purpose: apibost with no model has no default (the Defaults are OpenRouter's slugs), so the
-// openrouter candidate after it answers with its default; with no default either, the purpose is
-// not configured and nothing is called.
+// the purpose: apibost with no model has no default here (testDefaults carries no ByProvider table —
+// production's does, TestADirectProviderRowWithNoModelCallsItsDefault), so the openrouter candidate
+// after it answers with its default; with no default either, the purpose is not configured and
+// nothing is called.
 //
 // MUTATION: the `model == ""` skip removed → red (apibost called with "").
 func TestChatSkipsACandidateWithNoModel(t *testing.T) {
@@ -879,6 +905,71 @@ func TestEffectiveModelKeepsTodaysEnvSemantics(t *testing.T) {
 	require.Equal(t, slugIdeasFB, res.Model)
 	require.Equal(t, []string{slugIdeas, slugIdeasFB}, on.or.models())
 	require.Equal(t, entity.AIProviderOpenRouter, on.rows()[1].Start.FallbackFrom)
+}
+
+// TestADirectProviderRowWithNoModelCallsItsDefault (B-23) — a route row on a direct provider with no
+// model resolves to that provider's default chat slug (Defaults.ByProvider), so it is callable: the
+// rig's (openai, "") calls gpt-5-mini, RouteHead names it, and the answer — reported as the dated
+// snapshot OpenAI echoes — is priced from the table with the price version. The row's own model still
+// wins; openrouter never reads ByProvider (an openrouter entry planted in the map is ignored); a
+// provider absent from the map stays "" and is passed over; a non-chat purpose gets no chat default;
+// the Ideas kill switch closes a defaulted row too.
+//
+// MUTATIONS (each measured red → restored green): EffectiveModel without the ByProvider branch
+// (returns "" for every non-openrouter row, the pre-B-23 code) → red (openai not callable); ByProvider
+// read before the openrouter branch → red (the planted openrouter entry answers instead of the env
+// slug); the isChatPurpose guard removed → red (image.generate gets a chat slug).
+func TestADirectProviderRowWithNoModelCallsItsDefault(t *testing.T) {
+	d := testDefaults
+	d.ByProvider = map[string]string{
+		entity.AIProviderOpenAI:     "gpt-5-mini",
+		entity.AIProviderApibost:    " claude-sonnet-5 ",
+		entity.AIProviderOpenRouter: "must/not-be-read",
+	}
+	r := New(nil, nil, nil, d, 0)
+	cand := func(pk, m string) registry.Candidate { return registry.Candidate{ProviderKey: pk, Model: m} }
+	require.Equal(t, "gpt-5-mini", r.EffectiveModel(entity.AIPurposeNoteMarkdown, cand(entity.AIProviderOpenAI, "")))
+	require.Equal(t, "gpt-5-mini", r.EffectiveModel(entity.AIPurposeTechCardAnalysis, cand(entity.AIProviderOpenAI, " ")),
+		"one default for every chat purpose")
+	require.Equal(t, "claude-sonnet-5", r.EffectiveModel(entity.AIPurposeEmailTranslate, cand(entity.AIProviderApibost, "")))
+	require.Equal(t, "gpt-5.2", r.EffectiveModel(entity.AIPurposeNoteMarkdown, cand(entity.AIProviderOpenAI, "gpt-5.2")),
+		"the row's own model wins")
+	require.Equal(t, slugChat, r.EffectiveModel(entity.AIPurposeNoteMarkdown, cand(entity.AIProviderOpenRouter, "")),
+		"openrouter answers with its env slug, never with ByProvider")
+	require.Equal(t, slugAnalysis, r.EffectiveModel(entity.AIPurposeTechCardEnhance, cand(entity.AIProviderOpenRouter, "")))
+	require.Empty(t, r.EffectiveModel(entity.AIPurposeNoteMarkdown, cand(entity.AIProviderAnthropic, "")),
+		"a provider with no default stays uncallable")
+	require.Empty(t, r.EffectiveModel(entity.AIPurposeImageGenerate, cand(entity.AIProviderOpenAI, "")),
+		"a chat default is never an image slug")
+	off := d
+	off.IdeasOff = true
+	require.Empty(t, New(nil, nil, nil, off, 0).EffectiveModel(entity.AIPurposePlaygroundIdeas, cand(entity.AIProviderOpenAI, "")),
+		"the kill switch closes a defaulted row too")
+
+	// Through the registry: (openai, "") is callable, called with the default, and priced.
+	rg := newRig(t, map[string][]entity.AIRouteCandidate{
+		entity.AIPurposeNoteMarkdown: {at(1, entity.AIProviderOpenAI, "")},
+	}, d, 0)
+	require.True(t, rg.router.Enabled(entity.AIPurposeNoteMarkdown))
+	p, m := rg.router.RouteHead(entity.AIPurposeNoteMarkdown)
+	require.Equal(t, entity.AIProviderOpenAI, p)
+	require.Equal(t, "gpt-5-mini", m)
+	rg.oa.do = func(_ context.Context, model string, _ aiprov.ChatRequest) (*aiprov.ChatResult, error) {
+		return &aiprov.ChatResult{Text: "ok", Model: model + "-2025-08-07",
+			Usage: aiprov.TokenUsage{Prompt: 1000, Completion: 500}}, nil
+	}
+	res, err := rg.router.Chat(context.Background(), entity.AIPurposeNoteMarkdown, chatReq)
+	require.NoError(t, err)
+	require.Equal(t, entity.AIProviderOpenAI, res.Provider)
+	require.Equal(t, []string{"gpt-5-mini"}, rg.oa.models())
+	require.Zero(t, rg.or.n())
+	rows := rg.rows()
+	require.Len(t, rows, 1)
+	require.Equal(t, "gpt-5-mini", rows[0].Start.Model)
+	require.Equal(t, "gpt-5-mini-2025-08-07", rows[0].End.ModelActual)
+	require.Equal(t, entity.AICostTable, rows[0].End.CostSource, "the dated snapshot prices as its alias")
+	require.True(t, decimal.RequireFromString("0.00125").Equal(rows[0].End.CostUSD.Decimal), rows[0].End.CostUSD.Decimal.String())
+	require.Equal(t, pricing.Version, rows[0].End.PriceVersion)
 }
 
 // TestChatRefusesAPurposeThatIsNotChat — an image purpose's candidates are image providers; a chat

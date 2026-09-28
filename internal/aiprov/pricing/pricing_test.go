@@ -251,3 +251,79 @@ func TestPricingCatalogueIsACopy(t *testing.T) {
 	require.False(t, m.InputUSDPer1M.Decimal.Equal(decimal.NewFromInt(999)))
 	require.NotEmpty(t, Catalogue(entity.AIProviderOpenAI)[0].Source)
 }
+
+// TestPricingLookupStripsASnapshotDate — OpenAI reports the dated snapshot it served, and the ledger
+// prices what was reported: "gpt-5-mini-2025-08-07" prices as the "gpt-5-mini" row (the row itself
+// comes back, Source and all), through Price as well; anything else after the alias stays a miss —
+// "-preview" may be another model at another price, and eleven characters shaped like a date that is
+// not one are not a snapshot.
+//
+// MUTATIONS (each measured red → restored green): Lookup without the snapshot step → the dated rows
+// go red; snapshotAlias cutting at the LAST "-" (any suffix) → the "-preview" / "-mini-high" rows go
+// red; snapshotAlias without the time.Parse check (any "-dddd-dd-dd"-shaped tail) → the impossible-date
+// row goes red.
+func TestPricingLookupStripsASnapshotDate(t *testing.T) {
+	alias := mustLookup(t, entity.AIProviderOpenAI, "gpt-5-mini")
+	got, ok := Lookup(entity.AIProviderOpenAI, "gpt-5-mini-2025-08-07")
+	require.True(t, ok, "a dated snapshot is priced by its alias's row")
+	require.Equal(t, alias, got)
+
+	u := Usage{Prompt: 1000, Completion: 500}
+	dated, src := Price(entity.AIProviderOpenAI, "gpt-5-mini-2025-08-07", u)
+	requireUSD(t, "0.00125", dated, src) // (1000 × 0.25 + 500 × 2) / 1e6 — the alias's rates
+	plain, _ := Price(entity.AIProviderOpenAI, "gpt-5-mini", u)
+	require.True(t, plain.Decimal.Equal(dated.Decimal))
+
+	// The rule is the suffix, not the provider: a dated OpenRouter slug is its alias's fallback row.
+	_, ok = Lookup(entity.AIProviderOpenRouter, "openai/gpt-5-mini-2025-08-07")
+	require.True(t, ok)
+
+	for _, slug := range []string{
+		"gpt-5-mini-preview",    // a suffix that is not a date: maybe another model
+		"gpt-5-mini-high",       // likewise
+		"gpt-5-mini-2025-13-45", // shaped like a date, not a date
+		"gpt-5-mini-20250807",   // Anthropic's dated form is not OpenAI's; not stripped
+		"gpt-5-mini2025-08-07",  // no separator
+		"-2025-08-07",           // nothing before the date
+		"2025-08-07",
+		"gpt-9000-2025-08-07", // the alias has no row either
+	} {
+		_, ok := Lookup(entity.AIProviderOpenAI, slug)
+		require.False(t, ok, "%q must stay unpriced", slug)
+		usd, src := Price(entity.AIProviderOpenAI, slug, u)
+		requireNone(t, usd, src)
+	}
+}
+
+// TestDefaultChatSlugsArePricedRows — the default of every direct chat provider, exactly as the brief
+// chose them (for price, not power), each a PRICED chat row of its own provider, so a route row with no
+// model is callable AND a defaulted call is never booked unpriced; OpenRouter (env defaults) and every
+// provider that does not serve chat have none.
+//
+// MUTATIONS: the table emptied → red; a default that is not a row of its provider ("gpt-5-mini" on
+// google) → red; an openrouter entry added → red.
+func TestDefaultChatSlugsArePricedRows(t *testing.T) {
+	want := map[string]string{
+		entity.AIProviderOpenAI:    "gpt-5-mini",
+		entity.AIProviderAnthropic: "claude-sonnet-5",
+		entity.AIProviderGoogle:    "gemini-2.5-flash",
+		entity.AIProviderApibost:   "claude-sonnet-5",
+	}
+	for _, p := range allProviders {
+		slug, ok := DefaultChatSlug(p)
+		w, has := want[p]
+		require.Equal(t, has, ok, "%s: default present", p)
+		require.Equal(t, w, slug, p)
+		if !ok {
+			continue
+		}
+		require.True(t, entity.AIProviderServes(p, entity.AICapabilityChat), "%s serves chat", p)
+		m := mustLookup(t, p, slug)
+		require.Equal(t, KindChat, m.Kind, "%s/%s", p, slug)
+		usd, src := Price(p, slug, Usage{Prompt: 1000, Completion: 1000})
+		require.True(t, usd.Valid, "%s/%s: a default must be priced", p, slug)
+		require.Equal(t, entity.AICostTable, src)
+	}
+	_, ok := DefaultChatSlug(entity.AIProviderOpenRouter)
+	require.False(t, ok, "openrouter's defaults are the env slugs, never this table")
+}

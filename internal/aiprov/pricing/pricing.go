@@ -13,6 +13,9 @@
 package pricing
 
 import (
+	"strings"
+	"time"
+
 	"github.com/shopspring/decimal"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -154,14 +157,84 @@ func Catalogue(provider string) []Model {
 	return append([]Model(nil), rows...)
 }
 
-// Lookup finds one row by exact provider key and slug.
+// Lookup finds the row that prices slug on provider: the EXACT slug first; else, when slug ends in a
+// dated snapshot suffix (-YYYY-MM-DD, a real calendar date), the row of the slug without it; else no
+// row.
+//
+// WHY THE SECOND STEP. The ledger prices the slug the provider REPORTED (ChatResult.Model), and OpenAI
+// reports the dated snapshot it served, not the alias it was asked for: a call to "gpt-5-mini" comes
+// back as "gpt-5-mini-2025-08-07". An exact-only lookup would book every direct OpenAI call as
+// unpriced, forever, while the table holds its price. The snapshot is the alias's model on the day it
+// was cut, and the alias's row is the best sourced number for it — the row keeps saying where that
+// number came from, and the ledger's model_actual keeps the dated slug.
+//
+// WHY ONLY THAT SUFFIX. Anything else after the alias ("-preview", "-high", "-search") can be a
+// DIFFERENT model at a different price, and a guessed price is the lie this table exists to refuse —
+// so it stays a miss, and the report counts it as unpriced. The date must parse: eleven characters
+// that merely look like one are not a snapshot. An exact row always wins over the stripped one.
 func Lookup(provider, slug string) (Model, bool) {
+	if m, ok := lookupExact(provider, slug); ok {
+		return m, true
+	}
+	if alias, ok := snapshotAlias(slug); ok {
+		return lookupExact(provider, alias)
+	}
+	return Model{}, false
+}
+
+func lookupExact(provider, slug string) (Model, bool) {
 	for _, m := range catalogue[provider] {
 		if m.Slug == slug {
 			return m, true
 		}
 	}
 	return Model{}, false
+}
+
+// snapshotDate is the layout of the dated suffix OpenAI puts on the snapshot it served.
+const snapshotDate = "2006-01-02"
+
+// snapshotAlias is slug without a trailing "-YYYY-MM-DD" that parses as a calendar date; ok=false
+// when there is no such suffix or nothing is left before it.
+func snapshotAlias(slug string) (string, bool) {
+	cut := len(slug) - len(snapshotDate) - 1
+	if cut <= 0 || slug[cut] != '-' {
+		return "", false
+	}
+	if _, err := time.Parse(snapshotDate, slug[cut+1:]); err != nil {
+		return "", false
+	}
+	alias := slug[:cut]
+	if strings.TrimSpace(alias) == "" {
+		return "", false
+	}
+	return alias, true
+}
+
+// defaultChatSlugs — the slug a chat route row on a DIRECT provider is called with when the row
+// names no model (router.Defaults.ByProvider, filled by admin.AIRouterDefaults). Before B-23 such a
+// row resolved to "" and was silently uncallable: saved in the panel, passed over on every press.
+//
+// CHOSEN FOR PRICE, NOT POWER (06-BRIEFS-E, E3). A default is what a route gets when nobody picked a
+// model; whoever wants a stronger one names it on the row, and a stronger model as the default would
+// be spend nobody chose. Every value is a PRICED chat row of its own provider in the catalogue above
+// (TestDefaultChatSlugsArePricedRows), so a defaulted call is never booked as unpriced.
+//
+// OpenRouter has NO row here on purpose: its defaults are the per-purpose env slugs
+// (OPENROUTER_MODEL, _ANALYSIS, _IDEAS — router.Defaults.Chat / Analysis / Ideas), which the seeded
+// routes answer with today; the router never reads this table for an openrouter row.
+var defaultChatSlugs = map[string]string{
+	entity.AIProviderOpenAI:    "gpt-5-mini",
+	entity.AIProviderAnthropic: "claude-sonnet-5",
+	entity.AIProviderGoogle:    "gemini-2.5-flash",
+	entity.AIProviderApibost:   "claude-sonnet-5",
+}
+
+// DefaultChatSlug is the default chat slug of a direct provider (see defaultChatSlugs); ok=false for
+// OpenRouter (env defaults) and for every provider that does not serve chat.
+func DefaultChatSlug(provider string) (string, bool) {
+	slug, ok := defaultChatSlugs[provider]
+	return slug, ok
 }
 
 var million = decimal.NewFromInt(1_000_000)
