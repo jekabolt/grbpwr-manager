@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/probe"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -41,10 +40,17 @@ type AIProviderView struct {
 	Models            []AIModelView
 }
 
+// AIRouteCandidateView is one route row as the panel shows it: the row as stored (ProviderKey "" =
+// the capability's default) and EffectiveModel, the slug the row is CALLED with today (C-08). The
+// handler joins it from the chat router (admin.aiEffectiveModel); this package only carries it.
+type AIRouteCandidateView struct {
+	ProviderKey, Model, EffectiveModel string
+}
+
 // AIPurposeView is one purpose with its route; Fallback nil = no fallback, Primary nil = no route row.
 type AIPurposeView struct {
 	Key, Label, Hint, Group, Capability string
-	Primary, Fallback                   *entity.AIRouteCandidate
+	Primary, Fallback                   *AIRouteCandidateView
 }
 
 // AIConfigView is the whole panel.
@@ -118,11 +124,11 @@ func aiProviderToPb(p AIProviderView) *pb_admin.AiProviderInfo {
 }
 
 // AIRouteCandidateToPb converts one route candidate; nil stays nil (an absent fallback).
-func AIRouteCandidateToPb(c *entity.AIRouteCandidate) *pb_admin.AiRouteCandidate {
+func AIRouteCandidateToPb(c *AIRouteCandidateView) *pb_admin.AiRouteCandidate {
 	if c == nil {
 		return nil
 	}
-	return &pb_admin.AiRouteCandidate{ProviderKey: c.ProviderKey, Model: c.Model}
+	return &pb_admin.AiRouteCandidate{ProviderKey: c.ProviderKey, Model: c.Model, EffectiveModel: c.EffectiveModel}
 }
 
 // AIProbeResultToPb converts what a key's free probe said. probe.Result carries no key material by

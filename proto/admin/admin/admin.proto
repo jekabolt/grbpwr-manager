@@ -13203,6 +13203,14 @@ message AiRouteCandidate {
   // capabilities have no default, so their candidates name a provider.
   string provider_key = 1;
   string model = 2; // "" = the client's own default slug; a custom slug is any free text
+  // The slug this candidate is CALLED with today. For a chat purpose: `model` when named, else the
+  // router's default for (purpose, provider) — OpenRouter: the purpose's env slug; a direct provider:
+  // its priced default; "" = not callable (the purpose is switched off, or the provider has no
+  // default). For an image / 3D / vector purpose the router holds no default: it is the row's own
+  // `model`, and "" is the provider client's own default slug. The panel compares candidates by THIS,
+  // as the server does — and by `model` where this is "", as the server's same-as-primary check does.
+  // Set on a read (AiPurposeInfo); ignored on a write (SetAiRouteRequest).
+  string effective_model = 3;
 }
 
 // AiModelInfo is one model of a provider: curated (the pricing catalogue) or custom (an ai_model row —

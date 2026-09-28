@@ -15,6 +15,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/pricing"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/probe"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -147,6 +148,7 @@ func (s *Server) aiProvidersConfig(ctx context.Context) (*pb_admin.GetAiProvider
 		masterKeyPresent:        s.aiKeyRing.Enabled(),
 		designGenerationEnabled: s.designGenerationEnabled,
 		recraftViaOpenRouter:    s.aiRecraftViaOpenRouter,
+		chat:                    s.ai,
 	})), nil
 }
 
@@ -166,6 +168,9 @@ func (s *Server) aiReadConfig(ctx context.Context) (*entity.AIConfig, error) {
 // aiViewFlags — the server facts the view needs besides the rows.
 type aiViewFlags struct {
 	masterKeyPresent, designGenerationEnabled, recraftViaOpenRouter bool
+	// chat is the chat router, read for its default slugs only (a route row's effective_model); nil =
+	// a Server without SetAIRouter.
+	chat *router.Router
 }
 
 // aiConfigView joins the store's rows, the registry's live state, the fault badges and the code
@@ -237,16 +242,54 @@ func aiConfigView(cfg *entity.AIConfig, states []registry.ProviderState, faults 
 	for _, p := range aiprov.Purposes() {
 		pv := dto.AIPurposeView{Key: p.Key, Label: p.Label, Hint: p.Hint, Group: p.Group, Capability: p.Capability}
 		if cands := routes[p.Key]; len(cands) > 0 {
-			primary := cands[0]
-			pv.Primary = &primary
+			pv.Primary = aiCandidateView(p, cands[0], cfg.Settings, f.chat)
 			if len(cands) > 1 {
-				fallback := cands[1]
-				pv.Fallback = &fallback
+				pv.Fallback = aiCandidateView(p, cands[1], cfg.Settings, f.chat)
 			}
 		}
 		v.Purposes = append(v.Purposes, pv)
 	}
 	return v
+}
+
+// aiCandidateView is one route row for the wire, with the slug it is called with (C-08). The row's
+// provider "" is resolved to the capability's default under the SAME settings the rows were read
+// with before the router is asked: the registry hands the router the resolved key, and an
+// unresolved "" would read no default at all (ByProvider[""]) — a callable row shown as not callable.
+// The wire keeps the stored "" (the panel's own dropdown state).
+func aiCandidateView(p aiprov.Purpose, c entity.AIRouteCandidate, settings entity.AISettings, chat *router.Router) *dto.AIRouteCandidateView {
+	provider := c.ProviderKey
+	if strings.TrimSpace(provider) == "" {
+		provider = settings.DefaultProviderFor(p.Capability)
+	}
+	return &dto.AIRouteCandidateView{
+		ProviderKey:    c.ProviderKey,
+		Model:          c.Model,
+		EffectiveModel: aiEffectiveModel(chat, p.Key, provider, c.Model),
+	}
+}
+
+// aiEffectiveModel is the slug a route row of purpose is CALLED with today — AiRouteCandidate.
+// effective_model on the wire, and what aiSameCandidate compares on this side (via aiEffectiveSlug),
+// so the panel and the server tell a fallback from its primary by one function (C-08). providerKey
+// is already resolved ("" → the capability's default).
+//
+//   - A chat purpose: the router's answer (router.EffectiveModel — the row's model, else the purpose's
+//     env slug on openrouter, else the direct provider's priced default). "" = not callable: the
+//     purpose is switched off (OPENROUTER_MODEL_IDEAS=off) or the provider has no default. A nil
+//     router (a Server without SetAIRouter) calls nothing at all, so every chat row is "" — the
+//     router's own nil answer would be the row's model, a slug no door of this server calls.
+//   - Any other purpose (image / 3D / vector): the row's own model. The router serves chat only and
+//     holds no default there; such a row's "" is its provider client's own env slug (FAL_MODEL_*, …),
+//     which designgen reads, not this package — «the client's default», not «not callable».
+func aiEffectiveModel(chat *router.Router, purpose, providerKey, model string) string {
+	if entity.AIPurposeCapability(purpose) != entity.AICapabilityChat {
+		return strings.TrimSpace(model)
+	}
+	if chat == nil {
+		return ""
+	}
+	return chat.EffectiveModel(purpose, registry.Candidate{ProviderKey: providerKey, Model: model})
 }
 
 // aiAdminKeySupported — the providers whose cost API needs a separate reconciliation key (D-06):
@@ -592,11 +635,11 @@ func (s *Server) aiSameCandidate(ctx context.Context, purpose aiprov.Purpose, pr
 	return s.aiEffectiveSlug(purpose.Key, pp, primary.Model) == s.aiEffectiveSlug(purpose.Key, fp, fallback.Model), nil
 }
 
-// aiEffectiveSlug is the slug a route row is CALLED with: its own model, else the router's default for
-// the purpose on that provider (router.EffectiveModel — OPENROUTER_MODEL, _ANALYSIS, _IDEAS for an
-// openrouter row), else "" (a provider whose client picks its own default).
+// aiEffectiveSlug is what the same-as-primary check compares a row by: the slug it is CALLED with
+// (aiEffectiveModel — the wire's effective_model, so the panel compares the same thing), else its own
+// model where that is "" (a purpose switched off, a provider whose client picks its own default).
 func (s *Server) aiEffectiveSlug(purpose, providerKey, model string) string {
-	if m := s.ai.EffectiveModel(purpose, registry.Candidate{ProviderKey: providerKey, Model: model}); m != "" {
+	if m := aiEffectiveModel(s.ai, purpose, providerKey, model); m != "" {
 		return m
 	}
 	return model

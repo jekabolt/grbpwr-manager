@@ -25,6 +25,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -606,6 +607,137 @@ func TestAiConfigJoinsOneVersion(t *testing.T) {
 		require.False(t, armed.Load(), "the swap must have happened inside the read")
 		consistent(t, cfg)
 	})
+}
+
+// ───────────────────────── effective_model (C-08) ─────────────────────────
+
+const (
+	aiEnvChatSlug     = "vendor/chat-env"     // OPENROUTER_MODEL
+	aiEnvAnalysisSlug = "vendor/analysis-env" // OPENROUTER_MODEL_ANALYSIS
+	aiEnvIdeasSlug    = "vendor/ideas-env"    // OPENROUTER_MODEL_IDEAS
+)
+
+// aiWithChatRouter wires the chat router app.go builds — the harness registry, the default table
+// from an OpenRouter client (AIRouterDefaults) — its env slugs distinct per purpose; ideas "off" is
+// OPENROUTER_MODEL_IDEAS=off.
+func aiWithChatRouter(h *aiHarness, ideas string) {
+	client := openrouter.New(openrouter.Config{
+		APIKey: "k", Model: aiEnvChatSlug, ModelAnalysis: aiEnvAnalysisSlug, ModelIdeas: ideas,
+	})
+	h.s.SetAIRouter(router.New(h.reg, nil, nil, AIRouterDefaults(client), 0))
+}
+
+// aiRouteRows replaces purpose's route in cfg (the rows the store answers), positions from 1.
+func aiRouteRows(t *testing.T, cfg *entity.AIConfig, purpose string, cands ...entity.AIRouteCandidate) {
+	t.Helper()
+	cfg.Routes = slices.Clone(cfg.Routes) // the registry's source shares the backing array
+	for i := range cfg.Routes {
+		if cfg.Routes[i].Purpose == purpose {
+			for j := range cands {
+				cands[j].Position = j + 1
+			}
+			cfg.Routes[i].Candidates = cands
+			return
+		}
+	}
+	t.Fatalf("purpose %s is not routed in the test config", purpose)
+}
+
+func aiRow(provider, model string) entity.AIRouteCandidate {
+	return entity.AIRouteCandidate{ProviderKey: provider, Model: model}
+}
+
+// aiEffective is the (primary, fallback) effective_model of purpose on the wire; "-" = no fallback.
+func aiEffective(t *testing.T, cfg *pb_admin.GetAiProvidersConfigResponse, purpose string) [2]string {
+	t.Helper()
+	p := aiPurpose(t, cfg, purpose)
+	out := [2]string{p.GetPrimary().GetEffectiveModel(), "-"}
+	if p.GetFallback() != nil {
+		out[1] = p.GetFallback().GetEffectiveModel()
+	}
+	return out
+}
+
+// TestAiConfigEffectiveModelIsTheSlugACandidateIsCalledWith — every route row carries the slug the
+// runtime calls it with: a direct provider's "" is its priced default, openrouter's "" is the
+// PURPOSE's env slug (analysis ≠ chat ≠ ideas), a named model is itself, the default provider "" is
+// resolved first (here the chat default is anthropic), and an image / 3D / vector row is its own model
+// ("" there = the provider client's own default, which the router does not hold). The stored row
+// travels unchanged beside it.
+//
+// MUTATION IT CATCHES (measured red): the router not consulted — aiEffectiveModel copies the raw model
+// for a chat row too (`return strings.TrimSpace(model)` first) → (openai, "") shows "" instead of
+// gpt-5-mini, (openrouter, "") shows "" instead of the env slug.
+func TestAiConfigEffectiveModelIsTheSlugACandidateIsCalledWith(t *testing.T) {
+	h := newAIHarness(t, aiHarnessOpt{})
+	aiWithChatRouter(h, aiEnvIdeasSlug)
+	h.cfg.Settings.DefaultChatProviderKey = entity.AIProviderAnthropic
+	aiRouteRows(t, &h.cfg, entity.AIPurposeNoteMarkdown, aiRow("openai", ""), aiRow("openrouter", ""))
+	aiRouteRows(t, &h.cfg, entity.AIPurposeTechCardAnalysis, aiRow("openrouter", ""), aiRow("openrouter", "x-ai/grok-9"))
+	aiRouteRows(t, &h.cfg, entity.AIPurposePlaygroundIdeas, aiRow("openrouter", ""))
+	aiRouteRows(t, &h.cfg, entity.AIPurposeEmailTranslate, aiRow("", ""), aiRow("google", ""))
+	h.expectConfigRead(nil)
+
+	cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+	require.NoError(t, err)
+
+	for purpose, want := range map[string][2]string{
+		entity.AIPurposeNoteMarkdown:     {"gpt-5-mini", aiEnvChatSlug},
+		entity.AIPurposeTechCardAnalysis: {aiEnvAnalysisSlug, "x-ai/grok-9"},
+		entity.AIPurposeTechCardEnhance:  {aiEnvAnalysisSlug, "-"}, // the seed: openrouter, ""
+		entity.AIPurposeDesignDraftIdea:  {aiEnvChatSlug, "-"},
+		entity.AIPurposePlaygroundIdeas:  {aiEnvIdeasSlug, "-"},
+		entity.AIPurposeEmailTranslate:   {"claude-sonnet-5", "gemini-2.5-flash"}, // "" → anthropic
+		entity.AIPurposeImageGenerate:    {"openai/gpt-image-2", "fal-ai/flux"},
+		entity.AIPurposeThreed:           {"", "-"},
+		entity.AIPurposeImageCutout:      {"", "-"},
+		entity.AIPurposeVector:           {"", "-"},
+	} {
+		require.Equal(t, want, aiEffective(t, cfg, purpose), purpose)
+	}
+	// The row as stored rides beside it: "" stays "" (the panel's dropdown state), the model unchanged.
+	email := aiPurpose(t, cfg, entity.AIPurposeEmailTranslate)
+	require.Equal(t, "", email.GetPrimary().GetProviderKey())
+	require.Equal(t, "", email.GetPrimary().GetModel())
+	require.Equal(t, "x-ai/grok-9", aiPurpose(t, cfg, entity.AIPurposeTechCardAnalysis).GetFallback().GetModel())
+}
+
+// TestAiConfigEffectiveModelIdeasOffIsEmpty — OPENROUTER_MODEL_IDEAS=off closes every candidate of the
+// Ideas door, a row that NAMES its slug included (router.Defaults.IdeasOff): both rows are "" — not
+// callable — while the other chat purposes keep their slugs. The server's same-as-primary check then
+// compares the raw models (aiEffectiveSlug); the wire says "" and leaves that step to the panel.
+//
+// MUTATION IT CATCHES (measured red): the wire fed aiEffectiveSlug's comparison value (`effective, else
+// the row's model`) instead of aiEffectiveModel → the named fallback shows "vendor/named-ideas" on a
+// door that calls nobody.
+func TestAiConfigEffectiveModelIdeasOffIsEmpty(t *testing.T) {
+	h := newAIHarness(t, aiHarnessOpt{})
+	aiWithChatRouter(h, "off")
+	aiRouteRows(t, &h.cfg, entity.AIPurposePlaygroundIdeas, aiRow("openrouter", ""), aiRow("openrouter", "vendor/named-ideas"))
+	h.expectConfigRead(nil)
+
+	cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+	require.NoError(t, err)
+	require.Equal(t, [2]string{"", ""}, aiEffective(t, cfg, entity.AIPurposePlaygroundIdeas))
+	require.Equal(t, "vendor/named-ideas", aiPurpose(t, cfg, entity.AIPurposePlaygroundIdeas).GetFallback().GetModel())
+	require.Equal(t, [2]string{aiEnvChatSlug, "-"}, aiEffective(t, cfg, entity.AIPurposeNoteMarkdown))
+}
+
+// TestAiConfigEffectiveModelWithoutARouterIsEmpty — a Server without SetAIRouter refuses every chat
+// door, so no chat row is callable: "" even for a row that names its model. An image row is still its
+// own model (designgen calls it, not the router).
+//
+// MUTATION IT CATCHES (measured red): the nil router not special-cased (`if chat == nil` removed) —
+// the router's nil-safe answer is the row's own model → "x-ai/grok-9" on a server that calls nothing.
+func TestAiConfigEffectiveModelWithoutARouterIsEmpty(t *testing.T) {
+	h := newAIHarness(t, aiHarnessOpt{}) // no SetAIRouter
+	aiRouteRows(t, &h.cfg, entity.AIPurposeNoteMarkdown, aiRow("openrouter", "x-ai/grok-9"), aiRow("openai", ""))
+	h.expectConfigRead(nil)
+
+	cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
+	require.NoError(t, err)
+	require.Equal(t, [2]string{"", ""}, aiEffective(t, cfg, entity.AIPurposeNoteMarkdown))
+	require.Equal(t, [2]string{"openai/gpt-image-2", "fal-ai/flux"}, aiEffective(t, cfg, entity.AIPurposeImageGenerate))
 }
 
 // ───────────────────────── writes ─────────────────────────
