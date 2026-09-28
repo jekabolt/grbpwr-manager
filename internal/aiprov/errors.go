@@ -52,6 +52,10 @@ const (
 	CodeEmptyAnswer     = "empty_answer"     // a 2xx with no choices or an empty message
 	CodeBudgetExhausted = "budget_exhausted" // ErrBudgetExhausted
 	CodeNotConfigured   = "not_configured"   // no key (ErrNotConfigured)
+	// CodeNotFound — a 404 on a READ of something the provider does not have (runblob's status read
+	// of a generation id): a lookup miss, not a setting. Never model_unknown, which says «fix the
+	// route» — and the probe reads runblob's 404 on the zero uuid as «key accepted».
+	CodeNotFound = "not_found"
 )
 
 // CallError is the ONE error shape every transport must return for a failed provider call (02-PLAN
