@@ -152,6 +152,14 @@ var designRefusals = []struct {
 	{entity.ErrDesignTechnicalSheet, codes.FailedPrecondition, "technical_sheet"},
 	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
 	{entity.ErrDesignHiddenPicture, codes.FailedPrecondition, "hidden_picture"},
+	// ─── УДАЛИТЬ НАСОВСЕМ (O-68, D-74) ───
+	//
+	// picture_not_found — NotFound СВОИМ токеном, а не общим not_found: модалка удаления называет
+	// картинку, и «её уже нет» — другой экран, чем «полосы нет». picture_is_root —
+	// FailedPrecondition того же класса, что hidden_picture: запрос правилен, СОСТОЯНИЕ отказывает
+	// (у картинки нет derived_from — плиту прогона и загрузку руками прячут, не стирают).
+	{entity.ErrDesignPictureNotFound, codes.NotFound, "picture_not_found"},
+	{entity.ErrDesignPictureIsRoot, codes.FailedPrecondition, "picture_is_root"},
 }
 
 // designError translates a store error into the status the client knows how to act on. metadata is
@@ -623,6 +631,93 @@ func (s *Server) HideDesignPicture(ctx context.Context, req *pb_admin.HideDesign
 		return nil, designError(ctx, "failed to set design picture visibility", err, nil)
 	}
 	return &pb_admin.HideDesignPictureResponse{Picture: designPictureToPb(*pic)}, nil
+}
+
+// DeleteDesignPicture removes a derived picture FOR GOOD (O-68, D-74). The rows go in the store's
+// transaction; the media rows and the objects behind them go HERE, after the commit, per media and
+// best-effort, and the answer says which went and which stayed. The write gate is HideDesignPicture's:
+// the store reads the row and refuses what it refuses; nothing stricter is invented here.
+func (s *Server) DeleteDesignPicture(ctx context.Context, req *pb_admin.DeleteDesignPictureRequest) (*pb_admin.DeleteDesignPictureResponse, error) {
+	actor := designActor(ctx)
+	res, err := s.repo.Design().DeletePicture(ctx, int(req.GetPictureId()), actor)
+	if err != nil {
+		return nil, designError(ctx, "failed to delete the design picture", err, nil)
+	}
+	deleted, kept := s.designDropMedia(ctx, res)
+	// The only trace of who deleted what: the rows are gone and the band has no audit table.
+	slog.Default().InfoContext(ctx, "design picture deleted for good",
+		slog.Int("picture_id", int(req.GetPictureId())), slog.String("actor", actor),
+		slog.Any("picture_ids", res.PictureIds), slog.Any("deleted_media_ids", deleted),
+		slog.Any("kept_media_ids", kept))
+	return &pb_admin.DeleteDesignPictureResponse{
+		DeletedPictureIds: intsToInt32(res.PictureIds),
+		DeletedMediaIds:   intsToInt32(deleted),
+		KeptMediaIds:      intsToInt32(kept),
+	}, nil
+}
+
+// designDropMedia takes the media of deleted pictures out of `media` and out of the bucket, one by
+// one, AFTER the rows are gone. DeleteMediaByIdIfUnused decides and deletes under one lock and
+// refuses anything still referenced (the files library, another card, a second role on this card):
+// that media is KEPT. A row that went but whose objects could not be removed is KEPT too, and
+// logged — the person is told a file stayed, not that all is clean.
+//
+// ON context.WithoutCancel: the picture rows are already committed. A client gone at this point
+// (closed tab, ingress timeout) would cancel the handler's context, the media delete would refuse
+// on BeginTx, and the rows and objects would be orphans forever — there is no sweeper for them.
+// Each media gets its own short budget, as the closing writes of a run do.
+func (s *Server) designDropMedia(ctx context.Context, res *entity.DesignPictureDeletion) (deleted, kept []int) {
+	deleted, kept = []int{}, []int{}
+	base := context.WithoutCancel(ctx)
+	for _, id := range res.MediaIds {
+		if !s.designDropOneMedia(base, id, res.Media[id]) {
+			kept = append(kept, id)
+			continue
+		}
+		deleted = append(deleted, id)
+	}
+	return deleted, kept
+}
+
+// designDropOneMedia — one media: the row, then its objects. True only when both are gone (a row
+// that was already missing counts as gone: nothing references it and nothing backs it).
+func (s *Server) designDropOneMedia(base context.Context, id int, row entity.MediaFull) bool {
+	ctx, cancel := context.WithTimeout(base, designCloseWriteBudget)
+	defer cancel()
+	gone, refs, err := s.repo.Media().DeleteMediaByIdIfUnused(ctx, id)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to delete the media of a deleted design picture",
+			slog.Int("media_id", id), slog.String("err", err.Error()))
+		return false
+	}
+	if !gone {
+		slog.Default().InfoContext(ctx, "the media of a deleted design picture is still held elsewhere",
+			slog.Int("media_id", id), slog.Int("refs", len(refs)))
+		return false
+	}
+	urls := designMediaURLs(row.MediaItem)
+	if len(urls) == 0 {
+		return true
+	}
+	if err := s.bucket.DeleteObjects(ctx, urls...); err != nil {
+		slog.Default().ErrorContext(ctx, "failed to drop the objects of a deleted design picture",
+			slog.Int("media_id", id), slog.String("err", err.Error()))
+		return false
+	}
+	return true
+}
+
+// designMediaURLs — every object a media row addresses: full size, thumbnail, compressed. Empty
+// urls are skipped; DeleteObjects ignores duplicates itself. The entity twin of the pb loop in
+// designCompensateMedia.
+func designMediaURLs(m entity.MediaItem) []string {
+	urls := []string{}
+	for _, u := range []string{m.FullSizeMediaURL, m.ThumbnailMediaURL, m.CompressedMediaURL} {
+		if u != "" {
+			urls = append(urls, u)
+		}
+	}
+	return urls
 }
 
 // ArchiveDesignRun flips a presentational, reversible flag on a history row.

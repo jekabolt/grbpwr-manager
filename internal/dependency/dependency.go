@@ -2092,6 +2092,16 @@ type (
 		// HidePicture is the only persistent verb for picture invisibility; its four guards read
 		// in the same transaction as the update.
 		HidePicture(ctx context.Context, pictureID int, hidden bool, actor string) (*entity.DesignPicture, error)
+		// DeletePicture removes a DERIVED picture FOR GOOD with everything derived from it (O-68,
+		// D-74): the picture rows children first, the edit layer of the card whose base is one of
+		// their media, and by the schema's own hand the asset placements on them. ROWS ONLY, in one
+		// SERIALIZABLE transaction — the media rows and the objects behind them are the handler's
+		// business after the commit, and the answer carries the media rows as they were read
+		// inside the transaction so their urls survive the delete. Refuses picture_not_found and
+		// picture_is_root (no derived_from: the plate of a run or a hand upload is hidden, never
+		// deleted). Hidden pictures and pictures in a slot go the same way; HidePicture's guards
+		// do not apply.
+		DeletePicture(ctx context.Context, pictureID int, actor string) (*entity.DesignPictureDeletion, error)
 		// MediaHeldDisplayOnly answers, for a set of media ids, WHICH of them some design picture
 		// holds as DISPLAY-ONLY (0361, D-24) — on any card: the flag is a statement about the file
 		// («never to a paid call»), and the card boundary is somebody else's door. It is the one

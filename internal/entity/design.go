@@ -1237,6 +1237,14 @@ var (
 	ErrDesignInSlot         = errors.New("design: in_slot")
 	ErrDesignLiveRunInput   = errors.New("design: live_run_input")
 	ErrDesignLiveCropParent = errors.New("design: live_crop_parent")
+	// ErrDesignPictureNotFound / ErrDesignPictureIsRoot — the two refusals of DeletePicture (O-68,
+	// D-74). picture_not_found is NotFound with ITS OWN token, not the band's generic not_found:
+	// the delete modal names the picture it is about to lose, and «this picture is already gone»
+	// is a different screen from «the band is gone». picture_is_root is FailedPrecondition: the
+	// request is well-formed, the STATE refuses — a picture with no derived_from (the plate of a
+	// run, a hand upload) has no delete door at all and is hidden instead.
+	ErrDesignPictureNotFound = errors.New("design: picture_not_found")
+	ErrDesignPictureIsRoot   = errors.New("design: picture_is_root")
 	// ErrDesignNotComposite — режут не композит.
 	//
 	// СЕЙЧАС ЕГО НИКТО НЕ ПОДНИМАЕТ, и это записано здесь, чтобы читатель не решил, будто разрез
