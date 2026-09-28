@@ -94,6 +94,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		"image.extend":           AICapabilityEdit,
 		"image.inpaint":          AICapabilityEdit,
 		"threed":                 AICapabilityThreed,
+		"video.generate":         AICapabilityVideo, // B-32: the owner named the video purpose, 28.09
 		"vector":                 AICapabilityVector,
 	}
 	got := AIPurposes()
@@ -113,7 +114,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		}
 	}
 	// chat.techcard_operations_draft is retired (O-66, 0378): a route naming it is refused like any word.
-	for _, p := range []string{"", "chat", "image.flat", "video", "chat.techcard_enhance ", "chat.techcard_operations_draft"} {
+	for _, p := range []string{"", "chat", "image.flat", "video", "video.clip", "chat.techcard_enhance ", "chat.techcard_operations_draft"} {
 		if IsAIPurpose(p) {
 			t.Fatalf("IsAIPurpose(%q) = true", p)
 		}
@@ -155,6 +156,7 @@ func TestAIShapeEveryRunKindSpendsUnderAPurpose(t *testing.T) {
 		DesignRunKindCutout:    AIPurposeImageCutout,
 		DesignRunKindExtend:    AIPurposeImageExtend,
 		DesignRunKindInpaint:   AIPurposeImageInpaint,
+		DesignRunKindVideo:     AIPurposeVideoGenerate,
 		DesignRunKindThreed:    AIPurposeThreed,
 		DesignRunKindVector:    AIPurposeVector,
 		DesignRunKindDraftIdea: AIPurposeDesignDraftIdea,
@@ -168,7 +170,7 @@ func TestAIShapeEveryRunKindSpendsUnderAPurpose(t *testing.T) {
 			t.Fatalf("AIPurposeOfRunKind(%q) = %q, want %q", kind, p, w)
 		}
 	}
-	if AIPurposeOfRunKind("") != "" || AIPurposeOfRunKind("video") != "" {
+	if AIPurposeOfRunKind("") != "" || AIPurposeOfRunKind("hologram") != "" {
 		t.Fatal("an unknown run kind must map to no purpose, not to a plausible default")
 	}
 }

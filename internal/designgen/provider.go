@@ -20,6 +20,10 @@ const (
 	ContentTypeGIF  = "image/gif"
 	ContentTypeSVG  = "image/svg+xml"
 	ContentTypeGLB  = "model/gltf-binary"
+	// ContentTypeMP4 / ContentTypeWEBM — the video route's output (B-32) and the bucket's second
+	// video container; both take the sink's VIDEO door (bucket.UploadContentVideo).
+	ContentTypeMP4  = "video/mp4"
+	ContentTypeWEBM = "video/webm"
 )
 
 // Job is one run, decoded from its frozen snapshot and ready to be sent to a provider.
@@ -32,7 +36,7 @@ const (
 type Job struct {
 	RunID      int
 	TechCardID int
-	// Kind is the run kind: flat | render | vector | threed. draft_idea never reaches here.
+	// Kind is the run kind: flat | render | vector | threed | … | video. draft_idea never reaches here.
 	Kind string
 	// Prompt is the composed instruction: the ask, the garment description, the fit, the roles and
 	// notes of the references. Composed from the SNAPSHOT rather than from today's card, because
@@ -153,9 +157,18 @@ type Job struct {
 	// requested_outputs); invalid when the row carries no estimate. The fal collect compares the
 	// booked charge with it before saying the reservation was short (G-02 r2, Codex 5).
 	ThreedReservedUSD decimal.NullDecimal
-	// RouteReservedUSD — the same figure for an extend / inpaint run (one output): what the door
-	// reserved. The fal collect compares the booked charge with it (G-03, Codex 5 + 10).
+	// RouteReservedUSD — the same figure for an extend / inpaint / video run (one output): what the
+	// door reserved. The fal collect compares the booked charge with it (G-03, Codex 5 + 10); the
+	// video submit compares runblob's price with it (RUNBLOB_VIDEO_CEILING_USD, B-32).
 	RouteReservedUSD decimal.NullDecimal
+
+	// VideoModel / VideoDuration / VideoAspectRatio — a video run's frozen params.video (B-32): the
+	// Kling slug the door froze ("" = the route's own), the clip length in seconds (0 = the route's
+	// own, 5), and the aspect ratio NEAREST to the source picture's (16:9 | 9:16 | 1:1; "" when the
+	// media row states no size — the provider's default then). Empty on every other kind.
+	VideoModel       string
+	VideoDuration    int
+	VideoAspectRatio string
 
 	// Extend is an extend run's plan (kind=extend, PLAYGROUND phase 3), frozen at build time BEFORE
 	// the money: the source size after the 3 MP cap, the canvas, where the source sits in it, the
@@ -330,6 +343,10 @@ type Providers struct {
 	// cut-out; different slugs, bodies and tariffs, so different routes.
 	Outpaint Provider
 	Fill     Provider
+	// Video serves kind=video (B-32): runblob's Kling image-to-video, a Provider + Collector like the
+	// 3D routes (the submit pays, the collect is free). One provider today, so no Chooser: the
+	// panel's `video.generate` route names the model, not the transport.
+	Video Provider
 
 	// Also — providers the worker CONSTRUCTED but does not route any kind to directly: since B-24 BOTH
 	// boot-time 3D providers (fal at the env slug, meshy), because the Threed slot is the panel's route
@@ -347,7 +364,7 @@ func (p Providers) byName(name string) (Provider, bool) {
 	if name == "" {
 		return nil, false
 	}
-	for _, prov := range append([]Provider{p.Image, p.Vector, p.Threed, p.Cutout, p.Outpaint, p.Fill}, p.Also...) {
+	for _, prov := range append([]Provider{p.Image, p.Vector, p.Threed, p.Cutout, p.Outpaint, p.Fill, p.Video}, p.Also...) {
 		if prov != nil && prov.Name() == name {
 			return prov, true
 		}
@@ -399,6 +416,11 @@ func (p Providers) forKind(kind string) (Provider, error) {
 			return nil, fmt.Errorf("%w: no 3D route is wired", errRouteMissing)
 		}
 		return p.Threed, nil
+	case entity.DesignRunKindVideo:
+		if p.Video == nil {
+			return nil, fmt.Errorf("%w: no video route is wired", errRouteMissing)
+		}
+		return p.Video, nil
 	case entity.DesignRunKindDraftIdea:
 		// Reachable only if the claim predicate ever stops excluding it. Refusing loudly is the
 		// cheap half of that mistake; paying twice is the expensive half.

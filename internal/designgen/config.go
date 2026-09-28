@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // Config is the worker's configuration.
@@ -116,6 +117,11 @@ type Config struct {
 	// FalRouteModel over the live registry — the expression the door's FalRoutesFunc reads); "" = the
 	// env slug. Nil = the env slug always (the tests, a worker built without app.go).
 	FalRouteModel func(kind string) string `mapstructure:"-"`
+	// VideoCeilingUSD is RUNBLOB_VIDEO_CEILING_USD (B-32): the most one video clip reserves against
+	// the day — read through VideoCeiling(), which supplies DefaultVideoCeilingUSD for an empty or
+	// unparseable value. A string, not a float: it is money, and the door and the ledger read it as a
+	// decimal.
+	VideoCeilingUSD string `mapstructure:"video_ceiling_usd"`
 }
 
 // Environment variable names. AutomaticEnv is switched off in this repo, so a name that is not
@@ -132,7 +138,29 @@ const (
 	EnvThreedPBR        = "DESIGN_THREED_PBR"
 	EnvEngineGemini     = "DESIGN_ENGINE_GEMINI"
 	EnvEngineSeedream   = "DESIGN_ENGINE_SEEDREAM"
+	// EnvVideoCeilingUSD — RUNBLOB_VIDEO_CEILING_USD, the video route's reserve (Config.VideoCeilingUSD).
+	EnvVideoCeilingUSD = "RUNBLOB_VIDEO_CEILING_USD"
 )
+
+// DefaultVideoCeilingUSD — what one clip reserves when RUNBLOB_VIDEO_CEILING_USD is unset or
+// unparseable: above Kling 2.5 Turbo's documented $0.29 for 5 s with room for the dearer kling_*
+// slugs a route row may name (the pro tiers, Kling 3), below a price nobody would call a clip.
+const DefaultVideoCeilingUSD = "1.50"
+
+// VideoCeiling — the most one video clip may BOOK on this deployment, as a number: the configured
+// RUNBLOB_VIDEO_CEILING_USD, else DefaultVideoCeilingUSD. It is the reserve the door holds for one
+// clip (designPriceEstimate) and the line the submit compares runblob's price with — a breach is
+// LOGGED, never refused, because after the 201 the money has moved (fal's booked-vs-reserved rule).
+// Zero, negative or unparseable = the default: a typo in a money knob must not close the door
+// silently, and it must not open it to an unbounded reserve either.
+func (c Config) VideoCeiling() decimal.Decimal {
+	if v := strings.TrimSpace(c.VideoCeilingUSD); v != "" {
+		if d, err := decimal.NewFromString(v); err == nil && d.IsPositive() {
+			return d
+		}
+	}
+	return decimal.RequireFromString(DefaultVideoCeilingUSD)
+}
 
 // EngineFlags — the flagged engine rows this configuration lists (EngineTable's second argument).
 func (c Config) EngineFlags() EngineFlags {
@@ -320,6 +348,9 @@ func ConfigFromEnv() Config {
 	c.ThreedPBR = envBool(EnvThreedPBR, c.ThreedPBR)
 	c.EngineGemini = envBool(EnvEngineGemini, c.EngineGemini)
 	c.EngineSeedream = envBool(EnvEngineSeedream, c.EngineSeedream)
+	if v := strings.TrimSpace(os.Getenv(EnvVideoCeilingUSD)); v != "" {
+		c.VideoCeilingUSD = v
+	}
 	applyDefaults(&c)
 	return c
 }

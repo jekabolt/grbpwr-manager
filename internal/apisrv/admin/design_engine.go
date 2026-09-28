@@ -369,6 +369,10 @@ func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_commo
 	if e, ok := s.designFalRouteEstimate(kind, outputs); ok {
 		return e
 	}
+	// B-32: a video clip reserves RUNBLOB_VIDEO_CEILING_USD (the live route), else the table's default.
+	if e, ok := s.designVideoRunEstimate(kind, outputs); ok {
+		return e
+	}
 	// 3D reserves by ITS OWN options (texture off / detailed = fal «ultra», $1.40), B-09. With the
 	// default options this is exactly designThreedCeilingUSD() × outputs — the kind's table row.
 	if e, ok := s.designThreedRunEstimate(kind, params, outputs); ok {

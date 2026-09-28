@@ -12,10 +12,11 @@ import (
 
 // The grid order is the owner's; the client lays the tiles out by this list.
 func TestPlaygroundWorkflowsAreTheTwelveTilesInGRID_ORDER(t *testing.T) {
+	// The owner's twelve, then tile 13 «Image to Video» (B-32, 28.09) after them.
 	want := []string{
 		"virtual_try_on", "fabric_to_image", "ghost_mannequin", "change_color", "swap_fabrics",
 		"add_logo", "design_variations", "remove_background", "extend_image", "retouch_zone",
-		"create_edit", "image_to_3d",
+		"create_edit", "image_to_3d", "image_to_video",
 	}
 	require.Equal(t, want, PlaygroundWorkflows())
 

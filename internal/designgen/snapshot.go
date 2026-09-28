@@ -57,6 +57,16 @@ type runParams struct {
 	// every other kind: the door refuses the blocks to every kind but their own.
 	Extend  *extendParams  `json:"extend"`
 	Inpaint *inpaintParams `json:"inpaint"`
+	// Video — DesignVideoParams (field 19, B-32): the one source picture, the clip length and the
+	// slug the door froze. nil on every other kind.
+	Video *videoParams `json:"video"`
+}
+
+// videoParams — DesignVideoParams: the picture to animate, the duration, the frozen Kling slug.
+type videoParams struct {
+	SourceMediaID int    `json:"source_media_id"`
+	Duration      int    `json:"duration"`
+	Model         string `json:"model"`
 }
 
 // extendParams — DesignExtendParams: the target proportion of an extend run (the source travels in
@@ -514,6 +524,15 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			return nil
 		}
 		return []refCaption{{MediaID: p.Inpaint.SourceMediaID, Caption: "the picture to retouch"}}
+	}
+	// ─── VIDEO (B-32): THE ONE PICTURE TO ANIMATE — the first frame. Like the retouch it reads no
+	// card: the bench, the references and the cloths are pictures of other things, and Kling reads
+	// exactly one image_url.
+	if kind == entity.DesignRunKindVideo {
+		if p.Video == nil || p.Video.SourceMediaID <= 0 {
+			return nil
+		}
+		return []refCaption{{MediaID: p.Video.SourceMediaID, Caption: "the picture to animate"}}
 	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
@@ -1297,8 +1316,16 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		}
 	}
 
-	if (run.Kind == entity.DesignRunKindExtend || run.Kind == entity.DesignRunKindInpaint) && run.PriceEstimate.Valid {
+	if (run.Kind == entity.DesignRunKindExtend || run.Kind == entity.DesignRunKindInpaint ||
+		run.Kind == entity.DesignRunKindVideo) && run.PriceEstimate.Valid {
 		job.RouteReservedUSD = run.PriceEstimate
+	}
+	// The video run's frozen ask (B-32): the slug the door froze and the length. The aspect ratio is
+	// read off the SOURCE PICTURE's media row below, once it is resolved — it is a property of the
+	// picture, not of the params.
+	if run.Kind == entity.DesignRunKindVideo && p.Video != nil {
+		job.VideoModel = strings.TrimSpace(p.Video.Model)
+		job.VideoDuration = p.Video.Duration
 	}
 
 	// ─── RESOLUTION FIRST, WORDS SECOND. The prompt's caption block is numbered off the pictures
@@ -1359,6 +1386,15 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		}
 		if m, ok := byID[maskID]; ok && maskID > 0 {
 			maskURL = strings.TrimSpace(m.FullSizeMediaURL)
+		}
+		// THE CLIP'S SHAPE IS THE PICTURE'S SHAPE (B-32): Kling takes 16:9 | 9:16 | 1:1 and would
+		// otherwise default to 16:9, cropping a portrait render to a landscape. The nearest of the
+		// three, from the media row's stored full-size dimensions; a row that states none (a legacy
+		// 0×0) sends no ratio and the provider's default stands.
+		if run.Kind == entity.DesignRunKindVideo && p.Video != nil {
+			if m, ok := byID[p.Video.SourceMediaID]; ok {
+				job.VideoAspectRatio = nearestVideoAspect(m.FullSizeWidth, m.FullSizeHeight)
+			}
 		}
 		resolve := func(rc refCaption) (string, bool) {
 			m, ok := byID[rc.MediaID]
@@ -1470,10 +1506,11 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		}
 	}
 	switch run.Kind {
-	case entity.DesignRunKindInpaint:
-		// ⚠ composePrompt IS BYPASSED FOR THIS KIND, ON PURPOSE. The fill model takes plain words
-		// about the painted zone; a craft paragraph or a caption block would be text about pictures
-		// it is not shown. The prompt is the ask, verbatim — and SentPrompt records exactly this.
+	case entity.DesignRunKindInpaint, entity.DesignRunKindVideo:
+		// ⚠ composePrompt IS BYPASSED FOR THESE KINDS, ON PURPOSE. The fill model takes plain words
+		// about the painted zone, Kling takes plain words about the motion; a craft paragraph or a
+		// caption block would be text about pictures they are not shown. The prompt is the ask,
+		// verbatim — and the history column records exactly this (recordedPrompt → job.Prompt).
 		job.Prompt = strings.TrimSpace(run.Ask.String)
 	default:
 		job.Prompt = composePrompt(run, p, in, attached)

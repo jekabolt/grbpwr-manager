@@ -31,6 +31,7 @@ func TestDesignGenerationEnvBindings(t *testing.T) {
 	t.Setenv("DESIGN_THREED_PBR", "true")
 	t.Setenv("DESIGN_ENGINE_GEMINI", "true")
 	t.Setenv("DESIGN_ENGINE_SEEDREAM", "true")
+	t.Setenv("RUNBLOB_VIDEO_CEILING_USD", "2.25")
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err)
@@ -51,6 +52,9 @@ func TestDesignGenerationEnvBindings(t *testing.T) {
 		"DESIGN_ENGINE_GEMINI must reach the config: unbound, the owner turns Gemini on and the picker never lists it")
 	assert.True(t, cfg.DesignGen.EngineSeedream,
 		"DESIGN_ENGINE_SEEDREAM must reach the config: unbound, the owner turns Seedream on and the picker never lists it")
+	assert.Equal(t, "2.25", cfg.DesignGen.VideoCeiling().String(),
+		"RUNBLOB_VIDEO_CEILING_USD is a MONEY knob (B-32): unbound, the door reserves the default for every clip "+
+			"whatever the owner set")
 }
 
 // TestDesignGenerationUnsetIsAnHonestOff pins the other half. The default has to be OFF, because

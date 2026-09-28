@@ -267,6 +267,13 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: ""
+# RUNBLOB_VIDEO_CEILING_USD (B-32) — what ONE video clip of the playground's «Image to Video» tile
+# reserves against the day (runblob Kling image-to-video; the seeded route is video.generate → runblob).
+# runblob prices the clip at submit (kling_2.5_turbo, 5 s ≈ $0.29); a price above this is logged, never
+# refused — after the 201 the money has moved. Raise it when a route row names a dearer kling_* slug.
+- key: RUNBLOB_VIDEO_CEILING_USD
+  scope: RUN_TIME
+  value: "1.50"
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m

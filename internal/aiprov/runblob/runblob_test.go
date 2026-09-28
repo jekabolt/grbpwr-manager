@@ -149,21 +149,27 @@ func TestSurface(t *testing.T) {
 	require.Equal(t, aiprov.CodeNotConfigured, callErr(t, err).Code)
 }
 
-// TestNoPurposeRoutesToRunblob — D-05 as a fact of the vocabulary, not of a comment: runblob serves
-// video only, and no purpose asks for video, so a route row naming it is refused when it is saved
-// (store/ai: provider_cannot_serve) and skipped when it is read (registry: AIProviderServes). When
-// the owner names a video purpose (B-27b) this test is the one to change, on purpose.
+// TestOnlyTheVideoPurposeRoutesToRunblob — B-32 as a fact of the vocabulary (D-05 superseded 28.09:
+// the owner named the video purpose): runblob serves video, exactly one purpose asks for video
+// (video.generate, the playground's clip), and no other purpose can be routed to it — a route row
+// naming it elsewhere is refused when it is saved (store/ai: provider_cannot_serve) and skipped when it
+// is read (registry: AIProviderServes). This is the test D-05's version said to change, on purpose.
 //
 // MUTATION (measured red → green): AICapabilityImage added to runblob's row of
 // entity.AIProviderCapabilities → red (the capability pin; the loop reads image.generate as routable).
-func TestNoPurposeRoutesToRunblob(t *testing.T) {
+func TestOnlyTheVideoPurposeRoutesToRunblob(t *testing.T) {
 	require.Equal(t, []string{entity.AICapabilityVideo}, entity.AIProviderCapabilities(New(Config{}).Provider()))
+	var routed []string
 	for _, purpose := range entity.AIPurposes() {
 		capability := entity.AIPurposeCapability(purpose)
 		require.NotEmpty(t, capability, purpose)
-		require.False(t, entity.AIProviderServes(entity.AIProviderRunblob, capability),
-			"purpose %s (%s) would route to runblob — D-05 says no purpose does until the owner names one", purpose, capability)
+		if entity.AIProviderServes(entity.AIProviderRunblob, capability) {
+			routed = append(routed, purpose)
+		}
 	}
+	require.Equal(t, []string{entity.AIPurposeVideoGenerate}, routed,
+		"runblob is the video route and nothing else: any other purpose here would be paid on a key the owner "+
+			"saved for clips")
 }
 
 // ─── goldens ─────────────────────────────────────────────────────────────────────────────────────

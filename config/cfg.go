@@ -731,6 +731,11 @@ func bindEnvVars() {
 	// and the 64 MiB cap refuses it AFTER the charge. Turn on (true) only after a beta smoke has
 	// measured one PBR build per tier under the cap — see designgen.Config.ThreedPBR.
 	viper.BindEnv("design_generation.threed_pbr", "DESIGN_THREED_PBR")
+	// RUNBLOB_VIDEO_CEILING_USD (B-32) — the most one video clip reserves against the day, a MONEY
+	// knob like FAL_UNITS_CEILING_3D: the door holds it per clip and the submit logs a runblob price
+	// above it. Unset or unparseable = designgen.DefaultVideoCeilingUSD (1.50). Unbound, a number
+	// the owner set in the dashboard would never reach the door.
+	viper.BindEnv("design_generation.video_ceiling_usd", "RUNBLOB_VIDEO_CEILING_USD")
 	// THE PHASE-3 ENGINE ROWS (B-16): Gemini 3 Pro Image and Seedream 5 Pro in the per-run engine
 	// table. Off by default — each is the owner's money decision after the beta cost ledger; see
 	// designgen.Config.EngineGemini. Unbound, the owner turns one on and the picker never shows it.

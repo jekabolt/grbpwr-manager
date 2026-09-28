@@ -164,6 +164,9 @@ type Server struct {
 	// the reserve read one object, asked afresh by every reader. Nil, or a kind with no entry, is CLOSED
 	// (fail closed: nothing on the door knows what the worker would book).
 	designFalRoutes func() map[string]designgen.FalRoute
+	// designVideoRoute — the live video route (B-32): the `video.generate` row's Kling slug and the
+	// reserve per clip. nil = no video route wired (the table's default reserve, Kling's default slug).
+	designVideoRoute func() designgen.VideoRoute
 	// aiReg, aiKeyRing, aiRecraftViaOpenRouter, aiProbeClient, aiReconcile — the admin → AI providers panel
 	// (ai_providers.go, SetAIProviders). aiReg nil = not wired: the five RPCs refuse with
 	// FailedPrecondition. A nil/disabled aiKeyRing refuses to store a key and says which variable

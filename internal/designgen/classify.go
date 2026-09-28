@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/runblob"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -70,6 +71,28 @@ var (
 	// at the pickup (G-03, Codex 6). Refused before StartAttempt, so nothing is spent; terminal,
 	// the door's own word (`unknown_image_model`).
 	errEngineSwitchedOff = errors.New("designgen: the frozen engine is switched off on this deployment")
+
+	// ─── the video route (B-32, runblob Kling image-to-video) — its four outcomes after the submit ───
+	//
+	// errVideoNotReady — the generation is still pending / processing: the collect looks again, for
+	// free (retryable; the submit's `accepted` row keeps the id).
+	errVideoNotReady = errors.New("designgen: the video is still being generated")
+	// errVideoFailed — runblob ended the generation itself (`failed`) and REFUNDS it («Your balance is
+	// automatically refunded on any failed task»): terminal, and it cost nothing — `failed`, not
+	// `unknown`, exactly Meshy's rule.
+	errVideoFailed = errors.New("designgen: runblob failed the video generation (refunded)")
+	// errVideoNoResult — `completed`, and nothing usable came of it: no video_url, a file that is not
+	// an mp4, or one past the store's ceiling. The submit's price is REAL (no refund is documented for
+	// a completed job), so the collect carries it beside this error — `unknown`, priced.
+	errVideoNoResult = errors.New("designgen: the video generation completed with no usable clip")
+	// errVideoFetchFailed — the clip's download broke on the wire (a reset, a deadline, a 5xx from the
+	// CDN): the generation is done and its url is durable, so looking again is free (retryable).
+	errVideoFetchFailed = errors.New("designgen: the finished video could not be downloaded")
+	// errVideoSubmitUnconfirmed — the submit LEFT and no usable answer came back (a post-write break,
+	// a 408, a 5xx other than a bare 503, a 2xx with no generation id): runblob may have queued and
+	// charged the clip, and nothing on record can resume it. D-16: never fall back, never resubmit —
+	// `unknown`, terminal, reconciled by a person. fal's ErrSubmitUnconfirmed, for the same reason.
+	errVideoSubmitUnconfirmed = errors.New("designgen: the video submit may have been bought and cannot be confirmed")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -263,7 +286,8 @@ func classifyBySentinel(err error) verdict {
 	// ErrUnexpectedResponse, and a 5xx would otherwise fall into the retryable default — both would
 	// read as «resubmit». Meshy's create call joined on a 5xx other than a bare 503 (B-13/A1).
 	case errors.Is(err, errAcceptedNotRecorded), errors.Is(err, errUnresolvedSubmit),
-		errors.Is(err, fal.ErrSubmitUnconfirmed), errors.Is(err, meshy.ErrSubmitUnconfirmed):
+		errors.Is(err, fal.ErrSubmitUnconfirmed), errors.Is(err, meshy.ErrSubmitUnconfirmed),
+		errors.Is(err, errVideoSubmitUnconfirmed):
 		return verdict{Retryable: false, Code: CodeSubmitUnconfirmed, State: entity.DesignAttemptUnknown}
 	// ─── ours: the frozen engine cannot be drawn here — its flag went off (G-03, Codex 6), or no
 	// candidate of the image route serves its slug (B-13). Before StartAttempt, free, terminal: the
@@ -423,7 +447,10 @@ func classifyBySentinel(err error) verdict {
 	case errors.Is(err, orimages.ErrNoImages), errors.Is(err, recraft.ErrInvalidResponse),
 		errors.Is(err, meshy.ErrNoGLB), errors.Is(err, meshy.ErrUnexpectedResponse),
 		errors.Is(err, meshy.ErrTaskNotFound), errors.Is(err, fal.ErrNoModel),
-		errors.Is(err, fal.ErrUnexpectedResponse), errors.Is(err, fal.ErrRequestNotFound):
+		errors.Is(err, fal.ErrUnexpectedResponse), errors.Is(err, fal.ErrRequestNotFound),
+		// B-32: a completed video with nothing usable, and a generation id runblob no longer knows
+		// (the status 404) — bought, and nothing to show for it.
+		errors.Is(err, errVideoNoResult), errors.Is(err, runblob.ErrGenerationNotFound):
 		return verdict{Retryable: false, Code: CodeEmptyResponse, State: entity.DesignAttemptUnknown}
 	case errors.Is(err, orimages.ErrResponseTooLarge), errors.Is(err, meshy.ErrTooLarge),
 		errors.Is(err, fal.ErrTooLarge):
@@ -441,7 +468,9 @@ func classifyBySentinel(err error) verdict {
 	// то есть с CallError транспорта, и classify ставит состояние по ЕГО Engaged. На опросе (GET) оно
 	// всегда false — строка сбора закрывается `failed`, она сама ничего не покупала; «деньги,
 	// возможно, ушли» остаётся на `accepted`-строке сабмита и в леджере (collectEnd → `unknown`).
-	case errors.Is(err, meshy.ErrTaskFailed):
+	case errors.Is(err, meshy.ErrTaskFailed),
+		// B-32: runblob refunds a failed generation, so its failure is Meshy's kind — it cost nothing.
+		errors.Is(err, errVideoFailed):
 		return verdict{Retryable: false, Code: CodeTaskFailed, State: entity.DesignAttemptFailed}
 	case errors.Is(err, fal.ErrTaskFailed):
 		return verdict{Retryable: false, Code: CodeTaskFailed, State: entity.DesignAttemptUnknown}
@@ -455,8 +484,12 @@ func classifyBySentinel(err error) verdict {
 	// The wait ran out on a task that is probably still alive. The submit was already closed as
 	// `accepted` with its id, so the next pass COLLECTS FOR FREE instead of submitting again.
 	case errors.Is(err, meshy.ErrTimedOut), errors.Is(err, meshy.ErrNotReady),
-		errors.Is(err, fal.ErrTimedOut), errors.Is(err, fal.ErrNotReady):
+		errors.Is(err, fal.ErrTimedOut), errors.Is(err, fal.ErrNotReady),
+		errors.Is(err, errVideoNotReady):
 		return verdict{Retryable: true, Code: CodeProviderTimeout, State: entity.DesignAttemptUnknown}
+	// B-32: the finished clip's download broke — the url is durable, the next collect fetches again.
+	case errors.Is(err, errVideoFetchFailed):
+		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
 	// «The provider failed»: a 5xx (nothing billed — failed, retryable) or, for recraft direct, a
 	// round trip that broke (either side of the write). The CallError tells the two apart in classify;
 	// the base answer below is what an error no transport classified still gets.

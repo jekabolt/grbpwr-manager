@@ -249,6 +249,12 @@ const (
 	// состояние изделия с какой-либо стороны. Отдельное имя даёт клиенту ещё и повод показывать
 	// такой кадр по-другому (грунт, `contain`), не заводя флага «есть альфа».
 	DesignPictureKindCutout = "cutout"
+	// DesignPictureKindVideo — THE CLIP a `video` run made (B-32): an mp4 in the media row, every
+	// variant url the one object (the bucket's video path stores no thumbnail). Named apart for the
+	// reason `freeform` is: DesignPictureKindOfRun drops an unknown run kind into `flat`, and a clip
+	// filed as a flat would be offered to a bench slot and to every image route as a picture. Never
+	// a bench kind, never an upload kind — it exists only as the OUTPUT of a run.
+	DesignPictureKindVideo = "video"
 )
 
 // IsDesignPictureKind сообщает, известен ли род кадра. Словарь растёт, CHECK в схеме намеренно
@@ -256,7 +262,8 @@ const (
 func IsDesignPictureKind(v string) bool {
 	switch v {
 	case DesignPictureKindFlat, DesignPictureKindRender, DesignPictureKindThreed,
-		DesignPictureKindPattern, DesignPictureKindFreeform, DesignPictureKindCutout:
+		DesignPictureKindPattern, DesignPictureKindFreeform, DesignPictureKindCutout,
+		DesignPictureKindVideo:
 		return true
 	}
 	return false
@@ -533,6 +540,13 @@ const (
 	// past the ceiling (as past every JPEG step) the composite is not made and the repainted crop is
 	// filed as delivered (inpaint_not_composited). The source may be at most 18 MP (source_too_large).
 	DesignRunKindInpaint = "inpaint"
+	// DesignRunKindVideo — A SHORT CLIP FROM ONE PICTURE of the card (the playground's «Image to
+	// Video», B-32) on runblob's Kling image-to-video route: params.video (the source picture, the
+	// duration, the frozen slug) + the ask as the prompt. One output — the mp4 — colourway 0, no
+	// bench, no card. Its own kind because it is its own paid endpoint with its own unit of money
+	// (the provider's price at submit) and its own purpose (video.generate); a fifth passenger on
+	// Image would book a clip as a picture.
+	DesignRunKindVideo = "video"
 )
 
 // DesignRunKinds — every run kind, in a fixed order (the band's run_kinds keeps it). A copy on
@@ -542,6 +556,7 @@ func DesignRunKinds() []string {
 		DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed, DesignRunKindVector,
 		DesignRunKindDraftIdea, DesignRunKindRecolor, DesignRunKindPattern,
 		DesignRunKindFreeform, DesignRunKindCutout, DesignRunKindExtend, DesignRunKindInpaint,
+		DesignRunKindVideo,
 	}
 }
 
@@ -552,7 +567,8 @@ func IsDesignRunKind(v string) bool {
 		DesignRunKindVector, DesignRunKindDraftIdea,
 		DesignRunKindRecolor, DesignRunKindPattern,
 		DesignRunKindFreeform, DesignRunKindCutout,
-		DesignRunKindExtend, DesignRunKindInpaint:
+		DesignRunKindExtend, DesignRunKindInpaint,
+		DesignRunKindVideo:
 		return true
 	}
 	return false
@@ -588,6 +604,10 @@ func DesignPictureKindOfRun(runKind string) string {
 	// picture kind: no new picture vocabulary, no bench axis, no colourway axis.
 	case DesignRunKindExtend, DesignRunKindInpaint:
 		return DesignPictureKindFreeform
+	// B-32: a clip is not a picture of any kind the band has — named explicitly so the `default`
+	// below cannot file an mp4 as a flat of the bench.
+	case DesignRunKindVideo:
+		return DesignPictureKindVideo
 	default:
 		return DesignPictureKindFlat
 	}
@@ -719,6 +739,8 @@ const (
 	DesignWorkflowRetouchZone      = "retouch_zone"
 	DesignWorkflowCreateEdit       = "create_edit"
 	DesignWorkflowImageTo3D        = "image_to_3d"
+	// DesignWorkflowImageToVideo — tile 13 «Image to Video» (B-32): kind `video`.
+	DesignWorkflowImageToVideo = "image_to_video"
 )
 
 // PlaygroundWorkflows — every workflow key in the owner's grid order. A copy on every call:
@@ -737,6 +759,7 @@ func PlaygroundWorkflows() []string {
 		DesignWorkflowRetouchZone,
 		DesignWorkflowCreateEdit,
 		DesignWorkflowImageTo3D,
+		DesignWorkflowImageToVideo,
 	}
 }
 
@@ -791,6 +814,8 @@ func DesignWorkflowOf(kind, preset string, hasFabricPicture bool) string {
 		return DesignWorkflowChangeColor
 	case DesignRunKindThreed:
 		return DesignWorkflowImageTo3D
+	case DesignRunKindVideo:
+		return DesignWorkflowImageToVideo
 	}
 	return ""
 }
@@ -1098,6 +1123,8 @@ const (
 	DesignErrorCodeTargetAspectMustExtend = "target_aspect_must_extend"
 	DesignErrorCodeExtendForbidden        = "extend_forbidden"
 	DesignErrorCodeInpaintForbidden       = "inpaint_forbidden"
+	// DesignErrorCodeVideoForbidden — params.video on a kind that is not `video` (B-32).
+	DesignErrorCodeVideoForbidden = "video_forbidden"
 	DesignErrorCodeMaskRequired           = "mask_required"
 	DesignErrorCodeMaskSizeMismatch       = "mask_size_mismatch"
 	DesignErrorCodeMaskInvalid            = "mask_invalid"

@@ -326,7 +326,10 @@ func parsePrice(raw json.RawMessage) (decimal.NullDecimal, error) {
 //	          field, and "pending" at submit);
 //	VideoURL  the result, once there is one;
 //	Model     the model that ran it (kling_2.5_turbo, …);
-//	Error     the provider's failure text, bounded and scrubbed of the key; "" when none.
+//	Error     the provider's failure text, bounded and scrubbed of the key; "" when none. Read from
+//	          `error`, else from `message` — the field runblob's Kling spec (runblob-specs/kling.json,
+//	          28.09) documents for the error code of a failed job (TIMEOUT, CONTENT_POLICY_VIOLATION,
+//	          TASK_FAILED, MAINTENANCE, INVALID_IMAGE, IMAGE_INACCESSIBLE).
 type Generation struct {
 	Status   string
 	VideoURL string
@@ -341,6 +344,7 @@ type generationResponse struct {
 	VideoURL string          `json:"video_url"`
 	Model    string          `json:"model"`
 	Error    json.RawMessage `json:"error"`
+	Message  json.RawMessage `json:"message"`
 }
 
 // Status reads generation id of family: GET {base}/v1/{family}/generations/{id}.
@@ -377,6 +381,11 @@ func (c *Client) Status(ctx context.Context, family, id string) (*Generation, er
 		VideoURL: strings.TrimSpace(gr.VideoURL),
 		Model:    strings.TrimSpace(gr.Model),
 		Error:    errorText(gr.Error, key),
+	}
+	if g.Error == "" {
+		// The Kling spec puts a failed job's code in `message` (a null on success); `error` was the
+		// research page's word. Either is the provider's reason, bounded and scrubbed the same way.
+		g.Error = errorText(gr.Message, key)
 	}
 	if g.Status == "" {
 		// A status read that names no status cannot be acted on; free, so looking again is the answer.
