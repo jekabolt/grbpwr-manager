@@ -395,7 +395,9 @@ func (p falOutpaintProvider) Execute(ctx context.Context, job Job) (*Outcome, er
 		return nil, fmt.Errorf("%w: an extend run reached its route without its plan or its one picture",
 			fal.ErrBadRequest)
 	}
-	model := p.c.ModelFor(fal.RouteOutpaint)
+	// The route row's slug (job.Model, B-24) before FAL_MODEL_OUTPAINT; a slug outpaintBody has not read
+	// is refused below, free — the door's FalRoute.Unsupported is the same family test.
+	model := firstNonEmpty(job.Model, p.c.ModelFor(fal.RouteOutpaint))
 	if err := falLocatorFits(model); err != nil {
 		return nil, err
 	}

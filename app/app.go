@@ -613,9 +613,10 @@ func (a *App) Start(ctx context.Context) error {
 	// is closed. The View of the SAME routed provider the worker is given below; wired only when the
 	// worker exists.
 	var designThreedView func() designgen.ThreedRouteView
-	// PLAYGROUND phase 3: the extend / inpaint route objects, built from the SAME fal client the
-	// worker's Outpaint / Fill providers get (one value for the band, the door and the reserve).
-	var designFalRoutes map[string]designgen.FalRoute
+	// PLAYGROUND phase 3: the extend / inpaint route objects, off the SAME fal config the worker's
+	// Outpaint / Fill providers get, at the route row's model (B-24) — one function for the band, the
+	// door and the reserve.
+	var designFalRoutes func() map[string]designgen.FalRoute
 
 	// ─── THE AI LEDGER (B-07): one ai_usage_event row per physical provider call, opened BEFORE
 	// the call. Built in BOTH branches below: the worker books every call it pays for and sweeps
@@ -756,13 +757,16 @@ func (a *App) Start(ctx context.Context) error {
 		}
 
 		// PLAYGROUND phase 3 — tile 9 (extend → fal outpaint) and tile 10's mask route (inpaint → fal
-		// fill): the SAME FAL_KEY, their own slugs (FAL_MODEL_OUTPAINT / FAL_MODEL_FILL) and tariffs.
-		// A tariff set without its units ceiling closes the kind at the door, in words.
+		// fill): the SAME FAL_KEY, their own slugs and tariffs. The slug is the route row's model
+		// (admin → AI providers, image.extend / image.inpaint, B-24), else FAL_MODEL_OUTPAINT / FILL;
+		// the worker reads the same expression (FalRouteModel) for extend / inpaint / cutout runs. A
+		// tariff set without its units ceiling closes the kind at the door, in words.
 		falRoutes := fal.New(a.c.Fal)
-		designFalRoutes = map[string]designgen.FalRoute{}
+		designFalRoutes = designgen.FalRoutesFunc(a.aireg, a.c.Fal)
+		designCfg.FalRouteModel = func(kind string) string { return designgen.FalRouteModel(a.aireg, kind) }
+		bootFalRoutes := designFalRoutes()
 		for _, kind := range []string{entity.DesignRunKindExtend, entity.DesignRunKindInpaint} {
-			r, _ := designgen.FalRouteOf(falRoutes, kind)
-			designFalRoutes[kind] = r
+			r := bootFalRoutes[kind]
 			slog.Default().InfoContext(ctx, "design generation: fal route wired",
 				slog.String("kind", kind), slog.String("model", r.Model),
 				slog.String("reserve_usd", r.Ceiling.String()), slog.Bool("bounded", r.Bounded))

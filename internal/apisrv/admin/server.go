@@ -159,11 +159,11 @@ type Server struct {
 	// a test): the band then advertises no build option and the door refuses a non-default one, and the
 	// reserve keeps the static table.
 	designThreedRoute func() designgen.ThreedRouteView
-	// designFalRoutes are the fal JSON routes of kind extend / inpaint (PLAYGROUND phase 3,
-	// designgen.FalRouteOf over the worker's own fal client, app.go): the band, the door and the
-	// reserve read one object. A kind with no entry is CLOSED (fail closed: nothing on the door knows
-	// what the worker would book).
-	designFalRoutes map[string]designgen.FalRoute
+	// designFalRoutes are the fal JSON routes of kind extend / inpaint (PLAYGROUND phase 3; B-24: at the
+	// route row's model, designgen.FalRoutesFunc over the live registry, app.go): the band, the door and
+	// the reserve read one object, asked afresh by every reader. Nil, or a kind with no entry, is CLOSED
+	// (fail closed: nothing on the door knows what the worker would book).
+	designFalRoutes func() map[string]designgen.FalRoute
 	// aiReg, aiKeyRing, aiRecraftViaOpenRouter, aiProbeClient, aiReconcile — the admin → AI providers panel
 	// (ai_providers.go, SetAIProviders). aiReg nil = not wired: the five RPCs refuse with
 	// FailedPrecondition. A nil/disabled aiKeyRing refuses to store a key and says which variable

@@ -24,12 +24,19 @@ import (
 // providers get; the band (run_kinds, playground_workflows), the door (route_reserve_unbounded) and
 // the reserve (designFalRouteEstimate) read it and nothing else.
 
-// SetDesignFalRoutes wires the extend / inpaint route objects (app.go, beside SetDesignThreedRoute).
-func (s *Server) SetDesignFalRoutes(routes map[string]designgen.FalRoute) {
-	s.designFalRoutes = make(map[string]designgen.FalRoute, len(routes))
-	for k, r := range routes {
-		s.designFalRoutes[k] = r
+// SetDesignFalRoutes wires the extend / inpaint route objects (app.go, beside SetDesignThreedRoute): a
+// function of the live route (B-24 — a row's model is the slug), asked by every reader.
+func (s *Server) SetDesignFalRoutes(routes func() map[string]designgen.FalRoute) {
+	s.designFalRoutes = routes
+}
+
+// designFalRoute — the kind's route object right now; ok = false when none is wired.
+func (s *Server) designFalRoute(kind string) (designgen.FalRoute, bool) {
+	if s.designFalRoutes == nil {
+		return designgen.FalRoute{}, false
 	}
+	r, ok := s.designFalRoutes()[kind]
+	return r, ok
 }
 
 // designFalRouteKind — the kinds that ride a fal JSON route.
@@ -40,7 +47,7 @@ func designFalRouteKind(kind string) bool {
 // designFalRouteBounded — the kind's route is wired AND has a number to reserve. Fail closed: no
 // route object → false.
 func (s *Server) designFalRouteBounded(kind string) bool {
-	r, ok := s.designFalRoutes[kind]
+	r, ok := s.designFalRoute(kind)
 	return ok && r.Bounded
 }
 
@@ -53,7 +60,7 @@ func (s *Server) designRefuseFalRouteUnbounded(kind string) error {
 	if !designFalRouteKind(kind) {
 		return nil
 	}
-	r, ok := s.designFalRoutes[kind]
+	r, ok := s.designFalRoute(kind)
 	if !ok {
 		return designRefusal(codes.FailedPrecondition, designReasonKindUnavailable,
 			fmt.Sprintf("a %s run cannot be started: no fal route is wired for it on this server. Nothing "+
@@ -88,7 +95,7 @@ func (s *Server) designFalRouteEstimate(kind string, outputs int) (decimal.NullD
 		outputs = 1
 	}
 	per := designPriceEstimate[kind]
-	if r, ok := s.designFalRoutes[kind]; ok && r.Bounded {
+	if r, ok := s.designFalRoute(kind); ok && r.Bounded {
 		per = decimal.Max(per, r.Ceiling)
 	}
 	return decimal.NullDecimal{Decimal: per.Mul(decimal.NewFromInt(int64(outputs))), Valid: true}, true

@@ -126,6 +126,12 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		// A database hiccup while resolving input media. Retryable, and nothing has been spent.
 		return w.failRun(ctx, run, token, err)
 	}
+	// THE fal ROWS' MODEL (B-24): an extend / inpaint / cutout run that froze no slug goes to its route
+	// row's model, read at the pickup from the expression the door priced and gated with — the images'
+	// rule: the frozen slug wins, else the row's, else the client's env default.
+	if job.Model == "" && w.c != nil && w.c.FalRouteModel != nil {
+		job.Model = w.c.FalRouteModel(run.Kind)
+	}
 
 	// chain is the routed kind's fallback state for settle; nil for every route that is not a Chooser
 	// and for a resume (a collect never falls back: the job is bought).
