@@ -22,8 +22,10 @@ import (
 
 // ───────────────────────── fakes ─────────────────────────
 
-// fakeStore is dependency.AI over one in-memory AIConfig. Only the two reads the registry makes are
-// real; every write refuses, so a registry that started writing would fail loudly here.
+// fakeStore is dependency.AI over one in-memory AIConfig. The two reads the registry makes are real,
+// and so is the ONE write it may make — SetProviderKey, from the boot import (B-33), recorded in
+// keyWrites and applied to the row as the store would; every other write refuses, so a registry
+// that started writing elsewhere would fail loudly here.
 type fakeStore struct {
 	mu             sync.Mutex
 	cfg            entity.AIConfig
@@ -31,6 +33,17 @@ type fakeStore struct {
 	versionCalls   int
 	getConfigErr   error
 	versionErr     error
+	keyWrites      []keyWrite
+	keyWriteErr    error
+}
+
+// keyWrite is one SetProviderKey call as the fake saw it.
+type keyWrite struct {
+	provider string
+	kind     entity.AIKeyKind
+	enc      []byte
+	last4    string
+	by       string
 }
 
 var _ dependency.AI = (*fakeStore)(nil)
@@ -80,8 +93,31 @@ func (f *fakeStore) calls() (getConfig, version int) {
 func (f *fakeStore) UpdateProvider(context.Context, string, entity.AIProviderPatch, uint64, string) error {
 	return errNotUsed
 }
-func (f *fakeStore) SetProviderKey(context.Context, string, entity.AIKeyKind, []byte, string, string) error {
-	return errNotUsed
+func (f *fakeStore) SetProviderKey(_ context.Context, key string, kind entity.AIKeyKind, enc []byte, last4 string, by string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keyWriteErr != nil {
+		return f.keyWriteErr
+	}
+	f.keyWrites = append(f.keyWrites, keyWrite{provider: key, kind: kind, enc: enc, last4: last4, by: by})
+	for i := range f.cfg.Providers {
+		if f.cfg.Providers[i].Key != key {
+			continue
+		}
+		if kind == entity.AIKeyAdmin {
+			f.cfg.Providers[i].AdminKeyEnc, f.cfg.Providers[i].AdminKeyLast4, f.cfg.Providers[i].AdminKeyUpdatedBy = enc, last4, by
+		} else {
+			f.cfg.Providers[i].APIKeyEnc, f.cfg.Providers[i].APIKeyLast4, f.cfg.Providers[i].APIKeyUpdatedBy = enc, last4, by
+		}
+	}
+	f.cfg.Settings.ConfigVersion++ // the store bumps the version on every key write
+	return nil
+}
+
+func (f *fakeStore) writes() []keyWrite {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]keyWrite(nil), f.keyWrites...)
 }
 func (f *fakeStore) SetDefaults(context.Context, entity.AIDefaultsPatch, uint64, string) error {
 	return errNotUsed
@@ -110,7 +146,9 @@ func (f *fakeStore) UpsertCostDaily(context.Context, []entity.AICostDaily) error
 func (f *fakeStore) GetUsageSnapshot(context.Context, string) (*entity.AIUsageSnapshot, error) {
 	return nil, errNotUsed
 }
-func (f *fakeStore) PutUsageSnapshot(context.Context, entity.AIUsageSnapshot) error { return errNotUsed }
+func (f *fakeStore) PutUsageSnapshot(context.Context, entity.AIUsageSnapshot) error {
+	return errNotUsed
+}
 
 // fakeClock is a settable clock for the breaker window.
 type fakeClock struct{ ns atomic.Int64 }
@@ -141,16 +179,36 @@ func seal(t *testing.T, ring *keyring.Ring, provider string, kind entity.AIKeyKi
 	return blob
 }
 
-// seedConfig is the 0373 seed: nine rows (openrouter, fal, meshy, recraft on), every purpose at
-// position 1 as today, version 1, both defaults openrouter.
+// seedKeys are the api keys seedConfig stores for the four providers that are on — sealed under
+// testRing's master, so a registry over testRing opens them and one over another master does not.
+// Since B-33 a keyed provider is a provider WITH A STORED KEY: the env values (testEnv) are the
+// import's input only, and every test that expects a key to answer expects one of these.
+var seedKeys = map[string]string{
+	entity.AIProviderOpenRouter: "db-openrouter-1111",
+	entity.AIProviderFal:        "db-fal-2222",
+	entity.AIProviderMeshy:      "db-meshy-3333",
+	entity.AIProviderRecraft:    "db-recraft-4444",
+}
+
+// seedConfig is the 0373 seed as B-33 leaves it after the boot import: nine rows (openrouter, fal,
+// meshy, recraft on, each with a stored key — seedKeys), every purpose at position 1 as today,
+// version 1, both defaults openrouter.
 func seedConfig() entity.AIConfig {
-	on := map[string]bool{
-		entity.AIProviderOpenRouter: true, entity.AIProviderFal: true,
-		entity.AIProviderMeshy: true, entity.AIProviderRecraft: true,
+	ring, err := keyring.New(masterB64(7)) // testRing's master, without a *testing.T
+	if err != nil {
+		panic(err)
 	}
 	var cfg entity.AIConfig
 	for _, k := range entity.AIProviderKeys() {
-		cfg.Providers = append(cfg.Providers, entity.AIProvider{Key: k, Label: k, Enabled: on[k]})
+		p := entity.AIProvider{Key: k, Label: k, Enabled: seedKeys[k] != ""}
+		if plain := seedKeys[k]; plain != "" {
+			blob, err := ring.Seal(plain, keyring.AAD(k, string(entity.AIKeyAPI)))
+			if err != nil {
+				panic(err)
+			}
+			p.APIKeyEnc, p.APIKeyLast4 = blob, keyring.Last4(plain)
+		}
+		cfg.Providers = append(cfg.Providers, p)
 	}
 	for _, p := range entity.AIPurposes() {
 		pk := entity.AIProviderOpenRouter
@@ -245,14 +303,18 @@ func admitOK(_ Admission, ok bool) bool { return ok }
 
 // ───────────────────────── keys ─────────────────────────
 
-// TestKeyFunc_DBKeyBeatsEnv — a stored key answers even though the env variable is set; the panel
-// says "db" and shows the stored key's last four.
+// TestKeyFunc_StoredKeyOnly_EnvNeverAnswers (B-33) — the stored key answers and the panel says "db"
+// with its last four; a provider with NO stored key answers "" and says "none" although its env
+// variable is set: the env values are the import's input, never a call's key.
 //
-// MUTATION: effectiveKeyIn returns envKey before checking dbKey → red.
-func TestKeyFunc_DBKeyBeatsEnv(t *testing.T) {
+// MUTATION (measured red → green): the env fallback restored at the end of effectiveKeyIn
+// (`return r.envValue(providerKey)` in place of `return p.dbKey` for an empty dbKey) → meshy answers
+// testEnv.Meshy again → red.
+func TestKeyFunc_StoredKeyOnly_EnvNeverAnswers(t *testing.T) {
 	ring := testRing(t)
 	cfg := seedConfig()
 	provider(&cfg, entity.AIProviderFal).APIKeyEnc = seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "db-fal-9z9z")
+	provider(&cfg, entity.AIProviderMeshy).APIKeyEnc = nil // on, env set, nothing stored
 
 	r, _, logs := newLoaded(t, ring, cfg)
 
@@ -260,16 +322,19 @@ func TestKeyFunc_DBKeyBeatsEnv(t *testing.T) {
 	st := state(t, r, entity.AIProviderFal)
 	require.Equal(t, KeySourceDB, st.KeySource)
 	require.Equal(t, "9z9z", st.KeyLast4)
-	// A provider with no stored key keeps its env key.
-	require.Equal(t, testEnv.Meshy, r.KeyFunc(entity.AIProviderMeshy)())
-	require.Equal(t, KeySourceEnv, state(t, r, entity.AIProviderMeshy).KeySource)
+	// No stored key: nothing answers, whatever MESHY_API_KEY says.
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)())
+	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderMeshy).KeySource)
+	require.Equal(t, "", state(t, r, entity.AIProviderMeshy).KeyLast4)
+	require.Contains(t, logs.String(), "ai provider meshy: enabled=true key=none")
 	// Never the value in a log line — source and last4 only.
 	require.NotContains(t, logs.String(), "db-fal-9z9z")
 	require.NotContains(t, logs.String(), testEnv.Meshy)
 	require.Contains(t, logs.String(), "ai provider fal: enabled=true key=db")
 }
 
-// TestKeyFunc_DisabledYieldsEmpty — enabled=0 WINS over a stored key and over env (02-PLAN S-2).
+// TestKeyFunc_DisabledYieldsEmpty — enabled=0 WINS over a stored key (02-PLAN S-2); the panel still
+// shows which key the switched-off provider would use.
 //
 // MUTATION: drop the `!p.enabled` return in effectiveKeyIn → red (the db key comes back).
 func TestKeyFunc_DisabledYieldsEmpty(t *testing.T) {
@@ -278,22 +343,25 @@ func TestKeyFunc_DisabledYieldsEmpty(t *testing.T) {
 	fal := provider(&cfg, entity.AIProviderFal)
 	fal.Enabled = false
 	fal.APIKeyEnc = seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "db-fal-9z9z")
-	provider(&cfg, entity.AIProviderMeshy).Enabled = false // env only
+	provider(&cfg, entity.AIProviderMeshy).Enabled = false // its seeded key stays stored
 
 	r, _, _ := newLoaded(t, ring, cfg)
 
 	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)())
-	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)(), "enabled=0 must win over the env key too")
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)())
 	require.False(t, state(t, r, entity.AIProviderFal).Enabled)
+	require.Equal(t, "9z9z", state(t, r, entity.AIProviderFal).KeyLast4, "shown as if enabled")
 }
 
-// TestKeyFunc_UnreadableFallsBackToEnv — a blob that does not open (sealed for another row, under
-// another master, or with no master at all) is reported "unreadable", the env key answers, and the
-// warning is logged ONCE per blob, not on every reload.
+// TestKeyFunc_UnreadableAnswersNothing — a blob that does not open (sealed for another row, under
+// another master, or with no master at all) is reported "unreadable", NOTHING answers for the
+// provider (B-33: the env key is not a fallback any more), the warning says where to re-enter the
+// key and is logged ONCE per blob, not on every reload.
 //
-// MUTATION: return (plain, false) on an Open error in open() → red (KeySource "env"/"none").
+// MUTATION: return (plain, false) on an Open error in open() → red (KeySource "none").
 // MUTATION: drop the `already` check → red (two warnings).
-func TestKeyFunc_UnreadableFallsBackToEnv(t *testing.T) {
+// MUTATION (B-33): effectiveKeyIn answers envValue for an empty dbKey → red (fal answers testEnv.Fal).
+func TestKeyFunc_UnreadableAnswersNothing(t *testing.T) {
 	ring := testRing(t)
 	other, err := keyring.New(masterB64(9))
 	require.NoError(t, err)
@@ -305,43 +373,49 @@ func TestKeyFunc_UnreadableFallsBackToEnv(t *testing.T) {
 	provider(&cfg, entity.AIProviderFal).APIKeyEnc = seal(t, ring, entity.AIProviderOpenRouter, entity.AIKeyAPI, "moved-key-1111")
 	// Sealed under another master.
 	provider(&cfg, entity.AIProviderMeshy).APIKeyEnc = seal(t, other, entity.AIProviderMeshy, entity.AIKeyAPI, "other-master-2222")
-	// Unreadable and nothing in env to fall back to.
+	// Unreadable on a provider that never had an env variable.
 	provider(&cfg, entity.AIProviderOpenAI).Enabled = true
 	provider(&cfg, entity.AIProviderOpenAI).APIKeyEnc = seal(t, other, entity.AIProviderOpenAI, entity.AIKeyAPI, "sk-openai-3333")
 
 	r, fs, logs := newLoaded(t, ring, cfg)
 
-	require.Equal(t, testEnv.Fal, r.KeyFunc(entity.AIProviderFal)())
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)(), "FAL_KEY is set and must not answer")
 	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderFal).KeySource)
-	require.Equal(t, "cccc", state(t, r, entity.AIProviderFal).KeyLast4, "last4 of the key that answers: env")
-	require.Equal(t, testEnv.Meshy, r.KeyFunc(entity.AIProviderMeshy)())
+	require.Equal(t, "", state(t, r, entity.AIProviderFal).KeyLast4, "no key answers: no last4")
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)())
 	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderMeshy).KeySource)
 	require.Equal(t, "", r.KeyFunc(entity.AIProviderOpenAI)())
 	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderOpenAI).KeySource)
+	require.Contains(t, logs.String(), "does not open — re-enter it in admin → AI providers")
+	require.NotContains(t, logs.String(), "answers meanwhile")
+	require.NotContains(t, logs.String(), "fallback=")
 
 	// Reload again (a version bump that touches nothing here): no second warning for the same blobs.
 	fs.edit(func(c *entity.AIConfig) {})
 	require.NoError(t, r.Reload(context.Background()))
 	require.Equal(t, 1, strings.Count(logs.String(), "provider=fal kind=api"), logs.String())
 	require.Equal(t, 1, strings.Count(logs.String(), "provider=meshy kind=api"), logs.String())
-	for _, secret := range []string{"moved-key-1111", "other-master-2222", "sk-openai-3333"} {
+	for _, secret := range []string{"moved-key-1111", "other-master-2222", "sk-openai-3333", testEnv.Fal, testEnv.Meshy} {
 		require.NotContains(t, logs.String(), secret)
 	}
 
-	// A registry with no master key cannot open anything: stored keys are unreadable, env answers.
+	// A registry with no master key cannot open anything: stored keys are unreadable, nothing answers.
 	cfg2 := seedConfig()
 	provider(&cfg2, entity.AIProviderFal).APIKeyEnc = seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "db-fal-9z9z")
 	r2, _, _ := newLoaded(t, noMaster, cfg2)
-	require.Equal(t, testEnv.Fal, r2.KeyFunc(entity.AIProviderFal)())
+	require.Equal(t, "", r2.KeyFunc(entity.AIProviderFal)())
 	require.Equal(t, KeySourceUnreadable, state(t, r2, entity.AIProviderFal).KeySource)
 }
 
-// TestKeyFunc_BeforeReloadAndMissingRow — never loaded, or a provider with no row: today's env key.
+// TestKeyFunc_BeforeReloadAndMissingRow — never loaded, or a provider with no row: "" (B-33: with no
+// snapshot there is no key, and a missing row is a broken deploy, not a reason to read env).
 //
-// MUTATION: effectiveKeyIn returns "" for a nil snapshot → red.
+// MUTATION: effectiveKeyIn returns r.envValue(providerKey) for a nil snapshot / a missing row → red.
 func TestKeyFunc_BeforeReloadAndMissingRow(t *testing.T) {
 	r := New(&fakeStore{cfg: seedConfig()}, testRing(t), testEnv)
-	require.Equal(t, testEnv.Fal, r.KeyFunc(entity.AIProviderFal)())
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)())
+	require.Equal(t, "", state(t, r, entity.AIProviderFal).KeyLast4)
+	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderFal).KeySource)
 	require.Equal(t, uint64(0), r.Version())
 	require.Nil(t, r.Candidates(entity.AIPurposeThreed))
 
@@ -354,20 +428,24 @@ func TestKeyFunc_BeforeReloadAndMissingRow(t *testing.T) {
 	}
 	cfg.Providers = kept
 	loaded, _, _ := newLoaded(t, testRing(t), cfg)
-	require.Equal(t, testEnv.Meshy, loaded.KeyFunc(entity.AIProviderMeshy)())
+	require.Equal(t, "", loaded.KeyFunc(entity.AIProviderMeshy)())
+	require.Equal(t, KeySourceNone, state(t, loaded, entity.AIProviderMeshy).KeySource)
 	require.Equal(t, uint64(1), loaded.Version())
 }
 
 // TestOpenRouterImagesKeyFunc — one row serves both OpenRouter clients: a stored key answers for
-// both; with none, each keeps its own env variable; enabled=0 silences both.
+// both; with none, BOTH answer "" — OPENROUTER_IMAGES_API_KEY is no fallback any more (B-33);
+// enabled=0 silences both.
 //
-// MUTATION: OpenRouterImagesKeyFunc passes capability "" → red (the chat env key answers images).
+// MUTATION: OpenRouterImagesKeyFunc answers r.env.OpenRouterImages for an empty dbKey → red.
 func TestOpenRouterImagesKeyFunc(t *testing.T) {
 	ring := testRing(t)
-	r, fs, _ := newLoaded(t, ring, seedConfig())
+	cfg := seedConfig()
+	provider(&cfg, entity.AIProviderOpenRouter).APIKeyEnc = nil
+	r, fs, _ := newLoaded(t, ring, cfg)
 	chat, images := r.KeyFunc(entity.AIProviderOpenRouter), r.OpenRouterImagesKeyFunc()
-	require.Equal(t, testEnv.OpenRouter, chat())
-	require.Equal(t, testEnv.OpenRouterImages, images())
+	require.Equal(t, "", chat())
+	require.Equal(t, "", images())
 
 	blob := seal(t, ring, entity.AIProviderOpenRouter, entity.AIKeyAPI, "db-or-7777")
 	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderOpenRouter).APIKeyEnc = blob })
@@ -394,6 +472,187 @@ func TestAdminKey(t *testing.T) {
 	require.True(t, state(t, r, entity.AIProviderOpenAI).AdminKeySet)
 	require.Equal(t, "", r.AdminKey(entity.AIProviderFal))
 	require.False(t, state(t, r, entity.AIProviderFal).AdminKeySet)
+}
+
+// ───────────────────────── the env import (B-33) ─────────────────────────
+
+// importRig is a registry over cfg with testEnv as its env, its log captured, NOT yet reloaded — the
+// import runs before the boot Reload, and the tests reload afterwards to see what the snapshot says.
+func importRig(t *testing.T, ring *keyring.Ring, cfg entity.AIConfig) (*Registry, *fakeStore, *bytes.Buffer) {
+	t.Helper()
+	fs := &fakeStore{cfg: cfg}
+	r := New(fs, ring, testEnv)
+	var buf bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&lockedWriter{w: &buf}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return r, fs, &buf
+}
+
+// TestImportEnvKeys_EmptySlotIsFilled — an env value whose panel slot is EMPTY is sealed (the
+// handler's AAD, so the registry opens it) and stored with updated_by "env-import" and the right
+// last4; one INFO line per import names the VARIABLE to delete and never the value; the next Reload
+// says "db" and the key answers — from the store, not from env.
+//
+// MUTATION (measured red → green): the seal's AAD changed to AAD(provider, "admin") → the blob does
+// not open under "api" → KeySource unreadable, KeyFunc "" → red.
+func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
+	ring := testRing(t)
+	cfg := seedConfig()
+	for _, k := range []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft} {
+		provider(&cfg, k).APIKeyEnc = nil
+	}
+	r, fs, logs := importRig(t, ring, cfg)
+
+	imported, err := r.ImportEnvKeys(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft}, imported)
+
+	want := map[string]string{
+		entity.AIProviderOpenRouter: testEnv.OpenRouter, entity.AIProviderFal: testEnv.Fal,
+		entity.AIProviderMeshy: testEnv.Meshy, entity.AIProviderRecraft: testEnv.Recraft,
+	}
+	writes := fs.writes()
+	require.Len(t, writes, 4)
+	for _, w := range writes {
+		require.Equal(t, entity.AIKeyAPI, w.kind)
+		require.Equal(t, EnvImportedBy, w.by)
+		require.Equal(t, keyring.Last4(want[w.provider]), w.last4)
+		plain, err := ring.Open(w.enc, keyring.AAD(w.provider, string(entity.AIKeyAPI)))
+		require.NoError(t, err, "sealed with the handler's AAD")
+		require.Equal(t, want[w.provider], plain)
+	}
+	require.Contains(t, logs.String(),
+		"ai provider fal: env key imported into the panel (last4 cccc) — delete FAL_KEY from the app spec")
+	require.Contains(t, logs.String(), "delete OPENROUTER_API_KEY from the app spec")
+	require.Contains(t, logs.String(), "delete MESHY_API_KEY from the app spec")
+	require.Contains(t, logs.String(), "delete RECRAFT_API_KEY from the app spec")
+	for _, secret := range []string{testEnv.OpenRouter, testEnv.Fal, testEnv.Meshy, testEnv.Recraft, testEnv.OpenRouterImages} {
+		require.NotContains(t, logs.String(), secret)
+	}
+	require.NotContains(t, logs.String(), "level=ERROR")
+
+	require.NoError(t, r.Reload(context.Background()))
+	require.Equal(t, testEnv.Fal, r.KeyFunc(entity.AIProviderFal)(), "answers now — from the stored blob")
+	st := state(t, r, entity.AIProviderFal)
+	require.Equal(t, KeySourceDB, st.KeySource)
+	require.Equal(t, "cccc", st.KeyLast4)
+	require.Equal(t, testEnv.OpenRouter, r.OpenRouterImagesKeyFunc()(), "one row serves both OpenRouter clients")
+}
+
+// TestImportEnvKeys_FilledSlotUntouched — a slot that already holds a blob keeps it: the panel's
+// key wins over the env value, and no write happens for it. Only the empty slots are filled.
+//
+// MUTATION (measured red → green): the `len(row.APIKeyEnc) > 0` skip dropped → openrouter's stored
+// key is overwritten with testEnv.OpenRouter → red on the first assertion (five writes, not three)
+// and on the KeyFunc answer.
+func TestImportEnvKeys_FilledSlotUntouched(t *testing.T) {
+	ring := testRing(t)
+	cfg := seedConfig() // openrouter, fal, meshy, recraft all stored
+	provider(&cfg, entity.AIProviderFal).APIKeyEnc = nil
+	r, fs, _ := importRig(t, ring, cfg)
+
+	imported, err := r.ImportEnvKeys(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{entity.AIProviderFal}, imported)
+	require.Len(t, fs.writes(), 1)
+	require.Equal(t, entity.AIProviderFal, fs.writes()[0].provider)
+
+	require.NoError(t, r.Reload(context.Background()))
+	require.Equal(t, seedKeys[entity.AIProviderOpenRouter], r.KeyFunc(entity.AIProviderOpenRouter)(), "the stored key, not OPENROUTER_API_KEY")
+	require.Equal(t, testEnv.Fal, r.KeyFunc(entity.AIProviderFal)())
+}
+
+// TestImportEnvKeys_BrokenBlobUntouched — a blob that does not open is still "a key is stored": the
+// import leaves it (a person re-enters it), the provider stays unreadable and answers "".
+//
+// MUTATION (measured red → green): the skip made `r.open(...) != ""` (readable blobs only) → the
+// broken fal blob is overwritten with FAL_KEY → KeySource db → red.
+func TestImportEnvKeys_BrokenBlobUntouched(t *testing.T) {
+	ring := testRing(t)
+	other, err := keyring.New(masterB64(9))
+	require.NoError(t, err)
+	cfg := seedConfig()
+	provider(&cfg, entity.AIProviderFal).APIKeyEnc = seal(t, other, entity.AIProviderFal, entity.AIKeyAPI, "other-master-2222")
+	r, fs, _ := importRig(t, ring, cfg)
+
+	imported, err := r.ImportEnvKeys(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, imported)
+	require.Empty(t, fs.writes())
+
+	require.NoError(t, r.Reload(context.Background()))
+	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderFal).KeySource)
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)())
+}
+
+// TestImportEnvKeys_NoMasterKey — without AI_KEYS_MASTER_KEY nothing can be sealed: one ERROR line
+// says so, nothing is stored, and the env values are not used either — the provider answers "".
+//
+// MUTATION (measured red → green): the `!r.ring.Enabled()` early return dropped → SealProviderKey
+// fails with ErrNoMasterKey → ImportEnvKeys returns an error → red.
+func TestImportEnvKeys_NoMasterKey(t *testing.T) {
+	noMaster, err := keyring.New("")
+	require.NoError(t, err)
+	cfg := seedConfig()
+	provider(&cfg, entity.AIProviderFal).APIKeyEnc = nil
+	r, fs, logs := importRig(t, noMaster, cfg)
+
+	imported, err := r.ImportEnvKeys(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, imported)
+	require.Empty(t, fs.writes())
+	require.Contains(t, logs.String(), "level=ERROR")
+	require.Contains(t, logs.String(),
+		"AI_KEYS_MASTER_KEY is not set: env keys are no longer read; set it and save the keys in admin → AI providers")
+
+	require.NoError(t, r.Reload(context.Background()))
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)(), "FAL_KEY is set and is not used")
+	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderFal).KeySource)
+}
+
+// TestImportEnvKeys_ImagesEnvDiffersWarns — OPENROUTER_IMAGES_API_KEY is never imported (one
+// openrouter row serves both clients); when it differs from OPENROUTER_API_KEY one WARN names the
+// variable and not the value; when it is the same (config's own fallback) there is no line.
+//
+// MUTATION (measured red → green): the WARN's condition inverted (`==`) → the differing case logs
+// nothing → red.
+func TestImportEnvKeys_ImagesEnvDiffersWarns(t *testing.T) {
+	ring := testRing(t)
+	r, fs, logs := importRig(t, ring, seedConfig()) // every slot filled: nothing to import
+	_, err := r.ImportEnvKeys(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, fs.writes())
+	require.Contains(t, logs.String(), "level=WARN")
+	require.Contains(t, logs.String(), "OPENROUTER_IMAGES_API_KEY differs from OPENROUTER_API_KEY and is not imported")
+	require.NotContains(t, logs.String(), testEnv.OpenRouterImages)
+
+	same := testEnv
+	same.OpenRouterImages = same.OpenRouter
+	r2 := New(&fakeStore{cfg: seedConfig()}, ring, same)
+	var buf bytes.Buffer
+	r2.log = slog.New(slog.NewTextHandler(&buf, nil))
+	_, err = r2.ImportEnvKeys(context.Background())
+	require.NoError(t, err)
+	require.NotContains(t, buf.String(), "OPENROUTER_IMAGES_API_KEY")
+}
+
+// TestImportEnvKeys_StoreFailureIsReturned — a store that cannot read or write is a boot error for
+// the import exactly as it is for the Reload; the import never swallows it.
+func TestImportEnvKeys_StoreFailureIsReturned(t *testing.T) {
+	ring := testRing(t)
+	cfg := seedConfig()
+	provider(&cfg, entity.AIProviderFal).APIKeyEnc = nil
+	r, fs, _ := importRig(t, ring, cfg)
+	fs.mu.Lock()
+	fs.keyWriteErr = errors.New("db down")
+	fs.mu.Unlock()
+	_, err := r.ImportEnvKeys(context.Background())
+	require.ErrorContains(t, err, "env import: store fal key: db down")
+
+	fs.mu.Lock()
+	fs.keyWriteErr, fs.getConfigErr = nil, errors.New("db down")
+	fs.mu.Unlock()
+	_, err = r.ImportEnvKeys(context.Background())
+	require.ErrorContains(t, err, "env import: db down")
 }
 
 // ───────────────────────── candidates ─────────────────────────
@@ -563,11 +822,11 @@ func TestReload_SwapsAtomically(t *testing.T) {
 	ring := testRing(t)
 	r, fs, _ := newLoaded(t, ring, seedConfig())
 	falKey := r.KeyFunc(entity.AIProviderFal)
-	require.Equal(t, testEnv.Fal, falKey())
+	require.Equal(t, seedKeys[entity.AIProviderFal], falKey())
 
 	blob := seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "rotated-fal-8888")
 	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderFal).APIKeyEnc = blob })
-	require.Equal(t, testEnv.Fal, falKey(), "nothing changes until the reload")
+	require.Equal(t, seedKeys[entity.AIProviderFal], falKey(), "nothing changes until the reload")
 	require.NoError(t, r.Reload(context.Background()))
 	require.Equal(t, "rotated-fal-8888", falKey())
 	require.Equal(t, uint64(2), r.Version())
@@ -798,11 +1057,12 @@ func TestProvidersAt_OneSnapshot(t *testing.T) {
 	require.Empty(t, openaiOf(states).KeyLast4)
 	require.Equal(t, states, r.Providers(), "Providers is ProvidersAt's states")
 
-	// Before the first Reload: version 0, the env picture.
+	// Before the first Reload: version 0 and no key anywhere (B-33: env is not a picture any more).
 	states, v = New(&fakeStore{cfg: seedConfig()}, ring, testEnv).ProvidersAt()
 	require.Zero(t, v)
 	require.Len(t, states, len(entity.AIProviderKeys()))
-	require.Equal(t, KeySourceEnv, states[slices.Index(entity.AIProviderKeys(), entity.AIProviderFal)].KeySource)
+	require.Equal(t, KeySourceNone, states[slices.Index(entity.AIProviderKeys(), entity.AIProviderFal)].KeySource)
+	require.Empty(t, states[slices.Index(entity.AIProviderKeys(), entity.AIProviderFal)].KeyLast4)
 }
 
 // ───────────────────────── one clock, one probe (Codex A1 #1) ─────────────────────────
