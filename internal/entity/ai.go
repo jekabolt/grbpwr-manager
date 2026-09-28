@@ -353,8 +353,13 @@ type AIProviderPatch struct {
 }
 
 // AIDefaultsPatch — a partial write of the two default providers; nil = keep.
+//
+// ApplyToRoutes (28.09, SetAiDefaultsRequest.apply_to_routes): every purpose of a capability whose
+// default this patch names is re-pointed at it in the same write — its primary becomes the "default"
+// candidate; a fallback that would then be the primary itself is dropped (store/ai followDefault).
 type AIDefaultsPatch struct {
 	ChatProviderKey, ImageProviderKey *string
+	ApplyToRoutes                     bool
 }
 
 // ───────────────────────── ledger rows ─────────────────────────

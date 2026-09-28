@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (404 rpc) ----
+// ---- admin (406 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -192,6 +192,14 @@ func (c *Client) AdjustMaterialStock(ctx context.Context, in *admin.AdjustMateri
 func (c *Client) AnalyzeTechCardConstruction(ctx context.Context, in *admin.AnalyzeTechCardConstructionRequest) (*admin.AnalyzeTechCardConstructionResponse, error) {
 	out := new(admin.AnalyzeTechCardConstructionResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/construction/analyze", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ApplyColorwayPaletteToSlots(ctx context.Context, in *admin.ApplyColorwayPaletteToSlotsRequest) (*admin.ApplyColorwayPaletteToSlotsResponse, error) {
+	out := new(admin.ApplyColorwayPaletteToSlotsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/colorways/{colorway_id}/palette/apply", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -600,6 +608,14 @@ func (c *Client) DeleteDesignAssetPlacement(ctx context.Context, in *admin.Delet
 func (c *Client) DeleteDesignDetailSlot(ctx context.Context, in *admin.DeleteDesignDetailSlotRequest) (*admin.DeleteDesignDetailSlotResponse, error) {
 	out := new(admin.DeleteDesignDetailSlotResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/design/bench/{slot_id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteDesignPicture(ctx context.Context, in *admin.DeleteDesignPictureRequest) (*admin.DeleteDesignPictureResponse, error) {
+	out := new(admin.DeleteDesignPictureResponse)
+	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/delete", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

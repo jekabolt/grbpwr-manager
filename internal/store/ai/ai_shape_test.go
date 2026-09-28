@@ -800,6 +800,12 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 		{"SetDefaults", func(s *Store) error {
 			return s.SetDefaults(ctx, entity.AIDefaultsPatch{ImageProviderKey: ptr("google")}, 7, "jeka")
 		}, []string{"bumpConfigVersionChecked", "updateAIDefaults"}},
+		// ApplyToRoutes (28.09): the ONE image purpose is re-pointed in the same transaction, after the
+		// settings row moved — read the routes once, then DELETE + INSERT the "default" primary (no slug,
+		// so nothing is recorded in ai_model).
+		{"SetDefaults apply to routes", func(s *Store) error {
+			return s.SetDefaults(ctx, entity.AIDefaultsPatch{ImageProviderKey: ptr("google"), ApplyToRoutes: true}, 7, "jeka")
+		}, []string{"bumpConfigVersionChecked", "updateAIDefaults", "selectAIRoutes", "deleteAIRoute", "insertAIRouteCandidate"}},
 		{"SetRoute", func(s *Store) error {
 			return s.SetRoute(ctx, entity.AIPurposeThreed, []entity.AIRouteCandidate{
 				{Position: 9, ProviderKey: "meshy"}, {Position: 3, ProviderKey: "fal", Model: " fal-ai/trellis "},
@@ -2053,5 +2059,34 @@ func TestAIStoreShapeUsageSnapshotIsOneBasePerProvider(t *testing.T) {
 	}
 	if !usageSnapshotBound.Equal(decimal.New(1, 14-6)) {
 		t.Fatalf("the usage bound %s is not DECIMAL(14,6)'s", usageSnapshotBound)
+	}
+}
+
+// TestFollowDefaultKeepsOnlyAFallbackThatDiffers — the pure half of ApplyToRoutes: the primary becomes
+// "default"; a fallback on "" or on the new default with no slug of its own would be the primary itself
+// and is dropped; a fallback on another provider, or on a named slug, stays at position 2.
+//
+// MUTATION (measured red→green): the same-as-primary skip removed → «default, default» is written.
+func TestFollowDefaultKeepsOnlyAFallbackThatDiffers(t *testing.T) {
+	cand := func(pos int, p, m string) entity.AIRouteCandidate {
+		return entity.AIRouteCandidate{Position: pos, ProviderKey: p, Model: m}
+	}
+	for name, tc := range map[string]struct {
+		existing []entity.AIRouteCandidate
+		want     []entity.AIRouteCandidate
+	}{
+		"no route yet":                 {nil, []entity.AIRouteCandidate{cand(1, "", "")}},
+		"primary only":                 {[]entity.AIRouteCandidate{cand(1, "anthropic", "claude-sonnet-5")}, []entity.AIRouteCandidate{cand(1, "", "")}},
+		"fallback is the new default":  {[]entity.AIRouteCandidate{cand(1, "anthropic", ""), cand(2, "openai", "")}, []entity.AIRouteCandidate{cand(1, "", "")}},
+		"fallback is default already":  {[]entity.AIRouteCandidate{cand(1, "anthropic", ""), cand(2, "", "")}, []entity.AIRouteCandidate{cand(1, "", "")}},
+		"fallback on another provider": {[]entity.AIRouteCandidate{cand(1, "anthropic", ""), cand(2, "google", "")}, []entity.AIRouteCandidate{cand(1, "", ""), cand(2, "google", "")}},
+		"fallback on the default, named slug": {[]entity.AIRouteCandidate{cand(1, "anthropic", ""), cand(2, "openai", "gpt-5")},
+			[]entity.AIRouteCandidate{cand(1, "", ""), cand(2, "openai", "gpt-5")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := followDefault(tc.existing, "openai"); !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

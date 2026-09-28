@@ -547,8 +547,88 @@ func (s *Store) SetDefaults(ctx context.Context, patch entity.AIDefaultsPatch, e
 		if _, err := execNamed(ctx, rep.DB(), updateAIDefaults, params); err != nil {
 			return fmt.Errorf("failed to update ai defaults: %w", err)
 		}
+		if !patch.ApplyToRoutes {
+			return nil
+		}
+		// AFTER the settings row moved, on the same handle: recordRouteModels resolves a "" provider
+		// against the default this transaction just wrote — the one the routes will follow.
+		if patch.ChatProviderKey != nil {
+			if err := applyDefaultToRoutes(ctx, rep.DB(), entity.AICapabilityChat, *patch.ChatProviderKey, by); err != nil {
+				return err
+			}
+		}
+		if patch.ImageProviderKey != nil {
+			if err := applyDefaultToRoutes(ctx, rep.DB(), entity.AICapabilityImage, *patch.ImageProviderKey, by); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+}
+
+// followDefault is one purpose's route re-pointed at its capability's NEW default (SetDefaults with
+// ApplyToRoutes, 28.09): the primary becomes the "default" candidate (provider "", model "") so a later
+// default change moves it too; the stored fallback stays unless it would then be the primary itself —
+// provider "" or the new default, with no slug of its own (the same-as-primary rule as far as the
+// store can judge it: a named slug on the default provider may still differ from the router's own).
+func followDefault(existing []entity.AIRouteCandidate, newDefault string) []entity.AIRouteCandidate {
+	out := []entity.AIRouteCandidate{{Position: 1}}
+	for _, c := range existing {
+		if c.Position <= 1 {
+			continue
+		}
+		if (c.ProviderKey == "" || c.ProviderKey == newDefault) && c.Model == "" {
+			continue
+		}
+		out = append(out, entity.AIRouteCandidate{Position: len(out) + 1, ProviderKey: c.ProviderKey, Model: c.Model})
+	}
+	return out
+}
+
+// applyDefaultToRoutes rewrites every purpose of capability with followDefault, on the caller's
+// transaction handle (SetDefaults, after the settings row moved). A purpose with no route today gets
+// one — "default" — which is what the panel already showed for it.
+func applyDefaultToRoutes(ctx context.Context, db dependency.DB, capability, newDefault, by string) error {
+	var rows []routeRow
+	if err := selectNamed(ctx, db, &rows, selectAIRoutes, nil); err != nil {
+		return fmt.Errorf("failed to read ai routes: %w", err)
+	}
+	existing := map[string][]entity.AIRouteCandidate{}
+	for _, r := range groupRoutes(rows) {
+		existing[r.Purpose] = r.Candidates
+	}
+	for _, purpose := range entity.AIPurposes() {
+		if entity.AIPurposeCapability(purpose) != capability {
+			continue
+		}
+		route := followDefault(existing[purpose], newDefault)
+		if err := writeRoute(ctx, db, purpose, route, by); err != nil {
+			return err
+		}
+		if err := recordRouteModels(ctx, db, capability, route, by); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeRoute replaces one purpose's rows: DELETE purpose, INSERT positions 1..n in order.
+func writeRoute(ctx context.Context, db dependency.DB, purpose string, route []entity.AIRouteCandidate, by string) error {
+	if _, err := execNamed(ctx, db, deleteAIRoute, map[string]any{"purpose": purpose}); err != nil {
+		return fmt.Errorf("failed to clear ai route %q: %w", purpose, err)
+	}
+	for _, c := range route {
+		if _, err := execNamed(ctx, db, insertAIRouteCandidate, map[string]any{
+			"purpose":      purpose,
+			"position":     c.Position,
+			"provider_key": c.ProviderKey,
+			"model":        c.Model,
+			"by":           by,
+		}); err != nil {
+			return fmt.Errorf("failed to write ai route %q position %d: %w", purpose, c.Position, err)
+		}
+	}
+	return nil
 }
 
 const deleteAIRoute = `DELETE FROM ai_route WHERE purpose = :purpose`
@@ -633,19 +713,8 @@ func (s *Store) SetRoute(ctx context.Context, purpose string, candidates []entit
 		if err := bumpVersion(ctx, rep.DB(), &expectedVersion, by); err != nil {
 			return err
 		}
-		if _, err := execNamed(ctx, rep.DB(), deleteAIRoute, map[string]any{"purpose": purpose}); err != nil {
-			return fmt.Errorf("failed to clear ai route %q: %w", purpose, err)
-		}
-		for _, c := range route {
-			if _, err := execNamed(ctx, rep.DB(), insertAIRouteCandidate, map[string]any{
-				"purpose":      purpose,
-				"position":     c.Position,
-				"provider_key": c.ProviderKey,
-				"model":        c.Model,
-				"by":           by,
-			}); err != nil {
-				return fmt.Errorf("failed to write ai route %q position %d: %w", purpose, c.Position, err)
-			}
+		if err := writeRoute(ctx, rep.DB(), purpose, route, by); err != nil {
+			return err
 		}
 		return recordRouteModels(ctx, rep.DB(), capability, route, by)
 	})

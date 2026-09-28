@@ -507,6 +507,9 @@ func (s *Server) SetAiDefaults(ctx context.Context, req *pb_admin.SetAiDefaultsR
 		return nil, apierr.Invalid(entity.NewFieldViolation("chat_provider_key", "no_settings_named", "",
 			"name a default chat provider, a default image provider, or both"))
 	}
+	// apply_to_routes: the routes of the named capability follow in the same checked transaction (the
+	// store's followDefault); the panel asks before sending it.
+	patch.ApplyToRoutes = req.GetApplyToRoutes()
 	by := authsrv.GetAdminUsername(ctx)
 	if err := s.repo.AI().SetDefaults(ctx, patch, req.GetExpectedVersion(), by); err != nil {
 		return nil, aiWriteError(ctx, "set the ai default providers", err)
@@ -514,6 +517,7 @@ func (s *Server) SetAiDefaults(ctx context.Context, req *pb_admin.SetAiDefaultsR
 	slog.Default().InfoContext(ctx, "ai default providers set",
 		slog.String("chat", derefOr(patch.ChatProviderKey, "(unchanged)")),
 		slog.String("image", derefOr(patch.ImageProviderKey, "(unchanged)")),
+		slog.Bool("apply_to_routes", patch.ApplyToRoutes),
 		slog.String("by", by))
 	cfg, err := s.aiAfterWrite(ctx)
 	if err != nil {

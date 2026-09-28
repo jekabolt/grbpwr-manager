@@ -926,6 +926,21 @@ func TestAiDefaultsEmptyLeavesUnchanged(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestAiDefaultsApplyToRoutesReachesTheStore — apply_to_routes travels into the patch the ONE checked
+// SetDefaults gets; the handler rewrites no route itself (no SetRoute expectation on the mock).
+//
+// MUTATION IT CATCHES: the flag dropped on the way to the store (the panel's "yes" moving nothing).
+func TestAiDefaultsApplyToRoutesReachesTheStore(t *testing.T) {
+	h := newAIHarness(t, aiHarnessOpt{})
+	h.ai.EXPECT().SetDefaults(mock.Anything, mock.MatchedBy(func(p entity.AIDefaultsPatch) bool {
+		return p.ApplyToRoutes && p.ImageProviderKey != nil && *p.ImageProviderKey == "google" && p.ChatProviderKey == nil
+	}), aiTestVersion, aiTestUser).Return(nil).Once()
+	h.expectConfigRead(nil)
+	_, err := h.s.SetAiDefaults(aiCtx(), &pb_admin.SetAiDefaultsRequest{ImageProviderKey: "google", ApplyToRoutes: true, ExpectedVersion: aiTestVersion})
+	require.NoError(t, err)
+	h.ai.AssertNotCalled(t, "SetRoute", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
 // TestAiRouteLeavesModelRecordingToTheStore (Codex B #6) — the handler hands the route's candidates,
 // trimmed and positioned, to the store's ONE checked SetRoute and records nothing itself: the store
 // files every named slug in ai_model inside that transaction. The mock has no UpsertModel expectation,
