@@ -382,6 +382,61 @@ var techCardBomKindEntityToPb = func() map[entity.TechCardBomKind]pb_common.Tech
 	return m
 }()
 
+// techCardBomLabelPartPbToEntity maps the closed ЧАСТЬ СОСТАВНИКА vocabulary. UNSPECIFIED is
+// deliberately absent, on the same rule as purpose/kind: it is «авто», not a value, and it may only
+// ever become a NULL column.
+var techCardBomLabelPartPbToEntity = map[pb_common.TechCardBomLabelPart]entity.TechCardBomLabelPart{
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_SHELL:         entity.BomLabelPartShell,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_BODY_LINING:   entity.BomLabelPartBodyLining,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_SLEEVE_LINING: entity.BomLabelPartSleeveLining,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_POCKET_LINING: entity.BomLabelPartPocketLining,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_HOOD_LINING:   entity.BomLabelPartHoodLining,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_FILLING:       entity.BomLabelPartFilling,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_TRIM:          entity.BomLabelPartTrim,
+	pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_NOT_ON_LABEL:  entity.BomLabelPartNotOnLabel,
+}
+
+var techCardBomLabelPartEntityToPb = func() map[entity.TechCardBomLabelPart]pb_common.TechCardBomLabelPart {
+	m := make(map[entity.TechCardBomLabelPart]pb_common.TechCardBomLabelPart, len(techCardBomLabelPartPbToEntity))
+	for k, v := range techCardBomLabelPartPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// bomLabelPartFromPb разбирает optional label_part строки BOM. Три состояния, и различие несущее:
+//   - поля НЕТ на проводе (nil) → omitted=true: «не трогай» — вкладка со старым бандлом;
+//   - явный UNSPECIFIED → NULL, omitted=false: «авто», очистить сохранённый выбор;
+//   - значение → строка словаря. Неизвестное значение ОТВЕРГАЕТСЯ, а не деградирует в «авто»:
+//     чтение может деградировать, запись не должна молча терять решение оператора.
+func bomLabelPartFromPb(p *pb_common.TechCardBomLabelPart, i int) (sql.NullString, bool, error) {
+	if p == nil {
+		return sql.NullString{}, true, nil
+	}
+	if *p == pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_UNSPECIFIED {
+		return sql.NullString{}, false, nil
+	}
+	v, ok := techCardBomLabelPartPbToEntity[*p]
+	if !ok {
+		return sql.NullString{}, false, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].label_part", i),
+			"unknown label part", "", "pick a label part from the list")
+	}
+	return sql.NullString{String: string(v), Valid: true}, false, nil
+}
+
+// pbBomLabelPart maps a stored label part back to the wire. NULL is UNSPECIFIED («авто»), and so is
+// a value this build does not recognise — a newer schema's part must degrade to «авто», not be
+// reported as some other part.
+func pbBomLabelPart(p sql.NullString) pb_common.TechCardBomLabelPart {
+	if !p.Valid {
+		return pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_UNSPECIFIED
+	}
+	if v, ok := techCardBomLabelPartEntityToPb[entity.TechCardBomLabelPart(p.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_UNSPECIFIED
+}
+
 var techCardLabDipPbToEntity = map[pb_common.TechCardLabDipStatus]entity.TechCardLabDipStatus{
 	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_PENDING:   entity.LabDipPending,
 	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_SUBMITTED: entity.LabDipSubmitted,
@@ -3254,6 +3309,14 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
 		}
 
+		// ЧАСТЬ СОСТАВНИКА — присутствие, а не значение (протокол purpose/kind): поля нет на проводе
+		// → «не трогай», явный UNSPECIFIED → NULL («авто»). Пары с секцией нет — часть это свойство
+		// ленты, а не геометрии.
+		labelPart, labelPartOmitted, err := bomLabelPartFromPb(b.LabelPart, i)
+		if err != nil {
+			return nil, err
+		}
+
 		// СЧЁТНАЯ НОРМА СЛОТА (0333) — сколько ШТУК пришивается на изделие и сколько закупается
 		// сверх пришитых, в пакетик.
 		//
@@ -3327,22 +3390,24 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
 			// unchanged positional index. id is read-only.
-			LineKey:         lineKey,
-			MaterialId:      materialID,
-			Section:         section,
-			Purpose:         purpose,
-			PurposeOmitted:  purposeOmitted,
-			PurposeNote:     purposeNote,
-			Kind:            kind,
-			KindOmitted:     kindOmitted,
-			KindNote:        kindNote,
-			KindNoteOmitted: kindOmitted,
-			IsSample:        b.GetIsSample(),
-			IsSampleOmitted: b.IsSample == nil,
-			Name:            b.Name,
-			Supplier:        nullStringFromPb(b.Supplier),
-			SupplierRef:     nullStringFromPb(b.SupplierRef),
-			Color:           nullStringFromPb(b.Color),
+			LineKey:          lineKey,
+			MaterialId:       materialID,
+			Section:          section,
+			Purpose:          purpose,
+			PurposeOmitted:   purposeOmitted,
+			PurposeNote:      purposeNote,
+			Kind:             kind,
+			KindOmitted:      kindOmitted,
+			KindNote:         kindNote,
+			KindNoteOmitted:  kindOmitted,
+			LabelPart:        labelPart,
+			LabelPartOmitted: labelPartOmitted,
+			IsSample:         b.GetIsSample(),
+			IsSampleOmitted:  b.IsSample == nil,
+			Name:             b.Name,
+			Supplier:         nullStringFromPb(b.Supplier),
+			SupplierRef:      nullStringFromPb(b.SupplierRef),
+			Color:            nullStringFromPb(b.Color),
 			// Pantone — цвет строки до выбора артикула (0363). Каталожный `material.pantone`
 			// старше: он про то, что реально купят.
 			Pantone:                  nullStringFromPb(b.Pantone),
@@ -3813,6 +3878,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.
 			PurposeNote: pbPtr(pbStringFromNull(b.PurposeNote)),
 			Kind:        pbPtr(pbBomKind(b.Kind)),
 			KindNote:    pbPtr(pbStringFromNull(b.KindNote)),
+			LabelPart:   pbPtr(pbBomLabelPart(b.LabelPart)),
 			IsSample:    pbPtr(b.IsSample),
 			Name:        b.Name,
 			Supplier:    pbStringFromNull(b.Supplier),

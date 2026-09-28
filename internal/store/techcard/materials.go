@@ -561,6 +561,7 @@ const bomItemUpdateQuery = `
 		purpose_note=IF(:purpose_omitted, purpose_note, :purpose_note),
 		kind=IF(:kind_omitted, kind, :kind),
 		kind_note=IF(:kind_note_omitted, kind_note, :kind_note),
+		label_part=IF(:label_part_omitted, label_part, :label_part),
 		is_sample=IF(:is_sample_omitted, is_sample, :is_sample),
 		name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 		color=:color, pantone=:pantone, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
@@ -577,11 +578,11 @@ const bomItemUpdateQuery = `
 
 const bomItemInsertQuery = `
 	INSERT INTO tech_card_bom_item
-		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, is_sample, name, supplier, supplier_ref,
+		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, label_part, is_sample, name, supplier, supplier_ref,
 		 color, pantone, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
 		 fabric_weight_gsm, fabric_direction, wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at,
 		 wastage_applied_percent, qty_per_garment, spare_qty, est_usage, line_key, price_source, price_snapshot_at)
-	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :is_sample, :name, :supplier, :supplier_ref,
+	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :label_part, :is_sample, :name, :supplier, :supplier_ref,
 		 :color, :pantone, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
 		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :wastage_source, :wastage_lay_count, :wastage_applied_at,
 		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :est_usage, :line_key, :price_source, :price_snapshot_at)`
@@ -833,6 +834,8 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"kind_omitted":             b.KindOmitted,
 		"kind_note":                b.KindNote,
 		"kind_note_omitted":        b.KindNoteOmitted,
+		"label_part":               b.LabelPart,
+		"label_part_omitted":       b.LabelPartOmitted,
 		"is_sample":                b.IsSample,
 		"is_sample_omitted":        b.IsSampleOmitted,
 		"name":                     b.Name,
@@ -1132,7 +1135,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// query shipped broken and took every tech-card read down with it.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
-		       bi.purpose, bi.purpose_note, bi.kind, bi.kind_note, bi.is_sample,
+		       bi.purpose, bi.purpose_note, bi.kind, bi.kind_note, bi.label_part, bi.is_sample,
 		       COALESCE(NULLIF(bi.name, ''), m.name) AS name,
 		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
 		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,

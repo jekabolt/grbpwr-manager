@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (406 rpc) ----
+// ---- admin (407 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -3168,6 +3168,14 @@ func (c *Client) UpsertEmailSegment(ctx context.Context, in *admin.UpsertEmailSe
 func (c *Client) UpsertEmployee(ctx context.Context, in *admin.UpsertEmployeeRequest) (*admin.UpsertEmployeeResponse, error) {
 	out := new(admin.UpsertEmployeeResponse)
 	if err := c.call(ctx, "POST", "/api/admin/metrics/employees/upsert", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpsertFiberLabelTranslations(ctx context.Context, in *admin.UpsertFiberLabelTranslationsRequest) (*admin.UpsertFiberLabelTranslationsResponse, error) {
+	out := new(admin.UpsertFiberLabelTranslationsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/dictionaries/fibers/{code}/label-translations", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

@@ -302,9 +302,11 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 
 	for _, f := range dict.Fibers {
 		commonDict.Fibers = append(commonDict.Fibers, &pb_common.Fiber{
-			Code:     f.Code,
-			Name:     f.Name,
-			Archived: f.ArchivedAt.Valid,
+			Code:             f.Code,
+			Name:             f.Name,
+			Archived:         f.ArchivedAt.Valid,
+			Translations:     ConvertFiberLabelTranslationsToPb(f.LabelTranslations),
+			AnimalNonTextile: f.AnimalNonTextile,
 		})
 	}
 

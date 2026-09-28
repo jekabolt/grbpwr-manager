@@ -426,10 +426,12 @@ func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 
 	cfg, err := h.s.GetAiProvidersConfig(aiCtx(), &pb_admin.GetAiProvidersConfigRequest{})
 	require.NoError(t, err)
-	for _, k := range []string{"openai", "google", "openrouter", "apibost", "fal", "meshy", "recraft"} {
+	// runblob is in the design list since B-31 (it serves image): with generation off, an image.generate
+	// route to it is as idle as one to openrouter.
+	for _, k := range []string{"openai", "google", "openrouter", "apibost", "fal", "meshy", "recraft", "runblob"} {
 		require.Equal(t, aiNoteDesignOff, aiProvider(t, cfg, k).GetNote(), k)
 	}
-	for _, k := range []string{"anthropic", "runblob"} {
+	for _, k := range []string{"anthropic"} {
 		require.Empty(t, aiProvider(t, cfg, k).GetNote(), k)
 	}
 	require.False(t, cfg.GetDesignGenerationEnabled())

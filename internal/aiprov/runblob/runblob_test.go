@@ -149,21 +149,27 @@ func TestSurface(t *testing.T) {
 	require.Equal(t, aiprov.CodeNotConfigured, callErr(t, err).Code)
 }
 
-// TestNoPurposeRoutesToRunblob — D-05 as a fact of the vocabulary, not of a comment: runblob serves
-// video only, and no purpose asks for video, so a route row naming it is refused when it is saved
-// (store/ai: provider_cannot_serve) and skipped when it is read (registry: AIProviderServes). When
-// the owner names a video purpose (B-27b) this test is the one to change, on purpose.
+// TestOnlyImageGenerateRoutesToRunblob — B-31 as a fact of the vocabulary: runblob serves image and
+// video; image.generate is the ONE purpose that asks for either today, so it is the one route row
+// naming runblob the store accepts (provider_cannot_serve otherwise) and the registry lists. The video
+// purpose is G2's (video.generate); when it lands this test names two purposes, on purpose.
 //
-// MUTATION (measured red → green): AICapabilityImage added to runblob's row of
-// entity.AIProviderCapabilities → red (the capability pin; the loop reads image.generate as routable).
-func TestNoPurposeRoutesToRunblob(t *testing.T) {
-	require.Equal(t, []string{entity.AICapabilityVideo}, entity.AIProviderCapabilities(New(Config{}).Provider()))
+// MUTATION (measured red → green): AICapabilityImage dropped from runblob's row of
+// entity.AIProviderCapabilities → red (image.generate no longer routable); AICapabilityChat added → red
+// (every chat purpose would route to an adapter that cannot complete).
+func TestOnlyImageGenerateRoutesToRunblob(t *testing.T) {
+	require.Equal(t, []string{entity.AICapabilityImage, entity.AICapabilityVideo},
+		entity.AIProviderCapabilities(New(Config{}).Provider()))
+	var routable []string
 	for _, purpose := range entity.AIPurposes() {
 		capability := entity.AIPurposeCapability(purpose)
 		require.NotEmpty(t, capability, purpose)
-		require.False(t, entity.AIProviderServes(entity.AIProviderRunblob, capability),
-			"purpose %s (%s) would route to runblob — D-05 says no purpose does until the owner names one", purpose, capability)
+		if entity.AIProviderServes(entity.AIProviderRunblob, capability) {
+			routable = append(routable, purpose)
+		}
 	}
+	require.Equal(t, []string{entity.AIPurposeImageGenerate}, routable,
+		"runblob draws pictures (B-31) and nothing else until G2 names the video purpose")
 }
 
 // ─── goldens ─────────────────────────────────────────────────────────────────────────────────────
@@ -570,7 +576,7 @@ func TestAnUnusableSubmitAnswerIsEngaged(t *testing.T) {
 			code: aiprov.CodeEmptyAnswer, sentence: "runblob: the kling submit was accepted (HTTP 200) with no generation_id",
 			partial: &Submission{Status: "pending", Engaged: true}},
 		{name: "a generation_id that is not a uuid", status: 201, body: `{"generation_id":"../../v1/x","status":"pending","price":"0.5"}`,
-			code: aiprov.CodeProviderError, sentence: `runblob: the kling submit returned a generation_id that is not a uuid: "../../v1/x"`,
+			code: aiprov.CodeProviderError, sentence: `runblob: the kling submit returned an id that is not a uuid: "../../v1/x"`,
 			partial: &Submission{Status: "pending", Engaged: true,
 				PriceUSD: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.5"), Valid: true}}},
 	}
@@ -739,13 +745,13 @@ func TestRefusalsBeforeTheWire(t *testing.T) {
 		sentence string
 	}{
 		{"submit: an unknown family", submit("sora", klingBody()), aiprov.CodeBadRequest,
-			`runblob: unknown family "sora" (known: kling, veo)`},
+			`runblob: unknown family path "sora" (known: gemini, kling, kling/o1-photo, kling/o3-photo, veo)`},
 		{"submit: an upper-case family", submit("Kling", klingBody()), aiprov.CodeBadRequest,
-			`runblob: a family is lower-case letters, digits and underscores, got "Kling"`},
+			`runblob: a family path is lower-case letters, digits and underscores, with at most one /sub-segment, got "Kling"`},
 		{"submit: a family that climbs the path", submit("kling/../admin", klingBody()), aiprov.CodeBadRequest,
-			`runblob: a family is lower-case letters, digits and underscores, got "kling/../admin"`},
+			`runblob: a family path is lower-case letters, digits and underscores, with at most one /sub-segment, got "kling/../admin"`},
 		{"submit: an empty family", submit("", klingBody()), aiprov.CodeBadRequest,
-			`runblob: a family is lower-case letters, digits and underscores, got ""`},
+			`runblob: a family path is lower-case letters, digits and underscores, with at most one /sub-segment, got ""`},
 		{"submit: a nil body", submit(FamilyKling, nil), aiprov.CodeBadRequest,
 			"runblob: a kling generation needs a request body"},
 		{"submit: an empty body", submit(FamilyKling, map[string]any{}), aiprov.CodeBadRequest,
@@ -753,7 +759,7 @@ func TestRefusalsBeforeTheWire(t *testing.T) {
 		{"submit: a body JSON cannot carry", submit(FamilyKling, map[string]any{"x": make(chan int)}), aiprov.CodeBadRequest,
 			"runblob: marshal kling request: "},
 		{"status: an unknown family", status("sora", genID), aiprov.CodeBadRequest,
-			`runblob: unknown family "sora" (known: kling, veo)`},
+			`runblob: unknown family path "sora" (known: gemini, kling, kling/o1-photo, kling/o3-photo, veo)`},
 		{"status: an id that climbs the path", status(FamilyKling, "../../admin"), aiprov.CodeBadRequest,
 			`runblob: a generation id must be a uuid, got "../../admin"`},
 		{"status: a uuid with a query behind it", status(FamilyKling, genID+"?x=1"), aiprov.CodeBadRequest,

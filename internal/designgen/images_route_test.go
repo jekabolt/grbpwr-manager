@@ -98,14 +98,15 @@ func row(pos int, pk, model string) entity.AIRouteCandidate {
 	return entity.AIRouteCandidate{Position: pos, ProviderKey: pk, Model: model}
 }
 
-// newImageRouteRig: openrouter, openai and google on with sealed database keys — the only key source
-// since B-33 (google has no image transport in any rig — «routed before its adapter exists»); every
-// other provider off. image.generate is routed to cands; every other purpose keeps the 0373 seed.
+// newImageRouteRig: openrouter, openai, google and runblob on with sealed database keys — the only
+// key source since B-33 (google has no image transport in any rig — «routed before its adapter
+// exists»; runblob's is the real transport over a stand, images_runblob_test.go); every other
+// provider off. image.generate is routed to cands; every other purpose keeps the 0373 seed.
 func newImageRouteRig(t *testing.T, cands ...entity.AIRouteCandidate) *imageRouteRig {
 	t.Helper()
 	ring, err := keyring.New(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
 	require.NoError(t, err)
-	sealed := map[string]bool{entity.AIProviderOpenRouter: true, entity.AIProviderOpenAI: true, entity.AIProviderGoogle: true}
+	sealed := map[string]bool{entity.AIProviderOpenRouter: true, entity.AIProviderOpenAI: true, entity.AIProviderGoogle: true, entity.AIProviderRunblob: true}
 	var cfg entity.AIConfig
 	for _, k := range entity.AIProviderKeys() {
 		p := entity.AIProvider{Key: k, Label: k, Enabled: sealed[k]}
