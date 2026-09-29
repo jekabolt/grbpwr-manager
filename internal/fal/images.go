@@ -68,6 +68,12 @@ var falImageSizes = map[string]string{
 // falImageFormats — the output_format words passed through; any other word is not sent.
 var falImageFormats = map[string]bool{"png": true, "jpeg": true, "webp": true}
 
+// singleImageEdit — endpoints with "edit" in the slug whose schema takes ONE `image_url`, not
+// `image_urls` (fal's OpenAPI input, read 2026-09-29 for the catalogue: qwen-image-edit). Every other
+// "edit" endpoint the catalogue offers (nano-banana/edit, flux-2/edit, seedream edit, gpt-image edit)
+// takes the list.
+var singleImageEdit = map[string]bool{"fal-ai/qwen-image-edit": true}
+
 // ModelImage is the effective default slug of the image transport: FAL_MODEL_IMAGE, else
 // DefaultModelImage. Nil-safe.
 func (c *Client) ModelImage() string {
@@ -214,7 +220,7 @@ func (t *Images) imageBody(ctx context.Context, slug, prompt string, req orimage
 		body["output_format"] = f
 	}
 	if len(refs) > 0 {
-		if strings.Contains(slug, "edit") {
+		if strings.Contains(slug, "edit") && !singleImageEdit[slug] {
 			body["image_urls"] = refs
 		} else {
 			body["image_url"] = refs[0]

@@ -344,9 +344,10 @@ func withFailure(end entity.AICallEnd, err error) entity.AICallEnd {
 	return end
 }
 
-// imageCallEnd — one orimages.Generate (images.go). The cost's source is the transport's word
-// (Usage.CostSource: "" = the provider's own number → `provider`; entity.AICostTable → `table` +
-// pricing.Version, H3). The transport's CallError decides (B-14):
+// imageCallEnd — one orimages.Generate (images.go) paid on provider. The cost's source is the
+// transport's word (Usage.CostSource: "" = the provider's own number → `provider`; entity.AICostTable →
+// `table` + pricing.Version, H3), and a served call with no number at all is priced by the table's
+// per-call row for (provider, slug) when it has one (H4). The transport's CallError decides (B-14):
 //   - charged_failed: the call failed and the provider reported a cost (Result rides with the error);
 //   - free: the CallError is NOT engaged, whatever its sentinel — a refusal before the wire, or any
 //     non-2xx (OpenRouter documents image generation as all-or-nothing, «fails and is not billed»),
@@ -354,7 +355,7 @@ func withFailure(end entity.AICallEnd, err error) entity.AICallEnd {
 //   - failed: engaged, and a 2xx came back with usage and no cost (billed-shaped, zero charge reported);
 //   - unknown: engaged otherwise — a deadline or a reset AFTER the request was written, an unreadable
 //     2xx — and, last resort, an error that carries no CallError at all.
-func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
+func imageCallEnd(provider string, res *orimages.Result, err error) entity.AICallEnd {
 	var end entity.AICallEnd
 	if res != nil {
 		end.ModelActual = res.Model
@@ -368,6 +369,16 @@ func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
 				// THE TRANSPORT COMPUTED IT FROM THE TABLE (H3 — fal: billable units × the catalogue's
 				// per-call price), so it is booked as the table's number and names the table's version:
 				// «their number» would claim fal said a dollar figure it never said.
+				end.CostSource, end.PriceVersion = entity.AICostTable, pricing.Version
+			}
+		} else if err == nil {
+			// THE PROVIDER NAMED NO PRICE AND THE PICTURE CAME (H4 — openai and apibost state none on
+			// /images; OpenRouter's usage.cost can be absent): the router's rank for chat, provider > table
+			// > none, applied to one delivered picture. ONLY on success: a 2xx that delivered nothing and
+			// named no charge stays the transport's own fact — `failed`, unpriced — not a table number
+			// this deployment guessed for a call the provider may or may not have billed.
+			if m, ok := pricing.Lookup(provider, res.Model); ok && m.PerCallUSD.Valid && m.PerCallUSD.Decimal.IsPositive() {
+				end.CostUSD = decimal.NullDecimal{Decimal: m.PerCallUSD.Decimal, Valid: true}
 				end.CostSource, end.PriceVersion = entity.AICostTable, pricing.Version
 			}
 		}

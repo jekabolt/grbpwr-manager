@@ -176,7 +176,7 @@ func TestImagesSurface(t *testing.T) {
 	// offered, and every offered image slug is served — except the chatgpt-images family, which lane H5
 	// wires into this transport (listed ahead of it; pendingH5 empties when H5 lands). Video rows belong
 	// to the video route, not this transport.
-	pendingH5 := map[string]bool{"chatgpt-images/gpt-5-2": true, "chatgpt-images/chatgpt-2.5": true}
+	pendingH5 := map[string]bool{} // H5 landed: every image row is served
 	offered := map[string]bool{}
 	for _, m := range pricing.Catalogue(entity.AIProviderRunblob) {
 		if m.Kind != pricing.KindImage {

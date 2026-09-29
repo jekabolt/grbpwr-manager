@@ -265,7 +265,7 @@ func intp(v int) *int { return &v }
 // (the deleted `\bHTTP (\d{3})\b` branch restored) → every «the text is dead» row reads `unknown`.
 func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 	type mapping func(err error) entity.AICallEnd
-	image := func(err error) entity.AICallEnd { return imageCallEnd(nil, err) }
+	image := func(err error) entity.AICallEnd { return imageCallEnd(entity.AIProviderOpenRouter, nil, err) }
 	vector := func(err error) entity.AICallEnd { return vectorCallEnd(recraft.RouteDirect, nil, err) }
 	falSubmit := func(err error) entity.AICallEnd { return falSubmitEnd(err, decimal.NullDecimal{}) }
 	meshySubmit := func(err error) entity.AICallEnd { return meshySubmitEnd(err) }

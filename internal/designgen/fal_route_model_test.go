@@ -110,7 +110,7 @@ func TestABadRowSlugIS_NOT_A_PATH(t *testing.T) {
 }
 
 // TestEveryFalCatalogueSlugIS_A_PATH — every fal row the panel offers (pricing.Catalogue) is a slug a
-// route will actually put on the wire: falSlugRe is the gate a route row's model passes before it
+// route will actually put on the wire: fal.ValidSlug is the gate a route row's model passes before it
 // becomes the request path, so a catalogue slug it refuses would be offered in the datalist and then
 // silently replaced by the env slug on every press. The Meshy default keeps fal's own un-prefixed form.
 //
@@ -121,7 +121,7 @@ func TestEveryFalCatalogueSlugIS_A_PATH(t *testing.T) {
 	require.NotEmpty(t, rows)
 	slugs := map[string]bool{}
 	for _, m := range rows {
-		require.True(t, falSlugRe.MatchString(m.Slug), "fal catalogue slug %q is not a fal path", m.Slug)
+		require.True(t, fal.ValidSlug(m.Slug), "fal catalogue slug %q is not a fal path", m.Slug)
 		slugs[m.Slug] = true
 	}
 	for _, def := range []string{fal.DefaultModel3D, fal.DefaultModelOutpaint, fal.DefaultModelFill, fal.DefaultModelCutout} {

@@ -198,21 +198,58 @@ func TestABadFalSlugIS_SKIPPED_BY_THE_CHOOSER(t *testing.T) {
 // MUTATION (measured red→green): the CostSource branch removed → the table cost reads `provider`.
 func TestImageCallEndBOOKS_A_TABLE_COST_AS_TABLE(t *testing.T) {
 	table := &orimages.Result{Model: "fal-ai/flux-pro/v1.1", Usage: orimages.Usage{Cost: 0.08, CostSource: entity.AICostTable}}
-	end := imageCallEnd(table, nil)
+	end := imageCallEnd(entity.AIProviderFal, table, nil)
 	require.Equal(t, entity.AICallOK, end.Status)
 	require.Equal(t, entity.AICostTable, end.CostSource)
 	require.Equal(t, pricing.Version, end.PriceVersion)
 	require.Equal(t, "0.08", end.CostUSD.Decimal.String())
 
 	own := &orimages.Result{Model: "gemini/standard", Usage: orimages.Usage{Cost: 0.021}}
-	end = imageCallEnd(own, nil)
+	end = imageCallEnd(entity.AIProviderFal, own, nil)
 	require.Equal(t, entity.AICostProvider, end.CostSource)
 	require.Empty(t, end.PriceVersion)
 
 	bought := &aiprov.CallError{Provider: entity.AIProviderFal, Code: aiprov.CodeProviderError, Engaged: true,
 		Err: errors.New("fal: request x is bought and delivered no picture")}
-	end = imageCallEnd(table, bought)
+	end = imageCallEnd(entity.AIProviderFal, table, bought)
 	require.Equal(t, entity.AICallChargedFailed, end.Status)
 	require.Equal(t, entity.AICostTable, end.CostSource)
 	require.Equal(t, pricing.Version, end.PriceVersion)
+}
+
+// TestImageCallEndPRICES_A_SILENT_PROVIDER_BY_THE_TABLE — H4: openai and apibost state no price on
+// /images, so their Result carries Cost 0; a DELIVERED picture is booked at the catalogue's per-call
+// row for (provider, slug) as cost_source table + pricing.Version. A slug the table has no per-call row
+// for stays unpriced (`none`); a 2xx that delivered nothing stays `failed` and unpriced (the transport's
+// own fact, TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT); a refusal with no Result books no money.
+//
+// MUTATION (measured red→green): the Lookup branch removed → openai gpt-image-2 reads `none`.
+func TestImageCallEndPRICES_A_SILENT_PROVIDER_BY_THE_TABLE(t *testing.T) {
+	row, ok := pricing.Lookup(entity.AIProviderOpenAI, "gpt-image-2")
+	require.True(t, ok && row.PerCallUSD.Valid, "the openai catalogue prices gpt-image-2 per call")
+
+	silent := &orimages.Result{Model: "gpt-image-2", Usage: orimages.Usage{Prompt: 12, Completion: 4160}}
+	end := imageCallEnd(entity.AIProviderOpenAI, silent, nil)
+	require.Equal(t, entity.AICallOK, end.Status)
+	require.Equal(t, entity.AICostTable, end.CostSource)
+	require.Equal(t, pricing.Version, end.PriceVersion)
+	require.True(t, end.CostUSD.Valid && end.CostUSD.Decimal.Equal(row.PerCallUSD.Decimal), "one picture at the row's price")
+	require.NotNil(t, end.PromptTokens)
+
+	unknown := &orimages.Result{Model: "gpt-image-9-nightly"}
+	end = imageCallEnd(entity.AIProviderOpenAI, unknown, nil)
+	require.Equal(t, entity.AICostNone, end.CostSource)
+	require.False(t, end.CostUSD.Valid)
+
+	// A chat-style (per-token) row is not a per-call price: nothing is invented for it.
+	chatRow := &orimages.Result{Model: "gpt-5-mini"}
+	end = imageCallEnd(entity.AIProviderOpenAI, chatRow, nil)
+	require.False(t, end.CostUSD.Valid)
+
+	// A 2xx with no picture and no number: failed, unpriced — the table does not guess a charge.
+	empty := &aiprov.CallError{Provider: entity.AIProviderOpenAI, Code: aiprov.CodeEmptyAnswer, Engaged: true,
+		Err: errors.New("openai: the provider returned no image")}
+	end = imageCallEnd(entity.AIProviderOpenAI, silent, empty)
+	require.Equal(t, entity.AICallFailed, end.Status)
+	require.False(t, end.CostUSD.Valid)
 }

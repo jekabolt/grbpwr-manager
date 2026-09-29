@@ -219,7 +219,7 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			OutputFormat:    format,
 			InputReferences: call.refs,
 		})
-		job.finishCall(ctx, h, imageCallEnd(res, err))
+		job.finishCall(ctx, h, imageCallEnd(p.billing(), res, err))
 		p.endCall(adm, err)
 		if res != nil {
 			usage.Prompt += res.Usage.Prompt
