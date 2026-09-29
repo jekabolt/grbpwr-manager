@@ -10,10 +10,9 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-var allProviders = []string{
-	entity.AIProviderOpenAI, entity.AIProviderAnthropic, entity.AIProviderGoogle, entity.AIProviderOpenRouter,
-	entity.AIProviderApibost, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRunblob, entity.AIProviderRecraft,
-}
+// allProviders — every provider key the panel knows (entity.AIProviderKeys), so a provider added or
+// removed there is walked here without a second list to keep in step.
+var allProviders = entity.AIProviderKeys()
 
 func requireUSD(t *testing.T, want string, got decimal.NullDecimal, source string) {
 	t.Helper()
@@ -117,8 +116,6 @@ func TestPricingUnknownIsNone(t *testing.T) {
 		{entity.AIProviderOpenRouter, "gpt-5-mini"},        // and the reverse
 		{entity.AIProviderGoogle, "gemini-3.1-flash-lite"}, // the OpenRouter row IS priced (live read in openrouter.go:131-133)
 		{entity.AIProviderFal, "fal-ai/birefnet/v2"},
-		{entity.AIProviderMeshy, "meshy-5"},
-		{entity.AIProviderRecraft, "recraftv3"},
 		{entity.AIProviderRunblob, "kling_2.5_turbo"},
 		{"", ""},
 	} {
@@ -128,9 +125,7 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	got, src := Price(entity.AIProviderOpenAI, "gpt-5-mini", Usage{})
 	requireNone(t, got, src) // usage missing is not a free call
 
-	for _, p := range []string{entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft} {
-		require.Empty(t, Catalogue(p), "%s is priced by units/credits, not by this table", p)
-	}
+	require.Empty(t, Catalogue(entity.AIProviderFal), "fal is priced by billable units, not by this table")
 	// runblob (B-31): LISTED so the panel can offer the eight image slugs, UNPRICED so the ledger takes
 	// runblob's own submit price and never a number this table made up.
 	for _, m := range Catalogue(entity.AIProviderRunblob) {
@@ -166,12 +161,12 @@ func TestPricingRunblobRowsAreListedUnpriced(t *testing.T) {
 // MUTATION: blank the Source of any row → red. MUTATION: give an unpriced row a Source without the
 // "unpriced" prefix → red.
 func TestPricingEveryRowHasSource(t *testing.T) {
-	require.Equal(t, "2026-09-27", Version)
-	total := 0
+	require.Equal(t, "2026-09-29", Version)
+	count := map[string]int{}
 	for _, p := range allProviders {
 		seen := map[string]bool{}
 		for _, m := range Catalogue(p) {
-			total++
+			count[p]++
 			require.NotEmpty(t, strings.TrimSpace(m.Source), "%s/%s", p, m.Slug)
 			require.Equal(t, p, m.Provider, "%s/%s", p, m.Slug)
 			require.NotEmpty(t, m.Label, "%s/%s", p, m.Slug)
@@ -199,7 +194,12 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 			require.Equal(t, m, got)
 		}
 	}
-	require.Equal(t, 35, total, "the brief's catalogue has 27 rows + runblob's 8 unpriced image slugs (B-31)")
+	// The A brief's 19 direct/OpenRouter rows + lane H2's 36 direct rows (21 openai, 6 anthropic, 9 google)
+	// + apibost's 67 chat/image models (catalogue_apibost.go) + runblob's 8 unpriced image slugs (B-31).
+	require.Equal(t, map[string]int{
+		entity.AIProviderOpenAI: 25, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
+		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 8,
+	}, count)
 }
 
 // TestPricingCatalogueMatchesTheBrief — the curated numbers, one by one, as 06-BRIEFS-A lists them
@@ -353,4 +353,44 @@ func TestDefaultChatSlugsArePricedRows(t *testing.T) {
 	}
 	_, ok := DefaultChatSlug(entity.AIProviderOpenRouter)
 	require.False(t, ok, "openrouter's defaults are the env slugs, never this table")
+}
+
+// TestCatalogueRowsFitTheProvider — every row is a promise the router can keep: it sits under a known
+// provider, names a capability that provider serves (entity.AIProviderCapabilities — a video row on
+// apibost, which has no video transport, would be offered on a route and fail on every press), carries
+// a label for the panel's datalist, a slug unique within its provider and free of padding, and a
+// source: a priced row names where its number was read, an unpriced one says "unpriced".
+//
+// MUTATIONS: a veo row with KindVideo in apibostRows → red (apibost serves chat + image only); a row
+// with Kind "vector" on openai → red; a duplicated slug → red; a priced row whose Source starts with
+// "unpriced" or is blank → red; a catalogue key that is not a provider key → red.
+func TestCatalogueRowsFitTheProvider(t *testing.T) {
+	keys := map[string]bool{}
+	for _, p := range entity.AIProviderKeys() {
+		keys[p] = true
+	}
+	for p := range catalogue {
+		require.True(t, keys[p], "catalogue key %q is not a provider (entity.AIProviderKeys)", p)
+	}
+	for _, p := range entity.AIProviderKeys() {
+		seen := map[string]bool{}
+		for _, m := range Catalogue(p) {
+			name := p + "/" + m.Slug
+			require.Equal(t, p, m.Provider, name)
+			require.NotEmpty(t, m.Slug, name)
+			require.Equal(t, strings.TrimSpace(m.Slug), m.Slug, "%s: padded slug", name)
+			require.False(t, seen[m.Slug], "duplicate slug %s", name)
+			seen[m.Slug] = true
+			require.True(t, entity.IsAICapability(m.Kind), "%s: kind %q is not a capability", name, m.Kind)
+			require.True(t, entity.AIProviderServes(p, m.Kind), "%s: %s does not serve %q", name, p, m.Kind)
+			require.NotEmpty(t, strings.TrimSpace(m.Label), "%s: no label", name)
+			priced := m.PerCallUSD.Valid || m.InputUSDPer1M.Valid || m.OutputUSDPer1M.Valid
+			if priced {
+				require.NotEmpty(t, strings.TrimSpace(m.Source), "%s: a priced row names its source", name)
+				require.False(t, strings.HasPrefix(m.Source, "unpriced"), "%s: priced but says unpriced", name)
+			} else {
+				require.True(t, strings.HasPrefix(m.Source, "unpriced"), "%s: an unpriced row says so", name)
+			}
+		}
+	}
 }
