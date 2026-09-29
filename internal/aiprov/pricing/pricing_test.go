@@ -125,7 +125,12 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	got, src := Price(entity.AIProviderOpenAI, "gpt-5-mini", Usage{})
 	requireNone(t, got, src) // usage missing is not a free call
 
-	require.Empty(t, Catalogue(entity.AIProviderFal), "fal is priced by billable units, not by this table")
+	// fal (H2): LISTED; a row carries a rate only where fal states one flat figure per output, never a
+	// token rate — its ledger line is billable units × tariff first.
+	require.NotEmpty(t, Catalogue(entity.AIProviderFal))
+	for _, m := range Catalogue(entity.AIProviderFal) {
+		require.False(t, m.InputUSDPer1M.Valid || m.OutputUSDPer1M.Valid, "fal/%s: no token rates", m.Slug)
+	}
 	// runblob (B-31, H2): LISTED so the panel can offer every family, UNPRICED so the ledger takes
 	// runblob's own submit price and never a number this table made up.
 	for _, m := range Catalogue(entity.AIProviderRunblob) {
@@ -183,7 +188,7 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 			tokens := m.InputUSDPer1M.Valid || m.OutputUSDPer1M.Valid
 			switch {
 			case m.PerCallUSD.Valid:
-				require.Equal(t, KindImage, m.Kind, "%s/%s", p, m.Slug)
+				require.NotEqual(t, KindChat, m.Kind, "%s/%s: a per-call row is an output, not a chat", p, m.Slug)
 				require.False(t, tokens, "%s/%s: a per-call row carries no token rates", p, m.Slug)
 				require.True(t, m.PerCallUSD.Decimal.IsPositive(), "%s/%s", p, m.Slug)
 			case tokens:
@@ -203,10 +208,11 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 	}
 	// The A brief's 19 direct/OpenRouter rows + lane H2's 36 direct rows (21 openai, 6 anthropic, 9 google)
 	// + apibost's 67 chat/image models (catalogue_apibost.go) + runblob's 31 unpriced rows, 10 image + 21
-	// video (catalogue_runblob.go).
+	// video (catalogue_runblob.go) + fal's 35 (24 image, 3 edit, 4 cutout, 4 threed; catalogue_fal.go).
 	require.Equal(t, map[string]int{
 		entity.AIProviderOpenAI: 25, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
 		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 31,
+		entity.AIProviderFal: 35,
 	}, count)
 }
 

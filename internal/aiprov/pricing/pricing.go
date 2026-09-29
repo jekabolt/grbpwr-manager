@@ -27,15 +27,18 @@ const Version = "2026-09-29"
 
 // Row kinds — the capability vocabulary (entity.AIProviderCapabilities) a row serves.
 const (
-	KindChat  = entity.AICapabilityChat
-	KindImage = entity.AICapabilityImage
-	KindVideo = entity.AICapabilityVideo
+	KindChat   = entity.AICapabilityChat
+	KindImage  = entity.AICapabilityImage
+	KindVideo  = entity.AICapabilityVideo
+	KindEdit   = entity.AICapabilityEdit
+	KindCutout = entity.AICapabilityCutout
+	KindThreed = entity.AICapabilityThreed
 )
 
 // Model is one curated row. A chat row has InputUSDPer1M + OutputUSDPer1M (CachedInputUSDPer1M
 // when the provider publishes a cache rate — none of today's rows has a sourced one, so cached
-// tokens are billed at the input rate: never under). An image row has PerCallUSD: the price of ONE
-// output picture at the quality the row names. An unpriced row has neither.
+// tokens are billed at the input rate: never under). A per-call row (image, and fal's edit rows) has
+// PerCallUSD: the price of ONE output at the quality the row names. An unpriced row has neither.
 type Model struct {
 	Provider, Slug, Label, Kind                                    string
 	InputUSDPer1M, OutputUSDPer1M, CachedInputUSDPer1M, PerCallUSD decimal.NullDecimal
@@ -62,9 +65,14 @@ func chat(provider, slug, label, in, out, source string) Model {
 		InputUSDPer1M: usd(in), OutputUSDPer1M: usd(out), Source: source}
 }
 
-func image(provider, slug, label, perCall, source string) Model {
-	return Model{Provider: provider, Slug: slug, Label: label, Kind: KindImage,
-		PerCallUSD: usd(perCall), Source: source}
+func image(provider, slug, label, price, source string) Model {
+	return perCall(provider, slug, label, KindImage, price, source)
+}
+
+// perCall is a row priced per output (one picture, one generation) of any non-chat kind.
+func perCall(provider, slug, label, kind, price, source string) Model {
+	return Model{Provider: provider, Slug: slug, Label: label, Kind: kind,
+		PerCallUSD: usd(price), Source: source}
 }
 
 func unpricedRow(provider, slug, label, kind, source string) Model {
@@ -106,9 +114,10 @@ const srcRunblob = "unpriced — runblob states its price per generation at subm
 	"docs page, read 2026-09-28"
 
 // catalogue — the curated rows: the direct providers and OpenRouter here, the resellers' full lists in
-// their own files (catalogue_apibost.go, catalogue_runblob.go). fal has no rows yet: its money arrives as billable units × a
-// tariff and is priced by its caller. runblob's rows are LISTED and UNPRICED (srcRunblob): the panel
-// needs the slugs to offer, and the ledger takes runblob's own number.
+// their own files (catalogue_apibost.go, catalogue_runblob.go, catalogue_fal.go). fal's rows are priced
+// only where fal states one flat figure per output: its money arrives as billable units × a tariff
+// (cost_source units, which outranks this table). runblob's rows are LISTED and UNPRICED (srcRunblob):
+// the panel needs the slugs to offer, and the ledger takes runblob's own number.
 //
 // The rows the A brief curated (srcBrief and the others above) keep their numbers; the rows lane H2
 // added (2026-09-29) are priced only from the provider's own page (srcOpenAIList, srcAnthropicList,
@@ -203,6 +212,7 @@ var catalogue = map[string][]Model{
 	},
 	entity.AIProviderApibost: apibostRows,
 	entity.AIProviderRunblob: runblobRows,
+	entity.AIProviderFal:     falRows,
 }
 
 // Catalogue returns a copy of the curated rows of one provider (nil when it has none).
