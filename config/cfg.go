@@ -817,6 +817,10 @@ func bindEnvVars() {
 	viper.BindEnv("fal.units_ceiling_outpaint", "FAL_UNITS_CEILING_OUTPAINT")
 	viper.BindEnv("fal.unit_usd_fill", "FAL_UNIT_USD_FILL")
 	viper.BindEnv("fal.units_ceiling_fill", "FAL_UNITS_CEILING_FILL")
+	// H3 — fal as an image.generate transport (fal/images.go): the slug a route row `image.generate →
+	// fal` draws when it names no model. Empty => fal.DefaultModelImage (`fal-ai/flux-pro/v1.1`). A row's
+	// own model always wins; this is the emergency wheel for a retired default, like FAL_MODEL_CUTOUT.
+	viper.BindEnv("fal.model_image", "FAL_MODEL_IMAGE")
 
 	// AI providers (internal/aiprov). AI_KEYS_MASTER_KEY is the master key that seals the provider
 	// keys an admin stores in the panel (base64 of 32 random bytes, one per environment). REQUIRED

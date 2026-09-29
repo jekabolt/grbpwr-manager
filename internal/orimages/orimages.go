@@ -359,6 +359,12 @@ type Usage struct {
 	Completion int     `json:"completion_tokens"`
 	Total      int     `json:"total_tokens"`
 	Cost       float64 `json:"cost"`
+	// CostSource says WHOSE number Cost is (H3): "" — the provider's own charge (OpenRouter's
+	// usage.cost, runblob's submit price), booked as cost_source `provider`; entity.AICostTable — a
+	// number the transport computed from the curated table (internal/aiprov/pricing: fal's billable
+	// units × the catalogue's per-call price), booked as `table` with pricing.Version. Never read off
+	// the wire: a provider cannot claim its number is ours.
+	CostSource string `json:"-"`
 }
 
 // Result is one completed generation.

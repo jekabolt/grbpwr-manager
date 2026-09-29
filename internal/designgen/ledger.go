@@ -10,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/pricing"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
@@ -343,7 +344,9 @@ func withFailure(end entity.AICallEnd, err error) entity.AICallEnd {
 	return end
 }
 
-// imageCallEnd — one orimages.Generate (images.go). The transport's CallError decides (B-14):
+// imageCallEnd — one orimages.Generate (images.go). The cost's source is the transport's word
+// (Usage.CostSource: "" = the provider's own number → `provider`; entity.AICostTable → `table` +
+// pricing.Version, H3). The transport's CallError decides (B-14):
 //   - charged_failed: the call failed and the provider reported a cost (Result rides with the error);
 //   - free: the CallError is NOT engaged, whatever its sentinel — a refusal before the wire, or any
 //     non-2xx (OpenRouter documents image generation as all-or-nothing, «fails and is not billed»),
@@ -361,6 +364,12 @@ func imageCallEnd(res *orimages.Result, err error) entity.AICallEnd {
 		}
 		if cost := usdOf(res.Usage.Cost); cost.Valid {
 			end.CostUSD, end.CostSource = cost, entity.AICostProvider
+			if res.Usage.CostSource == entity.AICostTable {
+				// THE TRANSPORT COMPUTED IT FROM THE TABLE (H3 — fal: billable units × the catalogue's
+				// per-call price), so it is booked as the table's number and names the table's version:
+				// «their number» would claim fal said a dollar figure it never said.
+				end.CostSource, end.PriceVersion = entity.AICostTable, pricing.Version
+			}
 		}
 	}
 	ce, spoke := aiprov.AsCallError(err)

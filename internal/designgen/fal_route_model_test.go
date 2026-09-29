@@ -93,7 +93,7 @@ func TestTheCutoutRowsModelIS_THE_QUEUE(t *testing.T) {
 // TestABadRowSlugIS_NOT_A_PATH — Codex REVIEW-F1 #4: a row's model is POSTed as a path under the fal key, so
 // only a plain owner/model[/variant] slug ever comes out of FalRouteModel; anything else is the env slug.
 //
-// MUTATION (measured red→green): falSlugRe not consulted → "../x" comes back as the model.
+// MUTATION (measured red→green): fal.ValidSlug not consulted → "../x" comes back as the model.
 func TestABadRowSlugIS_NOT_A_PATH(t *testing.T) {
 	rg := newThreedRouteRig(t)
 	for _, bad := range []string{"../x", "fal-ai/../x", "acme/model?x=1", "acme/model#f", "acme/./model",

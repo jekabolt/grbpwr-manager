@@ -411,6 +411,10 @@ type Config struct {
 	UnitsCeilingOutpaint float64 `mapstructure:"units_ceiling_outpaint"` // FAL_UNITS_CEILING_OUTPAINT
 	UnitUSDFill          float64 `mapstructure:"unit_usd_fill"`          // FAL_UNIT_USD_FILL
 	UnitsCeilingFill     float64 `mapstructure:"units_ceiling_fill"`     // FAL_UNITS_CEILING_FILL
+	// ModelImage is the image.generate transport's own default slug (images.go, H3): what a route
+	// row naming fal with no model draws. Empty = DefaultModelImage. No tariff of its own: the ledger
+	// prices it by the catalogue (pricing, fal rows) × x-fal-billable-units, or books it unpriced.
+	ModelImage string `mapstructure:"model_image"` // FAL_MODEL_IMAGE
 	// KeyFunc, when set, is asked for the key on EVERY request and by Enabled(): it is the AI
 	// providers registry's hook (internal/aiprov/registry), so a key saved in the admin panel — or
 	// a provider switched off there — takes effect on the next request without a redeploy. "" means
@@ -429,10 +433,12 @@ func (c Config) String() string {
 	}
 	return fmt.Sprintf("fal.Config{APIKey:%s BaseURL:%s Model3D:%s ModelCutout:%s HTTPTimeout:%s "+
 		"PollInterval:%s PollTimeout:%s DownloadTimeout:%s UnitUSD:%v UnitUSDCutout:%v UnitsCeiling3D:%v "+
-		"ModelOutpaint:%s ModelFill:%s UnitUSDOutpaint:%v UnitsCeilingOutpaint:%v UnitUSDFill:%v UnitsCeilingFill:%v}",
+		"ModelOutpaint:%s ModelFill:%s UnitUSDOutpaint:%v UnitsCeilingOutpaint:%v UnitUSDFill:%v UnitsCeilingFill:%v "+
+		"ModelImage:%s}",
 		key, c.BaseURL, c.Model3D, c.ModelCutout, c.HTTPTimeout, c.PollInterval, c.PollTimeout,
 		c.DownloadTimeout, c.UnitUSD, c.UnitUSDCutout, c.UnitsCeiling3D,
-		c.ModelOutpaint, c.ModelFill, c.UnitUSDOutpaint, c.UnitsCeilingOutpaint, c.UnitUSDFill, c.UnitsCeilingFill)
+		c.ModelOutpaint, c.ModelFill, c.UnitUSDOutpaint, c.UnitsCeilingOutpaint, c.UnitUSDFill, c.UnitsCeilingFill,
+		c.ModelImage)
 }
 
 // Client is a configured fal queue client. A nil *Client is valid and permanently disabled, so
