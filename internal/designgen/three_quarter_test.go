@@ -6,7 +6,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,7 +13,7 @@ import (
 //
 // Три четверти слева и справа — пятая и шестая стороны силуэта. Для флэта и рендера это ещё два
 // чекбокса и ещё две плиты, для 3D — ловушка: Meshy принимает 1..4 картинки одного предмета
-// (meshy.MaxImages), у fal четыре ИМЕНОВАННЫХ слота (front/back/left/right). Отбор плит 3D поэтому
+// (threedProviderMaxImages), у fal четыре ИМЕНОВАННЫХ слота (front/back/left/right). Отбор плит 3D поэтому
 // идёт по entity.IsDesignCardinalView, а не по «стороне силуэта».
 //
 // МУТАЦИЯ, КОТОРУЮ ЛОВИТ ПЕРВАЯ ПРОБА: вернуть в threedPictures `IsDesignSilhouetteView` — в
@@ -57,8 +56,8 @@ func TestThreedDropsTheThreeQuarterPlatesAndKeepsTheCardinalFour(t *testing.T) {
 		require.NotContains(t, u, "/5.", "три четверти слева уехали в сборку 3D")
 		require.NotContains(t, u, "/6.", "три четверти справа уехали в сборку 3D")
 	}
-	require.LessOrEqual(t, len(job.References), meshy.MaxImages,
-		"meshy.Submit отказывает локально выше этого числа — прогон не начнётся вовсе")
+	require.LessOrEqual(t, len(job.References), threedProviderMaxImages,
+		"поставщик отказывает выше этого числа — прогон не начнётся вовсе")
 }
 
 // TestAThreeQuarterFrontlessBenchStillHasNoFront — «без переда ничего» не ослабло от новых

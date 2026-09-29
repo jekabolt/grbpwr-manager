@@ -115,8 +115,7 @@ func TestDetailRunsGetTheDetailEtalon(t *testing.T) {
 }
 
 // TestFlatCraftIsForFlatsOnly — the owner gave these reference prompts for flats. A 3D run is a
-// Meshy build, the vector kind redraws an approved raster and draft_idea never reaches the worker:
-// none of them may inherit "black vector line art".
+// model build and draft_idea never reaches the worker: neither may inherit "black vector line art".
 //
 // ⚠ RENDER LEFT THIS LOOP WHEN IT GREW A CRAFT OF ITS OWN, AND THE GUARANTEE DID NOT LEAVE WITH IT.
 // The loop's real claim about a render was never "it carries no craft" — it was "it does not come
@@ -128,7 +127,7 @@ func TestDetailRunsGetTheDetailEtalon(t *testing.T) {
 // a reason that has nothing to do with what this test is about.
 func TestFlatCraftIsForFlatsOnly(t *testing.T) {
 	for _, kind := range []string{
-		entity.DesignRunKindThreed, entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
+		entity.DesignRunKindThreed, entity.DesignRunKindDraftIdea,
 	} {
 		r := testRun(1, kind)
 		r.Params = entity.RawJSON(`{"views":["front","back"],"layout":"one"}`)

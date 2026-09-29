@@ -21,7 +21,8 @@ type Purpose struct {
 }
 
 // purposes — one row per purpose seeded in 0373 (ai_route) and not retired since (0378 deletes the
-// operations draft's route with its feature, O-66; 0384 seeds video.generate → runblob, B-32), in
+// operations draft's route with its feature, O-66; 0384 seeds video.generate → runblob, B-32; 0385
+// deletes the vector route with vector generation), in
 // entity.AIPurposes()'s order. The 3d group carries the video purpose too: the panel heads it
 // «3d & video» (the client's label; the group KEY stays `3d` so older clients keep their heading).
 var purposes = []Purpose{
@@ -49,8 +50,6 @@ var purposes = []Purpose{
 		"design → 3d: the garment model built from its flats", PurposeGroup3D, entity.AICapabilityThreed},
 	{entity.AIPurposeVideoGenerate, "video clip",
 		"playground → image to video: a short clip from one picture of the card", PurposeGroup3D, entity.AICapabilityVideo},
-	{entity.AIPurposeVector, "vector",
-		"design → vector: the flat as a vector drawing", PurposeGroupImages, entity.AICapabilityVector},
 }
 
 // Purposes returns the catalogue in the panel's fixed order. A copy on every call.

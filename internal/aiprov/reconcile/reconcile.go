@@ -5,8 +5,8 @@
 //
 // Four providers have something to read: OpenAI (/v1/organization/costs), Anthropic (cost_report) and
 // fal (/v1/models/usage) with the reconciliation key an admin stores in the panel (kind admin), and
-// OpenRouter (/api/v1/key data.usage) with its ordinary API key. Google, meshy, apibost, runblob and
-// recraft-direct have no cost API here: their line is the ledger alone.
+// OpenRouter (/api/v1/key data.usage) with its ordinary API key. Google, apibost and runblob have no cost
+// API here: their line is the ledger alone.
 //
 // THE KEY RULE IS DELIBERATE: OpenAI, Anthropic and fal read Registry.AdminKey(provider), which is
 // not gated by the provider's enabled switch because old spend still needs reconciling; OpenRouter

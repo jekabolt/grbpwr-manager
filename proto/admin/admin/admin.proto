@@ -82,8 +82,8 @@ service AdminService {
   // pedantry: the object is served from our own public host, where an SVG is a DOCUMENT —
   // <script>, on* handlers, javascript: urls, <foreignObject> and declared XML entities run or
   // expand in the viewer's browser. The storage path (bucket.UploadContentNonRaster →
-  // recraft.InspectSVG) refuses active content, declared entities, not-XML, and a raster wearing a
-  // vector's name; the ceiling is recraft.MaxSVGBytes (8 MiB). A refusal is InvalidArgument, and
+  // svgcheck.InspectSVG) refuses active content, declared entities, not-XML, and a raster wearing a
+  // vector's name; the ceiling is svgcheck.MaxSVGBytes (8 MiB). A refusal is InvalidArgument, and
   // it has a named price: an SVG wrapping text in <foreignObject>, or an old export carrying
   // benign DTD entities, will not upload through this door.
   //
@@ -3125,9 +3125,8 @@ service AdminService {
   // vector renderer anywhere in this repository, so the only honest producer of strokes is the
   // canvas that is about to draw them.
   //
-  // IT SPENDS NOTHING, AND THAT IS THE LINE BETWEEN IT AND GENERATION. Vectorising by machine is a
-  // paid provider call and goes through StartDesignRun with kind = vector; this verb only files a
-  // file that already exists. Two doors for the money would be two budget checks.
+  // IT SPENDS NOTHING: there is no machine vectorising (vector generation was removed on
+  // 2026-09-29); this verb only files a file that already exists.
   //
   // Idempotent by client_request_id. InvalidArgument: an unknown or foreign media_id, an unknown
   // origin, strokes_too_large (> 512 KB).
@@ -12315,8 +12314,8 @@ message GetDesignBandResponse {
   // this card holds, NOT just the ones whose run happens to sit on the page above.
   //
   // WHY IT EXISTS. `runs` is one page of the feed (12 rows), and the screen's «RENDERS OF THIS
-  // CARD» section was reading exactly that page. Every run of any kind — a flat re-trace, a vector
-  // redraw, a 3D try — pushes an older run off the window, so renders left the section one at a
+  // CARD» section was reading exactly that page. Every run of any kind — a flat re-trace, a
+  // recolour, a 3D try — pushes an older run off the window, so renders left the section one at a
   // time and the crops split off them left with their parent run. The section's title claims the
   // CARD; the answer had the scope of a page.
   //
@@ -12543,16 +12542,13 @@ message StartDesignRunRequest {
   // Client-minted UUID. A repeat returns the existing run with OK — a double click on GENERATE is
   // one payment.
   string client_request_id = 2;
-  // flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint |
-  // video. `draft_idea` is REFUSED here with
+  // flat | render | threed | recolor | pattern | freeform | cutout | extend | inpaint | video.
+  // `vector` (vector generation, removed 2026-09-29) is refused as an unknown kind. `draft_idea` is
+  // REFUSED here with
   // InvalidArgument: a text run executes inline and returns its answer, so it has its own verb
   // (DraftDesignIdea) rather than a shared one that would return a pending row nobody ever polls.
   //
-  // `vector` IS ACCEPTED HERE and has no verb of its own on purpose: machine vectorisation spends
-  // the key's money like every other kind, and money has exactly one door. Filing an SVG that
-  // already exists is the other thing entirely and is ImportDesignVector.
-  //
-  // `recolor` AND `pattern` ARE HERE FOR THE SAME REASON and take the same door: both spend the
+  // `recolor` AND `pattern` ARE HERE and take the same door as every generation: both spend the
   // image key's money, both must be counted against the day, and both must show up in one history.
   // What each needs is stated on common.DesignRun.kind and on DesignRunParams; what each REFUSES
   // for free, before anything is reserved, is:
@@ -12641,7 +12637,7 @@ message StartDesignRunRequest {
   //   · params.image — a slug the engine table does not hold («unknown_image_model»), a tier, ratio
   //     or background the chosen engine does not list («quality_not_supported»,
   //     «aspect_not_supported», «background_not_supported»), or any params.image on threed | cutout
-  //     | vector | extend | inpaint | video («image_options_forbidden»);
+  //     | extend | inpaint | video («image_options_forbidden»);
   //   · threed — more than 4 params.threed.reference_media_ids («too_many_pictures»);
   //   · video (B-32) — no params.video.source_media_id («one_source_picture»); no words
   //     («words_required»); words past 2500 characters (InvalidArgument); a duration other than 5
@@ -13279,7 +13275,7 @@ message AiRouteCandidate {
   // The slug this candidate is CALLED with today. For a chat purpose: `model` when named, else the
   // router's default for (purpose, provider) — OpenRouter: the purpose's env slug; a direct provider:
   // its priced default; "" = not callable (the purpose is switched off, or the provider has no
-  // default). For an image / 3D / vector purpose the router holds no default: it is the row's own
+  // default). For an image / 3D / video purpose the router holds no default: it is the row's own
   // `model`, and "" is the provider client's own default slug. The panel compares candidates by THIS,
   // as the server does — and by `model` where this is "", as the server's same-as-primary check does.
   // Set on a read (AiPurposeInfo); ignored on a write (SetAiRouteRequest).
@@ -13291,7 +13287,7 @@ message AiRouteCandidate {
 message AiModelInfo {
   string slug = 1;
   string label = 2;
-  string kind = 3; // the capability it serves: chat | image | cutout | edit | threed | vector | video
+  string kind = 3; // the capability it serves: chat | image | cutout | edit | threed | video
   bool custom = 4; // true = an ai_model row; false = the curated catalogue
   bool priced = 5; // a price is on file for this slug
 }
@@ -13299,10 +13295,10 @@ message AiModelInfo {
 // AiProviderInfo is one provider of the registry as the panel shows it. No key value is ever here:
 // only where the answering key comes from, its last four characters and who stored it when.
 message AiProviderInfo {
-  string key = 1; // openai | anthropic | google | openrouter | apibost | fal | meshy | runblob | recraft
+  string key = 1; // openai | anthropic | google | openrouter | apibost | fal | runblob
   string label = 2;
   bool enabled = 3;
-  // What a route may ask of it: chat | image | cutout | edit | threed | vector | video.
+  // What a route may ask of it: chat | image | cutout | edit | threed | video.
   repeated string capabilities = 4;
   // none | env | db | unreadable. unreadable = a stored key that does not open with the master key;
   // the env key, if any, answers meanwhile.
@@ -13317,8 +13313,8 @@ message AiProviderInfo {
   // The provider badge from the last 24 h of ledger rows: key_rejected | out_of_credits |
   // model_unknown | "" (none).
   string fault_code = 13;
-  // One short sentence or "": "via openrouter" (recraft on the OpenRouter route), "design generation
-  // is off on this server" (image/3D providers when DESIGN_GENERATION_ENABLED is false).
+  // One short sentence or "": "design generation is off on this server" (image/3D providers when
+  // DESIGN_GENERATION_ENABLED is false).
   string note = 14;
   repeated AiModelInfo models = 15; // curated (pricing catalogue) + custom (ai_model rows)
 }

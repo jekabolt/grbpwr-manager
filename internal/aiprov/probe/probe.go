@@ -88,9 +88,7 @@ const (
 	openRouterBase = hosts.OpenRouterHost
 	apibostBase    = hosts.ApibostHost
 	falBase        = hosts.FalHost
-	meshyBase      = hosts.MeshyHost
 	runblobBase    = hosts.RunblobHost
-	recraftBase    = hosts.RecraftHost
 
 	// anthropicVersion is the API version header every Anthropic request carries.
 	anthropicVersion = "2023-06-01"
@@ -159,14 +157,8 @@ var endpoints = map[probeKey]endpoint{
 	{entity.AIProviderFal, entity.AIKeyAPI}: {
 		url: falBase + "/v1/models/pricing?endpoint_id=fal-ai/birefnet/v2", auth: authFal,
 	},
-	{entity.AIProviderMeshy, entity.AIKeyAPI}: {
-		url: meshyBase + "/openapi/v1/balance", auth: authBearer, balance: meshyBalance,
-	},
 	{entity.AIProviderRunblob, entity.AIKeyAPI}: {
 		url: runblobBase + "/v1/kling/generations/" + runblobZeroGeneration, auth: authBearer, notFoundIsOK: true,
-	},
-	{entity.AIProviderRecraft, entity.AIKeyAPI}: {
-		url: recraftBase + "/v1/users/me", auth: authBearer,
 	},
 
 	// ── admin keys: the reconciliation key for the provider's cost API (D-06) ──
@@ -411,24 +403,6 @@ func falBalance(body []byte) (string, bool) {
 }
 
 var currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
-
-// meshyBalance reads GET /openapi/v1/balance: {"balance": <credits>}.
-func meshyBalance(body []byte) (string, bool) {
-	var v struct {
-		Balance *json.Number `json:"balance"`
-	}
-	if json.Unmarshal(body, &v) != nil || v.Balance == nil {
-		return "", false
-	}
-	d, err := decimal.NewFromString(v.Balance.String())
-	if err != nil {
-		return "", false
-	}
-	if !d.IsInteger() {
-		return d.StringFixed(2) + " credits", true
-	}
-	return d.String() + " credits", true
-}
 
 // ───────────────────────── messages ─────────────────────────
 

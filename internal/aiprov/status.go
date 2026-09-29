@@ -10,7 +10,7 @@ import (
 // ═══ THE ONE STATUS MATRIX (B-14) ═══
 //
 // Every HTTP transport of the stack — the chat transport (oaichat) and the design transports
-// (orimages, recraft direct, fal, Meshy) — names a failed call's Code and Retryable with THESE two
+// (orimages, fal, runblob) — names a failed call's Code and Retryable with THESE two
 // functions and no copy of them. Moved verbatim out of oaichat, where they were born, so that a 408
 // cannot be weather on the chat path and a terminal refusal on the image path: the router's fallback,
 // the breaker and the design worker's retry all read CallError fields, and those fields are only as
@@ -18,8 +18,8 @@ import (
 //
 // A transport keeps its OWN SENTINELS beside the matrix (orimages.ErrProviderFailure, fal.ErrBadRequest,
 // …): the sentinel names the fault for errors.Is and for the person reading the row; the CallError's
-// Code and Retryable are the matrix's. Where the two disagree (fal / Meshy / recraft direct fold a 408
-// into their «bad request» sentinel, the matrix calls it weather) the transport says so at its wrap site.
+// Code and Retryable are the matrix's. Where the two disagree (fal folds a 408
+// into its «bad request» sentinel, the matrix calls it weather) the transport says so at its wrap site.
 
 // ClassifyStatus is the status → (Code, Retryable) table, one row per case on purpose (each row has a
 // test and a measured mutation in oaichat). Retryable = the SAME request may succeed later and nobody

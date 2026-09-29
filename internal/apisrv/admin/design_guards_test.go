@@ -11,7 +11,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -165,35 +164,6 @@ func designGuardStart(kind string) *pb_admin.StartDesignRunRequest {
 }
 
 // ─────────────────────── 1. ЦЕНА ───────────────────────
-
-// РЕЗЕРВ ВЕКТОРА ПОКРЫВАЕТ ЛЮБОЙ ОПУБЛИКОВАННЫЙ ТАРИФ ПРОВАЙДЕРА.
-//
-// ЧТО БЫЛО: дверь резервировала $0.04, а собственная константа пакета списания говорит $0.08 за
-// стандартный тир и $0.30 за pro. Дневной потолок пропускал вдвое больше трат, чем согласовано, и
-// молча.
-//
-// ⚠ ТРЕБОВАНИЕ ЗДЕСЬ СФОРМУЛИРОВАНО НЕЗАВИСИМО ОТ РЕАЛИЗАЦИИ — через recraft.Tiers(), то есть
-// через ТОТ ЖЕ ИСТОЧНИК, из которого берёт число списание, плюс жёсткий якорь в долларах. Проба,
-// сверяющая таблицу оценок с самой собой, зеленела бы под любой правкой обеих.
-func TestVectorReserveCoversEveryPublishedTier(t *testing.T) {
-	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
-	_, err := rig.srv.StartDesignRun(designGuardCtx(), designGuardStart(entity.DesignRunKindVector))
-	require.NoError(t, err)
-	require.NotNil(t, rig.sent, "прогон обязан был дойти до стора")
-	require.True(t, rig.sent.PriceEstimate.Valid, "у платного рода обязана быть оценка")
-
-	got := rig.sent.PriceEstimate.Decimal
-	for _, tier := range recraft.Tiers() {
-		published := decimal.NewFromFloat(tier.EstimatedUSD())
-		require.Falsef(t, got.LessThan(published),
-			"резерв %s ниже опубликованной цены тира %s ($%s): дневной потолок пропустит больше, "+
-				"чем владелец согласился оплатить", got, tier, published)
-	}
-	// ЯКОРЬ В ДОЛЛАРАХ. Он повторяет число провайдера НАМЕРЕННО: требование обязано быть сказано
-	// в пробе своими словами, иначе таблица оценок сверяется сама с собой.
-	require.False(t, got.LessThan(decimal.RequireFromString("0.30")),
-		"pro-вектор стоит $0.30; резерв ниже факта недопустим")
-}
 
 // РЕЗЕРВ КАРТИНКИ ПОКРЫВАЕТ САМОЕ ДОРОГОЕ ПОЛОЖЕНИЕ ДИЛА DESIGN_IMAGE_QUALITY.
 //

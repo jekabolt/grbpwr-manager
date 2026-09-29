@@ -242,12 +242,13 @@ envs:
   value: ""
 # AI provider keys (OpenRouter for the admin AI text features — AutoTranslateEmailCampaign,
 # FormatLibraryNoteMarkdown, DraftDesignIdea, EnhanceText, SuggestPrompts, AnalyzeTechCardConstruction;
-# fal, Meshy, Recraft for the design band) LIVE IN THE PANEL: admin -> AI providers, sealed under
+# fal and runblob for the design band) LIVE IN THE PANEL: admin -> AI providers, sealed under
 # AI_KEYS_MASTER_KEY below. No env variable is a key source any more (B-33). The old variables
-# (OPENROUTER_API_KEY, OPENROUTER_IMAGES_API_KEY, FAL_KEY, MESHY_API_KEY, RECRAFT_API_KEY) are read
-# ONCE at boot, for the import into the panel of a value whose panel slot is still empty; after the
-# first boot that logs «env key imported into the panel» they can be deleted from the dashboard.
-# They are deliberately no longer declared here.
+# (OPENROUTER_API_KEY, OPENROUTER_IMAGES_API_KEY, FAL_KEY) are read ONCE at boot, for the import into
+# the panel of a value whose panel slot is still empty; after the first boot that logs «env key
+# imported into the panel» they can be deleted from the dashboard. They are deliberately no longer
+# declared here. MESHY_*, RECRAFT_* and DESIGN_THREED_PROVIDER are read by nothing since 2026-09-29
+# (Recraft and vector generation removed; Meshy is reached through fal) and can be deleted too.
 #
 # AI_KEYS_MASTER_KEY seals the provider API keys an admin stores in admin -> AI providers
 # (AES-256-GCM; only the ciphertext reaches the database, so a dump is not a list of working keys).
@@ -271,6 +272,10 @@ envs:
 - key: RUNBLOB_VIDEO_CEILING_USD
   scope: RUN_TIME
   value: "1.50"
+# FAL_MODEL_IMAGE (H3, optional, set in the DO dashboard only if needed) — the fal endpoint id an
+# `image.generate → fal` route row draws when the row names no model. Unset => fal-ai/flux-pro/v1.1.
+# A row's own model always wins; like FAL_MODEL_CUTOUT this is the emergency wheel for a retired default,
+# not a knob. Deliberately not declared as a key here (applying the spec deploys master).
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m

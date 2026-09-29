@@ -484,13 +484,13 @@ func (r DesignColorwayRef) Id() int {
 	return int(r)
 }
 
-// Виды прогона. `vector` приехал волной 2: векторизация — это ДЕНЬГИ, и у денег одна дверь, а не
-// отдельный RPC мимо бюджета (31 §решения).
+// Виды прогона. `vector` (волна 2, векторизация через Recraft) убран 29.09.2026 вместе с
+// интеграцией: дверь его больше не принимает, а старые строки design_run с kind = 'vector' читаются
+// как есть — ни один путь чтения не сверяет род со списком.
 const (
 	DesignRunKindFlat      = "flat"
 	DesignRunKindRender    = "render"
 	DesignRunKindThreed    = "threed"
-	DesignRunKindVector    = "vector"
 	DesignRunKindDraftIdea = "draft_idea"
 	// DesignRunKindRecolor — ПЕРЕКРАС ВЕЩИ НА ГОТОВОЙ ФОТОГРАФИИ (K-17). Владелец: «раздел ON MODEL
 	// должен быть таким что мы можем загрузить фото реальное на модели с разных сторон и нам можно
@@ -553,8 +553,8 @@ const (
 // every call.
 func DesignRunKinds() []string {
 	return []string{
-		DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed, DesignRunKindVector,
-		DesignRunKindDraftIdea, DesignRunKindRecolor, DesignRunKindPattern,
+		DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed, DesignRunKindDraftIdea,
+		DesignRunKindRecolor, DesignRunKindPattern,
 		DesignRunKindFreeform, DesignRunKindCutout, DesignRunKindExtend, DesignRunKindInpaint,
 		DesignRunKindVideo,
 	}
@@ -564,7 +564,7 @@ func DesignRunKinds() []string {
 func IsDesignRunKind(v string) bool {
 	switch v {
 	case DesignRunKindFlat, DesignRunKindRender, DesignRunKindThreed,
-		DesignRunKindVector, DesignRunKindDraftIdea,
+		DesignRunKindDraftIdea,
 		DesignRunKindRecolor, DesignRunKindPattern,
 		DesignRunKindFreeform, DesignRunKindCutout,
 		DesignRunKindExtend, DesignRunKindInpaint,
@@ -574,8 +574,7 @@ func IsDesignRunKind(v string) bool {
 	return false
 }
 
-// DesignPictureKindOfRun — какого рода кадры рождает прогон этого рода. Вектор рождает ПЛОСКИЙ
-// кадр: SVG остаётся флэтом изделия, а не третьим родом верстака.
+// DesignPictureKindOfRun — какого рода кадры рождает прогон этого рода.
 func DesignPictureKindOfRun(runKind string) string {
 	switch runKind {
 	case DesignRunKindRender:
@@ -781,7 +780,7 @@ func IsDesignWorkflow(v string) bool {
 //   - cutout → remove_background; threed → image_to_3d; extend → extend_image; inpaint →
 //     retouch_zone (phase 3: tile 10's mask route shares the tile with the phase-2 window path);
 //   - recolor → swap_fabrics when some fabric carries a picture, else change_color;
-//   - every other kind (flat, render, pattern, vector, draft_idea) → ” (no tile).
+//   - every other kind (flat, render, pattern, draft_idea) → ” (no tile).
 func DesignWorkflowOf(kind, preset string, hasFabricPicture bool) string {
 	switch kind {
 	case DesignRunKindFreeform:
@@ -1124,14 +1123,14 @@ const (
 	DesignErrorCodeExtendForbidden        = "extend_forbidden"
 	DesignErrorCodeInpaintForbidden       = "inpaint_forbidden"
 	// DesignErrorCodeVideoForbidden — params.video on a kind that is not `video` (B-32).
-	DesignErrorCodeVideoForbidden = "video_forbidden"
-	DesignErrorCodeMaskRequired           = "mask_required"
-	DesignErrorCodeMaskSizeMismatch       = "mask_size_mismatch"
-	DesignErrorCodeMaskInvalid            = "mask_invalid"
-	DesignErrorCodeMaskEmpty              = "mask_empty"
-	DesignErrorCodeRouteReserveUnbounded  = "route_reserve_unbounded"
-	DesignErrorCodeNoSourcePicture        = "no_source_picture"
-	DesignErrorCodeOneListPerFact         = "one_list_per_fact"
+	DesignErrorCodeVideoForbidden        = "video_forbidden"
+	DesignErrorCodeMaskRequired          = "mask_required"
+	DesignErrorCodeMaskSizeMismatch      = "mask_size_mismatch"
+	DesignErrorCodeMaskInvalid           = "mask_invalid"
+	DesignErrorCodeMaskEmpty             = "mask_empty"
+	DesignErrorCodeRouteReserveUnbounded = "route_reserve_unbounded"
+	DesignErrorCodeNoSourcePicture       = "no_source_picture"
+	DesignErrorCodeOneListPerFact        = "one_list_per_fact"
 	// source_too_large (G-03 r2): an extend / inpaint source over the composite's working pixel cap
 	// (designgen.CompositeMaxSourcePixels), read off the stored size or the header — the worker's own
 	// word (designgen.CodeSourceTooLarge), said at the door before anything is reserved.
@@ -1326,7 +1325,7 @@ var (
 
 	// ErrDesignColorwayForbidden — колорвей назван там, где оси колорвея НЕТ ПО СУЩЕСТВУ: у
 	// флэта (и паттерна) как кадра, у флэтового верстака как адреса, у прогона рода
-	// flat|vector|pattern|draft_idea. Это НЕ «поле пока не заполняют»: чертёж изделия один на все
+	// flat|pattern|draft_idea. Это НЕ «поле пока не заполняют»: чертёж изделия один на все
 	// цвета (L-4), и состояние «флэт с колорвеем» не должно быть выразимо ни через одну дверь
 	// записи. Отказ, а не молчаливый сброс: сброшенное значение — это принятая, но не
 	// исполненная просьба, и разошлись бы они молча.
@@ -1955,9 +1954,8 @@ type DesignEditLayerSave struct {
 // медиа держит авторитетный SVG, слой — его редактируемую проекцию, а SourceMediaId и есть ребро
 // между ними.
 //
-// ⚠ ЭТО НИЧЕГО НЕ ТРАТИТ, И В ЭТОМ ГРАНИЦА С ГЕНЕРАЦИЕЙ. Векторизация машиной — платный вызов
-// поставщика и идёт через StartRun с kind = vector; этот запрос подшивает файл, который уже
-// существует. Две двери для денег означали бы две проверки бюджета.
+// ⚠ ЭТО НИЧЕГО НЕ ТРАТИТ. Векторизации машиной нет (генерация вектора убрана 29.09.2026); этот
+// запрос подшивает файл, который уже существует.
 //
 // ИДЕМПОТЕНТНОСТЬ ЗДЕСЬ — ПО (TechCardId, SourceMediaId), А НЕ ПО ClientRequestId, и это
 // вынужденно: у design_edit_layer (0343) колонки под запросный ключ нет вовсе, а 0350 её не

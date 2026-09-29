@@ -167,14 +167,13 @@ type Server struct {
 	// designVideoRoute — the live video route (B-32): the `video.generate` row's Kling slug and the
 	// reserve per clip. nil = no video route wired (the table's default reserve, Kling's default slug).
 	designVideoRoute func() designgen.VideoRoute
-	// aiReg, aiKeyRing, aiRecraftViaOpenRouter, aiProbeClient, aiReconcile — the admin → AI providers panel
+	// aiReg, aiKeyRing, aiProbeClient, aiReconcile — the admin → AI providers panel
 	// (ai_providers.go, SetAIProviders). aiReg nil = not wired: the five RPCs refuse with
 	// FailedPrecondition. A nil/disabled aiKeyRing refuses to store a key and says which variable
 	// is missing.
-	aiReg                  *registry.Registry
-	aiKeyRing              *keyring.Ring
-	aiRecraftViaOpenRouter bool
-	aiProbeClient          *http.Client
+	aiReg         *registry.Registry
+	aiKeyRing     *keyring.Ring
+	aiProbeClient *http.Client
 	// aiReconcile starts one provider's cost fetch after an accepted admin-key save. Nil means the
 	// worker is intentionally disabled; the handler then has no detached side effect.
 	aiReconcile func(context.Context, string)

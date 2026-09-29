@@ -279,8 +279,8 @@ func (c *Client) MaxResponseBytes() int64 {
 // published at GET /api/v1/images/models — this package deliberately does not carry a copy.
 type Request struct {
 	// Model overrides the client's configured slug for this one call. Empty = the configured slug.
-	// It exists so a caller that needs the vector model (recraft/*) can reach it through the same
-	// endpoint, since the endpoint really is the same one.
+	// It exists so a route row that names another image slug (admin → AI providers, image.generate)
+	// reaches it through the same endpoint, since the endpoint really is the same one.
 	Model string
 	// Prompt is the instruction. Required.
 	Prompt string
@@ -312,18 +312,17 @@ type Request struct {
 	//
 	// ⚠ "transparent" IS A 400 AGAINST DefaultModel — gpt-image-2 does not list it (measured). That
 	// is deliberate and not a loss: the design band asks for a background in the PROMPT ("a plain
-	// white background", "white seamless background"), and the raster is vectorised afterwards,
-	// where no background travels. A caller still passing "transparent" is asking for a fault, and
+	// white background", "white seamless background"). A caller still passing "transparent" is asking for a fault, and
 	// this package does NOT silently rewrite it — a dropped parameter is a picture that differs
 	// from the one that was ordered, discovered much later.
 	Background string
-	// OutputFormat is "png" | "jpeg" | "webp" (and "svg" on Recraft vector models). Empty omits it.
+	// OutputFormat is "png" | "jpeg" | "webp". Empty omits it.
 	//
 	// NOTE that no GPT Image slug lists `output_format` among its supported parameters at all —
 	// not -1, not -1-mini, not -2 (measured 2026-08-30). designgen has been sending "png" against
 	// gpt-image-1 regardless, so whatever the provider does with an unlisted key it has been doing
-	// all along; the move to gpt-image-2 changes nothing here. It IS honoured on the Recraft vector
-	// models this same endpoint reaches, which is why the field stays.
+	// all along; the move to gpt-image-2 changes nothing here. Other slugs this same endpoint reaches
+	// may honour it, which is why the field stays.
 	OutputFormat string
 	// OutputCompression is 0..100 for webp/jpeg. Nil omits it. It is a POINTER because 0 is a
 	// meaningful value here and "unset" has to be distinguishable from it.
@@ -359,6 +358,12 @@ type Usage struct {
 	Completion int     `json:"completion_tokens"`
 	Total      int     `json:"total_tokens"`
 	Cost       float64 `json:"cost"`
+	// CostSource says WHOSE number Cost is (H3): "" — the provider's own charge (OpenRouter's
+	// usage.cost, runblob's submit price), booked as cost_source `provider`; entity.AICostTable — a
+	// number the transport computed from the curated table (internal/aiprov/pricing: fal's billable
+	// units × the catalogue's per-call price), booked as `table` with pricing.Version. Never read off
+	// the wire: a provider cannot claim its number is ours.
+	CostSource string `json:"-"`
 }
 
 // Result is one completed generation.
@@ -553,8 +558,7 @@ func (c *Client) Generate(ctx context.Context, req Request) (*Result, error) {
 }
 
 // fail wraps today's error in the CallError every design transport returns (B-14). Provider is the
-// BILLING key: this client spends the OpenRouter account whatever slug it is handed — recraft's vector
-// route included, which is why recraft.translateORError keeps this error in its chain.
+// BILLING key: this client spends the OpenRouter account whatever slug it is handed.
 func fail(code string, status int, engaged, retryable bool, err error) *aiprov.CallError {
 	return &aiprov.CallError{
 		Provider:   entity.AIProviderOpenRouter,

@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
+	"github.com/jekabolt/grbpwr-manager/internal/svgcheck"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +24,7 @@ import (
 //
 //  1. SVG — ИСПОЛНЯЕМЫЙ ДОКУМЕНТ. В браузере администратора <script>, on*-атрибут, javascript:-ссылка
 //     и объявленная XML-сущность работают. Поэтому ни один байт не должен уехать в бакет раньше,
-//     чем recraft.InspectSVG сказал «чисто». Пробы ниже — это то, что краснеет поимённо, если
+//     чем svgcheck.InspectSVG сказал «чисто». Пробы ниже — это то, что краснеет поимённо, если
 //     проверку убрать: они утверждают не только отказ, но и ПУСТОЙ бакет (store.puts == 0).
 //  2. ТИП, КОТОРОМУ ПОДЧИНЯЕТСЯ БРАУЗЕР. Объект кладётся с content-type и расширением: модель,
 //     отданная как application/octet-stream, — это скачивание, а не то, что откроет вьюер.
@@ -119,7 +119,7 @@ func TestGLBIsStoredAsAModelTheBrowserCanOpen(t *testing.T) {
 // что в бакет не уехало НИ ОДНОГО объекта. Второе важнее первого: объект уже публичен в момент,
 // когда PutObject вернулся, и «удалим потом» ничего не отменяет — ссылку могли открыть.
 //
-// ⚠ Уберите вызов recraft.InspectSVG из UploadContentNonRaster — и этот тест покраснеет поимённо,
+// ⚠ Уберите вызов svgcheck.InspectSVG из UploadContentNonRaster — и этот тест покраснеет поимённо,
 // по одному подтесту на каждый способ исполнить код с нашего домена.
 func TestAnExecutableSVGNeverReachesTheBucket(t *testing.T) {
 	cases := map[string]string{
@@ -297,8 +297,8 @@ func makeVideoOfType(ct ContentType) []byte {
 
 // inspectForTest is the same check the storage path runs, called directly so the size probe reads
 // what the document said rather than a value this test wrote down itself.
-func inspectForTest(svg string) (recraft.SVGStats, error) {
-	return recraft.InspectSVG([]byte(svg))
+func inspectForTest(svg string) (svgcheck.SVGStats, error) {
+	return svgcheck.InspectSVG([]byte(svg))
 }
 
 // makeRasterOfType builds a small real picture in one of the raster types the package advertises.

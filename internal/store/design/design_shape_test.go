@@ -413,10 +413,11 @@ func TestCardOutputsClassifyByRunKindNotPictureKind(t *testing.T) {
 				"cannot find what the card paid for", kind)
 		}
 	}
-	// …и ровно эти. Флэт и вектор рождают ПЛОСКИЙ кадр верстака, а черновик идеи не рождает кадра
-	// вовсе; попав сюда, они смешали бы верстак с лентой выходов.
+	// …и ровно эти. Флэт рождает ПЛОСКИЙ кадр верстака (как и снятый 29.09 вектор — его старые строки
+	// остаются), а черновик идеи не рождает кадра вовсе; попав сюда, они смешали бы верстак с лентой
+	// выходов.
 	for _, kind := range []string{
-		entity.DesignRunKindFlat, entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
+		entity.DesignRunKindFlat, "vector", entity.DesignRunKindDraftIdea,
 	} {
 		if byRun[kind] {
 			t.Fatalf("a %q run does not produce a card OUTPUT: listing it here mixes the bench "+

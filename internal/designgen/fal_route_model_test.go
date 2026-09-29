@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/pricing"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 )
@@ -92,7 +93,7 @@ func TestTheCutoutRowsModelIS_THE_QUEUE(t *testing.T) {
 // TestABadRowSlugIS_NOT_A_PATH — Codex REVIEW-F1 #4: a row's model is POSTed as a path under the fal key, so
 // only a plain owner/model[/variant] slug ever comes out of FalRouteModel; anything else is the env slug.
 //
-// MUTATION (measured red→green): falSlugRe not consulted → "../x" comes back as the model.
+// MUTATION (measured red→green): fal.ValidSlug not consulted → "../x" comes back as the model.
 func TestABadRowSlugIS_NOT_A_PATH(t *testing.T) {
 	rg := newThreedRouteRig(t)
 	for _, bad := range []string{"../x", "fal-ai/../x", "acme/model?x=1", "acme/model#f", "acme/./model",
@@ -105,5 +106,25 @@ func TestABadRowSlugIS_NOT_A_PATH(t *testing.T) {
 		rg.store.routeTo(entity.AIPurposeImageExtend, row(1, entity.AIProviderFal, "/"+good+"/"))
 		rg.reload(t)
 		require.Equal(t, good, FalRouteModel(rg.reg, entity.DesignRunKindExtend))
+	}
+}
+
+// TestEveryFalCatalogueSlugIS_A_PATH — every fal row the panel offers (pricing.Catalogue) is a slug a
+// route will actually put on the wire: fal.ValidSlug is the gate a route row's model passes before it
+// becomes the request path, so a catalogue slug it refuses would be offered in the datalist and then
+// silently replaced by the env slug on every press. The Meshy default keeps fal's own un-prefixed form.
+//
+// MUTATION: a catalogue row "fal-ai/flux-pro/v1.1?x" or "Fal-AI/flux" → red; the DefaultModel3D row
+// renamed "fal-ai/meshy/v7/multi-image-to-3d" → red.
+func TestEveryFalCatalogueSlugIS_A_PATH(t *testing.T) {
+	rows := pricing.Catalogue(entity.AIProviderFal)
+	require.NotEmpty(t, rows)
+	slugs := map[string]bool{}
+	for _, m := range rows {
+		require.True(t, fal.ValidSlug(m.Slug), "fal catalogue slug %q is not a fal path", m.Slug)
+		slugs[m.Slug] = true
+	}
+	for _, def := range []string{fal.DefaultModel3D, fal.DefaultModelOutpaint, fal.DefaultModelFill, fal.DefaultModelCutout} {
+		require.True(t, slugs[def], "the route default %q is in the catalogue", def)
 	}
 }

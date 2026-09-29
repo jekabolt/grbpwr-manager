@@ -36,7 +36,7 @@ const (
 type Job struct {
 	RunID      int
 	TechCardID int
-	// Kind is the run kind: flat | render | vector | threed | … | video. draft_idea never reaches here.
+	// Kind is the run kind: flat | render | threed | … | video. draft_idea never reaches here.
 	Kind string
 	// Prompt is the composed instruction: the ask, the garment description, the fit, the roles and
 	// notes of the references. Composed from the SNAPSHOT rather than from today's card, because
@@ -65,9 +65,9 @@ type Job struct {
 	// References[i], and is empty where the run has no view for that picture (a moodboard-style
 	// reference, a fabric swatch, an uploaded photograph nobody labelled).
 	//
-	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND THE ROUTE HAS TO STATE WHAT IT KNOWS. Both
-	// meshy families — the direct API and meshy on fal, which is what FAL_MODEL_3D defaults to
-	// today — take an ORDERED LIST and infer the front from position zero. fal's hitem3d, the slug
+	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND THE ROUTE HAS TO STATE WHAT IT KNOWS. The
+	// meshy family on fal, which is what FAL_MODEL_3D defaults to today, takes an ORDERED LIST and
+	// infers the front from position zero. fal's hitem3d, the slug
 	// the owner named first, takes NAMED SLOTS (front_image_url, back_image_url, …) and is one
 	// variable away.
 	//
@@ -218,12 +218,12 @@ type Outcome struct {
 	RequestID string
 	// Model is the slug that actually answered.
 	Model string
-	// Pending marks a provider that ACCEPTED the job and will deliver later (Meshy). The worker
+	// Pending marks a provider that ACCEPTED the job and will deliver later (the fal 3D queue, the runblob video). The worker
 	// closes the attempt as `accepted` with RequestID, then collects — and a collect is free, so a
 	// worker that dies between the two costs nothing to resume.
 	Pending bool
 	// Provider is the BILLING transport of this pass (an entity.AIProvider* key: the account that
-	// pays — recraft through OpenRouter is "openrouter"), and Usage the tokens its calls reported,
+	// pays — a model routed through OpenRouter is "openrouter"), and Usage the tokens its calls reported,
 	// summed; nil when none did. Both are PROVENANCE for the ledger's side of the pass, set by the
 	// route: recordAttempt does not read them, and the attempt row stays the money truth of the run.
 	Provider string
@@ -288,7 +288,7 @@ func missingCredential(p Provider) string {
 // evidence.
 //
 // OPTIONAL, and its absence means «this route sends Job.Prompt», which is the truth for the image
-// and vector routes and the reason they implement nothing.
+// routes and the reason they implement nothing.
 //
 // ⚠ THE ANSWER IS THE ROUTE'S, NEVER THE KIND'S. A `switch kind` in the dispatcher would be a
 // second opinion about a fact only the route holds — which model family is configured, and whether
@@ -307,8 +307,8 @@ func recordedPrompt(prov Provider, job Job) string {
 	return job.Prompt
 }
 
-// Collector is the second half of an asynchronous route. Only the 3D route implements it: Meshy
-// answers a submit with a task id and builds the model for minutes afterwards.
+// Collector is the second half of an asynchronous route. The 3D and video routes implement it:
+// fal answers a 3D submit with a request id and builds the model for minutes afterwards.
 //
 // COLLECT IS FREE. That is the entire reason the two halves are separate verbs — the submit is the
 // payment, the collect is a lookup, and a worker resuming after a crash must be able to do the
@@ -327,8 +327,6 @@ type Providers struct {
 	// provider here (NewRoutedImageProvider): a Chooser, whose concrete candidate is what each pass
 	// pays and records (dispatch.go).
 	Image Provider
-	// Vector serves the vector kind.
-	Vector Provider
 	// Threed serves the threed kind.
 	Threed Provider
 	// Cutout serves the cutout kind — background removal, a SEGMENTER rather than a generator.
@@ -348,10 +346,10 @@ type Providers struct {
 	// panel's `video.generate` route names the model, not the transport.
 	Video Provider
 
-	// Also — providers the worker CONSTRUCTED but does not route any kind to directly: since B-24 BOTH
-	// boot-time 3D providers (fal at the env slug, meshy), because the Threed slot is the panel's route
-	// (named "threed", never an attempt row's name). They are never chosen for a fresh run; they exist
-	// so a job one of them ACCEPTED — under any route row, before any route edit — is collected by it,
+	// Also — providers the worker CONSTRUCTED but does not route any kind to directly: since B-24 the
+	// boot-time 3D provider (fal at the env slug), because the Threed slot is the panel's route (named
+	// "threed", never an attempt row's name). It is never chosen for a fresh run; it exists so a job it
+	// ACCEPTED — under any route row, before any route edit — is collected by it,
 	// for free: the collect goes to the provider the accepted attempt names (byName), never to
 	// whoever the route puts first today.
 	Also []Provider
@@ -364,7 +362,7 @@ func (p Providers) byName(name string) (Provider, bool) {
 	if name == "" {
 		return nil, false
 	}
-	for _, prov := range append([]Provider{p.Image, p.Vector, p.Threed, p.Cutout, p.Outpaint, p.Fill, p.Video}, p.Also...) {
+	for _, prov := range append([]Provider{p.Image, p.Threed, p.Cutout, p.Outpaint, p.Fill, p.Video}, p.Also...) {
 		if prov != nil && prov.Name() == name {
 			return prov, true
 		}
@@ -406,11 +404,6 @@ func (p Providers) forKind(kind string) (Provider, error) {
 			return nil, fmt.Errorf("%w: no fill route is wired", errRouteMissing)
 		}
 		return p.Fill, nil
-	case entity.DesignRunKindVector:
-		if p.Vector == nil {
-			return nil, fmt.Errorf("%w: no vector route is wired", errRouteMissing)
-		}
-		return p.Vector, nil
 	case entity.DesignRunKindThreed:
 		if p.Threed == nil {
 			return nil, fmt.Errorf("%w: no 3D route is wired", errRouteMissing)

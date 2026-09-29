@@ -43,9 +43,9 @@ import (
 // ⚠ NO KEY ON THE DOWNLOAD. The picture's address comes out of the provider's JSON; the request that
 // fetches it carries no Authorization header, whatever host the address names (fal.fetch, same rule).
 
-// Slugs the transport serves — `<family path>/<model>` for Nano Banana, the family path itself for
-// the Kling photo endpoints (their model is the endpoint). These are the route row's / a run's
-// `model`; the pricing catalogue lists the same eight (pricing.go, unpriced: runblob states its
+// Slugs the transport serves — `<family path>/<model>` for Nano Banana and ChatGPT Images, the family
+// path itself for the Kling photo endpoints (their model is the endpoint). These are the route row's /
+// a run's `model`; the pricing catalogue lists the same ten (pricing.go, unpriced: runblob states its
 // price per call).
 const (
 	SlugGeminiStandard = "gemini/standard"
@@ -56,6 +56,11 @@ const (
 	SlugGeminiV2VIP    = "gemini/v2_vip"
 	SlugKlingO1Photo   = PathKlingO1Photo
 	SlugKlingO3Photo   = PathKlingO3Photo
+	// SlugChatGPTImage / SlugChatGPTImage25 — ChatGPT Images (runblob-specs/chatgpt-images.md):
+	// gpt-5-2 is the family's default and has no quality dial; chatgpt-2.5 takes quality flare |
+	// sunburst and background transparent | opaque | auto.
+	SlugChatGPTImage   = PathChatGPTImages + "/gpt-5-2"
+	SlugChatGPTImage25 = PathChatGPTImages + "/chatgpt-2.5"
 
 	// DefaultImageSlug is the transport's own default (ImageTransport.Model): a run and a route row
 	// that name none draw Nano Banana standard — the cheapest documented family ($0.021 a picture on
@@ -72,6 +77,9 @@ const (
 	// that outlives its ceiling is bought and unknown, never re-bought.
 	geminiCeiling     = 3 * time.Minute
 	klingPhotoCeiling = 5 * time.Minute
+	// chatgptCeiling — ChatGPT Images is not timed on its page; it is a single-picture queue like
+	// Nano Banana and gets the same wait.
+	chatgptCeiling = geminiCeiling
 	// MaxImageBytes caps ONE downloaded picture (orimages' 24 MiB was sized for base64 in JSON; a 4k
 	// PNG straight off a CDN can be larger). Refused by name, never trimmed — a cut PNG opens half grey.
 	MaxImageBytes = 48 << 20 // 48 MiB
@@ -84,17 +92,29 @@ const (
 // Quality words of orimages.Request.Quality (the band's dial: auto | low | medium | high).
 const qualityHigh = "high"
 
+// Image dialects — which body a family takes.
+const (
+	// dialectKling — a Kling photo endpoint: `img_resolution`, `images_url` (http(s) only), no model.
+	dialectKling = iota
+	// dialectGemini — Nano Banana: `model`, `quality` standard | 2k, `images` (http(s) or data: urls).
+	dialectGemini
+	// dialectChatGPT — ChatGPT Images: `model`, `quality` flare | sunburst and `background` on
+	// chatgpt-2.5 only, `images` (http(s) or data: urls, base64 too — not sent: our refs are urls).
+	dialectChatGPT
+)
+
 // imageFamily is one family's wire dialect: the path, the reference rules, the enums, the ceiling.
 type imageFamily struct {
-	path string
-	// gemini — Nano Banana: `model`, `quality`, `images` (http(s) or data: urls); false — a Kling photo
-	// endpoint: `img_resolution`, `images_url` (http(s) only).
-	gemini bool
+	path    string
+	dialect int
 	// maxRefs — the family's reference ceiling (docs): over it is a refusal before the wire.
 	maxRefs int
 	// twoK — quality `high` may ask for 2k (Nano Banana: pro, v2, pro_vip, v2_vip only; standard and
 	// v2_lite take `standard` alone — sending 2k there is a 422).
 	twoK bool
+	// dials — the model takes `quality` and `background` (ChatGPT Images: chatgpt-2.5 only; gpt-5-2
+	// «silently ignores» both, so they are not sent there).
+	dials bool
 	// aspects — the family's aspect_ratio enum; a value outside it is NOT sent (the family's default
 	// applies) rather than answered with a 4xx.
 	aspects map[string]bool
@@ -105,6 +125,10 @@ var (
 	geminiAspects = set("auto", "21:9", "16:9", "4:3", "3:2", "1:1", "9:16", "3:4", "2:3", "5:4", "4:5")
 	klingO1Aspect = set("9:16", "2:3", "3:4", "1:1", "4:3", "3:2", "16:9", "21:9")
 	klingO3Aspect = set("auto", "9:16", "2:3", "3:4", "1:1", "4:3", "3:2", "16:9", "21:9")
+	// chatgptAspect — the page's nine; its "auto" means «the parameter is not sent», so it is not here.
+	chatgptAspect = set("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9", "4:5")
+	// chatgptBackground — the page's background enum (chatgpt-2.5 only).
+	chatgptBackground = set("transparent", "opaque", "auto")
 )
 
 func set(vs ...string) map[string]bool {
@@ -115,21 +139,24 @@ func set(vs ...string) map[string]bool {
 	return m
 }
 
-// imageSlugs — slug → (family, Nano Banana model). The reference ceilings and the 2k rule are the
+// imageSlugs — slug → (family, the body's model). The reference ceilings and the 2k rule are the
 // Nano Banana page's (standard ≤ 4 pictures, pro / v2 ≤ 10, *_vip ≤ 8; 2k on pro, v2, pro_vip,
-// v2_vip) and kling.json's (≤ 10), read 2026-09-28.
+// v2_vip) and kling.json's (≤ 10), read 2026-09-28; ChatGPT Images' (≤ 8, both models) read
+// 2026-09-29.
 var imageSlugs = map[string]struct {
 	fam   imageFamily
 	model string
 }{
-	SlugGeminiStandard: {imageFamily{path: PathGemini, gemini: true, maxRefs: 4, aspects: geminiAspects, ceiling: geminiCeiling}, "standard"},
-	SlugGeminiPro:      {imageFamily{path: PathGemini, gemini: true, maxRefs: 10, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "pro"},
-	SlugGeminiV2:       {imageFamily{path: PathGemini, gemini: true, maxRefs: 10, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "v2"},
-	SlugGeminiV2Lite:   {imageFamily{path: PathGemini, gemini: true, maxRefs: 10, aspects: geminiAspects, ceiling: geminiCeiling}, "v2_lite"},
-	SlugGeminiProVIP:   {imageFamily{path: PathGemini, gemini: true, maxRefs: 8, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "pro_vip"},
-	SlugGeminiV2VIP:    {imageFamily{path: PathGemini, gemini: true, maxRefs: 8, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "v2_vip"},
+	SlugGeminiStandard: {imageFamily{path: PathGemini, dialect: dialectGemini, maxRefs: 4, aspects: geminiAspects, ceiling: geminiCeiling}, "standard"},
+	SlugGeminiPro:      {imageFamily{path: PathGemini, dialect: dialectGemini, maxRefs: 10, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "pro"},
+	SlugGeminiV2:       {imageFamily{path: PathGemini, dialect: dialectGemini, maxRefs: 10, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "v2"},
+	SlugGeminiV2Lite:   {imageFamily{path: PathGemini, dialect: dialectGemini, maxRefs: 10, aspects: geminiAspects, ceiling: geminiCeiling}, "v2_lite"},
+	SlugGeminiProVIP:   {imageFamily{path: PathGemini, dialect: dialectGemini, maxRefs: 8, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "pro_vip"},
+	SlugGeminiV2VIP:    {imageFamily{path: PathGemini, dialect: dialectGemini, maxRefs: 8, twoK: true, aspects: geminiAspects, ceiling: geminiCeiling}, "v2_vip"},
 	SlugKlingO1Photo:   {imageFamily{path: PathKlingO1Photo, maxRefs: 10, aspects: klingO1Aspect, ceiling: klingPhotoCeiling}, ""},
 	SlugKlingO3Photo:   {imageFamily{path: PathKlingO3Photo, maxRefs: 10, aspects: klingO3Aspect, ceiling: klingPhotoCeiling}, ""},
+	SlugChatGPTImage:   {imageFamily{path: PathChatGPTImages, dialect: dialectChatGPT, maxRefs: 8, aspects: chatgptAspect, ceiling: chatgptCeiling}, "gpt-5-2"},
+	SlugChatGPTImage25: {imageFamily{path: PathChatGPTImages, dialect: dialectChatGPT, maxRefs: 8, dials: true, aspects: chatgptAspect, ceiling: chatgptCeiling}, "chatgpt-2.5"},
 }
 
 // ImageSlugs — every slug the transport serves, sorted (the pricing catalogue's rows are pinned to it).
@@ -175,7 +202,7 @@ func (t *Images) Model() string { return DefaultImageSlug }
 // Enabled — the adapter holds a key right now (the registry's KeyFunc, read per call). Nil-safe.
 func (t *Images) Enabled() bool { return t != nil && t.c.Enabled() }
 
-// Serves reports whether slug is one of the eight this transport draws (designgen.ImageTransport).
+// Serves reports whether slug is one of the ten this transport draws (designgen.ImageTransport).
 // Unknown → false: the chooser skips the candidate before any row is opened, as it skips a slug the
 // OpenAI alias map does not carry. Nil-safe.
 func (t *Images) Serves(slug string) bool {
@@ -188,13 +215,14 @@ func (t *Images) Serves(slug string) bool {
 
 // Generate draws ONE picture: submit → poll → download (see the section doc).
 //
-// Mapping from orimages.Request: Model (empty = DefaultImageSlug) picks the family and the Nano
-// Banana model; Prompt goes as `prompt`; Quality `high` asks for 2k / 2k-resolution where the family
-// takes it, everything else the family's standard tier; AspectRatio is sent when the family's enum
-// lists it, else left to the family's default; InputReferences become `images` (Nano Banana: http(s)
-// and data: urls) or `images_url` (Kling: http(s) only — a data: url there is refused before the wire).
-// N, Background, OutputFormat, OutputCompression and Resolution have no runblob counterpart and are not
-// sent: runblob returns exactly one picture per task, in the raster the family produces.
+// Mapping from orimages.Request: Model (empty = DefaultImageSlug) picks the family and the body's
+// model; Prompt goes as `prompt`; Quality `high` asks for 2k / 2k-resolution / sunburst where the
+// family takes it, everything else the family's cheap tier (standard / 1k / flare); AspectRatio is
+// sent when the family's enum lists it, else left to the family's default; InputReferences become
+// `images` (Nano Banana, ChatGPT Images: http(s) and data: urls) or `images_url` (Kling: http(s) only —
+// a data: url there is refused before the wire); Background goes to chatgpt-2.5 alone, when it is one
+// of its three words. N, OutputFormat, OutputCompression and Resolution have no runblob counterpart
+// and are not sent: runblob returns exactly one picture per task, in the raster the family produces.
 func (t *Images) Generate(ctx context.Context, req orimages.Request) (*orimages.Result, error) {
 	if !t.Enabled() {
 		return nil, fail(aiprov.CodeNotConfigured, 0, false, false,
@@ -262,7 +290,7 @@ func (t *Images) Generate(ctx context.Context, req orimages.Request) (*orimages.
 }
 
 // references validates the reference pictures for the family: at most maxRefs; each an http(s) url
-// with a host, or — Nano Banana only — a data: url. All refused BEFORE the wire: Kling fetches its
+// with a host, or — Nano Banana and ChatGPT Images only — a data: url. All refused BEFORE the wire: Kling fetches its
 // references itself and answers a base64 one with a 400/422 after the round trip at best.
 func (f imageFamily) references(in []string, slug string) ([]string, error) {
 	out := make([]string, 0, len(in))
@@ -272,7 +300,7 @@ func (f imageFamily) references(in []string, slug string) ([]string, error) {
 			continue
 		}
 		if strings.HasPrefix(r, "data:") {
-			if !f.gemini {
+			if f.dialect == dialectKling {
 				return nil, fmt.Errorf("%s: %s takes reference pictures by http(s) url only, and one was given as a data: url",
 					provider, slug)
 			}
@@ -298,7 +326,25 @@ func (f imageFamily) references(in []string, slug string) ([]string, error) {
 func (f imageFamily) body(prompt, model string, req orimages.Request, refs []string) map[string]any {
 	body := map[string]any{"prompt": prompt}
 	high := strings.EqualFold(strings.TrimSpace(req.Quality), qualityHigh)
-	if f.gemini {
+	switch f.dialect {
+	case dialectChatGPT:
+		body["model"] = model
+		if f.dials {
+			// sunburst is the page's default AND the dearer tier: sent only when `high` asked for it,
+			// the cheap tier otherwise — the band's rule on every family.
+			if high {
+				body["quality"] = "sunburst"
+			} else {
+				body["quality"] = "flare"
+			}
+			if bg := strings.ToLower(strings.TrimSpace(req.Background)); chatgptBackground[bg] {
+				body["background"] = bg
+			}
+		}
+		if len(refs) > 0 {
+			body["images"] = refs
+		}
+	case dialectGemini:
 		body["model"] = model
 		if high && f.twoK {
 			body["quality"] = "2k"
@@ -308,7 +354,7 @@ func (f imageFamily) body(prompt, model string, req orimages.Request, refs []str
 		if len(refs) > 0 {
 			body["images"] = refs
 		}
-	} else {
+	default:
 		// 1k | 2k (| 4k on O3, never asked: the band's dial tops at `high`, and 4k is the dearest tier
 		// nothing in the band prices). `high` → 2k, everything else the cheap tier.
 		if high {

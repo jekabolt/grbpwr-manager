@@ -219,8 +219,15 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			OutputFormat:    format,
 			InputReferences: call.refs,
 		})
-		job.finishCall(ctx, h, imageCallEnd(res, err))
+		end := imageCallEnd(p.billing(), res, err)
+		job.finishCall(ctx, h, end)
 		p.endCall(adm, err)
+		if res != nil && end.CostUSD.Valid && res.Usage.Cost <= 0 {
+			// THE LEDGER'S NUMBER IS THE RUN'S NUMBER (Codex REVIEW-H #3): a picture the table priced
+			// (the provider named none — openai, apibost) must reach the attempt row, the run's
+			// price_actual and the day's spent, not only ai_usage_event. One price, resolved once.
+			res.Usage.Cost = end.CostUSD.Decimal.InexactFloat64()
+		}
 		if res != nil {
 			usage.Prompt += res.Usage.Prompt
 			usage.Completion += res.Usage.Completion
@@ -435,8 +442,6 @@ func imageCalls(job Job) ([]imageCall, error) {
 //   - the owner's own prompt orders the opposite in words — «black vector line art on a plain
 //     white background», «white seamless background». Asking the API for transparency while the
 //     prompt asks for white is one order contradicting itself;
-//   - the raster is not the end of the road. It goes to a vector model next, and a vector carries
-//     no background at all — so the sheet is composed from something that never had a rectangle;
 //   - a technical sheet is printed on white paper, where a white plate is invisible anyway.
 //
 // So: `opaque` is STATED rather than omitted. Omitting would leave `auto`, and «auto» is the model

@@ -39,6 +39,11 @@ func TestSubmitPathsAndIdFields(t *testing.T) {
 		{PathKlingO3Photo, `{"generation_id":"` + genID + `","status":"pending","price":"0.0500"}`, genID, "0.05"},
 		// both present (UNVERIFIED (G-06): no family documents both): generation_id wins, as the first named.
 		{FamilyKling, `{"generation_id":"` + genID + `","task_uuid":"` + taskUUID + `","status":"pending","price":"0.2900"}`, genID, "0.29"},
+		// H5 (2026-09-29): ChatGPT Images answers task_uuid (chatgpt-images.md); the omni video
+		// endpoints answer generation_id (kling.json endpoints[1], [2]).
+		{PathChatGPTImages, `{"task_uuid":"` + taskUUID + `","status":"pending","price":"0.0390"}`, taskUUID, "0.039"},
+		{PathKlingO1Video, `{"generation_id":"` + genID + `","status":"pending","price":"0.9000"}`, genID, "0.9"},
+		{PathKlingO3Video, `{"generation_id":"` + genID + `","status":"pending","price":"1.8000"}`, genID, "1.8"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -54,6 +59,18 @@ func TestSubmitPathsAndIdFields(t *testing.T) {
 			require.True(t, sub.Engaged)
 		})
 	}
+
+	t.Run("seedance: task_uuid and NO price in the 201 — accepted, unpriced", func(t *testing.T) {
+		rec := &recorder{}
+		srv := rec.server(t, answer(http.StatusCreated,
+			`{"task_uuid":"`+taskUUID+`","model":"seedance-2.0-mini","status":"pending","output":null,"error":null}`))
+		sub, err := newAt(srv.URL, 2*time.Second).Submit(context.Background(), PathSeedance, map[string]any{"prompt": "a coat"})
+		require.NoError(t, err)
+		require.Equal(t, "/v1/seedance/generate", rec.paths[0])
+		require.Equal(t, taskUUID, sub.ID)
+		require.False(t, sub.PriceUSD.Valid, "no price stated is NULL, never zero")
+		require.True(t, sub.Engaged)
+	})
 
 	t.Run("neither id field: engaged, empty_answer, the sentence names both", func(t *testing.T) {
 		rec := &recorder{}
@@ -102,6 +119,31 @@ func TestStatusReadsEveryResultField(t *testing.T) {
 			`{"generation_id":"` + genID + `","status":"failed","image_url":null,"model":"kling-o3-photo-4k","message":"TASK_FAILED","error":"upstream down"}`,
 			Generation{Status: "failed", Model: "kling-o3-photo-4k", Message: "TASK_FAILED", Error: "upstream down"},
 			"", "upstream down"},
+		// H5 (2026-09-29) — chatgpt-images.md, kling.json endpoints[2], seedance.json.
+		{"chatgpt-images completed", PathChatGPTImages,
+			`{"task_uuid":"` + taskUUID + `","status":"completed","prompt":"p","result_image_url":"https://cdn.runblob.io/generations/9b2f.png","message":null}`,
+			Generation{Status: "completed", ImageURL: "https://cdn.runblob.io/generations/9b2f.png"},
+			"https://cdn.runblob.io/generations/9b2f.png", ""},
+		{"chatgpt-images failed: OPENAI_DECLINED", PathChatGPTImages,
+			`{"task_uuid":"` + taskUUID + `","status":"failed","prompt":"p","result_image_url":null,"message":"OPENAI_DECLINED"}`,
+			Generation{Status: "failed", Message: "OPENAI_DECLINED"}, "", "OPENAI_DECLINED"},
+		{"kling o3-video completed", PathKlingO3Video,
+			`{"generation_id":"` + genID + `","status":"completed","prompt":"p","video_url":"https://cdn.runblob.io/v/o3.mp4","model":"kling_o3_pro"}`,
+			Generation{Status: "completed", VideoURL: "https://cdn.runblob.io/v/o3.mp4", Model: "kling_o3_pro"},
+			"https://cdn.runblob.io/v/o3.mp4", ""},
+		{"seedance completed: the first of output.video_urls", PathSeedance,
+			`{"task_uuid":"` + taskUUID + `","model":"doubao-seedance-2.5-face","status":"completed","output":{"video_urls":["https://media.runblob.io/s/0.mp4","https://media.runblob.io/s/1.mp4"],"last_frame_url":null},"error":null}`,
+			Generation{Status: "completed", VideoURL: "https://media.runblob.io/s/0.mp4", Model: "doubao-seedance-2.5-face"},
+			"https://media.runblob.io/s/0.mp4", ""},
+		{"seedance processing: output null", PathSeedance,
+			`{"task_uuid":"` + taskUUID + `","model":"seedance-2.0-mini","status":"processing","output":null,"error":null}`,
+			Generation{Status: "processing", Model: "seedance-2.0-mini"}, "", ""},
+		{"seedance failed: error {code, message}", PathSeedance,
+			`{"task_uuid":"` + taskUUID + `","model":"seedance-2.0-mini","status":"failed","output":null,"error":{"code":"GENERATION_FAILED","message":"upstream said no"}}`,
+			Generation{Status: "failed", Model: "seedance-2.0-mini", Error: "upstream said no"}, "", "upstream said no"},
+		{"seedance failed: a code with no message", PathSeedance,
+			`{"task_uuid":"` + taskUUID + `","model":"seedance-2.0-mini","status":"failed","output":null,"error":{"code":"CONTENT_REJECTED","message":""}}`,
+			Generation{Status: "failed", Model: "seedance-2.0-mini", Error: "CONTENT_REJECTED"}, "", "CONTENT_REJECTED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,12 +173,16 @@ func TestPathShapeIsClosed(t *testing.T) {
 	for _, p := range knownPaths {
 		require.NoError(t, validPath(p), p)
 	}
-	require.Equal(t, []string{"gemini", "kling", "kling/o1-photo", "kling/o3-photo", "veo"}, knownPaths)
+	require.Equal(t, []string{"gemini", "kling", "kling/o1-photo", "kling/o3-photo", "veo",
+		"kling/o1-video", "kling/o3-video", "seedance", "chatgpt-images"}, knownPaths)
 	rec := &recorder{}
 	srv := rec.server(t, answer(http.StatusCreated, okSubmitBody))
 	c := newAt(srv.URL, 2*time.Second)
 	for _, p := range []string{"kling/o1-photo/x", "kling/o1", "gemini/", "/gemini", "kling/o1-photo?x=1",
-		"kling/o1.photo", "kling//o1-photo", "Kling/o1-photo", "kling/o1-photo/../generate"} {
+		"kling/o1.photo", "kling//o1-photo", "Kling/o1-photo", "kling/o1-photo/../generate",
+		// H5: the first segment may carry INNER hyphens only; a well-shaped name nobody serves is refused
+		// by the closed list.
+		"-chatgpt-images", "chatgpt-images-", "chatgpt--images", "chatgpt-image", "kling/o5-video"} {
 		_, err := c.Submit(context.Background(), p, map[string]any{"prompt": "p"})
 		ce := callErr(t, err)
 		require.Equal(t, aiprov.CodeBadRequest, ce.Code, p)

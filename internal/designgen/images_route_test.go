@@ -106,7 +106,8 @@ func newImageRouteRig(t *testing.T, cands ...entity.AIRouteCandidate) *imageRout
 	t.Helper()
 	ring, err := keyring.New(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
 	require.NoError(t, err)
-	sealed := map[string]bool{entity.AIProviderOpenRouter: true, entity.AIProviderOpenAI: true, entity.AIProviderGoogle: true, entity.AIProviderRunblob: true}
+	sealed := map[string]bool{entity.AIProviderOpenRouter: true, entity.AIProviderOpenAI: true, entity.AIProviderGoogle: true, entity.AIProviderRunblob: true,
+		entity.AIProviderFal: true}
 	var cfg entity.AIConfig
 	for _, k := range entity.AIProviderKeys() {
 		p := entity.AIProvider{Key: k, Label: k, Enabled: sealed[k]}

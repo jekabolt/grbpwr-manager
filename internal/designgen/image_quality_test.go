@@ -48,7 +48,7 @@ func TestEveryKindAsksForAWordTheProviderAccepts(t *testing.T) {
 	applyDefaults(&c)
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindRecolor,
-		entity.DesignRunKindPattern, entity.DesignRunKindVector, entity.DesignRunKindThreed,
+		entity.DesignRunKindPattern, entity.DesignRunKindThreed,
 	} {
 		q := c.QualityFor(kind)
 		require.Truef(t, providerQualityWords[q], "%s asks for %q, which the endpoint does not accept", kind, q)

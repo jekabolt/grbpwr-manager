@@ -88,7 +88,7 @@ func TestDesignWorkflowOfIsTheStampTABLE(t *testing.T) {
 		{DesignRunKindFlat, "", false, ""},
 		{DesignRunKindRender, "", true, ""},
 		{DesignRunKindPattern, "", false, ""},
-		{DesignRunKindVector, "", false, ""},
+		{"vector", "", false, ""},
 		{DesignRunKindDraftIdea, "", false, ""},
 		{"", "tryon", false, ""},
 	}

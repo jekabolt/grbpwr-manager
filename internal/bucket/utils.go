@@ -26,11 +26,11 @@ const (
 	contentTypeDXF ContentType = "image/vnd.dxf"
 	// contentTypeSVG and contentTypeGLB are accepted ONLY by the non-raster path
 	// (UploadContentNonRaster, see nonraster.go), which checks the bytes before it stores
-	// them — an SVG through recraft.InspectSVG, a GLB through its container header. The
+	// them — an SVG through svgcheck.InspectSVG, a GLB through its container header. The
 	// raster paths sniff for a picture format and can never arrive at either: sniffImageType
 	// does not recognise them, so they fall into its "unrecognized" refusal.
 	//
-	// contentTypeSVG is spelled the same as recraft.SVGContentType, and it has to be: the
+	// contentTypeSVG is spelled the same as svgcheck.SVGContentType, and it has to be: the
 	// media row, the bucket object and the browser must all be told the same thing.
 	contentTypeSVG ContentType = "image/svg+xml"
 	// contentTypeGLB is the IANA type for a glTF binary. The browser needs THIS one — a model

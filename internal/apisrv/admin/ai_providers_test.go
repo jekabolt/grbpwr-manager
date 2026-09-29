@@ -86,7 +86,6 @@ const (
 	aiDBAdminAnthro = "sk-ant-admin-stored-9z9z"
 	aiEnvOpenRouter = "sk-or-env-key-9999"
 	aiEnvFal        = "fal-env-key-5678"
-	aiEnvRecraft    = "rc-env-key-4321"
 )
 
 var aiKeyStoredAt = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
@@ -112,13 +111,13 @@ func aiTestConfig(t *testing.T, ring *keyring.Ring) entity.AIConfig {
 	t.Helper()
 	labels := map[string]string{
 		"openai": "OpenAI", "anthropic": "Anthropic", "google": "Google Gemini", "openrouter": "OpenRouter",
-		"apibost": "apibost", "fal": "fal", "meshy": "Meshy", "runblob": "runblob", "recraft": "Recraft",
+		"apibost": "apibost", "fal": "fal", "runblob": "runblob",
 	}
 	var providers []entity.AIProvider
 	for _, k := range entity.AIProviderKeys() {
 		p := entity.AIProvider{Key: k, Label: labels[k]}
 		switch k {
-		case entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft:
+		case entity.AIProviderOpenRouter, entity.AIProviderFal:
 			p.Enabled = true
 		}
 		switch k {
@@ -132,7 +131,7 @@ func aiTestConfig(t *testing.T, ring *keyring.Ring) entity.AIConfig {
 		case entity.AIProviderAnthropic:
 			p.AdminKeyEnc = aiSeal(t, ring, k, entity.AIKeyAdmin, aiDBAdminAnthro)
 			p.AdminKeyLast4 = "9z9z"
-		case entity.AIProviderMeshy:
+		case entity.AIProviderRunblob:
 			// A cleared slot still records who cleared it; the panel must not show it as "set by".
 			p.APIKeyUpdatedBy, p.APIKeyUpdatedAt = "someone", &aiKeyStoredAt
 		}
@@ -144,8 +143,6 @@ func aiTestConfig(t *testing.T, ring *keyring.Ring) entity.AIConfig {
 		switch entity.AIPurposeCapability(purpose) {
 		case entity.AICapabilityCutout, entity.AICapabilityEdit, entity.AICapabilityThreed:
 			provider = entity.AIProviderFal
-		case entity.AICapabilityVector:
-			provider = entity.AIProviderRecraft
 		}
 		rt := entity.AIRoute{Purpose: purpose, Candidates: []entity.AIRouteCandidate{{Position: 1, ProviderKey: provider}}}
 		if purpose == entity.AIPurposeImageGenerate {
@@ -223,7 +220,7 @@ func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
 	cfg := aiTestConfig(t, cfgRing)
 	store := &aiCfgStore{Store: &aiprovtest.Store{}, cfg: cfg}
 	reg := registry.New(store, cfgRing, registry.EnvKeys{
-		OpenRouter: aiEnvOpenRouter, OpenRouterImages: aiEnvOpenRouter, Fal: aiEnvFal, Recraft: aiEnvRecraft,
+		OpenRouter: aiEnvOpenRouter, OpenRouterImages: aiEnvOpenRouter, Fal: aiEnvFal,
 	}, registry.WithClock(o.clock))
 	require.NoError(t, reg.Reload(context.Background()))
 
@@ -235,7 +232,7 @@ func newAIHarness(t *testing.T, o aiHarnessOpt) *aiHarness {
 	s := &Server{repo: repo}
 	s.SetDesignGenerationEnabled(o.designGeneration)
 	s.SetAIProviders(AIProvidersWiring{
-		Registry: reg, KeyRing: ring, RecraftViaOpenRouter: true,
+		Registry: reg, KeyRing: ring,
 		ProbeClient: &http.Client{Transport: pr}, Reconcile: o.reconcile,
 	})
 	return &aiHarness{s: s, ai: ai, reg: reg, store: store, cfg: cfg, ring: ring, probe: pr}
@@ -298,15 +295,15 @@ func aiViolationField(st *status.Status) string {
 // TestAiConfigJoinsStoreRegistryAndBadges.
 //
 // MUTATIONS IT CATCHES: key source / last4 read from the store row instead of the registry (fal would
-// say "db ···ster" while nothing answers); "set by" shown for a cleared slot (meshy); the admin key
+// say "db ···ster" while nothing answers); "set by" shown for a cleared slot (runblob); the admin key
 // source not derived (anthropic); the breaker or the badge dropped; a disabled custom model listed, or a
 // custom row duplicating a catalogue slug listed twice; the fallback of a single-candidate route
 // invented; any version / default / flag not passed through.
 func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	h := newAIHarness(t, aiHarnessOpt{designGeneration: true})
-	for i := 0; i < 3; i++ { // three transient faults open meshy's 3D breaker
-		h.reg.RecordFailure(entity.AIProviderMeshy, entity.AICapabilityThreed, registry.Admission{},
-			&aiprov.CallError{Provider: "meshy", Retryable: true, Err: fmt.Errorf("503")})
+	for i := 0; i < 3; i++ { // three transient faults open runblob's video breaker
+		h.reg.RecordFailure(entity.AIProviderRunblob, entity.AICapabilityVideo, registry.Admission{},
+			&aiprov.CallError{Provider: "runblob", Retryable: true, Err: fmt.Errorf("503")})
 	}
 	h.expectConfigRead(map[string]string{"fal": "out_of_credits"})
 
@@ -338,22 +335,24 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	require.Equal(t, "someone", fal.GetKeyUpdatedBy(), "a key is stored, if unreadable")
 	require.Equal(t, "out_of_credits", fal.GetFaultCode())
 
-	meshy := aiProvider(t, cfg, "meshy")
-	require.Equal(t, registry.BreakerOpen, meshy.GetBreaker())
-	require.Equal(t, registry.KeySourceNone, meshy.GetKeySource())
-	require.Empty(t, meshy.GetKeyUpdatedBy(), "a cleared slot is not «set by»")
-	require.Nil(t, meshy.GetKeyUpdatedAt())
-	require.False(t, meshy.GetAdminKeySupported())
+	runblob := aiProvider(t, cfg, "runblob")
+	require.Equal(t, registry.BreakerOpen, runblob.GetBreaker())
+	require.Equal(t, registry.KeySourceNone, runblob.GetKeySource())
+	require.Empty(t, runblob.GetKeyUpdatedBy(), "a cleared slot is not «set by»")
+	require.Nil(t, runblob.GetKeyUpdatedAt())
+	require.False(t, runblob.GetAdminKeySupported())
 
 	anthropic := aiProvider(t, cfg, "anthropic")
 	require.False(t, anthropic.GetEnabled())
 	require.Equal(t, registry.KeySourceDB, anthropic.GetAdminKeySource())
 	require.Equal(t, "9z9z", anthropic.GetAdminKeyLast4())
 
-	require.Equal(t, registry.KeySourceNone, aiProvider(t, cfg, "recraft").GetKeySource(),
-		"RECRAFT_API_KEY is set in this harness and is never a key source (B-33)")
-	require.Equal(t, "via openrouter", aiProvider(t, cfg, "recraft").GetNote())
 	require.Empty(t, aiProvider(t, cfg, "openrouter").GetNote())
+	// Recraft left with vector generation (2026-09-29): no provider carries the old «via openrouter».
+	for _, p := range cfg.GetProviders() {
+		require.NotEqual(t, "via openrouter", p.GetNote(), p.GetKey())
+		require.NotEqual(t, "recraft", p.GetKey())
+	}
 
 	// Models: the catalogue (priced where a rate is on file), then custom rows; no disabled row, no dup.
 	var slugs []string
@@ -378,7 +377,6 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	}
 	want = append(want, "x-ai/grok-9")
 	require.Equal(t, want, slugs)
-	require.Empty(t, aiProvider(t, cfg, "meshy").GetModels(), "no catalogue, no custom rows")
 
 	// Purposes: every one, in order, with its words and its route.
 	var purposes []string
@@ -393,9 +391,9 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	require.Equal(t, "", gen.GetPrimary().GetProviderKey())
 	require.Equal(t, "openai/gpt-image-2", gen.GetPrimary().GetModel())
 	require.Equal(t, "fal", gen.GetFallback().GetProviderKey())
-	vector := aiPurpose(t, cfg, entity.AIPurposeVector)
-	require.Equal(t, "recraft", vector.GetPrimary().GetProviderKey())
-	require.Nil(t, vector.GetFallback(), "absent = no fallback")
+	threed := aiPurpose(t, cfg, entity.AIPurposeThreed)
+	require.Equal(t, "fal", threed.GetPrimary().GetProviderKey())
+	require.Nil(t, threed.GetFallback(), "absent = no fallback")
 
 	require.Equal(t, "openrouter", cfg.GetDefaultChatProviderKey())
 	require.Equal(t, "openrouter", cfg.GetDefaultImageProviderKey())
@@ -408,7 +406,7 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 	// And no key, anywhere in it.
 	wire, err := protojson.Marshal(cfg)
 	require.NoError(t, err)
-	for _, secret := range []string{aiDBKeyOpenAI, aiDBAdminAnthro, aiEnvOpenRouter, aiEnvFal, aiEnvRecraft} {
+	for _, secret := range []string{aiDBKeyOpenAI, aiDBAdminAnthro, aiEnvOpenRouter, aiEnvFal} {
 		require.NotContains(t, string(wire), secret)
 	}
 }
@@ -416,8 +414,7 @@ func TestAiConfigJoinsStoreRegistryAndBadges(t *testing.T) {
 // TestAiConfigNotesWhenDesignGenerationIsOff.
 //
 // MUTATIONS IT CATCHES: the note keyed on the wrong flag; a chat-only provider told design generation
-// is off; "via openrouter" winning over "off" for recraft (with generation off nothing calls it at all);
-// master_key_present hard-wired to true.
+// is off; master_key_present hard-wired to true.
 func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 	disabled, err := keyring.New("")
 	require.NoError(t, err)
@@ -428,7 +425,7 @@ func TestAiConfigNotesWhenDesignGenerationIsOff(t *testing.T) {
 	require.NoError(t, err)
 	// runblob is in the design list since B-31 (it serves image): with generation off, an image.generate
 	// route to it is as idle as one to openrouter.
-	for _, k := range []string{"openai", "google", "openrouter", "apibost", "fal", "meshy", "recraft", "runblob"} {
+	for _, k := range []string{"openai", "google", "openrouter", "apibost", "fal", "runblob"} {
 		require.Equal(t, aiNoteDesignOff, aiProvider(t, cfg, k).GetNote(), k)
 	}
 	for _, k := range []string{"anthropic"} {
@@ -694,7 +691,6 @@ func TestAiConfigEffectiveModelIsTheSlugACandidateIsCalledWith(t *testing.T) {
 		entity.AIPurposeImageGenerate:    {"openai/gpt-image-2", "fal-ai/flux"},
 		entity.AIPurposeThreed:           {"", "-"},
 		entity.AIPurposeImageCutout:      {"", "-"},
-		entity.AIPurposeVector:           {"", "-"},
 	} {
 		require.Equal(t, want, aiEffective(t, cfg, purpose), purpose)
 	}
@@ -849,7 +845,7 @@ func TestAiProviderUnknownRefusedBeforeAnyWrite(t *testing.T) {
 			return err
 		}, codes.InvalidArgument, "kind"},
 		{"key: admin kind on a provider without a cost API", func(s *Server) error {
-			_, err := s.SetAiProviderKey(aiCtx(), &pb_admin.SetAiProviderKeyRequest{ProviderKey: "meshy", Kind: "admin", Value: "x"})
+			_, err := s.SetAiProviderKey(aiCtx(), &pb_admin.SetAiProviderKeyRequest{ProviderKey: "runblob", Kind: "admin", Value: "x"})
 			return err
 		}, codes.InvalidArgument, "kind"},
 		{"key: a key with a line break", func(s *Server) error {
@@ -873,7 +869,7 @@ func TestAiProviderUnknownRefusedBeforeAnyWrite(t *testing.T) {
 			return err
 		}, codes.NotFound, ""},
 		{"route: no primary", func(s *Server) error {
-			_, err := s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{Purpose: entity.AIPurposeVector})
+			_, err := s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{Purpose: entity.AIPurposeThreed})
 			return err
 		}, codes.InvalidArgument, "primary"},
 		{"route: capability mismatch on the primary", func(s *Server) error {
@@ -973,14 +969,14 @@ func TestAiRouteLeavesModelRecordingToTheStore(t *testing.T) {
 	// A slug the catalogue names, and a model-less route: the same single write, nothing else.
 	h2 := newAIHarness(t, aiHarnessOpt{})
 	h2.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeThreed, []entity.AIRouteCandidate{
-		{Position: 1, ProviderKey: "meshy", Model: ""},
+		{Position: 1, ProviderKey: "fal", Model: ""},
 	}, aiTestVersion, aiTestUser).Return(nil).Once()
 	h2.ai.EXPECT().SetRoute(mock.Anything, entity.AIPurposeImageGenerate, []entity.AIRouteCandidate{
 		{Position: 1, ProviderKey: "openrouter", Model: "openai/gpt-image-2"},
 	}, aiTestVersion, aiTestUser).Return(nil).Once()
 	h2.expectConfigRead(nil)
 	_, err = h2.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{Purpose: entity.AIPurposeThreed,
-		Primary: &pb_admin.AiRouteCandidate{ProviderKey: "meshy"}, ExpectedVersion: aiTestVersion})
+		Primary: &pb_admin.AiRouteCandidate{ProviderKey: "fal"}, ExpectedVersion: aiTestVersion})
 	require.NoError(t, err)
 	_, err = h2.s.SetAiRoute(aiCtx(), &pb_admin.SetAiRouteRequest{Purpose: entity.AIPurposeImageGenerate,
 		Primary: &pb_admin.AiRouteCandidate{ProviderKey: "openrouter", Model: "openai/gpt-image-2"}, ExpectedVersion: aiTestVersion})

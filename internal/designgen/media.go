@@ -57,7 +57,7 @@ func NewBucketSink(files dependency.FileStore, repo dependency.Repository) Media
 
 // nonRasterTypes is not an allowlist — it is the ROUTING. A raster gets its compressed variant,
 // its thumbnail and its blurhash derived from its pixels; a vector and a model have no pixels, so
-// they take the single-object path, which checks the SVG through recraft.InspectSVG before storing
+// they take the single-object path, which checks the SVG through svgcheck.InspectSVG before storing
 // a byte of it. Which door a type goes through is this package's business; whether the bucket can
 // keep it at all is NOT.
 var nonRasterTypes = map[string]struct{}{
