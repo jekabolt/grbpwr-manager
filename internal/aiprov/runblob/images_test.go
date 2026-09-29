@@ -172,13 +172,24 @@ func TestImagesSurface(t *testing.T) {
 	}
 	require.True(t, NewImages(New(Config{KeyFunc: key("k")})).Enabled())
 
-	var fromCatalogue []string
+	// The panel's image rows (pricing) and the transport's Serves are one list: every served slug is
+	// offered, and every offered image slug is served — except the chatgpt-images family, which lane H5
+	// wires into this transport (listed ahead of it; pendingH5 empties when H5 lands). Video rows belong
+	// to the video route, not this transport.
+	pendingH5 := map[string]bool{"chatgpt-images/gpt-5-2": true, "chatgpt-images/chatgpt-2.5": true}
+	offered := map[string]bool{}
 	for _, m := range pricing.Catalogue(entity.AIProviderRunblob) {
-		fromCatalogue = append(fromCatalogue, m.Slug)
+		if m.Kind != pricing.KindImage {
+			continue
+		}
+		offered[m.Slug] = true
+		require.True(t, tr.Serves(m.Slug) || pendingH5[m.Slug], "catalogue image row %q is not served by the transport", m.Slug)
 	}
 	got := ImageSlugs()
-	require.ElementsMatch(t, fromCatalogue, got, "the panel's list (pricing) and the transport's Serves are one list")
-	require.Len(t, got, 8)
+	for _, s := range got {
+		require.True(t, offered[s], "served slug %q is missing from the catalogue", s)
+	}
+	require.GreaterOrEqual(t, len(got), 8)
 }
 
 // ─── the happy path, per family ──────────────────────────────────────────────────────────────────

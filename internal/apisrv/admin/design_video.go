@@ -59,7 +59,8 @@ func (s *Server) designVideoRunEstimate(kind string, outputs int) (decimal.NullD
 }
 
 // designRefuseUnworkableVideo — the shape of a video run, on EFFECTIVE params (a rerun that cannot work
-// does not work however it was spoken): one source picture, words, the one duration, a Kling slug.
+// does not work however it was spoken): one source picture, words, the one duration, a runblob video
+// slug (designgen.IsVideoModel: kling_*, the Kling omni models, the four Seedance models — H5).
 func designRefuseUnworkableVideo(ask string, params *pb_common.DesignRunParams) error {
 	v := params.GetVideo()
 	if v.GetSourceMediaId() <= 0 {
@@ -94,17 +95,18 @@ func designRefuseUnworkableVideo(ask string, params *pb_common.DesignRunParams) 
 				"Nothing was reserved and nothing was charged", d, designgen.VideoDurationSeconds),
 			map[string]string{"duration": strconv.Itoa(int(d))})
 	}
-	if m := strings.TrimSpace(v.GetModel()); m != "" && !strings.HasPrefix(m, "kling_") {
+	if m := strings.TrimSpace(v.GetModel()); m != "" && !designgen.IsVideoModel(m) {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeUnknownOption,
-			fmt.Sprintf("params.video.model %q is not a Kling video slug (kling_*) — leave it empty and the "+
-				"route row's model is used. Nothing was reserved and nothing was charged", m),
+			fmt.Sprintf("params.video.model %q is not a runblob video model (known: %s) — leave it empty and "+
+				"the route row's model is used. Nothing was reserved and nothing was charged", m,
+				designgen.VideoModelsKnown()),
 			map[string]string{"model": m})
 	}
 	return nil
 }
 
 // designFreezeVideoModel — THE SLUG THE CLIP IS BOUGHT WITH IS WRITTEN INTO THE RUN before the money,
-// like an image run's engine (designFreezeImageModel): the route row's kling_* slug, else Kling's own
+// like an image run's engine (designFreezeImageModel): the route row's video slug, else Kling's own
 // default. A stated slug (a rerun of a frozen run, a client that names one) stands. The worker sends the
 // frozen slug (job.VideoModel), so the history says what was bought even after the panel's row moves.
 func (s *Server) designFreezeVideoModel(kind string, params *pb_common.DesignRunParams) {

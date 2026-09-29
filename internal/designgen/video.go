@@ -10,6 +10,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +30,9 @@ import (
 // a media of the card (kind=video, purpose video.generate, provider runblob).
 //
 // IT IS THE SAME TWO-HALVED SHAPE AS THE 3D ROUTES, because it is the same problem: Execute SUBMITS
-// (one POST /v1/kling/generate, answered at once with an id and — unlike fal or Meshy — THE PRICE),
+// (one POST to the slug's family — /v1/kling/generate, /v1/kling/o1-video/generate,
+// /v1/kling/o3-video/generate or /v1/seedance/generate (H5, videoFamilyOf) — answered at once with an
+// id and, on the Kling families — unlike fal or Meshy — THE PRICE),
 // closes the attempt `accepted` and returns; Collect is a FREE status read and, on `completed`, the
 // download. A worker that dies during the minutes Kling takes resumes by the id and buys nothing twice.
 //
@@ -48,16 +52,20 @@ import (
 // no price (the store's rule: the collect books the charge), and a collect after a restart holds only
 // the stored request id — so the id is stored WITH its price, `kling#<uuid>#0.2900`, exactly as a fal
 // locator carries the slug a build was bought under: what a job cost is a property of the request, not
-// of anything that outlives it.
+// of anything that outlives it. Since H5 the first field is the FAMILY the job lives on (kling |
+// kling-o1 | kling-o3 | seedance): the status read goes to the family's own path, and a locator
+// written before H5 (`kling#…`) is read exactly as it was written.
 //
 // THE RESERVE is RUNBLOB_VIDEO_CEILING_USD (Config.VideoCeiling, default 1.50): what the door holds
 // for one clip. runblob's price is the truth; a price above the reserve is LOGGED at the submit, never
 // refused — after the 201 the money has moved (fal's booked-vs-reserved rule).
+//
+// ⚠ SEEDANCE STATES NO PRICE AT SUBMIT (seedance.json: the 201 is {task_uuid, model, status, output,
+// error}; the money is a per-second hold settled after the result): its clip is booked with no number,
+// exactly as Kling's «calculating» is, and the owner reconciles it against runblob's cabinet.
 
 // Constants of the route.
 const (
-	// VideoFamily — the runblob path family the clip is bought on (POST /v1/kling/generate).
-	VideoFamily = runblob.FamilyKling
 	// DefaultVideoModel — Kling's own default and the one the seeded route row ('' model) means.
 	DefaultVideoModel = "kling_2.5_turbo"
 	// VideoDurationSeconds — the clip length this route sells: five seconds, the cheapest Kling tier.
@@ -81,6 +89,79 @@ type VideoRoute struct {
 	Model      string
 	CeilingUSD decimal.Decimal
 }
+
+// ─── the families (H5): the slug decides the path, the body and the locator's tag ───
+
+// Video slugs that are NOT on the main Kling endpoint (runblob-specs/kling.json endpoints[1], [2];
+// runblob-specs/seedance.json models).
+const (
+	VideoModelKlingO1          = "kling_o1"
+	VideoModelKlingO3          = "kling_o3"
+	VideoModelKlingO3Pro       = "kling_o3_pro"
+	VideoModelSeedanceMini     = "seedance-2.0-mini"
+	VideoModelSeedanceFace     = "doubao-seedance-2.0-face"
+	VideoModelSeedanceFastFace = "doubao-seedance-2.0-fast-face"
+	VideoModelSeedance25Face   = "doubao-seedance-2.5-face"
+)
+
+// videoFamily — one runblob video family: the locator's tag and the adapter's path.
+type videoFamily struct {
+	tag  string
+	path string
+}
+
+var (
+	videoFamKling    = videoFamily{tag: "kling", path: runblob.FamilyKling}
+	videoFamKlingO1  = videoFamily{tag: "kling-o1", path: runblob.PathKlingO1Video}
+	videoFamKlingO3  = videoFamily{tag: "kling-o3", path: runblob.PathKlingO3Video}
+	videoFamSeedance = videoFamily{tag: "seedance", path: runblob.PathSeedance}
+	// videoFamilies — every family a stored locator may name.
+	videoFamilies = []videoFamily{videoFamKling, videoFamKlingO1, videoFamKlingO3, videoFamSeedance}
+
+	// klingMainModel — a slug of the main endpoint: kling_ and a version digit (kling_2.5_turbo,
+	// kling_3_pro, …). kling_o* is NOT here: the omni models live on their own endpoints, and an omni
+	// slug nobody documents (kling_o5) must be refused, not sent to the main endpoint.
+	klingMainModel = regexp.MustCompile(`^kling_[0-9]`)
+
+	// seedanceModels — the four documented Seedance models (a CLOSED list: the media field differs
+	// by model — Mini's first_frame_url, the Face models' image_with_roles — so an unknown one would
+	// be a body we cannot build).
+	seedanceModels = map[string]bool{
+		VideoModelSeedanceMini: true, VideoModelSeedanceFace: true,
+		VideoModelSeedanceFastFace: true, VideoModelSeedance25Face: true,
+	}
+
+	// videoModelsKnown — the refusal sentence's list.
+	videoModelsKnown = "kling_<version> (kling_2.5_turbo, kling_3_pro, … — the 14 of the main endpoint), " +
+		VideoModelKlingO1 + ", " + VideoModelKlingO3 + ", " + VideoModelKlingO3Pro + ", " +
+		VideoModelSeedanceMini + ", " + VideoModelSeedanceFace + ", " + VideoModelSeedanceFastFace + ", " +
+		VideoModelSeedance25Face
+)
+
+// videoFamilyOf — the family a slug is bought on; false for a slug runblob does not serve as video.
+func videoFamilyOf(model string) (videoFamily, bool) {
+	switch model = strings.TrimSpace(model); {
+	case model == VideoModelKlingO1:
+		return videoFamKlingO1, true
+	case model == VideoModelKlingO3, model == VideoModelKlingO3Pro:
+		return videoFamKlingO3, true
+	case seedanceModels[model]:
+		return videoFamSeedance, true
+	case klingMainModel.MatchString(model):
+		return videoFamKling, true
+	}
+	return videoFamily{}, false
+}
+
+// IsVideoModel — whether the video route can buy a clip with this slug (the door asks it before it
+// reserves anything, so a slug the worker would refuse never takes the day's money).
+func IsVideoModel(model string) bool {
+	_, ok := videoFamilyOf(model)
+	return ok
+}
+
+// VideoModelsKnown — the slugs IsVideoModel accepts, as a sentence names them.
+func VideoModelsKnown() string { return videoModelsKnown }
 
 // videoTransport — what the route needs of the runblob adapter, and nothing more: the key question
 // and the two verbs (the submit that spends, the status read that is free). *runblob.Client is the
@@ -157,7 +238,8 @@ func (p *videoProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 	}
 	// THE SUBMIT IS THE PAYMENT, SO IT OPENS THE LEDGER ROW (B-07).
 	h := job.beginCall(ctx, entity.AIProviderRunblob, model, 1)
-	sub, serr := p.c.Submit(ctx, VideoFamily, body)
+	fam, _ := videoFamilyOf(model) // body() refused every slug videoFamilyOf does not know
+	sub, serr := p.c.Submit(ctx, fam.path, body)
 	if serr != nil {
 		if sub != nil && sub.ID != "" {
 			// ⚠ ACCEPTED, WITH AN UNREADABLE PRICE (the adapter's partial answer): the job IS running
@@ -166,14 +248,14 @@ func (p *videoProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 			slog.Default().WarnContext(ctx, "video: runblob accepted the clip with a price this "+
 				"deployment could not read; the job is collected and booked with no number",
 				slog.Int("run_id", job.RunID), slog.String("generation_id", sub.ID), slog.String("err", serr.Error()))
-			locator := videoLocator(sub.ID, decimal.NullDecimal{})
+			locator := videoLocator(fam, sub.ID, decimal.NullDecimal{})
 			job.finishCall(ctx, h, acceptedEnd(locator))
 			return &Outcome{RequestID: locator, Model: model, Pending: true, Provider: entity.AIProviderRunblob}, nil
 		}
 		job.finishCall(ctx, h, runblobSubmitEnd(serr))
 		return nil, videoSubmitError(serr)
 	}
-	locator := videoLocator(sub.ID, sub.PriceUSD)
+	locator := videoLocator(fam, sub.ID, sub.PriceUSD)
 	end := acceptedEnd(locator)
 	if sub.PriceUSD.Valid {
 		// THEIR NUMBER, AT SUBMIT: the provider's own price is on the ledger row from the moment the
@@ -187,8 +269,21 @@ func (p *videoProvider) Execute(ctx context.Context, job Job) (*Outcome, error) 
 	return &Outcome{RequestID: locator, Model: model, Pending: true, Provider: entity.AIProviderRunblob}, nil
 }
 
-// body — the request as Kling documents it (runblob-specs/kling.json): prompt, model, duration,
-// image_url (the source picture's public url), aspect_ratio when the picture's shape is known.
+// body — the request as the slug's family documents it, the source picture always as a public url:
+//
+//	kling     (kling.json endpoints[0]) prompt, model, image_url, duration "5" | 5 (Kling 3), aspect_ratio;
+//	kling-o1  (endpoints[1]) prompt, images_urls [the picture], duration "5", aspect_ratio — NO model:
+//	          the endpoint IS kling_o1;
+//	kling-o3  (endpoints[2]) prompt, model, images_url [the picture] (the spec's own spelling, not
+//	          O1's), duration "5", aspect_ratio;
+//	seedance  (seedance.json) model, prompt, resolution 720p (the documented default, sent so the
+//	          per-second rate is the one we meant), duration 5 (an integer), the picture as the FIRST
+//	          FRAME — first_frame_url on Mini, image_with_roles [{url, role: first_frame}] on the Face
+//	          models — and aspect_ratio: the picture's on Mini and 2.0, `adaptive` on 2.5 (its rule:
+//	          frame roles force adaptive).
+//
+// Single-picture reference mode on O1/O3 (images_url[s]), not their start-end mode: start-end needs
+// BOTH frames, and this route has one picture.
 //
 // ⚠ EVERY REFUSAL HERE IS A CallError THAT IS NOT ENGAGED AND NOT RETRYABLE (provider_bad_request,
 // terminal, free): the snapshot is frozen, so the next pass would meet the very same input.
@@ -216,22 +311,66 @@ func (p *videoProvider) body(job Job) (map[string]any, string, error) {
 		return nil, "", refuse(fmt.Sprintf("the prompt is %d characters; Kling takes at most %d", n, VideoMaxPromptRunes))
 	}
 	model := p.modelFor(job)
+	fam, ok := videoFamilyOf(model)
+	if !ok {
+		return nil, "", refuse(fmt.Sprintf("%q is not a runblob video model (known: %s)", truncateRunes(model, 60), videoModelsKnown))
+	}
 	seconds := job.VideoDuration
 	if seconds <= 0 {
 		seconds = VideoDurationSeconds
 	}
-	body := map[string]any{
-		"prompt":    prompt,
-		"model":     model,
-		"image_url": source,
+	ar := strings.TrimSpace(job.VideoAspectRatio)
+	body := map[string]any{"prompt": prompt}
+	switch fam {
+	case videoFamKlingO1:
+		body["images_urls"] = []string{source}
+		body["duration"] = strconv.Itoa(seconds)
+	case videoFamKlingO3:
+		body["model"] = model
+		body["images_url"] = []string{source}
+		body["duration"] = strconv.Itoa(seconds)
+	case videoFamSeedance:
+		if n := len([]rune(prompt)); n < seedanceMinPromptRunes && model != VideoModelSeedance25Face {
+			return nil, "", refuse(fmt.Sprintf("%s takes a prompt of %d–20000 characters, and this one has %d",
+				model, seedanceMinPromptRunes, n))
+		}
+		body["model"] = model
+		body["resolution"] = seedanceResolution
+		body["duration"] = seconds
+		if model == VideoModelSeedanceMini {
+			body["first_frame_url"] = source
+		} else {
+			body["image_with_roles"] = []map[string]string{{"url": source, "role": "first_frame"}}
+		}
+		if model == VideoModelSeedance25Face {
+			ar = "adaptive"
+		}
+	default:
+		body["model"] = model
+		body["image_url"] = source
 		// «Kling 3 models: integer 3-15. Other models: string "5" or "10"» — the spec's own
 		// two spellings of one number. UNVERIFIED (G-06) whether kling_3 also takes the string.
-		"duration": videoDurationWire(model, seconds),
+		body["duration"] = videoDurationWire(model, seconds)
 	}
-	if ar := strings.TrimSpace(job.VideoAspectRatio); ar != "" {
+	if ar != "" {
 		body["aspect_ratio"] = ar
 	}
 	return body, model, nil
+}
+
+const (
+	// seedanceMinPromptRunes — Mini and 2.0: «3–20,000 characters» (2.5 has no minimum).
+	seedanceMinPromptRunes = 3
+	// seedanceResolution — the documented default, which every Seedance model takes.
+	seedanceResolution = "720p"
+)
+
+// truncateRunes cuts s to at most n runes for a sentence.
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 // videoDurationWire — the duration in the spelling the model family documents.
@@ -294,13 +433,13 @@ func (p *videoProvider) Collect(ctx context.Context, job Job, requestID string) 
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
 	}
-	id, price := splitVideoLocator(requestID)
-	if id == "" {
-		err := fmt.Errorf("%w: the stored locator %q names no generation id", errVideoNoResult, requestID)
+	fam, id, price, ok := splitVideoLocator(requestID)
+	if !ok || id == "" {
+		err := fmt.Errorf("%w: the stored locator %q names no video family and generation id", errVideoNoResult, requestID)
 		job.priceAcceptedIfSet(ctx, videoCollectEnd(nil, err, decimal.NullDecimal{}))
 		return nil, err
 	}
-	g, err := p.c.Status(ctx, VideoFamily, id)
+	g, err := p.c.Status(ctx, fam.path, id)
 	if err != nil {
 		// A transient read (retryable by the adapter's word) writes nothing and the row stays
 		// `accepted`; a terminal one (the id unknown to runblob, a key rejected on the read) is money
@@ -468,36 +607,45 @@ func httpFetchVideo(ctx context.Context, rawURL string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ─── the locator: `kling#<uuid>#<price>` ───
+// ─── the locator: `<family>#<uuid>#<price>` ───
 
-// videoLocator — the accepted request as the attempt row stores it: the family, the generation id
-// and the price it was bought at ("" when runblob said «calculating» or nothing).
-func videoLocator(id string, price decimal.NullDecimal) string {
-	loc := VideoFamily + videoLocatorSep + strings.TrimSpace(id)
+// videoLocator — the accepted request as the attempt row stores it: the family's tag (kling |
+// kling-o1 | kling-o3 | seedance), the generation id and the price it was bought at (absent when
+// runblob said «calculating» or nothing — Seedance never says one).
+func videoLocator(fam videoFamily, id string, price decimal.NullDecimal) string {
+	loc := fam.tag + videoLocatorSep + strings.TrimSpace(id)
 	if price.Valid {
 		loc += videoLocatorSep + price.Decimal.String()
 	}
 	return loc
 }
 
-// splitVideoLocator — (id, price) of a stored locator; a bare uuid (no family, no price) is read as
-// the id alone, so a row written by hand still collects.
-func splitVideoLocator(s string) (string, decimal.NullDecimal) {
+// splitVideoLocator — (family, id, price) of a stored locator. A locator written before H5 is
+// `kling#<id>#<price>` — the same shape with the main Kling family, read as it was written; a bare
+// uuid (no family, no price) is read as a main-Kling id, so a row written by hand still collects. A
+// family tag nobody knows is ok=false: its path cannot be guessed, and guessing would read another
+// family's generation.
+func splitVideoLocator(s string) (videoFamily, string, decimal.NullDecimal, bool) {
 	parts := strings.Split(strings.TrimSpace(s), videoLocatorSep)
-	var id string
 	var price decimal.NullDecimal
-	switch len(parts) {
-	case 1:
-		id = parts[0]
-	case 2:
-		id = parts[1]
-	default:
-		id = parts[1]
+	if len(parts) == 1 {
+		return videoFamKling, strings.TrimSpace(parts[0]), price, true
+	}
+	var fam videoFamily
+	for _, f := range videoFamilies {
+		if strings.TrimSpace(parts[0]) == f.tag {
+			fam = f
+		}
+	}
+	if fam.tag == "" {
+		return videoFamily{}, "", price, false
+	}
+	if len(parts) > 2 {
 		if d, err := decimal.NewFromString(parts[2]); err == nil && d.IsPositive() {
 			price = decimal.NullDecimal{Decimal: d, Valid: true}
 		}
 	}
-	return strings.TrimSpace(id), price
+	return fam, strings.TrimSpace(parts[1]), price, true
 }
 
 // logVideoCeilingBreach — the submit's price against what the door reserved (RUNBLOB_VIDEO_CEILING_USD
@@ -533,8 +681,8 @@ func nearestVideoAspect(w, h int) string {
 }
 
 // VideoRouteFunc — the live `video.generate` route as ONE function for the door and the worker
-// (app.go hands it to both, B-32): the head row's model (the owner's kling_* slug, or "" = Kling's
-// own default) and this deployment's reserve per clip (RUNBLOB_VIDEO_CEILING_USD). Read at every call,
+// (app.go hands it to both, B-32): the head row's model (the owner's runblob video slug — IsVideoModel —
+// or "" = Kling's own default) and this deployment's reserve per clip (RUNBLOB_VIDEO_CEILING_USD). Read at every call,
 // so a slug moved in the panel reaches the next submit and the next door read together.
 func VideoRouteFunc(reg *registry.Registry, ceiling decimal.Decimal) func() VideoRoute {
 	return func() VideoRoute {

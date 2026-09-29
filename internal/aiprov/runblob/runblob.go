@@ -33,8 +33,11 @@
 // task_uuid (Nano Banana), status:"pending", price:"0.2900" | "calculating", description}; GET
 // /v1/{path}/generations/{id} → {status, video_url | image_url | result_image_url, model, message,
 // error}; 401 {"detail":"Invalid API key"}; 402 {"detail":"INSUFFICIENT_CREDITS"}; statuses pending |
-// processing | completed | failed, a failed job REFUNDED. Everything not on those pages is marked
-// UNVERIFIED (G-06) where it is used, and G-06 checks it live with the owner's key.
+// processing | completed | failed, a failed job REFUNDED. Since H5 (2026-09-29) also ChatGPT Images
+// (runblob-specs/chatgpt-images.md: task_uuid, result_image_url), Kling O1/O3 video (kling.json
+// endpoints[1], [2]) and Seedance (seedance.json: task_uuid, a 201 with NO price, output.video_urls,
+// errors as {code, message}). Everything not on those pages is marked UNVERIFIED (G-06) where it is
+// used, and G-06 checks it live with the owner's key.
 package runblob
 
 import (
@@ -66,7 +69,8 @@ const (
 	// answer's id is generation_id, its result video_url.
 	FamilyKling = "kling"
 	// FamilyVeo — UNVERIFIED (G-06): named on runblob's landing page (veo-3-fast / veo-3-quality,
-	// POST /v1/veo/generate), absent from the docs nav on 2026-09-27.
+	// POST /v1/veo/generate), absent from the docs nav on 2026-09-27 AND from the docs' own search
+	// index on 2026-09-29 (catalogue/runblob.json): nothing routes to it.
 	FamilyVeo = "veo"
 	// PathGemini — Nano Banana pictures (the docs page read 2026-09-28): POST /v1/gemini/generate
 	// answers {task_uuid, status, price}; GET /v1/gemini/generations/{task_uuid} answers
@@ -76,10 +80,22 @@ const (
 	// on the submit, image_url on the status read.
 	PathKlingO1Photo = "kling/o1-photo"
 	PathKlingO3Photo = "kling/o3-photo"
+	// PathKlingO1Video / PathKlingO3Video — Kling omni video (runblob-specs/kling.json endpoints[1],
+	// [2]): generation_id on the submit, video_url on the status read. O1 takes no `model` (the
+	// endpoint IS kling_o1); O3 takes model kling_o3 | kling_o3_pro.
+	PathKlingO1Video = "kling/o1-video"
+	PathKlingO3Video = "kling/o3-video"
+	// PathSeedance — Seedance video (runblob-specs/seedance.json; the docs page read 2026-09-29):
+	// task_uuid on the submit (and NO price in the 201), output.video_urls[] on the status read.
+	PathSeedance = "seedance"
+	// PathChatGPTImages — ChatGPT Images pictures (runblob-specs/chatgpt-images.md, read 2026-09-29):
+	// task_uuid + price on the submit, result_image_url on the status read, like Nano Banana.
+	PathChatGPTImages = "chatgpt-images"
 )
 
 // knownPaths — the closed list, in the order the refusal sentence names it.
-var knownPaths = []string{PathGemini, FamilyKling, PathKlingO1Photo, PathKlingO3Photo, FamilyVeo}
+var knownPaths = []string{PathGemini, FamilyKling, PathKlingO1Photo, PathKlingO3Photo, FamilyVeo,
+	PathKlingO1Video, PathKlingO3Video, PathSeedance, PathChatGPTImages}
 
 const (
 	// MaxResponseBytes caps how much of a response is read (the chat transports' number): every answer
@@ -106,10 +122,11 @@ var ErrGenerationNotFound = errors.New("no such generation")
 
 var (
 	// pathShape is the character set of a family path that cannot climb out of /v1/: one segment of
-	// lower-case letters, digits and underscores, optionally ONE sub-segment that may also carry a
-	// hyphen (o1-photo) — no dot, no query, no percent, no empty segment. Checked BEFORE the closed
+	// lower-case letters, digits and underscores joined by single inner hyphens (chatgpt-images),
+	// optionally ONE sub-segment that may also carry a hyphen (o1-photo) — no dot, no query, no
+	// percent, no empty segment, no leading or trailing hyphen on the first. Checked BEFORE the closed
 	// list, so a path added to the list later with a bad spelling is still refused, not sent.
-	pathShape = regexp.MustCompile(`^[a-z0-9_]+(/[a-z0-9_-]+)?$`)
+	pathShape = regexp.MustCompile(`^[a-z0-9_]+(-[a-z0-9_]+)*(/[a-z0-9_-]+)?$`)
 	// uuidShape is a generation id (the probe's zero uuid is this shape). UNVERIFIED (G-06): that
 	// runblob's generation_id is a uuid — the docs name the field, not its format; the probe was built
 	// on the same assumption.
@@ -205,7 +222,8 @@ func (c *Client) key() string {
 
 // Submission is an accepted submit: what was bought and how to find it again.
 //
-//	ID           generation_id (Kling, veo) or task_uuid (Nano Banana) — a uuid, the id Status reads;
+//	ID           generation_id (Kling) or task_uuid (Nano Banana, ChatGPT Images, Seedance) — a
+//	             uuid, the id Status reads;
 //	Status       the provider's word at submit time ("pending");
 //	PriceUSD     the provider's price for THIS generation, in USD — what a caller books as
 //	             entity.AICostProvider. NULL when the provider did not state it ("calculating",
@@ -367,12 +385,13 @@ const (
 // Generation is one status read.
 //
 //	Status    the provider's word — pending | processing | completed | failed;
-//	VideoURL  a video result, once there is one (video_url);
+//	VideoURL  a video result, once there is one — video_url (Kling), or the FIRST of
+//	          output.video_urls (Seedance: one task is one clip, the list is its shape only);
 //	ImageURL  a picture result, once there is one — image_url (Kling photo) or result_image_url (Nano
 //	          Banana), whichever the family answers with; ResultURL picks the one that is set;
 //	Model     the model that ran it (kling_2.5_turbo, kling-o1-photo, …);
 //	Message   the provider's `message`: the error CODE of a failed job (TIMEOUT,
-//	          CONTENT_POLICY_VIOLATION, …) on Nano Banana; null when none. Bounded, key-scrubbed;
+//	          CONTENT_POLICY_VIOLATION, OPENAI_DECLINED, …); null when none. Bounded, key-scrubbed;
 //	Error     the provider's `error` text (the Kling video page's field), bounded and scrubbed of the
 //	          key; "" when none. Failure joins the two for a sentence.
 type Generation struct {
@@ -402,15 +421,30 @@ func (g *Generation) Failure() string {
 }
 
 // generationResponse is the documented status body across the families. error and message are RAW:
-// null, a string, or (UNVERIFIED (G-06)) an object — errorText reads each without failing the envelope.
+// null, a string, or an object (Seedance documents {code, message}) — errorText reads each without
+// failing the envelope. output is RAW too: Seedance's {video_urls, last_frame_url} | null, read by
+// outputVideoURL without failing the envelope on any other shape.
 type generationResponse struct {
 	Status         string          `json:"status"`
 	VideoURL       string          `json:"video_url"`
 	ImageURL       string          `json:"image_url"`
 	ResultImageURL string          `json:"result_image_url"`
+	Output         json.RawMessage `json:"output"`
 	Model          string          `json:"model"`
 	Message        json.RawMessage `json:"message"`
 	Error          json.RawMessage `json:"error"`
+}
+
+// outputVideoURL — the first non-blank entry of Seedance's output.video_urls, "" for null or any
+// other shape.
+func outputVideoURL(raw json.RawMessage) string {
+	var out struct {
+		VideoURLs []string `json:"video_urls"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &out) != nil {
+		return ""
+	}
+	return firstNonBlank(out.VideoURLs...)
 }
 
 // Status reads generation id of the family at path: GET {base}/v1/{path}/generations/{id}.
@@ -444,7 +478,7 @@ func (c *Client) Status(ctx context.Context, path, id string) (*Generation, erro
 	}
 	g := &Generation{
 		Status:   strings.TrimSpace(gr.Status),
-		VideoURL: strings.TrimSpace(gr.VideoURL),
+		VideoURL: firstNonBlank(gr.VideoURL, outputVideoURL(gr.Output)),
 		ImageURL: firstNonBlank(gr.ImageURL, gr.ResultImageURL),
 		Model:    strings.TrimSpace(gr.Model),
 		Message:  errorText(gr.Message, key),
@@ -584,8 +618,8 @@ func fail(code string, status int, engaged, retryable bool, err error) *aiprov.C
 // the wire, so a typo or an injected "kling/../x" never carries the key anywhere.
 func validPath(path string) error {
 	if !pathShape.MatchString(path) {
-		return fmt.Errorf("%s: a family path is lower-case letters, digits and underscores, with at most one "+
-			"/sub-segment, got %q", provider, truncate(path, 40))
+		return fmt.Errorf("%s: a family path is lower-case letters, digits, underscores and inner hyphens, with "+
+			"at most one /sub-segment, got %q", provider, truncate(path, 40))
 	}
 	for _, known := range knownPaths {
 		if path == known {
@@ -611,9 +645,9 @@ func readCapped(r io.Reader, limit int64, what string) ([]byte, error) {
 }
 
 // apiErrorMessage pulls the provider's words out of an error body: `detail` as a string (documented:
-// {"detail":"Invalid API key"}) or as a list of {msg} (UNVERIFIED (G-06): the FastAPI validation shape
-// a 422 is likely to carry), else `error.message` / `message`, else the raw body — always bounded and
-// scrubbed of the key.
+// {"detail":"Invalid API key"}), as an object {code, message} (Seedance's documented shape), or as a
+// list of {msg} (UNVERIFIED (G-06): the FastAPI validation shape a 422 is likely to carry), else
+// `error.message` / `message`, else the raw body — always bounded and scrubbed of the key.
 func apiErrorMessage(body []byte, key string) string {
 	var env struct {
 		Detail  json.RawMessage `json:"detail"`
@@ -636,7 +670,8 @@ func apiErrorMessage(body []byte, key string) string {
 	return boundedMessage(string(body), key)
 }
 
-// detailText reads `detail`: a string, or a list whose members carry `msg` (joined with "; ").
+// detailText reads `detail`: a string, an object {code, message} ("CODE: message"), or a list whose
+// members carry `msg` (joined with "; ").
 func detailText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -644,6 +679,13 @@ func detailText(raw json.RawMessage) string {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		return strings.TrimSpace(s)
+	}
+	var obj struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return codeAndMessage(obj.Code, obj.Message)
 	}
 	var list []struct {
 		Msg string `json:"msg"`
@@ -672,11 +714,14 @@ func errorText(raw json.RawMessage, key string) string {
 		return boundedMessage(str, key)
 	}
 	var obj struct {
+		Code    string          `json:"code"`
 		Message string          `json:"message"`
 		Detail  json.RawMessage `json:"detail"`
 	}
 	if json.Unmarshal(raw, &obj) == nil {
-		if m := strings.TrimSpace(obj.Message); m != "" {
+		// message first (the sentence the provider wrote), the code when that is all there is
+		// (Seedance's {code, message} with a blank message).
+		if m := firstNonBlank(obj.Message, obj.Code); m != "" {
 			return boundedMessage(m, key)
 		}
 		if m := detailText(obj.Detail); m != "" {
@@ -684,6 +729,19 @@ func errorText(raw json.RawMessage, key string) string {
 		}
 	}
 	return boundedMessage(s, key)
+}
+
+// codeAndMessage joins an error object's code and message ("GENERATION_FAILED: …"); either alone
+// stands alone; "" when both are blank.
+func codeAndMessage(code, msg string) string {
+	code, msg = strings.TrimSpace(code), strings.TrimSpace(msg)
+	switch {
+	case code != "" && msg != "":
+		return code + ": " + msg
+	case code != "":
+		return code
+	}
+	return msg
 }
 
 // boundedMessage is the provider's text as a sentence may carry it: the key scrubbed FIRST (a cut made

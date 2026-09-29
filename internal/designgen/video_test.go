@@ -36,6 +36,8 @@ type fakeVideoTransport struct {
 	submits  []map[string]any
 	families []string
 	statusOf []string
+	// statusFamilies — the family path of every status read, in order.
+	statusFamilies []string
 	// submitReply answers every Submit; nil = accepted at $0.29.
 	submitReply func(body map[string]any) (*runblob.Submission, error)
 	// statusReply answers every Status; nil = completed with a clip url.
@@ -56,9 +58,10 @@ func (f *fakeVideoTransport) Submit(_ context.Context, family string, body map[s
 		PriceUSD: decimal.NewNullDecimal(decimal.RequireFromString("0.29")), Engaged: true}, nil
 }
 
-func (f *fakeVideoTransport) Status(_ context.Context, _ string, id string) (*runblob.Generation, error) {
+func (f *fakeVideoTransport) Status(_ context.Context, family string, id string) (*runblob.Generation, error) {
 	f.mu.Lock()
 	f.statusOf = append(f.statusOf, id)
+	f.statusFamilies = append(f.statusFamilies, family)
 	f.mu.Unlock()
 	if f.statusReply != nil {
 		return f.statusReply(id)
@@ -379,16 +382,22 @@ func TestACompletedJobWithNoClipIsChargedAndUnknown(t *testing.T) {
 // (and a bare uuid still collects); the nearest Kling ratio; the two spellings of the duration.
 func TestVideoLocatorAndAspectAndDuration(t *testing.T) {
 	price := decimal.NewNullDecimal(decimal.RequireFromString("0.29"))
-	loc := videoLocator(videoGenID, price)
+	loc := videoLocator(videoFamKling, videoGenID, price)
 	require.Equal(t, "kling#"+videoGenID+"#0.29", loc)
 	require.LessOrEqual(t, len(loc), providerRequestIDMax, "fits design_run_attempt.provider_request_id")
-	id, p := splitVideoLocator(loc)
+	fam, id, p, ok := splitVideoLocator(loc)
+	require.True(t, ok)
+	require.Equal(t, videoFamKling, fam)
 	require.Equal(t, videoGenID, id)
 	require.True(t, p.Valid && p.Decimal.Equal(price.Decimal))
-	id, p = splitVideoLocator("kling#" + videoGenID)
+	fam, id, p, ok = splitVideoLocator("kling#" + videoGenID)
+	require.True(t, ok)
+	require.Equal(t, videoFamKling, fam)
 	require.Equal(t, videoGenID, id)
 	require.False(t, p.Valid, "«calculating» at submit: no price to book")
-	id, _ = splitVideoLocator(videoGenID)
+	fam, id, _, ok = splitVideoLocator(videoGenID)
+	require.True(t, ok)
+	require.Equal(t, videoFamKling, fam, "a bare uuid is a main-Kling id")
 	require.Equal(t, videoGenID, id, "a bare uuid is the id")
 
 	for _, c := range []struct {
