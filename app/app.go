@@ -18,6 +18,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/gemini"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/oaichat"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/oaiimages"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
@@ -816,6 +817,20 @@ func (a *App) Start(ctx context.Context) error {
 				slog.String("knob", designgen.EnvVideoCeilingUSD), slog.Bool("keyed", a.runblob.Enabled()))
 		}
 
+		// B-25/B-26 (commit H) — OpenAI-shaped image transports for openai and apibost:
+		// /images/generations, or /images/edits when a run carries references (read through the bucket,
+		// host-checked, as the gemini chat transport reads them). The panel's key per request; the
+		// ledger prices their pictures by the catalogue (neither provider states a price).
+		oaiImagesFor := func(provider, base string) *oaiimages.Client {
+			return oaiimages.New(oaiimages.Config{
+				Provider: provider, BaseURL: base, KeyFunc: a.aireg.KeyFunc(provider), DefaultSlug: "gpt-image-2",
+				Objects: a.b,
+				KeyFromURL: func(rawURL string) (string, error) {
+					return bucket.ManagedObjectKeyFromURL(&a.c.Bucket, rawURL)
+				},
+			})
+		}
+
 		a.dgw, err = designgen.New(&designCfg, a.db, a.b, designgen.Providers{
 			// flat, render, recolor, pattern and freeform — the raster route. They differ by prompt and
 			// by which pictures go into which paid call, both of which live inside designgen. Since B-13
@@ -832,6 +847,8 @@ func (a *App) Start(ctx context.Context) error {
 					entity.AIProviderOpenRouter: designImages,
 					entity.AIProviderRunblob:    runblob.NewImages(a.runblob),
 					entity.AIProviderFal:        fal.NewImages(falRoutes),
+					entity.AIProviderOpenAI:     oaiImagesFor(entity.AIProviderOpenAI, endpoints.OpenAIAPIBase),
+					entity.AIProviderApibost:    oaiImagesFor(entity.AIProviderApibost, endpoints.ApibostAPIBase),
 				}, designImages.Model()),
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
