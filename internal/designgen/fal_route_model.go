@@ -17,8 +17,7 @@ import (
 // and until B-24 their route row's MODEL changed nothing: FAL_MODEL_OUTPAINT / FILL / CUTOUT decided.
 // Now a row's model overrides the env slug, for the door (FalRoutesFunc: the tile, the reserve, the
 // unsupported-slug refusal) and for the worker (Config.FalRouteModel → Job.Model, which each route reads
-// before its env slug) through ONE expression. The provider stays fal; vector stays recraft (one
-// provider, a fixed slug).
+// before its env slug) through ONE expression. The provider stays fal.
 
 // falRoutePurposes — the run kinds whose route row may name a fal slug.
 var falRoutePurposes = map[string]string{

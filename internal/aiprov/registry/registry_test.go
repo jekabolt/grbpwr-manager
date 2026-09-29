@@ -179,19 +179,17 @@ func seal(t *testing.T, ring *keyring.Ring, provider string, kind entity.AIKeyKi
 	return blob
 }
 
-// seedKeys are the api keys seedConfig stores for the four providers that are on — sealed under
+// seedKeys are the api keys seedConfig stores for the providers that are on — sealed under
 // testRing's master, so a registry over testRing opens them and one over another master does not.
 // Since B-33 a keyed provider is a provider WITH A STORED KEY: the env values (testEnv) are the
 // import's input only, and every test that expects a key to answer expects one of these.
 var seedKeys = map[string]string{
 	entity.AIProviderOpenRouter: "db-openrouter-1111",
 	entity.AIProviderFal:        "db-fal-2222",
-	entity.AIProviderMeshy:      "db-meshy-3333",
-	entity.AIProviderRecraft:    "db-recraft-4444",
 }
 
 // seedConfig is the 0373 seed as B-33 leaves it after the boot import: nine rows (openrouter, fal,
-// meshy, recraft on, each with a stored key — seedKeys), every purpose at position 1 as today,
+// on, each with a stored key — seedKeys), every purpose at position 1 as today,
 // version 1, both defaults openrouter.
 func seedConfig() entity.AIConfig {
 	ring, err := keyring.New(masterB64(7)) // testRing's master, without a *testing.T
@@ -215,8 +213,6 @@ func seedConfig() entity.AIConfig {
 		switch p {
 		case entity.AIPurposeImageCutout, entity.AIPurposeImageExtend, entity.AIPurposeImageInpaint, entity.AIPurposeThreed:
 			pk = entity.AIProviderFal
-		case entity.AIPurposeVector:
-			pk = entity.AIProviderRecraft
 		}
 		cfg.Routes = append(cfg.Routes, entity.AIRoute{Purpose: p, Candidates: []entity.AIRouteCandidate{{Position: 1, ProviderKey: pk}}})
 	}
@@ -248,8 +244,6 @@ var testEnv = EnvKeys{
 	OpenRouter:       "env-openrouter-aaaa",
 	OpenRouterImages: "env-images-bbbb",
 	Fal:              "env-fal-cccc",
-	Meshy:            "env-meshy-dddd",
-	Recraft:          "env-recraft-eeee",
 }
 
 // newLoaded builds a registry over cfg, captures its log, and reloads once.
@@ -308,13 +302,13 @@ func admitOK(_ Admission, ok bool) bool { return ok }
 // variable is set: the env values are the import's input, never a call's key.
 //
 // MUTATION (measured red → green): the env fallback restored at the end of effectiveKeyIn
-// (`return r.envValue(providerKey)` in place of `return p.dbKey` for an empty dbKey) → meshy answers
-// testEnv.Meshy again → red.
+// (`return r.envValue(providerKey)` in place of `return p.dbKey` for an empty dbKey) → openrouter
+// answers testEnv.OpenRouter again → red.
 func TestKeyFunc_StoredKeyOnly_EnvNeverAnswers(t *testing.T) {
 	ring := testRing(t)
 	cfg := seedConfig()
 	provider(&cfg, entity.AIProviderFal).APIKeyEnc = seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "db-fal-9z9z")
-	provider(&cfg, entity.AIProviderMeshy).APIKeyEnc = nil // on, env set, nothing stored
+	provider(&cfg, entity.AIProviderOpenRouter).APIKeyEnc = nil // on, env set, nothing stored
 
 	r, _, logs := newLoaded(t, ring, cfg)
 
@@ -322,14 +316,14 @@ func TestKeyFunc_StoredKeyOnly_EnvNeverAnswers(t *testing.T) {
 	st := state(t, r, entity.AIProviderFal)
 	require.Equal(t, KeySourceDB, st.KeySource)
 	require.Equal(t, "9z9z", st.KeyLast4)
-	// No stored key: nothing answers, whatever MESHY_API_KEY says.
-	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)())
-	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderMeshy).KeySource)
-	require.Equal(t, "", state(t, r, entity.AIProviderMeshy).KeyLast4)
-	require.Contains(t, logs.String(), "ai provider meshy: enabled=true key=none")
+	// No stored key: nothing answers, whatever OPENROUTER_API_KEY says.
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderOpenRouter)())
+	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderOpenRouter).KeySource)
+	require.Equal(t, "", state(t, r, entity.AIProviderOpenRouter).KeyLast4)
+	require.Contains(t, logs.String(), "ai provider openrouter: enabled=true key=none")
 	// Never the value in a log line — source and last4 only.
 	require.NotContains(t, logs.String(), "db-fal-9z9z")
-	require.NotContains(t, logs.String(), testEnv.Meshy)
+	require.NotContains(t, logs.String(), testEnv.OpenRouter)
 	require.Contains(t, logs.String(), "ai provider fal: enabled=true key=db")
 }
 
@@ -343,12 +337,12 @@ func TestKeyFunc_DisabledYieldsEmpty(t *testing.T) {
 	fal := provider(&cfg, entity.AIProviderFal)
 	fal.Enabled = false
 	fal.APIKeyEnc = seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "db-fal-9z9z")
-	provider(&cfg, entity.AIProviderMeshy).Enabled = false // its seeded key stays stored
+	provider(&cfg, entity.AIProviderOpenRouter).Enabled = false // its seeded key stays stored
 
 	r, _, _ := newLoaded(t, ring, cfg)
 
 	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)())
-	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)())
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderOpenRouter)())
 	require.False(t, state(t, r, entity.AIProviderFal).Enabled)
 	require.Equal(t, "9z9z", state(t, r, entity.AIProviderFal).KeyLast4, "shown as if enabled")
 }
@@ -372,7 +366,7 @@ func TestKeyFunc_UnreadableAnswersNothing(t *testing.T) {
 	// The openrouter ciphertext moved onto the fal row: the AAD binds it to openrouter:api.
 	provider(&cfg, entity.AIProviderFal).APIKeyEnc = seal(t, ring, entity.AIProviderOpenRouter, entity.AIKeyAPI, "moved-key-1111")
 	// Sealed under another master.
-	provider(&cfg, entity.AIProviderMeshy).APIKeyEnc = seal(t, other, entity.AIProviderMeshy, entity.AIKeyAPI, "other-master-2222")
+	provider(&cfg, entity.AIProviderOpenRouter).APIKeyEnc = seal(t, other, entity.AIProviderOpenRouter, entity.AIKeyAPI, "other-master-2222")
 	// Unreadable on a provider that never had an env variable.
 	provider(&cfg, entity.AIProviderOpenAI).Enabled = true
 	provider(&cfg, entity.AIProviderOpenAI).APIKeyEnc = seal(t, other, entity.AIProviderOpenAI, entity.AIKeyAPI, "sk-openai-3333")
@@ -382,8 +376,8 @@ func TestKeyFunc_UnreadableAnswersNothing(t *testing.T) {
 	require.Equal(t, "", r.KeyFunc(entity.AIProviderFal)(), "FAL_KEY is set and must not answer")
 	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderFal).KeySource)
 	require.Equal(t, "", state(t, r, entity.AIProviderFal).KeyLast4, "no key answers: no last4")
-	require.Equal(t, "", r.KeyFunc(entity.AIProviderMeshy)())
-	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderMeshy).KeySource)
+	require.Equal(t, "", r.KeyFunc(entity.AIProviderOpenRouter)())
+	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderOpenRouter).KeySource)
 	require.Equal(t, "", r.KeyFunc(entity.AIProviderOpenAI)())
 	require.Equal(t, KeySourceUnreadable, state(t, r, entity.AIProviderOpenAI).KeySource)
 	require.Contains(t, logs.String(), "does not open — re-enter it in admin → AI providers")
@@ -394,8 +388,8 @@ func TestKeyFunc_UnreadableAnswersNothing(t *testing.T) {
 	fs.edit(func(c *entity.AIConfig) {})
 	require.NoError(t, r.Reload(context.Background()))
 	require.Equal(t, 1, strings.Count(logs.String(), "provider=fal kind=api"), logs.String())
-	require.Equal(t, 1, strings.Count(logs.String(), "provider=meshy kind=api"), logs.String())
-	for _, secret := range []string{"moved-key-1111", "other-master-2222", "sk-openai-3333", testEnv.Fal, testEnv.Meshy} {
+	require.Equal(t, 1, strings.Count(logs.String(), "provider=openrouter kind=api"), logs.String())
+	for _, secret := range []string{"moved-key-1111", "other-master-2222", "sk-openai-3333", testEnv.Fal, testEnv.OpenRouter} {
 		require.NotContains(t, logs.String(), secret)
 	}
 
@@ -422,14 +416,14 @@ func TestKeyFunc_BeforeReloadAndMissingRow(t *testing.T) {
 	cfg := seedConfig()
 	var kept []entity.AIProvider
 	for _, p := range cfg.Providers {
-		if p.Key != entity.AIProviderMeshy {
+		if p.Key != entity.AIProviderOpenRouter {
 			kept = append(kept, p)
 		}
 	}
 	cfg.Providers = kept
 	loaded, _, _ := newLoaded(t, testRing(t), cfg)
-	require.Equal(t, "", loaded.KeyFunc(entity.AIProviderMeshy)())
-	require.Equal(t, KeySourceNone, state(t, loaded, entity.AIProviderMeshy).KeySource)
+	require.Equal(t, "", loaded.KeyFunc(entity.AIProviderOpenRouter)())
+	require.Equal(t, KeySourceNone, state(t, loaded, entity.AIProviderOpenRouter).KeySource)
 	require.Equal(t, uint64(1), loaded.Version())
 }
 
@@ -497,21 +491,20 @@ func importRig(t *testing.T, ring *keyring.Ring, cfg entity.AIConfig) (*Registry
 func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
 	ring := testRing(t)
 	cfg := seedConfig()
-	for _, k := range []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft} {
+	for _, k := range []string{entity.AIProviderOpenRouter, entity.AIProviderFal} {
 		provider(&cfg, k).APIKeyEnc = nil
 	}
 	r, fs, logs := importRig(t, ring, cfg)
 
 	imported, err := r.ImportEnvKeys(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft}, imported)
+	require.Equal(t, []string{entity.AIProviderOpenRouter, entity.AIProviderFal}, imported)
 
 	want := map[string]string{
 		entity.AIProviderOpenRouter: testEnv.OpenRouter, entity.AIProviderFal: testEnv.Fal,
-		entity.AIProviderMeshy: testEnv.Meshy, entity.AIProviderRecraft: testEnv.Recraft,
 	}
 	writes := fs.writes()
-	require.Len(t, writes, 4)
+	require.Len(t, writes, 2)
 	for _, w := range writes {
 		require.Equal(t, entity.AIKeyAPI, w.kind)
 		require.Equal(t, EnvImportedBy, w.by)
@@ -523,9 +516,7 @@ func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
 	require.Contains(t, logs.String(),
 		"ai provider fal: env key imported into the panel (last4 cccc) — delete FAL_KEY from the app spec")
 	require.Contains(t, logs.String(), "delete OPENROUTER_API_KEY from the app spec")
-	require.Contains(t, logs.String(), "delete MESHY_API_KEY from the app spec")
-	require.Contains(t, logs.String(), "delete RECRAFT_API_KEY from the app spec")
-	for _, secret := range []string{testEnv.OpenRouter, testEnv.Fal, testEnv.Meshy, testEnv.Recraft, testEnv.OpenRouterImages} {
+	for _, secret := range []string{testEnv.OpenRouter, testEnv.Fal, testEnv.OpenRouterImages} {
 		require.NotContains(t, logs.String(), secret)
 	}
 	require.NotContains(t, logs.String(), "level=ERROR")
@@ -546,7 +537,7 @@ func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
 // and on the KeyFunc answer.
 func TestImportEnvKeys_FilledSlotUntouched(t *testing.T) {
 	ring := testRing(t)
-	cfg := seedConfig() // openrouter, fal, meshy, recraft all stored
+	cfg := seedConfig() // openrouter, fal both stored
 	provider(&cfg, entity.AIProviderFal).APIKeyEnc = nil
 	r, fs, _ := importRig(t, ring, cfg)
 
@@ -689,7 +680,6 @@ func TestCandidates_OrderSkipsAndDefaultProvider(t *testing.T) {
 
 	// The seeded routes answer exactly today's wiring.
 	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderFal, Position: 1}}, r.Candidates(entity.AIPurposeThreed))
-	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderRecraft, Position: 1}}, r.Candidates(entity.AIPurposeVector))
 	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderOpenRouter, Position: 1}}, r.Candidates(entity.AIPurposeImageGenerate))
 	require.Nil(t, r.Candidates("no.such.purpose"))
 }
@@ -848,17 +838,17 @@ func TestReload_KeyChangeResetsThatProvidersBreakers(t *testing.T) {
 	transient := &aiprov.CallError{HTTPStatus: 502, Retryable: true}
 	for range 3 {
 		call(t, r, entity.AIProviderFal, entity.AICapabilityThreed, transient)
-		call(t, r, entity.AIProviderMeshy, entity.AICapabilityThreed, transient)
+		call(t, r, entity.AIProviderOpenRouter, entity.AICapabilityImage, transient)
 	}
 	blob := seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "rotated-fal-8888")
 	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderFal).APIKeyEnc = blob })
 	require.NoError(t, r.Reload(context.Background()))
 	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderFal, entity.AICapabilityThreed))
-	require.Equal(t, BreakerOpen, r.BreakerState(entity.AIProviderMeshy, entity.AICapabilityThreed),
+	require.Equal(t, BreakerOpen, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityImage),
 		"another provider's breaker is not touched")
 
-	r.ResetBreakers(entity.AIProviderMeshy)
-	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderMeshy, entity.AICapabilityThreed))
+	r.ResetBreakers(entity.AIProviderOpenRouter)
+	require.Equal(t, BreakerClosed, r.BreakerState(entity.AIProviderOpenRouter, entity.AICapabilityImage))
 }
 
 // TestPoller_ReloadsOnVersionChangeOnly — a poll with an unchanged version reads the version and
@@ -879,12 +869,12 @@ func TestPoller_ReloadsOnVersionChangeOnly(t *testing.T) {
 	require.Equal(t, 3, v)
 	require.False(t, r.LastSuccess().IsZero())
 
-	blob := seal(t, ring, entity.AIProviderMeshy, entity.AIKeyAPI, "rotated-meshy-9999")
-	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderMeshy).APIKeyEnc = blob })
+	blob := seal(t, ring, entity.AIProviderOpenRouter, entity.AIKeyAPI, "rotated-openrouter-9999")
+	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderOpenRouter).APIKeyEnc = blob })
 	require.True(t, r.pollOnce(context.Background()))
 	g, _ = fs.calls()
 	require.Equal(t, g0+1, g)
-	require.Equal(t, "rotated-meshy-9999", r.KeyFunc(entity.AIProviderMeshy)())
+	require.Equal(t, "rotated-openrouter-9999", r.KeyFunc(entity.AIProviderOpenRouter)())
 
 	fs.mu.Lock()
 	fs.versionErr = errors.New("db down")
@@ -905,10 +895,10 @@ func TestPoller_Loop(t *testing.T) {
 	g, _ := fs.calls()
 	require.Equal(t, 1, g, "only the boot reload so far")
 
-	blob := seal(t, ring, entity.AIProviderRecraft, entity.AIKeyAPI, "rotated-recraft-1234")
-	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderRecraft).APIKeyEnc = blob })
-	fn := r.KeyFunc(entity.AIProviderRecraft)
-	require.Eventually(t, func() bool { return fn() == "rotated-recraft-1234" }, 2*time.Second, time.Millisecond)
+	blob := seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "rotated-fal-1234")
+	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderFal).APIKeyEnc = blob })
+	fn := r.KeyFunc(entity.AIProviderFal)
+	require.Eventually(t, func() bool { return fn() == "rotated-fal-1234" }, 2*time.Second, time.Millisecond)
 
 	require.NoError(t, r.Stop())
 	require.Error(t, r.Stop())
@@ -998,7 +988,7 @@ func TestProviders_PanelOrderAndNoKeys(t *testing.T) {
 		require.Equal(t, k, st.Key)
 		require.Equal(t, BreakerClosed, st.Breaker)
 		for _, v := range []string{st.KeySource, st.KeyLast4} {
-			require.NotContains(t, []string{"db-fal-9z9z", testEnv.Fal, testEnv.OpenRouter, testEnv.Meshy, testEnv.Recraft}, v)
+			require.NotContains(t, []string{"db-fal-9z9z", testEnv.Fal, testEnv.OpenRouter}, v)
 		}
 	}
 	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderRunblob).KeySource)

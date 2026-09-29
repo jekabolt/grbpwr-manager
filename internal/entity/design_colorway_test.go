@@ -55,7 +55,7 @@ func TestColorwayAxisVocabulary(t *testing.T) {
 	require.True(t, DesignRunKindTakesColorway(DesignRunKindThreed))
 	require.True(t, DesignRunKindTakesColorway(DesignRunKindRecolor),
 		"перекрас рождает рендер — его колорвей осмыслен")
-	for _, k := range []string{DesignRunKindFlat, DesignRunKindVector, DesignRunKindDraftIdea} {
+	for _, k := range []string{DesignRunKindFlat, DesignRunKindDraftIdea} {
 		require.Falsef(t, DesignRunKindTakesColorway(k), "род %s оси колорвея не имеет", k)
 	}
 }

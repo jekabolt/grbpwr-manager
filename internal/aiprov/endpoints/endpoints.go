@@ -17,9 +17,7 @@ const (
 	OpenRouterHost = "https://openrouter.ai"
 	ApibostHost    = "https://apibost.com"
 	FalHost        = "https://api.fal.ai"
-	MeshyHost      = "https://api.meshy.ai"
 	RunblobHost    = "https://platform.runblob.io"
-	RecraftHost    = "https://external.api.recraft.ai"
 
 	// API roots the chat transports post under (chat/completions, messages, generateContent).
 	OpenAIAPIBase     = OpenAIHost + "/v1"

@@ -15,15 +15,15 @@ import (
 // between, so «which word turns on which provider» is one expression rather than a string compared
 // in app.go and documented in a comment somewhere else.
 const (
-	ThreedProviderFal   = "fal"
-	ThreedProviderMeshy = "meshy"
+	ThreedProviderFal = "fal"
 )
 
 // falThreedProvider is the 3D route reached through fal.ai's queue (K-10 — «для 3d как референсы
 // должны использоваться hitem3d/hi3d/v3.0/multi-view-to-3d и нам нужна интеграция с fal.ai и что бы
 // мы могли туда подавать наши фронт бэк и так далее»).
 //
-// WHAT IT DOES THAT THE DIRECT MESHY ROUTE CANNOT. It hands the transport the plates BY NAME —
+// WHAT IT DOES THAT THE DIRECT MESHY ROUTE (removed 2026-09-29) COULD NOT. It hands the transport the
+// plates BY NAME —
 // front, back, left, right — instead of as an ordered list whose first member is taken on faith to
 // be the face of the garment. The bench has always known which plate is which; this is the route
 // that can be told.
@@ -34,8 +34,8 @@ const (
 // THE WAY DOWN TO THE TRANSPORT is what makes that flattening one line in one file instead of a
 // property of the whole band.
 //
-// IT IS THE SAME TWO-HALVED SHAPE as the Meshy route (Execute submits and pays, Collect looks up and
-// is free), because it is the same problem, and because the worker's resume logic reads that shape.
+// IT IS TWO-HALVED (Execute submits and pays, Collect looks up and is free), because the worker's
+// resume logic reads that shape.
 type falThreedProvider struct{ c *fal.Client }
 
 // NewFalThreedProvider wires the fal 3D route. A nil client is a disabled route, not a panic.
@@ -62,7 +62,7 @@ func (p falThreedProvider) Produces() []string { return []string{ContentTypeGLB,
 
 // Execute SUBMITS and returns immediately with the provider's request id.
 //
-// THE SPLIT INTO SUBMIT AND COLLECT IS THE WHOLE POINT, exactly as on the Meshy route. The submit is
+// THE SPLIT INTO SUBMIT AND COLLECT IS THE WHOLE POINT. The submit is
 // the payment; the collect is a free lookup. Closing the attempt as `accepted` with the request id
 // the instant the submit returns means a worker that dies during the minutes hitem3d takes resumes
 // for nothing instead of buying a second model.
@@ -219,8 +219,7 @@ func (p falThreedProvider) SentPrompt(job Job) string {
 
 // Collect is the FREE half: one status lookup, then — once the request has completed — the bytes.
 //
-// THE BYTES ARE TAKEN IMMEDIATELY AND THE LINKS ARE NEVER STORED, for the reason the Meshy route
-// gives: a provider's result urls expire, and a stored link is a model that quietly stops existing.
+// THE BYTES ARE TAKEN IMMEDIATELY AND THE LINKS ARE NEVER STORED: a provider's result urls expire, and a stored link is a model that quietly stops existing.
 func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID string) (*Outcome, error) {
 	if !p.Enabled() {
 		return nil, fmt.Errorf("%w: %s", errProviderDisabled, p.MissingCredential())
@@ -231,8 +230,8 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	var model, thumb bytes.Buffer
 	res, err := p.c.AwaitAt(ctx, slug, id, fal.Sink{Model: &model, Thumbnail: &thumb})
 	if err != nil {
-		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as on the Meshy and vector
-		// routes: the transport attaches what a failed call billed when it knew, and Charge reads
+		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as on the image route:
+		// the transport attaches what a failed call billed when it knew, and Charge reads
 		// it back. Without this the money of a terminal failure — a COMPLETED request with no
 		// model file, a model past the size cap — vanishes: the attempt closes with a NULL price,
 		// the day's ledger never sees the spend, and nobody can say what the failures cost.

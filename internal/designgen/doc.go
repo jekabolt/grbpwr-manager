@@ -35,8 +35,8 @@
 //
 //  4. NOTHING IS PAID FOR THAT CANNOT BE STORED. Before StartAttempt — that is, before any money
 //     moves — the pass checks that the provider is configured AND that the media sink accepts the
-//     content type the provider produces. Today the sink stores raster only, so the vector (SVG)
-//     and 3D (GLB) routes refuse for free instead of buying a file with nowhere to live.
+//     content type the provider produces. A route whose output the sink cannot store refuses for free
+//     instead of buying a file with nowhere to live.
 //
 // # WHY A FAILURE'S CLASSIFICATION IS A MONEY DECISION
 //
@@ -48,8 +48,8 @@
 // "the money may be gone and we have nothing to show", which is a thing a person must be able to
 // read rather than infer from a blank.
 //
-// A price that arrives TOGETHER WITH an error is still recorded. Both image and vector transports
-// can fail after the meter ran (orimages returns a *Result beside its error, recraft wraps a
+// A price that arrives TOGETHER WITH an error is still recorded. The image and 3D transports
+// can fail after the meter ran (orimages returns a *Result beside its error, fal wraps a
 // ChargedError), and a ledger that only records successes under-reports spend in exactly the case
 // where the spend was wasted.
 package designgen

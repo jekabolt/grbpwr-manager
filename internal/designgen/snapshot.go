@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/shopspring/decimal"
 )
 
@@ -481,7 +480,7 @@ type refCaption struct {
 //
 // THE FLIP IS FLAT-ONLY, AND THE REASON IS THE SAME SENTENCE AS ABOVE: on 3D the first url IS the
 // front view, so «references first» would hand Meshy somebody's mood photograph as the front of
-// the garment. Render, recolor, pattern and vector are untouched for the plainer reason that their
+// the garment. Render, recolor and pattern are untouched for the plainer reason that their
 // composed prompts are already frozen in history, and a reordering would renumber every caption of
 // every future run of a kind nobody asked to change.
 //
@@ -987,9 +986,8 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// fabric texture" against "photorealistic, the weave must read" — so a run that took both would
 	// end on whichever paragraph happened to be written last.
 	//
-	// 3D IS A MESHY BUILD, VECTOR REDRAWS AN APPROVED RASTER, AND draft_idea NEVER REACHES THE
-	// WORKER. None of the three is a picture composed by these words, so all three keep the bare
-	// human context above and take no craft block at all.
+	// 3D IS A MODEL BUILD AND draft_idea NEVER REACHES THE WORKER. Neither is a picture composed by
+	// these words, so both keep the bare human context above and take no craft block at all.
 	switch {
 	case run.Kind == entity.DesignRunKindFlat:
 		write("", flatCraft(p, detailNames, len(attached)))
@@ -1114,11 +1112,14 @@ func surfaceSteer(ctx context.Context, p runParams) string {
 	return steer
 }
 
+// maxTexturePrompt — the fal-hosted Meshy family's texture_prompt ceiling, in runes: a longer prompt
+// is answered with a 422.
+const maxTexturePrompt = 600
+
 // steerCeiling is the number of runes a surface hint may carry, and it is the PROVIDER'S number
-// rather than a taste of ours: meshy.Submit refuses above it locally, and the meshy family reached
-// through fal answers a longer one with a 422. Both refusals are terminal, so this is the one place
-// that can keep them unreachable.
-const steerCeiling = meshy.MaxTexturePrompt
+// rather than a taste of ours: the meshy family reached through fal answers a longer one with a 422,
+// a terminal refusal, so this is the one place that can keep it unreachable.
+const steerCeiling = maxTexturePrompt
 
 // steerMinPhrase is how much room a part needs before it is worth sending in part. Below it the
 // remainder is not a phrase but a fragment — «matte heavy jer» — and a fragment in a hint is worse

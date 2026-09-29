@@ -1,4 +1,4 @@
-package recraft
+package svgcheck
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ const SVGContentType = "image/svg+xml"
 // weighs megabytes is evidence that something traced a raster instead of drawing it.
 const MaxSVGBytes = 8 << 20 // 8 MiB
 
-// SVGStats is the SHAPE of what the model returned — the measurement that answers the owner's
-// requirement in numbers instead of adjectives.
+// SVGStats is the SHAPE of the document — the measurement that states «a clean vector, not a pile
+// of polygons» in numbers instead of adjectives.
 //
 // «Ровный вектор, а не куча полигонов» is a property one can count. A redrawn garment is tens of
 // paths and hundreds of nodes, most of them on curve segments. A traced raster is thousands of
@@ -83,11 +83,11 @@ func (s SVGStats) CurveShare() float64 {
 // InspectSVG validates the bytes and measures them.
 //
 // It answers three questions, in this order, because they fail differently:
-//  1. Is it an SVG at all? A raster here means a RASTER MODEL was configured under a vector name
-//     (ErrNotVector) — storing it would silently defeat the whole requirement.
+//  1. Is it an SVG at all? A raster here is a bitmap labelled as SVG (ErrNotVector) — storing it
+//     would show a "vector" that is not one.
 //  2. Is it safe to serve? These bytes end up in our bucket and then in an admin's browser, so
 //     active content is refused outright (ErrUnsafeSVG) rather than scrubbed: a partial scrub that
-//     misses one vector is worse than a loud refusal of a file no legitimate generation produces.
+//     misses one vector is worse than a loud refusal of a file no legitimate drawing needs.
 //  3. What shape is it? — SVGStats, for a person to judge by.
 //
 // It NEVER rewrites the picture. In particular it does not flatten curves into polylines to suit
@@ -101,7 +101,7 @@ func InspectSVG(raw []byte) (SVGStats, error) {
 		return stats, fmt.Errorf("%w: image is %d bytes, over the %d cap", ErrInvalidResponse, len(raw), MaxSVGBytes)
 	}
 	if format := rasterFormat(raw); format != "" {
-		return stats, fmt.Errorf("%w: the bytes are %s — check that RECRAFT_MODEL_* names a VECTOR model", ErrNotVector, format)
+		return stats, fmt.Errorf("%w: the bytes are %s, not SVG", ErrNotVector, format)
 	}
 
 	dec := xml.NewDecoder(bytes.NewReader(raw))

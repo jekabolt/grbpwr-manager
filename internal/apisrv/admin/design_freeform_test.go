@@ -292,7 +292,7 @@ func TestEveryPlaygroundRefusalHappensBEFORE_ANY_MONEY(t *testing.T) {
 	t.Run("and the gate is silent for every other kind", func(t *testing.T) {
 		for _, kind := range []string{
 			entity.DesignRunKindFlat, entity.DesignRunKindRender,
-			entity.DesignRunKindThreed, entity.DesignRunKindVector,
+			entity.DesignRunKindThreed,
 		} {
 			require.NoErrorf(t, designRefuseMalformedFreeform(kind, &pb_common.DesignRunParams{}), "kind %s", kind)
 			require.NoErrorf(t, designRefuseFreeformOverflow(kind, ffParams("free")), "kind %s", kind)

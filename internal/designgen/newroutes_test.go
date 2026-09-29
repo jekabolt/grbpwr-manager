@@ -42,7 +42,6 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 	// deployment is in before the owner opens the dashboard.
 	w := newWorker(&Config{}, nil, nil, allSink{}, Providers{
 		Image:  NewImageProvider(nil),
-		Vector: NewVectorProvider(nil),
 		Threed: NewFalThreedProvider(nil),
 	})
 
@@ -62,8 +61,6 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 		// названный у двери, но не попавший в forKind, отказал бы словами «no image route», то
 		// есть человеку, который ключ как раз ввёл.
 		{entity.DesignRunKindFreeform, "no key for openrouter — save it in admin → AI providers"},
-		// RECRAFT_ROUTE is a route switch, not a key: it may stay in the sentence.
-		{entity.DesignRunKindVector, "no key for openrouter (the default transport) or recraft (RECRAFT_ROUTE=direct) — save it in admin → AI providers"},
 	} {
 		err := w.PreflightKind(tc.kind)
 		require.Errorf(t, err, "kind %s", tc.kind)
@@ -76,12 +73,6 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 		require.Equal(t, CodeKindNotAvailable, named.RefusalReason(),
 			"«no key» is the same machine word wherever it is discovered")
 	}
-
-	// AND THE MESHY ROUTE KEEPS ITS OWN NAME, so switching DESIGN_THREED_PROVIDER switches the
-	// sentence too — an operator told to set FAL_KEY on a Meshy deployment would set the wrong one.
-	m := newWorker(&Config{}, nil, nil, allSink{}, Providers{Threed: NewThreedProvider(nil)})
-	require.Contains(t, m.PreflightKind(entity.DesignRunKindThreed).Error(),
-		"no key for meshy — save it in admin → AI providers")
 }
 
 // ─────────────────────── K-10: THE NAMED VIEWS ───────────────────────

@@ -22,16 +22,14 @@ const (
 	AIProviderOpenRouter = "openrouter"
 	AIProviderApibost    = "apibost"
 	AIProviderFal        = "fal"
-	AIProviderMeshy      = "meshy"
 	AIProviderRunblob    = "runblob"
-	AIProviderRecraft    = "recraft"
 )
 
 // AIProviderKeys — every provider, in the panel's fixed order. A copy on every call.
 func AIProviderKeys() []string {
 	return []string{
 		AIProviderOpenAI, AIProviderAnthropic, AIProviderGoogle, AIProviderOpenRouter,
-		AIProviderApibost, AIProviderFal, AIProviderMeshy, AIProviderRunblob, AIProviderRecraft,
+		AIProviderApibost, AIProviderFal, AIProviderRunblob,
 	}
 }
 
@@ -39,7 +37,7 @@ func AIProviderKeys() []string {
 func IsAIProviderKey(v string) bool {
 	switch v {
 	case AIProviderOpenAI, AIProviderAnthropic, AIProviderGoogle, AIProviderOpenRouter,
-		AIProviderApibost, AIProviderFal, AIProviderMeshy, AIProviderRunblob, AIProviderRecraft:
+		AIProviderApibost, AIProviderFal, AIProviderRunblob:
 		return true
 	}
 	return false
@@ -52,7 +50,6 @@ const (
 	AICapabilityCutout = "cutout"
 	AICapabilityEdit   = "edit"
 	AICapabilityThreed = "threed"
-	AICapabilityVector = "vector"
 	AICapabilityVideo  = "video"
 )
 
@@ -60,7 +57,7 @@ const (
 func AICapabilities() []string {
 	return []string{
 		AICapabilityChat, AICapabilityImage, AICapabilityCutout, AICapabilityEdit,
-		AICapabilityThreed, AICapabilityVector, AICapabilityVideo,
+		AICapabilityThreed, AICapabilityVideo,
 	}
 }
 
@@ -68,7 +65,7 @@ func AICapabilities() []string {
 func IsAICapability(v string) bool {
 	switch v {
 	case AICapabilityChat, AICapabilityImage, AICapabilityCutout, AICapabilityEdit,
-		AICapabilityThreed, AICapabilityVector, AICapabilityVideo:
+		AICapabilityThreed, AICapabilityVideo:
 		return true
 	}
 	return false
@@ -89,14 +86,10 @@ func AIProviderCapabilities(key string) []string {
 		return []string{AICapabilityChat}
 	case AIProviderFal:
 		return []string{AICapabilityImage, AICapabilityCutout, AICapabilityEdit, AICapabilityThreed}
-	case AIProviderMeshy:
-		return []string{AICapabilityThreed}
 	case AIProviderRunblob:
 		// image first: it is the capability with a purpose today (image.generate, B-31); video is what
 		// the adapter was built for and what G2's purpose routes.
 		return []string{AICapabilityImage, AICapabilityVideo}
-	case AIProviderRecraft:
-		return []string{AICapabilityVector}
 	}
 	return nil
 }
@@ -128,7 +121,6 @@ const (
 	AIPurposeImageInpaint     = "image.inpaint"
 	AIPurposeThreed           = "threed"
 	AIPurposeVideoGenerate    = "video.generate"
-	AIPurposeVector           = "vector"
 )
 
 // AIPurposes — every purpose, in the panel's fixed order. A copy on every call.
@@ -137,7 +129,7 @@ func AIPurposes() []string {
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
 		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposePlaygroundIdeas,
 		AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
-		AIPurposeThreed, AIPurposeVideoGenerate, AIPurposeVector,
+		AIPurposeThreed, AIPurposeVideoGenerate,
 	}
 }
 
@@ -162,8 +154,6 @@ func AIPurposeCapability(p string) string {
 		return AICapabilityThreed
 	case AIPurposeVideoGenerate:
 		return AICapabilityVideo
-	case AIPurposeVector:
-		return AICapabilityVector
 	}
 	return ""
 }
@@ -188,8 +178,6 @@ func AIPurposeOfRunKind(kind string) string {
 		return AIPurposeThreed
 	case DesignRunKindVideo:
 		return AIPurposeVideoGenerate
-	case DesignRunKindVector:
-		return AIPurposeVector
 	case DesignRunKindDraftIdea:
 		return AIPurposeDesignDraftIdea
 	}

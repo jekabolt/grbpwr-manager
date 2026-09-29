@@ -3,8 +3,9 @@
 // hitem3d/hi3d/v3.0/multi-view-to-3d и нам нужна интеграция с fal.ai и что бы мы могли туда
 // подавать наши фронт бэк и так далее»).
 //
-// WHY A SECOND 3D TRANSPORT AND NOT A SECOND MESHY METHOD. The two providers do not take the same
-// request. Meshy's multi-image-to-3d takes an ORDERED LIST and reads image_urls[0] as the front;
+// WHY fal AND NOT MESHY DIRECTLY. (Since 2026-09-29 this is the ONLY 3D transport: the direct Meshy
+// provider left and fal hosts Meshy's models.) The two model families do not take the same request.
+// Meshy's multi-image-to-3d takes an ORDERED LIST and reads image_urls[0] as the front;
 // hitem3d takes NAMED SLOTS — front_image_url, back_image_url, left_image_url, right_image_url —
 // which is exactly the shape the bench already has, and is what the owner asked for by name. An
 // ordered list flattens that naming and loses the one thing this provider is better at.
@@ -18,10 +19,8 @@
 // slug moves back nothing above this package has to change — and, more to the point, no caller can
 // quietly start passing an ordered list of its own and lose the one fact the bench knows for sure.
 //
-// THE PACKAGE IS SHAPED LIKE internal/meshy ON PURPOSE, down to the sentinel names and the
-// Submit / Collect / Await split. It is the same problem — a paid submit, then minutes of building,
-// then artifacts behind expiring links — and designgen's 3D pass already knows that shape. Two
-// spellings of one mechanism would be two things to remember at the one call site that reads them.
+// THE PACKAGE HAS A Submit / Collect / Await SPLIT on purpose: a paid submit, then minutes of
+// building, then artifacts behind expiring links — the shape designgen's 3D pass reads.
 //
 // The client is optional: with no FAL_KEY, Enabled() is false and every verb returns
 // ErrNotConfigured, whose sentence names the variable so the refusal a person reads on the screen
@@ -79,8 +78,7 @@ const (
 	// retired3D and locateRequest, which is where that is handled.
 	DefaultModel3D = "meshy/v7/multi-image-to-3d"
 
-	// formatGLB is the only export format asked for or accepted. The band shows GLB and only GLB,
-	// exactly as on the Meshy route.
+	// formatGLB is the only export format asked for or accepted. The band shows GLB and only GLB.
 	formatGLB = "glb"
 
 	// defaultHTTPTimeout bounds ONE control-plane request (submit, status or result envelope). All
@@ -112,7 +110,7 @@ const (
 	// unset.
 	//
 	// IT IS AN ESTIMATE AND IT IS HERE SO THAT AN UNCONFIGURED DEPLOYMENT RECORDS A PLAUSIBLE COST
-	// RATHER THAN ZERO — the same argument meshy.defaultCreditUSD makes, and for the same ledger:
+	// RATHER THAN ZERO, for the ledger's sake:
 	// «this run was free» is a worse lie than «this run cost about a dollar».
 	//
 	// ⚠ ЭТО ЦЕНА ЗАПРОСА, А НЕ ЕДИНИЦЫ, И ИМЕННО ЗДЕСЬ БЫЛ ДЕФЕКТ. Раньше константа звалась
@@ -307,11 +305,10 @@ func submitLost(status int) error {
 
 // ChargedError marks a failure the provider HAS ALREADY BILLED, and carries the charge.
 //
-// THE SHAPE IS meshy.ChargedError / recraft.ChargedError, DELIBERATELY. designgen's 3D pass already
-// reads that spelling; a third mechanism for one fact would be a third thing to remember at the one
-// call site that reads them.
+// THE SHAPE WAS SHARED with the direct Meshy and Recraft transports (removed 2026-09-29), and
+// designgen's 3D pass reads that spelling.
 //
-// THE UNIT IS BILLABLE UNITS, NOT DOLLARS, for the same reason Meshy's is credits: the rate is
+// THE UNIT IS BILLABLE UNITS, NOT DOLLARS: the rate is
 // configuration (FAL_UNIT_USD) and lives on the Client, and a package-level wrap has no client
 // to ask.
 type ChargedError struct {
@@ -703,8 +700,7 @@ type Request3D struct {
 	//
 	// ⚠ fal's meshy/v7 schema has NO `texture_resolution` and NO `ai_model` (read 2026-09-27 from
 	// https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=meshy/v7/multi-image-to-3d), so on
-	// this route «detailed» is `geometry_resolution: "2k"` and nothing else. The direct Meshy API has
-	// the texture dial too; see meshy.Request.
+	// this route «detailed» is `geometry_resolution: "2k"` and nothing else.
 	Texture string
 	PBR     string
 	Quality string

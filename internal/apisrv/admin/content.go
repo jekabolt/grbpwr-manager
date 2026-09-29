@@ -180,7 +180,7 @@ func (s *Server) UploadPattern(ctx context.Context, req *pb_admin.UploadPatternR
 // the files library).
 //
 // The handler is deliberately thin: the gate that must not move lives in
-// bucket.UploadContentNonRaster, which inspects the bytes (recraft.InspectSVG refuses active
+// bucket.UploadContentNonRaster, which inspects the bytes (svgcheck.InspectSVG refuses active
 // content, declared XML entities, not-XML, and a raster wearing a vector's name) BEFORE anything
 // lands on our own public host, and files the row the way a video's is filed — one verbatim
 // object, three url slots. The content type is fixed by the verb, not read from the request:
@@ -216,7 +216,7 @@ func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadCo
 // reason is written on that verb: «the content type is fixed by the verb, not read from the
 // request: this door stores image/svg+xml and nothing else, so a client cannot talk its way into
 // the GLB branch of the non-raster path». Adding a type field would reopen exactly that, in both
-// directions — an SVG could be pushed through the GLB branch and skip recraft.InspectSVG, which is
+// directions — an SVG could be pushed through the GLB branch and skip svgcheck.InspectSVG, which is
 // a security boundary and not a formality. One verb per content type keeps the routing decision on
 // this side of the wire.
 //

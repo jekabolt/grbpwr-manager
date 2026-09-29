@@ -28,7 +28,7 @@ import (
 func TestEVERY_RUN_KIND_THE_DOOR_ACCEPTS_HAS_A_PRICE(t *testing.T) {
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindThreed,
-		entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
+		entity.DesignRunKindDraftIdea,
 		entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
 		entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
 		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
@@ -173,7 +173,7 @@ func TestTHE_TWO_NEW_KINDS_REFUSE_BEFORE_ANY_MONEY_IS_RESERVED(t *testing.T) {
 	// case, and a rule that leaked onto it would close the band's main route.
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender,
-		entity.DesignRunKindThreed, entity.DesignRunKindVector,
+		entity.DesignRunKindThreed,
 	} {
 		require.NoErrorf(t, designRefuseUnworkableSources(kind, "", &pb_common.DesignRunParams{}), "kind %s", kind)
 	}

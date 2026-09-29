@@ -152,13 +152,8 @@ func matrix() []probeCase {
 			bearer, `{"data":[]}`, ""},
 		{entity.AIProviderFal, entity.AIKeyAPI, "https://api.fal.ai/v1/models/pricing?endpoint_id=fal-ai/birefnet/v2",
 			fal, `{"prices":[]}`, ""},
-		{entity.AIProviderMeshy, entity.AIKeyAPI, "https://api.meshy.ai/openapi/v1/balance",
-			bearer, `{"balance":1200}`, "1200 credits"},
 		{entity.AIProviderRunblob, entity.AIKeyAPI, "https://platform.runblob.io/v1/kling/generations/00000000-0000-0000-0000-000000000000",
 			bearer, `{"status":"pending"}`, ""},
-		// recraft's users/me carries credits, but no balance is promised for it: "" not a guess.
-		{entity.AIProviderRecraft, entity.AIKeyAPI, "https://external.api.recraft.ai/v1/users/me",
-			bearer, `{"credits":1000,"id":"x"}`, ""},
 		{entity.AIProviderOpenAI, entity.AIKeyAdmin, "https://api.openai.com/v1/organization/costs?start_time=1790418600&limit=1",
 			bearer, `{"object":"page","data":[]}`, ""},
 		{entity.AIProviderAnthropic, entity.AIKeyAdmin,
@@ -291,13 +286,13 @@ func TestProbeBoundsEveryProbe(t *testing.T) {
 func TestProbeUnreachable(t *testing.T) {
 	r := newRig(t, http.StatusOK, "")
 	r.srv.Close()
-	res := Probe(context.Background(), entity.AIProviderMeshy, entity.AIKeyAPI, fakeKey, r.client())
+	res := Probe(context.Background(), entity.AIProviderFal, entity.AIKeyAPI, fakeKey, r.client())
 	require.Equal(t, Result{Code: CodeUnreachable, Message: "could not reach the provider"}, res)
 
 	r2 := newRig(t, http.StatusOK, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res = Probe(ctx, entity.AIProviderMeshy, entity.AIKeyAPI, fakeKey, r2.client())
+	res = Probe(ctx, entity.AIProviderFal, entity.AIKeyAPI, fakeKey, r2.client())
 	require.Equal(t, Result{Code: CodeUnreachable, Message: "probe cancelled"}, res)
 }
 
@@ -337,8 +332,8 @@ var paidCall = regexp.MustCompile(`chat/completions|/messages|generate|generatio
 func TestNoProbeIsAPaidCall(t *testing.T) {
 	hosts := map[string]bool{
 		"api.openai.com": true, "api.anthropic.com": true, "generativelanguage.googleapis.com": true,
-		"openrouter.ai": true, "apibost.com": true, "api.fal.ai": true, "api.meshy.ai": true,
-		"platform.runblob.io": true, "external.api.recraft.ai": true,
+		"openrouter.ai": true, "apibost.com": true, "api.fal.ai": true,
+		"platform.runblob.io": true,
 	}
 	require.NotEmpty(t, endpoints)
 	for k, ep := range endpoints {
@@ -403,7 +398,8 @@ func TestNoProbeWithoutACall(t *testing.T) {
 		kind     entity.AIKeyKind
 		msg      string
 	}{
-		{entity.AIProviderMeshy, entity.AIKeyAdmin, "no probe for meshy/admin"},
+		{entity.AIProviderApibost, entity.AIKeyAdmin, "no probe for apibost/admin"},
+		{"meshy", entity.AIKeyAPI, "no probe for unknown provider/api"}, // retired 2026-09-29
 		{entity.AIProviderGoogle, entity.AIKeyAdmin, "no probe for google/admin"},
 		{entity.AIProviderOpenRouter, entity.AIKeyAdmin, "no probe for openrouter/admin"},
 		{entity.AIProviderRunblob, entity.AIKeyAdmin, "no probe for runblob/admin"},
@@ -524,13 +520,8 @@ func TestBalances(t *testing.T) {
 		{entity.AIProviderFal, entity.AIKeyAdmin, `{"credits":{"current_balance":7}}`, "7.00 USD", accepted},
 		{entity.AIProviderFal, entity.AIKeyAdmin, `{"credits":{"current_balance":7,"currency":"dollars"}}`, "", unreadable},
 		{entity.AIProviderFal, entity.AIKeyAdmin, `{"username":"someone"}`, "", unreadable},
-		{entity.AIProviderMeshy, entity.AIKeyAPI, `{"balance":1200}`, "1200 credits", accepted},
-		{entity.AIProviderMeshy, entity.AIKeyAPI, `{"balance":0}`, "0 credits", accepted},
-		{entity.AIProviderMeshy, entity.AIKeyAPI, `{"balance":12.5}`, "12.50 credits", accepted},
-		{entity.AIProviderMeshy, entity.AIKeyAPI, `{}`, "", unreadable},
 		// no balance promised: the body is not read for one
 		{entity.AIProviderFal, entity.AIKeyAPI, `{"credits":{"current_balance":24.5,"currency":"USD"}}`, "", accepted},
-		{entity.AIProviderRecraft, entity.AIKeyAPI, `{"credits":1000}`, "", accepted},
 	} {
 		r := newRig(t, http.StatusOK, tc.body)
 		res := Probe(context.Background(), tc.provider, tc.kind, fakeKey, r.client())

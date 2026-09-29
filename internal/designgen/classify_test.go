@@ -9,9 +9,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,34 +47,25 @@ func TestClassifyIsAMoneyDecision(t *testing.T) {
 		{"image key rejected", orimages.ErrUnauthorized, false, CodeUnauthorized, entity.DesignAttemptFailed},
 		{"image out of credit", orimages.ErrOutOfCredit, false, CodeOutOfCredit, entity.DesignAttemptFailed},
 		{"image slug retired", orimages.ErrModelUnavailable, false, CodeModelRetired, entity.DesignAttemptFailed},
-		{"vector key rejected", recraft.ErrUnauthorized, false, CodeUnauthorized, entity.DesignAttemptFailed},
-		{"vector no credits", recraft.ErrInsufficientCredits, false, CodeOutOfCredit, entity.DesignAttemptFailed},
-		{"meshy key rejected", meshy.ErrUnauthorized, false, CodeUnauthorized, entity.DesignAttemptFailed},
+		{"fal key rejected", fal.ErrUnauthorized, false, CodeUnauthorized, entity.DesignAttemptFailed},
 		// We sent something unacceptable; a retry repeats it exactly.
-		{"vector bad request", recraft.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
-		{"meshy image count", meshy.ErrImageCount, false, CodeBadRequest, entity.DesignAttemptFailed},
 		// ЭТИХ ТРЁХ ЗДЕСЬ НЕ БЫЛО, И КАЖДЫЙ УХОДИЛ В ДЕФОЛТНУЮ ВЕТКУ — то есть читался как ПОГОДА
 		// и жёг все пять попыток на запросе, который провайдер уже отверг. Строка истории при этом
 		// говорила `provider_unavailable`: человек шёл смотреть статус поставщика вместо того,
 		// чтобы починить свой запрос.
-		{"meshy prompt over the ceiling", meshy.ErrPromptTooLong, false, CodeBadRequest, entity.DesignAttemptFailed},
-		{"meshy refused the request (4xx)", meshy.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
 		{"image request we built wrong", orimages.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
+		{"fal refused the request (4xx)", fal.ErrBadRequest, false, CodeBadRequest, entity.DesignAttemptFailed},
 		// Billed and useless: `unknown` is the schema's word for it and a person has to read it.
 		{"image returned nothing", orimages.ErrNoImages, false, CodeEmptyResponse, entity.DesignAttemptUnknown},
-		{"vector malformed", recraft.ErrInvalidResponse, false, CodeEmptyResponse, entity.DesignAttemptUnknown},
-		{"raster under a vector name", recraft.ErrNotVector, false, CodeWrongFormat, entity.DesignAttemptUnknown},
-		{"unsafe svg", recraft.ErrUnsafeSVG, false, CodeWrongFormat, entity.DesignAttemptUnknown},
 		{"response over the ceiling", orimages.ErrResponseTooLarge, false, CodeResponseTooLarge, entity.DesignAttemptUnknown},
-		// The provider ended the task itself and returned the credits.
-		{"meshy task failed", meshy.ErrTaskFailed, false, CodeTaskFailed, entity.DesignAttemptFailed},
+		// The provider ended the task itself: fal promises no refund, so the money may be gone.
+		{"fal task failed", fal.ErrTaskFailed, false, CodeTaskFailed, entity.DesignAttemptUnknown},
 		// Refused, therefore not billed: the one fault that may be repeated with a clear conscience.
 		{"image rate limited", orimages.ErrRateLimited, true, CodeRateLimited, entity.DesignAttemptFailed},
-		{"vector rate limited", recraft.ErrRateLimited, true, CodeRateLimited, entity.DesignAttemptFailed},
-		{"meshy rate limited", meshy.ErrRateLimited, true, CodeRateLimited, entity.DesignAttemptFailed},
+		{"fal rate limited", fal.ErrRateLimited, true, CodeRateLimited, entity.DesignAttemptFailed},
 		// Still baking; the next pass collects it for free off the accepted attempt.
-		{"meshy not ready", meshy.ErrNotReady, true, CodeProviderTimeout, entity.DesignAttemptUnknown},
-		{"meshy timed out", meshy.ErrTimedOut, true, CodeProviderTimeout, entity.DesignAttemptUnknown},
+		{"fal not ready", fal.ErrNotReady, true, CodeProviderTimeout, entity.DesignAttemptUnknown},
+		{"fal timed out", fal.ErrTimedOut, true, CodeProviderTimeout, entity.DesignAttemptUnknown},
 		{"provider 5xx", orimages.ErrProviderFailure, true, CodeProviderUnavailable, entity.DesignAttemptUnknown},
 		// Ours.
 		{"no route", errRouteMissing, false, CodeKindNotAvailable, entity.DesignAttemptFailed},
@@ -107,15 +96,15 @@ func TestClassifyIsAMoneyDecision(t *testing.T) {
 		{"image empty after a 2xx keeps its sentinel's word",
 			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeEmptyAnswer, HTTPStatus: 200, Engaged: true, Err: orimages.ErrNoImages},
 			false, CodeEmptyResponse, entity.DesignAttemptUnknown},
-		{"recraft direct reset after the write keeps ErrProviderFailure, loses the retry",
-			&callErr{Provider: entity.AIProviderRecraft, Code: aiprov.CodeTransport, Engaged: true,
-				Err: fmt.Errorf("%w: connection reset", recraft.ErrProviderFailure)},
+		{"image reset after the write keeps ErrProviderFailure, loses the retry",
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeTransport, Engaged: true,
+				Err: fmt.Errorf("%w: connection reset", orimages.ErrProviderFailure)},
 			false, CodeProviderUnavailable, entity.DesignAttemptUnknown},
 		// B-13/A3: a 408 answering a PAID POST is engaged (the server may have taken the body and
 		// billed it before giving up) — the sentinel still names the code, the CallError ends the run.
 		{"a 408 on a paid POST: the sentinel names the code, the engaged CallError forbids the retry",
-			&callErr{Provider: entity.AIProviderRecraft, Code: aiprov.CodeProviderError, HTTPStatus: 408, Engaged: true,
-				Err: fmt.Errorf("%w (HTTP 408): timeout", recraft.ErrBadRequest)},
+			&callErr{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeProviderError, HTTPStatus: 408, Engaged: true,
+				Err: fmt.Errorf("%w (HTTP 408): timeout", orimages.ErrBadRequest)},
 			false, CodeBadRequest, entity.DesignAttemptUnknown},
 		{"a 408 on a status poll: a lookup, never engaged, retried for free",
 			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeProviderError, HTTPStatus: 408, Retryable: true,
@@ -137,9 +126,9 @@ func TestClassifyIsAMoneyDecision(t *testing.T) {
 			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeProviderError, HTTPStatus: 502, Retryable: true,
 				Err: errors.New("fal: GET /meshy/v7/requests/r/status: HTTP 502: bad gateway")},
 			true, CodeProviderUnavailable, entity.DesignAttemptFailed},
-		{"meshy 401 on a submit: the setting, not the weather",
-			&callErr{Provider: entity.AIProviderMeshy, Code: aiprov.CodeKeyRejected, HTTPStatus: 401,
-				Err: fmt.Errorf("%w (HTTP 401): nope", meshy.ErrUnauthorized)},
+		{"fal 401 on a submit: the setting, not the weather",
+			&callErr{Provider: entity.AIProviderFal, Code: aiprov.CodeKeyRejected, HTTPStatus: 401,
+				Err: fmt.Errorf("%w (HTTP 401): nope", fal.ErrUnauthorized)},
 			false, CodeUnauthorized, entity.DesignAttemptFailed},
 		// B-13/A2: the transport says «not retryable» for its breaker and the chat fallback; for this
 		// worker the canceller is its own Stop, nothing was written, and the run must survive the deploy.

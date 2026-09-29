@@ -69,8 +69,8 @@ type Config struct {
 	// pixels.
 	//
 	// WHY THE FLAT AND NOT EVERYTHING. A flat is the drawing the pattern room works from: hairline
-	// topstitching, a zip tape, a bar-tack. It is also the picture that gets vectorised afterwards,
-	// and a vectoriser cannot recover a stitch the raster never resolved. A render is looked at; a
+	// topstitching, a zip tape, a bar-tack. It is also the picture a person traces into the
+	// stroke editor, and nobody can recover a stitch the raster never resolved. A render is looked at; a
 	// flat is read.
 	//
 	// THE MONEY WAS ALREADY COVERED, WHICH IS WHY THIS IS SAFE. designPriceEstimate reserves every
@@ -79,20 +79,6 @@ type Config struct {
 	// under-count. Raising the flat to the ceiling spends inside a reservation that was already
 	// being held for it. What it does change is the real bill, so the knob stays a knob.
 	ImageQualityFlat string `mapstructure:"image_quality_flat"`
-	// ThreedProvider names WHICH 3D route is wired: fal | meshy.
-	//
-	// ⚠ IT IS AN EXPLICIT WORD AND NOT «WHICHEVER KEY HAPPENS TO BE SET», AND THAT IS THE WHOLE
-	// POINT. This setting decides WHO GETS PAID for a turntable. A rule like «use fal if FAL_KEY is
-	// present, otherwise Meshy» would move the owner's money from one vendor to another as a side
-	// effect of typing a key into a dashboard, silently, with the history row the only trace. A word
-	// somebody wrote down is the only honest way to say a thing like that.
-	//
-	// THE DEFAULT IS `fal`, BECAUSE THE OWNER NAMED IT: «для 3d как референсы должны использоваться
-	// hitem3d/hi3d/v3.0/multi-view-to-3d и нам нужна интеграция с fal.ai». The consequence is
-	// deliberate and is the behaviour the requirement asks for — with no FAL_KEY the 3D button
-	// refuses IN WORDS, naming the variable, instead of quietly falling back to a provider the owner
-	// did not ask for and reporting success. Meshy stays one variable away.
-	ThreedProvider string `mapstructure:"threed_provider"`
 	// ThreedPBR lets a 3D run ask for realistic materials (params.threed.pbr = on). OFF BY DEFAULT
 	// (DESIGN_THREED_PBR), and that is a money decision, not a taste: a PBR build carries extra maps,
 	// its GLB size on fal meshy/v7 (standard and detailed geometry) is UNMEASURED, and the transport
@@ -134,7 +120,6 @@ const (
 	EnvRunTimeout       = "DESIGN_WORKER_RUN_TIMEOUT"
 	EnvImageQuality     = "DESIGN_IMAGE_QUALITY"
 	EnvImageQualityFlat = "DESIGN_IMAGE_QUALITY_FLAT"
-	EnvThreedProvider   = "DESIGN_THREED_PROVIDER"
 	EnvThreedPBR        = "DESIGN_THREED_PBR"
 	EnvEngineGemini     = "DESIGN_ENGINE_GEMINI"
 	EnvEngineSeedream   = "DESIGN_ENGINE_SEEDREAM"
@@ -205,16 +190,13 @@ func DefaultConfig() Config {
 		RunTimeout:       15 * time.Minute,
 		ImageQuality:     "medium",
 		ImageQualityFlat: ImageQualityMax,
-		ThreedProvider:   ThreedProviderFal,
 	}
 }
 
 // Normalize applies this package's own defaults and ceilings to a configuration IN PLACE.
 //
-// ⚠ IT EXISTS SO NOBODY READS A FIELD BEFORE IT MEANS ANYTHING, and that is not hypothetical: the
-// first version of app.go compared ThreedProvider against `meshy` BEFORE constructing the worker,
-// i.e. before applyDefaults had lower-cased it — so an operator who wrote `MESHY` in the dashboard
-// got fal, silently, and the log line said fal too. New() normalises as a matter of course; a
+// ⚠ IT EXISTS SO NOBODY READS A FIELD BEFORE IT MEANS ANYTHING: app.go reads the config (the image
+// quality, the PBR flag) before constructing the worker. New() normalises as a matter of course; a
 // caller that needs to READ a normalised value before that point calls this. It is idempotent.
 func Normalize(c *Config) {
 	if c == nil {
@@ -243,16 +225,6 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.ImageQualityFlat) == "" {
 		c.ImageQualityFlat = d.ImageQualityFlat
 	}
-	// AN UNKNOWN WORD FALLS BACK TO THE DEFAULT AND app.go SAYS WHICH ROUTE IT WIRED, at info level,
-	// on every boot. Refusing to boot over a typo in a route name would take the whole backend down;
-	// silently picking one and never mentioning it is how a deployment comes to pay a vendor nobody
-	// chose. The pair — normalise here, announce there — is the cheap version of both.
-	switch strings.ToLower(strings.TrimSpace(c.ThreedProvider)) {
-	case ThreedProviderFal, ThreedProviderMeshy:
-		c.ThreedProvider = strings.ToLower(strings.TrimSpace(c.ThreedProvider))
-	default:
-		c.ThreedProvider = d.ThreedProvider
-	}
 	// THE INVARIANT, ENFORCED RATHER THAN DOCUMENTED — AND IT IS ABOUT THE WHOLE BATCH.
 	//
 	// A LEASE IS GRANTED ONCE, TO EVERY ROW OF THE BATCH, AT THE MOMENT OF THE CLAIM. ClaimRuns
@@ -274,7 +246,7 @@ func applyDefaults(c *Config) {
 	// three numbers it is THE BATCH that gives:
 	//
 	//   - RunTimeout bounds a PAID call. Dividing it by the batch would cut a provider wait the
-	//     operator sized deliberately (Meshy alone polls for twelve minutes before it has anything),
+	//     operator sized deliberately (a 3D build alone polls for minutes before it has anything),
 	//     which is the money-losing direction.
 	//   - ClaimLease is how long a genuinely dead worker's run stays stuck in `running` holding its
 	//     budget reservation. Multiplying it by up to the batch ceiling would turn one redeploy into
@@ -341,9 +313,6 @@ func ConfigFromEnv() Config {
 	}
 	if v := strings.TrimSpace(os.Getenv(EnvImageQualityFlat)); v != "" {
 		c.ImageQualityFlat = v
-	}
-	if v := strings.TrimSpace(os.Getenv(EnvThreedProvider)); v != "" {
-		c.ThreedProvider = v
 	}
 	c.ThreedPBR = envBool(EnvThreedPBR, c.ThreedPBR)
 	c.EngineGemini = envBool(EnvEngineGemini, c.EngineGemini)

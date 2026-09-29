@@ -8,13 +8,14 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ───────────── ВТОРЫЕ ВОРОТА: РОД, КОТОРЫЙ ВСЁ РАВНО НЕ ДОЕДЕТ ─────────────
 //
 // ЧТО ЗДЕСЬ ЗАЩИЩАЕТСЯ. StartDesignRun РЕЗЕРВИРУЕТ ДЕНЬГИ: строка заводится с price_estimate, и
 // резерв дня держится до полуночи либо до терминального перехода. Пока приёмник не умел хранить
-// SVG и GLB, каждый прогон вида vector|threed принимался этой дверью, резервировал деньги и через
+// GLB, каждый прогон вида threed принимался этой дверью, резервировал деньги и через
 // тик воркера ГАРАНТИРОВАННО падал — по разу на клик. Отказ обязан стоять до резерва.
 //
 // ЧЕГО ЗДЕСЬ НЕТ И БЫТЬ НЕ ДОЛЖНО: списка родов. Ответ приходит функцией из воркера и считается
@@ -37,18 +38,18 @@ func TestStartDesignRunRefusesAKindThatCannotBeStoredBeforeAnyReserve(t *testing
 	srv.SetDesignKindGate(func(kind string) error {
 		return &stubGateRefusal{
 			reason: "output_not_storable",
-			msg:    "designgen: this route's output has nowhere to be stored: recraft_vector returns image/svg+xml",
+			msg:    "designgen: this route's output has nowhere to be stored: the route returns image/svg+xml",
 		}
 	})
 
-	_, err := srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindVector))
+	_, err := srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindFlat))
 	require.Error(t, err)
 	code, md := errorReason(t, err)
 	require.Equal(t, codes.FailedPrecondition, code,
 		"запрос правильный — не готова система; это не InvalidArgument")
 	require.Equal(t, "output_not_storable", md["reason"],
 		"машинная причина обязана доехать до клиента: по ней он отличает «у нас выключено» от «модель отказала»")
-	require.Equal(t, entity.DesignRunKindVector, md["kind"])
+	require.Equal(t, entity.DesignRunKindFlat, md["kind"])
 	require.Contains(t, err.Error(), "image/svg+xml",
 		"человеку нужно назвать ТИП, из-за которого отказано, иначе чинить нечего")
 	require.Contains(t, err.Error(), "Nothing was reserved")
@@ -59,7 +60,7 @@ func TestStartDesignRunRefusesAKindThatCannotBeStoredBeforeAnyReserve(t *testing
 func TestTheKindGateAppliesToEveryKindItRefuses(t *testing.T) {
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender,
-		entity.DesignRunKindVector, entity.DesignRunKindThreed,
+		entity.DesignRunKindThreed,
 	} {
 		t.Run(kind, func(t *testing.T) {
 			repo := mocks.NewMockRepository(t)
@@ -87,12 +88,12 @@ func TestAKindTheGateAllowsStillReachesTheStore(t *testing.T) {
 	var asked []string
 	rig.srv.SetDesignKindGate(func(k string) error { asked = append(asked, k); return nil })
 
-	resp, err := rig.srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindVector))
+	resp, err := rig.srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindFlat))
 	require.NoError(t, err)
 	require.NotNil(t, resp.GetRun())
-	require.Equal(t, []string{entity.DesignRunKindVector}, asked)
+	require.Equal(t, []string{entity.DesignRunKindFlat}, asked)
 	require.NotNil(t, rig.sent, "разрешённый род обязан дойти до стора")
-	require.Equal(t, entity.DesignRunKindVector, rig.sent.Kind)
+	require.Equal(t, entity.DesignRunKindFlat, rig.sent.Kind)
 }
 
 // TestAnUnwiredKindGateRefusesNothing. Сервер без ворот — это сервер с выключенным флагом денег
@@ -101,7 +102,7 @@ func TestAKindTheGateAllowsStillReachesTheStore(t *testing.T) {
 func TestAnUnwiredKindGateRefusesNothing(t *testing.T) {
 	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
 	require.Nil(t, rig.srv.designKindGate, "стенд собран без ворот — это и есть проверяемый случай")
-	_, err := rig.srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindVector))
+	_, err := rig.srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindFlat))
 	require.NoError(t, err)
 	require.NotNil(t, rig.sent)
 }
@@ -129,9 +130,23 @@ func TestTheMoneyFlagIsCheckedBeforeTheKindGate(t *testing.T) {
 	called := false
 	srv.SetDesignKindGate(func(string) error { called = true; return nil })
 
-	_, err := srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindVector))
+	_, err := srv.StartDesignRun(designRunCtx(), designStartRequest(entity.DesignRunKindFlat))
 	require.Error(t, err)
 	_, md := errorReason(t, err)
 	require.Equal(t, designReasonGenerationDisabled, md["reason"])
 	require.False(t, called, "выключенный флаг закрывает дверь раньше и дешевле")
+}
+
+// TestTheRetiredVectorKindIsRefusedAtTheDoor — vector generation was removed on 2026-09-29 (Recraft
+// out). A client that still sends kind=vector gets InvalidArgument before any read, reserve or gate.
+func TestTheRetiredVectorKindIsRefusedAtTheDoor(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	srv := &Server{repo: repo, designGenerationEnabled: true}
+	gateAsked := false
+	srv.SetDesignKindGate(func(string) error { gateAsked = true; return nil })
+
+	_, err := srv.StartDesignRun(designRunCtx(), designStartRequest("vector"))
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.False(t, gateAsked, "an unknown kind never reaches the gate")
 }

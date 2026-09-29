@@ -8,7 +8,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
@@ -27,12 +26,16 @@ import (
 // поверхности. Пустая строка у каждой опции — сегодняшняя константа (с текстурой, без PBR,
 // стандартная геометрия); так читается всякий прогон, замороженный до полей.
 
-// designThreedMaxReferences — потолок названных картинок. Это потолок ПОСТАВЩИКА (Meshy
-// multi-image-to-3d и meshy на fal: «1 to 4 images»), а не вкус: пятой картинке некуда ехать, и
-// fal без отказа молча берёт первые четыре — то есть покупает модель не того, что человек назвал.
-const designThreedMaxReferences = meshy.MaxImages
+// maxThreedImages — потолок картинок одной 3D-сборки у поставщика (семейство Meshy на fal:
+// «1 to 4 images»).
+const maxThreedImages = 4
 
-// Словари опций — дословно те же слова, что у обоих транспортов (fal.Option*, meshy.Option*).
+// designThreedMaxReferences — потолок названных картинок. Это потолок ПОСТАВЩИКА (maxThreedImages),
+// а не вкус: пятой картинке некуда ехать, и fal без отказа молча берёт первые четыре — то есть
+// покупает модель не того, что человек назвал.
+const designThreedMaxReferences = maxThreedImages
+
+// Словари опций — дословно те же слова, что у транспорта (fal.Option*).
 var (
 	designThreedSwitchWords  = []string{"", fal.OptionOn, fal.OptionOff}
 	designThreedQualityWords = []string{"", fal.QualityStandard, fal.QualityDetailed}
@@ -125,8 +128,7 @@ func designRefuseMalformedThreedReferences(kind string, spoken *pb_common.Design
 		}
 		if first, dup := seen[id]; dup {
 			// Одна картинка на двух позициях — это ОДИН вид, названный двумя сторонами: fal-маршрут
-			// отказал бы уже после резерва, прямой Meshy построил бы модель из двух одинаковых
-			// «сторон». Дёшево сказать здесь.
+			// отказал бы уже после резерва. Дёшево сказать здесь.
 			return designRefusal(codes.InvalidArgument, "duplicate_picture",
 				fmt.Sprintf("%s names picture %d, which params.threed.reference_media_ids.%d already "+
 					"names: each position is a different side of the garment. Nothing was reserved "+
@@ -324,33 +326,23 @@ func (s *Server) designRefuseThreedRoute(kind string, params *pb_common.DesignRu
 
 // ─────────────────────────── цена сборки по её опциям ───────────────────────────
 
-// designThreedCeilingUSDFor — резерв ОДНОЙ сборки 3D при этих опциях: самый дорогой из двух
-// маршрутов, по тому же доводу, что у designThreedCeilingUSD (дверь не знает, какой включён).
+// designThreedCeilingUSDFor — резерв ОДНОЙ сборки 3D при этих опциях (маршрут один — fal).
 //
 // fal: $1.20 обычная, $1.40 «ultra mode» (detailed) — fal.EstimatedRequestUSDForQuality, то есть ТО
 // ЖЕ выражение, которым попытка пишет цену без тарифа. Для сборки без текстуры fal не публикует
-// меньшего числа, и оно не выдумывается: остаётся $1.20. Meshy: (20 | 30 кредитов + 5 за detailed)
-// × $0.02.
+// меньшего числа, и оно не выдумывается: остаётся $1.20.
 //
 // С ПУСТЫМИ ОПЦИЯМИ ЭТО В ТОЧНОСТИ designThreedCeilingUSD() — TestTheDefaultThreedCeilingIsToday.
-func designThreedCeilingUSDFor(texture, quality string) decimal.Decimal {
-	return decimal.Max(fal.EstimatedRequestUSDForQuality("", quality), designMeshyTaskUSDFor(texture, quality))
-}
-
-// designMeshyTaskUSDFor — оценка прямого маршрута Meshy при этих опциях ПО КУРСУ ПО УМОЛЧАНИЮ
-// (meshy.EstimatedTaskUSD: опубликованные кредиты × $0.02). С опциями по умолчанию — ровно
-// designMeshyTaskCeilingUSD (30 кредитов). Настроенный курс (MESHY_CREDIT_USD) читает маршрут
-// (designThreedRunEstimate), а не эта статическая нижняя граница.
-func designMeshyTaskUSDFor(texture, quality string) decimal.Decimal {
-	return meshy.EstimatedTaskUSD(texture, quality)
+func designThreedCeilingUSDFor(_, quality string) decimal.Decimal {
+	return fal.EstimatedRequestUSDForQuality("", quality)
 }
 
 // designThreedRunEstimate — оценка прогона 3D ПО ЕГО ОПЦИЯМ; ok = false для всякого другого рода
 // (там отвечает designEstimateFor). Читает ДЕЙСТВУЮЩИЕ параметры: реран платит за то, что повторяет.
 //
-// ⚠ И ПО ТАРИФУ НАСТРОЕННОГО МАРШРУТА (G-02, Codex 4). Статический потолок выше считает Meshy по
-// $0.02 за кредит и fal по опубликованной цене без тарифа, а собирать деньги будет collect по
-// НАСТРОЕННОМУ тарифу (MESHY_CREDIT_USD; FAL_UNIT_USD × единицы). Поэтому резерв —
+// ⚠ И ПО ТАРИФУ НАСТРОЕННОГО МАРШРУТА (G-02, Codex 4). Статический потолок выше считает fal по
+// опубликованной цене без тарифа, а собирать деньги будет collect по НАСТРОЕННОМУ тарифу
+// (FAL_UNIT_USD × единицы). Поэтому резерв —
 // max(статический потолок, потолок маршрута): никогда не ниже сегодняшнего числа и никогда не ниже
 // того, что запишет collect. Маршрут без числа (fal с тарифом и без FAL_UNITS_CEILING_3D) сюда не
 // доходит — его отказывает designRefuseThreedRoute до резерва.

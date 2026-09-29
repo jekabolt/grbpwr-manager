@@ -16,17 +16,16 @@ import (
 
 // ═══ THE ROUTED 3D PROVIDER (B-24) ═══
 //
-// Before B-24 the panel's `threed` route (fal | meshy, primary + fallback, an optional model) changed
-// nothing about a build: DESIGN_THREED_PROVIDER picked ONE provider at boot, at FAL_MODEL_3D. The panel
-// was lying. Now the Threed slot is a CHOOSER over the registry's live route, built like the image route
+// Before B-24 the panel's `threed` route (primary + fallback, an optional model) changed nothing about
+// a build: an env word picked ONE provider at boot, at FAL_MODEL_3D. The panel was lying. Now the Threed slot is a CHOOSER over the registry's live route, built like the image route
 // (images_route.go): every pass pays ONE candidate — the first callable one, in position order, whose
 // route reads what the run states — and that candidate's concrete provider opens the attempt row and
 // pays. A candidate that fails WITHOUT engaging hands the run to the next one on a fresh attempt, through
 // the worker's re-queue (settle → candidateChain.next); an open breaker PAUSES the route.
 //
-// ⚠ DESIGN_THREED_PROVIDER IS THE CANDIDATE ONLY WHEN THE ROUTE HAS NO ROWS. The seeded route (0373) is
-// `threed → fal`, so a deployment that set DESIGN_THREED_PROVIDER=meshy pays fal from this commit on
-// unless the route is edited: the panel is the truth, the env is the fallback — the boot log names both.
+// ⚠ fal IS THE ONE CANDIDATE OF A ROUTE WITH NO ROWS. Since 2026-09-29 fal is the only 3D provider
+// (it hosts Meshy's models; the direct Meshy provider and DESIGN_THREED_PROVIDER left): the panel's
+// rows are the truth, fal at FAL_MODEL_3D is what an empty route means.
 //
 // ⚠ THE DOOR READS THE SAME ROUTE, LIVE (View): which options it reads, what one build may book — the
 // MAX over the chain, because the reservation must cover whichever candidate ends up paying — and
@@ -34,7 +33,7 @@ import (
 // (dispatch.go threedUnreadAtSubmit), so a route edit between the door and the pickup is caught free.
 
 // routedThreedName is the slot's own name. It NEVER lands in an attempt row: the worker chooses first
-// and records the concrete candidate's name (`fal` | `meshy`, the names every row before B-24 carries).
+// and records the concrete candidate's name (`fal`; older rows may also say `meshy`).
 const routedThreedName = "threed"
 
 // RoutedThreed is the 3D slot as app.go wires it: the Provider the worker routes kind threed to (a
@@ -84,13 +83,11 @@ func ThreedViewOf(r ThreedRoute) ThreedRouteView {
 type routedThreedProvider struct {
 	reg *registry.Registry
 	// factories builds a candidate's concrete provider per provider key: fal → the fal route at the row's
-	// model (FAL_MODEL_3D when ""), meshy → the Meshy route asking for the row's ai_model. A struct build,
-	// cheap enough per choice.
+	// model (FAL_MODEL_3D when ""). A struct build, cheap enough per choice.
 	factories map[string]func(model string) Provider
 	// pbr is DESIGN_THREED_PBR, which every candidate's ThreedRoute is read at.
 	pbr bool
-	// envDefault is DESIGN_THREED_PROVIDER as designgen normalised it: the ONE candidate of a route with
-	// no rows.
+	// envDefault is the ONE candidate of a route with no rows: fal, the only 3D provider.
 	envDefault string
 
 	warnMu sync.Mutex
@@ -99,7 +96,7 @@ type routedThreedProvider struct {
 
 // NewRoutedThreedProvider is the 3D slot over the registry's `threed` route. A nil factory is dropped.
 func NewRoutedThreedProvider(reg *registry.Registry, factories map[string]func(model string) Provider,
-	pbr bool, envDefault string) RoutedThreed {
+	pbr bool) RoutedThreed {
 	f := make(map[string]func(string) Provider, len(factories))
 	for k, fn := range factories {
 		if fn != nil {
@@ -110,13 +107,13 @@ func NewRoutedThreedProvider(reg *registry.Registry, factories map[string]func(m
 		reg:        reg,
 		factories:  f,
 		pbr:        pbr,
-		envDefault: strings.TrimSpace(envDefault),
+		envDefault: ThreedProviderFal,
 		warned:     map[string]uint64{},
 	}
 }
 
 // threedCandidate is one route row's concrete provider (Provider + Collector by delegation), with the
-// registry's breaker around its paid half. Its Name is the inner provider's (`fal` | `meshy`), so attempt
+// registry's breaker around its paid half. Its Name is the inner provider's (`fal`), so attempt
 // rows keep today's names and a resume by name (Providers.byName over Also) is unchanged.
 type threedCandidate struct {
 	inner Provider
@@ -211,8 +208,8 @@ func (p *routedThreedProvider) read() threedRouteRead {
 		}
 	}
 	if !hasRows {
-		// THE ENV IS THE FALLBACK: a route with no row able to serve 3D is DESIGN_THREED_PROVIDER at its
-		// env model, under the same key, bound and breaker rules as a row.
+		// A route with no row able to serve 3D is fal at its env model (FAL_MODEL_3D), under the same key,
+		// bound and breaker rules as a row.
 		out.headKey = p.envDefault
 		c, ok := p.candidate(registry.Candidate{ProviderKey: p.envDefault}, version)
 		if !ok {

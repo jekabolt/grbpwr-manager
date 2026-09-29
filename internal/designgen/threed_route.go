@@ -4,20 +4,20 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/shopspring/decimal"
 )
 
 // ═══ THE CONFIGURED 3D ROUTE, AS THE DOOR AND THE BAND SEE IT (G-02, Codex 3 + 4, Fable M-3) ═══
 //
 // The door used to answer two questions about 3D from constants: WHICH build options a run may
-// state (texture / pbr / quality — always all three) and WHAT one build reserves (the max of fal's
-// published price and Meshy at $0.02 a credit). Both are properties of the route this deployment
+// state (texture / pbr / quality — always all three) and WHAT one build reserves (then: the max of
+// fal's published price and the direct Meshy provider at $0.02 a credit; that provider left on
+// 2026-09-29, 3D is fal only). Both are properties of the route this deployment
 // actually wired, and both went wrong on a configuration nobody on the door could see:
 //
 //   - FAL_MODEL_3D = the retired hitem3d slug: its body sends fixed constants, so every option was
 //     sold and dropped (Codex 3);
-//   - MESHY_CREDIT_USD / FAL_UNIT_USD: the collect books at the configured tariff, the door reserved
+//   - FAL_UNIT_USD: the collect books at the configured tariff, the door reserved
 //     at the default one — the reservation below the booking (Codex 4);
 //   - pbr on fal meshy/v7: its GLB size is unmeasured and the 64 MiB cap fails AFTER the charge,
 //     so it stays off until DESIGN_THREED_PBR says a smoke measured it (M-3).
@@ -31,14 +31,14 @@ const (
 	ThreedOptionPBR     = "pbr"
 	ThreedOptionQuality = "quality"
 	// ThreedOptionSurfaceHint — the person's own words about the surface (params.threed.surface_hint).
-	// A route reads them only when its model has a text field (the meshy family; never the hitem3d
-	// override), and only on a TEXTURED build — an untextured one has no stage to hand them to.
+	// A route reads them only when its model has a text field (the meshy family on fal; never the
+	// hitem3d override), and only on a TEXTURED build — an untextured one has no stage to hand them to.
 	ThreedOptionSurfaceHint = "surface_hint"
 )
 
 // ThreedRoute — what the configured 3D route honours, and the most one build of it may book.
 type ThreedRoute struct {
-	// Provider — fal | meshy, for the refusal sentences.
+	// Provider — fal (the only 3D provider since 2026-09-29), for the refusal sentences.
 	Provider string
 	// Options — the build options this route READS, in band order. An option absent here is one the
 	// route would drop; the door refuses a non-default value of it before any money moves.
@@ -137,7 +137,7 @@ func ThreedUnread(r *ThreedRoute, texture, pbr, quality, surfaceHint string) (op
 }
 
 // ThreedRouteOf — the route a wired 3D provider IS, read off the same client it pays with; nil for a
-// provider that is neither of the two routes (nothing is known about what it reads). The 3D chooser
+// provider that is not the fal route (nothing is known about what it reads). The 3D chooser
 // (threed_choice.go) reads it per candidate for the door's View, and the worker asks it again of the
 // candidate it is about to pay, before every fresh submit — a candidate is the route of its inner provider.
 func ThreedRouteOf(p Provider, pbr bool) *ThreedRoute {
@@ -145,8 +145,6 @@ func ThreedRouteOf(p Provider, pbr bool) *ThreedRoute {
 	switch v := p.(type) {
 	case falThreedProvider:
 		r = FalThreedRoute(v.c, pbr)
-	case threedProvider:
-		r = MeshyThreedRoute(v.c, pbr)
 	case threedCandidate:
 		return ThreedRouteOf(v.inner, pbr)
 	default:
@@ -169,17 +167,5 @@ func FalThreedRoute(c *fal.Client, pbr bool) ThreedRoute {
 		unbounded: "FAL_UNIT_USD is set and FAL_UNITS_CEILING_3D is not: a 3D build would book " +
 			"FAL_UNIT_USD × whatever units fal reports, and no reservation can cover that. Set " +
 			"FAL_UNITS_CEILING_3D, or unset FAL_UNIT_USD to book fal's published per-build price",
-	}
-}
-
-// MeshyThreedRoute — the direct Meshy route: it reads all build options and the surface words, and one task is priced by
-// its published credits at THIS client's rate (MESHY_CREDIT_USD) — the rate CostUSD books with.
-func MeshyThreedRoute(c *meshy.Client, pbr bool) ThreedRoute {
-	return ThreedRoute{
-		Provider: ThreedProviderMeshy,
-		Options:  threedRouteOptions(true, pbr, true),
-		ceiling: func(texture, quality string) (decimal.Decimal, bool) {
-			return c.TaskCeilingUSD(texture, quality), true
-		},
 	}
 }

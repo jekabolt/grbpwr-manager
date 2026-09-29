@@ -96,7 +96,7 @@ func TestBOTH_HALVES_OF_THE_SNAPSHOT_ASK_THE_SAME_PREDICATE(t *testing.T) {
 	band := designBandWith(true)
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindThreed,
-		entity.DesignRunKindVector, entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
+		entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
 	} {
 		src := designInputSources{
 			Kind: kind, Card: card, Refs: band.References, Bench: band.Bench,

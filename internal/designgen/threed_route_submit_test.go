@@ -11,7 +11,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +53,7 @@ func routeWorker(t *testing.T, st *fakeStore, prov Provider, pbr bool) *Worker {
 func TestTheWorkerREFUSES_AN_OPTION_THE_ROUTE_NO_LONGER_READS(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		model  string // fal slug; "" = direct Meshy
+		model  string // fal slug
 		pbr    bool
 		threed string
 		field  string
@@ -65,20 +64,11 @@ func TestTheWorkerREFUSES_AN_OPTION_THE_ROUTE_NO_LONGER_READS(t *testing.T) {
 		{"surface words, now on the hitem3d override", hitemSlug, true, `{"surface_hint": "matte red cotton"}`, ThreedOptionSurfaceHint},
 		{"surface words on an untextured fal meshy build", "meshy/v7/multi-image-to-3d", true,
 			`{"texture": "off", "surface_hint": "matte red cotton"}`, ThreedOptionSurfaceHint},
-		{"surface words on an untextured direct Meshy build", "", true,
-			`{"texture": "off", "surface_hint": "matte red cotton"}`, ThreedOptionSurfaceHint},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			st := &fakeStore{}
-			var body chan string
-			var prov Provider
-			if c.model == "" {
-				stand := newThreedSteerStand(t)
-				body, prov = stand.body, newThreedSteerProvider(t, stand.srv.URL)
-			} else {
-				stand := newFalSubmitStand(t)
-				body, prov = stand.body, falRoute(t, stand.srv.URL, c.model)
-			}
+			stand := newFalSubmitStand(t)
+			body, prov := stand.body, falRoute(t, stand.srv.URL, c.model)
 			w := routeWorker(t, st, prov, c.pbr)
 
 			require.NoError(t, w.execute(context.Background(), routeRun(40, c.threed), "tok"))
@@ -233,7 +223,7 @@ func TestThreedUnreadNAMES_THE_DROPPED_OPTION(t *testing.T) {
 		r := FalThreedRoute(fal.New(fal.Config{APIKey: "k", Model3D: model}), pbr)
 		return &r
 	}
-	mr := MeshyThreedRoute(meshy.New(meshy.Config{APIKey: "k"}), false)
+	mr := fr("meshy/v7/multi-image-to-3d", false)
 	for _, c := range []struct {
 		name                         string
 		r                            *ThreedRoute
@@ -245,9 +235,9 @@ func TestThreedUnreadNAMES_THE_DROPPED_OPTION(t *testing.T) {
 		{"words, no route", nil, "", "", "", "silk", ThreedOptionSurfaceHint},
 		{"words, hitem3d", fr(hitemSlug, true), "", "", "", "silk", ThreedOptionSurfaceHint},
 		{"words, fal meshy", fr("meshy/v7/multi-image-to-3d", false), "", "", "", "silk", ""},
-		{"words, direct meshy", &mr, "on", "", "", "silk", ""},
-		{"words untextured, direct meshy", &mr, "off", "", "", "silk", ThreedOptionSurfaceHint},
-		{"pbr, direct meshy without the flag", &mr, "", "on", "", "", ThreedOptionPBR},
+		{"words textured, fal meshy", mr, "on", "", "", "silk", ""},
+		{"words untextured, fal meshy", mr, "off", "", "", "silk", ThreedOptionSurfaceHint},
+		{"pbr, fal meshy without the flag", mr, "", "on", "", "", ThreedOptionPBR},
 		{"detailed, hitem3d", fr(hitemSlug, true), "", "", "detailed", "", ThreedOptionQuality},
 	} {
 		got, why := ThreedUnread(c.r, c.texture, c.pbr, c.quality, c.words)

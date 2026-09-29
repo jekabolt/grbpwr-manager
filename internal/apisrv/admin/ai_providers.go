@@ -54,9 +54,8 @@ const (
 	// aiKeyMaxBytes bounds a pasted key. Real keys are under 200 characters; the sealed blob must fit
 	// ai_provider.*_key_enc VARBINARY(2048) with its 28 bytes of nonce and tag.
 	aiKeyMaxBytes = 1024
-	// aiNoteViaOpenRouter / aiNoteDesignOff — AiProviderInfo.note.
-	aiNoteViaOpenRouter = "via openrouter"
-	aiNoteDesignOff     = "design generation is off on this server"
+	// aiNoteDesignOff — AiProviderInfo.note.
+	aiNoteDesignOff = "design generation is off on this server"
 )
 
 // AIProvidersWiring is what the AI providers handlers need from app.go.
@@ -65,9 +64,6 @@ type AIProvidersWiring struct {
 	Registry *registry.Registry
 	// KeyRing seals a key before it is stored; a disabled ring (no AI_KEYS_MASTER_KEY) refuses to store.
 	KeyRing *keyring.Ring
-	// RecraftViaOpenRouter — RECRAFT_ROUTE resolved to the OpenRouter route (recraft.Client.Route):
-	// recraft's own key then answers nothing, and the panel says so.
-	RecraftViaOpenRouter bool
 	// ProbeClient is the http.Client a key probe uses; nil = the probe package's default (8 s).
 	ProbeClient *http.Client
 	// Reconcile runs one provider's cost fetch after an accepted admin-key save. Nil = no worker;
@@ -80,7 +76,6 @@ type AIProvidersWiring struct {
 func (s *Server) SetAIProviders(w AIProvidersWiring) {
 	s.aiReg = w.Registry
 	s.aiKeyRing = w.KeyRing
-	s.aiRecraftViaOpenRouter = w.RecraftViaOpenRouter
 	s.aiProbeClient = w.ProbeClient
 	s.aiReconcile = w.Reconcile
 }
@@ -147,7 +142,6 @@ func (s *Server) aiProvidersConfig(ctx context.Context) (*pb_admin.GetAiProvider
 	return dto.AIConfigToPb(aiConfigView(cfg, states, faults, aiViewFlags{
 		masterKeyPresent:        s.aiKeyRing.Enabled(),
 		designGenerationEnabled: s.designGenerationEnabled,
-		recraftViaOpenRouter:    s.aiRecraftViaOpenRouter,
 		chat:                    s.ai,
 	})), nil
 }
@@ -167,7 +161,7 @@ func (s *Server) aiReadConfig(ctx context.Context) (*entity.AIConfig, error) {
 
 // aiViewFlags — the server facts the view needs besides the rows.
 type aiViewFlags struct {
-	masterKeyPresent, designGenerationEnabled, recraftViaOpenRouter bool
+	masterKeyPresent, designGenerationEnabled bool
 	// chat is the chat router, read for its default slugs only (a route row's effective_model); nil =
 	// a Server without SetAIRouter.
 	chat *router.Router
@@ -307,21 +301,18 @@ func aiServesDesign(provider string) bool {
 	for _, c := range entity.AIProviderCapabilities(provider) {
 		switch c {
 		case entity.AICapabilityImage, entity.AICapabilityCutout, entity.AICapabilityEdit,
-			entity.AICapabilityThreed, entity.AICapabilityVector:
+			entity.AICapabilityThreed:
 			return true
 		}
 	}
 	return false
 }
 
-// aiProviderNote is the one short sentence beside a provider. "design generation is off" wins over
-// "via openrouter": with generation off, recraft is not called by any route at all.
+// aiProviderNote is the one short sentence beside a provider: "design generation is off" for a
+// provider only the design band calls, while the band is off.
 func aiProviderNote(provider string, f aiViewFlags) string {
 	if !f.designGenerationEnabled && aiServesDesign(provider) {
 		return aiNoteDesignOff
-	}
-	if provider == entity.AIProviderRecraft && f.recraftViaOpenRouter {
-		return aiNoteViaOpenRouter
 	}
 	return ""
 }

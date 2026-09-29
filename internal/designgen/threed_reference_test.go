@@ -131,28 +131,6 @@ func TestBenchPlate3DBodyIsByteIdentical(t *testing.T) {
 	require.Equal(t, want, raw)
 }
 
-// TestBenchPlate3DMeshyBodyIsByteIdentical — то же для прямого маршрута Meshy.
-func TestBenchPlate3DMeshyBodyIsByteIdentical(t *testing.T) {
-	stand := newThreedSteerStand(t)
-	st := &fakeStore{}
-	w := steerWorker(t, st, newThreedSteerProvider(t, stand.srv.URL))
-	_ = w.execute(context.Background(), steerRun(37), "tok")
-
-	var raw string
-	select {
-	case raw = <-stand.body:
-	default:
-		t.Fatal("сабмита не было")
-	}
-	require.Len(t, st.recordedPrompts, 1)
-	steer, err := json.Marshal(st.recordedPrompts[0])
-	require.NoError(t, err)
-	want := `{"image_urls":["https://cdn.example/m/21.png","https://cdn.example/m/22.png"],` +
-		`"target_formats":["glb"],"should_texture":true,"enable_pbr":false,` +
-		`"texture_prompt":` + string(steer) + `}`
-	require.Equal(t, want, raw)
-}
-
 // ─────────────────── опции доезжают до тела ───────────────────
 
 func refJob() Job {
@@ -165,9 +143,9 @@ func refJob() Job {
 	}
 }
 
-// TestTheRunsOptionsReachBothRoutes — маршрут передаёт опции транспорту дословно и не отдаёт слов
+// TestTheRunsOptionsReachTheRoute — маршрут передаёт опции транспорту дословно и не отдаёт слов
 // сборке без текстуры. МУТАЦИЯ: execute, не копирующий opts в запрос (→ should_texture true, красно).
-func TestTheRunsOptionsReachBothRoutes(t *testing.T) {
+func TestTheRunsOptionsReachTheRoute(t *testing.T) {
 	opts := threedOptions{Texture: "off", Quality: "detailed"}
 
 	falStand := newFalSubmitStand(t)
@@ -180,12 +158,12 @@ func TestTheRunsOptionsReachBothRoutes(t *testing.T) {
 	require.Equal(t, "2k", fb["geometry_resolution"])
 	require.NotContains(t, fb, "texture_prompt")
 
-	mStand := newThreedSteerStand(t)
-	mp := newThreedSteerProvider(t, mStand.srv.URL).(threedProvider)
-	_, err = mp.execute(context.Background(), refJob(), threedOptions{PBR: "on", Quality: "detailed"})
+	pStand := newFalSubmitStand(t)
+	pp := falRoute(t, pStand.srv.URL, "meshy/v7/multi-image-to-3d").(falThreedProvider)
+	_, err = pp.execute(context.Background(), refJob(), threedOptions{PBR: "on", Quality: "detailed"})
 	require.NoError(t, err)
 	var mb map[string]any
-	require.NoError(t, json.Unmarshal([]byte(<-mStand.body), &mb))
+	require.NoError(t, json.Unmarshal([]byte(<-pStand.body), &mb))
 	require.Equal(t, true, mb["enable_pbr"])
 	require.Equal(t, "2k", mb["geometry_resolution"])
 	require.Equal(t, "colourway BLK", mb["texture_prompt"])
