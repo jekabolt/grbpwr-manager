@@ -96,17 +96,17 @@ const (
 	orFallback = " — fallback only: OpenRouter's usage.cost wins"
 )
 
-// srcRunblob — runblob's image families, as the panel lists them. UNPRICED ON PURPOSE: runblob states
-// the price of EVERY generation at submit (Submission.PriceUSD — «0.0210», «0.0290»), and the image
-// transport books that number as cost_source provider; a rate here would be a second number that
-// disagrees the day runblob edits its page. The slugs are the transport's (runblob.ImageSlugs; a test
-// there pins the two lists together).
+// srcRunblob — runblob's families (catalogue_runblob.go), as the panel lists them. UNPRICED ON PURPOSE:
+// runblob states the price of EVERY generation at submit (Submission.PriceUSD — «0.0210», «0.0290»), and
+// the transports book that number as cost_source provider; a rate here would be a second number that
+// disagrees the day runblob edits its page. The image slugs are the image transport's (runblob.ImageSlugs;
+// a test there pins the two lists together).
 const srcRunblob = "unpriced — runblob states its price per generation at submit (Submission.PriceUSD, " +
 	"booked as cost_source provider); tmp/plans/ai-providers/runblob-specs/kling.json and the Nano Banana " +
 	"docs page, read 2026-09-28"
 
 // catalogue — the curated rows: the direct providers and OpenRouter here, the resellers' full lists in
-// their own files (catalogue_apibost.go). fal has no rows yet: its money arrives as billable units × a
+// their own files (catalogue_apibost.go, catalogue_runblob.go). fal has no rows yet: its money arrives as billable units × a
 // tariff and is priced by its caller. runblob's rows are LISTED and UNPRICED (srcRunblob): the panel
 // needs the slugs to offer, and the ledger takes runblob's own number.
 //
@@ -202,16 +202,7 @@ var catalogue = map[string][]Model{
 		image(entity.AIProviderOpenRouter, "bytedance-seed/seedream-5-0-pro", "Seedream 5 Pro", "0.045", srcSeedream5Pro+orFallback),
 	},
 	entity.AIProviderApibost: apibostRows,
-	entity.AIProviderRunblob: {
-		unpricedRow(entity.AIProviderRunblob, "gemini/standard", "Nano Banana (standard)", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/pro", "Nano Banana Pro", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/v2", "Nano Banana 2", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/v2_lite", "Nano Banana 2 Lite", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/pro_vip", "Nano Banana Pro VIP", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/v2_vip", "Nano Banana 2 VIP", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "kling/o1-photo", "Kling O1 Photo", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "kling/o3-photo", "Kling O3 Photo", KindImage, srcRunblob),
-	},
+	entity.AIProviderRunblob: runblobRows,
 }
 
 // Catalogue returns a copy of the curated rows of one provider (nil when it has none).

@@ -126,7 +126,7 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	requireNone(t, got, src) // usage missing is not a free call
 
 	require.Empty(t, Catalogue(entity.AIProviderFal), "fal is priced by billable units, not by this table")
-	// runblob (B-31): LISTED so the panel can offer the eight image slugs, UNPRICED so the ledger takes
+	// runblob (B-31, H2): LISTED so the panel can offer every family, UNPRICED so the ledger takes
 	// runblob's own submit price and never a number this table made up.
 	for _, m := range Catalogue(entity.AIProviderRunblob) {
 		got, src := Price(entity.AIProviderRunblob, m.Slug, Usage{Units: decimal.NewNullDecimal(decimal.NewFromInt(1)), Unit: "image"})
@@ -134,25 +134,32 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	}
 }
 
-// TestPricingRunblobRowsAreListedUnpriced — the eight image slugs of runblob's transport are in the
-// catalogue as image rows with no rate: the panel lists them (priced=false), the ledger books the
-// provider's own price (cost_source provider) and never a table number.
+// TestPricingRunblobRowsAreListedUnpriced — every runblob family is in the catalogue with no rate: the
+// image transport's slugs (and the chatgpt-images family lane H5 wires) as image rows, the Kling /
+// Kling-omni / Seedance models as video rows under the bare model value the video route sends. The
+// panel lists them (priced=false); the ledger books the provider's own submit price (cost_source
+// provider), never a table number.
 //
 // MUTATION (measured red→green): give "gemini/standard" a PerCallUSD of "0.021" → red (a rate that
-// would silently disagree with runblob's own price); drop the kling/o3-photo row → red.
+// would silently disagree with runblob's own price); drop the kling/o3-photo row → red; kind image on
+// kling_2.5_turbo → red.
 func TestPricingRunblobRowsAreListedUnpriced(t *testing.T) {
-	rows := Catalogue(entity.AIProviderRunblob)
-	slugs := make([]string, 0, len(rows))
-	for _, m := range rows {
-		slugs = append(slugs, m.Slug)
-		require.Equal(t, KindImage, m.Kind, m.Slug)
+	byKind := map[string][]string{}
+	for _, m := range Catalogue(entity.AIProviderRunblob) {
+		byKind[m.Kind] = append(byKind[m.Kind], m.Slug)
 		require.False(t, m.PerCallUSD.Valid, "%s: runblob's price is per call, from the submit, never a table rate", m.Slug)
 		require.False(t, m.InputUSDPer1M.Valid || m.OutputUSDPer1M.Valid, m.Slug)
 		require.True(t, strings.HasPrefix(m.Source, "unpriced"), m.Slug)
 		require.Contains(t, m.Source, "cost_source provider", m.Slug)
 	}
-	require.Equal(t, []string{"gemini/standard", "gemini/pro", "gemini/v2", "gemini/v2_lite", "gemini/pro_vip", "gemini/v2_vip",
-		"kling/o1-photo", "kling/o3-photo"}, slugs)
+	require.Equal(t, map[string][]string{
+		KindImage: {"gemini/standard", "gemini/pro", "gemini/v2", "gemini/v2_lite", "gemini/pro_vip", "gemini/v2_vip",
+			"kling/o1-photo", "kling/o3-photo", "chatgpt-images/gpt-5-2", "chatgpt-images/chatgpt-2.5"},
+		KindVideo: {"kling_3", "kling_3_pro", "kling_3_motion", "kling_3_motion_pro", "kling_2.6", "kling_2.6_motion",
+			"kling_2.6_motion_pro", "kling_2.5_turbo", "kling_2.5_turbo_pro", "kling_2.1", "kling_2.1_pro", "kling_2.1_master",
+			"kling_1.6", "kling_1.6_pro", "kling_o1", "kling_o3", "kling_o3_pro",
+			"seedance-2.0-mini", "doubao-seedance-2.0-face", "doubao-seedance-2.0-fast-face", "doubao-seedance-2.5-face"},
+	}, byKind)
 }
 
 // TestPricingEveryRowHasSource — every row says where its number came from; an unpriced row says
@@ -195,10 +202,11 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 		}
 	}
 	// The A brief's 19 direct/OpenRouter rows + lane H2's 36 direct rows (21 openai, 6 anthropic, 9 google)
-	// + apibost's 67 chat/image models (catalogue_apibost.go) + runblob's 8 unpriced image slugs (B-31).
+	// + apibost's 67 chat/image models (catalogue_apibost.go) + runblob's 31 unpriced rows, 10 image + 21
+	// video (catalogue_runblob.go).
 	require.Equal(t, map[string]int{
 		entity.AIProviderOpenAI: 25, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
-		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 8,
+		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 31,
 	}, count)
 }
 
