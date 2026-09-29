@@ -3,7 +3,7 @@
 //
 // ⚠ IT IS THE THIRD SOURCE OF A LEDGER PRICE, NOT THE FIRST. The rank (02-PLAN §6) is: `provider`
 // (the provider's own number — OpenRouter usage.cost, runblob's price) > `units` (billable units or
-// credits × a tariff — fal, Meshy, Recraft) > `table` (this package) > `none` (NULL). A row here is
+// credits × a tariff — fal) > `table` (this package) > `none` (NULL). A row here is
 // what the ledger records when nothing better arrived; the report says `cost_source` beside it.
 //
 // ⚠ NO NUMBER HERE IS INVENTED. A slug whose price could not be sourced has NULL rates and a Source
@@ -23,18 +23,22 @@ import (
 
 // Version is recorded on every table-priced ledger row (ai_usage_event.price_version), so a price
 // edit here never silently re-prices history: rows keep saying which table priced them.
-const Version = "2026-09-27"
+const Version = "2026-09-29"
 
 // Row kinds — the capability vocabulary (entity.AIProviderCapabilities) a row serves.
 const (
-	KindChat  = "chat"
-	KindImage = "image"
+	KindChat   = entity.AICapabilityChat
+	KindImage  = entity.AICapabilityImage
+	KindVideo  = entity.AICapabilityVideo
+	KindEdit   = entity.AICapabilityEdit
+	KindCutout = entity.AICapabilityCutout
+	KindThreed = entity.AICapabilityThreed
 )
 
 // Model is one curated row. A chat row has InputUSDPer1M + OutputUSDPer1M (CachedInputUSDPer1M
 // when the provider publishes a cache rate — none of today's rows has a sourced one, so cached
-// tokens are billed at the input rate: never under). An image row has PerCallUSD: the price of ONE
-// output picture at the quality the row names. An unpriced row has neither.
+// tokens are billed at the input rate: never under). A per-call row (image, and fal's edit rows) has
+// PerCallUSD: the price of ONE output at the quality the row names. An unpriced row has neither.
 type Model struct {
 	Provider, Slug, Label, Kind                                    string
 	InputUSDPer1M, OutputUSDPer1M, CachedInputUSDPer1M, PerCallUSD decimal.NullDecimal
@@ -61,16 +65,21 @@ func chat(provider, slug, label, in, out, source string) Model {
 		InputUSDPer1M: usd(in), OutputUSDPer1M: usd(out), Source: source}
 }
 
-func image(provider, slug, label, perCall, source string) Model {
-	return Model{Provider: provider, Slug: slug, Label: label, Kind: KindImage,
-		PerCallUSD: usd(perCall), Source: source}
+func image(provider, slug, label, price, source string) Model {
+	return perCall(provider, slug, label, KindImage, price, source)
+}
+
+// perCall is a row priced per output (one picture, one generation) of any non-chat kind.
+func perCall(provider, slug, label, kind, price, source string) Model {
+	return Model{Provider: provider, Slug: slug, Label: label, Kind: kind,
+		PerCallUSD: usd(price), Source: source}
 }
 
 func unpricedRow(provider, slug, label, kind, source string) Model {
 	return Model{Provider: provider, Slug: slug, Label: label, Kind: kind, Source: source}
 }
 
-// Where the numbers come from (all read or recorded by 2026-09-27).
+// Where the numbers come from (read or recorded 2026-09-27 … 2026-09-29).
 const (
 	srcBrief = "tmp/plans/ai-providers/06-BRIEFS-A.md curated table, 2026-09-27"
 	// OpenRouter's live chat catalogue, read 2026-09-27 (the IdeasFallbackModel note in openrouter.go).
@@ -84,41 +93,85 @@ const (
 		"× $120/M ≈ $0.134 (4K ≈ $0.24 not modelled; designgen/engines.go)"
 	srcSeedream5Pro = "https://www.atlascloud.ai/blog/ai-updates/seedream-5-0-pro-price, read 2026-09-27: ≤ 2.36 MP $0.045 " +
 		"(the 2K variant $0.09 not modelled; designgen/engines.go)"
-	srcApibost = "apibost.com Model Square, read 2026-09-27"
+	// The direct providers' own list prices (lane H2): each page read 2026-09-29, the standard (not
+	// batch / flex / fast) tier, the short-context rate where the page has two.
+	srcOpenAIList    = "https://developers.openai.com/api/docs/pricing (Standard tier), read 2026-09-29"
+	srcAnthropicList = "https://platform.claude.com/docs/en/about-claude/pricing (base input / output), read 2026-09-29"
+	srcGoogleList    = "https://ai.google.dev/gemini-api/docs/pricing (Paid tier, Standard), read 2026-09-29"
+	// A direct row whose slug apibost proves exists but whose list price no page stated.
+	srcDirectUnpriced = "unpriced — list price not sourced 2026-09-29; "
 	// OpenRouter returns the provider's own cost (usage.cost); its rows are the fallback when it did not.
 	orFallback = " — fallback only: OpenRouter's usage.cost wins"
 )
 
-// srcRunblob — runblob's image families, as the panel lists them. UNPRICED ON PURPOSE: runblob states
-// the price of EVERY generation at submit (Submission.PriceUSD — «0.0210», «0.0290»), and the image
-// transport books that number as cost_source provider; a rate here would be a second number that
-// disagrees the day runblob edits its page. The slugs are the transport's (runblob.ImageSlugs; a test
-// there pins the two lists together).
+// srcRunblob — runblob's families (catalogue_runblob.go), as the panel lists them. UNPRICED ON PURPOSE:
+// runblob states the price of EVERY generation at submit (Submission.PriceUSD — «0.0210», «0.0290»), and
+// the transports book that number as cost_source provider; a rate here would be a second number that
+// disagrees the day runblob edits its page. The image slugs are the image transport's (runblob.ImageSlugs;
+// a test there pins the two lists together).
 const srcRunblob = "unpriced — runblob states its price per generation at submit (Submission.PriceUSD, " +
 	"booked as cost_source provider); tmp/plans/ai-providers/runblob-specs/kling.json and the Nano Banana " +
 	"docs page, read 2026-09-28"
 
-// catalogue — the curated rows, in the order of the brief. fal, meshy and recraft have no rows on
-// purpose: their money arrives as units / credits (fal tariffs, MESHY_CREDIT_USD, recraft credits) and
-// is priced by their callers. runblob's rows are LISTED and UNPRICED (srcRunblob): the panel needs the
-// eight slugs to offer on image.generate, and the ledger takes runblob's own number.
+// catalogue — the curated rows: the direct providers and OpenRouter here, the resellers' full lists in
+// their own files (catalogue_apibost.go, catalogue_runblob.go, catalogue_fal.go). fal's rows are priced
+// only where fal states one flat figure per output: its money arrives as billable units × a tariff
+// (cost_source units, which outranks this table). runblob's rows are LISTED and UNPRICED (srcRunblob):
+// the panel needs the slugs to offer, and the ledger takes runblob's own number.
+//
+// A direct row is priced from the provider's own page (srcOpenAIList, srcAnthropicList, srcGoogleList,
+// read 2026-09-29) — four rows the A brief carried were re-priced to it and say what the brief had —
+// else it keeps its earlier sourced figure (srcBrief and the others above) or is unpriced with the
+// reseller's relay price in the note.
 var catalogue = map[string][]Model{
 	entity.AIProviderOpenAI: {
-		chat(entity.AIProviderOpenAI, "gpt-5.2", "GPT-5.2", "1.25", "10",
-			srcBrief+" — UNVERIFIED (marked «verify»; check https://openai.com/api/pricing/ on beta)"),
+		chat(entity.AIProviderOpenAI, "gpt-5.2", "GPT-5.2", "1.75", "14",
+			srcOpenAIList+" (the A brief had an UNVERIFIED $1.25/$10, 2026-09-27)"),
 		chat(entity.AIProviderOpenAI, "gpt-5-mini", "GPT-5 mini", "0.25", "2",
 			srcORModels+": openai/gpt-5-mini $0.25/M in, $2/M out (OpenRouter passes the list price through)"),
 		image(entity.AIProviderOpenAI, "gpt-image-2", "GPT Image 2", "0.053", srcORGPTImage2),
 		image(entity.AIProviderOpenAI, "gpt-image-2.5-sunburst", "GPT Image 2.5", "0.013", srcGPTImage25),
+		// Lane H2: the models apibost proves exist, priced from OpenAI's own page.
+		chat(entity.AIProviderOpenAI, "gpt-6-astra", "GPT-6 Astra", "10", "50", srcOpenAIList+" (short context; the long-context rate is not modelled)"),
+		chat(entity.AIProviderOpenAI, "gpt-6-sol", "GPT-6 Sol", "2", "10", srcOpenAIList+" (short context; the long-context rate is not modelled)"),
+		chat(entity.AIProviderOpenAI, "gpt-6-luna", "GPT-6 Luna", "0.1", "0.5", srcOpenAIList+" (short context; the long-context rate is not modelled)"),
+		chat(entity.AIProviderOpenAI, "gpt-5.6-sol", "GPT-5.6 Sol", "4", "20", srcOpenAIList+" — a promotional price «at least through November 21, 2026»: re-read then"),
+		chat(entity.AIProviderOpenAI, "gpt-5.6-terra", "GPT-5.6 Terra", "2", "12", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-5.6-luna", "GPT-5.6 Luna", "0.2", "1.2", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-5.5", "GPT-5.5", "5", "30", srcOpenAIList+" (the <272K-context rate)"),
+		chat(entity.AIProviderOpenAI, "gpt-5.4", "GPT-5.4", "2.5", "15", srcOpenAIList+" (the <272K-context rate)"),
+		chat(entity.AIProviderOpenAI, "gpt-5.4-mini", "GPT-5.4 mini", "0.75", "4.5", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-5.4-nano", "GPT-5.4 nano", "0.2", "1.25", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-5", "GPT-5", "1.25", "10", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-5-nano", "GPT-5 nano", "0.05", "0.4", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "o3", "o3", "2", "8", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "o3-mini", "o3-mini", "1.1", "4.4", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "o4-mini", "o4-mini", "1.1", "4.4", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-4.1", "GPT-4.1", "2", "8", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-4.1-mini", "GPT-4.1 mini", "0.4", "1.6", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-4.1-nano", "GPT-4.1 nano", "0.1", "0.4", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-4o", "GPT-4o", "2.5", "10", srcOpenAIList),
+		chat(entity.AIProviderOpenAI, "gpt-4o-mini", "GPT-4o mini", "0.15", "0.6", srcOpenAIList),
+		unpricedRow(entity.AIProviderOpenAI, "gpt-image-1.5", "GPT Image 1.5", KindImage,
+			srcDirectUnpriced+"OpenAI prices image output per token, not per picture; apibost relays it at $0.16 per image"),
 	},
 	entity.AIProviderAnthropic: {
-		chat(entity.AIProviderAnthropic, "claude-sonnet-5", "Claude Sonnet 5", "3", "15",
-			srcBrief+" (the Sonnet-class tariff $3/M in, $15/M out — the same pair as design_run.go designChatUSDPerMTok*)"),
-		chat(entity.AIProviderAnthropic, "claude-opus-5-5", "Claude Opus 5.5", "5", "25",
-			"UNVERIFIED — $5/M in, $25/M out carried from OpenRouter's anthropic/claude-opus-5 price (live tech-card "+
-				"analysis run, 2026-08-25); apibost Model Square lists $75/$75 (2026-09-27); check https://www.anthropic.com/pricing on beta"),
+		chat(entity.AIProviderAnthropic, "claude-sonnet-5", "Claude Sonnet 5", "2", "10",
+			srcAnthropicList+": the $2/$10 launch price is now standard, the announced rise to $3/$15 will not happen "+
+				"(the A brief had $3/$15, 2026-09-27)"),
+		chat(entity.AIProviderAnthropic, "claude-opus-5-5", "Claude Opus 5.5", "4", "20",
+			srcAnthropicList+" (the A brief had an UNVERIFIED $5/$25 carried from OpenRouter's claude-opus-5, 2026-09-27; "+
+				"apibost's flat ratio derives $75/$75, its tiered_expr p×4 + c×20 matches the list price)"),
 		chat(entity.AIProviderAnthropic, "claude-haiku-4-5-20251001", "Claude Haiku 4.5", "1", "5",
 			srcBrief+" (apibost Model Square lists the same $1/$5)"),
+		// Lane H2: the models apibost proves exist (its "-thinking" names are apibost's own, not
+		// Anthropic's), priced from Anthropic's own page.
+		chat(entity.AIProviderAnthropic, "claude-fable-5-1", "Claude Fable 5.1", "10", "50", srcAnthropicList),
+		chat(entity.AIProviderAnthropic, "claude-fable-5", "Claude Fable 5", "10", "50", srcAnthropicList),
+		chat(entity.AIProviderAnthropic, "claude-opus-4-8", "Claude Opus 4.8", "5", "25", srcAnthropicList),
+		chat(entity.AIProviderAnthropic, "claude-opus-4-6", "Claude Opus 4.6", "5", "25", srcAnthropicList),
+		chat(entity.AIProviderAnthropic, "claude-sonnet-4-6", "Claude Sonnet 4.6", "3", "15", srcAnthropicList),
+		chat(entity.AIProviderAnthropic, "claude-sonnet-4-5-20250929", "Claude Sonnet 4.5", "3", "15", srcAnthropicList),
 	},
 	entity.AIProviderGoogle: {
 		chat(entity.AIProviderGoogle, "gemini-2.5-pro", "Gemini 2.5 Pro", "1.25", "10",
@@ -126,8 +179,22 @@ var catalogue = map[string][]Model{
 		chat(entity.AIProviderGoogle, "gemini-2.5-flash", "Gemini 2.5 Flash", "0.30", "2.50",
 			srcBrief+" (Google AI Studio list price)"),
 		image(entity.AIProviderGoogle, "gemini-3-pro-image", "Gemini 3 Pro Image", "0.134", srcGemini3ProImage),
-		unpricedRow(entity.AIProviderGoogle, "gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", KindChat,
-			"unpriced — no Google AI Studio price sourced by 2026-09-27 ("+srcBrief+")"),
+		chat(entity.AIProviderGoogle, "gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", "0.25", "1.50",
+			srcGoogleList+" (text / image / video input; audio input $0.50 is not modelled; the A brief had it "+
+				"unpriced, 2026-09-27)"),
+		// Lane H2: the models apibost proves exist, priced from Google's own page.
+		chat(entity.AIProviderGoogle, "gemini-3.8-flash", "Gemini 3.8 Flash", "0.75", "3.75", srcGoogleList+" — «through December 31, 2026»; $1.50/$7.50 from 2027-01-01: re-price then"),
+		chat(entity.AIProviderGoogle, "gemini-3.7-flash", "Gemini 3.7 Flash", "0.75", "3.75", srcGoogleList+" — «through December 31, 2026»; $1.50/$7.50 from 2027-01-01: re-price then"),
+		chat(entity.AIProviderGoogle, "gemini-3.5-flash", "Gemini 3.5 Flash", "1.5", "9", srcGoogleList),
+		chat(entity.AIProviderGoogle, "gemini-3.1-pro-preview", "Gemini 3.1 Pro (preview)", "2", "12", srcGoogleList+" (prompts ≤ 200k tokens; the long-prompt tier is not modelled)"),
+		unpricedRow(entity.AIProviderGoogle, "gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite (preview)", KindChat,
+			srcDirectUnpriced+"not on Google's pricing page (the GA gemini-3.1-flash-lite is); apibost relays it at $0.25/$1.50"),
+		image(entity.AIProviderGoogle, "gemini-3.1-flash-image", "Gemini 3.1 Flash Image", "0.067", srcGoogleList+": $0.067 per 1K image (0.5K $0.045, 2K $0.101, 4K $0.151 not modelled)"),
+		image(entity.AIProviderGoogle, "gemini-3.1-flash-lite-image", "Gemini 3.1 Flash-Lite Image", "0.0336", srcGoogleList+": $0.0336 per 1K-resolution image"),
+		unpricedRow(entity.AIProviderGoogle, "gemini-3.1-flash-image-preview", "Gemini 3.1 Flash Image (preview)", KindImage,
+			srcDirectUnpriced+"not on Google's pricing page (the GA gemini-3.1-flash-image is); apibost relays it at $0.04 per image"),
+		unpricedRow(entity.AIProviderGoogle, "gemini-3-pro-image-preview", "Gemini 3 Pro Image (preview)", KindImage,
+			srcDirectUnpriced+"not on Google's pricing page (the GA gemini-3-pro-image is); apibost relays it at $0.13 per image"),
 	},
 	entity.AIProviderOpenRouter: {
 		chat(entity.AIProviderOpenRouter, "anthropic/claude-sonnet-5", "Claude Sonnet 5", "3", "15",
@@ -146,26 +213,9 @@ var catalogue = map[string][]Model{
 		image(entity.AIProviderOpenRouter, "google/gemini-3-pro-image", "Gemini 3 Pro Image", "0.134", srcGemini3ProImage+orFallback),
 		image(entity.AIProviderOpenRouter, "bytedance-seed/seedream-5-0-pro", "Seedream 5 Pro", "0.045", srcSeedream5Pro+orFallback),
 	},
-	entity.AIProviderApibost: {
-		chat(entity.AIProviderApibost, "claude-fable-5-1", "Claude Fable 5.1", "8", "40", srcApibost),
-		chat(entity.AIProviderApibost, "claude-sonnet-5", "Claude Sonnet 5", "2", "10", srcApibost),
-		chat(entity.AIProviderApibost, "claude-haiku-4-5-20251001", "Claude Haiku 4.5", "1", "5", srcApibost),
-		chat(entity.AIProviderApibost, "gemini-2.5-flash", "Gemini 2.5 Flash", "0.3", "2.5", srcApibost),
-		chat(entity.AIProviderApibost, "gemini-2.5-pro", "Gemini 2.5 Pro", "1.25", "10", srcApibost),
-		image(entity.AIProviderApibost, "dall-e-3", "DALL·E 3", "0.04", srcApibost),
-		image(entity.AIProviderApibost, "flux-kontext-pro", "FLUX Kontext Pro", "0.08", srcApibost),
-		image(entity.AIProviderApibost, "gemini-2.5-flash-image", "Gemini 2.5 Flash Image", "0.02", srcApibost),
-	},
-	entity.AIProviderRunblob: {
-		unpricedRow(entity.AIProviderRunblob, "gemini/standard", "Nano Banana (standard)", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/pro", "Nano Banana Pro", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/v2", "Nano Banana 2", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/v2_lite", "Nano Banana 2 Lite", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/pro_vip", "Nano Banana Pro VIP", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "gemini/v2_vip", "Nano Banana 2 VIP", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "kling/o1-photo", "Kling O1 Photo", KindImage, srcRunblob),
-		unpricedRow(entity.AIProviderRunblob, "kling/o3-photo", "Kling O3 Photo", KindImage, srcRunblob),
-	},
+	entity.AIProviderApibost: apibostRows,
+	entity.AIProviderRunblob: runblobRows,
+	entity.AIProviderFal:     falRows,
 }
 
 // Catalogue returns a copy of the curated rows of one provider (nil when it has none).
