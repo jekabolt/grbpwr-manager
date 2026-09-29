@@ -42,7 +42,7 @@ func TestPricingKnownSlugPricesTokens(t *testing.T) {
 	requireUSD(t, "0.113245", usd, src) // 10149 × 5/M + 2500 × 25/M
 
 	usd, src = Price(entity.AIProviderAnthropic, "claude-sonnet-5", Usage{Prompt: 2000, Completion: 1600})
-	requireUSD(t, "0.03", usd, src) // the hand-computed draft-idea base in design_run.go
+	requireUSD(t, "0.02", usd, src) // 2000 × 2/M + 1600 × 10/M (Anthropic's list price, 2026-09-29)
 
 	usd, src = Price(entity.AIProviderApibost, "claude-fable-5-1", Usage{Prompt: 1000, Completion: 0})
 	requireUSD(t, "0.008", usd, src)
@@ -112,9 +112,8 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	for _, c := range []struct{ provider, slug string }{
 		{entity.AIProviderOpenAI, "gpt-9000"},
 		{"nonexistent", "gpt-5-mini"},
-		{entity.AIProviderOpenAI, "openai/gpt-5-mini"},     // an OpenRouter slug on the direct provider
-		{entity.AIProviderOpenRouter, "gpt-5-mini"},        // and the reverse
-		{entity.AIProviderGoogle, "gemini-3.1-flash-lite"}, // the OpenRouter row IS priced (live read in openrouter.go:131-133)
+		{entity.AIProviderOpenAI, "openai/gpt-5-mini"}, // an OpenRouter slug on the direct provider
+		{entity.AIProviderOpenRouter, "gpt-5-mini"},    // and the reverse
 		{entity.AIProviderFal, "fal-ai/birefnet/v2"},
 		{entity.AIProviderRunblob, "kling_2.5_turbo"},
 		{"", ""},
@@ -216,24 +215,27 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 	}, count)
 }
 
-// TestPricingCatalogueMatchesTheBrief — the curated numbers, one by one, as 06-BRIEFS-A lists them
-// (the sunburst row on OpenRouter carries the brief's figure for the same model on the direct row).
+// TestPricingCatalogueFollowsTheProvidersPages — the curated numbers, one by one. A direct row's number
+// is the provider's own list price as its page stated it on 2026-09-29 (gpt-5.2, claude-sonnet-5,
+// claude-opus-5-5 and gemini-3.1-flash-lite were re-priced from the A brief's figures that day); the
+// rows no page re-stated keep their earlier sourced figure (06-BRIEFS-A: OpenRouter's, apibost's, the
+// sunburst row on OpenRouter carrying the direct row's figure).
 //
 // MUTATION: change any one number in the catalogue → red.
-func TestPricingCatalogueMatchesTheBrief(t *testing.T) {
+func TestPricingCatalogueFollowsTheProvidersPages(t *testing.T) {
 	type row struct{ provider, slug, in, out, perCall string } // "" = NULL
 	want := []row{
-		{"openai", "gpt-5.2", "1.25", "10", ""},
+		{"openai", "gpt-5.2", "1.75", "14", ""},
 		{"openai", "gpt-5-mini", "0.25", "2", ""},
 		{"openai", "gpt-image-2", "", "", "0.053"},
 		{"openai", "gpt-image-2.5-sunburst", "", "", "0.013"},
-		{"anthropic", "claude-sonnet-5", "3", "15", ""},
-		{"anthropic", "claude-opus-5-5", "5", "25", ""},
+		{"anthropic", "claude-sonnet-5", "2", "10", ""},
+		{"anthropic", "claude-opus-5-5", "4", "20", ""},
 		{"anthropic", "claude-haiku-4-5-20251001", "1", "5", ""},
 		{"google", "gemini-2.5-pro", "1.25", "10", ""},
 		{"google", "gemini-2.5-flash", "0.30", "2.50", ""},
 		{"google", "gemini-3-pro-image", "", "", "0.134"},
-		{"google", "gemini-3.1-flash-lite", "", "", ""},
+		{"google", "gemini-3.1-flash-lite", "0.25", "1.50", ""},
 		{"openrouter", "anthropic/claude-sonnet-5", "3", "15", ""},
 		{"openrouter", "anthropic/claude-opus-5", "5", "25", ""},
 		{"openrouter", "openai/gpt-5-mini", "0.25", "2", ""},
@@ -268,9 +270,14 @@ func TestPricingCatalogueMatchesTheBrief(t *testing.T) {
 		eq(w.provider+"/"+w.slug+" per call", w.perCall, m.PerCallUSD)
 		require.False(t, m.CachedInputUSDPer1M.Valid, "%s/%s: no cache rate was sourced", w.provider, w.slug)
 	}
-	require.Contains(t, mustLookup(t, "anthropic", "claude-opus-5-5").Source, "UNVERIFIED")
-	require.Contains(t, mustLookup(t, "anthropic", "claude-opus-5-5").Source, "$75/$75")
-	require.Contains(t, mustLookup(t, "openai", "gpt-5.2").Source, "UNVERIFIED")
+	for _, c := range []struct{ provider, slug, page string }{
+		{"openai", "gpt-5.2", srcOpenAIList}, {"anthropic", "claude-sonnet-5", srcAnthropicList},
+		{"anthropic", "claude-opus-5-5", srcAnthropicList}, {"google", "gemini-3.1-flash-lite", srcGoogleList},
+	} {
+		src := mustLookup(t, c.provider, c.slug).Source
+		require.True(t, strings.HasPrefix(src, c.page), "%s/%s: names the page it was read from", c.provider, c.slug)
+		require.Contains(t, src, "the A brief had", "%s/%s: says what it replaced", c.provider, c.slug)
+	}
 }
 
 func mustLookup(t *testing.T, provider, slug string) Model {

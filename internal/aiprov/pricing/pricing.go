@@ -119,13 +119,14 @@ const srcRunblob = "unpriced — runblob states its price per generation at subm
 // (cost_source units, which outranks this table). runblob's rows are LISTED and UNPRICED (srcRunblob):
 // the panel needs the slugs to offer, and the ledger takes runblob's own number.
 //
-// The rows the A brief curated (srcBrief and the others above) keep their numbers; the rows lane H2
-// added (2026-09-29) are priced only from the provider's own page (srcOpenAIList, srcAnthropicList,
-// srcGoogleList), else unpriced with the reseller's relay price in the note.
+// A direct row is priced from the provider's own page (srcOpenAIList, srcAnthropicList, srcGoogleList,
+// read 2026-09-29) — four rows the A brief carried were re-priced to it and say what the brief had —
+// else it keeps its earlier sourced figure (srcBrief and the others above) or is unpriced with the
+// reseller's relay price in the note.
 var catalogue = map[string][]Model{
 	entity.AIProviderOpenAI: {
-		chat(entity.AIProviderOpenAI, "gpt-5.2", "GPT-5.2", "1.25", "10",
-			srcBrief+" — UNVERIFIED (marked «verify»; check https://openai.com/api/pricing/ on beta)"),
+		chat(entity.AIProviderOpenAI, "gpt-5.2", "GPT-5.2", "1.75", "14",
+			srcOpenAIList+" (the A brief had an UNVERIFIED $1.25/$10, 2026-09-27)"),
 		chat(entity.AIProviderOpenAI, "gpt-5-mini", "GPT-5 mini", "0.25", "2",
 			srcORModels+": openai/gpt-5-mini $0.25/M in, $2/M out (OpenRouter passes the list price through)"),
 		image(entity.AIProviderOpenAI, "gpt-image-2", "GPT Image 2", "0.053", srcORGPTImage2),
@@ -155,11 +156,12 @@ var catalogue = map[string][]Model{
 			srcDirectUnpriced+"OpenAI prices image output per token, not per picture; apibost relays it at $0.16 per image"),
 	},
 	entity.AIProviderAnthropic: {
-		chat(entity.AIProviderAnthropic, "claude-sonnet-5", "Claude Sonnet 5", "3", "15",
-			srcBrief+" (the Sonnet-class tariff $3/M in, $15/M out — the same pair as design_run.go designChatUSDPerMTok*)"),
-		chat(entity.AIProviderAnthropic, "claude-opus-5-5", "Claude Opus 5.5", "5", "25",
-			"UNVERIFIED — $5/M in, $25/M out carried from OpenRouter's anthropic/claude-opus-5 price (live tech-card "+
-				"analysis run, 2026-08-25); apibost Model Square lists $75/$75 (2026-09-27); check https://www.anthropic.com/pricing on beta"),
+		chat(entity.AIProviderAnthropic, "claude-sonnet-5", "Claude Sonnet 5", "2", "10",
+			srcAnthropicList+": the $2/$10 launch price is now standard, the announced rise to $3/$15 will not happen "+
+				"(the A brief had $3/$15, 2026-09-27)"),
+		chat(entity.AIProviderAnthropic, "claude-opus-5-5", "Claude Opus 5.5", "4", "20",
+			srcAnthropicList+" (the A brief had an UNVERIFIED $5/$25 carried from OpenRouter's claude-opus-5, 2026-09-27; "+
+				"apibost's flat ratio derives $75/$75, its tiered_expr p×4 + c×20 matches the list price)"),
 		chat(entity.AIProviderAnthropic, "claude-haiku-4-5-20251001", "Claude Haiku 4.5", "1", "5",
 			srcBrief+" (apibost Model Square lists the same $1/$5)"),
 		// Lane H2: the models apibost proves exist (its "-thinking" names are apibost's own, not
@@ -177,8 +179,9 @@ var catalogue = map[string][]Model{
 		chat(entity.AIProviderGoogle, "gemini-2.5-flash", "Gemini 2.5 Flash", "0.30", "2.50",
 			srcBrief+" (Google AI Studio list price)"),
 		image(entity.AIProviderGoogle, "gemini-3-pro-image", "Gemini 3 Pro Image", "0.134", srcGemini3ProImage),
-		unpricedRow(entity.AIProviderGoogle, "gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", KindChat,
-			"unpriced — no Google AI Studio price sourced by 2026-09-27 ("+srcBrief+")"),
+		chat(entity.AIProviderGoogle, "gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", "0.25", "1.50",
+			srcGoogleList+" (text / image / video input; audio input $0.50 is not modelled; the A brief had it "+
+				"unpriced, 2026-09-27)"),
 		// Lane H2: the models apibost proves exist, priced from Google's own page.
 		chat(entity.AIProviderGoogle, "gemini-3.8-flash", "Gemini 3.8 Flash", "0.75", "3.75", srcGoogleList+" — «through December 31, 2026»; $1.50/$7.50 from 2027-01-01: re-price then"),
 		chat(entity.AIProviderGoogle, "gemini-3.7-flash", "Gemini 3.7 Flash", "0.75", "3.75", srcGoogleList+" — «through December 31, 2026»; $1.50/$7.50 from 2027-01-01: re-price then"),
