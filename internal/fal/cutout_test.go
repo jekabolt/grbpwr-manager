@@ -417,8 +417,9 @@ func TestA404ThatOUTLIVES_THE_GRACE_IS_TERMINAL(t *testing.T) {
 // settings have to be visible, because a config dump that omits them cannot answer «which model did
 // this deployment cut with, and at what rate».
 func TestTheCutoutSettingsAreNEVER_PRINTED_AND_ARE_PRINTED(t *testing.T) {
-	c := Config{APIKey: "sk-super-secret-value", ModelCutout: "vendor/matting/v9", UnitUSDCutout: 0.031}
+	c := Config{APIKey: "sk-super-secret-value", ModelCutout: "vendor/matting/v9", UnitUSDCutout: 0.031, ModelImage: "vendor/pic/v9"}
 	s := c.String()
+	require.Contains(t, s, "ModelImage:vendor/pic/v9", "H3: the image transport's default slug is printed too")
 	require.NotContains(t, s, "sk-super-secret-value")
 	require.Contains(t, s, "REDACTED")
 	require.Contains(t, s, "ModelCutout:vendor/matting/v9")

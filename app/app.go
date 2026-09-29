@@ -823,11 +823,15 @@ func (a *App) Start(ctx context.Context) error {
 			// candidate of it, a candidate that failed without money moving hands the run to the next
 			// one on a fresh attempt. Transports: openrouter (the env default) and runblob (B-31: Nano
 			// Banana and the Kling photo endpoints through the panel's key — submit, free poll, download;
-			// the ledger takes runblob's own submit price as cost_source provider).
+			// the ledger takes runblob's own submit price as cost_source provider), and fal (H3: any fal
+			// endpoint id on the row, FAL_MODEL_IMAGE when it names none — the SAME fal client as the
+			// extend / inpaint routes; booked units × the catalogue's per-call price as cost_source table,
+			// else unpriced).
 			Image: designgen.NewRoutedImageProvider(a.aireg,
 				map[string]designgen.ImageTransport{
 					entity.AIProviderOpenRouter: designImages,
 					entity.AIProviderRunblob:    runblob.NewImages(a.runblob),
+					entity.AIProviderFal:        fal.NewImages(falRoutes),
 				}, designImages.Model()),
 			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
 			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.

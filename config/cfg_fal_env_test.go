@@ -34,6 +34,7 @@ func TestFalConfigFromEnv(t *testing.T) {
 	t.Setenv("FAL_MODEL_CUTOUT", "vendor/matting/v9")
 	t.Setenv("FAL_UNIT_USD_CUTOUT", "0.045")
 	t.Setenv("FAL_UNITS_CEILING_3D", "3")
+	t.Setenv("FAL_MODEL_IMAGE", "vendor/pic/v9")
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err)
@@ -64,8 +65,11 @@ func TestFalConfigFromEnv(t *testing.T) {
 
 	// THE VALUES MUST SURVIVE THE CONSTRUCTOR, not merely land in the struct: a default applied
 	// over a configured value is the same silent failure one layer down.
+	assert.Equal(t, "vendor/pic/v9", cfg.Fal.ModelImage,
+		"FAL_MODEL_IMAGE (H3) — the image transport's default slug; unbound, the override is silently ignored")
 	c := fal.New(cfg.Fal)
 	assert.True(t, c.Enabled())
+	assert.Equal(t, "vendor/pic/v9", c.ModelImage())
 	assert.Equal(t, 7*time.Second, c.PollInterval())
 	assert.Equal(t, 20*time.Minute, c.PollTimeout())
 	assert.Equal(t, "vendor/model/v9/multi-view-to-3d", c.Model())

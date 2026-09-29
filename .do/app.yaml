@@ -271,6 +271,10 @@ envs:
 - key: RUNBLOB_VIDEO_CEILING_USD
   scope: RUN_TIME
   value: "1.50"
+# FAL_MODEL_IMAGE (H3, optional, set in the DO dashboard only if needed) — the fal endpoint id an
+# `image.generate → fal` route row draws when the row names no model. Unset => fal-ai/flux-pro/v1.1.
+# A row's own model always wins; like FAL_MODEL_CUTOUT this is the emergency wheel for a retired default,
+# not a knob. Deliberately not declared as a key here (applying the spec deploys master).
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
