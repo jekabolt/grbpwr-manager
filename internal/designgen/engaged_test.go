@@ -15,7 +15,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/aiprovtest"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 )
 
@@ -98,18 +97,6 @@ func designTransports() []designTransport {
 				return err, oneRow(t, ai)
 			},
 			code: map[int]string{401: CodeUnauthorized, 402: CodeOutOfCredit, 404: CodeModelRetired, 429: CodeRateLimited,
-				408: CodeSubmitUnconfirmed},
-		},
-		{
-			name: "meshy submit", billing: entity.AIProviderMeshy, unconfirmed5xx: true,
-			call: func(t *testing.T, baseURL string, timeout time.Duration) (error, aiprovtest.Row) {
-				job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindThreed, References: ref}, entity.AIPurposeThreed)
-				_, err := NewThreedProvider(meshy.New(meshy.Config{APIKey: "k", BaseURL: baseURL, HTTPTimeout: timeout})).
-					Execute(context.Background(), job)
-				return err, oneRow(t, ai)
-			},
-			// A 404 answering Meshy's POST is its generic 4xx (ErrBadRequest), as it was before B-14.
-			code: map[int]string{401: CodeUnauthorized, 402: CodeOutOfCredit, 404: CodeBadRequest, 429: CodeRateLimited,
 				408: CodeSubmitUnconfirmed},
 		},
 	}

@@ -16,7 +16,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -869,8 +868,6 @@ func TestTheThreedOptionsFOLLOW_THE_CONFIGURED_ROUTE(t *testing.T) {
 		{"fal meshy, pbr off (the default)", route(pgFalRoute(fal.Config{}, false)), []string{"texture", "quality", "surface_hint"}, true},
 		{"fal meshy, pbr on", route(pgFalRoute(fal.Config{}, true)), []string{"texture", "pbr", "quality", "surface_hint"}, true},
 		{"fal hitem3d override", route(pgFalRoute(fal.Config{Model3D: pgHitemSlug}, true)), []string{}, true},
-		{"direct meshy, pbr off", route(designgen.MeshyThreedRoute(meshy.New(meshy.Config{APIKey: "k"}), false)),
-			[]string{"texture", "quality", "surface_hint"}, true},
 		{"fal tariff without a units ceiling", route(pgFalRoute(fal.Config{UnitUSD: 0.5}, true)), []string{}, false},
 		{"fal tariff with a units ceiling", route(pgFalRoute(fal.Config{UnitUSD: 0.5, UnitsCeiling3D: 3}, false)),
 			[]string{"texture", "quality", "surface_hint"}, true},
@@ -913,9 +910,9 @@ func TestTheThreedDoorREADS_THE_ROUTE_LIVE(t *testing.T) {
 	require.Equal(t, entity.DesignErrorCodeThreedReserveUnbounded, md["reason"])
 	require.Equal(t, "fal", md["provider"])
 
-	cur = designgen.ThreedViewOf(designgen.MeshyThreedRoute(meshy.New(meshy.Config{APIKey: "k", CreditUSD: 0.05}), false))
+	cur = designgen.ThreedViewOf(pgFalRoute(fal.Config{UnitUSD: 0.5, UnitsCeiling3D: 4}, false))
 	require.True(t, s.designThreedRouteReserveBounded())
-	require.Equal(t, "1.5", s.designEstimateForRun(entity.DesignRunKindThreed, 1, plain, nil).Decimal.String(),
+	require.Equal(t, "2", s.designEstimateForRun(entity.DesignRunKindThreed, 1, plain, nil).Decimal.String(),
 		"the reserve reads the route's ceiling now, not the boot one")
 }
 
@@ -929,14 +926,12 @@ func pgContains(list []string, w string) bool {
 }
 
 // TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING — Codex 4: the reserve reads the tariff of
-// the wired route and is never below what that route's collect books for the same build (Meshy:
-// CostUSD of the published credits at MESHY_CREDIT_USD; fal with a tariff: tariff × the stated units
-// ceiling; fal without one: the published per-build price), and never below today's static number.
-// MUTATIONS (each measured red): designThreedRunEstimate ignoring the route (Meshy at $0.05 reserves
-// 1.2 against a 1.5 booking); MeshyThreedRoute pricing at the default rate; RequestCeilingUSDForQuality
-// ignoring the units ceiling.
+// the wired route and is never below what that route's collect books for the same build (fal with a
+// tariff: tariff × the stated units ceiling; fal without one: the published per-build price), and never
+// below today's static number. MUTATIONS (each measured red): designThreedRunEstimate ignoring the route
+// (fal at $0.50 × 4 units reserves 1.2 against a 2.0 booking); RequestCeilingUSDForQuality ignoring the
+// units ceiling.
 func TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING(t *testing.T) {
-	meshyC := meshy.New(meshy.Config{APIKey: "k", CreditUSD: 0.05})
 	falTariff := fal.New(fal.Config{APIKey: "k", UnitUSD: 0.5, UnitsCeiling3D: 4})
 	falFlat := fal.New(fal.Config{APIKey: "k"})
 	opts := []struct{ texture, quality string }{{"", ""}, {"off", ""}, {"", "detailed"}, {"off", "detailed"}}
@@ -946,9 +941,6 @@ func TestTheThreedReserveNEVER_UNDER_THE_CONFIGURED_BOOKING(t *testing.T) {
 		booking func(texture, quality string) decimal.Decimal
 		want    map[string]string // texture|quality → reserve
 	}{
-		{"direct meshy at $0.05 a credit", designgen.MeshyThreedRoute(meshyC, false),
-			func(tx, q string) decimal.Decimal { return meshyC.CostUSD(meshy.EstimatedTaskCredits(tx, q)) },
-			map[string]string{"|": "1.5", "off|": "1.2", "|detailed": "1.75", "off|detailed": "1.4"}},
 		{"fal with a tariff and a units ceiling", designgen.FalThreedRoute(falTariff, false),
 			func(_, q string) decimal.Decimal { return falTariff.CostUSDForQuality("", 4, q) },
 			map[string]string{"|": "2", "off|": "2", "|detailed": "2", "off|detailed": "2"}},

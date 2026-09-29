@@ -48,7 +48,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
@@ -191,7 +190,6 @@ func (a *App) Start(ctx context.Context) error {
 		OpenRouter:       a.c.OpenRouter.APIKey,
 		OpenRouterImages: a.c.OpenRouterImages.APIKey,
 		Fal:              a.c.Fal.APIKey,
-		Meshy:            a.c.Meshy.APIKey,
 	})
 	// B-33: a key still living in an env variable is moved into the panel here, ONCE, BEFORE the
 	// first Reload — a value whose panel slot is empty is sealed and stored as if an admin had
@@ -228,7 +226,6 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.OpenRouter.KeyFunc = a.aireg.KeyFunc(entity.AIProviderOpenRouter)
 	a.c.OpenRouterImages.KeyFunc = a.aireg.OpenRouterImagesKeyFunc()
 	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
-	a.c.Meshy.KeyFunc = a.aireg.KeyFunc(entity.AIProviderMeshy)
 	var reconcileAfterAdminKeySave func(context.Context, string)
 	if a.c.AIReconcile.Enabled {
 		// The registry is the one key policy: AdminKey for openai/anthropic/fal, and the
@@ -612,10 +609,8 @@ func (a *App) Start(ctx context.Context) error {
 	// незаполненная секция здесь безопасна: очередь не сможет воскресить прогон, чей воркер
 	// ещё жив и платит.
 	designCfg := a.c.DesignGen
-	// ⚠ NORMALISED BEFORE ANY FIELD OF IT IS READ. designgen.New would do this itself, but the 3D
-	// route is chosen BELOW, from ThreedProvider — and a raw `MESHY` typed into the dashboard does
-	// not equal the lower-case constant, so an un-normalised read would wire fal and log fal while
-	// the operator had asked for Meshy. Idempotent; New() applies it again.
+	// ⚠ NORMALISED BEFORE ANY FIELD OF IT IS READ: fields of it are read below, before designgen.New
+	// would normalise it itself. Idempotent; New() applies it again.
 	designgen.Normalize(&designCfg)
 	// The worker resolves a frozen params.image against the same table the door checks it with — ONE
 	// function, handed to both (B-13): the image.generate route's first model when it is a row the table
@@ -725,17 +720,14 @@ func (a *App) Start(ctx context.Context) error {
 	if designCfg.Enabled {
 		// ─── WHICH 3D ROUTE GETS PAID: THE PANEL'S `threed` ROUTE (B-24) ─────────────────────────
 		//
-		// Every fresh build pays the FIRST callable candidate of admin → AI providers → threed (fal |
-		// meshy, position order; a row's model is fal's slug / Meshy's ai_model); a candidate that
-		// failed without engaging hands the run to the next one on a fresh attempt, an open breaker
-		// pauses the route. DESIGN_THREED_PROVIDER (defaulting to `fal`, normalised by designgen) is the
-		// candidate ONLY when the route has no rows — the seeded route is `threed → fal`, so the panel,
-		// not the env, now decides which vendor a bill is from, and this block says both out loud once
-		// per boot.
+		// Every fresh build pays the FIRST callable candidate of admin → AI providers → threed (fal —
+		// the only 3D provider since 2026-09-29; it hosts Meshy's models — in position order; a row's
+		// model is fal's slug); a candidate that failed without engaging hands the run to the next one
+		// on a fresh attempt, an open breaker pauses the route. A route with no rows is fal at
+		// FAL_MODEL_3D.
 		//
-		// Neither client is asked for a key here. A route with no credentials refuses AT THE DOOR, in
-		// words, naming its variable (PreflightKind → MissingCredential).
-		meshyThreedClient := meshy.New(a.c.Meshy)
+		// The client is not asked for a key here. A route with no credentials refuses AT THE DOOR, in
+		// words (PreflightKind → MissingCredential).
 		threedFactories := map[string]func(model string) designgen.Provider{
 			// fal at the row's slug: fal.New is a struct build, so a candidate per choice is cheap; the
 			// row's model overrides FAL_MODEL_3D and nothing else of the fal config.
@@ -746,39 +738,22 @@ func (a *App) Start(ctx context.Context) error {
 				}
 				return designgen.NewFalThreedProvider(fal.New(cfg))
 			},
-			// meshy asking for the row's ai_model ("" = Meshy's own default, today's body).
-			designgen.ThreedProviderMeshy: func(model string) designgen.Provider {
-				return designgen.NewMeshyThreedProvider(meshyThreedClient, model)
-			},
 		}
-		routedThreed := designgen.NewRoutedThreedProvider(a.aireg, threedFactories, designCfg.ThreedPBR,
-			designCfg.ThreedProvider)
+		routedThreed := designgen.NewRoutedThreedProvider(a.aireg, threedFactories, designCfg.ThreedPBR)
 		designThreedView = routedThreed.View
-		// ⚠ BOTH BOOT-TIME 3D PROVIDERS ARE CONSTRUCTED AND GO TO Providers.Also (B-13, B-24). A job either
-		// vendor ACCEPTED — under any route row, before any route edit — is paid and collectable for free
-		// by that vendor only: the worker collects with the provider the accepted attempt names (the
-		// Threed slot's own name is "threed", never an attempt row's). A fal locator carries the slug it
-		// was bought at, so the env-slug fal client collects a build bought under any row's model.
+		// ⚠ THE BOOT-TIME fal 3D PROVIDER IS CONSTRUCTED AND GOES TO Providers.Also (B-13, B-24). A job
+		// fal ACCEPTED — under any route row, before any route edit — is paid and collectable for free
+		// by fal only: the worker collects with the provider the accepted attempt names (the Threed
+		// slot's own name is "threed", never an attempt row's). A fal locator carries the slug it was
+		// bought at, so the env-slug fal client collects a build bought under any row's model.
 		falThreedRoute := designgen.NewFalThreedProvider(fal.New(a.c.Fal))
-		meshyThreedRoute := designgen.NewThreedProvider(meshyThreedClient)
-		// The env default's own options, as before B-24: what a route with no rows would read.
-		var envOptions []string
-		if f := threedFactories[designCfg.ThreedProvider]; f != nil {
-			if r := designgen.ThreedRouteOf(f(""), designCfg.ThreedPBR); r != nil {
-				envOptions = r.Options
-			}
-		}
 		view := routedThreed.View()
 		headProvider := ""
 		if view.Head != nil {
 			headProvider = view.Head.Provider
 		}
-		slog.Default().InfoContext(ctx, "design generation: 3D route = the panel's threed route; env fallback "+
-			designCfg.ThreedProvider,
+		slog.Default().InfoContext(ctx, "design generation: 3D route = the panel's threed route (fal)",
 			slog.String("route_head", headProvider),
-			slog.String("env_fallback", designCfg.ThreedProvider),
-			slog.String("flag", designgen.EnvThreedProvider),
-			slog.Any("env_build_options", envOptions),
 			slog.Bool("pbr", designCfg.ThreedPBR), slog.String("pbr_flag", designgen.EnvThreedPBR))
 		if view.Closed != "" {
 			slog.Default().WarnContext(ctx, "design generation: the 3D door is closed — "+view.Closed)
@@ -826,9 +801,9 @@ func (a *App) Start(ctx context.Context) error {
 					entity.AIProviderOpenRouter: designImages,
 					entity.AIProviderRunblob:    runblob.NewImages(a.runblob),
 				}, designImages.Model()),
-			// threed — the panel's `threed` route (B-24): fal.ai's queue and Meshy's own API, both reached
-			// DIRECTLY because OpenRouter has no 3D modality to route to. A fal row with no model asks
-			// for FAL_MODEL_3D / fal.DefaultModel3D, today `meshy/v7/multi-image-to-3d`.
+			// threed — the panel's `threed` route (B-24): fal.ai's queue, reached DIRECTLY because
+			// OpenRouter has no 3D modality to route to. A fal row with no model asks for FAL_MODEL_3D /
+			// fal.DefaultModel3D, today `meshy/v7/multi-image-to-3d`.
 			Threed: routedThreed,
 			// cutout — background removal, the SAME fal client and the SAME FAL_KEY as the 3D
 			// route, and a different slug (FAL_MODEL_CUTOUT / fal.DefaultModelCutout, today
@@ -845,9 +820,9 @@ func (a *App) Start(ctx context.Context) error {
 			// video — the playground's «Image to Video» tile (B-32): runblob's Kling image-to-video, paid
 			// on the panel's runblob key, priced by runblob at submit, one clip per run.
 			Video: designgen.NewVideoProvider(a.runblob, designVideoRoute),
-			// BOTH boot-time 3D providers — never chosen for a fresh run, kept so each collects what it
+			// The boot-time fal 3D provider — never chosen for a fresh run, kept so it collects what it
 			// accepted, whatever the route says now (see above).
-			Also: []designgen.Provider{falThreedRoute, meshyThreedRoute},
+			Also: []designgen.Provider{falThreedRoute},
 		}, designgen.WithLedger(aiLedger))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't construct design generation worker",

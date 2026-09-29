@@ -53,7 +53,7 @@ const (
 	// Stated here as well so the bound is visible where the storage happens.
 	maxVectorPayloadBytes = svgcheck.MaxSVGBytes
 	// maxModelPayloadBytes is the GLB ceiling, the same 64 MiB the 3D provider refuses above
-	// (meshy.maxModelBytes). Equal on purpose: a model our own transport agreed to download must
+	// (fal.maxModelBytes). Equal on purpose: a model our own transport agreed to download must
 	// not then be refused by our own bucket — that failure would land AFTER the generation was
 	// paid for.
 	maxModelPayloadBytes = 64 << 20

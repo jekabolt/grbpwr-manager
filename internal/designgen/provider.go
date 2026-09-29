@@ -65,9 +65,9 @@ type Job struct {
 	// References[i], and is empty where the run has no view for that picture (a moodboard-style
 	// reference, a fabric swatch, an uploaded photograph nobody labelled).
 	//
-	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND THE ROUTE HAS TO STATE WHAT IT KNOWS. Both
-	// meshy families — the direct API and meshy on fal, which is what FAL_MODEL_3D defaults to
-	// today — take an ORDERED LIST and infer the front from position zero. fal's hitem3d, the slug
+	// ⚠ IT TRAVELS BECAUSE A POSITION IS NOT A NAME, AND THE ROUTE HAS TO STATE WHAT IT KNOWS. The
+	// meshy family on fal, which is what FAL_MODEL_3D defaults to today, takes an ORDERED LIST and
+	// infers the front from position zero. fal's hitem3d, the slug
 	// the owner named first, takes NAMED SLOTS (front_image_url, back_image_url, …) and is one
 	// variable away.
 	//
@@ -218,7 +218,7 @@ type Outcome struct {
 	RequestID string
 	// Model is the slug that actually answered.
 	Model string
-	// Pending marks a provider that ACCEPTED the job and will deliver later (Meshy). The worker
+	// Pending marks a provider that ACCEPTED the job and will deliver later (the fal 3D queue, the runblob video). The worker
 	// closes the attempt as `accepted` with RequestID, then collects — and a collect is free, so a
 	// worker that dies between the two costs nothing to resume.
 	Pending bool
@@ -307,8 +307,8 @@ func recordedPrompt(prov Provider, job Job) string {
 	return job.Prompt
 }
 
-// Collector is the second half of an asynchronous route. Only the 3D route implements it: Meshy
-// answers a submit with a task id and builds the model for minutes afterwards.
+// Collector is the second half of an asynchronous route. The 3D and video routes implement it:
+// fal answers a 3D submit with a request id and builds the model for minutes afterwards.
 //
 // COLLECT IS FREE. That is the entire reason the two halves are separate verbs — the submit is the
 // payment, the collect is a lookup, and a worker resuming after a crash must be able to do the
@@ -346,10 +346,10 @@ type Providers struct {
 	// panel's `video.generate` route names the model, not the transport.
 	Video Provider
 
-	// Also — providers the worker CONSTRUCTED but does not route any kind to directly: since B-24 BOTH
-	// boot-time 3D providers (fal at the env slug, meshy), because the Threed slot is the panel's route
-	// (named "threed", never an attempt row's name). They are never chosen for a fresh run; they exist
-	// so a job one of them ACCEPTED — under any route row, before any route edit — is collected by it,
+	// Also — providers the worker CONSTRUCTED but does not route any kind to directly: since B-24 the
+	// boot-time 3D provider (fal at the env slug), because the Threed slot is the panel's route (named
+	// "threed", never an attempt row's name). It is never chosen for a fresh run; it exists so a job it
+	// ACCEPTED — under any route row, before any route edit — is collected by it,
 	// for free: the collect goes to the provider the accepted attempt names (byName), never to
 	// whoever the route puts first today.
 	Also []Provider

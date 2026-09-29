@@ -3,7 +3,6 @@ package designgen
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -30,34 +28,7 @@ import (
 
 // ─────────────────────────── стенды ───────────────────────────
 
-// threedSteerStand — поставщик Meshy, который ЗАПОМИНАЕТ тело сабмита. Отвечает так же, как
-// настоящий: {"result": "<task id>"}.
-type threedSteerStand struct {
-	srv  *httptest.Server
-	body chan string
-}
-
-func newThreedSteerStand(t *testing.T) *threedSteerStand {
-	t.Helper()
-	st := &threedSteerStand{body: make(chan string, 4)}
-	st.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		st.body <- string(raw)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"result":"task-777"}`))
-	}))
-	t.Cleanup(st.srv.Close)
-	return st
-}
-
-// sentPrompt достаёт `texture_prompt` из перехваченного тела. Разбирается JSON, а не ищется
-// подстрока: подстрока сошлась бы и с полем, которого в запросе нет.
-func (st *threedSteerStand) sentPrompt(t *testing.T) string {
-	t.Helper()
-	return sentBody(t, st.body).TexturePrompt
-}
-
-// falSubmitStand — тот же приём для очереди fal: перехватывает тело сабмита и отвечает id.
+// falSubmitStand — стенд очереди fal, который ЗАПОМИНАЕТ тело сабмита и отвечает id.
 type falSubmitStand struct {
 	srv  *httptest.Server
 	body chan string
@@ -97,11 +68,6 @@ func sentBody(t *testing.T, ch chan string) falBody {
 		t.Fatal("сабмита не было вовсе: запрос до поставщика не доехал")
 		return falBody{}
 	}
-}
-
-func newThreedSteerProvider(t *testing.T, baseURL string) Provider {
-	t.Helper()
-	return NewThreedProvider(meshy.New(meshy.Config{APIKey: "k", BaseURL: baseURL}))
 }
 
 // falRoute — маршрут fal с ЯВНО названным слагом. Слаг здесь параметр пробы, а не умолчание:
@@ -174,12 +140,13 @@ func steerWorker(t *testing.T, st *fakeStore, prov Provider) *Worker {
 // ВТОРАЯ МУТАЦИЯ: выбросить из стира рецепт цвета (оставить одну подачу). Тогда единственное, ради
 // чего это поле существует, перестаёт до поставщика доезжать.
 func TestThreedSteerCarriesTheSurfaceAndNotTheSilhouette(t *testing.T) {
-	stand := newThreedSteerStand(t)
+	stand := newFalSubmitStand(t)
 	st := &fakeStore{}
-	w := steerWorker(t, st, newThreedSteerProvider(t, stand.srv.URL))
+	w := steerWorker(t, st, falRoute(t, stand.srv.URL, falMeshySlug))
 
-	require.NoError(t, w.execute(context.Background(), steerRun(31), "tok"))
-	sent := stand.sentPrompt(t)
+	// Проход дойдёт до сбора и провалится там (стенд не отдаёт модель) — нас интересует сабмит.
+	_ = w.execute(context.Background(), steerRun(31), "tok")
+	sent := sentBody(t, stand.body).TexturePrompt
 
 	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ ПЕРВЫМ: пустая подсказка «не содержит лямок» ничуть не хуже правильной,
 	// и без этой строки проба зеленела бы на реализации, выбрасывающей поле целиком.
@@ -197,9 +164,8 @@ func TestThreedSteerCarriesTheSurfaceAndNotTheSilhouette(t *testing.T) {
 	require.NotContains(t, sent, "athletic", "телосложение — форма, а не поверхность; её несут плиты")
 	require.NotContains(t, sent, "slim", "посадка — форма, а не поверхность")
 
-	// И ПОТОЛОК ПОСТАВЩИКА ВЫДЕРЖАН БЕЗ ЕДИНОГО РЕЗА: стир короток по построению, поэтому
-	// meshy.Submit его принял (иначе сабмита выше просто не случилось бы).
-	require.LessOrEqual(t, len([]rune(sent)), meshy.MaxTexturePrompt)
+	// И ПОТОЛОК ПОСТАВЩИКА ВЫДЕРЖАН БЕЗ ЕДИНОГО РЕЗА: стир короток по построению.
+	require.LessOrEqual(t, len([]rune(sent)), maxTexturePrompt)
 }
 
 // В КОЛОНКЕ ИСТОРИИ ЛЕЖИТ РОВНО ТО, ЧТО УЕХАЛО.
@@ -208,12 +174,12 @@ func TestThreedSteerCarriesTheSurfaceAndNotTheSilhouette(t *testing.T) {
 // волны. Панель показывала владельцу полный composePrompt рядом с настоящей ценой, а поставщик этих
 // слов не видел: приписанные деньгам слова хуже пустой колонки, потому что выглядят уликой.
 func TestThreedHistoryStoresExactlyWhatWasSent(t *testing.T) {
-	stand := newThreedSteerStand(t)
+	stand := newFalSubmitStand(t)
 	st := &fakeStore{}
-	w := steerWorker(t, st, newThreedSteerProvider(t, stand.srv.URL))
+	w := steerWorker(t, st, falRoute(t, stand.srv.URL, falMeshySlug))
 
-	require.NoError(t, w.execute(context.Background(), steerRun(32), "tok"))
-	sent := stand.sentPrompt(t)
+	_ = w.execute(context.Background(), steerRun(32), "tok")
+	sent := sentBody(t, stand.body).TexturePrompt
 
 	require.Len(t, st.recordedPrompts, 1, "проход обязан записать текст ровно один раз")
 	require.Equal(t, sent, st.recordedPrompts[0],
@@ -440,13 +406,13 @@ func TestSurfaceSteerNeverSaysThePrimaryClothTwice(t *testing.T) {
 //
 // ⚠ ДОВОД «СТИР КОРОТОК ПО ПРИРОДЕ» БЫЛ ЗАМЕРОМ ОПРОВЕРГНУТ. Ни `colour.words`, ни `fabrics[].words`,
 // ни `fabrics[].parts`, ни ЧИСЛО тканей не ограничены нигде в полосе: 660 символов слов о цвете
-// давали стир в 703 руны, восемь тканей — 1262, при потолке 600. Оба исхода ТЕРМИНАЛЬНЫ (прямой
-// meshy отказывает локально, meshy через fal отвечает 422), то есть 3D умирало для такого колорвея
+// давали стир в 703 руны, восемь тканей — 1262, при потолке 600. Исход ТЕРМИНАЛЕН (meshy через fal
+// отвечает 422; тогдашний прямой meshy отказывал локально), то есть 3D умирало для такого колорвея
 // навсегда — с ошибкой, называющей поле `texture_prompt`, о котором на верстаке никто не слышал.
 //
 // МУТАЦИЯ, КОТОРУЮ ЭТО КРАСИТ: `return strings.Join(parts, "; ")` вместо joinSteer — то есть
-// отсутствие границы. ИГЛА УНИКАЛЬНА: проба не сверяет длину с самой собой, а гонит тот же стир
-// через настоящий meshy.Submit, у которого потолок и стоит.
+// отсутствие границы. Длина сверяется с maxTexturePrompt — числом поставщика, сказанным один раз
+// (snapshot.go).
 func TestSurfaceSteerStaysUnderTheProvidersCeiling(t *testing.T) {
 	ctx := context.Background()
 
@@ -454,7 +420,7 @@ func TestSurfaceSteerStaysUnderTheProvidersCeiling(t *testing.T) {
 	long := strings.Repeat("matte heavy jersey with a slight sheen and a dry hand, ", 12)[:660]
 	wordy := runParams{Colour: &colourRecipe{Code: "BLK", Hex: "#0a0a0a", Words: long}}
 	a := surfaceSteer(ctx, wordy)
-	require.LessOrEqual(t, len([]rune(a)), meshy.MaxTexturePrompt, "стир длиннее потолка = терминальный отказ")
+	require.LessOrEqual(t, len([]rune(a)), maxTexturePrompt, "стир длиннее потолка = терминальный отказ")
 	require.Contains(t, a, "colourway BLK — the exact value is #0a0a0a",
 		"утверждение цвета обязано пережить границу: оно первое по важности")
 	require.NotEmpty(t, strings.TrimSpace(a), "положительный контроль: граница — не «выбросить всё»")
@@ -472,20 +438,9 @@ func TestSurfaceSteerStaysUnderTheProvidersCeiling(t *testing.T) {
 		Threed: &threedParams{Presentation: "model"},
 	}
 	b := surfaceSteer(ctx, crowded)
-	require.LessOrEqual(t, len([]rune(b)), meshy.MaxTexturePrompt)
+	require.LessOrEqual(t, len([]rune(b)), maxTexturePrompt)
 
-	// (в) И ЭТО ПРОВЕРЯЕТСЯ ТЕМ САМЫМ ПОТОЛКОМ, А НЕ НАШЕЙ КОПИЕЙ ЧИСЛА: оба стира идут в
-	// настоящий meshy.Submit, который выше потолка отказывает ЛОКАЛЬНО и терминально.
-	stand := newThreedSteerStand(t)
-	c := meshy.New(meshy.Config{APIKey: "k", BaseURL: stand.srv.URL})
-	for _, steer := range []string{a, b} {
-		_, err := c.Submit(ctx, meshy.Request{
-			ImageURLs: []string{"https://example.com/front.png"}, TexturePrompt: steer,
-		})
-		require.NoError(t, err, "поставщик отказал в стире локально: маршрут 3D мёртв для этого колорвея")
-	}
-
-	// (г) ОБЫЧНЫЙ ПРОГОН ГРАНИЦЫ НЕ КАСАЕТСЯ ВОВСЕ — иначе «граница» была бы обрезкой всех.
+	// (в) ОБЫЧНЫЙ ПРОГОН ГРАНИЦЫ НЕ КАСАЕТСЯ ВОВСЕ — иначе «граница» была бы обрезкой всех.
 	ordinary := surfaceSteer(ctx, runParams{
 		Colour: &colourRecipe{Code: "BLK", Hex: "#0a0a0a", Words: "matte heavy jersey with a slight sheen"},
 		Threed: &threedParams{Presentation: "model"},
@@ -579,7 +534,7 @@ func TestSurfaceSteerNeverInventsAPartialWord(t *testing.T) {
 		Threed: &threedParams{Presentation: "model"},
 	})
 
-	require.LessOrEqual(t, len([]rune(steer)), meshy.MaxTexturePrompt, "граница обязана держаться и здесь")
+	require.LessOrEqual(t, len([]rune(steer)), maxTexturePrompt, "граница обязана держаться и здесь")
 	require.NotContains(t, steer, "aa",
 		"кусок непроизносимого куска — выдуманное слово: подсказка обязана его выбросить, а не отрезать")
 	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: выбрасывается ИМЕННО непроизносимая часть, а не стир целиком.
@@ -590,39 +545,4 @@ func TestSurfaceSteerNeverInventsAPartialWord(t *testing.T) {
 	require.Equal(t, "one two three", cutAtWord([]rune("one two three four"), 15))
 	require.Equal(t, "", cutAtWord([]rune(strings.Repeat("x", 40)), 20),
 		"нет пробела — нет и ответа: половина токена хуже его отсутствия")
-}
-
-// ОТРИЦАТЕЛЬНЫЙ КОНТРОЛЬ САМОГО ПОТОЛКА: полный промпт прогона поставщик отказывает ЛОКАЛЬНО, и
-// отказ терминальный. Проба держит сам довод починки — то, что дефект был не косметическим, и что
-// потолок 600 рун по-прежнему сторожит поле, в которое больше не льют весь промпт.
-func TestMeshyRefusesAnUncutRunPromptLocally(t *testing.T) {
-	st := newThreedSteerStand(t)
-	c := meshy.New(meshy.Config{APIKey: "k", BaseURL: st.srv.URL})
-
-	_, err := c.Submit(context.Background(), meshy.Request{
-		ImageURLs:     []string{"https://example.com/front.png"},
-		TexturePrompt: longRunPrompt(),
-	})
-	if !errors.Is(err, meshy.ErrPromptTooLong) {
-		t.Fatalf("err = %v, ждали meshy.ErrPromptTooLong", err)
-	}
-	if v := classify(err); v.Retryable {
-		t.Errorf("отказ классифицирован как погода (%s): пять оплаченных попыток на неисправимую длину", v.Code)
-	}
-	select {
-	case raw := <-st.body:
-		t.Errorf("запрос всё-таки ушёл в сеть: %s", raw)
-	default:
-	}
-}
-
-// longRunPrompt — промпт ПРОГОНА, а не строка-заполнитель: те же разделы и тот же разделитель
-// («\n\n»), которыми их склеивает composePrompt. Длина заведомо за потолком поставщика.
-func longRunPrompt() string {
-	var b strings.Builder
-	b.WriteString("make the shoulder softer and the hem straight")
-	for i := 0; i < 40; i++ {
-		b.WriteString("\n\nreferences:\n- front — the collar stands, the placket is hidden, the cuff is doubled")
-	}
-	return b.String()
 }

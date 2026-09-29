@@ -24,7 +24,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
@@ -116,15 +115,11 @@ type Config struct {
 	// different catalogues, different timeouts and a response ceiling that differs by an order of
 	// magnitude — see internal/orimages.
 	OpenRouterImages orimages.Config `mapstructure:"openrouter_images"`
-	// Meshy is the 3D provider, and the ONE place this feature departs from "everything through
-	// OpenRouter" (P-5). Not by preference: OpenRouter has no 3D modality at all — "3d" is not a
-	// value its catalogue accepts — so there is nothing there to route to. See internal/meshy.
-	Meshy meshy.Config `mapstructure:"meshy"`
-	// Fal is the SECOND 3D transport and the one the owner named: multi-view-to-3d reached through
-	// fal.ai's queue (hitem3d at first; `meshy/v7/multi-image-to-3d` since the owner asked for the
-	// better reconstruction — see fal.DefaultModel3D). Which of the two the turntable actually uses is
-	// `design_generation.threed_provider` (DESIGN_THREED_PROVIDER), an explicit word rather than a
-	// guess from which key happens to be present — see designgen.Config.ThreedProvider.
+	// Fal is the 3D transport the owner named (the only one since 2026-09-29: the direct Meshy
+	// provider left, fal hosts Meshy's models): multi-view-to-3d reached through fal.ai's queue
+	// (hitem3d at first; `meshy/v7/multi-image-to-3d` since the owner asked for the better
+	// reconstruction — see fal.DefaultModel3D). OpenRouter has no 3D modality, so this is the one
+	// place the feature departs from "everything through OpenRouter" (P-5).
 	Fal fal.Config `mapstructure:"fal"`
 	// DesignGen is the generation WORKER — the thing that actually claims a paid run and calls a
 	// provider. It is inert unless DESIGN_GENERATION_ENABLED is set (precedent: ACCOUNTING_ENABLED),
@@ -647,39 +642,6 @@ func bindEnvVars() {
 	// that grows needs no deploy and a box that is dying can be rescued by lowering one number.
 	viper.BindEnv("openrouter_images.max_response_bytes", "OPENROUTER_IMAGES_MAX_RESPONSE_BYTES")
 
-	// Meshy (3D generation, P-4). A DIFFERENT PROVIDER with a key of its own — nothing here falls
-	// back to an OpenRouter variable, because there is no 3D at OpenRouter to fall back to.
-	//
-	// EVERY LINE BELOW IS LOAD-BEARING IN THE SAME SILENT WAY. viper.AutomaticEnv is off in this
-	// package on purpose, so a variable without its own BindEnv reads as EMPTY — and empty is also
-	// what a correctly-unset optional override looks like. A forgotten line here does not fail, log
-	// or differ visibly; it just means the number somebody set in the DO dashboard is never the
-	// number the process uses. config/cfg_meshy_env_test.go sets each one and insists it arrives.
-	//
-	// ⚠️ These are set IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml: pushing the spec
-	// deploys prod and overwrites live SECRET values with the empty ones in the file.
-
-	// MESHY_API_KEY is read at boot for the one-time import into the panel (admin → AI providers)
-	// and is never a runtime key source since B-33: the client's key comes from the registry, and
-	// with none stored the client is disabled and StartRun refuses a 3D run outright rather than
-	// queue one nobody can execute.
-	viper.BindEnv("meshy.api_key", "MESHY_API_KEY")
-	// The API root. Exists for tests and a possible regional host, not as a knob to turn.
-	viper.BindEnv("meshy.base_url", "MESHY_BASE_URL")
-	// Bounds ONE control-plane request (submit or status lookup), not the generation.
-	viper.BindEnv("meshy.http_timeout", "MESHY_HTTP_TIMEOUT")
-	// The waiting shape: how often to ask, and how long to keep asking. A worker sizing its lease
-	// or its next_attempt_at should read these off the client rather than guess them again.
-	viper.BindEnv("meshy.poll_interval", "MESHY_POLL_INTERVAL")
-	viper.BindEnv("meshy.poll_timeout", "MESHY_POLL_TIMEOUT")
-	// Bounds fetching the finished model, SEPARATELY from the wait above — deliberately, because a
-	// download cut by the waiting deadline loses an artifact that was already paid for and whose
-	// link dies in three days.
-	viper.BindEnv("meshy.download_timeout", "MESHY_DOWNLOAD_TIMEOUT")
-	// Price of one Meshy credit in USD, the only bridge from consumed_credits to money. Unset falls
-	// back to an estimate from the published plans; set it to the real rate of the active plan.
-	viper.BindEnv("meshy.credit_usd", "MESHY_CREDIT_USD")
-
 	// Design generation worker. Six knobs, and only the first one decides anything on its own:
 	// with DESIGN_GENERATION_ENABLED unset the worker is not constructed at all, and a run started
 	// by hand would sit in `pending` with nobody to claim it — which is why the handler refuses to
@@ -694,9 +656,6 @@ func bindEnvVars() {
 	viper.BindEnv("design_generation.claim_lease", "DESIGN_WORKER_CLAIM_LEASE")
 	viper.BindEnv("design_generation.run_timeout", "DESIGN_WORKER_RUN_TIMEOUT")
 	viper.BindEnv("design_generation.image_quality", "DESIGN_IMAGE_QUALITY")
-	// WHICH 3D PROVIDER GETS PAID: fal (default, the owner's own choice) | meshy. An unknown word
-	// falls back to the default and app.go logs the route it wired.
-	viper.BindEnv("design_generation.threed_provider", "DESIGN_THREED_PROVIDER")
 	// REALISTIC MATERIALS ON 3D (params.threed.pbr). Off by default: a PBR GLB's size is unmeasured
 	// and the 64 MiB cap refuses it AFTER the charge. Turn on (true) only after a beta smoke has
 	// measured one PBR build per tier under the cap — see designgen.Config.ThreedPBR.
@@ -712,10 +671,10 @@ func bindEnvVars() {
 	viper.BindEnv("design_generation.engine_gemini", "DESIGN_ENGINE_GEMINI")
 	viper.BindEnv("design_generation.engine_seedream", "DESIGN_ENGINE_SEEDREAM")
 
-	// fal.ai (3D generation, K-10). A THIRD provider with a key of its own — nothing here falls back
-	// to an OpenRouter or a Meshy variable, because neither account can pay for a fal request.
+	// fal.ai (3D generation, K-10). A provider with a key of its own — nothing here falls back to an
+	// OpenRouter variable, because that account cannot pay for a fal request.
 	//
-	// EVERY LINE BELOW IS LOAD-BEARING IN THE SAME SILENT WAY as the Meshy block: viper.AutomaticEnv
+	// EVERY LINE BELOW IS LOAD-BEARING IN A SILENT WAY: viper.AutomaticEnv
 	// is off in this package on purpose, so a variable without its own BindEnv reads as EMPTY — and
 	// empty is also what a correctly-unset optional override looks like. A forgotten line here does
 	// not fail, log or differ visibly; it just means the number somebody set in the DO dashboard is

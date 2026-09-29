@@ -73,12 +73,6 @@ func TestEveryRouteWithoutItsKeyNAMES_THE_VARIABLE_AT_THE_DOOR(t *testing.T) {
 		require.Equal(t, CodeKindNotAvailable, named.RefusalReason(),
 			"«no key» is the same machine word wherever it is discovered")
 	}
-
-	// AND THE MESHY ROUTE KEEPS ITS OWN NAME, so switching DESIGN_THREED_PROVIDER switches the
-	// sentence too — an operator told to set FAL_KEY on a Meshy deployment would set the wrong one.
-	m := newWorker(&Config{}, nil, nil, allSink{}, Providers{Threed: NewThreedProvider(nil)})
-	require.Contains(t, m.PreflightKind(entity.DesignRunKindThreed).Error(),
-		"no key for meshy — save it in admin → AI providers")
 }
 
 // ─────────────────────── K-10: THE NAMED VIEWS ───────────────────────

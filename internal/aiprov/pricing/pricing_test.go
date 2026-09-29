@@ -12,7 +12,7 @@ import (
 
 var allProviders = []string{
 	entity.AIProviderOpenAI, entity.AIProviderAnthropic, entity.AIProviderGoogle, entity.AIProviderOpenRouter,
-	entity.AIProviderApibost, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRunblob,
+	entity.AIProviderApibost, entity.AIProviderFal, entity.AIProviderRunblob,
 }
 
 func requireUSD(t *testing.T, want string, got decimal.NullDecimal, source string) {
@@ -117,7 +117,6 @@ func TestPricingUnknownIsNone(t *testing.T) {
 		{entity.AIProviderOpenRouter, "gpt-5-mini"},        // and the reverse
 		{entity.AIProviderGoogle, "gemini-3.1-flash-lite"}, // the OpenRouter row IS priced (live read in openrouter.go:131-133)
 		{entity.AIProviderFal, "fal-ai/birefnet/v2"},
-		{entity.AIProviderMeshy, "meshy-5"},
 		{entity.AIProviderRunblob, "kling_2.5_turbo"},
 		{"", ""},
 	} {
@@ -127,7 +126,7 @@ func TestPricingUnknownIsNone(t *testing.T) {
 	got, src := Price(entity.AIProviderOpenAI, "gpt-5-mini", Usage{})
 	requireNone(t, got, src) // usage missing is not a free call
 
-	for _, p := range []string{entity.AIProviderFal, entity.AIProviderMeshy} {
+	for _, p := range []string{entity.AIProviderFal} {
 		require.Empty(t, Catalogue(p), "%s is priced by units/credits, not by this table", p)
 	}
 	// runblob (B-31): LISTED so the panel can offer the eight image slugs, UNPRICED so the ledger takes

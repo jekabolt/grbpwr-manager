@@ -60,11 +60,6 @@ func TestThreedReservationCoversWhatTheRouteActuallyCHARGES(t *testing.T) {
 	// этой строки дверь могла бы читать одно поле пакета, а попытка писать другое.
 	require.True(t, charge.Equal(fal.EstimatedRequestUSD()),
 		"оценка маршрута и его же списание без тарифа обязаны быть одним выражением")
-
-	// И РЕЗЕРВ ПОКРЫВАЕТ ВТОРОЙ МАРШРУТ ТОЖЕ, потому что дверь не знает, какой из двух включён:
-	// DESIGN_THREED_PROVIDER читает воркер, а второй читатель настройки — это второе число.
-	require.Truef(t, reserve.GreaterThanOrEqual(designMeshyTaskCeilingUSD),
-		"резерв %s ниже потолка прямого Meshy %s", reserve, designMeshyTaskCeilingUSD)
 }
 
 // TestAConfiguredTariffIsNOT_BOUNDED_BY_THE_ESTIMATE_AND_THE_COMMENT_SAYS_SO — ЗАМЕР ГРАНИЦЫ

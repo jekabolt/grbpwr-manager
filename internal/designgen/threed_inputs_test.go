@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
+	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,8 +46,8 @@ func threedRun() entity.DesignRun {
 // TestThreedSendsOnlyItsOwnPlates — САМ ДЕФЕКТ V-14, поставленный числом.
 //
 // До починки этот снимок давал СЕМЬ картинок: четыре плиты плюс два референса карточки, плюс
-// дополнительное медиа, плюс свотч ткани. Провайдер принимает 1..4 (meshy.MaxImages) и отказывает
-// локально — то есть каждый прогон 3D на живой карточке умирал у двери, не начавшись.
+// дополнительное медиа, плюс свотч ткани. Провайдер принимает 1..4 (threedProviderMaxImages) и
+// отказывает — то есть каждый прогон 3D на живой карточке умирал у двери, не начавшись.
 func TestThreedSendsOnlyItsOwnPlates(t *testing.T) {
 	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), nil, threedRun(), "medium")
 	require.NoError(t, err)
@@ -66,18 +66,20 @@ func TestThreedSendsOnlyItsOwnPlates(t *testing.T) {
 	}
 }
 
-// TestThreedFitsTheProvidersCeiling — ТА ЖЕ ПРАВДА, СКАЗАННАЯ ПРОВАЙДЕРОМ, а не нашим equal.
-//
-// Проба, которая только считает элементы, сторожит наше представление о потолке. Эта зовёт тот же
-// локальный отказ, который стоит на пути настоящего прогона, поэтому она краснеет ровно тогда,
-// когда краснел бы прод.
+// threedProviderMaxImages — потолок картинок одной 3D-сборки у поставщика (семейство Meshy на fal:
+// «1 to 4 images»); у именного маршрута fal ровно четыре слота.
+const threedProviderMaxImages = 4
+
+// TestThreedFitsTheProvidersCeiling — набор помещается в потолок поставщика и проходит раскладку
+// маршрута fal по именованным слотам (falViews) — ту же, что стоит на пути настоящего прогона.
 func TestThreedFitsTheProvidersCeiling(t *testing.T) {
 	job, err := buildJob(context.Background(), media(1, 2, 3, 4, 77, 88, 90, 91), nil, threedRun(), "medium")
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(job.References), meshy.MinImages,
-		"сборке нужен хотя бы фронт")
-	require.LessOrEqual(t, len(job.References), meshy.MaxImages,
-		"meshy.Submit отказывает локально выше этого числа — прогон не начнётся вовсе")
+	require.GreaterOrEqual(t, len(job.References), 1, "сборке нужен хотя бы фронт")
+	require.LessOrEqual(t, len(job.References), threedProviderMaxImages,
+		"поставщик отказывает выше этого числа — прогон не начнётся вовсе")
+	_, err = falViews(job)
+	require.NoError(t, err, "маршрут обязан разложить набор по слотам")
 }
 
 // TestRenderStillCarriesTheCardsReferences — ОТРИЦАТЕЛЬНЫЙ КОНТРОЛЬ, и без него первая проба
@@ -102,7 +104,7 @@ func TestRenderStillCarriesTheCardsReferences(t *testing.T) {
 //
 // Прогону 3D, у которого верстак пуст, крутить нечего. Раньше он молча уезжал в сборку с
 // референсами настроения вместо видов, закрывался `done` и списывал деньги за модель неизвестно
-// чего; теперь провайдер отказывает своим ErrImageCount, и отказ читается человеком.
+// чего; теперь маршрут отказывает словами (fal.ErrNoFrontView), и отказ читается человеком.
 func TestThreedWithNoPlatesSendsNothing(t *testing.T) {
 	r := testRun(1, entity.DesignRunKindThreed)
 	r.Inputs = entity.RawJSON(`{"refs":[{"media_id":90},{"media_id":91}]}`)
@@ -111,12 +113,11 @@ func TestThreedWithNoPlatesSendsNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, job.References)
 
-	// НАСТОЯЩИЙ ОТКАЗ ПРОВАЙДЕРА, а не наше представление о нём: клиент включён (ключ задан), и
-	// счётчик картинок проверяется ЛОКАЛЬНО, до всякой сети — поэтому проба не ходит наружу.
-	client := meshy.New(meshy.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})
-	_, subErr := client.Submit(context.Background(), meshy.Request{ImageURLs: job.References})
-	require.ErrorIs(t, subErr, meshy.ErrImageCount,
-		"провайдер обязан отказать пустой сборке, а не собрать что попало")
+	// НАСТОЯЩИЙ ОТКАЗ МАРШРУТА, а не наше представление о нём: раскладка по слотам идёт ЛОКАЛЬНО,
+	// до всякой сети.
+	_, subErr := falViews(job)
+	require.ErrorIs(t, subErr, fal.ErrNoFrontView,
+		"маршрут обязан отказать пустой сборке, а не собрать что попало")
 }
 
 // TestThreedPromptNamesTheBody — V-15 на проводе.
@@ -160,14 +161,14 @@ func threedRunOfSlots(slots string) entity.DesignRun {
 
 // TestThreedWithoutTheFrontSendsNothing — СЦЕНАРИЙ «В ВЕРСТАКЕ ТОЛЬКО СПИНА».
 //
-// Meshy читает первую присланную картинку как ПЕРЁД — это не соглашение, а его контракт
-// (meshy.MinImages/MaxImages, image_urls[0] = фронт). Прогон, у которого переда нет, отправлял
+// Meshy (на fal) читает первую присланную картинку как ПЕРЁД — это не соглашение, а его контракт
+// (image_urls[0] = фронт). Прогон, у которого переда нет, отправлял
 // СПИНУ первой, и провайдер строил поворотный стол, считая спину лицом изделия: тихий успех, `done`
 // и списанные деньги за модель, повёрнутую задом наперёд. Отличить это от честной сборки по
 // истории нечем.
 //
-// ПУСТОЙ ОТВЕТ ЗДЕСЬ — ЭТО ПРАВДА, А НЕ ОТКАЗ ОТ РАБОТЫ: провайдер отвечает своим ErrImageCount
-// («a turntable needs at least the front view»), и такой отказ человек читает.
+// ПУСТОЙ ОТВЕТ ЗДЕСЬ — ЭТО ПРАВДА, А НЕ ОТКАЗ ОТ РАБОТЫ: маршрут отвечает fal.ErrNoFrontView
+// («this run has no front plate»), и такой отказ человек читает.
 func TestThreedWithoutTheFrontSendsNothing(t *testing.T) {
 	r := threedRunOfSlots(`[{"view_key":"back","media_id":2},{"view_key":"side_l","media_id":3}]`)
 
@@ -176,16 +177,15 @@ func TestThreedWithoutTheFrontSendsNothing(t *testing.T) {
 	require.Empty(t, job.References,
 		"без переда список видов не набор: первая картинка уехала бы к провайдеру как лицо изделия")
 
-	client := meshy.New(meshy.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})
-	_, subErr := client.Submit(context.Background(), meshy.Request{ImageURLs: job.References})
-	require.ErrorIs(t, subErr, meshy.ErrImageCount,
-		"отказ обязан прийти от провайдера словами, а не молча стать чужим передом")
+	_, subErr := falViews(job)
+	require.ErrorIs(t, subErr, fal.ErrNoFrontView,
+		"отказ обязан прийти словами, а не молча стать чужим передом")
 }
 
 // TestThreedLeavesADetailPlateOutOfTheTurntable — СЦЕНАРИЙ «ЧЕТЫРЕ СТОРОНЫ ПЛЮС ДЕТАЛЬ».
 //
 // Деталь-рендер — законная плита верстака рендера и законный вход рендера, но она НЕ ВИД ИЗДЕЛИЯ:
-// поворотному столу она пятая картинка, то есть локальный отказ `meshy.Submit` ДО сети. Карточка,
+// поворотному столу она пятая картинка, то есть отказ поставщика. Карточка,
 // на которой человек сделал рендер манжеты, теряла из-за него КАЖДЫЙ прогон 3D.
 func TestThreedLeavesADetailPlateOutOfTheTurntable(t *testing.T) {
 	r := threedRunOfSlots(`[
@@ -205,10 +205,8 @@ func TestThreedLeavesADetailPlateOutOfTheTurntable(t *testing.T) {
 		"https://cdn.example/m/4.png",
 	}, job.References, "стол крутит четыре стороны силуэта; деталь ему не вид, а пятая картинка")
 
-	client := meshy.New(meshy.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})
-	_, subErr := client.Submit(context.Background(), meshy.Request{ImageURLs: job.References})
-	require.NotErrorIs(t, subErr, meshy.ErrImageCount,
-		"набор обязан проходить локальный счётчик провайдера, а не умирать у двери")
+	_, subErr := falViews(job)
+	require.NoError(t, subErr, "набор обязан раскладываться по слотам маршрута, а не умирать у двери")
 }
 
 // TestThreedStillCarriesEverySilhouetteSide — ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ к двум пробам выше.

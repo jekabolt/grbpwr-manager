@@ -132,14 +132,13 @@ func TestAReferenceRunDoesNotReadTheCard(t *testing.T) {
 
 // TestTheDefaultThreedCeilingIsToday — с пустыми опциями новая функция отвечает РОВНО сегодняшним
 // числом, поэтому TestThreedReservationCoversWhatTheRouteActuallyCHARGES и резерв каждого прогона
-// верстака не сдвигаются. МУТАЦИИ: fal-оценка detailed по умолчанию — красно; базовые кредиты
-// Meshy 35 вместо 30 — красно на прямой строке Meshy (в максимуме её перекрывает fal).
+// верстака не сдвигаются. С 29.09.2026 маршрут 3D один — fal: потолок — его опубликованная цена ($1.20,
+// $1.40 за detailed), прямого Meshy в максимуме больше нет. МУТАЦИЯ: fal-оценка detailed по
+// умолчанию — красно.
 func TestTheDefaultThreedCeilingIsToday(t *testing.T) {
-	require.True(t, designMeshyTaskUSDFor("", "").Equal(designMeshyTaskCeilingUSD),
-		"прямой Meshy по умолчанию — те же 30 кредитов, что вчерашний литерал")
-	require.Equal(t, "0.4", designMeshyTaskUSDFor("off", "").String())
-	require.Equal(t, "0.7", designMeshyTaskUSDFor("", "detailed").String())
-	require.Equal(t, "0.5", designMeshyTaskUSDFor("off", "detailed").String())
+	require.Equal(t, "1.2", designThreedCeilingUSD().String(), "fal's published per-build price")
+	require.Equal(t, "1.4", designThreedCeilingUSDFor("", "detailed").String(), "fal's «ultra mode» price")
+	require.Equal(t, "1.2", designThreedCeilingUSDFor("off", "").String(), "no cheaper untextured price is published")
 	require.True(t, designThreedCeilingUSDFor("", "").Equal(designThreedCeilingUSD()),
 		"%s != %s", designThreedCeilingUSDFor("", ""), designThreedCeilingUSD())
 	require.True(t, designThreedCeilingUSDFor("on", "standard").Equal(designThreedCeilingUSD()))

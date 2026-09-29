@@ -306,8 +306,7 @@ func designMaxFactor(m map[string]decimal.Decimal) decimal.Decimal {
 	return out
 }
 
-// designThreedCeilingUSD — САМЫЙ ДОРОГОЙ ИЗ ДВУХ 3D-МАРШРУТОВ, и он выбирается ПЕРЕБОРОМ, потому
-// что дверь не знает, какой из них включён.
+// designThreedCeilingUSD — ПОТОЛОК ОДНОЙ 3D-СБОРКИ: опубликованная цена маршрута fal.
 //
 // ⚠ ЧТО ЭТО ЧИСЛО ДЕЛАЕТ СЕГОДНЯ — И ЧЕГО ОНО НЕ ДЕЛАЕТ. Оно попадает в `design_run.price_estimate`
 // и в `design_budget_day.reserved`, то есть в БУХГАЛТЕРИЮ и на панель рядом с `price_actual`.
@@ -331,23 +330,11 @@ func designMaxFactor(m map[string]decimal.Decimal) decimal.Decimal {
 // защита от того дефекта живёт не здесь, а в `fal.CostUSDFor` (без тарифа не умножать) и в потолке
 // ПОВТОРОВ (designMaxPaidAttempts).
 //
-// ⚠ ПОЧЕМУ МАКСИМУМ, А НЕ ЧТЕНИЕ DESIGN_THREED_PROVIDER. Довод тот же, что у дила качества
-// картинки двумя абзацами выше: второй читатель настройки — это второе число, и оно разойдётся с
-// первым на том деплое, который задаст настройку файлом, а не средой. Максимум читателя не заводит
-// вовсе, а платит за это лишь тем, что число в полёте слегка завышено — и оно снимается целиком на
-// терминальном переходе, уступая место ФАКТУ.
-//
-// MESHY СТОИТ ЛИТЕРАЛОМ, А FAL — НЕТ, И РАЗНИЦА НЕ В ВКУСЕ. У маршрута fal есть СОБСТВЕННОЕ
-// опубликованное число, которым он и списывает без заданного тарифа, — его и берём. У прямого
-// Meshy такого числа нет и быть не может: сколько кредитов съест задание, до сабмита не знает и сам
-// провайдер, а курс кредита — env-дил (MESHY_CREDIT_USD), которого дверь не видит. $0.60 — это
-// ~30 кредитов по ~$0.02 (meshy.defaultCreditUSD), догадка двери о ПОТОЛКЕ обычного задания, и она
-// не дублирует ничего: в пакете meshy такого числа нет.
+// С 29.09.2026 3D-МАРШРУТ ОДИН — fal (он же хостит модели Meshy); прямой Meshy и его литерал $0.60
+// ушли вместе с провайдером, так что «самый дорогой из двух» стал ценой fal.
 func designThreedCeilingUSD() decimal.Decimal {
-	return decimal.Max(fal.EstimatedRequestUSD(), designMeshyTaskCeilingUSD)
+	return fal.EstimatedRequestUSD()
 }
-
-var designMeshyTaskCeilingUSD = decimal.RequireFromString("0.60")
 
 // designDraftIdeaBaseUSD / designDraftIdeaPictureUSD — ДВА СЛАГАЕМЫХ ЦЕНЫ ТЕКСТОВОГО ЧЕРНОВИКА.
 //
@@ -1003,7 +990,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// ⚠ ЭТО ТОТ ЖЕ ПРЕДИКАТ, ЧТО У ВОРКЕРА, НА ТЕХ ЖЕ ДАННЫХ — не второе мнение о том же.
 	// designgen.threedPictures читает `inputs.slots`, ищет силуэтную сторону `front` с медиа и на
 	// её отсутствии возвращает ПУСТОЙ список, после чего маршрут отказывает у самой двери
-	// провайдера (meshy.ErrImageCount / fal.ErrNoFrontView, оба Retryable=false). Здесь спрашивается
+	// провайдера (fal.ErrNoFrontView, Retryable=false). Здесь спрашивается
 	// ТОТ ЖЕ снимок, на один тик раньше и до денег. Разойтись им не на чем: второго источника
 	// `inputs.slots` не существует.
 	//

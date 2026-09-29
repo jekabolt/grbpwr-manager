@@ -23,7 +23,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 )
 
@@ -251,22 +250,21 @@ func intp(v int) *int { return &v }
 // B-14 MOVED THE STATUS FROM THE SENTENCE TO THE FIELD, and this test with it. Each error of the first
 // half is a CallError a transport COULD raise for a 408 (HTTPStatus, not engaged, the matrix's code) —
 // the net timeoutIsNotFree still spreads under every mapping. The second half runs the REAL orimages /
-// fal / Meshy clients against a 408 stand: since B-13/A3 each of them raises a 408 on
+// fal clients against a 408 stand: since B-13/A3 each of them raises a 408 on
 // its paid POST as ENGAGED, so the row is `unknown` by the transport's own word (Engaged true) and the
 // attempt is `unknown` and never retried — the ledger and the worker finally say the same thing. The
 // third half is the text fallback's funeral: a LOCAL refusal whose words quote "HTTP 408" — no response
 // arrived — stays `free`, because nothing reads text any more.
 //
 // MUTATIONS (measured red→green): timeoutIsNotFree returning `end` unchanged → every 408 case reads
-// `free`; the call removed from each of imageCallEnd / falSubmitEnd / meshySubmitEnd in turn →
-// that transport's 408 cases read `free`, the other two stay green; the rule widened to
+// `free`; the call removed from each of imageCallEnd / falSubmitEnd in turn → that
+// transport's 408 cases read `free`, the other stays green; the rule widened to
 // every status ≥ 400 → the validator controls read `unknown`; httpStatusOf reading the sentence again
 // (the deleted `\bHTTP (\d{3})\b` branch restored) → every «the text is dead» row reads `unknown`.
 func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 	type mapping func(err error) entity.AICallEnd
 	image := func(err error) entity.AICallEnd { return imageCallEnd(nil, err) }
 	falSubmit := func(err error) entity.AICallEnd { return falSubmitEnd(err, decimal.NullDecimal{}) }
-	meshySubmit := func(err error) entity.AICallEnd { return meshySubmitEnd(err) }
 	// refusal — a non-2xx exactly as a design transport raises it since B-14.
 	refusal := func(provider string, status int, err error) error {
 		code, retryable := aiprov.ClassifyStatus(status)
@@ -288,10 +286,6 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 			refusal(entity.AIProviderFal, 408, fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 408, "request timeout")),
 			refusal(entity.AIProviderFal, 422, fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 422, "bad schema")),
 			fmt.Errorf("front view: %w (HTTP 408 in the address)", fal.ErrBadImageURL)},
-		{"meshy submit", meshySubmit,
-			refusal(entity.AIProviderMeshy, 408, fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 408, "request timeout")),
-			refusal(entity.AIProviderMeshy, 400, fmt.Errorf("%w: %s %s: HTTP %d: %s", meshy.ErrBadRequest, http.MethodPost, "/openapi/v1/multi-image-to-3d", 400, "bad schema")),
-			fmt.Errorf("%w (got 9, HTTP 408 nowhere near a wire)", meshy.ErrImageCount)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			end := c.end(c.timeout)
@@ -354,15 +348,6 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 		stored(t, ai)
 		require.Equal(t, []string{CodeSubmitUnconfirmed + " retry=false"}, failedCodes(st),
 			"B-13/A3: the run closes for reconciliation instead of buying a second build")
-	})
-	t.Run("meshy submit, real client", func(t *testing.T) {
-		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindThreed,
-			References: []string{"https://cdn.example/f.png"}}, entity.AIPurposeThreed)
-		_, err := newThreedSteerProvider(t, stand408(t).URL).Execute(context.Background(), job)
-		require.ErrorIs(t, err, meshy.ErrBadRequest)
-		require.ErrorIs(t, err, meshy.ErrSubmitUnconfirmed, "B-13/A3")
-		require.False(t, classify(err).Retryable, "B-13/A3: now also terminal")
-		stored(t, ai)
 	})
 }
 
@@ -493,35 +478,28 @@ func TestAResumedCollectPRICES_THE_ROW_ITS_SUBMIT_OPENED(t *testing.T) {
 }
 
 // TestACollectAfterAProviderSwitchGOES_TO_THE_STORED_PROVIDER — REVIEW-A4 #2, closed by B-13: fal
-// accepted attempt 1 (the history stores Provider "fal" and fal's locator); the deployment was switched
-// to DESIGN_THREED_PROVIDER=meshy before the next pickup, so Meshy is the kind's route and fal is only
-// CONSTRUCTED (Providers.Also, as app.go wires it).
+// accepted attempt 1 (the history stores Provider "fal" and fal's locator); by the next pickup the kind's
+// route is ANOTHER provider (in the test a fake `other3d`; historically the direct Meshy route) and fal
+// is only CONSTRUCTED (Providers.Also, as app.go wires it).
 //
-// This test used to pin the OLD behaviour — the Meshy collector asked for fal's locator, failed for
+// This test used to pin the OLD behaviour — the other collector asked for fal's locator, failed for
 // good, and the ledger row was merely withheld (`accepted` for ever, the run closed as lost). Rewritten
 // for B-13: the collect goes to the STORED provider, fal delivers, and fal's row is priced `ok` at the
-// number the collect's attempt books. Meshy is never asked anything.
+// number the collect's attempt books. The wired route is never asked anything.
 //
 // The two refusals of the same resume: the stored provider is constructed but now KEYLESS → the paid
 // job waits (`paid_collect_waiting`, retryable, nothing called); no provider of that name is
 // constructed at all → `kind_not_available`, the name in the sentence, nothing called.
 //
 // MUTATIONS (measured red→green): resumeRoute returning the kind's route (w.providers.preflight)
-// instead of byName(a.Provider) → the Meshy stand is asked, the run fails and fal's row stays
+// instead of byName(a.Provider) → the wired route is asked, the run fails and fal's row stays
 // `accepted`; byName skipping Also → `kind_not_available` instead of the delivered build; routeReady
 // dropped from the named branch → the keyless fal is asked to collect instead of the run waiting.
 func TestACollectAfterAProviderSwitchGOES_TO_THE_STORED_PROVIDER(t *testing.T) {
-	var meshyAsked atomic.Int32
-	meshyStand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		meshyAsked.Add(1)
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"no such task"}`))
-	}))
-	t.Cleanup(meshyStand.Close)
-	meshyRoute := NewThreedProvider(meshy.New(meshy.Config{APIKey: "k", BaseURL: meshyStand.URL,
-		HTTPTimeout: 2 * time.Second, PollInterval: 5 * time.Millisecond, PollTimeout: 40 * time.Millisecond,
-		DownloadTimeout: 2 * time.Second}))
-	require.NotEqual(t, ThreedProviderFal, meshyRoute.Name(), "the wired route is not the one that accepted")
+	otherRoute := &fakeAsyncProvider{fakeProvider: fakeProvider{name: "other3d",
+		produces: []string{ContentTypeGLB, ContentTypePNG}}}
+	require.NotEqual(t, ThreedProviderFal, otherRoute.Name(), "the wired route is not the one that accepted")
+	otherAsked := func() int { return len(otherRoute.calls) + len(otherRoute.collectFor) }
 
 	run := steerRun(65)
 	run.Author = "im"
@@ -543,13 +521,13 @@ func TestACollectAfterAProviderSwitchGOES_TO_THE_STORED_PROVIDER(t *testing.T) {
 		stand := newFalBuildStand(t)
 		full := accepted(ThreedProviderFal)
 		st := &fakeStore{getRun: &full, nextNo: 1}
-		w := steerWorker(t, st, meshyRoute)
+		w := steerWorker(t, st, otherRoute)
 		w.providers.Also = []Provider{falRoute(t, stand.srv.URL, falMeshySlug)}
 		ai := withLedger(w)
 		seedFalRow(ai)
 
 		require.NoError(t, w.execute(context.Background(), run, "tok"))
-		require.Zero(t, meshyAsked.Load(), "the wired route has never seen this locator and is not asked")
+		require.Zero(t, otherAsked(), "the wired route has never seen this locator and is not asked")
 		require.Zero(t, stand.posts.Load(), "a resume never submits")
 
 		require.Len(t, st.started, 1)
@@ -571,28 +549,28 @@ func TestACollectAfterAProviderSwitchGOES_TO_THE_STORED_PROVIDER(t *testing.T) {
 		stand := newFalBuildStand(t)
 		full := accepted(ThreedProviderFal)
 		st := &fakeStore{getRun: &full, nextNo: 1}
-		w := steerWorker(t, st, meshyRoute)
+		w := steerWorker(t, st, otherRoute)
 		w.providers.Also = []Provider{NewFalThreedProvider(fal.New(fal.Config{BaseURL: stand.srv.URL, Model3D: falMeshySlug}))}
 
 		require.NoError(t, w.execute(context.Background(), run, "tok"))
 		require.Equal(t, []string{CodePaidCollectWaiting + " retry=true"}, failedCodes(st),
 			"a bought job waits for its provider; it is never re-submitted elsewhere")
 		require.Empty(t, st.started, "nothing is called: no attempt row")
-		require.Zero(t, meshyAsked.Load())
+		require.Zero(t, otherAsked())
 		require.Zero(t, stand.posts.Load())
 	})
 
 	t.Run("no provider of that name is constructed: refused by name, nothing called", func(t *testing.T) {
 		full := accepted("hitem3d_direct")
 		st := &fakeStore{getRun: &full, nextNo: 1}
-		w := steerWorker(t, st, meshyRoute)
+		w := steerWorker(t, st, otherRoute)
 
 		require.NoError(t, w.execute(context.Background(), run, "tok"))
 		require.Equal(t, []string{CodeKindNotAvailable + " retry=false"}, failedCodes(st))
 		require.Contains(t, st.failed[0].LastError, "hitem3d_direct", "the sentence names the provider that holds the job")
 		require.Contains(t, st.failed[0].LastError, falMeshySlug+"#req-1", "and the request to reconcile")
 		require.Empty(t, st.started)
-		require.Zero(t, meshyAsked.Load())
+		require.Zero(t, otherAsked())
 	})
 }
 
@@ -847,47 +825,6 @@ func TestTheAttemptWriteBOOKS_NO_LEDGER_ROW(t *testing.T) {
 	require.Empty(t, ai.Writes())
 }
 
-// TestAMeshyBuildIsAcceptedThenPricedINCREDITS — the direct Meshy route: the submit's row is
-// `accepted`; a collect that reports credits and no model is `charged_failed` at credits × rate, on
-// the SAME row, the number the attempt books.
-func TestAMeshyBuildIsAcceptedThenPricedINCREDITS(t *testing.T) {
-	prior := acceptedThreedRun()
-	st := &fakeStore{getRun: &prior, nextNo: 1}
-	w := chargedThreedWorker(t, st, 30)
-	ai := withLedger(w)
-	runID, attemptNo := 8, 1
-	ai.Seed(aiprovtest.Row{Status: entity.AICallAccepted, Start: entity.AICallStart{
-		OccurredAt: time.Now(), ProviderKey: entity.AIProviderMeshy, Purpose: entity.AIPurposeThreed,
-		RunID: &runID, AttemptNo: &attemptNo, CallNo: 1}})
-
-	require.NoError(t, w.execute(context.Background(), acceptedThreedRun(), "tok"))
-
-	require.Equal(t, "0.6", st.finished[0].Price.Decimal.String())
-	r := ai.Rows()[0]
-	require.Equal(t, entity.AICallChargedFailed, r.Status)
-	require.Equal(t, "0.6", r.End.CostUSD.Decimal.String())
-	require.Equal(t, "30", r.End.Units.String())
-	require.Equal(t, "credit", r.End.Unit)
-	require.Equal(t, CodeEmptyResponse, r.End.ErrorCode)
-
-	// And the submit half: a fresh Meshy submit opens its row and closes it `accepted` with the id.
-	stand := newThreedSteerStand(t)
-	ai2 := &aiprovtest.Store{}
-	job := Job{RunID: 64, Kind: entity.DesignRunKindThreed, References: []string{"https://cdn.example/f.png"},
-		Recorder: runRecorder{ledger: aiprov.NewLedger(ai2, nil), runID: 64, attemptNo: 1,
-			purpose: entity.AIPurposeThreed, actor: "im"}}
-	sub, err := newThreedSteerProvider(t, stand.srv.URL).Execute(context.Background(), job)
-	require.NoError(t, err)
-	require.True(t, sub.Pending)
-	require.Equal(t, entity.AIProviderMeshy, sub.Provider)
-	rows := ai2.Rows()
-	require.Len(t, rows, 1)
-	require.Equal(t, entity.AIProviderMeshy, rows[0].Start.ProviderKey)
-	require.Equal(t, entity.AICallAccepted, rows[0].Status)
-	require.Equal(t, "task-777", rows[0].End.RequestID)
-	require.False(t, rows[0].End.CostUSD.Valid, "accepted is unpriced until the collect")
-}
-
 // TestWithLedgerNilIsNoLedger — a typed nil must not become a non-nil interface the worker would
 // call into.
 func TestWithLedgerNilIsNoLedger(t *testing.T) {
@@ -1026,20 +963,17 @@ var colorOpaque = color.NRGBA{R: 1, G: 2, B: 3, A: 255}
 
 // TestATerminalCollectIsUNKNOWN_UNLESS_THE_PROVIDER_REFUNDED — an accepted job is billed when it
 // finishes, whether or not we look: a lookup that fails for good on OUR side (a key rejected on the
-// status GET, a request id the queue forgot) is `unknown`, never `failed`; only Meshy's FAILED task
-// (credits returned) is `failed`; a job still running writes nothing and the row stays `accepted`.
-//
-// B-14b (REVIEW-FIXD P2 #2): the refunded row carries a KNOWN zero — cost 0, source `provider` — so the
-// spend report does not count a refund as an unknown liability; every other terminal row stays NULL
-// (`none`), because nobody said what it cost.
+// status GET, a request id the queue forgot) is `unknown`, never `failed`; a job still running writes
+// nothing and the row stays `accepted`. Every terminal row stays NULL (`none`), because nobody said
+// what it cost. (The one refunded outcome — the direct Meshy provider's FAILED task, a KNOWN zero —
+// left with that provider on 2026-09-29.)
 //
 // MUTATIONS (measured red→green): collectEnd mapping through classify(err).State → the 401 row reads
-// `failed` (classify's word for the ATTEMPT, which paid nothing) and drops out of «unpriced»; the
-// refund's known zero removed (the row left NULL) → the Meshy row fails the known-zero assertions.
+// `failed` (classify's word for the ATTEMPT, which paid nothing) and drops out of «unpriced».
 func TestATerminalCollectIsUNKNOWN_UNLESS_THE_PROVIDER_REFUNDED(t *testing.T) {
 	_, write := collectEnd(nil, fal.ErrNotReady, nil, "", false)
 	require.False(t, write, "still running: the next collect decides")
-	_, write = collectEnd(nil, fmt.Errorf("%w: job 1", meshy.ErrTimedOut), nil, "", false)
+	_, write = collectEnd(nil, fmt.Errorf("%w: job 1", fal.ErrTimedOut), nil, "", false)
 	require.False(t, write)
 
 	for _, c := range []struct {
@@ -1055,7 +989,6 @@ func TestATerminalCollectIsUNKNOWN_UNLESS_THE_PROVIDER_REFUNDED(t *testing.T) {
 		{"fal forgot the request", &aiprov.CallError{Provider: entity.AIProviderFal, Code: aiprov.CodeModelUnknown,
 			HTTPStatus: 404, Err: fmt.Errorf("%w (HTTP 404): gone", fal.ErrRequestNotFound)}, entity.AICallUnknown, intp(404), false},
 		{"fal failed the task (it may have billed)", fal.ErrTaskFailed, entity.AICallUnknown, nil, false},
-		{"Meshy failed the task (Meshy refunds)", meshy.ErrTaskFailed, entity.AICallFailed, nil, true},
 	} {
 		end, write := collectEnd(nil, c.err, nil, "", false)
 		require.True(t, write, c.name)

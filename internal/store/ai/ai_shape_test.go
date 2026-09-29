@@ -221,7 +221,7 @@ func sampleStart() entity.AICallStart {
 	return entity.AICallStart{
 		OccurredAt: fixedNow, DayLocal: "2026-09-27", ProviderKey: "fal", Model: "fal-ai/trellis",
 		Purpose: entity.AIPurposeThreed, Actor: "jeka", ActorAdminID: ptr(7), RunID: ptr(41),
-		AttemptNo: ptr(2), CallNo: 1, FallbackFrom: "meshy",
+		AttemptNo: ptr(2), CallNo: 1, FallbackFrom: "runblob",
 	}
 }
 
@@ -282,8 +282,8 @@ func TestAIStoreShapeEveryStatementBindsExactlyItsParams(t *testing.T) {
 		"setAIProviderAPIKey":      keyWriteParams("fal", []byte{1, 2}, "abcd", "jeka", fixedNow),
 		"setAIProviderAdminKey":    keyWriteParams("fal", nil, "", "jeka", fixedNow),
 		"updateAIDefaults":         defaultsParams(entity.AIDefaultsPatch{ChatProviderKey: ptr("openai")}, "jeka"),
-		"deleteAIRoute":            {"purpose": "vector"},
-		"insertAIRouteCandidate":   {"purpose": "vector", "position": 1, "provider_key": "", "model": "", "by": "jeka"},
+		"deleteAIRoute":            {"purpose": "threed"},
+		"insertAIRouteCandidate":   {"purpose": "threed", "position": 1, "provider_key": "", "model": "", "by": "jeka"},
 		"upsertAIModel":            {"provider_key": "fal", "model": "x", "label": "", "kind": "threed", "disabled": false, "by": "jeka"},
 		"insertAIModelIfAbsent":    {"provider_key": "fal", "model": "x", "kind": "threed", "by": "jeka"},
 		"insertAICall":             begin,
@@ -808,7 +808,7 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 		}, []string{"bumpConfigVersionChecked", "updateAIDefaults", "selectAIRoutes", "deleteAIRoute", "insertAIRouteCandidate"}},
 		{"SetRoute", func(s *Store) error {
 			return s.SetRoute(ctx, entity.AIPurposeThreed, []entity.AIRouteCandidate{
-				{Position: 9, ProviderKey: "meshy"}, {Position: 3, ProviderKey: "fal", Model: " fal-ai/trellis "},
+				{Position: 9, ProviderKey: "fal"}, {Position: 3, ProviderKey: "fal", Model: " fal-ai/trellis "},
 			}, 7, "jeka")
 		}, []string{"bumpConfigVersionChecked", "deleteAIRoute", "insertAIRouteCandidate", "insertAIRouteCandidate", "insertAIModelIfAbsent"}},
 		{"UpsertModel", func(s *Store) error {
@@ -838,7 +838,7 @@ func TestAIStoreShapeConfigWritesBumpTheVersionFirst(t *testing.T) {
 					argOf(t, insertAIRouteCandidate, c.args, "model").(string)+"#"+
 					string(rune('0'+argOf(t, insertAIRouteCandidate, c.args, "position").(int))))
 			}
-			if want := []string{"fal@fal-ai/trellis#1", "meshy@#2"}; !slices.Equal(got, want) {
+			if want := []string{"fal@fal-ai/trellis#1", "fal@#2"}; !slices.Equal(got, want) {
 				t.Fatalf("SetRoute wrote %v, want %v (ordered by Position, renumbered 1..n, trimmed)", got, want)
 			}
 		}
@@ -1051,22 +1051,22 @@ func TestAIStoreShapeRefusalsNeverReachTheDatabase(t *testing.T) {
 			return s.SetProviderKey(ctx, "fal", entity.AIKeyAPI, make([]byte, 2049), "abcd", "j")
 		},
 		"empty defaults": func(s *Store) error { return s.SetDefaults(ctx, entity.AIDefaultsPatch{}, 1, "j") },
-		"chat default is meshy": func(s *Store) error {
-			return s.SetDefaults(ctx, entity.AIDefaultsPatch{ChatProviderKey: ptr("meshy")}, 1, "j")
+		"chat default is fal": func(s *Store) error {
+			return s.SetDefaults(ctx, entity.AIDefaultsPatch{ChatProviderKey: ptr("fal")}, 1, "j")
 		},
 		"image default is anth.": func(s *Store) error {
 			return s.SetDefaults(ctx, entity.AIDefaultsPatch{ImageProviderKey: ptr("anthropic")}, 1, "j")
 		},
 		"unknown purpose": func(s *Store) error { return s.SetRoute(ctx, "image.flat", []entity.AIRouteCandidate{{}}, 1, "j") },
-		"empty route":     func(s *Store) error { return s.SetRoute(ctx, "vector", nil, 1, "j") },
+		"empty route":     func(s *Store) error { return s.SetRoute(ctx, "threed", nil, 1, "j") },
 		"route too long": func(s *Store) error {
-			return s.SetRoute(ctx, "vector", make([]entity.AIRouteCandidate, maxRouteCandidates+1), 1, "j")
+			return s.SetRoute(ctx, "threed", make([]entity.AIRouteCandidate, maxRouteCandidates+1), 1, "j")
 		},
 		"route cannot serve": func(s *Store) error {
 			return s.SetRoute(ctx, "image.extend", []entity.AIRouteCandidate{{ProviderKey: "openrouter"}}, 1, "j")
 		},
 		"route model too long": func(s *Store) error {
-			return s.SetRoute(ctx, "vector", []entity.AIRouteCandidate{{Model: strings.Repeat("m", 129)}}, 1, "j")
+			return s.SetRoute(ctx, "threed", []entity.AIRouteCandidate{{Model: strings.Repeat("m", 129)}}, 1, "j")
 		},
 		"model kind not served": func(s *Store) error {
 			return s.UpsertModel(ctx, entity.AIModel{ProviderKey: "anthropic", Model: "x", Kind: "image"}, "j")
@@ -1463,13 +1463,13 @@ func TestAIStoreShapeRecentFaultsPicksTheBadge(t *testing.T) {
 		// fal: a tie on count goes to the badge seen last.
 		{"fal", designgen.CodeOutOfCredit, 2, earlier},
 		{"fal", designgen.CodeModelRetired, 2, later},
-		// meshy: only weather — no badge.
-		{"meshy", designgen.CodeProviderUnavailable, 4, later},
-		// recraft: a full tie goes to the alphabetically first badge, whatever the row order.
-		{"recraft", faultOutOfCredits, 1, later},
-		{"recraft", faultKeyRejected, 1, later},
+		// runblob: only weather — no badge.
+		{"runblob", designgen.CodeProviderUnavailable, 4, later},
+		// apibost: a full tie goes to the alphabetically first badge, whatever the row order.
+		{"apibost", faultOutOfCredits, 1, later},
+		{"apibost", faultKeyRejected, 1, later},
 	})
-	want := map[string]string{"openai": faultKeyRejected, "fal": faultModelUnknown, "recraft": faultKeyRejected}
+	want := map[string]string{"openai": faultKeyRejected, "fal": faultModelUnknown, "apibost": faultKeyRejected}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("pickFaults = %v, want %v", got, want)
 	}
@@ -1491,11 +1491,11 @@ func TestAIStoreShapeGetConfigReadsTheVersionFirst(t *testing.T) {
 		onSelect: func(dest any, q string, _ []any) error {
 			switch d := dest.(type) {
 			case *[]entity.AIProvider:
-				*d = []entity.AIProvider{{Key: "recraft"}, {Key: "zeta"}, {Key: "openai"}, {Key: "fal"}}
+				*d = []entity.AIProvider{{Key: "runblob"}, {Key: "zeta"}, {Key: "openai"}, {Key: "fal"}}
 			case *[]routeRow:
 				*d = []routeRow{
-					{"vector", entity.AIRouteCandidate{Position: 2, ProviderKey: "recraft"}},
-					{"vector", entity.AIRouteCandidate{Position: 1}},
+					{"threed", entity.AIRouteCandidate{Position: 2, ProviderKey: "fal"}},
+					{"threed", entity.AIRouteCandidate{Position: 1}},
 					{"chat.note_markdown", entity.AIRouteCandidate{Position: 1, ProviderKey: "openrouter"}},
 				}
 			}
@@ -1519,14 +1519,14 @@ func TestAIStoreShapeGetConfigReadsTheVersionFirst(t *testing.T) {
 	for _, p := range cfg.Providers {
 		keys = append(keys, p.Key)
 	}
-	if want := []string{"openai", "fal", "recraft", "zeta"}; !slices.Equal(keys, want) {
+	if want := []string{"openai", "fal", "runblob", "zeta"}; !slices.Equal(keys, want) {
 		t.Fatalf("providers %v, want the vocabulary order %v with unknown keys last", keys, want)
 	}
-	if len(cfg.Routes) != 2 || cfg.Routes[0].Purpose != "chat.note_markdown" || cfg.Routes[1].Purpose != "vector" {
+	if len(cfg.Routes) != 2 || cfg.Routes[0].Purpose != "chat.note_markdown" || cfg.Routes[1].Purpose != "threed" {
 		t.Fatalf("routes %+v, want one per purpose in vocabulary order", cfg.Routes)
 	}
-	if v := cfg.Routes[1].Candidates; len(v) != 2 || v[0].Position != 1 || v[0].ProviderKey != "" || v[1].ProviderKey != "recraft" {
-		t.Fatalf("vector candidates %+v, want primary (default provider) then recraft", v)
+	if v := cfg.Routes[1].Candidates; len(v) != 2 || v[0].Position != 1 || v[0].ProviderKey != "" || v[1].ProviderKey != "fal" {
+		t.Fatalf("threed candidates %+v, want primary (default provider) then fal", v)
 	}
 }
 
@@ -1674,7 +1674,7 @@ func TestAIStoreShapeSpendTotalsKeepNull(t *testing.T) {
 	}
 	mixed := spendTotals([]entity.AISpendByProvider{
 		{ProviderKey: "fal", OurUSD: decimal.NewNullDecimal(decimal.RequireFromString("1.20")), Calls: 1},
-		{ProviderKey: "meshy", Calls: 4, Failed: 1, Unpriced: 3},
+		{ProviderKey: "runblob", Calls: 4, Failed: 1, Unpriced: 3},
 		{ProviderKey: "openrouter", OurUSD: decimal.NewNullDecimal(decimal.RequireFromString("0.053")), Calls: 2, Failed: 1},
 	})
 	if !mixed.TotalUSD.Valid || !mixed.TotalUSD.Decimal.Equal(decimal.RequireFromString("1.253")) {
@@ -1725,8 +1725,8 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 			case *[]ourSpendRow: // GROUP BY order: alphabetical
 				*d = []ourSpendRow{
 					{ProviderKey: "fal", Calls: 2, Unpriced: 2},
-					{ProviderKey: "meshy", OurUSD: usd("0.000000"), Calls: 3, Failed: 3},
 					{ProviderKey: "openrouter", OurUSD: usd("1.253000"), Calls: 4, Failed: 1},
+					{ProviderKey: "runblob", OurUSD: usd("0.000000"), Calls: 3, Failed: 3},
 					{ProviderKey: "zeta", OurUSD: usd("0.5"), Calls: 1},
 				}
 			case *[]theirSpendRow:
@@ -1752,7 +1752,7 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 	for _, l := range rep.ByProvider {
 		keys = append(keys, l.ProviderKey)
 	}
-	if want := []string{"openai", "openrouter", "fal", "meshy", "zeta"}; !slices.Equal(keys, want) {
+	if want := []string{"openai", "openrouter", "fal", "runblob", "zeta"}; !slices.Equal(keys, want) {
 		t.Fatalf("lines %v, want %v (union of both sides, panel order, an unknown key last)", keys, want)
 	}
 	openai := rep.ByProvider[0]
@@ -1773,8 +1773,8 @@ func TestAIStoreShapeSpendReportUnionsBothSides(t *testing.T) {
 	if openai.TheirBucketTZ != "UTC" || openrouter.TheirBucketTZ != "Europe/Warsaw" {
 		t.Fatalf("their zones %q / %q, want UTC / Europe/Warsaw", openai.TheirBucketTZ, openrouter.TheirBucketTZ)
 	}
-	if meshy := rep.ByProvider[3]; !meshy.OurUSD.Valid || !meshy.OurUSD.Decimal.IsZero() {
-		t.Fatalf("free-only line %+v, want a real 0", meshy)
+	if runblob := rep.ByProvider[3]; !runblob.OurUSD.Valid || !runblob.OurUSD.Decimal.IsZero() {
+		t.Fatalf("free-only line %+v, want a real 0", runblob)
 	}
 	if !rep.TotalUSD.Valid || !rep.TotalUSD.Decimal.Equal(decimal.RequireFromString("1.753")) {
 		t.Fatalf("total %v, want 1.753 (ours only: their 12.5 + 1.2 never enter it)", rep.TotalUSD)

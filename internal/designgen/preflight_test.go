@@ -143,7 +143,7 @@ func TestASinklessGateRefusesRatherThanGuesses(t *testing.T) {
 func TestTheRealRoutesOutputsAllHaveSomewhereToLive(t *testing.T) {
 	sink := &bucketSink{}
 	for _, prov := range []Provider{
-		NewImageProvider(nil), NewThreedProvider(nil),
+		NewImageProvider(nil), NewFalThreedProvider(nil),
 	} {
 		produces := prov.Produces()
 		require.NotEmpty(t, produces, "маршрут, который ничего не обещает, делает пробу пустой")

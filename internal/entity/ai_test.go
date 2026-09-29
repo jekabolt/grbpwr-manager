@@ -14,7 +14,7 @@ import (
 // panel would list a provider every write then refuses, or the store would accept one the panel never
 // shows. Also: returning the package's own slice, which a caller could sort in place.
 func TestAIShapeProviderKeysAreClosed(t *testing.T) {
-	want := []string{"openai", "anthropic", "google", "openrouter", "apibost", "fal", "meshy", "runblob"}
+	want := []string{"openai", "anthropic", "google", "openrouter", "apibost", "fal", "runblob"}
 	got := AIProviderKeys()
 	if !slices.Equal(got, want) {
 		t.Fatalf("AIProviderKeys() = %v, want %v", got, want)
@@ -27,7 +27,7 @@ func TestAIShapeProviderKeysAreClosed(t *testing.T) {
 			t.Fatalf("%q serves nothing: every provider must name its capabilities", k)
 		}
 	}
-	for _, k := range []string{"", "OpenAI", "openai ", "orimages", "openrouter_images", "fal_cutout", "recraft"} {
+	for _, k := range []string{"", "OpenAI", "openai ", "orimages", "openrouter_images", "fal_cutout", "recraft", "meshy"} {
 		if IsAIProviderKey(k) {
 			t.Fatalf("IsAIProviderKey(%q) = true: the vocabulary must be closed and exact", k)
 		}
@@ -51,7 +51,6 @@ func TestAIShapeProviderCapabilitiesMatchTheContract(t *testing.T) {
 		AIProviderOpenRouter: {AICapabilityChat, AICapabilityImage},
 		AIProviderApibost:    {AICapabilityChat, AICapabilityImage},
 		AIProviderFal:        {AICapabilityImage, AICapabilityCutout, AICapabilityEdit, AICapabilityThreed},
-		AIProviderMeshy:      {AICapabilityThreed},
 		AIProviderRunblob:    {AICapabilityImage, AICapabilityVideo},
 	}
 	for k, caps := range want {
@@ -123,7 +122,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 // TestAIShapeEveryPurposeHasAProvider. A purpose no provider can serve is a route the panel can never
 // save.
 //
-// MUTATION IT CATCHES: removing `threed` from both fal and meshy.
+// MUTATION IT CATCHES: removing `threed` from fal.
 func TestAIShapeEveryPurposeHasAProvider(t *testing.T) {
 	for _, p := range AIPurposes() {
 		c := AIPurposeCapability(p)

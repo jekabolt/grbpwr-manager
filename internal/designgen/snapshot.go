@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/shopspring/decimal"
 )
 
@@ -1113,11 +1112,14 @@ func surfaceSteer(ctx context.Context, p runParams) string {
 	return steer
 }
 
+// maxTexturePrompt — the fal-hosted Meshy family's texture_prompt ceiling, in runes: a longer prompt
+// is answered with a 422.
+const maxTexturePrompt = 600
+
 // steerCeiling is the number of runes a surface hint may carry, and it is the PROVIDER'S number
-// rather than a taste of ours: meshy.Submit refuses above it locally, and the meshy family reached
-// through fal answers a longer one with a 422. Both refusals are terminal, so this is the one place
-// that can keep them unreachable.
-const steerCeiling = meshy.MaxTexturePrompt
+// rather than a taste of ours: the meshy family reached through fal answers a longer one with a 422,
+// a terminal refusal, so this is the one place that can keep it unreachable.
+const steerCeiling = maxTexturePrompt
 
 // steerMinPhrase is how much room a part needs before it is worth sending in part. Below it the
 // remainder is not a phrase but a fragment — «matte heavy jer» — and a fragment in a hint is worse
