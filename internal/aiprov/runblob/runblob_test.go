@@ -275,6 +275,9 @@ func TestStatusMatrix(t *testing.T) {
 		{400, detailBody("bad"), aiprov.CodeBadRequest, false, "bad"},
 		{401, detailBody("Invalid API key"), aiprov.CodeKeyRejected, false, "Invalid API key"},
 		{402, detailBody("Insufficient balance"), aiprov.CodeOutOfCredits, false, "Insufficient balance"},
+		// Seedance's documented error shape (seedance.json errors.shapes.http_error): detail {code, message}.
+		{402, `{"detail":{"code":"INSUFFICIENT_CREDITS","message":"top up the balance"}}`, aiprov.CodeOutOfCredits, false,
+			"INSUFFICIENT_CREDITS: top up the balance"},
 		{403, detailBody("forbidden"), aiprov.CodeKeyRejected, false, "forbidden"},
 		{404, detailBody("Not Found"), "", false, "Not Found"},
 		{408, detailBody("slow"), aiprov.CodeProviderError, true, "slow"},
@@ -746,13 +749,14 @@ func TestRefusalsBeforeTheWire(t *testing.T) {
 		sentence string
 	}{
 		{"submit: an unknown family", submit("sora", klingBody()), aiprov.CodeBadRequest,
-			`runblob: unknown family path "sora" (known: gemini, kling, kling/o1-photo, kling/o3-photo, veo)`},
+			`runblob: unknown family path "sora" (known: gemini, kling, kling/o1-photo, kling/o3-photo, veo, ` +
+				`kling/o1-video, kling/o3-video, seedance, chatgpt-images)`},
 		{"submit: an upper-case family", submit("Kling", klingBody()), aiprov.CodeBadRequest,
-			`runblob: a family path is lower-case letters, digits and underscores, with at most one /sub-segment, got "Kling"`},
+			`runblob: a family path is lower-case letters, digits, underscores and inner hyphens, with at most one /sub-segment, got "Kling"`},
 		{"submit: a family that climbs the path", submit("kling/../admin", klingBody()), aiprov.CodeBadRequest,
-			`runblob: a family path is lower-case letters, digits and underscores, with at most one /sub-segment, got "kling/../admin"`},
+			`runblob: a family path is lower-case letters, digits, underscores and inner hyphens, with at most one /sub-segment, got "kling/../admin"`},
 		{"submit: an empty family", submit("", klingBody()), aiprov.CodeBadRequest,
-			`runblob: a family path is lower-case letters, digits and underscores, with at most one /sub-segment, got ""`},
+			`runblob: a family path is lower-case letters, digits, underscores and inner hyphens, with at most one /sub-segment, got ""`},
 		{"submit: a nil body", submit(FamilyKling, nil), aiprov.CodeBadRequest,
 			"runblob: a kling generation needs a request body"},
 		{"submit: an empty body", submit(FamilyKling, map[string]any{}), aiprov.CodeBadRequest,
@@ -760,7 +764,8 @@ func TestRefusalsBeforeTheWire(t *testing.T) {
 		{"submit: a body JSON cannot carry", submit(FamilyKling, map[string]any{"x": make(chan int)}), aiprov.CodeBadRequest,
 			"runblob: marshal kling request: "},
 		{"status: an unknown family", status("sora", genID), aiprov.CodeBadRequest,
-			`runblob: unknown family path "sora" (known: gemini, kling, kling/o1-photo, kling/o3-photo, veo)`},
+			`runblob: unknown family path "sora" (known: gemini, kling, kling/o1-photo, kling/o3-photo, veo, ` +
+				`kling/o1-video, kling/o3-video, seedance, chatgpt-images)`},
 		{"status: an id that climbs the path", status(FamilyKling, "../../admin"), aiprov.CodeBadRequest,
 			`runblob: a generation id must be a uuid, got "../../admin"`},
 		{"status: a uuid with a query behind it", status(FamilyKling, genID+"?x=1"), aiprov.CodeBadRequest,
