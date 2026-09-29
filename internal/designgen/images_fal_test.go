@@ -223,25 +223,36 @@ func TestImageCallEndBOOKS_A_TABLE_COST_AS_TABLE(t *testing.T) {
 // for stays unpriced (`none`); a 2xx that delivered nothing stays `failed` and unpriced (the transport's
 // own fact, TestTheImageCallOutcomeIsTHE_TRANSPORTS_OWN_FACT); a refusal with no Result books no money.
 //
-// MUTATION (measured red→green): the Lookup branch removed → openai gpt-image-2 reads `none`.
+// MUTATION (measured red→green): the pricing.Price branch removed → openai gpt-image-2 reads `none`.
 func TestImageCallEndPRICES_A_SILENT_PROVIDER_BY_THE_TABLE(t *testing.T) {
 	row, ok := pricing.Lookup(entity.AIProviderOpenAI, "gpt-image-2")
-	require.True(t, ok && row.PerCallUSD.Valid, "the openai catalogue prices gpt-image-2 per call")
+	require.True(t, ok && row.OutputUSDPer1M.Valid, "the openai catalogue prices gpt-image-2 by token (OpenAI's own tariff)")
 
+	// 12 text-input + 4160 image-output tokens (a high 1024² on gpt-image-1's scale): $5/M + $30/M.
 	silent := &orimages.Result{Model: "gpt-image-2", Usage: orimages.Usage{Prompt: 12, Completion: 4160}}
 	end := imageCallEnd(entity.AIProviderOpenAI, silent, nil)
 	require.Equal(t, entity.AICallOK, end.Status)
 	require.Equal(t, entity.AICostTable, end.CostSource)
 	require.Equal(t, pricing.Version, end.PriceVersion)
-	require.True(t, end.CostUSD.Valid && end.CostUSD.Decimal.Equal(row.PerCallUSD.Decimal), "one picture at the row's price")
+	require.True(t, end.CostUSD.Valid, "priced")
+	require.Equal(t, "0.12486", end.CostUSD.Decimal.String(), "12×$5/M + 4160×$30/M — the tokens, not one flat picture")
 	require.NotNil(t, end.PromptTokens)
+
+	// The same picture on apibost: a per-call row ($0.16 whatever the quality — apibost's own tariff).
+	end = imageCallEnd(entity.AIProviderApibost, &orimages.Result{Model: "gpt-image-2"}, nil)
+	require.Equal(t, entity.AICostTable, end.CostSource)
+	require.Equal(t, "0.16", end.CostUSD.Decimal.String())
+
+	// A token row with no tokens reported: nothing is invented.
+	end = imageCallEnd(entity.AIProviderOpenAI, &orimages.Result{Model: "gpt-image-2"}, nil)
+	require.False(t, end.CostUSD.Valid)
 
 	unknown := &orimages.Result{Model: "gpt-image-9-nightly"}
 	end = imageCallEnd(entity.AIProviderOpenAI, unknown, nil)
 	require.Equal(t, entity.AICostNone, end.CostSource)
 	require.False(t, end.CostUSD.Valid)
 
-	// A chat-style (per-token) row is not a per-call price: nothing is invented for it.
+	// A chat row is not an image price: nothing is invented for it either.
 	chatRow := &orimages.Result{Model: "gpt-5-mini"}
 	end = imageCallEnd(entity.AIProviderOpenAI, chatRow, nil)
 	require.False(t, end.CostUSD.Valid)

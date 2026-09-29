@@ -377,9 +377,12 @@ func imageCallEnd(provider string, res *orimages.Result, err error) entity.AICal
 			// > none, applied to one delivered picture. ONLY on success: a 2xx that delivered nothing and
 			// named no charge stays the transport's own fact — `failed`, unpriced — not a table number
 			// this deployment guessed for a call the provider may or may not have billed.
-			if m, ok := pricing.Lookup(provider, res.Model); ok && m.PerCallUSD.Valid && m.PerCallUSD.Decimal.IsPositive() {
-				end.CostUSD = decimal.NullDecimal{Decimal: m.PerCallUSD.Decimal, Valid: true}
-				end.CostSource, end.PriceVersion = entity.AICostTable, pricing.Version
+			// pricing.Price ranks the row: a per-call row is one picture; a per-token row (OpenAI's own
+			// gpt-image tariff) needs the tokens the transport reported, and answers none without them.
+			if usd, src := pricing.Price(provider, res.Model, pricing.Usage{
+				Prompt: res.Usage.Prompt, Completion: res.Usage.Completion,
+			}); usd.Valid && src == entity.AICostTable && usd.Decimal.IsPositive() {
+				end.CostUSD, end.CostSource, end.PriceVersion = usd, entity.AICostTable, pricing.Version
 			}
 		}
 	}

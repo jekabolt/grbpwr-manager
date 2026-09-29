@@ -156,8 +156,20 @@ func videoFamilyOf(model string) (videoFamily, bool) {
 // IsVideoModel — whether the video route can buy a clip with this slug (the door asks it before it
 // reserves anything, so a slug the worker would refuse never takes the day's money).
 func IsVideoModel(model string) bool {
-	_, ok := videoFamilyOf(model)
-	return ok
+	model = strings.TrimSpace(model)
+	fam, ok := videoFamilyOf(model)
+	if !ok {
+		return false
+	}
+	// NOT OFFERED (Codex REVIEW-H #5, #7; catalogue_runblob.go lists neither): a Seedance submit
+	// carries no price (billing is a per-second hold settled later, behind a cabinet JWT the panel
+	// does not hold), so every clip would close as a $0 run; the Kling Motion models need a reference
+	// VIDEO the body does not carry. The families stay built (the worker collects a stored run), the
+	// door refuses a new one.
+	if fam == videoFamSeedance || strings.Contains(model, "_motion") {
+		return false
+	}
+	return true
 }
 
 // VideoModelsKnown — the slugs IsVideoModel accepts, as a sentence names them.

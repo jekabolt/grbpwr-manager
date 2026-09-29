@@ -83,7 +83,7 @@ const (
 
 	// MaxReferences is how many pictures one edits call may carry — our guard (a user-controlled list
 	// turned into one request of arbitrary size), not the provider's limit.
-	MaxReferences = 8
+	MaxReferences = 16 // = designgen's engine door (engines.go MaxRefs), so the door and the wire agree
 	// MaxReferenceBytes caps ONE reference picture; MaxReferenceTotalBytes all of them together, so
 	// eight maximal pictures cannot stack a 128 MiB multipart body on a 0.5 GiB box.
 	MaxReferenceBytes      = 16 << 20 // 16 MiB
@@ -188,10 +188,10 @@ func (c *Client) Serves(slug string) bool {
 
 // wireSlug is the slug as it goes on the wire, or false when this transport does not draw it.
 func (c *Client) wireSlug(slug string) (string, bool) {
-	s := strings.TrimSpace(slug)
-	if c.cfg.Provider == entity.AIProviderOpenAI {
-		s = strings.TrimPrefix(s, openAIPrefix)
-	}
+	// The OpenRouter form (`openai/gpt-image-2`, the engine table's frozen params.image.model) is
+	// stripped for BOTH providers: apibost relays OpenAI's models under their bare names, and a run
+	// that froze the OpenRouter spelling must still reach an apibost route (Codex REVIEW-H #9).
+	s := strings.TrimPrefix(strings.TrimSpace(slug), openAIPrefix)
 	if s == "" || strings.Contains(s, "/") || strings.IndexFunc(s, unicode.IsSpace) >= 0 {
 		return "", false
 	}

@@ -219,8 +219,15 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			OutputFormat:    format,
 			InputReferences: call.refs,
 		})
-		job.finishCall(ctx, h, imageCallEnd(p.billing(), res, err))
+		end := imageCallEnd(p.billing(), res, err)
+		job.finishCall(ctx, h, end)
 		p.endCall(adm, err)
+		if res != nil && end.CostUSD.Valid && res.Usage.Cost <= 0 {
+			// THE LEDGER'S NUMBER IS THE RUN'S NUMBER (Codex REVIEW-H #3): a picture the table priced
+			// (the provider named none — openai, apibost) must reach the attempt row, the run's
+			// price_actual and the day's spent, not only ai_usage_event. One price, resolved once.
+			res.Usage.Cost = end.CostUSD.Decimal.InexactFloat64()
+		}
 		if res != nil {
 			usage.Prompt += res.Usage.Prompt
 			usage.Completion += res.Usage.Completion

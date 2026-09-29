@@ -69,6 +69,15 @@ func image(provider, slug, label, price, source string) Model {
 	return perCall(provider, slug, label, KindImage, price, source)
 }
 
+// imageTokens is an image row priced per token, as OpenAI bills its own gpt-image-* directly: text
+// input and image output per 1M (the transport reports input_tokens / output_tokens). A per-call
+// figure would book one quality × size for every picture (Codex REVIEW-H #4: a high 1024² is ~4× a
+// medium one); the tokens are what OpenAI charges.
+func imageTokens(provider, slug, label, in, out, source string) Model {
+	return Model{Provider: provider, Slug: slug, Label: label, Kind: KindImage,
+		InputUSDPer1M: usd(in), OutputUSDPer1M: usd(out), Source: source}
+}
+
 // perCall is a row priced per output (one picture, one generation) of any non-chat kind.
 func perCall(provider, slug, label, kind, price, source string) Model {
 	return Model{Provider: provider, Slug: slug, Label: label, Kind: kind,
@@ -95,9 +104,13 @@ const (
 		"(the 2K variant $0.09 not modelled; designgen/engines.go)"
 	// The direct providers' own list prices (lane H2): each page read 2026-09-29, the standard (not
 	// batch / flex / fast) tier, the short-context rate where the page has two.
-	srcOpenAIList    = "https://developers.openai.com/api/docs/pricing (Standard tier), read 2026-09-29"
-	srcAnthropicList = "https://platform.claude.com/docs/en/about-claude/pricing (base input / output), read 2026-09-29"
-	srcGoogleList    = "https://ai.google.dev/gemini-api/docs/pricing (Paid tier, Standard), read 2026-09-29"
+	srcOpenAIList = "https://developers.openai.com/api/docs/pricing (Standard tier), read 2026-09-29"
+	// OpenAI's own image tariff, per 1M tokens: the transport (oaiimages) reports input_tokens and
+	// output_tokens; image-INPUT tokens ($8/M on gpt-image-2, $10/M on gpt-image-1) are billed here at the
+	// text-input rate because the transport does not split them — a few hundred tokens per reference.
+	srcOpenAIImageTokens = "https://developers.openai.com/api/docs/pricing (image generation: text input / image output per 1M tokens; image-input tokens billed at the text rate here), read 2026-09-29"
+	srcAnthropicList     = "https://platform.claude.com/docs/en/about-claude/pricing (base input / output), read 2026-09-29"
+	srcGoogleList        = "https://ai.google.dev/gemini-api/docs/pricing (Paid tier, Standard), read 2026-09-29"
 	// A direct row whose slug apibost proves exists but whose list price no page stated.
 	srcDirectUnpriced = "unpriced — list price not sourced 2026-09-29; "
 	// OpenRouter returns the provider's own cost (usage.cost); its rows are the fallback when it did not.
@@ -129,8 +142,11 @@ var catalogue = map[string][]Model{
 			srcOpenAIList+" (the A brief had an UNVERIFIED $1.25/$10, 2026-09-27)"),
 		chat(entity.AIProviderOpenAI, "gpt-5-mini", "GPT-5 mini", "0.25", "2",
 			srcORModels+": openai/gpt-5-mini $0.25/M in, $2/M out (OpenRouter passes the list price through)"),
-		image(entity.AIProviderOpenAI, "gpt-image-2", "GPT Image 2", "0.053", srcORGPTImage2),
-		image(entity.AIProviderOpenAI, "gpt-image-2.5-sunburst", "GPT Image 2.5", "0.013", srcGPTImage25),
+		imageTokens(entity.AIProviderOpenAI, "gpt-image-2", "GPT Image 2", "5", "30", srcOpenAIImageTokens),
+		imageTokens(entity.AIProviderOpenAI, "gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst", "5", "30", srcOpenAIImageTokens),
+		imageTokens(entity.AIProviderOpenAI, "gpt-image-2.5-flare", "GPT Image 2.5 Flare", "5", "30", srcOpenAIImageTokens),
+		imageTokens(entity.AIProviderOpenAI, "gpt-image-1", "GPT Image 1", "5", "40", srcOpenAIImageTokens),
+		imageTokens(entity.AIProviderOpenAI, "gpt-image-1-mini", "GPT Image 1 mini", "2", "8", srcOpenAIImageTokens),
 		// Lane H2: the models apibost proves exist, priced from OpenAI's own page.
 		chat(entity.AIProviderOpenAI, "gpt-6-astra", "GPT-6 Astra", "10", "50", srcOpenAIList+" (short context; the long-context rate is not modelled)"),
 		chat(entity.AIProviderOpenAI, "gpt-6-sol", "GPT-6 Sol", "2", "10", srcOpenAIList+" (short context; the long-context rate is not modelled)"),
@@ -152,8 +168,7 @@ var catalogue = map[string][]Model{
 		chat(entity.AIProviderOpenAI, "gpt-4.1-nano", "GPT-4.1 nano", "0.1", "0.4", srcOpenAIList),
 		chat(entity.AIProviderOpenAI, "gpt-4o", "GPT-4o", "2.5", "10", srcOpenAIList),
 		chat(entity.AIProviderOpenAI, "gpt-4o-mini", "GPT-4o mini", "0.15", "0.6", srcOpenAIList),
-		unpricedRow(entity.AIProviderOpenAI, "gpt-image-1.5", "GPT Image 1.5", KindImage,
-			srcDirectUnpriced+"OpenAI prices image output per token, not per picture; apibost relays it at $0.16 per image"),
+		imageTokens(entity.AIProviderOpenAI, "gpt-image-1.5", "GPT Image 1.5", "5", "32", srcOpenAIImageTokens),
 	},
 	entity.AIProviderAnthropic: {
 		chat(entity.AIProviderAnthropic, "claude-sonnet-5", "Claude Sonnet 5", "2", "10",

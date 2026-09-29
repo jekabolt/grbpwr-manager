@@ -39,6 +39,10 @@ func TestVideoFamilyOf(t *testing.T) {
 		got, ok := videoFamilyOf(model)
 		require.True(t, ok, model)
 		require.Equal(t, want, got, model)
+		if got == videoFamSeedance || strings.Contains(model, "_motion") {
+			require.False(t, IsVideoModel(model), "%s is built but not offered (no submit price / needs a reference video)", model)
+			continue
+		}
 		require.True(t, IsVideoModel(model), model)
 	}
 	for _, model := range []string{"", "veo_3", "kling_o5", "kling_", "kling", "seedance-3.0", "doubao-seedance-9-face",

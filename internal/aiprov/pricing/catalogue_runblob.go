@@ -28,6 +28,10 @@ const (
 		"slug"
 )
 
+// NOT LISTED (Codex REVIEW-H #5, #7; designgen.IsVideoModel refuses them at the door): the four Kling
+// Motion models (kling_3_motion[_pro], kling_2.6_motion[_pro]) need a reference VIDEO the route's body
+// does not carry, and the four Seedance models submit with NO price (a per-second hold settled later,
+// behind a cabinet JWT) — a row here is a promise the router can keep and the ledger can price.
 var runblobRows = []Model{
 	unpricedRow(entity.AIProviderRunblob, "gemini/standard", "Nano Banana (standard)", KindImage, srcRunblob+" — docs example $0.021, not a tariff"),
 	unpricedRow(entity.AIProviderRunblob, "gemini/pro", "Nano Banana Pro", KindImage, srcRunblob),
@@ -41,11 +45,7 @@ var runblobRows = []Model{
 	unpricedRow(entity.AIProviderRunblob, "chatgpt-images/chatgpt-2.5", "ChatGPT Images 2.5", KindImage, srcRunblobH5),
 	unpricedRow(entity.AIProviderRunblob, "kling_3", "Kling 3.0", KindVideo, srcRunblobVideo),
 	unpricedRow(entity.AIProviderRunblob, "kling_3_pro", "Kling 3.0 Pro", KindVideo, srcRunblobVideo+" — docs example $0.29, not a tariff"),
-	unpricedRow(entity.AIProviderRunblob, "kling_3_motion", "Kling 3.0 Motion", KindVideo, srcRunblobVideo),
-	unpricedRow(entity.AIProviderRunblob, "kling_3_motion_pro", "Kling 3.0 Motion Pro", KindVideo, srcRunblobVideo),
 	unpricedRow(entity.AIProviderRunblob, "kling_2.6", "Kling 2.6 (Pro quality)", KindVideo, srcRunblobVideo),
-	unpricedRow(entity.AIProviderRunblob, "kling_2.6_motion", "Kling 2.6 Motion (legacy)", KindVideo, srcRunblobVideo),
-	unpricedRow(entity.AIProviderRunblob, "kling_2.6_motion_pro", "Kling 2.6 Motion Pro (legacy)", KindVideo, srcRunblobVideo),
 	unpricedRow(entity.AIProviderRunblob, "kling_2.5_turbo", "Kling 2.5 Turbo (Std quality)", KindVideo, srcRunblobVideo+" — docs example $0.25, not a tariff"),
 	unpricedRow(entity.AIProviderRunblob, "kling_2.5_turbo_pro", "Kling 2.5 Turbo Pro", KindVideo, srcRunblobVideo),
 	unpricedRow(entity.AIProviderRunblob, "kling_2.1", "Kling 2.1 (Std)", KindVideo, srcRunblobVideo+" — image-to-video only (a text-only request is refused with 400)"),
@@ -56,8 +56,4 @@ var runblobRows = []Model{
 	unpricedRow(entity.AIProviderRunblob, "kling_o1", "Kling O1 Video (omni)", KindVideo, srcRunblobKlingOmni+" — docs example $0.9, not a tariff"),
 	unpricedRow(entity.AIProviderRunblob, "kling_o3", "Kling O3 Video (std)", KindVideo, srcRunblobKlingOmni),
 	unpricedRow(entity.AIProviderRunblob, "kling_o3_pro", "Kling O3 Video Pro", KindVideo, srcRunblobKlingOmni+" — docs example $1.8, not a tariff"),
-	unpricedRow(entity.AIProviderRunblob, "seedance-2.0-mini", "Seedance 2.0 Mini", KindVideo, srcRunblobSeedance),
-	unpricedRow(entity.AIProviderRunblob, "doubao-seedance-2.0-face", "Seedance 2.0 Face", KindVideo, srcRunblobSeedance),
-	unpricedRow(entity.AIProviderRunblob, "doubao-seedance-2.0-fast-face", "Seedance 2.0 Fast Face", KindVideo, srcRunblobSeedance),
-	unpricedRow(entity.AIProviderRunblob, "doubao-seedance-2.5-face", "Seedance 2.5 Face", KindVideo, srcRunblobSeedance),
 }

@@ -159,10 +159,8 @@ func TestPricingRunblobRowsAreListedUnpriced(t *testing.T) {
 	require.Equal(t, map[string][]string{
 		KindImage: {"gemini/standard", "gemini/pro", "gemini/v2", "gemini/v2_lite", "gemini/pro_vip", "gemini/v2_vip",
 			"kling/o1-photo", "kling/o3-photo", "chatgpt-images/gpt-5-2", "chatgpt-images/chatgpt-2.5"},
-		KindVideo: {"kling_3", "kling_3_pro", "kling_3_motion", "kling_3_motion_pro", "kling_2.6", "kling_2.6_motion",
-			"kling_2.6_motion_pro", "kling_2.5_turbo", "kling_2.5_turbo_pro", "kling_2.1", "kling_2.1_pro", "kling_2.1_master",
-			"kling_1.6", "kling_1.6_pro", "kling_o1", "kling_o3", "kling_o3_pro",
-			"seedance-2.0-mini", "doubao-seedance-2.0-face", "doubao-seedance-2.0-fast-face", "doubao-seedance-2.5-face"},
+		KindVideo: {"kling_3", "kling_3_pro", "kling_2.6", "kling_2.5_turbo", "kling_2.5_turbo_pro", "kling_2.1", "kling_2.1_pro", "kling_2.1_master",
+			"kling_1.6", "kling_1.6_pro", "kling_o1", "kling_o3", "kling_o3_pro"},
 	}, byKind)
 }
 
@@ -191,7 +189,11 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 				require.False(t, tokens, "%s/%s: a per-call row carries no token rates", p, m.Slug)
 				require.True(t, m.PerCallUSD.Decimal.IsPositive(), "%s/%s", p, m.Slug)
 			case tokens:
-				require.Equal(t, KindChat, m.Kind, "%s/%s", p, m.Slug)
+				// chat, or an image row OpenAI bills by token (imageTokens: gpt-image-* direct).
+				require.Contains(t, []string{KindChat, KindImage}, m.Kind, "%s/%s", p, m.Slug)
+				if m.Kind == KindImage {
+					require.Equal(t, entity.AIProviderOpenAI, p, "%s/%s: only OpenAI's own gpt-image rows are token-priced", p, m.Slug)
+				}
 				require.True(t, m.InputUSDPer1M.Valid && m.OutputUSDPer1M.Valid, "%s/%s: both token rates or none", p, m.Slug)
 				require.True(t, m.InputUSDPer1M.Decimal.IsPositive() && m.OutputUSDPer1M.Decimal.IsPositive(), "%s/%s", p, m.Slug)
 			default:
@@ -205,12 +207,13 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 			require.Equal(t, m, got)
 		}
 	}
-	// The A brief's 19 direct/OpenRouter rows + lane H2's 36 direct rows (21 openai, 6 anthropic, 9 google)
-	// + apibost's 67 chat/image models (catalogue_apibost.go) + runblob's 31 unpriced rows, 10 image + 21
-	// video (catalogue_runblob.go) + fal's 35 (24 image, 3 edit, 4 cutout, 4 threed; catalogue_fal.go).
+	// The A brief's 19 direct/OpenRouter rows + lane H2's direct rows (openai 24 incl. OpenAI's own
+	// token-priced gpt-image family after REVIEW-H #4, anthropic 6, google 9) + apibost's 67 chat/image
+	// models (catalogue_apibost.go) + runblob's 23 unpriced rows, 10 image + 13 video (catalogue_runblob.go;
+	// Motion and Seedance not offered, REVIEW-H #5/#7) + fal's 35 (24 image, 3 edit, 4 cutout, 4 threed).
 	require.Equal(t, map[string]int{
-		entity.AIProviderOpenAI: 25, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
-		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 31,
+		entity.AIProviderOpenAI: 28, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
+		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 23,
 		entity.AIProviderFal: 35,
 	}, count)
 }
@@ -227,8 +230,9 @@ func TestPricingCatalogueFollowsTheProvidersPages(t *testing.T) {
 	want := []row{
 		{"openai", "gpt-5.2", "1.75", "14", ""},
 		{"openai", "gpt-5-mini", "0.25", "2", ""},
-		{"openai", "gpt-image-2", "", "", "0.053"},
-		{"openai", "gpt-image-2.5-sunburst", "", "", "0.013"},
+		{"openai", "gpt-image-2", "5", "30", ""},
+		{"openai", "gpt-image-2.5-sunburst", "5", "30", ""},
+		{"openai", "gpt-image-1", "5", "40", ""},
 		{"anthropic", "claude-sonnet-5", "2", "10", ""},
 		{"anthropic", "claude-opus-5-5", "4", "20", ""},
 		{"anthropic", "claude-haiku-4-5-20251001", "1", "5", ""},

@@ -316,7 +316,7 @@ func TestServes(t *testing.T) {
 		openai, apibost bool
 	}{
 		{"gpt-image-2", true, true},
-		{"openai/gpt-image-2", true, false},
+		{"openai/gpt-image-2", true, true}, // the OpenRouter spelling is stripped for both (REVIEW-H #9)
 		{"gpt-image-1", true, true},
 		{"gpt-image-1-mini", true, true},
 		{"gpt-image-1.5", true, true},
