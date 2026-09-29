@@ -2134,8 +2134,8 @@ type (
 		// transaction: its bench slot moves onto the edit and it is stamped replaced_by.
 		FlattenEditLayer(ctx context.Context, req entity.DesignEditLayerFlatten) (*entity.DesignPicture, error)
 		// ImportVector files an ALREADY-UPLOADED vector file as an edit layer: the media row keeps
-		// the authoritative SVG, the layer keeps its editable projection. IT SPENDS NOTHING —
-		// machine vectorisation is StartRun with kind = vector, and money has one door.
+		// the authoritative SVG, the layer keeps its editable projection. IT SPENDS NOTHING (there
+		// is no machine vectorisation since 2026-09-29).
 		ImportVector(ctx context.Context, req entity.DesignVectorImport) (*entity.DesignEditLayer, error)
 		// SetColourPlan replaces the card's WHOLE colour plan under compare-and-set on its rev —
 		// the painted views and what each painted colour stands for, in one document. A whole
