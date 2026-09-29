@@ -369,11 +369,11 @@ func TestARenderIsNotAFlatAndAFlatIsNotARender(t *testing.T) {
 	require.NotContains(t, flat, authorityHeader)
 }
 
-// TestRenderCraftIsForRendersOnly — 3D is a Meshy build, vector redraws an approved raster and
-// draft_idea never reaches the worker. None of them is a photograph composed by these words.
+// TestRenderCraftIsForRendersOnly — 3D is a model build and draft_idea never reaches the worker.
+// Neither is a photograph composed by these words.
 func TestRenderCraftIsForRendersOnly(t *testing.T) {
 	for _, kind := range []string{
-		entity.DesignRunKindThreed, entity.DesignRunKindVector, entity.DesignRunKindDraftIdea,
+		entity.DesignRunKindThreed, entity.DesignRunKindDraftIdea,
 	} {
 		r := testRun(1, kind)
 		r.Params = entity.RawJSON(

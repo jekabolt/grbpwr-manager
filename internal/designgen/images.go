@@ -435,8 +435,6 @@ func imageCalls(job Job) ([]imageCall, error) {
 //   - the owner's own prompt orders the opposite in words — «black vector line art on a plain
 //     white background», «white seamless background». Asking the API for transparency while the
 //     prompt asks for white is one order contradicting itself;
-//   - the raster is not the end of the road. It goes to a vector model next, and a vector carries
-//     no background at all — so the sheet is composed from something that never had a rectangle;
 //   - a technical sheet is printed on white paper, where a white plate is invisible anyway.
 //
 // So: `opaque` is STATED rather than omitted. Omitting would leave `auto`, and «auto» is the model

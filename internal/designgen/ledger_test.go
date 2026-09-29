@@ -25,7 +25,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 )
 
 // ═══ B-07: THE AI LEDGER FROM THE WORKER'S SIDE ═══
@@ -252,21 +251,20 @@ func intp(v int) *int { return &v }
 // B-14 MOVED THE STATUS FROM THE SENTENCE TO THE FIELD, and this test with it. Each error of the first
 // half is a CallError a transport COULD raise for a 408 (HTTPStatus, not engaged, the matrix's code) —
 // the net timeoutIsNotFree still spreads under every mapping. The second half runs the REAL orimages /
-// recraft direct / fal / Meshy clients against a 408 stand: since B-13/A3 each of them raises a 408 on
+// fal / Meshy clients against a 408 stand: since B-13/A3 each of them raises a 408 on
 // its paid POST as ENGAGED, so the row is `unknown` by the transport's own word (Engaged true) and the
 // attempt is `unknown` and never retried — the ledger and the worker finally say the same thing. The
 // third half is the text fallback's funeral: a LOCAL refusal whose words quote "HTTP 408" — no response
 // arrived — stays `free`, because nothing reads text any more.
 //
 // MUTATIONS (measured red→green): timeoutIsNotFree returning `end` unchanged → every 408 case reads
-// `free`; the call removed from each of imageCallEnd / vectorCallEnd / falSubmitEnd / meshySubmitEnd
-// in turn → that transport's 408 cases read `free`, the other three stay green; the rule widened to
+// `free`; the call removed from each of imageCallEnd / falSubmitEnd / meshySubmitEnd in turn →
+// that transport's 408 cases read `free`, the other two stay green; the rule widened to
 // every status ≥ 400 → the validator controls read `unknown`; httpStatusOf reading the sentence again
 // (the deleted `\bHTTP (\d{3})\b` branch restored) → every «the text is dead» row reads `unknown`.
 func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 	type mapping func(err error) entity.AICallEnd
 	image := func(err error) entity.AICallEnd { return imageCallEnd(nil, err) }
-	vector := func(err error) entity.AICallEnd { return vectorCallEnd(recraft.RouteDirect, nil, err) }
 	falSubmit := func(err error) entity.AICallEnd { return falSubmitEnd(err, decimal.NullDecimal{}) }
 	meshySubmit := func(err error) entity.AICallEnd { return meshySubmitEnd(err) }
 	// refusal — a non-2xx exactly as a design transport raises it since B-14.
@@ -286,10 +284,6 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 			refusal(entity.AIProviderOpenRouter, 400, fmt.Errorf("%w: API error (HTTP %d): %s", orimages.ErrBadRequest, 400, "bad schema")),
 			&aiprov.CallError{Provider: entity.AIProviderOpenRouter, Code: aiprov.CodeBadRequest,
 				Err: errors.New("orimages: API error (HTTP 408): x")}},
-		{"recraft direct", vector,
-			refusal(entity.AIProviderRecraft, 408, fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 408, "request timeout")),
-			refusal(entity.AIProviderRecraft, 422, fmt.Errorf("%w (HTTP %d): %s", recraft.ErrBadRequest, 422, "bad schema")),
-			fmt.Errorf("%w: the prompt quotes (HTTP 408) and was refused here", recraft.ErrBadRequest)},
 		{"fal submit", falSubmit,
 			refusal(entity.AIProviderFal, 408, fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 408, "request timeout")),
 			refusal(entity.AIProviderFal, 422, fmt.Errorf("%w: %s %s: HTTP %d: %s", fal.ErrBadRequest, http.MethodPost, "/"+falMeshySlug, 422, "bad schema")),
@@ -347,15 +341,6 @@ func TestA408IsNEVER_BOOKED_FREE(t *testing.T) {
 			entity.AIPurposeImageGenerate)
 		_, err := imageRoute(stand408(t).URL).Execute(context.Background(), job)
 		require.ErrorIs(t, err, orimages.ErrProviderFailure)
-		require.False(t, classify(err).Retryable, "B-13/A3: now also terminal")
-		stored(t, ai)
-	})
-	t.Run("recraft direct, real client", func(t *testing.T) {
-		job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindVector, Prompt: "a flat",
-			References: []string{"https://cdn.example/a.png"}}, entity.AIPurposeVector)
-		_, err := NewVectorProvider(recraft.New(recraft.Config{Route: string(recraft.RouteDirect),
-			Direct: recraft.DirectConfig{APIKey: "k", BaseURL: stand408(t).URL}}, nil)).Execute(context.Background(), job)
-		require.ErrorIs(t, err, recraft.ErrBadRequest)
 		require.False(t, classify(err).Retryable, "B-13/A3: now also terminal")
 		stored(t, ai)
 	})
@@ -901,77 +886,6 @@ func TestAMeshyBuildIsAcceptedThenPricedINCREDITS(t *testing.T) {
 	require.Equal(t, entity.AICallAccepted, rows[0].Status)
 	require.Equal(t, "task-777", rows[0].End.RequestID)
 	require.False(t, rows[0].End.CostUSD.Valid, "accepted is unpriced until the collect")
-}
-
-// fakeVectorGen is recraft's transport seam: one SVG at a stated price.
-type fakeVectorGen struct {
-	usd, credits float64
-	err          error
-}
-
-func (g fakeVectorGen) GenerateImage(_ context.Context, req recraft.GenerateRequest) (*recraft.GenerateResponse, error) {
-	if g.err != nil {
-		return nil, g.err
-	}
-	return &recraft.GenerateResponse{
-		Bytes:       []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 1L9 9"/></svg>`),
-		ContentType: "image/svg+xml", Model: req.Model, CostUSD: g.usd, Credits: g.credits,
-	}, nil
-}
-
-// TestAVectorCallIsBOOKED_TO_THE_ACCOUNT_THAT_PAYS — recraft through OpenRouter is an OpenRouter row
-// priced by OpenRouter's USD; RECRAFT_ROUTE=direct is a recraft row priced in credits (02-PLAN rev.1
-// Opus #7). The route NAME on the attempt is unchanged either way.
-func TestAVectorCallIsBOOKED_TO_THE_ACCOUNT_THAT_PAYS(t *testing.T) {
-	models := map[recraft.Tier]string{recraft.TierVector: "recraft/recraft-v4-vector"}
-	for _, c := range []struct {
-		route        recraft.Route
-		gen          fakeVectorGen
-		provider     string
-		source       string
-		cost, units  string
-		wantStatus   string
-		wantCostNull bool
-	}{
-		{recraft.RouteOpenRouter, fakeVectorGen{usd: 0.08}, entity.AIProviderOpenRouter, entity.AICostProvider, "0.08", "", entity.AICallOK, false},
-		{recraft.RouteDirect, fakeVectorGen{usd: 0.04, credits: 40}, entity.AIProviderRecraft, entity.AICostUnits, "0.04", "40", entity.AICallOK, false},
-		// B-14: the fake transport speaks the contract the real ones do — a CallError saying whether the
-		// request was written. A refused 402 (not engaged) is free; a reset after the write is unknown.
-		{recraft.RouteOpenRouter, fakeVectorGen{err: &aiprov.CallError{Provider: entity.AIProviderOpenRouter,
-			Code: aiprov.CodeOutOfCredits, HTTPStatus: 402, Err: fmt.Errorf("%w (HTTP 402): broke", recraft.ErrInsufficientCredits)}},
-			entity.AIProviderOpenRouter, entity.AICostFree, "0", "", entity.AICallFree, false},
-		{recraft.RouteOpenRouter, fakeVectorGen{err: &aiprov.CallError{Provider: entity.AIProviderOpenRouter,
-			Code: aiprov.CodeTransport, Engaged: true, Err: fmt.Errorf("%w: reset", recraft.ErrProviderFailure)}},
-			entity.AIProviderOpenRouter, entity.AICostNone, "", "", entity.AICallUnknown, true},
-	} {
-		t.Run(string(c.route)+"/"+c.wantStatus, func(t *testing.T) {
-			ai := &aiprovtest.Store{}
-			p := NewVectorProvider(recraft.NewWithGenerator(c.route, c.gen, models))
-			job := Job{RunID: 3, Kind: entity.DesignRunKindVector, Prompt: "a flat", References: []string{"https://cdn.example/a.png"},
-				Recorder: runRecorder{ledger: aiprov.NewLedger(ai, nil), runID: 3, attemptNo: 1,
-					purpose: entity.AIPurposeVector, actor: "im"}}
-			out, _ := p.Execute(context.Background(), job)
-			require.Equal(t, "recraft_vector", p.Name(), "the attempt still names the ROUTE")
-			r := ai.Rows()[0]
-			require.Equal(t, c.provider, r.Start.ProviderKey)
-			require.Equal(t, "recraft/recraft-v4-vector", r.Start.Model)
-			require.Equal(t, entity.AIPurposeVector, r.Start.Purpose)
-			require.Equal(t, c.wantStatus, r.Status)
-			require.Equal(t, c.source, r.End.CostSource)
-			if c.wantCostNull {
-				require.False(t, r.End.CostUSD.Valid)
-			} else {
-				require.True(t, r.End.CostUSD.Decimal.Equal(decimal.RequireFromString(c.cost)))
-			}
-			if c.units != "" {
-				require.Equal(t, c.units, r.End.Units.String())
-				require.Equal(t, "credit", r.End.Unit)
-			}
-			if out != nil && c.wantStatus == entity.AICallOK {
-				require.Equal(t, c.provider, out.Provider)
-			}
-		})
-	}
 }
 
 // TestWithLedgerNilIsNoLedger — a typed nil must not become a non-nil interface the worker would

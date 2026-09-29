@@ -179,7 +179,7 @@ func seal(t *testing.T, ring *keyring.Ring, provider string, kind entity.AIKeyKi
 	return blob
 }
 
-// seedKeys are the api keys seedConfig stores for the four providers that are on — sealed under
+// seedKeys are the api keys seedConfig stores for the providers that are on — sealed under
 // testRing's master, so a registry over testRing opens them and one over another master does not.
 // Since B-33 a keyed provider is a provider WITH A STORED KEY: the env values (testEnv) are the
 // import's input only, and every test that expects a key to answer expects one of these.
@@ -187,11 +187,10 @@ var seedKeys = map[string]string{
 	entity.AIProviderOpenRouter: "db-openrouter-1111",
 	entity.AIProviderFal:        "db-fal-2222",
 	entity.AIProviderMeshy:      "db-meshy-3333",
-	entity.AIProviderRecraft:    "db-recraft-4444",
 }
 
 // seedConfig is the 0373 seed as B-33 leaves it after the boot import: nine rows (openrouter, fal,
-// meshy, recraft on, each with a stored key — seedKeys), every purpose at position 1 as today,
+// meshy on, each with a stored key — seedKeys), every purpose at position 1 as today,
 // version 1, both defaults openrouter.
 func seedConfig() entity.AIConfig {
 	ring, err := keyring.New(masterB64(7)) // testRing's master, without a *testing.T
@@ -215,8 +214,6 @@ func seedConfig() entity.AIConfig {
 		switch p {
 		case entity.AIPurposeImageCutout, entity.AIPurposeImageExtend, entity.AIPurposeImageInpaint, entity.AIPurposeThreed:
 			pk = entity.AIProviderFal
-		case entity.AIPurposeVector:
-			pk = entity.AIProviderRecraft
 		}
 		cfg.Routes = append(cfg.Routes, entity.AIRoute{Purpose: p, Candidates: []entity.AIRouteCandidate{{Position: 1, ProviderKey: pk}}})
 	}
@@ -249,7 +246,6 @@ var testEnv = EnvKeys{
 	OpenRouterImages: "env-images-bbbb",
 	Fal:              "env-fal-cccc",
 	Meshy:            "env-meshy-dddd",
-	Recraft:          "env-recraft-eeee",
 }
 
 // newLoaded builds a registry over cfg, captures its log, and reloads once.
@@ -497,21 +493,21 @@ func importRig(t *testing.T, ring *keyring.Ring, cfg entity.AIConfig) (*Registry
 func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
 	ring := testRing(t)
 	cfg := seedConfig()
-	for _, k := range []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft} {
+	for _, k := range []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy} {
 		provider(&cfg, k).APIKeyEnc = nil
 	}
 	r, fs, logs := importRig(t, ring, cfg)
 
 	imported, err := r.ImportEnvKeys(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy, entity.AIProviderRecraft}, imported)
+	require.Equal(t, []string{entity.AIProviderOpenRouter, entity.AIProviderFal, entity.AIProviderMeshy}, imported)
 
 	want := map[string]string{
 		entity.AIProviderOpenRouter: testEnv.OpenRouter, entity.AIProviderFal: testEnv.Fal,
-		entity.AIProviderMeshy: testEnv.Meshy, entity.AIProviderRecraft: testEnv.Recraft,
+		entity.AIProviderMeshy: testEnv.Meshy,
 	}
 	writes := fs.writes()
-	require.Len(t, writes, 4)
+	require.Len(t, writes, 3)
 	for _, w := range writes {
 		require.Equal(t, entity.AIKeyAPI, w.kind)
 		require.Equal(t, EnvImportedBy, w.by)
@@ -524,8 +520,7 @@ func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
 		"ai provider fal: env key imported into the panel (last4 cccc) — delete FAL_KEY from the app spec")
 	require.Contains(t, logs.String(), "delete OPENROUTER_API_KEY from the app spec")
 	require.Contains(t, logs.String(), "delete MESHY_API_KEY from the app spec")
-	require.Contains(t, logs.String(), "delete RECRAFT_API_KEY from the app spec")
-	for _, secret := range []string{testEnv.OpenRouter, testEnv.Fal, testEnv.Meshy, testEnv.Recraft, testEnv.OpenRouterImages} {
+	for _, secret := range []string{testEnv.OpenRouter, testEnv.Fal, testEnv.Meshy, testEnv.OpenRouterImages} {
 		require.NotContains(t, logs.String(), secret)
 	}
 	require.NotContains(t, logs.String(), "level=ERROR")
@@ -546,7 +541,7 @@ func TestImportEnvKeys_EmptySlotIsFilled(t *testing.T) {
 // and on the KeyFunc answer.
 func TestImportEnvKeys_FilledSlotUntouched(t *testing.T) {
 	ring := testRing(t)
-	cfg := seedConfig() // openrouter, fal, meshy, recraft all stored
+	cfg := seedConfig() // openrouter, fal, meshy all stored
 	provider(&cfg, entity.AIProviderFal).APIKeyEnc = nil
 	r, fs, _ := importRig(t, ring, cfg)
 
@@ -689,7 +684,6 @@ func TestCandidates_OrderSkipsAndDefaultProvider(t *testing.T) {
 
 	// The seeded routes answer exactly today's wiring.
 	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderFal, Position: 1}}, r.Candidates(entity.AIPurposeThreed))
-	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderRecraft, Position: 1}}, r.Candidates(entity.AIPurposeVector))
 	require.Equal(t, []Candidate{{ProviderKey: entity.AIProviderOpenRouter, Position: 1}}, r.Candidates(entity.AIPurposeImageGenerate))
 	require.Nil(t, r.Candidates("no.such.purpose"))
 }
@@ -905,10 +899,10 @@ func TestPoller_Loop(t *testing.T) {
 	g, _ := fs.calls()
 	require.Equal(t, 1, g, "only the boot reload so far")
 
-	blob := seal(t, ring, entity.AIProviderRecraft, entity.AIKeyAPI, "rotated-recraft-1234")
-	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderRecraft).APIKeyEnc = blob })
-	fn := r.KeyFunc(entity.AIProviderRecraft)
-	require.Eventually(t, func() bool { return fn() == "rotated-recraft-1234" }, 2*time.Second, time.Millisecond)
+	blob := seal(t, ring, entity.AIProviderFal, entity.AIKeyAPI, "rotated-fal-1234")
+	fs.edit(func(c *entity.AIConfig) { provider(c, entity.AIProviderFal).APIKeyEnc = blob })
+	fn := r.KeyFunc(entity.AIProviderFal)
+	require.Eventually(t, func() bool { return fn() == "rotated-fal-1234" }, 2*time.Second, time.Millisecond)
 
 	require.NoError(t, r.Stop())
 	require.Error(t, r.Stop())
@@ -998,7 +992,7 @@ func TestProviders_PanelOrderAndNoKeys(t *testing.T) {
 		require.Equal(t, k, st.Key)
 		require.Equal(t, BreakerClosed, st.Breaker)
 		for _, v := range []string{st.KeySource, st.KeyLast4} {
-			require.NotContains(t, []string{"db-fal-9z9z", testEnv.Fal, testEnv.OpenRouter, testEnv.Meshy, testEnv.Recraft}, v)
+			require.NotContains(t, []string{"db-fal-9z9z", testEnv.Fal, testEnv.OpenRouter, testEnv.Meshy}, v)
 		}
 	}
 	require.Equal(t, KeySourceNone, state(t, r, entity.AIProviderRunblob).KeySource)

@@ -156,9 +156,6 @@ func matrix() []probeCase {
 			bearer, `{"balance":1200}`, "1200 credits"},
 		{entity.AIProviderRunblob, entity.AIKeyAPI, "https://platform.runblob.io/v1/kling/generations/00000000-0000-0000-0000-000000000000",
 			bearer, `{"status":"pending"}`, ""},
-		// recraft's users/me carries credits, but no balance is promised for it: "" not a guess.
-		{entity.AIProviderRecraft, entity.AIKeyAPI, "https://external.api.recraft.ai/v1/users/me",
-			bearer, `{"credits":1000,"id":"x"}`, ""},
 		{entity.AIProviderOpenAI, entity.AIKeyAdmin, "https://api.openai.com/v1/organization/costs?start_time=1790418600&limit=1",
 			bearer, `{"object":"page","data":[]}`, ""},
 		{entity.AIProviderAnthropic, entity.AIKeyAdmin,
@@ -338,7 +335,7 @@ func TestNoProbeIsAPaidCall(t *testing.T) {
 	hosts := map[string]bool{
 		"api.openai.com": true, "api.anthropic.com": true, "generativelanguage.googleapis.com": true,
 		"openrouter.ai": true, "apibost.com": true, "api.fal.ai": true, "api.meshy.ai": true,
-		"platform.runblob.io": true, "external.api.recraft.ai": true,
+		"platform.runblob.io": true,
 	}
 	require.NotEmpty(t, endpoints)
 	for k, ep := range endpoints {
@@ -530,7 +527,6 @@ func TestBalances(t *testing.T) {
 		{entity.AIProviderMeshy, entity.AIKeyAPI, `{}`, "", unreadable},
 		// no balance promised: the body is not read for one
 		{entity.AIProviderFal, entity.AIKeyAPI, `{"credits":{"current_balance":24.5,"currency":"USD"}}`, "", accepted},
-		{entity.AIProviderRecraft, entity.AIKeyAPI, `{"credits":1000}`, "", accepted},
 	} {
 		r := newRig(t, http.StatusOK, tc.body)
 		res := Probe(context.Background(), tc.provider, tc.kind, fakeKey, r.client())

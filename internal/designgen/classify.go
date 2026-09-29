@@ -9,7 +9,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 )
 
 // Faults this package raises itself, before or around a provider call.
@@ -106,7 +105,6 @@ const (
 	CodeBadRequest          = "provider_bad_request"
 	CodeEmptyResponse       = "provider_empty_response"
 	CodeResponseTooLarge    = "provider_response_too_large"
-	CodeWrongFormat         = "provider_wrong_format"
 	CodeRateLimited         = "provider_rate_limited"
 	CodeProviderUnavailable = "provider_unavailable"
 	CodeProviderTimeout     = "provider_timeout"
@@ -306,7 +304,7 @@ func classifyBySentinel(err error) verdict {
 		return verdict{Retryable: false, Code: CodeOutputRefused, State: entity.DesignAttemptDelivered}
 	// ─── ours: settled before any payment ───
 	case errors.Is(err, errRouteMissing), errors.Is(err, errProviderDisabled),
-		errors.Is(err, orimages.ErrNotConfigured), errors.Is(err, recraft.ErrNotConfigured),
+		errors.Is(err, orimages.ErrNotConfigured),
 		errors.Is(err, meshy.ErrNotConfigured), errors.Is(err, fal.ErrNotConfigured):
 		return verdict{Retryable: false, Code: CodeKindNotAvailable, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errSinkUnsupported):
@@ -404,10 +402,10 @@ func classifyBySentinel(err error) verdict {
 		return verdict{Retryable: false, Code: CodeStorageFailed, State: entity.DesignAttemptDelivered}
 
 	// ─── credentials and balance: not weather ───
-	case errors.Is(err, orimages.ErrUnauthorized), errors.Is(err, recraft.ErrUnauthorized),
+	case errors.Is(err, orimages.ErrUnauthorized),
 		errors.Is(err, meshy.ErrUnauthorized), errors.Is(err, fal.ErrUnauthorized):
 		return verdict{Retryable: false, Code: CodeUnauthorized, State: entity.DesignAttemptFailed}
-	case errors.Is(err, orimages.ErrOutOfCredit), errors.Is(err, recraft.ErrInsufficientCredits),
+	case errors.Is(err, orimages.ErrOutOfCredit),
 		errors.Is(err, meshy.ErrOutOfCredit), errors.Is(err, fal.ErrOutOfCredit):
 		return verdict{Retryable: false, Code: CodeOutOfCredit, State: entity.DesignAttemptFailed}
 	// ⚠ fal.ErrModelUnavailable СТОИТ ИМЕННО ЗДЕСЬ, А НЕ В ПОГОДЕ, И ЭТО ТОТ САМЫЙ ДЕФЕКТ, КОТОРЫЙ
@@ -415,8 +413,7 @@ func classifyBySentinel(err error) verdict {
 	// временный отказ, и по экрану «такой модели нет» было не отличить от «сервис занят». Транспорт
 	// различает их по ПУТИ (404 на сабмите — модель, 404 на статусе — задание), а не по английской
 	// фразе провайдера, и здесь это различие доезжает до строки истории.
-	case errors.Is(err, orimages.ErrModelUnavailable), errors.Is(err, recraft.ErrModelUnavailable),
-		errors.Is(err, fal.ErrModelUnavailable):
+	case errors.Is(err, orimages.ErrModelUnavailable), errors.Is(err, fal.ErrModelUnavailable):
 		return verdict{Retryable: false, Code: CodeModelRetired, State: entity.DesignAttemptFailed}
 
 	// ─── we sent something unacceptable; a retry repeats it exactly ───
@@ -436,7 +433,7 @@ func classifyBySentinel(err error) verdict {
 	// side twice, and it will still name it twice on the fifth pass. Unclassified it would fall
 	// into the retryable default and spend the whole cap on a run that cannot become sendable.
 	case errors.Is(err, errDuplicateView),
-		errors.Is(err, recraft.ErrBadRequest), errors.Is(err, meshy.ErrImageCount),
+		errors.Is(err, meshy.ErrImageCount),
 		errors.Is(err, meshy.ErrBadImageURL), errors.Is(err, meshy.ErrPromptTooLong),
 		errors.Is(err, meshy.ErrBadRequest), errors.Is(err, orimages.ErrBadRequest),
 		errors.Is(err, fal.ErrBadRequest), errors.Is(err, fal.ErrBadImageURL),
@@ -444,7 +441,7 @@ func classifyBySentinel(err error) verdict {
 		return verdict{Retryable: false, Code: CodeBadRequest, State: entity.DesignAttemptFailed}
 
 	// ─── billed and useless: the money is real, the output is not ───
-	case errors.Is(err, orimages.ErrNoImages), errors.Is(err, recraft.ErrInvalidResponse),
+	case errors.Is(err, orimages.ErrNoImages),
 		errors.Is(err, meshy.ErrNoGLB), errors.Is(err, meshy.ErrUnexpectedResponse),
 		errors.Is(err, meshy.ErrTaskNotFound), errors.Is(err, fal.ErrNoModel),
 		errors.Is(err, fal.ErrUnexpectedResponse), errors.Is(err, fal.ErrRequestNotFound),
@@ -455,8 +452,6 @@ func classifyBySentinel(err error) verdict {
 	case errors.Is(err, orimages.ErrResponseTooLarge), errors.Is(err, meshy.ErrTooLarge),
 		errors.Is(err, fal.ErrTooLarge):
 		return verdict{Retryable: false, Code: CodeResponseTooLarge, State: entity.DesignAttemptUnknown}
-	case errors.Is(err, recraft.ErrNotVector), errors.Is(err, recraft.ErrUnsafeSVG):
-		return verdict{Retryable: false, Code: CodeWrongFormat, State: entity.DesignAttemptUnknown}
 
 	// ─── the provider ended the task itself. Meshy returns the credits on FAILED, so this is a
 	// failure that cost nothing — `failed`, not `unknown`.
@@ -478,7 +473,7 @@ func classifyBySentinel(err error) verdict {
 	// ─── retryable ───
 	// The request was REFUSED, so it was not billed: the one failure that can be repeated with a
 	// clear conscience.
-	case errors.Is(err, orimages.ErrRateLimited), errors.Is(err, recraft.ErrRateLimited),
+	case errors.Is(err, orimages.ErrRateLimited),
 		errors.Is(err, meshy.ErrRateLimited), errors.Is(err, fal.ErrRateLimited):
 		return verdict{Retryable: true, Code: CodeRateLimited, State: entity.DesignAttemptFailed}
 	// The wait ran out on a task that is probably still alive. The submit was already closed as
@@ -490,10 +485,10 @@ func classifyBySentinel(err error) verdict {
 	// B-32: the finished clip's download broke — the url is durable, the next collect fetches again.
 	case errors.Is(err, errVideoFetchFailed):
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
-	// «The provider failed»: a 5xx (nothing billed — failed, retryable) or, for recraft direct, a
-	// round trip that broke (either side of the write). The CallError tells the two apart in classify;
-	// the base answer below is what an error no transport classified still gets.
-	case errors.Is(err, orimages.ErrProviderFailure), errors.Is(err, recraft.ErrProviderFailure):
+	// «The provider failed»: a 5xx (nothing billed — failed, retryable). The CallError tells the
+	// cases apart in classify; the base answer below is what an error no transport classified still
+	// gets.
+	case errors.Is(err, orimages.ErrProviderFailure):
 		return verdict{Retryable: true, Code: CodeProviderUnavailable, State: entity.DesignAttemptUnknown}
 	// ─── no sentinel. A transport that spoke (CallError) names the code; its Retryable and Engaged
 	// are applied by classify. A fal 503 without a request id arrives here — the one explicit «service

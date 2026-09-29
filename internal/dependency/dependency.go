@@ -2419,7 +2419,7 @@ type (
 		// type, and the object extension is where the file type lives.
 		//
 		// THE DECLARED TYPE IS CHECKED AGAINST THE BYTES, and for SVG the check is
-		// recraft.InspectSVG: these bytes are served from our own public host and an SVG is
+		// svgcheck.InspectSVG: these bytes are served from our own public host and an SVG is
 		// a document, so <script>, on*/javascript: attributes, <foreignObject> and declared
 		// XML entities are refused rather than scrubbed. A GLB is verified through its
 		// container header, which also catches a truncated download. Both types have a

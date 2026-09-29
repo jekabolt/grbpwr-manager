@@ -481,7 +481,7 @@ type refCaption struct {
 //
 // THE FLIP IS FLAT-ONLY, AND THE REASON IS THE SAME SENTENCE AS ABOVE: on 3D the first url IS the
 // front view, so «references first» would hand Meshy somebody's mood photograph as the front of
-// the garment. Render, recolor, pattern and vector are untouched for the plainer reason that their
+// the garment. Render, recolor and pattern are untouched for the plainer reason that their
 // composed prompts are already frozen in history, and a reordering would renumber every caption of
 // every future run of a kind nobody asked to change.
 //
@@ -987,9 +987,8 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// fabric texture" against "photorealistic, the weave must read" — so a run that took both would
 	// end on whichever paragraph happened to be written last.
 	//
-	// 3D IS A MESHY BUILD, VECTOR REDRAWS AN APPROVED RASTER, AND draft_idea NEVER REACHES THE
-	// WORKER. None of the three is a picture composed by these words, so all three keep the bare
-	// human context above and take no craft block at all.
+	// 3D IS A MODEL BUILD AND draft_idea NEVER REACHES THE WORKER. Neither is a picture composed by
+	// these words, so both keep the bare human context above and take no craft block at all.
 	switch {
 	case run.Kind == entity.DesignRunKindFlat:
 		write("", flatCraft(p, detailNames, len(attached)))

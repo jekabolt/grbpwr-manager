@@ -20,7 +20,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -196,16 +195,13 @@ func (s *Server) designKindGateCheck(kind string) error {
 //
 // ⚠ КАЖДОЕ ЧИСЛО ЗДЕСЬ — ВЕРХНЯЯ ГРАНИЦА РОДА, А НЕ ЕГО ОЖИДАНИЕ, И ЭТО НЕСУЩЕЕ РЕШЕНИЕ.
 //
-// ЧТО БЫЛО. Вектор резервировал $0.04, а собственная константа провайдерского пакета
-// (recraft.Tier.EstimatedUSD) говорит $0.08 за стандартный тир и $0.30 за pro — то есть дневной
-// потолок пропускал ВДВОЕ больше трат, чем с владельцем согласовано, и делал это молча. Картинка
-// же стоила плоскую константу БЕЗ члена качества вовсе, хотя дил DESIGN_IMAGE_QUALITY — «the
+// ЧТО БЫЛО. Картинка стоила плоскую константу БЕЗ члена качества вовсе, хотя дил DESIGN_IMAGE_QUALITY — «the
 // single largest multiplier on what a press costs» (designgen.Config.ImageQuality), и на `high`
-// кадр стоит вчетверо против той константы. Обе поломки — один класс: рядом с местом списания
-// лежала СВОЯ копия цены, а две копии расходятся в тот день, когда правят одну.
+// кадр стоит вчетверо против той константы. Класс поломки: рядом с местом списания лежала СВОЯ
+// копия цены, а две копии расходятся в тот день, когда правят одну.
 //
 // ЧТО СТАЛО. Там, где у списания есть СОБСТВЕННЫЙ источник числа, оценка ВЫВОДИТСЯ из него
-// (вектор — из recraft.Tiers()), а не повторяет его. Там, где источника нет — картинку тарифицирует
+// (3D — из потолка тарифа fal), а не повторяет его. Там, где источника нет — картинку тарифицирует
 // сам провайдер, и локальной таблицы цен у неё не существует, — оценка берёт САМОЕ ДОРОГОЕ
 // положение дила, и связь с дилом становится не нужна: покрыто любое.
 //
@@ -225,8 +221,6 @@ var designPriceEstimate = map[string]decimal.Decimal{
 	entity.DesignRunKindFlat:   designImageMediumUSD.Mul(designImageQualityCeiling),
 	entity.DesignRunKindRender: designRenderMediumUSD.Mul(designImageQualityCeiling),
 	entity.DesignRunKindThreed: designThreedCeilingUSD(),
-	// ВЕКТОР — ЕДИНСТВЕННЫЙ РОД, У КОТОРОГО ЦЕНА ОПУБЛИКОВАНА ПАКЕТОМ СПИСАНИЯ. Берётся ИМЕННО ОНА.
-	entity.DesignRunKindVector: designVectorCeilingUSD(),
 	// ЧЕРНОВИК — ЦЕНА ПУСТОЙ ДОСКИ, а не цена нажатия. Полная оценка складывается в
 	// designDraftIdeaEstimate, потому что у этого рода задание измеряется не числом выходов, а
 	// числом ПРОЧИТАННЫХ КАРТИНОК, и таблица «цена одного выхода» такой вопрос не выражает.
@@ -308,27 +302,6 @@ func designMaxFactor(m map[string]decimal.Decimal) decimal.Decimal {
 	if out.IsZero() {
 		// Пустая таблица — это не «бесплатно»: множитель 1 оставляет базовую цену как есть.
 		return decimal.NewFromInt(1)
-	}
-	return out
-}
-
-// designVectorCeilingUSD — САМЫЙ ДОРОГОЙ ИЗ ОПУБЛИКОВАННЫХ ТАРИФОВ ВЕКТОРА, взятый из
-// recraft.Tier.EstimatedUSD() — того самого числа, которое провайдерский пакет называет «the number
-// to RESERVE before the call».
-//
-// ⚠ ПОЧЕМУ ПО МАКСИМУМУ, А НЕ ПО ТОМУ ТИРУ, КОТОРЫЙ СЕГОДНЯ ЗОВЁТ ВОРКЕР. Тир на проводе не
-// выбирается вовсе: designgen/vector.go зашивает recraft.TierVector, то есть $0.08. Но слаг ЭТОГО
-// тира переопределяется средой (RECRAFT_MODEL_VECTOR), и деплой, направивший стандартный тир на
-// pro-модель, получил бы списание $0.30 против резерва $0.08 — резерв ниже факта, ровно то, что
-// здесь чинится. Плюс тот день, когда выбор тира появится на проводе: оценка, привязанная к
-// зашитому тиру, промолчала бы. Перебор по recraft.Tiers() гасит оба случая сам и поднимется сам,
-// если у провайдера появится третий тир.
-func designVectorCeilingUSD() decimal.Decimal {
-	out := decimal.Zero
-	for _, t := range recraft.Tiers() {
-		if v := decimal.NewFromFloat(t.EstimatedUSD()); v.GreaterThan(out) {
-			out = v
-		}
 	}
 	return out
 }
@@ -629,7 +602,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	kind := strings.TrimSpace(req.GetKind())
 	if !entity.IsDesignRunKind(kind) {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"kind %q is not flat | render | threed | vector | recolor | pattern | freeform | cutout | extend | inpaint | video", kind)
+			"kind %q is not flat | render | threed | recolor | pattern | freeform | cutout | extend | inpaint | video", kind)
 	}
 	// draft_idea ОТКАЗЫВАЕТСЯ ЗДЕСЬ, дословно по контракту. Текстовый прогон исполняется в
 	// хендлере синхронно и возвращает свой ответ; заведённый отсюда, он вернул бы строку
@@ -2292,8 +2265,8 @@ func designParentPlates(parent *entity.DesignRun) []int32 {
 // не заполнит, читается как потерянный результат.
 func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int {
 	switch kind {
-	case entity.DesignRunKindThreed, entity.DesignRunKindVector:
-		// Одна модель и один SVG. Кадры поворотного стола, если они появятся, приедут одним
+	case entity.DesignRunKindThreed:
+		// Одна модель. Кадры поворотного стола, если они появятся, приедут одним
 		// артефактом, а не отдельными кадрами полосы.
 		return 1
 	case entity.DesignRunKindPattern:
@@ -2441,9 +2414,9 @@ func (s *Server) SetDesignPictureSelected(ctx context.Context, req *pb_admin.Set
 
 // ImportDesignVector files an ALREADY-UPLOADED vector file into the band as an edit layer.
 //
-// IT SPENDS NOTHING, AND THAT IS THE LINE BETWEEN IT AND GENERATION. Vectorising BY MACHINE is a
-// paid provider call and goes through StartDesignRun with kind = vector; this verb files a file
-// that already exists, which is why the money gate above does not stand here.
+// IT SPENDS NOTHING: there is no machine vectorising (vector generation was removed on 2026-09-29);
+// this verb files a file that already exists, which is why the money gate above does not stand
+// here.
 //
 // THE CLIENT PARSES, THE SERVER RECORDS THE PROVENANCE — the same division of labour
 // FlattenDesignEditLayer draws, and for the same reason: there is no SVG parser and no vector

@@ -822,7 +822,7 @@ func TestTheThreedReserveGOES_THROUGH_THE_RUN_ESTIMATE(t *testing.T) {
 	for _, s := range []*Server{{}, engineServer()} {
 		for _, kind := range []string{
 			entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindThreed,
-			entity.DesignRunKindVector, entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
+			entity.DesignRunKindRecolor, entity.DesignRunKindPattern,
 			entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
 		} {
 			got := s.designEstimateForRun(kind, 1, &pb_common.DesignRunParams{}, nil)

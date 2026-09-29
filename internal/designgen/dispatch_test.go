@@ -32,18 +32,16 @@ func TestKindRoutesToItsProvider(t *testing.T) {
 	}{
 		{entity.DesignRunKindFlat, "image"},
 		{entity.DesignRunKindRender, "image"},
-		{entity.DesignRunKindVector, "vector"},
 		{entity.DesignRunKindThreed, "threed"},
 	} {
 		t.Run(c.kind, func(t *testing.T) {
 			img := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
-			vec := &fakeProvider{name: "vector", produces: []string{ContentTypePNG}, out: okOutcome(1, 0.08)}
 			thd := &fakeProvider{name: "threed", produces: []string{ContentTypePNG}, out: okOutcome(1, 0.6)}
 			st := &fakeStore{}
-			w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{Image: img, Vector: vec, Threed: thd})
+			w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{Image: img, Threed: thd})
 
 			require.NoError(t, w.execute(context.Background(), testRun(1, c.kind), "tok"))
-			for name, p := range map[string]*fakeProvider{"image": img, "vector": vec, "threed": thd} {
+			for name, p := range map[string]*fakeProvider{"image": img, "threed": thd} {
 				if name == c.want {
 					require.Len(t, p.calls, 1, "%s should have been called", name)
 				} else {
@@ -71,15 +69,15 @@ func TestDraftIdeaNeverReachesAProvider(t *testing.T) {
 }
 
 // TestUnstorableOutputRefusesBeforeAnyMoney is the guard that is live TODAY: the bucket's picture
-// path stores raster only, so the vector (SVG) and 3D (GLB) routes must refuse for free rather
-// than buy a file the upload will then reject — five times per run.
+// path stores raster only, so a route that produces something else (here a fake that claims SVG)
+// must refuse for free rather than buy a file the upload will then reject — five times per run.
 func TestUnstorableOutputRefusesBeforeAnyMoney(t *testing.T) {
-	vec := &fakeProvider{name: "recraft_vector", produces: []string{ContentTypeSVG}, out: okOutcome(1, 0.08)}
+	vec := &fakeProvider{name: "image", produces: []string{ContentTypeSVG}, out: okOutcome(1, 0.08)}
 	st := &fakeStore{}
 	sink := newFakeSink(ContentTypePNG) // raster only, exactly like the real one
-	w := testWorker(st, nil, sink, Providers{Vector: vec})
+	w := testWorker(st, nil, sink, Providers{Image: vec})
 
-	require.NoError(t, w.execute(context.Background(), testRun(1, entity.DesignRunKindVector), "tok"))
+	require.NoError(t, w.execute(context.Background(), testRun(1, entity.DesignRunKindFlat), "tok"))
 	require.Empty(t, vec.calls, "the provider must not be called at all")
 	require.Empty(t, st.started, "no attempt row, therefore no money")
 	require.Empty(t, st.finished)

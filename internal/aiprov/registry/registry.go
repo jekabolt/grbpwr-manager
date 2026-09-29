@@ -25,7 +25,7 @@
 // the physical call → exactly one of RecordSuccess / RecordFailure / Release, WITH THE ADMISSION
 // Admit handed out — an end acts only on the admission it completes.
 //
-// This package imports no client package. The clients (openrouter, orimages, fal, meshy, recraft)
+// This package imports no client package. The clients (openrouter, orimages, fal, meshy)
 // get a plain `KeyFunc func() string` in their Config and never import aiprov either.
 package registry
 
@@ -92,7 +92,7 @@ const (
 // OPENROUTER_API_KEY) is never imported: ONE provider row serves both OpenRouter clients, so the
 // chat variable is the one that lands in the slot. A differing images value is only warned about.
 type EnvKeys struct {
-	OpenRouter, OpenRouterImages, Fal, Meshy, Recraft string
+	OpenRouter, OpenRouterImages, Fal, Meshy string
 }
 
 // Candidate is one provider a purpose may be served by, in route order.
@@ -201,7 +201,6 @@ func trimEnv(e EnvKeys) EnvKeys {
 		OpenRouterImages: strings.TrimSpace(e.OpenRouterImages),
 		Fal:              strings.TrimSpace(e.Fal),
 		Meshy:            strings.TrimSpace(e.Meshy),
-		Recraft:          strings.TrimSpace(e.Recraft),
 	}
 }
 
@@ -324,14 +323,13 @@ func (r *Registry) forgetWarning(slot string) {
 
 // ───────────────────────── the one-time env import (B-33) ─────────────────────────
 
-// envImports are the four variables the import reads, in the panel's order, each with the provider
+// envImports are the three variables the import reads, in the panel's order, each with the provider
 // row it lands in. OPENROUTER_IMAGES_API_KEY is deliberately absent — one openrouter row serves both
 // OpenRouter clients (EnvKeys) — and no other provider ever had an env variable.
 var envImports = []struct{ provider, variable string }{
 	{entity.AIProviderOpenRouter, "OPENROUTER_API_KEY"},
 	{entity.AIProviderFal, "FAL_KEY"},
 	{entity.AIProviderMeshy, "MESHY_API_KEY"},
-	{entity.AIProviderRecraft, "RECRAFT_API_KEY"},
 }
 
 // EnvImportedBy is the updated_by the panel shows for a key the import stored — a name no admin
@@ -347,8 +345,6 @@ func (r *Registry) envValue(providerKey string) string {
 		return r.env.Fal
 	case entity.AIProviderMeshy:
 		return r.env.Meshy
-	case entity.AIProviderRecraft:
-		return r.env.Recraft
 	}
 	return ""
 }

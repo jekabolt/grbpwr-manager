@@ -126,7 +126,8 @@ func parseFeedWorkflowSQL(t *testing.T, feed design.CardOutputsFeedSQL) feedWork
 func feedTwinKinds() []string {
 	return []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender, entity.DesignRunKindThreed,
-		entity.DesignRunKindVector, entity.DesignRunKindDraftIdea, entity.DesignRunKindRecolor,
+		"vector", // retired 2026-09-29; stored rows still carry it
+		entity.DesignRunKindDraftIdea, entity.DesignRunKindRecolor,
 		entity.DesignRunKindPattern, entity.DesignRunKindFreeform, entity.DesignRunKindCutout,
 		entity.DesignRunKindExtend, entity.DesignRunKindInpaint,
 		"", "unheard_of_kind",

@@ -69,8 +69,8 @@ type Config struct {
 	// pixels.
 	//
 	// WHY THE FLAT AND NOT EVERYTHING. A flat is the drawing the pattern room works from: hairline
-	// topstitching, a zip tape, a bar-tack. It is also the picture that gets vectorised afterwards,
-	// and a vectoriser cannot recover a stitch the raster never resolved. A render is looked at; a
+	// topstitching, a zip tape, a bar-tack. It is also the picture a person traces into the
+	// stroke editor, and nobody can recover a stitch the raster never resolved. A render is looked at; a
 	// flat is read.
 	//
 	// THE MONEY WAS ALREADY COVERED, WHICH IS WHY THIS IS SAFE. designPriceEstimate reserves every

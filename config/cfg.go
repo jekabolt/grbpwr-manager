@@ -31,7 +31,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -127,11 +126,6 @@ type Config struct {
 	// `design_generation.threed_provider` (DESIGN_THREED_PROVIDER), an explicit word rather than a
 	// guess from which key happens to be present — see designgen.Config.ThreedProvider.
 	Fal fal.Config `mapstructure:"fal"`
-	// Recraft is the VECTOR provider (owner spec P-3: «ровный вектор, а не куча полигонов»). Its
-	// primary route is the OpenRouterImages client above — the vector models are ordinary rows of
-	// that same image catalogue — and this section only carries the tier→slug table plus the
-	// FALLBACK direct-Recraft credentials. See internal/recraft.
-	Recraft recraft.Config `mapstructure:"recraft"`
 	// DesignGen is the generation WORKER — the thing that actually claims a paid run and calls a
 	// provider. It is inert unless DESIGN_GENERATION_ENABLED is set (precedent: ACCOUNTING_ENABLED),
 	// and that is deliberate: prod stands at migration 0339 and has no DESIGN band at all, so the
@@ -685,36 +679,6 @@ func bindEnvVars() {
 	// Price of one Meshy credit in USD, the only bridge from consumed_credits to money. Unset falls
 	// back to an estimate from the published plans; set it to the real rate of the active plan.
 	viper.BindEnv("meshy.credit_usd", "MESHY_CREDIT_USD")
-
-	// Recraft (VECTOR generation, P-3). The paid call normally goes through the OpenRouter image
-	// client above; this section decides WHICH MODEL it names and, for the fallback route, how to
-	// reach Recraft directly.
-	//
-	// EVERY LINE BELOW IS LOAD-BEARING IN THE SAME SILENT WAY as the Meshy block: AutomaticEnv is
-	// off, so a name without its own BindEnv reads as empty, and empty is exactly what a correctly
-	// unset override looks like. config/cfg_recraft_env_test.go sets each one and insists it lands.
-	//
-	// ⚠️ Set these IN THE DIGITALOCEAN DASHBOARD, never in .do/app.yaml.
-
-	// RECRAFT_ROUTE picks the transport: unset/"openrouter" (owner rule P-5, the default) or
-	// "direct" — Recraft's own API, which is the only way to reach the `strength` dial.
-	viper.BindEnv("recraft.route", "RECRAFT_ROUTE")
-	// The two model ids, for the ACTIVE ROUTE (the routes spell the same models differently:
-	// recraft/recraft-v4-vector at OpenRouter, recraftv4_vector at Recraft). Unset => the verified
-	// defaults in internal/recraft. They exist because a baked-in provider slug rots silently, and
-	// this repo has already lost every AI feature to exactly that once.
-	viper.BindEnv("recraft.model_vector", "RECRAFT_MODEL_VECTOR")
-	viper.BindEnv("recraft.model_vector_pro", "RECRAFT_MODEL_VECTOR_PRO")
-	// The fallback route's own credentials. RECRAFT_API_KEY is read at boot for the one-time import
-	// into the panel (admin → AI providers) and is never a runtime key source since B-33: with no
-	// stored key the direct route is disabled and the service refuses up front rather than queueing
-	// a run nobody can run.
-	viper.BindEnv("recraft.direct.api_key", "RECRAFT_API_KEY")
-	viper.BindEnv("recraft.direct.base_url", "RECRAFT_BASE_URL")
-	viper.BindEnv("recraft.direct.http_timeout", "RECRAFT_HTTP_TIMEOUT")
-	// Price of one Recraft API unit in USD (published: $1.00 = 1000 units, so 80 units = $0.08 for
-	// V4 Vector and 300 = $0.30 for V4 Pro Vector). The only bridge from `credits` to money.
-	viper.BindEnv("recraft.direct.credit_usd", "RECRAFT_CREDIT_USD")
 
 	// Design generation worker. Six knobs, and only the first one decides anything on its own:
 	// with DESIGN_GENERATION_ENABLED unset the worker is not constructed at all, and a run started

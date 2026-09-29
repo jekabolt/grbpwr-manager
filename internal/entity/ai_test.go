@@ -8,13 +8,13 @@ import (
 // The AI vocabularies are closed in Go and nowhere else (no ENUM, no CHECK in 0373/0374), so these
 // probes ARE the database's constraint. Every test below names the mutation that turns it red.
 
-// TestAIShapeProviderKeysAreTheNineAndClosed.
+// TestAIShapeProviderKeysAreClosed.
 //
 // MUTATION IT CATCHES: a key added to AIProviderKeys but not to IsAIProviderKey (or the reverse) — the
 // panel would list a provider every write then refuses, or the store would accept one the panel never
 // shows. Also: returning the package's own slice, which a caller could sort in place.
-func TestAIShapeProviderKeysAreTheNineAndClosed(t *testing.T) {
-	want := []string{"openai", "anthropic", "google", "openrouter", "apibost", "fal", "meshy", "runblob", "recraft"}
+func TestAIShapeProviderKeysAreClosed(t *testing.T) {
+	want := []string{"openai", "anthropic", "google", "openrouter", "apibost", "fal", "meshy", "runblob"}
 	got := AIProviderKeys()
 	if !slices.Equal(got, want) {
 		t.Fatalf("AIProviderKeys() = %v, want %v", got, want)
@@ -27,7 +27,7 @@ func TestAIShapeProviderKeysAreTheNineAndClosed(t *testing.T) {
 			t.Fatalf("%q serves nothing: every provider must name its capabilities", k)
 		}
 	}
-	for _, k := range []string{"", "OpenAI", "openai ", "orimages", "openrouter_images", "fal_cutout"} {
+	for _, k := range []string{"", "OpenAI", "openai ", "orimages", "openrouter_images", "fal_cutout", "recraft"} {
 		if IsAIProviderKey(k) {
 			t.Fatalf("IsAIProviderKey(%q) = true: the vocabulary must be closed and exact", k)
 		}
@@ -53,7 +53,6 @@ func TestAIShapeProviderCapabilitiesMatchTheContract(t *testing.T) {
 		AIProviderFal:        {AICapabilityImage, AICapabilityCutout, AICapabilityEdit, AICapabilityThreed},
 		AIProviderMeshy:      {AICapabilityThreed},
 		AIProviderRunblob:    {AICapabilityImage, AICapabilityVideo},
-		AIProviderRecraft:    {AICapabilityVector},
 	}
 	for k, caps := range want {
 		if got := AIProviderCapabilities(k); !slices.Equal(got, caps) {
@@ -96,7 +95,6 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		"image.inpaint":          AICapabilityEdit,
 		"threed":                 AICapabilityThreed,
 		"video.generate":         AICapabilityVideo, // B-32: the owner named the video purpose, 28.09
-		"vector":                 AICapabilityVector,
 	}
 	got := AIPurposes()
 	if len(got) != len(want) {
@@ -115,7 +113,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		}
 	}
 	// chat.techcard_operations_draft is retired (O-66, 0378): a route naming it is refused like any word.
-	for _, p := range []string{"", "chat", "image.flat", "video", "video.clip", "chat.techcard_enhance ", "chat.techcard_operations_draft"} {
+	for _, p := range []string{"", "chat", "image.flat", "video", "video.clip", "vector", "chat.techcard_enhance ", "chat.techcard_operations_draft"} {
 		if IsAIPurpose(p) {
 			t.Fatalf("IsAIPurpose(%q) = true", p)
 		}
@@ -125,7 +123,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 // TestAIShapeEveryPurposeHasAProvider. A purpose no provider can serve is a route the panel can never
 // save.
 //
-// MUTATION IT CATCHES: removing `threed` from both fal and meshy, or `vector` from recraft.
+// MUTATION IT CATCHES: removing `threed` from both fal and meshy.
 func TestAIShapeEveryPurposeHasAProvider(t *testing.T) {
 	for _, p := range AIPurposes() {
 		c := AIPurposeCapability(p)
@@ -159,7 +157,6 @@ func TestAIShapeEveryRunKindSpendsUnderAPurpose(t *testing.T) {
 		DesignRunKindInpaint:   AIPurposeImageInpaint,
 		DesignRunKindVideo:     AIPurposeVideoGenerate,
 		DesignRunKindThreed:    AIPurposeThreed,
-		DesignRunKindVector:    AIPurposeVector,
 		DesignRunKindDraftIdea: AIPurposeDesignDraftIdea,
 	}
 	for _, kind := range DesignRunKinds() {
@@ -170,6 +167,10 @@ func TestAIShapeEveryRunKindSpendsUnderAPurpose(t *testing.T) {
 		if w, ok := want[kind]; !ok || p != w {
 			t.Fatalf("AIPurposeOfRunKind(%q) = %q, want %q", kind, p, w)
 		}
+	}
+	// vector generation is gone (2026-09-29): the door refuses the kind, and nothing books under it.
+	if IsDesignRunKind("vector") || AIPurposeOfRunKind("vector") != "" || IsAIPurpose("vector") {
+		t.Fatal("the retired vector kind must be neither a run kind nor a purpose")
 	}
 	if AIPurposeOfRunKind("") != "" || AIPurposeOfRunKind("hologram") != "" {
 		t.Fatal("an unknown run kind must map to no purpose, not to a plausible default")

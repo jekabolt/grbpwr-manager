@@ -231,8 +231,8 @@ func (p falThreedProvider) Collect(ctx context.Context, job Job, requestID strin
 	var model, thumb bytes.Buffer
 	res, err := p.c.AwaitAt(ctx, slug, id, fal.Sink{Model: &model, Thumbnail: &thumb})
 	if err != nil {
-		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as on the Meshy and vector
-		// routes: the transport attaches what a failed call billed when it knew, and Charge reads
+		// «PAID, AND NOTHING CAME OF IT» HAS A CARRIER HERE, exactly as on the image route:
+		// the transport attaches what a failed call billed when it knew, and Charge reads
 		// it back. Without this the money of a terminal failure — a COMPLETED request with no
 		// model file, a model past the size cap — vanishes: the attempt closes with a NULL price,
 		// the day's ledger never sees the spend, and nobody can say what the failures cost.

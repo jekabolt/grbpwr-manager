@@ -70,11 +70,6 @@ func TestFlatPutsThePlatesAfterTheReferencesAndTheOtherRoutesDoNot(t *testing.T)
 			want: []int{21, 22, 11, 12},
 		},
 		{
-			name: "vector keeps the plates first",
-			kind: entity.DesignRunKindVector,
-			want: []int{21, 22, 11, 12},
-		},
-		{
 			name: "recolor keeps the plates first",
 			kind: entity.DesignRunKindRecolor,
 			want: []int{21, 22, 11, 12},

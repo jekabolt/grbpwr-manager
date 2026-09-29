@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
+	"github.com/jekabolt/grbpwr-manager/internal/svgcheck"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
@@ -36,7 +36,7 @@ import (
 //
 // WHAT IS NOT SHARED WITH THE RASTER PATH, and must not be:
 //
-//   - THE SVG IS NOT STORED UNTIL recraft.InspectSVG HAS PASSED IT. These bytes end up on our own
+//   - THE SVG IS NOT STORED UNTIL svgcheck.InspectSVG HAS PASSED IT. These bytes end up on our own
 //     public CDN host and then in an administrator's browser, where an SVG is a DOCUMENT, not a
 //     picture: <script>, on* handlers, javascript: urls, <foreignObject> and declared XML entities
 //     all run or expand. The check is here, in the storage path, rather than at the one caller that
@@ -47,11 +47,11 @@ import (
 //     nothing, and a silently shortened SVG is a drawing with pieces missing; both are worse than an
 //     error, because they look like storage succeeded.
 const (
-	// maxVectorPayloadBytes is the SVG ceiling. It is recraft's own number rather than a second
+	// maxVectorPayloadBytes is the SVG ceiling. It is the SVG checker's own number rather than a second
 	// opinion: InspectSVG enforces the same constant a few lines below, and two ceilings that could
 	// drift would mean a file the checker accepts and the bucket refuses (or worse, the reverse).
 	// Stated here as well so the bound is visible where the storage happens.
-	maxVectorPayloadBytes = recraft.MaxSVGBytes
+	maxVectorPayloadBytes = svgcheck.MaxSVGBytes
 	// maxModelPayloadBytes is the GLB ceiling, the same 64 MiB the 3D provider refuses above
 	// (meshy.maxModelBytes). Equal on purpose: a model our own transport agreed to download must
 	// not then be refused by our own bucket — that failure would land AFTER the generation was
@@ -121,7 +121,7 @@ var glbMagic = []byte("glTF")
 // verbatim, and records the media row that makes it a first-class member of the library.
 //
 // The declared content type is CHECKED AGAINST THE BYTES, never trusted: the SVG branch runs
-// recraft.InspectSVG (which refuses a raster, a malformed document and anything executable) and the
+// svgcheck.InspectSVG (which refuses a raster, a malformed document and anything executable) and the
 // GLB branch reads the container header. That is the same discipline uploadVideoObj applies to a
 // declared video, and it is what keeps the object's content type — the one the browser will obey —
 // a statement about the payload rather than about the caller.
@@ -146,7 +146,7 @@ func (b *Bucket) UploadContentNonRaster(ctx context.Context, raw []byte, content
 		// under our own domain; an SVG that reaches it unchecked is executable content we serve
 		// ourselves. InspectSVG refuses <script>, on*/javascript: attributes, <foreignObject>,
 		// declared XML entities, and a raster wearing a vector's name.
-		stats, err := recraft.InspectSVG(raw)
+		stats, err := svgcheck.InspectSVG(raw)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidNonRaster, err)
 		}
@@ -410,7 +410,7 @@ func checkGLB(raw []byte) error {
 // not about the picture, so the viewBox is the fallback rather than the other way round. Anything
 // that does not parse, is not positive, or is larger than the raster ceiling reads as UNKNOWN: a
 // zero pair is honest, while a guessed one silently mis-lays every screen that trusts it.
-func svgPixelSize(s recraft.SVGStats) (int, int) {
+func svgPixelSize(s svgcheck.SVGStats) (int, int) {
 	if w, wok := svgLength(s.Width); wok {
 		if h, hok := svgLength(s.Height); hok {
 			return w, h

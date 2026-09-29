@@ -17,18 +17,17 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/fal"
 	"github.com/jekabolt/grbpwr-manager/internal/meshy"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 )
 
 // ═══ B-14 — THE WORKER READS THE TRANSPORT'S MONEY FACT, NOT ITS SENTINEL ═══
 //
 // TestTheWriteIsTheMoneyBoundaryON_EVERY_DESIGN_TRANSPORT runs each paid call of the design band —
-// orimages Generate, recraft direct imageToImage, the fal 3D submit, the Meshy create-task — through
+// orimages Generate, the fal 3D submit, the Meshy create-task — through
 // its REAL client and its real route against an httptest stand, and reads the two answers the worker
 // writes from it: classify's verdict (does the queue try again, and in which state does the attempt
 // close) and the ledger row. The rows it pins are the ones that were wrong before B-14:
 //
-//   - a deadline AFTER the request was written — the orimages / Meshy / recraft default retried it,
+//   - a deadline AFTER the request was written — the orimages / Meshy default retried it,
 //     a second payment for one picture — is now `unknown`, NOT retryable, and booked `unknown`;
 //   - a refused dial BEFORE the write is `failed` and retryable, booked `free` (it was `unknown`);
 //   - a 5xx is `failed` and retryable, booked `free` (it was `unknown` twice over) — except fal's
@@ -48,9 +47,9 @@ import (
 // the Meshy refusals book `unknown`.
 //
 // B-13/A3 MUTATIONS (each measured red→green): each transport's 408 arm reverted to «not engaged,
-// retryable» in turn (orimages / recraft direct: the `status == http.StatusRequestTimeout` branch
+// retryable» in turn (orimages: the `status == http.StatusRequestTimeout` branch
 // disabled; fal / Meshy: `|| status == http.StatusRequestTimeout` dropped from the submit arm) → that
-// transport's «a real 408» row goes red here and in TestA408IsNEVER_BOOKED_FREE, the other three stay
+// transport's «a real 408» row goes red here and in TestA408IsNEVER_BOOKED_FREE, the others stay
 // green.
 
 // designTransport is one paid call of the band, driven through its real client and route.
@@ -88,19 +87,6 @@ func designTransports() []designTransport {
 			},
 			code: map[int]string{401: CodeUnauthorized, 402: CodeOutOfCredit, 404: CodeModelRetired, 429: CodeRateLimited,
 				408: CodeProviderUnavailable},
-		},
-		{
-			name: "recraft direct", billing: entity.AIProviderRecraft,
-			call: func(t *testing.T, baseURL string, timeout time.Duration) (error, aiprovtest.Row) {
-				job, ai := recorded(Job{RunID: 70, Kind: entity.DesignRunKindVector, Prompt: "a flat", References: ref},
-					entity.AIPurposeVector)
-				_, err := NewVectorProvider(recraft.New(recraft.Config{Route: string(recraft.RouteDirect),
-					Direct: recraft.DirectConfig{APIKey: "k", BaseURL: baseURL, HTTPTimeout: timeout}}, nil)).
-					Execute(context.Background(), job)
-				return err, oneRow(t, ai)
-			},
-			code: map[int]string{401: CodeUnauthorized, 402: CodeOutOfCredit, 404: CodeModelRetired, 429: CodeRateLimited,
-				408: CodeBadRequest},
 		},
 		{
 			name: "fal 3D submit", billing: entity.AIProviderFal, unconfirmed5xx: true,

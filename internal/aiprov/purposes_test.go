@@ -113,6 +113,20 @@ func TestTheOperationsDraftPurposeIsRetired(t *testing.T) {
 	require(!ok, "the panel's catalogue has no row for a retired purpose")
 }
 
+// TestTheVectorPurposeIsRetired — vector generation left with Recraft (0385, 2026-09-29): the route is
+// deleted, the purpose is not seeded, not in the vocabulary and has no catalogue row.
+func TestTheVectorPurposeIsRetired(t *testing.T) {
+	if !slices.Contains(retiredPurposes(t), "vector") {
+		t.Fatal("0385's Up must delete the vector route")
+	}
+	if slices.Contains(seededPurposes(t), "vector") || entity.IsAIPurpose("vector") {
+		t.Fatal("a retired purpose is neither seeded nor a purpose")
+	}
+	if _, ok := PurposeInfo("vector"); ok {
+		t.Fatal("the panel's catalogue has no row for a retired purpose")
+	}
+}
+
 // TestAIPurposesCatalogueCoversEverySeededPurpose.
 //
 // MUTATIONS IT CATCHES: a purpose seeded in 0373 with no row here (the panel would show a route with

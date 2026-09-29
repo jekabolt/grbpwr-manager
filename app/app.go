@@ -55,7 +55,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/recraft"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
@@ -193,7 +192,6 @@ func (a *App) Start(ctx context.Context) error {
 		OpenRouterImages: a.c.OpenRouterImages.APIKey,
 		Fal:              a.c.Fal.APIKey,
 		Meshy:            a.c.Meshy.APIKey,
-		Recraft:          a.c.Recraft.Direct.APIKey,
 	})
 	// B-33: a key still living in an env variable is moved into the panel here, ONCE, BEFORE the
 	// first Reload — a value whose panel slot is empty is sealed and stored as if an admin had
@@ -231,7 +229,6 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.OpenRouterImages.KeyFunc = a.aireg.OpenRouterImagesKeyFunc()
 	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
 	a.c.Meshy.KeyFunc = a.aireg.KeyFunc(entity.AIProviderMeshy)
-	a.c.Recraft.Direct.KeyFunc = a.aireg.KeyFunc(entity.AIProviderRecraft)
 	var reconcileAfterAdminKeySave func(context.Context, string)
 	if a.c.AIReconcile.Enabled {
 		// The registry is the one key policy: AdminKey for openai/anthropic/fal, and the
@@ -829,9 +826,6 @@ func (a *App) Start(ctx context.Context) error {
 					entity.AIProviderOpenRouter: designImages,
 					entity.AIProviderRunblob:    runblob.NewImages(a.runblob),
 				}, designImages.Model()),
-			// vector — Recraft's vector model, reached through the SAME image endpoint (owner rule
-			// P-5); the direct Recraft transport is the fallback and is chosen by RECRAFT_ROUTE.
-			Vector: designgen.NewVectorProvider(recraft.New(a.c.Recraft, recraft.NewOpenRouterGenerator(designImages))),
 			// threed — the panel's `threed` route (B-24): fal.ai's queue and Meshy's own API, both reached
 			// DIRECTLY because OpenRouter has no 3D modality to route to. A fal row with no model asks
 			// for FAL_MODEL_3D / fal.DefaultModel3D, today `meshy/v7/multi-image-to-3d`.
@@ -942,15 +936,13 @@ func (a *App) Start(ctx context.Context) error {
 	adminS.SetDesignEngines(designCfg.Engines)
 	// admin → AI providers: the SAME registry every client reads its key through (a write reloads it
 	// here at once) and the SAME ring it opens stored keys with (a key sealed by another master would
-	// read back "unreadable"). The recraft route is asked of recraft itself — RECRAFT_ROUTE's parse,
-	// typo fallback included, lives in one place.
+	// read back "unreadable").
 	// admin → the chat doors: the router built above, next to the registry and the ledger.
 	adminS.SetAIRouter(aiRouter)
 	adminS.SetAIProviders(admin.AIProvidersWiring{
-		Registry:             a.aireg,
-		KeyRing:              aiKeyRing,
-		RecraftViaOpenRouter: recraft.New(a.c.Recraft, nil).Route() == recraft.RouteOpenRouter,
-		Reconcile:            reconcileAfterAdminKeySave,
+		Registry:  a.aireg,
+		KeyRing:   aiKeyRing,
+		Reconcile: reconcileAfterAdminKeySave,
 	})
 	a.adminS = adminS
 

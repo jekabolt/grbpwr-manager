@@ -193,28 +193,28 @@ func TestGenerate_BackgroundIsNeverRewritten(t *testing.T) {
 }
 
 // TestGenerate_ModelOverride proves one client can address a second slug on the same endpoint —
-// the seam the vector model will come through, since /images is genuinely the same route for it.
+// the seam a route row's model comes through, since /images is genuinely the same route for it.
 func TestGenerate_ModelOverride(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		io.WriteString(w, okResponse("image/svg+xml"))
+		io.WriteString(w, okResponse("image/webp"))
 	}))
 	defer srv.Close()
 
 	c := New(Config{APIKey: "k", BaseURL: srv.URL})
-	res, err := c.Generate(context.Background(), Request{Prompt: "p", Model: "recraft/recraft-v4-vector"})
+	res, err := c.Generate(context.Background(), Request{Prompt: "p", Model: "google/gemini-3-pro-image-preview"})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if !strings.Contains(gotBody, `"model":"recraft/recraft-v4-vector"`) {
+	if !strings.Contains(gotBody, `"model":"google/gemini-3-pro-image-preview"`) {
 		t.Errorf("override did not reach the wire: %s", gotBody)
 	}
-	if res.Model != "recraft/recraft-v4-vector" {
+	if res.Model != "google/gemini-3-pro-image-preview" {
 		t.Errorf("result model = %q — provenance must name the slug that was CALLED, not the configured one", res.Model)
 	}
-	if res.Images[0].MediaType != "image/svg+xml" {
+	if res.Images[0].MediaType != "image/webp" {
 		t.Errorf("media type = %q, want the provider's own label", res.Images[0].MediaType)
 	}
 }

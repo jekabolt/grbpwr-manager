@@ -243,13 +243,13 @@ func designStartRequest(kind string) *pb_admin.StartDesignRunRequest {
 // положительный контроль: явно перенесённый референс и плита верстака обязаны БЫТЬ.
 //
 // МУТАЦИЯ, КОТОРОЙ ПРОБА ПРОВЕРЕНА: в designAssembleInputs добавлена строка, подмешивающая
-// медиа доски в out.Refs. Проба покраснела на всех четырёх родах (см. отчёт).
+// медиа доски в out.Refs. Проба покраснела на всех родах (см. отчёт).
 func TestDesignRunInputsNeverCarryTheMoodboard(t *testing.T) {
 	card := designMoodCard()
 	band := designBandWith(true)
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender,
-		entity.DesignRunKindThreed, entity.DesignRunKindVector,
+		entity.DesignRunKindThreed,
 	} {
 		t.Run(kind, func(t *testing.T) {
 			params := &pb_common.DesignRunParams{
@@ -1162,7 +1162,7 @@ func TestW15BoardReachesTheDraftButNeverGeneration(t *testing.T) {
 	band := designBandWith(true)
 	for _, kind := range []string{
 		entity.DesignRunKindFlat, entity.DesignRunKindRender,
-		entity.DesignRunKindThreed, entity.DesignRunKindVector,
+		entity.DesignRunKindThreed,
 	} {
 		t.Run(kind, func(t *testing.T) {
 			snap, err := designAssembleInputs(designInputSources{

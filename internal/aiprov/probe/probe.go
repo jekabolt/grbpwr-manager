@@ -90,7 +90,6 @@ const (
 	falBase        = hosts.FalHost
 	meshyBase      = hosts.MeshyHost
 	runblobBase    = hosts.RunblobHost
-	recraftBase    = hosts.RecraftHost
 
 	// anthropicVersion is the API version header every Anthropic request carries.
 	anthropicVersion = "2023-06-01"
@@ -164,9 +163,6 @@ var endpoints = map[probeKey]endpoint{
 	},
 	{entity.AIProviderRunblob, entity.AIKeyAPI}: {
 		url: runblobBase + "/v1/kling/generations/" + runblobZeroGeneration, auth: authBearer, notFoundIsOK: true,
-	},
-	{entity.AIProviderRecraft, entity.AIKeyAPI}: {
-		url: recraftBase + "/v1/users/me", auth: authBearer,
 	},
 
 	// ── admin keys: the reconciliation key for the provider's cost API (D-06) ──

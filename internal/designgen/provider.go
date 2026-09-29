@@ -36,7 +36,7 @@ const (
 type Job struct {
 	RunID      int
 	TechCardID int
-	// Kind is the run kind: flat | render | vector | threed | … | video. draft_idea never reaches here.
+	// Kind is the run kind: flat | render | threed | … | video. draft_idea never reaches here.
 	Kind string
 	// Prompt is the composed instruction: the ask, the garment description, the fit, the roles and
 	// notes of the references. Composed from the SNAPSHOT rather than from today's card, because
@@ -223,7 +223,7 @@ type Outcome struct {
 	// worker that dies between the two costs nothing to resume.
 	Pending bool
 	// Provider is the BILLING transport of this pass (an entity.AIProvider* key: the account that
-	// pays — recraft through OpenRouter is "openrouter"), and Usage the tokens its calls reported,
+	// pays — a model routed through OpenRouter is "openrouter"), and Usage the tokens its calls reported,
 	// summed; nil when none did. Both are PROVENANCE for the ledger's side of the pass, set by the
 	// route: recordAttempt does not read them, and the attempt row stays the money truth of the run.
 	Provider string
@@ -288,7 +288,7 @@ func missingCredential(p Provider) string {
 // evidence.
 //
 // OPTIONAL, and its absence means «this route sends Job.Prompt», which is the truth for the image
-// and vector routes and the reason they implement nothing.
+// routes and the reason they implement nothing.
 //
 // ⚠ THE ANSWER IS THE ROUTE'S, NEVER THE KIND'S. A `switch kind` in the dispatcher would be a
 // second opinion about a fact only the route holds — which model family is configured, and whether
@@ -327,8 +327,6 @@ type Providers struct {
 	// provider here (NewRoutedImageProvider): a Chooser, whose concrete candidate is what each pass
 	// pays and records (dispatch.go).
 	Image Provider
-	// Vector serves the vector kind.
-	Vector Provider
 	// Threed serves the threed kind.
 	Threed Provider
 	// Cutout serves the cutout kind — background removal, a SEGMENTER rather than a generator.
@@ -364,7 +362,7 @@ func (p Providers) byName(name string) (Provider, bool) {
 	if name == "" {
 		return nil, false
 	}
-	for _, prov := range append([]Provider{p.Image, p.Vector, p.Threed, p.Cutout, p.Outpaint, p.Fill, p.Video}, p.Also...) {
+	for _, prov := range append([]Provider{p.Image, p.Threed, p.Cutout, p.Outpaint, p.Fill, p.Video}, p.Also...) {
 		if prov != nil && prov.Name() == name {
 			return prov, true
 		}
@@ -406,11 +404,6 @@ func (p Providers) forKind(kind string) (Provider, error) {
 			return nil, fmt.Errorf("%w: no fill route is wired", errRouteMissing)
 		}
 		return p.Fill, nil
-	case entity.DesignRunKindVector:
-		if p.Vector == nil {
-			return nil, fmt.Errorf("%w: no vector route is wired", errRouteMissing)
-		}
-		return p.Vector, nil
 	case entity.DesignRunKindThreed:
 		if p.Threed == nil {
 			return nil, fmt.Errorf("%w: no 3D route is wired", errRouteMissing)
