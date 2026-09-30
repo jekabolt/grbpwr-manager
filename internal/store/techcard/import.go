@@ -114,6 +114,8 @@ const (
 
 	archiveImportBomLinesQuery = `SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :card`
 
+	// The two label queries below served resewImportedLabels, which 0386 retired together with the
+	// legacy label write; they stay (with their query-shape tests) until the drop I-19 removes both.
 	archiveImportLabelsQuery = `SELECT id, display_order FROM tech_card_label WHERE tech_card_id = :card`
 
 	archiveImportLabelRelinkQuery = `
@@ -253,9 +255,8 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err != nil {
 			return err
 		}
-		if err := resewImportedLabels(ctx, db, newID, in.Labels, bomIDs); err != nil {
-			return err
-		}
+		// Legacy labels are no longer written by the save (0386, read-only until the drop I-19), so an
+		// imported card has no tech_card_label row to re-sew: in.Labels is deliberately not applied.
 		if err := insertImportedMarkers(ctx, db, newID, in.Markers, bomIDs, in.Actor, rng, losses); err != nil {
 			return err
 		}
@@ -891,73 +892,6 @@ func importedBomLineIDs(ctx context.Context, db dependency.DB, techCardID int) (
 // importedLineKey normalises a line_key for lookup: trimmed and case-folded, matching the column's
 // own collation.
 func importedLineKey(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
-
-// ────────────────────────────── R2-2: labels → BOM lines ──────────────────────────────
-
-// resewImportedLabels restores each label's link to the BOM line it prints on.
-//
-// WHY THIS EXISTS AT ALL. TechCardLabel.bom_item_id is a REAL input FK carrying the SOURCE base's
-// row id. Written as it stands it would either break the foreign key — killing the whole import —
-// or, on the day that number happens to name a live row here, bind the label to ANOTHER CARD's BOM
-// line. So the resolver translates it into the line's stable key and clears the id off the payload,
-// and the card lands with every label unlinked. This function is the second half of that transfer.
-//
-// WHY IT IS THE STEP MOST EASILY LOST. There is no hole in the report for a label whose link went
-// missing, and there cannot be: the resolver deliberately wrote none, because the link is not lost
-// at that point — it is in the plan, waiting for the new ids to exist. Skip this and the label
-// imports with a NULL link, in silence, with a clean report saying everything is fine. Nothing
-// downstream fails, because a NULL bom_item_id is legal: it means «this label names no article»,
-// which is a legitimate state a great many labels are actually in. That is exactly why the failure
-// is invisible and why the miss below is LOUD.
-//
-// A key that resolves to nothing is therefore an error rather than a silent unlink: the BOM travels
-// verbatim in the same card.json the label came from, so the line the label names is either in the
-// imported BOM or the archive is corrupt.
-func resewImportedLabels(ctx context.Context, db dependency.DB, techCardID int,
-	links []entity.TechCardArchiveLabelLink, bomIDs map[string]int64) error {
-	if len(links) == 0 {
-		return nil
-	}
-	// display_order is the label's position in the payload, written by insertTechCardLabels from
-	// the very slice the resolver indexed — that position IS the label's identity (labels are a
-	// full-replace child with no key of their own). Addressed by id after this read rather than by
-	// `WHERE display_order = ...`, so «no such label» is distinguishable from «the row was already
-	// correct»: this driver counts rows CHANGED, not matched.
-	rows, err := storeutil.QueryListNamed[struct {
-		Id           int64 `db:"id"`
-		DisplayOrder int   `db:"display_order"`
-	}](ctx, db, archiveImportLabelsQuery, map[string]any{"card": techCardID})
-	if err != nil {
-		return fmt.Errorf("read back labels of imported tech card %d: %w", techCardID, err)
-	}
-	idByOrder := make(map[int]int64, len(rows))
-	for _, r := range rows {
-		idByOrder[r.DisplayOrder] = r.Id
-	}
-
-	for _, link := range links {
-		key := importedLineKey(link.BomLineKey)
-		if key == "" {
-			continue
-		}
-		labelID, ok := idByOrder[link.LabelIndex]
-		if !ok {
-			return fmt.Errorf("re-sew imported label %d of tech card %d: the card has no label at that position",
-				link.LabelIndex, techCardID)
-		}
-		bomID, ok := bomIDs[key]
-		if !ok {
-			return entity.NewFieldViolation(fmt.Sprintf("labels[%d].bom_item_id", link.LabelIndex),
-				"not_in_tech_card", fmt.Sprintf("BOM line %s", link.BomLineKey),
-				"the archive's label names a BOM line the archive did not carry")
-		}
-		if err := storeutil.ExecNamed(ctx, db, archiveImportLabelRelinkQuery,
-			map[string]any{"id": labelID, "card": techCardID, "bom": bomID}); err != nil {
-			return fmt.Errorf("re-sew imported label %d of tech card %d: %w", link.LabelIndex, techCardID, err)
-		}
-	}
-	return nil
-}
 
 // ────────────────────────────── markers ──────────────────────────────
 

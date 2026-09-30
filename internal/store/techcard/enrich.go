@@ -89,6 +89,9 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err := s.enrichProduction(ctx, cards); err != nil {
 		return err
 	}
+	if err := s.enrichLabelsRework(ctx, cards); err != nil {
+		return err
+	}
 	// ПОСЛЕ производства, а не вместе с карточными медиа: id операционных снимков известны только
 	// когда операции уже прочитаны. Резолвится одним запросом на всю пачку карточек.
 	return s.enrichOperationMedia(ctx, cards)

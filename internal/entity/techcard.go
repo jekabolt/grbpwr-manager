@@ -3667,6 +3667,80 @@ type TechCardPackaging struct {
 	Notes            sql.NullString `db:"notes"`
 }
 
+// --- labels rework (0386) --------------------------------------------------------------------------
+
+// Care-label QR presets (tech_card_care_label.qr_preset). Closed here; the column is a plain VARCHAR.
+const (
+	CareLabelQRStorefront = "storefront"
+	CareLabelQRCustom     = "custom"
+	CareLabelQRFixed      = "fixed"
+)
+
+// ValidCareLabelQRPresets is the accepted qr_preset set.
+var ValidCareLabelQRPresets = map[string]bool{
+	CareLabelQRStorefront: true, CareLabelQRCustom: true, CareLabelQRFixed: true,
+}
+
+// TechCardCareLabel — СОСТАВНИК: the overrides of the always-present composition label (1:1 with the
+// card, tech_card_care_label). Every empty field means «the derived value». Line lists are stored
+// newline-joined; nil = NULL = derived.
+type TechCardCareLabel struct {
+	LogoMediaId      sql.NullInt32 // NULL = the brand mark
+	CareProseLines   []string
+	QRPreset         string // one of ValidCareLabelQRPresets; never "" after parse
+	QRTemplate       sql.NullString
+	BackCaptionLines []string
+	AddressLines     []string
+	Colorways        []TechCardCareLabelColorway // sorted by ColorwayId after parse and on read
+}
+
+// TechCardCareLabelColorway is one colourway's overrides on the composition label
+// (tech_card_care_label_colorway + its fibre rows).
+type TechCardCareLabelColorway struct {
+	ColorwayId int
+	ColourName sql.NullString           // NULL = derived colour name
+	Fibers     []TechCardCareLabelFiber // empty = composition derived from the BOM
+}
+
+// TechCardCareLabelFiber is one fibre row of a colourway's composition override.
+type TechCardCareLabelFiber struct {
+	Part      TechCardBomLabelPart
+	FiberCode string
+	Pct       int // 1..100
+}
+
+// TechCardGarmentLabel is a garment label other than the composition label (tech_card_garment_label).
+// Key is freeform like TechCardDetail.Key: known-ness is the client's constant.
+type TechCardGarmentLabel struct {
+	Key           string
+	Placement     sql.NullString
+	Attachment    sql.NullString
+	Folding       sql.NullString
+	Size          sql.NullString
+	QtyPerGarment int           // ≥ 1
+	BomItemId     sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
+	// BomLineKey is WRITE-SIDE TRANSPORT for server-built payloads (the season clone): the source
+	// card's BOM ids mean nothing on the new card, so the link travels as the line's stable key and
+	// the store resolves it against the ids it just minted. Never read back, never hashed.
+	BomLineKey string
+	Note       sql.NullString
+	MediaIds   []int // mockups, in display order
+}
+
+// TechCardPackagingItem is one packaging item (tech_card_packaging_item) — the garment label with
+// Usage in place of placement and Packing in place of attachment + folding.
+type TechCardPackagingItem struct {
+	Key           string
+	Usage         sql.NullString
+	Packing       sql.NullString
+	Size          sql.NullString
+	QtyPerGarment int
+	BomItemId     sql.NullInt32
+	BomLineKey    string // see TechCardGarmentLabel.BomLineKey
+	Note          sql.NullString
+	MediaIds      []int
+}
+
 // TechCardCosting holds the manually-entered per-unit cost articles (Sheet
 // «Калькуляция», 1:1), all in a single currency. The materials line and the unit/order
 // totals are computed on read (see dto), not stored. Pricing (markup/wholesale/retail)
@@ -4208,10 +4282,19 @@ type TechCardInsert struct {
 	// card that has neither hashes byte-identically to before this phase.
 	DerivedCostInputsDigest string `db:"-"`
 	// production (Phase 3); 1:1 sections are nil when unset
-	Construction   *TechCardConstruction  `db:"-"`
-	Operations     []TechCardOperation    `db:"-"`
-	Labels         []TechCardLabel        `db:"-"`
-	Packaging      *TechCardPackaging     `db:"-"`
+	Construction *TechCardConstruction `db:"-"`
+	Operations   []TechCardOperation   `db:"-"`
+	// Labels is the LEGACY tech_card_label list: read-only since 0386 (the save neither clears nor
+	// writes it) and in no digest. Dropped by I-19.
+	Labels    []TechCardLabel    `db:"-"`
+	Packaging *TechCardPackaging `db:"-"`
+	// Labels rework (0386). CareLabel nil on write = keep the stored record; on read = no record.
+	CareLabel      *TechCardCareLabel      `db:"-"`
+	GarmentLabels  []TechCardGarmentLabel  `db:"-"`
+	PackagingItems []TechCardPackagingItem `db:"-"`
+	// LabelsAware says the client knows GarmentLabels / PackagingItems exist. Transport, not content:
+	// without it UpdateTechCard keeps both stored lists (an old bundle would otherwise erase them).
+	LabelsAware    bool                   `db:"-"`
 	Costing        *TechCardCosting       `db:"-"`
 	Issues         []TechCardIssue        `db:"-"`
 	SizeQuantities []TechCardSizeQuantity `db:"-"`

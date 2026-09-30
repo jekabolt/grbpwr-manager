@@ -582,18 +582,30 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// job or nobody's. And its presence signal is the WRAPPER, not the section: a client that
 	// sends a construction it does understand while knowing nothing about profiles must not erase
 	// the park, whereas a present-but-empty wrapper is a deliberate «delete them all».
+	//
+	// LABELS REWORK (0386). tech_card_label is GONE from this list on purpose: the legacy labels are
+	// read-only until the drop (I-19), so the save neither clears nor writes them. The composition label
+	// record is presence-aware like packaging (its colourway and fibre rows cascade from it). The
+	// garment labels and packaging items are full-replace lists, but only from a client that declares
+	// it knows them (labels_aware): an older bundle's payload cannot tell «none» from «never heard of
+	// them», so without the flag both stored lists are kept and nothing of them is inserted.
+	preserveLabelLists := !tc.LabelsAware
 	preserveAbsentSection := map[string]bool{
 		"tech_card_construction":      tc.Construction == nil,
 		"tech_card_packaging":         tc.Packaging == nil,
 		"tech_card_costing":           tc.Costing == nil,
 		"tech_card_equipment_profile": tc.Construction == nil || tc.Construction.EquipmentDefaults == nil,
+		"tech_card_care_label":        tc.CareLabel == nil,
+		"tech_card_garment_label":     preserveLabelLists,
+		"tech_card_packaging_item":    preserveLabelLists,
 	}
 	for _, table := range []string{
 		"tech_card_size", "tech_card_product", "tech_card_media",
 		"tech_card_callout", "tech_card_detail",
 		"tech_card_construction", "tech_card_equipment_profile",
-		"tech_card_operation", "tech_card_label",
+		"tech_card_operation",
 		"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
+		"tech_card_care_label", "tech_card_garment_label", "tech_card_packaging_item",
 	} {
 		if preserveAbsentSection[table] {
 			continue
@@ -604,7 +616,16 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 			return nil, fmt.Errorf("failed to clear %s: %w", table, err)
 		}
 	}
-	if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
+	children := tc
+	if preserveLabelLists && (len(tc.GarmentLabels) > 0 || len(tc.PackagingItems) > 0) {
+		// Kept above, so inserting the payload's lists would DUPLICATE the stored ones. A payload
+		// without the flag that still carries lists is server-built (it never came from a bundle that
+		// knows the fields), and the stored lists win — the same «absent = keep» rule.
+		kept := *tc
+		kept.GarmentLabels, kept.PackagingItems = nil, nil
+		children = &kept
+	}
+	if err := insertTechCardChildren(ctx, rep.DB(), id, children); err != nil {
 		return nil, err
 	}
 	// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
@@ -1401,10 +1422,18 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
 		return err
 	}
-	if err := insertTechCardLabels(ctx, db, id, tc.Labels, bomRes); err != nil {
+	// tc.Labels (legacy tech_card_label) is NOT written any more — read-only until the drop (0386, I-19).
+	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
 		return err
 	}
-	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
+	// Labels rework (0386): after the BOM upsert, so a label's BOM link resolves against this save's ids.
+	if err := insertTechCardCareLabel(ctx, db, id, tc.CareLabel); err != nil {
+		return err
+	}
+	if err := insertTechCardGarmentLabels(ctx, db, id, tc.GarmentLabels, bomRes); err != nil {
+		return err
+	}
+	if err := insertTechCardPackagingItems(ctx, db, id, tc.PackagingItems, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardCosting(ctx, db, id, tc.Costing); err != nil {

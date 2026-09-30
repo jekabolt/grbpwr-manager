@@ -951,6 +951,19 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	// Labels rework (0386): the composition label record (nil = keep), garment labels, packaging items.
+	careLabel, err := parseTechCardCareLabel(pb.CareLabel)
+	if err != nil {
+		return nil, err
+	}
+	garmentLabels, err := parseTechCardGarmentLabels(pb.GarmentLabels)
+	if err != nil {
+		return nil, err
+	}
+	packagingItems, err := parseTechCardPackagingItems(pb.PackagingItems)
+	if err != nil {
+		return nil, err
+	}
 	costing, err := parseTechCardCosting(pb.Costing)
 	if err != nil {
 		return nil, err
@@ -1070,14 +1083,19 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Operations:                operations,
 		Labels:                    labels,
 		Packaging:                 packaging,
-		Costing:                   costing,
-		Issues:                    issues,
-		SizeQuantities:            sizeQuantities,
-		Signoffs:                  signoffs,
-		Patterns:                  patterns,
-		Pieces:                    pieces,
-		PieceDxfAliases:           pieceDxfAliases,
-		PieceDxfAliasesSet:        pieceDxfAliasesSet,
+		CareLabel:                 careLabel,
+		GarmentLabels:             garmentLabels,
+		PackagingItems:            packagingItems,
+		// Транспорт, не содержание (щит полной замены двух списков) — ни в один дайджест не входит.
+		LabelsAware:        pb.LabelsAware,
+		Costing:            costing,
+		Issues:             issues,
+		SizeQuantities:     sizeQuantities,
+		Signoffs:           signoffs,
+		Patterns:           patterns,
+		Pieces:             pieces,
+		PieceDxfAliases:    pieceDxfAliases,
+		PieceDxfAliasesSet: pieceDxfAliasesSet,
 
 		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2). ABSENT is carried through as INVALID — «take the workshop
 		// default» — and an explicit 0 is carried through as a set zero. Deliberately NOT folded into
@@ -1499,6 +1517,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Operations:         techCardOperationsToPb(tc.Operations),
 			Labels:             techCardLabelsToPb(tc.Labels),
 			Packaging:          techCardPackagingToPb(tc.Packaging),
+			CareLabel:          techCardCareLabelToPb(tc.CareLabel),
+			GarmentLabels:      techCardGarmentLabelsToPb(tc.GarmentLabels),
+			PackagingItems:     techCardPackagingItemsToPb(tc.PackagingItems),
 			Costing:            techCardCostingToPb(tc, fx),
 			Issues:             techCardIssuesToPb(tc.Issues),
 			SizeQuantities:     techCardSizeQuantitiesToPb(tc.SizeQuantities),

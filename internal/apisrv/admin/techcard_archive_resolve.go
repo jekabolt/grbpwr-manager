@@ -177,6 +177,12 @@ type resolvedTechCardImport struct {
 	SizeChartPlan entity.StyleSizeChart
 	AssemblyPlan  []entity.StyleAssemblyInsert
 	LabelPlan     []tcimpLabelLink
+	// GarmentLabelBomKeys / PackagingItemBomKeys (labels rework, 0386): position in
+	// Insert.GarmentLabels / Insert.PackagingItems → the BOM line key their source bom_item_id named.
+	// Stamped onto the entity (BomLineKey) right after conversion; the store resolves the key against
+	// the ids the insert mints — the season clone's transfer, done here for the archive.
+	GarmentLabelBomKeys  map[int]string
+	PackagingItemBomKeys map[int]string
 	// MaterialPlan is keyed by the passport's `ref` (the source material_id).
 	MaterialPlan map[int64]tcimpMaterialMatch
 
@@ -217,6 +223,25 @@ type resolvedTechCardImport struct {
 // the payload is converted from `Insert` after the archive's files have moved (tcciPayload), and
 // WastageClaimVerified lives only on the entity. Idempotent, so the commit's repair path — which
 // re-derives the payload from the same plan — stamps the same lines a second time and no others.
+// stampLabelBomLineKeys hands the translated BOM links of the garment labels and packaging items
+// (resolveForeignScalars) to the entity the store will insert. Positions are stable: the conversion
+// keeps both lists in payload order and drops only nil entries, which the wire never carries.
+func (res *resolvedTechCardImport) stampLabelBomLineKeys(card *entity.TechCardInsert) {
+	if res == nil || card == nil {
+		return
+	}
+	for i, key := range res.GarmentLabelBomKeys {
+		if i >= 0 && i < len(card.GarmentLabels) {
+			card.GarmentLabels[i].BomLineKey = key
+		}
+	}
+	for i, key := range res.PackagingItemBomKeys {
+		if i >= 0 && i < len(card.PackagingItems) {
+			card.PackagingItems[i].BomLineKey = key
+		}
+	}
+}
+
 func (res *resolvedTechCardImport) stampVerifiedWastageClaims(card *entity.TechCardInsert) {
 	if res == nil || card == nil || len(res.WastageVerified) == 0 {
 		return
@@ -361,6 +386,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.OperationKindsAware = true
 	insert.OperationWorkAware = true
 	insert.BomQtyAware = true
+	insert.LabelsAware = true
 
 	r.resolveCategory(di.Categories)
 	if err := r.resolveMedia(ctx); err != nil {
@@ -1171,6 +1197,40 @@ func (r *tcimpResolver) resolveForeignScalars() {
 			r.out.LabelPlan = append(r.out.LabelPlan, tcimpLabelLink{LabelIndex: i, BomLineKey: key})
 		}
 		l.BomItemId = 0
+	}
+
+	// Labels rework (0386): the same translation for garment labels and packaging items. A source id
+	// with no key behind it is simply dropped (the link was already broken in the source).
+	for i, l := range ins.GetGarmentLabels() {
+		if l == nil || l.GetBomItemId() <= 0 {
+			continue
+		}
+		if key := lineKeyByBomID[l.GetBomItemId()]; key != "" {
+			if r.out.GarmentLabelBomKeys == nil {
+				r.out.GarmentLabelBomKeys = map[int]string{}
+			}
+			r.out.GarmentLabelBomKeys[i] = key
+		}
+		l.BomItemId = 0
+	}
+	for i, it := range ins.GetPackagingItems() {
+		if it == nil || it.GetBomItemId() <= 0 {
+			continue
+		}
+		if key := lineKeyByBomID[it.GetBomItemId()]; key != "" {
+			if r.out.PackagingItemBomKeys == nil {
+				r.out.PackagingItemBomKeys = map[int]string{}
+			}
+			r.out.PackagingItemBomKeys[i] = key
+		}
+		it.BomItemId = 0
+	}
+	// The composition label's per-colourway overrides name SOURCE colourways (products), which an
+	// import does not create (§5.3) — dropped, logged; the card-level overrides import as they are.
+	if cl := ins.GetCareLabel(); cl != nil && len(cl.GetColorways()) > 0 {
+		slog.Default().Warn("tech card import: composition label colourway overrides dropped (colourways do not travel)",
+			slog.Int("colourways", len(cl.GetColorways())))
+		cl.Colorways = nil
 	}
 
 	for _, b := range ins.GetBomItems() {
