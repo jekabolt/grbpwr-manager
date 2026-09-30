@@ -94,7 +94,51 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	}
 	// ПОСЛЕ производства, а не вместе с карточными медиа: id операционных снимков известны только
 	// когда операции уже прочитаны. Резолвится одним запросом на всю пачку карточек.
-	return s.enrichOperationMedia(ctx, cards)
+	if err := s.enrichOperationMedia(ctx, cards); err != nil {
+		return err
+	}
+	// AFTER enrichLabelsRework: the label media ids are known only once the labels are read (M-02).
+	return s.enrichLabelMedia(ctx, cards)
+}
+
+// enrichLabelMedia resolves the labels rework's media ids (care-label logo, garment-label and
+// packaging-item mockups — entity.TechCardInsert.LabelMediaIds) into full media records, one query
+// for the whole batch. Same contract as enrichOperationMedia: a missing media is simply absent.
+func (s *Store) enrichLabelMedia(ctx context.Context, cards []entity.TechCard) error {
+	perCard := make([][]int, len(cards))
+	wanted := make(map[int]bool)
+	for i := range cards {
+		perCard[i] = cards[i].LabelMediaIds()
+		for _, id := range perCard[i] {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load label media: %w", err)
+	}
+	byID := make(map[int]entity.MediaFull, len(rows))
+	for i := range rows {
+		byID[rows[i].Id] = rows[i]
+	}
+	for i := range cards {
+		var out []entity.TechCardMediaFull
+		for _, id := range perCard[i] {
+			if full, ok := byID[id]; ok {
+				out = append(out, entity.TechCardMediaFull{Media: full})
+			}
+		}
+		cards[i].ResolvedLabelMedia = out
+	}
+	return nil
 }
 
 // enrichOperationMedia разрешает media_id операционных снимков (0308) в полные записи медиа.

@@ -3741,6 +3741,36 @@ type TechCardPackagingItem struct {
 	MediaIds      []int
 }
 
+// LabelMediaIds is every media id the labels rework references on this card — the composition
+// label's logo override, then each garment label's mockups, then each packaging item's mockups —
+// deduplicated, first occurrence wins. It is what the read resolves into TechCard.ResolvedLabelMedia
+// (M-02): the client must not depend on its media-library page to turn these ids into pictures.
+func (tc *TechCardInsert) LabelMediaIds() []int {
+	var out []int
+	seen := make(map[int]bool)
+	add := func(id int) {
+		if id <= 0 || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if tc.CareLabel != nil && tc.CareLabel.LogoMediaId.Valid {
+		add(int(tc.CareLabel.LogoMediaId.Int32))
+	}
+	for _, l := range tc.GarmentLabels {
+		for _, id := range l.MediaIds {
+			add(id)
+		}
+	}
+	for _, it := range tc.PackagingItems {
+		for _, id := range it.MediaIds {
+			add(id)
+		}
+	}
+	return out
+}
+
 // TechCardCosting holds the manually-entered per-unit cost articles (Sheet
 // «Калькуляция», 1:1), all in a single currency. The materials line and the unit/order
 // totals are computed on read (see dto), not stored. Pricing (markup/wholesale/retail)
@@ -4579,6 +4609,9 @@ type TechCard struct {
 	// media_id, а URL и размеры это read-данные — та же разводка, что у карточных медиа, где
 	// TechCardMediaItem пишет, а ResolvedMedia читает.
 	ResolvedOperationMedia []TechCardMediaFull `db:"-"`
+	// ResolvedLabelMedia — the MediaFull of every id in LabelMediaIds (M-02), in that order; an id
+	// whose media is gone is simply absent. Read-only projection, never written.
+	ResolvedLabelMedia []TechCardMediaFull `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an

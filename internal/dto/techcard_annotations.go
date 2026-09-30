@@ -850,6 +850,21 @@ func resolvedOperationMedia(tc *entity.TechCard) []*pb_common.TechCardMediaFull 
 	return out
 }
 
+// resolvedLabelMedia projects TechCard.ResolvedLabelMedia (M-02) — the labels rework's media ids
+// resolved to MediaFull, the same shape resolvedOperationMedia gives the operation photos.
+func resolvedLabelMedia(tc *entity.TechCard) []*pb_common.TechCardMediaFull {
+	if len(tc.ResolvedLabelMedia) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardMediaFull, 0, len(tc.ResolvedLabelMedia))
+	for i := range tc.ResolvedLabelMedia {
+		out = append(out, &pb_common.TechCardMediaFull{
+			Media: ConvertEntityToCommonMedia(&tc.ResolvedLabelMedia[i].Media),
+		})
+	}
+	return out
+}
+
 // TechCardCalloutAnnotationJSON — ГЕОМЕТРИЯ УКАЗАНИЯ В ТОЙ ФОРМЕ, В КАКОЙ ЕЁ ЧИТАЕТ ПРОВОД.
 //
 // Существует ради потребителя, которому нужна ФОРМА выноски отдельно от строки её текста: снимок
