@@ -39,6 +39,11 @@ type (
 		// tech_card.lock_version (entity.ErrTechCardConflict on a stale value; sql.ErrNoRows when absent).
 		// Never touches style facts, variants, stock or the chart. Returns the new shared lock_version.
 		UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error)
+		// UpdateColorwayCountry writes a colourway's country of origin alone (country_code + the
+		// country_of_origin text) under the same guard as UpdateColorway (labels rework D-02). An ISO-2
+		// code absent from the country dictionary is a field violation on country_code. Returns the new
+		// shared lock_version.
+		UpdateColorwayCountry(ctx context.Context, colorwayID, expectedVersion int, countryCode string) (int, error)
 		// LabDipRoundsByStyleID returns the lab-dip round journal of every colourway of a style,
 		// grouped by colourway id and oldest first (one query for the whole style).
 		LabDipRoundsByStyleID(ctx context.Context, styleID int) (map[int][]entity.ColorwayLabDipRound, error)
