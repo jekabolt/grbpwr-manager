@@ -2899,15 +2899,71 @@ message TechCardLabel {
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка»).
 message TechCardPackaging {
   string folding_method = 1; // способ складывания
-  string polybag = 2; // полибэг (тип / размер)
-  string bag_sticker = 3; // стикер на пакет
-  string inserts = 4; // доп. вложения
+  string polybag = 2; // полибэг (тип / размер). DEPRECATED (0386): use packaging_items; kept until the drop (I-19) — clients round-trip what they read.
+  string bag_sticker = 3; // стикер на пакет. DEPRECATED (0386): use packaging_items; kept until the drop (I-19).
+  string inserts = 4; // доп. вложения. DEPRECATED (0386): use packaging_items; kept until the drop (I-19).
   int32 units_per_box = 5; // кол-во в коробе; 0 = unset
   string box_marking = 6; // маркировка короба
   string box_dimensions = 7; // размеры короба (Д×Ш×В)
   int32 weight_net_grams = 8; // вес нетто, граммы (0 = unset)
   int32 weight_gross_grams = 9; // вес брутто, граммы (0 = unset)
   string notes = 10;
+}
+
+// TechCardCareLabelFiber is one fibre row of a colourway's composition OVERRIDE on the composition
+// label (labels rework, 0386). The ten translations come from the fibre dictionary.
+message TechCardCareLabelFiber {
+  TechCardBomLabelPart part = 1; // required; UNSPECIFIED and NOT_ON_LABEL are refused
+  string fiber_code = 2; // required; FK fiber(code)
+  int32 pct = 3; // 1..100; a part summing to ≠ 100 is a warning hole, not a refusal
+}
+
+// TechCardCareLabelColorway holds the per-colourway overrides of the composition label.
+message TechCardCareLabelColorway {
+  int32 colorway_id = 1; // required; a colourway (product.id) of THIS style
+  string colour_name = 2; // override of the colour name on the ribbon; "" = derived
+  repeated TechCardCareLabelFiber fibers = 3; // composition override; empty = derived from the BOM
+}
+
+// TechCardCareLabel — СОСТАВНИК: the overrides of the always-present composition label. Every field
+// empty = the derived value (brand mark, dictionary prose, storefront QR, default caption, company
+// address). Lines are sent one string per printed line and must not contain a newline.
+message TechCardCareLabel {
+  int32 logo_media_id = 1; // FK media(id), SVG; 0 = the brand mark
+  repeated string care_prose_lines = 2; // empty = dictionary short_prose
+  string qr_preset = 3; // storefront | custom | fixed ("" = storefront)
+  string qr_template = 4; // template (custom) or URL (fixed)
+  repeated string back_caption_lines = 5; // empty = the default two lines
+  repeated string address_lines = 6; // empty = the company constant
+  repeated TechCardCareLabelColorway colorways = 7; // one entry per overridden colourway
+}
+
+// TechCardGarmentLabel is one label on the garment other than the composition label (labels rework,
+// 0386), shaped like a construction aspect: a known key or a custom name, a mockup, and where / how
+// it goes on. A label without a mockup is saved, but the LABELS sign-off cannot be approved (D-04).
+message TechCardGarmentLabel {
+  string key = 1; // required, ≤ 64; brand / size / flag / hangtag / barcode / special or a custom name
+  string placement = 2; // where on the garment
+  string attachment = 3; // how it is attached / where it is inserted
+  string folding = 4; // how the label is folded
+  string size = 5; // free text, mm
+  int32 qty_per_garment = 6; // ≥ 1; 0 = 1
+  int32 bom_item_id = 7; // FK to a BOM line of THIS card; 0 = none
+  string note = 8;
+  repeated int32 media_ids = 9; // FK media(id): the mockups, in display order
+}
+
+// TechCardPackagingItem is one packaging item (labels rework, 0386): the label card with two words
+// changed — `usage` instead of placement, `packing` instead of attachment + folding.
+message TechCardPackagingItem {
+  string key = 1; // required, ≤ 64; polybag / tissue / sticker / insert_card / … or a custom name
+  string usage = 2; // where / how the item is used
+  string packing = 3; // folding / packing instruction
+  string size = 4; // free text
+  int32 qty_per_garment = 5; // ≥ 1; 0 = 1
+  int32 bom_item_id = 6; // FK to a BOM line of THIS card; 0 = none
+  string note = 7;
+  repeated int32 media_ids = 8; // FK media(id): the mockups, in display order
 }
 
 // TechCardCostLine is one currency bucket of the materials rollup.
@@ -3366,6 +3422,9 @@ message TechCardInsert {
   // production (Phase 3): construction, operations, labels, packaging, costing.
   TechCardConstruction construction = 43; // 1:1; null = unset
   repeated TechCardOperation operations = 44;
+  // DEPRECATED (labels rework, 0386): READ-ONLY until the drop migration (I-19); IGNORED ON WRITE —
+  // the save neither clears nor inserts tech_card_label any more. The labels live in garment_labels
+  // (121) and the composition label in care_label (120). Not in any section digest.
   repeated TechCardLabel labels = 45;
   TechCardPackaging packaging = 46; // 1:1; null = unset
   TechCardCosting costing = 47; // 1:1; null = unset
@@ -3603,6 +3662,22 @@ message TechCardInsert {
   // ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест секции — которым бандлом сохранили
   // карточку, не то, от чего может зависеть подпись.
   bool bom_qty_aware = 117;
+
+  // СОСТАВНИК (labels rework, 0386) — the composition (care) label's overrides, 1:1 with the card.
+  // Presence-aware like packaging: null on write = KEEP the stored record; a present message replaces
+  // it (a present-but-empty one resets every line to derived). Null on read = nothing overridden.
+  TechCardCareLabel care_label = 120;
+  // The garment labels other than the composition label (brand, size, flag, hangtag, … or a custom
+  // name). Full replace on write — but only from a client that sets labels_aware (123).
+  repeated TechCardGarmentLabel garment_labels = 121;
+  // The packaging items (polybag, tissue, insert card, … or a custom name). Full replace on write —
+  // but only from a client that sets labels_aware (123). The carton facts stay on `packaging` (46).
+  repeated TechCardPackagingItem packaging_items = 122;
+  // ЩИТ СОВМЕСТИМОСТИ для garment_labels (121) и packaging_items (122): оба — полная замена, и
+  // payload бандла, который про них не знает, неотличим от «удалили все». Без флага UpdateTechCard
+  // СОХРАНЯЕТ оба списка как есть (create/clone пишут что прислано). Флаг не фильтрует разбор.
+  // ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест секции.
+  bool labels_aware = 123;
 
   reserved 108;
   reserved "required_seam_allowance_cm";
