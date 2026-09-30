@@ -190,6 +190,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
+	// D-04 (labels rework): a LABELS approval needs a mockup on every garment label.
+	if err := validateLabelsMockupSignGate(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
 	// here exactly as it does on update — so the same correction applies. The card id is 0 on purpose:
 	// it does not exist yet, so it can carry neither measured areas nor a recipe (Ф-П).
@@ -459,6 +463,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
+	if err := validateFreshLabelsSectionsCarried(tc, &stored.TechCardInsert, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// The two sign-off belts, both between the presence check and the restamp — the last point where
 	// the fresh set, the stored card and the payload are all in view, and the last point at which a
 	// refusal is still a refusal of the REQUEST rather than a fingerprint already taken.
@@ -466,6 +473,10 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 		return nil, apierr.Invalid(err)
 	}
 	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	// D-04 (labels rework): a LABELS approval needs a mockup on every garment label.
+	if err := validateLabelsMockupSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
 	if err := s.restampFreshSignoffDigests(ctx, id, tc, freshSignoffs); err != nil {
