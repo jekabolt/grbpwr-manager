@@ -297,3 +297,74 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 	}
 	return newLockVersion, nil
 }
+
+// UpdateColorwayCountry writes a colourway's country of origin ALONE (labels rework D-02: an
+// UpdateColorway whose update_mask is exactly `country_code`) under the same optimistic guard as
+// UpdateColorway — the style's shared tech_card.lock_version — and returns the new version. It sets
+// product.country_code (the ISO-2 code, which must be in the seeded country dictionary: an unknown
+// code is a field violation on `country_code`) and product.country_of_origin (the text), and nothing
+// else: no merch row, translations, media, tags, prices, development block or SKU re-mint (the SKU
+// carries no country segment). A released card is entity.ErrTechCardReleased, a stale version
+// entity.ErrTechCardConflict, an absent colourway sql.ErrNoRows — same as UpdateColorway.
+//
+// The text is the dictionary's display name when that name resolves back to the same code
+// (entity.ResolveSeededCountryISO2), otherwise the code itself — which is what a full UpdateColorway
+// stores there. A full save re-derives country_code from this text, so a name that does not round-trip
+// (the seed still carries placeholder names such as «Uae») would silently clear the code on the next one.
+func (s *Store) UpdateColorwayCountry(ctx context.Context, colorwayID, expectedVersion int, countryCode string) (int, error) {
+	var newLockVersion int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[struct {
+			StyleID     int `db:"style_id"`
+			LockVersion int `db:"lock_version"`
+		}](ctx, rep.DB(),
+			`SELECT p.style_id, t.lock_version
+			 FROM product p JOIN tech_card t ON t.id = p.style_id WHERE p.id = :id`,
+			map[string]any{"id": colorwayID})
+		if err != nil {
+			return err // sql.ErrNoRows -> NOT_FOUND upstream
+		}
+		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), cur.StyleID); err != nil {
+			return err
+		}
+		if cur.LockVersion != expectedVersion {
+			return entity.ErrTechCardConflict
+		}
+		country, err := storeutil.QueryNamedOne[struct {
+			Code        string `db:"code"`
+			DisplayName string `db:"display_name"`
+		}](ctx, rep.DB(), `SELECT code, display_name FROM country WHERE code = :code`,
+			map[string]any{"code": countryCode})
+		if errors.Is(err, sql.ErrNoRows) {
+			return entity.NewFieldViolation("country_code", "unknown_country", countryCode,
+				"send an ISO 3166-1 alpha-2 code from the country dictionary")
+		}
+		if err != nil {
+			return fmt.Errorf("can't read country %q: %w", countryCode, err)
+		}
+		text := country.Code
+		if iso2, ok := entity.ResolveSeededCountryISO2(country.DisplayName); ok && iso2 == country.Code {
+			text = country.DisplayName
+		}
+		if _, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+			`UPDATE product SET country_code = :code, country_of_origin = :text WHERE id = :id`,
+			map[string]any{"code": country.Code, "text": text, "id": colorwayID}); err != nil {
+			return fmt.Errorf("can't update colourway %d country: %w", colorwayID, err)
+		}
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+			`UPDATE tech_card SET lock_version = lock_version + 1 WHERE id = :id AND lock_version = :expected`,
+			map[string]any{"id": cur.StyleID, "expected": expectedVersion})
+		if err != nil {
+			return fmt.Errorf("bump colourway %d lock: %w", colorwayID, err)
+		}
+		if rows == 0 {
+			return entity.ErrTechCardConflict
+		}
+		newLockVersion = expectedVersion + 1
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return newLockVersion, nil
+}

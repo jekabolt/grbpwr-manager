@@ -171,12 +171,18 @@ func createColorwayStatus(ctx context.Context, err error) error {
 // (merchandising.color_code) is proposed from the palette's main hex when this request writes a
 // palette, and otherwise keeps the stored family (the store does that). The SKU colour token is an
 // echo guard only (the store refuses a changed one).
+//
+// Labels rework D-02: an update_mask of exactly `country_code` writes the country of origin ALONE
+// (updateColorwayCountry); every other mask is unchanged.
 func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
 	if err := rejectEmbeddedColorwayUsages(req.GetDevelopment()); err != nil {
 		return nil, err
 	}
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
+	}
+	if dto.UpdateMaskIsCountryOnly(req.GetUpdateMask()) {
+		return s.updateColorwayCountry(ctx, req)
 	}
 	dev, err := dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())
 	if err != nil {
@@ -198,6 +204,26 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
 		stampColorwayDevelopmentActor(ctx, dev))
+	if err != nil {
+		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
+	}
+	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
+	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
+
+// updateColorwayCountry is UpdateColorway for an update_mask of exactly `country_code` (labels rework
+// D-02): the tech card's composition label sets a missing country of origin in place. Only the
+// country is written — merchandising, media, tags, prices, translations and the development block in
+// the request are ignored — under the same shared lock (expected_colorway_version), and the same
+// after-write refresh runs (storefront revalidation). An empty code is refused here; an unknown one by
+// the store, both as a field violation on country_code.
+func (s *Server) updateColorwayCountry(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
+	code := strings.ToUpper(strings.TrimSpace(req.GetCountryCode()))
+	if code == "" {
+		return nil, apierr.Invalid(entity.NewFieldViolation("country_code", "required", "",
+			"update_mask names only country_code, so country_code must carry an ISO 3166-1 alpha-2 code"))
+	}
+	lockVersion, err := s.repo.Products().UpdateColorwayCountry(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), code)
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}
