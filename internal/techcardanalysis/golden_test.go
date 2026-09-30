@@ -285,7 +285,7 @@ const goldenCard8InReview = `FINDINGS (21)
   [warning/readiness] No standard time on 48 of 48 operations | refs: op:10, op:20, op:30 | clause: SMV 0/48
   [warning/readiness] No work assigned on 43 of 48 operations | refs: op:10, op:20, op:30 | clause: works 5/48
   [warning/readiness] The card carries no technical sketch | refs: card | clause: no technical sketch
-  [warning/readiness] The print packet would go out with 5 empty sections | refs: card | clause: print packet has 5 empty sections
+  [warning/readiness] The print packet would go out with 4 empty sections | refs: card | clause: print packet has 4 empty sections
   [warning/readiness] The route ends with the last seam and has no finishing block | refs: card | clause: no finishing block
 OBSERVATIONS (8)
   Lexical mirror pairing over unit names suggests left/right twins: 60<->90, 70<->100, 80<->150, 110<->120, 170<->180, 190<->200, 210<->220, 290<->?, 300<->?, 310<->320, 330<->?, 360<->370, 380<->390, 420<->430 (<->? means the pairer found no partner). The pairing is derived from NAMES only; the input lists are the ground truth - correct it freely.
@@ -356,7 +356,7 @@ FINGERPRINTS (48)
 // finding of §3.0 IS its enumeration, and a collapse that lost a clause would still look like a
 // perfectly good finding in the projection above.
 const gdCollapsedDraftDetail = "Not yet ready for release: SMV 0/48 · works 5/48 · " +
-	"no equipment profiles · no technical sketch · print packet has 5 empty sections · no finishing block"
+	"no equipment profiles · no technical sketch · print packet has 4 empty sections · no finishing block"
 
 func TestGoldenCard8DraftCollapsedText(t *testing.T) {
 	res := RunAudit(card8(), gdFx)
@@ -418,7 +418,7 @@ func TestGoldenCard8AggregatesInsteadOfSpraying(t *testing.T) {
 		// B8: четыре рулонные линии с NULL wastage — одна находка с дробью, а не четыре.
 		{"B8 wastage", "Cutting wastage is not stated on 4 of 4 roll-goods lines", 1},
 		// C2: ПЯТЬ пустот, а не четыре — пятая базовый размер (base_sample_size_id NULL на проде).
-		{"C2 print packet", "The print packet would go out with 5 empty sections", 1},
+		{"C2 print packet", "The print packet would go out with 4 empty sections", 1},
 		// C4: ноль профилей на четыре типа машин.
 		{"C4 equipment", "No equipment profiles on a card that names 4 machine types", 1},
 		// C7/C8: покрытие считается по ВСЕМУ маршруту, и дробь заголовка называет пропуск, а
@@ -502,12 +502,12 @@ func TestGoldenCard8Silences(t *testing.T) {
 		{"C1 (операции есть)", "The card has no operations"},
 		{"C1 (детали есть)", "The card has no cut pieces"},
 		{"C1 (ряд s/m/l/xl с прода)", "The card declares no size range"},
-		{"C3 (гейт стадии: proto < sms)", "with no labels anywhere"},
-		// Подстрока обязана ловить И пер-спековую форму («The care label spec IS not
-		// linked…»), И агрегатную («3 of 5 label specs ARE not linked…»): проба, слепая к
+		{"C3b (лейблов и позиций упаковки нет — мокапа не у кого требовать)", "has no mockup"},
+		// Подстрока обязана ловить И пер-спековую форму («The brand label IS not
+		// linked…»), И агрегатную («3 of 5 garment labels ARE not linked…»): проба, слепая к
 		// агрегату, зелена ровно на той карточке, где находок много.
 		{"C3 (спека без линии, обе формы)", "not linked to a BOM line"},
-		{"C3 (линия без спеки)", "is a label nothing describes"},
+		{"C3 (линии без лейбла)", "linked to no garment label"},
 		{"C4-error (мягких ссылок на профили нет)", "profile the card does not have"},
 		{"C4-error (агрегат)", "references point at nothing"},
 		{"C4-info (профилей ноль — наследовать не из чего)", "could inherit"},

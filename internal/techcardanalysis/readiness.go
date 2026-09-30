@@ -40,6 +40,7 @@ var _ = register(
 	needsCard(checkC1Floor),
 	needsCard(checkC2PrintPacketDryRun),
 	needsCard(checkC3LabelBridge),
+	needsCard(checkC3bMockups),
 	needsCard(checkC4EquipmentPark),
 	needsCard(checkC5TechnicalSketch),
 	needsCard(checkC6ReleaseRuleFour),
@@ -114,8 +115,14 @@ func checkC1Floor(v *cardView) []Finding {
 // 8 — NULL при объявленном ряде из четырёх размеров, то есть пятая пустота реальна. Печатный пакет
 // печатает «размер образца» строкой шапки, и пустая она там ровно так же, как пустой hem_finish.
 //
-// Подавитель: секция заполнена. Лейблы спрашиваются только у sellable-карточки (у вспомогательной —
-// пакета, вешалки — лейблов не бывает по определению, NF-07).
+// ЛЕЙБЛОВ В СПИСКЕ НЕТ (labels rework, 0386). Составник (`tech_card_care_label`) есть у КАЖДОЙ
+// карточки — его значения выводятся, запись засеяна миграцией, — и печатный пакет печатает его
+// всегда; «пустой секции лейблов» больше не бывает. Легаси `tech_card_label` не читается: владелец
+// решил старые лейблы не конвертировать, и считать их значило бы спрашивать с карточки то, чего
+// новая модель от неё не требует. Лейбл без мокапа — отдельная дыра, C3b.
+//
+// УПАКОВКА = строка коробки + позиции упаковки. `polybag` / `bag_sticker` / `inserts` уехали в
+// позиции (§3.4 п.3) и клиентом больше не показываются, поэтому пустоту они не заполняют.
 func checkC2PrintPacketDryRun(v *cardView) []Finding {
 	c := v.construction()
 
@@ -128,11 +135,8 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 	if nsEmpty(c.Notes) {
 		gaps = append(gaps, gap{"construction notes", "tech_card_construction.notes"})
 	}
-	if v.card.Purpose == entity.TechCardPurposeSellable && len(v.card.Labels) == 0 {
-		gaps = append(gaps, gap{"labels", "tech_card_label (0 rows on a sellable card)"})
-	}
-	if v.card.Packaging == nil || isEmptyPackaging(v.card.Packaging) {
-		gaps = append(gaps, gap{"packaging", "tech_card_packaging"})
+	if len(v.card.PackagingItems) == 0 && (v.card.Packaging == nil || isEmptyPackaging(v.card.Packaging)) {
+		gaps = append(gaps, gap{"packaging", "tech_card_packaging (carton row), tech_card_packaging_item"})
 	}
 	if !v.card.BaseSampleSizeId.Valid {
 		gaps = append(gaps, gap{"base sample size", "tech_card.base_sample_size_id"})
@@ -160,12 +164,12 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 	}}
 }
 
-// isEmptyPackaging reports whether the packaging block says nothing at all. Присутствие СТРОКИ не
+// isEmptyPackaging reports whether the carton row says nothing at all. Присутствие СТРОКИ не
 // равно заполненности: строка, созданная сохранением соседней секции, печатается такой же пустой,
-// как её отсутствие.
+// как её отсутствие. `polybag` / `bag_sticker` / `inserts` не считаются: их данные живут в позициях
+// упаковки (0386), а колонки ждут дропа.
 func isEmptyPackaging(p *entity.TechCardPackaging) bool {
-	return nsEmpty(p.FoldingMethod) && nsEmpty(p.Polybag) && nsEmpty(p.BagSticker) &&
-		nsEmpty(p.Inserts) && niEmpty(p.UnitsPerBox) && nsEmpty(p.BoxMarking) &&
+	return nsEmpty(p.FoldingMethod) && niEmpty(p.UnitsPerBox) && nsEmpty(p.BoxMarking) &&
 		nsEmpty(p.BoxDimensions) && niEmpty(p.WeightNetGrams) && niEmpty(p.WeightGrossGrams) &&
 		nsEmpty(p.Notes)
 }
@@ -176,13 +180,18 @@ func isEmptyPackaging(p *entity.TechCardPackaging) bool {
 //
 // ЗАЧЕМ ГЕЙТ. Лейблы заводят к продажному образцу, а не к прототипу: спрашивать их у карточки на
 // стадии proto значит спрашивать работу, которой на этой стадии не бывает, — и получать шум на
-// каждой ранней карточке студии. Карточка 8 стоит на proto и поэтому здесь МОЛЧИТ, хотя лейблов у
-// неё нет нигде.
+// каждой ранней карточке студии.
 //
-// ДВЕ СТОРОНЫ МОСТА. `tech_card_label` — это СПЕЦИФИКАЦИЯ («что написано на бирке, где она стоит»),
-// а `tech_card_bom_item` section='label' — МАТЕРИАЛ, который за неё платят. Связывает их мягкий
-// линк `tech_card_label.bom_item_id` (0174, ON DELETE SET NULL — разрыв легален и происходит сам).
-// Нет ни одной половины → находка; половина без пары → тот самый регистр «info» (см. шапку файла).
+// ДВЕ СТОРОНЫ МОСТА. `tech_card_garment_label` — это СПЕЦИФИКАЦИЯ («какая бирка, где она стоит,
+// как выглядит»), а `tech_card_bom_item` section='label' — МАТЕРИАЛ, который за неё платят.
+// Связывает их мягкий линк `tech_card_garment_label.bom_item_id` (ON DELETE SET NULL — разрыв
+// легален и происходит сам). Половина без пары → тот самый регистр «info» (см. шапку файла).
+//
+// СОСТАВНИК (labels rework, 0386). Он есть у каждой карточки, поэтому «лейблов нет нигде» больше не
+// бывает и такой находки нет. Но линка на BOM у составника НЕТ, а платит за него обычно строка
+// section='label' — значит ОДНА непривязанная строка лейбла легальна (это он), и о «куплено, но не
+// описано» говорится только тогда, когда таких строк две и больше. Легаси `tech_card_label` не
+// читается (владелец: старые лейблы не конвертируются).
 //
 // Подавители: стадия ниже sms; карточка не sellable; обе половины на месте и связаны.
 func checkC3LabelBridge(v *cardView) []Finding {
@@ -196,22 +205,7 @@ func checkC3LabelBridge(v *cardView) []Finding {
 	}
 
 	lines := v.bomLinesOfSection(entity.BomSectionLabel)
-	specs := v.card.Labels
-
-	if len(specs) == 0 && len(lines) == 0 {
-		return []Finding{{
-			Category: CategoryReadiness,
-			Severity: SeverityWarning,
-			Title:    "A sellable style at " + string(v.card.Stage) + " with no labels anywhere",
-			Detail: "There is no tech_card_label spec and no BOM line in section 'label'. A sellable " +
-				"garment carries at least a care label (label_type='care') — the one the customer is " +
-				"entitled to and the factory is obliged to sew in — and this card neither describes one " +
-				"nor buys one.",
-			Refs:       []string{RefCard},
-			Suggestion: "Add the label specs the style carries, and the BOM lines that pay for them.",
-			Clause:     "no labels anywhere",
-		}}
-	}
+	specs := v.card.GarmentLabels
 
 	var out []Finding
 
@@ -224,19 +218,19 @@ func checkC3LabelBridge(v *cardView) []Finding {
 			if s.BomItemId.Valid && v.bomByID[int(s.BomItemId.Int32)] != nil {
 				continue
 			}
-			name := labelSpecName(s)
+			name := garmentLabelName(s.Key)
 			missing = append(missing, CoverageMiss{
 				Refs: []string{RefCard},
 				Finding: Finding{
 					Category: CategoryReadiness,
 					Severity: SeverityWarning,
-					Title:    aiBoundedText(fmt.Sprintf("The %s label spec is not linked to a BOM line", name), 90),
+					Title:    aiBoundedText(fmt.Sprintf("The %s label is not linked to a BOM line", name), 90),
 					Detail: fmt.Sprintf("The %s label is described on the card and no BOM line pays for it "+
-						"(tech_card_label.bom_item_id is unset, or points at a line that no longer exists — "+
-						"the link is ON DELETE SET NULL, so it breaks by itself and legally). The label is "+
-						"then sewn in and costed at nothing.", name),
+						"(tech_card_garment_label.bom_item_id is unset, or points at a line that no longer "+
+						"exists — the link is ON DELETE SET NULL, so it breaks by itself and legally). The "+
+						"label is then sewn in and costed at nothing.", name),
 					Refs:       []string{RefCard},
-					Suggestion: "Link the spec to the BOM line that buys the label, or add that line.",
+					Suggestion: "Link the label to the BOM line that buys it, or add that line.",
 					Clause:     fmt.Sprintf("%s label not costed", name),
 				},
 			})
@@ -245,18 +239,18 @@ func checkC3LabelBridge(v *cardView) []Finding {
 			return Finding{
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
-				Title: fmt.Sprintf("%d of %d label specs are not linked to a BOM line",
+				Title: fmt.Sprintf("%d of %d garment labels are not linked to a BOM line",
 					missing, applicable),
 				Detail: "These labels are described on the card and nothing in the BOM pays for them " +
-					"(tech_card_label.bom_item_id) — they are sewn in and costed at nothing.",
+					"(tech_card_garment_label.bom_item_id) — they are sewn in and costed at nothing.",
 				Refs:       sample,
-				Suggestion: "Link each spec to the BOM line that buys it.",
-				Clause:     fmt.Sprintf("%d label specs not costed", missing),
+				Suggestion: "Link each label to the BOM line that buys it.",
+				Clause:     fmt.Sprintf("%d labels not costed", missing),
 			}
 		})...)
 	}
 
-	// Линия без спеки: куплено, но не описано.
+	// Линии без спеки: куплено, но не описано. Одна такая линия — составник (см. выше).
 	{
 		linked := map[int]bool{}
 		for i := range specs {
@@ -264,54 +258,107 @@ func checkC3LabelBridge(v *cardView) []Finding {
 				linked[int(specs[i].BomItemId.Int32)] = true
 			}
 		}
-		applicable, missing := 0, []CoverageMiss(nil)
+		var names, refs []string
 		for _, b := range lines {
-			applicable++
 			if linked[b.Id] {
 				continue
 			}
-			missing = append(missing, CoverageMiss{
-				Refs: []string{RefBom(b.Name)},
-				Finding: Finding{
-					Category: CategoryReadiness,
-					Severity: SeverityWarning,
-					Title:    aiBoundedText(fmt.Sprintf("BOM line %q is a label nothing describes", b.Name), 90),
-					Detail: fmt.Sprintf("%q sits in section 'label' of the BOM and no tech_card_label spec "+
-						"points at it. The label is bought, and what is printed on it, where it goes and how "+
-						"it is attached are stated nowhere.", b.Name),
-					Refs:       []string{RefBom(b.Name)},
-					Suggestion: "Describe the label in the labels section and link it to this line.",
-					Clause:     fmt.Sprintf("label line %q undescribed", b.Name),
-				},
-			})
+			names = append(names, fmt.Sprintf("%q", b.Name))
+			refs = append(refs, RefBom(b.Name))
 		}
-		out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
-			return Finding{
+		if len(names) >= 2 {
+			out = append(out, Finding{
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
-				Title: fmt.Sprintf("%d of %d label BOM lines have no spec describing them",
-					missing, applicable),
-				Detail: "These lines buy labels that no tech_card_label spec describes — what is printed " +
-					"on them, where they go and how they are attached is stated nowhere.",
-				Refs:       sample,
-				Suggestion: "Describe each label and link the spec to its line.",
-				Clause:     fmt.Sprintf("%d label lines undescribed", missing),
-			}
-		})...)
+				Title: fmt.Sprintf("%d label BOM lines are linked to no garment label",
+					len(names)),
+				Detail: fmt.Sprintf("These lines sit in section 'label' of the BOM and no garment label "+
+					"points at them: %s. One of them may be the composition label, which carries no BOM "+
+					"link; the rest are bought, and what they are, where they go and how they are attached "+
+					"is stated nowhere.", joinAnd(names)),
+				Refs:       refs,
+				Suggestion: "Add a garment label for each line that is not the composition label, and link it.",
+				Clause:     fmt.Sprintf("%d label lines undescribed", len(names)),
+			})
+		}
 	}
 
 	return out
 }
 
-// labelSpecName names a label spec for prose: its type, falling back to the placement.
-func labelSpecName(s *entity.TechCardLabel) string {
-	if t := strings.TrimSpace(string(s.LabelType)); t != "" {
-		return t
-	}
-	if p := strings.TrimSpace(s.Placement.String); p != "" {
-		return p
+// garmentLabelName names a garment label for prose: its key (freeform, e.g. "brand", "size").
+func garmentLabelName(key string) string {
+	if k := strings.TrimSpace(key); k != "" {
+		return k
 	}
 	return "unnamed"
+}
+
+// ── C3b. МОКАП ОБЯЗАТЕЛЕН (labels rework D-04) ─────────────────────────────────────────────────
+//
+// readiness, warning. Лейбл без мокапа (ни одного media id) — дыра: мокап и есть картинка бирки
+// для цеха, пиктограммы размещения больше нет. Сохранение это НИКОГДА не блокирует; блокирует только
+// свежее одобрение подписи LABELS (validateLabelsMockupSignGate) — здесь то же условие, видимое
+// заранее. Позиция упаковки без мокапа — тоже дыра, но мягче по смыслу (у пакета картинки часто
+// нет, §2.5); severity у обеих warning, разница — в тексте.
+//
+// БЕЗ ГЕЙТА СТАДИИ И НАЗНАЧЕНИЯ: если лейбл или позиция заведены, мокап им нужен на любой стадии,
+// а на черновике readiness всё равно схлопывается в одну строку. Составника здесь нет — его
+// картинку рисует движок из данных, мокапа у него не бывает.
+func checkC3bMockups(v *cardView) []Finding {
+	var out []Finding
+
+	var labels []string
+	for _, l := range v.card.GarmentLabels {
+		if len(l.MediaIds) == 0 {
+			labels = append(labels, garmentLabelName(l.Key))
+		}
+	}
+	if len(labels) > 0 {
+		title := fmt.Sprintf("The %s label has no mockup", labels[0])
+		clause := labels[0] + " label without mockup"
+		if len(labels) > 1 {
+			title = fmt.Sprintf("%d of %d garment labels have no mockup", len(labels), len(v.card.GarmentLabels))
+			clause = fmt.Sprintf("%d labels without mockup", len(labels))
+		}
+		out = append(out, Finding{
+			Category: CategoryReadiness,
+			Severity: SeverityWarning,
+			Title:    aiBoundedText(title, 90),
+			Detail: fmt.Sprintf("No mockup on: %s. The mockup is the picture the factory sews the label "+
+				"from, and the LABELS sign-off cannot be approved while a garment label has none.",
+				joinAnd(labels)),
+			Refs:       []string{RefCard},
+			Suggestion: "Add a mockup to each of these labels.",
+			Clause:     clause,
+		})
+	}
+
+	var items []string
+	for _, p := range v.card.PackagingItems {
+		if len(p.MediaIds) == 0 {
+			items = append(items, garmentLabelName(p.Key))
+		}
+	}
+	if len(items) > 0 {
+		title := fmt.Sprintf("The %s packaging item has no mockup", items[0])
+		clause := items[0] + " without mockup"
+		if len(items) > 1 {
+			title = fmt.Sprintf("%d of %d packaging items have no mockup", len(items), len(v.card.PackagingItems))
+			clause = fmt.Sprintf("%d packaging items without mockup", len(items))
+		}
+		out = append(out, Finding{
+			Category: CategoryReadiness,
+			Severity: SeverityWarning,
+			Title:    aiBoundedText(title, 90),
+			Detail: fmt.Sprintf("No mockup on: %s. Without one the packer has only the words to go by; "+
+				"a plain item (a blank polybag) may legitimately have no artwork.", joinAnd(items)),
+			Refs:       []string{RefCard},
+			Suggestion: "Add a mockup where the item carries print or a specific look.",
+			Clause:     clause,
+		})
+	}
+	return out
 }
 
 // ── C4. ПАРК ОБОРУДОВАНИЯ ───────────────────────────────────────────────────────────────────────
