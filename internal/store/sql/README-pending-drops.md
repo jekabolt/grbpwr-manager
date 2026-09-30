@@ -54,6 +54,27 @@
   `newAdminJSONMarshaler`, `internal/api/http/http.go`) — `reserved 3;` / `reserved 4;` плюс
   `reserved "assignee";`.
 
+## `tech_card_label` + `tech_card_packaging.polybag / bag_sticker / inserts` (переделка этикеток, I-19)
+
+- **Осиротели**: волной переделки этикеток (`0386_labels_rework.sql`, 2026-09-30, план
+  `tmp/plans/labels-rework/`). Этикетки переехали в `tech_card_garment_label` (+ `_media`), составник —
+  в `tech_card_care_label` (+ `_colorway`, `_fiber`), упаковочные вещи — в `tech_card_packaging_item`
+  (+ `_media`). Решение владельца D-06: старые этикетки НЕ конвертируются, новые таблицы стартуют пустыми.
+- **Кто читает/пишет сегодня**: сохранение карточки `tech_card_label` больше НЕ пишет и НЕ чистит
+  (`TechCardInsert.labels = 45` на записи игнорируется); чтение карточки ещё отдаёт строки в `labels`
+  (read-only) — читают их только `internal/techcardanalysis/readiness.go`, импорт архива
+  (`resewImportedLabels`) и дайджест НЕ читает (проекция LABELS считает новые таблицы). Три текстовых
+  колонки упаковки ещё пишутся полной заменой строки `tech_card_packaging` (клиент гоняет прочитанное
+  обратно) и входят в замороженную голову проекции PACKAGING.
+- **Почему не дропнуты сразу**: до-волновой бинарь именует `tech_card_label` и три колонки в своих
+  INSERT; откат образа после дропа ронял бы каждое сохранение карточки.
+- **Что сделать потом** (одним вторым коммитом, после того как прод отработал на бинаре 0386 И клиент
+  волны на проде): `DROP TABLE IF EXISTS tech_card_label`; `ALTER TABLE tech_card_packaging DROP COLUMN`
+  ×3 под гвардом по `information_schema` (PREPARE/EXECUTE/DEALLOCATE по одному оператору на строку);
+  снять `labels = 45` и три поля `TechCardPackaging` в `reserved`; перезаморозить голову
+  `packagingProjection` (золотой hex обновится один раз); убрать чтение `tech_card_label` из стора,
+  readiness и импорта архива.
+
 ---
 
 # Нумерация: бронь живой волны и чем кончилась дыра 0336
