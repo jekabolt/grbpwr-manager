@@ -348,7 +348,8 @@ func TestEnhanceTextSystemPromptCarriesNoRequestBytes(t *testing.T) {
 			require.NoError(t, err)
 			calls++
 			c := rec.all()[len(rec.all())-1]
-			require.Equal(t, fmt.Sprintf(enhanceTextSystemPromptFormat, phrase, word, steer, 1500), c.System)
+			promptDef, language := enhanceTextFieldPieces(field)
+			require.Equal(t, fmt.Sprintf(enhanceTextSystemPromptFormat, phrase, word, promptDef, steer, language, 1500), c.System)
 			require.NotContains(t, c.System, "Ignore all previous")
 			require.NotContains(t, c.System, "pirate")
 			require.Equal(t, "CONTEXT (facts of the card):\n"+facts+"\n\nTEXT:\n"+text, c.User)
