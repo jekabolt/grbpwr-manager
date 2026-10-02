@@ -651,13 +651,14 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// ─── A FLAT DETAIL IS DRAWN ALONE (owner item 7) ───
 	//
 	// A detail is a close-up of one construction, a side is the whole garment; one sheet asked for
-	// both comes back as the garment with the detail lost in it. The client un-ticks the sides when a
-	// detail is picked; this is the same rule at the door. Like the length rule, it binds the caller
-	// (req.GetParams()), not inherited params of a rerun: mixed runs already on disk stay rerunnable.
-	if kind == entity.DesignRunKindFlat && req.GetParams() != nil && designFlatViewsMixDetail(params.GetViews()) {
-		return nil, designRefusal(codes.InvalidArgument, "detail_mixed_with_views",
-			"params.views mixes `detail` with garment views; a flat detail is drawn alone — "+
-				"start one run for the detail(s) and another for the sides", nil)
+	// both comes back as the garment with the detail lost in it. A flat run that names a detail is
+	// therefore CANONICALIZED to its details, not refused: the backend deploys before the client, and
+	// the deployed client still sends [front, back, detail] — a refusal would break its one press.
+	// It runs on the EFFECTIVE params, so a rerun inheriting a mixed run (nil params) is drawn the
+	// same way; the canonical list is what freezes into the row, so an idempotent retry of the same
+	// press replays it. detail_slot_ids is positional over the `detail` entries and stays aligned.
+	if kind == entity.DesignRunKindFlat {
+		designFlatDetailsOnly(params)
 	}
 
 	// ─── W-13 × L-3: 3D ТОЛЬКО ПОСЛЕ ЗАНЯТОГО РЕНДЕР-ВЕРСТАКА ТОГО ЖЕ КОЛОРВЕЯ ───
@@ -4550,6 +4551,27 @@ func (s *Server) designBudgetResponse(ctx context.Context, b entity.DesignBudget
 	pb := designBudgetToPb(b)
 	s.stripDesignCosting(ctx, nil, pb)
 	return pb
+}
+
+// designFlatDetailsOnly drops every non-detail view from a flat run that names at least one detail
+// (owner item 7). detail_slot_ids is positional over the `detail` entries, so removing the other
+// views keeps it aligned. auto_split asks for a proposed cut of a composite of SEVERAL views (the
+// client sets it only for layout=one with two or more views); with a single view left it is cleared.
+// Layout stays: per_view with several details is still one picture per detail.
+func designFlatDetailsOnly(params *pb_common.DesignRunParams) {
+	if !designFlatViewsMixDetail(params.GetViews()) {
+		return
+	}
+	details := make([]string, 0, len(params.GetViews()))
+	for _, v := range params.GetViews() {
+		if v == entity.DesignViewDetail {
+			details = append(details, v)
+		}
+	}
+	params.Views = details
+	if len(details) < 2 {
+		params.AutoSplit = false
+	}
 }
 
 // designFlatViewsMixDetail reports a view list that asks for at least one `detail` AND at least one
