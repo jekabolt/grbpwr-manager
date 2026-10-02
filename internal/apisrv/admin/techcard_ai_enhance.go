@@ -89,7 +89,7 @@ const (
 	// So on WORDS the answer is always ENGLISH, and «prompt» condenses the text into a flat-sketch
 	// brief: what a line drawing can show, nothing else.
 	enhanceWordsPromptDefinition = `condense the TEXT — the garment's concept and construction description, which may mix mood, story and construction — into ONE brief for technical flat sketches (black line drawings) of the garment, in this order: the garment type (taken from the CONTEXT only when the TEXT does not name it), silhouette and fit, construction (panels, seams, darts, pleats, gathers), closures, pockets, collar, sleeves, cuffs, hems and other details, then materials only as they show in a line drawing (quilting, ribbing, topstitching, padding, a stiff or a soft drape) — short concrete descriptors separated by commas, one paragraph; leave out mood, story, inspiration, references, brand and marketing words, colours and prints, and any view, background or lighting; no negations (an image model draws what a prompt names, so what the garment does NOT have, like "no logo", is left out); every construction fact of the TEXT kept, nothing added`
-	enhanceLanguageEnglish = `Always write in ENGLISH, whatever the language of the TEXT and the CONTEXT: translate, never answer in the input's language.`
+	enhanceLanguageEnglish       = `Always write in ENGLISH, whatever the language of the TEXT and the CONTEXT: translate, never answer in the input's language.`
 
 	// enhanceSteerClauseFormat is STEER's mode definition (20-PROMPTS §3.8, D9), the PLAYGROUND's
 	// Improve: the tile's prompt field is one phrase for one image tool, and «fix the grammar»
