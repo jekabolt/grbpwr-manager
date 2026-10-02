@@ -226,8 +226,9 @@ func TestCoercedCountsOnlyWhatWasChanged(t *testing.T) {
 		var one designConstructionStats
 		reflect.ValueOf(&one).Elem().Field(i).SetInt(1)
 		// CalloutsUnasked считает ПРИНЯТОЕ, ColourFamiliesProposed (T45) — ДОБАВЛЕННОЕ сервером:
-		// ни то, ни другое не потеря и не поправка.
-		if name == "CalloutsUnasked" || name == "ColourFamiliesProposed" {
+		// ни то, ни другое не потеря и не поправка. ColourwaysExisting (T06) — намеренный фильтр
+		// повторов колорвеев карточки, а не поправка ответа.
+		if name == "CalloutsUnasked" || name == "ColourFamiliesProposed" || name == "ColourwaysExisting" {
 			require.False(t, one.Coerced(), "%s считает ПРИНЯТОЕ и не поднимает уровень", name)
 			continue
 		}

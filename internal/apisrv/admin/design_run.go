@@ -2947,6 +2947,10 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			designCardSlotFolds(card), &stats)
 		// T45: палитра предложения и его семейство — тем же списком цветов, тоже только здесь.
 		designSettleColourwayPalettes(parsed, colours, &stats)
+		// T06: a colourway already on the card is not proposed again, whatever the model says.
+		if card != nil {
+			designDropExistingColourways(parsed, card.Colorways, &stats)
+		}
 		s.designLogConstructionDraft(ctx, cardID, run.Id, model, provider, finishReason, usage, stats, perr)
 		if perr != nil {
 			s.designFailDraftAs(ctx, run, attempt.AttemptNo,
@@ -3145,6 +3149,7 @@ func (s *Server) designLogConstructionDraft(
 		// (добавление, Warn не поднимает).
 		slog.Int("colours_dropped", stats.ColoursDropped),
 		slog.Int("colour_families_proposed", stats.ColourFamiliesProposed),
+		slog.Int("colourways_existing", stats.ColourwaysExisting),
 	}
 	switch {
 	case err != nil:

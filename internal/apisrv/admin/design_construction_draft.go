@@ -40,6 +40,7 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -850,7 +851,9 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"the combination's palette: 1 to 4 distinct colours, the main cloth's colour first, each a " +
 	"Pantone code and a hex, or a short \"label\" when no Pantone code fits. \"color_code\" is " +
 	"the code from the colour list in the prompt closest to the MAIN colour (empty when none is " +
-	"close); several colourways may share a code. Never invent a colour the board does not show.\n" +
+	"close); several colourways may share a code. Never invent a colour the board does not show. " +
+	"Never propose a colourway the prompt lists as already existing on the card — not under its " +
+	"name, not with its main Pantone code, not with its main hex.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
 	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
@@ -1185,7 +1188,30 @@ func designCardAlreadySays(card *entity.TechCard) string {
 		}
 	}
 
+	// COLOURWAYS FIRST (owner item 6): a re-run kept proposing colourways the card already has,
+	// because no section named them. They go before the aspects so the byte budget cannot push
+	// them out; the server-side filter (designDropExistingColourways) is the second half.
 	shown, skipped := 0, 0
+	for _, cw := range card.Colorways {
+		if cw.Status == entity.ColorwayStatusArchived {
+			continue
+		}
+		line := designExistingColourwayLine(cw)
+		if line == "" {
+			continue
+		}
+		if shown == 0 {
+			b.WriteString("- colourways that already exist — do not propose these again:\n")
+		}
+		if shown >= designConstructionMaxAlreadyRows || !write("  - "+line+"\n") {
+			skipped++
+			continue
+		}
+		shown++
+	}
+	tail("colourways", skipped)
+
+	shown, skipped = 0, 0
 	for _, d := range card.Details {
 		key := aiBoundedText(strings.TrimSpace(d.Key.String), designConstructionMaxVarchar64)
 		text := aiBoundedText(designOneLine(d.Text.String), designConstructionMaxAlreadyLineRunes)
@@ -1435,6 +1461,10 @@ type designConstructionStats struct {
 	// ⚠ НЕ ПОТЕРЯ И НЕ ПОПРАВКА — предложение сверх ответа, как CalloutsUnasked, поэтому в Coerced()
 	// не входит: Warn «was coerced» на ответе, которому мы ДОБАВИЛИ код, был бы неправдой.
 	ColourFamiliesProposed int
+	// ColourwaysExisting — the proposal repeats a colourway ALREADY ON THE CARD (same folded name,
+	// main Pantone code or main hex) and was dropped (owner item 6). Not in Coerced(): it is a
+	// deliberate filter, not a repair of the answer.
+	ColourwaysExisting int
 	// BomEstDropped — ОЦЕНКА РАСХОДА СНЯТА СО СТРОКИ, А САМА СТРОКА ОСТАЛАСЬ (B-16). Модель пишет
 	// «about 2», «1,6», «1.5-2 m» — это не десятичное число, и положить его в DECIMAL(12,3) нельзя.
 	//
@@ -2664,4 +2694,106 @@ var designConstructionMarshal = protojson.MarshalOptions{UseProtoNames: true, Em
 
 func designMarshalConstructionDraft(d *pb_common.DesignConstructionDraft) ([]byte, error) {
 	return designConstructionMarshal.Marshal(d)
+}
+
+// ─────────────────── T06: colourways already on the card ───────────────────
+
+// designColourwayMain is a colourway's main colour: the first palette colour (T45), or the legacy
+// scalar Pantone / Hex of a single-colour colourway.
+func designColourwayMain(cw entity.TechCardColorway) (pantone, hex string) {
+	if len(cw.Colours) > 0 {
+		pantone, hex = cw.Colours[0].Pantone, cw.Colours[0].Hex
+	}
+	if pantone == "" {
+		pantone = cw.Pantone.String
+	}
+	if hex == "" {
+		hex = cw.Hex.String
+	}
+	return strings.TrimSpace(pantone), strings.TrimSpace(hex)
+}
+
+// designExistingColourwayLine prints one existing colourway for the prompt: «name · pantone · hex».
+func designExistingColourwayLine(cw entity.TechCardColorway) string {
+	pantone, hex := designColourwayMain(cw)
+	var parts []string
+	for _, v := range []string{designOneLine(cw.Name), pantone, hex} {
+		if v = aiBoundedText(strings.TrimSpace(v), designConstructionMaxAlreadyLineRunes); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// designPantoneKey folds a Pantone code to its identity: case, spaces and punctuation go, and so do
+// the word «pantone» and the book suffix, so «19-4005 TCX», «19-4005tcx» and «PANTONE 19-4005»
+// are one colour. A code with no digits (a named colour) keeps its letters.
+func designPantoneKey(s string) string {
+	k := designFoldToken(s)
+	k = strings.TrimPrefix(k, "pantone")
+	if !strings.ContainsAny(k, "0123456789") {
+		return k
+	}
+	return strings.TrimRightFunc(k, unicode.IsLetter)
+}
+
+// designHexKey folds a hex to lowercase without «#»; anything that is not #RRGGBB has no key.
+func designHexKey(s string) string {
+	h := designHexColour(s)
+	if h == "" {
+		return ""
+	}
+	return strings.ToLower(h[1:])
+}
+
+// designAutoColourwayName matches the server's own label for an unnamed proposal («colourway 2»,
+// designVerifyColourways). It names a position in one answer, not a colour, so it never counts as
+// a name match.
+var designAutoColourwayName = regexp.MustCompile(`^colourway \d+$`)
+
+// designDropExistingColourways removes every proposal that repeats a colourway already on the card
+// (non-archived): the same folded name, OR the same main Pantone code, OR the same main hex
+// (owner item 6). Runs once, on the live answer, before the canonical JSON is filed — like
+// designVerifyColourways, a replay never re-judges a paid answer by today's card.
+func designDropExistingColourways(
+	draft *pb_common.DesignConstructionDraft, existing []entity.TechCardColorway, stats *designConstructionStats,
+) {
+	if draft == nil || len(draft.Colourways) == 0 || len(existing) == 0 {
+		return
+	}
+	names, pantones, hexes := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, cw := range existing {
+		if cw.Status == entity.ColorwayStatusArchived {
+			continue
+		}
+		if k := designFoldToken(cw.Name); k != "" {
+			names[k] = true
+		}
+		pantone, hex := designColourwayMain(cw)
+		if k := designPantoneKey(pantone); k != "" {
+			pantones[k] = true
+		}
+		if k := designHexKey(hex); k != "" {
+			hexes[k] = true
+		}
+	}
+	kept := draft.Colourways[:0]
+	for _, cw := range draft.Colourways {
+		pantone, hex := cw.GetPantone(), cw.GetHex()
+		if len(cw.GetColours()) > 0 {
+			pantone, hex = cw.Colours[0].GetPantone(), cw.Colours[0].GetHex()
+		}
+		name := strings.ToLower(strings.TrimSpace(cw.GetName()))
+		nameKey, pantoneKey, hexKey := designFoldToken(name), designPantoneKey(pantone), designHexKey(hex)
+		if designAutoColourwayName.MatchString(name) {
+			nameKey = ""
+		}
+		if (nameKey != "" && names[nameKey]) || (pantoneKey != "" && pantones[pantoneKey]) ||
+			(hexKey != "" && hexes[hexKey]) {
+			stats.ColourwaysExisting++
+			continue
+		}
+		kept = append(kept, cw)
+	}
+	draft.Colourways = kept
 }
