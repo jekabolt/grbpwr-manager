@@ -30,19 +30,49 @@ func TestDropExistingColourwaysMatchesByNameOrPantoneOrHex(t *testing.T) {
 		{Name: "Ink", Pantone: "PANTONE 19-4005 TPX"},                              // pantone of Black / Bone, other book
 		{Name: "Sand", Pantone: "13-1008 TCX", Hex: "#D8CBB0"},                     // new
 		{Name: "Rust", Pantone: "18-1248 TCX"},                                     // only archived on the card
-		{Name: "colourway 2", Pantone: "14-4102 TCX"},                              // server label, not a name
 	}}
 	var stats designConstructionStats
-	designDropExistingColourways(draft, append(existingColourwaysProbe(),
-		entity.TechCardColorway{Name: "colourway 2"}), &stats)
+	designDropExistingColourways(draft, existingColourwaysProbe(), nil, &stats)
 
 	var names []string
 	for _, cw := range draft.GetColourways() {
 		names = append(names, cw.GetName())
 	}
-	require.Equal(t, []string{"Sand", "Rust", "colourway 2"}, names)
+	require.Equal(t, []string{"Sand", "Rust"}, names)
 	require.Equal(t, 4, stats.ColourwaysExisting)
 	require.False(t, stats.Coerced(), "a deliberate filter, not a repair")
+}
+
+// BX2: the server's own label «colourway N» for an unnamed proposal names a position, not a colour,
+// and never name-matches — but a card colourway REALLY named «colourway 2» still matches a proposal
+// the model itself named so. Runs the live order: designVerifyColourways labels, then the drop.
+// MUTATION: make designDropExistingColourways ignore autoNamed (or skip every «colourway N» by its
+// text, as before) — one of the two assertions goes red.
+func TestDropExistingColourwaysTellsTheServerLabelFromARealName(t *testing.T) {
+	existing := []entity.TechCardColorway{{Name: "colourway 2", Hex: sql.NullString{String: "#101010", Valid: true}}}
+
+	// The model left the second proposal unnamed: the server labels it «colourway 2», same spelling.
+	labelled := &pb_common.DesignConstructionDraft{Colourways: []*pb_common.DesignColourwayProposal{
+		{Name: "Sand", Colours: []*pb_common.ColorwayColour{{Hex: "#D8CBB0"}}},
+		{Colours: []*pb_common.ColorwayColour{{Hex: "#5B2333"}}},
+	}}
+	var stats designConstructionStats
+	auto := designVerifyColourways(labelled, designBuildColourDictionary(draftProbeColours()), nil, &stats)
+	require.Equal(t, "colourway 2", labelled.GetColourways()[1].GetName())
+	designDropExistingColourways(labelled, existing, auto, &stats)
+	require.Len(t, labelled.GetColourways(), 2, "a server label is not a name")
+
+	// The model NAMED its proposal «Colourway 2»: that is the card's colourway, proposed again.
+	named := &pb_common.DesignConstructionDraft{Colourways: []*pb_common.DesignColourwayProposal{
+		{Name: "Sand", Colours: []*pb_common.ColorwayColour{{Hex: "#D8CBB0"}}},
+		{Name: "Colourway 2", Colours: []*pb_common.ColorwayColour{{Hex: "#5B2333"}}},
+	}}
+	stats = designConstructionStats{}
+	auto = designVerifyColourways(named, designBuildColourDictionary(draftProbeColours()), nil, &stats)
+	designDropExistingColourways(named, existing, auto, &stats)
+	require.Len(t, named.GetColourways(), 1)
+	require.Equal(t, "Sand", named.GetColourways()[0].GetName())
+	require.Equal(t, 1, stats.ColourwaysExisting)
 }
 
 func TestDesignPantoneKey(t *testing.T) {

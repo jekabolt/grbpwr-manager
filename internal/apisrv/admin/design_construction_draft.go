@@ -40,7 +40,6 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2271,9 +2270,9 @@ func designVerifyColourways(
 	dict designColourDictionary,
 	cardSlots map[string]string,
 	stats *designConstructionStats,
-) {
+) (autoNamed map[*pb_common.DesignColourwayProposal]bool) {
 	if draft == nil || len(draft.Colourways) == 0 {
-		return
+		return nil
 	}
 
 	// ЧТО СЧИТАЕТСЯ СУЩЕСТВУЮЩИМ СЛОТОМ: строки спеки ЭТОГО ЖЕ ОТВЕТА плюс строки спеки КАРТОЧКИ.
@@ -2349,11 +2348,19 @@ func designVerifyColourways(
 	// ⚠ СЧИТАЕТСЯ ПО ПОРЯДКУ В ОТВЕТЕ, А НЕ ПО ЧИСЛУ БЕЗЫМЯННЫХ: «colourway 2» рядом с «Black /
 	// Bone» и «colourway 3» читается как «второе и третье предложение», а два подряд «colourway 1»
 	// и «colourway 2» на местах 2 и 4 не сказали бы человеку ничего.
+	//
+	// The labelled proposals are RETURNED (T06/BX2): the label names a position in this answer, not a
+	// colour, so designDropExistingColourways must not name-match it — while a model that literally
+	// named a proposal «colourway 2» did say a name, and that one must match. The text alone cannot
+	// tell the two apart; the server knows which ones it labelled.
+	autoNamed = map[*pb_common.DesignColourwayProposal]bool{}
 	for i, cw := range draft.Colourways {
 		if cw.Name == "" {
 			cw.Name = "colourway " + strconv.Itoa(i+1)
+			autoNamed[cw] = true
 		}
 	}
+	return autoNamed
 }
 
 // designSettleColourwayPalettes — ПАЛИТРА И СЕМЕЙСТВО ПРЕДЛОЖЕНИЯ, ТРЕТИЙ ШАГ ЖИВОГО ОТВЕТА (T45).
@@ -2746,17 +2753,15 @@ func designHexKey(s string) string {
 	return strings.ToLower(h[1:])
 }
 
-// designAutoColourwayName matches the server's own label for an unnamed proposal («colourway 2»,
-// designVerifyColourways). It names a position in one answer, not a colour, so it never counts as
-// a name match.
-var designAutoColourwayName = regexp.MustCompile(`^colourway \d+$`)
-
 // designDropExistingColourways removes every proposal that repeats a colourway already on the card
 // (non-archived): the same folded name, OR the same main Pantone code, OR the same main hex
 // (owner item 6). Runs once, on the live answer, before the canonical JSON is filed — like
-// designVerifyColourways, a replay never re-judges a paid answer by today's card.
+// designVerifyColourways, a replay never re-judges a paid answer by today's card. autoNamed is the
+// set designVerifyColourways labelled itself («colourway N»): those take no part in the name match.
+// The card's own colourway names always do, whatever they spell.
 func designDropExistingColourways(
-	draft *pb_common.DesignConstructionDraft, existing []entity.TechCardColorway, stats *designConstructionStats,
+	draft *pb_common.DesignConstructionDraft, existing []entity.TechCardColorway,
+	autoNamed map[*pb_common.DesignColourwayProposal]bool, stats *designConstructionStats,
 ) {
 	if draft == nil || len(draft.Colourways) == 0 || len(existing) == 0 {
 		return
@@ -2783,9 +2788,8 @@ func designDropExistingColourways(
 		if len(cw.GetColours()) > 0 {
 			pantone, hex = cw.Colours[0].GetPantone(), cw.Colours[0].GetHex()
 		}
-		name := strings.ToLower(strings.TrimSpace(cw.GetName()))
-		nameKey, pantoneKey, hexKey := designFoldToken(name), designPantoneKey(pantone), designHexKey(hex)
-		if designAutoColourwayName.MatchString(name) {
+		nameKey, pantoneKey, hexKey := designFoldToken(cw.GetName()), designPantoneKey(pantone), designHexKey(hex)
+		if autoNamed[cw] {
 			nameKey = ""
 		}
 		if (nameKey != "" && names[nameKey]) || (pantoneKey != "" && pantones[pantoneKey]) ||

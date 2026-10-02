@@ -2944,13 +2944,13 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		// зовётся ещё раз на повторе, где ни словаря, ни свежей карточки быть не должно: сверка
 		// там пересматривала бы вчерашний оплаченный ответ сегодняшним словарём. Довод целиком —
 		// у designVerifyColourways.
-		designVerifyColourways(parsed, designBuildColourDictionary(colours),
+		autoNamed := designVerifyColourways(parsed, designBuildColourDictionary(colours),
 			designCardSlotFolds(card), &stats)
 		// T45: палитра предложения и его семейство — тем же списком цветов, тоже только здесь.
 		designSettleColourwayPalettes(parsed, colours, &stats)
 		// T06: a colourway already on the card is not proposed again, whatever the model says.
 		if card != nil {
-			designDropExistingColourways(parsed, card.Colorways, &stats)
+			designDropExistingColourways(parsed, card.Colorways, autoNamed, &stats)
 		}
 		s.designLogConstructionDraft(ctx, cardID, run.Id, model, provider, finishReason, usage, stats, perr)
 		if perr != nil {
