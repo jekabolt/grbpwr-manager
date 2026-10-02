@@ -46,6 +46,13 @@ const (
 
 	flatExcludedDetail = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements."
 
+	// Owner item 7: a detail run draws the detail and nothing else. The «garment context» block
+	// above still names the whole garment (so the detail is drawn true to it), and without this
+	// sentence the model reads that block as the subject and returns a front/back sheet.
+	flatOnlyDetail = "Draw ONLY this one detail, isolated and close up, as a flat technical sketch. No full garment, no front, back or side views, no multiple views on one sheet."
+
+	flatOnlyDetails = "Draw ONLY these details, each one isolated and close up, as flat technical sketches. No full garment, no front, back or side views of the garment."
+
 	// Shared closing paragraph — identical in both of the owner's prompts.
 	flatOutput = "Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic."
 )
@@ -88,10 +95,15 @@ func flatCraft(p runParams, detailNames []string, refs int) string {
 		flatIntro(detail, countDetails(p.Views), refs),
 		identify,
 		flatLayoutParagraph(p.Views, detailNames, p.Layout, refs),
-		style,
-		excluded,
-		flatOutput,
 	}
+	if detail {
+		only := flatOnlyDetail
+		if countDetails(p.Views) > 1 {
+			only = flatOnlyDetails
+		}
+		paras = append(paras, only)
+	}
+	paras = append(paras, style, excluded, flatOutput)
 	return strings.Join(paras, "\n\n")
 }
 
@@ -294,3 +306,7 @@ func countWord(n int) string {
 	}
 	return strconv.Itoa(n)
 }
+
+// flatDetailGarmentLabel labels WORDS on a detail-only flat run: the garment is context, the detail
+// is the subject.
+const flatDetailGarmentLabel = "garment context (for reference only — this is NOT what to draw; draw only the detail named below)"

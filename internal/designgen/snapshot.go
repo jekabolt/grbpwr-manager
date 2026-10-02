@@ -883,7 +883,14 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	if run.Ask.Valid {
 		write("", run.Ask.String)
 	}
-	write("garment", in.GarmentNote)
+	// A FLAT DETAIL RUN DRAWS THE DETAIL, NOT THE GARMENT (owner item 7). WORDS describe the whole
+	// garment; under a bare «garment:» label the model takes them as the subject. They still go in —
+	// the detail has to be drawn true to its garment — but labelled as context only.
+	garmentLabel := "garment"
+	if run.Kind == entity.DesignRunKindFlat && detailOnlyRun(p.Views) {
+		garmentLabel = flatDetailGarmentLabel
+	}
+	write(garmentLabel, in.GarmentNote)
 	write("fit", in.Fit)
 	// КАКИЕ ИМЕННО ДЕТАЛИ ПРОСИЛИ. Без этой строки прогон на две детали говорил модели ровно
 	// «нарисуй две детали» — и получал два произвольных крупных плана, потому что `views` несёт

@@ -648,6 +648,17 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err != nil {
 		return nil, err
 	}
+	// ─── A FLAT DETAIL IS DRAWN ALONE (owner item 7) ───
+	//
+	// A detail is a close-up of one construction, a side is the whole garment; one sheet asked for
+	// both comes back as the garment with the detail lost in it. The client un-ticks the sides when a
+	// detail is picked; this is the same rule at the door. Like the length rule, it binds the caller
+	// (req.GetParams()), not inherited params of a rerun: mixed runs already on disk stay rerunnable.
+	if kind == entity.DesignRunKindFlat && req.GetParams() != nil && designFlatViewsMixDetail(params.GetViews()) {
+		return nil, designRefusal(codes.InvalidArgument, "detail_mixed_with_views",
+			"params.views mixes `detail` with garment views; a flat detail is drawn alone — "+
+				"start one run for the detail(s) and another for the sides", nil)
+	}
 
 	// ─── W-13 × L-3: 3D ТОЛЬКО ПОСЛЕ ЗАНЯТОГО РЕНДЕР-ВЕРСТАКА ТОГО ЖЕ КОЛОРВЕЯ ───
 	//
@@ -4534,4 +4545,18 @@ func (s *Server) designBudgetResponse(ctx context.Context, b entity.DesignBudget
 	pb := designBudgetToPb(b)
 	s.stripDesignCosting(ctx, nil, pb)
 	return pb
+}
+
+// designFlatViewsMixDetail reports a view list that asks for at least one `detail` AND at least one
+// other view. Detail-only lists ([detail], [detail, detail]) and side-only lists are fine.
+func designFlatViewsMixDetail(views []string) bool {
+	var detail, other bool
+	for _, v := range views {
+		if v == entity.DesignViewDetail {
+			detail = true
+		} else {
+			other = true
+		}
+	}
+	return detail && other
 }
