@@ -280,6 +280,7 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 				Slot:            target,
 				PictureId:       pics[0].Id,
 				ExpectedSlotRev: req.ExpectedSlotRev,
+				NewDetailName:   req.NewDetailName,
 				Actor:           req.Actor,
 			})
 			if err != nil {

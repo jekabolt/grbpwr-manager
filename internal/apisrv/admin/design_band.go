@@ -601,7 +601,10 @@ func (s *Server) RegisterDesignUpload(ctx context.Context, req *pb_admin.Registe
 		ClientRequestId: strings.TrimSpace(req.GetClientRequestId()),
 		Items:           items,
 		ExpectedSlotRev: int(req.GetExpectedSlotRev()),
-		Actor:           designActor(ctx),
+		// T15: the name of a detail slot that `target` mints — without it a mint-from-media in one
+		// call was refused detail_name_required. Trimmed exactly as in SetDesignBenchSlot.
+		NewDetailName: strings.TrimSpace(req.GetNewDetailName()),
+		Actor:         designActor(ctx),
 	}
 	if req.GetTarget() != nil {
 		ref, err := designSlotRefFromPb(req.GetTarget())

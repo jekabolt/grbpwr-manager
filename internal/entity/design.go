@@ -1914,7 +1914,10 @@ type DesignBatchRegister struct {
 	Items           []DesignUploadItem
 	Target          *DesignSlotRef
 	ExpectedSlotRev int
-	Actor           string
+	// NewDetailName — the name of a detail slot that Target mints (view_key = detail, no slot id).
+	// Same rule as DesignBenchSlotSet.NewDetailName: required in that case, ignored otherwise.
+	NewDetailName string
+	Actor         string
 }
 
 // DesignBatchResult — что вернула регистрация пачки.
