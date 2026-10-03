@@ -219,6 +219,30 @@ const (
 	DesignDerivationFlatten = "flatten"
 )
 
+// DesignFlattenInheritedViews — what a flatten (save-as-new edit or overwrite edit) inherits of
+// its base's view labels: ghost_view and composite_views, both verbatim.
+//
+// An edit is drawn OVER the base and keeps its frame, so it is the same sheet: a multi-view sheet
+// stays multi-view, a front stays a front. Before T14 the flatten copied ghost_view and dropped
+// composite_views, so an edit of a `layout=one` sheet — and an overwrite edit becomes the bench
+// chain head — lost SPLIT on the client and became placeable on a side slot as one view.
+//
+// CROPS MUST NOT CALL THIS. A crop is one view cut out of the sheet: it carries the frame's own
+// view_key and never the parent's composite list (SplitPicture).
+//
+// An empty, `null` or `[]` composite list inherits as nothing, so the copy never invents a
+// composite. A nil parent (a layer drawn from nothing) inherits nothing.
+func DesignFlattenInheritedViews(parent *DesignPicture) (ghost sql.NullString, composite RawJSON) {
+	if parent == nil {
+		return sql.NullString{}, nil
+	}
+	ghost = parent.GhostView
+	if c := string(parent.CompositeViews); c != "" && c != "null" && c != "[]" {
+		composite = append(RawJSON(nil), parent.CompositeViews...)
+	}
+	return ghost, composite
+}
+
 // Виды кадра. ОН ЖЕ СЛОВАРЬ ВТОРОЙ ОСИ ВЕРСТАКА: design_bench_slot.kind (0349) объявлен тем же
 // словарём намеренно — «род» у слота и у кадра обязан быть одним понятием, иначе рендер встанет
 // на технический лист.

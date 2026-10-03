@@ -608,7 +608,10 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// PROVENANCE. Both strings come from the wire vocabulary of DesignPicture.source_class —
 		// see entity.DesignSourceAIEdits for why the wire wins over the migration's prose.
 		src := designFlattenSourceClass(layer.Origin, parent != nil)
-		ghost, kind := any(nil), entity.DesignPictureKindFlat
+		kind := entity.DesignPictureKindFlat
+		// ВИДЫ НАСЛЕДУЮТСЯ ОТ БАЗЫ ЦЕЛИКОМ (T14): правка — тот же лист, поэтому мультивью остаётся
+		// мультивью (composite_views), а сторона — стороной (ghost_view). Кропы этого не делают.
+		ghost, composite := entity.DesignFlattenInheritedViews(parent)
 		mixed := false
 		runID, batchID, derived := any(nil), any(nil), any(nil)
 		cw := any(nil)
@@ -625,9 +628,6 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 			// Флэттен — СИБЛИНГ подложки и наследует её колорвей (0356): перекрашенный слоем
 			// рендер колорвея A остаётся кадром колорвея A, иначе он выпал бы из своего верстака.
 			cw = nullInt32(parent.ColorwayId)
-			if parent.GhostView.Valid {
-				ghost = parent.GhostView.String
-			}
 		}
 		ord := 0
 		if parent != nil {
@@ -655,14 +655,15 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// сверяет, что ключ назван ТЕМ ЖЕ слоем (entity.DesignFlattenReplayRefusal).
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
-				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
+				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view, composite_views,
 				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev,
 				 display_only, request_key, source_layer_id)
-			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
-			        :src, :mixed, :layer, :display_only, :request_key, :source_layer)`,
+			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :composite, :cw, :parent,
+			        :derivation, :src, :mixed, :layer, :display_only, :request_key, :source_layer)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
-				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
+				"ord": ord, "kind": kind, "ghost": ghost, "composite": composite, // RawJSON: empty → NULL (Value)
+				"cw": cw, "parent": derived,
 				"derivation": derivation,
 				"src":        src, "mixed": mixed, "layer": layer.Rev,
 				"display_only": displayOnly,
