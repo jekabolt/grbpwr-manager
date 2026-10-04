@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,4 +292,54 @@ func TestDesignDBHardwareIsNOT_THE_PARENT_OF_A_PATTERN(t *testing.T) {
 	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: законный родитель записывается, иначе проба доказывала бы только то,
 	// что родословная не пишется никогда.
 	require.Equal(t, cloth.Id, int(byName["from cloth"].DerivedFromAssetId.Int32))
+}
+
+// ПРОСЬБА ПРОГОНА САДИТСЯ ЗАМЕТКОЙ АССЕТА (ROUND3 B1) — для каждого режима паттерна: обрезанная по
+// краям, укороченная до MaxDesignAssetNoteRunes и NULL, когда просьбы не было.
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: вернуть `"note": nil` (краснеют свотч/фурнитура/картинка); снять
+// обрезку (1406 на длинной просьбе в строгом режиме); писать пустую строку вместо NULL.
+func TestDesignDBTheRunAskLANDS_AS_THE_ASSET_NOTE(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	resetBudget(t, raw)
+	ctx := context.Background()
+
+	start := func(name, mode, ask string) int {
+		params, err := json.Marshal(map[string]any{"pattern": map[string]any{"name": name, "mode": mode}})
+		require.NoError(t, err)
+		started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+			TechCardId: card, ClientRequestId: uuid.NewString(),
+			Kind: entity.DesignRunKindPattern, RequestedOutputs: 1, Author: "probe",
+			Params: params, Ask: ask,
+			PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.10"), Valid: true},
+		})
+		require.NoError(t, err)
+		_, err = landPatternRun(t, rep, started.Run.Id, probeMedia(t, raw))
+		require.NoError(t, err)
+		return started.Run.Id
+	}
+	long := strings.Repeat("ж", entity.MaxDesignAssetNoteRunes+40)
+	start("swatch", entity.DesignPatternModeSwatch, "  cotton twill, 280 gsm  ")
+	start("zip", entity.DesignPatternModeHardware, "brass zip, 5 mm teeth")
+	start("print", entity.DesignPatternModeImage, long)
+	start("silent", entity.DesignPatternModeImage, "   ")
+
+	notes := map[string]sql.NullString{}
+	rows, err := raw.Query(`SELECT name, note FROM design_asset WHERE tech_card_id = ?`, card)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var note sql.NullString
+		require.NoError(t, rows.Scan(&name, &note))
+		notes[name] = note
+	}
+	require.NoError(t, rows.Err())
+
+	require.Equal(t, sql.NullString{String: "cotton twill, 280 gsm", Valid: true}, notes["swatch"])
+	require.Equal(t, sql.NullString{String: "brass zip, 5 mm teeth", Valid: true}, notes["zip"])
+	require.True(t, notes["print"].Valid)
+	require.Equal(t, entity.MaxDesignAssetNoteRunes, len([]rune(notes["print"].String)),
+		"длинная просьба укорачивается, а не роняет прилёт оплаченной картинки")
+	require.False(t, notes["silent"].Valid, "пустая просьба — NULL, а не пустая строка")
 }
