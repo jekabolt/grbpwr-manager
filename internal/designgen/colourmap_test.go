@@ -46,15 +46,15 @@ func TestRenderPromptTwoClothsOneMap(t *testing.T) {
 
 	// THE CAPTION. Image 3 is the map — after the two plates, before the two swatches — and it says
 	// what it is in the same breath as what its colours are NOT.
-	require.Contains(t, got, "- image 3: colour map of the front flat — the same drawing with each "+
-		"part flooded in one flat colour; those colours LABEL which cloth covers which part and are "+
+	require.Contains(t, got, "- image 3: colour map of the front flat — the same drawing with the labelled "+
+		"parts flooded in flat colours; parts left white carry no label; those colours LABEL which cloth covers which part and are "+
 		"not the garment's own colours, which the cloth list states",
 		"a colour map read under the extra-input caption is a drawing of the garment in improbable colours")
 
 	// THE HEADING. The number comes off the ATTACHED list, so it is the same picture the caption
 	// block numbered — by construction, not by coincidence.
 	require.Contains(t, got, "Image 3 is a colour map of the front drawing — the same drawing with "+
-		"each part flooded in one flat colour. Those flat colours are LABELS that say which cloth "+
+		"the labelled parts flooded in flat colours; parts left white carry no label. Those flat colours are LABELS that say which cloth "+
 		"covers which part; they are not the garment's colours, which the list below states.")
 
 	// THE UNPAINTED VIEW IS NAMED. Without this sentence a model handed a front map and an unmapped
@@ -108,7 +108,7 @@ func TestAClothPlacedONLYByPaintIsStillACloth(t *testing.T) {
 // went away between the snapshot and the pass).
 func TestAColourMapWhoseMediaVanishedIsNeitherNumberedNorMentioned(t *testing.T) {
 	attached := []refCaption{{MediaID: 1, Caption: "front"}, {MediaID: 2, Caption: "back"}}
-	got := renderColourMapSentence([]colourMap{{MediaID: 20, View: "front"}}, []string{"front"}, attached)
+	got := renderColourMapSentence([]colourMap{{MediaID: 20, View: "front"}}, []string{"front"}, attached, false)
 	require.Equal(t, "", got,
 		"a map that did not go out must not be described — the model cannot see it")
 
@@ -116,7 +116,7 @@ func TestAColourMapWhoseMediaVanishedIsNeitherNumberedNorMentioned(t *testing.T)
 	// в момент сборки списка — см. refCaption.IsColourMap: «картинка в списке есть» ответом на этот
 	// вопрос не является, потому что плита верстака, названная картой, в списке тоже есть.
 	attached = append(attached, refCaption{MediaID: 20, Caption: "map", IsColourMap: true})
-	require.Contains(t, renderColourMapSentence([]colourMap{{MediaID: 20, View: "front"}}, []string{"front"}, attached),
+	require.Contains(t, renderColourMapSentence([]colourMap{{MediaID: 20, View: "front"}}, []string{"front"}, attached, false),
 		"Image 3 is a colour map of the front drawing")
 }
 
@@ -226,7 +226,7 @@ func TestColourMapSentenceListsSeveralMapsAndSeveralBareViews(t *testing.T) {
 	}
 	got := renderColourMapSentence(
 		[]colourMap{{MediaID: 20, View: "front"}, {MediaID: 21, View: "back"}},
-		[]string{"front", "back", "side_l", "side_r"}, attached)
+		[]string{"front", "back", "side_l", "side_r"}, attached, false)
 
 	require.Contains(t, got, "Images 3 and 4 are colour maps of the front and back drawings")
 	require.Contains(t, got, "The left side and right side drawings carry no colour map: on those "+
@@ -236,7 +236,7 @@ func TestColourMapSentenceListsSeveralMapsAndSeveralBareViews(t *testing.T) {
 	// about nothing, which is the one thing this whole block exists to avoid.
 	all := renderColourMapSentence(
 		[]colourMap{{MediaID: 20, View: "front"}, {MediaID: 21, View: "back"}},
-		[]string{"front", "back"}, attached)
+		[]string{"front", "back"}, attached, false)
 	require.NotContains(t, all, "carries no colour map")
 	require.NotContains(t, all, "carry no colour map")
 }
@@ -360,4 +360,23 @@ func TestABenchPlateNamedAsAColourMapIsNotDeclaredTwice(t *testing.T) {
 	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: подпись плиты цела и НЕ склеена со второй.
 	require.Contains(t, got, "- image 1: current state of the garment — front view")
 	require.NotContains(t, got, "front view; ")
+}
+
+// TestAPartialMapSendsWhiteToTheRemainder — a map may be partial: white is «no label», and where
+// white goes depends on whether the list has a REMAINDER cloth (no parts, no label).
+func TestAPartialMapSendsWhiteToTheRemainder(t *testing.T) {
+	withRemainder := `{"views":["front"],"layout":"one","colour":{"code":"RED-01","hex":"#b1121a",` +
+		`"colour_maps":[{"media_id":20,"view":"front"}],` +
+		`"fabrics":[{"name":"main jersey"},{"name":"contrast rib","map_hex":"#ff0000"}]}}`
+	got := renderPrompt(t, withRemainder, renderSlots)
+	require.Contains(t, got, "parts left white carry no label.")
+	require.Contains(t, got, "Parts left white on a map are made of the REMAINDER cloth.")
+	require.NotContains(t, got, "continue the cloth of the panel they belong to")
+
+	allPainted := `{"views":["front"],"layout":"one","colour":{"code":"RED-01","hex":"#b1121a",` +
+		`"colour_maps":[{"media_id":20,"view":"front"}],` +
+		`"fabrics":[{"name":"main jersey","map_hex":"#3a7bd5"},{"name":"contrast rib","map_hex":"#ff0000"}]}}`
+	got = renderPrompt(t, allPainted, renderSlots)
+	require.Contains(t, got, "Parts left white on a map continue the cloth of the panel they belong to.")
+	require.NotContains(t, got, "made of the REMAINDER cloth")
 }

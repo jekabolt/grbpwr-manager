@@ -459,7 +459,19 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 	//
 	// A RUN WITH NO MAPS ADDS NOTHING HERE, which is why every prompt this file composed before
 	// Feature A is the prompt it composes now.
-	if s := renderColourMapSentence(sent, views, attached); s != "" {
+	//
+	// ⚠ КАРТА БЫВАЕТ ЧАСТИЧНОЙ: белое на ней — «без ярлыка». Куда уходит белое, решает ткань-ОСТАТОК
+	// (ни частей, ни ярлыка) — если она на списке есть.
+	remainder := false
+	if anyParts {
+		for _, c := range cloths {
+			if oneLine(c.Parts) == "" && strings.TrimSpace(c.MapHex) == "" {
+				remainder = true
+				break
+			}
+		}
+	}
+	if s := renderColourMapSentence(sent, views, attached, remainder); s != "" {
 		heading += " " + s
 	}
 	lines := []string{heading + " " + rule + " The cloths, in the order they were stated:"}
@@ -487,7 +499,10 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 // fills in. Handed a front map and a back drawing with no map, it either carries the division over
 // (what we want) or treats the unmapped view as a second garment (what we have seen). Said out
 // loud, it is one reading instead of a lottery.
-func renderColourMapSentence(maps []colourMap, views []string, attached []refCaption) string {
+//
+// A MAP MAY BE PARTIAL, so white is said out loud: with a REMAINDER cloth on the list white is that
+// cloth; without one, white continues the cloth of the panel it belongs to.
+func renderColourMapSentence(maps []colourMap, views []string, attached []refCaption, remainder bool) string {
 	var numbers []string
 	var painted []string
 	seen := make(map[string]struct{}, len(maps))
@@ -506,13 +521,18 @@ func renderColourMapSentence(maps []colourMap, views []string, attached []refCap
 	var b strings.Builder
 	if len(numbers) == 1 {
 		b.WriteString("Image " + numbers[0] + " is a colour map of the " + painted[0] +
-			" drawing — the same drawing with each part flooded in one flat colour.")
+			" drawing — the same drawing with the labelled parts flooded in flat colours; parts left white carry no label.")
 	} else {
 		b.WriteString("Images " + joinWords(numbers) + " are colour maps of the " +
-			joinWords(painted) + " drawings — the same drawings with each part flooded in one flat colour.")
+			joinWords(painted) + " drawings — the same drawings with the labelled parts flooded in flat colours; parts left white carry no label.")
 	}
 	b.WriteString(" Those flat colours are LABELS that say which cloth covers which part; they are " +
 		"not the garment's colours, which the list below states.")
+	if remainder {
+		b.WriteString(" Parts left white on a map are made of the REMAINDER cloth.")
+	} else {
+		b.WriteString(" Parts left white on a map continue the cloth of the panel they belong to.")
+	}
 
 	// The views this run draws that carry no map. `detail` is left out on purpose: a detail frame
 	// is a close-up of something already divided by the sides, not a side of its own to divide.

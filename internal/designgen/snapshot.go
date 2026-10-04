@@ -766,9 +766,11 @@ func refEntryCaption(r inputRef) string {
 // the cloth list, and the caption points at it rather than restating them — two places saying what
 // colour the garment is would be the same disagreement the order of authority exists to end.
 func colourMapCaption(view string) string {
-	return "colour map of the " + viewWord(view) + " flat — the same drawing with each part " +
-		"flooded in one flat colour; those colours LABEL which cloth covers which part and are " +
-		"not the garment's own colours, which the cloth list states"
+	// A map may be PARTIAL: the person paints only some parts and leaves the rest white, and white
+	// is «no label», not a colour of the garment.
+	return "colour map of the " + viewWord(view) + " flat — the same drawing with the labelled " +
+		"parts flooded in flat colours; parts left white carry no label; those colours LABEL which " +
+		"cloth covers which part and are not the garment's own colours, which the cloth list states"
 }
 
 // viewWord spells a view key as a bare adjective — «front», «left side» — where a caption needs it
