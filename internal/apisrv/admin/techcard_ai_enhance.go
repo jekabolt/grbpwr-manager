@@ -90,6 +90,10 @@ const (
 	// brief: what a line drawing can show, nothing else.
 	enhanceWordsPromptDefinition = `condense the TEXT — the garment's concept and construction description, which may mix mood, story and construction — into ONE brief for technical flat sketches (black line drawings) of the garment, in this order: the garment type (taken from the CONTEXT only when the TEXT does not name it), silhouette and fit, construction (panels, seams, darts, pleats, gathers), closures, pockets, collar, sleeves, cuffs, hems and other details, then materials only as they show in a line drawing (quilting, ribbing, topstitching, padding, a stiff or a soft drape) — short concrete descriptors separated by commas, one paragraph; leave out mood, story, inspiration, references, brand and marketing words, colours and prints, and any view, background or lighting; no negations (an image model draws what a prompt names, so what the garment does NOT have, like "no logo", is left out); every construction fact of the TEXT kept, nothing added`
 	enhanceLanguageEnglish       = `Always write in ENGLISH, whatever the language of the TEXT and the CONTEXT: translate, never answer in the input's language.`
+	// T56: FABRIC RENDER › IN WORDS is seeded from the same moodboard text, but it briefs a photoreal
+	// render of the flats in cloth — so its «prompt» keeps the look (cloth, colour, drape, surface)
+	// and drops the flat-sketch instructions. English, like WORDS.
+	enhanceRenderWordsPromptDefinition = `condense the TEXT — the garment's concept and construction description, which may mix mood, story and construction — into ONE brief for a photoreal render of the garment's flats made up in real cloth, in this order: the garment type (taken from the CONTEXT only when the TEXT does not name it), silhouette and fit as they shape the cloth, the cloth itself (fibre, weave or knit, weight, hand), colour and finish, surface (texture, sheen, wash, wear), how it drapes, folds and holds its shape, then the visible details that change the surface (seams, topstitching, quilting, ribbing, hardware) — short concrete descriptors separated by commas, one paragraph; leave out mood, story, inspiration, references, brand and marketing words, line-drawing and flat-sketch instructions, and any view, background or lighting; no negations (an image model draws what a prompt names, so what the garment does NOT have, like "no logo", is left out); every cloth, colour and surface fact of the TEXT kept, nothing added`
 
 	// enhanceSteerClauseFormat is STEER's mode definition (20-PROMPTS §3.8, D9), the PLAYGROUND's
 	// Improve: the tile's prompt field is one phrase for one image tool, and «fix the grammar»
@@ -130,12 +134,13 @@ var enhanceModeWords = map[pb_admin.EnhanceTextMode]string{
 // enhanceFieldPhrases is the server's own name for each field (review M-07: the field is an enum, and
 // the phrase is ours). UNKNOWN is absent on purpose: absence is the refusal.
 var enhanceFieldPhrases = map[pb_admin.EnhanceTextField]string{
-	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_DESCRIPTION: "moodboard description (the design concept of the garment)",
-	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_NOTE:        "tech card note",
-	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_WORDS:       "garment description that briefs the technical flat sketches",
-	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_SILHOUETTE:  "silhouette",
-	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_FABRIC:      "fabric",
-	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_OTHER:       "free-text field of a tech card",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_DESCRIPTION:  "moodboard description (the design concept of the garment)",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_NOTE:         "tech card note",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_WORDS:        "garment description that briefs the technical flat sketches",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_SILHOUETTE:   "silhouette",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_FABRIC:       "fabric",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_OTHER:        "free-text field of a tech card",
+	pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_RENDER_WORDS: "garment description that briefs a photoreal fabric render of the flats (cloth, colour, drape, surface)",
 }
 
 // enhanceTextGuard is the per-admin hourly window in front of the model call.
@@ -505,10 +510,14 @@ func enhanceTextSystemPrompt(in enhanceTextInput) string {
 }
 
 // enhanceTextFieldPieces is the «prompt =» definition and the language rule for a field: WORDS has
-// its own (always English, a flat-sketch brief), every other field the shared pair.
+// its own (always English, a flat-sketch brief), RENDER_WORDS too (English, a fabric-render brief),
+// every other field the shared pair.
 func enhanceTextFieldPieces(field pb_admin.EnhanceTextField) (promptDef, language string) {
 	if field == pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_WORDS {
 		return enhanceWordsPromptDefinition, enhanceLanguageEnglish
+	}
+	if field == pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_RENDER_WORDS {
+		return enhanceRenderWordsPromptDefinition, enhanceLanguageEnglish
 	}
 	return enhancePromptDefinition, enhanceLanguageSame
 }

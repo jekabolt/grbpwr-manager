@@ -49,3 +49,26 @@ func TestEnhanceTextWordsIsAlwaysAnEnglishFlatBrief(t *testing.T) {
 	require.NotContains(t, c.System, "ENGLISH")
 	require.Contains(t, c.System, "prompt = rewrite it as ONE image-generation prompt")
 }
+
+// T56: FABRIC RENDER › IN WORDS has its own brief — English, cloth/colour/drape/surface, no
+// flat-sketch instructions. MUTATION: drop the RENDER_WORDS branch in enhanceTextFieldPieces — red.
+func TestEnhanceTextRenderWordsIsAnEnglishFabricBrief(t *testing.T) {
+	const answer = "boxy work jacket in heavy indigo cotton drill, stiff hand, faded wash, crisp folds"
+	client, rec := newEnhanceFakeOR(t, enhanceReply(answer, "stop"))
+	s := newEnhanceServer(t, client)
+
+	resp, err := s.EnhanceText(adminCtx("alice"), &pb_admin.EnhanceTextRequest{
+		Text:    "Куртка рабочая из плотного индиго, навеяна мастерскими 30-х.",
+		Context: "category: outerwear › jackets",
+		Mode:    pb_admin.EnhanceTextMode_ENHANCE_TEXT_MODE_PROMPT,
+		Field:   pb_admin.EnhanceTextField_ENHANCE_TEXT_FIELD_RENDER_WORDS,
+	})
+	require.NoError(t, err)
+	require.Equal(t, answer, resp.GetText())
+	c := rec.all()[len(rec.all())-1]
+	require.Contains(t, c.System, enhanceLanguageEnglish)
+	require.Contains(t, c.System, "photoreal fabric render of the flats")
+	require.Contains(t, c.System, "photoreal render of the garment's flats made up in real cloth")
+	require.NotContains(t, c.System, "black line drawings")
+	require.NotContains(t, c.System, "Куртка")
+}
