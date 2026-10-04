@@ -210,7 +210,8 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	// родословной, и привязывается к паре ровно как свотч. Колорвей целиком она не носит никогда
 	// (SetAssetColorway ей отказывает), поэтому legacy-колонку не трогает и без слота.
 	// Бирка (mode label) садится так же: тот же род hardware, та же пара.
-	hardware := p.Pattern.Mode == entity.DesignPatternModeHardware || p.Pattern.Mode == entity.DesignPatternModeLabel
+	hardware := p.Pattern.Mode == entity.DesignPatternModeHardware || p.Pattern.Mode == entity.DesignPatternModeLabel ||
+		p.Pattern.Mode == entity.DesignPatternModeArtwork
 	kind := entity.DesignAssetKindPattern
 	if hardware {
 		kind = entity.DesignAssetKindHardware

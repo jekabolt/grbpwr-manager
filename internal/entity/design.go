@@ -1214,11 +1214,17 @@ func DesignExtendRatioValue(r string) (float64, bool) {
 //   - DesignPatternModeLabel — предметный снимок ОДНОЙ бирки одежды, плоско, анфас; во всём, кроме
 //     промпта и числа картинок, это hardware (та же пара, та же полка, тот же род ассета). 0–1
 //     картинка — и это ЛОГОТИП бренда, который бирка несёт, а не референс формы.
+//   - DesignPatternModeArtwork — предметный снимок ОДНОГО артворка одежды (принт, вышивка, нашивка,
+//     аппликация, термоперенос) на чистом белом, анфас; во всём, кроме промпта, это hardware (та же
+//     пара, та же полка, тот же род ассета). 0–MaxDesignHardwareReferences картинок: необязательный
+//     ИСХОДНИК первым (маркер «artwork = picture 1» в словах) — его форма и цвета переносятся в
+//     технику, — затем референсы техники.
 const (
 	DesignPatternModeImage    = "image"
 	DesignPatternModeSwatch   = "swatch"
 	DesignPatternModeHardware = "hardware"
 	DesignPatternModeLabel    = "label"
+	DesignPatternModeArtwork  = "artwork"
 )
 
 // MaxDesignHardwareReferences — сколько референсов формы/материала берёт прогон фурнитуры.

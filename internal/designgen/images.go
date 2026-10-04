@@ -364,6 +364,16 @@ func imageCalls(job Job) ([]imageCall, error) {
 		}
 		// A LABEL takes 0..MaxDesignHardwareReferences pictures — an optional logo (first) plus
 		// reference labels (the door refuses more with `too_many_references`) — still one paid call.
+		// AN ARTWORK takes the same 0..MaxDesignHardwareReferences: an optional source (first) plus
+		// technique references — still one paid call.
+		if job.PatternMode == entity.DesignPatternModeArtwork {
+			if len(job.References) > entity.MaxDesignHardwareReferences {
+				return nil, fmt.Errorf("%w: an artwork takes at most %d pictures — an optional source "+
+					"and technique references — and this run resolved %d", orimages.ErrBadRequest,
+					entity.MaxDesignHardwareReferences, len(job.References))
+			}
+			return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+		}
 		if job.PatternMode == entity.DesignPatternModeLabel {
 			if len(job.References) > entity.MaxDesignHardwareReferences {
 				return nil, fmt.Errorf("%w: a label picture takes at most %d pictures — an optional logo "+

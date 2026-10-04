@@ -178,6 +178,9 @@ type patternParams struct {
 	// colour.words) — клиент, приложив логотип, ставит его ПЕРВОЙ картинкой и пишет маркер
 	// «logo = picture 1». Читает только labelCraft.
 	LabelHasLogo bool `json:"-"`
+	// ArtworkHasSource — то же для режима artwork: исходник ПЕРВОЙ картинкой и маркер
+	// «artwork = picture 1» в словах прогона. Читает только artworkCraft.
+	ArtworkHasSource bool `json:"-"`
 }
 
 type colourRecipe struct {
@@ -943,6 +946,8 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 				wordsLabel = "item in words"
 			case entity.DesignPatternModeLabel:
 				wordsLabel = "label in words"
+			case entity.DesignPatternModeArtwork:
+				wordsLabel = "artwork in words"
 			}
 		}
 		write(wordsLabel, c.Words)
@@ -1033,6 +1038,13 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 				words += "\n" + p.Colour.Words
 			}
 			pp.LabelHasLogo = labelWordsNameALogo(words)
+		}
+		if pp.Mode == entity.DesignPatternModeArtwork {
+			words := run.Ask.String
+			if p.Colour != nil {
+				words += "\n" + p.Colour.Words
+			}
+			pp.ArtworkHasSource = artworkWordsNameASource(words)
 		}
 		// СКОЛЬКО КАРТИНОК РЕАЛЬНО УЕЗЖАЕТ — из `attached`, а не из снимка: абзац свотча говорит
 		// модели либо «фактура — с картинки», либо «картинки нет, сделай гладкую ткань», и сказать
