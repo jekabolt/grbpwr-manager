@@ -3231,6 +3231,20 @@ service AdminService {
     };
   }
 
+  // SuggestDesignParts (auto parts) — one sync vision+JSON call: the model reads the side's flat cut
+  // into numbered regions (marks_media_id, drawn by the client) and groups the numbers into named
+  // garment parts. Cached per (card, view, base_media_id, algo_rev): a cached answer is returned
+  // without a call unless force.
+  //
+  // FailedPrecondition: the flat changed (base_media_id is not the side's flat), the region count is
+  // outside 2..60.
+  rpc SuggestDesignParts(SuggestDesignPartsRequest) returns (SuggestDesignPartsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/parts:suggest"
+      body: "*"
+    };
+  }
+
   // GetDesignQuizAnswers — every quiz answer stored on the card, in display order.
   rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"};
@@ -12534,6 +12548,9 @@ message GetDesignBandResponse {
   // THE MODEL SuggestPrompts ANSWERS WITH ('' = the assistant is not configured: draw the static Ideas list only).
   // ABSENT = a binary without SuggestPrompts.
   string suggest_prompts_model = 33;
+  // AUTO PARTS of the flat each side holds NOW (base_media_id = the media in that side's flat slot),
+  // every algo_rev. A row of a flat that left its slot is not sent.
+  repeated DesignPartsSuggestion parts_suggestions = 34;
 }
 
 // DesignImageModel is ONE engine the image door accepts (GetDesignBandResponse.image_models) and
@@ -13410,6 +13427,45 @@ message SaveDesignQuizAnswersRequest {
 
 message SaveDesignQuizAnswersResponse {
   repeated DesignQuizAnswer answers = 1;
+}
+
+// AUTO PARTS messages.
+
+message SuggestDesignPartsRequest {
+  int32 tech_card_id = 1;
+  string view = 2; // front|back|side_l|side_r
+  int32 base_media_id = 3; // the side's flat the regions were cut from
+  int32 marks_media_id = 4; // the flat with the numbered regions, as the model sees it
+  int32 region_count = 5; // 2..60
+  string algo_rev = 6; // the client's cut revision, ≤ 32
+  bool force = 7; // ask again even when an answer is cached
+}
+
+// DesignPartGroup is one garment part: its name and its region numbers (1-based).
+message DesignPartGroup {
+  string label = 1; // lowercase, ≤ 3 words; "unnamed" holds what the model left out
+  repeated int32 regions = 2;
+}
+
+// DesignPartSplit is a region that spans two parts with no seam line drawn.
+message DesignPartSplit {
+  int32 region = 1;
+  string why = 2;
+}
+
+message DesignPartsSuggestion {
+  string view = 1;
+  int32 base_media_id = 2;
+  string algo_rev = 3;
+  repeated DesignPartGroup parts = 4;
+  repeated DesignPartSplit split_needed = 5;
+  string model = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message SuggestDesignPartsResponse {
+  DesignPartsSuggestion suggestion = 1;
+  bool cached = 2; // true = read from the cache, no call made
 }
 
 // AI PROVIDERS messages

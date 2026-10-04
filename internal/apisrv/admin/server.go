@@ -130,6 +130,9 @@ type Server struct {
 	// quizFlight coalesces GenerateDesignQuiz presses of ONE card in flight (design_quiz.go): a double
 	// click pays once and both presses get the same questions. Zero value works.
 	quizFlight singleflight.Group
+	// partsFlight coalesces SuggestDesignParts presses of ONE (card, view, flat, cut) in flight
+	// (design_parts.go). Zero value works.
+	partsFlight singleflight.Group
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer

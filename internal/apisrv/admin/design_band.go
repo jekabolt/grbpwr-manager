@@ -384,6 +384,8 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// then draws the static Ideas list only. Drop this line and the band still answers 200 while
 		// every Ideas menu stays static on a server that can suggest.
 		SuggestPromptsModel: s.designSuggestPromptsModel(),
+		// AUTO PARTS (0390, field 34): the cached answers of the flat each side holds now.
+		PartsSuggestions: designPartsSuggestionsToPb(band.PartsSuggestions),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —
