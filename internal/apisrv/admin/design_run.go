@@ -562,7 +562,20 @@ const (
 const (
 	designProfileName    = "design-band"
 	designProfileVersion = 1
+	// designDraftDescriptionProfileVersion — the prose branch of DraftDesignIdea since T39: it
+	// answers the bare concept & construction description (no three titled sections) from the
+	// board plus the card details, so its runs must not read as the same profile as the old ones.
+	designDraftDescriptionProfileVersion = 2
 )
+
+// designDraftProfileVersion — the profile version a DraftDesignIdea press freezes into its run,
+// per branch: the structured branch's contract is unchanged, the prose branch's changed with T39.
+func designDraftProfileVersion(construction bool) int {
+	if construction {
+		return designProfileVersion
+	}
+	return designDraftDescriptionProfileVersion
+}
 
 // ─────────────────────────── StartDesignRun ───────────────────────────
 
@@ -2690,7 +2703,7 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		Kind:             entity.DesignRunKindDraftIdea,
 		Inputs:           json.RawMessage(inputsJSON),
 		ProfileName:      designProfileName,
-		ProfileVersion:   designProfileVersion,
+		ProfileVersion:   designDraftProfileVersion(construction),
 		FitAtLaunch:      card.Fit.String,
 		RequestedOutputs: 0, // текстовый прогон не рождает ни одного кадра
 		PriceEstimate:    est,

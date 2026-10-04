@@ -221,3 +221,19 @@ func TestDraftDescriptionRefusesAnEmptyBoardWithTheNoPicturesReason(t *testing.T
 	require.Equal(t, codes.FailedPrecondition, code)
 	require.Equal(t, designReasonBoardHasNoPictures, md["reason"])
 }
+
+// THE PROSE BRANCH FREEZES ITS OWN PROFILE VERSION: its answer changed shape with T39, so its runs
+// must be told apart from the three-section runs and from the structured branch.
+func TestDraftDescriptionRunCarriesItsOwnProfileVersion(t *testing.T) {
+	rig := newDraftRig(t, http.StatusOK, "A boxy coat.")
+	_, err := rig.srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.NoError(t, err)
+	require.Equal(t, designDraftDescriptionProfileVersion, rig.started.ProfileVersion)
+	require.NotEqual(t, designProfileVersion, rig.started.ProfileVersion)
+
+	rig = newDraftRig(t, http.StatusOK, constructionAnswer)
+	_, err = rig.srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest())
+	require.NoError(t, err)
+	require.Equal(t, designProfileVersion, rig.started.ProfileVersion,
+		"the structured branch's contract did not change")
+}
