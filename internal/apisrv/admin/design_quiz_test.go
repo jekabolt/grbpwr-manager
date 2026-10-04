@@ -312,6 +312,7 @@ func TestDesignQuizUserPromptCarriesAnswersAndParts(t *testing.T) {
 	for _, want := range []string{"[season · use · whole] Season? → skipped", "Allowed part keys: whole, collar, lapel",
 		"Hardware part keys (one specific hardware type → its hw_ key; choosing between types → the garment zone): hw_",
 		"hw_button", "hw_lace_hook",
+		"Label part keys (a question about a label — placement, type, size, attachment → its lbl_ key): lbl_brand, lbl_care",
 		"Garment family: jacket", "(/card_data)"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, p)
@@ -390,6 +391,25 @@ func TestDesignQuizResolvePart(t *testing.T) {
 		{"", "rivet", "q", plainQ, "hw_rivet", true},
 		{"shirt", "corduroy", "corduroy", "Is the corduroy heavy?", "whole", true},
 		{"hoodie", "corduroy", "corduroy_wale", "Corduroy wale?", "whole", true},
+		// 40-HARDWARE § Labels: lbl_ keys for every family; the family part `label` is overridden.
+		{"tee", "label", "q", plainQ, "lbl_brand", true},
+		{"tee", "labels", "q", plainQ, "lbl_brand", true},
+		{"tee", "lbl_brand", "q", plainQ, "lbl_brand", false},
+		{"jacket", "brand label", "q", plainQ, "lbl_brand", true},
+		{"coat", "whole", "q", plainQ, "whole", false},
+		{"coat", "x", "label_placement", plainQ, "lbl_brand", true},
+		{"tee", "x", "q", "Where does the label sit?", "lbl_brand", true},
+		{"shirt", "neck_label", "q", plainQ, "lbl_brand", true},
+		{"shirt", "care label", "q", plainQ, "lbl_care", true},
+		{"tee", "composition_label", "q", plainQ, "lbl_care", true},
+		{"trousers", "size tab", "q", plainQ, "lbl_size", true},
+		{"hoodie", "flag_label", "q", plainQ, "lbl_flag", true},
+		{"trousers", "leather patch", "q", plainQ, "lbl_patch", true},
+		{"cap", "badge", "q", plainQ, "lbl_patch", true},
+		{"shirt", "patch_pocket", "q", plainQ, "pocket", true},
+		{"bag", "hang tag", "q", plainQ, "lbl_hang_tag", true},
+		{"shoe", "swing_tag", "q", plainQ, "lbl_hang_tag", true},
+		{"", "price tag", "q", plainQ, "lbl_hang_tag", true},
 		{"hoodie", "fabric", "q", "Is the corduroy heavy?", "whole", true},
 		{"trousers", "back pocket", "q", plainQ, "back_pocket", true},
 		{"trousers", "x", "q", "Where does the back pocket sit?", "back_pocket", true},
@@ -419,5 +439,24 @@ func TestDesignQuizPromptPartsFirst(t *testing.T) {
 	}
 	if !strings.Contains(designQuizSystemPrompt, "- part: EXACTLY one key") {
 		t.Fatal("system prompt part rule")
+	}
+}
+
+func TestDesignQuizLabelsInPromptAndFacts(t *testing.T) {
+	p := designQuizUserPrompt(nil, nil, nil, "tee")
+	if !strings.Contains(p, "Allowed part keys: whole, neckline") || strings.Contains(p, "side_seam, label") {
+		t.Fatalf("family part label is overridden by lbl_ keys: %q", p[:200])
+	}
+	for part, want := range map[string]string{"lbl_brand": "brand label", "lbl_care": "care label",
+		"lbl_hang_tag": "hang tag", "lbl_patch": "patch", "hw_cord_stopper": "cord stopper", "back_pocket": "back pocket"} {
+		if got := designQuizPartLabel(part); got != want {
+			t.Errorf("%s: %q, want %q", part, got, want)
+		}
+	}
+	card := &entity.TechCard{QuizAnswers: []entity.TechCardQuizAnswer{{Question: entity.DesignQuizQuestion{
+		ID: "l", Category: "finish", Part: "lbl_brand", Question: "Where does it sit?", Options: []string{"neck", "hem"}},
+		Selected: []string{"neck"}}}}
+	if lines := designQuizDecisionLines(card); len(lines) != 1 || !strings.HasPrefix(lines[0], "- brand label — ") {
+		t.Fatalf("decided-facts line: %q", lines)
 	}
 }
