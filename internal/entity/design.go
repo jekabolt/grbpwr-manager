@@ -1530,9 +1530,20 @@ type DesignPicture struct {
 	HiddenAt   sql.NullTime   `db:"hidden_at"`
 	HiddenBy   sql.NullString `db:"hidden_by"`
 	CreatedAt  time.Time      `db:"created_at"`
+	// UndoneAt — ПРАВКА ОТМЕНЕНА (0387, T28 v2): undo поставил метку на текущую версию цепочки замен,
+	// redo её снимает. НЕ hidden_at: спрятанность undo/redo не трогают, а отменённое звено с экрана
+	// верстака уходит по своему правилу — текущая версия цепочки = обход replaced_by от корня до
+	// первого отменённого звена (DesignEditChainCurrent).
+	UndoneAt sql.NullTime `db:"undone_at"`
 
 	// Media резолвится джойном на media(id) читателем полосы.
 	Media *MediaFull `db:"-"`
+	// CanUndo / CanRedo — СЕРВЕРНЫЙ ОТВЕТ ПО ВСЕЙ ЦЕПОЧКЕ (T28 v2, DesignEditChainControls): кадр — текущая
+	// версия своей цепочки, и у него есть предшественник (undo) либо отменённый преемник (redo).
+	// Считаются читателем (resolveMedia), не колонки: плита в слоте из ушедшей за страницу строки
+	// сохраняет свои углы, потому что клиент цепочки целиком не видит.
+	CanUndo bool `db:"-"`
+	CanRedo bool `db:"-"`
 }
 
 // DesignBenchSlot — строка design_bench_slot: адрес, по которому лежит ПРИНЯТАЯ плита.

@@ -1239,7 +1239,8 @@ message DesignPicture {
   bool display_only = 20;
   // THE EDIT THAT TOOK THIS PICTURE'S PLACE (O-53) — the id of the flatten filed by
   // FlattenDesignEditLayer with replace_picture_id = this picture. 0 = not replaced. OUTPUT-ONLY:
-  // no request carries it, and no verb clears it (there is no «un-replace» in v1).
+  // no request carries it, and no verb clears it. An overwrite over an UNDONE successor (undone_at)
+  // rewrites it to the new edit; the undone branch keeps its rows, cut off.
   //
   // A REPLACED PICTURE IS NOT HIDDEN AND NOT CHANGED. Its pixels, run row, crops, reference roles
   // and hidden_at are exactly what they were; what moved is the bench slot that held it, which now
@@ -1257,7 +1258,24 @@ message DesignPicture {
   //
   // ⚠ ABSENT — not 0 — on a server older than the field, and that absence is how a client knows
   // the server cannot replace a picture yet (FlattenDesignEditLayerRequest.replace_picture_id).
+  //
+  // UNDO / REDO (T28 v2, undone_at below). The CURRENT VERSION of a chain is reached by walking
+  // replaced_by from the root and stopping BEFORE the first link with undone_at set. The head named
+  // in already_replaced is that current version.
   int32 replaced_by = 21;
+  // THIS EDIT WAS UNDONE (T28 v2) — UndoDesignEdit set it on the current version of its chain,
+  // RedoDesignEdit clears it. It is NOT hidden_at: undo and redo never touch visibility, and a hidden
+  // picture keeps every rule of hidden_at. An undone link and every link after it stand nowhere on
+  // the bench and in no slot; the history keeps them. A chain whose ROOT is undone is a branch cut off
+  // by a newer edit (an overwrite over an undone successor detaches it) and has no current version.
+  // Unset = not undone.
+  google.protobuf.Timestamp undone_at = 22;
+  // The server's answer from the WHOLE chain (not from the page the client holds), so a plate in a
+  // slot whose run row is paged out keeps its corners. Set only on the CURRENT version of a chain:
+  //   can_undo — the chain has a link before this one;
+  //   can_redo — the link after this one is undone.
+  bool can_undo = 23;
+  bool can_redo = 24;
 }
 
 // DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the

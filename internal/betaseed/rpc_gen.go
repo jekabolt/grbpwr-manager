@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (407 rpc) ----
+// ---- admin (409 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -2285,6 +2285,14 @@ func (c *Client) ReceiveProductionRun(ctx context.Context, in *admin.ReceiveProd
 	return out, nil
 }
 
+func (c *Client) RedoDesignEdit(ctx context.Context, in *admin.RedoDesignEditRequest) (*admin.RedoDesignEditResponse, error) {
+	out := new(admin.RedoDesignEditResponse)
+	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/redo", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) RefundOrder(ctx context.Context, in *admin.RefundOrderRequest) (*admin.RefundOrderResponse, error) {
 	out := new(admin.RefundOrderResponse)
 	if err := c.call(ctx, "POST", "/api/admin/orders/{order_uuid}/refund", in, out); err != nil {
@@ -2816,6 +2824,14 @@ func (c *Client) TransitionColorwayStatus(ctx context.Context, in *admin.Transit
 func (c *Client) UnarchiveTask(ctx context.Context, in *admin.UnarchiveTaskRequest) (*admin.UnarchiveTaskResponse, error) {
 	out := new(admin.UnarchiveTaskResponse)
 	if err := c.call(ctx, "POST", "/api/admin/task/unarchive", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UndoDesignEdit(ctx context.Context, in *admin.UndoDesignEditRequest) (*admin.UndoDesignEditResponse, error) {
+	out := new(admin.UndoDesignEditResponse)
+	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/undo", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

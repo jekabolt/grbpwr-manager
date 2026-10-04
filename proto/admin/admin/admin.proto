@@ -2795,6 +2795,37 @@ service AdminService {
     };
   }
 
+  // UndoDesignEdit takes back the CURRENT VERSION of an edit chain (replaced_by, T28 v2): undone_at is
+  // set on it and every bench slot that held it moves to the link before it (slot_rev + 1). ONE
+  // transaction: the chain rows are locked, then a compare-and-set on expected_current_id.
+  //
+  // picture_id names the chain (any link of it). IDEMPOTENT BY OUTCOME: a repeat that finds the
+  // undo already in place (expected_current_id undone, the link before it current) answers OK and
+  // writes nothing; idempotency_key is required and logged.
+  //
+  // InvalidArgument: a missing id or key. FailedPrecondition: stale_chain (the current version is
+  // not expected_current_id — re-read the band), nothing_to_undo (the current version is the
+  // original), live_crop_parent (it is cut into visible pieces), and every refusal of a slot
+  // placement (hidden_plate, picture_already_in_slot, …). NotFound: no such picture.
+  rpc UndoDesignEdit(UndoDesignEditRequest) returns (UndoDesignEditResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/undo"
+      body: "*"
+    };
+  }
+
+  // RedoDesignEdit brings back the undone link right after the current version (T28 v2): undone_at
+  // is cleared on it and every bench slot that held the current version moves onto it. Same
+  // transaction, lock, compare-and-set and idempotency as UndoDesignEdit.
+  //
+  // FailedPrecondition: stale_chain, nothing_to_redo, and every refusal of a slot placement.
+  rpc RedoDesignEdit(RedoDesignEditRequest) returns (RedoDesignEditResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/redo"
+      body: "*"
+    };
+  }
+
   // DeleteDesignPicture removes a DERIVED picture FOR GOOD — a crop, or an edit of a crop — with
   // everything cut or flattened from it and with the files behind them (O-68, D-74). It is the
   // one verb on a picture that is NOT reversible, and that is why it is narrow: only a picture
@@ -12700,6 +12731,37 @@ message HideDesignPictureRequest {
 
 message HideDesignPictureResponse {
   common.DesignPicture picture = 1;
+}
+
+message UndoDesignEditRequest {
+  int32 picture_id = 1; // any link of the chain
+  // CAS: the current version the client saw (the picture whose undo corner was pressed).
+  int32 expected_current_id = 2;
+  string idempotency_key = 3; // required (UUID minted per gesture)
+}
+
+// The chain after the step — the band rows the step touched.
+message DesignEditChainState {
+  // The current version now.
+  int32 current_picture_id = 1;
+  // Every link of the chain, root first, with undone_at, can_undo and can_redo as stored now.
+  repeated common.DesignPicture pictures = 2;
+  // The bench slots that hold the current version now (the ones this step moved), slot_rev bumped.
+  repeated common.DesignBenchSlot slots = 3;
+}
+
+message UndoDesignEditResponse {
+  DesignEditChainState chain = 1;
+}
+
+message RedoDesignEditRequest {
+  int32 picture_id = 1; // any link of the chain
+  int32 expected_current_id = 2; // CAS, as in UndoDesignEditRequest
+  string idempotency_key = 3; // required
+}
+
+message RedoDesignEditResponse {
+  DesignEditChainState chain = 1;
 }
 
 message DeleteDesignPictureRequest {

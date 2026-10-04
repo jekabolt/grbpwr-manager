@@ -327,6 +327,10 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 		if pic.HiddenAt.Valid {
 			return nil, fmt.Errorf("%w: picture %d is hidden", entity.ErrDesignHiddenPlate, pic.Id)
 		}
+		// ОТМЕНЁННАЯ ПРАВКА (0387, T28 v2) на верстаке не стоит нигде — в слоте тоже. Вернуть её — redo.
+		if pic.UndoneAt.Valid {
+			return nil, fmt.Errorf("%w: picture %d is an undone edit", entity.ErrDesignUndonePicture, pic.Id)
+		}
 		// ONLY FOR SHOWING NEVER STANDS ON THE BENCH (0361, D-24). The bench is what runs read —
 		// designSelectBench takes its plates from the slots — so a slot is the one address through
 		// which a picture reaches a paid call without anybody naming it in a request. The owner's

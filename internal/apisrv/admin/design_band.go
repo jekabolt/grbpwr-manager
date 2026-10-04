@@ -152,6 +152,15 @@ var designRefusals = []struct {
 	{entity.ErrDesignTechnicalSheet, codes.FailedPrecondition, "technical_sheet"},
 	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
 	{entity.ErrDesignHiddenPicture, codes.FailedPrecondition, "hidden_picture"},
+	// ─── UNDO / REDO ПРАВКИ (0387, T28 v2) ───
+	//
+	// stale_chain — FailedPrecondition, как и велит контракт: CAS по текущей версии цепочки не сошёлся,
+	// клиент перечитывает полосу. undone_picture — жест над отменённым звеном (перезапись, разрез,
+	// постановка в слот); чинится redo либо «save as new».
+	{entity.ErrDesignStaleChain, codes.FailedPrecondition, "stale_chain"},
+	{entity.ErrDesignNothingToUndo, codes.FailedPrecondition, "nothing_to_undo"},
+	{entity.ErrDesignNothingToRedo, codes.FailedPrecondition, "nothing_to_redo"},
+	{entity.ErrDesignUndonePicture, codes.FailedPrecondition, "undone_picture"},
 	// ─── УДАЛИТЬ НАСОВСЕМ (O-68, D-74) ───
 	//
 	// picture_not_found — NotFound СВОИМ токеном, а не общим not_found: модалка удаления называет
@@ -634,6 +643,61 @@ func (s *Server) HideDesignPicture(ctx context.Context, req *pb_admin.HideDesign
 		return nil, designError(ctx, "failed to set design picture visibility", err, nil)
 	}
 	return &pb_admin.HideDesignPictureResponse{Picture: designPictureToPb(*pic)}, nil
+}
+
+// UndoDesignEdit takes back the current version of an edit chain (T28 v2).
+func (s *Server) UndoDesignEdit(ctx context.Context, req *pb_admin.UndoDesignEditRequest) (*pb_admin.UndoDesignEditResponse, error) {
+	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetIdempotencyKey())
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.repo.Design().UndoEdit(ctx, in)
+	if err != nil {
+		return nil, designError(ctx, "failed to undo the design edit", err, nil)
+	}
+	return &pb_admin.UndoDesignEditResponse{Chain: designEditChainToPb(res)}, nil
+}
+
+// RedoDesignEdit brings back the undone link after the current version (T28 v2).
+func (s *Server) RedoDesignEdit(ctx context.Context, req *pb_admin.RedoDesignEditRequest) (*pb_admin.RedoDesignEditResponse, error) {
+	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetIdempotencyKey())
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.repo.Design().RedoEdit(ctx, in)
+	if err != nil {
+		return nil, designError(ctx, "failed to redo the design edit", err, nil)
+	}
+	return &pb_admin.RedoDesignEditResponse{Chain: designEditChainToPb(res)}, nil
+}
+
+func designEditChainStepRequest(ctx context.Context, pictureID, expected int32, key string) (entity.DesignEditChainStepRequest, error) {
+	key = strings.TrimSpace(key)
+	if pictureID <= 0 || expected <= 0 {
+		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument, "picture_id and expected_current_id are required")
+	}
+	if key == "" {
+		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument, "idempotency_key is required")
+	}
+	if len([]rune(key)) > entity.DesignRequestKeyMaxRunes {
+		return entity.DesignEditChainStepRequest{}, status.Errorf(codes.InvalidArgument,
+			"idempotency_key is longer than %d characters", entity.DesignRequestKeyMaxRunes)
+	}
+	return entity.DesignEditChainStepRequest{
+		PictureId: int(pictureID), ExpectedCurrentId: int(expected), IdempotencyKey: key, Actor: designActor(ctx),
+	}, nil
+}
+
+func designEditChainToPb(res *entity.DesignEditChainResult) *pb_admin.DesignEditChainState {
+	out := &pb_admin.DesignEditChainState{
+		CurrentPictureId: int32(res.CurrentPictureId),
+		Pictures:         designPicturesToPb(res.Pictures),
+		Slots:            make([]*pb_common.DesignBenchSlot, 0, len(res.Slots)),
+	}
+	for _, sl := range res.Slots {
+		out.Slots = append(out.Slots, designSlotToPb(sl))
+	}
+	return out
 }
 
 // DeleteDesignPicture removes a derived picture FOR GOOD (O-68, D-74). The rows go in the store's
@@ -1406,6 +1470,12 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		// его от ОТСУТСТВИЯ ключа — так выглядит сервер старше поля, который заменять не умеет.
 		ReplacedBy: p.ReplacedBy.Int32,
 		CreatedAt:  timestamppb.New(p.CreatedAt),
+		// T28 v2: углы undo/redo по всей цепочке (стор, annotateEditChains).
+		CanUndo: p.CanUndo,
+		CanRedo: p.CanRedo,
+	}
+	if p.UndoneAt.Valid {
+		out.UndoneAt = timestamppb.New(p.UndoneAt.Time)
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)

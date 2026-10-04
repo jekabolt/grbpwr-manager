@@ -229,7 +229,13 @@ func loadPicturesByRuns(ctx context.Context, db dependency.DB, runIDs []int) (ma
 // resolveMedia fills the Media pointer of every picture in place, in ONE batch read, inside the
 // caller's transaction. A missing media row leaves Media nil rather than dropping the picture:
 // "the file disappeared" is a fact the band must be able to show, not a row to hide.
+//
+// УГЛЫ undo/redo (T28 v2) ставятся здесь же (annotateEditChains): это единственная воронка, через
+// которую кадр уходит наружу, и дверь, забывшая отдельный вызов, отдала бы кадр без углов молча.
 func resolveMedia(ctx context.Context, rep dependency.Repository, pics []*entity.DesignPicture) error {
+	if err := annotateEditChains(ctx, rep.DB(), pics); err != nil {
+		return err
+	}
 	ids := make([]int, 0, len(pics))
 	seen := map[int]struct{}{}
 	for _, p := range pics {

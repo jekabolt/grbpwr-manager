@@ -83,7 +83,7 @@ const DesignReplacementChainMax = 1024
 // таблица отказов хендлера и все пробы узнают отказ по-прежнему, а голову достаёт errors.As.
 type DesignReplacedError struct {
 	PictureId     int // названный кадр
-	HeadPictureId int // голова его цепочки замен: единственное звено с replaced_by = NULL
+	HeadPictureId int // голова его цепочки замен: текущая версия (до первого отменённого звена, 0387)
 }
 
 func (e *DesignReplacedError) Error() string {
@@ -93,7 +93,8 @@ func (e *DesignReplacedError) Error() string {
 
 func (e *DesignReplacedError) Unwrap() error { return ErrDesignAlreadyReplaced }
 
-// DesignReplacementHead — ГОЛОВА ЦЕПОЧКИ ЗАМЕН p: идти по replaced_by, пока он не NULL. Незаменённый
+// DesignReplacementHead — ГОЛОВА ЦЕПОЧКИ ЗАМЕН p: идти по replaced_by, пока он не NULL и следующее звено
+// не отменено (undone_at, 0387 — голова = текущая версия, DesignEditChainCurrent). Незаменённый
 // кадр — сам себе голова. load читает кадр по id: стор — в своей транзакции, хендлер — своим
 // чтением; обход один, чтобы два обхода не разошлись в том, что считать порчей.
 //
@@ -127,6 +128,10 @@ func DesignReplacementHead(p DesignPicture, load func(id int) (DesignPicture, er
 			return head, fmt.Errorf("design picture %d: the replacement chain leaves tech card %d at picture %d, which belongs to tech card %d",
 				p.Id, p.TechCardId, n.Id, n.TechCardId)
 		}
+		// ОТМЕНЁННОЕ ЗВЕНО (0387, T28 v2) — конец обхода: на месте стоит текущая версия, звено перед ним.
+		if n.UndoneAt.Valid {
+			break
+		}
 		head = n
 	}
 	return head, nil
@@ -153,11 +158,19 @@ type DesignReplaceFacts struct {
 	OnTechnicalSheet bool
 	// StandingPieces — сколько кусков кадра ещё стоят (DesignStandingPieces).
 	StandingPieces int
-	// SuccessorUndone — у кадра есть преемник (replaced_by), и он СПРЯТАН: правка, которую человек
-	// отменил (T28, undo = спрятать голову цепочки и вернуть слот предшественнику). Отменённая ветка
-	// места не занимает, и новая правка встаёт на место кадра поверх неё; сама ветка остаётся в
-	// истории спрятанной. Стор читает преемника в транзакции флэттена, ДО первого вызова решения.
+	// SuccessorUndone — у кадра есть преемник (replaced_by), и он ОТМЕНЁН (undone_at, 0387, T28 v2):
+	// правка, которую человек отменил (UndoEdit). Отменённая ветка места не занимает, и новая правка
+	// встаёт на место кадра поверх неё; сама ветка остаётся в истории отрезанной. Только undone_at:
+	// просто спрятанный преемник (hidden_at) место держит, как и прежде. Стор читает преемника в
+	// транзакции флэттена, ДО первого вызова решения.
 	SuccessorUndone bool
+}
+
+// DesignSuccessorUndone — ОСВОБОЖДАЕТ ЛИ ПРЕЕМНИК next МЕСТО КАДРА (DesignReplaceFacts.SuccessorUndone):
+// только отменённый (undone_at, 0387). Спрятанный, но не отменённый преемник место держит — hidden_at
+// и undone_at два разных факта (T28 v2).
+func DesignSuccessorUndone(next DesignPicture) bool {
+	return next.UndoneAt.Valid
 }
 
 // DesignReplaceRefusal — МОЖЕТ ЛИ ПРАВКА СЛОЯ ЗАНЯТЬ МЕСТО КАДРА original. nil = может.
@@ -173,9 +186,12 @@ type DesignReplaceFacts struct {
 //     не подложка слоя. Медиа сверяется с base_media_id, а не с source_picture_id: слой держится
 //     ключом подложки (один слой на файл), и равенство файлов — ровно то, что делает правку
 //     картинкой ЭТОГО кадра. Две регистрации одного файла обе годятся: место занимается у НАЗВАННОЙ.
-//  2. already_replaced — replaced_by уже стоит, и преемник НЕ отменён (T28: спрятанный преемник —
-//     отменённая правка, facts.SuccessorUndone, и место кадра снова свободно). Проверяется NULL-ность, а не знак, ровно как
-//     `replaced_by IS NULL` в самом UPDATE: два сторожа одного факта не расходятся ни на одной строке.
+//  2. already_replaced — replaced_by уже стоит, и преемник НЕ отменён (T28 v2: преемник с undone_at —
+//     отменённая правка, facts.SuccessorUndone, и место кадра снова свободно; спрятанный, но не
+//     отменённый преемник место держит). Штамп стора пишет поверх ровно прочитанного
+//     (`replaced_by <=> :was`): два сторожа одного факта не расходятся ни на одной строке.
+//     undone_picture — сам оригинал ОТМЕНЁН: его преемник встал бы за отменённым звеном, то есть
+//     нигде (ErrDesignUndonePicture). Сразу после already_replaced.
 //     Голову цепочки здесь не узнать — это чтение, — и стор дописывает её (DesignAlreadyReplaced).
 //  3. hidden_picture — оригинал СПРЯТАН (hidden_at, 27.09): правка встала бы преемником кадра, которого
 //     на экране нет (ErrDesignHiddenPicture). Чтения не нужно — hidden_at лежит на уже прочитанной
@@ -213,6 +229,10 @@ func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original D
 	if original.ReplacedBy.Valid && !facts.SuccessorUndone {
 		return fmt.Errorf("%w: picture %d was already replaced by picture %d",
 			ErrDesignAlreadyReplaced, original.Id, original.ReplacedBy.Int32)
+	}
+	if original.UndoneAt.Valid {
+		return fmt.Errorf("%w: the original, picture %d, is an undone edit — redo it first, or save the edit as a new picture",
+			ErrDesignUndonePicture, original.Id)
 	}
 	if original.HiddenAt.Valid {
 		return fmt.Errorf("%w: the original, picture %d, is hidden — an edit cannot take a hidden picture's place; "+
@@ -704,6 +724,11 @@ func (l *designBranchLoad) read(read func(ids []int, limit int) ([]DesignBranchN
 func DesignSplitHiddenRefusal(p DesignPicture) error {
 	if p.HiddenAt.Valid {
 		return fmt.Errorf("%w: picture %d is hidden; show it before cutting it", ErrDesignHiddenPicture, p.Id)
+	}
+	// ОТМЕНЁННАЯ ПРАВКА (0387, T28 v2) на верстаке не стоит, и её куски родились бы видимыми под
+	// звеном, которого нет на экране — тот же довод, что у спрятанного.
+	if p.UndoneAt.Valid {
+		return fmt.Errorf("%w: picture %d is an undone edit; redo it before cutting it", ErrDesignUndonePicture, p.Id)
 	}
 	return nil
 }

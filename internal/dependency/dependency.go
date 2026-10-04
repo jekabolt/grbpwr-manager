@@ -2097,6 +2097,11 @@ type (
 		// HidePicture is the only persistent verb for picture invisibility; its four guards read
 		// in the same transaction as the update.
 		HidePicture(ctx context.Context, pictureID int, hidden bool, actor string) (*entity.DesignPicture, error)
+		// UndoEdit / RedoEdit step an edit chain (replaced_by) back or forward (T28 v2): one
+		// transaction each — the chain rows locked, a CAS on the current version, undone_at set or
+		// cleared, the slots of the old current version moved to the new one.
+		UndoEdit(ctx context.Context, req entity.DesignEditChainStepRequest) (*entity.DesignEditChainResult, error)
+		RedoEdit(ctx context.Context, req entity.DesignEditChainStepRequest) (*entity.DesignEditChainResult, error)
 		// DeletePicture removes a DERIVED picture FOR GOOD with everything derived from it (O-68,
 		// D-74): the picture rows children first, the edit layer of the card whose base is one of
 		// their media, and by the schema's own hand the asset placements on them. ROWS ONLY, in one
