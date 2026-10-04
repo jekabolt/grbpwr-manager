@@ -931,8 +931,13 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		}
 		// A hardware run (a zip, a button) is not cloth: «fabric in words» would introduce the item's
 		// description as a note about a fabric. hardwareCraft points at «the words above» generically.
-		if run.Kind == entity.DesignRunKindPattern && p.Pattern != nil && p.Pattern.Mode == entity.DesignPatternModeHardware {
-			wordsLabel = "item in words"
+		if run.Kind == entity.DesignRunKindPattern && p.Pattern != nil {
+			switch p.Pattern.Mode {
+			case entity.DesignPatternModeHardware:
+				wordsLabel = "item in words"
+			case entity.DesignPatternModeLabel:
+				wordsLabel = "label in words"
+			}
 		}
 		write(wordsLabel, c.Words)
 	}

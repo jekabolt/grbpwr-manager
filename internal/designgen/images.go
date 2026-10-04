@@ -362,6 +362,15 @@ func imageCalls(job Job) ([]imageCall, error) {
 			}
 			return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
 		}
+		// A LABEL takes 0..1 picture — its logo artwork (the door refuses more with
+		// `too_many_references`): two logos would blend into a third mark.
+		if job.PatternMode == entity.DesignPatternModeLabel {
+			if len(job.References) > 1 {
+				return nil, fmt.Errorf("%w: a label picture takes at most one picture — its logo — and "+
+					"this run resolved %d", orimages.ErrBadRequest, len(job.References))
+			}
+			return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+		}
 		if job.PatternMode == entity.DesignPatternModeSwatch {
 			if len(job.References) > 1 {
 				return nil, fmt.Errorf("%w: a swatch takes at most one texture reference, and this run "+

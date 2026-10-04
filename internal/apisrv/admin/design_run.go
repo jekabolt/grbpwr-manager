@@ -1270,7 +1270,7 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 						"Nothing was reserved and nothing was charged", sources),
 					map[string]string{"named": strconv.Itoa(sources)})
 			}
-		case entity.DesignPatternModeHardware:
+		case entity.DesignPatternModeHardware, entity.DesignPatternModeLabel:
 			// ФУРНИТУРА — СНИМОК ОДНОЙ ВЕЩИ ДЛЯ ОДНОЙ ПАРЫ (колорвей, строка BOM). Без пары снимок
 			// садился бы на полку ничьим, а верстак читает только связки — то есть платная картинка,
 			// которую экран не покажет. Принадлежность строки и колорвея карточке проверяют свои
@@ -1283,6 +1283,14 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 			}
 			// ЦВЕТ НЕОБЯЗАТЕЛЕН: у кнопки из рога или латунной молнии цвет — это материал, и
 			// слова вещи (params.colour.words / ask) его уже называют. Референсы — форма и материал.
+			// БИРКА БЕРЁТ ОДНУ КАРТИНКУ — СВОЙ ЛОГОТИП. Два логотипа модель слила бы в третий знак.
+			if mode == entity.DesignPatternModeLabel && sources > 1 {
+				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTooManyReferences,
+					fmt.Sprintf("a label picture takes at most one picture — its logo artwork — and this "+
+						"run names %d: keep one picture in params.extra_input_media_ids, or none for a "+
+						"blank label. Nothing was reserved and nothing was charged", sources),
+					map[string]string{"named": strconv.Itoa(sources)})
+			}
 			if sources > entity.MaxDesignHardwareReferences {
 				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTooManyReferences,
 					fmt.Sprintf("a hardware picture takes at most %d reference pictures, and this run "+
@@ -1300,10 +1308,10 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 			}
 		default:
 			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeUnknownPatternMode,
-				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty), %q nor %q. Nothing was "+
-					"reserved and nothing was charged",
+				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty), %q, %q nor %q. Nothing "+
+					"was reserved and nothing was charged",
 					mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch,
-					entity.DesignPatternModeHardware),
+					entity.DesignPatternModeHardware, entity.DesignPatternModeLabel),
 				map[string]string{"mode": mode})
 		}
 		name := strings.TrimSpace(params.GetPattern().GetName())
@@ -2026,7 +2034,7 @@ func designRefuseForeignBomLine(cardID int, spoken *pb_common.DesignRunParams, b
 		roll := entity.IsRollGoodsSection(line.Section)
 		meta := map[string]string{"bom_item_id": strconv.Itoa(id), "section": string(line.Section)}
 		switch spoken.GetPattern().GetMode() {
-		case entity.DesignPatternModeHardware:
+		case entity.DesignPatternModeHardware, entity.DesignPatternModeLabel:
 			if roll {
 				return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeHardwareOnClothLine,
 					fmt.Sprintf("params.pattern.bom_item_id %d is a %s line — roll goods — and a hardware "+

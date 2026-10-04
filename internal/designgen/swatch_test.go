@@ -186,3 +186,44 @@ func TestAHardwarePictureTAKES_UP_TO_FOUR_REFERENCES_IN_ONE_CALL(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, classify(err).Retryable)
 }
+
+// TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN: mode label writes labelCraft, not hardwareCraft —
+// the one picture is the LOGO ARTWORK to reproduce (hardware would say «not necessarily for the
+// colour» and exclude any logo), and with no picture the label is blank, no invented wordmark.
+func TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN(t *testing.T) {
+	for _, pictures := range []int{0, 1} {
+		got := patternCraft(patternParams{Mode: entity.DesignPatternModeLabel, RepeatMM: 80}, pictures)
+		low := strings.ToLower(got)
+		for _, must := range []string{"garment label:", "plain, seamless pure white background",
+			"soft, even studio light", "context only", "never draw the garment"} {
+			require.Containsf(t, low, must, "%d pictures: must say %q", pictures, must)
+		}
+		for _, never := range []string{"hardware item:", "not necessarily for the colour", "logo that the words",
+			"repeating tile", "repeat"} {
+			require.NotContainsf(t, low, never, "%d pictures: must not say %q", pictures, never)
+		}
+		if pictures > 0 {
+			require.Contains(t, got, "LOGO ARTWORK")
+			require.NotContains(t, low, "no logo is given")
+		} else {
+			require.Contains(t, low, "no logo is given")
+			require.NotContains(t, got, "LOGO ARTWORK")
+		}
+	}
+}
+
+// TestALabelPictureTAKES_AT_MOST_ONE_PICTURE: the logo, in one call; two refuse at the money boundary.
+func TestALabelPictureTAKES_AT_MOST_ONE_PICTURE(t *testing.T) {
+	for _, refs := range [][]string{nil, {"logo"}} {
+		calls, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeLabel,
+			Prompt: "label", References: refs})
+		require.NoErrorf(t, err, "%d refs", len(refs))
+		require.Len(t, calls, 1)
+		require.Equal(t, 1, calls[0].n)
+		require.Len(t, calls[0].refs, len(refs))
+	}
+	_, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeLabel,
+		References: []string{"a", "b"}})
+	require.Error(t, err)
+	require.False(t, classify(err).Retryable)
+}

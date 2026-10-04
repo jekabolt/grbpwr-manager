@@ -1211,10 +1211,14 @@ func DesignExtendRatioValue(r string) (float64, bool) {
 //     отделка, бирка) для пары (колорвей, строка BOM): слот и колорвей обязательны, цвет
 //     необязателен, 0–MaxDesignHardwareReferences референсов формы и материала. Садится на полку
 //     ассетом рода hardware и сразу привязывается к паре — это НЕ плитка, раппорта у него нет.
+//   - DesignPatternModeLabel — предметный снимок ОДНОЙ бирки одежды, плоско, анфас; во всём, кроме
+//     промпта и числа картинок, это hardware (та же пара, та же полка, тот же род ассета). 0–1
+//     картинка — и это ЛОГОТИП бренда, который бирка несёт, а не референс формы.
 const (
 	DesignPatternModeImage    = "image"
 	DesignPatternModeSwatch   = "swatch"
 	DesignPatternModeHardware = "hardware"
+	DesignPatternModeLabel    = "label"
 )
 
 // MaxDesignHardwareReferences — сколько референсов формы/материала берёт прогон фурнитуры.

@@ -104,6 +104,36 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "", p)))
 	})
 
+	t.Run("label: slot required, colour optional, 0..1 picture (the logo)", func(t *testing.T) {
+		lb := func(cw int32, bom int32, refs ...int32) *pb_common.DesignRunParams {
+			return &pb_common.DesignRunParams{
+				ColorwayId:         cw,
+				ExtraInputMediaIds: refs,
+				Pattern: &pb_common.DesignPatternParams{Name: "brand label", Mode: entity.DesignPatternModeLabel,
+					BomItemId: bom},
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			params *pb_common.DesignRunParams
+			reason string
+		}{
+			{"blank label", lb(13, 904), ""},
+			{"one logo", lb(13, 904, 1), ""},
+			{"two pictures", lb(13, 904, 1, 2), entity.DesignErrorCodeTooManyReferences},
+			{"no bom line", lb(13, 0), entity.DesignErrorCodeHardwareNeedsSlot},
+			{"no colourway", lb(0, 904), entity.DesignErrorCodeHardwareNeedsSlot},
+		} {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoErrorf(t, err, tc.name)
+				continue
+			}
+			require.Equalf(t, codes.InvalidArgument, status.Code(err), tc.name)
+			require.Equalf(t, tc.reason, ffReason(t, err), tc.name)
+		}
+	})
+
 	t.Run("a swatch still needs its name", func(t *testing.T) {
 		p := swatch(hex)
 		p.Pattern.Name = " "
@@ -189,6 +219,8 @@ func TestTheBomLineDoorJUDGES_THE_FAMILY_BY_MODE(t *testing.T) {
 		{"hardware on a thread line", entity.DesignPatternModeHardware, 905, ""},
 		{"hardware on a fabric line", entity.DesignPatternModeHardware, 902, entity.DesignErrorCodeHardwareOnClothLine},
 		{"hardware on an insulation line", entity.DesignPatternModeHardware, 906, entity.DesignErrorCodeHardwareOnClothLine},
+		{"label on a hardware line", entity.DesignPatternModeLabel, 904, ""},
+		{"label on a fabric line", entity.DesignPatternModeLabel, 902, entity.DesignErrorCodeHardwareOnClothLine},
 		{"swatch on a fabric line", entity.DesignPatternModeSwatch, 902, ""},
 		{"swatch on an insulation line", entity.DesignPatternModeSwatch, 906, ""},
 		{"swatch on a hardware line", entity.DesignPatternModeSwatch, 904, entity.DesignErrorCodeClothOnTrimLine},

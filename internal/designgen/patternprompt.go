@@ -66,6 +66,11 @@ import (
 func patternCraft(p patternParams, pictures int) string {
 	// ФУРНИТУРА — НЕ ПЛИТКА. Ни стыка, ни раппорта, ни «заполни кадр от края до края»: это
 	// предметный снимок одной вещи на белом, и общая половина ремесла плитки ему противоречит.
+	// БИРКА — ТОЖЕ ПРЕДМЕТНЫЙ СНИМОК, но её картинка — логотип, который нужно воспроизвести, а
+	// hardwareCraft велит у референсов цвет не брать и исключает «любой логотип» — ровно обратное.
+	if p.Mode == entity.DesignPatternModeLabel {
+		return labelCraft(pictures)
+	}
 	if p.Mode == entity.DesignPatternModeHardware {
 		return hardwareCraft(pictures)
 	}
@@ -221,6 +226,44 @@ func hardwareCraft(pictures int) string {
 	} else {
 		b.WriteString(" No picture is attached: build the item from the words alone, as a real, " +
 			"manufactured trim item would look.")
+	}
+	return b.String()
+}
+
+// labelCraft — mode label: ONE product photograph of ONE garment label, flat, front view. Its
+// 0..1 attached picture is the brand's LOGO ARTWORK, reproduced exactly — the opposite of
+// hardwareCraft, whose references give shape only and whose exclusions drop any logo. «sewn at …»
+// in the words is context (where the label sits on the garment), never something to draw.
+func labelCraft(pictures int) string {
+	var b strings.Builder
+	b.WriteString("garment label:\n" +
+		"Produce ONE square product photograph of a single garment LABEL as described in the words " +
+		"above — shown alone, lying flat, in front view, whole and in sharp focus, centered on a plain, " +
+		"seamless pure white background, with generous empty space around it.\n")
+	b.WriteString("Light it with soft, even studio light: no hard cast shadow, no hot spot, no " +
+		"coloured reflection; at most a faint soft contact shadow directly beneath the item.\n")
+	b.WriteString("Strictly excluded: any garment, cloth or fabric the item is attached to; any hand, " +
+		"body part, mannequin or packaging; any props, surface texture, scenery or second item; any " +
+		"text, caption or watermark that the words do not name, measurement, ruler or frame.\n")
+	b.WriteString("Build the label the words describe: its construction — woven, printed, satin, " +
+		"leather patch, rubber, embroidered or whatever the words name — with that technique's real " +
+		"surface: the woven threads of a woven label, the ink of a print, the debossing of leather, " +
+		"the moulded relief of rubber, the stitches of embroidery. Keep the proportions of its stated " +
+		"size; if the words name a fold, show the finished folded label. If a colour is stated above, " +
+		"the label ground is that colour: match the stated colour value exactly, not a tint of it and " +
+		"not a lighting effect on it. If no colour is stated, give the ground the natural colour of " +
+		"its construction.\n")
+	b.WriteString("Where the words say «sewn at …», that names where the label sits on the garment — " +
+		"CONTEXT ONLY: never draw the garment, the seam or any stitching into cloth; the picture is " +
+		"the label alone.")
+	if pictures > 0 {
+		b.WriteString(" The attached picture is the brand's LOGO ARTWORK: reproduce the mark exactly — " +
+			"its letterforms, proportions and spacing — as the label's artwork, executed in the label's " +
+			"technique (woven, printed, embossed, embroidered…). Add, drop, restyle or redraw nothing, " +
+			"take nothing of the picture's background, and render no text the words do not name.")
+	} else {
+		b.WriteString(" No logo is given: make a blank label carrying only what the words name — " +
+			"invent no wordmark, no monogram, no text.")
 	}
 	return b.String()
 }

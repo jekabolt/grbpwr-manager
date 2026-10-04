@@ -209,7 +209,8 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	// ФУРНИТУРА (mode hardware) — НЕ ПЛИТКА: садится ассетом рода hardware, без раппорта и без
 	// родословной, и привязывается к паре ровно как свотч. Колорвей целиком она не носит никогда
 	// (SetAssetColorway ей отказывает), поэтому legacy-колонку не трогает и без слота.
-	hardware := p.Pattern.Mode == entity.DesignPatternModeHardware
+	// Бирка (mode label) садится так же: тот же род hardware, та же пара.
+	hardware := p.Pattern.Mode == entity.DesignPatternModeHardware || p.Pattern.Mode == entity.DesignPatternModeLabel
 	kind := entity.DesignAssetKindPattern
 	if hardware {
 		kind = entity.DesignAssetKindHardware
