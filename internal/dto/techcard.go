@@ -863,6 +863,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, entity.NewFieldViolation(path+".client_ref", "too_long", "",
 				fmt.Sprintf("a callout's client key is at most %d characters", maxVarchar64))
 		}
+		spec, err := calloutSpecFromPb(path, c.Spec)
+		if err != nil {
+			return nil, err
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(part),
@@ -887,6 +891,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			// Ключ строки едет ДО минта номера: именно он — гейт минта (см. ClientRef), и хендлер
 			// читает его на уже разобранной сущности.
 			ClientRef: nullStringFromPb(c.ClientRef),
+			// Назначение выноски (0388) — канонизированный JSON-объект; пусто ⇒ NULL.
+			Spec: nullStringFromPb(spec),
 		})
 	}
 
@@ -1448,6 +1454,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			// сопоставляет свою строку с серверным номером по нему, а не по номеру, которого у
 			// новой строки ещё не было. Пусто у всего, что заведено до 0345.
 			ClientRef: pbStringFromNull(c.ClientRef),
+			Spec:      pbStringFromNull(c.Spec),
 		})
 	}
 

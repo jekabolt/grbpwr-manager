@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -803,6 +804,35 @@ type TechCardCallout struct {
 	//   3. НЕ ОБЯЗАТЕЛЕН. Хранимые строки читаются с пустым ключом; старый клиент его не шлёт, его
 	//      номера остаются его, и он ничего не теряет.
 	ClientRef sql.NullString `db:"client_ref"`
+	// Spec — НАЗНАЧЕНИЕ выноски и её структурное содержимое (0388): JSON-объект строкой, канонизированный
+	// CanonicalCalloutSpec. Ось, ортогональная виду, как Caps. NULL в колонке ↔ "" здесь: обычная выноска.
+	// Входит в атомарную группу геометрии (перенос при KindOmitted) и в подпись DESIGN четвёртым хвостом.
+	Spec sql.NullString `db:"spec"`
+}
+
+// MaxCalloutSpecBytes — предел канонизированного spec выноски.
+const MaxCalloutSpecBytes = 16384
+
+// CanonicalCalloutSpec приводит spec выноски к одному написанию: пусто остаётся пустым, JSON-объект
+// перемаршаливается с ключами по алфавиту. Нужна И на записи, И на чтении: MySQL хранит JSON бинарно
+// и отдаёт его в своём порядке ключей и со своими пробелами, и без второй канонизации отпечаток DESIGN
+// не совпадал бы сам с собой. Ошибка — не объект (массив, скаляр, битый JSON).
+func CanonicalCalloutSpec(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", err
+	}
+	if obj == nil {
+		return "", fmt.Errorf("spec is null, not an object")
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // PartList — детали указания ОДНИМ СПИСКОМ, по единственному правилу: непустой список главнее,

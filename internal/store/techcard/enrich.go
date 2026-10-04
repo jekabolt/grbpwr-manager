@@ -299,7 +299,7 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
 		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y,
-		       kind, color, dashed, filled, caps, points, parts, client_ref
+		       kind, color, dashed, filled, caps, points, parts, client_ref, spec
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -319,6 +319,19 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 				c.Points = nil
 				c.Kind = entity.AnnotationKindPin
 			}
+		}
+		if c.Spec.Valid {
+			// MySQL отдаёт JSON в своём порядке ключей и со своими пробелами: канонизируем тем же
+			// правилом, что на записи, иначе отпечаток DESIGN не совпал бы сам с собой. Битое
+			// значение читается как обычная выноска — видно, а чтение карточки не падает.
+			spec, err := entity.CanonicalCalloutSpec(c.Spec.String)
+			if err != nil {
+				slog.Default().Error("tech card callout: broken spec json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				spec = ""
+			}
+			c.Spec = sql.NullString{String: spec, Valid: spec != ""}
 		}
 		if len(c.PartsRaw) > 0 {
 			// Битый список деталей — та же логика, что у якорей: указание остаётся с одной

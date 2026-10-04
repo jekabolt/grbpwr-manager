@@ -327,18 +327,30 @@ func designProjection(tc *entity.TechCardInsert) any {
 		// ВХОДИТ В ПОДПИСЬ, как пунктир, а не как цвет: засечка говорит «этот участок измерен»,
 		// стрелка — «смотри сюда», точка — «вот здесь». Это разные указания цеху.
 		caps := c.Caps != "" && calloutKindOrPin(c.Kind).HasCaps()
-		if geom || style || caps {
+		// ЧЕТВЁРТЫЙ ХВОСТ — НАЗНАЧЕНИЕ (0388), открывается ТОЛЬКО непустым spec и тянет за собой все
+		// три предыдущих по тому же правилу: позиция в кортеже обязана значить одно и то же. Карточка,
+		// где назначения никто не выбирал, хэшируется байт в байт как до 0388. Spec уже канонизирован
+		// (ключи по алфавиту) и на записи, и на чтении.
+		spec := c.Spec.Valid && c.Spec.String != ""
+		if geom || style || caps || spec {
 			points := make([]any, 0, len(c.Points))
 			for _, p := range c.Points {
 				points = append(points, []any{p.X.String(), p.Y.String()})
 			}
 			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
 		}
-		if style || caps {
+		if style || caps || spec {
 			row = append(row, []any{c.Dashed, c.Filled, parts})
 		}
-		if caps {
-			row = append(row, string(c.Caps))
+		if caps || spec {
+			capsVal := ""
+			if caps {
+				capsVal = string(c.Caps)
+			}
+			row = append(row, capsVal)
+		}
+		if spec {
+			row = append(row, c.Spec.String)
 		}
 		callouts = append(callouts, row)
 	}

@@ -2046,7 +2046,9 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			// возвращается круглым рейсом; NULL у всего, что заведено раньше, и у любого клиента,
 			// который про ключи не знает. Индекса на колонке нет намеренно — сопоставление идёт в
 			// памяти по payload, а не запросом.
-			"client_ref":    c.ClientRef,
+			"client_ref": c.ClientRef,
+			// Назначение выноски (0388): канонизированный JSON-объект; "" ⇒ NULL, а не пустой объект.
+			"spec":          nullCalloutSpec(c.Spec),
 			"display_order": i,
 		})
 	}
@@ -2106,4 +2108,13 @@ func clampPagination(limit, offset int) (int, int) {
 func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)
+}
+
+// nullCalloutSpec — пустой spec пишется NULL: JSON-колонка не принимает пустую строку, и «обычная
+// выноска» должна лежать одним способом.
+func nullCalloutSpec(v sql.NullString) any {
+	if !v.Valid || v.String == "" {
+		return nil
+	}
+	return v.String
 }

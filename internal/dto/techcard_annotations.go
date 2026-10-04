@@ -551,6 +551,26 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 	}, nil
 }
 
+// calloutSpecFromPb проверяет и канонизирует назначение выноски (0388): пусто или JSON-объект не
+// длиннее entity.MaxCalloutSpecBytes. Канонизация — ключи по алфавиту, чтобы один и тот же spec,
+// присланный в другом порядке ключей, не двигал подпись DESIGN.
+func calloutSpecFromPb(path, raw string) (string, error) {
+	if len(raw) > entity.MaxCalloutSpecBytes {
+		return "", entity.NewFieldViolation(path+".spec", "too_long", "",
+			fmt.Sprintf("a callout spec is at most %d bytes", entity.MaxCalloutSpecBytes))
+	}
+	spec, err := entity.CanonicalCalloutSpec(raw)
+	if err != nil {
+		return "", entity.NewFieldViolation(path+".spec", "invalid", "",
+			"a callout spec is a JSON object")
+	}
+	if len(spec) > entity.MaxCalloutSpecBytes {
+		return "", entity.NewFieldViolation(path+".spec", "too_long", "",
+			fmt.Sprintf("a callout spec is at most %d bytes", entity.MaxCalloutSpecBytes))
+	}
+	return spec, nil
+}
+
 // calloutParts сводит СПИСОК деталей карточного указания и старое одиночное `part` к одному
 // списку — теми же правилами, что annotationPieceKeys, и по той же причине: пустой список
 // читается как [part], непустой вытесняет его целиком.
@@ -644,6 +664,9 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		// Наконечник — та же группа: перенести якоря и потерять стрелку значило бы отдать в цех
 		// другую линию, ровно как с пунктиром.
 		tc.Callouts[i].Caps = prev.Caps
+		// Назначение (0388) — та же группа: вкладка, не знающая вида, не знает и spec, и молча
+		// превратить узел крупно или шов обратно в простую точку значило бы стереть указание цеху.
+		tc.Callouts[i].Spec = prev.Spec
 	}
 }
 
