@@ -350,7 +350,91 @@ func bindKeptPatternTx(ctx context.Context, db dependency.DB, run entity.DesignR
 			slog.Int("tech_card_id", run.TechCardId), slog.Int("bom_item_id", bomItemID))
 		return nil
 	}
-	return upsertAssetBindingTx(ctx, db, run.TechCardId, cw, bomItemID, assetID, run.Author)
+	prev, err := pairAssetTx(ctx, db, cw, bomItemID)
+	if err != nil {
+		return err
+	}
+	if err := upsertAssetBindingTx(ctx, db, run.TechCardId, cw, bomItemID, assetID, run.Author); err != nil {
+		return err
+	}
+	if prev != assetID {
+		return dropSupersededHardwareTx(ctx, db, prev)
+	}
+	return nil
+}
+
+// pairAssetTx — какой ассет сейчас носит пара (колорвей, слот); 0 = пара пуста. Читается в
+// транзакции записи ДО неё: после upsert прежнего номера уже не узнать.
+func pairAssetTx(ctx context.Context, db dependency.DB, cw, bomItemID int) (int, error) {
+	ids, err := storeutil.QueryScalarListNamed[int](ctx, db, `
+		SELECT asset_id FROM design_asset_binding WHERE colorway_id = :cw AND bom_item_id = :bom`,
+		map[string]any{"cw": cw, "bom": bomItemID})
+	if err != nil {
+		return 0, fmt.Errorf("failed to read the asset of colourway %d on BOM line %d: %w", cw, bomItemID, err)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return ids[0], nil
+}
+
+// dropSupersededHardwareTx — СНИМОК ФУРНИТУРЫ, КОТОРЫЙ ПЕРЕСТАЛ БЫТЬ КАРТИНКОЙ ХОТЬ ОДНОЙ ПАРЫ,
+// УДАЛЯЕТСЯ в той же транзакции, что его заменила либо сняла. Снимок фурнитуры делается ДЛЯ пары и
+// вне пары не значит ничего — на полке он был бы мусором, который копится с каждым перезаказом.
+//
+// ⚠ ТОЛЬКО kind = hardware. Ткани и паттерны — библиотека, которой человек управляет сам: они
+// переживают снятие с любой пары. И только сирота: ни связки, ни метки на флэте, ни носки колорвея
+// (colorway_id), ни паттерна, сделанного из него (derived_from_asset_id). Любая из этих ссылок —
+// повод оставить. Проверки и DELETE идут отдельными операторами: MySQL не даёт подзапросу DELETE
+// читать ту же таблицу (1093), а SERIALIZABLE держит прочитанное до коммита.
+func dropSupersededHardwareTx(ctx context.Context, db dependency.DB, assetID int) error {
+	if assetID <= 0 {
+		return nil
+	}
+	a, err := assetByID(ctx, db, assetID)
+	if err != nil {
+		if errors.Is(err, entity.ErrDesignNotFound) {
+			return nil
+		}
+		return err
+	}
+	if a.Kind != entity.DesignAssetKindHardware || a.ColorwayId.Valid {
+		return nil
+	}
+	refs, err := storeutil.QueryCountNamed(ctx, db, `
+		SELECT
+			(SELECT COUNT(*) FROM design_asset_binding   WHERE asset_id = :id) +
+			(SELECT COUNT(*) FROM design_asset_placement WHERE asset_id = :id) +
+			(SELECT COUNT(*) FROM design_asset           WHERE derived_from_asset_id = :id)`,
+		map[string]any{"id": assetID})
+	if err != nil {
+		return fmt.Errorf("failed to count the references of superseded hardware asset %d: %w", assetID, err)
+	}
+	if refs > 0 {
+		return nil
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM design_asset WHERE id = :id AND kind = :kind`,
+		map[string]any{"id": assetID, "kind": entity.DesignAssetKindHardware}); err != nil {
+		return fmt.Errorf("failed to drop superseded hardware asset %d: %w", assetID, err)
+	}
+	slog.InfoContext(ctx, "design: superseded hardware asset dropped",
+		slog.Int("tech_card_id", a.TechCardId), slog.Int("asset_id", assetID))
+	return nil
+}
+
+// bomLineSectionOfCard — секция строки BOM этой карточки; ok=false, если строки у карточки нет.
+func bomLineSectionOfCard(ctx context.Context, db dependency.DB, cardID, bomItemID int) (entity.TechCardBomSection, bool, error) {
+	secs, err := storeutil.QueryScalarListNamed[string](ctx, db,
+		`SELECT section FROM tech_card_bom_item WHERE id = :bom AND tech_card_id = :card`,
+		map[string]any{"bom": bomItemID, "card": cardID})
+	if err != nil {
+		return "", false, fmt.Errorf("failed to read BOM line %d of tech card %d: %w", bomItemID, cardID, err)
+	}
+	if len(secs) == 0 {
+		return "", false, nil
+	}
+	return entity.TechCardBomSection(secs[0]), true, nil
 }
 
 // Ширины colour_code / colour_hex из 0354. Посадка не отказывает — она пишет оплаченный результат,
@@ -433,8 +517,13 @@ func upsertAssetBindingTx(ctx context.Context, db dependency.DB, cardID, cw, bom
 // the asset (NotFound for another card's; any kind binds — a hardware asset is the picture of a
 // hardware slot), the colourway (foreign_colorway) and the BOM line (foreign_bom_line). None of
 // the three is expressible in the schema: the four foreign keys are each satisfied by a row of ANY
-// card. The line's SECTION is not judged — which lines are cloth slots is the screen's reading of
-// the BOM, and a server rule here would be a second copy of it.
+// card. The asset's KIND is judged against the line's family on a bind: hardware only on a line
+// that is not roll goods (hardware_on_cloth_line), fabric|pattern only on a roll-goods line
+// (cloth_on_trim_line) — entity.IsRollGoodsSection is the one reading of «roll goods».
+//
+// A SUPERSEDED HARDWARE PICTURE IS DROPPED: when the pair's previous asset was hardware and the
+// rebind or unbind leaves it referenced by nothing, it is deleted in this transaction
+// (dropSupersededHardwareTx). Fabric and pattern rows are never dropped here.
 //
 // IT DOES NOT TOUCH design_asset.colorway_id: that is the legacy whole-colourway fabric and has its
 // own verb (SetAssetColorway).
@@ -455,21 +544,36 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		out = nil
 		db := rep.DB()
+		var asset entity.DesignAsset
 		if req.AssetId > 0 {
 			// ФУРНИТУРА ТОЖЕ БИНДИТСЯ (fabrics and hardware bench): связка — это «картинка этой
-			// пары», а пара фурнитуры — строка BOM пуговиц или молнии. Род ассета здесь не судится,
-			// как не судится и секция строки; legacy-колонку колорвея (SetAssetColorway) фурнитура
-			// по-прежнему не носит.
-			if _, err := requireAssetOfCard(ctx, db, req.TechCardId, req.AssetId); err != nil {
+			// пары», а пара фурнитуры — строка BOM пуговиц или молнии. Род ассета судится против
+			// семьи строки ниже; legacy-колонку колорвея (SetAssetColorway) фурнитура по-прежнему
+			// не носит.
+			var err error
+			if asset, err = requireAssetOfCard(ctx, db, req.TechCardId, req.AssetId); err != nil {
 				return err
 			}
 		}
 		if err := assertColorwayOfCard(ctx, db, req.TechCardId, req.ColorwayId); err != nil {
 			return err
 		}
-		ok, err := bomLineOfCard(ctx, db, req.TechCardId, req.BomItemId)
+		section, ok, err := bomLineSectionOfCard(ctx, db, req.TechCardId, req.BomItemId)
 		if err != nil {
 			return err
+		}
+		if ok && req.AssetId > 0 {
+			// РОД ПРОТИВ СЕМЬИ: фурнитура — только на не-рулонную строку, ткань и паттерн — только
+			// на рулонную. Тот же токен, что у денежной двери прогона паттерна.
+			roll := entity.IsRollGoodsSection(section)
+			if asset.Kind == entity.DesignAssetKindHardware && roll {
+				return fmt.Errorf("%w: asset %d is hardware and BOM line %d is a %s line (roll goods)",
+					entity.ErrDesignHardwareOnClothLine, req.AssetId, req.BomItemId, section)
+			}
+			if asset.Kind != entity.DesignAssetKindHardware && !roll {
+				return fmt.Errorf("%w: asset %d is a %s and BOM line %d is a %s line, not roll goods",
+					entity.ErrDesignClothOnTrimLine, req.AssetId, asset.Kind, req.BomItemId, section)
+			}
 		}
 		if !ok {
 			// СНЯТИЕ С ПРОПАВШЕЙ СТРОКИ — НЕ ОТКАЗ (ревью STEP 3). Строку BOM законно удаляют, пока
@@ -490,6 +594,12 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 			}
 		}
 		pair := map[string]any{"cw": req.ColorwayId, "bom": req.BomItemId, "card": req.TechCardId}
+		// ПРЕЖНИЙ АССЕТ ПАРЫ — ДО ЗАПИСИ: заменённый либо снятый снимок фурнитуры, оставшийся
+		// сиротой, удаляется в этой же транзакции (dropSupersededHardwareTx).
+		prev, err := pairAssetTx(ctx, db, req.ColorwayId, req.BomItemId)
+		if err != nil {
+			return err
+		}
 		if req.AssetId == 0 {
 			if err := storeutil.ExecNamed(ctx, db, `
 				DELETE FROM design_asset_binding
@@ -497,11 +607,16 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 				return fmt.Errorf("failed to unbind colourway %d on BOM line %d: %w",
 					req.ColorwayId, req.BomItemId, err)
 			}
-			return nil
+			return dropSupersededHardwareTx(ctx, db, prev)
 		}
 		if err := upsertAssetBindingTx(ctx, db, req.TechCardId, req.ColorwayId, req.BomItemId,
 			req.AssetId, req.SetBy); err != nil {
 			return err
+		}
+		if prev != req.AssetId {
+			if err := dropSupersededHardwareTx(ctx, db, prev); err != nil {
+				return err
+			}
 		}
 		saved, err := storeutil.QueryNamedOne[entity.DesignAssetBinding](ctx, db, `
 			SELECT * FROM design_asset_binding

@@ -115,9 +115,9 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 // СЛОТ ПЛИТКИ — СТРОКА BOM ЭТОЙ КАРТОЧКИ, И ОТКАЗ ЧУЖОЙ — FailedPrecondition ДО РЕЗЕРВА.
 //
 // МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать designRefuseForeignBomLine из StartDesignRun — прогон заплатит за
-// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки. И вторая: начать
-// судить СЕКЦИЮ строки — фурнитура и нитки этой карточки проходят намеренно, какие строки слоты
-// ткани, решает экран по своему прочтению BOM.
+// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки. И вторая: перестать
+// судить СЕМЬЮ строки — свотч на строке фурнитуры или ниток заплатил бы за ткань, которая не может
+// быть картинкой пуговицы (cloth_on_trim_line).
 func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 	card := designMoodCard()
 	card.BomItems = []entity.TechCardBomItem{
@@ -134,9 +134,12 @@ func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 		refused bool
 	}{
 		{"a line of this card", 902, codes.OK, "", false},
+		{"a lining line of this card", 903, codes.OK, "", false},
 		{"not made for a slot", 0, codes.OK, "", false},
-		{"a hardware line of this card — the section is not judged", 904, codes.OK, "", false},
-		{"a thread line of this card — the section is not judged", 905, codes.OK, "", false},
+		{"a hardware line of this card — a swatch is cloth", 904, codes.FailedPrecondition,
+			entity.DesignErrorCodeClothOnTrimLine, true},
+		{"a thread line of this card — a swatch is cloth", 905, codes.FailedPrecondition,
+			entity.DesignErrorCodeClothOnTrimLine, true},
 		{"a line of another card", 7777, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine, true},
 		{"a negative id", -3, codes.InvalidArgument, entity.DesignErrorCodeBadBomLineID, true},
 	} {
@@ -161,6 +164,47 @@ func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 			require.Equal(t, tc.code, status.Code(err))
 			require.Equal(t, tc.reason, ffReason(t, err), "каждый отказ двери называет себя словом")
 			require.Nil(t, rig.sent, "отказ обязан стоять ДО резерва")
+		})
+	}
+}
+
+// СЕМЬЯ СТРОКИ ПО РЕЖИМУ: фурнитура — только на не-рулонную строку, свотч — только на рулонную,
+// фотография (image) семью не судит. Отказы — FailedPrecondition со своими токенами.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: перепутать IsRollGoodsSection местами в двух ветках; судить image-режим.
+func TestTheBomLineDoorJUDGES_THE_FAMILY_BY_MODE(t *testing.T) {
+	bom := []entity.TechCardBomItem{
+		{Id: 902, Section: entity.BomSectionFabric},
+		{Id: 906, Section: entity.BomSectionInsulation},
+		{Id: 904, Section: entity.BomSectionHardware},
+		{Id: 905, Section: entity.BomSectionThread},
+	}
+	for _, tc := range []struct {
+		name   string
+		mode   string
+		bom    int32
+		reason string
+	}{
+		{"hardware on a hardware line", entity.DesignPatternModeHardware, 904, ""},
+		{"hardware on a thread line", entity.DesignPatternModeHardware, 905, ""},
+		{"hardware on a fabric line", entity.DesignPatternModeHardware, 902, entity.DesignErrorCodeHardwareOnClothLine},
+		{"hardware on an insulation line", entity.DesignPatternModeHardware, 906, entity.DesignErrorCodeHardwareOnClothLine},
+		{"swatch on a fabric line", entity.DesignPatternModeSwatch, 902, ""},
+		{"swatch on an insulation line", entity.DesignPatternModeSwatch, 906, ""},
+		{"swatch on a hardware line", entity.DesignPatternModeSwatch, 904, entity.DesignErrorCodeClothOnTrimLine},
+		{"image on a hardware line is not judged", entity.DesignPatternModeImage, 904, ""},
+		{"legacy empty mode on a thread line is not judged", "", 905, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := designRefuseForeignBomLine(41, &pb_common.DesignRunParams{
+				Pattern: &pb_common.DesignPatternParams{Name: "x", Mode: tc.mode, BomItemId: tc.bom},
+			}, bom)
+			if tc.reason == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Equal(t, codes.FailedPrecondition, status.Code(err))
+			require.Equal(t, tc.reason, ffReason(t, err))
 		})
 	}
 }

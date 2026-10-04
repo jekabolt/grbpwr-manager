@@ -1999,8 +1999,11 @@ func designRefuseForeignPatternSource(cardID int, spoken *pb_common.DesignRunPar
 // Запрос правильной формы, не годится СОСТОЯНИЕ — ровно класс foreign_colorway, — а одному факту
 // нельзя отвечать двумя кодами на двух дверях.
 //
-// СЕКЦИЯ СТРОКИ НЕ СУДИТСЯ: какие строки — слоты ткани, решает экран по своему прочтению BOM, а
-// правило здесь было бы второй копией этого прочтения. Сервер отвечает только «чья это строка».
+// СЕМЬЯ СТРОКИ СУДИТСЯ ПО РЕЖИМУ, тем же чтением (fabrics and hardware bench): свотч — ткань, и
+// строка обязана быть рулонной (entity.IsRollGoodsSection), иначе cloth_on_trim_line; фурнитура —
+// снимок вещи, и строка обязана НЕ быть рулонной, иначе hardware_on_cloth_line. Оба отказа —
+// FailedPrecondition, тем же токеном, что у SetDesignAssetBinding. Режим image (из фотографии) с
+// bom_item_id семью не судит.
 //
 // `spoken` — СООБЩЕНИЕ КЛИЕНТА: унаследованный слот рерана законно пропадает вместе со строкой BOM,
 // а посадка на пропавший слот не падает (store/design: bindKeptPatternTx).
@@ -2017,9 +2020,28 @@ func designRefuseForeignBomLine(cardID int, spoken *pb_common.DesignRunParams, b
 			map[string]string{"bom_item_id": strconv.Itoa(id)})
 	}
 	for _, line := range bom {
-		if line.Id == id {
-			return nil
+		if line.Id != id {
+			continue
 		}
+		roll := entity.IsRollGoodsSection(line.Section)
+		meta := map[string]string{"bom_item_id": strconv.Itoa(id), "section": string(line.Section)}
+		switch spoken.GetPattern().GetMode() {
+		case entity.DesignPatternModeHardware:
+			if roll {
+				return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeHardwareOnClothLine,
+					fmt.Sprintf("params.pattern.bom_item_id %d is a %s line — roll goods — and a hardware "+
+						"picture is made for a trim line (buttons, zips, labels…). Nothing was reserved "+
+						"and nothing was charged", id, line.Section), meta)
+			}
+		case entity.DesignPatternModeSwatch:
+			if !roll {
+				return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeClothOnTrimLine,
+					fmt.Sprintf("params.pattern.bom_item_id %d is a %s line, and a swatch is cloth: it "+
+						"is made for a roll-goods line (fabric, lining, interlining, insulation). "+
+						"Nothing was reserved and nothing was charged", id, line.Section), meta)
+			}
+		}
+		return nil
 	}
 	return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine,
 		fmt.Sprintf("params.pattern.bom_item_id %d is not a BOM line of tech card %d — a swatch is made "+

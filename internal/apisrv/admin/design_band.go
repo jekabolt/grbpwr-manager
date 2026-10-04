@@ -128,6 +128,10 @@ var designRefusals = []struct {
 	// слотом пары, не этой карточки. FailedPrecondition на КАЖДОЙ двери — и у SetDesignAssetBinding,
 	// и у денежной двери прогона паттерна, — одним токеном.
 	{entity.ErrDesignForeignBomLine, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine},
+	// Род ассета против семьи строки BOM (fabrics and hardware bench): тот же класс и те же токены,
+	// что у денежной двери прогона паттерна.
+	{entity.ErrDesignHardwareOnClothLine, codes.FailedPrecondition, entity.DesignErrorCodeHardwareOnClothLine},
+	{entity.ErrDesignClothOnTrimLine, codes.FailedPrecondition, entity.DesignErrorCodeClothOnTrimLine},
 	// ambiguous_flatten_base — FailedPrecondition того же класса: запрос правилен, не годится
 	// СОСТОЯНИЕ (один файл зарегистрирован на карточке под несколькими колорвеями, а слой не
 	// назвал, поверх которого из них рисовали).

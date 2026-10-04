@@ -1112,6 +1112,13 @@ const (
 	// DesignErrorCodeTooManyReferences — у прогона фурнитуры больше MaxDesignHardwareReferences
 	// референсов.
 	DesignErrorCodeTooManyReferences = "too_many_references"
+	// DesignErrorCodeHardwareOnClothLine — фурнитура названа для строки РУЛОННОГО товара
+	// (IsRollGoodsSection): прогон фурнитуры на ткани либо SetAssetBinding ассета hardware на слот
+	// ткани. Снимок пуговицы не может быть тканью пары. Один токен на обеих дверях.
+	DesignErrorCodeHardwareOnClothLine = "hardware_on_cloth_line"
+	// DesignErrorCodeClothOnTrimLine — ткань (свотч-прогон либо ассет fabric|pattern) названа для
+	// строки НЕ рулонного товара: пуговицы, молнии, нитки, этикетки. Один токен на обеих дверях.
+	DesignErrorCodeClothOnTrimLine = "cloth_on_trim_line"
 )
 
 // PLAYGROUND phase-2 refusals (all InvalidArgument, all before money). Constants because the
@@ -1382,6 +1389,11 @@ var (
 	// колонки разных таблиц, и «пара одной карточки» схема выразить не может, поэтому проверяет Go
 	// в пишущей транзакции. Токен — DesignErrorCodeForeignBomLine.
 	ErrDesignForeignBomLine = errors.New("design: foreign_bom_line")
+	// ErrDesignHardwareOnClothLine / ErrDesignClothOnTrimLine — род ассета не той семьи, что строка
+	// BOM пары: фурнитура только на не-рулонную строку, fabric|pattern только на рулонную
+	// (IsRollGoodsSection). Токены — DesignErrorCodeHardwareOnClothLine / DesignErrorCodeClothOnTrimLine.
+	ErrDesignHardwareOnClothLine = errors.New("design: hardware_on_cloth_line")
+	ErrDesignClothOnTrimLine     = errors.New("design: cloth_on_trim_line")
 	// ErrDesignAmbiguousFlattenBase — подложку слоя нельзя привязать к ОДНОЙ картинке: слой не
 	// назвал source_picture_id, а его base_media_id зарегистрирован на карточке НЕСКОЛЬКО раз, и
 	// эти регистрации не согласны о колорвее. Один файл законно бывает кадром двух колорвеев

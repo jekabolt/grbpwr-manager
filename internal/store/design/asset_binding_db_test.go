@@ -173,6 +173,102 @@ func TestDesignDBAssetBindingRefusesForeignEnds(t *testing.T) {
 	// Фурнитура — картинка слота фурнитуры: связка принимается.
 	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
 	require.NoError(t, set(cw, hwLine, zip.Id))
+
+	// РОД ПРОТИВ СЕМЬИ СТРОКИ: фурнитура не носится слотом ткани, ткань — слотом фурнитуры.
+	require.ErrorIs(t, set(cw, line, zip.Id), entity.ErrDesignHardwareOnClothLine)
+	require.ErrorIs(t, set(cw, hwLine, mine.Id), entity.ErrDesignClothOnTrimLine)
+	threadLine := probeBomLine(t, raw, card, "thread", "topstitch")
+	require.ErrorIs(t, set(cw, threadLine, mine.Id), entity.ErrDesignClothOnTrimLine)
+	require.NoError(t, set(cw, line, 0), "снятие род не судит")
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: zip.Id}, bindingsOf(t, raw, card),
+		"ни один отказ семьи не оставил строки")
+}
+
+// ЗАМЕНЁННЫЙ СНИМОК ФУРНИТУРЫ — СИРОТА — УДАЛЯЕТСЯ В ТОЙ ЖЕ ТРАНЗАКЦИИ; ТКАНЬ — НИКОГДА.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: не читать прежний ассет пары до записи (сирота копится на полке); снять
+// фильтр kind (снятая с пары ткань пропадает из библиотеки); не считать оставшиеся связки (снимок,
+// который носит ДРУГАЯ пара, удаляется вместе со связкой каскадом).
+func TestDesignDBSupersededHardwareIsDropped(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	cw2 := probeColorway(t, raw, card, "WHT")
+	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
+	outer := probeBomLine(t, raw, card, "fabric", "outer")
+	ctx := context.Background()
+
+	hw := func(name string) int {
+		a, err := rep.Design().UpsertAsset(ctx, entity.DesignAssetUpsert{
+			TechCardId: card, Kind: entity.DesignAssetKindHardware, Name: name, Actor: "probe",
+		})
+		require.NoError(t, err)
+		return a.Id
+	}
+	set := func(cwID, bom, asset int) {
+		t.Helper()
+		_, err := rep.Design().SetAssetBinding(ctx, entity.DesignAssetBindingSet{
+			TechCardId: card, ColorwayId: cwID, BomItemId: bom, AssetId: asset, SetBy: "probe",
+		})
+		require.NoError(t, err)
+	}
+	alive := func(id int) bool {
+		t.Helper()
+		var n int
+		require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM design_asset WHERE id = ?`, id).Scan(&n))
+		return n == 1
+	}
+
+	first, second, third := hw("zip 1"), hw("zip 2"), hw("zip 3")
+	set(cw, hwLine, first)
+	set(cw, hwLine, second)
+	require.False(t, alive(first), "заменённый снимок без ссылок удалён")
+	require.True(t, alive(second))
+
+	// СНИМОК, КОТОРЫЙ НОСИТ ДРУГАЯ ПАРА, ПЕРЕЖИВАЕТ ЗАМЕНУ.
+	set(cw2, hwLine, second)
+	set(cw, hwLine, third)
+	require.True(t, alive(second), "его ещё носит пара второго колорвея")
+	// И СНЯТИЕ ПОСЛЕДНЕЙ ПАРЫ УДАЛЯЕТ ЕГО.
+	set(cw2, hwLine, 0)
+	require.False(t, alive(second), "снятие с последней пары — та же замена на «ничего»")
+
+	// ТКАНЬ — БИБЛИОТЕКА: снятая с пары, она остаётся на полке.
+	cloth := probeAsset(t, rep, card, "twill")
+	set(cw, outer, cloth.Id)
+	set(cw, outer, 0)
+	require.True(t, alive(cloth.Id))
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: third}, bindingsOf(t, raw, card))
+}
+
+// ПОСАДКА ПРОГОНА ФУРНИТУРЫ ЗАМЕНЯЕТ СНИМОК ПАРЫ И УДАЛЯЕТ ПРЕЖНИЙ, ЕСЛИ ОН СИРОТА.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: вызвать dropSupersededHardwareTx только в SetAssetBinding, забыв посадку.
+func TestDesignDBAHardwareRunLandingDropsTheSupersededPicture(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
+	resetBudget(t, raw)
+
+	land := func(name string) int {
+		started := patternRunWith(t, rep, card, cw, map[string]any{
+			"name": name, "mode": entity.DesignPatternModeHardware, "bom_item_id": hwLine,
+		}, map[string]any{"words": "horn button"})
+		done, err := landPatternRun(t, rep, started.Run.Id, probeMedia(t, raw))
+		require.NoError(t, err)
+		require.Equal(t, entity.DesignRunDone, done.Status)
+		var id int
+		require.NoError(t, raw.QueryRow(`SELECT MAX(id) FROM design_asset WHERE tech_card_id = ?`, card).Scan(&id))
+		return id
+	}
+	first := land("button 1")
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: first}, bindingsOf(t, raw, card))
+	second := land("button 2")
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: second}, bindingsOf(t, raw, card))
+	var n int
+	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM design_asset WHERE id = ?`, first).Scan(&n))
+	require.Zero(t, n, "прежний снимок фурнитуры пары удалён посадкой")
 }
 
 // СНЯТИЕ С ПРОПАВШЕЙ СТРОКИ BOM — OK: СОСТОЯНИЕ, О КОТОРОМ ПРОСЯТ, УЖЕ НАСТУПИЛО (ревью STEP 3).
