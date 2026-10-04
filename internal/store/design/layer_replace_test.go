@@ -2,6 +2,7 @@ package design
 
 import (
 	"context"
+	"database/sql"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,9 +20,11 @@ import (
 // проверены без базы в entity (design_replace_test.go). Здесь — то, что живёт в ФОРМЕ кода: операторы,
 // которые держат факт, и отказы, которые обязаны прозвучать до транзакции.
 
-// ШТАМП ПИШЕТСЯ ОДИН РАЗ И ТОЛЬКО ПОВЕРХ ПУСТОТЫ.
+// ШТАМП ПИШЕТСЯ ТОЛЬКО ПОВЕРХ ТОГО, ЧТО ПРОЧИТАЛА ТРАНЗАКЦИЯ: NULL либо отменённый (спрятанный)
+// преемник (T28) — `replaced_by <=> :was`, NULL-безопасное равенство.
 //
-// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: снять `replaced_by IS NULL` с WHERE. Тогда вторая перезапись того же
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: снять `replaced_by <=> :was` с WHERE (или заменить на `=`, при котором NULL
+// не совпадает ни с чем и первая перезапись не штампуется вовсе). Тогда вторая перезапись того же
 // оригинала, проскочившая чтение (или любой будущий писатель без чтения), молча переписала бы
 // указатель на свою правку — и первая правка, уже стоящая в слоте, потеряла бы место в цепочке, не
 // потеряв слота.
@@ -31,11 +34,11 @@ func TestReplacedByStampIsWrittenOnceOverNothing(t *testing.T) {
 	require.Equal(t, 1, strings.Count(up, "WHERE"), "один оператор, один предикат")
 	where := designStampReplacedBy[strings.Index(up, "WHERE"):]
 	require.Contains(t, where, "id = :id")
-	require.Contains(t, where, "replaced_by IS NULL",
-		"указатель замены пишется только поверх NULL — второй пояс к чтению в транзакции")
+	require.Contains(t, where, "replaced_by <=> :was",
+		"указатель замены пишется только поверх прочитанного — второй пояс к чтению в транзакции")
 	require.Contains(t, designStampReplacedBy, "SET replaced_by = :edit")
 
-	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12})
+	requireNamedQueryBinds(t, designStampReplacedBy, map[string]any{"id": 7, "edit": 12, "was": sql.NullInt32{}})
 }
 
 // СТОРОЖ cut_sheet ЧИТАЕТ ВЕТКУ, А НЕ КАРТОЧКУ: ДВА ЗАПРОСА ПО id РОДИТЕЛЕЙ И ЦЕЛЕЙ (O-53 review,

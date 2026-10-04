@@ -153,6 +153,11 @@ type DesignReplaceFacts struct {
 	OnTechnicalSheet bool
 	// StandingPieces — сколько кусков кадра ещё стоят (DesignStandingPieces).
 	StandingPieces int
+	// SuccessorUndone — у кадра есть преемник (replaced_by), и он СПРЯТАН: правка, которую человек
+	// отменил (T28, undo = спрятать голову цепочки и вернуть слот предшественнику). Отменённая ветка
+	// места не занимает, и новая правка встаёт на место кадра поверх неё; сама ветка остаётся в
+	// истории спрятанной. Стор читает преемника в транзакции флэттена, ДО первого вызова решения.
+	SuccessorUndone bool
 }
 
 // DesignReplaceRefusal — МОЖЕТ ЛИ ПРАВКА СЛОЯ ЗАНЯТЬ МЕСТО КАДРА original. nil = может.
@@ -168,7 +173,8 @@ type DesignReplaceFacts struct {
 //     не подложка слоя. Медиа сверяется с base_media_id, а не с source_picture_id: слой держится
 //     ключом подложки (один слой на файл), и равенство файлов — ровно то, что делает правку
 //     картинкой ЭТОГО кадра. Две регистрации одного файла обе годятся: место занимается у НАЗВАННОЙ.
-//  2. already_replaced — replaced_by уже стоит. Проверяется NULL-ность, а не знак, ровно как
+//  2. already_replaced — replaced_by уже стоит, и преемник НЕ отменён (T28: спрятанный преемник —
+//     отменённая правка, facts.SuccessorUndone, и место кадра снова свободно). Проверяется NULL-ность, а не знак, ровно как
 //     `replaced_by IS NULL` в самом UPDATE: два сторожа одного факта не расходятся ни на одной строке.
 //     Голову цепочки здесь не узнать — это чтение, — и стор дописывает её (DesignAlreadyReplaced).
 //  3. hidden_picture — оригинал СПРЯТАН (hidden_at, 27.09): правка встала бы преемником кадра, которого
@@ -204,7 +210,7 @@ func DesignReplaceRefusal(cardID int, layerBaseMediaID sql.NullInt32, original D
 		return fmt.Errorf("%w: the layer is drawn over media %d, and picture %d is media %d",
 			ErrDesignReplaceMismatch, layerBaseMediaID.Int32, original.Id, original.MediaId)
 	}
-	if original.ReplacedBy.Valid {
+	if original.ReplacedBy.Valid && !facts.SuccessorUndone {
 		return fmt.Errorf("%w: picture %d was already replaced by picture %d",
 			ErrDesignAlreadyReplaced, original.Id, original.ReplacedBy.Int32)
 	}

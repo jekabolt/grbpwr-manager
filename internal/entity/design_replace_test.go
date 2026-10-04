@@ -1331,3 +1331,21 @@ func TestDesignFlattenReplayRefusesAKeySpentElsewhere(t *testing.T) {
 		})
 	}
 }
+
+// ОТМЕНЁННЫЙ ПРЕЕМНИК (T28): правка, которую человек отменил (спрятанная голова цепочки), места кадра
+// не держит — новая правка встаёт на него. Видимый преемник по-прежнему already_replaced, а
+// остальные отказы после него звучат как прежде.
+//
+// МУТАЦИИ: забыть facts.SuccessorUndone в условии (первый случай краснеет already_replaced);
+// пропускать любой заменённый кадр (второй случай проходит nil); поставить проверку отмены ПОСЛЕ
+// остальных отказов (третий случай — лист — должен звучать и над отменённой веткой).
+func TestDesignReplaceRefusalUndoneSuccessorFreesThePlace(t *testing.T) {
+	replaced := replaceProbeOriginal()
+	replaced.ReplacedBy = sql.NullInt32{Int32: 12, Valid: true}
+	require.NoError(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaced,
+		DesignReplaceFacts{SuccessorUndone: true}))
+	require.ErrorIs(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaced,
+		DesignReplaceFacts{}), ErrDesignAlreadyReplaced)
+	require.ErrorIs(t, DesignReplaceRefusal(replaceProbeCard, replaceProbeBase(replaceProbeMedia), replaced,
+		DesignReplaceFacts{SuccessorUndone: true, OnTechnicalSheet: true}), ErrDesignTechnicalSheet)
+}

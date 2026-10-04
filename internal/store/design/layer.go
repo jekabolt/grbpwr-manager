@@ -801,9 +801,12 @@ func designBranchQuery(q string, params map[string]any, limit int) (string, []an
 // правило «замену не переписывают» дороже допущения об изоляции и стоит ровно одну строку. Ноль
 // затронутых строк — ОТКАЗ already_replaced, а не молчаливый успех, по тому же доводу, что у
 // adoptPictureIntoColorway.
+//
+// ПОВЕРХ ОТМЕНЁННОГО (T28): `<=> :was` — то значение, что прочитала транзакция (NULL либо спрятанный
+// преемник, entity.DesignReplaceFacts.SuccessorUndone). Ни на что другое штамп не ложится.
 const designStampReplacedBy = `
 	UPDATE design_picture SET replaced_by = :edit
-	WHERE id = :id AND replaced_by IS NULL`
+	WHERE id = :id AND replaced_by <=> :was`
 
 // flattenReplaceTarget — ОРИГИНАЛ, ЧЬЁ МЕСТО ЗАНИМАЕТ ПРАВКА: читается и судится В ТРАНЗАКЦИИ
 // ФЛЭТТЕНА, до вставки. Отказ здесь не подаёт ничего — в том числе повтор перезаписи без ключа,
@@ -832,6 +835,15 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 		return original, err
 	}
 	var facts entity.DesignReplaceFacts
+	// ОТМЕНЁННЫЙ ПРЕЕМНИК (T28): спрятанная голова — правка, которую человек отменил. Читается в этой
+	// же транзакции, до решения: под SERIALIZABLE показ преемника между этим чтением и штампом ждёт.
+	if original.ReplacedBy.Valid && original.TechCardId == req.TechCardId {
+		next, err := pictureByID(ctx, db, int(original.ReplacedBy.Int32))
+		if err != nil {
+			return original, err
+		}
+		facts.SuccessorUndone = next.HiddenAt.Valid
+	}
 	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, facts); err != nil {
 		if errors.Is(err, entity.ErrDesignAlreadyReplaced) {
 			return original, designAlreadyReplaced(ctx, db, original)
@@ -948,7 +960,7 @@ func flattenTakeThePlaceOf(ctx context.Context, rep dependency.Repository, origi
 		}
 	}
 	n, err := storeutil.ExecNamedRows(ctx, db, designStampReplacedBy,
-		map[string]any{"id": original.Id, "edit": editID})
+		map[string]any{"id": original.Id, "edit": editID, "was": original.ReplacedBy})
 	if err != nil {
 		return fmt.Errorf("failed to stamp design picture %d as replaced by %d: %w", original.Id, editID, err)
 	}
