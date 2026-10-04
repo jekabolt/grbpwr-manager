@@ -2163,6 +2163,13 @@ type (
 		// молча стирала двадцать минут чужой покраски — ровно ту потерю, ради запрета которой этот
 		// глагол и держит expected_rev.
 		SetColourPlan(ctx context.Context, req entity.DesignColourPlanSave) (*entity.DesignColourPlan, error)
+		// FlatBenchMedia — view → media of the plate on each side's flat slot (auto parts, 0390).
+		// ErrDesignNotFound when the card does not exist.
+		FlatBenchMedia(ctx context.Context, cardID int) (map[string]int, error)
+		// GetPartsSuggestion — the cached auto-parts answer of one cut of one flat; nil when none.
+		GetPartsSuggestion(ctx context.Context, cardID int, view string, baseMediaID int, algoRev string) (*entity.DesignPartsSuggestion, error)
+		// SavePartsSuggestion upserts the answer on (card, view, base media, algo rev).
+		SavePartsSuggestion(ctx context.Context, in entity.DesignPartsSuggestion) (*entity.DesignPartsSuggestion, error)
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)

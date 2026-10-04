@@ -1,0 +1,48 @@
+package entity
+
+import "time"
+
+// Auto parts (Ф2, 0390): the client cuts a side's flat into numbered regions, the model groups the
+// numbers into garment parts and names them. One row per (card, view, flat media, cut revision) —
+// a cache: the same flat cut the same way is never paid for twice.
+const (
+	// DesignPartsMinRegions / DesignPartsMaxRegions — a cut the model is asked to name. One region
+	// is a sketch or a photo (nothing to group); above 60 the numbers stop being readable.
+	DesignPartsMinRegions = 2
+	DesignPartsMaxRegions = 60
+	// DesignPartsMaxAlgoRev — the client's cut revision (regions.ts REGIONS_ALGO_REV).
+	DesignPartsMaxAlgoRev = 32
+	// DesignPartsMaxParts — parts kept from one answer.
+	DesignPartsMaxParts = 40
+	// DesignPartsMaxLabelRunes / DesignPartsMaxWhyRunes — the trims of the model's words.
+	DesignPartsMaxLabelRunes = 40
+	DesignPartsMaxWhyRunes   = 120
+	// DesignPartsUnnamed — the part every region the model left out falls into.
+	DesignPartsUnnamed = "unnamed"
+)
+
+// DesignPartGroup is one garment part: its name and the region numbers it is made of (1-based).
+type DesignPartGroup struct {
+	Label   string `json:"label"`
+	Regions []int  `json:"regions"`
+}
+
+// DesignPartSplit is one region the model says spans two parts with no seam line drawn.
+type DesignPartSplit struct {
+	Region int    `json:"region"`
+	Why    string `json:"why"`
+}
+
+// DesignPartsSuggestion is one cached answer for one cut of one side's flat.
+type DesignPartsSuggestion struct {
+	Id          int
+	TechCardId  int
+	View        string
+	BaseMediaId int
+	AlgoRev     string
+	Parts       []DesignPartGroup
+	SplitNeeded []DesignPartSplit
+	Model       string
+	CreatedBy   string
+	CreatedAt   time.Time
+}

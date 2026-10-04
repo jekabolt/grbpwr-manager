@@ -2364,6 +2364,10 @@ type DesignBand struct {
 	// же сохранение прошло бы мимо всякого сравнения.
 	ColourPlan *DesignColourPlan
 
+	// PartsSuggestions — the auto-parts answers (0390) of the CURRENT flat of each side: a row whose
+	// base_media_id is no longer the flat in that side's slot is not read. Every cut revision.
+	PartsSuggestions []DesignPartsSuggestion
+
 	// HasFabricRender — у карточки есть ХОТЯ БЫ ОДИН НЕСПРЯТАННЫЙ КАДР рода `render` (W-13).
 	// Считается в той же читающей транзакции по ВСЕЙ карточке, а не по загруженной странице.
 	//

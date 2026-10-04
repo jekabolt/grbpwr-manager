@@ -500,6 +500,11 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if band.ColourPlan, err = colourPlanByCard(ctx, db, cardID); err != nil {
 			return err
 		}
+		// AUTO PARTS (0390) of the flat each side holds now, in the same snapshot as the bench they
+		// are checked against.
+		if band.PartsSuggestions, err = partsSuggestionsOfCurrentFlats(ctx, db, cardID); err != nil {
+			return err
+		}
 		if band.TotalBatches, err = storeutil.QueryCountNamed(ctx, db, designCountBatches,
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to count design batches: %w", err)
