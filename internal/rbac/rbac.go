@@ -479,13 +479,17 @@ var methodRequirements = map[string]Requirement{
 	//
 	// StartDesignRun и DraftDesignIdea — платные вызовы: право их звать это право выставить
 	// организации счёт, и на чтении им места нет ни при каких обстоятельствах.
-	"StartDesignRun":    wr(SectionTechCards),
-	"DraftDesignIdea":   wr(SectionTechCards),
-	"CancelDesignRun":   wr(SectionTechCards),
-	"ArchiveDesignRun":  wr(SectionTechCards),
-	"HideDesignPicture": wr(SectionTechCards),
-	"UndoDesignEdit":    wr(SectionTechCards),
-	"RedoDesignEdit":    wr(SectionTechCards),
+	"StartDesignRun":  wr(SectionTechCards),
+	"DraftDesignIdea": wr(SectionTechCards),
+	// Moodboard quiz: generating spends the key (write); the answers are card data (write / read).
+	"GenerateDesignQuiz":    wr(SectionTechCards),
+	"SaveDesignQuizAnswers": wr(SectionTechCards),
+	"GetDesignQuizAnswers":  rd(SectionTechCards),
+	"CancelDesignRun":       wr(SectionTechCards),
+	"ArchiveDesignRun":      wr(SectionTechCards),
+	"HideDesignPicture":     wr(SectionTechCards),
+	"UndoDesignEdit":        wr(SectionTechCards),
+	"RedoDesignEdit":        wr(SectionTechCards),
 	// «Удалить насовсем» (O-68, D-74) — та же запись о карточке, что «спрятать», только необратимая;
 	// право то же: кто может прятать кроп, тот может его и стереть. Денег не тратит.
 	"DeleteDesignPicture": wr(SectionTechCards),

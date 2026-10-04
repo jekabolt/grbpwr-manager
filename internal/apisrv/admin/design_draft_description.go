@@ -187,5 +187,6 @@ func designDescriptionCardFacts(card *entity.TechCard) string {
 			rows++
 		}
 	}
-	return b.String()
+	// The moodboard quiz's decisions, with their own ceiling (designQuizDecisionsBlock).
+	return b.String() + designQuizDecisionsBlock(card)
 }

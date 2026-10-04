@@ -1164,6 +1164,14 @@ func designSizeRunLine(card *entity.TechCard) string {
 // именно там, где обещали их не получать. Строка «(+N more … not listed)» стоит десяток байт и
 // делает список ЧЕСТНЫМ вместо ПОЛНОГО.
 func designCardAlreadySays(card *entity.TechCard) string {
+	// The moodboard quiz's decisions follow the card's own lists, with their own ceiling, so a long
+	// BOM cannot push the designer's answers out (designQuizDecisionsBlock).
+	return designCardAlreadySaysBase(card) + designQuizDecisionsBlock(card)
+}
+
+// designCardAlreadySaysBase — designCardAlreadySays without the quiz decisions: the quiz's own
+// prompt lists earlier answers separately (with the skipped ones), so it reads this half only.
+func designCardAlreadySaysBase(card *entity.TechCard) string {
 	if card == nil {
 		return ""
 	}

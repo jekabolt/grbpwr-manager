@@ -127,6 +127,9 @@ type Server struct {
 	suggestCache suggestPromptsCache
 	// suggestFlight coalesces identical SuggestPrompts misses in flight (G-03, Codex 11). Zero value works.
 	suggestFlight singleflight.Group
+	// quizFlight coalesces GenerateDesignQuiz presses of ONE card in flight (design_quiz.go): a double
+	// click pays once and both presses get the same questions. Zero value works.
+	quizFlight singleflight.Group
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer

@@ -36,6 +36,8 @@ var purposes = []Purpose{
 		"email campaigns → auto-translate", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeDesignDraftIdea, "draft the idea",
 		"design → moodboard: draft the idea from its pictures and words", PurposeGroupChat, entity.AICapabilityChat},
+	{entity.AIPurposeDesignQuiz, "design quiz",
+		"design → moodboard: ask me — the questions the model asks about the garment", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposePlaygroundIdeas, "prompt ideas",
 		"the ideas ▾ button beside a playground prompt", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeImageGenerate, "design images",

@@ -114,21 +114,24 @@ const (
 	AIPurposeNoteMarkdown     = "chat.note_markdown"
 	AIPurposeEmailTranslate   = "chat.email_translate"
 	AIPurposeDesignDraftIdea  = "chat.design_draft_idea"
-	AIPurposePlaygroundIdeas  = "chat.playground_ideas"
-	AIPurposeImageGenerate    = "image.generate"
-	AIPurposeImageCutout      = "image.cutout"
-	AIPurposeImageExtend      = "image.extend"
-	AIPurposeImageInpaint     = "image.inpaint"
-	AIPurposeThreed           = "threed"
-	AIPurposeVideoGenerate    = "video.generate"
+	// AIPurposeDesignQuiz — the moodboard quiz (0389): one vision+JSON call asking the designer about
+	// what is still unclear on the garment.
+	AIPurposeDesignQuiz      = "chat.design_quiz"
+	AIPurposePlaygroundIdeas = "chat.playground_ideas"
+	AIPurposeImageGenerate   = "image.generate"
+	AIPurposeImageCutout     = "image.cutout"
+	AIPurposeImageExtend     = "image.extend"
+	AIPurposeImageInpaint    = "image.inpaint"
+	AIPurposeThreed          = "threed"
+	AIPurposeVideoGenerate   = "video.generate"
 )
 
 // AIPurposes — every purpose, in the panel's fixed order. A copy on every call.
 func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposePlaygroundIdeas,
-		AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz,
+		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
 	}
 }
@@ -142,7 +145,8 @@ func IsAIPurpose(v string) bool {
 func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposePlaygroundIdeas:
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz,
+		AIPurposePlaygroundIdeas:
 		return AICapabilityChat
 	case AIPurposeImageGenerate:
 		return AICapabilityImage

@@ -87,6 +87,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		"chat.note_markdown":     AICapabilityChat,
 		"chat.email_translate":   AICapabilityChat,
 		"chat.design_draft_idea": AICapabilityChat,
+		"chat.design_quiz":       AICapabilityChat, // moodboard quiz (0389)
 		"chat.playground_ideas":  AICapabilityChat,
 		"image.generate":         AICapabilityImage,
 		"image.cutout":           AICapabilityCutout,

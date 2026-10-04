@@ -4646,6 +4646,11 @@ type TechCard struct {
 	// ResolvedLabelMedia — the MediaFull of every id in LabelMediaIds (M-02), in that order; an id
 	// whose media is gone is simply absent. Read-only projection, never written.
 	ResolvedLabelMedia []TechCardMediaFull `db:"-"`
+	// QuizAnswers — the moodboard quiz answers of this card (0389, tech_card_design_quiz_answer), in
+	// display order. Read-only projection loaded by enrich; written ONLY by ReplaceDesignQuizAnswers,
+	// never by UpdateTechCard (the table is not in its full-replace loop, so autosave cannot drop it).
+	// Not mapped into common.TechCard: the quiz has its own RPCs.
+	QuizAnswers []TechCardQuizAnswer `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an

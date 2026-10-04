@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (409 rpc) ----
+// ---- admin (412 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -917,6 +917,14 @@ func (c *Client) FormatLibraryNoteMarkdown(ctx context.Context, in *admin.Format
 	return out, nil
 }
 
+func (c *Client) GenerateDesignQuiz(ctx context.Context, in *admin.GenerateDesignQuizRequest) (*admin.GenerateDesignQuizResponse, error) {
+	out := new(admin.GenerateDesignQuizResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/quiz", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GenerateHackerInvite(ctx context.Context, in *admin.GenerateHackerInviteRequest) (*admin.GenerateHackerInviteResponse, error) {
 	out := new(admin.GenerateHackerInviteResponse)
 	if err := c.call(ctx, "POST", "/api/admin/hacker/invite", in, out); err != nil {
@@ -1120,6 +1128,14 @@ func (c *Client) GetDesignBand(ctx context.Context, in *admin.GetDesignBandReque
 func (c *Client) GetDesignEditLayer(ctx context.Context, in *admin.GetDesignEditLayerRequest) (*admin.GetDesignEditLayerResponse, error) {
 	out := new(admin.GetDesignEditLayerResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetDesignQuizAnswers(ctx context.Context, in *admin.GetDesignQuizAnswersRequest) (*admin.GetDesignQuizAnswersResponse, error) {
+	out := new(admin.GetDesignQuizAnswersResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/{tech_card_id}/design/quiz-answers", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2448,6 +2464,14 @@ func (c *Client) RunTierBackfill(ctx context.Context, in *admin.RunTierBackfillR
 func (c *Client) SaveDesignEditLayer(ctx context.Context, in *admin.SaveDesignEditLayerRequest) (*admin.SaveDesignEditLayerResponse, error) {
 	out := new(admin.SaveDesignEditLayerResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/layer", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SaveDesignQuizAnswers(ctx context.Context, in *admin.SaveDesignQuizAnswersRequest) (*admin.SaveDesignQuizAnswersResponse, error) {
+	out := new(admin.SaveDesignQuizAnswersResponse)
+	if err := c.call(ctx, "PUT", "/api/admin/tech-card/{tech_card_id}/design/quiz-answers", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

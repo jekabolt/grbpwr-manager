@@ -3218,6 +3218,33 @@ service AdminService {
     };
   }
 
+  // GenerateDesignQuiz (moodboard quiz) — one sync vision+JSON call: the model reads the board
+  // pictures, the board words and the card facts, and asks 0..15 questions about what is still
+  // unclear or non-standard. Nothing is stored; ai_usage_event books the call. Questions already
+  // answered on the card (GetDesignQuizAnswers) are never returned again.
+  //
+  // FailedPrecondition: nothing to ask about (no attached picture and no concept).
+  rpc GenerateDesignQuiz(GenerateDesignQuizRequest) returns (GenerateDesignQuizResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/quiz"
+      body: "*"
+    };
+  }
+
+  // GetDesignQuizAnswers — every quiz answer stored on the card, in display order.
+  rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"};
+  }
+
+  // SaveDesignQuizAnswers REPLACES the card's whole answer list with the one sent (single writer:
+  // the client always sends the full list). Returns the stored list.
+  rpc SaveDesignQuizAnswers(SaveDesignQuizAnswersRequest) returns (SaveDesignQuizAnswersResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"
+      body: "*"
+    };
+  }
+
   // GetWorkshopSettings returns «дом настроек цеха» (Ф2.5, 0272): the shop-floor constants that
   // belong to the ЦЕХ itself and not to any one card or раскладка. Первый жилец is the cutting
   // table length, which the nesting modal used to make the operator retype on every раскладка.
@@ -13329,6 +13356,60 @@ message DraftDesignIdeaResponse {
   // canonical JSON of this message — what the client was handed, not what the model happened to
   // type.
   common.DesignConstructionDraft construction = 3;
+}
+
+// MOODBOARD QUIZ messages.
+
+// DesignQuizQuestion is one question of the moodboard quiz, as asked and as stored.
+message DesignQuizQuestion {
+  string id = 1; // snake_case, unique per card
+  string category = 2; // design|details|materials|use|finish
+  string part = 3; // part key of the family's pictogram table, "whole" default
+  string family = 4; // garment pictogram family or ""
+  string view = 5; // front|back|side_l
+  string kind = 6; // single|multi
+  string question = 7;
+  repeated string options = 8; // 2..6
+  repeated bool contradicts = 9; // parallel to options (may be empty = all false)
+  string visual_evidence = 10; // what the pictures show about this point; never shown in UI
+  string clarify_question = 11; // optional follow-up when a contradicting option is picked
+  repeated string clarify_options = 12;
+}
+
+message GenerateDesignQuizRequest {
+  int32 tech_card_id = 1;
+}
+
+message GenerateDesignQuizResponse {
+  repeated DesignQuizQuestion questions = 1;
+  string family = 2;
+  string model = 3;
+}
+
+message DesignQuizAnswer {
+  DesignQuizQuestion question = 1;
+  repeated string selected = 2; // chosen option texts
+  string free_text = 3;
+  bool skipped = 4;
+  google.protobuf.Timestamp answered_at = 5; // server-set
+}
+
+message GetDesignQuizAnswersRequest {
+  int32 tech_card_id = 1;
+}
+
+message GetDesignQuizAnswersResponse {
+  repeated DesignQuizAnswer answers = 1;
+}
+
+// SaveDesignQuizAnswersRequest carries the FULL list; the stored list is replaced by it.
+message SaveDesignQuizAnswersRequest {
+  int32 tech_card_id = 1;
+  repeated DesignQuizAnswer answers = 2;
+}
+
+message SaveDesignQuizAnswersResponse {
+  repeated DesignQuizAnswer answers = 1;
 }
 
 // AI PROVIDERS messages

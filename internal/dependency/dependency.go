@@ -1192,6 +1192,10 @@ type (
 		// in minutes, and an export does not touch the card — so without this row "was this style
 		// ever sent out of the building" has no answer in the database at all.
 		AppendTechCardArchiveExportedEvent(ctx context.Context, techCardID int, author, summary string) error
+		// ListDesignQuizAnswers / ReplaceDesignQuizAnswers — the moodboard quiz answers (0389).
+		// Replace swaps the whole list in one transaction; sql.ErrNoRows = no such card.
+		ListDesignQuizAnswers(ctx context.Context, techCardID int) ([]entity.TechCardQuizAnswer, error)
+		ReplaceDesignQuizAnswers(ctx context.Context, techCardID int, answers []entity.TechCardQuizAnswer) ([]entity.TechCardQuizAnswer, error)
 		// CreateTechCardImportRow records ONE uploaded import archive (Ф2.5, migration 0336): where
 		// its bytes went in the bucket, what its manifest said, and the colourway payload the much
 		// later "create colourways from the archive" step needs after the bucket object has expired.
