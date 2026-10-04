@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ─────────────────────────── ARTWORK PLACEMENTS → RENDER SNAPSHOT (70-ROUND7 B7) ───────────────────────────
@@ -165,4 +169,113 @@ func TestDesignSpliceArtworksWritesTheKeyDesigngenReads(t *testing.T) {
 	// A rerun carries the parent's frozen copy.
 	require.Equal(t, arts, designParentArtworks(&entity.DesignRun{Inputs: entity.RawJSON(spliced)}))
 	require.Empty(t, designParentArtworks(&entity.DesignRun{Inputs: entity.RawJSON(raw)}))
+}
+
+// manyArtworks — n frozen artworks with distinct pictures (media 300+i) on the front flat.
+func manyArtworks(n int) []designFrozenArtwork {
+	out := make([]designFrozenArtwork, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, designFrozenArtwork{AssetID: 40 + i, MediaID: 300 + i, View: "front", Name: "print"})
+	}
+	return out
+}
+
+// TestDesignFreezeArtworksDoesNotTruncate — a fifth placed artwork is frozen, not silently dropped:
+// the door refuses it in words.
+func TestDesignFreezeArtworksDoesNotTruncate(t *testing.T) {
+	card, band := artworkBand(t)
+	quad := band.AssetPlacements[1].Annotation
+	for i := 0; i < 4; i++ {
+		band.AssetPlacements = append(band.AssetPlacements,
+			entity.DesignAssetPlacement{Id: 10 + i, AssetId: 40, PictureId: 501, Annotation: quad})
+	}
+	got := designFreezeArtworks(entity.DesignRunKindRender, &pb_common.DesignRunParams{ColorwayId: 13},
+		card, band, artworkInputs(1, 2))
+	require.Len(t, got, 5)
+}
+
+// TestDesignRefuseRenderArtworksTooMany — more than four placed artworks is InvalidArgument
+// `too_many_artworks` before the reserve; four pass; other kinds and no artworks are untouched.
+func TestDesignRefuseRenderArtworksTooMany(t *testing.T) {
+	s := engineServer()
+	p := &pb_common.DesignRunParams{ColorwayId: 13}
+	in := artworkInputs(1, 2)
+
+	err := s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, manyArtworks(5))
+	require.Equal(t, designErrorCodeTooManyArtworks, ffReason(t, err))
+	require.Equal(t, "too_many_artworks", designErrorCodeTooManyArtworks)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, err.Error(), "at most 4 placed artworks per render · remove one on PARTS")
+
+	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, manyArtworks(4)))
+	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, nil))
+	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindFlat, p, in, manyArtworks(5)))
+}
+
+// renderAtCeiling — a render whose plates and references fill the engine's ceiling exactly.
+func renderAtCeiling(t *testing.T) (*Server, designgen.Engine, *pb_common.DesignRunParams, *pb_common.DesignInputSnapshot) {
+	t.Helper()
+	s := engineServer()
+	engine, ok := designgen.FindEngine(s.designEngineTable(), "")
+	require.True(t, ok)
+	require.Greater(t, engine.MaxRefs, 2)
+	in := artworkInputs(1, 2)
+	for i := 0; i < engine.MaxRefs-2; i++ {
+		in.Refs = append(in.Refs, &pb_common.DesignInputRef{MediaId: int32(500 + i)})
+	}
+	return s, engine, &pb_common.DesignRunParams{ColorwayId: 13}, in
+}
+
+// TestDesignRefuseRenderArtworksOverTheEngineCeiling — artwork pictures count against the engine's
+// reference ceiling at the door (deduplicated), so an over-ceiling render is refused before the reserve.
+func TestDesignRefuseRenderArtworksOverTheEngineCeiling(t *testing.T) {
+	s, engine, p, in := renderAtCeiling(t)
+	require.Equal(t, engine.MaxRefs, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, nil, 0))
+
+	over := manyArtworks(1)
+	require.Equal(t, engine.MaxRefs+1, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, over, 0))
+	err := s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, over)
+	require.Equal(t, "too_many_pictures", ffReason(t, err))
+
+	// An artwork whose picture already travels (here: the front plate) adds nothing.
+	dup := []designFrozenArtwork{{AssetID: 40, MediaID: 1, View: "front"}}
+	require.Equal(t, engine.MaxRefs, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, dup, 0))
+	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, dup))
+}
+
+// TestDesignEstimateCountsArtworkPictures — the reserve prices every distinct artwork picture as an
+// input image of each call.
+func TestDesignEstimateCountsArtworkPictures(t *testing.T) {
+	s := engineServer()
+	engine, ok := designgen.FindEngine(s.designEngineTable(), "")
+	require.True(t, ok)
+	p := &pb_common.DesignRunParams{ColorwayId: 13, Image: &pb_common.DesignImageOptions{Model: engine.Slug, Quality: "high"}}
+	in := artworkInputs(1, 2)
+
+	plain := s.designEstimateForRunWithArtworks(entity.DesignRunKindRender, 1, p, in, nil)
+	require.True(t, plain.Valid)
+	require.Equal(t, plain, s.designEstimateForRun(entity.DesignRunKindRender, 1, p, in))
+
+	two := s.designEstimateForRunWithArtworks(entity.DesignRunKindRender, 1, p, in, manyArtworks(2))
+	require.True(t, two.Decimal.Equal(plain.Decimal.Add(engine.InputUSD.Mul(decimal.NewFromInt(2)))),
+		"%s vs %s", two.Decimal, plain.Decimal)
+
+	dup := s.designEstimateForRunWithArtworks(entity.DesignRunKindRender, 1, p, in,
+		[]designFrozenArtwork{{MediaID: 1, View: "front"}})
+	require.True(t, dup.Decimal.Equal(plain.Decimal), "a picture already sent is not priced twice")
+}
+
+// TestDesignArtworkMediaRefsJoinTheMediaDoors — the format / display-only / hidden doors see the
+// artwork pictures, deduplicated, named by where they came from.
+func TestDesignArtworkMediaRefsJoinTheMediaDoors(t *testing.T) {
+	refs := designRunInputMediaRefs(&pb_common.DesignRunParams{}, artworkInputs(1, 2))
+	got := designArtworkMediaRefs(refs, []designFrozenArtwork{
+		{MediaID: 30, View: "front", Name: "chest embroidery"},
+		{MediaID: 1, View: "front"},
+		{MediaID: 30, View: "back"},
+	})
+	require.Len(t, got, 3)
+	require.Equal(t, 30, got[2].ID)
+	require.Equal(t, "the artwork «chest embroidery» placed on the front flat", got[2].Where)
+	require.Equal(t, refs, designArtworkMediaRefs(refs, nil))
 }

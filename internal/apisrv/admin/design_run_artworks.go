@@ -2,12 +2,15 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"google.golang.org/grpc/codes"
 )
 
 // ─────────────────────────── ARTWORK НА РЕНДЕРЕ (70-ROUND7 B7) ───────────────────────────
@@ -24,8 +27,13 @@ import (
 // История читает копию: живая разметка полосы может позже разойтись — и это правильно.
 
 // designMaxRunArtworks — сколько артворков уезжает в один рендер. Каждый — лишняя картинка вызова,
-// а потолок картинок у движка общий с плитами, референсами, картами и тканями.
+// а потолок картинок у движка общий с плитами, референсами, картами и тканями. Больше — отказ
+// двери (designErrorCodeTooManyArtworks), а не тихая обрезка.
 const designMaxRunArtworks = 4
+
+// designErrorCodeTooManyArtworks — refusal reason: the render would carry more placed artworks than
+// designMaxRunArtworks.
+const designErrorCodeTooManyArtworks = "too_many_artworks"
 
 // designFrozenArtwork — ОДИН размещённый артворк, замороженный в снимок входов прогона. Ключи
 // snake_case — их читает designgen.artworkUse.
@@ -208,10 +216,9 @@ func designFreezeArtworks(kind string, params *pb_common.DesignRunParams, card *
 			Corners:     corners,
 			Note:        note,
 		})
-		if len(out) == designMaxRunArtworks {
-			break
-		}
 	}
+	// НЕ ОБРЕЗАЕТСЯ: пятый артворк, молча выкинутый здесь, — это принт, о котором человек думает,
+	// что он на рендере. Лишнее отказывает дверь (designRefuseRenderArtworks) до денег.
 	return out
 }
 
@@ -263,4 +270,87 @@ func designParentArtworks(parent *entity.DesignRun) []designFrozenArtwork {
 		return nil
 	}
 	return in.Artworks
+}
+
+// designRunArtworks — the artworks THIS run carries: a rerun the parent's frozen copy, a fresh
+// render the freeze of today's markup. Called BEFORE the media doors and the reserve, so the
+// artwork pictures are validated, counted against the engine ceiling and priced like every input.
+func designRunArtworks(kind string, params *pb_common.DesignRunParams, card *entity.TechCard,
+	band *entity.DesignBand, inputs *pb_common.DesignInputSnapshot, parent *entity.DesignRun) []designFrozenArtwork {
+	if kind != entity.DesignRunKindRender {
+		return nil
+	}
+	if parent != nil {
+		return designParentArtworks(parent)
+	}
+	return designFreezeArtworks(kind, params, card, band, inputs)
+}
+
+// designArtworkMediaRefs — refs plus every artwork picture not already among them (dedup by media id,
+// first source wins, the same rule as designRunInputMediaRefs and the worker's `add`).
+func designArtworkMediaRefs(refs []designInputMediaRef, arts []designFrozenArtwork) []designInputMediaRef {
+	if len(arts) == 0 {
+		return refs
+	}
+	seen := make(map[int]struct{}, len(refs)+len(arts))
+	for _, r := range refs {
+		seen[r.ID] = struct{}{}
+	}
+	out := append([]designInputMediaRef(nil), refs...)
+	for _, a := range arts {
+		if a.MediaID <= 0 {
+			continue
+		}
+		if _, dup := seen[a.MediaID]; dup {
+			continue
+		}
+		seen[a.MediaID] = struct{}{}
+		where := "the artwork placed on the " + a.View + " flat"
+		if name := strings.TrimSpace(a.Name); name != "" {
+			where = "the artwork «" + name + "» placed on the " + a.View + " flat"
+		}
+		out = append(out, designInputMediaRef{ID: a.MediaID, Where: where})
+	}
+	return out
+}
+
+// designRefuseRenderArtworks — the render's artworks, asked BEFORE the reserve:
+//   - more than designMaxRunArtworks placed artworks is refused in words (never truncated: a dropped
+//     print is one the person believes is on the render);
+//   - with artworks, the whole call (plates, references, extras, maps, cloths AND artwork pictures)
+//     must fit the engine's reference ceiling — the worker refuses an over-ceiling call only after
+//     the money is reserved.
+//
+// A render with no artworks is untouched (its ceiling stays with the provider client, as before).
+func (s *Server) designRefuseRenderArtworks(kind string, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) error {
+	if kind != entity.DesignRunKindRender || len(arts) == 0 {
+		return nil
+	}
+	if len(arts) > designMaxRunArtworks {
+		return designRefusal(codes.InvalidArgument, designErrorCodeTooManyArtworks,
+			fmt.Sprintf("this render carries %d placed artworks: at most %d placed artworks per render · "+
+				"remove one on PARTS. Nothing was reserved and nothing was charged", len(arts), designMaxRunArtworks),
+			map[string]string{
+				"artworks": strconv.Itoa(len(arts)),
+				"ceiling":  strconv.Itoa(designMaxRunArtworks),
+			})
+	}
+	engine, ok := designgen.FindEngine(s.designEngineTable(), params.GetImage().GetModel())
+	if !ok || engine.MaxRefs <= 0 {
+		return nil
+	}
+	if n := designImageCallImagesWithArtworks(kind, params, inputs, arts, 0); n > engine.MaxRefs {
+		return designRefusal(codes.InvalidArgument, "too_many_pictures",
+			fmt.Sprintf("this render would send %d images in one call (its placed artworks included) and %s "+
+				"takes at most %d. Remove an artwork on PARTS or a picture. Nothing was reserved and nothing "+
+				"was charged", n, engine.Label, engine.MaxRefs),
+			map[string]string{
+				"images":   strconv.Itoa(n),
+				"ceiling":  strconv.Itoa(engine.MaxRefs),
+				"model":    engine.Slug,
+				"artworks": strconv.Itoa(len(arts)),
+			})
+	}
+	return nil
 }

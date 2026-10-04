@@ -205,8 +205,11 @@ func designNonPictureRefusal(ref designInputMediaRef, contentType string) error 
 // клиента: неработоспособная форма прогона остаётся неработоспособной и на повторе, а
 // замороженный прогон, чей вход поставщик прочитать не может, обязан быть остановлен здесь —
 // иначе новый бинарь повторит его и заплатит за отказ ещё раз.
-func (s *Server) designRefuseNonPictureInputs(ctx context.Context, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot) error {
-	refs := designRunInputMediaRefs(params, inputs)
+//
+// A render's frozen artwork pictures (`arts`) travel to the provider too, so they are asked as well.
+func (s *Server) designRefuseNonPictureInputs(ctx context.Context, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) error {
+	refs := designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)
 	if len(refs) == 0 {
 		return nil
 	}
