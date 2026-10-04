@@ -56,9 +56,9 @@ func TestParseDesignQuizPartFallbackAndView(t *testing.T) {
 	if qs[1].Part != "sleeve" || qs[1].View != "front" || qs[2].View != "back" {
 		t.Fatalf("view comes from the table: %+v %+v", qs[1], qs[2])
 	}
-	// jacket sleeve is drawn from the side; cap's whole is the side view; family "" = whole only.
+	// jacket sleeve is drawn from the front (30-PICTO-FIX T6); cap's whole is the side view; family "" = whole only.
 	qs, _ = parseDesignQuiz(`[`+quizQ("s", "design", "sleeve", "Sleeve?", "a", "b")+`]`, "jacket", nil)
-	if qs[0].View != "side_l" {
+	if qs[0].View != "front" {
 		t.Fatalf("jacket sleeve view: %+v", qs[0])
 	}
 	qs, _ = parseDesignQuiz(`[`+quizQ("w", "design", "brim", "Brim?", "a", "b")+`]`, "", nil)
@@ -317,5 +317,70 @@ func TestDesignQuizUserPromptCarriesAnswersAndParts(t *testing.T) {
 	}
 	if strings.Count(p, "</card_data>") != 1 {
 		t.Error("the data block has exactly one end")
+	}
+}
+
+// 30-PICTO-FIX T4: realistic model misses on the real beta family (shirt) resolve to the part the
+// question is about; nothing the family lacks is drawn.
+func TestDesignQuizResolvePart(t *testing.T) {
+	const sleeveQ = "How long are the sleeves?"
+	const plainQ = "What is it made of?"
+	cases := []struct {
+		family, part, id, question, want string
+		fixed                             bool
+	}{
+		{"shirt", "sleeve", "q", sleeveQ, "sleeve", false},
+		{"shirt", "sleeves", "q", sleeveQ, "sleeve", true},
+		{"shirt", "Sleeve", "q", sleeveQ, "sleeve", false},
+		{"shirt", "sleeve_length", "q", sleeveQ, "sleeve", true},
+		{"shirt", "sleeve length", "q", sleeveQ, "sleeve", true},
+		{"shirt", "cuffs", "q", plainQ, "cuff", true},
+		{"shirt", "pockets", "q", plainQ, "pocket", true},
+		{"shirt", "chest_pocket", "q", plainQ, "pocket", true},
+		{"shirt", "collar_stand", "q", plainQ, "collar", true},
+		{"shirt", "neckline", "q", plainQ, "collar", true},
+		{"shirt", "insulation", "insulation", "Is it insulated?", "whole", true},
+		{"shirt", "lining", "q", plainQ, "whole", true},
+		{"shirt", "button", "q", plainQ, "closure", true},
+		{"shirt", "buttons", "q", plainQ, "closure", true},
+		{"shirt", "hemline", "q", plainQ, "hem", true},
+		{"shirt", "arm", "q", plainQ, "sleeve", true},
+		{"shirt", "fabric", "q", plainQ, "whole", true},
+		{"shirt", "whole", "q", sleeveQ, "whole", false},
+		{"shirt", "", "q", sleeveQ, "sleeve", true},
+		{"shirt", "silhouette", "pocket_count", plainQ, "pocket", true},
+		{"jacket", "insulation", "q", plainQ, "lining", true},
+		{"jacket", "padding", "q", plainQ, "lining", true},
+		{"jacket", "zipper", "q", plainQ, "closure", true},
+		{"hoodie", "zipper", "q", plainQ, "zip", true},
+		{"hoodie", "fabric", "q", "Is the corduroy heavy?", "whole", true},
+		{"trousers", "back pocket", "q", plainQ, "back_pocket", true},
+		{"trousers", "x", "q", "Where does the back pocket sit?", "back_pocket", true},
+		{"shoe", "lace", "q", plainQ, "laces", true},
+		{"shoe", "laces", "q", plainQ, "laces", false},
+		{"", "sleeve", "q", sleeveQ, "whole", true},
+	}
+	for _, c := range cases {
+		got, fixed := designQuizResolvePart(c.family, c.part, c.id, c.question)
+		if got != c.want || fixed != c.fixed {
+			t.Errorf("%s %q: got %s fixed=%v, want %s fixed=%v", c.family, c.part, got, fixed, c.want, c.fixed)
+		}
+	}
+	// Through the parser: the fix reaches the question and is counted.
+	raw := `[` + quizQ("q_a", "details", "sleeves", sleeveQ, "full", "3/4") + `,` +
+		quizQ("q_b", "details", "collar", "Collar shape?", "spread", "point") + `]`
+	qs, fixed, ok := parseDesignQuizCounted(raw, "shirt", nil)
+	if !ok || len(qs) != 2 || qs[0].Part != "sleeve" || qs[0].View != "front" || qs[1].Part != "collar" || fixed != 1 {
+		t.Fatalf("parser: ok=%v fixed=%d %+v", ok, fixed, qs)
+	}
+}
+
+func TestDesignQuizPromptPartsFirst(t *testing.T) {
+	p := designQuizUserPrompt(nil, nil, nil, "shirt")
+	if !strings.HasPrefix(p, "Garment family: shirt. Allowed part keys: whole, collar") {
+		t.Fatalf("family line must open the user turn: %q", p[:min(len(p), 80)])
+	}
+	if !strings.Contains(designQuizSystemPrompt, "- part: EXACTLY one key") {
+		t.Fatal("system prompt part rule")
 	}
 }
