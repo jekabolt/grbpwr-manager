@@ -331,6 +331,13 @@ func designRecolorCallImages(params *pb_common.DesignRunParams) int {
 // carries at most every media id of the run plus its colour maps, and never more than the engine
 // takes — the provider client refuses anything above that before the call.
 func designImageCallImages(kind string, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot, maxRefs int) int {
+	return designImageCallImagesWithArtworks(kind, params, inputs, nil, maxRefs)
+}
+
+// designImageCallImagesWithArtworks — designImageCallImages plus a render's frozen artwork pictures
+// (deduplicated against every other input, as the worker attaches them).
+func designImageCallImagesWithArtworks(kind string, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork, maxRefs int) int {
 	n := 0
 	switch kind {
 	case entity.DesignRunKindFreeform:
@@ -338,7 +345,8 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 	case entity.DesignRunKindRecolor:
 		n = designRecolorCallImages(params)
 	default:
-		n = len(designRunInputMediaRefs(params, inputs)) + len(designColourMapMediaIDs(params.GetColour()))
+		n = len(designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)) +
+			len(designColourMapMediaIDs(params.GetColour()))
 	}
 	if maxRefs > 0 && n > maxRefs {
 		n = maxRefs
@@ -364,6 +372,13 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 // Kind threed prices by its options (B-09), through designThreedRunEstimate → designThreedCeilingUSDFor.
 func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot) decimal.NullDecimal {
+	return s.designEstimateForRunWithArtworks(kind, outputs, params, inputs, nil)
+}
+
+// designEstimateForRunWithArtworks — designEstimateForRun with a render's frozen artwork pictures
+// counted as images of every call (they travel with each one).
+func (s *Server) designEstimateForRunWithArtworks(kind string, outputs int, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) decimal.NullDecimal {
 	base := designEstimateFor(kind, outputs)
 	// PHASE 3: extend / inpaint reserve max(table, the route's own ceiling) — designFalRouteEstimate.
 	if e, ok := s.designFalRouteEstimate(kind, outputs); ok {
@@ -395,7 +410,7 @@ func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_commo
 		outputs = 1
 	}
 	calls := decimal.NewFromInt(int64(outputs))
-	images := decimal.NewFromInt(int64(designImageCallImages(kind, params, inputs, engine.MaxRefs)))
+	images := decimal.NewFromInt(int64(designImageCallImagesWithArtworks(kind, params, inputs, arts, engine.MaxRefs)))
 	total := engine.CeilingUSD(tier).Mul(calls).Add(engine.InputUSD.Mul(images).Mul(calls))
 	if !stated && base.Valid && base.Decimal.GreaterThan(total) {
 		return base

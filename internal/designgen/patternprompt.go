@@ -71,6 +71,11 @@ func patternCraft(p patternParams, pictures int) string {
 	if p.Mode == entity.DesignPatternModeLabel {
 		return labelCraft(pictures, p.LabelHasLogo)
 	}
+	// АРТВОРК — ПРЕДМЕТНЫЙ СНИМОК ПРИНТА/ВЫШИВКИ: исходник, если он есть, перерисовывается в
+	// технику с сохранением формы и цветов — снова обратное hardwareCraft.
+	if p.Mode == entity.DesignPatternModeArtwork {
+		return artworkCraft(pictures, p.ArtworkHasSource)
+	}
 	if p.Mode == entity.DesignPatternModeHardware {
 		return hardwareCraft(pictures)
 	}
@@ -283,6 +288,61 @@ func labelCraft(pictures int, hasLogo bool) string {
 	default:
 		b.WriteString(" No logo is given: make a blank label carrying only what the words name — " +
 			"invent no wordmark, no monogram, no text.")
+	}
+	return b.String()
+}
+
+// artworkSourceMarker — the client's convention for mode artwork: when a source photo/artwork is
+// attached it is the FIRST picture and the run's words carry this marker (case-insensitive).
+const artworkSourceMarker = "artwork = picture 1"
+
+// artworkWordsNameASource — do the run's words carry artworkSourceMarker?
+func artworkWordsNameASource(words string) bool {
+	return strings.Contains(strings.ToLower(words), artworkSourceMarker)
+}
+
+// artworkCraft — mode artwork: ONE square picture of ONE piece of garment artwork (print,
+// embroidery, patch, appliqué, transfer) alone on pure white, straight on. With hasSource the FIRST
+// picture is the SOURCE — its shape, letterforms, proportions and colours are kept and only its
+// MATERIAL changes into the named technique (the owner: «photo re-drawn in the technique»); every
+// other picture is a technique reference. Without a source the artwork is built from the words and
+// invents no wordmark. The white ground is not part of the artwork: the canvas multiplies it away
+// and the cut-out run removes it.
+func artworkCraft(pictures int, hasSource bool) string {
+	var b strings.Builder
+	b.WriteString("artwork:\n" +
+		"Produce ONE square picture of a single piece of garment ARTWORK alone — the print, " +
+		"embroidery, patch, appliqué or transfer the words above name — viewed straight on, flat, " +
+		"centred on a plain, seamless pure white background with generous empty margin around it.\n")
+	b.WriteString("Light it with soft, even light: no hard cast shadow, no hot spot, no coloured " +
+		"reflection; at most a faint soft contact shadow.\n")
+	b.WriteString("Strictly excluded: any garment, cloth or fabric the artwork is applied to; any hand, " +
+		"body part, mannequin or packaging; any props, scenery or second artwork; any text, caption or " +
+		"watermark that the words or the source do not carry, measurement, ruler or frame.\n")
+	b.WriteString("Execute it in the named technique with that technique's REAL surface: satin and fill " +
+		"stitches with visible thread direction and sheen for embroidery; flat ink with a hint of " +
+		"halftone for screen print; fine, soft ink sunk into the cloth for DTG; a raised moulded relief " +
+		"for rubber or puff print; felt or twill with a merrow border for a patch; stitched cloth edges " +
+		"for appliqué; a thin, slightly glossy film for a heat transfer. If a colour is stated above, " +
+		"use it exactly where the words put it.")
+	const reference = "take the technique — its stitch, ink, relief, edge and finish — from it, never " +
+		"its motif, text or colours."
+	switch {
+	case pictures > 0 && hasSource:
+		b.WriteString(" The FIRST attached picture is the SOURCE artwork: reproduce its shape, " +
+			"letterforms, proportions and colours exactly — add, drop, restyle or redraw nothing — and " +
+			"change ONLY its material into the named technique, re-drawing it as that technique really " +
+			"makes it. Take nothing of the source picture's background, photo light or surroundings.")
+		if pictures > 1 {
+			b.WriteString(" Every OTHER attached picture is a TECHNIQUE reference: " + reference)
+		}
+	case pictures > 0:
+		b.WriteString(" Every attached picture is a TECHNIQUE reference: " + reference +
+			" No source artwork is given: build only what the words name — invent no wordmark, no " +
+			"monogram, no text the words do not name.")
+	default:
+		b.WriteString(" No picture is attached: build only what the words name — invent no wordmark, " +
+			"no monogram, no text the words do not name.")
 	}
 	return b.String()
 }

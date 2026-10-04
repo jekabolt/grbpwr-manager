@@ -866,6 +866,12 @@ func hexToHSL(hex string) (h, s, l float64, ok bool) {
 // telling a model to read the cloth off an image it was never shown is how a render comes back in
 // an invented fabric.
 func renderCraft(p runParams, detailNames []string, attached []refCaption) string {
+	return renderCraftWith(p, detailNames, attached, nil)
+}
+
+// renderCraftWith is renderCraft plus the placed ARTWORKS of the run (70-ROUND7 B7): one paragraph
+// each, after the cloth section. No artworks — the block renderCraft always composed, byte for byte.
+func renderCraftWith(p runParams, detailNames []string, attached []refCaption, arts []artworkUse) string {
 	stated := fabricStated{}
 	if c := p.Colour; c != nil {
 		stated.photoImage = imageNumberOf(attached, c.FabricMediaID)
@@ -886,6 +892,7 @@ func renderCraft(p runParams, detailNames []string, attached []refCaption) strin
 		maps = c.ColourMaps
 	}
 	paras = append(paras, renderFabricSection(stated, statedCloths(p.Colour), maps, p.Views, attached)...)
+	paras = append(paras, renderArtworkParagraphs(arts, attached)...)
 	paras = append(paras,
 		renderLayoutParagraph(p.Views, detailNames, p.Layout),
 		renderStyle,

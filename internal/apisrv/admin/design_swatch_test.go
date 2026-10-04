@@ -136,6 +136,37 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 		}
 	})
 
+	t.Run("artwork: slot required, colour optional, 0..4 pictures (optional source + references)", func(t *testing.T) {
+		aw := func(cw int32, bom int32, refs ...int32) *pb_common.DesignRunParams {
+			return &pb_common.DesignRunParams{
+				ColorwayId:         cw,
+				ExtraInputMediaIds: refs,
+				Pattern: &pb_common.DesignPatternParams{Name: "chest embroidery", Mode: entity.DesignPatternModeArtwork,
+					BomItemId: bom},
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			params *pb_common.DesignRunParams
+			reason string
+		}{
+			{"words only", aw(13, 904), ""},
+			{"source only", aw(13, 904, 1), ""},
+			{"source + 3 references", aw(13, 904, 1, 2, 3, 4), ""},
+			{"five pictures", aw(13, 904, 1, 2, 3, 4, 5), entity.DesignErrorCodeTooManyReferences},
+			{"no bom line", aw(13, 0), entity.DesignErrorCodeHardwareNeedsSlot},
+			{"no colourway", aw(0, 904), entity.DesignErrorCodeHardwareNeedsSlot},
+		} {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoErrorf(t, err, tc.name)
+				continue
+			}
+			require.Equalf(t, codes.InvalidArgument, status.Code(err), tc.name)
+			require.Equalf(t, tc.reason, ffReason(t, err), tc.name)
+		}
+	})
+
 	t.Run("a swatch still needs its name", func(t *testing.T) {
 		p := swatch(hex)
 		p.Pattern.Name = " "
@@ -223,6 +254,8 @@ func TestTheBomLineDoorJUDGES_THE_FAMILY_BY_MODE(t *testing.T) {
 		{"hardware on an insulation line", entity.DesignPatternModeHardware, 906, entity.DesignErrorCodeHardwareOnClothLine},
 		{"label on a hardware line", entity.DesignPatternModeLabel, 904, ""},
 		{"label on a fabric line", entity.DesignPatternModeLabel, 902, entity.DesignErrorCodeHardwareOnClothLine},
+		{"artwork on a hardware line", entity.DesignPatternModeArtwork, 904, ""},
+		{"artwork on a fabric line", entity.DesignPatternModeArtwork, 902, entity.DesignErrorCodeHardwareOnClothLine},
 		{"swatch on a fabric line", entity.DesignPatternModeSwatch, 902, ""},
 		{"swatch on an insulation line", entity.DesignPatternModeSwatch, 906, ""},
 		{"swatch on a hardware line", entity.DesignPatternModeSwatch, 904, entity.DesignErrorCodeClothOnTrimLine},

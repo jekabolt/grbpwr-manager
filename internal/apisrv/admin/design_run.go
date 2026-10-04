@@ -1039,14 +1039,24 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// Довод целиком — в шапке design_input_format.go: медиа опознаётся номером и адресом, content
 	// type не хранит никто, и до этой двери .glb, загруженный руками, доезжал до слота картинки
 	// платного вызова пятью разными путями.
-	if err := s.designRefuseNonPictureInputs(ctx, params, inputs); err != nil {
+	// ─── АРТВОРКИ НА ФЛЭТАХ (70-ROUND7 B7) — ЗАМОРАЖИВАЮТСЯ ДО ДВЕРЕЙ ───
+	//
+	// Рендер замораживает разметку артворков своего колорвея на отправляемых флэтах копией в снимок
+	// входов (design_run_artworks.go); реран везёт копию родителя. Заморозка стоит ЗДЕСЬ, до дверей
+	// формата / «только для показа» / «спрятан», потолка движка и цены: картинка артворка уезжает
+	// поставщику как всякий вход, и лишний артворк обязан быть отказом до денег, а не провалом после.
+	arts := designRunArtworks(kind, params, card, band, inputs, parent)
+	if err := s.designRefuseRenderArtworks(kind, params, inputs, arts); err != nil {
+		return nil, err
+	}
+	if err := s.designRefuseNonPictureInputs(ctx, params, inputs, arts); err != nil {
 		return nil, err
 	}
 	// ─── КАДР «ТОЛЬКО ДЛЯ ПОКАЗА» — ОТКАЗ ЗДЕСЬ ЖЕ, ПО ТЕМ ЖЕ ПЯТИ ИСТОЧНИКАМ (0361, D-24) ───
 	//
 	// Та же позиция и тот же довод, что у двери формата строкой выше: входы уже собраны, деньги
 	// ещё нет. Довод, почему это дверь, а не фильтр в отборе плит, — в шапке design_input_format.go.
-	if err := s.designRefuseDisplayOnlyInputs(ctx, designRunInputMediaRefs(params, inputs)); err != nil {
+	if err := s.designRefuseDisplayOnlyInputs(ctx, designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)); err != nil {
 		return nil, err
 	}
 	// ─── И СПРЯТАННЫЙ КАДР — ТУДА ЖЕ, ПО ТЕМ ЖЕ ПЯТИ ИСТОЧНИКАМ И В ТОЙ ЖЕ ТОЧКЕ ───
@@ -1055,7 +1065,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// такой кадр в платный вызов значит заплатить за уже забракованное, и в истории от этого не
 	// остаётся ни следа. До этой двери про `hidden_at` не спрашивал НИ ОДИН из пяти источников —
 	// дыра была общая, а не только у плейграунда. Довод целиком — в шапке design_input_format.go.
-	if err := s.designRefuseHiddenInputs(ctx, designRunInputMediaRefs(params, inputs)); err != nil {
+	if err := s.designRefuseHiddenInputs(ctx, designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)); err != nil {
 		return nil, err
 	}
 	// ─── КАРТА ЦВЕТА, КОТОРАЯ НА САМОМ ДЕЛЕ ПЛИТА ИЛИ РЕФЕРЕНС ───
@@ -1092,6 +1102,14 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 			slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
 	}
+	// Артворки, замороженные выше до дверей, кладутся в снимок той же копией (пустой список — no-op).
+	if kind == entity.DesignRunKindRender {
+		if inputsJSON, err = designSpliceArtworks(inputsJSON, arts); err != nil {
+			slog.Default().ErrorContext(ctx, "design run: the artworks did not encode",
+				slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
+		}
+	}
 	if len(inputsJSON) > designMaxInputsBytes {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"the input snapshot encodes to %d bytes; the ceiling is %d",
@@ -1113,7 +1131,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		ProfileVersion:   designProfileVersion,
 		FitAtLaunch:      fitAtLaunch,
 		RequestedOutputs: outputs,
-		PriceEstimate:    s.designEstimateForRun(kind, outputs, params, inputs),
+		PriceEstimate:    s.designEstimateForRunWithArtworks(kind, outputs, params, inputs, arts),
 		Author:           designActor(ctx),
 		RerunOf:          designParentID(parent),
 		// Колорвей прогона — из ДЕЙСТВУЮЩИХ params (реран наследует родительские); стор в той же
@@ -1270,7 +1288,7 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 						"Nothing was reserved and nothing was charged", sources),
 					map[string]string{"named": strconv.Itoa(sources)})
 			}
-		case entity.DesignPatternModeHardware, entity.DesignPatternModeLabel:
+		case entity.DesignPatternModeHardware, entity.DesignPatternModeLabel, entity.DesignPatternModeArtwork:
 			// ФУРНИТУРА — СНИМОК ОДНОЙ ВЕЩИ ДЛЯ ОДНОЙ ПАРЫ (колорвей, строка BOM). Без пары снимок
 			// садился бы на полку ничьим, а верстак читает только связки — то есть платная картинка,
 			// которую экран не покажет. Принадлежность строки и колорвея карточке проверяют свои
@@ -1295,6 +1313,15 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 						entity.MaxDesignHardwareReferences),
 					map[string]string{"named": strconv.Itoa(sources)})
 			}
+			// АРТВОРК — ТА ЖЕ ПАРА И ТОТ ЖЕ ПОТОЛОК: исходник (если есть) первым, затем референсы техники.
+			if mode == entity.DesignPatternModeArtwork && sources > entity.MaxDesignHardwareReferences {
+				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTooManyReferences,
+					fmt.Sprintf("an artwork takes at most %d pictures — the source first, then references — "+
+						"and this run names %d: keep at most %d in params.extra_input_media_ids. Nothing "+
+						"was reserved and nothing was charged", entity.MaxDesignHardwareReferences, sources,
+						entity.MaxDesignHardwareReferences),
+					map[string]string{"named": strconv.Itoa(sources)})
+			}
 			if sources > entity.MaxDesignHardwareReferences {
 				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTooManyReferences,
 					fmt.Sprintf("a hardware picture takes at most %d reference pictures, and this run "+
@@ -1312,10 +1339,11 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 			}
 		default:
 			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeUnknownPatternMode,
-				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty), %q, %q nor %q. Nothing "+
+				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty), %q, %q, %q nor %q. Nothing "+
 					"was reserved and nothing was charged",
 					mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch,
-					entity.DesignPatternModeHardware, entity.DesignPatternModeLabel),
+					entity.DesignPatternModeHardware, entity.DesignPatternModeLabel,
+					entity.DesignPatternModeArtwork),
 				map[string]string{"mode": mode})
 		}
 		name := strings.TrimSpace(params.GetPattern().GetName())
@@ -2038,7 +2066,7 @@ func designRefuseForeignBomLine(cardID int, spoken *pb_common.DesignRunParams, b
 		roll := entity.IsRollGoodsSection(line.Section)
 		meta := map[string]string{"bom_item_id": strconv.Itoa(id), "section": string(line.Section)}
 		switch spoken.GetPattern().GetMode() {
-		case entity.DesignPatternModeHardware, entity.DesignPatternModeLabel:
+		case entity.DesignPatternModeHardware, entity.DesignPatternModeLabel, entity.DesignPatternModeArtwork:
 			if roll {
 				return designRefusal(codes.FailedPrecondition, entity.DesignErrorCodeHardwareOnClothLine,
 					fmt.Sprintf("params.pattern.bom_item_id %d is a %s line — roll goods — and a hardware "+
