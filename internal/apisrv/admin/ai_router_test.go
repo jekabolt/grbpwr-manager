@@ -281,7 +281,12 @@ func TestThePictureDoorsSendThePreB18BytesWithoutPictures(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		req  *pb_admin.DraftDesignIdeaRequest
-	}{{"draft, prose", draftRequest()}, {"draft, structured", draftConstructionRequest()}} {
+	}{
+		// T39: the prose branch writes the description FROM the pictures and refuses a words-only
+		// board before any call (TestDraftDescriptionRefusesABoardWithoutPictures), so only the
+		// structured branch still sends a picture-less request.
+		{"draft, structured", draftConstructionRequest()},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newDraftRigWithCard(t, http.StatusOK, constructionAnswer, words, nil, nil)
 			_, _ = rig.srv.DraftDesignIdea(designRunCtx(), tc.req) // the request bytes are the subject

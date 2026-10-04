@@ -399,9 +399,8 @@ const (
 	// designProseAnswerTokens — ОЖИДАЕМЫЙ, А НЕ РАЗРЕШЁННЫЙ размер прозаического ответа, и разница
 	// названа вслух, потому что она и есть предмет решения ниже.
 	//
-	// Роль просит РОВНО ТРИ раздела (draftIdeaSystemPrompt): DESCRIPTION — «at most 120 words»,
-	// DESIGN ASPECTS — по строке на аспект, MISSING CALLOUTS — по строке на пропуск. Живой ответ
-	// такой формы это ≈400–700 токенов; 1600 — двукратный запас поверх верхнего края.
+	// Since T39 the role asks for the bare description, «at most 150 words» (≈250–400 tokens); the
+	// 1600 sized for the old three-section answer is kept as a generous upper expectation.
 	designProseAnswerTokens = 1600
 )
 
@@ -2354,26 +2353,26 @@ func (s *Server) GetDesignRun(ctx context.Context, req *pb_admin.GetDesignRunReq
 // текст, «from the notes» было правдой. Теперь доска уезжает изображениями (см. DraftDesignIdea), и
 // роль, продолжающая говорить «по заметкам», прямо велела бы модели не смотреть на то, за что уже
 // заплачено: картинки в биллинге — входные токены, и потраченные впустую они всё равно потрачены.
-// ⚠ THE THREE SECTION TITLES ARE A CONTRACT WITH THE CLIENT, NOT A STYLE CHOICE (V-19). The owner
-// asks the draft for three different answers with three different fates: the description is
-// offered line by line into the printed concept, the aspects are advice for the construction
-// block, the missing callouts are advice to go pin something — and the client
-// (head/mood-draft.tsx, parseDraftSections) tells them apart BY THESE TITLES. Renaming a title
-// here silently demotes its section to "offer everything into the concept".
+// ⚠ T39: THE ANSWER IS THE DESCRIPTION ITSELF, plain text. The three titled sections (V-19) were
+// parsed by head/mood-draft.tsx, which no client has any more; see design_draft_description.go for
+// why this branch was repurposed rather than a verb added. The client writes `run.output_text`
+// into an EMPTY concept field as a draft the operator edits — so no title, no list, no preamble:
+// anything but the description would land in the field.
 const draftIdeaSystemPrompt = "You are a fashion designer's assistant. " +
-	"You are shown the pictures of a garment's moodboard, the designer's concept & construction " +
-	"description, and the notes pinned on the pictures — every note names its picture by number " +
-	"and the spot on it, so you know exactly which part of which image it marks. " +
-	"Look at the pictures and answer in exactly three titled sections, plain English prose:\n" +
-	"DESCRIPTION — one paragraph, at most 120 words: the garment the board is reaching for — " +
-	"silhouette, proportions, construction, the two or three details that carry the idea — " +
-	"written so it can stand as the concept & construction description itself.\n" +
-	"DESIGN ASPECTS — the construction aspects the pictures and the notes imply, one line each " +
-	"(closure, collar, pockets, seams, hem and the like).\n" +
-	"MISSING CALLOUTS — what deserves a pinned note and has none: name the picture by its number " +
-	"and the spot on it.\n" +
-	"Never invent a fabric, a colour or a measurement that the pictures do not show and the notes " +
-	"do not mention — say what is missing instead."
+	"You are shown the pictures of a garment's moodboard, the notes pinned on the pictures — every " +
+	"note names its picture by number and the spot on it, so you know exactly which part of which " +
+	"image it marks — and the facts already on the garment's tech card. " +
+	"Write the garment's concept & construction description: the text a designer keeps on the card " +
+	"to say what this garment is and how it is built. Cover, in this order: the concept in one " +
+	"sentence; the silhouette and proportions; the construction (closures, collar, sleeves, pockets, " +
+	"seams, panels, hem); the two or three details that carry the idea; the materials. " +
+	"At most 150 words, one to three short paragraphs of plain text: no title, no headings, no lists, " +
+	"no markdown, nothing before or after the description. " +
+	"Concise and factual, like a designer's working note: no marketing words, no mood, no story. " +
+	"When the card already has the designer's description, build on it. " +
+	"Never invent a fabric, a colour or a measurement that the pictures do not show and neither the " +
+	"notes nor the card state — leave it out. " +
+	"Write in the language the last line of the request names."
 
 // draftIdeaNotConfiguredMsg / draftIdeaModelUnavailableMsg — те же две несводимые настройки, что
 // у остальных функций на AI-роутере (s.ai), и те же слова: одна причина обязана звучать одинаково везде,
@@ -2637,9 +2636,9 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// роли, требующей объект; потолок без проверки finish_reason), они дают ответ, который
 	// формально пришёл и содержательно наполовину.
 	//
-	// ⚠ ОТСУТСТВУЮЩИЙ ФЛАГ ОБЯЗАН ДАВАТЬ ПРЕЖНИЕ БАЙТЫ. Старый клиент разбирает `output_text` по
-	// трём заголовкам (V-19), поэтому у него не меняется ничего: та же роль, тот же промпт, тот
-	// же выключенный json и тот же отсутствующий потолок.
+	// The absent flag keeps its transport bytes (no json mode, no ceiling); since T39 its role and
+	// prompt ask for the description itself — the three-section client is gone (see
+	// design_draft_description.go).
 	construction := req.GetConstruction()
 	systemPrompt := draftIdeaSystemPrompt
 	if construction {
@@ -2666,6 +2665,15 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		return nil, status.Errorf(codes.InvalidArgument,
 			"the moodboard encodes to %d bytes; the ceiling is %d — shorten the board's note or its callouts",
 			len(inputsJSON), designMaxInputsBytes)
+	}
+
+	// T39: THE PROSE BRANCH WRITES THE DESCRIPTION FROM THE PICTURES, so a board that sends none —
+	// words only, or tiles whose media rows are gone — is refused before StartRun and money. It
+	// stands after the snapshot ceiling, so an oversized board is told that first. The construction
+	// branch keeps answering a words-only board.
+	if !req.GetConstruction() && len(attachedIDs) == 0 {
+		return nil, designRefusal(codes.FailedPrecondition, designReasonBoardHasNoPictures,
+			designBoardHasNoPicturesMsg, nil)
 	}
 
 	// ЦЕНА СЧИТАЕТСЯ ПО ЧИСЛУ УЕХАВШИХ КАРТИНОК И ПО ФОРМЕ ОТВЕТА, а не по роду прогона: см.
@@ -4392,17 +4400,34 @@ func designCalloutsByMedia(card *entity.TechCard) map[int][]*pb_common.DesignMoo
 //
 // ⚠ media_id ПО-ПРЕЖНЕМУ НЕ ПИШЕТСЯ: это наш внутренний ключ, модели он не сообщает ничего.
 // Номер здесь — порядковый номер content-части, и только он.
+//
+// T39: the card details the description is built from (category, gender, composition, aspects,
+// material slots, table callouts) follow the board, and the LANGUAGE RULE is the last line — the
+// role tells the model to take the language from there (designDescriptionLanguageLine).
 func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int) string {
 	var b strings.Builder
 	if card != nil {
 		if v := strings.TrimSpace(card.Name); v != "" {
 			b.WriteString("Garment: " + v + "\n")
 		}
+		if v := designCategoryName(card); v != "" {
+			b.WriteString("Category: " + v + "\n")
+		}
 		if v := strings.TrimSpace(card.Fit.String); v != "" {
 			b.WriteString("Fit: " + v + "\n")
 		}
+		if v := strings.TrimSpace(card.TargetGender.String); v != "" {
+			b.WriteString("Gender: " + v + "\n")
+		}
+		if v := aiBoundedText(designOneLine(card.Composition.String), designConstructionMaxAlreadyLineRunes); v != "" {
+			b.WriteString("Composition: " + v + "\n")
+		}
 	}
 	b.WriteString(designBoardPromptBody(mood, attachedIDs))
+	if facts := designDescriptionCardFacts(card); facts != "" {
+		b.WriteString("\nOn the card already — the designer's facts, keep them:\n" + facts)
+	}
+	b.WriteString("\n" + designDescriptionLanguageLine(card, mood, attachedIDs))
 	return strings.TrimSpace(b.String())
 }
 
