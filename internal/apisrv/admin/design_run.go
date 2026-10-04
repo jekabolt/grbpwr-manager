@@ -1270,6 +1270,26 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 						"Nothing was reserved and nothing was charged", sources),
 					map[string]string{"named": strconv.Itoa(sources)})
 			}
+		case entity.DesignPatternModeHardware:
+			// ФУРНИТУРА — СНИМОК ОДНОЙ ВЕЩИ ДЛЯ ОДНОЙ ПАРЫ (колорвей, строка BOM). Без пары снимок
+			// садился бы на полку ничьим, а верстак читает только связки — то есть платная картинка,
+			// которую экран не покажет. Принадлежность строки и колорвея карточке проверяют свои
+			// двери (designRefuseForeignBomLine и граница колорвея); здесь — только «названы ли».
+			if params.GetPattern().GetBomItemId() <= 0 || params.GetColorwayId() <= 0 {
+				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeHardwareNeedsSlot,
+					"a hardware picture is made for one (colourway, BOM line) pair: state both "+
+						"params.colorway_id and params.pattern.bom_item_id. Nothing was reserved and "+
+						"nothing was charged", nil)
+			}
+			// ЦВЕТ НЕОБЯЗАТЕЛЕН: у кнопки из рога или латунной молнии цвет — это материал, и
+			// слова вещи (params.colour.words / ask) его уже называют. Референсы — форма и материал.
+			if sources > entity.MaxDesignHardwareReferences {
+				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTooManyReferences,
+					fmt.Sprintf("a hardware picture takes at most %d reference pictures, and this run "+
+						"names %d. Nothing was reserved and nothing was charged",
+						entity.MaxDesignHardwareReferences, sources),
+					map[string]string{"named": strconv.Itoa(sources)})
+			}
 		case "", entity.DesignPatternModeImage:
 			if sources != 1 {
 				return designRefusal(codes.InvalidArgument, "one_source_picture",
@@ -1280,9 +1300,10 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 			}
 		default:
 			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeUnknownPatternMode,
-				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty) nor %q. Nothing was "+
+				fmt.Sprintf("params.pattern.mode %q is neither %q (or empty), %q nor %q. Nothing was "+
 					"reserved and nothing was charged",
-					mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch),
+					mode, entity.DesignPatternModeImage, entity.DesignPatternModeSwatch,
+					entity.DesignPatternModeHardware),
 				map[string]string{"mode": mode})
 		}
 		name := strings.TrimSpace(params.GetPattern().GetName())

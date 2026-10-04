@@ -353,6 +353,15 @@ func imageCalls(job Job) ([]imageCall, error) {
 		// (`one_texture_picture`): two textures blend into a third that neither of them is. The
 		// craft paragraph is written for what actually attached (composePrompt), so a texture
 		// that did not survive resolution simply makes this a plain-cloth call, not a refusal.
+		// A HARDWARE PICTURE TAKES 0..MaxDesignHardwareReferences references of the item's shape
+		// and material (the door refuses more with `too_many_references`) — still one paid call.
+		if job.PatternMode == entity.DesignPatternModeHardware {
+			if len(job.References) > entity.MaxDesignHardwareReferences {
+				return nil, fmt.Errorf("%w: a hardware picture takes at most %d references, and this run "+
+					"resolved %d", orimages.ErrBadRequest, entity.MaxDesignHardwareReferences, len(job.References))
+			}
+			return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+		}
 		if job.PatternMode == entity.DesignPatternModeSwatch {
 			if len(job.References) > 1 {
 				return nil, fmt.Errorf("%w: a swatch takes at most one texture reference, and this run "+

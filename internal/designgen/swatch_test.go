@@ -148,3 +148,41 @@ func TestTheSwatchModeREACHES_THE_JOB_AND_THE_PROMPT(t *testing.T) {
 	require.Empty(t, job.References)
 	require.Contains(t, strings.ToLower(job.Prompt), "no picture is attached")
 }
+
+// TestTheHardwareCraftIS_A_PRODUCT_SHOT_NOT_A_TILE: mode hardware writes its own craft (one item,
+// white ground, colour matched if stated, refs = shape/material) and none of the tile half.
+func TestTheHardwareCraftIS_A_PRODUCT_SHOT_NOT_A_TILE(t *testing.T) {
+	for _, pictures := range []int{0, 3} {
+		low := strings.ToLower(patternCraft(patternParams{Mode: entity.DesignPatternModeHardware, RepeatMM: 80}, pictures))
+		for _, must := range []string{"single garment trim item", "exactly one of it",
+			"plain, seamless pure white background", "soft, even studio light", "any hand",
+			"match the stated colour value exactly", "if no colour is stated"} {
+			require.Containsf(t, low, must, "%d pictures: must say %q", pictures, must)
+		}
+		for _, never := range []string{"repeating tile", "right edge", "repeat", "fill the frame edge to edge",
+			"natural scale", "reconstruct the print"} {
+			require.NotContainsf(t, low, never, "%d pictures: must not say %q", pictures, never)
+		}
+		if pictures > 0 {
+			require.Contains(t, low, "not necessarily for the colour")
+		} else {
+			require.Contains(t, low, "no picture is attached")
+		}
+	}
+}
+
+// TestAHardwarePictureTAKES_UP_TO_FOUR_REFERENCES_IN_ONE_CALL.
+func TestAHardwarePictureTAKES_UP_TO_FOUR_REFERENCES_IN_ONE_CALL(t *testing.T) {
+	for _, refs := range [][]string{nil, {"a"}, {"a", "b", "c", "d"}} {
+		calls, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeHardware,
+			Prompt: "hw", References: refs})
+		require.NoErrorf(t, err, "%d refs", len(refs))
+		require.Len(t, calls, 1)
+		require.Equal(t, 1, calls[0].n)
+		require.Len(t, calls[0].refs, len(refs))
+	}
+	_, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeHardware,
+		References: []string{"a", "b", "c", "d", "e"}})
+	require.Error(t, err)
+	require.False(t, classify(err).Retryable)
+}

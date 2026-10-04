@@ -206,6 +206,15 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	if repeat > entity.MaxDesignAssetRepeatMm {
 		repeat = entity.MaxDesignAssetRepeatMm
 	}
+	// ФУРНИТУРА (mode hardware) — НЕ ПЛИТКА: садится ассетом рода hardware, без раппорта и без
+	// родословной, и привязывается к паре ровно как свотч. Колорвей целиком она не носит никогда
+	// (SetAssetColorway ей отказывает), поэтому legacy-колонку не трогает и без слота.
+	hardware := p.Pattern.Mode == entity.DesignPatternModeHardware
+	kind := entity.DesignAssetKindPattern
+	if hardware {
+		kind = entity.DesignAssetKindHardware
+		repeat = 0
+	}
 
 	if err := refuseFullShelf(ctx, db, run.TechCardId); err != nil {
 		if errors.Is(err, entity.ErrDesignAssetTooMany) {
@@ -226,7 +235,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	cw := entity.DesignColorwayOrNone(run.ColorwayId)
 	// Плитка слота колорвей целиком не носит (см. шапку): ей нечего и красть.
 	slot := p.Pattern.BomItemId > 0
-	if cw > 0 && !slot {
+	if cw > 0 && !slot && !hardware {
 		if err := stealColorwayTx(ctx, db, run.TechCardId, cw, 0); err != nil {
 			return err
 		}
@@ -244,7 +253,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	// просто не пишется — провалить прилёт УЖЕ ОПЛАЧЕННОЙ плитки из-за поля, которое законно
 	// пустует, было бы дороже правды, которую оно несёт.
 	parent := 0
-	if src := p.Pattern.SourceAssetID; src > 0 {
+	if src := p.Pattern.SourceAssetID; src > 0 && !hardware {
 		switch a, err := assetByID(ctx, db, src); {
 		case err != nil && !errors.Is(err, entity.ErrDesignNotFound):
 			return err
@@ -266,7 +275,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 
 	id, err := insertAssetTx(ctx, db, map[string]any{
 		"card":        run.TechCardId,
-		"kind":        entity.DesignAssetKindPattern,
+		"kind":        kind,
 		"name":        name,
 		"media":       nullInt(mediaID),
 		"colour_code": nullStr(code),
@@ -294,6 +303,10 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	if slot {
 		// ТКАНЬ ПАРЫ, А НЕ КОЛОРВЕЯ: legacy-колонка остаётся NULL, пишется только связка.
 		return bindKeptPatternTx(ctx, db, run, cw, p.Pattern.BomItemId, id)
+	}
+	if hardware {
+		// Без слота фурнитура остаётся на полке ничьей: носить колорвей целиком ей нельзя.
+		return nil
 	}
 	// ⚠ НОСКА — ОТДЕЛЬНЫМ UPDATE, И ЭТО НАМЕРЕННО. Колонки colorway_id НЕТ в общем INSERT, которым
 	// пользуется UpsertAsset, и её там не будет: держать её вне того оператора — это и есть
@@ -417,8 +430,8 @@ func upsertAssetBindingTx(ctx context.Context, db dependency.DB, cardID, cw, bom
 // rather than foreign_bom_line. A line that still exists on ANOTHER card is refused either way.
 //
 // EVERY ONE OF THE THREE IDS IS CHECKED AGAINST THE CARD, in this transaction and in this order:
-// the asset (NotFound for another card's, colorway_forbidden for hardware — a zip is not what a
-// slot is cut from), the colourway (foreign_colorway) and the BOM line (foreign_bom_line). None of
+// the asset (NotFound for another card's; any kind binds — a hardware asset is the picture of a
+// hardware slot), the colourway (foreign_colorway) and the BOM line (foreign_bom_line). None of
 // the three is expressible in the schema: the four foreign keys are each satisfied by a row of ANY
 // card. The line's SECTION is not judged — which lines are cloth slots is the screen's reading of
 // the BOM, and a server rule here would be a second copy of it.
@@ -443,13 +456,12 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 		out = nil
 		db := rep.DB()
 		if req.AssetId > 0 {
-			asset, err := requireAssetOfCard(ctx, db, req.TechCardId, req.AssetId)
-			if err != nil {
+			// ФУРНИТУРА ТОЖЕ БИНДИТСЯ (fabrics and hardware bench): связка — это «картинка этой
+			// пары», а пара фурнитуры — строка BOM пуговиц или молнии. Род ассета здесь не судится,
+			// как не судится и секция строки; legacy-колонку колорвея (SetAssetColorway) фурнитура
+			// по-прежнему не носит.
+			if _, err := requireAssetOfCard(ctx, db, req.TechCardId, req.AssetId); err != nil {
 				return err
-			}
-			if asset.Kind == entity.DesignAssetKindHardware {
-				return fmt.Errorf("%w: a %s asset cannot be the fabric of a slot",
-					entity.ErrDesignColorwayForbidden, asset.Kind)
 			}
 		}
 		if err := assertColorwayOfCard(ctx, db, req.TechCardId, req.ColorwayId); err != nil {

@@ -133,7 +133,7 @@ func TestDesignDBAssetBindingIsSingleSelectPerPair(t *testing.T) {
 	require.Empty(t, band.AssetBindings)
 }
 
-// КАЖДЫЙ ИЗ ТРЁХ ID ПРОВЕРЯЕТСЯ ПРОТИВ КАРТОЧКИ, И ФУРНИТУРА ТКАНЬЮ СЛОТА НЕ БЫВАЕТ.
+// КАЖДЫЙ ИЗ ТРЁХ ID ПРОВЕРЯЕТСЯ ПРОТИВ КАРТОЧКИ; ФУРНИТУРА (fabrics and hardware bench) БИНДИТСЯ.
 //
 // МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать любой из трёх сторожей SetAssetBinding — FK примет строку ЧУЖОЙ
 // карточки молча, и пара одной карточки назовёт ткань, колорвей либо слот другой.
@@ -161,7 +161,6 @@ func TestDesignDBAssetBindingRefusesForeignEnds(t *testing.T) {
 		return err
 	}
 	require.ErrorIs(t, set(cw, line, theirs.Id), entity.ErrDesignNotFound)
-	require.ErrorIs(t, set(cw, line, zip.Id), entity.ErrDesignColorwayForbidden)
 	require.ErrorIs(t, set(foreignCw, line, mine.Id), entity.ErrDesignForeignColorway)
 	require.ErrorIs(t, set(cw, foreignLine, mine.Id), entity.ErrDesignForeignBomLine)
 	require.ErrorIs(t, set(cw, foreignLine, 0), entity.ErrDesignForeignBomLine,
@@ -170,6 +169,10 @@ func TestDesignDBAssetBindingRefusesForeignEnds(t *testing.T) {
 	require.ErrorIs(t, set(cw, 0, mine.Id), entity.ErrDesignInvalidArgument)
 	require.ErrorIs(t, set(cw, line, -1), entity.ErrDesignInvalidArgument)
 	require.Empty(t, bindingsOf(t, raw, card), "ни один отказ не оставил строки")
+
+	// Фурнитура — картинка слота фурнитуры: связка принимается.
+	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
+	require.NoError(t, set(cw, hwLine, zip.Id))
 }
 
 // СНЯТИЕ С ПРОПАВШЕЙ СТРОКИ BOM — OK: СОСТОЯНИЕ, О КОТОРОМ ПРОСЯТ, УЖЕ НАСТУПИЛО (ревью STEP 3).

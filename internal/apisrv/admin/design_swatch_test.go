@@ -68,6 +68,42 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 		})
 	}
 
+	t.Run("hardware: slot required, colour optional, 0..4 references", func(t *testing.T) {
+		hw := func(cw int32, bom int32, colour *pb_common.DesignColourRecipe, refs ...int32) *pb_common.DesignRunParams {
+			return &pb_common.DesignRunParams{
+				ColorwayId:         cw,
+				ExtraInputMediaIds: refs,
+				Colour:             colour,
+				Pattern: &pb_common.DesignPatternParams{Name: "button · horn", Mode: entity.DesignPatternModeHardware,
+					BomItemId: bom},
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			params *pb_common.DesignRunParams
+			reason string
+		}{
+			{"no colour, no refs", hw(13, 904, nil), ""},
+			{"colour stated", hw(13, 904, hex), ""},
+			{"four refs", hw(13, 904, nil, 1, 2, 3, 4), ""},
+			{"five refs", hw(13, 904, nil, 1, 2, 3, 4, 5), entity.DesignErrorCodeTooManyReferences},
+			{"no bom line", hw(13, 0, hex), entity.DesignErrorCodeHardwareNeedsSlot},
+			{"no colourway", hw(0, 904, hex), entity.DesignErrorCodeHardwareNeedsSlot},
+		} {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoErrorf(t, err, tc.name)
+				continue
+			}
+			require.Equalf(t, codes.InvalidArgument, status.Code(err), tc.name)
+			require.Equalf(t, tc.reason, ffReason(t, err), tc.name)
+		}
+		p := hw(13, 904, nil)
+		p.Pattern.Name = ""
+		require.Equal(t, "pattern_name_required",
+			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "", p)))
+	})
+
 	t.Run("a swatch still needs its name", func(t *testing.T) {
 		p := swatch(hex)
 		p.Pattern.Name = " "

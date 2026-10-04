@@ -1106,6 +1106,12 @@ const (
 	DesignErrorCodeForeignBomLine     = "foreign_bom_line"
 	DesignErrorCodeUnknownPatternMode = "unknown_pattern_mode"
 	DesignErrorCodeBadBomLineID       = "bad_bom_line_id"
+	// DesignErrorCodeHardwareNeedsSlot — прогон фурнитуры без пары (колорвей, строка BOM): снимок
+	// фурнитуры делается ДЛЯ слота и без адреса пары садился бы на полку ничьим.
+	DesignErrorCodeHardwareNeedsSlot = "hardware_needs_slot"
+	// DesignErrorCodeTooManyReferences — у прогона фурнитуры больше MaxDesignHardwareReferences
+	// референсов.
+	DesignErrorCodeTooManyReferences = "too_many_references"
 )
 
 // PLAYGROUND phase-2 refusals (all InvalidArgument, all before money). Constants because the
@@ -1194,10 +1200,18 @@ func DesignExtendRatioValue(r string) (float64, bool) {
 //   - DesignPatternModeImage — плитка из ОДНОЙ фотографии ткани (сегодняшний маршрут).
 //   - DesignPatternModeSwatch — свотч из ЗАЯВЛЕННОГО цвета (params.colour обязателен), с 0–1
 //     референсом ФАКТУРЫ, от которого берётся материал и переплетение, но не цвет.
+//   - DesignPatternModeHardware — предметный снимок ОДНОЙ единицы фурнитуры (пуговица, молния,
+//     отделка, бирка) для пары (колорвей, строка BOM): слот и колорвей обязательны, цвет
+//     необязателен, 0–MaxDesignHardwareReferences референсов формы и материала. Садится на полку
+//     ассетом рода hardware и сразу привязывается к паре — это НЕ плитка, раппорта у него нет.
 const (
-	DesignPatternModeImage  = "image"
-	DesignPatternModeSwatch = "swatch"
+	DesignPatternModeImage    = "image"
+	DesignPatternModeSwatch   = "swatch"
+	DesignPatternModeHardware = "hardware"
 )
+
+// MaxDesignHardwareReferences — сколько референсов формы/материала берёт прогон фурнитуры.
+const MaxDesignHardwareReferences = 4
 
 // DesignAssetKinds — три полки в том порядке, в каком их называет владелец: ткани, паттерны,
 // фурнитура. Порядок значим ровно настолько, насколько значим порядок полок на стене.
