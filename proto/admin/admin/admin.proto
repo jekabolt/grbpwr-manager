@@ -7284,6 +7284,7 @@ enum EnhanceTextField {
   ENHANCE_TEXT_FIELD_SILHOUETTE = 4;
   ENHANCE_TEXT_FIELD_FABRIC = 5;
   ENHANCE_TEXT_FIELD_OTHER = 6; // any other free-text field
+  ENHANCE_TEXT_FIELD_RENDER_WORDS = 7; // FABRIC RENDER › IN WORDS: the garment description that briefs a fabric render of the flats
 }
 
 message EnhanceTextRequest {
