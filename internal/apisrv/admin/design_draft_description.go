@@ -30,6 +30,38 @@ import (
 // sample. Enough for a model to recognise a language, short enough not to read as content.
 const draftDescriptionMaxSampleRunes = 240
 
+// designCardDataOpen / designCardDataClose — the block the prose prompt wraps all card and board
+// content in (T39 review 1). Named in the role, so the model knows where the data ends.
+const (
+	designCardDataOpen  = "<card_data>"
+	designCardDataClose = "</card_data>"
+)
+
+// designNeutraliseDataTags — a person's text cannot close the data block early: any spelling of
+// the two tags inside the content is rewritten so the block has exactly one end, ours.
+func designNeutraliseDataTags(s string) string {
+	lower := strings.ToLower(s)
+	if !strings.Contains(lower, "card_data") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(lower[i:], "</card_data>") {
+			b.WriteString("(/card_data)")
+			i += len("</card_data>")
+			continue
+		}
+		if strings.HasPrefix(lower[i:], "<card_data>") {
+			b.WriteString("(card_data)")
+			i += len("<card_data>")
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // designReasonBoardHasNoPictures — the description is written FROM the pictures; a board without
 // one attached picture is refused before any money moves.
 const designReasonBoardHasNoPictures = "board_has_no_pictures"
@@ -45,6 +77,8 @@ const designBoardHasNoPicturesMsg = "the description is written from the moodboa
 // language a designer may type. WORDS is unaffected — T03 still turns this into the English brief.
 func designDescriptionLanguageLine(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int) string {
 	if sample := designDesignerTextSample(card, mood, attachedIDs); sample != "" {
+		// The sample is data too: its quote marks and the data tags cannot be closed from inside.
+		sample = designNeutraliseDataTags(strings.NewReplacer("«", "\"", "»", "\"").Replace(sample))
 		return "Language: write the description in the same language as the designer's own words on this card, " +
 			"for example: «" + sample + "». Do not translate them into English."
 	}
