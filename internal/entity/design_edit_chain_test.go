@@ -238,3 +238,29 @@ func TestDesignEditStepTargetDisambiguatesTheReplay(t *testing.T) {
 	_, err = DesignUndoStep(twice, 30, 20, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
 }
+
+// C3: ЧТЕНИЕ ПОЛОСЫ ЧИТАЕТ ЦЕПОЧКИ КАРТОЧКИ ОДИН РАЗ, И НЕ ЧИТАЕТ ВОВСЕ, ЕСЛИ ЗВЕНЬЕВ НЕТ.
+//
+// МУТАЦИИ: не смотреть в memo (второй вызов читает снова); не пропускать кадры, которые не звенья
+// (чтение на странице без единой правки).
+func TestDesignAnnotateEditControlsReadsOncePerCard(t *testing.T) {
+	calls := 0
+	load := func(cards []int) ([]DesignChainLink, error) {
+		calls++
+		require.Equal(t, []int{7}, cards)
+		return []DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, false)}, nil
+	}
+	plain := &DesignPicture{Id: 5, TechCardId: 7}
+	require.NoError(t, DesignAnnotateEditControls([]*DesignPicture{plain}, DesignEditControlsMemo{}, load))
+	require.Zero(t, calls, "ни одного звена — цепочки не читаются")
+
+	memo := DesignEditControlsMemo{}
+	head := &DesignPicture{Id: 20, TechCardId: 7, Derivation: DesignDerivationFlatten}
+	root := &DesignPicture{Id: 10, TechCardId: 7, ReplacedBy: sql.NullInt32{Int32: 20, Valid: true}}
+	require.NoError(t, DesignAnnotateEditControls([]*DesignPicture{root, plain}, memo, load))
+	require.NoError(t, DesignAnnotateEditControls([]*DesignPicture{head}, memo, load))
+	require.Equal(t, 1, calls, "второй вызов того же чтения берёт память")
+	require.True(t, head.CanUndo)
+	require.Equal(t, 10, head.UndoToId)
+	require.False(t, root.CanUndo || root.CanRedo)
+}

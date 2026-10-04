@@ -21,35 +21,28 @@ func designEditChainParams(cards []int) map[string]any {
 	return map[string]any{"cards": cards, "flatten": entity.DesignDerivationFlatten}
 }
 
-// annotateEditChains — УГЛЫ undo/redo каждого кадра (entity.DesignEditChainControls), посчитанные по
+// annotateEditChains — УГЛЫ undo/redo каждого кадра (entity.DesignAnnotateEditControls), посчитанные по
 // ВСЕЙ цепочке его карточки, а не по странице: плита слота из строки, ушедшей за страницу, обязана
 // сохранить углы. Зовётся из resolveMedia — единственной воронки, через которую кадр уходит наружу.
+// Цепочки не читаются, если ни один кадр не звено (C3), и читаются раз на карточку за чтение, когда
+// чтение завело память (withEditControlsMemo — GetBand).
 func annotateEditChains(ctx context.Context, db dependency.DB, pics []*entity.DesignPicture) error {
-	seen := map[int]bool{}
-	var cards []int
-	for _, p := range pics {
-		if p == nil || p.TechCardId <= 0 || seen[p.TechCardId] {
-			continue
+	memo, _ := ctx.Value(editControlsMemoKey{}).(entity.DesignEditControlsMemo)
+	return entity.DesignAnnotateEditControls(pics, memo, func(cards []int) ([]entity.DesignChainLink, error) {
+		links, err := storeutil.QueryListNamed[entity.DesignChainLink](ctx, db, designEditChainLinks, designEditChainParams(cards))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read design edit chains: %w", err)
 		}
-		seen[p.TechCardId] = true
-		cards = append(cards, p.TechCardId)
-	}
-	if len(cards) == 0 {
-		return nil
-	}
-	links, err := storeutil.QueryListNamed[entity.DesignChainLink](ctx, db, designEditChainLinks, designEditChainParams(cards))
-	if err != nil {
-		return fmt.Errorf("failed to read design edit chains: %w", err)
-	}
-	controls := entity.DesignEditChainControls(links)
-	for _, p := range pics {
-		if p == nil {
-			continue
-		}
-		c := controls[p.Id]
-		p.CanUndo, p.CanRedo, p.UndoToId = c.CanUndo, c.CanRedo, c.UndoTo
-	}
-	return nil
+		return links, nil
+	})
+}
+
+type editControlsMemoKey struct{}
+
+// withEditControlsMemo — память углов на одно чтение (один снимок): разметка, позванная несколько раз
+// за чтение, читает цепочки карточки один раз.
+func withEditControlsMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, editControlsMemoKey{}, entity.DesignEditControlsMemo{})
 }
 
 // UndoEdit — ОТМЕНИТЬ ТЕКУЩУЮ ВЕРСИЮ ЦЕПОЧКИ (UndoDesignEdit): undone_at на неё, слоты, державшие её,

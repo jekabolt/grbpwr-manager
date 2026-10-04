@@ -259,8 +259,8 @@ type DesignEditChainStepRequest struct {
 	ExpectedCurrentId int
 	// ExpectedTargetId — версия, которая должна стать текущей (undo: предшественник, redo: преемник).
 	ExpectedTargetId int
-	IdempotencyKey    string
-	Actor             string
+	IdempotencyKey   string
+	Actor            string
 }
 
 // DesignEditChainResult — цепочка после шага: текущая версия, все звенья (от корня, с файлами и
@@ -269,4 +269,56 @@ type DesignEditChainResult struct {
 	CurrentPictureId int
 	Pictures         []DesignPicture
 	Slots            []DesignBenchSlot
+}
+
+// DesignMayHaveEditControls — МОЖЕТ ЛИ КАДР НЕСТИ УГЛЫ undo/redo (T28 v2 C3): только звено цепочки —
+// кадр с replaced_by (корень, середина, восстановленный оригинал) либо флэттен (только он бывает
+// преемником). Остальным цепочку не читают вовсе.
+func DesignMayHaveEditControls(p DesignPicture) bool {
+	return p.ReplacedBy.Valid || p.Derivation == DesignDerivationFlatten
+}
+
+// DesignEditControlsMemo — углы, уже посчитанные в этом чтении, по карточке. Одно чтение полосы зовёт
+// разметку несколько раз (слоты, строки, пачки, выходы); цепочки карточки читаются один раз.
+type DesignEditControlsMemo map[int]map[int]DesignEditControls
+
+// DesignAnnotateEditControls — ставит CanUndo / CanRedo / UndoToId каждому кадру. load читает звенья
+// цепочек данных карточек (DesignEditChainColumns) и зовётся только для карточек, где хоть один кадр
+// может нести углы (DesignMayHaveEditControls) и которых ещё нет в memo (nil — без памяти).
+func DesignAnnotateEditControls(pics []*DesignPicture, memo DesignEditControlsMemo, load func(cards []int) ([]DesignChainLink, error)) error {
+	seen := map[int]bool{}
+	var cards []int
+	for _, p := range pics {
+		if p == nil || p.TechCardId <= 0 || seen[p.TechCardId] || !DesignMayHaveEditControls(*p) {
+			continue
+		}
+		seen[p.TechCardId] = true
+		if _, done := memo[p.TechCardId]; !done {
+			cards = append(cards, p.TechCardId)
+		}
+	}
+	if memo == nil {
+		memo = DesignEditControlsMemo{}
+	}
+	if len(cards) > 0 {
+		links, err := load(cards)
+		if err != nil {
+			return err
+		}
+		byCard := map[int][]DesignChainLink{}
+		for _, l := range links {
+			byCard[l.TechCardId] = append(byCard[l.TechCardId], l)
+		}
+		for _, c := range cards {
+			memo[c] = DesignEditChainControls(byCard[c])
+		}
+	}
+	for _, p := range pics {
+		if p == nil {
+			continue
+		}
+		c := memo[p.TechCardId][p.Id]
+		p.CanUndo, p.CanRedo, p.UndoToId = c.CanUndo, c.CanRedo, c.UndoTo
+	}
+	return nil
 }

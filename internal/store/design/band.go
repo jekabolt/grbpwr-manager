@@ -413,6 +413,8 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		var err error
+		// Углы undo/redo — одно чтение цепочек карточки на всё чтение полосы (T28 v2 C3).
+		ctx = withEditControlsMemo(ctx)
 
 		if band.Bench, err = listBenchSlots(ctx, db, cardID); err != nil {
 			return err
