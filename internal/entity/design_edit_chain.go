@@ -156,7 +156,10 @@ func DesignUndoStep(chain []DesignChainLink, expected int, standingCrops int) (D
 // ПОВТОР ПО ИСХОДУ: expected стоит сразу перед текущей версией — состояние после этого redo. (Его же
 // даёт и новая правка над expected, сделанная другой вкладкой между попытками; ответ несёт настоящую
 // цепочку, и экран рисует правду.)
-func DesignRedoStep(chain []DesignChainLink, expected int) (DesignEditStep, error) {
+//
+// standingCrops — видимые куски, отрезанные от текущей версии после undo (восстановленный оригинал
+// режется, T28 v2 M1): redo увёл бы место у листа, от которого они отрезаны, — live_crop_parent.
+func DesignRedoStep(chain []DesignChainLink, expected int, standingCrops int) (DesignEditStep, error) {
 	cur := DesignEditChainCurrent(chain)
 	if cur < 0 || chain[cur].Id != expected {
 		if cur >= 1 && chain[cur-1].Id == expected {
@@ -166,6 +169,10 @@ func DesignRedoStep(chain []DesignChainLink, expected int) (DesignEditStep, erro
 	}
 	if cur+1 >= len(chain) {
 		return DesignEditStep{}, fmt.Errorf("%w: picture %d has no undone edit after it", ErrDesignNothingToRedo, expected)
+	}
+	if standingCrops > 0 {
+		return DesignEditStep{}, fmt.Errorf("%w: picture %d is cut into %d visible piece(s); redo would leave them cut from a replaced version",
+			ErrDesignLiveCropParent, expected, standingCrops)
 	}
 	next := chain[cur+1]
 	return DesignEditStep{Mark: next.Id, From: expected, To: next.Id}, nil

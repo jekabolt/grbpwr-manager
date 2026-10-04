@@ -101,20 +101,21 @@ func (s *Store) editChainStep(ctx context.Context, req entity.DesignEditChainSte
 			return err
 		}
 
+		// Видимые куски текущей версии: undo и redo оба увели бы место у листа, от которого они отрезаны.
+		crops := 0
+		if cur := entity.DesignEditChainCurrent(chain); cur >= 0 && chain[cur].Id == req.ExpectedCurrentId {
+			standing, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db,
+				designSheetCropsOf, designSheetCropsParams(chain[cur].Id))
+			if err != nil {
+				return fmt.Errorf("failed to read the visible pieces of design picture %d: %w", chain[cur].Id, err)
+			}
+			crops = len(standing)
+		}
 		var step entity.DesignEditStep
 		if undo {
-			crops := 0
-			if cur := entity.DesignEditChainCurrent(chain); cur > 0 && chain[cur].Id == req.ExpectedCurrentId {
-				standing, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, db,
-					designSheetCropsOf, designSheetCropsParams(chain[cur].Id))
-				if err != nil {
-					return fmt.Errorf("failed to read the visible pieces of design picture %d: %w", chain[cur].Id, err)
-				}
-				crops = len(standing)
-			}
 			step, err = entity.DesignUndoStep(chain, req.ExpectedCurrentId, crops)
 		} else {
-			step, err = entity.DesignRedoStep(chain, req.ExpectedCurrentId)
+			step, err = entity.DesignRedoStep(chain, req.ExpectedCurrentId, crops)
 		}
 		if err != nil {
 			return err

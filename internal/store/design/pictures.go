@@ -585,8 +585,12 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		// return: a replaced sheet whose old crops are still visible is refused as well, since the
 		// answer a stale tab needs is «cut the head», not the crops of a picture it should not be
 		// looking at. The refusal carries the head of the chain.
-		if parent.ReplacedBy.Valid {
-			return designAlreadyReplaced(ctx, db, parent)
+		// T28 v2: only a picture whose place ANOTHER picture holds — a restored original (its successor
+		// undone) is the current version and is cut like any other.
+		if err := entity.DesignSplitReplacedRefusal(parent, func(id int) (entity.DesignPicture, error) {
+			return pictureByID(ctx, db, id)
+		}); err != nil {
+			return err
 		}
 		// A HIDDEN SHEET IS NOT CUT (O-53 review, round 3). Crops are born visible, so a cut of a
 		// hidden picture hangs live pieces under a parent nobody can look at — the very state

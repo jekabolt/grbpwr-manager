@@ -98,20 +98,20 @@ func TestDesignUndoStepReplay(t *testing.T) {
 
 func TestDesignRedoStep(t *testing.T) {
 	undone := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, true), chainLink(30, 0, true)}
-	step, err := DesignRedoStep(undone, 10)
+	step, err := DesignRedoStep(undone, 10, 0)
 	require.NoError(t, err)
 	require.Equal(t, DesignEditStep{Mark: 20, From: 10, To: 20}, step, "redo снимает отмену только со следующего звена")
 
-	_, err = DesignRedoStep(undone, 20)
+	_, err = DesignRedoStep(undone, 20, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
 
 	after := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, false), chainLink(30, 0, true)}
-	step, err = DesignRedoStep(after, 10)
+	step, err = DesignRedoStep(after, 10, 0)
 	require.NoError(t, err)
 	require.Equal(t, DesignEditStep{Mark: 20, From: 10, To: 20, Replay: true}, step, "повтор redo(10)")
 
 	tail := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, false)}
-	_, err = DesignRedoStep(tail, 20)
+	_, err = DesignRedoStep(tail, 20, 0)
 	require.ErrorIs(t, err, ErrDesignNothingToRedo)
 }
 
@@ -119,7 +119,7 @@ func TestDesignRedoStep(t *testing.T) {
 // redo не поднимает её на верстак, undo тоже ничего не делает.
 func TestDesignEditChainCutOffBranch(t *testing.T) {
 	cut := []DesignChainLink{chainLink(30, 0, true)}
-	_, err := DesignRedoStep(cut, 30)
+	_, err := DesignRedoStep(cut, 30, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
 	_, err = DesignUndoStep(cut, 30, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
@@ -175,4 +175,37 @@ func TestDesignReplacementHeadStopsBeforeAnUndoneLink(t *testing.T) {
 	head, err := DesignReplacementHead(pics[10], func(id int) (DesignPicture, error) { return pics[id], nil })
 	require.NoError(t, err)
 	require.Equal(t, 20, head.Id)
+}
+
+// M1: ПОСЛЕ UNDO ВОССТАНОВЛЕННЫЙ ОРИГИНАЛ — ТЕКУЩАЯ ВЕРСИЯ (replaced_by стоит, преемник отменён): он
+// режется и законно стоит на техническом листе. Живой преемник по-прежнему отказывает обоим, с головой.
+// А redo над текущей версией с видимыми кусками — live_crop_parent.
+//
+// МУТАЦИИ: судить по ReplacedBy.Valid вместо головы (разрез и лист отказывают восстановленному);
+// снять сторож кусков у redo.
+func TestDesignRestoredOriginalIsCurrent(t *testing.T) {
+	pics := map[int]DesignPicture{
+		10: {Id: 10, TechCardId: replaceProbeCard, MediaId: 1010, ReplacedBy: sql.NullInt32{Int32: 20, Valid: true}},
+		20: {Id: 20, TechCardId: replaceProbeCard, MediaId: 2020, UndoneAt: sql.NullTime{Time: time.Unix(1, 0), Valid: true}},
+	}
+	load := func(id int) (DesignPicture, error) { return pics[id], nil }
+
+	require.NoError(t, DesignSplitReplacedRefusal(pics[10], load), "восстановленный оригинал режется")
+	require.NoError(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(1010)}, nil,
+		[]DesignPicture{pics[10]}, load), "восстановленный оригинал законно стоит на листе")
+
+	live := pics[20]
+	live.UndoneAt = sql.NullTime{}
+	pics[20] = live
+	err := DesignSplitReplacedRefusal(pics[10], load)
+	var replaced *DesignReplacedError
+	require.ErrorAs(t, err, &replaced)
+	require.Equal(t, 20, replaced.HeadPictureId)
+	require.Error(t, DesignSheetReplacedRefusal(replaceProbeCard, []TechCardMediaItem{sheetItem(1010)}, nil,
+		[]DesignPicture{pics[10]}, load))
+	require.NoError(t, DesignSplitReplacedRefusal(DesignPicture{Id: 5, TechCardId: replaceProbeCard}, load))
+
+	chain := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, true)}
+	_, err = DesignRedoStep(chain, 10, 1)
+	require.ErrorIs(t, err, ErrDesignLiveCropParent)
 }

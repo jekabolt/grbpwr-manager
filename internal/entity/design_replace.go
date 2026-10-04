@@ -137,6 +137,23 @@ func DesignReplacementHead(p DesignPicture, load func(id int) (DesignPicture, er
 	return head, nil
 }
 
+// DesignSplitReplacedRefusal — РЕЖЕТСЯ ЛИ p ПО ЦЕПОЧКЕ ЗАМЕН (O-53 review; T28 v2): отказ already_replaced
+// только когда на месте p стоит ДРУГОЙ кадр — голова цепочки (текущая версия) не p. Кадр, чей
+// преемник отменён (undo вернул ему место), — текущий, и режется как незаменённый. nil — режется.
+func DesignSplitReplacedRefusal(p DesignPicture, load func(id int) (DesignPicture, error)) error {
+	if !p.ReplacedBy.Valid {
+		return nil
+	}
+	head, err := DesignReplacementHead(p, load)
+	if err != nil {
+		return err
+	}
+	if head.Id == p.Id {
+		return nil
+	}
+	return &DesignReplacedError{PictureId: p.Id, HeadPictureId: head.Id}
+}
+
 // DesignAlreadyReplaced — ОТКАЗ already_replaced ДЛЯ ЗАМЕНЁННОГО p, с его головой. Ошибка обхода
 // возвращается вместо отказа: отказ без головы нарушил бы контракт (head_picture_id обещан всегда),
 // а порча цепочки — не состояние, которое клиент чинит другим жестом.
@@ -324,10 +341,21 @@ func DesignSheetMediaIds(media []TechCardMediaItem) []int {
 // не отказ, а ошибка без сентинела (DesignReplacementHead): клиенту Internal, дежурному строка в логе.
 func DesignSheetReplacedRefusal(cardID int, media []TechCardMediaItem, stored map[int]int, replaced []DesignPicture, load func(id int) (DesignPicture, error)) error {
 	byMedia := make(map[int]DesignPicture, len(replaced))
+	heads := make(map[int]int, len(replaced))
 	for _, p := range replaced {
 		if p.TechCardId != cardID || !p.ReplacedBy.Valid {
 			continue
 		}
+		// ТЕКУЩАЯ ВЕРСИЯ НЕ ЗАМЕНЕНА (T28 v2): у кадра, чей преемник отменён, голова — он сам, и его
+		// файл на листе законен. Голова считается ДО решения, а не только для текста отказа.
+		head, err := DesignReplacementHead(p, load)
+		if err != nil {
+			return err
+		}
+		if head.Id == p.Id {
+			continue
+		}
+		heads[p.Id] = head.Id
 		// Тот же файл у двух заменённых кадров: называется старший — ответ не зависит от порядка
 		// строк, в котором их прочитали.
 		if held, ok := byMedia[p.MediaId]; !ok || p.Id < held.Id {
@@ -347,14 +375,10 @@ func DesignSheetReplacedRefusal(cardID int, media []TechCardMediaItem, stored ma
 			seen[m.MediaId]++
 			// Вхождения в пределах сохранённого числа — лист, каким он уже стоит: их сейв не судит.
 			if seen[m.MediaId] > stored[m.MediaId] {
-				head, err := DesignReplacementHead(p, load)
-				if err != nil {
-					return err
-				}
 				// item — место первого вхождения сверх сохранённого числа в техническом списке.
 				return NewFieldViolation(fmt.Sprintf("technical_media[%d].media_id", item), DesignSheetReplacedReason, "",
 					fmt.Sprintf("technical sheet item %d: this drawing was replaced by picture #%d — "+
-						"put the replacement on the sheet, or take this one off", item+1, head.Id))
+						"put the replacement on the sheet, or take this one off", item+1, heads[p.Id]))
 			}
 		}
 		item++

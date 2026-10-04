@@ -28,13 +28,13 @@ func TestSheetReplacedReadsNameTheCardTheFilesAndTheSheet(t *testing.T) {
 	norm := func(q string) string { return strings.Join(strings.Fields(q), " ") }
 
 	require.Equal(t,
-		"SELECT id, tech_card_id, media_id, replaced_by FROM design_picture "+
+		"SELECT id, tech_card_id, media_id, replaced_by, undone_at FROM design_picture "+
 			"WHERE tech_card_id = :card AND media_id IN (:media) AND replaced_by IS NOT NULL",
 		norm(techCardSheetReplacedPictures))
 	query, args, err := techCardSheetReplacedQuery(41, []int{900, 901})
 	require.NoError(t, err)
 	require.Equal(t,
-		"SELECT id, tech_card_id, media_id, replaced_by FROM design_picture "+
+		"SELECT id, tech_card_id, media_id, replaced_by, undone_at FROM design_picture "+
 			"WHERE tech_card_id = ? AND media_id IN (?, ?) AND replaced_by IS NOT NULL",
 		norm(query))
 	require.Equal(t, []any{41, 900, 901}, args, "the card, then every file of the sheet")
@@ -52,7 +52,7 @@ func TestSheetReplacedReadsNameTheCardTheFilesAndTheSheet(t *testing.T) {
 	require.Equal(t, []any{41, 900, 901, "technical"}, args, "the card, the files, the sheet's word")
 
 	require.Equal(t,
-		"SELECT id, tech_card_id, media_id, replaced_by FROM design_picture WHERE id = :id",
+		"SELECT id, tech_card_id, media_id, replaced_by, undone_at FROM design_picture WHERE id = :id",
 		norm(techCardSheetPictureLink),
 		"a chain link is read by id with replaced_by and its card, or the head walk stops or trusts a foreign link")
 }

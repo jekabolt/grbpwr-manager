@@ -923,15 +923,14 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 	// ДО байтовой работы — чтения оригинала, нарезки, заливки каждого куска и уборки их следом.
 	// Голова цепочки ищется тем же обходом, что и в сторе (entity.DesignAlreadyReplaced), только
 	// своими чтениями; лист, заменённый между этой проверкой и транзакцией, откажет уже стор.
-	if parent.ReplacedBy.Valid {
-		return nil, designError(ctx, "failed to split the design picture",
-			entity.DesignAlreadyReplaced(*parent, func(id int) (entity.DesignPicture, error) {
-				p, err := s.repo.Design().GetPicture(ctx, id)
-				if err != nil {
-					return entity.DesignPicture{}, err
-				}
-				return *p, nil
-			}), nil)
+	if err := entity.DesignSplitReplacedRefusal(*parent, func(id int) (entity.DesignPicture, error) {
+		p, err := s.repo.Design().GetPicture(ctx, id)
+		if err != nil {
+			return entity.DesignPicture{}, err
+		}
+		return *p, nil
+	}); err != nil {
+		return nil, designError(ctx, "failed to split the design picture", err, nil)
 	}
 	// СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ (O-53 review, раунд 3) — тоже предпроверка того же правила
 	// (entity.DesignSplitHiddenRefusal), авторитетного в транзакции SplitPicture, и в том же порядке:
