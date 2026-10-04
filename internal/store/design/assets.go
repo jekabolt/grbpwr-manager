@@ -302,7 +302,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 	}
 	if slot {
 		// ТКАНЬ ПАРЫ, А НЕ КОЛОРВЕЯ: legacy-колонка остаётся NULL, пишется только связка.
-		return bindKeptPatternTx(ctx, db, run, cw, p.Pattern.BomItemId, id)
+		return bindKeptPatternTx(ctx, db, run, cw, p.Pattern.BomItemId, id, hardware)
 	}
 	if hardware {
 		// Без слота фурнитура остаётся на полке ничьей: носить колорвей целиком ей нельзя.
@@ -336,11 +336,17 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 // чужая строка означает «плитка на полке, пара не перепривязана» с записью в журнал — ровно то, что
 // обещает контракт DesignPatternParams.bom_item_id. Ошибка же самой базы — не промах, а поломка, и
 // она уходит наверх, как у каждого оператора этой транзакции: дедлок повторяется всем замыканием.
-func bindKeptPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, cw, bomItemID, assetID int) error {
+//
+// ⚠ СЕМЬЯ СТРОКИ ПЕРЕСУЖИВАЕТСЯ ЗДЕСЬ ЖЕ. Дверь судила род против семьи ДО денег, но между дверью и
+// прилётом строку законно переносят в другую секцию. Снимок фурнитуры (hardware) на строке, ставшей
+// рулонной, и плитка (pattern) на строке, ставшей не рулонной, — тот же промах, что пропавшая
+// строка: ассет остаётся на полке ничьим, прежняя связка пары НЕ трогается и НЕ собирается (GC
+// только при настоящей замене), запись в журнал. Правило то же, что у SetAssetBinding.
+func bindKeptPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, cw, bomItemID, assetID int, hardware bool) error {
 	if bomItemID <= 0 {
 		return nil
 	}
-	ok, err := bomLineOfCard(ctx, db, run.TechCardId, bomItemID)
+	section, ok, err := bomLineSectionOfCard(ctx, db, run.TechCardId, bomItemID)
 	if err != nil {
 		return err
 	}
@@ -348,6 +354,13 @@ func bindKeptPatternTx(ctx context.Context, db dependency.DB, run entity.DesignR
 		slog.WarnContext(ctx, "design: pattern tile landed unbound — its BOM line is not this card's any more",
 			slog.Int("run_id", run.Id), slog.Int("asset_id", assetID),
 			slog.Int("tech_card_id", run.TechCardId), slog.Int("bom_item_id", bomItemID))
+		return nil
+	}
+	if roll := entity.IsRollGoodsSection(section); hardware == roll {
+		slog.WarnContext(ctx, "design: pattern tile landed unbound — its BOM line changed family",
+			slog.Int("run_id", run.Id), slog.Int("asset_id", assetID),
+			slog.Int("tech_card_id", run.TechCardId), slog.Int("bom_item_id", bomItemID),
+			slog.String("section", string(section)), slog.Bool("hardware", hardware))
 		return nil
 	}
 	prev, err := pairAssetTx(ctx, db, cw, bomItemID)
@@ -379,7 +392,8 @@ func pairAssetTx(ctx context.Context, db dependency.DB, cw, bomItemID int) (int,
 }
 
 // dropSupersededHardwareTx — СНИМОК ФУРНИТУРЫ, КОТОРЫЙ ПЕРЕСТАЛ БЫТЬ КАРТИНКОЙ ХОТЬ ОДНОЙ ПАРЫ,
-// УДАЛЯЕТСЯ в той же транзакции, что его заменила либо сняла. Снимок фурнитуры делается ДЛЯ пары и
+// УДАЛЯЕТСЯ в той же транзакции, что его заменила, — ТОЛЬКО при посадке прогона (перезаказ снимка).
+// SetAssetBinding не собирает никогда: снятие и замена откатываются UNDO. Снимок фурнитуры делается ДЛЯ пары и
 // вне пары не значит ничего — на полке он был бы мусором, который копится с каждым перезаказом.
 //
 // ⚠ ТОЛЬКО kind = hardware. Ткани и паттерны — библиотека, которой человек управляет сам: они
@@ -457,20 +471,8 @@ func keptColourFact(ctx context.Context, runID int, column, v string, maxRunes i
 	return v
 }
 
-// bomLineOfCard — есть ли у карточки строка BOM с этим id. Одна проверка на обоих писателей связки
-// (глагол и посадка): «чья это строка» — не «в какой она секции», секцию сервер не судит.
-func bomLineOfCard(ctx context.Context, db dependency.DB, cardID, bomItemID int) (bool, error) {
-	n, err := storeutil.QueryCountNamed(ctx, db,
-		`SELECT COUNT(*) FROM tech_card_bom_item WHERE id = :bom AND tech_card_id = :card`,
-		map[string]any{"bom": bomItemID, "card": cardID})
-	if err != nil {
-		return false, fmt.Errorf("failed to read BOM line %d of tech card %d: %w", bomItemID, cardID, err)
-	}
-	return n > 0, nil
-}
-
 // bomLineGone — нет ли строки BOM с этим id НИ У ОДНОЙ карточки. Нужна только снятию связки:
-// «пропала» (снимать нечего, OK) и «чужая» (foreign_bom_line) bomLineOfCard не различает.
+// «пропала» (снимать нечего, OK) и «чужая» (foreign_bom_line) bomLineSectionOfCard не различает.
 func bomLineGone(ctx context.Context, db dependency.DB, bomItemID int) (bool, error) {
 	n, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM tech_card_bom_item WHERE id = :bom`, map[string]any{"bom": bomItemID})
@@ -521,9 +523,9 @@ func upsertAssetBindingTx(ctx context.Context, db dependency.DB, cardID, cw, bom
 // that is not roll goods (hardware_on_cloth_line), fabric|pattern only on a roll-goods line
 // (cloth_on_trim_line) — entity.IsRollGoodsSection is the one reading of «roll goods».
 //
-// A SUPERSEDED HARDWARE PICTURE IS DROPPED: when the pair's previous asset was hardware and the
-// rebind or unbind leaves it referenced by nothing, it is deleted in this transaction
-// (dropSupersededHardwareTx). Fabric and pattern rows are never dropped here.
+// IT NEVER DROPS AN ASSET, not on a rebind and not on an unbind: the client offers UNDO after a
+// clear or a replace by re-binding the previous asset id, so that asset must survive. A superseded
+// hardware picture is collected only when a run lands over it (bindKeptPatternTx).
 //
 // IT DOES NOT TOUCH design_asset.colorway_id: that is the legacy whole-colourway fabric and has its
 // own verb (SetAssetColorway).
@@ -594,12 +596,8 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 			}
 		}
 		pair := map[string]any{"cw": req.ColorwayId, "bom": req.BomItemId, "card": req.TechCardId}
-		// ПРЕЖНИЙ АССЕТ ПАРЫ — ДО ЗАПИСИ: заменённый либо снятый снимок фурнитуры, оставшийся
-		// сиротой, удаляется в этой же транзакции (dropSupersededHardwareTx).
-		prev, err := pairAssetTx(ctx, db, req.ColorwayId, req.BomItemId)
-		if err != nil {
-			return err
-		}
+		// ⚠ БЕЗ СБОРКИ МУСОРА: снятый либо заменённый ассет остаётся на полке — клиент предлагает
+		// UNDO, перепривязывая прежний id. GC только при посадке прогона (bindKeptPatternTx).
 		if req.AssetId == 0 {
 			if err := storeutil.ExecNamed(ctx, db, `
 				DELETE FROM design_asset_binding
@@ -607,16 +605,11 @@ func (s *Store) SetAssetBinding(ctx context.Context, req entity.DesignAssetBindi
 				return fmt.Errorf("failed to unbind colourway %d on BOM line %d: %w",
 					req.ColorwayId, req.BomItemId, err)
 			}
-			return dropSupersededHardwareTx(ctx, db, prev)
+			return nil
 		}
 		if err := upsertAssetBindingTx(ctx, db, req.TechCardId, req.ColorwayId, req.BomItemId,
 			req.AssetId, req.SetBy); err != nil {
 			return err
-		}
-		if prev != req.AssetId {
-			if err := dropSupersededHardwareTx(ctx, db, prev); err != nil {
-				return err
-			}
 		}
 		saved, err := storeutil.QueryNamedOne[entity.DesignAssetBinding](ctx, db, `
 			SELECT * FROM design_asset_binding

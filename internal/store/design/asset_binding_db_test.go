@@ -184,16 +184,15 @@ func TestDesignDBAssetBindingRefusesForeignEnds(t *testing.T) {
 		"ни один отказ семьи не оставил строки")
 }
 
-// ЗАМЕНЁННЫЙ СНИМОК ФУРНИТУРЫ — СИРОТА — УДАЛЯЕТСЯ В ТОЙ ЖЕ ТРАНЗАКЦИИ; ТКАНЬ — НИКОГДА.
+// SetAssetBinding НЕ СОБИРАЕТ МУСОР НИ НА ЗАМЕНЕ, НИ НА СНЯТИИ: клиент предлагает UNDO, перепривязывая
+// прежний id, и прежний ассет обязан пережить и то, и другое.
 //
-// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: не читать прежний ассет пары до записи (сирота копится на полке); снять
-// фильтр kind (снятая с пары ткань пропадает из библиотеки); не считать оставшиеся связки (снимок,
-// который носит ДРУГАЯ пара, удаляется вместе со связкой каскадом).
-func TestDesignDBSupersededHardwareIsDropped(t *testing.T) {
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: вернуть dropSupersededHardwareTx в SetAssetBinding — UNDO после замены
+// или снятия снимка фурнитуры получит NotFound на ассете, которого больше нет.
+func TestDesignDBAssetBindingNeverDropsAnAsset(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
 	cw := probeColorway(t, raw, card, "BLK")
-	cw2 := probeColorway(t, raw, card, "WHT")
 	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
 	outer := probeBomLine(t, raw, card, "fabric", "outer")
 	ctx := context.Background()
@@ -219,31 +218,29 @@ func TestDesignDBSupersededHardwareIsDropped(t *testing.T) {
 		return n == 1
 	}
 
-	first, second, third := hw("zip 1"), hw("zip 2"), hw("zip 3")
+	first, second := hw("zip 1"), hw("zip 2")
 	set(cw, hwLine, first)
 	set(cw, hwLine, second)
-	require.False(t, alive(first), "заменённый снимок без ссылок удалён")
+	require.True(t, alive(first), "заменённый снимок остаётся на полке — UNDO вернёт его")
+	set(cw, hwLine, first) // UNDO замены
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: first}, bindingsOf(t, raw, card))
+
+	set(cw, hwLine, 0)
+	require.True(t, alive(first), "снятый снимок остаётся на полке — UNDO вернёт его")
 	require.True(t, alive(second))
+	set(cw, hwLine, first) // UNDO снятия
 
-	// СНИМОК, КОТОРЫЙ НОСИТ ДРУГАЯ ПАРА, ПЕРЕЖИВАЕТ ЗАМЕНУ.
-	set(cw2, hwLine, second)
-	set(cw, hwLine, third)
-	require.True(t, alive(second), "его ещё носит пара второго колорвея")
-	// И СНЯТИЕ ПОСЛЕДНЕЙ ПАРЫ УДАЛЯЕТ ЕГО.
-	set(cw2, hwLine, 0)
-	require.False(t, alive(second), "снятие с последней пары — та же замена на «ничего»")
-
-	// ТКАНЬ — БИБЛИОТЕКА: снятая с пары, она остаётся на полке.
+	// ТКАНЬ — ТОЖЕ.
 	cloth := probeAsset(t, rep, card, "twill")
 	set(cw, outer, cloth.Id)
 	set(cw, outer, 0)
 	require.True(t, alive(cloth.Id))
-	require.Equal(t, map[[2]int]int{{cw, hwLine}: third}, bindingsOf(t, raw, card))
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: first}, bindingsOf(t, raw, card))
 }
 
 // ПОСАДКА ПРОГОНА ФУРНИТУРЫ ЗАМЕНЯЕТ СНИМОК ПАРЫ И УДАЛЯЕТ ПРЕЖНИЙ, ЕСЛИ ОН СИРОТА.
 //
-// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: вызвать dropSupersededHardwareTx только в SetAssetBinding, забыв посадку.
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать dropSupersededHardwareTx из посадки (единственное место GC).
 func TestDesignDBAHardwareRunLandingDropsTheSupersededPicture(t *testing.T) {
 	rep, raw := probeRepository(t)
 	card, _, _ := designProbeCard(t, rep, raw)
@@ -489,6 +486,65 @@ func TestDesignDBAPatternRunWhoseSlotVanishedSTILL_LANDS(t *testing.T) {
 	}
 	require.Len(t, shelfOf(t, raw, card), 2, "обе плитки на полке")
 	require.Empty(t, bindingsOf(t, raw, card), "ни одна пара не перепривязана на чужой либо пропавший слот")
+}
+
+// СТРОКА, СМЕНИВШАЯ СЕМЬЮ МЕЖДУ ДВЕРЬЮ И ПРИЛЁТОМ: ОПЛАЧЕННЫЙ АССЕТ — НА ПОЛКУ НИЧЬИМ, ПРЕЖНЯЯ
+// СВЯЗКА ПАРЫ НЕ ТРОНУТА И НЕ СОБРАНА.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: убрать пересуживание семьи в bindKeptPatternTx (снимок фурнитуры ляжет на
+// рулонную строку, плитка — на строку фурнитуры, а прежний снимок пары будет удалён GC).
+func TestDesignDBARunLandingOnALineThatChangedFamilyStaysUnbound(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
+	outer := probeBomLine(t, raw, card, "fabric", "outer")
+	resetBudget(t, raw)
+
+	lastAsset := func() int {
+		t.Helper()
+		var id int
+		require.NoError(t, raw.QueryRow(`SELECT MAX(id) FROM design_asset WHERE tech_card_id = ?`, card).Scan(&id))
+		return id
+	}
+	land := func(started *entity.DesignRunStarted, moveTo string, line int) int {
+		t.Helper()
+		if moveTo != "" {
+			_, err := raw.Exec(`UPDATE tech_card_bom_item SET section = ? WHERE id = ?`, moveTo, line)
+			require.NoError(t, err)
+		}
+		done, err := landPatternRun(t, rep, started.Run.Id, probeMedia(t, raw))
+		require.NoError(t, err, "смена семьи — не повод выбрасывать оплаченный ассет")
+		require.Equal(t, entity.DesignRunDone, done.Status)
+		return lastAsset()
+	}
+	hwRun := func() *entity.DesignRunStarted {
+		return patternRunWith(t, rep, card, cw, map[string]any{
+			"name": "button", "mode": entity.DesignPatternModeHardware, "bom_item_id": hwLine,
+		}, map[string]any{"words": "horn button"})
+	}
+	swRun := func() *entity.DesignRunStarted {
+		return patternRunWith(t, rep, card, cw, map[string]any{
+			"name": "tile", "mode": entity.DesignPatternModeSwatch, "bom_item_id": outer,
+		}, map[string]any{"hex": "#000000"})
+	}
+
+	firstHw := land(hwRun(), "", 0)
+	firstSw := land(swRun(), "", 0)
+	want := map[[2]int]int{{cw, hwLine}: firstHw, {cw, outer}: firstSw}
+	require.Equal(t, want, bindingsOf(t, raw, card))
+
+	// ФУРНИТУРА ПРИЛЕТАЕТ НА СТРОКУ, СТАВШУЮ РУЛОННОЙ.
+	strayHw := land(hwRun(), "fabric", hwLine)
+	// ПЛИТКА ПРИЛЕТАЕТ НА СТРОКУ, СТАВШУЮ ФУРНИТУРОЙ.
+	straySw := land(swRun(), "hardware", outer)
+
+	require.Equal(t, want, bindingsOf(t, raw, card), "прежние связки пар не тронуты")
+	for _, id := range []int{firstHw, firstSw, strayHw, straySw} {
+		var n int
+		require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM design_asset WHERE id = ?`, id).Scan(&n))
+		require.Equal(t, 1, n, "asset %d на полке", id)
+	}
 }
 
 // КОЛОРВЕЙ, НОСЯЩИЙ ТКАНЬ СЛОТА: ВЕРДИКТ УДАЛЕНИЯ НАЗЫВАЕТ ЕЁ, ПЕРЕПРИВЯЗКА ОТКАЗЫВАЕТ.
