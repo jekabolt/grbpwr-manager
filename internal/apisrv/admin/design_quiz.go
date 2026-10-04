@@ -110,23 +110,8 @@ Fit, every wearable garment:
  · stretch, ONLY when the fabric or the fit makes it relevant: direction (none, 2-way, 4-way), usable stretch, recovery, whether it is meant to fit with negative ease. Never infer stretch from the fibre content.
  · the size range and the governing body chart or approved block, when the card names none (grade rules are the pattern maker's)
  · movement (sitting, cycling, arms raised, workwear), when the pictures or the words suggest a use
-Fit by group — ask only what applies:
- · tops (tee, shirt, knit, hoodie) and outerwear (jacket, coat, vest): chest or bust ease as a feel; shoulder (set-in at the natural point, dropped, raglan, saddle) and armhole intent (close, easy, deep); body length landmark; sleeve length landmark
- · dresses and one-pieces: the tops points, plus torso length and where the waist sits (natural, raised, dropped, none)
- · bottoms (trousers, shorts, skirt): where the waist sits; front rise against back rise and room at the seat; thigh; leg opening and taper; length landmark
- · bras: the band and cup basis (size system, wired or soft)
-Design and construction:
- · tops, outerwear, dresses: neckline or collar (shape, depth, stand, construction); closure (type, count, placket visible or concealed, how far it opens); body construction (panels, darts, princess seams, yoke, vents); pockets (type, count, placement); hem finish; visible seams and topstitching
- · bottoms: waistband (width, straight or contoured, elastic, drawcord, closure, belt loops); fly; front and back pockets; pleats, darts, yoke, slits; hem finish (plain, turn-up, raw, elastic)
- · dresses and skirts: bodice-to-skirt join, volume (gathers, pleats, godets), slit, lining
- · underwear and swim (briefs, bra): fabric and lining, elastic type and width, gusset, cup construction, wire, closure, seams next to the skin
- · knitwear: gauge, structure (jersey, rib, cable), fully fashioned or cut-and-sew, rib depth of trims
 Materials and use, every wearable garment: main shell fabric (fibre, weight or hand, drape or crisp, structure); season and climate, insulation and lining; care (machine wash or dry clean).
-Headwear (cap, hat): sizing (fitted sizes or adjustable), crown height, brim width and stiffness, closure, sweatband.
-Footwear (shoe, boot, sandal): last and toe shape, heel height, shaft height and calf width, closure, sole and construction, lining, size range.
-Bags, wallets, belts: dimensions, strap drop or length and adjustability, closure, lining, hardware finish, structure (soft or stiffened).
-Gloves, socks, scarves, ties, glasses, jewellery: sizing or dimensions, material, closure and hardware.
-Objects: dimensions, material, finish, function.
+This garment's own checklist — fit by group, design and construction, or the points of a non-garment product — is in the user message, after the card data. Walk only that one.
 Not your questions: target price, production quantity, factory — business facts settled elsewhere. Routine engineering — seam allowances, stitch density, pocket-bag fabric, routine interfacing, grade rules — is the pattern maker's, unless it changes the visible design, the hand, the function or a quality intent the designer declared.
 
 A POINT DESERVES A QUESTION when the choice changes the pattern, the fabric order, the visible design or the cost and nothing on the card decides it; when the pictures disagree; when it is hidden, cropped or ambiguous in every picture; when the pictures show something unusual whose construction is not obvious (an asymmetric or hidden closure, an odd seam line, a hybrid of two garment types, an unusual volume, a fabric you cannot identify). A point does NOT deserve a question when every picture clearly shows it, when the card states it with enough precision (Known / Already answered), or when it has a safe technical default for this garment type.
@@ -689,7 +674,17 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 	}
 
 	family := designQuizFamily(designQuizCategoryPath(card))
-	user := designQuizUserPrompt(card, mood, attachedIDs, family)
+	// W-B3: the base size's POM values travel as Known — the prompt says a dimension is settled by
+	// the card's measurements, so it must see them. A failed read degrades to "no chart", never a
+	// refusal: the quiz works without measurements as it did before.
+	measurements := ""
+	if chart, err := s.repo.TechCards().GetStyleSizeChart(ctx, cardID); err != nil {
+		slog.Default().WarnContext(ctx, "design quiz: cannot read the size chart, asking without it",
+			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
+	} else {
+		measurements = designQuizBaseMeasurements(card, chart, designQuizMeasurementNames(), designQuizSizeName)
+	}
+	user := designQuizUserPrompt(card, mood, attachedIDs, family, measurements)
 	if len(user) > designQuizMaxPromptBytes {
 		return designQuizFlightAnswer{}, status.Errorf(codes.InvalidArgument,
 			"the card and the board come to %d bytes; the quiz reads at most %d — shorten the board's note or its callouts",
@@ -754,9 +749,19 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 		return designQuizFlightAnswer{}, status.Error(codes.Unavailable, "the assistant is unavailable right now — try again in a moment")
 	}
 
-	questions, partsFixed, ok := parseDesignQuizCounted(raw, family, card.QuizAnswers)
+	questions, st, ok := parseDesignQuizCounted(raw, family, card.QuizAnswers)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "design quiz: the answer is not the promised JSON", logAttrs...)
+		return designQuizFlightAnswer{}, status.Error(codes.Internal, designQuizUnusableMsg)
+	}
+	// W-B5: counts only, never the model's or the designer's text.
+	logAttrs = append(logAttrs, slog.Int("questions_raw", st.raw), slog.Int("questions_kept", st.kept),
+		slog.Int("questions_dropped", st.raw-st.kept), slog.Int("dropped_invalid", st.invalid),
+		slog.Int("dropped_repeated", st.repeated), slog.Int("dropped_over_cap", st.capped))
+	// An honest empty list says "nothing left to ask"; a list where nothing survived validation is a
+	// failed call and says so — the designer retries instead of believing the garment is decided.
+	if st.unusable() {
+		slog.Default().ErrorContext(ctx, "design quiz: no question survived validation", logAttrs...)
 		return designQuizFlightAnswer{}, status.Error(codes.Internal, designQuizUnusableMsg)
 	}
 	fitQuestions := 0
@@ -767,14 +772,16 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 	}
 	// fit_questions + model (already in logAttrs): the owner's model A/B reads from this line (A12).
 	slog.Default().InfoContext(ctx, "design quiz", append(logAttrs, slog.Int("questions", len(questions)),
-		slog.Int("fit_questions", fitQuestions), slog.Int("parts_fixed", partsFixed))...)
+		slog.Int("fit_questions", fitQuestions), slog.Int("parts_fixed", st.partsFixed))...)
 	return designQuizFlightAnswer{questions: questions, family: family, model: answered}, nil
 }
 
 // ─── prompt ───
 
 // designQuizUserPrompt — the card, the board and the earlier answers as data, then our two lines.
-func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int, family string) string {
+//
+// measurements is the base-size POM line (designQuizBaseMeasurements, W-B3), "" when the card has none.
+func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnapshot, attachedIDs []int, family, measurements string) string {
 	var b strings.Builder
 	if card != nil {
 		if v := strings.TrimSpace(card.Name); v != "" {
@@ -810,6 +817,9 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 		if v := designQuizBaseSizeName(card); v != "" {
 			b.WriteString("Base sample size: " + v + "\n")
 		}
+		if measurements != "" {
+			b.WriteString(measurements + "\n")
+		}
 		if v := aiBoundedText(designOneLine(card.Composition.String), designConstructionMaxAlreadyLineRunes); v != "" {
 			b.WriteString("Composition: " + v + "\n")
 		}
@@ -819,7 +829,9 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 		b.WriteString("\nKnown — on the card already, do not ask about these:\n" + known)
 	}
 	if card != nil && len(card.QuizAnswers) > 0 {
-		b.WriteString("\nAlready answered in earlier quizzes — do not ask again; check them against the pictures:\n")
+		// W-B4: an answered point is closed; a skipped one was only deferred ("not now") and may come
+		// back while it is still open.
+		b.WriteString("\nAlready answered in earlier quizzes — an answered point is closed, do not ask it again; a deferred one may be asked again if it is still open and matters; check the answers against the pictures:\n")
 		for i, a := range card.QuizAnswers {
 			if i >= designQuizMaxAnsweredLines {
 				b.WriteString("- (+" + strconv.Itoa(len(card.QuizAnswers)-i) + " more answered, not listed)\n")
@@ -855,6 +867,7 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 		"Label part keys (a question about a label — placement, type, size, attachment → its lbl_ key): " +
 		strings.Join(lbl, ", ") + ".\n\n" +
 		designCardDataOpen + "\n" + data + "\n" + designCardDataClose + "\n\n" +
+		designQuizGroupChecklist(family) + "\n" +
 		designQuizCoverageLine(group) + "\n" +
 		"Ask at most " + strconv.Itoa(designQuizMaxQuestions) + " questions — every point that is still open and matters, nothing that is settled."
 }
@@ -890,7 +903,7 @@ func designQuizFamilyGroup(family string) string {
 func designQuizCoverageLine(group string) string {
 	line := "Coverage for this run: walk the " + group + " checklist."
 	switch group {
-	case "objects":
+	case "objects", "unknown":
 		return line
 	case "headwear", "footwear", "bags and small leather", "small accessories":
 		return line + " Sizing or dimensions stay open unless the card above gives numbers."
@@ -898,6 +911,151 @@ func designQuizCoverageLine(group string) string {
 		return line + " Fit, rise and waist position included, stays open unless the card above gives measurements for the base size — the fit label is intent, not a spec."
 	}
 	return line + " Fit stays open unless the card above gives measurements for the base size — the fit label is intent, not a spec."
+}
+
+// designQuizGroupChecklist — the checklist of the family's group, sent in the USER turn (W-B6): the
+// system prompt keeps the common rules only, so a jacket no longer reads the bra, footwear and bag
+// lists on every call. The unknown family assumes nothing wearable: it first resolves what the
+// product is, then asks only points every product has.
+func designQuizGroupChecklist(family string) string {
+	const (
+		fitTops     = " · fit (tops and outerwear): chest or bust ease as a feel; shoulder (set-in at the natural point, dropped, raglan, saddle) and armhole intent (close, easy, deep); body length landmark; sleeve length landmark\n"
+		designTops  = " · design and construction: neckline or collar (shape, depth, stand, construction); closure (type, count, placket visible or concealed, how far it opens); body construction (panels, darts, princess seams, yoke, vents); pockets (type, count, placement); hem finish; visible seams and topstitching\n"
+		knitwear    = " · knitwear: gauge, structure (jersey, rib, cable), fully fashioned or cut-and-sew, rib depth of trims\n"
+		fitBottoms  = " · fit (bottoms): where the waist sits; front rise against back rise and room at the seat; thigh; leg opening and taper; length landmark\n"
+		designBotts = " · design and construction: waistband (width, straight or contoured, elastic, drawcord, closure, belt loops); fly; front and back pockets; pleats, darts, yoke, slits; hem finish (plain, turn-up, raw, elastic)\n"
+		skirtsDress = " · dresses and skirts: bodice-to-skirt join, volume (gathers, pleats, godets), slit, lining\n"
+	)
+	var lines string
+	switch designQuizFamilyGroup(family) {
+	case "tops", "outerwear":
+		lines = fitTops + designTops
+		if family == "knit" {
+			lines += knitwear
+		}
+	case "dresses and one-pieces":
+		lines = fitTops + " · fit (dresses and one-pieces): torso length and where the waist sits (natural, raised, dropped, none)\n" + designTops
+		if family == "jumpsuit" {
+			lines += fitBottoms
+		} else {
+			lines += skirtsDress
+		}
+	case "bottoms":
+		lines = fitBottoms + designBotts
+		if family == "skirt" {
+			lines += skirtsDress
+		}
+	case "underwear and swim":
+		if family == "bra" {
+			lines = " · fit (bras): the band and cup basis (size system, wired or soft)\n"
+		}
+		lines += " · design and construction: fabric and lining, elastic type and width, gusset, cup construction, wire, closure, seams next to the skin\n"
+	case "headwear":
+		lines = " · headwear: sizing (fitted sizes or adjustable), crown height, brim width and stiffness, closure, sweatband\n"
+	case "footwear":
+		lines = " · footwear: last and toe shape, heel height, shaft height and calf width, closure, sole and construction, lining, size range\n"
+	case "bags and small leather":
+		lines = " · bags, wallets, belts: dimensions, strap drop or length and adjustability, closure, lining, hardware finish, structure (soft or stiffened)\n"
+	case "small accessories":
+		lines = " · gloves, socks, scarves, ties, glasses, jewellery: sizing or dimensions, material, closure and hardware\n"
+	case "objects":
+		lines = " · objects: dimensions, material, finish, function\n"
+	default:
+		return "Checklist (product type unknown): do not assume the product is worn on the body. When neither the card's words nor the pictures make clear what the product is, ask that FIRST (id \"product_type\", category design, part whole). Then ask only points any product has: main material, size or dimensions, closure or fastening, visible construction, finish."
+	}
+	return "Checklist (" + designQuizFamilyGroup(family) + "):\n" + strings.TrimRight(lines, "\n")
+}
+
+// designQuizMaxMeasurements / designQuizMaxMeasurementBytes — the POM line's bounds (W-B3).
+const (
+	designQuizMaxMeasurements     = 30
+	designQuizMaxMeasurementBytes = 1024
+)
+
+// designQuizMeasurementNames — measurement_name id → its name, from the dictionary cache.
+func designQuizMeasurementNames() map[int]string {
+	ms := cache.GetMeasurements()
+	out := make(map[int]string, len(ms))
+	for _, m := range ms {
+		out[m.Id] = m.Name
+	}
+	return out
+}
+
+// designQuizSizeName — a size id's name from the dictionary cache.
+func designQuizSizeName(id int) string {
+	if sz, ok := cache.GetSizeById(id); ok {
+		return strings.TrimSpace(sz.Name)
+	}
+	return ""
+}
+
+// designQuizBaseMeasurements — "Base sample measurements (M, cm): chest 112, back length 68, …" for
+// the quiz prompt (W-B3), "" when the chart has no cell of the base size. The base size is the card's
+// base sample size, else the grade rule's base, else the only size the chart carries. Bounded by
+// count and bytes with an honest tail; a cell whose measurement has no name is left out.
+func designQuizBaseMeasurements(card *entity.TechCard, chart entity.StyleSizeChart, names map[int]string, sizeName func(int) string) string {
+	if card == nil || len(chart.Cells) == 0 {
+		return ""
+	}
+	has := func(size int) bool {
+		for _, c := range chart.Cells {
+			if c.SizeID == size {
+				return true
+			}
+		}
+		return false
+	}
+	base := 0
+	switch {
+	case card.BaseSampleSizeId.Valid && has(int(card.BaseSampleSizeId.Int32)):
+		base = int(card.BaseSampleSizeId.Int32)
+	case chart.GradeBaseSizeID > 0 && has(chart.GradeBaseSizeID):
+		base = chart.GradeBaseSizeID
+	default:
+		only := chart.Cells[0].SizeID
+		for _, c := range chart.Cells {
+			if c.SizeID != only {
+				return ""
+			}
+		}
+		base = only
+	}
+	var items []string
+	for _, c := range chart.Cells {
+		if c.SizeID != base {
+			continue
+		}
+		name := strings.TrimSpace(strings.ReplaceAll(names[c.MeasurementNameID], "_", " "))
+		if name == "" {
+			continue
+		}
+		items = append(items, aiBoundedText(designOneLine(name), 40)+" "+c.Value.String())
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	unit := strings.TrimSpace(string(card.MeasurementUnit))
+	if unit == "" {
+		unit = string(entity.TechCardUnitCm)
+	}
+	label := unit
+	if n := sizeName(base); n != "" {
+		label = n + ", " + unit
+	}
+	var b strings.Builder
+	b.WriteString("Base sample measurements (" + label + "): ")
+	for i, it := range items {
+		if i >= designQuizMaxMeasurements || b.Len()+len(it)+2 > designQuizMaxMeasurementBytes {
+			b.WriteString(" (+" + strconv.Itoa(len(items)-i) + " more)")
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(it)
+	}
+	return b.String()
 }
 
 // designQuizBaseSizeName — the base sample size by name, "" when unset or unknown (A11: never a
@@ -918,7 +1076,7 @@ func designQuizAnsweredLine(a entity.TechCardQuizAnswer) string {
 	q := a.Question
 	line := "- [" + q.ID + " · " + q.Category + " · " + q.Part + "] " + designOneLine(q.Question) + " → "
 	if a.Skipped {
-		return line + "skipped by the designer (do not ask again)"
+		return line + "deferred by the designer — may ask again if still open"
 	}
 	if ans := designQuizAnswerText(a); ans != "" {
 		return line + ans
@@ -1001,6 +1159,40 @@ func designQuizDecisionsBlock(card *entity.TechCard) string {
 		b.WriteString(l)
 	}
 	return b.String()
+}
+
+// designQuizImageMaxBytes — the quiz block's ceiling inside an image run's garment note (W-B2).
+const designQuizImageMaxBytes = 1536
+
+// designQuizImageBlock — the quiz decisions for an image run's frozen garment note (W-B2): the same
+// question-qualified lines as the drafts (skipped omitted, hw_/lbl_ humanised), headed
+// "decided with the designer:", bounded to designQuizImageMaxBytes with an honest tail. A line the
+// note already carries word for word (WORDS written from the same lines) is not repeated. "" when
+// nothing is decided.
+func designQuizImageBlock(card *entity.TechCard, note string) string {
+	lines := designQuizDecisionLines(card)
+	if len(lines) == 0 {
+		return ""
+	}
+	have := strings.ToLower(note)
+	const head = "decided with the designer:\n"
+	var b strings.Builder
+	b.WriteString(head)
+	for i, l := range lines {
+		l = aiBoundedText(l, 2*designConstructionMaxAlreadyLineRunes)
+		if strings.Contains(have, strings.ToLower(strings.TrimPrefix(l, "- "))) {
+			continue
+		}
+		if b.Len()+len(l)+1 > designQuizImageMaxBytes-32 {
+			b.WriteString("(+" + strconv.Itoa(len(lines)-i) + " more decisions, not listed)\n")
+			break
+		}
+		b.WriteString(l + "\n")
+	}
+	if b.Len() == len(head) {
+		return ""
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // ─── parse ───
@@ -1130,23 +1322,42 @@ func designQuizSlug(s string) string {
 // from the table (the model never picks one); id lowercase [a-z0-9_]{1,64} else q{n}_{slug};
 // clarify kept only when some option contradicts the picture and it has a question and 2..4
 // options. Questions whose id or text (case-insensitive) is already among the saved answers are
-// dropped, as are duplicates in the batch. At most 15.
+// dropped (a SKIPPED saved answer closes nothing — W-B4), as are duplicates in the batch. At most 15.
 func parseDesignQuiz(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, bool) {
 	qs, _, ok := parseDesignQuizCounted(raw, family, saved)
 	return qs, ok
 }
 
-// parseDesignQuizCounted is parseDesignQuiz plus how many kept questions had their part corrected
-// by designQuizResolvePart (logged as parts_fixed).
-func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, int, bool) {
+// designQuizParseStats — what the parse made of the model's list (W-B5, logged per call): raw items,
+// kept questions, dropped as invalid (shape, vocabulary, bounds), dropped as repeats (of a saved
+// answer or within the batch), dropped over the cap; plus how many kept questions had their part
+// corrected by designQuizResolvePart (parts_fixed).
+type designQuizParseStats struct {
+	raw, kept, invalid, repeated, capped, partsFixed int
+}
+
+// unusable — the model returned questions but not one survived validation: that is a failed call
+// (retryable), not an honest "nothing left to ask". Repeats of saved answers are honest: the re-run
+// found nothing new.
+func (st designQuizParseStats) unusable() bool {
+	return st.raw > 0 && st.kept == 0 && st.invalid > 0
+}
+
+// parseDesignQuizCounted is parseDesignQuiz plus its stats. W-B4: only ANSWERED saved rows close a
+// point — a skipped one was deferred and its id or text may come back.
+func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, designQuizParseStats, bool) {
+	var st designQuizParseStats
 	items, ok := designQuizExtract(raw)
 	if !ok {
-		return nil, 0, false
+		return nil, st, false
 	}
-	partsFixed := 0
+	st.raw = len(items)
 	savedIDs := map[string]bool{}
 	savedText := map[string]bool{}
 	for _, a := range saved {
+		if a.Skipped {
+			continue
+		}
 		savedIDs[a.Question.ID] = true
 		savedText[strings.ToLower(designOneLine(a.Question.Question))] = true
 	}
@@ -1155,22 +1366,27 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 	out := make([]entity.DesignQuizQuestion, 0, designQuizMaxQuestions)
 	for n, it := range items {
 		if len(out) == designQuizMaxQuestions {
+			st.capped = len(items) - n
 			break
 		}
 		category := strings.ToLower(strings.TrimSpace(it.Category))
 		if !entity.IsDesignQuizCategory(category) {
+			st.invalid++
 			continue
 		}
 		question := designOneLine(it.Question)
 		if question == "" || utf8.RuneCountInString(question) > designQuizMaxQuestionRunes {
+			st.invalid++
 			continue
 		}
 		textKey := strings.ToLower(question)
 		if savedText[textKey] || seenText[textKey] {
+			st.repeated++
 			continue
 		}
 		options, contradicts := designQuizCleanOptions(it.Options, designQuizMaxOptions)
 		if len(options) < designQuizMinOptions {
+			st.invalid++
 			continue
 		}
 		kind := strings.ToLower(strings.TrimSpace(it.Kind))
@@ -1186,10 +1402,8 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 				id = strings.TrimRight(id[:designQuizMaxIDLen], "_")
 			}
 		}
-		if savedIDs[id] {
-			continue
-		}
-		if seenIDs[id] {
+		if savedIDs[id] || seenIDs[id] {
+			st.repeated++
 			continue
 		}
 		q := entity.DesignQuizQuestion{
@@ -1214,10 +1428,11 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 		seenIDs[id], seenText[textKey] = true, true
 		out = append(out, q)
 		if fixedPart {
-			partsFixed++
+			st.partsFixed++
 		}
 	}
-	return out, partsFixed, true
+	st.kept = len(out)
+	return out, st, true
 }
 
 // ─── answers: get / save ───
@@ -1237,20 +1452,28 @@ func (s *Server) GetDesignQuizAnswers(ctx context.Context, req *pb_admin.GetDesi
 	return &pb_admin.GetDesignQuizAnswersResponse{Answers: designQuizAnswersToPb(answers)}, nil
 }
 
-// SaveDesignQuizAnswers replaces the card's whole answer list with the one sent.
+// SaveDesignQuizAnswers MERGES the sent answers into the card's stored list (61-QUICKWINS W-B1):
+// each row is upserted by question id, a row sent EMPTY (no selection, no own words, not skipped)
+// forgets that question id, and every stored row the request does not name stays. A client that
+// commits before its list has loaded — or a second tab — can no longer erase the card's history.
+// A client that sends the full list gets the same result as before.
 func (s *Server) SaveDesignQuizAnswers(ctx context.Context, req *pb_admin.SaveDesignQuizAnswersRequest) (*pb_admin.SaveDesignQuizAnswersResponse, error) {
 	cardID := int(req.GetTechCardId())
 	if cardID <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
 	}
-	answers, ve := validateDesignQuizAnswers(req.GetAnswers())
+	answers, forget, ve := validateDesignQuizAnswers(req.GetAnswers())
 	if ve != nil {
 		return nil, apierr.Invalid(ve)
 	}
-	stored, err := s.repo.TechCards().ReplaceDesignQuizAnswers(ctx, cardID, answers)
+	stored, err := s.repo.TechCards().SaveDesignQuizAnswers(ctx, cardID, answers, forget, designQuizMaxAnswers)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "tech card not found")
+		}
+		if errors.Is(err, entity.ErrDesignQuizTooManyAnswers) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"at most %d quiz answers are stored on a card — forget some first", designQuizMaxAnswers)
 		}
 		slog.Default().ErrorContext(ctx, "design quiz: cannot store the answers",
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
@@ -1275,14 +1498,17 @@ func designQuizCleanList(in []string, maxRunes int) ([]string, bool) {
 	return out, true
 }
 
-// validateDesignQuizAnswers checks the full list the client sends (vocabularies, bounds, ids,
-// selected ⊆ options) and returns it in entity form, field-tagged on the first violation.
-func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCardQuizAnswer, *entity.ValidationError) {
+// validateDesignQuizAnswers checks the list the client sends (vocabularies, bounds, ids,
+// selected ⊆ options) and splits it: the rows to upsert in entity form, and the question ids sent
+// EMPTY — no selection, no own words, not skipped — which mean "forget this answer" (W-B1). Every row,
+// an empty one included, passes the same validation; field-tagged on the first violation.
+func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCardQuizAnswer, []string, *entity.ValidationError) {
 	if len(in) > designQuizMaxAnswers {
-		return nil, entity.NewFieldViolation("answers", "too_many", strconv.Itoa(len(in)),
+		return nil, nil, entity.NewFieldViolation("answers", "too_many", strconv.Itoa(len(in)),
 			fmt.Sprintf("at most %d quiz answers are stored on a card", designQuizMaxAnswers))
 	}
 	out := make([]entity.TechCardQuizAnswer, 0, len(in))
+	var forget []string
 	ids := map[string]bool{}
 	for i, a := range in {
 		field := fmt.Sprintf("answers[%d]", i)
@@ -1291,74 +1517,74 @@ func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCa
 		}
 		pq := a.GetQuestion()
 		if pq == nil {
-			return nil, bad("question", "required", "", "every answer carries its question")
+			return nil, nil, bad("question", "required", "", "every answer carries its question")
 		}
 		id := strings.TrimSpace(pq.GetId())
 		if !designQuizIDRe.MatchString(id) {
-			return nil, bad("question.id", "invalid_id", id, "a question id is 1–64 lowercase letters, digits or underscores")
+			return nil, nil, bad("question.id", "invalid_id", id, "a question id is 1–64 lowercase letters, digits or underscores")
 		}
 		if ids[id] {
-			return nil, bad("question.id", "duplicate", id, "each question is answered once")
+			return nil, nil, bad("question.id", "duplicate", id, "each question is answered once")
 		}
 		ids[id] = true
 		category := strings.TrimSpace(pq.GetCategory())
 		if !entity.IsDesignQuizCategory(category) {
-			return nil, bad("question.category", "unknown_category", category, "design, fit, details, materials, use or finish")
+			return nil, nil, bad("question.category", "unknown_category", category, "design, fit, details, materials, use or finish")
 		}
 		kind := strings.TrimSpace(pq.GetKind())
 		if kind == "" {
 			kind = entity.DesignQuizKindSingle
 		}
 		if !entity.IsDesignQuizKind(kind) {
-			return nil, bad("question.kind", "unknown_kind", kind, "single or multi")
+			return nil, nil, bad("question.kind", "unknown_kind", kind, "single or multi")
 		}
 		view := strings.TrimSpace(pq.GetView())
 		if view == "" {
 			view = entity.DesignQuizViewFront
 		}
 		if !entity.IsDesignQuizView(view) {
-			return nil, bad("question.view", "unknown_view", view, "front, back or side_l")
+			return nil, nil, bad("question.view", "unknown_view", view, "front, back or side_l")
 		}
 		part := strings.TrimSpace(pq.GetPart())
 		if part == "" {
 			part = entity.DesignQuizPartWhole
 		}
 		if len(part) > designQuizMaxPartLen || !designQuizIDRe.MatchString(part) {
-			return nil, bad("question.part", "invalid_part", part, "a part key is a short snake_case word")
+			return nil, nil, bad("question.part", "invalid_part", part, "a part key is a short snake_case word")
 		}
 		family := strings.TrimSpace(pq.GetFamily())
 		if len(family) > designQuizMaxFamilyLen || (family != "" && !designQuizIDRe.MatchString(family)) {
-			return nil, bad("question.family", "invalid_family", family, "a family is a short lowercase word")
+			return nil, nil, bad("question.family", "invalid_family", family, "a family is a short lowercase word")
 		}
 		question := designOneLine(pq.GetQuestion())
 		if question == "" || utf8.RuneCountInString(question) > designQuizMaxQuestionRunes {
-			return nil, bad("question.question", "invalid_question", "",
+			return nil, nil, bad("question.question", "invalid_question", "",
 				fmt.Sprintf("a question is 1–%d characters", designQuizMaxQuestionRunes))
 		}
 		options, ok := designQuizCleanList(pq.GetOptions(), designQuizMaxOptionRunes)
 		if !ok || len(options) < designQuizMinOptions || len(options) > designQuizMaxOptions {
-			return nil, bad("question.options", "invalid_options", "",
+			return nil, nil, bad("question.options", "invalid_options", "",
 				fmt.Sprintf("%d–%d distinct options of at most %d characters", designQuizMinOptions, designQuizMaxOptions, designQuizMaxOptionRunes))
 		}
 		contradicts := pq.GetContradicts()
 		if len(contradicts) != 0 && len(contradicts) != len(options) {
-			return nil, bad("question.contradicts", "length_mismatch", "", "contradicts is parallel to options, or empty")
+			return nil, nil, bad("question.contradicts", "length_mismatch", "", "contradicts is parallel to options, or empty")
 		}
 		clarifyQ := designOneLine(pq.GetClarifyQuestion())
 		if utf8.RuneCountInString(clarifyQ) > designQuizMaxQuestionRunes {
-			return nil, bad("question.clarify_question", "too_long", "",
+			return nil, nil, bad("question.clarify_question", "too_long", "",
 				fmt.Sprintf("a question is at most %d characters", designQuizMaxQuestionRunes))
 		}
 		clarifyOpts, ok := designQuizCleanList(pq.GetClarifyOptions(), designQuizMaxOptionRunes)
 		if !ok || len(clarifyOpts) > designQuizMaxClarifyOptions ||
 			(len(clarifyOpts) > 0 && (len(clarifyOpts) < designQuizMinOptions || clarifyQ == "")) ||
 			(clarifyQ != "" && len(clarifyOpts) == 0) {
-			return nil, bad("question.clarify_options", "invalid_options", "",
+			return nil, nil, bad("question.clarify_options", "invalid_options", "",
 				fmt.Sprintf("a follow-up has a question and %d–%d distinct options", designQuizMinOptions, designQuizMaxClarifyOptions))
 		}
 		selected, ok := designQuizCleanList(a.GetSelected(), designQuizMaxOptionRunes)
 		if !ok {
-			return nil, bad("selected", "invalid_selected", "", "selected options are distinct option texts")
+			return nil, nil, bad("selected", "invalid_selected", "", "selected options are distinct option texts")
 		}
 		offered := map[string]bool{}
 		for _, o := range options {
@@ -1366,20 +1592,24 @@ func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCa
 		}
 		for _, sel := range selected {
 			if !offered[sel] {
-				return nil, bad("selected", "not_an_option", sel, "a selected answer must be one of the question's options")
+				return nil, nil, bad("selected", "not_an_option", sel, "a selected answer must be one of the question's options")
 			}
 		}
 		if kind == entity.DesignQuizKindSingle && len(selected) > 1 {
-			return nil, bad("selected", "too_many", strconv.Itoa(len(selected)), "a single-choice question takes one option")
+			return nil, nil, bad("selected", "too_many", strconv.Itoa(len(selected)), "a single-choice question takes one option")
 		}
 		free := strings.TrimSpace(a.GetFreeText())
 		if utf8.RuneCountInString(free) > designQuizMaxFreeTextRunes {
-			return nil, bad("free_text", "too_long", "",
+			return nil, nil, bad("free_text", "too_long", "",
 				fmt.Sprintf("an own answer is at most %d characters", designQuizMaxFreeTextRunes))
 		}
 		skipped := a.GetSkipped()
 		if skipped {
 			selected, free = nil, ""
+		}
+		if !skipped && len(selected) == 0 && free == "" {
+			forget = append(forget, id)
+			continue
 		}
 		out = append(out, entity.TechCardQuizAnswer{
 			Question: entity.DesignQuizQuestion{
@@ -1391,7 +1621,7 @@ func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCa
 			Selected: selected, FreeText: free, Skipped: skipped,
 		})
 	}
-	return out, nil
+	return out, forget, nil
 }
 
 // ─── wire ───

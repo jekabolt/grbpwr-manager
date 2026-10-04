@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -12,8 +11,9 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// Moodboard quiz answers (0389). One row per answered question; the client door always sends the
-// FULL list and the store replaces it in one transaction (single writer, no merge, no CAS).
+// Moodboard quiz answers (0389). One row per answered question. A save MERGES by question id (W-B1):
+// rows the request does not name stay; a row sent empty (no selection, no own words, not skipped)
+// deletes its question id. No CAS: two writers of the same id — the later one wins.
 
 type designQuizAnswerRow struct {
 	TechCardID         int       `db:"tech_card_id"`
@@ -110,13 +110,17 @@ func designQuizJSON[T any](v []T) string {
 	return string(b)
 }
 
-// ReplaceDesignQuizAnswers replaces the card's whole answer list with answers (already validated by
-// the caller), in the given order, and returns the stored list. One transaction: the card row is
-// locked first (sql.ErrNoRows when it does not exist), so two saves of one card serialise.
+// SaveDesignQuizAnswers is the NON-DESTRUCTIVE save (61-QUICKWINS W-B1): upserts (already validated
+// by the caller) are written over the stored rows of the same question id or appended; the ids in
+// forget are deleted; every other stored row STAYS. Returns the stored list. One transaction: the
+// card row is locked first (sql.ErrNoRows when it does not exist), so two saves of one card serialise
+// and each merges over what the other stored. A merge leaving more than maxStored rows is refused
+// with entity.ErrDesignQuizTooManyAnswers and changes nothing.
 //
-// answered_at is the server's: an answer that comes back unchanged (same question id, selection,
-// free text and skip) keeps the time it was first given; a new or changed one is stamped now.
-func (s *Store) ReplaceDesignQuizAnswers(ctx context.Context, techCardID int, answers []entity.TechCardQuizAnswer) ([]entity.TechCardQuizAnswer, error) {
+// The merge itself is entity.MergeDesignQuizAnswers (pure, unit-tested); the store writes its result
+// back as the card's list (DELETE by card + INSERT in merge order, inside the same lock), which keeps
+// display_order dense and answered_at as the merge decided.
+func (s *Store) SaveDesignQuizAnswers(ctx context.Context, techCardID int, upserts []entity.TechCardQuizAnswer, forget []string, maxStored int) ([]entity.TechCardQuizAnswer, error) {
 	var stored []entity.TechCardQuizAnswer
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -128,31 +132,25 @@ func (s *Store) ReplaceDesignQuizAnswers(ctx context.Context, techCardID int, an
 		if err != nil {
 			return err
 		}
-		prevAt := make(map[string]entity.TechCardQuizAnswer, len(prev[techCardID]))
-		for _, a := range prev[techCardID] {
-			prevAt[a.Question.ID] = a
+		merged := entity.MergeDesignQuizAnswers(prev[techCardID], upserts, forget, time.Now().UTC())
+		if len(merged) > maxStored {
+			return entity.ErrDesignQuizTooManyAnswers
 		}
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_design_quiz_answer WHERE tech_card_id = :id`,
 			map[string]any{"id": techCardID}); err != nil {
 			return fmt.Errorf("can't clear design quiz answers: %w", err)
 		}
-		now := time.Now().UTC()
 		cols := []string{"tech_card_id", "question_id", "category", "part", "family", "part_view", "kind",
 			"question", "options_json", "contradicts_json", "visual_evidence", "clarify_question",
 			"clarify_options_json", "selected_json", "free_text", "skipped", "display_order", "answered_at"}
-		rows := make([][]any, 0, len(answers))
-		for i, a := range answers {
-			at := now
-			if p, ok := prevAt[a.Question.ID]; ok && p.Skipped == a.Skipped && p.FreeText == a.FreeText &&
-				slices.Equal(p.Selected, a.Selected) {
-				at = p.AnsweredAt
-			}
+		rows := make([][]any, 0, len(merged))
+		for i, a := range merged {
 			q := a.Question
 			rows = append(rows, []any{techCardID, q.ID, q.Category, q.Part, q.Family, q.View, q.Kind,
 				q.Question, designQuizJSON(q.Options), designQuizJSON(q.Contradicts), q.VisualEvidence,
 				q.ClarifyQuestion, designQuizJSON(q.ClarifyOptions), designQuizJSON(a.Selected), a.FreeText,
-				a.Skipped, i, at})
+				a.Skipped, i, a.AnsweredAt})
 		}
 		if err := storeutil.BulkInsertRows(ctx, db, "tech_card_design_quiz_answer", cols, rows); err != nil {
 			return fmt.Errorf("can't store design quiz answers: %w", err)

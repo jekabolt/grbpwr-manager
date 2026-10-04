@@ -3660,6 +3660,16 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		// ИЗДЕЛИЕ и её читает каждая генерация. Подставленная сюда записка доски отправила бы в
 		// модель ровно те слова, которые W-15 запрещает.
 		out.GarmentNote = src.Card.GarmentDescription.String
+		// QUIZ DECISIONS (61-QUICKWINS W-B2) ride WITH the garment note, frozen in the same copy: a
+		// flat or render gets them whatever WORDS say (hand-edited, stale, never re-briefed), and a
+		// rerun reads the snapshot, so it keeps exactly the decisions seen at launch.
+		if quiz := designQuizImageBlock(src.Card, out.GarmentNote); quiz != "" {
+			if strings.TrimSpace(out.GarmentNote) != "" {
+				out.GarmentNote = strings.TrimRight(out.GarmentNote, "\n") + "\n\n" + quiz
+			} else {
+				out.GarmentNote = quiz
+			}
+		}
 	}
 
 	// ─── refs: design_reference, затем явно названные extra_input_media_ids ───
