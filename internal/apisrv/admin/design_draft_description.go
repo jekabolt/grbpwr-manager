@@ -86,9 +86,16 @@ func designDescriptionLanguageLine(card *entity.TechCard, mood *pb_common.Design
 }
 
 // designDesignerTextSample — the designer's own free text on the card, flattened and cut to
-// draftDescriptionMaxSampleRunes. "" when the card carries no free text with a single letter in it
-// (a callout reading "2 cm" says nothing about a language). Aspect KEYS and the card name are not
-// free text in this sense: keys are a fixed English vocabulary, and a name is a label.
+// draftDescriptionMaxSampleRunes. "" when none of it has a single letter (a callout reading
+// "12 / 3,5" says nothing about a language).
+//
+// ONLY HUMAN-AUTHORED SOURCES (T39 review 2), in this order: the board note (concept + legacy
+// mood note), the card note, then the callouts a person pinned on the board pictures. Left out on
+// purpose: the aspects (accepted construction-draft aspects are AI text and carry no provenance
+// column), the table callouts (the older construction draft proposed callouts and the client could
+// accept them, again with no provenance), the card name (a label) and aspect keys (a fixed English
+// vocabulary). A model-written line in English must not decide the language of a designer who
+// writes in Russian.
 //
 // A board callout counts only when its picture is attached: the words of a picture that did not
 // reach the model go nowhere, the sample included (the rule of designBoardPromptBody).
@@ -101,6 +108,9 @@ func designDesignerTextSample(card *entity.TechCard, mood *pb_common.DesignMoodS
 		}
 	}
 	add(mood.GetNote())
+	if card != nil {
+		add(card.Notes.String)
+	}
 	attached := make(map[int32]bool, len(attachedIDs))
 	for _, id := range attachedIDs {
 		attached[int32(id)] = true
@@ -109,18 +119,6 @@ func designDesignerTextSample(card *entity.TechCard, mood *pb_common.DesignMoodS
 		if attached[c.GetMediaId()] {
 			add(c.GetText())
 		}
-	}
-	if card != nil {
-		for _, d := range card.Details {
-			add(d.Text.String)
-		}
-		for _, c := range card.Callouts {
-			if c.MediaId.Valid && c.MediaId.Int32 > 0 {
-				continue // board callouts are already in mood
-			}
-			add(entity.TechCardCalloutPrintedLine(c))
-		}
-		add(card.Notes.String)
 	}
 	if len(parts) == 0 {
 		return ""

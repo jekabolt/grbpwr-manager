@@ -108,7 +108,6 @@ func TestDraftDescriptionLanguageRule(t *testing.T) {
 		line := designDescriptionLanguageLine(card, designMoodSnapshot(card), []int{designBoardMediaID})
 		require.Contains(t, line, "same language as the designer's own words")
 		require.Contains(t, line, "широкий воротник")
-		require.Contains(t, line, "трапеция")
 		require.Contains(t, line, "Do not translate")
 		require.NotContains(t, line, "in English.")
 	})
@@ -267,4 +266,29 @@ func TestDraftDescriptionPromptQuotesCardContentAsData(t *testing.T) {
 		"only the language rule stands outside")
 	require.Equal(t, 1, strings.Count(tail, "«"), "the sample cannot open a second quote")
 	require.Equal(t, 1, strings.Count(tail, "»"), "the sample cannot close the quote early")
+}
+
+// THE LANGUAGE SAMPLE IS HUMAN-AUTHORED ONLY (review 2): aspects and table callouts may be accepted
+// AI text with no provenance, so they never decide the language; the notes come first.
+func TestDraftDescriptionLanguageSampleIsHumanAuthoredOnly(t *testing.T) {
+	t.Run("aspects and table callouts alone → English", func(t *testing.T) {
+		card := &entity.TechCard{}
+		card.Details = []entity.TechCardDetail{{Key: sql.NullString{String: "collar", Valid: true},
+			Text: sql.NullString{String: "AI-ASPECT stand collar, two-piece", Valid: true}}}
+		card.Callouts = []entity.TechCardCallout{{Number: 1,
+			Description: sql.NullString{String: "AI-TABLE double topstitch", Valid: true}}}
+		require.Equal(t, "", designDesignerTextSample(card, designMoodSnapshot(card), nil))
+		require.Equal(t, "Language: write the description in English.",
+			designDescriptionLanguageLine(card, designMoodSnapshot(card), nil))
+	})
+	t.Run("the notes lead the sample, ahead of the board callouts", func(t *testing.T) {
+		card := descriptionCard()
+		card.Notes = sql.NullString{String: "CARDNOTE заметка дизайнера", Valid: true}
+		card.Concept = sql.NullString{String: "CONCEPT замысел", Valid: true}
+		sample := designDesignerTextSample(card, designMoodSnapshot(card), []int{designBoardMediaID})
+		require.True(t, strings.HasPrefix(sample, "CONCEPT замысел / CARDNOTE"), sample)
+		require.Contains(t, sample, "BOARDNOTE")
+		require.NotContains(t, sample, "SILHOUETTE", "aspects are not a language source")
+		require.NotContains(t, sample, "TABLENOTE", "table callouts are not a language source")
+	})
 }
