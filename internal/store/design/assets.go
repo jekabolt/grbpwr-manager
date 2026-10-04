@@ -273,6 +273,14 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		hex = keptColourFact(ctx, run.Id, "colour_hex", c.Hex, designAssetColourHexMax)
 	}
 
+	// ПРОСЬБА ПРОГОНА САДИТСЯ ЗАМЕТКОЙ АССЕТА (ROUND3 B1) — для свотча, фурнитуры и картинки
+	// одинаково: «brass zip, 5 mm teeth» без неё теряется на полке. Обрезка, а не отказ, по той же
+	// причине, что у имени: заметка не стоит оплаченной картинки. Пустое — NULL, как у UpsertAsset.
+	note := strings.TrimSpace(run.Ask.String)
+	if r := []rune(note); len(r) > entity.MaxDesignAssetNoteRunes {
+		note = strings.TrimSpace(string(r[:entity.MaxDesignAssetNoteRunes]))
+	}
+
 	id, err := insertAssetTx(ctx, db, map[string]any{
 		"card":        run.TechCardId,
 		"kind":        kind,
@@ -280,7 +288,7 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		"media":       nullInt(mediaID),
 		"colour_code": nullStr(code),
 		"colour_hex":  nullStr(hex),
-		"note":        nil,
+		"note":        nullStr(note),
 		"parent":      nullInt(parent),
 		"repeat_mm":   repeat,
 		"rotation":    0,

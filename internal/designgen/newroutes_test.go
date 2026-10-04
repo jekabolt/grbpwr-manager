@@ -544,4 +544,9 @@ func TestTheRecolourWordsBlockIsCOLOUR_IN_WORDS_AND_THE_RENDER_KEEPS_FABRIC_IN_W
 	render := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindRender}, p, runInputs{}, nil)
 	require.Contains(t, render, "fabric in words:\nClassic Blue")
 	require.NotContains(t, render, "colour in words")
+
+	hw := runParams{Colour: &colourRecipe{Words: "brass zip, 5 mm teeth"}, Pattern: &patternParams{Mode: entity.DesignPatternModeHardware}}
+	hardware := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, hw, runInputs{}, nil)
+	require.Contains(t, hardware, "item in words:\nbrass zip, 5 mm teeth")
+	require.NotContains(t, hardware, "fabric in words")
 }
