@@ -214,29 +214,7 @@ func (s *Server) designPartsCall(ctx context.Context, cardID int, view string, b
 		slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
 	}
 	if err != nil {
-		// NEVER err.Error(): the provider may echo the request. A fixed class only.
-		class := enhanceErrClass(err)
-		if refusal, ok := aiUncalledRefusal(err, designPartsNotConfiguredMsg); ok {
-			return designPartsFlightAnswer{}, refusal
-		}
-		if class == enhanceErrNotConfigured {
-			return designPartsFlightAnswer{}, aiRefusal(aiReasonNotConfigured, designPartsNotConfiguredMsg, nil)
-		}
-		provider := s.aiProviderOf(purpose, res)
-		failAttrs := append(logAttrs, slog.String("err_class", class),
-			slog.Bool("provider_engaged", aiprov.Engaged(err)),
-			slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)))
-		if class == enhanceErrProviderHTTP {
-			failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
-		}
-		slog.Default().ErrorContext(ctx, "design parts failed", failAttrs...)
-		switch class {
-		case enhanceErrModelUnavailable:
-			return designPartsFlightAnswer{}, aiModelRefusal(designPartsModelUnavailMsg, s.ai.PrimaryModel(purpose))
-		case enhanceErrBudgetExhausted, enhanceErrEmptyAnswer:
-			return designPartsFlightAnswer{}, status.Error(codes.Internal, designPartsUnusableMsg)
-		}
-		return designPartsFlightAnswer{}, status.Error(codes.Unavailable, "the assistant is unavailable right now — try again in a moment")
+		return designPartsFlightAnswer{}, s.designPartsChatFailure(ctx, res, err, logAttrs)
 	}
 
 	parts, splits, ok := parseDesignParts(raw, count)
@@ -254,6 +232,35 @@ func (s *Server) designPartsCall(ctx context.Context, cardID int, view string, b
 	slog.Default().InfoContext(ctx, "design parts", append(logAttrs, slog.Int("parts", len(parts)),
 		slog.Int("split_needed", len(splits)))...)
 	return designPartsFlightAnswer{suggestion: saved}, nil
+}
+
+// designPartsChatFailure maps a failed chat.design_parts call to its refusal (and logs it) — the
+// per-side and the card-wide call fail the same way.
+func (s *Server) designPartsChatFailure(ctx context.Context, res *aiprov.ChatResult, err error, logAttrs []any) error {
+	const purpose = entity.AIPurposeDesignParts
+	// NEVER err.Error(): the provider may echo the request. A fixed class only.
+	class := enhanceErrClass(err)
+	if refusal, ok := aiUncalledRefusal(err, designPartsNotConfiguredMsg); ok {
+		return refusal
+	}
+	if class == enhanceErrNotConfigured {
+		return aiRefusal(aiReasonNotConfigured, designPartsNotConfiguredMsg, nil)
+	}
+	provider := s.aiProviderOf(purpose, res)
+	failAttrs := append(logAttrs, slog.String("err_class", class),
+		slog.Bool("provider_engaged", aiprov.Engaged(err)),
+		slog.String("provider", provider), slog.String("base_url", s.ai.BaseURL(provider)))
+	if class == enhanceErrProviderHTTP {
+		failAttrs = append(failAttrs, slog.Int("http_status", providerHTTPStatus(err)))
+	}
+	slog.Default().ErrorContext(ctx, "design parts failed", failAttrs...)
+	switch class {
+	case enhanceErrModelUnavailable:
+		return aiModelRefusal(designPartsModelUnavailMsg, s.ai.PrimaryModel(purpose))
+	case enhanceErrBudgetExhausted, enhanceErrEmptyAnswer:
+		return status.Error(codes.Internal, designPartsUnusableMsg)
+	}
+	return status.Error(codes.Unavailable, "the assistant is unavailable right now — try again in a moment")
 }
 
 // ─── parsing ───
@@ -417,7 +424,7 @@ func designPartsSuggestionToPb(in entity.DesignPartsSuggestion) *pb_admin.Design
 		CreatedAt: timestamppb.New(in.CreatedAt),
 	}
 	for _, p := range in.Parts {
-		g := &pb_admin.DesignPartGroup{Label: p.Label}
+		g := &pb_admin.DesignPartGroup{Label: p.Label, PartKey: p.PartKey}
 		for _, r := range p.Regions {
 			g.Regions = append(g.Regions, int32(r))
 		}

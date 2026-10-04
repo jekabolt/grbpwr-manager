@@ -19,12 +19,18 @@ const (
 	DesignPartsMaxWhyRunes   = 120
 	// DesignPartsUnnamed — the part every region the model left out falls into.
 	DesignPartsUnnamed = "unnamed"
+	// DesignPartsMaxViews — the sides one card-wide call may carry (the four cardinal views).
+	DesignPartsMaxViews = 4
 )
 
 // DesignPartGroup is one garment part: its name and the region numbers it is made of (1-based).
+// PartKey is the part's identity across the sides of one card-wide answer (SuggestDesignPartsCard):
+// the same physical part carries the same key on every side it is seen on. Empty on the rows of the
+// per-side call.
 type DesignPartGroup struct {
 	Label   string `json:"label"`
 	Regions []int  `json:"regions"`
+	PartKey string `json:"part_key,omitempty"`
 }
 
 // DesignPartSplit is one region the model says spans two parts with no seam line drawn.

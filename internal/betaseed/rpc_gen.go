@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (413 rpc) ----
+// ---- admin (414 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -2816,6 +2816,14 @@ func (c *Client) StartDesignRun(ctx context.Context, in *admin.StartDesignRunReq
 func (c *Client) SuggestDesignParts(ctx context.Context, in *admin.SuggestDesignPartsRequest) (*admin.SuggestDesignPartsResponse, error) {
 	out := new(admin.SuggestDesignPartsResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/parts:suggest", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SuggestDesignPartsCard(ctx context.Context, in *admin.SuggestDesignPartsCardRequest) (*admin.SuggestDesignPartsCardResponse, error) {
+	out := new(admin.SuggestDesignPartsCardResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/parts:suggest-card", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

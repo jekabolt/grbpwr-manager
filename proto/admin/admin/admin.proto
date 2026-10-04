@@ -3245,6 +3245,22 @@ service AdminService {
     };
   }
 
+  // SuggestDesignPartsCard (auto parts, topology) — ONE sync vision+JSON call over every requested
+  // side at once: the model sees the marks pictures in view order and lists the garment's PHYSICAL
+  // parts, each with its region numbers on every side it is visible on, so one part (the collar)
+  // is one part across front, back and the sides. The answer is stored per side in the same cache
+  // as SuggestDesignParts (card, view, base_media_id, algo_rev); every group carries a part_key
+  // shared across the sides. A cached answer is returned without a call when EVERY requested side
+  // has one from this call shape and !force.
+  //
+  // FailedPrecondition: a side's flat changed, a side's region count is outside 2..60.
+  rpc SuggestDesignPartsCard(SuggestDesignPartsCardRequest) returns (SuggestDesignPartsCardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/parts:suggest-card"
+      body: "*"
+    };
+  }
+
   // GetDesignQuizAnswers — every quiz answer stored on the card, in display order.
   rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"};
@@ -13446,6 +13462,10 @@ message SuggestDesignPartsRequest {
 message DesignPartGroup {
   string label = 1; // lowercase, ≤ 3 words; "unnamed" holds what the model left out
   repeated int32 regions = 2;
+  // part_key — the part's identity across the sides of one SuggestDesignPartsCard answer (slug of
+  // the label, unique within the answer: "left-sleeve", "collar-2"; "unnamed-<view>" for what the
+  // model left out). Empty on answers of the per-side SuggestDesignParts.
+  string part_key = 3;
 }
 
 // DesignPartSplit is a region that spans two parts with no seam line drawn.
@@ -13466,6 +13486,26 @@ message DesignPartsSuggestion {
 
 message SuggestDesignPartsResponse {
   DesignPartsSuggestion suggestion = 1;
+  bool cached = 2; // true = read from the cache, no call made
+}
+
+// DesignPartsViewInput is one side of a SuggestDesignPartsCard request.
+message DesignPartsViewInput {
+  string view = 1; // front|back|side_l|side_r, each at most once
+  int32 base_media_id = 2; // the side's flat the regions were cut from
+  int32 marks_media_id = 3; // the flat with the numbered regions, as the model sees it
+  int32 region_count = 4; // 2..60
+}
+
+message SuggestDesignPartsCardRequest {
+  int32 tech_card_id = 1;
+  string algo_rev = 2; // the client's cut revision, ≤ 32
+  bool force = 3; // ask again even when every side is cached
+  repeated DesignPartsViewInput views = 4; // 1..4 sides, in the order the model sees them
+}
+
+message SuggestDesignPartsCardResponse {
+  repeated DesignPartsSuggestion suggestions = 1; // one per requested side, in request order
   bool cached = 2; // true = read from the cache, no call made
 }
 

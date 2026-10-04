@@ -486,12 +486,13 @@ var methodRequirements = map[string]Requirement{
 	"SaveDesignQuizAnswers": wr(SectionTechCards),
 	"GetDesignQuizAnswers":  rd(SectionTechCards),
 	// Auto parts: naming a flat's parts spends the key (write).
-	"SuggestDesignParts": wr(SectionTechCards),
-	"CancelDesignRun":    wr(SectionTechCards),
-	"ArchiveDesignRun":   wr(SectionTechCards),
-	"HideDesignPicture":  wr(SectionTechCards),
-	"UndoDesignEdit":     wr(SectionTechCards),
-	"RedoDesignEdit":     wr(SectionTechCards),
+	"SuggestDesignParts":     wr(SectionTechCards),
+	"SuggestDesignPartsCard": wr(SectionTechCards),
+	"CancelDesignRun":        wr(SectionTechCards),
+	"ArchiveDesignRun":       wr(SectionTechCards),
+	"HideDesignPicture":      wr(SectionTechCards),
+	"UndoDesignEdit":         wr(SectionTechCards),
+	"RedoDesignEdit":         wr(SectionTechCards),
 	// «Удалить насовсем» (O-68, D-74) — та же запись о карточке, что «спрятать», только необратимая;
 	// право то же: кто может прятать кроп, тот может его и стереть. Денег не тратит.
 	"DeleteDesignPicture": wr(SectionTechCards),
