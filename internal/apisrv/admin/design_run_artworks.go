@@ -317,14 +317,20 @@ func designArtworkMediaRefs(refs []designInputMediaRef, arts []designFrozenArtwo
 // designRefuseRenderArtworks — the render's artworks, asked BEFORE the reserve:
 //   - more than designMaxRunArtworks placed artworks is refused in words (never truncated: a dropped
 //     print is one the person believes is on the render);
-//   - with artworks, the whole call (plates, references, extras, maps, cloths AND artwork pictures)
+//   - the whole call (plates, references, extras, maps, mockups, cloths AND artwork pictures)
 //     must fit the engine's reference ceiling — the worker refuses an over-ceiling call only after
 //     the money is reserved.
 //
-// A render with no artworks is untouched (its ceiling stays with the provider client, as before).
+// ⚠ T24: THE CEILING HOLDS FOR EVERY RENDER, ARTWORKS OR NOT. It used to be asked only when the
+// render carried artworks, and «its ceiling stays with the provider client» meant the worker: a
+// render of 4 plates + 3 references + 4 colour maps + 4 cloth mockups + 2 cloths (17) was
+// accepted, reserved, and failed in designgen with «17 reference pictures in one call, and GPT
+// Image 2 takes at most 16» (beta, card 49, run 72). The number is the engine row's MaxRefs —
+// orimages.MaxInputReferences on every GPT row, the same row the worker checks — so door and
+// worker read one ceiling.
 func (s *Server) designRefuseRenderArtworks(kind string, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) error {
-	if kind != entity.DesignRunKindRender || len(arts) == 0 {
+	if kind != entity.DesignRunKindRender {
 		return nil
 	}
 	if len(arts) > designMaxRunArtworks {
@@ -340,7 +346,19 @@ func (s *Server) designRefuseRenderArtworks(kind string, params *pb_common.Desig
 	if !ok || engine.MaxRefs <= 0 {
 		return nil
 	}
-	if n := designImageCallImagesWithArtworks(kind, params, inputs, arts, 0); n > engine.MaxRefs {
+	n := designImageCallImagesWithArtworks(kind, params, inputs, arts, 0)
+	if n > engine.MaxRefs && len(arts) == 0 {
+		return designRefusal(codes.InvalidArgument, "too_many_pictures",
+			fmt.Sprintf("this render would send %d pictures and %s takes at most %d — drop a cloth "+
+				"mockup, a reference or a cloth so it fits. Nothing was reserved and nothing was charged",
+				n, engine.Label, engine.MaxRefs),
+			map[string]string{
+				"images":  strconv.Itoa(n),
+				"ceiling": strconv.Itoa(engine.MaxRefs),
+				"model":   engine.Slug,
+			})
+	}
+	if n > engine.MaxRefs {
 		return designRefusal(codes.InvalidArgument, "too_many_pictures",
 			fmt.Sprintf("this render would send %d images in one call (its placed artworks included) and %s "+
 				"takes at most %d. Remove an artwork on PARTS or a picture. Nothing was reserved and nothing "+

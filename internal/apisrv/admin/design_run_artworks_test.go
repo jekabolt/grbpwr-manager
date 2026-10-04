@@ -279,3 +279,43 @@ func TestDesignArtworkMediaRefsJoinTheMediaDoors(t *testing.T) {
 	require.Equal(t, "the artwork «chest embroidery» placed on the front flat", got[2].Where)
 	require.Equal(t, refs, designArtworkMediaRefs(refs, nil))
 }
+
+// TestDesignRefuseRenderOverTheCeilingWithoutArtworks — T24, the beta run 72 shape: 4 bench plates
+// + 3 references + 4 colour maps + 4 cloth mockups + 2 cloths = 17 against GPT Image 2's 16. No
+// artworks, and still refused at the door (InvalidArgument, too_many_pictures) — before, only a
+// render with artworks was counted and this one failed in the worker after the reserve.
+func TestDesignRefuseRenderOverTheCeilingWithoutArtworks(t *testing.T) {
+	s := engineServer()
+	engine, ok := designgen.FindEngine(s.designEngineTable(), "")
+	require.True(t, ok)
+	require.Equal(t, 16, engine.MaxRefs)
+
+	in := &pb_common.DesignInputSnapshot{}
+	views := []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL, entity.DesignViewSideR}
+	for i, v := range views {
+		in.Slots = append(in.Slots, &pb_common.DesignInputSlot{ViewKey: v, MediaId: int32(100 + i)})
+	}
+	for i := 0; i < 3; i++ {
+		in.Refs = append(in.Refs, &pb_common.DesignInputRef{MediaId: int32(200 + i)})
+	}
+	c := &pb_common.DesignColourRecipe{Fabrics: []*pb_common.DesignFabricUse{{MediaId: 400}, {MediaId: 401}}}
+	for i, v := range views {
+		c.ColourMaps = append(c.ColourMaps, &pb_common.DesignColourMap{
+			MediaId: int32(300 + i), View: v, MockupMediaId: int32(310 + i)})
+	}
+	p := &pb_common.DesignRunParams{ColorwayId: 13, Colour: c}
+	require.Equal(t, 17, designImageCallImages(entity.DesignRunKindRender, p, in, 0))
+
+	err := s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, nil)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "too_many_pictures", ffReason(t, err))
+	require.Contains(t, err.Error(), "this render would send 17 pictures and "+engine.Label+" takes at most 16")
+
+	// One mockup fewer fits exactly: the door is a ceiling, not a guess.
+	c.ColourMaps[3].MockupMediaId = 0
+	require.Equal(t, 16, designImageCallImages(entity.DesignRunKindRender, p, in, 0))
+	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, nil))
+	// Other kinds are not this door's.
+	c.ColourMaps[3].MockupMediaId = 313
+	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindFlat, p, in, nil))
+}
