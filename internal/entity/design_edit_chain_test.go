@@ -70,48 +70,48 @@ func TestDesignEditChainCurrentStopsBeforeTheFirstUndoneLink(t *testing.T) {
 
 func TestDesignUndoStep(t *testing.T) {
 	live := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, false), chainLink(30, 0, false)}
-	step, err := DesignUndoStep(live, 30, 0)
+	step, err := DesignUndoStep(live, 30, 20, 0)
 	require.NoError(t, err)
 	require.Equal(t, DesignEditStep{Mark: 30, From: 30, To: 20}, step)
 
-	_, err = DesignUndoStep(live, 20, 0)
+	_, err = DesignUndoStep(live, 20, 10, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain, "CAS: текущая 30, клиент видел 20")
-	_, err = DesignUndoStep(live, 30, 2)
+	_, err = DesignUndoStep(live, 30, 20, 2)
 	require.ErrorIs(t, err, ErrDesignLiveCropParent)
 
 	root := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, true)}
-	_, err = DesignUndoStep(root, 10, 0)
+	_, err = DesignUndoStep(root, 10, 5, 0)
 	require.ErrorIs(t, err, ErrDesignNothingToUndo, "текущая — оригинал")
 }
 
 func TestDesignUndoStepReplay(t *testing.T) {
 	// После undo(30): 30 отменён, текущая 20. Повтор того же undo — успех без записи.
 	after := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, false), chainLink(30, 0, true)}
-	step, err := DesignUndoStep(after, 30, 0)
+	step, err := DesignUndoStep(after, 30, 20, 0)
 	require.NoError(t, err)
 	require.Equal(t, DesignEditStep{Mark: 30, From: 30, To: 20, Replay: true}, step)
 	// Но undo(30), когда отменено уже и 20, — не повтор: текущая 10.
 	further := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, true), chainLink(30, 0, true)}
-	_, err = DesignUndoStep(further, 30, 0)
+	_, err = DesignUndoStep(further, 30, 20, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
 }
 
 func TestDesignRedoStep(t *testing.T) {
 	undone := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, true), chainLink(30, 0, true)}
-	step, err := DesignRedoStep(undone, 10, 0)
+	step, err := DesignRedoStep(undone, 10, 20, 0)
 	require.NoError(t, err)
 	require.Equal(t, DesignEditStep{Mark: 20, From: 10, To: 20}, step, "redo снимает отмену только со следующего звена")
 
-	_, err = DesignRedoStep(undone, 20, 0)
+	_, err = DesignRedoStep(undone, 20, 30, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
 
 	after := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, false), chainLink(30, 0, true)}
-	step, err = DesignRedoStep(after, 10, 0)
+	step, err = DesignRedoStep(after, 10, 20, 0)
 	require.NoError(t, err)
 	require.Equal(t, DesignEditStep{Mark: 20, From: 10, To: 20, Replay: true}, step, "повтор redo(10)")
 
 	tail := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, false)}
-	_, err = DesignRedoStep(tail, 20, 0)
+	_, err = DesignRedoStep(tail, 20, 30, 0)
 	require.ErrorIs(t, err, ErrDesignNothingToRedo)
 }
 
@@ -119,9 +119,9 @@ func TestDesignRedoStep(t *testing.T) {
 // redo не поднимает её на верстак, undo тоже ничего не делает.
 func TestDesignEditChainCutOffBranch(t *testing.T) {
 	cut := []DesignChainLink{chainLink(30, 0, true)}
-	_, err := DesignRedoStep(cut, 30, 0)
+	_, err := DesignRedoStep(cut, 30, 31, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
-	_, err = DesignUndoStep(cut, 30, 0)
+	_, err = DesignUndoStep(cut, 30, 29, 0)
 	require.ErrorIs(t, err, ErrDesignStaleChain)
 	require.Empty(t, DesignEditChainControls(cut))
 }
@@ -138,8 +138,8 @@ func TestDesignEditChainControls(t *testing.T) {
 		chainLink(90, 0, false), chainLink(95, 0, true),
 	}
 	require.Equal(t, map[int]DesignEditControls{
-		20: {CanUndo: true, CanRedo: true},
-		60: {CanUndo: true},
+		20: {CanUndo: true, CanRedo: true, UndoTo: 10},
+		60: {CanUndo: true, UndoTo: 50},
 		70: {CanRedo: true},
 	}, DesignEditChainControls(links))
 }
@@ -206,6 +206,35 @@ func TestDesignRestoredOriginalIsCurrent(t *testing.T) {
 	require.NoError(t, DesignSplitReplacedRefusal(DesignPicture{Id: 5, TechCardId: replaceProbeCard}, load))
 
 	chain := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, true)}
-	_, err = DesignRedoStep(chain, 10, 1)
+	_, err = DesignRedoStep(chain, 10, 20, 1)
 	require.ErrorIs(t, err, ErrDesignLiveCropParent)
+}
+
+// C1: ПОВТОР — ТОЛЬКО КОГДА ТЕКУЩЕЙ СТАЛА ЦЕЛЬ ЗАПРОСА, И ЦЕПОЧКА ТА САМАЯ. Новая правка над expected,
+// сделанная другой вкладкой между redo и его повтором, — не повтор, а stale_chain; так же undo, чья
+// цель не предшественник, который видит сервер.
+//
+// МУТАЦИИ: повтор redo без проверки «текущая = target» (прежнее правило — preceded-by-expected);
+// шаг undo без сверки target с предшественником.
+func TestDesignEditStepTargetDisambiguatesTheReplay(t *testing.T) {
+	// P=10 → E=20 (redo уже прошёл): повтор redo(10→20) — успех.
+	step, err := DesignRedoStep([]DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, false)}, 10, 20, 0)
+	require.NoError(t, err)
+	require.True(t, step.Replay)
+	// Другая вкладка: после undo(20) сделала правку N=30 над P; E отрезан. Повтор redo(10→20) — stale.
+	afterNewEdit := []DesignChainLink{chainLink(10, 30, false), chainLink(30, 0, false)}
+	_, err = DesignRedoStep(afterNewEdit, 10, 20, 0)
+	require.ErrorIs(t, err, ErrDesignStaleChain)
+	// Redo в другое звено, чем видит сервер, — stale.
+	_, err = DesignRedoStep([]DesignChainLink{chainLink(10, 20, false), chainLink(20, 0, true)}, 10, 99, 0)
+	require.ErrorIs(t, err, ErrDesignStaleChain)
+
+	// Undo: цель — не тот предшественник — stale; повтор, когда текущей стала цель, — успех.
+	live := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, false), chainLink(30, 0, false)}
+	_, err = DesignUndoStep(live, 30, 10, 0)
+	require.ErrorIs(t, err, ErrDesignStaleChain)
+	// Другая вкладка уже отменила и 30, и 20: текущая 10, не цель 20 — stale, а не «повтор».
+	twice := []DesignChainLink{chainLink(10, 20, false), chainLink(20, 30, true), chainLink(30, 0, true)}
+	_, err = DesignUndoStep(twice, 30, 20, 0)
+	require.ErrorIs(t, err, ErrDesignStaleChain)
 }

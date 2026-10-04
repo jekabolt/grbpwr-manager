@@ -47,7 +47,7 @@ func annotateEditChains(ctx context.Context, db dependency.DB, pics []*entity.De
 			continue
 		}
 		c := controls[p.Id]
-		p.CanUndo, p.CanRedo = c.CanUndo, c.CanRedo
+		p.CanUndo, p.CanRedo, p.UndoToId = c.CanUndo, c.CanRedo, c.UndoTo
 	}
 	return nil
 }
@@ -76,8 +76,8 @@ func (s *Store) RedoEdit(ctx context.Context, req entity.DesignEditChainStepRequ
 //
 // Ответ — цепочка после шага (кадры с файлами и углами) и слоты новой текущей версии.
 func (s *Store) editChainStep(ctx context.Context, req entity.DesignEditChainStepRequest, undo bool) (*entity.DesignEditChainResult, error) {
-	if req.PictureId <= 0 || req.ExpectedCurrentId <= 0 {
-		return nil, fmt.Errorf("%w: picture_id and expected_current_id are required", entity.ErrDesignInvalidArgument)
+	if req.PictureId <= 0 || req.ExpectedCurrentId <= 0 || req.ExpectedTargetId <= 0 {
+		return nil, fmt.Errorf("%w: picture_id, expected_current_id and expected_target_id are required", entity.ErrDesignInvalidArgument)
 	}
 	var out entity.DesignEditChainResult
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -113,9 +113,9 @@ func (s *Store) editChainStep(ctx context.Context, req entity.DesignEditChainSte
 		}
 		var step entity.DesignEditStep
 		if undo {
-			step, err = entity.DesignUndoStep(chain, req.ExpectedCurrentId, crops)
+			step, err = entity.DesignUndoStep(chain, req.ExpectedCurrentId, req.ExpectedTargetId, crops)
 		} else {
-			step, err = entity.DesignRedoStep(chain, req.ExpectedCurrentId, crops)
+			step, err = entity.DesignRedoStep(chain, req.ExpectedCurrentId, req.ExpectedTargetId, crops)
 		}
 		if err != nil {
 			return err

@@ -647,7 +647,7 @@ func (s *Server) HideDesignPicture(ctx context.Context, req *pb_admin.HideDesign
 
 // UndoDesignEdit takes back the current version of an edit chain (T28 v2).
 func (s *Server) UndoDesignEdit(ctx context.Context, req *pb_admin.UndoDesignEditRequest) (*pb_admin.UndoDesignEditResponse, error) {
-	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetIdempotencyKey())
+	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetExpectedTargetId(), req.GetIdempotencyKey())
 	if err != nil {
 		return nil, err
 	}
@@ -660,7 +660,7 @@ func (s *Server) UndoDesignEdit(ctx context.Context, req *pb_admin.UndoDesignEdi
 
 // RedoDesignEdit brings back the undone link after the current version (T28 v2).
 func (s *Server) RedoDesignEdit(ctx context.Context, req *pb_admin.RedoDesignEditRequest) (*pb_admin.RedoDesignEditResponse, error) {
-	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetIdempotencyKey())
+	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetExpectedTargetId(), req.GetIdempotencyKey())
 	if err != nil {
 		return nil, err
 	}
@@ -671,10 +671,11 @@ func (s *Server) RedoDesignEdit(ctx context.Context, req *pb_admin.RedoDesignEdi
 	return &pb_admin.RedoDesignEditResponse{Chain: designEditChainToPb(res)}, nil
 }
 
-func designEditChainStepRequest(ctx context.Context, pictureID, expected int32, key string) (entity.DesignEditChainStepRequest, error) {
+func designEditChainStepRequest(ctx context.Context, pictureID, expected, target int32, key string) (entity.DesignEditChainStepRequest, error) {
 	key = strings.TrimSpace(key)
-	if pictureID <= 0 || expected <= 0 {
-		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument, "picture_id and expected_current_id are required")
+	if pictureID <= 0 || expected <= 0 || target <= 0 {
+		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument,
+			"picture_id, expected_current_id and expected_target_id are required")
 	}
 	if key == "" {
 		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument, "idempotency_key is required")
@@ -684,7 +685,8 @@ func designEditChainStepRequest(ctx context.Context, pictureID, expected int32, 
 			"idempotency_key is longer than %d characters", entity.DesignRequestKeyMaxRunes)
 	}
 	return entity.DesignEditChainStepRequest{
-		PictureId: int(pictureID), ExpectedCurrentId: int(expected), IdempotencyKey: key, Actor: designActor(ctx),
+		PictureId: int(pictureID), ExpectedCurrentId: int(expected), ExpectedTargetId: int(target),
+		IdempotencyKey: key, Actor: designActor(ctx),
 	}, nil
 }
 
@@ -1470,8 +1472,9 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		ReplacedBy: p.ReplacedBy.Int32,
 		CreatedAt:  timestamppb.New(p.CreatedAt),
 		// T28 v2: углы undo/redo по всей цепочке (стор, annotateEditChains).
-		CanUndo: p.CanUndo,
-		CanRedo: p.CanRedo,
+		CanUndo:  p.CanUndo,
+		CanRedo:  p.CanRedo,
+		UndoToId: int32(p.UndoToId),
 	}
 	if p.UndoneAt.Valid {
 		out.UndoneAt = timestamppb.New(p.UndoneAt.Time)

@@ -1276,6 +1276,10 @@ message DesignPicture {
   //   can_redo — the link after this one is undone.
   bool can_undo = 23;
   bool can_redo = 24;
+  // The version undo makes current — the link before this one; 0 when can_undo is false. Sent back
+  // as UndoDesignEditRequest.expected_target_id (the link may sit in a run row that is paged out).
+  // Redo's target is replaced_by.
+  int32 undo_to_id = 25;
 }
 
 // DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the

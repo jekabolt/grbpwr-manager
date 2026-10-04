@@ -2800,8 +2800,8 @@ service AdminService {
   // transaction: the chain rows are locked, then a compare-and-set on expected_current_id.
   //
   // picture_id names the chain (any link of it). IDEMPOTENT BY OUTCOME: a repeat that finds the
-  // undo already in place (expected_current_id undone, the link before it current) answers OK and
-  // writes nothing; idempotency_key is required and logged.
+  // undo already in place (expected_target_id current, expected_current_id undone right after it)
+  // answers OK and writes nothing; idempotency_key is required and logged.
   //
   // InvalidArgument: a missing id or key. FailedPrecondition: stale_chain (the current version is
   // not expected_current_id — re-read the band), nothing_to_undo (the current version is the
@@ -2901,7 +2901,9 @@ service AdminService {
   // this picture are visible, a repeat returns THEM and cuts nothing. The key is required but not
   // stored yet (backlog) — a retry that lands after those crops were hidden cuts again.
   //
-  // A REPLACED PICTURE IS NOT CUT (O-53): FailedPrecondition already_replaced, whose ErrorInfo
+  // A REPLACED PICTURE IS NOT CUT (O-53) — one whose place ANOTHER picture holds (the head of its
+  // chain is not itself; a restored original whose successor is undone is current and is cut, T28
+  // v2): FailedPrecondition already_replaced, whose ErrorInfo
   // metadata carries head_picture_id — the head of its replacement chain, the picture a stale tab
   // should cut instead. A HIDDEN PICTURE IS NOT CUT EITHER: FailedPrecondition hidden_picture. Its
   // crops would be born visible under a parent nobody can see — the state HideDesignPicture refuses
@@ -12738,6 +12740,10 @@ message UndoDesignEditRequest {
   // CAS: the current version the client saw (the picture whose undo corner was pressed).
   int32 expected_current_id = 2;
   string idempotency_key = 3; // required (UUID minted per gesture)
+  // The version that should become current: the link before expected_current_id
+  // (common.DesignPicture.undo_to_id). Required. A repeat is answered OK only when THIS is current
+  // and expected_current_id stands undone right after it; anything else not matching is stale_chain.
+  int32 expected_target_id = 4;
 }
 
 // The chain after the step — the band rows the step touched.
@@ -12758,6 +12764,11 @@ message RedoDesignEditRequest {
   int32 picture_id = 1; // any link of the chain
   int32 expected_current_id = 2; // CAS, as in UndoDesignEditRequest
   string idempotency_key = 3; // required
+  // The version that should become current: the undone link right after expected_current_id (its
+  // replaced_by). Required. A repeat is answered OK only when THIS is current and
+  // expected_current_id stands right before it — a newer edit over expected_current_id made in
+  // another tab is stale_chain, not a repeat.
+  int32 expected_target_id = 4;
 }
 
 message RedoDesignEditResponse {

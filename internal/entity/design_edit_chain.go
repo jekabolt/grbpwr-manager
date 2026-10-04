@@ -125,57 +125,69 @@ type DesignEditStep struct {
 }
 
 // DesignUndoStep — ШАГ UNDO над цепочкой, прочитанной под замком. expected — текущая версия, которую
-// видел клиент. standingCrops — сколько видимых кусков отрезано от текущей версии (они остались бы
-// висеть под отменённой правкой: live_crop_parent).
+// видел клиент; target — версия, которая должна стать текущей (её предшественник, как его видел
+// клиент: DesignPicture.undo_to_id). standingCrops — сколько видимых кусков отрезано от текущей версии
+// (они остались бы висеть под отменённой правкой: live_crop_parent).
 //
 // ПОРЯДОК: CAS (с повтором) → nothing_to_undo → live_crop_parent.
 //
-// ПОВТОР ПО ИСХОДУ, А НЕ ПО КЛЮЧУ: expected уже отменён и стоит сразу за текущей версией — это ровно
-// состояние после этого undo, и ответ ему успех без записи (прецедент — SplitPicture, «idempotent by
-// derivation»). Иначе — stale_chain.
-func DesignUndoStep(chain []DesignChainLink, expected int, standingCrops int) (DesignEditStep, error) {
+//   - текущая = expected: шаг, если её предшественник — target; иначе stale_chain (клиент видел другую
+//     цепочку);
+//   - текущая = target, и сразу за ней стоит отменённый expected: ПОВТОР — успех без записи (повтор по
+//     исходу; ключ не хранится, прецедент — SplitPicture);
+//   - иначе stale_chain.
+func DesignUndoStep(chain []DesignChainLink, expected, target int, standingCrops int) (DesignEditStep, error) {
 	cur := DesignEditChainCurrent(chain)
-	if cur < 0 || chain[cur].Id != expected {
-		if cur >= 0 && cur+1 < len(chain) && chain[cur+1].Id == expected && chain[cur+1].UndoneAt.Valid {
-			return DesignEditStep{Mark: expected, From: expected, To: chain[cur].Id, Replay: true}, nil
+	if cur >= 0 && chain[cur].Id == expected {
+		if cur == 0 {
+			return DesignEditStep{}, fmt.Errorf("%w: picture %d is the original of its chain", ErrDesignNothingToUndo, expected)
 		}
-		return DesignEditStep{}, designStaleChain(chain, cur, expected)
+		if chain[cur-1].Id != target {
+			return DesignEditStep{}, fmt.Errorf("%w: undo of picture %d goes to picture %d, not %d",
+				ErrDesignStaleChain, expected, chain[cur-1].Id, target)
+		}
+		if standingCrops > 0 {
+			return DesignEditStep{}, fmt.Errorf("%w: picture %d is cut into %d visible piece(s); undoing it would leave them under an undone edit",
+				ErrDesignLiveCropParent, expected, standingCrops)
+		}
+		return DesignEditStep{Mark: expected, From: expected, To: target}, nil
 	}
-	if cur == 0 {
-		return DesignEditStep{}, fmt.Errorf("%w: picture %d is the original of its chain", ErrDesignNothingToUndo, expected)
+	if cur >= 0 && chain[cur].Id == target && cur+1 < len(chain) && chain[cur+1].Id == expected && chain[cur+1].UndoneAt.Valid {
+		return DesignEditStep{Mark: expected, From: expected, To: target, Replay: true}, nil
 	}
-	if standingCrops > 0 {
-		return DesignEditStep{}, fmt.Errorf("%w: picture %d is cut into %d visible piece(s); undoing it would leave them under an undone edit",
-			ErrDesignLiveCropParent, expected, standingCrops)
-	}
-	return DesignEditStep{Mark: chain[cur].Id, From: chain[cur].Id, To: chain[cur-1].Id}, nil
+	return DesignEditStep{}, designStaleChain(chain, cur, expected)
 }
 
-// DesignRedoStep — ШАГ REDO: снять отмену со звена за текущей версией.
+// DesignRedoStep — ШАГ REDO: снять отмену со звена за текущей версией. target — то звено (replaced_by
+// версии, которую видел клиент).
 //
-// ПОВТОР ПО ИСХОДУ: expected стоит сразу перед текущей версией — состояние после этого redo. (Его же
-// даёт и новая правка над expected, сделанная другой вкладкой между попытками; ответ несёт настоящую
-// цепочку, и экран рисует правду.)
+//   - текущая = expected: шаг, если за ней стоит отменённый target; иначе stale_chain либо nothing_to_redo;
+//   - текущая = target, и сразу перед ней стоит expected: ПОВТОР — успех без записи. Новая правка над
+//     expected из другой вкладки сюда не попадает: текущей стала она, а не target, — stale_chain;
+//   - иначе stale_chain.
 //
 // standingCrops — видимые куски, отрезанные от текущей версии после undo (восстановленный оригинал
 // режется, T28 v2 M1): redo увёл бы место у листа, от которого они отрезаны, — live_crop_parent.
-func DesignRedoStep(chain []DesignChainLink, expected int, standingCrops int) (DesignEditStep, error) {
+func DesignRedoStep(chain []DesignChainLink, expected, target int, standingCrops int) (DesignEditStep, error) {
 	cur := DesignEditChainCurrent(chain)
-	if cur < 0 || chain[cur].Id != expected {
-		if cur >= 1 && chain[cur-1].Id == expected {
-			return DesignEditStep{Mark: chain[cur].Id, From: expected, To: chain[cur].Id, Replay: true}, nil
+	if cur >= 0 && chain[cur].Id == expected {
+		if cur+1 >= len(chain) {
+			return DesignEditStep{}, fmt.Errorf("%w: picture %d has no undone edit after it", ErrDesignNothingToRedo, expected)
 		}
-		return DesignEditStep{}, designStaleChain(chain, cur, expected)
+		if chain[cur+1].Id != target {
+			return DesignEditStep{}, fmt.Errorf("%w: redo of picture %d goes to picture %d, not %d",
+				ErrDesignStaleChain, expected, chain[cur+1].Id, target)
+		}
+		if standingCrops > 0 {
+			return DesignEditStep{}, fmt.Errorf("%w: picture %d is cut into %d visible piece(s); redo would leave them cut from a replaced version",
+				ErrDesignLiveCropParent, expected, standingCrops)
+		}
+		return DesignEditStep{Mark: target, From: expected, To: target}, nil
 	}
-	if cur+1 >= len(chain) {
-		return DesignEditStep{}, fmt.Errorf("%w: picture %d has no undone edit after it", ErrDesignNothingToRedo, expected)
+	if cur >= 1 && chain[cur].Id == target && chain[cur-1].Id == expected {
+		return DesignEditStep{Mark: target, From: expected, To: target, Replay: true}, nil
 	}
-	if standingCrops > 0 {
-		return DesignEditStep{}, fmt.Errorf("%w: picture %d is cut into %d visible piece(s); redo would leave them cut from a replaced version",
-			ErrDesignLiveCropParent, expected, standingCrops)
-	}
-	next := chain[cur+1]
-	return DesignEditStep{Mark: next.Id, From: expected, To: next.Id}, nil
+	return DesignEditStep{}, designStaleChain(chain, cur, expected)
 }
 
 func designStaleChain(chain []DesignChainLink, cur, expected int) error {
@@ -190,6 +202,9 @@ func designStaleChain(chain []DesignChainLink, cur, expected int) error {
 type DesignEditControls struct {
 	CanUndo bool
 	CanRedo bool
+	// UndoTo — версия, которую undo сделает текущей (предшественник); 0 без undo. Клиент шлёт её
+	// expected_target_id: предшественник может лежать в строке, ушедшей за страницу.
+	UndoTo int
 }
 
 // DesignEditChainControls — УГЛЫ ДЛЯ КАЖДОЙ ТЕКУЩЕЙ ВЕРСИИ среди links (звенья карточки или карточек).
@@ -226,6 +241,9 @@ func DesignEditChainControls(links []DesignChainLink) map[int]DesignEditControls
 			continue
 		}
 		c := DesignEditControls{CanUndo: cur > 0, CanRedo: cur+1 < len(chain)}
+		if c.CanUndo {
+			c.UndoTo = chain[cur-1].Id
+		}
 		if c.CanUndo || c.CanRedo {
 			out[chain[cur].Id] = c
 		}
@@ -239,6 +257,8 @@ func DesignEditChainControls(links []DesignChainLink) map[int]DesignEditControls
 type DesignEditChainStepRequest struct {
 	PictureId         int
 	ExpectedCurrentId int
+	// ExpectedTargetId — версия, которая должна стать текущей (undo: предшественник, redo: преемник).
+	ExpectedTargetId int
 	IdempotencyKey    string
 	Actor             string
 }

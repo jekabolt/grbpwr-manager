@@ -1544,6 +1544,8 @@ type DesignPicture struct {
 	// сохраняет свои углы, потому что клиент цепочки целиком не видит.
 	CanUndo bool `db:"-"`
 	CanRedo bool `db:"-"`
+	// UndoToId — версия, которую undo сделает текущей (DesignEditControls.UndoTo); 0 без undo.
+	UndoToId int `db:"-"`
 }
 
 // DesignBenchSlot — строка design_bench_slot: адрес, по которому лежит ПРИНЯТАЯ плита.
