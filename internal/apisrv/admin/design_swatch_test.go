@@ -104,7 +104,7 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "", p)))
 	})
 
-	t.Run("label: slot required, colour optional, 0..1 picture (the logo)", func(t *testing.T) {
+	t.Run("label: slot required, colour optional, 0..4 pictures (optional logo + references)", func(t *testing.T) {
 		lb := func(cw int32, bom int32, refs ...int32) *pb_common.DesignRunParams {
 			return &pb_common.DesignRunParams{
 				ColorwayId:         cw,
@@ -119,8 +119,10 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 			reason string
 		}{
 			{"blank label", lb(13, 904), ""},
-			{"one logo", lb(13, 904, 1), ""},
-			{"two pictures", lb(13, 904, 1, 2), entity.DesignErrorCodeTooManyReferences},
+			{"logo only", lb(13, 904, 1), ""},
+			{"logo + 3 references", lb(13, 904, 1, 2, 3, 4), ""},
+			{"4 references, no logo", lb(13, 904, 5, 6, 7, 8), ""},
+			{"five pictures", lb(13, 904, 1, 2, 3, 4, 5), entity.DesignErrorCodeTooManyReferences},
 			{"no bom line", lb(13, 0), entity.DesignErrorCodeHardwareNeedsSlot},
 			{"no colourway", lb(0, 904), entity.DesignErrorCodeHardwareNeedsSlot},
 		} {

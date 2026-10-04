@@ -2,6 +2,7 @@ package designgen
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -187,34 +188,70 @@ func TestAHardwarePictureTAKES_UP_TO_FOUR_REFERENCES_IN_ONE_CALL(t *testing.T) {
 	require.False(t, classify(err).Retryable)
 }
 
-// TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN: mode label writes labelCraft, not hardwareCraft —
-// the one picture is the LOGO ARTWORK to reproduce (hardware would say «not necessarily for the
-// colour» and exclude any logo), and with no picture the label is blank, no invented wordmark.
+// TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN: mode label writes labelCraft, not hardwareCraft.
+// With the logo marker the FIRST picture is the LOGO ARTWORK to reproduce and every other picture is
+// a REFERENCE label (construction only, never its logo/text/colours); without it every picture is a
+// reference and no wordmark is invented; with no picture the label is blank.
 func TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN(t *testing.T) {
-	for _, pictures := range []int{0, 1} {
-		got := patternCraft(patternParams{Mode: entity.DesignPatternModeLabel, RepeatMM: 80}, pictures)
+	for _, tc := range []struct {
+		pictures int
+		hasLogo  bool
+	}{{0, false}, {0, true}, {1, true}, {4, true}, {1, false}, {4, false}} {
+		got := patternCraft(patternParams{Mode: entity.DesignPatternModeLabel, RepeatMM: 80,
+			LabelHasLogo: tc.hasLogo}, tc.pictures)
 		low := strings.ToLower(got)
 		for _, must := range []string{"garment label:", "plain, seamless pure white background",
 			"soft, even studio light", "context only", "never draw the garment"} {
-			require.Containsf(t, low, must, "%d pictures: must say %q", pictures, must)
+			require.Containsf(t, low, must, "%+v: must say %q", tc, must)
 		}
 		for _, never := range []string{"hardware item:", "not necessarily for the colour", "logo that the words",
 			"repeating tile", "repeat"} {
-			require.NotContainsf(t, low, never, "%d pictures: must not say %q", pictures, never)
+			require.NotContainsf(t, low, never, "%+v: must not say %q", tc, never)
 		}
-		if pictures > 0 {
-			require.Contains(t, got, "LOGO ARTWORK")
-			require.NotContains(t, low, "no logo is given")
-		} else {
-			require.Contains(t, low, "no logo is given")
-			require.NotContains(t, got, "LOGO ARTWORK")
+		switch {
+		case tc.pictures > 0 && tc.hasLogo:
+			require.Containsf(t, got, "FIRST attached picture is the brand's LOGO ARTWORK", "%+v", tc)
+			require.NotContainsf(t, low, "no logo is given", "%+v", tc)
+			if tc.pictures > 1 {
+				require.Containsf(t, got, "Every OTHER attached picture is a REFERENCE label", "%+v", tc)
+				require.Containsf(t, low, "never copy its logo, text or colours", "%+v", tc)
+			} else {
+				require.NotContainsf(t, got, "REFERENCE", "%+v", tc)
+			}
+		case tc.pictures > 0:
+			require.NotContainsf(t, got, "LOGO ARTWORK", "%+v", tc)
+			require.Containsf(t, got, "Every attached picture is a REFERENCE label", "%+v", tc)
+			require.Containsf(t, low, "never copy its logo, text or colours", "%+v", tc)
+			require.Containsf(t, low, "no logo is given: invent no wordmark", "%+v", tc)
+		default:
+			require.Containsf(t, low, "no logo is given: make a blank label", "%+v", tc)
+			require.NotContainsf(t, got, "LOGO ARTWORK", "%+v", tc)
+			require.NotContainsf(t, got, "REFERENCE", "%+v", tc)
 		}
 	}
 }
 
-// TestALabelPictureTAKES_AT_MOST_ONE_PICTURE: the logo, in one call; two refuse at the money boundary.
-func TestALabelPictureTAKES_AT_MOST_ONE_PICTURE(t *testing.T) {
-	for _, refs := range [][]string{nil, {"logo"}} {
+// TestALabelRunNAMES_ITS_LOGO_BY_THE_MARKER: composePrompt reads «logo = picture 1» from the ask or
+// the colour words, case-insensitively; without it the pictures are references.
+func TestALabelRunNAMES_ITS_LOGO_BY_THE_MARKER(t *testing.T) {
+	att := []refCaption{{}, {}}
+	lb := func(words string) runParams {
+		return runParams{Colour: &colourRecipe{Words: words}, Pattern: &patternParams{Mode: entity.DesignPatternModeLabel}}
+	}
+	withLogo := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, lb("woven; Logo = Picture 1"), runInputs{}, att)
+	require.Contains(t, withLogo, "FIRST attached picture is the brand's LOGO ARTWORK")
+	viaAsk := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern,
+		Ask: sql.NullString{String: "logo = picture 1", Valid: true}}, lb("woven"), runInputs{}, att)
+	require.Contains(t, viaAsk, "FIRST attached picture is the brand's LOGO ARTWORK")
+	noLogo := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, lb("woven"), runInputs{}, att)
+	require.Contains(t, noLogo, "Every attached picture is a REFERENCE label")
+	require.NotContains(t, noLogo, "LOGO ARTWORK")
+}
+
+// TestALabelPictureTAKES_AT_MOST_FOUR_PICTURES: logo + references in one call; five refuse at the
+// money boundary.
+func TestALabelPictureTAKES_AT_MOST_FOUR_PICTURES(t *testing.T) {
+	for _, refs := range [][]string{nil, {"logo"}, {"logo", "a", "b", "c"}} {
 		calls, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeLabel,
 			Prompt: "label", References: refs})
 		require.NoErrorf(t, err, "%d refs", len(refs))
@@ -223,7 +260,7 @@ func TestALabelPictureTAKES_AT_MOST_ONE_PICTURE(t *testing.T) {
 		require.Len(t, calls[0].refs, len(refs))
 	}
 	_, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeLabel,
-		References: []string{"a", "b"}})
+		References: []string{"a", "b", "c", "d", "e"}})
 	require.Error(t, err)
 	require.False(t, classify(err).Retryable)
 }

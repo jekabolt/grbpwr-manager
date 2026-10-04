@@ -174,6 +174,10 @@ type patternParams struct {
 	// params с UseProtoNames. Режим меняет ДВА места и больше ничего: число картинок вызова
 	// (imageCalls) и абзац ремесла (patternCraft).
 	Mode string `json:"mode"`
+	// LabelHasLogo — НЕ ИЗ СНИМКА (json:"-"): composePrompt выводит его из слов прогона (ask и
+	// colour.words) — клиент, приложив логотип, ставит его ПЕРВОЙ картинкой и пишет маркер
+	// «logo = picture 1». Читает только labelCraft.
+	LabelHasLogo bool `json:"-"`
 }
 
 type colourRecipe struct {
@@ -1022,6 +1026,13 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		pp := patternParams{}
 		if p.Pattern != nil {
 			pp = *p.Pattern
+		}
+		if pp.Mode == entity.DesignPatternModeLabel {
+			words := run.Ask.String
+			if p.Colour != nil {
+				words += "\n" + p.Colour.Words
+			}
+			pp.LabelHasLogo = labelWordsNameALogo(words)
 		}
 		// СКОЛЬКО КАРТИНОК РЕАЛЬНО УЕЗЖАЕТ — из `attached`, а не из снимка: абзац свотча говорит
 		// модели либо «фактура — с картинки», либо «картинки нет, сделай гладкую ткань», и сказать

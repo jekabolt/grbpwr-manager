@@ -69,7 +69,7 @@ func patternCraft(p patternParams, pictures int) string {
 	// БИРКА — ТОЖЕ ПРЕДМЕТНЫЙ СНИМОК, но её картинка — логотип, который нужно воспроизвести, а
 	// hardwareCraft велит у референсов цвет не брать и исключает «любой логотип» — ровно обратное.
 	if p.Mode == entity.DesignPatternModeLabel {
-		return labelCraft(pictures)
+		return labelCraft(pictures, p.LabelHasLogo)
 	}
 	if p.Mode == entity.DesignPatternModeHardware {
 		return hardwareCraft(pictures)
@@ -230,11 +230,21 @@ func hardwareCraft(pictures int) string {
 	return b.String()
 }
 
+// labelLogoMarker — the client's convention: when a logo is attached it is the FIRST picture and
+// the run's words carry this marker (matched case-insensitively).
+const labelLogoMarker = "logo = picture 1"
+
+// labelWordsNameALogo — do the run's words carry labelLogoMarker?
+func labelWordsNameALogo(words string) bool {
+	return strings.Contains(strings.ToLower(words), labelLogoMarker)
+}
+
 // labelCraft — mode label: ONE product photograph of ONE garment label, flat, front view. Its
-// 0..1 attached picture is the brand's LOGO ARTWORK, reproduced exactly — the opposite of
-// hardwareCraft, whose references give shape only and whose exclusions drop any logo. «sewn at …»
-// in the words is context (where the label sits on the garment), never something to draw.
-func labelCraft(pictures int) string {
+// 0..MaxDesignHardwareReferences attached pictures are an optional LOGO (hasLogo: the FIRST picture,
+// reproduced exactly — the opposite of hardwareCraft, whose exclusions drop any logo) plus REFERENCE
+// labels that give construction and finish only, never their logo, text or colours. «sewn at …» in
+// the words is context (where the label sits on the garment), never something to draw.
+func labelCraft(pictures int, hasLogo bool) string {
 	var b strings.Builder
 	b.WriteString("garment label:\n" +
 		"Produce ONE square product photograph of a single garment LABEL as described in the words " +
@@ -256,12 +266,21 @@ func labelCraft(pictures int) string {
 	b.WriteString("Where the words say «sewn at …», that names where the label sits on the garment — " +
 		"CONTEXT ONLY: never draw the garment, the seam or any stitching into cloth; the picture is " +
 		"the label alone.")
-	if pictures > 0 {
-		b.WriteString(" The attached picture is the brand's LOGO ARTWORK: reproduce the mark exactly — " +
+	const reference = "take its construction, material, weave/print technique, finish, edge and " +
+		"fold from it — never copy its logo, text or colours."
+	switch {
+	case pictures > 0 && hasLogo:
+		b.WriteString(" The FIRST attached picture is the brand's LOGO ARTWORK: reproduce the mark exactly — " +
 			"its letterforms, proportions and spacing — as the label's artwork, executed in the label's " +
 			"technique (woven, printed, embossed, embroidered…). Add, drop, restyle or redraw nothing, " +
 			"take nothing of the picture's background, and render no text the words do not name.")
-	} else {
+		if pictures > 1 {
+			b.WriteString(" Every OTHER attached picture is a REFERENCE label: " + reference)
+		}
+	case pictures > 0:
+		b.WriteString(" Every attached picture is a REFERENCE label: " + reference +
+			" No logo is given: invent no wordmark, no monogram, no text the words do not name.")
+	default:
 		b.WriteString(" No logo is given: make a blank label carrying only what the words name — " +
 			"invent no wordmark, no monogram, no text.")
 	}

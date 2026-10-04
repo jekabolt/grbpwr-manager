@@ -1283,12 +1283,16 @@ func designRefuseUnworkableSources(kind, ask string, params *pb_common.DesignRun
 			}
 			// ЦВЕТ НЕОБЯЗАТЕЛЕН: у кнопки из рога или латунной молнии цвет — это материал, и
 			// слова вещи (params.colour.words / ask) его уже называют. Референсы — форма и материал.
-			// БИРКА БЕРЁТ ОДНУ КАРТИНКУ — СВОЙ ЛОГОТИП. Два логотипа модель слила бы в третий знак.
-			if mode == entity.DesignPatternModeLabel && sources > 1 {
+			// БИРКА БЕРЁТ 0..MaxDesignHardwareReferences КАРТИНОК: необязательный логотип (тогда он
+			// ПЕРВЫЙ, а слова несут маркер «logo = picture 1») и референсы бирок — конструкция и
+			// отделка, без их логотипа, текста и цвета.
+			if mode == entity.DesignPatternModeLabel && sources > entity.MaxDesignHardwareReferences {
 				return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTooManyReferences,
-					fmt.Sprintf("a label picture takes at most one picture — its logo artwork — and this "+
-						"run names %d: keep one picture in params.extra_input_media_ids, or none for a "+
-						"blank label. Nothing was reserved and nothing was charged", sources),
+					fmt.Sprintf("a label picture takes at most %d pictures — an optional logo first, then "+
+						"reference labels — and this run names %d: keep at most %d in "+
+						"params.extra_input_media_ids, or none for a blank label. Nothing was reserved and "+
+						"nothing was charged", entity.MaxDesignHardwareReferences, sources,
+						entity.MaxDesignHardwareReferences),
 					map[string]string{"named": strconv.Itoa(sources)})
 			}
 			if sources > entity.MaxDesignHardwareReferences {
