@@ -503,6 +503,20 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	var out entity.DesignPicture
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		// ПЕРЕЗАПИСЬ БЕРЁТ ЗАМКИ В ОБЩЕМ ПОРЯДКЕ (T28 v2 C2, locks.go): карточка → оригинал (его штампуют)
+		// → слоты верстака (один из них переедет) — до первого чтения, чтобы ни одна из этих строк не
+		// была прочитана под S и потом записана.
+		if req.ReplacePictureId > 0 {
+			if err := lockDesignCard(ctx, db, req.TechCardId); err != nil {
+				return err
+			}
+			if err := lockDesignPictures(ctx, db, req.TechCardId, req.ReplacePictureId); err != nil {
+				return err
+			}
+			if err := lockDesignBench(ctx, db, req.TechCardId); err != nil {
+				return err
+			}
+		}
 		// ─── 0. ПОВТОР ЖЕСТА (0370) — раньше всего остального, см. доку функции ───
 		if prior, ok, err := pictureByRequestKey(ctx, db, req.TechCardId, key); err != nil {
 			return err

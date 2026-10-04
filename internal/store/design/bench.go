@@ -71,6 +71,18 @@ func (s *Store) SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet)
 	var out entity.DesignBenchSlot
 	var mismatch *entity.DesignBenchSlot
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// ОБЩИЙ ПОРЯДОК ЗАМКОВ (T28 v2 C2, locks.go): карточка → плита (усыновление колорвея её пишет) →
+		// слоты верстака. Постановка встаёт в очередь с undo/redo и перезаписью той же карточки.
+		db := rep.DB()
+		if err := lockDesignCard(ctx, db, req.TechCardId); err != nil {
+			return err
+		}
+		if err := lockDesignPictures(ctx, db, req.TechCardId, req.PictureId); err != nil {
+			return err
+		}
+		if err := lockDesignBench(ctx, db, req.TechCardId); err != nil {
+			return err
+		}
 		slot, err := setBenchSlotTx(ctx, rep, req)
 		if err != nil {
 			// The refusal carries the slot's CURRENT state, plate included, so the client can

@@ -79,18 +79,33 @@ func (s *Store) editChainStep(ctx context.Context, req entity.DesignEditChainSte
 	if req.PictureId <= 0 || req.ExpectedCurrentId <= 0 || req.ExpectedTargetId <= 0 {
 		return nil, fmt.Errorf("%w: picture_id, expected_current_id and expected_target_id are required", entity.ErrDesignInvalidArgument)
 	}
+	// Карточка — вне транзакции (locks.go: tech_card_id кадра неизменен, а чтение внутри подняло бы замок).
+	card, err := cardOfPicture(ctx, s.DB, req.PictureId)
+	if err != nil {
+		return nil, err
+	}
 	var out entity.DesignEditChainResult
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		out = entity.DesignEditChainResult{}
 		db := rep.DB()
+		// ПОРЯДОК ЗАМКОВ (locks.go): карточка → звенья цепочек по id → слоты.
+		if err := lockDesignCard(ctx, db, card); err != nil {
+			return err
+		}
+		links, err := storeutil.QueryListNamed[entity.DesignChainLink](ctx, db,
+			designEditChainLinks+` ORDER BY id FOR UPDATE`, designEditChainParams([]int{card}))
+		if err != nil {
+			return fmt.Errorf("failed to lock the edit chains of tech card %d: %w", card, err)
+		}
+		if err := lockDesignBench(ctx, db, card); err != nil {
+			return err
+		}
 		pic, err := pictureByID(ctx, db, req.PictureId)
 		if err != nil {
 			return err
 		}
-		links, err := storeutil.QueryListNamed[entity.DesignChainLink](ctx, db,
-			designEditChainLinks+` FOR UPDATE`, designEditChainParams([]int{pic.TechCardId}))
-		if err != nil {
-			return fmt.Errorf("failed to lock the edit chain of design picture %d: %w", pic.Id, err)
+		if pic.TechCardId != card {
+			return fmt.Errorf("%w: design picture %d moved between tech cards", entity.ErrDesignStaleChain, pic.Id)
 		}
 		if !hasChainLink(links, pic.Id) {
 			// Кадр вне всякой цепочки (не флэттен и не заменён) — цепочка из него одного.
