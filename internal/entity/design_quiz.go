@@ -6,6 +6,7 @@ import "time"
 // Vocabularies are closed in Go (no ENUM, no CHECK — the design band rule).
 const (
 	DesignQuizCategoryDesign    = "design"
+	DesignQuizCategoryFit       = "fit"
 	DesignQuizCategoryDetails   = "details"
 	DesignQuizCategoryMaterials = "materials"
 	DesignQuizCategoryUse       = "use"
@@ -21,10 +22,10 @@ const (
 	DesignQuizPartWhole = "whole"
 )
 
-// IsDesignQuizCategory reports whether v is one of the five quiz categories.
+// IsDesignQuizCategory reports whether v is one of the six quiz categories.
 func IsDesignQuizCategory(v string) bool {
 	switch v {
-	case DesignQuizCategoryDesign, DesignQuizCategoryDetails, DesignQuizCategoryMaterials,
+	case DesignQuizCategoryDesign, DesignQuizCategoryFit, DesignQuizCategoryDetails, DesignQuizCategoryMaterials,
 		DesignQuizCategoryUse, DesignQuizCategoryFinish:
 		return true
 	}

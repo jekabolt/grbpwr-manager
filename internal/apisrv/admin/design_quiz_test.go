@@ -434,7 +434,7 @@ func TestDesignQuizResolvePart(t *testing.T) {
 
 func TestDesignQuizPromptPartsFirst(t *testing.T) {
 	p := designQuizUserPrompt(nil, nil, nil, "shirt")
-	if !strings.HasPrefix(p, "Garment family: shirt. Allowed part keys: whole, collar") {
+	if !strings.HasPrefix(p, "Garment family: shirt (checklist group: tops). Allowed part keys: whole, collar") {
 		t.Fatalf("family line must open the user turn: %q", p[:min(len(p), 80)])
 	}
 	if !strings.Contains(designQuizSystemPrompt, "- part: EXACTLY one key") {
@@ -458,5 +458,69 @@ func TestDesignQuizLabelsInPromptAndFacts(t *testing.T) {
 		Selected: []string{"neck"}}}}
 	if lines := designQuizDecisionLines(card); len(lines) != 1 || !strings.HasPrefix(lines[0], "- brand label — ") {
 		t.Fatalf("decided-facts line: %q", lines)
+	}
+}
+
+// Q09 (51-SYNTHESIS): fit is a sixth category end to end, the fit label never closes fit, and the
+// prompt carries the coverage line of the family's checklist group.
+func TestDesignQuizFitCategory(t *testing.T) {
+	card := &entity.TechCard{}
+	card.Fit.String, card.Fit.Valid = "oversized", true
+	jacket := designQuizUserPrompt(card, nil, nil, "jacket")
+	for _, want := range []string{"Fit label: oversized (the designer's intent", "Coverage for this run: walk the outerwear checklist.",
+		"Fit stays open unless the card above gives measurements"} {
+		if !strings.Contains(jacket, want) {
+			t.Errorf("jacket prompt lacks %q:\n%s", want, jacket)
+		}
+	}
+	if strings.Contains(jacket, "\nFit: ") || strings.Contains(jacket, "rise and waist position") {
+		t.Errorf("jacket prompt: bare fit fact or bottoms coverage:\n%s", jacket)
+	}
+	if p := designQuizUserPrompt(nil, nil, nil, "trousers"); !strings.Contains(p, "walk the bottoms checklist. Fit, rise and waist position included") {
+		t.Errorf("trousers coverage:\n%s", p)
+	}
+	if p := designQuizUserPrompt(nil, nil, nil, "bag"); !strings.Contains(p, "Sizing or dimensions stay open") {
+		t.Errorf("bag coverage:\n%s", p)
+	}
+	if p := designQuizUserPrompt(nil, nil, nil, "object"); strings.Contains(p, "stays open") || strings.Contains(p, "stay open") {
+		t.Errorf("objects carry no fit sentence:\n%s", p)
+	}
+	if !strings.HasPrefix(designQuizUserPrompt(nil, nil, nil, ""), "Garment family: unknown (checklist group: unknown).") {
+		t.Error("unknown family line")
+	}
+	for fam := range designQuizParts {
+		if designQuizFamilyGroup(fam) == "unknown" {
+			t.Errorf("family %q has no checklist group", fam)
+		}
+	}
+	if strings.Contains(designQuizUserPrompt(&entity.TechCard{}, nil, nil, "tee"), "Base sample size") {
+		t.Error("no base size, no line (A11)")
+	}
+
+	raw := `{"questions":[` + quizQ("chest_room", "fit", "whole", "How much room at the chest?", "close", "relaxed") + `,` +
+		quizQ("size", "size", "whole", "Size?", "S", "M") + `]}`
+	qs, ok := parseDesignQuiz(raw, "jacket", nil)
+	if !ok || len(qs) != 1 || qs[0].Category != "fit" {
+		t.Fatalf("parse keeps fit, drops unknown: ok=%v %+v", ok, qs)
+	}
+	if _, ve := validateDesignQuizAnswers([]*pb_admin.DesignQuizAnswer{{Question: &pb_admin.DesignQuizQuestion{
+		Id: "chest_room", Category: "fit", Question: "Room?", Options: []string{"close", "relaxed"}}}}); ve != nil {
+		t.Fatalf("fit answer refused: %v", ve)
+	}
+	lines := designQuizDecisionLines(&entity.TechCard{QuizAnswers: []entity.TechCardQuizAnswer{{Question: entity.DesignQuizQuestion{
+		ID: "chest_room", Category: "fit", Part: "whole", Question: "How much room at the chest?"}, Selected: []string{"relaxed"}}}})
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "- fit — ") {
+		t.Fatalf("fit decision line: %q", lines)
+	}
+	for _, want := range []string{"- part: EXACTLY one key", "A one-word fit label", "FIT BASIS", "never invent a measurement range",
+		"candidate points, not a quota", `"category":"design|fit|details|materials|use|finish"`} {
+		if !strings.Contains(designQuizSystemPrompt, want) {
+			t.Errorf("system prompt lacks %q", want)
+		}
+	}
+	for _, banned := range []string{"8 to 12", "★"} {
+		if strings.Contains(designQuizSystemPrompt, banned) {
+			t.Errorf("system prompt keeps %q (A3)", banned)
+		}
 	}
 }
