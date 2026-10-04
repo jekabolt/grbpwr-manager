@@ -2624,6 +2624,14 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	//
 	// ⚠ И ЭТО ТА ЖЕ ФУНКЦИЯ, ЧТО СОБИРАЕТ ПРОМПТ, А НЕ ЕЁ ПЕРЕСКАЗ. Второе мнение о том, «что
 	// считается непустой доской», разошлось бы с первым в первый же раз, когда правят одно из двух.
+	// T39: THE PROSE BRANCH WRITES THE DESCRIPTION FROM THE PICTURES, so a board that sends none —
+	// empty, words only, or tiles whose media rows are gone — is refused before StartRun and money.
+	// It stands BEFORE the generic "nothing to read", so the client always gets the one reason it
+	// branches on (board_has_no_pictures). The construction branch keeps answering a words-only board.
+	if !req.GetConstruction() && len(attachedIDs) == 0 {
+		return nil, designRefusal(codes.FailedPrecondition, designReasonBoardHasNoPictures,
+			designBoardHasNoPicturesMsg, nil)
+	}
 	if strings.TrimSpace(designBoardPromptBody(mood, attachedIDs)) == "" {
 		return nil, status.Error(codes.FailedPrecondition,
 			"there is nothing to read: put a picture on the moodboard or write the description")
@@ -2665,15 +2673,6 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 		return nil, status.Errorf(codes.InvalidArgument,
 			"the moodboard encodes to %d bytes; the ceiling is %d — shorten the board's note or its callouts",
 			len(inputsJSON), designMaxInputsBytes)
-	}
-
-	// T39: THE PROSE BRANCH WRITES THE DESCRIPTION FROM THE PICTURES, so a board that sends none —
-	// words only, or tiles whose media rows are gone — is refused before StartRun and money. It
-	// stands after the snapshot ceiling, so an oversized board is told that first. The construction
-	// branch keeps answering a words-only board.
-	if !req.GetConstruction() && len(attachedIDs) == 0 {
-		return nil, designRefusal(codes.FailedPrecondition, designReasonBoardHasNoPictures,
-			designBoardHasNoPicturesMsg, nil)
 	}
 
 	// ЦЕНА СЧИТАЕТСЯ ПО ЧИСЛУ УЕХАВШИХ КАРТИНОК И ПО ФОРМЕ ОТВЕТА, а не по роду прогона: см.

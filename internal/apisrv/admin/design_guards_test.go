@@ -495,6 +495,9 @@ func TestDraftIdeaRefusesAMoodboardOverTheSnapshotCeiling(t *testing.T) {
 	_, err := srv.DraftDesignIdea(designGuardCtx(), &pb_admin.DraftDesignIdeaRequest{
 		TechCardId:      designGuardCardID,
 		ClientRequestId: "22222222-2222-2222-2222-222222222222",
+		// T39: the prose branch refuses a picture-less board first; the ceiling is the
+		// structured branch's question here (the check itself is shared).
+		Construction: true,
 	})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))

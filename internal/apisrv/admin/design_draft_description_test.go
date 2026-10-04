@@ -193,3 +193,31 @@ func TestDraftDescriptionRefusesABoardWithoutPictures(t *testing.T) {
 	require.Equal(t, designReasonBoardHasNoPictures, md["reason"])
 	require.Contains(t, err.Error(), "put a picture on the moodboard first")
 }
+
+// AN EMPTY BOARD GETS THE SAME REASON: the no-pictures refusal stands before the generic
+// "nothing to read", so the client branches on one reason for every picture-less board.
+func TestDraftDescriptionRefusesAnEmptyBoardWithTheNoPicturesReason(t *testing.T) {
+	card := &entity.TechCard{}
+	card.Name = "empty board"
+
+	repo := mocks.NewMockRepository(t)
+	cards := mocks.NewMockTechCards(t)
+	design := mocks.NewMockDesign(t)
+	media := mocks.NewMockMedia(t)
+	repo.EXPECT().TechCards().Return(cards).Maybe()
+	repo.EXPECT().Design().Return(design).Maybe()
+	repo.EXPECT().Media().Return(media).Maybe()
+	designStubNoDisplayOnly(design)
+	media.EXPECT().GetMediaByIds(mock.Anything, mock.Anything).Return(map[int]entity.MediaFull{}, nil).Maybe()
+	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Once()
+	srv := &Server{
+		repo: repo, designGenerationEnabled: true,
+		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
+	}
+
+	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	require.Error(t, err)
+	code, md := errorReason(t, err)
+	require.Equal(t, codes.FailedPrecondition, code)
+	require.Equal(t, designReasonBoardHasNoPictures, md["reason"])
+}

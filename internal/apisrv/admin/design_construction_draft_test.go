@@ -1173,7 +1173,7 @@ func TestDraftDesignIdeaRefusesABoardWhoseWordsTravelWithPicturesThatDidNot(t *t
 		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
 	}
 
-	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	_, err := srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest()) // T39: the prose branch answers board_has_no_pictures first
 	require.Error(t, err, "промпт из двух строк шапки — платный вызов ни о чём")
 	code, _ := errorReason(t, err)
 	require.Equal(t, codes.FailedPrecondition, code)
