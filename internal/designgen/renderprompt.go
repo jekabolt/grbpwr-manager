@@ -385,6 +385,11 @@ func renderFabricSection(f fabricStated, cloths []fabricUse, maps []colourMap, v
 		if len(cloths) == 1 && clothIsAPattern(cloths[0]) {
 			paras = append(paras, renderPatternClothParagraph(cloths[0], attached))
 		}
+		// A MOCKUP (T13) IS NOT A DIVISION, so unlike the map it does speak here: its scale is
+		// still the one thing the model copies from it. Absent on every run without one.
+		if s := renderMockupSentence(maps, attached); s != "" {
+			paras = append(paras, s)
+		}
 		return paras
 	}
 	lines := renderClothLines(cloths, maps, views, attached)
@@ -555,7 +560,51 @@ func renderColourMapSentence(maps []colourMap, views []string, attached []refCap
 		b.WriteString(" The " + joinWords(bare) + " drawings carry no colour map: on those views, " +
 			"divide the cloths as the mapped views imply.")
 	}
+
+	if s := renderMockupSentence(maps, attached); s != "" {
+		b.WriteString(" " + s)
+	}
 	return b.String()
+}
+
+// renderMockupSentence names the cloth mockups (T13) BY THEIR IMAGE NUMBERS. Empty when none went
+// out, so a run with no mockup composes the prompt it composed before, byte for byte. The split of
+// authority is the measured one (paint-parts t13 A/B): the motif's SCALE from the mockup, the
+// construction from the drawings, material and drape from the cloth pictures.
+func renderMockupSentence(maps []colourMap, attached []refCaption) string {
+	var mockups []string
+	for _, m := range colourMapsSent(maps, attached) {
+		if img := mockupNumberOf(attached, m.MockupMediaID); img > 0 {
+			mockups = append(mockups, strconv.Itoa(img))
+		}
+	}
+	switch {
+	case len(mockups) == 1:
+		return "Image " + mockups[0] + " is a cloth mockup of the same drawing: take the " +
+			"scale of each cloth's motif from it; take the construction from the drawing and the " +
+			"material and drape from the cloth pictures."
+	case len(mockups) > 1:
+		return "Images " + joinWords(mockups) + " are cloth mockups of the same drawings: " +
+			"take the scale of each cloth's motif from them; take the construction from the drawings " +
+			"and the material and drape from the cloth pictures."
+	}
+	return ""
+}
+
+// mockupNumberOf — номер картинки, уехавшей МАКЕТОМ карты (T13). 0 = такого макета в запросе нет.
+func mockupNumberOf(attached []refCaption, mediaID int) int {
+	if mediaID <= 0 {
+		return 0
+	}
+	for i, rc := range attached {
+		if rc.MediaID == mediaID {
+			if !rc.IsMockup {
+				return 0
+			}
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // joinWords is «a, b and c» — the way a sentence lists things, not the way a machine does. A

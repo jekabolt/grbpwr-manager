@@ -867,6 +867,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designColourMapMediaIDs(params.GetColour())...); err != nil {
 		return nil, err
 	}
+	// МАКЕТ КАРТЫ (T13) уезжает поставщику картинкой сразу за своей картой — граница та же.
+	if err := s.designRefuseForeignMedia(ctx, cardID, "params.colour.colour_maps.mockup_media_id",
+		designColourMapMockupMediaIDs(params.GetColour())...); err != nil {
+		return nil, err
+	}
 	// ФОРМА КАРТ — У ГОВОРЯЩЕГО, А НЕ У УНАСЛЕДОВАННОГО СНИМКА, и это та же лестница, что у адреса
 	// полки строкой выше: словарь видов законно растёт, а параметры родителя заморожены, поэтому
 	// проверка унаследованного значения сделала бы старый прогон неперезапускаемым навсегда.
@@ -2110,6 +2115,19 @@ func designColourMapMediaIDs(c *pb_common.DesignColourRecipe) []int {
 	return out
 }
 
+// designColourMapMockupMediaIDs — макеты тканей при картах (T13): необязательны, 0 = макета нет.
+// Снимок цепляет каждый сразу за его картой, поэтому они — такие же картинки прогона, как сами
+// карты: чужой номер, счёт картинок в резерве и «одна картинка — одна роль» касаются их тоже.
+func designColourMapMockupMediaIDs(c *pb_common.DesignColourRecipe) []int {
+	out := make([]int, 0, len(c.GetColourMaps()))
+	for _, m := range c.GetColourMaps() {
+		if id := int(m.GetMockupMediaId()); id > 0 {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // designRefuseMalformedColourMaps — ФОРМА КАРТ ЦВЕТА У ДВЕРИ ПРОГОНА.
 //
 // ⚠ ПОЧЕМУ ЭТО ПРОВЕРЯЕТСЯ ДВАЖДЫ — ЗДЕСЬ И В ПЛАНЕ. Это НЕ повтор: план и прогон — две
@@ -2178,6 +2196,11 @@ func designRefuseMalformedColourMaps(spoken *pb_common.DesignRunParams) error {
 					"reaches the model as «Images N and N»", i, m.GetMediaId(), at)
 		}
 		pictures[int(m.GetMediaId())] = i
+		if m.GetMockupMediaId() < 0 {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d.mockup_media_id %d — a mockup is a picture, or 0 for none",
+				i, m.GetMockupMediaId())
+		}
 		for j, sw := range m.GetPalette() {
 			if !entity.IsDesignColourMapHex(sw.GetHex()) {
 				return status.Errorf(codes.InvalidArgument,
@@ -2186,6 +2209,28 @@ func designRefuseMalformedColourMaps(spoken *pb_common.DesignRunParams) error {
 			}
 			painted[sw.GetHex()] = struct{}{}
 		}
+	}
+	// ОДНА КАРТИНКА — ОДНА РОЛЬ, И ДЛЯ МАКЕТА ТОЖЕ (T13). Макет, совпавший со своей или чужой
+	// картой, снимок не прицепит вовсе (картинка уже в списке под подписью карты), а совпавший с
+	// чужим макетом — прицепит один раз за первой картой; оба случая — промпт, называющий
+	// картинку макетом, которой модель макетом не видела.
+	mockups := make(map[int]int)
+	for i, m := range maps {
+		id := int(m.GetMockupMediaId())
+		if id <= 0 {
+			continue
+		}
+		if at, clash := pictures[id]; clash {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d.mockup_media_id %d is the picture of colour_maps.%d: "+
+					"a mockup is its own picture, drawn from the map — never the map itself", i, id, at)
+		}
+		if at, dup := mockups[id]; dup {
+			return status.Errorf(codes.InvalidArgument,
+				"params.colour.colour_maps.%d.mockup_media_id %d is already the mockup of "+
+					"colour_maps.%d: one mockup belongs to one map", i, id, at)
+		}
+		mockups[id] = i
 	}
 	claimed := make(map[string]int)
 	for i, f := range spoken.GetColour().GetFabrics() {
@@ -2263,6 +2308,24 @@ func designRefuseColourMapAlsoAnInput(params *pb_common.DesignRunParams, inputs 
 				"upload — check that colour_maps.%d.media_id is not the flat it was painted over, "+
 				"which belongs in base_media_id. Nothing was reserved and nothing was charged",
 				ref.ID, ref.Where, m.GetView(), i, i),
+			map[string]string{
+				"media_id": strconv.Itoa(ref.ID),
+				"also":     ref.Where,
+				"view":     m.GetView(),
+			})
+	}
+	// МАКЕТ (T13) — тот же сторож и тот же довод: макет, который на самом деле плита, референс или
+	// лоскут ткани, уехал бы под чужой подписью, а промпт назвал бы его макетом.
+	for i, m := range maps {
+		ref, clash := byID[int(m.GetMockupMediaId())]
+		if !clash {
+			continue
+		}
+		return designRefusal(codes.InvalidArgument, "colour_map_mockup_is_also_an_input",
+			fmt.Sprintf("media %d is named BOTH as %s and as the cloth mockup of the %s colour map "+
+				"(params.colour.colour_maps.%d.mockup_media_id): a mockup is its own picture, drawn "+
+				"from the map. Nothing was reserved and nothing was charged",
+				ref.ID, ref.Where, m.GetView(), i),
 			map[string]string{
 				"media_id": strconv.Itoa(ref.ID),
 				"also":     ref.Where,

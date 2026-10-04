@@ -681,6 +681,20 @@ message DesignColourMap {
   // a claim that the file is gone. The distinction is DesignEditLayer.raster_deleted's, verbatim:
   // a failed lookup must not report a deletion that may not have happened.
   bool deleted = 6;
+  // FK media(id), OPTIONAL (0 = none): THE CLOTH MOCKUP OF THIS MAP — the same flat of the same
+  // `view` over the same base, each labelled part filled flat with its cloth's tile at the cloth's
+  // TRUE repeat. Read on the frozen recipe (DesignColourRecipe.colour_maps) only; the colour plan
+  // does not store it.
+  //
+  // ⚠ IT SHOWS WHERE AND HOW BIG, NEVER HOW IT LOOKS. Measured (paint-parts T13 A/B): handed a
+  // mockup, the image model copies the motif's SCALE and colours from it — so its scale must be
+  // the cloth's real repeat — while placement was already right from the map alone. It is attached
+  // right after its map with a caption that forbids its flat, unlit look.
+  //
+  // It belongs to its map, so it travels HERE rather than as an extra input; the run door holds it
+  // to the same rules as the map: card-owned media, never also a map, a plate, a reference or a
+  // cloth of the same run.
+  int32 mockup_media_id = 7;
 }
 
 // DesignColourSwatch is ONE label of a colour map: a colour somebody deliberately chose, and how

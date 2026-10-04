@@ -328,7 +328,7 @@ func designRecolorCallImages(params *pb_common.DesignRunParams) int {
 
 // designImageCallImages — an UPPER BOUND on the images one call of this run carries, for the
 // reserve. Freeform and recolour are exact (the arithmetic above); a flat / render / pattern call
-// carries at most every media id of the run plus its colour maps, and never more than the engine
+// carries at most every media id of the run plus its colour maps and their mockups, and never more than the engine
 // takes — the provider client refuses anything above that before the call.
 func designImageCallImages(kind string, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot, maxRefs int) int {
 	return designImageCallImagesWithArtworks(kind, params, inputs, nil, maxRefs)
@@ -346,7 +346,8 @@ func designImageCallImagesWithArtworks(kind string, params *pb_common.DesignRunP
 		n = designRecolorCallImages(params)
 	default:
 		n = len(designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)) +
-			len(designColourMapMediaIDs(params.GetColour()))
+			len(designColourMapMediaIDs(params.GetColour())) +
+			len(designColourMapMockupMediaIDs(params.GetColour()))
 	}
 	if maxRefs > 0 && n > maxRefs {
 		n = maxRefs

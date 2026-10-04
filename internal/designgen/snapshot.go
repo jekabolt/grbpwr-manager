@@ -224,6 +224,10 @@ type colourRecipe struct {
 type colourMap struct {
 	MediaID int    `json:"media_id"`
 	View    string `json:"view"`
+	// MockupMediaID — the CLOTH MOCKUP of this map (T13), 0 = none: the same flat with each
+	// labelled part filled with its cloth's tile at the cloth's true repeat. Attached right after
+	// its map and only when the map itself went out as a map — a mockup belongs to its map.
+	MockupMediaID int `json:"mockup_media_id"`
 }
 
 // fabricUse is ONE cloth of the submission: what it looks like and WHICH PART OF THE GARMENT it is
@@ -477,6 +481,9 @@ type refCaption struct {
 	// Наличие media в списке ответом НЕ является: плита, названная картой, в списке есть — под
 	// подписью плиты.
 	IsColourMap bool
+	// IsMockup — эта картинка уехала МАКЕТОМ ТКАНЕЙ своей карты (T13); renderColourMapSentence
+	// называет её номер только тогда, когда она в списке именно этой ролью.
+	IsMockup bool
 	// IsWindow — ЭТА КАРТИНКА И ЕСТЬ ОКНО ГЕНЕРАЦИИ: кроп области, приехавший ВМЕСТО полного кадра.
 	//
 	// ⚠ ФЛАГ, А НЕ ДОГАДКА ПО ПОДПИСИ ИЛИ ПО ПОЗИЦИИ. Ремесло обязано назвать модели НОМЕР этой
@@ -682,6 +689,24 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			if at < len(out) {
 				out[at].IsColourMap = true
 			}
+			// ─── ITS CLOTH MOCKUP (T13), RIGHT AFTER IT ───
+			//
+			// ⚠ MEASURED, AND THE CAPTION FOLLOWS THE MEASUREMENT (paint-parts t13 A/B): handed a
+			// mockup, gpt-image-2 copies the motif's SCALE and colours from it, while placement is
+			// already right from the map alone. So the caption says what it is good for — where,
+			// and how big — and forbids the one thing it must never lend: its flat, unlit look.
+			//
+			// Only behind a map that went out AS a map, and only a picture not already in the list:
+			// one picture, one role — the rule the map itself keeps above.
+			if at < len(out) && m.MockupMediaID > 0 {
+				if _, taken := seen[m.MockupMediaID]; !taken {
+					mk := len(out)
+					add(m.MockupMediaID, colourMapMockupCaption(m.View), m.View)
+					if mk < len(out) {
+						out[mk].IsMockup = true
+					}
+				}
+			}
 		}
 	}
 	// ─── THE ARTWORKS (70-ROUND7 B7) ──────────────────────────────────────────────────────────
@@ -822,6 +847,15 @@ func colourMapCaption(view string) string {
 	return "colour map of the " + viewWord(view) + " flat — the same drawing with the labelled " +
 		"parts flooded in flat colours; parts left white carry no label; those colours LABEL which " +
 		"cloth covers which part and are not the garment's own colours, which the cloth list states"
+}
+
+// colourMapMockupCaption says what a cloth mockup IS and what it may be read for (T13). The
+// wording is the measured one: WHERE and SCALE yes, its flat unlit look never.
+func colourMapMockupCaption(view string) string {
+	return "cloth mockup of the " + viewWord(view) + " flat — each labelled part filled flat with " +
+		"its cloth's tile at the cloth's true repeat; it shows WHERE each cloth goes and the " +
+		"motif's SCALE and colours; it has no folds, no light and no volume — never copy its flat, " +
+		"unlit look"
 }
 
 // viewWord spells a view key as a bare adjective — «front», «left side» — where a caption needs it
