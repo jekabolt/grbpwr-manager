@@ -554,7 +554,24 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 // calloutSpecFromPb проверяет и канонизирует назначение выноски (0388): пусто или JSON-объект не
 // длиннее entity.MaxCalloutSpecBytes. Канонизация — ключи по алфавиту, чтобы один и тот же spec,
 // присланный в другом порядке ключей, не двигал подпись DESIGN.
-func calloutSpecFromPb(path, raw string) (string, error) {
+//
+// ПУСТАЯ СТРОКА — «НЕ СКАЗАНО» (omitted = true, хранимое переносится), "{}" — ЯВНАЯ ОЧИСТКА:
+// пустой объект хранится NULL и хешируется как обычная выноска. Новый клиент шлёт объект всегда.
+func calloutSpecFromPb(path, raw string) (spec string, omitted bool, err error) {
+	if raw == "" {
+		return "", true, nil
+	}
+	spec, err = calloutSpecCanonical(path, raw)
+	if err != nil {
+		return "", false, err
+	}
+	if spec == "{}" {
+		spec = ""
+	}
+	return spec, false, nil
+}
+
+func calloutSpecCanonical(path, raw string) (string, error) {
 	if len(raw) > entity.MaxCalloutSpecBytes {
 		return "", entity.NewFieldViolation(path+".spec", "too_long", "",
 			fmt.Sprintf("a callout spec is at most %d bytes", entity.MaxCalloutSpecBytes))
@@ -648,6 +665,12 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		// Счётчик позиции двигается на КАЖДОЙ входящей строке с этим ключом, а не только на тех,
 		// что просят перенос: иначе вторая просящая получила бы содержание ПЕРВОЙ хранимой.
 		prev, ok := pos.Next(tc.Callouts[i].CalloutKey())
+		// Назначение (0388) переносится и БЕЗ KindOmitted: бандл до 0388 шлёт вид, но не spec, и
+		// его сохранение не должно стирать назначение. Явная очистка приходит как "{}".
+		if ok && tc.Callouts[i].SpecOmitted {
+			tc.Callouts[i].Spec = prev.Spec
+			tc.Callouts[i].SpecOmitted = false
+		}
 		if !tc.Callouts[i].KindOmitted {
 			continue
 		}
@@ -667,6 +690,7 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		// Назначение (0388) — та же группа: вкладка, не знающая вида, не знает и spec, и молча
 		// превратить узел крупно или шов обратно в простую точку значило бы стереть указание цеху.
 		tc.Callouts[i].Spec = prev.Spec
+		tc.Callouts[i].SpecOmitted = false
 	}
 }
 

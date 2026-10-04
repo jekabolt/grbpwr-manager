@@ -67,16 +67,41 @@ func TestSpecCarriedWithOmittedKind(t *testing.T) {
 	require.Equal(t, `{"t":"detail"}`, in.Callouts[0].Spec.String)
 	require.Equal(t, entity.AnnotationCapsArrow, in.Callouts[0].Caps)
 
-	// Явный вид — значит клиент сказал всё, и пустой spec остаётся пустым.
-	in2 := specDigestFixture()
-	CarryOmittedCalloutGeometry(stored, in2)
-	require.False(t, in2.Callouts[0].Spec.Valid)
+}
+
+// Бандл до 0388 шлёт вид, но spec — пустой строкой: хранимое назначение обязано пережить сохранение.
+func TestSpecCarriedWhenKindPresentAndSpecEmpty(t *testing.T) {
+	stored := &entity.TechCard{TechCardInsert: *specDigestFixture()}
+	stored.Callouts[0].Spec = ns(`{"t":"detail"}`)
+	_, omitted, err := calloutSpecFromPb("callouts[0]", "")
+	require.NoError(t, err)
+	require.True(t, omitted)
+	in := specDigestFixture()
+	in.Callouts[0].SpecOmitted = omitted
+	CarryOmittedCalloutGeometry(stored, in)
+	require.Equal(t, `{"t":"detail"}`, in.Callouts[0].Spec.String)
+}
+
+// "{}" — явная очистка: хранится NULL, не переносится, и хешируется как карточка без spec.
+func TestSpecEmptyObjectClears(t *testing.T) {
+	spec, omitted, err := calloutSpecFromPb("callouts[0]", ` { } `)
+	require.NoError(t, err)
+	require.False(t, omitted)
+	require.Equal(t, "", spec)
+
+	stored := &entity.TechCard{TechCardInsert: *specDigestFixture()}
+	stored.Callouts[0].Spec = ns(`{"t":"detail"}`)
+	in := specDigestFixture()
+	in.Callouts[0].Spec = nullStringFromPb(spec)
+	CarryOmittedCalloutGeometry(stored, in)
+	require.False(t, in.Callouts[0].Spec.Valid)
+	require.Equal(t, pre0388SpecFixtureDesignDigest, TechCardSectionDigests(in)[entity.SignoffDesign])
 }
 
 func TestSpecCanonicalizedOnWrite(t *testing.T) {
-	a, err := calloutSpecFromPb("callouts[0]", `{"b":1,"a":2}`)
+	a, _, err := calloutSpecFromPb("callouts[0]", `{"b":1,"a":2}`)
 	require.NoError(t, err)
-	b, err := calloutSpecFromPb("callouts[0]", ` { "a" : 2 , "b" : 1 } `)
+	b, _, err := calloutSpecFromPb("callouts[0]", ` { "a" : 2 , "b" : 1 } `)
 	require.NoError(t, err)
 	require.Equal(t, a, b)
 	require.Equal(t, `{"a":2,"b":1}`, a)
@@ -86,23 +111,24 @@ func TestSpecCanonicalizedOnWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, a, r)
 
-	empty, err := calloutSpecFromPb("callouts[0]", "")
+	empty, omitted, err := calloutSpecFromPb("callouts[0]", "")
 	require.NoError(t, err)
 	require.Equal(t, "", empty)
+	require.True(t, omitted)
 }
 
 func TestSpecRefusesNonObject(t *testing.T) {
 	for _, bad := range []string{`[1,2]`, `"note"`, `5`, `null`, `{"t":`, strings.Repeat(" ", entity.MaxCalloutSpecBytes) + `{}`} {
-		_, err := calloutSpecFromPb("callouts[0]", bad)
+		_, _, err := calloutSpecFromPb("callouts[0]", bad)
 		require.Error(t, err, "spec %q must be refused", bad)
 	}
-	_, err := calloutSpecFromPb("callouts[0]", `{"t":"`+strings.Repeat("x", entity.MaxCalloutSpecBytes)+`"}`)
+	_, _, err := calloutSpecFromPb("callouts[0]", `{"t":"`+strings.Repeat("x", entity.MaxCalloutSpecBytes)+`"}`)
 	require.Error(t, err)
 }
 
 func TestSpecRoundTripsThroughTheWire(t *testing.T) {
 	pb := &pb_common.TechCardCallout{Number: 1, Spec: `{"t":"note","b":1}`}
-	spec, err := calloutSpecFromPb("callouts[0]", pb.Spec)
+	spec, _, err := calloutSpecFromPb("callouts[0]", pb.Spec)
 	require.NoError(t, err)
 	require.Equal(t, `{"b":1,"t":"note"}`, spec)
 }
