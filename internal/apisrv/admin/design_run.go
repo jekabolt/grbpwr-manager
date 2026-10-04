@@ -1092,6 +1092,21 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 			slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
 	}
+	// ─── АРТВОРКИ НА ФЛЭТАХ (70-ROUND7 B7) ───
+	//
+	// Рендер замораживает разметку артворков своего колорвея на отправляемых флэтах копией в снимок
+	// входов (design_run_artworks.go). Реран везёт копию родителя: «то же самое» знает только история.
+	if kind == entity.DesignRunKindRender {
+		arts := designParentArtworks(parent)
+		if parent == nil {
+			arts = designFreezeArtworks(kind, params, card, band, inputs)
+		}
+		if inputsJSON, err = designSpliceArtworks(inputsJSON, arts); err != nil {
+			slog.Default().ErrorContext(ctx, "design run: the artworks did not encode",
+				slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
+		}
+	}
 	if len(inputsJSON) > designMaxInputsBytes {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"the input snapshot encodes to %d bytes; the ceiling is %d",

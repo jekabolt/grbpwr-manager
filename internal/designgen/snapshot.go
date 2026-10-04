@@ -318,6 +318,27 @@ type runInputs struct {
 	Fit         string      `json:"fit"`
 	Refs        []inputRef  `json:"refs"`
 	Slots       []inputSlot `json:"slots"`
+	// Artworks — артворки, размещённые на флэтах верстака, которые рендер замораживает сам
+	// (сервер, design_run_artworks.go; в DesignInputSnapshot этого ключа нет). Пусто у каждого
+	// прогона до 70-ROUND7 и у всякого не-рендера.
+	Artworks []artworkUse `json:"artworks"`
+}
+
+// artworkUse — ОДИН размещённый артворк: его картинка, флэт, на котором он стоит, и четыре угла
+// места (TL, TR, BR, BL) в долях кадра этого флэта.
+type artworkUse struct {
+	AssetID     int             `json:"asset_id"`
+	Name        string          `json:"name"`
+	MediaID     int             `json:"media_id"`
+	View        string          `json:"view"`
+	FlatMediaID int             `json:"flat_media_id"`
+	Corners     []artworkCorner `json:"corners"`
+	Note        string          `json:"note"`
+}
+
+type artworkCorner struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type inputRef struct {
@@ -463,6 +484,9 @@ type refCaption struct {
 	// по тексту подписи значило бы завести второе чтение того же факта, которое разъедется при
 	// первой правке слов. Ставится ровно там же, где картинка кладётся в список.
 	IsWindow bool
+	// IsArtwork — эта картинка уехала АРТВОРКОМ рендера (70-ROUND7 B7): абзац ARTWORK называет её
+	// номер только тогда, когда она в списке именно этой ролью.
+	IsArtwork bool
 }
 
 // referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
@@ -657,6 +681,26 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			add(m.MediaID, colourMapCaption(m.View), m.View)
 			if at < len(out) {
 				out[at].IsColourMap = true
+			}
+		}
+	}
+	// ─── THE ARTWORKS (70-ROUND7 B7) ──────────────────────────────────────────────────────────
+	//
+	// A RENDER ONLY, AND ONLY WHAT THE SERVER FROZE. Like a colour map, an artwork travels with its
+	// own caption — «additional reference image» would read a print photographed on white as a
+	// garment — and a picture already in the list under another role is not re-labelled.
+	if kind == entity.DesignRunKindRender {
+		for _, a := range in.Artworks {
+			if a.MediaID <= 0 {
+				continue
+			}
+			if _, taken := seen[a.MediaID]; taken {
+				continue
+			}
+			at := len(out)
+			add(a.MediaID, artworkCaption(a), "")
+			if at < len(out) {
+				out[at].IsArtwork = true
 			}
 		}
 	}
@@ -1020,7 +1064,7 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	case run.Kind == entity.DesignRunKindFlat:
 		write("", flatCraft(p, detailNames, len(attached)))
 	case renderIsTheKind(run.Kind):
-		write("", renderCraft(p, detailNames, attached))
+		write("", renderCraftWith(p, detailNames, attached, in.Artworks))
 	// ПЕРЕКРАС И ПАТТЕРН — ЕЩЁ ДВА РЕМЕСЛА, И КАЖДОЕ ПРОТИВОРЕЧИТ ОБОИМ СОСЕДНИМ. Рендер СОЧИНЯЕТ
 	// сцену, перекрас обязан её НЕ ТРОГАТЬ; флэт рисует чёрную линию на белом, паттерн — сплошное
 	// поле цвета без единого поля вокруг. Поэтому абзац ровно один на прогон, как и у первых двух:

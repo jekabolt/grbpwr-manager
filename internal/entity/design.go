@@ -2587,3 +2587,35 @@ type DesignRunFail struct {
 	Retryable   bool
 	NextAttempt time.Time
 }
+
+// DesignArtworkCutMarker — the client's marker on design_asset.note of an artwork asset whose media
+// was already swapped to its cut-out PNG (70-ROUND7: the client chains the cutout run).
+const DesignArtworkCutMarker = " · cut"
+
+// DesignArtworkTechniqueWords — an artwork's note/placement words as they may reach a render prompt:
+// the trailing cut marker and the run-word markers («artwork = picture 1», «logo = picture 1») are
+// bookkeeping, never a description, so they are dropped together with the separators they leave.
+func DesignArtworkTechniqueWords(s string) string {
+	s = strings.TrimSpace(s)
+	for strings.HasSuffix(s, strings.TrimSpace(DesignArtworkCutMarker)) {
+		s = strings.TrimSpace(strings.TrimSuffix(s, strings.TrimSpace(DesignArtworkCutMarker)))
+		s = strings.TrimSpace(strings.TrimRight(s, "·"))
+	}
+	for _, marker := range []string{"artwork = picture 1", "logo = picture 1"} {
+		for {
+			i := strings.Index(strings.ToLower(s), marker)
+			if i < 0 {
+				break
+			}
+			s = s[:i] + s[i+len(marker):]
+		}
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || r == '\n' })
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(strings.Trim(strings.TrimSpace(p), "·")); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, ", ")
+}
