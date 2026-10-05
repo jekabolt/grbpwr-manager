@@ -1235,7 +1235,7 @@ func listAssetPlacements(ctx context.Context, db dependency.DB, cardID int) ([]e
 // loadPlacementPictures reads the pictures the marks sit on, by id, in ONE query, with their media
 // resolved through the same funnel every outgoing picture takes (resolveMedia). Placements are few
 // (bounded by the shelves), so this is a short IN list. A picture row that is gone simply has no key.
-func loadPlacementPictures(ctx context.Context, rep dependency.Repository, pls []entity.DesignAssetPlacement) (map[int]entity.DesignPicture, error) {
+func loadPlacementPictures(ctx context.Context, rep dependency.Repository, cardID int, pls []entity.DesignAssetPlacement) (map[int]entity.DesignPicture, error) {
 	out := map[int]entity.DesignPicture{}
 	ids := make([]int, 0, len(pls))
 	seen := map[int]struct{}{}
@@ -1253,8 +1253,8 @@ func loadPlacementPictures(ctx context.Context, rep dependency.Repository, pls [
 		return out, nil
 	}
 	rows, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, rep.DB(), `
-		SELECT * FROM design_picture WHERE id IN (:ids)`,
-		map[string]any{"ids": ids})
+		SELECT * FROM design_picture WHERE id IN (:ids) AND tech_card_id = :card`,
+		map[string]any{"ids": ids, "card": cardID})
 	if err != nil {
 		return nil, fmt.Errorf("failed to load the pictures of design asset placements: %w", err)
 	}
