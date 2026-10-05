@@ -15,7 +15,7 @@ import (
 // from sliding in quietly.
 const (
 	FormatName            = "grbpwr-techcard-archive"
-	FormatVersion         = "1.1" // MAJOR.MINOR, see FormatMajor / FormatMinor
+	FormatVersion         = "1.2" // MAJOR.MINOR, see FormatMajor / FormatMinor
 	MoneyPolicyStrippedV1 = "stripped-v1"
 
 	// FormatMajor breaks parsing: an archive of another MAJOR is refused whole. FormatMinor is
@@ -26,8 +26,11 @@ const (
 	// 1.1 (T45, 27.09) adds a colourway's own identity to colorways.json: its SKU colour token,
 	// its name with per-language translations and its palette (FORMAT.md §5.3). A 1.0 archive
 	// reads as before — its color_code was the token then.
+	//
+	// 1.2 (62-DEEP-FIXES D2, 05.10) adds design_quiz.json — the moodboard quiz answers (§5.3a). An
+	// older server lists it as unknown_entry and imports the card without them.
 	FormatMajor = 1
-	FormatMinor = 1
+	FormatMinor = 2
 
 	// ArchiveNameTimeLayout formats the timestamp in the archive's own file name,
 	// techcard-<style_number>-<yyyymmdd-hhmm>.zip.
@@ -38,11 +41,12 @@ const (
 // concatenation and matched by prefix without a join step; `file` fields inside the indexes carry
 // exactly these root-relative names (FORMAT.md §1.1).
 const (
-	FileManifest  = "manifest.json"
-	FileCard      = "card.json"
-	FileSizeChart = "sizechart.json"
-	FileAssembly  = "assembly.json"
-	FileColorways = "colorways.json"
+	FileManifest   = "manifest.json"
+	FileCard       = "card.json"
+	FileSizeChart  = "sizechart.json"
+	FileAssembly   = "assembly.json"
+	FileColorways  = "colorways.json"
+	FileDesignQuiz = "design_quiz.json"
 
 	DirMaterials = "materials/"
 	DirMedia     = "media/"
@@ -347,6 +351,29 @@ type AssemblyLink struct {
 	PrintNote    string  `json:"print_note,omitempty"`
 	PositionNote string  `json:"position_note,omitempty"`
 	Active       bool    `json:"active"`
+}
+
+// DesignQuizAnswer is one element of design_quiz.json (1.2, FORMAT.md §5.3a): one moodboard quiz
+// question with the designer's answer, as stored on the card. Validated on import by the same rules
+// as a live save; a file that does not validate is dropped whole and reported.
+type DesignQuizAnswer struct {
+	ID              string   `json:"id"`
+	Category        string   `json:"category"`
+	Part            string   `json:"part"`
+	Family          string   `json:"family,omitempty"`
+	View            string   `json:"view"`
+	Kind            string   `json:"kind"`
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	Contradicts     []bool   `json:"contradicts,omitempty"`
+	VisualEvidence  string   `json:"visual_evidence,omitempty"`
+	ClarifyQuestion string   `json:"clarify_question,omitempty"`
+	ClarifyOptions  []string `json:"clarify_options,omitempty"`
+	Selected        []string `json:"selected"`
+	FreeText        string   `json:"free_text,omitempty"`
+	Skipped         bool     `json:"skipped,omitempty"`
+	// AnsweredAt is RFC 3339 UTC; "" when unknown.
+	AnsweredAt string `json:"answered_at,omitempty"`
 }
 
 // ColorwayPayload is one element of colorways.json. Colourways are PRODUCTS and an import does not

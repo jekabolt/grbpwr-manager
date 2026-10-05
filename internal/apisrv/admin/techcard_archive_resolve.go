@@ -176,7 +176,9 @@ type resolvedTechCardImport struct {
 	MarkerPlan    []tcimpMarkerPlan
 	SizeChartPlan entity.StyleSizeChart
 	AssemblyPlan  []entity.StyleAssemblyInsert
-	LabelPlan     []tcimpLabelLink
+	// DesignQuizPlan — design_quiz.json validated (62-DEEP-FIXES D2); nil when absent or dropped.
+	DesignQuizPlan []entity.TechCardQuizAnswer
+	LabelPlan      []tcimpLabelLink
 	// GarmentLabelBomKeys / PackagingItemBomKeys (labels rework, 0386): position in
 	// Insert.GarmentLabels / Insert.PackagingItems → the BOM line key their source bom_item_id named.
 	// Stamped onto the entity (BomLineKey) right after conversion; the store resolves the key against
@@ -418,6 +420,9 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 		return nil, err
 	}
 	if err := r.resolveColorways(); err != nil {
+		return nil, err
+	}
+	if err := r.resolveDesignQuiz(); err != nil {
 		return nil, err
 	}
 	if err := r.resolveMarkers(); err != nil {

@@ -1,4 +1,4 @@
-# GRBPWR tech-card archive — format v1.1
+# GRBPWR tech-card archive — format v1.2
 
 The single source of truth for the tech-card ZIP: what an export writes and what an import is
 allowed to assume. Both sides read THIS file; `format.go` is its Go transcription and
@@ -24,6 +24,7 @@ techcard-<style_number>-<yyyymmdd-hhmm>.zip
 ├── sizechart.json     # мерки + грейд-правило, размеры и мерки ИМЕНАМИ (§5.1)
 ├── assembly.json      # [{component_style_number, size_name?, qty, print_note, position_note, active}]
 ├── colorways.json     # [{color_code, base_sku, recipe[], piece_materials[]}] — без денег
+├── design_quiz.json   # [{id, category, part, view, kind, question, options, selected, …}] (1.2, §5.3a)
 ├── materials/index.json  # паспорта материалов (code, name, supplier, supplier_ref, composition,
 │                         #   spec, unit, class, CTI-атрибуты, cutting_coefficient) — БЕЗ цен
 ├── media/index.json      # [{ref: media_id из card.json, file, sha256, kind, caption, w, h}]
@@ -157,12 +158,13 @@ top-level JSON files.
 
 ## 3. Version and compatibility
 
-`format_version` is `"MAJOR.MINOR"`; the current one is `"1.1"`.
+`format_version` is `"MAJOR.MINOR"`; the current one is `"1.2"`.
 
 | version | what it added |
 | --- | --- |
 | `1.0` | the format |
 | `1.1` | T45 (27.09): a colourway's own identity in `colorways.json` — `sku_color_token`, `name`, `name_i18n`, `colours` (§5.3) |
+| `1.2` | 05.10: `design_quiz.json` — the moodboard quiz answers (§5.3a) |
 
 * **MAJOR mismatch = refusal of the whole import**, with words saying the archive is newer or
   older than this server. A MAJOR bump is what renaming a field, changing its meaning, or moving a
@@ -496,6 +498,16 @@ lost with nothing put in their place:
 * `norm_marker_id` does not travel: the stamp points at a marker of the source instance, and a
   norm whose marker cannot be re-sewn degrades honestly (`norm_marker_lost`) instead of pointing
   at a stranger.
+
+### 5.3a `design_quiz.json` (1.2)
+
+The moodboard quiz answers stored on the card — the designer's decisions about the garment, in
+display order: `{id, category, part, family?, view, kind, question, options, contradicts?,
+clarify_question?, clarify_options?, selected, free_text?, skipped?, answered_at?}`. Written only
+when the card has answers. The import validates the list by the rules of a live save; a list that
+does not validate is dropped whole (`archive_row_invalid` on `card`) and the card imports without
+it. Imported answers count as fresh (no staleness fingerprint travels: the source's category ids are
+not the target's).
 
 ### 5.4 `materials/index.json`
 

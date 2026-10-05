@@ -361,7 +361,14 @@ func designProjection(tc *entity.TechCardInsert) any {
 		// DESIGN такой карточки не совпадал сам с собой — подпись рождалась протухшей.
 		details = append(details, []any{d.Key.String, d.Text.String, digestList(d.MediaIds)})
 	}
-	return []any{tc.Concept.String, media, callouts, details}
+	out := []any{tc.Concept.String, media, callouts, details}
+	// THE QUIZ TAIL (62-DEEP-FIXES D2): the moodboard quiz answers are design decisions, so a changed
+	// answer must stale a DESIGN sign-off. A tail opened ONLY by a card that has answers: a card
+	// without them hashes byte-identically to before (no mass sign-off flip at deploy).
+	if tc.DesignQuizDigest != "" {
+		out = append(out, tc.DesignQuizDigest)
+	}
+	return out
 }
 
 // constructionRow — головной кортеж секции: то, что карточка объявляет умолчаниями пошива.

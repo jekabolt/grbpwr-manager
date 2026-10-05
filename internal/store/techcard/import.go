@@ -266,6 +266,11 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng, losses); err != nil {
 			return err
 		}
+		// The moodboard quiz answers (62-DEEP-FIXES D2), already validated by the resolver. Fingerprint
+		// "" (fresh): the source base's category ids and dictionaries are not this base's.
+		if err := insertDesignQuizRows(ctx, db, newID, in.DesignQuizAnswers); err != nil {
+			return err
+		}
 		// A new card links no products of its own (colourways are created separately and an import
 		// creates none), so this is a no-op today — kept because AddTechCard and the season clone
 		// both run it, and «the create paths agree» is worth more than one saved statement.

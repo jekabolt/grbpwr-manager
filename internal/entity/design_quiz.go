@@ -1,6 +1,9 @@
 package entity
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -68,6 +71,47 @@ type TechCardQuizAnswer struct {
 	FreeText   string
 	Skipped    bool
 	AnsweredAt time.Time
+	// Fingerprint — the card's structured-input fingerprint when this answer was last saved (0392,
+	// 62-DEEP-FIXES D1). "" = saved before 0392 or imported: counts as fresh.
+	Fingerprint string
+	// Stale — derived on read, never stored: Fingerprint != "" and differs from the card's current
+	// fingerprint (the card's structured facts changed since the answer was given).
+	Stale bool
+}
+
+// DesignQuizIsStale — the one staleness rule: an answer saved under a fingerprint that is no longer
+// the card's. An empty fingerprint on either side is fresh (pre-0392 rows; a current fingerprint
+// that could not be computed).
+func DesignQuizIsStale(answerFingerprint, current string) bool {
+	return answerFingerprint != "" && current != "" && answerFingerprint != current
+}
+
+// MarkDesignQuizStale sets Stale on every answer against the card's current fingerprint.
+func MarkDesignQuizStale(answers []TechCardQuizAnswer, current string) {
+	for i := range answers {
+		answers[i].Stale = DesignQuizIsStale(answers[i].Fingerprint, current)
+	}
+}
+
+// DesignQuizAnswersDigest — the token the DESIGN sign-off digest appends for the quiz (62-DEEP-FIXES
+// D2): sha256 over (question id, selected, free text, skipped) of every answer, in display order.
+// "" when the card has none, so a card without answers keeps a byte-identical DESIGN digest.
+// answered_at and the fingerprint are deliberately out: re-confirming the same answer is not an edit.
+func DesignQuizAnswersDigest(answers []TechCardQuizAnswer) string {
+	if len(answers) == 0 {
+		return ""
+	}
+	rows := make([][]any, 0, len(answers))
+	for _, a := range answers {
+		sel := a.Selected
+		if sel == nil {
+			sel = []string{}
+		}
+		rows = append(rows, []any{a.Question.ID, sel, a.FreeText, a.Skipped})
+	}
+	b, _ := json.Marshal(rows)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // ErrDesignQuizTooManyAnswers — a save would leave more answers on the card than the cap allows.

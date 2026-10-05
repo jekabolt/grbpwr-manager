@@ -278,7 +278,7 @@ func TestDesignQuizDecisionsReachBothDrafts(t *testing.T) {
 			FreeText: "spring, light rain"},
 		{Question: entity.DesignQuizQuestion{ID: "lining", Category: "materials", Part: "lining", Question: "Lining?"}, Skipped: true},
 	}}
-	lines := designQuizDecisionLines(card)
+	lines := designQuizDecisionLines(card, false)
 	want := []string{
 		"- collar — How does the collar stand? → stiff stand, 3 cm",
 		`- use — Season? → own words: "spring, light rain"`,
@@ -457,7 +457,7 @@ func TestDesignQuizLabelsInPromptAndFacts(t *testing.T) {
 	card := &entity.TechCard{QuizAnswers: []entity.TechCardQuizAnswer{{Question: entity.DesignQuizQuestion{
 		ID: "l", Category: "finish", Part: "lbl_brand", Question: "Where does it sit?", Options: []string{"neck", "hem"}},
 		Selected: []string{"neck"}}}}
-	if lines := designQuizDecisionLines(card); len(lines) != 1 || !strings.HasPrefix(lines[0], "- brand label — ") {
+	if lines := designQuizDecisionLines(card, false); len(lines) != 1 || !strings.HasPrefix(lines[0], "- brand label — ") {
 		t.Fatalf("decided-facts line: %q", lines)
 	}
 }
@@ -509,7 +509,7 @@ func TestDesignQuizFitCategory(t *testing.T) {
 		t.Fatalf("fit answer refused: %v", ve)
 	}
 	lines := designQuizDecisionLines(&entity.TechCard{QuizAnswers: []entity.TechCardQuizAnswer{{Question: entity.DesignQuizQuestion{
-		ID: "chest_room", Category: "fit", Part: "whole", Question: "How much room at the chest?"}, Selected: []string{"relaxed"}}}})
+		ID: "chest_room", Category: "fit", Part: "whole", Question: "How much room at the chest?"}, Selected: []string{"relaxed"}}}}, false)
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "- fit — ") {
 		t.Fatalf("fit decision line: %q", lines)
 	}

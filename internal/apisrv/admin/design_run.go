@@ -2683,6 +2683,8 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot load the tech card")
 	}
+	// 62-DEEP-FIXES D1: quiz answers given before the card changed go to both drafts as unconfirmed.
+	s.designQuizMarkStale(ctx, card)
 	// ─── КАРТИНКИ ДОСКИ: ПОТОЛОК ДО ДЕНЕГ, ПОТОМ АДРЕСА ───
 	//
 	// ПОТОЛОК СТОИТ ЗДЕСЬ, А НЕ У ТРАНСПОРТА, И ЭТО НЕ ДУБЛИРОВАНИЕ. Число одно и то же —
@@ -2789,11 +2791,16 @@ func (s *Server) DraftDesignIdea(ctx context.Context, req *pb_admin.DraftDesignI
 	// empty, words only, or tiles whose media rows are gone — is refused before StartRun and money.
 	// It stands BEFORE the generic "nothing to read", so the client always gets the one reason it
 	// branches on (board_has_no_pictures). The construction branch keeps answering a words-only board.
-	if !req.GetConstruction() && len(attachedIDs) == 0 {
+	//
+	// 62-DEEP-FIXES D3: A QUIZ IS SOMETHING TO WRITE FROM. A card with ≥ 1 non-skipped quiz answer is
+	// drafted without pictures — the same prompt, text only (designDescriptionCardFacts carries the
+	// decisions) — so "apply to description" works for a quiz asked from the concept alone.
+	quizOnly := !req.GetConstruction() && designQuizHasDecisions(card)
+	if !req.GetConstruction() && len(attachedIDs) == 0 && !quizOnly {
 		return nil, designRefusal(codes.FailedPrecondition, designReasonBoardHasNoPictures,
 			designBoardHasNoPicturesMsg, nil)
 	}
-	if strings.TrimSpace(designBoardPromptBody(mood, attachedIDs)) == "" {
+	if strings.TrimSpace(designBoardPromptBody(mood, attachedIDs)) == "" && !quizOnly {
 		return nil, status.Error(codes.FailedPrecondition,
 			"there is nothing to read: put a picture on the moodboard or write the description")
 	}
@@ -4249,6 +4256,8 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 // чей отпечаток не сходится с собственными параметрами строки, врал бы дивайдеру истории.
 func (s *Server) designRunInputs(ctx context.Context, src designInputSources, parent *entity.DesignRun) (*pb_common.DesignInputSnapshot, string, error) {
 	if parent == nil {
+		// 62-DEEP-FIXES D1: the frozen garment note carries stale quiz answers as unconfirmed.
+		s.designQuizMarkStale(ctx, src.Card)
 		snap, err := designAssembleInputs(src)
 		if err != nil {
 			return nil, "", err

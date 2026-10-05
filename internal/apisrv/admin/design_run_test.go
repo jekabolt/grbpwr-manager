@@ -981,6 +981,8 @@ func newDraftRigWithCard(
 	}).Maybe()
 	designStubNoDisplayOnly(design)
 	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
+	// 62 D1: a card with quiz answers reads its size chart once for the staleness fingerprint.
+	cards.EXPECT().GetStyleSizeChart(mock.Anything, mock.Anything).Return(entity.StyleSizeChart{}, nil).Maybe()
 	// КАРТИНКИ ДОСКИ РАЗРЕШАЮТСЯ В АДРЕСА: с этого места черновик идеи их ЧИТАЕТ (решение
 	// владельца «только в генерации»), поэтому стенд обязан уметь их отдать.
 	media := mocks.NewMockMedia(t)

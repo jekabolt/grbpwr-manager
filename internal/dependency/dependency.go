@@ -1197,7 +1197,7 @@ type (
 		// keeps every other stored row; entity.ErrDesignQuizTooManyAnswers when the result would
 		// exceed maxStored; sql.ErrNoRows = no such card.
 		ListDesignQuizAnswers(ctx context.Context, techCardID int) ([]entity.TechCardQuizAnswer, error)
-		SaveDesignQuizAnswers(ctx context.Context, techCardID int, upserts []entity.TechCardQuizAnswer, forget []string, maxStored int) ([]entity.TechCardQuizAnswer, error)
+		SaveDesignQuizAnswers(ctx context.Context, techCardID int, upserts []entity.TechCardQuizAnswer, forget []string, maxStored int, actor string) ([]entity.TechCardQuizAnswer, error)
 		// CreateTechCardImportRow records ONE uploaded import archive (Ф2.5, migration 0336): where
 		// its bytes went in the bucket, what its manifest said, and the colourway payload the much
 		// later "create colourways from the archive" step needs after the bucket object has expired.

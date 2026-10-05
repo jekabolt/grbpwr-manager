@@ -3266,8 +3266,10 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"};
   }
 
-  // SaveDesignQuizAnswers REPLACES the card's whole answer list with the one sent (single writer:
-  // the client always sends the full list). Returns the stored list.
+  // SaveDesignQuizAnswers MERGES the sent answers into the card's stored list by question id: a sent
+  // row is upserted (stamped with the card's current fingerprint, so it reads fresh), a row sent EMPTY
+  // (no selection, no free text, not skipped) forgets that id, every stored row not sent stays.
+  // `stale` on a sent row is ignored. Returns the stored list.
   rpc SaveDesignQuizAnswers(SaveDesignQuizAnswersRequest) returns (SaveDesignQuizAnswersResponse) {
     option (google.api.http) = {
       put: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"
@@ -13362,12 +13364,12 @@ message DeleteDesignAssetPlacementResponse {}
 message DraftDesignIdeaRequest {
   int32 tech_card_id = 1;
   string client_request_id = 2; // the same idempotency as every other paid call
-  // ASK FOR THE STRUCTURED ANSWER instead of the three-section prose.
+  // ASK FOR THE STRUCTURED ANSWER instead of the prose description.
   //
-  // ABSENT (false) IS THE OLD BEHAVIOUR, BYTE FOR BYTE: the same system prompt, the same user
-  // prompt, no json mode, no token ceiling, and `output_text` still holds the prose the client
-  // splits by its three titles. A client that predates this field keeps working unchanged, which
-  // is the entire reason this is a flag on the existing verb and not a second verb.
+  // ABSENT (false): no json mode, no token ceiling; `output_text` holds the concept & construction
+  // description itself (T39), written from the board pictures, the card facts and the moodboard quiz
+  // decisions. It needs ≥ 1 attached board picture OR ≥ 1 non-skipped quiz answer (a quiz-only card
+  // is drafted text-only, 62-DEEP-FIXES D3); otherwise FailedPrecondition board_has_no_pictures.
   //
   // WHY NOT A NEW `kind`. Run kinds are a vocabulary every client maps — the bench, the history,
   // the artifacts panel each hold their own table of them — so a new member would ripple through
@@ -13426,6 +13428,10 @@ message DesignQuizAnswer {
   string free_text = 3;
   bool skipped = 4;
   google.protobuf.Timestamp answered_at = 5; // server-set
+  // stale — OUTPUT ONLY, ignored on save (62-DEEP-FIXES D1): the card's structured facts (category,
+  // fit, gender, details, BOM names/compositions, base-size measurements) changed since this answer
+  // was saved. Downstream prompts treat it as unconfirmed; re-saving the same answer makes it fresh.
+  bool stale = 6;
 }
 
 message GetDesignQuizAnswersRequest {
@@ -13436,7 +13442,7 @@ message GetDesignQuizAnswersResponse {
   repeated DesignQuizAnswer answers = 1;
 }
 
-// SaveDesignQuizAnswersRequest carries the FULL list; the stored list is replaced by it.
+// SaveDesignQuizAnswersRequest carries the rows to upsert (or forget, when sent empty); see the rpc.
 message SaveDesignQuizAnswersRequest {
   int32 tech_card_id = 1;
   repeated DesignQuizAnswer answers = 2;

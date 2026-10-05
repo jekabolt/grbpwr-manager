@@ -105,10 +105,15 @@ func TestSaveDesignQuizAnswersHandlerUpsertsAndForgets(t *testing.T) {
 		repo := mocks.NewMockRepository(t)
 		cards := mocks.NewMockTechCards(t)
 		repo.EXPECT().TechCards().Return(cards)
+		card := &entity.TechCard{Id: 7}
+		cards.EXPECT().GetTechCardById(mock.Anything, 7).Return(card, nil)
+		cards.EXPECT().GetStyleSizeChart(mock.Anything, 7).Return(entity.StyleSizeChart{}, nil)
+		fp := designQuizCardFingerprint(card, entity.StyleSizeChart{})
 		cards.EXPECT().SaveDesignQuizAnswers(mock.Anything, 7,
 			mock.MatchedBy(func(up []entity.TechCardQuizAnswer) bool {
-				return len(up) == 1 && up[0].Question.ID == "collar_stand"
-			}), []string{"gone"}, designQuizMaxAnswers).
+				// 62 D1: the upsert carries the card's current fingerprint (a save is fresh).
+				return len(up) == 1 && up[0].Question.ID == "collar_stand" && up[0].Fingerprint == fp
+			}), []string{"gone"}, designQuizMaxAnswers, mock.Anything).
 			Return([]entity.TechCardQuizAnswer{storedQuiz("kept", time.Now()), storedQuiz("collar_stand", time.Now(), "soft")}, storeErr)
 		return (&Server{repo: repo}).SaveDesignQuizAnswers(context.Background(), req)
 	}
@@ -267,7 +272,7 @@ func TestDesignQuizDecisionsReachImageRuns(t *testing.T) {
 	snap, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Params: params})
 	require.NoError(t, err)
 	note := snap.GetGarmentNote()
-	require.True(t, strings.HasPrefix(note, "olive field jacket\n\ndecided with the designer:\n"), note)
+	require.True(t, strings.HasPrefix(note, "olive field jacket\n\ndecided with the designer (current card fields outrank these when they conflict):\n"), note)
 	for _, want := range []string{"- hem — Where does the hem sit? → mid-thigh", "- button — How many front buttons? → 6",
 		`- brand label — Brand label placement? → own words: "inside back neck"`} {
 		require.Contains(t, note, want)
@@ -278,7 +283,7 @@ func TestDesignQuizDecisionsReachImageRuns(t *testing.T) {
 	card.GarmentDescription = sql.NullString{}
 	snap, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Params: params})
 	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(snap.GetGarmentNote(), "decided with the designer:\n"))
+	require.True(t, strings.HasPrefix(snap.GetGarmentNote(), "decided with the designer ("))
 	require.Empty(t, designQuizImageBlock(&entity.TechCard{}, ""))
 
 	// WORDS that already carry a line verbatim (case-insensitive) do not get it twice.

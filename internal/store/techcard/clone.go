@@ -119,5 +119,21 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 		ORDER BY src.id`, params); err != nil {
 		return fmt.Errorf("copy cloned style assembly: %w", err)
 	}
+	// MOODBOARD QUIZ ANSWERS (62-DEEP-FIXES D2): the designer's decisions about the garment travel
+	// with the style into the next season, rows as they are (fingerprint included: the clone carries
+	// the same structured facts, so a still-true answer stays fresh and a changed card stales it).
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_design_quiz_answer
+			(tech_card_id, question_id, category, part, family, part_view, kind, question,
+			 options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
+			 selected_json, free_text, skipped, card_fingerprint, display_order, answered_at)
+		SELECT :target, question_id, category, part, family, part_view, kind, question,
+		       options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
+		       selected_json, free_text, skipped, card_fingerprint, display_order, answered_at
+		FROM tech_card_design_quiz_answer
+		WHERE tech_card_id = :source
+		ORDER BY display_order, id`, params); err != nil {
+		return fmt.Errorf("copy cloned style quiz answers: %w", err)
+	}
 	return nil
 }

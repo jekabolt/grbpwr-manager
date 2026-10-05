@@ -683,6 +683,8 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 	} else {
 		measurements = designQuizBaseMeasurements(card, chart, designQuizMeasurementNames(), designQuizSizeName)
+		// D1: the same chart read marks the saved answers stale against the current card.
+		entity.MarkDesignQuizStale(card.QuizAnswers, designQuizCardFingerprint(card, chart))
 	}
 	user := designQuizUserPrompt(card, mood, attachedIDs, family, measurements)
 	if len(user) > designQuizMaxPromptBytes {
@@ -831,7 +833,7 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 	if card != nil && len(card.QuizAnswers) > 0 {
 		// W-B4: an answered point is closed; a skipped one was only deferred ("not now") and may come
 		// back while it is still open.
-		b.WriteString("\nAlready answered in earlier quizzes — an answered point is closed, do not ask it again; a deferred one may be asked again if it is still open and matters; check the answers against the pictures:\n")
+		b.WriteString("\nAlready answered in earlier quizzes — an answered point is closed, do not ask it again; a deferred one may be asked again if it is still open and matters; an answer marked TO RE-CONFIRM was given before the card changed — if it now conflicts with a card field above, you may ask ONE re-confirmation question about it (at most one in the whole quiz); check the answers against the pictures:\n")
 		for i, a := range card.QuizAnswers {
 			if i >= designQuizMaxAnsweredLines {
 				b.WriteString("- (+" + strconv.Itoa(len(card.QuizAnswers)-i) + " more answered, not listed)\n")
@@ -995,31 +997,9 @@ func designQuizSizeName(id int) string {
 // base sample size, else the grade rule's base, else the only size the chart carries. Bounded by
 // count and bytes with an honest tail; a cell whose measurement has no name is left out.
 func designQuizBaseMeasurements(card *entity.TechCard, chart entity.StyleSizeChart, names map[int]string, sizeName func(int) string) string {
-	if card == nil || len(chart.Cells) == 0 {
+	base := designQuizBaseSizeOf(card, chart)
+	if base == 0 {
 		return ""
-	}
-	has := func(size int) bool {
-		for _, c := range chart.Cells {
-			if c.SizeID == size {
-				return true
-			}
-		}
-		return false
-	}
-	base := 0
-	switch {
-	case card.BaseSampleSizeId.Valid && has(int(card.BaseSampleSizeId.Int32)):
-		base = int(card.BaseSampleSizeId.Int32)
-	case chart.GradeBaseSizeID > 0 && has(chart.GradeBaseSizeID):
-		base = chart.GradeBaseSizeID
-	default:
-		only := chart.Cells[0].SizeID
-		for _, c := range chart.Cells {
-			if c.SizeID != only {
-				return ""
-			}
-		}
-		base = only
 	}
 	var items []string
 	for _, c := range chart.Cells {
@@ -1079,6 +1059,9 @@ func designQuizAnsweredLine(a entity.TechCardQuizAnswer) string {
 		return line + "deferred by the designer — may ask again if still open"
 	}
 	if ans := designQuizAnswerText(a); ans != "" {
+		if a.Stale {
+			return line + ans + " (TO RE-CONFIRM: the card changed since this answer)"
+		}
 		return line + ans
 	}
 	return line + "no answer"
@@ -1098,15 +1081,16 @@ func designQuizAnswerText(a entity.TechCardQuizAnswer) string {
 	return strings.Join(parts, "; ")
 }
 
-// designQuizDecisionLines — the quiz answers as fixed facts for both drafts (description and
-// construction). Skipped and empty answers are omitted. "" when there is nothing decided.
-func designQuizDecisionLines(card *entity.TechCard) []string {
+// designQuizDecisionLines — the quiz answers as facts for both drafts (description and construction)
+// and the image runs. Skipped and empty answers are omitted. With stale=false the FRESH answers, with
+// stale=true the STALE ones (62-DEEP-FIXES D1: the card changed since they were given).
+func designQuizDecisionLines(card *entity.TechCard, stale bool) []string {
 	if card == nil {
 		return nil
 	}
 	var out []string
 	for _, a := range card.QuizAnswers {
-		if a.Skipped {
+		if a.Skipped || a.Stale != stale {
 			continue
 		}
 		ans := designQuizAnswerText(a)
@@ -1136,27 +1120,39 @@ func designQuizPartLabel(part string) string {
 	return strings.ReplaceAll(strings.TrimPrefix(part, "hw_"), "_", " ")
 }
 
-// designQuizDecisionsHeader — the line both drafts print above the decisions.
-const designQuizDecisionsHeader = "- decided with the designer in the quiz — treat as fixed facts:\n"
+// designQuizDecisionsHeader / designQuizStaleHeader — the lines both drafts print above the fresh
+// and the stale decisions (62 D1: current card fields outrank the answers; stale ones are unconfirmed).
+const (
+	designQuizDecisionsHeader = "- decided with the designer in the quiz — treat as fixed facts; current card fields (details, BOM, measurements) outrank these answers when they conflict:\n"
+	designQuizStaleHeader     = "- earlier quiz answers — the card changed since; unconfirmed, current card facts win:\n"
+)
 
-// designQuizDecisionsBlock — the header plus the decision lines, bounded like the card's own lists
-// (rows, runes per line, a byte budget of its own) with an honest tail. "" when nothing is decided.
+// designQuizDecisionsBlock — the fresh decisions under their header, then the stale ones under
+// theirs, bounded like the card's own lists (rows, runes per line, ONE byte budget for both) with an
+// honest tail. "" when nothing is decided.
 func designQuizDecisionsBlock(card *entity.TechCard) string {
-	lines := designQuizDecisionLines(card)
-	if len(lines) == 0 {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString(designQuizDecisionsHeader)
 	budget := designConstructionMaxAlreadyBytes
-	for i, l := range lines {
-		l = "  " + aiBoundedText(strings.TrimPrefix(l, "- "), 2*designConstructionMaxAlreadyLineRunes) + "\n"
-		if i >= designQuizMaxAnsweredLines || len(l) > budget {
-			b.WriteString("  (+" + strconv.Itoa(len(lines)-i) + " more decisions, not listed)\n")
-			break
+	rows := 0
+	for _, part := range []struct {
+		head  string
+		stale bool
+	}{{designQuizDecisionsHeader, false}, {designQuizStaleHeader, true}} {
+		lines := designQuizDecisionLines(card, part.stale)
+		if len(lines) == 0 {
+			continue
 		}
-		budget -= len(l)
-		b.WriteString(l)
+		b.WriteString(part.head)
+		for i, l := range lines {
+			l = "  " + aiBoundedText(strings.TrimPrefix(l, "- "), 2*designConstructionMaxAlreadyLineRunes) + "\n"
+			if rows >= designQuizMaxAnsweredLines || len(l) > budget {
+				b.WriteString("  (+" + strconv.Itoa(len(lines)-i) + " more decisions, not listed)\n")
+				break
+			}
+			budget -= len(l)
+			rows++
+			b.WriteString(l)
+		}
 	}
 	return b.String()
 }
@@ -1165,32 +1161,45 @@ func designQuizDecisionsBlock(card *entity.TechCard) string {
 const designQuizImageMaxBytes = 1536
 
 // designQuizImageBlock — the quiz decisions for an image run's frozen garment note (W-B2): the same
-// question-qualified lines as the drafts (skipped omitted, hw_/lbl_ humanised), headed
-// "decided with the designer:", bounded to designQuizImageMaxBytes with an honest tail. A line the
-// note already carries word for word (WORDS written from the same lines) is not repeated. "" when
-// nothing is decided.
+// question-qualified lines as the drafts (skipped omitted, hw_/lbl_ humanised), fresh ones headed
+// "decided with the designer …", stale ones (62 D1) under "earlier quiz answers …", bounded together
+// to designQuizImageMaxBytes with an honest tail. A line the note already carries word for word
+// (WORDS written from the same lines) is not repeated. "" when nothing is decided.
 func designQuizImageBlock(card *entity.TechCard, note string) string {
-	lines := designQuizDecisionLines(card)
-	if len(lines) == 0 {
-		return ""
-	}
 	have := strings.ToLower(note)
-	const head = "decided with the designer:\n"
 	var b strings.Builder
-	b.WriteString(head)
-	for i, l := range lines {
-		l = aiBoundedText(l, 2*designConstructionMaxAlreadyLineRunes)
-		if strings.Contains(have, strings.ToLower(strings.TrimPrefix(l, "- "))) {
-			continue
-		}
-		if b.Len()+len(l)+1 > designQuizImageMaxBytes-32 {
-			b.WriteString("(+" + strconv.Itoa(len(lines)-i) + " more decisions, not listed)\n")
+	full := false
+	for _, part := range []struct {
+		head  string
+		stale bool
+	}{
+		{"decided with the designer (current card fields outrank these when they conflict):\n", false},
+		{"earlier quiz answers — the card changed since; unconfirmed, current card facts win:\n", true},
+	} {
+		if full {
 			break
 		}
-		b.WriteString(l + "\n")
-	}
-	if b.Len() == len(head) {
-		return ""
+		var sec strings.Builder
+		lines := designQuizDecisionLines(card, part.stale)
+		for i, l := range lines {
+			l = aiBoundedText(l, 2*designConstructionMaxAlreadyLineRunes)
+			if strings.Contains(have, strings.ToLower(strings.TrimPrefix(l, "- "))) {
+				continue
+			}
+			if sec.Len() == 0 {
+				if b.Len() > 0 {
+					sec.WriteString("\n")
+				}
+				sec.WriteString(part.head)
+			}
+			if b.Len()+sec.Len()+len(l)+1 > designQuizImageMaxBytes-32 {
+				sec.WriteString("(+" + strconv.Itoa(len(lines)-i) + " more decisions, not listed)\n")
+				full = true
+				break
+			}
+			sec.WriteString(l + "\n")
+		}
+		b.WriteString(sec.String())
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -1344,7 +1353,9 @@ func (st designQuizParseStats) unusable() bool {
 }
 
 // parseDesignQuizCounted is parseDesignQuiz plus its stats. W-B4: only ANSWERED saved rows close a
-// point — a skipped one was deferred and its id or text may come back.
+// point — a skipped one was deferred and its id or text may come back. 62 D1: a STALE answered row
+// (the card changed since) may come back ONCE in the whole list — the one re-confirmation question
+// the prompt allows; a second repeat of a stale row is dropped as a repeat.
 func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, designQuizParseStats, bool) {
 	var st designQuizParseStats
 	items, ok := designQuizExtract(raw)
@@ -1354,13 +1365,21 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 	st.raw = len(items)
 	savedIDs := map[string]bool{}
 	savedText := map[string]bool{}
+	staleIDs := map[string]bool{}
+	staleText := map[string]bool{}
 	for _, a := range saved {
 		if a.Skipped {
+			continue
+		}
+		if a.Stale {
+			staleIDs[a.Question.ID] = true
+			staleText[strings.ToLower(designOneLine(a.Question.Question))] = true
 			continue
 		}
 		savedIDs[a.Question.ID] = true
 		savedText[strings.ToLower(designOneLine(a.Question.Question))] = true
 	}
+	reconfirmUsed := false
 	seenIDs := map[string]bool{}
 	seenText := map[string]bool{}
 	out := make([]entity.DesignQuizQuestion, 0, designQuizMaxQuestions)
@@ -1406,6 +1425,13 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 			st.repeated++
 			continue
 		}
+		if staleIDs[id] || staleText[textKey] {
+			if reconfirmUsed {
+				st.repeated++
+				continue
+			}
+			reconfirmUsed = true
+		}
 		q := entity.DesignQuizQuestion{
 			ID: id, Category: category, Part: part, Family: family, View: view, Kind: kind,
 			Question: question, Options: options,
@@ -1443,13 +1469,19 @@ func (s *Server) GetDesignQuizAnswers(ctx context.Context, req *pb_admin.GetDesi
 	if cardID <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
 	}
-	answers, err := s.repo.TechCards().ListDesignQuizAnswers(ctx, cardID)
+	// The card, not the bare list: `stale` is the answer's fingerprint against the card's current
+	// one (62-DEEP-FIXES D1). No such card answers an empty list, as before.
+	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &pb_admin.GetDesignQuizAnswersResponse{Answers: []*pb_admin.DesignQuizAnswer{}}, nil
+	}
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "design quiz: cannot read the answers",
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot read the quiz answers")
 	}
-	return &pb_admin.GetDesignQuizAnswersResponse{Answers: designQuizAnswersToPb(answers)}, nil
+	s.designQuizMarkStale(ctx, card)
+	return &pb_admin.GetDesignQuizAnswersResponse{Answers: designQuizAnswersToPb(card.QuizAnswers)}, nil
 }
 
 // SaveDesignQuizAnswers MERGES the sent answers into the card's stored list (61-QUICKWINS W-B1):
@@ -1466,7 +1498,23 @@ func (s *Server) SaveDesignQuizAnswers(ctx context.Context, req *pb_admin.SaveDe
 	if ve != nil {
 		return nil, apierr.Invalid(ve)
 	}
-	stored, err := s.repo.TechCards().SaveDesignQuizAnswers(ctx, cardID, answers, forget, designQuizMaxAnswers)
+	// D1: every upserted row is stamped with the card's CURRENT fingerprint — a saved (or re-confirmed)
+	// answer is fresh by definition. A chart that cannot be read stamps "" (fresh, as pre-0392 rows).
+	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, status.Error(codes.NotFound, "tech card not found")
+	}
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "design quiz: cannot load the tech card",
+			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "cannot store the quiz answers")
+	}
+	fp, _ := s.designQuizCurrentFingerprint(ctx, card)
+	for i := range answers {
+		answers[i].Fingerprint = fp
+	}
+	stored, err := s.repo.TechCards().SaveDesignQuizAnswers(ctx, cardID, answers, forget, designQuizMaxAnswers,
+		authsrv.GetAdminUsername(ctx))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "tech card not found")
@@ -1479,6 +1527,7 @@ func (s *Server) SaveDesignQuizAnswers(ctx context.Context, req *pb_admin.SaveDe
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot store the quiz answers")
 	}
+	entity.MarkDesignQuizStale(stored, fp)
 	return &pb_admin.SaveDesignQuizAnswersResponse{Answers: designQuizAnswersToPb(stored)}, nil
 }
 
@@ -1641,7 +1690,7 @@ func designQuizAnswersToPb(in []entity.TechCardQuizAnswer) []*pb_admin.DesignQui
 		pa := &pb_admin.DesignQuizAnswer{
 			Question: designQuizQuestionToPb(a.Question),
 			Selected: append([]string(nil), a.Selected...),
-			FreeText: a.FreeText, Skipped: a.Skipped,
+			FreeText: a.FreeText, Skipped: a.Skipped, Stale: a.Stale,
 		}
 		if !a.AnsweredAt.IsZero() {
 			pa.AnsweredAt = timestamppb.New(a.AnsweredAt)

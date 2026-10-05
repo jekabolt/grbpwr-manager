@@ -4345,6 +4345,11 @@ type TechCardInsert struct {
 	// a fresh approval. Empty means «neither exists», and the projection then appends nothing, so a
 	// card that has neither hashes byte-identically to before this phase.
 	DerivedCostInputsDigest string `db:"-"`
+	// DesignQuizDigest is entity.DesignQuizAnswersDigest of the card's moodboard quiz answers
+	// (62-DEEP-FIXES D2) — the DESIGN signature covers them although they live outside this payload.
+	// Populated by the STORE on read, and by the write path from the store before stamping a fresh
+	// DESIGN approval. Empty (no answers) appends nothing: such a card hashes byte-identically.
+	DesignQuizDigest string `db:"-"`
 	// production (Phase 3); 1:1 sections are nil when unset
 	Construction *TechCardConstruction `db:"-"`
 	Operations   []TechCardOperation   `db:"-"`

@@ -626,6 +626,17 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, techCardID int,
 		}
 		tc.DerivedCostInputsDigest = derived
 	}
+	// THE QUIZ TOKEN (62-DEEP-FIXES D2), by the same rule: the moodboard quiz answers live in their
+	// own table and are written by their own RPC, the read puts their token on the entity, so a
+	// fresh DESIGN approval must take it from the store — else it is stale from birth on every card
+	// with answers. Only when DESIGN is approved; a new card has no answers (empty token).
+	if techCardID > 0 && freshSignoffs[entity.SignoffDesign] {
+		answers, err := s.repo.TechCards().ListDesignQuizAnswers(ctx, techCardID)
+		if err != nil {
+			return err
+		}
+		tc.DesignQuizDigest = entity.DesignQuizAnswersDigest(answers)
+	}
 	final := dto.TechCardSectionDigestsAsRead(tc, identities)
 	for _, so := range fresh {
 		d := final[so.Section]
