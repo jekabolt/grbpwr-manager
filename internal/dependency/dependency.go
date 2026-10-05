@@ -1198,6 +1198,13 @@ type (
 		// exceed maxStored; sql.ErrNoRows = no such card.
 		ListDesignQuizAnswers(ctx context.Context, techCardID int) ([]entity.TechCardQuizAnswer, error)
 		SaveDesignQuizAnswers(ctx context.Context, techCardID int, upserts []entity.TechCardQuizAnswer, forget []string, maxStored int, actor string) ([]entity.TechCardQuizAnswer, error)
+		// OpenDesignQuizSession / GetOpenDesignQuizSession / CloseDesignQuizSession — the card's last
+		// generated quiz list (0394, 64-DEFERRED E2). Open closes the previous open one in the same
+		// transaction (sql.ErrNoRows = no such card); Get answers nil when none is open; Close is a
+		// no-op without one.
+		OpenDesignQuizSession(ctx context.Context, techCardID int, family string, questions []entity.DesignQuizQuestion, actor string) error
+		GetOpenDesignQuizSession(ctx context.Context, techCardID int) (*entity.DesignQuizSession, error)
+		CloseDesignQuizSession(ctx context.Context, techCardID int) error
 		// CreateTechCardImportRow records ONE uploaded import archive (Ф2.5, migration 0336): where
 		// its bytes went in the bucket, what its manifest said, and the colourway payload the much
 		// later "create colourways from the archive" step needs after the bucket object has expired.

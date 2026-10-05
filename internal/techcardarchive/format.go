@@ -369,6 +369,7 @@ type DesignQuizAnswer struct {
 	VisualEvidence  string   `json:"visual_evidence,omitempty"`
 	ClarifyQuestion string   `json:"clarify_question,omitempty"`
 	ClarifyOptions  []string `json:"clarify_options,omitempty"`
+	DecisionKey     string   `json:"decision_key,omitempty"` // 0394; absent in older archives
 	Selected        []string `json:"selected"`
 	FreeText        string   `json:"free_text,omitempty"`
 	Skipped         bool     `json:"skipped,omitempty"`

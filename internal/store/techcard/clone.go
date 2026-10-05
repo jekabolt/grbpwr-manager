@@ -124,10 +124,10 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 	// the same structured facts, so a still-true answer stays fresh and a changed card stales it).
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_design_quiz_answer
-			(tech_card_id, question_id, category, part, family, part_view, kind, question,
+			(tech_card_id, question_id, decision_key, category, part, family, part_view, kind, question,
 			 options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
 			 selected_json, free_text, skipped, card_fingerprint, display_order, answered_at)
-		SELECT :target, question_id, category, part, family, part_view, kind, question,
+		SELECT :target, question_id, decision_key, category, part, family, part_view, kind, question,
 		       options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
 		       selected_json, free_text, skipped, card_fingerprint, display_order, answered_at
 		FROM tech_card_design_quiz_answer

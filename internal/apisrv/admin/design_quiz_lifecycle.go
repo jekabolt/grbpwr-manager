@@ -149,7 +149,8 @@ func designQuizToArchive(in []entity.TechCardQuizAnswer) []techcardarchive.Desig
 			Question: q.Question, Options: append([]string{}, q.Options...),
 			Contradicts: append([]bool(nil), q.Contradicts...), VisualEvidence: q.VisualEvidence,
 			ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: append([]string(nil), q.ClarifyOptions...),
-			Selected: append([]string{}, a.Selected...), FreeText: a.FreeText, Skipped: a.Skipped,
+			DecisionKey: q.DecisionKey,
+			Selected:    append([]string{}, a.Selected...), FreeText: a.FreeText, Skipped: a.Skipped,
 		}
 		if !a.AnsweredAt.IsZero() {
 			row.AnsweredAt = a.AnsweredAt.UTC().Format(time.RFC3339)
@@ -170,6 +171,7 @@ func designQuizFromArchive(rows []techcardarchive.DesignQuizAnswer) ([]entity.Te
 				Id: r.ID, Category: r.Category, Part: r.Part, Family: r.Family, View: r.View, Kind: r.Kind,
 				Question: r.Question, Options: r.Options, Contradicts: r.Contradicts,
 				VisualEvidence: r.VisualEvidence, ClarifyQuestion: r.ClarifyQuestion, ClarifyOptions: r.ClarifyOptions,
+				DecisionKey: r.DecisionKey,
 			},
 			Selected: r.Selected, FreeText: r.FreeText, Skipped: r.Skipped,
 		})

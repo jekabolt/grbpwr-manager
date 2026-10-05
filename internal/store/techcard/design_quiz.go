@@ -2,6 +2,7 @@ package techcard
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -18,6 +19,7 @@ import (
 type designQuizAnswerRow struct {
 	TechCardID         int       `db:"tech_card_id"`
 	QuestionID         string    `db:"question_id"`
+	DecisionKey        string    `db:"decision_key"`
 	Category           string    `db:"category"`
 	Part               string    `db:"part"`
 	Family             string    `db:"family"`
@@ -37,7 +39,7 @@ type designQuizAnswerRow struct {
 }
 
 const designQuizSelect = `
-	SELECT tech_card_id, question_id, category, part, family, part_view, kind, question,
+	SELECT tech_card_id, question_id, decision_key, category, part, family, part_view, kind, question,
 	       options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
 	       selected_json, free_text, skipped, card_fingerprint, answered_at
 	FROM tech_card_design_quiz_answer`
@@ -54,6 +56,7 @@ func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
 			ID: r.QuestionID, Category: r.Category, Part: r.Part, Family: r.Family, View: r.View,
 			Kind: r.Kind, Question: r.Question, Options: opts, Contradicts: contra,
 			VisualEvidence: r.VisualEvidence, ClarifyQuestion: r.ClarifyQuestion, ClarifyOptions: clar,
+			DecisionKey: r.DecisionKey,
 		},
 		Selected: sel, FreeText: r.FreeText, Skipped: r.Skipped, AnsweredAt: r.AnsweredAt,
 		Fingerprint: r.CardFingerprint,
@@ -115,7 +118,7 @@ func designQuizJSON[T any](v []T) string {
 }
 
 // designQuizInsertCols — the columns insertDesignQuizRows writes, in its row order.
-var designQuizInsertCols = []string{"tech_card_id", "question_id", "category", "part", "family", "part_view", "kind",
+var designQuizInsertCols = []string{"tech_card_id", "question_id", "decision_key", "category", "part", "family", "part_view", "kind",
 	"question", "options_json", "contradicts_json", "visual_evidence", "clarify_question",
 	"clarify_options_json", "selected_json", "free_text", "skipped", "card_fingerprint", "display_order", "answered_at"}
 
@@ -133,7 +136,7 @@ func insertDesignQuizRows(ctx context.Context, db dependency.DB, techCardID int,
 		if at.IsZero() {
 			at = time.Now().UTC()
 		}
-		rows = append(rows, []any{techCardID, q.ID, q.Category, q.Part, q.Family, q.View, q.Kind,
+		rows = append(rows, []any{techCardID, q.ID, q.DecisionKey, q.Category, q.Part, q.Family, q.View, q.Kind,
 			q.Question, designQuizJSON(q.Options), designQuizJSON(q.Contradicts), q.VisualEvidence,
 			q.ClarifyQuestion, designQuizJSON(q.ClarifyOptions), designQuizJSON(a.Selected), a.FreeText,
 			a.Skipped, a.Fingerprint, i, at})
@@ -154,7 +157,8 @@ const (
 // SaveDesignQuizAnswers is the NON-DESTRUCTIVE save (61-QUICKWINS W-B1): upserts (already validated
 // by the caller, Fingerprint already stamped with the card's current one — 62 D1) are written over
 // the stored rows of the same question id or appended; the ids in forget are deleted; every other
-// stored row STAYS. Returns the stored list. One transaction: the card row is locked first
+// stored row STAYS; a row superseded by an upsert's decision key (another question id, same key) is
+// forgotten in the same transaction (64-DEFERRED E1). Returns the stored list. One transaction: the card row is locked first
 // (sql.ErrNoRows when it does not exist), so two saves of one card serialise and each merges over
 // what the other stored. A merge leaving more than maxStored rows is refused with
 // entity.ErrDesignQuizTooManyAnswers and changes nothing.
@@ -204,4 +208,124 @@ func (s *Store) SaveDesignQuizAnswers(ctx context.Context, techCardID int, upser
 		return nil, err
 	}
 	return stored, nil
+}
+
+// ─── quiz session (0394, 64-DEFERRED E2) ───
+
+type designQuizSessionRow struct {
+	ID            int          `db:"id"`
+	TechCardID    int          `db:"tech_card_id"`
+	Family        string       `db:"family"`
+	QuestionsJSON string       `db:"questions_json"`
+	CreatedBy     string       `db:"created_by"`
+	CreatedAt     time.Time    `db:"created_at"`
+	ClosedAt      sql.NullTime `db:"closed_at"`
+}
+
+// designQuizSessionQuestion — the questions_json row shape (stable JSON names, not Go field names).
+type designQuizSessionQuestion struct {
+	ID              string   `json:"id"`
+	DecisionKey     string   `json:"decision_key,omitempty"`
+	Category        string   `json:"category"`
+	Part            string   `json:"part"`
+	Family          string   `json:"family,omitempty"`
+	View            string   `json:"view"`
+	Kind            string   `json:"kind"`
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	Contradicts     []bool   `json:"contradicts,omitempty"`
+	VisualEvidence  string   `json:"visual_evidence,omitempty"`
+	ClarifyQuestion string   `json:"clarify_question,omitempty"`
+	ClarifyOptions  []string `json:"clarify_options,omitempty"`
+}
+
+func designQuizSessionQuestionsJSON(qs []entity.DesignQuizQuestion) string {
+	rows := make([]designQuizSessionQuestion, 0, len(qs))
+	for _, q := range qs {
+		rows = append(rows, designQuizSessionQuestion{
+			ID: q.ID, DecisionKey: q.DecisionKey, Category: q.Category, Part: q.Part, Family: q.Family,
+			View: q.View, Kind: q.Kind, Question: q.Question, Options: q.Options, Contradicts: q.Contradicts,
+			VisualEvidence: q.VisualEvidence, ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: q.ClarifyOptions,
+		})
+	}
+	b, _ := json.Marshal(rows)
+	return string(b)
+}
+
+func (r designQuizSessionRow) entity() entity.DesignQuizSession {
+	var rows []designQuizSessionQuestion
+	_ = json.Unmarshal([]byte(r.QuestionsJSON), &rows)
+	qs := make([]entity.DesignQuizQuestion, 0, len(rows))
+	for _, q := range rows {
+		qs = append(qs, entity.DesignQuizQuestion{
+			ID: q.ID, DecisionKey: q.DecisionKey, Category: q.Category, Part: q.Part, Family: q.Family,
+			View: q.View, Kind: q.Kind, Question: q.Question, Options: q.Options, Contradicts: q.Contradicts,
+			VisualEvidence: q.VisualEvidence, ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: q.ClarifyOptions,
+		})
+	}
+	out := entity.DesignQuizSession{
+		ID: r.ID, TechCardID: r.TechCardID, Family: r.Family, Questions: qs,
+		CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt,
+	}
+	if r.ClosedAt.Valid {
+		t := r.ClosedAt.Time
+		out.ClosedAt = &t
+	}
+	return out
+}
+
+// OpenDesignQuizSession stores a freshly generated question list as the card's OPEN quiz session,
+// closing the previous open one in the same transaction (one open session per card; the card row is
+// locked first, sql.ErrNoRows when it does not exist).
+func (s *Store) OpenDesignQuizSession(ctx context.Context, techCardID int, family string, questions []entity.DesignQuizQuestion, actor string) error {
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		var id int
+		if err := db.QueryRowxContext(ctx, `SELECT id FROM tech_card WHERE id = ? FOR UPDATE`, techCardID).Scan(&id); err != nil {
+			return err
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE tech_card_design_quiz_session SET closed_at = CURRENT_TIMESTAMP(6)
+			 WHERE tech_card_id = :id AND closed_at IS NULL`,
+			map[string]any{"id": techCardID}); err != nil {
+			return fmt.Errorf("can't close the previous design quiz session: %w", err)
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`INSERT INTO tech_card_design_quiz_session (tech_card_id, family, questions_json, created_by)
+			 VALUES (:id, :family, :questions, :actor)`,
+			map[string]any{"id": techCardID, "family": family,
+				"questions": designQuizSessionQuestionsJSON(questions), "actor": actor}); err != nil {
+			return fmt.Errorf("can't store the design quiz session: %w", err)
+		}
+		return nil
+	})
+}
+
+// GetOpenDesignQuizSession returns the card's open quiz session; nil (no error) when none is open.
+func (s *Store) GetOpenDesignQuizSession(ctx context.Context, techCardID int) (*entity.DesignQuizSession, error) {
+	rows, err := storeutil.QueryListNamed[designQuizSessionRow](ctx, s.DB,
+		`SELECT id, tech_card_id, family, questions_json, created_by, created_at, closed_at
+		 FROM tech_card_design_quiz_session
+		 WHERE tech_card_id = :id AND closed_at IS NULL
+		 ORDER BY id DESC LIMIT 1`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("can't load the design quiz session: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := rows[0].entity()
+	return &out, nil
+}
+
+// CloseDesignQuizSession closes the card's open quiz session; a card with none is a no-op.
+func (s *Store) CloseDesignQuizSession(ctx context.Context, techCardID int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB,
+		`UPDATE tech_card_design_quiz_session SET closed_at = CURRENT_TIMESTAMP(6)
+		 WHERE tech_card_id = :id AND closed_at IS NULL`,
+		map[string]any{"id": techCardID}); err != nil {
+		return fmt.Errorf("can't close the design quiz session: %w", err)
+	}
+	return nil
 }

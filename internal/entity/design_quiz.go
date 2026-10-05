@@ -62,6 +62,8 @@ type DesignQuizQuestion struct {
 	VisualEvidence  string
 	ClarifyQuestion string
 	ClarifyOptions  []string
+	// DecisionKey — snake_case key of the DECISION (not the wording), "" = none (0394, 64-DEFERRED E1).
+	DecisionKey string
 }
 
 // TechCardQuizAnswer is one stored answer: the question plus what the designer chose.
@@ -117,10 +119,48 @@ func DesignQuizAnswersDigest(answers []TechCardQuizAnswer) string {
 // ErrDesignQuizTooManyAnswers — a save would leave more answers on the card than the cap allows.
 var ErrDesignQuizTooManyAnswers = errors.New("too many quiz answers on the card")
 
+// DesignQuizSession — the card's last generated question list (0394, 64-DEFERRED E2), so a quiz
+// resumes on another tab or device. ClosedAt nil = the open one (one per card).
+type DesignQuizSession struct {
+	ID         int
+	TechCardID int
+	Family     string
+	Questions  []DesignQuizQuestion
+	CreatedBy  string
+	CreatedAt  time.Time
+	ClosedAt   *time.Time
+}
+
+// DesignQuizPending — the session's questions not yet saved on the card: every question whose id is
+// among the saved rows (answered or skipped) is out, and so is every question whose non-empty
+// decision key a saved row carries — a save that superseded (forgot) an older row by key must not
+// bring that row's question back. The generated order is kept.
+func DesignQuizPending(questions []DesignQuizQuestion, saved []TechCardQuizAnswer) []DesignQuizQuestion {
+	done := make(map[string]bool, len(saved))
+	keys := make(map[string]bool, len(saved))
+	for _, a := range saved {
+		done[a.Question.ID] = true
+		if k := a.Question.DecisionKey; k != "" {
+			keys[k] = true
+		}
+	}
+	out := make([]DesignQuizQuestion, 0, len(questions))
+	for _, q := range questions {
+		if !done[q.ID] && (q.DecisionKey == "" || !keys[q.DecisionKey]) {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
 // MergeDesignQuizAnswers is the NON-DESTRUCTIVE save (61-QUICKWINS W-B1): the stored list prev with
 // every row of upserts written over the stored row of the same question id (in place) or appended
 // (in request order), and every id in forget removed. A stored row the request does not name STAYS —
 // a client that saves before its list has loaded can no longer erase the card's history.
+//
+// SUPERSESSION (64-DEFERRED E1): an upsert carrying a decision key forgets every OTHER row (another
+// question id) with the same key — the decision was re-asked in other words, the latest answer wins.
+// Two upserts of one key in a request: the later in request order wins. "" never supersedes.
 //
 // answered_at is the server's: an answer that comes back unchanged (same selection, free text and
 // skip) keeps the time it was first given; a new or changed one is stamped now.
@@ -162,5 +202,21 @@ func MergeDesignQuizAnswers(prev, upserts []TechCardQuizAnswer, forget []string,
 		placed[id] = true
 		out = append(out, stamp(nil, a))
 	}
-	return out
+	owner := make(map[string]string, len(upserts))
+	for _, a := range upserts {
+		if k := a.Question.DecisionKey; k != "" && !gone[a.Question.ID] {
+			owner[k] = a.Question.ID
+		}
+	}
+	if len(owner) == 0 {
+		return out
+	}
+	kept := out[:0]
+	for _, a := range out {
+		if id, ok := owner[a.Question.DecisionKey]; ok && a.Question.DecisionKey != "" && id != a.Question.ID {
+			continue
+		}
+		kept = append(kept, a)
+	}
+	return kept
 }

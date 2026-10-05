@@ -3220,8 +3220,10 @@ service AdminService {
 
   // GenerateDesignQuiz (moodboard quiz) — one sync vision+JSON call: the model reads the board
   // pictures, the board words and the card facts, and asks 0..15 questions about what is still
-  // unclear or non-standard. Nothing is stored; ai_usage_event books the call. Questions already
-  // answered on the card (GetDesignQuizAnswers) are never returned again.
+  // unclear or non-standard. The generated list is stored as the card's OPEN quiz session (closing the
+  // previous one) so another tab or device can resume it (GetDesignQuizAnswers.pending); ai_usage_event
+  // books the call. Questions already answered on the card (by id, text or decision_key) are never
+  // returned again.
   //
   // FailedPrecondition: nothing to ask about (no attached picture and no concept).
   rpc GenerateDesignQuiz(GenerateDesignQuizRequest) returns (GenerateDesignQuizResponse) {
@@ -3261,7 +3263,8 @@ service AdminService {
     };
   }
 
-  // GetDesignQuizAnswers — every quiz answer stored on the card, in display order.
+  // GetDesignQuizAnswers — every quiz answer stored on the card, in display order, plus the open
+  // session's questions not yet saved (pending).
   rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"};
   }
@@ -3269,7 +3272,9 @@ service AdminService {
   // SaveDesignQuizAnswers MERGES the sent answers into the card's stored list by question id: a sent
   // row is upserted (stamped with the card's current fingerprint, so it reads fresh), a row sent EMPTY
   // (no selection, no free text, not skipped) forgets that id, every stored row not sent stays.
-  // `stale` on a sent row is ignored. Returns the stored list.
+  // `stale` on a sent row is ignored. A saved row whose decision_key matches a DIFFERENT stored
+  // question id forgets that older row (latest wins). close_session closes the open quiz session after
+  // the save. Returns the stored list.
   rpc SaveDesignQuizAnswers(SaveDesignQuizAnswersRequest) returns (SaveDesignQuizAnswersResponse) {
     option (google.api.http) = {
       put: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"
@@ -13410,6 +13415,10 @@ message DesignQuizQuestion {
   string visual_evidence = 10; // what the pictures show about this point; never shown in UI
   string clarify_question = 11; // optional follow-up when a contradicting option is picked
   repeated string clarify_options = 12;
+  // decision_key — snake_case key of the DECISION (not the wording), e.g. chest_room, collar_type;
+  // "" = none. A saved answer closes its key for later quizzes; saving an answer whose key matches a
+  // different saved question id forgets that older row (latest wins). Clients echo it on save.
+  string decision_key = 13;
 }
 
 message GenerateDesignQuizRequest {
@@ -13440,12 +13449,18 @@ message GetDesignQuizAnswersRequest {
 
 message GetDesignQuizAnswersResponse {
   repeated DesignQuizAnswer answers = 1;
+  // pending — the card's OPEN quiz session (the last GenerateDesignQuiz) minus every saved question
+  // id (answered or skipped), in the generated order; empty when no session is open. Resume source.
+  repeated DesignQuizQuestion pending = 2;
+  string pending_family = 3; // the open session's garment family
 }
 
 // SaveDesignQuizAnswersRequest carries the rows to upsert (or forget, when sent empty); see the rpc.
 message SaveDesignQuizAnswersRequest {
   int32 tech_card_id = 1;
   repeated DesignQuizAnswer answers = 2;
+  // close_session — after the save, close the card's open quiz session (discard, or the quiz ended).
+  bool close_session = 3;
 }
 
 message SaveDesignQuizAnswersResponse {
