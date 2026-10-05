@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/mock"
@@ -147,19 +148,35 @@ func TestFlatRouteDoor(t *testing.T) {
 	srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
 
 	p := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
-	srv.designFreezeFlatModel(entity.DesignRunKindFlat, p)
+	srv.designFreezeFlatModel(entity.DesignRunKindFlat, p, nil)
 	require.Equal(t, designgen.FlatDefaultEngine, p.GetImage().GetModel())
 	named := &pb_common.DesignRunParams{Image: &pb_common.DesignImageOptions{Model: designgen.EngineGPTImage2}}
-	srv.designFreezeFlatModel(entity.DesignRunKindFlat, named)
+	srv.designFreezeFlatModel(entity.DesignRunKindFlat, named, nil)
 	require.Equal(t, designgen.EngineGPTImage2, named.GetImage().GetModel(), "a named engine is the person's")
 	render := &pb_common.DesignRunParams{}
-	srv.designFreezeFlatModel(entity.DesignRunKindRender, render)
+	srv.designFreezeFlatModel(entity.DesignRunKindRender, render, nil)
 	require.Nil(t, render.GetImage(), "only flats")
 	custom := &Server{}
 	custom.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("acme/custom") })
 	q := &pb_common.DesignRunParams{}
-	custom.designFreezeFlatModel(entity.DesignRunKindFlat, q)
+	custom.designFreezeFlatModel(entity.DesignRunKindFlat, q, nil)
 	require.Nil(t, q.GetImage(), "a deployment whose table is empty keeps its own slug")
+
+	// Codex 1: a RERUN keeps what its parent used, a FIX stays one picture on the deployment default.
+	legacy := &entity.DesignRun{Params: entity.RawJSON(`{"views":["front","back"],"layout":"one"}`), RequestedOutputs: 1}
+	r := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
+	srv.designFreezeFlatModel(entity.DesignRunKindFlat, r, legacy)
+	require.Nil(t, r.GetImage(), "a legacy rerun is not redrawn by flare")
+	require.Equal(t, 1, designRerunFlatOutputs(entity.DesignRunKindFlat, designRequestedOutputs(entity.DesignRunKindFlat, r), legacy))
+	named2 := &entity.DesignRun{Params: entity.RawJSON(`{"image":{"model":"openai/gpt-image-2"}}`), RequestedOutputs: 4}
+	r2 := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
+	srv.designFreezeFlatModel(entity.DesignRunKindFlat, r2, named2)
+	require.Equal(t, "openai/gpt-image-2", r2.GetImage().GetModel(), "the parent's frozen model")
+	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, 4, named2))
+	fix := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne, FixTargets: []string{"front"}}
+	srv.designFreezeFlatModel(entity.DesignRunKindFlat, fix, nil)
+	require.Nil(t, fix.GetImage(), "a fix keeps today's model")
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, fix), "a fix is one picture")
 
 	doc := entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}
 	band := &entity.DesignBand{Joins: &entity.DesignJoins{Doc: doc}}
@@ -176,4 +193,37 @@ func TestFlatRouteDoor(t *testing.T) {
 
 	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat, p))
 	require.Equal(t, 1, designImageVariantsPerCall(entity.DesignRunKindFlat, p), "the worker splits over an engine's n")
+}
+
+// Codex 3: the model's answer is saved only over the rev the press saw; a designer's save during the
+// call wins and the answer is dropped (the current row comes back as cached).
+func TestGenerateDesignJoinsNeverOverwritesAConcurrentEdit(t *testing.T) {
+	const card = 38
+	answer := `{"consistency":{"consistent":true},"items":[{"id":"hem","kind":"edge","path":["HEM_L","HEM_FC","HEM_R"]}],"absences":["no sleeves"]}`
+	client, rec := newSuggestFakeOR(t, openrouter.Config{}, suggestAnswer(answer))
+	s := newEnhanceServer(t, client)
+	s.designGenerationEnabled = true
+	repo := mocks.NewMockRepository(t)
+	design := mocks.NewMockDesign(t)
+	cards := mocks.NewMockTechCards(t)
+	repo.EXPECT().Design().Return(design).Maybe()
+	repo.EXPECT().TechCards().Return(cards).Maybe()
+	s.repo = repo
+	cards.EXPECT().GetTechCardById(mock.Anything, card).Return(&entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		GarmentDescription: sql.NullString{String: "a top", Valid: true}}}, nil)
+	design.EXPECT().GetBand(mock.Anything, card, 1).Return(&entity.DesignBand{
+		Joins: &entity.DesignJoins{Rev: 2, SourceFingerprint: "stale"}}, nil)
+	design.EXPECT().GetJoins(mock.Anything, card).Return(&entity.DesignJoins{Rev: 2, SourceFingerprint: "stale"}, nil).Once()
+	design.EXPECT().SaveJoins(mock.Anything, mock.MatchedBy(func(r entity.DesignJoinsSave) bool {
+		return r.ExpectedRev == 2 && !r.Edited
+	})).Return(nil, entity.ErrDesignJoinsRevMismatch)
+	design.EXPECT().GetJoins(mock.Anything, card).Return(&entity.DesignJoins{Rev: 3,
+		EditedAt: sql.NullTime{Time: time.Now(), Valid: true}}, nil).Once()
+
+	resp, err := s.GenerateDesignJoins(adminCtx("olga"), &pb_admin.GenerateDesignJoinsRequest{TechCardId: card})
+	require.NoError(t, err)
+	require.True(t, resp.GetCached())
+	require.Equal(t, int32(3), resp.GetJoins().GetRev())
+	require.True(t, resp.GetJoins().GetEdited(), "the designer's row stands")
+	require.Len(t, rec.all(), 1)
 }

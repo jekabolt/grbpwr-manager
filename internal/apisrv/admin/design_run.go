@@ -1002,7 +1002,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		return nil, err
 	}
 	// A flat that names no engine is drawn by the flat route's engine (flare), frozen here.
-	s.designFreezeFlatModel(kind, params)
+	s.designFreezeFlatModel(kind, params, parent)
 	// A stated engine freezes with its slug (G-02, Codex 5).
 	s.designFreezeImageModel(kind, params)
 	// A video run freezes the Kling slug it is bought with (B-32).
@@ -1136,7 +1136,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 			len(inputsJSON), designMaxInputsBytes)
 	}
 
-	outputs := designRequestedOutputs(kind, params)
+	outputs := designRerunFlatOutputs(kind, designRequestedOutputs(kind, params), parent)
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:      cardID,
 		ClientRequestId: clientRequestID,
@@ -2436,7 +2436,7 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 	// FLAT CANDIDATES (owner 05.10): a garment sheet is bought FlatCandidates times — the designer
 	// picks one and the split flow cuts the chosen one. imageCalls reads this number back as the
 	// call's n (designgen FlatCandidatesFor names the same runs).
-	if kind == entity.DesignRunKindFlat && params.GetLayout() == designLayoutOne {
+	if kind == entity.DesignRunKindFlat && params.GetLayout() == designLayoutOne && !designFlatIsFix(params) {
 		if n := designgen.FlatCandidatesFor(params.GetViews(), params.GetLayout()); n > 0 {
 			return n
 		}

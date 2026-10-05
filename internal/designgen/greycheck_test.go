@@ -2,6 +2,9 @@ package designgen
 
 import (
 	"bytes"
+	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -83,5 +86,45 @@ func TestFlatSheetIsBoughtAsCandidates(t *testing.T) {
 	}
 	if FlatCandidatesFor([]string{"front"}, layoutPerView) != 0 || FlatCandidatesFor([]string{"front", "back"}, layoutOne) != FlatCandidates {
 		t.Fatal("FlatCandidatesFor: only a garment sheet")
+	}
+}
+
+// TestGreyCheckSkipsADecompressionBomb — a PNG whose header declares a canvas over the budget is not
+// decoded (no label, no allocation): 74 bytes claiming 40000×40000.
+func TestGreyCheckSkipsADecompressionBomb(t *testing.T) {
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, image.NewGray(image.Rect(0, 0, 1, 1)))
+	raw := buf.Bytes()
+	// IHDR width/height live at bytes 16..23
+	bomb := append([]byte(nil), raw...)
+	for i, v := range []byte{0, 0, 0x9c, 0x40, 0, 0, 0x9c, 0x40} {
+		bomb[16+i] = v
+	}
+	binary.BigEndian.PutUint32(bomb[29:33], crc32.ChecksumIEEE(bomb[12:29]))
+	if cfg, err := png.DecodeConfig(bytes.NewReader(bomb)); err != nil || cfg.Width != 40000 {
+		t.Fatalf("the probe must be a valid header: %v %v", cfg, err)
+	}
+	if f := flatPixelFlags(bomb); f != nil {
+		t.Fatalf("a bomb must be skipped, got %v", f)
+	}
+}
+
+// TestFlatCandidatesOnAnUnknownSlugAreSingleCalls — a custom default slug (no catalogue row, n range
+// unknown) buys four candidates as four n = 1 calls; a catalogue GPT row as one n = 4 call.
+func TestFlatCandidatesOnAnUnknownSlugAreSingleCalls(t *testing.T) {
+	job := Job{Kind: "flat", Views: []string{"front", "back"}, Layout: layoutOne, Outputs: FlatCandidates, Prompt: "p"}
+	custom := &fakeImageTransport{model: "acme/custom"}
+	out, err := imageProvider{t: custom, providerKey: "openrouter"}.Execute(context.Background(), job)
+	if err != nil || len(custom.calls) != FlatCandidates || len(out.Artifacts) != FlatCandidates {
+		t.Fatalf("custom slug: %d calls, %v", len(custom.calls), err)
+	}
+	for _, c := range custom.calls {
+		if c.N != 1 {
+			t.Fatalf("n=%d on an unknown slug", c.N)
+		}
+	}
+	gpt := &fakeImageTransport{model: EngineGPTImage25Flare}
+	if _, err := (imageProvider{t: gpt, providerKey: "openrouter"}).Execute(context.Background(), job); err != nil || len(gpt.calls) != 1 || gpt.calls[0].N != FlatCandidates {
+		t.Fatalf("flare: %+v %v", gpt.calls, err)
 	}
 }

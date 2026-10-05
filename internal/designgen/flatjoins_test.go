@@ -25,7 +25,8 @@ func loadJoinsCase(t *testing.T, name string) entity.DesignJoinsDoc {
 // TestJoinsCraftMatchesTheWinningPrompts — the join paragraphs of the flat prompt, built from the
 // round-5 example lists (cards 38 and 49), are BYTE FOR BYTE the paragraphs of round 7's winning
 // prompts (tmp/plans/flat-consistency/out/r7/c38/prompt-text-b2.txt, out/r7/c49/prompt-text-b.txt),
-// less ONE thing on card 49: the positive note round 7 turned into «Draw NOTHING for: collar and
+// plus one sentence per interior SHARP corner (a V point, a sleeve-end corner: r5's `sharp`, which the
+// text route used to drop), and less ONE thing on card 49: the positive note round 7 turned into «Draw NOTHING for: collar and
 // placket edges are … raw» — the cleaner drops it from the absences (the round-7 generator bug).
 //
 // MUTATIONS IT CATCHES: any wording drift of a sentence; the diagonal / crossing / no-back-neckline /

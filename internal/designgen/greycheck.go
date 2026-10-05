@@ -39,11 +39,22 @@ const (
 	// not labelled.
 	greyFlagFraction = 0.015
 	greyMinInside    = 400 // cells: a silhouette smaller than this is not a garment
+	// The decode budget — the upload path's (bucket maxImageDimension / maxImagePixels).
+	greyMaxSide   = 12000
+	greyMaxPixels = 40_000_000
 )
 
 // flatPixelFlags — the labels of one flat candidate; nil when nothing is noticed or the bytes do not
 // decode.
 func flatPixelFlags(raw []byte) []string {
+	// HEADER FIRST: the bytes are a provider's answer, and a header declaring a huge canvas must never
+	// be unpacked. Over the upload path's budget (bucket: 12000 px a side, 40 M pixels) the check is
+	// skipped — no label, and never a failed run.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > greyMaxSide || cfg.Height > greyMaxSide ||
+		int64(cfg.Width)*int64(cfg.Height) > greyMaxPixels {
+		return nil
+	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil

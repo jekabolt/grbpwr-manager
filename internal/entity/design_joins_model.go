@@ -45,6 +45,7 @@ type DesignJoinsAnswer struct {
 		Visibility    string          `json:"visibility"`
 		CaughtInto    []string        `json:"caught_into"`
 		FreeEdge      bool            `json:"free_edge"`
+		Sharp         []string        `json:"sharp"`
 	} `json:"items"`
 	Absent    []string `json:"absent"`
 	Absences  []string `json:"absences"`
@@ -106,7 +107,7 @@ func (a DesignJoinsAnswer) Doc() DesignJoinsDoc {
 			ID: it.ID, Kind: it.Kind, Closed: it.Closed, Width: it.Width, Type: it.Type,
 			Count: designJoinsInt(it.Count), BoundedBy: it.BoundedBy, ContinuesInto: it.ContinuesInto,
 			Text: it.Note, Layer: designJoinsInt(it.Layer), Visibility: it.Visibility,
-			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge,
+			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp,
 		}
 		switch {
 		case strings.EqualFold(strings.TrimSpace(it.Kind), DesignJoinKindPocket):

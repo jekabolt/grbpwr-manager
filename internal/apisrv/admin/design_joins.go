@@ -171,6 +171,12 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 	}
 	fp := designJoinsFingerprint(photos, note)
 	force := req.GetForce()
+	// The rev this press saw: the model's answer is saved ONLY over it (CAS), so a designer's edit
+	// saved while the model was thinking is never overwritten — the edit wins, the answer is dropped.
+	seenRev := 0
+	if band.Joins != nil {
+		seenRev = band.Joins.Rev
+	}
 	if !force && designJoinsCacheHit(band.Joins, fp) {
 		return &pb_admin.GenerateDesignJoinsResponse{Joins: designJoinsToPb(band.Joins), Cached: true}, nil
 	}
@@ -228,7 +234,7 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			s.ai.ChainBudget(purpose, designJoinsMaxTokens)+designPartsFlightMargin)
 		defer cancel()
-		return s.designJoinsCall(fctx, cardID, photos, note, fp, force)
+		return s.designJoinsCall(fctx, cardID, photos, note, fp, force, seenRev)
 	})
 	var res singleflight.Result
 	select {
@@ -281,7 +287,7 @@ func designJoinsPhotos(refs []entity.DesignReference) []designJoinsPhoto {
 }
 
 // designJoinsCall — the fences and the ONE provider call (the flight leader's work).
-func (s *Server) designJoinsCall(ctx context.Context, cardID int, photos []designJoinsPhoto, note, fp string, force bool) (designJoinsFlightAnswer, error) {
+func (s *Server) designJoinsCall(ctx context.Context, cardID int, photos []designJoinsPhoto, note, fp string, force bool, seenRev int) (designJoinsFlightAnswer, error) {
 	const purpose = entity.AIPurposeDesignJoins
 	// A flight that finished just before this one already paid: read the row again.
 	if !force {
@@ -347,9 +353,19 @@ func (s *Server) designJoinsCall(ctx context.Context, cardID int, photos []desig
 		return designJoinsFlightAnswer{}, status.Error(codes.Internal, designJoinsUnusableMsg)
 	}
 	saved, err := s.repo.Design().SaveJoins(ctx, entity.DesignJoinsSave{
-		TechCardId: cardID, ExpectedRev: -1, Doc: doc, Consistency: ans.ConsistencyFor(mediaIDs),
+		TechCardId: cardID, ExpectedRev: seenRev, Doc: doc, Consistency: ans.ConsistencyFor(mediaIDs),
 		Model: answered, SourceFingerprint: fp, Actor: designActor(ctx),
 	})
+	if errors.Is(err, entity.ErrDesignJoinsRevMismatch) {
+		// Someone saved the list while the model was answering: their row stands, the answer goes.
+		cur, rerr := s.repo.Design().GetJoins(ctx, cardID)
+		if rerr != nil || cur == nil {
+			return designJoinsFlightAnswer{}, designError(ctx, "failed to save the join list", err, nil)
+		}
+		slog.Default().WarnContext(ctx, "design joins: the list changed during the call; the answer is dropped",
+			append(logAttrs, slog.Int("seen_rev", seenRev), slog.Int("rev", cur.Rev))...)
+		return designJoinsFlightAnswer{joins: cur, cached: true}, nil
+	}
 	if err != nil {
 		return designJoinsFlightAnswer{}, designError(ctx, "failed to save the join list", err, nil)
 	}
@@ -464,7 +480,7 @@ func designJoinsToPb(j *entity.DesignJoins) *pb_common.DesignJoins {
 			Kind: it.Kind, From: it.From, To: it.To, View: it.View, Side: it.Side, Text: it.Text, Id: it.ID,
 			Via: it.Via, Width: it.Width, Closed: it.Closed, Type: it.Type, Count: int32(it.Count),
 			BoundedBy: it.BoundedBy, ContinuesInto: it.ContinuesInto, Layer: int32(it.Layer), Visibility: it.Visibility,
-			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge,
+			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp,
 		})
 	}
 	c := &pb_common.DesignJoinsConsistency{Consistent: j.Consistency.Consistent, Note: j.Consistency.Note}
@@ -496,7 +512,7 @@ func designJoinsDocFromPb(in *pb_common.DesignJoins) entity.DesignJoinsDoc {
 			View: it.GetView(), Side: it.GetSide(), Text: it.GetText(), Width: it.GetWidth(),
 			Closed: it.GetClosed(), Type: it.GetType(), Count: int(it.GetCount()), BoundedBy: it.GetBoundedBy(),
 			ContinuesInto: it.GetContinuesInto(), Layer: int(it.GetLayer()), Visibility: it.GetVisibility(),
-			CaughtInto: it.GetCaughtInto(), FreeEdge: it.GetFreeEdge(),
+			CaughtInto: it.GetCaughtInto(), FreeEdge: it.GetFreeEdge(), Sharp: it.GetSharp(),
 		})
 	}
 	d.Absences = append(d.Absences, in.GetAbsences()...)
@@ -541,12 +557,33 @@ func designParentJoins(parent *entity.DesignRun) *entity.DesignJoinsDoc {
 	return in.Joins
 }
 
-// designFreezeFlatModel — a flat run that names no engine is drawn by designgen.FlatDefaultEngine,
-// frozen into params.image.model so the run says so for ever. Only when this deployment's engine
-// table lists the row (a custom default empties the table: then nothing is frozen and the run keeps
-// the deployment's own slug, as before).
-func (s *Server) designFreezeFlatModel(kind string, params *pb_common.DesignRunParams) {
+// designFreezeFlatModel — a NEW flat press that names no engine is drawn by
+// designgen.FlatDefaultEngine, frozen into params.image.model so the run says so for ever. Only when
+// this deployment's engine table lists the row (a custom default empties the table: then nothing is
+// frozen and the run keeps the deployment's own slug, as before).
+//
+// A RERUN keeps what its parent effectively used: the parent's frozen model when it had one, else
+// nothing (the deployment default it was drawn by) — a flat from before the flat route is never
+// silently redrawn by another model. A FIX keeps today's behaviour too.
+func (s *Server) designFreezeFlatModel(kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun) {
 	if kind != entity.DesignRunKindFlat || params == nil || strings.TrimSpace(params.GetImage().GetModel()) != "" {
+		return
+	}
+	if parent != nil {
+		var pp struct {
+			Image struct {
+				Model string `json:"model"`
+			} `json:"image"`
+		}
+		if len(parent.Params) > 0 && json.Unmarshal(parent.Params, &pp) == nil && strings.TrimSpace(pp.Image.Model) != "" {
+			if params.Image == nil {
+				params.Image = &pb_common.DesignImageOptions{}
+			}
+			params.Image.Model = strings.TrimSpace(pp.Image.Model)
+		}
+		return
+	}
+	if designFlatIsFix(params) {
 		return
 	}
 	if _, ok := designgen.FindEngine(s.designEngineTable(), designgen.FlatDefaultEngine); !ok {
@@ -556,4 +593,21 @@ func (s *Server) designFreezeFlatModel(kind string, params *pb_common.DesignRunP
 		params.Image = &pb_common.DesignImageOptions{}
 	}
 	params.Image.Model = designgen.FlatDefaultEngine
+}
+
+// designFlatIsFix — a flat that corrects named views (fix_target(s) / fix_slot_ids): one picture.
+func designFlatIsFix(params *pb_common.DesignRunParams) bool {
+	return len(params.GetFixTargets()) > 0 || strings.TrimSpace(params.GetFixTarget()) != "" || len(params.GetFixSlotIds()) > 0
+}
+
+// designRerunFlatOutputs — a flat RERUN buys no more candidates than its parent did: a one-picture
+// flat from before the flat route stays one picture.
+func designRerunFlatOutputs(kind string, outputs int, parent *entity.DesignRun) int {
+	if kind != entity.DesignRunKindFlat || parent == nil || outputs != designgen.FlatCandidates {
+		return outputs
+	}
+	if parent.RequestedOutputs >= 1 && parent.RequestedOutputs < outputs {
+		return parent.RequestedOutputs
+	}
+	return outputs
 }

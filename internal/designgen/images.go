@@ -165,6 +165,11 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	background, format := firstNonEmpty(job.Background, backgroundFor(job.Kind)), "png"
 	// A per-run engine names its own slug; the provenance says so even when the call fails.
 	requested := p.requested(job.Model)
+	// FLAT CANDIDATES ON A SLUG THE CATALOGUE DOES NOT KNOW (a custom OPENROUTER_MODEL_IMAGE): its `n`
+	// range is unknown, so each candidate is its own n = 1 call — never a 400 after the door priced it.
+	if _, known := catalogueEngine(requested); !known && job.Kind == entity.DesignRunKindFlat {
+		calls = splitCallsOverN(calls, 1)
+	}
 	if row, ok := catalogueEngine(requested); ok {
 		if row.NoRouteDefaults {
 			// Neither key is in this slug's catalogue: the kind's `opaque` and the route's `png` are

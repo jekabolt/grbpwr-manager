@@ -211,6 +211,8 @@ type DesignJoinItem struct {
 	CaughtInto []string `json:"caught_into,omitempty"`
 	// FreeEdge — the edge hangs free: it does not reach the side seams or the hem.
 	FreeEdge bool `json:"free_edge,omitempty"`
+	// Sharp — points of the path that are CORNERS (the point of a V, hem corners); the rest is smooth.
+	Sharp []string `json:"sharp,omitempty"`
 }
 
 // Path — From, Via…, To (empty parts skipped).
@@ -491,6 +493,17 @@ func SanitizeDesignJoinsDoc(in DesignJoinsDoc) DesignJoinsDoc {
 		c.BoundedBy = append([]string(nil), it.BoundedBy...)
 		c.ContinuesInto = append([]string(nil), it.ContinuesInto...)
 		c.CaughtInto = append([]string(nil), it.CaughtInto...)
+		// sharp: only points of this item's own path, once each
+		onPath := map[string]bool{}
+		for _, pt := range c.Path() {
+			onPath[pt] = true
+		}
+		for _, pt := range it.Sharp {
+			if pt = designJoinLandmark(pt); onPath[pt] {
+				onPath[pt] = false
+				c.Sharp = append(c.Sharp, pt)
+			}
+		}
 		out.Items = append(out.Items, c)
 	}
 	refs := func(list []string, self string) []string {

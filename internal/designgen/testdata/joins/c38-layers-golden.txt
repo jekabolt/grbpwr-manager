@@ -49,6 +49,7 @@ CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
 - Draw NOTHING for: no centre-front seam.
 - Draw NOTHING for: no shoulder seam visible.
 - Draw NOTHING for: no back between the strap cross and mid-back (open).
+- inner_V_edge comes to a SHARP corner at BUST_C: a crisp point, never rounded.
 - SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.
 - The sheer cloth is drawn exactly like opaque cloth: white, no grey, no hatching, no tint anywhere.
 - inner_V_edge is the edge of the layer BEHIND the sheer front (inner front V-panel / modesty lining), seen through it: draw it as ONE fine dashed line, lighter than seams; it does not break or touch the outline; no tint, no fill on either side of it.

@@ -84,6 +84,13 @@ func TestParseDesignJoinsAnswerMapsImagesToMedia(t *testing.T) {
 	if len(d.Items) != 2 || d.Items[0].From != "CHEST_L" || d.Items[1].Via[0] != "BUST_C" || d.Items[1].Visibility != DesignJoinThrough || d.Items[1].Layer != 1 {
 		t.Fatalf("doc: %+v", d)
 	}
+	if got := d.Items[1].Sharp; len(got) != 0 {
+		t.Fatalf("no sharp in the answer: %v", got)
+	}
+	sh := SanitizeDesignJoinsDoc(DesignJoinsDoc{Items: []DesignJoinItem{{ID: "v", Kind: "edge", From: "NP_L", Via: []string{"BUST_C"}, To: "NP_R", Sharp: []string{"BUST_C", "HEM_L", "BUST_C"}}}})
+	if got := sh.Items[0].Sharp; len(got) != 1 || got[0] != "BUST_C" {
+		t.Fatalf("sharp keeps the item's own points once: %v", got)
+	}
 	if d.Layers[0].Face != "front" || len(d.Uncertain) != 1 {
 		t.Fatalf("face / uncertain: %+v %v", d.Layers, d.Uncertain)
 	}

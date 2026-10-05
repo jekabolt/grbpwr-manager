@@ -1880,6 +1880,7 @@ message DesignJoinItem {
   string visibility = 16; // visible | through (seen through a sheer layer above) | hidden
   repeated string caught_into = 17; // item ids this edge ends INTO (a seam / binding of another layer)
   bool free_edge = 18; // the edge hangs free: it does not reach the side seams or the hem
+  repeated string sharp = 19; // points of the path that are CORNERS (the point of a V); others are smooth
 }
 
 // DesignJoinsConsistencyGroup — photos that show one and the same garment.

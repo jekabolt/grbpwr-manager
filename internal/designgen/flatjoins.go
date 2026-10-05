@@ -230,6 +230,20 @@ func joinsSentences(j entity.DesignJoinsDoc) []string {
 			S = append(S, it.ID+" is on the wearer's RIGHT only: on the FRONT view it is on the picture-left; on the side views it shows only on SIDE RIGHT.")
 		}
 	}
+	// 8. sharp corners INSIDE a path (the point of a V): r5's `sharp` hint, which the schematic used
+	// and the text route had lost — a V must not come back rounded. Ends are corners by nature.
+	for _, it := range items {
+		p := it.Path()
+		var mid []string
+		for _, pt := range it.Sharp {
+			if len(p) > 2 && pt != p[0] && pt != p[len(p)-1] {
+				mid = append(mid, pt)
+			}
+		}
+		if len(mid) > 0 {
+			S = append(S, it.ID+" comes to a SHARP corner at "+strings.Join(mid, ", ")+": a crisp point, never rounded.")
+		}
+	}
 	S = append(S, "SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.")
 	// 8. layers (owner 05.10: garments can be multi-layer and sheer) — after, as l4.py tested them
 	S = append(S, joinsLayerSentences(j)...)

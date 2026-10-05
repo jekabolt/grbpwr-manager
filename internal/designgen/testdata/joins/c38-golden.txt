@@ -40,4 +40,5 @@ CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
 - Draw NOTHING for: no pockets.
 - Draw NOTHING for: no centre front or centre back seam.
 - Draw NOTHING for: no back fabric above mid-back except the two straps.
+- inner_V_layer comes to a SHARP corner at BUST_C: a crisp point, never rounded.
 - SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.

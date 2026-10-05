@@ -35,4 +35,6 @@ CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
 - Draw NOTHING for: no pocket on the right chest.
 - Draw NOTHING for: no second pocket.
 - pocket_L is on the wearer's LEFT only: on the FRONT view it is on the picture-right; on the side views it shows only on SIDE LEFT.
+- slv_L comes to a SHARP corner at WRIST_OUT_L, WRIST_IN_L: a crisp point, never rounded.
+- slv_R comes to a SHARP corner at WRIST_OUT_R, WRIST_IN_R: a crisp point, never rounded.
 - SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.
