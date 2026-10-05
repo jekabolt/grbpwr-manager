@@ -66,6 +66,11 @@ func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, pare
 	}
 	pf := designFlatParentBlock(parent)
 	pm, _ := designgen.NormalizeFlatMode(pf.GetMode())
+	if designgen.FlatIsDrawingMode(pm) {
+		if err := designFlatRerunSameSheet(params, parent, pm); err != nil {
+			return err
+		}
+	}
 	if params.GetFlat() == nil {
 		if pf != nil {
 			params.Flat = proto.Clone(pf).(*pb_common.DesignFlatParams)
@@ -83,6 +88,26 @@ func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, pare
 		fmt.Sprintf("run %d was drawn in the %s mode and a rerun repeats it with the same pictures; start a new "+
 			"run for another mode. Nothing was reserved and nothing was charged", parent.Id, pm),
 		map[string]string{"parent_mode": pm, "mode": params.GetFlat().GetMode()})
+}
+
+// designFlatRerunSameSheet — a drawing-mode rerun draws the parent's views in the parent's order and
+// layout: the structure image it inherits holds exactly those columns, and the prompt names them.
+func designFlatRerunSameSheet(params *pb_common.DesignRunParams, parent *entity.DesignRun, mode string) error {
+	pp := &pb_common.DesignRunParams{}
+	if designUnmarshalJSON(parent.Params, pp) != nil {
+		return nil
+	}
+	same := pp.GetLayout() == params.GetLayout() && len(pp.GetViews()) == len(params.GetViews())
+	for i := 0; same && i < len(pp.GetViews()); i++ {
+		same = pp.GetViews()[i] == params.GetViews()[i]
+	}
+	if same {
+		return nil
+	}
+	return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
+		fmt.Sprintf("run %d traced a drawing of the views %v; a rerun repeats those views in that order — start a new "+
+			"run for other views. Nothing was reserved and nothing was charged", parent.Id, pp.GetViews()),
+		map[string]string{"parent_mode": mode})
 }
 
 // designFlatSameStructure — two blocks name the same structure picture(s).
@@ -243,29 +268,84 @@ func designFlatIsRendered(params *pb_common.DesignRunParams) bool {
 	return designgen.FlatIsDrawingMode(mode) && src == designgen.FlatStructureRendered
 }
 
-// designRefuseUnderdrawingShape — the stored picture is a 16:9 sheet (±3 %). Read off the media row's
-// stored size; a row with none (legacy 0×0) is unknown and passes. New presses and fixes only: a rerun's
-// drawing passed this door with its parent.
+// designRefuseUnderdrawingShape — every structure picture still exists (reruns included), and a NEW
+// rendered drawing is a 16:9 sheet (±3 %), read off the media row's stored size (a legacy 0×0 row is
+// unknown and passes).
 func (s *Server) designRefuseUnderdrawingShape(ctx context.Context, kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun) error {
-	if kind != entity.DesignRunKindFlat || parent != nil || !designFlatIsRendered(params) {
+	mode, _ := designFlatModeOf(params)
+	if kind != entity.DesignRunKindFlat || !designgen.FlatIsDrawingMode(mode) {
 		return nil
 	}
-	id := int(params.GetFlat().GetUnderdrawingMediaId())
-	if id <= 0 {
+	var ids []int
+	if designFlatIsRendered(params) {
+		if id := int(params.GetFlat().GetUnderdrawingMediaId()); id > 0 {
+			ids = append(ids, id)
+		}
+	} else {
+		for _, r := range params.GetFlat().GetStructureRefs() {
+			if r.GetMediaId() > 0 {
+				ids = append(ids, int(r.GetMediaId()))
+			}
+		}
+	}
+	if len(ids) == 0 {
 		return nil
 	}
-	byID, err := s.repo.Media().GetMediaByIds(ctx, []int{id})
+	byID, err := s.repo.Media().GetMediaByIds(ctx, ids)
 	if err != nil {
 		return designError(ctx, "failed to read the construction drawing", err, nil)
 	}
-	m, ok := byID[id]
-	if !ok {
-		return designRefusal(codes.InvalidArgument, "underdrawing_malformed",
-			fmt.Sprintf("the construction drawing (media %d) does not exist; redraw it and try again. "+
-				"Nothing was reserved and nothing was charged", id),
-			map[string]string{"media_id": strconv.Itoa(id)})
+	// EVERY structure picture must still exist — a rerun too: the worker refuses a trace without its
+	// image (free), but only after the run was booked.
+	for _, id := range ids {
+		m, ok := byID[id]
+		if !ok || strings.TrimSpace(m.FullSizeMediaURL) == "" {
+			return designRefusal(codes.FailedPrecondition, "underdrawing_malformed",
+				fmt.Sprintf("the structure picture (media %d) no longer exists; start a new run. "+
+					"Nothing was reserved and nothing was charged", id),
+				map[string]string{"media_id": strconv.Itoa(id)})
+		}
+		if parent == nil && designFlatIsRendered(params) {
+			if err := designUnderdrawingShapeRefusal(id, m.FullSizeWidth, m.FullSizeHeight); err != nil {
+				return err
+			}
+		}
 	}
-	return designUnderdrawingShapeRefusal(id, m.FullSizeWidth, m.FullSizeHeight)
+	return nil
+}
+
+// designRefuseFlatReferenceCeiling — a drawing-mode flat sends its snapshot's pictures in ONE call
+// (structure + photos [+ fix plates]); more than the engine takes would be refused by the worker after
+// the run was booked.
+func (s *Server) designRefuseFlatReferenceCeiling(kind string, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot) error {
+	mode, _ := designFlatModeOf(params)
+	if kind != entity.DesignRunKindFlat || !designgen.FlatIsDrawingMode(mode) {
+		return nil
+	}
+	e, ok := designgen.FindEngine(s.designEngineTable(), params.GetImage().GetModel())
+	if !ok || e.MaxRefs <= 0 {
+		return nil
+	}
+	n := 0
+	for _, r := range inputs.GetRefs() {
+		if r.GetMediaId() > 0 {
+			n++
+		}
+	}
+	if designFlatIsFix(params) {
+		for _, sl := range inputs.GetSlots() {
+			if sl.GetMediaId() > 0 {
+				n++
+			}
+		}
+	}
+	if n > e.MaxRefs {
+		return designRefusal(codes.InvalidArgument, "too_many_pictures",
+			fmt.Sprintf("this run would send %d images in one call and %s takes at most %d. Remove a "+
+				"reference photo. Nothing was reserved and nothing was charged", n, e.Label, e.MaxRefs),
+			map[string]string{"images": strconv.Itoa(n), "ceiling": strconv.Itoa(e.MaxRefs), "model": e.Slug})
+	}
+	return nil
 }
 
 // designUnderdrawingShapeRefusal — the pure half of the shape check.

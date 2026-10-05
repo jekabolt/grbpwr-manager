@@ -131,6 +131,7 @@ func TestFlatRerunInheritsTheParentsMode(t *testing.T) {
 	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, p, designRequestedOutputs(entity.DesignRunKindFlat, p), parent))
 	// the same block restated passes; another mode or drawing is refused
 	same := flatParamsOf("drawing", 5, 3)
+	same.Views = []string{"front", "back"}
 	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, same, parent))
 	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("quick", 0, 0), parent)))
 	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("drawing", 6, 3), parent)))
@@ -241,4 +242,33 @@ func TestJoinsFitOnTheWire(t *testing.T) {
 	require.Equal(t, 0.05, back.Items[0].Size)
 	b, _ := json.Marshal(back)
 	require.Contains(t, string(b), `"fit":{"ease":"relaxed","waist":"straight"}`)
+}
+
+// Codex gate: a drawing rerun repeats the parent's views in order (the inherited drawing holds those
+// columns); a drawing run over the engine's reference ceiling is refused before the money.
+func TestFlatDrawingRerunKeepsTheSheetAndTheCeiling(t *testing.T) {
+	parent := &entity.DesignRun{Id: 7, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"drawing","underdrawing_media_id":5}}`)}
+	swapped := &pb_common.DesignRunParams{Views: []string{"back", "front", "side_l", "side_r"}, Layout: designLayoutOne}
+	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, swapped, parent)))
+	same := &pb_common.DesignRunParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: designLayoutOne}
+	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, same, parent))
+
+	srv := &Server{}
+	srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	p := flatParamsOf("drawing_photos", 5, 3)
+	p.Image = &pb_common.DesignImageOptions{Model: designgen.FlatDefaultEngine}
+	e, ok := designgen.FindEngine(srv.designEngineTable(), designgen.FlatDefaultEngine)
+	require.True(t, ok)
+	snap := &pb_common.DesignInputSnapshot{}
+	for i := 0; i <= e.MaxRefs; i++ {
+		snap.Refs = append(snap.Refs, &pb_common.DesignInputRef{MediaId: int32(100 + i)})
+	}
+	require.Equal(t, "too_many_pictures", flatReason(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap)))
+	snap.Refs = snap.Refs[:e.MaxRefs]
+	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap))
+	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, flatParamsOf("quick", 0, 0), &pb_common.DesignInputSnapshot{Refs: snap.Refs}))
+
+	doc := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
+		{ID: "loop_closure", Kind: "closure", From: "CFN", Via: []string{"CHEST_C"}, To: "CFN", Closed: true}}})
+	require.True(t, doc.Items[0].Closed, "a closure keeps closed")
 }

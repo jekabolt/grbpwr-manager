@@ -521,6 +521,7 @@ func SanitizeDesignJoinsDoc(in DesignJoinsDoc) DesignJoinsDoc {
 			c.From = from
 			if IsDesignJoinLandmark(to) {
 				c.To = to
+				c.Closed = it.Closed
 				for _, v := range it.Via {
 					if len(c.Via) == DesignJoinsMaxVia {
 						break
