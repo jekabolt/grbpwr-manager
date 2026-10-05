@@ -167,48 +167,15 @@ FIELDS
 - Write in English. Output ONLY one JSON object, no prose and no code fence:
 {"questions":[{"id":"snake_case","decision_key":"snake_case","category":"design|fit|details|materials|use|finish","part":"<allowed part key>","kind":"single|multi","question":"…","visual_evidence":"…","options":[{"label":"…","contradicts_picture":false}],"clarify":{"question":"…","options":["…","…"]}}]}`
 
-// ─── the family → part table (20-DESIGN O6; the client's GARMENT_PARTS must match exactly) ───
-
-// designQuizPartTable — canonical text, parsed once. f=front b=back s=side_l, (z) = zone fill (the
-// client's concern; the server only needs the view). `whole` is always allowed for every family.
-const designQuizPartTable = `
-tee      whole:f neckline:f shoulder:f chest:f sleeve:f cuff:f pocket:f hem:f back:b side_seam:s label:b
-shirt    whole:f collar:f placket:f closure:f chest:f pocket:f sleeve:f cuff:f yoke:b back:b hem:f side_seam:s
-knit     whole:f neckline:f shoulder:f chest:f placket:f pocket:f sleeve:f cuff:f hem:f back:b
-hoodie   whole:f hood:s neckline:f drawcord:f zip:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b
-jacket   whole:f collar:f lapel:f closure:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f yoke:b back:b side_seam:s lining:f(z)
-coat     whole:f collar:f lapel:f closure:f chest:f pocket:f belt:f shoulder:f sleeve:f cuff:f hem:f yoke:b back:b slit:b lining:f(z)
-vest     whole:f neckline:f closure:f pocket:f hem:f back:b lining:f(z)
-dress    whole:f neckline:f strap:f bodice:f waist:f sleeve:f cuff:f pocket:f panel:f slit:f hem:f back:b closure:b
-jumpsuit whole:f neckline:f collar:f closure:f bodice:f waist:f pocket:f sleeve:f cuff:f leg:f knee:f hem:f back:b
-trousers whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f yoke:b
-shorts   whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b leg:f inseam:f side_seam:s hem:f
-skirt    whole:f waistband:f closure:b hip:f pocket:f panel:f pleat:f slit:f hem:f yoke:b
-briefs   whole:f waistband:f front:f seat:b leg_opening:f gusset:f label:b
-bra      whole:f cup:f underband:f strap:f closure:b neckline:f
-cap      whole:s crown:s brim:s panel:f vent:f closure:b label:f
-hat      whole:s crown:s brim:s band:s label:f
-glove    whole:f palm:f back:b fingers:f thumb:f cuff:f
-sock     whole:s cuff:s leg:s heel:s foot:s toe:s
-belt     whole:f strap:f(z) buckle:f keeper:f tip:f
-scarf    whole:f edge:f end:f fringe:f label:f
-tie      whole:f knot:f blade:f tip:f keeper:b
-glasses  whole:f frame:f lens:f(z) bridge:f temple:s hinge:s
-wallet   whole:f closure:f card_slot:f coin_pocket:f zip:f edge:f lining:f(z) back:b
-keyring  whole:f ring:f charm:f clasp:f
-necklace whole:f chain:f pendant:f clasp:b
-shoe     whole:s upper:s toe:s throat:f laces:s tongue:s quarter:s heel:s sole:s label:b
-boot     whole:s shaft:s upper:s toe:s laces:s heel:s sole:s pull_tab:b zip:s
-sandal   whole:s strap:s footbed:s toe:s heel:s sole:s buckle:s
-bag      whole:f body:f handle:f strap:f flap:f closure:f zip:f pocket:f panel:f hardware:f base:s lining:f(z) back:b
-object   whole:f body:f lid:f front_panel:f side:s base:s label:f
-`
+// ─── the family → part table (20-DESIGN O6) — the manifest's families.*.parts (garment_manifest.go);
+// the client's GARMENT_PARTS is asserted against the same manifest. f=front b=back s=side_l,
+// (z) = zone fill (the client's concern; the server only needs the view). `whole` always first.
 
 // designQuizPart is one allowed part of a family and the pictogram view that shows it.
 type designQuizPart struct{ key, view string }
 
 // designQuizParts — family → its parts in table order (whole first). Family "" → whole/front only.
-var designQuizParts = parseDesignQuizPartTable(designQuizPartTable)
+var designQuizParts = parseDesignQuizPartTable(designQuizPartTableFromManifest(garmentManifestData))
 
 func parseDesignQuizPartTable(table string) map[string][]designQuizPart {
 	views := map[string]string{"f": entity.DesignQuizViewFront, "b": entity.DesignQuizViewBack, "s": entity.DesignQuizViewSideL}
@@ -558,85 +525,7 @@ func designQuizResolvePart(family, part, id, question string) (key string, fixed
 	return done(entity.DesignQuizPartWhole)
 }
 
-// ─── family from the category (port of the client's familyFor, 20-DESIGN O5) ───
-
-var designQuizAccessoryFamilies = map[string]string{
-	"gloves": "glove", "socks": "sock", "belts": "belt", "scarves": "scarf", "ties": "tie",
-	"eyewear": "glasses", "wallets": "wallet", "keychains": "keyring", "jewelry": "necklace",
-}
-
-// designQuizFamily maps the category NAMES (top, sub, type) to a pictogram family; "" when unknown.
-func designQuizFamily(top, sub, typ string) string {
-	top = strings.ToLower(strings.TrimSpace(top))
-	sub = strings.ToLower(strings.TrimSpace(sub))
-	typ = strings.ToLower(strings.TrimSpace(typ))
-	switch top {
-	case "outerwear":
-		switch sub {
-		case "coats":
-			return "coat"
-		case "vests":
-			return "vest"
-		}
-		return "jacket"
-	case "tops":
-		switch sub {
-		case "shirts", "blouses", "polos":
-			return "shirt"
-		case "sweaters_knits":
-			return "knit"
-		case "hoodies_sweatshirts":
-			return "hoodie"
-		}
-		return "tee"
-	case "bottoms":
-		switch sub {
-		case "jumpsuits":
-			return "jumpsuit"
-		case "shorts":
-			return "shorts"
-		case "skirts":
-			return "skirt"
-		}
-		return "trousers"
-	case "dresses":
-		return "dress"
-	case "loungewear_sleepwear":
-		switch sub {
-		case "boxers", "briefs", "swimwear_m":
-			return "briefs"
-		case "bralettes", "swimwear_w":
-			return "bra"
-		case "robes":
-			return "coat"
-		}
-		return "tee"
-	case "accessories":
-		if sub == "hats" {
-			if typ == "caps" {
-				return "cap"
-			}
-			return "hat"
-		}
-		if f, ok := designQuizAccessoryFamilies[sub]; ok {
-			return f
-		}
-		return "cap"
-	case "shoes":
-		switch sub {
-		case "boots":
-			return "boot"
-		case "sandals", "mules_clogs":
-			return "sandal"
-		}
-		return "shoe"
-	case "bags":
-		return "bag"
-	case "objects":
-		return "object"
-	}
-	return ""
-}
+// ─── family from the category: designQuizFamily / designQuizCardFamily live in garment_manifest.go ───
 
 // designQuizCategoryPath — the card's category names by level, from the leaf category_id walked up
 // through the dictionary cache (the client's resolveCategory over the same leaf); the stored
@@ -774,7 +663,7 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 		return designQuizFlightAnswer{}, status.Error(codes.FailedPrecondition, designQuizNothingToAskMsg)
 	}
 
-	family := designQuizFamily(designQuizCategoryPath(card))
+	family := designQuizCardFamily(card)
 	// W-B3: the base size's POM values travel as Known — the prompt says a dimension is settled by
 	// the card's measurements, so it must see them. A failed read degrades to "no chart", never a
 	// refusal: the quiz works without measurements as it did before.
@@ -996,33 +885,6 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 		"Ask as many questions as this garment needs (never more than " + strconv.Itoa(designQuizMaxQuestions) + ") — every point that is still open and matters, nothing that is settled."
 }
 
-// designQuizFamilyGroup — the checklist group of the system prompt a family belongs to.
-func designQuizFamilyGroup(family string) string {
-	switch family {
-	case "tee", "shirt", "knit", "hoodie":
-		return "tops"
-	case "jacket", "coat", "vest":
-		return "outerwear"
-	case "trousers", "shorts", "skirt":
-		return "bottoms"
-	case "dress", "jumpsuit":
-		return "dresses and one-pieces"
-	case "briefs", "bra":
-		return "underwear and swim"
-	case "cap", "hat":
-		return "headwear"
-	case "shoe", "boot", "sandal":
-		return "footwear"
-	case "bag", "wallet", "belt":
-		return "bags and small leather"
-	case "glove", "sock", "scarf", "tie", "glasses", "keyring", "necklace":
-		return "small accessories"
-	case "object":
-		return "objects"
-	}
-	return "unknown"
-}
-
 // designQuizCoverageLine — what stays open for this group (Q09: the fit label never closes fit).
 func designQuizCoverageLine(group string) string {
 	line := "Coverage for this run: walk the " + group + " checklist."
@@ -1057,26 +919,28 @@ func designQuizGroupChecklist(family string) string {
 	var lines string
 	switch designQuizFamilyGroup(family) {
 	case "tops", "outerwear":
-		lines = fitTops + designTops + seams + colours
-		if family == "knit" {
-			lines += knitwear
+		lines = fitTops + designTops
+		if designQuizFamilyHas(family, garmentTraitBottomsFit) { // pyjamas, lounge set
+			lines += fitBottoms
 		}
+		lines += seams + colours
 	case "dresses and one-pieces":
 		lines = fitTops + " · fit (dresses and one-pieces): torso length and where the waist sits (natural, raised, dropped, none)\n" + designTops
-		if family == "jumpsuit" {
+		if designQuizFamilyHas(family, garmentTraitBottomsFit) {
 			lines += fitBottoms
-		} else {
+		}
+		if designQuizFamilyHas(family, garmentTraitSkirtVolume) {
 			lines += skirtsDress
 		}
 		lines += seams + colours
 	case "bottoms":
 		lines = fitBottoms + designBotts
-		if family == "skirt" {
+		if designQuizFamilyHas(family, garmentTraitSkirtVolume) {
 			lines += skirtsDress
 		}
 		lines += seams + colours
 	case "underwear and swim":
-		if family == "bra" {
+		if designQuizFamilyHas(family, garmentTraitBraFit) {
 			lines = " · fit (bras): the band and cup basis (size system, wired or soft)\n"
 		}
 		lines += " · design and construction: fabric and lining, elastic type and width, gusset, cup construction, wire, closure, seams next to the skin\n"
@@ -1094,8 +958,10 @@ func designQuizGroupChecklist(family string) string {
 	default:
 		return "Checklist (product type unknown): do not assume the product is worn on the body. When neither the card's words nor the pictures make clear what the product is, ask that FIRST (id \"product_type\", category design, part whole). Then ask only points any product has: main material, size or dimensions, closure or fastening, visible construction, finish."
 	}
-	switch family {
-	case "tee", "hoodie", "knit", "briefs": // cut-and-sew knits (fully fashioned knitwear: no seam question)
+	if designQuizFamilyHas(family, garmentTraitKnitwear) {
+		lines += knitwear
+	}
+	if designQuizFamilyHas(family, garmentTraitCutSewKnit) { // fully fashioned knitwear: no seam question
 		lines += knitSeams
 	}
 	return "Checklist (" + designQuizFamilyGroup(family) + "):\n" + strings.TrimRight(lines, "\n")

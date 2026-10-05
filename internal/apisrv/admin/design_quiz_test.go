@@ -162,27 +162,44 @@ func TestParseDesignQuizContradictsAndClarify(t *testing.T) {
 
 func TestDesignQuizFamilyMapping(t *testing.T) {
 	cases := []struct{ top, sub, typ, want string }{
-		{"outerwear", "coats", "trench", "coat"},
+		{"outerwear", "coats", "trench", "trench"},
 		{"outerwear", "vests", "", "vest"},
-		{"outerwear", "jackets", "blazer", "jacket"},
-		{"tops", "polos", "", "shirt"},
-		{"tops", "sweaters_knits", "cardigans", "knit"},
-		{"tops", "hoodies_sweatshirts", "zip", "hoodie"},
-		{"tops", "tanks", "", "tee"},
-		{"bottoms", "jumpsuits", "overalls", "jumpsuit"},
-		{"bottoms", "leggings", "", "trousers"},
+		{"outerwear", "jackets", "blazer", "blazer"},
+		{"outerwear", "coats", "wool", "coat"},
+		{"outerwear", "jackets", "", "jacket"},
+		{"tops", "polos", "", "polo"},
+		{"tops", "blouses", "", "blouse"},
+		{"tops", "shirts", "oxford", "shirt"},
+		{"tops", "sweaters_knits", "cardigans", "cardigan"},
+		{"tops", "sweaters_knits", "pullovers", "knit"},
+		{"tops", "hoodies_sweatshirts", "zip", "zip_hoodie"},
+		{"tops", "hoodies_sweatshirts", "pullover", "hoodie"},
+		{"tops", "tanks", "", "tank"},
+		{"tops", "crop", "", "crop_top"},
+		{"Tops", " TShirts ", "", "tee"},
+		{"bottoms", "jumpsuits", "overalls", "overalls"},
+		{"bottoms", "jumpsuits", "", "jumpsuit"},
+		{"bottoms", "leggings", "", "leggings"},
+		{"bottoms", "pants", "chinos", "trousers"},
 		{"bottoms", "skirts", "midi", "skirt"},
-		{"dresses", "", "slip", "dress"},
-		{"loungewear_sleepwear", "swimwear_w", "", "bra"},
-		{"loungewear_sleepwear", "swimwear_m", "", "briefs"},
-		{"loungewear_sleepwear", "robes", "", "coat"},
-		{"loungewear_sleepwear", "pyjamas", "", "tee"},
+		{"dresses", "", "slip", "slip_dress"},
+		{"dresses", "", "midi", "dress"},
+		{"loungewear_sleepwear", "swimwear_w", "", "swimsuit"},
+		{"loungewear_sleepwear", "bralettes", "", "bra"},
+		{"loungewear_sleepwear", "swimwear_m", "", "swim_shorts"},
+		{"loungewear_sleepwear", "briefs", "", "briefs"},
+		{"loungewear_sleepwear", "robes", "", "robe"},
+		{"loungewear_sleepwear", "pyjamas", "", "pyjamas"},
+		{"loungewear_sleepwear", "future_sub", "", "tee"},
 		{"accessories", "hats", "caps", "cap"},
-		{"accessories", "hats", "bucket", "hat"},
-		{"accessories", "jewelry", "rings", "necklace"},
+		{"accessories", "hats", "bucket", "bucket_hat"},
+		{"accessories", "hats", "panama", "hat"},
+		{"accessories", "jewelry", "rings", "ring"},
+		{"accessories", "jewelry", "", "necklace"},
 		{"accessories", "", "", "cap"},
 		{"shoes", "boots", "", "boot"},
-		{"shoes", "mules_clogs", "", "sandal"},
+		{"shoes", "mules_clogs", "", "mule"},
+		{"shoes", "sandals", "", "sandal"},
 		{"shoes", "sneakers", "", "shoe"},
 		{"bags", "tote", "", "bag"},
 		{"objects", "home", "", "object"},
@@ -196,17 +213,26 @@ func TestDesignQuizFamilyMapping(t *testing.T) {
 	}
 }
 
-// TestDesignQuizPartTableCoversEveryFamily — the 30 families of 20-DESIGN O5, each with whole first.
+// TestDesignQuizPartTableCoversEveryFamily — every manifest family (30 kept + the wave-95 ones),
+// each with whole first; the 30 kept keys are all still there (saved answers point at them).
 func TestDesignQuizPartTableCoversEveryFamily(t *testing.T) {
-	families := strings.Fields("tee hoodie jacket trousers shorts skirt dress briefs cap glove sock belt scarf tie glasses " +
+	kept := strings.Fields("tee hoodie jacket trousers shorts skirt dress briefs cap glove sock belt scarf tie glasses " +
 		"wallet keyring necklace shoe bag object coat vest shirt knit jumpsuit bra boot sandal hat")
-	if len(designQuizParts) != len(families) {
-		t.Fatalf("table has %d families, want %d", len(designQuizParts), len(families))
+	if len(designQuizParts) != len(garmentManifestData.Families) {
+		t.Fatalf("table has %d families, manifest %d", len(designQuizParts), len(garmentManifestData.Families))
 	}
-	for _, f := range families {
+	for _, f := range kept {
+		if garmentManifestData.Families[f].Status != "existing" {
+			t.Errorf("kept family %s is not in the manifest as existing", f)
+		}
+	}
+	for f := range garmentManifestData.Families {
 		parts := designQuizParts[f]
 		if len(parts) < 2 || parts[0].key != "whole" {
 			t.Errorf("%s: %+v", f, parts)
+		}
+		if len(f) > designQuizMaxFamilyLen {
+			t.Errorf("%s longer than designQuizMaxFamilyLen", f)
 		}
 	}
 	if v, ok := designQuizPartView("jacket", "lining"); !ok || v != "front" {
