@@ -1982,6 +1982,7 @@ func insertTechCardMedia(ctx context.Context, db dependency.DB, id int, media []
 			"category":      string(m.Category),
 			"kind":          string(m.Kind),
 			"caption":       m.Caption,
+			"role":          string(m.Role),
 			"display_order": i,
 		})
 	}

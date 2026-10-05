@@ -252,11 +252,17 @@ func parseTechCardMediaItems(items []*pb_common.TechCardMediaItem, cat entity.Te
 		if len(m.Caption) > maxVarchar255 {
 			return nil, fmt.Errorf("media caption must be at most %d characters", maxVarchar255)
 		}
+		role := entity.TechCardMediaRole(m.Role)
+		if !entity.IsTechCardMediaRole(role) {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("%s[%d].role", field, i),
+				"unknown_role", m.Role, "role must be one of target, detail, material, mood, or empty")
+		}
 		out = append(out, entity.TechCardMediaItem{
 			MediaId:  int(m.MediaId),
 			Category: cat,
 			Kind:     kind,
 			Caption:  nullStringFromPb(m.Caption),
+			Role:     role,
 		})
 	}
 	return out, nil
@@ -1406,6 +1412,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MediaId: int32(m.MediaId),
 			Kind:    pbTechCardMediaKind(m.Kind),
 			Caption: pbStringFromNull(m.Caption),
+			Role:    string(m.Role),
 		}
 		if m.Category == entity.TechCardMediaCategoryMoodboard {
 			moodboardMedia = append(moodboardMedia, item)
@@ -1420,6 +1427,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Media:   ConvertEntityToCommonMedia(&tc.ResolvedMedia[i].Media),
 			Kind:    pbTechCardMediaKind(tc.ResolvedMedia[i].Kind),
 			Caption: pbStringFromNull(tc.ResolvedMedia[i].Caption),
+			Role:    string(tc.ResolvedMedia[i].Role),
 		}
 		if tc.ResolvedMedia[i].Category == entity.TechCardMediaCategoryMoodboard {
 			resolvedMoodboard = append(resolvedMoodboard, item)

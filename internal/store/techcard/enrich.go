@@ -227,6 +227,7 @@ type techCardMediaRow struct {
 	Category   entity.TechCardMediaCategory `db:"category"`
 	Kind       entity.TechCardMediaKind     `db:"kind"`
 	Caption    sql.NullString               `db:"caption"`
+	Role       entity.TechCardMediaRole     `db:"role"`
 	entity.MediaFull
 }
 
@@ -237,7 +238,7 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 		return items, full, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardMediaRow](ctx, s.DB, `
-		SELECT tcm.tech_card_id, tcm.category, tcm.kind, tcm.caption, m.*
+		SELECT tcm.tech_card_id, tcm.category, tcm.kind, tcm.caption, tcm.role, m.*
 		FROM tech_card_media tcm
 		JOIN media m ON m.id = tcm.media_id
 		WHERE tcm.tech_card_id IN (:ids)
@@ -247,8 +248,8 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 	}
 	for i := range rows {
 		tcID := rows[i].TechCardID
-		items[tcID] = append(items[tcID], entity.TechCardMediaItem{MediaId: rows[i].Id, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption})
-		full[tcID] = append(full[tcID], entity.TechCardMediaFull{Media: rows[i].MediaFull, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption})
+		items[tcID] = append(items[tcID], entity.TechCardMediaItem{MediaId: rows[i].Id, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption, Role: rows[i].Role})
+		full[tcID] = append(full[tcID], entity.TechCardMediaFull{Media: rows[i].MediaFull, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption, Role: rows[i].Role})
 	}
 	return items, full, nil
 }

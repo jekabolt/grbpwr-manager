@@ -68,6 +68,9 @@ message TechCardMediaItem {
   int32 media_id = 1; // FK media(id)
   TechCardMediaKind kind = 2;
   string caption = 3; // image caption / view name
+  // Moodboard picture role (0395): "target" (the garment we make) | "detail" | "material" | "mood";
+  // "" = unassigned. Only moodboard_media carries it; rides the full-replace card save.
+  string role = 4;
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -75,6 +78,7 @@ message TechCardMediaFull {
   MediaFull media = 1;
   TechCardMediaKind kind = 2;
   string caption = 3; // image caption / view name
+  string role = 4; // same as TechCardMediaItem.role
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.

@@ -828,7 +828,11 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 			b.WriteString("Composition: " + v + "\n")
 		}
 	}
-	b.WriteString(designBoardPromptBody(mood, attachedIDs))
+	b.WriteString(designBoardPromptBodyRoles(mood, attachedIDs, designBoardRoles(card)))
+	if len(designBoardRoles(card)) > 0 {
+		// E3: the picture-role rule — only where the designer marked roles.
+		b.WriteString("\nPicture roles decide what a picture settles: a visible detail or construction is settled only by a target or detail picture; a mood or material picture never settles construction; material pictures inform the materials questions.\n")
+	}
 	if known := designCardAlreadySaysBase(card); known != "" {
 		b.WriteString("\nKnown — on the card already, do not ask about these:\n" + known)
 	}
