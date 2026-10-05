@@ -169,8 +169,9 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	if mode == designgen.FlatModeHandFlat {
 		return designRefuseFlatHandFlat(f, parent, card)
 	}
-	// straps: a rerun repeats its parent's frozen list; a fix redraws a sheet of a confirmed run.
-	if parent != nil || designFlatIsFix(params) {
+	// straps: a rerun repeats its parent's frozen list. A fix freezes the card's CURRENT list, so it
+	// needs the confirmation like a new press.
+	if parent != nil {
 		return nil
 	}
 	cur, usable, confirmed := 0, false, false
@@ -260,9 +261,10 @@ func (s *Server) designRefuseFlatStructureGone(ctx context.Context, kind string,
 	return nil
 }
 
-// designRefuseFlatReferenceCeiling — a flat sends its snapshot's pictures in ONE call; more than the
-// engine takes would be refused by the worker after the run was booked.
-func (s *Server) designRefuseFlatReferenceCeiling(kind string, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot) error {
+// designRefuseFlatReferenceCeiling — a flat sends all its pictures in ONE call; more than the engine
+// takes would be refused by the worker after the run was booked. Counted on the frozen params and
+// snapshot by the worker's own list (designgen.FlatCallPictures).
+func (s *Server) designRefuseFlatReferenceCeiling(kind string, params *pb_common.DesignRunParams, paramsJSON, inputsJSON []byte) error {
 	if kind != entity.DesignRunKindFlat {
 		return nil
 	}
@@ -270,23 +272,9 @@ func (s *Server) designRefuseFlatReferenceCeiling(kind string, params *pb_common
 	if !ok || e.MaxRefs <= 0 {
 		return nil
 	}
-	n := 0
-	seen := map[int32]bool{}
-	for _, r := range inputs.GetRefs() {
-		if id := r.GetMediaId(); id > 0 && !seen[id] {
-			seen[id] = true
-			n++
-		}
-	}
-	for _, sl := range inputs.GetSlots() {
-		if id := sl.GetMediaId(); id > 0 && !seen[id] {
-			seen[id] = true
-			n++
-		}
-	}
-	if n > e.MaxRefs {
+	if n := designgen.FlatCallPictures(kind, paramsJSON, inputsJSON); n > e.MaxRefs {
 		return designRefusal(codes.InvalidArgument, "too_many_pictures",
-			fmt.Sprintf("this run would send up to %d images in one call and %s takes at most %d. Remove a "+
+			fmt.Sprintf("this run would send %d images in one call and %s takes at most %d. Remove a "+
 				"reference photo. Nothing was reserved and nothing was charged", n, e.Label, e.MaxRefs),
 			map[string]string{"images": strconv.Itoa(n), "ceiling": strconv.Itoa(e.MaxRefs), "model": e.Slug})
 	}

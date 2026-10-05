@@ -1023,9 +1023,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err != nil {
 		return nil, err
 	}
-	if err := s.designRefuseFlatReferenceCeiling(kind, params, inputs); err != nil {
-		return nil, err
-	}
 	// ─── 3D БЕЗ ПЕРЕДА — ОТКАЗ ЗДЕСЬ, А НЕ ПАДЕНИЕ В ВОРКЕРЕ (J-26) ───
 	//
 	// СТОИТ РОВНО ЗДЕСЬ, И ЭТО ЕДИНСТВЕННОЕ ВОЗМОЖНОЕ МЕСТО. Раньше — вопросу не на чем стоять:
@@ -1143,6 +1140,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 				slog.String("err", err.Error()))
 			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
 		}
+	}
+	if err := s.designRefuseFlatReferenceCeiling(kind, params, paramsJSON, inputsJSON); err != nil {
+		return nil, err
 	}
 	if len(inputsJSON) > designMaxInputsBytes {
 		return nil, status.Errorf(codes.InvalidArgument,

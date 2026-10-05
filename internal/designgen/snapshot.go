@@ -674,7 +674,7 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 				continue
 			}
 			// The designer's flats travel only on a hand_flat run (flatHandFlatReferences).
-			if FlatStructureView(r.Role) != "" {
+			if FlatStructureView(r.Role) != "" || (r.Role != entity.DesignRefRoleMood && entity.IsDesignRefRoleReserved(r.Role)) {
 				continue
 			}
 			caption := refEntryCaption(r)
@@ -888,6 +888,12 @@ func flatHandFlatReferences(p runParams, in runInputs) []refCaption {
 		}
 	}
 	return out
+}
+
+// FlatCallPictures — how many pictures ONE call of this frozen flat run attaches (the door's ceiling
+// check before the money; the same list the worker builds, before media resolution).
+func FlatCallPictures(kind string, params, inputs []byte) int {
+	return len(referenceMediaIDs(kind, parseParams(entity.RawJSON(params)), parseInputs(entity.RawJSON(inputs))))
 }
 
 // referenceMediaIDs is the picture half of referenceList — kept as a name because half the band's

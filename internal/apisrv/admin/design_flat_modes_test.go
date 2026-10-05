@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -78,7 +79,7 @@ func TestFlatModeDoorRefusals(t *testing.T) {
 		{"straps unconfirmed", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), "joins_unconfirmed"},
 		{"straps no list", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, &entity.DesignBand{}, "joins_unconfirmed"},
 		{"straps rerun skips", entity.DesignRunKindFlat, flatParamsOf("straps"), parent, bandWithJoins(3, false), ""},
-		{"straps fix skips", entity.DesignRunKindFlat, fix, nil, bandWithJoins(3, false), ""},
+		{"straps fix needs the confirmation too", entity.DesignRunKindFlat, fix, nil, bandWithJoins(3, false), "joins_unconfirmed"},
 		{"straps per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
 			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, nil, bandWithJoins(3, true), "mode_not_for_this_run"},
 		{"hand flat detail only", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"detail"}, Layout: designLayoutOne,
@@ -177,13 +178,17 @@ func TestFlatReferenceCeiling(t *testing.T) {
 	p.Image = &pb_common.DesignImageOptions{Model: designgen.FlatDefaultEngine}
 	e, ok := designgen.FindEngine(srv.designEngineTable(), designgen.FlatDefaultEngine)
 	require.True(t, ok)
-	snap := &pb_common.DesignInputSnapshot{}
-	for i := 0; i <= e.MaxRefs; i++ {
-		snap.Refs = append(snap.Refs, &pb_common.DesignInputRef{MediaId: int32(100 + i)})
+	refs := func(n int) []byte {
+		var parts []string
+		for i := 0; i < n; i++ {
+			parts = append(parts, `{"media_id":`+strconv.Itoa(100+i)+`,"role":"front"}`)
+		}
+		return []byte(`{"refs":[` + strings.Join(parts, ",") + `]}`)
 	}
-	require.Equal(t, "too_many_pictures", flatReason(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap)))
-	snap.Refs = snap.Refs[:e.MaxRefs]
-	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap))
+	params := []byte(`{"views":["front","back"],"layout":"one","colour":{"fabric_media_id":9}}`)
+	require.Equal(t, "too_many_pictures", flatReason(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, params, refs(e.MaxRefs))),
+		"the fabric photo counts too")
+	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, params, refs(e.MaxRefs-1)))
 }
 
 func TestReservedReferenceRoles(t *testing.T) {
