@@ -180,6 +180,12 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 	if !force && designJoinsCacheHit(band.Joins, fp) {
 		return &pb_admin.GenerateDesignJoinsResponse{Joins: designJoinsToPb(band.Joins), Cached: true}, nil
 	}
+	// A NON-FORCE regeneration reads only the photos the last verdict kept (the designer's «photos
+	// disagree · pick»); `force` re-reads every photo and re-judges them. The fingerprint stays the
+	// full set's, so the cache keeps answering for the same source.
+	if !force {
+		photos = designJoinsKeptPhotos(photos, band.Joins)
+	}
 
 	if err := s.designGenerationGate(); err != nil {
 		return nil, err
@@ -282,6 +288,58 @@ func designJoinsPhotos(refs []entity.DesignReference) []designJoinsPhoto {
 		if len(out) == entity.DesignJoinsMaxPhotos {
 			break
 		}
+	}
+	return out
+}
+
+// designJoinsKeptPhotos — photos narrowed to the stored verdict's keep_media_ids; unchanged when
+// there is no verdict, no keep list, or none of the kept photos is still a reference.
+func designJoinsKeptPhotos(photos []designJoinsPhoto, j *entity.DesignJoins) []designJoinsPhoto {
+	keep := designJoinsKeepSet(j)
+	if keep == nil {
+		return photos
+	}
+	var out []designJoinsPhoto
+	for _, p := range photos {
+		if keep[p.MediaID] {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return photos
+	}
+	return out
+}
+
+// designJoinsKeepSet — the card's keep_media_ids as a set; nil when there is none.
+func designJoinsKeepSet(j *entity.DesignJoins) map[int]bool {
+	if j == nil || len(j.Consistency.KeepMediaIDs) == 0 {
+		return nil
+	}
+	keep := make(map[int]bool, len(j.Consistency.KeepMediaIDs))
+	for _, id := range j.Consistency.KeepMediaIDs {
+		keep[id] = true
+	}
+	return keep
+}
+
+// designKeptReferences — a FLAT run reads only the reference photos the join list's verdict kept
+// (the photos that show THIS garment); the roles of the others stay on the card untouched. Any other
+// kind, no verdict or no keep list — the card's references as they are. When none of the kept photos
+// is still a reference, nothing is filtered (an empty reference set would be a different run).
+func designKeptReferences(kind string, refs []entity.DesignReference, j *entity.DesignJoins) []entity.DesignReference {
+	keep := designJoinsKeepSet(j)
+	if kind != entity.DesignRunKindFlat || keep == nil {
+		return refs
+	}
+	var out []entity.DesignReference
+	for _, r := range refs {
+		if keep[r.MediaId] {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return refs
 	}
 	return out
 }

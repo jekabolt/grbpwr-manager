@@ -390,6 +390,9 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		PartsSuggestions: designPartsSuggestionsToPb(band.PartsSuggestions),
 		// FLAT ROUTE (0397, field 35): the card's current join list; absent = none yet.
 		Joins: designJoinsToPb(band.Joins),
+		// The wall-clock cap (fields 36–37): the client draws elapsed / limit from started_at.
+		ImageRunCapSeconds: int32(s.designRunCap().Seconds()),
+		CappedRunKinds:     entity.DesignCappedRunKinds(),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -23,6 +24,17 @@ import (
 // SetDesignEngines wires the engine table (app.go, beside SetDesignKindGate). A function, not a
 // slice, for the same reason as the kind gate: the answer belongs to the image client.
 func (s *Server) SetDesignEngines(f func() []designgen.Engine) { s.designEngines = f }
+
+// SetDesignImageRunCap — the worker's wall-clock cap of an image run, advertised by the band.
+func (s *Server) SetDesignImageRunCap(d time.Duration) { s.designImageRunCap = d }
+
+// designRunCap — the advertised cap (the entity default until app.go sets the deployment's).
+func (s *Server) designRunCap() time.Duration {
+	if s.designImageRunCap > 0 {
+		return s.designImageRunCap
+	}
+	return entity.DesignImageRunCapDefault
+}
 
 // designEngineTable — the engines this server accepts; nil when none are wired, and then the door
 // refuses every params.image (a run it cannot price is a run it does not take).
