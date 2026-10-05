@@ -3,6 +3,7 @@ package designgen
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/draw"
@@ -118,6 +119,10 @@ func artworkTighten(src image.Image) (artworkCut, bool) {
 	draw.Draw(m, m.Bounds(), fitted, b.Min, draw.Src)
 	hasAlpha := hasTransparentPixel(m)
 	W, H := m.Bounds().Dx(), m.Bounds().Dy()
+	var ground []bool
+	if !hasAlpha {
+		ground = artworkOuterWhite(m)
+	}
 	x0, y0, x1, y1 := W, H, -1, -1
 	for y := 0; y < H; y++ {
 		row := m.Pix[y*m.Stride : y*m.Stride+W*4]
@@ -127,10 +132,11 @@ func artworkTighten(src image.Image) (artworkCut, bool) {
 			if hasAlpha {
 				content = px[3] > artworkAlphaFloor
 			} else {
-				lo, hi := min(px[0], px[1], px[2]), max(px[0], px[1], px[2])
-				content = lo < artworkWhiteFloor || int(hi)-int(lo) > artworkChromaFloor
+				// Only the white ground reached from the picture's edge is not the artwork; white
+				// inside it (lettering, counters, a white fill) stays.
+				content = !ground[y*W+x]
 				if !content {
-					px[3] = 0 // the white ground of an opaque picture is not the artwork
+					px[3] = 0
 				}
 			}
 			if content {
@@ -155,6 +161,44 @@ func artworkTighten(src image.Image) (artworkCut, bool) {
 		leanScale(cut.img, cut.img.Bounds(), m, rect)
 	}
 	return cut, true
+}
+
+// artworkOuterWhite marks the white ground of an opaque picture: near-white pixels (min channel ≥
+// artworkWhiteFloor and chroma ≤ artworkChromaFloor) 4-connected to the picture's edge.
+func artworkOuterWhite(m *image.NRGBA) []bool {
+	W, H := m.Bounds().Dx(), m.Bounds().Dy()
+	white := func(x, y int) bool {
+		px := m.Pix[y*m.Stride+x*4 : y*m.Stride+x*4+3]
+		lo, hi := min(px[0], px[1], px[2]), max(px[0], px[1], px[2])
+		return lo >= artworkWhiteFloor && int(hi)-int(lo) <= artworkChromaFloor
+	}
+	seen := make([]bool, W*H)
+	stack := make([]int, 0, 2*(W+H))
+	push := func(x, y int) {
+		if x < 0 || y < 0 || x >= W || y >= H || seen[y*W+x] || !white(x, y) {
+			return
+		}
+		seen[y*W+x] = true
+		stack = append(stack, y*W+x)
+	}
+	for x := 0; x < W; x++ {
+		push(x, 0)
+		push(x, H-1)
+	}
+	for y := 0; y < H; y++ {
+		push(0, y)
+		push(W-1, y)
+	}
+	for len(stack) > 0 {
+		i := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		x, y := i%W, i/W
+		push(x+1, y)
+		push(x-1, y)
+		push(x, y+1)
+		push(x, y-1)
+	}
+	return seen
 }
 
 // artworkOnGround — the cut flattened onto the ground, as a JPEG data URI (opaque by then).
@@ -182,13 +226,19 @@ func artworkBlend(under, over color.NRGBA, a uint8) color.NRGBA {
 }
 
 // artworkSubQuad maps the content bbox (fractions of the artwork picture) into the placed quad by
-// bilinear interpolation of its four corners TL, TR, BR, BL.
+// the quad's own homography (TL, TR, BR, BL) — the same map the guide warps with.
 func artworkSubQuad(q []artworkCorner, frac [4]float64) []artworkCorner {
+	p := [4][2]float64{{q[0].X, q[0].Y}, {q[1].X, q[1].Y}, {q[2].X, q[2].Y}, {q[3].X, q[3].Y}}
+	if artworkQuadArea(p) < 1e-6 {
+		return q // a degenerate quad has no map; its corners go out as placed
+	}
+	m := artworkHomography(p)
 	at := func(u, v float64) artworkCorner {
-		return artworkCorner{
-			X: (1-u)*(1-v)*q[0].X + u*(1-v)*q[1].X + u*v*q[2].X + (1-u)*v*q[3].X,
-			Y: (1-u)*(1-v)*q[0].Y + u*(1-v)*q[1].Y + u*v*q[2].Y + (1-u)*v*q[3].Y,
+		w := m[6]*u + m[7]*v + m[8]
+		if w == 0 {
+			w = 1
 		}
+		return artworkCorner{X: (m[0]*u + m[1]*v + m[2]) / w, Y: (m[3]*u + m[4]*v + m[5]) / w}
 	}
 	return []artworkCorner{at(frac[0], frac[1]), at(frac[2], frac[1]), at(frac[2], frac[3]), at(frac[0], frac[3])}
 }
@@ -235,7 +285,7 @@ func artworkInvert3(m [9]float64) ([9]float64, bool) {
 
 // artworkDrawInQuad warps the cut into the quad q (fractions of dst's frame) by its homography, on a
 // ground-coloured underlay under the cut's alpha — so white thread reads on a white flat.
-func artworkDrawInQuad(dst *image.NRGBA, cut *image.NRGBA, q []artworkCorner, ground color.NRGBA) {
+func artworkDrawInQuad(dst *image.NRGBA, cut *image.NRGBA, q []artworkCorner, ground color.NRGBA) bool {
 	db := dst.Bounds()
 	W, H := float64(db.Dx()), float64(db.Dy())
 	var px [4][2]float64
@@ -246,13 +296,13 @@ func artworkDrawInQuad(dst *image.NRGBA, cut *image.NRGBA, q []artworkCorner, gr
 		minY, maxY = math.Min(minY, px[k][1]), math.Max(maxY, px[k][1])
 	}
 	inv, ok := artworkInvert3(artworkHomography(px))
-	if !ok {
-		return
+	if !ok || artworkQuadArea(px) < 4 {
+		return false
 	}
 	area := image.Rect(int(math.Floor(minX)), int(math.Floor(minY)), int(math.Ceil(maxX)), int(math.Ceil(maxY))).
 		Add(db.Min).Intersect(db)
 	if area.Empty() {
-		return
+		return false
 	}
 	// The cut scaled to about the quad's size first, so the per-pixel lookup below can be nearest
 	// without aliasing thin letters away.
@@ -283,7 +333,22 @@ func artworkDrawInQuad(dst *image.NRGBA, cut *image.NRGBA, q []artworkCorner, gr
 			dst.SetNRGBA(x, y, artworkBlend(under, s, s.A))
 		}
 	}
+	return true
 }
+
+// artworkQuadArea — the shoelace area of a quad in pixels² (coincident or collinear corners ≈ 0).
+func artworkQuadArea(p [4][2]float64) float64 {
+	a := 0.0
+	for k := 0; k < 4; k++ {
+		n := (k + 1) % 4
+		a += p[k][0]*p[n][1] - p[n][0]*p[k][1]
+	}
+	return math.Abs(a) / 2
+}
+
+// errArtworkGuideIncomplete — some artwork of the side could not be drawn; a guide that does not
+// show every artwork of its side would tell the model something false, so none goes out.
+var errArtworkGuideIncomplete = errors.New("artwork guide: an artwork could not be drawn")
 
 // artworkGuide composes one side's guide: the flat (fitted to artworkGuideSide) with every artwork
 // of that side drawn into its content quad. JPEG data URI.
@@ -295,8 +360,9 @@ func artworkGuide(flat image.Image, arts []artworkUse, cuts map[int]artworkCut, 
 	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.Draw(dst, dst.Bounds(), fitted, b.Min, draw.Over)
 	for _, a := range arts {
-		if c, ok := cuts[a.MediaID]; ok && len(a.Corners) == 4 {
-			artworkDrawInQuad(dst, c.img, a.Corners, ground)
+		c, ok := cuts[a.MediaID]
+		if !ok || len(a.Corners) != 4 || !artworkDrawInQuad(dst, c.img, a.Corners, ground) {
+			return "", errArtworkGuideIncomplete
 		}
 	}
 	var buf bytes.Buffer

@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"strings"
 	"testing"
 
@@ -90,12 +91,13 @@ func TestArtworkSubQuadInterpolatesTheCorners(t *testing.T) {
 		require.InDelta(t, want[i].X, got[i].X, 1e-12)
 		require.InDelta(t, want[i].Y, got[i].Y, 1e-12)
 	}
-	// A free quad: the whole box is the quad itself, its centre the bilinear centre.
+	// A free quad: the whole box is the quad itself.
 	q := []artworkCorner{{0.1, 0.1}, {0.5, 0.2}, {0.6, 0.7}, {0.0, 0.5}}
-	require.Equal(t, q, artworkSubQuad(q, [4]float64{0, 0, 1, 1}))
-	c := artworkSubQuad(q, [4]float64{0.5, 0.5, 0.5, 0.5})[0]
-	require.InDelta(t, (0.1+0.5+0.6+0.0)/4, c.X, 1e-12)
-	require.InDelta(t, (0.1+0.2+0.7+0.5)/4, c.Y, 1e-12)
+	full := artworkSubQuad(q, [4]float64{0, 0, 1, 1})
+	for i := range q {
+		require.InDelta(t, q[i].X, full[i].X, 1e-12)
+		require.InDelta(t, q[i].Y, full[i].Y, 1e-12)
+	}
 }
 
 func TestArtworkHomographyMapsTheSquareOntoTheQuad(t *testing.T) {
@@ -338,4 +340,51 @@ func TestArtworkGroundOf(t *testing.T) {
 	g, k = artworkGroundOf(runParams{})
 	require.Equal(t, artworkGroundGrey, k)
 	require.Equal(t, artworkNeutralGround, g)
+}
+
+func TestT27ReviewOpaqueInnerWhiteKept(t *testing.T) {
+	// white picture, red square 20..80 with a white hole 40..60 inside: the hole is artwork.
+	m := image.NewNRGBA(image.Rect(0, 0, 100, 100))
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 100; x++ {
+			c := color.NRGBA{255, 255, 255, 255}
+			if x >= 20 && x < 80 && y >= 20 && y < 80 && !(x >= 40 && x < 60 && y >= 40 && y < 60) {
+				c = color.NRGBA{200, 0, 0, 255}
+			}
+			m.SetNRGBA(x, y, c)
+		}
+	}
+	cut, ok := artworkTighten(m)
+	if !ok {
+		t.Fatal("no content")
+	}
+	b := cut.img.Bounds()
+	if a := cut.img.NRGBAAt(b.Dx()/2, b.Dy()/2).A; a != 255 {
+		t.Fatalf("inner white made transparent: alpha %d", a)
+	}
+}
+
+func TestT27ReviewSubQuadProjective(t *testing.T) {
+	q := []artworkCorner{{0.1, 0.1}, {0.9, 0.1}, {0.65, 0.9}, {0.35, 0.9}}
+	sq := artworkSubQuad(q, [4]float64{0.25, 0.25, 0.75, 0.75})
+	if sq[0].Y < 0.45 || sq[0].Y > 0.50 || sq[2].Y < 0.79 || sq[2].Y > 0.83 {
+		t.Fatalf("sub-quad not projective: %+v", sq)
+	}
+	// rectangle: same as linear
+	r := artworkSubQuad([]artworkCorner{{0.2, 0.2}, {0.6, 0.2}, {0.6, 0.6}, {0.2, 0.6}}, [4]float64{0.5, 0.5, 1, 1})
+	if math.Abs(r[0].X-0.4) > 1e-9 || math.Abs(r[2].Y-0.6) > 1e-9 {
+		t.Fatalf("rectangle sub-quad wrong: %+v", r)
+	}
+}
+
+func TestT27ReviewDegenerateQuadNoGuide(t *testing.T) {
+	flat := image.NewNRGBA(image.Rect(0, 0, 200, 200))
+	cut := image.NewNRGBA(image.Rect(0, 0, 10, 10))
+	q := []artworkCorner{{0.2, 0.2}, {0.5, 0.5}, {0.8, 0.8}, {0.3, 0.3}}
+	if artworkDrawInQuad(flat, cut, q, color.NRGBA{0, 0, 0, 255}) {
+		t.Fatal("collinear quad drawn")
+	}
+	if got := artworkSubQuad(q, [4]float64{0.1, 0.1, 0.9, 0.9}); got[1] != q[1] {
+		t.Fatalf("degenerate sub-quad changed: %+v", got)
+	}
 }
