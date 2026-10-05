@@ -236,3 +236,27 @@ func TestDesignRunCapIsAdvertised(t *testing.T) {
 	require.Equal(t, 4*time.Minute, s.designRunCap())
 	require.Equal(t, []string{"flat", "render", "recolor", "pattern", "freeform"}, entity.DesignCappedRunKinds())
 }
+
+// keep_media_ids narrows a FLAT run's references and a non-force regeneration's photos; other kinds,
+// no verdict, or a keep list that no longer matches any reference change nothing.
+func TestKeepMediaIDsNarrowTheFlat(t *testing.T) {
+	refs := []entity.DesignReference{{MediaId: 1, Role: "front"}, {MediaId: 2, Role: "front"}, {MediaId: 3, Role: "back"}}
+	j := &entity.DesignJoins{Consistency: entity.DesignJoinsConsistency{Consistent: false, KeepMediaIDs: []int{1, 3}}}
+	ids := func(rs []entity.DesignReference) (out []int) {
+		for _, r := range rs {
+			out = append(out, r.MediaId)
+		}
+		return
+	}
+	require.Equal(t, []int{1, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, j)))
+	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindRender, refs, j)), "only flats")
+	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, nil)))
+	gone := &entity.DesignJoins{Consistency: entity.DesignJoinsConsistency{KeepMediaIDs: []int{9}}}
+	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, gone)), "never an empty set")
+
+	photos := designJoinsPhotos(refs)
+	kept := designJoinsKeptPhotos(photos, j)
+	require.Len(t, kept, 2)
+	require.Equal(t, 1, kept[0].MediaID)
+	require.Equal(t, 3, kept[1].MediaID)
+}
