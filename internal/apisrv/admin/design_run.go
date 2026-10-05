@@ -680,7 +680,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := designRefuseFlatParams(kind, params, parent, band, card); err != nil {
 		return nil, err
 	}
-	if err := s.designRefuseUnderdrawingShape(ctx, kind, params, parent); err != nil {
+	if err := s.designRefuseFlatStructureGone(ctx, kind, params); err != nil {
 		return nil, err
 	}
 
@@ -1014,8 +1014,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	}
 	// A flat that names no engine is drawn by the flat route's engine (flare), frozen here.
 	s.designFreezeFlatModel(kind, params, parent)
-	// A drawing-mode flat is drawn 16:9, like the drawing it traces.
-	s.designFreezeFlatAspect(kind, params)
 	// A stated engine freezes with its slug (G-02, Codex 5).
 	s.designFreezeImageModel(kind, params)
 	// A video run freezes the Kling slug it is bought with (B-32).
@@ -2452,7 +2450,7 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 	// FLAT CANDIDATES (owner 05.10): a garment sheet is bought FlatCandidates times — the designer
 	// picks one and the split flow cuts the chosen one. imageCalls reads this number back as the
 	// call's n (designgen FlatCandidatesFor names the same runs).
-	// 80-BUILD-MODES §3.4: quick buys ONE sheet, a drawing mode four.
+	// 81-FINAL-MODES: photos and hand_flat buy two sheets, straps four.
 	if kind == entity.DesignRunKindFlat && params.GetLayout() == designLayoutOne && !designFlatIsFix(params) {
 		mode, _ := designFlatModeOf(params)
 		if n := designgen.FlatCandidatesFor(params.GetViews(), params.GetLayout(), mode); n > 0 {
@@ -3764,10 +3762,10 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 			Callouts: callouts[int(id)],
 		})
 	}
-	// ─── A DRAWING-MODE FLAT (80-BUILD-MODES §2.2): the snapshot records what is SENT — the
-	// construction drawing first, then (drawing_photos) the photos gathered above; drawing alone sends
-	// the drawing and nothing else.
-	if refs, ok := designFlatDrawingRefs(src, out.Refs); ok {
+	// ─── A FLAT (81-FINAL-MODES): a mood picture is named as one; a hand_flat run records the
+	// designer's flats first (their roles), then the photos gathered above.
+	designFlatMoodRoles(src, out.Refs)
+	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
 		out.Refs = refs
 	}
 	if len(out.Refs) > designMaxInputRefs {

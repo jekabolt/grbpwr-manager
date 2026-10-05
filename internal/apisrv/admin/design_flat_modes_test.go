@@ -33,33 +33,32 @@ func flatReason(t *testing.T, err error) string {
 	return "no-reason:" + st.Message()
 }
 
-func flatParamsOf(mode string, under int32, rev int32) *pb_common.DesignRunParams {
-	return &pb_common.DesignRunParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: designLayoutOne,
-		Flat: &pb_common.DesignFlatParams{Mode: mode, UnderdrawingMediaId: under, UnderdrawingJoinsRev: rev}}
+var flatFour = []string{"front", "back", "side_l", "side_r"}
+
+func flatParamsOf(mode string, refs ...*pb_common.DesignFlatStructureRef) *pb_common.DesignRunParams {
+	return &pb_common.DesignRunParams{Views: flatFour, Layout: designLayoutOne,
+		Flat: &pb_common.DesignFlatParams{Mode: mode, StructureRefs: refs}}
 }
 
-func bandWithJoins(rev int) *entity.DesignBand {
+func sref(id int32, role string) *pb_common.DesignFlatStructureRef {
+	return &pb_common.DesignFlatStructureRef{MediaId: id, Role: role}
+}
+
+func bandWithJoins(rev int, confirmed bool) *entity.DesignBand {
 	return &entity.DesignBand{Joins: &entity.DesignJoins{Rev: rev, Doc: entity.DesignJoinsDoc{
-		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}}}
+		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}, Confirmed: confirmed}}}
 }
 
-func TestUnderdrawingDoorRefusals(t *testing.T) {
+func TestFlatModeDoorRefusals(t *testing.T) {
 	card := &entity.TechCard{}
 	card.Media = []entity.TechCardMediaItem{
 		{MediaId: 70, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
 		{MediaId: 71, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaBack},
 		{MediaId: 80, Category: entity.TechCardMediaCategoryMoodboard},
 	}
-	hand := func(refs ...*pb_common.DesignFlatStructureRef) *pb_common.DesignRunParams {
-		p := flatParamsOf(designgen.FlatModeDrawing, 0, 0)
-		p.Flat.StructureSource = designgen.FlatStructureHandFlat
-		p.Flat.StructureRefs = refs
-		return p
-	}
-	ref := func(id int32, v string) *pb_common.DesignFlatStructureRef {
-		return &pb_common.DesignFlatStructureRef{MediaId: id, View: v}
-	}
 	parent := &entity.DesignRun{Id: 1}
+	fix := flatParamsOf("straps")
+	fix.FixTargets = []string{"front"}
 	cases := []struct {
 		name   string
 		kind   string
@@ -68,127 +67,99 @@ func TestUnderdrawingDoorRefusals(t *testing.T) {
 		band   *entity.DesignBand
 		want   string
 	}{
-		{"no block is quick", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutOne}, nil, nil, ""},
-		{"quick stated", entity.DesignRunKindFlat, flatParamsOf("quick", 0, 0), nil, nil, ""},
-		{"flat on a render", entity.DesignRunKindRender, flatParamsOf("quick", 0, 0), nil, nil, "flat_forbidden"},
-		{"unknown mode", entity.DesignRunKindFlat, flatParamsOf("trace", 0, 0), nil, nil, "unknown_flat_mode"},
-		{"underdrawing on quick", entity.DesignRunKindFlat, flatParamsOf("quick", 5, 3), nil, nil, "underdrawing_forbidden"},
-		{"required", entity.DesignRunKindFlat, flatParamsOf("drawing", 0, 3), nil, bandWithJoins(3), "underdrawing_required"},
-		{"fresh", entity.DesignRunKindFlat, flatParamsOf("drawing", 5, 3), nil, bandWithJoins(3), ""},
-		{"stale rev", entity.DesignRunKindFlat, flatParamsOf("drawing_photos", 5, 2), nil, bandWithJoins(3), "underdrawing_stale"},
-		{"no list", entity.DesignRunKindFlat, flatParamsOf("drawing", 5, 0), nil, &entity.DesignBand{}, "underdrawing_stale"},
-		{"rerun skips the rev", entity.DesignRunKindFlat, flatParamsOf("drawing", 5, 2), parent, bandWithJoins(3), ""},
-		{"per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
-			Flat: &pb_common.DesignFlatParams{Mode: "drawing", UnderdrawingMediaId: 5}}, nil, bandWithJoins(0), "mode_not_for_this_run"},
-		{"detail only", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"detail"}, Layout: designLayoutOne,
-			Flat: &pb_common.DesignFlatParams{Mode: "drawing", UnderdrawingMediaId: 5}}, nil, bandWithJoins(0), "mode_not_for_this_run"},
-		{"unknown source", entity.DesignRunKindFlat, func() *pb_common.DesignRunParams {
-			p := flatParamsOf("drawing", 5, 3)
-			p.Flat.StructureSource = "photo"
-			return p
-		}(), nil, bandWithJoins(3), "unknown_structure_source"},
-		{"refs on rendered", entity.DesignRunKindFlat, func() *pb_common.DesignRunParams {
-			p := flatParamsOf("drawing", 5, 3)
-			p.Flat.StructureRefs = []*pb_common.DesignFlatStructureRef{ref(70, "front")}
-			return p
-		}(), nil, bandWithJoins(3), "structure_malformed"},
-		{"hand flat, no rev guard", entity.DesignRunKindFlat, hand(ref(70, "front"), ref(71, "back")), nil, nil, ""},
-		{"hand flat, none", entity.DesignRunKindFlat, hand(), nil, nil, "structure_required"},
-		{"hand flat, moodboard media", entity.DesignRunKindFlat, hand(ref(80, "front")), nil, nil, "structure_not_on_card"},
-		{"hand flat, foreign media", entity.DesignRunKindFlat, hand(ref(99, "front")), nil, nil, "structure_not_on_card"},
-		{"hand flat, twice one view", entity.DesignRunKindFlat, hand(ref(70, "front"), ref(71, "front")), nil, nil, "structure_malformed"},
-		{"hand flat, detail view", entity.DesignRunKindFlat, hand(ref(70, "detail")), nil, nil, "structure_malformed"},
-		{"hand flat + rendered id", entity.DesignRunKindFlat, func() *pb_common.DesignRunParams {
-			p := hand(ref(70, "front"))
-			p.Flat.UnderdrawingMediaId = 5
-			return p
-		}(), nil, nil, "structure_malformed"},
+		{"no block is photos", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutOne}, nil, nil, ""},
+		{"photos stated", entity.DesignRunKindFlat, flatParamsOf("photos"), nil, nil, ""},
+		{"photos on per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView, Flat: &pb_common.DesignFlatParams{}}, nil, nil, ""},
+		{"flat on a render", entity.DesignRunKindRender, flatParamsOf(""), nil, nil, "flat_forbidden"},
+		{"unknown mode", entity.DesignRunKindFlat, flatParamsOf("drawing"), nil, nil, "unknown_flat_mode"},
+		{"refs on photos", entity.DesignRunKindFlat, flatParamsOf("", sref(70, "front_flat")), nil, nil, "structure_forbidden"},
+		{"refs on straps", entity.DesignRunKindFlat, flatParamsOf("straps", sref(70, "front_flat")), nil, bandWithJoins(3, true), "structure_forbidden"},
+		{"straps confirmed", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, true), ""},
+		{"straps unconfirmed", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), "joins_unconfirmed"},
+		{"straps no list", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, &entity.DesignBand{}, "joins_unconfirmed"},
+		{"straps rerun skips", entity.DesignRunKindFlat, flatParamsOf("straps"), parent, bandWithJoins(3, false), ""},
+		{"straps fix skips", entity.DesignRunKindFlat, fix, nil, bandWithJoins(3, false), ""},
+		{"straps per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
+			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, nil, bandWithJoins(3, true), "mode_not_for_this_run"},
+		{"hand flat detail only", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"detail"}, Layout: designLayoutOne,
+			Flat: &pb_common.DesignFlatParams{Mode: "hand_flat", StructureRefs: []*pb_common.DesignFlatStructureRef{sref(70, "front_flat")}}}, nil, nil, "mode_not_for_this_run"},
+		{"hand flat", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "back_flat")), nil, nil, ""},
+		{"hand flat none", entity.DesignRunKindFlat, flatParamsOf("hand_flat"), nil, nil, "structure_required"},
+		{"hand flat moodboard media", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(80, "front_flat")), nil, nil, "structure_not_on_card"},
+		{"hand flat foreign media", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(99, "front_flat")), nil, nil, "structure_not_on_card"},
+		{"hand flat rerun not re-read", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(99, "front_flat")), parent, nil, ""},
+		{"hand flat role twice", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "front_flat")), nil, nil, "structure_malformed"},
+		{"hand flat bad role", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front")), nil, nil, "structure_malformed"},
+		{"hand flat media twice", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(70, "back_flat")), nil, nil, "structure_malformed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			require.Equal(t, c.want, flatReason(t, designRefuseFlatParams(c.kind, c.params, c.parent, c.band, card)))
 		})
 	}
-	st, _ := status.FromError(designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("drawing", 5, 2), nil, bandWithJoins(3), card))
+	st, _ := status.FromError(designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), card))
 	require.Equal(t, codes.FailedPrecondition, st.Code())
 	for _, d := range st.Details() {
 		require.Equal(t, "3", d.(*errdetails.ErrorInfo).GetMetadata()["joins_rev"])
 	}
-
-	require.Equal(t, "", flatReason(t, designUnderdrawingShapeRefusal(5, 1536, 864)))
-	require.Equal(t, "", flatReason(t, designUnderdrawingShapeRefusal(5, 0, 0)), "unknown size passes")
-	require.Equal(t, "underdrawing_malformed", flatReason(t, designUnderdrawingShapeRefusal(5, 1024, 1024)))
-	require.Equal(t, "underdrawing_malformed", flatReason(t, designUnderdrawingShapeRefusal(5, 1536, 800)))
 }
 
-func TestFlatRerunInheritsTheParentsMode(t *testing.T) {
-	parent := &entity.DesignRun{Id: 7, Params: entity.RawJSON(`{"views":["front","back"],"layout":"one","flat":{"mode":"drawing","underdrawing_media_id":5,"underdrawing_joins_rev":3}}`), RequestedOutputs: 4}
+func TestFlatModeOutputsAndReruns(t *testing.T) {
+	require.Equal(t, 2, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("")))
+	require.Equal(t, 2, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"))))
+	require.Equal(t, 4, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("straps")))
+	fix := flatParamsOf("straps")
+	fix.FixTargets = []string{"front"}
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, fix), "a fix is one picture")
+
+	parent := &entity.DesignRun{Id: 7, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"straps"}}`), RequestedOutputs: 4}
 	// a client that knows nothing of the block (every client before the modes) inherits it
-	p := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
+	p := &pb_common.DesignRunParams{Views: flatFour, Layout: designLayoutOne}
 	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, p, parent))
-	require.Equal(t, "drawing", p.GetFlat().GetMode())
-	require.Equal(t, int32(5), p.GetFlat().GetUnderdrawingMediaId())
+	require.Equal(t, "straps", p.GetFlat().GetMode())
 	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, p, designRequestedOutputs(entity.DesignRunKindFlat, p), parent))
-	// the same block restated passes; another mode or drawing is refused
-	same := flatParamsOf("drawing", 5, 3)
-	same.Views = []string{"front", "back"}
-	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, same, parent))
-	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("quick", 0, 0), parent)))
-	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("drawing", 6, 3), parent)))
-	// a legacy parent (no block) stays quick; quick restated is fine; a drawing mode is refused
+	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), parent))
+	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf(""), parent)))
+	// a legacy parent (no block) is the photos route; its four candidates rerun as four
 	legacy := &entity.DesignRun{Id: 8, Params: entity.RawJSON(`{"views":["front","back"],"layout":"one"}`), RequestedOutputs: 4}
 	q := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
 	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, q, legacy))
 	require.Nil(t, q.GetFlat())
-	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, q, designRequestedOutputs(entity.DesignRunKindFlat, q), legacy),
-		"a four-candidate run from before the modes reruns as four")
-	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("drawing", 5, 3), legacy)))
-	// a fix is one picture whatever its mode
-	fix := flatParamsOf("drawing", 5, 3)
-	fix.FixTargets = []string{"front"}
-	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, fix))
-	fix.Flat.UnderdrawingJoinsRev = 1
-	require.Equal(t, "", flatReason(t, designRefuseFlatParams(entity.DesignRunKindFlat, fix, nil, bandWithJoins(3), nil)),
-		"a fix traces the drawing its plate was traced from: no rev check")
+	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, q, designRequestedOutputs(entity.DesignRunKindFlat, q), legacy))
+	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), legacy)))
+	// hand_flat: the same flats and the same views
+	hp := &entity.DesignRun{Id: 9, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"hand_flat","structure_refs":[{"media_id":70,"role":"front_flat"}]}}`)}
+	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat")), hp))
+	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(71, "front_flat")), hp)))
+	swapped := &pb_common.DesignRunParams{Views: []string{"back", "front", "side_l", "side_r"}, Layout: designLayoutOne}
+	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, swapped, hp)))
 }
 
-func TestSnapshotRefsPerMode(t *testing.T) {
-	refs := []entity.DesignReference{{MediaId: 11, Role: "front"}, {MediaId: 12, Role: "back"}}
-	bench := []entity.DesignBenchSlot{}
+func TestFlatSnapshotRefsPerMode(t *testing.T) {
+	card := &entity.TechCard{}
+	card.Media = []entity.TechCardMediaItem{{MediaId: 13, Category: entity.TechCardMediaCategoryMoodboard, Role: entity.TechCardMediaRoleMood}}
+	refs := []entity.DesignReference{{MediaId: 11, Role: "front"}, {MediaId: 12, Role: "back"}, {MediaId: 13}}
 	snap := func(p *pb_common.DesignRunParams) []*pb_common.DesignInputRef {
-		out, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Refs: refs, Bench: bench, Params: p})
+		out, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Refs: refs, Params: p})
 		require.NoError(t, err)
 		return out.GetRefs()
 	}
-	quick := snap(&pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne, ExtraInputMediaIds: []int32{9}})
-	require.Equal(t, []int32{11, 12, 9}, refIDs(quick), "quick: as today")
+	got := snap(&pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne})
+	require.Equal(t, []int32{11, 12, 13}, refIDs(got), "photos: as today")
+	require.Equal(t, entity.DesignRefRoleMood, got[2].GetRole(), "a mood picture is named as one")
+	got = snap(flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "back_flat")))
+	require.Equal(t, []int32{70, 71, 11, 12, 13}, refIDs(got), "hand_flat: the flats first, then the photos")
+	require.Equal(t, entity.DesignRefRoleBackFlat, got[1].GetRole())
 
-	d := flatParamsOf("drawing", 5, 3)
-	d.ExtraInputMediaIds = []int32{9}
-	got := snap(d)
-	require.Equal(t, []int32{5}, refIDs(got), "drawing: the drawing alone")
-	require.Equal(t, entity.DesignRefRoleUnderdrawing, got[0].GetRole())
-
-	dp := flatParamsOf("drawing_photos", 5, 3)
-	dp.ExtraInputMediaIds = []int32{9}
-	got = snap(dp)
-	require.Equal(t, []int32{5, 11, 12, 9}, refIDs(got), "drawing_photos: the drawing first, then the photos")
-	require.Equal(t, "front", got[1].GetRole())
-
-	h := flatParamsOf("drawing", 0, 0)
-	h.Flat.StructureSource = designgen.FlatStructureHandFlat
-	h.Flat.StructureRefs = []*pb_common.DesignFlatStructureRef{{MediaId: 70, View: "front"}, {MediaId: 71, View: "back"}}
-	got = snap(h)
-	require.Equal(t, []int32{70, 71}, refIDs(got))
-	require.Equal(t, entity.DesignRefRoleUnderdrawing, got[1].GetRole())
-
-	// every structure picture is a media source the doors see
 	var where []string
-	for _, r := range designRunInputMediaRefs(h, nil) {
+	for _, r := range designRunInputMediaRefs(flatParamsOf("hand_flat", sref(70, "front_flat")), nil) {
 		where = append(where, r.Where)
 	}
-	require.Equal(t, []string{"params.flat.structure_refs.0.media_id", "params.flat.structure_refs.1.media_id"}, where)
-	require.Equal(t, "params.flat.underdrawing_media_id", designRunInputMediaRefs(d, nil)[1].Where)
+	require.Equal(t, []string{"params.flat.structure_refs.0.media_id"}, where)
+
+	band := bandWithJoins(3, true)
+	require.Nil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat")), band, nil), "hand_flat freezes no list")
+	require.NotNil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf("straps"), band, nil))
 }
 
 func refIDs(refs []*pb_common.DesignInputRef) []int32 {
@@ -199,10 +170,61 @@ func refIDs(refs []*pb_common.DesignInputRef) []int32 {
 	return out
 }
 
-func TestReferenceRoleUnderdrawingIsReserved(t *testing.T) {
-	_, err := (&Server{}).SetDesignReferenceRole(context.Background(), &pb_admin.SetDesignReferenceRoleRequest{
-		TechCardId: 1, MediaId: 2, Role: "underdrawing"})
-	require.Equal(t, "role_reserved", flatReason(t, err))
+func TestFlatReferenceCeiling(t *testing.T) {
+	srv := &Server{}
+	srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
+	p := flatParamsOf("")
+	p.Image = &pb_common.DesignImageOptions{Model: designgen.FlatDefaultEngine}
+	e, ok := designgen.FindEngine(srv.designEngineTable(), designgen.FlatDefaultEngine)
+	require.True(t, ok)
+	snap := &pb_common.DesignInputSnapshot{}
+	for i := 0; i <= e.MaxRefs; i++ {
+		snap.Refs = append(snap.Refs, &pb_common.DesignInputRef{MediaId: int32(100 + i)})
+	}
+	require.Equal(t, "too_many_pictures", flatReason(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap)))
+	snap.Refs = snap.Refs[:e.MaxRefs]
+	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap))
+}
+
+func TestReservedReferenceRoles(t *testing.T) {
+	for _, role := range []string{"front_flat", "back_flat", "mood", "underdrawing"} {
+		_, err := (&Server{}).SetDesignReferenceRole(context.Background(), &pb_admin.SetDesignReferenceRoleRequest{
+			TechCardId: 1, MediaId: 2, Role: role})
+		require.Equal(t, "role_reserved", flatReason(t, err), role)
+	}
+}
+
+func TestJoinsEditMarksAndConfirm(t *testing.T) {
+	prev := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{
+		Items:    []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R", Text: "hem"}, {ID: "side", Kind: "seam", From: "UA_L", To: "HEM_L"}},
+		Absences: []string{"no sleeves"},
+	})
+	next := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{
+		Items: []entity.DesignJoinItem{
+			{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R", Text: "raw hem"},
+			{ID: "side", Kind: "seam", From: "UA_L", To: "HEM_L"},
+			{ID: "pocket_L", Kind: "pocket", From: "CHEST_L", Text: "patch pocket"},
+		},
+		Absences: []string{"no sleeves", "no collar"},
+	})
+	designJoinsMarkEdits(&next, &prev)
+	require.True(t, next.Items[0].Edited, "changed text")
+	require.False(t, next.Items[1].Edited, "untouched")
+	require.True(t, next.Items[2].Edited, "added")
+	require.Equal(t, []string{"no collar"}, next.EditedAbsences)
+	// a later save keeps the marks of what the designer already changed
+	again := entity.SanitizeDesignJoinsDoc(next)
+	designJoinsMarkEdits(&again, &next)
+	require.True(t, again.Items[0].Edited)
+	require.Equal(t, []string{"no collar"}, again.EditedAbsences)
+	// the wire carries edited + confirmed, and never trusts an incoming edited
+	next.Confirmed = true
+	pb := designJoinsToPb(&entity.DesignJoins{Rev: 4, Doc: next})
+	require.True(t, pb.GetConfirmed())
+	require.True(t, pb.GetItems()[0].GetEdited())
+	back := entity.SanitizeDesignJoinsDoc(designJoinsDocFromPb(pb))
+	require.False(t, back.Items[0].Edited)
+	require.False(t, back.Confirmed)
 }
 
 func TestPartsCardConstructionFromJoins(t *testing.T) {
@@ -242,33 +264,7 @@ func TestJoinsFitOnTheWire(t *testing.T) {
 	require.Equal(t, 0.05, back.Items[0].Size)
 	b, _ := json.Marshal(back)
 	require.Contains(t, string(b), `"fit":{"ease":"relaxed","waist":"straight"}`)
-}
-
-// Codex gate: a drawing rerun repeats the parent's views in order (the inherited drawing holds those
-// columns); a drawing run over the engine's reference ceiling is refused before the money.
-func TestFlatDrawingRerunKeepsTheSheetAndTheCeiling(t *testing.T) {
-	parent := &entity.DesignRun{Id: 7, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"drawing","underdrawing_media_id":5}}`)}
-	swapped := &pb_common.DesignRunParams{Views: []string{"back", "front", "side_l", "side_r"}, Layout: designLayoutOne}
-	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, swapped, parent)))
-	same := &pb_common.DesignRunParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: designLayoutOne}
-	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, same, parent))
-
-	srv := &Server{}
-	srv.SetDesignEngines(func() []designgen.Engine { return designgen.EngineTable("") })
-	p := flatParamsOf("drawing_photos", 5, 3)
-	p.Image = &pb_common.DesignImageOptions{Model: designgen.FlatDefaultEngine}
-	e, ok := designgen.FindEngine(srv.designEngineTable(), designgen.FlatDefaultEngine)
-	require.True(t, ok)
-	snap := &pb_common.DesignInputSnapshot{}
-	for i := 0; i <= e.MaxRefs; i++ {
-		snap.Refs = append(snap.Refs, &pb_common.DesignInputRef{MediaId: int32(100 + i)})
-	}
-	require.Equal(t, "too_many_pictures", flatReason(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap)))
-	snap.Refs = snap.Refs[:e.MaxRefs]
-	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, p, snap))
-	require.NoError(t, srv.designRefuseFlatReferenceCeiling(entity.DesignRunKindFlat, flatParamsOf("quick", 0, 0), &pb_common.DesignInputSnapshot{Refs: snap.Refs}))
-
-	doc := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
+	closed := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
 		{ID: "loop_closure", Kind: "closure", From: "CFN", Via: []string{"CHEST_C"}, To: "CFN", Closed: true}}})
-	require.True(t, doc.Items[0].Closed, "a closure keeps closed")
+	require.True(t, closed.Items[0].Closed, "a closure keeps closed")
 }

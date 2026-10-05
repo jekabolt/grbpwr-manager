@@ -247,7 +247,311 @@ func joinsSentences(j entity.DesignJoinsDoc) []string {
 	S = append(S, "SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.")
 	// 8. layers (owner 05.10: garments can be multi-layer and sheer) — after, as l4.py tested them
 	S = append(S, joinsLayerSentences(j)...)
+	// 9. the v10 sentence types (81-FINAL-MODES; golden: out/v10/h3/c2/prompt.txt lines 62–66), then the
+	// designer's own edits verbatim.
+	S = append(S, joinsShapeSentences(j)...)
+	S = append(S, joinsDesignerSentences(j)...)
 	return S
+}
+
+// ─── v10 sentence types ───
+
+// joinsNeckItem — the item that draws the front neckline: not an opening, its path passes the centre
+// front neck (CFN / CFN_LOW / BREAK). The first one wins.
+func joinsNeckItem(items []entity.DesignJoinItem) *entity.DesignJoinItem {
+	for i, it := range items {
+		if it.Kind == entity.DesignJoinKindOpening {
+			continue
+		}
+		for _, n := range it.Path() {
+			if b := joinsLmBase(n); b == "CFN" || b == "CFN_LOW" || b == "BREAK" {
+				return &items[i]
+			}
+		}
+	}
+	return nil
+}
+
+// joinsNeckWord — «neck binding» / «neck band» / «neck collar»… for the neck item; «neckline» for none.
+func joinsNeckWord(neck *entity.DesignJoinItem) string {
+	if neck == nil {
+		return "neckline"
+	}
+	return "neck " + strings.ReplaceAll(neck.Kind, "_", " ")
+}
+
+// joinsMids — the interior points of a path.
+func joinsMids(p []string) []string {
+	if len(p) <= 2 {
+		return nil
+	}
+	return p[1 : len(p)-1]
+}
+
+// joinsBackLevel — the height word of a back edge from its centre-back point: «mid-back», «waist»…
+func joinsBackLevel(p []string) string {
+	for _, n := range p {
+		switch joinsLmBase(n) {
+		case "MB_C":
+			return "mid-back"
+		case "UB_C":
+			return "upper-back"
+		case "WB_C":
+			return "waist"
+		case "HEM_BC":
+			return "hem"
+		}
+	}
+	return ""
+}
+
+// joinsPointWhere — where the point of a V sits, in words.
+func joinsPointWhere(n string) string {
+	b := joinsLmBase(n)
+	between := strings.Contains(n, "..")
+	switch {
+	case b == "BUST_C" && between:
+		return "just below the bust"
+	case b == "BUST_C":
+		return "at the bust"
+	case b == "CHEST_C":
+		return "at the chest"
+	case b == "WF_C":
+		return "at the waist"
+	}
+	return "at " + n
+}
+
+// joinsBackFace — the item lies on the back (mean depth of its path).
+func joinsBackFace(it entity.DesignJoinItem) bool {
+	return it.View == entity.DesignViewBack || entity.DesignJoinFace(it.Path()) == entity.DesignViewBack
+}
+
+func joinsIsEdgeKind(k string) bool {
+	return k == entity.DesignJoinKindBinding || k == entity.DesignJoinKindEdge || k == entity.DesignJoinKindBindingWide || k == entity.DesignJoinKindBand
+}
+
+// joinsNeckShapeSentence — sentence type 1: the neckline's shape (the neck item's `type`).
+func joinsNeckShapeSentence(neck *entity.DesignJoinItem) string {
+	if neck == nil {
+		return ""
+	}
+	p := neck.Path()
+	if len(p) < 2 {
+		return ""
+	}
+	a, z := p[0], p[len(p)-1]
+	mid := strings.Join(joinsMids(p), ", ")
+	if mid == "" {
+		mid = "the centre front"
+	}
+	band := "band"
+	if neck.Width != "" {
+		band = neck.Width + " band"
+	}
+	switch neck.Type {
+	case "crew":
+		return fmt.Sprintf("The FRONT neckline is a HIGH CREW neck: %s is a %s hugging the base of the neck from %s over %s (crew height, just below the collarbone notch) to %s — NOT a V, NOT a plunge, NOT a halter ring standing away from the neck, NOT a scoop.", neck.ID, band, a, mid, z)
+	case "v":
+		return fmt.Sprintf("The FRONT neckline is a V neck: %s runs from %s straight down to a SHARP point at %s and straight up to %s — NOT a crew, NOT a scoop, NOT a halter.", neck.ID, a, mid, z)
+	case "scoop":
+		return fmt.Sprintf("The FRONT neckline is a SCOOP neck: %s curves low and wide from %s through %s to %s — NOT a crew, NOT a V, NOT a halter.", neck.ID, a, mid, z)
+	case "halter":
+		return fmt.Sprintf("The neckline is a HALTER: %s rises from %s and goes AROUND the back of the neck to %s — NOT a crew, NOT a V, NOT a scoop; the shoulders stay bare.", neck.ID, a, z)
+	case "boat":
+		return fmt.Sprintf("The FRONT neckline is a wide BOAT neck: %s runs almost straight from %s to %s across the collarbones — NOT a crew, NOT a V, NOT a scoop.", neck.ID, a, z)
+	case "square":
+		return fmt.Sprintf("The FRONT neckline is a SQUARE neck: %s drops straight down from %s, runs straight across through %s and straight up to %s — NOT a crew, NOT a V, NOT a scoop.", neck.ID, a, mid, z)
+	case "mock":
+		return fmt.Sprintf("The neckline is a MOCK NECK: %s is a short band standing up around the base of the neck — NOT a crew band lying flat, NOT a V.", neck.ID)
+	case "turtle":
+		return fmt.Sprintf("The neckline is a TURTLENECK: %s is a tall band standing up around the neck and folded over — NOT a crew band lying flat, NOT a V.", neck.ID)
+	}
+	return ""
+}
+
+// joinsShapeSentences — the v10 types 1–5 (generated from the list's fields only).
+func joinsShapeSentences(j entity.DesignJoinsDoc) []string {
+	var S []string
+	items := j.Items
+	byID := map[string]entity.DesignJoinItem{}
+	for _, it := range items {
+		byID[it.ID] = it
+	}
+	neck := joinsNeckItem(items)
+	// 1. the neckline's shape
+	if t := joinsNeckShapeSentence(neck); t != "" {
+		S = append(S, t)
+	}
+	// 2. an inner edge seen through a sheer front (a multi-layer list says it in the layer sentences)
+	if len(j.Layers) <= 1 {
+		first := true
+		for _, it := range items {
+			p := it.Path()
+			if it.Visibility != entity.DesignJoinThrough || joinsBackFace(it) || len(p) < 2 {
+				continue
+			}
+			t := ""
+			if first {
+				t = "The outer front layer is CLOSED cloth from the " + joinsNeckWord(neck) + " down to the hem; there is no cut-out and no open V in the front. "
+				first = false
+			}
+			t += it.ID + " is the edge of the opaque inner layer seen THROUGH the sheer outer layer: draw it as a FINE DASHED line only, "
+			if mids := joinsMids(p); len(mids) == 1 {
+				t += "from " + p[0] + " down to its point " + joinsPointWhere(mids[0]) + " and back up to " + p[len(p)-1] + "."
+			} else {
+				t += "from " + strings.Join(p, " → ") + "."
+			}
+			S = append(S, t)
+		}
+	}
+	// straps that end on the back, and whether the back has a neckline
+	var backStraps []entity.DesignJoinItem
+	for _, it := range items {
+		if it.Kind == entity.DesignJoinKindStrap && joinsBackFace(it) {
+			backStraps = append(backStraps, it)
+		}
+	}
+	backNeck := false
+	for _, it := range items {
+		if it.Kind == entity.DesignJoinKindOpening || it.Kind == entity.DesignJoinKindStrap {
+			continue
+		}
+		for _, n := range it.Path() {
+			if b := joinsLmBase(n); b == "CBN" || b == "CBN_LOW" {
+				backNeck = true
+			}
+		}
+	}
+	// the opening's edge: bounded by straps and exactly one edge item on the back
+	var openEdge *entity.DesignJoinItem
+	for _, it := range items {
+		if it.Kind != entity.DesignJoinKindOpening {
+			continue
+		}
+		straps, edges := 0, []entity.DesignJoinItem{}
+		for _, id := range it.BoundedBy {
+			b, ok := byID[id]
+			switch {
+			case !ok:
+			case b.Kind == entity.DesignJoinKindStrap:
+				straps++
+			case joinsIsEdgeKind(b.Kind):
+				edges = append(edges, b)
+			}
+		}
+		if straps > 0 && len(edges) == 1 && joinsBackFace(edges[0]) && len(edges[0].Path()) >= 2 {
+			e := edges[0]
+			openEdge = &e
+			break
+		}
+	}
+	// 3. armhole bindings on the FRONT only (a strap back with no back neckline)
+	if len(backStraps) > 0 && !backNeck {
+		var ids []string
+		allBinding := true
+		for _, it := range items {
+			p := it.Path()
+			if !joinsIsEdgeKind(it.Kind) || it.Kind == entity.DesignJoinKindBand || len(p) < 2 || joinsBackFace(it) {
+				continue
+			}
+			a, z := joinsLmBase(p[0]), joinsLmBase(p[len(p)-1])
+			if (strings.HasPrefix(a, "NP_") && strings.HasPrefix(z, "UA_")) || (strings.HasPrefix(z, "NP_") && strings.HasPrefix(a, "UA_")) {
+				ids = append(ids, it.ID)
+				if it.Kind != entity.DesignJoinKindBinding {
+					allBinding = false
+				}
+			}
+		}
+		if len(ids) > 0 {
+			word := "binding"
+			if !allBinding {
+				word = "edge"
+			}
+			verb := " is"
+			if len(ids) > 1 {
+				word += "s"
+				verb = " are"
+			}
+			above := "above the back opening"
+			if openEdge == nil {
+				above = "at the top of the back"
+			}
+			S = append(S, joinsAnd(ids)+" "+word+verb+" on the FRONT view only (deep cut-in racer-style armhole from the neck point to the underarm); on the BACK view the straps themselves are the only edges "+above+".")
+		}
+	}
+	// 4. the opening's edge: one smooth U
+	level := ""
+	if openEdge != nil {
+		p := openEdge.Path()
+		level = joinsBackLevel(p)
+		at := ""
+		if level != "" {
+			at = " at " + level + " level"
+		}
+		through := ""
+		if mids := joinsMids(p); len(mids) > 0 {
+			through = " down through " + strings.Join(mids, ", ") + " and up"
+		}
+		word := strings.ReplaceAll(openEdge.Kind, "_", " ")
+		S = append(S, fmt.Sprintf("%s is ONE smooth U-shaped %s across the back%s, from %s%s to %s; the lower ends of the straps are sewn to it at its two top ends.",
+			openEdge.ID, word, at, p[0], through, p[len(p)-1]))
+	}
+	// 5. the side view of a strap that continues the front neck over the shoulder to the back
+	if neck != nil && len(backStraps) > 0 {
+		cont := false
+		for _, st := range backStraps {
+			for _, c := range neck.ContinuesInto {
+				if c == st.ID {
+					cont = true
+				}
+			}
+			for _, c := range st.ContinuesInto {
+				if c == neck.ID {
+					cont = true
+				}
+			}
+		}
+		if cont {
+			t := "In SIDE LEFT and SIDE RIGHT the strap is ONE smooth continuous band: from the front " + joinsNeckWord(neck) + " up over the top of the shoulder and down the back to "
+			if openEdge != nil {
+				h := level
+				if h == "" {
+					h = "the opening's"
+				}
+				t += "the back opening edge — no loop, knot, hook, fold or notch; behind the strap the back body starts only at " + h + " height (open back), while the front body starts at the neck."
+			} else {
+				t += "its end — no loop, knot, hook, fold or notch."
+			}
+			S = append(S, t)
+		}
+	}
+	return S
+}
+
+// joinsDesignerSentences — sentence type 6: every item or absence a designer added or changed, its
+// words verbatim.
+func joinsDesignerSentences(j entity.DesignJoinsDoc) []string {
+	var S []string
+	for _, it := range j.Items {
+		if t := strings.TrimSpace(it.Text); it.Edited && t != "" {
+			S = append(S, "designer: "+t)
+		}
+	}
+	for _, a := range j.EditedAbsences {
+		if t := strings.TrimSpace(a); t != "" {
+			S = append(S, "designer: "+t)
+		}
+	}
+	return S
+}
+
+// joinsAnd — «a», «a and b», «a, b and c».
+func joinsAnd(ids []string) string {
+	if len(ids) <= 1 {
+		return strings.Join(ids, "")
+	}
+	return strings.Join(ids[:len(ids)-1], ", ") + " and " + ids[len(ids)-1]
 }
 
 // joinsLayerSentences — tmp/plans/flat-consistency/l4.py layer_sentences(), ported VERBATIM (the

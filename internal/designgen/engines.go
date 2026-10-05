@@ -446,18 +446,17 @@ const FlatDefaultEngine = EngineGPTImage25Flare
 // detail callout is one close-up.
 const FlatCandidates = 4
 
-// FlatCandidatesFor — the outputs a flat run of these views, layout and mode buys (80-BUILD-MODES
-// §3.4): a garment sheet in a DRAWING mode is bought FlatCandidates times; a QUICK sheet (mode quick or
-// "" — every run frozen before the modes) once (owner: «1 лист, дёшево»); 0 when the rule does not
-// apply at all — per_view or a detail callout — and the caller keeps its own count.
+// FlatCandidatesFor — the outputs a flat run of these views, layout and mode buys (81-FINAL-MODES):
+// straps FlatCandidates (4), the photos route and hand_flat FlatCandidatesPhotos (2); 0 when the rule
+// does not apply at all — per_view or a detail callout — and the caller keeps its own count.
 func FlatCandidatesFor(views []string, layout, mode string) int {
 	if !FlatIsGarmentSheet(views, layout) {
 		return 0
 	}
-	if FlatIsDrawingMode(mode) {
+	if m, _ := NormalizeFlatMode(mode); m == FlatModeStraps {
 		return FlatCandidates
 	}
-	return 1
+	return FlatCandidatesPhotos
 }
 
 // FlatIsGarmentSheet — a flat run that draws the garment on ONE sheet: not per_view, not a detail

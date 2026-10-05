@@ -381,46 +381,35 @@ message DesignRunParams {
   DesignExtendParams extend = 18;
   // THE SOURCE PICTURE OF A VIDEO RUN (kind=video, B-32). Refused on every other kind (`video_forbidden`).
   DesignVideoParams video = 19;
-  // THE FLAT GENERATION MODE (kind=flat, flat-consistency 80-BUILD-MODES). Refused on every other kind
-  // (`flat_forbidden`). Absent or mode "" = quick. A rerun inherits its parent's block (a different
-  // one is `mode_not_for_this_run`).
+  // THE FLAT GENERATION MODE (kind=flat, flat-consistency 81-FINAL-MODES). Refused on every other kind
+  // (`flat_forbidden`). Absent = the photos route. A rerun inherits its parent's block (a different one
+  // is `mode_not_for_this_run`).
   DesignFlatParams flat = 20;
 }
 
-// DesignFlatParams — how ONE flat press draws its sheet.
-//   - quick: the card's kept reference photos + the frozen join list in words; ONE sheet;
-//   - drawing: the client-rendered construction drawing (the underdrawing) is the ONLY picture sent,
-//     and the model traces it; four candidate sheets;
-//   - drawing_photos: the underdrawing + the kept photos, captioned fit-only; four candidate sheets.
-// Door refusals (all free, before any money): `underdrawing_required` (a drawing mode without a media
-// id), `underdrawing_forbidden` (an underdrawing on quick), `underdrawing_stale` (FailedPrecondition:
-// underdrawing_joins_rev is not the card's current join-list rev, or the card has no usable list —
-// metadata `joins_rev` = the current rev; redraw, re-upload, retry — rendered source only),
-// `underdrawing_malformed` (a rendered picture is not 16:9 ±3 %), `structure_required`,
-// `structure_not_on_card`, `structure_malformed` (hand_flat refs: bad view, duplicate),
-// `unknown_structure_source`, `mode_not_for_this_run` (a detail-only or per_view run, or a rerun that
-// changes its parent's mode), `unknown_flat_mode`. The underdrawing travels in the input snapshot as
-// the first reference(s), role `underdrawing` (a hand_flat run: one per structure ref, in order).
+// DesignFlatParams — how ONE flat press draws its sheet (81-FINAL-MODES).
+//   - "" (or "photos"): the card's kept reference photos with roles and notes + the join list in words
+//     when the card has one; TWO candidate sheets. The default.
+//   - hand_flat: the card's own hand-drawn technical flats (structure_refs) are redrawn cleanly, the
+//     missing views derived; the kept photos travel for fit only; no join list. TWO candidates.
+//   - straps: the photos route with the designer-CONFIRMED join list (DesignJoins.confirmed at the
+//     card's current rev); FOUR candidates.
+// Door refusals (all free, before any money): `unknown_flat_mode`, `structure_required` (hand_flat
+// without refs), `structure_forbidden` (refs on another mode), `structure_malformed` (a role that is not
+// front_flat | back_flat, a role or media twice), `structure_not_on_card` (not a TECHNICAL media of this
+// card), `joins_unconfirmed` (straps on a card whose list is missing or not confirmed at its current rev;
+// FailedPrecondition, metadata `joins_rev`), `mode_not_for_this_run` (a detail-only or per_view run, or
+// a rerun that changes its parent's mode, flats or views). The structure flats travel in the input
+// snapshot as the first references, with their roles.
 message DesignFlatParams {
-  string mode = 1; // "" | quick | drawing | drawing_photos; "" is read as quick for ever
-  int32 underdrawing_media_id = 2; // FK media(id); required when mode is drawing*, refused otherwise
-  int32 underdrawing_joins_rev = 3; // the joins rev the drawing was rendered from; must equal the card's current rev on a new press
-  string underdrawing_renderer_rev = 4; // the client's RENDERER_REV, for history («underdrawing.v1»)
-  // WHERE THE STRUCTURE IMAGE COMES FROM (drawing modes only): "" | rendered = the client-rendered
-  // drawing named by underdrawing_media_id (one 16:9 sheet of every view; the joins-rev guard applies);
-  // hand_flat = the card's OWN hand-drawn technical flats named by structure_refs (each must be a
-  // technical media of this card — `structure_not_on_card`; no rev guard), the model redraws them
-  // cleanly and derives the views they do not cover. Anything else is `unknown_structure_source`.
-  string structure_source = 5;
-  // hand_flat only: the designer's flats, one per view (front, back, …; distinct views and media), in
-  // the order they are sent. Required (1..4) for hand_flat (`structure_required`), refused otherwise.
-  repeated DesignFlatStructureRef structure_refs = 6;
+  string mode = 1; // "" | photos | hand_flat | straps; "" is the photos route for ever
+  repeated DesignFlatStructureRef structure_refs = 2; // hand_flat only: 1..2 of the card's technical flats
 }
 
-// DesignFlatStructureRef — one hand-drawn technical flat of the card and the view it shows.
+// DesignFlatStructureRef — one hand-drawn technical flat of the card and what it shows.
 message DesignFlatStructureRef {
-  int32 media_id = 1; // FK media(id); a technical media of this tech card
-  string view = 2; // front | back | side_l | side_r | three_quarter_l | three_quarter_r
+  int32 media_id = 1; // FK media(id); a TECHNICAL media of this tech card
+  string role = 2; // front_flat | back_flat
 }
 
 // DesignVideoParams is the frozen ask of a VIDEO run (kind=video, the playground's «Image to Video»,
@@ -1912,7 +1901,7 @@ message DesignJoinItem {
   repeated string via = 8; // landmarks between from and to, in order
   string width = 9; // narrow | wide | "" (bands)
   bool closed = 10; // the path is a closed loop
-  string type = 11; // closure: buttons | zip | hook…; pocket: patch | welt…
+  string type = 11; // closure: buttons | zip | hook…; pocket: patch | welt…; the neck edge: crew | v | scoop | halter | boat | square | mock | turtle
   int32 count = 12; // closure: how many (buttons)
   repeated string bounded_by = 13; // opening: the ids of the items around it
   repeated string continues_into = 14; // item ids at its ends
@@ -1921,7 +1910,11 @@ message DesignJoinItem {
   repeated string caught_into = 17; // item ids this edge ends INTO (a seam / binding of another layer)
   bool free_edge = 18; // the edge hangs free: it does not reach the side seams or the hem
   repeated string sharp = 19; // points of the path that are CORNERS (the point of a V); others are smooth
-  double size = 20; // a pocket's half-width in ruler units (0.01..0.2); 0 = the renderer's default (0.045)
+  double size = 20; // a pocket's half-width in ruler units (0.01..0.2); 0 = unstated
+  // READ-ONLY, server-computed: a designer added or changed this item (SetDesignJoins diff against the
+  // stored list; it stays set until the model rewrites the list). Its text is said to the flat model as a
+  // «designer:» check line.
+  bool edited = 21;
 }
 
 // DesignJoinsConsistencyGroup — photos that show one and the same garment.
@@ -1950,7 +1943,10 @@ message DesignJoins {
   google.protobuf.Timestamp edited_at = 8;
   repeated DesignJoinLayer layers = 9; // empty = a single-layer garment
   repeated string uncertain = 10; // the model's honest doubts — questions for the designer
-  DesignJoinsFit fit = 11; // the body block the underdrawing renderer scales by; empty words = regular
+  DesignJoinsFit fit = 11; // the garment's ease and waist; empty words = regular
+  // A designer confirmed THIS rev (SetDesignJoins with confirm = true); any later save — the model's or
+  // an edit without confirm — clears it. The straps mode needs it.
+  bool confirmed = 12;
 }
 
 // DesignJoinsFit — the garment's ease and waist, closed vocabularies (anything else is cleaned to "").

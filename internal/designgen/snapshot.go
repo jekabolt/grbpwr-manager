@@ -66,37 +66,21 @@ type runParams struct {
 
 // flatParams — DesignFlatParams.
 type flatParams struct {
-	Mode                    string `json:"mode"`
-	UnderdrawingMediaID     int    `json:"underdrawing_media_id"`
-	UnderdrawingJoinsRev    int    `json:"underdrawing_joins_rev"`
-	UnderdrawingRendererRev string `json:"underdrawing_renderer_rev"`
-	StructureSource         string `json:"structure_source"`
-	StructureRefs           []struct {
+	Mode          string `json:"mode"`
+	StructureRefs []struct {
 		MediaID int    `json:"media_id"`
-		View    string `json:"view"`
+		Role    string `json:"role"`
 	} `json:"structure_refs"`
 }
 
-// flatStructureOf — the normalised structure source of a drawing-mode run (rendered | hand_flat).
-func flatStructureOf(p runParams) string {
-	if p.Flat == nil {
-		return FlatStructureRendered
-	}
-	s, ok := NormalizeFlatStructureSource(p.Flat.StructureSource)
-	if !ok {
-		return FlatStructureRendered
-	}
-	return s
-}
-
-// flatModeOf — the frozen flat mode, normalised ("" and anything unknown read as quick).
+// flatModeOf — the frozen flat mode, normalised ("" — the photos route — for none and anything unknown).
 func flatModeOf(p runParams) string {
 	if p.Flat == nil {
-		return FlatModeQuick
+		return FlatModePhotos
 	}
 	m, ok := NormalizeFlatMode(p.Flat.Mode)
 	if !ok {
-		return FlatModeQuick
+		return FlatModePhotos
 	}
 	return m
 }
@@ -548,11 +532,10 @@ type refCaption struct {
 	// every artwork of the side drawn at its exact size and place. Derived (data URI, MediaID 0);
 	// empty for every other picture. The ARTWORK paragraph names its number only off this field.
 	GuideView string
-	// IsUnderdrawing — this picture is the construction drawing a drawing-mode flat traces (snapshot
-	// role `underdrawing`); the trace craft names its number only off this field.
-	IsUnderdrawing bool
-	// StructView — the view a hand-drawn structure flat shows ("" for a rendered sheet of every view).
-	StructView string
+	// IsStructure — this picture is the designer's own technical flat a hand_flat run redraws
+	// (snapshot role front_flat / back_flat); StructView is the view it shows.
+	IsStructure bool
+	StructView  string
 	// FromRef / Role / Note — the picture came from the snapshot's refs, with that role and note (the
 	// photo-roles paragraph of drawing_photos reads them).
 	FromRef bool
@@ -639,8 +622,8 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// THE MODE SENDS. drawing = the underdrawing alone; drawing_photos = the underdrawing, then the
 	// card's kept photos. A selective fix also carries the plates it corrects. No extras, no colour
 	// maps, no cloths: a trace is black line art of the drawing.
-	if kind == entity.DesignRunKindFlat && FlatIsDrawingMode(flatModeOf(p)) {
-		return flatDrawingReferences(p, in)
+	if kind == entity.DesignRunKindFlat && flatModeOf(p) == FlatModeHandFlat {
+		return flatHandFlatReferences(p, in)
 	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
@@ -690,13 +673,16 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			if r.Deleted {
 				continue
 			}
-			// The construction drawing travels only on a drawing-mode flat (flatDrawingReferences):
-			// a quick run never sends a picture the door froze for another mode.
-			if r.Role == entity.DesignRefRoleUnderdrawing {
+			// The designer's flats travel only on a hand_flat run (flatHandFlatReferences).
+			if FlatStructureView(r.Role) != "" {
 				continue
 			}
+			caption := refEntryCaption(r)
+			if kind == entity.DesignRunKindFlat {
+				caption = flatRefCaption(r)
+			}
 			at := len(out)
-			add(r.MediaID, refEntryCaption(r), "")
+			add(r.MediaID, caption, "")
 			if at < len(out) {
 				out[at].FromRef, out[at].Role, out[at].Note = true, r.Role, r.Note
 			}
@@ -860,54 +846,35 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	return out
 }
 
-// flatDrawingReferences — the pictures of a drawing-mode flat, in order: the underdrawing (role
-// `underdrawing` in the snapshot refs — the door puts it first; params.flat.underdrawing_media_id for
-// a snapshot that somehow lacks it), then — drawing_photos only — the other refs as photos, then — a
-// selective fix only — the plates it corrects.
-func flatDrawingReferences(p runParams, in runInputs) []refCaption {
+// flatHandFlatReferences — the pictures of a hand_flat run, in order: the designer's flats (in the
+// frozen params order, each with its view), then the card's kept photos, then — a selective fix only —
+// the plates it corrects. No extras beyond what the snapshot refs hold, no colour maps, no cloths.
+func flatHandFlatReferences(p runParams, in runInputs) []refCaption {
 	var out []refCaption
 	seen := map[int]bool{}
-	if flatStructureOf(p) == FlatStructureHandFlat {
-		// The designer's own flats, in the frozen params order, each with its view. The params are
-		// the authority on which picture shows which view; the snapshot refs carry the same ids.
-		deleted := map[int]bool{}
-		for _, r := range in.Refs {
-			if r.Deleted {
-				deleted[r.MediaID] = true
-			}
-		}
-		for _, r := range p.Flat.StructureRefs {
-			if r.MediaID <= 0 || seen[r.MediaID] || deleted[r.MediaID] {
-				continue
-			}
-			seen[r.MediaID] = true
-			out = append(out, refCaption{MediaID: r.MediaID, IsUnderdrawing: true, StructView: r.View,
-				Caption: "the designer's own hand-drawn technical flat — " + displayView(r.View) + " view (structure authority)"})
-		}
-	} else {
-		under := 0
-		for _, r := range in.Refs {
-			if r.Role == entity.DesignRefRoleUnderdrawing && !r.Deleted && r.MediaID > 0 {
-				under = r.MediaID
-				break
-			}
-		}
-		if under == 0 && p.Flat != nil && p.Flat.UnderdrawingMediaID > 0 {
-			under = p.Flat.UnderdrawingMediaID
-		}
-		if under > 0 {
-			seen[under] = true
-			out = append(out, refCaption{MediaID: under, Caption: underdrawingCaption, IsUnderdrawing: true})
+	deleted := map[int]bool{}
+	for _, r := range in.Refs {
+		if r.Deleted {
+			deleted[r.MediaID] = true
 		}
 	}
-	if flatModeOf(p) == FlatModeDrawingPhotos {
-		for _, r := range in.Refs {
-			if r.Deleted || r.MediaID <= 0 || seen[r.MediaID] || r.Role == entity.DesignRefRoleUnderdrawing {
+	if p.Flat != nil {
+		for _, r := range p.Flat.StructureRefs {
+			v := FlatStructureView(r.Role)
+			if r.MediaID <= 0 || v == "" || seen[r.MediaID] || deleted[r.MediaID] {
 				continue
 			}
 			seen[r.MediaID] = true
-			out = append(out, refCaption{MediaID: r.MediaID, Caption: refEntryCaption(r), FromRef: true, Role: r.Role, Note: r.Note})
+			out = append(out, refCaption{MediaID: r.MediaID, IsStructure: true, StructView: v,
+				Caption: "the designer's own hand-drawn technical flat — " + displayView(v) + " view (structure authority)"})
 		}
+	}
+	for _, r := range in.Refs {
+		if r.Deleted || r.MediaID <= 0 || seen[r.MediaID] || FlatStructureView(r.Role) != "" {
+			continue
+		}
+		seen[r.MediaID] = true
+		out = append(out, refCaption{MediaID: r.MediaID, Caption: flatRefCaption(r), FromRef: true, Role: r.Role, Note: r.Note})
 	}
 	if entity.IsDesignSelectiveFix(p.FixTarget, p.FixTargets, p.FixSlotIDs) {
 		slots := append([]inputSlot(nil), in.Slots...)
@@ -1238,8 +1205,8 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// 3D IS A MODEL BUILD AND draft_idea NEVER REACHES THE WORKER. Neither is a picture composed by
 	// these words, so both keep the bare human context above and take no craft block at all.
 	switch {
-	case run.Kind == entity.DesignRunKindFlat && FlatIsDrawingMode(flatModeOf(p)):
-		write("", flatTraceCraft(p, detailNames, attached, in.Joins, flatModeOf(p)))
+	case run.Kind == entity.DesignRunKindFlat && flatModeOf(p) == FlatModeHandFlat:
+		write("", flatHandFlatCraft(p, detailNames, attached))
 	case run.Kind == entity.DesignRunKindFlat:
 		write("", flatCraftWith(p, detailNames, len(attached), in.Joins))
 	case renderIsTheKind(run.Kind):
@@ -1781,11 +1748,11 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 			return Job{}, err
 		}
 	}
-	// ─── A DRAWING-MODE FLAT WITHOUT ITS DRAWING IS REFUSED HERE, FREE AND TERMINAL. Its words say
-	// «trace image k»; sent without image k (the media row went away) the model would invent a
-	// garment from the CHECK sentences alone — a paid wrong sheet. buildJob runs before StartAttempt.
-	if run.Kind == entity.DesignRunKindFlat && FlatIsDrawingMode(job.FlatMode) && !flatStructureAttached(p, attached) {
-		return Job{}, fmt.Errorf("%w: the construction drawing of this %s flat is no longer there — start a new run", errFlatUnderdrawingGone, job.FlatMode)
+	// ─── A HAND_FLAT RUN WITHOUT EVERY ONE OF ITS FLATS IS REFUSED HERE, FREE AND TERMINAL. Its words
+	// say «redraw image k»; sent without it the model would invent that view — a paid wrong sheet.
+	// buildJob runs before StartAttempt.
+	if run.Kind == entity.DesignRunKindFlat && job.FlatMode == FlatModeHandFlat && !flatStructureAttached(p, attached) {
+		return Job{}, fmt.Errorf("%w: a hand-drawn flat this run redraws is no longer there — start a new run", errFlatStructureGone)
 	}
 	switch run.Kind {
 	case entity.DesignRunKindInpaint, entity.DesignRunKindVideo:
@@ -1811,9 +1778,9 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 // замороженного снимка и снова её не найдёт — то есть повтор покупает пять одинаковых отказов.
 var errFreeformSourceGone = errors.New("designgen: a picture this playground run needs is gone")
 
-// errFlatUnderdrawingGone — a drawing-mode flat's construction drawing did not resolve (terminal,
-// free: refused while the job is built, before StartAttempt).
-var errFlatUnderdrawingGone = errors.New("designgen: the construction drawing of this flat is gone")
+// errFlatStructureGone — a hand_flat run's flat did not resolve (terminal, free: refused while the job
+// is built, before StartAttempt).
+var errFlatStructureGone = errors.New("designgen: a hand-drawn flat of this run is gone")
 
 // freeformPrerequisitesSurvived ПЕРЕСПРАШИВАЕТ ПРЕДПОСЫЛКИ ПРЕСЕТА У КАРТИНОК, КОТОРЫЕ ДЕЙСТВИТЕЛЬНО
 // ДОЕХАЛИ.

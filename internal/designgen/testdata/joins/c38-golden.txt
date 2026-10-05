@@ -44,3 +44,6 @@ CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
 - Draw NOTHING for: no back fabric above mid-back except the two straps.
 - inner_V_layer comes to a SHARP corner at BUST_C: a crisp point, never rounded.
 - SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.
+- armhole_bind_L and armhole_bind_R bindings are on the FRONT view only (deep cut-in racer-style armhole from the neck point to the underarm); on the BACK view the straps themselves are the only edges above the back opening.
+- back_open_bind is ONE smooth U-shaped binding across the back at mid-back level, from UA_L down through MB_L, MB_C, MB_R and up to UA_R; the lower ends of the straps are sewn to it at its two top ends.
+- In SIDE LEFT and SIDE RIGHT the strap is ONE smooth continuous band: from the front neck binding up over the top of the shoulder and down the back to the back opening edge — no loop, knot, hook, fold or notch; behind the strap the back body starts only at mid-back height (open back), while the front body starts at the neck.

@@ -17,205 +17,145 @@ import (
 
 var fourViews = []string{"front", "back", "side_l", "side_r"}
 
-// The generalised prompt-Dflare paragraphs 1–3 (out/f8/d/prompt-Dflare.txt; the card-38 clauses moved
-// into the CHECK sentences). A literal copy: an «improvement» of the craft goes red here.
-const goldenTraceCoreImage1 = `Image 1 is the exact construction drawing of a garment, already laid out as four technical-flat views on one canvas, left to right: FRONT, BACK, SIDE LEFT, SIDE RIGHT.
-
-Redraw image 1 as a finished professional fashion technical flat sketch (CAD-style tech pack drawing) in the same layout. This is a TRACING job, not a design job:
-- keep every edge, band, strap, seam, hem and dashed line exactly where image 1 has it, with the same proportions and the same position of each view;
-- do not add ANY line, edge, band, panel, neckline, shoulder, seam or detail that is not in image 1; open areas stay plain white;
-- do not remove or straighten anything; where image 1 shows a strap, the finished drawing shows a strap of the same width in the same place.
-
-Improve only the rendering: uniform precise vector-style line work, heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching; subtle body-form shaping of the outline following the given silhouette; cloth drawn white.`
-
-func under(n int) refCaption {
-	return refCaption{MediaID: n, Caption: underdrawingCaption, IsUnderdrawing: true}
+func structRC(n int, view string) refCaption {
+	return refCaption{MediaID: n, IsStructure: true, StructView: view}
 }
 
 func photo(n int, role, note string) refCaption {
 	return refCaption{MediaID: n, Caption: role, FromRef: true, Role: role, Note: note}
 }
 
-func drawingParams(mode string) runParams {
-	return runParams{Views: fourViews, Layout: layoutOne, Flat: &flatParams{Mode: mode, UnderdrawingMediaID: 5}}
+func handParams(views []string) runParams {
+	return runParams{Views: views, Layout: layoutOne, Flat: &flatParams{Mode: FlatModeHandFlat}}
 }
 
-func TestFlatTraceCraftIsF8Verbatim(t *testing.T) {
-	got := flatTraceCraft(drawingParams(FlatModeDrawing), nil, []refCaption{under(5)}, nil, FlatModeDrawing)
-	require.True(t, strings.HasPrefix(got, goldenTraceCoreImage1+"\n\n"), got)
-	require.True(t, strings.HasSuffix(got, flatNoTextNoGrey+"\n\n"+flatStyleGarment+"\n\n"+flatExcludedGarment+"\n\n"+flatOutput))
-	for _, absent := range []string{"Turn the garment", "Automatically identify", "Layout:"} {
-		require.NotContains(t, got, absent, "a trace does not speak to photos")
-	}
-	// image number 3: the drawing is wherever it attached
-	got3 := flatTraceCraft(drawingParams(FlatModeDrawing), nil, []refCaption{photo(1, "front", ""), photo(2, "back", ""), under(5)}, nil, FlatModeDrawing)
-	require.True(t, strings.HasPrefix(got3, strings.ReplaceAll(strings.ReplaceAll(goldenTraceCoreImage1, "Image 1", "Image 3"), "image 1", "image 3")), got3)
-}
-
-func TestFlatPhotoRolesAreCx8(t *testing.T) {
-	att := []refCaption{under(5), photo(11, "front", "the waist"), photo(12, "back", ""), photo(13, "side_r", ""), photo(14, "detail", "")}
-	got := flatTraceCraft(drawingParams(FlatModeDrawingPhotos), nil, att, nil, FlatModeDrawingPhotos)
-	want := `Input roles are strict and non-interchangeable:
-- Image 1 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the view layout.
-- Image 2 — FRONT FIT AND DETAIL AUTHORITY only (front photo — the waist); never a source of construction.
-- Image 3 — BACK FIT AND DETAIL AUTHORITY only (back photo); never a source of construction.
-- Image 4 — SIDE FIT AND DETAIL AUTHORITY only (right side photo, the wearer's RIGHT flank); never a source of construction; mirror its depth profile to image 1's side orientation.
-- Image 5 — DETAIL FIT AND DETAIL AUTHORITY only (detail close-up); never a source of construction.
-Unlike a literal trace, adjust only the continuous OUTER-SILHOUETTE geometry and the rendering of details to the photos: reproduce the fit (waist suppression, ease, bust/hip curvature, body and sleeve length), the proportions of pockets, collars and bands, hems, cuffs, topstitching and hardware as seen on the real garment. The photos must NOT change the construction: where a photo disagrees with image 1 about a connection, an endpoint, an opening or a view's orientation, image 1 is right.`
-	require.Contains(t, got, "\n\n"+want+"\n\n")
-	require.Less(t, strings.Index(got, flatTraceRender), strings.Index(got, want), "roles after the rendering paragraph")
-	// drawing alone never names photos; drawing_photos with no photo attached is a plain trace
-	require.NotContains(t, flatTraceCraft(drawingParams(FlatModeDrawing), nil, att, nil, FlatModeDrawing), flatRolesHead)
-	require.NotContains(t, flatTraceCraft(drawingParams(FlatModeDrawingPhotos), nil, []refCaption{under(5)}, nil, FlatModeDrawingPhotos), flatRolesHead)
-}
-
-func TestTraceCraftCarriesTheCheckSentences(t *testing.T) {
-	j := loadJoinsCase(t, "c38")
-	got := flatTraceCraft(drawingParams(FlatModeDrawing), nil, []refCaption{under(5)}, &j, FlatModeDrawing)
-	for _, s := range []string{
-		"CHECK EVERY VIEW AGAINST IMAGE 1 AND THESE BEFORE DRAWING:\n- ",
-		"its top end sits AT the neck point NP_L",
-		"cross each other once, BELOW the neck points",
-		"There is NO back neckline",
-	} {
-		require.Contains(t, got, s)
-	}
-	require.NotContains(t, got, "JOIN LIST", "the trace checks the sentences; the list itself is the drawing")
-}
-
-// The default mode is the text route, UNCHANGED: a run without params.flat and a run that states quick
-// compose the same prompt and send the same pictures as before the modes; an underdrawing-role ref is
-// never sent by a quick run.
-func TestQuickCraftUnchanged(t *testing.T) {
-	j := loadJoinsCase(t, "c38")
-	inputs := runInputs{Refs: []inputRef{{MediaID: 11, Role: "front"}, {MediaID: 12, Role: "back"}}, Joins: &j}
-	base := runParams{Views: fourViews, Layout: layoutOne}
-	quick := base
-	quick.Flat = &flatParams{Mode: FlatModeQuick}
-	run := entity.DesignRun{Kind: entity.DesignRunKindFlat}
-	att := referenceList(run.Kind, base, inputs)
-	require.Equal(t, att, referenceList(run.Kind, quick, inputs))
-	a, b := composePrompt(run, base, inputs, att), composePrompt(run, quick, inputs, att)
-	require.Equal(t, a, b)
-	require.Contains(t, a, flatCraftWith(base, nil, 2, &j), "quick is flatCraftWith as is")
-
-	withUnder := inputs
-	withUnder.Refs = append([]inputRef{{MediaID: 5, Role: entity.DesignRefRoleUnderdrawing}}, inputs.Refs...)
-	for _, rc := range referenceList(run.Kind, base, withUnder) {
-		require.NotEqual(t, 5, rc.MediaID, "a quick run never sends a construction drawing")
-	}
-}
-
+// The hand_flat craft: name the designer's flats, trace them (the F8 bullets, literal), derive the views
+// they do not cover, the photos own only the fit, the owner's paragraphs close it.
 func TestHandFlatCraft(t *testing.T) {
-	p := runParams{Views: fourViews, Layout: layoutOne, Flat: &flatParams{Mode: FlatModeDrawing, StructureSource: FlatStructureHandFlat}}
-	att := []refCaption{
-		{MediaID: 7, IsUnderdrawing: true, StructView: "front"},
-		{MediaID: 8, IsUnderdrawing: true, StructView: "back"},
-	}
-	got := flatTraceCraft(p, nil, att, nil, FlatModeDrawing)
+	att := []refCaption{structRC(7, "front"), structRC(8, "back")}
+	got := flatHandFlatCraft(handParams(fourViews), nil, att)
 	for _, s := range []string{
-		"Image 1 is the designer's own hand-drawn technical flat of the garment's FRONT view. Image 2 is the designer's own hand-drawn technical flat of the garment's BACK view. Draw ONE finished sheet: four views on one horizontal canvas",
-		"left to right: FRONT, BACK, SIDE LEFT, SIDE RIGHT.",
-		"Redraw the designer's flats (images 1 and 2) cleanly",
-		"For every view the designer drew this is a TRACING job",
-		"exactly where images 1 and 2 has it",
+		"Image 1 is the designer's own hand-drawn technical flat of the garment's FRONT view. Image 2 is the designer's own hand-drawn technical flat of the garment's BACK view. Draw ONE finished sheet: four views on one horizontal canvas, side by side, equal scale, aligned on a common baseline, evenly spaced — left to right: FRONT, BACK, SIDE LEFT, SIDE RIGHT.",
+		"Redraw the designer's flats (images 1 and 2) cleanly as a finished professional fashion technical flat sketch (CAD-style tech pack drawing). For every view the designer drew this is a TRACING job, not a design job:\n" +
+			"- keep every edge, band, strap, seam, hem and dashed line exactly where images 1 and 2 has it, with the same proportions and the same position of each view;\n" +
+			"- do not add ANY line, edge, band, panel, neckline, shoulder, seam or detail that is not in images 1 and 2; open areas stay plain white;\n" +
+			"- do not remove or straighten anything; where images 1 and 2 shows a strap, the finished drawing shows a strap of the same width in the same place.",
 		"Derive the views the designer did not draw (SIDE LEFT, SIDE RIGHT) yourself, consistent with images 1 and 2",
-		flatSideFacing,
+		flatSideFacing, flatTraceRender,
 	} {
 		require.Contains(t, got, s)
 	}
-	require.NotContains(t, got, "construction drawing of a garment", "not the rendered opening")
-	// every requested view drawn → nothing to derive
-	got2 := flatTraceCraft(runParams{Views: []string{"front"}, Layout: layoutOne, Flat: p.Flat}, nil, att[:1], nil, FlatModeDrawing)
+	require.True(t, strings.HasSuffix(got, flatNoTextNoGrey+"\n\n"+flatStyleGarment+"\n\n"+flatExcludedGarment+"\n\n"+flatOutput))
+	require.NotContains(t, got, flatRolesHead, "no photo, no roles")
+	got2 := flatHandFlatCraft(handParams([]string{"front"}), nil, att[:1])
 	require.NotContains(t, got2, "Derive the views")
 	require.Contains(t, got2, "a single view — FRONT —")
-	// drawing_photos: one STRUCTURE line per flat, with its view
-	roles := flatTraceCraft(p, nil, append(att, photo(11, "front", "")), nil, FlatModeDrawingPhotos)
-	require.Contains(t, roles, "- Image 1 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the FRONT view.")
-	require.Contains(t, roles, "- Image 2 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the BACK view.")
-	require.Contains(t, roles, "where a photo disagrees with images 1 and 2")
+	roles := flatHandFlatCraft(handParams(fourViews), nil, append(att, photo(11, "front", "the waist"), photo(12, "side_r", "")))
+	want := `Input roles are strict and non-interchangeable:
+- Image 1 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the FRONT view.
+- Image 2 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the BACK view.
+- Image 3 — FRONT FIT AND DETAIL AUTHORITY only (front photo — the waist); never a source of construction.
+- Image 4 — SIDE FIT AND DETAIL AUTHORITY only (side photo, the wearer's RIGHT flank); never a source of construction; mirror its depth profile to the side views you derive.
+Unlike a literal trace, adjust only the continuous OUTER-SILHOUETTE geometry and the rendering of details to the photos: reproduce the fit (waist suppression, ease, bust/hip curvature, body and sleeve length), the proportions of pockets, collars and bands, hems, cuffs, topstitching and hardware as seen on the real garment. The photos must NOT change the construction: where a photo disagrees with images 1 and 2 about a connection, an endpoint, an opening or a view's orientation, images 1 and 2 is right.`
+	require.Contains(t, roles, "\n\n"+want+"\n\n")
 }
 
-func TestDrawingModeReferences(t *testing.T) {
-	inputs := `{"refs":[{"media_id":5,"role":"underdrawing"},{"media_id":11,"role":"front"},{"media_id":12,"role":"back"}],` +
-		`"slots":[{"view_key":"front","media_id":21}]}`
-	in := parseInputs(entity.RawJSON(inputs))
-	ids := func(p string) []int {
-		var out []int
-		for _, rc := range referenceList(entity.DesignRunKindFlat, parseParams(entity.RawJSON(p)), in) {
-			out = append(out, rc.MediaID)
-		}
-		return out
+// The photos route and straps compose the SAME text route (flatCraftWith); the mode only changes the
+// count and the door. A structure-role ref never travels outside hand_flat.
+func TestPhotosAndStrapsAreTheTextRoute(t *testing.T) {
+	j := loadJoinsCase(t, "c38")
+	inputs := runInputs{Refs: []inputRef{{MediaID: 11, Role: "front"}, {MediaID: 12, Role: "back", Note: "open back"}}, Joins: &j}
+	base := runParams{Views: fourViews, Layout: layoutOne}
+	straps := base
+	straps.Flat = &flatParams{Mode: FlatModeStraps}
+	run := entity.DesignRun{Kind: entity.DesignRunKindFlat}
+	att := referenceList(run.Kind, base, inputs)
+	require.Equal(t, att, referenceList(run.Kind, straps, inputs))
+	a := composePrompt(run, base, inputs, att)
+	require.Equal(t, a, composePrompt(run, straps, inputs, att))
+	require.Contains(t, a, flatCraftWith(base, nil, 2, &j))
+	require.Contains(t, a, "- image 1: front photo\n- image 2: back photo: open back\n")
+
+	withFlat := inputs
+	withFlat.Refs = append([]inputRef{{MediaID: 5, Role: entity.DesignRefRoleFrontFlat}}, inputs.Refs...)
+	for _, rc := range referenceList(run.Kind, base, withFlat) {
+		require.NotEqual(t, 5, rc.MediaID, "a photos run never sends the designer's flat as a structure")
 	}
-	require.Equal(t, []int{5}, ids(`{"views":["front","back"],"layout":"one","extra_input_media_ids":[9],"flat":{"mode":"drawing","underdrawing_media_id":5}}`),
-		"drawing: the drawing alone — no photos, no plates, no extras")
-	require.Equal(t, []int{5, 11, 12}, ids(`{"views":["front","back"],"layout":"one","flat":{"mode":"drawing_photos","underdrawing_media_id":5}}`))
-	require.Equal(t, []int{5, 21}, ids(`{"views":["front","back"],"layout":"one","fix_targets":["front"],"flat":{"mode":"drawing","underdrawing_media_id":5}}`),
-		"a fix carries the plate it corrects, after the drawing")
-	require.Equal(t, []int{11, 12, 21}, ids(`{"views":["front","back"],"layout":"one","use_flat_slots":true}`), "quick: as before, no drawing")
-	hand := parseInputs(entity.RawJSON(`{"refs":[{"media_id":8,"role":"underdrawing"},{"media_id":7,"role":"underdrawing"},{"media_id":11,"role":"front"}]}`))
+}
+
+func TestFlatRefCaptions(t *testing.T) {
+	require.Equal(t, "detail photo: the crossed straps on the back", flatRefCaption(inputRef{Role: "detail", Note: "the crossed straps on the back"}))
+	require.Equal(t, "side photo (wearer's right flank)", flatRefCaption(inputRef{Role: "side_r"}))
+	require.Equal(t, "mood reference screenshot from the card (a DIFFERENT garment; style mood only, not this construction)", flatRefCaption(inputRef{Role: "mood"}))
+	require.Equal(t, "front photo: only the cut [collar; hem]", flatRefCaption(inputRef{Role: "front", Note: "only the\ncut", Callouts: []inputCallout{{Text: "collar"}, {Text: "hem"}}}))
+}
+
+func TestHandFlatReferences(t *testing.T) {
+	in := parseInputs(entity.RawJSON(`{"refs":[{"media_id":8,"role":"back_flat"},{"media_id":7,"role":"front_flat"},{"media_id":11,"role":"front"}],"slots":[{"view_key":"front","media_id":21}]}`))
 	got := referenceList(entity.DesignRunKindFlat, parseParams(entity.RawJSON(
-		`{"views":["front","back","side_l"],"layout":"one","flat":{"mode":"drawing_photos","structure_source":"hand_flat","structure_refs":[{"media_id":7,"view":"front"},{"media_id":8,"view":"back"}]}}`)), hand)
+		`{"views":["front","back","side_l"],"layout":"one","flat":{"mode":"hand_flat","structure_refs":[{"media_id":7,"role":"front_flat"},{"media_id":8,"role":"back_flat"}]}}`)), in)
 	require.Len(t, got, 3)
-	require.Equal(t, []int{7, 8, 11}, []int{got[0].MediaID, got[1].MediaID, got[2].MediaID}, "the params order and views rule")
+	require.Equal(t, []int{7, 8, 11}, []int{got[0].MediaID, got[1].MediaID, got[2].MediaID}, "the flats in params order, then the photos; no plates")
 	require.Equal(t, "front", got[0].StructView)
 	require.Equal(t, "back", got[1].StructView)
+	fix := referenceList(entity.DesignRunKindFlat, parseParams(entity.RawJSON(
+		`{"views":["front","back"],"layout":"one","fix_targets":["front"],"flat":{"mode":"hand_flat","structure_refs":[{"media_id":7,"role":"front_flat"}]}}`)), in)
+	require.Equal(t, 21, fix[len(fix)-1].MediaID, "a fix carries the plate it corrects, last")
 }
 
-func TestBuildJobDrawingModes(t *testing.T) {
-	r := testRun(1, entity.DesignRunKindFlat)
-	r.RequestedOutputs = 4
-	r.Params = entity.RawJSON(`{"views":["front","back"],"layout":"one","flat":{"mode":"drawing","underdrawing_media_id":5}}`)
-	r.Inputs = entity.RawJSON(`{"refs":[{"media_id":5,"role":"underdrawing"}]}`)
-	job, err := buildJob(context.Background(), media(5), nil, r, "medium")
+func TestBuildJobHandFlat(t *testing.T) {
+	h := testRun(2, entity.DesignRunKindFlat)
+	h.RequestedOutputs = 2
+	h.Params = entity.RawJSON(`{"views":["front","back"],"layout":"one","flat":{"mode":"hand_flat","structure_refs":[{"media_id":7,"role":"front_flat"},{"media_id":8,"role":"back_flat"}]}}`)
+	h.Inputs = entity.RawJSON(`{"refs":[{"media_id":7,"role":"front_flat"},{"media_id":8,"role":"back_flat"}]}`)
+	_, err := buildJob(context.Background(), media(7), nil, h, "medium")
+	require.True(t, errors.Is(err, errFlatStructureGone), "one flat gone → refused, never silently derived")
+	require.False(t, classify(err).Retryable)
+	job, err := buildJob(context.Background(), media(7, 8), nil, h, "medium")
 	require.NoError(t, err)
-	require.Equal(t, FlatModeDrawing, job.FlatMode)
-	require.Len(t, job.References, 1)
-	require.Contains(t, job.Prompt, "- image 1: "+underdrawingCaption)
-	require.Contains(t, job.Prompt, "Redraw image 1 as a finished")
+	require.Equal(t, FlatModeHandFlat, job.FlatMode)
+	require.Contains(t, job.Prompt, "Image 1 is the designer's own hand-drawn technical flat of the garment's FRONT view.")
 	calls, err := imageCalls(job)
 	require.NoError(t, err)
-	require.Equal(t, 4, calls[0].n)
-
-	// the drawing's media row is gone → refused while building (free), terminal
-	_, err = buildJob(context.Background(), media(), nil, r, "medium")
-	require.True(t, errors.Is(err, errFlatUnderdrawingGone), "%v", err)
-	require.False(t, classify(err).Retryable)
-
-	// hand_flat: one of two flats gone → refused, never silently «derived»
-	h := testRun(2, entity.DesignRunKindFlat)
-	h.Params = entity.RawJSON(`{"views":["front","back"],"layout":"one","flat":{"mode":"drawing","structure_source":"hand_flat","structure_refs":[{"media_id":7,"view":"front"},{"media_id":8,"view":"back"}]}}`)
-	h.Inputs = entity.RawJSON(`{"refs":[{"media_id":7,"role":"underdrawing"},{"media_id":8,"role":"underdrawing"}]}`)
-	_, err = buildJob(context.Background(), media(7), nil, h, "medium")
-	require.True(t, errors.Is(err, errFlatUnderdrawingGone))
-	job, err = buildJob(context.Background(), media(7, 8), nil, h, "medium")
-	require.NoError(t, err)
-	require.Contains(t, job.Prompt, "Image 1 is the designer's own hand-drawn technical flat of the garment's FRONT view.")
+	require.Equal(t, 2, calls[0].n)
 }
 
 func TestFlatModeCandidates(t *testing.T) {
 	two := []string{"front", "back"}
-	require.Equal(t, 1, FlatCandidatesFor(two, layoutOne, ""))
-	require.Equal(t, 1, FlatCandidatesFor(two, layoutOne, FlatModeQuick))
-	require.Equal(t, FlatCandidates, FlatCandidatesFor(two, layoutOne, FlatModeDrawing))
-	require.Equal(t, FlatCandidates, FlatCandidatesFor(two, layoutOne, FlatModeDrawingPhotos))
-	require.Equal(t, 0, FlatCandidatesFor(two, layoutPerView, FlatModeDrawing))
-	require.Equal(t, 0, FlatCandidatesFor([]string{"detail"}, layoutOne, FlatModeDrawing))
-	for _, m := range []string{"", FlatModeQuick, FlatModeDrawing, FlatModeDrawingPhotos} {
+	require.Equal(t, 2, FlatCandidatesFor(two, layoutOne, ""))
+	require.Equal(t, 2, FlatCandidatesFor(two, layoutOne, "photos"))
+	require.Equal(t, 2, FlatCandidatesFor(two, layoutOne, FlatModeHandFlat))
+	require.Equal(t, FlatCandidates, FlatCandidatesFor(two, layoutOne, FlatModeStraps))
+	require.Equal(t, 0, FlatCandidatesFor(two, layoutPerView, FlatModeStraps))
+	require.Equal(t, 0, FlatCandidatesFor([]string{"detail"}, layoutOne, FlatModeStraps))
+	for _, m := range []string{"", FlatModeHandFlat, FlatModeStraps} {
 		require.Equal(t, FlatDefaultEngine, FlatModelFor(m))
 	}
-	// a quick sheet queued before the modes with 4 outputs still buys 4 (frozen number)
 	calls, _ := imageCalls(Job{Kind: "flat", Views: two, Layout: layoutOne, Outputs: 4})
-	require.Equal(t, 4, calls[0].n)
-	calls, _ = imageCalls(Job{Kind: "flat", Views: two, Layout: layoutOne, Outputs: 1, FlatMode: FlatModeDrawing})
-	require.Equal(t, 1, calls[0].n, "a drawing fix is one picture")
-	for in, want := range map[string]string{"": FlatModeQuick, "quick": FlatModeQuick, "drawing": FlatModeDrawing, " drawing_photos ": FlatModeDrawingPhotos} {
-		got, ok := NormalizeFlatMode(in)
-		require.True(t, ok)
-		require.Equal(t, want, got)
-	}
-	_, ok := NormalizeFlatMode("trace")
+	require.Equal(t, 4, calls[0].n, "a sheet queued before the modes keeps its frozen number")
+	calls, _ = imageCalls(Job{Kind: "flat", Views: two, Layout: layoutOne, Outputs: 1, FlatMode: FlatModeStraps})
+	require.Equal(t, 1, calls[0].n, "a fix is one picture")
+	_, ok := NormalizeFlatMode("drawing")
 	require.False(t, ok)
+}
+
+// Sentence types 1 and 6 beyond the c2 golden: every neck shape speaks, the designer's edits are said
+// verbatim.
+func TestNeckShapesAndDesignerLines(t *testing.T) {
+	for shape, want := range map[string]string{
+		"v": "is a V neck", "scoop": "SCOOP neck", "halter": "HALTER", "boat": "BOAT neck",
+		"square": "SQUARE neck", "mock": "MOCK NECK", "turtle": "TURTLENECK",
+	} {
+		doc := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
+			{ID: "neck", Kind: "binding", From: "NP_R", Via: []string{"CFN"}, To: "NP_L", Type: shape}}})
+		require.Contains(t, strings.Join(joinsSentences(doc), "\n"), want, shape)
+	}
+	doc := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
+		{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R", Text: "raw hem, cut 2 cm longer at the back"}}})
+	doc.Items[0].Edited = true
+	doc.EditedAbsences = []string{"no pocket on the left"}
+	got := joinsSentences(doc)
+	require.Equal(t, []string{"designer: raw hem, cut 2 cm longer at the back", "designer: no pocket on the left"}, got[len(got)-2:])
 }
 
 // The ruler is ONE table: the Go ruler equals the renderer's (testdata/joins/ruler.json, exported from

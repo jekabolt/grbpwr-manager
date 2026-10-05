@@ -13631,6 +13631,9 @@ message SetDesignJoinsRequest {
   int32 tech_card_id = 1;
   common.DesignJoins joins = 2; // items, absences, layers, consistency.keep_media_ids are read
   int32 expected_rev = 3; // the rev the edit was made on; 0 = no list yet
+  // The designer confirms the list as saved: the new rev is marked DesignJoins.confirmed (the straps
+  // flat mode needs it). A save without confirm clears the mark.
+  bool confirm = 4;
 }
 
 message SetDesignJoinsResponse {

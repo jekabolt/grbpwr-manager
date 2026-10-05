@@ -58,3 +58,5 @@ CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
 - inner_V_edge is a free hanging edge: it runs from NP_L..SP_L:0.6 to NP_R..SP_R:0.6 via BUST_C and does NOT run into the side seams or the hem.
 - inner_V_top ends INTO neckband_front, armhole_front_L, armhole_front_R: at those points two edges meet — the outer body (front + lower back + straps)'s binding and the inner layer's edge just inside it. On the SIDE views this shows as a second fine line just inside the armhole binding at the shoulder, running down into the dashed V.
 - Draw NOTHING for inner_V_top on any view (construction only).
+- back_top_edge is ONE smooth U-shaped binding across the back at mid-back level, from MB_R down through MB_C and up to MB_L; the lower ends of the straps are sewn to it at its two top ends.
+- In SIDE LEFT and SIDE RIGHT the strap is ONE smooth continuous band: from the front neck band up over the top of the shoulder and down the back to the back opening edge — no loop, knot, hook, fold or notch; behind the strap the back body starts only at mid-back height (open back), while the front body starts at the neck.

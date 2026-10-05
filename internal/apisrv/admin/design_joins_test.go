@@ -192,9 +192,9 @@ func TestFlatRouteDoor(t *testing.T) {
 	got := designRunJoins(entity.DesignRunKindFlat, p, band, &entity.DesignRun{Inputs: entity.RawJSON(raw)})
 	require.Equal(t, "old", got.Items[0].ID, "a rerun carries its parent's list, not today's")
 
-	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, p), "quick (no mode) buys one sheet")
+	require.Equal(t, designgen.FlatCandidatesPhotos, designRequestedOutputs(entity.DesignRunKindFlat, p), "the photos route buys two sheets")
 	drawing := proto.Clone(p).(*pb_common.DesignRunParams)
-	drawing.Flat = &pb_common.DesignFlatParams{Mode: designgen.FlatModeDrawing, UnderdrawingMediaId: 9}
+	drawing.Flat = &pb_common.DesignFlatParams{Mode: designgen.FlatModeStraps}
 	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat, drawing))
 	require.Equal(t, 1, designImageVariantsPerCall(entity.DesignRunKindFlat, p), "the worker splits over an engine's n")
 }

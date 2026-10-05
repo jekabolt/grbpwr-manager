@@ -13,38 +13,35 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ═══ THE THREE FLAT MODES AT THE DOOR (tmp/plans/flat-consistency/80-BUILD-MODES.md §2.1) ═══
+// ═══ THE THREE FLAT MODES AT THE DOOR (tmp/plans/flat-consistency/81-FINAL-MODES.md) ═══
 //
-// params.flat = { mode, underdrawing_media_id, underdrawing_joins_rev, underdrawing_renderer_rev }.
+// params.flat = { mode: "" | photos | hand_flat | straps, structure_refs: [{media_id, role}] }.
 // Every refusal below stands BEFORE StartRun reserves anything: it is free.
 //
-//   - flat_forbidden          — the block on any kind but flat;
-//   - unknown_flat_mode       — a mode word that is none of "" | quick | drawing | drawing_photos;
-//   - underdrawing_forbidden  — an underdrawing on a quick run (it would never be sent);
-//   - mode_not_for_this_run   — a drawing mode on a detail-only or per_view run, or a rerun whose mode
-//     or drawing differs from its parent's (the parent's snapshot is what a rerun sends);
-//   - underdrawing_required   — a drawing mode without a media id;
-//   - underdrawing_stale      — a NEW press whose drawing was rendered from another joins rev than the
-//     card's current one, or the card has no usable list (FailedPrecondition, metadata joins_rev);
-//   - underdrawing_malformed  — the stored picture is not 16:9 ±3 % (the sheet is four 384×864 columns).
+//   - flat_forbidden        — the block on any kind but flat;
+//   - unknown_flat_mode     — a mode word that is none of the three;
+//   - structure_forbidden   — structure_refs on a mode that does not read them;
+//   - structure_required    — hand_flat without refs;
+//   - structure_malformed   — a role that is not front_flat | back_flat, a role or a media twice;
+//   - structure_not_on_card — a ref that is not a TECHNICAL media of this card;
+//   - structure_gone        — a ref whose media row no longer exists (reruns included);
+//   - joins_unconfirmed     — straps on a card whose join list is missing, unusable or not confirmed at
+//     its current rev (FailedPrecondition, metadata joins_rev);
+//   - mode_not_for_this_run — hand_flat / straps on a detail-only or per_view run, or a rerun that
+//     changes its parent's mode, flats or (hand_flat) views.
 //
-// A rerun inherits the parent's block (designFlatRerunInherit) and skips the rev check; a fix sends the
-// block of the plate's run and skips the rev check too (the drawing is the one that sheet was traced
-// from); neither re-reads the picture's shape.
+// A rerun inherits the parent's block (designFlatRerunInherit) and its snapshot (joins included), so
+// neither the confirmation nor today's card media are asked again; a fix sends the block of the plate's
+// run and skips the confirmation the same way.
 
-const (
-	designFlatUnderdrawingRatio    = 16.0 / 9.0
-	designFlatUnderdrawingRatioTol = 0.03
-)
-
-// designFlatModeOf — the normalised mode of the effective params ("" → quick); ok=false for an unknown
+// designFlatModeOf — the normalised mode of the effective params ("" = photos); ok=false for an unknown
 // word.
 func designFlatModeOf(params *pb_common.DesignRunParams) (string, bool) {
 	return designgen.NormalizeFlatMode(params.GetFlat().GetMode())
 }
 
-// designFlatParentBlock — the parent's frozen params.flat (nil when it had none or does not parse).
-func designFlatParentBlock(parent *entity.DesignRun) *pb_common.DesignFlatParams {
+// designFlatParentParams — the parent's frozen params (nil when they do not parse).
+func designFlatParentParams(parent *entity.DesignRun) *pb_common.DesignRunParams {
 	if parent == nil || len(parent.Params) == 0 {
 		return nil
 	}
@@ -52,24 +49,29 @@ func designFlatParentBlock(parent *entity.DesignRun) *pb_common.DesignFlatParams
 	if designUnmarshalJSON(parent.Params, pp) != nil {
 		return nil
 	}
-	return pp.GetFlat()
+	return pp
 }
 
-// designFlatRerunInherit — a flat RERUN draws in its parent's mode, from its parent's drawing: the
-// rerun's snapshot is the parent's copy (designRunInputs), so a different mode would send the parent's
-// pictures under another craft — the construction drawing captioned as a photo, or photos traced as a
-// drawing. A client that omits the block (every client before the modes) inherits it; one that states
-// the parent's own block is accepted; any other is refused.
+// designFlatRerunInherit — a flat RERUN draws in its parent's mode from its parent's pictures: the
+// rerun's snapshot is the parent's copy (designRunInputs), so another mode would send those pictures
+// under another craft. A client that omits the block (every client before the modes) inherits it; one
+// that states the parent's own block is accepted; any other is refused. A hand_flat rerun also keeps the
+// parent's views in order (the designer's flats and the derived views are named by position).
 func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun) error {
 	if kind != entity.DesignRunKindFlat || parent == nil {
 		return nil
 	}
-	pf := designFlatParentBlock(parent)
+	pp := designFlatParentParams(parent)
+	pf := pp.GetFlat()
 	pm, _ := designgen.NormalizeFlatMode(pf.GetMode())
-	if designgen.FlatIsDrawingMode(pm) {
-		if err := designFlatRerunSameSheet(params, parent, pm); err != nil {
-			return err
-		}
+	refuse := func(why string) error {
+		return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
+			fmt.Sprintf("run %d was drawn in the %q mode and a rerun repeats it with the same pictures%s; start a "+
+				"new run for another mode. Nothing was reserved and nothing was charged", parent.Id, pm, why),
+			map[string]string{"parent_mode": pm, "mode": params.GetFlat().GetMode()})
+	}
+	if pm == designgen.FlatModeHandFlat && !designFlatSameViews(pp, params) {
+		return refuse(" and views")
 	}
 	if params.GetFlat() == nil {
 		if pf != nil {
@@ -78,48 +80,35 @@ func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, pare
 		return nil
 	}
 	cm, ok := designFlatModeOf(params)
-	if ok && cm == pm && (!designgen.FlatIsDrawingMode(pm) || designFlatSameStructure(params.GetFlat(), pf)) {
-		if pf != nil {
-			params.Flat = proto.Clone(pf).(*pb_common.DesignFlatParams)
+	if !ok || cm != pm || !designFlatSameStructure(params.GetFlat(), pf) {
+		return refuse("")
+	}
+	if pf != nil {
+		params.Flat = proto.Clone(pf).(*pb_common.DesignFlatParams)
+	}
+	return nil
+}
+
+func designFlatSameViews(a, b *pb_common.DesignRunParams) bool {
+	if a.GetLayout() != b.GetLayout() || len(a.GetViews()) != len(b.GetViews()) {
+		return false
+	}
+	for i, v := range a.GetViews() {
+		if v != b.GetViews()[i] {
+			return false
 		}
-		return nil
 	}
-	return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
-		fmt.Sprintf("run %d was drawn in the %s mode and a rerun repeats it with the same pictures; start a new "+
-			"run for another mode. Nothing was reserved and nothing was charged", parent.Id, pm),
-		map[string]string{"parent_mode": pm, "mode": params.GetFlat().GetMode()})
+	return true
 }
 
-// designFlatRerunSameSheet — a drawing-mode rerun draws the parent's views in the parent's order and
-// layout: the structure image it inherits holds exactly those columns, and the prompt names them.
-func designFlatRerunSameSheet(params *pb_common.DesignRunParams, parent *entity.DesignRun, mode string) error {
-	pp := &pb_common.DesignRunParams{}
-	if designUnmarshalJSON(parent.Params, pp) != nil {
-		return nil
-	}
-	same := pp.GetLayout() == params.GetLayout() && len(pp.GetViews()) == len(params.GetViews())
-	for i := 0; same && i < len(pp.GetViews()); i++ {
-		same = pp.GetViews()[i] == params.GetViews()[i]
-	}
-	if same {
-		return nil
-	}
-	return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
-		fmt.Sprintf("run %d traced a drawing of the views %v; a rerun repeats those views in that order — start a new "+
-			"run for other views. Nothing was reserved and nothing was charged", parent.Id, pp.GetViews()),
-		map[string]string{"parent_mode": mode})
-}
-
-// designFlatSameStructure — two blocks name the same structure picture(s).
+// designFlatSameStructure — two blocks name the same flats in the same roles and order.
 func designFlatSameStructure(a, b *pb_common.DesignFlatParams) bool {
-	sa, _ := designgen.NormalizeFlatStructureSource(a.GetStructureSource())
-	sb, _ := designgen.NormalizeFlatStructureSource(b.GetStructureSource())
-	if sa != sb || a.GetUnderdrawingMediaId() != b.GetUnderdrawingMediaId() || len(a.GetStructureRefs()) != len(b.GetStructureRefs()) {
+	if len(a.GetStructureRefs()) != len(b.GetStructureRefs()) {
 		return false
 	}
 	for i, r := range a.GetStructureRefs() {
 		o := b.GetStructureRefs()[i]
-		if r.GetMediaId() != o.GetMediaId() || strings.TrimSpace(r.GetView()) != strings.TrimSpace(o.GetView()) {
+		if r.GetMediaId() != o.GetMediaId() || strings.TrimSpace(r.GetRole()) != strings.TrimSpace(o.GetRole()) {
 			return false
 		}
 	}
@@ -141,8 +130,8 @@ func designFlatTechnicalMedia(card *entity.TechCard) map[int32]bool {
 }
 
 // designRefuseFlatParams — the rules of params.flat on the EFFECTIVE params (after the rerun
-// inheritance and the detail canonicalisation). band is the door's own read: the stale check compares
-// against the same join list the snapshot freezes.
+// inheritance and the detail canonicalisation). band and card are the door's own reads: the
+// confirmation is checked on the same join list the snapshot freezes.
 func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun, band *entity.DesignBand, card *entity.TechCard) error {
 	f := params.GetFlat()
 	if kind != entity.DesignRunKindFlat {
@@ -160,91 +149,71 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	mode, ok := designgen.NormalizeFlatMode(f.GetMode())
 	if !ok {
 		return designRefusal(codes.InvalidArgument, "unknown_flat_mode",
-			fmt.Sprintf("params.flat.mode %q is not quick | drawing | drawing_photos", f.GetMode()),
+			fmt.Sprintf("params.flat.mode %q is not photos | hand_flat | straps", f.GetMode()),
 			map[string]string{"mode": f.GetMode()})
 	}
-	if !designgen.FlatIsDrawingMode(mode) {
-		if f.GetUnderdrawingMediaId() != 0 || len(f.GetStructureRefs()) > 0 || strings.TrimSpace(f.GetStructureSource()) != "" {
-			return designRefusal(codes.InvalidArgument, "underdrawing_forbidden",
-				"a quick flat sends the card's photos, never a construction drawing; drop params.flat.underdrawing_media_id "+
-					"or pick a drawing mode. Nothing was reserved and nothing was charged",
-				map[string]string{"mode": mode})
-		}
+	if mode != designgen.FlatModeHandFlat && len(f.GetStructureRefs()) > 0 {
+		return designRefusal(codes.InvalidArgument, "structure_forbidden",
+			"params.flat.structure_refs names the card's own flats and only a hand_flat run reads it. "+
+				"Nothing was reserved and nothing was charged", map[string]string{"mode": mode})
+	}
+	if mode == designgen.FlatModePhotos {
 		return nil
 	}
 	if !designgen.FlatIsGarmentSheet(params.GetViews(), params.GetLayout()) {
 		return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
-			"a drawing mode draws the garment on one sheet; a detail sketch or a per-view run runs quick. "+
-				"Nothing was reserved and nothing was charged",
+			fmt.Sprintf("the %s mode draws the garment on one sheet; a detail sketch or a per-view run uses the photos route. "+
+				"Nothing was reserved and nothing was charged", mode),
 			map[string]string{"mode": mode, "layout": params.GetLayout()})
 	}
-	source, ok := designgen.NormalizeFlatStructureSource(f.GetStructureSource())
-	if !ok {
-		return designRefusal(codes.InvalidArgument, "unknown_structure_source",
-			fmt.Sprintf("params.flat.structure_source %q is not rendered | hand_flat", f.GetStructureSource()),
-			map[string]string{"structure_source": f.GetStructureSource()})
-	}
-	if source == designgen.FlatStructureHandFlat {
+	if mode == designgen.FlatModeHandFlat {
 		return designRefuseFlatHandFlat(f, parent, card)
 	}
-	if len(f.GetStructureRefs()) > 0 {
-		return designRefusal(codes.InvalidArgument, "structure_malformed",
-			"params.flat.structure_refs names the card's own flats and only a hand_flat source reads it. "+
-				"Nothing was reserved and nothing was charged", map[string]string{"structure_source": source})
-	}
-	if f.GetUnderdrawingMediaId() <= 0 {
-		return designRefusal(codes.InvalidArgument, "underdrawing_required",
-			"a drawing mode traces the construction drawing: params.flat.underdrawing_media_id is required. "+
-				"Nothing was reserved and nothing was charged",
-			map[string]string{"mode": mode})
-	}
-	// A rerun repeats its parent's frozen drawing; a fix traces the drawing its plate was traced from.
+	// straps: a rerun repeats its parent's frozen list; a fix redraws a sheet of a confirmed run.
 	if parent != nil || designFlatIsFix(params) {
 		return nil
 	}
-	cur := 0
-	usable := false
+	cur, usable, confirmed := 0, false, false
 	if band != nil && band.Joins != nil {
 		cur = band.Joins.Rev
 		doc := band.Joins.Doc
 		usable = designgen.JoinsUsable(&doc)
+		confirmed = doc.Confirmed
 	}
-	if !usable || int(f.GetUnderdrawingJoinsRev()) != cur {
-		return designRefusal(codes.FailedPrecondition, "underdrawing_stale",
-			fmt.Sprintf("the construction drawing was rendered from join list rev %d and the card's list is rev %d%s — "+
-				"redraw it and try again. Nothing was reserved and nothing was charged",
-				f.GetUnderdrawingJoinsRev(), cur, map[bool]string{true: "", false: " with nothing usable in it"}[usable]),
+	if !usable || !confirmed {
+		return designRefusal(codes.FailedPrecondition, "joins_unconfirmed",
+			fmt.Sprintf("the straps mode draws from the join list a designer confirmed; the card's list (rev %d) is %s. "+
+				"Check it and confirm it, then generate. Nothing was reserved and nothing was charged",
+				cur, map[bool]string{true: "not confirmed", false: "missing or empty"}[usable]),
 			map[string]string{"joins_rev": strconv.Itoa(cur)})
 	}
 	return nil
 }
 
-// designRefuseFlatHandFlat — a hand_flat structure: 1..4 of the card's own technical flats, one per
-// silhouette view, no rendered drawing beside them. No joins-rev guard: the designer's flat is not
-// rendered from the list. A rerun's refs passed this door with its parent and are not re-read
-// against today's card (a flat removed from the card since stays the parent's picture).
+// designRefuseFlatHandFlat — 1..2 of the card's own technical flats, front_flat / back_flat, each once.
+// A rerun's refs passed this door with its parent and are not re-read against today's card.
 func designRefuseFlatHandFlat(f *pb_common.DesignFlatParams, parent *entity.DesignRun, card *entity.TechCard) error {
 	refs := f.GetStructureRefs()
 	if len(refs) == 0 {
 		return designRefusal(codes.InvalidArgument, "structure_required",
-			"a hand_flat drawing traces the card's own technical flats: params.flat.structure_refs is required. "+
+			"the hand_flat mode redraws the card's own technical flats: params.flat.structure_refs is required. "+
 				"Nothing was reserved and nothing was charged", nil)
 	}
-	if len(refs) > designgen.FlatMaxStructureRefs || f.GetUnderdrawingMediaId() != 0 {
+	if len(refs) > designgen.FlatMaxStructureRefs {
 		return designRefusal(codes.InvalidArgument, "structure_malformed",
-			fmt.Sprintf("a hand_flat drawing names 1..%d of the card's flats and no rendered drawing. "+
-				"Nothing was reserved and nothing was charged", designgen.FlatMaxStructureRefs), nil)
+			fmt.Sprintf("the hand_flat mode names at most %d flats (front_flat, back_flat). Nothing was reserved and "+
+				"nothing was charged", designgen.FlatMaxStructureRefs), nil)
 	}
-	views, media := map[string]bool{}, map[int32]bool{}
+	roles, media := map[string]bool{}, map[int32]bool{}
 	for i, r := range refs {
-		v := strings.TrimSpace(r.GetView())
-		if !entity.IsDesignSilhouetteView(v) || views[v] || r.GetMediaId() <= 0 || media[r.GetMediaId()] {
+		role := strings.TrimSpace(r.GetRole())
+		if designgen.FlatStructureView(role) == "" || roles[role] || r.GetMediaId() <= 0 || media[r.GetMediaId()] {
 			return designRefusal(codes.InvalidArgument, "structure_malformed",
-				fmt.Sprintf("params.flat.structure_refs.%d: each flat names its own media and its own view "+
-					"(front | back | side_l | side_r | three_quarter_l | three_quarter_r). Nothing was reserved and nothing was charged", i),
-				map[string]string{"index": strconv.Itoa(i), "view": v})
+				fmt.Sprintf("params.flat.structure_refs.%d: each flat names its own media and its own role "+
+					"(front_flat | back_flat). Nothing was reserved and nothing was charged", i),
+				map[string]string{"index": strconv.Itoa(i), "role": role})
 		}
-		views[v], media[r.GetMediaId()] = true, true
+		roles[role], media[r.GetMediaId()] = true, true
 	}
 	if parent != nil {
 		return nil
@@ -253,7 +222,7 @@ func designRefuseFlatHandFlat(f *pb_common.DesignFlatParams, parent *entity.Desi
 	for i, r := range refs {
 		if !tech[r.GetMediaId()] {
 			return designRefusal(codes.InvalidArgument, "structure_not_on_card",
-				fmt.Sprintf("media %d is not a technical flat of this card; a hand_flat drawing traces the card's own "+
+				fmt.Sprintf("media %d is not a technical flat of this card; the hand_flat mode redraws the card's own "+
 					"flats. Nothing was reserved and nothing was charged", r.GetMediaId()),
 				map[string]string{"index": strconv.Itoa(i), "media_id": strconv.Itoa(int(r.GetMediaId()))})
 		}
@@ -261,31 +230,17 @@ func designRefuseFlatHandFlat(f *pb_common.DesignFlatParams, parent *entity.Desi
 	return nil
 }
 
-// designFlatIsRendered — a drawing-mode run whose structure is the client-rendered sheet.
-func designFlatIsRendered(params *pb_common.DesignRunParams) bool {
+// designRefuseFlatStructureGone — every flat a hand_flat run redraws still exists, reruns included:
+// the worker refuses a trace without its flat (free), but only after the run was booked.
+func (s *Server) designRefuseFlatStructureGone(ctx context.Context, kind string, params *pb_common.DesignRunParams) error {
 	mode, _ := designFlatModeOf(params)
-	src, _ := designgen.NormalizeFlatStructureSource(params.GetFlat().GetStructureSource())
-	return designgen.FlatIsDrawingMode(mode) && src == designgen.FlatStructureRendered
-}
-
-// designRefuseUnderdrawingShape — every structure picture still exists (reruns included), and a NEW
-// rendered drawing is a 16:9 sheet (±3 %), read off the media row's stored size (a legacy 0×0 row is
-// unknown and passes).
-func (s *Server) designRefuseUnderdrawingShape(ctx context.Context, kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun) error {
-	mode, _ := designFlatModeOf(params)
-	if kind != entity.DesignRunKindFlat || !designgen.FlatIsDrawingMode(mode) {
+	if kind != entity.DesignRunKindFlat || mode != designgen.FlatModeHandFlat {
 		return nil
 	}
 	var ids []int
-	if designFlatIsRendered(params) {
-		if id := int(params.GetFlat().GetUnderdrawingMediaId()); id > 0 {
-			ids = append(ids, id)
-		}
-	} else {
-		for _, r := range params.GetFlat().GetStructureRefs() {
-			if r.GetMediaId() > 0 {
-				ids = append(ids, int(r.GetMediaId()))
-			}
+	for _, r := range params.GetFlat().GetStructureRefs() {
+		if r.GetMediaId() > 0 {
+			ids = append(ids, int(r.GetMediaId()))
 		}
 	}
 	if len(ids) == 0 {
@@ -293,33 +248,22 @@ func (s *Server) designRefuseUnderdrawingShape(ctx context.Context, kind string,
 	}
 	byID, err := s.repo.Media().GetMediaByIds(ctx, ids)
 	if err != nil {
-		return designError(ctx, "failed to read the construction drawing", err, nil)
+		return designError(ctx, "failed to read the card's flats", err, nil)
 	}
-	// EVERY structure picture must still exist — a rerun too: the worker refuses a trace without its
-	// image (free), but only after the run was booked.
 	for _, id := range ids {
-		m, ok := byID[id]
-		if !ok || strings.TrimSpace(m.FullSizeMediaURL) == "" {
-			return designRefusal(codes.FailedPrecondition, "underdrawing_malformed",
-				fmt.Sprintf("the structure picture (media %d) no longer exists; start a new run. "+
-					"Nothing was reserved and nothing was charged", id),
+		if m, ok := byID[id]; !ok || strings.TrimSpace(m.FullSizeMediaURL) == "" {
+			return designRefusal(codes.FailedPrecondition, "structure_gone",
+				fmt.Sprintf("the flat (media %d) no longer exists; start a new run. Nothing was reserved and nothing was charged", id),
 				map[string]string{"media_id": strconv.Itoa(id)})
-		}
-		if parent == nil && designFlatIsRendered(params) {
-			if err := designUnderdrawingShapeRefusal(id, m.FullSizeWidth, m.FullSizeHeight); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
-// designRefuseFlatReferenceCeiling — a drawing-mode flat sends its snapshot's pictures in ONE call
-// (structure + photos [+ fix plates]); more than the engine takes would be refused by the worker after
-// the run was booked.
+// designRefuseFlatReferenceCeiling — a flat sends its snapshot's pictures in ONE call; more than the
+// engine takes would be refused by the worker after the run was booked.
 func (s *Server) designRefuseFlatReferenceCeiling(kind string, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot) error {
-	mode, _ := designFlatModeOf(params)
-	if kind != entity.DesignRunKindFlat || !designgen.FlatIsDrawingMode(mode) {
+	if kind != entity.DesignRunKindFlat {
 		return nil
 	}
 	e, ok := designgen.FindEngine(s.designEngineTable(), params.GetImage().GetModel())
@@ -327,107 +271,72 @@ func (s *Server) designRefuseFlatReferenceCeiling(kind string, params *pb_common
 		return nil
 	}
 	n := 0
+	seen := map[int32]bool{}
 	for _, r := range inputs.GetRefs() {
-		if r.GetMediaId() > 0 {
+		if id := r.GetMediaId(); id > 0 && !seen[id] {
+			seen[id] = true
 			n++
 		}
 	}
-	if designFlatIsFix(params) {
-		for _, sl := range inputs.GetSlots() {
-			if sl.GetMediaId() > 0 {
-				n++
-			}
+	for _, sl := range inputs.GetSlots() {
+		if id := sl.GetMediaId(); id > 0 && !seen[id] {
+			seen[id] = true
+			n++
 		}
 	}
 	if n > e.MaxRefs {
 		return designRefusal(codes.InvalidArgument, "too_many_pictures",
-			fmt.Sprintf("this run would send %d images in one call and %s takes at most %d. Remove a "+
+			fmt.Sprintf("this run would send up to %d images in one call and %s takes at most %d. Remove a "+
 				"reference photo. Nothing was reserved and nothing was charged", n, e.Label, e.MaxRefs),
 			map[string]string{"images": strconv.Itoa(n), "ceiling": strconv.Itoa(e.MaxRefs), "model": e.Slug})
 	}
 	return nil
 }
 
-// designUnderdrawingShapeRefusal — the pure half of the shape check.
-func designUnderdrawingShapeRefusal(id, w, h int) error {
-	if w <= 0 || h <= 0 {
-		return nil
-	}
-	r := float64(w) / float64(h)
-	if d := r/designFlatUnderdrawingRatio - 1; d > designFlatUnderdrawingRatioTol || d < -designFlatUnderdrawingRatioTol {
-		return designRefusal(codes.InvalidArgument, "underdrawing_malformed",
-			fmt.Sprintf("the construction drawing (media %d) is %d×%d px; a drawing sheet is 16:9. Redraw it and "+
-				"try again. Nothing was reserved and nothing was charged", id, w, h),
-			map[string]string{"media_id": strconv.Itoa(id), "width": strconv.Itoa(w), "height": strconv.Itoa(h)})
-	}
-	return nil
-}
-
-// designFreezeFlatAspect — a drawing-mode flat is drawn 16:9 (the drawing's four 384×864 columns)
-// when the run states no ratio and its engine offers it.
-func (s *Server) designFreezeFlatAspect(kind string, params *pb_common.DesignRunParams) {
-	if kind != entity.DesignRunKindFlat || !designFlatIsRendered(params) {
-		return
-	}
-	if strings.TrimSpace(params.GetImage().GetAspectRatio()) != "" {
-		return
-	}
-	e, ok := designgen.FindEngine(s.designEngineTable(), params.GetImage().GetModel())
-	if !ok {
-		return
-	}
-	for _, r := range e.Ratios {
-		if r == "16:9" {
-			if params.Image == nil {
-				params.Image = &pb_common.DesignImageOptions{}
-			}
-			params.Image.AspectRatio = "16:9"
-			return
-		}
-	}
-}
-
-// designFlatDrawingRefs — the refs a drawing-mode flat's snapshot records: the underdrawing first
-// (role `underdrawing`), then — drawing_photos only — the card's kept photos and the named extras.
-// nil, false for any other run (the caller keeps today's refs).
-func designFlatDrawingRefs(src designInputSources, photos []*pb_common.DesignInputRef) ([]*pb_common.DesignInputRef, bool) {
+// designFlatStructureRefs — a hand_flat run's snapshot refs: the designer's flats first, with their
+// roles, then the photos gathered for fit. nil, false for any other run (the caller keeps today's refs).
+func designFlatStructureRefs(src designInputSources, photos []*pb_common.DesignInputRef) ([]*pb_common.DesignInputRef, bool) {
 	if src.Kind != entity.DesignRunKindFlat {
 		return nil, false
 	}
-	mode, _ := designFlatModeOf(src.Params)
-	if !designgen.FlatIsDrawingMode(mode) {
+	if mode, _ := designFlatModeOf(src.Params); mode != designgen.FlatModeHandFlat {
 		return nil, false
 	}
 	var out []*pb_common.DesignInputRef
 	structural := map[int32]bool{}
-	if designFlatIsRendered(src.Params) {
-		under := src.Params.GetFlat().GetUnderdrawingMediaId()
-		out = append(out, &pb_common.DesignInputRef{MediaId: under, Role: entity.DesignRefRoleUnderdrawing})
-		structural[under] = true
-	} else {
-		for _, r := range src.Params.GetFlat().GetStructureRefs() {
-			out = append(out, &pb_common.DesignInputRef{MediaId: r.GetMediaId(), Role: entity.DesignRefRoleUnderdrawing,
-				Note: "the designer's own technical flat — " + strings.TrimSpace(r.GetView())})
-			structural[r.GetMediaId()] = true
-		}
+	for _, r := range src.Params.GetFlat().GetStructureRefs() {
+		out = append(out, &pb_common.DesignInputRef{MediaId: r.GetMediaId(), Role: strings.TrimSpace(r.GetRole())})
+		structural[r.GetMediaId()] = true
 	}
-	if mode == designgen.FlatModeDrawingPhotos {
-		for _, r := range photos {
-			if structural[r.GetMediaId()] {
-				continue
-			}
-			out = append(out, r)
+	for _, r := range photos {
+		if structural[r.GetMediaId()] {
+			continue
 		}
+		out = append(out, r)
 	}
 	return out, true
 }
 
-// designFlatModeKeepsSlots — whether a drawing-mode flat's snapshot keeps bench plates: only a fix
-// carries the plates it corrects; a drawing press sends the drawing (and photos), never old flats.
+// designFlatMoodRoles — a flat's role-less reference whose card picture is a MOOD picture travels with
+// the snapshot role `mood` (captioned «a DIFFERENT garment; style mood only»).
+func designFlatMoodRoles(src designInputSources, refs []*pb_common.DesignInputRef) {
+	if src.Kind != entity.DesignRunKindFlat || src.Card == nil {
+		return
+	}
+	roles := designBoardRoles(src.Card)
+	for _, r := range refs {
+		if strings.TrimSpace(r.GetRole()) == "" && roles[int(r.GetMediaId())] == entity.TechCardMediaRoleMood {
+			r.Role = entity.DesignRefRoleMood
+		}
+	}
+}
+
+// designFlatModeKeepsSlots — a hand_flat press sends the designer's flats and photos, never old bench
+// flats; only a fix carries the plates it corrects.
 func designFlatModeKeepsSlots(src designInputSources) bool {
 	if src.Kind != entity.DesignRunKindFlat {
 		return true
 	}
 	mode, _ := designFlatModeOf(src.Params)
-	return !designgen.FlatIsDrawingMode(mode) || designFlatIsFix(src.Params)
+	return mode != designgen.FlatModeHandFlat || designFlatIsFix(src.Params)
 }

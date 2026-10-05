@@ -67,11 +67,24 @@ const (
 	DesignJoinKindLoop            = "loop"
 )
 
-// DesignRefRoleUnderdrawing — the role of the construction drawing a drawing-mode flat run traces, as
-// it stands in the run's input snapshot (first reference). RESERVED: no person may give a card
-// reference this role (SetDesignReferenceRole refuses it), so the role always means «the picture the
-// door checked against the join list».
-const DesignRefRoleUnderdrawing = "underdrawing"
+// Snapshot-only reference roles of a flat run (81-FINAL-MODES). RESERVED: no person may give a card
+// reference one of them (SetDesignReferenceRole refuses: role_reserved).
+//   - front_flat / back_flat: the card's own hand-drawn technical flat a hand_flat run redraws;
+//   - mood: a moodboard picture whose card role is mood — captioned as a DIFFERENT garment.
+const (
+	DesignRefRoleFrontFlat = "front_flat"
+	DesignRefRoleBackFlat  = "back_flat"
+	DesignRefRoleMood      = "mood"
+)
+
+// IsDesignRefRoleReserved — a role only the server writes into a snapshot.
+func IsDesignRefRoleReserved(role string) bool {
+	switch role {
+	case DesignRefRoleFrontFlat, DesignRefRoleBackFlat, DesignRefRoleMood, "underdrawing":
+		return true
+	}
+	return false
+}
 
 // Visibility of an item.
 const (
@@ -251,6 +264,9 @@ type DesignJoinItem struct {
 	Sharp []string `json:"sharp,omitempty"`
 	// Size — a pocket's half-width in ruler units (v9: «size», default 0.045); 0 = unstated.
 	Size float64 `json:"size,omitempty"`
+	// Edited — a designer added or changed this item (SetDesignJoins, diff against the stored list);
+	// server-computed, never trusted from the wire. Its text becomes a «designer:» CHECK line.
+	Edited bool `json:"edited,omitempty"`
 }
 
 // Path — From, Via…, To (empty parts skipped).
@@ -288,8 +304,13 @@ type DesignJoinsDoc struct {
 	Absences []string          `json:"absences,omitempty"`
 	// Uncertain — the model's honest doubts (questions for the designer; not read by the prompt).
 	Uncertain []string `json:"uncertain,omitempty"`
-	// Fit — the body block the underdrawing renderer scales by (v9 fit_of); nil = regular.
+	// Fit — the garment's ease and waist (v9 fit_of); nil = regular.
 	Fit *DesignJoinsFit `json:"fit,omitempty"`
+	// EditedAbsences — the absences a designer added (server-computed like DesignJoinItem.Edited).
+	EditedAbsences []string `json:"edited_absences,omitempty"`
+	// Confirmed — a designer confirmed THIS rev (SetDesignJoins confirm = true). Every save writes the
+	// whole doc, so any later save — the model's or an unconfirmed edit — clears it by construction.
+	Confirmed bool `json:"confirmed,omitempty"`
 }
 
 // DesignJoinsFit — the garment's ease and waist on closed vocabularies (v9_render.fit_of reads every

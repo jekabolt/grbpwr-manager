@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +61,7 @@ List EVERY edge and line of the garment as items (paths through landmarks, in or
 - kind "binding"/"band"/"strap"/"collar"/"stand"/"placket"/"cuff"/"waistband": a band of its own width ("width": "narrow"|"wide"), with its path from where it STARTS to where it ENDS — e.g. a binding that runs only across the front from NP_R via CFN to NP_L, or a strap from NP_L over the back (via UB_C) to MB_R;
 - kind "sleeve": the sleeve outline (e.g. SP_L, ELB_OUT_L, WRIST_OUT_L, WRIST_IN_L, UA_L);
 - kind "closure": "type" (buttons|zip|hook), path along its line, "count";
+- the item that draws the FRONT neckline (its path passes CFN, CFN_LOW or BREAK) gets "type": crew|v|scoop|halter|boat|square|mock|turtle — the neckline's shape;
 - kind "pocket": "anchor" landmark (on the correct WEARER side), "type" (patch|flap|welt|kangaroo|jeans-front-scoop|back-patch), "size" (half-width in ruler units, e.g. 0.045), or a "path" polygon through landmarks for a shaped pocket;
 - kind "opening": "bounded_by" item ids (no path needed) — an area with no cloth.
 Each item: {"id","kind","path":[...],"closed":false,"width":..., "sharp":["landmarks in the path that are CORNERS (e.g. the point of a V, hem corners); every other point is passed through smoothly"], "continues_into":["other item id at its ends"], "note":"short"}.
@@ -482,6 +484,15 @@ func (s *Server) SetDesignJoins(ctx context.Context, req *pb_admin.SetDesignJoin
 	}
 	in := req.GetJoins()
 	doc := entity.SanitizeDesignJoinsDoc(designJoinsDocFromPb(in))
+	// What the designer changed is said to the flat model verbatim (81-FINAL-MODES type 6); the mark is
+	// computed here against the stored list, never read off the wire.
+	var prev *entity.DesignJoinsDoc
+	if before != nil {
+		prev = &before.Doc
+	}
+	designJoinsMarkEdits(&doc, prev)
+	// The confirmation belongs to THIS save's rev; a save without it clears it (the doc is written whole).
+	doc.Confirmed = req.GetConfirm()
 	// The photos verdict is the model's; the designer may only narrow which photos to keep.
 	cons := entity.DesignJoinsConsistency{Consistent: true}
 	model, fp := "", ""
@@ -540,7 +551,7 @@ func designJoinsToPb(j *entity.DesignJoins) *pb_common.DesignJoins {
 			Kind: it.Kind, From: it.From, To: it.To, View: it.View, Side: it.Side, Text: it.Text, Id: it.ID,
 			Via: it.Via, Width: it.Width, Closed: it.Closed, Type: it.Type, Count: int32(it.Count),
 			BoundedBy: it.BoundedBy, ContinuesInto: it.ContinuesInto, Layer: int32(it.Layer), Visibility: it.Visibility,
-			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp, Size: it.Size,
+			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp, Size: it.Size, Edited: it.Edited,
 		})
 	}
 	c := &pb_common.DesignJoinsConsistency{Consistent: j.Consistency.Consistent, Note: j.Consistency.Note}
@@ -558,7 +569,56 @@ func designJoinsToPb(j *entity.DesignJoins) *pb_common.DesignJoins {
 	if f := j.Doc.Fit; f != nil {
 		out.Fit = &pb_common.DesignJoinsFit{Ease: f.Ease, Waist: f.Waist}
 	}
+	out.Confirmed = j.Doc.Confirmed
 	return out
+}
+
+// designJoinsMarkEdits — marks every item a designer added or changed (against the stored list; an item
+// already marked keeps its mark while it lives) and every absence they added.
+func designJoinsMarkEdits(doc *entity.DesignJoinsDoc, prev *entity.DesignJoinsDoc) {
+	old := map[string]entity.DesignJoinItem{}
+	oldAbs := map[string]bool{}
+	oldEditedAbs := map[string]bool{}
+	if prev != nil {
+		for _, it := range prev.Items {
+			old[it.ID] = it
+		}
+		for _, a := range prev.Absences {
+			oldAbs[strings.ToLower(a)] = true
+		}
+		for _, a := range prev.EditedAbsences {
+			oldEditedAbs[strings.ToLower(a)] = true
+		}
+	}
+	for i, it := range doc.Items {
+		o, ok := old[it.ID]
+		if !ok {
+			doc.Items[i].Edited = true
+			continue
+		}
+		was := o.Edited
+		o.Edited, it.Edited = false, false
+		doc.Items[i].Edited = was || !reflect.DeepEqual(designJoinsComparable(o), designJoinsComparable(it))
+	}
+	doc.EditedAbsences = nil
+	for _, a := range doc.Absences {
+		k := strings.ToLower(a)
+		if !oldAbs[k] || oldEditedAbs[k] {
+			doc.EditedAbsences = append(doc.EditedAbsences, a)
+		}
+	}
+}
+
+// designJoinsComparable — an item with nil and empty slices made equal (the wire and the store differ).
+func designJoinsComparable(it entity.DesignJoinItem) entity.DesignJoinItem {
+	norm := func(s []string) []string {
+		if len(s) == 0 {
+			return nil
+		}
+		return s
+	}
+	it.Via, it.BoundedBy, it.ContinuesInto, it.CaughtInto, it.Sharp = norm(it.Via), norm(it.BoundedBy), norm(it.ContinuesInto), norm(it.CaughtInto), norm(it.Sharp)
+	return it
 }
 
 func designJoinsDocFromPb(in *pb_common.DesignJoins) entity.DesignJoinsDoc {
@@ -592,6 +652,10 @@ func designJoinsDocFromPb(in *pb_common.DesignJoins) entity.DesignJoinsDoc {
 // carries its parent's copy; a new garment flat reads the card's current list off the band the door
 // already holds (GetBand reads it in the same snapshot as the bench); anything else none.
 func designRunJoins(kind string, params *pb_common.DesignRunParams, band *entity.DesignBand, parent *entity.DesignRun) *entity.DesignJoinsDoc {
+	// hand_flat redraws the designer's flats: no list (81-FINAL-MODES).
+	if mode, _ := designFlatModeOf(params); mode == designgen.FlatModeHandFlat {
+		return nil
+	}
 	if kind != entity.DesignRunKindFlat || !designgen.FlatIsGarmentSheet(params.GetViews(), designLayoutOne) {
 		return nil
 	}

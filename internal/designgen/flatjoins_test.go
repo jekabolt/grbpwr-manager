@@ -32,7 +32,7 @@ func loadJoinsCase(t *testing.T, name string) entity.DesignJoinsDoc {
 // MUTATIONS IT CATCHES: any wording drift of a sentence; the diagonal / crossing / no-back-neckline /
 // pocket-side rules not firing or firing on the wrong garment; a positive absence surviving.
 func TestJoinsCraftMatchesTheWinningPrompts(t *testing.T) {
-	for _, c := range []string{"c38", "c49"} {
+	for _, c := range []string{"c38", "c49", "c2"} {
 		t.Run(c, func(t *testing.T) {
 			want, err := os.ReadFile(filepath.Join("testdata", "joins", c+"-golden.txt"))
 			if err != nil {

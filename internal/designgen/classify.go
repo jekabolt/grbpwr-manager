@@ -325,7 +325,7 @@ func classifyBySentinel(err error) verdict {
 	// ─── ours: the preset's own prerequisite did not survive to the pass. Refused while the job was
 	// BUILT, so no money moved; terminal because the row that vanished does not come back and the
 	// snapshot is frozen. See freeformPrerequisitesSurvived.
-	case errors.Is(err, errFreeformSourceGone), errors.Is(err, errFlatUnderdrawingGone):
+	case errors.Is(err, errFreeformSourceGone), errors.Is(err, errFlatStructureGone):
 		return verdict{Retryable: false, Code: CodeSourceGone, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errFreeformSourceTooSmall):
 		return verdict{Retryable: false, Code: CodeSourceTooSmall, State: entity.DesignAttemptFailed}
