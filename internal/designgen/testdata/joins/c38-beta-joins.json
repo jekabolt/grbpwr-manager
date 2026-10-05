@@ -1,0 +1,25 @@
+{
+ "rev": 1,
+ "items": [
+  {"kind": "binding", "from": "NP_R", "to": "NP_L", "view": "front", "text": "High crew neck, bound, front only. It runs into the strap inner edges at the neck points.", "id": "neck_bind_front", "via": ["CFN"], "width": "narrow", "continuesInto": ["strap_L", "strap_R"], "visibility": "visible"},
+  {"kind": "binding", "from": "NP_L..SP_L:0.6", "to": "UA_L", "side": "L", "text": "Cut-in front armhole, bound.", "id": "armhole_bind_L", "width": "narrow", "continuesInto": ["strap_L", "back_armhole_L"], "visibility": "visible"},
+  {"kind": "binding", "from": "NP_R..SP_R:0.6", "to": "UA_R", "side": "R", "text": "Mirror of armhole_bind_L.", "id": "armhole_bind_R", "width": "narrow", "continuesInto": ["strap_R", "back_armhole_R"], "visibility": "visible"},
+  {"kind": "strap", "from": "NP_L..SP_L:0.3", "to": "MB_R", "view": "back", "text": "Folded jersey strap. It continues from the left front shoulder, crosses over the right strap at the upper back and attaches at the right back side at mid-back.", "id": "strap_L", "via": ["UB_C"], "width": "wide", "continuesInto": ["neck_bind_front", "back_top_bind"], "visibility": "visible"},
+  {"kind": "strap", "from": "NP_R..SP_R:0.3", "to": "MB_L", "view": "back", "text": "Mirror of strap_L. It runs from the right front shoulder to the left back side and passes under strap_L at the cross.", "id": "strap_R", "via": ["UB_C"], "width": "wide", "continuesInto": ["neck_bind_front", "back_top_bind"], "visibility": "visible"},
+  {"kind": "edge", "from": "UA_L", "to": "MB_L", "side": "L", "text": "Short bound back side edge, rising from the strap join to the underarm.", "id": "back_armhole_L", "continuesInto": ["armhole_bind_L", "strap_R"], "visibility": "visible"},
+  {"kind": "edge", "from": "UA_R", "to": "MB_R", "side": "R", "text": "Mirror of back_armhole_L.", "id": "back_armhole_R", "continuesInto": ["armhole_bind_R", "strap_L"], "visibility": "visible"},
+  {"kind": "binding", "from": "MB_L", "to": "MB_R", "view": "back", "text": "Top edge of the back panel, gently curved, with a small tack/bartack at the centre.", "id": "back_top_bind", "via": ["MB_C"], "width": "narrow", "continuesInto": ["strap_R", "strap_L"], "visibility": "visible"},
+  {"kind": "seam", "from": "UA_L", "to": "HEM_L", "side": "L", "text": "Fitted side seam that shapes in at the waist.", "id": "side_seam_L", "via": ["WL_L"], "visibility": "visible"},
+  {"kind": "seam", "from": "UA_R", "to": "HEM_R", "side": "R", "text": "Small care label visible near the hem.", "id": "side_seam_R", "via": ["WL_R"], "visibility": "visible"},
+  {"kind": "edge", "from": "HEM_L", "to": "HEM_R", "view": "front", "text": "Raw cut edge, slightly rolling.", "id": "hem_front", "via": ["HEM_FC"], "continuesInto": ["hem_back"], "visibility": "visible", "sharp": ["HEM_L", "HEM_R"]},
+  {"kind": "edge", "from": "HEM_R", "to": "HEM_L", "view": "back", "text": "Raw cut edge.", "id": "hem_back", "via": ["HEM_BC"], "continuesInto": ["hem_front"], "visibility": "visible"},
+  {"kind": "opening", "text": "Open back with bare skin, from the upper back down to mid-back.", "id": "back_opening", "boundedBy": ["strap_L", "strap_R", "back_top_bind"], "visibility": "visible"},
+  {"kind": "edge", "from": "SP_L..UA_L:0.15", "to": "SP_R..UA_R:0.15", "view": "front", "text": "Lower edge of the inner front layer, a deep V ending under the bust. It shows as a soft shadow line.", "id": "inner_V_edge", "via": ["BUST_C"], "layer": 1, "visibility": "through", "freeEdge": true, "sharp": ["BUST_C"]},
+  {"kind": "edge", "from": "UA_L", "to": "UA_R", "text": "Caught into the neck and armhole bindings with the outer front.", "id": "inner_top_edges", "via": ["NP_L..SP_L:0.6", "NP_L", "CFN", "NP_R", "NP_R..SP_R:0.6"], "layer": 1, "visibility": "hidden", "caughtInto": ["neck_bind_front", "armhole_bind_L", "armhole_bind_R"]}
+ ],
+ "absences": ["no sleeves", "no back neckline panel", "no back neck binding", "no closures", "no pockets", "no hem band", "no centre front seam", "no shoulder seam visible at the top of the shoulder"],
+ "layers": [
+  {"index": 0, "name": "outer shell (front panel, back panel, st", "sheer": true, "note": "Thin semi-sheer white jersey. Skin and an inner layer's edge show through on the front.", "face": "both"},
+  {"index": 1, "name": "inner front V-panel / modesty layer", "sheer": true, "note": "Seen only as a soft V-shaped shadow line through the front. Its top edges are caught into the neck and armhole bindings and its sides into the side seams. Its V edge hangs free under the bust.", "face": "front"}
+ ]
+}

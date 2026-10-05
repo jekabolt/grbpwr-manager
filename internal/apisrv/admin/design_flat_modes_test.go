@@ -239,16 +239,16 @@ func TestPartsCardConstructionFromJoins(t *testing.T) {
 	require.True(t, ok)
 	got := designPartsConstructionText(a.Doc())
 	require.True(t, strings.HasPrefix(got, designgen.JoinsListText(a.Doc())+"\n\n"))
-	want := `PART VOCABULARY (closed — use these names; never name a part the construction does not have; a region that matches none of them is an opening or the nearest body panel):
-- front body
-- back body
-- neck bind front
-- left strap
-- right strap
-- left armhole bind
-- right armhole bind
-- back open bind
-- opening: bounded by strap_L, strap_R, back_open_bind`
+	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening or the inside of the part seen through it, never a binding or a band):
+- front body — the outer front body panel
+- back body — the outer back body panel
+- front neck binding — a thin binding strip (narrow) cut as its own piece, along NP_R → CFN → NP_L
+- left strap — a strap cut as its own piece; it STARTS at NP_L and ends at UA_R..MB_R:0.3; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
+- right strap — a strap cut as its own piece; it STARTS at NP_R and ends at UA_L..MB_L:0.3; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
+- left armhole binding — a thin binding strip (narrow) cut as its own piece, along NP_L..SP_L:0.35 → FSH_L..UA_L:0.5 → UA_L
+- right armhole binding — a thin binding strip (narrow) cut as its own piece, along NP_R..SP_R:0.35 → FSH_R..UA_R:0.5 → UA_R
+- back open binding — a thin binding strip (narrow) cut as its own piece, along UA_L → MB_L → MB_C → MB_R → UA_R
+- opening: bounded by strap_L, strap_R, back_open_bind — no cloth: label it «opening», or put it in the part whose inside shows through it (seen_through)`
 	require.True(t, strings.HasSuffix(got, want), got)
 	require.NotContains(t, strings.ToLower(got[strings.Index(got, "PART VOCABULARY"):]), "upper back")
 	require.Equal(t, "", designPartsConstructionText(entity.DesignJoinsDoc{}), "no list, no block")

@@ -41,7 +41,9 @@ const designPartsCardMaxTokens = 6000
 // flank of a side view comes from the drawing; regions with no cloth of their own are OPENINGS
 // (seen through to the far side's inside → that part, or the `opening` group when nothing is
 // behind); no invented pieces. Tested on card 38: back-8 / no-invent 3/3 (tmp/plans/flat-consistency
-// 10-RESEARCH.md B1). Any change here: bump the client's parts rev (PARTS_ALGO_REV) so cached rows
+// 10-RESEARCH.md B1). f3 (2026-10-06): openings are never a binding (bindings are thin strips
+// only), every separately cut piece and every inner layer is its own part, a strap is named by the
+// neck point it starts at, and the viewer → wearer side mapping of every view is spelled out. Any change here: bump the client's parts rev (PARTS_ALGO_REV) so cached rows
 // of the old text are not applied.
 const designPartsCardSystemPrompt = `These are technical fashion flats of ONE garment, one picture per view (front, back and possibly the left and right side views). Each picture's line drawing has been cut into numbered regions (each region is tinted and carries a red number); the numbering restarts at 1 on every picture. Some regions are only fragments of one garment part: strips between pleat/fold lines, topstitching channels, fringe bits, a pocket split from its flap, etc.
 
@@ -49,7 +51,8 @@ List the PHYSICAL parts of the garment a designer could make from different mate
 
 Rules:
 - One physical part is ONE entry, even when it is visible on several views: the collar seen on the front, the back and the sides is one "collar" entry with regions on each of those views. Never repeat a part once per view.
-- Left and right are the WEARER'S left and right, never the viewer's: on a front view the wearer's left sleeve is on the right side of the picture, on a back view it is on the left side. Left and right sleeves, cuffs, pockets, front panels are separate parts.
+- Left and right are the WEARER'S left and right, never the viewer's. On the FRONT view the wearer's left is picture-RIGHT; on the BACK view the wearer's left is picture-LEFT; on a side view the flank comes from the drawing (the garment's front facing picture-left = the wearer's LEFT flank, facing picture-right = the wearer's RIGHT flank). Left and right sleeves, cuffs, pockets, front panels are separate parts.
+- A STRAP is named by the shoulder where it STARTS at the neck point (the wearer's side): a strap that starts at the wearer's left neck point is the "left strap" on every view, even where it crosses to the right side of the body or ends there. One strap keeps one name on all views.
 - Every region number of every view must appear in exactly one part. A region that is noise goes into the part it sits on.
 - Labels are lowercase, at most 3 words, standard garment part names ("left sleeve", "collar", "left front body", "back yoke", "left pocket flap"); each label is used once.
 - If ONE region clearly spans two parts whose seam line is missing in the drawing, put it in the part it mostly belongs to and also list it in "split_needed" with its view.
@@ -57,6 +60,8 @@ Rules:
 
 Construction rules (they override any habit of naming the usual pieces):
 - OPENINGS ARE NOT CLOTH. A region bounded by straps, bindings or the edge of a cut-out — an open back, a keyhole, a cut-out, an armhole seen from the side, the gap between crossed straps — is an OPENING. A flat has no body inside it, so through an opening you see the INSIDE (reverse side) of the cloth on the far side of the garment: through an open back, the inside of the front panels; through an armhole seen from the side, the inside of the opposite side. Put such a region in the part whose inside it shows (so painting that part paints it too) AND list it in "seen_through" with that part's label. An opening with no cloth behind it (empty space, background seen through), or one where you cannot tell what is behind it, goes into ONE part labelled "opening" — never a garment part.
+- NO CLOTH IS NEVER A BINDING. An area with no cloth of its own bounded by straps or edges (e.g. the triangle between a strap and the armhole edge on an open back) is an "opening", or the inside of the piece seen through it (seen_through) — never a binding or a band. Bindings and bands are THIN strips along an edge only.
+- EVERY SEPARATELY CUT PIECE IS ITS OWN PART: a neck band, each binding (neck, armhole, the edge of an open back), each strap, and every inner layer the construction lists. Never fold a band, binding, strap or layer into the body panel next to it. An inner layer seen through a sheer outer layer is its own part (its own label, the same on every view), not the outer body.
 - NEVER INVENT A PIECE. Name a part only when the drawing gives it cloth bounded by its own seams/edges. In particular a back view of an open-back garment has NO upper back / back yoke / back bodice above the opening: the area inside the straps is an opening, not a panel. A part must be consistent across the views and with the construction notes in the message: before answering, check every part against every other view — if the other views show no such piece and the region can be explained as an opening, it is an opening.
 - THE FLANK OF A SIDE VIEW COMES FROM THE DRAWING, NOT FROM ITS NAME. Find which way the garment's front faces (neckline, bust, front edge). If the front faces the RIGHT edge of the picture, the flank you see is the wearer's RIGHT side; if it faces the LEFT edge, the wearer's LEFT side. Every left/right part on that view belongs to that flank only — never mix a left armhole with a right back panel on one side view — and it must be the same entry (same part) as the matching piece on the front and back views.
 - A seam that runs down the middle of a side view is the side seam: the front of the garment is on one side of it, the back on the other.
