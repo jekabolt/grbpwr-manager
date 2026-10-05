@@ -930,6 +930,7 @@ func (a *App) Start(ctx context.Context) error {
 	// gate — it spends nothing, and the money flag above has already closed every paid verb when it
 	// is off.
 	adminS.SetDesignEngines(designCfg.Engines)
+	adminS.SetDesignImageRunCap(designCfg.ImageRunCap)
 	// admin → AI providers: the SAME registry every client reads its key through (a write reloads it
 	// here at once) and the SAME ring it opens stored keys with (a key sealed by another master would
 	// read back "unreadable").

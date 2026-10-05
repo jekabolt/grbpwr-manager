@@ -47,6 +47,11 @@ type Config struct {
 	// BatchSize × RunTimeout under ClaimLease, which is what makes the invariant above true by
 	// construction rather than by an operator getting three numbers right.
 	RunTimeout time.Duration `mapstructure:"run_timeout"`
+	// ImageRunCap — the WALL-CLOCK cap of an image.generate run from its first start
+	// (entity.DesignImageRunCapDefault, owner 05.10): the worker bounds its own provider phase by it
+	// and its overdue sweep closes the row as `timed_out` past it, so a person never waits on a
+	// spinner for the 20-minute lease.
+	ImageRunCap time.Duration `mapstructure:"image_run_cap"`
 	// ImageQuality is the image provider's price dial ("auto" | "low" | "medium" | "high"). It is
 	// configuration rather than a constant because it is the single largest multiplier on what a
 	// press costs — roughly four times between medium and high on gpt-image-1 — and moving it must
@@ -118,6 +123,7 @@ const (
 	EnvBatchSize        = "DESIGN_WORKER_BATCH_SIZE"
 	EnvClaimLease       = "DESIGN_WORKER_CLAIM_LEASE"
 	EnvRunTimeout       = "DESIGN_WORKER_RUN_TIMEOUT"
+	EnvImageRunCap      = "DESIGN_IMAGE_RUN_CAP"
 	EnvImageQuality     = "DESIGN_IMAGE_QUALITY"
 	EnvImageQualityFlat = "DESIGN_IMAGE_QUALITY_FLAT"
 	EnvThreedPBR        = "DESIGN_THREED_PBR"
@@ -188,6 +194,7 @@ func DefaultConfig() Config {
 		BatchSize:        1,
 		ClaimLease:       20 * time.Minute,
 		RunTimeout:       15 * time.Minute,
+		ImageRunCap:      entity.DesignImageRunCapDefault,
 		ImageQuality:     "medium",
 		ImageQualityFlat: ImageQualityMax,
 	}
@@ -218,6 +225,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.RunTimeout <= 0 {
 		c.RunTimeout = d.RunTimeout
+	}
+	if c.ImageRunCap <= 0 {
+		c.ImageRunCap = d.ImageRunCap
 	}
 	if strings.TrimSpace(c.ImageQuality) == "" {
 		c.ImageQuality = d.ImageQuality

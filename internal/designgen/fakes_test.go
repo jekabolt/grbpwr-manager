@@ -59,6 +59,9 @@ func (f *fakeStore) ClaimRuns(_ context.Context, _ int, _ time.Duration, token s
 }
 
 func (f *fakeStore) ReviveExpiredRuns(context.Context) (int, error) { return f.revived, f.reviveErr }
+func (f *fakeStore) CloseOverdueRuns(context.Context, entity.DesignOverdueSweep) (int, error) {
+	return 0, nil
+}
 
 func (f *fakeStore) GetRun(context.Context, int) (*entity.DesignRun, error) {
 	return f.getRun, f.getRunErr

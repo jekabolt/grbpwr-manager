@@ -22,6 +22,9 @@ var (
 	// errStorageFailed — the provider delivered and OUR storage refused. Money spent, nothing to
 	// show, and A RETRY IS FORBIDDEN: it would pay a second time for bytes we already had.
 	errStorageFailed = errors.New("designgen: the delivered bytes could not be stored")
+	// errLandingFailed — the provider delivered and the pictures could not be FILED, after a second
+	// try (run 148). Terminal: a retry would buy them again.
+	errLandingFailed = errors.New("designgen: the pictures were generated but could not be saved — try again")
 	// errDuplicateView — TWO PLATES OF THIS RUN CLAIM THE SAME SIDE OF THE GARMENT, and a build
 	// has one slot per side. Raised before the request leaves, so nothing is spent; see falViews.
 	errDuplicateView = errors.New("designgen: two input plates claim the same view of the garment")
@@ -395,6 +398,8 @@ func classifyBySentinel(err error) verdict {
 
 	// ─── ours: delivered, then our storage refused. RETRY FORBIDDEN — it pays again for bytes we
 	// already had, which is the single most expensive mistake this worker could make.
+	case errors.Is(err, errLandingFailed):
+		return verdict{Retryable: false, Code: entity.DesignErrorCodeLandingFailed, State: entity.DesignAttemptDelivered}
 	case errors.Is(err, errStorageFailed):
 		return verdict{Retryable: false, Code: CodeStorageFailed, State: entity.DesignAttemptDelivered}
 

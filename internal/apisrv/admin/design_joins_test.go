@@ -227,3 +227,12 @@ func TestGenerateDesignJoinsNeverOverwritesAConcurrentEdit(t *testing.T) {
 	require.True(t, resp.GetJoins().GetEdited(), "the designer's row stands")
 	require.Len(t, rec.all(), 1)
 }
+
+// The band advertises the wall-clock cap of an image run (fields 36–37).
+func TestDesignRunCapIsAdvertised(t *testing.T) {
+	s := &Server{}
+	require.Equal(t, entity.DesignImageRunCapDefault, s.designRunCap())
+	s.SetDesignImageRunCap(4 * time.Minute)
+	require.Equal(t, 4*time.Minute, s.designRunCap())
+	require.Equal(t, []string{"flat", "render", "recolor", "pattern", "freeform"}, entity.DesignCappedRunKinds())
+}

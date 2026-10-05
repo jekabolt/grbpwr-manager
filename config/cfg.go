@@ -655,6 +655,7 @@ func bindEnvVars() {
 	viper.BindEnv("design_generation.batch_size", "DESIGN_WORKER_BATCH_SIZE")
 	viper.BindEnv("design_generation.claim_lease", "DESIGN_WORKER_CLAIM_LEASE")
 	viper.BindEnv("design_generation.run_timeout", "DESIGN_WORKER_RUN_TIMEOUT")
+	viper.BindEnv("design_generation.image_run_cap", "DESIGN_IMAGE_RUN_CAP")
 	viper.BindEnv("design_generation.image_quality", "DESIGN_IMAGE_QUALITY")
 	// REALISTIC MATERIALS ON 3D (params.threed.pbr). Off by default: a PBR GLB's size is unmeasured
 	// and the 64 MiB cap refuses it AFTER the charge. Turn on (true) only after a beta smoke has
