@@ -514,7 +514,10 @@ func TestDesignQuizFitCategory(t *testing.T) {
 		t.Fatalf("fit decision line: %q", lines)
 	}
 	for _, want := range []string{"- part: EXACTLY one key", "A one-word fit label", "FIT BASIS", "never invent a measurement range",
-		"candidate points, not a quota", `"category":"design|fit|details|materials|use|finish"`} {
+		"candidate points, not a quota", `"category":"design|fit|details|materials|use|finish"`,
+		// 63-AB-RESULT P1 (padding to the cap) and P2 (Known detail row re-asked through its sub-decisions).
+		"15 is a ceiling, not a target", "Stop rule:", "Never fill the list toward the cap", "a re-run with saved answers is usually short",
+		"A Known detail row closes its topic INCLUDING its sub-decisions", "ONE clarifying question at most"} {
 		if !strings.Contains(designQuizSystemPrompt, want) {
 			t.Errorf("system prompt lacks %q", want)
 		}
