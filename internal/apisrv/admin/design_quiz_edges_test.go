@@ -63,7 +63,7 @@ func TestDesignQuizEdgeKinds(t *testing.T) {
 
 	for _, s := range []string{
 		"EDGES — every open edge gets its finish decided",
-		"decision_key edge_finish_main", "decision_key edge_exceptions",
+		"decision_key edge_finish_main", "IS the edge_exceptions decision",
 		"Which edges are finished differently?",
 		"armhole_finish, sleeve_finish, front_edge_finish, waistband_finish, leg_finish, pocket_edge_finish, vent_finish, hood_edge_finish",
 		"part sm_hem_bound",

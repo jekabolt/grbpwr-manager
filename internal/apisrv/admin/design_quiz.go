@@ -116,7 +116,7 @@ Not your questions: target price, production quantity, factory — business fact
 
 SEAMS AND INSIDE FINISH — the designer chooses the MAIN seam construction once, then the additional constructions and the hem. Ask them when the garment is unlined or the inside is visible (a lining hides the interior finish: then ask only visible topstitching and the hem); ask them BEFORE the hem. Name constructions by these exact names, with the ISO numbers where conventional: plain seam pressed open, edges overlocked · plain seam overlocked together · safety stitch 516 · French seam · flat-felled · mock flat-fell (topstitched to one side) · lapped seam · Hong Kong finish (bias-bound edges) · bound seam · taped seam (seam-sealed) · bonded (welded) · flatlock 607 · hem turned twice, 301 · blind hem 103 · coverstitch hem 406/602 · raw edge · bound edge (binding) · faced edge. Offer only what the fabric and the garment allow: knits → overlock 514 / safety 516 / flatlock 607, coverstitch or bound edges, never French or flat-felled; light unlined wovens → French, flat-felled, Hong Kong, plain overlocked; denim and heavy unlined wovens → flat-felled, mock flat-fell, Hong Kong, bound, plain overlocked; waterproof shells → taped, bonded, flat-felled then taped, never overlock alone; leather and coated → lapped, plain pressed open, raw or painted edges, never overlock; fully fashioned knitwear has linked seams — no seam question. A question about ONE construction (its topstitch width, binding width, tape) → part = its sm_ key; a question CHOOSING between constructions → part = the garment zone (side_seam when listed, else whole) with the constructions as options.
 
-EDGES — every open edge gets its finish decided. Walk this garment's edges by group: tops and outerwear: neckline, armhole when sleeveless, sleeve opening, front edge, body hem, hood edge, pocket openings, vents and slits; bottoms: waistband edge, fly, pocket openings, leg opening or hem, slits; dresses: neckline, armhole, sleeve opening, hem, slits; underwear and swim: leg openings, waist, straps, neckline. An edge the card or a clear picture settles is not asked. Required coverage step: before you return, list (silently) this garment's open edges from its group above; every edge whose finish is not settled must be covered — by edge_finish_main + edge_exceptions, or by its own edge key. A jacket or coat is not covered by its body hem alone: front edge, sleeve opening, pocket openings, vents and hood edge count too. Use the edge decision keys listed below, never coined ones (no sleeve_opening, neck_rib). Ask efficiently: when several edges likely share a finish, ONE single question on the main edge finish (decision_key edge_finish_main), then ONE multi "Which edges are finished differently?" whose options name edge and finish (decision_key edge_exceptions); when the edges clearly differ, one question per edge (neck_finish, armhole_finish, sleeve_finish, front_edge_finish, waistband_finish, leg_finish, pocket_edge_finish, vent_finish, hem_finish, hood_edge_finish). Binding chosen or seen → ask once its width and self-fabric or contrast (part sm_hem_bound). Edge finish names, exact: hem turned twice, 301 · blind hem 103 · coverstitch hem 406/602 · raw edge · bound edge (binding) · faced edge · rolled hem (baby hem) · piped edge (piping) · rib band · self-fabric band · elastic casing · drawcord casing · overlocked edge · lettuce edge. The fabric decides: knits → coverstitch, rib band, self-fabric band, binding, raw or lettuce edge; wovens → turned, blind, faced, bound, rolled; leather → raw, painted, turned and glued. A lining does not hide the edges — still ask them. No padding: a well-documented card asks nothing here.
+EDGES — every open edge gets its finish decided. Walk this garment's edges by group: tops and outerwear: neckline, armhole when sleeveless, sleeve opening, front edge, body hem, hood edge, pocket openings, vents and slits; bottoms: waistband edge, fly, pocket openings, leg opening or hem, slits; dresses: neckline, armhole, sleeve opening, hem, slits; underwear and swim: leg openings, waist, straps, neckline. An edge the card or a clear picture settles is not asked. Required coverage step: before you return, list (silently) this garment's open edges from its group above; every edge whose finish is not settled must be covered — by edge_finish_main + edge_exceptions, or by its own edge key. A jacket or coat is not covered by its body hem alone: front edge, sleeve opening, pocket openings, vents and hood edge count too. Use the edge decision keys listed below, never coined ones (no sleeve_opening, neck_rib). Ask efficiently: when several edges likely share a finish, ONE single question on the main edge finish (decision_key edge_finish_main) that MUST carry "clarify": {"question": "Which edges are finished differently?", "options": 2 to 6 "<edge>: <finish>" pairs, the realistic exceptions of THIS garment} — that follow-up IS the edge_exceptions decision (kind multi, asked after the main answer), so never ask edge_exceptions as a separate question; when the edges clearly differ, one question per edge (neck_finish, armhole_finish, sleeve_finish, front_edge_finish, waistband_finish, leg_finish, pocket_edge_finish, vent_finish, hem_finish, hood_edge_finish). Binding chosen or seen → ask once its width and self-fabric or contrast (part sm_hem_bound). Edge finish names, exact: hem turned twice, 301 · blind hem 103 · coverstitch hem 406/602 · raw edge · bound edge (binding) · faced edge · rolled hem (baby hem) · piped edge (piping) · rib band · self-fabric band · elastic casing · drawcord casing · overlocked edge · lettuce edge. The fabric decides: knits → coverstitch, rib band, self-fabric band, binding, raw or lettuce edge; wovens → turned, blind, faced, bound, rolled; leather → raw, painted, turned and glued. A lining does not hide the edges — still ask them. No padding: a well-documented card asks nothing here.
 
 COLOURWAYS — the construction draft builds its colourway proposals from these answers, so ask them in depth, part col_palette, category design. No colourway listed under Known: ask colourway_count AND colourway_colours, both, adjacent (the colour a picture shows settles that picture, not the colourway range) (kind multi for the colours; options are concrete colour words read off the pictures — "black", "bone", "olive drab", "washed indigo" — plus the common companions of that palette; at most 6, never Pantone codes; the designer types more). Then ask each of these ONLY when the garment has the thing: colour_blocking when it has panels, yokes or trims that could take a contrast; thread_colour when topstitching is visible; hardware_finish when it has metal hardware (part = its hw_ key when one hardware type is on the garment); wash_per_colourway when the fabric is washed or garment-dyed; print_per_colourway when it carries artwork. Colourways listed under Known: ask only what they leave open (a missing colour, the thread or hardware finish, the wash per colourway) — never the count or colours again. No padding: a garment without visible stitching, hardware, contrast panels, wash or artwork gets the count and colours only.
 
@@ -145,8 +145,7 @@ Good — details, part collar: "Collar stand height?" → ["no stand", "2.5 cm s
 Good — details, part hw_button: "How many front buttons?" → ["5", "6", "7", "8"]
 Good — details, part side_seam, decision_key main_seam: "Main seam construction for the body?" → ["flat-felled", "mock flat-fell, topstitched to one side", "plain seam overlocked together", "Hong Kong finish (bias-bound edges)"]
 Good — details, part whole, kind multi, decision_key extra_seams: "Which other constructions appear, and where?" → ["flat-felled yoke and armhole", "bound pocket bags", "Hong Kong finish on the facings", "taped seams throughout"]
-Good — details, part whole, decision_key edge_finish_main (jacket): "Main finish of the front edge, hem, sleeve openings and pocket openings?" → ["hem turned twice, 301", "faced edge", "bound edge (binding)", "raw edge"]
-Good — details, part whole, kind multi, decision_key edge_exceptions: "Which edges are finished differently?" → ["neckline: rib band", "sleeve opening: rolled hem (baby hem)", "pocket openings: piped edge (piping)", "front edge: faced edge"]
+Good — details, part whole, decision_key edge_finish_main (jacket): "Main finish of the front edge, hem, sleeve openings and pocket openings?" → ["hem turned twice, 301", "faced edge", "bound edge (binding)", "raw edge"], clarify "Which edges are finished differently?" → ["neckline: rib band", "sleeve opening: rolled hem (baby hem)", "pocket openings: piped edge (piping)", "hood edge: bound edge (binding)"]
 Good — design, part col_palette, decision_key colourway_count: "How many colourways?" → ["one", "two", "three", "four or more"]
 Good — design, part col_palette, kind multi, decision_key colourway_colours: "Main colours of the colourways?" → ["black", "bone", "olive drab", "washed indigo"]
 Bad — "What fit do you want?" → ["regular", "slim", "oversized"]: catalogue words that repeat the label; ask the concrete point (room at the chest, the hem landmark, the shoulder).
@@ -158,7 +157,7 @@ Bad — asking the French seam on a jersey tee, or an overlock finish on a fully
 
 FIELDS
 - visual_evidence: one short line on what the pictures show about this point, or "" when they show nothing.
-- contradicts_picture: true on an option only when it contradicts what the pictures CLEARLY show — not when they are merely silent. On a fit question only for a clear conflict in silhouette or volume ("skin-tight" against an oversized reference), never over a number. When a question has such an option, add "clarify": the follow-up asked if the designer picks it — one question (at most 15 words) and 2 to 4 options that resolve the conflict (for example "change the garment from the picture" / "the picture is only mood, ignore it"). Otherwise omit "clarify".
+- contradicts_picture: true on an option only when it contradicts what the pictures CLEARLY show — not when they are merely silent. On a fit question only for a clear conflict in silhouette or volume ("skin-tight" against an oversized reference), never over a number. When a question has such an option, add "clarify": the follow-up asked if the designer picks it — one question (at most 15 words) and 2 to 4 options that resolve the conflict (for example "change the garment from the picture" / "the picture is only mood, ignore it"). Otherwise omit "clarify" — except on edge_finish_main, which always carries its edge exceptions there (EDGES).
 - If an EARLIER answer contradicts what the pictures clearly show, the FIRST question is about that conflict: id "clarify_" + the earlier id, same category and part, offering both readings as options.
 - part: EXACTLY one key from the allowed lists in the user message (garment parts, then hardware, then labels), spelled as listed (singular, lowercase). Pick the most specific part the question is about: fit basis, ease, volume, layering, size range, stretch, movement, the main shell fabric, season or care → whole; length or where the hem sits → hem; rise → rise when listed, else waistband; waist position → waist when listed, else waistband; sleeve length, width or armhole → sleeve; leg width, taper or opening → leg; shoulder construction → shoulder when listed; cuff finish → cuff; collar, stand, lapel → collar / lapel; insulation, padding, lining → lining when listed. Labels: a question about a label (placement, type, size, attachment) → its lbl_ key (brand label → lbl_brand, care/composition → lbl_care, size tab → lbl_size, flag → lbl_flag, patch → lbl_patch, hang tag → lbl_hang_tag). Hardware: a question about ONE specific hardware type (how many buttons, button size, which snap finish, eyelet placement, zip length) → that hw_ key; a question CHOOSING between closure or hardware types (buttons or zip? snaps or toggles?) → the garment zone (closure, fly, pocket, zip when listed). Seam constructions and edge finishes: a question about one of them → its sm_ key (listed in the user message). Colour and colourway questions → col_palette.
 - category: design (silhouette and volume as a look, proportion, visual accents, colour blocking) · fit (fit basis, ease as a feel, length to a landmark, shoulder and armhole, sleeve and leg shape, rise and waist position, layering, size range and body chart, stretch need, movement) · details (collar, neckline, cuffs, closures, plackets, pockets, seams, panels, darts, hems, construction) · materials (fabric, weight, stretch, insulation, lining, interfacing, hardware, trims) · use (season, climate, function, wear, care) · finish (prints, embroidery, washes, dyes, topstitch colour, labels). Rule of thumb: how it sits on the body → fit; how it looks → design; how it is built → details; what it is made of → materials.
@@ -876,7 +875,7 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 	}
 	// fit_questions + model (already in logAttrs): the owner's model A/B reads from this line (A12).
 	slog.Default().InfoContext(ctx, "design quiz", append(logAttrs, slog.Int("questions", len(questions)),
-		slog.Int("fit_questions", fitQuestions), slog.Int("parts_fixed", st.partsFixed))...)
+		slog.Int("fit_questions", fitQuestions), slog.Int("parts_fixed", st.partsFixed), slog.Int("keys_fixed", st.keysFixed))...)
 	// 64-DEFERRED E2: the list becomes the card's open session (resume on another tab or device). The
 	// call is paid for: a failed store is logged, never turned into a refusal.
 	if err := s.repo.TechCards().OpenDesignQuizSession(ctx, cardID, family, questions, authsrv.GetAdminUsername(ctx)); err != nil {
@@ -1308,6 +1307,12 @@ func designQuizDecisionLines(card *entity.TechCard, stale bool) []string {
 		if a.Skipped || a.Stale != stale {
 			continue
 		}
+		if a.Question.DecisionKey == designQuizEdgeExceptionsKey {
+			if line := designQuizEdgeExceptionsLine(a.Selected, aiBoundedText(a.FreeText, designQuizMaxFreeTextRunes)); line != "" {
+				out = append(out, "- "+line)
+			}
+			continue
+		}
 		ans := designQuizAnswerText(a)
 		if ans == "" {
 			continue
@@ -1572,6 +1577,8 @@ func parseDesignQuiz(raw, family string, saved []entity.TechCardQuizAnswer) ([]e
 // corrected by designQuizResolvePart (parts_fixed).
 type designQuizParseStats struct {
 	raw, kept, invalid, repeated, capped, partsFixed int
+	// keysFixed — edge questions whose decision key was rewritten to its canonical key (91-EDGE-KEYS K1).
+	keysFixed int
 }
 
 // unusable — the model returned questions but not one survived validation: that is a failed call
@@ -1662,6 +1669,13 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 		}
 		// A clarify_ question re-opens its earlier answer on purpose and keeps its key: not a repeat.
 		decisionKey := designQuizDecisionKey(it.DecisionKey)
+		// 91-EDGE-KEYS K1: an edge question carries its canonical key; dedupe (E1) runs after.
+		if !strings.HasPrefix(id, "clarify_") {
+			if canon := designQuizCanonicalEdgeKey(category, decisionKey, part, kind, question, options); canon != decisionKey {
+				decisionKey = canon
+				st.keysFixed++
+			}
+		}
 		if decisionKey != "" && !strings.HasPrefix(id, "clarify_") && (savedKeys[decisionKey] || seenKeys[decisionKey]) {
 			st.repeated++
 			continue
@@ -1692,9 +1706,25 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 				}
 			}
 		}
+		// 91-EDGE-KEYS K2: edge_finish_main always carries its follow-up (the edge_exceptions decision
+		// the client asks after the main answer): the model's pairs, else the group's open edges.
+		if decisionKey == designQuizEdgeMainKey {
+			var copts []string
+			if it.Clarify != nil {
+				copts, _ = designQuizCleanOptions(it.Clarify.Options, designQuizMaxEdgeExceptions)
+			}
+			if len(copts) < designQuizMinOptions {
+				copts = designQuizEdgeExceptionsFallback(family, question)
+			}
+			q.ClarifyQuestion, q.ClarifyOptions = designQuizEdgeExceptionsQuestion, copts
+		}
 		seenIDs[id], seenText[textKey] = true, true
 		if decisionKey != "" && !strings.HasPrefix(id, "clarify_") {
 			seenKeys[decisionKey] = true
+			// The follow-up is the exceptions question: a separate one in the batch is a repeat.
+			if decisionKey == designQuizEdgeMainKey {
+				seenKeys[designQuizEdgeExceptionsKey] = true
+			}
 		}
 		out = append(out, q)
 		if fixedPart {
@@ -1882,10 +1912,18 @@ func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCa
 			return nil, nil, bad("question.question", "invalid_question", "",
 				fmt.Sprintf("a question is 1–%d characters", designQuizMaxQuestionRunes))
 		}
+		// 91-EDGE-KEYS K2: the edge_exceptions follow-up holds up to 6 pairs + "none — all the same".
+		maxOptions, maxClarify := designQuizMaxOptions, designQuizMaxClarifyOptions
+		if decisionKey == designQuizEdgeExceptionsKey {
+			maxOptions = designQuizMaxEdgeExceptions + 1
+		}
+		if decisionKey == designQuizEdgeMainKey {
+			maxClarify = designQuizMaxEdgeExceptions
+		}
 		options, ok := designQuizCleanList(pq.GetOptions(), designQuizMaxOptionRunes)
-		if !ok || len(options) < designQuizMinOptions || len(options) > designQuizMaxOptions {
+		if !ok || len(options) < designQuizMinOptions || len(options) > maxOptions {
 			return nil, nil, bad("question.options", "invalid_options", "",
-				fmt.Sprintf("%d–%d distinct options of at most %d characters", designQuizMinOptions, designQuizMaxOptions, designQuizMaxOptionRunes))
+				fmt.Sprintf("%d–%d distinct options of at most %d characters", designQuizMinOptions, maxOptions, designQuizMaxOptionRunes))
 		}
 		contradicts := pq.GetContradicts()
 		if len(contradicts) != 0 && len(contradicts) != len(options) {
@@ -1897,11 +1935,11 @@ func validateDesignQuizAnswers(in []*pb_admin.DesignQuizAnswer) ([]entity.TechCa
 				fmt.Sprintf("a question is at most %d characters", designQuizMaxQuestionRunes))
 		}
 		clarifyOpts, ok := designQuizCleanList(pq.GetClarifyOptions(), designQuizMaxOptionRunes)
-		if !ok || len(clarifyOpts) > designQuizMaxClarifyOptions ||
+		if !ok || len(clarifyOpts) > maxClarify ||
 			(len(clarifyOpts) > 0 && (len(clarifyOpts) < designQuizMinOptions || clarifyQ == "")) ||
 			(clarifyQ != "" && len(clarifyOpts) == 0) {
 			return nil, nil, bad("question.clarify_options", "invalid_options", "",
-				fmt.Sprintf("a follow-up has a question and %d–%d distinct options", designQuizMinOptions, designQuizMaxClarifyOptions))
+				fmt.Sprintf("a follow-up has a question and %d–%d distinct options", designQuizMinOptions, maxClarify))
 		}
 		selected, ok := designQuizCleanList(a.GetSelected(), designQuizMaxOptionRunes)
 		if !ok {
