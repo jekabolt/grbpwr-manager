@@ -355,8 +355,8 @@ func TestValidateCalloutAnswerCapsPerFlatWithModelOwnLast(t *testing.T) {
 
 func TestParseCalloutAnswerLenient(t *testing.T) {
 	for name, raw := range map[string]string{
-		"object": `{"placements":[{"id":"c1","skip":true}]}`,
-		"fenced": "Sure:\n```json\n{\"placements\":[{\"id\":\"c1\",\"skip\":true}],\"own\":[]}\n```",
+		"object":          `{"placements":[{"id":"c1","skip":true}]}`,
+		"fenced":          "Sure:\n```json\n{\"placements\":[{\"id\":\"c1\",\"skip\":true}],\"own\":[]}\n```",
 		"one bad element": `{"placements":[{"id":"c1","skip":true},{"id":["broken"]}]}`,
 	} {
 		a, ok := parseCalloutAnswer(raw)
@@ -448,4 +448,3 @@ func TestSuggestCalloutsUnusableAnswerIsAnError(t *testing.T) {
 	_, err := s.SuggestCallouts(adminCtx("olga"), &pb_admin.SuggestCalloutsRequest{TechCardId: 7, MediaIds: []int32{csFront}})
 	require.Equal(t, codes.Internal, status.Code(err), "%v", err)
 }
-
