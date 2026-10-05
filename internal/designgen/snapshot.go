@@ -338,6 +338,9 @@ type artworkUse struct {
 	FlatMediaID int             `json:"flat_media_id"`
 	Corners     []artworkCorner `json:"corners"`
 	Note        string          `json:"note"`
+	// Ground — set by the worker when the picture went out TIGHTENED (T27): cropped to its content
+	// and flattened onto this ground, its Corners then being the content quad. "" = sent as stored.
+	Ground artworkGroundKind `json:"-"`
 }
 
 type artworkCorner struct {
@@ -494,6 +497,10 @@ type refCaption struct {
 	// IsArtwork — эта картинка уехала АРТВОРКОМ рендера (70-ROUND7 B7): абзац ARTWORK называет её
 	// номер только тогда, когда она в списке именно этой ролью.
 	IsArtwork bool
+	// GuideView — this picture is the PLACEMENT GUIDE of that side (T27): the side's bench flat with
+	// every artwork of the side drawn at its exact size and place. Derived (data URI, MediaID 0);
+	// empty for every other picture. The ARTWORK paragraph names its number only off this field.
+	GuideView string
 }
 
 // referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
@@ -1609,6 +1616,13 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 			// берёт другое ремесло, так что ноль здесь ни на что не может указать неверно.
 			attached = append(attached, refCaption{Caption: d.caption})
 		}
+	}
+	// ─── RENDER ARTWORKS (T27): tightened to their content, the quad shrunk with them, and one
+	// placement guide per side within the engine's ceiling. Between resolution and the prompt for the
+	// same reason as the playground's derivatives: the guides are pictures of the call and take
+	// numbers in the same count. A picture that cannot be read keeps today's url and today's words.
+	if run.Kind == entity.DesignRunKindRender && len(in.Artworks) > 0 {
+		attached = deriveRenderArtworks(ctx, objects, p, &in, &job, attached, renderMaxRefs(job.Model, engines))
 	}
 	// ─── EXTEND (phase 3): THE PLAN IS FROZEN HERE, BEFORE THE MONEY. The source is decoded once to
 	// learn its size, the canvas and the per-side expansion are computed, the 3 MP cap applied — and

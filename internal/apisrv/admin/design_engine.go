@@ -335,9 +335,39 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 }
 
 // designImageCallImagesWithArtworks — designImageCallImages plus a render's frozen artwork pictures
-// (deduplicated against every other input, as the worker attaches them).
+// (deduplicated against every other input, as the worker attaches them) AND their placement guides
+// (T27: one per side carrying artworks). Guides are optional — the worker attaches only as many as
+// fit under the engine's ceiling — so with maxRefs this is still the exact upper bound the reserve
+// prices; the door refuses on designImageCallRequiredImages, which leaves the guides out.
 func designImageCallImagesWithArtworks(kind string, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork, maxRefs int) int {
+	n := designImageCallRequiredImages(kind, params, inputs, arts)
+	if kind == entity.DesignRunKindRender {
+		n += designArtworkGuideCount(arts)
+	}
+	if maxRefs > 0 && n > maxRefs {
+		n = maxRefs
+	}
+	return n
+}
+
+// designArtworkGuideCount — the placement guides a render's artworks can bring (T27): one per side
+// among front, back, side_l, side_r carrying at least one artwork — designgen.artworkGuideOrder.
+func designArtworkGuideCount(arts []designFrozenArtwork) int {
+	sides := map[string]struct{}{}
+	for _, a := range arts {
+		switch a.View {
+		case "front", "back", "side_l", "side_r":
+			sides[a.View] = struct{}{}
+		}
+	}
+	return len(sides)
+}
+
+// designImageCallRequiredImages — the pictures one call MUST carry: designImageCallImagesWithArtworks
+// without the optional guides and without the clamp. The ceiling refusal asks this.
+func designImageCallRequiredImages(kind string, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) int {
 	n := 0
 	switch kind {
 	case entity.DesignRunKindFreeform:
@@ -348,9 +378,6 @@ func designImageCallImagesWithArtworks(kind string, params *pb_common.DesignRunP
 		n = len(designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)) +
 			len(designColourMapMediaIDs(params.GetColour())) +
 			len(designColourMapMockupMediaIDs(params.GetColour()))
-	}
-	if maxRefs > 0 && n > maxRefs {
-		n = maxRefs
 	}
 	return n
 }

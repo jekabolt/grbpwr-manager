@@ -346,7 +346,9 @@ func (s *Server) designRefuseRenderArtworks(kind string, params *pb_common.Desig
 	if !ok || engine.MaxRefs <= 0 {
 		return nil
 	}
-	n := designImageCallImagesWithArtworks(kind, params, inputs, arts, 0)
+	// T27: the placement guides are optional (dropped by the worker under the ceiling), so the refusal
+	// counts only what the call must carry.
+	n := designImageCallRequiredImages(kind, params, inputs, arts)
 	if n > engine.MaxRefs && len(arts) == 0 {
 		return designRefusal(codes.InvalidArgument, "too_many_pictures",
 			fmt.Sprintf("this render would send %d pictures and %s takes at most %d — drop a cloth "+

@@ -233,18 +233,42 @@ func TestDesignRefuseRenderArtworksOverTheEngineCeiling(t *testing.T) {
 	require.Equal(t, engine.MaxRefs, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, nil, 0))
 
 	over := manyArtworks(1)
-	require.Equal(t, engine.MaxRefs+1, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, over, 0))
+	require.Equal(t, engine.MaxRefs+1, designImageCallRequiredImages(entity.DesignRunKindRender, p, in, over))
 	err := s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, over)
 	require.Equal(t, "too_many_pictures", ffReason(t, err))
 
-	// An artwork whose picture already travels (here: the front plate) adds nothing.
+	// An artwork whose picture already travels (here: the front plate) adds nothing it must carry —
+	// its front guide (T27) is optional and does not move the door.
 	dup := []designFrozenArtwork{{AssetID: 40, MediaID: 1, View: "front"}}
-	require.Equal(t, engine.MaxRefs, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, dup, 0))
+	require.Equal(t, engine.MaxRefs, designImageCallRequiredImages(entity.DesignRunKindRender, p, in, dup))
+	require.Equal(t, engine.MaxRefs+1, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, dup, 0))
+	require.Equal(t, engine.MaxRefs, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, dup, engine.MaxRefs))
 	require.NoError(t, s.designRefuseRenderArtworks(entity.DesignRunKindRender, p, in, dup))
 }
 
-// TestDesignEstimateCountsArtworkPictures — the reserve prices every distinct artwork picture as an
-// input image of each call.
+// TestDesignArtworkGuidesAreOptionalAtTheDoor — T27: one placement guide per side carrying artworks
+// is counted for the reserve (within the ceiling) and never refused: the worker drops guides
+// side_r, side_l, back, front under the ceiling before anything else.
+func TestDesignArtworkGuidesAreOptionalAtTheDoor(t *testing.T) {
+	arts := []designFrozenArtwork{
+		{MediaID: 30, View: "front"}, {MediaID: 31, View: "front"},
+		{MediaID: 32, View: "back"}, {MediaID: 33, View: "side_r"}, {MediaID: 34, View: "detail"},
+	}
+	require.Equal(t, 3, designArtworkGuideCount(arts))
+	require.Equal(t, 0, designArtworkGuideCount(nil))
+
+	p := &pb_common.DesignRunParams{ColorwayId: 13}
+	in := artworkInputs(1, 2)
+	req := designImageCallRequiredImages(entity.DesignRunKindRender, p, in, arts)
+	require.Equal(t, req+3, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, arts, 0))
+	require.Equal(t, req+1, designImageCallImagesWithArtworks(entity.DesignRunKindRender, p, in, arts, req+1))
+	// Other kinds carry no guides.
+	require.Equal(t, designImageCallRequiredImages(entity.DesignRunKindFlat, p, in, nil),
+		designImageCallImagesWithArtworks(entity.DesignRunKindFlat, p, in, nil, 0))
+}
+
+// TestDesignEstimateCountsArtworkPictures — the reserve prices every distinct artwork picture, and
+// each side's placement guide, as an input image of each call.
 func TestDesignEstimateCountsArtworkPictures(t *testing.T) {
 	s := engineServer()
 	engine, ok := designgen.FindEngine(s.designEngineTable(), "")
@@ -256,13 +280,15 @@ func TestDesignEstimateCountsArtworkPictures(t *testing.T) {
 	require.True(t, plain.Valid)
 	require.Equal(t, plain, s.designEstimateForRun(entity.DesignRunKindRender, 1, p, in))
 
+	// Two front artworks: two pictures plus ONE front placement guide (T27).
 	two := s.designEstimateForRunWithArtworks(entity.DesignRunKindRender, 1, p, in, manyArtworks(2))
-	require.True(t, two.Decimal.Equal(plain.Decimal.Add(engine.InputUSD.Mul(decimal.NewFromInt(2)))),
+	require.True(t, two.Decimal.Equal(plain.Decimal.Add(engine.InputUSD.Mul(decimal.NewFromInt(3)))),
 		"%s vs %s", two.Decimal, plain.Decimal)
 
 	dup := s.designEstimateForRunWithArtworks(entity.DesignRunKindRender, 1, p, in,
 		[]designFrozenArtwork{{MediaID: 1, View: "front"}})
-	require.True(t, dup.Decimal.Equal(plain.Decimal), "a picture already sent is not priced twice")
+	require.True(t, dup.Decimal.Equal(plain.Decimal.Add(engine.InputUSD)),
+		"a picture already sent is not priced twice; only its guide is")
 }
 
 // TestDesignArtworkMediaRefsJoinTheMediaDoors — the format / display-only / hidden doors see the

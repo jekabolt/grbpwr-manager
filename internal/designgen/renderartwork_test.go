@@ -23,10 +23,13 @@ const artworkGoldenParagraph = "ARTWORK. Image 3 is the artwork «chest embroide
 	"on the front of the garment, wherever that side is visible, inside the four-cornered area marked on " +
 	"the front flat (image 1) whose corners lie at — top-left 34 %, 22 %; top-right 48 %, 25 %; " +
 	"bottom-right 47 %, 39 %; bottom-left 33 %, 36 % — of that flat's frame (x from its left edge, y " +
-	"from its top edge), rotated about 12° clockwise. Make it real embroidery on the cloth: its white " +
-	"ground is not part of it; its exact shape, colours and letterforms are kept; it fills that area at " +
-	"the area's own proportions and perspective, follows the folds and takes the light of the " +
-	"photograph. Nowhere else on the garment."
+	"from its top edge), rotated about 12° clockwise. Make it real machine EMBROIDERY: dense satin-stitch " +
+	"thread in the artwork's own colours, raised above the cloth by about 1–2 mm, visible stitch direction " +
+	"and the soft sheen of thread, stitched edges that slightly gather the cloth around them. It is NOT a " +
+	"print, NOT a flat patch, NOT an appliqué and has no backing or border of its own: only the artwork " +
+	"itself is stitched, its exact shape, colours and letterforms kept. Its white ground is not part of it. " +
+	"It fills that area at the area's own proportions and perspective, follows the folds and takes the " +
+	"light of the photograph. Nowhere else on the garment."
 
 // TestARenderCarriesItsPlacedArtwork — GOLDEN: the artwork picture goes out captioned as an artwork
 // (after the plates, before the swatch), and one ARTWORK paragraph names it, its flat and the quad.
