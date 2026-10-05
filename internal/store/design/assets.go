@@ -76,18 +76,31 @@ func requireAssetOfCard(ctx context.Context, db dependency.DB, cardID, assetID i
 // прогона паттерна (keepPatternTx, queue.go), и он приходит сюда через минуты после того, как
 // дверь уже спросила то же самое у полосы. Одна проверка без другой была бы либо TOCTOU, либо
 // платой за заведомо невозможную посадку; два написания одного счёта разошлись бы молча.
-func refuseFullShelf(ctx context.Context, db dependency.DB, cardID int) error {
+//
+// freeing — сколько строк полки ЭТА ЖЕ транзакция гарантированно уберёт (B-m1): посадка прогона,
+// которая заменяет на паре снимок фурнитуры, собираемый GC, не прибавляет полке строку, а меняет
+// одну на другую, и отказать ей library_full на 120 значило бы выбросить оплаченный результат,
+// который полку не переполнил бы. Все прочие звателя передают 0.
+func refuseFullShelf(ctx context.Context, db dependency.DB, cardID, freeing int) error {
 	n, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM design_asset WHERE tech_card_id = :card`,
 		map[string]any{"card": cardID})
 	if err != nil {
 		return fmt.Errorf("failed to count design assets: %w", err)
 	}
-	if n >= entity.MaxDesignAssetsPerCard {
+	if shelfFull(n, freeing) {
 		return fmt.Errorf("%w: tech card %d already holds %d shelf rows, the ceiling is %d",
 			entity.ErrDesignAssetTooMany, cardID, n, entity.MaxDesignAssetsPerCard)
 	}
 	return nil
+}
+
+// shelfFull — чистый счёт потолка: n строк на полке, freeing из них уйдут в той же транзакции.
+func shelfFull(n, freeing int) bool {
+	if freeing < 0 {
+		freeing = 0
+	}
+	return n-freeing >= entity.MaxDesignAssetsPerCard
 }
 
 // insertAssetTx — ОДНА строка полки, вставленная в транзакции вызывающего.
@@ -218,7 +231,29 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		repeat = 0
 	}
 
-	if err := refuseFullShelf(ctx, db, run.TechCardId); err != nil {
+	// КОЛОРВЕЙ БЕРЁТСЯ ИЗ ЖИВОЙ КОЛОНКИ, А НЕ ИЗ ЗАМОРОЖЕННЫХ params, И РАЗНИЦА СОДЕРЖАТЕЛЬНАЯ:
+	// колорвей законно удаляют между стартом и прилётом, FK гасит колонку в NULL, и посадка на
+	// несуществующий id упала бы внешним ключом. Ноль здесь значит «плитка встаёт на полку ничьей»,
+	// ровно то же, что случилось со строкой прогона.
+	cw := entity.DesignColorwayOrNone(run.ColorwayId)
+	// Плитка слота колорвей целиком не носит (см. шапку): ей нечего и красть.
+	slot := p.Pattern.BomItemId > 0
+
+	// ⚠ ПОТОЛОК СЧИТАЕТСЯ НЕТТО (B-m1). Перезаказ снимка фурнитуры/картинки на ту же пару
+	// собирает прежний снимок в этой же транзакции (bindKeptPatternTx → dropSupersededHardwareTx),
+	// так что полка на 120 после посадки останется на 120. Предикат — тот же, что у GC, с учётом
+	// переезда меток (B-m2): см. landingFreesShelfRowTx.
+	freeing := 0
+	if cw > 0 && slot {
+		frees, err := landingFreesShelfRowTx(ctx, db, run.TechCardId, cw, p.Pattern.BomItemId, hardware)
+		if err != nil {
+			return err
+		}
+		if frees {
+			freeing = 1
+		}
+	}
+	if err := refuseFullShelf(ctx, db, run.TechCardId, freeing); err != nil {
 		if errors.Is(err, entity.ErrDesignAssetTooMany) {
 			if err := storeutil.ExecNamed(ctx, db,
 				`UPDATE design_run SET error_code = :code WHERE id = :id`,
@@ -230,13 +265,6 @@ func keepPatternTx(ctx context.Context, db dependency.DB, run entity.DesignRun, 
 		return err
 	}
 
-	// КОЛОРВЕЙ БЕРЁТСЯ ИЗ ЖИВОЙ КОЛОНКИ, А НЕ ИЗ ЗАМОРОЖЕННЫХ params, И РАЗНИЦА СОДЕРЖАТЕЛЬНАЯ:
-	// колорвей законно удаляют между стартом и прилётом, FK гасит колонку в NULL, и посадка на
-	// несуществующий id упала бы внешним ключом. Ноль здесь значит «плитка встаёт на полку ничьей»,
-	// ровно то же, что случилось со строкой прогона.
-	cw := entity.DesignColorwayOrNone(run.ColorwayId)
-	// Плитка слота колорвей целиком не носит (см. шапку): ей нечего и красть.
-	slot := p.Pattern.BomItemId > 0
 	if cw > 0 && !slot && !hardware {
 		if err := stealColorwayTx(ctx, db, run.TechCardId, cw, 0); err != nil {
 			return err
@@ -377,13 +405,106 @@ func bindKeptPatternTx(ctx context.Context, db dependency.DB, run entity.DesignR
 	if err != nil {
 		return err
 	}
+	// ⚠ МЕТКИ ПЕРЕЕЗЖАЮТ ДО GC (B-m2). Перезаказ картинки на ту же пару — это та же вещь в новой
+	// версии: метки на флэте (design_asset_placement) принадлежат ПАРЕ, а не байтам снимка, и без
+	// переезда GC прежнего снимка уносил бы их каскадом. Переезжают только с hardware-ассета, который
+	// носит ровно эта пара: метки снимка, служащего ещё и другой паре, — её, и остаются с ней.
+	// Решение принимается ДО upsert: после него связка пары уже указывает на новый ассет.
+	move := false
+	if prev > 0 && prev != assetID && hardware {
+		if move, err = soleHardwareOfPairTx(ctx, db, prev); err != nil {
+			return err
+		}
+	}
 	if err := upsertAssetBindingTx(ctx, db, run.TechCardId, cw, bomItemID, assetID, run.Author); err != nil {
 		return err
 	}
 	if prev != assetID {
+		if move {
+			if err := storeutil.ExecNamed(ctx, db,
+				`UPDATE design_asset_placement SET asset_id = :new WHERE asset_id = :prev`,
+				map[string]any{"new": assetID, "prev": prev}); err != nil {
+				return fmt.Errorf("failed to move the flat marks of superseded asset %d onto asset %d: %w", prev, assetID, err)
+			}
+		}
 		return dropSupersededHardwareTx(ctx, db, prev)
 	}
 	return nil
+}
+
+// soleHardwareOfPairTx — prev рода hardware и связан РОВНО с одной парой (той, которую сейчас
+// заменяют). Зовётся ДО upsert, пока связка пары ещё указывает на prev.
+func soleHardwareOfPairTx(ctx context.Context, db dependency.DB, prev int) (bool, error) {
+	a, err := assetByID(ctx, db, prev)
+	if err != nil {
+		if errors.Is(err, entity.ErrDesignNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if a.Kind != entity.DesignAssetKindHardware {
+		return false, nil
+	}
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM design_asset_binding WHERE asset_id = :id`,
+		map[string]any{"id": prev})
+	if err != nil {
+		return false, fmt.Errorf("failed to count the bindings of asset %d: %w", prev, err)
+	}
+	return n == 1, nil
+}
+
+// landingFreesShelfRowTx — уберёт ли посадка на пару (cw, bomItemID) прежний ассет пары (B-m1).
+// Повторяет решения bindKeptPatternTx до записи: строка BOM карточки на месте, семья совпадает,
+// у пары есть прежний ассет — и тот собирается dropSupersededHardwareTx ПОСЛЕ переезда меток.
+func landingFreesShelfRowTx(ctx context.Context, db dependency.DB, cardID, cw, bomItemID int, hardware bool) (bool, error) {
+	section, ok, err := bomLineSectionOfCard(ctx, db, cardID, bomItemID)
+	if err != nil || !ok {
+		return false, err
+	}
+	if entity.IsRollGoodsSection(section) == hardware {
+		return false, nil
+	}
+	prev, err := pairAssetTx(ctx, db, cw, bomItemID)
+	if err != nil || prev <= 0 {
+		return false, err
+	}
+	a, err := assetByID(ctx, db, prev)
+	if err != nil {
+		if errors.Is(err, entity.ErrDesignNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	refs, err := storeutil.QueryNamedOne[struct {
+		Bindings   int `db:"bindings"`
+		Placements int `db:"placements"`
+		Derived    int `db:"derived"`
+	}](ctx, db, `
+		SELECT
+			(SELECT COUNT(*) FROM design_asset_binding   WHERE asset_id = :id) AS bindings,
+			(SELECT COUNT(*) FROM design_asset_placement WHERE asset_id = :id) AS placements,
+			(SELECT COUNT(*) FROM design_asset           WHERE derived_from_asset_id = :id) AS derived`,
+		map[string]any{"id": prev})
+	if err != nil {
+		return false, fmt.Errorf("failed to count the references of asset %d: %w", prev, err)
+	}
+	return supersededCollectable(a.Kind, a.ColorwayId.Valid, hardware, refs.Bindings, refs.Placements, refs.Derived), nil
+}
+
+// supersededCollectable — чистый предикат GC прежнего ассета пары при посадке, с учётом переезда
+// меток (B-m2). bindings считает и связку заменяемой пары: после upsert её у prev не останется.
+// Метки не держат prev, если переедут, — а переезжают они, когда prev hardware, связан только с
+// этой парой и садится hardware; иначе любая метка — повод оставить.
+func supersededCollectable(kind string, colorwayHeld, landingHardware bool, bindings, placements, derived int) bool {
+	if kind != entity.DesignAssetKindHardware || colorwayHeld {
+		return false
+	}
+	if bindings != 1 || derived > 0 {
+		return false
+	}
+	movesPlacements := landingHardware
+	return placements == 0 || movesPlacements
 }
 
 // pairAssetTx — какой ассет сейчас носит пара (колорвей, слот); 0 = пара пуста. Читается в
@@ -700,7 +821,7 @@ func (s *Store) UpsertAsset(ctx context.Context, req entity.DesignAssetUpsert) (
 		}
 
 		if id == 0 {
-			if err := refuseFullShelf(ctx, db, req.TechCardId); err != nil {
+			if err := refuseFullShelf(ctx, db, req.TechCardId, 0); err != nil {
 				return err
 			}
 			newID, err := insertAssetTx(ctx, db, params)
