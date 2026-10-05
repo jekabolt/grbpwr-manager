@@ -200,6 +200,8 @@ type Artifact struct {
 	// Kind overrides the picture kind derived from the run kind. Empty = the derived one. It
 	// exists for the 3D route, whose thumbnail is a raster tile standing in for a model.
 	Kind string
+	// Flags — pixel labels read off the picture (flat route, 0397: FlagGrey). A label, never a refusal.
+	Flags []string
 }
 
 // Outcome is what one pass through a provider produced.

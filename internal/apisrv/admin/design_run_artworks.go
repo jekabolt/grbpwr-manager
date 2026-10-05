@@ -374,3 +374,23 @@ func (s *Server) designRefuseRenderArtworks(kind string, params *pb_common.Desig
 	}
 	return nil
 }
+
+// designSpliceJoins — the flat route's join list into the snapshot under `joins` (designgen
+// runInputs.Joins reads it).
+func designSpliceJoins(inputsJSON []byte, joins *entity.DesignJoinsDoc) ([]byte, error) {
+	if joins == nil {
+		return inputsJSON, nil
+	}
+	obj := map[string]json.RawMessage{}
+	if len(inputsJSON) > 0 {
+		if err := json.Unmarshal(inputsJSON, &obj); err != nil {
+			return nil, err
+		}
+	}
+	raw, err := json.Marshal(joins)
+	if err != nil {
+		return nil, err
+	}
+	obj["joins"] = raw
+	return json.Marshal(obj)
+}

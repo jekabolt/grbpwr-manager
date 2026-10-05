@@ -1,0 +1,40 @@
+Landmark ruler (fixed for every garment; L/R = WEARER'S left/right):
+NP_L/NP_R neck points (side of the neck, top of the shoulder line); CFN centre-front neck; CBN centre-back neck (nape); CFN_LOW / CBN_LOW a low front / back neck centre;
+SP_L/SP_R shoulder tips; FSH_x / BSH_x mid-shoulder slightly to the front / back; UA_L/UA_R underarms (top of side seam);
+CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust, BUSTSIDE_x bust side; SB_x shoulder blades, UB_C centre upper back; YOKE_x back yoke seam at the armhole;
+MB_x side at mid-back height, MB_C centre back at mid-back; WL_x waist at the side, WF_C / WB_C centre front / back waist; HEM_x hem at the side, HEM_FC / HEM_BC centre front / back hem;
+sleeves: SSLV_OUT_x / SSLV_IN_x short-sleeve end outer / inner; ELB_OUT_x elbow outer; WRIST_OUT_x / WRIST_IN_x long-sleeve end outer / inner.
+A point between two landmarks is written "A..B:t" (t from 0 at A to 1 at B), e.g. "NP_L..SP_L:0.3".
+
+JOIN LIST (the construction; every view must agree with it):
+- stand: stand (narrow) from CFN → NP_R → CBN → NP_L → CFN. continues into collar, placket. collar stand around the full neck; the brand label is sewn inside it at the back neck
+- collar: collar (wide) from CFN..NP_R:0.2 → NP_R → CBN → NP_L → CFN..NP_L:0.2. continues into stand. point collar that runs around the back; its outer edges are raw and frayed; a single thin stitched line on the wearer's right leaf near the edge
+- placket: placket (narrow) from CFN → CHEST_C → BUST_C → WF_C → HEM_FC. continues into stand, hem. centre-front placket; both long edges are raw, frayed and topstitched; a second raw-edged layer overlaps on the wearer's left; continuation below the photo is assumed
+- btn: buttons closure, 6 along CFN → CHEST_C → BUST_C → WF_C. faceted square black (jet-like) buttons; 6 visible, more are likely below the crop
+- sh_L: seam from NP_L → SP_L. continues into arm_L. shoulder seam, visible on the wearer's left
+- sh_R: seam from NP_R → SP_R. continues into arm_R. shoulder seam
+- arm_L: seam from SP_L → UA_L. assumed set-in armhole seam; not visible
+- arm_R: seam from SP_R → UA_R. assumed set-in armhole seam; not visible
+- slv_L: sleeve from SP_L → ELB_OUT_L → WRIST_OUT_L → WRIST_IN_L → UA_L. not visible; length assumed
+- slv_R: sleeve from SP_R → ELB_OUT_R → WRIST_OUT_R → WRIST_IN_R → UA_R. not visible; length assumed
+- side_L: seam from UA_L → WL_L → HEM_L. continues into hem. assumed side seam
+- side_R: seam from UA_R → WL_R → HEM_R. continues into hem. assumed side seam
+- hem: edge from HEM_FC → HEM_L → HEM_BC → HEM_R → HEM_FC (closed loop). raw, frayed hem edge
+- pocket_L: patch pocket at CHEST_L. one patch pocket, wearer's left chest only
+- yoke: seam from YOKE_R → CBN_LOW → YOKE_L. back yoke seam from armhole to armhole; meets the armhole seams
+- cuff_L: cuff (wide) from WRIST_OUT_L → WRIST_IN_L. buttoned cuff
+- cuff_R: cuff (wide) from WRIST_OUT_R → WRIST_IN_R. buttoned cuff
+- slv_placket_L: placket (narrow) from WRIST_OUT_L..WRIST_IN_L:0.5 → WRIST_OUT_L..ELB_OUT_L:0.3. sleeve placket above the cuff, back of the sleeve
+- slv_placket_R: placket (narrow) from WRIST_OUT_R..WRIST_IN_R:0.5 → WRIST_OUT_R..ELB_OUT_R:0.3. sleeve placket above the cuff, back of the sleeve
+ABSENT (do not draw): no front yoke; no darts or panel seams on the front chest; no pocket on the right chest; no second pocket
+
+CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
+- The neckline goes all the way round: on the BACK view draw the back neckline (and its band/collar) between the neck points.
+- Draw NOTHING for: no front yoke.
+- Draw NOTHING for: no darts or panel seams on the front chest.
+- Draw NOTHING for: no pocket on the right chest.
+- Draw NOTHING for: no second pocket.
+- pocket_L is on the wearer's LEFT only: on the FRONT view it is on the picture-right; on the side views it shows only on SIDE LEFT.
+- slv_L comes to a SHARP corner at WRIST_OUT_L, WRIST_IN_L: a crisp point, never rounded.
+- slv_R comes to a SHARP corner at WRIST_OUT_R, WRIST_IN_R: a crisp point, never rounded.
+- SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.

@@ -511,6 +511,10 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if band.PartsSuggestions, err = partsSuggestionsOfCurrentFlats(ctx, db, cardID); err != nil {
 			return err
 		}
+		// FLAT ROUTE (0397): the card's current join list.
+		if band.Joins, err = joinsByCard(ctx, db, cardID); err != nil {
+			return err
+		}
 		if band.TotalBatches, err = storeutil.QueryCountNamed(ctx, db, designCountBatches,
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to count design batches: %w", err)

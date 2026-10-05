@@ -1,0 +1,58 @@
+Landmark ruler (fixed for every garment; L/R = WEARER'S left/right):
+NP_L/NP_R neck points (side of the neck, top of the shoulder line); CFN centre-front neck; CBN centre-back neck (nape); CFN_LOW / CBN_LOW a low front / back neck centre;
+SP_L/SP_R shoulder tips; FSH_x / BSH_x mid-shoulder slightly to the front / back; UA_L/UA_R underarms (top of side seam);
+CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust, BUSTSIDE_x bust side; SB_x shoulder blades, UB_C centre upper back; YOKE_x back yoke seam at the armhole;
+MB_x side at mid-back height, MB_C centre back at mid-back; WL_x waist at the side, WF_C / WB_C centre front / back waist; HEM_x hem at the side, HEM_FC / HEM_BC centre front / back hem;
+sleeves: SSLV_OUT_x / SSLV_IN_x short-sleeve end outer / inner; ELB_OUT_x elbow outer; WRIST_OUT_x / WRIST_IN_x long-sleeve end outer / inner.
+A point between two landmarks is written "A..B:t" (t from 0 at A to 1 at B), e.g. "NP_L..SP_L:0.3".
+
+LAYERS (depth levels; 0 = outermost):
+- layer 0: outer body (front + lower back + straps) — SHEER. Sheer white rib jersey. Skin and the inner V layer show through it.
+- layer 1: inner front V-panel / modesty lining — SHEER. A second layer behind the front, covering the upper chest. It is caught into the neckband and the armhole bindings at the top. Its lower edge is a free V with the point at about BUST_C. It shows only as a soft shadow line.
+- layer 2: back panel — SHEER. Single layer from about mid-back down to the hem. It is the same cloth as the outer front and is joined to it at the side seams.
+
+JOIN LIST (the construction; every view must agree with it):
+- neckband_front: band (narrow) from NP_R → CFN → NP_L. continues into strap_L, strap_R. High crew neck finished at the front only. It runs into the crossed straps at the neck points.
+- strap_L: strap (wide) from NP_L → UB_C → MB_R. continues into neckband_front, armhole_front_L, back_top_edge. Starts as the whole left shoulder (NP_L to SP_L width). It goes over the back, crosses the right strap at UB_C and ends at the right side, mid-back height, where it meets the back panel. Its edges are folded or bound.
+- strap_R: strap (wide) from NP_R → UB_C → MB_L. continues into neckband_front, armhole_front_R, back_top_edge. Mirror of strap_L. Which strap lies on top at the cross is uncertain.
+- armhole_front_L: binding (narrow) from SP_L → UA_L. continues into strap_L, side_seam_L. Cut-in front armhole, bound or turned. Its upper end continues into the strap's outer edge.
+- armhole_front_R: binding (narrow) from SP_R → UA_R. continues into strap_R, side_seam_R. Mirror of armhole_front_L.
+- armhole_back_L: edge from UA_L → MB_L. continues into strap_R, side_seam_L. Short back armhole edge below the underarm. It is formed by the outer edge of the lower end of strap_R.
+- armhole_back_R: edge from UA_R → MB_R. continues into strap_L, side_seam_R. Mirror of armhole_back_L.
+- back_top_edge: binding (narrow) from MB_R → MB_C → MB_L. continues into strap_L, strap_R. Shallow U-shaped top edge of the back panel, dipping slightly at MB_C. A small vertical tack or seam mark sits at MB_C.
+- back_opening: OPENING (no cloth) bounded by strap_L, strap_R, back_top_edge. Large open back, from below the strap cross at UB_C down to MB_C.
+- side_seam_L: seam from UA_L → WL_L → HEM_L. continues into armhole_front_L, hem_front, hem_back. Side seam, set slightly forward of the true side.
+- side_seam_R: seam from UA_R → WL_R → HEM_R. continues into armhole_front_R, hem_front, hem_back. Visible in the side photo.
+- hem_front: edge from HEM_L → HEM_FC → HEM_R. continues into side_seam_L, side_seam_R. Straight hem just below the waist. It is a narrow, slightly curling, raw-looking finish.
+- hem_back: edge from HEM_R → HEM_BC → HEM_L. continues into side_seam_L, side_seam_R. Same finish as the front hem.
+- inner_V_edge: edge from NP_L..SP_L:0.6 → BUST_C → NP_R..SP_R:0.6. Lower edge of the inner V-panel, seen as a shadow through the outer front. The point of the V is at the under-bust centre.
+- inner_V_top: edge from NP_L..SP_L:0.6 → NP_L → CFN → NP_R → NP_R..SP_R:0.6. The top of the inner panel is caught into the neckband and the upper armhole/strap finish.
+ABSENT (do not draw): no back neckline or back neck binding (the straps cross instead); no sleeves; no closures; no pockets; no centre-front seam; no shoulder seam visible; no back between the strap cross and mid-back (open)
+
+CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
+- neckband_front: its top end sits AT the neck point NP_R, right beside the neck, only a neck-width away from neckband_front, NOT at the shoulder tip; nothing of it rises above the neckline.
+- strap_R: its top end sits AT the neck point NP_R, right beside the neck, only a neck-width away from neckband_front, NOT at the shoulder tip; nothing of it rises above the neckline.
+- neckband_front: its top end sits AT the neck point NP_L, right beside the neck, only a neck-width away from neckband_front, NOT at the shoulder tip; nothing of it rises above the neckline.
+- strap_L: its top end sits AT the neck point NP_L, right beside the neck, only a neck-width away from neckband_front, NOT at the shoulder tip; nothing of it rises above the neckline.
+- strap_L runs DIAGONALLY across the back from NP_L to MB_R on the OPPOSITE side, as one straight band.
+- strap_R runs DIAGONALLY across the back from NP_R to MB_L on the OPPOSITE side, as one straight band.
+- strap_L and strap_R cross each other once, BELOW the neck points (between the shoulder blades), never above the neckline.
+- There is NO back neckline: neckband_front, inner_V_top runs across the FRONT only. On the FRONT view draw NOTHING behind or inside the front neck band (no back-neck arc, no second curve). On the BACK view draw NOTHING between the tops of the bands at the neck points — no neckline, no band, no line.
+- armhole_front_L starts at SP_L and stops at UA_L; it does not continue past them.
+- armhole_front_R starts at SP_R and stops at UA_R; it does not continue past them.
+- back_top_edge starts at MB_R and stops at MB_L; it does not continue past them.
+- The area bounded by strap_L, strap_R, back_top_edge is OPEN: leave it white — no cloth, no panel, no line across it.
+- Draw NOTHING for: no back neckline or back neck binding (the straps cross instead).
+- Draw NOTHING for: no sleeves.
+- Draw NOTHING for: no closures.
+- Draw NOTHING for: no pockets.
+- Draw NOTHING for: no centre-front seam.
+- Draw NOTHING for: no shoulder seam visible.
+- Draw NOTHING for: no back between the strap cross and mid-back (open).
+- inner_V_edge comes to a SHARP corner at BUST_C: a crisp point, never rounded.
+- SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.
+- The sheer cloth is drawn exactly like opaque cloth: white, no grey, no hatching, no tint anywhere.
+- inner_V_edge is the edge of the layer BEHIND the sheer front (inner front V-panel / modesty lining), seen through it: draw it as ONE fine dashed line, lighter than seams; it does not break or touch the outline; no tint, no fill on either side of it.
+- inner_V_edge is a free hanging edge: it runs from NP_L..SP_L:0.6 to NP_R..SP_R:0.6 via BUST_C and does NOT run into the side seams or the hem.
+- inner_V_top ends INTO neckband_front, armhole_front_L, armhole_front_R: at those points two edges meet — the outer body (front + lower back + straps)'s binding and the inner layer's edge just inside it. On the SIDE views this shows as a second fine line just inside the armhole binding at the shoulder, running down into the dashed V.
+- Draw NOTHING for inner_V_top on any view (construction only).

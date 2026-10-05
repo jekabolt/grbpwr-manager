@@ -326,6 +326,9 @@ type runInputs struct {
 	// (сервер, design_run_artworks.go; в DesignInputSnapshot этого ключа нет). Пусто у каждого
 	// прогона до 70-ROUND7 и у всякого не-рендера.
 	Artworks []artworkUse `json:"artworks"`
+	// Joins — the card's join list, FROZEN by the door into a flat run's snapshot (flat route, 0397;
+	// server key `joins`, absent from DesignInputSnapshot like `artworks`). nil = the card had none.
+	Joins *entity.DesignJoinsDoc `json:"joins"`
 }
 
 // artworkUse — ОДИН размещённый артворк: его картинка, флэт, на котором он стоит, и четыре угла
@@ -1107,7 +1110,7 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// these words, so both keep the bare human context above and take no craft block at all.
 	switch {
 	case run.Kind == entity.DesignRunKindFlat:
-		write("", flatCraft(p, detailNames, len(attached)))
+		write("", flatCraftWith(p, detailNames, len(attached), in.Joins))
 	case renderIsTheKind(run.Kind):
 		write("", renderCraftWith(p, detailNames, attached, in.Artworks))
 	// ПЕРЕКРАС И ПАТТЕРН — ЕЩЁ ДВА РЕМЕСЛА, И КАЖДОЕ ПРОТИВОРЕЧИТ ОБОИМ СОСЕДНИМ. Рендер СОЧИНЯЕТ

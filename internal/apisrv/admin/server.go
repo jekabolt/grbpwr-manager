@@ -140,6 +140,9 @@ type Server struct {
 	// partsCardFlight coalesces SuggestDesignPartsCard presses of ONE (card, sides+flats, cut) in
 	// flight (design_parts_card.go). Zero value works.
 	partsCardFlight singleflight.Group
+	// joinsFlight coalesces GenerateDesignJoins presses of ONE (card, source) in flight
+	// (design_joins.go). Zero value works.
+	joinsFlight singleflight.Group
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer

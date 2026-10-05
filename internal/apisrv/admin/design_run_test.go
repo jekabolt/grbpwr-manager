@@ -17,6 +17,7 @@ import (
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
@@ -457,7 +458,14 @@ func TestDesignEffectiveParamsRefusesNonsense(t *testing.T) {
 // плитки, которых генерация не приносит, и человек читал бы это как потерянный результат.
 func TestDesignRequestedOutputsCountsPicturesNotViews(t *testing.T) {
 	three := []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL}
+	// A flat GARMENT sheet is bought as candidates (flat route, owner 05.10): one composite per
+	// candidate, never one per view.
+	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}))
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: []string{entity.DesignViewDetail}, Layout: designLayoutOne}),
+		"a detail callout is one close-up")
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindRender,
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}))
 	require.Equal(t, 3, designRequestedOutputs(entity.DesignRunKindFlat,
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutPerView}))

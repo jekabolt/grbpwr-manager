@@ -186,6 +186,10 @@ func (s *Server) designFreezeImageModel(kind string, params *pb_common.DesignRun
 // n = 1 engine that the worker draws as ONE n = 1 call (designgen imageCalls: unspecified = one).
 func designImageVariantsPerCall(kind string, params *pb_common.DesignRunParams) int {
 	switch {
+	case kind == entity.DesignRunKindFlat:
+		// Flat candidates on an engine that returns fewer per call are split into several calls by
+		// the worker (designgen splitCallsOverN) — never refused here.
+		return 1
 	case kind == entity.DesignRunKindRecolor, params.GetLayout() == designLayoutPerView:
 		return 1
 	case params.GetLayout() == "":

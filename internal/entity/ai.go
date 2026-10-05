@@ -122,7 +122,10 @@ const (
 	AIPurposeDesignParts = "chat.design_parts"
 	// AIPurposeCalloutSuggest — callout suggestions on the ARTIFACTS sheet (T28): one vision+JSON call
 	// placing the callouts the card's own data implies onto its flats.
-	AIPurposeCalloutSuggest  = "chat.callout_suggest"
+	AIPurposeCalloutSuggest = "chat.callout_suggest"
+	// AIPurposeDesignJoins — the flat route's join list (0397): one vision+JSON call writing the
+	// garment's construction on the fixed landmark ruler from its reference photos.
+	AIPurposeDesignJoins     = "chat.design_joins"
 	AIPurposePlaygroundIdeas = "chat.playground_ideas"
 	AIPurposeImageGenerate   = "image.generate"
 	AIPurposeImageCutout     = "image.cutout"
@@ -136,7 +139,7 @@ const (
 func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
 		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
 	}
@@ -151,7 +154,7 @@ func IsAIPurpose(v string) bool {
 func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
 		AIPurposePlaygroundIdeas:
 		return AICapabilityChat
 	case AIPurposeImageGenerate:

@@ -647,6 +647,7 @@ func (w *Worker) publish(ctx context.Context, run entity.DesignRun, out *Outcome
 			// on the per-view route where each call was made for a named side.
 			GhostView:   a.GhostView,
 			SourceClass: entity.DesignSourceAI,
+			QAFlags:     a.Flags,
 		})
 	}
 	return minted, outputs, nil

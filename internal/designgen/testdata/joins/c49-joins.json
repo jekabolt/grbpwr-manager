@@ -1,0 +1,275 @@
+{
+ "consistency": {
+  "same_garment": true,
+  "notes": "Only one photo: a front close-up of a dark charcoal/black linen button-front shirt (Krista Larson label), cropped above the waist. Sleeves, side seams below the chest, hem and back are not visible, so those items are inferred and marked as assumed.",
+  "trust": [
+   1
+  ]
+ },
+ "items": [
+  {
+   "id": "stand",
+   "kind": "stand",
+   "path": [
+    "CFN",
+    "NP_R",
+    "CBN",
+    "NP_L",
+    "CFN"
+   ],
+   "closed": false,
+   "width": "narrow",
+   "sharp": [],
+   "continues_into": [
+    "collar",
+    "placket"
+   ],
+   "note": "collar stand around the full neck; the brand label is sewn inside it at the back neck"
+  },
+  {
+   "id": "collar",
+   "kind": "collar",
+   "path": [
+    "CFN..NP_R:0.2",
+    "NP_R",
+    "CBN",
+    "NP_L",
+    "CFN..NP_L:0.2"
+   ],
+   "closed": false,
+   "width": "wide",
+   "sharp": [
+    "CFN..NP_R:0.2",
+    "CFN..NP_L:0.2"
+   ],
+   "continues_into": [
+    "stand"
+   ],
+   "note": "point collar that runs around the back; its outer edges are raw and frayed; a single thin stitched line on the wearer's right leaf near the edge"
+  },
+  {
+   "id": "placket",
+   "kind": "placket",
+   "path": [
+    "CFN",
+    "CHEST_C",
+    "BUST_C",
+    "WF_C",
+    "HEM_FC"
+   ],
+   "closed": false,
+   "width": "narrow",
+   "sharp": [],
+   "continues_into": [
+    "stand",
+    "hem"
+   ],
+   "note": "centre-front placket; both long edges are raw, frayed and topstitched; a second raw-edged layer overlaps on the wearer's left; continuation below the photo is assumed"
+  },
+  {
+   "id": "btn",
+   "kind": "closure",
+   "type": "buttons",
+   "path": [
+    "CFN",
+    "CHEST_C",
+    "BUST_C",
+    "WF_C"
+   ],
+   "count": 6,
+   "note": "faceted square black (jet-like) buttons; 6 visible, more are likely below the crop"
+  },
+  {
+   "id": "sh_L",
+   "kind": "seam",
+   "path": [
+    "NP_L",
+    "SP_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "arm_L"
+   ],
+   "note": "shoulder seam, visible on the wearer's left"
+  },
+  {
+   "id": "sh_R",
+   "kind": "seam",
+   "path": [
+    "NP_R",
+    "SP_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "arm_R"
+   ],
+   "note": "shoulder seam"
+  },
+  {
+   "id": "arm_L",
+   "kind": "seam",
+   "path": [
+    "SP_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "note": "assumed set-in armhole seam; not visible"
+  },
+  {
+   "id": "arm_R",
+   "kind": "seam",
+   "path": [
+    "SP_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "note": "assumed set-in armhole seam; not visible"
+  },
+  {
+   "id": "slv_L",
+   "kind": "sleeve",
+   "path": [
+    "SP_L",
+    "ELB_OUT_L",
+    "WRIST_OUT_L",
+    "WRIST_IN_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_L",
+    "WRIST_IN_L"
+   ],
+   "note": "not visible; length assumed"
+  },
+  {
+   "id": "slv_R",
+   "kind": "sleeve",
+   "path": [
+    "SP_R",
+    "ELB_OUT_R",
+    "WRIST_OUT_R",
+    "WRIST_IN_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_R",
+    "WRIST_IN_R"
+   ],
+   "note": "not visible; length assumed"
+  },
+  {
+   "id": "side_L",
+   "kind": "seam",
+   "path": [
+    "UA_L",
+    "WL_L",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "hem"
+   ],
+   "note": "assumed side seam"
+  },
+  {
+   "id": "side_R",
+   "kind": "seam",
+   "path": [
+    "UA_R",
+    "WL_R",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "hem"
+   ],
+   "note": "assumed side seam"
+  },
+  {
+   "id": "hem",
+   "kind": "edge",
+   "path": [
+    "HEM_FC",
+    "HEM_L",
+    "HEM_BC",
+    "HEM_R",
+    "HEM_FC"
+   ],
+   "closed": true,
+   "sharp": [],
+   "note": "raw, frayed hem edge"
+  },
+  {
+   "id": "pocket_L",
+   "kind": "pocket",
+   "anchor": "CHEST_L",
+   "type": "patch",
+   "note": "one patch pocket, wearer's left chest only"
+  },
+  {
+   "id": "yoke",
+   "kind": "seam",
+   "path": [
+    "YOKE_R",
+    "CBN_LOW",
+    "YOKE_L"
+   ],
+   "note": "back yoke seam from armhole to armhole; meets the armhole seams"
+  },
+  {
+   "id": "cuff_L",
+   "kind": "cuff",
+   "path": [
+    "WRIST_OUT_L",
+    "WRIST_IN_L"
+   ],
+   "width": "wide",
+   "note": "buttoned cuff"
+  },
+  {
+   "id": "cuff_R",
+   "kind": "cuff",
+   "path": [
+    "WRIST_OUT_R",
+    "WRIST_IN_R"
+   ],
+   "width": "wide",
+   "note": "buttoned cuff"
+  },
+  {
+   "id": "slv_placket_L",
+   "kind": "placket",
+   "path": [
+    "WRIST_OUT_L..WRIST_IN_L:0.5",
+    "WRIST_OUT_L..ELB_OUT_L:0.3"
+   ],
+   "width": "narrow",
+   "note": "sleeve placket above the cuff, back of the sleeve"
+  },
+  {
+   "id": "slv_placket_R",
+   "kind": "placket",
+   "path": [
+    "WRIST_OUT_R..WRIST_IN_R:0.5",
+    "WRIST_OUT_R..ELB_OUT_R:0.3"
+   ],
+   "width": "narrow",
+   "note": "sleeve placket above the cuff, back of the sleeve"
+  }
+ ],
+ "absent": [
+  "no front yoke",
+  "no darts or panel seams on the front chest",
+  "collar and placket edges are not cleanly finished; they are deliberately raw and frayed",
+  "no pocket on the right chest",
+  "no second pocket"
+ ]
+}

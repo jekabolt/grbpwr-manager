@@ -58,6 +58,8 @@ var designRefusals = []struct {
 	// у клиента здесь другой экран и другое объяснение («коллега сохранил свой план цвета, ваш
 	// не записан»), а различить их он может только по машинному слову.
 	{entity.ErrDesignColourPlanRevMismatch, codes.Aborted, "colour_plan_rev_mismatch"},
+	// joins_rev_mismatch — the flat route's join list (0397): a regeneration or another tab saved first.
+	{entity.ErrDesignJoinsRevMismatch, codes.Aborted, "joins_rev_mismatch"},
 	{entity.ErrDesignForeignCardPlate, codes.FailedPrecondition, "foreign_card_plate"},
 	{entity.ErrDesignCompositePlate, codes.FailedPrecondition, "composite_plate"},
 	{entity.ErrDesignHiddenPlate, codes.FailedPrecondition, "hidden_plate"},
@@ -386,6 +388,8 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		SuggestPromptsModel: s.designSuggestPromptsModel(),
 		// AUTO PARTS (0390, field 34): the cached answers of the flat each side holds now.
 		PartsSuggestions: designPartsSuggestionsToPb(band.PartsSuggestions),
+		// FLAT ROUTE (0397, field 35): the card's current join list; absent = none yet.
+		Joins: designJoinsToPb(band.Joins),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —
@@ -1490,6 +1494,12 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 	}
 	if p.UndoneAt.Valid {
 		out.UndoneAt = timestamppb.New(p.UndoneAt.Time)
+	}
+	// 0397: the worker's pixel labels («grey»).
+	for _, f := range strings.Split(p.QAFlags, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out.Flags = append(out.Flags, f)
+		}
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)

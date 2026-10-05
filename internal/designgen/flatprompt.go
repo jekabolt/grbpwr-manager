@@ -72,6 +72,14 @@ const (
 // close-up. The mixed case is not something either reference prompt describes, so the garment
 // frame (the more general of the two) carries it.
 func flatCraft(p runParams, detailNames []string, refs int) string {
+	return flatCraftWith(p, detailNames, refs, nil)
+}
+
+// flatCraftWith is flatCraft with the run's FROZEN join list (flat route, flatjoins.go): when the run
+// draws the garment (not a detail callout) and carries a usable list, the layout paragraph gains the
+// side-facing convention and the list + its checks follow it. Every flat run, with a list or
+// without, ends its own words on flatNoTextNoGrey before the owner's verbatim paragraphs.
+func flatCraftWith(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc) string {
 	detail := detailOnlyRun(p.Views)
 
 	identify := flatIdentifyGarment
@@ -91,10 +99,15 @@ func flatCraft(p runParams, detailNames []string, refs int) string {
 		}
 	}
 
+	layout := flatLayoutParagraph(p.Views, detailNames, p.Layout, refs)
+	withJoins := !detail && flatJoinsUsable(joins)
+	if withJoins && flatHasSideView(p.Views) {
+		layout += " " + flatSideFacing
+	}
 	paras := []string{
 		flatIntro(detail, countDetails(p.Views), refs),
 		identify,
-		flatLayoutParagraph(p.Views, detailNames, p.Layout, refs),
+		layout,
 	}
 	if detail {
 		only := flatOnlyDetail
@@ -103,7 +116,10 @@ func flatCraft(p runParams, detailNames []string, refs int) string {
 		}
 		paras = append(paras, only)
 	}
-	paras = append(paras, style, excluded, flatOutput)
+	if withJoins {
+		paras = append(paras, joinsCraft(*joins)...)
+	}
+	paras = append(paras, flatNoTextNoGrey, style, excluded, flatOutput)
 	return strings.Join(paras, "\n\n")
 }
 
@@ -310,3 +326,13 @@ func countWord(n int) string {
 // flatDetailGarmentLabel labels WORDS on a detail-only flat run: the garment is context, the detail
 // is the subject.
 const flatDetailGarmentLabel = "garment context (for reference only — this is NOT what to draw; draw only the detail named below)"
+
+// flatHasSideView — whether the run draws a side view (the side-facing convention is said only then).
+func flatHasSideView(views []string) bool {
+	for _, v := range views {
+		if v == entity.DesignViewSideL || v == entity.DesignViewSideR {
+			return true
+		}
+	}
+	return false
+}

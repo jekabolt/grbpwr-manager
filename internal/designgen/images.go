@@ -165,12 +165,20 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 	background, format := firstNonEmpty(job.Background, backgroundFor(job.Kind)), "png"
 	// A per-run engine names its own slug; the provenance says so even when the call fails.
 	requested := p.requested(job.Model)
+	// FLAT CANDIDATES ON A SLUG THE CATALOGUE DOES NOT KNOW (a custom OPENROUTER_MODEL_IMAGE): its `n`
+	// range is unknown, so each candidate is its own n = 1 call — never a 400 after the door priced it.
+	if _, known := catalogueEngine(requested); !known && job.Kind == entity.DesignRunKindFlat {
+		calls = splitCallsOverN(calls, 1)
+	}
 	if row, ok := catalogueEngine(requested); ok {
 		if row.NoRouteDefaults {
 			// Neither key is in this slug's catalogue: the kind's `opaque` and the route's `png` are
 			// OUR defaults, not the person's words, and are not sent. A stated background was already
 			// refused at the door (Engine.Backgrounds); the sink files whatever raster comes back.
 			background, format = strings.TrimSpace(job.Background), ""
+		}
+		if job.Kind == entity.DesignRunKindFlat {
+			calls = splitCallsOverN(calls, row.MaxN)
 		}
 		// FREE LOCKS BEFORE THE FIRST PAID CALL, over EVERY call: the engine's reference ceiling (the
 		// door counts flat / render / pattern references only as an upper bound and leaves them to
@@ -249,11 +257,16 @@ func (p imageProvider) Execute(ctx context.Context, job Job) (*Outcome, error) {
 			return out, err
 		}
 		for _, img := range res.Images {
-			out.Artifacts = append(out.Artifacts, Artifact{
+			a := Artifact{
 				Bytes:       img.Bytes,
 				ContentType: img.MediaType,
 				GhostView:   call.view,
-			})
+			}
+			// The flat route's grey check (greycheck.go): a label on the candidate, never a refusal.
+			if job.Kind == entity.DesignRunKindFlat {
+				a.Flags = flatPixelFlags(img.Bytes)
+			}
+			out.Artifacts = append(out.Artifacts, a)
 		}
 	}
 	out.Price = decimal.NullDecimal{Decimal: cost, Valid: charged}
@@ -454,7 +467,36 @@ func imageCalls(job Job) ([]imageCall, error) {
 	//
 	// A composite carries several views and therefore has no single one; leaving the view empty
 	// lets the store's own rule (no ghost guess for a composite) stand.
-	return []imageCall{{prompt: job.Prompt, n: 1, refs: job.References}}, nil
+	//
+	// THE ONE NAMED EXCEPTION: A FLAT GARMENT SHEET IS BOUGHT AS CANDIDATES (FlatCandidates, owner
+	// 05.10 «4 кандидата на нажатие»). The door sets requested_outputs to the candidate count for
+	// exactly those runs (FlatCandidatesFor) and the frozen number is read back here — a flat queued
+	// before the change says 1 and stays one picture.
+	n := 1
+	if job.Kind == entity.DesignRunKindFlat && job.Outputs > 1 && FlatCandidatesFor(job.Views, job.Layout) > 0 {
+		n = job.Outputs
+	}
+	return []imageCall{{prompt: job.Prompt, n: n, refs: job.References}}, nil
+}
+
+// splitCallsOverN — a call that asks an engine for more pictures than one call returns becomes
+// several calls of the same prompt (flat candidates on an n = 1 engine): same money per picture,
+// never a refusal after the door priced the run.
+func splitCallsOverN(calls []imageCall, maxN int) []imageCall {
+	if maxN <= 0 {
+		return calls
+	}
+	out := make([]imageCall, 0, len(calls))
+	for _, c := range calls {
+		for c.n > maxN {
+			part := c
+			part.n = maxN
+			out = append(out, part)
+			c.n -= maxN
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // backgroundFor names the background the model must produce.

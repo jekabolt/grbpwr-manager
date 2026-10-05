@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (415 rpc) ----
+// ---- admin (417 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -912,6 +912,14 @@ func (c *Client) FlattenDesignEditLayer(ctx context.Context, in *admin.FlattenDe
 func (c *Client) FormatLibraryNoteMarkdown(ctx context.Context, in *admin.FormatLibraryNoteMarkdownRequest) (*admin.FormatLibraryNoteMarkdownResponse, error) {
 	out := new(admin.FormatLibraryNoteMarkdownResponse)
 	if err := c.call(ctx, "POST", "/api/admin/files/note/format", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GenerateDesignJoins(ctx context.Context, in *admin.GenerateDesignJoinsRequest) (*admin.GenerateDesignJoinsResponse, error) {
+	out := new(admin.GenerateDesignJoinsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/joins:generate", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2656,6 +2664,14 @@ func (c *Client) SetDesignBenchSlot(ctx context.Context, in *admin.SetDesignBenc
 func (c *Client) SetDesignColourPlan(ctx context.Context, in *admin.SetDesignColourPlanRequest) (*admin.SetDesignColourPlanResponse, error) {
 	out := new(admin.SetDesignColourPlanResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/colour-plan", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetDesignJoins(ctx context.Context, in *admin.SetDesignJoinsRequest) (*admin.SetDesignJoinsResponse, error) {
+	out := new(admin.SetDesignJoinsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/joins", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

@@ -896,8 +896,8 @@ func (s *Store) CompleteRun(ctx context.Context, req entity.DesignRunComplete) (
 			if _, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO design_picture
 					(tech_card_id, media_id, run_id, ordinal, kind, ghost_view, composite_views,
-					 colorway_id, source_class, mixed_input)
-				VALUES (:card, :media, :run, :ord, :kind, :ghost, :composite, :cw, :src, :mixed)
+					 colorway_id, source_class, mixed_input, qa_flags)
+				VALUES (:card, :media, :run, :ord, :kind, :ghost, :composite, :cw, :src, :mixed, :qa)
 				ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
 				map[string]any{
 					"card": run.TechCardId, "media": o.MediaId, "run": run.Id, "ord": o.Ordinal,
@@ -911,6 +911,8 @@ func (s *Store) CompleteRun(ctx context.Context, req entity.DesignRunComplete) (
 					// Одно не отменяет другого: воркер видит то, чего нет в снимке (например,
 					// подмешанный им же кадр), а стор видит то, чего не видит воркер.
 					"mixed": mixed || o.MixedInput,
+					// Pixel labels of the worker (0397: «grey»), a label and never a refusal.
+					"qa": designQAFlags(o.QAFlags),
 				}); err != nil {
 				return fmt.Errorf("failed to file output %d of design run %d: %w", o.Ordinal, run.Id, err)
 			}
@@ -1289,4 +1291,22 @@ func ghostViewOf(o entity.DesignPictureInsert, p designRunParams) string {
 		return p.Views[o.Ordinal]
 	}
 	return ""
+}
+
+// designQAFlags — the worker's pixel labels as the column holds them: known words only, deduplicated,
+// comma-joined, ≤ 64 bytes.
+func designQAFlags(in []string) string {
+	var out []string
+	seen := map[string]bool{}
+	n := 0
+	for _, f := range in {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f == "" || seen[f] || strings.ContainsAny(f, ", ") || n+len(f)+1 > 64 {
+			continue
+		}
+		seen[f] = true
+		n += len(f) + 1
+		out = append(out, f)
+	}
+	return strings.Join(out, ",")
 }
