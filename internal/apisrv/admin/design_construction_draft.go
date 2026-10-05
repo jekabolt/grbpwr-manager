@@ -305,6 +305,7 @@ var designConstructionAspectKeys = []string{
 	"pockets",
 	"sleeveCuff",
 	"topstitching",
+	"seams",
 	"extraDetails",
 	"auxMaterials",
 }
@@ -484,6 +485,7 @@ var designAspectAbsenceNouns = func() map[string][]string {
 	cuffs := []string{"cuff"}
 	hem := []string{"hem", "hemline"}
 	topstitching := []string{"topstitch", "topstitching", "stitching"}
+	seams := []string{"seam", "seams", "finish", "binding"}
 	hardware := []string{"hardware", "eyelet", "grommet", "rivet", "buckle"}
 	aux := []string{"interfacing", "fusing", "tape", "elastic"}
 	src := map[string][]string{
@@ -494,6 +496,7 @@ var designAspectAbsenceNouns = func() map[string][]string {
 		"sleeveCuff": cuffs, "cuffs": cuffs, "cuff": cuffs,
 		"hem": hem, "hems": hem,
 		"topstitching": topstitching,
+		"seams":        seams,
 		"hardware":     hardware,
 		"auxMaterials": aux,
 	}
@@ -822,7 +825,11 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"2. Prefer the designer's own words where they say the same thing.\n" +
 	"3. Construction features visible on the pictures — seams, closures, edges, pockets, bindings — " +
 	"go into \"aspects\" under the fitting key (fastening, pockets, topstitching, extraDetails, or " +
-	"a short custom key); do not list them separately.\n" +
+	"a short custom key); do not list them separately. Seam constructions the designer decided " +
+	"(lines starting with 'seam' or naming main seam / extra seams / hem finish) go into ONE aspect " +
+	"with key \"seams\", quoting the constructions and where they apply; a lined garment's interior " +
+	"finish is not an aspect. A taped seam needs a bom line of kind seam_sealing_tape; a Hong Kong " +
+	"finish, a bound seam or a bound edge needs a bom line of kind binding.\n" +
 	"4. \"bom\" names components BY THEIR ROLE («main fabric», «neck binding», «care label»), one " +
 	"line per component. Use the section / purpose / kind tokens given in the prompt; leave a token " +
 	"empty when it does not apply. \"composition\" is written as \"NN% fibre, NN% fibre\". " +
@@ -851,7 +858,10 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"the code from the colour list in the prompt closest to the MAIN colour (empty when none is " +
 	"close); several colourways may share a code. Never invent a colour the board does not show. " +
 	"Never propose a colourway the prompt lists as already existing on the card — not under its " +
-	"name, not with its main Pantone code, not with its main hex.\n" +
+	"name, not with its main Pantone code, not with its main hex. When the prompt carries a " +
+	"Colourway brief, propose exactly that many colourways (never more than 4), one per named main " +
+	"colour, in the named order, with the thread / hardware / artwork decisions applied to the " +
+	"slots; the brief outranks what the pictures suggest.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
 	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
@@ -958,6 +968,14 @@ func designConstructionUserPrompt(
 	b.WriteString("bom units (for \"unit\"): " + strings.Join(designUnitTokens, ", ") + "\n")
 	b.WriteString("fit: " + strings.Join(designConstructionFits, ", ") + "\n")
 	b.WriteString(designColourTokenLine(colours))
+
+	// ─── 5б. БРИФ КОЛОРВЕЕВ ИЗ КВИЗА (70-SEAMS B2) ───
+	//
+	// ⚠ ПЕРЕД «Slots to colour», А НЕ В «Уже на карточке»: там байтовый бюджет может его вытеснить,
+	// а правило 9 говорит модели, что бриф старше картинок.
+	if brief := designQuizColourwayBrief(card); brief != "" {
+		b.WriteString("\n" + brief + "\n")
+	}
 
 	// ─── 6. СЛОТЫ ПОД ЦВЕТ (O-44 п.2) ───
 	//

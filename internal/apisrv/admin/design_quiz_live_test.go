@@ -106,7 +106,103 @@ func quizLiveFixtures() []quizLiveFixture {
 		skipped,
 	}
 
+	// 70-SEAMS D4: seam and colourway fixtures.
+	denim := &entity.TechCard{}
+	denim.Name = "denim trucker"
+	denim.Fit = quizLiveNull("relaxed")
+	denim.Concept = quizLiveNull("Unlined 12 oz denim trucker jacket, contrast gold topstitching, two chest pockets, metal shank buttons.")
+	// denimDifferentWashes — the board shows ≥2 pictures in different washes (then a colourway
+	// question is required). The current Commons pictures are one mid-blue wash.
+	const denimDifferentWashes = false
+
+	tee := &entity.TechCard{}
+	tee.Name = "heavy tee"
+	tee.Fit = quizLiveNull("boxy")
+	tee.Concept = quizLiveNull("Heavy 240 gsm cotton jersey tee, boxy, dropped shoulder, ribbed neck.")
+
+	shell := &entity.TechCard{}
+	shell.Name = "rain shell"
+	shell.Fit = quizLiveNull("regular")
+	shell.Concept = quizLiveNull("3-layer waterproof shell, fully seam-sealed, hood, two-way front zip.")
+
+	coat := &entity.TechCard{}
+	coat.Name = "melton overcoat"
+	coat.Fit = quizLiveNull("regular")
+	coat.Concept = quizLiveNull("Fully lined wool melton overcoat, single-breasted.")
+	lined := ans("lining", "materials", "lining", "Is the body lined?", []string{"unlined", "half lined", "fully lined"}, "fully lined")
+	lined.Question.DecisionKey = "lining_insulation"
+	coat.QuizAnswers = []entity.TechCardQuizAnswer{lined}
+
 	return []quizLiveFixture{
+		{name: "denim_jacket", family: "jacket", card: denim, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
+			var out []string
+			main := quizLiveByKey(qs, "main_seam")
+			if main == nil {
+				out = append(out, "no main_seam question")
+			} else if kinds := quizLiveSeamKinds(main.Options); len(kinds) < 2 {
+				out = append(out, fmt.Sprintf("main_seam options resolve to %d sm_ kinds (want ≥2): %s", len(kinds), strings.Join(main.Options, " / ")))
+			}
+			for _, o := range quizLiveAllOptions(qs) {
+				if designQuizSeamOf(o) == "sm_french" {
+					out = append(out, "French seam offered on denim: "+o)
+				}
+			}
+			if denimDifferentWashes && quizLiveByKey(qs, "colourway_count") == nil && quizLiveByKey(qs, "colourway_colours") == nil {
+				out = append(out, "no colourway question with washes on the board")
+			}
+			return out
+		}},
+		{name: "knit_tee", family: "tee", card: tee, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
+			var out []string
+			knit := map[string]bool{"": true, "sm_plain_overlock": true, "sm_safety": true, "sm_flatlock": true,
+				"sm_hem_cover": true, "sm_hem_raw": true, "sm_hem_bound": true}
+			for _, o := range quizLiveAllOptions(qs) {
+				if k := designQuizSeamOf(o); !knit[k] {
+					out = append(out, "woven construction ("+k+") on a jersey tee: "+o)
+				}
+			}
+			if quizLiveByKey(qs, "hem_finish") == nil && quizLiveByKey(qs, "neck_finish") == nil {
+				out = append(out, "no hem_finish or neck_finish question")
+			}
+			return out
+		}},
+		{name: "shell", family: "jacket", card: shell, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
+			var out []string
+			sealed := false
+			for _, o := range quizLiveAllOptions(qs) {
+				if k := designQuizSeamOf(o); k == "sm_taped" || k == "sm_bonded" {
+					sealed = true
+				}
+			}
+			if !sealed {
+				out = append(out, "no taped or bonded option on a waterproof shell")
+			}
+			for _, q := range qs {
+				only := len(q.Options) > 0
+				for _, o := range q.Options {
+					if k := designQuizSeamOf(o); k != "sm_plain_overlock" && k != "sm_safety" {
+						only = false
+					}
+				}
+				if only {
+					out = append(out, "overlock-only seam choice on a shell: "+q.Question)
+				}
+			}
+			return out
+		}},
+		{name: "lined_coat", family: "coat", card: coat, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
+			var out []string
+			if q := quizLiveByKey(qs, "extra_seams"); q != nil {
+				out = append(out, "asked interior constructions on a fully lined coat: "+q.Question)
+			}
+			for _, o := range quizLiveAllOptions(qs) {
+				switch designQuizSeamOf(o) {
+				case "sm_hong_kong", "sm_bound", "sm_plain_overlock":
+					out = append(out, "hidden interior finish offered on a lined coat: "+o)
+				}
+			}
+			return out
+		}},
 		{name: "jacket", family: "jacket", card: jacket, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
 			var out []string
 			if !quizLiveHas(qs, "fit_basis") {
@@ -151,6 +247,37 @@ func quizLiveHas(qs []entity.DesignQuizQuestion, id string) bool {
 	}
 	return false
 }
+
+func quizLiveByKey(qs []entity.DesignQuizQuestion, key string) *entity.DesignQuizQuestion {
+	for i := range qs {
+		if qs[i].DecisionKey == key {
+			return &qs[i]
+		}
+	}
+	return nil
+}
+
+func quizLiveAllOptions(qs []entity.DesignQuizQuestion) []string {
+	var out []string
+	for _, q := range qs {
+		out = append(out, q.Options...)
+	}
+	return out
+}
+
+// quizLiveSeamKinds — the distinct sm_ keys the options resolve to (the client's chip icons).
+func quizLiveSeamKinds(opts []string) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range opts {
+		if k := designQuizSeamOf(o); k != "" {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// quizLiveSeamKeys — the decision keys that count as a seam question in the summary.
+var quizLiveSeamKeys = map[string]bool{"main_seam": true, "extra_seams": true, "hem_finish": true, "neck_finish": true}
 
 type quizLiveModel struct{ slug, effort string }
 
@@ -420,7 +547,13 @@ func quizLiveScore(raw string, qs []entity.DesignQuizQuestion) map[string]int {
 		if q.Category == entity.DesignQuizCategoryDetails && q.Part == entity.DesignQuizPartWhole {
 			s["details_on_whole"]++
 		}
+		if quizLiveSeamKeys[q.DecisionKey] {
+			s["seam_q"]++
+		}
 		for _, o := range q.Options {
+			if designQuizSeamOf(o) != "" {
+				s["sm_icons"]++
+			}
 			lo := strings.ToLower(strings.TrimSpace(o))
 			if quizLiveBanned.MatchString(o) || lo == "regular" || lo == "other" {
 				s["banned_option_words"]++
@@ -447,16 +580,16 @@ func quizLiveSummary(rs []quizLiveResult) string {
 	var b strings.Builder
 	b.WriteString("# Moodboard quiz — live A/B (" + time.Now().UTC().Format("2006-01-02 15:04 UTC") + ")\n\n")
 	b.WriteString("Generated by internal/apisrv/admin/design_quiz_live_test.go (build tag quizlive). Prompts = production builders; parse = production parser.\n\n")
-	b.WriteString("| fixture | model | effort | # | q | fit | clarify | banned | fit cm/% | parts fixed | invalid | repeated | finish | sec | prompt tok | compl tok | reasoning tok | USD | violations |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| fixture | model | effort | # | q | fit | clarify | banned | fit cm/% | seam q | sm icons | parts fixed | invalid | repeated | finish | sec | prompt tok | compl tok | reasoning tok | USD | violations |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rs {
 		viol := strings.Join(r.Violations, "; ")
 		if r.Error != "" {
 			viol = "ERROR " + r.Error
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %.1f | %d | %d | %d | %.4f | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %.1f | %d | %d | %d | %.4f | %s |\n",
 			r.Fixture, r.Model, quizLiveOr(r.Effort, "default"), r.Run, r.Score["questions"], r.Score["cat_fit"], r.Score["clarify"],
-			r.Score["banned_option_words"], r.Score["fit_invented_numbers"], r.Stats["parts_fixed"], r.Stats["invalid"],
+			r.Score["banned_option_words"], r.Score["fit_invented_numbers"], r.Score["seam_q"], r.Score["sm_icons"], r.Stats["parts_fixed"], r.Stats["invalid"],
 			r.Stats["repeated"], r.FinishReason, r.Seconds, r.Usage.PromptTokens, r.Usage.CompletionTokens,
 			r.Usage.Details.Reasoning, r.Usage.Cost, strings.ReplaceAll(viol, "|", "/"))
 	}
