@@ -581,3 +581,112 @@ func TestDesignDBColourwayWearingASlotFabricIsNamedAndHeld(t *testing.T) {
 	require.ErrorIs(t, err, entity.ErrColorwayHasDesignRows,
 		"пара (колорвей, слот) держит колорвей на этой карточке")
 }
+
+// ПЕРЕЗАКАЗ СНИМКА НА ТУ ЖЕ ПАРУ УВОЗИТ МЕТКИ ФЛЭТА НА НОВЫЙ СНИМОК (B-m2), А НЕ ТЕРЯЕТ ИХ КАСКАДОМ.
+// Снимок, который носит ЕЩЁ И другая пара, своих меток не отдаёт и на полке остаётся.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: убрать UPDATE design_asset_placement из bindKeptPatternTx (метка уйдёт
+// каскадом вместе с GC прежнего снимка); снять условие «связан только с этой парой» (метки снимка
+// второй пары уедут на чужой ассет).
+func TestDesignDBAHardwareRunLandingMovesTheFlatMarks(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	cw2 := probeColorway(t, raw, card, "WHT")
+	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
+	flat := probePicture(t, rep, raw, card, entity.DesignPictureKindFlat)
+	resetBudget(t, raw)
+	ctx := context.Background()
+
+	land := func(name string) int {
+		started := patternRunWith(t, rep, card, cw, map[string]any{
+			"name": name, "mode": entity.DesignPatternModeArtwork, "bom_item_id": hwLine,
+		}, map[string]any{"words": "crest"})
+		done, err := landPatternRun(t, rep, started.Run.Id, probeMedia(t, raw))
+		require.NoError(t, err)
+		require.Equal(t, entity.DesignRunDone, done.Status)
+		require.False(t, done.ErrorCode.Valid)
+		var id int
+		require.NoError(t, raw.QueryRow(`SELECT MAX(id) FROM design_asset WHERE tech_card_id = ?`, card).Scan(&id))
+		return id
+	}
+	mark := func(asset int) int {
+		m, err := rep.Design().SetAssetPlacement(ctx, entity.DesignAssetPlacementSet{
+			TechCardId: card, AssetId: asset, PictureId: flat.Id,
+			Annotation: probeAnnotation(), Actor: "probe",
+		})
+		require.NoError(t, err)
+		return m.Id
+	}
+	ownerOf := func(markID int) int {
+		var a int
+		require.NoError(t, raw.QueryRow(`SELECT asset_id FROM design_asset_placement WHERE id = ?`, markID).Scan(&a))
+		return a
+	}
+
+	first := land("crest 1")
+	m1 := mark(first)
+	second := land("crest 2")
+	require.Equal(t, second, ownerOf(m1), "метка пары переехала на новый снимок")
+	require.Zero(t, countRows(t, raw, `SELECT COUNT(*) FROM design_asset WHERE id = ?`, first),
+		"прежний снимок собран после переезда меток")
+
+	// ВТОРАЯ ПАРА НОСИТ ТОТ ЖЕ СНИМОК: его метки — её, и они остаются.
+	_, err := rep.Design().SetAssetBinding(ctx, entity.DesignAssetBindingSet{
+		TechCardId: card, ColorwayId: cw2, BomItemId: hwLine, AssetId: second, SetBy: "probe",
+	})
+	require.NoError(t, err)
+	third := land("crest 3")
+	require.Equal(t, second, ownerOf(m1), "снимок другой пары меток не отдаёт")
+	require.Equal(t, 1, countRows(t, raw, `SELECT COUNT(*) FROM design_asset WHERE id = ?`, second))
+	require.Equal(t, map[[2]int]int{{cw, hwLine}: third, {cw2, hwLine}: second}, bindingsOf(t, raw, card))
+}
+
+// ПОЛКА НА 120 ПРИНИМАЕТ ПЕРЕЗАКАЗ СНИМКА, КОТОРЫЙ СОБЕРЁТ ПРЕЖНИЙ (B-m1): посадка меняет строку на
+// строку, а не прибавляет. Посадка на пару, чей прежний снимок ОСТАЁТСЯ (его носит ещё колорвей
+// другой пары), на 120 по-прежнему пишет library_full.
+//
+// МУТАЦИЯ, КОТОРУЮ ЛОВИТ: вернуть refuseFullShelf к брутто-счёту (freeing = 0) в keepPatternTx.
+func TestDesignDBAFullShelfTakesAReplacementThatFreesARow(t *testing.T) {
+	rep, raw := probeRepository(t)
+	card, _, _ := designProbeCard(t, rep, raw)
+	cw := probeColorway(t, raw, card, "BLK")
+	cw2 := probeColorway(t, raw, card, "WHT")
+	hwLine := probeBomLine(t, raw, card, "hardware", "closure")
+	resetBudget(t, raw)
+	ctx := context.Background()
+
+	start := func(colorway int, name string) int {
+		return patternRunWith(t, rep, card, colorway, map[string]any{
+			"name": name, "mode": entity.DesignPatternModeHardware, "bom_item_id": hwLine,
+		}, map[string]any{"words": "horn button"}).Run.Id
+	}
+	first := start(cw, "button 1")
+	done, err := landPatternRun(t, rep, first, probeMedia(t, raw))
+	require.NoError(t, err)
+	require.False(t, done.ErrorCode.Valid)
+	var prev int
+	require.NoError(t, raw.QueryRow(`SELECT MAX(id) FROM design_asset WHERE tech_card_id = ?`, card).Scan(&prev))
+
+	// Второй пары у cw2 нет: её посадка на полной полке ничего не освобождает.
+	replace, fresh := start(cw, "button 2"), start(cw2, "button 3")
+	for i := len(shelfOf(t, raw, card)); i < entity.MaxDesignAssetsPerCard; i++ {
+		_, err := rep.Design().UpsertAsset(ctx, entity.DesignAssetUpsert{
+			TechCardId: card, Kind: entity.DesignAssetKindFabric,
+			Name: "cloth " + uuid.NewString()[:8], Actor: "probe",
+		})
+		require.NoError(t, err)
+	}
+	require.Len(t, shelfOf(t, raw, card), entity.MaxDesignAssetsPerCard)
+
+	done, err = landPatternRun(t, rep, fresh, probeMedia(t, raw))
+	require.NoError(t, err)
+	require.True(t, done.ErrorCode.Valid, "посадка без замены на полной полке — library_full")
+	require.Equal(t, entity.DesignErrorCodeLibraryFull, done.ErrorCode.String)
+
+	done, err = landPatternRun(t, rep, replace, probeMedia(t, raw))
+	require.NoError(t, err)
+	require.False(t, done.ErrorCode.Valid, "замена собираемого снимка полку не переполняет")
+	require.Len(t, shelfOf(t, raw, card), entity.MaxDesignAssetsPerCard, "строка за строку")
+	require.Zero(t, countRows(t, raw, `SELECT COUNT(*) FROM design_asset WHERE id = ?`, prev))
+}
