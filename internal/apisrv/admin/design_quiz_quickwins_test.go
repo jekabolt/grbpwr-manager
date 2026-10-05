@@ -253,7 +253,8 @@ func TestDesignQuizGroupChecklistInUserTurn(t *testing.T) {
 	require.Contains(t, unknown, `"product_type"`)
 	require.NotContains(t, unknown, "Fit stays open")
 	// 64-DEFERRED E1 added the decision_key list (~0.7 KB), 70-SEAMS §C the seam paragraph and the
-	// seam/colourway examples (~2.7 KB); the per-group checklists stay out.
+	// seam/colourway examples (~2.7 KB), 70-SEAMS §B the COLOURWAYS paragraph (~1.2 KB); the
+	// per-group checklists stay out.
 	require.Less(t, len(designQuizSystemPrompt), 18000, "the system prompt shrank")
 	for fam := range designQuizParts {
 		require.NotContains(t, designQuizGroupChecklist(fam), "unknown", fam)

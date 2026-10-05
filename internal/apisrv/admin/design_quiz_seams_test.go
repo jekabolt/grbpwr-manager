@@ -79,6 +79,25 @@ func TestDesignQuizSeamHumaniserAndPrompts(t *testing.T) {
 	require.Contains(t, designQuizSystemPrompt, "SEAMS AND INSIDE FINISH")
 	require.Contains(t, designQuizSystemPrompt, "main_seam, extra_seams, neck_finish")
 	require.Contains(t, designQuizSystemPrompt, "label_set")
+
+	// 70-SEAMS §B in depth: count AND colours together when the card has none; the per-colourway
+	// keys only when the garment has the thing; existing colourways → only what they leave open.
+	for _, s := range []string{
+		"COLOURWAYS —",
+		"ask colourway_count AND colourway_colours, both, adjacent",
+		"kind multi for the colours",
+		"colour_blocking when it has panels",
+		"thread_colour when topstitching is visible",
+		"hardware_finish when it has metal hardware",
+		"wash_per_colourway when the fabric is washed",
+		"print_per_colourway when it carries artwork",
+		"Colourways listed under Known: ask only what they leave open",
+		"No padding",
+	} {
+		require.Contains(t, designQuizSystemPrompt, s)
+	}
+	require.Contains(t, shirt, "how many and the main colours, together, when none is on the card")
+	require.Contains(t, shirt, "only when the garment has them")
 }
 
 func TestDesignQuizColourwayBrief(t *testing.T) {
