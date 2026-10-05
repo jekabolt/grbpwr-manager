@@ -107,13 +107,6 @@ func designPartsCardUserPrompt(views []designPartsCardView, note, construction s
 	return b.String()
 }
 
-// designPartsCardConstruction — the card's confirmed construction (the join list of the flat
-// route) as words for the labeller. HOOK: empty until the join list exists; then it returns the
-// joins/absences/openings in words, and the labeller takes its part names from them.
-func (s *Server) designPartsCardConstruction(_ context.Context, _ int) string {
-	return ""
-}
-
 // designPartsCardNote — the card's garment note (empty when the card has none or cannot be read: the
 // note helps, it never blocks the call).
 func (s *Server) designPartsCardNote(ctx context.Context, cardID int) string {

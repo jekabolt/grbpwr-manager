@@ -672,6 +672,17 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if kind == entity.DesignRunKindFlat {
 		designFlatDetailsOnly(params)
 	}
+	// ─── THE FLAT MODE (80-BUILD-MODES §2.1): a rerun inherits its parent's block; the block's rules
+	// are checked on the EFFECTIVE params, against this door's own read of the join list.
+	if err := designFlatRerunInherit(kind, params, parent); err != nil {
+		return nil, err
+	}
+	if err := designRefuseFlatParams(kind, params, parent, band, card); err != nil {
+		return nil, err
+	}
+	if err := s.designRefuseUnderdrawingShape(ctx, kind, params, parent); err != nil {
+		return nil, err
+	}
 
 	// ─── W-13 × L-3: 3D ТОЛЬКО ПОСЛЕ ЗАНЯТОГО РЕНДЕР-ВЕРСТАКА ТОГО ЖЕ КОЛОРВЕЯ ───
 	//
@@ -1003,6 +1014,8 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	}
 	// A flat that names no engine is drawn by the flat route's engine (flare), frozen here.
 	s.designFreezeFlatModel(kind, params, parent)
+	// A drawing-mode flat is drawn 16:9, like the drawing it traces.
+	s.designFreezeFlatAspect(kind, params)
 	// A stated engine freezes with its slug (G-02, Codex 5).
 	s.designFreezeImageModel(kind, params)
 	// A video run freezes the Kling slug it is bought with (B-32).
@@ -1136,7 +1149,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 			len(inputsJSON), designMaxInputsBytes)
 	}
 
-	outputs := designRerunFlatOutputs(kind, designRequestedOutputs(kind, params), parent)
+	outputs := designRerunFlatOutputs(kind, params, designRequestedOutputs(kind, params), parent)
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:      cardID,
 		ClientRequestId: clientRequestID,
@@ -2436,8 +2449,10 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 	// FLAT CANDIDATES (owner 05.10): a garment sheet is bought FlatCandidates times — the designer
 	// picks one and the split flow cuts the chosen one. imageCalls reads this number back as the
 	// call's n (designgen FlatCandidatesFor names the same runs).
+	// 80-BUILD-MODES §3.4: quick buys ONE sheet, a drawing mode four.
 	if kind == entity.DesignRunKindFlat && params.GetLayout() == designLayoutOne && !designFlatIsFix(params) {
-		if n := designgen.FlatCandidatesFor(params.GetViews(), params.GetLayout()); n > 0 {
+		mode, _ := designFlatModeOf(params)
+		if n := designgen.FlatCandidatesFor(params.GetViews(), params.GetLayout(), mode); n > 0 {
 			return n
 		}
 	}
@@ -3746,6 +3761,12 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 			Callouts: callouts[int(id)],
 		})
 	}
+	// ─── A DRAWING-MODE FLAT (80-BUILD-MODES §2.2): the snapshot records what is SENT — the
+	// construction drawing first, then (drawing_photos) the photos gathered above; drawing alone sends
+	// the drawing and nothing else.
+	if refs, ok := designFlatDrawingRefs(src, out.Refs); ok {
+		out.Refs = refs
+	}
 	if len(out.Refs) > designMaxInputRefs {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"a run may carry %d reference images; this one has %d", designMaxInputRefs, len(out.Refs))
@@ -3762,6 +3783,9 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// Довод потолка («снимок обязан помещаться в строку и в глаз») от разделения не страдает: обе
 	// половины ограничены, а запись-имя весит десятки байт против плиты с хешем и адресом.
 	out.Slots = designInputSlots(src)
+	if !designFlatModeKeepsSlots(src) {
+		out.Slots = nil
+	}
 	plates, asked := 0, 0
 	for _, s := range out.Slots {
 		if s.GetMediaId() > 0 {

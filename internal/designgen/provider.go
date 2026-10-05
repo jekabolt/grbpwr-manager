@@ -86,6 +86,9 @@ type Job struct {
 	// `per_view` for one picture per view — which is one paid call per view, not one call with n.
 	Views  []string
 	Layout string
+	// FlatMode — params.flat.mode of a flat run (quick | drawing | drawing_photos; "" = quick): the
+	// money boundary reads it beside Outputs (FlatCandidatesFor).
+	FlatMode string
 	// DetailNames names the requested details POSITIONALLY: the i-th entry belongs to the i-th
 	// `detail` in Views. An entry is empty when the frozen snapshot could not name that slot.
 	//

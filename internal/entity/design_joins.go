@@ -55,7 +55,23 @@ const (
 	DesignJoinKindClosure   = "closure"
 	DesignJoinKindPocket    = "pocket"
 	DesignJoinKindOpening   = "opening"
+	// v9 renderer kinds (tmp/plans/flat-consistency/v9_render.py BANDS / LINE_KINDS).
+	DesignJoinKindHoodEdge        = "hood_edge"
+	DesignJoinKindDrawcordChannel = "drawcord_channel"
+	DesignJoinKindBindingWide     = "binding_wide"
+	DesignJoinKindLapel           = "lapel"
+	DesignJoinKindPleat           = "pleat"
+	DesignJoinKindDart            = "dart"
+	DesignJoinKindTopstitch       = "topstitch"
+	DesignJoinKindFold            = "fold"
+	DesignJoinKindLoop            = "loop"
 )
+
+// DesignRefRoleUnderdrawing — the role of the construction drawing a drawing-mode flat run traces, as
+// it stands in the run's input snapshot (first reference). RESERVED: no person may give a card
+// reference this role (SetDesignReferenceRole refuses it), so the role always means «the picture the
+// door checked against the join list».
+const DesignRefRoleUnderdrawing = "underdrawing"
 
 // Visibility of an item.
 const (
@@ -70,66 +86,86 @@ func IsDesignJoinKind(k string) bool {
 	case DesignJoinKindEdge, DesignJoinKindSeam, DesignJoinKindBinding, DesignJoinKindBand,
 		DesignJoinKindStrap, DesignJoinKindCollar, DesignJoinKindStand, DesignJoinKindPlacket,
 		DesignJoinKindCuff, DesignJoinKindWaistband, DesignJoinKindSleeve, DesignJoinKindClosure,
-		DesignJoinKindPocket, DesignJoinKindOpening:
+		DesignJoinKindPocket, DesignJoinKindOpening,
+		DesignJoinKindHoodEdge, DesignJoinKindDrawcordChannel, DesignJoinKindBindingWide,
+		DesignJoinKindLapel, DesignJoinKindPleat, DesignJoinKindDart, DesignJoinKindTopstitch,
+		DesignJoinKindFold, DesignJoinKindLoop:
 		return true
 	}
 	return false
 }
 
-// DesignJoinBandKinds — the kinds that are a band of their own width (r6.BANDS; binding is apart).
+// DesignJoinIsBand — the kinds that are a band of their own width (v9_render.BANDS; binding is apart).
 func DesignJoinIsBand(k string) bool {
 	switch k {
 	case DesignJoinKindStrap, DesignJoinKindBand, DesignJoinKindCollar, DesignJoinKindStand,
-		DesignJoinKindPlacket, DesignJoinKindCuff, DesignJoinKindWaistband:
+		DesignJoinKindPlacket, DesignJoinKindCuff, DesignJoinKindWaistband,
+		DesignJoinKindHoodEdge, DesignJoinKindDrawcordChannel, DesignJoinKindBindingWide:
 		return true
 	}
 	return false
 }
 
 // designJoinLM — the ruler: (x lateral, wearer's LEFT positive; z depth, FRONT positive; y down from
-// the top of the shoulders). r5.py LM, value for value.
+// the top of the shoulders). tmp/plans/flat-consistency/v9_render.py BASE + SIDE, value for value — the
+// SAME table the client's underdrawing renderer draws with (underdrawing/ruler.ts); a Go test holds it
+// against internal/designgen/testdata/joins/ruler.json. A superset of r5's ruler: every r5 name is here
+// (MB_x, WL_x, WF_C and HEM_FC moved by ≤ 0.01 to v9's body block).
 var designJoinLM = func() map[string][3]float64 {
 	m := map[string][3]float64{
-		"CFN": {0, .07, .11}, "CBN": {0, -.07, .06}, "CFN_LOW": {0, .09, .22}, "CBN_LOW": {0, -.09, .2},
-		"BUST_C": {0, .1, .38}, "CHEST_C": {0, .1, .27}, "UB_C": {0, -.09, .22}, "MB_C": {0, -.09, .45},
-		"WF_C": {0, .1, .55}, "WB_C": {0, -.1, .55}, "HEM_FC": {0, .1, .95}, "HEM_BC": {0, -.1, .95},
+		"CFN": {0, .07, .11}, "CBN": {0, -.07, .06}, "CFN_LOW": {0, .09, .22}, "CBN_LOW": {0, -.09, .20},
+		"CHEST_C": {0, .10, .27}, "BUST_C": {0, .10, .38}, "UB_C": {0, -.09, .22}, "MB_C": {0, -.09, .45},
+		"WF_C": {0, .09, .55}, "WB_C": {0, -.10, .55}, "HIP_C_F": {0, .09, .72}, "HIP_C_B": {0, -.11, .72},
+		"HEM_FC": {0, .09, .95}, "HEM_BC": {0, -.10, .95},
+		"BREAK": {0, .10, .36}, "CROTCH_F": {0, .06, .80}, "CROTCH_B": {0, -.07, .82}, "CROTCH": {0, 0, .81},
+		"SKIRT_HEM_C_F": {0, .11, 1.15}, "SKIRT_HEM_C_B": {0, -.13, 1.15}, "DRESS_HEM_C_F": {0, .10, 1.50}, "DRESS_HEM_C_B": {0, -.12, 1.50},
+		"HOOD_TOP": {0, -.03, -.24}, "HOOD_BACK": {0, -.16, -.10}, "HOOD_CROWN_F": {0, .04, -.20},
+	}
+	// name: (x, z, y) for the wearer's LEFT; RIGHT is mirrored.
+	side := []struct {
+		n       string
+		x, z, y float64
+	}{
+		{"NP", .06, 0, .05}, {"SP", .18, 0, .09}, {"UA", .17, 0, .30}, {"MB", .165, 0, .45}, {"WL", .145, 0, .55}, {"HIP", .175, 0, .72}, {"HEM", .17, 0, .95},
+		{"CHEST", .09, .10, .25}, {"BUSTSIDE", .12, .09, .38}, {"SB", .09, -.09, .22}, {"YOKE", .17, -.04, .17}, {"FSH", .12, .05, .07}, {"BSH", .12, -.05, .07},
+		{"ELB_OUT", .27, 0, .55}, {"ELB_IN", .20, 0, .57}, {"WRIST_OUT", .30, 0, .88}, {"WRIST_IN", .21, 0, .90}, {"SSLV_OUT", .29, 0, .24}, {"SSLV_IN", .23, 0, .33},
+		{"LAPEL_TIP", .12, .10, .17}, {"GORGE", .075, .07, .12}, {"FPK_TOP", .06, .10, .57}, {"FPK_SIDE", .17, 0, .67}, {"BPK", .09, -.10, .66},
+		{"KANG", .10, .10, .62}, {"KANG_LOW", .15, .09, .80}, {"KNEE_OUT", .15, 0, 1.15}, {"KNEE_IN", .045, 0, 1.15}, {"ANKLE_OUT", .13, 0, 1.50}, {"ANKLE_IN", .045, 0, 1.50},
+		{"LEG_HEM_F", .09, .07, 1.50}, {"LEG_HEM_B", .09, -.07, 1.50}, {"SHORT_OUT", .17, 0, .98}, {"SHORT_IN", .035, 0, .98}, {"SHORT_HEM_F", .10, .07, .98}, {"SHORT_HEM_B", .10, -.07, .98},
+		{"SKIRT_HEM", .26, 0, 1.15}, {"DRESS_HEM", .20, 0, 1.50}, {"HOOD_FRONT", .07, .06, -.11}, {"HOOD_SIDE", .12, -.04, -.10}, {"NECK_SIDE", .065, .0, .035},
 	}
 	for _, sd := range []struct {
 		s  string
 		sg float64
 	}{{"L", 1}, {"R", -1}} {
-		s, sg := sd.s, sd.sg
-		add := func(name string, x, z, y float64) { m[name+"_"+s] = [3]float64{sg * x, z, y} }
-		add("NP", .06, 0, .05)
-		add("SP", .18, 0, .09)
-		add("UA", .17, 0, .3)
-		add("MB", .16, 0, .45)
-		add("WL", .15, 0, .55)
-		add("HEM", .17, 0, .95)
-		add("CHEST", .09, .1, .25)
-		add("BUSTSIDE", .12, .09, .38)
-		add("SB", .09, -.09, .22)
-		add("YOKE", .17, -.04, .17)
-		add("FSH", .12, .05, .07)
-		add("BSH", .12, -.05, .07)
-		add("ELB_OUT", .27, 0, .55)
-		add("WRIST_OUT", .3, 0, .88)
-		add("WRIST_IN", .21, 0, .9)
-		add("SSLV_OUT", .29, 0, .24)
-		add("SSLV_IN", .23, 0, .33)
+		for _, p := range side {
+			m[p.n+"_"+sd.s] = [3]float64{sd.sg * p.x, p.z, p.y}
+		}
 	}
 	return m
 }()
 
+// DesignJoinRuler — a copy of the ruler (name → x, z, y), for the parity test against the client's
+// export and for nobody else.
+func DesignJoinRuler() map[string][3]float64 {
+	out := make(map[string][3]float64, len(designJoinLM))
+	for k, v := range designJoinLM {
+		out[k] = v
+	}
+	return out
+}
+
 // DesignJoinLandmarkHelp — the ruler in words, for the model that writes the list and for the
-// model that draws from it (r5.LM_HELP, verbatim).
-const DesignJoinLandmarkHelp = `Landmark ruler (fixed for every garment; L/R = WEARER'S left/right):
-NP_L/NP_R neck points (side of the neck, top of the shoulder line); CFN centre-front neck; CBN centre-back neck (nape); CFN_LOW / CBN_LOW a low front / back neck centre;
-SP_L/SP_R shoulder tips; FSH_x / BSH_x mid-shoulder slightly to the front / back; UA_L/UA_R underarms (top of side seam);
-CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust, BUSTSIDE_x bust side; SB_x shoulder blades, UB_C centre upper back; YOKE_x back yoke seam at the armhole;
-MB_x side at mid-back height, MB_C centre back at mid-back; WL_x waist at the side, WF_C / WB_C centre front / back waist; HEM_x hem at the side, HEM_FC / HEM_BC centre front / back hem;
-sleeves: SSLV_OUT_x / SSLV_IN_x short-sleeve end outer / inner; ELB_OUT_x elbow outer; WRIST_OUT_x / WRIST_IN_x long-sleeve end outer / inner.
-A point between two landmarks is written "A..B:t" (t from 0 at A to 1 at B), e.g. "NP_L..SP_L:0.3".`
+// model that draws from it (v9_render.LM_HELP, verbatim).
+const DesignJoinLandmarkHelp = `Landmark ruler (fixed for every garment; L/R = WEARER'S left/right; a point between two landmarks is written "A..B:t", t from 0 at A to 1 at B):
+neck/shoulder: NP_x neck points (side of the neck, top of the shoulder line); SP_x shoulder tips; FSH_x/BSH_x mid-shoulder slightly front/back; CFN centre-front neck (crew height), CFN_LOW low front neck; CBN nape, CBN_LOW low back neck; NECK_SIDE_x base of the neck at the side (for collar stands);
+torso: UA_x underarm (top of side seam); CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust; BUSTSIDE_x; SB_x shoulder blades; UB_C centre upper back; YOKE_x back yoke at the armhole; MB_x side at mid-back, MB_C centre back mid-back; WL_x waist at the side, WF_C/WB_C centre front/back waist; HIP_x hip at the side, HIP_C_F/HIP_C_B; HEM_x hem of a top at the side (hip length), HEM_FC/HEM_BC centre front/back hem;
+tailoring: BREAK centre front where lapels meet (top button); LAPEL_TIP_x lapel point; GORGE_x the notch where collar meets lapel;
+sleeves: SSLV_OUT_x/SSLV_IN_x short-sleeve end outer/inner; ELB_OUT_x/ELB_IN_x elbow; WRIST_OUT_x/WRIST_IN_x long-sleeve end outer/inner;
+hood: HOOD_FRONT_x middle of the hood's front edge; HOOD_TOP top of the hood; HOOD_BACK back of the hood; HOOD_SIDE_x; HOOD_CROWN_F;
+pockets: FPK_TOP_x/FPK_SIDE_x ends of a trouser front-pocket scoop; BPK_x back pocket centre; KANG_x/KANG_LOW_x corners of a kangaroo pocket;
+lower body: CROTCH (inseam top), CROTCH_F/CROTCH_B; KNEE_OUT_x/KNEE_IN_x; ANKLE_OUT_x/ANKLE_IN_x; LEG_HEM_F_x/LEG_HEM_B_x middle of a leg hem front/back; SHORT_OUT_x/SHORT_IN_x/SHORT_HEM_F_x/SHORT_HEM_B_x shorts hem; SKIRT_HEM_x skirt hem at the side (knee), SKIRT_HEM_C_F/SKIRT_HEM_C_B.
+Trousers/skirts start at the waist (WL_x, WF_C, WB_C); tops end at HEM_x or shorter (e.g. "UA_L..HEM_L:0.6").`
 
 // IsDesignJoinLandmark reports whether name is a ruler point, plain or "A..B:t" with t in 0..1.
 func IsDesignJoinLandmark(name string) bool {
@@ -213,6 +249,8 @@ type DesignJoinItem struct {
 	FreeEdge bool `json:"free_edge,omitempty"`
 	// Sharp — points of the path that are CORNERS (the point of a V, hem corners); the rest is smooth.
 	Sharp []string `json:"sharp,omitempty"`
+	// Size — a pocket's half-width in ruler units (v9: «size», default 0.045); 0 = unstated.
+	Size float64 `json:"size,omitempty"`
 }
 
 // Path — From, Via…, To (empty parts skipped).
@@ -250,6 +288,35 @@ type DesignJoinsDoc struct {
 	Absences []string          `json:"absences,omitempty"`
 	// Uncertain — the model's honest doubts (questions for the designer; not read by the prompt).
 	Uncertain []string `json:"uncertain,omitempty"`
+	// Fit — the body block the underdrawing renderer scales by (v9 fit_of); nil = regular.
+	Fit *DesignJoinsFit `json:"fit,omitempty"`
+}
+
+// DesignJoinsFit — the garment's ease and waist on closed vocabularies (v9_render.fit_of reads every
+// word below; anything else is cleaned to "").
+type DesignJoinsFit struct {
+	Ease  string `json:"ease,omitempty"`
+	Waist string `json:"waist,omitempty"`
+}
+
+// SanitizeDesignJoinsFit — the closed vocabularies; nil when neither word survives.
+func SanitizeDesignJoinsFit(in *DesignJoinsFit) *DesignJoinsFit {
+	if in == nil {
+		return nil
+	}
+	out := DesignJoinsFit{}
+	switch e := strings.ToLower(strings.TrimSpace(in.Ease)); e {
+	case "slim", "fitted", "regular", "relaxed", "oversized", "boxy":
+		out.Ease = e
+	}
+	switch w := strings.ToLower(strings.TrimSpace(in.Waist)); w {
+	case "fitted", "shaped", "suppressed", "straight", "boxy", "none":
+		out.Waist = w
+	}
+	if out.Ease == "" && out.Waist == "" {
+		return nil
+	}
+	return &out
 }
 
 // DesignJoins — the card's current list (one row per card).
@@ -382,7 +449,7 @@ func designJoinSideOfPath(path []string) string {
 //   - view and side are derived from the path when not stated (or stated wrong);
 //   - every count and length is capped.
 func SanitizeDesignJoinsDoc(in DesignJoinsDoc) DesignJoinsDoc {
-	out := DesignJoinsDoc{Items: []DesignJoinItem{}}
+	out := DesignJoinsDoc{Items: []DesignJoinItem{}, Fit: SanitizeDesignJoinsFit(in.Fit)}
 
 	seenLayer := map[int]bool{}
 	for _, l := range in.Layers {
@@ -428,6 +495,41 @@ func SanitizeDesignJoinsDoc(in DesignJoinsDoc) DesignJoinsDoc {
 				continue
 			}
 			c.From = a
+			// A shaped pocket (v9: «a path polygon through landmarks») keeps the rest of its path;
+			// an unknown point drops that point, never the pocket.
+			for _, v := range it.Via {
+				if len(c.Via) == DesignJoinsMaxVia {
+					break
+				}
+				if v = designJoinLandmark(v); IsDesignJoinLandmark(v) {
+					c.Via = append(c.Via, v)
+				}
+			}
+			if to := designJoinLandmark(it.To); IsDesignJoinLandmark(to) {
+				c.To = to
+			}
+			c.Closed = it.Closed && c.To != ""
+			if it.Size >= 0.01 && it.Size <= 0.2 {
+				c.Size = it.Size
+			}
+		case DesignJoinKindClosure:
+			// A closure may sit at ONE point (a single button on a collar stand, v9 c16).
+			from, to := designJoinLandmark(it.From), designJoinLandmark(it.To)
+			if !IsDesignJoinLandmark(from) {
+				continue
+			}
+			c.From = from
+			if IsDesignJoinLandmark(to) {
+				c.To = to
+				for _, v := range it.Via {
+					if len(c.Via) == DesignJoinsMaxVia {
+						break
+					}
+					if v = designJoinLandmark(v); IsDesignJoinLandmark(v) {
+						c.Via = append(c.Via, v)
+					}
+				}
+			}
 		default:
 			from, to := designJoinLandmark(it.From), designJoinLandmark(it.To)
 			if !IsDesignJoinLandmark(from) || !IsDesignJoinLandmark(to) {

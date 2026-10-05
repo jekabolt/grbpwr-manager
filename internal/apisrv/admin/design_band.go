@@ -511,6 +511,13 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 		return nil, status.Errorf(codes.InvalidArgument,
 			"note is %d characters; the ceiling is %d", n, designMaxRefNoteRunes)
 	}
+	// `underdrawing` is the snapshot's own role for the construction drawing a drawing-mode flat run
+	// traces (80-BUILD-MODES §2.2); a card reference wearing it would be indistinguishable from it.
+	if strings.TrimSpace(req.GetRole()) == entity.DesignRefRoleUnderdrawing {
+		return nil, designRefusal(codes.InvalidArgument, "role_reserved",
+			"«underdrawing» is reserved for the construction drawing of a flat run; pick a side of the garment",
+			map[string]string{"role": entity.DesignRefRoleUnderdrawing})
+	}
 	ref, err := s.repo.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
 		TechCardId: int(req.GetTechCardId()),
 		MediaId:    int(req.GetMediaId()),

@@ -126,6 +126,12 @@ func designRunInputMediaRefs(params *pb_common.DesignRunParams, inputs *pb_commo
 	// B-32: the video's first frame travels to Kling as image_url, so «not a picture» (a .glb, another
 	// clip), «display only» and «hidden» must see it.
 	add(int(params.GetVideo().GetSourceMediaId()), "params.video.source_media_id")
+	// 80-BUILD-MODES: the construction drawing a drawing-mode flat traces travels to the provider as
+	// image 1 (it is also the snapshot's first ref; named here first so a refusal says which field).
+	add(int(params.GetFlat().GetUnderdrawingMediaId()), "params.flat.underdrawing_media_id")
+	for i, r := range params.GetFlat().GetStructureRefs() {
+		add(int(r.GetMediaId()), "params.flat.structure_refs."+strconv.Itoa(i)+".media_id")
+	}
 	add(int(params.GetColour().GetFabricMediaId()), "params.colour.fabric_media_id")
 	for i, f := range params.GetColour().GetFabrics() {
 		add(int(f.GetMediaId()), "params.colour.fabrics."+strconv.Itoa(i)+".media_id")

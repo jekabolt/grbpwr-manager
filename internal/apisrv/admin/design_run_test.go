@@ -460,8 +460,11 @@ func TestDesignRequestedOutputsCountsPicturesNotViews(t *testing.T) {
 	three := []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL}
 	// A flat GARMENT sheet is bought as candidates (flat route, owner 05.10): one composite per
 	// candidate, never one per view.
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}), "a quick sheet is one picture")
 	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat,
-		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}))
+		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne,
+			Flat: &pb_common.DesignFlatParams{Mode: designgen.FlatModeDrawingPhotos, UnderdrawingMediaId: 3}}))
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
 		&pb_common.DesignRunParams{Views: []string{entity.DesignViewDetail}, Layout: designLayoutOne}),
 		"a detail callout is one close-up")

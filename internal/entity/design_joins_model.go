@@ -46,10 +46,15 @@ type DesignJoinsAnswer struct {
 		CaughtInto    []string        `json:"caught_into"`
 		FreeEdge      bool            `json:"free_edge"`
 		Sharp         []string        `json:"sharp"`
+		Size          json.RawMessage `json:"size"`
 	} `json:"items"`
 	Absent    []string `json:"absent"`
 	Absences  []string `json:"absences"`
 	Uncertain []string `json:"uncertain"`
+	Fit       *struct {
+		Ease  string `json:"ease"`
+		Waist string `json:"waist"`
+	} `json:"fit"`
 }
 
 // ParseDesignJoinsAnswer finds the {"items": …} object in a model's answer: bare, fenced or wrapped
@@ -96,6 +101,23 @@ func designJoinsInt(raw json.RawMessage) int {
 	return 0
 }
 
+// designJoinsFloat reads a number that may come as a string; 0 when it is neither.
+func designJoinsFloat(raw json.RawMessage) float64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var f float64
+	if json.Unmarshal(raw, &f) == nil {
+		return f
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		f, _ = strconv.ParseFloat(strings.TrimSpace(s), 64)
+		return f
+	}
+	return 0
+}
+
 // Doc — the answer as a join list, CLEANED (SanitizeDesignJoinsDoc).
 func (a DesignJoinsAnswer) Doc() DesignJoinsDoc {
 	var d DesignJoinsDoc
@@ -107,14 +129,13 @@ func (a DesignJoinsAnswer) Doc() DesignJoinsDoc {
 			ID: it.ID, Kind: it.Kind, Closed: it.Closed, Width: it.Width, Type: it.Type,
 			Count: designJoinsInt(it.Count), BoundedBy: it.BoundedBy, ContinuesInto: it.ContinuesInto,
 			Text: it.Note, Layer: designJoinsInt(it.Layer), Visibility: it.Visibility,
-			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp,
+			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp, Size: designJoinsFloat(it.Size),
 		}
 		switch {
-		case strings.EqualFold(strings.TrimSpace(it.Kind), DesignJoinKindPocket):
+		case strings.EqualFold(strings.TrimSpace(it.Kind), DesignJoinKindPocket) && strings.TrimSpace(it.Anchor) != "":
 			c.From = it.Anchor
-			if c.From == "" && len(it.Path) > 0 {
-				c.From = it.Path[0]
-			}
+		case strings.EqualFold(strings.TrimSpace(it.Kind), DesignJoinKindPocket) && len(it.Path) == 1:
+			c.From = it.Path[0]
 		case len(it.Path) >= 2:
 			c.From, c.To = it.Path[0], it.Path[len(it.Path)-1]
 			c.Via = append([]string(nil), it.Path[1:len(it.Path)-1]...)
@@ -125,6 +146,9 @@ func (a DesignJoinsAnswer) Doc() DesignJoinsDoc {
 	}
 	d.Absences = append(append([]string(nil), a.Absent...), a.Absences...)
 	d.Uncertain = a.Uncertain
+	if a.Fit != nil {
+		d.Fit = &DesignJoinsFit{Ease: a.Fit.Ease, Waist: a.Fit.Waist}
+	}
 	return SanitizeDesignJoinsDoc(d)
 }
 

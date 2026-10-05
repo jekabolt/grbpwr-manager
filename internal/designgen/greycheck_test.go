@@ -84,8 +84,10 @@ func TestFlatSheetIsBoughtAsCandidates(t *testing.T) {
 	if calls, _ := imageCalls(detail); calls[0].n != 1 {
 		t.Fatal("a detail callout is one close-up")
 	}
-	if FlatCandidatesFor([]string{"front"}, layoutPerView) != 0 || FlatCandidatesFor([]string{"front", "back"}, layoutOne) != FlatCandidates {
-		t.Fatal("FlatCandidatesFor: only a garment sheet")
+	if FlatCandidatesFor([]string{"front"}, layoutPerView, FlatModeDrawing) != 0 ||
+		FlatCandidatesFor([]string{"front", "back"}, layoutOne, FlatModeDrawing) != FlatCandidates ||
+		FlatCandidatesFor([]string{"front", "back"}, layoutOne, "") != 1 {
+		t.Fatal("FlatCandidatesFor: only a garment sheet; quick buys one")
 	}
 }
 

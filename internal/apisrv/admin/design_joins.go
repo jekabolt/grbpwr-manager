@@ -60,7 +60,7 @@ List EVERY edge and line of the garment as items (paths through landmarks, in or
 - kind "binding"/"band"/"strap"/"collar"/"stand"/"placket"/"cuff"/"waistband": a band of its own width ("width": "narrow"|"wide"), with its path from where it STARTS to where it ENDS — e.g. a binding that runs only across the front from NP_R via CFN to NP_L, or a strap from NP_L over the back (via UB_C) to MB_R;
 - kind "sleeve": the sleeve outline (e.g. SP_L, ELB_OUT_L, WRIST_OUT_L, WRIST_IN_L, UA_L);
 - kind "closure": "type" (buttons|zip|hook), path along its line, "count";
-- kind "pocket": "anchor" landmark (on the correct WEARER side), "type";
+- kind "pocket": "anchor" landmark (on the correct WEARER side), "type" (patch|flap|welt|kangaroo|jeans-front-scoop|back-patch), "size" (half-width in ruler units, e.g. 0.045), or a "path" polygon through landmarks for a shaped pocket;
 - kind "opening": "bounded_by" item ids (no path needed) — an area with no cloth.
 Each item: {"id","kind","path":[...],"closed":false,"width":..., "sharp":["landmarks in the path that are CORNERS (e.g. the point of a V, hem corners); every other point is passed through smoothly"], "continues_into":["other item id at its ends"], "note":"short"}.
 Paths go DIRECTLY through the landmarks the line really passes; do not route a diagonal line through extra landmarks it does not touch. Use ONLY the landmark names of the ruler.
@@ -77,8 +77,10 @@ Represent layers in the JSON: "layers":[{"index":0,"name":"outer front","sheer":
 A layer is a DEPTH level per face, not a panel: 0 = everything outermost (the back panel of a single-layer back is layer 0 too), 1 = the cloth directly behind layer 0. "face" is front, back or both.
 State in "uncertain" whatever you cannot tell from the photos.
 
+Also give "fit": {"ease": "slim|regular|relaxed|oversized", "waist": "fitted|straight"} for the body block.
+
 Answer with JSON only:
-{"consistency":{"consistent":true,"note":"...","groups":[{"images":[1,2],"what":"..."}],"keep":[1,2]},"layers":[...],"items":[...],"absences":["no ..."],"uncertain":["..."]}`
+{"fit":{...},"consistency":{"consistent":true,"note":"...","groups":[{"images":[1,2],"what":"..."}],"keep":[1,2]},"layers":[...],"items":[...],"absences":["no ..."],"uncertain":["..."]}`
 
 // designJoinsPhoto — one reference photo as the call reads it.
 type designJoinsPhoto struct {
@@ -538,7 +540,7 @@ func designJoinsToPb(j *entity.DesignJoins) *pb_common.DesignJoins {
 			Kind: it.Kind, From: it.From, To: it.To, View: it.View, Side: it.Side, Text: it.Text, Id: it.ID,
 			Via: it.Via, Width: it.Width, Closed: it.Closed, Type: it.Type, Count: int32(it.Count),
 			BoundedBy: it.BoundedBy, ContinuesInto: it.ContinuesInto, Layer: int32(it.Layer), Visibility: it.Visibility,
-			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp,
+			CaughtInto: it.CaughtInto, FreeEdge: it.FreeEdge, Sharp: it.Sharp, Size: it.Size,
 		})
 	}
 	c := &pb_common.DesignJoinsConsistency{Consistent: j.Consistency.Consistent, Note: j.Consistency.Note}
@@ -553,6 +555,9 @@ func designJoinsToPb(j *entity.DesignJoins) *pb_common.DesignJoins {
 		c.Groups = append(c.Groups, pg)
 	}
 	out.Consistency = c
+	if f := j.Doc.Fit; f != nil {
+		out.Fit = &pb_common.DesignJoinsFit{Ease: f.Ease, Waist: f.Waist}
+	}
 	return out
 }
 
@@ -570,11 +575,14 @@ func designJoinsDocFromPb(in *pb_common.DesignJoins) entity.DesignJoinsDoc {
 			View: it.GetView(), Side: it.GetSide(), Text: it.GetText(), Width: it.GetWidth(),
 			Closed: it.GetClosed(), Type: it.GetType(), Count: int(it.GetCount()), BoundedBy: it.GetBoundedBy(),
 			ContinuesInto: it.GetContinuesInto(), Layer: int(it.GetLayer()), Visibility: it.GetVisibility(),
-			CaughtInto: it.GetCaughtInto(), FreeEdge: it.GetFreeEdge(), Sharp: it.GetSharp(),
+			CaughtInto: it.GetCaughtInto(), FreeEdge: it.GetFreeEdge(), Sharp: it.GetSharp(), Size: it.GetSize(),
 		})
 	}
 	d.Absences = append(d.Absences, in.GetAbsences()...)
 	d.Uncertain = append(d.Uncertain, in.GetUncertain()...)
+	if f := in.GetFit(); f != nil {
+		d.Fit = &entity.DesignJoinsFit{Ease: f.GetEase(), Waist: f.GetWaist()}
+	}
 	return d
 }
 
@@ -584,7 +592,7 @@ func designJoinsDocFromPb(in *pb_common.DesignJoins) entity.DesignJoinsDoc {
 // carries its parent's copy; a new garment flat reads the card's current list off the band the door
 // already holds (GetBand reads it in the same snapshot as the bench); anything else none.
 func designRunJoins(kind string, params *pb_common.DesignRunParams, band *entity.DesignBand, parent *entity.DesignRun) *entity.DesignJoinsDoc {
-	if kind != entity.DesignRunKindFlat || designgen.FlatCandidatesFor(params.GetViews(), designLayoutOne) == 0 {
+	if kind != entity.DesignRunKindFlat || !designgen.FlatIsGarmentSheet(params.GetViews(), designLayoutOne) {
 		return nil
 	}
 	if parent != nil {
@@ -644,13 +652,15 @@ func (s *Server) designFreezeFlatModel(kind string, params *pb_common.DesignRunP
 	if designFlatIsFix(params) {
 		return
 	}
-	if _, ok := designgen.FindEngine(s.designEngineTable(), designgen.FlatDefaultEngine); !ok {
+	mode, _ := designFlatModeOf(params)
+	slug := designgen.FlatModelFor(mode)
+	if _, ok := designgen.FindEngine(s.designEngineTable(), slug); !ok {
 		return
 	}
 	if params.Image == nil {
 		params.Image = &pb_common.DesignImageOptions{}
 	}
-	params.Image.Model = designgen.FlatDefaultEngine
+	params.Image.Model = slug
 }
 
 // designFlatIsFix — a flat that corrects named views (fix_target(s) / fix_slot_ids): one picture.
@@ -658,13 +668,16 @@ func designFlatIsFix(params *pb_common.DesignRunParams) bool {
 	return len(params.GetFixTargets()) > 0 || strings.TrimSpace(params.GetFixTarget()) != "" || len(params.GetFixSlotIds()) > 0
 }
 
-// designRerunFlatOutputs — a flat RERUN buys no more candidates than its parent did: a one-picture
-// flat from before the flat route stays one picture.
-func designRerunFlatOutputs(kind string, outputs int, parent *entity.DesignRun) int {
-	if kind != entity.DesignRunKindFlat || parent == nil || outputs != designgen.FlatCandidates {
+// designRerunFlatOutputs — a flat RERUN of a garment sheet buys what its parent bought (1..
+// FlatCandidates): a one-picture flat from before the flat route stays one picture, a four-candidate
+// quick sheet from before the modes stays four, and a drawing-mode press repeats its four. A fix and a
+// per_view / detail run keep their own count.
+func designRerunFlatOutputs(kind string, params *pb_common.DesignRunParams, outputs int, parent *entity.DesignRun) int {
+	if kind != entity.DesignRunKindFlat || parent == nil || designFlatIsFix(params) ||
+		params.GetLayout() != designLayoutOne || !designgen.FlatIsGarmentSheet(params.GetViews(), params.GetLayout()) {
 		return outputs
 	}
-	if parent.RequestedOutputs >= 1 && parent.RequestedOutputs < outputs {
+	if parent.RequestedOutputs >= 1 && parent.RequestedOutputs <= designgen.FlatCandidates {
 		return parent.RequestedOutputs
 	}
 	return outputs

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func TestDesignJoinsPhotosAndPrompt(t *testing.T) {
 	got := designJoinsUserPrompt(photos, "white rib top")
 	want := "image 1: front photo — only the cut\nimage 2: back photo\nimage 3: right side (shows the wearer's RIGHT flank) photo\ngarment note: white rib top\nWrite the join list."
 	require.Equal(t, want, got)
-	for _, must := range []string{"LAYERS. Garments can have several cloth layers", "SHEER", "DEPTH level per face, not a panel", `"caught_into"`, `"free_edge"`, `"uncertain"`, "starts with \"no\"", `"keep"`, "NP_L/NP_R neck points"} {
+	for _, must := range []string{"LAYERS. Garments can have several cloth layers", "SHEER", "DEPTH level per face, not a panel", `"caught_into"`, `"free_edge"`, `"uncertain"`, "starts with \"no\"", `"keep"`, "NP_x neck points", `"fit"`, "jeans-front-scoop"} {
 		require.Contains(t, designJoinsSystemPrompt, must)
 	}
 }
@@ -167,12 +168,12 @@ func TestFlatRouteDoor(t *testing.T) {
 	r := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
 	srv.designFreezeFlatModel(entity.DesignRunKindFlat, r, legacy)
 	require.Nil(t, r.GetImage(), "a legacy rerun is not redrawn by flare")
-	require.Equal(t, 1, designRerunFlatOutputs(entity.DesignRunKindFlat, designRequestedOutputs(entity.DesignRunKindFlat, r), legacy))
+	require.Equal(t, 1, designRerunFlatOutputs(entity.DesignRunKindFlat, r, designRequestedOutputs(entity.DesignRunKindFlat, r), legacy))
 	named2 := &entity.DesignRun{Params: entity.RawJSON(`{"image":{"model":"openai/gpt-image-2"}}`), RequestedOutputs: 4}
 	r2 := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
 	srv.designFreezeFlatModel(entity.DesignRunKindFlat, r2, named2)
 	require.Equal(t, "openai/gpt-image-2", r2.GetImage().GetModel(), "the parent's frozen model")
-	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, 4, named2))
+	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, r2, 1, named2))
 	fix := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne, FixTargets: []string{"front"}}
 	srv.designFreezeFlatModel(entity.DesignRunKindFlat, fix, nil)
 	require.Nil(t, fix.GetImage(), "a fix keeps today's model")
@@ -191,7 +192,10 @@ func TestFlatRouteDoor(t *testing.T) {
 	got := designRunJoins(entity.DesignRunKindFlat, p, band, &entity.DesignRun{Inputs: entity.RawJSON(raw)})
 	require.Equal(t, "old", got.Items[0].ID, "a rerun carries its parent's list, not today's")
 
-	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat, p))
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, p), "quick (no mode) buys one sheet")
+	drawing := proto.Clone(p).(*pb_common.DesignRunParams)
+	drawing.Flat = &pb_common.DesignFlatParams{Mode: designgen.FlatModeDrawing, UnderdrawingMediaId: 9}
+	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat, drawing))
 	require.Equal(t, 1, designImageVariantsPerCall(entity.DesignRunKindFlat, p), "the worker splits over an engine's n")
 }
 

@@ -473,7 +473,7 @@ func imageCalls(job Job) ([]imageCall, error) {
 	// exactly those runs (FlatCandidatesFor) and the frozen number is read back here — a flat queued
 	// before the change says 1 and stays one picture.
 	n := 1
-	if job.Kind == entity.DesignRunKindFlat && job.Outputs > 1 && FlatCandidatesFor(job.Views, job.Layout) > 0 {
+	if job.Kind == entity.DesignRunKindFlat && job.Outputs > 1 && FlatCandidatesFor(job.Views, job.Layout, job.FlatMode) > 0 {
 		n = job.Outputs
 	}
 	return []imageCall{{prompt: job.Prompt, n: n, refs: job.References}}, nil

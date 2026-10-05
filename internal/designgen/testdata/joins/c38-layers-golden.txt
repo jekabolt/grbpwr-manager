@@ -1,10 +1,12 @@
-Landmark ruler (fixed for every garment; L/R = WEARER'S left/right):
-NP_L/NP_R neck points (side of the neck, top of the shoulder line); CFN centre-front neck; CBN centre-back neck (nape); CFN_LOW / CBN_LOW a low front / back neck centre;
-SP_L/SP_R shoulder tips; FSH_x / BSH_x mid-shoulder slightly to the front / back; UA_L/UA_R underarms (top of side seam);
-CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust, BUSTSIDE_x bust side; SB_x shoulder blades, UB_C centre upper back; YOKE_x back yoke seam at the armhole;
-MB_x side at mid-back height, MB_C centre back at mid-back; WL_x waist at the side, WF_C / WB_C centre front / back waist; HEM_x hem at the side, HEM_FC / HEM_BC centre front / back hem;
-sleeves: SSLV_OUT_x / SSLV_IN_x short-sleeve end outer / inner; ELB_OUT_x elbow outer; WRIST_OUT_x / WRIST_IN_x long-sleeve end outer / inner.
-A point between two landmarks is written "A..B:t" (t from 0 at A to 1 at B), e.g. "NP_L..SP_L:0.3".
+Landmark ruler (fixed for every garment; L/R = WEARER'S left/right; a point between two landmarks is written "A..B:t", t from 0 at A to 1 at B):
+neck/shoulder: NP_x neck points (side of the neck, top of the shoulder line); SP_x shoulder tips; FSH_x/BSH_x mid-shoulder slightly front/back; CFN centre-front neck (crew height), CFN_LOW low front neck; CBN nape, CBN_LOW low back neck; NECK_SIDE_x base of the neck at the side (for collar stands);
+torso: UA_x underarm (top of side seam); CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust; BUSTSIDE_x; SB_x shoulder blades; UB_C centre upper back; YOKE_x back yoke at the armhole; MB_x side at mid-back, MB_C centre back mid-back; WL_x waist at the side, WF_C/WB_C centre front/back waist; HIP_x hip at the side, HIP_C_F/HIP_C_B; HEM_x hem of a top at the side (hip length), HEM_FC/HEM_BC centre front/back hem;
+tailoring: BREAK centre front where lapels meet (top button); LAPEL_TIP_x lapel point; GORGE_x the notch where collar meets lapel;
+sleeves: SSLV_OUT_x/SSLV_IN_x short-sleeve end outer/inner; ELB_OUT_x/ELB_IN_x elbow; WRIST_OUT_x/WRIST_IN_x long-sleeve end outer/inner;
+hood: HOOD_FRONT_x middle of the hood's front edge; HOOD_TOP top of the hood; HOOD_BACK back of the hood; HOOD_SIDE_x; HOOD_CROWN_F;
+pockets: FPK_TOP_x/FPK_SIDE_x ends of a trouser front-pocket scoop; BPK_x back pocket centre; KANG_x/KANG_LOW_x corners of a kangaroo pocket;
+lower body: CROTCH (inseam top), CROTCH_F/CROTCH_B; KNEE_OUT_x/KNEE_IN_x; ANKLE_OUT_x/ANKLE_IN_x; LEG_HEM_F_x/LEG_HEM_B_x middle of a leg hem front/back; SHORT_OUT_x/SHORT_IN_x/SHORT_HEM_F_x/SHORT_HEM_B_x shorts hem; SKIRT_HEM_x skirt hem at the side (knee), SKIRT_HEM_C_F/SKIRT_HEM_C_B.
+Trousers/skirts start at the waist (WL_x, WF_C, WB_C); tops end at HEM_x or shorter (e.g. "UA_L..HEM_L:0.6").
 
 LAYERS (depth levels; 0 = outermost):
 - layer 0: outer body (front + lower back + straps) — SHEER. Sheer white rib jersey. Skin and the inner V layer show through it.

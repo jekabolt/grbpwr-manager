@@ -1,0 +1,392 @@
+{
+ "fit": {
+  "ease": "regular",
+  "waist": "straight"
+ },
+ "consistency": {
+  "same_garment": false,
+  "notes": "Images 1-6 show the same black cotton shirt: point collar on a stand, concealed fly-front placket, centre-back seam, deep pointed split cuffs. Image 7 is a mood screenshot of a different outfit (a white shirt with a chest pocket under a long black coat). It is style mood only and must not be used for construction.",
+  "trust": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ]
+ },
+ "items": [
+  {
+   "id": "neck_seam",
+   "kind": "seam",
+   "path": [
+    "CFN",
+    "NP_L",
+    "CBN",
+    "NP_R",
+    "CFN"
+   ],
+   "closed": true,
+   "sharp": [
+    "CFN"
+   ],
+   "continues_into": [
+    "stand"
+   ],
+   "note": "neckline seam where the collar stand joins the body; crew height"
+  },
+  {
+   "id": "stand",
+   "kind": "stand",
+   "width": "narrow",
+   "path": [
+    "CFN",
+    "NECK_SIDE_L",
+    "CBN",
+    "NECK_SIDE_R",
+    "CFN"
+   ],
+   "closed": false,
+   "sharp": [
+    "CFN"
+   ],
+   "continues_into": [
+    "collar",
+    "placket"
+   ],
+   "note": "collar stand with one visible small black button at the centre front; the stand ends meet edge to edge at CFN"
+  },
+  {
+   "id": "collar",
+   "kind": "collar",
+   "width": "wide",
+   "path": [
+    "CFN..CHEST_L:0.12",
+    "NECK_SIDE_L",
+    "CBN",
+    "NECK_SIDE_R",
+    "CFN..CHEST_R:0.12"
+   ],
+   "closed": false,
+   "sharp": [
+    "CFN..CHEST_L:0.12",
+    "CFN..CHEST_R:0.12"
+   ],
+   "continues_into": [
+    "stand"
+   ],
+   "note": "classic point collar with a narrow spread and an edgestitched leaf; the points angle down and outward onto the upper chest; it rolls over the stand at the back"
+  },
+  {
+   "id": "placket",
+   "kind": "placket",
+   "width": "wide",
+   "path": [
+    "CFN",
+    "HEM_FC"
+   ],
+   "closed": false,
+   "sharp": [
+    "CFN",
+    "HEM_FC"
+   ],
+   "continues_into": [
+    "stand",
+    "hem_front"
+   ],
+   "note": "concealed fly-front placket on the wearer's right over left; a single topstitch line runs on its side away from CF; square bottom end at the hem"
+  },
+  {
+   "id": "closure_front",
+   "kind": "closure",
+   "type": "buttons",
+   "path": [
+    "CFN..HEM_FC:0.1",
+    "CFN..HEM_FC:0.95"
+   ],
+   "count": 6,
+   "note": "buttons hidden under the fly (seen only in the side view); only the stand button is visible from the front"
+  },
+  {
+   "id": "closure_stand",
+   "kind": "closure",
+   "type": "buttons",
+   "path": [
+    "CFN"
+   ],
+   "count": 1,
+   "note": "one visible button on the collar stand"
+  },
+  {
+   "id": "shoulder_L",
+   "kind": "seam",
+   "path": [
+    "NP_L",
+    "SP_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_L"
+   ],
+   "note": "shoulder seam; firm, slightly squared shoulder"
+  },
+  {
+   "id": "shoulder_R",
+   "kind": "seam",
+   "path": [
+    "NP_R",
+    "SP_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_R"
+   ],
+   "note": "shoulder seam"
+  },
+  {
+   "id": "armhole_L",
+   "kind": "seam",
+   "path": [
+    "SP_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "side_L",
+    "sleeve_L"
+   ],
+   "note": "set-in sleeve armhole seam; runs front and back from SP to UA"
+  },
+  {
+   "id": "armhole_R",
+   "kind": "seam",
+   "path": [
+    "SP_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "side_R",
+    "sleeve_R"
+   ],
+   "note": "set-in sleeve armhole seam; runs front and back from SP to UA"
+  },
+  {
+   "id": "side_L",
+   "kind": "seam",
+   "path": [
+    "UA_L",
+    "WL_L",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_L"
+   ],
+   "continues_into": [
+    "hem_front",
+    "hem_back"
+   ],
+   "note": "straight side seam with no waist suppression"
+  },
+  {
+   "id": "side_R",
+   "kind": "seam",
+   "path": [
+    "UA_R",
+    "WL_R",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_R"
+   ],
+   "continues_into": [
+    "hem_front",
+    "hem_back"
+   ],
+   "note": "straight side seam"
+  },
+  {
+   "id": "hem_front",
+   "kind": "edge",
+   "path": [
+    "HEM_R",
+    "HEM_FC",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_R",
+    "HEM_FC",
+    "HEM_L"
+   ],
+   "continues_into": [
+    "side_L",
+    "side_R",
+    "placket"
+   ],
+   "note": "straight hem at high-hip length; no shirttail curve"
+  },
+  {
+   "id": "hem_back",
+   "kind": "edge",
+   "path": [
+    "HEM_L",
+    "HEM_BC",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_L",
+    "HEM_R"
+   ],
+   "continues_into": [
+    "side_L",
+    "side_R",
+    "cb_seam"
+   ],
+   "note": "straight hem"
+  },
+  {
+   "id": "cb_seam",
+   "kind": "seam",
+   "path": [
+    "CBN",
+    "UB_C",
+    "MB_C",
+    "WB_C",
+    "HEM_BC"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "neck_seam",
+    "hem_back"
+   ],
+   "note": "centre-back seam, pressed to one side with a stitched fold line, running from the collar to the hem"
+  },
+  {
+   "id": "sleeve_L",
+   "kind": "sleeve",
+   "path": [
+    "SP_L",
+    "ELB_OUT_L",
+    "WRIST_OUT_L",
+    "WRIST_IN_L",
+    "ELB_IN_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_L",
+    "WRIST_IN_L"
+   ],
+   "continues_into": [
+    "armhole_L",
+    "cuff_L"
+   ],
+   "note": "long straight sleeve with a one-piece underarm seam"
+  },
+  {
+   "id": "sleeve_R",
+   "kind": "sleeve",
+   "path": [
+    "SP_R",
+    "ELB_OUT_R",
+    "WRIST_OUT_R",
+    "WRIST_IN_R",
+    "ELB_IN_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_R",
+    "WRIST_IN_R"
+   ],
+   "continues_into": [
+    "armhole_R",
+    "cuff_R"
+   ],
+   "note": "long straight sleeve"
+  },
+  {
+   "id": "cuff_seam_L",
+   "kind": "seam",
+   "path": [
+    "ELB_OUT_L..WRIST_OUT_L:0.7",
+    "ELB_IN_L..WRIST_IN_L:0.7"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "cuff_L"
+   ],
+   "note": "seam joining the sleeve to the deep cuff"
+  },
+  {
+   "id": "cuff_seam_R",
+   "kind": "seam",
+   "path": [
+    "ELB_OUT_R..WRIST_OUT_R:0.7",
+    "ELB_IN_R..WRIST_IN_R:0.7"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "cuff_R"
+   ],
+   "note": "seam joining the sleeve to the deep cuff"
+  },
+  {
+   "id": "cuff_L",
+   "kind": "cuff",
+   "width": "wide",
+   "path": [
+    "WRIST_OUT_L",
+    "WRIST_IN_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_L"
+   ],
+   "continues_into": [
+    "sleeve_L"
+   ],
+   "note": "deep cuff (about 12 cm) left open in a slit at the outer-back wrist; its two ends are cut to angled points and flare apart; edgestitched; no visible button"
+  },
+  {
+   "id": "cuff_R",
+   "kind": "cuff",
+   "width": "wide",
+   "path": [
+    "WRIST_OUT_R",
+    "WRIST_IN_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_R"
+   ],
+   "continues_into": [
+    "sleeve_R"
+   ],
+   "note": "deep split cuff with pointed flared ends, matching the left cuff"
+  }
+ ],
+ "absent": [
+  "no chest pocket (the pocket in image 7 belongs to a different shirt)",
+  "no pockets at all",
+  "no back yoke",
+  "no back box pleat or locker loop",
+  "no visible front buttons below the stand (the fly is concealed)",
+  "no darts or princess seams",
+  "no curved shirttail hem",
+  "no epaulettes",
+  "no sleeve placket buttons",
+  "no cufflinks or cuff buttons visible"
+ ]
+}
