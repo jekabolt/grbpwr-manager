@@ -7389,13 +7389,19 @@ message CalloutSuggestion {
   int32 media_id = 4; // which flat
   common.TechCardAnnotationKind kind = 5;
   repeated common.TechCardAnnotationPoint points = 6; // normalised 0..1
-  google.type.Decimal pos_x = 7; // label / marker position 0..1
+  // label / marker position 0..1: a fallback beside the anchor only — the model gives no plate
+  // position, the client lays the plates out in the margins (R38)
+  google.type.Decimal pos_x = 7;
   google.type.Decimal pos_y = 8;
   string spec = 9; // callout spec JSON (purpose.ts shape, keys sorted); data-backed: rendered from the row
   string description = 10; // data-backed: from the row; model-own: the model's text, ≤ 120 chars
   repeated string parts = 11; // piece / part names
   repeated string missing = 12; // data gaps on the source row: "stitch", "spi", "allowance", "size", "placement"
   bool from_data = 13; // false = model-own ("from picture")
+  // the ghost plate's text: one line, ≤ 32 chars (R38). Data-backed: rendered from the row (material: the
+  // BOM name; stitch: "301 · side seam"; label: "main label"; section: "A–A layers"; detail: the aspect
+  // words "collar"); model-own: the model's text cut to 32. description stays the full text (used on ✓)
+  string label = 14;
 }
 
 message UpdateTaskRequest {
