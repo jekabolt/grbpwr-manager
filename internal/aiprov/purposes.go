@@ -40,6 +40,8 @@ var purposes = []Purpose{
 		"design → moodboard: ask me — the questions the model asks about the garment", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeDesignParts, "flat parts",
 		"design → paint: names the parts of a side's flat", PurposeGroupChat, entity.AICapabilityChat},
+	{entity.AIPurposeCalloutSuggest, "callout suggestions",
+		"artifacts → the sheet: suggest ✦ places the callouts the card's data implies", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposePlaygroundIdeas, "prompt ideas",
 		"the ideas ▾ button beside a playground prompt", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeImageGenerate, "design images",

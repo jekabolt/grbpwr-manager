@@ -133,6 +133,10 @@ type Server struct {
 	// partsFlight coalesces SuggestDesignParts presses of ONE (card, view, flat, cut) in flight
 	// (design_parts.go). Zero value works.
 	partsFlight singleflight.Group
+	// calloutCache / calloutFlight — SuggestCallouts answers for ten minutes and identical presses
+	// coalesced in flight (callout_suggest.go). Zero values work.
+	calloutCache  calloutSuggestCache
+	calloutFlight singleflight.Group
 	// partsCardFlight coalesces SuggestDesignPartsCard presses of ONE (card, sides+flats, cut) in
 	// flight (design_parts_card.go). Zero value works.
 	partsCardFlight singleflight.Group

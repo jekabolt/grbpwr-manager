@@ -1791,6 +1791,21 @@ service AdminService {
     };
   }
 
+  // SuggestCallouts — the `suggest ✦` chip of the ARTIFACTS sheet (R36, T28): the callouts the SAVED card's own data
+  // implies (BOM lines, operations, garment labels, layered pieces, details aspects, STUDIO quiz decisions) and the sheet
+  // does not have yet, placed on the given flats by a vision model, plus up to 4 per flat the model sees on the picture
+  // itself (from_data = false). Spec, description and parts of a data-backed suggestion are rendered by the SERVER from
+  // its source row, never from model text. Nothing is stored; an identical request is answered from memory for ten
+  // minutes. Limits: no key → FailedPrecondition AI_NOT_CONFIGURED; no flat, > 4 flats, a flat that is not a technical
+  // picture of this card → InvalidArgument; 4 in flight and 30 calls per admin per hour SHARED with EnhanceText →
+  // ResourceExhausted. Classified as a WRITE on tech_cards, like SuggestPrompts (a press spends the AI key).
+  rpc SuggestCallouts(SuggestCalloutsRequest) returns (SuggestCalloutsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/ai/suggest-callouts"
+      body: "*"
+    };
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -7350,6 +7365,37 @@ message SuggestPromptsRequest {
 message SuggestPromptsResponse {
   repeated string ideas = 1; // 3..5 phrases, ≤ 12 words each, trimmed, distinct
   string model = 2; // the slug that answered
+}
+
+message SuggestCalloutsRequest {
+  int32 tech_card_id = 1; // the SAVED card is read
+  repeated int32 media_ids = 2; // the card's technical flats on the sheet, 1..4
+  repeated string dismissed_source_ids = 3; // dismissed on this computer: never suggested again
+}
+
+message SuggestCalloutsResponse {
+  repeated CalloutSuggestion suggestions = 1; // ≤ 12 per flat, data-backed first by rank, model-own last
+  string model = 2; // the slug that placed them
+}
+
+// CalloutSuggestion — one ghost callout. Geometry follows TechCardCallout: LABEL 1 point (stitch, material), DIM 2
+// (section), POLYGON 4 (detail, artwork — a rectangle TL, TR, BR, BL), PIN 0.
+message CalloutSuggestion {
+  string id = 1; // unique within this response
+  // stable: "bom:<lineKey>", "op:<operation number, or (index+1)*10 when unset>", "label:<garment label key>",
+  // "section:card", "detail:<aspect key>", "quiz:<question id>", "pic:<n>" (model-own)
+  string source_id = 2;
+  string source_label = 3; // human: "BOM · YKK zip #5", "op 20 · side seam", "from picture"
+  int32 media_id = 4; // which flat
+  common.TechCardAnnotationKind kind = 5;
+  repeated common.TechCardAnnotationPoint points = 6; // normalised 0..1
+  google.type.Decimal pos_x = 7; // label / marker position 0..1
+  google.type.Decimal pos_y = 8;
+  string spec = 9; // callout spec JSON (purpose.ts shape, keys sorted); data-backed: rendered from the row
+  string description = 10; // data-backed: from the row; model-own: the model's text, ≤ 120 chars
+  repeated string parts = 11; // piece / part names
+  repeated string missing = 12; // data gaps on the source row: "stitch", "spi", "allowance", "size", "placement"
+  bool from_data = 13; // false = model-own ("from picture")
 }
 
 message UpdateTaskRequest {

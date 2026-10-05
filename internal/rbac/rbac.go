@@ -389,6 +389,9 @@ var methodRequirements = map[string]Requirement{
 	// is a WRITE by EnhanceText's precedent: a press spends the AI key (it draws the SAME 30/h
 	// window as EnhanceText), and it may read the card's pictures.
 	"SuggestPrompts": wr(SectionTechCards),
+	// SuggestCallouts (T28) — the `suggest ✦` chip of the ARTIFACTS sheet. Stores nothing; a WRITE by
+	// the same precedent (a press spends the AI key, the SAME 30/h window as EnhanceText).
+	"SuggestCallouts": wr(SectionTechCards),
 	// AddTechCardIssue пишет строку — тут спорить не о чем. Он работает и на ЗАМОРОЖЕННОЙ карточке
 	// (issues вне CONSTRUCTION-дайджеста), но замороженность карточки — не права: право одно и то
 	// же на всех состояниях, иначе роль зависела бы от стадии.
