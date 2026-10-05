@@ -86,10 +86,9 @@ func TestDesignDBReferenceRoleAcceptsOwnBandCrop(t *testing.T) {
 
 // ─────────────────────── R-10: что обязано ОТКАЗЫВАТЬ по-прежнему ───────────────────────
 
-// ОБЯЗАТЕЛЬНАЯ ПРОБА УЗОСТИ. Ослабление границы законно ровно до тех пор, пока медиа, которое
-// держит ЧУЖАЯ карточка (любым из двух держателей) и не держит эта, получает отказ: иначе роль
-// скармливает модели чужую картинку. Мутация «убрать refuseForeignMedia вовсе» краснит именно её.
-func TestDesignDBReferenceRoleStillRefusesForeignCard(t *testing.T) {
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+// Медиа, которое держит другая карточка (любым из двух держателей), законно получает роль здесь.
+func TestDesignDBReferenceRoleAcceptsMediaHeldByAnotherCard(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
 	mine := probeCard(t, raw)
@@ -105,8 +104,7 @@ func TestDesignDBReferenceRoleStillRefusesForeignCard(t *testing.T) {
 	_, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
 		TechCardId: mine, MediaId: bandMedia, Role: entity.DesignViewFront, Ordinal: 1, Actor: "probe",
 	})
-	require.ErrorIs(t, err, entity.ErrDesignForeignMedia,
-		"картинка ПОЛОСЫ чужой карточки обязана получать отказ")
+	require.NoError(t, err, "картинка полосы другой карточки — файл общей медиатеки")
 
 	// Держатель 2: tech_card_media чужой карточки.
 	heldMedia := probeMedia(t, raw)
@@ -118,8 +116,7 @@ func TestDesignDBReferenceRoleStillRefusesForeignCard(t *testing.T) {
 	_, err = rep.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
 		TechCardId: mine, MediaId: heldMedia, Role: entity.DesignViewFront, Ordinal: 1, Actor: "probe",
 	})
-	require.ErrorIs(t, err, entity.ErrDesignForeignMedia,
-		"медиа из tech_card_media чужой карточки обязано получать отказ")
+	require.NoError(t, err, "медиа из tech_card_media другой карточки — файл общей медиатеки")
 
 	// Контроль узости с другой стороны: та же картинка СВОЕЙ карточке роль ставит — отказ выше
 	// был про принадлежность, а не про сам файл.

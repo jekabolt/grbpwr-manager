@@ -178,8 +178,9 @@ func TestDesignDBLayerRefusesARasterAndAClearTogether(t *testing.T) {
 // слой карточки A показывает и сплющивает картинку карточки B — дословно та беда, которую
 // ImportVector закрыл для source_media_id и base_media_id.
 //
-// МУТАЦИЯ: убрать вызов refuseForeignMedia из SaveEditLayer — красная.
-func TestDesignDBLayerRefusesForeignRaster(t *testing.T) {
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+// Растр, который держит другая карточка, законно становится пикселями слоя этой.
+func TestDesignDBLayerAcceptsARasterHeldByAnotherCard(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
 	mine, foreign := probeCard(t, raw), probeCard(t, raw)
@@ -189,12 +190,12 @@ func TestDesignDBLayerRefusesForeignRaster(t *testing.T) {
 	_, err := rep.Design().SaveEditLayer(ctx, entity.DesignEditLayerSave{
 		TechCardId: mine, RasterMediaId: media, Actor: "probe",
 	})
-	require.ErrorIs(t, err, entity.ErrDesignForeignMedia)
+	require.NoError(t, err)
 
 	var rows int
 	require.NoError(t, raw.QueryRow(
 		`SELECT COUNT(*) FROM design_edit_layer WHERE tech_card_id = ?`, mine).Scan(&rows))
-	require.Equal(t, 0, rows, "a refused save must not leave a layer behind")
+	require.Equal(t, 1, rows, "the shared-library raster is saved as a layer")
 }
 
 // ...А НИЧЕЙНЫЙ СВЕЖЕЗАГРУЖЕННЫЙ ФАЙЛ ПРОХОДИТ, И ЭТО ОБЫЧНЫЙ СЛУЧАЙ.

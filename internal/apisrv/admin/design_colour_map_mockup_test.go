@@ -97,10 +97,10 @@ func TestAMockupIsCountedAsAnImageOfTheCall(t *testing.T) {
 	require.Equal(t, plain+1, with)
 }
 
-// TestAForeignMockupIsRefusedBeforeTheReserve — the mockup is asked «whose picture is this» under
-// its own field name, and a foreign one never reaches StartRun. The positive control freezes the
-// mockup id into params, where the worker reads it.
-func TestAForeignMockupIsRefusedBeforeTheReserve(t *testing.T) {
+// TestAMockupHeldByAnotherCardReachesTheStore — T64 (05.10): владелец — медиатека общая,
+// foreign_media больше не отказ. A mockup another card holds passes like any other and is frozen
+// into params, where the worker reads it.
+func TestAMockupHeldByAnotherCardReachesTheStore(t *testing.T) {
 	run := func(t *testing.T, mockupID int32) (*designRunRig, error) {
 		rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
 		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, mock.Anything).
@@ -127,8 +127,7 @@ func TestAForeignMockupIsRefusedBeforeTheReserve(t *testing.T) {
 	require.Contains(t, string(rig.sent.Params), `"mockup_media_id":30`)
 
 	rig, err = run(t, 666)
-	require.Error(t, err)
-	_, md := errorReason(t, err)
-	require.Equal(t, "params.colour.colour_maps.mockup_media_id", md["field"])
-	require.Nil(t, rig.sent, "refused before the reserve")
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent, "a library picture held by another card is not refused")
+	require.Contains(t, string(rig.sent.Params), `"mockup_media_id":666`)
 }

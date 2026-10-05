@@ -151,7 +151,8 @@ func TestTheVideoDoorREFUSES_BEFORE_THE_STORE(t *testing.T) {
 
 // TestTheVideoPictureIsSeenByTheInputGates — params.video.source_media_id is a source the three gates
 // on designRunInputMediaRefs (not a picture / display only / hidden) must see: a .glb or an .mp4 named
-// as the picture is refused as input_not_a_picture, and a foreign picture by the card boundary.
+// as the picture is refused as input_not_a_picture. (T64, 05.10: a picture another card holds is no
+// longer refused — the media library is shared.)
 // MUTATION (measured red → green): drop the params.video line of designRunInputMediaRefs → the .glb row
 // reaches the store.
 func TestTheVideoPictureIsSeenByTheInputGates(t *testing.T) {
@@ -170,17 +171,6 @@ func TestTheVideoPictureIsSeenByTheInputGates(t *testing.T) {
 		require.Error(t, err)
 		_, md := errorReason(t, err)
 		require.Equal(t, "input_not_a_picture", md["reason"])
-		require.Nil(t, rig.sent)
-	})
-	t.Run("another card's picture", func(t *testing.T) {
-		rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, []int{designRefMediaID}).
-			Return(status.Error(codes.PermissionDenied, "foreign")).Once()
-		req := designStartRequest(entity.DesignRunKindVideo)
-		req.Params = videoParams(designRefMediaID)
-		req.Ask = "sway"
-		_, err := rig.srv.StartDesignRun(designRunCtx(), req)
-		require.Error(t, err)
 		require.Nil(t, rig.sent)
 	})
 }

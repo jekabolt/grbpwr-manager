@@ -1049,111 +1049,21 @@ func layerByRequestID(ctx context.Context, db dependency.DB, requestID string) (
 	return rows[0], true, nil
 }
 
-// AssertMediaNotForeign — та же граница, вынесенная НАРУЖУ, для двери.
+// AssertMediaNotForeign — бывшая граница карточки для медиа, вынесенная для двери.
 //
-// ⚠ ЗАЧЕМ ГЛАГОЛ, А НЕ КОПИЯ ПРАВИЛА В ХЕНДЛЕРЕ. Дверь обязана отказать ДО резерва денег: прогон с
-// чужой картинкой не должен даже открываться. Но правило «чьё это медиа» знает только база, и
-// хендлер, отвечавший на него по-своему (через реестр ссылок media), был ВТОРЫМ мнением о том же
-// вопросе — а два мнения расходятся в тот день, когда правят одно. Здесь оно одно, и спрашивают его
-// оба: дверь снаружи транзакции, ImportVector — внутри своей.
-//
-// ЧИТАЮЩАЯ ТРАНЗАКЦИЯ, а не пишущая: это вопрос, а не изменение, и SERIALIZABLE-писатель ради
-// одного COUNT держал бы блокировки на чужих строках.
-func (s *Store) AssertMediaNotForeign(ctx context.Context, techCardID int, mediaIDs []int) error {
-	if err := requireCard(techCardID); err != nil {
-		return err
-	}
-	if len(mediaIDs) == 0 {
-		return nil
-	}
-	return s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		return refuseForeignMedia(ctx, rep.DB(), techCardID, mediaIDs...)
-	})
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ. Любой файл библиотеки
+// законно выбирается на любой карточке (референс, флэт, вход рендера, фото ткани, плейграунд…).
+// Глагол оставлен, чтобы не трогать интерфейс и двери; проверяется только сам номер карточки.
+// Чужие КАРТИНКИ полосы (design_picture id), foreign_card_plate и чужие ассеты полок — другие
+// правила, и они на месте.
+func (s *Store) AssertMediaNotForeign(_ context.Context, techCardID int, _ []int) error {
+	return requireCard(techCardID)
 }
 
-// refuseForeignMedia — ГРАНИЦА КАРТОЧКИ ДЛЯ ИДЕНТИФИКАТОРА МЕДИА, ПРИШЕДШЕГО С ПРОВОДА.
-//
-// ⚠ ПРАВИЛО ОТРИЦАТЕЛЬНОЕ («не принадлежит ДРУГОЙ карточке»), А НЕ ПОЛОЖИТЕЛЬНОЕ («принадлежит
-// этой»), И ЭТО РЕШЕНИЕ, А НЕ СЛАБОСТЬ. Положительное правило — то, что стоит у SetReferenceRole
-// («медиа обязано лежать в tech_card_media этой карточки»), — здесь ЛОЖНО ОТКАЗЫВАЛО БЫ на
-// законном жесте: файл, только что загруженный через UploadContentImage, не принадлежит ещё ни
-// одной карточке (контракт ImportDesignVector говорит это про source_media_id дословно), а
-// картинка полосы живёт в design_picture и в tech_card_media не попадает вовсе — ту таблицу
-// целиком переписывает сейв карточки.
-//
-// ДЕРЖАТЕЛЕЙ РОВНО ДВА, И ЭТО НЕ ПРОИЗВОЛ: tech_card_media — картинки, которые карточка держит
-// сама, design_picture — картинки её полосы. Больше НИ ОДНА таблица не отвечает на вопрос «чья это
-// карточка» (реестр ссылок media знает ещё продукты, архивы и примерки, но они про другую
-// принадлежность). Медиа, за которым не стоит ни одна карточка, — ничейное, и оно проходит.
-//
-// ⚠ design_asset.media_id ЗДЕСЬ НЕТ НАМЕРЕННО, И ЭТО РЕШЕНИЕ, КОТОРОЕ УЖЕ ОСПАРИВАЛИ. Полки (0354)
-// — третья пер-карточная таблица со ссылкой на media, и «третий держатель, который забыли» выглядит
-// очевидным выводом. Он неверен, и вот чем.
-//
-// ДВА ДЕРЖАТЕЛЯ ВЫШЕ — ЭТО КАРТИНКИ САМОГО ИЗДЕЛИЯ: его флэты, его референсы, его рендеры. Такая
-// картинка по построению принадлежит ОДНОМУ стилю, поэтому правило «не чужая» никогда не мешает
-// работе. Ассет — это картинка МАТЕРИАЛА: лоскут ткани, плитка паттерна, снимок фурнитуры. Один и
-// тот же джерси законно шьётся в десяти стилях, и дверь загрузки ассета — это ПИКЕР БИБЛИОТЕКИ
-// (клиент: MediaSlot на полке), то есть выбрать тот же файл на второй карточке — один клик.
-//
-// ЧТО БЫ ДАЛО ДОБАВЛЕНИЕ. Оба запроса ниже симметричны, и таблица, попавшая в них, попадает в оба:
-// первая карточка, положившая лоскут на полку, стала бы его ЕДИНСТВЕННЫМ держателем (`others = 1`,
-// `mine = 0`), и всякая следующая получала бы отказ «media belongs to another tech card». Полки,
-// заведённые ради того, чтобы называть ткани изделия, начали бы запрещать называть ту же ткань во
-// втором изделии — то есть правило границы съело бы саму функцию.
-//
-// А ГДЕ ВРЕД ОТ ОТСУТСТВИЯ, ТАМ ОН ЗАКРЫТ ДРУГИМ ПРАВИЛОМ. Настоящая опасность звучит не «чужой
-// лоскут», а «чужая ПОЛКА»: прогон, замораживающий в своей истории `fabrics[*].asset_id` другой
-// карточки. Это проверяется по имени — designRefuseForeignClothAssets у двери прогона, — и
-// отмывания через ассет тоже не выходит: чтобы положить на полку карточки B чужую картинку, надо
-// сначала пройти ЭТУ функцию, а флэт или референс карточки A она держит.
-//
-// НОЛЬ И ОТРИЦАТЕЛЬНОЕ МОЛЧА ПРОПУСКАЮТСЯ: «не задано» — законное состояние обоих полей, и
-// отказывать за отсутствие значения обязан тот, кто его требует, а не эта функция.
-func refuseForeignMedia(ctx context.Context, db dependency.DB, cardID int, mediaIDs ...int) error {
-	seen := make(map[int]struct{}, len(mediaIDs))
-	for _, id := range mediaIDs {
-		if id <= 0 {
-			continue
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-
-		// СНАЧАЛА СПРАШИВАЕТСЯ «ЧУЖОЕ ЛИ», и обычный ответ — ноль, на котором второй запрос не
-		// нужен вовсе: ничейный свежий файл проходит одним чтением.
-		others, err := storeutil.QueryCountNamed(ctx, db, `
-			SELECT COUNT(*) FROM (
-				SELECT tech_card_id FROM tech_card_media WHERE media_id = :media
-				UNION ALL
-				SELECT tech_card_id FROM design_picture WHERE media_id = :media
-			) h WHERE h.tech_card_id <> :card`,
-			map[string]any{"media": id, "card": cardID})
-		if err != nil {
-			return fmt.Errorf("failed to check who media %d belongs to: %w", id, err)
-		}
-		if others == 0 {
-			continue
-		}
-		// ОДИН ФАЙЛ В ДВУХ КАРТОЧКАХ — ОБЫЧНОЕ ДЕЛО (та же ткань, тот же референс), и отказывать
-		// за это нельзя: правило про то, что картинка НЕ ЧУЖАЯ, а не про то, что она больше нигде
-		// не встречается.
-		mine, err := storeutil.QueryCountNamed(ctx, db, `
-			SELECT COUNT(*) FROM (
-				SELECT tech_card_id FROM tech_card_media WHERE media_id = :media
-				UNION ALL
-				SELECT tech_card_id FROM design_picture WHERE media_id = :media
-			) h WHERE h.tech_card_id = :card`,
-			map[string]any{"media": id, "card": cardID})
-		if err != nil {
-			return fmt.Errorf("failed to check whether media %d belongs here: %w", id, err)
-		}
-		if mine == 0 {
-			return fmt.Errorf("%w: media %d belongs to another tech card, not to %d",
-				entity.ErrDesignForeignMedia, id, cardID)
-		}
-	}
+// refuseForeignMedia — T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+// Медиа, которое держит другая карточка (tech_card_media / design_picture), проходит так же, как
+// ничейное. Вызовы оставлены на местах, чтобы правка была одной точкой.
+func refuseForeignMedia(_ context.Context, _ dependency.DB, _ int, _ ...int) error {
 	return nil
 }
 

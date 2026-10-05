@@ -801,6 +801,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 				"ceiling":      strconv.Itoa(entity.MaxDesignAssetsPerCard),
 			})
 	}
+	// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ; designRefuseForeignMedia
+	// ниже теперь всегда пропускает. Текст ниже — история правила.
+	//
 	// ГРАНИЦА КАРТОЧКИ — ДО ДЕНЕГ. Все три списка приезжают с провода и все три уезжают
 	// ПОСТАВЩИКУ: designgen/snapshot.go собирает ссылки прогона из плит, референсов,
 	// `extra_input_media_ids`, `colour.fabric_media_id` И текстуры КАЖДОЙ ткани `colour.fabrics`.
@@ -1680,51 +1683,13 @@ func (s *Server) designRerunParent(ctx context.Context, cardID int, kind string,
 
 // ─────────────────── ЧУЖОЕ МЕДИА: ГРАНИЦА КАРТОЧКИ ───────────────────
 
-// designRefuseForeignMedia — ГРАНИЦА КАРТОЧКИ У ДВЕРИ: медиа, ПРИНАДЛЕЖАЩЕЕ ДРУГОЙ ТЕХ-КАРТЕ, не
-// открывает здесь оплаченного прогона.
-//
-// ЧТО БЫЛО. Идентификаторы медиа приезжали с провода и проверялись ровно на «> 0». Любой номер из
-// системы — картинка чужой карточки в том числе — уезжал в платную генерацию
-// (`extra_input_media_ids`, `colour.fabric_media_id`), замерзал в снимке и оставался в истории
-// утверждением, которого никто не делал.
-//
-// ⚠ ПРАВИЛО ЖИВЁТ В СТОРЕ, А ЗДЕСЬ ТОЛЬКО СПРАШИВАЮТ. Сначала эта функция отвечала на вопрос сама,
-// через реестр ссылок media, — и это было ВТОРОЕ мнение о том же вопросе, на который внутри своей
-// транзакции отвечает ImportVector: два множества «держателей» (реестр знает ещё выноски карточки,
-// плиты версий и примерки) разошлись бы в первый же день, когда правят одно. Спрашивается ОДИН
-// глагол — Design().AssertMediaNotForeign, — и потому у двери и у стора ответ один по построению.
-//
-// ⚠ ЗАЧЕМ ТОГДА ВООБЩЕ СПРАШИВАТЬ ЗДЕСЬ, РАЗ СТОР ЗНАЕТ. Потому что StartRun РЕЗЕРВИРУЕТ ДЕНЬГИ:
-// отказ, пришедший после резерва, стоил бы дню оплаченной строки. Тот же довод, по которому здесь
-// же стоят ворота рода и W-13.
-func (s *Server) designRefuseForeignMedia(ctx context.Context, cardID int, field string, ids ...int) error {
-	want := make([]int, 0, len(ids))
-	seen := make(map[int]struct{}, len(ids))
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		want = append(want, id)
-	}
-	if len(want) == 0 {
-		return nil
-	}
-	err := s.repo.Design().AssertMediaNotForeign(ctx, cardID, want)
-	if err == nil {
-		return nil
-	}
-	// ⚠ ПРОВЕРКА НА nil ОБЯЗАТЕЛЬНА ЗДЕСЬ, А НЕ ВНУТРИ designError: та таблица переводов не знает
-	// «всё хорошо» — не найдя ошибку в списке, она отвечает Internal. Переданный ей nil закрыл бы
-	// КАЖДЫЙ законный прогон.
-	//
-	// Поле называется в детали отказа: у прогона два независимых источника чужого номера, и
-	// человеку надо знать, какой из них чинить.
-	return designError(ctx, "failed to check who the input pictures belong to", err,
-		map[string]string{"field": field})
+// designRefuseForeignMedia — T64 (05.10): владелец — медиатека общая, foreign_media больше не
+// отказ. Любой файл библиотеки законно уезжает во вход прогона на любой карточке; дверь больше не
+// спрашивает стор о держателе медиа. Сигнатура и вызовы оставлены, чтобы правка была одной точкой.
+// Чужие КАРТИНКИ полосы, foreign_card_plate и designRefuseForeignClothAssets — другие правила, и
+// они на месте.
+func (s *Server) designRefuseForeignMedia(_ context.Context, _ int, _ string, _ ...int) error {
+	return nil
 }
 
 // designEffectiveParams — ЧТО ПРОСЯТ У МОДЕЛИ.
