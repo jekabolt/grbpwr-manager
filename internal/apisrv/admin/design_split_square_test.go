@@ -107,7 +107,8 @@ func TestT25SplitAlphaFlattensToWhite(t *testing.T) {
 	t25Check(t, "alpha", raw, 100, 120)
 }
 
-// T25: the square respects the size ceiling — it is scaled while placing, not after.
+// T25 review: the work is bounded — a frame longer than designSquareWorkMaxSide is brought down
+// before any copy, so the square never exceeds 4096/0.84.
 func TestT25SquareCapped(t *testing.T) {
 	src := image.NewNRGBA(image.Rect(0, 0, 5400, 100))
 	t25Fill(src, src.Bounds(), color.NRGBA{0, 0, 0, 255})
@@ -115,7 +116,85 @@ func TestT25SquareCapped(t *testing.T) {
 	if !ok {
 		t.Fatal("no content found")
 	}
-	if b := out.Bounds(); b.Dx() != designSquareMaxSide || b.Dy() != designSquareMaxSide {
-		t.Fatalf("got %v, want %d square", b, designSquareMaxSide)
+	b := out.Bounds()
+	if b.Dx() != b.Dy() || b.Dx() > 4877 || b.Dx() < 4870 {
+		t.Fatalf("got %v, want a square of ≈4877", b)
+	}
+}
+
+// t25Dark — the box of dark pixels and the side of the square.
+func t25Dark(t *testing.T, img image.Image) (side int, box image.Rectangle) {
+	t.Helper()
+	b := img.Bounds()
+	if b.Dx() != b.Dy() {
+		t.Fatalf("not square: %v", b)
+	}
+	minX, minY, maxX, maxY := b.Dx(), b.Dy(), -1, -1
+	for y := 0; y < b.Dy(); y++ {
+		for x := 0; x < b.Dx(); x++ {
+			r, _, _, a := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			if a>>8 != 255 {
+				t.Fatalf("transparent pixel at %d,%d", x, y)
+			}
+			if r>>8 < 128 {
+				minX, minY, maxX, maxY = min(minX, x), min(minY, y), max(maxX, x), max(maxY, y)
+			}
+		}
+	}
+	return b.Dx(), image.Rect(minX, minY, maxX+1, maxY+1)
+}
+
+// T25 review: a WHITE garment with a small dark print on a transparent sheet — the foreground comes
+// from alpha, so the whole shape (120×160) is kept, not clipped to the print.
+func TestT25WhiteGarmentOnAlphaKeepsWholeShape(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 200, 200))
+	t25Fill(src, image.Rect(40, 20, 160, 180), color.NRGBA{255, 255, 255, 255})
+	t25Fill(src, image.Rect(90, 90, 110, 110), color.NRGBA{10, 10, 10, 255})
+	out, ok := designSquarePiece(src)
+	if !ok {
+		t.Fatal("no content")
+	}
+	side, print := t25Dark(t, out)
+	if side != 191 { // ceil(160/0.84): the shape's long side, not the print's 20
+		t.Fatalf("side %d, want 191 (whole shape kept)", side)
+	}
+	// shape at offset ((191-120)/2, (191-160)/2) = (35,15); print sits 50,70 inside it
+	if want := image.Rect(85, 85, 105, 105); print != want {
+		t.Fatalf("print at %v, want %v", print, want)
+	}
+}
+
+// T25 review: an OPAQUE white garment on white — colour sees only the print, which covers < 20 %
+// of the frame, so the frame is NOT tightened: square-padded as submitted.
+func TestT25WhiteOnWhiteNotTightened(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 200, 150))
+	t25Fill(src, src.Bounds(), color.NRGBA{255, 255, 255, 255})
+	t25Fill(src, image.Rect(90, 60, 110, 80), color.NRGBA{10, 10, 10, 255})
+	out, ok := designSquarePiece(src)
+	if !ok {
+		t.Fatal("no content")
+	}
+	side, print := t25Dark(t, out)
+	if side != 239 { // ceil(200/0.84): the whole frame
+		t.Fatalf("side %d, want 239 (frame kept whole)", side)
+	}
+	// frame at offset ((239-200)/2, (239-150)/2) = (19,44)
+	if want := image.Rect(109, 104, 129, 124); print != want {
+		t.Fatalf("print at %v, want %v", print, want)
+	}
+}
+
+// T25 review: light shading of a white garment reaching past a large print — faint guard keeps it.
+func TestT25FaintShadingBeyondInkNotTightened(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 200, 200))
+	t25Fill(src, src.Bounds(), color.NRGBA{255, 255, 255, 255})
+	t25Fill(src, image.Rect(10, 10, 190, 190), color.NRGBA{242, 242, 242, 255}) // garment shading
+	t25Fill(src, image.Rect(60, 60, 140, 160), color.NRGBA{10, 10, 10, 255})    // print, 20 % of frame
+	out, ok := designSquarePiece(src)
+	if !ok {
+		t.Fatal("no content")
+	}
+	if side := out.Bounds().Dx(); side != 239 {
+		t.Fatalf("side %d, want 239 (frame kept whole)", side)
 	}
 }
