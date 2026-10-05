@@ -117,13 +117,14 @@ func artworkTechniqueKind(a artworkUse) string {
 func artworkTechniqueSentence(a artworkUse) string {
 	switch artworkTechniqueKind(a) {
 	case "embroidery":
-		return "Make it real machine EMBROIDERY: dense satin-stitch thread in the artwork's own colours, " +
+		return "Make it real machine EMBROIDERY: dense satin-stitch thread in the artwork's own colours" +
+			artworkColoursAside(a) + ", " +
 			"raised above the cloth by about 1–2 mm, visible stitch direction and the soft sheen of thread, " +
 			"stitched edges that slightly gather the cloth around them. It is NOT a print, NOT a flat patch, " +
 			"NOT an appliqué and has no backing or border of its own: only the artwork itself is stitched, " +
 			"its exact shape, colours and letterforms kept."
 	case "print":
-		return "Make it a real PRINT: screen-printed ink sitting in the weave — flat, no relief, the cloth " +
+		return "Make it a real PRINT: screen-printed ink" + artworkColoursAside(a) + " sitting in the weave — flat, no relief, the cloth " +
 			"texture shows through the ink; its exact shape, colours and letterforms are kept. It is NOT " +
 			"embroidery and NOT a patch."
 	}
@@ -226,4 +227,12 @@ func renderArtworkParagraphs(arts []artworkUse, attached []refCaption) []string 
 		out = append(out, b.String())
 	}
 	return out
+}
+
+// artworkColoursAside — « (white #f4f4f4 — never the cloth's colour)» when the colours were read.
+func artworkColoursAside(a artworkUse) string {
+	if a.Colours == "" {
+		return ""
+	}
+	return " (" + a.Colours + " — never the cloth's own colour, never tone-on-tone)"
 }
