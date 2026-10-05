@@ -198,24 +198,86 @@ func TestDesignPartsCardPrompt(t *testing.T) {
 		"PHYSICAL parts",
 		"One physical part is ONE entry",
 		"WEARER'S left and right, never the viewer's",
-		"A side view shows the parts of THAT side",
 		"exactly one part",
 		"lowercase, at most 3 words",
 		`"split_needed"`,
-		`"regions":{"front":[1,2],"back":[1],"side_l":[1],"side_r":[1]}`,
+		// Ф1 (B1): openings, no invented pieces, the flank from the drawing.
+		"OPENINGS ARE NOT CLOTH",
+		`list it in "seen_through" with that part's label`,
+		`ONE part labelled "opening"`,
+		"NEVER INVENT A PIECE",
+		"THE FLANK OF A SIDE VIEW COMES FROM THE DRAWING, NOT FROM ITS NAME",
+		`"seen_through":[{"view":"back","region":8,"label":"front body"}]`,
+		`"regions":{"front":[4],"back":[2],"side_l":[3]}`,
 		"Answer with JSON only",
 	} {
 		if !strings.Contains(designPartsCardSystemPrompt, must) {
 			t.Fatalf("the system prompt lost %q", must)
 		}
 	}
-	got := designPartsCardUserPrompt([]designPartsCardView{{View: "front", Count: 21}, {View: "side_l", Count: 12}})
-	want := "The garment has 2 views; the pictures follow in this order:\n" +
+	// The old side rule named the flank by the view's name — wrong whenever the drawing faces the
+	// other way (card 38).
+	if strings.Contains(designPartsCardSystemPrompt, "A side view shows the parts of THAT side") {
+		t.Fatal("the flank-by-name rule is back")
+	}
+	views := []designPartsCardView{{View: "front", Count: 21}, {View: "side_l", Count: 12}}
+	tail := "The garment has 2 views; the pictures follow in this order:\n" +
 		"image 1: front view flat (key \"front\"), regions 1..21\n" +
 		"image 2: left side view flat (key \"side_l\"), regions 1..12\n" +
 		"List the garment's physical parts, each with its region numbers on every view where it is visible."
+	if got := designPartsCardUserPrompt(views, " ", ""); got != tail {
+		t.Fatalf("user prompt:\n got %q\nwant %q", got, tail)
+	}
+	got := designPartsCardUserPrompt(views, "open back,\n  crossed straps", "1. neck band NP L → NP R")
+	want := "CONSTRUCTION of this garment (confirmed by the designer; trust it over habit — never name a part it does not have):\n" +
+		"1. neck band NP L → NP R\n\n" +
+		"The designer's note on the garment (construction only):\nopen back, crossed straps\n\n" + tail
 	if got != want {
-		t.Fatalf("user prompt:\n got %q\nwant %q", got, want)
+		t.Fatalf("user prompt with note:\n got %q\nwant %q", got, want)
+	}
+	long := designPartsCardUserPrompt(views, strings.Repeat("a", 5000), "")
+	if strings.Count(long, "a") > designPartsCardMaxNoteRunes+40 {
+		t.Fatal("the note is not capped")
+	}
+}
+
+// Ф1: openings are one "opening" group per side; a seen_through region becomes the inside of the
+// part it shows (same key), wherever the model had put it.
+func TestParseDesignPartsCardOpeningsAndInside(t *testing.T) {
+	views := []designPartsCardView{{View: "front", Count: 4}, {View: "back", Count: 6}}
+	raw := `{"parts":[
+		{"label":"front body","regions":{"front":[1,2],"back":[5]}},
+		{"label":"left strap","regions":{"back":[1]}},
+		{"label":"Opening","regions":{"front":[3],"back":[2]}},
+		{"label":"openings","regions":{"back":[3]}},
+		{"label":"back body","regions":{"back":[4]}}
+	],"seen_through":[
+		{"view":"back","region":5,"label":"front body"},
+		{"view":"back","region":3,"label":"front body · inside"},
+		{"view":"back","region":4,"label":"ghost"},
+		{"view":"front","region":9,"label":"front body"},
+		{"view":"side_l","region":1,"label":"front body"}
+	]}`
+	parts, _, ok := parseDesignPartsCard(raw, views)
+	if !ok {
+		t.Fatal("must be usable")
+	}
+	want := map[string][]entity.DesignPartGroup{
+		"front": {
+			{Label: "front body", Regions: []int{1, 2}, PartKey: "front-body"},
+			{Label: "opening", Regions: []int{3}, PartKey: "opening"},
+			{Label: "unnamed", Regions: []int{4}, PartKey: "unnamed-front"},
+		},
+		"back": {
+			{Label: "left strap", Regions: []int{1}, PartKey: "left-strap"},
+			{Label: "back body", Regions: []int{4}, PartKey: "back-body"},
+			{Label: "opening", Regions: []int{2}, PartKey: "opening"},
+			{Label: "front body · inside", Regions: []int{3, 5}, PartKey: "front-body"},
+			{Label: "unnamed", Regions: []int{6}, PartKey: "unnamed-back"},
+		},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts:\n got %+v\nwant %+v", parts, want)
 	}
 }
 
