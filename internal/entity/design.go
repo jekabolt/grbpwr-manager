@@ -1571,6 +1571,8 @@ type DesignPicture struct {
 	// верстака уходит по своему правилу — текущая версия цепочки = обход replaced_by от корня до
 	// первого отменённого звена (DesignEditChainCurrent).
 	UndoneAt sql.NullTime `db:"undone_at"`
+	// QAFlags — comma-separated pixel labels of a generated picture (0397: "grey"); '' = none.
+	QAFlags string `db:"qa_flags"`
 
 	// Media резолвится джойном на media(id) читателем полосы.
 	Media *MediaFull `db:"-"`
@@ -2374,6 +2376,9 @@ type DesignBand struct {
 	// base_media_id is no longer the flat in that side's slot is not read. Every cut revision.
 	PartsSuggestions []DesignPartsSuggestion
 
+	// Joins — the card's current join list (flat route, 0397); nil = none yet.
+	Joins *DesignJoins
+
 	// HasFabricRender — у карточки есть ХОТЯ БЫ ОДИН НЕСПРЯТАННЫЙ КАДР рода `render` (W-13).
 	// Считается в той же читающей транзакции по ВСЕЙ карточке, а не по загруженной странице.
 	//
@@ -2571,6 +2576,8 @@ type DesignPictureInsert struct {
 	CompositeViews json.RawMessage
 	SourceClass    string
 	MixedInput     bool
+	// QAFlags — pixel labels the worker read off the picture (0397: "grey"); nil = none.
+	QAFlags []string
 }
 
 // DesignRunComplete — закрытие прогона. Частичный ответ = меньше картинок, статус всё равно

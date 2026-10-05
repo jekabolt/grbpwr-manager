@@ -2179,6 +2179,12 @@ type (
 		GetPartsSuggestion(ctx context.Context, cardID int, view string, baseMediaID int, algoRev string) (*entity.DesignPartsSuggestion, error)
 		// SavePartsSuggestion upserts the answer on (card, view, base media, algo rev).
 		SavePartsSuggestion(ctx context.Context, in entity.DesignPartsSuggestion) (*entity.DesignPartsSuggestion, error)
+		// GetJoins — the card's current join list (flat route, 0397); nil when none.
+		// ErrDesignNotFound when the card does not exist.
+		GetJoins(ctx context.Context, cardID int) (*entity.DesignJoins, error)
+		// SaveJoins writes the card's join list: ExpectedRev < 0 replaces it (the generator), ≥ 0 is a
+		// CAS on rev (the designer; 0 = no list yet) — ErrDesignJoinsRevMismatch on a stale rev.
+		SaveJoins(ctx context.Context, req entity.DesignJoinsSave) (*entity.DesignJoins, error)
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)

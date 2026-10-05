@@ -210,10 +210,10 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 	// The A brief's 19 direct/OpenRouter rows + lane H2's direct rows (openai 24 incl. OpenAI's own
 	// token-priced gpt-image family after REVIEW-H #4, anthropic 6, google 9) + apibost's 67 chat/image
 	// models (catalogue_apibost.go) + runblob's 23 unpriced rows, 10 image + 13 video (catalogue_runblob.go;
-	// Motion and Seedance not offered, REVIEW-H #5/#7) + fal's 35 (24 image, 3 edit, 4 cutout, 4 threed).
+	// Motion and Seedance not offered, REVIEW-H #5/#7) + OpenRouter's gpt-image-2.5-flare (flat route, 0397) + fal's 35 (24 image, 3 edit, 4 cutout, 4 threed).
 	require.Equal(t, map[string]int{
 		entity.AIProviderOpenAI: 28, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
-		entity.AIProviderOpenRouter: 8, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 23,
+		entity.AIProviderOpenRouter: 9, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 23,
 		entity.AIProviderFal: 35,
 	}, count)
 }

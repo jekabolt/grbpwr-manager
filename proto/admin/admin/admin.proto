@@ -3278,6 +3278,31 @@ service AdminService {
     };
   }
 
+  // GenerateDesignJoins (flat route) — one sync vision+JSON call (chat.design_joins): the model reads
+  // the card's reference photos (with their roles) and the garment note and writes the JOIN LIST on
+  // the fixed landmark ruler, the layers, the absences and a verdict on whether the photos show one
+  // garment. Stored as the card's current list (rev + 1). A stored list is returned without a call
+  // (cached) when !force and it was written from the same photos and note, or a designer edited it.
+  //
+  // FailedPrecondition: nothing to read (no reference photo and no garment note).
+  rpc GenerateDesignJoins(GenerateDesignJoinsRequest) returns (GenerateDesignJoinsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/joins:generate"
+      body: "*"
+    };
+  }
+
+  // SetDesignJoins saves the designer's join list (CAS: expected_rev must be the stored rev; 0 = no
+  // list yet). The server cleans it as it cleans the model's: unknown kinds and landmarks dropped,
+  // absences kept only when they are negations, counts and lengths capped. Aborted
+  // (joins_rev_mismatch) on a stale rev.
+  rpc SetDesignJoins(SetDesignJoinsRequest) returns (SetDesignJoinsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/joins"
+      body: "*"
+    };
+  }
+
   // GetDesignQuizAnswers — every quiz answer stored on the card, in display order, plus the open
   // session's questions not yet saved (pending).
   rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
@@ -12627,6 +12652,8 @@ message GetDesignBandResponse {
   // AUTO PARTS of the flat each side holds NOW (base_media_id = the media in that side's flat slot),
   // every algo_rev. A row of a flat that left its slot is not sent.
   repeated DesignPartsSuggestion parts_suggestions = 34;
+  // joins — the card's current join list (flat route, 0397); absent = none yet.
+  common.DesignJoins joins = 35;
 }
 
 // DesignImageModel is ONE engine the image door accepts (GetDesignBandResponse.image_models) and
@@ -13580,6 +13607,28 @@ message SuggestDesignPartsCardRequest {
 message SuggestDesignPartsCardResponse {
   repeated DesignPartsSuggestion suggestions = 1; // one per requested side, in request order
   bool cached = 2; // true = read from the cache, no call made
+}
+
+// FLAT ROUTE · JOIN LIST messages.
+
+message GenerateDesignJoinsRequest {
+  int32 tech_card_id = 1;
+  bool force = 2; // ask again even when a list is stored
+}
+
+message GenerateDesignJoinsResponse {
+  common.DesignJoins joins = 1;
+  bool cached = 2; // true = the stored list, no call made
+}
+
+message SetDesignJoinsRequest {
+  int32 tech_card_id = 1;
+  common.DesignJoins joins = 2; // items, absences, layers, consistency.keep_media_ids are read
+  int32 expected_rev = 3; // the rev the edit was made on; 0 = no list yet
+}
+
+message SetDesignJoinsResponse {
+  common.DesignJoins joins = 1;
 }
 
 // AI PROVIDERS messages

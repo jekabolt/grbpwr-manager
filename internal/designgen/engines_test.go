@@ -29,7 +29,7 @@ func TestEveryEngineRowIsPRICED_AND_DRAWABLE(t *testing.T) {
 		t.Run(e.Slug, func(t *testing.T) {
 			require.NotEmpty(t, e.Label)
 			require.NotEmpty(t, e.Tiers, "an engine with no tier cannot be priced")
-			gpt := e.Slug == EngineGPTImage2 || e.Slug == EngineGPTImage25
+			gpt := e.Slug == EngineGPTImage2 || e.Slug == EngineGPTImage25 || e.Slug == EngineGPTImage25Flare
 			if e.Slug != EngineGemini3Pro {
 				require.Contains(t, e.Ratios, "auto")
 			}
@@ -95,12 +95,12 @@ func TestTheEngineTableMarksONE_DEFAULT_FIRST(t *testing.T) {
 	}
 
 	std := EngineTable("")
-	require.Len(t, std, 2)
+	require.Len(t, std, 3) // gpt-image-2, 2.5, 2.5 flare (the flat route's engine)
 	require.Equal(t, []string{orimages.DefaultModel}, defaults(std))
 	require.Equal(t, orimages.DefaultModel, std[0].Slug)
 
 	alt := EngineTable(EngineGPTImage25)
-	require.Len(t, alt, 2)
+	require.Len(t, alt, 3)
 	require.Equal(t, []string{EngineGPTImage25}, defaults(alt))
 	require.Equal(t, EngineGPTImage25, alt[0].Slug)
 
@@ -255,7 +255,7 @@ func TestTheEngineFlagsLIST_THE_PHASE3_ROWS(t *testing.T) {
 		}
 		return out
 	}
-	gpt := []string{EngineGPTImage2, EngineGPTImage25}
+	gpt := []string{EngineGPTImage2, EngineGPTImage25, EngineGPTImage25Flare}
 
 	// MUTATION (measured red): drop the `if !on.Gemini { continue }` in EngineTable.
 	require.Equal(t, gpt, slugs(EngineTable("")), "no flags = the phase-2 table, byte for byte")

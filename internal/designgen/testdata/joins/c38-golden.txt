@@ -1,0 +1,43 @@
+Landmark ruler (fixed for every garment; L/R = WEARER'S left/right):
+NP_L/NP_R neck points (side of the neck, top of the shoulder line); CFN centre-front neck; CBN centre-back neck (nape); CFN_LOW / CBN_LOW a low front / back neck centre;
+SP_L/SP_R shoulder tips; FSH_x / BSH_x mid-shoulder slightly to the front / back; UA_L/UA_R underarms (top of side seam);
+CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust, BUSTSIDE_x bust side; SB_x shoulder blades, UB_C centre upper back; YOKE_x back yoke seam at the armhole;
+MB_x side at mid-back height, MB_C centre back at mid-back; WL_x waist at the side, WF_C / WB_C centre front / back waist; HEM_x hem at the side, HEM_FC / HEM_BC centre front / back hem;
+sleeves: SSLV_OUT_x / SSLV_IN_x short-sleeve end outer / inner; ELB_OUT_x elbow outer; WRIST_OUT_x / WRIST_IN_x long-sleeve end outer / inner.
+A point between two landmarks is written "A..B:t" (t from 0 at A to 1 at B), e.g. "NP_L..SP_L:0.3".
+
+JOIN LIST (the construction; every view must agree with it):
+- neck_bind_front: binding (narrow) from NP_R → CFN → NP_L. continues into strap_L, strap_R. high crew neck binding across the front only; at each neck point it runs into the inner edge of a back strap
+- strap_L: strap (wide) from NP_L → CBN..UB_C:0.6 → UA_R..MB_R:0.3. continues into armhole_bind_L, back_open_bind. starts AT the left neck point as the continuation of the front neck binding, a neck-width from the other strap; runs diagonally to the opposite (right) side
+- strap_R: strap (wide) from NP_R → CBN..UB_C:0.6 → UA_L..MB_L:0.3. continues into armhole_bind_R, back_open_bind. starts AT the right neck point as the continuation of the front neck binding; runs diagonally to the opposite (left) side
+- armhole_bind_L: binding (narrow) from NP_L..SP_L:0.35 → FSH_L..UA_L:0.5 → UA_L. continues into strap_L, back_open_bind. front armhole edge only; on the back the strap is the edge
+- armhole_bind_R: binding (narrow) from NP_R..SP_R:0.35 → FSH_R..UA_R:0.5 → UA_R. continues into strap_R, back_open_bind. front armhole edge only; on the back the strap is the edge
+- back_open_bind: binding (narrow) from UA_L → MB_L → MB_C → MB_R → UA_R. continues into armhole_bind_L, armhole_bind_R. lower U-shaped edge of the open back, dipping to MB_C; small tack at MB_C
+- back_opening: OPENING (no cloth) bounded by strap_L, strap_R, back_open_bind. large bare back between the crossed straps and the U-shaped edge
+- side_seam_L: seam from UA_L → WL_L → HEM_L. left side seam
+- side_seam_R: seam from UA_R → WL_R → HEM_R. right side seam
+- hem_front: edge from HEM_L → HEM_FC → HEM_R. continues into hem_back. narrow coverstitched or lettuce-like hem at the hip
+- hem_back: edge from HEM_L → HEM_BC → HEM_R. continues into hem_front. back hem
+- inner_V_layer: seam from NP_L..SP_L:0.35 → BUST_C → NP_R..SP_R:0.35. edge of an inner V-shaped front lining layer, seen only as a shadow through the sheer jersey; point of the V at BUST_C
+ABSENT (do not draw): no sleeves; no back neckline or back neck binding (the straps replace it); no visible shoulder seams (front shoulder runs straight into the straps); no closures; no pockets; no centre front or centre back seam; no back fabric above mid-back except the two straps
+
+CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
+- strap_L: its top end sits AT the neck point NP_L, right beside the neck, only a neck-width away from strap_R, NOT at the shoulder tip; nothing of it rises above the neckline.
+- strap_R: its top end sits AT the neck point NP_R, right beside the neck, only a neck-width away from strap_L, NOT at the shoulder tip; nothing of it rises above the neckline.
+- strap_L runs DIAGONALLY across the back from NP_L to UA_R..MB_R:0.3 on the OPPOSITE side, as one straight band.
+- strap_R runs DIAGONALLY across the back from NP_R to UA_L..MB_L:0.3 on the OPPOSITE side, as one straight band.
+- strap_L and strap_R cross each other once, BELOW the neck points (between the shoulder blades), never above the neckline.
+- There is NO back neckline: neck_bind_front runs across the FRONT only. On the FRONT view draw NOTHING behind or inside the front neck band (no back-neck arc, no second curve). On the BACK view draw NOTHING between the tops of the bands at the neck points — no neckline, no band, no line.
+- neck_bind_front starts at NP_R and stops at NP_L; it does not continue past them.
+- armhole_bind_L starts at NP_L..SP_L:0.35 and stops at UA_L; it does not continue past them.
+- armhole_bind_R starts at NP_R..SP_R:0.35 and stops at UA_R; it does not continue past them.
+- back_open_bind starts at UA_L and stops at UA_R; it does not continue past them.
+- The area bounded by strap_L, strap_R, back_open_bind is OPEN: leave it white — no cloth, no panel, no line across it.
+- Draw NOTHING for: no sleeves.
+- Draw NOTHING for: no back neckline or back neck binding (the straps replace it).
+- Draw NOTHING for: no visible shoulder seams (front shoulder runs straight into the straps).
+- Draw NOTHING for: no closures.
+- Draw NOTHING for: no pockets.
+- Draw NOTHING for: no centre front or centre back seam.
+- Draw NOTHING for: no back fabric above mid-back except the two straps.
+- SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.

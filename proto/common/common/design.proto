@@ -1298,6 +1298,10 @@ message DesignPicture {
   // as UndoDesignEditRequest.expected_target_id (the link may sit in a run row that is paged out).
   // Redo's target is replaced_by.
   int32 undo_to_id = 25;
+  // QUALITY FLAGS of a generated picture (0397, flat route): labels the worker read off the pixels,
+  // never a refusal. "grey" = a flat candidate whose drawing carries a mid-grey fill or tint inside
+  // its silhouette (the owner's style is white inside black lines). Empty = nothing noticed.
+  repeated string flags = 26;
 }
 
 // DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the
@@ -1833,4 +1837,75 @@ message DesignConstructionBomLine {
   // Неузнанное словарём написание («yd») отдаётся пустым, а не сырым: клиент покажет семейное
   // умолчание, вместо того чтобы записать в подписываемую колонку слово, которого мы не знаем.
   string unit = 10;
+}
+
+// ─── FLAT ROUTE · THE JOIN LIST (0397) ───
+//
+// The construction of the garment as a list of joins on a FIXED landmark ruler (L/R = the WEARER'S
+// left/right): NP_L/NP_R neck points, CFN/CBN centre-front/back neck, SP_x shoulder tips, UA_x
+// underarms, HEM_x hems… A point between two landmarks is "A..B:t" (t 0..1). Written by the model
+// (GenerateDesignJoins), corrected by the designer (SetDesignJoins), frozen into every flat run's
+// input snapshot and turned into words by the flat prompt.
+
+// DesignJoinLayer — one layer of a multi-layer garment. 0 = outermost.
+message DesignJoinLayer {
+  int32 index = 1;
+  string name = 2; // "outer front", "inner lining"
+  bool sheer = 3; // the edges of the layer under it show through
+  string note = 4;
+  // front | back | both | "" — the face this depth level is on. A layer is a DEPTH level per face,
+  // not a panel: 0 = everything outermost, 1 = the cloth directly behind layer 0.
+  string face = 5;
+}
+
+// DesignJoinItem — one edge, seam, band, closure, pocket or opening of the garment.
+message DesignJoinItem {
+  // edge | seam | binding | band | strap | collar | stand | placket | cuff | waistband | sleeve |
+  // closure | pocket | opening
+  string kind = 1;
+  string from = 2; // first landmark of the path; a pocket's anchor; "" on an opening
+  string to = 3; // last landmark of the path; "" on a pocket / opening
+  string view = 4; // front | back | "" — the face it runs on (derived when empty)
+  string side = 5; // L | R | "" — the wearer's side it belongs to (derived when empty)
+  string text = 6; // the note in words, ≤ 300
+  string id = 7; // unique within the list (snake_case); server-made when empty
+  repeated string via = 8; // landmarks between from and to, in order
+  string width = 9; // narrow | wide | "" (bands)
+  bool closed = 10; // the path is a closed loop
+  string type = 11; // closure: buttons | zip | hook…; pocket: patch | welt…
+  int32 count = 12; // closure: how many (buttons)
+  repeated string bounded_by = 13; // opening: the ids of the items around it
+  repeated string continues_into = 14; // item ids at its ends
+  int32 layer = 15; // 0 = outermost layer, 1 = the next one under it…
+  string visibility = 16; // visible | through (seen through a sheer layer above) | hidden
+  repeated string caught_into = 17; // item ids this edge ends INTO (a seam / binding of another layer)
+  bool free_edge = 18; // the edge hangs free: it does not reach the side seams or the hem
+}
+
+// DesignJoinsConsistencyGroup — photos that show one and the same garment.
+message DesignJoinsConsistencyGroup {
+  repeated int32 media_ids = 1;
+  string what = 2;
+}
+
+// DesignJoinsConsistency — do the reference photos show ONE garment?
+message DesignJoinsConsistency {
+  bool consistent = 1;
+  string note = 2;
+  repeated int32 keep_media_ids = 3; // the photos the list was written from (the subset to trust)
+  repeated DesignJoinsConsistencyGroup groups = 4; // when not consistent: which photos go together
+}
+
+// DesignJoins — the card's current join list (one row per card, rev for CAS).
+message DesignJoins {
+  int32 rev = 1;
+  repeated DesignJoinItem items = 2;
+  repeated string absences = 3; // negations only ("no back neckline")
+  DesignJoinsConsistency consistency = 4;
+  string model = 5; // the model that wrote the list
+  bool edited = 6; // a designer saved it after the model
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp edited_at = 8;
+  repeated DesignJoinLayer layers = 9; // empty = a single-layer garment
+  repeated string uncertain = 10; // the model's honest doubts — questions for the designer
 }

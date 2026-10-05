@@ -1001,6 +1001,8 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designRefuseExtendTarget(ctx, kind, params); err != nil {
 		return nil, err
 	}
+	// A flat that names no engine is drawn by the flat route's engine (flare), frozen here.
+	s.designFreezeFlatModel(kind, params)
 	// A stated engine freezes with its slug (G-02, Codex 5).
 	s.designFreezeImageModel(kind, params)
 	// A video run freezes the Kling slug it is bought with (B-32).
@@ -1054,6 +1056,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// формата / «только для показа» / «спрятан», потолка движка и цены: картинка артворка уезжает
 	// поставщику как всякий вход, и лишний артворк обязан быть отказом до денег, а не провалом после.
 	arts := designRunArtworks(kind, params, card, band, inputs, parent)
+	// THE JOIN LIST (flat route, 0397) — frozen into the snapshot like the artworks: the card's current
+	// list (a rerun: its parent's copy). Editing the list later never rewrites this run.
+	joins := designRunJoins(kind, params, band, parent)
 	if err := s.designRefuseRenderArtworks(kind, params, inputs, arts); err != nil {
 		return nil, err
 	}
@@ -1114,6 +1119,13 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if kind == entity.DesignRunKindRender {
 		if inputsJSON, err = designSpliceArtworks(inputsJSON, arts); err != nil {
 			slog.Default().ErrorContext(ctx, "design run: the artworks did not encode",
+				slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
+		}
+	}
+	if joins != nil {
+		if inputsJSON, err = designSpliceJoins(inputsJSON, joins); err != nil {
+			slog.Default().ErrorContext(ctx, "design run: the join list did not encode",
 				slog.String("err", err.Error()))
 			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
 		}
@@ -2420,6 +2432,14 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 			return n
 		}
 		return 1
+	}
+	// FLAT CANDIDATES (owner 05.10): a garment sheet is bought FlatCandidates times — the designer
+	// picks one and the split flow cuts the chosen one. imageCalls reads this number back as the
+	// call's n (designgen FlatCandidatesFor names the same runs).
+	if kind == entity.DesignRunKindFlat && params.GetLayout() == designLayoutOne {
+		if n := designgen.FlatCandidatesFor(params.GetViews(), params.GetLayout()); n > 0 {
+			return n
+		}
 	}
 	if params.GetLayout() == designLayoutOne {
 		// КОМПОЗИТ — ОДНА КАРТИНКА, сколько бы видов на ней ни было. Разрез на N кадров это
