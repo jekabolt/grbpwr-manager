@@ -267,6 +267,9 @@ type digestMedia struct {
 	Kind    string `json:"k"`
 	Caption string `json:"c"`
 	Cat     string `json:"g"`
+	// Role (0395): what the picture means to the model (target/detail/material/mood). omitempty keeps
+	// digests of role-less media byte-identical; a role change re-opens the DESIGN sign-off.
+	Role string `json:"r,omitempty"`
 }
 
 func designProjection(tc *entity.TechCardInsert) any {
@@ -274,7 +277,7 @@ func designProjection(tc *entity.TechCardInsert) any {
 	for _, m := range tc.Media {
 		media = append(media, digestMedia{
 			MediaID: m.MediaId, Kind: string(m.Kind),
-			Caption: m.Caption.String, Cat: string(m.Category),
+			Caption: m.Caption.String, Cat: string(m.Category), Role: string(m.Role),
 		})
 	}
 	callouts := make([]any, 0, len(tc.Callouts))
