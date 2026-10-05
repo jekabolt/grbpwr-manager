@@ -32,7 +32,7 @@ import (
 //
 // Owner: «нажать кнопку типо пораспрашивай меня об этой вещи и оно тебе давало бы квиз … спрашивать
 // о непонятных деталях и нестандартных моментах … вопросов до 15, но столько, сколько требует
-// ситуация». One sync vision+JSON call (the SuggestPrompts skeleton: no design_run row, the router
+// ситуация»; 05.10: «можно не ограничиваться 15 вопросами» → 30 is only a safety ceiling). One sync vision+JSON call (the SuggestPrompts skeleton: no design_run row, the router
 // books ai_usage_event per call) over the DraftDesignIdea board doors. Answers live in their own
 // table (0389) and are fed into both drafts as fixed facts (designQuizDecisionLines).
 //
@@ -42,7 +42,7 @@ import (
 // fences (enhanceSem + the hourly window shared with EnhanceText and the ideas door).
 
 const (
-	designQuizMaxQuestions      = 15
+	designQuizMaxQuestions      = 30 // safety ceiling only, not a target (owner 05.10)
 	designQuizMaxOptions        = 6
 	designQuizMinOptions        = 2
 	designQuizMaxClarifyOptions = 4
@@ -50,7 +50,7 @@ const (
 	designQuizMaxOptionRunes    = 80
 	designQuizMaxEvidenceRunes  = 300
 	designQuizMaxFreeTextRunes  = 500
-	designQuizMaxAnswers        = 60
+	designQuizMaxAnswers        = 150
 	designQuizMaxIDLen          = 64
 	designQuizMaxPartLen        = 32
 	designQuizMaxFamilyLen      = 16
@@ -58,10 +58,10 @@ const (
 	designQuizMaxAnsweredLines = 40
 	// designQuizMaxPromptBytes — the composed user turn's ceiling (the 64 KB of designMaxInputsBytes).
 	designQuizMaxPromptBytes = 64 << 10
-	// designQuizMaxTokens — 15 questions × (≤ 6 options + evidence + clarify) is ≈ 3–3.5k tokens of
-	// JSON; the rest is headroom for the "medium" reasoning a Claude route spends out of the same cap
-	// (walking the checklist silently is the reasoning). Server budget 60 s + 8000/30 ≈ 327 s.
-	designQuizMaxTokens = 8000
+	// designQuizMaxTokens — live runs spent ≈ 2.5k completion tokens on 15 questions, so the 30-question
+	// ceiling is ≈ 5–7k of JSON; the rest is headroom for the "medium" reasoning a Claude route spends
+	// out of the same cap. Server budget 60 s + 12000/30 = 460 s.
+	designQuizMaxTokens = 12000
 	// designQuizEffort — "medium": the long rubric (picture-settles rules, family checklist, closed
 	// part vocabulary) is where "low" drifted to templated collar/pocket/label questions.
 	designQuizEffort = "medium"
@@ -79,7 +79,7 @@ const (
 // <card_data>, labelled as data.
 //
 // What it is built to do (owner's words): ask about the UNCLEAR and NON-STANDARD points of THIS
-// garment, with concrete garment-specific options, as many questions as the case needs (≤ 15). The
+// garment, with concrete garment-specific options, as many questions as the case needs (no target; ≤ 30 as a safety ceiling). The
 // visual_evidence / contradicts_picture / clarify trio (20-DESIGN O2) lets the client insert a
 // clarifying question in the same quiz when the designer picks an answer the pictures contradict,
 // without a second paid call.
@@ -118,7 +118,7 @@ A POINT DESERVES A QUESTION when the choice changes the pattern, the fabric orde
 
 A Known detail row closes its topic INCLUDING its sub-decisions — placement, position, loops, fullness, shaping, fastening of that part ("waistband: elastic back, flat front" settles where the waistband sits, belt loops and how the fullness is taken in). Ask about a Known topic only when the row is genuinely ambiguous, and then ONE clarifying question at most.
 
-HOW MANY: 15 is a ceiling, not a target. Stop rule: ask a question only when its answer changes the pattern or the brief; when no open point is left, stop — even at 2 or 5. Never fill the list toward the cap, never drop a point that matters. A card with details, BOM and measurements needs few; a re-run with saved answers is usually short and asks only what is new. Return an empty list when nothing is open.
+HOW MANY: ask as many questions as this garment needs — there is no target count; never pad; a well-documented card or a re-run is short. Stop rule: ask a question only when its answer changes the pattern or the brief; when no open point is left, stop — even at 2 or 5. Never fill the list toward the cap, never drop a point that matters. A card with details, BOM and measurements needs few; a re-run with saved answers is usually short and asks only what is new. Return an empty list when nothing is open.
 
 ORDER: 1) a clarify_ question on an earlier answer that contradicts the pictures; 2) fit — the fit basis, then the open fit points of this garment; 3) what changes the pattern or the fabric order most — volume and silhouette as a look, closure, lining and insulation, main fabric; 4) details by part from the top down (neckline or collar → shoulder, sleeve, cuff → front and pockets → waist → hem, leg); 5) use — season, function, care; 6) finish — prints, washes, labels. Questions about the same part sit together.
 
@@ -888,7 +888,7 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 		designCardDataOpen + "\n" + data + "\n" + designCardDataClose + "\n\n" +
 		designQuizGroupChecklist(family) + "\n" +
 		designQuizCoverageLine(group) + "\n" +
-		"Ask at most " + strconv.Itoa(designQuizMaxQuestions) + " questions — every point that is still open and matters, nothing that is settled."
+		"Ask as many questions as this garment needs (never more than " + strconv.Itoa(designQuizMaxQuestions) + ") — every point that is still open and matters, nothing that is settled."
 }
 
 // designQuizFamilyGroup — the checklist group of the system prompt a family belongs to.
@@ -1381,7 +1381,7 @@ func designQuizSlug(s string) string {
 // from the table (the model never picks one); id lowercase [a-z0-9_]{1,64} else q{n}_{slug};
 // clarify kept only when some option contradicts the picture and it has a question and 2..4
 // options. Questions whose id or text (case-insensitive) is already among the saved answers are
-// dropped (a SKIPPED saved answer closes nothing — W-B4), as are duplicates in the batch. At most 15.
+// dropped (a SKIPPED saved answer closes nothing — W-B4), as are duplicates in the batch. At most designQuizMaxQuestions (30).
 func parseDesignQuiz(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, bool) {
 	qs, _, ok := parseDesignQuizCounted(raw, family, saved)
 	return qs, ok

@@ -180,11 +180,11 @@ func TestDesignQuizParseStatsUnusable(t *testing.T) {
 	require.Equal(t, 1, st.invalid)
 
 	var items []string
-	for i := 0; i < 18; i++ {
+	for i := 0; i < 33; i++ {
 		items = append(items, quizQ(fmt.Sprintf("q_%d", i), "design", "whole", fmt.Sprintf("Question %d?", i), "a", "b"))
 	}
 	_, st, _ = parseDesignQuizCounted(`{"questions":[`+strings.Join(items, ",")+`]}`, "tee", nil)
-	require.Equal(t, designQuizParseStats{raw: 18, kept: 15, capped: 3}, st)
+	require.Equal(t, designQuizParseStats{raw: 33, kept: 30, capped: 3}, st)
 }
 
 // W-B3: the base size's POM values reach the prompt with size and unit; an empty chart adds nothing.

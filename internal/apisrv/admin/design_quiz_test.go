@@ -116,7 +116,7 @@ func TestParseDesignQuizDedupesSavedAnswersAndCaps(t *testing.T) {
 	}
 
 	var items []string
-	for i := 0; i < 20; i++ {
+	for i := 0; i < designQuizMaxQuestions+5; i++ {
 		items = append(items, quizQ(fmt.Sprintf("q_%d", i), "design", "whole", fmt.Sprintf("Question %d?", i), "a", "b"))
 	}
 	qs, _ = parseDesignQuiz(`{"questions":[`+strings.Join(items, ",")+`]}`, "tee", nil)
@@ -516,7 +516,7 @@ func TestDesignQuizFitCategory(t *testing.T) {
 	for _, want := range []string{"- part: EXACTLY one key", "A one-word fit label", "FIT BASIS", "never invent a measurement range",
 		"candidate points, not a quota", `"category":"design|fit|details|materials|use|finish"`,
 		// 63-AB-RESULT P1 (padding to the cap) and P2 (Known detail row re-asked through its sub-decisions).
-		"15 is a ceiling, not a target", "Stop rule:", "Never fill the list toward the cap", "a re-run with saved answers is usually short",
+		"there is no target count; never pad; a well-documented card or a re-run is short", "Stop rule:", "Never fill the list toward the cap", "a re-run with saved answers is usually short",
 		"A Known detail row closes its topic INCLUDING its sub-decisions", "ONE clarifying question at most"} {
 		if !strings.Contains(designQuizSystemPrompt, want) {
 			t.Errorf("system prompt lacks %q", want)
