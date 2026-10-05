@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/shopspring/decimal"
@@ -60,6 +61,8 @@ type runStore interface {
 	ReviveExpiredRuns(ctx context.Context) (int, error)
 	// CloseOverdueRuns — the wall-clock cap's sweep (entity.DesignOverdueSweep).
 	CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSweep) (int, error)
+	// CapClaim shortens a live claim to end `within` from now (never lengthens it).
+	CapClaim(ctx context.Context, runID int, claimToken string, within time.Duration) error
 	GetRun(ctx context.Context, runID int) (*entity.DesignRun, error)
 	RecordRunPrompt(ctx context.Context, runID int, claimToken, prompt string) error
 	StartAttempt(ctx context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error)
@@ -681,6 +684,10 @@ func designKindBuysOnePicture(kind string) bool {
 // first failure is returned with everything that DID land, so the caller can sweep it.
 func (w *Worker) publish(ctx context.Context, run entity.DesignRun, out *Outcome) ([]MintedMedia, []entity.DesignPictureInsert, error) {
 	n := len(out.Artifacts)
+	// A NONCE PER PUBLISH: the object key is derived from the name, and a landing retry after a
+	// best-effort sweep must never point a second media row at the first one's objects (deleting
+	// the orphan later would delete the adopted picture's files). Every publish gets its own keys.
+	nonce := strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
 	got := make([]MintedMedia, n)
 	errs := make([]error, n)
 	sem := make(chan struct{}, publishParallel)
@@ -691,7 +698,7 @@ func (w *Worker) publish(ctx context.Context, run entity.DesignRun, out *Outcome
 		go func(i int, a Artifact) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			got[i], errs[i] = w.sink.Put(ctx, a.Bytes, a.ContentType, fmt.Sprintf("run-%d-%d", run.Id, i))
+			got[i], errs[i] = w.sink.Put(ctx, a.Bytes, a.ContentType, fmt.Sprintf("run-%d-%d-%s", run.Id, i, nonce))
 		}(i, a)
 	}
 	wg.Wait()
@@ -901,6 +908,21 @@ func (w *Worker) runDeadline(run entity.DesignRun) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return run.StartedAt.Time.Add(w.imageRunCap()), true
+}
+
+// claimTailAfterCap — how long a capped run's claim outlives its cap: the worst a LIVE worker can
+// still need after its provider phase stopped at the deadline — two landings (settleMax each), two
+// fresh closing writes, and a minute of slack.
+const claimTailAfterCap = 2*settleMax + 2*closeTimeout + time.Minute
+
+// capClaimWithin — the claim length that ends claimTailAfterCap after deadline d, and never less
+// than the time a worker needs to close a run already past its cap.
+func (w *Worker) capClaimWithin(d time.Time) time.Duration {
+	within := d.Add(claimTailAfterCap).Sub(w.clock())
+	if floor := 2*closeTimeout + time.Minute; within < floor {
+		within = floor
+	}
+	return within
 }
 
 // pastCap — a capped run is past its wall-clock cap now.

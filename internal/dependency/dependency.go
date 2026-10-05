@@ -2224,6 +2224,8 @@ type (
 		// CloseOverdueRuns closes capped image runs past their wall-clock cap (timed_out /
 		// landing_failed / cancelled) and releases their reserve.
 		CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSweep) (int, error)
+		// CapClaim shortens a live claim (the holder's token) to end `within` from now.
+		CapClaim(ctx context.Context, runID int, claimToken string, within time.Duration) error
 		// RecordRunPrompt writes the COMPOSED prompt the worker is about to send onto the run row,
 		// claim-guarded, BEFORE the first attempt — so the history carries the sent text itself
 		// rather than a reconstruction that could drift from it.

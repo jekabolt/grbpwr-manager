@@ -473,3 +473,38 @@ func TestOverDeliveryDoesNotOverwriteTheComplaintAboutThePicture(t *testing.T) {
 	require.Equal(t, CodeCutoutNoAlpha, st.finished[0].ErrorCode)
 	require.Equal(t, entity.DesignAttemptDelivered, st.finished[0].State)
 }
+
+// TestALandingRetryNeverReusesObjectKeys — the second landing gets its own object names, so no two
+// media rows ever point at the same bucket objects (Codex critical 2).
+func TestALandingRetryNeverReusesObjectKeys(t *testing.T) {
+	st := &fakeStore{}
+	sink := newFakeSink(ContentTypePNG)
+	sink.failAfter = 1
+	w := testWorker(st, nil, sink, Providers{Image: &fakeProvider{name: "image", out: okOutcome(3, 0.12)}})
+	require.NoError(t, w.execute(context.Background(), testRun(4, entity.DesignRunKindFlat), "tok"))
+	require.Len(t, sink.names, 6, "two landings of three")
+	seen := map[string]bool{}
+	for _, n := range sink.names {
+		require.False(t, seen[n], "object name %q handed out twice", n)
+		seen[n] = true
+	}
+}
+
+// TestACappedRunsClaimEndsAfterItsCap — at pickup a capped run's claim is shortened to its deadline
+// plus the live worker's worst tail (Codex critical 1); an uncapped kind keeps the full lease.
+func TestACappedRunsClaimEndsAfterItsCap(t *testing.T) {
+	now := time.Date(2026, 10, 5, 18, 0, 0, 0, time.UTC)
+	flat := testRun(3, entity.DesignRunKindFlat)
+	flat.StartedAt = sql.NullTime{Time: now.Add(-time.Minute), Valid: true}
+	threed := testRun(4, entity.DesignRunKindThreed)
+	threed.StartedAt = flat.StartedAt
+	st := &fakeStore{claimReturn: []entity.DesignRun{flat, threed}}
+	w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{Image: &fakeProvider{name: "image", out: okOutcome(1, 0.04)}})
+	w.now = func() time.Time { return now }
+	w.runOnce(context.Background())
+	require.Equal(t, entity.DesignImageRunCapDefault-time.Minute+claimTailAfterCap, st.capped[3])
+	_, ok := st.capped[4]
+	require.False(t, ok, "3D keeps its lease")
+	require.Less(t, entity.DesignImageRunCapDefault+claimTailAfterCap, 20*time.Minute)
+	require.Equal(t, 2*closeTimeout+time.Minute, w.capClaimWithin(now.Add(-time.Hour)), "a run past its cap still gets time to close")
+}

@@ -3,21 +3,26 @@ package design
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// CloseOverdueRuns — the wall-clock cap of an image run (entity.DesignOverdueSweep, owner 05.10):
-//
-//   - a capped run (pending or running) that started more than Cap ago and has NO delivered attempt
-//     is closed: `cancelled` when a cancel was asked, else `failed` / timed_out;
-//   - one with a DELIVERED attempt (the pictures are bought and were being filed) gets LandingGrace
-//     more, then `failed` / landing_failed — never re-queued: a re-claim would buy them again.
-//
-// Each close is one guarded UPDATE (the status it read) and releases the run's reserve, like the
-// other sweeps. A live worker that later reports on a closed row meets ErrDesignRunTerminal.
+// designRunUnheldSQL — nobody holds the row: never claimed / handed back (no token), or its claim
+// expired. A LIVE CLAIM IS NEVER TOUCHED: the worker holding it closes its own capped run through
+// its deadline path, and a sweep that closed it under the worker's feet would make the worker's
+// CompleteRun lose and discard a paid result (FinishAttempt's `delivered` write is best-effort, so
+// «no delivered attempt» does not prove nothing was delivered).
+const designRunUnheldSQL = `(claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at < UTC_TIMESTAMP(6))`
+
+// CloseOverdueRuns — the wall-clock cap of an image run (entity.DesignOverdueSweep, owner 05.10),
+// for runs NOBODY HOLDS: a capped run (pending or running) that started more than Cap ago and whose
+// claim is absent or expired is closed — `landing_failed` when an attempt was delivered (never
+// re-queued: a re-claim would buy the pictures again), `cancelled` when a cancel was asked, else
+// `failed` / timed_out. The UPDATE re-checks the status AND the token it read AND that the claim is
+// still not live, so a row claimed in between is left alone. Each close releases the reserve.
 func (s *Store) CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSweep) (int, error) {
 	if len(req.Kinds) == 0 || req.Cap <= 0 {
 		return 0, nil
@@ -27,13 +32,13 @@ func (s *Store) CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSw
 		closed = 0
 		db := rep.DB()
 		capSec := int64(req.Cap.Seconds())
-		landSec := capSec + int64(req.LandingGrace.Seconds())
 		rows, err := storeutil.QueryListNamed[entity.DesignRun](ctx, db, `
 			SELECT * FROM design_run
 			WHERE status IN ('pending', 'running')
 			  AND kind IN (:kinds)
 			  AND started_at IS NOT NULL
 			  AND started_at < UTC_TIMESTAMP(6) - INTERVAL :cap SECOND
+			  AND `+designRunUnheldSQL+`
 			ORDER BY id`, map[string]any{"kinds": req.Kinds, "cap": capSec})
 		if err != nil {
 			return fmt.Errorf("failed to read overdue design runs: %w", err)
@@ -46,20 +51,9 @@ func (s *Store) CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSw
 				return fmt.Errorf("failed to read the attempts of design run %d: %w", run.Id, err)
 			}
 			status, code := "failed", entity.DesignErrorCodeTimedOut
-			msg := fmt.Sprintf("took longer than %d min — try again", capSec/60)
+			msg := fmt.Sprintf("took longer than %d min — try again", int(req.Cap.Round(time.Minute).Minutes()))
 			switch {
 			case delivered > 0:
-				// still inside the landing grace? the worker may be filing it right now
-				young, err := storeutil.QueryCountNamed(ctx, db, `
-					SELECT COUNT(*) FROM design_run
-					WHERE id = :id AND started_at >= UTC_TIMESTAMP(6) - INTERVAL :land SECOND`,
-					map[string]any{"id": run.Id, "land": landSec})
-				if err != nil {
-					return fmt.Errorf("failed to read design run %d: %w", run.Id, err)
-				}
-				if young > 0 {
-					continue
-				}
 				code = entity.DesignErrorCodeLandingFailed
 				msg = "the pictures were generated but could not be saved — try again"
 			case run.CancelRequestedAt.Valid:
@@ -73,8 +67,9 @@ func (s *Store) CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSw
 				    completed_at = COALESCE(completed_at, UTC_TIMESTAMP(6)),
 				    claim_token = NULL,
 				    claim_expires_at = NULL
-				WHERE id = :id AND status = :was`,
-				map[string]any{"id": run.Id, "was": run.Status, "status": status, "code": code, "msg": msg})
+				WHERE id = :id AND status = :was AND claim_token <=> :tok AND `+designRunUnheldSQL,
+				map[string]any{"id": run.Id, "was": run.Status, "tok": run.ClaimToken,
+					"status": status, "code": code, "msg": msg})
 			if err != nil {
 				return fmt.Errorf("failed to close overdue design run %d: %w", run.Id, err)
 			}
@@ -91,4 +86,25 @@ func (s *Store) CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSw
 		return 0, err
 	}
 	return closed, nil
+}
+
+// CapClaim shortens a live claim to `until` (never lengthens it): a capped image run's lease ends
+// shortly after its wall-clock cap, so a worker that died with it is swept in minutes, not after the
+// full batch lease. Only the holder's own token moves it.
+//
+// `within` is measured from the database's own clock (no Go time crosses the wire).
+func (s *Store) CapClaim(ctx context.Context, runID int, claimToken string, within time.Duration) error {
+	if within <= 0 {
+		return nil
+	}
+	if _, err := storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE design_run
+		SET claim_expires_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL :micros MICROSECOND)
+		WHERE id = :id AND status = 'running' AND claim_token = :tok
+		  AND claim_expires_at IS NOT NULL
+		  AND claim_expires_at > DATE_ADD(UTC_TIMESTAMP(6), INTERVAL :micros MICROSECOND)`,
+		map[string]any{"id": runID, "tok": claimToken, "micros": within.Microseconds()}); err != nil {
+		return fmt.Errorf("failed to cap the claim of design run %d: %w", runID, err)
+	}
+	return nil
 }

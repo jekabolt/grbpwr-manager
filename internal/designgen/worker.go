@@ -202,7 +202,7 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 	// instead of spinning for its lease. Grace of one tick-ish minute over the cap, because a live
 	// worker fails such a run itself at the cap (runOnce's deadline + failRunAt).
 	if _, err := w.store.CloseOverdueRuns(qctx, entity.DesignOverdueSweep{
-		Kinds: entity.DesignCappedRunKinds(), Cap: w.imageRunCap() + overdueGrace, LandingGrace: settleMax,
+		Kinds: entity.DesignCappedRunKinds(), Cap: w.imageRunCap() + overdueGrace,
 	}); err != nil {
 		qcancel()
 		return w.failed(ctx, "close overdue design runs", err)
@@ -219,6 +219,18 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 	if len(runs) == 0 {
 		w.tracker.MarkSuccess()
 		return true
+	}
+	// A capped run's lease ends shortly after its cap (claimTailAfterCap), so a worker that died
+	// holding it is swept in minutes; a failed shortening only keeps the full lease.
+	for _, run := range runs {
+		if d, ok := w.runDeadline(run); ok {
+			cctx, ccancel := context.WithTimeout(ctx, queueTimeout)
+			if err := w.store.CapClaim(cctx, run.Id, token, w.capClaimWithin(d)); err != nil {
+				slog.WarnContext(ctx, "design generation: the claim of a capped run kept its full lease",
+					slog.Int("run_id", run.Id), slog.String("err", err.Error()))
+			}
+			ccancel()
+		}
 	}
 
 	for _, run := range runs {

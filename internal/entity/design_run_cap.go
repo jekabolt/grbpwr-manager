@@ -10,8 +10,9 @@ import "time"
 // spinning until its 20-minute lease runs out. The worker enforces the same cap on its own provider
 // phase, so a live worker fails the run itself first; the sweep is for a worker that died.
 //
-// A run whose result was DELIVERED and is still landing gets LandingGrace more before it is closed
-// — as `landing_failed`, never re-queued: re-queueing a delivered attempt buys the pictures again.
+// The sweep only ever touches a run NOBODY HOLDS (no claim, or an expired one); a capped run's claim
+// is shortened at pickup to end shortly after its cap. A run with a delivered attempt closes as
+// `landing_failed`, never re-queued: re-queueing a delivered attempt buys the pictures again.
 
 // DesignImageRunCapDefault — the cap when the deployment names none (DESIGN_IMAGE_RUN_CAP).
 const DesignImageRunCapDefault = 6 * time.Minute
@@ -42,7 +43,6 @@ func DesignCappedRunKinds() []string {
 
 // DesignOverdueSweep — one pass of the overdue sweep.
 type DesignOverdueSweep struct {
-	Kinds        []string
-	Cap          time.Duration
-	LandingGrace time.Duration
+	Kinds []string
+	Cap   time.Duration
 }
