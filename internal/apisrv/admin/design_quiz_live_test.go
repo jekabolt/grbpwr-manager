@@ -154,10 +154,12 @@ func quizLiveFixtures() []quizLiveFixture {
 		}},
 		{name: "knit_tee", family: "tee", card: tee, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
 			var out []string
-			knit := map[string]bool{"": true, "sm_plain_overlock": true, "sm_safety": true, "sm_flatlock": true,
-				"sm_hem_cover": true, "sm_hem_raw": true, "sm_hem_bound": true}
+			// Only woven-only constructions are wrong on jersey; knit edges (rib/self band, lettuce,
+			// overlocked edge, coverstitch, binding, raw) are fine.
+			woven := map[string]bool{"sm_french": true, "sm_flat_felled": true,
+				"sm_hem_blind": true, "sm_hem_faced": true, "sm_hong_kong": true, "sm_hem_turned": true}
 			for _, o := range quizLiveAllOptions(qs) {
-				if k := designQuizSeamOf(o); !knit[k] {
+				if k := designQuizSeamOf(o); woven[k] {
 					out = append(out, "woven construction ("+k+") on a jersey tee: "+o)
 				}
 			}
