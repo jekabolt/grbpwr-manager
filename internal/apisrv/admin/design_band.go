@@ -1214,7 +1214,8 @@ func designUnitInterval(field string, d *pb_decimal.Decimal) (decimal.Decimal, e
 	return v, nil
 }
 
-// designCropPNG cuts one frame out of the decoded source and encodes it as PNG.
+// designCropPNG cuts one frame out of the decoded source, squares it on white (T25,
+// designSquarePiece) and encodes it as PNG. Its only caller is SplitDesignPicture.
 //
 // PNG, and not the source's own format, because the cut must be LOSSLESS: re-encoding a JPEG
 // composite as JPEG would add a generation of loss to every crop, and a flat that gets printed
@@ -1253,6 +1254,11 @@ func designCropPNG(src image.Image, bounds image.Rectangle, r designUnitRect) ([
 			}
 		}
 		cropped = dst
+	}
+	// T25: the piece comes out SQUARE — the garment tightened and centred on white with an 8 %
+	// margin (designSquarePiece). A frame with no garment in it keeps the plain crop.
+	if sq, ok := designSquarePiece(cropped); ok {
+		cropped = sq
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, cropped); err != nil {
