@@ -341,6 +341,10 @@ type artworkUse struct {
 	// Ground — set by the worker when the picture went out TIGHTENED (T27): cropped to its content
 	// and flattened onto this ground, its Corners then being the content quad. "" = sent as stored.
 	Ground artworkGroundKind `json:"-"`
+	// Colours — the artwork's own colours in words («white #f4f4f4»), read off the tightened
+	// picture by the worker; "" when it went out as stored. Named, because a light thread shown on
+	// the cloth's own ground reads to the model as tone-on-tone (beta run 139).
+	Colours string `json:"-"`
 }
 
 type artworkCorner struct {

@@ -165,7 +165,7 @@ func t27Job(t *testing.T, params, inputs string, engines []Engine) Job {
 	return job
 }
 
-const t27Embroidery = "Make it real machine EMBROIDERY: dense satin-stitch thread in the artwork's own colours, " +
+const t27Embroidery = "Make it real machine EMBROIDERY: dense satin-stitch thread in the artwork's own colours (red #dc0a0a — never the cloth's own colour, never tone-on-tone), " +
 	"raised above the cloth by about 1–2 mm, visible stitch direction and the soft sheen of thread, stitched " +
 	"edges that slightly gather the cloth around them. It is NOT a print, NOT a flat patch, NOT an appliqué " +
 	"and has no backing or border of its own: only the artwork itself is stitched, its exact shape, colours " +
@@ -219,7 +219,7 @@ func TestT27EmbroideryGoesOutTightWithItsGuide(t *testing.T) {
 func TestT27PrintGetsTheInkWording(t *testing.T) {
 	job := t27Job(t, t27Params, t27Inputs("screen print"), EngineTable(""))
 	require.Contains(t, job.Prompt, "ARTWORK. Image 3 is the artwork «back logo» (screen print). Image 4 shows EXACTLY")
-	require.Contains(t, job.Prompt, "do not move it. Make it a real PRINT: screen-printed ink sitting in the weave — "+
+	require.Contains(t, job.Prompt, "do not move it. Make it a real PRINT: screen-printed ink (red #dc0a0a — never the cloth's own colour, never tone-on-tone) sitting in the weave — "+
 		"flat, no relief, the cloth texture shows through the ink; its exact shape, colours and letterforms are "+
 		"kept. It is NOT embroidery and NOT a patch. The plain ground around it in image 3 is only the garment's "+
 		"cloth colour and is not part of it.")
@@ -387,4 +387,18 @@ func TestT27ReviewDegenerateQuadNoGuide(t *testing.T) {
 	if got := artworkSubQuad(q, [4]float64{0.1, 0.1, 0.9, 0.9}); got[1] != q[1] {
 		t.Fatalf("degenerate sub-quad changed: %+v", got)
 	}
+}
+
+func TestT27ColourWordsNameTheThread(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			c := color.NRGBA{244, 244, 244, 255}
+			if x < 3 {
+				c = color.NRGBA{0, 0, 0, 0}
+			}
+			img.SetNRGBA(x, y, c)
+		}
+	}
+	require.Equal(t, "white #f4f4f4", artworkColourWords(img))
 }

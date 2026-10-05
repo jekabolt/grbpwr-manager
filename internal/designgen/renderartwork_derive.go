@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/jpeg"
 	"log/slog"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -444,6 +446,7 @@ func deriveRenderArtworks(ctx context.Context, objects objectFetcher, p runParam
 		if c, ok := cuts[arts[k].MediaID]; ok && len(arts[k].Corners) == 4 {
 			arts[k].Corners = artworkSubQuad(arts[k].Corners, c.frac)
 			arts[k].Ground = groundKind
+			arts[k].Colours = artworkColourWords(c.img)
 		}
 	}
 	in.Artworks = arts
@@ -534,4 +537,105 @@ func deriveRenderArtworks(ctx context.Context, objects objectFetcher, p runParam
 		job.ReferenceViews = views
 	}
 	return out
+}
+
+// artworkColourWords names the artwork's main colours — at most two, each ≥ 15 % of its opaque
+// pixels — as «white #f4f4f4» or «white #f4f4f4 and red #c0262d». "" when nothing is opaque.
+func artworkColourWords(img *image.NRGBA) string {
+	type acc struct{ r, g, b, n int }
+	buckets := map[int]*acc{}
+	total := 0
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.NRGBAAt(x, y)
+			if c.A < 128 {
+				continue
+			}
+			k := int(c.R>>5)<<6 | int(c.G>>5)<<3 | int(c.B>>5)
+			a := buckets[k]
+			if a == nil {
+				a = &acc{}
+				buckets[k] = a
+			}
+			a.r, a.g, a.b, a.n = a.r+int(c.R), a.g+int(c.G), a.b+int(c.B), a.n+1
+			total++
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	list := make([]*acc, 0, len(buckets))
+	for _, a := range buckets {
+		list = append(list, a)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].n > list[j].n })
+	var words []string
+	for _, a := range list {
+		if len(words) == 2 || a.n*100 < total*15 {
+			break
+		}
+		c := color.NRGBA{R: uint8(a.r / a.n), G: uint8(a.g / a.n), B: uint8(a.b / a.n), A: 0xff}
+		words = append(words, fmt.Sprintf("%s #%02x%02x%02x", artworkColourName(c), c.R, c.G, c.B))
+	}
+	return strings.Join(words, " and ")
+}
+
+// artworkColourName — a plain colour word: achromatic by lightness, else by hue.
+func artworkColourName(c color.NRGBA) string {
+	r, g, b := float64(c.R)/255, float64(c.G)/255, float64(c.B)/255
+	mx, mn := math.Max(r, math.Max(g, b)), math.Min(r, math.Min(g, b))
+	l, ch := (mx+mn)/2, mx-mn
+	if ch < 0.12 {
+		switch {
+		case l > 0.85:
+			return "white"
+		case l > 0.6:
+			return "light grey"
+		case l > 0.3:
+			return "grey"
+		case l > 0.12:
+			return "dark grey"
+		}
+		return "black"
+	}
+	var h float64
+	switch mx {
+	case r:
+		h = math.Mod((g-b)/ch, 6)
+	case g:
+		h = (b-r)/ch + 2
+	default:
+		h = (r-g)/ch + 4
+	}
+	h *= 60
+	if h < 0 {
+		h += 360
+	}
+	name := "red"
+	switch {
+	case h < 15 || h >= 345:
+		name = "red"
+	case h < 40:
+		name = "orange"
+	case h < 65:
+		name = "yellow"
+	case h < 165:
+		name = "green"
+	case h < 200:
+		name = "cyan"
+	case h < 255:
+		name = "blue"
+	case h < 290:
+		name = "purple"
+	default:
+		name = "pink"
+	}
+	switch {
+	case l < 0.3:
+		return "dark " + name
+	case l > 0.75:
+		return "light " + name
+	}
+	return name
 }
