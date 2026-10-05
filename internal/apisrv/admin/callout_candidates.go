@@ -45,6 +45,15 @@ const calloutMaxCandidates = 48
 // calloutDescriptionMaxRunes — the callout text, data-backed or model-own (42-CONTRACT).
 const calloutDescriptionMaxRunes = 120
 
+// calloutLabelMaxRunes — the ghost plate's one line (43-REWORK, R38): the description is the full text
+// the callout gets on ✓, the label is what the plate shows before.
+const calloutLabelMaxRunes = 32
+
+// calloutLabelText — one line, ≤ 32 runes, an ellipsis when cut.
+func calloutLabelText(s string) string {
+	return aiBoundedText(designOneLine(s), calloutLabelMaxRunes)
+}
+
 // calloutCandidate — one callout the card's data implies.
 type calloutCandidate struct {
 	sourceID    string
@@ -54,6 +63,7 @@ type calloutCandidate struct {
 	order       int // card order inside the rank
 	spec        string
 	description string
+	label       string // the plate's one line, ≤ 32 runes (rendered from the row)
 	parts       []string
 	missing     []string
 	facts       string // one line for the model
@@ -256,6 +266,7 @@ func (b *calloutBuilder) add(c calloutCandidate) {
 	b.order++
 	c.order = b.order
 	c.description = aiBoundedText(designOneLine(c.description), calloutDescriptionMaxRunes)
+	c.label = calloutLabelText(c.label)
 	b.out = append(b.out, c)
 }
 
@@ -396,7 +407,7 @@ func (b *calloutBuilder) bomLines() {
 			b.add(calloutCandidate{
 				sourceID: src, sourceLabel: label, purpose: calloutPurposeArtwork, rank: calloutRankArtwork,
 				spec:        renderCalloutSpec(map[string]any{"t": calloutPurposeArtwork, "sub": sub, "method": method}),
-				description: name, parts: b.piecesOfBomLine(line), missing: []string{"size", "placement"},
+				description: name, label: name, parts: b.piecesOfBomLine(line), missing: []string{"size", "placement"},
 				facts: sub + " · " + method + " · " + name,
 			})
 			continue
@@ -441,7 +452,7 @@ func (b *calloutBuilder) bomLines() {
 		b.add(calloutCandidate{
 			sourceID: src, sourceLabel: label, purpose: calloutPurposeMaterial, rank: rank,
 			spec:        renderCalloutSpec(map[string]any{"t": calloutPurposeMaterial, "lineKey": line.LineKey, "name": name}),
-			description: desc, parts: parts, facts: facts + " · " + desc,
+			description: desc, label: name, parts: parts, facts: facts + " · " + desc,
 		})
 	}
 }
@@ -537,7 +548,7 @@ func (b *calloutBuilder) garmentLabels() {
 			rank: calloutRankTrim, view: view,
 			spec: renderCalloutSpec(map[string]any{"t": calloutPurposeArtwork, "sub": "label",
 				"from": placement, "w": w, "h": h}),
-			description: desc, missing: missing, facts: facts,
+			description: desc, label: name, missing: missing, facts: facts,
 		})
 	}
 }
@@ -627,6 +638,10 @@ func (b *calloutBuilder) opStitch(i int, op entity.TechCardOperation) (calloutCa
 		c.rank = calloutRankClosure
 		c.spec = renderCalloutSpec(map[string]any{"t": calloutPurposeStitch, "method": method})
 		c.description = what
+		c.label = method
+		if what != calloutWords(machine) {
+			c.label += " · " + what
+		}
 		c.facts = method
 		return c, true
 	}
@@ -674,6 +689,10 @@ func (b *calloutBuilder) opStitch(i int, op entity.TechCardOperation) (calloutCa
 	c.spec = renderCalloutSpec(map[string]any{"t": calloutPurposeStitch, "iso": iso, "seam": seamToken,
 		"stcm": stcm, "allowance": allowance, "method": method})
 	c.description = what
+	c.label = what
+	if iso != "" {
+		c.label = iso + " · " + what
+	}
 	facts := []string{what}
 	if iso != "" {
 		facts = append(facts, iso)
@@ -807,6 +826,7 @@ func (b *calloutBuilder) section() {
 	b.add(calloutCandidate{
 		sourceID: "section:card", sourceLabel: "card · layers", purpose: calloutPurposeSection, rank: calloutRankFabric,
 		spec: renderCalloutSpec(map[string]any{"t": calloutPurposeSection, "layers": ls}), description: desc, parts: fused,
+		label: "A–A layers",
 		facts: "layers " + strings.Join(layers, " / ") + func() string {
 			if desc != "" {
 				return " · " + desc
@@ -819,7 +839,9 @@ func (b *calloutBuilder) section() {
 // Aspects that restate the silhouette or the fit — noise on a construction flat (41 §2).
 var calloutSkipAspects = map[string]bool{"silhouette": true, "fit": true, "overall": true, "length": true, "volume": true}
 
-// details — the card's details aspects, then the STUDIO quiz decisions about a part (fresh, answered).
+// details — the card's details aspects WITH PHOTOS, then the STUDIO quiz decisions about a part (fresh,
+// answered). An aspect without a photo is prose about the garment, not a place on the flat: the live run
+// (R38) drew page-wide zones for such paragraphs, so it is not a candidate (43-REWORK).
 func (b *calloutBuilder) details() {
 	covered := func(name, desc string) bool {
 		d := strings.ToLower(designOneLine(desc))
@@ -841,6 +863,9 @@ func (b *calloutBuilder) details() {
 			continue
 		}
 		lk := strings.ToLower(key)
+		if len(d.MediaIds) == 0 {
+			continue // no photo: neither a candidate nor a voice that silences the quiz decision of its part
+		}
 		aspects[lk] = true
 		if calloutSkipAspects[lk] || covered(key, text) {
 			continue
@@ -848,7 +873,7 @@ func (b *calloutBuilder) details() {
 		b.add(calloutCandidate{
 			sourceID: "detail:" + key, sourceLabel: "detail · " + calloutWords(key), purpose: calloutPurposeDetail,
 			rank: calloutRankDetail, spec: calloutSpecDefault(calloutPurposeDetail, ""),
-			description: text, parts: []string{key},
+			description: text, label: calloutWords(key), parts: []string{key},
 			facts: calloutWords(key) + ": " + aiBoundedText(designOneLine(text), 160),
 		})
 	}
@@ -876,7 +901,7 @@ func (b *calloutBuilder) details() {
 		b.add(calloutCandidate{
 			sourceID: "quiz:" + q.ID, sourceLabel: "quiz · " + label, purpose: calloutPurposeDetail,
 			rank: calloutRankDetail, spec: calloutSpecDefault(calloutPurposeDetail, ""), view: view,
-			description: desc, parts: []string{label},
+			description: desc, label: label, parts: []string{label},
 			facts: label + ": " + aiBoundedText(designOneLine(q.Question), 100) + " → " + ans,
 		})
 	}

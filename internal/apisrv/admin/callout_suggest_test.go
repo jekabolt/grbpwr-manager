@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -80,8 +81,9 @@ func csCard() *entity.TechCard {
 		{Key: "care"},
 	}
 	c.Details = []entity.TechCardDetail{
-		{Key: ns("collar"), Text: ns("two-piece collar, 4 cm stand")},
-		{Key: ns("silhouette"), Text: ns("boxy, hip length")},
+		{Key: ns("collar"), Text: ns("two-piece collar, 4 cm stand"), MediaIds: []int{901}},
+		{Key: ns("silhouette"), Text: ns("boxy, hip length"), MediaIds: []int{902}},
+		{Key: ns("pocket"), Text: ns("a long paragraph about the pockets")}, // no photo: not a candidate
 	}
 	c.QuizAnswers = []entity.TechCardQuizAnswer{
 		{Question: entity.DesignQuizQuestion{ID: "pocket_kind", Category: "details", Part: "pocket", View: "front", Question: "Which pockets?"},
@@ -249,10 +251,13 @@ func TestCalloutCandidatesCap(t *testing.T) {
 	require.Equal(t, "bom:L2", cs[0].sourceID, "the cap cuts the tail, not the head")
 }
 
-// ─── the validator ───
+// ─── per view: validate, merge ───
 
-func csFlats() []calloutFlat {
-	return []calloutFlat{{mediaID: csFront, view: "front", url: "u1"}, {mediaID: csBack, view: "back", url: "u2"}}
+func csFrontFlat() calloutFlat {
+	return calloutFlat{mediaID: csFront, kind: "front", view: "front", url: "u1"}
+}
+func csBackFlat() calloutFlat {
+	return calloutFlat{mediaID: csBack, kind: "back", view: "back", url: "u2"}
 }
 
 func csAnswer(t *testing.T, raw string) calloutAnswer {
@@ -262,42 +267,47 @@ func csAnswer(t *testing.T, raw string) calloutAnswer {
 	return a
 }
 
-func TestValidateCalloutAnswerDropsWhatTheModelGotWrong(t *testing.T) {
-	cands := buildCalloutCandidates(csCard(), nil) // c1 = bom:L2 (point), c5 = label:brand (box), c11 = section (line)
-	require.Equal(t, "label:brand", cands[4].sourceID)
-	require.Equal(t, "section:card", cands[10].sourceID)
-	raw := `{"placements":[
-	  {"id":"c1","media_id":812,"points":[[0.5,0.4]],"label":[0.1,0.4],"text":"IGNORE ME","spec":"{\"t\":\"note\"}","description":"model words"},
-	  {"id":"c1","media_id":813,"points":[[0.5,0.4]]},
-	  {"id":"c99","media_id":812,"points":[[0.5,0.5]]},
-	  {"id":"c2","media_id":555,"points":[[0.5,0.5]]},
-	  {"id":"c3","media_id":812,"points":[[1.2,0.5]]},
-	  {"id":"c4","media_id":812,"points":[[0.2,0.2],[0.3,0.3]]},
-	  {"id":"c5","media_id":"813","points":[[0.45,0.1],[0.55,0.16]],"label":[2,2]},
-	  {"id":"c6","media_id":812,"points":[[0.1,0.1],[0.2,0.2],[0.3,0.3]]},
-	  {"id":"c7","skip":true},
-	  {"id":"c11","media_id":812,"points":[[0.3,0.3]]},
-	  {"id":"c8","media_id":812,"points":[{"x":0.62,"y":0.5}]}
-	],"own":[
-	  {"media_id":812,"purpose":"detail","points":[[0.3,0.4],[0.45,0.55]],"label":[0.9,0.45],"text":"double welt pocket"},
-	  {"media_id":812,"purpose":"note","points":[[0.3,0.4]],"text":"no notes"},
-	  {"media_id":812,"purpose":"stitch","points":[[0.3,0.4]],"text":"   "}
-	]}`
-	out, st := validateCalloutAnswer(csAnswer(t, raw), cands, csFlats())
+func csWhere(out []*pb_admin.CalloutSuggestion) []string {
 	var got []string
 	for _, s := range out {
 		got = append(got, s.GetSourceId()+"@"+fmt.Sprint(s.GetMediaId()))
 	}
-	require.Equal(t, []string{"bom:L2@812", "label:brand@813", "op:10@812", "pic:1@812"}, got)
+	return got
+}
+
+func TestValidateCalloutViewDropsWhatTheModelGotWrong(t *testing.T) {
+	cands := buildCalloutCandidates(csCard(), nil) // c1 = bom:L2 (point), c5 = label:brand (box), c11 = section (line)
+	require.Equal(t, "label:brand", cands[4].sourceID)
+	require.Equal(t, "section:card", cands[10].sourceID)
+	raw := `{"placements":[
+	  {"id":"c1","media_id":813,"points":[[0.5,0.4]],"label":[0.1,0.4],"text":"IGNORE ME","spec":"{\"t\":\"note\"}","description":"model words"},
+	  {"id":"c1","points":[[0.5,0.4]]},
+	  {"id":"c99","points":[[0.5,0.5]]},
+	  {"id":"c3","points":[[1.2,0.5]]},
+	  {"id":"c4","points":[[0.2,0.2],[0.3,0.3]]},
+	  {"id":"c5","points":[[0.45,0.1],[0.55,0.16]],"confidence":"0.7"},
+	  {"id":"c6","points":[[0.1,0.1],[0.2,0.2],[0.3,0.3]]},
+	  {"id":"c7","skip":true},
+	  {"id":"c11","points":[[0.3,0.3]]},
+	  {"id":"c8","points":[{"x":0.62,"y":0.5}]}
+	],"own":[
+	  {"purpose":"detail","points":[[0.3,0.4],[0.45,0.55]],"label":[0.9,0.45],"text":"double welt pocket"},
+	  {"purpose":"note","points":[[0.3,0.4]],"text":"no notes"},
+	  {"purpose":"stitch","points":[[0.3,0.4]],"text":"   "}
+	]}`
+	out, st := mergeCalloutViews([]calloutViewAnswer{{flat: csFrontFlat(), ans: csAnswer(t, raw)}}, cands)
+	require.Equal(t, []string{"bom:L2@812", "label:brand@812", "op:10@812", "pic:1@812"}, csWhere(out),
+		"the view is the call's: a media_id in the answer moves nothing")
 	require.Equal(t, 1, st.skipped)
 
 	zip := out[0]
 	require.Equal(t, cands[0].spec, zip.GetSpec(), "the spec is the row's, never the model's")
 	require.Equal(t, "YKK zip #5 · black", zip.GetDescription(), "the description is the row's, never the model's")
+	require.Equal(t, "YKK zip #5", zip.GetLabel(), "the plate line is the row's")
 	require.True(t, zip.GetFromData())
 	require.Equal(t, pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_LABEL, zip.GetKind())
 	require.Len(t, zip.GetPoints(), 1)
-	require.Equal(t, "0.1", zip.GetPosX().GetValue())
+	require.Equal(t, "0.3", zip.GetPosX().GetValue(), "the model's plate position is ignored: the fallback sits beside the anchor")
 
 	label := out[1]
 	require.Equal(t, pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON, label.GetKind())
@@ -306,13 +316,14 @@ func TestValidateCalloutAnswerDropsWhatTheModelGotWrong(t *testing.T) {
 		corners = append(corners, p.GetX().GetValue()+","+p.GetY().GetValue())
 	}
 	require.Equal(t, []string{"0.45,0.1", "0.55,0.1", "0.55,0.16", "0.45,0.16"}, corners, "two corners → a TL TR BR BL rect")
-	require.Equal(t, "0.25", label.GetPosX().GetValue(), "an out-of-range label falls back beside the zone")
+	require.Equal(t, "0.25", label.GetPosX().GetValue())
 
 	own := out[3]
 	require.False(t, own.GetFromData())
 	require.Equal(t, "from picture", own.GetSourceLabel())
 	require.Equal(t, `{"scale":2,"t":"detail"}`, own.GetSpec())
 	require.Equal(t, "double welt pocket", own.GetDescription())
+	require.Equal(t, "double welt pocket", own.GetLabel())
 	require.Empty(t, own.GetMissing())
 
 	ids := map[string]bool{}
@@ -322,8 +333,113 @@ func TestValidateCalloutAnswerDropsWhatTheModelGotWrong(t *testing.T) {
 	}
 }
 
+// A candidate placed on several views keeps ONE: its usual view beats the model's confidence, the
+// confidence beats the order, and on a tie front goes before back whatever the request order.
+func TestMergeCalloutViewsKeepsOnePlacePerCandidate(t *testing.T) {
+	cands := buildCalloutCandidates(csCard(), nil) // c1 bom:L2 zip, c2 bom:L3 button, c5 label:brand (usually back)
+	require.Equal(t, "back", cands[4].view)
+	front := `{"placements":[{"id":"c1","points":[[0.5,0.3]],"confidence":0.3},{"id":"c2","points":[[0.5,0.5]],"confidence":0.5},` +
+		`{"id":"c5","points":[[0.45,0.1],[0.55,0.16]],"confidence":0.9}]}`
+	back := `{"placements":[{"id":"c1","points":[[0.5,0.3]],"confidence":0.8},{"id":"c2","points":[[0.5,0.5]],"confidence":0.5},` +
+		`{"id":"c5","points":[[0.45,0.05],[0.55,0.1]],"confidence":0.4}]}`
+	out, st := mergeCalloutViews([]calloutViewAnswer{
+		{flat: csBackFlat(), ans: csAnswer(t, back)}, // the back first in the request: the tie rule must still pick front
+		{flat: csFrontFlat(), ans: csAnswer(t, front)},
+	}, cands)
+	require.Equal(t, []string{"bom:L2@813", "label:brand@813", "bom:L3@812"}, csWhere(out))
+	require.Equal(t, 3, st.merged)
+	require.Equal(t, "0.05", out[1].GetPoints()[0].GetY().GetValue(), "the kept place is the winning view's points")
+}
+
+// The plate line per source: rendered from the row, ≤ 32 runes, one line.
+func TestCalloutLabelsPerSource(t *testing.T) {
+	c := csCard()
+	c.BomItems = append(c.BomItems, entity.TechCardBomItem{LineKey: "L9", Section: entity.BomSectionTrim, Kind: ns("drawcord"),
+		Name: "Flat cotton drawcord with metal aglets 120 cm"})
+	cs := buildCalloutCandidates(c, nil)
+	for id, want := range map[string]string{
+		"bom:L1":           "Cotton twill",
+		"bom:L2":           "YKK zip #5",
+		"bom:L5":           "Back logo print",
+		"bom:L9":           "Flat cotton drawcord with metal…",
+		"op:10":            "301 · side seam",
+		"op:30":            "514 · overlock",
+		"op:40":            "bartack 12 mm",
+		"label:brand":      "brand label",
+		"label:care":       "care label",
+		"section:card":     "A–A layers",
+		"detail:collar":    "collar",
+		"quiz:pocket_kind": "pocket",
+	} {
+		got, ok := csFind(cs, id)
+		require.True(t, ok, id)
+		require.Equal(t, want, got.label, id)
+		require.LessOrEqual(t, utf8.RuneCountInString(got.label), calloutLabelMaxRunes, id)
+	}
+	_, ok := csFind(cs, "detail:pocket")
+	require.False(t, ok, "an aspect without a photo is not a candidate")
+
+	own := `{"own":[{"purpose":"stitch","points":[[0.3,0.4]],"text":"double needle topstitch along the yoke seam, 6 mm"}]}`
+	out, _ := mergeCalloutViews([]calloutViewAnswer{{flat: csFrontFlat(), ans: csAnswer(t, own)}}, cs)
+	require.Len(t, out, 1)
+	require.Equal(t, "double needle topstitch along t…", out[0].GetLabel(), "model-own: its text cut to 32")
+	require.Equal(t, "double needle topstitch along the yoke seam, 6 mm", out[0].GetDescription(), "the description stays whole")
+}
+
+// Zones are places: a side over a quarter shrinks around the centre, one over half goes.
+func TestCalloutZoneCap(t *testing.T) {
+	ans := `{"own":[` +
+		`{"purpose":"detail","points":[[0.1,0.2],[0.5,0.3]],"text":"pocket"},` +
+		`{"purpose":"artwork","points":[[0.05,0.1],[0.95,0.2]],"text":"hem-wide band"},` +
+		`{"purpose":"detail","points":[[0.6,0.6],[0.7,0.7]],"text":"tab"}]}`
+	out, st := mergeCalloutViews([]calloutViewAnswer{{flat: csFrontFlat(), ans: csAnswer(t, ans)}}, nil)
+	require.Len(t, out, 2)
+	var corners []string
+	for _, p := range out[0].GetPoints() {
+		corners = append(corners, p.GetX().GetValue()+","+p.GetY().GetValue())
+	}
+	require.Equal(t, []string{"0.175,0.2", "0.425,0.2", "0.425,0.3", "0.175,0.3"}, corners, "clamped toward the centre 0.3")
+	require.Equal(t, "tab", out[1].GetDescription())
+	require.Equal(t, 1, st.clamped)
+	require.Equal(t, 1, st.zoneDropped)
+}
+
+// ≤ 2 details per view (data-backed by rank first, the model's own last), the rest of the view untouched.
+func TestCalloutDetailLimitPerView(t *testing.T) {
+	c := csCard()
+	c.Details = append(c.Details,
+		entity.TechCardDetail{Key: ns("cuff"), Text: ns("button cuff"), MediaIds: []int{903}},
+		entity.TechCardDetail{Key: ns("hem"), Text: ns("raw hem"), MediaIds: []int{904}})
+	cands := buildCalloutCandidates(c, nil)
+	var items []string
+	nDetail := 0
+	for i, cd := range cands {
+		word, _, _ := calloutGeometryOf(cd.purpose)
+		pts := map[string]string{"point": `[[0.5,0.5]]`, "box": `[[0.4,0.4],[0.5,0.5]]`, "line": `[[0.4,0.4],[0.5,0.5]]`}[word]
+		if cd.purpose == calloutPurposeDetail {
+			nDetail++
+		} else if i > 3 {
+			continue // keep the view under 12 so only the detail rule bites
+		}
+		items = append(items, fmt.Sprintf(`{"id":"c%d","points":%s}`, i+1, pts))
+	}
+	require.Equal(t, 4, nDetail) // collar, cuff, hem, quiz pocket
+	own := `{"purpose":"detail","points":[[0.1,0.1],[0.2,0.2]],"text":"own detail"}`
+	out, st := mergeCalloutViews([]calloutViewAnswer{{flat: csFrontFlat(),
+		ans: csAnswer(t, `{"placements":[`+strings.Join(items, ",")+`],"own":[`+own+`]}`)}}, cands)
+	var details []string
+	for _, s := range out {
+		if strings.Contains(s.GetSpec(), `"t":"detail"`) {
+			details = append(details, s.GetSourceId())
+		}
+	}
+	require.Equal(t, []string{"detail:collar", "detail:cuff"}, details)
+	require.Equal(t, 3, st.detailCapped)
+	require.Len(t, out, 4+2)
+}
+
 // ≤ 12 per flat: data-backed first by rank, model-own last.
-func TestValidateCalloutAnswerCapsPerFlatWithModelOwnLast(t *testing.T) {
+func TestValidateCalloutViewCapsPerFlatWithModelOwnLast(t *testing.T) {
 	c := csCard()
 	for i := 0; i < 20; i++ {
 		c.BomItems = append(c.BomItems, entity.TechCardBomItem{LineKey: fmt.Sprintf("T%d", i),
@@ -334,19 +450,19 @@ func TestValidateCalloutAnswerCapsPerFlatWithModelOwnLast(t *testing.T) {
 	for i := len(cands); i >= 1; i-- { // reverse order: the cap must follow RANK, not answer order
 		pts := map[string]string{"point": `[[0.5,0.5]]`, "box": `[[0.4,0.4],[0.5,0.5]]`, "line": `[[0.4,0.4],[0.5,0.5]]`}
 		word, _, _ := calloutGeometryOf(cands[i-1].purpose)
-		items = append(items, fmt.Sprintf(`{"id":"c%d","media_id":812,"points":%s,"label":[0.9,0.5]}`, i, pts[word]))
+		items = append(items, fmt.Sprintf(`{"id":"c%d","points":%s}`, i, pts[word]))
 	}
-	own := `{"media_id":812,"purpose":"detail","points":[[0.1,0.1],[0.2,0.2]],"text":"own one"},` +
-		`{"media_id":813,"purpose":"detail","points":[[0.1,0.1],[0.2,0.2]],"text":"own on back"}`
-	out, st := validateCalloutAnswer(csAnswer(t, `{"placements":[`+strings.Join(items, ",")+`],"own":[`+own+`]}`), cands, csFlats())
-	front := 0
+	front := `{"placements":[` + strings.Join(items, ",") + `],"own":[{"purpose":"detail","points":[[0.1,0.1],[0.2,0.2]],"text":"own one"}]}`
+	back := `{"own":[{"purpose":"detail","points":[[0.1,0.1],[0.2,0.2]],"text":"own on back"}]}`
+	out, st := mergeCalloutViews([]calloutViewAnswer{{flat: csFrontFlat(), ans: csAnswer(t, front)}, {flat: csBackFlat(), ans: csAnswer(t, back)}}, cands)
+	n := 0
 	for _, s := range out {
 		if s.GetMediaId() == csFront {
-			front++
+			n++
 			require.True(t, s.GetFromData(), "a full flat keeps data-backed callouts, the model's own go first")
 		}
 	}
-	require.Equal(t, calloutMaxPerFlat, front)
+	require.Equal(t, calloutMaxPerFlat, n)
 	require.Equal(t, "bom:L2", out[0].GetSourceId(), "rank order, not the answer's order")
 	require.Equal(t, "pic:1", out[len(out)-1].GetSourceId(), "the back flat still has room for its own")
 	require.Zero(t, st.invalid)
@@ -383,36 +499,46 @@ func csStand(t *testing.T, card *entity.TechCard, client *openrouter.Client) *Se
 }
 
 func TestSuggestCalloutsHandler(t *testing.T) {
-	answer := `{"placements":[{"id":"c1","media_id":812,"points":[[0.52,0.4]],"label":[0.92,0.4]},{"id":"c2","skip":true}],` +
-		`"own":[{"media_id":813,"purpose":"stitch","points":[[0.5,0.2]],"label":[0.1,0.2],"text":"yoke topstitch"}]}`
+	// Every view gets the same answer: c1 on both views must come back once; the own one is per view.
+	answer := `{"placements":[{"id":"c1","points":[[0.52,0.4]],"confidence":0.8},{"id":"c2","skip":true}],` +
+		`"own":[{"purpose":"stitch","points":[[0.5,0.2]],"text":"yoke topstitch"}]}`
 	client, rec := newSuggestFakeOR(t, openrouter.Config{}, suggestAnswer(answer))
 	s := csStand(t, csCard(), client)
 	req := &pb_admin.SuggestCalloutsRequest{TechCardId: 7, MediaIds: []int32{csFront, csBack}, DismissedSourceIds: []string{"bom:L3"}}
 
 	resp, err := s.SuggestCallouts(adminCtx("olga"), req)
 	require.NoError(t, err)
-	require.Len(t, resp.GetSuggestions(), 2)
+	require.Equal(t, []string{"bom:L2@812", "pic:1@812", "pic:2@813"}, csWhere(resp.GetSuggestions()))
 	require.Equal(t, "shared/model", resp.GetModel())
 	zip := resp.GetSuggestions()[0]
-	require.Equal(t, "bom:L2", zip.GetSourceId())
 	require.Equal(t, `{"lineKey":"L2","name":"YKK zip #5","t":"material"}`, zip.GetSpec())
+	require.Equal(t, "YKK zip #5", zip.GetLabel())
 	require.True(t, zip.GetFromData())
-	require.Equal(t, "pic:1", resp.GetSuggestions()[1].GetSourceId())
 
 	calls := rec.all()
-	require.Len(t, calls, 1)
-	require.Equal(t, []string{"https://cdn.test/812-c.webp", "https://cdn.test/813-c.webp"}, calls[0].Images)
-	require.True(t, calls[0].JSONMode)
-	require.Contains(t, calls[0].UserText, "IMAGE 2 = media_id 813, view back")
-	require.Contains(t, calls[0].UserText, "c1 | material | point")
-	require.NotContains(t, calls[0].UserText, "Horn button", "a dismissed source never reaches the model")
-	require.NotContains(t, calls[0].System, "Field jacket", "no card byte in the system role")
+	require.Len(t, calls, 2, "one call per flat")
+	views := map[string]string{}
+	for _, c := range calls {
+		require.Len(t, c.Images, 1, "each call sees its own flat only")
+		require.True(t, c.JSONMode)
+		require.Contains(t, c.UserText, "c1 | material | point")
+		require.NotContains(t, c.UserText, "Horn button", "a dismissed source never reaches the model")
+		require.NotContains(t, c.System, "Field jacket", "no card byte in the system role")
+		views[c.Images[0]] = c.UserText
+	}
+	require.Contains(t, views["https://cdn.test/812-c.webp"], "VIEW: front (the picture, media_id 812)")
+	require.Contains(t, views["https://cdn.test/813-c.webp"], "VIEW: back (the picture, media_id 813)")
 
 	// An identical press within ten minutes is free.
 	again, err := s.SuggestCallouts(adminCtx("olga"), req)
 	require.NoError(t, err)
-	require.Len(t, rec.all(), 1)
-	require.Equal(t, resp.GetSuggestions()[0].GetId(), again.GetSuggestions()[0].GetId())
+	require.Len(t, rec.all(), 2)
+	require.Equal(t, csWhere(resp.GetSuggestions()), csWhere(again.GetSuggestions()))
+
+	// The cache is per flat: dropping the back flat asks nobody.
+	_, err = s.SuggestCallouts(adminCtx("olga"), &pb_admin.SuggestCalloutsRequest{TechCardId: 7, MediaIds: []int32{csFront}, DismissedSourceIds: []string{"bom:L3"}})
+	require.NoError(t, err)
+	require.Len(t, rec.all(), 2)
 }
 
 func TestSuggestCalloutsRefusals(t *testing.T) {
