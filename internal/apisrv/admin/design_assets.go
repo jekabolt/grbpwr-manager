@@ -252,6 +252,20 @@ func designAssetPlacementsToPb(in []entity.DesignAssetPlacement) []*pb_common.De
 	return out
 }
 
+// designAssetPlacementsWithPicturesToPb is the band's variant: each mark carries the picture it
+// sits on (T29b), so a client can draw a mark whose flat left the paged runs/batches lists.
+func designAssetPlacementsWithPicturesToPb(in []entity.DesignAssetPlacement, pics map[int]entity.DesignPicture) []*pb_common.DesignAssetPlacement {
+	out := make([]*pb_common.DesignAssetPlacement, 0, len(in))
+	for _, p := range in {
+		pb := designAssetPlacementToPb(p)
+		if pic, ok := pics[p.PictureId]; ok {
+			pb.Picture = designPictureToPb(pic)
+		}
+		out = append(out, pb)
+	}
+	return out
+}
+
 // designAssetPlacementToPb reads the stored geometry back into the very message it was written
 // from, with the band's DiscardUnknown reader.
 //

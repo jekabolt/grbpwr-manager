@@ -302,7 +302,7 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// по-прежнему отвечает 200, стена полок просто пустеет, а метки на флэтах исчезают:
 		// молчаливая потеря, которую ловит только проба формы ответа.
 		Assets:          designAssetsToPb(band.Assets),
-		AssetPlacements: designAssetPlacementsToPb(band.AssetPlacements),
+		AssetPlacements: designAssetPlacementsWithPicturesToPb(band.AssetPlacements, band.AssetPlacementPictures),
 		// ТКАНИ ПАР (КОЛОРВЕЙ, СЛОТ), 0368 — ВСЯ КАРТОЧКА, bench_colorway_id ИХ НЕ СУЖАЕТ. Конвертер
 		// отдаёт [] при пустоте, и это несущее: на проводе пустой список значит «ничего не выбрано»,
 		// а отсутствие — «старый бинарь», против которого клиент не рисует двери слотов.

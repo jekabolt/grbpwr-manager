@@ -364,6 +364,14 @@ func TestGetDesignBandCarriesTheShelvesAndTheirMarks(t *testing.T) {
 				Annotation: entity.RawJSON(raw), SetBy: "designer",
 				SetAt: time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC),
 			}},
+			// T29b: картинка под меткой едет с меткой — старый флэт вне страниц прогонов.
+			AssetPlacementPictures: map[int]entity.DesignPicture{91: {
+				Id: 91, Kind: "flat",
+				GhostView:   sql.NullString{String: "back", Valid: true},
+				DerivedFrom: sql.NullInt32{Int32: 40, Valid: true},
+				MediaId:     5,
+				Media:       &entity.MediaFull{Id: 5},
+			}},
 		}, nil).Once()
 
 	resp, err := rig.srv.GetDesignBand(designRunCtx(), &pb_admin.GetDesignBandRequest{
@@ -381,6 +389,12 @@ func TestGetDesignBandCarriesTheShelvesAndTheirMarks(t *testing.T) {
 	require.NotNil(t, resp.GetAssetPlacements()[0].GetAnnotation())
 	assert.Equal(t, pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_DIM,
 		resp.GetAssetPlacements()[0].GetAnnotation().GetKind())
+	pic := resp.GetAssetPlacements()[0].GetPicture()
+	require.NotNil(t, pic, "T29b: метка везёт свою картинку, иначе метку на выпавшем флэте не нарисовать")
+	assert.Equal(t, int32(91), pic.GetId())
+	assert.Equal(t, "back", pic.GetGhostView())
+	assert.Equal(t, int32(40), pic.GetDerivedFrom())
+	require.NotNil(t, pic.GetMedia())
 }
 
 // ─────────────────────── СКОУП КАРТОЧКИ У ГЛАГОЛА УДАЛЕНИЯ ───────────────────────

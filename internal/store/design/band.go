@@ -451,6 +451,12 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if band.AssetPlacements, err = listAssetPlacements(ctx, db, cardID); err != nil {
 			return err
 		}
+		// THE PICTURE UNDER EACH MARK (T29b), ONE BATCH, MEDIA RESOLVED. An old flat leaves the
+		// paged runs/batches lists while its marks stay; without this the client has neither the
+		// view nor the pixels of the picture a mark sits on.
+		if band.AssetPlacementPictures, err = loadPlacementPictures(ctx, rep, band.AssetPlacements); err != nil {
+			return err
+		}
 		// THE FABRIC OF EVERY (COLOURWAY, SLOT), 0368, IN THE SAME SNAPSHOT AS THE SHELF IT POINTS
 		// INTO — read apart, a binding could name a tile the wall no longer holds. Whole card: the
 		// pattern step draws every colourway's slots on one screen.

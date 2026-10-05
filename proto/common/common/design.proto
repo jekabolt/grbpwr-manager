@@ -924,6 +924,10 @@ message DesignAssetPlacement {
   string note = 5;
   string set_by = 6; // server-stamped
   google.protobuf.Timestamp set_at = 7;
+  // The picture it sits on, so a client can carry a placement whose picture left the band (old
+  // flats drop out of the paged runs/batches lists). Filled by GetDesignBand with media resolved;
+  // unset on the Set response and when the picture row is gone.
+  DesignPicture picture = 8;
 }
 
 // DesignAssetBinding — THE FABRIC OF ONE (COLOURWAY, SLOT): which asset colourway N wears on BOM

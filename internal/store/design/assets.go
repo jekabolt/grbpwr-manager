@@ -1232,6 +1232,45 @@ func listAssetPlacements(ctx context.Context, db dependency.DB, cardID int) ([]e
 	return rows, nil
 }
 
+// loadPlacementPictures reads the pictures the marks sit on, by id, in ONE query, with their media
+// resolved through the same funnel every outgoing picture takes (resolveMedia). Placements are few
+// (bounded by the shelves), so this is a short IN list. A picture row that is gone simply has no key.
+func loadPlacementPictures(ctx context.Context, rep dependency.Repository, pls []entity.DesignAssetPlacement) (map[int]entity.DesignPicture, error) {
+	out := map[int]entity.DesignPicture{}
+	ids := make([]int, 0, len(pls))
+	seen := map[int]struct{}{}
+	for _, p := range pls {
+		if p.PictureId == 0 {
+			continue
+		}
+		if _, ok := seen[p.PictureId]; ok {
+			continue
+		}
+		seen[p.PictureId] = struct{}{}
+		ids = append(ids, p.PictureId)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.DesignPicture](ctx, rep.DB(), `
+		SELECT * FROM design_picture WHERE id IN (:ids)`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("failed to load the pictures of design asset placements: %w", err)
+	}
+	ptrs := make([]*entity.DesignPicture, 0, len(rows))
+	for i := range rows {
+		ptrs = append(ptrs, &rows[i])
+	}
+	if err := resolveMedia(ctx, rep, ptrs); err != nil {
+		return nil, err
+	}
+	for _, p := range rows {
+		out[p.Id] = p
+	}
+	return out, nil
+}
+
 // listAssetBindings reads the fabric of every (colourway, slot) of this card (0368), never nil: an
 // empty card answers [] so the wire can say «nothing bound yet» rather than «this binary does not
 // know bindings». Ordered by colourway, then slot — the order the pattern step draws them in.
