@@ -931,7 +931,7 @@ func designConstructionUserPrompt(
 	// долях кадра», ради которой был отдельный круг работы и на которую стоят пробы. Вырезка по
 	// заголовку (первый вариант этой функции) держалась бы на том, что заголовок не поправят, —
 	// а поправив его, мы вынули бы замысел и записки из платного запроса МОЛЧА.
-	b.WriteString(designBoardPromptBody(mood, attachedIDs))
+	b.WriteString(designBoardPromptBodyRoles(mood, attachedIDs, designBoardRoles(card)))
 
 	// ─── 4. УЖЕ НА КАРТОЧКЕ ───
 	if already := designCardAlreadySays(card); already != "" {

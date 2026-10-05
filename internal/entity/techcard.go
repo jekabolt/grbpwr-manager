@@ -740,6 +740,7 @@ type TechCardMediaItem struct {
 	Category TechCardMediaCategory `db:"category"`
 	Kind     TechCardMediaKind     `db:"kind"`
 	Caption  sql.NullString        `db:"caption"`
+	Role     TechCardMediaRole     `db:"role"`
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -748,6 +749,28 @@ type TechCardMediaFull struct {
 	Category TechCardMediaCategory
 	Kind     TechCardMediaKind
 	Caption  sql.NullString
+	Role     TechCardMediaRole
+}
+
+// TechCardMediaRole says what a MOODBOARD picture is for (0395, tech_card_media.role). Empty =
+// unassigned: prompts treat it as mood and name no role. Technical rows keep it empty.
+type TechCardMediaRole string
+
+const (
+	TechCardMediaRoleNone     TechCardMediaRole = ""
+	TechCardMediaRoleTarget   TechCardMediaRole = "target"   // the garment we make
+	TechCardMediaRoleDetail   TechCardMediaRole = "detail"   // a detail reference
+	TechCardMediaRoleMaterial TechCardMediaRole = "material" // fabric / colour / texture
+	TechCardMediaRoleMood     TechCardMediaRole = "mood"     // atmosphere only
+)
+
+// IsTechCardMediaRole reports whether r is in the column's vocabulary (empty included).
+func IsTechCardMediaRole(r TechCardMediaRole) bool {
+	switch r {
+	case TechCardMediaRoleNone, TechCardMediaRoleTarget, TechCardMediaRoleDetail, TechCardMediaRoleMaterial, TechCardMediaRoleMood:
+		return true
+	}
+	return false
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.

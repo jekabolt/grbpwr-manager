@@ -4606,7 +4606,7 @@ func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnap
 			b.WriteString("Composition: " + v + "\n")
 		}
 	}
-	b.WriteString(designBoardPromptBody(mood, attachedIDs))
+	b.WriteString(designBoardPromptBodyRoles(mood, attachedIDs, designBoardRoles(card)))
 	if facts := designDescriptionCardFacts(card); facts != "" {
 		b.WriteString("\nOn the card already — the designer's facts, keep them:\n" + facts)
 	}
@@ -4626,6 +4626,15 @@ func designDraftIdeaPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnap
 // Шапка (имя изделия, посадка) сюда НЕ входит: у двух читателей она разная — короткая у прозы,
 // с категорией, полом и размерным рядом у конструкции.
 func designBoardPromptBody(mood *pb_common.DesignMoodSnapshot, attachedIDs []int) string {
+	return designBoardPromptBodyRoles(mood, attachedIDs, nil)
+}
+
+// designBoardPromptBodyRoles — the board body with the designer's PICTURE ROLES (64-DEFERRED E3,
+// 0395): «picture 2 (target garment)». Roles come from the card (designBoardRoles), keyed by media
+// id, and are written only for pictures that actually went; an unassigned picture is named bare
+// (prompts treat it as mood). nil roles = the body exactly as before — the doors that only ask
+// «is there anything to read» call the plain wrapper.
+func designBoardPromptBodyRoles(mood *pb_common.DesignMoodSnapshot, attachedIDs []int, roles map[int]entity.TechCardMediaRole) string {
 	var b strings.Builder
 	if note := strings.TrimSpace(mood.GetNote()); note != "" {
 		b.WriteString("\nConcept & construction description — the designer's own words, build on them:\n" + note + "\n")
@@ -4634,8 +4643,22 @@ func designBoardPromptBody(mood *pb_common.DesignMoodSnapshot, attachedIDs []int
 		b.WriteString("\nThe moodboard pictures are attached in order: «picture 1» is the first attached image, «picture 2» the second, and so on.\n")
 	}
 	pictureAt := make(map[int32]int, len(attachedIDs))
+	var roleLines []string
 	for i, id := range attachedIDs {
 		pictureAt[int32(id)] = i + 1
+		if w := designPictureRoleWords(roles[id]); w != "" {
+			roleLines = append(roleLines, "- picture "+strconv.Itoa(i+1)+" ("+w+")")
+		}
+	}
+	if len(roleLines) > 0 {
+		b.WriteString("\nWhat the designer marked each picture as — a target picture is the garment itself, a detail picture shows a detail to take, a material picture shows fabric, colour or texture only, a mood picture is atmosphere only; an unmarked picture is mood:\n")
+		b.WriteString(strings.Join(roleLines, "\n") + "\n")
+	}
+	pictureName := func(n int, id int32) string {
+		if w := designPictureRoleWords(roles[int(id)]); w != "" {
+			return "picture " + strconv.Itoa(n) + " (" + w + ")"
+		}
+		return "picture " + strconv.Itoa(n)
 	}
 	var lines []string
 	for _, c := range mood.GetCallouts() {
@@ -4644,13 +4667,49 @@ func designBoardPromptBody(mood *pb_common.DesignMoodSnapshot, attachedIDs []int
 			continue // картинка не уехала — её слова едут вместе с ней, то есть никуда
 		}
 		lines = append(lines,
-			"- picture "+strconv.Itoa(n)+designCalloutSpot(c.GetAnnotation())+": "+designOneLine(c.GetText()))
+			"- "+pictureName(n, c.GetMediaId())+designCalloutSpot(c.GetAnnotation())+": "+designOneLine(c.GetText()))
 	}
 	if len(lines) > 0 {
 		b.WriteString("\nNotes pinned on the pictures — each names its picture and the spot it marks:\n")
 		b.WriteString(strings.Join(lines, "\n") + "\n")
 	}
 	return b.String()
+}
+
+// designBoardRoles — the moodboard picture roles of the card, by media id (0395). Only set roles
+// are kept; nil card or no roles → nil.
+func designBoardRoles(card *entity.TechCard) map[int]entity.TechCardMediaRole {
+	if card == nil {
+		return nil
+	}
+	var out map[int]entity.TechCardMediaRole
+	for _, m := range card.Media {
+		if m.Category != entity.TechCardMediaCategoryMoodboard || m.Role == entity.TechCardMediaRoleNone {
+			continue
+		}
+		if out == nil {
+			out = make(map[int]entity.TechCardMediaRole)
+		}
+		if _, dup := out[m.MediaId]; !dup {
+			out[m.MediaId] = m.Role
+		}
+	}
+	return out
+}
+
+// designPictureRoleWords — the role as the model reads it next to «picture N»; "" for unassigned.
+func designPictureRoleWords(r entity.TechCardMediaRole) string {
+	switch r {
+	case entity.TechCardMediaRoleTarget:
+		return "target garment"
+	case entity.TechCardMediaRoleDetail:
+		return "detail reference"
+	case entity.TechCardMediaRoleMaterial:
+		return "material reference"
+	case entity.TechCardMediaRoleMood:
+		return "mood only"
+	}
+	return ""
 }
 
 // designOneLine сплющивает человеческий текст в одну строку — тот же приём и тот же довод, что
