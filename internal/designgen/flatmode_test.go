@@ -45,7 +45,7 @@ func TestHandFlatCraft(t *testing.T) {
 	} {
 		require.Contains(t, got, s)
 	}
-	require.True(t, strings.HasSuffix(got, flatNoTextNoGrey+"\n\n"+flatStyleGarment+"\n\n"+flatExcludedGarment+"\n\n"+flatOutput))
+	require.True(t, strings.HasSuffix(got, flatNoTextNoGrey+"\n\n"+flatStyleHandFlat+"\n\n"+flatExcludedGarment+"\n\n"+flatOutput))
 	require.NotContains(t, got, flatRolesHead, "no photo, no roles")
 	got2 := flatHandFlatCraft(handParams([]string{"front"}), nil, att[:1])
 	require.NotContains(t, got2, "Derive the views")

@@ -179,7 +179,7 @@ func flatHandFlatCraft(p runParams, detailNames []string, attached []refCaption)
 	if mood := flatMoodSentence(attached); mood != "" {
 		paras = append(paras, mood)
 	}
-	paras = append(paras, flatNoTextNoGrey, flatStyleGarment, flatExcludedGarment, flatOutput)
+	paras = append(paras, flatNoTextNoGrey, flatStyleHandFlat, flatExcludedGarment, flatOutput)
 	return strings.Join(paras, "\n\n")
 }
 

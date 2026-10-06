@@ -40,6 +40,11 @@ const (
 	// 102-ARTIFACTS §2.1: «fine dashed lines for topstitching…» ordered stitching on every edge; «with subtle body-form shaping» removed — it invited waist shaping the garment does not have.
 	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger."
 
+	// The Style of a run whose source is NOT a photo (Codex, R19): a run from words alone, and a
+	// hand_flat redraw whose dashed lines are the designer's own.
+	flatStyleGarmentNoRef = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the words name. Dashed lines only for stitching the words name; otherwise the drawing contains no dashed lines. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
+	flatStyleHandFlat     = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the designer's flats show. Dashed lines only where the designer's flats have them; otherwise none. Garment drawn flat and symmetrical, with the silhouette the flats show. No human body, no mannequin, no hanger."
+
 	flatExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
 
 	// Эталон 2 — one enlarged construction detail.
@@ -152,6 +157,9 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 		// reference to be true to, and keeping those clauses would tell the model to be faithful
 		// to a picture it was never shown.
 		identify = flatIdentifyGarmentNoRef
+		if !detail {
+			style = flatStyleGarmentNoRef
+		}
 		if detail {
 			identify = flatIdentifyDetailNoRef
 		}
@@ -416,6 +424,9 @@ func flatMissingViewsLine(views []string, attached []refCaption) string {
 	for _, rc := range attached {
 		if rc.View != "" {
 			shown[rc.View] = true
+		}
+		if rc.IsStructure && rc.StructView != "" {
+			shown[rc.StructView] = true
 		}
 		switch rc.Role {
 		case entity.DesignRefRoleFrontFlat:

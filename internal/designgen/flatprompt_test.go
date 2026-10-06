@@ -202,4 +202,6 @@ func TestFlatSaysWhichViewsNoPhotoShows(t *testing.T) {
 	all := []refCaption{{FromRef: true, Role: "front"}, {FromRef: true, Role: "back_flat"}, {FromRef: true, Role: "side_l"}, {View: "side_r"}}
 	require.Equal(t, "", flatMissingViewsLine(four, all))
 	require.Equal(t, "", flatMissingViewsLine([]string{"detail"}, front))
+	hand := []refCaption{{IsStructure: true, StructView: "front"}, {IsStructure: true, StructView: "back"}}
+	require.Equal(t, "- no photo shows the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, hand))
 }
