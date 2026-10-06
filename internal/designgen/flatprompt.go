@@ -125,6 +125,14 @@ func flatAcceptedViewsSentence(attached []refCaption) string {
 		" exactly: the same position on the garment, the same proportions, seam lines, stitch rows, layer order and construction as drawn there. Where a photo and the flats differ, follow the flats. Read the detail off the flats; do not draw the whole garment."
 }
 
+// FlatPromptCarriesConstruction — THE ONE SWITCH for the join list in a flat prompt (owner 06.10, wave
+// 10: «CONSTRUCTION тоже не добавлять в промпт генерации флета — тупиковая ветвь»). Off: the image
+// model gets no landmark ruler, no LAYERS / JOIN LIST / ABSENT and no CHECK sentences — the list is
+// still built, confirmed, frozen in the snapshot and read by the PARTS labeller; it only stops
+// travelling to the picture. Back on in one line if the backs break again (73-AB-LAYOUT: a prompt
+// without the list drew a back neckline behind 38's straps 6/6).
+var FlatPromptCarriesConstruction = false
+
 func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc, mood, accepted string) string {
 	detail := detailOnlyRun(p.Views)
 
@@ -146,8 +154,9 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 	}
 
 	layout := flatLayoutParagraph(p.Views, detailNames, p.Layout, refs)
-	withJoins := !detail && flatJoinsUsable(joins)
-	if withJoins && flatHasSideView(p.Views) {
+	withJoins := FlatPromptCarriesConstruction && !detail && flatJoinsUsable(joins)
+	// The side-facing convention is a LAYOUT rule, not construction: said whenever a side is drawn.
+	if !detail && flatHasSideView(p.Views) {
 		layout += " " + flatSideFacing
 	}
 	paras := []string{

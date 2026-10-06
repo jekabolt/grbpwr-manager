@@ -1,6 +1,7 @@
 package designgen
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,8 @@ func TestJoinsCraftMatchesTheWinningPrompts(t *testing.T) {
 // TestFlatCraftWithJoins — the list rides only a garment run, the side convention only with a side
 // view, and the no-grey sentence on every flat run, before the owner's verbatim style.
 func TestFlatCraftWithJoins(t *testing.T) {
+	defer func(v bool) { FlatPromptCarriesConstruction = v }(FlatPromptCarriesConstruction)
+	FlatPromptCarriesConstruction = true
 	j := loadJoinsCase(t, "c38")
 	p := runParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: layoutOne}
 	got := flatCraftWith(p, nil, 3, &j)
@@ -77,8 +80,8 @@ func TestFlatCraftWithJoins(t *testing.T) {
 	}
 
 	plain := flatCraft(p, nil, 3)
-	if strings.Contains(plain, "JOIN LIST") || strings.Contains(plain, flatSideFacing) {
-		t.Fatal("a run without joins must not carry the list")
+	if strings.Contains(plain, "JOIN LIST") || !strings.Contains(plain, flatSideFacing) {
+		t.Fatal("a run without joins must not carry the list (the side-facing layout rule stays, wave 10)")
 	}
 	if !strings.Contains(plain, flatNoTextNoGrey) {
 		t.Fatal("every flat run says no grey")
@@ -148,6 +151,8 @@ func TestJoinsHorizontalBandIsNotDiagonal(t *testing.T) {
 
 // TestComposePromptCarriesFrozenJoins — the list reaches the prompt from the FROZEN snapshot key.
 func TestComposePromptCarriesFrozenJoins(t *testing.T) {
+	defer func(v bool) { FlatPromptCarriesConstruction = v }(FlatPromptCarriesConstruction)
+	FlatPromptCarriesConstruction = true
 	raw := `{"garment_note":"a top","joins":{"items":[{"id":"strap_L","kind":"strap","from":"NP_L","via":["CBN..UB_C:0.6"],"to":"UA_R..MB_R:0.3","visibility":"visible"}],"absences":["no sleeves"]}}`
 	in := parseInputs(entity.RawJSON(raw))
 	if in.Joins == nil || len(in.Joins.Items) != 1 {
@@ -200,4 +205,16 @@ func TestJoinsNeckSentencesAtTheirPoints(t *testing.T) {
 	if d.Items[0].ID != "neck_seam" || d.Items[0].Type != "crew" {
 		t.Fatalf("the c49seam fixture lost its crew seam: %+v", d.Items[0])
 	}
+}
+
+// TestFlatPromptCarriesNoConstructionByDefault — wave 10 (owner): the join list is built and frozen,
+// but the image model is not told it; the side-facing layout rule stays.
+func TestFlatPromptCarriesNoConstructionByDefault(t *testing.T) {
+	require.False(t, FlatPromptCarriesConstruction)
+	j := loadJoinsCase(t, "c38")
+	got := flatCraftWith(runParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: layoutOne}, nil, 3, &j)
+	for _, gone := range []string{"Landmark ruler", "JOIN LIST", "LAYERS", "ABSENT", "CHECK EVERY VIEW"} {
+		require.NotContains(t, got, gone)
+	}
+	require.Contains(t, got, flatSideFacing)
 }
