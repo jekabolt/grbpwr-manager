@@ -1,0 +1,32 @@
+garment: jacket
+
+references:
+- image 1: the designer's own hand-drawn technical flat — FRONT view (structure authority)
+- image 2: the designer's own hand-drawn technical flat — BACK view (structure authority)
+- image 3: front photo: the waist
+- no photo shows the SIDE LEFT or the SIDE RIGHT
+
+Image 1 is the designer's own hand-drawn technical flat of the garment's FRONT view. Image 2 is the designer's own hand-drawn technical flat of the garment's BACK view. Draw ONE finished sheet: four views on one horizontal canvas, side by side, equal scale, aligned on a common baseline, evenly spaced — left to right: FRONT, BACK, SIDE LEFT, SIDE RIGHT.
+
+Redraw the designer's flats (images 1 and 2) cleanly as a finished professional fashion technical flat sketch (CAD-style tech pack drawing). For every view the designer drew this is a TRACING job, not a design job:
+- keep every edge, band, strap, seam, hem and dashed line exactly where images 1 and 2 has it, with the same proportions and the same position of each view;
+- do not add ANY line, edge, band, panel, neckline, shoulder, seam or detail that is not in images 1 and 2; open areas stay plain white;
+- do not remove or straighten anything; where images 1 and 2 shows a strap, the finished drawing shows a strap of the same width in the same place.
+
+Derive the views the designer did not draw (SIDE LEFT, SIDE RIGHT) yourself, consistent with images 1 and 2: the same construction, the same proportions and length, every edge, seam, band, strap, pocket and closure where the designer's flats put it, seen from that side; add nothing they do not imply. SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge; SIDE RIGHT the right flank with the front facing the RIGHT edge (mirror images).
+
+Improve only the rendering: uniform precise vector-style line work, heavier weight for outer contours, thin lines for internal design lines, dashed lines only where images 1 and 2 has them; the outline follows the given silhouette exactly; cloth drawn white.
+
+Input roles are strict and non-interchangeable:
+- Image 1 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the FRONT view.
+- Image 2 — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the BACK view.
+- Image 3 — FRONT FIT AND DETAIL AUTHORITY only (front photo — the waist); never a source of construction.
+Unlike a literal trace, adjust only the continuous OUTER-SILHOUETTE geometry and the rendering of details to the photos: reproduce the fit (waist suppression, ease, bust/hip curvature, body and sleeve length), the proportions of pockets, collars and bands, hems, cuffs, topstitching and hardware as seen on the real garment. The photos must NOT change the construction: where a photo disagrees with images 1 and 2 about a connection, an endpoint, an opening or a view's orientation, images 1 and 2 is right.
+
+No text, no view names, no grey, no tint, no shading anywhere on the drawing — the inside of every band, binding and collar stays white.
+
+Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the designer's flats show. Dashed lines only where the designer's flats have them; otherwise none. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger.
+
+Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements.
+
+Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic.

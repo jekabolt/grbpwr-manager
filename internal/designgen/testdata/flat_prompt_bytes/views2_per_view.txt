@@ -1,0 +1,19 @@
+garment: shirt
+
+references:
+- image 1: front photo
+- image 2: back photo
+
+Turn the garment shown in the reference images into a professional fashion technical flat sketch (CAD-style tech pack drawing).
+
+Draw only what the photos show. Every line in the drawing must correspond to an edge, seam, opening, closure or row of stitching that is visible in a photo. Where the photos show plain cloth, draw plain white with no lines. A view, or a part of a view, that no photo shows is drawn as the plainest continuation of the photographed views — same hem line, same width, same sleeves — with no seam, stitching, vent, pocket or shaping added to it. Count what the photos show — buttons, pockets, seams, panels, vents — and draw exactly that many: a missing element and an added element are equally wrong. Do not complete the garment from a typical example of its kind. Draw every seam that is visible in the photos, including faint seams on dark fabric; add nothing that is not visible. Ignore the model, pose, background, lighting and fabric colour; draw only the garment.
+
+Layout: one drawing out of a set of two, each view of the same garment as its own image — FRONT, BACK, one view per image. This image shows exactly one of those views, the garment isolated and centered on the canvas, equal scale and true proportions across the whole set.
+
+No text, no view names, no grey, no tint, no shading anywhere on the drawing — the inside of every band, binding and collar stays white.
+
+Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger.
+
+Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements.
+
+Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic.
