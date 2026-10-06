@@ -633,8 +633,10 @@ func parseDesignPartsCard(raw string, views []designPartsCardView, vocab ...stri
 		if label == "" || label == entity.DesignPartsUnnamed {
 			continue
 		}
-		opening := designPartsIsOpening(label)
-		if !opening {
+		// A name of the vocabulary itself is that part, whatever its words («opening placket»).
+		exact, named := designPartsVocabExact(label, vocab)
+		opening := !named && designPartsIsOpening(label)
+		if !named && !opening {
 			switch edge, hole := designPartsEdgeOnly(label); {
 			case hole:
 				opening = true
@@ -642,7 +644,9 @@ func parseDesignPartsCard(raw string, views []designPartsCardView, vocab ...stri
 				continue // an edge is no part: its regions are unnamed
 			}
 		}
-		if opening {
+		if named {
+			label = exact
+		} else if opening {
 			label = designPartsOpening
 		} else if len(vocab) > 0 {
 			name, ok := designPartsVocabMatch(label, vocab)
@@ -796,7 +800,9 @@ func parseDesignPartsCard(raw string, views []designPartsCardView, vocab ...stri
 }
 
 // designPartsEdgeWords — words that name an edge or a place on the garment, never a cut piece;
-// designPartsHoleWords — those of them that name a hole (no cloth: an opening).
+// designPartsHoleWords — those of them that name a hole (no cloth: an opening). A region the model
+// calls by a hole's edge alone («right armhole», «neckline») is that hole: an opening, never a part
+// and never unnamed (an unnamed region is an error on the client).
 var (
 	designPartsEdgeWords = map[string]bool{
 		"left": true, "right": true, "front": true, "back": true, "upper": true, "lower": true, "top": true,
@@ -807,6 +813,7 @@ var (
 	}
 	designPartsHoleWords = map[string]bool{
 		"hole": true, "holes": true, "cutout": true, "keyhole": true, "gap": true, "out": true,
+		"armhole": true, "armholes": true, "scye": true, "neckline": true, "neck": true,
 	}
 	designPartsPlaceWords = map[string]bool{
 		"left": true, "right": true, "front": true, "back": true, "upper": true, "lower": true, "top": true,
@@ -840,6 +847,27 @@ func designPartsEdgeOnly(label string) (edge, hole bool) {
 		return false, false // «front», «back left»: a place, not an edge — left to the vocabulary
 	}
 	return true, hole
+}
+
+// designPartsVocabExact — the vocabulary name the label IS: the same words in any order, or the
+// same letters run together («neck band» is «neckband»).
+func designPartsVocabExact(label string, vocab []string) (string, bool) {
+	words := designPartsWords(label)
+	if len(words) == 0 {
+		return "", false
+	}
+	sorted := slices.Clone(words)
+	slices.Sort(sorted)
+	joined := strings.Join(words, "")
+	for _, v := range vocab {
+		vw := designPartsWords(v)
+		vs := slices.Clone(vw)
+		slices.Sort(vs)
+		if slices.Equal(slices.Compact(vs), slices.Compact(slices.Clone(sorted))) || strings.Join(vw, "") == joined {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // designPartsVocabMatch maps a label onto the closed vocabulary: the same words in any order; else

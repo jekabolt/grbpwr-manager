@@ -298,23 +298,25 @@ func TestParseDesignPartsCardOpeningsNeverCloth(t *testing.T) {
 
 // M5: an edge is no part («right armhole» was a part on card 38's side view); a hole is an opening.
 func TestParseDesignPartsCardEdgeIsNoPart(t *testing.T) {
-	views := []designPartsCardView{{View: "side_r", Count: 5}}
+	views := []designPartsCardView{{View: "side_r", Count: 6}}
 	raw := `{"parts":[
 		{"label":"right armhole","regions":{"side_r":[1]}},
 		{"label":"neckline","regions":{"side_r":[2]}},
 		{"label":"armhole hole","regions":{"side_r":[3]}},
 		{"label":"right armhole binding","regions":{"side_r":[4]}},
-		{"label":"back","regions":{"side_r":[5]}}
+		{"label":"back","regions":{"side_r":[5]}},
+		{"label":"side seam","regions":{"side_r":[6]}}
 	]}`
 	parts, _, ok := parseDesignPartsCard(raw, views)
 	if !ok {
 		t.Fatal("must be usable")
 	}
+	// A hole's edge alone names the hole: an opening. An edge that is no hole is no part.
 	want := []entity.DesignPartGroup{
 		{Label: "right armhole binding", Regions: []int{4}, PartKey: "right-armhole-binding"},
 		{Label: "back", Regions: []int{5}, PartKey: "back"},
-		{Label: "opening", Regions: []int{3}, PartKey: "opening"},
-		{Label: "unnamed", Regions: []int{1, 2}, PartKey: "unnamed-side_r"},
+		{Label: "opening", Regions: []int{1, 2, 3}, PartKey: "opening"},
+		{Label: "unnamed", Regions: []int{6}, PartKey: "unnamed-side_r"},
 	}
 	if !reflect.DeepEqual(parts["side_r"], want) {
 		t.Fatalf("got %+v", parts["side_r"])
@@ -570,5 +572,31 @@ func TestDesignPartsRetryUnusable(t *testing.T) {
 	defer cancel()
 	if n, err := run(short, unusable, nil); n != 1 || !designPartsUnusable(err) {
 		t.Fatalf("less than one budget left: no retry, got %d calls, %v", n, err)
+	}
+}
+
+// M5 (Codex): a vocabulary name is that part whatever its words — «opening placket» is no hole —
+// and words run together are the same name («neck band» is «neckband»).
+func TestParseDesignPartsCardVocabularyExactFirst(t *testing.T) {
+	vocab := []string{"front body", "opening placket", "neckband"}
+	views := []designPartsCardView{{View: "front", Count: 4}}
+	raw := `{"parts":[
+		{"label":"front body","regions":{"front":[1]}},
+		{"label":"opening placket","regions":{"front":[2]}},
+		{"label":"neck band","regions":{"front":[3]}},
+		{"label":"opening","regions":{"front":[4]}}
+	]}`
+	parts, _, ok := parseDesignPartsCard(raw, views, vocab...)
+	if !ok {
+		t.Fatal("must be usable")
+	}
+	want := []entity.DesignPartGroup{
+		{Label: "front body", Regions: []int{1}, PartKey: "front-body"},
+		{Label: "opening placket", Regions: []int{2}, PartKey: "opening-placket"},
+		{Label: "neckband", Regions: []int{3}, PartKey: "neckband"},
+		{Label: "opening", Regions: []int{4}, PartKey: "opening"},
+	}
+	if !reflect.DeepEqual(parts["front"], want) {
+		t.Fatalf("got %+v", parts["front"])
 	}
 }
