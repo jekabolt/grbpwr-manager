@@ -12,12 +12,6 @@
       ]
     },
     "inputs": {
-      "refs": [
-        {
-          "media_id": 100,
-          "role": "front"
-        }
-      ],
       "slots": [
         {
           "view_key": "front",
@@ -52,12 +46,6 @@
       ]
     },
     "inputs": {
-      "refs": [
-        {
-          "media_id": 100,
-          "role": "front"
-        }
-      ],
       "slots": [
         {
           "view_key": "front",
@@ -88,12 +76,6 @@
       ]
     },
     "inputs": {
-      "refs": [
-        {
-          "media_id": 100,
-          "role": "front"
-        }
-      ],
       "slots": [
         {
           "view_key": "front",

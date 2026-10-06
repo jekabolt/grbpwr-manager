@@ -134,7 +134,9 @@ func TestDesignEmptyDetailRecordIsNotAPicture(t *testing.T) {
 		[]string{entity.DesignViewDetail, entity.DesignViewDetail})
 	// T8: прогон деталей добавляет принятый front (media 200) — первой плитой снимка; записи
 	// пустых деталей картинок не добавляют.
-	require.Equal(t, append([]int32{200}, bare...), asked,
+	// T74: FRONT-фото карточки (media 100) к детали не относится и в прогон деталей не едет.
+	require.Equal(t, []int32{100}, bare)
+	require.Equal(t, []int32{200}, asked,
 		"картинки прогона обязаны совпасть до элемента: запись без media_id не картинка")
 }
 

@@ -70,9 +70,11 @@ func TestTwoDetailSheetNamesBothFramesAndAsksForTwo(t *testing.T) {
 	// переписывала его один в один. Уезжает то, что человек принёс, — его референс.
 	// T8 (владелец 06.10): деталь получает ещё и принятый FRONT — второй картинкой, под своей
 	// подписью; ни боков, ни старых деталей.
-	require.Len(t, job.References, 2, "референс карточки + принятый front; прочие плиты — только по просьбе")
-	require.Contains(t, job.Prompt, "image 2: this garment's accepted technical flat")
-	require.Contains(t, job.Prompt, "Image 2 is this garment's accepted technical flat")
+	// T74 (владелец 06.10): «если генерим деталь — только картинки этой детали». FRONT-фото карточки
+	// к детали не относится и больше не едет; остаётся принятый FRONT-флет, первой картинкой.
+	require.Len(t, job.References, 1, "только принятый front; фото сторон к детали не относятся")
+	require.Contains(t, job.Prompt, "image 1: this garment's accepted technical flat")
+	require.Contains(t, job.Prompt, "Image 1 is this garment's accepted technical flat")
 }
 
 // КОНТРОЛЬ ГРАНИЦЫ: РОВНО ОДНОЙ ДЕТАЛИ ЭТАЛОН 2 ПРИНАДЛЕЖИТ ПО-ПРЕЖНЕМУ.

@@ -3763,6 +3763,7 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// ─── A FLAT: only the garment's own photos with a side role travel — no moodboard picture, no
 	// role-less input (wave 10); a hand_flat run records the designer's flats first, then those photos.
 	out.Refs = designFlatOnlyRoledPhotos(src, out.Refs)
+	out.Refs = designFlatDetailOnlyItsRefs(src, out.Refs)
 	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
 		out.Refs = refs
 	}
