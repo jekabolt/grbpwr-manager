@@ -279,7 +279,7 @@ func TestDesignQuizDecisionsReachImageRuns(t *testing.T) {
 	// Wave 10: a FLAT reads construction only — no quiz Q&A in its note.
 	flat, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Params: params})
 	require.NoError(t, err)
-	require.Equal(t, "olive field jacket", flat.GetGarmentNote())
+	require.Empty(t, flat.GetGarmentNote(), "wave 10: a flat sends no description, only a «garment:» class line")
 	snap, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindRender, Card: card, Params: params})
 	require.NoError(t, err)
 	note := snap.GetGarmentNote()

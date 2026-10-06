@@ -1338,8 +1338,9 @@ func designW3Refs() []entity.DesignReference {
 // поле, доехавшее до сообщения, но уехавшее в снимок под другим именем, было бы для него пустым —
 // молча, без единой ошибки.
 func TestDesignRunInputsCarryTheGarmentDescriptionTheNoteAndTheMarkup(t *testing.T) {
+	// Wave 10: a flat sends no description (only a class line) — the render route still reads it whole.
 	snap, err := designAssembleInputs(designInputSources{
-		Kind:   entity.DesignRunKindFlat,
+		Kind:   entity.DesignRunKindRender,
 		Card:   designW3Card(),
 		Refs:   designW3Refs(),
 		Bench:  designBandWith(true).Bench,

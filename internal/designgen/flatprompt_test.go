@@ -14,7 +14,8 @@ import (
 // assertion at once and any "improvement" of the owner's wording would pass silently. These copies
 // are the reference the constants are held to.
 const (
-	ownerStyleGarment    = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical with subtle body-form shaping. No human body, no mannequin, no hanger."
+	// Wave 10 (owner 06.10): «with subtle body-form shaping» removed by the owner.
+	ownerStyleGarment    = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
 	ownerExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
 	ownerStyleDetail     = "Style: black vector line art on a plain white background. Heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching. Flat, technical, true proportions. No human body, no mannequin, no hanger."
 	ownerExcludedDetail  = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements."

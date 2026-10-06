@@ -33,9 +33,12 @@ import (
 //     separate entity drawn OVER the picture, never baked into it.
 const (
 	// Эталон 1 — silhouette views of a whole garment.
-	flatIdentifyGarment = "Automatically identify the garment type and reproduce it exactly: silhouette, proportions, neckline, collar, sleeves, straps, cut-outs, seam lines, princess seams, darts, pleats, pockets, closures (zippers, buttons, snaps, drawcords), waistband, cuffs, hems and bindings — all true to the reference. Ignore the model, pose, background, lighting and fabric color of the reference; extract only the construction."
+	// Wave 10 (owner 06.10): the old checklist («silhouette, … princess seams, darts, pleats, pockets, …»)
+	// invited the model to add exactly those; the line now asks for what is visible and nothing else.
+	flatIdentifyGarment = "Reproduce exactly what is visible in the reference photos; do not add any seam, dart, pocket, vent or detail that is not visible. Ignore the model, pose, background, lighting and fabric color of the photos; draw only the garment."
 
-	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical with subtle body-form shaping. No human body, no mannequin, no hanger."
+	// Wave 10: «with subtle body-form shaping» removed — it invited waist shaping the garment does not have.
+	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
 
 	flatExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
 
@@ -188,7 +191,7 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 // The no-reference identification variants: the same construction vocabulary as the owner's
 // paragraphs, minus every clause that points at a reference image.
 const (
-	flatIdentifyGarmentNoRef = "Reproduce its construction exactly and explicitly: silhouette, proportions, neckline, collar, sleeves, straps, cut-outs, seam lines, princess seams, darts, pleats, pockets, closures (zippers, buttons, snaps, drawcords), waistband, cuffs, hems and bindings — all true to the description above."
+	flatIdentifyGarmentNoRef = "Draw exactly what the words above state; do not add any seam, dart, pocket, vent or detail they do not name."
 
 	flatIdentifyDetailNoRef = "Reproduce it exactly as constructed: layer order, seam placement, stitch rows, folds, edge finishes, hardware shape and proportions, closure mechanics, and the exact way it attaches to the surrounding panels."
 )

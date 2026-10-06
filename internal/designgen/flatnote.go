@@ -58,21 +58,11 @@ func flatCleanClause(c string) string {
 	if c == "" || flatHardJunkRe.MatchString(c) {
 		return ""
 	}
-	if !flatSoftJunkRe.MatchString(c) {
-		return c
+	if flatSoftJunkRe.MatchString(c) {
+		// whole clauses only (owner, wave 10): stripping words left fragments («shell with soft tailored»)
+		return ""
 	}
-	c = flatSoftTokenRe.ReplaceAllString(c, "")
-	c = strings.TrimSpace(flatSpacesRe.ReplaceAllString(c, " "))
-	for _, dangling := range []string{" in", " with", " of", " and", " a", " an", " the"} {
-		c = strings.TrimSuffix(c, dangling)
-	}
-	c = strings.TrimSpace(c)
-	// What is left stays when it names construction, or says enough on its own (three content words:
-	// «blazer with a curved front edge» yes, «soft tailored» / «knit with mild» no).
-	if flatConstructionRe.MatchString(c) || flatContentWords(c) >= 3 {
-		return c
-	}
-	return ""
+	return c
 }
 
 var flatStopWords = map[string]bool{"a": true, "an": true, "the": true, "with": true, "and": true, "of": true,
@@ -97,6 +87,13 @@ var flatDecisionLineRe = regexp.MustCompile(`(?i)^(decided ·|unconfirmed ·|dec
 
 var flatGarmentLineRe = regexp.MustCompile(`(?i)^garment\s*:\s*(.*)$`)
 
+// FlatWordsCarryDescription — whether a flat's garment note carries the card description's clauses
+// (filtered) or only the «garment: <class>» line. OFF (owner 06.10): WORDS are seeded by a model brief
+// (EnhanceText) and the card stores no author per sentence, so model-written text («slim body through
+// the waist», invisible «welt pockets hidden in the side seams») would reach the image model as fact.
+// Back on only once WORDS carry a human/model provenance.
+var FlatWordsCarryDescription = false
+
 // FlatConstructionNote — the card's garment note as a flat reads it: «garment: <class>» on the first
 // line (once), then the description's construction clauses. "" when nothing is left.
 func FlatConstructionNote(note string) string {
@@ -116,6 +113,11 @@ func FlatConstructionNote(note string) string {
 			continue
 		}
 		if flatDropLabelRe.MatchString(line) || flatDecisionLineRe.MatchString(line) {
+			continue
+		}
+		// Wave 10 (owner): the description is written by a model as often as by a person, and the
+		// store cannot tell which — so a flat sends none of it, only the class (FlatWordsCarryDescription).
+		if !FlatWordsCarryDescription {
 			continue
 		}
 		if t := flatConstructionText(line, seen); t != "" {

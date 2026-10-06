@@ -11,17 +11,22 @@ import (
 
 // TestFlatConstructionNote — wave 10: the card 51 description (beta run 170) as a flat reads it.
 func TestFlatConstructionNote(t *testing.T) {
+	// Wave 10: by default a flat sends only the class; the description filter is behind the switch.
+	require.Equal(t, "garment: blazer", FlatConstructionNote("garment: blazer\nfit: regular\nSingle-breasted blazer, slim body through the waist."))
+	defer func(v bool) { FlatWordsCarryDescription = v }(FlatWordsCarryDescription)
+	FlatWordsCarryDescription = true
 	in := "garment: blazer\nfit: regular\nSingle-breasted blazer, regular fit with easy chest room, slim body through the waist, cropped to the hip bone with a curved front hem and waist shaping, light shoulder pad. Notch lapel with matched gorge height. Welt pockets concealed in the side seams of the front body, inside chest pocket on the lining. Body seams plain, pressed open with overlocked edges; hem, front edge and sleeve openings blind hemmed. Fully lined. Mid-weight rustic linen with a slubby surface, soft tailored drape. Notch lapel with matched gorge height.\ndecided · collar: notch\n\ndecided with the designer (current card fields outrank these when they conflict):"
 	got := FlatConstructionNote(in)
 	require.Equal(t, "garment: blazer\nSingle-breasted blazer, slim body through the waist, cropped to the hip bone with a curved front hem and waist shaping, light shoulder pad. Notch lapel with matched gorge height. Welt pockets concealed in the side seams of the front body. Body seams plain.", got)
 	require.Equal(t, "", FlatConstructionNote("fit: slim\nFully lined."))
 	require.Equal(t, "garment: top", FlatConstructionNote("garment: top\ngarment: shirt"))
 	// a material word next to construction loses the word, not the construction (Codex review)
-	require.Equal(t, "Jacket with patch pockets and a two-way zip.", FlatConstructionNote("Linen jacket with patch pockets and a two-way zip."))
-	require.Equal(t, "Hem finished with a band at the hip bone.", FlatConstructionNote("hem finished with a self-fabric band at the hip bone."))
-	require.Equal(t, "Blazer with a curved front edge and waist shaping.", FlatConstructionNote("Linen blazer with a curved front edge and waist shaping."))
+	// whole clauses only — a material word drops its clause, never leaves a fragment (owner, wave 10)
+	require.Equal(t, "", FlatConstructionNote("Linen jacket with patch pockets."))
+	require.Equal(t, "", FlatConstructionNote("hem finished with a self-fabric band at the hip bone."))
 	require.Equal(t, "", FlatConstructionNote("soft stretch jersey drape"))
 	require.Equal(t, "Back vent.", FlatConstructionNote("back vent, shell with soft tailored drape."))
+	require.Equal(t, "Single-breasted blazer.", FlatConstructionNote("Single-breasted blazer, soft tailored drape."))
 	// the hidden goes whole, even next to a construction word
 	require.Equal(t, "", FlatConstructionNote("inside chest pocket on the lining"))
 	// a knit rib band, a sheer layer and a fitted inner layer are drawn — they stay

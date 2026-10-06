@@ -72,7 +72,12 @@ func TestASnapshotCarriesTheCardsReferencesONLY_FOR_THE_KINDS_THAT_READ_THE_CARD
 				"снимок обязан называть входом ровно то, что уедет модели")
 
 			if tc.wantGarment {
-				require.Equal(t, "GARMENT-olive shirt", snap.GetGarmentNote())
+				if tc.kind == entity.DesignRunKindFlat {
+					// wave 10: a flat sends only «garment: <class>» — this card names no class
+					require.Empty(t, snap.GetGarmentNote())
+				} else {
+					require.Equal(t, "GARMENT-olive shirt", snap.GetGarmentNote())
+				}
 				if tc.kind == entity.DesignRunKindFlat {
 					require.Empty(t, snap.GetFit(), "a flat draws construction only (wave 10)")
 				} else {

@@ -386,6 +386,9 @@ func TestRunRefusesAnOverlongGarmentDescription(t *testing.T) {
 func TestGarmentDescriptionCeilingCountsRunesAndNeverTrims(t *testing.T) {
 	card := designGuardCard()
 	full := strings.Repeat("я", designMaxGarmentNoteRunes)
+	// a «garment:» class line followed by the description: a flat keeps only the class (wave 10), so
+	// the whole-description check is made on the class line, which must arrive whole too
+	full = "garment: " + full[:len(full)-len("garment: ")*2]
 	card.GarmentDescription = sql.NullString{String: full, Valid: true}
 	rig := newDesignGuardRig(t, card, designGuardBand())
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), designGuardStart(entity.DesignRunKindFlat))
