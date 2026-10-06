@@ -13504,6 +13504,10 @@ message DesignQuizQuestion {
   // "" = none. A saved answer closes its key for later quizzes; saving an answer whose key matches a
   // different saved question id forgets that older row (latest wins). Clients echo it on save.
   string decision_key = 13;
+  // media_id — the moodboard picture (tech card media id, as attached to the board) this question
+  // is about; 0 = not a picture question. When set, part is "whole" and family/view are ignored by
+  // clients (no pictogram: the board anchors to the picture instead). Clients echo it on save.
+  int32 media_id = 14;
 }
 
 message GenerateDesignQuizRequest {

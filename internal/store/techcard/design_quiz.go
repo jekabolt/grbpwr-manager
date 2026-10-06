@@ -20,6 +20,7 @@ type designQuizAnswerRow struct {
 	TechCardID         int       `db:"tech_card_id"`
 	QuestionID         string    `db:"question_id"`
 	DecisionKey        string    `db:"decision_key"`
+	MediaID            int       `db:"media_id"`
 	Category           string    `db:"category"`
 	Part               string    `db:"part"`
 	Family             string    `db:"family"`
@@ -39,7 +40,7 @@ type designQuizAnswerRow struct {
 }
 
 const designQuizSelect = `
-	SELECT tech_card_id, question_id, decision_key, category, part, family, part_view, kind, question,
+	SELECT tech_card_id, question_id, decision_key, media_id, category, part, family, part_view, kind, question,
 	       options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
 	       selected_json, free_text, skipped, card_fingerprint, answered_at
 	FROM tech_card_design_quiz_answer`
@@ -56,7 +57,7 @@ func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
 			ID: r.QuestionID, Category: r.Category, Part: r.Part, Family: r.Family, View: r.View,
 			Kind: r.Kind, Question: r.Question, Options: opts, Contradicts: contra,
 			VisualEvidence: r.VisualEvidence, ClarifyQuestion: r.ClarifyQuestion, ClarifyOptions: clar,
-			DecisionKey: r.DecisionKey,
+			DecisionKey: r.DecisionKey, MediaID: r.MediaID,
 		},
 		Selected: sel, FreeText: r.FreeText, Skipped: r.Skipped, AnsweredAt: r.AnsweredAt,
 		Fingerprint: r.CardFingerprint,
@@ -118,7 +119,7 @@ func designQuizJSON[T any](v []T) string {
 }
 
 // designQuizInsertCols — the columns insertDesignQuizRows writes, in its row order.
-var designQuizInsertCols = []string{"tech_card_id", "question_id", "decision_key", "category", "part", "family", "part_view", "kind",
+var designQuizInsertCols = []string{"tech_card_id", "question_id", "decision_key", "media_id", "category", "part", "family", "part_view", "kind",
 	"question", "options_json", "contradicts_json", "visual_evidence", "clarify_question",
 	"clarify_options_json", "selected_json", "free_text", "skipped", "card_fingerprint", "display_order", "answered_at"}
 
@@ -136,7 +137,7 @@ func insertDesignQuizRows(ctx context.Context, db dependency.DB, techCardID int,
 		if at.IsZero() {
 			at = time.Now().UTC()
 		}
-		rows = append(rows, []any{techCardID, q.ID, q.DecisionKey, q.Category, q.Part, q.Family, q.View, q.Kind,
+		rows = append(rows, []any{techCardID, q.ID, q.DecisionKey, q.MediaID, q.Category, q.Part, q.Family, q.View, q.Kind,
 			q.Question, designQuizJSON(q.Options), designQuizJSON(q.Contradicts), q.VisualEvidence,
 			q.ClarifyQuestion, designQuizJSON(q.ClarifyOptions), designQuizJSON(a.Selected), a.FreeText,
 			a.Skipped, a.Fingerprint, i, at})
@@ -226,6 +227,7 @@ type designQuizSessionRow struct {
 type designQuizSessionQuestion struct {
 	ID              string   `json:"id"`
 	DecisionKey     string   `json:"decision_key,omitempty"`
+	MediaID         int      `json:"media_id,omitempty"`
 	Category        string   `json:"category"`
 	Part            string   `json:"part"`
 	Family          string   `json:"family,omitempty"`
@@ -243,7 +245,7 @@ func designQuizSessionQuestionsJSON(qs []entity.DesignQuizQuestion) string {
 	rows := make([]designQuizSessionQuestion, 0, len(qs))
 	for _, q := range qs {
 		rows = append(rows, designQuizSessionQuestion{
-			ID: q.ID, DecisionKey: q.DecisionKey, Category: q.Category, Part: q.Part, Family: q.Family,
+			ID: q.ID, DecisionKey: q.DecisionKey, MediaID: q.MediaID, Category: q.Category, Part: q.Part, Family: q.Family,
 			View: q.View, Kind: q.Kind, Question: q.Question, Options: q.Options, Contradicts: q.Contradicts,
 			VisualEvidence: q.VisualEvidence, ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: q.ClarifyOptions,
 		})
@@ -258,7 +260,7 @@ func (r designQuizSessionRow) entity() entity.DesignQuizSession {
 	qs := make([]entity.DesignQuizQuestion, 0, len(rows))
 	for _, q := range rows {
 		qs = append(qs, entity.DesignQuizQuestion{
-			ID: q.ID, DecisionKey: q.DecisionKey, Category: q.Category, Part: q.Part, Family: q.Family,
+			ID: q.ID, DecisionKey: q.DecisionKey, MediaID: q.MediaID, Category: q.Category, Part: q.Part, Family: q.Family,
 			View: q.View, Kind: q.Kind, Question: q.Question, Options: q.Options, Contradicts: q.Contradicts,
 			VisualEvidence: q.VisualEvidence, ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: q.ClarifyOptions,
 		})

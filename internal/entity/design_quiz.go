@@ -64,6 +64,9 @@ type DesignQuizQuestion struct {
 	ClarifyOptions  []string
 	// DecisionKey — snake_case key of the DECISION (not the wording), "" = none (0394, 64-DEFERRED E1).
 	DecisionKey string
+	// MediaID — the moodboard picture (tech card media id) this question is about, 0 = not a picture
+	// question (0398, 96-PICTURE-QUESTIONS). Set → Part is "whole", no pictogram.
+	MediaID int
 }
 
 // TechCardQuizAnswer is one stored answer: the question plus what the designer chose.
