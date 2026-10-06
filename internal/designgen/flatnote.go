@@ -50,7 +50,7 @@ var (
 	flatSoftTokenRe = regexp.MustCompile(`(?i)[\w-]*\b(` + flatSoftJunk + `)\b[\w-]*`)
 	// a construction word: what a flat draws
 	flatConstructionRe = regexp.MustCompile(`(?i)\b(pockets?|zip\w*|buttons?|snaps?|seams?|collars?|lapels?|sleeves?|hems?|vents?|yokes?|darts?|pleats?|plackets?|cuffs?|straps?|necklines?|bands?|bindings?|closures?|panels?|hoods?|waistbands?|drawcords?|tabs?|belts?|loops?|epaulettes?|flaps?|welts?|gussets?|ruffles?|frills?|slits?|gores?|godets?|tucks?|gathers?|shirring|smocking|topstitch\w*|stitch\w*|piping|trims?|jacket|coat|shirt|top|trousers|dress|skirt|tank)\b`)
-	flatSpacesRe = regexp.MustCompile(`\s{2,}`)
+	flatSpacesRe       = regexp.MustCompile(`\s{2,}`)
 )
 
 // flatCleanClause — the clause as a flat says it, "" when nothing drawable is left.
