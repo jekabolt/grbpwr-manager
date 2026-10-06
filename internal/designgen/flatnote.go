@@ -25,24 +25,52 @@ import (
 // minus the join items that are hidden by definition (lining, inside pockets) and the layers left
 // with nothing to draw.
 
-// flatJunkRe — a clause naming any of these is not drawn on a flat. Word-prefix matches, case-folded.
-// NOT here on purpose: knit / rib (a «rib band» is a visible band), mesh (a visible panel), sheer and
+// TWO KINDS OF JUNK (Codex review, wave 10). A clause naming the HIDDEN or the fit philosophy is dropped
+// whole («inside chest pocket on the lining», «regular fit with easy chest room», «pressed open with
+// overlocked edges»): keeping its other words would draw what cannot be seen. A clause naming only a
+// MATERIAL / colour / feel loses those words but keeps its construction when it has some («linen
+// jacket with patch pockets» → «jacket with patch pockets»); without a construction word it goes whole
+// («mid-weight rustic linen with a slubby surface»).
+//
+// NOT junk on purpose: knit / rib (a «rib band» is a visible band), mesh (a visible panel), sheer and
 // inner (a sheer layer and what shows through it are drawn — 38's dashed inner V), fitted (a shape),
 // draping (a neckline «draping at the chest» is a cut), pad (a shoulder pad shapes the shoulder line).
-var flatJunkRe = regexp.MustCompile(`(?i)\b(` +
-	// materials and their feel
-	`linen|cotton|wool|silk|cashmere|denim|jersey|fleece|nylon|polyester|elastane|spandex|lycra|viscose|rayon|leather|suede|twill|poplin|canvas|` +
-	`fabrics?|textiles?|textur\w*|slub\w*|rustic|drapes?|soft hand|hand[- ]?feel|matte|sheen|glossy|lustr\w*|` +
-	`\w*-?weight|gsm|stretch\w*|2-way|4-way|breathab\w*|translucen\w*|opacity|opaque|cling\w*|` +
-	// colour
-	`colou?rs?|colou?rways?|` +
-	// lining and the inside
-	`lining|lined|unlined|interlin\w*|interfac\w*|fus(ed|ible)|wadding|inside|interior|facings?|` +
-	// finishing nobody sees
+const flatHardJunk = `lining|lined|unlined|interlin\w*|interfac\w*|fus(ed|ible)|wadding|inside|interior|facings?|` +
 	`overlock\w*|serg(ed|er)|pressed open|blind\w*|bagged|` +
-	// fit philosophy and ease
-	`fit|ease|easy|room|block|movement|compression|regular` +
-	`)\b`)
+	`fit|ease|easy|room|block|movement|compression|regular|colou?rways?`
+
+const flatSoftJunk = `linen|cotton|wool|silk|cashmere|denim|jersey|fleece|nylon|polyester|elastane|spandex|lycra|viscose|rayon|leather|suede|twill|poplin|canvas|` +
+	`fabrics?|textiles?|textur\w*|slub\w*|rustic|drapes?|soft hand|hand[- ]?feel|matte|sheen|glossy|lustr\w*|` +
+	`\w*-?weight|gsm|stretch\w*|2-way|4-way|breathab\w*|translucen\w*|opacity|opaque|cling\w*|colou?rs?`
+
+var (
+	flatHardJunkRe = regexp.MustCompile(`(?i)\b(` + flatHardJunk + `)\b`)
+	flatSoftJunkRe = regexp.MustCompile(`(?i)\b(` + flatSoftJunk + `)\b`)
+	// a soft junk token with its hyphenated compound («self-fabric», «cotton-elastane», «mid-weight»)
+	flatSoftTokenRe = regexp.MustCompile(`(?i)[\w-]*\b(` + flatSoftJunk + `)\b[\w-]*`)
+	// a construction word: what a flat draws
+	flatConstructionRe = regexp.MustCompile(`(?i)\b(pockets?|zip\w*|buttons?|snaps?|seams?|collars?|lapels?|sleeves?|hems?|vents?|yokes?|darts?|pleats?|plackets?|cuffs?|straps?|necklines?|bands?|bindings?|closures?|panels?|hoods?|waistbands?|drawcords?|tabs?|belts?|loops?|epaulettes?|flaps?|welts?|gussets?|ruffles?|frills?|slits?|gores?|godets?|tucks?|gathers?|shirring|smocking|topstitch\w*|stitch\w*|piping|trims?|jacket|coat|shirt|top|trousers|dress|skirt|tank)\b`)
+	flatSpacesRe = regexp.MustCompile(`\s{2,}`)
+)
+
+// flatCleanClause — the clause as a flat says it, "" when nothing drawable is left.
+func flatCleanClause(c string) string {
+	if c == "" || flatHardJunkRe.MatchString(c) {
+		return ""
+	}
+	if !flatSoftJunkRe.MatchString(c) {
+		return c
+	}
+	if !flatConstructionRe.MatchString(c) {
+		return ""
+	}
+	c = flatSoftTokenRe.ReplaceAllString(c, "")
+	c = strings.TrimSpace(flatSpacesRe.ReplaceAllString(c, " "))
+	for _, dangling := range []string{" in", " with", " of", " and", " a", " an", " the"} {
+		c = strings.TrimSuffix(c, dangling)
+	}
+	return strings.TrimSpace(c)
+}
 
 // flatDropLabelRe — a card-facts line whose label is not construction (card-facts.ts cardFactLines).
 var flatDropLabelRe = regexp.MustCompile(`(?i)^(fit|age group|for|fabric|materials?|colou?rs?|colou?rways?|lining|notes on the board)\s*:`)
@@ -129,9 +157,9 @@ func flatConstructionText(text string, seen map[string]bool) string {
 func flatKeepClauses(clauses []string) string {
 	keep := make([]bool, len(clauses))
 	for i, c := range clauses {
-		c = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(c), "."))
+		c = flatCleanClause(strings.TrimSpace(strings.TrimRight(strings.TrimSpace(c), ".")))
 		clauses[i] = c
-		keep[i] = c != "" && !flatJunkRe.MatchString(c)
+		keep[i] = c != ""
 	}
 	for i := range clauses {
 		if keep[i] && i+1 < len(clauses) && !keep[i+1] && len(strings.Fields(clauses[i])) < 2 {

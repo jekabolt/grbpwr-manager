@@ -731,8 +731,13 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		addSlots()
 		addRefs()
 	}
-	for _, id := range p.ExtraInputMediaIDs {
-		add(id, "additional reference image", "")
+	// A FLAT ATTACHES ONLY ITS SNAPSHOT (wave 10, Codex review): designAssembleInputs folds the extra
+	// inputs into the refs and then drops every role-less one (designFlatOnlyRoledPhotos), so re-adding
+	// the frozen params here would send what the snapshot says was not sent.
+	if kind != entity.DesignRunKindFlat {
+		for _, id := range p.ExtraInputMediaIDs {
+			add(id, "additional reference image", "")
+		}
 	}
 	// ─── THE COLOUR MAPS ───────────────────────────────────────────────────────────────────────
 	//

@@ -375,3 +375,15 @@ func TestFlatSendsOnlyRoledPhotos(t *testing.T) {
 	other := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}, {MediaId: 82}}
 	require.Len(t, designFlatOnlyRoledPhotos(designInputSources{Kind: entity.DesignRunKindRender, Card: card}, other), 2, "only a flat run")
 }
+
+// TestFlatWithNothingToDrawIsRefused — wave 10 (Codex review): a garment sheet with no side-role photo
+// and no construction words is refused before money; a photo or words let it through.
+func TestFlatWithNothingToDrawIsRefused(t *testing.T) {
+	p := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
+	_, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{}, Params: p,
+		Refs: []entity.DesignReference{{MediaId: 9}}})
+	require.Equal(t, "flat_nothing_to_draw", flatReason(t, err))
+	_, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{}, Params: p,
+		Refs: []entity.DesignReference{{MediaId: 9, Role: "front"}}})
+	require.NoError(t, err)
+}
