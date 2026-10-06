@@ -740,13 +740,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// названный адрес, — иначе один молча выбросит то, что другой принял. Значение чисто
 	// описательное (род, карточка, референсы, верстак, действующие params) и до самого отбора не
 	// меняется, так что перенос вверх ничего не сдвигает.
-	src := designInputSources{
-		Kind:   kind,
-		Card:   card,
-		Refs:   designKeptReferences(kind, designRunRefs(card, band.References), band.Joins),
-		Bench:  band.Bench,
-		Params: params,
-	}
+	// ONE builder for the run and its preview (PreviewDesignRunInputs, 101 §2.8): the modal and the
+	// snapshot cannot disagree about which sources they read.
+	src := designRunSources(kind, card, band, params)
 
 	if err := designRefuseForeignDetailSlots(cardID, req.GetParams(), band.Bench, src); err != nil {
 		return nil, err
@@ -3767,6 +3763,9 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// role-less input (wave 10); a hand_flat run records the designer's flats first, then those photos.
 	out.Refs = designFlatOnlyRoledPhotos(src, out.Refs)
 	out.Refs = designFlatDetailOnlyItsRefs(src, out.Refs)
+	// 101 §2.8: a views run takes view photos only, the newest two of each view; a detail run the newest
+	// four of each asked detail.
+	out.Refs = designFlatPickFromBoard(src, out.Refs)
 	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
 		out.Refs = refs
 	}

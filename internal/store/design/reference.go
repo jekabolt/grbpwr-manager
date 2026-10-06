@@ -163,6 +163,11 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 			}); err != nil {
 			return fmt.Errorf("failed to set design reference role: %w", err)
 		}
+		// A person moving a photo off a model's detail (to another slot, a view or «no view») may leave
+		// that slot with nothing: it goes with its last photo (101 §2.6, §4.2).
+		if _, err := dropOrphanModelSlots(ctx, db, req.TechCardId); err != nil {
+			return err
+		}
 		if req.Role == "" {
 			return nil
 		}

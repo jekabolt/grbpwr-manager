@@ -469,6 +469,8 @@ var methodRequirements = map[string]Requirement{
 	// аккаунт, который правит карточку, но не видит, из чего она собрана.
 	"GetDesignBand":  rd(SectionTechCards),
 	"ListDesignRuns": rd(SectionTechCards),
+	// The dry run of a run's inputs (101): reads the card, spends nothing.
+	"PreviewDesignRunInputs": rd(SectionTechCards),
 	// Чтение ОДНОГО прогона целиком — снимок входов, попытки, картинки. Право то же, что у ленты:
 	// это та же карточка, взятая по одной строке, а не другой объём знания. Деньги здесь не
 	// тратятся — реран платит через StartDesignRun, который стоит на записи.

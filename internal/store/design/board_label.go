@@ -102,6 +102,9 @@ func (s *Store) BeginBoardLabel(ctx context.Context, req entity.DesignBoardLabel
 				map[string]any{"id": r.Id, "src": entity.DesignLabelSourceModelCheap, "pending": entity.DesignLabelStatePending}); err != nil {
 				return fmt.Errorf("failed to re-arm the board label: %w", err)
 			}
+			if _, err := dropOrphanModelSlots(ctx, db, req.TechCardId); err != nil {
+				return err
+			}
 			claimed = true
 		case state == entity.DesignLabelStatePending && (!r.LabelledAt.Valid || r.LabelledAt.Time.Before(req.StaleBefore)):
 			if r.LabelAttempts >= entity.DesignBoardLabelMaxAttempts {
@@ -258,14 +261,9 @@ func (s *Store) DropBoardLabels(ctx context.Context, cardID int, mediaIDs []int)
 			map[string]any{"card": cardID, "media": mediaIDs}); err != nil {
 			return fmt.Errorf("failed to drop the board labels: %w", err)
 		}
-		n, err := storeutil.ExecNamedRows(ctx, db, `
-			DELETE s FROM design_bench_slot s
-			WHERE s.tech_card_id = :card AND s.view_key = :detail AND s.made_by_model = 1
-			  AND s.picture_id IS NULL
-			  AND NOT EXISTS (SELECT 1 FROM design_reference r WHERE r.detail_slot_id = s.id)`,
-			map[string]any{"card": cardID, "detail": entity.DesignViewDetail})
+		n, err := dropOrphanModelSlots(ctx, db, cardID)
 		if err != nil {
-			return fmt.Errorf("failed to drop the empty model detail slots: %w", err)
+			return err
 		}
 		dropped = int(n)
 		return nil
@@ -282,4 +280,20 @@ func truncateRunes(s string, max int) string {
 		return string(r[:max])
 	}
 	return s
+}
+
+// dropOrphanModelSlots deletes the card's model-made detail slots left with no plate and no label
+// pointing at them (101 §2.6): the model's detail went away with its last photo. A person's slot, or a
+// model's slot that holds a drawing or a photo, stays. Runs inside the caller's transaction.
+func dropOrphanModelSlots(ctx context.Context, db dependency.DB, cardID int) (int64, error) {
+	n, err := storeutil.ExecNamedRows(ctx, db, `
+		DELETE s FROM design_bench_slot s
+		WHERE s.tech_card_id = :card AND s.view_key = :detail AND s.made_by_model = 1
+		  AND s.picture_id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM design_reference r WHERE r.detail_slot_id = s.id)`,
+		map[string]any{"card": cardID, "detail": entity.DesignViewDetail})
+	if err != nil {
+		return 0, fmt.Errorf("failed to drop the empty model detail slots: %w", err)
+	}
+	return n, nil
 }

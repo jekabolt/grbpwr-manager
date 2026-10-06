@@ -134,7 +134,7 @@ func TestBoardLabelLive(t *testing.T) {
 	for _, n := range names {
 		f := fixtures[n]
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		got, err := designBoardLabelLadder(ctx, ai, designBoardPicture{MediaID: 1, Purpose: entity.TechCardMediaRoleTarget}, f.URL)
+		got, err := designBoardLabelLadder(ctx, ai, designBoardPicture{MediaID: 1, Purpose: entity.TechCardMediaRoleTarget}, f.URL, nil)
 		cancel()
 		verdict := "MISS"
 		switch {
@@ -153,4 +153,24 @@ func TestBoardLabelLive(t *testing.T) {
 		t.Log(l)
 	}
 	t.Logf("views %d/%d, L/R wrong %d, spent $%.4f", hit, len(names), lrWrong, ai.spent)
+}
+
+// TestBoardDetailReadLive — one detail read (101 Ф2) on card 38's detail picture 211, no slots yet.
+func TestBoardDetailReadLive(t *testing.T) {
+	key := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+	if key == "" {
+		t.Skip("OPENROUTER_API_KEY is not set")
+	}
+	url := os.Getenv("BOARD_DETAIL_URL")
+	if url == "" {
+		url = "https://files.grbpwr.com/grbpwr-com-beta/grbpwr-com-beta/2026/september/20260904220830592e1ae-og.png"
+	}
+	ai := &boardLiveAI{key: key, models: map[string]string{entity.AIPurposeBoardRead: "anthropic/claude-sonnet-5.5"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	got, err := designBoardLabelLadder(ctx, ai, designBoardPicture{MediaID: 211, Purpose: entity.TechCardMediaRoleDetail}, url, nil)
+	for _, l := range ai.log {
+		t.Log(l)
+	}
+	t.Logf("role %q slot %d new %q state %s caption %q err %v spent $%.4f", got.Role, got.DetailSlotId, got.NewDetailName, got.State, got.ModelCaption, err, ai.spent)
 }

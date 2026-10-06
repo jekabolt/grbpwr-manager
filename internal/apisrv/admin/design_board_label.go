@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,10 @@ const (
 	designBoardLabelSure = 0.7
 	// designBoardReadSure — the strong model's: below it the person is asked.
 	designBoardReadSure = 0.6
+	// designBoardDetailSure — the detail read's: lower, because the owner wants the model to make the
+	// detail itself rather than wait (R17 «раз фото есть — деталь нужна»); a wrong name is one tap
+	// (measured 07.10 on card 38's strap photo: «asymmetric shoulder strap» at 0.55).
+	designBoardDetailSure = 0.5
 
 	designBoardLabelMaxTokens = 1200
 	designBoardLabelEffort    = "low"
@@ -52,6 +57,8 @@ const (
 	designBoardLabelMaxPerSync = 24
 	// designBoardLabelPerToken — pictures per token of the shared hourly window.
 	designBoardLabelPerToken = 6
+	// designBoardMaxSlotsShown — existing details shown to the detail read (101 §2.5: ≤ 6).
+	designBoardMaxSlotsShown = 6
 	// designBoardResyncEvery — a band read re-checks the board for unlabelled pictures (a legacy
 	// card, a save that lost its task) at most this often per card.
 	designBoardResyncEvery = 10 * time.Minute
@@ -88,6 +95,47 @@ Reply with ONE JSON object and nothing else:
 ` + designBoardViewRules + `
 Answer "unclear" only when the picture really does not show one view of the garment; then say why in "why".
 confidence — 0..1, how sure you are of the view.`
+
+// designBoardReadDetailSystemPrompt — the detail read (101 §2.5): the part a detail photo shows, and
+// whether it is one of the card's details already. The name is a LABEL from the parts vocabulary — it
+// is the only word of this answer that ever reaches a prompt (as the detail slot's name); the caption
+// never does (101 §2.7).
+const designBoardReadDetailSystemPrompt = `You read ONE close-up picture from a fashion designer's moodboard. It shows a detail of the garment being designed. Name the detail and decide whether it is one of the details the designer already has.
+Reply with ONE JSON object and nothing else:
+{"slot": <the number of an existing detail> | "new", "name": "1 to 3 lowercase words", "caption": "1 or 2 short sentences: what the picture shows", "confidence": 0.0-1.0}
+
+name — the garment part, the way a pattern maker says it: "left cuff", "back yoke", "patch pocket", "collar", "front placket", "back vent", "shoulder strap". No colours, no materials, no style adjectives.
+slot — the number of an existing detail when this picture shows the SAME part (another photo or angle of it); otherwise "new".
+confidence — 0..1, how sure you are of the part (and of the match).`
+
+// designBoardReadDetailUserPrompt — the existing details, each with its number and, when it has a
+// photo, which picture of the call shows it (the first picture is always the one being read).
+func designBoardReadDetailUserPrompt(slots []designBoardDetailSlot) string {
+	var b strings.Builder
+	b.WriteString("Picture 1 is the one to read.\n")
+	if len(slots) == 0 {
+		b.WriteString("Existing details: none.")
+		return b.String()
+	}
+	b.WriteString("Existing details:\n")
+	pic := 2
+	for _, sl := range slots {
+		fmt.Fprintf(&b, "- %d: %s", sl.ID, sl.Name)
+		if sl.URL != "" {
+			fmt.Fprintf(&b, " (picture %d)", pic)
+			pic++
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// designBoardDetailSlot — an existing detail slot of the card as the detail read is shown it.
+type designBoardDetailSlot struct {
+	ID   int
+	Name string
+	URL  string // the newest photo labelled to it; "" when none
+}
 
 // designBoardLabelUserPrompt — the cheap call's user turn: the purpose as a given when the form states
 // one, else the model proposes it.
@@ -208,16 +256,20 @@ func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignRefere
 	return tasks, drop
 }
 
-// designBoardLabelDetails — whether the detail read is wired (Ф2). Off in Ф1: a detail picture is a
-// person's to label.
-var designBoardLabelDetails = false
+// designBoardLabelDetails — whether a `detail` picture is read by the model (Ф2): it names the part and
+// joins an existing detail slot or mints one (101 §2.5). A var so the plan's test covers both.
+var designBoardLabelDetails = true
 
 // ─── the ladder ───
 
 // designBoardLabelLadder runs the models for ONE picture and returns the label to write. err != nil =
 // a model call failed or answered garbage: the row stays pending and is retried lazily.
-func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic designBoardPicture, url string) (entity.DesignBoardLabel, error) {
+func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic designBoardPicture, url string, slots []designBoardDetailSlot) (entity.DesignBoardLabel, error) {
 	out := entity.DesignBoardLabel{MediaId: pic.MediaID, Source: entity.DesignLabelSourceModelCheap}
+	if pic.Purpose == entity.TechCardMediaRoleDetail {
+		// A detail goes straight to the strong read: the cheap model has nothing to add.
+		return designBoardDetailRead(ctx, ai, out, url, slots)
+	}
 	if !ai.Enabled(entity.AIPurposeBoardLabel) {
 		out.State = entity.DesignLabelStateFailed
 		return out, nil
@@ -241,7 +293,8 @@ func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic desi
 		purpose = entity.TechCardMediaRole(ans.Purpose)
 	}
 	if purpose != entity.TechCardMediaRoleTarget {
-		// mood / material / detail (the detail read is Ф2) / nothing proposed: settled, no view.
+		// mood / material / a PROPOSED detail (read once the person's purpose says detail) / nothing
+		// proposed: settled, no view.
 		out.State = entity.DesignLabelStateOk
 		return out, nil
 	}
@@ -271,6 +324,51 @@ func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic desi
 	out.ModelCaption = strong.Why
 	if role, sure := designBoardSureView(strong, designBoardReadSure); sure {
 		out.Role, out.State = role, entity.DesignLabelStateOk
+		return out, nil
+	}
+	out.State = entity.DesignLabelStateUnsure
+	return out, nil
+}
+
+// designBoardDetailRead — the detail read of one picture: an existing slot, a new one by name (the store
+// mints it made_by_model, deduplicated by name), or unsure (no slot is made; the person picks).
+func designBoardDetailRead(ctx context.Context, ai designBoardChatter, out entity.DesignBoardLabel, url string, slots []designBoardDetailSlot) (entity.DesignBoardLabel, error) {
+	out.Source = entity.DesignLabelSourceModelStrong
+	if !ai.Enabled(entity.AIPurposeBoardRead) {
+		out.State = entity.DesignLabelStateFailed
+		return out, nil
+	}
+	images := []string{url}
+	known := make(map[int]bool, len(slots))
+	for _, sl := range slots {
+		known[sl.ID] = true
+		if sl.URL != "" {
+			images = append(images, sl.URL)
+		}
+	}
+	res, err := ai.Chat(ctx, entity.AIPurposeBoardRead, aiprov.ChatRequest{
+		System: designBoardReadDetailSystemPrompt, User: designBoardReadDetailUserPrompt(slots),
+		ImageURLs: images, UserAsParts: true, JSONMode: true,
+		MaxTokens: designBoardReadMaxTokens, Effort: designBoardReadEffort,
+	})
+	if err != nil {
+		return out, fmt.Errorf("board detail read: %w", err)
+	}
+	ans, ok := entity.ParseDesignBoardLabelAnswer(res.Text)
+	if !ok {
+		return out, fmt.Errorf("board detail read: the answer is not the promised JSON")
+	}
+	out.LabelModel = res.Model
+	out.ModelCaption = ans.Caption
+	switch {
+	case ans.Confidence < designBoardDetailSure:
+	case ans.SlotID > 0 && known[ans.SlotID]:
+		out.Role, out.DetailSlotId, out.State = entity.DesignViewDetail, ans.SlotID, entity.DesignLabelStateOk
+		return out, nil
+	case ans.Name != "":
+		// "new" — or a slot number that is not one of ours, read as new by the name (the store joins an
+		// existing slot of the same name instead of minting «(2)»).
+		out.Role, out.NewDetailName, out.State = entity.DesignViewDetail, ans.Name, entity.DesignLabelStateOk
 		return out, nil
 	}
 	out.State = entity.DesignLabelStateUnsure
@@ -456,7 +554,15 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		if !claimed {
 			continue
 		}
-		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], aiOn)
+		var slots []designBoardDetailSlot
+		if t.Purpose == entity.TechCardMediaRoleDetail && aiOn {
+			// Read fresh per detail: the previous picture of this sync may have minted the slot this
+			// one belongs to (two photos of one cuff → one slot).
+			if slots, err = s.designBoardDetailSlots(ctx, cardID); err != nil {
+				return err
+			}
+		}
+		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], aiOn, slots)
 	}
 	return nil
 }
@@ -464,7 +570,7 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 // designBoardLabelOne — the fences and the ladder for one claimed picture, then the write.
 // aiOn is the sync's decision, frozen: a sync that took no hourly token never calls a model, even if
 // the route comes back on while it works (Codex Ф1 r2).
-func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn bool) {
+func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn bool, slots []designBoardDetailSlot) {
 	logAttrs := []any{slog.Int("tech_card_id", cardID), slog.Int("media_id", pic.MediaID), slog.String("purpose", string(pic.Purpose))}
 	var label entity.DesignBoardLabel
 	if !aiOn || url == "" || designBoardNotAPicture(url) {
@@ -487,7 +593,7 @@ func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic design
 				return
 			}
 			defer func() { <-s.enhanceSem }()
-			label, err = designBoardLabelLadder(cctx, s.ai, pic, url)
+			label, err = designBoardLabelLadder(cctx, s.ai, pic, url, slots)
 		}()
 		if !acquired {
 			slog.Default().WarnContext(ctx, "design board labels: the assistant stayed busy; the label waits", logAttrs...)
@@ -517,4 +623,51 @@ func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic design
 func designBoardNotAPicture(url string) bool {
 	_, _, bad := designFirstNonPictureInput([]designInputMediaRef{{URL: url}})
 	return bad
+}
+
+// designBoardDetailSlots — the card's detail slots for the detail read: name and the newest photo
+// labelled to each (by media id — the upload order), at most designBoardMaxSlotsShown, newest slots
+// first.
+func (s *Server) designBoardDetailSlots(ctx context.Context, cardID int) ([]designBoardDetailSlot, error) {
+	band, err := s.repo.Design().GetBand(ctx, cardID, 1)
+	if err != nil {
+		return nil, fmt.Errorf("read the detail slots: %w", err)
+	}
+	newest := map[int]int{}
+	for _, r := range band.References {
+		if r.Role == entity.DesignViewDetail && r.DetailSlotId.Valid && entity.DesignReferenceTravels(r) {
+			if id := int(r.DetailSlotId.Int32); r.MediaId > newest[id] {
+				newest[id] = r.MediaId
+			}
+		}
+	}
+	var out []designBoardDetailSlot
+	var ids []int
+	for _, sl := range band.Bench {
+		if sl.ViewKey != entity.DesignViewDetail || strings.TrimSpace(sl.DetailName.String) == "" {
+			continue
+		}
+		out = append(out, designBoardDetailSlot{ID: sl.Id, Name: strings.TrimSpace(sl.DetailName.String)})
+		if m := newest[sl.Id]; m > 0 {
+			ids = append(ids, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if len(out) > designBoardMaxSlotsShown {
+		out = out[:designBoardMaxSlotsShown]
+	}
+	urls, attached, err := s.designBoardPictureURLs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the detail photos: %w", err)
+	}
+	urlOfMedia := make(map[int]string, len(attached))
+	for i, id := range attached {
+		urlOfMedia[id] = urls[i]
+	}
+	for i := range out {
+		if m := newest[out[i].ID]; m > 0 && !designBoardNotAPicture(urlOfMedia[m]) {
+			out[i].URL = urlOfMedia[m]
+		}
+	}
+	return out, nil
 }

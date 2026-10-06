@@ -369,5 +369,5 @@ func TestFlatDetailRunSendsOnlyThatDetailsRefs(t *testing.T) {
 	sheet := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
 	got, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{}, Params: sheet, Refs: refs})
 	require.NoError(t, err)
-	require.Equal(t, []int32{1, 2, 3, 4, 5, 7}, ids(got), "non-detail runs unchanged")
+	require.Equal(t, []int32{1, 2}, ids(got), "a views run takes view photos only (101 §2.8): detail photos ride their detail run")
 }

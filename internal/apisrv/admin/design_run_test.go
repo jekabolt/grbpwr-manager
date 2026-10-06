@@ -775,8 +775,10 @@ func TestDesignAssembleInputsRefusesTooManyReferences(t *testing.T) {
 	for i := 0; i <= designMaxInputRefs; i++ {
 		refs = append(refs, entity.DesignReference{MediaId: 1000 + i, Role: entity.DesignViewFront})
 	}
+	// A RENDER: a flat run takes at most two photos of a view (101 §2.8), so it can no longer reach the
+	// ceiling with one view — the ceiling itself is the same line for every kind.
 	_, err := designAssembleInputs(designInputSources{
-		Kind: entity.DesignRunKindFlat, Refs: refs, Params: &pb_common.DesignRunParams{},
+		Kind: entity.DesignRunKindRender, Refs: refs, Params: &pb_common.DesignRunParams{},
 	})
 	require.Error(t, err)
 	code, _ := errorReason(t, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ var targetPic = designBoardPicture{MediaID: 124, Purpose: entity.TechCardMediaRo
 func TestBoardLabelLadderCheapSureTakesTheView(t *testing.T) {
 	ai := newFakeBoardAI()
 	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"purpose":"target","view":"back","confidence":0.92}`}
-	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "https://cdn.test/124.jpg")
+	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "https://cdn.test/124.jpg", nil)
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignViewBack, got.Role)
 	require.Equal(t, entity.DesignLabelStateOk, got.State)
@@ -66,7 +67,7 @@ func TestBoardLabelLadderSideFlankIsComputed(t *testing.T) {
 	} {
 		ai := newFakeBoardAI()
 		ai.answers[entity.AIPurposeBoardLabel] = []string{raw}
-		got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+		got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u", nil)
 		require.NoError(t, err)
 		require.Equal(t, want, got.Role, raw)
 	}
@@ -76,7 +77,7 @@ func TestBoardLabelLadderUnclearEscalatesToStrong(t *testing.T) {
 	ai := newFakeBoardAI()
 	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"view":"unclear","confidence":0.3}`}
 	ai.answers[entity.AIPurposeBoardRead] = []string{"I think side_l.\n```json\n{\"view\":\"side\",\"faces\":\"left\",\"confidence\":0.5}\n```\nWait — final:\n{\"view\":\"side\",\"faces\":\"right\",\"confidence\":0.8,\"why\":\"front points right\"}"}
-	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u", nil)
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignViewSideR, got.Role)
 	require.Equal(t, entity.DesignLabelSourceModelStrong, got.Source)
@@ -89,7 +90,7 @@ func TestBoardLabelLadderBothUnsureAsksThePerson(t *testing.T) {
 	ai := newFakeBoardAI()
 	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"view":"front","confidence":0.5}`}
 	ai.answers[entity.AIPurposeBoardRead] = []string{`{"view":"unclear","confidence":0.2,"why":"three-quarter angle, collar and back both visible"}`}
-	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u", nil)
 	require.NoError(t, err)
 	require.Equal(t, "", got.Role, "an unsure label carries no role — it never travels")
 	require.Equal(t, entity.DesignLabelStateUnsure, got.State)
@@ -99,19 +100,19 @@ func TestBoardLabelLadderBothUnsureAsksThePerson(t *testing.T) {
 func TestBoardLabelLadderErrorsLeaveItPending(t *testing.T) {
 	ai := newFakeBoardAI()
 	ai.errs[entity.AIPurposeBoardLabel] = errors.New("503")
-	_, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+	_, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u", nil)
 	require.Error(t, err, "an error is retried lazily, never written as a label")
 
 	ai = newFakeBoardAI()
 	ai.answers[entity.AIPurposeBoardLabel] = []string{`I think it is the front.`}
-	_, err = designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+	_, err = designBoardLabelLadder(context.Background(), ai, targetPic, "u", nil)
 	require.Error(t, err, "garbage is not a label")
 }
 
 func TestBoardLabelLadderAIOffFails(t *testing.T) {
 	ai := newFakeBoardAI()
 	ai.enabled = map[string]bool{}
-	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u", nil)
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignLabelStateFailed, got.State)
 	require.Empty(t, ai.calls)
@@ -124,13 +125,13 @@ func TestBoardLabelLadderProposesAPurposeForAnUnmarkedPicture(t *testing.T) {
 		`{"purpose":"target","view":"front","confidence":0.95,"lr_sure":true}`,
 	}
 	none := designBoardPicture{MediaID: 9}
-	got, err := designBoardLabelLadder(context.Background(), ai, none, "u")
+	got, err := designBoardLabelLadder(context.Background(), ai, none, "u", nil)
 	require.NoError(t, err)
 	require.Equal(t, "mood", got.ProposedPurpose)
 	require.Equal(t, "", got.Role)
 	require.Equal(t, entity.DesignLabelStateOk, got.State, "a settled «no view»")
 
-	got, err = designBoardLabelLadder(context.Background(), ai, none, "u")
+	got, err = designBoardLabelLadder(context.Background(), ai, none, "u", nil)
 	require.NoError(t, err)
 	require.Equal(t, "target", got.ProposedPurpose)
 	require.Equal(t, entity.DesignViewFront, got.Role, "the view rides with the proposal; it travels only once the form says target")
@@ -217,4 +218,57 @@ func TestParseBoardLabelAnswerLenient(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "unclear", a.View)
 	require.Equal(t, 0.02, a.Confidence)
+}
+
+func TestBoardDetailReadJoinsMintsOrAsks(t *testing.T) {
+	slots := []designBoardDetailSlot{{ID: 17, Name: "left cuff", URL: "https://cdn.test/cuff.jpg"}, {ID: 18, Name: "back yoke"}}
+	det := designBoardPicture{MediaID: 460, Purpose: entity.TechCardMediaRoleDetail}
+	cases := []struct {
+		answer      string
+		slot        int
+		name, state string
+		caption     string
+	}{
+		{`{"slot":17,"name":"left cuff","caption":"A buttoned cuff.","confidence":0.9}`, 17, "", entity.DesignLabelStateOk, "A buttoned cuff."},
+		{`{"slot":"new","name":"Patch Pocket!","caption":"A patch pocket.","confidence":0.8}`, 0, "patch pocket", entity.DesignLabelStateOk, "A patch pocket."},
+		{`{"slot":99,"name":"left cuff","confidence":0.8}`, 0, "left cuff", entity.DesignLabelStateOk, ""}, // a slot that is not ours → by name (the store joins 17)
+		{`{"slot":"new","name":"collar","caption":"blurry","confidence":0.4}`, 0, "", entity.DesignLabelStateUnsure, "blurry"},
+	}
+	for _, c := range cases {
+		ai := newFakeBoardAI()
+		ai.answers[entity.AIPurposeBoardRead] = []string{c.answer}
+		got, err := designBoardLabelLadder(context.Background(), ai, det, "https://cdn.test/460.jpg", slots)
+		require.NoError(t, err)
+		require.Equal(t, []string{entity.AIPurposeBoardRead}, ai.calls, "a detail goes straight to the strong read")
+		require.Equal(t, c.state, got.State, c.answer)
+		require.Equal(t, c.slot, got.DetailSlotId, c.answer)
+		require.Equal(t, c.name, got.NewDetailName, c.answer)
+		require.Equal(t, c.caption, got.ModelCaption, c.answer)
+		if c.state == entity.DesignLabelStateOk {
+			require.Equal(t, entity.DesignViewDetail, got.Role)
+		} else {
+			require.Equal(t, "", got.Role, "no slot is made when unsure")
+		}
+	}
+	require.Contains(t, designBoardReadDetailUserPrompt(slots), "- 17: left cuff (picture 2)")
+	require.True(t, strings.HasSuffix(designBoardReadDetailUserPrompt(slots), "- 18: back yoke"), "a slot without a photo names no picture")
+}
+
+func TestBoardLabelPlanDetails(t *testing.T) {
+	board := []designBoardPicture{
+		{MediaID: 1, Purpose: entity.TechCardMediaRoleDetail}, // new detail → read
+		{MediaID: 2, Purpose: entity.TechCardMediaRoleDetail}, // model labelled it a view → relabel
+		{MediaID: 3, Purpose: entity.TechCardMediaRoleTarget}, // model labelled it a detail → relabel
+	}
+	refs := []entity.DesignReference{
+		ref(2, "front", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateOk),
+		ref(3, "detail", entity.DesignLabelSourceModelStrong, entity.DesignLabelStateOk),
+	}
+	tasks, drop := designBoardLabelPlan(board, refs, time.Now().Add(-time.Minute), true)
+	got := map[int]bool{}
+	for _, tk := range tasks {
+		got[tk.MediaID] = tk.Relabel
+	}
+	require.Equal(t, map[int]bool{1: false, 2: true, 3: true}, got)
+	require.Empty(t, drop)
 }

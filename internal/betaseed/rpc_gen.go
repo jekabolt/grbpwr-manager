@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (418 rpc) ----
+// ---- admin (419 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -2264,6 +2264,14 @@ func (c *Client) PostProductionRunReceipt(ctx context.Context, in *admin.PostPro
 func (c *Client) PrepareShippingLabel(ctx context.Context, in *admin.PrepareShippingLabelRequest) (*admin.PrepareShippingLabelResponse, error) {
 	out := new(admin.PrepareShippingLabelResponse)
 	if err := c.call(ctx, "GET", "/api/admin/fulfillment/label/{order_uuid}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PreviewDesignRunInputs(ctx context.Context, in *admin.PreviewDesignRunInputsRequest) (*admin.PreviewDesignRunInputsResponse, error) {
+	out := new(admin.PreviewDesignRunInputsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/runs/preview", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
