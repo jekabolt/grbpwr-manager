@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -454,4 +455,43 @@ func TestPartsCacheKeyFollowsJoinsAndPrompt(t *testing.T) {
 		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}})
 	require.NotEmpty(t, c)
 	require.False(t, ok)
+}
+
+// TestDesignPartsRetryUnusable — an unusable labeller answer is asked once more (never twice), any
+// other failure is not retried, and the retry never starts past what the deadline leaves.
+// MUTATIONS IT CATCHES: no retry (the first 500 reaches the client); a retry loop (three calls); a
+// retry on a fence/provider refusal; a retry with less than one budget left.
+func TestDesignPartsRetryUnusable(t *testing.T) {
+	unusable := status.Error(codes.Internal, designPartsUnusableMsg)
+	run := func(ctx context.Context, results ...error) (int, error) {
+		calls := 0
+		err := designPartsRetryUnusable(ctx, time.Second, func(actx context.Context, attempt int) error {
+			calls++
+			if attempt != calls {
+				t.Fatalf("attempt %d on call %d", attempt, calls)
+			}
+			if _, ok := actx.Deadline(); !ok {
+				t.Fatal("an attempt runs without its own deadline")
+			}
+			return results[min(calls, len(results))-1]
+		})
+		return calls, err
+	}
+	if n, err := run(context.Background(), unusable, nil); n != 2 || err != nil {
+		t.Fatalf("unusable then fine: %d calls, %v", n, err)
+	}
+	if n, err := run(context.Background(), unusable, unusable, nil); n != 2 || !designPartsUnusable(err) {
+		t.Fatalf("one retry only: %d calls, %v", n, err)
+	}
+	if n, err := run(context.Background(), status.Error(codes.Unavailable, "x")); n != 1 || status.Code(err) != codes.Unavailable {
+		t.Fatalf("a provider refusal is not retried: %d calls, %v", n, err)
+	}
+	if n, err := run(context.Background(), nil); n != 1 || err != nil {
+		t.Fatalf("a good answer is asked once: %d, %v", n, err)
+	}
+	short, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if n, err := run(short, unusable, nil); n != 1 || !designPartsUnusable(err) {
+		t.Fatalf("less than one budget left: no retry, got %d calls, %v", n, err)
+	}
 }

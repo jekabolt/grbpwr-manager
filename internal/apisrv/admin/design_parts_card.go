@@ -246,10 +246,12 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 	// ⚠ ONE FLIGHT PER (card, sides+flats, cut): a double press pays once. Detached from the leader's
 	// cancellation under its own budget, like the per-side call.
 	ch := s.partsCardFlight.DoChan(designPartsCardFlightKey(cardID, views, algoRev), func() (any, error) {
+		// One budget per attempt (an unusable answer is asked once more, designPartsCardAttempts).
+		budget := s.ai.ChainBudget(purpose, designPartsCardMaxTokens)
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
-			s.ai.ChainBudget(purpose, designPartsCardMaxTokens)+designPartsFlightMargin)
+			designPartsCardAttempts*budget+designPartsFlightMargin)
 		defer cancel()
-		return s.designPartsCardCall(fctx, cardID, views, algoRev, ordered, force, joins)
+		return s.designPartsCardCall(fctx, cardID, views, algoRev, ordered, force, joins, budget)
 	})
 	var res singleflight.Result
 	select {
@@ -357,7 +359,7 @@ func designPartsCardShaped(in entity.DesignPartsSuggestion) bool {
 }
 
 // designPartsCardCall — the fences and the ONE provider call (the flight leader's work).
-func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []designPartsCardView, algoRev string, marksURLs []string, force bool, joins *entity.DesignJoins) (designPartsCardFlightAnswer, error) {
+func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []designPartsCardView, algoRev string, marksURLs []string, force bool, joins *entity.DesignJoins, budget time.Duration) (designPartsCardFlightAnswer, error) {
 	const purpose = entity.AIPurposeDesignParts
 	// A flight that finished just before this one already paid: read the cache again.
 	if !force {
@@ -385,37 +387,52 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 
 	construction, confirmed := designPartsCardConstructionOf(joins)
 	user := designPartsCardUserPrompt(views, s.designPartsCardNote(ctx, cardID), construction, confirmed)
-	started := time.Now()
-	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
-		System: designPartsCardSystemPrompt, User: user, ImageURLs: marksURLs,
-		UserAsParts: true, JSONMode: true, MaxTokens: designPartsCardMaxTokens, Effort: designPartsEffort,
-	})
-	var (
-		raw, finishReason string
-		usage             aiprov.TokenUsage
-	)
-	if res != nil {
-		raw, finishReason, usage = res.Text, res.FinishReason, res.Usage
-	}
-	answered := s.aiModelOf(purpose, res)
 	sides := make([]string, 0, len(views))
 	for _, v := range views {
 		sides = append(sides, fmt.Sprintf("%s:%d", v.View, v.Count))
 	}
-	logAttrs := []any{
-		slog.Int("tech_card_id", cardID), slog.String("views", strings.Join(sides, ",")),
-		slog.String("algo_rev", algoRev), slog.String("model", answered),
-		slog.Duration("took", time.Since(started)), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
-		slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
-	}
+	var (
+		parts    map[string][]entity.DesignPartGroup
+		splits   map[string][]entity.DesignPartSplit
+		answered string
+		logAttrs []any
+	)
+	// An unusable answer (empty, cut at the token budget, not the promised JSON) is asked ONCE more
+	// before the 500: the labeller fails like this now and then on a picture it names fine the next
+	// time. Each attempt has its own chain budget; the flight's deadline covers both.
+	err := designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
+		started := time.Now()
+		res, err := s.ai.Chat(actx, purpose, aiprov.ChatRequest{
+			System: designPartsCardSystemPrompt, User: user, ImageURLs: marksURLs,
+			UserAsParts: true, JSONMode: true, MaxTokens: designPartsCardMaxTokens, Effort: designPartsEffort,
+		})
+		var (
+			raw, finishReason string
+			usage             aiprov.TokenUsage
+		)
+		if res != nil {
+			raw, finishReason, usage = res.Text, res.FinishReason, res.Usage
+		}
+		answered = s.aiModelOf(purpose, res)
+		logAttrs = []any{
+			slog.Int("tech_card_id", cardID), slog.String("views", strings.Join(sides, ",")),
+			slog.String("algo_rev", algoRev), slog.String("model", answered), slog.Int("attempt", attempt),
+			slog.Duration("took", time.Since(started)), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
+			slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
+		}
+		if err != nil {
+			return s.designPartsChatFailure(ctx, res, err, logAttrs)
+		}
+		var ok bool
+		parts, splits, ok = parseDesignPartsCard(raw, views)
+		if !ok {
+			slog.Default().ErrorContext(ctx, "design parts card: the answer is not the promised JSON", logAttrs...)
+			return status.Error(codes.Internal, designPartsUnusableMsg)
+		}
+		return nil
+	})
 	if err != nil {
-		return designPartsCardFlightAnswer{}, s.designPartsChatFailure(ctx, res, err, logAttrs)
-	}
-
-	parts, splits, ok := parseDesignPartsCard(raw, views)
-	if !ok {
-		slog.Default().ErrorContext(ctx, "design parts card: the answer is not the promised JSON", logAttrs...)
-		return designPartsCardFlightAnswer{}, status.Error(codes.Internal, designPartsUnusableMsg)
+		return designPartsCardFlightAnswer{}, err
 	}
 	out := make([]entity.DesignPartsSuggestion, 0, len(views))
 	keys := map[string]bool{}
@@ -434,6 +451,40 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 	}
 	slog.Default().InfoContext(ctx, "design parts card", append(logAttrs, slog.Int("part_keys", len(keys)))...)
 	return designPartsCardFlightAnswer{suggestions: out}, nil
+}
+
+// designPartsCardAttempts — the labeller is asked at most this many times per flight (1 retry).
+const designPartsCardAttempts = 2
+
+// designPartsUnusable — the refusal an unusable answer ends in (designPartsChatFailure's empty /
+// budget-exhausted classes, and an answer that is not the promised JSON).
+func designPartsUnusable(err error) bool {
+	st, ok := status.FromError(err)
+	return ok && st.Code() == codes.Internal && st.Message() == designPartsUnusableMsg
+}
+
+// designPartsRetryUnusable runs `try` once, and once more only when it ended unusable and the
+// caller's deadline still leaves one full `budget` (never past ctx). Each attempt runs under its own
+// `budget` deadline, so the total stays within designPartsCardAttempts × budget.
+func designPartsRetryUnusable(ctx context.Context, budget time.Duration, try func(ctx context.Context, attempt int) error) error {
+	var err error
+	for attempt := 1; attempt <= designPartsCardAttempts; attempt++ {
+		if attempt > 1 {
+			if ctx.Err() != nil {
+				return err
+			}
+			if dl, ok := ctx.Deadline(); ok && time.Until(dl) < budget {
+				return err
+			}
+		}
+		actx, cancel := context.WithTimeout(ctx, budget)
+		err = try(actx, attempt)
+		cancel()
+		if err == nil || !designPartsUnusable(err) {
+			return err
+		}
+	}
+	return err
 }
 
 func designPartsCardResponse(in []entity.DesignPartsSuggestion, cached bool) *pb_admin.SuggestDesignPartsCardResponse {
