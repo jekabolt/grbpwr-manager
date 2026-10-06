@@ -80,7 +80,9 @@ var designFlatViewRank = map[string]int{
 // Other kinds keep their refs. Frozen into the snapshot, so «what the model gets» (the preview) and the
 // run's history both show exactly this.
 func designFlatPickFromBoard(src designInputSources, refs []*pb_common.DesignInputRef) []*pb_common.DesignInputRef {
-	if src.Kind != entity.DesignRunKindFlat {
+	// A FIX keeps what it had (Codex Ф2 #3): it corrects named plates and may carry the very detail
+	// photo of the plate it fixes, which the views branch below would drop.
+	if src.Kind != entity.DesignRunKindFlat || designFlatIsFix(src.Params) {
 		return refs
 	}
 	type item struct {
@@ -264,9 +266,12 @@ func (s *Server) PreviewDesignRunInputs(ctx context.Context, req *pb_admin.Previ
 	if cardID <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
 	}
+	// FLAT ONLY (Codex Ф2 #4): a render freezes its artworks into the snapshot after this assembly
+	// (designSpliceArtworks), so a render preview would be short of pictures the model receives. A flat's
+	// only later splice is the frozen join list, which no flat prompt reads (construction is off).
 	kind := strings.TrimSpace(req.GetKind())
-	if !entity.IsDesignRunKind(kind) || kind == entity.DesignRunKindDraftIdea {
-		return nil, status.Errorf(codes.InvalidArgument, "kind %q is not a run kind the preview knows", kind)
+	if kind != entity.DesignRunKindFlat {
+		return nil, status.Errorf(codes.InvalidArgument, "the preview answers for a flat run; kind %q is not one", kind)
 	}
 	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
 	if err != nil {

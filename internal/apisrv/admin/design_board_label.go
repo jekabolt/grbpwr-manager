@@ -183,6 +183,8 @@ type designBoardLabelTask struct {
 	Relabel bool
 	// Existing — the picture already has a model row (a relabel or a stale pending one).
 	Existing bool
+	// CallsModel — the route this task starts at is on (decided once per sync, before the token).
+	CallsModel bool
 }
 
 // designBoardLabelled — whether a purpose takes a model label. A purpose of `detail` waits for the
@@ -363,7 +365,8 @@ func designBoardDetailRead(ctx context.Context, ai designBoardChatter, out entit
 	switch {
 	case ans.Confidence < designBoardDetailSure:
 	case ans.SlotID > 0 && known[ans.SlotID]:
-		out.Role, out.DetailSlotId, out.State = entity.DesignViewDetail, ans.SlotID, entity.DesignLabelStateOk
+		// The name rides along: should the slot be deleted meanwhile, the store joins / mints by it.
+		out.Role, out.DetailSlotId, out.NewDetailName, out.State = entity.DesignViewDetail, ans.SlotID, ans.Name, entity.DesignLabelStateOk
 		return out, nil
 	case ans.Name != "":
 		// "new" — or a slot number that is not one of ours, read as new by the name (the store joins an
@@ -502,18 +505,23 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		slog.Default().InfoContext(ctx, "design board labels: dropped", slog.Int("tech_card_id", cardID),
 			slog.Any("media_ids", drop), slog.Int("slots", slots))
 	}
-	aiOn := s.ai.Enabled(entity.AIPurposeBoardLabel)
-	if !aiOn {
-		// AI off: only a row that already exists is settled (as `failed`, by the ladder, for free); a
-		// new picture gets no row — the tile's «view ▾» says the same.
-		kept := tasks[:0]
-		for _, t := range tasks {
-			if t.Existing {
-				kept = append(kept, t)
-			}
+	// WHICH ROUTE A TASK CALLS decides whether it may (Codex Ф2 #1): a detail goes straight to the
+	// strong read, everything else starts at the cheap label. A task whose route is off settles an
+	// existing row as `failed` for free; a new picture gets no row (the tile's «view ▾» says the same).
+	routeOn := func(t designBoardLabelTask) bool {
+		if t.Purpose == entity.TechCardMediaRoleDetail {
+			return s.ai.Enabled(entity.AIPurposeBoardRead)
 		}
-		tasks = kept
+		return s.ai.Enabled(entity.AIPurposeBoardLabel)
 	}
+	kept := tasks[:0]
+	for _, t := range tasks {
+		t.CallsModel = routeOn(t)
+		if t.CallsModel || t.Existing {
+			kept = append(kept, t)
+		}
+	}
+	tasks = kept
 	if len(tasks) > designBoardLabelMaxPerSync {
 		// A board is capped on the client (24); a crafted payload is cut here (Codex Ф1 #1). The rest
 		// is labelled by the next sync.
@@ -536,14 +544,19 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 	}
 	actor := designActor(ctx)
 	admin := authsrv.GetAdminUsername(ctx)
-	for i, t := range tasks {
+	paid := 0
+	for _, t := range tasks {
 		// THE HOURLY WINDOW, SHARED WITH THE QUIZ AND THE PARTS: one token per designBoardLabelPerToken
-		// pictures (a picture costs ≈ $0.001, an unclear one ≈ $0.02), taken BEFORE any claim of the
-		// batch. Refused → the rest stays unclaimed; the next save or band read tries again.
-		if aiOn && i%designBoardLabelPerToken == 0 && !s.enhanceRuns.allow(admin) {
-			slog.Default().WarnContext(ctx, "design board labels: the hourly window is full; labels wait",
-				slog.Int("tech_card_id", cardID), slog.Int("pictures", len(tasks)-i))
-			return nil
+		// pictures that call a model (a picture costs ≈ $0.001, an unclear one or a detail ≈ $0.02),
+		// taken BEFORE that batch's first claim. Refused → the rest stays unclaimed; the next save or
+		// band read tries again.
+		if t.CallsModel {
+			if paid%designBoardLabelPerToken == 0 && !s.enhanceRuns.allow(admin) {
+				slog.Default().WarnContext(ctx, "design board labels: the hourly window is full; labels wait",
+					slog.Int("tech_card_id", cardID))
+				return nil
+			}
+			paid++
 		}
 		claimed, err := s.repo.Design().BeginBoardLabel(ctx, entity.DesignBoardLabelBegin{
 			TechCardId: cardID, MediaId: t.MediaID, Relabel: t.Relabel, StaleBefore: staleBefore, Actor: actor,
@@ -555,21 +568,21 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 			continue
 		}
 		var slots []designBoardDetailSlot
-		if t.Purpose == entity.TechCardMediaRoleDetail && aiOn {
+		if t.Purpose == entity.TechCardMediaRoleDetail && t.CallsModel {
 			// Read fresh per detail: the previous picture of this sync may have minted the slot this
 			// one belongs to (two photos of one cuff → one slot).
 			if slots, err = s.designBoardDetailSlots(ctx, cardID); err != nil {
 				return err
 			}
 		}
-		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], aiOn, slots)
+		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], t.CallsModel, slots)
 	}
 	return nil
 }
 
 // designBoardLabelOne — the fences and the ladder for one claimed picture, then the write.
-// aiOn is the sync's decision, frozen: a sync that took no hourly token never calls a model, even if
-// the route comes back on while it works (Codex Ф1 r2).
+// aiOn is the sync's decision for this task, frozen: a task that took no hourly token never calls a
+// model, even if the route comes back on while it works (Codex Ф1 r2).
 func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn bool, slots []designBoardDetailSlot) {
 	logAttrs := []any{slog.Int("tech_card_id", cardID), slog.Int("media_id", pic.MediaID), slog.String("purpose", string(pic.Purpose))}
 	var label entity.DesignBoardLabel
@@ -644,7 +657,9 @@ func (s *Server) designBoardDetailSlots(ctx context.Context, cardID int) ([]desi
 	var out []designBoardDetailSlot
 	var ids []int
 	for _, sl := range band.Bench {
-		if sl.ViewKey != entity.DesignViewDetail || strings.TrimSpace(sl.DetailName.String) == "" {
+		// The flat, colourway-less detail bench only — the one a flat detail run reads (Codex Ф2 #2).
+		if sl.ViewKey != entity.DesignViewDetail || sl.Kind != entity.DesignPictureKindFlat ||
+			(sl.ColorwayId.Valid && sl.ColorwayId.Int32 != 0) || strings.TrimSpace(sl.DetailName.String) == "" {
 			continue
 		}
 		out = append(out, designBoardDetailSlot{ID: sl.Id, Name: strings.TrimSpace(sl.DetailName.String)})

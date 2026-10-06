@@ -229,7 +229,7 @@ func TestBoardDetailReadJoinsMintsOrAsks(t *testing.T) {
 		name, state string
 		caption     string
 	}{
-		{`{"slot":17,"name":"left cuff","caption":"A buttoned cuff.","confidence":0.9}`, 17, "", entity.DesignLabelStateOk, "A buttoned cuff."},
+		{`{"slot":17,"name":"left cuff","caption":"A buttoned cuff.","confidence":0.9}`, 17, "left cuff", entity.DesignLabelStateOk, "A buttoned cuff."}, // the name rides as the fallback
 		{`{"slot":"new","name":"Patch Pocket!","caption":"A patch pocket.","confidence":0.8}`, 0, "patch pocket", entity.DesignLabelStateOk, "A patch pocket."},
 		{`{"slot":99,"name":"left cuff","confidence":0.8}`, 0, "left cuff", entity.DesignLabelStateOk, ""}, // a slot that is not ours → by name (the store joins 17)
 		{`{"slot":"new","name":"collar","caption":"blurry","confidence":0.4}`, 0, "", entity.DesignLabelStateUnsure, "blurry"},

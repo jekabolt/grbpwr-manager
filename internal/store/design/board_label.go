@@ -169,6 +169,11 @@ func (s *Store) FinishBoardLabel(ctx context.Context, req entity.DesignBoardLabe
 			}
 			if id > 0 {
 				slot = id
+			} else {
+				// The model's slot vanished while it was thinking and it gave no name to mint by: a
+				// settled «detail» with no slot could never ride a detail run and would never be asked
+				// again — the person picks instead (Codex Ф2 #5).
+				req.Role, req.State = "", entity.DesignLabelStateUnsure
 			}
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
@@ -202,9 +207,13 @@ func (s *Store) FinishBoardLabel(ctx context.Context, req entity.DesignBoardLabe
 // it is a detail slot of this card; else an existing detail slot with the same name; else a NEW slot
 // marked made_by_model. 0 = no slot (no id, no name).
 func boardLabelDetailSlot(ctx context.Context, db dependency.DB, req entity.DesignBoardLabel) (int, error) {
+	// ONLY THE FLAT, COLOURWAY-LESS BENCH (Codex Ф2 #2): a photo's detail is a drawing to come, and the
+	// flat detail run reads exactly these slots; a render detail of a colourway is another axis.
 	slots, err := storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db, `
-		SELECT * FROM design_bench_slot WHERE tech_card_id = :card AND view_key = :detail ORDER BY id`,
-		map[string]any{"card": req.TechCardId, "detail": entity.DesignViewDetail})
+		SELECT * FROM design_bench_slot
+		WHERE tech_card_id = :card AND view_key = :detail AND kind = :flat AND colorway_id IS NULL
+		ORDER BY id`,
+		map[string]any{"card": req.TechCardId, "detail": entity.DesignViewDetail, "flat": entity.DesignPictureKindFlat})
 	if err != nil {
 		return 0, fmt.Errorf("failed to read the detail slots: %w", err)
 	}
