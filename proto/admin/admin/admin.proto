@@ -13508,6 +13508,25 @@ message DesignQuizQuestion {
   // is about; 0 = not a picture question. When set, part is "whole" and family/view are ignored by
   // clients (no pictogram: the board anchors to the picture instead). Clients echo it on save.
   int32 media_id = 14;
+  // spots — the 1–3 places IN the anchored picture the question is about (99-SPOTS), drawn as
+  // numbered rings on the board tile. Only when media_id ≠ 0 and the picture is a target or detail
+  // reference; empty for whole-picture questions. Clients echo it on save (like media_id).
+  repeated DesignQuizSpot spots = 15;
+}
+
+// DesignQuizSpot — one place on a quiz question's picture (99-SPOTS).
+message DesignQuizSpot {
+  // label — the place in the question's own words, 1–4 words ("inner strap edge").
+  string label = 1;
+  // x — 0..1000 across the picture's width, from the left edge as the viewer sees it.
+  int32 x = 2;
+  // y — 0..1000 down the picture's height, from the top.
+  int32 y = 3;
+  // scale — "zone" (a part: sleeve, yoke, the run of a hem) or "detail" (a stitch line, a button).
+  string scale = 4;
+  // at — output only, server-computed: where label sits inside the question text, as a UTF-16 code
+  // unit offset (a JS string index), matched case-insensitively; -1 = not found. Ignored on save.
+  int32 at = 5;
 }
 
 message GenerateDesignQuizRequest {

@@ -38,13 +38,14 @@ type designQuizAnswerRow struct {
 	CardFingerprint    string         `db:"card_fingerprint"`
 	Topic              string         `db:"topic"`
 	FactsJSON          sql.NullString `db:"facts_json"`
+	SpotsJSON          sql.NullString `db:"spots_json"`
 	AnsweredAt         time.Time      `db:"answered_at"`
 }
 
 const designQuizSelect = `
 	SELECT tech_card_id, question_id, decision_key, media_id, category, part, family, part_view, kind, question,
 	       options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
-	       selected_json, free_text, skipped, card_fingerprint, topic, facts_json, answered_at
+	       selected_json, free_text, skipped, card_fingerprint, topic, facts_json, spots_json, answered_at
 	FROM tech_card_design_quiz_answer`
 
 func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
@@ -61,12 +62,17 @@ func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
 			facts = []entity.DesignQuizFact{}
 		}
 	}
+	// 0401: NULL = no spots.
+	var spots []entity.DesignQuizSpot
+	if r.SpotsJSON.Valid {
+		_ = json.Unmarshal([]byte(r.SpotsJSON.String), &spots)
+	}
 	return entity.TechCardQuizAnswer{
 		Question: entity.DesignQuizQuestion{
 			ID: r.QuestionID, Category: r.Category, Part: r.Part, Family: r.Family, View: r.View,
 			Kind: r.Kind, Question: r.Question, Options: opts, Contradicts: contra,
 			VisualEvidence: r.VisualEvidence, ClarifyQuestion: r.ClarifyQuestion, ClarifyOptions: clar,
-			DecisionKey: r.DecisionKey, MediaID: r.MediaID,
+			DecisionKey: r.DecisionKey, MediaID: r.MediaID, Spots: spots,
 		},
 		Selected: sel, FreeText: r.FreeText, Skipped: r.Skipped, AnsweredAt: r.AnsweredAt,
 		Fingerprint: r.CardFingerprint, Topic: r.Topic, Facts: facts,
@@ -136,10 +142,19 @@ func designQuizFactsJSON(f []entity.DesignQuizFact) sql.NullString {
 	return sql.NullString{String: string(b), Valid: true}
 }
 
+// designQuizSpotsJSON — the spots column (0401): NULL when the question has none.
+func designQuizSpotsJSON(s []entity.DesignQuizSpot) sql.NullString {
+	if len(s) == 0 {
+		return sql.NullString{}
+	}
+	b, _ := json.Marshal(s)
+	return sql.NullString{String: string(b), Valid: true}
+}
+
 // designQuizInsertCols — the columns insertDesignQuizRows writes, in its row order.
 var designQuizInsertCols = []string{"tech_card_id", "question_id", "decision_key", "media_id", "category", "part", "family", "part_view", "kind",
 	"question", "options_json", "contradicts_json", "visual_evidence", "clarify_question",
-	"clarify_options_json", "selected_json", "free_text", "skipped", "card_fingerprint", "topic", "facts_json", "display_order", "answered_at"}
+	"clarify_options_json", "selected_json", "free_text", "skipped", "card_fingerprint", "topic", "facts_json", "spots_json", "display_order", "answered_at"}
 
 // insertDesignQuizRows writes list as the card's answers in that order (display_order = index). The
 // caller owns the transaction and has cleared the card's rows (or the card is new). Shared by the
@@ -158,7 +173,7 @@ func insertDesignQuizRows(ctx context.Context, db dependency.DB, techCardID int,
 		rows = append(rows, []any{techCardID, q.ID, q.DecisionKey, q.MediaID, q.Category, q.Part, q.Family, q.View, q.Kind,
 			q.Question, designQuizJSON(q.Options), designQuizJSON(q.Contradicts), q.VisualEvidence,
 			q.ClarifyQuestion, designQuizJSON(q.ClarifyOptions), designQuizJSON(a.Selected), a.FreeText,
-			a.Skipped, a.Fingerprint, a.Topic, designQuizFactsJSON(a.Facts), i, at})
+			a.Skipped, a.Fingerprint, a.Topic, designQuizFactsJSON(a.Facts), designQuizSpotsJSON(q.Spots), i, at})
 	}
 	if err := storeutil.BulkInsertRows(ctx, db, "tech_card_design_quiz_answer", designQuizInsertCols, rows); err != nil {
 		return fmt.Errorf("can't store design quiz answers: %w", err)
@@ -243,27 +258,28 @@ type designQuizSessionRow struct {
 
 // designQuizSessionQuestion — the questions_json row shape (stable JSON names, not Go field names).
 type designQuizSessionQuestion struct {
-	ID              string   `json:"id"`
-	DecisionKey     string   `json:"decision_key,omitempty"`
-	MediaID         int      `json:"media_id,omitempty"`
-	Category        string   `json:"category"`
-	Part            string   `json:"part"`
-	Family          string   `json:"family,omitempty"`
-	View            string   `json:"view"`
-	Kind            string   `json:"kind"`
-	Question        string   `json:"question"`
-	Options         []string `json:"options"`
-	Contradicts     []bool   `json:"contradicts,omitempty"`
-	VisualEvidence  string   `json:"visual_evidence,omitempty"`
-	ClarifyQuestion string   `json:"clarify_question,omitempty"`
-	ClarifyOptions  []string `json:"clarify_options,omitempty"`
+	ID              string                  `json:"id"`
+	DecisionKey     string                  `json:"decision_key,omitempty"`
+	MediaID         int                     `json:"media_id,omitempty"`
+	Spots           []entity.DesignQuizSpot `json:"spots,omitempty"`
+	Category        string                  `json:"category"`
+	Part            string                  `json:"part"`
+	Family          string                  `json:"family,omitempty"`
+	View            string                  `json:"view"`
+	Kind            string                  `json:"kind"`
+	Question        string                  `json:"question"`
+	Options         []string                `json:"options"`
+	Contradicts     []bool                  `json:"contradicts,omitempty"`
+	VisualEvidence  string                  `json:"visual_evidence,omitempty"`
+	ClarifyQuestion string                  `json:"clarify_question,omitempty"`
+	ClarifyOptions  []string                `json:"clarify_options,omitempty"`
 }
 
 func designQuizSessionQuestionsJSON(qs []entity.DesignQuizQuestion) string {
 	rows := make([]designQuizSessionQuestion, 0, len(qs))
 	for _, q := range qs {
 		rows = append(rows, designQuizSessionQuestion{
-			ID: q.ID, DecisionKey: q.DecisionKey, MediaID: q.MediaID, Category: q.Category, Part: q.Part, Family: q.Family,
+			ID: q.ID, DecisionKey: q.DecisionKey, MediaID: q.MediaID, Spots: q.Spots, Category: q.Category, Part: q.Part, Family: q.Family,
 			View: q.View, Kind: q.Kind, Question: q.Question, Options: q.Options, Contradicts: q.Contradicts,
 			VisualEvidence: q.VisualEvidence, ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: q.ClarifyOptions,
 		})
@@ -278,7 +294,7 @@ func (r designQuizSessionRow) entity() entity.DesignQuizSession {
 	qs := make([]entity.DesignQuizQuestion, 0, len(rows))
 	for _, q := range rows {
 		qs = append(qs, entity.DesignQuizQuestion{
-			ID: q.ID, DecisionKey: q.DecisionKey, MediaID: q.MediaID, Category: q.Category, Part: q.Part, Family: q.Family,
+			ID: q.ID, DecisionKey: q.DecisionKey, MediaID: q.MediaID, Spots: q.Spots, Category: q.Category, Part: q.Part, Family: q.Family,
 			View: q.View, Kind: q.Kind, Question: q.Question, Options: q.Options, Contradicts: q.Contradicts,
 			VisualEvidence: q.VisualEvidence, ClarifyQuestion: q.ClarifyQuestion, ClarifyOptions: q.ClarifyOptions,
 		})

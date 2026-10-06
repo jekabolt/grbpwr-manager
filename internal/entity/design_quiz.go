@@ -68,6 +68,24 @@ type DesignQuizQuestion struct {
 	// MediaID — the moodboard picture (tech card media id) this question is about, 0 = not a picture
 	// question (0398, 96-PICTURE-QUESTIONS). Set → Part is "whole", no pictogram.
 	MediaID int
+	// Spots — the 1–3 places in that picture the question is about (0401, 99-SPOTS); only with
+	// MediaID ≠ 0. nil = none (whole-picture question, or saved before 0401).
+	Spots []DesignQuizSpot
+}
+
+// Moodboard quiz spot scales (99-SPOTS §1): a part of the garment vs a small thing on it.
+const (
+	DesignQuizSpotZone   = "zone"
+	DesignQuizSpotDetail = "detail"
+)
+
+// DesignQuizSpot is one place on a picture question's picture (99-SPOTS): X, Y in 0..1000 across the
+// picture as the viewer sees it (from the left, from the top), Label in the question's own words.
+type DesignQuizSpot struct {
+	Label string `json:"label"`
+	X     int    `json:"x"`
+	Y     int    `json:"y"`
+	Scale string `json:"scale"`
 }
 
 // TechCardQuizAnswer is one stored answer: the question plus what the designer chose.
