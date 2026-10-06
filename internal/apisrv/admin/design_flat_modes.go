@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,24 +16,26 @@ import (
 
 // ═══ THE THREE FLAT MODES AT THE DOOR (tmp/plans/flat-consistency/81-FINAL-MODES.md) ═══
 //
-// params.flat = { mode: "" | photos | hand_flat | straps, structure_refs: [{media_id, role}] }.
-// Every refusal below stands BEFORE StartRun reserves anything: it is free.
+// params.flat = { mode: "" | photos | hand_flat, structure_refs: [{media_id, role}] }. The third mode,
+// straps, is RETIRED (owner 07.10, M7, 100-CONSTRUCTION-DEADEND): it was the photos route plus the
+// designer-confirmed join list, and the join list no longer reaches the image model — a straps press
+// drew exactly what a photos press draws, behind a confirmation gate. Every refusal below stands
+// BEFORE StartRun reserves anything: it is free.
 //
 //   - flat_forbidden        — the block on any kind but flat;
 //   - unknown_flat_mode     — a mode word that is none of the three;
+//   - mode_retired          — straps on a NEW press (a rerun of a straps run repeats its parent);
 //   - structure_forbidden   — structure_refs on a mode that does not read them;
 //   - structure_required    — hand_flat without refs;
 //   - structure_malformed   — a role that is not front_flat | back_flat, a role or a media twice;
 //   - structure_not_on_card — a ref that is not a TECHNICAL media of this card;
 //   - structure_gone        — a ref whose media row no longer exists (reruns included);
-//   - joins_unconfirmed     — straps on a card whose join list is missing, unusable or not confirmed at
-//     its current rev (FailedPrecondition, metadata joins_rev);
 //   - mode_not_for_this_run — hand_flat / straps on a detail-only or per_view run, or a rerun that
 //     changes its parent's mode, flats or (hand_flat) views.
 //
-// A rerun inherits the parent's block (designFlatRerunInherit) and its snapshot (joins included), so
-// neither the confirmation nor today's card media are asked again; a fix sends the block of the plate's
-// run and skips the confirmation the same way.
+// A rerun inherits the parent's block (designFlatRerunInherit) and its snapshot, so today's card media
+// are not asked again. The join list's state gates nothing (the joins_unconfirmed refusal went with the
+// straps mode).
 
 // designFlatModeOf — the normalised mode of the effective params ("" = photos); ok=false for an unknown
 // word.
@@ -130,9 +133,8 @@ func designFlatTechnicalMedia(card *entity.TechCard) map[int32]bool {
 }
 
 // designRefuseFlatParams — the rules of params.flat on the EFFECTIVE params (after the rerun
-// inheritance and the detail canonicalisation). band and card are the door's own reads: the
-// confirmation is checked on the same join list the snapshot freezes.
-func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun, band *entity.DesignBand, card *entity.TechCard) error {
+// inheritance and the detail canonicalisation). card is the door's own read (hand_flat's flats).
+func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, parent *entity.DesignRun, card *entity.TechCard) error {
 	f := params.GetFlat()
 	if kind != entity.DesignRunKindFlat {
 		if f != nil {
@@ -149,8 +151,16 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	mode, ok := designgen.NormalizeFlatMode(f.GetMode())
 	if !ok {
 		return designRefusal(codes.InvalidArgument, "unknown_flat_mode",
-			fmt.Sprintf("params.flat.mode %q is not photos | hand_flat | straps", f.GetMode()),
+			fmt.Sprintf("params.flat.mode %q is not photos | hand_flat", f.GetMode()),
 			map[string]string{"mode": f.GetMode()})
+	}
+	// THE STRAPS MODE IS RETIRED (M7, owner 07.10): a new press is refused, free; no client sends it. A
+	// rerun of a run drawn in it repeats its parent (designFlatRerunInherit already holds it to that).
+	if mode == designgen.FlatModeStraps && parent == nil {
+		return designRefusal(codes.InvalidArgument, "mode_retired",
+			"the straps mode was retired: the construction list no longer reaches the image model, so a flat "+
+				"draws from the reference photos — send no params.flat. Nothing was reserved and nothing was charged",
+			map[string]string{"mode": mode})
 	}
 	if mode != designgen.FlatModeHandFlat && len(f.GetStructureRefs()) > 0 {
 		return designRefusal(codes.InvalidArgument, "structure_forbidden",
@@ -169,40 +179,7 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	if mode == designgen.FlatModeHandFlat {
 		return designRefuseFlatHandFlat(f, parent, card)
 	}
-	// straps: a rerun repeats its parent's frozen list. A fix freezes the card's CURRENT list, so it
-	// needs the confirmation like a new press.
-	if parent != nil {
-		return nil
-	}
-	// WAVE 10 (owner 06.10, 100-CONSTRUCTION-DEADEND): the join list does not reach the image model
-	// (designgen.FlatPromptCarriesConstruction), so its state must not gate a press either — a straps
-	// press is the photos route. The gate comes back with the switch.
-	if !designgen.FlatPromptCarriesConstruction {
-		return nil
-	}
-	cur, usable, confirmed := 0, false, false
-	if band != nil && band.Joins != nil {
-		cur = band.Joins.Rev
-		doc := band.Joins.Doc
-		usable = designgen.JoinsUsable(&doc)
-		confirmed = doc.Confirmed
-	}
-	if !usable || !confirmed {
-		return designRefusal(codes.FailedPrecondition, "joins_unconfirmed",
-			fmt.Sprintf("the straps mode draws from the join list a designer confirmed; the card's list (rev %d) is %s. "+
-				"Check it and confirm it, then generate. Nothing was reserved and nothing was charged",
-				cur, map[bool]string{true: "not confirmed", false: "missing or empty"}[usable]),
-			map[string]string{"joins_rev": strconv.Itoa(cur)})
-	}
-	// Codex b1: the confirmation is of the list AGAINST the photos and the note of that moment. A photo
-	// replaced, a role or note changed, the garment note rewritten since → the list may be obsolete.
-	if !designJoinsConfirmedFresh(band.Joins, designJoinsSourceFP(card, band.References)) {
-		return designRefusal(codes.FailedPrecondition, "joins_unconfirmed",
-			fmt.Sprintf("the straps mode draws from the join list a designer confirmed; the card's reference photos or "+
-				"garment note changed after the list (rev %d) was confirmed. Check it against them and confirm it again, "+
-				"then generate. Nothing was reserved and nothing was charged", cur),
-			map[string]string{"joins_rev": strconv.Itoa(cur), "reason": "stale"})
-	}
+	// straps: only a rerun reaches here; it repeats its parent's frozen snapshot.
 	return nil
 }
 
@@ -405,4 +382,18 @@ func designFlatDetailOnlyItsRefs(src designInputSources, refs []*pb_common.Desig
 		out = append(out, r)
 	}
 	return out
+}
+
+// designFlatInFlightRefusal — M8 (07.10): the store refused a second flat run of a card while one is
+// pending or running (entity.DesignFlatRunInFlightError, checked inside StartRun's transaction before
+// the reservation). FailedPrecondition `flat_run_in_flight` with the holding run; nil for any other error.
+func designFlatInFlightRefusal(err error) error {
+	var live *entity.DesignFlatRunInFlightError
+	if !errors.As(err, &live) {
+		return nil
+	}
+	return designRefusal(codes.FailedPrecondition, "flat_run_in_flight",
+		fmt.Sprintf("flat run %d of this card is still drawing; wait for it to finish (or cancel it), then generate "+
+			"again. Nothing was reserved and nothing was charged", live.RunID),
+		map[string]string{"run_id": strconv.Itoa(live.RunID), "status": live.Status})
 }

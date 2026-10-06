@@ -46,84 +46,6 @@ func sref(id int32, role string) *pb_common.DesignFlatStructureRef {
 	return &pb_common.DesignFlatStructureRef{MediaId: id, Role: role}
 }
 
-// bandWithJoins — a band whose list was confirmed (when confirmed) against the card it is checked with
-// in these tests: no references, no garment note.
-func bandWithJoins(rev int, confirmed bool) *entity.DesignBand {
-	src := ""
-	if confirmed {
-		src = designJoinsSourceFP(nil, nil)
-	}
-	return &entity.DesignBand{Joins: &entity.DesignJoins{Rev: rev, Doc: entity.DesignJoinsDoc{
-		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}, Confirmed: confirmed, ConfirmedSource: src}}}
-}
-
-// TestStrapsDoorRefusesAStaleConfirmation — Codex b1: the straps door refuses a confirmation made
-// against other photos or another garment note (joins_unconfirmed, reason=stale); a confirmation older
-// than the stored fingerprint falls back to the fingerprint the list was written from.
-// MUTATIONS IT CATCHES: the gate checking only `Confirmed`; the fingerprint ignoring a role, a note or
-// the garment note; the legacy fallback missing (every old confirmation stale) or always passing.
-func TestStrapsDoorRefusesAStaleConfirmation(t *testing.T) {
-	// the gate stands only while the join list reaches the prompt (wave 10 switch)
-	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
-	designgen.FlatPromptCarriesConstruction = true
-	card := &entity.TechCard{}
-	refs := []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "back"}}
-	confirmedNow := func() *entity.DesignBand {
-		b := bandWithJoins(4, true)
-		b.References = refs
-		b.Joins.Doc.ConfirmedSource = designJoinsSourceFP(card, refs)
-		return b
-	}
-	staleOf := func(b *entity.DesignBand, c *entity.TechCard) (string, string) {
-		st, _ := status.FromError(designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, b, c))
-		for _, d := range st.Details() {
-			ei := d.(*errdetails.ErrorInfo)
-			return ei.GetReason(), ei.GetMetadata()["reason"]
-		}
-		return "", ""
-	}
-	r, why := staleOf(confirmedNow(), card)
-	require.Equal(t, "", r, "a confirmation of today's photos passes")
-	require.Equal(t, "", why)
-
-	// a photo replaced
-	b := confirmedNow()
-	b.References = []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 9, Role: "back"}}
-	r, why = staleOf(b, card)
-	require.Equal(t, "joins_unconfirmed", r)
-	require.Equal(t, "stale", why)
-	// a role changed
-	b = confirmedNow()
-	b.References = []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "side_l"}}
-	r, why = staleOf(b, card)
-	require.Equal(t, "stale", why)
-	// a photo's note changed
-	b = confirmedNow()
-	b.References = []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "back"}}
-	b.References[1].Note.String, b.References[1].Note.Valid = "the crossed straps", true
-	r, why = staleOf(b, card)
-	require.Equal(t, "stale", why)
-	// the garment note changed
-	noted := &entity.TechCard{}
-	noted.GarmentDescription.String, noted.GarmentDescription.Valid = "open back", true
-	r, why = staleOf(confirmedNow(), noted)
-	require.Equal(t, "joins_unconfirmed", r)
-	require.Equal(t, "stale", why)
-
-	// a confirmation from before the field: the list's own source decides
-	legacy := confirmedNow()
-	legacy.Joins.Doc.ConfirmedSource = ""
-	legacy.Joins.SourceFingerprint = designJoinsSourceFP(card, refs)
-	r, _ = staleOf(legacy, card)
-	require.Equal(t, "", r)
-	legacy.Joins.SourceFingerprint = "other"
-	_, why = staleOf(legacy, card)
-	require.Equal(t, "stale", why)
-	legacy.Joins.SourceFingerprint = ""
-	_, why = staleOf(legacy, card)
-	require.Equal(t, "stale", why, "a hand-written list confirmed before the field must be confirmed again")
-}
-
 // TestJoinsFlightKeySeparatesForce — Codex b2: a forced re-read never shares a flight with a non-force
 // read of the same source, nor with a read of other photos.
 func TestJoinsFlightKeySeparatesForce(t *testing.T) {
@@ -136,9 +58,6 @@ func TestJoinsFlightKeySeparatesForce(t *testing.T) {
 }
 
 func TestFlatModeDoorRefusals(t *testing.T) {
-	// the gate stands only while the join list reaches the prompt (wave 10 switch)
-	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
-	designgen.FlatPromptCarriesConstruction = true
 	card := &entity.TechCard{}
 	card.Media = []entity.TechCardMediaItem{
 		{MediaId: 70, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
@@ -153,44 +72,42 @@ func TestFlatModeDoorRefusals(t *testing.T) {
 		kind   string
 		params *pb_common.DesignRunParams
 		parent *entity.DesignRun
-		band   *entity.DesignBand
 		want   string
 	}{
-		{"no block is photos", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutOne}, nil, nil, ""},
-		{"photos stated", entity.DesignRunKindFlat, flatParamsOf("photos"), nil, nil, ""},
-		{"photos on per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView, Flat: &pb_common.DesignFlatParams{}}, nil, nil, ""},
-		{"flat on a render", entity.DesignRunKindRender, flatParamsOf(""), nil, nil, "flat_forbidden"},
-		{"unknown mode", entity.DesignRunKindFlat, flatParamsOf("drawing"), nil, nil, "unknown_flat_mode"},
-		{"refs on photos", entity.DesignRunKindFlat, flatParamsOf("", sref(70, "front_flat")), nil, nil, "structure_forbidden"},
-		{"refs on straps", entity.DesignRunKindFlat, flatParamsOf("straps", sref(70, "front_flat")), nil, bandWithJoins(3, true), "structure_forbidden"},
-		{"straps confirmed", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, true), ""},
-		{"straps unconfirmed", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), "joins_unconfirmed"},
-		{"straps no list", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, &entity.DesignBand{}, "joins_unconfirmed"},
-		{"straps rerun skips", entity.DesignRunKindFlat, flatParamsOf("straps"), parent, bandWithJoins(3, false), ""},
-		{"straps fix needs the confirmation too", entity.DesignRunKindFlat, fix, nil, bandWithJoins(3, false), "joins_unconfirmed"},
+		{"no block is photos", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutOne}, nil, ""},
+		{"photos stated", entity.DesignRunKindFlat, flatParamsOf("photos"), nil, ""},
+		{"photos on per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView, Flat: &pb_common.DesignFlatParams{}}, nil, ""},
+		{"flat on a render", entity.DesignRunKindRender, flatParamsOf(""), nil, "flat_forbidden"},
+		{"unknown mode", entity.DesignRunKindFlat, flatParamsOf("drawing"), nil, "unknown_flat_mode"},
+		{"refs on photos", entity.DesignRunKindFlat, flatParamsOf("", sref(70, "front_flat")), nil, "structure_forbidden"},
+		// M7 (owner 07.10): the straps mode is retired — a new press of it is refused whatever it carries.
+		{"straps new press", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, "mode_retired"},
+		{"refs on straps", entity.DesignRunKindFlat, flatParamsOf("straps", sref(70, "front_flat")), nil, "mode_retired"},
+		{"straps fix", entity.DesignRunKindFlat, fix, nil, "mode_retired"},
 		{"straps per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
-			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, nil, bandWithJoins(3, true), "mode_not_for_this_run"},
+			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, nil, "mode_retired"},
+		{"straps rerun repeats its parent", entity.DesignRunKindFlat, flatParamsOf("straps"), parent, ""},
+		{"straps rerun per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
+			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, parent, "mode_not_for_this_run"},
 		{"hand flat detail only", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"detail"}, Layout: designLayoutOne,
-			Flat: &pb_common.DesignFlatParams{Mode: "hand_flat", StructureRefs: []*pb_common.DesignFlatStructureRef{sref(70, "front_flat")}}}, nil, nil, "mode_not_for_this_run"},
-		{"hand flat", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "back_flat")), nil, nil, ""},
-		{"hand flat none", entity.DesignRunKindFlat, flatParamsOf("hand_flat"), nil, nil, "structure_required"},
-		{"hand flat moodboard media", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(80, "front_flat")), nil, nil, "structure_not_on_card"},
-		{"hand flat foreign media", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(99, "front_flat")), nil, nil, "structure_not_on_card"},
-		{"hand flat rerun not re-read", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(99, "front_flat")), parent, nil, ""},
-		{"hand flat role twice", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "front_flat")), nil, nil, "structure_malformed"},
-		{"hand flat bad role", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front")), nil, nil, "structure_malformed"},
-		{"hand flat media twice", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(70, "back_flat")), nil, nil, "structure_malformed"},
+			Flat: &pb_common.DesignFlatParams{Mode: "hand_flat", StructureRefs: []*pb_common.DesignFlatStructureRef{sref(70, "front_flat")}}}, nil, "mode_not_for_this_run"},
+		{"hand flat", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "back_flat")), nil, ""},
+		{"hand flat none", entity.DesignRunKindFlat, flatParamsOf("hand_flat"), nil, "structure_required"},
+		{"hand flat moodboard media", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(80, "front_flat")), nil, "structure_not_on_card"},
+		{"hand flat foreign media", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(99, "front_flat")), nil, "structure_not_on_card"},
+		{"hand flat rerun not re-read", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(99, "front_flat")), parent, ""},
+		{"hand flat role twice", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "front_flat")), nil, "structure_malformed"},
+		{"hand flat bad role", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front")), nil, "structure_malformed"},
+		{"hand flat media twice", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(70, "back_flat")), nil, "structure_malformed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, flatReason(t, designRefuseFlatParams(c.kind, c.params, c.parent, c.band, card)))
+			require.Equal(t, c.want, flatReason(t, designRefuseFlatParams(c.kind, c.params, c.parent, card)))
 		})
 	}
-	st, _ := status.FromError(designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), card))
-	require.Equal(t, codes.FailedPrecondition, st.Code())
-	for _, d := range st.Details() {
-		require.Equal(t, "3", d.(*errdetails.ErrorInfo).GetMetadata()["joins_rev"])
-	}
+	st, _ := status.FromError(designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, card))
+	require.Equal(t, codes.InvalidArgument, st.Code())
+	require.Contains(t, st.Message(), "Nothing was reserved and nothing was charged")
 }
 
 func TestFlatModeOutputsAndReruns(t *testing.T) {
@@ -246,9 +163,10 @@ func TestFlatSnapshotRefsPerMode(t *testing.T) {
 	}
 	require.Equal(t, []string{"params.flat.structure_refs.0.media_id"}, where)
 
-	band := bandWithJoins(3, true)
+	band := &entity.DesignBand{Joins: &entity.DesignJoins{Rev: 3, Doc: entity.DesignJoinsDoc{
+		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}}}
 	require.Nil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat")), band, nil), "hand_flat freezes no list")
-	require.NotNil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf("straps"), band, nil))
+	require.NotNil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf(""), band, nil))
 }
 
 func refIDs(refs []*pb_common.DesignInputRef) []int32 {
@@ -402,13 +320,18 @@ func TestHandFlatWithOnlyItsFlatsIsNotRefused(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestStrapsIsNotGatedWithoutConstruction — wave 10: with the join list out of the prompt, its state
-// (missing, unconfirmed, stale) does not refuse a press.
-func TestStrapsIsNotGatedWithoutConstruction(t *testing.T) {
-	require.False(t, designgen.FlatPromptCarriesConstruction)
+// TestStrapsRetiredWhateverTheSwitch — M7 (owner 07.10): the straps mode is refused on a new press and
+// the join list gates no flat press, with the construction switch off (today) or on (a re-enable of the
+// prompt text does not bring the confirmation gate back).
+func TestStrapsRetiredWhateverTheSwitch(t *testing.T) {
+	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
 	card := &entity.TechCard{}
-	require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), card))
-	require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, &entity.DesignBand{}, card))
+	for _, on := range []bool{false, true} {
+		designgen.FlatPromptCarriesConstruction = on
+		require.Equal(t, "mode_retired", flatReason(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, card)))
+		require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), &entity.DesignRun{Id: 4}, card))
+		require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf(""), nil, card))
+	}
 }
 
 // TestFlatDetailRunSendsOnlyThatDetailsRefs — T74 (owner 06.10): a detail run's snapshot carries only

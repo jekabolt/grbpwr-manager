@@ -153,20 +153,6 @@ func designJoinsSourceFP(card *entity.TechCard, refs []entity.DesignReference) s
 	return designJoinsFingerprint(designJoinsPhotos(refs), designJoinsNote(card))
 }
 
-// designJoinsConfirmedFresh — a confirmed list still speaks for the card's current photos and note:
-// the fingerprint stored at confirmation (or, for a confirmation older than that field, the one the
-// list was written from) equals the card's current one. False for an unconfirmed list.
-func designJoinsConfirmedFresh(j *entity.DesignJoins, current string) bool {
-	if j == nil || !j.Doc.Confirmed {
-		return false
-	}
-	want := j.Doc.ConfirmedSource
-	if want == "" {
-		want = j.SourceFingerprint
-	}
-	return want != "" && want == current
-}
-
 // designJoinsCacheHit — a stored list answers without a call when it was written from the same
 // source, or a designer edited it (a regeneration would throw the edit away: that is `force`).
 func designJoinsCacheHit(j *entity.DesignJoins, fp string) bool {
@@ -541,7 +527,8 @@ func (s *Server) SetDesignJoins(ctx context.Context, req *pb_admin.SetDesignJoin
 	designJoinsMarkEdits(&doc, prev)
 	// The confirmation belongs to THIS save's rev; a save without it clears it (the doc is written whole).
 	// It records the card's source fingerprint at this moment: a confirmation is of the list AGAINST
-	// these photos and this note, and the straps door refuses it once they change (Codex b1).
+	// these photos and this note. Data only since M7 (07.10): the straps door that refused a stale
+	// confirmation is retired with the mode, and nothing in the flat run path reads it.
 	doc.Confirmed = req.GetConfirm()
 	if doc.Confirmed {
 		cfp, err := s.designJoinsCurrentSource(ctx, cardID)

@@ -673,11 +673,11 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		designFlatDetailsOnly(params)
 	}
 	// ─── THE FLAT MODE (80-BUILD-MODES §2.1): a rerun inherits its parent's block; the block's rules
-	// are checked on the EFFECTIVE params, against this door's own read of the join list.
+	// are checked on the EFFECTIVE params.
 	if err := designFlatRerunInherit(kind, params, parent); err != nil {
 		return nil, err
 	}
-	if err := designRefuseFlatParams(kind, params, parent, band, card); err != nil {
+	if err := designRefuseFlatParams(kind, params, parent, card); err != nil {
 		return nil, err
 	}
 	if err := s.designRefuseFlatStructureGone(ctx, kind, params); err != nil {
@@ -1192,6 +1192,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		ColorwayStated: req.GetParams().GetColorwayId() > 0,
 	})
 	if err != nil {
+		if r := designFlatInFlightRefusal(err); r != nil {
+			return nil, r
+		}
 		return nil, designError(ctx, "failed to start the design run", err, nil)
 	}
 	return &pb_admin.StartDesignRunResponse{
