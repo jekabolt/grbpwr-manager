@@ -37,7 +37,7 @@ func TestQuizSpotsParseAndShapeGate(t *testing.T) {
 		{"label":"fourth","x":10,"y":10}
 	]`
 	raw := `{"questions":[` + spotQ("edges", "edge_finish", "1", spots) + `]}`
-	qs, _, ok := parseDesignQuizBoard(raw, "top", nil, []int{501}, spotRoles())
+	qs, _, ok := parseDesignQuizBoard(raw, "top", nil, []int{502}, spotRoles())
 	require.True(t, ok)
 	require.Len(t, qs, 1)
 	require.Equal(t, []entity.DesignQuizSpot{
@@ -49,7 +49,7 @@ func TestQuizSpotsParseAndShapeGate(t *testing.T) {
 	// The spots are optional and never cost the question.
 	for _, s := range []string{`null`, `"nope"`, `[]`, `[{"label":"x"}]`, `{"label":"a","x":1,"y":1}`} {
 		raw := `{"questions":[` + spotQ("q", "edge_finish", "1", s) + `]}`
-		qs, _, ok := parseDesignQuizBoard(raw, "top", nil, []int{501}, spotRoles())
+		qs, _, ok := parseDesignQuizBoard(raw, "top", nil, []int{502}, spotRoles())
 		require.True(t, ok, s)
 		require.Len(t, qs, 1, s)
 		require.Empty(t, qs[0].Spots, s)
@@ -77,10 +77,10 @@ func TestQuizSpotsRoleAndWholePictureGates(t *testing.T) {
 		got[q.ID] = len(q.Spots)
 	}
 	require.Equal(t, map[string]int{
-		"on_target": 1, "on_detail": 1, "match_a_part": 1,
-		// 06.10: the key is not a gate — pic_match on a target picture keeps its spots (the model omits
-		// spots on a whole-picture question itself); a detail picture keeps them under any key.
-		"whole_match": 1, "whole_material": 1,
+		// 06.10: the key is not a gate — a detail picture keeps its spots under any key.
+		"on_detail": 1, "whole_material": 1,
+		// 102 B3: no spots on ANY target-picture question.
+		"on_target": 0, "match_a_part": 0, "whole_match": 0,
 		"on_material": 0, "on_mood": 0, "on_unmarked": 0, "not_a_picture": 0,
 	}, got)
 
@@ -139,7 +139,7 @@ func TestQuizSpotsSaveRoundTrip(t *testing.T) {
 func TestQuizSpotsPromptRule(t *testing.T) {
 	require.Contains(t, designQuizSystemPrompt, "- "+designQuizSpotsRule)
 	require.Contains(t, designQuizSystemPrompt, `"spots":[{"label":"…","x":0,"y":0,"scale":"zone|detail"}]`)
-	for _, w := range []string{"target or detail picture", "1 to 3 places IN THAT PICTURE", "0–1000 from the left edge as the viewer sees it",
+	for _, w := range []string{"only on a question about a DETAIL picture (never a target, material or mood picture)", "1 to 3 places IN THAT PICTURE", "0–1000 from the left edge as the viewer sees it",
 		"Omit spots when the question is about the whole picture", "a wrong spot is worse than none"} {
 		require.Contains(t, designQuizSpotsRule, w)
 	}

@@ -147,7 +147,7 @@ EDGES — every open edge gets its finish decided. Walk this garment's edges by 
 
 COLOURWAYS — the construction draft builds its colourway proposals from these answers, so ask them in depth, part col_palette, category design. No colourway listed under Known: ask colourway_count AND colourway_colours, both, adjacent (the colour a picture shows settles that picture, not the colourway range) (kind multi for the colours; options are concrete colour words read off the pictures — "black", "bone", "olive drab", "washed indigo" — plus the common companions of that palette; at most 6, never Pantone codes; the designer types more). Then ask each of these ONLY when the garment has the thing: colour_blocking when it has panels, yokes or trims that could take a contrast; thread_colour when topstitching is visible; hardware_finish when it has metal hardware (part = its hw_ key when one hardware type is on the garment); wash_per_colourway when the fabric is washed or garment-dyed; print_per_colourway when it carries artwork. Colourways listed under Known: ask only what they leave open (a missing colour, the thread or hardware finish, the wash per colourway) — never the count or colours again. No padding: a garment without visible stitching, hardware, contrast panels, wash or artwork gets the count and colours only.
 
-PICTURES — ask at least ONE question about EACH attached picture, tagged "picture": N (its «picture N» number), phrased by what the designer marked it as: target — which aspects of this garment to match exactly and which to change (silhouette, length, fabric look, details); detail — which exact detail to take from it and where it goes on our garment; material — what to take from it: fabric type, weight or hand, colour, texture, finish (which of them); mood or unmarked — what to translate from it into the garment (colour, attitude, styling, nothing concrete). Skip a picture only when an earlier answer already settles it; never repeat what Known or the answers settle. Options name what is visible in THAT picture (its visual_evidence), never generic words. A picture question has part whole and decision_key pic_<aspect> (pic_match, pic_detail, pic_material, pic_mood or a more specific aspect); it counts like any other question. A question not about one picture has no "picture".
+PICTURES — ask at least ONE question about EACH attached picture, tagged "picture": N (its «picture N» number), phrased by what the designer marked it as: target — "What do we change from picture N?" (decision_key pic_change, kind multi): each option an ACTIONABLE change, a verb or comparative plus the part ("narrower straps", "lower crossing point", "shallower open back"), never a bare noun ("strap width"); the server adds the no-change option itself; detail — "What do we take from picture N?" (decision_key pic_take, kind multi): each option a concrete thing to take, the part plus how ("crossed back straps, same width", "bound neckline edge"); material — what to take from it: fabric type, weight or hand, colour, texture, finish (which of them); mood or unmarked — what to translate from it into the garment (colour, attitude, styling, nothing concrete). Skip a picture only when an earlier answer already settles it; never repeat what Known or the answers settle. Options name what is visible in THAT picture (its visual_evidence), never generic words. A picture question has part whole and decision_key pic_<aspect> (pic_change, pic_take, pic_material, pic_mood or a more specific aspect); it counts like any other question. A question not about one picture has no "picture".
 
 A POINT DESERVES A QUESTION when the choice changes the pattern, the fabric order, the visible design or the cost and nothing on the card decides it; when the pictures disagree; when it is hidden, cropped or ambiguous in every picture; when the pictures show something unusual whose construction is not obvious (an asymmetric or hidden closure, an odd seam line, a hybrid of two garment types, an unusual volume, a fabric you cannot identify). A point does NOT deserve a question when every picture clearly shows it, when the card states it with enough precision (Known / Already answered), or when it has a safe technical default for this garment type.
 
@@ -1245,8 +1245,24 @@ func designQuizDecisionLines(card *entity.TechCard, stale bool) []string {
 		return nil
 	}
 	var out []string
+	var pictureAt map[int]int
+	var roles map[int]entity.TechCardMediaRole
 	for _, a := range card.QuizAnswers {
 		if a.Skipped || a.Stale != stale {
+			continue
+		}
+		// 102 B4: a picture answer speaks as its picture, numbered as the drafts attach the board.
+		if a.Question.MediaID != 0 {
+			if pictureAt == nil {
+				pictureAt = map[int]int{}
+				for i, id := range designBoardMediaIDs(card) {
+					pictureAt[id] = i + 1
+				}
+				roles = designBoardRoles(card)
+			}
+			if line := designQuizPictureDecisionLine(a, pictureAt, roles); line != "" {
+				out = append(out, line)
+			}
 			continue
 		}
 		if a.Question.DecisionKey == designQuizEdgeExceptionsKey {
@@ -1267,6 +1283,34 @@ func designQuizDecisionLines(card *entity.TechCard, stale bool) []string {
 		out = append(out, "- "+label+" — "+q+" → "+ans)
 	}
 	return out
+}
+
+// designQuizPictureDecisionLine — a picture answer as a decided fact (102 B4): "- picture 2 (target
+// garment): match as shown, no changes" when the designer kept the picture as it is, else
+// "- picture 2 (target garment) — <question> → <answer>". A picture no longer on the board is named
+// as such. "" when there is no answer.
+func designQuizPictureDecisionLine(a entity.TechCardQuizAnswer, pictureAt map[int]int, roles map[int]entity.TechCardMediaRole) string {
+	mid := a.Question.MediaID
+	label := "a picture since removed from the board"
+	if n, ok := pictureAt[mid]; ok {
+		label = "picture " + strconv.Itoa(n)
+		if w := designPictureRoleWords(roles[mid]); w != "" {
+			label += " (" + w + ")"
+		}
+	}
+	if designQuizIsMatchAsShown(a.Selected) {
+		line := "- " + label + ": match as shown, no changes"
+		if free := aiBoundedText(designOneLine(a.FreeText), designQuizMaxFreeTextRunes); free != "" {
+			line += `; own words: "` + free + `"`
+		}
+		return line
+	}
+	ans := designQuizAnswerText(a)
+	if ans == "" {
+		return ""
+	}
+	q := aiBoundedText(designOneLine(a.Question.Question), designQuizMaxQuestionRunes)
+	return "- " + label + " — " + q + " → " + ans
 }
 
 // designQuizPartLabel — a part key as words for the decided-facts lines: hw_/lbl_ prefixes dropped,
@@ -1444,6 +1488,67 @@ func designQuizPictureKey(mediaID int, modelKey, id string) string {
 	return k
 }
 
+// designQuizMatchAsShown — the option the server puts FIRST on a target picture's whole question
+// "What do we change from picture N?" (102-QUICKWIN B2): the designer keeps the picture as it is.
+// The client makes it exclusive inside the multi; the server keeps whatever is saved.
+const designQuizMatchAsShown = "match as shown — no changes"
+
+// designQuizNoChangeLabels — model options that say the same as designQuizMatchAsShown (dropped
+// before it is prepended, so it never shows twice).
+var designQuizNoChangeLabels = map[string]bool{
+	"no changes": true, "no change": true, "nothing": true, "none": true, "as shown": true,
+	"keep as shown": true, "keep as is": true, "match as shown": true, "match exactly": true,
+	"match it exactly": true, "change nothing": true,
+}
+
+// designQuizWholePicture — a picture question about its WHOLE picture (102 B2): on a target picture
+// the "what do we change" question (aspect match|change, or the text starts "what do we match" /
+// "what do we change"), on a detail picture the "what do we take" one (aspect take|detail, or the
+// text starts "what do we take"). Returns that role, else TechCardMediaRoleNone.
+func designQuizWholePicture(role entity.TechCardMediaRole, decisionKey string, mediaID int, question string) entity.TechCardMediaRole {
+	aspect := strings.TrimPrefix(decisionKey, "pic_"+strconv.Itoa(mediaID)+"_")
+	q := strings.ToLower(question)
+	switch role {
+	case entity.TechCardMediaRoleTarget:
+		if aspect == "match" || aspect == "change" ||
+			strings.HasPrefix(q, "what do we match") || strings.HasPrefix(q, "what do we change") {
+			return role
+		}
+	case entity.TechCardMediaRoleDetail:
+		if aspect == "take" || aspect == "detail" || strings.HasPrefix(q, "what do we take") {
+			return role
+		}
+	}
+	return entity.TechCardMediaRoleNone
+}
+
+// designQuizPrependMatch — designQuizMatchAsShown first, then the model's options without any
+// no-change twin, cut so the whole list stays within designQuizMaxOptions (the model's LAST options
+// go). The prepended option never contradicts the picture.
+func designQuizPrependMatch(options []string, contradicts []bool) ([]string, []bool) {
+	outO := []string{designQuizMatchAsShown}
+	outC := []bool{false}
+	for i, o := range options {
+		k := strings.ToLower(strings.Trim(strings.ReplaceAll(o, "—", " "), " .,;:-"))
+		k = strings.Join(strings.Fields(k), " ")
+		if designQuizNoChangeLabels[k] || strings.HasPrefix(k, "match as shown") {
+			continue
+		}
+		if len(outO) == designQuizMaxOptions {
+			break
+		}
+		outO = append(outO, o)
+		outC = append(outC, i < len(contradicts) && contradicts[i])
+	}
+	return outO, outC
+}
+
+// designQuizIsMatchAsShown — an answer that keeps the picture as shown: exactly the prepended option
+// selected (case-insensitive).
+func designQuizIsMatchAsShown(selected []string) bool {
+	return len(selected) == 1 && strings.EqualFold(designOneLine(selected[0]), designQuizMatchAsShown)
+}
+
 // designQuizRawOption reads one option: {"label":…, "contradicts_picture":…} or a bare string.
 func designQuizRawOption(raw json.RawMessage) (string, bool) {
 	var s string
@@ -1588,7 +1693,10 @@ func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswe
 // range or not an integer → 0, a normal question), its part is forced to whole and its decision key
 // is rewritten to pic_<media_id>_<aspect> so dedupe survives a re-numbered board.
 //
-// roles (designBoardRoles) gate the spots (99-SPOTS §1): kept only on a target or detail picture.
+// roles (designBoardRoles) gate the spots (99-SPOTS §1, 102 B3): kept only on a detail picture; and
+// shape the whole-picture questions (102 B2, designQuizWholePicture): a target picture's
+// "what do we change" is multi with designQuizMatchAsShown first, a detail picture's "what do we
+// take" is multi.
 func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer, attachedIDs []int, roles map[int]entity.TechCardMediaRole) ([]entity.DesignQuizQuestion, designQuizParseStats, bool) {
 	var st designQuizParseStats
 	items, ok := designQuizExtract(raw)
@@ -1689,6 +1797,22 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 		decisionKey := designQuizDecisionKey(it.DecisionKey)
 		if mediaID != 0 {
 			decisionKey = designQuizPictureKey(mediaID, decisionKey, id)
+			// 102 B2: the whole-picture question is a multi; a target's carries "match as shown" first
+			// under the key pic_<id>_change. A clarify_ re-opens an earlier answer with its own options.
+			if !strings.HasPrefix(id, "clarify_") {
+				switch designQuizWholePicture(roles[mediaID], decisionKey, mediaID, question) {
+				case entity.TechCardMediaRoleTarget:
+					kind = entity.DesignQuizKindMulti
+					decisionKey = "pic_" + strconv.Itoa(mediaID) + "_change"
+					options, contradicts = designQuizPrependMatch(options, contradicts)
+					if len(options) < designQuizMinOptions {
+						st.invalid++
+						continue
+					}
+				case entity.TechCardMediaRoleDetail:
+					kind = entity.DesignQuizKindMulti
+				}
+			}
 		} else if !strings.HasPrefix(id, "clarify_") {
 			// 91-EDGE-KEYS K1: an edge question carries its canonical key; dedupe (E1) runs after.
 			if canon := designQuizCanonicalEdgeKey(category, decisionKey, part, kind, question, options); canon != decisionKey {
