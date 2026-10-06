@@ -49,7 +49,7 @@ var (
 	// a soft junk token with its hyphenated compound («self-fabric», «cotton-elastane», «mid-weight»)
 	flatSoftTokenRe = regexp.MustCompile(`(?i)[\w-]*\b(` + flatSoftJunk + `)\b[\w-]*`)
 	// a construction word: what a flat draws
-	flatConstructionRe = regexp.MustCompile(`(?i)\b(pockets?|zip\w*|buttons?|snaps?|seams?|collars?|lapels?|sleeves?|hems?|vents?|yokes?|darts?|pleats?|plackets?|cuffs?|straps?|necklines?|bands?|bindings?|closures?|panels?|hoods?|waistbands?|drawcords?|tabs?|belts?|loops?|epaulettes?|flaps?|welts?|gussets?|ruffles?|frills?|slits?|gores?|godets?|tucks?|gathers?|shirring|smocking|topstitch\w*|stitch\w*|piping|trims?|jacket|coat|shirt|top|trousers|dress|skirt|tank)\b`)
+	flatConstructionRe = regexp.MustCompile(`(?i)\b(pockets?|zip\w*|buttons?|snaps?|seams?|collars?|lapels?|sleeves?|hems?|vents?|yokes?|darts?|pleats?|plackets?|cuffs?|straps?|necklines?|bands?|bindings?|closures?|panels?|hoods?|waistbands?|drawcords?|tabs?|belts?|loops?|epaulettes?|flaps?|welts?|gussets?|ruffles?|frills?|slits?|gores?|godets?|tucks?|gathers?|shirring|smocking|topstitch\w*|stitch\w*|piping|trims?|edges?|waist\w*|shaping|silhouette|jacket|blazer|coat|shirt|top|trousers|pants|shorts|dress|skirt|tank)\b`)
 	flatSpacesRe       = regexp.MustCompile(`\s{2,}`)
 )
 
@@ -61,15 +61,31 @@ func flatCleanClause(c string) string {
 	if !flatSoftJunkRe.MatchString(c) {
 		return c
 	}
-	if !flatConstructionRe.MatchString(c) {
-		return ""
-	}
 	c = flatSoftTokenRe.ReplaceAllString(c, "")
 	c = strings.TrimSpace(flatSpacesRe.ReplaceAllString(c, " "))
 	for _, dangling := range []string{" in", " with", " of", " and", " a", " an", " the"} {
 		c = strings.TrimSuffix(c, dangling)
 	}
-	return strings.TrimSpace(c)
+	c = strings.TrimSpace(c)
+	// What is left stays when it names construction, or says enough on its own (three content words:
+	// «blazer with a curved front edge» yes, «soft tailored» / «knit with mild» no).
+	if flatConstructionRe.MatchString(c) || flatContentWords(c) >= 3 {
+		return c
+	}
+	return ""
+}
+
+var flatStopWords = map[string]bool{"a": true, "an": true, "the": true, "with": true, "and": true, "of": true,
+	"in": true, "on": true, "at": true, "to": true, "over": true, "for": true, "by": true, "its": true}
+
+func flatContentWords(c string) int {
+	n := 0
+	for _, w := range strings.Fields(c) {
+		if !flatStopWords[strings.ToLower(w)] {
+			n++
+		}
+	}
+	return n
 }
 
 // flatDropLabelRe — a card-facts line whose label is not construction (card-facts.ts cardFactLines).

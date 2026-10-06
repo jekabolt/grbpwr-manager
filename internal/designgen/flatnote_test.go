@@ -19,6 +19,8 @@ func TestFlatConstructionNote(t *testing.T) {
 	// a material word next to construction loses the word, not the construction (Codex review)
 	require.Equal(t, "Jacket with patch pockets and a two-way zip.", FlatConstructionNote("Linen jacket with patch pockets and a two-way zip."))
 	require.Equal(t, "Hem finished with a band at the hip bone.", FlatConstructionNote("hem finished with a self-fabric band at the hip bone."))
+	require.Equal(t, "Blazer with a curved front edge and waist shaping.", FlatConstructionNote("Linen blazer with a curved front edge and waist shaping."))
+	require.Equal(t, "", FlatConstructionNote("soft stretch jersey drape"))
 	// the hidden goes whole, even next to a construction word
 	require.Equal(t, "", FlatConstructionNote("inside chest pocket on the lining"))
 	// a knit rib band, a sheer layer and a fitted inner layer are drawn — they stay

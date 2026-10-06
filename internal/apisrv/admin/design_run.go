@@ -3763,6 +3763,9 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// ─── A FLAT: only the garment's own photos with a side role travel — no moodboard picture, no
 	// role-less input (wave 10); a hand_flat run records the designer's flats first, then those photos.
 	out.Refs = designFlatOnlyRoledPhotos(src, out.Refs)
+	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
+		out.Refs = refs
+	}
 	// A FLAT GARMENT SHEET WITH NOTHING TO DRAW FROM is refused before any money (Codex review): no
 	// photo with a side role and no construction words would buy a generic flat of nobody's garment.
 	// A fix and a detail run carry bench plates (checked by their own doors) and are not asked here.
@@ -3771,9 +3774,6 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		return nil, designRefusal(codes.FailedPrecondition, "flat_nothing_to_draw",
 			"a flat needs at least one garment photo with a side role (front, back, side) or a description of its construction; nothing was reserved and nothing was charged",
 			nil)
-	}
-	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
-		out.Refs = refs
 	}
 	if len(out.Refs) > designMaxInputRefs {
 		return nil, status.Errorf(codes.InvalidArgument,

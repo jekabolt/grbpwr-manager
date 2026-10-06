@@ -387,3 +387,10 @@ func TestFlatWithNothingToDrawIsRefused(t *testing.T) {
 		Refs: []entity.DesignReference{{MediaId: 9, Role: "front"}}})
 	require.NoError(t, err)
 }
+
+// TestHandFlatWithOnlyItsFlatsIsNotRefused — the nothing-to-draw check counts the designer's own flats.
+func TestHandFlatWithOnlyItsFlatsIsNotRefused(t *testing.T) {
+	_, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{},
+		Params: flatParamsOf("hand_flat", sref(70, "front_flat"))})
+	require.NoError(t, err)
+}
