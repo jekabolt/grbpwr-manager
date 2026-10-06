@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -225,17 +226,17 @@ func TestDesignPartsCardPrompt(t *testing.T) {
 		"image 1: front view flat (key \"front\"), regions 1..21\n" +
 		"image 2: left side view flat (key \"side_l\"), regions 1..12\n" +
 		"List the garment's physical parts, each with its region numbers on every view where it is visible."
-	if got := designPartsCardUserPrompt(views, " ", ""); got != tail {
+	if got := designPartsCardUserPrompt(views, " ", "", false); got != tail {
 		t.Fatalf("user prompt:\n got %q\nwant %q", got, tail)
 	}
-	got := designPartsCardUserPrompt(views, "open back,\n  crossed straps", "1. neck band NP L → NP R")
+	got := designPartsCardUserPrompt(views, "open back,\n  crossed straps", "1. neck band NP L → NP R", true)
 	want := "CONSTRUCTION of this garment (confirmed by the designer; trust it over habit — never name a part it does not have):\n" +
 		"1. neck band NP L → NP R\n\n" +
 		"The designer's note on the garment (construction only):\nopen back, crossed straps\n\n" + tail
 	if got != want {
 		t.Fatalf("user prompt with note:\n got %q\nwant %q", got, want)
 	}
-	long := designPartsCardUserPrompt(views, strings.Repeat("a", 5000), "")
+	long := designPartsCardUserPrompt(views, strings.Repeat("a", 5000), "", false)
 	if strings.Count(long, "a") > designPartsCardMaxNoteRunes+40 {
 		t.Fatal("the note is not capped")
 	}
@@ -308,7 +309,7 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 	flats := map[string]int{"front": 11, "back": 21, "side_l": 31}
 	code := func(err error) codes.Code { return status.Code(err) }
 	row := func(view string, base int, key string) *entity.DesignPartsSuggestion {
-		return &entity.DesignPartsSuggestion{View: view, BaseMediaId: base, AlgoRev: "r2", Model: "m",
+		return &entity.DesignPartsSuggestion{View: view, BaseMediaId: base, AlgoRev: "r2@s2.j0", Model: "m",
 			Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: key}}}
 	}
 
@@ -361,8 +362,9 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 	t.Run("cache hit on every side", func(t *testing.T) {
 		srv, design := newSrv(t)
 		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2").Return(row("front", 11, "collar"), nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2").Return(row("back", 21, "collar"), nil)
+		design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s2.j0").Return(row("front", 11, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s2.j0").Return(row("back", 21, "collar"), nil)
 		resp, err := srv.SuggestDesignPartsCard(context.Background(), req())
 		if err != nil || !resp.GetCached() || len(resp.GetSuggestions()) != 2 {
 			t.Fatalf("got %+v %v", resp, err)
@@ -379,8 +381,10 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 		t.Run(name+" is a miss", func(t *testing.T) {
 			srv, design := newSrv(t)
 			design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
-			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2").Return(row("front", 11, "collar"), nil)
-			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2").Return(back, nil)
+			design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
+			design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
+			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s2.j0").Return(row("front", 11, "collar"), nil)
+			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s2.j0").Return(back, nil)
 			_, err := srv.SuggestDesignPartsCard(context.Background(), req())
 			if code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), designGenerationDisabledMsg) {
 				t.Fatalf("a miss must reach the generation gate (off here): %v", err)
@@ -390,10 +394,64 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 	t.Run("force skips the cache", func(t *testing.T) {
 		srv, design := newSrv(t)
 		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
+		design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
 		r := req()
 		r.Force = true
 		if _, err := srv.SuggestDesignPartsCard(context.Background(), r); code(err) != codes.FailedPrecondition {
 			t.Fatalf("got %v", err)
 		}
 	})
+}
+
+// TestPartsCacheKeyFollowsJoinsAndPrompt — Codex b4: the stored algo_rev carries the server prompt
+// revision and the join list's rev; the wire shows only the client's revision; the band shows only the
+// rows of today's prompt and list. Codex b3: «confirmed by the designer» only for a confirmed list.
+// MUTATIONS IT CATCHES: a joins edit answered from the old cache row; the server tag leaking to the
+// client (its equality check against PARTS_ALGO_REV would fail); a stale-prompt or stale-list row shown
+// as fresh; an unconfirmed list called confirmed.
+func TestPartsCacheKeyFollowsJoinsAndPrompt(t *testing.T) {
+	require.Equal(t, 2, designPartsPromptRev, "bumped 06.10; bump again on any labeller prompt change")
+	require.Equal(t, "regions.v4+parts.f3@s2.j7", designPartsCacheRev("regions.v4+parts.f3", 7))
+	require.LessOrEqual(t, len(designPartsCacheRev("regions.v4+parts.f3", 99999)), entity.DesignPartsMaxAlgoRev)
+	require.Equal(t, "regions.v4+parts.f3", designPartsClientRev("regions.v4+parts.f3@s2.j7"))
+	require.Equal(t, "r2", designPartsClientRev("r2"))
+	require.Equal(t, "r2", designPartsSuggestionToPb(entity.DesignPartsSuggestion{AlgoRev: "r2@s2.j7"}).GetAlgoRev())
+
+	rows := []entity.DesignPartsSuggestion{
+		{View: "front", AlgoRev: "r2@s2.j7"}, {View: "back", AlgoRev: "r2@s2.j6"}, {View: "side_l", AlgoRev: "r2@s1.j7"},
+		{View: "side_r", AlgoRev: "r2"}, {View: "front", AlgoRev: "r2@s2.j17"},
+	}
+	got := designPartsCurrentRows(rows, &entity.DesignJoins{Rev: 7})
+	require.Len(t, got, 1)
+	require.Equal(t, "front", got[0].View)
+	require.Len(t, designPartsCurrentRows([]entity.DesignPartsSuggestion{{AlgoRev: "r2@s2.j0"}}, nil), 1, "no list = rev 0")
+
+	// the cache is read under the list's rev
+	const card = 7
+	repo := mocks.NewMockRepository(t)
+	design := mocks.NewMockDesign(t)
+	repo.EXPECT().Design().Return(design).Maybe()
+	srv := &Server{repo: repo}
+	design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(map[string]int{"front": 11}, nil)
+	design.EXPECT().GetJoins(mock.Anything, card).Return(&entity.DesignJoins{Rev: 5}, nil)
+	design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s2.j5").Return(&entity.DesignPartsSuggestion{
+		View: "front", BaseMediaId: 11, AlgoRev: "r2@s2.j5", Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: "collar"}}}, nil)
+	resp, err := srv.SuggestDesignPartsCard(context.Background(), &pb_admin.SuggestDesignPartsCardRequest{TechCardId: card, AlgoRev: "r2",
+		Views: []*pb_admin.DesignPartsViewInput{{View: "front", BaseMediaId: 11, MarksMediaId: 12, RegionCount: 9}}})
+	require.NoError(t, err)
+	require.True(t, resp.GetCached())
+	require.Equal(t, "r2", resp.GetSuggestions()[0].GetAlgoRev())
+	_, err = srv.SuggestDesignPartsCard(context.Background(), &pb_admin.SuggestDesignPartsCardRequest{TechCardId: card, AlgoRev: "r2@s9",
+		Views: []*pb_admin.DesignPartsViewInput{{View: "front", BaseMediaId: 11, MarksMediaId: 12, RegionCount: 9}}})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "the client may not forge the server tag")
+
+	views := []designPartsCardView{{View: "front", Count: 3}}
+	require.Contains(t, designPartsCardUserPrompt(views, "", "LIST", true), "confirmed by the designer")
+	un := designPartsCardUserPrompt(views, "", "LIST", false)
+	require.Contains(t, un, "suggested construction (unconfirmed)")
+	require.NotContains(t, un, "confirmed by the designer")
+	c, ok := designPartsCardConstructionOf(&entity.DesignJoins{Doc: entity.DesignJoinsDoc{Confirmed: false,
+		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}})
+	require.NotEmpty(t, c)
+	require.False(t, ok)
 }

@@ -177,6 +177,9 @@ func flatHandFlatCraft(p runParams, detailNames []string, attached []refCaption)
 	if roles := flatPhotoRolesParagraph(attached, st, img); roles != "" {
 		paras = append(paras, roles)
 	}
+	if mood := flatMoodSentence(attached); mood != "" {
+		paras = append(paras, mood)
+	}
 	paras = append(paras, flatNoTextNoGrey, flatStyleGarment, flatExcludedGarment, flatOutput)
 	return strings.Join(paras, "\n\n")
 }
@@ -186,7 +189,9 @@ func flatHandFlatCraft(p runParams, detailNames []string, attached []refCaption)
 func flatPhotoRolesParagraph(attached []refCaption, st []structImage, img string) string {
 	var lines []string
 	for i, rc := range attached {
-		if rc.IsStructure || !rc.FromRef {
+		if rc.IsStructure || !rc.FromRef || rc.Role == entity.DesignRefRoleMood {
+			// A mood picture is a DIFFERENT garment: never a fit or detail authority (M2) — it is
+			// said once, in flatMoodSentence, after this paragraph.
 			continue
 		}
 		label, words := flatPhotoRole(rc.Role)
@@ -208,6 +213,38 @@ func flatPhotoRolesParagraph(attached []refCaption, st []structImage, img string
 		head = append(head, "- Image "+strconv.Itoa(x.n)+" — STRUCTURE AUTHORITY: controls every endpoint, connection, crossing, opening, seam, pocket, closure and the "+displayView(x.view)+" view.")
 	}
 	return flatRolesHead + "\n" + strings.Join(head, "\n") + "\n" + strings.Join(lines, "\n") + "\n" + withImg(flatRolesAdapt, img)
+}
+
+// flatMoodImages — the 1-based numbers of the attached mood pictures (a reference the snapshot marks
+// `mood`: a picture of a DIFFERENT garment from the card's moodboard).
+func flatMoodImages(attached []refCaption) []int {
+	var out []int
+	for i, rc := range attached {
+		if rc.FromRef && !rc.IsStructure && rc.Role == entity.DesignRefRoleMood {
+			out = append(out, i+1)
+		}
+	}
+	return out
+}
+
+// flatMoodSentence — what EVERY flat mode says about its mood pictures (M2 + Codex b6): style mood
+// only, never a source of silhouette, fit, proportions, details or construction. "" when none.
+func flatMoodSentence(attached []refCaption) string {
+	nums := flatMoodImages(attached)
+	if len(nums) == 0 {
+		return ""
+	}
+	words := make([]string, len(nums))
+	for i, n := range nums {
+		words[i] = strconv.Itoa(n)
+	}
+	label, verb, what := "Image "+words[0], "is a mood picture", "it"
+	if len(nums) > 1 {
+		label = "Images " + strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+		verb, what = "are mood pictures", "them"
+	}
+	return label + " " + verb + " of a DIFFERENT garment: style mood only. Take NOTHING of this garment from " + what +
+		" — no silhouette, no fit, no proportions, no length, no details, no straps, no construction; everything said above about the reference applies to the other images only."
 }
 
 // flatPhotoRole — the authority label and the role words of a photo by its reference role.

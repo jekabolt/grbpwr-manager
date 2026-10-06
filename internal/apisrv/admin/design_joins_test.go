@@ -264,3 +264,35 @@ func TestKeepMediaIDsNarrowTheFlat(t *testing.T) {
 	require.Equal(t, 1, kept[0].MediaID)
 	require.Equal(t, 3, kept[1].MediaID)
 }
+
+// TestSetDesignJoinsConfirmStoresTheSource — Codex b1: a confirmation records the card's source
+// fingerprint of that moment (in the doc JSON); a save without confirm records none; the wire cannot
+// set it.
+func TestSetDesignJoinsConfirmStoresTheSource(t *testing.T) {
+	const card = 49
+	refs := []entity.DesignReference{{MediaId: 11, Role: "front"}}
+	noted := &entity.TechCard{TechCardInsert: entity.TechCardInsert{GarmentDescription: sql.NullString{String: "shirt", Valid: true}}}
+	for _, confirm := range []bool{true, false} {
+		srv, design, cards := newJoinsSrv(t)
+		design.EXPECT().GetJoins(mock.Anything, card).Return(&entity.DesignJoins{Rev: 2, SourceFingerprint: "old"}, nil)
+		if confirm {
+			cards.EXPECT().GetTechCardById(mock.Anything, card).Return(noted, nil)
+			design.EXPECT().GetBand(mock.Anything, card, 1).Return(&entity.DesignBand{References: refs}, nil)
+		}
+		var saved entity.DesignJoinsSave
+		design.EXPECT().SaveJoins(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, s entity.DesignJoinsSave) (*entity.DesignJoins, error) {
+			saved = s
+			return &entity.DesignJoins{Rev: 3, Doc: s.Doc}, nil
+		})
+		_, err := srv.SetDesignJoins(context.Background(), &pb_admin.SetDesignJoinsRequest{TechCardId: card, ExpectedRev: 2, Confirm: confirm,
+			Joins: &pb_common.DesignJoins{Items: []*pb_common.DesignJoinItem{{Id: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}})
+		require.NoError(t, err)
+		require.Equal(t, confirm, saved.Doc.Confirmed)
+		if confirm {
+			require.Equal(t, designJoinsSourceFP(noted, refs), saved.Doc.ConfirmedSource)
+			require.Equal(t, "old", saved.SourceFingerprint, "the list's own source is not rewritten")
+		} else {
+			require.Empty(t, saved.Doc.ConfirmedSource)
+		}
+	}
+}

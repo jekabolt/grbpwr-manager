@@ -188,6 +188,15 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 				cur, map[bool]string{true: "not confirmed", false: "missing or empty"}[usable]),
 			map[string]string{"joins_rev": strconv.Itoa(cur)})
 	}
+	// Codex b1: the confirmation is of the list AGAINST the photos and the note of that moment. A photo
+	// replaced, a role or note changed, the garment note rewritten since → the list may be obsolete.
+	if !designJoinsConfirmedFresh(band.Joins, designJoinsSourceFP(card, band.References)) {
+		return designRefusal(codes.FailedPrecondition, "joins_unconfirmed",
+			fmt.Sprintf("the straps mode draws from the join list a designer confirmed; the card's reference photos or "+
+				"garment note changed after the list (rev %d) was confirmed. Check it against them and confirm it again, "+
+				"then generate. Nothing was reserved and nothing was charged", cur),
+			map[string]string{"joins_rev": strconv.Itoa(cur), "reason": "stale"})
+	}
 	return nil
 }
 
@@ -305,15 +314,17 @@ func designFlatStructureRefs(src designInputSources, photos []*pb_common.DesignI
 	return out, true
 }
 
-// designFlatMoodRoles — a flat's role-less reference whose card picture is a MOOD picture travels with
-// the snapshot role `mood` (captioned «a DIFFERENT garment; style mood only»).
+// designFlatMoodRoles — a flat's reference whose card picture is a MOOD picture travels with the
+// snapshot role `mood` (captioned «a DIFFERENT garment; style mood only»), WHATEVER reference role it
+// carries (M2 / Codex b6): a mood picture is never a fit or detail authority in any mode, and one
+// picture is described once — as mood — never as «front photo» and mood at the same time.
 func designFlatMoodRoles(src designInputSources, refs []*pb_common.DesignInputRef) {
 	if src.Kind != entity.DesignRunKindFlat || src.Card == nil {
 		return
 	}
 	roles := designBoardRoles(src.Card)
 	for _, r := range refs {
-		if strings.TrimSpace(r.GetRole()) == "" && roles[int(r.GetMediaId())] == entity.TechCardMediaRoleMood {
+		if roles[int(r.GetMediaId())] == entity.TechCardMediaRoleMood {
 			r.Role = entity.DesignRefRoleMood
 		}
 	}

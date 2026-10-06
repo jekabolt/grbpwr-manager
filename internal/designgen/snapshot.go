@@ -1214,7 +1214,7 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	case run.Kind == entity.DesignRunKindFlat && flatModeOf(p) == FlatModeHandFlat:
 		write("", flatHandFlatCraft(p, detailNames, attached))
 	case run.Kind == entity.DesignRunKindFlat:
-		write("", flatCraftWith(p, detailNames, len(attached), in.Joins))
+		write("", flatCraftAttached(p, detailNames, attached, in.Joins))
 	case renderIsTheKind(run.Kind):
 		write("", renderCraftWith(p, detailNames, attached, in.Artworks))
 	// ПЕРЕКРАС И ПАТТЕРН — ЕЩЁ ДВА РЕМЕСЛА, И КАЖДОЕ ПРОТИВОРЕЧИТ ОБОИМ СОСЕДНИМ. Рендер СОЧИНЯЕТ

@@ -32,7 +32,7 @@ func loadJoinsCase(t *testing.T, name string) entity.DesignJoinsDoc {
 // MUTATIONS IT CATCHES: any wording drift of a sentence; the diagonal / crossing / no-back-neckline /
 // pocket-side rules not firing or firing on the wrong garment; a positive absence surviving.
 func TestJoinsCraftMatchesTheWinningPrompts(t *testing.T) {
-	for _, c := range []string{"c38", "c49", "c2"} {
+	for _, c := range []string{"c38", "c49", "c2", "c2out", "c49seam"} {
 		t.Run(c, func(t *testing.T) {
 			want, err := os.ReadFile(filepath.Join("testdata", "joins", c+"-golden.txt"))
 			if err != nil {
@@ -157,5 +157,43 @@ func TestComposePromptCarriesFrozenJoins(t *testing.T) {
 	got := composePrompt(run, runParams{Views: []string{"front", "back"}, Layout: layoutOne}, in, nil)
 	if !strings.Contains(got, "strap_L runs DIAGONALLY across the back") || !strings.Contains(got, "Draw NOTHING for: no sleeves.") {
 		t.Fatalf("the frozen list did not reach the prompt:\n%s", got)
+	}
+}
+
+// TestJoinsNeckSentencesAtTheirPoints — M1: only an end AT a neck point (NP_x, or NP_x..B:t with
+// t ≤ 0.1) is told it sits there; further out it is told where it is (the golden c2out holds the whole
+// prompt for NP_x..SP_x:0.3). D4: the neckline-shape sentence speaks only for a neck band/binding/edge
+// and never on a garment with a collar or a stand (golden c49seam: type=crew on the neck SEAM of a
+// collared shirt).
+// MUTATIONS IT CATCHES: the base-stripping «AT the neck point» coming back for an interpolated end;
+// the 0.1 tolerance lost; the crew sentence on a seam or under a collar.
+func TestJoinsNeckSentencesAtTheirPoints(t *testing.T) {
+	strap := func(from string) entity.DesignJoinsDoc {
+		return entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{{ID: "s", Kind: entity.DesignJoinKindStrap, From: from, To: "MB_R", Via: []string{"UB_C"}}}}
+	}
+	at := strings.Join(joinsSentences(strap("NP_L..SP_L:0.1")), "\n")
+	if !strings.Contains(at, "s: its top end sits AT the neck point NP_L") {
+		t.Fatalf("t = 0.1 is at the neck point:\n%s", at)
+	}
+	out := strings.Join(joinsSentences(strap("NP_L..SP_L:0.3")), "\n")
+	if strings.Contains(out, "AT the neck point") || !strings.Contains(out, "30% of the way from the neck point NP_L towards the shoulder tip SP_L") {
+		t.Fatalf("t = 0.3 must be told where it is:\n%s", out)
+	}
+	neck := func(kind string, extra ...entity.DesignJoinItem) string {
+		d := entity.DesignJoinsDoc{Items: append([]entity.DesignJoinItem{{ID: "n", Kind: kind, From: "NP_R", Via: []string{"CFN"}, To: "NP_L", Type: "crew"}}, extra...)}
+		return strings.Join(joinsSentences(d), "\n")
+	}
+	if !strings.Contains(neck(entity.DesignJoinKindBinding), "HIGH CREW") {
+		t.Fatal("a crew neck binding names its shape")
+	}
+	if strings.Contains(neck(entity.DesignJoinKindSeam), "CREW") {
+		t.Fatal("a neck seam never names a neckline shape")
+	}
+	if strings.Contains(neck(entity.DesignJoinKindBinding, entity.DesignJoinItem{ID: "c", Kind: entity.DesignJoinKindCollar, From: "NP_R", Via: []string{"CBN"}, To: "NP_L"}), "CREW") {
+		t.Fatal("a garment with a collar never gets the crew sentence")
+	}
+	d := loadJoinsCase(t, "c49seam")
+	if d.Items[0].ID != "neck_seam" || d.Items[0].Type != "crew" {
+		t.Fatalf("the c49seam fixture lost its crew seam: %+v", d.Items[0])
 	}
 }

@@ -2,6 +2,7 @@ package designgen
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -97,6 +98,66 @@ func joinsLmBase(n string) string {
 	return b
 }
 
+// joinsAtNeckT — how far out along the line from a neck point an end may sit and still be told it is
+// AT the neck point (10 % of the way).
+const joinsAtNeckT = 0.1
+
+// joinsNeckEnd — a path end that starts from a neck point: the neck point, how far out it sits (t, 0
+// at the neck point) and the landmark it heads to («NP_L..SP_L:0.3» → NP_L, 0.3, SP_L; «NP_L» → NP_L,
+// 0, ""). ok = false for any other point.
+func joinsNeckEnd(n string) (np string, t float64, toward string, ok bool) {
+	n = strings.TrimSpace(n)
+	a, rest, between := strings.Cut(n, "..")
+	if !strings.HasPrefix(a, "NP_") {
+		return "", 0, "", false
+	}
+	if !between {
+		return a, 0, "", true
+	}
+	i := strings.LastIndex(rest, ":")
+	if i < 0 {
+		return "", 0, "", false
+	}
+	v, err := strconv.ParseFloat(rest[i+1:], 64)
+	if err != nil || v < 0 || v > 1 {
+		return "", 0, "", false
+	}
+	return a, v, rest[:i], true
+}
+
+// joinsAtNeck — the point is a neck point or within joinsAtNeckT of one.
+func joinsAtNeck(n string) bool {
+	_, t, _, ok := joinsNeckEnd(n)
+	return ok && t <= joinsAtNeckT
+}
+
+// joinsNeckEndsHug — an end of the neck item that may be told it hugs the base of the neck: any
+// plain landmark (the list's own words), or a point between two landmarks only when it is AT a neck
+// point. An interpolated end further out does not hug the neck (M1).
+func joinsNeckEndsHug(n string) bool {
+	return !strings.Contains(n, "..") || joinsAtNeck(n)
+}
+
+// joinsPct — 0.3 → «30%».
+func joinsPct(t float64) string {
+	return strconv.Itoa(int(math.Round(t*100))) + "%"
+}
+
+// joinsOutwardSentence — an end that starts from a neck point but sits further out along the line:
+// where it really is, in the words of its path.
+func joinsOutwardSentence(id, end, np, toward string, t float64) string {
+	if strings.HasPrefix(toward, "SP_") {
+		s := id + ": its top end sits ON THE SHOULDER LINE, " + joinsPct(t) + " of the way from the neck point " + np +
+			" towards the shoulder tip " + toward + " (" + end + "); NOT at the neck point"
+		if t < 1-joinsAtNeckT {
+			s += " and NOT at the shoulder tip"
+		}
+		return s + "."
+	}
+	return id + ": its top end sits " + joinsPct(t) + " of the way from the neck point " + np + " towards " + toward +
+		" (" + end + "); NOT at the neck point."
+}
+
 // joinsSentences — r7.sentences, ported line for line (golden tests: card 38 and card 49), plus the
 // layer sentences of a multi-layer garment before the side-facing one. One deliberate difference: a
 // band counts as DIAGONAL only when its ends are also apart in height (> 0.1 of the ruler) — a
@@ -111,22 +172,33 @@ func joinsSentences(j entity.DesignJoinsDoc) []string {
 			straps = append(straps, it)
 		}
 	}
-	// 1. bands that start/end at a neck point
+	// 1. bands that start/end at a neck point. Only an end AT the neck point (plain NP_x, or
+	// NP_x..B:t with t ≤ joinsAtNeckT) is told it sits there; an end further out along the line is told
+	// where it is (M1: «NP_L..SP_L:0.3» once came out as «AT the neck point», beside a list line that
+	// says 30 % out to the shoulder tip).
 	var npOrder []string
 	npBands := map[string][]entity.DesignJoinItem{}
+	var outward []string
 	for _, it := range straps {
 		if it.Closed {
 			continue
 		}
 		p := it.Path()
 		for _, end := range []string{p[0], p[len(p)-1]} {
-			b := joinsLmBase(end)
-			if strings.HasPrefix(b, "NP_") {
-				if _, ok := npBands[b]; !ok {
-					npOrder = append(npOrder, b)
-				}
-				npBands[b] = append(npBands[b], it)
+			np, t, toward, ok := joinsNeckEnd(end)
+			if !ok {
+				continue
 			}
+			if t > joinsAtNeckT {
+				if it.Kind != entity.DesignJoinKindCollar && it.Kind != entity.DesignJoinKindStand {
+					outward = append(outward, joinsOutwardSentence(it.ID, end, np, toward, t))
+				}
+				continue
+			}
+			if _, ok := npBands[np]; !ok {
+				npOrder = append(npOrder, np)
+			}
+			npBands[np] = append(npBands[np], it)
 		}
 	}
 	for _, npn := range npOrder {
@@ -147,6 +219,7 @@ func joinsSentences(j entity.DesignJoinsDoc) []string {
 			S = append(S, t)
 		}
 	}
+	S = append(S, outward...)
 	// 2. bands that run to the opposite side → diagonal, crossing below the neck
 	var diag []string
 	for _, it := range straps {
@@ -331,6 +404,20 @@ func joinsIsEdgeKind(k string) bool {
 	return k == entity.DesignJoinKindBinding || k == entity.DesignJoinKindEdge || k == entity.DesignJoinKindBindingWide || k == entity.DesignJoinKindBand
 }
 
+// joinsNeckShapeSpeaks — whether the neck item may carry the neckline-shape sentence: it is an edge,
+// binding or band (never a seam, a placket or anything else), and the list has no collar and no stand.
+func joinsNeckShapeSpeaks(neck *entity.DesignJoinItem, items []entity.DesignJoinItem) bool {
+	if neck == nil || !joinsIsEdgeKind(neck.Kind) {
+		return false
+	}
+	for _, it := range items {
+		if it.Kind == entity.DesignJoinKindCollar || it.Kind == entity.DesignJoinKindStand {
+			return false
+		}
+	}
+	return true
+}
+
 // joinsNeckShapeSentence — sentence type 1: the neckline's shape (the neck item's `type`).
 func joinsNeckShapeSentence(neck *entity.DesignJoinItem) string {
 	if neck == nil {
@@ -351,6 +438,11 @@ func joinsNeckShapeSentence(neck *entity.DesignJoinItem) string {
 	}
 	switch neck.Type {
 	case "crew":
+		if !joinsNeckEndsHug(a) || !joinsNeckEndsHug(z) {
+			// M1: ends written further out than the neck points («NP_L..SP_L:0.3») — the band does
+			// not hug the base of the neck there, and the sentence must not say it does.
+			return fmt.Sprintf("The FRONT neckline is a HIGH CREW neck at the centre front: %s is a %s from %s over %s (crew height at the centre front, just below the collarbone notch) to %s; its ends sit exactly where those points are, away from the base of the neck — NOT a V, NOT a plunge, NOT a halter ring, NOT a scoop.", neck.ID, band, a, mid, z)
+		}
 		return fmt.Sprintf("The FRONT neckline is a HIGH CREW neck: %s is a %s hugging the base of the neck from %s over %s (crew height, just below the collarbone notch) to %s — NOT a V, NOT a plunge, NOT a halter ring standing away from the neck, NOT a scoop.", neck.ID, band, a, mid, z)
 	case "v":
 		return fmt.Sprintf("The FRONT neckline is a V neck: %s runs from %s straight down to a SHARP point at %s and straight up to %s — NOT a crew, NOT a scoop, NOT a halter.", neck.ID, a, mid, z)
@@ -379,9 +471,13 @@ func joinsShapeSentences(j entity.DesignJoinsDoc) []string {
 		byID[it.ID] = it
 	}
 	neck := joinsNeckItem(items)
-	// 1. the neckline's shape
-	if t := joinsNeckShapeSentence(neck); t != "" {
-		S = append(S, t)
+	// 1. the neckline's shape — only when the neck item is itself a band/binding/edge, and never on a
+	// garment with a collar or a stand (D4, card 49: the model put type=crew on the neck SEAM under a
+	// shirt collar, and the prompt said «HIGH CREW neck … hugging the base of the neck»).
+	if joinsNeckShapeSpeaks(neck, items) {
+		if t := joinsNeckShapeSentence(neck); t != "" {
+			S = append(S, t)
+		}
 	}
 	// 2. an inner edge seen through a sheer front (a multi-layer list says it in the layer sentences)
 	if len(j.Layers) <= 1 {
@@ -450,17 +546,32 @@ func joinsShapeSentences(j entity.DesignJoinsDoc) []string {
 	if len(backStraps) > 0 && !backNeck {
 		var ids []string
 		allBinding := true
+		// Where the armholes start: AT the neck point only when every one of them does (M1); else
+		// the one shared spot on the shoulder line, or the list's own words.
+		atNeck, starts := true, map[string]bool{}
 		for _, it := range items {
 			p := it.Path()
 			if !joinsIsEdgeKind(it.Kind) || it.Kind == entity.DesignJoinKindBand || len(p) < 2 || joinsBackFace(it) {
 				continue
 			}
 			a, z := joinsLmBase(p[0]), joinsLmBase(p[len(p)-1])
-			if (strings.HasPrefix(a, "NP_") && strings.HasPrefix(z, "UA_")) || (strings.HasPrefix(z, "NP_") && strings.HasPrefix(a, "UA_")) {
+			top := ""
+			switch {
+			case strings.HasPrefix(a, "NP_") && strings.HasPrefix(z, "UA_"):
+				top = p[0]
+			case strings.HasPrefix(z, "NP_") && strings.HasPrefix(a, "UA_"):
+				top = p[len(p)-1]
+			}
+			if top != "" {
 				ids = append(ids, it.ID)
 				if it.Kind != entity.DesignJoinKindBinding {
 					allBinding = false
 				}
+				if !joinsAtNeck(top) {
+					atNeck = false
+				}
+				_, t, toward, _ := joinsNeckEnd(top)
+				starts[joinsPct(t)+"|"+strings.TrimSuffix(strings.TrimSuffix(toward, "_L"), "_R")] = true
 			}
 		}
 		if len(ids) > 0 {
@@ -477,7 +588,19 @@ func joinsShapeSentences(j entity.DesignJoinsDoc) []string {
 			if openEdge == nil {
 				above = "at the top of the back"
 			}
-			S = append(S, joinsAnd(ids)+" "+word+verb+" on the FRONT view only (deep cut-in racer-style armhole from the neck point to the underarm); on the BACK view the straps themselves are the only edges "+above+".")
+			from := "from the neck point to the underarm"
+			if !atNeck {
+				from = "from where each starts on the shoulder line, as the join list gives it, down to the underarm"
+				if len(starts) == 1 {
+					for k := range starts {
+						pct, toward, _ := strings.Cut(k, "|")
+						if toward == "SP" {
+							from = "from the shoulder line " + pct + " of the way out from the neck point towards the shoulder tip, NOT from the neck point, down to the underarm"
+						}
+					}
+				}
+			}
+			S = append(S, joinsAnd(ids)+" "+word+verb+" on the FRONT view only (deep cut-in racer-style armhole "+from+"); on the BACK view the straps themselves are the only edges "+above+".")
 		}
 	}
 	// 4. the opening's edge: one smooth U

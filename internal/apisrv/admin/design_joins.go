@@ -135,6 +135,38 @@ func designJoinsFingerprint(photos []designJoinsPhoto, note string) string {
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
+// designJoinsNote — the card's garment note as the join call reads it (trimmed, capped).
+func designJoinsNote(card *entity.TechCard) string {
+	if card == nil {
+		return ""
+	}
+	note := strings.TrimSpace(card.GarmentDescription.String)
+	if r := []rune(note); len(r) > designMaxGarmentNoteRunes {
+		note = string(r[:designMaxGarmentNoteRunes])
+	}
+	return note
+}
+
+// designJoinsSourceFP — the card's CURRENT source fingerprint: the photos a join call would read (with
+// their roles and notes) and the garment note, exactly as GenerateDesignJoins computes it.
+func designJoinsSourceFP(card *entity.TechCard, refs []entity.DesignReference) string {
+	return designJoinsFingerprint(designJoinsPhotos(refs), designJoinsNote(card))
+}
+
+// designJoinsConfirmedFresh — a confirmed list still speaks for the card's current photos and note:
+// the fingerprint stored at confirmation (or, for a confirmation older than that field, the one the
+// list was written from) equals the card's current one. False for an unconfirmed list.
+func designJoinsConfirmedFresh(j *entity.DesignJoins, current string) bool {
+	if j == nil || !j.Doc.Confirmed {
+		return false
+	}
+	want := j.Doc.ConfirmedSource
+	if want == "" {
+		want = j.SourceFingerprint
+	}
+	return want != "" && want == current
+}
+
 // designJoinsCacheHit — a stored list answers without a call when it was written from the same
 // source, or a designer edited it (a regeneration would throw the edit away: that is `force`).
 func designJoinsCacheHit(j *entity.DesignJoins, fp string) bool {
@@ -161,10 +193,7 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot load the tech card")
 	}
-	note := strings.TrimSpace(card.GarmentDescription.String)
-	if r := []rune(note); len(r) > designMaxGarmentNoteRunes {
-		note = string(r[:designMaxGarmentNoteRunes])
-	}
+	note := designJoinsNote(card)
 	band, err := s.repo.Design().GetBand(ctx, cardID, 1)
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design band", err, nil)
@@ -240,7 +269,7 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 
 	// ⚠ ONE FLIGHT PER (card, source): a double press pays once. Detached from the leader's
 	// cancellation under its own budget, like the parts call.
-	ch := s.joinsFlight.DoChan(strconv.Itoa(cardID)+"|"+fp, func() (any, error) {
+	ch := s.joinsFlight.DoChan(designJoinsFlightKey(cardID, fp, force, photos), func() (any, error) {
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			s.ai.ChainBudget(purpose, designJoinsMaxTokens)+designPartsFlightMargin)
 		defer cancel()
@@ -257,6 +286,22 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 	}
 	ans := res.Val.(designJoinsFlightAnswer)
 	return &pb_admin.GenerateDesignJoinsResponse{Joins: designJoinsToPb(ans.joins), Cached: ans.cached}, nil
+}
+
+// designJoinsFlightKey — one flight per (card, source, force, the photos actually read): a forced
+// re-read of every photo never joins a non-force flight that reads only the kept ones and would save
+// its narrowed answer under the full source (Codex b2).
+func designJoinsFlightKey(cardID int, fp string, force bool, photos []designJoinsPhoto) string {
+	ids := make([]int, 0, len(photos))
+	for _, p := range photos {
+		ids = append(ids, p.MediaID)
+	}
+	sort.Ints(ids)
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.Itoa(id)
+	}
+	return fmt.Sprintf("%d|%s|force=%t|%s", cardID, fp, force, strings.Join(parts, ","))
 }
 
 // designJoinsPhotos — the reference photos the call reads: every reference with a role, in role order
@@ -492,7 +537,16 @@ func (s *Server) SetDesignJoins(ctx context.Context, req *pb_admin.SetDesignJoin
 	}
 	designJoinsMarkEdits(&doc, prev)
 	// The confirmation belongs to THIS save's rev; a save without it clears it (the doc is written whole).
+	// It records the card's source fingerprint at this moment: a confirmation is of the list AGAINST
+	// these photos and this note, and the straps door refuses it once they change (Codex b1).
 	doc.Confirmed = req.GetConfirm()
+	if doc.Confirmed {
+		cfp, err := s.designJoinsCurrentSource(ctx, cardID)
+		if err != nil {
+			return nil, err
+		}
+		doc.ConfirmedSource = cfp
+	}
 	// The photos verdict is the model's; the designer may only narrow which photos to keep.
 	cons := entity.DesignJoinsConsistency{Consistent: true}
 	model, fp := "", ""
@@ -527,6 +581,22 @@ func (s *Server) SetDesignJoins(ctx context.Context, req *pb_admin.SetDesignJoin
 		return nil, designError(ctx, "failed to save the join list", err, map[string]string{"tech_card_id": strconv.Itoa(cardID)})
 	}
 	return &pb_admin.SetDesignJoinsResponse{Joins: designJoinsToPb(saved)}, nil
+}
+
+// designJoinsCurrentSource — the card's current source fingerprint, read fresh (card + references).
+func (s *Server) designJoinsCurrentSource(ctx context.Context, cardID int) (string, error) {
+	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", status.Error(codes.NotFound, "tech card not found")
+		}
+		return "", designError(ctx, "failed to read the tech card", err, nil)
+	}
+	band, err := s.repo.Design().GetBand(ctx, cardID, 1)
+	if err != nil {
+		return "", designError(ctx, "failed to read the design band", err, nil)
+	}
+	return designJoinsSourceFP(card, band.References), nil
 }
 
 // ─── the wire ───

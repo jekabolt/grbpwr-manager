@@ -420,7 +420,7 @@ func parseDesignParts(raw string, regionCount int) ([]entity.DesignPartGroup, []
 
 func designPartsSuggestionToPb(in entity.DesignPartsSuggestion) *pb_admin.DesignPartsSuggestion {
 	out := &pb_admin.DesignPartsSuggestion{
-		View: in.View, BaseMediaId: int32(in.BaseMediaId), AlgoRev: in.AlgoRev, Model: in.Model,
+		View: in.View, BaseMediaId: int32(in.BaseMediaId), AlgoRev: designPartsClientRev(in.AlgoRev), Model: in.Model,
 		CreatedAt: timestamppb.New(in.CreatedAt),
 	}
 	for _, p := range in.Parts {

@@ -219,3 +219,36 @@ func TestFitRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &back))
 	require.Equal(t, a.Doc().Fit, back.Fit, "the frozen snapshot keeps the fit")
 }
+
+// TestMoodIsNeverAnAuthority — M2 + Codex b6: a mood picture (a DIFFERENT garment) is never a fit or
+// detail authority. hand_flat: it is left out of the roles list and said once, as style mood only;
+// photos/straps: the craft says the same right after the identification, and the owner's «true to the
+// reference» counts only the other pictures (a run whose only picture is mood gets the no-reference
+// wording). Golden: the exact paragraphs.
+// MUTATIONS IT CATCHES: «MOOD FIT AND DETAIL AUTHORITY» coming back; the mood sentence missing in any
+// mode; a mood picture counted as «the reference image»; a run without mood changing by a byte.
+func TestMoodIsNeverAnAuthority(t *testing.T) {
+	att := []refCaption{structRC(7, "front"), photo(11, "front", ""), photo(12, entity.DesignRefRoleMood, "")}
+	got := flatHandFlatCraft(handParams(fourViews), nil, att)
+	require.NotContains(t, got, "MOOD FIT AND DETAIL AUTHORITY")
+	require.NotContains(t, got, "- Image 3 —")
+	wantMood := "Image 3 is a mood picture of a DIFFERENT garment: style mood only. Take NOTHING of this garment from it — no silhouette, no fit, no proportions, no length, no details, no straps, no construction; everything said above about the reference applies to the other images only."
+	require.Contains(t, got, "image 1 is right.\n\n"+wantMood+"\n\n"+flatNoTextNoGrey)
+	require.Contains(t, got, "- Image 2 — FRONT FIT AND DETAIL AUTHORITY only (front photo); never a source of construction.")
+
+	// only mood beside the flat: no roles paragraph at all, the mood sentence still
+	onlyMood := flatHandFlatCraft(handParams(fourViews), nil, []refCaption{structRC(7, "front"), photo(12, entity.DesignRefRoleMood, "")})
+	require.NotContains(t, onlyMood, flatRolesHead)
+	require.Contains(t, onlyMood, "Image 2 is a mood picture of a DIFFERENT garment: style mood only.")
+
+	// photos / straps
+	p := runParams{Views: fourViews, Layout: layoutOne}
+	plain := []refCaption{photo(11, "front", ""), photo(13, "back", "")}
+	require.Equal(t, flatCraftWith(p, nil, 2, nil), flatCraftAttached(p, nil, plain, nil), "no mood: byte for byte the old craft")
+	withMood := flatCraftAttached(p, nil, append(plain, photo(12, entity.DesignRefRoleMood, ""), photo(14, entity.DesignRefRoleMood, "")), nil)
+	require.Contains(t, withMood, flatIdentifyGarment+"\n\nImages 3 and 4 are mood pictures of a DIFFERENT garment: style mood only. Take NOTHING of this garment from them — no silhouette, no fit, no proportions, no length, no details, no straps, no construction; everything said above about the reference applies to the other images only.\n\n")
+	require.True(t, strings.HasPrefix(withMood, flatIntro(false, 0, 2)), "two garment pictures, not four")
+	moodOnly := flatCraftAttached(p, nil, []refCaption{photo(12, entity.DesignRefRoleMood, "")}, nil)
+	require.Contains(t, moodOnly, flatIdentifyGarmentNoRef, "a mood picture is not the reference the garment is true to")
+	require.Contains(t, moodOnly, "Image 1 is a mood picture of a DIFFERENT garment")
+}

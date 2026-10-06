@@ -387,7 +387,7 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// every Ideas menu stays static on a server that can suggest.
 		SuggestPromptsModel: s.designSuggestPromptsModel(),
 		// AUTO PARTS (0390, field 34): the cached answers of the flat each side holds now.
-		PartsSuggestions: designPartsSuggestionsToPb(band.PartsSuggestions),
+		PartsSuggestions: designPartsSuggestionsToPb(designPartsCurrentRows(band.PartsSuggestions, band.Joins)),
 		// FLAT ROUTE (0397, field 35): the card's current join list; absent = none yet.
 		Joins: designJoinsToPb(band.Joins),
 		// The wall-clock cap (fields 36–37): the client draws elapsed / limit from started_at.

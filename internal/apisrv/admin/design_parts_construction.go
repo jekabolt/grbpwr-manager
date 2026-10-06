@@ -1,9 +1,7 @@
 package admin
 
 import (
-	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
@@ -16,19 +14,14 @@ import (
 // vocabulary: a region that matches none of the names is an `opening` or the nearest body panel,
 // never a new name (card 38 got an «upper back» it does not have).
 
-// designPartsCardConstruction — the card's join list in words + the part vocabulary; "" when the
-// card has no usable list or it cannot be read (the block helps, it never blocks the call).
-func (s *Server) designPartsCardConstruction(ctx context.Context, cardID int) string {
-	j, err := s.repo.Design().GetJoins(ctx, cardID)
-	if err != nil {
-		slog.Default().WarnContext(ctx, "design parts card: the join list is not read",
-			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
-		return ""
-	}
+// designPartsCardConstructionOf — the card's join list in words + the part vocabulary, and whether a
+// designer confirmed it (the prompt calls an unconfirmed list «suggested construction (unconfirmed)»,
+// Codex b3); "" when the card has no usable list.
+func designPartsCardConstructionOf(j *entity.DesignJoins) (string, bool) {
 	if j == nil {
-		return ""
+		return "", false
 	}
-	return designPartsConstructionText(j.Doc)
+	return designPartsConstructionText(j.Doc), j.Doc.Confirmed
 }
 
 // designPartsConstructionText — the pure half: the list (designgen.JoinsListText) and the vocabulary.

@@ -1,0 +1,43 @@
+Landmark ruler (fixed for every garment; L/R = WEARER'S left/right; a point between two landmarks is written "A..B:t", t from 0 at A to 1 at B):
+neck/shoulder: NP_x neck points (side of the neck, top of the shoulder line); SP_x shoulder tips; FSH_x/BSH_x mid-shoulder slightly front/back; CFN centre-front neck (crew height), CFN_LOW low front neck; CBN nape, CBN_LOW low back neck; NECK_SIDE_x base of the neck at the side (for collar stands);
+torso: UA_x underarm (top of side seam); CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust; BUSTSIDE_x; SB_x shoulder blades; UB_C centre upper back; YOKE_x back yoke at the armhole; MB_x side at mid-back, MB_C centre back mid-back; WL_x waist at the side, WF_C/WB_C centre front/back waist; HIP_x hip at the side, HIP_C_F/HIP_C_B; HEM_x hem of a top at the side (hip length), HEM_FC/HEM_BC centre front/back hem;
+tailoring: BREAK centre front where lapels meet (top button); LAPEL_TIP_x lapel point; GORGE_x the notch where collar meets lapel;
+sleeves: SSLV_OUT_x/SSLV_IN_x short-sleeve end outer/inner; ELB_OUT_x/ELB_IN_x elbow; WRIST_OUT_x/WRIST_IN_x long-sleeve end outer/inner;
+hood: HOOD_FRONT_x middle of the hood's front edge; HOOD_TOP top of the hood; HOOD_BACK back of the hood; HOOD_SIDE_x; HOOD_CROWN_F;
+pockets: FPK_TOP_x/FPK_SIDE_x ends of a trouser front-pocket scoop; BPK_x back pocket centre; KANG_x/KANG_LOW_x corners of a kangaroo pocket;
+lower body: CROTCH (inseam top), CROTCH_F/CROTCH_B; KNEE_OUT_x/KNEE_IN_x; ANKLE_OUT_x/ANKLE_IN_x; LEG_HEM_F_x/LEG_HEM_B_x middle of a leg hem front/back; SHORT_OUT_x/SHORT_IN_x/SHORT_HEM_F_x/SHORT_HEM_B_x shorts hem; SKIRT_HEM_x skirt hem at the side (knee), SKIRT_HEM_C_F/SKIRT_HEM_C_B.
+Trousers/skirts start at the waist (WL_x, WF_C, WB_C); tops end at HEM_x or shorter (e.g. "UA_L..HEM_L:0.6").
+
+JOIN LIST (the construction; every view must agree with it):
+- neck_seam: seam from NP_R → CFN → NP_L. continues into stand. neckline seam under the collar stand
+- stand: stand (narrow) from CFN → NP_R → CBN → NP_L → CFN. continues into collar, placket. collar stand around the full neck; the brand label is sewn inside it at the back neck
+- collar: collar (wide) from CFN..NP_R:0.2 → NP_R → CBN → NP_L → CFN..NP_L:0.2. continues into stand. point collar that runs around the back; its outer edges are raw and frayed; a single thin stitched line on the wearer's right leaf near the edge
+- placket: placket (narrow) from CFN → CHEST_C → BUST_C → WF_C → HEM_FC. continues into stand, hem. centre-front placket; both long edges are raw, frayed and topstitched; a second raw-edged layer overlaps on the wearer's left; continuation below the photo is assumed
+- btn: buttons closure, 6 along CFN → CHEST_C → BUST_C → WF_C. faceted square black (jet-like) buttons; 6 visible, more are likely below the crop
+- sh_L: seam from NP_L → SP_L. continues into arm_L. shoulder seam, visible on the wearer's left
+- sh_R: seam from NP_R → SP_R. continues into arm_R. shoulder seam
+- arm_L: seam from SP_L → UA_L. assumed set-in armhole seam; not visible
+- arm_R: seam from SP_R → UA_R. assumed set-in armhole seam; not visible
+- slv_L: sleeve from SP_L → ELB_OUT_L → WRIST_OUT_L → WRIST_IN_L → UA_L. not visible; length assumed
+- slv_R: sleeve from SP_R → ELB_OUT_R → WRIST_OUT_R → WRIST_IN_R → UA_R. not visible; length assumed
+- side_L: seam from UA_L → WL_L → HEM_L. continues into hem. assumed side seam
+- side_R: seam from UA_R → WL_R → HEM_R. continues into hem. assumed side seam
+- hem: edge from HEM_FC → HEM_L → HEM_BC → HEM_R → HEM_FC (closed loop). raw, frayed hem edge
+- pocket_L: patch pocket at CHEST_L. one patch pocket, wearer's left chest only
+- yoke: seam from YOKE_R → CBN_LOW → YOKE_L. back yoke seam from armhole to armhole; meets the armhole seams
+- cuff_L: cuff (wide) from WRIST_OUT_L → WRIST_IN_L. buttoned cuff
+- cuff_R: cuff (wide) from WRIST_OUT_R → WRIST_IN_R. buttoned cuff
+- slv_placket_L: placket (narrow) from WRIST_OUT_L..WRIST_IN_L:0.5 → WRIST_OUT_L..ELB_OUT_L:0.3. sleeve placket above the cuff, back of the sleeve
+- slv_placket_R: placket (narrow) from WRIST_OUT_R..WRIST_IN_R:0.5 → WRIST_OUT_R..ELB_OUT_R:0.3. sleeve placket above the cuff, back of the sleeve
+ABSENT (do not draw): no front yoke; no darts or panel seams on the front chest; no pocket on the right chest; no second pocket
+
+CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
+- The neckline goes all the way round: on the BACK view draw the back neckline (and its band/collar) between the neck points.
+- Draw NOTHING for: no front yoke.
+- Draw NOTHING for: no darts or panel seams on the front chest.
+- Draw NOTHING for: no pocket on the right chest.
+- Draw NOTHING for: no second pocket.
+- pocket_L is on the wearer's LEFT only: on the FRONT view it is on the picture-right; on the side views it shows only on SIDE LEFT.
+- slv_L comes to a SHARP corner at WRIST_OUT_L, WRIST_IN_L: a crisp point, never rounded.
+- slv_R comes to a SHARP corner at WRIST_OUT_R, WRIST_IN_R: a crisp point, never rounded.
+- SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.

@@ -311,6 +311,10 @@ type DesignJoinsDoc struct {
 	// Confirmed — a designer confirmed THIS rev (SetDesignJoins confirm = true). Every save writes the
 	// whole doc, so any later save — the model's or an unconfirmed edit — clears it by construction.
 	Confirmed bool `json:"confirmed,omitempty"`
+	// ConfirmedSource — the card's reference fingerprint (photos with roles and notes + the garment
+	// note; admin designJoinsFingerprint) at the moment of the confirmation. Server-written only (never
+	// read off the wire); the straps door refuses a confirmation whose source has since changed.
+	ConfirmedSource string `json:"confirmed_source,omitempty"`
 }
 
 // DesignJoinsFit — the garment's ease and waist on closed vocabularies (v9_render.fit_of reads every

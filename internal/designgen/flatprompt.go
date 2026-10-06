@@ -80,6 +80,19 @@ func flatCraft(p runParams, detailNames []string, refs int) string {
 // side-facing convention and the list + its checks follow it. Every flat run, with a list or
 // without, ends its own words on flatNoTextNoGrey before the owner's verbatim paragraphs.
 func flatCraftWith(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc) string {
+	return flatCraftFor(p, detailNames, refs, joins, "")
+}
+
+// flatCraftAttached — flatCraftWith over the pictures actually attached: a mood picture (a DIFFERENT
+// garment) is not counted as «the reference» the owner's paragraphs are true to, and the craft says
+// once, after the identification, that it is style mood only (M2 / Codex b6). With no mood picture it
+// is flatCraftWith byte for byte.
+func flatCraftAttached(p runParams, detailNames []string, attached []refCaption, joins *entity.DesignJoinsDoc) string {
+	mood := flatMoodSentence(attached)
+	return flatCraftFor(p, detailNames, len(attached)-len(flatMoodImages(attached)), joins, mood)
+}
+
+func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc, mood string) string {
 	detail := detailOnlyRun(p.Views)
 
 	identify := flatIdentifyGarment
@@ -107,8 +120,11 @@ func flatCraftWith(p runParams, detailNames []string, refs int, joins *entity.De
 	paras := []string{
 		flatIntro(detail, countDetails(p.Views), refs),
 		identify,
-		layout,
 	}
+	if mood != "" {
+		paras = append(paras, mood)
+	}
+	paras = append(paras, layout)
 	if detail {
 		only := flatOnlyDetail
 		if countDetails(p.Views) > 1 {

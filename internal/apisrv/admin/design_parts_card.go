@@ -92,10 +92,15 @@ type designPartsCardView struct {
 // designPartsCardUserPrompt numbers the pictures in the order they travel. `note` is the card's
 // garment note, `construction` the confirmed construction (designPartsCardConstruction); either may
 // be empty. No photos travel (B1: they make the labelling worse).
-func designPartsCardUserPrompt(views []designPartsCardView, note, construction string) string {
+func designPartsCardUserPrompt(views []designPartsCardView, note, construction string, confirmed bool) string {
 	var b strings.Builder
 	if c := strings.TrimSpace(construction); c != "" {
-		b.WriteString("CONSTRUCTION of this garment (confirmed by the designer; trust it over habit — never name a part it does not have):\n")
+		// Codex b3: «confirmed by the designer» only when a designer did confirm this list.
+		if confirmed {
+			b.WriteString("CONSTRUCTION of this garment (confirmed by the designer; trust it over habit — never name a part it does not have):\n")
+		} else {
+			b.WriteString("CONSTRUCTION of this garment (suggested construction (unconfirmed): read from the photos by a model, not yet checked by the designer; prefer it over habit, but where the drawing plainly disagrees, the drawing wins):\n")
+		}
 		b.WriteString(c)
 		b.WriteString("\n\n")
 	}
@@ -141,6 +146,8 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
 	case algoRev == "" || len(algoRev) > entity.DesignPartsMaxAlgoRev:
 		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must be 1..%d characters", entity.DesignPartsMaxAlgoRev)
+	case strings.Contains(algoRev, designPartsServerTagSep):
+		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must not contain %q", designPartsServerTagSep)
 	case len(req.GetViews()) == 0 || len(req.GetViews()) > entity.DesignPartsMaxViews:
 		return nil, status.Errorf(codes.InvalidArgument, "views must name 1..%d sides", entity.DesignPartsMaxViews)
 	}
@@ -172,6 +179,18 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		if flats[v.View] != v.Base {
 			return nil, status.Error(codes.FailedPrecondition, designPartsFlatChangedMsg)
 		}
+	}
+	// Codex b4: the cache and the flight are keyed on the client's cut, the server's prompt revision
+	// and the join list's rev — a list created, corrected or confirmed after the parts were named
+	// names them again. The list read here is the one the prompt reads (one read, one rev).
+	joins, err := s.repo.Design().GetJoins(ctx, cardID)
+	if err != nil {
+		return nil, designError(ctx, "failed to read the join list", err, nil)
+	}
+	clientRev := algoRev
+	algoRev = designPartsCacheRev(clientRev, designPartsJoinsRev(joins))
+	if len(algoRev) > entity.DesignPartsMaxAlgoRev {
+		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must be 1..%d characters", entity.DesignPartsMaxAlgoRev-(len(algoRev)-len(clientRev)))
 	}
 	force := req.GetForce()
 	if !force {
@@ -230,7 +249,7 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			s.ai.ChainBudget(purpose, designPartsCardMaxTokens)+designPartsFlightMargin)
 		defer cancel()
-		return s.designPartsCardCall(fctx, cardID, views, algoRev, ordered, force)
+		return s.designPartsCardCall(fctx, cardID, views, algoRev, ordered, force, joins)
 	})
 	var res singleflight.Result
 	select {
@@ -243,6 +262,59 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 	}
 	ans := res.Val.(designPartsCardFlightAnswer)
 	return designPartsCardResponse(ans.suggestions, ans.cached), nil
+}
+
+// designPartsPromptRev — the server half of the parts cache key: BUMP IT on every change to what the
+// labeller is told (the system prompt, the user prompt, the construction block, the vocabulary), so a
+// card's cached parts are named again under the new words. 2 = 06.10 (unconfirmed construction is
+// called «suggested construction (unconfirmed)»; the cache learns the joins rev).
+const designPartsPromptRev = 2
+
+// designPartsServerTagSep — where the server's half of a stored algo_rev starts. The client's own
+// revision never contains it (the door refuses one that does), and the wire never shows it.
+const designPartsServerTagSep = "@s"
+
+// designPartsCacheRev — the algo_rev a card-wide answer is cached under: the client's cut, the
+// prompt revision, the join list's rev («regions.v4+parts.f3@s2.j7»). Fits the 32-character column
+// for any client revision up to ~22 characters.
+func designPartsCacheRev(clientRev string, joinsRev int) string {
+	return clientRev + designPartsServerTag(joinsRev)
+}
+
+// designPartsServerTag — «@s2.j7».
+func designPartsServerTag(joinsRev int) string {
+	return designPartsServerTagSep + strconv.Itoa(designPartsPromptRev) + ".j" + strconv.Itoa(joinsRev)
+}
+
+// designPartsClientRev — the client's half of a stored algo_rev (the wire value).
+func designPartsClientRev(stored string) string {
+	if i := strings.Index(stored, designPartsServerTagSep); i >= 0 {
+		return stored[:i]
+	}
+	return stored
+}
+
+// designPartsJoinsRev — the rev of the card's join list; 0 when there is none.
+func designPartsJoinsRev(j *entity.DesignJoins) int {
+	if j == nil {
+		return 0
+	}
+	return j.Rev
+}
+
+// designPartsCurrentRows — the band's rows that answer for TODAY's prompt and join list: tagged with
+// this server's prompt revision and the list's current rev. An untagged row (named before the tag, or
+// by the per-side call) and a row named under another prompt or list are not shown, so the client
+// asks again (and the server answers from the cache when it can).
+func designPartsCurrentRows(rows []entity.DesignPartsSuggestion, joins *entity.DesignJoins) []entity.DesignPartsSuggestion {
+	tag := designPartsServerTag(designPartsJoinsRev(joins))
+	out := make([]entity.DesignPartsSuggestion, 0, len(rows))
+	for _, r := range rows {
+		if strings.HasSuffix(r.AlgoRev, tag) && strings.Index(r.AlgoRev, designPartsServerTagSep) == len(r.AlgoRev)-len(tag) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // designPartsCardFlightKey — card, the sides with their flats sorted, the cut.
@@ -285,7 +357,7 @@ func designPartsCardShaped(in entity.DesignPartsSuggestion) bool {
 }
 
 // designPartsCardCall — the fences and the ONE provider call (the flight leader's work).
-func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []designPartsCardView, algoRev string, marksURLs []string, force bool) (designPartsCardFlightAnswer, error) {
+func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []designPartsCardView, algoRev string, marksURLs []string, force bool, joins *entity.DesignJoins) (designPartsCardFlightAnswer, error) {
 	const purpose = entity.AIPurposeDesignParts
 	// A flight that finished just before this one already paid: read the cache again.
 	if !force {
@@ -311,7 +383,8 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 			enhancePerAdminCalls)
 	}
 
-	user := designPartsCardUserPrompt(views, s.designPartsCardNote(ctx, cardID), s.designPartsCardConstruction(ctx, cardID))
+	construction, confirmed := designPartsCardConstructionOf(joins)
+	user := designPartsCardUserPrompt(views, s.designPartsCardNote(ctx, cardID), construction, confirmed)
 	started := time.Now()
 	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
 		System: designPartsCardSystemPrompt, User: user, ImageURLs: marksURLs,

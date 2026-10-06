@@ -45,9 +45,90 @@ func sref(id int32, role string) *pb_common.DesignFlatStructureRef {
 	return &pb_common.DesignFlatStructureRef{MediaId: id, Role: role}
 }
 
+// bandWithJoins — a band whose list was confirmed (when confirmed) against the card it is checked with
+// in these tests: no references, no garment note.
 func bandWithJoins(rev int, confirmed bool) *entity.DesignBand {
+	src := ""
+	if confirmed {
+		src = designJoinsSourceFP(nil, nil)
+	}
 	return &entity.DesignBand{Joins: &entity.DesignJoins{Rev: rev, Doc: entity.DesignJoinsDoc{
-		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}, Confirmed: confirmed}}}
+		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}, Confirmed: confirmed, ConfirmedSource: src}}}
+}
+
+// TestStrapsDoorRefusesAStaleConfirmation — Codex b1: the straps door refuses a confirmation made
+// against other photos or another garment note (joins_unconfirmed, reason=stale); a confirmation older
+// than the stored fingerprint falls back to the fingerprint the list was written from.
+// MUTATIONS IT CATCHES: the gate checking only `Confirmed`; the fingerprint ignoring a role, a note or
+// the garment note; the legacy fallback missing (every old confirmation stale) or always passing.
+func TestStrapsDoorRefusesAStaleConfirmation(t *testing.T) {
+	card := &entity.TechCard{}
+	refs := []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "back"}}
+	confirmedNow := func() *entity.DesignBand {
+		b := bandWithJoins(4, true)
+		b.References = refs
+		b.Joins.Doc.ConfirmedSource = designJoinsSourceFP(card, refs)
+		return b
+	}
+	staleOf := func(b *entity.DesignBand, c *entity.TechCard) (string, string) {
+		st, _ := status.FromError(designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, b, c))
+		for _, d := range st.Details() {
+			ei := d.(*errdetails.ErrorInfo)
+			return ei.GetReason(), ei.GetMetadata()["reason"]
+		}
+		return "", ""
+	}
+	r, why := staleOf(confirmedNow(), card)
+	require.Equal(t, "", r, "a confirmation of today's photos passes")
+	require.Equal(t, "", why)
+
+	// a photo replaced
+	b := confirmedNow()
+	b.References = []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 9, Role: "back"}}
+	r, why = staleOf(b, card)
+	require.Equal(t, "joins_unconfirmed", r)
+	require.Equal(t, "stale", why)
+	// a role changed
+	b = confirmedNow()
+	b.References = []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "side_l"}}
+	r, why = staleOf(b, card)
+	require.Equal(t, "stale", why)
+	// a photo's note changed
+	b = confirmedNow()
+	b.References = []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "back"}}
+	b.References[1].Note.String, b.References[1].Note.Valid = "the crossed straps", true
+	r, why = staleOf(b, card)
+	require.Equal(t, "stale", why)
+	// the garment note changed
+	noted := &entity.TechCard{}
+	noted.GarmentDescription.String, noted.GarmentDescription.Valid = "open back", true
+	r, why = staleOf(confirmedNow(), noted)
+	require.Equal(t, "joins_unconfirmed", r)
+	require.Equal(t, "stale", why)
+
+	// a confirmation from before the field: the list's own source decides
+	legacy := confirmedNow()
+	legacy.Joins.Doc.ConfirmedSource = ""
+	legacy.Joins.SourceFingerprint = designJoinsSourceFP(card, refs)
+	r, _ = staleOf(legacy, card)
+	require.Equal(t, "", r)
+	legacy.Joins.SourceFingerprint = "other"
+	_, why = staleOf(legacy, card)
+	require.Equal(t, "stale", why)
+	legacy.Joins.SourceFingerprint = ""
+	_, why = staleOf(legacy, card)
+	require.Equal(t, "stale", why, "a hand-written list confirmed before the field must be confirmed again")
+}
+
+// TestJoinsFlightKeySeparatesForce — Codex b2: a forced re-read never shares a flight with a non-force
+// read of the same source, nor with a read of other photos.
+func TestJoinsFlightKeySeparatesForce(t *testing.T) {
+	all := []designJoinsPhoto{{MediaID: 3}, {MediaID: 1}, {MediaID: 2}}
+	kept := []designJoinsPhoto{{MediaID: 1}}
+	require.NotEqual(t, designJoinsFlightKey(7, "fp", true, all), designJoinsFlightKey(7, "fp", false, all))
+	require.NotEqual(t, designJoinsFlightKey(7, "fp", false, all), designJoinsFlightKey(7, "fp", false, kept))
+	require.Equal(t, designJoinsFlightKey(7, "fp", false, all),
+		designJoinsFlightKey(7, "fp", false, []designJoinsPhoto{{MediaID: 1}, {MediaID: 2}, {MediaID: 3}}), "order does not split a flight")
 }
 
 func TestFlatModeDoorRefusals(t *testing.T) {
@@ -272,4 +353,20 @@ func TestJoinsFitOnTheWire(t *testing.T) {
 	closed := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
 		{ID: "loop_closure", Kind: "closure", From: "CFN", Via: []string{"CHEST_C"}, To: "CFN", Closed: true}}})
 	require.True(t, closed.Items[0].Closed, "a closure keeps closed")
+}
+
+// TestFlatMoodRoleWinsOverAReferenceRole — M2 / Codex b6: a card picture that is a MOOD picture travels
+// as `mood` even when its reference row names a side; any other picture keeps its role.
+func TestFlatMoodRoleWinsOverAReferenceRole(t *testing.T) {
+	card := &entity.TechCard{}
+	card.Media = []entity.TechCardMediaItem{
+		{MediaId: 80, Category: entity.TechCardMediaCategoryMoodboard, Role: entity.TechCardMediaRoleMood},
+		{MediaId: 81, Category: entity.TechCardMediaCategoryMoodboard, Role: entity.TechCardMediaRoleTarget},
+	}
+	refs := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}, {MediaId: 80}, {MediaId: 81, Role: "back"}, {MediaId: 5, Role: "side_l"}}
+	designFlatMoodRoles(designInputSources{Kind: entity.DesignRunKindFlat, Card: card}, refs)
+	require.Equal(t, []string{"mood", "mood", "back", "side_l"}, []string{refs[0].Role, refs[1].Role, refs[2].Role, refs[3].Role})
+	other := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}}
+	designFlatMoodRoles(designInputSources{Kind: entity.DesignRunKindRender, Card: card}, other)
+	require.Equal(t, "front", other[0].Role, "only a flat run")
 }
