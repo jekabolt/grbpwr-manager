@@ -119,6 +119,9 @@ const (
 	DesignQuizTopicConstruction = "construction"
 	DesignQuizTopicDesign       = "design"
 	DesignQuizTopicPicture      = "picture"
+	// DesignQuizTopicColourways — colourway count/palette answers read the card's colourways, not
+	// the BOM: a BOM fabric edit must not stale "how many colourways" (owner, 06.10, card 51).
+	DesignQuizTopicColourways = "colourways"
 )
 
 // Picture-topic fact labels: the picture's «picture N» number when the snapshot was taken (metadata,
