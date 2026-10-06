@@ -43,8 +43,8 @@ func TestDesignQuizDedupeByDecisionKey(t *testing.T) {
 	]}`
 	qs, st, ok := parseDesignQuizCounted(raw, "jacket", saved)
 	require.True(t, ok)
-	// hem_sit re-asks the STALE body_length answer (98-STALE §4): kept, and sorted to the front.
-	require.Equal(t, []string{"hem_sit", "clarify_room_at_chest", "lining_type", "collar_a", "no_key"}, func() []string {
+	// hem_sit re-asks the STALE body_length answer (98-STALE §4): kept as recheck_hem, sorted first.
+	require.Equal(t, []string{"recheck_hem", "clarify_room_at_chest", "lining_type", "collar_a", "no_key"}, func() []string {
 		var ids []string
 		for _, q := range qs {
 			ids = append(ids, q.ID)

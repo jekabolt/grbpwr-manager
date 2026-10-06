@@ -118,8 +118,8 @@ func TestDesignQuizStaleAnswerMayBeReaskedOncePerAnswer(t *testing.T) {
 	qs, st, ok := parseDesignQuizCounted(raw, "jacket", saved)
 	require.True(t, ok)
 	require.Len(t, qs, 2)
-	require.Equal(t, "closure", qs[0].ID)
-	require.Equal(t, "pocket", qs[1].ID)
+	require.Equal(t, "recheck_closure", qs[0].ID)
+	require.Equal(t, "recheck_pocket", qs[1].ID)
 	require.Equal(t, 2, st.repeated, "hem (fresh) and clarify_closure (closure already re-asked)")
 }
 

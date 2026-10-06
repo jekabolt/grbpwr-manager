@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -256,9 +257,47 @@ func TestDesignQuizStaleKeysAskableAndFirst(t *testing.T) {
 	for _, q := range qs {
 		ids = append(ids, q.ID)
 	}
-	require.Equal(t, []string{"clarify_shell", "collar_shape", "season", "lining"}, ids)
+	require.Equal(t, []string{"recheck_shell", "recheck_collar", "season", "lining"}, ids)
 	require.Equal(t, 2, st.repeated, "chest_again (fresh key) and fabric_b (shell already re-asked)")
 	require.Equal(t, "shell_fabric", qs[0].DecisionKey)
+	require.Equal(t, "collar_type", qs[1].DecisionKey)
+}
+
+// §4 + client note: a re-question never takes an id a saved row already has — a saved client
+// clarify_<id> row (or an earlier recheck_<id>) would otherwise swallow it on resume (pending
+// subtracts saved ids). It keeps the stale answer's decision key whatever the model sent, so saving
+// it supersedes the stale answer (E1).
+func TestDesignQuizRecheckIDNeverCollides(t *testing.T) {
+	saved := []entity.TechCardQuizAnswer{
+		{Question: entity.DesignQuizQuestion{ID: "shell", DecisionKey: "shell_fabric", Question: "Main shell fabric?"}, Selected: []string{"twill"}, Stale: true},
+		{Question: entity.DesignQuizQuestion{ID: "clarify_shell", Question: "Picture shows wool — which?"}, Selected: []string{"twill"}},
+		{Question: entity.DesignQuizQuestion{ID: "recheck_shell", Question: "Older recheck"}, Skipped: true},
+		{Question: entity.DesignQuizQuestion{ID: "collar", DecisionKey: "collar_type", Question: "Which collar?"}, Selected: []string{"shirt"}, Stale: true},
+	}
+	raw := `{"questions":[
+	 {"id":"clarify_shell","decision_key":"fabric_choice","category":"materials","kind":"single","question":"Still twill with wool on the BOM?","options":["twill","wool flannel"]},
+	 {"id":"recheck_collar","category":"details","kind":"single","question":"Collar after the change?","options":["shirt","band"]}
+	]}`
+	qs, _, ok := parseDesignQuizCounted(raw, "jacket", saved)
+	require.True(t, ok)
+	require.Len(t, qs, 2)
+	require.Equal(t, "recheck_shell_2", qs[0].ID, "clarify_shell and recheck_shell are saved ids")
+	require.Equal(t, "shell_fabric", qs[0].DecisionKey, "the stale answer's key, not the model's")
+	require.Equal(t, "recheck_collar", qs[1].ID)
+	require.Equal(t, "collar_type", qs[1].DecisionKey)
+
+	// The pending list (resume) keeps it: its id is not among the saved rows.
+	require.Len(t, entity.DesignQuizPending(qs[:1], []entity.TechCardQuizAnswer{saved[1], saved[2]}), 1)
+	// Saving it supersedes the stale answer by key.
+	merged := entity.MergeDesignQuizAnswers(saved, []entity.TechCardQuizAnswer{{Question: qs[0], Selected: []string{"wool flannel"}}}, nil, time.Now())
+	for _, a := range merged {
+		require.NotEqual(t, "shell", a.Question.ID)
+	}
+
+	long := strings.Repeat("x", 64)
+	id := designQuizRecheckID(long, func(c string) bool { return c == strings.TrimRight(("recheck_" + long)[:64], "_") })
+	require.LessOrEqual(t, len(id), 64)
+	require.True(t, strings.HasSuffix(id, "_2"), id)
 }
 
 // §4: the user prompt renders a stale answer with its changes in the bracket; the system prompt
@@ -279,7 +318,7 @@ func TestDesignQuizPromptStaleRendering(t *testing.T) {
 	require.Contains(t, user, "- [shell · materials · whole · STALE: main fabric: cotton twill → wool flannel; lining: — → viscose twill] Main shell fabric? → cotton twill\n")
 	require.Contains(t, user, "- [pic · design · whole · about picture 1 (material reference) · STALE: picture 1 role: mood → material] What to take? → the colour\n")
 	require.Contains(t, designQuizSystemPrompt, designQuizStaleRule)
-	require.Equal(t, "A STALE answer was given before the card changed as shown. If the change contradicts or reopens it, ask ONE short clarifying question about it FIRST (id clarify_<that id>, same decision_key, same category/part/picture); if it still holds, ask nothing about it.", designQuizStaleRule)
+	require.Equal(t, "A STALE answer was given before the card changed as shown. If the change contradicts or reopens it, ask ONE short clarifying question about it FIRST (id recheck_<that id>, same decision_key, same category/part/picture); if it still holds, ask nothing about it.", designQuizStaleRule)
 
 	pb := designQuizAnswersToPb(card.QuizAnswers)
 	require.Equal(t, []string{"main fabric: cotton twill → wool flannel", "lining: — → viscose twill"}, pb[0].GetStaleChanges())
