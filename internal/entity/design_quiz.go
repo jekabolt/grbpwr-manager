@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -79,9 +80,124 @@ type TechCardQuizAnswer struct {
 	// Fingerprint — the card's structured-input fingerprint when this answer was last saved (0392,
 	// 62-DEEP-FIXES D1). "" = saved before 0392 or imported: counts as fresh.
 	Fingerprint string
-	// Stale — derived on read, never stored: Fingerprint != "" and differs from the card's current
-	// fingerprint (the card's structured facts changed since the answer was given).
+	// Topic — the ONE kind of card fact this answer depends on (0399, 98-STALE §1): fit, materials,
+	// construction, design or picture; "" on rows saved before 0399.
+	Topic string
+	// Facts — the topic's facts AT ANSWER TIME (0399), human-labelled, in card order. nil = saved before
+	// 0399 (legacy: staleness falls back to Fingerprint); an empty non-nil list is a real snapshot.
+	Facts []DesignQuizFact
+	// Stale — derived on read, never stored: the topic's facts changed since the answer was given (or,
+	// for a legacy row, Fingerprint != "" and differs from the card's current fingerprint).
 	Stale bool
+	// StaleChanges — derived on read with Stale: one line per changed fact ("main fabric: cotton twill
+	// → wool flannel"), at most DesignQuizMaxStaleLines then "+N more"; empty when fresh (98-STALE §3).
+	StaleChanges []string
+}
+
+// Moodboard quiz per-topic staleness (98-STALE §1). The vocabulary is closed in Go (no ENUM/CHECK).
+const (
+	DesignQuizTopicFit          = "fit"
+	DesignQuizTopicMaterials    = "materials"
+	DesignQuizTopicConstruction = "construction"
+	DesignQuizTopicDesign       = "design"
+	DesignQuizTopicPicture      = "picture"
+)
+
+// Picture-topic fact labels: the picture's «picture N» number when the snapshot was taken (metadata,
+// never compared — a re-numbered board is not a change), whether it is on the board, and its role.
+const (
+	DesignQuizFactPictureNumber = "#"
+	DesignQuizFactPictureBoard  = "board"
+	DesignQuizFactPictureRole   = "role"
+
+	DesignQuizPictureOnBoard = "on the board"
+	DesignQuizPictureRemoved = "removed"
+	DesignQuizRoleNone       = "none"
+)
+
+// DesignQuizMaxStaleLines — change lines listed per stale answer before "+N more".
+const DesignQuizMaxStaleLines = 4
+
+// DesignQuizLegacyStaleLine — the one change line of a stale row saved before per-topic tracking.
+const DesignQuizLegacyStaleLine = "the card changed (answered before per-topic tracking)"
+
+// DesignQuizFact is one labelled card fact a quiz answer depended on ("main fabric" → "cotton twill").
+type DesignQuizFact struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// DesignQuizFactChanges — what changed between the facts an answer was given against (old) and the
+// topic's facts now (cur), one line per changed fact, compared by label (order-insensitive, so a
+// re-ordered BOM is not a change): "label: old → new", added "label: — → new", removed "label: old →
+// —". The picture topic renders its own lines: "picture N: removed from the board", "picture N role:
+// mood → material". The full list; DesignQuizCapLines bounds it for the wire.
+func DesignQuizFactChanges(topic string, old, cur []DesignQuizFact) []string {
+	if topic == DesignQuizTopicPicture {
+		return designQuizPictureChanges(old, cur)
+	}
+	curBy := make(map[string]string, len(cur))
+	for _, f := range cur {
+		curBy[f.Label] = f.Value
+	}
+	oldBy := make(map[string]bool, len(old))
+	var out []string
+	for _, f := range old {
+		oldBy[f.Label] = true
+		v, ok := curBy[f.Label]
+		switch {
+		case !ok:
+			out = append(out, f.Label+": "+f.Value+" → —")
+		case v != f.Value:
+			out = append(out, f.Label+": "+f.Value+" → "+v)
+		}
+	}
+	for _, f := range cur {
+		if !oldBy[f.Label] {
+			out = append(out, f.Label+": — → "+f.Value)
+		}
+	}
+	return out
+}
+
+func designQuizPictureChanges(old, cur []DesignQuizFact) []string {
+	get := func(fs []DesignQuizFact, label string) string {
+		for _, f := range fs {
+			if f.Label == label {
+				return f.Value
+			}
+		}
+		return ""
+	}
+	name := func(fs []DesignQuizFact) string {
+		if n := get(fs, DesignQuizFactPictureNumber); n != "" {
+			return "picture " + n
+		}
+		return "the picture"
+	}
+	wasOn := get(old, DesignQuizFactPictureBoard) == DesignQuizPictureOnBoard
+	isOn := get(cur, DesignQuizFactPictureBoard) == DesignQuizPictureOnBoard
+	switch {
+	case wasOn && !isOn:
+		return []string{name(old) + ": removed from the board"}
+	case !wasOn && isOn:
+		return []string{name(cur) + ": back on the board"}
+	case !isOn:
+		return nil
+	}
+	if o, c := get(old, DesignQuizFactPictureRole), get(cur, DesignQuizFactPictureRole); o != c {
+		return []string{name(cur) + " role: " + o + " → " + c}
+	}
+	return nil
+}
+
+// DesignQuizCapLines — at most DesignQuizMaxStaleLines lines, then "+N more".
+func DesignQuizCapLines(lines []string) []string {
+	if len(lines) <= DesignQuizMaxStaleLines {
+		return lines
+	}
+	out := append([]string(nil), lines[:DesignQuizMaxStaleLines]...)
+	return append(out, "+"+strconv.Itoa(len(lines)-DesignQuizMaxStaleLines)+" more")
 }
 
 // DesignQuizIsStale — the one staleness rule: an answer saved under a fingerprint that is no longer
@@ -91,10 +207,27 @@ func DesignQuizIsStale(answerFingerprint, current string) bool {
 	return answerFingerprint != "" && current != "" && answerFingerprint != current
 }
 
-// MarkDesignQuizStale sets Stale on every answer against the card's current fingerprint.
-func MarkDesignQuizStale(answers []TechCardQuizAnswer, current string) {
+// MarkDesignQuizStale sets Stale and StaleChanges on every answer (98-STALE §1/§3). A row with a
+// facts snapshot is stale when its topic's facts now (factsOf(topic, media id)) differ from the
+// snapshot; a legacy row (Facts nil) falls back to the whole-card fingerprint against current, with
+// the one DesignQuizLegacyStaleLine. factsOf nil = the current facts are unknown: every row with a
+// snapshot is fresh (an unreadable chart degrades to fresh, never to a refusal).
+func MarkDesignQuizStale(answers []TechCardQuizAnswer, current string, factsOf func(topic string, mediaID int) []DesignQuizFact) {
 	for i := range answers {
-		answers[i].Stale = DesignQuizIsStale(answers[i].Fingerprint, current)
+		a := &answers[i]
+		a.Stale, a.StaleChanges = false, nil
+		if a.Facts == nil {
+			if DesignQuizIsStale(a.Fingerprint, current) {
+				a.Stale, a.StaleChanges = true, []string{DesignQuizLegacyStaleLine}
+			}
+			continue
+		}
+		if factsOf == nil {
+			continue
+		}
+		if lines := DesignQuizFactChanges(a.Topic, a.Facts, factsOf(a.Topic, a.Question.MediaID)); len(lines) > 0 {
+			a.Stale, a.StaleChanges = true, DesignQuizCapLines(lines)
+		}
 	}
 }
 

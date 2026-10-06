@@ -13530,6 +13530,12 @@ message DesignQuizAnswer {
   // fit, gender, details, BOM names/compositions, base-size measurements) changed since this answer
   // was saved. Downstream prompts treat it as unconfirmed; re-saving the same answer makes it fresh.
   bool stale = 6;
+  // stale_changes — OUTPUT ONLY, ignored on save (98-STALE §3): what changed since the answer was given,
+  // one line per changed fact of the answer's topic ("main fabric: cotton twill → wool flannel",
+  // "lining: — → viscose twill", "detail: hood: … → —", "picture 3: removed from the board",
+  // "picture 2 role: mood → material"); at most 4 lines, then "+N more". A row saved before per-topic
+  // tracking says "the card changed (answered before per-topic tracking)". Empty when not stale.
+  repeated string stale_changes = 7;
 }
 
 message GetDesignQuizAnswersRequest {

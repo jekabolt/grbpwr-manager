@@ -95,17 +95,17 @@ func TestDesignQuizStaleAnswersAreUnconfirmedDownstream(t *testing.T) {
 	require.Contains(t, img, "earlier quiz answers — the card changed since; unconfirmed, current card facts win:\n- details — What closes the front? → exposed metal zip")
 
 	line := designQuizAnsweredLine(card.QuizAnswers[1])
-	require.Contains(t, line, "TO RE-CONFIRM")
-	require.NotContains(t, designQuizAnsweredLine(card.QuizAnswers[0]), "RE-CONFIRM")
-	require.Contains(t, designQuizUserPrompt(card, nil, nil, "jacket", ""), "you may ask ONE re-confirmation question")
+	require.Contains(t, line, "[closure · details · whole · STALE: the card changed] ")
+	require.NotContains(t, designQuizAnsweredLine(card.QuizAnswers[0]), "STALE")
+	require.Contains(t, designQuizUserPrompt(card, nil, nil, "jacket", ""), "follow the STALE rule")
 
 	// Only stale → no fresh header at all.
 	onlyStale := &entity.TechCard{QuizAnswers: card.QuizAnswers[1:]}
 	require.NotContains(t, designQuizDecisionsBlock(onlyStale), designQuizDecisionsHeader)
 }
 
-// D1 parse: a stale answered row may come back ONCE (the re-confirmation); a fresh one never.
-func TestDesignQuizStaleAnswerMayBeReconfirmedOnce(t *testing.T) {
+// D1 / 98-STALE §4 parse: each stale answered row may come back ONCE; a fresh one never.
+func TestDesignQuizStaleAnswerMayBeReaskedOncePerAnswer(t *testing.T) {
 	saved := []entity.TechCardQuizAnswer{
 		{Question: entity.DesignQuizQuestion{ID: "closure", Question: "What closes the front?"}, Selected: []string{"zip"}, Stale: true},
 		{Question: entity.DesignQuizQuestion{ID: "pocket", Question: "Chest pockets?"}, Selected: []string{"two"}, Stale: true},
@@ -113,12 +113,14 @@ func TestDesignQuizStaleAnswerMayBeReconfirmedOnce(t *testing.T) {
 	}
 	raw := `{"questions":[` + quizQ("closure", "details", "whole", "What closes the front?", "zip", "buttons") + "," +
 		quizQ("pocket", "details", "whole", "Chest pockets?", "one", "two") + "," +
-		quizQ("hem", "fit", "hem", "Where does the hem sit?", "hip", "mid-thigh") + `]}`
+		quizQ("hem", "fit", "hem", "Where does the hem sit?", "hip", "mid-thigh") + "," +
+		quizQ("clarify_closure", "details", "whole", "Still a front zip?", "zip", "buttons") + `]}`
 	qs, st, ok := parseDesignQuizCounted(raw, "jacket", saved)
 	require.True(t, ok)
-	require.Len(t, qs, 1)
+	require.Len(t, qs, 2)
 	require.Equal(t, "closure", qs[0].ID)
-	require.Equal(t, 2, st.repeated)
+	require.Equal(t, "pocket", qs[1].ID)
+	require.Equal(t, 2, st.repeated, "hem (fresh) and clarify_closure (closure already re-asked)")
 }
 
 // D2 archive: design_quiz.json round-trips through the live-save validation; a list that does not

@@ -89,6 +89,9 @@ const (
 // no longer closes fit questions; a picture shows relative volume, never a number, so fit options are
 // feel or body-landmark words and never invented cm/%; one fit_basis question when no block / body
 // chart / reference garment is named. The checklist is candidates, not a quota — no floor.
+// designQuizStaleRule — the STALE rule of the system prompt (98-STALE §4).
+const designQuizStaleRule = "A STALE answer was given before the card changed as shown. If the change contradicts or reopens it, ask ONE short clarifying question about it FIRST (id clarify_<that id>, same decision_key, same category/part/picture); if it still holds, ask nothing about it."
+
 const designQuizSystemPrompt = `You are a senior garment technologist and pattern maker interviewing a fashion designer about ONE garment before it goes to pattern making and sampling. You see the moodboard pictures and everything written on the tech card. Your job: find the decisions that belong to the DESIGNER and that a pattern maker, a sample room or a fabric buyer would otherwise have to guess for this specific garment, and ask exactly those — concrete questions answered in one click — nothing else.
 
 WHAT A PICTURE SETTLES, AND WHAT IT NEVER SETTLES
@@ -128,7 +131,7 @@ A Known detail row closes its topic INCLUDING its sub-decisions — placement, p
 
 HOW MANY: ask as many questions as this garment needs — there is no target count; never pad; a well-documented card or a re-run is short. Stop rule: ask a question only when its answer changes the pattern or the brief; when no open point is left, stop — even at 2 or 5. Never fill the list toward the cap, never drop a point that matters. A card with details, BOM and measurements needs few; a re-run with saved answers is usually short and asks only what is new. Return an empty list when nothing is open.
 
-ORDER: 1) a clarify_ question on an earlier answer that contradicts the pictures; 2) fit — the fit basis, then the open fit points of this garment; 3) what changes the pattern or the fabric order most — volume and silhouette as a look, closure, lining and insulation, main fabric; 4) details by part from the top down (neckline or collar → shoulder, sleeve, cuff → front and pockets → waist → seams: main seam, then the additional constructions → hem, leg; main_seam, extra_seams and hem_finish sit together); 5) use — season, function, care; 6) finish — prints, washes, labels. Questions about the same part sit together.
+ORDER: 1) a clarify_ question on a STALE answer the change reopens, then on an earlier answer that contradicts the pictures; 2) fit — the fit basis, then the open fit points of this garment; 3) what changes the pattern or the fabric order most — volume and silhouette as a look, closure, lining and insulation, main fabric; 4) details by part from the top down (neckline or collar → shoulder, sleeve, cuff → front and pockets → waist → seams: main seam, then the additional constructions → hem, leg; main_seam, extra_seams and hem_finish sit together); 5) use — season, function, care; 6) finish — prints, washes, labels. Questions about the same part sit together.
 
 WRITING A QUESTION: one point per question, at most 15 words, plain manufacturing English, about THIS garment ("How much room at the chest?", not "Tell me about the fit"). No "why", no theory, no compliments.
 WRITING OPTIONS: 2 to 6, each at most 8 words. Mutually exclusive for single, independent items for multi. Together they cover the realistic range for this garment, in a logical order — least to most, short to long, close to loose, light to heavy — never with the picture's reading pinned first. Concrete: named constructions, named materials, body landmarks, counts. Numbers only where they are conventional for a visible construction detail (a 3 cm collar stand, 6 mm topstitching, 5 buttons) or copied from the card or a reference; for fit and ease use feel or body-landmark words ("close without compression", "room for a heavy knit", "at the hip bone", "mid-thigh") and never invent a measurement range. Never "standard", "regular" alone, "classic", "normal", "as in the picture", "other", "not sure", "depends" — the free-text field exists for anything else.
@@ -161,6 +164,7 @@ FIELDS
 - visual_evidence: one short line on what the pictures show about this point, or "" when they show nothing.
 - contradicts_picture: true on an option only when it contradicts what the pictures CLEARLY show — not when they are merely silent. On a fit question only for a clear conflict in silhouette or volume ("skin-tight" against an oversized reference), never over a number. When a question has such an option, add "clarify": the follow-up asked if the designer picks it — one question (at most 15 words) and 2 to 4 options that resolve the conflict (for example "change the garment from the picture" / "the picture is only mood, ignore it"). Otherwise omit "clarify" — except on edge_finish_main, which always carries its edge exceptions there (EDGES).
 - If an EARLIER answer contradicts what the pictures clearly show, the FIRST question is about that conflict: id "clarify_" + the earlier id, same category and part, offering both readings as options.
+- ` + designQuizStaleRule + `
 - part: EXACTLY one key from the allowed lists in the user message (garment parts, then hardware, then labels), spelled as listed (singular, lowercase). Pick the most specific part the question is about: fit basis, ease, volume, layering, size range, stretch, movement, the main shell fabric, season or care → whole; length or where the hem sits → hem; rise → rise when listed, else waistband; waist position → waist when listed, else waistband; sleeve length, width or armhole → sleeve; leg width, taper or opening → leg; shoulder construction → shoulder when listed; cuff finish → cuff; collar, stand, lapel → collar / lapel; insulation, padding, lining → lining when listed. Labels: a question about a label (placement, type, size, attachment) → its lbl_ key (brand label → lbl_brand, care/composition → lbl_care, size tab → lbl_size, flag → lbl_flag, patch → lbl_patch, hang tag → lbl_hang_tag). Hardware: a question about ONE specific hardware type (how many buttons, button size, which snap finish, eyelet placement, zip length) → that hw_ key; a question CHOOSING between closure or hardware types (buttons or zip? snaps or toggles?) → the garment zone (closure, fly, pocket, zip when listed). Seam constructions and edge finishes: a question about one of them → its sm_ key (listed in the user message). Colour and colourway questions → col_palette.
 - category: design (silhouette and volume as a look, proportion, visual accents, colour blocking) · fit (fit basis, ease as a feel, length to a landmark, shoulder and armhole, sleeve and leg shape, rise and waist position, layering, size range and body chart, stretch need, movement) · details (collar, neckline, cuffs, closures, plackets, pockets, seams, panels, darts, hems, construction) · materials (fabric, weight, stretch, insulation, lining, interfacing, hardware, trims) · use (season, climate, function, wear, care) · finish (prints, embroidery, washes, dyes, topstitch colour, labels). Rule of thumb: how it sits on the body → fit; how it looks → design; how it is built → details; what it is made of → materials.
 - picture: on a picture question (PICTURES) the 1-based «picture N» it is about; otherwise 0 or omitted.
@@ -676,8 +680,8 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 	} else {
 		measurements = designQuizBaseMeasurements(card, chart, designQuizMeasurementNames(), designQuizSizeName)
-		// D1: the same chart read marks the saved answers stale against the current card.
-		entity.MarkDesignQuizStale(card.QuizAnswers, designQuizCardFingerprint(card, chart))
+		// D1 / 98-STALE: the same chart read marks the saved answers stale (per topic, with the changes).
+		designQuizStateOf(card, chart, designQuizMeasurementNames(), designQuizSizeName).mark(card.QuizAnswers)
 	}
 	user := designQuizUserPrompt(card, mood, attachedIDs, family, measurements)
 	if len(user) > designQuizMaxPromptBytes {
@@ -836,7 +840,7 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 	if card != nil && len(card.QuizAnswers) > 0 {
 		// W-B4: an answered point is closed; a skipped one was only deferred ("not now") and may come
 		// back while it is still open.
-		b.WriteString("\nAlready answered in earlier quizzes — an answered point is closed, do not ask it again; a deferred one may be asked again if it is still open and matters; an answer marked TO RE-CONFIRM was given before the card changed — if it now conflicts with a card field above, you may ask ONE re-confirmation question about it (at most one in the whole quiz); check the answers against the pictures:\n")
+		b.WriteString("\nAlready answered in earlier quizzes — an answered point is closed, do not ask it again; a deferred one may be asked again if it is still open and matters; an answer marked STALE was given before the card changed as shown after STALE — follow the STALE rule; check the answers against the pictures:\n")
 		pictureAt := make(map[int]int, len(attachedIDs))
 		for i, id := range attachedIDs {
 			pictureAt[id] = i + 1
@@ -1058,17 +1062,34 @@ func designQuizBaseSizeName(card *entity.TechCard) string {
 	return strings.TrimSpace(sz.Name)
 }
 
-// designQuizAnsweredLine — `- [id · category · part] question → answer` for the model.
+// designQuizAnsweredLine — `- [id · category · part] question → answer` for the model; a stale
+// answer carries its changes in the bracket (98-STALE §4): `[id · … · STALE: main fabric: cotton
+// twill → wool flannel] …`.
 func designQuizAnsweredLine(a entity.TechCardQuizAnswer) string {
+	return designQuizAnsweredLineTagged(a, "")
+}
+
+// designQuizAnsweredLineTagged — designQuizAnsweredLine with one extra bracket tag (the picture
+// anchor) before the STALE tag.
+func designQuizAnsweredLineTagged(a entity.TechCardQuizAnswer, extra string) string {
 	q := a.Question
-	line := "- [" + q.ID + " · " + q.Category + " · " + q.Part + "] " + designOneLine(q.Question) + " → "
+	tags := []string{q.ID, q.Category, q.Part}
+	if extra != "" {
+		tags = append(tags, extra)
+	}
+	ans := designQuizAnswerText(a)
+	if a.Stale && !a.Skipped && ans != "" {
+		changes := strings.Join(a.StaleChanges, "; ")
+		if changes == "" {
+			changes = "the card changed"
+		}
+		tags = append(tags, "STALE: "+changes)
+	}
+	line := "- [" + strings.Join(tags, " · ") + "] " + designOneLine(q.Question) + " → "
 	if a.Skipped {
 		return line + "deferred by the designer — may ask again if still open"
 	}
-	if ans := designQuizAnswerText(a); ans != "" {
-		if a.Stale {
-			return line + ans + " (TO RE-CONFIRM: the card changed since this answer)"
-		}
+	if ans != "" {
 		return line + ans
 	}
 	return line + "no answer"
@@ -1078,10 +1099,9 @@ func designQuizAnsweredLine(a entity.TechCardQuizAnswer) string {
 // picture 3 (material)» while its picture is still attached (pictureAt: media id → «picture N»), else
 // a note that the picture was removed from the board.
 func designQuizAnsweredLineOnBoard(a entity.TechCardQuizAnswer, pictureAt map[int]int, roles map[int]entity.TechCardMediaRole) string {
-	line := designQuizAnsweredLine(a)
 	mid := a.Question.MediaID
 	if mid == 0 {
-		return line
+		return designQuizAnsweredLine(a)
 	}
 	about := "about a picture since removed from the board"
 	if n, ok := pictureAt[mid]; ok {
@@ -1090,11 +1110,7 @@ func designQuizAnsweredLineOnBoard(a entity.TechCardQuizAnswer, pictureAt map[in
 			about += " (" + w + ")"
 		}
 	}
-	// "- [id · category · part] …" → "- [id · category · part · about …] …"
-	if i := strings.Index(line, "] "); i > 0 {
-		return line[:i] + " · " + about + line[i:]
-	}
-	return line
+	return designQuizAnsweredLineTagged(a, about)
 }
 
 // designQuizAnsweredKeys — the decision keys of the ANSWERED (not skipped, not stale) saved rows, in
@@ -1530,9 +1546,9 @@ func (st designQuizParseStats) unusable() bool {
 }
 
 // parseDesignQuizCounted is parseDesignQuiz plus its stats. W-B4: only ANSWERED saved rows close a
-// point — a skipped one was deferred and its id or text may come back. 62 D1: a STALE answered row
-// (the card changed since) may come back ONCE in the whole list — the one re-confirmation question
-// the prompt allows; a second repeat of a stale row is dropped as a repeat.
+// point — a skipped one was deferred and its id or text may come back. 98-STALE §4: a STALE answered
+// row (its topic's facts changed since) closes nothing; ONE re-question per stale answer (by its id,
+// clarify_<id>, text or decision key) is kept and sorted to the front, a second one is a repeat.
 func parseDesignQuizCounted(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, designQuizParseStats, bool) {
 	return parseDesignQuizBoard(raw, family, saved, nil)
 }
@@ -1550,15 +1566,21 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 	st.raw = len(items)
 	savedIDs := map[string]bool{}
 	savedText := map[string]bool{}
-	staleIDs := map[string]bool{}
-	staleText := map[string]bool{}
+	// 98-STALE §4: a STALE answered row closes nothing — dedupe runs against FRESH answers only. Its
+	// id, its clarify_<id>, its text and its decision key each lead back to it (staleOf), so one
+	// re-question per stale answer is kept and sorted to the front.
+	staleOf := map[string]string{}
 	for _, a := range saved {
 		if a.Skipped {
 			continue
 		}
 		if a.Stale {
-			staleIDs[a.Question.ID] = true
-			staleText[strings.ToLower(designOneLine(a.Question.Question))] = true
+			id := a.Question.ID
+			staleOf["i:"+id], staleOf["i:clarify_"+id] = id, id
+			staleOf["t:"+strings.ToLower(designOneLine(a.Question.Question))] = id
+			if k := a.Question.DecisionKey; k != "" {
+				staleOf["k:"+k] = id
+			}
 			continue
 		}
 		savedIDs[a.Question.ID] = true
@@ -1570,7 +1592,8 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 		savedKeys[k] = true
 	}
 	seenKeys := map[string]bool{}
-	reconfirmUsed := false
+	reasked := map[string]bool{}
+	var front []bool // parallel to out: a re-question of a stale answer
 	seenIDs := map[string]bool{}
 	seenText := map[string]bool{}
 	out := make([]entity.DesignQuizQuestion, 0, designQuizMaxQuestions)
@@ -1635,12 +1658,19 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 			st.repeated++
 			continue
 		}
-		if staleIDs[id] || staleText[textKey] {
-			if reconfirmUsed {
+		staleID := staleOf["i:"+id]
+		if staleID == "" {
+			staleID = staleOf["t:"+textKey]
+		}
+		if staleID == "" && decisionKey != "" {
+			staleID = staleOf["k:"+decisionKey]
+		}
+		if staleID != "" {
+			if reasked[staleID] {
 				st.repeated++
 				continue
 			}
-			reconfirmUsed = true
+			reasked[staleID] = true
 		}
 		q := entity.DesignQuizQuestion{
 			ID: id, Category: category, Part: part, Family: family, View: view, Kind: kind,
@@ -1682,9 +1712,22 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 			}
 		}
 		out = append(out, q)
+		front = append(front, staleID != "")
 		if fixedPart {
 			st.partsFixed++
 		}
+	}
+	// Re-questions of stale answers first, each group in the model's order (stable).
+	if len(reasked) > 0 {
+		sorted := make([]entity.DesignQuizQuestion, 0, len(out))
+		for pass := 0; pass < 2; pass++ {
+			for i, q := range out {
+				if front[i] == (pass == 0) {
+					sorted = append(sorted, q)
+				}
+			}
+		}
+		out = sorted
 	}
 	st.kept = len(out)
 	return out, st, true
@@ -1742,8 +1785,9 @@ func (s *Server) SaveDesignQuizAnswers(ctx context.Context, req *pb_admin.SaveDe
 	if ve != nil {
 		return nil, apierr.Invalid(ve)
 	}
-	// D1: every upserted row is stamped with the card's CURRENT fingerprint — a saved (or re-confirmed)
-	// answer is fresh by definition. A chart that cannot be read stamps "" (fresh, as pre-0392 rows).
+	// D1 / 98-STALE: every upserted row is stamped with its topic, the topic's facts now and the card's
+	// fingerprint — a saved (or kept) answer is fresh by definition. A chart that cannot be read stamps
+	// nothing (fresh, as pre-0392 rows).
 	card, err := s.repo.TechCards().GetTechCardById(ctx, cardID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, status.Error(codes.NotFound, "tech card not found")
@@ -1753,9 +1797,9 @@ func (s *Server) SaveDesignQuizAnswers(ctx context.Context, req *pb_admin.SaveDe
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot store the quiz answers")
 	}
-	fp, _ := s.designQuizCurrentFingerprint(ctx, card)
-	for i := range answers {
-		answers[i].Fingerprint = fp
+	st, stOK := s.designQuizCurrentState(ctx, card)
+	if stOK {
+		st.stamp(answers)
 	}
 	stored, err := s.repo.TechCards().SaveDesignQuizAnswers(ctx, cardID, answers, forget, designQuizMaxAnswers,
 		authsrv.GetAdminUsername(ctx))
@@ -1771,7 +1815,9 @@ func (s *Server) SaveDesignQuizAnswers(ctx context.Context, req *pb_admin.SaveDe
 			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "cannot store the quiz answers")
 	}
-	entity.MarkDesignQuizStale(stored, fp)
+	if stOK {
+		st.mark(stored)
+	}
 	// 64-DEFERRED E2: discard / quiz end — after a successful save (a retry re-merges the same rows).
 	if req.GetCloseSession() {
 		if err := s.repo.TechCards().CloseDesignQuizSession(ctx, cardID); err != nil {
@@ -1963,6 +2009,7 @@ func designQuizAnswersToPb(in []entity.TechCardQuizAnswer) []*pb_admin.DesignQui
 			Question: designQuizQuestionToPb(a.Question),
 			Selected: append([]string(nil), a.Selected...),
 			FreeText: a.FreeText, Skipped: a.Skipped, Stale: a.Stale,
+			StaleChanges: append([]string(nil), a.StaleChanges...),
 		}
 		if !a.AnsweredAt.IsZero() {
 			pa.AnsweredAt = timestamppb.New(a.AnsweredAt)

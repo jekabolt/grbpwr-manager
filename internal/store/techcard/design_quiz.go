@@ -17,32 +17,34 @@ import (
 // deletes its question id. No CAS: two writers of the same id — the later one wins.
 
 type designQuizAnswerRow struct {
-	TechCardID         int       `db:"tech_card_id"`
-	QuestionID         string    `db:"question_id"`
-	DecisionKey        string    `db:"decision_key"`
-	MediaID            int       `db:"media_id"`
-	Category           string    `db:"category"`
-	Part               string    `db:"part"`
-	Family             string    `db:"family"`
-	View               string    `db:"part_view"`
-	Kind               string    `db:"kind"`
-	Question           string    `db:"question"`
-	OptionsJSON        string    `db:"options_json"`
-	ContradictsJSON    string    `db:"contradicts_json"`
-	VisualEvidence     string    `db:"visual_evidence"`
-	ClarifyQuestion    string    `db:"clarify_question"`
-	ClarifyOptionsJSON string    `db:"clarify_options_json"`
-	SelectedJSON       string    `db:"selected_json"`
-	FreeText           string    `db:"free_text"`
-	Skipped            bool      `db:"skipped"`
-	CardFingerprint    string    `db:"card_fingerprint"`
-	AnsweredAt         time.Time `db:"answered_at"`
+	TechCardID         int            `db:"tech_card_id"`
+	QuestionID         string         `db:"question_id"`
+	DecisionKey        string         `db:"decision_key"`
+	MediaID            int            `db:"media_id"`
+	Category           string         `db:"category"`
+	Part               string         `db:"part"`
+	Family             string         `db:"family"`
+	View               string         `db:"part_view"`
+	Kind               string         `db:"kind"`
+	Question           string         `db:"question"`
+	OptionsJSON        string         `db:"options_json"`
+	ContradictsJSON    string         `db:"contradicts_json"`
+	VisualEvidence     string         `db:"visual_evidence"`
+	ClarifyQuestion    string         `db:"clarify_question"`
+	ClarifyOptionsJSON string         `db:"clarify_options_json"`
+	SelectedJSON       string         `db:"selected_json"`
+	FreeText           string         `db:"free_text"`
+	Skipped            bool           `db:"skipped"`
+	CardFingerprint    string         `db:"card_fingerprint"`
+	Topic              string         `db:"topic"`
+	FactsJSON          sql.NullString `db:"facts_json"`
+	AnsweredAt         time.Time      `db:"answered_at"`
 }
 
 const designQuizSelect = `
 	SELECT tech_card_id, question_id, decision_key, media_id, category, part, family, part_view, kind, question,
 	       options_json, contradicts_json, visual_evidence, clarify_question, clarify_options_json,
-	       selected_json, free_text, skipped, card_fingerprint, answered_at
+	       selected_json, free_text, skipped, card_fingerprint, topic, facts_json, answered_at
 	FROM tech_card_design_quiz_answer`
 
 func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
@@ -52,6 +54,13 @@ func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
 	_ = json.Unmarshal([]byte(r.ContradictsJSON), &contra)
 	_ = json.Unmarshal([]byte(r.ClarifyOptionsJSON), &clar)
 	_ = json.Unmarshal([]byte(r.SelectedJSON), &sel)
+	// 0399: NULL facts = a legacy row (staleness by fingerprint); a stored list, even empty, is a snapshot.
+	var facts []entity.DesignQuizFact
+	if r.FactsJSON.Valid {
+		if err := json.Unmarshal([]byte(r.FactsJSON.String), &facts); err != nil || facts == nil {
+			facts = []entity.DesignQuizFact{}
+		}
+	}
 	return entity.TechCardQuizAnswer{
 		Question: entity.DesignQuizQuestion{
 			ID: r.QuestionID, Category: r.Category, Part: r.Part, Family: r.Family, View: r.View,
@@ -60,7 +69,7 @@ func (r designQuizAnswerRow) entity() entity.TechCardQuizAnswer {
 			DecisionKey: r.DecisionKey, MediaID: r.MediaID,
 		},
 		Selected: sel, FreeText: r.FreeText, Skipped: r.Skipped, AnsweredAt: r.AnsweredAt,
-		Fingerprint: r.CardFingerprint,
+		Fingerprint: r.CardFingerprint, Topic: r.Topic, Facts: facts,
 	}
 }
 
@@ -118,10 +127,19 @@ func designQuizJSON[T any](v []T) string {
 	return string(b)
 }
 
+// designQuizFactsJSON — the facts snapshot column (0399): NULL for a row without one (legacy, import).
+func designQuizFactsJSON(f []entity.DesignQuizFact) sql.NullString {
+	if f == nil {
+		return sql.NullString{}
+	}
+	b, _ := json.Marshal(f)
+	return sql.NullString{String: string(b), Valid: true}
+}
+
 // designQuizInsertCols — the columns insertDesignQuizRows writes, in its row order.
 var designQuizInsertCols = []string{"tech_card_id", "question_id", "decision_key", "media_id", "category", "part", "family", "part_view", "kind",
 	"question", "options_json", "contradicts_json", "visual_evidence", "clarify_question",
-	"clarify_options_json", "selected_json", "free_text", "skipped", "card_fingerprint", "display_order", "answered_at"}
+	"clarify_options_json", "selected_json", "free_text", "skipped", "card_fingerprint", "topic", "facts_json", "display_order", "answered_at"}
 
 // insertDesignQuizRows writes list as the card's answers in that order (display_order = index). The
 // caller owns the transaction and has cleared the card's rows (or the card is new). Shared by the
@@ -140,7 +158,7 @@ func insertDesignQuizRows(ctx context.Context, db dependency.DB, techCardID int,
 		rows = append(rows, []any{techCardID, q.ID, q.DecisionKey, q.MediaID, q.Category, q.Part, q.Family, q.View, q.Kind,
 			q.Question, designQuizJSON(q.Options), designQuizJSON(q.Contradicts), q.VisualEvidence,
 			q.ClarifyQuestion, designQuizJSON(q.ClarifyOptions), designQuizJSON(a.Selected), a.FreeText,
-			a.Skipped, a.Fingerprint, i, at})
+			a.Skipped, a.Fingerprint, a.Topic, designQuizFactsJSON(a.Facts), i, at})
 	}
 	if err := storeutil.BulkInsertRows(ctx, db, "tech_card_design_quiz_answer", designQuizInsertCols, rows); err != nil {
 		return fmt.Errorf("can't store design quiz answers: %w", err)
