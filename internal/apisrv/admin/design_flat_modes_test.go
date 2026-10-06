@@ -187,9 +187,10 @@ func TestFlatModeDoorRefusals(t *testing.T) {
 }
 
 func TestFlatModeOutputsAndReruns(t *testing.T) {
-	require.Equal(t, 2, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("")))
-	require.Equal(t, 2, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"))))
-	require.Equal(t, 4, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("straps")))
+	// Wave 10: every mode buys ONE sheet (the candidate quiz is gone).
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("")))
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"))))
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, flatParamsOf("straps")))
 	fix := flatParamsOf("straps")
 	fix.FixTargets = []string{"front"}
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, fix), "a fix is one picture")
@@ -199,15 +200,15 @@ func TestFlatModeOutputsAndReruns(t *testing.T) {
 	p := &pb_common.DesignRunParams{Views: flatFour, Layout: designLayoutOne}
 	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, p, parent))
 	require.Equal(t, "straps", p.GetFlat().GetMode())
-	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, p, designRequestedOutputs(entity.DesignRunKindFlat, p), parent))
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, p), "a rerun of a four-candidate parent is one sheet")
 	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), parent))
 	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf(""), parent)))
-	// a legacy parent (no block) is the photos route; its four candidates rerun as four
+	// a legacy parent (no block) is the photos route; its four candidates rerun as one sheet
 	legacy := &entity.DesignRun{Id: 8, Params: entity.RawJSON(`{"views":["front","back"],"layout":"one"}`), RequestedOutputs: 4}
 	q := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
 	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, q, legacy))
 	require.Nil(t, q.GetFlat())
-	require.Equal(t, 4, designRerunFlatOutputs(entity.DesignRunKindFlat, q, designRequestedOutputs(entity.DesignRunKindFlat, q), legacy))
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, q))
 	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), legacy)))
 	// hand_flat: the same flats and the same views
 	hp := &entity.DesignRun{Id: 9, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"hand_flat","structure_refs":[{"media_id":70,"role":"front_flat"}]}}`)}
@@ -227,10 +228,9 @@ func TestFlatSnapshotRefsPerMode(t *testing.T) {
 		return out.GetRefs()
 	}
 	got := snap(&pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne})
-	require.Equal(t, []int32{11, 12, 13}, refIDs(got), "photos: as today")
-	require.Equal(t, entity.DesignRefRoleMood, got[2].GetRole(), "a mood picture is named as one")
+	require.Equal(t, []int32{11, 12}, refIDs(got), "photos: the roled photos only — the mood picture stays home (wave 10)")
 	got = snap(flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "back_flat")))
-	require.Equal(t, []int32{70, 71, 11, 12, 13}, refIDs(got), "hand_flat: the flats first, then the photos")
+	require.Equal(t, []int32{70, 71, 11, 12}, refIDs(got), "hand_flat: the flats first, then the photos")
 	require.Equal(t, entity.DesignRefRoleBackFlat, got[1].GetRole())
 
 	var where []string
@@ -355,18 +355,23 @@ func TestJoinsFitOnTheWire(t *testing.T) {
 	require.True(t, closed.Items[0].Closed, "a closure keeps closed")
 }
 
-// TestFlatMoodRoleWinsOverAReferenceRole — M2 / Codex b6: a card picture that is a MOOD picture travels
-// as `mood` even when its reference row names a side; any other picture keeps its role.
-func TestFlatMoodRoleWinsOverAReferenceRole(t *testing.T) {
+// TestFlatSendsOnlyRoledPhotos — wave 10 (owner 06.10): a flat run sends no moodboard picture (a board
+// MOOD picture, whatever role its reference row names, or a `mood` ref) and no role-less input; every
+// other kind keeps its refs.
+func TestFlatSendsOnlyRoledPhotos(t *testing.T) {
 	card := &entity.TechCard{}
 	card.Media = []entity.TechCardMediaItem{
 		{MediaId: 80, Category: entity.TechCardMediaCategoryMoodboard, Role: entity.TechCardMediaRoleMood},
 		{MediaId: 81, Category: entity.TechCardMediaCategoryMoodboard, Role: entity.TechCardMediaRoleTarget},
 	}
-	refs := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}, {MediaId: 80}, {MediaId: 81, Role: "back"}, {MediaId: 5, Role: "side_l"}}
-	designFlatMoodRoles(designInputSources{Kind: entity.DesignRunKindFlat, Card: card}, refs)
-	require.Equal(t, []string{"mood", "mood", "back", "side_l"}, []string{refs[0].Role, refs[1].Role, refs[2].Role, refs[3].Role})
-	other := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}}
-	designFlatMoodRoles(designInputSources{Kind: entity.DesignRunKindRender, Card: card}, other)
-	require.Equal(t, "front", other[0].Role, "only a flat run")
+	refs := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}, {MediaId: 82}, {MediaId: 83, Role: "mood"},
+		{MediaId: 81, Role: "back"}, {MediaId: 5, Role: "side_l"}, {MediaId: 6, Role: "detail"}}
+	got := designFlatOnlyRoledPhotos(designInputSources{Kind: entity.DesignRunKindFlat, Card: card}, refs)
+	var ids []int32
+	for _, r := range got {
+		ids = append(ids, r.GetMediaId())
+	}
+	require.Equal(t, []int32{81, 5, 6}, ids)
+	other := []*pb_common.DesignInputRef{{MediaId: 80, Role: "front"}, {MediaId: 82}}
+	require.Len(t, designFlatOnlyRoledPhotos(designInputSources{Kind: entity.DesignRunKindRender, Card: card}, other), 2, "only a flat run")
 }

@@ -34,7 +34,6 @@
           "detail_name": "patch pocket"
         }
       ],
-      "fit": "oversized",
       "views": [
         "detail",
         "detail"
@@ -70,7 +69,6 @@
           "detail_name": "collar"
         }
       ],
-      "fit": "oversized",
       "views": [
         "detail"
       ],
@@ -112,7 +110,6 @@
           "detail_name": "patch pocket"
         }
       ],
-      "fit": "oversized",
       "views": [
         "detail",
         "detail"

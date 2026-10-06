@@ -67,13 +67,17 @@ func TestSplitCallsOverN(t *testing.T) {
 	}
 }
 
+// legacyFlatCandidates — what a straps press bought 05.10–06.10 (wave 10 made every press one sheet);
+// a run queued then still carries it frozen.
+const legacyFlatCandidates = 4
+
 // TestFlatSheetIsBoughtAsCandidates — the frozen requested_outputs of a garment sheet is the call's
 // n; a per_view run and a detail callout keep n = 1; an old flat (outputs 1) stays one picture.
 func TestFlatSheetIsBoughtAsCandidates(t *testing.T) {
-	sheet := Job{Kind: "flat", Views: []string{"front", "back"}, Layout: layoutOne, Outputs: FlatCandidates}
+	sheet := Job{Kind: "flat", Views: []string{"front", "back"}, Layout: layoutOne, Outputs: legacyFlatCandidates}
 	calls, err := imageCalls(sheet)
-	if err != nil || len(calls) != 1 || calls[0].n != FlatCandidates {
-		t.Fatalf("a flat sheet buys %d candidates in one call, got %+v %v", FlatCandidates, calls, err)
+	if err != nil || len(calls) != 1 || calls[0].n != legacyFlatCandidates {
+		t.Fatalf("a flat sheet buys %d candidates in one call, got %+v %v", legacyFlatCandidates, calls, err)
 	}
 	old := sheet
 	old.Outputs = 1
@@ -83,11 +87,6 @@ func TestFlatSheetIsBoughtAsCandidates(t *testing.T) {
 	detail := Job{Kind: "flat", Views: []string{"detail"}, Layout: layoutOne, Outputs: 4}
 	if calls, _ := imageCalls(detail); calls[0].n != 1 {
 		t.Fatal("a detail callout is one close-up")
-	}
-	if FlatCandidatesFor([]string{"front"}, layoutPerView, FlatModeStraps) != 0 ||
-		FlatCandidatesFor([]string{"front", "back"}, layoutOne, FlatModeStraps) != FlatCandidates ||
-		FlatCandidatesFor([]string{"front", "back"}, layoutOne, "") != FlatCandidatesPhotos {
-		t.Fatal("FlatCandidatesFor: only a garment sheet; photos buys two")
 	}
 }
 
@@ -114,10 +113,10 @@ func TestGreyCheckSkipsADecompressionBomb(t *testing.T) {
 // TestFlatCandidatesOnAnUnknownSlugAreSingleCalls — a custom default slug (no catalogue row, n range
 // unknown) buys four candidates as four n = 1 calls; a catalogue GPT row as one n = 4 call.
 func TestFlatCandidatesOnAnUnknownSlugAreSingleCalls(t *testing.T) {
-	job := Job{Kind: "flat", Views: []string{"front", "back"}, Layout: layoutOne, Outputs: FlatCandidates, Prompt: "p"}
+	job := Job{Kind: "flat", Views: []string{"front", "back"}, Layout: layoutOne, Outputs: legacyFlatCandidates, Prompt: "p"}
 	custom := &fakeImageTransport{model: "acme/custom"}
 	out, err := imageProvider{t: custom, providerKey: "openrouter"}.Execute(context.Background(), job)
-	if err != nil || len(custom.calls) != FlatCandidates || len(out.Artifacts) != FlatCandidates {
+	if err != nil || len(custom.calls) != legacyFlatCandidates || len(out.Artifacts) != legacyFlatCandidates {
 		t.Fatalf("custom slug: %d calls, %v", len(custom.calls), err)
 	}
 	for _, c := range custom.calls {
@@ -126,7 +125,7 @@ func TestFlatCandidatesOnAnUnknownSlugAreSingleCalls(t *testing.T) {
 		}
 	}
 	gpt := &fakeImageTransport{model: EngineGPTImage25Flare}
-	if _, err := (imageProvider{t: gpt, providerKey: "openrouter"}).Execute(context.Background(), job); err != nil || len(gpt.calls) != 1 || gpt.calls[0].N != FlatCandidates {
+	if _, err := (imageProvider{t: gpt, providerKey: "openrouter"}).Execute(context.Background(), job); err != nil || len(gpt.calls) != 1 || gpt.calls[0].N != legacyFlatCandidates {
 		t.Fatalf("flare: %+v %v", gpt.calls, err)
 	}
 }

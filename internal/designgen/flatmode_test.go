@@ -122,12 +122,9 @@ func TestBuildJobHandFlat(t *testing.T) {
 
 func TestFlatModeCandidates(t *testing.T) {
 	two := []string{"front", "back"}
-	require.Equal(t, 2, FlatCandidatesFor(two, layoutOne, ""))
-	require.Equal(t, 2, FlatCandidatesFor(two, layoutOne, "photos"))
-	require.Equal(t, 2, FlatCandidatesFor(two, layoutOne, FlatModeHandFlat))
-	require.Equal(t, FlatCandidates, FlatCandidatesFor(two, layoutOne, FlatModeStraps))
-	require.Equal(t, 0, FlatCandidatesFor(two, layoutPerView, FlatModeStraps))
-	require.Equal(t, 0, FlatCandidatesFor([]string{"detail"}, layoutOne, FlatModeStraps))
+	require.True(t, FlatIsGarmentSheet(two, layoutOne))
+	require.False(t, FlatIsGarmentSheet(two, layoutPerView))
+	require.False(t, FlatIsGarmentSheet([]string{"detail"}, layoutOne))
 	for _, m := range []string{"", FlatModeHandFlat, FlatModeStraps} {
 		require.Equal(t, FlatDefaultEngine, FlatModelFor(m))
 	}

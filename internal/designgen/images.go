@@ -468,12 +468,11 @@ func imageCalls(job Job) ([]imageCall, error) {
 	// A composite carries several views and therefore has no single one; leaving the view empty
 	// lets the store's own rule (no ghost guess for a composite) stand.
 	//
-	// THE ONE NAMED EXCEPTION: A FLAT GARMENT SHEET IS BOUGHT AS CANDIDATES (FlatCandidates, owner
-	// 05.10 «4 кандидата на нажатие»). The door sets requested_outputs to the candidate count for
-	// exactly those runs (FlatCandidatesFor) and the frozen number is read back here — a flat queued
-	// before the change says 1 and stays one picture.
+	// THE ONE NAMED EXCEPTION, NOW LEGACY ONLY: a flat garment sheet queued while presses bought 2–4
+	// candidates (05.10–06.10) carries that count frozen in requested_outputs, and the door priced it —
+	// so it is read back here. Since wave 10 the door sets 1 and this branch never fires for a new run.
 	n := 1
-	if job.Kind == entity.DesignRunKindFlat && job.Outputs > 1 && FlatCandidatesFor(job.Views, job.Layout, job.FlatMode) > 0 {
+	if job.Kind == entity.DesignRunKindFlat && job.Outputs > 1 && FlatIsGarmentSheet(job.Views, job.Layout) {
 		n = job.Outputs
 	}
 	return []imageCall{{prompt: job.Prompt, n: n, refs: job.References}}, nil

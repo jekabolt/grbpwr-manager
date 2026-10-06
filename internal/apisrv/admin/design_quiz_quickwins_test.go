@@ -273,7 +273,11 @@ func TestDesignQuizDecisionsReachImageRuns(t *testing.T) {
 	}}
 	card.GarmentDescription = sql.NullString{String: "olive field jacket", Valid: true}
 	params := &pb_common.DesignRunParams{Views: []string{entity.DesignViewFront}, Layout: designLayoutPerView}
-	snap, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Params: params})
+	// Wave 10: a FLAT reads construction only — no quiz Q&A in its note.
+	flat, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Params: params})
+	require.NoError(t, err)
+	require.Equal(t, "olive field jacket", flat.GetGarmentNote())
+	snap, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindRender, Card: card, Params: params})
 	require.NoError(t, err)
 	note := snap.GetGarmentNote()
 	require.True(t, strings.HasPrefix(note, "olive field jacket\n\ndecided with the designer (current card fields outrank these when they conflict):\n"), note)
@@ -285,7 +289,7 @@ func TestDesignQuizDecisionsReachImageRuns(t *testing.T) {
 
 	// No description: the block alone. Kinds that read no garment note get nothing.
 	card.GarmentDescription = sql.NullString{}
-	snap, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: card, Params: params})
+	snap, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindRender, Card: card, Params: params})
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(snap.GetGarmentNote(), "decided with the designer ("))
 	require.Empty(t, designQuizImageBlock(&entity.TechCard{}, ""))

@@ -801,18 +801,3 @@ func (s *Server) designFreezeFlatModel(kind string, params *pb_common.DesignRunP
 func designFlatIsFix(params *pb_common.DesignRunParams) bool {
 	return len(params.GetFixTargets()) > 0 || strings.TrimSpace(params.GetFixTarget()) != "" || len(params.GetFixSlotIds()) > 0
 }
-
-// designRerunFlatOutputs — a flat RERUN of a garment sheet buys what its parent bought (1..
-// FlatCandidates): a one-picture flat from before the flat route stays one picture, a four-candidate
-// quick sheet from before the modes stays four, and a drawing-mode press repeats its four. A fix and a
-// per_view / detail run keep their own count.
-func designRerunFlatOutputs(kind string, params *pb_common.DesignRunParams, outputs int, parent *entity.DesignRun) int {
-	if kind != entity.DesignRunKindFlat || parent == nil || designFlatIsFix(params) ||
-		params.GetLayout() != designLayoutOne || !designgen.FlatIsGarmentSheet(params.GetViews(), params.GetLayout()) {
-		return outputs
-	}
-	if parent.RequestedOutputs >= 1 && parent.RequestedOutputs <= designgen.FlatCandidates {
-		return parent.RequestedOutputs
-	}
-	return outputs
-}

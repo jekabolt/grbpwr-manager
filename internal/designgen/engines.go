@@ -440,24 +440,10 @@ func applyImageOptions(job *Job, o *imageOptions, table []Engine) {
 // of this constant never rewrites an old run. Other kinds keep the deployment default.
 const FlatDefaultEngine = EngineGPTImage25Flare
 
-// FlatCandidates — how many sheets ONE flat press buys (owner, 05.10: «4 кандидата на нажатие»; the
-// designer picks one, the split flow cuts the chosen one). Only a garment sheet (`one` layout, at
-// least one non-detail view) is bought four times: a per_view run is already one call per view and a
-// detail callout is one close-up.
-const FlatCandidates = 4
-
-// FlatCandidatesFor — the outputs a flat run of these views, layout and mode buys (81-FINAL-MODES):
-// straps FlatCandidates (4), the photos route and hand_flat FlatCandidatesPhotos (2); 0 when the rule
-// does not apply at all — per_view or a detail callout — and the caller keeps its own count.
-func FlatCandidatesFor(views []string, layout, mode string) int {
-	if !FlatIsGarmentSheet(views, layout) {
-		return 0
-	}
-	if m, _ := NormalizeFlatMode(mode); m == FlatModeStraps {
-		return FlatCandidates
-	}
-	return FlatCandidatesPhotos
-}
+// ONE SHEET PER PRESS (owner 06.10, wave 10: «убрать тиндер-фичу»). A flat garment sheet used to
+// be bought as 2–4 candidates the designer picked from in a quiz; the quiz is gone, and so is the
+// count: every garment sheet is ONE picture, cut and applied to the four slots by the client. A run
+// queued before the change still carries its frozen requested_outputs (imageCalls reads it back).
 
 // FlatIsGarmentSheet — a flat run that draws the garment on ONE sheet: not per_view, not a detail
 // callout, at least one view.

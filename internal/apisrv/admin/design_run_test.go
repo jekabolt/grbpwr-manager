@@ -271,7 +271,13 @@ func TestDesignRunInputsNeverCarryTheMoodboard(t *testing.T) {
 			for _, r := range snap.GetRefs() {
 				refIDs = append(refIDs, r.GetMediaId())
 			}
-			require.ElementsMatch(t, []int32{designRefMediaID, designExtraMediaID}, refIDs,
+			want := []int32{designRefMediaID, designExtraMediaID}
+			if kind == entity.DesignRunKindFlat {
+				// Wave 10: a flat sends only the garment's photos WITH a side role — the role-less
+				// extra input stays home too.
+				want = []int32{designRefMediaID}
+			}
+			require.ElementsMatch(t, want, refIDs,
 				"снимок обязан нести явно перенесённый референс и явно названный доп-вход")
 
 			// ── доска отсутствует и как блок, и как число ──
@@ -458,11 +464,10 @@ func TestDesignEffectiveParamsRefusesNonsense(t *testing.T) {
 // плитки, которых генерация не приносит, и человек читал бы это как потерянный результат.
 func TestDesignRequestedOutputsCountsPicturesNotViews(t *testing.T) {
 	three := []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL}
-	// A flat GARMENT sheet is bought as candidates (flat route, owner 05.10): one composite per
-	// candidate, never one per view.
-	require.Equal(t, designgen.FlatCandidatesPhotos, designRequestedOutputs(entity.DesignRunKindFlat,
-		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}), "a photos sheet is two candidates")
-	require.Equal(t, designgen.FlatCandidates, designRequestedOutputs(entity.DesignRunKindFlat,
+	// A flat GARMENT sheet is ONE composite (wave 10), never one per view.
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}), "a photos sheet is one picture")
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne,
 			Flat: &pb_common.DesignFlatParams{Mode: designgen.FlatModeStraps}}))
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
@@ -768,7 +773,7 @@ func TestDraftDesignIdeaResumeUsesTheRotatedToken(t *testing.T) {
 func TestDesignAssembleInputsRefusesTooManyReferences(t *testing.T) {
 	refs := make([]entity.DesignReference, 0, designMaxInputRefs+1)
 	for i := 0; i <= designMaxInputRefs; i++ {
-		refs = append(refs, entity.DesignReference{MediaId: 1000 + i})
+		refs = append(refs, entity.DesignReference{MediaId: 1000 + i, Role: entity.DesignViewFront})
 	}
 	_, err := designAssembleInputs(designInputSources{
 		Kind: entity.DesignRunKindFlat, Refs: refs, Params: &pb_common.DesignRunParams{},

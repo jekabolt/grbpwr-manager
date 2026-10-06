@@ -314,20 +314,30 @@ func designFlatStructureRefs(src designInputSources, photos []*pb_common.DesignI
 	return out, true
 }
 
-// designFlatMoodRoles — a flat's reference whose card picture is a MOOD picture travels with the
-// snapshot role `mood` (captioned «a DIFFERENT garment; style mood only»), WHATEVER reference role it
-// carries (M2 / Codex b6): a mood picture is never a fit or detail authority in any mode, and one
-// picture is described once — as mood — never as «front photo» and mood at the same time.
-func designFlatMoodRoles(src designInputSources, refs []*pb_common.DesignInputRef) {
-	if src.Kind != entity.DesignRunKindFlat || src.Card == nil {
-		return
+// designFlatOnlyRoledPhotos — A FLAT GETS THE GARMENT'S OWN PHOTOS AND NOTHING ELSE (owner 06.10, wave 10:
+// «в флет генерейшен не будем передавать картинки из мудборда — это не нужно, только засоряет промпт»).
+// A reference on a MOOD picture of the board (whatever role it carries in the references block), a
+// reference whose role is `mood`, and a reference without a role (an extra input named in the request
+// included) are dropped from the snapshot: the model sees only photos that say which side of THIS
+// garment they show. A hand_flat run's own flats are added after this (designFlatStructureRefs), and a
+// detail run's accepted FRONT/BACK flats travel as bench slots, not refs. Other kinds keep their refs.
+func designFlatOnlyRoledPhotos(src designInputSources, refs []*pb_common.DesignInputRef) []*pb_common.DesignInputRef {
+	if src.Kind != entity.DesignRunKindFlat {
+		return refs
 	}
-	roles := designBoardRoles(src.Card)
+	var roles map[int]entity.TechCardMediaRole
+	if src.Card != nil {
+		roles = designBoardRoles(src.Card)
+	}
+	out := refs[:0]
 	for _, r := range refs {
-		if roles[int(r.GetMediaId())] == entity.TechCardMediaRoleMood {
-			r.Role = entity.DesignRefRoleMood
+		role := strings.TrimSpace(r.GetRole())
+		if role == "" || role == entity.DesignRefRoleMood || roles[int(r.GetMediaId())] == entity.TechCardMediaRoleMood {
+			continue
 		}
+		out = append(out, r)
 	}
+	return out
 }
 
 // designFlatModeKeepsSlots — a hand_flat press sends the designer's flats and photos, never old bench

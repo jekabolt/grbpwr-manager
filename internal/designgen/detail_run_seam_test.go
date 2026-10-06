@@ -120,8 +120,8 @@ func TestThreedDoesNotCarryTheDetailListIntoTheMeshyPrompt(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, job.Prompt, "draw these details")
 	require.NotContains(t, job.Prompt, "patch pocket")
-	// Положительный контроль: человеческий контекст 3D-прогона на месте, промпт не пуст.
-	require.Contains(t, job.Prompt, "fit:\noversized")
+	// Положительный контроль: промпт не пуст (fit больше не замерзает у флэта, wave 10 — эталон флэтовый).
+	require.Contains(t, job.Prompt, "references:")
 }
 
 // MINOR-6: клоз третьего ранга В ОДИНОЧЕСТВЕ обязан иметь ПОЛОЖИТЕЛЬНУЮ форму.

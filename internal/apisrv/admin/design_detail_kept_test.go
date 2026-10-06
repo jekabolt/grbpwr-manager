@@ -140,7 +140,7 @@ func TestADetailRunWithUseFlatSlotsKeepsItsOwnMeaning(t *testing.T) {
 	require.Equal(t, entity.DesignViewSideL, slots[0].GetViewKey())
 }
 
-// ─── default candidate counts (82 §3.1 / §4.3): photos 2, hand_flat 2, straps 4, detail 1 ───
+// ─── one sheet per press (wave 10): every route buys one picture ───
 
 func TestFlatCandidateCountsPerRoute(t *testing.T) {
 	sheet := []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL, entity.DesignViewSideR}
@@ -149,13 +149,13 @@ func TestFlatCandidateCountsPerRoute(t *testing.T) {
 		params *pb_common.DesignRunParams
 		want   int
 	}{
-		{"photos", &pb_common.DesignRunParams{Views: sheet, Layout: designLayoutOne}, 2},
+		{"photos", &pb_common.DesignRunParams{Views: sheet, Layout: designLayoutOne}, 1},
 		{"photos named", &pb_common.DesignRunParams{Views: sheet, Layout: designLayoutOne,
-			Flat: &pb_common.DesignFlatParams{Mode: "photos"}}, 2},
+			Flat: &pb_common.DesignFlatParams{Mode: "photos"}}, 1},
 		{"hand_flat", &pb_common.DesignRunParams{Views: sheet, Layout: designLayoutOne,
-			Flat: &pb_common.DesignFlatParams{Mode: "hand_flat"}}, 2},
+			Flat: &pb_common.DesignFlatParams{Mode: "hand_flat"}}, 1},
 		{"straps", &pb_common.DesignRunParams{Views: sheet, Layout: designLayoutOne,
-			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, 4},
+			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, 1},
 		{"detail", &pb_common.DesignRunParams{Views: []string{entity.DesignViewDetail}, Layout: designLayoutOne,
 			DetailSlotIds: []int32{5}}, 1},
 	} {

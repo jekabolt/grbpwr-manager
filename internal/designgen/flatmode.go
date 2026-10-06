@@ -12,17 +12,16 @@ import (
 //   - "" (photos, the default): the card's kept photos with roles and notes + the join list in words
 //     when the card has one; two candidate sheets.
 //   - hand_flat: the card's own hand-drawn technical flats (front_flat / back_flat) are redrawn
-//     cleanly and the missing views derived; the kept photos travel for fit only; no join list; two
-//     candidates.
-//   - straps: the photos route with the designer-CONFIRMED join list; four candidates.
+//     cleanly and the missing views derived; the kept photos travel for fit only; no join list.
+//   - straps: the photos route with the designer-CONFIRMED join list.
+//
+// Every mode buys ONE sheet (wave 10: the candidate quiz is gone).
 //
 // The mode is frozen in params.flat.mode; "" (and every run before the modes) is the photos route.
 const (
 	FlatModePhotos   = ""
 	FlatModeHandFlat = "hand_flat"
 	FlatModeStraps   = "straps"
-	// FlatCandidatesPhotos — the sheets one photos / hand_flat press buys (FlatCandidates: straps).
-	FlatCandidatesPhotos = 2
 	// FlatMaxStructureRefs — the hand-drawn flats one run may trace (front + back).
 	FlatMaxStructureRefs = 2
 )

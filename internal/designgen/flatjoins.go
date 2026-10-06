@@ -84,7 +84,7 @@ func joinsListText(j entity.DesignJoinsDoc) string {
 			if len(it.ContinuesInto) > 0 {
 				cont = " continues into " + strings.Join(it.ContinuesInto, ", ") + "."
 			}
-			L = append(L, fmt.Sprintf("- %s: %s%s from %s%s.%s %s", it.ID, it.Kind, width, strings.Join(path, " → "), closed, cont, it.Text))
+			L = append(L, strings.TrimRight(fmt.Sprintf("- %s: %s%s from %s%s.%s %s", it.ID, it.Kind, width, strings.Join(path, " → "), closed, cont, it.Text), " "))
 		}
 	}
 	if len(j.Absences) > 0 {

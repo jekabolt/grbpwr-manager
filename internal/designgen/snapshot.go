@@ -1111,6 +1111,11 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	if run.Kind == entity.DesignRunKindFlat && detailOnlyRun(p.Views) {
 		garmentLabel = flatDetailGarmentLabel
 	}
+	// «garment:\ngarment: blazer» (wave 10): the card's WORDS already open with their own
+	// «garment: <class>» line (card-facts.ts), so the label is not said a second time.
+	if garmentLabel == "garment" && flatGarmentLineRe.MatchString(strings.TrimSpace(strings.SplitN(strings.TrimSpace(in.GarmentNote), "\n", 2)[0])) {
+		garmentLabel = ""
+	}
 	write(garmentLabel, in.GarmentNote)
 	write("fit", in.Fit)
 	// КАКИЕ ИМЕННО ДЕТАЛИ ПРОСИЛИ. Без этой строки прогон на две детали говорил модели ровно

@@ -169,7 +169,8 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 		paras = append(paras, only)
 	}
 	if withJoins {
-		paras = append(paras, joinsCraft(*joins)...)
+		// Wave 10: hidden items (lining, inside pockets) and their layers are not said to a flat.
+		paras = append(paras, joinsCraft(flatVisibleJoins(*joins))...)
 	}
 	paras = append(paras, flatNoTextNoGrey, style, excluded, flatOutput)
 	return strings.Join(paras, "\n\n")

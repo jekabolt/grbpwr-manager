@@ -87,7 +87,7 @@ type Job struct {
 	Views  []string
 	Layout string
 	// FlatMode — params.flat.mode of a flat run (quick | drawing | drawing_photos; "" = quick): the
-	// money boundary reads it beside Outputs (FlatCandidatesFor).
+	// money boundary reads it beside Outputs (a legacy multi-candidate flat, imageCalls).
 	FlatMode string
 	// DetailNames names the requested details POSITIONALLY: the i-th entry belongs to the i-th
 	// `detail` in Views. An entry is empty when the frozen snapshot could not name that slot.

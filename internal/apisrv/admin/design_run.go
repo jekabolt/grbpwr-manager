@@ -1150,7 +1150,8 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 			len(inputsJSON), designMaxInputsBytes)
 	}
 
-	outputs := designRerunFlatOutputs(kind, params, designRequestedOutputs(kind, params), parent)
+	// A flat garment sheet is ONE picture (wave 10), a rerun of a legacy multi-candidate run too.
+	outputs := designRequestedOutputs(kind, params)
 	started, err := s.repo.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId:      cardID,
 		ClientRequestId: clientRequestID,
@@ -2447,16 +2448,6 @@ func designRequestedOutputs(kind string, params *pb_common.DesignRunParams) int 
 		}
 		return 1
 	}
-	// FLAT CANDIDATES (owner 05.10): a garment sheet is bought FlatCandidates times — the designer
-	// picks one and the split flow cuts the chosen one. imageCalls reads this number back as the
-	// call's n (designgen FlatCandidatesFor names the same runs).
-	// 81-FINAL-MODES: photos and hand_flat buy two sheets, straps four.
-	if kind == entity.DesignRunKindFlat && params.GetLayout() == designLayoutOne && !designFlatIsFix(params) {
-		mode, _ := designFlatModeOf(params)
-		if n := designgen.FlatCandidatesFor(params.GetViews(), params.GetLayout(), mode); n > 0 {
-			return n
-		}
-	}
 	if params.GetLayout() == designLayoutOne {
 		// КОМПОЗИТ — ОДНА КАРТИНКА, сколько бы видов на ней ни было. Разрез на N кадров это
 		// отдельный, бесплатный акт (SplitDesignPicture), и считать его выходами прогона значило
@@ -3668,10 +3659,17 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		// ИЗДЕЛИЕ и её читает каждая генерация. Подставленная сюда записка доски отправила бы в
 		// модель ровно те слова, которые W-15 запрещает.
 		out.GarmentNote = src.Card.GarmentDescription.String
-		// QUIZ DECISIONS (61-QUICKWINS W-B2) ride WITH the garment note, frozen in the same copy: a
-		// flat or render gets them whatever WORDS say (hand-edited, stale, never re-briefed), and a
-		// rerun reads the snapshot, so it keeps exactly the decisions seen at launch.
-		if quiz := designQuizImageBlock(src.Card, out.GarmentNote); quiz != "" {
+		// A FLAT READS CONSTRUCTION ONLY (owner 06.10, wave 10: «максимально уберем мусор из
+		// промпта»): no fit line, no quiz Q&A, and the description without material / colour /
+		// lining / inside / hidden finishing / ease (designgen.FlatConstructionNote). The join list
+		// carries the construction the quiz decided. Frozen here, so the stored prompt says it too.
+		if src.Kind == entity.DesignRunKindFlat {
+			out.Fit = ""
+			out.GarmentNote = designgen.FlatConstructionNote(out.GarmentNote)
+		} else if quiz := designQuizImageBlock(src.Card, out.GarmentNote); quiz != "" {
+			// QUIZ DECISIONS (61-QUICKWINS W-B2) ride WITH the garment note, frozen in the same copy:
+			// a render gets them whatever WORDS say (hand-edited, stale, never re-briefed), and a
+			// rerun reads the snapshot, so it keeps exactly the decisions seen at launch.
 			if strings.TrimSpace(out.GarmentNote) != "" {
 				out.GarmentNote = strings.TrimRight(out.GarmentNote, "\n") + "\n\n" + quiz
 			} else {
@@ -3762,9 +3760,9 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 			Callouts: callouts[int(id)],
 		})
 	}
-	// ─── A FLAT (81-FINAL-MODES): a mood picture is named as one; a hand_flat run records the
-	// designer's flats first (their roles), then the photos gathered above.
-	designFlatMoodRoles(src, out.Refs)
+	// ─── A FLAT: only the garment's own photos with a side role travel — no moodboard picture, no
+	// role-less input (wave 10); a hand_flat run records the designer's flats first, then those photos.
+	out.Refs = designFlatOnlyRoledPhotos(src, out.Refs)
 	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
 		out.Refs = refs
 	}
