@@ -199,7 +199,7 @@ func flatPhotoRolesParagraph(attached []refCaption, st []structImage, img string
 			inner += " — " + n
 		}
 		line := "- Image " + strconv.Itoa(i+1) + " — " + label + " FIT AND DETAIL AUTHORITY only (" + inner + "); never a source of construction"
-		if rc.Role == entity.DesignViewSideL || rc.Role == entity.DesignViewSideR {
+		if rc.Role == entity.DesignViewSideL || rc.Role == entity.DesignViewSideR || rc.Role == entity.DesignViewSide {
 			line += "; mirror its depth profile to the side views you derive"
 		}
 		lines = append(lines, line+".")
@@ -257,6 +257,10 @@ func flatPhotoRole(role string) (string, string) {
 		return "SIDE", "side photo, the wearer's LEFT flank"
 	case entity.DesignViewSideR:
 		return "SIDE", "side photo, the wearer's RIGHT flank"
+	case entity.DesignViewSide:
+		// The board read a side view and could not tell the flank (101 Q2): «side photo», no flank
+		// claimed — before this it fell to «reference photo» and lost that it shows a side at all.
+		return "SIDE", "side photo"
 	case entity.DesignViewThreeQuarterL:
 		return "THREE-QUARTER", "three-quarter photo from the wearer's left"
 	case entity.DesignViewThreeQuarterR:
@@ -283,6 +287,8 @@ func flatRefCaption(r inputRef) string {
 		line = "side photo (wearer's left flank)"
 	case entity.DesignViewSideR:
 		line = "side photo (wearer's right flank)"
+	case entity.DesignViewSide:
+		line = "side photo"
 	case entity.DesignViewThreeQuarterL:
 		line = "three-quarter photo (from the wearer's left)"
 	case entity.DesignViewThreeQuarterR:

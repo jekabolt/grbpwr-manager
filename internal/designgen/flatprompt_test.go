@@ -205,3 +205,35 @@ func TestFlatSaysWhichViewsNoPhotoShows(t *testing.T) {
 	hand := []refCaption{{IsStructure: true, StructView: "front"}, {IsStructure: true, StructView: "back"}}
 	require.Equal(t, "- no photo shows the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, hand))
 }
+
+// M3 (07.10, 104-PROMPT-LOOP): the garment identification asks for the photos' COUNT and weighs a missing element
+// the same as an added one. The sentence it replaced («when unsure, leave it out: a missing line is a small error»)
+// made missing the main error; it must not come back by an edit that «softens» the counting line.
+func TestFlatIdentifyCountsAndWeighsMissingLikeAdded(t *testing.T) {
+	const counting = "Count what the photos show — buttons, pockets, seams, panels, vents — and draw exactly that many: a missing element and an added element are equally wrong."
+	got := flatCraft(runParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: "one"}, nil, 2)
+	require.Contains(t, got, counting)
+	require.NotContains(t, got, "leave it out")
+	require.NotContains(t, got, "a missing line is a small error")
+	// Words-only and detail runs keep their own identification.
+	require.NotContains(t, flatCraft(runParams{Views: []string{"front"}, Layout: "one"}, nil, 0), counting)
+	require.NotContains(t, flatCraft(runParams{Views: []string{"detail"}, Layout: "one"}, []string{"collar"}, 1), counting)
+}
+
+// TestFlatNamesASideOfUnknownFlank — the board labels a side photo whose flank it cannot tell `side`
+// (101 Q2). The flat prompt names it a side photo (not «reference photo» / the raw word), lets it guide
+// the side views, and does not claim that no photo shows a side.
+func TestFlatNamesASideOfUnknownFlank(t *testing.T) {
+	label, words := flatPhotoRole(entity.DesignViewSide)
+	require.Equal(t, "SIDE", label)
+	require.Equal(t, "side photo", words)
+	require.Equal(t, "side photo", flatRefCaption(inputRef{Role: entity.DesignViewSide}))
+
+	four := []string{"front", "back", "side_l", "side_r"}
+	refs := []refCaption{{FromRef: true, Role: "front"}, {FromRef: true, Role: "back"}, {FromRef: true, Role: entity.DesignViewSide}}
+	require.Equal(t, "", flatMissingViewsLine(four, refs))
+	require.Equal(t, "- no photo shows the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, refs[:2]))
+
+	para := flatPhotoRolesParagraph(refs, nil, "the photos")
+	require.Contains(t, para, "- Image 3 — SIDE FIT AND DETAIL AUTHORITY only (side photo); never a source of construction; mirror its depth profile to the side views you derive.")
+}
