@@ -131,11 +131,12 @@ func joinsAtNeck(n string) bool {
 	return ok && t <= joinsAtNeckT
 }
 
-// joinsNeckEndsHug — an end of the neck item that may be told it hugs the base of the neck: any
-// plain landmark (the list's own words), or a point between two landmarks only when it is AT a neck
-// point. An interpolated end further out does not hug the neck (M1).
+// joinsNeckEndsHug — an end of the neck item that may be told it hugs the base of the neck: a neck
+// point (or within joinsAtNeckT of one) or the base of the neck at the side (NECK_SIDE_x). An end
+// anywhere else — out on the shoulder line, at a shoulder tip — does not hug the neck (M1).
 func joinsNeckEndsHug(n string) bool {
-	return !strings.Contains(n, "..") || joinsAtNeck(n)
+	n = strings.TrimSpace(n)
+	return joinsAtNeck(n) || (strings.HasPrefix(n, "NECK_SIDE_") && !strings.Contains(n, ".."))
 }
 
 // joinsPct — 0.3 → «30%».

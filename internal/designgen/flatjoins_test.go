@@ -186,6 +186,10 @@ func TestJoinsNeckSentencesAtTheirPoints(t *testing.T) {
 	if !strings.Contains(neck(entity.DesignJoinKindBinding), "HIGH CREW") {
 		t.Fatal("a crew neck binding names its shape")
 	}
+	tips := entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{{ID: "n", Kind: entity.DesignJoinKindBinding, From: "SP_R", Via: []string{"CFN"}, To: "SP_L", Type: "crew"}}}
+	if got := strings.Join(joinsSentences(tips), "\n"); strings.Contains(got, "hugging the base of the neck") || !strings.Contains(got, "away from the base of the neck") {
+		t.Fatalf("a crew binding ending at the shoulder tips does not hug the neck:\n%s", got)
+	}
 	if strings.Contains(neck(entity.DesignJoinKindSeam), "CREW") {
 		t.Fatal("a neck seam never names a neckline shape")
 	}
