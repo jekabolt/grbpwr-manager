@@ -3767,15 +3767,6 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	if refs, ok := designFlatStructureRefs(src, out.Refs); ok {
 		out.Refs = refs
 	}
-	// A FLAT GARMENT SHEET WITH NOTHING TO DRAW FROM is refused before any money (Codex review): no
-	// photo with a side role and no construction words would buy a generic flat of nobody's garment.
-	// A fix and a detail run carry bench plates (checked by their own doors) and are not asked here.
-	if src.Kind == entity.DesignRunKindFlat && len(out.Refs) == 0 && strings.TrimSpace(out.GarmentNote) == "" &&
-		designgen.FlatIsGarmentSheet(src.Params.GetViews(), src.Params.GetLayout()) && !designFlatIsFix(src.Params) {
-		return nil, designRefusal(codes.FailedPrecondition, "flat_nothing_to_draw",
-			"a flat needs at least one garment photo with a side role (front, back, side) or a description of its construction; nothing was reserved and nothing was charged",
-			nil)
-	}
 	if len(out.Refs) > designMaxInputRefs {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"a run may carry %d reference images; this one has %d", designMaxInputRefs, len(out.Refs))
@@ -3810,6 +3801,16 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	if asked > designMaxInputSlots {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"a run may ask for %d empty detail slots; this one asks for %d", designMaxInputSlots, asked)
+	}
+	// A FLAT GARMENT SHEET WITH NO PICTURE TO DRAW FROM is refused before any money (Codex review, wave
+	// 10): the words are only the garment class now, so a sheet with no roled photo, no hand-drawn flat
+	// and no bench plate would buy a generic drawing of nobody's garment. A fix carries its plate; a
+	// detail run reads the accepted FRONT/BACK flats (the client refuses it without them, views_first).
+	if src.Kind == entity.DesignRunKindFlat && !designFlatIsFix(src.Params) && len(out.Refs) == 0 && plates == 0 &&
+		designgen.FlatIsGarmentSheet(src.Params.GetViews(), src.Params.GetLayout()) {
+		return nil, designRefusal(codes.FailedPrecondition, "flat_nothing_to_draw",
+			"a flat needs at least one garment photo with a side role (front, back, side), or the accepted front and back flats for a detail; nothing was reserved and nothing was charged",
+			nil)
 	}
 	return out, nil
 }

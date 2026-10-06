@@ -73,7 +73,7 @@ const (
 	flatTraceKeep    = "- keep every edge, band, strap, seam, hem and dashed line exactly where %IMG% has it, with the same proportions and the same position of each view;"
 	flatTraceAddNone = "- do not add ANY line, edge, band, panel, neckline, shoulder, seam or detail that is not in %IMG%; open areas stay plain white;"
 	flatTraceRemove  = "- do not remove or straighten anything; where %IMG% shows a strap, the finished drawing shows a strap of the same width in the same place."
-	flatTraceRender  = "Improve only the rendering: uniform precise vector-style line work, heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching; subtle body-form shaping of the outline following the given silhouette; cloth drawn white."
+	flatTraceRender  = "Improve only the rendering: uniform precise vector-style line work, heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching; the outline follows the given silhouette exactly; cloth drawn white."
 
 	// 61-CODEX-ROUTE out/cx8/prompt-role.txt, generalised.
 	flatRolesHead  = "Input roles are strict and non-interchangeable:"

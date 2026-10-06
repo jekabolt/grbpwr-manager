@@ -43,7 +43,8 @@ const (
 	flatExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
 
 	// Эталон 2 — one enlarged construction detail.
-	flatIdentifyDetail = "Automatically identify what the detail is (seam, closure, strap, collar, cuff, pocket, hem, binding, hardware, etc.) and reproduce it exactly as constructed: layer order, seam placement, stitch rows, folds, edge finishes, hardware shape and proportions, closure mechanics, and the exact way it attaches to the surrounding panels. Ignore the model, pose, background, lighting, fabric color and texture of the reference; extract only the construction."
+	// Wave 10 (Codex): visible-only, like the garment line — the old checklist invited invented seams/layers/hardware.
+	flatIdentifyDetail = "Reproduce the detail exactly as it is visible in the reference photos and the accepted flats; do not add any seam, layer, stitch row, fold or hardware that is not visible. Ignore the model, pose, background, lighting, fabric color and texture of the photos; draw only the detail."
 
 	flatStyleDetail = "Style: black vector line art on a plain white background. Heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching. Flat, technical, true proportions. No human body, no mannequin, no hanger."
 
@@ -193,7 +194,7 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 const (
 	flatIdentifyGarmentNoRef = "Draw exactly what the words above state; do not add any seam, dart, pocket, vent or detail they do not name."
 
-	flatIdentifyDetailNoRef = "Reproduce it exactly as constructed: layer order, seam placement, stitch rows, folds, edge finishes, hardware shape and proportions, closure mechanics, and the exact way it attaches to the surrounding panels."
+	flatIdentifyDetailNoRef = "Draw the detail exactly as the words above and the accepted flats show it; add nothing they do not show."
 )
 
 // flatIntro is the opening sentence, aimed at what the run actually has: the reference image, the
