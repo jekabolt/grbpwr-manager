@@ -46,7 +46,7 @@ var targetPic = designBoardPicture{MediaID: 124, Purpose: entity.TechCardMediaRo
 
 func TestBoardLabelLadderCheapSureTakesTheView(t *testing.T) {
 	ai := newFakeBoardAI()
-	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"purpose":"target","view":"back","confidence":0.92,"lr_sure":true}`}
+	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"purpose":"target","view":"back","confidence":0.92}`}
 	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "https://cdn.test/124.jpg")
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignViewBack, got.Role)
@@ -56,18 +56,26 @@ func TestBoardLabelLadderCheapSureTakesTheView(t *testing.T) {
 	require.Equal(t, []string{entity.AIPurposeBoardLabel}, ai.calls, "a sure cheap answer never pays the strong model")
 }
 
-func TestBoardLabelLadderSideWithoutLRIsSide(t *testing.T) {
-	ai := newFakeBoardAI()
-	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"view":"side_l","confidence":0.85,"lr_sure":false}`}
-	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
-	require.NoError(t, err)
-	require.Equal(t, entity.DesignViewSide, got.Role, "L/R not sure → `side`, no question (101 Q2)")
+func TestBoardLabelLadderSideFlankIsComputed(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"view":"side","faces":"left","confidence":0.9}`:   entity.DesignViewSideL, // front → picture's left = wearer's left flank
+		`{"view":"side","faces":"right","confidence":0.9}`:  entity.DesignViewSideR,
+		`{"view":"side","confidence":0.9}`:                  entity.DesignViewSide, // no direction → `side`, no question (101 Q2)
+		`{"view":"side_r","confidence":0.9}`:                entity.DesignViewSide, // the model's own flank word is not trusted
+		`{"view":"side_r","faces":"left","confidence":0.9}`: entity.DesignViewSideL,
+	} {
+		ai := newFakeBoardAI()
+		ai.answers[entity.AIPurposeBoardLabel] = []string{raw}
+		got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
+		require.NoError(t, err)
+		require.Equal(t, want, got.Role, raw)
+	}
 }
 
 func TestBoardLabelLadderUnclearEscalatesToStrong(t *testing.T) {
 	ai := newFakeBoardAI()
 	ai.answers[entity.AIPurposeBoardLabel] = []string{`{"view":"unclear","confidence":0.3}`}
-	ai.answers[entity.AIPurposeBoardRead] = []string{"```json\n{\"view\":\"side_r\",\"confidence\":0.8,\"lr_sure\":true,\"why\":\"front points right\"}\n```"}
+	ai.answers[entity.AIPurposeBoardRead] = []string{"I think side_l.\n```json\n{\"view\":\"side\",\"faces\":\"left\",\"confidence\":0.5}\n```\nWait — final:\n{\"view\":\"side\",\"faces\":\"right\",\"confidence\":0.8,\"why\":\"front points right\"}"}
 	got, err := designBoardLabelLadder(context.Background(), ai, targetPic, "u")
 	require.NoError(t, err)
 	require.Equal(t, entity.DesignViewSideR, got.Role)
@@ -198,12 +206,12 @@ func TestDesignRunRefsTravelRule(t *testing.T) {
 }
 
 func TestParseBoardLabelAnswerLenient(t *testing.T) {
-	a, ok := entity.ParseDesignBoardLabelAnswer(`{"purpose":"Target","view":"Left Side","confidence":"85","lr_sure":"true"}`)
+	a, ok := entity.ParseDesignBoardLabelAnswer(`{"purpose":"Target","view":"Left Side","faces":"Left","confidence":"85"}`)
 	require.True(t, ok)
 	require.Equal(t, "target", a.Purpose)
-	require.Equal(t, entity.DesignViewSideL, a.View)
+	require.Equal(t, entity.DesignViewSide, a.View)
+	require.Equal(t, entity.DesignViewSideL, a.ResolvedView())
 	require.InDelta(t, 0.85, a.Confidence, 1e-9)
-	require.True(t, a.LRSure)
 
 	a, ok = entity.ParseDesignBoardLabelAnswer(`{"view":"three-quarter","confidence":2}`)
 	require.True(t, ok)

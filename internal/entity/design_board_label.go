@@ -110,31 +110,47 @@ func IsDesignProposedPurpose(v string) bool {
 
 // DesignBoardLabelAnswer — the parsed JSON of a board label / board read call. Lenient by design: a
 // field the model got wrong is dropped to its zero value rather than failing the whole answer.
+//
+// LEFT / RIGHT IS NOT ASKED OF THE MODEL, it is COMPUTED (measured 07.10 on cards 38 and 51: flash-lite
+// named the two left flanks side_l and side_r with confidence 1.0 and lr_sure true; sonnet argued
+// itself in circles). A model answers a question it sees — which edge of the picture the garment's
+// front points to (`faces`) — and the flank follows from geometry: the camera sees the wearer's LEFT
+// flank exactly when the front points to the picture's LEFT edge (ResolvedView).
 type DesignBoardLabelAnswer struct {
 	Purpose    string  // target | detail | mood | material | ''
-	View       string  // front | back | side_l | side_r | side | unclear | ''
+	View       string  // front | back | side | unclear | '' (a model's side_l / side_r is read as side)
+	Faces      string  // a side view: left | right | '' — the picture edge the garment's front points to
 	Confidence float64 // 0..1
-	LRSure     bool
-	Why        string // ≤ 12 words; the strong model's reason (model_caption)
+	Why        string  // ≤ 16 words; the strong model's reason (model_caption)
 	// Detail read (101 §2.5): an existing slot id, or 0 with Slot == "new".
-	Slot      string
-	SlotID    int
-	Name      string
-	Caption   string
-	HasLRSure bool
+	Slot    string
+	SlotID  int
+	Name    string
+	Caption string
 }
 
-// ParseDesignBoardLabelAnswer reads the model's JSON object (code fences and prose around it are
-// tolerated — the first {...} is taken). ok=false only when no object can be read at all.
+// ResolvedView — the label word of the answer: a side view becomes side_l / side_r by where its front
+// points, else `side` (101 Q2: no question asked for L/R).
+func (a DesignBoardLabelAnswer) ResolvedView() string {
+	if a.View != DesignViewSide {
+		return a.View
+	}
+	switch a.Faces {
+	case "left":
+		return DesignViewSideL
+	case "right":
+		return DesignViewSideR
+	}
+	return DesignViewSide
+}
+
+// ParseDesignBoardLabelAnswer reads the model's JSON object. Code fences and prose around it are
+// tolerated, and when the answer holds several objects (a model «correcting» itself) the LAST one that
+// parses wins. ok=false only when no object can be read at all.
 func ParseDesignBoardLabelAnswer(raw string) (DesignBoardLabelAnswer, bool) {
 	var out DesignBoardLabelAnswer
-	s := strings.TrimSpace(raw)
-	i, j := strings.Index(s, "{"), strings.LastIndex(s, "}")
-	if i < 0 || j <= i {
-		return out, false
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(s[i:j+1]), &m); err != nil {
+	m, ok := lastJSONObject(raw)
+	if !ok {
 		return out, false
 	}
 	str := func(k string) string {
@@ -155,6 +171,10 @@ func ParseDesignBoardLabelAnswer(raw string) (DesignBoardLabelAnswer, bool) {
 		out.Purpose = ""
 	}
 	out.View = normaliseDesignLabelView(str("view"))
+	switch f := strings.ToLower(str("faces")); f {
+	case "left", "right":
+		out.Faces = f
+	}
 	switch c := m["confidence"].(type) {
 	case float64:
 		out.Confidence = c
@@ -166,12 +186,6 @@ func ParseDesignBoardLabelAnswer(raw string) (DesignBoardLabelAnswer, bool) {
 	}
 	if out.Confidence < 0 || out.Confidence > 1 {
 		out.Confidence = 0
-	}
-	switch b := m["lr_sure"].(type) {
-	case bool:
-		out.LRSure, out.HasLRSure = b, true
-	case string:
-		out.LRSure, out.HasLRSure = strings.EqualFold(strings.TrimSpace(b), "true"), true
 	}
 	out.Why = designLabelWords(str("why"), 16)
 	out.Caption = designLabelWords(str("caption"), 60)
@@ -192,18 +206,59 @@ func ParseDesignBoardLabelAnswer(raw string) (DesignBoardLabelAnswer, bool) {
 	return out, true
 }
 
-// normaliseDesignLabelView maps the model's spelling onto the label vocabulary; anything else is
-// `unclear`.
+// lastJSONObject — the last balanced {...} in s that decodes as an object (string-aware brace scan).
+func lastJSONObject(s string) (map[string]any, bool) {
+	var found map[string]any
+	ok := false
+	for start := 0; start < len(s); start++ {
+		if s[start] != '{' {
+			continue
+		}
+		depth, inStr, esc := 0, false, false
+		for i := start; i < len(s); i++ {
+			c := s[i]
+			if inStr {
+				switch {
+				case esc:
+					esc = false
+				case c == '\\':
+					esc = true
+				case c == '"':
+					inStr = false
+				}
+				continue
+			}
+			if c == '"' {
+				inStr = true
+			} else if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+				if depth == 0 {
+					var m map[string]any
+					if json.Unmarshal([]byte(s[start:i+1]), &m) == nil {
+						found, ok = m, true
+						start = i
+					}
+					break
+				}
+			}
+		}
+	}
+	return found, ok
+}
+
+// normaliseDesignLabelView maps the model's spelling onto front / back / side / unclear. A model's own
+// side_l / side_r / «left side» is read as `side`: the flank is computed from `faces`, never taken
+// from the model's word for it.
 func normaliseDesignLabelView(v string) string {
 	t := strings.ToLower(strings.TrimSpace(v))
 	t = strings.NewReplacer(" ", "_", "-", "_").Replace(t)
 	switch t {
-	case DesignViewFront, DesignViewBack, DesignViewSideL, DesignViewSideR, DesignViewSide:
+	case DesignViewFront, DesignViewBack, DesignViewSide:
 		return t
-	case "left", "left_side", "side_left":
-		return DesignViewSideL
-	case "right", "right_side", "side_right":
-		return DesignViewSideR
+	case DesignViewSideL, DesignViewSideR, "left", "right", "left_side", "right_side", "side_left", "side_right", "profile":
+		return DesignViewSide
 	}
 	return "unclear"
 }

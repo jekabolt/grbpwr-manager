@@ -8,7 +8,7 @@ package admin
 // board and, if needed, corrects one word on the tile.
 //
 // THE LADDER, per picture (designBoardLabelLadder):
-//  1. chat.board_label (cheap, flash-lite): {purpose, view, confidence, lr_sure}; a picture whose
+//  1. chat.board_label (cheap, flash-lite): {purpose, view, faces, confidence}; a picture whose
 //     purpose the form already states gets it as a given and answers the view only;
 //  2. a target whose view the cheap model is not sure of → chat.board_read (sonnet-5.5): {view,
 //     confidence, why}; sure → the view; not sure → `unsure` (empty role, never travels) and the
@@ -53,21 +53,20 @@ const (
 	designBoardResyncEvery = 10 * time.Minute
 )
 
-// designBoardViewRules — the view vocabulary, ONE text for both models, so the cheap and the strong
-// read «side_l» the same way. The convention is the wearer's, as the flat prompt says it («side photo,
-// the wearer's LEFT flank»).
+// designBoardViewRules — the view vocabulary, ONE text for both models. LEFT / RIGHT IS NOT ASKED: the
+// model says where the garment's front points in the picture (`faces`) and the flank is computed
+// (entity.DesignBoardLabelAnswer.ResolvedView) — measured 07.10, both models named two identical left
+// flanks once left and once right when asked for the flank itself.
 const designBoardViewRules = `view — which side of the garment faces the camera:
 - "front": the front of the garment (its face side: the opening, the buttons, the neckline, the fly);
 - "back": the back of the garment;
-- "side_l": the garment's own LEFT side (the wearer's left flank) faces the camera — the front of the garment points to the LEFT edge of the picture;
-- "side_r": the garment's own RIGHT side (the wearer's right flank) faces the camera — the front of the garment points to the RIGHT edge of the picture;
-- "side": a side view where you cannot tell left from right;
+- "side": a side (profile) view;
 - "unclear": a three-quarter angle, several views in one picture, a folded or crumpled garment you cannot orient, or you are not sure.
-lr_sure — for "side_l" / "side_r": true only when you are sure which side it is.`
+faces — for a "side" view only: the edge of the PICTURE the front of the garment (the wearer's face, chest, toes) points to: "left" or "right". Look at the picture, not at the wearer's body.`
 
 const designBoardLabelSystemPrompt = `You label ONE picture from a fashion designer's moodboard for a garment being designed.
 Reply with ONE JSON object and nothing else:
-{"purpose": "target" | "detail" | "material" | "mood", "view": "front" | "back" | "side_l" | "side_r" | "side" | "unclear", "confidence": 0.0-1.0, "lr_sure": true | false}
+{"purpose": "target" | "detail" | "material" | "mood", "view": "front" | "back" | "side" | "unclear", "faces": "left" | "right" | "", "confidence": 0.0-1.0}
 
 purpose — what the picture is for:
 - "target": the whole garment (or most of it) is the subject — a product photo, a photo of it worn where the garment is clearly the subject, a sketch or a technical flat of it;
@@ -80,7 +79,7 @@ confidence — 0..1, how sure you are of the view (of the purpose, for a picture
 
 const designBoardReadViewSystemPrompt = `You decide which view of a garment ONE picture shows. The designer marked the picture as the garment being designed.
 Reply with ONE JSON object and nothing else:
-{"view": "front" | "back" | "side_l" | "side_r" | "side" | "unclear", "confidence": 0.0-1.0, "lr_sure": true | false, "why": "at most 12 words"}
+{"view": "front" | "back" | "side" | "unclear", "faces": "left" | "right" | "", "confidence": 0.0-1.0, "why": "at most 12 words"}
 
 ` + designBoardViewRules + `
 Answer "unclear" only when the picture really does not show one view of the garment; then say why in "why".
@@ -272,16 +271,13 @@ func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic desi
 	return out, nil
 }
 
-// designBoardSureView — the view a model answer settles at this confidence: a side the model is not
-// sure is left or right becomes `side` (101 Q2: no question asked for L/R).
+// designBoardSureView — the view a model answer settles at this confidence; a side view's flank comes
+// from where its front points, else `side` (101 Q2: no question asked for L/R).
 func designBoardSureView(a entity.DesignBoardLabelAnswer, sure float64) (string, bool) {
 	if a.View == "" || a.View == "unclear" || a.Confidence < sure {
 		return "", false
 	}
-	if (a.View == entity.DesignViewSideL || a.View == entity.DesignViewSideR) && a.HasLRSure && !a.LRSure {
-		return entity.DesignViewSide, true
-	}
-	return a.View, true
+	return a.ResolvedView(), true
 }
 
 // ─── the sync: one goroutine per card, re-run when a save lands while it works ───
