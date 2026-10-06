@@ -78,7 +78,10 @@ func TestQuizSpotsRoleAndWholePictureGates(t *testing.T) {
 	}
 	require.Equal(t, map[string]int{
 		"on_target": 1, "on_detail": 1, "match_a_part": 1,
-		"on_material": 0, "on_mood": 0, "on_unmarked": 0, "not_a_picture": 0, "whole_match": 0, "whole_material": 0,
+		// 06.10: the key is not a gate — pic_match on a target picture keeps its spots (the model omits
+		// spots on a whole-picture question itself); a detail picture keeps them under any key.
+		"whole_match": 1, "whole_material": 1,
+		"on_material": 0, "on_mood": 0, "on_unmarked": 0, "not_a_picture": 0,
 	}, got)
 
 	// No roles known (counted parse, no board): no spots at all.

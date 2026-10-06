@@ -18,7 +18,7 @@ import (
 // question.
 
 // designQuizSpotsRule — the FIELDS line for "spots" (99-SPOTS §3), next to "picture".
-const designQuizSpotsRule = `spots: on a picture question about a target or detail picture, the 1 to 3 places IN THAT PICTURE the question is about: {"label": the place in the question's own words (1–4 words), "x": 0–1000 from the left edge as the viewer sees it, "y": 0–1000 from the top, "scale": "zone" for a part (sleeve, yoke, the run of a hem) or "detail" for a small thing (a stitch line, a button, a label)}. Point at the centre of the place; for an edge or a seam, the middle of its visible run. Omit spots when the question is about the whole picture (silhouette, proportion, colour, fabric look, what to match) or when you cannot place it — a wrong spot is worse than none.`
+const designQuizSpotsRule = `spots: on a picture question about a target or detail picture, the 1 to 3 places IN THAT PICTURE the question is about: {"label": the place in the question's own words (1–4 words), "x": 0–1000 from the left edge as the viewer sees it, "y": 0–1000 from the top, "scale": "zone" for a part or the run of an edge, hem, binding, strap or seam (sleeve, yoke, back neckline, strap edge) or "detail" only for a small point-like thing (a button, a snap, a label, a bar tack)}. Point at the centre of the place; for an edge or a seam, the middle of its visible run. Omit spots when the question is about the whole picture (silhouette, proportion, colour, fabric look, what to match) or when you cannot place it — a wrong spot is worse than none.`
 
 const (
 	designQuizMaxSpots          = 3
@@ -29,23 +29,16 @@ const (
 	designQuizSpotMinGap = 40
 )
 
-// designQuizWholePictureAspects — picture-question aspects about the whole picture (99-SPOTS §1.2):
-// pic_<id>_match / _mood / _material carry no spots; an aspect that names a part (pic_<id>_match_collar)
-// keeps them.
-var designQuizWholePictureAspects = map[string]bool{"match": true, "mood": true, "material": true}
-
-// designQuizSpotsAllowed — the role and whole-picture gates (99-SPOTS §1.1–1.2): only a picture
-// question, only on a target or detail picture (material is a swatch, mood and unmarked pictures are
-// atmosphere), never on a whole-picture aspect.
-func designQuizSpotsAllowed(mediaID int, role entity.TechCardMediaRole, decisionKey string) bool {
+// designQuizSpotsAllowed — the role gate (99-SPOTS §1.1): only a picture question, only on a target or
+// detail picture (material is a swatch, mood and unmarked pictures are atmosphere). The whole-picture
+// gate is the model's (the rule says to omit spots then): the decision key is NOT a signal — the
+// PICTURES rule itself suggests pic_match for any target-picture question, so gating on the key
+// dropped the spots of nearly every target question on beta (owner, 06.10: «ничего не подсветило»).
+func designQuizSpotsAllowed(mediaID int, role entity.TechCardMediaRole, _ string) bool {
 	if mediaID == 0 {
 		return false
 	}
-	if role != entity.TechCardMediaRoleTarget && role != entity.TechCardMediaRoleDetail {
-		return false
-	}
-	aspect := strings.TrimPrefix(decisionKey, "pic_"+strconv.Itoa(mediaID)+"_")
-	return !designQuizWholePictureAspects[aspect]
+	return role == entity.TechCardMediaRoleTarget || role == entity.TechCardMediaRoleDetail
 }
 
 // designQuizRawSpots reads the model's "spots" leniently: a list of objects whose numbers may be
