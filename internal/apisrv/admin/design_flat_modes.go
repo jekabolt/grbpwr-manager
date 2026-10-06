@@ -174,6 +174,12 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	if parent != nil {
 		return nil
 	}
+	// WAVE 10 (owner 06.10, 100-CONSTRUCTION-DEADEND): the join list does not reach the image model
+	// (designgen.FlatPromptCarriesConstruction), so its state must not gate a press either — a straps
+	// press is the photos route. The gate comes back with the switch.
+	if !designgen.FlatPromptCarriesConstruction {
+		return nil
+	}
 	cur, usable, confirmed := 0, false, false
 	if band != nil && band.Joins != nil {
 		cur = band.Joins.Rev

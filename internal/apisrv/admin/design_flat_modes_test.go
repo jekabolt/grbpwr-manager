@@ -62,6 +62,9 @@ func bandWithJoins(rev int, confirmed bool) *entity.DesignBand {
 // MUTATIONS IT CATCHES: the gate checking only `Confirmed`; the fingerprint ignoring a role, a note or
 // the garment note; the legacy fallback missing (every old confirmation stale) or always passing.
 func TestStrapsDoorRefusesAStaleConfirmation(t *testing.T) {
+	// the gate stands only while the join list reaches the prompt (wave 10 switch)
+	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
+	designgen.FlatPromptCarriesConstruction = true
 	card := &entity.TechCard{}
 	refs := []entity.DesignReference{{MediaId: 5, Role: "front"}, {MediaId: 6, Role: "back"}}
 	confirmedNow := func() *entity.DesignBand {
@@ -132,6 +135,9 @@ func TestJoinsFlightKeySeparatesForce(t *testing.T) {
 }
 
 func TestFlatModeDoorRefusals(t *testing.T) {
+	// the gate stands only while the join list reaches the prompt (wave 10 switch)
+	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
+	designgen.FlatPromptCarriesConstruction = true
 	card := &entity.TechCard{}
 	card.Media = []entity.TechCardMediaItem{
 		{MediaId: 70, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
@@ -393,4 +399,13 @@ func TestHandFlatWithOnlyItsFlatsIsNotRefused(t *testing.T) {
 	_, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{},
 		Params: flatParamsOf("hand_flat", sref(70, "front_flat"))})
 	require.NoError(t, err)
+}
+
+// TestStrapsIsNotGatedWithoutConstruction — wave 10: with the join list out of the prompt, its state
+// (missing, unconfirmed, stale) does not refuse a press.
+func TestStrapsIsNotGatedWithoutConstruction(t *testing.T) {
+	require.False(t, designgen.FlatPromptCarriesConstruction)
+	card := &entity.TechCard{}
+	require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, bandWithJoins(3, false), card))
+	require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, &entity.DesignBand{}, card))
 }
