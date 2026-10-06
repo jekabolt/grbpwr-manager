@@ -349,3 +349,54 @@ func designFlatModeKeepsSlots(src designInputSources) bool {
 	mode, _ := designFlatModeOf(src.Params)
 	return mode != designgen.FlatModeHandFlat || designFlatIsFix(src.Params)
 }
+
+// designFlatIsDetailRun — a FLAT asked for details only: every view is `detail` (one per named
+// detail) and the details are named by slot id. The one predicate the detail-reference filter keys on.
+func designFlatIsDetailRun(kind string, params *pb_common.DesignRunParams) bool {
+	if kind != entity.DesignRunKindFlat || len(params.GetDetailSlotIds()) == 0 || len(params.GetViews()) == 0 {
+		return false
+	}
+	for _, v := range params.GetViews() {
+		if v != entity.DesignViewDetail {
+			return false
+		}
+	}
+	return true
+}
+
+// designFlatDetailOnlyItsRefs — A DETAIL RUN GETS ONLY THE PICTURES OF THAT DETAIL (owner 06.10, T74:
+// «если мы генерим деталь то в промпт не обязательно сыпать все картинки а только те что относятся к
+// детали»). A reference travels only when its role is `detail` AND its design_reference row ties it
+// (detail_slot_id, 0360) to one of the requested slots. Front/back/side photos, other details'
+// pictures, a `detail` reference tied to no slot, mood and extras are dropped. No match → no refs:
+// the accepted FRONT/BACK bench flats still travel as slots and give the silhouette. Frozen into the
+// snapshot, so the run's history shows exactly what was sent. Other runs keep their refs.
+func designFlatDetailOnlyItsRefs(src designInputSources, refs []*pb_common.DesignInputRef) []*pb_common.DesignInputRef {
+	if !designFlatIsDetailRun(src.Kind, src.Params) {
+		return refs
+	}
+	asked := make(map[int32]struct{}, len(src.Params.GetDetailSlotIds()))
+	for _, id := range src.Params.GetDetailSlotIds() {
+		asked[id] = struct{}{}
+	}
+	tied := make(map[int32]struct{}, len(src.Refs))
+	for _, r := range src.Refs {
+		if r.Role != entity.DesignViewDetail || !r.DetailSlotId.Valid {
+			continue
+		}
+		if _, ok := asked[r.DetailSlotId.Int32]; ok {
+			tied[int32(r.MediaId)] = struct{}{}
+		}
+	}
+	out := make([]*pb_common.DesignInputRef, 0, len(tied))
+	for _, r := range refs {
+		if strings.TrimSpace(r.GetRole()) != entity.DesignViewDetail {
+			continue
+		}
+		if _, ok := tied[r.GetMediaId()]; !ok {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}

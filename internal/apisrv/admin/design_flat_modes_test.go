@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -393,4 +394,42 @@ func TestHandFlatWithOnlyItsFlatsIsNotRefused(t *testing.T) {
 	_, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{},
 		Params: flatParamsOf("hand_flat", sref(70, "front_flat"))})
 	require.NoError(t, err)
+}
+
+// TestFlatDetailRunSendsOnlyThatDetailsRefs — T74 (owner 06.10): a detail run's snapshot carries only
+// the `detail` references tied to the requested slot; sides, other details, untied details, mood and
+// extras stay out. No tied reference → no refs. A garment-sheet run keeps them all.
+func TestFlatDetailRunSendsOnlyThatDetailsRefs(t *testing.T) {
+	slot := func(id int32) sql.NullInt32 { return sql.NullInt32{Int32: id, Valid: true} }
+	refs := []entity.DesignReference{
+		{MediaId: 1, Role: "front"},
+		{MediaId: 2, Role: "back"},
+		{MediaId: 3, Role: "detail", DetailSlotId: slot(11)},
+		{MediaId: 4, Role: "detail", DetailSlotId: slot(12)},
+		{MediaId: 5, Role: "detail"},
+		{MediaId: 6, Role: "mood"},
+		{MediaId: 7, Role: "detail", DetailSlotId: slot(11)},
+	}
+	ids := func(in *pb_common.DesignInputSnapshot) []int32 {
+		var out []int32
+		for _, r := range in.GetRefs() {
+			out = append(out, r.GetMediaId())
+		}
+		return out
+	}
+	detail := &pb_common.DesignRunParams{Views: []string{"detail"}, Layout: designLayoutOne,
+		DetailSlotIds: []int32{11}, ExtraInputMediaIds: []int32{9}}
+	got, err := designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{}, Params: detail, Refs: refs})
+	require.NoError(t, err)
+	require.Equal(t, []int32{3, 7}, ids(got))
+
+	detail.DetailSlotIds = []int32{13}
+	got, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{}, Params: detail, Refs: refs})
+	require.NoError(t, err)
+	require.Empty(t, got.GetRefs(), "no reference tied to the asked detail → none sent")
+
+	sheet := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
+	got, err = designAssembleInputs(designInputSources{Kind: entity.DesignRunKindFlat, Card: &entity.TechCard{}, Params: sheet, Refs: refs})
+	require.NoError(t, err)
+	require.Equal(t, []int32{1, 2, 3, 4, 5, 7}, ids(got), "non-detail runs unchanged")
 }
