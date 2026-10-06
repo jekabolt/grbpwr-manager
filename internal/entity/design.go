@@ -1313,6 +1313,12 @@ var (
 	// В плане этот отказ не назван; он добавлен, потому что иначе единственный законный ответ
 	// на «удали front» — молчаливое удаление стороны, которую слот-адрес обязан переживать.
 	ErrDesignNotADetailSlot = errors.New("design: not_a_detail_slot")
+	// SetDesignDetailKept (0400): the slot is not a FLAT detail / holds no plate / is not stale; the
+	// views changed under the person (against_run_id is not the current views run).
+	ErrDesignNotAFlatDetail = errors.New("design: not_a_flat_detail")
+	ErrDesignDetailEmpty    = errors.New("design: detail_empty")
+	ErrDesignDetailNotStale = errors.New("design: detail_not_stale")
+	ErrDesignViewsChanged   = errors.New("design: views_changed")
 	// ErrDesignInSlot / ErrDesignLiveRunInput / ErrDesignLiveCropParent — три сторожа
 	// HidePicture. Читаются в ТОЙ ЖЕ транзакции, что и UPDATE, иначе TOCTOU.
 	ErrDesignInSlot         = errors.New("design: in_slot")
@@ -1634,6 +1640,90 @@ type DesignBenchSlot struct {
 	// отсутствующего: он выглядит покрытием.
 	RunKind string `db:"-"`
 	RunRrev int    `db:"-"`
+
+	// THE «KEEP» OF A STALE FLAT DETAIL (0400, 82-INPUT-REDESIGN §5). Stored against the views run
+	// and the detail plate it was made on; it holds only while both are still current
+	// (ApplyDesignDetailStaleness), so no writer ever has to clear it.
+	KeptRunId     sql.NullInt32 `db:"kept_run_id"`
+	KeptPictureId sql.NullInt32 `db:"kept_picture_id"`
+	KeptBy        string        `db:"kept_by"`
+	KeptAt        sql.NullTime  `db:"kept_at"`
+	// Computed by ApplyDesignDetailStaleness over the whole bench; false / 0 until it ran.
+	Stale             bool `db:"-"`
+	Kept              bool `db:"-"`
+	StaleAgainstRunId int  `db:"-"`
+}
+
+// DesignViewsRunId — the run the card's current flat VIEWS came out of: the run of the FRONT flat
+// plate, or of the BACK one when the front slot is empty. 0 when neither holds a plate, or when the
+// plate standing there has no run (an upload) — nothing can be stale against an upload.
+func DesignViewsRunId(bench []DesignBenchSlot) int {
+	plateRun := func(view string) (int, bool) {
+		for _, sl := range bench {
+			if sl.ViewKey != view || DesignKindOrFlat(sl.Kind) != DesignPictureKindFlat || DesignColorwayOrNone(sl.ColorwayId) != 0 {
+				continue
+			}
+			if sl.Picture == nil || !sl.PictureId.Valid || sl.PictureId.Int32 <= 0 {
+				return 0, false
+			}
+			if !sl.Picture.RunId.Valid {
+				return 0, true
+			}
+			return int(sl.Picture.RunId.Int32), true
+		}
+		return 0, false
+	}
+	if run, filled := plateRun(DesignViewFront); filled {
+		return run
+	}
+	run, _ := plateRun(DesignViewBack)
+	return run
+}
+
+// IsDesignFlatDetailSlot — a detail slot of the flat bench (the only slots that can be stale).
+func IsDesignFlatDetailSlot(sl DesignBenchSlot) bool {
+	return sl.ViewKey == DesignViewDetail && DesignKindOrFlat(sl.Kind) == DesignPictureKindFlat
+}
+
+// ApplyDesignDetailStaleness fills Stale / Kept / StaleAgainstRunId on every flat detail slot of ONE
+// card's whole bench (the rule needs the front/back slots beside the details).
+//
+// STALE: the detail's plate came out of a run with a LOWER id than the views run. design_run ids are
+// minted at creation, so «lower id» is «created earlier» without a second read of created_at. A plate
+// without a run (an upload) is never stale, and nothing is stale against views without a run.
+//
+// KEPT: stale, and the stored mark names THIS views run and THIS plate. Either changing (views drawn
+// again, the detail replaced) leaves the mark stale on its own — it is simply not read.
+func ApplyDesignDetailStaleness(bench []DesignBenchSlot) {
+	views := DesignViewsRunId(bench)
+	for i := range bench {
+		sl := &bench[i]
+		sl.Stale, sl.Kept, sl.StaleAgainstRunId = false, false, 0
+		if !IsDesignFlatDetailSlot(*sl) {
+			continue
+		}
+		sl.StaleAgainstRunId = views
+		if views <= 0 || sl.Picture == nil || !sl.PictureId.Valid || sl.PictureId.Int32 <= 0 ||
+			!sl.Picture.RunId.Valid || sl.Picture.RunId.Int32 <= 0 {
+			continue
+		}
+		if int(sl.Picture.RunId.Int32) >= views {
+			continue
+		}
+		sl.Stale = true
+		sl.Kept = sl.KeptRunId.Valid && int(sl.KeptRunId.Int32) == views &&
+			sl.KeptPictureId.Valid && sl.KeptPictureId.Int32 == sl.PictureId.Int32
+	}
+}
+
+// DesignDetailKeptSet — SetDesignDetailKept: mark (Keep) or unmark a stale flat detail.
+type DesignDetailKeptSet struct {
+	TechCardId int
+	SlotId     int
+	Keep       bool
+	// AgainstRunId — the views run the person saw (CAS); 0 = no check.
+	AgainstRunId int
+	Actor        string
 }
 
 // DesignEditLayer — строка design_edit_layer: векторная калька поверх картинки либо поверх

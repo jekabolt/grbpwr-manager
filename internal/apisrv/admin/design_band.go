@@ -72,6 +72,11 @@ var designRefusals = []struct {
 	{entity.ErrDesignDetailNameRequired, codes.FailedPrecondition, "detail_name_required"},
 	{entity.ErrDesignSlotFilled, codes.FailedPrecondition, "slot_filled"},
 	{entity.ErrDesignNotADetailSlot, codes.FailedPrecondition, "not_a_detail_slot"},
+	// SetDesignDetailKept (0400): the views moved under the person is a race (Aborted, re-read the band).
+	{entity.ErrDesignNotAFlatDetail, codes.FailedPrecondition, "not_a_flat_detail"},
+	{entity.ErrDesignDetailEmpty, codes.FailedPrecondition, "detail_empty"},
+	{entity.ErrDesignDetailNotStale, codes.FailedPrecondition, "detail_not_stale"},
+	{entity.ErrDesignViewsChanged, codes.Aborted, "views_changed"},
 	{entity.ErrDesignInSlot, codes.FailedPrecondition, "in_slot"},
 	{entity.ErrDesignLiveRunInput, codes.FailedPrecondition, "live_run_input"},
 	{entity.ErrDesignLiveCropParent, codes.FailedPrecondition, "live_crop_parent"},
@@ -483,6 +488,28 @@ func (s *Server) SetDesignBenchSlot(ctx context.Context, req *pb_admin.SetDesign
 		return nil, designError(ctx, "failed to set the design bench slot", err, designSlotDetails(slot))
 	}
 	return &pb_admin.SetDesignBenchSlotResponse{Slot: designSlotToPb(*slot)}, nil
+}
+
+// SetDesignDetailKept marks a stale flat detail kept, or takes the mark off (0400, 82-INPUT-REDESIGN
+// §5). «discard» is SetDesignBenchSlot with picture_id = 0, not this verb.
+func (s *Server) SetDesignDetailKept(ctx context.Context, req *pb_admin.SetDesignDetailKeptRequest) (*pb_admin.SetDesignDetailKeptResponse, error) {
+	if req.GetTechCardId() <= 0 || req.GetSlotId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "tech_card_id and slot_id are required")
+	}
+	if req.GetAgainstRunId() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "against_run_id must be ≥ 0")
+	}
+	slot, err := s.repo.Design().SetDetailKept(ctx, entity.DesignDetailKeptSet{
+		TechCardId:   int(req.GetTechCardId()),
+		SlotId:       int(req.GetSlotId()),
+		Keep:         req.GetKeep(),
+		AgainstRunId: int(req.GetAgainstRunId()),
+		Actor:        designActor(ctx),
+	})
+	if err != nil {
+		return nil, designError(ctx, "failed to set the kept mark of the design detail", err, nil)
+	}
+	return &pb_admin.SetDesignDetailKeptResponse{Slot: designSlotToPb(*slot)}, nil
 }
 
 // DeleteDesignDetailSlot removes an EMPTY detail slot that no version quotes.
@@ -1452,6 +1479,16 @@ func designSlotToPb(s entity.DesignBenchSlot) *pb_common.DesignBenchSlot {
 		// «здесь что-то стояло», то есть как факт, которого никто не утверждал.
 		out.RunKind = s.RunKind
 		out.RunRrev = int32(s.RunRrev)
+	}
+	// STALE FLAT DETAIL AND ITS «KEEP» (0400) — computed by the store over the whole bench.
+	out.Stale = s.Stale
+	out.Kept = s.Kept
+	out.StaleAgainstRunId = int32(s.StaleAgainstRunId)
+	if s.Kept {
+		out.KeptBy = s.KeptBy
+		if s.KeptAt.Valid {
+			out.KeptAt = timestamppb.New(s.KeptAt.Time)
+		}
 	}
 	return out
 }

@@ -80,7 +80,7 @@ func flatCraft(p runParams, detailNames []string, refs int) string {
 // side-facing convention and the list + its checks follow it. Every flat run, with a list or
 // without, ends its own words on flatNoTextNoGrey before the owner's verbatim paragraphs.
 func flatCraftWith(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc) string {
-	return flatCraftFor(p, detailNames, refs, joins, "")
+	return flatCraftFor(p, detailNames, refs, joins, "", "")
 }
 
 // flatCraftAttached — flatCraftWith over the pictures actually attached: a mood picture (a DIFFERENT
@@ -89,10 +89,43 @@ func flatCraftWith(p runParams, detailNames []string, refs int, joins *entity.De
 // is flatCraftWith byte for byte.
 func flatCraftAttached(p runParams, detailNames []string, attached []refCaption, joins *entity.DesignJoinsDoc) string {
 	mood := flatMoodSentence(attached)
-	return flatCraftFor(p, detailNames, len(attached)-len(flatMoodImages(attached)), joins, mood)
+	accepted := ""
+	if detailOnlyRun(p.Views) {
+		accepted = flatAcceptedViewsSentence(attached)
+	}
+	return flatCraftFor(p, detailNames, len(attached)-len(flatMoodImages(attached)), joins, mood, accepted)
 }
 
-func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc, mood string) string {
+// flatAcceptedViewCaption — the caption of the card's FRONT / BACK flat plate on a DETAIL run (T8,
+// owner 06.10 «детали получают готовые FRONT/BACK как вход»): not «the current state of the
+// garment» to be redrawn, but the finished views the detail has to agree with.
+func flatAcceptedViewCaption(view string) string {
+	return "this garment's accepted technical flat — " + captionView(view) + " (finished and approved; the detail must agree with it)"
+}
+
+// flatAcceptedViewsSentence — the paragraph of a detail run that carries the accepted FRONT / BACK
+// flats: which images they are and what they rule. "" when none travelled.
+func flatAcceptedViewsSentence(attached []refCaption) string {
+	var nums, views []string
+	for i, rc := range attached {
+		if rc.IsAcceptedView {
+			nums = append(nums, strconv.Itoa(i+1))
+			views = append(views, captionView(rc.View))
+		}
+	}
+	if len(nums) == 0 {
+		return ""
+	}
+	label, verb, them := "Image "+nums[0], "is this garment's accepted technical flat ("+views[0]+")", "it"
+	if len(nums) > 1 {
+		label = "Images " + strings.Join(nums[:len(nums)-1], ", ") + " and " + nums[len(nums)-1]
+		verb, them = "are this garment's accepted technical flats ("+strings.Join(views, ", ")+")", "them"
+	}
+	return label + " " + verb + " — finished and approved. The detail must agree with " + them +
+		" exactly: the same position on the garment, the same proportions, seam lines, stitch rows, layer order and construction as drawn there. Where a photo and the flats differ, follow the flats. Read the detail off the flats; do not draw the whole garment."
+}
+
+func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc, mood, accepted string) string {
 	detail := detailOnlyRun(p.Views)
 
 	identify := flatIdentifyGarment
@@ -123,6 +156,9 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 	}
 	if mood != "" {
 		paras = append(paras, mood)
+	}
+	if accepted != "" {
+		paras = append(paras, accepted)
 	}
 	paras = append(paras, layout)
 	if detail {

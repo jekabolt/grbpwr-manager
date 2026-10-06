@@ -508,6 +508,7 @@ var methodRequirements = map[string]Requirement{
 	"RegisterDesignUpload":     wr(SectionTechCards),
 	"SplitDesignPicture":       wr(SectionTechCards),
 	"SetDesignBenchSlot":       wr(SectionTechCards),
+	"SetDesignDetailKept":      wr(SectionTechCards),
 	"SetDesignReferenceRole":   wr(SectionTechCards),
 	// Полки ассетов карточки (0354): ткани, паттерны, фурнитура и их разметка на флэтах. Это
 	// ЗАПИСЬ О КАРТОЧКЕ, а не деньги: ассет ничего не тратит, он объявляет, из чего сделано

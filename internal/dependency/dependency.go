@@ -2101,6 +2101,10 @@ type (
 		// never a select-then-insert. On a mismatch it returns the slot's CURRENT state
 		// alongside the refusal so the client can show what actually stands there.
 		SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet) (*entity.DesignBenchSlot, error)
+		// SetDetailKept marks a stale flat detail kept (or unmarks it) against the current views run
+		// and plate (0400); the slot comes back with Stale / Kept recomputed. ErrDesignNotFound,
+		// ErrDesignNotAFlatDetail, ErrDesignDetailEmpty, ErrDesignDetailNotStale, ErrDesignViewsChanged.
+		SetDetailKept(ctx context.Context, req entity.DesignDetailKeptSet) (*entity.DesignBenchSlot, error)
 		// DeleteDetailSlot removes an EMPTY detail slot that no version quotes.
 		DeleteDetailSlot(ctx context.Context, slotID int) error
 		// RegisterBatch files one upload gesture as one batch plus its pictures, optionally

@@ -4168,7 +4168,15 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 	 * просьба, а не референс. Перезапуск снимок не пересобирает вовсе, поэтому старые прогоны
 	 * повторяются ровно так, как шли.
 	 */
-	if src.Kind == entity.DesignRunKindFlat && !selective && !src.Params.GetUseFlatSlots() {
+	//
+	// ⚠ ОДНО ИСКЛЮЧЕНИЕ (T8, владелец 06.10: «детали получают готовые FRONT/BACK как вход»): прогон,
+	// рисующий ТОЛЬКО детали, без `use_flat_slots` берёт FRONT и BACK флет-слоты — принятые виды
+	// изделия, с которыми деталь обязана совпасть. Это не «готовый ответ»: деталь крупным планом на
+	// виде не нарисована, её с вида читают. Боковые и прочие детали не едут. Подпись у них своя
+	// (designgen.flatAcceptedViewCaption). Реран снимок не пересобирает — старые детали повторяются
+	// как шли.
+	acceptedViews := designFlatDetailTakesViews(src.Kind, src.Params, selective)
+	if src.Kind == entity.DesignRunKindFlat && !selective && !src.Params.GetUseFlatSlots() && !acceptedViews {
 		return nil, nil
 	}
 
@@ -4212,6 +4220,9 @@ func designSelectBench(src designInputSources) ([]*pb_common.DesignInputSlot, []
 			continue
 		}
 		if slot.Picture == nil || slot.Picture.MediaId <= 0 {
+			continue
+		}
+		if acceptedViews && slot.ViewKey != entity.DesignViewFront && slot.ViewKey != entity.DesignViewBack {
 			continue
 		}
 		// ИМЕНОВАННОЕ СУЖЕНИЕ ФЛЭТ-ПЛИТ (J-10). Карта пуста на всяком маршруте, кроме флэта с
@@ -4850,6 +4861,25 @@ func designFlatDetailsOnly(params *pb_common.DesignRunParams) {
 	if len(details) < 2 {
 		params.AutoSplit = false
 	}
+}
+
+// designFlatDetailTakesViews — a NEW flat run that draws only details and did not ask for the bench
+// itself (`use_flat_slots` off) takes the card's FRONT and BACK flat plates as its accepted views
+// (T8). A selective fix narrows itself; `use_flat_slots` keeps its own meaning.
+func designFlatDetailTakesViews(kind string, params *pb_common.DesignRunParams, selective bool) bool {
+	if kind != entity.DesignRunKindFlat || selective || params.GetUseFlatSlots() {
+		return false
+	}
+	views := params.GetViews()
+	if len(views) == 0 {
+		return false
+	}
+	for _, v := range views {
+		if v != entity.DesignViewDetail {
+			return false
+		}
+	}
+	return true
 }
 
 // designFlatViewsMixDetail reports a view list that asks for at least one `detail` AND at least one

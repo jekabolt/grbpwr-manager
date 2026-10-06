@@ -3303,6 +3303,26 @@ service AdminService {
     };
   }
 
+  // SetDesignDetailKept marks a STALE flat detail as kept (keep = true) or takes the mark off (keep =
+  // false) — 82-INPUT-REDESIGN §5, owner 06.10: «keep» is stored on the server, everyone sees it.
+  //
+  // A detail is stale when its plate came out of a run OLDER than the run of the card's current
+  // FRONT flat plate (BACK when front is empty) — see common.DesignBenchSlot.stale. The mark is
+  // stored against that views run AND the detail's plate, so it clears by itself the moment either
+  // changes (new views, another detail picture). `discard` is not this verb: it is
+  // SetDesignBenchSlot with picture_id = 0 (the slot is emptied and kept, the picture stays in history).
+  //
+  // against_run_id = the stale_against_run_id the client saw (CAS); 0 = do not check.
+  // FailedPrecondition: not_a_flat_detail | detail_empty | detail_not_stale (keep only).
+  // Aborted: views_changed (against_run_id is not the current views run). NotFound: no such slot on
+  // this card. Unkeep of an unmarked slot is a no-op.
+  rpc SetDesignDetailKept(SetDesignDetailKeptRequest) returns (SetDesignDetailKeptResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/bench/{slot_id}/kept"
+      body: "*"
+    };
+  }
+
   // GetDesignQuizAnswers — every quiz answer stored on the card, in display order, plus the open
   // session's questions not yet saved (pending).
   rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
@@ -13648,6 +13668,18 @@ message SetDesignJoinsRequest {
 
 message SetDesignJoinsResponse {
   common.DesignJoins joins = 1;
+}
+
+message SetDesignDetailKeptRequest {
+  int32 tech_card_id = 1;
+  int32 slot_id = 2; // the flat DETAIL slot, design_bench_slot(id)
+  bool keep = 3; // true = mark kept; false = take the mark off
+  // The views run the client saw as stale_against_run_id (CAS); 0 = no check.
+  int32 against_run_id = 4;
+}
+
+message SetDesignDetailKeptResponse {
+  common.DesignBenchSlot slot = 1; // the slot with stale / kept recomputed
 }
 
 // AI PROVIDERS messages

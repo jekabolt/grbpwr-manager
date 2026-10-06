@@ -35,8 +35,11 @@ type runParams struct {
 	Colour             *colourRecipe `json:"colour"`
 	ExtraInputMediaIDs []int         `json:"extra_input_media_ids"`
 	DetailSlotIDs      []int         `json:"detail_slot_ids"`
-	FixTarget          string        `json:"fix_target"`
-	FixTargets         []string      `json:"fix_targets"`
+	// UseFlatSlots — the run asked for its bench plates itself; then they are NOT the accepted views
+	// of a detail run (T8), whatever they show.
+	UseFlatSlots bool     `json:"use_flat_slots"`
+	FixTarget    string   `json:"fix_target"`
+	FixTargets   []string `json:"fix_targets"`
 	// FixSlotIDs — ТРЕТЬЕ ПРАВОПИСАНИЕ СУЖЕНИЯ, и без него сборщик ссылок читал «сужен ли прогон»
 	// иначе, чем отбор плит: прогон, сузивший себя слотами, а не видами, выглядел здесь обычным.
 	FixSlotIDs []int         `json:"fix_slot_ids"`
@@ -536,6 +539,9 @@ type refCaption struct {
 	// (snapshot role front_flat / back_flat); StructView is the view it shows.
 	IsStructure bool
 	StructView  string
+	// IsAcceptedView — the card's FRONT / BACK flat plate travelling on a DETAIL run (T8): the
+	// finished views the detail must agree with (flatAcceptedViewsSentence names its number).
+	IsAcceptedView bool
 	// FromRef / Role / Note — the picture came from the snapshot's refs, with that role and note (the
 	// photo-roles paragraph of drawing_photos reads them).
 	FromRef bool
@@ -660,8 +666,20 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		seen[id] = len(out)
 		out = append(out, refCaption{MediaID: id, Caption: caption, View: view})
 	}
+	// T8: on a flat DETAIL run the silhouette plates are the garment's accepted views, not a state
+	// to redraw — their own caption, and a flag the craft paragraph numbers them by.
+	selectiveFix := entity.IsDesignSelectiveFix(p.FixTarget, p.FixTargets, p.FixSlotIDs)
+	acceptedViews := kind == entity.DesignRunKindFlat && !selectiveFix && !p.UseFlatSlots && detailOnlyRun(p.Views)
 	addSlots := func() {
 		for _, s := range slots {
+			if acceptedViews && (s.ViewKey == entity.DesignViewFront || s.ViewKey == entity.DesignViewBack) {
+				at := len(out)
+				add(s.MediaID, flatAcceptedViewCaption(s.ViewKey), s.ViewKey)
+				if at < len(out) {
+					out[at].IsAcceptedView = true
+				}
+				continue
+			}
 			add(s.MediaID, slotCaption(s), s.ViewKey)
 		}
 	}
