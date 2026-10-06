@@ -736,10 +736,12 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 				// Упсерт, а не голый INSERT — на случай, когда одно медиа названо двумя кадрами одного
 				// запроса; записка (note) НЕ перечислена и потому не затирается, если строка уже была.
 				if err := storeutil.ExecNamed(ctx, db, `
-				INSERT INTO design_reference (tech_card_id, media_id, role, ordinal, set_by, set_at)
-				VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6))
+				INSERT INTO design_reference (tech_card_id, media_id, role, ordinal, set_by, set_at, label_source, label_state)
+				VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6), 'human', 'ok')
 				ON DUPLICATE KEY UPDATE
 					role = VALUES(role),
+					-- a cut named by a person is a person's label (101)
+					label_source = 'human', label_state = 'ok',
 					-- ВТОРОЙ ПИСАТЕЛЬ РОЛИ НИКОГДА НЕ ЗНАЕТ СЛОТА ДЕТАЛИ — и потому ПОДЧИНЯЕТСЯ ТОМУ ЖЕ
 					-- ТРЁХЧЛЕННОМУ ПРАВИЛУ, что и ручная дверь 0360. Роль перестала быть деталью —
 					-- связь очищается; роль осталась деталью, а про слот НЕ СКАЗАНО — связь остаётся

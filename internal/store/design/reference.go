@@ -27,7 +27,7 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 	if req.MediaId <= 0 {
 		return nil, fmt.Errorf("%w: a reference role needs a media id", entity.ErrDesignInvalidArgument)
 	}
-	if req.Role != "" && !entity.IsDesignGhostView(req.Role) {
+	if req.Role != "" && !entity.IsDesignReferenceRole(req.Role) {
 		return nil, fmt.Errorf("%w: unknown reference role %q", entity.ErrDesignInvalidArgument, req.Role)
 	}
 	var out *entity.DesignReference
@@ -98,15 +98,11 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 			}
 		}
 
-		if req.Role == "" {
-			if err := storeutil.ExecNamed(ctx, db,
-				`DELETE FROM design_reference WHERE tech_card_id = :card AND media_id = :media`,
-				map[string]any{"card": req.TechCardId, "media": req.MediaId}); err != nil {
-				return fmt.Errorf("failed to clear design reference role: %w", err)
-			}
-			return nil
-		}
-
+		// AN EMPTY ROLE NO LONGER DELETES THE ROW (101, wave 11). The row is now also the server's label
+		// on a board picture, and a deleted row reads as «never labelled» — the next save would hand the
+		// picture straight back to the model and undo the person's «no view». So an empty role is written
+		// as a PERSON's empty label: it never travels (entity.DesignReferenceTravels), no model touches it
+		// again, and the response still carries no reference, as before.
 		// THE NOTE IS WRITTEN BY THIS UPSERT AND BY NO OTHER (0348, W-3). It lives on this row, so
 		// a verb of its own would be a second write over the same key that could half-succeed —
 		// leaving a role stated with somebody else's words next to it.
@@ -132,10 +128,16 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
 			INSERT INTO design_reference
-				(tech_card_id, media_id, role, note, detail_slot_id, ordinal, set_by, set_at)
-			VALUES (:card, :media, :role, :note, :slot, :ord, :who, UTC_TIMESTAMP(6))
+				(tech_card_id, media_id, role, note, detail_slot_id, ordinal, set_by, set_at,
+				 label_source, label_state, labelled_at)
+			VALUES (:card, :media, :role, :note, :slot, :ord, :who, UTC_TIMESTAMP(6),
+				:human, :ok, UTC_TIMESTAMP(6))
 			ON DUPLICATE KEY UPDATE
 				role = VALUES(role),
+				-- A PERSON'S WRITE SETTLES THE LABEL (101). Any write through this door is a person's tap,
+				-- so the row leaves the model's hands for good and its state is ok.
+				label_source = VALUES(label_source), label_state = VALUES(label_state),
+				labelled_at = VALUES(labelled_at),
 				-- IF, А НЕ VALUES(detail_slot_id) — по тому же доводу, что у записки строкой ниже,
 				-- и с тем же запретом на двоеточие внутри комментария именованного запроса.
 				detail_slot_id = IF(:slot_keep, detail_slot_id, VALUES(detail_slot_id)),
@@ -157,8 +159,12 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 				"note_omitted": req.NoteOmitted,
 				"slot":         slot, "slot_keep": keepSlot,
 				"ord": req.Ordinal, "who": req.Actor,
+				"human": entity.DesignLabelSourceHuman, "ok": entity.DesignLabelStateOk,
 			}); err != nil {
 			return fmt.Errorf("failed to set design reference role: %w", err)
+		}
+		if req.Role == "" {
+			return nil
 		}
 		rows, err := storeutil.QueryListNamed[entity.DesignReference](ctx, db,
 			`SELECT * FROM design_reference WHERE tech_card_id = :card AND media_id = :media`,

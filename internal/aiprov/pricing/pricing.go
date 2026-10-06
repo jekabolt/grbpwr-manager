@@ -218,6 +218,12 @@ var catalogue = map[string][]Model{
 			srcBrief+" (OpenRouter catalogue)"+orFallback),
 		chat(entity.AIProviderOpenRouter, "anthropic/claude-opus-5", "Claude Opus 5", "5", "25",
 			"OpenRouter price $5/M in, $25/M out, recorded on the live tech-card analysis run 2026-08-25"+orFallback),
+		// The quiz (0393) and the board read (101) route here; without these rows the ledger booked them
+		// NULL whenever OpenRouter left usage.cost out, and the spend panel showed the purposes without money.
+		chat(entity.AIProviderOpenRouter, "anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5", "2", "10",
+			"https://openrouter.ai/api/v1/models, read 2026-10-06: $2/M in, $10/M out"+orFallback),
+		chat(entity.AIProviderOpenRouter, "anthropic/claude-opus-5.5", "Claude Opus 5.5", "4", "20",
+			"https://openrouter.ai/api/v1/models, read 2026-10-06: $4/M in, $20/M out"+orFallback),
 		chat(entity.AIProviderOpenRouter, "openai/gpt-5-mini", "GPT-5 mini", "0.25", "2",
 			srcORModels+": $0.25/M in, $2/M out"+orFallback),
 		// Unpriced ON PURPOSE (06-BRIEFS-A curated table; Codex review A1 #3): OpenRouter's usage.cost

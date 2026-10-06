@@ -546,6 +546,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, s.techCardWriteError(ctx, err)
 	}
 	s.finalizeTechCardWrite(ctx, int(req.Id), int(req.ExpectedLockVersion), orphanedPatternURLs)
+	// MOODBOARD LABELS (101): the save may have put pictures on the board or changed a purpose — the
+	// server labels them in the background (never blocks the save, never writes the form).
+	s.designBoardLabelKick(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
 }
 

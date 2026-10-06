@@ -131,6 +131,8 @@ type Server struct {
 	// quizFlight coalesces GenerateDesignQuiz presses of ONE card in flight (design_quiz.go): a double
 	// click pays once and both presses get the same questions. Zero value works.
 	quizFlight singleflight.Group
+	// boardLabels — the per-card moodboard label sync (design_board_label.go, 101). Zero value works.
+	boardLabels designBoardLabeller
 	// partsFlight coalesces SuggestDesignParts presses of ONE (card, view, flat, cut) in flight
 	// (design_parts.go). Zero value works.
 	partsFlight singleflight.Group
@@ -246,6 +248,7 @@ func New(
 		noteFormatSem:        make(chan struct{}, maxConcurrentNoteFormats),
 		enhanceSem:           make(chan struct{}, maxConcurrentEnhance),
 		jpkTaxpayer:          jpkTaxpayer,
+		boardLabels:          designBoardLabeller{live: true},
 	}, nil
 }
 

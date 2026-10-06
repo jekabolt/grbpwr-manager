@@ -2192,6 +2192,17 @@ type (
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)
+		// ListReferences — the card's design_reference rows in every label state (101).
+		ListReferences(ctx context.Context, cardID int) ([]entity.DesignReference, error)
+		// BeginBoardLabel claims a board picture for a model label (a pending row); false = nothing
+		// to do. A person's row is never claimed (101-MOODBOARD-ROLES).
+		BeginBoardLabel(ctx context.Context, req entity.DesignBoardLabelBegin) (bool, error)
+		// FinishBoardLabel writes a model's answer over its still-pending model row (a person's tap
+		// meanwhile wins: nil, nil); a detail may mint a made_by_model slot in the same transaction.
+		FinishBoardLabel(ctx context.Context, req entity.DesignBoardLabel) (*entity.DesignReference, error)
+		// DropBoardLabels deletes the model rows of the named pictures and the model-made detail
+		// slots left empty; returns how many slots went.
+		DropBoardLabels(ctx context.Context, cardID int, mediaIDs []int) (int, error)
 		// UpsertAsset writes ONE shelf row of the card — a cloth, a pattern or a piece of
 		// hardware (0354) — creating it when AssetId is 0 and replacing it otherwise. One verb
 		// because the screen has one gesture; a second would be a second place to forget the

@@ -91,6 +91,8 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		"chat.design_parts":      AICapabilityChat, // auto parts (0390)
 		"chat.callout_suggest":   AICapabilityChat, // callout suggestions (T28)
 		"chat.design_joins":      AICapabilityChat, // flat route join list (0397)
+		"chat.board_label":       AICapabilityChat, // moodboard view labels (101)
+		"chat.board_read":        AICapabilityChat, // unclear views + detail reads (101)
 		"chat.playground_ideas":  AICapabilityChat,
 		"image.generate":         AICapabilityImage,
 		"image.cutout":           AICapabilityCutout,

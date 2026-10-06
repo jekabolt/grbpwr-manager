@@ -198,7 +198,7 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design band", err, nil)
 	}
-	photos := designJoinsPhotos(band.References)
+	photos := designJoinsPhotos(designRunRefs(card, band.References))
 	if len(photos) == 0 && note == "" {
 		return nil, status.Error(codes.FailedPrecondition, designJoinsNothingToReadMsg)
 	}
@@ -599,7 +599,7 @@ func (s *Server) designJoinsCurrentSource(ctx context.Context, cardID int) (stri
 	if err != nil {
 		return "", designError(ctx, "failed to read the design band", err, nil)
 	}
-	return designJoinsSourceFP(card, band.References), nil
+	return designJoinsSourceFP(card, designRunRefs(card, band.References)), nil
 }
 
 // ─── the wire ───

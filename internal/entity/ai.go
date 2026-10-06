@@ -125,7 +125,12 @@ const (
 	AIPurposeCalloutSuggest = "chat.callout_suggest"
 	// AIPurposeDesignJoins — the flat route's join list (0397): one vision+JSON call writing the
 	// garment's construction on the fixed landmark ruler from its reference photos.
-	AIPurposeDesignJoins     = "chat.design_joins"
+	AIPurposeDesignJoins = "chat.design_joins"
+	// AIPurposeBoardLabel / AIPurposeBoardRead — the moodboard labels (101-MOODBOARD-ROLES): a cheap
+	// vision call names the view of a target picture (and proposes the purpose of a picture without
+	// one); a strong one takes the unclear views and reads which detail a detail photo shows.
+	AIPurposeBoardLabel      = "chat.board_label"
+	AIPurposeBoardRead       = "chat.board_read"
 	AIPurposePlaygroundIdeas = "chat.playground_ideas"
 	AIPurposeImageGenerate   = "image.generate"
 	AIPurposeImageCutout     = "image.cutout"
@@ -140,6 +145,7 @@ func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
 		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
+		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
 	}
@@ -155,6 +161,7 @@ func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
 		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
+		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas:
 		return AICapabilityChat
 	case AIPurposeImageGenerate:

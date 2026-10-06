@@ -572,9 +572,12 @@ func casExistingSlot(ctx context.Context, db dependency.DB, req entity.DesignBen
 	n, err := storeutil.ExecNamedRows(ctx, db, `
 		UPDATE design_bench_slot
 		SET picture_id = :pic, detail_name = :name, set_by = :who, set_at = UTC_TIMESTAMP(6),
-			slot_rev = slot_rev + 1
+			slot_rev = slot_rev + 1,
+			-- a person renaming a model's detail makes the name theirs (101 §2.6)
+			made_by_model = IF(:renamed, 0, made_by_model)
 		WHERE id = :id AND slot_rev = :expected_rev`,
 		map[string]any{
+			"renamed": req.NewDetailName != "" && req.NewDetailName != before.DetailName.String,
 			"pic": nullInt(req.PictureId), "name": name, "who": req.Actor,
 			"id": req.Slot.SlotId, "expected_rev": req.ExpectedSlotRev,
 		})

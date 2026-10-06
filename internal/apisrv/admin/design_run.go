@@ -743,7 +743,7 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	src := designInputSources{
 		Kind:   kind,
 		Card:   card,
-		Refs:   designKeptReferences(kind, band.References, band.Joins),
+		Refs:   designKeptReferences(kind, designRunRefs(card, band.References), band.Joins),
 		Bench:  band.Bench,
 		Params: params,
 	}

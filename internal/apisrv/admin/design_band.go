@@ -276,6 +276,9 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design band", err, nil)
 	}
+	// MOODBOARD LABELS (101): a lost task (pending past the stale window) or a board not looked at for
+	// a while is re-synced in the background — the band read never waits for a model.
+	s.designBoardLabelLazy(ctx, int(req.GetTechCardId()), band.References)
 	// Картинки входов резолвятся ОДНИМ запросом на всю страницу прогонов — см. довод у
 	// joinDesignRunInputMedia; снимок хранит только идентификаторы.
 	runsPb := designRunsToPb(ctx, band.Runs)
@@ -1483,6 +1486,7 @@ func designSlotToPb(s entity.DesignBenchSlot) *pb_common.DesignBenchSlot {
 	// STALE FLAT DETAIL AND ITS «KEEP» (0400) — computed by the store over the whole bench.
 	out.Stale = s.Stale
 	out.Kept = s.Kept
+	out.MadeByModel = s.MadeByModel
 	out.StaleAgainstRunId = int32(s.StaleAgainstRunId)
 	if s.Kept {
 		out.KeptBy = s.KeptBy
@@ -1867,7 +1871,7 @@ func designReferencesToPb(in []entity.DesignReference) []*pb_common.DesignRefere
 }
 
 func designReferenceToPb(r entity.DesignReference) *pb_common.DesignReference {
-	return &pb_common.DesignReference{
+	out := &pb_common.DesignReference{
 		TechCardId: int32(r.TechCardId),
 		MediaId:    int32(r.MediaId),
 		Role:       r.Role,
@@ -1881,7 +1885,18 @@ func designReferenceToPb(r entity.DesignReference) *pb_common.DesignReference {
 		Ordinal:      int32(r.Ordinal),
 		SetBy:        r.SetBy,
 		SetAt:        timestamppb.New(r.SetAt),
+		// The board label (101): who set it, its state, the model's purpose proposal and what it read
+		// (never sent to a prompt — the client shows it greyed in «what the model gets» only).
+		LabelSource:     r.LabelSource,
+		LabelState:      entity.DesignLabelStateOrOk(r.LabelState),
+		ProposedPurpose: r.ProposedPurpose,
+		ModelCaption:    r.ModelCaption.String,
+		LabelModel:      r.LabelModel,
 	}
+	if r.LabelledAt.Valid {
+		out.LabelledAt = timestamppb.New(r.LabelledAt.Time)
+	}
+	return out
 }
 
 func designLayersToPb(in []entity.DesignEditLayer, withStrokes bool) []*pb_common.DesignEditLayer {

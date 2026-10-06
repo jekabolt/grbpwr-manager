@@ -1648,6 +1648,10 @@ type DesignBenchSlot struct {
 	KeptPictureId sql.NullInt32 `db:"kept_picture_id"`
 	KeptBy        string        `db:"kept_by"`
 	KeptAt        sql.NullTime  `db:"kept_at"`
+	// MadeByModel — a detail slot a model minted from a detail photo on the board (101 §2.5). Only
+	// such a slot may the server delete by itself, when it is empty and its last photo left the board;
+	// a rename by a person clears the flag (the name became a person's).
+	MadeByModel bool `db:"made_by_model"`
 	// Computed by ApplyDesignDetailStaleness over the whole bench; false / 0 until it ran.
 	Stale             bool `db:"-"`
 	Kept              bool `db:"-"`
@@ -1819,6 +1823,21 @@ type DesignReference struct {
 	Ordinal      int           `db:"ordinal"`
 	SetBy        string        `db:"set_by"`
 	SetAt        time.Time     `db:"set_at"`
+	// BOARD LABEL (101-MOODBOARD-ROLES, wave 11): who set the view / detail and in what state the
+	// label is. '' source = a row older than the columns (a person's); '' state reads as ok. A row in
+	// state pending / unsure / failed carries an empty role and never travels (DesignReferenceTravels).
+	LabelSource string `db:"label_source"`
+	LabelState  string `db:"label_state"`
+	// ProposedPurpose — the model's proposal for the picture's board purpose (target / detail / mood /
+	// material); the CLIENT applies it to an empty purpose of the form row once. The server never
+	// writes tech_card_media.role (the table has no row key and is rewritten by every save).
+	ProposedPurpose string `db:"proposed_purpose"`
+	// ModelCaption — what the model read (the view and a phrase about a detail). NEVER sent to a
+	// prompt (101 §2.7): used to dedup details and shown greyed as «model read · not sent».
+	ModelCaption  sql.NullString `db:"model_caption"`
+	LabelModel    string         `db:"label_model"`
+	LabelledAt    sql.NullTime   `db:"labelled_at"`
+	LabelAttempts int            `db:"label_attempts"`
 }
 
 // DesignAsset — строка design_asset (0354): одна вещь, ИЗ КОТОРОЙ СДЕЛАНО изделие и которая не

@@ -213,7 +213,7 @@ func TestPricingEveryRowHasSource(t *testing.T) {
 	// Motion and Seedance not offered, REVIEW-H #5/#7) + OpenRouter's gpt-image-2.5-flare (flat route, 0397) + fal's 35 (24 image, 3 edit, 4 cutout, 4 threed).
 	require.Equal(t, map[string]int{
 		entity.AIProviderOpenAI: 28, entity.AIProviderAnthropic: 9, entity.AIProviderGoogle: 13,
-		entity.AIProviderOpenRouter: 9, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 23,
+		entity.AIProviderOpenRouter: 11, entity.AIProviderApibost: 67, entity.AIProviderRunblob: 23,
 		entity.AIProviderFal: 35,
 	}, count)
 }

@@ -196,7 +196,7 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	}
 	// Codex b1: the confirmation is of the list AGAINST the photos and the note of that moment. A photo
 	// replaced, a role or note changed, the garment note rewritten since → the list may be obsolete.
-	if !designJoinsConfirmedFresh(band.Joins, designJoinsSourceFP(card, band.References)) {
+	if !designJoinsConfirmedFresh(band.Joins, designJoinsSourceFP(card, designRunRefs(card, band.References))) {
 		return designRefusal(codes.FailedPrecondition, "joins_unconfirmed",
 			fmt.Sprintf("the straps mode draws from the join list a designer confirmed; the card's reference photos or "+
 				"garment note changed after the list (rev %d) was confirmed. Check it against them and confirm it again, "+

@@ -2969,6 +2969,17 @@ service AdminService {
     };
   }
 
+  // PreviewDesignRunInputs is a DRY RUN of StartDesignRun's input assembly (101 §2.8): the snapshot a
+  // run of this kind and params would freeze right now — the same function, the same sources, no
+  // reservation, no money, no model. «what the model gets» draws this answer instead of re-deriving
+  // the rule on the client, plus the board pictures that stay home and why.
+  rpc PreviewDesignRunInputs(PreviewDesignRunInputsRequest) returns (PreviewDesignRunInputsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/runs/preview"
+      body: "*"
+    };
+  }
+
   // DeleteDesignDetailSlot removes an EMPTY detail slot.
   // FailedPrecondition: slot_filled.
   rpc DeleteDesignDetailSlot(DeleteDesignDetailSlotRequest) returns (DeleteDesignDetailSlotResponse) {
@@ -13364,6 +13375,32 @@ message SetDesignReferenceRoleRequest {
 
 message SetDesignReferenceRoleResponse {
   common.DesignReference reference = 1; // unset when the call cleared the role
+}
+
+message PreviewDesignRunInputsRequest {
+  int32 tech_card_id = 1;
+  string kind = 2; // as StartDesignRunRequest.kind
+  common.DesignRunParams params = 3; // as StartDesignRunRequest.params (no rerun)
+}
+
+// DesignInputHeld — a moodboard picture that does NOT go to this run, and why.
+message DesignInputHeld {
+  int32 media_id = 1;
+  // mood | material | unmarked (no purpose) | pending (the label is being read) | view_unknown
+  // (unsure / failed — answer the question card or tap the tile) | not_a_view (a person's «no view»)
+  // | older (beyond the two newest of its view) | other_detail (a detail of another slot) | detail
+  // (a detail picture on a views run) | over_cap
+  string reason = 2;
+  string role = 3; // the label's view / detail, when it has one
+  string model_caption = 4; // «model read · not sent» — never part of the prompt
+}
+
+message PreviewDesignRunInputsResponse {
+  // Exactly what designAssembleInputs would freeze into design_run.inputs — refs in prompt order with
+  // their media resolved, the bench plates, the words.
+  common.DesignInputSnapshot inputs = 1;
+  // The board pictures that stay home, in board order.
+  repeated DesignInputHeld held = 2;
 }
 
 // UpsertDesignAssetRequest writes one shelf row of the card (V-11).
