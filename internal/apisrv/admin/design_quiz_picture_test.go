@@ -26,7 +26,7 @@ func TestQuizPictureMapsToMediaID(t *testing.T) {
 		picQ("not_integer", "pic_mood", "collar", "What mood from picture 1.5?", `1.5`),
 		picQ("zero", "collar_type", "collar", "Which collar?", `0`),
 	}, ",") + `]}`
-	qs, _, ok := parseDesignQuizBoard(raw, "jacket", nil, attached)
+	qs, _, ok := parseDesignQuizBoard(raw, "jacket", nil, attached, nil)
 	require.True(t, ok)
 	require.Len(t, qs, 5)
 
@@ -72,7 +72,7 @@ func TestQuizPictureDedupeAcrossRenumbering(t *testing.T) {
 		Selected: []string{"a"},
 	}}
 	raw := `{"questions":[` + picQ("pic3_fabric_again", "pic_material", "whole", "What fabric from picture 3?", `3`) + `]}`
-	qs, st, ok := parseDesignQuizBoard(raw, "jacket", saved, []int{501, 502, 503})
+	qs, st, ok := parseDesignQuizBoard(raw, "jacket", saved, []int{501, 502, 503}, nil)
 	require.True(t, ok)
 	require.Empty(t, qs)
 	require.Equal(t, 1, st.repeated)

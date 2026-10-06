@@ -125,7 +125,7 @@ func designQuizTopicOf(q entity.DesignQuizQuestion) string {
 	case q.MediaID != 0:
 		return entity.DesignQuizTopicPicture
 	case part == designQuizPaletteKey || key == designQuizPaletteKey || has(colourway, key):
-		return entity.DesignQuizTopicMaterials
+		return entity.DesignQuizTopicColourways
 	case strings.HasPrefix(part, "sm_") || strings.HasPrefix(part, "hw_") || strings.HasPrefix(part, "lbl_"):
 		return entity.DesignQuizTopicConstruction
 	case q.Category != entity.DesignQuizCategoryMaterials && (has(designQuizFitTokens, key) || has(designQuizFitTokens, part)):
@@ -232,6 +232,23 @@ func designQuizFactsOf(card *entity.TechCard, chart entity.StyleSizeChart, names
 		add(entity.DesignQuizTopicMaterials, name, comp)
 	}
 
+	// colourways: how many, then each one's name → colour family / code
+	add(entity.DesignQuizTopicColourways, "colourways", strconv.Itoa(len(card.Colorways)))
+	for i, c := range card.Colorways {
+		name := designOneLine(c.Name)
+		if name == "" {
+			name = "colourway " + strconv.Itoa(i+1)
+		}
+		colour := strings.TrimSpace(c.ColorCode)
+		if colour == "" {
+			colour = strings.TrimSpace(c.Code.String)
+		}
+		if colour == "" {
+			colour = "no colour"
+		}
+		add(entity.DesignQuizTopicColourways, "colourway: "+name, colour)
+	}
+
 	// construction + design: the category, then the detail rows
 	category := ""
 	if top, sub, typ := designQuizCategoryPath(card); top+sub+typ != "" {
@@ -328,6 +345,15 @@ func (s *Server) designQuizCurrentState(ctx context.Context, card *entity.TechCa
 // mark sets Stale + StaleChanges on answers against this state.
 func (st designQuizStaleState) mark(answers []entity.TechCardQuizAnswer) {
 	entity.MarkDesignQuizStale(answers, st.fingerprint, st.facts.of)
+	// A row stamped under a topic the question no longer maps to (colourway answers were materials
+	// before 06.10) has no snapshot of its real topic: fresh, not stale on unrelated facts. The next
+	// save or KEEP re-stamps it under the right topic.
+	for i := range answers {
+		a := &answers[i]
+		if a.Facts != nil && a.Topic != "" && a.Topic != designQuizTopicOf(a.Question) {
+			a.Stale, a.StaleChanges = false, nil
+		}
+	}
 }
 
 // stamp gives each upserted answer its topic, the topic's facts now and the card fingerprint: a

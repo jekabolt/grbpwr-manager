@@ -5,7 +5,8 @@ package admin
 // LIVE A/B HARNESS for the moodboard quiz (61-QUICKWINS W-B7, 60-REVIEW-fable §4). Never compiled by
 // CI or a plain `go test`: the build tag keeps it out. It touches no database and no store — the
 // fixture cards are literals, the prompts are OUR builders (designQuizSystemPrompt +
-// designQuizUserPrompt), the answer goes through OUR parser (parseDesignQuizCounted).
+// designQuizUserPrompt), the answer goes through OUR parser (parseDesignQuizBoard, with the board's
+// pictures and roles, so picture questions and their spots are gated exactly as in prod).
 //
 // Run (from the repo root):
 //
@@ -17,8 +18,14 @@ package admin
 // Env: OPENROUTER_API_KEY (required, else SKIP; never printed), QUIZ_MODELS (slug[:effort],…; default
 // opus-5.5 medium + sonnet-5.5 medium), QUIZ_RUNS (per model × fixture, default 1), QUIZ_OUT (output
 // folder, default <plans>/moodboard-quiz/live), QUIZ_FIXTURES (image URL file, default
-// $QUIZ_OUT/fixtures.json), QUIZ_ONLY (comma list of fixture names).
-// Output: $QUIZ_OUT/<fixture>/<model>_<effort>_<n>.json + $QUIZ_OUT/summary.md.
+// $QUIZ_OUT/fixtures.json), QUIZ_ONLY (comma list of fixture names), QUIZ_SPOT_TILE (the on-screen
+// board tile's long side in px the spot rings are sized for, default 360).
+// Fixtures file: {"<fixture>": [picture, …]} where a picture is a URL string (no role) or
+// {"url": "…", "role": "target|detail|material|mood"} — the role the designer gave it on the board.
+// Output: $QUIZ_OUT/<fixture>/<model>_<effort>_<n>.json + $QUIZ_OUT/summary.md; 99-SPOTS: per picture
+// question with spots $QUIZ_OUT/<fixture>/spots/<model>_<effort>_<n>_p<N>_<question id>.png (the
+// picture with the numbered rings as the client draws them, question + legend below) and every spot
+// as a row of $QUIZ_OUT/spots.json.
 
 import (
 	"bytes"
@@ -54,13 +61,43 @@ type quizLiveFixture struct {
 
 func quizLiveNull(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
 
-func quizLiveBoard(card *entity.TechCard, n int) []int {
-	ids := make([]int, 0, n)
-	for i := 1; i <= n; i++ {
-		card.Media = append(card.Media, entity.TechCardMediaItem{MediaId: i, Category: entity.TechCardMediaCategoryMoodboard})
-		ids = append(ids, i)
+// quizLiveBoard attaches the fixture's pictures as media ids 1..n (so media id = «picture N») with
+// their roles.
+func quizLiveBoard(card *entity.TechCard, pics []quizLivePicture) []int {
+	ids := make([]int, 0, len(pics))
+	for i, p := range pics {
+		card.Media = append(card.Media, entity.TechCardMediaItem{MediaId: i + 1, Category: entity.TechCardMediaCategoryMoodboard,
+			Role: entity.TechCardMediaRole(p.Role)})
+		ids = append(ids, i+1)
 	}
 	return ids
+}
+
+// quizLivePicture — one fixture picture: a bare URL string or {"url", "role"}.
+type quizLivePicture struct {
+	URL  string `json:"url"`
+	Role string `json:"role"`
+}
+
+func quizLivePictures(raw json.RawMessage) ([]quizLivePicture, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	out := make([]quizLivePicture, 0, len(items))
+	for _, it := range items {
+		var p quizLivePicture
+		if err := json.Unmarshal(it, &p.URL); err != nil {
+			if err := json.Unmarshal(it, &p); err != nil {
+				return nil, err
+			}
+		}
+		if !entity.IsTechCardMediaRole(entity.TechCardMediaRole(p.Role)) {
+			return nil, fmt.Errorf("picture %s: unknown role %q", p.URL, p.Role)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func quizLiveFixtures() []quizLiveFixture {
@@ -133,7 +170,37 @@ func quizLiveFixtures() []quizLiveFixture {
 	lined.Question.DecisionKey = "lining_insulation"
 	coat.QuizAnswers = []entity.TechCardQuizAnswer{lined}
 
+	// 99-SPOTS §4: three boards whose target/detail pictures carry SMALL places (straps, plackets,
+	// cuffs, pocket bags, belt loops) — the hard case for a free point from the model.
+	cami := &entity.TechCard{}
+	cami.Name = "strap top"
+	cami.Fit = quizLiveNull("fitted")
+	cami.Concept = quizLiveNull("Bias-cut silk camisole with thin shoulder straps; the strap ends, the neckline edge and the back edge are the point.")
+
+	shirtDetails := &entity.TechCard{}
+	shirtDetails.Name = "dress shirt"
+	shirtDetails.Fit = quizLiveNull("regular")
+	shirtDetails.Concept = quizLiveNull("Cotton poplin shirt rebuilt from an old pattern: collar, front placket, cuffs and sleeve plackets to be decided from the pictures.")
+
+	trousersDetails := &entity.TechCard{}
+	trousersDetails.Name = "chino trousers"
+	trousersDetails.Fit = quizLiveNull("regular")
+	trousersDetails.Concept = quizLiveNull("Cotton twill chinos: belt loops, slant front pockets, back welt pockets — take the details from the pictures.")
+
+	// spotsCheck — every fixture of this group should ring at least one place.
+	spotsCheck := func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
+		for _, q := range qs {
+			if len(q.Spots) > 0 {
+				return nil
+			}
+		}
+		return []string{"no picture question carries spots"}
+	}
+
 	return []quizLiveFixture{
+		{name: "strap_top", family: "cami", card: cami, check: spotsCheck},
+		{name: "shirt_details", family: "shirt", card: shirtDetails, check: spotsCheck},
+		{name: "trousers_details", family: "trousers", card: trousersDetails, check: spotsCheck},
 		{name: "denim_jacket", family: "jacket", card: denim, check: func(qs []entity.DesignQuizQuestion, _ designQuizParseStats) []string {
 			var out []string
 			main := quizLiveByKey(qs, "main_seam")
@@ -369,23 +436,28 @@ func TestDesignQuizLive(t *testing.T) {
 	}
 
 	var results []quizLiveResult
+	spotRows := []quizLiveSpotRow{}
 	for _, fx := range quizLiveFixtures() {
 		if len(only) > 0 && !only[fx.name] {
 			continue
 		}
-		var list []string
+		var pics []quizLivePicture
 		if raw, ok := urls[fx.name]; ok {
-			_ = json.Unmarshal(raw, &list)
+			if pics, err = quizLivePictures(raw); err != nil {
+				t.Fatalf("%s: fixtures: %v", fx.name, err)
+			}
 		}
-		images := make([]string, 0, len(list))
-		for _, u := range list {
-			d, err := quizLiveDataURL(u)
+		images := make([]string, 0, len(pics))
+		imageBytes := make([][]byte, 0, len(pics))
+		for _, p := range pics {
+			d, b, err := quizLiveDataURL(p.URL)
 			if err != nil {
-				t.Fatalf("%s: picture %s: %v", fx.name, u, err)
+				t.Fatalf("%s: picture %s: %v", fx.name, p.URL, err)
 			}
 			images = append(images, d)
+			imageBytes = append(imageBytes, b)
 		}
-		attached := quizLiveBoard(fx.card, len(images))
+		attached := quizLiveBoard(fx.card, pics)
 		user := designQuizUserPrompt(fx.card, designMoodSnapshot(fx.card), attached, fx.family, fx.pom)
 		if err := os.MkdirAll(filepath.Join(out, fx.name), 0o755); err != nil {
 			t.Fatal(err)
@@ -395,7 +467,7 @@ func TestDesignQuizLive(t *testing.T) {
 			for n := 1; n <= runs; n++ {
 				r := quizLiveCall(key, m, user, images)
 				r.Fixture, r.Run = fx.name, n
-				qs, st, ok := parseDesignQuizCounted(r.Raw, fx.family, fx.card.QuizAnswers)
+				qs, st, ok := parseDesignQuizBoard(r.Raw, fx.family, fx.card.QuizAnswers, attached, designBoardRoles(fx.card))
 				r.ParsedOK, r.Questions = ok, qs
 				r.Stats = map[string]int{"raw": st.raw, "kept": st.kept, "invalid": st.invalid,
 					"repeated": st.repeated, "capped": st.capped, "parts_fixed": st.partsFixed}
@@ -408,7 +480,14 @@ func TestDesignQuizLive(t *testing.T) {
 				} else if r.Error == "" {
 					r.Violations = append(r.Violations, "not the promised JSON")
 				}
-				name := strings.NewReplacer("/", "_", ":", "_", ".", "-").Replace(m.slug) + "_" + quizLiveOr(m.effort, "default") + "_" + strconv.Itoa(n) + ".json"
+				tag := strings.NewReplacer("/", "_", ":", "_", ".", "-").Replace(m.slug) + "_" + quizLiveOr(m.effort, "default") + "_" + strconv.Itoa(n)
+				name := tag + ".json"
+				// 99-SPOTS: one render per picture question with spots + the rows for spots.json.
+				rows, err := quizLiveRenderRunSpots(out, fx.name, tag, r, pics, imageBytes, quizLiveSpotTile())
+				if err != nil {
+					t.Errorf("%s %s: spots render: %v", fx.name, tag, err)
+				}
+				spotRows = append(spotRows, rows...)
 				b, _ := json.MarshalIndent(r, "", "  ")
 				_ = os.WriteFile(filepath.Join(out, fx.name, name), b, 0o644)
 				t.Logf("%s · %s:%s #%d → %d questions, %.1fs, $%.4f, finish=%s, violations=%d",
@@ -420,6 +499,11 @@ func TestDesignQuizLive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out, "summary.md"), []byte(quizLiveSummary(results)), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	sb, _ := json.MarshalIndent(spotRows, "", "  ")
+	if err := os.WriteFile(filepath.Join(out, "spots.json"), sb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("spots: %d rows → %s", len(spotRows), filepath.Join(out, "spots.json"))
 	t.Logf("summary: %s", filepath.Join(out, "summary.md"))
 }
 
@@ -431,30 +515,30 @@ func quizLiveOr(s, def string) string {
 }
 
 // quizLiveDataURL downloads a public picture and returns it as a data: URL (the provider never has to
-// fetch a third-party host).
-func quizLiveDataURL(u string) (string, error) {
+// fetch a third-party host) plus its bytes (the spot renders draw on them).
+func quizLiveDataURL(u string) (string, []byte, error) {
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req.Header.Set("User-Agent", "grbpwr-quiz-live-harness/1.0")
 	res, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("http %d", res.StatusCode)
+		return "", nil, fmt.Errorf("http %d", res.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	ct := res.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "image/") {
 		ct = http.DetectContentType(b)
 	}
-	return "data:" + strings.Split(ct, ";")[0] + ";base64," + base64.StdEncoding.EncodeToString(b), nil
+	return "data:" + strings.Split(ct, ";")[0] + ";base64," + base64.StdEncoding.EncodeToString(b), b, nil
 }
 
 // quizLiveCall — one OpenRouter call in the dialect prod uses (oaichat DialectOpenRouter): system
@@ -542,6 +626,10 @@ func quizLiveScore(raw string, qs []entity.DesignQuizQuestion) map[string]int {
 		if strings.HasPrefix(q.ID, "clarify_") {
 			s["clarify"]++
 		}
+		if q.MediaID != 0 {
+			s["picture_q"]++
+		}
+		s["spots"] += len(q.Spots)
 		for _, c := range q.Contradicts {
 			if c {
 				s["contradicts"]++
@@ -590,15 +678,15 @@ func quizLiveSummary(rs []quizLiveResult) string {
 	var b strings.Builder
 	b.WriteString("# Moodboard quiz — live A/B (" + time.Now().UTC().Format("2006-01-02 15:04 UTC") + ")\n\n")
 	b.WriteString("Generated by internal/apisrv/admin/design_quiz_live_test.go (build tag quizlive). Prompts = production builders; parse = production parser.\n\n")
-	b.WriteString("| fixture | model | effort | # | q | fit | clarify | banned | fit cm/% | seam q | edges asked | sm icons | parts fixed | invalid | repeated | finish | sec | prompt tok | compl tok | reasoning tok | USD | violations |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| fixture | model | effort | # | q | pic q | spots | fit | clarify | banned | fit cm/% | seam q | edges asked | sm icons | parts fixed | invalid | repeated | finish | sec | prompt tok | compl tok | reasoning tok | USD | violations |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rs {
 		viol := strings.Join(r.Violations, "; ")
 		if r.Error != "" {
 			viol = "ERROR " + r.Error
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %.1f | %d | %d | %d | %.4f | %s |\n",
-			r.Fixture, r.Model, quizLiveOr(r.Effort, "default"), r.Run, r.Score["questions"], r.Score["cat_fit"], r.Score["clarify"],
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %d | %s | %.1f | %d | %d | %d | %.4f | %s |\n",
+			r.Fixture, r.Model, quizLiveOr(r.Effort, "default"), r.Run, r.Score["questions"], r.Score["picture_q"], r.Score["spots"], r.Score["cat_fit"], r.Score["clarify"],
 			r.Score["banned_option_words"], r.Score["fit_invented_numbers"], r.Score["seam_q"], r.Score["edge_q"], r.Score["sm_icons"], r.Stats["parts_fixed"], r.Stats["invalid"],
 			r.Stats["repeated"], r.FinishReason, r.Seconds, r.Usage.PromptTokens, r.Usage.CompletionTokens,
 			r.Usage.Details.Reasoning, r.Usage.Cost, strings.ReplaceAll(viol, "|", "/"))
@@ -610,7 +698,8 @@ func quizLiveSummary(rs []quizLiveResult) string {
 			b.WriteString("(none)\n")
 		}
 		for i, q := range r.Questions {
-			fmt.Fprintf(&b, "%d. [%s · %s · %s] %s → %s\n", i+1, q.ID, q.Category, q.Part, q.Question, strings.Join(q.Options, " / "))
+			fmt.Fprintf(&b, "%d. [%s · %s · %s%s] %s → %s%s\n", i+1, q.ID, q.Category, q.Part, quizLivePicTag(q), q.Question,
+				strings.Join(q.Options, " / "), quizLiveSpotsTag(q))
 		}
 	}
 	return b.String()

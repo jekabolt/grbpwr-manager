@@ -256,7 +256,9 @@ func TestDesignQuizGroupChecklistInUserTurn(t *testing.T) {
 	// seam/colourway examples (~2.7 KB), 70-SEAMS §B the COLOURWAYS paragraph (~1.2 KB), 90-EDGES
 	// the EDGES paragraph, edge keys and example (~2.1 KB, 20015 bytes); the per-group checklists
 	// stay out. 96-PICTURE-QUESTIONS the PICTURES paragraph and the picture field (~1.1 KB, 22035 bytes).
-	require.Less(t, len(designQuizSystemPrompt), 22500, "the system prompt shrank")
+	// 99-SPOTS the spots field and its schema entry (~0.9 KB, 23111 bytes). 102-QUICKWIN the target
+	// "what do we change" / detail "what do we take" wording with examples (~0.4 KB, 23521 bytes).
+	require.Less(t, len(designQuizSystemPrompt), 24000, "the system prompt shrank")
 	for fam := range designQuizParts {
 		require.NotContains(t, designQuizGroupChecklist(fam), "unknown", fam)
 	}
