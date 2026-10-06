@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,10 @@ const designPartsCardMaxTokens = 6000
 // only), every separately cut piece and every inner layer is its own part, a strap is named by the
 // neck point it starts at, and the viewer → wearer side mapping of every view is spelled out. Any change here: bump the client's parts rev (PARTS_ALGO_REV) so cached rows
 // of the old text are not applied.
+//
+// M5 (owner 06.10, flat-consistency 92 W5/W6): an opening is NEVER cloth — the Ф1 rule «an opening
+// shows the inside of the far piece: give it to that part (seen_through)» is gone (the armhole hole
+// of a side view was painted as «front body · inside»); an edge is never a part («right armhole»).
 const designPartsCardSystemPrompt = `These are technical fashion flats of ONE garment, one picture per view (front, back and possibly the left and right side views). Each picture's line drawing has been cut into numbered regions (each region is tinted and carries a red number); the numbering restarts at 1 on every picture. Some regions are only fragments of one garment part: strips between pleat/fold lines, topstitching channels, fringe bits, a pocket split from its flap, etc.
 
 List the PHYSICAL parts of the garment a designer could make from different materials (body panels, yoke, sleeves, cuffs, collar, collar stand, placket, pocket, pocket flap, waistband, hem band, straps, bodice cups, skirt, trims...). For every part give its region numbers on EVERY view where it is visible.
@@ -59,23 +64,20 @@ Rules:
 - Use only the view keys named in the message.
 
 Construction rules (they override any habit of naming the usual pieces):
-- OPENINGS ARE NOT CLOTH. A region bounded by straps, bindings or the edge of a cut-out — an open back, a keyhole, a cut-out, an armhole seen from the side, the gap between crossed straps — is an OPENING. A flat has no body inside it, so through an opening you see the INSIDE (reverse side) of the cloth on the far side of the garment: through an open back, the inside of the front panels; through an armhole seen from the side, the inside of the opposite side. Put such a region in the part whose inside it shows (so painting that part paints it too) AND list it in "seen_through" with that part's label. An opening with no cloth behind it (empty space, background seen through), or one where you cannot tell what is behind it, goes into ONE part labelled "opening" — never a garment part.
-- NO CLOTH IS NEVER A BINDING. An area with no cloth of its own bounded by straps or edges (e.g. the triangle between a strap and the armhole edge on an open back) is an "opening", or the inside of the piece seen through it (seen_through) — never a binding or a band. Bindings and bands are THIN strips along an edge only.
+- OPENINGS ARE NOT CLOTH. A region bounded by straps, bindings or the edge of a cut-out — an open back, a keyhole, a cut-out, the neck hole, the hole inside an armhole (on a side view too), the gap between crossed straps — is an OPENING: put every such region into ONE part labelled "opening". It is never painted, whatever you think shows through it (a flat is an empty garment): never give an opening to a garment part.
+- NO CLOTH IS NEVER A BINDING. An area with no cloth of its own bounded by straps or edges (e.g. the triangle between a strap and the armhole edge on an open back) is an "opening" — never a binding or a band. Bindings and bands are THIN strips along an edge only.
+- AN EDGE IS NOT A PART. Never name a part by an edge or a hole alone ("armhole", "right armhole", "neckline", "hem", "opening edge"): a thin strip along an edge is the binding or band the construction lists, or else the panel whose edge it finishes.
 - EVERY SEPARATELY CUT PIECE IS ITS OWN PART: a neck band, each binding (neck, armhole, the edge of an open back), each strap, and every inner layer the construction lists. Never fold a band, binding, strap or layer into the body panel next to it. An inner layer seen through a sheer outer layer is its own part (its own label, the same on every view), not the outer body.
 - NEVER INVENT A PIECE. Name a part only when the drawing gives it cloth bounded by its own seams/edges. In particular a back view of an open-back garment has NO upper back / back yoke / back bodice above the opening: the area inside the straps is an opening, not a panel. A part must be consistent across the views and with the construction notes in the message: before answering, check every part against every other view — if the other views show no such piece and the region can be explained as an opening, it is an opening.
 - THE FLANK OF A SIDE VIEW COMES FROM THE DRAWING, NOT FROM ITS NAME. Find which way the garment's front faces (neckline, bust, front edge). If the front faces the RIGHT edge of the picture, the flank you see is the wearer's RIGHT side; if it faces the LEFT edge, the wearer's LEFT side. Every left/right part on that view belongs to that flank only — never mix a left armhole with a right back panel on one side view — and it must be the same entry (same part) as the matching piece on the front and back views.
 - A seam that runs down the middle of a side view is the side seam: the front of the garment is on one side of it, the back on the other.
 
 Answer with JSON only:
-{"parts":[{"label":"left sleeve","regions":{"front":[4],"back":[2],"side_l":[3]}}, ...], "seen_through":[{"view":"back","region":8,"label":"front body"}], "split_needed":[{"view":"back","region":5,"why":"yoke and back body share it"}]}`
+{"parts":[{"label":"left sleeve","regions":{"front":[4],"back":[2],"side_l":[3]}}, ...], "split_needed":[{"view":"back","region":5,"why":"yoke and back body share it"}]}`
 
 // designPartsOpening — the part_key and label of every region with no cloth of its own (Ф1): the
 // client never paints it.
 const designPartsOpening = "opening"
-
-// designPartsInsideSuffix — the label of a region that shows the INSIDE of a part through an
-// opening: the same part_key, the part's label + this.
-const designPartsInsideSuffix = " · inside"
 
 // designPartsCardMaxNoteRunes — the garment note travels at most this long (the card's own ceiling
 // is designMaxGarmentNoteRunes; the labeller needs the construction words, not an essay).
@@ -269,8 +271,10 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 // designPartsPromptRev — the server half of the parts cache key: BUMP IT on every change to what the
 // labeller is told (the system prompt, the user prompt, the construction block, the vocabulary), so a
 // card's cached parts are named again under the new words. 2 = 06.10 (unconfirmed construction is
-// called «suggested construction (unconfirmed)»; the cache learns the joins rev).
-const designPartsPromptRev = 2
+// called «suggested construction (unconfirmed)»; the cache learns the joins rev). 3 = 07.10 (M5: an
+// opening is never cloth, no seen_through; an edge is no part; no armhole binding; labels only from
+// the vocabulary).
+const designPartsPromptRev = 3
 
 // designPartsServerTagSep — where the server's half of a stored algo_rev starts. The client's own
 // revision never contains it (the door refuses one that does), and the wire never shows it.
@@ -386,6 +390,7 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 	}
 
 	construction, confirmed := designPartsCardConstructionOf(joins)
+	vocab := designPartsCardVocabOf(joins)
 	user := designPartsCardUserPrompt(views, s.designPartsCardNote(ctx, cardID), construction, confirmed)
 	sides := make([]string, 0, len(views))
 	for _, v := range views {
@@ -424,7 +429,7 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 			return s.designPartsChatFailure(ctx, res, err, logAttrs)
 		}
 		var ok bool
-		parts, splits, ok = parseDesignPartsCard(raw, views)
+		parts, splits, ok = parseDesignPartsCard(raw, views, vocab...)
 		if !ok {
 			slog.Default().ErrorContext(ctx, "design parts card: the answer is not the promised JSON", logAttrs...)
 			return status.Error(codes.Internal, designPartsUnusableMsg)
@@ -599,11 +604,14 @@ func designPartsUnnamedKey(view string) string {
 // side's "unnamed" group (part_key "unnamed-<view>"). Labels are lowercase ≤ 40 runes, ≤ 40 parts
 // per answer and per side. ok=false when no JSON of that shape is there or no part survives.
 //
-// Ф1: every part labelled "opening…" is ONE group per side, part_key and label "opening". A
-// "seen_through" region (an opening showing the INSIDE of a part) leaves wherever it was and joins
-// that part as its own group: the part's part_key, label "<part> · inside". A seen_through naming
-// no kept part (or "opening") changes nothing.
-func parseDesignPartsCard(raw string, views []designPartsCardView) (map[string][]entity.DesignPartGroup, map[string][]entity.DesignPartSplit, bool) {
+// Ф1: every part labelled "opening…" is ONE group per side, part_key and label "opening". M5: an
+// opening is never cloth — a "seen_through" region (the Ф1 «inside of the far piece», no longer
+// asked for) joins the side's opening, wherever the model had put it. An EDGE is no part: a label
+// that names only an edge or a hole ("right armhole", "neckline") is no part (its regions are
+// unnamed) unless it says a hole (→ opening). With a `vocab` (the construction's closed part list),
+// a label is mapped onto it (designPartsVocabMatch) and a label it does not hold is no part; the
+// labels mapped onto one name are one part.
+func parseDesignPartsCard(raw string, views []designPartsCardView, vocab ...string) (map[string][]entity.DesignPartGroup, map[string][]entity.DesignPartSplit, bool) {
 	in, ok := designPartsCardExtract(raw)
 	if !ok {
 		return nil, nil, false
@@ -618,19 +626,34 @@ func parseDesignPartsCard(raw string, views []designPartsCardView) (map[string][
 	}
 	perView := make(map[string][]entity.DesignPartGroup, len(views))
 	openings := map[string][]int{}
-	keyOf := map[string]string{} // kept label → its part_key (seen_through names parts by label)
+	keyOf := map[string]string{} // a vocabulary name → its part_key (the labels mapped onto it are one part)
 	kept := 0
 	for _, p := range in.Parts {
-		if kept == entity.DesignPartsMaxParts {
-			break
-		}
 		label := strings.ToLower(designPartsTrim(p.Label, entity.DesignPartsMaxLabelRunes))
 		if label == "" || label == entity.DesignPartsUnnamed {
 			continue
 		}
 		opening := designPartsIsOpening(label)
+		if !opening {
+			switch edge, hole := designPartsEdgeOnly(label); {
+			case hole:
+				opening = true
+			case edge:
+				continue // an edge is no part: its regions are unnamed
+			}
+		}
 		if opening {
 			label = designPartsOpening
+		} else if len(vocab) > 0 {
+			name, ok := designPartsVocabMatch(label, vocab)
+			if !ok {
+				continue // a name the construction does not have is no part
+			}
+			label = name
+		}
+		key, merged := keyOf[label]
+		if !opening && !merged && kept == entity.DesignPartsMaxParts {
+			break
 		}
 		byView := designPartsCardRegions(p.Regions)
 		claimed := map[string][]int{}
@@ -658,12 +681,36 @@ func parseDesignPartsCard(raw string, views []designPartsCardView) (map[string][
 			}
 			continue
 		}
-		key := designPartsSlug(label)
+		if merged {
+			for _, v := range views {
+				regions := claimed[v.View]
+				if len(regions) == 0 {
+					continue
+				}
+				at := -1
+				for i, g := range perView[v.View] {
+					if g.PartKey == key {
+						at = i
+					}
+				}
+				if at < 0 {
+					perView[v.View] = append(perView[v.View], entity.DesignPartGroup{Label: label, PartKey: key})
+					at = len(perView[v.View]) - 1
+				}
+				g := &perView[v.View][at]
+				g.Regions = append(g.Regions, regions...)
+				sort.Ints(g.Regions)
+			}
+			continue
+		}
+		key = designPartsSlug(label)
 		for i := 2; used[key]; i++ {
 			key = designPartsSlug(label) + "-" + strconv.Itoa(i)
 		}
 		used[key] = true
-		keyOf[label] = key
+		if len(vocab) > 0 {
+			keyOf[label] = key
+		}
 		for _, v := range views {
 			if regions := claimed[v.View]; len(regions) > 0 {
 				sort.Ints(regions)
@@ -672,7 +719,31 @@ func parseDesignPartsCard(raw string, views []designPartsCardView) (map[string][
 		}
 		kept++
 	}
-	if kept == 0 {
+	// M5 · a region the model said shows something through it is an opening: out of any part.
+	for _, st := range in.SeenThrough {
+		view := designPartsCardViewKey(st.View)
+		count, asked := countOf[view]
+		n := designPartsRegion(st.Region)
+		if !asked || n < 1 || n > count {
+			continue
+		}
+		kept := perView[view][:0]
+		for _, g := range perView[view] {
+			if i := sort.SearchInts(g.Regions, n); i < len(g.Regions) && g.Regions[i] == n {
+				g.Regions = append(append([]int{}, g.Regions[:i]...), g.Regions[i+1:]...)
+				if len(g.Regions) == 0 {
+					continue
+				}
+			}
+			kept = append(kept, g)
+		}
+		perView[view] = kept
+		if !slices.Contains(openings[view], n) {
+			openings[view] = append(openings[view], n)
+		}
+		owner[view][n] = true
+	}
+	if kept == 0 && len(openings) == 0 {
 		return nil, nil, false
 	}
 	for _, v := range views {
@@ -681,7 +752,6 @@ func parseDesignPartsCard(raw string, views []designPartsCardView) (map[string][
 			perView[v.View] = append(perView[v.View], entity.DesignPartGroup{Label: designPartsOpening, Regions: regions, PartKey: designPartsOpening})
 		}
 	}
-	designPartsCardSeenThrough(perView, owner, countOf, keyOf, in)
 
 	for _, v := range views {
 		parts := perView[v.View]
@@ -725,63 +795,98 @@ func parseDesignPartsCard(raw string, views []designPartsCardView) (map[string][
 	return perView, splits, true
 }
 
-// designPartsCardSeenThrough moves every "seen_through" region into an inside group of the part it
-// shows (same part_key, label "<part> · inside"), out of whatever group held it; a group left empty
-// goes. Regions the model left out are taken too (owner marks them). The ≤ 40 groups per side cap
-// holds: an inside group that would be the 41st is not made.
-func designPartsCardSeenThrough(perView map[string][]entity.DesignPartGroup, owner map[string]map[int]bool, countOf map[string]int, keyOf map[string]string, in designPartsCardRaw) {
-	for _, st := range in.SeenThrough {
-		view := designPartsCardViewKey(st.View)
-		count, asked := countOf[view]
-		n := designPartsRegion(st.Region)
-		label := strings.ToLower(designPartsTrim(st.Label, entity.DesignPartsMaxLabelRunes))
-		label = strings.TrimSpace(strings.TrimSuffix(label, strings.TrimSpace(designPartsInsideSuffix)))
-		key, named := keyOf[label]
-		if !asked || n < 1 || n > count || !named {
-			continue
-		}
-		groups := perView[view]
-		inside := label + designPartsInsideSuffix
-		at := -1
-		for i, g := range groups {
-			if g.PartKey == key && g.Label == inside {
-				at = i
-			}
-		}
-		if at < 0 && len(groups) >= entity.DesignPartsMaxParts {
-			continue
-		}
-		// Out of the group that holds it (if any).
-		kept := groups[:0]
-		for _, g := range groups {
-			if i := sort.SearchInts(g.Regions, n); i < len(g.Regions) && g.Regions[i] == n {
-				if g.Label == inside && g.PartKey == key {
-					kept = append(kept, g)
-					continue
-				}
-				g.Regions = append(append([]int{}, g.Regions[:i]...), g.Regions[i+1:]...)
-				if len(g.Regions) == 0 {
-					continue
-				}
-			}
-			kept = append(kept, g)
-		}
-		groups = kept
-		at = -1
-		for i, g := range groups {
-			if g.PartKey == key && g.Label == inside {
-				at = i
-			}
-		}
-		if at < 0 {
-			groups = append(groups, entity.DesignPartGroup{Label: inside, PartKey: key})
-			at = len(groups) - 1
-		}
-		if i := sort.SearchInts(groups[at].Regions, n); i == len(groups[at].Regions) || groups[at].Regions[i] != n {
-			groups[at].Regions = append(groups[at].Regions, n)
-			sort.Ints(groups[at].Regions)
-		}
-		owner[view][n] = true
-		perView[view] = groups
+// designPartsEdgeWords — words that name an edge or a place on the garment, never a cut piece;
+// designPartsHoleWords — those of them that name a hole (no cloth: an opening).
+var (
+	designPartsEdgeWords = map[string]bool{
+		"left": true, "right": true, "front": true, "back": true, "upper": true, "lower": true, "top": true,
+		"bottom": true, "centre": true, "center": true, "side": true, "inner": true, "outer": true,
+		"armhole": true, "armholes": true, "scye": true, "neckline": true, "neck": true, "hem": true,
+		"edge": true, "edges": true, "seam": true, "line": true,
+		"hole": true, "holes": true, "cutout": true, "cut": true, "out": true, "keyhole": true, "gap": true,
 	}
+	designPartsHoleWords = map[string]bool{
+		"hole": true, "holes": true, "cutout": true, "keyhole": true, "gap": true, "out": true,
+	}
+	designPartsPlaceWords = map[string]bool{
+		"left": true, "right": true, "front": true, "back": true, "upper": true, "lower": true, "top": true,
+		"bottom": true, "centre": true, "center": true, "side": true, "inner": true, "outer": true,
+	}
+)
+
+// designPartsWords — a label as its words: lowercase letters and digits, every other run a break.
+func designPartsWords(label string) []string {
+	return strings.FieldsFunc(strings.ToLower(label), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+// designPartsEdgeOnly — the label names only an edge or a place («right armhole», «neckline», «hem
+// edge»): edge; and among those, a hole («armhole hole», «cut-out»): hole too. A label with any word
+// of a piece («armhole binding», «neck band») is neither.
+func designPartsEdgeOnly(label string) (edge, hole bool) {
+	words := designPartsWords(label)
+	place := true
+	for _, w := range words {
+		if !designPartsEdgeWords[w] {
+			return false, false
+		}
+		if designPartsHoleWords[w] {
+			hole = true
+		}
+		if !designPartsPlaceWords[w] {
+			place = false
+		}
+	}
+	if len(words) == 0 || place {
+		return false, false // «front», «back left»: a place, not an edge — left to the vocabulary
+	}
+	return true, hole
+}
+
+// designPartsVocabMatch maps a label onto the closed vocabulary: the same words in any order; else
+// the ONE name whose words hold all of the label's («inner v panel» → «inner front v-panel»), or
+// the ONE name all of whose words the label holds («left front body» → «front body»). A label two
+// names would take («strap» of «left strap» and «right strap») matches none.
+func designPartsVocabMatch(label string, vocab []string) (string, bool) {
+	set := func(s string) map[string]bool {
+		out := map[string]bool{}
+		for _, w := range designPartsWords(s) {
+			out[w] = true
+		}
+		return out
+	}
+	within := func(a, b map[string]bool) bool {
+		for w := range a {
+			if !b[w] {
+				return false
+			}
+		}
+		return true
+	}
+	l := set(label)
+	if len(l) == 0 {
+		return "", false
+	}
+	for _, v := range vocab {
+		if vs := set(v); within(l, vs) && within(vs, l) {
+			return v, true
+		}
+	}
+	for _, rule := range []func(vs map[string]bool) bool{
+		func(vs map[string]bool) bool { return within(l, vs) },
+		func(vs map[string]bool) bool { return len(vs) > 0 && within(vs, l) },
+	} {
+		hit, n := "", 0
+		for _, v := range vocab {
+			if rule(set(v)) {
+				hit, n = v, n+1
+			}
+		}
+		if n == 1 {
+			return hit, true
+		}
+		if n > 1 {
+			return "", false
+		}
+	}
+	return "", false
 }

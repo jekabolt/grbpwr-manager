@@ -6,9 +6,10 @@ import "time"
 // numbers into garment parts and names them. One row per (card, view, flat media, cut revision) —
 // a cache: the same flat cut the same way is never paid for twice.
 const (
-	// DesignPartsMinRegions / DesignPartsMaxRegions — a cut the model is asked to name. One region
-	// is a sketch or a photo (nothing to group); above 60 the numbers stop being readable.
-	DesignPartsMinRegions = 2
+	// DesignPartsMinRegions / DesignPartsMaxRegions — a cut the model is asked to name. M5: ONE
+	// region is named too (a fine drawing whose bindings the cutter could not keep is still a part;
+	// it was «pen only»); above 60 the numbers stop being readable.
+	DesignPartsMinRegions = 1
 	DesignPartsMaxRegions = 60
 	// DesignPartsMaxAlgoRev — the client's cut revision (regions.ts REGIONS_ALGO_REV).
 	DesignPartsMaxAlgoRev = 32

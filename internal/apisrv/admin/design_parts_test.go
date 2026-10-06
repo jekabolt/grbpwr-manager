@@ -156,7 +156,7 @@ func TestSuggestDesignPartsDoorsBeforeMoney(t *testing.T) {
 				t.Fatalf("%s: %v", name, err)
 			}
 		}
-		for _, n := range []int32{1, 61} {
+		for _, n := range []int32{0, 61} { // M5: one region is named too
 			r := req()
 			r.RegionCount = n
 			_, err := srv.SuggestDesignParts(context.Background(), r)

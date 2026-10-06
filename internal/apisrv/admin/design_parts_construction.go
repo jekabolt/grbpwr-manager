@@ -32,6 +32,20 @@ func designPartsConstructionText(doc entity.DesignJoinsDoc) string {
 	return designgen.JoinsListText(doc) + "\n\n" + designPartsVocabulary(doc)
 }
 
+// designPartsCardVocabOf — the closed part names the labeller's answer is held to (M5: a label the
+// construction does not have is no part); nil when the card has no usable list (labels stay free).
+func designPartsCardVocabOf(j *entity.DesignJoins) []string {
+	if j == nil || !designgen.JoinsUsable(&j.Doc) {
+		return nil
+	}
+	entries, _ := designPartsVocabEntries(j.Doc)
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.name)
+	}
+	return out
+}
+
 // designPartsNamedKinds — the kinds that are a physical part of their own (a band of cloth, a sleeve,
 // a pocket); edges and seams bound parts, they are not parts.
 var designPartsNamedKinds = map[string]bool{
@@ -75,8 +89,55 @@ type designPartsVocabEntry struct {
 // designPartsVocabulary — the closed list of part names the construction allows (f3): the body
 // panels, EVERY separately cut piece of the list (bands, bindings, straps, collar, cuffs, pockets…),
 // every inner LAYER of joins.layers, and the openings. A painter must be able to paint each cut piece
-// on its own, so none of them may be folded into a body panel.
+// on its own, so none of them may be folded into a body panel. M5: an armhole's binding is no piece
+// (owner 06.10: the armhole edge is the edge of the body panel, the strap's binding runs on into it)
+// — the vocabulary says so instead of naming one.
 func designPartsVocabulary(doc entity.DesignJoinsDoc) string {
+	entries, armhole := designPartsVocabEntries(doc)
+	var lines []string
+	for _, e := range entries {
+		line := "- " + e.name
+		if e.what != "" {
+			line += " — " + e.what
+		}
+		lines = append(lines, line)
+	}
+	if armhole {
+		lines = append(lines, "- (no armhole binding: the strip along an armhole edge is the panel it finishes, or the strap it runs on into — never a part of its own)")
+	}
+	for _, it := range doc.Items {
+		if it.Kind == entity.DesignJoinKindOpening {
+			lines = append(lines, "- opening: bounded by "+strings.Join(it.BoundedBy, ", ")+" — no cloth: label it «opening», never a garment part")
+		}
+	}
+	return "PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening, never a binding or a band):\n" +
+		strings.Join(lines, "\n")
+}
+
+// designPartsArmholeFinish — a binding or band that only finishes an armhole (its id says armhole,
+// or it runs from the shoulder / neck point to the underarm): M5, no piece of its own.
+func designPartsArmholeFinish(it entity.DesignJoinItem) bool {
+	if !designPartsThinKinds[it.Kind] {
+		return false
+	}
+	for _, t := range strings.Split(strings.ToLower(it.ID), "_") {
+		if t == "armhole" || t == "armholes" || t == "scye" {
+			return true
+		}
+	}
+	path := it.Path()
+	if len(path) < 2 {
+		return false
+	}
+	a, b := designPartsPointBase(path[0]), designPartsPointBase(path[len(path)-1])
+	top := func(p string) bool { return strings.HasPrefix(p, "SP_") || strings.HasPrefix(p, "NP_") }
+	under := func(p string) bool { return strings.HasPrefix(p, "UA_") }
+	return top(a) && under(b) || top(b) && under(a)
+}
+
+// designPartsVocabEntries — the vocabulary's names in order, and whether an armhole finish was left
+// out of it (designPartsArmholeFinish).
+func designPartsVocabEntries(doc entity.DesignJoinsDoc) ([]designPartsVocabEntry, bool) {
 	var entries []designPartsVocabEntry
 	seen := map[string]bool{}
 	add := func(n, what string) {
@@ -131,8 +192,11 @@ func designPartsVocabulary(doc entity.DesignJoinsDoc) string {
 	case back:
 		add("back body", "the outer back body panel")
 	}
+	armhole := false
 	for _, it := range doc.Items {
 		switch {
+		case designPartsArmholeFinish(it):
+			armhole = true
 		case designPartsNamedKinds[it.Kind]:
 			add(designPartsNameOf(it), designPartsWhatOf(it))
 		case it.Kind == entity.DesignJoinKindSeam && designPartsHasToken(it.ID, "yoke"):
@@ -169,21 +233,7 @@ func designPartsVocabulary(doc entity.DesignJoinsDoc) string {
 		what += " is THIS part with this name on every view, never the outer body"
 		add(n, what)
 	}
-	var lines []string
-	for _, e := range entries {
-		line := "- " + e.name
-		if e.what != "" {
-			line += " — " + e.what
-		}
-		lines = append(lines, line)
-	}
-	for _, it := range doc.Items {
-		if it.Kind == entity.DesignJoinKindOpening {
-			lines = append(lines, "- opening: bounded by "+strings.Join(it.BoundedBy, ", ")+" — no cloth: label it «opening», or put it in the part whose inside shows through it (seen_through)")
-		}
-	}
-	return "PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening or the inside of the part seen through it, never a binding or a band):\n" +
-		strings.Join(lines, "\n")
+	return entries, armhole
 }
 
 // designPartsBodySynonym — layer names that only restate a body panel the vocabulary already has.
@@ -282,6 +332,33 @@ func designPartsSideOfPoint(p string) string {
 	return ""
 }
 
+// designPartsKindNoun — the piece a named kind is, as a name's last words.
+var designPartsKindNoun = map[string]string{
+	entity.DesignJoinKindBinding: "binding", entity.DesignJoinKindBindingWide: "binding", entity.DesignJoinKindBand: "band",
+	entity.DesignJoinKindStrap: "strap", entity.DesignJoinKindCollar: "collar", entity.DesignJoinKindPlacket: "placket",
+	entity.DesignJoinKindCuff: "cuff", entity.DesignJoinKindWaistband: "waistband", entity.DesignJoinKindSleeve: "sleeve",
+	entity.DesignJoinKindPocket: "pocket", entity.DesignJoinKindDrawcordChannel: "drawcord channel",
+}
+
+// designPartsPieceWords — words that name a cut piece (a name holding one names a piece, not an edge).
+var designPartsPieceWords = map[string]bool{
+	"binding": true, "band": true, "strap": true, "collar": true, "stand": true, "placket": true, "cuff": true,
+	"waistband": true, "sleeve": true, "pocket": true, "hood": true, "channel": true, "casing": true, "yoke": true,
+	"panel": true, "flap": true, "welt": true, "facing": true, "trim": true, "tape": true, "piping": true,
+	"ruffle": true, "frill": true, "belt": true, "loop": true, "tab": true, "lining": true, "cup": true,
+	"skirt": true, "tie": true, "body": true, "bodice": true, "rib": true, "lapel": true, "gusset": true,
+}
+
+// designPartsHasPieceWord — some word names a piece (also as the end of one word: «neckband»).
+func designPartsHasPieceWord(words []string) bool {
+	for _, w := range words {
+		if designPartsPieceWords[w] || strings.HasSuffix(w, "band") || strings.HasSuffix(w, "binding") {
+			return true
+		}
+	}
+	return false
+}
+
 // designPartsWordOf — id abbreviations spelled out («slv» → «sleeve», «bind» → «binding»).
 var designPartsWordOf = map[string]string{
 	"slv": "sleeve", "bind": "binding", "btn": "button", "pkt": "pocket", "wb": "waistband",
@@ -334,6 +411,11 @@ func designPartsNameOf(it entity.DesignJoinItem) string {
 	}
 	if len(words) == 1 && words[0] == entity.DesignJoinKindStand {
 		words = []string{"collar", "stand"}
+	}
+	// M5 · an id that names only an edge («armhole_R», «lower_back_edge») names the piece by its
+	// kind too: «right armhole binding», never «right armhole» — an edge is no part.
+	if noun := designPartsKindNoun[it.Kind]; noun != "" && !designPartsHasPieceWord(words) {
+		words = append(words, strings.Fields(noun)...)
 	}
 	n := strings.Join(words, " ")
 	if side != "" {

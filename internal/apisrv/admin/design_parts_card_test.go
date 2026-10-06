@@ -205,16 +205,24 @@ func TestDesignPartsCardPrompt(t *testing.T) {
 		`"split_needed"`,
 		// Ф1 (B1): openings, no invented pieces, the flank from the drawing.
 		"OPENINGS ARE NOT CLOTH",
-		`list it in "seen_through" with that part's label`,
 		`ONE part labelled "opening"`,
+		// M5: an opening is never given to a part; an edge is no part.
+		"never give an opening to a garment part",
+		"the hole inside an armhole (on a side view too)",
+		"AN EDGE IS NOT A PART",
 		"NEVER INVENT A PIECE",
 		"THE FLANK OF A SIDE VIEW COMES FROM THE DRAWING, NOT FROM ITS NAME",
-		`"seen_through":[{"view":"back","region":8,"label":"front body"}]`,
 		`"regions":{"front":[4],"back":[2],"side_l":[3]}`,
 		"Answer with JSON only",
 	} {
 		if !strings.Contains(designPartsCardSystemPrompt, must) {
 			t.Fatalf("the system prompt lost %q", must)
+		}
+	}
+	// M5 (owner 06.10): the Ф1 «paint the inside of the far piece through an opening» rule is gone.
+	for _, gone := range []string{"seen_through", "INSIDE (reverse side)", "so painting that part paints it too"} {
+		if strings.Contains(designPartsCardSystemPrompt, gone) {
+			t.Fatalf("the system prompt still says %q", gone)
 		}
 	}
 	// The old side rule named the flank by the view's name — wrong whenever the drawing faces the
@@ -243,9 +251,9 @@ func TestDesignPartsCardPrompt(t *testing.T) {
 	}
 }
 
-// Ф1: openings are one "opening" group per side; a seen_through region becomes the inside of the
-// part it shows (same key), wherever the model had put it.
-func TestParseDesignPartsCardOpeningsAndInside(t *testing.T) {
+// Ф1: openings are one "opening" group per side. M5: a seen_through region (no longer asked for) is
+// an opening too, wherever the model had put it — never «the inside» of a part.
+func TestParseDesignPartsCardOpeningsNeverCloth(t *testing.T) {
 	views := []designPartsCardView{{View: "front", Count: 4}, {View: "back", Count: 6}}
 	raw := `{"parts":[
 		{"label":"front body","regions":{"front":[1,2],"back":[5]}},
@@ -256,7 +264,6 @@ func TestParseDesignPartsCardOpeningsAndInside(t *testing.T) {
 	],"seen_through":[
 		{"view":"back","region":5,"label":"front body"},
 		{"view":"back","region":3,"label":"front body · inside"},
-		{"view":"back","region":4,"label":"ghost"},
 		{"view":"front","region":9,"label":"front body"},
 		{"view":"side_l","region":1,"label":"front body"}
 	]}`
@@ -273,9 +280,79 @@ func TestParseDesignPartsCardOpeningsAndInside(t *testing.T) {
 		"back": {
 			{Label: "left strap", Regions: []int{1}, PartKey: "left-strap"},
 			{Label: "back body", Regions: []int{4}, PartKey: "back-body"},
-			{Label: "opening", Regions: []int{2}, PartKey: "opening"},
-			{Label: "front body · inside", Regions: []int{3, 5}, PartKey: "front-body"},
+			{Label: "opening", Regions: []int{2, 3, 5}, PartKey: "opening"},
 			{Label: "unnamed", Regions: []int{6}, PartKey: "unnamed-back"},
+		},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts:\n got %+v\nwant %+v", parts, want)
+	}
+	for _, groups := range parts {
+		for _, g := range groups {
+			if strings.Contains(g.Label, "inside") {
+				t.Fatalf("an inside group is back: %+v", g)
+			}
+		}
+	}
+}
+
+// M5: an edge is no part («right armhole» was a part on card 38's side view); a hole is an opening.
+func TestParseDesignPartsCardEdgeIsNoPart(t *testing.T) {
+	views := []designPartsCardView{{View: "side_r", Count: 5}}
+	raw := `{"parts":[
+		{"label":"right armhole","regions":{"side_r":[1]}},
+		{"label":"neckline","regions":{"side_r":[2]}},
+		{"label":"armhole hole","regions":{"side_r":[3]}},
+		{"label":"right armhole binding","regions":{"side_r":[4]}},
+		{"label":"back","regions":{"side_r":[5]}}
+	]}`
+	parts, _, ok := parseDesignPartsCard(raw, views)
+	if !ok {
+		t.Fatal("must be usable")
+	}
+	want := []entity.DesignPartGroup{
+		{Label: "right armhole binding", Regions: []int{4}, PartKey: "right-armhole-binding"},
+		{Label: "back", Regions: []int{5}, PartKey: "back"},
+		{Label: "opening", Regions: []int{3}, PartKey: "opening"},
+		{Label: "unnamed", Regions: []int{1, 2}, PartKey: "unnamed-side_r"},
+	}
+	if !reflect.DeepEqual(parts["side_r"], want) {
+		t.Fatalf("got %+v", parts["side_r"])
+	}
+}
+
+// M5: with the construction's vocabulary, a label is mapped onto it (any word order, the one name
+// that holds it, the one name it holds); one it does not have is no part; the labels mapped onto
+// one name are one part.
+func TestParseDesignPartsCardVocabulary(t *testing.T) {
+	vocab := []string{"front body", "back body", "front neck binding", "left strap", "right strap", "inner front v-panel"}
+	views := []designPartsCardView{{View: "front", Count: 7}, {View: "back", Count: 3}}
+	raw := `{"parts":[
+		{"label":"Body Front","regions":{"front":[1],"back":[]}},
+		{"label":"left front body","regions":{"front":[2]}},
+		{"label":"inner v panel","regions":{"front":[3]}},
+		{"label":"left armhole binding","regions":{"front":[4]}},
+		{"label":"strap","regions":{"front":[5]}},
+		{"label":"neck binding","regions":{"front":[6]}},
+		{"label":"left strap","regions":{"back":[1]}},
+		{"label":"opening","regions":{"back":[2]}},
+		{"label":"right front body","regions":{"front":[7],"back":[3]}}
+	]}`
+	parts, _, ok := parseDesignPartsCard(raw, views, vocab...)
+	if !ok {
+		t.Fatal("must be usable")
+	}
+	want := map[string][]entity.DesignPartGroup{
+		"front": {
+			{Label: "front body", Regions: []int{1, 2, 7}, PartKey: "front-body"},
+			{Label: "inner front v-panel", Regions: []int{3}, PartKey: "inner-front-v-panel"},
+			{Label: "front neck binding", Regions: []int{6}, PartKey: "front-neck-binding"},
+			{Label: "unnamed", Regions: []int{4, 5}, PartKey: "unnamed-front"},
+		},
+		"back": {
+			{Label: "left strap", Regions: []int{1}, PartKey: "left-strap"},
+			{Label: "front body", Regions: []int{3}, PartKey: "front-body"},
+			{Label: "opening", Regions: []int{2}, PartKey: "opening"},
 		},
 	}
 	if !reflect.DeepEqual(parts, want) {
@@ -310,7 +387,7 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 	flats := map[string]int{"front": 11, "back": 21, "side_l": 31}
 	code := func(err error) codes.Code { return status.Code(err) }
 	row := func(view string, base int, key string) *entity.DesignPartsSuggestion {
-		return &entity.DesignPartsSuggestion{View: view, BaseMediaId: base, AlgoRev: "r2@s2.j0", Model: "m",
+		return &entity.DesignPartsSuggestion{View: view, BaseMediaId: base, AlgoRev: "r2@s3.j0", Model: "m",
 			Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: key}}}
 	}
 
@@ -336,7 +413,7 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 				t.Fatalf("%s: %v", name, err)
 			}
 		}
-		for _, n := range []int32{1, 61} {
+		for _, n := range []int32{0, 61} { // M5: one region is named too
 			r := req()
 			r.Views[1].RegionCount = n
 			_, err := srv.SuggestDesignPartsCard(context.Background(), r)
@@ -364,8 +441,8 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 		srv, design := newSrv(t)
 		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
 		design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s2.j0").Return(row("front", 11, "collar"), nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s2.j0").Return(row("back", 21, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s3.j0").Return(row("front", 11, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s3.j0").Return(row("back", 21, "collar"), nil)
 		resp, err := srv.SuggestDesignPartsCard(context.Background(), req())
 		if err != nil || !resp.GetCached() || len(resp.GetSuggestions()) != 2 {
 			t.Fatalf("got %+v %v", resp, err)
@@ -384,8 +461,8 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 			design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
 			design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
 			design.EXPECT().GetJoins(mock.Anything, card).Return(nil, nil)
-			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s2.j0").Return(row("front", 11, "collar"), nil)
-			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s2.j0").Return(back, nil)
+			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s3.j0").Return(row("front", 11, "collar"), nil)
+			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s3.j0").Return(back, nil)
 			_, err := srv.SuggestDesignPartsCard(context.Background(), req())
 			if code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), designGenerationDisabledMsg) {
 				t.Fatalf("a miss must reach the generation gate (off here): %v", err)
@@ -411,21 +488,21 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 // client (its equality check against PARTS_ALGO_REV would fail); a stale-prompt or stale-list row shown
 // as fresh; an unconfirmed list called confirmed.
 func TestPartsCacheKeyFollowsJoinsAndPrompt(t *testing.T) {
-	require.Equal(t, 2, designPartsPromptRev, "bumped 06.10; bump again on any labeller prompt change")
-	require.Equal(t, "regions.v4+parts.f3@s2.j7", designPartsCacheRev("regions.v4+parts.f3", 7))
+	require.Equal(t, 3, designPartsPromptRev, "bumped 07.10 (M5); bump again on any labeller prompt change")
+	require.Equal(t, "regions.v4+parts.f3@s3.j7", designPartsCacheRev("regions.v4+parts.f3", 7))
 	require.LessOrEqual(t, len(designPartsCacheRev("regions.v4+parts.f3", 99999)), entity.DesignPartsMaxAlgoRev)
-	require.Equal(t, "regions.v4+parts.f3", designPartsClientRev("regions.v4+parts.f3@s2.j7"))
+	require.Equal(t, "regions.v4+parts.f3", designPartsClientRev("regions.v4+parts.f3@s3.j7"))
 	require.Equal(t, "r2", designPartsClientRev("r2"))
-	require.Equal(t, "r2", designPartsSuggestionToPb(entity.DesignPartsSuggestion{AlgoRev: "r2@s2.j7"}).GetAlgoRev())
+	require.Equal(t, "r2", designPartsSuggestionToPb(entity.DesignPartsSuggestion{AlgoRev: "r2@s3.j7"}).GetAlgoRev())
 
 	rows := []entity.DesignPartsSuggestion{
-		{View: "front", AlgoRev: "r2@s2.j7"}, {View: "back", AlgoRev: "r2@s2.j6"}, {View: "side_l", AlgoRev: "r2@s1.j7"},
-		{View: "side_r", AlgoRev: "r2"}, {View: "front", AlgoRev: "r2@s2.j17"},
+		{View: "front", AlgoRev: "r2@s3.j7"}, {View: "back", AlgoRev: "r2@s3.j6"}, {View: "side_l", AlgoRev: "r2@s1.j7"},
+		{View: "side_r", AlgoRev: "r2"}, {View: "front", AlgoRev: "r2@s3.j17"},
 	}
 	got := designPartsCurrentRows(rows, &entity.DesignJoins{Rev: 7})
 	require.Len(t, got, 1)
 	require.Equal(t, "front", got[0].View)
-	require.Len(t, designPartsCurrentRows([]entity.DesignPartsSuggestion{{AlgoRev: "r2@s2.j0"}}, nil), 1, "no list = rev 0")
+	require.Len(t, designPartsCurrentRows([]entity.DesignPartsSuggestion{{AlgoRev: "r2@s3.j0"}}, nil), 1, "no list = rev 0")
 
 	// the cache is read under the list's rev
 	const card = 7
@@ -435,8 +512,8 @@ func TestPartsCacheKeyFollowsJoinsAndPrompt(t *testing.T) {
 	srv := &Server{repo: repo}
 	design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(map[string]int{"front": 11}, nil)
 	design.EXPECT().GetJoins(mock.Anything, card).Return(&entity.DesignJoins{Rev: 5}, nil)
-	design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s2.j5").Return(&entity.DesignPartsSuggestion{
-		View: "front", BaseMediaId: 11, AlgoRev: "r2@s2.j5", Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: "collar"}}}, nil)
+	design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s3.j5").Return(&entity.DesignPartsSuggestion{
+		View: "front", BaseMediaId: 11, AlgoRev: "r2@s3.j5", Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: "collar"}}}, nil)
 	resp, err := srv.SuggestDesignPartsCard(context.Background(), &pb_admin.SuggestDesignPartsCardRequest{TechCardId: card, AlgoRev: "r2",
 		Views: []*pb_admin.DesignPartsViewInput{{View: "front", BaseMediaId: 11, MarksMediaId: 12, RegionCount: 9}}})
 	require.NoError(t, err)

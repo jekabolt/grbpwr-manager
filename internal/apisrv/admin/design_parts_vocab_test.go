@@ -33,46 +33,46 @@ func partsVocabFixture(t *testing.T, name string) entity.DesignJoinsDoc {
 
 func TestPartsVocabularyGoldenCard38Beta(t *testing.T) {
 	got := designPartsVocabulary(partsVocabFixture(t, "c38-beta-joins.json"))
-	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening or the inside of the part seen through it, never a binding or a band):
+	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening, never a binding or a band):
 - front body — the outer front body panel
 - back body — the outer back body panel
 - front neck binding — a thin binding strip (narrow) cut as its own piece, along NP_R → CFN → NP_L
-- left armhole binding — a thin binding strip (narrow) cut as its own piece, along NP_L..SP_L:0.6 → UA_L
-- right armhole binding — a thin binding strip (narrow) cut as its own piece, along NP_R..SP_R:0.6 → UA_R
 - left strap — a strap cut as its own piece; it STARTS at NP_L..SP_L:0.3 and ends at MB_R; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
 - right strap — a strap cut as its own piece; it STARTS at NP_R..SP_R:0.3 and ends at MB_L; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
 - back top binding — a thin binding strip (narrow) cut as its own piece, along MB_L → MB_C → MB_R
 - inner front v-panel — layer 1, on the front: a separately cut inner piece; every region where it shows (through the sheer outer layer) is THIS part with this name on every view, never the outer body
-- opening: bounded by strap_L, strap_R, back_top_bind — no cloth: label it «opening», or put it in the part whose inside shows through it (seen_through)`
+- (no armhole binding: the strip along an armhole edge is the panel it finishes, or the strap it runs on into — never a part of its own)
+- opening: bounded by strap_L, strap_R, back_top_bind — no cloth: label it «opening», never a garment part`
 	require.Equal(t, want, got)
 	// every separately cut piece and the inner layer are their own names; nothing invented
-	for _, n := range []string{"- front neck binding —", "- left armhole binding —", "- right armhole binding —",
-		"- back top binding —", "- left strap —", "- right strap —", "- inner front v-panel —"} {
+	for _, n := range []string{"- front neck binding —", "- back top binding —", "- left strap —", "- right strap —",
+		"- inner front v-panel —"} {
 		require.Contains(t, got, n)
 	}
+	// M5 (owner 06.10): an armhole's binding is no piece — the armhole edge is the body panel's.
+	require.NotContains(t, got, "armhole binding —")
 	require.NotContains(t, got, "upper back")
 	require.NotContains(t, got, "back panel", "layer 0 is the outer shell: the body panels")
 }
 
 func TestPartsVocabularyGoldenCard38Layers(t *testing.T) {
 	got := designPartsVocabulary(partsVocabFixture(t, "c38-layers-joins.json"))
-	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening or the inside of the part seen through it, never a binding or a band):
+	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening, never a binding or a band):
 - front body — the outer front body panel
 - back body — the outer back body panel
 - front neckband — a thin band strip (narrow) cut as its own piece, along NP_R → CFN → NP_L
 - left strap — a strap cut as its own piece; it STARTS at NP_L and ends at MB_R; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
 - right strap — a strap cut as its own piece; it STARTS at NP_R and ends at MB_L; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
-- left front armhole — a thin binding strip (narrow) cut as its own piece, along SP_L → UA_L
-- right front armhole — a thin binding strip (narrow) cut as its own piece, along SP_R → UA_R
-- back top edge — a thin binding strip (narrow) cut as its own piece, along MB_R → MB_C → MB_L
+- back top edge binding — a thin binding strip (narrow) cut as its own piece, along MB_R → MB_C → MB_L
 - inner front v-panel — layer 1, on the front: a separately cut inner piece; every region where it shows (through the sheer outer layer) is THIS part with this name on every view, never the outer body
-- opening: bounded by strap_L, strap_R, back_top_edge — no cloth: label it «opening», or put it in the part whose inside shows through it (seen_through)`
+- (no armhole binding: the strip along an armhole edge is the panel it finishes, or the strap it runs on into — never a part of its own)
+- opening: bounded by strap_L, strap_R, back_top_edge — no cloth: label it «opening», never a garment part`
 	require.Equal(t, want, got)
 }
 
 func TestPartsVocabularyGoldenCard49(t *testing.T) {
 	got := designPartsVocabulary(partsVocabFixture(t, "c49-joins.json"))
-	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening or the inside of the part seen through it, never a binding or a band):
+	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening, never a binding or a band):
 - left front body — the body panel on the wearer's left of the centre front
 - right front body — the body panel on the wearer's right of the centre front
 - back body — the outer back body panel
@@ -89,6 +89,20 @@ func TestPartsVocabularyGoldenCard49(t *testing.T) {
 - right sleeve placket — cut as its own piece`
 	require.Equal(t, want, got)
 	require.NotContains(t, got, "- front body", "a centre-front placket splits the front")
+}
+
+// M5: an id that names only an edge names the piece by its kind too — an edge is no part.
+func TestPartsNameOfEdgeIdTakesItsKind(t *testing.T) {
+	require.Equal(t, "right armhole binding", designPartsNameOf(entity.DesignJoinItem{ID: "armhole_R", Kind: "binding"}))
+	require.Equal(t, "back lower edge binding", designPartsNameOf(entity.DesignJoinItem{ID: "lower_back_edge", Kind: "binding"}))
+	require.Equal(t, "front neck band", designPartsNameOf(entity.DesignJoinItem{ID: "neck_band_front", Kind: "band"}))
+	require.Equal(t, "neckband", designPartsNameOf(entity.DesignJoinItem{ID: "neckband", Kind: "band"}))
+	require.Equal(t, "left pocket", designPartsNameOf(entity.DesignJoinItem{ID: "pocket_L", Kind: "pocket"}))
+	// an armhole finish (by id, or shoulder → underarm) is no vocabulary piece; a neck binding is
+	require.True(t, designPartsArmholeFinish(entity.DesignJoinItem{ID: "armhole_R", Kind: "binding"}))
+	require.True(t, designPartsArmholeFinish(entity.DesignJoinItem{ID: "edge_L", Kind: "band", From: "NP_L..SP_L:0.4", To: "UA_L"}))
+	require.False(t, designPartsArmholeFinish(entity.DesignJoinItem{ID: "neck_bind", Kind: "binding", From: "NP_R", To: "NP_L"}))
+	require.False(t, designPartsArmholeFinish(entity.DesignJoinItem{ID: "armhole_L", Kind: "seam", From: "SP_L", To: "UA_L"}))
 }
 
 func TestPartsStrapNamedByItsNeckEnd(t *testing.T) {
