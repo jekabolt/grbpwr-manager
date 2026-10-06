@@ -68,7 +68,11 @@ func TestTwoDetailSheetNamesBothFramesAndAsksForTwo(t *testing.T) {
 	// ⚠ БЫЛО ДВА, СТАЛО ОДИН, И ЭТО ФИКС K-1, А НЕ ПОТЕРЯ. Второй картинкой была ПЛИТА ФЛЕТ-СЛОТА,
 	// которую флет-прогон брал молча: модель получала свой же старый флет как референс и
 	// переписывала его один в один. Уезжает то, что человек принёс, — его референс.
-	require.Len(t, job.References, 1, "уезжает референс карточки; плиты верстака — только по просьбе")
+	// T8 (владелец 06.10): деталь получает ещё и принятый FRONT — второй картинкой, под своей
+	// подписью; ни боков, ни старых деталей.
+	require.Len(t, job.References, 2, "референс карточки + принятый front; прочие плиты — только по просьбе")
+	require.Contains(t, job.Prompt, "image 2: this garment's accepted technical flat")
+	require.Contains(t, job.Prompt, "Image 2 is this garment's accepted technical flat")
 }
 
 // КОНТРОЛЬ ГРАНИЦЫ: РОВНО ОДНОЙ ДЕТАЛИ ЭТАЛОН 2 ПРИНАДЛЕЖИТ ПО-ПРЕЖНЕМУ.

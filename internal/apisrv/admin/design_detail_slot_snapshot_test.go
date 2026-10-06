@@ -66,8 +66,15 @@ func TestStartDesignRunFreezesTheNameOfAnEmptyDetailSlot(t *testing.T) {
 		}
 		return n
 	}
-	require.Zero(t, countPlates(snap),
-		"без просьбы флет-прогон не берёт плиты верстака — иначе модель получает готовый ответ")
+	// T8 (владелец 06.10): прогон, рисующий ТОЛЬКО детали, берёт принятые FRONT/BACK — и ничего
+	// больше. На этом верстаке занят один front: ровно одна плита, и это он.
+	require.Equal(t, 1, countPlates(snap),
+		"деталь получает принятые виды (front/back) — и только их")
+	for _, s := range snap.GetSlots() {
+		if s.GetMediaId() > 0 {
+			require.Equal(t, entity.DesignViewFront, s.GetViewKey())
+		}
+	}
 
 	// ── ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: попросили — взял. Без него проба зеленела бы на сборке, которая
 	// разучилась брать плиты ВООБЩЕ, и разницы между «не берёт без спроса» и «не умеет» не было бы.
@@ -125,7 +132,9 @@ func TestDesignEmptyDetailRecordIsNotAPicture(t *testing.T) {
 	bare := withDetails(nil, []string{entity.DesignViewFront})
 	asked := withDetails([]int32{17, 18},
 		[]string{entity.DesignViewDetail, entity.DesignViewDetail})
-	require.Equal(t, bare, asked,
+	// T8: прогон деталей добавляет принятый front (media 200) — первой плитой снимка; записи
+	// пустых деталей картинок не добавляют.
+	require.Equal(t, append([]int32{200}, bare...), asked,
 		"картинки прогона обязаны совпасть до элемента: запись без media_id не картинка")
 }
 

@@ -426,6 +426,8 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if err = attachSlotPictures(ctx, rep, benchPtrs); err != nil {
 			return err
 		}
+		// STALE FLAT DETAILS AND THEIR «KEEP» (0400): computed over the whole bench, in this snapshot.
+		entity.ApplyDesignDetailStaleness(band.Bench)
 		if band.Budget, err = loadBudget(ctx, db, s.Now()); err != nil {
 			return err
 		}
