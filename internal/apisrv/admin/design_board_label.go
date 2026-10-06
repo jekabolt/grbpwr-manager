@@ -456,17 +456,19 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		if !claimed {
 			continue
 		}
-		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID])
+		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], aiOn)
 	}
 	return nil
 }
 
 // designBoardLabelOne — the fences and the ladder for one claimed picture, then the write.
-func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string) {
+// aiOn is the sync's decision, frozen: a sync that took no hourly token never calls a model, even if
+// the route comes back on while it works (Codex Ф1 r2).
+func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn bool) {
 	logAttrs := []any{slog.Int("tech_card_id", cardID), slog.Int("media_id", pic.MediaID), slog.String("purpose", string(pic.Purpose))}
 	var label entity.DesignBoardLabel
-	if url == "" || designBoardNotAPicture(url) {
-		// No file, or a file a model cannot read as a picture: a person labels it.
+	if !aiOn || url == "" || designBoardNotAPicture(url) {
+		// AI off, no file, or a file a model cannot read as a picture: a person labels it.
 		label = entity.DesignBoardLabel{MediaId: pic.MediaID, Source: entity.DesignLabelSourceModelCheap, State: entity.DesignLabelStateFailed}
 	} else {
 		budget := s.ai.ChainBudget(entity.AIPurposeBoardLabel, designBoardLabelMaxTokens) +
