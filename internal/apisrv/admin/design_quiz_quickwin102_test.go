@@ -22,7 +22,7 @@ func TestQuizQuickwinRuleText(t *testing.T) {
 		`target — "What do we change from picture N?" (decision_key pic_change, kind multi)`,
 		`ACTIONABLE change, a verb or comparative plus the part ("narrower straps", "lower crossing point", "shallower open back"), never a bare noun ("strap width")`,
 		`detail — "What do we take from picture N?" (decision_key pic_take, kind multi)`,
-		"(pic_change, pic_take, pic_material, pic_mood or a more specific aspect)",
+		"(pic_change, pic_take or a more specific aspect)",
 	} {
 		require.Contains(t, designQuizSystemPrompt, w)
 	}

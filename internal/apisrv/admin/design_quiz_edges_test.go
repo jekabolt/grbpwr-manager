@@ -61,14 +61,15 @@ func TestDesignQuizEdgeKinds(t *testing.T) {
 	require.Len(t, lines, 1)
 	require.True(t, strings.HasPrefix(lines[0], "- edge: rib band — "), lines[0])
 
+	// T72: the edge walk is gone — ONE construction-finish question at most (main seam OR
+	// edge_finish_main with its exceptions follow-up), only when the finish IS the visible design.
 	for _, s := range []string{
-		"EDGES — every open edge gets its finish decided",
+		"the finish of every edge",
 		"decision_key edge_finish_main", "IS the edge_exceptions decision",
 		"Which edges are finished differently?",
 		"armhole_finish, sleeve_finish, front_edge_finish, waistband_finish, leg_finish, pocket_edge_finish, vent_finish, hood_edge_finish",
-		"part sm_hem_bound",
 		"rolled hem (baby hem) · piped edge (piping) · rib band · self-fabric band · elastic casing · drawcord casing · overlocked edge · lettuce edge",
-		"A lining does not hide the edges",
+		"never both, never two questions about stitching",
 	} {
 		require.Contains(t, designQuizSystemPrompt, s)
 	}
