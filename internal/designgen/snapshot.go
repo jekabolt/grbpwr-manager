@@ -1200,6 +1200,11 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	for i, rc := range attached {
 		refLines = append(refLines, "- image "+strconv.Itoa(i+1)+": "+rc.Caption)
 	}
+	if run.Kind == entity.DesignRunKindFlat && len(refLines) > 0 {
+		if l := flatMissingViewsLine(p.Views, attached); l != "" {
+			refLines = append(refLines, l)
+		}
+	}
 	write("references", strings.Join(refLines, "\n"))
 
 	// A fix names what it is fixing. Both spellings are read — the frozen scalar of an older run

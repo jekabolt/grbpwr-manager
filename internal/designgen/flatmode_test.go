@@ -41,7 +41,7 @@ func TestHandFlatCraft(t *testing.T) {
 			"- do not add ANY line, edge, band, panel, neckline, shoulder, seam or detail that is not in images 1 and 2; open areas stay plain white;\n" +
 			"- do not remove or straighten anything; where images 1 and 2 shows a strap, the finished drawing shows a strap of the same width in the same place.",
 		"Derive the views the designer did not draw (SIDE LEFT, SIDE RIGHT) yourself, consistent with images 1 and 2",
-		flatSideFacing, flatTraceRender,
+		flatSideFacing, withImg(flatTraceRender, "images 1 and 2"),
 	} {
 		require.Contains(t, got, s)
 	}

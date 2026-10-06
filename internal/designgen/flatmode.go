@@ -73,7 +73,7 @@ const (
 	flatTraceKeep    = "- keep every edge, band, strap, seam, hem and dashed line exactly where %IMG% has it, with the same proportions and the same position of each view;"
 	flatTraceAddNone = "- do not add ANY line, edge, band, panel, neckline, shoulder, seam or detail that is not in %IMG%; open areas stay plain white;"
 	flatTraceRemove  = "- do not remove or straighten anything; where %IMG% shows a strap, the finished drawing shows a strap of the same width in the same place."
-	flatTraceRender  = "Improve only the rendering: uniform precise vector-style line work, heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching; the outline follows the given silhouette exactly; cloth drawn white."
+	flatTraceRender  = "Improve only the rendering: uniform precise vector-style line work, heavier weight for outer contours, thin lines for internal design lines, dashed lines only where %IMG% has them; the outline follows the given silhouette exactly; cloth drawn white."
 
 	// 61-CODEX-ROUTE out/cx8/prompt-role.txt, generalised.
 	flatRolesHead  = "Input roles are strict and non-interchangeable:"
@@ -172,7 +172,7 @@ func flatHandFlatCraft(p runParams, detailNames []string, attached []refCaption)
 		paras = append(paras, "Derive the views the designer did not draw ("+strings.Join(missing, ", ")+
 			") yourself, consistent with "+img+": the same construction, the same proportions and length, every edge, seam, band, strap, pocket and closure where the designer's flats put it, seen from that side; add nothing they do not imply. "+flatSideFacing)
 	}
-	paras = append(paras, flatTraceRender)
+	paras = append(paras, withImg(flatTraceRender, img))
 	if roles := flatPhotoRolesParagraph(attached, st, img); roles != "" {
 		paras = append(paras, roles)
 	}

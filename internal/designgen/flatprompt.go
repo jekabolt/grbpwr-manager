@@ -33,12 +33,12 @@ import (
 //     separate entity drawn OVER the picture, never baked into it.
 const (
 	// Эталон 1 — silhouette views of a whole garment.
-	// Wave 10 (owner 06.10): the old checklist («silhouette, … princess seams, darts, pleats, pockets, …»)
+	// Wave 10 R19 (102-ARTIFACTS §2.2, owner 06.10): no element checklist of any kind; the old checklist («silhouette, … princess seams, darts, pleats, pockets, …»)
 	// invited the model to add exactly those; the line now asks for what is visible and nothing else.
-	flatIdentifyGarment = "Reproduce exactly what is visible in the reference photos; do not add any seam, dart, pocket, vent or detail that is not visible. Ignore the model, pose, background, lighting and fabric color of the photos; draw only the garment."
+	flatIdentifyGarment = "Draw only what the photos show. Every line in the drawing must correspond to an edge, seam, opening, closure or row of stitching that is visible in a photo. Where the photos show plain cloth, draw plain white with no lines. A view, or a part of a view, that no photo shows is drawn as the plainest continuation of the photographed views — same hem line, same width, same sleeves — with no seam, stitching, vent, pocket or shaping added to it. When unsure whether something is there, leave it out: a missing line is a small error, an invented one is a different garment. Do not complete the garment from a typical example of its kind. Draw every seam that is visible in the photos, including faint seams on dark fabric; add nothing that is not visible. Ignore the model, pose, background, lighting and fabric colour; draw only the garment."
 
-	// Wave 10: «with subtle body-form shaping» removed — it invited waist shaping the garment does not have.
-	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
+	// 102-ARTIFACTS §2.1: «fine dashed lines for topstitching…» ordered stitching on every edge; «with subtle body-form shaping» removed — it invited waist shaping the garment does not have.
+	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger."
 
 	flatExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
 
@@ -46,7 +46,7 @@ const (
 	// Wave 10 (Codex): visible-only, like the garment line — the old checklist invited invented seams/layers/hardware.
 	flatIdentifyDetail = "Reproduce the detail exactly as it is visible in the reference photos and the accepted flats; do not add any seam, layer, stitch row, fold or hardware that is not visible. Ignore the model, pose, background, lighting, fabric color and texture of the photos; draw only the detail."
 
-	flatStyleDetail = "Style: black vector line art on a plain white background. Heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching. Flat, technical, true proportions. No human body, no mannequin, no hanger."
+	flatStyleDetail = "Style: black vector line art on a plain white background. Heavier weight for the outer contour, thin solid lines for the edges and seams the photos and the accepted flats show; dashed lines only for stitching actually visible there, otherwise none. Flat, technical, true proportions. No human body, no mannequin, no hanger."
 
 	flatExcludedDetail = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements."
 
@@ -192,7 +192,7 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 // The no-reference identification variants: the same construction vocabulary as the owner's
 // paragraphs, minus every clause that points at a reference image.
 const (
-	flatIdentifyGarmentNoRef = "Draw exactly what the words above state; do not add any seam, dart, pocket, vent or detail they do not name."
+	flatIdentifyGarmentNoRef = "Draw exactly what the words above state; do not add any seam, dart, pocket, vent, stitching or detail they do not name; no dashed lines unless the words name visible stitching."
 
 	flatIdentifyDetailNoRef = "Draw the detail exactly as the words above and the accepted flats show it; add nothing they do not show."
 )
@@ -401,4 +401,45 @@ func flatHasSideView(views []string) bool {
 		}
 	}
 	return false
+}
+
+// flatMissingViewsLine — 102-ARTIFACTS §2.3: the views this garment sheet asks for that no attached
+// picture shows, said once under the references («- no photo shows the BACK, the SIDE LEFT or the SIDE
+// RIGHT»), so the identify paragraph's «a view no photo shows» has its subject. A photo's reference role
+// (front / back / side_l / side_r), a designer's flat (front_flat / back_flat) and a bench plate's view
+// count as showing that view. "" for a detail run or when every asked view is shown.
+func flatMissingViewsLine(views []string, attached []refCaption) string {
+	if detailOnlyRun(views) {
+		return ""
+	}
+	shown := map[string]bool{}
+	for _, rc := range attached {
+		if rc.View != "" {
+			shown[rc.View] = true
+		}
+		switch rc.Role {
+		case entity.DesignRefRoleFrontFlat:
+			shown[entity.DesignViewFront] = true
+		case entity.DesignRefRoleBackFlat:
+			shown[entity.DesignViewBack] = true
+		default:
+			if rc.FromRef && rc.Role != "" {
+				shown[rc.Role] = true
+			}
+		}
+	}
+	var missing []string
+	for _, v := range views {
+		if v == entity.DesignViewDetail || shown[v] {
+			continue
+		}
+		missing = append(missing, "the "+displayView(v))
+	}
+	switch len(missing) {
+	case 0:
+		return ""
+	case 1:
+		return "- no photo shows " + missing[0]
+	}
+	return "- no photo shows " + strings.Join(missing[:len(missing)-1], ", ") + " or " + missing[len(missing)-1]
 }

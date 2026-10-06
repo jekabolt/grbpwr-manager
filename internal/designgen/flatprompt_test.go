@@ -14,10 +14,10 @@ import (
 // assertion at once and any "improvement" of the owner's wording would pass silently. These copies
 // are the reference the constants are held to.
 const (
-	// Wave 10 (owner 06.10): «with subtle body-form shaping» removed by the owner.
-	ownerStyleGarment    = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
+	// Wave 10 R19 (owner 06.10, 102-ARTIFACTS §2.1/§2.4): dashed lines only for visible stitching.
+	ownerStyleGarment    = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger."
 	ownerExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
-	ownerStyleDetail     = "Style: black vector line art on a plain white background. Heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching. Flat, technical, true proportions. No human body, no mannequin, no hanger."
+	ownerStyleDetail     = "Style: black vector line art on a plain white background. Heavier weight for the outer contour, thin solid lines for the edges and seams the photos and the accepted flats show; dashed lines only for stitching actually visible there, otherwise none. Flat, technical, true proportions. No human body, no mannequin, no hanger."
 	ownerExcludedDetail  = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements."
 	ownerOutput          = "Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic."
 )
@@ -191,4 +191,15 @@ func TestBrokenSnapshotStillGetsTheCraft(t *testing.T) {
 	require.Contains(t, got, ownerStyleGarment)
 	require.Contains(t, got, ownerExcludedGarment)
 	require.Contains(t, got, ownerOutput)
+}
+
+// TestFlatSaysWhichViewsNoPhotoShows — 102-ARTIFACTS §2.3: the asked views no attached picture shows.
+func TestFlatSaysWhichViewsNoPhotoShows(t *testing.T) {
+	four := []string{"front", "back", "side_l", "side_r"}
+	front := []refCaption{{FromRef: true, Role: "front"}}
+	require.Equal(t, "- no photo shows the BACK, the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, front))
+	require.Equal(t, "- no photo shows the BACK", flatMissingViewsLine([]string{"front", "back"}, front))
+	all := []refCaption{{FromRef: true, Role: "front"}, {FromRef: true, Role: "back_flat"}, {FromRef: true, Role: "side_l"}, {View: "side_r"}}
+	require.Equal(t, "", flatMissingViewsLine(four, all))
+	require.Equal(t, "", flatMissingViewsLine([]string{"detail"}, front))
 }
