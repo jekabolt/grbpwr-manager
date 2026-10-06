@@ -150,6 +150,17 @@ func startProbeRun(t *testing.T, rep dependency.Repository, card int, est string
 	return started
 }
 
+// startSettledProbeRun — a flat run that does not stay in flight: started and cancelled while
+// pending (CancelRun releases its reservation). M8 (07.10): a card holds ONE flat run in flight, so a
+// probe that needs many runs on one card (a page of history) settles each before the next.
+func startSettledProbeRun(t *testing.T, rep dependency.Repository, card int, est string) *entity.DesignRunStarted {
+	t.Helper()
+	started := startProbeRun(t, rep, card, est)
+	_, err := rep.Design().CancelRun(context.Background(), started.Run.Id, "probe")
+	require.NoError(t, err)
+	return started
+}
+
 func expireClaim(t *testing.T, raw *sql.DB, runID int) {
 	t.Helper()
 	_, err := raw.Exec(
@@ -225,9 +236,10 @@ func TestDesignDBStartRunIsNeverRefusedForMoney(t *testing.T) {
 	card := probeCard(t, raw)
 	ctx := context.Background()
 
-	// Сумма, которая при прежнем потолке в $1.00 закрывала полосу на день с запасом.
+	// Сумма, которая при прежнем потолке в $1.00 закрывала полосу на день с запасом. Каждый прогон —
+	// на своей карточке: флэт карточки в полёте один (M8), а резерв дня общий на все карточки.
 	for i := 0; i < 4; i++ {
-		startProbeRun(t, rep, card, "0.60")
+		startProbeRun(t, rep, probeCard(t, raw), "0.60")
 	}
 	started, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
 		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindFlat,
@@ -1481,7 +1493,7 @@ func TestDesignDBClaimUpdateRepeatsTheClaimablePredicate(t *testing.T) {
 	require.Equal(t, neighbour, token.String, "токен соседа устоял")
 
 	// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: свободную строку тот же оператор берёт.
-	free := startProbeRun(t, rep, card, "0.10").Run.Id
+	free := startProbeRun(t, rep, probeCard(t, raw), "0.10").Run.Id // M8: one flat in flight per card
 	taker := uuid.NewString()
 	require.EqualValues(t, 1, execProbeStatement(t, raw, stmts[0], map[string]any{
 		"id": free, "tok": taker, "lease_micros": time.Minute.Microseconds(),

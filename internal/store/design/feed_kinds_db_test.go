@@ -40,9 +40,15 @@ func TestDesignDBDraftIdeaLeavesTheFeedAndStaysInTheLedger(t *testing.T) {
 	ctx := context.Background()
 	card := probeCard(t, raw)
 
-	// ДВА КАРТИНОЧНЫХ ПРОГОНА — то, что лента показывать обязана.
+	// ДВА КАРТИНОЧНЫХ ПРОГОНА — то, что лента показывать обязана. Второй — рендер: флэт карточки в
+	// полёте один (M8), а оба обязаны остаться ждущими — резерв ниже считает их обоих.
 	firstFlat := startProbeRun(t, rep, card, "0.20")
-	secondFlat := startProbeRun(t, rep, card, "0.20")
+	secondFlat, err := rep.Design().StartRun(ctx, entity.DesignRunStart{
+		TechCardId: card, ClientRequestId: uuid.NewString(), Kind: entity.DesignRunKindRender,
+		RequestedOutputs: 1, Author: "probe",
+		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.20"), Valid: true},
+	})
+	require.NoError(t, err)
 
 	// ЧЕРНОВИК ИДЁТ ЧЕРЕЗ ТУ ЖЕ ДЕНЕЖНУЮ МАШИНУ, ЧТО И ОСТАЛЬНЫЕ, И ЭТО НАМЕРЕННО: проба, которая
 	// клала бы его прямым INSERT, доказывала бы про ленту и молчала бы про деньги — то есть ровно
