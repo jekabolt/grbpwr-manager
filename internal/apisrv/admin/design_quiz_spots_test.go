@@ -58,23 +58,30 @@ func TestQuizSpotsParseAndShapeGate(t *testing.T) {
 
 func TestQuizSpotsRoleAndWholePictureGates(t *testing.T) {
 	one := `[{"label":"inner strap","x":420,"y":310,"scale":"detail"}]`
-	raw := `{"questions":[` + strings.Join([]string{
-		spotQ("on_target", "pic_edges", "1", one),
-		spotQ("on_detail", "pic_detail", "2", one),
-		spotQ("on_material", "pic_fabric", "3", one),
-		spotQ("on_mood", "pic_colour", "4", one),
-		spotQ("on_unmarked", "pic_edges2", "5", one),
-		spotQ("not_a_picture", "collar_type", "0", one),
-		spotQ("whole_match", "pic_match", "1", one),
-		spotQ("match_a_part", "pic_match_collar", "1", one),
-		spotQ("whole_material", "pic_material", "2", one),
-	}, ",") + `]}`
-	qs, _, ok := parseDesignQuizBoard(raw, "top", nil, []int{501, 502, 503, 504, 505}, spotRoles())
-	require.True(t, ok)
-	require.Len(t, qs, 9)
+	// Two batches: T72 keeps at most designQuizMaxPerPicture (2) questions per picture and 8 per run.
+	raws := []string{
+		`{"questions":[` + strings.Join([]string{
+			spotQ("on_target", "pic_edges", "1", one),
+			spotQ("on_detail", "pic_detail", "2", one),
+			spotQ("on_material", "pic_fabric", "3", one),
+			spotQ("on_mood", "pic_colour", "4", one),
+			spotQ("on_unmarked", "pic_edges2", "5", one),
+			spotQ("not_a_picture", "collar_type", "0", one),
+		}, ",") + `]}`,
+		`{"questions":[` + strings.Join([]string{
+			spotQ("whole_match", "pic_match", "1", one),
+			spotQ("match_a_part", "pic_match_collar", "1", one),
+			spotQ("whole_material", "pic_material", "2", one),
+		}, ",") + `]}`,
+	}
 	got := map[string]int{}
-	for _, q := range qs {
-		got[q.ID] = len(q.Spots)
+	for i, raw := range raws {
+		qs, _, ok := parseDesignQuizBoard(raw, "top", nil, []int{501, 502, 503, 504, 505}, spotRoles())
+		require.True(t, ok)
+		require.Len(t, qs, []int{6, 3}[i])
+		for _, q := range qs {
+			got[q.ID] = len(q.Spots)
+		}
 	}
 	require.Equal(t, map[string]int{
 		// 06.10: the key is not a gate — a detail picture keeps its spots under any key.
@@ -85,9 +92,11 @@ func TestQuizSpotsRoleAndWholePictureGates(t *testing.T) {
 	}, got)
 
 	// No roles known (counted parse, no board): no spots at all.
-	qs, _, _ = parseDesignQuizCounted(raw, "top", nil)
-	for _, q := range qs {
-		require.Empty(t, q.Spots, q.ID)
+	for _, raw := range raws {
+		qs, _, _ := parseDesignQuizCounted(raw, "top", nil)
+		for _, q := range qs {
+			require.Empty(t, q.Spots, q.ID)
+		}
 	}
 }
 

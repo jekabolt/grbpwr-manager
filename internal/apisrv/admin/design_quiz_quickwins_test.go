@@ -184,7 +184,8 @@ func TestDesignQuizParseStatsUnusable(t *testing.T) {
 		items = append(items, quizQ(fmt.Sprintf("q_%d", i), "design", "whole", fmt.Sprintf("Question %d?", i), "a", "b"))
 	}
 	_, st, _ = parseDesignQuizCounted(`{"questions":[`+strings.Join(items, ",")+`]}`, "tee", nil)
-	require.Equal(t, designQuizParseStats{raw: 33, kept: 30, capped: 3}, st)
+	// T72: the hard cap is designQuizMaxQuestions (8); the rest counts as capped.
+	require.Equal(t, designQuizParseStats{raw: 33, kept: designQuizMaxQuestions, capped: 33 - designQuizMaxQuestions}, st)
 }
 
 // W-B3: the base size's POM values reach the prompt with size and unit; an empty chart adds nothing.
@@ -234,7 +235,7 @@ func TestDesignQuizGroupChecklistInUserTurn(t *testing.T) {
 		"bottoms: waistband (width"} {
 		require.NotContains(t, designQuizSystemPrompt, gone, "family checklists left the system prompt")
 	}
-	require.Contains(t, designQuizSystemPrompt, "Fit, every wearable garment:")
+	require.Contains(t, designQuizSystemPrompt, "THE ESSENTIALS, in priority order")
 	require.Contains(t, designQuizSystemPrompt, "is in the user message, after the card data")
 
 	jacket := designQuizUserPrompt(nil, nil, nil, "jacket", "")

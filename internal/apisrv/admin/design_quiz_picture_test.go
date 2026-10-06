@@ -79,11 +79,13 @@ func TestQuizPictureDedupeAcrossRenumbering(t *testing.T) {
 }
 
 func TestQuizPicturePromptRule(t *testing.T) {
-	require.Contains(t, designQuizSystemPrompt, `PICTURES — ask at least ONE question about EACH attached picture, tagged "picture": N`)
+	// T72: at most ONE question per target or detail picture; a material or mood picture gets none.
+	require.Contains(t, designQuizSystemPrompt, `Pictures: at most ONE question per target or detail picture, tagged "picture": N`)
 	require.Contains(t, designQuizSystemPrompt, `"picture":0`)
-	for _, w := range []string{"target — ", "detail — ", "material — ", "mood or unmarked — ", "decision_key pic_<aspect>"} {
+	for _, w := range []string{"target — ", "detail — ", "A material or mood picture gets no question of its own", "decision_key pic_<aspect>"} {
 		require.Contains(t, designQuizSystemPrompt, w)
 	}
+	require.NotContains(t, designQuizSystemPrompt, "at least ONE question about EACH")
 
 	card := &entity.TechCard{
 		QuizAnswers: []entity.TechCardQuizAnswer{

@@ -76,28 +76,28 @@ func TestDesignQuizSeamHumaniserAndPrompts(t *testing.T) {
 	require.Contains(t, shirt, " · colourways: how many")
 	require.NotContains(t, shirt, "knit seams")
 	require.Contains(t, designQuizUserPrompt(nil, nil, nil, "tee", ""), "knit seams: 514 / 516 / 607")
-	require.Contains(t, designQuizSystemPrompt, "SEAMS AND INSIDE FINISH")
+	require.Contains(t, designQuizSystemPrompt, "ONE construction-finish question is the only exception")
 	require.Contains(t, designQuizSystemPrompt, "main_seam, extra_seams, neck_finish")
 	require.Contains(t, designQuizSystemPrompt, "label_set")
 
-	// 70-SEAMS §B in depth: count AND colours together when the card has none; the per-colourway
-	// keys only when the garment has the thing; existing colourways → only what they leave open.
+	// 70-SEAMS §B trimmed by T72: count AND colours together when the card has none — and nothing
+	// more about colourways (thread, hardware finish, wash, artwork are the construction draft's).
 	for _, s := range []string{
-		"COLOURWAYS —",
+		"Colourways, part col_palette, category design",
 		"ask colourway_count AND colourway_colours, both, adjacent",
 		"kind multi for the colours",
-		"colour_blocking when it has panels",
-		"thread_colour when topstitching is visible",
-		"hardware_finish when it has metal hardware",
-		"wash_per_colourway when the fabric is washed",
-		"print_per_colourway when it carries artwork",
-		"Colourways listed under Known: ask only what they leave open",
-		"No padding",
+		"Colourways listed under Known: nothing",
+		"Nothing else about colourways",
+		"never pad",
 	} {
 		require.Contains(t, designQuizSystemPrompt, s)
 	}
+	for _, gone := range []string{"colour_blocking when it has panels", "thread_colour when topstitching is visible",
+		"wash_per_colourway when the fabric is washed", "print_per_colourway when it carries artwork"} {
+		require.NotContains(t, designQuizSystemPrompt, gone)
+	}
 	require.Contains(t, shirt, "how many and the main colours, together, when none is on the card")
-	require.Contains(t, shirt, "only when the garment has them")
+	require.Contains(t, shirt, "nothing more about colourways")
 }
 
 func TestDesignQuizColourwayBrief(t *testing.T) {

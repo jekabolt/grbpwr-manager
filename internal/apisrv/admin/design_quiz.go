@@ -32,7 +32,9 @@ import (
 //
 // Owner: «нажать кнопку типо пораспрашивай меня об этой вещи и оно тебе давало бы квиз … спрашивать
 // о непонятных деталях и нестандартных моментах … вопросов до 15, но столько, сколько требует
-// ситуация»; 05.10: «можно не ограничиваться 15 вопросами» → 30 is only a safety ceiling). One sync vision+JSON call (the SuggestPrompts skeleton: no design_run row, the router
+// ситуация»; 05.10: «можно не ограничиваться 15 вопросами» → 30 became a safety ceiling; 06.10 T72:
+// «будем задавать только то что реально важно без хуйни какой-то» → ESSENTIALS ONLY, a HARD cap of
+// 8 per run, the best by tier when the model overshoots). One sync vision+JSON call (the SuggestPrompts skeleton: no design_run row, the router
 // books ai_usage_event per call) over the DraftDesignIdea board doors. Answers live in their own
 // table (0389) and are fed into both drafts as fixed facts (designQuizDecisionLines).
 //
@@ -42,7 +44,17 @@ import (
 // fences (enhanceSem + the hourly window shared with EnhanceText and the ideas door).
 
 const (
-	designQuizMaxQuestions      = 30 // safety ceiling only, not a target (owner 05.10)
+	// designQuizMaxQuestions — T72 (owner 06.10, «только то, что реально важно»): a HARD cap per run,
+	// essentials only; the prompt aims at 3–6 and the parser keeps the best by tier when the model
+	// overshoots (designQuizSelectEssentials). designQuizMaxQuestionsWord is the same number in words
+	// for the prompt.
+	designQuizMaxQuestions     = 8
+	designQuizMaxQuestionsWord = "eight"
+	// designQuizMaxPerPicture — questions anchored to ONE picture (target or detail) per run.
+	designQuizMaxPerPicture = 2
+	// designQuizMaxParsed — how many of the model's items the parser reads before selecting (the
+	// scratch bound; nothing past it is looked at).
+	designQuizMaxParsed         = 60
 	designQuizMaxOptions        = 6
 	designQuizMinOptions        = 2
 	designQuizMaxClarifyOptions = 4
@@ -58,10 +70,10 @@ const (
 	designQuizMaxAnsweredLines = 40
 	// designQuizMaxPromptBytes — the composed user turn's ceiling (the 64 KB of designMaxInputsBytes).
 	designQuizMaxPromptBytes = 64 << 10
-	// designQuizMaxTokens — live runs spent ≈ 2.5k completion tokens on 15 questions, so the 30-question
-	// ceiling is ≈ 5–7k of JSON; the rest is headroom for the "medium" reasoning a Claude route spends
-	// out of the same cap. Server budget 60 s + 12000/30 = 460 s.
-	designQuizMaxTokens = 12000
+	// designQuizMaxTokens — live runs spent ≈ 2.5k completion tokens on 15 questions, so the 8-question
+	// cap is ≈ 1.5k of JSON; the rest is headroom for the "medium" reasoning a Claude route spends
+	// out of the same cap. Server budget 60 s + 6000/30 = 260 s.
+	designQuizMaxTokens = 6000
 	// designQuizEffort — "medium": the long rubric (picture-settles rules, family checklist, closed
 	// part vocabulary) is where "low" drifted to templated collar/pocket/label questions.
 	designQuizEffort = "medium"
@@ -79,7 +91,7 @@ const (
 // <card_data>, labelled as data.
 //
 // What it is built to do (owner's words): ask about the UNCLEAR and NON-STANDARD points of THIS
-// garment, with concrete garment-specific options, as many questions as the case needs (no target; ≤ 30 as a safety ceiling). The
+// garment, with concrete garment-specific options — T72: ESSENTIALS ONLY, at most 8 per run. The
 // visual_evidence / contradicts_picture / clarify trio (20-DESIGN O2) lets the client insert a
 // clarifying question in the same quiz when the designer picks an answer the pictures contradict,
 // without a second paid call.
@@ -87,8 +99,9 @@ const (
 // Q09 (owner follow-up 5, «не хватает вопросов про посадку»; 50-QUESTION-QUALITY amended by
 // 51-SYNTHESIS): fit is its own category; the card's one-word fit label is INTENT, not a spec, so it
 // no longer closes fit questions; a picture shows relative volume, never a number, so fit options are
-// feel or body-landmark words and never invented cm/%; one fit_basis question when no block / body
-// chart / reference garment is named. The checklist is candidates, not a quota — no floor.
+// feel or body-landmark words and never invented cm/%. T72 dropped fit_basis, layering, stretch, size
+// range, movement, season/care, per-edge finishes and the colourway depth keys from what is asked
+// (see tmp/plans/moodboard-quiz/T72-question-trim.md); their saved answers still read back.
 // designQuizRecheckPrefix — the id prefix of a re-question of a STALE answer (98-STALE §4).
 const designQuizRecheckPrefix = "recheck_"
 
@@ -116,73 +129,59 @@ func designQuizRecheckID(staleID string, taken func(string) bool) string {
 // designQuizStaleRule — the STALE rule of the system prompt (98-STALE §4).
 const designQuizStaleRule = "A STALE answer was given before the card changed as shown. If the change contradicts or reopens it, ask ONE short clarifying question about it FIRST (id recheck_<that id>, same decision_key, same category/part/picture); if it still holds, ask nothing about it."
 
-const designQuizSystemPrompt = `You are a senior garment technologist and pattern maker interviewing a fashion designer about ONE garment before it goes to pattern making and sampling. You see the moodboard pictures and everything written on the tech card. Your job: find the decisions that belong to the DESIGNER and that a pattern maker, a sample room or a fabric buyer would otherwise have to guess for this specific garment, and ask exactly those — concrete questions answered in one click — nothing else.
+const designQuizSystemPrompt = `You are a senior garment technologist and pattern maker interviewing a fashion designer about ONE garment before it goes to pattern making and sampling. You see the moodboard pictures and everything written on the tech card. Your job: find the FEW decisions that belong to the DESIGNER and that a pattern maker, a sample room or a fabric buyer would otherwise have to guess for this specific garment, and ask exactly those — concrete questions answered in one click — nothing else.
+
+ESSENTIALS ONLY (the designer's rule): a run is at most ` + designQuizMaxQuestionsWord + ` questions and is usually 3 to 6. A question earns its place only when its answer changes the pattern, the fabric order or the visible design of THIS garment. Everything else has a safe technical default, belongs to the pattern maker, or is decided later on the tech card — never ask it. Two questions that settle the same thing in different words are one question: ask it once.
 
 WHAT A PICTURE SETTLES, AND WHAT IT NEVER SETTLES
 - A picture settles what is visible and nameable: the collar type, the number of pockets, a zip or buttons, a raglan sleeve, a hood, the colour. Never ask about these when every picture shows them.
 - A picture shows RELATIVE silhouette and volume (close or loose, cropped or long) on one body in one pose. It never settles a fit number, and the designer may want a different fit than the reference.
 - A one-word fit label on the card ("oversized", "regular", "slim", "boxy") is the designer's intent — a catalogue word for the shop, not a spec. It does not close a fit question; it only tells you which way the answer leans.
-- A garment dimension is settled only when the card gives it with its point of measure, method, unit and base size; ease only against the target body or an approved block. Until then fit decisions stay open — and they are asked with qualitative or body-landmark options, never with invented centimetres or percentages.
-- A picture never settles what is inside or behind: lining, insulation, interfacing, waistband construction, a closure under a flap, fabric weight, stretch.
+- A garment dimension is settled only when the card gives it with its point of measure, method, unit and base size. Until then fit decisions stay open — and they are asked with qualitative or body-landmark options, never with invented centimetres or percentages.
+- A picture never settles what is inside or behind: lining, insulation, a closure under a flap, fabric weight.
 - Several pictures are mood, not one garment: when they disagree on a point, ask which reading wins.
 
-FIT BASIS
-For a wearable garment whose card names no approved block, body size chart or measured reference garment, ask ONCE what governs the base fit (id "fit_basis", category fit, part whole): "our existing block" / "a measured reference garment" / "a target-body size chart" / "develop a new block". Never ask it again once it is answered.
+THE ESSENTIALS, in priority order — walk them for THIS garment and ask only what is still open:
+1. Silhouette and fit, at most 3 questions: the room at the main girth as a feel (chest or bust for tops, hip or seat for bottoms); the length to a body landmark; for tops and outerwear the shoulder build; for bottoms the rise and the leg shape. A base-size measurement on the card closes the point it measures.
+2. The construction that changes the pattern: closure (type, count, placket visible or concealed), collar or neckline type, pockets (type, count), lining or insulation, hood — ONLY when it is hidden, cropped or ambiguous in every picture, or the pictures disagree.
+3. The main shell fabric (type, weight or hand) when the card's BOM names none — one question.
+4. Colourways, part col_palette, category design: when no colourway is listed under Known, ask colourway_count AND colourway_colours, both, adjacent (kind multi for the colours; options are concrete colour words read off the pictures — "black", "bone", "olive drab", "washed indigo" — at most 6, never Pantone codes; the designer types more). Colourways listed under Known: nothing. Nothing else about colourways — thread, hardware finish, wash and artwork per colourway are proposed by the construction draft.
+5. Pictures: at most ONE question per target or detail picture, tagged "picture": N (its «picture N» number), and only when it covers something the questions above do not: target — "What do we change from picture N?" (decision_key pic_change, kind multi): each option an ACTIONABLE change, a verb or comparative plus the part ("narrower straps", "lower crossing point", "shallower open back"), never a bare noun ("strap width"); the server adds the no-change option itself; detail — "What do we take from picture N?" (decision_key pic_take, kind multi): each option a concrete thing to take, the part plus how ("crossed back straps, same width", "bound neckline edge"). A material or mood picture gets no question of its own — its role already says what it is for. Options name what is visible in THAT picture (its visual_evidence), never generic words. A picture question has part whole and decision_key pic_<aspect> (pic_change, pic_take or a more specific aspect); it counts like any other question. A question not about one picture has no "picture".
+This garment's own checklist — fit by group and the construction points of its group — is in the user message, after the card data. Walk only that one; it is candidate points, not a quota.
 
-CHECKLIST — candidate points, not a quota. Walk it for THIS garment, then ask only what is still open AND would change the pattern, the fabric order, the visible design, the hand or the function. A wearable garment whose fit is not specified almost always has open fit decisions: consider them before details. Stop when the next question has a safe technical default or would not change the brief.
-Fit, every wearable garment:
- · the fit intent at the main girth, as a feel (close without compression / easy / relaxed / deliberately oversized)
- · length to a body landmark (hip bone, covering the seat, mid-thigh, knee, ankle…)
- · layering, ONLY for a garment worn over something (never underwear, swim or a base tee): the bulkiest layer it must go over
- · stretch, ONLY when the fabric or the fit makes it relevant: direction (none, 2-way, 4-way), usable stretch, recovery, whether it is meant to fit with negative ease. Never infer stretch from the fibre content.
- · the size range and the governing body chart or approved block, when the card names none (grade rules are the pattern maker's)
- · movement (sitting, cycling, arms raised, workwear), when the pictures or the words suggest a use
-Materials and use, every wearable garment: main shell fabric (fibre, weight or hand, drape or crisp, structure); season and climate, insulation and lining; care (machine wash or dry clean).
-This garment's own checklist — fit by group, design and construction, or the points of a non-garment product — is in the user message, after the card data. Walk only that one.
-Not your questions: target price, production quantity, factory — business facts settled elsewhere. Routine engineering — seam allowances, stitch density, pocket-bag fabric, routine interfacing, grade rules — is the pattern maker's, unless it changes the visible design, the hand, the function or a quality intent the designer declared.
-
-SEAMS AND INSIDE FINISH — the designer chooses the MAIN seam construction once, then the additional constructions and the hem. Ask them when the garment is unlined or the inside is visible (a lining hides the interior finish: then ask only visible topstitching and the hem); ask them BEFORE the hem. Name constructions by these exact names, with the ISO numbers where conventional: plain seam pressed open, edges overlocked · plain seam overlocked together · safety stitch 516 · French seam · flat-felled · mock flat-fell (topstitched to one side) · lapped seam · Hong Kong finish (bias-bound edges) · bound seam · taped seam (seam-sealed) · bonded (welded) · flatlock 607 · hem turned twice, 301 · blind hem 103 · coverstitch hem 406/602 · raw edge · bound edge (binding) · faced edge. Offer only what the fabric and the garment allow: knits → overlock 514 / safety 516 / flatlock 607, coverstitch or bound edges, never French or flat-felled; light unlined wovens → French, flat-felled, Hong Kong, plain overlocked; denim and heavy unlined wovens → flat-felled, mock flat-fell, Hong Kong, bound, plain overlocked; waterproof shells → taped, bonded, flat-felled then taped, never overlock alone; leather and coated → lapped, plain pressed open, raw or painted edges, never overlock; fully fashioned knitwear has linked seams — no seam question. A question about ONE construction (its topstitch width, binding width, tape) → part = its sm_ key; a question CHOOSING between constructions → part = the garment zone (side_seam when listed, else whole) with the constructions as options.
-
-EDGES — every open edge gets its finish decided. Walk this garment's edges by group: tops and outerwear: neckline, armhole when sleeveless, sleeve opening, front edge, body hem, hood edge, pocket openings, vents and slits; bottoms: waistband edge, fly, pocket openings, leg opening or hem, slits; dresses: neckline, armhole, sleeve opening, hem, slits; underwear and swim: leg openings, waist, straps, neckline. An edge the card or a clear picture settles is not asked. Required coverage step: before you return, list (silently) this garment's open edges from its group above; every edge whose finish is not settled must be covered — by edge_finish_main + edge_exceptions, or by its own edge key. A jacket or coat is not covered by its body hem alone: front edge, sleeve opening, pocket openings, vents and hood edge count too. Use the edge decision keys listed below, never coined ones (no sleeve_opening, neck_rib). Ask efficiently: when several edges likely share a finish, ONE single question on the main edge finish (decision_key edge_finish_main) that MUST carry "clarify": {"question": "Which edges are finished differently?", "options": 2 to 6 "<edge>: <finish>" pairs, the realistic exceptions of THIS garment} — that follow-up IS the edge_exceptions decision (kind multi, asked after the main answer), so never ask edge_exceptions as a separate question; when the edges clearly differ, one question per edge (neck_finish, armhole_finish, sleeve_finish, front_edge_finish, waistband_finish, leg_finish, pocket_edge_finish, vent_finish, hem_finish, hood_edge_finish). Binding chosen or seen → ask once its width and self-fabric or contrast (part sm_hem_bound). Edge finish names, exact: hem turned twice, 301 · blind hem 103 · coverstitch hem 406/602 · raw edge · bound edge (binding) · faced edge · rolled hem (baby hem) · piped edge (piping) · rib band · self-fabric band · elastic casing · drawcord casing · overlocked edge · lettuce edge. The fabric decides: knits → coverstitch, rib band, self-fabric band, binding, raw or lettuce edge; wovens → turned, blind, faced, bound, rolled; leather → raw, painted, turned and glued. A lining does not hide the edges — still ask them. No padding: a well-documented card asks nothing here.
-
-COLOURWAYS — the construction draft builds its colourway proposals from these answers, so ask them in depth, part col_palette, category design. No colourway listed under Known: ask colourway_count AND colourway_colours, both, adjacent (the colour a picture shows settles that picture, not the colourway range) (kind multi for the colours; options are concrete colour words read off the pictures — "black", "bone", "olive drab", "washed indigo" — plus the common companions of that palette; at most 6, never Pantone codes; the designer types more). Then ask each of these ONLY when the garment has the thing: colour_blocking when it has panels, yokes or trims that could take a contrast; thread_colour when topstitching is visible; hardware_finish when it has metal hardware (part = its hw_ key when one hardware type is on the garment); wash_per_colourway when the fabric is washed or garment-dyed; print_per_colourway when it carries artwork. Colourways listed under Known: ask only what they leave open (a missing colour, the thread or hardware finish, the wash per colourway) — never the count or colours again. No padding: a garment without visible stitching, hardware, contrast panels, wash or artwork gets the count and colours only.
-
-PICTURES — ask at least ONE question about EACH attached picture, tagged "picture": N (its «picture N» number), phrased by what the designer marked it as: target — "What do we change from picture N?" (decision_key pic_change, kind multi): each option an ACTIONABLE change, a verb or comparative plus the part ("narrower straps", "lower crossing point", "shallower open back"), never a bare noun ("strap width"); the server adds the no-change option itself; detail — "What do we take from picture N?" (decision_key pic_take, kind multi): each option a concrete thing to take, the part plus how ("crossed back straps, same width", "bound neckline edge"); material — what to take from it: fabric type, weight or hand, colour, texture, finish (which of them); mood or unmarked — what to translate from it into the garment (colour, attitude, styling, nothing concrete). Skip a picture only when an earlier answer already settles it; never repeat what Known or the answers settle. Options name what is visible in THAT picture (its visual_evidence), never generic words. A picture question has part whole and decision_key pic_<aspect> (pic_change, pic_take, pic_material, pic_mood or a more specific aspect); it counts like any other question. A question not about one picture has no "picture".
-
-A POINT DESERVES A QUESTION when the choice changes the pattern, the fabric order, the visible design or the cost and nothing on the card decides it; when the pictures disagree; when it is hidden, cropped or ambiguous in every picture; when the pictures show something unusual whose construction is not obvious (an asymmetric or hidden closure, an odd seam line, a hybrid of two garment types, an unusual volume, a fabric you cannot identify). A point does NOT deserve a question when every picture clearly shows it, when the card states it with enough precision (Known / Already answered), or when it has a safe technical default for this garment type.
+NOT ESSENTIAL — do not ask: what governs the base fit (block, body chart, reference garment); the bulkiest layer underneath; stretch; the size range; movement; season, climate and care; the interior seam finish; the finish of every edge; topstitching width and thread colour; hardware finish; labels; washes; prints; target price, quantity, factory. These are the pattern maker's defaults or later tech-card steps.
+ONE construction-finish question is the only exception, and only when the finish IS the visible design of this garment (a denim jacket's felled seams, a waterproof shell's taped seams, a tee's raw or bound edges) and the card does not say it: either the main seam construction (decision_key main_seam, part side_seam when listed, else whole) OR the main edge finish (decision_key edge_finish_main, part whole, with "clarify": {"question": "Which edges are finished differently?", "options": 2 to 6 "<edge>: <finish>" pairs} — that follow-up IS the edge_exceptions decision, never a separate question) — never both, never two questions about stitching. Name constructions by these exact names: plain seam pressed open, edges overlocked · plain seam overlocked together · safety stitch 516 · French seam · flat-felled · mock flat-fell (topstitched to one side) · lapped seam · Hong Kong finish (bias-bound edges) · bound seam · taped seam (seam-sealed) · bonded (welded) · flatlock 607; edge finishes: hem turned twice, 301 · blind hem 103 · coverstitch hem 406/602 · raw edge · bound edge (binding) · faced edge · rolled hem (baby hem) · piped edge (piping) · rib band · self-fabric band · elastic casing · drawcord casing · overlocked edge · lettuce edge. Offer only what the fabric allows: knits → overlock, flatlock, coverstitch, rib band, binding, raw edge, never French or flat-felled; light unlined wovens → French, flat-felled, Hong Kong; denim and heavy wovens → flat-felled, mock flat-fell; waterproof shells → taped, bonded; leather → lapped, raw edge, never overlock; a lined garment and fully fashioned knitwear get no seam question.
 
 A Known detail row closes its topic INCLUDING its sub-decisions — placement, position, loops, fullness, shaping, fastening of that part ("waistband: elastic back, flat front" settles where the waistband sits, belt loops and how the fullness is taken in). Ask about a Known topic only when the row is genuinely ambiguous, and then ONE clarifying question at most.
 
-HOW MANY: ask as many questions as this garment needs — there is no target count; never pad; a well-documented card or a re-run is short. Stop rule: ask a question only when its answer changes the pattern or the brief; when no open point is left, stop — even at 2 or 5. Never fill the list toward the cap, never drop a point that matters. A card with details, BOM and measurements needs few; a re-run with saved answers is usually short and asks only what is new. Return an empty list when nothing is open.
+HOW MANY: never pad; a well-documented card or a re-run is short. Stop rule: ask a question only when its answer changes the pattern, the fabric order or the visible design; when no essential point is left, stop — even at 1 or 2. Never fill the list toward the cap. A card with details, BOM and measurements needs few; a re-run with saved answers is usually short and asks only what is new. Return an empty list when nothing is open.
 
-ORDER: 1) a recheck_ question on a STALE answer the change reopens, then a clarify_ question on an earlier answer that contradicts the pictures; 2) fit — the fit basis, then the open fit points of this garment; 3) what changes the pattern or the fabric order most — volume and silhouette as a look, closure, lining and insulation, main fabric; 4) details by part from the top down (neckline or collar → shoulder, sleeve, cuff → front and pockets → waist → seams: main seam, then the additional constructions → hem, leg; main_seam, extra_seams and hem_finish sit together); 5) use — season, function, care; 6) finish — prints, washes, labels. Questions about the same part sit together.
+ORDER: 1) a recheck_ question on a STALE answer the change reopens, then a clarify_ question on an earlier answer that contradicts the pictures; 2) silhouette and fit; 3) the construction that changes the pattern, from the top down (collar → closure → pockets → lining); 4) the main fabric; 5) colourways; 6) the picture questions; 7) the one construction-finish question, if any.
 
 WRITING A QUESTION: one point per question, at most 15 words, plain manufacturing English, about THIS garment ("How much room at the chest?", not "Tell me about the fit"). No "why", no theory, no compliments.
 WRITING OPTIONS: 2 to 6, each at most 8 words. Mutually exclusive for single, independent items for multi. Together they cover the realistic range for this garment, in a logical order — least to most, short to long, close to loose, light to heavy — never with the picture's reading pinned first. Concrete: named constructions, named materials, body landmarks, counts. Numbers only where they are conventional for a visible construction detail (a 3 cm collar stand, 6 mm topstitching, 5 buttons) or copied from the card or a reference; for fit and ease use feel or body-landmark words ("close without compression", "room for a heavy knit", "at the hip bone", "mid-thigh") and never invent a measurement range. Never "standard", "regular" alone, "classic", "normal", "as in the picture", "other", "not sure", "depends" — the free-text field exists for anything else.
-kind: "multi" only when several options can be true at once (pockets, trims, finishes, seasons, movement); otherwise "single". Layering is single: the bulkiest layer.
+kind: "multi" only when several options can be true at once (pockets, trims, colours, what to change or take from a picture); otherwise "single".
 
 EXAMPLES
-Good — fit, part whole: "What governs the base fit?" → ["our existing block", "a measured reference garment", "a target-body size chart", "develop a new block"]
 Good — fit, part whole: "How much room at the chest?" → ["close without compression", "easy, natural movement", "relaxed, visibly loose", "deliberately oversized"]
-Good — fit, part whole: "What is the bulkiest layer it goes over?" → ["a tee", "a shirt or light knit", "a heavy knit or hoodie", "a tailored jacket"]
 Good — fit, part hem: "Where does the hem sit?" → ["at the hip bone", "covering the seat", "mid-thigh", "at the knee"]
 Good — fit, part shoulder: "How is the shoulder built?" → ["set-in at the natural point", "slightly dropped", "deeply dropped", "raglan"]
 Good — fit, part rise: "Where does the waistband sit?" → ["on the hips, low rise", "just below the navel, mid rise", "at the natural waist, high rise"]
 Good — fit, part leg: "Leg shape from knee to hem?" → ["tapered, narrow opening", "straight", "wide, flaring out"]
+Good — details, part closure: "How does the front close?" → ["zip under a buttoned storm flap", "zip only", "buttons on a concealed placket", "snaps on a visible placket"]
 Good — materials, part whole: "Main shell fabric?" → ["nylon ripstop, light", "cotton twill, mid-weight", "cotton canvas, heavy", "wool melton, heavy"]
-Good — details, part collar: "Collar stand height?" → ["no stand", "2.5 cm stand", "3 cm stand", "4 cm stand"]
-Good — details, part hw_button: "How many front buttons?" → ["5", "6", "7", "8"]
-Good — details, part side_seam, decision_key main_seam: "Main seam construction for the body?" → ["flat-felled", "mock flat-fell, topstitched to one side", "plain seam overlocked together", "Hong Kong finish (bias-bound edges)"]
-Good — details, part whole, kind multi, decision_key extra_seams: "Which other constructions appear, and where?" → ["flat-felled yoke and armhole", "bound pocket bags", "Hong Kong finish on the facings", "taped seams throughout"]
-Good — details, part whole, decision_key edge_finish_main (jacket): "Main finish of the front edge, hem, sleeve openings and pocket openings?" → ["hem turned twice, 301", "faced edge", "bound edge (binding)", "raw edge"], clarify "Which edges are finished differently?" → ["neckline: rib band", "sleeve opening: rolled hem (baby hem)", "pocket openings: piped edge (piping)", "hood edge: bound edge (binding)"]
+Good — details, part side_seam, decision_key main_seam (denim jacket, unlined): "Main seam construction for the body?" → ["flat-felled", "mock flat-fell, topstitched to one side", "plain seam overlocked together"]
 Good — design, part col_palette, decision_key colourway_count: "How many colourways?" → ["one", "two", "three", "four or more"]
 Good — design, part col_palette, kind multi, decision_key colourway_colours: "Main colours of the colourways?" → ["black", "bone", "olive drab", "washed indigo"]
+Bad — "What governs the base fit?": a process question for the pattern maker, not a garment decision.
+Bad — "What is the bulkiest layer it goes over?": follows from the room at the chest; one question, not two.
 Bad — "What fit do you want?" → ["regular", "slim", "oversized"]: catalogue words that repeat the label; ask the concrete point (room at the chest, the hem landmark, the shoulder).
 Bad — "Chest ease for the base size?" → ["4–6 cm", "10–14 cm", "20 cm or more"]: invented numbers — there is no block or body chart to measure them against.
-Bad — "Tell me about the sleeves": not one point, not answerable in one click.
+Bad — "Visible stitching on the back yoke?" and then "How should the back stitching be treated?": the same point twice; and stitching is not essential unless it is the design.
+Bad — "From the side view, which aspects must we match?": the pictures are matched by default; ask only what we CHANGE or TAKE, once per picture.
 Bad — "Do you want a standard collar?" → ["yes", "no", "other"]: banned words; name the collar types.
 Bad — asking the colour, the pocket count or whether there is a hood when every picture shows it.
-Bad — asking the French seam on a jersey tee, or an overlock finish on a fully lined coat.
+Bad — asking the French seam on a jersey tee, or any seam finish on a fully lined coat.
 
 FIELDS
 - visual_evidence: one short line on what the pictures show about this point, or "" when they show nothing.
@@ -919,7 +918,7 @@ func designQuizUserPrompt(card *entity.TechCard, mood *pb_common.DesignMoodSnaps
 		designCardDataOpen + "\n" + data + "\n" + designCardDataClose + "\n\n" +
 		designQuizGroupChecklist(family) + "\n" +
 		designQuizCoverageLine(group) + "\n" +
-		"Ask as many questions as this garment needs (never more than " + strconv.Itoa(designQuizMaxQuestions) + ") — every point that is still open and matters, nothing that is settled."
+		"Ask only the essentials — at most " + strconv.Itoa(designQuizMaxQuestions) + " questions, usually 3 to 6: what still changes the pattern, the fabric order or the visible design; nothing that is settled, nothing with a safe default."
 }
 
 // designQuizCoverageLine — what stays open for this group (Q09: the fit label never closes fit).
@@ -942,16 +941,17 @@ func designQuizCoverageLine(group string) string {
 // product is, then asks only points every product has.
 func designQuizGroupChecklist(family string) string {
 	const (
-		fitTops     = " · fit (tops and outerwear): chest or bust ease as a feel; shoulder (set-in at the natural point, dropped, raglan, saddle) and armhole intent (close, easy, deep); body length landmark; sleeve length landmark\n"
-		designTops  = " · design and construction: neckline or collar (shape, depth, stand, construction); closure (type, count, placket visible or concealed, how far it opens); body construction (panels, darts, princess seams, yoke, vents); pockets (type, count, placement); hem finish; visible seams and topstitching\n"
-		knitwear    = " · knitwear: gauge, structure (jersey, rib, cable), fully fashioned or cut-and-sew, rib depth of trims\n"
-		fitBottoms  = " · fit (bottoms): where the waist sits; front rise against back rise and room at the seat; thigh; leg opening and taper; length landmark\n"
-		designBotts = " · design and construction: waistband (width, straight or contoured, elastic, drawcord, closure, belt loops); fly; front and back pockets; pleats, darts, yoke, slits; hem finish (plain, turn-up, raw, elastic)\n"
+		// T72: candidate points only — the essentials rule of the system prompt decides what is asked.
+		fitTops     = " · fit (tops and outerwear): chest or bust ease as a feel; shoulder (set-in at the natural point, dropped, raglan); body length landmark; sleeve length landmark — the 2 or 3 that are open\n"
+		designTops  = " · design and construction: neckline or collar type; closure (type, count, placket visible or concealed); pockets (type, count); lining or insulation; hood — only what is hidden, ambiguous or disputed between the pictures\n"
+		knitwear    = " · knitwear: gauge, structure (jersey, rib, cable), fully fashioned or cut-and-sew\n"
+		fitBottoms  = " · fit (bottoms): where the waist sits; rise and room at the seat; leg opening and taper; length landmark — the 2 or 3 that are open\n"
+		designBotts = " · design and construction: waistband (elastic, drawcord, closure); fly; pockets; pleats or darts; hem (plain, turn-up, raw, elastic) — only what is hidden, ambiguous or disputed between the pictures\n"
 		skirtsDress = " · dresses and skirts: bodice-to-skirt join, volume (gathers, pleats, godets), slit, lining\n"
-		// 70-SEAMS §C: seams and colourways.
-		seams     = " · seams: main construction, additional constructions and where, hem and neck finish (interior finish only when unlined)\n"
-		knitSeams = " · knit seams: 514 / 516 / 607, coverstitch or bound edges\n"
-		colours   = " · colourways: how many and the main colours, together, when none is on the card; colour blocking, thread colour, hardware finish, wash or artwork per colourway — only when the garment has them\n"
+		// 70-SEAMS §C, trimmed by T72: one construction-finish question at most, colourways count + colours only.
+		seams     = " · seams: main construction — ONE question at most, only when the seam IS the visible design (felled, taped, bound) and the card does not say it; interior finish is the pattern maker's\n"
+		knitSeams = " · knit seams: 514 / 516 / 607, coverstitch or bound edges — only when the visible finish is in question\n"
+		colours   = " · colourways: how many and the main colours, together, when none is on the card — nothing more about colourways\n"
 	)
 	var lines string
 	switch designQuizFamilyGroup(family) {
@@ -1657,7 +1657,9 @@ func designQuizSlug(s string) string {
 // from the table (the model never picks one); id lowercase [a-z0-9_]{1,64} else q{n}_{slug};
 // clarify kept only when some option contradicts the picture and it has a question and 2..4
 // options. Questions whose id or text (case-insensitive) is already among the saved answers are
-// dropped (a SKIPPED saved answer closes nothing — W-B4), as are duplicates in the batch. At most designQuizMaxQuestions (30).
+// dropped (a SKIPPED saved answer closes nothing — W-B4), as are duplicates in the batch. At most
+// designQuizMaxQuestions (8, T72): the parser reads up to designQuizMaxParsed items and keeps the best
+// by tier (designQuizSelectEssentials), at most designQuizMaxPerPicture per picture.
 func parseDesignQuiz(raw, family string, saved []entity.TechCardQuizAnswer) ([]entity.DesignQuizQuestion, bool) {
 	qs, _, ok := parseDesignQuizCounted(raw, family, saved)
 	return qs, ok
@@ -1744,7 +1746,7 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 	seenText := map[string]bool{}
 	out := make([]entity.DesignQuizQuestion, 0, designQuizMaxQuestions)
 	for n, it := range items {
-		if len(out) == designQuizMaxQuestions {
+		if len(out) == designQuizMaxParsed {
 			st.capped = len(items) - n
 			break
 		}
@@ -1886,6 +1888,18 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 			st.partsFixed++
 		}
 	}
+	// T72: the essentials — the best designQuizMaxQuestions by tier, at most designQuizMaxPerPicture
+	// per picture, in the model's order; the rest counts as capped.
+	if keep := designQuizSelectEssentials(out); len(keep) < len(out) {
+		st.capped += len(out) - len(keep)
+		sel := make([]entity.DesignQuizQuestion, 0, len(keep))
+		sf := make([]bool, 0, len(keep))
+		for _, i := range keep {
+			sel = append(sel, out[i])
+			sf = append(sf, front[i])
+		}
+		out, front = sel, sf
+	}
 	// Re-questions of stale answers first, each group in the model's order (stable).
 	if len(reasked) > 0 {
 		sorted := make([]entity.DesignQuizQuestion, 0, len(out))
@@ -1900,6 +1914,97 @@ func parseDesignQuizBoard(raw, family string, saved []entity.TechCardQuizAnswer,
 	}
 	st.kept = len(out)
 	return out, st, true
+}
+
+// ─── T72: the essentials — which questions survive the hard cap ───
+
+// designQuizTierOther — the tier of everything the essentials rule calls not essential (seams, edges,
+// finish, use, labels, fit basis, layering…): asked only when the cap has room left.
+const designQuizTierOther = 6
+
+// designQuizKeyTier — decision key (a picture question's aspect) → tier, lower asked first:
+// 1 silhouette and fit · 2 construction that changes the pattern · 3 main fabric · 4 colourways.
+// Picture questions without a tiered aspect are tier 5; the keys the prompt names as not essential
+// are designQuizTierOther whatever their category; a coined key falls back to its category.
+var designQuizKeyTier = map[string]int{
+	"chest_room": 1, "waist_room": 1, "hip_room": 1, "body_length": 1, "shoulder_build": 1, "sleeve_length": 1,
+	"leg_shape": 1, "rise": 1, "waist_position": 1, "armhole": 1, "silhouette": 1, "volume": 1,
+	"length_proportion": 1, "product_type": 1,
+	"closure_type": 2, "closure_count": 2, "collar_type": 2, "pocket_style": 2, "hood": 2, "placket": 2,
+	"lining_insulation": 2, "cuff_style": 2, "drawcord": 2,
+	"shell_fabric": 3, "fabric_weight": 3,
+	"colourway_count": 4, "colourway_colours": 4,
+	// Named as not essential by the prompt — whatever category the model files them under.
+	"fit_basis": designQuizTierOther, "layering": designQuizTierOther, "stretch": designQuizTierOther,
+	"size_range": designQuizTierOther, "movement": designQuizTierOther,
+	"seams_visible": designQuizTierOther, "main_seam": designQuizTierOther, "extra_seams": designQuizTierOther,
+	"hem_finish": designQuizTierOther, "neck_finish": designQuizTierOther, "edge_finish_main": designQuizTierOther,
+	"edge_exceptions": designQuizTierOther, "armhole_finish": designQuizTierOther, "sleeve_finish": designQuizTierOther,
+	"front_edge_finish": designQuizTierOther, "waistband_finish": designQuizTierOther, "leg_finish": designQuizTierOther,
+	"pocket_edge_finish": designQuizTierOther, "vent_finish": designQuizTierOther, "hood_edge_finish": designQuizTierOther,
+	"colour_direction": designQuizTierOther, "colour_blocking": designQuizTierOther, "thread_colour": designQuizTierOther,
+	"hardware_finish": designQuizTierOther, "wash_per_colourway": designQuizTierOther, "print_per_colourway": designQuizTierOther,
+	"interlining": designQuizTierOther, "trims_hardware": designQuizTierOther, "thread": designQuizTierOther,
+	"season": designQuizTierOther, "climate": designQuizTierOther, "layering_use": designQuizTierOther,
+	"care": designQuizTierOther, "function": designQuizTierOther, "wash_finish": designQuizTierOther,
+	"print_placement": designQuizTierOther, "embroidery": designQuizTierOther, "topstitch": designQuizTierOther,
+	"labels": designQuizTierOther, "label_set": designQuizTierOther,
+}
+
+// designQuizTier — the priority of a parsed question when the model overshoots the cap: 0 a recheck_
+// or clarify_ (a stale or contradicted earlier answer), then designQuizKeyTier by the decision key
+// (a picture question by its aspect), then a picture question (5), then the category (fit 1, design
+// and details 2, materials 3) for a coined key, else designQuizTierOther.
+func designQuizTier(q entity.DesignQuizQuestion) int {
+	if strings.HasPrefix(q.ID, designQuizRecheckPrefix) || strings.HasPrefix(q.ID, "clarify_") {
+		return 0
+	}
+	key := q.DecisionKey
+	if q.MediaID != 0 {
+		key = strings.TrimPrefix(key, "pic_"+strconv.Itoa(q.MediaID)+"_")
+	}
+	if t, ok := designQuizKeyTier[key]; ok {
+		return t
+	}
+	if q.MediaID != 0 {
+		return 5
+	}
+	switch q.Category {
+	case entity.DesignQuizCategoryFit:
+		return 1
+	case entity.DesignQuizCategoryDesign, entity.DesignQuizCategoryDetails:
+		return 2
+	case entity.DesignQuizCategoryMaterials:
+		return 3
+	}
+	return designQuizTierOther
+}
+
+// designQuizSelectEssentials — the indexes of the questions to keep, ascending (the model's order):
+// walked by tier (designQuizTier, ties in the model's order), at most designQuizMaxQuestions in all
+// and designQuizMaxPerPicture anchored to one picture. All of them when they fit.
+func designQuizSelectEssentials(qs []entity.DesignQuizQuestion) []int {
+	order := make([]int, len(qs))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return designQuizTier(qs[a]) - designQuizTier(qs[b]) })
+	keep := make([]int, 0, designQuizMaxQuestions)
+	perPicture := map[int]int{}
+	for _, i := range order {
+		if len(keep) == designQuizMaxQuestions {
+			break
+		}
+		if mid := qs[i].MediaID; mid != 0 {
+			if perPicture[mid] == designQuizMaxPerPicture {
+				continue
+			}
+			perPicture[mid]++
+		}
+		keep = append(keep, i)
+	}
+	slices.Sort(keep)
+	return keep
 }
 
 // ─── answers: get / save ───

@@ -539,10 +539,11 @@ func TestDesignQuizFitCategory(t *testing.T) {
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "- fit — ") {
 		t.Fatalf("fit decision line: %q", lines)
 	}
-	for _, want := range []string{"- part: EXACTLY one key", "A one-word fit label", "FIT BASIS", "never invent a measurement range",
+	// T72: fit_basis is no longer asked (a process question); the essentials rule replaces "as many as needed".
+	for _, want := range []string{"- part: EXACTLY one key", "A one-word fit label", "NOT ESSENTIAL — do not ask: what governs the base fit", "never invent a measurement range",
 		"candidate points, not a quota", `"category":"design|fit|details|materials|use|finish"`,
 		// 63-AB-RESULT P1 (padding to the cap) and P2 (Known detail row re-asked through its sub-decisions).
-		"there is no target count; never pad; a well-documented card or a re-run is short", "Stop rule:", "Never fill the list toward the cap", "a re-run with saved answers is usually short",
+		"never pad; a well-documented card or a re-run is short", "Stop rule:", "Never fill the list toward the cap", "a re-run with saved answers is usually short",
 		"A Known detail row closes its topic INCLUDING its sub-decisions", "ONE clarifying question at most"} {
 		if !strings.Contains(designQuizSystemPrompt, want) {
 			t.Errorf("system prompt lacks %q", want)
