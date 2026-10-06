@@ -1,0 +1,28 @@
+garment context (for reference only — this is NOT what to draw; draw only the detail named below):
+garment: top
+
+draw these details:
+strap
+
+references:
+- image 1: detail photo
+- image 2: this garment's accepted technical flat — front view (finished and approved; the detail must agree with it)
+- image 3: this garment's accepted technical flat — back view (finished and approved; the detail must agree with it)
+
+Turn the construction detail shown in the reference images into a professional fashion technical detail sketch (CAD-style tech pack callout drawing).
+
+Reproduce the detail exactly as it is visible in the reference photos and the accepted flats; do not add any seam, layer, stitch row, fold or hardware that is not visible. Ignore the model, pose, background, lighting, fabric color and texture of the photos; draw only the detail.
+
+Images 2 and 3 are this garment's accepted technical flats (front view, back view) — finished and approved. The detail must agree with them exactly: the same position on the garment, the same proportions, seam lines, stitch rows, layer order and construction as drawn there. Where a photo and the flats differ, follow the flats. Read the detail off the flats; do not draw the whole garment.
+
+Layout: a single enlarged view of the detail, isolated and centered on the canvas, shown from the same angle as the reference. Include just enough of the surrounding garment panel or edge to make the construction readable, with the fragment ending in clean straight edges.
+
+Draw ONLY this one detail, isolated and close up, as a flat technical sketch. No full garment, no front, back or side views, no multiple views on one sheet.
+
+No text, no view names, no grey, no tint, no shading anywhere on the drawing — the inside of every band, binding and collar stays white.
+
+Style: black vector line art on a plain white background. Heavier weight for the outer contour, thin solid lines for the edges and seams the photos and the accepted flats show; dashed lines only for stitching actually visible there, otherwise none. Flat, technical, true proportions. No human body, no mannequin, no hanger.
+
+Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements.
+
+Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic.
