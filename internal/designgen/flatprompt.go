@@ -35,7 +35,11 @@ const (
 	// Эталон 1 — silhouette views of a whole garment.
 	// Wave 10 R19 (102-ARTIFACTS §2.2, owner 06.10): no element checklist of any kind; the old checklist («silhouette, … princess seams, darts, pleats, pockets, …»)
 	// invited the model to add exactly those; the line now asks for what is visible and nothing else.
-	flatIdentifyGarment = "Draw only what the photos show. Every line in the drawing must correspond to an edge, seam, opening, closure or row of stitching that is visible in a photo. Where the photos show plain cloth, draw plain white with no lines. A view, or a part of a view, that no photo shows is drawn as the plainest continuation of the photographed views — same hem line, same width, same sleeves — with no seam, stitching, vent, pocket or shaping added to it. When unsure whether something is there, leave it out: a missing line is a small error, an invented one is a different garment. Do not complete the garment from a typical example of its kind. Draw every seam that is visible in the photos, including faint seams on dark fabric; add nothing that is not visible. Ignore the model, pose, background, lighting and fabric colour; draw only the garment."
+	// M3 (07.10, 104-PROMPT-LOOP): «When unsure whether something is there, leave it out: a missing line is a small error, an
+	// invented one is a different garment» told the model a missing element is cheap — and missing became the main error (103);
+	// the counting sentence that replaced it took a blind A/B (12 sheets per arm, 6 garments): errors 27 → 20, front+back
+	// strictly right 1/12 → 4/12, buttons back on the shirt, the inner V back on 38, invented not up (12 → 11).
+	flatIdentifyGarment = "Draw only what the photos show. Every line in the drawing must correspond to an edge, seam, opening, closure or row of stitching that is visible in a photo. Where the photos show plain cloth, draw plain white with no lines. A view, or a part of a view, that no photo shows is drawn as the plainest continuation of the photographed views — same hem line, same width, same sleeves — with no seam, stitching, vent, pocket or shaping added to it. Count what the photos show — buttons, pockets, seams, panels, vents — and draw exactly that many: a missing element and an added element are equally wrong. Do not complete the garment from a typical example of its kind. Draw every seam that is visible in the photos, including faint seams on dark fabric; add nothing that is not visible. Ignore the model, pose, background, lighting and fabric colour; draw only the garment."
 
 	// 102-ARTIFACTS §2.1: «fine dashed lines for topstitching…» ordered stitching on every edge; «with subtle body-form shaping» removed — it invited waist shaping the garment does not have.
 	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger."
@@ -433,6 +437,14 @@ func flatMissingViewsLine(views []string, attached []refCaption) string {
 			shown[entity.DesignViewFront] = true
 		case entity.DesignRefRoleBackFlat:
 			shown[entity.DesignViewBack] = true
+		case entity.DesignViewSide:
+			// A side photo whose flank the board could not tell shows a side either way: both side
+			// views are drawn from it, and «no photo shows the SIDE LEFT or the SIDE RIGHT» next to it
+			// would be false.
+			if rc.FromRef {
+				shown[entity.DesignViewSideL] = true
+				shown[entity.DesignViewSideR] = true
+			}
 		default:
 			if rc.FromRef && rc.Role != "" {
 				shown[rc.Role] = true
