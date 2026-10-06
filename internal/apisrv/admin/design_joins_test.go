@@ -251,6 +251,10 @@ func TestKeepMediaIDsNarrowTheFlat(t *testing.T) {
 		}
 		return
 	}
+	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, j)),
+		"wave 10: the verdict does not choose a flat's photos while construction is out of the prompt")
+	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
+	designgen.FlatPromptCarriesConstruction = true
 	require.Equal(t, []int{1, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, j)))
 	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindRender, refs, j)), "only flats")
 	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, nil)))

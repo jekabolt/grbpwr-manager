@@ -41,7 +41,7 @@ const flatHardJunk = `lining|lined|unlined|interlin\w*|interfac\w*|fus(ed|ible)|
 
 const flatSoftJunk = `linen|cotton|wool|silk|cashmere|denim|jersey|fleece|nylon|polyester|elastane|spandex|lycra|viscose|rayon|leather|suede|twill|poplin|canvas|` +
 	`fabrics?|textiles?|textur\w*|slub\w*|rustic|drapes?|soft hand|hand[- ]?feel|matte|sheen|glossy|lustr\w*|` +
-	`\w*-?weight|gsm|stretch\w*|2-way|4-way|breathab\w*|translucen\w*|opacity|opaque|cling\w*|colou?rs?`
+	`\w*-?weight|gsm|stretch\w*|2-way|4-way|breathab\w*|translucen\w*|opacity|opaque|cling\w*|colou?rs?|shell|soft|tailored drape`
 
 var (
 	flatHardJunkRe = regexp.MustCompile(`(?i)\b(` + flatHardJunk + `)\b`)

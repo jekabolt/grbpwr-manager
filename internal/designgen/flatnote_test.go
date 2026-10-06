@@ -21,6 +21,7 @@ func TestFlatConstructionNote(t *testing.T) {
 	require.Equal(t, "Hem finished with a band at the hip bone.", FlatConstructionNote("hem finished with a self-fabric band at the hip bone."))
 	require.Equal(t, "Blazer with a curved front edge and waist shaping.", FlatConstructionNote("Linen blazer with a curved front edge and waist shaping."))
 	require.Equal(t, "", FlatConstructionNote("soft stretch jersey drape"))
+	require.Equal(t, "Back vent.", FlatConstructionNote("back vent, shell with soft tailored drape."))
 	// the hidden goes whole, even next to a construction word
 	require.Equal(t, "", FlatConstructionNote("inside chest pocket on the lining"))
 	// a knit rib band, a sheer layer and a fitted inner layer are drawn — they stay

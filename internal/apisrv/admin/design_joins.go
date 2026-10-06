@@ -378,7 +378,10 @@ func designJoinsKeepSet(j *entity.DesignJoins) map[int]bool {
 // is still a reference, nothing is filtered (an empty reference set would be a different run).
 func designKeptReferences(kind string, refs []entity.DesignReference, j *entity.DesignJoins) []entity.DesignReference {
 	keep := designJoinsKeepSet(j)
-	if kind != entity.DesignRunKindFlat || keep == nil {
+	// WAVE 10 (live check, card 51 run 176): with the join list out of the flat prompt its verdict must
+	// not choose the photos either — a list read when the card had one photo kept that one photo and
+	// silently dropped the front and side added later. The filter comes back with the switch.
+	if kind != entity.DesignRunKindFlat || keep == nil || !designgen.FlatPromptCarriesConstruction {
 		return refs
 	}
 	var out []entity.DesignReference
