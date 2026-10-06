@@ -48,6 +48,10 @@ const (
 	designBoardReadMaxTokens  = 2500
 	designBoardReadEffort     = "low"
 	designBoardFlightMargin   = 10 * time.Second
+	// designBoardLabelMaxPerSync — pictures one sync labels at most (the client caps a board at 24).
+	designBoardLabelMaxPerSync = 24
+	// designBoardLabelPerToken — pictures per token of the shared hourly window.
+	designBoardLabelPerToken = 6
 	// designBoardResyncEvery — a band read re-checks the board for unlabelled pictures (a legacy
 	// card, a save that lost its task) at most this often per card.
 	designBoardResyncEvery = 10 * time.Minute
@@ -129,6 +133,8 @@ func designBoardPictures(card *entity.TechCard) []designBoardPicture {
 type designBoardLabelTask struct {
 	designBoardPicture
 	Relabel bool
+	// Existing — the picture already has a model row (a relabel or a stale pending one).
+	Existing bool
 }
 
 // designBoardLabelled — whether a purpose takes a model label. A purpose of `detail` waits for the
@@ -184,13 +190,13 @@ func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignRefere
 				drop = append(drop, p.MediaID)
 			}
 		case p.Purpose == entity.TechCardMediaRoleTarget && (isDetail || settledEmpty):
-			tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true})
+			tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true, Existing: true})
 		case p.Purpose == entity.TechCardMediaRoleDetail && details && (isView || settledEmpty):
-			tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true})
+			tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true, Existing: true})
 		case p.Purpose == entity.TechCardMediaRoleDetail && !details && isView:
 			drop = append(drop, p.MediaID)
 		case state == entity.DesignLabelStatePending && (!r.LabelledAt.Valid || r.LabelledAt.Time.Before(staleBefore)):
-			tasks = append(tasks, designBoardLabelTask{designBoardPicture: p})
+			tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Existing: true})
 		}
 	}
 	for _, r := range refs {
@@ -295,9 +301,10 @@ type designBoardLabeller struct {
 
 // kick starts a sync of the card unless one is running (then it runs once more after it). Never blocks.
 func (s *Server) designBoardLabelKick(ctx context.Context, cardID int) {
-	// AI off (or a test server without a router): no labels at all — the client draws «view ▾» on a
-	// target picture without one, which is the same word a `failed` label would give.
-	if !s.boardLabels.live || cardID <= 0 || s.repo == nil || s.ai == nil || !s.ai.Enabled(entity.AIPurposeBoardLabel) {
+	// No router (a test server): nothing. AI OFF IS NOT A REASON TO SKIP — the sync then still drops
+	// what left the board and settles a stale pending label as `failed` without calling anybody
+	// (Codex Ф1 #2: otherwise «…» stays on the tile forever).
+	if !s.boardLabels.live || cardID <= 0 || s.repo == nil || s.ai == nil {
 		return
 	}
 	l := &s.boardLabels
@@ -316,28 +323,40 @@ func (s *Server) designBoardLabelKick(ctx context.Context, cardID int) {
 
 	base := context.WithoutCancel(ctx)
 	go func() {
+		// The «again» check and the release of ownership happen in ONE critical section (Codex Ф1 #3):
+		// a kick landing between them would set `again` on a goroutine that has already decided to stop.
+		finish := func() bool {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			if l.again[cardID] {
+				l.again[cardID] = false
+				l.lastSync[cardID] = time.Now()
+				return false
+			}
+			delete(l.running, cardID)
+			delete(l.again, cardID)
+			return true
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Default().ErrorContext(base, "design board labels: panic", slog.Int("tech_card_id", cardID),
 					slog.String("panic", fmt.Sprint(r)))
+				// No other goroutine of this card can exist while `running` is set, so the release is
+				// ours to make.
+				l.mu.Lock()
+				delete(l.running, cardID)
+				delete(l.again, cardID)
+				l.mu.Unlock()
 			}
-			l.mu.Lock()
-			delete(l.running, cardID)
-			delete(l.again, cardID)
-			l.mu.Unlock()
 		}()
 		for {
 			if err := s.designBoardLabelSync(base, cardID); err != nil {
 				slog.Default().ErrorContext(base, "design board labels: sync failed",
 					slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
 			}
-			l.mu.Lock()
-			if !l.again[cardID] {
-				l.mu.Unlock()
+			if finish() {
 				return
 			}
-			l.again[cardID] = false
-			l.mu.Unlock()
 		}
 	}()
 }
@@ -385,16 +404,24 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		slog.Default().InfoContext(ctx, "design board labels: dropped", slog.Int("tech_card_id", cardID),
 			slog.Any("media_ids", drop), slog.Int("slots", slots))
 	}
-	if len(tasks) == 0 {
-		return nil
+	aiOn := s.ai.Enabled(entity.AIPurposeBoardLabel)
+	if !aiOn {
+		// AI off: only a row that already exists is settled (as `failed`, by the ladder, for free); a
+		// new picture gets no row — the tile's «view ▾» says the same.
+		kept := tasks[:0]
+		for _, t := range tasks {
+			if t.Existing {
+				kept = append(kept, t)
+			}
+		}
+		tasks = kept
 	}
-	// THE HOURLY WINDOW: one token per sync that has work, not one per picture — a board of twelve
-	// would otherwise eat the quiz's hour. Refused → nothing is claimed; the next save or band read
-	// tries again.
-	admin := authsrv.GetAdminUsername(ctx)
-	if s.ai.Enabled(entity.AIPurposeBoardLabel) && !s.enhanceRuns.allow(admin) {
-		slog.Default().WarnContext(ctx, "design board labels: the hourly window is full; labels wait",
-			slog.Int("tech_card_id", cardID), slog.Int("pictures", len(tasks)))
+	if len(tasks) > designBoardLabelMaxPerSync {
+		// A board is capped on the client (24); a crafted payload is cut here (Codex Ф1 #1). The rest
+		// is labelled by the next sync.
+		tasks = tasks[:designBoardLabelMaxPerSync]
+	}
+	if len(tasks) == 0 {
 		return nil
 	}
 	ids := make([]int, 0, len(tasks))
@@ -410,7 +437,16 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		urlOf[id] = urls[i]
 	}
 	actor := designActor(ctx)
-	for _, t := range tasks {
+	admin := authsrv.GetAdminUsername(ctx)
+	for i, t := range tasks {
+		// THE HOURLY WINDOW, SHARED WITH THE QUIZ AND THE PARTS: one token per designBoardLabelPerToken
+		// pictures (a picture costs ≈ $0.001, an unclear one ≈ $0.02), taken BEFORE any claim of the
+		// batch. Refused → the rest stays unclaimed; the next save or band read tries again.
+		if aiOn && i%designBoardLabelPerToken == 0 && !s.enhanceRuns.allow(admin) {
+			slog.Default().WarnContext(ctx, "design board labels: the hourly window is full; labels wait",
+				slog.Int("tech_card_id", cardID), slog.Int("pictures", len(tasks)-i))
+			return nil
+		}
 		claimed, err := s.repo.Design().BeginBoardLabel(ctx, entity.DesignBoardLabelBegin{
 			TechCardId: cardID, MediaId: t.MediaID, Relabel: t.Relabel, StaleBefore: staleBefore, Actor: actor,
 		})
@@ -437,16 +473,24 @@ func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic design
 			s.ai.ChainBudget(entity.AIPurposeBoardRead, designBoardReadMaxTokens) + designBoardFlightMargin
 		cctx, cancel := context.WithTimeout(ctx, budget)
 		defer cancel()
-		select {
-		case s.enhanceSem <- struct{}{}:
-		case <-cctx.Done():
+		started := time.Now()
+		var err error
+		acquired := false
+		// The slot is released by a DEFER (Codex Ф1 #4): a panicking provider must not keep it.
+		func() {
+			select {
+			case s.enhanceSem <- struct{}{}:
+				acquired = true
+			case <-cctx.Done():
+				return
+			}
+			defer func() { <-s.enhanceSem }()
+			label, err = designBoardLabelLadder(cctx, s.ai, pic, url)
+		}()
+		if !acquired {
 			slog.Default().WarnContext(ctx, "design board labels: the assistant stayed busy; the label waits", logAttrs...)
 			return
 		}
-		started := time.Now()
-		var err error
-		label, err = designBoardLabelLadder(cctx, s.ai, pic, url)
-		<-s.enhanceSem
 		logAttrs = append(logAttrs, slog.Duration("took", time.Since(started)))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "design board labels: the model call failed; the label stays pending",
