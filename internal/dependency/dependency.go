@@ -2144,12 +2144,12 @@ type (
 		// all is absent from the answer, exactly as a freshly uploaded file is ownerless at the
 		// card boundary. An empty input answers empty without touching the base.
 		MediaHeldHiddenOnly(ctx context.Context, mediaIDs []int) ([]int, error)
-		// MediaRunKinds answers, for a set of media ids, the kinds of the design runs that produced
-		// a picture holding each one (design_picture.run_id, any card; a crop and a flatten carry
-		// their parent's run) — M16: a generated picture never feeds a flat. Media no run produced
-		// (an upload, a batch picture, a drawing) is absent. An empty input answers empty without
-		// touching the base.
-		MediaRunKinds(ctx context.Context, mediaIDs []int) (map[int][]string, error)
+		// MediaProducers answers, for a set of media ids, the design runs that produced a picture
+		// holding each one (design_picture.run_id, any card; a crop and a flatten carry their
+		// parent's run): the run's kind and, for a cutout, the media it was cut from — M16: a
+		// generated picture never feeds a flat. Media no run produced (an upload, a batch picture,
+		// a drawing) is absent. An empty input answers empty without touching the base.
+		MediaProducers(ctx context.Context, mediaIDs []int) (map[int][]entity.DesignMediaProducer, error)
 		// SetPictureSelected marks a picture as CHOSEN, and un-marks it (W-12). It is NOT the
 		// other side of HidePicture — hidden says «do not show me this», selected says «this is
 		// the one» — and nothing is exclusive: many pictures may be chosen at once.

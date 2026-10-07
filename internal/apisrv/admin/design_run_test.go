@@ -67,7 +67,7 @@ func designStubNoDisplayOnly(design *mocks.MockDesign) {
 	design.EXPECT().MediaHeldHiddenOnly(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 	// M16: a flat asks which of its pictures design runs produced — «none» here; the rule's own
 	// probes answer otherwise (design_board_generated_test.go).
-	design.EXPECT().MediaRunKinds(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	design.EXPECT().MediaProducers(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 }
 
 // ─────────────────────── стенд ───────────────────────

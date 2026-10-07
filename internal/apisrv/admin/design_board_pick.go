@@ -208,34 +208,94 @@ func designRunSources(kind string, card *entity.TechCard, band *entity.DesignBan
 // or its crop — is the model's own drawing; sent back as a photo it teaches the next flat its
 // mistakes. Found on the board it is HELD («render» in «what the model gets»), never sent.
 //
-// «Produced» is read from design_picture.run_id (MediaRunKinds: any card; a crop and a flatten carry
-// their parent's run), never from a filename.
+// «Produced» is read from design_picture.run_id (MediaProducers: any card; a crop and a flatten carry
+// their parent's run; a cutout is followed to what it was cut from), never from a filename.
 
 // designOutputFeedsAFlat — THE ONE EXCEPTION (M17): a CUTOUT (remove bg, fal BiRefNet) is the very
 // garment photo with its background removed — a crop of an input photo, not a drawing — so a cutout's
-// output may feed a flat like the photo it was cut from. Every other kind of run may not.
+// output may feed a flat like the photo it was cut from (and is generated when that was:
+// designResolveGenerated). Every other kind of run may not.
 func designOutputFeedsAFlat(runKind string) bool {
 	return runKind == entity.DesignRunKindCutout
 }
 
-// designGeneratedOf — of MediaRunKinds' answer, the media a flat may not take, each with the kind of
-// a run that produced it (the first kind that is not a cutout). A media both a cutout and, say, a
-// render produced is generated.
-func designGeneratedOf(kinds map[int][]string) map[int]string {
-	var out map[int]string
-	for media, ks := range kinds {
-		for _, k := range ks {
-			if designOutputFeedsAFlat(k) {
-				continue
+// designCutoutDepth — how many cutouts deep a picture's lineage is followed (a cutout of a cutout of
+// …). Beyond it the picture is judged by what is known: a cutout of nothing generated.
+const designCutoutDepth = 4
+
+// designProducersLookup — the store's MediaProducers (a fake in tests).
+type designProducersLookup func(ctx context.Context, ids []int) (map[int][]entity.DesignMediaProducer, error)
+
+// designResolveGenerated — of the named media, those a flat may not take, each with the kind of the run
+// that made it generated. A media any non-cutout run produced is generated; a media only cutouts
+// produced is as generated as what they were cut from (Sources, followed up to designCutoutDepth): a
+// cutout of a garment photo goes, a cutout of a render is a render (Codex M16 #3). nil when nothing is.
+func designResolveGenerated(ctx context.Context, ids []int, lookup designProducersLookup) (map[int]string, error) {
+	// Read level by level (one store read per level): the asked media, then what their cutouts were
+	// cut from, and so on — each media read once.
+	known := map[int][]entity.DesignMediaProducer{}
+	read := map[int]bool{}
+	frontier := ids
+	for depth := 0; depth <= designCutoutDepth && len(frontier) > 0; depth++ {
+		var ask []int
+		for _, id := range frontier {
+			if id > 0 && !read[id] {
+				read[id] = true
+				ask = append(ask, id)
 			}
+		}
+		if len(ask) == 0 {
+			break
+		}
+		sort.Ints(ask)
+		producers, err := lookup(ctx, ask)
+		if err != nil {
+			return nil, err
+		}
+		frontier = nil
+		for _, id := range ask {
+			known[id] = producers[id]
+			for _, p := range producers[id] {
+				if designOutputFeedsAFlat(p.RunKind) {
+					frontier = append(frontier, p.Sources...)
+				}
+			}
+		}
+	}
+	// The verdict of one media: a non-cutout producer → generated; else the first generated picture
+	// it was cut from, within the depth (a cycle ends there too).
+	var verdict func(id, depth int) string
+	verdict = func(id, depth int) string {
+		for _, p := range known[id] {
+			if !designOutputFeedsAFlat(p.RunKind) {
+				return p.RunKind
+			}
+		}
+		if depth >= designCutoutDepth {
+			return ""
+		}
+		for _, p := range known[id] {
+			for _, src := range p.Sources {
+				if k := verdict(src, depth+1); k != "" {
+					return k
+				}
+			}
+		}
+		return ""
+	}
+	var out map[int]string
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if k := verdict(id, 0); k != "" {
 			if out == nil {
 				out = map[int]string{}
 			}
-			out[media] = k
-			break
+			out[id] = k
 		}
 	}
-	return out
+	return out, nil
 }
 
 // designFlatGenerated — for a FLAT run of these sources, which of the pictures it could read (the
@@ -254,16 +314,16 @@ func (s *Server) designFlatGenerated(ctx context.Context, src designInputSources
 	return s.designGeneratedMedia(ctx, ids)
 }
 
-// designGeneratedMedia — MediaRunKinds folded by designOutputFeedsAFlat; no ids, no read.
+// designGeneratedMedia — designResolveGenerated over the store's MediaProducers; no ids, no read.
 func (s *Server) designGeneratedMedia(ctx context.Context, ids []int) (map[int]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	kinds, err := s.repo.Design().MediaRunKinds(ctx, ids)
+	gen, err := designResolveGenerated(ctx, ids, s.repo.Design().MediaProducers)
 	if err != nil {
 		return nil, designError(ctx, "failed to read which pictures design runs produced", err, nil)
 	}
-	return designGeneratedOf(kinds), nil
+	return gen, nil
 }
 
 // designFlatNoGenerated — a FLAT's refs without the generated pictures (Generated). The designer's own

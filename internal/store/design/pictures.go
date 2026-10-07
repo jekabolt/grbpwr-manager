@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -1025,19 +1026,23 @@ func (s *Store) MediaHeldHiddenOnly(ctx context.Context, mediaIDs []int) ([]int,
 	return out, nil
 }
 
-// MediaRunKinds — FOR EACH NAMED MEDIA, THE KINDS OF THE DESIGN RUNS THAT PRODUCED IT (M16, owner
-// 07.10: «в инпут на флеты не должны подсовываться фабрик рендеры»).
+// MediaProducers — FOR EACH NAMED MEDIA, THE DESIGN RUNS THAT PRODUCED IT (M16, owner 07.10: «в инпут
+// на флеты не должны подсовываться фабрик рендеры»).
 //
 // A picture is a run's output when its design_picture row carries a run_id: the worker files every
 // output that way (queue.go), and a crop or a flatten inherits its parent's run (SplitPicture,
 // FlattenEditLayer), so a cut-up or painted-over render is still a render. A batch upload, a drawing
 // and a garment photo on the board have no run and are absent from the answer. Any card: the file is
-// generated wherever it lies. Which kinds may still feed a flat is the caller's rule
+// generated wherever it lies.
+//
+// A CUTOUT also says what it was cut from — its frozen snapshot refs (`$.refs[*].media_id`, the one
+// picture a cutout takes): the caller follows them, so a cutout of a render is a render
+// (admin.designGeneratedMedia). Which kinds may still feed a flat is the caller's rule
 // (admin.designOutputFeedsAFlat), not this read's.
 //
 // The same shape as its neighbours: an empty input answers empty without touching the base; zeros and
 // repeats are dropped here.
-func (s *Store) MediaRunKinds(ctx context.Context, mediaIDs []int) (map[int][]string, error) {
+func (s *Store) MediaProducers(ctx context.Context, mediaIDs []int) (map[int][]entity.DesignMediaProducer, error) {
 	ids := make([]int, 0, len(mediaIDs))
 	seen := make(map[int]struct{}, len(mediaIDs))
 	for _, id := range mediaIDs {
@@ -1054,24 +1059,44 @@ func (s *Store) MediaRunKinds(ctx context.Context, mediaIDs []int) (map[int][]st
 		return nil, nil
 	}
 	type row struct {
-		MediaId int    `db:"media_id"`
-		Kind    string `db:"kind"`
+		MediaId int            `db:"media_id"`
+		Kind    string         `db:"kind"`
+		Sources sql.NullString `db:"sources"`
 	}
-	out := map[int][]string{}
+	var out map[int][]entity.DesignMediaProducer
 	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		rows, err := storeutil.QueryListNamed[row](ctx, rep.DB(), `
-			SELECT DISTINCT p.media_id, r.kind
+			SELECT p.media_id, r.kind,
+				CASE WHEN r.kind = :cutout
+					THEN CAST(JSON_EXTRACT(r.inputs, '$.refs[*].media_id') AS CHAR)
+					ELSE NULL END AS sources
 			FROM design_picture p
 			JOIN design_run r ON r.id = p.run_id
 			WHERE p.media_id IN (:ids)
-			ORDER BY p.media_id, r.kind`,
-			map[string]any{"ids": ids})
+			ORDER BY p.media_id, r.id`,
+			map[string]any{"ids": ids, "cutout": entity.DesignRunKindCutout})
 		if err != nil {
-			return fmt.Errorf("failed to read which media design runs produced: %w", err)
+			return fmt.Errorf("failed to read which design runs produced the media: %w", err)
 		}
-		out = make(map[int][]string, len(rows))
+		out = make(map[int][]entity.DesignMediaProducer, len(rows))
+		type key struct {
+			media         int
+			kind, sources string
+		}
+		dup := make(map[key]bool, len(rows))
 		for _, r := range rows {
-			out[r.MediaId] = append(out[r.MediaId], r.Kind)
+			k := key{r.MediaId, r.Kind, r.Sources.String}
+			if dup[k] {
+				continue
+			}
+			dup[k] = true
+			p := entity.DesignMediaProducer{RunKind: r.Kind}
+			if r.Sources.Valid && strings.TrimSpace(r.Sources.String) != "" {
+				// A malformed list reads as «cut from nothing known»: the caller then judges the
+				// cutout by itself.
+				_ = json.Unmarshal([]byte(r.Sources.String), &p.Sources)
+			}
+			out[r.MediaId] = append(out[r.MediaId], p)
 		}
 		return nil
 	})

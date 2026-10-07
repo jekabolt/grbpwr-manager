@@ -54,6 +54,15 @@ const (
 	DesignLabelStateOutput = "output"
 )
 
+// DesignMediaProducer — one design run that produced a picture holding a media (M16,
+// Design.MediaProducers).
+type DesignMediaProducer struct {
+	RunKind string
+	// Sources — the media that run was given (its snapshot refs), read for a CUTOUT only: a cutout is
+	// only as much a garment photo as the picture it was cut from.
+	Sources []int
+}
+
 // DesignLabelStateOrOk — ” (a row older than the column) reads as ok.
 func DesignLabelStateOrOk(v string) string {
 	if v == "" {

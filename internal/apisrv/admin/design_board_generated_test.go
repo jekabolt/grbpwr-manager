@@ -29,16 +29,53 @@ func TestOnlyACutoutOutputMayFeedAFlat(t *testing.T) {
 		require.False(t, designOutputFeedsAFlat(k), k)
 	}
 	require.True(t, designOutputFeedsAFlat(entity.DesignRunKindCutout))
+}
 
+// THE LINEAGE OF A CUTOUT (Codex M16 #3): a cutout goes when it was cut from a garment photo, and is a
+// render when it was cut from one — directly, through a crop of the render (the crop carries the
+// render's run), or through a cutout of a cutout.
+func TestACutoutIsAsGeneratedAsWhatItWasCutFrom(t *testing.T) {
+	cut := func(src ...int) entity.DesignMediaProducer {
+		return entity.DesignMediaProducer{RunKind: entity.DesignRunKindCutout, Sources: src}
+	}
+	run := func(kind string) entity.DesignMediaProducer { return entity.DesignMediaProducer{RunKind: kind} }
+	store := map[int][]entity.DesignMediaProducer{
+		1:  {run(entity.DesignRunKindRender)},             // a render
+		2:  {cut(100)},                                    // a cutout of photo 100 (no run)
+		3:  {cut(1)},                                      // a cutout of the render
+		4:  {cut(3)},                                      // a cutout of that cutout
+		5:  {cut(6)},                                      // a cutout of a crop of a 3D still
+		6:  {run(entity.DesignRunKindThreed)},             // the crop: it carries the 3D run
+		7:  {cut()},                                       // a cutout whose source is not recorded
+		8:  {cut(100), run(entity.DesignRunKindFreeform)}, // two producers, one generated
+		9:  {cut(10)},                                     // a cycle: judged by what is known
+		10: {cut(9)},
+	}
+	calls := 0
+	lookup := func(_ context.Context, ids []int) (map[int][]entity.DesignMediaProducer, error) {
+		calls++
+		out := map[int][]entity.DesignMediaProducer{}
+		for _, id := range ids {
+			if p, ok := store[id]; ok {
+				out[id] = p
+			}
+		}
+		return out, nil
+	}
+	got, err := designResolveGenerated(context.Background(), []int{1, 2, 3, 4, 5, 7, 8, 9, 100, 3}, lookup)
+	require.NoError(t, err)
 	require.Equal(t, map[int]string{
 		1: entity.DesignRunKindRender,
-		3: entity.DesignRunKindThreed, // a cutout AND a 3D still: generated
-	}, designGeneratedOf(map[int][]string{
-		1: {entity.DesignRunKindRender},
-		2: {entity.DesignRunKindCutout},
-		3: {entity.DesignRunKindCutout, entity.DesignRunKindThreed},
-	}))
-	require.Nil(t, designGeneratedOf(map[int][]string{2: {entity.DesignRunKindCutout}}))
+		3: entity.DesignRunKindRender,
+		4: entity.DesignRunKindRender,
+		5: entity.DesignRunKindThreed,
+		8: entity.DesignRunKindFreeform,
+	}, got)
+	require.LessOrEqual(t, calls, designCutoutDepth+1, "one read per level")
+
+	none, err := designResolveGenerated(context.Background(), []int{2, 100}, lookup)
+	require.NoError(t, err)
+	require.Nil(t, none)
 }
 
 // A VIEWS RUN: the render is held BEFORE «the two newest of its view» is counted — it must not push a
@@ -113,12 +150,22 @@ func TestPreviewAndRunHoldTheSameGeneratedPictures(t *testing.T) {
 	withBoardSource(t)
 	band := &entity.DesignBand{References: boardRefs(), Bench: designBandWith(false).Bench}
 	rig := newDesignRunRig(t, boardCard(), band)
-	rig.design.ExpectedCalls = pgDropCalls(rig.design.ExpectedCalls, "MediaRunKinds")
-	rig.design.EXPECT().MediaRunKinds(mock.Anything, mock.Anything).Return(map[int][]string{
-		403: {entity.DesignRunKindRender},
-		410: {entity.DesignRunKindThreed},
-		402: {entity.DesignRunKindCutout},
-	}, nil)
+	rig.design.ExpectedCalls = pgDropCalls(rig.design.ExpectedCalls, "MediaProducers")
+	rig.design.EXPECT().MediaProducers(mock.Anything, mock.Anything).RunAndReturn(
+		func(_ context.Context, ids []int) (map[int][]entity.DesignMediaProducer, error) {
+			all := map[int][]entity.DesignMediaProducer{
+				403: {{RunKind: entity.DesignRunKindRender}},
+				410: {{RunKind: entity.DesignRunKindThreed}},
+				402: {{RunKind: entity.DesignRunKindCutout, Sources: []int{9402}}}, // cut from a photo
+			}
+			out := map[int][]entity.DesignMediaProducer{}
+			for _, id := range ids {
+				if p, ok := all[id]; ok {
+					out[id] = p
+				}
+			}
+			return out, nil
+		})
 	params := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
 
 	prev, err := rig.srv.PreviewDesignRunInputs(designRunCtx(), &pb_admin.PreviewDesignRunInputsRequest{
@@ -146,9 +193,9 @@ func TestPreviewAndRunHoldTheSameGeneratedPictures(t *testing.T) {
 // A RERUN of a flat booked before the rule does not carry its render on.
 func TestAFlatRerunDropsItsParentsGeneratedPictures(t *testing.T) {
 	rig := newDesignRunRig(t, designMoodCard(), designBandWith(true))
-	rig.design.ExpectedCalls = pgDropCalls(rig.design.ExpectedCalls, "MediaRunKinds")
-	rig.design.EXPECT().MediaRunKinds(mock.Anything, []int{700, 701}).
-		Return(map[int][]string{700: {entity.DesignRunKindRender}}, nil).Once()
+	rig.design.ExpectedCalls = pgDropCalls(rig.design.ExpectedCalls, "MediaProducers")
+	rig.design.EXPECT().MediaProducers(mock.Anything, []int{700, 701}).
+		Return(map[int][]entity.DesignMediaProducer{700: {{RunKind: entity.DesignRunKindRender}}}, nil).Once()
 	parentInputs, err := designMarshalJSON(&pb_common.DesignInputSnapshot{
 		Refs: []*pb_common.DesignInputRef{{MediaId: 700, Role: entity.DesignViewFront}, {MediaId: 701, Role: entity.DesignViewBack}},
 	})
@@ -162,8 +209,10 @@ func TestAFlatRerunDropsItsParentsGeneratedPictures(t *testing.T) {
 	require.Equal(t, []int32{701}, boardSnapIDs(snap))
 
 	// Every picture generated, no plate: refused before any money.
-	rig.design.EXPECT().MediaRunKinds(mock.Anything, []int{700, 701}).
-		Return(map[int][]string{700: {entity.DesignRunKindRender}, 701: {entity.DesignRunKindPattern}}, nil).Once()
+	rig.design.EXPECT().MediaProducers(mock.Anything, []int{700, 701}).
+		Return(map[int][]entity.DesignMediaProducer{
+			700: {{RunKind: entity.DesignRunKindRender}}, 701: {{RunKind: entity.DesignRunKindPattern}},
+		}, nil).Once()
 	_, _, err = rig.srv.designRunInputs(context.Background(), designInputSources{
 		Kind: entity.DesignRunKindFlat, Card: designMoodCard(),
 		Params: &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne},
