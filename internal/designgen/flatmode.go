@@ -15,9 +15,10 @@ import (
 //
 // The third mode, `straps` (the photos route plus the designer-confirmed join list), is RETIRED (owner
 // 07.10, 100-CONSTRUCTION-DEADEND; M7 refused a new press, M7b took the word out of this list): the door
-// refuses any press that names it (mode_retired, admin design_flat_modes.go), and a run frozen with it
-// before then reads as no mode — flatModeOf draws it by the photos route, byte for byte the words it
-// was drawn with since the join list left the prompt (flat_prompt_bytes_test.go).
+// refuses a new press that names it (mode_retired, admin design_flat_modes.go; a rerun of a straps run
+// still repeats its parent), and a run that carries the word reads as no mode — flatModeOf draws it by
+// the photos route, byte for byte the words it was drawn with since the join list left the prompt
+// (flat_prompt_bytes_test.go).
 //
 // Every mode buys ONE sheet (wave 10: the candidate quiz is gone).
 //
