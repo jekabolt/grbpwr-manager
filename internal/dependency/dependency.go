@@ -2183,6 +2183,16 @@ type (
 		GetPartsSuggestion(ctx context.Context, cardID int, view string, baseMediaID int, algoRev string) (*entity.DesignPartsSuggestion, error)
 		// SavePartsSuggestion upserts the answer on (card, view, base media, algo rev).
 		SavePartsSuggestion(ctx context.Context, in entity.DesignPartsSuggestion) (*entity.DesignPartsSuggestion, error)
+		// GetPartsPieces — the card's PARTS pieces list (M6); nil when none. ErrDesignNotFound when
+		// the card does not exist.
+		GetPartsPieces(ctx context.Context, cardID int) (*entity.DesignPartsPieces, error)
+		// SavePartsPiecesRead writes a model's read of the FRONT/BACK plates: the list while no
+		// designer edited it, else the proposal; a row that moved since ExpectedRev is left alone.
+		// Returns the row after the write.
+		SavePartsPiecesRead(ctx context.Context, req entity.DesignPartsPiecesRead) (*entity.DesignPartsPieces, error)
+		// SetPartsPieces saves the designer's list under CAS on rev (0 = no row yet) —
+		// ErrDesignPartsPiecesRevMismatch on a stale rev.
+		SetPartsPieces(ctx context.Context, req entity.DesignPartsPiecesSave) (*entity.DesignPartsPieces, error)
 		// GetJoins — the card's current join list (flat route, 0397); nil when none.
 		// ErrDesignNotFound when the card does not exist.
 		GetJoins(ctx context.Context, cardID int) (*entity.DesignJoins, error)

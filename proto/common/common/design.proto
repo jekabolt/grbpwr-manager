@@ -1992,6 +1992,47 @@ message DesignJoins {
   bool confirmed = 12;
 }
 
+// DesignPartsPieces — the card's PIECES LIST for PARTS (M6, flat-consistency 107): the closed list of
+// part names the parts labeller may use. Read by a model from the ACCEPTED FRONT/BACK flats (the
+// plates of the FLAT bench slots — never the photos, never the join list) from a fixed garment
+// vocabulary, then edited by the designer. A re-read never writes over a designer's edits: once
+// edited, a newer read waits in `proposal` until the designer takes or keeps it. Never sent to image
+// generation.
+message DesignPartsPieces {
+  int32 rev = 1; // CAS revision; every write + 1. The parts labeller's answers are keyed on it.
+  repeated DesignPartsPiece pieces = 2; // in order; names unique
+  repeated string openings = 3; // areas with no cloth the read saw ("open back"); a hint, not a part
+  string model = 4; // the model of the read the list started from
+  bool edited = 5; // a designer saved the list after the model
+  google.protobuf.Timestamp edited_at = 6;
+  // The bench plates the list (as read) came from; 0 = that side had none.
+  int32 front_media_id = 7;
+  int32 back_media_id = 8;
+  // A newer read of changed FRONT/BACK flats, held because the designer edited the list; absent =
+  // none. SetDesignPartsPieces with settle_proposal = true takes it (send its names) or keeps the
+  // list (send the list's names) and drops it.
+  DesignPartsPiecesProposal proposal = 9;
+  // The FRONT/BACK flats on the bench now differ from the ones the list (or its proposal) was read
+  // from: the next parts naming reads them again.
+  bool stale = 10;
+}
+
+// DesignPartsPiece — one cut piece of the garment.
+message DesignPartsPiece {
+  string name = 1; // lowercase, ≤ 40 characters ("left strap", "front body")
+  repeated string views = 2; // front | back — where the read saw it; empty = a designer's piece
+}
+
+// DesignPartsPiecesProposal — a newer read waiting on the designer.
+message DesignPartsPiecesProposal {
+  repeated DesignPartsPiece pieces = 1;
+  repeated string openings = 2;
+  string model = 3;
+  int32 front_media_id = 4;
+  int32 back_media_id = 5;
+  google.protobuf.Timestamp read_at = 6;
+}
+
 // DesignJoinsFit — the garment's ease and waist, closed vocabularies (anything else is cleaned to "").
 message DesignJoinsFit {
   string ease = 1; // slim | fitted | regular | relaxed | oversized | boxy

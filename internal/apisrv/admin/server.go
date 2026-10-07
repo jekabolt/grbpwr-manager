@@ -143,6 +143,9 @@ type Server struct {
 	// partsCardFlight coalesces SuggestDesignPartsCard presses of ONE (card, sides+flats, cut) in
 	// flight (design_parts_card.go). Zero value works.
 	partsCardFlight singleflight.Group
+	// partsPiecesFlight coalesces the pieces reads of ONE (card, front plate, back plate, rev) in
+	// flight (design_parts_pieces.go, M6). Zero value works.
+	partsPiecesFlight singleflight.Group
 	// joinsFlight coalesces GenerateDesignJoins presses of ONE (card, source) in flight
 	// (design_joins.go). Zero value works.
 	joinsFlight singleflight.Group

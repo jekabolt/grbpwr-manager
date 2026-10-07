@@ -60,6 +60,8 @@ var designRefusals = []struct {
 	{entity.ErrDesignColourPlanRevMismatch, codes.Aborted, "colour_plan_rev_mismatch"},
 	// joins_rev_mismatch — the flat route's join list (0397): a regeneration or another tab saved first.
 	{entity.ErrDesignJoinsRevMismatch, codes.Aborted, "joins_rev_mismatch"},
+	// parts_pieces_rev_mismatch — PARTS' pieces list (M6): another tab saved the list first.
+	{entity.ErrDesignPartsPiecesRevMismatch, codes.Aborted, "parts_pieces_rev_mismatch"},
 	{entity.ErrDesignForeignCardPlate, codes.FailedPrecondition, "foreign_card_plate"},
 	{entity.ErrDesignCompositePlate, codes.FailedPrecondition, "composite_plate"},
 	{entity.ErrDesignHiddenPlate, codes.FailedPrecondition, "hidden_plate"},
@@ -395,12 +397,15 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// every Ideas menu stays static on a server that can suggest.
 		SuggestPromptsModel: s.designSuggestPromptsModel(),
 		// AUTO PARTS (0390, field 34): the cached answers of the flat each side holds now.
-		PartsSuggestions: designPartsSuggestionsToPb(designPartsCurrentRows(band.PartsSuggestions, band.Joins)),
+		// M6: only the rows named under the pieces list's current rev.
+		PartsSuggestions: designPartsSuggestionsToPb(designPartsCurrentRows(band.PartsSuggestions, band.PartsPieces)),
 		// FLAT ROUTE (0397, field 35): the card's current join list; absent = none yet.
 		Joins: designJoinsToPb(band.Joins),
 		// The wall-clock cap (fields 36–37): the client draws elapsed / limit from started_at.
 		ImageRunCapSeconds: int32(s.designRunCap().Seconds()),
 		CappedRunKinds:     entity.DesignCappedRunKinds(),
+		// PARTS · the pieces list (M6, field 38): the closed names the labeller uses; absent = none.
+		PartsPieces: designPartsPiecesToPb(band.PartsPieces, band.FlatMedia),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —

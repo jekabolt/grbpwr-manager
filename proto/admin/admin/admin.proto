@@ -3314,6 +3314,20 @@ service AdminService {
     };
   }
 
+  // SetDesignPartsPieces saves the designer's PIECES LIST for PARTS (M6, flat-consistency 107) — the
+  // closed list of names the parts labeller may use (CAS: expected_rev must be the stored rev; 0 = no
+  // list yet). Names are cleaned (lowercase, ≤ 40 characters, unique, not "opening"/"unnamed", ≤ 30);
+  // the list is marked edited, so a later read of changed flats only PROPOSES. settle_proposal = true
+  // also drops the pending proposal (the names sent are the designer's answer to it: its names = take,
+  // the list's own = keep). Aborted (parts_pieces_rev_mismatch) on a stale rev. Spends no key; the
+  // next SuggestDesignPartsCard names the parts again under the new rev.
+  rpc SetDesignPartsPieces(SetDesignPartsPiecesRequest) returns (SetDesignPartsPiecesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/parts/pieces"
+      body: "*"
+    };
+  }
+
   // SetDesignDetailKept marks a STALE flat detail as kept (keep = true) or takes the mark off (keep =
   // false) — 82-INPUT-REDESIGN §5, owner 06.10: «keep» is stored on the server, everyone sees it.
   //
@@ -12691,6 +12705,9 @@ message GetDesignBandResponse {
   // error_code (timed_out | landing_failed | …) and a human last_error.
   int32 image_run_cap_seconds = 36;
   repeated string capped_run_kinds = 37;
+  // PARTS · the card's pieces list (M6): the closed names the parts labeller uses; parts_suggestions
+  // carries only the rows named under its current rev. Absent = none read yet.
+  common.DesignPartsPieces parts_pieces = 38;
 }
 
 // DesignImageModel is ONE engine the image door accepts (GetDesignBandResponse.image_models) and
@@ -13699,6 +13716,9 @@ message SuggestDesignPartsCardRequest {
 message SuggestDesignPartsCardResponse {
   repeated DesignPartsSuggestion suggestions = 1; // one per requested side, in request order
   bool cached = 2; // true = read from the cache, no call made
+  // The card's pieces list the answer was named under (M6): its rev is the one the answer's rows are
+  // keyed on. Absent = the card has no FRONT/BACK flat to read pieces from (labels were free).
+  common.DesignPartsPieces pieces = 3;
 }
 
 // FLAT ROUTE · JOIN LIST messages.
@@ -13724,6 +13744,19 @@ message SetDesignJoinsRequest {
 
 message SetDesignJoinsResponse {
   common.DesignJoins joins = 1;
+}
+
+// PARTS · PIECES LIST messages (M6).
+
+message SetDesignPartsPiecesRequest {
+  int32 tech_card_id = 1;
+  int32 expected_rev = 2; // the rev the edit was made on; 0 = no list yet
+  repeated string names = 3; // the whole list, in order
+  bool settle_proposal = 4; // drop the pending proposal (take = its names, keep = the list's)
+}
+
+message SetDesignPartsPiecesResponse {
+  common.DesignPartsPieces pieces = 1;
 }
 
 message SetDesignDetailKeptRequest {

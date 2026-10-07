@@ -2488,6 +2488,12 @@ type DesignBand struct {
 	// Joins — the card's current join list (flat route, 0397); nil = none yet.
 	Joins *DesignJoins
 
+	// PartsPieces — the card's PARTS pieces list (M6, 107); nil = none read yet. FlatMedia — view →
+	// media of the plate on each side's flat slot, read in the same snapshot (whether the list is
+	// stale against the FRONT/BACK plates now).
+	PartsPieces *DesignPartsPieces
+	FlatMedia   map[string]int
+
 	// HasFabricRender — у карточки есть ХОТЯ БЫ ОДИН НЕСПРЯТАННЫЙ КАДР рода `render` (W-13).
 	// Считается в той же читающей транзакции по ВСЕЙ карточке, а не по загруженной странице.
 	//

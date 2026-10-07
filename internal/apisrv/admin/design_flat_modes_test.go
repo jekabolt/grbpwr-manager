@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -243,30 +241,6 @@ func TestJoinsEditMarksAndConfirm(t *testing.T) {
 	back := entity.SanitizeDesignJoinsDoc(designJoinsDocFromPb(pb))
 	require.False(t, back.Items[0].Edited)
 	require.False(t, back.Confirmed)
-}
-
-func TestPartsCardConstructionFromJoins(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "designgen", "testdata", "joins", "c38-joins.json"))
-	require.NoError(t, err)
-	a, ok := entity.ParseDesignJoinsAnswer(string(raw))
-	require.True(t, ok)
-	got := designPartsConstructionText(a.Doc())
-	require.True(t, strings.HasPrefix(got, designgen.JoinsListText(a.Doc())+"\n\n"))
-	want := `PART VOCABULARY (closed — use exactly these names; every separately cut piece below is its own part with its own regions, never folded into a body panel; never name a part the construction does not have; a region with no cloth of its own is an opening, never a binding or a band):
-- front body — the outer front body panel
-- back body — the outer back body panel
-- front neck binding — a thin binding strip (narrow) cut as its own piece, along NP_R → CFN → NP_L
-- left strap — a strap cut as its own piece; it STARTS at NP_L and ends at UA_R..MB_R:0.3; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
-- right strap — a strap cut as its own piece; it STARTS at NP_R and ends at UA_L..MB_L:0.3; named by the wearer's shoulder where it starts, with this one name on every view, even where it crosses to the other side
-- back open binding — a thin binding strip (narrow) cut as its own piece, along UA_L → MB_L → MB_C → MB_R → UA_R
-- (no armhole binding: the strip along an armhole edge is the panel it finishes, or the strap it runs on into — never a part of its own)
-- opening: bounded by strap_L, strap_R, back_open_bind — no cloth: label it «opening», never a garment part`
-	require.True(t, strings.HasSuffix(got, want), got)
-	require.NotContains(t, strings.ToLower(got[strings.Index(got, "PART VOCABULARY"):]), "upper back")
-	require.Equal(t, "", designPartsConstructionText(entity.DesignJoinsDoc{}), "no list, no block")
-	require.Equal(t, "left strap", designPartsNameOf(entity.DesignJoinItem{ID: "strap_from_L", Kind: "strap"}))
-	require.Equal(t, "neck binding", designPartsNameOf(entity.DesignJoinItem{ID: "neck_binding", Kind: "binding"}))
-	require.Equal(t, "right pocket", designPartsNameOf(entity.DesignJoinItem{ID: "pocket", Kind: "pocket", Side: "R"}))
 }
 
 func TestJoinsFitOnTheWire(t *testing.T) {

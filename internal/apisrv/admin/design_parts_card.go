@@ -59,16 +59,17 @@ Rules:
 - Left and right are the WEARER'S left and right, never the viewer's. On the FRONT view the wearer's left is picture-RIGHT; on the BACK view the wearer's left is picture-LEFT; on a side view the flank comes from the drawing (the garment's front facing picture-left = the wearer's LEFT flank, facing picture-right = the wearer's RIGHT flank). Left and right sleeves, cuffs, pockets, front panels are separate parts.
 - A STRAP is named by the shoulder where it STARTS at the neck point (the wearer's side): a strap that starts at the wearer's left neck point is the "left strap" on every view, even where it crosses to the right side of the body or ends there. One strap keeps one name on all views.
 - Every region number of every view must appear in exactly one part. A region that is noise goes into the part it sits on.
-- Labels are lowercase, at most 3 words, standard garment part names ("left sleeve", "collar", "left front body", "back yoke", "left pocket flap"); each label is used once.
+- Labels are lowercase, at most 3 words, standard garment part names ("left sleeve", "collar", "left front body", "back yoke", "left pocket flap"); each label is used once. When the message gives a PIECES list, every label is EXACTLY one of its names (or "opening") — no other name.
 - If ONE region clearly spans two parts whose seam line is missing in the drawing, put it in the part it mostly belongs to and also list it in "split_needed" with its view.
 - Use only the view keys named in the message.
 
 Construction rules (they override any habit of naming the usual pieces):
 - OPENINGS ARE NOT CLOTH. A region bounded by straps, bindings or the edge of a cut-out — an open back, a keyhole, a cut-out, the neck hole, the hole inside an armhole (on a side view too), the gap between crossed straps — is an OPENING: put every such region into ONE part labelled "opening". It is never painted, whatever you think shows through it (a flat is an empty garment): never give an opening to a garment part.
 - NO CLOTH IS NEVER A BINDING. An area with no cloth of its own bounded by straps or edges (e.g. the triangle between a strap and the armhole edge on an open back) is an "opening" — never a binding or a band. Bindings and bands are THIN strips along an edge only.
-- AN EDGE IS NOT A PART. Never name a part by an edge or a hole alone ("armhole", "right armhole", "neckline", "hem", "opening edge"): a thin strip along an edge is the binding or band the construction lists, or else the panel whose edge it finishes.
-- EVERY SEPARATELY CUT PIECE IS ITS OWN PART: a neck band, each binding (neck, armhole, the edge of an open back), each strap, and every inner layer the construction lists. Never fold a band, binding, strap or layer into the body panel next to it. An inner layer seen through a sheer outer layer is its own part (its own label, the same on every view), not the outer body.
-- NEVER INVENT A PIECE. Name a part only when the drawing gives it cloth bounded by its own seams/edges. In particular a back view of an open-back garment has NO upper back / back yoke / back bodice above the opening: the area inside the straps is an opening, not a panel. A part must be consistent across the views and with the construction notes in the message: before answering, check every part against every other view — if the other views show no such piece and the region can be explained as an opening, it is an opening.
+- AN EDGE IS NOT A PART. Never name a part by an edge or a hole alone ("armhole", "right armhole", "neckline", "hem", "opening edge"): a thin strip along an edge is the binding or band the PIECES list names, or else the panel whose edge it finishes.
+- AN ARMHOLE HAS NO PIECE OF ITS OWN. A strip or an area running along an armhole (also one between the armhole edge and a line from the shoulder down to the underarm) is the body panel it lies on — never a strap, a binding, a layer or any other piece of the list.
+- EVERY PIECE OF THE LIST IS ITS OWN PART: a neck band, a binding, each strap, every inner layer. Never fold a band, binding, strap or layer into the body panel next to it. An inner layer seen through a sheer outer layer is its own part (its own label, the same on every view), not the outer body.
+- NEVER INVENT A PIECE. Name a part only when the drawing gives it cloth bounded by its own seams/edges. In particular a back view of an open-back garment has NO upper back / back yoke / back bodice above the opening: the area inside the straps is an opening, not a panel. A part must be consistent across the views and with the PIECES list in the message: before answering, check every part against every other view — if the other views show no such piece and the region can be explained as an opening, it is an opening.
 - THE FLANK OF A SIDE VIEW COMES FROM THE DRAWING, NOT FROM ITS NAME. Find which way the garment's front faces (neckline, bust, front edge). If the front faces the RIGHT edge of the picture, the flank you see is the wearer's RIGHT side; if it faces the LEFT edge, the wearer's LEFT side. Every left/right part on that view belongs to that flank only — never mix a left armhole with a right back panel on one side view — and it must be the same entry (same part) as the matching piece on the front and back views.
 - A seam that runs down the middle of a side view is the side seam: the front of the garment is on one side of it, the back on the other.
 
@@ -92,17 +93,12 @@ type designPartsCardView struct {
 }
 
 // designPartsCardUserPrompt numbers the pictures in the order they travel. `note` is the card's
-// garment note, `construction` the confirmed construction (designPartsCardConstruction); either may
-// be empty. No photos travel (B1: they make the labelling worse).
-func designPartsCardUserPrompt(views []designPartsCardView, note, construction string, confirmed bool) string {
+// garment note, `pieces` the PIECES block of the card's pieces list (designPartsPiecesBlock, M6 —
+// read from the accepted front/back flats, never from the join list); either may be empty. No photos
+// travel (B1: they make the labelling worse).
+func designPartsCardUserPrompt(views []designPartsCardView, note, pieces string) string {
 	var b strings.Builder
-	if c := strings.TrimSpace(construction); c != "" {
-		// Codex b3: «confirmed by the designer» only when a designer did confirm this list.
-		if confirmed {
-			b.WriteString("CONSTRUCTION of this garment (confirmed by the designer; trust it over habit — never name a part it does not have):\n")
-		} else {
-			b.WriteString("CONSTRUCTION of this garment (suggested construction (unconfirmed): read from the photos by a model, not yet checked by the designer; prefer it over habit, but where the drawing plainly disagrees, the drawing wins):\n")
-		}
+	if c := strings.TrimSpace(pieces); c != "" {
 		b.WriteString(c)
 		b.WriteString("\n\n")
 	}
@@ -182,15 +178,17 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 			return nil, status.Error(codes.FailedPrecondition, designPartsFlatChangedMsg)
 		}
 	}
-	// Codex b4: the cache and the flight are keyed on the client's cut, the server's prompt revision
-	// and the join list's rev — a list created, corrected or confirmed after the parts were named
-	// names them again. The list read here is the one the prompt reads (one read, one rev).
-	joins, err := s.repo.Design().GetJoins(ctx, cardID)
+	// M6: the closed names come from the card's PIECES LIST, read from the FRONT/BACK plates on the
+	// bench (now, if there is none or the plates moved) and edited by the designer — never from the
+	// join list. The cache and the flight are keyed on the client's cut, the server's prompt revision
+	// and the list's rev: a list edited after the parts were named names them again. The list read
+	// here is the one the prompt reads (one read, one rev).
+	pieces, err := s.designPartsPiecesFor(ctx, cardID, flats)
 	if err != nil {
-		return nil, designError(ctx, "failed to read the join list", err, nil)
+		return nil, err
 	}
 	clientRev := algoRev
-	algoRev = designPartsCacheRev(clientRev, designPartsJoinsRev(joins))
+	algoRev = designPartsCacheRev(clientRev, designPartsPiecesRev(pieces))
 	if len(algoRev) > entity.DesignPartsMaxAlgoRev {
 		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must be 1..%d characters", entity.DesignPartsMaxAlgoRev-(len(algoRev)-len(clientRev)))
 	}
@@ -201,7 +199,7 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 			return nil, err
 		}
 		if hits != nil {
-			return designPartsCardResponse(hits, true), nil
+			return designPartsCardResponse(hits, true, pieces, flats), nil
 		}
 	}
 
@@ -253,7 +251,7 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			designPartsCardAttempts*budget+designPartsFlightMargin)
 		defer cancel()
-		return s.designPartsCardCall(fctx, cardID, views, algoRev, ordered, force, joins, budget)
+		return s.designPartsCardCall(fctx, cardID, views, algoRev, ordered, force, pieces, budget)
 	})
 	var res singleflight.Result
 	select {
@@ -265,7 +263,7 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		return nil, res.Err
 	}
 	ans := res.Val.(designPartsCardFlightAnswer)
-	return designPartsCardResponse(ans.suggestions, ans.cached), nil
+	return designPartsCardResponse(ans.suggestions, ans.cached, pieces, flats), nil
 }
 
 // designPartsPromptRev — the server half of the parts cache key: BUMP IT on every change to what the
@@ -273,23 +271,25 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 // card's cached parts are named again under the new words. 2 = 06.10 (unconfirmed construction is
 // called «suggested construction (unconfirmed)»; the cache learns the joins rev). 3 = 07.10 (M5: an
 // opening is never cloth, no seen_through; an edge is no part; no armhole binding; labels only from
-// the vocabulary).
-const designPartsPromptRev = 3
+// the vocabulary). 4 = 07.10 (M6: the closed names are the card's PIECES list read from the accepted
+// front/back flats, no longer the join list's vocabulary; an armhole has no piece of its own; the
+// cache learns the pieces list's rev instead of the join list's).
+const designPartsPromptRev = 4
 
 // designPartsServerTagSep — where the server's half of a stored algo_rev starts. The client's own
 // revision never contains it (the door refuses one that does), and the wire never shows it.
 const designPartsServerTagSep = "@s"
 
 // designPartsCacheRev — the algo_rev a card-wide answer is cached under: the client's cut, the
-// prompt revision, the join list's rev («regions.v4+parts.f3@s2.j7»). Fits the 32-character column
+// prompt revision, the pieces list's rev («regions.v6+parts.f6@s4.p3»). Fits the 32-character column
 // for any client revision up to ~22 characters.
-func designPartsCacheRev(clientRev string, joinsRev int) string {
-	return clientRev + designPartsServerTag(joinsRev)
+func designPartsCacheRev(clientRev string, piecesRev int) string {
+	return clientRev + designPartsServerTag(piecesRev)
 }
 
-// designPartsServerTag — «@s2.j7».
-func designPartsServerTag(joinsRev int) string {
-	return designPartsServerTagSep + strconv.Itoa(designPartsPromptRev) + ".j" + strconv.Itoa(joinsRev)
+// designPartsServerTag — «@s4.p3» (M6: «p» = the pieces list's rev; «j» was the join list's).
+func designPartsServerTag(piecesRev int) string {
+	return designPartsServerTagSep + strconv.Itoa(designPartsPromptRev) + ".p" + strconv.Itoa(piecesRev)
 }
 
 // designPartsClientRev — the client's half of a stored algo_rev (the wire value).
@@ -300,20 +300,12 @@ func designPartsClientRev(stored string) string {
 	return stored
 }
 
-// designPartsJoinsRev — the rev of the card's join list; 0 when there is none.
-func designPartsJoinsRev(j *entity.DesignJoins) int {
-	if j == nil {
-		return 0
-	}
-	return j.Rev
-}
-
-// designPartsCurrentRows — the band's rows that answer for TODAY's prompt and join list: tagged with
+// designPartsCurrentRows — the band's rows that answer for TODAY's prompt and pieces list: tagged with
 // this server's prompt revision and the list's current rev. An untagged row (named before the tag, or
 // by the per-side call) and a row named under another prompt or list are not shown, so the client
 // asks again (and the server answers from the cache when it can).
-func designPartsCurrentRows(rows []entity.DesignPartsSuggestion, joins *entity.DesignJoins) []entity.DesignPartsSuggestion {
-	tag := designPartsServerTag(designPartsJoinsRev(joins))
+func designPartsCurrentRows(rows []entity.DesignPartsSuggestion, pieces *entity.DesignPartsPieces) []entity.DesignPartsSuggestion {
+	tag := designPartsServerTag(designPartsPiecesRev(pieces))
 	out := make([]entity.DesignPartsSuggestion, 0, len(rows))
 	for _, r := range rows {
 		if strings.HasSuffix(r.AlgoRev, tag) && strings.Index(r.AlgoRev, designPartsServerTagSep) == len(r.AlgoRev)-len(tag) {
@@ -363,7 +355,7 @@ func designPartsCardShaped(in entity.DesignPartsSuggestion) bool {
 }
 
 // designPartsCardCall — the fences and the ONE provider call (the flight leader's work).
-func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []designPartsCardView, algoRev string, marksURLs []string, force bool, joins *entity.DesignJoins, budget time.Duration) (designPartsCardFlightAnswer, error) {
+func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []designPartsCardView, algoRev string, marksURLs []string, force bool, pieces *entity.DesignPartsPieces, budget time.Duration) (designPartsCardFlightAnswer, error) {
 	const purpose = entity.AIPurposeDesignParts
 	// A flight that finished just before this one already paid: read the cache again.
 	if !force {
@@ -389,9 +381,8 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 			enhancePerAdminCalls)
 	}
 
-	construction, confirmed := designPartsCardConstructionOf(joins)
-	vocab := designPartsCardVocabOf(joins)
-	user := designPartsCardUserPrompt(views, s.designPartsCardNote(ctx, cardID), construction, confirmed)
+	vocab := designPartsPiecesVocab(pieces)
+	user := designPartsCardUserPrompt(views, s.designPartsCardNote(ctx, cardID), designPartsPiecesBlock(pieces))
 	sides := make([]string, 0, len(views))
 	for _, v := range views {
 		sides = append(sides, fmt.Sprintf("%s:%d", v.View, v.Count))
@@ -492,8 +483,10 @@ func designPartsRetryUnusable(ctx context.Context, budget time.Duration, try fun
 	return err
 }
 
-func designPartsCardResponse(in []entity.DesignPartsSuggestion, cached bool) *pb_admin.SuggestDesignPartsCardResponse {
-	return &pb_admin.SuggestDesignPartsCardResponse{Suggestions: designPartsSuggestionsToPb(in), Cached: cached}
+func designPartsCardResponse(in []entity.DesignPartsSuggestion, cached bool, pieces *entity.DesignPartsPieces, flats map[string]int) *pb_admin.SuggestDesignPartsCardResponse {
+	return &pb_admin.SuggestDesignPartsCardResponse{
+		Suggestions: designPartsSuggestionsToPb(in), Cached: cached, Pieces: designPartsPiecesToPb(pieces, flats),
+	}
 }
 
 // ─── parsing ───

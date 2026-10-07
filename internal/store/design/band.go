@@ -517,6 +517,13 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if band.Joins, err = joinsByCard(ctx, db, cardID); err != nil {
 			return err
 		}
+		// PARTS (M6): the pieces list and the flat plates it is checked against, in the same snapshot.
+		if band.PartsPieces, err = piecesByCard(ctx, db, cardID); err != nil {
+			return err
+		}
+		if band.FlatMedia, err = flatBenchMedia(ctx, db, cardID); err != nil {
+			return err
+		}
 		if band.TotalBatches, err = storeutil.QueryCountNamed(ctx, db, designCountBatches,
 			map[string]any{"card": cardID}); err != nil {
 			return fmt.Errorf("failed to count design batches: %w", err)
