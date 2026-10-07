@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (421 rpc) ----
+// ---- admin (422 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -872,6 +872,14 @@ func (c *Client) DraftDesignIdea(ctx context.Context, in *admin.DraftDesignIdeaR
 func (c *Client) EnhanceText(ctx context.Context, in *admin.EnhanceTextRequest) (*admin.EnhanceTextResponse, error) {
 	out := new(admin.EnhanceTextResponse)
 	if err := c.call(ctx, "POST", "/api/admin/ai/enhance-text", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ExitTechCardGuide(ctx context.Context, in *admin.ExitTechCardGuideRequest) (*admin.ExitTechCardGuideResponse, error) {
+	out := new(admin.ExitTechCardGuideResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/guide/exit", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

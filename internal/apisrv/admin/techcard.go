@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
@@ -156,6 +157,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationWorkRetiredGate(req.TechCard, nil); err != nil {
 		return nil, err
 	}
+	opts, err := techCardCreateOpts(req)
+	if err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -207,13 +212,21 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
 
-	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
+	id, created, err := s.repo.TechCards().AddTechCardWithOpts(ctx, tc, opts)
 	if err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
 		}
 		if s.repo.IsErrUniqueViolation(err) {
+			// A race on the replay key (two first calls under one key, the loser past the store's own
+			// pre-read) is a replay, not a collision: answer with the card the winner made. Any other
+			// 1062 keeps its meaning.
+			if opts.RequestId != "" && strings.Contains(err.Error(), entity.TechCardCreateRequestIdIndex) {
+				if prior, rErr := s.repo.TechCards().TechCardIdByCreateRequestId(ctx, opts.RequestId); rErr == nil {
+					return &pb_admin.CreateTechCardResponse{Id: int32(prior)}, nil
+				}
+			}
 			return nil, techCardUniqueViolation(err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
@@ -224,9 +237,24 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't add tech card")
 	}
-	s.seedProductCostsFromTechCard(ctx, id, 0)
-	s.snapshotReleaseIfReleased(ctx, id)
+	// A replay (created=false) returns the first call's card and runs none of the post-create work:
+	// the release snapshot is MAX+1 and would mint a second Rev on every retry.
+	if created {
+		s.seedProductCostsFromTechCard(ctx, id, 0)
+		s.snapshotReleaseIfReleased(ctx, id)
+	}
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
+}
+
+// techCardCreateOpts reads CreateTechCard's replay key and guided flag (0407). The key is trimmed
+// (the column compares bytes, so «k» and «k » would be two keys) and bounded by the column width.
+func techCardCreateOpts(req *pb_admin.CreateTechCardRequest) (entity.TechCardCreateOpts, error) {
+	key := strings.TrimSpace(req.GetClientRequestId())
+	if utf8.RuneCountInString(key) > entity.TechCardCreateRequestIdMaxRunes {
+		return entity.TechCardCreateOpts{}, apierr.Invalid(entity.NewFieldViolation("client_request_id", "too_long", "",
+			fmt.Sprintf("client_request_id is at most %d characters", entity.TechCardCreateRequestIdMaxRunes)))
+	}
+	return entity.TechCardCreateOpts{RequestId: key, Guided: req.GetGuided()}, nil
 }
 
 // SuggestStyleNumber proposes the next free style number for a season (Q1). Advisory: the client may

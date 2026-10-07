@@ -530,8 +530,8 @@ func TestCreateTechCardApprovesFusingResolvedThroughAProfile(t *testing.T) {
 	repo.EXPECT().TechCards().Return(techCards)
 	// A field violation from the store is the cheapest recognisable «you got here»: it short-circuits
 	// the error mapping above the IsErr* predicates, which this mock does not stub.
-	techCards.EXPECT().AddTechCard(mock.Anything, mock.AnythingOfType("*entity.TechCardInsert")).
-		Return(0, entity.NewFieldViolation("style_number", "reached the store", "", ""))
+	techCards.EXPECT().AddTechCardWithOpts(mock.Anything, mock.AnythingOfType("*entity.TechCardInsert"), mock.Anything).
+		Return(0, false, entity.NewFieldViolation("style_number", "reached the store", "", ""))
 
 	presses := []*pb_common.TechCardPressProfile{gateFusingPressProfile(gateFusingKeyA, 150, 12,
 		pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING)}

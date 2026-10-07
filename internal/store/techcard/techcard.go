@@ -87,6 +87,28 @@ const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand
 	:required_seam_allowance_mm, :base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :mood_note, :garment_description, :flat_words, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
+// techCardUpdateHeaderSQL is UpdateTechCard's explicit SET list (the reasons for each clause are on
+// its call site). A package constant so a test can pin what it never names: guided and
+// create_request_id (0407) are written only by AddTechCardWithOpts and ExitTechCardGuide.
+const techCardUpdateHeaderSQL = `
+		UPDATE tech_card SET
+			lock_version = lock_version + 1,
+			style_number = :style_number, style_number_source = :style_number_source, name = :name,
+			updated_by = :updated_by,
+			category_id = COALESCE(:category_id, category_id),
+			stage = :stage, status = :status, approval_state = :approval_state,
+			approved_at = :approved_at, released_at = :released_at,
+			target_drop_date = :target_drop_date,
+			required_seam_allowance_mm = :required_seam_allowance_mm,
+			base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
+			measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
+			mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
+			garment_description = IF(:garment_description_omitted, garment_description, :garment_description),
+			flat_words = IF(:flat_words_omitted, flat_words, :flat_words),
+			callout_seq = GREATEST(callout_seq, :callout_seq),
+				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
+		WHERE id = :id AND lock_version = :expected_lock_version`
+
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
 	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
@@ -216,20 +238,58 @@ func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert, prevState entity.T
 	}
 }
 
-// AddTechCard inserts a tech card and its child sections, returning the new id.
+// AddTechCard inserts a tech card and its child sections, returning the new id. A plain create:
+// no replay key, not guided (AddTechCardWithOpts with the zero opts).
 func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error) {
+	id, _, err := s.AddTechCardWithOpts(ctx, tc, entity.TechCardCreateOpts{})
+	return id, err
+}
+
+// AddTechCardWithOpts is AddTechCard with the CreateTechCard extras (0407). created=false means the
+// call was a REPLAY: a card already carries opts.RequestId and its id is returned untouched — the
+// caller must not run its post-create work (cost seeding, release snapshot) a second time.
+//
+// The replay is read BEFORE the insert, inside the SERIALIZABLE transaction, so the answer is
+// authoritative (precedent: design batch upload). It is not left to the unique key: a 1062 out of
+// this path reads as «style number taken» unless the caller recognises the index by name, and a
+// replay is not an error at all. Two concurrent first calls under one key both read the same gap; one
+// inserts, the other deadlocks and its retry finds the first one's row.
+//
+// guided and create_request_id are named ONLY in this INSERT — never in techCardHeaderColumns, which
+// clone/import/update share.
+func (s *Store) AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInsert, opts entity.TechCardCreateOpts) (int, bool, error) {
 	if err := s.EnsureDictionaryFresh(ctx, "create"); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
+	requestId := sql.NullString{String: opts.RequestId, Valid: opts.RequestId != ""}
 	var id int
+	var created bool
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// The callback is re-run on a deadlock: each attempt starts from a blank verdict.
+		id, created = 0, false
+		if requestId.Valid {
+			prior, err := storeutil.QueryListNamed[struct {
+				Id int `db:"id"`
+			}](ctx, rep.DB(), `SELECT id FROM tech_card WHERE create_request_id = :req`,
+				map[string]any{"req": requestId})
+			if err != nil {
+				return fmt.Errorf("failed to check tech card create replay: %w", err)
+			}
+			if len(prior) > 0 {
+				id = prior[0].Id
+				return nil
+			}
+		}
 		params, err := techCardInsertHeaderParams(tc)
 		if err != nil {
 			return err
 		}
+		params["guided"] = opts.Guided
+		params["create_request_id"] = requestId
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
-			fmt.Sprintf(`INSERT INTO tech_card (%s) VALUES (%s)`, techCardHeaderColumns, techCardHeaderValues),
+			fmt.Sprintf(`INSERT INTO tech_card (%s, guided, create_request_id) VALUES (%s, :guided, :create_request_id)`,
+				techCardHeaderColumns, techCardHeaderValues),
 			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card: %w", err)
@@ -257,12 +317,54 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 			return err
 		}
 		// Q1: open the auto-journal with the creation event.
-		return appendTechCardRevision(ctx, rep.DB(), id, tc.CreatedBy, "header", "created", "tech card created")
+		if err := appendTechCardRevision(ctx, rep.DB(), id, tc.CreatedBy, "header", "created", "tech card created"); err != nil {
+			return err
+		}
+		created = true
+		return nil
 	})
 	if err != nil {
-		return 0, fmt.Errorf("can't add tech card: %w", err)
+		return 0, false, fmt.Errorf("can't add tech card: %w", err)
 	}
-	return id, nil
+	return id, created, nil
+}
+
+// TechCardIdByCreateRequestId returns the card a CreateTechCard call under requestId made, or
+// sql.ErrNoRows. The API layer's recovery when the insert lost a race on uq_tech_card_create_request_id.
+func (s *Store) TechCardIdByCreateRequestId(ctx context.Context, requestId string) (int, error) {
+	row, err := storeutil.QueryNamedOne[struct {
+		Id int `db:"id"`
+	}](ctx, s.DB, `SELECT id FROM tech_card WHERE create_request_id = :req`,
+		map[string]any{"req": requestId})
+	if err != nil {
+		return 0, err
+	}
+	return row.Id, nil
+}
+
+// ExitTechCardGuide clears tech_card.guided (0407). Idempotent: the DSN reports CHANGED rows, so a
+// card already out of the guide changes nothing — then existence decides between success and
+// sql.ErrNoRows. updated_at is pinned (the board orders by it) and lock_version is NOT bumped: an
+// open card form must not read the exit as a concurrent edit.
+func (s *Store) ExitTechCardGuide(ctx context.Context, id int) error {
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
+		`UPDATE tech_card SET guided = 0, updated_at = updated_at WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("exit tech card guide: %w", err)
+	}
+	if rows > 0 {
+		return nil
+	}
+	exists, err := storeutil.QueryListNamed[struct {
+		Id int `db:"id"`
+	}](ctx, s.DB, `SELECT id FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("exit tech card guide: %w", err)
+	}
+	if len(exists) == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // captureCardProductLinks returns the product ids belonging to this style. PR6 R1: after the
@@ -513,24 +615,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	//
 	// Оба комментария стоят ЗДЕСЬ, а не внутри запроса, намеренно: двоеточие внутри `--`
 	// комментария ломает разбор именованных параметров sqlx, и притом молча.
-	rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
-		UPDATE tech_card SET
-			lock_version = lock_version + 1,
-			style_number = :style_number, style_number_source = :style_number_source, name = :name,
-			updated_by = :updated_by,
-			category_id = COALESCE(:category_id, category_id),
-			stage = :stage, status = :status, approval_state = :approval_state,
-			approved_at = :approved_at, released_at = :released_at,
-			target_drop_date = :target_drop_date,
-			required_seam_allowance_mm = :required_seam_allowance_mm,
-			base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
-			measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
-			mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
-			garment_description = IF(:garment_description_omitted, garment_description, :garment_description),
-			flat_words = IF(:flat_words_omitted, flat_words, :flat_words),
-			callout_seq = GREATEST(callout_seq, :callout_seq),
-				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
-		WHERE id = :id AND lock_version = :expected_lock_version`, params)
+	rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), techCardUpdateHeaderSQL, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update tech card: %w", err)
 	}
@@ -1073,7 +1158,7 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 			slog.String("err", mErr.Error()))
 	} else {
 		for i := range cards {
-			cards[i].PreviewURL = pickTechCardPreviewURL(cards[i].Stage, full[cards[i].Id])
+			applyListMedia(&cards[i], full[cards[i].Id])
 		}
 	}
 	// Colourway counts and auxiliary output stock, batched for the page like the previews above and
@@ -1229,6 +1314,14 @@ func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) er
 	return nil
 }
 
+// applyListMedia sets the per-row facts a list/board tile derives from the card's media: the preview
+// thumbnail and the `setup` flag (0407). Shared by ListTechCards and GetStylePipeline, which render the
+// same tile — one place, so the two can never disagree about a card.
+func applyListMedia(card *entity.TechCard, media []entity.TechCardMediaFull) {
+	card.PreviewURL = pickTechCardPreviewURL(card.Stage, media)
+	card.Setup = entity.TechCardInSetup(card.Guided, card.Concept, media)
+}
+
 // pickTechCardPreviewURL chooses the thumbnail URL for a list/gallery card (B-9). `media` is ordered
 // by display_order. For an IDEA card the mood/reference image best represents it (a technical sketch
 // may not exist yet); otherwise the flat PREVIEW sketch is preferred. Falls back down a chain so any
@@ -1337,7 +1430,7 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 	} else {
 		for ci := range cols {
 			for i := range cols[ci].Cards {
-				cols[ci].Cards[i].PreviewURL = pickTechCardPreviewURL(cols[ci].Cards[i].Stage, full[cols[ci].Cards[i].Id])
+				applyListMedia(&cols[ci].Cards[i], full[cols[ci].Cards[i].Id])
 			}
 		}
 		// The board renders the same list-item message as ListTechCards, so its cards need the same

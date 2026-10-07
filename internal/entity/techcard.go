@@ -4670,6 +4670,13 @@ type TechCard struct {
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	// Guided — the card was created through the guided studio flow (0407) and the guide has not been
+	// left yet. Here, NOT on TechCardInsert: only AddTechCard writes it (CreateOpts) and only
+	// ExitTechCardGuide clears it; the shared header column list (update/clone/import) never names it.
+	Guided bool `db:"guided"`
+	// Setup — guided, no moodboard picture and no concept yet (TechCardSetup). Derived on the list
+	// paths (ListTechCards, GetStylePipeline); false elsewhere.
+	Setup bool `db:"-"`
 	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
 	// (GetTechCardById); empty on list views.
 	RoleAssignments []TechCardRoleAssignment `db:"-"`
@@ -4743,6 +4750,40 @@ type TechCard struct {
 	// article, and the production plan labels/converts its rollup rows, from this one map. Nil on
 	// list views and writes; every consumer must degrade to the BOM line's own snapshot fields.
 	LinkedMaterials map[int]MaterialWithPrice `db:"-"`
+}
+
+// TechCardCreateRequestIdMaxRunes bounds CreateTechCardRequest.client_request_id — the width of
+// tech_card.create_request_id (0407).
+const TechCardCreateRequestIdMaxRunes = 64
+
+// TechCardCreateRequestIdIndex is the name 0407 gives UNIQUE(tech_card.create_request_id). The API
+// layer reads it out of a 1062's message to tell a replay race from a style-number collision.
+const TechCardCreateRequestIdIndex = "uq_tech_card_create_request_id"
+
+// TechCardCreateOpts carries what a CreateTechCard call adds beyond the card itself (0407).
+// The zero value is a plain create: no replay key, not guided.
+type TechCardCreateOpts struct {
+	// RequestId is the client-minted replay key, already trimmed; "" = none. A create under a key
+	// that already made a card returns that card instead of inserting a second one.
+	RequestId string
+	// Guided creates the card in the guided studio flow (TechCard.Guided).
+	Guided bool
+}
+
+// TechCardInSetup is the list `setup` rule (0407): a guided card whose board has no picture yet and
+// whose concept is empty. A board picture is a moodboard row that is not a reference — reference rows
+// are the flat's inputs, not pictures the person put on the board. The ONE definition for every list
+// path (ListTechCards and GetStylePipeline render the same tile).
+func TechCardInSetup(guided bool, concept sql.NullString, media []TechCardMediaFull) bool {
+	if !guided || strings.TrimSpace(concept.String) != "" {
+		return false
+	}
+	for i := range media {
+		if media[i].Category == TechCardMediaCategoryMoodboard && media[i].Kind != TechCardMediaReference {
+			return false
+		}
+	}
+	return true
 }
 
 // LinkedProductIDs returns the style's live (non-archived) colourway product ids. PR6 R1: a style's

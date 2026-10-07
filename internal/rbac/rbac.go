@@ -362,6 +362,7 @@ var methodRequirements = map[string]Requirement{
 	// see there for the full reasoning.
 	"AssignTechCardRole":           wr(SectionTechCards),
 	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
+	"ExitTechCardGuide":            wr(SectionTechCards),
 	"ListTechCardRoleAssignments":  rd(SectionTechCards),
 	"GetTechCard":                  rd(SectionTechCards),
 	"UpdateTechCard":               wr(SectionTechCards),

@@ -1970,6 +1970,15 @@ service AdminService {
     };
   }
 
+  // ExitTechCardGuide leaves the guided studio flow for a card (clears TechCard.guided). Idempotent;
+  // does not bump lock_version, so an open card form gets no conflict.
+  rpc ExitTechCardGuide(ExitTechCardGuideRequest) returns (ExitTechCardGuideResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/guide/exit"
+      body: "*"
+    };
+  }
+
   // ListTechCardRoleAssignments lists a card's role assignments with resolved usernames (Q5).
   rpc ListTechCardRoleAssignments(ListTechCardRoleAssignmentsRequest) returns (ListTechCardRoleAssignmentsResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/roles"};
@@ -9409,6 +9418,11 @@ message RunTierBackfillResponse {
 
 message CreateTechCardRequest {
   common.TechCardInsert tech_card = 1;
+  // Client-minted key (≤64 chars, trimmed; "" = none). A repeat under the same key returns the card
+  // the first call created instead of a second one — a lost response or a doubled effect is one card.
+  string client_request_id = 2;
+  // Create the card in the guided studio flow (TechCard.guided).
+  bool guided = 3;
 }
 
 message CreateTechCardResponse {
@@ -9438,6 +9452,12 @@ message RemoveTechCardRoleAssignmentRequest {
 }
 
 message RemoveTechCardRoleAssignmentResponse {}
+
+message ExitTechCardGuideRequest {
+  int32 tech_card_id = 1;
+}
+
+message ExitTechCardGuideResponse {}
 
 message ListTechCardRoleAssignmentsRequest {
   int32 tech_card_id = 1;

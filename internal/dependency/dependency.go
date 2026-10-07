@@ -955,6 +955,12 @@ type (
 	// linked products, sketch media, callouts and revision log.
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
+		// AddTechCardWithOpts is AddTechCard with CreateTechCard's replay key and guided flag (0407).
+		// created=false is a replay: the id of the card the key already made, no insert — the caller
+		// must skip its post-create work.
+		AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInsert, opts entity.TechCardCreateOpts) (id int, created bool, err error)
+		// TechCardIdByCreateRequestId returns the card made under a create replay key, or sql.ErrNoRows.
+		TechCardIdByCreateRequestId(ctx context.Context, requestId string) (int, error)
 		// CloneTechCardForSeason inserts the converted card and its non-TechCardInsert carry-over
 		// (size chart, grade rule and assembly) in one transaction, under a source-version guard.
 		CloneTechCardForSeason(ctx context.Context, sourceID, expectedSourceVersion int, tc *entity.TechCardInsert) (int, error)
@@ -980,6 +986,9 @@ type (
 		// Role assignments (Q5): responsible admin accounts on a card, multi per role.
 		AssignTechCardRole(ctx context.Context, a entity.TechCardRoleAssignment) (entity.TechCardRoleAssignment, error)
 		RemoveTechCardRoleAssignment(ctx context.Context, id int) error
+		// ExitTechCardGuide clears TechCard.Guided (0407). Idempotent; sql.ErrNoRows only when the card
+		// does not exist. Does not bump lock_version.
+		ExitTechCardGuide(ctx context.Context, id int) error
 		ListTechCardRoleAssignments(ctx context.Context, techCardID int) ([]entity.TechCardRoleAssignment, error)
 		// ListStyleAssembly returns a garment style's assembly bill: the auxiliary components (labels/
 		// tags) that physically go on/into it, resolved for display (WS7, §2.8).

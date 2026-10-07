@@ -1498,6 +1498,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		UpdatedBy:       tc.UpdatedBy,
 		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
 		Revisions:       techCardRevisionsToPb(tc.Revisions),
+		Guided:          tc.Guided, // 0407, output-only
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber.String,
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
@@ -2593,6 +2594,10 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		// листа не только ради показа: из неё клиент собирает пул значений фасета, и карты с
 		// рукописными и архивными именами вне словаря становятся фильтруемыми.
 		Collection: pbStringFromNull(tc.Collection),
+		// Guided create (0407): the flag, and `setup` as the list paths derived it
+		// (entity.TechCardInSetup) — false off the list paths.
+		Guided: tc.Guided,
+		Setup:  tc.Setup,
 	}
 }
 

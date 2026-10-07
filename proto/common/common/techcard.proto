@@ -3809,6 +3809,10 @@ message TechCard {
   // Ignored on write.
   repeated TechCardMediaFull resolved_label_media = 30;
   reserved 5; // was resolved_media (single combined list; now split)
+  // OUTPUT-ONLY (0407): the card was created through the guided studio flow
+  // (CreateTechCardRequest.guided) and the guide has not been left yet. Cleared only by
+  // ExitTechCardGuide, which does not bump lock_version. Ignored on write.
+  bool guided = 31;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.
@@ -4545,4 +4549,9 @@ message TechCardListItem {
   // Read-only here — written only via UpdateStyle. UNKNOWN = not set (NULL column) or a stored token
   // this build cannot map; never a stand-in for ADULT.
   AgeGroupEnum age_group = 29;
+  // Mirrors TechCard.guided (0407).
+  bool guided = 30;
+  // The card is still being set up: guided, no moodboard picture (reference rows do not count) and
+  // no concept text. Derived server-side, the same rule for ListTechCards and GetStylePipeline.
+  bool setup = 31;
 }
