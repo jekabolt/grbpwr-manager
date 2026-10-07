@@ -80,15 +80,15 @@ func TestFlatModeDoorRefusals(t *testing.T) {
 		{"flat on a render", entity.DesignRunKindRender, flatParamsOf(""), nil, "flat_forbidden"},
 		{"unknown mode", entity.DesignRunKindFlat, flatParamsOf("drawing"), nil, "unknown_flat_mode"},
 		{"refs on photos", entity.DesignRunKindFlat, flatParamsOf("", sref(70, "front_flat")), nil, "structure_forbidden"},
-		// M7 (owner 07.10): the straps mode is retired — a new press of it is refused whatever it carries.
+		// M7/M7b (owner 07.10): the straps mode is retired — refused whatever it carries, a rerun too.
 		{"straps new press", entity.DesignRunKindFlat, flatParamsOf("straps"), nil, "mode_retired"},
 		{"refs on straps", entity.DesignRunKindFlat, flatParamsOf("straps", sref(70, "front_flat")), nil, "mode_retired"},
 		{"straps fix", entity.DesignRunKindFlat, fix, nil, "mode_retired"},
 		{"straps per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
 			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, nil, "mode_retired"},
-		{"straps rerun repeats its parent", entity.DesignRunKindFlat, flatParamsOf("straps"), parent, ""},
+		{"straps rerun", entity.DesignRunKindFlat, flatParamsOf("straps"), parent, "mode_retired"},
 		{"straps rerun per_view", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"front"}, Layout: designLayoutPerView,
-			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, parent, "mode_not_for_this_run"},
+			Flat: &pb_common.DesignFlatParams{Mode: "straps"}}, parent, "mode_retired"},
 		{"hand flat detail only", entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"detail"}, Layout: designLayoutOne,
 			Flat: &pb_common.DesignFlatParams{Mode: "hand_flat", StructureRefs: []*pb_common.DesignFlatStructureRef{sref(70, "front_flat")}}}, nil, "mode_not_for_this_run"},
 		{"hand flat", entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat"), sref(71, "back_flat")), nil, ""},
@@ -119,14 +119,22 @@ func TestFlatModeOutputsAndReruns(t *testing.T) {
 	fix.FixTargets = []string{"front"}
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, fix), "a fix is one picture")
 
+	// M7b: a rerun of a straps run is refused, free, whatever block the client states (or none)
 	parent := &entity.DesignRun{Id: 7, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"straps"}}`), RequestedOutputs: 4}
-	// a client that knows nothing of the block (every client before the modes) inherits it
 	p := &pb_common.DesignRunParams{Views: flatFour, Layout: designLayoutOne}
-	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, p, parent))
-	require.Equal(t, "straps", p.GetFlat().GetMode())
-	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, p), "a rerun of a four-candidate parent is one sheet")
-	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), parent))
-	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf(""), parent)))
+	require.Equal(t, "mode_retired", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, p, parent)))
+	require.Equal(t, "mode_retired", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), parent)))
+	require.Equal(t, "mode_retired", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf(""), parent)))
+	st, _ := status.FromError(designFlatRerunInherit(entity.DesignRunKindFlat, p, parent))
+	require.Contains(t, st.Message(), "run 7 was drawn in the retired straps mode")
+	require.Contains(t, st.Message(), "Nothing was reserved and nothing was charged")
+	// a photos parent: a client that knows nothing of the block (every client before the modes) inherits it
+	photosParent := &entity.DesignRun{Id: 6, Params: entity.RawJSON(`{"views":["front","back","side_l","side_r"],"layout":"one","flat":{"mode":"photos"}}`), RequestedOutputs: 4}
+	pp := &pb_common.DesignRunParams{Views: flatFour, Layout: designLayoutOne}
+	require.NoError(t, designFlatRerunInherit(entity.DesignRunKindFlat, pp, photosParent))
+	require.Equal(t, "photos", pp.GetFlat().GetMode())
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, pp), "a rerun of a four-candidate parent is one sheet")
+	require.Equal(t, "mode_not_for_this_run", flatReason(t, designFlatRerunInherit(entity.DesignRunKindFlat, flatParamsOf("straps"), photosParent)))
 	// a legacy parent (no block) is the photos route; its four candidates rerun as one sheet
 	legacy := &entity.DesignRun{Id: 8, Params: entity.RawJSON(`{"views":["front","back"],"layout":"one"}`), RequestedOutputs: 4}
 	q := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}
@@ -163,10 +171,6 @@ func TestFlatSnapshotRefsPerMode(t *testing.T) {
 	}
 	require.Equal(t, []string{"params.flat.structure_refs.0.media_id"}, where)
 
-	band := &entity.DesignBand{Joins: &entity.DesignJoins{Rev: 3, Doc: entity.DesignJoinsDoc{
-		Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}}}
-	require.Nil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf("hand_flat", sref(70, "front_flat")), band, nil), "hand_flat freezes no list")
-	require.NotNil(t, designRunJoins(entity.DesignRunKindFlat, flatParamsOf(""), band, nil))
 }
 
 func refIDs(refs []*pb_common.DesignInputRef) []int32 {
@@ -319,18 +323,14 @@ func TestHandFlatWithOnlyItsFlatsIsNotRefused(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestStrapsRetiredWhateverTheSwitch — M7 (owner 07.10): the straps mode is refused on a new press and
-// the join list gates no flat press, with the construction switch off (today) or on (a re-enable of the
-// prompt text does not bring the confirmation gate back).
-func TestStrapsRetiredWhateverTheSwitch(t *testing.T) {
-	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
+// TestStrapsRetiredOnEveryPress — M7/M7b (owner 07.10): the straps mode is refused on a new press and
+// on a rerun of a straps run, and the join list gates no flat press.
+func TestStrapsRetiredOnEveryPress(t *testing.T) {
 	card := &entity.TechCard{}
-	for _, on := range []bool{false, true} {
-		designgen.FlatPromptCarriesConstruction = on
-		require.Equal(t, "mode_retired", flatReason(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, card)))
-		require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), &entity.DesignRun{Id: 4}, card))
-		require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf(""), nil, card))
-	}
+	require.Equal(t, "mode_retired", flatReason(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("straps"), nil, card)))
+	require.Equal(t, "mode_retired", flatReason(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf(" straps "), &entity.DesignRun{Id: 4}, card)))
+	require.NoError(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf(""), nil, card))
+	require.Equal(t, "unknown_flat_mode", flatReason(t, designRefuseFlatParams(entity.DesignRunKindFlat, flatParamsOf("strapz"), nil, card)))
 }
 
 // TestFlatDetailRunSendsOnlyThatDetailsRefs — T74 (owner 06.10): a detail run's snapshot carries only

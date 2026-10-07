@@ -469,7 +469,7 @@ func TestDesignRequestedOutputsCountsPicturesNotViews(t *testing.T) {
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}), "a photos sheet is one picture")
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne,
-			Flat: &pb_common.DesignFlatParams{Mode: designgen.FlatModeStraps}}))
+			Flat: &pb_common.DesignFlatParams{Mode: designgen.FlatModeHandFlat}}))
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
 		&pb_common.DesignRunParams{Views: []string{entity.DesignViewDetail}, Layout: designLayoutOne}),
 		"a detail callout is one close-up")

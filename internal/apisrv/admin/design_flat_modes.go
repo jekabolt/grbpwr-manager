@@ -14,28 +14,55 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ═══ THE THREE FLAT MODES AT THE DOOR (tmp/plans/flat-consistency/81-FINAL-MODES.md) ═══
+// ═══ THE FLAT MODES AT THE DOOR (tmp/plans/flat-consistency/81-FINAL-MODES.md) ═══
 //
 // params.flat = { mode: "" | photos | hand_flat, structure_refs: [{media_id, role}] }. The third mode,
-// straps, is RETIRED (owner 07.10, M7, 100-CONSTRUCTION-DEADEND): it was the photos route plus the
+// straps, is RETIRED (owner 07.10, 100-CONSTRUCTION-DEADEND): it was the photos route plus the
 // designer-confirmed join list, and the join list no longer reaches the image model — a straps press
-// drew exactly what a photos press draws, behind a confirmation gate. Every refusal below stands
-// BEFORE StartRun reserves anything: it is free.
+// drew exactly what a photos press draws, behind a confirmation gate. M7 refused a new press of it; M7b
+// took the word out of the modes (designgen.NormalizeFlatMode) and refuses a RERUN of a straps run too:
+// the rerun would be drawn by another route than the one its history names, and a new press of the same
+// photos is the honest way to get that drawing. A straps run already queued is still drawn (the worker
+// reads the word as no mode: the photos route, the words it was drawn with since the list left).
+// Every refusal below stands BEFORE StartRun reserves anything: it is free.
 //
 //   - flat_forbidden        — the block on any kind but flat;
-//   - unknown_flat_mode     — a mode word that is none of the three;
-//   - mode_retired          — straps on a NEW press (a rerun of a straps run repeats its parent);
+//   - unknown_flat_mode     — a mode word that is neither photos nor hand_flat (nor the retired straps);
+//   - mode_retired          — straps, on a new press or a rerun of a straps run;
 //   - structure_forbidden   — structure_refs on a mode that does not read them;
 //   - structure_required    — hand_flat without refs;
 //   - structure_malformed   — a role that is not front_flat | back_flat, a role or a media twice;
 //   - structure_not_on_card — a ref that is not a TECHNICAL media of this card;
 //   - structure_gone        — a ref whose media row no longer exists (reruns included);
-//   - mode_not_for_this_run — hand_flat / straps on a detail-only or per_view run, or a rerun that
-//     changes its parent's mode, flats or (hand_flat) views.
+//   - mode_not_for_this_run — hand_flat on a detail-only or per_view run, or a rerun that changes its
+//     parent's mode, flats or (hand_flat) views.
 //
 // A rerun inherits the parent's block (designFlatRerunInherit) and its snapshot, so today's card media
 // are not asked again. The join list's state gates nothing (the joins_unconfirmed refusal went with the
 // straps mode).
+
+// designFlatModeStrapsRetired — the retired mode's word, kept only to name it in its refusal.
+const designFlatModeStrapsRetired = "straps"
+
+// designFlatModeIsRetired — the word names the retired straps mode.
+func designFlatModeIsRetired(mode string) bool {
+	return strings.TrimSpace(mode) == designFlatModeStrapsRetired
+}
+
+// designFlatRetiredRefusal — mode_retired, worded for a new press (parent nil) or a rerun of a straps run.
+func designFlatRetiredRefusal(parent *entity.DesignRun) error {
+	if parent != nil {
+		return designRefusal(codes.InvalidArgument, "mode_retired",
+			fmt.Sprintf("run %d was drawn in the retired straps mode and a rerun repeats its parent's mode; the "+
+				"construction list no longer reaches the image model — generate a new flat, which draws from the "+
+				"reference photos. Nothing was reserved and nothing was charged", parent.Id),
+			map[string]string{"mode": designFlatModeStrapsRetired, "parent_run_id": strconv.Itoa(parent.Id)})
+	}
+	return designRefusal(codes.InvalidArgument, "mode_retired",
+		"the straps mode was retired: the construction list no longer reaches the image model, so a flat "+
+			"draws from the reference photos — send no params.flat. Nothing was reserved and nothing was charged",
+		map[string]string{"mode": designFlatModeStrapsRetired})
+}
 
 // designFlatModeOf — the normalised mode of the effective params ("" = photos); ok=false for an unknown
 // word.
@@ -66,6 +93,9 @@ func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, pare
 	}
 	pp := designFlatParentParams(parent)
 	pf := pp.GetFlat()
+	if designFlatModeIsRetired(pf.GetMode()) {
+		return designFlatRetiredRefusal(parent)
+	}
 	pm, _ := designgen.NormalizeFlatMode(pf.GetMode())
 	refuse := func(why string) error {
 		return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
@@ -150,17 +180,14 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	}
 	mode, ok := designgen.NormalizeFlatMode(f.GetMode())
 	if !ok {
+		// THE STRAPS MODE IS RETIRED (M7/M7b, owner 07.10): refused, free, whatever else the block
+		// carries; no client sends it. A rerun of a straps run is refused by designFlatRerunInherit first.
+		if designFlatModeIsRetired(f.GetMode()) {
+			return designFlatRetiredRefusal(nil)
+		}
 		return designRefusal(codes.InvalidArgument, "unknown_flat_mode",
 			fmt.Sprintf("params.flat.mode %q is not photos | hand_flat", f.GetMode()),
 			map[string]string{"mode": f.GetMode()})
-	}
-	// THE STRAPS MODE IS RETIRED (M7, owner 07.10): a new press is refused, free; no client sends it. A
-	// rerun of a run drawn in it repeats its parent (designFlatRerunInherit already holds it to that).
-	if mode == designgen.FlatModeStraps && parent == nil {
-		return designRefusal(codes.InvalidArgument, "mode_retired",
-			"the straps mode was retired: the construction list no longer reaches the image model, so a flat "+
-				"draws from the reference photos — send no params.flat. Nothing was reserved and nothing was charged",
-			map[string]string{"mode": mode})
 	}
 	if mode != designgen.FlatModeHandFlat && len(f.GetStructureRefs()) > 0 {
 		return designRefusal(codes.InvalidArgument, "structure_forbidden",
@@ -176,11 +203,8 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 				"Nothing was reserved and nothing was charged", mode),
 			map[string]string{"mode": mode, "layout": params.GetLayout()})
 	}
-	if mode == designgen.FlatModeHandFlat {
-		return designRefuseFlatHandFlat(f, parent, card)
-	}
-	// straps: only a rerun reaches here; it repeats its parent's frozen snapshot.
-	return nil
+	// hand_flat: the only mode left that is not the photos route.
+	return designRefuseFlatHandFlat(f, parent, card)
 }
 
 // designRefuseFlatHandFlat — 1..2 of the card's own technical flats, front_flat / back_flat, each once.

@@ -5,8 +5,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // ═══ A FLAT IS DRAWN FROM CONSTRUCTION ONLY (owner 06.10, wave 10: «максимально уберем мусор из промпта») ═══
@@ -19,11 +17,10 @@ import (
 // of the quiz — and the same fact two or three times. None of it can be drawn; some of it the model
 // drew anyway (a lining line, a slubby texture, an inside pocket on the front).
 //
-// What a flat keeps: the garment class (one «garment: …» line), every clause of the description
-// that is not about material / colour / lining / inside / hidden finishing / fit ease, the JOIN LIST
-// and the CHECK sentences (73-AB-LAYOUT: the long list is what holds the back — never shorten that),
-// minus the join items that are hidden by definition (lining, inside pockets) and the layers left
-// with nothing to draw.
+// What a flat keeps: the garment class (one «garment: …» line) and — only behind
+// FlatWordsCarryDescription, off — every clause of the description that is not about material /
+// colour / lining / inside / hidden finishing / fit ease. (The join list and its CHECK sentences rode
+// here too until the owner called construction a dead end, 06.10 / 07.10; gone with M7b.)
 
 // TWO KINDS OF JUNK (Codex review, wave 10). A clause naming the HIDDEN or the fit philosophy is dropped
 // whole («inside chest pocket on the lining», «regular fit with easy chest room», «pressed open with
@@ -46,11 +43,6 @@ const flatSoftJunk = `linen|cotton|wool|silk|cashmere|denim|jersey|fleece|nylon|
 var (
 	flatHardJunkRe = regexp.MustCompile(`(?i)\b(` + flatHardJunk + `)\b`)
 	flatSoftJunkRe = regexp.MustCompile(`(?i)\b(` + flatSoftJunk + `)\b`)
-	// a soft junk token with its hyphenated compound («self-fabric», «cotton-elastane», «mid-weight»)
-	flatSoftTokenRe = regexp.MustCompile(`(?i)[\w-]*\b(` + flatSoftJunk + `)\b[\w-]*`)
-	// a construction word: what a flat draws
-	flatConstructionRe = regexp.MustCompile(`(?i)\b(pockets?|zip\w*|buttons?|snaps?|seams?|collars?|lapels?|sleeves?|hems?|vents?|yokes?|darts?|pleats?|plackets?|cuffs?|straps?|necklines?|bands?|bindings?|closures?|panels?|hoods?|waistbands?|drawcords?|tabs?|belts?|loops?|epaulettes?|flaps?|welts?|gussets?|ruffles?|frills?|slits?|gores?|godets?|tucks?|gathers?|shirring|smocking|topstitch\w*|stitch\w*|piping|trims?|edges?|waist\w*|shaping|silhouette|jacket|blazer|coat|shirt|top|trousers|pants|shorts|dress|skirt|tank)\b`)
-	flatSpacesRe       = regexp.MustCompile(`\s{2,}`)
 )
 
 // flatCleanClause — the clause as a flat says it, "" when nothing drawable is left.
@@ -63,19 +55,6 @@ func flatCleanClause(c string) string {
 		return ""
 	}
 	return c
-}
-
-var flatStopWords = map[string]bool{"a": true, "an": true, "the": true, "with": true, "and": true, "of": true,
-	"in": true, "on": true, "at": true, "to": true, "over": true, "for": true, "by": true, "its": true}
-
-func flatContentWords(c string) int {
-	n := 0
-	for _, w := range strings.Fields(c) {
-		if !flatStopWords[strings.ToLower(w)] {
-			n++
-		}
-	}
-	return n
 }
 
 // flatDropLabelRe — a card-facts line whose label is not construction (card-facts.ts cardFactLines).
@@ -210,59 +189,5 @@ func flatSentences(text string) []string {
 	if s := strings.TrimSpace(text[start:]); s != "" {
 		out = append(out, s)
 	}
-	return out
-}
-
-// flatVisibleJoins — the join list as a flat prompt says it: hidden items (lining, an inside pocket)
-// go, and every reference to them (continues into, caught into, bounded by) with them; a layer left
-// with no item to draw goes, and so does the LAYERS block when one layer is left (one layer says
-// nothing); the junk clauses leave the layer notes and the model's item texts (a designer's edited
-// text stays verbatim — it is also a «designer:» CHECK line).
-func flatVisibleJoins(j entity.DesignJoinsDoc) entity.DesignJoinsDoc {
-	out := j
-	gone := map[string]bool{}
-	out.Items = make([]entity.DesignJoinItem, 0, len(j.Items))
-	for _, it := range j.Items {
-		if it.Visibility == entity.DesignJoinHidden {
-			gone[it.ID] = true
-			continue
-		}
-		out.Items = append(out.Items, it)
-	}
-	prune := func(ids []string) []string {
-		if len(ids) == 0 {
-			return ids
-		}
-		kept := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if !gone[id] {
-				kept = append(kept, id)
-			}
-		}
-		return kept
-	}
-	drawn := map[int]bool{}
-	for i := range out.Items {
-		it := &out.Items[i]
-		it.ContinuesInto = prune(it.ContinuesInto)
-		it.CaughtInto = prune(it.CaughtInto)
-		it.BoundedBy = prune(it.BoundedBy)
-		if !it.Edited {
-			it.Text = flatConstructionText(it.Text, nil)
-		}
-		drawn[it.Layer] = true
-	}
-	var layers []entity.DesignJoinLayer
-	for _, l := range j.Layers {
-		if !drawn[l.Index] && l.Index != 0 {
-			continue
-		}
-		l.Note = flatConstructionText(l.Note, nil)
-		layers = append(layers, l)
-	}
-	if len(layers) <= 1 {
-		layers = nil
-	}
-	out.Layers = layers
 	return out
 }

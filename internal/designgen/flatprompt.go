@@ -68,6 +68,14 @@ const (
 
 	// Shared closing paragraph — identical in both of the owner's prompts.
 	flatOutput = "Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic."
+
+	// flatNoTextNoGrey — round 7's remaining fault was style (grey fills in the bands); the sentence that
+	// answers it. Said on every flat run AFTER every human word and before the owner's verbatim style
+	// paragraphs (which it does not replace).
+	flatNoTextNoGrey = "No text, no view names, no grey, no tint, no shading anywhere on the drawing — the inside of every band, binding and collar stays white."
+
+	// flatSideFacing — the side-view convention (r5 layout): a LAYOUT rule, said whenever a side is drawn.
+	flatSideFacing = "SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge; SIDE RIGHT the right flank with the front facing the RIGHT edge (mirror images)."
 )
 
 // flatCraft assembles the craft block for one flat run: intro, identification, the layout
@@ -85,28 +93,24 @@ const (
 // close-up. The mixed case is not something either reference prompt describes, so the garment
 // frame (the more general of the two) carries it.
 func flatCraft(p runParams, detailNames []string, refs int) string {
-	return flatCraftWith(p, detailNames, refs, nil)
+	return flatCraftFor(p, detailNames, refs, "", "")
 }
 
-// flatCraftWith is flatCraft with the run's FROZEN join list (flat route, flatjoins.go): when the run
-// draws the garment (not a detail callout) and carries a usable list, the layout paragraph gains the
-// side-facing convention and the list + its checks follow it. Every flat run, with a list or
-// without, ends its own words on flatNoTextNoGrey before the owner's verbatim paragraphs.
-func flatCraftWith(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc) string {
-	return flatCraftFor(p, detailNames, refs, joins, "", "")
-}
-
-// flatCraftAttached — flatCraftWith over the pictures actually attached: a mood picture (a DIFFERENT
+// flatCraftAttached — flatCraft over the pictures actually attached: a mood picture (a DIFFERENT
 // garment) is not counted as «the reference» the owner's paragraphs are true to, and the craft says
 // once, after the identification, that it is style mood only (M2 / Codex b6). With no mood picture it
-// is flatCraftWith byte for byte.
-func flatCraftAttached(p runParams, detailNames []string, attached []refCaption, joins *entity.DesignJoinsDoc) string {
+// is flatCraft byte for byte.
+//
+// The card's join list never reaches it (owner 06.10 / 07.10, 100-CONSTRUCTION-DEADEND: a dead end;
+// the switch, the sentence generator and the frozen inputs.joins left with M7b). A snapshot frozen
+// before M7b still carries `joins`; nothing reads it (flat_prompt_bytes_test.go).
+func flatCraftAttached(p runParams, detailNames []string, attached []refCaption) string {
 	mood := flatMoodSentence(attached)
 	accepted := ""
 	if detailOnlyRun(p.Views) {
 		accepted = flatAcceptedViewsSentence(attached)
 	}
-	return flatCraftFor(p, detailNames, len(attached)-len(flatMoodImages(attached)), joins, mood, accepted)
+	return flatCraftFor(p, detailNames, len(attached)-len(flatMoodImages(attached)), mood, accepted)
 }
 
 // flatAcceptedViewCaption — the caption of the card's FRONT / BACK flat plate on a DETAIL run (T8,
@@ -138,15 +142,7 @@ func flatAcceptedViewsSentence(attached []refCaption) string {
 		" exactly: the same position on the garment, the same proportions, seam lines, stitch rows, layer order and construction as drawn there. Where a photo and the flats differ, follow the flats. Read the detail off the flats; do not draw the whole garment."
 }
 
-// FlatPromptCarriesConstruction — THE ONE SWITCH for the join list in a flat prompt (owner 06.10, wave
-// 10: «CONSTRUCTION тоже не добавлять в промпт генерации флета — тупиковая ветвь»). Off: the image
-// model gets no landmark ruler, no LAYERS / JOIN LIST / ABSENT and no CHECK sentences — the list is
-// still built, confirmed, frozen in the snapshot and read by the PARTS labeller; it only stops
-// travelling to the picture. Back on in one line if the backs break again (73-AB-LAYOUT: a prompt
-// without the list drew a back neckline behind 38's straps 6/6).
-var FlatPromptCarriesConstruction = false
-
-func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.DesignJoinsDoc, mood, accepted string) string {
+func flatCraftFor(p runParams, detailNames []string, refs int, mood, accepted string) string {
 	detail := detailOnlyRun(p.Views)
 
 	identify := flatIdentifyGarment
@@ -170,7 +166,6 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 	}
 
 	layout := flatLayoutParagraph(p.Views, detailNames, p.Layout, refs)
-	withJoins := FlatPromptCarriesConstruction && !detail && flatJoinsUsable(joins)
 	// The side-facing convention is a LAYOUT rule, not construction: said whenever a side is drawn.
 	if !detail && flatHasSideView(p.Views) {
 		layout += " " + flatSideFacing
@@ -192,10 +187,6 @@ func flatCraftFor(p runParams, detailNames []string, refs int, joins *entity.Des
 			only = flatOnlyDetails
 		}
 		paras = append(paras, only)
-	}
-	if withJoins {
-		// Wave 10: hidden items (lining, inside pockets) and their layers are not said to a flat.
-		paras = append(paras, joinsCraft(flatVisibleJoins(*joins))...)
 	}
 	paras = append(paras, flatNoTextNoGrey, style, excluded, flatOutput)
 	return strings.Join(paras, "\n\n")

@@ -9,7 +9,6 @@ lower body: CROTCH (inseam top), CROTCH_F/CROTCH_B; KNEE_OUT_x/KNEE_IN_x; ANKLE_
 Trousers/skirts start at the waist (WL_x, WF_C, WB_C); tops end at HEM_x or shorter (e.g. "UA_L..HEM_L:0.6").
 
 JOIN LIST (the construction; every view must agree with it):
-- neck_seam: seam from NP_R → CFN → NP_L. continues into stand. neckline seam under the collar stand
 - stand: stand (narrow) from CFN → NP_R → CBN → NP_L → CFN. continues into collar, placket. collar stand around the full neck; the brand label is sewn inside it at the back neck
 - collar: collar (wide) from CFN..NP_R:0.2 → NP_R → CBN → NP_L → CFN..NP_L:0.2. continues into stand. point collar that runs around the back; its outer edges are raw and frayed; a single thin stitched line on the wearer's right leaf near the edge
 - placket: placket (narrow) from CFN → CHEST_C → BUST_C → WF_C → HEM_FC. continues into stand, hem. centre-front placket; both long edges are raw, frayed and topstitched; a second raw-edged layer overlaps on the wearer's left; continuation below the photo is assumed
@@ -30,14 +29,3 @@ JOIN LIST (the construction; every view must agree with it):
 - slv_placket_L: placket (narrow) from WRIST_OUT_L..WRIST_IN_L:0.5 → WRIST_OUT_L..ELB_OUT_L:0.3. sleeve placket above the cuff, back of the sleeve
 - slv_placket_R: placket (narrow) from WRIST_OUT_R..WRIST_IN_R:0.5 → WRIST_OUT_R..ELB_OUT_R:0.3. sleeve placket above the cuff, back of the sleeve
 ABSENT (do not draw): no front yoke; no darts or panel seams on the front chest; no pocket on the right chest; no second pocket
-
-CHECK EVERY VIEW AGAINST THESE BEFORE DRAWING:
-- The neckline goes all the way round: on the BACK view draw the back neckline (and its band/collar) between the neck points.
-- Draw NOTHING for: no front yoke.
-- Draw NOTHING for: no darts or panel seams on the front chest.
-- Draw NOTHING for: no pocket on the right chest.
-- Draw NOTHING for: no second pocket.
-- pocket_L is on the wearer's LEFT only: on the FRONT view it is on the picture-right; on the side views it shows only on SIDE LEFT.
-- slv_L comes to a SHARP corner at WRIST_OUT_L, WRIST_IN_L: a crisp point, never rounded.
-- slv_R comes to a SHARP corner at WRIST_OUT_R, WRIST_IN_R: a crisp point, never rounded.
-- SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge of its frame; SIDE RIGHT is its mirror with the front facing the RIGHT edge.

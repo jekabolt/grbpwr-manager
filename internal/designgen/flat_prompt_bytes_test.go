@@ -15,8 +15,8 @@ import (
 //
 // The construction code left the flat route (the switch, the sentence generator, the frozen
 // inputs.joins). Its removal must not move one byte of a flat prompt: these goldens were written by
-// the code BEFORE the removal (feat/flat-joins at b5da95e — the M3 «B0» counting sentence on beta
-// 36860a6) and the code after it must reproduce them exactly. The fixtures are raw frozen JSON on
+// the code BEFORE the removal (beta 8d6e8f3 — the M3 «B0» counting sentence, 36860a6) and the code
+// after it must reproduce them exactly. The fixtures are raw frozen JSON on
 // purpose: a snapshot that still carries `joins` (every flat frozen before M7b) and a legacy
 // `straps` run parse the same way before and after, and must draw the photos route's words.
 //

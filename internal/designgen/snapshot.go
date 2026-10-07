@@ -76,7 +76,8 @@ type flatParams struct {
 	} `json:"structure_refs"`
 }
 
-// flatModeOf — the frozen flat mode, normalised ("" — the photos route — for none and anything unknown).
+// flatModeOf — the frozen flat mode, normalised ("" — the photos route — for none and anything unknown,
+// the retired `straps` of a run frozen before M7b included).
 func flatModeOf(p runParams) string {
 	if p.Flat == nil {
 		return FlatModePhotos
@@ -353,9 +354,9 @@ type runInputs struct {
 	// (сервер, design_run_artworks.go; в DesignInputSnapshot этого ключа нет). Пусто у каждого
 	// прогона до 70-ROUND7 и у всякого не-рендера.
 	Artworks []artworkUse `json:"artworks"`
-	// Joins — the card's join list, FROZEN by the door into a flat run's snapshot (flat route, 0397;
-	// server key `joins`, absent from DesignInputSnapshot like `artworks`). nil = the card had none.
-	Joins *entity.DesignJoinsDoc `json:"joins"`
+	// `joins` — the card's join list, which the door froze into flat snapshots from 0397 until M7b
+	// (07.10) — is not read: the construction left the flat prompt (owner 06.10 / 07.10,
+	// 100-CONSTRUCTION-DEADEND), and an old snapshot's key is ignored (flat_prompt_bytes_test.go).
 }
 
 // artworkUse — ОДИН размещённый артворк: его картинка, флэт, на котором он стоит, и четыре угла
@@ -1247,7 +1248,7 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	case run.Kind == entity.DesignRunKindFlat && flatModeOf(p) == FlatModeHandFlat:
 		write("", flatHandFlatCraft(p, detailNames, attached))
 	case run.Kind == entity.DesignRunKindFlat:
-		write("", flatCraftAttached(p, detailNames, attached, in.Joins))
+		write("", flatCraftAttached(p, detailNames, attached))
 	case renderIsTheKind(run.Kind):
 		write("", renderCraftWith(p, detailNames, attached, in.Artworks))
 	// ПЕРЕКРАС И ПАТТЕРН — ЕЩЁ ДВА РЕМЕСЛА, И КАЖДОЕ ПРОТИВОРЕЧИТ ОБОИМ СОСЕДНИМ. Рендер СОЧИНЯЕТ

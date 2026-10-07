@@ -358,30 +358,6 @@ func designJoinsKeepSet(j *entity.DesignJoins) map[int]bool {
 	return keep
 }
 
-// designKeptReferences — a FLAT run reads only the reference photos the join list's verdict kept
-// (the photos that show THIS garment); the roles of the others stay on the card untouched. Any other
-// kind, no verdict or no keep list — the card's references as they are. When none of the kept photos
-// is still a reference, nothing is filtered (an empty reference set would be a different run).
-func designKeptReferences(kind string, refs []entity.DesignReference, j *entity.DesignJoins) []entity.DesignReference {
-	keep := designJoinsKeepSet(j)
-	// WAVE 10 (live check, card 51 run 176): with the join list out of the flat prompt its verdict must
-	// not choose the photos either — a list read when the card had one photo kept that one photo and
-	// silently dropped the front and side added later. The filter comes back with the switch.
-	if kind != entity.DesignRunKindFlat || keep == nil || !designgen.FlatPromptCarriesConstruction {
-		return refs
-	}
-	var out []entity.DesignReference
-	for _, r := range refs {
-		if keep[r.MediaId] {
-			out = append(out, r)
-		}
-	}
-	if len(out) == 0 {
-		return refs
-	}
-	return out
-}
-
 // designJoinsCall — the fences and the ONE provider call (the flight leader's work).
 func (s *Server) designJoinsCall(ctx context.Context, cardID int, photos []designJoinsPhoto, note, fp string, force bool, seenRev int) (designJoinsFlightAnswer, error) {
 	const purpose = entity.AIPurposeDesignJoins
@@ -704,47 +680,6 @@ func designJoinsDocFromPb(in *pb_common.DesignJoins) entity.DesignJoinsDoc {
 		d.Fit = &entity.DesignJoinsFit{Ease: f.GetEase(), Waist: f.GetWaist()}
 	}
 	return d
-}
-
-// ─── the door of a flat run ───
-
-// designRunJoins — the join list a flat run freezes into its snapshot (`inputs.joins`): a rerun
-// carries its parent's copy; a new garment flat reads the card's current list off the band the door
-// already holds (GetBand reads it in the same snapshot as the bench); anything else none.
-func designRunJoins(kind string, params *pb_common.DesignRunParams, band *entity.DesignBand, parent *entity.DesignRun) *entity.DesignJoinsDoc {
-	// hand_flat redraws the designer's flats: no list (81-FINAL-MODES).
-	if mode, _ := designFlatModeOf(params); mode == designgen.FlatModeHandFlat {
-		return nil
-	}
-	if kind != entity.DesignRunKindFlat || !designgen.FlatIsGarmentSheet(params.GetViews(), designLayoutOne) {
-		return nil
-	}
-	if parent != nil {
-		return designParentJoins(parent)
-	}
-	if band == nil || band.Joins == nil {
-		return nil
-	}
-	j := band.Joins
-	if len(j.Doc.Items) == 0 && len(j.Doc.Absences) == 0 {
-		return nil
-	}
-	doc := j.Doc
-	return &doc
-}
-
-// designParentJoins — the parent's frozen list, raw (protojson parsing of the snapshot drops it).
-func designParentJoins(parent *entity.DesignRun) *entity.DesignJoinsDoc {
-	if parent == nil || len(parent.Inputs) == 0 {
-		return nil
-	}
-	var in struct {
-		Joins *entity.DesignJoinsDoc `json:"joins"`
-	}
-	if err := json.Unmarshal(parent.Inputs, &in); err != nil {
-		return nil
-	}
-	return in.Joins
 }
 
 // designFreezeFlatModel — a NEW flat press that names no engine is drawn by
