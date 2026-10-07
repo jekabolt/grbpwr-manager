@@ -65,6 +65,9 @@ func designRunCtx() context.Context {
 func designStubNoDisplayOnly(design *mocks.MockDesign) {
 	design.EXPECT().MediaHeldDisplayOnly(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 	design.EXPECT().MediaHeldHiddenOnly(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	// M16: a flat asks which of its pictures design runs produced — «none» here; the rule's own
+	// probes answer otherwise (design_board_generated_test.go).
+	design.EXPECT().MediaRunKinds(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 }
 
 // ─────────────────────── стенд ───────────────────────
@@ -499,7 +502,8 @@ func TestDesignRerunTakesItsInputsFromTheParentNotFromTodaysCard(t *testing.T) {
 		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFlat,
 		Inputs: entity.RawJSON(parentInputs),
 	}
-	srv := &Server{}
+	// M16: a flat rerun asks the store which of its parent's pictures were generated («none» here).
+	srv := newDesignRunRig(t, designMoodCard(), designBandWith(true)).srv
 	params := &pb_common.DesignRunParams{Views: []string{entity.DesignViewFront}, Layout: designLayoutPerView}
 	snap, fit, err := srv.designRunInputs(context.Background(), designInputSources{
 		Kind:   entity.DesignRunKindFlat,
@@ -1421,7 +1425,8 @@ func TestDesignRerunKeepsTheParentsGarmentDescription(t *testing.T) {
 		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFlat,
 		Inputs: entity.RawJSON(parentInputs),
 	}
-	srv := &Server{}
+	// M16: a flat rerun asks the store which of its parent's pictures were generated («none» here).
+	srv := newDesignRunRig(t, designW3Card(), &entity.DesignBand{}).srv
 	snap, _, err := srv.designRunInputs(context.Background(), designInputSources{
 		Kind:   entity.DesignRunKindFlat,
 		Card:   designW3Card(), // сегодня на карточке designGarmentWords

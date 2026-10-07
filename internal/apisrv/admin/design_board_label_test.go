@@ -167,7 +167,7 @@ func TestBoardLabelPlan(t *testing.T) {
 		ref(12, "front", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateOk), // left the board → drop
 		ref(13, "front", entity.DesignLabelSourceHuman, entity.DesignLabelStateOk),      // a person's, off board → kept
 	}
-	tasks, drop := designBoardLabelPlan(board, refs, time.Now().Add(-entity.DesignBoardLabelStaleAfter), false)
+	tasks, drop := designBoardLabelPlan(board, refs, time.Now().Add(-entity.DesignBoardLabelStaleAfter), false, nil)
 	got := map[int]bool{}
 	for _, tk := range tasks {
 		got[tk.MediaID] = tk.Relabel
@@ -268,7 +268,7 @@ func TestBoardLabelPlanDetails(t *testing.T) {
 		ref(2, "front", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateOk),
 		ref(3, "detail", entity.DesignLabelSourceModelStrong, entity.DesignLabelStateOk),
 	}
-	tasks, drop := designBoardLabelPlan(board, refs, time.Now().Add(-time.Minute), true)
+	tasks, drop := designBoardLabelPlan(board, refs, time.Now().Add(-time.Minute), true, nil)
 	got := map[int]bool{}
 	for _, tk := range tasks {
 		got[tk.MediaID] = tk.Relabel

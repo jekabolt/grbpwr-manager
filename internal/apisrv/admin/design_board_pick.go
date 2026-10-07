@@ -198,8 +198,99 @@ func designRunSources(kind string, card *entity.TechCard, band *entity.DesignBan
 	}
 }
 
+// ─── M16: A GENERATED PICTURE NEVER FEEDS A FLAT ───
+//
+// Owner 07.10: «в инпут на флеты не должны подсовываться фабрик рендеры». A flat is drawn from the
+// garment itself: its photos, sketches and uploads (the board), the accepted FRONT/BACK plates of a
+// detail run (bench slots, not refs) and, with «from my flat», the card's own technical flats
+// (params.flat.structure_refs). A picture some design run PRODUCED — a fabric render, a colour
+// render, 3D, on-model / playground, recolor, pattern, inpaint, extend, a video still, a flat sheet
+// or its crop — is the model's own drawing; sent back as a photo it teaches the next flat its
+// mistakes. Found on the board it is HELD («render» in «what the model gets»), never sent.
+//
+// «Produced» is read from design_picture.run_id (MediaRunKinds: any card; a crop and a flatten carry
+// their parent's run), never from a filename.
+
+// designOutputFeedsAFlat — THE ONE EXCEPTION (M17): a CUTOUT (remove bg, fal BiRefNet) is the very
+// garment photo with its background removed — a crop of an input photo, not a drawing — so a cutout's
+// output may feed a flat like the photo it was cut from. Every other kind of run may not.
+func designOutputFeedsAFlat(runKind string) bool {
+	return runKind == entity.DesignRunKindCutout
+}
+
+// designGeneratedOf — of MediaRunKinds' answer, the media a flat may not take, each with the kind of
+// a run that produced it (the first kind that is not a cutout). A media both a cutout and, say, a
+// render produced is generated.
+func designGeneratedOf(kinds map[int][]string) map[int]string {
+	var out map[int]string
+	for media, ks := range kinds {
+		for _, k := range ks {
+			if designOutputFeedsAFlat(k) {
+				continue
+			}
+			if out == nil {
+				out = map[int]string{}
+			}
+			out[media] = k
+			break
+		}
+	}
+	return out
+}
+
+// designFlatGenerated — for a FLAT run of these sources, which of the pictures it could read (the
+// board's and the travelling labels') are generated. One store read, flat runs only; nil otherwise.
+func (s *Server) designFlatGenerated(ctx context.Context, src designInputSources) (map[int]string, error) {
+	if src.Kind != entity.DesignRunKindFlat {
+		return nil, nil
+	}
+	var ids []int
+	for _, p := range designBoardPictures(src.Card) {
+		ids = append(ids, p.MediaID)
+	}
+	for _, r := range src.Refs {
+		ids = append(ids, r.MediaId)
+	}
+	return s.designGeneratedMedia(ctx, ids)
+}
+
+// designGeneratedMedia — MediaRunKinds folded by designOutputFeedsAFlat; no ids, no read.
+func (s *Server) designGeneratedMedia(ctx context.Context, ids []int) (map[int]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	kinds, err := s.repo.Design().MediaRunKinds(ctx, ids)
+	if err != nil {
+		return nil, designError(ctx, "failed to read which pictures design runs produced", err, nil)
+	}
+	return designGeneratedOf(kinds), nil
+}
+
+// designFlatNoGenerated — a FLAT's refs without the generated pictures (Generated). The designer's own
+// flats of a «from my flat» run (structure_refs) are kept: they are the card's technical flats, sent as
+// today whatever made them. Other kinds keep their refs.
+func designFlatNoGenerated(src designInputSources, refs []*pb_common.DesignInputRef) []*pb_common.DesignInputRef {
+	if src.Kind != entity.DesignRunKindFlat || len(src.Generated) == 0 {
+		return refs
+	}
+	structural := map[int32]bool{}
+	for _, r := range src.Params.GetFlat().GetStructureRefs() {
+		structural[r.GetMediaId()] = true
+	}
+	out := make([]*pb_common.DesignInputRef, 0, len(refs))
+	for _, r := range refs {
+		if _, gen := src.Generated[int(r.GetMediaId())]; gen && !structural[r.GetMediaId()] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // Why a board picture stays home (DesignInputHeld.reason).
 const (
+	// designHeldRender — the picture is a design run's output (M16): never a flat's input.
+	designHeldRender      = "render"
 	designHeldMood        = "mood"
 	designHeldMaterial    = "material"
 	designHeldUnmarked    = "unmarked"
@@ -239,7 +330,10 @@ func designPreviewHeld(src designInputSources, snap *pb_common.DesignInputSnapsh
 		r, has := rowOf[p.MediaID]
 		h := &pb_admin.DesignInputHeld{MediaId: int32(p.MediaID), Role: r.Role, ModelCaption: r.ModelCaption.String}
 		state := entity.DesignLabelStateOrOk(r.LabelState)
+		_, generated := src.Generated[p.MediaID]
 		switch {
+		case generated:
+			h.Reason = designHeldRender
 		case p.Purpose == entity.TechCardMediaRoleMood:
 			h.Reason = designHeldMood
 		case p.Purpose == entity.TechCardMediaRoleMaterial:
@@ -320,6 +414,9 @@ func (s *Server) PreviewDesignRunInputs(ctx context.Context, req *pb_admin.Previ
 		designFlatDetailsOnly(params)
 	}
 	src := designRunSources(kind, card, band, params)
+	if src.Generated, err = s.designFlatGenerated(ctx, src); err != nil {
+		return nil, err
+	}
 	snap, _, err := s.designRunInputs(ctx, src, nil)
 	if err != nil {
 		return nil, err

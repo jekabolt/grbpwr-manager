@@ -757,6 +757,13 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// ONE builder for the run and its preview (PreviewDesignRunInputs, 101 §2.8): the modal and the
 	// snapshot cannot disagree about which sources they read.
 	src := designRunSources(kind, card, band, params)
+	// M16: which pictures a flat may not take — read here, so the snapshot below and the preview
+	// (PreviewDesignRunInputs) hold the same ones.
+	generated, err := s.designFlatGenerated(ctx, src)
+	if err != nil {
+		return nil, err
+	}
+	src.Generated = generated
 
 	if err := designRefuseForeignDetailSlots(cardID, req.GetParams(), band.Bench, src); err != nil {
 		return nil, err
@@ -3557,6 +3564,9 @@ type designInputSources struct {
 	Refs   []entity.DesignReference
 	Bench  []entity.DesignBenchSlot
 	Params *pb_common.DesignRunParams
+	// Generated — media → the kind of the design run that produced it, for the pictures a FLAT may
+	// not take (M16, designFlatGenerated); nil for every other kind and when nothing is generated.
+	Generated map[int]string
 }
 
 // designKindReadsTheCard — ЧИТАЕТ ЛИ ЭТОТ РОД ПРОГОНА КАРТОЧКУ ВООБЩЕ, или его вход — только те
@@ -3771,6 +3781,9 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 	// ─── A FLAT: only the garment's own photos with a side role travel — no moodboard picture, no
 	// role-less input (wave 10); a hand_flat run records the designer's flats first, then those photos.
 	out.Refs = designFlatOnlyRoledPhotos(src, out.Refs)
+	// M16: a generated picture never feeds a flat — dropped BEFORE the pick, so a render does not
+	// push a garment photo out of «the two newest of its view».
+	out.Refs = designFlatNoGenerated(src, out.Refs)
 	out.Refs = designFlatDetailOnlyItsRefs(src, out.Refs)
 	// 101 §2.8: a views run takes view photos only, the newest two of each view; a detail run the newest
 	// four of each asked detail.
@@ -4386,6 +4399,33 @@ func (s *Server) designRunInputs(ctx context.Context, src designInputSources, pa
 			}
 		}
 		snap.Refs = kept
+	}
+	// M16: A RERUN OF A FLAT REPLAYS ITS PARENT'S PICTURES — EXCEPT A GENERATED ONE. A parent booked
+	// before the rule may have carried a render off the board; the child is a new paid call and its
+	// snapshot is what the worker sends, so the render goes no further. The designer's own flats
+	// (structure_refs) stay, as on a fresh run (designFlatNoGenerated).
+	if src.Kind == entity.DesignRunKindFlat && len(snap.GetRefs()) > 0 {
+		ids := make([]int, 0, len(snap.GetRefs()))
+		for _, r := range snap.GetRefs() {
+			ids = append(ids, int(r.GetMediaId()))
+		}
+		gen, err := s.designGeneratedMedia(ctx, ids)
+		if err != nil {
+			return nil, "", err
+		}
+		snap.Refs = designFlatNoGenerated(designInputSources{Kind: src.Kind, Params: src.Params, Generated: gen}, snap.GetRefs())
+		plates := 0
+		for _, sl := range snap.GetSlots() {
+			if sl.GetMediaId() > 0 {
+				plates++
+			}
+		}
+		if len(snap.GetRefs()) == 0 && plates == 0 && !designFlatIsFix(src.Params) &&
+			designgen.FlatIsGarmentSheet(src.Params.GetViews(), src.Params.GetLayout()) {
+			return nil, "", designRefusal(codes.FailedPrecondition, "flat_nothing_to_draw",
+				"every picture of the run this repeats is a generated one, and a flat is drawn from the garment's own photos; nothing was reserved and nothing was charged",
+				nil)
+		}
 	}
 	if !designRunReadsTheGarmentNote(src.Kind, src.Params) {
 		snap.GarmentNote = ""

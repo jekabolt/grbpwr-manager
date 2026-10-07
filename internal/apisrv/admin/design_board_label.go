@@ -185,6 +185,9 @@ type designBoardLabelTask struct {
 	Existing bool
 	// CallsModel — the route this task starts at is on (decided once per sync, before the token).
 	CallsModel bool
+	// Output — the picture is a design run's output (M16): settled as `output` for free, no model
+	// looks at it and nothing is proposed for its purpose.
+	Output bool
 }
 
 // designBoardLabelled — whether a purpose takes a model label. A purpose of `detail` waits for the
@@ -212,7 +215,14 @@ func designBoardLabelled(p entity.TechCardMediaRole, details bool) bool {
 //	model row, purpose detail, row labelled a view / or
 //	  settled with no view                                 → relabel (when details are on)
 //	model row, pending and stale                          → label (BeginBoardLabel re-arms or fails it)
-func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignReference, staleBefore time.Time, details bool) (tasks []designBoardLabelTask, drop []int) {
+//
+// A DESIGN RUN'S OUTPUT (generated, M16) on a target / detail / unmarked picture is never read by a
+// model — a render is no view of the garment and a flat never takes it:
+//
+//	no row                                                → settle `output` (no call)
+//	model row in any other state                          → settle `output` (no call)
+//	model row `output` on a picture that is no output     → relabel (or drop, as its purpose says)
+func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignReference, staleBefore time.Time, details bool, generated map[int]bool) (tasks []designBoardLabelTask, drop []int) {
 	rowOf := make(map[int]entity.DesignReference, len(refs))
 	for _, r := range refs {
 		rowOf[r.MediaId] = r
@@ -223,7 +233,7 @@ func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignRefere
 		r, has := rowOf[p.MediaID]
 		if !has {
 			if designBoardLabelled(p.Purpose, details) {
-				tasks = append(tasks, designBoardLabelTask{designBoardPicture: p})
+				tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Output: generated[p.MediaID]})
 			}
 			continue
 		}
@@ -231,6 +241,19 @@ func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignRefere
 			continue
 		}
 		state := entity.DesignLabelStateOrOk(r.LabelState)
+		if designBoardLabelled(p.Purpose, details) {
+			switch {
+			case generated[p.MediaID] && state != entity.DesignLabelStateOutput:
+				tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true, Existing: true, Output: true})
+				continue
+			case generated[p.MediaID]:
+				continue
+			case state == entity.DesignLabelStateOutput:
+				// no longer an output (its run's pictures were deleted): read it like any picture
+				tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true, Existing: true})
+				continue
+			}
+		}
 		isView := r.Role != "" && r.Role != entity.DesignViewDetail
 		isDetail := r.Role == entity.DesignViewDetail
 		settledEmpty := r.Role == "" && state == entity.DesignLabelStateOk
@@ -496,7 +519,12 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		return fmt.Errorf("read the labels: %w", err)
 	}
 	staleBefore := time.Now().Add(-entity.DesignBoardLabelStaleAfter)
-	tasks, drop := designBoardLabelPlan(designBoardPictures(card), refs, staleBefore, designBoardLabelDetails)
+	board := designBoardPictures(card)
+	generated, err := s.designBoardGenerated(ctx, board)
+	if err != nil {
+		return err
+	}
+	tasks, drop := designBoardLabelPlan(board, refs, staleBefore, designBoardLabelDetails, generated)
 	if len(drop) > 0 {
 		slots, err := s.repo.Design().DropBoardLabels(ctx, cardID, drop)
 		if err != nil {
@@ -516,8 +544,8 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 	}
 	kept := tasks[:0]
 	for _, t := range tasks {
-		t.CallsModel = routeOn(t)
-		if t.CallsModel || t.Existing {
+		t.CallsModel = !t.Output && routeOn(t)
+		if t.CallsModel || t.Existing || t.Output {
 			kept = append(kept, t)
 		}
 	}
@@ -532,7 +560,9 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 	}
 	ids := make([]int, 0, len(tasks))
 	for _, t := range tasks {
-		ids = append(ids, t.MediaID)
+		if !t.Output {
+			ids = append(ids, t.MediaID)
+		}
 	}
 	urls, attached, err := s.designBoardPictureURLs(ctx, ids)
 	if err != nil {
@@ -575,18 +605,39 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 				return err
 			}
 		}
-		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], t.CallsModel, slots)
+		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], t.CallsModel, t.Output, slots)
 	}
 	return nil
 }
 
+// designBoardGenerated — which board pictures are design-run outputs a flat may not take (M16, the
+// same rule as the snapshot: designGeneratedMedia). A failed read labels nothing this sync.
+func (s *Server) designBoardGenerated(ctx context.Context, board []designBoardPicture) (map[int]bool, error) {
+	ids := make([]int, 0, len(board))
+	for _, p := range board {
+		ids = append(ids, p.MediaID)
+	}
+	gen, err := s.designGeneratedMedia(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the outputs on the board: %w", err)
+	}
+	out := make(map[int]bool, len(gen))
+	for id := range gen {
+		out[id] = true
+	}
+	return out, nil
+}
+
 // designBoardLabelOne — the fences and the ladder for one claimed picture, then the write.
 // aiOn is the sync's decision for this task, frozen: a task that took no hourly token never calls a
-// model, even if the route comes back on while it works (Codex Ф1 r2).
-func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn bool, slots []designBoardDetailSlot) {
+// model, even if the route comes back on while it works (Codex Ф1 r2). output = a design run's
+// output (M16): settled `output` without a call.
+func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn, output bool, slots []designBoardDetailSlot) {
 	logAttrs := []any{slog.Int("tech_card_id", cardID), slog.Int("media_id", pic.MediaID), slog.String("purpose", string(pic.Purpose))}
 	var label entity.DesignBoardLabel
-	if !aiOn || url == "" || designBoardNotAPicture(url) {
+	if output {
+		label = entity.DesignBoardLabel{MediaId: pic.MediaID, Source: entity.DesignLabelSourceModelCheap, State: entity.DesignLabelStateOutput}
+	} else if !aiOn || url == "" || designBoardNotAPicture(url) {
 		// AI off, no file, or a file a model cannot read as a picture: a person labels it.
 		label = entity.DesignBoardLabel{MediaId: pic.MediaID, Source: entity.DesignLabelSourceModelCheap, State: entity.DesignLabelStateFailed}
 	} else {

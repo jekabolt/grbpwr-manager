@@ -266,7 +266,8 @@ func TestAPatternRERUN_DOES_NOT_INHERIT_THE_GARMENT_NOTE(t *testing.T) {
 		Inputs: entity.RawJSON(`{"garment_note":"GARMENT-olive shirt","fit":"FIT-oversized",` +
 			`"refs":[{"media_id":100,"role":"front"},{"media_id":101},{"media_id":90}]}`),
 	}
-	srv := &Server{}
+	// M16: the flat row asks the store which of its parent's pictures were generated («none» here).
+	srv := newDesignRunRig(t, designMoodCard(), &entity.DesignBand{}).srv
 	for _, tc := range []struct {
 		name  string
 		kind  string

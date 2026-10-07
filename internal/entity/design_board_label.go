@@ -48,6 +48,10 @@ const (
 	DesignLabelStateOk      = "ok"
 	DesignLabelStateUnsure  = "unsure" // both models were unsure — a person answers the question card
 	DesignLabelStateFailed  = "failed" // AI off / errors — a person sets the view by a tap
+	// DesignLabelStateOutput — the picture is a design run's OUTPUT (a render, a 3D still, a flat
+	// sheet…; M16): no model reads it, it carries no role and never feeds a flat — the tile says
+	// «render». Written by the labeller for free; a person's tap still writes over it as always.
+	DesignLabelStateOutput = "output"
 )
 
 // DesignLabelStateOrOk — ” (a row older than the column) reads as ok.
