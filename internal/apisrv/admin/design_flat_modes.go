@@ -20,15 +20,16 @@ import (
 // straps, is RETIRED (owner 07.10, 100-CONSTRUCTION-DEADEND): it was the photos route plus the
 // designer-confirmed join list, and the join list no longer reaches the image model — a straps press
 // drew exactly what a photos press draws, behind a confirmation gate. M7 refused a new press of it; M7b
-// took the word out of the modes (designgen.NormalizeFlatMode) and refuses a RERUN of a straps run too:
-// the rerun would be drawn by another route than the one its history names, and a new press of the same
-// photos is the honest way to get that drawing. A straps run already queued is still drawn (the worker
-// reads the word as no mode: the photos route, the words it was drawn with since the list left).
-// Every refusal below stands BEFORE StartRun reserves anything: it is free.
+// took the word out of the modes (designgen.NormalizeFlatMode: the worker reads it as no mode, i.e. the
+// photos route — the words a straps run has been drawn with since the list left the prompt). A RERUN of
+// a straps run still repeats its parent, block and all, exactly as under M7: refusing it now would also
+// refuse the replay of a rerun booked before this deploy whose answer was lost (the client_request_id
+// replay lives in StartRun, after these doors), telling the person «nothing was reserved» beside a run
+// that exists (Codex, M7b). Every refusal below stands BEFORE StartRun reserves anything: it is free.
 //
 //   - flat_forbidden        — the block on any kind but flat;
 //   - unknown_flat_mode     — a mode word that is neither photos nor hand_flat (nor the retired straps);
-//   - mode_retired          — straps, on a new press or a rerun of a straps run;
+//   - mode_retired          — straps on a NEW press (a rerun of a straps run repeats its parent);
 //   - structure_forbidden   — structure_refs on a mode that does not read them;
 //   - structure_required    — hand_flat without refs;
 //   - structure_malformed   — a role that is not front_flat | back_flat, a role or a media twice;
@@ -49,15 +50,8 @@ func designFlatModeIsRetired(mode string) bool {
 	return strings.TrimSpace(mode) == designFlatModeStrapsRetired
 }
 
-// designFlatRetiredRefusal — mode_retired, worded for a new press (parent nil) or a rerun of a straps run.
-func designFlatRetiredRefusal(parent *entity.DesignRun) error {
-	if parent != nil {
-		return designRefusal(codes.InvalidArgument, "mode_retired",
-			fmt.Sprintf("run %d was drawn in the retired straps mode and a rerun repeats its parent's mode; the "+
-				"construction list no longer reaches the image model — generate a new flat, which draws from the "+
-				"reference photos. Nothing was reserved and nothing was charged", parent.Id),
-			map[string]string{"mode": designFlatModeStrapsRetired, "parent_run_id": strconv.Itoa(parent.Id)})
-	}
+// designFlatRetiredRefusal — mode_retired: a new press that names the retired straps mode.
+func designFlatRetiredRefusal() error {
 	return designRefusal(codes.InvalidArgument, "mode_retired",
 		"the straps mode was retired: the construction list no longer reaches the image model, so a flat "+
 			"draws from the reference photos — send no params.flat. Nothing was reserved and nothing was charged",
@@ -93,10 +87,13 @@ func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, pare
 	}
 	pp := designFlatParentParams(parent)
 	pf := pp.GetFlat()
-	if designFlatModeIsRetired(pf.GetMode()) {
-		return designFlatRetiredRefusal(parent)
-	}
 	pm, _ := designgen.NormalizeFlatMode(pf.GetMode())
+	// A straps parent (retired, M7b) is matched by its own word: its rerun keeps the block and is drawn
+	// by the photos route, as every straps run is now.
+	retired := designFlatModeIsRetired(pf.GetMode())
+	if retired {
+		pm = designFlatModeStrapsRetired
+	}
 	refuse := func(why string) error {
 		return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
 			fmt.Sprintf("run %d was drawn in the %q mode and a rerun repeats it with the same pictures%s; start a "+
@@ -113,6 +110,9 @@ func designFlatRerunInherit(kind string, params *pb_common.DesignRunParams, pare
 		return nil
 	}
 	cm, ok := designFlatModeOf(params)
+	if designFlatModeIsRetired(params.GetFlat().GetMode()) {
+		cm, ok = designFlatModeStrapsRetired, true
+	}
 	if !ok || cm != pm || !designFlatSameStructure(params.GetFlat(), pf) {
 		return refuse("")
 	}
@@ -180,10 +180,21 @@ func designRefuseFlatParams(kind string, params *pb_common.DesignRunParams, pare
 	}
 	mode, ok := designgen.NormalizeFlatMode(f.GetMode())
 	if !ok {
-		// THE STRAPS MODE IS RETIRED (M7/M7b, owner 07.10): refused, free, whatever else the block
-		// carries; no client sends it. A rerun of a straps run is refused by designFlatRerunInherit first.
+		// THE STRAPS MODE IS RETIRED (M7/M7b, owner 07.10): a new press is refused, free, whatever else
+		// the block carries; no client sends it. On a rerun the word can only be its straps parent's own
+		// block (designFlatRerunInherit refuses it on any other parent): the rerun repeats that run, and
+		// the worker draws it by the photos route.
 		if designFlatModeIsRetired(f.GetMode()) {
-			return designFlatRetiredRefusal(nil)
+			if parent == nil {
+				return designFlatRetiredRefusal()
+			}
+			if !designgen.FlatIsGarmentSheet(params.GetViews(), params.GetLayout()) {
+				return designRefusal(codes.InvalidArgument, "mode_not_for_this_run",
+					"the straps mode drew the garment on one sheet; a detail sketch or a per-view run uses the photos "+
+						"route. Nothing was reserved and nothing was charged",
+					map[string]string{"mode": designFlatModeStrapsRetired, "layout": params.GetLayout()})
+			}
+			return nil
 		}
 		return designRefusal(codes.InvalidArgument, "unknown_flat_mode",
 			fmt.Sprintf("params.flat.mode %q is not photos | hand_flat", f.GetMode()),
