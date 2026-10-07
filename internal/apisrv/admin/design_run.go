@@ -1063,9 +1063,9 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	// формата / «только для показа» / «спрятан», потолка движка и цены: картинка артворка уезжает
 	// поставщику как всякий вход, и лишний артворк обязан быть отказом до денег, а не провалом после.
 	arts := designRunArtworks(kind, params, card, band, inputs, parent)
-	// THE JOIN LIST (flat route, 0397) — frozen into the snapshot like the artworks: the card's current
-	// list (a rerun: its parent's copy). Editing the list later never rewrites this run.
-	joins := designRunJoins(kind, params, band, parent)
+	// The card's join list is NOT frozen into a flat's snapshot any more (M7b, 07.10): the construction
+	// left the flat prompt (owner 06.10 / 07.10, 100-CONSTRUCTION-DEADEND), so nothing would read it. The
+	// list itself stays on the card for the PARTS labeller (design_parts_construction.go).
 	if err := s.designRefuseRenderArtworks(kind, params, inputs, arts); err != nil {
 		return nil, err
 	}
@@ -1126,13 +1126,6 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if kind == entity.DesignRunKindRender {
 		if inputsJSON, err = designSpliceArtworks(inputsJSON, arts); err != nil {
 			slog.Default().ErrorContext(ctx, "design run: the artworks did not encode",
-				slog.String("err", err.Error()))
-			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
-		}
-	}
-	if joins != nil {
-		if inputsJSON, err = designSpliceJoins(inputsJSON, joins); err != nil {
-			slog.Default().ErrorContext(ctx, "design run: the join list did not encode",
 				slog.String("err", err.Error()))
 			return nil, status.Error(codes.Internal, "the input snapshot could not be stored")
 		}

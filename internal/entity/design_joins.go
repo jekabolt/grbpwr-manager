@@ -14,9 +14,11 @@ import (
 //
 // The garment's construction as a list of joins on a FIXED, garment-agnostic landmark ruler
 // (tmp/plans/flat-consistency r5.py/r7.py, rounds 5–7): the model writes it from the reference
-// photos (chat.design_joins), the designer corrects it, the flat run freezes it into its input
-// snapshot and the flat prompt turns it into words. One shape for all three, cleaned by ONE function
-// (SanitizeDesignJoinsDoc) whether the model or a person wrote it.
+// photos (chat.design_joins), the designer corrects it, and the PARTS labeller reads it as its
+// construction block and part vocabulary. (The flat run froze it into its input snapshot and the flat
+// prompt turned it into words until the owner called construction a dead end — 06.10 / 07.10, gone with
+// M7b.) One shape for every writer, cleaned by ONE function (SanitizeDesignJoinsDoc) whether the model
+// or a person wrote it.
 
 // Caps of a join list. A list over a cap is cut, never refused: it is a hint to a prompt.
 const (
@@ -296,8 +298,9 @@ type DesignJoinsConsistency struct {
 	Groups       []DesignJoinsGroup `json:"groups,omitempty"`
 }
 
-// DesignJoinsDoc — the list itself: what is stored in design_joins.joins and frozen into a flat
-// run's inputs (`inputs.joins`).
+// DesignJoinsDoc — the list itself: what is stored in design_joins.joins (and was frozen into a flat
+// run's inputs as `inputs.joins` until M7b, 07.10 — the construction left the flat prompt; the PARTS
+// labeller still reads the card's list).
 type DesignJoinsDoc struct {
 	Layers   []DesignJoinLayer `json:"layers,omitempty"`
 	Items    []DesignJoinItem  `json:"items"`

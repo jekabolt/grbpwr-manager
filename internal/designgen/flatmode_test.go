@@ -60,21 +60,26 @@ Unlike a literal trace, adjust only the continuous OUTER-SILHOUETTE geometry and
 	require.Contains(t, roles, "\n\n"+want+"\n\n")
 }
 
-// The photos route and straps compose the SAME text route (flatCraftWith); the mode only changes the
-// count and the door. A structure-role ref never travels outside hand_flat.
-func TestPhotosAndStrapsAreTheTextRoute(t *testing.T) {
-	j := loadJoinsCase(t, "c38")
-	inputs := runInputs{Refs: []inputRef{{MediaID: 11, Role: "front"}, {MediaID: 12, Role: "back", Note: "open back"}}, Joins: &j}
+// A run frozen in the retired straps mode (M7b) is drawn by the photos route, word for word, and its
+// frozen join list is not read. A structure-role ref never travels outside hand_flat.
+func TestRetiredStrapsIsThePhotosRoute(t *testing.T) {
+	inputs := parseInputs(entity.RawJSON(`{"refs":[{"media_id":11,"role":"front"},{"media_id":12,"role":"back","note":"open back"}],` +
+		`"joins":{"items":[{"id":"strap_L","kind":"strap","from":"NP_L","via":["UB_C"],"to":"MB_R"}],"absences":["no sleeves"]}}`))
 	base := runParams{Views: fourViews, Layout: layoutOne}
 	straps := base
-	straps.Flat = &flatParams{Mode: FlatModeStraps}
+	straps.Flat = &flatParams{Mode: "straps"}
+	_, ok := NormalizeFlatMode("straps")
+	require.False(t, ok, "straps is no mode")
+	require.Equal(t, FlatModePhotos, flatModeOf(straps), "a frozen straps run reads as the photos route")
 	run := entity.DesignRun{Kind: entity.DesignRunKindFlat}
 	att := referenceList(run.Kind, base, inputs)
 	require.Equal(t, att, referenceList(run.Kind, straps, inputs))
 	a := composePrompt(run, base, inputs, att)
 	require.Equal(t, a, composePrompt(run, straps, inputs, att))
-	require.Contains(t, a, flatCraftWith(base, nil, 2, &j))
+	require.Contains(t, a, flatCraft(base, nil, 2))
 	require.Contains(t, a, "- image 1: front photo\n- image 2: back photo: open back\n")
+	require.NotContains(t, a, "strap_L")
+	require.NotContains(t, a, "no sleeves")
 
 	withFlat := inputs
 	withFlat.Refs = append([]inputRef{{MediaID: 5, Role: entity.DesignRefRoleFrontFlat}}, inputs.Refs...)
@@ -125,34 +130,15 @@ func TestFlatModeCandidates(t *testing.T) {
 	require.True(t, FlatIsGarmentSheet(two, layoutOne))
 	require.False(t, FlatIsGarmentSheet(two, layoutPerView))
 	require.False(t, FlatIsGarmentSheet([]string{"detail"}, layoutOne))
-	for _, m := range []string{"", FlatModeHandFlat, FlatModeStraps} {
+	for _, m := range []string{"", FlatModeHandFlat, "straps"} {
 		require.Equal(t, FlatDefaultEngine, FlatModelFor(m))
 	}
 	calls, _ := imageCalls(Job{Kind: "flat", Views: two, Layout: layoutOne, Outputs: 4})
 	require.Equal(t, 4, calls[0].n, "a sheet queued before the modes keeps its frozen number")
-	calls, _ = imageCalls(Job{Kind: "flat", Views: two, Layout: layoutOne, Outputs: 1, FlatMode: FlatModeStraps})
+	calls, _ = imageCalls(Job{Kind: "flat", Views: two, Layout: layoutOne, Outputs: 1, FlatMode: FlatModePhotos})
 	require.Equal(t, 1, calls[0].n, "a fix is one picture")
 	_, ok := NormalizeFlatMode("drawing")
 	require.False(t, ok)
-}
-
-// Sentence types 1 and 6 beyond the c2 golden: every neck shape speaks, the designer's edits are said
-// verbatim.
-func TestNeckShapesAndDesignerLines(t *testing.T) {
-	for shape, want := range map[string]string{
-		"v": "is a V neck", "scoop": "SCOOP neck", "halter": "HALTER", "boat": "BOAT neck",
-		"square": "SQUARE neck", "mock": "MOCK NECK", "turtle": "TURTLENECK",
-	} {
-		doc := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
-			{ID: "neck", Kind: "binding", From: "NP_R", Via: []string{"CFN"}, To: "NP_L", Type: shape}}})
-		require.Contains(t, strings.Join(joinsSentences(doc), "\n"), want, shape)
-	}
-	doc := entity.SanitizeDesignJoinsDoc(entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{
-		{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R", Text: "raw hem, cut 2 cm longer at the back"}}})
-	doc.Items[0].Edited = true
-	doc.EditedAbsences = []string{"no pocket on the left"}
-	got := joinsSentences(doc)
-	require.Equal(t, []string{"designer: raw hem, cut 2 cm longer at the back", "designer: no pocket on the left"}, got[len(got)-2:])
 }
 
 // The ruler is ONE table: the Go ruler equals the renderer's (testdata/joins/ruler.json, exported from
@@ -219,7 +205,7 @@ func TestFitRoundTrip(t *testing.T) {
 
 // TestMoodIsNeverAnAuthority — M2 + Codex b6: a mood picture (a DIFFERENT garment) is never a fit or
 // detail authority. hand_flat: it is left out of the roles list and said once, as style mood only;
-// photos/straps: the craft says the same right after the identification, and the owner's «true to the
+// photos: the craft says the same right after the identification, and the owner's «true to the
 // reference» counts only the other pictures (a run whose only picture is mood gets the no-reference
 // wording). Golden: the exact paragraphs.
 // MUTATIONS IT CATCHES: «MOOD FIT AND DETAIL AUTHORITY» coming back; the mood sentence missing in any
@@ -238,14 +224,14 @@ func TestMoodIsNeverAnAuthority(t *testing.T) {
 	require.NotContains(t, onlyMood, flatRolesHead)
 	require.Contains(t, onlyMood, "Image 2 is a mood picture of a DIFFERENT garment: style mood only.")
 
-	// photos / straps
+	// photos
 	p := runParams{Views: fourViews, Layout: layoutOne}
 	plain := []refCaption{photo(11, "front", ""), photo(13, "back", "")}
-	require.Equal(t, flatCraftWith(p, nil, 2, nil), flatCraftAttached(p, nil, plain, nil), "no mood: byte for byte the old craft")
-	withMood := flatCraftAttached(p, nil, append(plain, photo(12, entity.DesignRefRoleMood, ""), photo(14, entity.DesignRefRoleMood, "")), nil)
+	require.Equal(t, flatCraft(p, nil, 2), flatCraftAttached(p, nil, plain), "no mood: byte for byte the old craft")
+	withMood := flatCraftAttached(p, nil, append(plain, photo(12, entity.DesignRefRoleMood, ""), photo(14, entity.DesignRefRoleMood, "")))
 	require.Contains(t, withMood, flatIdentifyGarment+"\n\nImages 3 and 4 are mood pictures of a DIFFERENT garment: style mood only. Take NOTHING of this garment from them — no silhouette, no fit, no proportions, no length, no details, no straps, no construction; everything said above about the reference applies to the other images only.\n\n")
 	require.True(t, strings.HasPrefix(withMood, flatIntro(false, 0, 2)), "two garment pictures, not four")
-	moodOnly := flatCraftAttached(p, nil, []refCaption{photo(12, entity.DesignRefRoleMood, "")}, nil)
+	moodOnly := flatCraftAttached(p, nil, []refCaption{photo(12, entity.DesignRefRoleMood, "")})
 	require.Contains(t, moodOnly, flatIdentifyGarmentNoRef, "a mood picture is not the reference the garment is true to")
 	require.Contains(t, moodOnly, "Image 1 is a mood picture of a DIFFERENT garment")
 }

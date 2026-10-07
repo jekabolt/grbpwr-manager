@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
@@ -178,22 +177,9 @@ func TestFlatRouteDoor(t *testing.T) {
 	require.Nil(t, fix.GetImage(), "a fix keeps today's model")
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, fix), "a fix is one picture")
 
-	doc := entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{{ID: "hem", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}
-	band := &entity.DesignBand{Joins: &entity.DesignJoins{Doc: doc}}
-	require.Equal(t, &doc, designRunJoins(entity.DesignRunKindFlat, p, band, nil))
-	require.Nil(t, designRunJoins(entity.DesignRunKindFlat, &pb_common.DesignRunParams{Views: []string{"detail"}}, band, nil))
-	require.Nil(t, designRunJoins(entity.DesignRunKindRender, p, band, nil))
-	parentDoc := entity.DesignJoinsDoc{Items: []entity.DesignJoinItem{{ID: "old", Kind: "edge", From: "HEM_L", To: "HEM_R"}}}
-	raw, _ := designSpliceJoins([]byte(`{"garment_note":"x"}`), &parentDoc)
-	var probe map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(raw, &probe))
-	require.Contains(t, probe, "garment_note")
-	got := designRunJoins(entity.DesignRunKindFlat, p, band, &entity.DesignRun{Inputs: entity.RawJSON(raw)})
-	require.Equal(t, "old", got.Items[0].ID, "a rerun carries its parent's list, not today's")
-
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, p), "the photos route buys one sheet")
 	drawing := proto.Clone(p).(*pb_common.DesignRunParams)
-	drawing.Flat = &pb_common.DesignFlatParams{Mode: designgen.FlatModeStraps}
+	drawing.Flat = &pb_common.DesignFlatParams{Mode: designgen.FlatModeHandFlat}
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat, drawing))
 	require.Equal(t, 1, designImageVariantsPerCall(entity.DesignRunKindFlat, p), "the worker splits over an engine's n")
 }
@@ -240,32 +226,20 @@ func TestDesignRunCapIsAdvertised(t *testing.T) {
 	require.Equal(t, []string{"flat", "render", "recolor", "pattern", "freeform"}, entity.DesignCappedRunKinds())
 }
 
-// keep_media_ids narrows a FLAT run's references and a non-force regeneration's photos; other kinds,
-// no verdict, or a keep list that no longer matches any reference change nothing.
-func TestKeepMediaIDsNarrowTheFlat(t *testing.T) {
+// keep_media_ids narrows a non-force regeneration's photos (never a flat's references any more: M7b
+// removed that filter with the construction switch); no verdict, or a keep list that no longer matches
+// any reference, changes nothing.
+func TestKeepMediaIDsNarrowTheJoinsPhotos(t *testing.T) {
 	refs := []entity.DesignReference{{MediaId: 1, Role: "front"}, {MediaId: 2, Role: "front"}, {MediaId: 3, Role: "back"}}
 	j := &entity.DesignJoins{Consistency: entity.DesignJoinsConsistency{Consistent: false, KeepMediaIDs: []int{1, 3}}}
-	ids := func(rs []entity.DesignReference) (out []int) {
-		for _, r := range rs {
-			out = append(out, r.MediaId)
-		}
-		return
-	}
-	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, j)),
-		"wave 10: the verdict does not choose a flat's photos while construction is out of the prompt")
-	defer func(v bool) { designgen.FlatPromptCarriesConstruction = v }(designgen.FlatPromptCarriesConstruction)
-	designgen.FlatPromptCarriesConstruction = true
-	require.Equal(t, []int{1, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, j)))
-	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindRender, refs, j)), "only flats")
-	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, nil)))
-	gone := &entity.DesignJoins{Consistency: entity.DesignJoinsConsistency{KeepMediaIDs: []int{9}}}
-	require.Equal(t, []int{1, 2, 3}, ids(designKeptReferences(entity.DesignRunKindFlat, refs, gone)), "never an empty set")
-
 	photos := designJoinsPhotos(refs)
 	kept := designJoinsKeptPhotos(photos, j)
 	require.Len(t, kept, 2)
 	require.Equal(t, 1, kept[0].MediaID)
 	require.Equal(t, 3, kept[1].MediaID)
+	require.Len(t, designJoinsKeptPhotos(photos, nil), 3)
+	gone := &entity.DesignJoins{Consistency: entity.DesignJoinsConsistency{KeepMediaIDs: []int{9}}}
+	require.Len(t, designJoinsKeptPhotos(photos, gone), 3, "never an empty set")
 }
 
 // TestSetDesignJoinsConfirmStoresTheSource — Codex b1: a confirmation records the card's source

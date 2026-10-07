@@ -164,7 +164,7 @@ func designRunSources(kind string, card *entity.TechCard, band *entity.DesignBan
 	return designInputSources{
 		Kind:   kind,
 		Card:   card,
-		Refs:   designKeptReferences(kind, designRunRefs(card, band.References), band.Joins),
+		Refs:   designRunRefs(card, band.References),
 		Bench:  band.Bench,
 		Params: params,
 	}

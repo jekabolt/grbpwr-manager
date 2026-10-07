@@ -7,13 +7,17 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// ═══ THE THREE FLAT MODES (tmp/plans/flat-consistency/81-FINAL-MODES.md) ═══
+// ═══ THE FLAT MODES (tmp/plans/flat-consistency/81-FINAL-MODES.md) ═══
 //
-//   - "" (photos, the default): the card's kept photos with roles and notes + the join list in words
-//     when the card has one; two candidate sheets.
+//   - "" (photos, the default): the card's photos with their roles and notes.
 //   - hand_flat: the card's own hand-drawn technical flats (front_flat / back_flat) are redrawn
-//     cleanly and the missing views derived; the kept photos travel for fit only; no join list.
-//   - straps: the photos route with the designer-CONFIRMED join list.
+//     cleanly and the missing views derived; the photos travel for fit only.
+//
+// The third mode, `straps` (the photos route plus the designer-confirmed join list), is RETIRED (owner
+// 07.10, 100-CONSTRUCTION-DEADEND; M7 refused a new press, M7b took the word out of this list): the door
+// refuses any press that names it (mode_retired, admin design_flat_modes.go), and a run frozen with it
+// before then reads as no mode — flatModeOf draws it by the photos route, byte for byte the words it
+// was drawn with since the join list left the prompt (flat_prompt_bytes_test.go).
 //
 // Every mode buys ONE sheet (wave 10: the candidate quiz is gone).
 //
@@ -21,28 +25,27 @@ import (
 const (
 	FlatModePhotos   = ""
 	FlatModeHandFlat = "hand_flat"
-	FlatModeStraps   = "straps"
 	// FlatMaxStructureRefs — the hand-drawn flats one run may trace (front + back).
 	FlatMaxStructureRefs = 2
 )
 
 // NormalizeFlatMode — the mode a stored word means ("" and "photos" → ""); false for a word that is no
-// mode.
+// mode (the retired `straps` included).
 func NormalizeFlatMode(mode string) (string, bool) {
 	switch m := strings.TrimSpace(mode); m {
 	case "", "photos":
 		return FlatModePhotos, true
-	case FlatModeHandFlat, FlatModeStraps:
+	case FlatModeHandFlat:
 		return m, true
 	}
 	return "", false
 }
 
 // FlatModelFor — the engine a NEW flat press of this mode is drawn by when the person named none. One
-// switch, so a cheaper slug for one mode is a one-line change; today flare for all three.
+// switch, so a cheaper slug for one mode is a one-line change; today flare for both.
 func FlatModelFor(mode string) string {
 	switch strings.TrimSpace(mode) {
-	case FlatModeHandFlat, FlatModeStraps:
+	case FlatModeHandFlat:
 		return FlatDefaultEngine
 	default:
 		return FlatDefaultEngine
@@ -59,13 +62,6 @@ func FlatStructureView(role string) string {
 	}
 	return ""
 }
-
-// JoinsListText — the ruler, the layers, every item on one line, the absences (r5.list_text). The
-// labeller's construction block reads it too (admin design_parts_construction.go).
-func JoinsListText(j entity.DesignJoinsDoc) string { return joinsListText(j) }
-
-// JoinsUsable — whether a list says anything a prompt can use (at least one item or absence).
-func JoinsUsable(j *entity.DesignJoinsDoc) bool { return flatJoinsUsable(j) }
 
 // The trace bullets (60-FABLE-ROUTE out/f8/d/prompt-Dflare.txt, generalised). %IMG% is «image k» or
 // «images k and j». A test holds a literal copy.
