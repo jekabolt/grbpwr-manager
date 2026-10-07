@@ -528,6 +528,9 @@ type refCaption struct {
 	// IsMockup — эта картинка уехала МАКЕТОМ ТКАНЕЙ своей карты (T13); renderColourMapSentence
 	// называет её номер только тогда, когда она в списке именно этой ролью.
 	IsMockup bool
+	// IsPlacement — the mockup went out as a PLACEMENT mockup (R9): the bare drawing with the
+	// hardware drawn in; it carries no cloth, so the prompt never sends the model to it for one.
+	IsPlacement bool
 	// IsWindow — ЭТА КАРТИНКА И ЕСТЬ ОКНО ГЕНЕРАЦИИ: кроп области, приехавший ВМЕСТО полного кадра.
 	//
 	// ⚠ ФЛАГ, А НЕ ДОГАДКА ПО ПОДПИСИ ИЛИ ПО ПОЗИЦИИ. Ремесло обязано назвать модели НОМЕР этой
@@ -776,6 +779,10 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// КАРТИНКА ЕСТЬ ОДНА РОЛЬ, — чтобы промпт не мог соврать даже про снимок, замороженный мимо
 	// сегодняшней двери.
 	if p.Colour != nil {
+		// R9 · only hardware painted: the maps label nothing, and the mockups are placement ones
+		// unless exactly one cloth skins them.
+		blank := mapsCarryNoLabels(p.Colour)
+		placement := mockupsArePlacement(p.Colour)
 		for _, m := range p.Colour.ColourMaps {
 			if m.MediaID <= 0 {
 				continue
@@ -784,7 +791,11 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 				continue
 			}
 			at := len(out)
-			add(m.MediaID, colourMapCaption(m.View), m.View)
+			caption := colourMapCaption(m.View)
+			if blank {
+				caption = colourMapBlankCaption(m.View)
+			}
+			add(m.MediaID, caption, m.View)
 			if at < len(out) {
 				out[at].IsColourMap = true
 			}
@@ -800,9 +811,14 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			if at < len(out) && m.MockupMediaID > 0 {
 				if _, taken := seen[m.MockupMediaID]; !taken {
 					mk := len(out)
-					add(m.MockupMediaID, colourMapMockupCaption(m.View), m.View)
+					caption := colourMapMockupCaption(m.View)
+					if placement {
+						caption = placementMockupCaption(m.View)
+					}
+					add(m.MockupMediaID, caption, m.View)
 					if mk < len(out) {
 						out[mk].IsMockup = true
+						out[mk].IsPlacement = placement
 					}
 				}
 			}
@@ -1016,6 +1032,22 @@ func colourMapCaption(view string) string {
 	return "colour map of the " + viewWord(view) + " flat — the same drawing with the labelled " +
 		"parts flooded in flat colours; parts left white carry no label; those colours LABEL which " +
 		"cloth covers which part and are not the garment's own colours, which the cloth list states"
+}
+
+// colourMapBlankCaption — R9 · a map that labels nothing (only hardware was painted; its pixels
+// went out as the paper or cloth around them). It travels only because its mockup belongs to it.
+func colourMapBlankCaption(view string) string {
+	return "unlabelled map of the " + viewWord(view) + " flat — nothing on it is labelled and it " +
+		"gives no instruction; it travels only with the mockup that follows it"
+}
+
+// placementMockupCaption — R9 · the mockup with no cloth on it: the drawing with each painted
+// piece of hardware drawn in at its place and size.
+func placementMockupCaption(view string) string {
+	return "placement mockup of the " + viewWord(view) + " flat — the drawing with each painted " +
+		"piece of hardware drawn in where it sits, at its true size; it shows WHERE the hardware " +
+		"goes and HOW BIG; no cloth is drawn on it — take no cloth or colour from it, and never " +
+		"copy its flat, unlit look"
 }
 
 // colourMapMockupCaption says what a cloth mockup IS and what it may be read for (T13). The

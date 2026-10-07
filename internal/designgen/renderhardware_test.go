@@ -112,3 +112,74 @@ func TestHardwareNounFollowsTheWords(t *testing.T) {
 		require.Equal(t, c.want, hardwareNoun(fabricUse{Name: c.name, Words: c.words}), c.name)
 	}
 }
+
+// TestHardwareOnAThreeQuarterViewCitesThatMockup — R9 fix 7: a button only on the three-quarter
+// view cites that view's mockup and no other, in the prompt's view words and in the client's bare
+// key spelling alike; a parts text naming a view word only as a prefix names nothing.
+func TestHardwareOnAThreeQuarterViewCitesThatMockup(t *testing.T) {
+	params := func(parts string) string {
+		return `{"views":["front","back"],"layout":"one",` +
+			`"colour":{"code":"RED-01","hex":"#b1121a","fabric_media_id":9,` +
+			`"colour_maps":[{"media_id":20,"view":"front","mockup_media_id":30},` +
+			`{"media_id":21,"view":"three_quarter_l","mockup_media_id":31}],` +
+			`"fabrics":[{"name":"main jersey","media_id":9,"map_hex":"#3a7bd5"},` +
+			`{"name":"contrast rib","media_id":10,"map_hex":"#ff0000"},` +
+			`{"name":"CUFF BUTTON","media_id":40,"parts":"` + parts + `","kind":"hardware"}]}}`
+	}
+	// plates 1, 2 · front map 3 · its mockup 4 · the three-quarter map 5 · its mockup 6
+	for _, parts := range []string{"cuff · 1 on the three-quarter from the left", "cuff · 1 on the three quarter l"} {
+		got := renderPrompt(t, params(parts), renderSlots)
+		require.Contains(t, got, "The mockup image 6 shows exactly where it sits and how big it is: "+parts+".", parts)
+		require.NotContains(t, got, "The mockup images 4 and 6", parts)
+	}
+	require.True(t, partsNameView("2 on the front", "front"))
+	require.False(t, partsNameView("2 on the frontal yoke", "front"))
+	require.False(t, partsNameView("1 on the three quarter left", "three_quarter_l"))
+	require.True(t, partsNameView("1 on the three quarter r, 2 on the back", "three_quarter_r"))
+}
+
+// hardwareOnlyParams — only a button painted: its map labels nothing (no cloth carries a map_hex).
+func hardwareOnlyParams(fabrics string) string {
+	return `{"views":["front","back"],"layout":"one",` +
+		`"colour":{"words":"black wool flannel",` +
+		`"colour_maps":[{"media_id":20,"view":"front","mockup_media_id":30}],` +
+		`"fabrics":[` + fabrics + `{"name":"FRONT BUTTON","media_id":40,"parts":"2 on the front","kind":"hardware"}]}}`
+}
+
+// TestHardwareWithNoClothIsAPlacementRun — R9 fix 2/3: no cloth bound (the cloth in words), a
+// painted button: the map is captioned as labelling nothing, the mockup as a PLACEMENT mockup, and
+// the prompt never sends the model to it for a cloth or a motif scale.
+func TestHardwareWithNoClothIsAPlacementRun(t *testing.T) {
+	p := hardwareOnlyParams("")
+	got := renderPrompt(t, p, renderSlots)
+	require.Contains(t, got, "- image 3: unlabelled map of the front flat — nothing on it is labelled")
+	require.Contains(t, got, "- image 4: placement mockup of the front flat — the drawing with each painted piece of hardware")
+	require.Contains(t, got, "Image 4 is a placement mockup of the same drawing: take each piece of hardware's place and size from it")
+	require.NotContains(t, got, "cloth mockup")
+	require.NotContains(t, got, "motif")
+	require.Contains(t, got, "black wool flannel")
+	require.Contains(t, got, "HARDWARE. Image 5 is the hardware «FRONT BUTTON». The mockup image 4 shows exactly where it sits")
+	list := referenceList("render", parseParams([]byte(p)), parseInputs([]byte(renderSlots)))
+	require.True(t, list[3].IsMockup && list[3].IsPlacement)
+}
+
+// TestHardwareOnlyOverTwoClothsSpeaksNoLabels — two unpainted cloths and a painted button: no
+// «colour map … LABELS» sentence (nothing is labelled), the mockup named as placement.
+func TestHardwareOnlyOverTwoClothsSpeaksNoLabels(t *testing.T) {
+	got := renderPrompt(t, hardwareOnlyParams(
+		`{"name":"main jersey","media_id":9,"parts":"body"},{"name":"satin","media_id":10,"parts":"lapel"},`), renderSlots)
+	require.Contains(t, got, "This garment is made of two different cloths")
+	require.NotContains(t, got, "is a colour map of the")
+	require.NotContains(t, got, "LABELS that say which cloth")
+	require.Contains(t, got, "Image 4 is a placement mockup of the same drawing")
+	require.NotContains(t, got, "cloth mockup")
+}
+
+// TestHardwareOnlyOverOneClothKeepsTheClothMockup — one cloth is the whole garment: the client
+// skins the mockup with it, so it stays a cloth mockup; only the map is unlabelled.
+func TestHardwareOnlyOverOneClothKeepsTheClothMockup(t *testing.T) {
+	got := renderPrompt(t, hardwareOnlyParams(`{"name":"main jersey","media_id":9},`), renderSlots)
+	require.Contains(t, got, "- image 3: unlabelled map of the front flat")
+	require.Contains(t, got, "- image 4: cloth mockup of the front flat")
+	require.NotContains(t, got, "placement mockup")
+}

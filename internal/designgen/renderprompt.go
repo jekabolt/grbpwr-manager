@@ -435,6 +435,18 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 	// Теперь факт один и считается один раз: `sent` — карты, доехавшие до модели ИМЕННО КАРТАМИ.
 	// Из него живут все трое — заголовок, признак «отметки есть» и клаузула места на строке ткани.
 	sent := colourMapsSent(maps, attached)
+	// R9 · a map no cloth claims a label on (only hardware was painted) addresses nothing: it is
+	// not spoken as a colour map, and its mockups are named on their own below.
+	labelled := false
+	for _, c := range cloths {
+		if strings.TrimSpace(c.MapHex) != "" {
+			labelled = true
+			break
+		}
+	}
+	if !labelled {
+		sent = nil
+	}
 	mapped := len(sent) > 0
 
 	// ⚠ «SOMEBODY MARKED SOMETHING» NOW HAS TWO SPELLINGS, AND BOTH COUNT. A cloth pinned by a
@@ -487,6 +499,10 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 	}
 	if s := renderColourMapSentence(sent, views, attached, remainder); s != "" {
 		heading += " " + s
+	} else if !labelled {
+		if s := renderMockupSentence(maps, attached); s != "" {
+			heading += " " + s
+		}
 	}
 	lines := []string{heading + " " + rule + " The cloths, in the order they were stated:"}
 	for i, c := range cloths {
@@ -582,10 +598,23 @@ func renderColourMapSentence(maps []colourMap, views []string, attached []refCap
 // construction from the drawings, material and drape from the cloth pictures.
 func renderMockupSentence(maps []colourMap, attached []refCaption) string {
 	var mockups []string
+	placement := true
 	for _, m := range colourMapsSent(maps, attached) {
 		if img := mockupNumberOf(attached, m.MockupMediaID); img > 0 {
 			mockups = append(mockups, strconv.Itoa(img))
+			placement = placement && attached[img-1].IsPlacement
 		}
+	}
+	// R9 · placement mockups carry no cloth: the model takes the hardware's place and size there.
+	switch {
+	case placement && len(mockups) == 1:
+		return "Image " + mockups[0] + " is a placement mockup of the same drawing: take each " +
+			"piece of hardware's place and size from it; take the construction from the drawing and " +
+			"the cloth from what this request states about it."
+	case placement && len(mockups) > 1:
+		return "Images " + joinWords(mockups) + " are placement mockups of the same drawings: " +
+			"take each piece of hardware's place and size from them; take the construction from the " +
+			"drawings and the cloth from what this request states about it."
 	}
 	switch {
 	case len(mockups) == 1:

@@ -100,8 +100,8 @@ func hardwareNumberOf(attached []refCaption, mediaID int) int {
 func hardwareMockups(h fabricUse, maps []colourMap, attached []refCaption) []string {
 	parts := strings.ToLower(oneLine(h.Parts))
 	namesAView := false
-	for _, v := range []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL, entity.DesignViewSideR} {
-		if strings.Contains(parts, "on the "+viewWord(v)) {
+	for _, v := range entity.DesignSilhouetteViews {
+		if partsNameView(parts, v) {
 			namesAView = true
 		}
 	}
@@ -112,7 +112,7 @@ func hardwareMockups(h fabricUse, maps []colourMap, attached []refCaption) []str
 			continue
 		}
 		all = append(all, strconv.Itoa(img))
-		if v := viewWord(m.View); v != "" && strings.Contains(parts, "on the "+v) {
+		if partsNameView(parts, m.View) {
 			named = append(named, strconv.Itoa(img))
 		}
 	}
@@ -120,6 +120,56 @@ func hardwareMockups(h fabricUse, maps []colourMap, attached []refCaption) []str
 		return named
 	}
 	return all
+}
+
+// partsNameView — the lower-cased `parts` of a hardware use say «on the <view>» for this view: in
+// the prompt's own view word («three-quarter from the left») or the client's bare key spelling
+// («three quarter l»), ending at a word boundary («on the front» never matches «on the frontal»).
+func partsNameView(parts, view string) bool {
+	if view == "" {
+		return false
+	}
+	for _, w := range []string{viewWord(view), strings.ReplaceAll(view, "_", " ")} {
+		needle := "on the " + strings.ToLower(w)
+		for from := 0; ; {
+			at := strings.Index(parts[from:], needle)
+			if at < 0 {
+				break
+			}
+			end := from + at + len(needle)
+			if end == len(parts) || !isWordByte(parts[end]) {
+				return true
+			}
+			from = end
+		}
+	}
+	return false
+}
+
+func isWordByte(b byte) bool {
+	return b == '-' || b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// mapsCarryNoLabels — the run's colour maps label no cloth: hardware is stated and no cloth
+// carries a `map_hex` (only hardware was painted; the client exports those maps with the hardware
+// given the paper or cloth around it). The maps then travel only to carry their mockups.
+func mapsCarryNoLabels(c *colourRecipe) bool {
+	if len(statedHardware(c)) == 0 {
+		return false
+	}
+	for _, f := range statedCloths(c) {
+		if strings.TrimSpace(f.MapHex) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// mockupsArePlacement — the mockups show the hardware on the bare drawing: no cloth is drawn on
+// them, because no label divides the cloths and the run does not have exactly one cloth (one
+// cloth is the whole garment, and the client skins the mockup with it).
+func mockupsArePlacement(c *colourRecipe) bool {
+	return mapsCarryNoLabels(c) && len(statedCloths(c)) != 1
 }
 
 // renderHardwareParagraphs — one HARDWARE paragraph per painted hardware use, after the cloths and
