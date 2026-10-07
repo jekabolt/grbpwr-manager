@@ -273,6 +273,10 @@ func designBoardLabelPlan(board []designBoardPicture, refs []entity.DesignRefere
 		state := entity.DesignLabelStateOrOk(r.LabelState)
 		if designBoardLabelled(p.Purpose, details) {
 			switch {
+			case state == entity.DesignLabelStateHeld:
+				// A PERSON'S HOLD (109 §4) is not the plan's to lift: a held render stays home anyway
+				// (the preview says render first), and relabelling it to `output` would hand it back to
+				// the model the day its run's pictures go (Codex M15). Only a purpose change lifts it.
 			case generated[p.MediaID] && state != entity.DesignLabelStateOutput:
 				tasks = append(tasks, designBoardLabelTask{designBoardPicture: p, Relabel: true, Existing: true, Output: true})
 				continue
@@ -443,18 +447,17 @@ func designBoardDetailRead(ctx context.Context, ai designBoardChatter, out entit
 	switch {
 	case ans.Confidence < designBoardDetailSure:
 	case ans.SlotID > 0 && known[ans.SlotID]:
-		// The name rides along: should the slot be deleted meanwhile, the store joins / mints by it —
-		// only a name in the vocabulary (109 §3).
-		name := ans.Name
-		if !designDetailNameOK(name) {
-			name = ""
-		}
-		out.Role, out.DetailSlotId, out.NewDetailName, out.State = entity.DesignViewDetail, ans.SlotID, name, entity.DesignLabelStateOk
+		// The name rides along: should the slot be deleted meanwhile, the store joins / mints by it.
+		// A name outside the vocabulary (109 §3) may join a slot of that name, never mint one (NoMint).
+		out.Role, out.DetailSlotId, out.NewDetailName, out.State = entity.DesignViewDetail, ans.SlotID, ans.Name, entity.DesignLabelStateOk
+		out.NoMint = !designDetailNameOK(ans.Name)
 		return out, nil
-	case ans.Name != "" && designDetailNameOK(ans.Name):
+	case ans.Name != "":
 		// "new" — or a slot number that is not one of ours, read as new by the name (the store joins an
-		// existing slot of the same name instead of minting «(2)»).
+		// existing slot of the same name instead of minting «(2)»). A name outside the vocabulary joins
+		// a slot a person named so (Codex M15: «zipper pull») but mints none: no slot → unsure.
 		out.Role, out.NewDetailName, out.State = entity.DesignViewDetail, ans.Name, entity.DesignLabelStateOk
+		out.NoMint = !designDetailNameOK(ans.Name)
 		return out, nil
 	}
 	out.State = entity.DesignLabelStateUnsure

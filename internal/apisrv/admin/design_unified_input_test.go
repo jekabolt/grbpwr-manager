@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -102,18 +103,40 @@ func TestDetailNamesStayInTheVocabulary(t *testing.T) {
 	}
 	det := designBoardPicture{MediaID: 460, Purpose: entity.TechCardMediaRoleDetail}
 	ai := newFakeBoardAI()
-	ai.answers[entity.AIPurposeBoardRead] = []string{`{"slot":"new","name":"pretty bit","confidence":0.9}`}
+	ai.answers[entity.AIPurposeBoardRead] = []string{`{"slot":"new","name":"zipper pull","confidence":0.9}`}
 	got, err := designBoardLabelLadder(context.Background(), ai, det, "u", nil)
 	require.NoError(t, err)
-	require.Equal(t, entity.DesignLabelStateUnsure, got.State)
-	require.Equal(t, "", got.Role, "no slot is minted for a free word")
+	require.Equal(t, entity.DesignViewDetail, got.Role)
+	require.Equal(t, "zipper pull", got.NewDetailName, "the name rides: it may join a slot a person named so")
+	require.True(t, got.NoMint, "… but it never mints one (Codex M15)")
+
+	ai = newFakeBoardAI()
+	ai.answers[entity.AIPurposeBoardRead] = []string{`{"slot":"new","name":"patch pocket","confidence":0.9}`}
+	got, err = designBoardLabelLadder(context.Background(), ai, det, "u", nil)
+	require.NoError(t, err)
+	require.False(t, got.NoMint, "a name in the vocabulary may mint")
 
 	ai = newFakeBoardAI()
 	ai.answers[entity.AIPurposeBoardRead] = []string{`{"slot":17,"name":"pretty bit","confidence":0.9}`}
 	got, err = designBoardLabelLadder(context.Background(), ai, det, "u", designSlotsOf([]designBoardDetailSlot{{ID: 17, Name: "collar"}}))
 	require.NoError(t, err)
 	require.Equal(t, 17, got.DetailSlotId, "a known slot is joined by its id")
-	require.Equal(t, "", got.NewDetailName, "… with no out-of-vocabulary fallback name")
+	require.True(t, got.NoMint, "… and its fallback name could not mint a free word")
+}
+
+// Codex M15: a person's hold is not the plan's to lift — not even when the picture turns out to be a
+// render (it stays home anyway: the preview says render first).
+func TestPlanKeepsAHeldModelRow(t *testing.T) {
+	board := []designBoardPicture{
+		{MediaID: 1, Purpose: entity.TechCardMediaRoleTarget},
+		{MediaID: 2, Purpose: entity.TechCardMediaRoleTarget},
+	}
+	held := ref(1, "front", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateHeld)
+	heldPlain := ref(2, "back", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateHeld)
+	tasks, drop := designBoardLabelPlan(board, []entity.DesignReference{held, heldPlain},
+		time.Now().Add(-time.Minute), true, map[int]bool{1: true})
+	require.Empty(t, tasks, "a held row is neither relabelled to output nor re-read")
+	require.Empty(t, drop)
 }
 
 func TestDetailReadTellsTwoPartsOfOneKindApart(t *testing.T) {

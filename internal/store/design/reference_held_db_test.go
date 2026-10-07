@@ -233,3 +233,37 @@ func TestDesignDBModelRelabelLiftsAHold(t *testing.T) {
 	_, state, _, _, _, _ := heldRow(t, raw, card, m)
 	require.Equal(t, entity.DesignLabelStatePending, state)
 }
+
+// Codex M15: a detail name outside the vocabulary JOINS a slot a person named so, and never mints one.
+func TestDesignDBNoMintJoinsButNeverMints(t *testing.T) {
+	rep, raw := probeRepository(t)
+	ctx := context.Background()
+	card := probeCard(t, raw)
+	joins, alone := probeMedia(t, raw), probeMedia(t, raw)
+	human, err := rep.Design().SetBenchSlot(ctx, entity.DesignBenchSlotSet{
+		TechCardId: card, Slot: entity.DesignSlotRef{ViewKey: entity.DesignViewDetail},
+		NewDetailName: "Zipper Pull", Actor: "probe",
+	})
+	require.NoError(t, err)
+	finish := func(media int, name string) *entity.DesignReference {
+		claimed, err := rep.Design().BeginBoardLabel(ctx, entity.DesignBoardLabelBegin{
+			TechCardId: card, MediaId: media, StaleBefore: time.Now().Add(-time.Minute), Actor: "probe",
+		})
+		require.NoError(t, err)
+		require.True(t, claimed)
+		ref, err := rep.Design().FinishBoardLabel(ctx, entity.DesignBoardLabel{
+			TechCardId: card, MediaId: media, Role: entity.DesignViewDetail, NewDetailName: name, NoMint: true,
+			Source: entity.DesignLabelSourceModelStrong, State: entity.DesignLabelStateOk, LabelModel: "probe",
+		})
+		require.NoError(t, err)
+		return ref
+	}
+	ref := finish(joins, "zipper pull")
+	require.Equal(t, int32(human.Id), ref.DetailSlotId.Int32, "joins the slot of that name")
+	ref = finish(alone, "pretty bit")
+	require.Equal(t, entity.DesignLabelStateUnsure, ref.LabelState, "no slot of that name: asks the person")
+	require.Equal(t, "", ref.Role)
+	var n int
+	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM design_bench_slot WHERE tech_card_id = ? AND made_by_model = 1`, card).Scan(&n))
+	require.Zero(t, n, "nothing minted")
+}

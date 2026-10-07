@@ -113,11 +113,14 @@ type DesignBoardLabelBegin struct {
 // DesignBoardLabel — a model's settled answer for one board picture. Written only over a row that is
 // still the model's and still pending (a person's tap in the meantime wins).
 type DesignBoardLabel struct {
-	TechCardId      int
-	MediaId         int
-	Role            string // a view, `detail`, or '' (unsure / failed / not a target)
-	DetailSlotId    int    // role=detail: an existing slot of the card
-	NewDetailName   string // role=detail, DetailSlotId=0: mint a model slot with this name in the same tx
+	TechCardId    int
+	MediaId       int
+	Role          string // a view, `detail`, or '' (unsure / failed / not a target)
+	DetailSlotId  int    // role=detail: an existing slot of the card
+	NewDetailName string // role=detail, DetailSlotId=0: mint a model slot with this name in the same tx
+	// NoMint — the name is outside the detail vocabulary (M15, 109 §3): it may JOIN an existing slot
+	// of that name, it never mints one (no slot → unsure, the person picks).
+	NoMint          bool
 	Source          string // model_cheap | model_strong
 	State           string // ok | unsure | failed
 	ProposedPurpose string // target | detail | mood | material | ''

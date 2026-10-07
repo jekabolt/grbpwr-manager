@@ -233,6 +233,10 @@ func boardLabelDetailSlot(ctx context.Context, db dependency.DB, req entity.Desi
 			return sl.Id, nil
 		}
 	}
+	if req.NoMint {
+		// A name outside the vocabulary joins, never mints (109 §3): the photo asks the person.
+		return 0, nil
+	}
 	id, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO design_bench_slot
 			(tech_card_id, view_key, kind, colorway_id, exclusive_key, detail_name, picture_id, slot_rev,
