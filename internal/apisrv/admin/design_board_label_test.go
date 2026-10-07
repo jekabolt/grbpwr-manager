@@ -241,7 +241,7 @@ func TestBoardDetailReadJoinsMintsOrAsks(t *testing.T) {
 	for _, c := range cases {
 		ai := newFakeBoardAI()
 		ai.answers[entity.AIPurposeBoardRead] = []string{c.answer}
-		got, err := designBoardLabelLadder(context.Background(), ai, det, "https://cdn.test/460.jpg", slots)
+		got, err := designBoardLabelLadder(context.Background(), ai, det, "https://cdn.test/460.jpg", designSlotsOf(slots))
 		require.NoError(t, err)
 		require.Equal(t, []string{entity.AIPurposeBoardRead}, ai.calls, "a detail goes straight to the strong read")
 		require.Equal(t, c.state, got.State, c.answer)

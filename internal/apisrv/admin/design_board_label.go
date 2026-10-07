@@ -105,7 +105,7 @@ Reply with ONE JSON object and nothing else:
 {"slot": <the number of an existing detail> | "new", "name": "1 to 3 lowercase words", "caption": "1 or 2 short sentences: what the picture shows", "confidence": 0.0-1.0}
 
 name — the garment part, the way a pattern maker says it: "left cuff", "back yoke", "patch pocket", "collar", "front placket", "back vent", "shoulder strap". No colours, no materials, no style adjectives.
-slot — the number of an existing detail when this picture shows the SAME part (another photo or angle of it); otherwise "new".
+slot — the number of an existing detail when this picture shows the SAME part (another photo or angle of it); otherwise "new". A different part of the same kind (the other cuff, a second pocket) is "new".
 confidence — 0..1, how sure you are of the part (and of the match).`
 
 // designBoardReadDetailUserPrompt — the existing details, each with its number and, when it has a
@@ -128,6 +128,36 @@ func designBoardReadDetailUserPrompt(slots []designBoardDetailSlot) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// designBoardSlotsFn — the card's detail slots, read when the ladder needs them: a picture with no
+// purpose becomes a detail only after the cheap model says so (109 §2.1), and each read is fresh, so a
+// second photo of a part sees the slot the first one minted (109 §3).
+type designBoardSlotsFn func() ([]designBoardDetailSlot, error)
+
+// designSlotsOf — a fixed list as a provider (tests).
+func designSlotsOf(slots []designBoardDetailSlot) designBoardSlotsFn {
+	return func() ([]designBoardDetailSlot, error) { return slots, nil }
+}
+
+// designDetailNouns — detail words a garment part may end in beyond the PARTS vocabulary
+// (designPiecesNouns): the parts a close-up shows that are no pattern piece (a vent, a neckline, a hem).
+var designDetailNouns = designPiecesSet([]string{
+	"vent", "neckline", "neck", "hem", "seam", "slit", "pleat", "dart", "zip", "zipper", "closure",
+	"button", "buttonhole", "armhole", "opening", "edge", "keyhole", "shoulder",
+})
+
+// designDetailNameOK — a detail read's name in the shared vocabulary (109 §3): its last word (past a
+// plural «s») is a PARTS noun or a detail noun. A name outside it is dropped: the photo waits for a
+// person («detail ?») rather than a free word reaching a prompt as the detail's name.
+func designDetailNameOK(name string) bool {
+	words := strings.Fields(strings.ToLower(name))
+	if len(words) == 0 {
+		return false
+	}
+	last := words[len(words)-1]
+	known := func(w string) bool { return designPiecesNounSet[w] || designDetailNouns[w] }
+	return known(last) || (strings.HasSuffix(last, "s") && known(strings.TrimSuffix(last, "s")))
 }
 
 // designBoardDetailSlot — an existing detail slot of the card as the detail read is shown it.
@@ -289,10 +319,24 @@ var designBoardLabelDetails = true
 
 // designBoardLabelLadder runs the models for ONE picture and returns the label to write. err != nil =
 // a model call failed or answered garbage: the row stays pending and is retried lazily.
-func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic designBoardPicture, url string, slots []designBoardDetailSlot) (entity.DesignBoardLabel, error) {
+func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic designBoardPicture, url string, slotsFn designBoardSlotsFn) (entity.DesignBoardLabel, error) {
 	out := entity.DesignBoardLabel{MediaId: pic.MediaID, Source: entity.DesignLabelSourceModelCheap}
+	readSlots := func() ([]designBoardDetailSlot, error) {
+		if slotsFn == nil {
+			return nil, nil
+		}
+		slots, err := slotsFn()
+		if err != nil {
+			return nil, fmt.Errorf("board detail slots: %w", err)
+		}
+		return slots, nil
+	}
 	if pic.Purpose == entity.TechCardMediaRoleDetail {
 		// A detail goes straight to the strong read: the cheap model has nothing to add.
+		slots, err := readSlots()
+		if err != nil {
+			return out, err
+		}
 		return designBoardDetailRead(ctx, ai, out, url, slots)
 	}
 	if !ai.Enabled(entity.AIPurposeBoardLabel) {
@@ -316,6 +360,17 @@ func designBoardLabelLadder(ctx context.Context, ai designBoardChatter, pic desi
 	if purpose == entity.TechCardMediaRoleNone {
 		out.ProposedPurpose = ans.Purpose
 		purpose = entity.TechCardMediaRole(ans.Purpose)
+		// THE ONE ACCELERATION (109 §2.1): a picture dropped into the input with no purpose that the
+		// cheap model is sure is a DETAIL is read as a detail in this same task — the slot is joined or
+		// minted now, with the proposal, in one write — instead of settling empty and waiting for the
+		// client to apply the purpose and the next save to relabel it.
+		if purpose == entity.TechCardMediaRoleDetail && ans.Confidence >= designBoardLabelSure {
+			slots, err := readSlots()
+			if err != nil {
+				return out, err
+			}
+			return designBoardDetailRead(ctx, ai, out, url, slots)
+		}
 	}
 	if purpose != entity.TechCardMediaRoleTarget {
 		// mood / material / a PROPOSED detail (read once the person's purpose says detail) / nothing
@@ -388,10 +443,15 @@ func designBoardDetailRead(ctx context.Context, ai designBoardChatter, out entit
 	switch {
 	case ans.Confidence < designBoardDetailSure:
 	case ans.SlotID > 0 && known[ans.SlotID]:
-		// The name rides along: should the slot be deleted meanwhile, the store joins / mints by it.
-		out.Role, out.DetailSlotId, out.NewDetailName, out.State = entity.DesignViewDetail, ans.SlotID, ans.Name, entity.DesignLabelStateOk
+		// The name rides along: should the slot be deleted meanwhile, the store joins / mints by it —
+		// only a name in the vocabulary (109 §3).
+		name := ans.Name
+		if !designDetailNameOK(name) {
+			name = ""
+		}
+		out.Role, out.DetailSlotId, out.NewDetailName, out.State = entity.DesignViewDetail, ans.SlotID, name, entity.DesignLabelStateOk
 		return out, nil
-	case ans.Name != "":
+	case ans.Name != "" && designDetailNameOK(ans.Name):
 		// "new" — or a slot number that is not one of ours, read as new by the name (the store joins an
 		// existing slot of the same name instead of minting «(2)»).
 		out.Role, out.NewDetailName, out.State = entity.DesignViewDetail, ans.Name, entity.DesignLabelStateOk
@@ -597,15 +657,11 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		if !claimed {
 			continue
 		}
-		var slots []designBoardDetailSlot
-		if t.Purpose == entity.TechCardMediaRoleDetail && t.CallsModel {
-			// Read fresh per detail: the previous picture of this sync may have minted the slot this
-			// one belongs to (two photos of one cuff → one slot).
-			if slots, err = s.designBoardDetailSlots(ctx, cardID); err != nil {
-				return err
-			}
-		}
-		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], t.CallsModel, t.Output, slots)
+		// The detail slots are read by the ladder when it needs them, fresh per picture: the previous
+		// picture of this sync may have minted the slot this one belongs to (two photos of one cuff →
+		// one slot), and an unmarked picture needs them only once the cheap model calls it a detail.
+		slotsFn := func() ([]designBoardDetailSlot, error) { return s.designBoardDetailSlots(ctx, cardID) }
+		s.designBoardLabelOne(ctx, cardID, t.designBoardPicture, urlOf[t.MediaID], t.CallsModel, t.Output, slotsFn)
 	}
 	return nil
 }
@@ -632,7 +688,7 @@ func (s *Server) designBoardGenerated(ctx context.Context, board []designBoardPi
 // aiOn is the sync's decision for this task, frozen: a task that took no hourly token never calls a
 // model, even if the route comes back on while it works (Codex Ф1 r2). output = a design run's
 // output (M16): settled `output` without a call.
-func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn, output bool, slots []designBoardDetailSlot) {
+func (s *Server) designBoardLabelOne(ctx context.Context, cardID int, pic designBoardPicture, url string, aiOn, output bool, slots designBoardSlotsFn) {
 	logAttrs := []any{slog.Int("tech_card_id", cardID), slog.Int("media_id", pic.MediaID), slog.String("purpose", string(pic.Purpose))}
 	var label entity.DesignBoardLabel
 	if output {

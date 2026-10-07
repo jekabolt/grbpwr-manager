@@ -13433,7 +13433,8 @@ message DesignInputHeld {
   // mood | material | unmarked (no purpose) | pending (the label is being read) | view_unknown
   // (unsure / failed — answer the question card or tap the tile) | not_a_view (a person's «no view»)
   // | older (beyond the two newest of its view) | other_detail (a detail of another slot) | detail
-  // (a detail picture on a views run) | over_cap
+  // (a detail picture on a views run) | over_cap | render (a design run's output: never a flat's
+  // input, M16) | held (a person took it out of the prompt — SetDesignReferenceHeld, 109 §4)
   string reason = 2;
   string role = 3; // the label's view / detail, when it has one
   string model_caption = 4; // «model read · not sent» — never part of the prompt

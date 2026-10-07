@@ -387,6 +387,9 @@ const (
 	designHeldOlder       = "older"
 	designHeldOtherDetail = "other_detail"
 	designHeldDetail      = "detail"
+	// designHeldHeld — a person took the picture out of the prompt (label_state held, 109 §4): the
+	// label stays, «send again ›» puts it back.
+	designHeldHeld = "held"
 )
 
 // designPreviewHeld — the board pictures a FLAT run of these sources does not send, and why, in board
@@ -427,6 +430,8 @@ func designPreviewHeld(src designInputSources, snap *pb_common.DesignInputSnapsh
 			h.Reason = designHeldMaterial
 		case p.Purpose == entity.TechCardMediaRoleNone:
 			h.Reason = designHeldUnmarked
+		case has && state == entity.DesignLabelStateHeld:
+			h.Reason = designHeldHeld
 		case !has || state == entity.DesignLabelStatePending:
 			h.Reason = designHeldPending
 		case state == entity.DesignLabelStateUnsure || state == entity.DesignLabelStateFailed:
