@@ -312,6 +312,12 @@ func clothIsAPattern(c fabricUse) bool {
 	return strings.TrimSpace(c.Kind) == entity.DesignAssetKindPattern
 }
 
+// clothIsHardware — R9: this use is HARDWARE painted on PARTS (a button, a snap, a zip), not a
+// cloth. Empty on every frozen run, so no existing prompt can reach the hardware wording.
+func clothIsHardware(c fabricUse) bool {
+	return strings.TrimSpace(c.Kind) == entity.DesignAssetKindHardware
+}
+
 type threedParams struct {
 	Presentation string `json:"presentation"`
 	FitOverride  string `json:"fit_override"`
@@ -532,6 +538,9 @@ type refCaption struct {
 	// IsArtwork — эта картинка уехала АРТВОРКОМ рендера (70-ROUND7 B7): абзац ARTWORK называет её
 	// номер только тогда, когда она в списке именно этой ролью.
 	IsArtwork bool
+	// IsHardware — R9: this picture went out as a painted HARDWARE use's picture; the HARDWARE
+	// paragraph names its number only off this field.
+	IsHardware bool
 	// GuideView — this picture is the PLACEMENT GUIDE of that side (T27): the side's bench flat with
 	// every artwork of the side drawn at its exact size and place. Derived (data URI, MediaID 0);
 	// empty for every other picture. The ARTWORK paragraph names its number only off this field.
@@ -865,6 +874,26 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		// it would have echoed is that same absent texture.
 		for i, c := range cloths {
 			add(c.MediaID, clothCaption(i+1, c), "")
+		}
+	}
+	// ─── R9 · THE HARDWARE PAINTED ON PARTS ─────────────────────────────────────────────────────
+	//
+	// A RENDER ONLY, AFTER THE CLOTHS, and only a picture not already in the list under another
+	// role (one picture, one role — the rule the maps keep above). A words-only use has no picture
+	// and attaches nothing; its paragraph says so.
+	if kind == entity.DesignRunKindRender {
+		for _, h := range statedHardware(p.Colour) {
+			if h.MediaID <= 0 {
+				continue
+			}
+			if _, taken := seen[h.MediaID]; taken {
+				continue
+			}
+			at := len(out)
+			add(h.MediaID, hardwareCaption(h), "")
+			if at < len(out) {
+				out[at].IsHardware = true
+			}
 		}
 	}
 	return out

@@ -330,12 +330,21 @@ func renderFabricParagraph(f fabricStated) string {
 // asset_id ALONE DOES NOT COUNT. It is provenance — «which shelf row was this» — and the contract
 // is explicit that a reader never resolves it. An entry carrying only an id therefore reaches the
 // model as the bare word «cloth», which is the failure detail slots already went through once.
+//
+// ⚠ R9 · HARDWARE IS NOT A CLOTH AND IS SPLIT OFF HERE, before every reader of the list. A use of
+// `kind: hardware` (a button painted on PARTS) went out as «CLOTH 2» before this round: counted in
+// «made of two different cloths», a candidate REMAINDER when it named no parts, and captioned
+// «fabric photograph — CLOTH 2 … read its weave». It has its own reader (statedHardware), its own
+// caption and its own paragraph (renderhardware.go).
 func statedCloths(c *colourRecipe) []fabricUse {
 	if c == nil {
 		return nil
 	}
 	out := make([]fabricUse, 0, len(c.Fabrics))
 	for _, f := range c.Fabrics {
+		if clothIsHardware(f) {
+			continue
+		}
 		// A MAP LABEL IS A STATEMENT, AND THE STRONGEST ONE ON THIS ROW. A cloth whose only content
 		// is `map_hex` was placed by somebody painting it onto the drawing — the picture says
 		// exactly which parts it covers — so leaving it out of the count would drop a whole cloth
@@ -954,6 +963,7 @@ func renderCraftWith(p runParams, detailNames []string, attached []refCaption, a
 	}
 	paras = append(paras, renderFabricSection(stated, statedCloths(p.Colour), maps, p.Views, attached)...)
 	paras = append(paras, renderArtworkParagraphs(arts, attached)...)
+	paras = append(paras, renderHardwareParagraphs(statedHardware(p.Colour), maps, attached)...)
 	paras = append(paras,
 		renderLayoutParagraph(p.Views, detailNames, p.Layout),
 		renderStyle,
