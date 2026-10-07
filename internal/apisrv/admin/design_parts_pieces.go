@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -511,12 +513,17 @@ func designPartsPiecesBlock(p *entity.DesignPartsPieces) string {
 	return b.String()
 }
 
-// designPartsPiecesRev — the rev the labeller's answers are tagged with; 0 = no list.
-func designPartsPiecesRev(p *entity.DesignPartsPieces) int {
-	if p == nil {
-		return 0
+// designPartsPiecesKeyOf — what the labeller's answers are cached under: the first 7 hex of the
+// sha256 of the PIECES block it is told (designPartsPiecesBlock); "0000000" when there is none. Not
+// the list's rev (Codex M6): a proposal moves the rev without changing a name, and a key of the rev
+// would pay to name unchanged sides again; a save back to the same names reuses its answers.
+func designPartsPiecesKeyOf(p *entity.DesignPartsPieces) string {
+	block := designPartsPiecesBlock(p)
+	if block == "" {
+		return "0000000"
 	}
-	return p.Rev
+	sum := sha256.Sum256([]byte(block))
+	return hex.EncodeToString(sum[:])[:7]
 }
 
 // designPartsPiecesVocab — the closed names (nil = no list: labels stay free).

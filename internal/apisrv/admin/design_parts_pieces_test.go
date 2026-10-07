@@ -108,7 +108,7 @@ func TestDesignPiecesPromptAndBlock(t *testing.T) {
 	require.Contains(t, designPartsPiecesBlock(p), "and corrected by the designer.")
 	require.Equal(t, []string{"front body", "left strap", "mesh panel"}, designPartsPiecesVocab(p))
 	require.Nil(t, designPartsPiecesVocab(nil))
-	require.Equal(t, 4, designPartsPiecesRev(p))
+	require.Len(t, designPartsPiecesKeyOf(p), 7)
 
 	// staleness follows the newest read: the proposal's plates when there is one
 	require.False(t, designPartsPiecesStale(p, map[string]int{}), "no plate, nothing to be stale against")

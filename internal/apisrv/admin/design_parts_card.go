@@ -171,9 +171,9 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 
 	// The cut with the longest server tag this binary writes for an ordinary list must fit the
 	// column BEFORE anything is read or paid (Codex M6: the pieces read is paid).
-	if len(algoRev)+len(designPartsServerTag(designPartsPiecesRevReserve)) > entity.DesignPartsMaxAlgoRev {
+	if len(algoRev)+len(designPartsServerTag(designPartsPiecesKeyOf(nil))) > entity.DesignPartsMaxAlgoRev {
 		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must be 1..%d characters",
-			entity.DesignPartsMaxAlgoRev-len(designPartsServerTag(designPartsPiecesRevReserve)))
+			entity.DesignPartsMaxAlgoRev-len(designPartsServerTag(designPartsPiecesKeyOf(nil))))
 	}
 
 	flats, err := s.repo.Design().FlatBenchMedia(ctx, cardID)
@@ -213,7 +213,7 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		return nil, err
 	}
 	clientRev := algoRev
-	algoRev = designPartsCacheRev(clientRev, designPartsPiecesRev(pieces))
+	algoRev = designPartsCacheRev(clientRev, designPartsPiecesKeyOf(pieces))
 	if len(algoRev) > entity.DesignPartsMaxAlgoRev {
 		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must be 1..%d characters", entity.DesignPartsMaxAlgoRev-(len(algoRev)-len(clientRev)))
 	}
@@ -279,20 +279,16 @@ const designPartsPromptRev = 4
 // revision never contains it (the door refuses one that does), and the wire never shows it.
 const designPartsServerTagSep = "@s"
 
-// designPartsPiecesRevReserve — the largest pieces rev the up-front algo_rev length check makes room
-// for (a list saved 99 999 times); a larger one is still refused after the read, as before.
-const designPartsPiecesRevReserve = 99999
-
 // designPartsCacheRev — the algo_rev a card-wide answer is cached under: the client's cut, the
-// prompt revision, the pieces list's rev («regions.v6+parts.f6@s4.p3»). Fits the 32-character column
-// for any client revision up to ~22 characters.
-func designPartsCacheRev(clientRev string, piecesRev int) string {
-	return clientRev + designPartsServerTag(piecesRev)
+// prompt revision, the key of what the PIECES block tells the labeller («regions.v6+parts.f6@s4.h1a2b3c4»,
+// designPartsPiecesKeyOf). Fits the 32-character column for any client revision up to 20 characters.
+func designPartsCacheRev(clientRev, piecesKey string) string {
+	return clientRev + designPartsServerTag(piecesKey)
 }
 
-// designPartsServerTag — «@s4.p3» (M6: «p» = the pieces list's rev; «j» was the join list's).
-func designPartsServerTag(piecesRev int) string {
-	return designPartsServerTagSep + strconv.Itoa(designPartsPromptRev) + ".p" + strconv.Itoa(piecesRev)
+// designPartsServerTag — «@s4.h1a2b3c4» (M6: «h» = the pieces block's key; «j» was the join list's rev).
+func designPartsServerTag(piecesKey string) string {
+	return designPartsServerTagSep + strconv.Itoa(designPartsPromptRev) + ".h" + piecesKey
 }
 
 // designPartsClientRev — the client's half of a stored algo_rev (the wire value).
@@ -308,7 +304,7 @@ func designPartsClientRev(stored string) string {
 // by the per-side call) and a row named under another prompt or list are not shown, so the client
 // asks again (and the server answers from the cache when it can).
 func designPartsCurrentRows(rows []entity.DesignPartsSuggestion, pieces *entity.DesignPartsPieces) []entity.DesignPartsSuggestion {
-	tag := designPartsServerTag(designPartsPiecesRev(pieces))
+	tag := designPartsServerTag(designPartsPiecesKeyOf(pieces))
 	out := make([]entity.DesignPartsSuggestion, 0, len(rows))
 	for _, r := range rows {
 		if strings.HasSuffix(r.AlgoRev, tag) && strings.Index(r.AlgoRev, designPartsServerTagSep) == len(r.AlgoRev)-len(tag) {

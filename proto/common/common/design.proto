@@ -1999,7 +1999,9 @@ message DesignJoins {
 // edited, a newer read waits in `proposal` until the designer takes or keeps it. Never sent to image
 // generation.
 message DesignPartsPieces {
-  int32 rev = 1; // CAS revision; every write + 1. The parts labeller's answers are keyed on it.
+  // CAS revision: every write + 1, a proposal's too (a settle is tied to the proposal seen). The
+  // labeller's answers are keyed on what the list TELLS it (names, openings, edited), not on rev.
+  int32 rev = 1;
   repeated DesignPartsPiece pieces = 2; // in order; names unique
   repeated string openings = 3; // areas with no cloth the read saw ("open back"); a hint, not a part
   string model = 4; // the model of the read the list started from

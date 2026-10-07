@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -409,9 +410,10 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 	// M6: the card's pieces list of today's FRONT/BACK plates — never read again.
 	list := &entity.DesignPartsPieces{TechCardId: card, Rev: 3, Front: 11, Back: 21,
 		Doc: entity.DesignPartsPiecesDoc{Pieces: []entity.DesignPartsPiece{{Name: "collar"}}}}
+	tagged := designPartsCacheRev("r2", designPartsPiecesKeyOf(list))
 	code := func(err error) codes.Code { return status.Code(err) }
 	row := func(view string, base int, key string) *entity.DesignPartsSuggestion {
-		return &entity.DesignPartsSuggestion{View: view, BaseMediaId: base, AlgoRev: "r2@s4.p3", Model: "m",
+		return &entity.DesignPartsSuggestion{View: view, BaseMediaId: base, AlgoRev: tagged, Model: "m",
 			Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: key}}}
 	}
 
@@ -465,8 +467,8 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 		srv, design := newSrv(t)
 		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
 		design.EXPECT().GetPartsPieces(mock.Anything, card).Return(list, nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s4.p3").Return(row("front", 11, "collar"), nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s4.p3").Return(row("back", 21, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, tagged).Return(row("front", 11, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, tagged).Return(row("back", 21, "collar"), nil)
 		resp, err := srv.SuggestDesignPartsCard(context.Background(), req())
 		if err != nil || !resp.GetCached() || len(resp.GetSuggestions()) != 2 {
 			t.Fatalf("got %+v %v", resp, err)
@@ -484,8 +486,8 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 			srv, design := newSrv(t)
 			design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
 			design.EXPECT().GetPartsPieces(mock.Anything, card).Return(list, nil)
-			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s4.p3").Return(row("front", 11, "collar"), nil)
-			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s4.p3").Return(back, nil)
+			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, tagged).Return(row("front", 11, "collar"), nil)
+			design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, tagged).Return(back, nil)
 			_, err := srv.SuggestDesignPartsCard(context.Background(), req())
 			if code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), designGenerationDisabledMsg) {
 				t.Fatalf("a miss must reach the generation gate (off here): %v", err)
@@ -532,8 +534,8 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 		old := *list
 		old.Front = 10
 		design.EXPECT().GetPartsPieces(mock.Anything, card).Return(&old, nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s4.p3").Return(row("front", 11, "collar"), nil)
-		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, "r2@s4.p3").Return(row("back", 21, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, tagged).Return(row("front", 11, "collar"), nil)
+		design.EXPECT().GetPartsSuggestion(mock.Anything, card, "back", 21, tagged).Return(row("back", 21, "collar"), nil)
 		resp, err := srv.SuggestDesignPartsCard(context.Background(), req())
 		if err != nil || !resp.GetCached() || !resp.GetPieces().GetStale() {
 			t.Fatalf("got %+v %v", resp, err)
@@ -549,33 +551,60 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 // as fresh; the join list read again for PARTS.
 func TestPartsCacheKeyFollowsPiecesAndPrompt(t *testing.T) {
 	require.Equal(t, 4, designPartsPromptRev, "bumped 07.10 (M6); bump again on any labeller prompt change")
-	require.Equal(t, "regions.v4+parts.f3@s4.p7", designPartsCacheRev("regions.v4+parts.f3", 7))
-	require.LessOrEqual(t, len(designPartsCacheRev("regions.v4+parts.f3", 99999)), entity.DesignPartsMaxAlgoRev)
-	require.Equal(t, "regions.v4+parts.f3", designPartsClientRev("regions.v4+parts.f3@s4.p7"))
+	list := func(edited bool, names ...string) *entity.DesignPartsPieces {
+		p := &entity.DesignPartsPieces{Rev: 7}
+		for _, n := range names {
+			p.Doc.Pieces = append(p.Doc.Pieces, entity.DesignPartsPiece{Name: n})
+		}
+		if edited {
+			p.EditedAt = sql.NullTime{Time: time.Now(), Valid: true}
+		}
+		return p
+	}
+	a := list(false, "front body", "neckband")
+	key := designPartsPiecesKeyOf(a)
+	require.Len(t, key, 7)
+	require.Equal(t, "0000000", designPartsPiecesKeyOf(nil))
+	// Codex M6 r2: the key is what the labeller is TOLD, not the row's rev — a proposal moves the rev
+	// and must not re-label; a rename, an edit mark or other openings must.
+	b := list(false, "front body", "neckband")
+	b.Rev = 8
+	b.Proposal = &entity.DesignPartsPiecesProposal{Doc: entity.DesignPartsPiecesDoc{Pieces: []entity.DesignPartsPiece{{Name: "x panel"}}}}
+	require.Equal(t, key, designPartsPiecesKeyOf(b), "a proposal changes nothing the labeller reads")
+	require.NotEqual(t, key, designPartsPiecesKeyOf(list(false, "front body", "neck band")))
+	require.NotEqual(t, key, designPartsPiecesKeyOf(list(true, "front body", "neckband")))
+	c := list(false, "front body", "neckband")
+	c.Doc.Openings = []string{"open back"}
+	require.NotEqual(t, key, designPartsPiecesKeyOf(c))
+
+	require.Equal(t, "regions.v4+parts.f3@s4.h"+key, designPartsCacheRev("regions.v4+parts.f3", key))
+	require.LessOrEqual(t, len(designPartsCacheRev("regions.v6+parts.f6", key)), entity.DesignPartsMaxAlgoRev)
+	require.Equal(t, "regions.v4+parts.f3", designPartsClientRev("regions.v4+parts.f3@s4.h"+key))
 	require.Equal(t, "r2", designPartsClientRev("r2"))
-	require.Equal(t, "r2", designPartsSuggestionToPb(entity.DesignPartsSuggestion{AlgoRev: "r2@s4.p7"}).GetAlgoRev())
+	require.Equal(t, "r2", designPartsSuggestionToPb(entity.DesignPartsSuggestion{AlgoRev: "r2@s4.h" + key}).GetAlgoRev())
 
 	rows := []entity.DesignPartsSuggestion{
-		{View: "front", AlgoRev: "r2@s4.p7"}, {View: "back", AlgoRev: "r2@s4.p6"}, {View: "side_l", AlgoRev: "r2@s3.j7"},
-		{View: "side_r", AlgoRev: "r2"}, {View: "front", AlgoRev: "r2@s4.p17"}, {View: "back", AlgoRev: "r2@s4.j7"},
+		{View: "front", AlgoRev: "r2@s4.h" + key}, {View: "back", AlgoRev: "r2@s4.h1234567"}, {View: "side_l", AlgoRev: "r2@s3.j7"},
+		{View: "side_r", AlgoRev: "r2"}, {View: "front", AlgoRev: "r2@s4.h" + key + "9"}, {View: "back", AlgoRev: "r2@s4.p7"},
 	}
-	got := designPartsCurrentRows(rows, &entity.DesignPartsPieces{Rev: 7})
+	got := designPartsCurrentRows(rows, a)
 	require.Len(t, got, 1)
 	require.Equal(t, "front", got[0].View)
-	require.Len(t, designPartsCurrentRows([]entity.DesignPartsSuggestion{{AlgoRev: "r2@s4.p0"}}, nil), 1, "no list = rev 0")
+	require.Len(t, designPartsCurrentRows([]entity.DesignPartsSuggestion{{AlgoRev: "r2@s4.h0000000"}}, nil), 1, "no list = the empty key")
 
-	// the cache is read under the list's rev; a list of today's plates is not read again
+	// the cache is read under the list's key; a list of today's plates is not read again
 	const card = 7
 	repo := mocks.NewMockRepository(t)
 	design := mocks.NewMockDesign(t)
 	repo.EXPECT().Design().Return(design).Maybe()
 	srv := &Server{repo: repo}
 	design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(map[string]int{"front": 11, "back": 13}, nil)
-	list := &entity.DesignPartsPieces{TechCardId: card, Rev: 5, Front: 11, Back: 13,
+	cur := &entity.DesignPartsPieces{TechCardId: card, Rev: 5, Front: 11, Back: 13,
 		Doc: entity.DesignPartsPiecesDoc{Pieces: []entity.DesignPartsPiece{{Name: "collar"}}}}
-	design.EXPECT().GetPartsPieces(mock.Anything, card).Return(list, nil)
-	design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, "r2@s4.p5").Return(&entity.DesignPartsSuggestion{
-		View: "front", BaseMediaId: 11, AlgoRev: "r2@s4.p5", Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: "collar"}}}, nil)
+	at := "r2@s4.h" + designPartsPiecesKeyOf(cur)
+	design.EXPECT().GetPartsPieces(mock.Anything, card).Return(cur, nil)
+	design.EXPECT().GetPartsSuggestion(mock.Anything, card, "front", 11, at).Return(&entity.DesignPartsSuggestion{
+		View: "front", BaseMediaId: 11, AlgoRev: at, Parts: []entity.DesignPartGroup{{Label: "collar", Regions: []int{1}, PartKey: "collar"}}}, nil)
 	resp, err := srv.SuggestDesignPartsCard(context.Background(), &pb_admin.SuggestDesignPartsCardRequest{TechCardId: card, AlgoRev: "r2",
 		Views: []*pb_admin.DesignPartsViewInput{{View: "front", BaseMediaId: 11, MarksMediaId: 12, RegionCount: 9}}})
 	require.NoError(t, err)
@@ -586,6 +615,9 @@ func TestPartsCacheKeyFollowsPiecesAndPrompt(t *testing.T) {
 	_, err = srv.SuggestDesignPartsCard(context.Background(), &pb_admin.SuggestDesignPartsCardRequest{TechCardId: card, AlgoRev: "r2@s9",
 		Views: []*pb_admin.DesignPartsViewInput{{View: "front", BaseMediaId: 11, MarksMediaId: 12, RegionCount: 9}}})
 	require.Equal(t, codes.InvalidArgument, status.Code(err), "the client may not forge the server tag")
+	_, err = srv.SuggestDesignPartsCard(context.Background(), &pb_admin.SuggestDesignPartsCardRequest{TechCardId: card, AlgoRev: strings.Repeat("r", 21),
+		Views: []*pb_admin.DesignPartsViewInput{{View: "front", BaseMediaId: 11, MarksMediaId: 12, RegionCount: 9}}})
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "a cut too long for the server tag is refused before anything is read")
 }
 
 // TestDesignPartsRetryUnusable — an unusable labeller answer is asked once more (never twice), any
