@@ -109,7 +109,7 @@ func TestStartDesignRunFreezesTheNameOfAnEmptyDetailSlot(t *testing.T) {
 // той же, что и у прогона БЕЗ пустых деталей.
 func TestDesignEmptyDetailRecordIsNotAPicture(t *testing.T) {
 	withDetails := func(ids []int32, views []string) []int32 {
-		rig := newDesignRunRig(t, designMoodCard(), designBandWithEmptyDetails())
+		rig := newDesignRunRig(t, designMoodCardWithRefOnBoard(), designBandWithEmptyDetails())
 		req := designStartRequest(entity.DesignRunKindFlat)
 		req.Params.Views = views
 		req.Params.Layout = designLayoutOne

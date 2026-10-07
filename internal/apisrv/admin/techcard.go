@@ -163,6 +163,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
+	// 101 Ф4: a new card has no flat input either — any reference row goes onto the board.
+	if tc.Media, err = designFoldReferenceRows(tc.Media, nil); err != nil {
+		return nil, err
+	}
 	// Заявки провенанса 'lays' на процент раскроя проверяются ПО СУТИ (MAJOR 3): у новой карточки
 	// эха не бывает — либо число совпало с текущей медианой сервера и бейдж подтверждён, либо
 	// строка ляжет как manual.
@@ -391,6 +395,18 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	// бы клиент ни прислал.
 	if err := s.verifyBomWastageClaims(ctx, stored, tc.BomItems); err != nil {
 		return nil, err
+	}
+	// 101 Ф4: a stale tab's old flat-input rows (kind reference) go onto the moodboard, as migration
+	// 0404 moved the stored ones — before the sign-off digests are stamped from tc. A released card is
+	// frozen and skipped, as the migration skips it.
+	if stored.ApprovalState != entity.TechCardApprovalReleased {
+		folded, err := designFoldReferenceRows(tc.Media, func() ([]entity.DesignReference, error) {
+			return s.designLabelsForFold(ctx, id)
+		})
+		if err != nil {
+			return nil, err
+		}
+		tc.Media = folded
 	}
 	username := authsrv.GetAdminUsername(ctx)
 	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)
