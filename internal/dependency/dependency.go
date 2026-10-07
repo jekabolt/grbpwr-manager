@@ -2208,6 +2208,9 @@ type (
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)
+		// SetReferenceHeld takes a labelled board picture out of the prompt (label_state held) or puts
+		// it back (109 §4); ErrDesignNothingToHold when the picture has no settled label.
+		SetReferenceHeld(ctx context.Context, req entity.DesignReferenceHold) (*entity.DesignReference, error)
 		// ListReferences — the card's design_reference rows in every label state (101).
 		ListReferences(ctx context.Context, cardID int) ([]entity.DesignReference, error)
 		// BeginBoardLabel claims a board picture for a model label (a pending row); false = nothing

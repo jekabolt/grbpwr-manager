@@ -188,3 +188,106 @@ func (s *Store) SetReferenceRole(ctx context.Context, req entity.DesignReference
 	}
 	return out, nil
 }
+
+// SetReferenceHeld takes a labelled board picture OUT OF THE PROMPT, or puts it back (109 §4,
+// «remove from prompt»). The label — the view, the detail slot — and the picture on the board stay:
+// only label_state moves between ok and held, and only ok travels (entity.DesignReferenceTravels).
+//
+//	held = true   a row with a role, ok or held      → held (idempotent); a model detail left with no
+//	                                                    photo that still travels loses its slot
+//	              anything else (no row, no role,     → ErrDesignNothingToHold: that picture is not in
+//	              pending / unsure / failed)            the prompt, there is nothing to take out
+//	held = false  a held row whose detail slot is gone (the hold dropped the model's slot):
+//	                a model's row                      → pending, labelled_at NULL, attempts 0 — the
+//	                                                    next sync reads it again and mints anew (the
+//	                                                    caller kicks the sync)
+//	                a person's row                     → ok; the client asks «detail ?» (no slot)
+//	              any other held row                   → ok
+//	              a row that is not held               → unchanged (idempotent)
+//
+// The label source is never changed: a model's guess put back is still the model's (grey), a
+// person's label is still the person's. Every write here is under the row's FOR UPDATE, so a model
+// answer landing at the same moment (FinishBoardLabel writes only a PENDING model row) cannot
+// overwrite a hold.
+func (s *Store) SetReferenceHeld(ctx context.Context, req entity.DesignReferenceHold) (*entity.DesignReference, error) {
+	if err := requireCard(req.TechCardId); err != nil {
+		return nil, err
+	}
+	if req.MediaId <= 0 {
+		return nil, fmt.Errorf("%w: a hold needs a media id", entity.ErrDesignInvalidArgument)
+	}
+	var out *entity.DesignReference
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		out = nil
+		db := rep.DB()
+		rows, err := storeutil.QueryListNamed[entity.DesignReference](ctx, db,
+			`SELECT * FROM design_reference WHERE tech_card_id = :card AND media_id = :media FOR UPDATE`,
+			map[string]any{"card": req.TechCardId, "media": req.MediaId})
+		if err != nil {
+			return fmt.Errorf("failed to read the reference to hold: %w", err)
+		}
+		var r entity.DesignReference
+		if len(rows) > 0 {
+			r = rows[0]
+		}
+		state := entity.DesignLabelStateOrOk(r.LabelState)
+		role := strings.TrimSpace(r.Role)
+		if req.Held {
+			if len(rows) == 0 || role == "" ||
+				(state != entity.DesignLabelStateOk && state != entity.DesignLabelStateHeld) {
+				return fmt.Errorf("%w: media %d of tech card %d has no settled label to take out of the prompt",
+					entity.ErrDesignNothingToHold, req.MediaId, req.TechCardId)
+			}
+			if state == entity.DesignLabelStateOk {
+				if err := storeutil.ExecNamed(ctx, db,
+					`UPDATE design_reference SET label_state = :held WHERE id = :id`,
+					map[string]any{"id": r.Id, "held": entity.DesignLabelStateHeld}); err != nil {
+					return fmt.Errorf("failed to hold the reference: %w", err)
+				}
+				// A model's detail whose last travelling photo was just held goes with it (109 Q3); a
+				// slot a person named or renamed (made_by_model = 0) stays whatever happens.
+				if _, err := dropOrphanModelSlots(ctx, db, req.TechCardId); err != nil {
+					return err
+				}
+			}
+		} else if len(rows) > 0 && state == entity.DesignLabelStateHeld {
+			lostSlot := role == entity.DesignViewDetail && !r.DetailSlotId.Valid
+			switch {
+			case lostSlot && entity.IsDesignLabelByModel(r.LabelSource):
+				// The model's slot went with the hold: read the photo again (it joins a slot or mints
+				// one). labelled_at NULL makes the pending row due at once — the sync's plan and
+				// BeginBoardLabel both read a NULL labelled_at as a lost task, and attempts 0 gives it
+				// the full two tries.
+				if err := storeutil.ExecNamed(ctx, db, `
+					UPDATE design_reference
+					SET role = '', detail_slot_id = NULL, label_state = :pending,
+						proposed_purpose = '', model_caption = NULL, label_model = '',
+						label_attempts = 0, labelled_at = NULL
+					WHERE id = :id AND label_source IN `+designModelSources,
+					map[string]any{"id": r.Id, "pending": entity.DesignLabelStatePending}); err != nil {
+					return fmt.Errorf("failed to re-arm the held reference: %w", err)
+				}
+			default:
+				if err := storeutil.ExecNamed(ctx, db,
+					`UPDATE design_reference SET label_state = :ok WHERE id = :id`,
+					map[string]any{"id": r.Id, "ok": entity.DesignLabelStateOk}); err != nil {
+					return fmt.Errorf("failed to put the reference back: %w", err)
+				}
+			}
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		after, err := storeutil.QueryNamedOne[entity.DesignReference](ctx, db,
+			`SELECT * FROM design_reference WHERE id = :id`, map[string]any{"id": r.Id})
+		if err != nil {
+			return fmt.Errorf("failed to re-read the reference: %w", err)
+		}
+		out = &after
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

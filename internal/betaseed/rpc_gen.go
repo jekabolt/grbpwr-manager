@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (420 rpc) ----
+// ---- admin (421 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -2704,6 +2704,14 @@ func (c *Client) SetDesignPartsPieces(ctx context.Context, in *admin.SetDesignPa
 func (c *Client) SetDesignPictureSelected(ctx context.Context, in *admin.SetDesignPictureSelectedRequest) (*admin.SetDesignPictureSelectedResponse, error) {
 	out := new(admin.SetDesignPictureSelectedResponse)
 	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/selected", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetDesignReferenceHeld(ctx context.Context, in *admin.SetDesignReferenceHeldRequest) (*admin.SetDesignReferenceHeldResponse, error) {
+	out := new(admin.SetDesignReferenceHeldResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/reference-held", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

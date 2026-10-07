@@ -77,6 +77,8 @@ var designRefusals = []struct {
 	// SetDesignDetailKept (0400): the views moved under the person is a race (Aborted, re-read the band).
 	{entity.ErrDesignNotAFlatDetail, codes.FailedPrecondition, "not_a_flat_detail"},
 	{entity.ErrDesignDetailEmpty, codes.FailedPrecondition, "detail_empty"},
+	// nothing_to_hold — «remove from prompt» on a picture that is not in the prompt (109 §5).
+	{entity.ErrDesignNothingToHold, codes.FailedPrecondition, "nothing_to_hold"},
 	{entity.ErrDesignDetailNotStale, codes.FailedPrecondition, "detail_not_stale"},
 	{entity.ErrDesignViewsChanged, codes.Aborted, "views_changed"},
 	{entity.ErrDesignInSlot, codes.FailedPrecondition, "in_slot"},
@@ -583,6 +585,35 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 		resp.Reference = designReferenceToPb(*ref)
 	}
 	return resp, nil
+}
+
+// SetDesignReferenceHeld takes a labelled board picture out of the prompt or puts it back (109 §4).
+// Putting back a model's detail photo whose slot went with the hold leaves its label pending: the
+// sync is kicked here so the photo is read again now, not at the next save.
+func (s *Server) SetDesignReferenceHeld(ctx context.Context, req *pb_admin.SetDesignReferenceHeldRequest) (*pb_admin.SetDesignReferenceHeldResponse, error) {
+	ref, err := s.repo.Design().SetReferenceHeld(ctx, entity.DesignReferenceHold{
+		TechCardId: int(req.GetTechCardId()),
+		MediaId:    int(req.GetMediaId()),
+		Held:       req.GetHeld(),
+		Actor:      designActor(ctx),
+	})
+	if err != nil {
+		return nil, designError(ctx, "failed to hold the design reference", err, nil)
+	}
+	resp := &pb_admin.SetDesignReferenceHeldResponse{}
+	if ref != nil {
+		resp.Reference = designReferenceToPb(*ref)
+		if designHeldPutBackRereads(req.GetHeld(), *ref) {
+			s.designBoardLabelKick(ctx, int(req.GetTechCardId()))
+		}
+	}
+	return resp, nil
+}
+
+// designHeldPutBackRereads — a put-back left the model's label pending (its detail slot went with the
+// hold), so the photo must be read again now.
+func designHeldPutBackRereads(held bool, ref entity.DesignReference) bool {
+	return !held && entity.IsDesignLabelByModel(ref.LabelSource) && ref.LabelState == entity.DesignLabelStatePending
 }
 
 // ─────────────────────────── pictures ───────────────────────────

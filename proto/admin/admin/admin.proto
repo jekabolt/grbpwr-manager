@@ -2969,6 +2969,23 @@ service AdminService {
     };
   }
 
+  // SetDesignReferenceHeld takes a labelled board picture OUT OF THE PROMPT, or puts it back
+  // (109 §4, «remove from prompt»). The label (view / detail slot) and the picture on the board stay;
+  // only label_state moves between ok and held, and a held picture rides no run. A model's detail
+  // whose every photo is held loses its slot; putting such a photo back reads it again (the label
+  // goes pending and the sync mints or joins a slot). The label source never changes. Enters no
+  // digest, like the role.
+  //
+  // FailedPrecondition nothing_to_hold: the picture has no settled label (no row, no role, still
+  // being read, waiting for a person) — it is not in the prompt. Putting back a picture that is not
+  // held is a no-op.
+  rpc SetDesignReferenceHeld(SetDesignReferenceHeldRequest) returns (SetDesignReferenceHeldResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/reference-held"
+      body: "*"
+    };
+  }
+
   // PreviewDesignRunInputs is a DRY RUN of StartDesignRun's input assembly (101 §2.8): the snapshot a
   // run of this kind and params would freeze right now — the same function, the same sources, no
   // reservation, no money, no model. «what the model gets» draws this answer instead of re-deriving
@@ -13392,6 +13409,16 @@ message SetDesignReferenceRoleRequest {
 
 message SetDesignReferenceRoleResponse {
   common.DesignReference reference = 1; // unset when the call cleared the role
+}
+
+message SetDesignReferenceHeldRequest {
+  int32 tech_card_id = 1;
+  int32 media_id = 2;
+  bool held = 3; // true = take out of the prompt; false = put back
+}
+
+message SetDesignReferenceHeldResponse {
+  common.DesignReference reference = 1; // the row after the write; unset when the picture has none
 }
 
 message PreviewDesignRunInputsRequest {

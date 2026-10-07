@@ -1316,6 +1316,10 @@ var (
 	// SetDesignDetailKept (0400): the slot is not a FLAT detail / holds no plate / is not stale; the
 	// views changed under the person (against_run_id is not the current views run).
 	ErrDesignNotAFlatDetail = errors.New("design: not_a_flat_detail")
+	// ErrDesignNothingToHold — SetDesignReferenceHeld on a picture with no settled label (no row, an
+	// empty role, a label still being read or waiting for a person): such a picture is not in the
+	// prompt, so there is nothing to take out of it (109 §5).
+	ErrDesignNothingToHold  = errors.New("design: nothing_to_hold")
 	ErrDesignDetailEmpty    = errors.New("design: detail_empty")
 	ErrDesignDetailNotStale = errors.New("design: detail_not_stale")
 	ErrDesignViewsChanged   = errors.New("design: views_changed")

@@ -514,6 +514,7 @@ var methodRequirements = map[string]Requirement{
 	"SetDesignBenchSlot":       wr(SectionTechCards),
 	"SetDesignDetailKept":      wr(SectionTechCards),
 	"SetDesignReferenceRole":   wr(SectionTechCards),
+	"SetDesignReferenceHeld":   wr(SectionTechCards), // 109: «remove from prompt» — the same record as the role
 	// Полки ассетов карточки (0354): ткани, паттерны, фурнитура и их разметка на флэтах. Это
 	// ЗАПИСЬ О КАРТОЧКЕ, а не деньги: ассет ничего не тратит, он объявляет, из чего сделано
 	// изделие, — и потому стоит рядом с ролью референса, а не рядом со StartDesignRun.

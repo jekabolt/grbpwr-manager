@@ -52,6 +52,11 @@ const (
 	// sheet…; M16): no model reads it, it carries no role and never feeds a flat — the tile says
 	// «render». Written by the labeller for free; a person's tap still writes over it as always.
 	DesignLabelStateOutput = "output"
+	// DesignLabelStateHeld — a person took the picture OUT OF THE PROMPT («remove from prompt», 109 §4):
+	// the label (view / detail slot) stays, the picture stays on the board, nothing rides. Only a
+	// person writes it (SetReferenceHeld); a person's label edit (SetReferenceRole → ok) and a model
+	// relabel of the purpose (BeginBoardLabel Relabel → pending) both lift it.
+	DesignLabelStateHeld = "held"
 )
 
 // DesignMediaProducer — one design run that produced a picture holding a media (M16,
@@ -76,6 +81,14 @@ func DesignLabelStateOrOk(v string) string {
 // a legacy three-quarter row moved to `unsure` keeps its role and must not ride.
 func DesignReferenceTravels(r DesignReference) bool {
 	return strings.TrimSpace(r.Role) != "" && DesignLabelStateOrOk(r.LabelState) == DesignLabelStateOk
+}
+
+// DesignReferenceHold — take a labelled board picture out of the prompt (Held) or put it back.
+type DesignReferenceHold struct {
+	TechCardId int
+	MediaId    int
+	Held       bool
+	Actor      string
 }
 
 // DesignBoardLabelMaxAttempts — a pending label older than DesignBoardLabelStaleAfter is re-queued

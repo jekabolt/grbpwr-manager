@@ -294,13 +294,18 @@ func truncateRunes(s string, max int) string {
 // dropOrphanModelSlots deletes the card's model-made detail slots left with no plate and no label
 // pointing at them (101 §2.6): the model's detail went away with its last photo. A person's slot, or a
 // model's slot that holds a drawing or a photo, stays. Runs inside the caller's transaction.
+//
+// A HELD LABEL DOES NOT KEEP THE SLOT (109 §4.1, Q3): a photo taken out of the prompt no longer asks
+// for the detail, so a model's detail whose every photo is held goes too. The held rows survive with
+// detail_slot_id NULL (FK SET NULL); putting one back re-reads it (SetReferenceHeld).
 func dropOrphanModelSlots(ctx context.Context, db dependency.DB, cardID int) (int64, error) {
 	n, err := storeutil.ExecNamedRows(ctx, db, `
 		DELETE s FROM design_bench_slot s
 		WHERE s.tech_card_id = :card AND s.view_key = :detail AND s.made_by_model = 1
 		  AND s.picture_id IS NULL
-		  AND NOT EXISTS (SELECT 1 FROM design_reference r WHERE r.detail_slot_id = s.id)`,
-		map[string]any{"card": cardID, "detail": entity.DesignViewDetail})
+		  AND NOT EXISTS (SELECT 1 FROM design_reference r
+		                  WHERE r.detail_slot_id = s.id AND r.label_state <> :held)`,
+		map[string]any{"card": cardID, "detail": entity.DesignViewDetail, "held": entity.DesignLabelStateHeld})
 	if err != nil {
 		return 0, fmt.Errorf("failed to drop the empty model detail slots: %w", err)
 	}
