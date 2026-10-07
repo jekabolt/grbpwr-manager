@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 
@@ -219,35 +220,46 @@ func designOutputFeedsAFlat(runKind string) bool {
 	return runKind == entity.DesignRunKindCutout
 }
 
-// designCutoutDepth — how many cutouts deep a picture's lineage is followed (a cutout of a cutout of
-// …). Beyond it the picture is judged by what is known: a cutout of nothing generated.
-const designCutoutDepth = 4
+// designLineageReads — at most this many store reads follow a picture's cutout lineage (a cutout of a
+// cutout of …). A lineage still open after them is HELD, never let through: an unread ancestor may be
+// a render (Codex M16 r2).
+const designLineageReads = 16
 
 // designProducersLookup — the store's MediaProducers (a fake in tests).
 type designProducersLookup func(ctx context.Context, ids []int) (map[int][]entity.DesignMediaProducer, error)
 
 // designResolveGenerated — of the named media, those a flat may not take, each with the kind of the run
 // that made it generated. A media any non-cutout run produced is generated; a media only cutouts
-// produced is as generated as what they were cut from (Sources, followed up to designCutoutDepth): a
-// cutout of a garment photo goes, a cutout of a render is a render (Codex M16 #3). nil when nothing is.
+// produced is as generated as what they were cut from (Sources, followed to the end): a cutout of a
+// garment photo goes, a cutout of a render is a render (Codex M16 #3). A cycle adds nothing; a
+// lineage longer than designLineageReads is held. nil when nothing is generated.
 func designResolveGenerated(ctx context.Context, ids []int, lookup designProducersLookup) (map[int]string, error) {
-	// Read level by level (one store read per level): the asked media, then what their cutouts were
-	// cut from, and so on — each media read once.
+	// Read level by level, each media once: the asked media, then what their cutouts were cut from…
 	known := map[int][]entity.DesignMediaProducer{}
 	read := map[int]bool{}
 	frontier := ids
-	for depth := 0; depth <= designCutoutDepth && len(frontier) > 0; depth++ {
+	open := map[int]bool{} // asked-for ancestors the read cap left unread
+	for reads := 0; ; reads++ {
 		var ask []int
 		for _, id := range frontier {
 			if id > 0 && !read[id] {
-				read[id] = true
 				ask = append(ask, id)
 			}
 		}
 		if len(ask) == 0 {
 			break
 		}
+		if reads >= designLineageReads {
+			for _, id := range ask {
+				open[id] = true
+			}
+			break
+		}
 		sort.Ints(ask)
+		ask = slices.Compact(ask)
+		for _, id := range ask {
+			read[id] = true
+		}
 		producers, err := lookup(ctx, ask)
 		if err != nil {
 			return nil, err
@@ -262,33 +274,52 @@ func designResolveGenerated(ctx context.Context, ids []int, lookup designProduce
 			}
 		}
 	}
-	// The verdict of one media: a non-cutout producer → generated; else the first generated picture
-	// it was cut from, within the depth (a cycle ends there too).
-	var verdict func(id, depth int) string
-	verdict = func(id, depth int) string {
-		for _, p := range known[id] {
-			if !designOutputFeedsAFlat(p.RunKind) {
-				return p.RunKind
-			}
+	// The verdict of one media, memoised; a media on the current path (a cycle) adds nothing.
+	memo := map[int]string{}
+	done := map[int]bool{}
+	onPath := map[int]bool{}
+	var verdict func(id int) string
+	verdict = func(id int) string {
+		if done[id] {
+			return memo[id]
 		}
-		if depth >= designCutoutDepth {
+		if onPath[id] {
 			return ""
 		}
+		if open[id] {
+			return entity.DesignRunKindCutout // an ancestor nobody read: held
+		}
+		onPath[id] = true
+		k := ""
 		for _, p := range known[id] {
+			if !designOutputFeedsAFlat(p.RunKind) {
+				k = p.RunKind
+				break
+			}
+		}
+		for _, p := range known[id] {
+			if k != "" {
+				break
+			}
 			for _, src := range p.Sources {
-				if k := verdict(src, depth+1); k != "" {
-					return k
+				if src <= 0 {
+					continue
+				}
+				if k = verdict(src); k != "" {
+					break
 				}
 			}
 		}
-		return ""
+		onPath[id] = false
+		memo[id], done[id] = k, true
+		return k
 	}
 	var out map[int]string
 	for _, id := range ids {
 		if id <= 0 {
 			continue
 		}
-		if k := verdict(id, 0); k != "" {
+		if k := verdict(id); k != "" {
 			if out == nil {
 				out = map[int]string{}
 			}

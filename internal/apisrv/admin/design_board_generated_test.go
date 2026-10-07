@@ -71,11 +71,28 @@ func TestACutoutIsAsGeneratedAsWhatItWasCutFrom(t *testing.T) {
 		5: entity.DesignRunKindThreed,
 		8: entity.DesignRunKindFreeform,
 	}, got)
-	require.LessOrEqual(t, calls, designCutoutDepth+1, "one read per level")
+	require.LessOrEqual(t, calls, designLineageReads, "one read per level")
 
 	none, err := designResolveGenerated(context.Background(), []int{2, 100}, lookup)
 	require.NoError(t, err)
 	require.Nil(t, none)
+
+	// A LONG LINEAGE (Codex M16 r2): a chain of cutouts longer than any fixed depth still ends at its
+	// render; a chain ending at a photo still goes; a chain longer than the read cap is held.
+	chain := func(base, n int, end []entity.DesignMediaProducer) {
+		for i := 0; i < n; i++ {
+			store[base+i] = []entity.DesignMediaProducer{cut(base + i + 1)}
+		}
+		if end != nil {
+			store[base+n] = end
+		}
+	}
+	chain(1000, 8, []entity.DesignMediaProducer{run(entity.DesignRunKindRender)}) // 1000 … 1007 → render 1008
+	chain(2000, 8, nil)                                                           // 2000 … 2007 → photo 2008
+	chain(3000, designLineageReads+2, nil)                                        // beyond the cap
+	got, err = designResolveGenerated(context.Background(), []int{1000, 2000, 3000}, lookup)
+	require.NoError(t, err)
+	require.Equal(t, map[int]string{1000: entity.DesignRunKindRender, 3000: entity.DesignRunKindCutout}, got)
 }
 
 // A VIEWS RUN: the render is held BEFORE «the two newest of its view» is counted — it must not push a
