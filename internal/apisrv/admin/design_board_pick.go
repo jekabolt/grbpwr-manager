@@ -274,52 +274,48 @@ func designResolveGenerated(ctx context.Context, ids []int, lookup designProduce
 			}
 		}
 	}
-	// The verdict of one media, memoised; a media on the current path (a cycle) adds nothing.
-	memo := map[int]string{}
-	done := map[int]bool{}
-	onPath := map[int]bool{}
-	var verdict func(id int) string
-	verdict = func(id int) string {
-		if done[id] {
-			return memo[id]
-		}
-		if onPath[id] {
-			return ""
-		}
-		if open[id] {
-			return entity.DesignRunKindCutout // an ancestor nobody read: held
-		}
-		onPath[id] = true
-		k := ""
-		for _, p := range known[id] {
+	// The verdicts, by propagation (Codex M16 r3): a media a non-cutout run produced, or an ancestor
+	// the cap left unread, is generated; so is every cutout cut from a generated one, to a fixed point.
+	// Order- and cycle-independent: a cycle adds nothing, an exit from it to a render is found.
+	gen := map[int]string{}
+	children := map[int][]int{} // source → the cutouts cut from it
+	var queue []int
+	for id := range open {
+		gen[id] = entity.DesignRunKindCutout
+		queue = append(queue, id)
+	}
+	for id, ps := range known {
+		for _, p := range ps {
 			if !designOutputFeedsAFlat(p.RunKind) {
-				k = p.RunKind
-				break
-			}
-		}
-		for _, p := range known[id] {
-			if k != "" {
-				break
+				if _, ok := gen[id]; !ok {
+					gen[id] = p.RunKind
+					queue = append(queue, id)
+				}
+				continue
 			}
 			for _, src := range p.Sources {
-				if src <= 0 {
-					continue
-				}
-				if k = verdict(src); k != "" {
-					break
+				if src > 0 {
+					children[src] = append(children[src], id)
 				}
 			}
 		}
-		onPath[id] = false
-		memo[id], done[id] = k, true
-		return k
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, c := range children[id] {
+			if _, ok := gen[c]; !ok {
+				gen[c] = gen[id]
+				queue = append(queue, c)
+			}
+		}
 	}
 	var out map[int]string
 	for _, id := range ids {
 		if id <= 0 {
 			continue
 		}
-		if k := verdict(id); k != "" {
+		if k := gen[id]; k != "" {
 			if out == nil {
 				out = map[int]string{}
 			}

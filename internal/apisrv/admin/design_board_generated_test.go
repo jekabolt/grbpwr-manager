@@ -77,6 +77,16 @@ func TestACutoutIsAsGeneratedAsWhatItWasCutFrom(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, none)
 
+	// A CYCLE WITH AN EXIT TO A RENDER (Codex M16 r3), asked in both orders: both are renders.
+	store[20] = []entity.DesignMediaProducer{cut(21), cut(22)}
+	store[21] = []entity.DesignMediaProducer{cut(20)}
+	store[22] = []entity.DesignMediaProducer{run(entity.DesignRunKindRender)}
+	for _, order := range [][]int{{20, 21}, {21, 20}} {
+		got, err = designResolveGenerated(context.Background(), order, lookup)
+		require.NoError(t, err)
+		require.Equal(t, map[int]string{20: entity.DesignRunKindRender, 21: entity.DesignRunKindRender}, got, order)
+	}
+
 	// A LONG LINEAGE (Codex M16 r2): a chain of cutouts longer than any fixed depth still ends at its
 	// render; a chain ending at a photo still goes; a chain longer than the read cap is held.
 	chain := func(base, n int, end []entity.DesignMediaProducer) {
