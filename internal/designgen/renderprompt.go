@@ -816,10 +816,16 @@ var colourNames = []struct {
 //
 // ⚠ HSL AND NOT RGB, BECAUSE THE QUESTION IS «WHAT WOULD A PERSON CALL THIS», NOT «HOW FAR APART
 // ARE THESE TWO SIGNALS». In RGB, `#3a7bd5` sits nearer to some greys than to any blue; in HSL its
-// hue answers the question directly. HUE IS WEIGHTED BY THE LOWER OF THE TWO SATURATIONS, which is
-// the one piece of arithmetic here that is load-bearing: an unsaturated colour HAS no meaningful
-// hue, and comparing it by hue would name a near-grey «magenta» on the strength of a rounding
-// error.
+// hue answers the question directly.
+//
+// ⚠ R9 · HUE FIRST. The first form weighed hue by the lower of the two saturations against
+// unweighted saturation and lightness, so a painted label (every client label is s 0.62, l 0.52)
+// was named by whichever anchor shared its saturation and lightness rather than its hue: #d0398f
+// (magenta-pink) printed as «brown», #2fa84f (green) as «steel blue» — in every painted
+// multi-cloth prompt, beside the hex it contradicted. Now a coloured label is named among the
+// coloured anchors with the hue weighing most (saturation and lightness only part anchors of one
+// hue: orange from brown, blue from navy, steel blue from blue), and a label with too little
+// saturation to have an honest hue is grey.
 //
 // AN UNPARSEABLE LABEL FALLS BACK TO THE HEX ITSELF rather than to a guess. The door already
 // refuses anything that is not `#rrggbb` (entity.IsDesignColourMapHex), so this branch is reachable
@@ -830,16 +836,19 @@ func colourWord(hex string) string {
 	if !ok {
 		return hex
 	}
-	best, bestD := "", 0.0
-	for i, c := range colourNames {
+	if s < colourWordGreyBelow {
+		return "grey"
+	}
+	best, bestD := "", math.Inf(1)
+	for _, c := range colourNames {
 		ch, cs, cl, ok := hexToHSL(c.hex)
-		if !ok {
+		if !ok || cs < colourWordGreyBelow {
 			continue
 		}
-		dh := hueDistance(h, ch) * math.Min(s, cs)
+		dh := hueDistance(h, ch)
 		ds, dl := s-cs, l-cl
-		d := 2*dh*dh + ds*ds + dl*dl
-		if i == 0 || d < bestD {
+		d := 4*dh*dh + 0.15*ds*ds + dl*dl
+		if d < bestD {
 			best, bestD = c.name, d
 		}
 	}
@@ -848,6 +857,9 @@ func colourWord(hex string) string {
 	}
 	return best
 }
+
+// colourWordGreyBelow — under this saturation a label has no honest hue: it is grey.
+const colourWordGreyBelow = 0.15
 
 // hueDistance is the shortest way round the wheel, normalised to 0..1. Hue is CIRCULAR and 350° is
 // ten degrees from 0°, not three hundred and fifty: a linear subtraction here would call a red

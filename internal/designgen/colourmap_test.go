@@ -380,3 +380,27 @@ func TestAPartialMapSendsWhiteToTheRemainder(t *testing.T) {
 	require.Contains(t, got, "Parts left white on a map continue the cloth of the panel they belong to.")
 	require.NotContains(t, got, "made of the REMAINDER cloth")
 }
+
+// TestColourWordFollowsTheHue — R9 Ф0 found every painted multi-cloth prompt naming its labels
+// wrongly: #d0398f «brown», #2fa84f «steel blue». A label is named by its hue first; saturation and
+// lightness only part anchors of one hue. The client's labels are all s 0.62 / l 0.52.
+func TestColourWordFollowsTheHue(t *testing.T) {
+	for _, c := range []struct{ hex, want string }{
+		{"#d0398f", "pink"},  // magenta-pink, was «brown»
+		{"#2fa84f", "green"}, // was «steel blue»
+		{"#39d065", "green"}, // slotHex(1)
+		{"#9139d0", "violet"},
+		{"#39b7d0", "cyan"},
+		{"#d06b39", "orange"},
+		{"#d0c939", "yellow"},
+		{"#d03939", "red"},
+		{"#808000", "olive"},
+		{"#002080", "navy"},
+		{"#3a7bd5", "steel blue"},
+		{"#0000ff", "blue"},
+		{"#8b4513", "brown"},
+		{"#828082", "grey"},
+	} {
+		require.Equalf(t, c.want, colourWord(c.hex), "colourWord(%s)", c.hex)
+	}
+}
