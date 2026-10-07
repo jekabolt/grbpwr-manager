@@ -76,6 +76,16 @@ var flatPromptFixtures = []flatPromptFixture{
 		`{"views":["detail"],"layout":"one","detail_slot_ids":[5]}`,
 		`{"garment_note":"garment: top","refs":[{"media_id":1,"role":"detail"}],"slots":[{"view_key":"back","media_id":12},{"view_key":"front","media_id":11},{"view_key":"detail","slot_id":5,"detail_name":"strap"}]}`,
 		[]int{1, 11, 12}},
+	// M14: the person's own flat words under the class line (TechCard.flat_words, typed in FLAT ›
+	// WORDS). Written for M14; every fixture above stays byte for byte what it was.
+	{"views4_photos_human_words",
+		`{"views":["front","back","side_l","side_r"],"layout":"one"}`,
+		`{"garment_note":"garment: blazer\nno topstitching on the lapel or the hem\ntwo buttons","refs":[{"media_id":11,"role":"front","note":"buttoned"},{"media_id":12,"role":"back"},{"media_id":13,"role":"side_l"}]}`,
+		[]int{11, 12, 13}},
+	{"detail_human_words",
+		`{"views":["detail"],"layout":"one","detail_slot_ids":[5]}`,
+		`{"garment_note":"garment: top\nthe straps cross once at the back","refs":[{"media_id":1,"role":"detail"}],"slots":[{"view_key":"back","media_id":12},{"view_key":"front","media_id":11},{"view_key":"detail","slot_id":5,"detail_name":"strap"}]}`,
+		[]int{1, 11, 12}},
 }
 
 // flatPromptOf — the prompt the worker sends for a frozen flat run (buildJob, as the queue does).

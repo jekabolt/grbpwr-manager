@@ -4342,6 +4342,17 @@ type TechCardInsert struct {
 	// отредактированной после подписания — на всех карточках разом и в момент деплоя.
 	GarmentDescription        sql.NullString `db:"garment_description"`
 	GarmentDescriptionOmitted bool           `db:"-"`
+	// FlatWords — СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (0406, flat-consistency M14, владелец 07.10: «показывай в
+	// WORDS только то, что уходит»). Печатает ТОЛЬКО человек в FLAT › WORDS под строкой класса; ни
+	// модель, ни засев, ни `ai ✦` сюда не пишут — поэтому автор известен по построению. Описанию
+	// выше (засев брифом модели + правки людей, одна строка без автора) этого не хватает, и флэт его
+	// не шлёт (designgen.FlatWordsCarryDescription); эти строки — шлёт, как напечатаны, под
+	// «garment: <класс>» (designgen.FlatGarmentNote). Читают только прогоны флэта.
+	//
+	// Тот же трёхсостоянийный verbatim-протокол, что у описания (FlatWordsOmitted: поле
+	// отсутствовало на проводе → колонку не трогать). В проекцию дайджеста НЕ ВХОДИТ.
+	FlatWords        sql.NullString `db:"flat_words"`
+	FlatWordsOmitted bool           `db:"-"`
 	// CalloutSeq — МОНОТОННЫЙ ИСТОЧНИК НОМЕРА ВЫНОСКИ (0345). Серверный счётчик карточки: хендлер
 	// UpdateTechCard двигает его ТЕМ ЖЕ UPDATE, который бампает lock_version, поэтому взаимное
 	// исключение уже стоит — сейв идёт под expected_lock_version, и два сейва не сминтят один номер.

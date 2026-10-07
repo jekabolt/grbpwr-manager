@@ -3414,6 +3414,16 @@ message TechCardInsert {
   //   * field PRESENT, value ""    → CLEAR it (store NULL).
   //   * field PRESENT with a value → set it.
   optional string garment_description = 119;
+  // THE PERSON'S OWN WORDS FOR A FLAT (flat-consistency M14, owner 07.10: «показывай в WORDS только
+  // то, что уходит»). Typed by a person in FLAT › WORDS, under the class line, and by nothing else:
+  // no model writes it (no ai ✦ on that box, no seeding, no brief), so it is human by construction —
+  // the provenance garment_description lacks (it is seeded by a model brief and edited by people,
+  // one string with no author). A flat run sends «garment: <class>» (from garment_description) and
+  // then these lines as typed; the description's other words never travel to a flat.
+  //
+  // Read by flat runs only; frozen into DesignInputSnapshot.garment_note. Not in any section digest.
+  // OPTIONAL for the same reason as garment_description: absent = keep, "" = clear, value = set.
+  optional string flat_words = 124;
   // revisions (34) removed as INPUT (Q1): the revision log is a server-stamped auto-journal, not a
   // client-supplied list — read it on the TechCard message (TechCard.revisions).
 

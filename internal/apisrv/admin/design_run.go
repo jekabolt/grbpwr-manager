@@ -539,6 +539,9 @@ const (
 	// съедало бы снимок целиком и отказ приходил бы про БАЙТЫ СНИМКА — про число, которого человек
 	// не видит и починить не может.
 	designMaxGarmentNoteRunes = 4000
+	// designMaxFlatWordsRunes — потолок СЛОВ ЧЕЛОВЕКА ДЛЯ ФЛЭТА (tech_card.flat_words, M14): несколько
+	// строк под строкой класса, а не второе описание. Клиент держит то же число (`FLAT_WORDS_MAX`).
+	designMaxFlatWordsRunes = 1000
 	// designMaxRefNoteRunes — потолок записки НА ОДНОЙ КАРТИНКЕ (design_reference.note, W-3:
 	// «только воротник», «ткань, а не крой»).
 	//
@@ -654,6 +657,17 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (M14) меряются тем же правилом, что описание: отказ, а не обрезка.
+	// Читает их только флэт, и только НОВЫЙ: реран едет на замороженном снимке родителя, и
+	// сегодняшние слова карточки ему не помеха (Codex M14).
+	if n := len([]rune(card.FlatWords.String)); kind == entity.DesignRunKindFlat && parent == nil &&
+		n > designMaxFlatWordsRunes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"the flat's words are %d characters; the ceiling is %d — they are copied into this run's "+
+				"frozen snapshot and into the prompt, so shorten them in FLAT › WORDS first",
+			n, designMaxFlatWordsRunes)
 	}
 
 	params, err := designEffectiveParams(req.GetParams(), parent)
@@ -3657,7 +3671,9 @@ func designAssembleInputs(src designInputSources) (*pb_common.DesignInputSnapsho
 		// carries the construction the quiz decided. Frozen here, so the stored prompt says it too.
 		if src.Kind == entity.DesignRunKindFlat {
 			out.Fit = ""
-			out.GarmentNote = designgen.FlatConstructionNote(out.GarmentNote)
+			// M14 (owner 07.10): the class line, then the person's own flat words as typed — the
+			// only words a flat sends; nothing a model wrote (designgen.FlatGarmentNote).
+			out.GarmentNote = designgen.FlatGarmentNote(out.GarmentNote, src.Card.FlatWords.String)
 		} else if quiz := designQuizImageBlock(src.Card, out.GarmentNote); quiz != "" {
 			// QUIZ DECISIONS (61-QUICKWINS W-B2) ride WITH the garment note, frozen in the same copy:
 			// a render gets them whatever WORDS say (hand-edited, stale, never re-briefed), and a

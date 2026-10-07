@@ -113,6 +113,36 @@ func FlatConstructionNote(note string) string {
 	return out
 }
 
+// FlatGarmentNote — THE WORDS A FLAT RUN SENDS (M14, owner 07.10: «показывай в WORDS только то, что
+// уходит»): the class line of the card's description (FlatConstructionNote — the description's
+// other words stay home, they have no author) and then the person's own flat words
+// (TechCard.flat_words — typed in FLAT › WORDS and written by nothing else), as typed. A card with
+// no flat words sends exactly what it sent before. The client draws the same text in the WORDS box
+// and in «what the model gets» (flat-route.ts flatWordsSent).
+func FlatGarmentNote(description, human string) string {
+	note := FlatConstructionNote(description)
+	words := FlatHumanWords(human)
+	switch {
+	case words == "":
+		return note
+	case note == "":
+		return words
+	}
+	return note + "\n" + words
+}
+
+// FlatHumanWords — the person's flat words as they travel: each line trimmed, blank lines dropped,
+// nothing else touched (they are a person's, so no junk filter rewrites them).
+func FlatHumanWords(human string) string {
+	var lines []string
+	for _, line := range strings.Split(human, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // flatConstructionText — the sentences of free text with their junk clauses dropped. A clause is a
 // piece between «;» and «,» inside a sentence; a one-word list head left in front of a dropped clause
 // («hem, front edge and sleeve openings blind hemmed» → «hem») goes with it. `seen` drops a sentence

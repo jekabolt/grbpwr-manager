@@ -80,12 +80,12 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
 	required_seam_allowance_mm, base_model_id, base_sample_size_id,
-	measurement_unit, concept, notes, mood_note, garment_description, callout_seq, purpose, output_material_id, aux_subtype, created_by, updated_by`
+	measurement_unit, concept, notes, mood_note, garment_description, flat_words, callout_seq, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
 	:required_seam_allowance_mm, :base_model_id, :base_sample_size_id,
-	:measurement_unit, :concept, :notes, :mood_note, :garment_description, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
+	:measurement_unit, :concept, :notes, :mood_note, :garment_description, :flat_words, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
@@ -144,6 +144,10 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		// этого момента рисует изделие, про которое ей ничего не сказали.
 		"garment_description":         tc.GarmentDescription,
 		"garment_description_omitted": tc.GarmentDescriptionOmitted,
+		// СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (0406, M14) + флаг присутствия — та же пара: на UPDATE
+		// IF(:flat_words_omitted, flat_words, :flat_words).
+		"flat_words":         tc.FlatWords,
+		"flat_words_omitted": tc.FlatWordsOmitted,
 		// МОНОТОННЫЙ СЧЁТЧИК НОМЕРА ВЫНОСКИ (0345). Значение СЧИТАЕТ ХЕНДЛЕР (dto.MintCalloutNumbers)
 		// — там же, где присваиваются номера и где ставится подпись; стор его только записывает, и на
 		// UPDATE только через GREATEST. Клон и импорт приезжают сюда с посчитанным по своей карточке
@@ -523,6 +527,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 			measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
 			mood_note = IF(:mood_note_omitted, mood_note, :mood_note),
 			garment_description = IF(:garment_description_omitted, garment_description, :garment_description),
+			flat_words = IF(:flat_words_omitted, flat_words, :flat_words),
 			callout_seq = GREATEST(callout_seq, :callout_seq),
 				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
 		WHERE id = :id AND lock_version = :expected_lock_version`, params)

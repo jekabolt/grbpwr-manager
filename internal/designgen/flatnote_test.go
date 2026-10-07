@@ -42,3 +42,30 @@ func TestGarmentLabelIsNotSaidTwice(t *testing.T) {
 	p = composePrompt(entity.DesignRun{Kind: entity.DesignRunKindRender}, runParams{}, runInputs{GarmentNote: "Notch lapel."}, nil)
 	require.True(t, strings.HasPrefix(p, "garment:\nNotch lapel."), p)
 }
+
+// TestFlatGarmentNote — M14 (owner 07.10: «показывай в WORDS только то, что уходит»): a flat sends
+// the description's class line and then the person's own flat words as typed. The same cases stand
+// in the client's probe of its mirror (flat-route.ts flatWordsSent, `yarn flat:words`).
+//
+// MUTATIONS IT CATCHES: the description's other words travelling again; the human words filtered
+// by the junk rules (they are a person's); a card with no flat words sending anything new; blank
+// lines or the line's own spaces reaching the prompt.
+func TestFlatGarmentNote(t *testing.T) {
+	const desc = "garment: tank top\nfit: slim\nTwo-layer sleeveless top, slim body-hugging silhouette, close through the chest."
+	for _, c := range []struct{ desc, human, want string }{
+		{desc, "", "garment: tank top"},
+		{desc, "inner V neckline under the sheer layer\n\n  crossed straps meet at the back neck  ", "garment: tank top\ninner V neckline under the sheer layer\ncrossed straps meet at the back neck"},
+		{"", "a line", "a line"},
+		{"", "  \n ", ""},
+		{"Two-layer sleeveless top.", "x", "x"},
+		{"garment:\ngarment: blazer", "no topstitching", "garment: blazer\nno topstitching"},
+		// a person's words are sent as written — even a word the description filter would drop
+		{"- garment: shirt", "fit: slim\nlinen, fully lined", "garment: shirt\nfit: slim\nlinen, fully lined"},
+		{"garment: top\r\n", "a\r\nb", "garment: top\na\nb"},
+	} {
+		require.Equal(t, c.want, FlatGarmentNote(c.desc, c.human), "%q + %q", c.desc, c.human)
+	}
+	// no flat words → exactly the words a flat sent before M14
+	require.Equal(t, FlatConstructionNote(desc), FlatGarmentNote(desc, ""))
+	require.Equal(t, FlatConstructionNote(desc), FlatGarmentNote(desc, " \n\t\n"))
+}

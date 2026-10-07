@@ -545,3 +545,43 @@ func TestTwoZeroCalloutsKeepTheirOwnGeometry(t *testing.T) {
 		"вторая обязана получить свою, а не первую")
 	require.True(t, tc.Callouts[1].Filled)
 }
+
+// СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (M14) — тот же протокол присутствия, что у описания: отсутствие поля не
+// трогает колонку, "" чистит, значение пишет; на чтении поле присутствует всегда. И в отпечаток
+// DESIGN они не входят — по тому же доводу, что описание.
+func TestFlatWordsCarryPresenceAndAreNotHashed(t *testing.T) {
+	base := func(v *string) *pb_common.TechCardInsert {
+		return &pb_common.TechCardInsert{
+			Name:            "Field Jacket",
+			Stage:           pb_common.TechCardStage_TECH_CARD_STAGE_IDEA,
+			MeasurementUnit: pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
+			FlatWords:       v,
+		}
+	}
+	absent, err := ConvertPbTechCardInsertToEntity(base(nil))
+	require.NoError(t, err)
+	require.True(t, absent.FlatWordsOmitted, "поля не было — колонку трогать нельзя")
+
+	empty := ""
+	cleared, err := ConvertPbTechCardInsertToEntity(base(&empty))
+	require.NoError(t, err)
+	require.False(t, cleared.FlatWordsOmitted)
+	require.False(t, cleared.FlatWords.Valid)
+
+	text := "two buttons\nno topstitching"
+	set, err := ConvertPbTechCardInsertToEntity(base(&text))
+	require.NoError(t, err)
+	require.False(t, set.FlatWordsOmitted)
+	require.Equal(t, text, set.FlatWords.String)
+
+	back := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *set}, CostingFx{Base: "EUR"})
+	require.NotNil(t, back.GetTechCard().FlatWords, "на чтении поле обязано присутствовать")
+	require.Equal(t, text, back.GetTechCard().GetFlatWords())
+	blank := ConvertEntityTechCardToPb(&entity.TechCard{}, CostingFx{Base: "EUR"})
+	require.NotNil(t, blank.GetTechCard().FlatWords)
+	require.Equal(t, "", blank.GetTechCard().GetFlatWords())
+
+	require.Equal(t,
+		TechCardSectionDigests(&entity.TechCardInsert{})[entity.SignoffDesign],
+		TechCardSectionDigests(&entity.TechCardInsert{FlatWords: sql.NullString{String: "two buttons", Valid: true}})[entity.SignoffDesign])
+}

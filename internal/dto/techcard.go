@@ -1087,18 +1087,21 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// следующая генерация ушла бы к модели, ничего не зная об изделии.
 		GarmentDescription:        nullStringFromPb(pb.GetGarmentDescription()),
 		GarmentDescriptionOmitted: pb.GarmentDescription == nil,
-		SizeIds:                   sizeIds,
-		Media:                     media,
-		Callouts:                  callouts,
-		Details:                   details,
-		BomItems:                  bomItems,
-		Construction:              construction,
-		Operations:                operations,
-		Labels:                    labels,
-		Packaging:                 packaging,
-		CareLabel:                 careLabel,
-		GarmentLabels:             garmentLabels,
-		PackagingItems:            packagingItems,
+		// СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (M14) — тот же verbatim-протокол: присутствие решает.
+		FlatWords:        nullStringFromPb(pb.GetFlatWords()),
+		FlatWordsOmitted: pb.FlatWords == nil,
+		SizeIds:          sizeIds,
+		Media:            media,
+		Callouts:         callouts,
+		Details:          details,
+		BomItems:         bomItems,
+		Construction:     construction,
+		Operations:       operations,
+		Labels:           labels,
+		Packaging:        packaging,
+		CareLabel:        careLabel,
+		GarmentLabels:    garmentLabels,
+		PackagingItems:   packagingItems,
 		// Транспорт, не содержание (щит полной замены двух списков) — ни в один дайджест не входит.
 		LabelsAware:        pb.LabelsAware,
 		Costing:            costing,
@@ -1483,6 +1486,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 	moodNote := pbStringFromNull(tc.MoodNote)
 	// Описание изделия — тоже присутствующим полем всегда, по тому же доводу.
 	garmentDescription := pbStringFromNull(tc.GarmentDescription)
+	// Слова человека для флэта (M14) — тоже присутствующим полем всегда.
+	flatWords := pbStringFromNull(tc.FlatWords)
 
 	return &pb_common.TechCard{
 		Id:              int32(tc.Id),
@@ -1523,6 +1528,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MoodNote: &moodNote,
 			// ОПИСАНИЕ ИЗДЕЛИЯ — ровно та же присутствующая-всегда форма, что у заметки выше.
 			GarmentDescription: &garmentDescription,
+			FlatWords:          &flatWords,
 			SizeIds:            sizeIds,
 			MoodboardMedia:     moodboardMedia,
 			TechnicalMedia:     technicalMedia,
