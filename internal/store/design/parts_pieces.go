@@ -102,8 +102,11 @@ func piecesDocJSON(doc entity.DesignPartsPiecesDoc) (string, error) {
 // stands after the write:
 //   - no row (ExpectedRev 0) → the read is the list (rev 1); a row born meanwhile is returned untouched;
 //   - the row moved since the reader saw ExpectedRev → returned untouched (the newer state wins);
-//   - a designer edited the list → the read becomes the proposal, the list and rev stay as they are
-//     (a proposal changes no name the labeller uses);
+//   - a designer edited the list → the read becomes the proposal; the list stays exactly as the
+//     designer wrote it, rev + 1 — so a designer's settle is tied to THE proposal they saw (Codex
+//     M6: a second read between seeing one and settling it is refused by the CAS, never mixed), and
+//     a late reader can never replace a newer proposal. It costs no extra naming: a read only runs
+//     on new plates, whose parts are named anyway;
 //   - else → the read replaces the list, rev + 1, any proposal dropped.
 func (s *Store) SavePartsPiecesRead(ctx context.Context, req entity.DesignPartsPiecesRead) (*entity.DesignPartsPieces, error) {
 	if err := requireCard(req.TechCardId); err != nil {
@@ -148,7 +151,7 @@ func (s *Store) SavePartsPiecesRead(ctx context.Context, req entity.DesignPartsP
 			}
 			args["proposal"] = string(prop)
 			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE design_parts_pieces SET proposal = :proposal, updated_at = UTC_TIMESTAMP(6)
+				UPDATE design_parts_pieces SET rev = rev + 1, proposal = :proposal, updated_at = UTC_TIMESTAMP(6)
 				WHERE tech_card_id = :card AND rev = :expected`, args); err != nil {
 				return fmt.Errorf("failed to save the pieces proposal: %w", err)
 			}

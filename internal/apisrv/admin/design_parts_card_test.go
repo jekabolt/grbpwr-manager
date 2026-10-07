@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -395,6 +396,16 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 		}}
 	}
 	flats := map[string]int{"front": 11, "back": 21, "side_l": 31}
+	// The marks of req(): ours, files, pictures.
+	marksOK := func(srv *Server, design *mocks.MockDesign) {
+		media := mocks.NewMockMedia(t)
+		srv.repo.(*mocks.MockRepository).EXPECT().Media().Return(media).Maybe()
+		design.EXPECT().AssertMediaNotForeign(mock.Anything, card, []int{12, 22}).Return(nil)
+		pic := func(id int) entity.MediaFull {
+			return entity.MediaFull{Id: id, MediaItem: entity.MediaItem{FullSizeMediaURL: fmt.Sprintf("https://files.example/m%d.png", id)}}
+		}
+		media.EXPECT().GetMediaByIds(mock.Anything, []int{12, 22}).Return(map[int]entity.MediaFull{12: pic(12), 22: pic(22)}, nil)
+	}
 	// M6: the card's pieces list of today's FRONT/BACK plates — never read again.
 	list := &entity.DesignPartsPieces{TechCardId: card, Rev: 3, Front: 11, Back: 21,
 		Doc: entity.DesignPartsPiecesDoc{Pieces: []entity.DesignPartsPiece{{Name: "collar"}}}}
@@ -491,9 +502,21 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+	// M6 (Codex): a read is due → the marks must hold BEFORE the paid read (a read is always followed
+	// by a naming): a foreign marks picture is refused with nothing read.
+	t.Run("no pieces list: refused marks never reach the read", func(t *testing.T) {
+		srv, design := newSrv(t)
+		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
+		design.EXPECT().GetPartsPieces(mock.Anything, card).Return(nil, nil)
+		design.EXPECT().AssertMediaNotForeign(mock.Anything, card, []int{12, 22}).Return(entity.ErrDesignForeignCardPlate)
+		if _, err := srv.SuggestDesignPartsCard(context.Background(), req()); code(err) != codes.FailedPrecondition {
+			t.Fatalf("got %v", err)
+		}
+	})
 	// M6: no list yet → the read of the plates is the first paid step: the gate answers before it.
 	t.Run("no pieces list: the read waits behind the gate", func(t *testing.T) {
 		srv, design := newSrv(t)
+		marksOK(srv, design)
 		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
 		design.EXPECT().GetPartsPieces(mock.Anything, card).Return(nil, nil)
 		_, err := srv.SuggestDesignPartsCard(context.Background(), req())
@@ -504,6 +527,7 @@ func TestSuggestDesignPartsCardDoorsBeforeMoney(t *testing.T) {
 	// M6: the plates moved and the read cannot run → the older list stands (cache read under its rev).
 	t.Run("moved plates, read refused: the older list stands", func(t *testing.T) {
 		srv, design := newSrv(t)
+		marksOK(srv, design)
 		design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(flats, nil)
 		old := *list
 		old.Front = 10

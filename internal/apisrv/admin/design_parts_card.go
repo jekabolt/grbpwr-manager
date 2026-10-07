@@ -169,6 +169,13 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		views = append(views, v)
 	}
 
+	// The cut with the longest server tag this binary writes for an ordinary list must fit the
+	// column BEFORE anything is read or paid (Codex M6: the pieces read is paid).
+	if len(algoRev)+len(designPartsServerTag(designPartsPiecesRevReserve)) > entity.DesignPartsMaxAlgoRev {
+		return nil, status.Errorf(codes.InvalidArgument, "algo_rev must be 1..%d characters",
+			entity.DesignPartsMaxAlgoRev-len(designPartsServerTag(designPartsPiecesRevReserve)))
+	}
+
 	flats, err := s.repo.Design().FlatBenchMedia(ctx, cardID)
 	if err != nil {
 		return nil, designError(ctx, "failed to read the flat bench", err, map[string]string{"tech_card_id": strconv.Itoa(cardID)})
@@ -178,12 +185,30 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 			return nil, status.Error(codes.FailedPrecondition, designPartsFlatChangedMsg)
 		}
 	}
+	// The marks pictures: ours, files, pictures the provider can read — in the order of the sides.
+	// Resolved before the pieces read when one is due (a read is paid and always followed by a
+	// naming), else only on a cache miss.
+	var ordered []string
+	resolveMarks := func() error {
+		var err error
+		ordered, err = s.designPartsMarksURLs(ctx, cardID, views)
+		return err
+	}
 	// M6: the closed names come from the card's PIECES LIST, read from the FRONT/BACK plates on the
 	// bench (now, if there is none or the plates moved) and edited by the designer — never from the
 	// join list. The cache and the flight are keyed on the client's cut, the server's prompt revision
 	// and the list's rev: a list edited after the parts were named names them again. The list read
 	// here is the one the prompt reads (one read, one rev).
-	pieces, err := s.designPartsPiecesFor(ctx, cardID, flats)
+	cur, err := s.repo.Design().GetPartsPieces(ctx, cardID)
+	if err != nil {
+		return nil, designError(ctx, "failed to read the pieces list", err, map[string]string{"tech_card_id": strconv.Itoa(cardID)})
+	}
+	if designPartsPiecesNeedRead(cur, flats) {
+		if err := resolveMarks(); err != nil {
+			return nil, err
+		}
+	}
+	pieces, err := s.designPartsPiecesFor(ctx, cardID, flats, cur)
 	if err != nil {
 		return nil, err
 	}
@@ -211,36 +236,10 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 		return nil, s.aiOffRefusal(purpose, designPartsNotConfiguredMsg)
 	}
 
-	// The marks pictures: ours, files, pictures the provider can read — in the order of the sides.
-	marks := make([]int, 0, len(views))
-	for _, v := range views {
-		marks = append(marks, v.Marks)
-	}
-	if err := s.repo.Design().AssertMediaNotForeign(ctx, cardID, marks); err != nil {
-		return nil, designError(ctx, "the marks picture is refused", err, nil)
-	}
-	urls, attached, err := s.designBoardPictureURLs(ctx, marks)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "design parts card: cannot resolve the marks pictures",
-			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "cannot read the marks picture")
-	}
-	urlOf := make(map[int]string, len(attached))
-	for i, id := range attached {
-		urlOf[id] = urls[i]
-	}
-	ordered := make([]string, 0, len(views))
-	refs := make([]designInputMediaRef, 0, len(views))
-	for _, v := range views {
-		u, ok := urlOf[v.Marks]
-		if !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "marks_media_id %d has no file", v.Marks)
+	if ordered == nil {
+		if err := resolveMarks(); err != nil {
+			return nil, err
 		}
-		ordered = append(ordered, u)
-		refs = append(refs, designInputMediaRef{ID: v.Marks, URL: u, Where: "the marks of the " + designPartsViewWords[v.View]})
-	}
-	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
-		return nil, designNonPictureRefusal(ref, ct)
 	}
 
 	// ⚠ ONE FLIGHT PER (card, sides+flats, cut): a double press pays once. Detached from the leader's
@@ -280,6 +279,10 @@ const designPartsPromptRev = 4
 // revision never contains it (the door refuses one that does), and the wire never shows it.
 const designPartsServerTagSep = "@s"
 
+// designPartsPiecesRevReserve — the largest pieces rev the up-front algo_rev length check makes room
+// for (a list saved 99 999 times); a larger one is still refused after the read, as before.
+const designPartsPiecesRevReserve = 99999
+
 // designPartsCacheRev — the algo_rev a card-wide answer is cached under: the client's cut, the
 // prompt revision, the pieces list's rev («regions.v6+parts.f6@s4.p3»). Fits the 32-character column
 // for any client revision up to ~22 characters.
@@ -313,6 +316,42 @@ func designPartsCurrentRows(rows []entity.DesignPartsSuggestion, pieces *entity.
 		}
 	}
 	return out
+}
+
+// designPartsMarksURLs — the marks pictures of the sides, in their order: ours, files, pictures the
+// provider can read.
+func (s *Server) designPartsMarksURLs(ctx context.Context, cardID int, views []designPartsCardView) ([]string, error) {
+	marks := make([]int, 0, len(views))
+	for _, v := range views {
+		marks = append(marks, v.Marks)
+	}
+	if err := s.repo.Design().AssertMediaNotForeign(ctx, cardID, marks); err != nil {
+		return nil, designError(ctx, "the marks picture is refused", err, nil)
+	}
+	urls, attached, err := s.designBoardPictureURLs(ctx, marks)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "design parts card: cannot resolve the marks pictures",
+			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "cannot read the marks picture")
+	}
+	urlOf := make(map[int]string, len(attached))
+	for i, id := range attached {
+		urlOf[id] = urls[i]
+	}
+	ordered := make([]string, 0, len(views))
+	refs := make([]designInputMediaRef, 0, len(views))
+	for _, v := range views {
+		u, ok := urlOf[v.Marks]
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "marks_media_id %d has no file", v.Marks)
+		}
+		ordered = append(ordered, u)
+		refs = append(refs, designInputMediaRef{ID: v.Marks, URL: u, Where: "the marks of the " + designPartsViewWords[v.View]})
+	}
+	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
+		return nil, designNonPictureRefusal(ref, ct)
+	}
+	return ordered, nil
 }
 
 // designPartsCardFlightKey — card, the sides with their flats sorted, the cut.

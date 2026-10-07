@@ -159,7 +159,7 @@ func TestSetDesignPartsPiecesDoors(t *testing.T) {
 			strings.Join(s.Names, "|") == "front body|left strap"
 	})).Return(&entity.DesignPartsPieces{TechCardId: card, Rev: 4, Front: 11, Back: 12,
 		Doc: entity.DesignPartsPiecesDoc{Pieces: []entity.DesignPartsPiece{{Name: "front body"}, {Name: "left strap"}}}}, nil).Once()
-	design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(map[string]int{"front": 11, "back": 12}, nil).Once()
+	design.EXPECT().FlatBenchMedia(mock.Anything, card).Return(map[string]int{"front": 11, "back": 12}, nil).Times(2)
 	resp, err := srv.SetDesignPartsPieces(context.Background(), &pb_admin.SetDesignPartsPiecesRequest{
 		TechCardId: card, ExpectedRev: 3, Names: []string{"Front Body", "left strap", "front body"}, SettleProposal: true})
 	require.NoError(t, err)

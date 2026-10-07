@@ -243,20 +243,11 @@ type designPiecesFlightAnswer struct {
 // there is none or the plates moved since the newest read. A failed read leaves an older list
 // standing (logged); with no list at all the failure is the caller's. nil, nil = no FRONT/BACK plate
 // to read from and no list (the labeller then names freely).
-func (s *Server) designPartsPiecesFor(ctx context.Context, cardID int, flats map[string]int) (*entity.DesignPartsPieces, error) {
-	cur, err := s.repo.Design().GetPartsPieces(ctx, cardID)
-	if err != nil {
-		return nil, designError(ctx, "failed to read the pieces list", err, map[string]string{"tech_card_id": strconv.Itoa(cardID)})
-	}
-	front, back := flats[entity.DesignViewFront], flats[entity.DesignViewBack]
-	if front == 0 && back == 0 {
+func (s *Server) designPartsPiecesFor(ctx context.Context, cardID int, flats map[string]int, cur *entity.DesignPartsPieces) (*entity.DesignPartsPieces, error) {
+	if !designPartsPiecesNeedRead(cur, flats) {
 		return cur, nil
 	}
-	if cur != nil {
-		if f, b := cur.ReadFrom(); f == front && b == back {
-			return cur, nil
-		}
-	}
+	front, back := flats[entity.DesignViewFront], flats[entity.DesignViewBack]
 	seen := 0
 	if cur != nil {
 		seen = cur.Rev
@@ -294,6 +285,20 @@ func (s *Server) designPartsPiecesFor(ctx context.Context, cardID int, flats map
 		return fallback(res.Err)
 	}
 	return res.Val.(designPiecesFlightAnswer).pieces, nil
+}
+
+// designPartsPiecesNeedRead — the bench holds a FRONT or BACK plate and the card has no list, or
+// its newest read (the proposal's, else the list's) was of other plates.
+func designPartsPiecesNeedRead(cur *entity.DesignPartsPieces, flats map[string]int) bool {
+	front, back := flats[entity.DesignViewFront], flats[entity.DesignViewBack]
+	if front == 0 && back == 0 {
+		return false
+	}
+	if cur == nil {
+		return true
+	}
+	f, b := cur.ReadFrom()
+	return f != front || b != back
 }
 
 // designPartsPiecesRead — the fences and the ONE read of the FRONT/BACK plates (the flight leader's
@@ -422,16 +427,18 @@ func (s *Server) SetDesignPartsPieces(ctx context.Context, req *pb_admin.SetDesi
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// Read BEFORE the write (Codex M6): a failure after a committed save would tell the designer
+	// their list was not kept, and their retry would then be refused on the moved rev.
+	flats, err := s.repo.Design().FlatBenchMedia(ctx, cardID)
+	if err != nil {
+		return nil, designError(ctx, "failed to read the flat bench", err, nil)
+	}
 	saved, err := s.repo.Design().SetPartsPieces(ctx, entity.DesignPartsPiecesSave{
 		TechCardId: cardID, ExpectedRev: int(req.GetExpectedRev()), Names: names,
 		SettleProposal: req.GetSettleProposal(), Actor: designActor(ctx),
 	})
 	if err != nil {
 		return nil, designError(ctx, "failed to save the pieces list", err, map[string]string{"tech_card_id": strconv.Itoa(cardID)})
-	}
-	flats, err := s.repo.Design().FlatBenchMedia(ctx, cardID)
-	if err != nil {
-		return nil, designError(ctx, "failed to read the flat bench", err, nil)
 	}
 	return &pb_admin.SetDesignPartsPiecesResponse{Pieces: designPartsPiecesToPb(saved, flats)}, nil
 }

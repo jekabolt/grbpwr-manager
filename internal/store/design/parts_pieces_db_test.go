@@ -74,11 +74,11 @@ func TestDesignDBPartsPiecesReadNeverOverwritesTheDesigner(t *testing.T) {
 	require.Equal(t, []string{"front"}, got.Doc.Pieces[0].Views, "a kept name keeps the views the read saw")
 	require.Empty(t, got.Doc.Pieces[1].Views, "a designer's own piece has none")
 
-	// new plates after the edit: the read only PROPOSES — names and rev stay
+	// new plates after the edit: the read only PROPOSES — the names stay, the rev moves
 	got, err = d.SavePartsPiecesRead(ctx, entity.DesignPartsPiecesRead{TechCardId: card, ExpectedRev: 3,
 		Doc: piecesDoc("front body", "armhole thing"), Front: 31, Back: 32, Model: "m3"})
 	require.NoError(t, err)
-	require.Equal(t, 3, got.Rev, "a proposal changes no name the labeller uses")
+	require.Equal(t, 4, got.Rev, "a proposal moves the rev (a settle is tied to it) but no name")
 	require.Equal(t, []string{"front body", "neck band", "left strap"}, got.Doc.Names())
 	require.NotNil(t, got.Proposal)
 	require.Equal(t, []string{"front body", "armhole thing"}, got.Proposal.Doc.Names())
@@ -93,18 +93,23 @@ func TestDesignDBPartsPiecesReadNeverOverwritesTheDesigner(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"front body", "armhole thing"}, got.Proposal.Doc.Names())
 
+	// a tab that saw the list before the proposal cannot settle (or edit) blind
+	_, err = d.SetPartsPieces(ctx, entity.DesignPartsPiecesSave{TechCardId: card, ExpectedRev: 3,
+		Names: []string{"front body"}, SettleProposal: true, Actor: "probe"})
+	require.True(t, errors.Is(err, entity.ErrDesignPartsPiecesRevMismatch), "%v", err)
+
 	// an edit without settling keeps the proposal waiting
-	got, err = d.SetPartsPieces(ctx, entity.DesignPartsPiecesSave{TechCardId: card, ExpectedRev: 3,
+	got, err = d.SetPartsPieces(ctx, entity.DesignPartsPiecesSave{TechCardId: card, ExpectedRev: 4,
 		Names: []string{"front body", "neck band"}, Actor: "probe"})
 	require.NoError(t, err)
-	require.Equal(t, 4, got.Rev)
+	require.Equal(t, 5, got.Rev)
 	require.NotNil(t, got.Proposal)
 
 	// settle (take): the proposal goes, its plates become the list's
-	got, err = d.SetPartsPieces(ctx, entity.DesignPartsPiecesSave{TechCardId: card, ExpectedRev: 4,
+	got, err = d.SetPartsPieces(ctx, entity.DesignPartsPiecesSave{TechCardId: card, ExpectedRev: 5,
 		Names: got.Proposal.Doc.Names(), SettleProposal: true, Actor: "probe"})
 	require.NoError(t, err)
-	require.Equal(t, 5, got.Rev)
+	require.Equal(t, 6, got.Rev)
 	require.Nil(t, got.Proposal)
 	require.Equal(t, []string{"front body", "armhole thing"}, got.Doc.Names())
 	require.Equal(t, [2]int{31, 32}, [2]int{got.Front, got.Back})
@@ -116,7 +121,7 @@ func TestDesignDBPartsPiecesReadNeverOverwritesTheDesigner(t *testing.T) {
 	band, err := d.GetBand(ctx, card, 10)
 	require.NoError(t, err)
 	require.NotNil(t, band.PartsPieces)
-	require.Equal(t, 5, band.PartsPieces.Rev)
+	require.Equal(t, 6, band.PartsPieces.Rev)
 	require.NotNil(t, band.FlatMedia)
 
 	// the row goes with the card
