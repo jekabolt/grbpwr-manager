@@ -16,9 +16,13 @@ import (
 )
 
 // designBoardIsTheSource — 101 §2.8 / Ф4: a run reads ONLY labels on pictures lying on the moodboard
-// with the purpose `target` (a view) or `detail`. Until the REFERENCE rows are moved onto the board
-// (Ф4), a person's label on a picture outside the board still travels, as before.
-var designBoardIsTheSource = false
+// with the purpose `target` (a view) or `detail`. On since Ф4: migration 0404 moved the REFERENCE rows
+// onto the board (designFoldReferenceRows does it to a stale tab's save), so a person's label on a
+// picture off the board, or on a mood / material / unmarked one, stays home like a model's. A var so
+// the old rule stays testable (design_board_source_test.go).
+const designBoardIsTheSourceDefault = true
+
+var designBoardIsTheSource = designBoardIsTheSourceDefault
 
 // designRunRefs — the design_reference rows a run (and the join list) may read:
 //   - a settled label only (entity.DesignReferenceTravels: a role, state ok — pending / unsure / failed
@@ -28,16 +32,40 @@ var designBoardIsTheSource = false
 //     mood, or never confirmed as the garment, is the model's guess and stays home;
 //   - with designBoardIsTheSource, a person's label the same way.
 func designRunRefs(card *entity.TechCard, refs []entity.DesignReference) []entity.DesignReference {
+	return designRefsBy(card, refs, false)
+}
+
+// designRunRefsFor — the refs of a run of `kind`. THE BOARD RULE IS THE FLAT'S (Ф4): the flat is the
+// run whose input the moodboard replaced (the old «INPUT — REFERENCES» was its input). Render, 3D and
+// the other kinds — and the join list — keep the rule they had: a person's label rides wherever its
+// picture is; only a model's label must sit on a fitting board picture.
+func designRunRefsFor(kind string, card *entity.TechCard, refs []entity.DesignReference) []entity.DesignReference {
+	return designRefsBy(card, refs, kind == entity.DesignRunKindFlat && designBoardIsTheSource)
+}
+
+func designRefsBy(card *entity.TechCard, refs []entity.DesignReference, boardRule bool) []entity.DesignReference {
 	purposeOf := map[int]entity.TechCardMediaRole{}
 	for _, p := range designBoardPictures(card) {
 		purposeOf[p.MediaID] = p.Purpose
+	}
+	// A LEGACY INPUT ROW (kind reference) still on the card — a released card, which migration 0404
+	// skips — keeps the old rule: its person label rides as it did. Everywhere else 0404 and the save
+	// fold turned these rows into board rows.
+	legacyInput := map[int]bool{}
+	if card != nil {
+		for _, m := range card.Media {
+			if m.Category == entity.TechCardMediaCategoryMoodboard && m.Kind == entity.TechCardMediaReference {
+				legacyInput[m.MediaId] = true
+			}
+		}
 	}
 	out := make([]entity.DesignReference, 0, len(refs))
 	for _, r := range refs {
 		if !entity.DesignReferenceTravels(r) {
 			continue
 		}
-		if designBoardIsTheSource || entity.IsDesignLabelByModel(r.LabelSource) {
+		byModel := entity.IsDesignLabelByModel(r.LabelSource)
+		if byModel || (boardRule && !legacyInput[r.MediaId]) {
 			purpose, onBoard := purposeOf[r.MediaId]
 			if !onBoard || !designLabelFitsPurpose(r.Role, purpose) {
 				continue
@@ -164,7 +192,7 @@ func designRunSources(kind string, card *entity.TechCard, band *entity.DesignBan
 	return designInputSources{
 		Kind:   kind,
 		Card:   card,
-		Refs:   designKeptReferences(kind, designRunRefs(card, band.References), band.Joins),
+		Refs:   designKeptReferences(kind, designRunRefsFor(kind, card, band.References), band.Joins),
 		Bench:  band.Bench,
 		Params: params,
 	}

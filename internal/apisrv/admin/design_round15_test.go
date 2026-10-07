@@ -162,7 +162,7 @@ func TestAFullShelfREFUSES_A_PATTERN_RUN_AND_NOTHING_ELSE(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newDesignRunRig(t, designMoodCard(), full)
+			rig := newDesignRunRig(t, designMoodCardWithRefOnBoard(), full)
 			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, mock.Anything, mock.Anything).
 				Return(nil).Maybe()
 			req := designStartRequest(tc.kind)

@@ -66,6 +66,7 @@ func boardSnapIDs(in *pb_common.DesignInputSnapshot) []int32 {
 }
 
 func TestFlatViewsRunTakesTheTwoNewestOfEachViewFromTheBoard(t *testing.T) {
+	withBoardSource(t)
 	src := designRunSources(entity.DesignRunKindFlat, boardCard(), &entity.DesignBand{References: boardRefs()},
 		&pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne})
 	snap, err := designAssembleInputs(src)
@@ -77,6 +78,7 @@ func TestFlatViewsRunTakesTheTwoNewestOfEachViewFromTheBoard(t *testing.T) {
 }
 
 func TestFlatDetailRunTakesTheNewestFourOfItsDetail(t *testing.T) {
+	withBoardSource(t)
 	card := &entity.TechCard{}
 	var refs []entity.DesignReference
 	for i := 1; i <= 6; i++ {
@@ -94,6 +96,7 @@ func TestFlatDetailRunTakesTheNewestFourOfItsDetail(t *testing.T) {
 }
 
 func TestPreviewHeldSaysWhyEachBoardPictureStaysHome(t *testing.T) {
+	withBoardSource(t)
 	src := designRunSources(entity.DesignRunKindFlat, boardCard(), &entity.DesignBand{References: boardRefs()},
 		&pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne})
 	snap, err := designAssembleInputs(src)
@@ -114,6 +117,7 @@ func TestPreviewHeldSaysWhyEachBoardPictureStaysHome(t *testing.T) {
 // THE INVARIANT (101 Ф2): «what the model gets» == the snapshot the next run freezes. Both go through
 // the real handlers on the same card and band.
 func TestPreviewEqualsTheSnapshotOfTheNextRun(t *testing.T) {
+	withBoardSource(t)
 	band := &entity.DesignBand{References: boardRefs(), Bench: designBandWith(false).Bench}
 	rig := newDesignRunRig(t, boardCard(), band)
 	params := &pb_common.DesignRunParams{Views: []string{"front", "back"}, Layout: designLayoutOne}

@@ -188,8 +188,8 @@ func TestDesignRunRefsTravelRule(t *testing.T) {
 		ref(1, "front", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateOk), // rides
 		ref(2, "back", entity.DesignLabelSourceModelCheap, entity.DesignLabelStateOk),  // model view on an unmarked picture: home
 		ref(3, "", entity.DesignLabelSourceModelStrong, entity.DesignLabelStateUnsure), // unsure: home
-		ref(5, "side_l", "", ""), // a person's legacy row: rides (flag off)
-		ref(6, "back", entity.DesignLabelSourceHuman, entity.DesignLabelStateOk), // a person's input row: rides (flag off)
+		ref(5, "side_l", "", ""), // a person's label on a picture off the card: not the flat's (Ф4)
+		ref(6, "back", entity.DesignLabelSourceHuman, entity.DesignLabelStateOk), // a person's legacy input row: rides
 		ref(7, "", entity.DesignLabelSourceHuman, entity.DesignLabelStateOk),     // a person's «no view»: home
 	}
 	ids := func(rs []entity.DesignReference) []int {
@@ -199,11 +199,15 @@ func TestDesignRunRefsTravelRule(t *testing.T) {
 		}
 		return out
 	}
+	// Render, 3D, the join list: a person's label rides wherever its picture is.
 	require.Equal(t, []int{1, 5, 6}, ids(designRunRefs(card, refs)))
-
-	designBoardIsTheSource = true
-	defer func() { designBoardIsTheSource = false }()
-	require.Equal(t, []int{1}, ids(designRunRefs(card, refs)), "Ф4: only labels on board target pictures")
+	require.Equal(t, []int{1, 5, 6}, ids(designRunRefsFor(entity.DesignRunKindRender, card, refs)))
+	// Ф4, the flat: only labels on board pictures of a fitting purpose — and a legacy input row (6, a
+	// released card's) keeps the old rule.
+	require.Equal(t, []int{1, 6}, ids(designRunRefsFor(entity.DesignRunKindFlat, card, refs)))
+	designBoardIsTheSource = false
+	t.Cleanup(func() { designBoardIsTheSource = designBoardIsTheSourceDefault })
+	require.Equal(t, []int{1, 5, 6}, ids(designRunRefsFor(entity.DesignRunKindFlat, card, refs)), "the old rule")
 }
 
 func TestParseBoardLabelAnswerLenient(t *testing.T) {
