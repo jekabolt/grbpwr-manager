@@ -494,6 +494,8 @@ var methodRequirements = map[string]Requirement{
 	// Auto parts: naming a flat's parts spends the key (write).
 	"SuggestDesignParts":     wr(SectionTechCards),
 	"SuggestDesignPartsCard": wr(SectionTechCards),
+	// Pattern import: naming an imported pattern's pieces spends the key (write).
+	"SuggestPatternPieces": wr(SectionTechCards),
 	// PARTS pieces list (M6): the designer's edit of card data (write; spends no key).
 	"SetDesignPartsPieces": wr(SectionTechCards),
 	// Flat route join list: generating spends the key, saving edits card data (write).

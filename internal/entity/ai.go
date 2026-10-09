@@ -126,6 +126,9 @@ const (
 	// AIPurposeDesignJoins — the flat route's join list (0397): one vision+JSON call writing the
 	// garment's construction on the fixed landmark ruler from its reference photos.
 	AIPurposeDesignJoins = "chat.design_joins"
+	// AIPurposePatternPieces — pattern import (F9, 0408): one vision+JSON call naming the numbered
+	// pieces of an imported sewing pattern (code, name, fabrics, cut quantity, fold, pair).
+	AIPurposePatternPieces = "chat.pattern_pieces"
 	// AIPurposeBoardLabel / AIPurposeBoardRead — the moodboard labels (101-MOODBOARD-ROLES): a cheap
 	// vision call names the view of a target picture (and proposes the purpose of a picture without
 	// one); a strong one takes the unclear views and reads which detail a detail photo shows.
@@ -144,7 +147,7 @@ const (
 func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
@@ -160,7 +163,7 @@ func IsAIPurpose(v string) bool {
 func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas:
 		return AICapabilityChat

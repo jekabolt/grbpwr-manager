@@ -2668,6 +2668,28 @@ service AdminService {
     };
   }
 
+  // SuggestPatternPieces (pattern import, F9) — ONE sync vision+JSON call (chat.pattern_pieces) that
+  // NAMES the pieces of an imported sewing pattern. The client finds the pieces itself (geometry is
+  // deterministic and never comes from the model), renders the assembled sheet with a number on
+  // every piece (Set-of-Mark, overview_media_id), optionally crops of single pieces, and sends its
+  // own evidence per mark (text inside the contour, quantity note, area, bbox, symmetry and fold
+  // hints) plus the card's context. The model proposes, per mark: a piece code of the card's grammar
+  // (PREFIX[_modifiers], uppercase, NO size tail), an English name, fabric purposes, cut quantity,
+  // fold, pair, a variant label, a confidence and short evidence quotes. The server validates the
+  // answer: unknown marks are dropped, the confidence is clamped to 0..1, the code is normalised to
+  // the grammar and refused (code "", a warning) when its prefix is not allowed or it carries a size
+  // tail or an unknown modifier. Nothing is stored; an identical request within an hour is answered
+  // from process memory (cached) unless force. tech_card_id is optional (0 = no card yet).
+  //
+  // InvalidArgument: no overview, 0 or more than 80 pieces, more than 12 crops, a duplicate mark, a
+  // crop of a mark not in pieces. FailedPrecondition: an image is not a picture.
+  rpc SuggestPatternPieces(SuggestPatternPiecesRequest) returns (SuggestPatternPiecesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/pattern-import/pieces:suggest"
+      body: "*"
+    };
+  }
+
   // SaveTechCardPieceAreas stores the MEASURED AREAS of one fabric scope's cut pieces (Ф0) — the
   // geometry the server needs to DERIVE a fabric consumption norm instead of demanding that somebody
   // type one.
@@ -11059,6 +11081,82 @@ message PutTechCardPatternSizeIndexRequest {
 message PutTechCardPatternSizeIndexResponse {
   string sheet_fingerprint = 1; // what the server recorded, for debugging
   int32 resolved_size_count = 2; // how many tokens landed on sizes of the card's range
+}
+
+// PATTERN IMPORT · PIECE NAMES messages (SuggestPatternPieces).
+
+// PatternPieceEvidence is what the client measured and read on one marked piece.
+message PatternPieceEvidence {
+  int32 mark = 1; // the number drawn on the piece in the overview, 1..999, unique in the request
+  repeated string text_inside = 2; // text found inside the contour, as printed (≤ 12 items, ≤ 120 runes each)
+  string quantity_text = 3; // a quantity note found by the piece ("2x", "cut 2 on fold"), ≤ 120 runes
+  double area_cm2 = 4; // the contour's area
+  double bbox_w_mm = 5; // the contour's bounding box, as laid on the sheet
+  double bbox_h_mm = 6;
+  bool is_symmetric_hint = 7; // the contour is mirror-symmetric about an axis
+  bool has_fold_line_hint = 8; // a fold line was found on the contour
+}
+
+// PatternPieceCrop is a close-up picture of one marked piece.
+message PatternPieceCrop {
+  int32 mark = 1; // a mark of SuggestPatternPiecesRequest.pieces
+  int32 media_id = 2; // the uploaded picture
+}
+
+// PatternPiecesContext is what the card and the pattern's own pages say around the pieces.
+message PatternPiecesContext {
+  repeated string size_names = 1; // the card's size range as written ("XS", "44"); a code never ends with one
+  repeated string fabric_purposes_in_bom = 2; // the card's BOM purposes (main, lining, interfacing…)
+  repeated string existing_card_piece_names = 3; // pieces the card already lists
+  string instructions_text_excerpt = 4; // e.g. the cutting-layout text, ≤ 4000 runes
+  string language_hint = 5; // the pattern's language ("de", "ru"), "" = unknown
+}
+
+// PatternPieceCodeOption is one allowed code prefix and its English name.
+message PatternPieceCodeOption {
+  string code = 1; // uppercase prefix: "FP"
+  string name = 2; // "front piece"
+}
+
+message SuggestPatternPiecesRequest {
+  int32 tech_card_id = 1; // optional (0 = no card yet): the card the import lands on, for the log
+  int32 overview_media_id = 2; // the assembled sheet with a number on every piece
+  repeated PatternPieceCrop crops = 3; // ≤ 12 close-ups, after the overview in the model's view
+  repeated PatternPieceEvidence pieces = 4; // 1..80 marked pieces
+  PatternPiecesContext context = 5;
+  // allowed_codes — the code prefixes the answer may use; empty = the server's default vocabulary
+  // (FP BP SL CLR CUF PLK WB PCK YK FAC LIN SP FL GST BLT WS).
+  repeated PatternPieceCodeOption allowed_codes = 6;
+  // allowed_modifiers — the letter/symbol modifiers a code may carry; empty = L R F B #. A part
+  // number 1..20 is always allowed.
+  repeated string allowed_modifiers = 7;
+  bool force = 8; // ask again even when an identical request was answered within the hour
+}
+
+// PatternPieceSuggestion is the model's proposal for one marked piece, validated by the server.
+message PatternPieceSuggestion {
+  int32 mark = 1;
+  // code — PREFIX[_L|_R][_F|_B][_n][_#], uppercase, no size tail; "" when the model's code was
+  // refused (the reason is in warnings) or the model gave none.
+  string code = 2;
+  string human_name_en = 3; // lowercase English, e.g. "front piece left"
+  repeated string fabric_purposes = 4; // BOM purposes: main lining pocketing interfacing insulation contrast mesh other
+  int32 cut_quantity = 5; // pieces cut per garment, 1..20; 0 = unknown
+  bool fold = 6; // cut on the fold
+  bool pair = 7; // cut as a mirrored pair (left + right)
+  string variant = 8; // the model/variant the piece belongs to, "" = all
+  double confidence = 9; // 0..1
+  repeated string evidence = 10; // short quotes of what the model relied on (≤ 4, ≤ 120 runes each)
+}
+
+message SuggestPatternPiecesResponse {
+  repeated PatternPieceSuggestion suggestions = 1; // one per named mark, in mark order
+  string model = 2; // the model that answered
+  int32 prompt_tokens = 3;
+  int32 completion_tokens = 4;
+  string cost_usd = 5; // the provider's reported charge, "" = not reported
+  repeated string warnings = 6; // marks left unnamed, codes refused, duplicate codes
+  bool cached = 7; // true = an identical request was answered within the hour, no call made
 }
 
 message SaveTechCardPieceAreasRequest {
