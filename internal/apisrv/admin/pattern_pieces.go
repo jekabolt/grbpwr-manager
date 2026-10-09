@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"regexp"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -46,21 +49,30 @@ import (
 // The router's route for the purpose (and its pause) is the switch.
 
 const (
-	patternPiecesMaxPieces       = 80
-	patternPiecesMaxCrops        = 12
-	patternPiecesMaxMark         = 999
-	patternPiecesMaxTextItems    = 12
-	patternPiecesMaxTextRunes    = 120
-	patternPiecesMaxListItems    = 60
-	patternPiecesMaxNameRunes    = 60
-	patternPiecesMaxVariantRunes = 40
-	patternPiecesMaxInstructions = 4000
-	patternPiecesMaxEvidence     = 4
-	patternPiecesMaxCodeLen      = 32
-	patternPiecesMaxPartNumber   = 20
-	patternPiecesMaxCutQuantity  = 20
-	patternPiecesMaxFabrics      = 4
-	patternPiecesMaxCodes        = 60
+	patternPiecesMaxPieces        = 80
+	patternPiecesMaxCrops         = 12
+	patternPiecesMaxMark          = 999
+	patternPiecesMaxTextItems     = 12
+	patternPiecesMaxTextRunes     = 120
+	patternPiecesMaxSizes         = 60
+	patternPiecesMaxSizeRunes     = 32
+	patternPiecesMaxBomFabrics    = 20
+	patternPiecesMaxFabricRunes   = 40
+	patternPiecesMaxCardPieces    = 120
+	patternPiecesMaxLanguageRunes = 16
+	patternPiecesMaxModifiers     = 16
+	patternPiecesMaxModifierRunes = 8
+	patternPiecesMaxCodeRunes     = 16
+	patternPiecesMaxPromptBytes   = 64 << 10
+	patternPiecesMaxNameRunes     = 60
+	patternPiecesMaxVariantRunes  = 40
+	patternPiecesMaxInstructions  = 4000
+	patternPiecesMaxEvidence      = 4
+	patternPiecesMaxCodeLen       = 32
+	patternPiecesMaxPartNumber    = 20
+	patternPiecesMaxCutQuantity   = 20
+	patternPiecesMaxFabrics       = 4
+	patternPiecesMaxCodes         = 60
 
 	patternPiecesMaxTokens = 8000
 	patternPiecesEffort    = "low"
@@ -132,14 +144,35 @@ type patternPieceEvidence struct {
 }
 
 // SuggestPatternPieces names the marked pieces of an imported pattern (cached for an hour).
+//
+// Order, cheapest first: the arguments (bounded BEFORE any cleaning) → the prompt's byte ceiling →
+// the purpose is callable → the hour cache → the hourly per-admin window → the media lookup → one
+// flight per digest (semaphore + call). The window is spent per press that misses the cache, before
+// the lookup, so a refused account never costs a media read; two coalesced presses spend two slots.
 func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.SuggestPatternPiecesRequest) (*pb_admin.SuggestPatternPiecesResponse, error) {
 	in, mediaIDs, err := patternPiecesInputOf(req)
+	if err != nil {
+		return nil, err
+	}
+	user, err := patternPiecesBoundedPrompt(in)
 	if err != nil {
 		return nil, err
 	}
 	const purpose = entity.AIPurposePatternPieces
 	if !s.ai.Enabled(purpose) {
 		return nil, s.aiOffRefusal(purpose, patternPiecesNotConfiguredMsg)
+	}
+
+	key := patternPiecesDigest(req)
+	if !req.GetForce() {
+		if hit, ok := s.patternPiecesCache.get(key, time.Now()); ok {
+			return patternPiecesCachedCopy(hit), nil
+		}
+	}
+	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts and the pattern pieces share the limit); every call spends the AI key — try again later",
+			enhancePerAdminCalls)
 	}
 
 	// The pictures: files of ours the provider can read, in the order the prompt names them.
@@ -165,13 +198,6 @@ func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.Suggest
 		return nil, designNonPictureRefusal(ref, ct)
 	}
 
-	key := patternPiecesDigest(req)
-	if !req.GetForce() {
-		if hit, ok := s.patternPiecesCache.get(key, time.Now()); ok {
-			return patternPiecesCachedCopy(hit), nil
-		}
-	}
-
 	// ⚠ ONE FLIGHT PER REQUEST DIGEST: a double press pays once. Detached from the leader's
 	// cancellation under its own budget, like the parts labeller.
 	cardID := int(req.GetTechCardId())
@@ -180,7 +206,7 @@ func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.Suggest
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			patternPiecesAttempts*budget+designPartsFlightMargin)
 		defer cancel()
-		return s.patternPiecesCall(fctx, cardID, in, urls, key, budget, req.GetForce())
+		return s.patternPiecesCall(fctx, cardID, in, user, urls, key, budget, req.GetForce())
 	})
 	var res singleflight.Result
 	select {
@@ -194,9 +220,9 @@ func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.Suggest
 	return proto.Clone(res.Val.(*pb_admin.SuggestPatternPiecesResponse)).(*pb_admin.SuggestPatternPiecesResponse), nil
 }
 
-// patternPiecesCall — the fences and the provider call (the flight leader's work); an unusable
-// answer is asked once more.
-func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPiecesInput, urls []string, key [sha256.Size]byte, budget time.Duration, force bool) (*pb_admin.SuggestPatternPiecesResponse, error) {
+// patternPiecesCall — the semaphore and the provider call (the flight leader's work). A structurally
+// invalid answer is asked once more; only a COMPLETE answer (every mark named) is cached.
+func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPiecesInput, user string, urls []string, key [sha256.Size]byte, budget time.Duration, force bool) (*pb_admin.SuggestPatternPiecesResponse, error) {
 	const purpose = entity.AIPurposePatternPieces
 	// A flight that finished just before this one already paid: read the cache again.
 	if !force {
@@ -210,14 +236,11 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
-		return nil, status.Errorf(codes.ResourceExhausted,
-			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts and the pattern pieces share the limit); every call spends the AI key — try again later",
-			enhancePerAdminCalls)
-	}
 
-	user := patternPiecesUserPrompt(in)
-	var out *pb_admin.SuggestPatternPiecesResponse
+	var (
+		out      *pb_admin.SuggestPatternPiecesResponse
+		complete bool
+	)
 	err := designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
 		started := time.Now()
 		res, err := s.ai.Chat(actx, purpose, aiprov.ChatRequest{
@@ -241,9 +264,11 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 		if err != nil {
 			return s.patternPiecesChatFailure(ctx, res, err, logAttrs)
 		}
-		suggestions, warnings, ok := parsePatternPieces(raw, in)
-		if !ok {
-			slog.Default().ErrorContext(ctx, "pattern pieces: the answer is not the promised JSON", logAttrs...)
+		suggestions, warnings, whole, perr := parsePatternPieces(raw, in)
+		if perr != nil {
+			// The violation names a field or a position, never the model's text.
+			slog.Default().ErrorContext(ctx, "pattern pieces: the answer is not the promised JSON",
+				append(logAttrs, slog.String("violation", perr.Error()))...)
 			return status.Error(codes.Internal, designPartsUnusableMsg)
 		}
 		out = &pb_admin.SuggestPatternPiecesResponse{
@@ -253,14 +278,17 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 		if res != nil && res.CostUSD.Valid {
 			out.CostUsd = res.CostUSD.Decimal.String()
 		}
+		complete = whole
 		slog.Default().InfoContext(ctx, "pattern pieces", append(logAttrs,
-			slog.Int("named", len(suggestions)), slog.Int("warnings", len(warnings)))...)
+			slog.Int("named", len(suggestions)), slog.Int("warnings", len(warnings)), slog.Bool("complete", whole))...)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.patternPiecesCache.put(key, out, time.Now())
+	if complete {
+		s.patternPiecesCache.put(key, out, time.Now())
+	}
 	return out, nil
 }
 
@@ -296,6 +324,8 @@ func (s *Server) patternPiecesChatFailure(ctx context.Context, res *aiprov.ChatR
 // ─── the request ───
 
 // patternPiecesInputOf validates and cleans the request; mediaIDs is the overview then the crops.
+// Every list and string is bounded on its RAW length first: an oversized field is refused, never
+// silently cut (the client must know the model did not see it).
 func patternPiecesInputOf(req *pb_admin.SuggestPatternPiecesRequest) (patternPiecesInput, []int, error) {
 	var in patternPiecesInput
 	overview := int(req.GetOverviewMediaId())
@@ -311,6 +341,11 @@ func patternPiecesInputOf(req *pb_admin.SuggestPatternPiecesRequest) (patternPie
 	case len(req.GetCrops()) > patternPiecesMaxCrops:
 		return in, nil, status.Errorf(codes.InvalidArgument, "crops: at most %d close-ups", patternPiecesMaxCrops)
 	}
+	ctxIn := req.GetContext()
+	if err := patternPiecesRawBounds(req); err != nil {
+		return in, nil, err
+	}
+
 	seen := map[int]bool{}
 	for _, p := range req.GetPieces() {
 		m := int(p.GetMark())
@@ -352,12 +387,11 @@ func patternPiecesInputOf(req *pb_admin.SuggestPatternPiecesRequest) (patternPie
 		in.CropMarks = append(in.CropMarks, m)
 	}
 
-	ctxIn := req.GetContext()
-	in.Sizes = patternPiecesTexts(ctxIn.GetSizeNames(), patternPiecesMaxListItems, 32)
-	in.BomFabrics = patternPiecesTexts(ctxIn.GetFabricPurposesInBom(), patternPiecesMaxListItems, 40)
-	in.CardPieces = patternPiecesTexts(ctxIn.GetExistingCardPieceNames(), patternPiecesMaxListItems, patternPiecesMaxNameRunes)
+	in.Sizes = patternPiecesTexts(ctxIn.GetSizeNames(), patternPiecesMaxSizes, patternPiecesMaxSizeRunes)
+	in.BomFabrics = patternPiecesTexts(ctxIn.GetFabricPurposesInBom(), patternPiecesMaxBomFabrics, patternPiecesMaxFabricRunes)
+	in.CardPieces = patternPiecesTexts(ctxIn.GetExistingCardPieceNames(), patternPiecesMaxCardPieces, patternPiecesMaxNameRunes)
 	in.Instructions = patternPiecesTrimKeepLines(ctxIn.GetInstructionsTextExcerpt(), patternPiecesMaxInstructions)
-	in.Language = designPartsTrim(ctxIn.GetLanguageHint(), 16)
+	in.Language = designPartsTrim(ctxIn.GetLanguageHint(), patternPiecesMaxLanguageRunes)
 
 	for _, c := range req.GetAllowedCodes() {
 		code := strings.ToUpper(strings.TrimSpace(c.GetCode()))
@@ -366,9 +400,6 @@ func patternPiecesInputOf(req *pb_admin.SuggestPatternPiecesRequest) (patternPie
 		}
 		if patternPiecesHasCode(in.Codes, code) {
 			continue
-		}
-		if len(in.Codes) == patternPiecesMaxCodes {
-			return in, nil, status.Errorf(codes.InvalidArgument, "allowed_codes: at most %d", patternPiecesMaxCodes)
 		}
 		in.Codes = append(in.Codes, patternPieceCode{Code: code, Name: strings.ToLower(designPartsTrim(c.GetName(), patternPiecesMaxNameRunes))})
 	}
@@ -391,6 +422,75 @@ func patternPiecesInputOf(req *pb_admin.SuggestPatternPiecesRequest) (patternPie
 		in.Modifiers = append(in.Modifiers, patternPiecesDefaultModifiers...)
 	}
 	return in, mediaIDs, nil
+}
+
+// patternPiecesRawBounds refuses any repeated field longer than its ceiling and any string longer
+// than its rune ceiling, on the values AS SENT (before trimming or de-duplication).
+func patternPiecesRawBounds(req *pb_admin.SuggestPatternPiecesRequest) error {
+	list := func(field string, values []string, maxItems, maxRunes int) error {
+		if len(values) > maxItems {
+			return status.Errorf(codes.InvalidArgument, "%s: at most %d items, got %d", field, maxItems, len(values))
+		}
+		for i, v := range values {
+			if err := patternPiecesOneBound(fmt.Sprintf("%s[%d]", field, i), v, maxRunes); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, p := range req.GetPieces() {
+		field := fmt.Sprintf("pieces[mark %d]", p.GetMark())
+		if err := list(field+".text_inside", p.GetTextInside(), patternPiecesMaxTextItems, patternPiecesMaxTextRunes); err != nil {
+			return err
+		}
+		if err := patternPiecesOneBound(field+".quantity_text", p.GetQuantityText(), patternPiecesMaxTextRunes); err != nil {
+			return err
+		}
+	}
+	c := req.GetContext()
+	for _, chk := range []error{
+		list("context.size_names", c.GetSizeNames(), patternPiecesMaxSizes, patternPiecesMaxSizeRunes),
+		list("context.fabric_purposes_in_bom", c.GetFabricPurposesInBom(), patternPiecesMaxBomFabrics, patternPiecesMaxFabricRunes),
+		list("context.existing_card_piece_names", c.GetExistingCardPieceNames(), patternPiecesMaxCardPieces, patternPiecesMaxNameRunes),
+		patternPiecesOneBound("context.instructions_text_excerpt", c.GetInstructionsTextExcerpt(), patternPiecesMaxInstructions),
+		patternPiecesOneBound("context.language_hint", c.GetLanguageHint(), patternPiecesMaxLanguageRunes),
+		list("allowed_modifiers", req.GetAllowedModifiers(), patternPiecesMaxModifiers, patternPiecesMaxModifierRunes),
+	} {
+		if chk != nil {
+			return chk
+		}
+	}
+	if n := len(req.GetAllowedCodes()); n > patternPiecesMaxCodes {
+		return status.Errorf(codes.InvalidArgument, "allowed_codes: at most %d items, got %d", patternPiecesMaxCodes, n)
+	}
+	for i, ac := range req.GetAllowedCodes() {
+		if err := patternPiecesOneBound(fmt.Sprintf("allowed_codes[%d].code", i), ac.GetCode(), patternPiecesMaxCodeRunes); err != nil {
+			return err
+		}
+		if err := patternPiecesOneBound(fmt.Sprintf("allowed_codes[%d].name", i), ac.GetName(), patternPiecesMaxNameRunes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func patternPiecesOneBound(field, v string, maxRunes int) error {
+	if n := utf8.RuneCountInString(v); n > maxRunes {
+		return status.Errorf(codes.InvalidArgument, "%s: at most %d characters, got %d", field, maxRunes, n)
+	}
+	return nil
+}
+
+// patternPiecesBoundedPrompt builds the user turn and refuses it above the byte ceiling: the per-field
+// bounds alone allow 80 pieces × 12 texts × 120 runes, more than one call should ever carry.
+func patternPiecesBoundedPrompt(in patternPiecesInput) (string, error) {
+	user := patternPiecesUserPrompt(in)
+	if len(user) > patternPiecesMaxPromptBytes {
+		return "", status.Errorf(codes.InvalidArgument,
+			"the evidence is too large for one call: %d bytes of text, at most %d — send fewer texts per piece or a shorter excerpt",
+			len(user), patternPiecesMaxPromptBytes)
+	}
+	return user, nil
 }
 
 func patternPiecesHasCode(list []patternPieceCode, code string) bool {
@@ -595,70 +695,108 @@ func patternPiecesUserPrompt(in patternPiecesInput) string {
 
 // ─── the answer ───
 
-type patternPiecesRawPiece struct {
-	Mark           json.RawMessage `json:"mark"`
-	Code           json.RawMessage `json:"code"`
-	HumanNameEn    json.RawMessage `json:"human_name_en"`
-	FabricPurposes json.RawMessage `json:"fabric_purposes"`
-	CutQuantity    json.RawMessage `json:"cut_quantity"`
-	Fold           json.RawMessage `json:"fold"`
-	Pair           json.RawMessage `json:"pair"`
-	Variant        json.RawMessage `json:"variant"`
-	Confidence     json.RawMessage `json:"confidence"`
-	Evidence       json.RawMessage `json:"evidence"`
+// patternPiecesAnswer is the ONE shape the model may answer: {"pieces":[…]} with exactly these
+// members. Pointers tell a missing (or null) member from a zero one; a wrong JSON type fails the
+// decode. No coercion of any kind: "1", "yes", "85%" are violations, not values.
+type patternPiecesAnswer struct {
+	Pieces *[]patternPiecesAnswerPiece `json:"pieces"`
 }
 
-// patternPiecesExtract finds the {"pieces":[…]} object: bare, fenced or wrapped in prose.
-func patternPiecesExtract(raw string) ([]patternPiecesRawPiece, bool) {
-	try := func(s string) ([]patternPiecesRawPiece, bool) {
-		var probe map[string]json.RawMessage
-		if json.Unmarshal([]byte(s), &probe) != nil {
-			return nil, false
-		}
-		list, has := probe["pieces"]
-		if !has {
-			return nil, false
-		}
-		var out []patternPiecesRawPiece
-		if json.Unmarshal(list, &out) != nil {
-			return nil, false
-		}
-		return out, true
-	}
+type patternPiecesAnswerPiece struct {
+	Mark           *int      `json:"mark"`
+	Code           *string   `json:"code"`
+	HumanNameEn    *string   `json:"human_name_en"`
+	FabricPurposes *[]string `json:"fabric_purposes"`
+	CutQuantity    *int      `json:"cut_quantity"`
+	Fold           *bool     `json:"fold"`
+	Pair           *bool     `json:"pair"`
+	Variant        *string   `json:"variant"`
+	Confidence     *float64  `json:"confidence"`
+	Evidence       *[]string `json:"evidence"`
+}
+
+// patternPiecesUnfence strips at most ONE fence around the whole answer (```json … ``` or ``` … ```),
+// the only wrapping a model adds on its own. Prose around the JSON stays and fails the decode.
+func patternPiecesUnfence(raw string) (string, error) {
 	body := strings.TrimSpace(raw)
-	if out, ok := try(body); ok {
-		return out, true
+	if !strings.HasPrefix(body, "```") {
+		return body, nil
 	}
-	if i, j := strings.Index(body, "{"), strings.LastIndex(body, "}"); i >= 0 && j > i {
-		return try(body[i : j+1])
+	nl := strings.IndexByte(body, '\n')
+	if nl < 0 {
+		return "", fmt.Errorf("an unterminated fence")
 	}
-	return nil, false
+	if lang := strings.TrimSpace(body[3:nl]); lang != "" && !strings.EqualFold(lang, "json") {
+		return "", fmt.Errorf("a fence of %q", designPartsTrim(lang, 16))
+	}
+	rest := strings.TrimSpace(body[nl+1:])
+	if !strings.HasSuffix(rest, "```") {
+		return "", fmt.Errorf("an unterminated fence")
+	}
+	return strings.TrimSpace(strings.TrimSuffix(rest, "```")), nil
 }
 
-// parsePatternPieces cleans the model's answer against the request: a mark not in the request (or
-// named twice) is dropped, the code is normalised or refused (code "" + a warning), the fabric
-// purposes are kept to the BOM vocabulary, the cut quantity to 0..20, the confidence to 0..1, the
-// evidence to 4 quotes of ≤ 120 runes. A mark the model left out is a warning. Suggestions come in
-// mark order. ok=false when no JSON of that shape is there or no suggestion survives.
-func parsePatternPieces(raw string, in patternPiecesInput) ([]*pb_admin.PatternPieceSuggestion, []string, bool) {
-	list, ok := patternPiecesExtract(raw)
-	if !ok {
-		return nil, nil, false
+// patternPiecesDecode decodes exactly one JSON object of the answer's shape and nothing after it.
+func patternPiecesDecode(raw string) ([]patternPiecesAnswerPiece, error) {
+	body, err := patternPiecesUnfence(raw)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(strings.NewReader(body))
+	dec.DisallowUnknownFields()
+	var ans patternPiecesAnswer
+	if err := dec.Decode(&ans); err != nil {
+		return nil, fmt.Errorf("not the answer's JSON shape: %s", patternPiecesDecodeWhy(err))
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("data after the JSON object")
+	}
+	if ans.Pieces == nil {
+		return nil, fmt.Errorf("no pieces member")
+	}
+	return *ans.Pieces, nil
+}
+
+// patternPiecesDecodeWhy — the decoder's complaint without the model's text: the field and the type.
+func patternPiecesDecodeWhy(err error) string {
+	var te *json.UnmarshalTypeError
+	var se *json.SyntaxError
+	switch {
+	case errors.As(err, &te):
+		return fmt.Sprintf("%s is not a %s", te.Field, te.Type)
+	case errors.As(err, &se):
+		return fmt.Sprintf("syntax error at byte %d", se.Offset)
+	case strings.HasPrefix(err.Error(), "json: unknown field "):
+		return designPartsTrim(err.Error(), 80)
+	}
+	return "unreadable"
+}
+
+// parsePatternPieces validates the model's answer against the request. A structural violation (not
+// one JSON object of the shape, a member missing or of the wrong type, no usable piece) is an error
+// — the caller asks again. Within a valid answer: a mark not asked (or named twice) is dropped with a
+// warning, the code is normalised or refused (code "" + a warning), fabric purposes are kept to the
+// BOM vocabulary, the cut quantity to 0..20 (outside = 0, unknown), the confidence clamped to 0..1,
+// the evidence to 4 quotes of ≤ 120 runes. complete = every asked mark is named (only then may the
+// answer be cached). Suggestions come in mark order.
+func parsePatternPieces(raw string, in patternPiecesInput) (out []*pb_admin.PatternPieceSuggestion, warnings []string, complete bool, err error) {
+	list, err := patternPiecesDecode(raw)
+	if err != nil {
+		return nil, nil, false, err
 	}
 	asked := map[int]bool{}
 	for _, p := range in.Pieces {
 		asked[p.Mark] = true
 	}
 	grammar := newPatternPieceGrammar(in)
-	var (
-		out      []*pb_admin.PatternPieceSuggestion
-		warnings []string
-	)
 	named := map[int]bool{}
-	for _, p := range list {
-		mark := designPartsRegion(p.Mark)
-		if mark < 1 || !asked[mark] {
-			warnings = append(warnings, fmt.Sprintf("the answer named mark %s, which was not asked; dropped", patternPiecesRawWord(p.Mark)))
+	for i, p := range list {
+		if missing := patternPiecesMissingMember(p); missing != "" {
+			return nil, nil, false, fmt.Errorf("pieces[%d] has no %s", i, missing)
+		}
+		mark := *p.Mark
+		if !asked[mark] {
+			warnings = append(warnings, fmt.Sprintf("the answer named mark %d, which was not asked; dropped", mark))
 			continue
 		}
 		if named[mark] {
@@ -668,20 +806,19 @@ func parsePatternPieces(raw string, in patternPiecesInput) ([]*pb_admin.PatternP
 		named[mark] = true
 		s := &pb_admin.PatternPieceSuggestion{
 			Mark:           int32(mark),
-			HumanNameEn:    strings.ToLower(designPartsTrim(patternPiecesString(p.HumanNameEn), patternPiecesMaxNameRunes)),
-			FabricPurposes: patternPiecesFabrics(p.FabricPurposes),
-			CutQuantity:    int32(patternPiecesQuantity(p.CutQuantity)),
-			Fold:           patternPiecesBool(p.Fold),
-			Pair:           patternPiecesBool(p.Pair),
-			Variant:        designPartsTrim(patternPiecesString(p.Variant), patternPiecesMaxVariantRunes),
-			Confidence:     patternPiecesConfidence(p.Confidence),
-			Evidence:       patternPiecesTexts(patternPiecesStrings(p.Evidence), patternPiecesMaxEvidence, patternPiecesMaxTextRunes),
+			HumanNameEn:    strings.ToLower(designPartsTrim(*p.HumanNameEn, patternPiecesMaxNameRunes)),
+			FabricPurposes: patternPiecesFabrics(*p.FabricPurposes),
+			CutQuantity:    int32(patternPiecesQuantity(*p.CutQuantity)),
+			Fold:           *p.Fold,
+			Pair:           *p.Pair,
+			Variant:        designPartsTrim(*p.Variant, patternPiecesMaxVariantRunes),
+			Confidence:     patternPiecesConfidence(*p.Confidence),
+			Evidence:       patternPiecesTexts(*p.Evidence, patternPiecesMaxEvidence, patternPiecesMaxTextRunes),
 		}
-		rawCode := patternPiecesString(p.Code)
-		code, refusal, note := grammar.normalize(rawCode)
+		code, refusal, note := grammar.normalize(*p.Code)
 		switch {
 		case refusal != "":
-			warnings = append(warnings, fmt.Sprintf("mark %d: code %q refused: %s", mark, designPartsTrim(rawCode, patternPiecesMaxCodeLen), refusal))
+			warnings = append(warnings, fmt.Sprintf("mark %d: code %q refused: %s", mark, designPartsTrim(*p.Code, patternPiecesMaxCodeLen), refusal))
 		case note != "":
 			warnings = append(warnings, fmt.Sprintf("mark %d: code %s %s", mark, code, note))
 		}
@@ -689,12 +826,14 @@ func parsePatternPieces(raw string, in patternPiecesInput) ([]*pb_admin.PatternP
 		out = append(out, s)
 	}
 	if len(out) == 0 {
-		return nil, nil, false
+		return nil, nil, false, fmt.Errorf("no piece of the request is named")
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Mark < out[j].Mark })
 
+	complete = true
 	for _, p := range in.Pieces {
 		if !named[p.Mark] {
+			complete = false
 			warnings = append(warnings, fmt.Sprintf("mark %d: not named by the model", p.Mark))
 		}
 	}
@@ -718,7 +857,34 @@ func parsePatternPieces(raw string, in patternPiecesInput) ([]*pb_admin.PatternP
 		}
 		warnings = append(warnings, fmt.Sprintf("code %s is given to marks %s", code, strings.Join(marks, ", ")))
 	}
-	return out, warnings, true
+	return out, warnings, complete, nil
+}
+
+// patternPiecesMissingMember names the first required member a piece lacks; "" when it has all.
+func patternPiecesMissingMember(p patternPiecesAnswerPiece) string {
+	switch {
+	case p.Mark == nil:
+		return "mark"
+	case p.Code == nil:
+		return "code"
+	case p.HumanNameEn == nil:
+		return "human_name_en"
+	case p.FabricPurposes == nil:
+		return "fabric_purposes"
+	case p.CutQuantity == nil:
+		return "cut_quantity"
+	case p.Fold == nil:
+		return "fold"
+	case p.Pair == nil:
+		return "pair"
+	case p.Variant == nil:
+		return "variant"
+	case p.Confidence == nil:
+		return "confidence"
+	case p.Evidence == nil:
+		return "evidence"
+	}
+	return ""
 }
 
 // patternPieceGrammar — PREFIX[_L|_R][_F|_B][_n][_#][_other allowed modifiers], uppercase.
@@ -829,6 +995,13 @@ func (g patternPieceGrammar) normalize(raw string) (code, refusal, note string) 
 	var mods []mod
 	taken := map[int]string{}
 	for _, t := range tokens[1:] {
+		// THE CARD'S SIZES FIRST: a token that names a size is a size, whatever else it could be
+		// read as (FP_12 on a card with size 12 is not part 12). The one exception is a side or
+		// front/back letter the grammar defines (L R F B): the pattern maker writes FP_L_L, and the
+		// importer appends the size after it, so FP_L stays — with a note.
+		if g.sizes[patternPieceBare(t)] && !patternPieceIsSideLetter(t) {
+			return "", fmt.Sprintf("%s is a size of the garment, and the size is added by the importer", t), ""
+		}
 		rank := -1
 		switch {
 		case (t == "L" || t == "R") && g.modifiers[t]:
@@ -843,9 +1016,6 @@ func (g patternPieceGrammar) normalize(raw string) (code, refusal, note string) 
 			rank = patternModOther
 		}
 		if rank < 0 {
-			if g.sizes[patternPieceBare(t)] {
-				return "", fmt.Sprintf("%s is a size of the garment, and the size is added by the importer", t), ""
-			}
 			return "", fmt.Sprintf("%s is not an allowed modifier", t), ""
 		}
 		if rank != patternModOther {
@@ -877,42 +1047,20 @@ func (g patternPieceGrammar) normalize(raw string) (code, refusal, note string) 
 	return code, "", note
 }
 
+// patternPieceIsSideLetter — L R F B, the grammar's own one-letter modifiers.
+func patternPieceIsSideLetter(t string) bool {
+	return t == "L" || t == "R" || t == "F" || t == "B"
+}
+
 // patternPieceIsPartNumber — 1..20 written without a leading zero.
 func patternPieceIsPartNumber(t string) bool {
 	n, err := strconv.Atoi(t)
 	return err == nil && n >= 1 && n <= patternPiecesMaxPartNumber && strconv.Itoa(n) == t
 }
 
-// patternPiecesString reads a JSON string; any other JSON reads as "".
-func patternPiecesString(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	return ""
-}
-
-// patternPiecesStrings reads a JSON array of strings (non-strings skipped) or one string.
-func patternPiecesStrings(raw json.RawMessage) []string {
-	var list []json.RawMessage
-	if json.Unmarshal(raw, &list) != nil {
-		if s := patternPiecesString(raw); s != "" {
-			return []string{s}
-		}
-		return nil
-	}
+func patternPiecesFabrics(in []string) []string {
 	var out []string
-	for _, item := range list {
-		if s := patternPiecesString(item); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func patternPiecesFabrics(raw json.RawMessage) []string {
-	var out []string
-	for _, f := range patternPiecesStrings(raw) {
+	for _, f := range in {
 		v, ok := patternPiecesFabricWords[strings.ToLower(designPartsTrim(f, 40))]
 		if !ok || patternPiecesContains(out, v) {
 			continue
@@ -925,65 +1073,23 @@ func patternPiecesFabrics(raw json.RawMessage) []string {
 	return out
 }
 
-// patternPiecesNumber reads a JSON number or a string holding one; ok=false otherwise.
-func patternPiecesNumber(raw json.RawMessage) (float64, bool) {
-	var f float64
-	if json.Unmarshal(raw, &f) == nil {
-		return f, !math.IsNaN(f) && !math.IsInf(f, 0)
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		s = strings.TrimSuffix(strings.TrimSpace(s), "%")
-		if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
-			return f, true
-		}
-	}
-	return 0, false
-}
-
-// patternPiecesQuantity — a whole number 1..20; anything else is 0 (unknown).
-func patternPiecesQuantity(raw json.RawMessage) int {
-	f, ok := patternPiecesNumber(raw)
-	if !ok || f != math.Trunc(f) || f < 1 || f > patternPiecesMaxCutQuantity {
+// patternPiecesQuantity — 1..20; anything else is 0 (unknown).
+func patternPiecesQuantity(n int) int {
+	if n < 1 || n > patternPiecesMaxCutQuantity {
 		return 0
 	}
-	return int(f)
+	return n
 }
 
-// patternPiecesConfidence — clamped to 0..1; a value in (1, 100] is read as a percentage.
-func patternPiecesConfidence(raw json.RawMessage) float64 {
-	f, ok := patternPiecesNumber(raw)
-	if !ok || f <= 0 {
+// patternPiecesConfidence — clamped to 0..1, three decimals.
+func patternPiecesConfidence(f float64) float64 {
+	switch {
+	case math.IsNaN(f) || f <= 0:
 		return 0
-	}
-	if f > 1 && f <= 100 {
-		f /= 100
-	}
-	if f > 1 {
+	case f >= 1:
 		return 1
 	}
 	return math.Round(f*1000) / 1000
-}
-
-func patternPiecesBool(raw json.RawMessage) bool {
-	var b bool
-	if json.Unmarshal(raw, &b) == nil {
-		return b
-	}
-	switch strings.ToLower(strings.TrimSpace(patternPiecesString(raw))) {
-	case "true", "yes", "1":
-		return true
-	}
-	return false
-}
-
-// patternPiecesRawWord — a model's mark value for a warning, short and printable.
-func patternPiecesRawWord(raw json.RawMessage) string {
-	s := strings.TrimSpace(string(raw))
-	if s == "" {
-		return "(none)"
-	}
-	return designPartsTrim(s, 16)
 }
 
 // ─── the cache ───

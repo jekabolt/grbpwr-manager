@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -60,6 +61,9 @@ func TestPatternPiecesInputOfRefusesBadRequests(t *testing.T) {
 		},
 		"mark beyond the range": func(r *pb_admin.SuggestPatternPiecesRequest) { r.Pieces[2].Mark = patternPiecesMaxMark + 1 },
 	}
+	for name, mutate := range patternPiecesOverBounds(1) {
+		cases["over bound: "+name] = mutate
+	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := patternPiecesTestRequest()
@@ -70,11 +74,77 @@ func TestPatternPiecesInputOfRefusesBadRequests(t *testing.T) {
 		})
 	}
 
+	// NEGATIVE CONTROL: every field exactly AT its bound passes — the refusals above are the bound,
+	// not a refusal of the field.
+	for name, mutate := range patternPiecesOverBounds(0) {
+		r := patternPiecesTestRequest()
+		mutate(r)
+		_, _, err := patternPiecesInputOf(r)
+		require.NoError(t, err, "at bound: "+name)
+	}
+
 	// The card is optional.
 	r := patternPiecesTestRequest()
 	r.TechCardId = 0
 	_, _, err := patternPiecesInputOf(r)
 	require.NoError(t, err)
+}
+
+// patternPiecesOverBounds — one mutation per bounded field, `over` past its bound (0 = exactly at it).
+func patternPiecesOverBounds(over int) map[string]func(r *pb_admin.SuggestPatternPiecesRequest) {
+	n := func(k int) []string {
+		out := make([]string, k)
+		for i := range out {
+			out[i] = "x" + strings.Repeat("y", i%3) + string(rune('a'+i%26)) + strings.Repeat("z", i/26)
+		}
+		return out
+	}
+	runes := func(k int) string { return strings.Repeat("я", k) }
+	return map[string]func(r *pb_admin.SuggestPatternPiecesRequest){
+		"text_inside items": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Pieces[0].TextInside = n(patternPiecesMaxTextItems + over)
+		},
+		"text_inside runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Pieces[0].TextInside = []string{runes(patternPiecesMaxTextRunes + over)}
+		},
+		"quantity_text runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Pieces[0].QuantityText = runes(patternPiecesMaxTextRunes + over)
+		},
+		"size_names items": func(r *pb_admin.SuggestPatternPiecesRequest) { r.Context.SizeNames = n(patternPiecesMaxSizes + over) },
+		"size_names runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.SizeNames = []string{runes(patternPiecesMaxSizeRunes + over)}
+		},
+		"bom fabrics items": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.FabricPurposesInBom = n(patternPiecesMaxBomFabrics + over)
+		},
+		"card pieces items": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.ExistingCardPieceNames = n(patternPiecesMaxCardPieces + over)
+		},
+		"instructions runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.InstructionsTextExcerpt = runes(patternPiecesMaxInstructions + over)
+		},
+		"language runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.LanguageHint = runes(patternPiecesMaxLanguageRunes + over)
+		},
+		"modifiers items": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			mods := make([]string, patternPiecesMaxModifiers+over)
+			for i := range mods {
+				mods[i] = "L"
+			}
+			r.AllowedModifiers = mods
+		},
+		"modifier runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.AllowedModifiers = []string{strings.Repeat(" ", patternPiecesMaxModifierRunes+over-1) + "L"}
+		},
+		"codes items": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			for i := 0; i < patternPiecesMaxCodes+over; i++ {
+				r.AllowedCodes = append(r.AllowedCodes, &pb_admin.PatternPieceCodeOption{Code: "FP"})
+			}
+		},
+		"code name runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.AllowedCodes = []*pb_admin.PatternPieceCodeOption{{Code: "FP", Name: runes(patternPiecesMaxNameRunes + over)}}
+		},
+	}
 }
 
 func TestPatternPiecesInputOfCleansAndDefaults(t *testing.T) {
@@ -90,12 +160,36 @@ func TestPatternPiecesInputOfCleansAndDefaults(t *testing.T) {
 	r := patternPiecesTestRequest()
 	r.AllowedCodes = []*pb_admin.PatternPieceCodeOption{{Code: " fp ", Name: "Front Piece"}, {Code: "FP"}, {Code: "SL", Name: "sleeve"}}
 	r.AllowedModifiers = []string{"_l", "R", "#", "r"}
-	r.Context.InstructionsTextExcerpt = strings.Repeat("я", patternPiecesMaxInstructions+50)
+	r.Context.InstructionsTextExcerpt = strings.Repeat("я", patternPiecesMaxInstructions)
 	in, _, err := patternPiecesInputOf(r)
 	require.NoError(t, err)
 	require.Equal(t, []patternPieceCode{{"FP", "front piece"}, {"SL", "sleeve"}}, in.Codes)
 	require.Equal(t, []string{"L", "R", "#"}, in.Modifiers)
-	require.Equal(t, patternPiecesMaxInstructions, len([]rune(in.Instructions)), "the excerpt is cut to 4000 runes")
+	require.Equal(t, patternPiecesMaxInstructions, len([]rune(in.Instructions)), "an excerpt at the bound is kept whole")
+}
+
+// TestPatternPiecesPromptByteCeiling — fields each within bound can still add up past one call: the
+// aggregate is refused before anything else happens. Negative control: the ordinary request passes.
+func TestPatternPiecesPromptByteCeiling(t *testing.T) {
+	_, err := patternPiecesBoundedPrompt(patternPiecesTestInput(t))
+	require.NoError(t, err)
+
+	r := patternPiecesTestRequest()
+	r.Pieces = nil
+	for m := 1; m <= patternPiecesMaxPieces; m++ {
+		texts := make([]string, patternPiecesMaxTextItems)
+		for i := range texts {
+			texts[i] = strings.Repeat("ж", patternPiecesMaxTextRunes-3) + string(rune('a'+i))
+		}
+		r.Pieces = append(r.Pieces, &pb_admin.PatternPieceEvidence{Mark: int32(m), TextInside: texts})
+	}
+	r.Crops = nil
+	in, _, err := patternPiecesInputOf(r)
+	require.NoError(t, err, "every field is within its own bound")
+	_, err = patternPiecesBoundedPrompt(in)
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, err.Error(), "too large for one call")
 }
 
 // TestPatternPiecesUserPromptCarriesEvidenceAsData — the prompt names every mark, the pictures, the
@@ -174,30 +268,57 @@ func TestPatternPieceGrammarNormalize(t *testing.T) {
 	code, refusal, _ := g.normalize("PCK_2_R")
 	require.Empty(t, refusal)
 	require.Equal(t, "PCK_R_2", code, "a part number is always allowed and goes after the side")
+
+	// A card with NUMERIC sizes: a part number that is also a size is a size, never part n.
+	in = patternPiecesTestInput(t)
+	in.Sizes = []string{"10", "12", "14"}
+	g = newPatternPieceGrammar(in)
+	code, refusal, _ = g.normalize("FP_12")
+	require.Empty(t, code)
+	require.Contains(t, refusal, "12 is a size of the garment")
+	code, refusal, _ = g.normalize("SL_R_14_#")
+	require.Empty(t, code)
+	require.Contains(t, refusal, "14 is a size of the garment")
+	// Negative control: a part number that is NOT a size of this card stays a part number.
+	code, refusal, _ = g.normalize("FP_2")
+	require.Empty(t, refusal)
+	require.Equal(t, "FP_2", code)
+	// A letter size that is not a grammar letter is refused even if the client allowed it as a modifier.
+	in.Sizes, in.Modifiers = []string{"S", "M"}, []string{"L", "R", "M"}
+	g = newPatternPieceGrammar(in)
+	_, refusal, _ = g.normalize("PCK_M")
+	require.Contains(t, refusal, "M is a size of the garment")
+}
+
+// patternPiecesTestPiece — one well-formed answer object; fields overridden by the caller.
+func patternPiecesTestPiece(mark int, code string, extra string) string {
+	base := `"mark":` + strconv.Itoa(mark) + `,"code":"` + code + `","human_name_en":"piece","fabric_purposes":["main"],` +
+		`"cut_quantity":1,"fold":false,"pair":false,"variant":"","confidence":0.9,"evidence":["x"]`
+	if extra != "" {
+		base = extra
+	}
+	return "{" + base + "}"
 }
 
 // TestParsePatternPiecesCleansTheAnswer — the validator is the only thing between the model and the
 // importer's auto-accept: every field is bounded, unknown marks never come through.
 func TestParsePatternPiecesCleansTheAnswer(t *testing.T) {
 	in := patternPiecesTestInput(t)
-	raw := "Here you go:\n```json\n" + `{"pieces":[
+	raw := "```json\n" + `{"pieces":[
 		{"mark":2,"code":"sl","human_name_en":"  Sleeve  ","fabric_purposes":["main","Interlining","silk","main"],"cut_quantity":2,"fold":false,"pair":true,"variant":"A","confidence":0.93,"evidence":["Ärmel","2x","","a","b","c"]},
-		{"mark":"1","code":"FP_M","human_name_en":"front piece","fabric_purposes":"main","cut_quantity":"1","fold":"yes","pair":false,"confidence":85,"evidence":"Vorderteil"},
-		{"mark":9,"code":"BP","confidence":0.9},
-		{"mark":2,"code":"BP","confidence":0.9},
-		{"mark":1.5,"code":"BP"}
+		{"mark":1,"code":"FP_M","human_name_en":"front piece","fabric_purposes":["main"],"cut_quantity":1,"fold":true,"pair":false,"variant":"","confidence":0.85,"evidence":["Vorderteil"]},
+		{"mark":9,"code":"BP","human_name_en":"","fabric_purposes":[],"cut_quantity":0,"fold":false,"pair":false,"variant":"","confidence":0.9,"evidence":[]},
+		{"mark":2,"code":"BP","human_name_en":"","fabric_purposes":[],"cut_quantity":0,"fold":false,"pair":false,"variant":"","confidence":0.9,"evidence":[]}
 	]}` + "\n```"
-	got, warnings, ok := parsePatternPieces(raw, in)
-	require.True(t, ok)
+	got, warnings, complete, err := parsePatternPieces(raw, in)
+	require.NoError(t, err, "one surrounding json fence is accepted")
+	require.False(t, complete, "mark 3 is missing: the answer must not be cached")
 	require.Len(t, got, 2)
 
 	require.EqualValues(t, 1, got[0].Mark, "mark order")
 	require.Equal(t, "", got[0].Code, "a code with a size tail is refused")
-	require.Equal(t, []string{"main"}, got[0].FabricPurposes)
-	require.EqualValues(t, 1, got[0].CutQuantity)
 	require.True(t, got[0].Fold)
-	require.InDelta(t, 0.85, got[0].Confidence, 1e-9, "a percentage reads as 0..1")
-	require.Equal(t, []string{"Vorderteil"}, got[0].Evidence)
+	require.InDelta(t, 0.85, got[0].Confidence, 1e-9)
 
 	require.EqualValues(t, 2, got[1].Mark)
 	require.Equal(t, "SL", got[1].Code)
@@ -211,38 +332,84 @@ func TestParsePatternPiecesCleansTheAnswer(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	require.Contains(t, joined, `mark 1: code "FP_M" refused: M is a size of the garment`)
 	require.Contains(t, joined, "the answer named mark 9, which was not asked; dropped")
-	require.Contains(t, joined, "the answer named mark 1.5, which was not asked; dropped")
 	require.Contains(t, joined, "mark 2: named twice; the first answer is kept")
 	require.Contains(t, joined, "mark 3: not named by the model")
+
+	// Negative control for `complete`: every mark named → complete.
+	whole := `{"pieces":[` + patternPiecesTestPiece(1, "FP", "") + "," + patternPiecesTestPiece(2, "SL", "") + "," +
+		patternPiecesTestPiece(3, "BP", "") + `]}`
+	_, _, complete, err = parsePatternPieces(whole, in)
+	require.NoError(t, err)
+	require.True(t, complete)
 }
 
 func TestParsePatternPiecesClampsAndFlagsDuplicates(t *testing.T) {
 	in := patternPiecesTestInput(t)
-	got, warnings, ok := parsePatternPieces(`{"pieces":[
-		{"mark":1,"code":"FP","confidence":7000,"cut_quantity":50},
-		{"mark":2,"code":"fp","confidence":-1,"cut_quantity":1.5},
-		{"mark":3,"code":"FP","variant":"B","confidence":"0.42"}
-	]}`, in)
-	require.True(t, ok)
+	p := func(mark int, code, variant, conf, qty string) string {
+		return `{"mark":` + strconv.Itoa(mark) + `,"code":"` + code + `","human_name_en":"","fabric_purposes":[],"cut_quantity":` + qty +
+			`,"fold":false,"pair":false,"variant":"` + variant + `","confidence":` + conf + `,"evidence":[]}`
+	}
+	got, warnings, _, err := parsePatternPieces(`{"pieces":[`+p(1, "FP", "", "7000", "50")+","+p(2, "fp", "", "-1", "-3")+","+
+		p(3, "FP", "B", "0.4216", "20")+`]}`, in)
+	require.NoError(t, err)
 	require.Len(t, got, 3)
 	require.Equal(t, 1.0, got[0].Confidence, "clamped to 1")
 	require.EqualValues(t, 0, got[0].CutQuantity, "an absurd quantity is unknown")
 	require.Equal(t, 0.0, got[1].Confidence, "clamped to 0")
 	require.EqualValues(t, 0, got[1].CutQuantity)
-	require.InDelta(t, 0.42, got[2].Confidence, 1e-9)
+	require.InDelta(t, 0.422, got[2].Confidence, 1e-9)
+	require.EqualValues(t, 20, got[2].CutQuantity)
 	require.Contains(t, strings.Join(warnings, "\n"), "code FP is given to marks 1, 2",
 		"the same code in one variant is flagged; another variant is not")
 	require.NotContains(t, strings.Join(warnings, "\n"), "marks 1, 2, 3")
 }
 
-func TestParsePatternPiecesRefusesUnusableAnswers(t *testing.T) {
+// TestParsePatternPiecesRefusesStructuralViolations — anything but exactly one object of the shape is
+// an error (the caller asks again and never caches it). No coercions.
+func TestParsePatternPiecesRefusesStructuralViolations(t *testing.T) {
 	in := patternPiecesTestInput(t)
-	for _, raw := range []string{
-		"", "I could not read the sheet.", `{"parts":[]}`, `{"pieces":[]}`, `{"pieces":[{"mark":42,"code":"FP"}]}`,
-		`{"pieces":"FP"}`,
-	} {
-		_, _, ok := parsePatternPieces(raw, in)
-		require.False(t, ok, raw)
+	good := patternPiecesTestPiece(1, "FP", "")
+	full := func(piece string) string {
+		return `{"pieces":[` + piece + `]}`
+	}
+	cases := map[string]string{
+		"empty":                 "",
+		"prose":                 "I could not read the sheet.",
+		"prose around the JSON": "Here you go: " + full(good),
+		"two fences":            "```json\n```json\n" + full(good) + "\n```\n```",
+		"unterminated fence":    "```json\n" + full(good),
+		"fence of another lang": "```python\n" + full(good) + "\n```",
+		"two objects":           full(good) + full(good),
+		"trailing text":         full(good) + " thanks",
+		"array at top":          "[" + good + "]",
+		"wrong top key":         `{"parts":[]}`,
+		"unknown top member":    `{"pieces":[` + good + `],"note":"x"}`,
+		"no pieces":             `{}`,
+		"pieces null":           `{"pieces":null}`,
+		"pieces empty":          `{"pieces":[]}`,
+		"pieces a string":       `{"pieces":"FP"}`,
+		"only unasked marks":    full(patternPiecesTestPiece(42, "FP", "")),
+		"unknown piece member":  full(strings.TrimSuffix(good, "}") + `,"mods":["L"]}`),
+		"mark as string":        full(strings.Replace(good, `"mark":1`, `"mark":"1"`, 1)),
+		"mark fractional":       full(strings.Replace(good, `"mark":1`, `"mark":1.5`, 1)),
+		"fold as string":        full(strings.Replace(good, `"fold":false`, `"fold":"yes"`, 1)),
+		"confidence as string":  full(strings.Replace(good, `"confidence":0.9`, `"confidence":"85%"`, 1)),
+		"quantity as string":    full(strings.Replace(good, `"cut_quantity":1`, `"cut_quantity":"1"`, 1)),
+		"fabrics as string":     full(strings.Replace(good, `"fabric_purposes":["main"]`, `"fabric_purposes":"main"`, 1)),
+		"evidence as string":    full(strings.Replace(good, `"evidence":["x"]`, `"evidence":"x"`, 1)),
+		"code missing":          full(strings.Replace(good, `"code":"FP",`, ``, 1)),
+		"code null":             full(strings.Replace(good, `"code":"FP"`, `"code":null`, 1)),
+		"variant missing":       full(strings.Replace(good, `"variant":"",`, ``, 1)),
+		"confidence missing":    full(strings.Replace(good, `,"confidence":0.9`, ``, 1)),
+	}
+	for name, raw := range cases {
+		_, _, _, err := parsePatternPieces(raw, in)
+		require.Error(t, err, name)
+	}
+	// Negative controls: the same answer bare, and in one fence with or without the language.
+	for _, raw := range []string{full(good), "```json\n" + full(good) + "\n```", "```\n" + full(good) + "\n```", "  \n" + full(good) + "\n "} {
+		_, _, _, err := parsePatternPieces(raw, in)
+		require.NoError(t, err, raw)
 	}
 }
 
