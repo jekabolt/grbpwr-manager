@@ -62,7 +62,11 @@ func TestPatternPiecesInputOfRefusesBadRequests(t *testing.T) {
 		"mark beyond the range": func(r *pb_admin.SuggestPatternPiecesRequest) { r.Pieces[2].Mark = patternPiecesMaxMark + 1 },
 	}
 	for name, mutate := range patternPiecesOverBounds(1) {
-		cases["over bound: "+name] = mutate
+		r := patternPiecesTestRequest()
+		mutate(r)
+		_, _, err := patternPiecesInputOf(r)
+		require.Equal(t, codes.InvalidArgument, status.Code(err), "over bound: "+name)
+		require.Contains(t, err.Error(), "at most", "over bound: %s is refused by its bound, not by a later rule", name)
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -140,6 +144,15 @@ func patternPiecesOverBounds(over int) map[string]func(r *pb_admin.SuggestPatter
 			for i := 0; i < patternPiecesMaxCodes+over; i++ {
 				r.AllowedCodes = append(r.AllowedCodes, &pb_admin.PatternPieceCodeOption{Code: "FP"})
 			}
+		},
+		"bom fabric runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.FabricPurposesInBom = []string{runes(patternPiecesMaxFabricRunes + over)}
+		},
+		"card piece name runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.Context.ExistingCardPieceNames = []string{runes(patternPiecesMaxNameRunes + over)}
+		},
+		"code runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
+			r.AllowedCodes = []*pb_admin.PatternPieceCodeOption{{Code: strings.Repeat(" ", patternPiecesMaxCodeRunes+over-2) + "FP"}}
 		},
 		"code name runes": func(r *pb_admin.SuggestPatternPiecesRequest) {
 			r.AllowedCodes = []*pb_admin.PatternPieceCodeOption{{Code: "FP", Name: runes(patternPiecesMaxNameRunes + over)}}
@@ -228,7 +241,7 @@ func TestPatternPieceGrammarNormalize(t *testing.T) {
 		{raw: "fp", code: "FP"},
 		{raw: " sl_r ", code: "SL_R"},
 		{raw: "SL-B-R-1-#", code: "SL_R_B_1_#"},
-		{raw: "PCK B L", code: "PCK_L_B"},
+		{raw: "PCK B L", code: "PCK_L_B", note: "carries L, also a size"},
 		{raw: "BP__2", code: "BP_2"},
 		{raw: "", code: ""},
 		{raw: "SLV", refusal: "the prefix SLV is not an allowed code"},
@@ -243,7 +256,12 @@ func TestPatternPieceGrammarNormalize(t *testing.T) {
 		{raw: "FP_21", refusal: "21 is not an allowed modifier"},
 		{raw: "FP_UNI", refusal: "UNI is not an allowed modifier"},
 		{raw: "F1", refusal: "the prefix F1 is not 1..6 letters"},
-		{raw: "FP_L", code: "FP_L", note: "ends with L, which is also a size of the garment"},
+		{raw: "FP_L", code: "FP_L", note: "carries L, also a size of the garment"},
+		{raw: "FP_L_2", code: "FP_L_2", note: "carries L, also a size"},
+		{raw: "FP_2_L", code: "FP_L_2", note: "carries L, also a size"},
+		{raw: "FP_L_#", code: "FP_L_#", note: "carries L, also a size"},
+		{raw: "FP_L_B", code: "FP_L_B", note: "carries L, also a size"},
+		{raw: "FP_R_B_2", code: "FP_R_B_2"},
 	}
 	for _, c := range cases {
 		code, refusal, note := g.normalize(c.raw)

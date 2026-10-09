@@ -23,6 +23,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/shopspring/decimal"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -146,9 +147,10 @@ type patternPieceEvidence struct {
 // SuggestPatternPieces names the marked pieces of an imported pattern (cached for an hour).
 //
 // Order, cheapest first: the arguments (bounded BEFORE any cleaning) → the prompt's byte ceiling →
-// the purpose is callable → the hour cache → the hourly per-admin window → the media lookup → one
-// flight per digest (semaphore + call). The window is spent per press that misses the cache, before
-// the lookup, so a refused account never costs a media read; two coalesced presses spend two slots.
+// the purpose is callable → the hour cache → ONE flight per (admin, request digest). Inside the
+// flight: the cache again → the media lookup → the semaphore → ONE slot of the hourly window → the
+// provider. The slot is the last door before money, so a cache hit, a refused picture or a busy
+// semaphore never spends one (the limiter has no refund), and a double press spends one.
 func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.SuggestPatternPiecesRequest) (*pb_admin.SuggestPatternPiecesResponse, error) {
 	in, mediaIDs, err := patternPiecesInputOf(req)
 	if err != nil {
@@ -164,49 +166,25 @@ func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.Suggest
 	}
 
 	key := patternPiecesDigest(req)
-	if !req.GetForce() {
+	force := req.GetForce()
+	if !force {
 		if hit, ok := s.patternPiecesCache.get(key, time.Now()); ok {
 			return patternPiecesCachedCopy(hit), nil
 		}
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
-		return nil, status.Errorf(codes.ResourceExhausted,
-			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts and the pattern pieces share the limit); every call spends the AI key — try again later",
-			enhancePerAdminCalls)
-	}
 
-	// The pictures: files of ours the provider can read, in the order the prompt names them.
-	urls, attached, err := s.designBoardPictureURLs(ctx, mediaIDs)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "pattern pieces: cannot resolve the pictures",
-			slog.Int("tech_card_id", int(req.GetTechCardId())), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "cannot read the pattern pictures")
+	// ⚠ ONE FLIGHT PER (ADMIN, REQUEST DIGEST): a double press pays once and spends one slot.
+	// Detached from the leader's cancellation under its own budget, like the parts labeller.
+	admin := authsrv.GetAdminUsername(ctx)
+	job := patternPiecesJob{
+		cardID: int(req.GetTechCardId()), admin: admin, in: in, user: user, mediaIDs: mediaIDs, key: key, force: force,
 	}
-	if len(urls) != len(mediaIDs) {
-		missing := patternPiecesMissingMedia(mediaIDs, attached)
-		return nil, status.Errorf(codes.InvalidArgument, "media %d has no file", missing)
-	}
-	refs := make([]designInputMediaRef, 0, len(urls))
-	for i, u := range urls {
-		where := "the pattern overview"
-		if i > 0 {
-			where = fmt.Sprintf("the close-up of mark %d", in.CropMarks[i-1])
-		}
-		refs = append(refs, designInputMediaRef{ID: attached[i], URL: u, Where: where})
-	}
-	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
-		return nil, designNonPictureRefusal(ref, ct)
-	}
-
-	// ⚠ ONE FLIGHT PER REQUEST DIGEST: a double press pays once. Detached from the leader's
-	// cancellation under its own budget, like the parts labeller.
-	cardID := int(req.GetTechCardId())
-	ch := s.patternPiecesFlight.DoChan(hex.EncodeToString(key[:]), func() (any, error) {
+	ch := s.patternPiecesFlight.DoChan(admin+"\x00"+hex.EncodeToString(key[:]), func() (any, error) {
 		budget := s.ai.ChainBudget(purpose, patternPiecesMaxTokens)
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			patternPiecesAttempts*budget+designPartsFlightMargin)
 		defer cancel()
-		return s.patternPiecesCall(fctx, cardID, in, user, urls, key, budget, req.GetForce())
+		return s.patternPiecesCall(fctx, job, budget)
 	})
 	var res singleflight.Result
 	select {
@@ -220,15 +198,58 @@ func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.Suggest
 	return proto.Clone(res.Val.(*pb_admin.SuggestPatternPiecesResponse)).(*pb_admin.SuggestPatternPiecesResponse), nil
 }
 
-// patternPiecesCall — the semaphore and the provider call (the flight leader's work). A structurally
-// invalid answer is asked once more; only a COMPLETE answer (every mark named) is cached.
-func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPiecesInput, user string, urls []string, key [sha256.Size]byte, budget time.Duration, force bool) (*pb_admin.SuggestPatternPiecesResponse, error) {
+// patternPiecesJob — what the flight leader needs.
+type patternPiecesJob struct {
+	cardID   int
+	admin    string
+	in       patternPiecesInput
+	user     string
+	mediaIDs []int
+	key      [sha256.Size]byte
+	force    bool
+}
+
+// patternPiecesResolvePictures — the overview and the crops as URLs the provider can read, or the
+// refusal (a missing file, a file that is not a picture).
+func (s *Server) patternPiecesResolvePictures(ctx context.Context, job patternPiecesJob) ([]string, error) {
+	urls, attached, err := s.designBoardPictureURLs(ctx, job.mediaIDs)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "pattern pieces: cannot resolve the pictures",
+			slog.Int("tech_card_id", job.cardID), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "cannot read the pattern pictures")
+	}
+	if len(urls) != len(job.mediaIDs) {
+		return nil, status.Errorf(codes.InvalidArgument, "media %d has no file", patternPiecesMissingMedia(job.mediaIDs, attached))
+	}
+	refs := make([]designInputMediaRef, 0, len(urls))
+	for i, u := range urls {
+		where := "the pattern overview"
+		if i > 0 {
+			where = fmt.Sprintf("the close-up of mark %d", job.in.CropMarks[i-1])
+		}
+		refs = append(refs, designInputMediaRef{ID: attached[i], URL: u, Where: where})
+	}
+	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
+		return nil, designNonPictureRefusal(ref, ct)
+	}
+	return urls, nil
+}
+
+// patternPiecesCall — the flight leader's work: cache → pictures → semaphore → one hourly slot → the
+// provider. A structurally invalid answer is asked once more; tokens and cost are summed over every
+// attempt; only a COMPLETE answer (every mark named) is cached.
+func (s *Server) patternPiecesCall(ctx context.Context, job patternPiecesJob, budget time.Duration) (*pb_admin.SuggestPatternPiecesResponse, error) {
 	const purpose = entity.AIPurposePatternPieces
+	in := job.in
 	// A flight that finished just before this one already paid: read the cache again.
-	if !force {
-		if hit, ok := s.patternPiecesCache.get(key, time.Now()); ok {
+	if !job.force {
+		if hit, ok := s.patternPiecesCache.get(job.key, time.Now()); ok {
 			return patternPiecesCachedCopy(hit), nil
 		}
+	}
+	urls, err := s.patternPiecesResolvePictures(ctx, job)
+	if err != nil {
+		return nil, err
 	}
 	select {
 	case s.enhanceSem <- struct{}{}:
@@ -236,15 +257,21 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
+	if !s.enhanceRuns.allow(job.admin) {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts and the pattern pieces share the limit); every call spends the AI key — try again later",
+			enhancePerAdminCalls)
+	}
 
 	var (
 		out      *pb_admin.SuggestPatternPiecesResponse
 		complete bool
+		spend    patternPiecesSpend
 	)
-	err := designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
+	err = designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
 		started := time.Now()
 		res, err := s.ai.Chat(actx, purpose, aiprov.ChatRequest{
-			System: patternPiecesSystemPrompt, User: user, ImageURLs: urls,
+			System: patternPiecesSystemPrompt, User: job.user, ImageURLs: urls,
 			UserAsParts: true, JSONMode: true, MaxTokens: patternPiecesMaxTokens, Effort: patternPiecesEffort,
 		})
 		var (
@@ -253,10 +280,11 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 		)
 		if res != nil {
 			raw, finishReason, usage = res.Text, res.FinishReason, res.Usage
+			spend.add(attempt, res)
 		}
 		answered := s.aiModelOf(purpose, res)
 		logAttrs := []any{
-			slog.Int("tech_card_id", cardID), slog.Int("pieces", len(in.Pieces)), slog.Int("crops", len(in.CropMarks)),
+			slog.Int("tech_card_id", job.cardID), slog.Int("pieces", len(in.Pieces)), slog.Int("crops", len(in.CropMarks)),
 			slog.String("model", answered), slog.Int("attempt", attempt),
 			slog.Duration("took", time.Since(started)), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
 			slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
@@ -271,13 +299,7 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 				append(logAttrs, slog.String("violation", perr.Error()))...)
 			return status.Error(codes.Internal, designPartsUnusableMsg)
 		}
-		out = &pb_admin.SuggestPatternPiecesResponse{
-			Suggestions: suggestions, Model: answered, Warnings: warnings,
-			PromptTokens: int32(usage.Prompt), CompletionTokens: int32(usage.Completion),
-		}
-		if res != nil && res.CostUSD.Valid {
-			out.CostUsd = res.CostUSD.Decimal.String()
-		}
+		out = &pb_admin.SuggestPatternPiecesResponse{Suggestions: suggestions, Model: answered, Warnings: warnings}
 		complete = whole
 		slog.Default().InfoContext(ctx, "pattern pieces", append(logAttrs,
 			slog.Int("named", len(suggestions)), slog.Int("warnings", len(warnings)), slog.Bool("complete", whole))...)
@@ -286,10 +308,40 @@ func (s *Server) patternPiecesCall(ctx context.Context, cardID int, in patternPi
 	if err != nil {
 		return nil, err
 	}
+	spend.fill(out)
 	if complete {
-		s.patternPiecesCache.put(key, out, time.Now())
+		s.patternPiecesCache.put(job.key, out, time.Now())
 	}
 	return out, nil
+}
+
+// patternPiecesSpend sums what every attempt of one flight cost: a retried answer was paid twice.
+type patternPiecesSpend struct {
+	prompt, completion int
+	cost               decimal.Decimal
+	costKnown          bool  // at least one attempt reported its cost
+	unpriced           []int // attempts that answered without a reported cost
+}
+
+func (sp *patternPiecesSpend) add(attempt int, res *aiprov.ChatResult) {
+	sp.prompt += res.Usage.Prompt
+	sp.completion += res.Usage.Completion
+	if res.CostUSD.Valid {
+		sp.cost = sp.cost.Add(res.CostUSD.Decimal)
+		sp.costKnown = true
+	} else {
+		sp.unpriced = append(sp.unpriced, attempt)
+	}
+}
+
+func (sp *patternPiecesSpend) fill(out *pb_admin.SuggestPatternPiecesResponse) {
+	out.PromptTokens, out.CompletionTokens = int32(sp.prompt), int32(sp.completion)
+	if sp.costKnown {
+		out.CostUsd = sp.cost.String()
+	}
+	for _, a := range sp.unpriced {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("attempt %d: the provider reported no cost; cost_usd covers the reported attempts only", a))
+	}
 }
 
 // patternPiecesChatFailure maps a failed chat.pattern_pieces call to its refusal (and logs it) —
@@ -1041,8 +1093,17 @@ func (g patternPieceGrammar) normalize(raw string) (code, refusal, note string) 
 	if len(code) > patternPiecesMaxCodeLen {
 		return "", fmt.Sprintf("longer than %d characters", patternPiecesMaxCodeLen), ""
 	}
-	if last := parts[len(parts)-1]; len(parts) > 1 && g.sizes[patternPieceBare(last)] {
-		note = fmt.Sprintf("ends with %s, which is also a size of the garment: the importer must append the size after it", last)
+	// Every accepted grammar letter that is ALSO a card size, wherever it stands (FP_L_2, FP_L_#):
+	// the code is valid, but a reader of the block name must know the size comes after it.
+	var clash []string
+	for _, m := range parts[1:] {
+		if g.sizes[patternPieceBare(m)] && !patternPiecesContains(clash, m) {
+			clash = append(clash, m)
+		}
+	}
+	if len(clash) > 0 {
+		note = fmt.Sprintf("carries %s, also a size of the garment: the importer must append the size after the code",
+			strings.Join(clash, ", "))
 	}
 	return code, "", note
 }
