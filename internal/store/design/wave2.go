@@ -221,6 +221,35 @@ func (s *Store) StartRun(ctx context.Context, req entity.DesignRunStart) (*entit
 			rerun = parent.Id
 		}
 
+		// ─── 2а. ОДИН ФЛЭТ НА КАРТОЧКУ ЗА РАЗ — ДО ДЕНЕГ (M8, 07.10) ───
+		//
+		// Две вкладки одной карточки нажимали GENERATE и заводили ДВА платных флэт-прогона: клиент
+		// запирает кнопку только в своей вкладке. Любой флэт карточки (виды, деталь, фикс, реран) в
+		// pending/running — отказ, и до резерва дня: откат транзакции уносит всё, ничего не занято и
+		// не списано. Повтор ТОГО ЖЕ client_request_id сюда не доходит — его отвечает шаг 1.
+		//
+		// ГОНКУ ЗАКРЫВАЕТ SERIALIZABLE: это чтение берёт разделяемые next-key блокировки по индексу
+		// карточки, и две одновременные заявки расходятся дедлоком 1213 — txFunc повторяет
+		// проигравшую, и та видит строку победителя. FORCE INDEX держит блокировку в пределах
+		// карточки: по idx_design_run_ready (status, …) чтение заперло бы промежутки pending/running
+		// ВСЕХ карточек, и любой чужой старт ждал бы его.
+		if req.Kind == entity.DesignRunKindFlat {
+			live, err := storeutil.QueryListNamed[struct {
+				ID     int    `db:"id"`
+				Status string `db:"status"`
+			}](ctx, db, `
+				SELECT id, status FROM design_run FORCE INDEX (idx_design_run_card)
+				WHERE tech_card_id = :card AND kind = 'flat' AND status IN ('pending', 'running')
+				ORDER BY id LIMIT 1`,
+				map[string]any{"card": req.TechCardId})
+			if err != nil {
+				return fmt.Errorf("failed to check the card's flat runs in flight: %w", err)
+			}
+			if len(live) > 0 {
+				return &entity.DesignFlatRunInFlightError{RunID: live[0].ID, Status: live[0].Status}
+			}
+		}
+
 		// ─── 2б. ГРАНИЦА КАРТОЧКИ ДЛЯ КОЛОРВЕЯ — ДО ДЕНЕГ (0356) ───
 		//
 		// В той же транзакции, что резерв: чужой колорвей не должен ни занять деньги дня, ни

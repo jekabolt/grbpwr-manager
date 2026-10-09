@@ -362,6 +362,7 @@ var methodRequirements = map[string]Requirement{
 	// see there for the full reasoning.
 	"AssignTechCardRole":           wr(SectionTechCards),
 	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
+	"ExitTechCardGuide":            wr(SectionTechCards),
 	"ListTechCardRoleAssignments":  rd(SectionTechCards),
 	"GetTechCard":                  rd(SectionTechCards),
 	"UpdateTechCard":               wr(SectionTechCards),
@@ -389,6 +390,9 @@ var methodRequirements = map[string]Requirement{
 	// is a WRITE by EnhanceText's precedent: a press spends the AI key (it draws the SAME 30/h
 	// window as EnhanceText), and it may read the card's pictures.
 	"SuggestPrompts": wr(SectionTechCards),
+	// SuggestCallouts (T28) — the `suggest ✦` chip of the ARTIFACTS sheet. Stores nothing; a WRITE by
+	// the same precedent (a press spends the AI key, the SAME 30/h window as EnhanceText).
+	"SuggestCallouts": wr(SectionTechCards),
 	// AddTechCardIssue пишет строку — тут спорить не о чем. Он работает и на ЗАМОРОЖЕННОЙ карточке
 	// (issues вне CONSTRUCTION-дайджеста), но замороженность карточки — не права: право одно и то
 	// же на всех состояниях, иначе роль зависела бы от стадии.
@@ -466,6 +470,8 @@ var methodRequirements = map[string]Requirement{
 	// аккаунт, который правит карточку, но не видит, из чего она собрана.
 	"GetDesignBand":  rd(SectionTechCards),
 	"ListDesignRuns": rd(SectionTechCards),
+	// The dry run of a run's inputs (101): reads the card, spends nothing.
+	"PreviewDesignRunInputs": rd(SectionTechCards),
 	// Чтение ОДНОГО прогона целиком — снимок входов, попытки, картинки. Право то же, что у ленты:
 	// это та же карточка, взятая по одной строке, а не другой объём знания. Деньги здесь не
 	// тратятся — реран платит через StartDesignRun, который стоит на записи.
@@ -479,11 +485,25 @@ var methodRequirements = map[string]Requirement{
 	//
 	// StartDesignRun и DraftDesignIdea — платные вызовы: право их звать это право выставить
 	// организации счёт, и на чтении им места нет ни при каких обстоятельствах.
-	"StartDesignRun":    wr(SectionTechCards),
-	"DraftDesignIdea":   wr(SectionTechCards),
-	"CancelDesignRun":   wr(SectionTechCards),
-	"ArchiveDesignRun":  wr(SectionTechCards),
-	"HideDesignPicture": wr(SectionTechCards),
+	"StartDesignRun":  wr(SectionTechCards),
+	"DraftDesignIdea": wr(SectionTechCards),
+	// Moodboard quiz: generating spends the key (write); the answers are card data (write / read).
+	"GenerateDesignQuiz":    wr(SectionTechCards),
+	"SaveDesignQuizAnswers": wr(SectionTechCards),
+	"GetDesignQuizAnswers":  rd(SectionTechCards),
+	// Auto parts: naming a flat's parts spends the key (write).
+	"SuggestDesignParts":     wr(SectionTechCards),
+	"SuggestDesignPartsCard": wr(SectionTechCards),
+	// PARTS pieces list (M6): the designer's edit of card data (write; spends no key).
+	"SetDesignPartsPieces": wr(SectionTechCards),
+	// Flat route join list: generating spends the key, saving edits card data (write).
+	"GenerateDesignJoins": wr(SectionTechCards),
+	"SetDesignJoins":      wr(SectionTechCards),
+	"CancelDesignRun":     wr(SectionTechCards),
+	"ArchiveDesignRun":    wr(SectionTechCards),
+	"HideDesignPicture":   wr(SectionTechCards),
+	"UndoDesignEdit":      wr(SectionTechCards),
+	"RedoDesignEdit":      wr(SectionTechCards),
 	// «Удалить насовсем» (O-68, D-74) — та же запись о карточке, что «спрятать», только необратимая;
 	// право то же: кто может прятать кроп, тот может его и стереть. Денег не тратит.
 	"DeleteDesignPicture": wr(SectionTechCards),
@@ -493,7 +513,9 @@ var methodRequirements = map[string]Requirement{
 	"RegisterDesignUpload":     wr(SectionTechCards),
 	"SplitDesignPicture":       wr(SectionTechCards),
 	"SetDesignBenchSlot":       wr(SectionTechCards),
+	"SetDesignDetailKept":      wr(SectionTechCards),
 	"SetDesignReferenceRole":   wr(SectionTechCards),
+	"SetDesignReferenceHeld":   wr(SectionTechCards), // 109: «remove from prompt» — the same record as the role
 	// Полки ассетов карточки (0354): ткани, паттерны, фурнитура и их разметка на флэтах. Это
 	// ЗАПИСЬ О КАРТОЧКЕ, а не деньги: ассет ничего не тратит, он объявляет, из чего сделано
 	// изделие, — и потому стоит рядом с ролью референса, а не рядом со StartDesignRun.

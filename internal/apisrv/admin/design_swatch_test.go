@@ -68,6 +68,105 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 		})
 	}
 
+	t.Run("hardware: slot required, colour optional, 0..4 references", func(t *testing.T) {
+		hw := func(cw int32, bom int32, colour *pb_common.DesignColourRecipe, refs ...int32) *pb_common.DesignRunParams {
+			return &pb_common.DesignRunParams{
+				ColorwayId:         cw,
+				ExtraInputMediaIds: refs,
+				Colour:             colour,
+				Pattern: &pb_common.DesignPatternParams{Name: "button · horn", Mode: entity.DesignPatternModeHardware,
+					BomItemId: bom},
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			params *pb_common.DesignRunParams
+			reason string
+		}{
+			{"no colour, no refs", hw(13, 904, nil), ""},
+			{"colour stated", hw(13, 904, hex), ""},
+			{"four refs", hw(13, 904, nil, 1, 2, 3, 4), ""},
+			{"five refs", hw(13, 904, nil, 1, 2, 3, 4, 5), entity.DesignErrorCodeTooManyReferences},
+			{"no bom line", hw(13, 0, hex), entity.DesignErrorCodeHardwareNeedsSlot},
+			{"no colourway", hw(0, 904, hex), entity.DesignErrorCodeHardwareNeedsSlot},
+		} {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoErrorf(t, err, tc.name)
+				continue
+			}
+			require.Equalf(t, codes.InvalidArgument, status.Code(err), tc.name)
+			require.Equalf(t, tc.reason, ffReason(t, err), tc.name)
+		}
+		p := hw(13, 904, nil)
+		p.Pattern.Name = ""
+		require.Equal(t, "pattern_name_required",
+			ffReason(t, designRefuseUnworkableSources(entity.DesignRunKindPattern, "", p)))
+	})
+
+	t.Run("label: slot required, colour optional, 0..4 pictures (optional logo + references)", func(t *testing.T) {
+		lb := func(cw int32, bom int32, refs ...int32) *pb_common.DesignRunParams {
+			return &pb_common.DesignRunParams{
+				ColorwayId:         cw,
+				ExtraInputMediaIds: refs,
+				Pattern: &pb_common.DesignPatternParams{Name: "brand label", Mode: entity.DesignPatternModeLabel,
+					BomItemId: bom},
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			params *pb_common.DesignRunParams
+			reason string
+		}{
+			{"blank label", lb(13, 904), ""},
+			{"logo only", lb(13, 904, 1), ""},
+			{"logo + 3 references", lb(13, 904, 1, 2, 3, 4), ""},
+			{"4 references, no logo", lb(13, 904, 5, 6, 7, 8), ""},
+			{"five pictures", lb(13, 904, 1, 2, 3, 4, 5), entity.DesignErrorCodeTooManyReferences},
+			{"no bom line", lb(13, 0), entity.DesignErrorCodeHardwareNeedsSlot},
+			{"no colourway", lb(0, 904), entity.DesignErrorCodeHardwareNeedsSlot},
+		} {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoErrorf(t, err, tc.name)
+				continue
+			}
+			require.Equalf(t, codes.InvalidArgument, status.Code(err), tc.name)
+			require.Equalf(t, tc.reason, ffReason(t, err), tc.name)
+		}
+	})
+
+	t.Run("artwork: slot required, colour optional, 0..4 pictures (optional source + references)", func(t *testing.T) {
+		aw := func(cw int32, bom int32, refs ...int32) *pb_common.DesignRunParams {
+			return &pb_common.DesignRunParams{
+				ColorwayId:         cw,
+				ExtraInputMediaIds: refs,
+				Pattern: &pb_common.DesignPatternParams{Name: "chest embroidery", Mode: entity.DesignPatternModeArtwork,
+					BomItemId: bom},
+			}
+		}
+		for _, tc := range []struct {
+			name   string
+			params *pb_common.DesignRunParams
+			reason string
+		}{
+			{"words only", aw(13, 904), ""},
+			{"source only", aw(13, 904, 1), ""},
+			{"source + 3 references", aw(13, 904, 1, 2, 3, 4), ""},
+			{"five pictures", aw(13, 904, 1, 2, 3, 4, 5), entity.DesignErrorCodeTooManyReferences},
+			{"no bom line", aw(13, 0), entity.DesignErrorCodeHardwareNeedsSlot},
+			{"no colourway", aw(0, 904), entity.DesignErrorCodeHardwareNeedsSlot},
+		} {
+			err := designRefuseUnworkableSources(entity.DesignRunKindPattern, "", tc.params)
+			if tc.reason == "" {
+				require.NoErrorf(t, err, tc.name)
+				continue
+			}
+			require.Equalf(t, codes.InvalidArgument, status.Code(err), tc.name)
+			require.Equalf(t, tc.reason, ffReason(t, err), tc.name)
+		}
+	})
+
 	t.Run("a swatch still needs its name", func(t *testing.T) {
 		p := swatch(hex)
 		p.Pattern.Name = " "
@@ -79,9 +178,9 @@ func TestTheSwatchDoorREFUSES_BEFORE_MONEY(t *testing.T) {
 // СЛОТ ПЛИТКИ — СТРОКА BOM ЭТОЙ КАРТОЧКИ, И ОТКАЗ ЧУЖОЙ — FailedPrecondition ДО РЕЗЕРВА.
 //
 // МУТАЦИЯ, КОТОРУЮ ЛОВИТ: убрать designRefuseForeignBomLine из StartDesignRun — прогон заплатит за
-// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки. И вторая: начать
-// судить СЕКЦИЮ строки — фурнитура и нитки этой карточки проходят намеренно, какие строки слоты
-// ткани, решает экран по своему прочтению BOM.
+// свотч, который при посадке не сможет стать тканью ни одной пары этой карточки. И вторая: перестать
+// судить СЕМЬЮ строки — свотч на строке фурнитуры или ниток заплатил бы за ткань, которая не может
+// быть картинкой пуговицы (cloth_on_trim_line).
 func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 	card := designMoodCard()
 	card.BomItems = []entity.TechCardBomItem{
@@ -98,9 +197,12 @@ func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 		refused bool
 	}{
 		{"a line of this card", 902, codes.OK, "", false},
+		{"a lining line of this card", 903, codes.OK, "", false},
 		{"not made for a slot", 0, codes.OK, "", false},
-		{"a hardware line of this card — the section is not judged", 904, codes.OK, "", false},
-		{"a thread line of this card — the section is not judged", 905, codes.OK, "", false},
+		{"a hardware line of this card — a swatch is cloth", 904, codes.FailedPrecondition,
+			entity.DesignErrorCodeClothOnTrimLine, true},
+		{"a thread line of this card — a swatch is cloth", 905, codes.FailedPrecondition,
+			entity.DesignErrorCodeClothOnTrimLine, true},
 		{"a line of another card", 7777, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine, true},
 		{"a negative id", -3, codes.InvalidArgument, entity.DesignErrorCodeBadBomLineID, true},
 	} {
@@ -125,6 +227,51 @@ func TestTheSwatchDoorREFUSES_A_FOREIGN_BOM_LINE(t *testing.T) {
 			require.Equal(t, tc.code, status.Code(err))
 			require.Equal(t, tc.reason, ffReason(t, err), "каждый отказ двери называет себя словом")
 			require.Nil(t, rig.sent, "отказ обязан стоять ДО резерва")
+		})
+	}
+}
+
+// СЕМЬЯ СТРОКИ ПО РЕЖИМУ: фурнитура — только на не-рулонную строку, свотч — только на рулонную,
+// фотография (image) семью не судит. Отказы — FailedPrecondition со своими токенами.
+//
+// МУТАЦИИ, КОТОРЫЕ ЛОВИТ: перепутать IsRollGoodsSection местами в двух ветках; судить image-режим.
+func TestTheBomLineDoorJUDGES_THE_FAMILY_BY_MODE(t *testing.T) {
+	bom := []entity.TechCardBomItem{
+		{Id: 902, Section: entity.BomSectionFabric},
+		{Id: 906, Section: entity.BomSectionInsulation},
+		{Id: 904, Section: entity.BomSectionHardware},
+		{Id: 905, Section: entity.BomSectionThread},
+	}
+	for _, tc := range []struct {
+		name   string
+		mode   string
+		bom    int32
+		reason string
+	}{
+		{"hardware on a hardware line", entity.DesignPatternModeHardware, 904, ""},
+		{"hardware on a thread line", entity.DesignPatternModeHardware, 905, ""},
+		{"hardware on a fabric line", entity.DesignPatternModeHardware, 902, entity.DesignErrorCodeHardwareOnClothLine},
+		{"hardware on an insulation line", entity.DesignPatternModeHardware, 906, entity.DesignErrorCodeHardwareOnClothLine},
+		{"label on a hardware line", entity.DesignPatternModeLabel, 904, ""},
+		{"label on a fabric line", entity.DesignPatternModeLabel, 902, entity.DesignErrorCodeHardwareOnClothLine},
+		{"artwork on a hardware line", entity.DesignPatternModeArtwork, 904, ""},
+		{"artwork on a fabric line", entity.DesignPatternModeArtwork, 902, entity.DesignErrorCodeHardwareOnClothLine},
+		{"swatch on a fabric line", entity.DesignPatternModeSwatch, 902, ""},
+		{"swatch on an insulation line", entity.DesignPatternModeSwatch, 906, ""},
+		{"swatch on a hardware line", entity.DesignPatternModeSwatch, 904, entity.DesignErrorCodeClothOnTrimLine},
+		{"image on a hardware line is not judged", entity.DesignPatternModeImage, 904, ""},
+		{"legacy empty mode on a thread line is not judged", "", 905, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := designRefuseForeignBomLine(41, &pb_common.DesignRunParams{
+				Pattern: &pb_common.DesignPatternParams{Name: "x", Mode: tc.mode, BomItemId: tc.bom},
+			}, bom)
+			if tc.reason == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Equal(t, codes.FailedPrecondition, status.Code(err))
+			require.Equal(t, tc.reason, ffReason(t, err))
 		})
 	}
 }

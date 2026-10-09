@@ -64,10 +64,14 @@ type Engine struct {
 // Engine slugs. GPT Image rows are phase 2; Gemini / Seedream rows are phase 3 (B-16), each behind
 // its own flag (EngineFlags).
 const (
-	EngineGPTImage2    = "openai/gpt-image-2"
-	EngineGPTImage25   = "openai/gpt-image-2.5-sunburst"
-	EngineGemini3Pro   = "google/gemini-3-pro-image"
-	EngineSeedream5Pro = "bytedance-seed/seedream-5-0-pro"
+	EngineGPTImage2  = "openai/gpt-image-2"
+	EngineGPTImage25 = "openai/gpt-image-2.5-sunburst"
+	// EngineGPTImage25Flare — the FLAT route's engine (tmp/plans/flat-consistency rounds 3–7: the only
+	// slug that drew card 38's construction right; measured $0.049 per 16:9 sheet through OpenRouter's
+	// /images). FlatDefaultEngine names it.
+	EngineGPTImage25Flare = "openai/gpt-image-2.5-flare"
+	EngineGemini3Pro      = "google/gemini-3-pro-image"
+	EngineSeedream5Pro    = "bytedance-seed/seedream-5-0-pro"
 )
 
 // EngineFlags — the rows that are the owner's money decision (DESIGN_ENGINE_GEMINI,
@@ -205,6 +209,8 @@ func engineCatalogue() []Engine {
 		// `transparent` on 2.5 through OpenRouter is UNVERIFIED (12-PROVIDERS §E): G-02 measures it,
 		// and a 400 there deletes this entry.
 		gptEngine(EngineGPTImage25, "GPT Image 2.5", []string{"transparent"}),
+		// The flat route's default (FlatDefaultEngine). No `transparent`: unmeasured on this slug.
+		gptEngine(EngineGPTImage25Flare, "GPT Image 2.5 Flare", nil),
 		geminiEngine(),
 		seedreamEngine(),
 	}
@@ -426,4 +432,21 @@ func applyImageOptions(job *Job, o *imageOptions, table []Engine) {
 	default:
 		job.Quality = t.Value
 	}
+}
+
+// FlatDefaultEngine — the engine a FLAT run is drawn by when the person named none (owner, 05.10:
+// «модель флэта по умолчанию → gpt-image-2.5-flare»). The door freezes it into params.image.model
+// (admin designFreezeFlatModel), so the run's history says which model drew it and a later change
+// of this constant never rewrites an old run. Other kinds keep the deployment default.
+const FlatDefaultEngine = EngineGPTImage25Flare
+
+// ONE SHEET PER PRESS (owner 06.10, wave 10: «убрать тиндер-фичу»). A flat garment sheet used to
+// be bought as 2–4 candidates the designer picked from in a quiz; the quiz is gone, and so is the
+// count: every garment sheet is ONE picture, cut and applied to the four slots by the client. A run
+// queued before the change still carries its frozen requested_outputs (imageCalls reads it back).
+
+// FlatIsGarmentSheet — a flat run that draws the garment on ONE sheet: not per_view, not a detail
+// callout, at least one view.
+func FlatIsGarmentSheet(views []string, layout string) bool {
+	return layout != layoutPerView && len(views) > 0 && !detailOnlyRun(views)
 }

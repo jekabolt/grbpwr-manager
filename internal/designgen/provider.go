@@ -86,6 +86,9 @@ type Job struct {
 	// `per_view` for one picture per view — which is one paid call per view, not one call with n.
 	Views  []string
 	Layout string
+	// FlatMode — params.flat.mode of a flat run (quick | drawing | drawing_photos; "" = quick): the
+	// money boundary reads it beside Outputs (a legacy multi-candidate flat, imageCalls).
+	FlatMode string
 	// DetailNames names the requested details POSITIONALLY: the i-th entry belongs to the i-th
 	// `detail` in Views. An entry is empty when the frozen snapshot could not name that slot.
 	//
@@ -200,6 +203,8 @@ type Artifact struct {
 	// Kind overrides the picture kind derived from the run kind. Empty = the derived one. It
 	// exists for the 3D route, whose thumbnail is a raster tile standing in for a model.
 	Kind string
+	// Flags — pixel labels read off the picture (flat route, 0397: FlagGrey). A label, never a refusal.
+	Flags []string
 }
 
 // Outcome is what one pass through a provider produced.

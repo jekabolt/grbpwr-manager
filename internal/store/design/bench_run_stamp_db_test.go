@@ -73,7 +73,7 @@ func TestDesignDBBenchSlotCarriesTheRunStampOfItsPlate(t *testing.T) {
 	// который штамп не резолвит вовсе: на свежей карточке прогон лежит на первой странице, и
 	// клиент нашёл бы ревизию сам.
 	for i := 0; i < 12; i++ {
-		startProbeRun(t, rep, card, "0.10")
+		startSettledProbeRun(t, rep, card, "0.10") // M8: one flat in flight per card
 	}
 
 	band, err := rep.Design().GetBand(ctx, card, 12)

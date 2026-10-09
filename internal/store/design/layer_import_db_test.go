@@ -3,7 +3,6 @@ package design_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -150,8 +149,9 @@ func TestDesignDBImportVectorStillDedupesTheSameFile(t *testing.T) {
 
 // ─────────────────── граница карточки ───────────────────
 
-// КАРТИНКА ПОЛОСЫ ЧУЖОЙ КАРТОЧКИ НЕ СТАНОВИТСЯ ВЕКТОРНЫМ СЛОЕМ ЭТОЙ.
-func TestDesignDBImportVectorRefusesForeignSourceMedia(t *testing.T) {
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+// Картинка полосы другой карточки законно становится векторным слоем этой.
+func TestDesignDBImportVectorAcceptsSourceMediaHeldByAnotherCard(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
 	mine := probeCard(t, raw)
@@ -160,16 +160,11 @@ func TestDesignDBImportVectorRefusesForeignSourceMedia(t *testing.T) {
 	probeBandPicture(t, raw, theirs, media)
 
 	_, err := rep.Design().ImportVector(ctx, probeVectorImport(mine, media, uuid.NewString()))
-	require.Error(t, err)
-	require.ErrorIs(t, err, entity.ErrDesignForeignMedia)
+	require.NoError(t, err)
 }
 
-// ТО ЖЕ ДЛЯ ПОДЛОЖКИ.
-//
-// base_media_id не проверялся ничем, кроме существования строки медиа, — при том что картинка
-// (source_picture_id) проверялась на принадлежность с самого начала. Одна дверь, два соседних
-// поля, и правило стояло только на одном.
-func TestDesignDBImportVectorRefusesForeignBaseMedia(t *testing.T) {
+// ТО ЖЕ ДЛЯ ПОДЛОЖКИ (T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.)
+func TestDesignDBImportVectorAcceptsBaseMediaHeldByAnotherCard(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
 	mine := probeCard(t, raw)
@@ -181,8 +176,7 @@ func TestDesignDBImportVectorRefusesForeignBaseMedia(t *testing.T) {
 	in := probeVectorImport(mine, svg, uuid.NewString())
 	in.BaseMediaId = base
 	_, err := rep.Design().ImportVector(ctx, in)
-	require.Error(t, err)
-	require.ErrorIs(t, err, entity.ErrDesignForeignMedia)
+	require.NoError(t, err)
 }
 
 // СВЕЖАЯ ЗАГРУЗКА ПРОХОДИТ — И БЕЗ ЭТОЙ ПРОБЫ ГРАНИЦА БЫЛА БЫ ПРОСТО ПОЛОМКОЙ.
@@ -235,6 +229,8 @@ func TestDesignDBImportVectorAcceptsMediaSharedWithAnotherCard(t *testing.T) {
 
 // AssertMediaNotForeign ОТВЕЧАЕТ ТО ЖЕ САМОЕ, ЧТО ПРОВЕРЯЕТ ИМПОРТ.
 //
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ. Оба ответа теперь «можно».
+//
 // ⚠ ЭТО И ЕСТЬ ПРЕДМЕТ ПРОБЫ: глагол существует затем, чтобы дверь спрашивала ТО ЖЕ ПРАВИЛО, а не
 // заводила своё второе мнение. Раньше дверь считала принадлежность сама — через реестр ссылок
 // media, у которого множество держателей ШИРЕ (выноски карточки, плиты версий, примерки), — и два
@@ -258,13 +254,10 @@ func TestDesignDBAssertMediaNotForeignMatchesTheImportRule(t *testing.T) {
 	require.NoError(t, rep.Design().AssertMediaNotForeign(ctx, mine, []int{0, -1}),
 		"незаданное — законное состояние, отказывать за него обязан тот, кто его требует")
 
-	err := rep.Design().AssertMediaNotForeign(ctx, mine, []int{fresh, own, foreign})
-	require.Error(t, err, "чужой номер обязан быть найден, на каком бы месте он ни стоял")
-	require.ErrorIs(t, err, entity.ErrDesignForeignMedia)
+	require.NoError(t, rep.Design().AssertMediaNotForeign(ctx, mine, []int{fresh, own, foreign}),
+		"медиатека общая: файл, который держит другая карточка, проходит")
 
-	// И ТОТ ЖЕ ВЕРДИКТ ЧЕРЕЗ САМ ИМПОРТ: два ответа на один вопрос обязаны совпадать, иначе дверь
-	// и стор снова разъедутся.
+	// И ТОТ ЖЕ ВЕРДИКТ ЧЕРЕЗ САМ ИМПОРТ.
 	_, ierr := rep.Design().ImportVector(ctx, probeVectorImport(mine, foreign, uuid.NewString()))
-	require.True(t, errors.Is(ierr, entity.ErrDesignForeignMedia),
-		"импорт обязан отказать ровно тому, что глагол назвал чужим")
+	require.NoError(t, ierr, "импорт обязан пропустить то же, что пропускает глагол")
 }

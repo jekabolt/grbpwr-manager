@@ -14,9 +14,10 @@ import (
 // assertion at once and any "improvement" of the owner's wording would pass silently. These copies
 // are the reference the constants are held to.
 const (
-	ownerStyleGarment    = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical with subtle body-form shaping. No human body, no mannequin, no hanger."
+	// Wave 10 R19 (owner 06.10, 102-ARTIFACTS §2.1/§2.4): dashed lines only for visible stitching.
+	ownerStyleGarment    = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger."
 	ownerExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
-	ownerStyleDetail     = "Style: black vector line art on a plain white background. Heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching. Flat, technical, true proportions. No human body, no mannequin, no hanger."
+	ownerStyleDetail     = "Style: black vector line art on a plain white background. Heavier weight for the outer contour, thin solid lines for the edges and seams the photos and the accepted flats show; dashed lines only for stitching actually visible there, otherwise none. Flat, technical, true proportions. No human body, no mannequin, no hanger."
 	ownerExcludedDetail  = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements."
 	ownerOutput          = "Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic."
 )
@@ -190,4 +191,49 @@ func TestBrokenSnapshotStillGetsTheCraft(t *testing.T) {
 	require.Contains(t, got, ownerStyleGarment)
 	require.Contains(t, got, ownerExcludedGarment)
 	require.Contains(t, got, ownerOutput)
+}
+
+// TestFlatSaysWhichViewsNoPhotoShows — 102-ARTIFACTS §2.3: the asked views no attached picture shows.
+func TestFlatSaysWhichViewsNoPhotoShows(t *testing.T) {
+	four := []string{"front", "back", "side_l", "side_r"}
+	front := []refCaption{{FromRef: true, Role: "front"}}
+	require.Equal(t, "- no photo shows the BACK, the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, front))
+	require.Equal(t, "- no photo shows the BACK", flatMissingViewsLine([]string{"front", "back"}, front))
+	all := []refCaption{{FromRef: true, Role: "front"}, {FromRef: true, Role: "back_flat"}, {FromRef: true, Role: "side_l"}, {View: "side_r"}}
+	require.Equal(t, "", flatMissingViewsLine(four, all))
+	require.Equal(t, "", flatMissingViewsLine([]string{"detail"}, front))
+	hand := []refCaption{{IsStructure: true, StructView: "front"}, {IsStructure: true, StructView: "back"}}
+	require.Equal(t, "- no photo shows the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, hand))
+}
+
+// M3 (07.10, 104-PROMPT-LOOP): the garment identification asks for the photos' COUNT and weighs a missing element
+// the same as an added one. The sentence it replaced («when unsure, leave it out: a missing line is a small error»)
+// made missing the main error; it must not come back by an edit that «softens» the counting line.
+func TestFlatIdentifyCountsAndWeighsMissingLikeAdded(t *testing.T) {
+	const counting = "Count what the photos show — buttons, pockets, seams, panels, vents — and draw exactly that many: a missing element and an added element are equally wrong."
+	got := flatCraft(runParams{Views: []string{"front", "back", "side_l", "side_r"}, Layout: "one"}, nil, 2)
+	require.Contains(t, got, counting)
+	require.NotContains(t, got, "leave it out")
+	require.NotContains(t, got, "a missing line is a small error")
+	// Words-only and detail runs keep their own identification.
+	require.NotContains(t, flatCraft(runParams{Views: []string{"front"}, Layout: "one"}, nil, 0), counting)
+	require.NotContains(t, flatCraft(runParams{Views: []string{"detail"}, Layout: "one"}, []string{"collar"}, 1), counting)
+}
+
+// TestFlatNamesASideOfUnknownFlank — the board labels a side photo whose flank it cannot tell `side`
+// (101 Q2). The flat prompt names it a side photo (not «reference photo» / the raw word), lets it guide
+// the side views, and does not claim that no photo shows a side.
+func TestFlatNamesASideOfUnknownFlank(t *testing.T) {
+	label, words := flatPhotoRole(entity.DesignViewSide)
+	require.Equal(t, "SIDE", label)
+	require.Equal(t, "side photo", words)
+	require.Equal(t, "side photo", flatRefCaption(inputRef{Role: entity.DesignViewSide}))
+
+	four := []string{"front", "back", "side_l", "side_r"}
+	refs := []refCaption{{FromRef: true, Role: "front"}, {FromRef: true, Role: "back"}, {FromRef: true, Role: entity.DesignViewSide}}
+	require.Equal(t, "", flatMissingViewsLine(four, refs))
+	require.Equal(t, "- no photo shows the SIDE LEFT or the SIDE RIGHT", flatMissingViewsLine(four, refs[:2]))
+
+	para := flatPhotoRolesParagraph(refs, nil, "the photos")
+	require.Contains(t, para, "- Image 3 — SIDE FIT AND DETAIL AUTHORITY only (side photo); never a source of construction; mirror its depth profile to the side views you derive.")
 }

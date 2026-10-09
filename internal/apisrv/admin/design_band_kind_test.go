@@ -229,3 +229,36 @@ func TestRegisterDesignUploadCarriesTheTargetKind(t *testing.T) {
 	require.NotNil(t, rig.sent.Target)
 	require.Equal(t, entity.DesignPictureKindRender, rig.sent.Target.Kind)
 }
+
+// T15: ИМЯ ДЕТАЛИ, МИНТУЕМОЙ ЗАГРУЗКОЙ, ДОЕЗЖАЕТ ДО СТОРА.
+//
+// МУТАЦИЯ, КОТОРУЮ ОНА ЛОВИТ: убрать `NewDetailName` из сборки entity.DesignBatchRegister — ровно то
+// состояние, в котором хендлер и был. Тогда `target` с view_key = detail отказывал
+// detail_name_required на каждой загрузке-с-минтом, хотя имя лежало в запросе. Пустое имя остаётся
+// пустым: клиент, который грузит и минтует двумя записями, его не шлёт.
+func TestRegisterDesignUploadCarriesTheNewDetailNameToTheStore(t *testing.T) {
+	rig := newDesignUploadRig(t)
+	_, err := rig.srv.RegisterDesignUpload(designRunCtx(), &pb_admin.RegisterDesignUploadRequest{
+		TechCardId:      designRunCardID,
+		ClientRequestId: "44444444-4444-4444-4444-444444444444",
+		Items:           []*pb_admin.DesignUploadItem{{MediaId: 501}},
+		Target: &pb_admin.DesignBenchSlotRef{
+			Slot: &pb_admin.DesignBenchSlotRef_ViewKey{ViewKey: entity.DesignViewDetail},
+		},
+		NewDetailName: "  pocket flap  ",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent)
+	require.NotNil(t, rig.sent.Target)
+	require.Equal(t, entity.DesignViewDetail, rig.sent.Target.ViewKey)
+	require.Equal(t, "pocket flap", rig.sent.NewDetailName, "trimmed exactly as in SetDesignBenchSlot")
+
+	rig = newDesignUploadRig(t)
+	_, err = rig.srv.RegisterDesignUpload(designRunCtx(), &pb_admin.RegisterDesignUploadRequest{
+		TechCardId:      designRunCardID,
+		ClientRequestId: "55555555-5555-5555-5555-555555555555",
+		Items:           []*pb_admin.DesignUploadItem{{MediaId: 502}},
+	})
+	require.NoError(t, err)
+	require.Empty(t, rig.sent.NewDetailName)
+}

@@ -114,7 +114,7 @@ func TestPromptIsRecordedBeforeAnyMoney(t *testing.T) {
 	require.Len(t, img.calls, 1)
 	require.Equal(t, img.calls[0].Prompt, st.recordedPrompts[0],
 		"the recorded text and the sent text must be the SAME string, not two compositions")
-	require.Contains(t, st.recordedPrompts[0], "- image 1: front — NOTE-collar",
+	require.Contains(t, st.recordedPrompts[0], "- image 1: front photo: NOTE-collar",
 		"what the person later reads is the numbered caption block the model got")
 }
 

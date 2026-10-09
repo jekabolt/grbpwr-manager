@@ -68,7 +68,13 @@ func TestTwoDetailSheetNamesBothFramesAndAsksForTwo(t *testing.T) {
 	// ⚠ БЫЛО ДВА, СТАЛО ОДИН, И ЭТО ФИКС K-1, А НЕ ПОТЕРЯ. Второй картинкой была ПЛИТА ФЛЕТ-СЛОТА,
 	// которую флет-прогон брал молча: модель получала свой же старый флет как референс и
 	// переписывала его один в один. Уезжает то, что человек принёс, — его референс.
-	require.Len(t, job.References, 1, "уезжает референс карточки; плиты верстака — только по просьбе")
+	// T8 (владелец 06.10): деталь получает ещё и принятый FRONT — второй картинкой, под своей
+	// подписью; ни боков, ни старых деталей.
+	// T74 (владелец 06.10): «если генерим деталь — только картинки этой детали». FRONT-фото карточки
+	// к детали не относится и больше не едет; остаётся принятый FRONT-флет, первой картинкой.
+	require.Len(t, job.References, 1, "только принятый front; фото сторон к детали не относятся")
+	require.Contains(t, job.Prompt, "image 1: this garment's accepted technical flat")
+	require.Contains(t, job.Prompt, "Image 1 is this garment's accepted technical flat")
 }
 
 // КОНТРОЛЬ ГРАНИЦЫ: РОВНО ОДНОЙ ДЕТАЛИ ЭТАЛОН 2 ПРИНАДЛЕЖИТ ПО-ПРЕЖНЕМУ.
@@ -116,8 +122,8 @@ func TestThreedDoesNotCarryTheDetailListIntoTheMeshyPrompt(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, job.Prompt, "draw these details")
 	require.NotContains(t, job.Prompt, "patch pocket")
-	// Положительный контроль: человеческий контекст 3D-прогона на месте, промпт не пуст.
-	require.Contains(t, job.Prompt, "fit:\noversized")
+	// Положительный контроль: промпт не пуст (fit больше не замерзает у флэта, wave 10 — эталон флэтовый).
+	require.Contains(t, job.Prompt, "references:")
 }
 
 // MINOR-6: клоз третьего ранга В ОДИНОЧЕСТВЕ обязан иметь ПОЛОЖИТЕЛЬНУЮ форму.

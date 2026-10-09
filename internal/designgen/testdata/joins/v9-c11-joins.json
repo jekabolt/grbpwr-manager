@@ -1,0 +1,353 @@
+{
+ "fit": {
+  "ease": "relaxed",
+  "waist": "fitted"
+ },
+ "consistency": {
+  "same_garment": true,
+  "notes": "All six photos show the same black trousers with the same contoured wide waistband, topstitched front fly and straight wide legs. Image 6 is captioned 'side slit at the hem' but actually shows an in-seam side pocket at the hip, just below the waistband seam; the leg hems in images 1–3 have no slit. Image 4 is lit greyer but shows the same garment.",
+  "trust": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ]
+ },
+ "items": [
+  {
+   "id": "wb_top_front",
+   "kind": "edge",
+   "path": [
+    "WL_R",
+    "WF_C",
+    "WL_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "wb_top_back",
+    "fly_placket"
+   ],
+   "note": "top edge of the front waistband; the fly strip runs up through it to this edge"
+  },
+  {
+   "id": "wb_top_back",
+   "kind": "edge",
+   "path": [
+    "WL_L",
+    "WB_C",
+    "WL_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WB_C"
+   ],
+   "continues_into": [
+    "wb_top_front"
+   ],
+   "note": "top edge of the back waistband; small V notch at the centre-back seam"
+  },
+  {
+   "id": "waistband_front",
+   "kind": "waistband",
+   "width": "wide",
+   "path": [
+    "WL_R",
+    "WF_C",
+    "WL_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "waistband_back"
+   ],
+   "note": "deep contoured band with no belt loops; split at CF by the fly"
+  },
+  {
+   "id": "waistband_back",
+   "kind": "waistband",
+   "width": "wide",
+   "path": [
+    "WL_L",
+    "WB_C",
+    "WL_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "waistband_front"
+   ],
+   "note": "deep contoured back band with a centre-back seam; label tab at CB inside"
+  },
+  {
+   "id": "wb_seam_front",
+   "kind": "seam",
+   "path": [
+    "WL_R..HIP_R:0.3",
+    "WF_C..CROTCH_F:0.25",
+    "WL_L..HIP_L:0.3"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "wb_seam_back",
+    "fly_placket"
+   ],
+   "note": "lower edge of the front waistband; interrupted by the fly strip"
+  },
+  {
+   "id": "wb_seam_back",
+   "kind": "seam",
+   "path": [
+    "WL_L..HIP_L:0.3",
+    "WB_C..CROTCH_B:0.25",
+    "WL_R..HIP_R:0.3"
+   ],
+   "closed": false,
+   "sharp": [
+    "WB_C..CROTCH_B:0.25"
+   ],
+   "continues_into": [
+    "wb_seam_front"
+   ],
+   "note": "lower edge of the back waistband; slight dip where it meets the CB seam"
+  },
+  {
+   "id": "cb_seam",
+   "kind": "seam",
+   "path": [
+    "WB_C",
+    "WB_C..CROTCH_B:0.25",
+    "CROTCH_B",
+    "CROTCH"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "inseam_L",
+    "inseam_R"
+   ],
+   "note": "centre-back seam running through the waistband and down the back rise"
+  },
+  {
+   "id": "fly_placket",
+   "kind": "placket",
+   "width": "narrow",
+   "path": [
+    "WF_C",
+    "WF_C..CROTCH_F:0.6"
+   ],
+   "closed": false,
+   "sharp": [
+    "WF_C..CROTCH_F:0.6"
+   ],
+   "continues_into": [
+    "cf_seam"
+   ],
+   "note": "topstitched fly strip lying on the wearer's left of CF; runs from the waistband top down; straight topstitching with a bar tack across the bottom"
+  },
+  {
+   "id": "fly_zip",
+   "kind": "closure",
+   "type": "zip",
+   "path": [
+    "WF_C",
+    "WF_C..CROTCH_F:0.6"
+   ],
+   "count": 1,
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "concealed zip under the fly; opening edge on CF; no visible waistband button"
+  },
+  {
+   "id": "cf_seam",
+   "kind": "seam",
+   "path": [
+    "WF_C..CROTCH_F:0.6",
+    "CROTCH_F",
+    "CROTCH"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "inseam_L",
+    "inseam_R"
+   ],
+   "note": "front rise seam below the fly"
+  },
+  {
+   "id": "side_seam_R",
+   "kind": "seam",
+   "path": [
+    "WL_R",
+    "HIP_R",
+    "KNEE_OUT_R",
+    "ANKLE_OUT_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WL_R",
+    "ANKLE_OUT_R"
+   ],
+   "continues_into": [
+    "hem_R"
+   ],
+   "note": "straight side seam that also forms the outer outline; runs through the waistband"
+  },
+  {
+   "id": "side_seam_L",
+   "kind": "seam",
+   "path": [
+    "WL_L",
+    "HIP_L",
+    "KNEE_OUT_L",
+    "ANKLE_OUT_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "WL_L",
+    "ANKLE_OUT_L"
+   ],
+   "continues_into": [
+    "hem_L"
+   ],
+   "note": "straight side seam / outer outline"
+  },
+  {
+   "id": "inseam_R",
+   "kind": "seam",
+   "path": [
+    "CROTCH",
+    "KNEE_IN_R",
+    "ANKLE_IN_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "ANKLE_IN_R"
+   ],
+   "continues_into": [
+    "hem_R"
+   ],
+   "note": "straight inseam"
+  },
+  {
+   "id": "inseam_L",
+   "kind": "seam",
+   "path": [
+    "CROTCH",
+    "KNEE_IN_L",
+    "ANKLE_IN_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "ANKLE_IN_L"
+   ],
+   "continues_into": [
+    "hem_L"
+   ],
+   "note": "straight inseam"
+  },
+  {
+   "id": "hem_R",
+   "kind": "edge",
+   "path": [
+    "ANKLE_OUT_R",
+    "LEG_HEM_F_R",
+    "ANKLE_IN_R",
+    "LEG_HEM_B_R"
+   ],
+   "closed": true,
+   "sharp": [],
+   "continues_into": [
+    "side_seam_R",
+    "inseam_R"
+   ],
+   "note": "plain straight wide leg hem; no slit, no turn-up"
+  },
+  {
+   "id": "hem_L",
+   "kind": "edge",
+   "path": [
+    "ANKLE_OUT_L",
+    "LEG_HEM_F_L",
+    "ANKLE_IN_L",
+    "LEG_HEM_B_L"
+   ],
+   "closed": true,
+   "sharp": [],
+   "continues_into": [
+    "side_seam_L",
+    "inseam_L"
+   ],
+   "note": "plain straight wide leg hem; no slit, no turn-up"
+  },
+  {
+   "id": "pocket_R",
+   "kind": "pocket",
+   "anchor": "HIP_R",
+   "type": "welt",
+   "path": [
+    "WL_R..HIP_R:0.35",
+    "HIP_R..KNEE_OUT_R:0.1"
+   ],
+   "closed": false,
+   "sharp": [
+    "WL_R..HIP_R:0.35",
+    "HIP_R..KNEE_OUT_R:0.1"
+   ],
+   "continues_into": [
+    "side_seam_R"
+   ],
+   "note": "in-seam side pocket: a vertical slit in the side seam starting just below the waistband seam; front edge topstitched; tacked at both ends"
+  },
+  {
+   "id": "pocket_L",
+   "kind": "pocket",
+   "anchor": "HIP_L",
+   "type": "welt",
+   "path": [
+    "WL_L..HIP_L:0.35",
+    "HIP_L..KNEE_OUT_L:0.1"
+   ],
+   "closed": false,
+   "sharp": [
+    "WL_L..HIP_L:0.35",
+    "HIP_L..KNEE_OUT_L:0.1"
+   ],
+   "continues_into": [
+    "side_seam_L"
+   ],
+   "note": "in-seam side pocket mirroring the right one"
+  },
+  {
+   "id": "hem_slit_L",
+   "kind": "edge",
+   "path": [
+    "KNEE_OUT_L..ANKLE_OUT_L:0.82",
+    "ANKLE_OUT_L..ANKLE_IN_L:0.06"
+   ],
+   "note": "short slit in the outseam at the hem (detail photo 6)"
+  },
+  {
+   "id": "hem_slit_R",
+   "kind": "edge",
+   "path": [
+    "KNEE_OUT_R..ANKLE_OUT_R:0.82",
+    "ANKLE_OUT_R..ANKLE_IN_R:0.06"
+   ],
+   "note": "short slit in the outseam at the hem (detail photo 6)"
+  }
+ ],
+ "absent": [
+  "no belt loops",
+  "no visible waistband button",
+  "no back pockets",
+  "no front scoop or slant pockets (pockets sit in the side seams only)",
+  "no turn-ups or cuffs at the hem",
+  "no visible darts or pleats",
+  "no back yoke apart from the waistband"
+ ]
+}

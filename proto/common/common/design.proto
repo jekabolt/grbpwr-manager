@@ -381,6 +381,35 @@ message DesignRunParams {
   DesignExtendParams extend = 18;
   // THE SOURCE PICTURE OF A VIDEO RUN (kind=video, B-32). Refused on every other kind (`video_forbidden`).
   DesignVideoParams video = 19;
+  // THE FLAT GENERATION MODE (kind=flat, flat-consistency 81-FINAL-MODES). Refused on every other kind
+  // (`flat_forbidden`). Absent = the photos route. A rerun inherits its parent's block (a different one
+  // is `mode_not_for_this_run`).
+  DesignFlatParams flat = 20;
+}
+
+// DesignFlatParams — how ONE flat press draws its sheet (81-FINAL-MODES).
+//   - "" (or "photos"): the card's kept reference photos with roles and notes + the join list in words
+//     when the card has one; TWO candidate sheets. The default.
+//   - hand_flat: the card's own hand-drawn technical flats (structure_refs) are redrawn cleanly, the
+//     missing views derived; the kept photos travel for fit only; no join list. TWO candidates.
+//   - straps: the photos route with the designer-CONFIRMED join list (DesignJoins.confirmed at the
+//     card's current rev); FOUR candidates.
+// Door refusals (all free, before any money): `unknown_flat_mode`, `structure_required` (hand_flat
+// without refs), `structure_forbidden` (refs on another mode), `structure_malformed` (a role that is not
+// front_flat | back_flat, a role or media twice), `structure_not_on_card` (not a TECHNICAL media of this
+// card), `joins_unconfirmed` (straps on a card whose list is missing or not confirmed at its current rev;
+// FailedPrecondition, metadata `joins_rev`), `mode_not_for_this_run` (a detail-only or per_view run, or
+// a rerun that changes its parent's mode, flats or views). The structure flats travel in the input
+// snapshot as the first references, with their roles.
+message DesignFlatParams {
+  string mode = 1; // "" | photos | hand_flat | straps; "" is the photos route for ever
+  repeated DesignFlatStructureRef structure_refs = 2; // hand_flat only: 1..2 of the card's technical flats
+}
+
+// DesignFlatStructureRef — one hand-drawn technical flat of the card and what it shows.
+message DesignFlatStructureRef {
+  int32 media_id = 1; // FK media(id); a TECHNICAL media of this tech card
+  string role = 2; // front_flat | back_flat
 }
 
 // DesignVideoParams is the frozen ask of a VIDEO run (kind=video, the playground's «Image to Video»,
@@ -681,6 +710,20 @@ message DesignColourMap {
   // a claim that the file is gone. The distinction is DesignEditLayer.raster_deleted's, verbatim:
   // a failed lookup must not report a deletion that may not have happened.
   bool deleted = 6;
+  // FK media(id), OPTIONAL (0 = none): THE CLOTH MOCKUP OF THIS MAP — the same flat of the same
+  // `view` over the same base, each labelled part filled flat with its cloth's tile at the cloth's
+  // TRUE repeat. Read on the frozen recipe (DesignColourRecipe.colour_maps) only; the colour plan
+  // does not store it.
+  //
+  // ⚠ IT SHOWS WHERE AND HOW BIG, NEVER HOW IT LOOKS. Measured (paint-parts T13 A/B): handed a
+  // mockup, the image model copies the motif's SCALE and colours from it — so its scale must be
+  // the cloth's real repeat — while placement was already right from the map alone. It is attached
+  // right after its map with a caption that forbids its flat, unlit look.
+  //
+  // It belongs to its map, so it travels HERE rather than as an extra input; the run door holds it
+  // to the same rules as the map: card-owned media, never also a map, a plate, a reference or a
+  // cloth of the same run.
+  int32 mockup_media_id = 7;
 }
 
 // DesignColourSwatch is ONE label of a colour map: a colour somebody deliberately chose, and how
@@ -910,6 +953,10 @@ message DesignAssetPlacement {
   string note = 5;
   string set_by = 6; // server-stamped
   google.protobuf.Timestamp set_at = 7;
+  // The picture it sits on, so a client can carry a placement whose picture left the band (old
+  // flats drop out of the paged runs/batches lists). Filled by GetDesignBand with media resolved;
+  // unset on the Set response and when the picture row is gone.
+  DesignPicture picture = 8;
 }
 
 // DesignAssetBinding — THE FABRIC OF ONE (COLOURWAY, SLOT): which asset colourway N wears on BOM
@@ -1239,7 +1286,8 @@ message DesignPicture {
   bool display_only = 20;
   // THE EDIT THAT TOOK THIS PICTURE'S PLACE (O-53) — the id of the flatten filed by
   // FlattenDesignEditLayer with replace_picture_id = this picture. 0 = not replaced. OUTPUT-ONLY:
-  // no request carries it, and no verb clears it (there is no «un-replace» in v1).
+  // no request carries it, and no verb clears it. An overwrite over an UNDONE successor (undone_at)
+  // rewrites it to the new edit; the undone branch keeps its rows, cut off.
   //
   // A REPLACED PICTURE IS NOT HIDDEN AND NOT CHANGED. Its pixels, run row, crops, reference roles
   // and hidden_at are exactly what they were; what moved is the bench slot that held it, which now
@@ -1257,7 +1305,32 @@ message DesignPicture {
   //
   // ⚠ ABSENT — not 0 — on a server older than the field, and that absence is how a client knows
   // the server cannot replace a picture yet (FlattenDesignEditLayerRequest.replace_picture_id).
+  //
+  // UNDO / REDO (T28 v2, undone_at below). The CURRENT VERSION of a chain is reached by walking
+  // replaced_by from the root and stopping BEFORE the first link with undone_at set. The head named
+  // in already_replaced is that current version.
   int32 replaced_by = 21;
+  // THIS EDIT WAS UNDONE (T28 v2) — UndoDesignEdit set it on the current version of its chain,
+  // RedoDesignEdit clears it. It is NOT hidden_at: undo and redo never touch visibility, and a hidden
+  // picture keeps every rule of hidden_at. An undone link and every link after it stand nowhere on
+  // the bench and in no slot; the history keeps them. A chain whose ROOT is undone is a branch cut off
+  // by a newer edit (an overwrite over an undone successor detaches it) and has no current version.
+  // Unset = not undone.
+  google.protobuf.Timestamp undone_at = 22;
+  // The server's answer from the WHOLE chain (not from the page the client holds), so a plate in a
+  // slot whose run row is paged out keeps its corners. Set only on the CURRENT version of a chain:
+  //   can_undo — the chain has a link before this one;
+  //   can_redo — the link after this one is undone.
+  bool can_undo = 23;
+  bool can_redo = 24;
+  // The version undo makes current — the link before this one; 0 when can_undo is false. Sent back
+  // as UndoDesignEditRequest.expected_target_id (the link may sit in a run row that is paged out).
+  // Redo's target is replaced_by.
+  int32 undo_to_id = 25;
+  // QUALITY FLAGS of a generated picture (0397, flat route): labels the worker read off the pixels,
+  // never a refusal. "grey" = a flat candidate whose drawing carries a mid-grey fill or tint inside
+  // its silhouette (the owner's style is white inside black lines). Empty = nothing noticed.
+  repeated string flags = 26;
 }
 
 // DesignBatch is one upload gesture: the shelf stamp «uploaded · Т. · 14:41 · 12.4 MB» and the
@@ -1389,6 +1462,28 @@ message DesignReference {
   // rather than inventing a name it does not have. On any role other than `detail` it is always 0,
   // and the store enforces that.
   int32 detail_slot_id = 8;
+
+  // ═══ BOARD LABEL (101-MOODBOARD-ROLES, wave 11) ═══
+  //
+  // The row is the server's label on a moodboard picture: which view it shows, or which detail slot it
+  // belongs to. A cheap model labels a new board picture, a strong one takes the unclear ones, and what
+  // neither is sure of waits for a person. Any SetDesignReferenceRole write is a person's (human, ok).
+  //
+  // human | model_cheap | model_strong | quiz; "" = a row older than the field (a person's).
+  string label_source = 9;
+  // pending | ok | unsure | failed | held; "" reads as ok. Only `ok` with a role travels to a run; a
+  // pending / unsure / failed row carries an empty role (the tile says «…» / «view ?»). `held` = a
+  // person took the picture out of the prompt (SetDesignReferenceHeld): the role and slot stay, the
+  // picture does not ride (109 §4).
+  string label_state = 10;
+  // The model's proposal for the picture's board PURPOSE (target | detail | mood | material): the
+  // client applies it to an EMPTY purpose of the form row, once. The server never writes the form.
+  string proposed_purpose = 11;
+  // What the model read (the reason it was unsure, a phrase about a detail). NEVER sent to a prompt —
+  // shown greyed as «model read · not sent» in «what the model gets» only.
+  string model_caption = 12;
+  string label_model = 13; // the slug that set the label; "" for a person's
+  google.protobuf.Timestamp labelled_at = 14;
 }
 
 // DesignBenchSlot is one exclusive place on the bench: a view holds at most one plate. The six
@@ -1480,6 +1575,29 @@ message DesignBenchSlot {
   // the page-bound lookup is still the only answer available. A client must not read the silence of
   // an old server as «this plate has no revision».
   int32 run_rrev = 12;
+
+  // ═══ STALE DETAIL AND ITS «KEEP» (82-INPUT-REDESIGN §5, owner 06.10) ═══
+  //
+  // Computed by GetDesignBand (and SetDesignDetailKept) on FLAT DETAIL slots only; false / 0 / empty
+  // everywhere else, including slots returned by SetDesignBenchSlot / RegisterDesignBatch.
+  //
+  // stale: the detail's plate came out of a run older (lower design_run id) than the run of the
+  // card's current FRONT flat plate — BACK when the front slot is empty. An uploaded detail (no run)
+  // or uploaded views (no run) are never stale. RAW: true even when kept.
+  bool stale = 13;
+  // kept: a person marked this stale detail kept against the CURRENT views run and the CURRENT
+  // plate. The mark clears by itself when the views run or the detail plate changes. Show the stale
+  // pill when stale && !kept.
+  bool kept = 14;
+  // The views run this detail is compared with (the run of the front / back plate); 0 = none. Send
+  // it back as SetDesignDetailKeptRequest.against_run_id.
+  int32 stale_against_run_id = 15;
+  string kept_by = 16; // who kept it; empty unless kept
+  google.protobuf.Timestamp kept_at = 17; // unset unless kept
+  // A detail slot a model minted from a detail photo on the moodboard (101 §2.5). Only such a slot
+  // does the server delete by itself — when it is empty and its last photo left the board; a person
+  // renaming it clears the flag.
+  bool made_by_model = 18;
 }
 
 // DesignEditLayer is a vector layer: strokes over a raster base, or strokes over nothing.
@@ -1793,4 +1911,134 @@ message DesignConstructionBomLine {
   // Неузнанное словарём написание («yd») отдаётся пустым, а не сырым: клиент покажет семейное
   // умолчание, вместо того чтобы записать в подписываемую колонку слово, которого мы не знаем.
   string unit = 10;
+}
+
+// ─── FLAT ROUTE · THE JOIN LIST (0397) ───
+//
+// The construction of the garment as a list of joins on a FIXED landmark ruler (L/R = the WEARER'S
+// left/right): NP_L/NP_R neck points, CFN/CBN centre-front/back neck, SP_x shoulder tips, UA_x
+// underarms, HEM_x hems… A point between two landmarks is "A..B:t" (t 0..1). Written by the model
+// (GenerateDesignJoins), corrected by the designer (SetDesignJoins), frozen into every flat run's
+// input snapshot and turned into words by the flat prompt.
+
+// DesignJoinLayer — one layer of a multi-layer garment. 0 = outermost.
+message DesignJoinLayer {
+  int32 index = 1;
+  string name = 2; // "outer front", "inner lining"
+  bool sheer = 3; // the edges of the layer under it show through
+  string note = 4;
+  // front | back | both | "" — the face this depth level is on. A layer is a DEPTH level per face,
+  // not a panel: 0 = everything outermost, 1 = the cloth directly behind layer 0.
+  string face = 5;
+}
+
+// DesignJoinItem — one edge, seam, band, closure, pocket or opening of the garment.
+message DesignJoinItem {
+  // edge | seam | binding | band | strap | collar | stand | placket | cuff | waistband | sleeve |
+  // closure | pocket | opening
+  string kind = 1;
+  string from = 2; // first landmark of the path; a pocket's anchor; "" on an opening
+  string to = 3; // last landmark of the path; "" on a pocket / opening
+  string view = 4; // front | back | "" — the face it runs on (derived when empty)
+  string side = 5; // L | R | "" — the wearer's side it belongs to (derived when empty)
+  string text = 6; // the note in words, ≤ 300
+  string id = 7; // unique within the list (snake_case); server-made when empty
+  repeated string via = 8; // landmarks between from and to, in order
+  string width = 9; // narrow | wide | "" (bands)
+  bool closed = 10; // the path is a closed loop
+  string type = 11; // closure: buttons | zip | hook…; pocket: patch | welt…; the neck edge: crew | v | scoop | halter | boat | square | mock | turtle
+  int32 count = 12; // closure: how many (buttons)
+  repeated string bounded_by = 13; // opening: the ids of the items around it
+  repeated string continues_into = 14; // item ids at its ends
+  int32 layer = 15; // 0 = outermost layer, 1 = the next one under it…
+  string visibility = 16; // visible | through (seen through a sheer layer above) | hidden
+  repeated string caught_into = 17; // item ids this edge ends INTO (a seam / binding of another layer)
+  bool free_edge = 18; // the edge hangs free: it does not reach the side seams or the hem
+  repeated string sharp = 19; // points of the path that are CORNERS (the point of a V); others are smooth
+  double size = 20; // a pocket's half-width in ruler units (0.01..0.2); 0 = unstated
+  // READ-ONLY, server-computed: a designer added or changed this item (SetDesignJoins diff against the
+  // stored list; it stays set until the model rewrites the list). Its text is said to the flat model as a
+  // «designer:» check line.
+  bool edited = 21;
+}
+
+// DesignJoinsConsistencyGroup — photos that show one and the same garment.
+message DesignJoinsConsistencyGroup {
+  repeated int32 media_ids = 1;
+  string what = 2;
+}
+
+// DesignJoinsConsistency — do the reference photos show ONE garment?
+message DesignJoinsConsistency {
+  bool consistent = 1;
+  string note = 2;
+  repeated int32 keep_media_ids = 3; // the photos the list was written from (the subset to trust)
+  repeated DesignJoinsConsistencyGroup groups = 4; // when not consistent: which photos go together
+}
+
+// DesignJoins — the card's current join list (one row per card, rev for CAS).
+message DesignJoins {
+  int32 rev = 1;
+  repeated DesignJoinItem items = 2;
+  repeated string absences = 3; // negations only ("no back neckline")
+  DesignJoinsConsistency consistency = 4;
+  string model = 5; // the model that wrote the list
+  bool edited = 6; // a designer saved it after the model
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp edited_at = 8;
+  repeated DesignJoinLayer layers = 9; // empty = a single-layer garment
+  repeated string uncertain = 10; // the model's honest doubts — questions for the designer
+  DesignJoinsFit fit = 11; // the garment's ease and waist; empty words = regular
+  // A designer confirmed THIS rev (SetDesignJoins with confirm = true); any later save — the model's or
+  // an edit without confirm — clears it. The straps mode needs it.
+  bool confirmed = 12;
+}
+
+// DesignPartsPieces — the card's PIECES LIST for PARTS (M6, flat-consistency 107): the closed list of
+// part names the parts labeller may use. Read by a model from the ACCEPTED FRONT/BACK flats (the
+// plates of the FLAT bench slots — never the photos, never the join list) from a fixed garment
+// vocabulary, then edited by the designer. A re-read never writes over a designer's edits: once
+// edited, a newer read waits in `proposal` until the designer takes or keeps it. Never sent to image
+// generation.
+message DesignPartsPieces {
+  // CAS revision: every write + 1, a proposal's too (a settle is tied to the proposal seen). The
+  // labeller's answers are keyed on what the list TELLS it (names, openings, edited), not on rev.
+  int32 rev = 1;
+  repeated DesignPartsPiece pieces = 2; // in order; names unique
+  repeated string openings = 3; // areas with no cloth the read saw ("open back"); a hint, not a part
+  string model = 4; // the model of the read the list started from
+  bool edited = 5; // a designer saved the list after the model
+  google.protobuf.Timestamp edited_at = 6;
+  // The bench plates the list (as read) came from; 0 = that side had none.
+  int32 front_media_id = 7;
+  int32 back_media_id = 8;
+  // A newer read of changed FRONT/BACK flats, held because the designer edited the list; absent =
+  // none. SetDesignPartsPieces with settle_proposal = true takes it (send its names) or keeps the
+  // list (send the list's names) and drops it.
+  DesignPartsPiecesProposal proposal = 9;
+  // The FRONT/BACK flats on the bench now differ from the ones the list (or its proposal) was read
+  // from: the next parts naming reads them again.
+  bool stale = 10;
+}
+
+// DesignPartsPiece — one cut piece of the garment.
+message DesignPartsPiece {
+  string name = 1; // lowercase, ≤ 40 characters ("left strap", "front body")
+  repeated string views = 2; // front | back — where the read saw it; empty = a designer's piece
+}
+
+// DesignPartsPiecesProposal — a newer read waiting on the designer.
+message DesignPartsPiecesProposal {
+  repeated DesignPartsPiece pieces = 1;
+  repeated string openings = 2;
+  string model = 3;
+  int32 front_media_id = 4;
+  int32 back_media_id = 5;
+  google.protobuf.Timestamp read_at = 6;
+}
+
+// DesignJoinsFit — the garment's ease and waist, closed vocabularies (anything else is cleaned to "").
+message DesignJoinsFit {
+  string ease = 1; // slim | fitted | regular | relaxed | oversized | boxy
+  string waist = 2; // fitted | shaped | suppressed | straight | boxy | none
 }

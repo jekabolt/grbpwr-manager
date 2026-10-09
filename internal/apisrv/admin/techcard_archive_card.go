@@ -339,6 +339,7 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	blankResolvedMediaURLs(pb.ResolvedMoodboardMedia)
 	blankResolvedMediaURLs(pb.ResolvedTechnicalMedia)
 	blankResolvedMediaURLs(pb.ResolvedOperationMedia)
+	blankResolvedMediaURLs(pb.ResolvedLabelMedia)
 }
 
 // blankResolvedMediaURLs empties the three MediaInfo urls of every resolved media item, keeping

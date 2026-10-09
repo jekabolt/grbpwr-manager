@@ -219,6 +219,30 @@ const (
 	DesignDerivationFlatten = "flatten"
 )
 
+// DesignFlattenInheritedViews — what a flatten (save-as-new edit or overwrite edit) inherits of
+// its base's view labels: ghost_view and composite_views, both verbatim.
+//
+// An edit is drawn OVER the base and keeps its frame, so it is the same sheet: a multi-view sheet
+// stays multi-view, a front stays a front. Before T14 the flatten copied ghost_view and dropped
+// composite_views, so an edit of a `layout=one` sheet — and an overwrite edit becomes the bench
+// chain head — lost SPLIT on the client and became placeable on a side slot as one view.
+//
+// CROPS MUST NOT CALL THIS. A crop is one view cut out of the sheet: it carries the frame's own
+// view_key and never the parent's composite list (SplitPicture).
+//
+// An empty, `null` or `[]` composite list inherits as nothing, so the copy never invents a
+// composite. A nil parent (a layer drawn from nothing) inherits nothing.
+func DesignFlattenInheritedViews(parent *DesignPicture) (ghost sql.NullString, composite RawJSON) {
+	if parent == nil {
+		return sql.NullString{}, nil
+	}
+	ghost = parent.GhostView
+	if c := string(parent.CompositeViews); c != "" && c != "null" && c != "[]" {
+		composite = append(RawJSON(nil), parent.CompositeViews...)
+	}
+	return ghost, composite
+}
+
 // Виды кадра. ОН ЖЕ СЛОВАРЬ ВТОРОЙ ОСИ ВЕРСТАКА: design_bench_slot.kind (0349) объявлен тем же
 // словарём намеренно — «род» у слота и у кадра обязан быть одним понятием, иначе рендер встанет
 // на технический лист.
@@ -1082,6 +1106,19 @@ const (
 	DesignErrorCodeForeignBomLine     = "foreign_bom_line"
 	DesignErrorCodeUnknownPatternMode = "unknown_pattern_mode"
 	DesignErrorCodeBadBomLineID       = "bad_bom_line_id"
+	// DesignErrorCodeHardwareNeedsSlot — прогон фурнитуры без пары (колорвей, строка BOM): снимок
+	// фурнитуры делается ДЛЯ слота и без адреса пары садился бы на полку ничьим.
+	DesignErrorCodeHardwareNeedsSlot = "hardware_needs_slot"
+	// DesignErrorCodeTooManyReferences — у прогона фурнитуры больше MaxDesignHardwareReferences
+	// референсов.
+	DesignErrorCodeTooManyReferences = "too_many_references"
+	// DesignErrorCodeHardwareOnClothLine — фурнитура названа для строки РУЛОННОГО товара
+	// (IsRollGoodsSection): прогон фурнитуры на ткани либо SetAssetBinding ассета hardware на слот
+	// ткани. Снимок пуговицы не может быть тканью пары. Один токен на обеих дверях.
+	DesignErrorCodeHardwareOnClothLine = "hardware_on_cloth_line"
+	// DesignErrorCodeClothOnTrimLine — ткань (свотч-прогон либо ассет fabric|pattern) названа для
+	// строки НЕ рулонного товара: пуговицы, молнии, нитки, этикетки. Один токен на обеих дверях.
+	DesignErrorCodeClothOnTrimLine = "cloth_on_trim_line"
 )
 
 // PLAYGROUND phase-2 refusals (all InvalidArgument, all before money). Constants because the
@@ -1170,10 +1207,28 @@ func DesignExtendRatioValue(r string) (float64, bool) {
 //   - DesignPatternModeImage — плитка из ОДНОЙ фотографии ткани (сегодняшний маршрут).
 //   - DesignPatternModeSwatch — свотч из ЗАЯВЛЕННОГО цвета (params.colour обязателен), с 0–1
 //     референсом ФАКТУРЫ, от которого берётся материал и переплетение, но не цвет.
+//   - DesignPatternModeHardware — предметный снимок ОДНОЙ единицы фурнитуры (пуговица, молния,
+//     отделка, бирка) для пары (колорвей, строка BOM): слот и колорвей обязательны, цвет
+//     необязателен, 0–MaxDesignHardwareReferences референсов формы и материала. Садится на полку
+//     ассетом рода hardware и сразу привязывается к паре — это НЕ плитка, раппорта у него нет.
+//   - DesignPatternModeLabel — предметный снимок ОДНОЙ бирки одежды, плоско, анфас; во всём, кроме
+//     промпта и числа картинок, это hardware (та же пара, та же полка, тот же род ассета). 0–1
+//     картинка — и это ЛОГОТИП бренда, который бирка несёт, а не референс формы.
+//   - DesignPatternModeArtwork — предметный снимок ОДНОГО артворка одежды (принт, вышивка, нашивка,
+//     аппликация, термоперенос) на чистом белом, анфас; во всём, кроме промпта, это hardware (та же
+//     пара, та же полка, тот же род ассета). 0–MaxDesignHardwareReferences картинок: необязательный
+//     ИСХОДНИК первым (маркер «artwork = picture 1» в словах) — его форма и цвета переносятся в
+//     технику, — затем референсы техники.
 const (
-	DesignPatternModeImage  = "image"
-	DesignPatternModeSwatch = "swatch"
+	DesignPatternModeImage    = "image"
+	DesignPatternModeSwatch   = "swatch"
+	DesignPatternModeHardware = "hardware"
+	DesignPatternModeLabel    = "label"
+	DesignPatternModeArtwork  = "artwork"
 )
+
+// MaxDesignHardwareReferences — сколько референсов формы/материала берёт прогон фурнитуры.
+const MaxDesignHardwareReferences = 4
 
 // DesignAssetKinds — три полки в том порядке, в каком их называет владелец: ткани, паттерны,
 // фурнитура. Порядок значим ровно настолько, насколько значим порядок полок на стене.
@@ -1258,6 +1313,16 @@ var (
 	// В плане этот отказ не назван; он добавлен, потому что иначе единственный законный ответ
 	// на «удали front» — молчаливое удаление стороны, которую слот-адрес обязан переживать.
 	ErrDesignNotADetailSlot = errors.New("design: not_a_detail_slot")
+	// SetDesignDetailKept (0400): the slot is not a FLAT detail / holds no plate / is not stale; the
+	// views changed under the person (against_run_id is not the current views run).
+	ErrDesignNotAFlatDetail = errors.New("design: not_a_flat_detail")
+	// ErrDesignNothingToHold — SetDesignReferenceHeld on a picture with no settled label (no row, an
+	// empty role, a label still being read or waiting for a person): such a picture is not in the
+	// prompt, so there is nothing to take out of it (109 §5).
+	ErrDesignNothingToHold  = errors.New("design: nothing_to_hold")
+	ErrDesignDetailEmpty    = errors.New("design: detail_empty")
+	ErrDesignDetailNotStale = errors.New("design: detail_not_stale")
+	ErrDesignViewsChanged   = errors.New("design: views_changed")
 	// ErrDesignInSlot / ErrDesignLiveRunInput / ErrDesignLiveCropParent — три сторожа
 	// HidePicture. Читаются в ТОЙ ЖЕ транзакции, что и UPDATE, иначе TOCTOU.
 	ErrDesignInSlot         = errors.New("design: in_slot")
@@ -1344,6 +1409,11 @@ var (
 	// колонки разных таблиц, и «пара одной карточки» схема выразить не может, поэтому проверяет Go
 	// в пишущей транзакции. Токен — DesignErrorCodeForeignBomLine.
 	ErrDesignForeignBomLine = errors.New("design: foreign_bom_line")
+	// ErrDesignHardwareOnClothLine / ErrDesignClothOnTrimLine — род ассета не той семьи, что строка
+	// BOM пары: фурнитура только на не-рулонную строку, fabric|pattern только на рулонную
+	// (IsRollGoodsSection). Токены — DesignErrorCodeHardwareOnClothLine / DesignErrorCodeClothOnTrimLine.
+	ErrDesignHardwareOnClothLine = errors.New("design: hardware_on_cloth_line")
+	ErrDesignClothOnTrimLine     = errors.New("design: cloth_on_trim_line")
 	// ErrDesignAmbiguousFlattenBase — подложку слоя нельзя привязать к ОДНОЙ картинке: слой не
 	// назвал source_picture_id, а его base_media_id зарегистрирован на карточке НЕСКОЛЬКО раз, и
 	// эти регистрации не согласны о колорвее. Один файл законно бывает кадром двух колорвеев
@@ -1506,9 +1576,24 @@ type DesignPicture struct {
 	HiddenAt   sql.NullTime   `db:"hidden_at"`
 	HiddenBy   sql.NullString `db:"hidden_by"`
 	CreatedAt  time.Time      `db:"created_at"`
+	// UndoneAt — ПРАВКА ОТМЕНЕНА (0387, T28 v2): undo поставил метку на текущую версию цепочки замен,
+	// redo её снимает. НЕ hidden_at: спрятанность undo/redo не трогают, а отменённое звено с экрана
+	// верстака уходит по своему правилу — текущая версия цепочки = обход replaced_by от корня до
+	// первого отменённого звена (DesignEditChainCurrent).
+	UndoneAt sql.NullTime `db:"undone_at"`
+	// QAFlags — comma-separated pixel labels of a generated picture (0397: "grey"); '' = none.
+	QAFlags string `db:"qa_flags"`
 
 	// Media резолвится джойном на media(id) читателем полосы.
 	Media *MediaFull `db:"-"`
+	// CanUndo / CanRedo — СЕРВЕРНЫЙ ОТВЕТ ПО ВСЕЙ ЦЕПОЧКЕ (T28 v2, DesignEditChainControls): кадр — текущая
+	// версия своей цепочки, и у него есть предшественник (undo) либо отменённый преемник (redo).
+	// Считаются читателем (resolveMedia), не колонки: плита в слоте из ушедшей за страницу строки
+	// сохраняет свои углы, потому что клиент цепочки целиком не видит.
+	CanUndo bool `db:"-"`
+	CanRedo bool `db:"-"`
+	// UndoToId — версия, которую undo сделает текущей (DesignEditControls.UndoTo); 0 без undo.
+	UndoToId int `db:"-"`
 }
 
 // DesignBenchSlot — строка design_bench_slot: адрес, по которому лежит ПРИНЯТАЯ плита.
@@ -1559,6 +1644,94 @@ type DesignBenchSlot struct {
 	// отсутствующего: он выглядит покрытием.
 	RunKind string `db:"-"`
 	RunRrev int    `db:"-"`
+
+	// THE «KEEP» OF A STALE FLAT DETAIL (0400, 82-INPUT-REDESIGN §5). Stored against the views run
+	// and the detail plate it was made on; it holds only while both are still current
+	// (ApplyDesignDetailStaleness), so no writer ever has to clear it.
+	KeptRunId     sql.NullInt32 `db:"kept_run_id"`
+	KeptPictureId sql.NullInt32 `db:"kept_picture_id"`
+	KeptBy        string        `db:"kept_by"`
+	KeptAt        sql.NullTime  `db:"kept_at"`
+	// MadeByModel — a detail slot a model minted from a detail photo on the board (101 §2.5). Only
+	// such a slot may the server delete by itself, when it is empty and its last photo left the board;
+	// a rename by a person clears the flag (the name became a person's).
+	MadeByModel bool `db:"made_by_model"`
+	// Computed by ApplyDesignDetailStaleness over the whole bench; false / 0 until it ran.
+	Stale             bool `db:"-"`
+	Kept              bool `db:"-"`
+	StaleAgainstRunId int  `db:"-"`
+}
+
+// DesignViewsRunId — the run the card's current flat VIEWS came out of: the run of the FRONT flat
+// plate, or of the BACK one when the front slot is empty. 0 when neither holds a plate, or when the
+// plate standing there has no run (an upload) — nothing can be stale against an upload.
+func DesignViewsRunId(bench []DesignBenchSlot) int {
+	plateRun := func(view string) (int, bool) {
+		for _, sl := range bench {
+			if sl.ViewKey != view || DesignKindOrFlat(sl.Kind) != DesignPictureKindFlat || DesignColorwayOrNone(sl.ColorwayId) != 0 {
+				continue
+			}
+			if sl.Picture == nil || !sl.PictureId.Valid || sl.PictureId.Int32 <= 0 {
+				return 0, false
+			}
+			if !sl.Picture.RunId.Valid {
+				return 0, true
+			}
+			return int(sl.Picture.RunId.Int32), true
+		}
+		return 0, false
+	}
+	if run, filled := plateRun(DesignViewFront); filled {
+		return run
+	}
+	run, _ := plateRun(DesignViewBack)
+	return run
+}
+
+// IsDesignFlatDetailSlot — a detail slot of the flat bench (the only slots that can be stale).
+func IsDesignFlatDetailSlot(sl DesignBenchSlot) bool {
+	return sl.ViewKey == DesignViewDetail && DesignKindOrFlat(sl.Kind) == DesignPictureKindFlat
+}
+
+// ApplyDesignDetailStaleness fills Stale / Kept / StaleAgainstRunId on every flat detail slot of ONE
+// card's whole bench (the rule needs the front/back slots beside the details).
+//
+// STALE: the detail's plate came out of a run with a LOWER id than the views run. design_run ids are
+// minted at creation, so «lower id» is «created earlier» without a second read of created_at. A plate
+// without a run (an upload) is never stale, and nothing is stale against views without a run.
+//
+// KEPT: stale, and the stored mark names THIS views run and THIS plate. Either changing (views drawn
+// again, the detail replaced) leaves the mark stale on its own — it is simply not read.
+func ApplyDesignDetailStaleness(bench []DesignBenchSlot) {
+	views := DesignViewsRunId(bench)
+	for i := range bench {
+		sl := &bench[i]
+		sl.Stale, sl.Kept, sl.StaleAgainstRunId = false, false, 0
+		if !IsDesignFlatDetailSlot(*sl) {
+			continue
+		}
+		sl.StaleAgainstRunId = views
+		if views <= 0 || sl.Picture == nil || !sl.PictureId.Valid || sl.PictureId.Int32 <= 0 ||
+			!sl.Picture.RunId.Valid || sl.Picture.RunId.Int32 <= 0 {
+			continue
+		}
+		if int(sl.Picture.RunId.Int32) >= views {
+			continue
+		}
+		sl.Stale = true
+		sl.Kept = sl.KeptRunId.Valid && int(sl.KeptRunId.Int32) == views &&
+			sl.KeptPictureId.Valid && sl.KeptPictureId.Int32 == sl.PictureId.Int32
+	}
+}
+
+// DesignDetailKeptSet — SetDesignDetailKept: mark (Keep) or unmark a stale flat detail.
+type DesignDetailKeptSet struct {
+	TechCardId int
+	SlotId     int
+	Keep       bool
+	// AgainstRunId — the views run the person saw (CAS); 0 = no check.
+	AgainstRunId int
+	Actor        string
 }
 
 // DesignEditLayer — строка design_edit_layer: векторная калька поверх картинки либо поверх
@@ -1654,6 +1827,21 @@ type DesignReference struct {
 	Ordinal      int           `db:"ordinal"`
 	SetBy        string        `db:"set_by"`
 	SetAt        time.Time     `db:"set_at"`
+	// BOARD LABEL (101-MOODBOARD-ROLES, wave 11): who set the view / detail and in what state the
+	// label is. '' source = a row older than the columns (a person's); '' state reads as ok. A row in
+	// state pending / unsure / failed carries an empty role and never travels (DesignReferenceTravels).
+	LabelSource string `db:"label_source"`
+	LabelState  string `db:"label_state"`
+	// ProposedPurpose — the model's proposal for the picture's board purpose (target / detail / mood /
+	// material); the CLIENT applies it to an empty purpose of the form row once. The server never
+	// writes tech_card_media.role (the table has no row key and is rewritten by every save).
+	ProposedPurpose string `db:"proposed_purpose"`
+	// ModelCaption — what the model read (the view and a phrase about a detail). NEVER sent to a
+	// prompt (101 §2.7): used to dedup details and shown greyed as «model read · not sent».
+	ModelCaption  sql.NullString `db:"model_caption"`
+	LabelModel    string         `db:"label_model"`
+	LabelledAt    sql.NullTime   `db:"labelled_at"`
+	LabelAttempts int            `db:"label_attempts"`
 }
 
 // DesignAsset — строка design_asset (0354): одна вещь, ИЗ КОТОРОЙ СДЕЛАНО изделие и которая не
@@ -1890,7 +2078,10 @@ type DesignBatchRegister struct {
 	Items           []DesignUploadItem
 	Target          *DesignSlotRef
 	ExpectedSlotRev int
-	Actor           string
+	// NewDetailName — the name of a detail slot that Target mints (view_key = detail, no slot id).
+	// Same rule as DesignBenchSlotSet.NewDetailName: required in that case, ignored otherwise.
+	NewDetailName string
+	Actor         string
 }
 
 // DesignBatchResult — что вернула регистрация пачки.
@@ -2294,6 +2485,19 @@ type DesignBand struct {
 	// же сохранение прошло бы мимо всякого сравнения.
 	ColourPlan *DesignColourPlan
 
+	// PartsSuggestions — the auto-parts answers (0390) of the CURRENT flat of each side: a row whose
+	// base_media_id is no longer the flat in that side's slot is not read. Every cut revision.
+	PartsSuggestions []DesignPartsSuggestion
+
+	// Joins — the card's current join list (flat route, 0397); nil = none yet.
+	Joins *DesignJoins
+
+	// PartsPieces — the card's PARTS pieces list (M6, 107); nil = none read yet. FlatMedia — view →
+	// media of the plate on each side's flat slot, read in the same snapshot (whether the list is
+	// stale against the FRONT/BACK plates now).
+	PartsPieces *DesignPartsPieces
+	FlatMedia   map[string]int
+
 	// HasFabricRender — у карточки есть ХОТЯ БЫ ОДИН НЕСПРЯТАННЫЙ КАДР рода `render` (W-13).
 	// Считается в той же читающей транзакции по ВСЕЙ карточке, а не по загруженной странице.
 	//
@@ -2326,6 +2530,10 @@ type DesignBand struct {
 	// полки ради одной картинки.
 	Assets          []DesignAsset
 	AssetPlacements []DesignAssetPlacement
+	// AssetPlacementPictures — картинки, на которых стоят метки, по id, с медиа (T29b). Старый флэт
+	// выпадает из постраничных списков прогонов/пачек, а метка на нём живёт; без этой карты клиент
+	// не знает ни вида, ни пикселей картинки метки. Одно пакетное чтение на полосу.
+	AssetPlacementPictures map[int]DesignPicture
 	// AssetBindings — ТКАНИ ВСЕХ ПАР (КОЛОРВЕЙ, СЛОТ) КАРТОЧКИ (0368), в том же снимке, что и полки:
 	// связка называет ассет по id, и прочитанные порознь они разошлись бы во мнении о том, какая
 	// плитка существует. Вся карточка, не суженная верстаком: шаг паттерна рисует слоты всех
@@ -2487,6 +2695,8 @@ type DesignPictureInsert struct {
 	CompositeViews json.RawMessage
 	SourceClass    string
 	MixedInput     bool
+	// QAFlags — pixel labels the worker read off the picture (0397: "grey"); nil = none.
+	QAFlags []string
 }
 
 // DesignRunComplete — закрытие прогона. Частичный ответ = меньше картинок, статус всё равно
@@ -2506,4 +2716,36 @@ type DesignRunFail struct {
 	LastError   string
 	Retryable   bool
 	NextAttempt time.Time
+}
+
+// DesignArtworkCutMarker — the client's marker on design_asset.note of an artwork asset whose media
+// was already swapped to its cut-out PNG (70-ROUND7: the client chains the cutout run).
+const DesignArtworkCutMarker = " · cut"
+
+// DesignArtworkTechniqueWords — an artwork's note/placement words as they may reach a render prompt:
+// the trailing cut marker and the run-word markers («artwork = picture 1», «logo = picture 1») are
+// bookkeeping, never a description, so they are dropped together with the separators they leave.
+func DesignArtworkTechniqueWords(s string) string {
+	s = strings.TrimSpace(s)
+	for strings.HasSuffix(s, strings.TrimSpace(DesignArtworkCutMarker)) {
+		s = strings.TrimSpace(strings.TrimSuffix(s, strings.TrimSpace(DesignArtworkCutMarker)))
+		s = strings.TrimSpace(strings.TrimRight(s, "·"))
+	}
+	for _, marker := range []string{"artwork = picture 1", "logo = picture 1"} {
+		for {
+			i := strings.Index(strings.ToLower(s), marker)
+			if i < 0 {
+				break
+			}
+			s = s[:i] + s[i+len(marker):]
+		}
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || r == '\n' })
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(strings.Trim(strings.TrimSpace(p), "·")); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, ", ")
 }

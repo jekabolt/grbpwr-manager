@@ -71,6 +71,18 @@ func (s *Store) SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet)
 	var out entity.DesignBenchSlot
 	var mismatch *entity.DesignBenchSlot
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// ОБЩИЙ ПОРЯДОК ЗАМКОВ (T28 v2 C2, locks.go): карточка → плита (усыновление колорвея её пишет) →
+		// слоты верстака. Постановка встаёт в очередь с undo/redo и перезаписью той же карточки.
+		db := rep.DB()
+		if err := lockDesignCard(ctx, db, req.TechCardId); err != nil {
+			return err
+		}
+		if err := lockDesignPictures(ctx, db, req.TechCardId, req.PictureId); err != nil {
+			return err
+		}
+		if err := lockDesignBench(ctx, db, req.TechCardId); err != nil {
+			return err
+		}
 		slot, err := setBenchSlotTx(ctx, rep, req)
 		if err != nil {
 			// The refusal carries the slot's CURRENT state, plate included, so the client can
@@ -327,6 +339,10 @@ func setBenchSlotTx(ctx context.Context, rep dependency.Repository, req entity.D
 		if pic.HiddenAt.Valid {
 			return nil, fmt.Errorf("%w: picture %d is hidden", entity.ErrDesignHiddenPlate, pic.Id)
 		}
+		// ОТМЕНЁННАЯ ПРАВКА (0387, T28 v2) на верстаке не стоит нигде — в слоте тоже. Вернуть её — redo.
+		if pic.UndoneAt.Valid {
+			return nil, fmt.Errorf("%w: picture %d is an undone edit", entity.ErrDesignUndonePicture, pic.Id)
+		}
 		// ONLY FOR SHOWING NEVER STANDS ON THE BENCH (0361, D-24). The bench is what runs read —
 		// designSelectBench takes its plates from the slots — so a slot is the one address through
 		// which a picture reaches a paid call without anybody naming it in a request. The owner's
@@ -556,9 +572,12 @@ func casExistingSlot(ctx context.Context, db dependency.DB, req entity.DesignBen
 	n, err := storeutil.ExecNamedRows(ctx, db, `
 		UPDATE design_bench_slot
 		SET picture_id = :pic, detail_name = :name, set_by = :who, set_at = UTC_TIMESTAMP(6),
-			slot_rev = slot_rev + 1
+			slot_rev = slot_rev + 1,
+			-- a person renaming a model's detail makes the name theirs (101 §2.6)
+			made_by_model = IF(:renamed, 0, made_by_model)
 		WHERE id = :id AND slot_rev = :expected_rev`,
 		map[string]any{
+			"renamed": req.NewDetailName != "" && req.NewDetailName != before.DetailName.String,
 			"pic": nullInt(req.PictureId), "name": name, "who": req.Actor,
 			"id": req.Slot.SlotId, "expected_rev": req.ExpectedSlotRev,
 		})

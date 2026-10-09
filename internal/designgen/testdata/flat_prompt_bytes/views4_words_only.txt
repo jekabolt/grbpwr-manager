@@ -1,0 +1,15 @@
+garment: trousers
+
+Draw the garment described above as a professional fashion technical flat sketch (CAD-style tech pack drawing).
+
+Draw exactly what the words above state; do not add any seam, dart, pocket, vent, stitching or detail they do not name; no dashed lines unless the words name visible stitching.
+
+Layout: four views on one horizontal canvas, side by side, equal scale, aligned on a common baseline, evenly spaced — left to right: FRONT, BACK, SIDE LEFT, SIDE RIGHT. SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge; SIDE RIGHT the right flank with the front facing the RIGHT edge (mirror images).
+
+No text, no view names, no grey, no tint, no shading anywhere on the drawing — the inside of every band, binding and collar stays white.
+
+Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the words name. Dashed lines only for stitching the words name; otherwise the drawing contains no dashed lines. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger.
+
+Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements.
+
+Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic.

@@ -69,6 +69,10 @@ type TechCardArchiveImport struct {
 	// Assembly is the auxiliary bill with component_tech_card_id already resolved by style number.
 	Assembly []StyleAssemblyInsert
 
+	// DesignQuizAnswers are the moodboard quiz answers (design_quiz.json, 62-DEEP-FIXES D2), validated
+	// by the same rules SaveDesignQuizAnswers applies, Fingerprint "" (fresh), in display order.
+	DesignQuizAnswers []TechCardQuizAnswer
+
 	// Markers are the card's раскладки. Each carries its own BomLineKey — the cloth it was
 	// measured on, re-sewn to the imported BOM inside the transaction — and a Composition whose
 	// sizes are already local. ProductionRunId is not a member of an import: only card markers

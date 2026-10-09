@@ -296,6 +296,7 @@ func (s *Server) buildArchiveInput(ctx context.Context, card *entity.TechCard, c
 		Assembly:    sc.Assembly,
 		Colorways:   sc.Colorways,
 		Materials:   sc.Materials,
+		DesignQuiz:  designQuizToArchive(card.QuizAnswers),
 		Media:       sc.Media,
 		Patterns:    sc.Patterns,
 		Markers:     sc.Markers,
@@ -798,6 +799,7 @@ func (s *Server) tcciPayload(ctx context.Context, res *resolvedTechCardImport) (
 	// a card exported from this base and restored into it would come back with its badge as
 	// 'manual', with nothing in the report to say why.
 	res.stampVerifiedWastageClaims(card)
+	res.stampLabelBomLineKeys(card)
 	markers, err := tcciMarkers(res.MarkerPlan)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "this archive's %v", err)
@@ -1085,13 +1087,15 @@ func (s *Server) tcciWrite(ctx context.Context, c tcciCommit) (*pb_admin.CommitT
 			// the ZIP entry afresh on every call, so a second read would hand back an UNSANITISED
 			// message — approvals intact, prices intact, every id the source's — that merely looks
 			// like the one everything above worked on.
-			Style:      c.res.StylePlan,
-			SizeChart:  c.res.SizeChartPlan,
-			Assembly:   c.res.AssemblyPlan,
-			Markers:    c.markers,
-			PieceAreas: c.res.PieceAreaPlan,
-			Labels:     tcciLabelLinks(c.res.LabelPlan),
-			Report:     reportJSON,
+			Style:     c.res.StylePlan,
+			SizeChart: c.res.SizeChartPlan,
+			Assembly:  c.res.AssemblyPlan,
+			// The moodboard quiz answers (design_quiz.json, 62-DEEP-FIXES D2), validated by the resolver.
+			DesignQuizAnswers: c.res.DesignQuizPlan,
+			Markers:           c.markers,
+			PieceAreas:        c.res.PieceAreaPlan,
+			Labels:            tcciLabelLinks(c.res.LabelPlan),
+			Report:            reportJSON,
 		})
 		if err == nil {
 			return s.tcciCommitted(ctx, c.importID, id)
@@ -1230,6 +1234,7 @@ func (c *tcciCommit) rebuild() error {
 	// half nobody looks at. The stamper is idempotent and keyed by line_key, so re-running it over
 	// a payload whose media ids have just been cleared touches exactly the lines it touched before.
 	c.res.stampVerifiedWastageClaims(fresh)
+	c.res.stampLabelBomLineKeys(fresh)
 	fresh.CreatedBy, fresh.UpdatedBy = c.actor, c.actor
 	if c.numberDecided {
 		fresh.StyleNumber = c.card.StyleNumber

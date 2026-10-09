@@ -1,0 +1,329 @@
+{
+ "consistency": {
+  "same_garment": true,
+  "notes": "All three photos show the same white, sheer, fine-rib jersey sleeveless top. It has a high crew neck at the front, cut-in armholes, two wide straps that cross on the upper back, and an open back down to about mid-back. Photo 1 shows a V-shaped inner layer as a shadow through the front. Photo 3 shows the right side seam and the hem.",
+  "trust": [
+   1,
+   2,
+   3
+  ]
+ },
+ "layers": [
+  {
+   "index": 0,
+   "name": "outer body (front + lower back + straps)",
+   "sheer": true,
+   "face": "front",
+   "note": "Sheer white rib jersey. Skin and the inner V layer show through it."
+  },
+  {
+   "index": 1,
+   "name": "inner front V-panel / modesty lining",
+   "sheer": true,
+   "face": "front",
+   "note": "A second layer behind the front, covering the upper chest. It is caught into the neckband and the armhole bindings at the top. Its lower edge is a free V with the point at about BUST_C. It shows only as a soft shadow line."
+  },
+  {
+   "index": 2,
+   "name": "back panel",
+   "sheer": true,
+   "face": "back",
+   "note": "Single layer from about mid-back down to the hem. It is the same cloth as the outer front and is joined to it at the side seams."
+  }
+ ],
+ "items": [
+  {
+   "id": "neckband_front",
+   "kind": "band",
+   "width": "narrow",
+   "path": [
+    "NP_R",
+    "CFN",
+    "NP_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_L",
+    "strap_R"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "High crew neck finished at the front only. It runs into the crossed straps at the neck points."
+  },
+  {
+   "id": "strap_L",
+   "kind": "strap",
+   "width": "wide",
+   "path": [
+    "NP_L",
+    "UB_C",
+    "MB_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "neckband_front",
+    "armhole_front_L",
+    "back_top_edge"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Starts as the whole left shoulder (NP_L to SP_L width). It goes over the back, crosses the right strap at UB_C and ends at the right side, mid-back height, where it meets the back panel. Its edges are folded or bound."
+  },
+  {
+   "id": "strap_R",
+   "kind": "strap",
+   "width": "wide",
+   "path": [
+    "NP_R",
+    "UB_C",
+    "MB_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "neckband_front",
+    "armhole_front_R",
+    "back_top_edge"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Mirror of strap_L. Which strap lies on top at the cross is uncertain."
+  },
+  {
+   "id": "armhole_front_L",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "SP_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_L",
+    "side_seam_L"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Cut-in front armhole, bound or turned. Its upper end continues into the strap's outer edge."
+  },
+  {
+   "id": "armhole_front_R",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "SP_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_R",
+    "side_seam_R"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Mirror of armhole_front_L."
+  },
+  {
+   "id": "armhole_back_L",
+   "kind": "edge",
+   "path": [
+    "UA_L",
+    "MB_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_R",
+    "side_seam_L"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Short back armhole edge below the underarm. It is formed by the outer edge of the lower end of strap_R."
+  },
+  {
+   "id": "armhole_back_R",
+   "kind": "edge",
+   "path": [
+    "UA_R",
+    "MB_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_L",
+    "side_seam_R"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Mirror of armhole_back_L."
+  },
+  {
+   "id": "back_top_edge",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "MB_R",
+    "MB_C",
+    "MB_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "MB_R",
+    "MB_L"
+   ],
+   "continues_into": [
+    "strap_L",
+    "strap_R"
+   ],
+   "layer": 2,
+   "visibility": "visible",
+   "note": "Shallow U-shaped top edge of the back panel, dipping slightly at MB_C. A small vertical tack or seam mark sits at MB_C."
+  },
+  {
+   "id": "back_opening",
+   "kind": "opening",
+   "bounded_by": [
+    "strap_L",
+    "strap_R",
+    "back_top_edge"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Large open back, from below the strap cross at UB_C down to MB_C."
+  },
+  {
+   "id": "side_seam_L",
+   "kind": "seam",
+   "path": [
+    "UA_L",
+    "WL_L",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_front_L",
+    "hem_front",
+    "hem_back"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Side seam, set slightly forward of the true side."
+  },
+  {
+   "id": "side_seam_R",
+   "kind": "seam",
+   "path": [
+    "UA_R",
+    "WL_R",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_front_R",
+    "hem_front",
+    "hem_back"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Visible in the side photo."
+  },
+  {
+   "id": "hem_front",
+   "kind": "edge",
+   "path": [
+    "HEM_L",
+    "HEM_FC",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "side_seam_L",
+    "side_seam_R"
+   ],
+   "layer": 0,
+   "visibility": "visible",
+   "note": "Straight hem just below the waist. It is a narrow, slightly curling, raw-looking finish."
+  },
+  {
+   "id": "hem_back",
+   "kind": "edge",
+   "path": [
+    "HEM_R",
+    "HEM_BC",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "side_seam_L",
+    "side_seam_R"
+   ],
+   "layer": 2,
+   "visibility": "visible",
+   "note": "Same finish as the front hem."
+  },
+  {
+   "id": "inner_V_edge",
+   "kind": "edge",
+   "path": [
+    "NP_L..SP_L:0.6",
+    "BUST_C",
+    "NP_R..SP_R:0.6"
+   ],
+   "closed": false,
+   "sharp": [
+    "BUST_C"
+   ],
+   "free_edge": true,
+   "layer": 1,
+   "visibility": "through",
+   "note": "Lower edge of the inner V-panel, seen as a shadow through the outer front. The point of the V is at the under-bust centre."
+  },
+  {
+   "id": "inner_V_top",
+   "kind": "edge",
+   "path": [
+    "NP_L..SP_L:0.6",
+    "NP_L",
+    "CFN",
+    "NP_R",
+    "NP_R..SP_R:0.6"
+   ],
+   "closed": false,
+   "sharp": [],
+   "caught_into": [
+    "neckband_front",
+    "armhole_front_L",
+    "armhole_front_R"
+   ],
+   "layer": 1,
+   "visibility": "hidden",
+   "note": "The top of the inner panel is caught into the neckband and the upper armhole/strap finish."
+  }
+ ],
+ "absent": [
+  "no back neckline or back neck binding (the straps cross instead)",
+  "no sleeves",
+  "no closures",
+  "no pockets",
+  "no centre-front seam",
+  "no shoulder seam visible",
+  "no back between the strap cross and mid-back (open)",
+  "inner V layer does not extend below BUST_C"
+ ],
+ "uncertain": [
+  "whether a seam joins the front shoulder to each strap",
+  "which strap lies on top at the crossing",
+  "exact lower end of the straps (MB_x vs slightly above)",
+  "whether the inner V-panel is a separate lining or a self-fold of the outer front",
+  "whether the mark at MB_C is a short seam or a tack",
+  "whether the hem is raw-cut or narrowly coverstitched"
+ ]
+}

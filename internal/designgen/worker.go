@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 )
@@ -20,6 +21,10 @@ const workerName = "designgen"
 // transactions on a small table; a tick that cannot do them in half a minute is a tick that should
 // back off rather than wait.
 const queueTimeout = 30 * time.Second
+
+// overdueGrace — the sweep closes a capped run this long after its cap: a live worker fails it at
+// the cap itself; the sweep is for a worker that died.
+const overdueGrace = 30 * time.Second
 
 // Backoff between failing ticks, copied from campaigndispatch: a broken database or a broken
 // provider must not become a hot loop.
@@ -193,6 +198,15 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 		qcancel()
 		return w.failed(ctx, "revive expired design runs", err)
 	}
+	// THE WALL-CLOCK CAP (owner 05.10): a capped image run past its cap is closed `timed_out` here
+	// instead of spinning for its lease. Grace of one tick-ish minute over the cap, because a live
+	// worker fails such a run itself at the cap (runOnce's deadline + failRunAt).
+	if _, err := w.store.CloseOverdueRuns(qctx, entity.DesignOverdueSweep{
+		Kinds: entity.DesignCappedRunKinds(), Cap: w.imageRunCap() + overdueGrace,
+	}); err != nil {
+		qcancel()
+		return w.failed(ctx, "close overdue design runs", err)
+	}
 	// A FRESH TOKEN PER TICK. It is the identity of this batch of claims, and it is what every
 	// closing write is checked against; a token shared between two processes, or reused after a
 	// lease was swept, would let one worker close a run another one is running.
@@ -206,6 +220,18 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 		w.tracker.MarkSuccess()
 		return true
 	}
+	// A capped run's lease ends shortly after its cap (claimTailAfterCap), so a worker that died
+	// holding it is swept in minutes; a failed shortening only keeps the full lease.
+	for _, run := range runs {
+		if d, ok := w.runDeadline(run); ok {
+			cctx, ccancel := context.WithTimeout(ctx, queueTimeout)
+			if err := w.store.CapClaim(cctx, run.Id, token, w.capClaimWithin(d)); err != nil {
+				slog.WarnContext(ctx, "design generation: the claim of a capped run kept its full lease",
+					slog.Int("run_id", run.Id), slog.String("err", err.Error()))
+			}
+			ccancel()
+		}
+	}
 
 	for _, run := range runs {
 		if ctx.Err() != nil {
@@ -214,6 +240,14 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 			return true
 		}
 		rctx, rcancel := context.WithTimeout(ctx, w.c.RunTimeout)
+		// A capped run's provider phase ends at its wall-clock cap; the settle that follows runs on
+		// its own fresh budget, and a failure past the cap closes the run timed_out (failRunAt).
+		if d, ok := w.runDeadline(run); ok {
+			var dcancel context.CancelFunc
+			rctx, dcancel = context.WithDeadline(rctx, d)
+			inner := rcancel
+			rcancel = func() { dcancel(); inner() }
+		}
 		err := w.execute(rctx, run, token)
 		rcancel()
 		if err != nil {

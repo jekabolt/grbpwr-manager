@@ -54,9 +54,56 @@
   `newAdminJSONMarshaler`, `internal/api/http/http.go`) — `reserved 3;` / `reserved 4;` плюс
   `reserved "assignee";`.
 
+## `tech_card_label` + `tech_card_packaging.polybag / bag_sticker / inserts` (переделка этикеток, I-19)
+
+- **Осиротели**: волной переделки этикеток (`0386_labels_rework.sql`, 2026-09-30, план
+  `tmp/plans/labels-rework/`). Этикетки переехали в `tech_card_garment_label` (+ `_media`), составник —
+  в `tech_card_care_label` (+ `_colorway`, `_fiber`), упаковочные вещи — в `tech_card_packaging_item`
+  (+ `_media`). Решение владельца D-06: старые этикетки НЕ конвертируются, новые таблицы стартуют пустыми.
+- **Кто читает/пишет сегодня**: сохранение карточки `tech_card_label` больше НЕ пишет и НЕ чистит
+  (`TechCardInsert.labels = 45` на записи игнорируется); чтение карточки ещё отдаёт строки в `labels`
+  (read-only) — читают их только `internal/techcardanalysis/readiness.go`, импорт архива
+  (`resewImportedLabels`) и дайджест НЕ читает (проекция LABELS считает новые таблицы). Три текстовых
+  колонки упаковки ещё пишутся полной заменой строки `tech_card_packaging` (клиент гоняет прочитанное
+  обратно) и входят в замороженную голову проекции PACKAGING.
+- **Почему не дропнуты сразу**: до-волновой бинарь именует `tech_card_label` и три колонки в своих
+  INSERT; откат образа после дропа ронял бы каждое сохранение карточки.
+- **Что сделать потом** (одним вторым коммитом, после того как прод отработал на бинаре 0386 И клиент
+  волны на проде): `DROP TABLE IF EXISTS tech_card_label`; `ALTER TABLE tech_card_packaging DROP COLUMN`
+  ×3 под гвардом по `information_schema` (PREPARE/EXECUTE/DEALLOCATE по одному оператору на строку);
+  снять `labels = 45` и три поля `TechCardPackaging` в `reserved`; перезаморозить голову
+  `packagingProjection` (золотой hex обновится один раз); убрать чтение `tech_card_label` из стора,
+  readiness и импорта архива.
+
 ---
 
 # Нумерация: бронь живой волны и чем кончилась дыра 0336
+
+## Слово `reference` в `tech_card_media.kind` (+ CHECK `chk_tech_card_media_kind`, 0346) — вход флэта (101 Ф4)
+
+- **Осиротело**: волной «мудборд как единственный источник» (101-MOODBOARD-ROLES, 2026-10-07).
+  Отдельного входа флэта («INPUT — REFERENCES») больше нет: `0404_design_board_is_the_source.sql`
+  перевела строки `kind = 'reference'` на доску (`'moodboard'` с назначением по ярлыку человека),
+  кроме выпущенных (`released`) карточек — они заморожены и пропущены.
+- **Кто пишет сегодня**: никто намеренно. Клиент Ф3 строк входа не заводит; отставшая вкладка, которая
+  их ещё шлёт, сворачивается на сохранении (`designFoldReferenceRows`,
+  `internal/apisrv/admin/design_board_fold.go`). Читает слово только `designBoardPictures` (строку
+  `reference` он не считает картинкой доски) и словарь dto/proto.
+- **Почему не снято сразу**: до-волновой бинарь и открытые до обновления вкладки пишут
+  `kind = reference`; снятое из CHECK слово превратило бы их сохранение в 3819. Плюс выпущенные
+  карточки ещё держат такие строки.
+- **Что сделать потом** (деплой 2, отдельной волной, после прода на бинаре Ф4):
+  1. убедиться на ОБЕИХ базах: `SELECT COUNT(*) FROM tech_card_media m JOIN tech_card t ON t.id =
+     m.tech_card_id WHERE m.kind = 'reference' AND t.approval_state <> 'released'` = 0;
+     решить судьбу строк выпущенных карточек (оставить словом в CHECK или перевести при снятии
+     выпуска);
+  2. снять ветку `reference` из `designFoldReferenceRows` и `designBoardPictures`, значение
+     `TECH_CARD_MEDIA_KIND_REFERENCE` пометить `deprecated` в proto (не `reserved` сразу —
+     `DiscardUnknown: false` у админ-гейтвея);
+  3. CHECK пересобрать без `reference` — это COPY таблицы (замер 0346: десятки строк, миллисекунды);
+     не ретроактивно опасен, только если шаг 1 дал ноль.
+- **Клиент**: `isInputRow`/`REFERENCE_KIND` в `core/mood-gate.ts` и `details-editor.tsx` уходят тем же
+  шагом.
 
 ## Бронь: 0340–0353 — полоса DESIGN (забронировано 2026-08-30, расширено 2026-08-31)
 

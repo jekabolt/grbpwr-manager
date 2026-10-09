@@ -1,0 +1,213 @@
+{
+ "consistency": {
+  "same_garment": true,
+  "notes": "All three photos show the same white sleeveless fine-rib jersey top. The front has a high crew neck. The back is open, with two wide crossed straps. The side view confirms a high armhole, a side seam and a narrow hem. The V shape on the front is an inner layer showing through the sheer jersey.",
+  "trust": [
+   1,
+   2,
+   3
+  ]
+ },
+ "items": [
+  {
+   "id": "neck_bind_front",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "NP_R",
+    "CFN",
+    "NP_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_L",
+    "strap_R"
+   ],
+   "note": "high crew neck binding across the front only; at each neck point it runs into the inner edge of a back strap"
+  },
+  {
+   "id": "strap_L",
+   "kind": "strap",
+   "width": "wide",
+   "path": [
+    "NP_L",
+    "CBN..UB_C:0.6",
+    "UA_R..MB_R:0.3"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_bind_L",
+    "back_open_bind"
+   ],
+   "note": "starts AT the left neck point as the continuation of the front neck binding, a neck-width from the other strap; runs diagonally to the opposite (right) side"
+  },
+  {
+   "id": "strap_R",
+   "kind": "strap",
+   "width": "wide",
+   "path": [
+    "NP_R",
+    "CBN..UB_C:0.6",
+    "UA_L..MB_L:0.3"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_bind_R",
+    "back_open_bind"
+   ],
+   "note": "starts AT the right neck point as the continuation of the front neck binding; runs diagonally to the opposite (left) side"
+  },
+  {
+   "id": "armhole_bind_L",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "NP_L..SP_L:0.35",
+    "FSH_L..UA_L:0.5",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_L",
+    "back_open_bind"
+   ],
+   "note": "front armhole edge only; on the back the strap is the edge"
+  },
+  {
+   "id": "armhole_bind_R",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "NP_R..SP_R:0.35",
+    "FSH_R..UA_R:0.5",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_R",
+    "back_open_bind"
+   ],
+   "note": "front armhole edge only; on the back the strap is the edge"
+  },
+  {
+   "id": "back_open_bind",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "UA_L",
+    "MB_L",
+    "MB_C",
+    "MB_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_bind_L",
+    "armhole_bind_R"
+   ],
+   "note": "lower U-shaped edge of the open back, dipping to MB_C; small tack at MB_C"
+  },
+  {
+   "id": "back_opening",
+   "kind": "opening",
+   "bounded_by": [
+    "strap_L",
+    "strap_R",
+    "back_open_bind"
+   ],
+   "note": "large bare back between the crossed straps and the U-shaped edge"
+  },
+  {
+   "id": "side_seam_L",
+   "kind": "seam",
+   "path": [
+    "UA_L",
+    "WL_L",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "left side seam"
+  },
+  {
+   "id": "side_seam_R",
+   "kind": "seam",
+   "path": [
+    "UA_R",
+    "WL_R",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "right side seam"
+  },
+  {
+   "id": "hem_front",
+   "kind": "edge",
+   "path": [
+    "HEM_L",
+    "HEM_FC",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_L",
+    "HEM_R"
+   ],
+   "continues_into": [
+    "hem_back"
+   ],
+   "note": "narrow coverstitched or lettuce-like hem at the hip"
+  },
+  {
+   "id": "hem_back",
+   "kind": "edge",
+   "path": [
+    "HEM_L",
+    "HEM_BC",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_L",
+    "HEM_R"
+   ],
+   "continues_into": [
+    "hem_front"
+   ],
+   "note": "back hem"
+  },
+  {
+   "id": "inner_V_layer",
+   "kind": "seam",
+   "path": [
+    "NP_L..SP_L:0.35",
+    "BUST_C",
+    "NP_R..SP_R:0.35"
+   ],
+   "closed": false,
+   "sharp": [
+    "BUST_C"
+   ],
+   "continues_into": [],
+   "note": "edge of an inner V-shaped front lining layer, seen only as a shadow through the sheer jersey; point of the V at BUST_C"
+  }
+ ],
+ "absent": [
+  "no sleeves",
+  "no back neckline or back neck binding (the straps replace it)",
+  "no visible shoulder seams (front shoulder runs straight into the straps)",
+  "no closures",
+  "no pockets",
+  "no centre front or centre back seam",
+  "no back fabric above mid-back except the two straps"
+ ]
+}

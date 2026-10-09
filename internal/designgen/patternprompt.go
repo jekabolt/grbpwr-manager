@@ -64,6 +64,21 @@ import (
 // picture». `pictures` is how many pictures actually attached; the image mode ignores it, and its
 // text is byte-identical to what every frozen prompt before this mode was composed from.
 func patternCraft(p patternParams, pictures int) string {
+	// ФУРНИТУРА — НЕ ПЛИТКА. Ни стыка, ни раппорта, ни «заполни кадр от края до края»: это
+	// предметный снимок одной вещи на белом, и общая половина ремесла плитки ему противоречит.
+	// БИРКА — ТОЖЕ ПРЕДМЕТНЫЙ СНИМОК, но её картинка — логотип, который нужно воспроизвести, а
+	// hardwareCraft велит у референсов цвет не брать и исключает «любой логотип» — ровно обратное.
+	if p.Mode == entity.DesignPatternModeLabel {
+		return labelCraft(pictures, p.LabelHasLogo)
+	}
+	// АРТВОРК — ПРЕДМЕТНЫЙ СНИМОК ПРИНТА/ВЫШИВКИ: исходник, если он есть, перерисовывается в
+	// технику с сохранением формы и цветов — снова обратное hardwareCraft.
+	if p.Mode == entity.DesignPatternModeArtwork {
+		return artworkCraft(pictures, p.ArtworkHasSource)
+	}
+	if p.Mode == entity.DesignPatternModeHardware {
+		return hardwareCraft(pictures)
+	}
 	var b strings.Builder
 	b.WriteString(patternWrapParagraph + patternExclusionParagraph)
 	if p.Mode == entity.DesignPatternModeSwatch {
@@ -170,5 +185,164 @@ func swatchCraft(pictures int) string {
 			"face-on, not a flat digital fill.")
 	}
 	b.WriteString(" Draw no motif, print, stripe or check unless the cloth words above name one.")
+	return b.String()
+}
+
+// hardwareCraft is the whole craft of HARDWARE MODE: a clean product photograph of ONE trim item —
+// a button, a zipper, a buckle, a trim, a label — for one (colourway, BOM line) pair of the bench.
+// It is not a tile: there is no wrap, no repeat and no edge-to-edge fill, so none of the tile
+// paragraphs are shared.
+//
+// ⚠ WHAT THE ITEM IS COMES FROM THE WORDS ABOVE. The client puts the BOM line's material in the
+// `colour` words and the ask («button · 4-hole horn 20L»); the server does not read the BOM, so the
+// paragraph points at those words instead of naming an item itself.
+//
+// ⚠ THE STATED COLOUR, WHEN THERE IS ONE, IS MATCHED; WHEN THERE IS NONE, THE WORDS DECIDE IT. A
+// horn button or a brass zip carries its colour in its material, so the colour is optional here.
+//
+// ⚠ REFERENCES SHOW SHAPE AND MATERIAL, NOT NECESSARILY THE COLOUR — the same separation swatchCraft
+// makes for a texture reference, for the same reason: a photograph of the right button in the
+// wrong colour is the ordinary case.
+//
+// `pictures` is the count that ACTUALLY attached (composePrompt reads it off `attached`).
+func hardwareCraft(pictures int) string {
+	var b strings.Builder
+	b.WriteString("hardware item:\n" +
+		"Produce ONE square product photograph of a single garment trim item — the button, zipper, " +
+		"buckle, snap, trim or label described in the words above. Show exactly one of it, whole and " +
+		"in sharp focus, centered on a plain, seamless pure white background, with generous empty " +
+		"space around it.\n")
+	b.WriteString("Light it with soft, even studio light: no hard cast shadow, no hot spot, no " +
+		"coloured reflection; at most a faint soft contact shadow directly beneath the item.\n")
+	b.WriteString("Strictly excluded: any garment, cloth or fabric the item is attached to; any hand, " +
+		"body part, mannequin or packaging; any props, surface texture, scenery or second item; any " +
+		"text, caption, watermark, logo that the words do not name, measurement, ruler or frame.\n")
+	b.WriteString("Build the item the words describe: its type, its shape, its size, its material and " +
+		"its finish — the grain of horn or wood, the lustre of metal, the sheen of plastic or resin, " +
+		"the weave of a tape or a woven label. If a colour is stated above, the item is that colour: " +
+		"match the stated colour value exactly, not a tint of it and not a lighting effect on it. If no " +
+		"colour is stated, give the item the natural colour of the material the words name.")
+	if pictures > 0 {
+		b.WriteString(" The attached pictures are REFERENCES of the item's shape, construction and " +
+			"material: follow them for the form — the hole count, the teeth, the puller, the edge, the " +
+			"proportions — but NOT necessarily for the colour, and take nothing of their background, " +
+			"lighting, crop or surroundings. Where a reference and the stated colour disagree, the " +
+			"stated colour wins.")
+	} else {
+		b.WriteString(" No picture is attached: build the item from the words alone, as a real, " +
+			"manufactured trim item would look.")
+	}
+	return b.String()
+}
+
+// labelLogoMarker — the client's convention: when a logo is attached it is the FIRST picture and
+// the run's words carry this marker (matched case-insensitively).
+const labelLogoMarker = "logo = picture 1"
+
+// labelWordsNameALogo — do the run's words carry labelLogoMarker?
+func labelWordsNameALogo(words string) bool {
+	return strings.Contains(strings.ToLower(words), labelLogoMarker)
+}
+
+// labelCraft — mode label: ONE product photograph of ONE garment label, flat, front view. Its
+// 0..MaxDesignHardwareReferences attached pictures are an optional LOGO (hasLogo: the FIRST picture,
+// reproduced exactly — the opposite of hardwareCraft, whose exclusions drop any logo) plus REFERENCE
+// labels that give construction and finish only, never their logo, text or colours. «sewn at …» in
+// the words is context (where the label sits on the garment), never something to draw.
+func labelCraft(pictures int, hasLogo bool) string {
+	var b strings.Builder
+	b.WriteString("garment label:\n" +
+		"Produce ONE square product photograph of a single garment LABEL as described in the words " +
+		"above — shown alone, lying flat, in front view, whole and in sharp focus, centered on a plain, " +
+		"seamless pure white background, with generous empty space around it.\n")
+	b.WriteString("Light it with soft, even studio light: no hard cast shadow, no hot spot, no " +
+		"coloured reflection; at most a faint soft contact shadow directly beneath the item.\n")
+	b.WriteString("Strictly excluded: any garment, cloth or fabric the item is attached to; any hand, " +
+		"body part, mannequin or packaging; any props, surface texture, scenery or second item; any " +
+		"text, caption or watermark that the words do not name, measurement, ruler or frame.\n")
+	b.WriteString("Build the label the words describe: its construction — woven, printed, satin, " +
+		"leather patch, rubber, embroidered or whatever the words name — with that technique's real " +
+		"surface: the woven threads of a woven label, the ink of a print, the debossing of leather, " +
+		"the moulded relief of rubber, the stitches of embroidery. Keep the proportions of its stated " +
+		"size; if the words name a fold, show the finished folded label. If a colour is stated above, " +
+		"the label ground is that colour: match the stated colour value exactly, not a tint of it and " +
+		"not a lighting effect on it. If no colour is stated, give the ground the natural colour of " +
+		"its construction.\n")
+	b.WriteString("Where the words say «sewn at …», that names where the label sits on the garment — " +
+		"CONTEXT ONLY: never draw the garment, the seam or any stitching into cloth; the picture is " +
+		"the label alone.")
+	const reference = "take its construction, material, weave/print technique, finish, edge and " +
+		"fold from it — never copy its logo, text or colours."
+	switch {
+	case pictures > 0 && hasLogo:
+		b.WriteString(" The FIRST attached picture is the brand's LOGO ARTWORK: reproduce the mark exactly — " +
+			"its letterforms, proportions and spacing — as the label's artwork, executed in the label's " +
+			"technique (woven, printed, embossed, embroidered…). Add, drop, restyle or redraw nothing, " +
+			"take nothing of the picture's background, and render no text the words do not name.")
+		if pictures > 1 {
+			b.WriteString(" Every OTHER attached picture is a REFERENCE label: " + reference)
+		}
+	case pictures > 0:
+		b.WriteString(" Every attached picture is a REFERENCE label: " + reference +
+			" No logo is given: invent no wordmark, no monogram, no text the words do not name.")
+	default:
+		b.WriteString(" No logo is given: make a blank label carrying only what the words name — " +
+			"invent no wordmark, no monogram, no text.")
+	}
+	return b.String()
+}
+
+// artworkSourceMarker — the client's convention for mode artwork: when a source photo/artwork is
+// attached it is the FIRST picture and the run's words carry this marker (case-insensitive).
+const artworkSourceMarker = "artwork = picture 1"
+
+// artworkWordsNameASource — do the run's words carry artworkSourceMarker?
+func artworkWordsNameASource(words string) bool {
+	return strings.Contains(strings.ToLower(words), artworkSourceMarker)
+}
+
+// artworkCraft — mode artwork: ONE square picture of ONE piece of garment artwork (print,
+// embroidery, patch, appliqué, transfer) alone on pure white, straight on. With hasSource the FIRST
+// picture is the SOURCE — its shape, letterforms, proportions and colours are kept and only its
+// MATERIAL changes into the named technique (the owner: «photo re-drawn in the technique»); every
+// other picture is a technique reference. Without a source the artwork is built from the words and
+// invents no wordmark. The white ground is not part of the artwork: the canvas multiplies it away
+// and the cut-out run removes it.
+func artworkCraft(pictures int, hasSource bool) string {
+	var b strings.Builder
+	b.WriteString("artwork:\n" +
+		"Produce ONE square picture of a single piece of garment ARTWORK alone — the print, " +
+		"embroidery, patch, appliqué or transfer the words above name — viewed straight on, flat, " +
+		"centred on a plain, seamless pure white background with generous empty margin around it.\n")
+	b.WriteString("Light it with soft, even light: no hard cast shadow, no hot spot, no coloured " +
+		"reflection; at most a faint soft contact shadow.\n")
+	b.WriteString("Strictly excluded: any garment, cloth or fabric the artwork is applied to; any hand, " +
+		"body part, mannequin or packaging; any props, scenery or second artwork; any text, caption or " +
+		"watermark that the words or the source do not carry, measurement, ruler or frame.\n")
+	b.WriteString("Execute it in the named technique with that technique's REAL surface: satin and fill " +
+		"stitches with visible thread direction and sheen for embroidery; flat ink with a hint of " +
+		"halftone for screen print; fine, soft ink sunk into the cloth for DTG; a raised moulded relief " +
+		"for rubber or puff print; felt or twill with a merrow border for a patch; stitched cloth edges " +
+		"for appliqué; a thin, slightly glossy film for a heat transfer. If a colour is stated above, " +
+		"use it exactly where the words put it.")
+	const reference = "take the technique — its stitch, ink, relief, edge and finish — from it, never " +
+		"its motif, text or colours."
+	switch {
+	case pictures > 0 && hasSource:
+		b.WriteString(" The FIRST attached picture is the SOURCE artwork: reproduce its shape, " +
+			"letterforms, proportions and colours exactly — add, drop, restyle or redraw nothing — and " +
+			"change ONLY its material into the named technique, re-drawing it as that technique really " +
+			"makes it. Take nothing of the source picture's background, photo light or surroundings.")
+		if pictures > 1 {
+			b.WriteString(" Every OTHER attached picture is a TECHNIQUE reference: " + reference)
+		}
+	case pictures > 0:
+		b.WriteString(" Every attached picture is a TECHNIQUE reference: " + reference +
+			" No source artwork is given: build only what the words name — invent no wordmark, no " +
+			"monogram, no text the words do not name.")
+	default:
+		b.WriteString(" No picture is attached: build only what the words name — invent no wordmark, " +
+			"no monogram, no text the words do not name.")
+	}
 	return b.String()
 }

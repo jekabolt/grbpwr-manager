@@ -35,8 +35,11 @@ type runParams struct {
 	Colour             *colourRecipe `json:"colour"`
 	ExtraInputMediaIDs []int         `json:"extra_input_media_ids"`
 	DetailSlotIDs      []int         `json:"detail_slot_ids"`
-	FixTarget          string        `json:"fix_target"`
-	FixTargets         []string      `json:"fix_targets"`
+	// UseFlatSlots — the run asked for its bench plates itself; then they are NOT the accepted views
+	// of a detail run (T8), whatever they show.
+	UseFlatSlots bool     `json:"use_flat_slots"`
+	FixTarget    string   `json:"fix_target"`
+	FixTargets   []string `json:"fix_targets"`
 	// FixSlotIDs — ТРЕТЬЕ ПРАВОПИСАНИЕ СУЖЕНИЯ, и без него сборщик ссылок читал «сужен ли прогон»
 	// иначе, чем отбор плит: прогон, сузивший себя слотами, а не видами, выглядел здесь обычным.
 	FixSlotIDs []int         `json:"fix_slot_ids"`
@@ -59,6 +62,31 @@ type runParams struct {
 	// Video — DesignVideoParams (field 19, B-32): the one source picture, the clip length and the
 	// slug the door froze. nil on every other kind.
 	Video *videoParams `json:"video"`
+	// Flat — DesignFlatParams (field 20, 80-BUILD-MODES): the flat mode and the underdrawing. nil =
+	// quick (every run frozen before the modes).
+	Flat *flatParams `json:"flat"`
+}
+
+// flatParams — DesignFlatParams.
+type flatParams struct {
+	Mode          string `json:"mode"`
+	StructureRefs []struct {
+		MediaID int    `json:"media_id"`
+		Role    string `json:"role"`
+	} `json:"structure_refs"`
+}
+
+// flatModeOf — the frozen flat mode, normalised ("" — the photos route — for none and anything unknown,
+// the retired `straps` of a run frozen before M7b included).
+func flatModeOf(p runParams) string {
+	if p.Flat == nil {
+		return FlatModePhotos
+	}
+	m, ok := NormalizeFlatMode(p.Flat.Mode)
+	if !ok {
+		return FlatModePhotos
+	}
+	return m
 }
 
 // videoParams — DesignVideoParams: the picture to animate, the duration, the frozen Kling slug.
@@ -174,6 +202,13 @@ type patternParams struct {
 	// params с UseProtoNames. Режим меняет ДВА места и больше ничего: число картинок вызова
 	// (imageCalls) и абзац ремесла (patternCraft).
 	Mode string `json:"mode"`
+	// LabelHasLogo — НЕ ИЗ СНИМКА (json:"-"): composePrompt выводит его из слов прогона (ask и
+	// colour.words) — клиент, приложив логотип, ставит его ПЕРВОЙ картинкой и пишет маркер
+	// «logo = picture 1». Читает только labelCraft.
+	LabelHasLogo bool `json:"-"`
+	// ArtworkHasSource — то же для режима artwork: исходник ПЕРВОЙ картинкой и маркер
+	// «artwork = picture 1» в словах прогона. Читает только artworkCraft.
+	ArtworkHasSource bool `json:"-"`
 }
 
 type colourRecipe struct {
@@ -217,6 +252,10 @@ type colourRecipe struct {
 type colourMap struct {
 	MediaID int    `json:"media_id"`
 	View    string `json:"view"`
+	// MockupMediaID — the CLOTH MOCKUP of this map (T13), 0 = none: the same flat with each
+	// labelled part filled with its cloth's tile at the cloth's true repeat. Attached right after
+	// its map and only when the map itself went out as a map — a mockup belongs to its map.
+	MockupMediaID int `json:"mockup_media_id"`
 }
 
 // fabricUse is ONE cloth of the submission: what it looks like and WHICH PART OF THE GARMENT it is
@@ -273,6 +312,12 @@ func clothIsAPattern(c fabricUse) bool {
 	return strings.TrimSpace(c.Kind) == entity.DesignAssetKindPattern
 }
 
+// clothIsHardware — R9: this use is HARDWARE painted on PARTS (a button, a snap, a zip), not a
+// cloth. Empty on every frozen run, so no existing prompt can reach the hardware wording.
+func clothIsHardware(c fabricUse) bool {
+	return strings.TrimSpace(c.Kind) == entity.DesignAssetKindHardware
+}
+
 type threedParams struct {
 	Presentation string `json:"presentation"`
 	FitOverride  string `json:"fit_override"`
@@ -311,6 +356,37 @@ type runInputs struct {
 	Fit         string      `json:"fit"`
 	Refs        []inputRef  `json:"refs"`
 	Slots       []inputSlot `json:"slots"`
+	// Artworks — артворки, размещённые на флэтах верстака, которые рендер замораживает сам
+	// (сервер, design_run_artworks.go; в DesignInputSnapshot этого ключа нет). Пусто у каждого
+	// прогона до 70-ROUND7 и у всякого не-рендера.
+	Artworks []artworkUse `json:"artworks"`
+	// `joins` — the card's join list, which the door froze into flat snapshots from 0397 until M7b
+	// (07.10) — is not read: the construction left the flat prompt (owner 06.10 / 07.10,
+	// 100-CONSTRUCTION-DEADEND), and an old snapshot's key is ignored (flat_prompt_bytes_test.go).
+}
+
+// artworkUse — ОДИН размещённый артворк: его картинка, флэт, на котором он стоит, и четыре угла
+// места (TL, TR, BR, BL) в долях кадра этого флэта.
+type artworkUse struct {
+	AssetID     int             `json:"asset_id"`
+	Name        string          `json:"name"`
+	MediaID     int             `json:"media_id"`
+	View        string          `json:"view"`
+	FlatMediaID int             `json:"flat_media_id"`
+	Corners     []artworkCorner `json:"corners"`
+	Note        string          `json:"note"`
+	// Ground — set by the worker when the picture went out TIGHTENED (T27): cropped to its content
+	// and flattened onto this ground, its Corners then being the content quad. "" = sent as stored.
+	Ground artworkGroundKind `json:"-"`
+	// Colours — the artwork's own colours in words («white #f4f4f4»), read off the tightened
+	// picture by the worker; "" when it went out as stored. Named, because a light thread shown on
+	// the cloth's own ground reads to the model as tone-on-tone (beta run 139).
+	Colours string `json:"-"`
+}
+
+type artworkCorner struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type inputRef struct {
@@ -449,6 +525,12 @@ type refCaption struct {
 	// Наличие media в списке ответом НЕ является: плита, названная картой, в списке есть — под
 	// подписью плиты.
 	IsColourMap bool
+	// IsMockup — эта картинка уехала МАКЕТОМ ТКАНЕЙ своей карты (T13); renderColourMapSentence
+	// называет её номер только тогда, когда она в списке именно этой ролью.
+	IsMockup bool
+	// IsPlacement — the mockup went out as a PLACEMENT mockup (R9): the bare drawing with the
+	// hardware drawn in; it carries no cloth, so the prompt never sends the model to it for one.
+	IsPlacement bool
 	// IsWindow — ЭТА КАРТИНКА И ЕСТЬ ОКНО ГЕНЕРАЦИИ: кроп области, приехавший ВМЕСТО полного кадра.
 	//
 	// ⚠ ФЛАГ, А НЕ ДОГАДКА ПО ПОДПИСИ ИЛИ ПО ПОЗИЦИИ. Ремесло обязано назвать модели НОМЕР этой
@@ -456,6 +538,28 @@ type refCaption struct {
 	// по тексту подписи значило бы завести второе чтение того же факта, которое разъедется при
 	// первой правке слов. Ставится ровно там же, где картинка кладётся в список.
 	IsWindow bool
+	// IsArtwork — эта картинка уехала АРТВОРКОМ рендера (70-ROUND7 B7): абзац ARTWORK называет её
+	// номер только тогда, когда она в списке именно этой ролью.
+	IsArtwork bool
+	// IsHardware — R9: this picture went out as a painted HARDWARE use's picture; the HARDWARE
+	// paragraph names its number only off this field.
+	IsHardware bool
+	// GuideView — this picture is the PLACEMENT GUIDE of that side (T27): the side's bench flat with
+	// every artwork of the side drawn at its exact size and place. Derived (data URI, MediaID 0);
+	// empty for every other picture. The ARTWORK paragraph names its number only off this field.
+	GuideView string
+	// IsStructure — this picture is the designer's own technical flat a hand_flat run redraws
+	// (snapshot role front_flat / back_flat); StructView is the view it shows.
+	IsStructure bool
+	StructView  string
+	// IsAcceptedView — the card's FRONT / BACK flat plate travelling on a DETAIL run (T8): the
+	// finished views the detail must agree with (flatAcceptedViewsSentence names its number).
+	IsAcceptedView bool
+	// FromRef / Role / Note — the picture came from the snapshot's refs, with that role and note (the
+	// photo-roles paragraph of drawing_photos reads them).
+	FromRef bool
+	Role    string
+	Note    string
 }
 
 // referenceList is EVERY picture this run is allowed to show a model, in a stable order, each
@@ -533,6 +637,13 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		}
 		return []refCaption{{MediaID: p.Video.SourceMediaID, Caption: "the picture to animate"}}
 	}
+	// ─── FLAT, DRAWING MODES (80-BUILD-MODES §2.2): THE CONSTRUCTION DRAWING FIRST, AND ONLY WHAT
+	// THE MODE SENDS. drawing = the underdrawing alone; drawing_photos = the underdrawing, then the
+	// card's kept photos. A selective fix also carries the plates it corrects. No extras, no colour
+	// maps, no cloths: a trace is black line art of the drawing.
+	if kind == entity.DesignRunKindFlat && flatModeOf(p) == FlatModeHandFlat {
+		return flatHandFlatReferences(p, in)
+	}
 	slots := append([]inputSlot(nil), in.Slots...)
 	sort.SliceStable(slots, func(i, j int) bool {
 		return viewRank(slots[i].ViewKey) < viewRank(slots[j].ViewKey)
@@ -568,8 +679,20 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		seen[id] = len(out)
 		out = append(out, refCaption{MediaID: id, Caption: caption, View: view})
 	}
+	// T8: on a flat DETAIL run the silhouette plates are the garment's accepted views, not a state
+	// to redraw — their own caption, and a flag the craft paragraph numbers them by.
+	selectiveFix := entity.IsDesignSelectiveFix(p.FixTarget, p.FixTargets, p.FixSlotIDs)
+	acceptedViews := kind == entity.DesignRunKindFlat && !selectiveFix && !p.UseFlatSlots && detailOnlyRun(p.Views)
 	addSlots := func() {
 		for _, s := range slots {
+			if acceptedViews && (s.ViewKey == entity.DesignViewFront || s.ViewKey == entity.DesignViewBack) {
+				at := len(out)
+				add(s.MediaID, flatAcceptedViewCaption(s.ViewKey), s.ViewKey)
+				if at < len(out) {
+					out[at].IsAcceptedView = true
+				}
+				continue
+			}
 			add(s.MediaID, slotCaption(s), s.ViewKey)
 		}
 	}
@@ -581,7 +704,19 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			if r.Deleted {
 				continue
 			}
-			add(r.MediaID, refEntryCaption(r), "")
+			// The designer's flats travel only on a hand_flat run (flatHandFlatReferences).
+			if FlatStructureView(r.Role) != "" || (r.Role != entity.DesignRefRoleMood && entity.IsDesignRefRoleReserved(r.Role)) {
+				continue
+			}
+			caption := refEntryCaption(r)
+			if kind == entity.DesignRunKindFlat {
+				caption = flatRefCaption(r)
+			}
+			at := len(out)
+			add(r.MediaID, caption, "")
+			if at < len(out) {
+				out[at].FromRef, out[at].Role, out[at].Note = true, r.Role, r.Note
+			}
 		}
 	}
 	// TWO ORDERS, ONE `add`. Both branches walk the same three sources through the same closure,
@@ -609,8 +744,13 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 		addSlots()
 		addRefs()
 	}
-	for _, id := range p.ExtraInputMediaIDs {
-		add(id, "additional reference image", "")
+	// A FLAT ATTACHES ONLY ITS SNAPSHOT (wave 10, Codex review): designAssembleInputs folds the extra
+	// inputs into the refs and then drops every role-less one (designFlatOnlyRoledPhotos), so re-adding
+	// the frozen params here would send what the snapshot says was not sent.
+	if kind != entity.DesignRunKindFlat {
+		for _, id := range p.ExtraInputMediaIDs {
+			add(id, "additional reference image", "")
+		}
 	}
 	// ─── THE COLOUR MAPS ───────────────────────────────────────────────────────────────────────
 	//
@@ -639,6 +779,10 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 	// КАРТИНКА ЕСТЬ ОДНА РОЛЬ, — чтобы промпт не мог соврать даже про снимок, замороженный мимо
 	// сегодняшней двери.
 	if p.Colour != nil {
+		// R9 · only hardware painted: the maps label nothing, and the mockups are placement ones
+		// unless exactly one cloth skins them.
+		blank := mapsCarryNoLabels(p.Colour)
+		placement := mockupsArePlacement(p.Colour)
 		for _, m := range p.Colour.ColourMaps {
 			if m.MediaID <= 0 {
 				continue
@@ -647,9 +791,56 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 				continue
 			}
 			at := len(out)
-			add(m.MediaID, colourMapCaption(m.View), m.View)
+			caption := colourMapCaption(m.View)
+			if blank {
+				caption = colourMapBlankCaption(m.View)
+			}
+			add(m.MediaID, caption, m.View)
 			if at < len(out) {
 				out[at].IsColourMap = true
+			}
+			// ─── ITS CLOTH MOCKUP (T13), RIGHT AFTER IT ───
+			//
+			// ⚠ MEASURED, AND THE CAPTION FOLLOWS THE MEASUREMENT (paint-parts t13 A/B): handed a
+			// mockup, gpt-image-2 copies the motif's SCALE and colours from it, while placement is
+			// already right from the map alone. So the caption says what it is good for — where,
+			// and how big — and forbids the one thing it must never lend: its flat, unlit look.
+			//
+			// Only behind a map that went out AS a map, and only a picture not already in the list:
+			// one picture, one role — the rule the map itself keeps above.
+			if at < len(out) && m.MockupMediaID > 0 {
+				if _, taken := seen[m.MockupMediaID]; !taken {
+					mk := len(out)
+					caption := colourMapMockupCaption(m.View)
+					if placement {
+						caption = placementMockupCaption(m.View)
+					}
+					add(m.MockupMediaID, caption, m.View)
+					if mk < len(out) {
+						out[mk].IsMockup = true
+						out[mk].IsPlacement = placement
+					}
+				}
+			}
+		}
+	}
+	// ─── THE ARTWORKS (70-ROUND7 B7) ──────────────────────────────────────────────────────────
+	//
+	// A RENDER ONLY, AND ONLY WHAT THE SERVER FROZE. Like a colour map, an artwork travels with its
+	// own caption — «additional reference image» would read a print photographed on white as a
+	// garment — and a picture already in the list under another role is not re-labelled.
+	if kind == entity.DesignRunKindRender {
+		for _, a := range in.Artworks {
+			if a.MediaID <= 0 {
+				continue
+			}
+			if _, taken := seen[a.MediaID]; taken {
+				continue
+			}
+			at := len(out)
+			add(a.MediaID, artworkCaption(a), "")
+			if at < len(out) {
+				out[at].IsArtwork = true
 			}
 		}
 	}
@@ -701,7 +892,77 @@ func referenceList(kind string, p runParams, in runInputs) []refCaption {
 			add(c.MediaID, clothCaption(i+1, c), "")
 		}
 	}
+	// ─── R9 · THE HARDWARE PAINTED ON PARTS ─────────────────────────────────────────────────────
+	//
+	// A RENDER ONLY, AFTER THE CLOTHS, and only a picture not already in the list under another
+	// role (one picture, one role — the rule the maps keep above). A words-only use has no picture
+	// and attaches nothing; its paragraph says so.
+	if kind == entity.DesignRunKindRender {
+		for _, h := range statedHardware(p.Colour) {
+			if h.MediaID <= 0 {
+				continue
+			}
+			if _, taken := seen[h.MediaID]; taken {
+				continue
+			}
+			at := len(out)
+			add(h.MediaID, hardwareCaption(h), "")
+			if at < len(out) {
+				out[at].IsHardware = true
+			}
+		}
+	}
 	return out
+}
+
+// flatHandFlatReferences — the pictures of a hand_flat run, in order: the designer's flats (in the
+// frozen params order, each with its view), then the card's kept photos, then — a selective fix only —
+// the plates it corrects. No extras beyond what the snapshot refs hold, no colour maps, no cloths.
+func flatHandFlatReferences(p runParams, in runInputs) []refCaption {
+	var out []refCaption
+	seen := map[int]bool{}
+	deleted := map[int]bool{}
+	for _, r := range in.Refs {
+		if r.Deleted {
+			deleted[r.MediaID] = true
+		}
+	}
+	if p.Flat != nil {
+		for _, r := range p.Flat.StructureRefs {
+			v := FlatStructureView(r.Role)
+			if r.MediaID <= 0 || v == "" || seen[r.MediaID] || deleted[r.MediaID] {
+				continue
+			}
+			seen[r.MediaID] = true
+			out = append(out, refCaption{MediaID: r.MediaID, IsStructure: true, StructView: v,
+				Caption: "the designer's own hand-drawn technical flat — " + displayView(v) + " view (structure authority)"})
+		}
+	}
+	for _, r := range in.Refs {
+		if r.Deleted || r.MediaID <= 0 || seen[r.MediaID] || FlatStructureView(r.Role) != "" {
+			continue
+		}
+		seen[r.MediaID] = true
+		out = append(out, refCaption{MediaID: r.MediaID, Caption: flatRefCaption(r), FromRef: true, Role: r.Role, Note: r.Note})
+	}
+	if entity.IsDesignSelectiveFix(p.FixTarget, p.FixTargets, p.FixSlotIDs) {
+		slots := append([]inputSlot(nil), in.Slots...)
+		sort.SliceStable(slots, func(i, j int) bool { return viewRank(slots[i].ViewKey) < viewRank(slots[j].ViewKey) })
+		for _, sl := range slots {
+			if sl.MediaID <= 0 || seen[sl.MediaID] {
+				continue
+			}
+			seen[sl.MediaID] = true
+			out = append(out, refCaption{MediaID: sl.MediaID, Caption: slotCaption(sl), View: sl.ViewKey})
+		}
+	}
+	return out
+}
+
+// FlatCallPictures — how many pictures ONE call of this frozen flat run attaches (the door's ceiling
+// check before the money; the same list the worker builds, before media resolution).
+func FlatCallPictures(kind string, params, inputs []byte) int {
+	return len(referenceMediaIDs(kind, parseParams(entity.RawJSON(params)), parseInputs(entity.RawJSON(inputs))))
 }
 
 // referenceMediaIDs is the picture half of referenceList — kept as a name because half the band's
@@ -766,9 +1027,36 @@ func refEntryCaption(r inputRef) string {
 // the cloth list, and the caption points at it rather than restating them — two places saying what
 // colour the garment is would be the same disagreement the order of authority exists to end.
 func colourMapCaption(view string) string {
-	return "colour map of the " + viewWord(view) + " flat — the same drawing with each part " +
-		"flooded in one flat colour; those colours LABEL which cloth covers which part and are " +
-		"not the garment's own colours, which the cloth list states"
+	// A map may be PARTIAL: the person paints only some parts and leaves the rest white, and white
+	// is «no label», not a colour of the garment.
+	return "colour map of the " + viewWord(view) + " flat — the same drawing with the labelled " +
+		"parts flooded in flat colours; parts left white carry no label; those colours LABEL which " +
+		"cloth covers which part and are not the garment's own colours, which the cloth list states"
+}
+
+// colourMapBlankCaption — R9 · a map that labels nothing (only hardware was painted; its pixels
+// went out as the paper or cloth around them). It travels only because its mockup belongs to it.
+func colourMapBlankCaption(view string) string {
+	return "unlabelled map of the " + viewWord(view) + " flat — nothing on it is labelled and it " +
+		"gives no instruction; it travels only with the mockup that follows it"
+}
+
+// placementMockupCaption — R9 · the mockup with no cloth on it: the drawing with each painted
+// piece of hardware drawn in at its place and size.
+func placementMockupCaption(view string) string {
+	return "placement mockup of the " + viewWord(view) + " flat — the drawing with each painted " +
+		"piece of hardware drawn in where it sits, at its true size; it shows WHERE the hardware " +
+		"goes and HOW BIG; no cloth is drawn on it — take no cloth or colour from it, and never " +
+		"copy its flat, unlit look"
+}
+
+// colourMapMockupCaption says what a cloth mockup IS and what it may be read for (T13). The
+// wording is the measured one: WHERE and SCALE yes, its flat unlit look never.
+func colourMapMockupCaption(view string) string {
+	return "cloth mockup of the " + viewWord(view) + " flat — each labelled part filled flat with " +
+		"its cloth's tile at the cloth's true repeat; it shows WHERE each cloth goes and the " +
+		"motif's SCALE and colours; it has no folds, no light and no volume — never copy its flat, " +
+		"unlit look"
 }
 
 // viewWord spells a view key as a bare adjective — «front», «left side» — where a caption needs it
@@ -883,7 +1171,19 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	if run.Ask.Valid {
 		write("", run.Ask.String)
 	}
-	write("garment", in.GarmentNote)
+	// A FLAT DETAIL RUN DRAWS THE DETAIL, NOT THE GARMENT (owner item 7). WORDS describe the whole
+	// garment; under a bare «garment:» label the model takes them as the subject. They still go in —
+	// the detail has to be drawn true to its garment — but labelled as context only.
+	garmentLabel := "garment"
+	if run.Kind == entity.DesignRunKindFlat && detailOnlyRun(p.Views) {
+		garmentLabel = flatDetailGarmentLabel
+	}
+	// «garment:\ngarment: blazer» (wave 10): the card's WORDS already open with their own
+	// «garment: <class>» line (card-facts.ts), so the label is not said a second time.
+	if garmentLabel == "garment" && flatGarmentLineRe.MatchString(strings.TrimSpace(strings.SplitN(strings.TrimSpace(in.GarmentNote), "\n", 2)[0])) {
+		garmentLabel = ""
+	}
+	write(garmentLabel, in.GarmentNote)
 	write("fit", in.Fit)
 	// КАКИЕ ИМЕННО ДЕТАЛИ ПРОСИЛИ. Без этой строки прогон на две детали говорил модели ровно
 	// «нарисуй две детали» — и получал два произвольных крупных плана, потому что `views` несёт
@@ -922,6 +1222,18 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		if run.Kind == entity.DesignRunKindRecolor {
 			wordsLabel = "colour in words"
 		}
+		// A hardware run (a zip, a button) is not cloth: «fabric in words» would introduce the item's
+		// description as a note about a fabric. hardwareCraft points at «the words above» generically.
+		if run.Kind == entity.DesignRunKindPattern && p.Pattern != nil {
+			switch p.Pattern.Mode {
+			case entity.DesignPatternModeHardware:
+				wordsLabel = "item in words"
+			case entity.DesignPatternModeLabel:
+				wordsLabel = "label in words"
+			case entity.DesignPatternModeArtwork:
+				wordsLabel = "artwork in words"
+			}
+		}
 		write(wordsLabel, c.Words)
 	}
 	if t := p.Threed; t != nil {
@@ -949,6 +1261,11 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	var refLines []string
 	for i, rc := range attached {
 		refLines = append(refLines, "- image "+strconv.Itoa(i+1)+": "+rc.Caption)
+	}
+	if run.Kind == entity.DesignRunKindFlat && len(refLines) > 0 {
+		if l := flatMissingViewsLine(p.Views, attached); l != "" {
+			refLines = append(refLines, l)
+		}
 	}
 	write("references", strings.Join(refLines, "\n"))
 
@@ -989,10 +1306,12 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 	// 3D IS A MODEL BUILD AND draft_idea NEVER REACHES THE WORKER. Neither is a picture composed by
 	// these words, so both keep the bare human context above and take no craft block at all.
 	switch {
+	case run.Kind == entity.DesignRunKindFlat && flatModeOf(p) == FlatModeHandFlat:
+		write("", flatHandFlatCraft(p, detailNames, attached))
 	case run.Kind == entity.DesignRunKindFlat:
-		write("", flatCraft(p, detailNames, len(attached)))
+		write("", flatCraftAttached(p, detailNames, attached))
 	case renderIsTheKind(run.Kind):
-		write("", renderCraft(p, detailNames, attached))
+		write("", renderCraftWith(p, detailNames, attached, in.Artworks))
 	// ПЕРЕКРАС И ПАТТЕРН — ЕЩЁ ДВА РЕМЕСЛА, И КАЖДОЕ ПРОТИВОРЕЧИТ ОБОИМ СОСЕДНИМ. Рендер СОЧИНЯЕТ
 	// сцену, перекрас обязан её НЕ ТРОГАТЬ; флэт рисует чёрную линию на белом, паттерн — сплошное
 	// поле цвета без единого поля вокруг. Поэтому абзац ровно один на прогон, как и у первых двух:
@@ -1003,6 +1322,20 @@ func composePrompt(run entity.DesignRun, p runParams, in runInputs, attached []r
 		pp := patternParams{}
 		if p.Pattern != nil {
 			pp = *p.Pattern
+		}
+		if pp.Mode == entity.DesignPatternModeLabel {
+			words := run.Ask.String
+			if p.Colour != nil {
+				words += "\n" + p.Colour.Words
+			}
+			pp.LabelHasLogo = labelWordsNameALogo(words)
+		}
+		if pp.Mode == entity.DesignPatternModeArtwork {
+			words := run.Ask.String
+			if p.Colour != nil {
+				words += "\n" + p.Colour.Words
+			}
+			pp.ArtworkHasSource = artworkWordsNameASource(words)
 		}
 		// СКОЛЬКО КАРТИНОК РЕАЛЬНО УЕЗЖАЕТ — из `attached`, а не из снимка: абзац свотча говорит
 		// модели либо «фактура — с картинки», либо «картинки нет, сделай гладкую ткань», и сказать
@@ -1289,6 +1622,9 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		Outputs:     run.RequestedOutputs,
 		Quality:     quality,
 	}
+	if run.Kind == entity.DesignRunKindFlat {
+		job.FlatMode = flatModeOf(p)
+	}
 	// РЕЖИМ ПАТТЕРНА ЕДЕТ В ЗАДАНИЕ, ПОТОМУ ЧТО ЕГО ЧИТАЕТ ДЕНЕЖНАЯ ГРАНИЦА (imageCalls), а снимок
 	// дальше этой функции не едет. Нет блока pattern — пустой режим, то есть сегодняшний маршрут.
 	if p.Pattern != nil {
@@ -1490,6 +1826,13 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 			attached = append(attached, refCaption{Caption: d.caption})
 		}
 	}
+	// ─── RENDER ARTWORKS (T27): tightened to their content, the quad shrunk with them, and one
+	// placement guide per side within the engine's ceiling. Between resolution and the prompt for the
+	// same reason as the playground's derivatives: the guides are pictures of the call and take
+	// numbers in the same count. A picture that cannot be read keeps today's url and today's words.
+	if run.Kind == entity.DesignRunKindRender && len(in.Artworks) > 0 {
+		attached = deriveRenderArtworks(ctx, objects, p, &in, &job, attached, renderMaxRefs(job.Model, engines))
+	}
 	// ─── EXTEND (phase 3): THE PLAN IS FROZEN HERE, BEFORE THE MONEY. The source is decoded once to
 	// learn its size, the canvas and the per-side expansion are computed, the 3 MP cap applied — and
 	// a refusal here (the picture is gone, too small, or the target adds nothing) is free and
@@ -1505,6 +1848,12 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 		if err := deriveInpaintPlan(ctx, objects, maskURL, &job); err != nil {
 			return Job{}, err
 		}
+	}
+	// ─── A HAND_FLAT RUN WITHOUT EVERY ONE OF ITS FLATS IS REFUSED HERE, FREE AND TERMINAL. Its words
+	// say «redraw image k»; sent without it the model would invent that view — a paid wrong sheet.
+	// buildJob runs before StartAttempt.
+	if run.Kind == entity.DesignRunKindFlat && job.FlatMode == FlatModeHandFlat && !flatStructureAttached(p, attached) {
+		return Job{}, fmt.Errorf("%w: a hand-drawn flat this run redraws is no longer there — start a new run", errFlatStructureGone)
 	}
 	switch run.Kind {
 	case entity.DesignRunKindInpaint, entity.DesignRunKindVideo:
@@ -1529,6 +1878,10 @@ func buildJobWith(ctx context.Context, media mediaResolver, objects objectFetche
 // ⚠ ТЕРМИНАЛЬНЫЙ. Строку медиа удалили; следующий проход соберёт то же задание из того же
 // замороженного снимка и снова её не найдёт — то есть повтор покупает пять одинаковых отказов.
 var errFreeformSourceGone = errors.New("designgen: a picture this playground run needs is gone")
+
+// errFlatStructureGone — a hand_flat run's flat did not resolve (terminal, free: refused while the job
+// is built, before StartAttempt).
+var errFlatStructureGone = errors.New("designgen: a hand-drawn flat of this run is gone")
 
 // freeformPrerequisitesSurvived ПЕРЕСПРАШИВАЕТ ПРЕДПОСЫЛКИ ПРЕСЕТА У КАРТИНОК, КОТОРЫЕ ДЕЙСТВИТЕЛЬНО
 // ДОЕХАЛИ.

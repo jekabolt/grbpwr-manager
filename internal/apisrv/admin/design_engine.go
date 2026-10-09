@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -23,6 +24,17 @@ import (
 // SetDesignEngines wires the engine table (app.go, beside SetDesignKindGate). A function, not a
 // slice, for the same reason as the kind gate: the answer belongs to the image client.
 func (s *Server) SetDesignEngines(f func() []designgen.Engine) { s.designEngines = f }
+
+// SetDesignImageRunCap — the worker's wall-clock cap of an image run, advertised by the band.
+func (s *Server) SetDesignImageRunCap(d time.Duration) { s.designImageRunCap = d }
+
+// designRunCap — the advertised cap (the entity default until app.go sets the deployment's).
+func (s *Server) designRunCap() time.Duration {
+	if s.designImageRunCap > 0 {
+		return s.designImageRunCap
+	}
+	return entity.DesignImageRunCapDefault
+}
 
 // designEngineTable — the engines this server accepts; nil when none are wired, and then the door
 // refuses every params.image (a run it cannot price is a run it does not take).
@@ -186,6 +198,10 @@ func (s *Server) designFreezeImageModel(kind string, params *pb_common.DesignRun
 // n = 1 engine that the worker draws as ONE n = 1 call (designgen imageCalls: unspecified = one).
 func designImageVariantsPerCall(kind string, params *pb_common.DesignRunParams) int {
 	switch {
+	case kind == entity.DesignRunKindFlat:
+		// Flat candidates on an engine that returns fewer per call are split into several calls by
+		// the worker (designgen splitCallsOverN) — never refused here.
+		return 1
 	case kind == entity.DesignRunKindRecolor, params.GetLayout() == designLayoutPerView:
 		return 1
 	case params.GetLayout() == "":
@@ -328,9 +344,46 @@ func designRecolorCallImages(params *pb_common.DesignRunParams) int {
 
 // designImageCallImages — an UPPER BOUND on the images one call of this run carries, for the
 // reserve. Freeform and recolour are exact (the arithmetic above); a flat / render / pattern call
-// carries at most every media id of the run plus its colour maps, and never more than the engine
+// carries at most every media id of the run plus its colour maps and their mockups, and never more than the engine
 // takes — the provider client refuses anything above that before the call.
 func designImageCallImages(kind string, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot, maxRefs int) int {
+	return designImageCallImagesWithArtworks(kind, params, inputs, nil, maxRefs)
+}
+
+// designImageCallImagesWithArtworks — designImageCallImages plus a render's frozen artwork pictures
+// (deduplicated against every other input, as the worker attaches them) AND their placement guides
+// (T27: one per side carrying artworks). Guides are optional — the worker attaches only as many as
+// fit under the engine's ceiling — so with maxRefs this is still the exact upper bound the reserve
+// prices; the door refuses on designImageCallRequiredImages, which leaves the guides out.
+func designImageCallImagesWithArtworks(kind string, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork, maxRefs int) int {
+	n := designImageCallRequiredImages(kind, params, inputs, arts)
+	if kind == entity.DesignRunKindRender {
+		n += designArtworkGuideCount(arts)
+	}
+	if maxRefs > 0 && n > maxRefs {
+		n = maxRefs
+	}
+	return n
+}
+
+// designArtworkGuideCount — the placement guides a render's artworks can bring (T27): one per side
+// among front, back, side_l, side_r carrying at least one artwork — designgen.artworkGuideOrder.
+func designArtworkGuideCount(arts []designFrozenArtwork) int {
+	sides := map[string]struct{}{}
+	for _, a := range arts {
+		switch a.View {
+		case "front", "back", "side_l", "side_r":
+			sides[a.View] = struct{}{}
+		}
+	}
+	return len(sides)
+}
+
+// designImageCallRequiredImages — the pictures one call MUST carry: designImageCallImagesWithArtworks
+// without the optional guides and without the clamp. The ceiling refusal asks this.
+func designImageCallRequiredImages(kind string, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) int {
 	n := 0
 	switch kind {
 	case entity.DesignRunKindFreeform:
@@ -338,10 +391,9 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 	case entity.DesignRunKindRecolor:
 		n = designRecolorCallImages(params)
 	default:
-		n = len(designRunInputMediaRefs(params, inputs)) + len(designColourMapMediaIDs(params.GetColour()))
-	}
-	if maxRefs > 0 && n > maxRefs {
-		n = maxRefs
+		n = len(designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)) +
+			len(designColourMapMediaIDs(params.GetColour())) +
+			len(designColourMapMockupMediaIDs(params.GetColour()))
 	}
 	return n
 }
@@ -364,6 +416,13 @@ func designImageCallImages(kind string, params *pb_common.DesignRunParams, input
 // Kind threed prices by its options (B-09), through designThreedRunEstimate → designThreedCeilingUSDFor.
 func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_common.DesignRunParams,
 	inputs *pb_common.DesignInputSnapshot) decimal.NullDecimal {
+	return s.designEstimateForRunWithArtworks(kind, outputs, params, inputs, nil)
+}
+
+// designEstimateForRunWithArtworks — designEstimateForRun with a render's frozen artwork pictures
+// counted as images of every call (they travel with each one).
+func (s *Server) designEstimateForRunWithArtworks(kind string, outputs int, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) decimal.NullDecimal {
 	base := designEstimateFor(kind, outputs)
 	// PHASE 3: extend / inpaint reserve max(table, the route's own ceiling) — designFalRouteEstimate.
 	if e, ok := s.designFalRouteEstimate(kind, outputs); ok {
@@ -395,7 +454,7 @@ func (s *Server) designEstimateForRun(kind string, outputs int, params *pb_commo
 		outputs = 1
 	}
 	calls := decimal.NewFromInt(int64(outputs))
-	images := decimal.NewFromInt(int64(designImageCallImages(kind, params, inputs, engine.MaxRefs)))
+	images := decimal.NewFromInt(int64(designImageCallImagesWithArtworks(kind, params, inputs, arts, engine.MaxRefs)))
 	total := engine.CeilingUSD(tier).Mul(calls).Add(engine.InputUSD.Mul(images).Mul(calls))
 	if !stated && base.Valid && base.Decimal.GreaterThan(total) {
 		return base

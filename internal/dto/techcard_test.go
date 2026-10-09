@@ -758,3 +758,22 @@ func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 // TestColorwayProductAutoSeed (task 17) was removed in the R1 merge: TechCardInsert.product_ids and
 // the colourway product_id auto-seed (unionColorwayProductIds) left the contract — the product↔style
 // link is product.style_id now (single source), derived, never client-supplied.
+
+// TestConvertEntityTechCardToPbResolvedLabelMedia pins the M-02 projection: the resolved label media
+// ride out as resolved_label_media, in order, and an empty list stays absent.
+func TestConvertEntityTechCardToPbResolvedLabelMedia(t *testing.T) {
+	tc := &entity.TechCard{
+		ResolvedLabelMedia: []entity.TechCardMediaFull{
+			{Media: entity.MediaFull{Id: 7}},
+			{Media: entity.MediaFull{Id: 3}},
+		},
+	}
+	pb := ConvertEntityTechCardToPb(tc, CostingFx{})
+	if len(pb.ResolvedLabelMedia) != 2 || pb.ResolvedLabelMedia[0].GetMedia().GetId() != 7 ||
+		pb.ResolvedLabelMedia[1].GetMedia().GetId() != 3 {
+		t.Fatalf("resolved_label_media mismatch: %+v", pb.ResolvedLabelMedia)
+	}
+	if got := ConvertEntityTechCardToPb(&entity.TechCard{}, CostingFx{}).ResolvedLabelMedia; got != nil {
+		t.Fatalf("empty card resolved_label_media = %+v, want nil", got)
+	}
+}

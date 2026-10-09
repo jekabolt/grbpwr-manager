@@ -551,6 +551,43 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 	}, nil
 }
 
+// calloutSpecFromPb проверяет и канонизирует назначение выноски (0388): пусто или JSON-объект не
+// длиннее entity.MaxCalloutSpecBytes. Канонизация — ключи по алфавиту, чтобы один и тот же spec,
+// присланный в другом порядке ключей, не двигал подпись DESIGN.
+//
+// ПУСТАЯ СТРОКА — «НЕ СКАЗАНО» (omitted = true, хранимое переносится), "{}" — ЯВНАЯ ОЧИСТКА:
+// пустой объект хранится NULL и хешируется как обычная выноска. Новый клиент шлёт объект всегда.
+func calloutSpecFromPb(path, raw string) (spec string, omitted bool, err error) {
+	if raw == "" {
+		return "", true, nil
+	}
+	spec, err = calloutSpecCanonical(path, raw)
+	if err != nil {
+		return "", false, err
+	}
+	if spec == "{}" {
+		spec = ""
+	}
+	return spec, false, nil
+}
+
+func calloutSpecCanonical(path, raw string) (string, error) {
+	if len(raw) > entity.MaxCalloutSpecBytes {
+		return "", entity.NewFieldViolation(path+".spec", "too_long", "",
+			fmt.Sprintf("a callout spec is at most %d bytes", entity.MaxCalloutSpecBytes))
+	}
+	spec, err := entity.CanonicalCalloutSpec(raw)
+	if err != nil {
+		return "", entity.NewFieldViolation(path+".spec", "invalid", "",
+			"a callout spec is a JSON object")
+	}
+	if len(spec) > entity.MaxCalloutSpecBytes {
+		return "", entity.NewFieldViolation(path+".spec", "too_long", "",
+			fmt.Sprintf("a callout spec is at most %d bytes", entity.MaxCalloutSpecBytes))
+	}
+	return spec, nil
+}
+
 // calloutParts сводит СПИСОК деталей карточного указания и старое одиночное `part` к одному
 // списку — теми же правилами, что annotationPieceKeys, и по той же причине: пустой список
 // читается как [part], непустой вытесняет его целиком.
@@ -628,6 +665,12 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		// Счётчик позиции двигается на КАЖДОЙ входящей строке с этим ключом, а не только на тех,
 		// что просят перенос: иначе вторая просящая получила бы содержание ПЕРВОЙ хранимой.
 		prev, ok := pos.Next(tc.Callouts[i].CalloutKey())
+		// Назначение (0388) переносится и БЕЗ KindOmitted: бандл до 0388 шлёт вид, но не spec, и
+		// его сохранение не должно стирать назначение. Явная очистка приходит как "{}".
+		if ok && tc.Callouts[i].SpecOmitted {
+			tc.Callouts[i].Spec = prev.Spec
+			tc.Callouts[i].SpecOmitted = false
+		}
 		if !tc.Callouts[i].KindOmitted {
 			continue
 		}
@@ -644,6 +687,10 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		// Наконечник — та же группа: перенести якоря и потерять стрелку значило бы отдать в цех
 		// другую линию, ровно как с пунктиром.
 		tc.Callouts[i].Caps = prev.Caps
+		// Назначение (0388) — та же группа: вкладка, не знающая вида, не знает и spec, и молча
+		// превратить узел крупно или шов обратно в простую точку значило бы стереть указание цеху.
+		tc.Callouts[i].Spec = prev.Spec
+		tc.Callouts[i].SpecOmitted = false
 	}
 }
 
@@ -845,6 +892,21 @@ func resolvedOperationMedia(tc *entity.TechCard) []*pb_common.TechCardMediaFull 
 	for i := range tc.ResolvedOperationMedia {
 		out = append(out, &pb_common.TechCardMediaFull{
 			Media: ConvertEntityToCommonMedia(&tc.ResolvedOperationMedia[i].Media),
+		})
+	}
+	return out
+}
+
+// resolvedLabelMedia projects TechCard.ResolvedLabelMedia (M-02) — the labels rework's media ids
+// resolved to MediaFull, the same shape resolvedOperationMedia gives the operation photos.
+func resolvedLabelMedia(tc *entity.TechCard) []*pb_common.TechCardMediaFull {
+	if len(tc.ResolvedLabelMedia) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardMediaFull, 0, len(tc.ResolvedLabelMedia))
+	for i := range tc.ResolvedLabelMedia {
+		out = append(out, &pb_common.TechCardMediaFull{
+			Media: ConvertEntityToCommonMedia(&tc.ResolvedLabelMedia[i].Media),
 		})
 	}
 	return out

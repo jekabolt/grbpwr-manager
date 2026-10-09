@@ -345,12 +345,14 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// иначе не проходит, и количества уехали бы из клона молча.
 	pbInsert.BomQtyAware = true
 	pbInsert.OperationWorkAware = true
+	pbInsert.LabelsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
 	}
+	carryCloneLabels(card, insert)
 	// Сброс approval_state ПЕРЕЕХАЛ ВЫШЕ, в pb, до конверсии (см. pbInsert.ApprovalState): в
 	// конвертере теперь стоит релизный гейт сборки, и released-исходник отказывался бы
 	// клонироваться из-за состояния, которое клон всё равно немедленно сбрасывает. Здесь остаётся
@@ -451,4 +453,41 @@ func legacyCloneCostingHasMonetaryAmounts(costing *entity.TechCardCosting) bool 
 		return false
 	}
 	return costing.CmtCost.Valid || costing.LogisticsCost.Valid || costing.OverheadCost.Valid
+}
+
+// carryCloneLabels re-addresses the labels rework (0386) sections for the new card of a season clone.
+//
+//   - A garment label's / packaging item's bom_item_id is a SOURCE card row id; the new card's BOM
+//     lines get new ids in the same transaction. The link therefore travels as the line's stable key
+//     (the clone copies the BOM by line_key) and the store resolves it against the ids it just minted.
+//   - The composition label's per-colourway overrides name the SOURCE style's colourways, which a clone
+//     does not create; they are dropped (the new card's colourways start derived). The card-level
+//     overrides (logo, prose, QR, caption, address) carry over as they are.
+func carryCloneLabels(source *entity.TechCard, insert *entity.TechCardInsert) {
+	if source == nil || insert == nil {
+		return
+	}
+	lineKeyByID := make(map[int32]string, len(source.BomItems))
+	for _, b := range source.BomItems {
+		if b.Id > 0 && b.LineKey != "" {
+			lineKeyByID[int32(b.Id)] = b.LineKey
+		}
+	}
+	for i := range insert.GarmentLabels {
+		l := &insert.GarmentLabels[i]
+		if l.BomItemId.Valid {
+			l.BomLineKey = lineKeyByID[l.BomItemId.Int32]
+			l.BomItemId = sql.NullInt32{}
+		}
+	}
+	for i := range insert.PackagingItems {
+		it := &insert.PackagingItems[i]
+		if it.BomItemId.Valid {
+			it.BomLineKey = lineKeyByID[it.BomItemId.Int32]
+			it.BomItemId = sql.NullInt32{}
+		}
+	}
+	if insert.CareLabel != nil {
+		insert.CareLabel.Colorways = nil
+	}
 }

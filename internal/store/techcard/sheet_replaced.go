@@ -35,7 +35,7 @@ import (
 // row order carries nothing — and a sort by id is exactly what would tempt the optimizer back onto
 // (tech_card_id, id).
 const techCardSheetReplacedPictures = `
-	SELECT id, tech_card_id, media_id, replaced_by FROM design_picture
+	SELECT id, tech_card_id, media_id, replaced_by, undone_at FROM design_picture
 	WHERE tech_card_id = :card AND media_id IN (:media) AND replaced_by IS NOT NULL`
 
 // techCardStoredSheetRows — HOW MANY TIMES EACH OF THESE FILES STANDS ON THE CARD'S TECHNICAL SHEET
@@ -49,10 +49,11 @@ const techCardStoredSheetRows = `
 	GROUP BY media_id`
 
 // techCardSheetPictureLink — one link of a replacement chain, for the head walk
-// (entity.DesignReplacementHead reads id, replaced_by and tech_card_id — a link of another card is
+// (entity.DesignReplacementHead reads id, replaced_by, undone_at and tech_card_id — the walk stops before
+// an undone link, T28 v2; a link of another card is
 // corruption; the file rides along for the log).
 const techCardSheetPictureLink = `
-	SELECT id, tech_card_id, media_id, replaced_by FROM design_picture WHERE id = :id`
+	SELECT id, tech_card_id, media_id, replaced_by, undone_at FROM design_picture WHERE id = :id`
 
 // techCardSheetReplacedQuery binds the picture read: the card and the sheet's files, expanded by
 // sqlx.In. Separate from the read so the words and the binds can be checked without a database.

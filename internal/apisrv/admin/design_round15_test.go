@@ -50,7 +50,8 @@ func TestASnapshotCarriesTheCardsReferencesONLY_FOR_THE_KINDS_THAT_READ_THE_CARD
 		// жалобу и завести вторую.
 		{entity.DesignRunKindRecolor, []int32{designExtraMediaID}, true},
 		// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: род, который карточку читает, читает её целиком.
-		{entity.DesignRunKindFlat, []int32{designRefMediaID, 101, 102, designExtraMediaID}, true},
+		// Wave 10: a flat sends only the photos with a side role (102 and the named extra have none).
+		{entity.DesignRunKindFlat, []int32{designRefMediaID, 101}, true},
 		{entity.DesignRunKindRender, []int32{designRefMediaID, 101, 102, designExtraMediaID}, true},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
@@ -71,8 +72,17 @@ func TestASnapshotCarriesTheCardsReferencesONLY_FOR_THE_KINDS_THAT_READ_THE_CARD
 				"снимок обязан называть входом ровно то, что уедет модели")
 
 			if tc.wantGarment {
-				require.Equal(t, "GARMENT-olive shirt", snap.GetGarmentNote())
-				require.Equal(t, "oversized", snap.GetFit())
+				if tc.kind == entity.DesignRunKindFlat {
+					// wave 10: a flat sends only «garment: <class>» — this card names no class
+					require.Empty(t, snap.GetGarmentNote())
+				} else {
+					require.Equal(t, "GARMENT-olive shirt", snap.GetGarmentNote())
+				}
+				if tc.kind == entity.DesignRunKindFlat {
+					require.Empty(t, snap.GetFit(), "a flat draws construction only (wave 10)")
+				} else {
+					require.Equal(t, "oversized", snap.GetFit())
+				}
 			} else {
 				require.Empty(t, snap.GetGarmentNote(),
 					"описание изделия в прогоне, который делает КУСОК ТКАНИ, — это деньги: "+
@@ -152,7 +162,7 @@ func TestAFullShelfREFUSES_A_PATTERN_RUN_AND_NOTHING_ELSE(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newDesignRunRig(t, designMoodCard(), full)
+			rig := newDesignRunRig(t, designMoodCardWithRefOnBoard(), full)
 			rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, mock.Anything, mock.Anything).
 				Return(nil).Maybe()
 			req := designStartRequest(tc.kind)
@@ -256,7 +266,8 @@ func TestAPatternRERUN_DOES_NOT_INHERIT_THE_GARMENT_NOTE(t *testing.T) {
 		Inputs: entity.RawJSON(`{"garment_note":"GARMENT-olive shirt","fit":"FIT-oversized",` +
 			`"refs":[{"media_id":100,"role":"front"},{"media_id":101},{"media_id":90}]}`),
 	}
-	srv := &Server{}
+	// M16: the flat row asks the store which of its parent's pictures were generated («none» here).
+	srv := newDesignRunRig(t, designMoodCard(), &entity.DesignBand{}).srv
 	for _, tc := range []struct {
 		name  string
 		kind  string

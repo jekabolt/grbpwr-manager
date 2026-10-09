@@ -39,6 +39,11 @@ type (
 		// tech_card.lock_version (entity.ErrTechCardConflict on a stale value; sql.ErrNoRows when absent).
 		// Never touches style facts, variants, stock or the chart. Returns the new shared lock_version.
 		UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error)
+		// UpdateColorwayCountry writes a colourway's country of origin alone (country_code + the
+		// country_of_origin text) under the same guard as UpdateColorway (labels rework D-02). An ISO-2
+		// code absent from the country dictionary is a field violation on country_code. Returns the new
+		// shared lock_version.
+		UpdateColorwayCountry(ctx context.Context, colorwayID, expectedVersion int, countryCode string) (int, error)
 		// LabDipRoundsByStyleID returns the lab-dip round journal of every colourway of a style,
 		// grouped by colourway id and oldest first (one query for the whole style).
 		LabDipRoundsByStyleID(ctx context.Context, styleID int) (map[int][]entity.ColorwayLabDipRound, error)
@@ -950,6 +955,12 @@ type (
 	// linked products, sketch media, callouts and revision log.
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
+		// AddTechCardWithOpts is AddTechCard with CreateTechCard's replay key and guided flag (0407).
+		// created=false is a replay: the id of the card the key already made, no insert — the caller
+		// must skip its post-create work.
+		AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInsert, opts entity.TechCardCreateOpts) (id int, created bool, err error)
+		// TechCardIdByCreateRequestId returns the card made under a create replay key, or sql.ErrNoRows.
+		TechCardIdByCreateRequestId(ctx context.Context, requestId string) (int, error)
 		// CloneTechCardForSeason inserts the converted card and its non-TechCardInsert carry-over
 		// (size chart, grade rule and assembly) in one transaction, under a source-version guard.
 		CloneTechCardForSeason(ctx context.Context, sourceID, expectedSourceVersion int, tc *entity.TechCardInsert) (int, error)
@@ -975,6 +986,9 @@ type (
 		// Role assignments (Q5): responsible admin accounts on a card, multi per role.
 		AssignTechCardRole(ctx context.Context, a entity.TechCardRoleAssignment) (entity.TechCardRoleAssignment, error)
 		RemoveTechCardRoleAssignment(ctx context.Context, id int) error
+		// ExitTechCardGuide clears TechCard.Guided (0407). Idempotent; sql.ErrNoRows only when the card
+		// does not exist. Does not bump lock_version.
+		ExitTechCardGuide(ctx context.Context, id int) error
 		ListTechCardRoleAssignments(ctx context.Context, techCardID int) ([]entity.TechCardRoleAssignment, error)
 		// ListStyleAssembly returns a garment style's assembly bill: the auxiliary components (labels/
 		// tags) that physically go on/into it, resolved for display (WS7, §2.8).
@@ -1187,6 +1201,19 @@ type (
 		// in minutes, and an export does not touch the card — so without this row "was this style
 		// ever sent out of the building" has no answer in the database at all.
 		AppendTechCardArchiveExportedEvent(ctx context.Context, techCardID int, author, summary string) error
+		// ListDesignQuizAnswers / SaveDesignQuizAnswers — the moodboard quiz answers (0389).
+		// Save MERGES in one transaction (W-B1): upserts by question id, deletes the forget ids,
+		// keeps every other stored row; entity.ErrDesignQuizTooManyAnswers when the result would
+		// exceed maxStored; sql.ErrNoRows = no such card.
+		ListDesignQuizAnswers(ctx context.Context, techCardID int) ([]entity.TechCardQuizAnswer, error)
+		SaveDesignQuizAnswers(ctx context.Context, techCardID int, upserts []entity.TechCardQuizAnswer, forget []string, maxStored int, actor string) ([]entity.TechCardQuizAnswer, error)
+		// OpenDesignQuizSession / GetOpenDesignQuizSession / CloseDesignQuizSession — the card's last
+		// generated quiz list (0394, 64-DEFERRED E2). Open closes the previous open one in the same
+		// transaction (sql.ErrNoRows = no such card); Get answers nil when none is open; Close is a
+		// no-op without one.
+		OpenDesignQuizSession(ctx context.Context, techCardID int, family string, questions []entity.DesignQuizQuestion, actor string) error
+		GetOpenDesignQuizSession(ctx context.Context, techCardID int) (*entity.DesignQuizSession, error)
+		CloseDesignQuizSession(ctx context.Context, techCardID int) error
 		// CreateTechCardImportRow records ONE uploaded import archive (Ф2.5, migration 0336): where
 		// its bytes went in the bucket, what its manifest said, and the colourway payload the much
 		// later "create colourways from the archive" step needs after the bucket object has expired.
@@ -2083,6 +2110,10 @@ type (
 		// never a select-then-insert. On a mismatch it returns the slot's CURRENT state
 		// alongside the refusal so the client can show what actually stands there.
 		SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet) (*entity.DesignBenchSlot, error)
+		// SetDetailKept marks a stale flat detail kept (or unmarks it) against the current views run
+		// and plate (0400); the slot comes back with Stale / Kept recomputed. ErrDesignNotFound,
+		// ErrDesignNotAFlatDetail, ErrDesignDetailEmpty, ErrDesignDetailNotStale, ErrDesignViewsChanged.
+		SetDetailKept(ctx context.Context, req entity.DesignDetailKeptSet) (*entity.DesignBenchSlot, error)
 		// DeleteDetailSlot removes an EMPTY detail slot that no version quotes.
 		DeleteDetailSlot(ctx context.Context, slotID int) error
 		// RegisterBatch files one upload gesture as one batch plus its pictures, optionally
@@ -2092,6 +2123,11 @@ type (
 		// HidePicture is the only persistent verb for picture invisibility; its four guards read
 		// in the same transaction as the update.
 		HidePicture(ctx context.Context, pictureID int, hidden bool, actor string) (*entity.DesignPicture, error)
+		// UndoEdit / RedoEdit step an edit chain (replaced_by) back or forward (T28 v2): one
+		// transaction each — the chain rows locked, a CAS on the current version, undone_at set or
+		// cleared, the slots of the old current version moved to the new one.
+		UndoEdit(ctx context.Context, req entity.DesignEditChainStepRequest) (*entity.DesignEditChainResult, error)
+		RedoEdit(ctx context.Context, req entity.DesignEditChainStepRequest) (*entity.DesignEditChainResult, error)
 		// DeletePicture removes a DERIVED picture FOR GOOD with everything derived from it (O-68,
 		// D-74): the picture rows children first, the edit layer of the card whose base is one of
 		// their media, and by the schema's own hand the asset placements on them. ROWS ONLY, in one
@@ -2117,6 +2153,12 @@ type (
 		// all is absent from the answer, exactly as a freshly uploaded file is ownerless at the
 		// card boundary. An empty input answers empty without touching the base.
 		MediaHeldHiddenOnly(ctx context.Context, mediaIDs []int) ([]int, error)
+		// MediaProducers answers, for a set of media ids, the design runs that produced a picture
+		// holding each one (design_picture.run_id, any card; a crop and a flatten carry their
+		// parent's run): the run's kind and, for a cutout, the media it was cut from — M16: a
+		// generated picture never feeds a flat. Media no run produced (an upload, a batch picture,
+		// a drawing) is absent. An empty input answers empty without touching the base.
+		MediaProducers(ctx context.Context, mediaIDs []int) (map[int][]entity.DesignMediaProducer, error)
 		// SetPictureSelected marks a picture as CHOSEN, and un-marks it (W-12). It is NOT the
 		// other side of HidePicture — hidden says «do not show me this», selected says «this is
 		// the one» — and nothing is exclusive: many pictures may be chosen at once.
@@ -2149,9 +2191,46 @@ type (
 		// молча стирала двадцать минут чужой покраски — ровно ту потерю, ради запрета которой этот
 		// глагол и держит expected_rev.
 		SetColourPlan(ctx context.Context, req entity.DesignColourPlanSave) (*entity.DesignColourPlan, error)
+		// FlatBenchMedia — view → media of the plate on each side's flat slot (auto parts, 0390).
+		// ErrDesignNotFound when the card does not exist.
+		FlatBenchMedia(ctx context.Context, cardID int) (map[string]int, error)
+		// GetPartsSuggestion — the cached auto-parts answer of one cut of one flat; nil when none.
+		GetPartsSuggestion(ctx context.Context, cardID int, view string, baseMediaID int, algoRev string) (*entity.DesignPartsSuggestion, error)
+		// SavePartsSuggestion upserts the answer on (card, view, base media, algo rev).
+		SavePartsSuggestion(ctx context.Context, in entity.DesignPartsSuggestion) (*entity.DesignPartsSuggestion, error)
+		// GetPartsPieces — the card's PARTS pieces list (M6); nil when none. ErrDesignNotFound when
+		// the card does not exist.
+		GetPartsPieces(ctx context.Context, cardID int) (*entity.DesignPartsPieces, error)
+		// SavePartsPiecesRead writes a model's read of the FRONT/BACK plates: the list while no
+		// designer edited it, else the proposal; a row that moved since ExpectedRev is left alone.
+		// Returns the row after the write.
+		SavePartsPiecesRead(ctx context.Context, req entity.DesignPartsPiecesRead) (*entity.DesignPartsPieces, error)
+		// SetPartsPieces saves the designer's list under CAS on rev (0 = no row yet) —
+		// ErrDesignPartsPiecesRevMismatch on a stale rev.
+		SetPartsPieces(ctx context.Context, req entity.DesignPartsPiecesSave) (*entity.DesignPartsPieces, error)
+		// GetJoins — the card's current join list (flat route, 0397); nil when none.
+		// ErrDesignNotFound when the card does not exist.
+		GetJoins(ctx context.Context, cardID int) (*entity.DesignJoins, error)
+		// SaveJoins writes the card's join list: ExpectedRev < 0 replaces it (the generator), ≥ 0 is a
+		// CAS on rev (the designer; 0 = no list yet) — ErrDesignJoinsRevMismatch on a stale rev.
+		SaveJoins(ctx context.Context, req entity.DesignJoinsSave) (*entity.DesignJoins, error)
 		// SetReferenceRole states which side of the garment a reference is about; an empty role
 		// clears it.
 		SetReferenceRole(ctx context.Context, req entity.DesignReferenceRole) (*entity.DesignReference, error)
+		// SetReferenceHeld takes a labelled board picture out of the prompt (label_state held) or puts
+		// it back (109 §4); ErrDesignNothingToHold when the picture has no settled label.
+		SetReferenceHeld(ctx context.Context, req entity.DesignReferenceHold) (*entity.DesignReference, error)
+		// ListReferences — the card's design_reference rows in every label state (101).
+		ListReferences(ctx context.Context, cardID int) ([]entity.DesignReference, error)
+		// BeginBoardLabel claims a board picture for a model label (a pending row); false = nothing
+		// to do. A person's row is never claimed (101-MOODBOARD-ROLES).
+		BeginBoardLabel(ctx context.Context, req entity.DesignBoardLabelBegin) (bool, error)
+		// FinishBoardLabel writes a model's answer over its still-pending model row (a person's tap
+		// meanwhile wins: nil, nil); a detail may mint a made_by_model slot in the same transaction.
+		FinishBoardLabel(ctx context.Context, req entity.DesignBoardLabel) (*entity.DesignReference, error)
+		// DropBoardLabels deletes the model rows of the named pictures and the model-made detail
+		// slots left empty; returns how many slots went.
+		DropBoardLabels(ctx context.Context, cardID int, mediaIDs []int) (int, error)
 		// UpsertAsset writes ONE shelf row of the card — a cloth, a pattern or a piece of
 		// hardware (0354) — creating it when AssetId is 0 and replacing it otherwise. One verb
 		// because the screen has one gesture; a second would be a second place to forget the
@@ -2185,6 +2264,11 @@ type (
 		StartRun(ctx context.Context, req entity.DesignRunStart) (*entity.DesignRunStarted, error)
 		ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)
 		ReviveExpiredRuns(ctx context.Context) (int, error)
+		// CloseOverdueRuns closes capped image runs past their wall-clock cap (timed_out /
+		// landing_failed / cancelled) and releases their reserve.
+		CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSweep) (int, error)
+		// CapClaim shortens a live claim (the holder's token) to end `within` from now.
+		CapClaim(ctx context.Context, runID int, claimToken string, within time.Duration) error
 		// RecordRunPrompt writes the COMPOSED prompt the worker is about to send onto the run row,
 		// claim-guarded, BEFORE the first attempt — so the history carries the sent text itself
 		// rather than a reconstruction that could drift from it.

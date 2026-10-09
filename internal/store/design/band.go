@@ -413,6 +413,8 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		var err error
+		// Углы undo/redo — одно чтение цепочек карточки на всё чтение полосы (T28 v2 C3).
+		ctx = withEditControlsMemo(ctx)
 
 		if band.Bench, err = listBenchSlots(ctx, db, cardID); err != nil {
 			return err
@@ -424,6 +426,8 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		if err = attachSlotPictures(ctx, rep, benchPtrs); err != nil {
 			return err
 		}
+		// STALE FLAT DETAILS AND THEIR «KEEP» (0400): computed over the whole bench, in this snapshot.
+		entity.ApplyDesignDetailStaleness(band.Bench)
 		if band.Budget, err = loadBudget(ctx, db, s.Now()); err != nil {
 			return err
 		}
@@ -447,6 +451,12 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 			return err
 		}
 		if band.AssetPlacements, err = listAssetPlacements(ctx, db, cardID); err != nil {
+			return err
+		}
+		// THE PICTURE UNDER EACH MARK (T29b), ONE BATCH, MEDIA RESOLVED. An old flat leaves the
+		// paged runs/batches lists while its marks stay; without this the client has neither the
+		// view nor the pixels of the picture a mark sits on.
+		if band.AssetPlacementPictures, err = loadPlacementPictures(ctx, rep, cardID, band.AssetPlacements); err != nil {
 			return err
 		}
 		// THE FABRIC OF EVERY (COLOURWAY, SLOT), 0368, IN THE SAME SNAPSHOT AS THE SHELF IT POINTS
@@ -496,6 +506,22 @@ func (s *Store) GetBand(ctx context.Context, cardID, runLimit int) (*entity.Desi
 		// «покрасили и стёрли», состояние, сделанное руками; подменив одно другим, полоса сообщила
 		// бы клиенту rev 0 у несуществующей строки, и первое же сохранение прошло бы мимо CAS.
 		if band.ColourPlan, err = colourPlanByCard(ctx, db, cardID); err != nil {
+			return err
+		}
+		// AUTO PARTS (0390) of the flat each side holds now, in the same snapshot as the bench they
+		// are checked against.
+		if band.PartsSuggestions, err = partsSuggestionsOfCurrentFlats(ctx, db, cardID); err != nil {
+			return err
+		}
+		// FLAT ROUTE (0397): the card's current join list.
+		if band.Joins, err = joinsByCard(ctx, db, cardID); err != nil {
+			return err
+		}
+		// PARTS (M6): the pieces list and the flat plates it is checked against, in the same snapshot.
+		if band.PartsPieces, err = piecesByCard(ctx, db, cardID); err != nil {
+			return err
+		}
+		if band.FlatMedia, err = flatBenchMedia(ctx, db, cardID); err != nil {
 			return err
 		}
 		if band.TotalBatches, err = storeutil.QueryCountNamed(ctx, db, designCountBatches,

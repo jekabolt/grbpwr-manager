@@ -203,7 +203,8 @@ func TestDesignDBColourPlanRefusesWhatTheDoorCannotSee(t *testing.T) {
 // Карта уезжает ПОСТАВЩИКУ как вход прогона и рисуется клиентом на экране, поэтому непроверенное
 // поле означает, что план карточки A показывает и отправляет картинку карточки B. Правило
 // ОТРИЦАТЕЛЬНОЕ: свежезагруженный ничейный PNG — обычный случай — проходит.
-func TestDesignDBColourPlanRefusesAForeignPicture(t *testing.T) {
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+func TestDesignDBColourPlanAcceptsAPictureHeldByAnotherCard(t *testing.T) {
 	rep, raw := probeRepository(t)
 	ctx := context.Background()
 	mine, base, mapMedia := designProbePlanCard(t)
@@ -226,7 +227,5 @@ func TestDesignDBColourPlanRefusesAForeignPicture(t *testing.T) {
 			MediaId: otherMedia, View: entity.DesignViewFront, BaseMediaId: base,
 		}},
 	})
-	require.Error(t, err)
-	require.True(t, errors.Is(err, entity.ErrDesignForeignMedia),
-		"картинка чужой карточки не встаёт в план и не уезжает поставщику")
+	require.NoError(t, err, "медиатека общая: картинка другой карточки встаёт в план")
 }

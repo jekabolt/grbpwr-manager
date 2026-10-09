@@ -1791,6 +1791,21 @@ service AdminService {
     };
   }
 
+  // SuggestCallouts — the `suggest ✦` chip of the ARTIFACTS sheet (R36, T28): the callouts the SAVED card's own data
+  // implies (BOM lines, operations, garment labels, layered pieces, details aspects, STUDIO quiz decisions) and the sheet
+  // does not have yet, placed on the given flats by a vision model, plus up to 4 per flat the model sees on the picture
+  // itself (from_data = false). Spec, description and parts of a data-backed suggestion are rendered by the SERVER from
+  // its source row, never from model text. Nothing is stored; an identical request is answered from memory for ten
+  // minutes. Limits: no key → FailedPrecondition AI_NOT_CONFIGURED; no flat, > 4 flats, a flat that is not a technical
+  // picture of this card → InvalidArgument; 4 in flight and 30 calls per admin per hour SHARED with EnhanceText →
+  // ResourceExhausted. Classified as a WRITE on tech_cards, like SuggestPrompts (a press spends the AI key).
+  rpc SuggestCallouts(SuggestCalloutsRequest) returns (SuggestCalloutsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/ai/suggest-callouts"
+      body: "*"
+    };
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -1951,6 +1966,15 @@ service AdminService {
   rpc RemoveTechCardRoleAssignment(RemoveTechCardRoleAssignmentRequest) returns (RemoveTechCardRoleAssignmentResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/role/remove"
+      body: "*"
+    };
+  }
+
+  // ExitTechCardGuide leaves the guided studio flow for a card (clears TechCard.guided). Idempotent;
+  // does not bump lock_version, so an open card form gets no conflict.
+  rpc ExitTechCardGuide(ExitTechCardGuideRequest) returns (ExitTechCardGuideResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/guide/exit"
       body: "*"
     };
   }
@@ -2795,6 +2819,37 @@ service AdminService {
     };
   }
 
+  // UndoDesignEdit takes back the CURRENT VERSION of an edit chain (replaced_by, T28 v2): undone_at is
+  // set on it and every bench slot that held it moves to the link before it (slot_rev + 1). ONE
+  // transaction: the chain rows are locked, then a compare-and-set on expected_current_id.
+  //
+  // picture_id names the chain (any link of it). IDEMPOTENT BY OUTCOME: a repeat that finds the
+  // undo already in place (expected_target_id current, expected_current_id undone right after it)
+  // answers OK and writes nothing; idempotency_key is required and logged.
+  //
+  // InvalidArgument: a missing id or key. FailedPrecondition: stale_chain (the current version is
+  // not expected_current_id — re-read the band), nothing_to_undo (the current version is the
+  // original), live_crop_parent (it is cut into visible pieces), and every refusal of a slot
+  // placement (hidden_plate, picture_already_in_slot, …). NotFound: no such picture.
+  rpc UndoDesignEdit(UndoDesignEditRequest) returns (UndoDesignEditResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/undo"
+      body: "*"
+    };
+  }
+
+  // RedoDesignEdit brings back the undone link right after the current version (T28 v2): undone_at
+  // is cleared on it and every bench slot that held the current version moves onto it. Same
+  // transaction, lock, compare-and-set and idempotency as UndoDesignEdit.
+  //
+  // FailedPrecondition: stale_chain, nothing_to_redo, and every refusal of a slot placement.
+  rpc RedoDesignEdit(RedoDesignEditRequest) returns (RedoDesignEditResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/design/picture/{picture_id}/redo"
+      body: "*"
+    };
+  }
+
   // DeleteDesignPicture removes a DERIVED picture FOR GOOD — a crop, or an edit of a crop — with
   // everything cut or flattened from it and with the files behind them (O-68, D-74). It is the
   // one verb on a picture that is NOT reversible, and that is why it is narrow: only a picture
@@ -2870,7 +2925,9 @@ service AdminService {
   // this picture are visible, a repeat returns THEM and cuts nothing. The key is required but not
   // stored yet (backlog) — a retry that lands after those crops were hidden cuts again.
   //
-  // A REPLACED PICTURE IS NOT CUT (O-53): FailedPrecondition already_replaced, whose ErrorInfo
+  // A REPLACED PICTURE IS NOT CUT (O-53) — one whose place ANOTHER picture holds (the head of its
+  // chain is not itself; a restored original whose successor is undone is current and is cut, T28
+  // v2): FailedPrecondition already_replaced, whose ErrorInfo
   // metadata carries head_picture_id — the head of its replacement chain, the picture a stale tab
   // should cut instead. A HIDDEN PICTURE IS NOT CUT EITHER: FailedPrecondition hidden_picture. Its
   // crops would be born visible under a parent nobody can see — the state HideDesignPicture refuses
@@ -2917,6 +2974,34 @@ service AdminService {
   rpc SetDesignReferenceRole(SetDesignReferenceRoleRequest) returns (SetDesignReferenceRoleResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/reference-role"
+      body: "*"
+    };
+  }
+
+  // SetDesignReferenceHeld takes a labelled board picture OUT OF THE PROMPT, or puts it back
+  // (109 §4, «remove from prompt»). The label (view / detail slot) and the picture on the board stay;
+  // only label_state moves between ok and held, and a held picture rides no run. A model's detail
+  // whose every photo is held loses its slot; putting such a photo back reads it again (the label
+  // goes pending and the sync mints or joins a slot). The label source never changes. Enters no
+  // digest, like the role.
+  //
+  // FailedPrecondition nothing_to_hold: the picture has no settled label (no row, no role, still
+  // being read, waiting for a person) — it is not in the prompt. Putting back a picture that is not
+  // held is a no-op.
+  rpc SetDesignReferenceHeld(SetDesignReferenceHeldRequest) returns (SetDesignReferenceHeldResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/reference-held"
+      body: "*"
+    };
+  }
+
+  // PreviewDesignRunInputs is a DRY RUN of StartDesignRun's input assembly (101 §2.8): the snapshot a
+  // run of this kind and params would freeze right now — the same function, the same sources, no
+  // reservation, no money, no model. «what the model gets» draws this answer instead of re-deriving
+  // the rule on the client, plus the board pictures that stay home and why.
+  rpc PreviewDesignRunInputs(PreviewDesignRunInputsRequest) returns (PreviewDesignRunInputsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/runs/preview"
       body: "*"
     };
   }
@@ -3181,6 +3266,129 @@ service AdminService {
   rpc DraftDesignIdea(DraftDesignIdeaRequest) returns (DraftDesignIdeaResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/design/draft-idea"
+      body: "*"
+    };
+  }
+
+  // GenerateDesignQuiz (moodboard quiz) — one sync vision+JSON call: the model reads the board
+  // pictures, the board words and the card facts, and asks 0..15 questions about what is still
+  // unclear or non-standard. The generated list is stored as the card's OPEN quiz session (closing the
+  // previous one) so another tab or device can resume it (GetDesignQuizAnswers.pending); ai_usage_event
+  // books the call. Questions already answered on the card (by id, text or decision_key) are never
+  // returned again.
+  //
+  // FailedPrecondition: nothing to ask about (no attached picture and no concept).
+  rpc GenerateDesignQuiz(GenerateDesignQuizRequest) returns (GenerateDesignQuizResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/quiz"
+      body: "*"
+    };
+  }
+
+  // SuggestDesignParts (auto parts) — one sync vision+JSON call: the model reads the side's flat cut
+  // into numbered regions (marks_media_id, drawn by the client) and groups the numbers into named
+  // garment parts. Cached per (card, view, base_media_id, algo_rev): a cached answer is returned
+  // without a call unless force.
+  //
+  // FailedPrecondition: the flat changed (base_media_id is not the side's flat), the region count is
+  // outside 2..60.
+  rpc SuggestDesignParts(SuggestDesignPartsRequest) returns (SuggestDesignPartsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/parts:suggest"
+      body: "*"
+    };
+  }
+
+  // SuggestDesignPartsCard (auto parts, topology) — ONE sync vision+JSON call over every requested
+  // side at once: the model sees the marks pictures in view order and lists the garment's PHYSICAL
+  // parts, each with its region numbers on every side it is visible on, so one part (the collar)
+  // is one part across front, back and the sides. The answer is stored per side in the same cache
+  // as SuggestDesignParts (card, view, base_media_id, algo_rev); every group carries a part_key
+  // shared across the sides. A cached answer is returned without a call when EVERY requested side
+  // has one from this call shape and !force.
+  //
+  // FailedPrecondition: a side's flat changed, a side's region count is outside 2..60.
+  rpc SuggestDesignPartsCard(SuggestDesignPartsCardRequest) returns (SuggestDesignPartsCardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/parts:suggest-card"
+      body: "*"
+    };
+  }
+
+  // GenerateDesignJoins (flat route) — one sync vision+JSON call (chat.design_joins): the model reads
+  // the card's reference photos (with their roles) and the garment note and writes the JOIN LIST on
+  // the fixed landmark ruler, the layers, the absences and a verdict on whether the photos show one
+  // garment. Stored as the card's current list (rev + 1). A stored list is returned without a call
+  // (cached) when !force and it was written from the same photos and note, or a designer edited it.
+  //
+  // FailedPrecondition: nothing to read (no reference photo and no garment note).
+  rpc GenerateDesignJoins(GenerateDesignJoinsRequest) returns (GenerateDesignJoinsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/joins:generate"
+      body: "*"
+    };
+  }
+
+  // SetDesignJoins saves the designer's join list (CAS: expected_rev must be the stored rev; 0 = no
+  // list yet). The server cleans it as it cleans the model's: unknown kinds and landmarks dropped,
+  // absences kept only when they are negations, counts and lengths capped. Aborted
+  // (joins_rev_mismatch) on a stale rev.
+  rpc SetDesignJoins(SetDesignJoinsRequest) returns (SetDesignJoinsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/joins"
+      body: "*"
+    };
+  }
+
+  // SetDesignPartsPieces saves the designer's PIECES LIST for PARTS (M6, flat-consistency 107) — the
+  // closed list of names the parts labeller may use (CAS: expected_rev must be the stored rev; 0 = no
+  // list yet). Names are cleaned (lowercase, ≤ 40 characters, unique, not "opening"/"unnamed", ≤ 30);
+  // the list is marked edited, so a later read of changed flats only PROPOSES (rev + 1, names kept).
+  // settle_proposal = true also drops the pending proposal (the names sent are the designer's answer
+  // to it: its names = take, the list's own = keep). Aborted (parts_pieces_rev_mismatch) on a stale
+  // rev. Spends no key; the next SuggestDesignPartsCard names the parts again under the new names.
+  rpc SetDesignPartsPieces(SetDesignPartsPiecesRequest) returns (SetDesignPartsPiecesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/parts/pieces"
+      body: "*"
+    };
+  }
+
+  // SetDesignDetailKept marks a STALE flat detail as kept (keep = true) or takes the mark off (keep =
+  // false) — 82-INPUT-REDESIGN §5, owner 06.10: «keep» is stored on the server, everyone sees it.
+  //
+  // A detail is stale when its plate came out of a run OLDER than the run of the card's current
+  // FRONT flat plate (BACK when front is empty) — see common.DesignBenchSlot.stale. The mark is
+  // stored against that views run AND the detail's plate, so it clears by itself the moment either
+  // changes (new views, another detail picture). `discard` is not this verb: it is
+  // SetDesignBenchSlot with picture_id = 0 (the slot is emptied and kept, the picture stays in history).
+  //
+  // against_run_id = the stale_against_run_id the client saw (CAS); 0 = do not check.
+  // FailedPrecondition: not_a_flat_detail | detail_empty | detail_not_stale (keep only).
+  // Aborted: views_changed (against_run_id is not the current views run). NotFound: no such slot on
+  // this card. Unkeep of an unmarked slot is a no-op.
+  rpc SetDesignDetailKept(SetDesignDetailKeptRequest) returns (SetDesignDetailKeptResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/design/bench/{slot_id}/kept"
+      body: "*"
+    };
+  }
+
+  // GetDesignQuizAnswers — every quiz answer stored on the card, in display order, plus the open
+  // session's questions not yet saved (pending).
+  rpc GetDesignQuizAnswers(GetDesignQuizAnswersRequest) returns (GetDesignQuizAnswersResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"};
+  }
+
+  // SaveDesignQuizAnswers MERGES the sent answers into the card's stored list by question id: a sent
+  // row is upserted (stamped with the card's current fingerprint, so it reads fresh), a row sent EMPTY
+  // (no selection, no free text, not skipped) forgets that id, every stored row not sent stays.
+  // `stale` on a sent row is ignored. A saved row whose decision_key matches a DIFFERENT stored
+  // question id forgets that older row (latest wins). close_session closes the open quiz session after
+  // the save. Returns the stored list.
+  rpc SaveDesignQuizAnswers(SaveDesignQuizAnswersRequest) returns (SaveDesignQuizAnswersResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/design/quiz-answers"
       body: "*"
     };
   }
@@ -7210,6 +7418,7 @@ enum EnhanceTextField {
   ENHANCE_TEXT_FIELD_SILHOUETTE = 4;
   ENHANCE_TEXT_FIELD_FABRIC = 5;
   ENHANCE_TEXT_FIELD_OTHER = 6; // any other free-text field
+  ENHANCE_TEXT_FIELD_RENDER_WORDS = 7; // FABRIC RENDER › IN WORDS: the garment description that briefs a fabric render of the flats
 }
 
 message EnhanceTextRequest {
@@ -7252,6 +7461,43 @@ message SuggestPromptsRequest {
 message SuggestPromptsResponse {
   repeated string ideas = 1; // 3..5 phrases, ≤ 12 words each, trimmed, distinct
   string model = 2; // the slug that answered
+}
+
+message SuggestCalloutsRequest {
+  int32 tech_card_id = 1; // the SAVED card is read
+  repeated int32 media_ids = 2; // the card's technical flats on the sheet, 1..4
+  repeated string dismissed_source_ids = 3; // dismissed on this computer: never suggested again
+}
+
+message SuggestCalloutsResponse {
+  repeated CalloutSuggestion suggestions = 1; // ≤ 12 per flat, data-backed first by rank, model-own last
+  string model = 2; // the slug that placed them
+}
+
+// CalloutSuggestion — one ghost callout. Geometry follows TechCardCallout: LABEL 1 point (stitch, material), DIM 2
+// (section), POLYGON 4 (detail, artwork — a rectangle TL, TR, BR, BL), PIN 0.
+message CalloutSuggestion {
+  string id = 1; // unique within this response
+  // stable: "bom:<lineKey>", "op:<operation number, or (index+1)*10 when unset>", "label:<garment label key>",
+  // "section:card", "detail:<aspect key>", "quiz:<question id>", "pic:<n>" (model-own)
+  string source_id = 2;
+  string source_label = 3; // human: "BOM · YKK zip #5", "op 20 · side seam", "from picture"
+  int32 media_id = 4; // which flat
+  common.TechCardAnnotationKind kind = 5;
+  repeated common.TechCardAnnotationPoint points = 6; // normalised 0..1
+  // label / marker position 0..1: a fallback beside the anchor only — the model gives no plate
+  // position, the client lays the plates out in the margins (R38)
+  google.type.Decimal pos_x = 7;
+  google.type.Decimal pos_y = 8;
+  string spec = 9; // callout spec JSON (purpose.ts shape, keys sorted); data-backed: rendered from the row
+  string description = 10; // data-backed: from the row; model-own: the model's text, ≤ 120 chars
+  repeated string parts = 11; // piece / part names
+  repeated string missing = 12; // data gaps on the source row: "stitch", "spi", "allowance", "size", "placement"
+  bool from_data = 13; // false = model-own ("from picture")
+  // the ghost plate's text: one line, ≤ 32 chars (R38). Data-backed: rendered from the row (material: the
+  // BOM name; stitch: "301 · side seam"; label: "main label"; section: "A–A layers"; detail: the aspect
+  // words "collar"); model-own: the model's text cut to 32. description stays the full text (used on ✓)
+  string label = 14;
 }
 
 message UpdateTaskRequest {
@@ -9172,6 +9418,11 @@ message RunTierBackfillResponse {
 
 message CreateTechCardRequest {
   common.TechCardInsert tech_card = 1;
+  // Client-minted key (≤64 chars, trimmed; "" = none). A repeat under the same key returns the card
+  // the first call created instead of a second one — a lost response or a doubled effect is one card.
+  string client_request_id = 2;
+  // Create the card in the guided studio flow (TechCard.guided).
+  bool guided = 3;
 }
 
 message CreateTechCardResponse {
@@ -9201,6 +9452,12 @@ message RemoveTechCardRoleAssignmentRequest {
 }
 
 message RemoveTechCardRoleAssignmentResponse {}
+
+message ExitTechCardGuideRequest {
+  int32 tech_card_id = 1;
+}
+
+message ExitTechCardGuideResponse {}
 
 message ListTechCardRoleAssignmentsRequest {
   int32 tech_card_id = 1;
@@ -12474,6 +12731,20 @@ message GetDesignBandResponse {
   // THE MODEL SuggestPrompts ANSWERS WITH ('' = the assistant is not configured: draw the static Ideas list only).
   // ABSENT = a binary without SuggestPrompts.
   string suggest_prompts_model = 33;
+  // AUTO PARTS of the flat each side holds NOW (base_media_id = the media in that side's flat slot),
+  // every algo_rev. A row of a flat that left its slot is not sent.
+  repeated DesignPartsSuggestion parts_suggestions = 34;
+  // joins — the card's current join list (flat route, 0397); absent = none yet.
+  common.DesignJoins joins = 35;
+  // The WALL-CLOCK CAP of an image run (owner 05.10): a run of a kind in capped_run_kinds that is not
+  // done image_run_cap_seconds after its started_at is closed failed `timed_out` ("took longer than N
+  // min — try again"). The client shows elapsed / limit from started_at; a failed run carries
+  // error_code (timed_out | landing_failed | …) and a human last_error.
+  int32 image_run_cap_seconds = 36;
+  repeated string capped_run_kinds = 37;
+  // PARTS · the card's pieces list (M6): the closed names the parts labeller uses; parts_suggestions
+  // carries only the rows named under its current names. Absent = none read yet.
+  common.DesignPartsPieces parts_pieces = 38;
 }
 
 // DesignImageModel is ONE engine the image door accepts (GetDesignBandResponse.image_models) and
@@ -12700,6 +12971,46 @@ message HideDesignPictureRequest {
 
 message HideDesignPictureResponse {
   common.DesignPicture picture = 1;
+}
+
+message UndoDesignEditRequest {
+  int32 picture_id = 1; // any link of the chain
+  // CAS: the current version the client saw (the picture whose undo corner was pressed).
+  int32 expected_current_id = 2;
+  string idempotency_key = 3; // required (UUID minted per gesture)
+  // The version that should become current: the link before expected_current_id
+  // (common.DesignPicture.undo_to_id). Required. A repeat is answered OK only when THIS is current
+  // and expected_current_id stands undone right after it; anything else not matching is stale_chain.
+  int32 expected_target_id = 4;
+}
+
+// The chain after the step — the band rows the step touched.
+message DesignEditChainState {
+  // The current version now.
+  int32 current_picture_id = 1;
+  // Every link of the chain, root first, with undone_at, can_undo and can_redo as stored now.
+  repeated common.DesignPicture pictures = 2;
+  // The bench slots that hold the current version now (the ones this step moved), slot_rev bumped.
+  repeated common.DesignBenchSlot slots = 3;
+}
+
+message UndoDesignEditResponse {
+  DesignEditChainState chain = 1;
+}
+
+message RedoDesignEditRequest {
+  int32 picture_id = 1; // any link of the chain
+  int32 expected_current_id = 2; // CAS, as in UndoDesignEditRequest
+  string idempotency_key = 3; // required
+  // The version that should become current: the undone link right after expected_current_id (its
+  // replaced_by). Required. A repeat is answered OK only when THIS is current and
+  // expected_current_id stands right before it — a newer edit over expected_current_id made in
+  // another tab is stale_chain, not a repeat.
+  int32 expected_target_id = 4;
+}
+
+message RedoDesignEditResponse {
+  DesignEditChainState chain = 1;
 }
 
 message DeleteDesignPictureRequest {
@@ -13120,6 +13431,43 @@ message SetDesignReferenceRoleResponse {
   common.DesignReference reference = 1; // unset when the call cleared the role
 }
 
+message SetDesignReferenceHeldRequest {
+  int32 tech_card_id = 1;
+  int32 media_id = 2;
+  bool held = 3; // true = take out of the prompt; false = put back
+}
+
+message SetDesignReferenceHeldResponse {
+  common.DesignReference reference = 1; // the row after the write; unset when the picture has none
+}
+
+message PreviewDesignRunInputsRequest {
+  int32 tech_card_id = 1;
+  string kind = 2; // as StartDesignRunRequest.kind
+  common.DesignRunParams params = 3; // as StartDesignRunRequest.params (no rerun)
+}
+
+// DesignInputHeld — a moodboard picture that does NOT go to this run, and why.
+message DesignInputHeld {
+  int32 media_id = 1;
+  // mood | material | unmarked (no purpose) | pending (the label is being read) | view_unknown
+  // (unsure / failed — answer the question card or tap the tile) | not_a_view (a person's «no view»)
+  // | older (beyond the two newest of its view) | other_detail (a detail of another slot) | detail
+  // (a detail picture on a views run) | over_cap | render (a design run's output: never a flat's
+  // input, M16) | held (a person took it out of the prompt — SetDesignReferenceHeld, 109 §4)
+  string reason = 2;
+  string role = 3; // the label's view / detail, when it has one
+  string model_caption = 4; // «model read · not sent» — never part of the prompt
+}
+
+message PreviewDesignRunInputsResponse {
+  // Exactly what designAssembleInputs would freeze into design_run.inputs — refs in prompt order with
+  // their media resolved, the bench plates, the words.
+  common.DesignInputSnapshot inputs = 1;
+  // The board pictures that stay home, in board order.
+  repeated DesignInputHeld held = 2;
+}
+
 // UpsertDesignAssetRequest writes one shelf row of the card (V-11).
 //
 // EVERY FIELD IS SENT ON EVERY CALL — this is a replace, not a patch, and the screen holds the
@@ -13228,12 +13576,12 @@ message DeleteDesignAssetPlacementResponse {}
 message DraftDesignIdeaRequest {
   int32 tech_card_id = 1;
   string client_request_id = 2; // the same idempotency as every other paid call
-  // ASK FOR THE STRUCTURED ANSWER instead of the three-section prose.
+  // ASK FOR THE STRUCTURED ANSWER instead of the prose description.
   //
-  // ABSENT (false) IS THE OLD BEHAVIOUR, BYTE FOR BYTE: the same system prompt, the same user
-  // prompt, no json mode, no token ceiling, and `output_text` still holds the prose the client
-  // splits by its three titles. A client that predates this field keeps working unchanged, which
-  // is the entire reason this is a flag on the existing verb and not a second verb.
+  // ABSENT (false): no json mode, no token ceiling; `output_text` holds the concept & construction
+  // description itself (T39), written from the board pictures, the card facts and the moodboard quiz
+  // decisions. It needs ≥ 1 attached board picture OR ≥ 1 non-skipped quiz answer (a quiz-only card
+  // is drafted text-only, 62-DEEP-FIXES D3); otherwise FailedPrecondition board_has_no_pictures.
   //
   // WHY NOT A NEW `kind`. Run kinds are a vocabulary every client maps — the bench, the history,
   // the artifacts panel each hold their own table of them — so a new member would ripple through
@@ -13256,6 +13604,220 @@ message DraftDesignIdeaResponse {
   // canonical JSON of this message — what the client was handed, not what the model happened to
   // type.
   common.DesignConstructionDraft construction = 3;
+}
+
+// MOODBOARD QUIZ messages.
+
+// DesignQuizQuestion is one question of the moodboard quiz, as asked and as stored.
+message DesignQuizQuestion {
+  string id = 1; // snake_case, unique per card
+  string category = 2; // design|details|materials|use|finish
+  string part = 3; // part key of the family's pictogram table, "whole" default
+  string family = 4; // garment pictogram family or ""
+  string view = 5; // front|back|side_l
+  string kind = 6; // single|multi
+  string question = 7;
+  repeated string options = 8; // 2..6
+  repeated bool contradicts = 9; // parallel to options (may be empty = all false)
+  string visual_evidence = 10; // what the pictures show about this point; never shown in UI
+  string clarify_question = 11; // optional follow-up when a contradicting option is picked
+  repeated string clarify_options = 12;
+  // decision_key — snake_case key of the DECISION (not the wording), e.g. chest_room, collar_type;
+  // "" = none. A saved answer closes its key for later quizzes; saving an answer whose key matches a
+  // different saved question id forgets that older row (latest wins). Clients echo it on save.
+  string decision_key = 13;
+  // media_id — the moodboard picture (tech card media id, as attached to the board) this question
+  // is about; 0 = not a picture question. When set, part is "whole" and family/view are ignored by
+  // clients (no pictogram: the board anchors to the picture instead). Clients echo it on save.
+  int32 media_id = 14;
+  // spots — the 1–3 places IN the anchored picture the question is about (99-SPOTS), drawn as
+  // numbered rings on the board tile. Only when media_id ≠ 0 and the picture is a target or detail
+  // reference; empty for whole-picture questions. Clients echo it on save (like media_id).
+  repeated DesignQuizSpot spots = 15;
+}
+
+// DesignQuizSpot — one place on a quiz question's picture (99-SPOTS).
+message DesignQuizSpot {
+  // label — the place in the question's own words, 1–4 words ("inner strap edge").
+  string label = 1;
+  // x — 0..1000 across the picture's width, from the left edge as the viewer sees it.
+  int32 x = 2;
+  // y — 0..1000 down the picture's height, from the top.
+  int32 y = 3;
+  // scale — "zone" (a part: sleeve, yoke, the run of a hem) or "detail" (a stitch line, a button).
+  string scale = 4;
+  // at — output only, server-computed: where label sits inside the question text, as a UTF-16 code
+  // unit offset (a JS string index), matched case-insensitively; -1 = not found. Ignored on save.
+  int32 at = 5;
+}
+
+message GenerateDesignQuizRequest {
+  int32 tech_card_id = 1;
+}
+
+message GenerateDesignQuizResponse {
+  repeated DesignQuizQuestion questions = 1;
+  string family = 2;
+  string model = 3;
+}
+
+message DesignQuizAnswer {
+  DesignQuizQuestion question = 1;
+  repeated string selected = 2; // chosen option texts
+  string free_text = 3;
+  bool skipped = 4;
+  google.protobuf.Timestamp answered_at = 5; // server-set
+  // stale — OUTPUT ONLY, ignored on save (62-DEEP-FIXES D1): the card's structured facts (category,
+  // fit, gender, details, BOM names/compositions, base-size measurements) changed since this answer
+  // was saved. Downstream prompts treat it as unconfirmed; re-saving the same answer makes it fresh.
+  bool stale = 6;
+  // stale_changes — OUTPUT ONLY, ignored on save (98-STALE §3): what changed since the answer was given,
+  // one line per changed fact of the answer's topic ("main fabric: cotton twill → wool flannel",
+  // "lining: — → viscose twill", "detail: hood: … → —", "picture 3: removed from the board",
+  // "picture 2 role: mood → material"); at most 4 lines, then "+N more". A row saved before per-topic
+  // tracking says "the card changed (answered before per-topic tracking)". Empty when not stale.
+  repeated string stale_changes = 7;
+}
+
+message GetDesignQuizAnswersRequest {
+  int32 tech_card_id = 1;
+}
+
+message GetDesignQuizAnswersResponse {
+  repeated DesignQuizAnswer answers = 1;
+  // pending — the card's OPEN quiz session (the last GenerateDesignQuiz) minus every saved question
+  // id (answered or skipped), in the generated order; empty when no session is open. Resume source.
+  repeated DesignQuizQuestion pending = 2;
+  string pending_family = 3; // the open session's garment family
+}
+
+// SaveDesignQuizAnswersRequest carries the rows to upsert (or forget, when sent empty); see the rpc.
+message SaveDesignQuizAnswersRequest {
+  int32 tech_card_id = 1;
+  repeated DesignQuizAnswer answers = 2;
+  // close_session — after the save, close the card's open quiz session (discard, or the quiz ended).
+  bool close_session = 3;
+}
+
+message SaveDesignQuizAnswersResponse {
+  repeated DesignQuizAnswer answers = 1;
+}
+
+// AUTO PARTS messages.
+
+message SuggestDesignPartsRequest {
+  int32 tech_card_id = 1;
+  string view = 2; // front|back|side_l|side_r
+  int32 base_media_id = 3; // the side's flat the regions were cut from
+  int32 marks_media_id = 4; // the flat with the numbered regions, as the model sees it
+  int32 region_count = 5; // 2..60
+  string algo_rev = 6; // the client's cut revision, ≤ 32
+  bool force = 7; // ask again even when an answer is cached
+}
+
+// DesignPartGroup is one garment part: its name and its region numbers (1-based).
+message DesignPartGroup {
+  string label = 1; // lowercase, ≤ 3 words; "unnamed" holds what the model left out
+  repeated int32 regions = 2;
+  // part_key — the part's identity across the sides of one SuggestDesignPartsCard answer (slug of
+  // the label, unique within the answer: "left-sleeve", "collar-2"; "unnamed-<view>" for what the
+  // model left out). Empty on answers of the per-side SuggestDesignParts.
+  string part_key = 3;
+}
+
+// DesignPartSplit is a region that spans two parts with no seam line drawn.
+message DesignPartSplit {
+  int32 region = 1;
+  string why = 2;
+}
+
+message DesignPartsSuggestion {
+  string view = 1;
+  int32 base_media_id = 2;
+  string algo_rev = 3;
+  repeated DesignPartGroup parts = 4;
+  repeated DesignPartSplit split_needed = 5;
+  string model = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message SuggestDesignPartsResponse {
+  DesignPartsSuggestion suggestion = 1;
+  bool cached = 2; // true = read from the cache, no call made
+}
+
+// DesignPartsViewInput is one side of a SuggestDesignPartsCard request.
+message DesignPartsViewInput {
+  string view = 1; // front|back|side_l|side_r, each at most once
+  int32 base_media_id = 2; // the side's flat the regions were cut from
+  int32 marks_media_id = 3; // the flat with the numbered regions, as the model sees it
+  int32 region_count = 4; // 2..60
+}
+
+message SuggestDesignPartsCardRequest {
+  int32 tech_card_id = 1;
+  string algo_rev = 2; // the client's cut revision, ≤ 32
+  bool force = 3; // ask again even when every side is cached
+  repeated DesignPartsViewInput views = 4; // 1..4 sides, in the order the model sees them
+}
+
+message SuggestDesignPartsCardResponse {
+  repeated DesignPartsSuggestion suggestions = 1; // one per requested side, in request order
+  bool cached = 2; // true = read from the cache, no call made
+  // The card's pieces list the answer was named under (M6); the server may have read it (or a
+  // proposal) during this very call. Absent = the card has no FRONT/BACK flat to read pieces from
+  // (labels were free).
+  common.DesignPartsPieces pieces = 3;
+}
+
+// FLAT ROUTE · JOIN LIST messages.
+
+message GenerateDesignJoinsRequest {
+  int32 tech_card_id = 1;
+  bool force = 2; // ask again even when a list is stored
+}
+
+message GenerateDesignJoinsResponse {
+  common.DesignJoins joins = 1;
+  bool cached = 2; // true = the stored list, no call made
+}
+
+message SetDesignJoinsRequest {
+  int32 tech_card_id = 1;
+  common.DesignJoins joins = 2; // items, absences, layers, consistency.keep_media_ids are read
+  int32 expected_rev = 3; // the rev the edit was made on; 0 = no list yet
+  // The designer confirms the list as saved: the new rev is marked DesignJoins.confirmed (the straps
+  // flat mode needs it). A save without confirm clears the mark.
+  bool confirm = 4;
+}
+
+message SetDesignJoinsResponse {
+  common.DesignJoins joins = 1;
+}
+
+// PARTS · PIECES LIST messages (M6).
+
+message SetDesignPartsPiecesRequest {
+  int32 tech_card_id = 1;
+  int32 expected_rev = 2; // the rev the edit was made on; 0 = no list yet
+  repeated string names = 3; // the whole list, in order
+  bool settle_proposal = 4; // drop the pending proposal (take = its names, keep = the list's)
+}
+
+message SetDesignPartsPiecesResponse {
+  common.DesignPartsPieces pieces = 1;
+}
+
+message SetDesignDetailKeptRequest {
+  int32 tech_card_id = 1;
+  int32 slot_id = 2; // the flat DETAIL slot, design_bench_slot(id)
+  bool keep = 3; // true = mark kept; false = take the mark off
+  // The views run the client saw as stale_against_run_id (CAS); 0 = no check.
+  int32 against_run_id = 4;
+}
+
+message SetDesignDetailKeptResponse {
+  common.DesignBenchSlot slot = 1; // the slot with stale / kept recomputed
 }
 
 // AI PROVIDERS messages

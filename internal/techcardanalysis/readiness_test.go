@@ -97,15 +97,16 @@ func TestC1CollapsedSeverityIsNotWatered(t *testing.T) {
 
 // ── C2 ──────────────────────────────────────────────────────────────────────────────────────────
 
-func TestC2NamesFiveEmptySectionsOnCard8(t *testing.T) {
-	// ПЯТЬ, А НЕ ЧЕТЫРЕ. §3.3 перечисляет базовый размер в правиле, но в примере по карточке 8 о
-	// нём забывает; на проде base_sample_size_id этой карточки — NULL при объявленном ряде из
-	// четырёх размеров, значит пятая пустота реальна.
+func TestC2NamesFourEmptySectionsOnCard8(t *testing.T) {
+	// ЧЕТЫРЕ. §3.3 перечисляет базовый размер в правиле, но в примере по карточке 8 о нём
+	// забывает; на проде base_sample_size_id этой карточки — NULL при объявленном ряде из четырёх
+	// размеров, значит эта пустота реальна. Лейблов в списке больше нет (0386): составник есть у
+	// каждой карточки.
 	f := rtOne(t, ctExpanded(card8()), "The print packet would go out with")
-	if f.Title != "The print packet would go out with 5 empty sections" {
+	if f.Title != "The print packet would go out with 4 empty sections" {
 		t.Errorf("C2: %q", f.Title)
 	}
-	for _, want := range []string{"hem finish", "construction notes", "labels", "packaging", "base sample size"} {
+	for _, want := range []string{"hem finish", "construction notes", "packaging", "base sample size"} {
 		if !strings.Contains(f.Detail, want) {
 			t.Errorf("C2 обязана назвать пустоту %q, got: %s", want, f.Detail)
 		}
@@ -119,10 +120,39 @@ func TestC2GoesQuietWhenEverySectionIsFilled(t *testing.T) {
 	c := card8()
 	c.Construction.HemFinish = text("обмётка + подгибка 20 мм")
 	c.Construction.Notes = text("см. лист обработки")
-	c.Labels = []entity.TechCardLabel{{LabelType: entity.LabelTypeCare, Content: text("30°C")}}
 	c.Packaging = &entity.TechCardPackaging{FoldingMethod: text("пополам")}
 	c.BaseSampleSizeId = sql.NullInt32{Int32: 4, Valid: true}
 	rtNone(t, ctExpanded(c), "The print packet would go out with")
+}
+
+// Позиции упаковки заполняют секцию так же, как строка коробки; легаси polybag в коробке — нет
+// (его данные уехали в позиции, §3.4).
+func TestC2CountsPackagingItemsAndIgnoresLegacyPolybag(t *testing.T) {
+	c := card8()
+	c.Packaging = &entity.TechCardPackaging{Polybag: text("PE 30×40")}
+	f := rtOne(t, ctExpanded(c), "The print packet would go out with")
+	if !strings.Contains(f.Detail, "packaging") {
+		t.Errorf("легаси polybag не заполняет упаковку: %s", f.Detail)
+	}
+
+	c.PackagingItems = []entity.TechCardPackagingItem{{Key: "polybag", QtyPerGarment: 1, MediaIds: []int{7}}}
+	f = rtOne(t, ctExpanded(c), "The print packet would go out with")
+	if strings.Contains(f.Detail, "packaging") {
+		t.Errorf("позиция упаковки заполняет секцию: %s", f.Detail)
+	}
+}
+
+// Легаси tech_card_label больше не читается: ни пустотой C2, ни мостом C3.
+func TestLegacyLabelsAreNoLongerCounted(t *testing.T) {
+	c := card8()
+	c.Stage = entity.TechCardStageSMS
+	c.Labels = []entity.TechCardLabel{{LabelType: entity.LabelTypeCare, Content: text("30°C")}}
+	fs := ctExpanded(c)
+	rtNone(t, fs, "label")
+	f := rtOne(t, fs, "The print packet would go out with")
+	if f.Title != "The print packet would go out with 4 empty sections" || strings.Contains(f.Detail, "labels") {
+		t.Errorf("легаси лейблы не должны ни заполнять, ни открывать пустоту: %q / %s", f.Title, f.Detail)
+	}
 }
 
 func TestC2CountsAnEmptyPackagingRowAsEmpty(t *testing.T) {
@@ -150,64 +180,58 @@ func TestC2DoesNotAskAnAuxiliaryCardForLabels(t *testing.T) {
 
 // ── C3 ──────────────────────────────────────────────────────────────────────────────────────────
 
-func TestC3IsSilentBelowSmsEvenWithNoLabelsAnywhere(t *testing.T) {
-	// Карточка 8 — sellable-пиджак без единого лейбла где-либо, и всё равно C3 на ней молчит:
-	// лейблы заводят к продажному образцу, а не к прототипу. Гейт стадии — это и есть проверка.
+func TestC3IsSilentBelowSms(t *testing.T) {
+	// Лейблы заводят к продажному образцу, а не к прототипу: на proto мост не спрашивается.
 	c := card8()
 	if c.Stage != entity.TechCardStageProto {
 		t.Fatalf("фикстура сменила стадию: %s", c.Stage)
 	}
-	rtNone(t, ctExpanded(c), "labels")
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", QtyPerGarment: 1, MediaIds: []int{1}}}
+	rtNone(t, ctExpanded(c), "BOM line")
 }
 
-func TestC3FiresAtSmsWithNoLabelsAnywhere(t *testing.T) {
+func TestC3NeverSaysNoLabelsAnywhere(t *testing.T) {
+	// Составник есть у каждой карточки (0386) — «лейблов нет нигде» не бывает.
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
-	f := rtOne(t, ctExpanded(c), "with no labels anywhere")
-	if f.Category != CategoryReadiness || f.Severity != SeverityWarning {
-		t.Errorf("C3 — readiness/warning, got %s/%s", f.Category, f.Severity)
-	}
-	if !strings.Contains(f.Detail, "care") {
-		t.Errorf("C3 обязана назвать обязательный лейбл: %s", f.Detail)
-	}
-	if f.Clause == "" {
-		t.Error("readiness-находка без Clause выпадет из схлопнутого перечисления")
-	}
+	rtNone(t, ctExpanded(c), "label")
 }
 
-func TestC3FiresOnASpecWithNoBomLine(t *testing.T) {
+func TestC3FiresOnALabelWithNoBomLine(t *testing.T) {
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
-	c.Labels = []entity.TechCardLabel{{LabelType: entity.LabelTypeCare, Content: text("30°C")}}
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", QtyPerGarment: 1, MediaIds: []int{1}}}
 
-	fs := ctExpanded(c)
-	rtNone(t, fs, "with no labels anywhere")
-	f := rtOne(t, fs, "care label spec is not linked to a BOM line")
+	f := rtOne(t, ctExpanded(c), "brand label is not linked to a BOM line")
 	rtWantRefs(t, f, RefCard)
+	if f.Category != CategoryReadiness || f.Severity != SeverityWarning || f.Clause == "" {
+		t.Errorf("C3 — readiness/warning с клаузой, got %s/%s %q", f.Category, f.Severity, f.Clause)
+	}
 }
 
-func TestC3FiresOnABomLineWithNoSpec(t *testing.T) {
+func TestC3ToleratesOneUnlinkedLabelLineAsTheCompositionLabel(t *testing.T) {
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
 	btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionLabel, Name: "care label"})
+	rtNone(t, ctExpanded(c), "label")
 
-	fs := ctExpanded(c)
-	rtNone(t, fs, "with no labels anywhere")
-	f := rtOne(t, fs, `BOM line "care label" is a label nothing describes`)
-	rtWantRefs(t, f, RefBom("care label"))
+	btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionLabel, Name: "size label"})
+	f := rtOne(t, ctExpanded(c), "2 label BOM lines are linked to no garment label")
+	rtWantRefs(t, f, RefBom("care label"), RefBom("size label"))
 }
 
 func TestC3IsSilentWhenTheBridgeIsWhole(t *testing.T) {
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
-	line := btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionLabel, Name: "care label"})
-	c.Labels = []entity.TechCardLabel{{
-		LabelType: entity.LabelTypeCare,
-		Content:   text("30°C"),
-		BomItemId: sql.NullInt32{Int32: int32(line.Id), Valid: true},
+	btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionLabel, Name: "care label"})
+	line := btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionLabel, Name: "brand label"})
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{
+		Key:           "brand",
+		QtyPerGarment: 1,
+		BomItemId:     sql.NullInt32{Int32: int32(line.Id), Valid: true},
+		MediaIds:      []int{1},
 	}}
-	fs := ctExpanded(c)
-	rtNone(t, fs, "label")
+	rtNone(t, ctExpanded(c), "label")
 }
 
 func TestC3TreatsABrokenLinkAsUnlinked(t *testing.T) {
@@ -215,18 +239,52 @@ func TestC3TreatsABrokenLinkAsUnlinked(t *testing.T) {
 	// это тоже «не куплено», и молчать на нём нельзя.
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
-	c.Labels = []entity.TechCardLabel{{
-		LabelType: entity.LabelTypeCare,
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{
+		Key:       "brand",
 		BomItemId: sql.NullInt32{Int32: 9999, Valid: true},
+		MediaIds:  []int{1},
 	}}
-	rtOne(t, ctExpanded(c), "care label spec is not linked to a BOM line")
+	rtOne(t, ctExpanded(c), "brand label is not linked to a BOM line")
 }
 
 func TestC3IsSilentOnAnAuxiliaryCard(t *testing.T) {
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
 	c.Purpose = entity.TechCardPurposeAuxiliary
-	rtNone(t, ctExpanded(c), "labels")
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", MediaIds: []int{1}}}
+	rtNone(t, ctExpanded(c), "BOM line")
+}
+
+// ── C3b (D-04: мокап обязателен) ────────────────────────────────────────────────────────────────
+
+func TestC3bNamesAGarmentLabelWithoutMockup(t *testing.T) {
+	c := card8() // proto: мокап спрашивается на любой стадии
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", QtyPerGarment: 1}}
+	f := rtOne(t, ctExpanded(c), "The brand label has no mockup")
+	if f.Category != CategoryReadiness || f.Severity != SeverityWarning {
+		t.Errorf("C3b — readiness/warning, got %s/%s", f.Category, f.Severity)
+	}
+	if !strings.Contains(f.Detail, "brand") || f.Clause != "brand label without mockup" {
+		t.Errorf("дыра обязана назвать лейбл: %s / %q", f.Detail, f.Clause)
+	}
+}
+
+func TestC3bIsSilentWhenTheLabelHasAMockup(t *testing.T) {
+	c := card8()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", QtyPerGarment: 1, MediaIds: []int{42}}}
+	rtNone(t, ctExpanded(c), "mockup")
+}
+
+func TestC3bAggregatesAndCoversPackagingItems(t *testing.T) {
+	c := card8()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand"}, {Key: "size"}, {Key: "flag", MediaIds: []int{1}}}
+	c.PackagingItems = []entity.TechCardPackagingItem{{Key: "polybag"}}
+	fs := ctExpanded(c)
+	f := rtOne(t, fs, "2 of 3 garment labels have no mockup")
+	if !strings.Contains(f.Detail, "brand and size") {
+		t.Errorf("агрегат обязан перечислить лейблы: %s", f.Detail)
+	}
+	rtOne(t, fs, "The polybag packaging item has no mockup")
 }
 
 // ── C4 ──────────────────────────────────────────────────────────────────────────────────────────
@@ -495,14 +553,14 @@ func TestReadinessOnAnEmptyCardIsNamed(t *testing.T) {
 			},
 		},
 		{
-			name: "sellable: лейблы становятся пятой пустотой печатного пакета",
+			name: "sellable: лейблы пустотой больше не бывают (составник есть всегда)",
 			card: &entity.TechCard{TechCardInsert: entity.TechCardInsert{Purpose: entity.TechCardPurposeSellable}},
 			want: []string{
 				"The card declares no size range",
 				"The card has no cut pieces",
 				"The card has no operations",
 				"The card carries no technical sketch",
-				"The print packet would go out with 5 empty sections",
+				"The print packet would go out with 4 empty sections",
 			},
 		},
 	} {
@@ -554,7 +612,7 @@ func TestReadinessCollapsesOnADraftAndExpandsOffIt(t *testing.T) {
 	draft := ctFindings(card8())
 	collapsed := rtOne(t, draft, collapsedReadinessTitle)
 	for _, want := range []string{"SMV 0/48", "works 5/48", "no equipment profiles", "no technical sketch",
-		"print packet has 5 empty sections", "no finishing block"} {
+		"print packet has 4 empty sections", "no finishing block"} {
 		if !strings.Contains(collapsed.Detail, want) {
 			t.Errorf("схлопнутая находка обязана перечислять клаузы, %q нет: %s", want, collapsed.Detail)
 		}
@@ -579,6 +637,7 @@ func TestEveryReadinessFindingCarriesAClause(t *testing.T) {
 		"card8":          card8(),
 		"empty floor":    &entity.TechCard{TechCardInsert: entity.TechCardInsert{Purpose: entity.TechCardPurposeSellable}},
 		"sms no labels":  ctSmsCard(),
+		"no mockups":     ctNoMockupCard(),
 		"costing no cmt": ctCostingCard(),
 		"two profiles":   ctTwoProfileCard(),
 	}
@@ -604,6 +663,13 @@ func TestEveryReadinessFindingCarriesAClause(t *testing.T) {
 func ctSmsCard() *entity.TechCard {
 	c := card8()
 	c.Stage = entity.TechCardStageSMS
+	return c
+}
+
+func ctNoMockupCard() *entity.TechCard {
+	c := ctSmsCard()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand"}, {Key: "size"}}
+	c.PackagingItems = []entity.TechCardPackagingItem{{Key: "polybag"}}
 	return c
 }
 

@@ -545,26 +545,14 @@ func withPictures(ids ...int32) *pb_admin.SuggestPromptsRequest {
 }
 
 // The run door's refusals, in the run door's order, BEFORE any provider call and before the cache.
-// Mutation: drop designRefuseForeignMedia from suggestPictureURLs → "foreign" is answered → red.
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ — the door no longer asks
+// whose picture it is.
 func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 	picture := map[int]entity.MediaFull{
 		7: {Id: 7, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/a-og.png", ThumbnailMediaURL: "https://files.grbpwr.com/a-thumb.webp"}},
 	}
-	t.Run("a picture of another card", func(t *testing.T) {
-		rig := newSuggestMediaRig(t)
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{7}).Return(entity.ErrDesignForeignMedia).Once()
-		client, rec := newSuggestFakeOR(t, openrouter.Config{}, suggestAnswer(goodIdeas))
-		s := newSuggestServer(t, client)
-		s.repo = rig.repo
-		_, err := s.SuggestPrompts(adminCtx("alice"), withPictures(7))
-		require.Equal(t, codes.FailedPrecondition, status.Code(err), "%v", err)
-		require.Equal(t, "foreign_media", aiReasonOf(t, err))
-		require.Empty(t, rec.all())
-		rig.media.AssertNotCalled(t, "GetMediaByIds", mock.Anything, mock.Anything)
-	})
 	t.Run("not a picture", func(t *testing.T) {
 		rig := newSuggestMediaRig(t)
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{9}).Return(nil).Once()
 		rig.media.EXPECT().GetMediaByIds(mock.Anything, []int{9}).Return(map[int]entity.MediaFull{
 			9: {Id: 9, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/model.glb"}},
 		}, nil).Once()
@@ -578,7 +566,6 @@ func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 	})
 	t.Run("display-only", func(t *testing.T) {
 		rig := newSuggestMediaRig(t)
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{7}).Return(nil).Once()
 		rig.media.EXPECT().GetMediaByIds(mock.Anything, []int{7}).Return(picture, nil).Once()
 		rig.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, []int{7}).Return([]int{7}, nil).Once()
 		client, rec := newSuggestFakeOR(t, openrouter.Config{}, suggestAnswer(goodIdeas))
@@ -591,7 +578,6 @@ func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 	})
 	t.Run("hidden", func(t *testing.T) {
 		rig := newSuggestMediaRig(t)
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{7}).Return(nil).Once()
 		rig.media.EXPECT().GetMediaByIds(mock.Anything, []int{7}).Return(picture, nil).Once()
 		rig.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, []int{7}).Return(nil, nil).Once()
 		rig.design.EXPECT().MediaHeldHiddenOnly(mock.Anything, []int{7}).Return([]int{7}, nil).Once()
@@ -609,7 +595,6 @@ func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 			7: picture[7],
 			8: {Id: 8, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/b-og.jpg"}}, // no thumbnail
 		}
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{8, 7}).Return(nil).Once()
 		rig.media.EXPECT().GetMediaByIds(mock.Anything, []int{8, 7}).Return(byID, nil).Once()
 		rig.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, []int{8, 7}).Return(nil, nil).Once()
 		rig.design.EXPECT().MediaHeldHiddenOnly(mock.Anything, []int{8, 7}).Return(nil, nil).Once()
@@ -624,7 +609,6 @@ func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 
 		rig2 := newSuggestMediaRig(t)
 		// A repeated id is folded into one (two ids on the wire, one picture sent).
-		rig2.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{5}).Return(nil).Once()
 		rig2.media.EXPECT().GetMediaByIds(mock.Anything, []int{5}).Return(map[int]entity.MediaFull{}, nil).Once()
 		rig2.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, []int{5}).Return(nil, nil).Once()
 		rig2.design.EXPECT().MediaHeldHiddenOnly(mock.Anything, []int{5}).Return(nil, nil).Once()
@@ -635,7 +619,6 @@ func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 	})
 	t.Run("the door stands before the cache", func(t *testing.T) {
 		rig := newSuggestMediaRig(t)
-		rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{7}).Return(nil).Once()
 		rig.media.EXPECT().GetMediaByIds(mock.Anything, []int{7}).Return(picture, nil).Once()
 		rig.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, []int{7}).Return(nil, nil).Once()
 		rig.design.EXPECT().MediaHeldHiddenOnly(mock.Anything, []int{7}).Return(nil, nil).Once()
@@ -647,7 +630,6 @@ func TestSuggestPromptsMediaDoorRefusesBeforeTheModel(t *testing.T) {
 
 		// The picture has since been hidden: the identical request is refused, not served from memory.
 		rig2 := newSuggestMediaRig(t)
-		rig2.design.EXPECT().AssertMediaNotForeign(mock.Anything, 38, []int{7}).Return(nil).Once()
 		rig2.media.EXPECT().GetMediaByIds(mock.Anything, []int{7}).Return(picture, nil).Once()
 		rig2.design.EXPECT().MediaHeldDisplayOnly(mock.Anything, []int{7}).Return(nil, nil).Once()
 		rig2.design.EXPECT().MediaHeldHiddenOnly(mock.Anything, []int{7}).Return([]int{7}, nil).Once()

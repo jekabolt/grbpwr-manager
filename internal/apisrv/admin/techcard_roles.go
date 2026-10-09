@@ -64,6 +64,22 @@ func (s *Server) RemoveTechCardRoleAssignment(ctx context.Context, req *pb_admin
 	return &pb_admin.RemoveTechCardRoleAssignmentResponse{}, nil
 }
 
+// ExitTechCardGuide leaves the guided studio flow for a card (0407). Idempotent: a card already out
+// of the guide answers OK; only a missing card is NotFound.
+func (s *Server) ExitTechCardGuide(ctx context.Context, req *pb_admin.ExitTechCardGuideRequest) (*pb_admin.ExitTechCardGuideResponse, error) {
+	if req.TechCardId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
+	}
+	if err := s.repo.TechCards().ExitTechCardGuide(ctx, int(req.TechCardId)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "tech card not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't exit tech card guide", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't exit tech card guide")
+	}
+	return &pb_admin.ExitTechCardGuideResponse{}, nil
+}
+
 // ListTechCardRoleAssignments lists a card's role assignments with resolved usernames.
 func (s *Server) ListTechCardRoleAssignments(ctx context.Context, req *pb_admin.ListTechCardRoleAssignmentsRequest) (*pb_admin.ListTechCardRoleAssignmentsResponse, error) {
 	if req.TechCardId <= 0 {

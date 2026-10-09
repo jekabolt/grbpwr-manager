@@ -1,0 +1,24 @@
+Landmark ruler (fixed for every garment; L/R = WEARER'S left/right; a point between two landmarks is written "A..B:t", t from 0 at A to 1 at B):
+neck/shoulder: NP_x neck points (side of the neck, top of the shoulder line); SP_x shoulder tips; FSH_x/BSH_x mid-shoulder slightly front/back; CFN centre-front neck (crew height), CFN_LOW low front neck; CBN nape, CBN_LOW low back neck; NECK_SIDE_x base of the neck at the side (for collar stands);
+torso: UA_x underarm (top of side seam); CHEST_x chest (pocket height), CHEST_C centre chest; BUST_C centre front under the bust; BUSTSIDE_x; SB_x shoulder blades; UB_C centre upper back; YOKE_x back yoke at the armhole; MB_x side at mid-back, MB_C centre back mid-back; WL_x waist at the side, WF_C/WB_C centre front/back waist; HIP_x hip at the side, HIP_C_F/HIP_C_B; HEM_x hem of a top at the side (hip length), HEM_FC/HEM_BC centre front/back hem;
+tailoring: BREAK centre front where lapels meet (top button); LAPEL_TIP_x lapel point; GORGE_x the notch where collar meets lapel;
+sleeves: SSLV_OUT_x/SSLV_IN_x short-sleeve end outer/inner; ELB_OUT_x/ELB_IN_x elbow; WRIST_OUT_x/WRIST_IN_x long-sleeve end outer/inner;
+hood: HOOD_FRONT_x middle of the hood's front edge; HOOD_TOP top of the hood; HOOD_BACK back of the hood; HOOD_SIDE_x; HOOD_CROWN_F;
+pockets: FPK_TOP_x/FPK_SIDE_x ends of a trouser front-pocket scoop; BPK_x back pocket centre; KANG_x/KANG_LOW_x corners of a kangaroo pocket;
+lower body: CROTCH (inseam top), CROTCH_F/CROTCH_B; KNEE_OUT_x/KNEE_IN_x; ANKLE_OUT_x/ANKLE_IN_x; LEG_HEM_F_x/LEG_HEM_B_x middle of a leg hem front/back; SHORT_OUT_x/SHORT_IN_x/SHORT_HEM_F_x/SHORT_HEM_B_x shorts hem; SKIRT_HEM_x skirt hem at the side (knee), SKIRT_HEM_C_F/SKIRT_HEM_C_B.
+Trousers/skirts start at the waist (WL_x, WF_C, WB_C); tops end at HEM_x or shorter (e.g. "UA_L..HEM_L:0.6").
+
+JOIN LIST (the construction; every view must agree with it):
+- neck_binding: binding (narrow) from NP_R..SP_R:0.3 → CFN → NP_L..SP_L:0.3. continues into strap_from_L, strap_from_R, armhole_L, armhole_R. High crew-height front neck binding, front only; at each neck point it turns into a back strap.
+- armhole_L: binding (narrow) from NP_L..SP_L:0.3 → SP_L..UA_L:0.4 → UA_L. continues into neck_binding, back_opening_edge. Deep cut-in (racer-style) front armhole, bound, running from the neck point down to the underarm.
+- armhole_R: binding (narrow) from NP_R..SP_R:0.3 → SP_R..UA_R:0.4 → UA_R. continues into neck_binding, back_opening_edge. Mirror of armhole_L.
+- strap_from_L: strap (wide) from NP_L..SP_L:0.3 → UB_C..MB_C:0.2 → UA_R..MB_R:0.4. continues into neck_binding. Folded double-layer strap; runs over the left shoulder and diagonally across the back to the right side. Lies on top at the crossing.
+- strap_from_R: strap (wide) from NP_R..SP_R:0.3 → UB_C..MB_C:0.2 → UA_L..MB_L:0.4. continues into neck_binding. Folded double-layer strap; runs over the right shoulder and diagonally across the back to the left side. Crosses strap_from_L at UB_C, underneath.
+- back_opening_edge: binding (narrow) from UA_L..MB_L:0.4 → MB_C → UA_R..MB_R:0.4. Curved, bound upper edge of the back body at mid-back, with a small tack at MB_C.
+- back_opening: OPENING (no cloth) bounded by strap_from_L, strap_from_R, back_opening_edge. Open back below and around the cross; bare skin shows.
+- side_seam_L: seam from UA_L → WL_L → HEM_L. continues into armhole_L, hem_front, hem_back. Side seam.
+- side_seam_R: seam from UA_R → WL_R → HEM_R. continues into armhole_R, hem_front, hem_back. Side seam.
+- hem_front: edge from HEM_L → HEM_FC → HEM_R. continues into side_seam_L, side_seam_R. Narrow rolled or raw lettuce-like hem at hip length.
+- hem_back: edge from HEM_R → HEM_BC → HEM_L. continues into side_seam_L, side_seam_R. Back hem.
+- inner_layer_V: edge from NP_R..SP_R:0.2 → BUST_C..WF_C:0.4 → NP_L..SP_L:0.2. continues into neck_binding. Edge of the opaque inner front layer, visible through the sheer outer layer. Its V point sits just below the bust; the inner layer is caught into the neck binding.
+ABSENT (do not draw): no sleeves; no back neckline or back neck binding (the straps replace it); no shoulder seam visible on the outside; no closures; no pockets; no collar; no centre-front seam on the outer layer; no cloth in the upper back between the straps

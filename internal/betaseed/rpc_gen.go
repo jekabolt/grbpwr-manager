@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (407 rpc) ----
+// ---- admin (422 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -877,6 +877,14 @@ func (c *Client) EnhanceText(ctx context.Context, in *admin.EnhanceTextRequest) 
 	return out, nil
 }
 
+func (c *Client) ExitTechCardGuide(ctx context.Context, in *admin.ExitTechCardGuideRequest) (*admin.ExitTechCardGuideResponse, error) {
+	out := new(admin.ExitTechCardGuideResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/guide/exit", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ExportJpkV7M(ctx context.Context, in *admin.ExportJpkV7MRequest) (*admin.ExportJpkV7MResponse, error) {
 	out := new(admin.ExportJpkV7MResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/jpk-v7m", in, out); err != nil {
@@ -912,6 +920,22 @@ func (c *Client) FlattenDesignEditLayer(ctx context.Context, in *admin.FlattenDe
 func (c *Client) FormatLibraryNoteMarkdown(ctx context.Context, in *admin.FormatLibraryNoteMarkdownRequest) (*admin.FormatLibraryNoteMarkdownResponse, error) {
 	out := new(admin.FormatLibraryNoteMarkdownResponse)
 	if err := c.call(ctx, "POST", "/api/admin/files/note/format", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GenerateDesignJoins(ctx context.Context, in *admin.GenerateDesignJoinsRequest) (*admin.GenerateDesignJoinsResponse, error) {
+	out := new(admin.GenerateDesignJoinsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/joins:generate", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GenerateDesignQuiz(ctx context.Context, in *admin.GenerateDesignQuizRequest) (*admin.GenerateDesignQuizResponse, error) {
+	out := new(admin.GenerateDesignQuizResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/quiz", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1120,6 +1144,14 @@ func (c *Client) GetDesignBand(ctx context.Context, in *admin.GetDesignBandReque
 func (c *Client) GetDesignEditLayer(ctx context.Context, in *admin.GetDesignEditLayerRequest) (*admin.GetDesignEditLayerResponse, error) {
 	out := new(admin.GetDesignEditLayerResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tech-card/{tech_card_id}/design/layer/{layer_id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetDesignQuizAnswers(ctx context.Context, in *admin.GetDesignQuizAnswersRequest) (*admin.GetDesignQuizAnswersResponse, error) {
+	out := new(admin.GetDesignQuizAnswersResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/{tech_card_id}/design/quiz-answers", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2245,6 +2277,14 @@ func (c *Client) PrepareShippingLabel(ctx context.Context, in *admin.PrepareShip
 	return out, nil
 }
 
+func (c *Client) PreviewDesignRunInputs(ctx context.Context, in *admin.PreviewDesignRunInputsRequest) (*admin.PreviewDesignRunInputsResponse, error) {
+	out := new(admin.PreviewDesignRunInputsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/runs/preview", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) PreviewEmailSegment(ctx context.Context, in *admin.PreviewEmailSegmentRequest) (*admin.PreviewEmailSegmentResponse, error) {
 	out := new(admin.PreviewEmailSegmentResponse)
 	if err := c.call(ctx, "POST", "/api/admin/email-segments/preview", in, out); err != nil {
@@ -2280,6 +2320,14 @@ func (c *Client) ReceiveMaterialStock(ctx context.Context, in *admin.ReceiveMate
 func (c *Client) ReceiveProductionRun(ctx context.Context, in *admin.ReceiveProductionRunRequest) (*admin.ReceiveProductionRunResponse, error) {
 	out := new(admin.ReceiveProductionRunResponse)
 	if err := c.call(ctx, "POST", "/api/admin/production-runs/{run_id}/receive", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RedoDesignEdit(ctx context.Context, in *admin.RedoDesignEditRequest) (*admin.RedoDesignEditResponse, error) {
+	out := new(admin.RedoDesignEditResponse)
+	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/redo", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2440,6 +2488,14 @@ func (c *Client) RunTierBackfill(ctx context.Context, in *admin.RunTierBackfillR
 func (c *Client) SaveDesignEditLayer(ctx context.Context, in *admin.SaveDesignEditLayerRequest) (*admin.SaveDesignEditLayerResponse, error) {
 	out := new(admin.SaveDesignEditLayerResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/layer", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SaveDesignQuizAnswers(ctx context.Context, in *admin.SaveDesignQuizAnswersRequest) (*admin.SaveDesignQuizAnswersResponse, error) {
+	out := new(admin.SaveDesignQuizAnswersResponse)
+	if err := c.call(ctx, "PUT", "/api/admin/tech-card/{tech_card_id}/design/quiz-answers", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2629,9 +2685,41 @@ func (c *Client) SetDesignColourPlan(ctx context.Context, in *admin.SetDesignCol
 	return out, nil
 }
 
+func (c *Client) SetDesignDetailKept(ctx context.Context, in *admin.SetDesignDetailKeptRequest) (*admin.SetDesignDetailKeptResponse, error) {
+	out := new(admin.SetDesignDetailKeptResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/bench/{slot_id}/kept", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetDesignJoins(ctx context.Context, in *admin.SetDesignJoinsRequest) (*admin.SetDesignJoinsResponse, error) {
+	out := new(admin.SetDesignJoinsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/joins", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetDesignPartsPieces(ctx context.Context, in *admin.SetDesignPartsPiecesRequest) (*admin.SetDesignPartsPiecesResponse, error) {
+	out := new(admin.SetDesignPartsPiecesResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/parts/pieces", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) SetDesignPictureSelected(ctx context.Context, in *admin.SetDesignPictureSelectedRequest) (*admin.SetDesignPictureSelectedResponse, error) {
 	out := new(admin.SetDesignPictureSelectedResponse)
 	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/selected", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetDesignReferenceHeld(ctx context.Context, in *admin.SetDesignReferenceHeldRequest) (*admin.SetDesignReferenceHeldResponse, error) {
+	out := new(admin.SetDesignReferenceHeldResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/reference-held", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2781,6 +2869,30 @@ func (c *Client) StartDesignRun(ctx context.Context, in *admin.StartDesignRunReq
 	return out, nil
 }
 
+func (c *Client) SuggestCallouts(ctx context.Context, in *admin.SuggestCalloutsRequest) (*admin.SuggestCalloutsResponse, error) {
+	out := new(admin.SuggestCalloutsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/ai/suggest-callouts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SuggestDesignParts(ctx context.Context, in *admin.SuggestDesignPartsRequest) (*admin.SuggestDesignPartsResponse, error) {
+	out := new(admin.SuggestDesignPartsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/parts:suggest", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SuggestDesignPartsCard(ctx context.Context, in *admin.SuggestDesignPartsCardRequest) (*admin.SuggestDesignPartsCardResponse, error) {
+	out := new(admin.SuggestDesignPartsCardResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/parts:suggest-card", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) SuggestPrompts(ctx context.Context, in *admin.SuggestPromptsRequest) (*admin.SuggestPromptsResponse, error) {
 	out := new(admin.SuggestPromptsResponse)
 	if err := c.call(ctx, "POST", "/api/admin/ai/suggest-prompts", in, out); err != nil {
@@ -2816,6 +2928,14 @@ func (c *Client) TransitionColorwayStatus(ctx context.Context, in *admin.Transit
 func (c *Client) UnarchiveTask(ctx context.Context, in *admin.UnarchiveTaskRequest) (*admin.UnarchiveTaskResponse, error) {
 	out := new(admin.UnarchiveTaskResponse)
 	if err := c.call(ctx, "POST", "/api/admin/task/unarchive", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UndoDesignEdit(ctx context.Context, in *admin.UndoDesignEditRequest) (*admin.UndoDesignEditResponse, error) {
+	out := new(admin.UndoDesignEditResponse)
+	if err := c.call(ctx, "POST", "/api/admin/design/picture/{picture_id}/undo", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

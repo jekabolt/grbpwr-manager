@@ -33,21 +33,49 @@ import (
 //     separate entity drawn OVER the picture, never baked into it.
 const (
 	// Эталон 1 — silhouette views of a whole garment.
-	flatIdentifyGarment = "Automatically identify the garment type and reproduce it exactly: silhouette, proportions, neckline, collar, sleeves, straps, cut-outs, seam lines, princess seams, darts, pleats, pockets, closures (zippers, buttons, snaps, drawcords), waistband, cuffs, hems and bindings — all true to the reference. Ignore the model, pose, background, lighting and fabric color of the reference; extract only the construction."
+	// Wave 10 R19 (102-ARTIFACTS §2.2, owner 06.10): no element checklist of any kind; the old checklist («silhouette, … princess seams, darts, pleats, pockets, …»)
+	// invited the model to add exactly those; the line now asks for what is visible and nothing else.
+	// M3 (07.10, 104-PROMPT-LOOP): «When unsure whether something is there, leave it out: a missing line is a small error, an
+	// invented one is a different garment» told the model a missing element is cheap — and missing became the main error (103);
+	// the counting sentence that replaced it took a blind A/B (12 sheets per arm, 6 garments): errors 27 → 20, front+back
+	// strictly right 1/12 → 4/12, buttons back on the shirt, the inner V back on 38, invented not up (12 → 11).
+	flatIdentifyGarment = "Draw only what the photos show. Every line in the drawing must correspond to an edge, seam, opening, closure or row of stitching that is visible in a photo. Where the photos show plain cloth, draw plain white with no lines. A view, or a part of a view, that no photo shows is drawn as the plainest continuation of the photographed views — same hem line, same width, same sleeves — with no seam, stitching, vent, pocket or shaping added to it. Count what the photos show — buttons, pockets, seams, panels, vents — and draw exactly that many: a missing element and an added element are equally wrong. Do not complete the garment from a typical example of its kind. Draw every seam that is visible in the photos, including faint seams on dark fabric; add nothing that is not visible. Ignore the model, pose, background, lighting and fabric colour; draw only the garment."
 
-	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for outer contours, thin lines for internal design lines; fine dashed lines for topstitching and seam stitching. Garment drawn flat and symmetrical with subtle body-form shaping. No human body, no mannequin, no hanger."
+	// 102-ARTIFACTS §2.1: «fine dashed lines for topstitching…» ordered stitching on every edge; «with subtle body-form shaping» removed — it invited waist shaping the garment does not have.
+	flatStyleGarment = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the photos show. Dashed lines only for stitching that is actually visible in a photo; if none is visible, the drawing contains no dashed lines. Garment drawn flat and symmetrical, with the silhouette the photos show. No human body, no mannequin, no hanger."
+
+	// The Style of a run whose source is NOT a photo (Codex, R19): a run from words alone, and a
+	// hand_flat redraw whose dashed lines are the designer's own.
+	flatStyleGarmentNoRef = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the words name. Dashed lines only for stitching the words name; otherwise the drawing contains no dashed lines. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
+	flatStyleHandFlat     = "Style: black vector line art on a plain white background. Uniform, precise lines; heavier weight for the outer contour, thin solid lines for the edges and seams the designer's flats show. Dashed lines only where the designer's flats have them; otherwise none. Garment drawn flat and symmetrical. No human body, no mannequin, no hanger."
 
 	flatExcludedGarment = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, callouts, background elements."
 
 	// Эталон 2 — one enlarged construction detail.
-	flatIdentifyDetail = "Automatically identify what the detail is (seam, closure, strap, collar, cuff, pocket, hem, binding, hardware, etc.) and reproduce it exactly as constructed: layer order, seam placement, stitch rows, folds, edge finishes, hardware shape and proportions, closure mechanics, and the exact way it attaches to the surrounding panels. Ignore the model, pose, background, lighting, fabric color and texture of the reference; extract only the construction."
+	// Wave 10 (Codex): visible-only, like the garment line — the old checklist invited invented seams/layers/hardware.
+	flatIdentifyDetail = "Reproduce the detail exactly as it is visible in the reference photos and the accepted flats; do not add any seam, layer, stitch row, fold or hardware that is not visible. Ignore the model, pose, background, lighting, fabric color and texture of the photos; draw only the detail."
 
-	flatStyleDetail = "Style: black vector line art on a plain white background. Heavier weight for outer contours, thin lines for internal design lines, fine dashed lines for topstitching and seam stitching. Flat, technical, true proportions. No human body, no mannequin, no hanger."
+	flatStyleDetail = "Style: black vector line art on a plain white background. Heavier weight for the outer contour, thin solid lines for the edges and seams the photos and the accepted flats show; dashed lines only for stitching actually visible there, otherwise none. Flat, technical, true proportions. No human body, no mannequin, no hanger."
 
 	flatExcludedDetail = "Strictly excluded: color, fills, shading, gradients, shadows, fabric texture or print, logos, text, labels, measurements, arrows, background elements."
 
+	// Owner item 7: a detail run draws the detail and nothing else. The «garment context» block
+	// above still names the whole garment (so the detail is drawn true to it), and without this
+	// sentence the model reads that block as the subject and returns a front/back sheet.
+	flatOnlyDetail = "Draw ONLY this one detail, isolated and close up, as a flat technical sketch. No full garment, no front, back or side views, no multiple views on one sheet."
+
+	flatOnlyDetails = "Draw ONLY these details, each one isolated and close up, as flat technical sketches. No full garment, no front, back or side views of the garment."
+
 	// Shared closing paragraph — identical in both of the owner's prompts.
 	flatOutput = "Output: high resolution, crisp clean lines, white seamless background, apparel industry technical drawing aesthetic."
+
+	// flatNoTextNoGrey — round 7's remaining fault was style (grey fills in the bands); the sentence that
+	// answers it. Said on every flat run AFTER every human word and before the owner's verbatim style
+	// paragraphs (which it does not replace).
+	flatNoTextNoGrey = "No text, no view names, no grey, no tint, no shading anywhere on the drawing — the inside of every band, binding and collar stays white."
+
+	// flatSideFacing — the side-view convention (r5 layout): a LAYOUT rule, said whenever a side is drawn.
+	flatSideFacing = "SIDE LEFT shows the wearer's LEFT flank with the front facing the LEFT edge; SIDE RIGHT the right flank with the front facing the RIGHT edge (mirror images)."
 )
 
 // flatCraft assembles the craft block for one flat run: intro, identification, the layout
@@ -65,6 +93,56 @@ const (
 // close-up. The mixed case is not something either reference prompt describes, so the garment
 // frame (the more general of the two) carries it.
 func flatCraft(p runParams, detailNames []string, refs int) string {
+	return flatCraftFor(p, detailNames, refs, "", "")
+}
+
+// flatCraftAttached — flatCraft over the pictures actually attached: a mood picture (a DIFFERENT
+// garment) is not counted as «the reference» the owner's paragraphs are true to, and the craft says
+// once, after the identification, that it is style mood only (M2 / Codex b6). With no mood picture it
+// is flatCraft byte for byte.
+//
+// The card's join list never reaches it (owner 06.10 / 07.10, 100-CONSTRUCTION-DEADEND: a dead end;
+// the switch, the sentence generator and the frozen inputs.joins left with M7b). A snapshot frozen
+// before M7b still carries `joins`; nothing reads it (flat_prompt_bytes_test.go).
+func flatCraftAttached(p runParams, detailNames []string, attached []refCaption) string {
+	mood := flatMoodSentence(attached)
+	accepted := ""
+	if detailOnlyRun(p.Views) {
+		accepted = flatAcceptedViewsSentence(attached)
+	}
+	return flatCraftFor(p, detailNames, len(attached)-len(flatMoodImages(attached)), mood, accepted)
+}
+
+// flatAcceptedViewCaption — the caption of the card's FRONT / BACK flat plate on a DETAIL run (T8,
+// owner 06.10 «детали получают готовые FRONT/BACK как вход»): not «the current state of the
+// garment» to be redrawn, but the finished views the detail has to agree with.
+func flatAcceptedViewCaption(view string) string {
+	return "this garment's accepted technical flat — " + captionView(view) + " (finished and approved; the detail must agree with it)"
+}
+
+// flatAcceptedViewsSentence — the paragraph of a detail run that carries the accepted FRONT / BACK
+// flats: which images they are and what they rule. "" when none travelled.
+func flatAcceptedViewsSentence(attached []refCaption) string {
+	var nums, views []string
+	for i, rc := range attached {
+		if rc.IsAcceptedView {
+			nums = append(nums, strconv.Itoa(i+1))
+			views = append(views, captionView(rc.View))
+		}
+	}
+	if len(nums) == 0 {
+		return ""
+	}
+	label, verb, them := "Image "+nums[0], "is this garment's accepted technical flat ("+views[0]+")", "it"
+	if len(nums) > 1 {
+		label = "Images " + strings.Join(nums[:len(nums)-1], ", ") + " and " + nums[len(nums)-1]
+		verb, them = "are this garment's accepted technical flats ("+strings.Join(views, ", ")+")", "them"
+	}
+	return label + " " + verb + " — finished and approved. The detail must agree with " + them +
+		" exactly: the same position on the garment, the same proportions, seam lines, stitch rows, layer order and construction as drawn there. Where a photo and the flats differ, follow the flats. Read the detail off the flats; do not draw the whole garment."
+}
+
+func flatCraftFor(p runParams, detailNames []string, refs int, mood, accepted string) string {
 	detail := detailOnlyRun(p.Views)
 
 	identify := flatIdentifyGarment
@@ -79,28 +157,47 @@ func flatCraft(p runParams, detailNames []string, refs int) string {
 		// reference to be true to, and keeping those clauses would tell the model to be faithful
 		// to a picture it was never shown.
 		identify = flatIdentifyGarmentNoRef
+		if !detail {
+			style = flatStyleGarmentNoRef
+		}
 		if detail {
 			identify = flatIdentifyDetailNoRef
 		}
 	}
 
+	layout := flatLayoutParagraph(p.Views, detailNames, p.Layout, refs)
+	// The side-facing convention is a LAYOUT rule, not construction: said whenever a side is drawn.
+	if !detail && flatHasSideView(p.Views) {
+		layout += " " + flatSideFacing
+	}
 	paras := []string{
 		flatIntro(detail, countDetails(p.Views), refs),
 		identify,
-		flatLayoutParagraph(p.Views, detailNames, p.Layout, refs),
-		style,
-		excluded,
-		flatOutput,
 	}
+	if mood != "" {
+		paras = append(paras, mood)
+	}
+	if accepted != "" {
+		paras = append(paras, accepted)
+	}
+	paras = append(paras, layout)
+	if detail {
+		only := flatOnlyDetail
+		if countDetails(p.Views) > 1 {
+			only = flatOnlyDetails
+		}
+		paras = append(paras, only)
+	}
+	paras = append(paras, flatNoTextNoGrey, style, excluded, flatOutput)
 	return strings.Join(paras, "\n\n")
 }
 
 // The no-reference identification variants: the same construction vocabulary as the owner's
 // paragraphs, minus every clause that points at a reference image.
 const (
-	flatIdentifyGarmentNoRef = "Reproduce its construction exactly and explicitly: silhouette, proportions, neckline, collar, sleeves, straps, cut-outs, seam lines, princess seams, darts, pleats, pockets, closures (zippers, buttons, snaps, drawcords), waistband, cuffs, hems and bindings — all true to the description above."
+	flatIdentifyGarmentNoRef = "Draw exactly what the words above state; do not add any seam, dart, pocket, vent, stitching or detail they do not name; no dashed lines unless the words name visible stitching."
 
-	flatIdentifyDetailNoRef = "Reproduce it exactly as constructed: layer order, seam placement, stitch rows, folds, edge finishes, hardware shape and proportions, closure mechanics, and the exact way it attaches to the surrounding panels."
+	flatIdentifyDetailNoRef = "Draw the detail exactly as the words above and the accepted flats show it; add nothing they do not show."
 )
 
 // flatIntro is the opening sentence, aimed at what the run actually has: the reference image, the
@@ -293,4 +390,70 @@ func countWord(n int) string {
 		return "seven"
 	}
 	return strconv.Itoa(n)
+}
+
+// flatDetailGarmentLabel labels WORDS on a detail-only flat run: the garment is context, the detail
+// is the subject.
+const flatDetailGarmentLabel = "garment context (for reference only — this is NOT what to draw; draw only the detail named below)"
+
+// flatHasSideView — whether the run draws a side view (the side-facing convention is said only then).
+func flatHasSideView(views []string) bool {
+	for _, v := range views {
+		if v == entity.DesignViewSideL || v == entity.DesignViewSideR {
+			return true
+		}
+	}
+	return false
+}
+
+// flatMissingViewsLine — 102-ARTIFACTS §2.3: the views this garment sheet asks for that no attached
+// picture shows, said once under the references («- no photo shows the BACK, the SIDE LEFT or the SIDE
+// RIGHT»), so the identify paragraph's «a view no photo shows» has its subject. A photo's reference role
+// (front / back / side_l / side_r), a designer's flat (front_flat / back_flat) and a bench plate's view
+// count as showing that view. "" for a detail run or when every asked view is shown.
+func flatMissingViewsLine(views []string, attached []refCaption) string {
+	if detailOnlyRun(views) {
+		return ""
+	}
+	shown := map[string]bool{}
+	for _, rc := range attached {
+		if rc.View != "" {
+			shown[rc.View] = true
+		}
+		if rc.IsStructure && rc.StructView != "" {
+			shown[rc.StructView] = true
+		}
+		switch rc.Role {
+		case entity.DesignRefRoleFrontFlat:
+			shown[entity.DesignViewFront] = true
+		case entity.DesignRefRoleBackFlat:
+			shown[entity.DesignViewBack] = true
+		case entity.DesignViewSide:
+			// A side photo whose flank the board could not tell shows a side either way: both side
+			// views are drawn from it, and «no photo shows the SIDE LEFT or the SIDE RIGHT» next to it
+			// would be false.
+			if rc.FromRef {
+				shown[entity.DesignViewSideL] = true
+				shown[entity.DesignViewSideR] = true
+			}
+		default:
+			if rc.FromRef && rc.Role != "" {
+				shown[rc.Role] = true
+			}
+		}
+	}
+	var missing []string
+	for _, v := range views {
+		if v == entity.DesignViewDetail || shown[v] {
+			continue
+		}
+		missing = append(missing, "the "+displayView(v))
+	}
+	switch len(missing) {
+	case 0:
+		return ""
+	case 1:
+		return "- no photo shows " + missing[0]
+	}
+	return "- no photo shows " + strings.Join(missing[:len(missing)-1], ", ") + " or " + missing[len(missing)-1]
 }

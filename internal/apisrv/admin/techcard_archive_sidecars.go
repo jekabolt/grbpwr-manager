@@ -897,6 +897,21 @@ func archiveCardMediaSlots(card *entity.TechCard) []archiveMediaSlot {
 			add(om.MediaId, "", "")
 		}
 	}
+	// Labels rework (0386): the composition label's logo and the mockups of the garment labels and
+	// packaging items — three more carriers, registered in media_usage.go beside the four above.
+	if card.CareLabel != nil && card.CareLabel.LogoMediaId.Valid {
+		add(int(card.CareLabel.LogoMediaId.Int32), "", "")
+	}
+	for _, l := range card.GarmentLabels {
+		for _, id := range l.MediaIds {
+			add(id, "", "")
+		}
+	}
+	for _, it := range card.PackagingItems {
+		for _, id := range it.MediaIds {
+			add(id, "", "")
+		}
+	}
 	return out
 }
 

@@ -98,6 +98,8 @@ const (
 		"(tmp/plans/playground-tab/12-PROVIDERS.md, 2026-09)"
 	srcGPTImage25 = "fal's published GPT Image 2.5 table, 1024² medium $0.0133 per image " +
 		"(tmp/plans/playground-tab/12-PROVIDERS.md, 2026-09) — UNVERIFIED, measure usage.cost on beta"
+	srcGPTImage25Flare = "OpenRouter usage.cost measured on 16:9 flat sheets, $0.049–0.050 per image " +
+		"(tmp/plans/flat-consistency/costs.jsonl, 2026-10-05)"
 	srcGemini3ProImage = "https://ai.google.dev/gemini-api/docs/pricing, read 2026-09-27: 1K/2K image = 1120 output tokens " +
 		"× $120/M ≈ $0.134 (4K ≈ $0.24 not modelled; designgen/engines.go)"
 	srcSeedream5Pro = "https://www.atlascloud.ai/blog/ai-updates/seedream-5-0-pro-price, read 2026-09-27: ≤ 2.36 MP $0.045 " +
@@ -216,6 +218,12 @@ var catalogue = map[string][]Model{
 			srcBrief+" (OpenRouter catalogue)"+orFallback),
 		chat(entity.AIProviderOpenRouter, "anthropic/claude-opus-5", "Claude Opus 5", "5", "25",
 			"OpenRouter price $5/M in, $25/M out, recorded on the live tech-card analysis run 2026-08-25"+orFallback),
+		// The quiz (0393) and the board read (101) route here; without these rows the ledger booked them
+		// NULL whenever OpenRouter left usage.cost out, and the spend panel showed the purposes without money.
+		chat(entity.AIProviderOpenRouter, "anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5", "2", "10",
+			"https://openrouter.ai/api/v1/models, read 2026-10-06: $2/M in, $10/M out"+orFallback),
+		chat(entity.AIProviderOpenRouter, "anthropic/claude-opus-5.5", "Claude Opus 5.5", "4", "20",
+			"https://openrouter.ai/api/v1/models, read 2026-10-06: $4/M in, $20/M out"+orFallback),
 		chat(entity.AIProviderOpenRouter, "openai/gpt-5-mini", "GPT-5 mini", "0.25", "2",
 			srcORModels+": $0.25/M in, $2/M out"+orFallback),
 		// Unpriced ON PURPOSE (06-BRIEFS-A curated table; Codex review A1 #3): OpenRouter's usage.cost
@@ -225,6 +233,7 @@ var catalogue = map[string][]Model{
 			"unpriced — no curated price by 2026-09-27 ("+srcBrief+")"+orFallback),
 		image(entity.AIProviderOpenRouter, "openai/gpt-image-2", "GPT Image 2", "0.053", srcORGPTImage2+orFallback),
 		image(entity.AIProviderOpenRouter, "openai/gpt-image-2.5-sunburst", "GPT Image 2.5", "0.013", srcGPTImage25+orFallback),
+		image(entity.AIProviderOpenRouter, "openai/gpt-image-2.5-flare", "GPT Image 2.5 Flare", "0.05", srcGPTImage25Flare+orFallback),
 		image(entity.AIProviderOpenRouter, "google/gemini-3-pro-image", "Gemini 3 Pro Image", "0.134", srcGemini3ProImage+orFallback),
 		image(entity.AIProviderOpenRouter, "bytedance-seed/seedream-5-0-pro", "Seedream 5 Pro", "0.045", srcSeedream5Pro+orFallback),
 	},

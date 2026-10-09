@@ -1113,10 +1113,15 @@ func checkpointTx(rep dependency.Repository, at func(string) bool, stop func()) 
 // всё заново на повторе (точка на повторе уже не держит) и отказывает своим отказом; ровно одна
 // операция проходит; инвариант в строках цел.
 //
-// Если одна из точек не достигнута за отведённое время, проба КРАСНЕЕТ, а не молча проходит
-// последовательным порядком: её смысл — именно переплетение.
+// ПОСЛЕ C2 (T28 v2, locks.go) ПЕРЕПЛЕТЕНИЯ НЕТ ВОВСЕ: перезапись до первого чтения берёт X на строку
+// карточки и на оригинал, а сейв читает ту же карточку и те же кадры (под SERIALIZABLE — S-замки).
+// Кто первым дошёл до своего чтения, тот держит строки, и вторая дверь ждёт замка ДО своей точки:
+// обе точки сразу не достигаются никогда. Проба теперь утверждает именно это (переплетение не
+// случилось за пять секунд) и, как прежде, что ровно одна операция проходит, а инвариант в строках
+// цел. Если обе точки достигнуты — замки C2 пропали, и проба краснеет.
 //
-// МУТАЦИИ: снять сторож сейва (порядок «перезапись первой» проходит, переплетение кончается двумя
+// МУТАЦИИ: снять у перезаписи lockDesignCard и lockDesignPictures — обе точки достигаются (одного из
+// двух замков хватает); дальше прежние: снять сторож сейва (порядок «перезапись первой» проходит, переплетение кончается двумя
 // успехами); читать кадры сейва на другом хендле (переплетение кончается двумя успехами — чтение без
 // замка не мешает штампу).
 func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
@@ -1147,7 +1152,7 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 		require.Zero(t, probeSheetRows(t, raw, p.card, p.sheet.MediaId))
 	})
 
-	t.Run("обе двери прочитали, ни одна не писала — ровно одна проходит", func(t *testing.T) {
+	t.Run("обе двери идут друг за другом по замку карточки — ровно одна проходит", func(t *testing.T) {
 		guardRead := func(q string) bool {
 			return strings.Contains(q, "FROM design_picture") && strings.Contains(q, "replaced_by IS NOT NULL")
 		}
@@ -1203,7 +1208,7 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 			}()
 
 			forced := true
-			checkpointsDue := time.NewTimer(30 * time.Second)
+			checkpointsDue := time.NewTimer(5 * time.Second)
 			defer checkpointsDue.Stop()
 		checkpoints:
 			for _, reached := range []chan struct{}{saveRead, flatRead} {
@@ -1232,7 +1237,7 @@ func TestDesignDBSheetSaveAndOverwriteCloseInEitherOrder(t *testing.T) {
 					t.Fatalf("round %d: the save and the overwrite did not both return in time", round)
 				}
 			}
-			require.True(t, forced, "round %d: the two reads did not both happen before either write", round)
+			require.False(t, forced, "round %d: both reads happened before either write — the C2 locks (tech card row, original) are gone", round)
 
 			switch {
 			case saveErr == nil && flatErr == nil:

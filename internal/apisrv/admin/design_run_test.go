@@ -17,6 +17,7 @@ import (
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/designgen"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
@@ -64,6 +65,9 @@ func designRunCtx() context.Context {
 func designStubNoDisplayOnly(design *mocks.MockDesign) {
 	design.EXPECT().MediaHeldDisplayOnly(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 	design.EXPECT().MediaHeldHiddenOnly(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	// M16: a flat asks which of its pictures design runs produced — «none» here; the rule's own
+	// probes answer otherwise (design_board_generated_test.go).
+	design.EXPECT().MediaProducers(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 }
 
 // ─────────────────────── стенд ───────────────────────
@@ -270,7 +274,13 @@ func TestDesignRunInputsNeverCarryTheMoodboard(t *testing.T) {
 			for _, r := range snap.GetRefs() {
 				refIDs = append(refIDs, r.GetMediaId())
 			}
-			require.ElementsMatch(t, []int32{designRefMediaID, designExtraMediaID}, refIDs,
+			want := []int32{designRefMediaID, designExtraMediaID}
+			if kind == entity.DesignRunKindFlat {
+				// Wave 10: a flat sends only the garment's photos WITH a side role — the role-less
+				// extra input stays home too.
+				want = []int32{designRefMediaID}
+			}
+			require.ElementsMatch(t, want, refIDs,
 				"снимок обязан нести явно перенесённый референс и явно названный доп-вход")
 
 			// ── доска отсутствует и как блок, и как число ──
@@ -457,7 +467,16 @@ func TestDesignEffectiveParamsRefusesNonsense(t *testing.T) {
 // плитки, которых генерация не приносит, и человек читал бы это как потерянный результат.
 func TestDesignRequestedOutputsCountsPicturesNotViews(t *testing.T) {
 	three := []string{entity.DesignViewFront, entity.DesignViewBack, entity.DesignViewSideL}
+	// A flat GARMENT sheet is ONE composite (wave 10), never one per view.
 	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}), "a photos sheet is one picture")
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne,
+			Flat: &pb_common.DesignFlatParams{Mode: designgen.FlatModeHandFlat}}))
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindFlat,
+		&pb_common.DesignRunParams{Views: []string{entity.DesignViewDetail}, Layout: designLayoutOne}),
+		"a detail callout is one close-up")
+	require.Equal(t, 1, designRequestedOutputs(entity.DesignRunKindRender,
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutOne}))
 	require.Equal(t, 3, designRequestedOutputs(entity.DesignRunKindFlat,
 		&pb_common.DesignRunParams{Views: three, Layout: designLayoutPerView}))
@@ -483,7 +502,8 @@ func TestDesignRerunTakesItsInputsFromTheParentNotFromTodaysCard(t *testing.T) {
 		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFlat,
 		Inputs: entity.RawJSON(parentInputs),
 	}
-	srv := &Server{}
+	// M16: a flat rerun asks the store which of its parent's pictures were generated («none» here).
+	srv := newDesignRunRig(t, designMoodCard(), designBandWith(true)).srv
 	params := &pb_common.DesignRunParams{Views: []string{entity.DesignViewFront}, Layout: designLayoutPerView}
 	snap, fit, err := srv.designRunInputs(context.Background(), designInputSources{
 		Kind:   entity.DesignRunKindFlat,
@@ -757,10 +777,12 @@ func TestDraftDesignIdeaResumeUsesTheRotatedToken(t *testing.T) {
 func TestDesignAssembleInputsRefusesTooManyReferences(t *testing.T) {
 	refs := make([]entity.DesignReference, 0, designMaxInputRefs+1)
 	for i := 0; i <= designMaxInputRefs; i++ {
-		refs = append(refs, entity.DesignReference{MediaId: 1000 + i})
+		refs = append(refs, entity.DesignReference{MediaId: 1000 + i, Role: entity.DesignViewFront})
 	}
+	// A RENDER: a flat run takes at most two photos of a view (101 §2.8), so it can no longer reach the
+	// ceiling with one view — the ceiling itself is the same line for every kind.
 	_, err := designAssembleInputs(designInputSources{
-		Kind: entity.DesignRunKindFlat, Refs: refs, Params: &pb_common.DesignRunParams{},
+		Kind: entity.DesignRunKindRender, Refs: refs, Params: &pb_common.DesignRunParams{},
 	})
 	require.Error(t, err)
 	code, _ := errorReason(t, err)
@@ -981,6 +1003,8 @@ func newDraftRigWithCard(
 	}).Maybe()
 	designStubNoDisplayOnly(design)
 	cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
+	// 62 D1: a card with quiz answers reads its size chart once for the staleness fingerprint.
+	cards.EXPECT().GetStyleSizeChart(mock.Anything, mock.Anything).Return(entity.StyleSizeChart{}, nil).Maybe()
 	// КАРТИНКИ ДОСКИ РАЗРЕШАЮТСЯ В АДРЕСА: с этого места черновик идеи их ЧИТАЕТ (решение
 	// владельца «только в генерации»), поэтому стенд обязан уметь их отдать.
 	media := mocks.NewMockMedia(t)
@@ -1320,8 +1344,9 @@ func designW3Refs() []entity.DesignReference {
 // поле, доехавшее до сообщения, но уехавшее в снимок под другим именем, было бы для него пустым —
 // молча, без единой ошибки.
 func TestDesignRunInputsCarryTheGarmentDescriptionTheNoteAndTheMarkup(t *testing.T) {
+	// Wave 10: a flat sends no description (only a class line) — the render route still reads it whole.
 	snap, err := designAssembleInputs(designInputSources{
-		Kind:   entity.DesignRunKindFlat,
+		Kind:   entity.DesignRunKindRender,
 		Card:   designW3Card(),
 		Refs:   designW3Refs(),
 		Bench:  designBandWith(true).Bench,
@@ -1400,7 +1425,8 @@ func TestDesignRerunKeepsTheParentsGarmentDescription(t *testing.T) {
 		Id: 12, TechCardId: designRunCardID, Kind: entity.DesignRunKindFlat,
 		Inputs: entity.RawJSON(parentInputs),
 	}
-	srv := &Server{}
+	// M16: a flat rerun asks the store which of its parent's pictures were generated («none» here).
+	srv := newDesignRunRig(t, designW3Card(), &entity.DesignBand{}).srv
 	snap, _, err := srv.designRunInputs(context.Background(), designInputSources{
 		Kind:   entity.DesignRunKindFlat,
 		Card:   designW3Card(), // сегодня на карточке designGarmentWords

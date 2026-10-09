@@ -95,6 +95,8 @@ type ArchiveInput struct {
 	Assembly  []AssemblyLink
 	Colorways []ColorwayPayload
 	Materials []MaterialPassport
+	// DesignQuiz — design_quiz.json (1.2), written only when the card has answers.
+	DesignQuiz []DesignQuizAnswer
 
 	// Media / Patterns / Markers are the three indexes. Their LENGTHS are the manifest's contents
 	// counters — not the number of files, which dedup makes smaller (two media ids with identical
@@ -310,6 +312,7 @@ func planArchive(in ArchiveInput) (Manifest, []archiveEntry, error) {
 		{FileSizeChart, sizeChart, true},
 		{FileAssembly, in.Assembly, len(in.Assembly) > 0},
 		{FileColorways, in.Colorways, len(in.Colorways) > 0},
+		{FileDesignQuiz, in.DesignQuiz, len(in.DesignQuiz) > 0},
 		{FileMaterialsIndex, in.Materials, len(in.Materials) > 0},
 		{FileMediaIndex, in.Media, len(in.Media) > 0},
 		{FilePatternsIndex, in.Patterns, len(in.Patterns) > 0},

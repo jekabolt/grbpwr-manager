@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
@@ -190,7 +191,8 @@ func TestStorageFailureSweepsWhatWasAlreadyMintedAndForbidsRetry(t *testing.T) {
 	require.Equal(t, []int{1}, sink.dropped)
 	require.Empty(t, st.completed)
 	require.Len(t, st.failed, 1)
-	require.Equal(t, CodeStorageFailed, st.failed[0].ErrorCode)
+	// the landing is tried twice (run 148), then the run closes NAMED — never re-queued
+	require.Equal(t, entity.DesignErrorCodeLandingFailed, st.failed[0].ErrorCode)
 	require.False(t, st.failed[0].Retryable, "a retry would pay again for bytes already delivered")
 	require.Len(t, st.finished, 1)
 	require.Equal(t, entity.DesignAttemptDelivered, st.finished[0].State)
@@ -317,18 +319,72 @@ func TestTerminalRunIsNotAnIncident(t *testing.T) {
 	require.Equal(t, sink.mintedIDs(), sink.dropped)
 }
 
-// TestDatabaseTroubleIsAWorkerError — as opposed to the two above. It has to reach the tick so the
-// worker backs off instead of hammering a database that is not answering.
-func TestDatabaseTroubleIsAWorkerError(t *testing.T) {
+// TestDatabaseTroubleClosesTheRunNamed — a delivered result the store cannot file (twice) closes the
+// run `landing_failed` on a fresh context instead of leaving it `running` on its lease (run 148);
+// only when even FailRun fails is it a worker error the tick backs off on.
+func TestDatabaseTroubleClosesTheRunNamed(t *testing.T) {
 	st := &fakeStore{completeEr: errBoom}
 	sink := newFakeSink(ContentTypePNG)
 	img := &fakeProvider{name: "image", out: okOutcome(1, 0.04)}
 	w := testWorker(st, nil, sink, Providers{Image: img})
 
-	err := w.execute(context.Background(), testRun(3, entity.DesignRunKindFlat), "tok")
+	require.NoError(t, w.execute(context.Background(), testRun(3, entity.DesignRunKindFlat), "tok"))
+	require.Len(t, st.completed, 2, "filing is tried twice")
+	require.Len(t, st.failed, 1)
+	require.Equal(t, entity.DesignErrorCodeLandingFailed, st.failed[0].ErrorCode)
+	require.False(t, st.failed[0].Retryable)
+	require.Equal(t, sink.mintedIDs(), sink.dropped, "nothing was filed, so nothing was adopted")
+
+	down := &fakeStore{completeEr: errBoom, failErr: errBoom}
+	w2 := testWorker(down, nil, newFakeSink(ContentTypePNG), Providers{Image: &fakeProvider{name: "image", out: okOutcome(1, 0.04)}})
+	err := w2.execute(context.Background(), testRun(3, entity.DesignRunKindFlat), "tok")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, errBoom))
-	require.Equal(t, sink.mintedIDs(), sink.dropped, "nothing was filed, so nothing was adopted")
+}
+
+// TestSettleRunsOnAFreshBudget — the pass's context is already spent when the provider answers
+// (run 148): the landing and the close still happen.
+func TestSettleRunsOnAFreshBudget(t *testing.T) {
+	st := &fakeStore{}
+	sink := newFakeSink(ContentTypePNG)
+	img := &fakeProvider{name: "image", out: okOutcome(4, 0.29)}
+	w := testWorker(st, nil, sink, Providers{Image: img})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	run := testRun(3, entity.DesignRunKindFlat)
+	require.NoError(t, w.settle(ctx, Job{Kind: run.Kind}, run, "tok", 1, okOutcome(4, 0.29), nil, &candidateChain{}))
+	require.Len(t, st.completed, 1)
+	require.Len(t, st.completed[0].Outputs, 4)
+	for i, o := range st.completed[0].Outputs {
+		require.Equal(t, i, o.Ordinal, "parallel landing keeps the ordinals")
+	}
+	require.Equal(t, 30*time.Second+4*settlePerArtifact, settleBudget(4))
+	require.Equal(t, settleMax, settleBudget(40))
+}
+
+// TestPastTheCapARetryableFaultClosesTimedOut — a capped run that fails past its wall-clock cap is
+// closed timed_out, not re-queued; an uncapped kind keeps its retry.
+func TestPastTheCapARetryableFaultClosesTimedOut(t *testing.T) {
+	st := &fakeStore{}
+	w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{})
+	now := time.Date(2026, 10, 5, 18, 0, 0, 0, time.UTC)
+	w.now = func() time.Time { return now }
+	run := testRun(3, entity.DesignRunKindFlat)
+	run.StartedAt = sql.NullTime{Time: now.Add(-7 * time.Minute), Valid: true}
+	require.NoError(t, w.failRun(context.Background(), run, "tok", errBoom))
+	require.Equal(t, entity.DesignErrorCodeTimedOut, st.failed[0].ErrorCode)
+	require.False(t, st.failed[0].Retryable)
+	require.Contains(t, st.failed[0].LastError, "took longer than 6 min")
+
+	fresh := testRun(4, entity.DesignRunKindFlat)
+	fresh.StartedAt = sql.NullTime{Time: now.Add(-time.Minute), Valid: true}
+	require.NoError(t, w.failRun(context.Background(), fresh, "tok", errBoom))
+	require.NotEqual(t, entity.DesignErrorCodeTimedOut, st.failed[1].ErrorCode)
+
+	threed := testRun(5, entity.DesignRunKindThreed)
+	threed.StartedAt = run.StartedAt
+	require.NoError(t, w.failRun(context.Background(), threed, "tok", errBoom))
+	require.NotEqual(t, entity.DesignErrorCodeTimedOut, st.failed[2].ErrorCode, "3D is not capped")
 }
 
 func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
@@ -416,4 +472,39 @@ func TestOverDeliveryDoesNotOverwriteTheComplaintAboutThePicture(t *testing.T) {
 	require.Len(t, sink.put, 1, "обрезка работает и рядом с чужой жалобой")
 	require.Equal(t, CodeCutoutNoAlpha, st.finished[0].ErrorCode)
 	require.Equal(t, entity.DesignAttemptDelivered, st.finished[0].State)
+}
+
+// TestALandingRetryNeverReusesObjectKeys — the second landing gets its own object names, so no two
+// media rows ever point at the same bucket objects (Codex critical 2).
+func TestALandingRetryNeverReusesObjectKeys(t *testing.T) {
+	st := &fakeStore{}
+	sink := newFakeSink(ContentTypePNG)
+	sink.failAfter = 1
+	w := testWorker(st, nil, sink, Providers{Image: &fakeProvider{name: "image", out: okOutcome(3, 0.12)}})
+	require.NoError(t, w.execute(context.Background(), testRun(4, entity.DesignRunKindFlat), "tok"))
+	require.Len(t, sink.names, 6, "two landings of three")
+	seen := map[string]bool{}
+	for _, n := range sink.names {
+		require.False(t, seen[n], "object name %q handed out twice", n)
+		seen[n] = true
+	}
+}
+
+// TestACappedRunsClaimEndsAfterItsCap — at pickup a capped run's claim is shortened to its deadline
+// plus the live worker's worst tail (Codex critical 1); an uncapped kind keeps the full lease.
+func TestACappedRunsClaimEndsAfterItsCap(t *testing.T) {
+	now := time.Date(2026, 10, 5, 18, 0, 0, 0, time.UTC)
+	flat := testRun(3, entity.DesignRunKindFlat)
+	flat.StartedAt = sql.NullTime{Time: now.Add(-time.Minute), Valid: true}
+	threed := testRun(4, entity.DesignRunKindThreed)
+	threed.StartedAt = flat.StartedAt
+	st := &fakeStore{claimReturn: []entity.DesignRun{flat, threed}}
+	w := testWorker(st, nil, newFakeSink(ContentTypePNG), Providers{Image: &fakeProvider{name: "image", out: okOutcome(1, 0.04)}})
+	w.now = func() time.Time { return now }
+	w.runOnce(context.Background())
+	require.Equal(t, entity.DesignImageRunCapDefault-time.Minute+claimTailAfterCap, st.capped[3])
+	_, ok := st.capped[4]
+	require.False(t, ok, "3D keeps its lease")
+	require.Less(t, entity.DesignImageRunCapDefault+claimTailAfterCap, 20*time.Minute)
+	require.Equal(t, 2*closeTimeout+time.Minute, w.capClaimWithin(now.Add(-time.Hour)), "a run past its cap still gets time to close")
 }

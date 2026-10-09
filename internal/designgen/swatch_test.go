@@ -2,6 +2,7 @@ package designgen
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -147,4 +148,195 @@ func TestTheSwatchModeREACHES_THE_JOB_AND_THE_PROMPT(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, job.References)
 	require.Contains(t, strings.ToLower(job.Prompt), "no picture is attached")
+}
+
+// TestTheHardwareCraftIS_A_PRODUCT_SHOT_NOT_A_TILE: mode hardware writes its own craft (one item,
+// white ground, colour matched if stated, refs = shape/material) and none of the tile half.
+func TestTheHardwareCraftIS_A_PRODUCT_SHOT_NOT_A_TILE(t *testing.T) {
+	for _, pictures := range []int{0, 3} {
+		low := strings.ToLower(patternCraft(patternParams{Mode: entity.DesignPatternModeHardware, RepeatMM: 80}, pictures))
+		for _, must := range []string{"single garment trim item", "exactly one of it",
+			"plain, seamless pure white background", "soft, even studio light", "any hand",
+			"match the stated colour value exactly", "if no colour is stated"} {
+			require.Containsf(t, low, must, "%d pictures: must say %q", pictures, must)
+		}
+		for _, never := range []string{"repeating tile", "right edge", "repeat", "fill the frame edge to edge",
+			"natural scale", "reconstruct the print"} {
+			require.NotContainsf(t, low, never, "%d pictures: must not say %q", pictures, never)
+		}
+		if pictures > 0 {
+			require.Contains(t, low, "not necessarily for the colour")
+		} else {
+			require.Contains(t, low, "no picture is attached")
+		}
+	}
+}
+
+// TestAHardwarePictureTAKES_UP_TO_FOUR_REFERENCES_IN_ONE_CALL.
+func TestAHardwarePictureTAKES_UP_TO_FOUR_REFERENCES_IN_ONE_CALL(t *testing.T) {
+	for _, refs := range [][]string{nil, {"a"}, {"a", "b", "c", "d"}} {
+		calls, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeHardware,
+			Prompt: "hw", References: refs})
+		require.NoErrorf(t, err, "%d refs", len(refs))
+		require.Len(t, calls, 1)
+		require.Equal(t, 1, calls[0].n)
+		require.Len(t, calls[0].refs, len(refs))
+	}
+	_, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeHardware,
+		References: []string{"a", "b", "c", "d", "e"}})
+	require.Error(t, err)
+	require.False(t, classify(err).Retryable)
+}
+
+// TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN: mode label writes labelCraft, not hardwareCraft.
+// With the logo marker the FIRST picture is the LOGO ARTWORK to reproduce and every other picture is
+// a REFERENCE label (construction only, never its logo/text/colours); without it every picture is a
+// reference and no wordmark is invented; with no picture the label is blank.
+func TestTheLabelCraftREPRODUCES_THE_LOGO_IT_IS_GIVEN(t *testing.T) {
+	for _, tc := range []struct {
+		pictures int
+		hasLogo  bool
+	}{{0, false}, {0, true}, {1, true}, {4, true}, {1, false}, {4, false}} {
+		got := patternCraft(patternParams{Mode: entity.DesignPatternModeLabel, RepeatMM: 80,
+			LabelHasLogo: tc.hasLogo}, tc.pictures)
+		low := strings.ToLower(got)
+		for _, must := range []string{"garment label:", "plain, seamless pure white background",
+			"soft, even studio light", "context only", "never draw the garment"} {
+			require.Containsf(t, low, must, "%+v: must say %q", tc, must)
+		}
+		for _, never := range []string{"hardware item:", "not necessarily for the colour", "logo that the words",
+			"repeating tile", "repeat"} {
+			require.NotContainsf(t, low, never, "%+v: must not say %q", tc, never)
+		}
+		switch {
+		case tc.pictures > 0 && tc.hasLogo:
+			require.Containsf(t, got, "FIRST attached picture is the brand's LOGO ARTWORK", "%+v", tc)
+			require.NotContainsf(t, low, "no logo is given", "%+v", tc)
+			if tc.pictures > 1 {
+				require.Containsf(t, got, "Every OTHER attached picture is a REFERENCE label", "%+v", tc)
+				require.Containsf(t, low, "never copy its logo, text or colours", "%+v", tc)
+			} else {
+				require.NotContainsf(t, got, "REFERENCE", "%+v", tc)
+			}
+		case tc.pictures > 0:
+			require.NotContainsf(t, got, "LOGO ARTWORK", "%+v", tc)
+			require.Containsf(t, got, "Every attached picture is a REFERENCE label", "%+v", tc)
+			require.Containsf(t, low, "never copy its logo, text or colours", "%+v", tc)
+			require.Containsf(t, low, "no logo is given: invent no wordmark", "%+v", tc)
+		default:
+			require.Containsf(t, low, "no logo is given: make a blank label", "%+v", tc)
+			require.NotContainsf(t, got, "LOGO ARTWORK", "%+v", tc)
+			require.NotContainsf(t, got, "REFERENCE", "%+v", tc)
+		}
+	}
+}
+
+// TestALabelRunNAMES_ITS_LOGO_BY_THE_MARKER: composePrompt reads «logo = picture 1» from the ask or
+// the colour words, case-insensitively; without it the pictures are references.
+func TestALabelRunNAMES_ITS_LOGO_BY_THE_MARKER(t *testing.T) {
+	att := []refCaption{{}, {}}
+	lb := func(words string) runParams {
+		return runParams{Colour: &colourRecipe{Words: words}, Pattern: &patternParams{Mode: entity.DesignPatternModeLabel}}
+	}
+	withLogo := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, lb("woven; Logo = Picture 1"), runInputs{}, att)
+	require.Contains(t, withLogo, "FIRST attached picture is the brand's LOGO ARTWORK")
+	viaAsk := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern,
+		Ask: sql.NullString{String: "logo = picture 1", Valid: true}}, lb("woven"), runInputs{}, att)
+	require.Contains(t, viaAsk, "FIRST attached picture is the brand's LOGO ARTWORK")
+	noLogo := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, lb("woven"), runInputs{}, att)
+	require.Contains(t, noLogo, "Every attached picture is a REFERENCE label")
+	require.NotContains(t, noLogo, "LOGO ARTWORK")
+}
+
+// TestALabelPictureTAKES_AT_MOST_FOUR_PICTURES: logo + references in one call; five refuse at the
+// money boundary.
+func TestALabelPictureTAKES_AT_MOST_FOUR_PICTURES(t *testing.T) {
+	for _, refs := range [][]string{nil, {"logo"}, {"logo", "a", "b", "c"}} {
+		calls, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeLabel,
+			Prompt: "label", References: refs})
+		require.NoErrorf(t, err, "%d refs", len(refs))
+		require.Len(t, calls, 1)
+		require.Equal(t, 1, calls[0].n)
+		require.Len(t, calls[0].refs, len(refs))
+	}
+	_, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeLabel,
+		References: []string{"a", "b", "c", "d", "e"}})
+	require.Error(t, err)
+	require.False(t, classify(err).Retryable)
+}
+
+// TestTheArtworkCraftREDRAWS_THE_SOURCE_IN_THE_TECHNIQUE: mode artwork writes artworkCraft. With
+// the source marker the FIRST picture is the SOURCE (shape and colours kept, only the material
+// changes); without it every picture is a technique reference and nothing is invented; no picture
+// = built from the words. No width words, no tile words.
+func TestTheArtworkCraftREDRAWS_THE_SOURCE_IN_THE_TECHNIQUE(t *testing.T) {
+	for _, tc := range []struct {
+		pictures  int
+		hasSource bool
+	}{{0, false}, {0, true}, {1, true}, {4, true}, {1, false}, {4, false}} {
+		got := patternCraft(patternParams{Mode: entity.DesignPatternModeArtwork, RepeatMM: 80,
+			ArtworkHasSource: tc.hasSource}, tc.pictures)
+		low := strings.ToLower(got)
+		for _, must := range []string{"artwork:", "plain, seamless pure white background", "straight on",
+			"satin and fill stitches", "merrow border"} {
+			require.Containsf(t, low, must, "%+v: must say %q", tc, must)
+		}
+		for _, never := range []string{"hardware item:", "garment label:", "repeat", " cm wide", "logo artwork"} {
+			require.NotContainsf(t, low, never, "%+v: must not say %q", tc, never)
+		}
+		switch {
+		case tc.pictures > 0 && tc.hasSource:
+			require.Containsf(t, got, "FIRST attached picture is the SOURCE artwork", "%+v", tc)
+			require.Containsf(t, got, "change ONLY its material into the named technique", "%+v", tc)
+			require.NotContainsf(t, low, "invent no", "%+v", tc)
+			if tc.pictures > 1 {
+				require.Containsf(t, got, "Every OTHER attached picture is a TECHNIQUE reference", "%+v", tc)
+			} else {
+				require.NotContainsf(t, got, "TECHNIQUE reference", "%+v", tc)
+			}
+		case tc.pictures > 0:
+			require.NotContainsf(t, got, "SOURCE", "%+v", tc)
+			require.Containsf(t, got, "Every attached picture is a TECHNIQUE reference", "%+v", tc)
+			require.Containsf(t, low, "invent no wordmark", "%+v", tc)
+		default:
+			require.Containsf(t, low, "no picture is attached: build only what the words name", "%+v", tc)
+			require.Containsf(t, low, "invent no wordmark", "%+v", tc)
+			require.NotContainsf(t, got, "SOURCE", "%+v", tc)
+		}
+	}
+}
+
+// TestAnArtworkRunNAMES_ITS_SOURCE_BY_THE_MARKER: composePrompt reads «artwork = picture 1» from
+// the ask or the colour words; the words block is «artwork in words».
+func TestAnArtworkRunNAMES_ITS_SOURCE_BY_THE_MARKER(t *testing.T) {
+	att := []refCaption{{}, {}}
+	aw := func(words string) runParams {
+		return runParams{Colour: &colourRecipe{Words: words}, Pattern: &patternParams{Mode: entity.DesignPatternModeArtwork}}
+	}
+	withSource := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, aw("embroidery; Artwork = Picture 1"), runInputs{}, att)
+	require.Contains(t, withSource, "FIRST attached picture is the SOURCE artwork")
+	require.Contains(t, withSource, "artwork in words:\nembroidery; Artwork = Picture 1")
+	require.NotContains(t, withSource, "fabric in words")
+	viaAsk := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern,
+		Ask: sql.NullString{String: "artwork = picture 1", Valid: true}}, aw("screen print"), runInputs{}, att)
+	require.Contains(t, viaAsk, "FIRST attached picture is the SOURCE artwork")
+	noSource := composePrompt(entity.DesignRun{Kind: entity.DesignRunKindPattern}, aw("embroidery"), runInputs{}, att)
+	require.Contains(t, noSource, "Every attached picture is a TECHNIQUE reference")
+	require.NotContains(t, noSource, "SOURCE")
+}
+
+// TestAnArtworkPictureTAKES_AT_MOST_FOUR_PICTURES: source + references in one call; five refuse.
+func TestAnArtworkPictureTAKES_AT_MOST_FOUR_PICTURES(t *testing.T) {
+	for _, refs := range [][]string{nil, {"src"}, {"src", "a", "b", "c"}} {
+		calls, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeArtwork,
+			Prompt: "artwork", References: refs})
+		require.NoErrorf(t, err, "%d refs", len(refs))
+		require.Len(t, calls, 1)
+		require.Equal(t, 1, calls[0].n)
+		require.Len(t, calls[0].refs, len(refs))
+	}
+	_, err := imageCalls(Job{Kind: entity.DesignRunKindPattern, PatternMode: entity.DesignPatternModeArtwork,
+		References: []string{"a", "b", "c", "d", "e"}})
+	require.Error(t, err)
+	require.False(t, classify(err).Retryable)
 }

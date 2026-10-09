@@ -222,54 +222,35 @@ func TestReserveScalesWithTheFramesAsked(t *testing.T) {
 
 // ─────────────────────── 4. ЧУЖОЕ МЕДИА ───────────────────────
 
-// КАРТИНКА ЧУЖОЙ КАРТОЧКИ НЕ УХОДИТ В ПЛАТНУЮ ГЕНЕРАЦИЮ.
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
 //
-// ЧТО БЫЛО: `extra_input_media_ids` проверялись только на «> 0», то есть любой номер из системы
-// уезжал поставщику и замерзал в снимке как вход этого прогона.
-func TestRunRefusesAPictureOfAnotherCard(t *testing.T) {
-	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
-	const foreignMedia = 777
-	rig.foreign[foreignMedia] = true
-
-	req := designGuardStart(entity.DesignRunKindRender)
-	req.Params = &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{foreignMedia}}
-	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
-	require.Error(t, err)
-	// FailedPrecondition + reason=foreign_media — ровно то, чем этот же сентинел отвечает у
-	// SetDesignReferenceRole (designRefusals). ОДНА новость обязана звучать одинаково, откуда бы
-	// ни пришла: клиент ветвится по слову, а не по тому, какой глагол её родил.
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Contains(t, status.Convert(err).Message(), "another tech card")
-	require.Equal(t, []int{foreignMedia}, rig.asked, "дверь обязана СПРОСИТЬ про названный номер")
-	require.Nil(t, rig.sent, "отказ обязан прийти ДО стора: иначе день уже потерял резерв")
-}
-
-// ТО ЖЕ ПРАВИЛО ДЛЯ ФОТО ТКАНИ РЕЦЕПТА ЦВЕТА.
-//
-// `colour.fabric_media_id` — второй номер медиа, который приезжает с провода и который воркер
-// кладёт в ссылки прогона (designgen/snapshot.go: referenceMediaIDs). Дефект у них один, и
-// закрыты они обязаны быть одним правилом.
-func TestRunRefusesAFabricPhotoOfAnotherCard(t *testing.T) {
-	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
-	const foreignFabric = 778
-	rig.foreign[foreignFabric] = true
-
-	req := designGuardStart(entity.DesignRunKindRender)
-	req.Params = &pb_common.DesignRunParams{
-		Colour: &pb_common.DesignColourRecipe{Source: "photo", FabricMediaId: foreignFabric},
+// КАРТИНКА, КОТОРУЮ ДЕРЖИТ ДРУГАЯ КАРТОЧКА, ДОЕЗЖАЕТ ДО СТОРА — и во входах прогона, и как фото
+// ткани рецепта. Стор, если бы его спросили, ответил бы foreign_media; дверь его больше не
+// спрашивает вовсе.
+func TestRunAcceptsAPictureHeldByAnotherCard(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params *pb_common.DesignRunParams
+	}{
+		{"extra input", &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{777}}},
+		{"colour fabric photo", &pb_common.DesignRunParams{
+			Colour: &pb_common.DesignColourRecipe{Source: "photo", FabricMediaId: 777},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
+			rig.foreign[777] = true
+			req := designGuardStart(entity.DesignRunKindRender)
+			req.Params = tc.params
+			_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
+			require.NoError(t, err)
+			require.NotNil(t, rig.sent, "файл общей медиатеки обязан доехать до стора")
+			require.Empty(t, rig.asked, "дверь больше не спрашивает, чьё это медиа")
+		})
 	}
-	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
-	require.Error(t, err)
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Contains(t, rig.asked, foreignFabric, "про фото ткани обязаны спросить отдельно")
-	require.Nil(t, rig.sent)
 }
 
-// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ, БЕЗ КОТОРОГО ДВЕ ПРОБЫ ВЫШЕ НИЧЕГО НЕ СТОЯТ.
-//
-// Ворота, отказывающие ВСЕМУ, отказывают и чужому. Здесь проверяются оба законных входа: картинка
-// ЭТОЙ карточки и файл, на который не ссылается ещё никто (свежая загрузка — по контракту
-// нормальный случай, и положительное правило «обязано лежать в карточке» ломало бы его).
+// ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ: картинка ЭТОЙ карточки и свежая загрузка оба доезжают до снимка.
 func TestRunAcceptsItsOwnPictureAndAFreshUpload(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
 	const ownMedia, freshMedia = 300, 301
@@ -293,23 +274,10 @@ func TestRunAcceptsItsOwnPictureAndAFreshUpload(t *testing.T) {
 		"снимок обязан нести оба явно названных входа")
 }
 
-// ДВЕРЬ СПРАШИВАЕТ ПРО ВСЕ НАЗВАННЫЕ НОМЕРА, А НЕ ПРО ПЕРВЫЙ.
+// ИСТОЧНИК ПАТТЕРНА БЕРЁТСЯ ИЗ ОБЩЕЙ БИБЛИОТЕКИ — И С T64 (05.10) ТАК ЖЕ ВСЕ ОСТАЛЬНЫЕ ВХОДЫ.
 //
-// Ворота, спросившие про один номер из трёх, зеленеют на пробе про чужой первый номер и молча
-// пропускают чужой третий.
-func TestEveryNamedInputIsChecked(t *testing.T) {
-	rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
-	rig.foreign[303] = true
-	req := designGuardStart(entity.DesignRunKindRender)
-	req.Params = &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{301, 302, 303}}
-	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
-	require.Error(t, err, "чужой номер обязан быть найден, на каком бы месте он ни стоял")
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Equal(t, []int{301, 302, 303}, rig.asked)
-	require.Nil(t, rig.sent)
-}
-
-// ИСТОЧНИК ПАТТЕРНА БЕРЁТСЯ ИЗ ОБЩЕЙ БИБЛИОТЕКИ; ТА ЖЕ КАРТИНКА В РЕНДЕРЕ — ПО-ПРЕЖНЕМУ ОТКАЗ.
+// T64: владелец — медиатека общая, foreign_media больше не отказ; рендер, перекрас и ткань рецепта
+// паттерна с той же картинкой теперь тоже проходят.
 //
 // ЗАМЕРЕНО НА БЕТЕ: фото, выбранное пикером медиатеки в блоке IMAGE TO FABRIC, получало
 // `foreign_media: media 218 belongs to another tech card, not to 38`. Вход паттерна — картинка
@@ -330,7 +298,7 @@ func TestAPatternSourceMayComeFromTheSharedLibrary(t *testing.T) {
 		name   string
 		kind   string
 		params *pb_common.DesignRunParams
-		field  string // "" = проходит границу карточки
+		field  string // "" = картинка обязана замёрзнуть в снимке; "-" = только проходит
 	}{
 		{"pattern, image mode: the source photograph is held by another card",
 			entity.DesignRunKindPattern, &pb_common.DesignRunParams{
@@ -348,22 +316,22 @@ func TestAPatternSourceMayComeFromTheSharedLibrary(t *testing.T) {
 				Colour:             colour(),
 				Pattern:            &pb_common.DesignPatternParams{Name: "red · outer", Mode: entity.DesignPatternModeSwatch},
 			}, ""},
-		{"render with the same picture in extra inputs is still refused",
+		{"render with the same picture in extra inputs passes too",
 			entity.DesignRunKindRender, &pb_common.DesignRunParams{
 				ExtraInputMediaIds: []int32{shared},
-			}, "params.extra_input_media_ids"},
-		{"recolor with the same picture as its photograph is still refused",
+			}, "-"},
+		{"recolor with the same picture as its photograph passes too",
 			entity.DesignRunKindRecolor, &pb_common.DesignRunParams{
 				ExtraInputMediaIds: []int32{shared},
 				Colour:             colour(),
-			}, "params.extra_input_media_ids"},
-		{"pattern: a cloth photo of another card in the colour recipe is still refused",
+			}, "-"},
+		{"pattern: a cloth photo of another card in the colour recipe passes too",
 			entity.DesignRunKindPattern, &pb_common.DesignRunParams{
 				Colour: &pb_common.DesignColourRecipe{
 					Hex: "#C8102E", Words: "Pantone Fiery Red", FabricMediaId: shared,
 				},
 				Pattern: &pb_common.DesignPatternParams{Name: "red · outer", Mode: entity.DesignPatternModeSwatch},
-			}, "params.colour.fabric_media_id"},
+			}, "-"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newDesignGuardRig(t, designGuardCard(), designGuardBand())
@@ -372,19 +340,13 @@ func TestAPatternSourceMayComeFromTheSharedLibrary(t *testing.T) {
 			req.Params = tc.params
 			_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
 
-			if tc.field != "" {
-				require.Error(t, err)
-				code, md := errorReason(t, err)
-				require.Equal(t, codes.FailedPrecondition, code)
-				require.Equal(t, "foreign_media", md["reason"])
-				require.Equal(t, tc.field, md["field"], "отказ обязан назвать поле, которое чинить")
-				require.Nil(t, rig.sent, "отказ обязан стоять ДО резерва")
-				return
-			}
 			require.NoError(t, err)
 			require.NotNil(t, rig.sent, "источник паттерна из библиотеки обязан доехать до стора")
 			// ИСКЛЮЧЕНИЕ — В ВОПРОСЕ, А НЕ В ОТВЕТЕ: дверь о картинке материала не спрашивает вовсе.
 			require.NotContains(t, rig.asked, shared)
+			if tc.field == "-" {
+				return
+			}
 			// И КАРТИНКА ЗАМЁРЗЛА В СНИМКЕ — то есть уедет поставщику, а не выпала молча.
 			snap := &pb_common.DesignInputSnapshot{}
 			require.NoError(t, designUnmarshalJSON(rig.sent.Inputs, snap))
@@ -424,6 +386,9 @@ func TestRunRefusesAnOverlongGarmentDescription(t *testing.T) {
 func TestGarmentDescriptionCeilingCountsRunesAndNeverTrims(t *testing.T) {
 	card := designGuardCard()
 	full := strings.Repeat("я", designMaxGarmentNoteRunes)
+	// a «garment:» class line followed by the description: a flat keeps only the class (wave 10), so
+	// the whole-description check is made on the class line, which must arrive whole too
+	full = "garment: " + full[:len(full)-len("garment: ")*2]
 	card.GarmentDescription = sql.NullString{String: full, Valid: true}
 	rig := newDesignGuardRig(t, card, designGuardBand())
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), designGuardStart(entity.DesignRunKindFlat))
@@ -495,6 +460,9 @@ func TestDraftIdeaRefusesAMoodboardOverTheSnapshotCeiling(t *testing.T) {
 	_, err := srv.DraftDesignIdea(designGuardCtx(), &pb_admin.DraftDesignIdeaRequest{
 		TechCardId:      designGuardCardID,
 		ClientRequestId: "22222222-2222-2222-2222-222222222222",
+		// T39: the prose branch refuses a picture-less board first; the ceiling is the
+		// structured branch's question here (the check itself is shared).
+		Construction: true,
 	})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
@@ -630,14 +598,10 @@ func designGuardTwoCloths(second *pb_common.DesignFabricUse) *pb_admin.StartDesi
 	return req
 }
 
-// ФОТОГРАФИЯ ТКАНИ ЧУЖОЙ КАРТОЧКИ НЕ УХОДИТ В ПЛАТНЫЙ ПРОГОН.
-//
-// ЧТО БЫЛО. Дверь спрашивала про `extra_input_media_ids` и про легаси-скаляр
-// `colour.fabric_media_id` — и НИ РАЗУ про `fabrics[*].media_id`, хотя эту же волну воркер научили
-// отправлять фотографию КАЖДОЙ ткани (designgen/snapshot.go). Достаточно было положить чужой номер
-// во ВТОРУЮ ткань: скаляр законный, дверь довольна, чужая картинка уезжает поставщику и замерзает
-// в истории этой карточки.
-func TestRunRefusesAClothPhotoOfAnotherCard(t *testing.T) {
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ. ФОТОГРАФИЯ ТКАНИ,
+// которую держит другая карточка, доезжает до стора, — а ЧУЖАЯ ПОЛКА (asset_id) по-прежнему
+// отказ (проба ниже).
+func TestRunAcceptsAClothPhotoHeldByAnotherCard(t *testing.T) {
 	rig := newDesignGuardRig(t, designGuardCard(), designGuardBandWithShelf())
 	const foreignCloth = 779
 	rig.foreign[foreignCloth] = true
@@ -646,11 +610,9 @@ func TestRunRefusesAClothPhotoOfAnotherCard(t *testing.T) {
 		AssetId: 62, Name: "contrast rib", MediaId: foreignCloth, Parts: "collar",
 	})
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
-	require.Error(t, err)
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Contains(t, rig.asked, foreignCloth,
-		"про текстуру каждой ткани обязаны спросить: воркер отправляет их все")
-	require.Nil(t, rig.sent, "отказ обязан прийти ДО резерва денег")
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent)
+	require.Empty(t, rig.asked)
 }
 
 // ТКАНЬ С ЧУЖОЙ ПОЛКИ НЕ ЗАМЕРЗАЕТ В ИСТОРИИ ЭТОЙ КАРТОЧКИ.
@@ -683,7 +645,6 @@ func TestRunAcceptsTwoClothsOfItsOwnShelf(t *testing.T) {
 	_, err := rig.srv.StartDesignRun(designGuardCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, rig.sent, "законный список тканей обязан доехать до стора")
-	require.Contains(t, rig.asked, 301, "про текстуру второй ткани всё равно спрашивают")
 
 	stored := &pb_common.DesignRunParams{}
 	require.NoError(t, designUnmarshalJSON(rig.sent.Params, stored))

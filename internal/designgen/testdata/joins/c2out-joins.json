@@ -1,0 +1,236 @@
+{
+ "fit": {
+  "ease": "slim",
+  "waist": "fitted"
+ },
+ "consistency": {
+  "same_garment": true,
+  "notes": "Images 1–6 show the same white two-layer sleeveless top: high crew neck, cut-in armholes, crossed back straps, open back and a V-shaped inner layer visible through the sheer front. Image 7 is a mood screenshot of a different grey garment and is excluded from construction.",
+  "trust": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ]
+ },
+ "items": [
+  {
+   "id": "neck_binding",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "NP_R..SP_R:0.3",
+    "CFN",
+    "NP_L..SP_L:0.3"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "strap_from_L",
+    "strap_from_R",
+    "armhole_L",
+    "armhole_R"
+   ],
+   "note": "High crew-height front neck binding, front only; at each neck point it turns into a back strap.",
+   "type": "crew"
+  },
+  {
+   "id": "armhole_L",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "NP_L..SP_L:0.3",
+    "SP_L..UA_L:0.4",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "NP_L"
+   ],
+   "continues_into": [
+    "neck_binding",
+    "back_opening_edge"
+   ],
+   "note": "Deep cut-in (racer-style) front armhole, bound, running from the neck point down to the underarm.",
+   "face": "front"
+  },
+  {
+   "id": "armhole_R",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "NP_R..SP_R:0.3",
+    "SP_R..UA_R:0.4",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "NP_R"
+   ],
+   "continues_into": [
+    "neck_binding",
+    "back_opening_edge"
+   ],
+   "note": "Mirror of armhole_L.",
+   "face": "front"
+  },
+  {
+   "id": "strap_from_L",
+   "kind": "strap",
+   "width": "wide",
+   "path": [
+    "NP_L..SP_L:0.3",
+    "UB_C..MB_C:0.2",
+    "UA_R..MB_R:0.4"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "neck_binding"
+   ],
+   "note": "Folded double-layer strap; runs over the left shoulder and diagonally across the back to the right side. Lies on top at the crossing.",
+   "face": "back"
+  },
+  {
+   "id": "strap_from_R",
+   "kind": "strap",
+   "width": "wide",
+   "path": [
+    "NP_R..SP_R:0.3",
+    "UB_C..MB_C:0.2",
+    "UA_L..MB_L:0.4"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "neck_binding"
+   ],
+   "note": "Folded double-layer strap; runs over the right shoulder and diagonally across the back to the left side. Crosses strap_from_L at UB_C, underneath.",
+   "face": "back"
+  },
+  {
+   "id": "back_opening_edge",
+   "kind": "binding",
+   "width": "narrow",
+   "path": [
+    "UA_L..MB_L:0.4",
+    "MB_C",
+    "UA_R..MB_R:0.4"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "Curved, bound upper edge of the back body at mid-back, with a small tack at MB_C."
+  },
+  {
+   "id": "back_opening",
+   "kind": "opening",
+   "bounded_by": [
+    "strap_from_L",
+    "strap_from_R",
+    "back_opening_edge"
+   ],
+   "note": "Open back below and around the cross; bare skin shows."
+  },
+  {
+   "id": "side_seam_L",
+   "kind": "seam",
+   "path": [
+    "UA_L",
+    "WL_L",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_L",
+    "hem_front",
+    "hem_back"
+   ],
+   "note": "Side seam."
+  },
+  {
+   "id": "side_seam_R",
+   "kind": "seam",
+   "path": [
+    "UA_R",
+    "WL_R",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_R",
+    "hem_front",
+    "hem_back"
+   ],
+   "note": "Side seam."
+  },
+  {
+   "id": "hem_front",
+   "kind": "edge",
+   "path": [
+    "HEM_L",
+    "HEM_FC",
+    "HEM_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_L",
+    "HEM_R"
+   ],
+   "continues_into": [
+    "side_seam_L",
+    "side_seam_R"
+   ],
+   "note": "Narrow rolled or raw lettuce-like hem at hip length."
+  },
+  {
+   "id": "hem_back",
+   "kind": "edge",
+   "path": [
+    "HEM_R",
+    "HEM_BC",
+    "HEM_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "HEM_L",
+    "HEM_R"
+   ],
+   "continues_into": [
+    "side_seam_L",
+    "side_seam_R"
+   ],
+   "note": "Back hem."
+  },
+  {
+   "id": "inner_layer_V",
+   "kind": "edge",
+   "path": [
+    "NP_R..SP_R:0.2",
+    "BUST_C..WF_C:0.4",
+    "NP_L..SP_L:0.2"
+   ],
+   "closed": false,
+   "continues_into": [
+    "neck_binding"
+   ],
+   "note": "Edge of the opaque inner front layer, visible through the sheer outer layer. Its V point sits just below the bust; the inner layer is caught into the neck binding.",
+   "through": true,
+   "visibility": "through"
+  }
+ ],
+ "absent": [
+  "no sleeves",
+  "no back neckline or back neck binding (the straps replace it)",
+  "no shoulder seam visible on the outside",
+  "no closures",
+  "no pockets",
+  "no collar",
+  "no centre-front seam on the outer layer",
+  "no cloth in the upper back between the straps"
+ ]
+}

@@ -330,12 +330,21 @@ func renderFabricParagraph(f fabricStated) string {
 // asset_id ALONE DOES NOT COUNT. It is provenance — «which shelf row was this» — and the contract
 // is explicit that a reader never resolves it. An entry carrying only an id therefore reaches the
 // model as the bare word «cloth», which is the failure detail slots already went through once.
+//
+// ⚠ R9 · HARDWARE IS NOT A CLOTH AND IS SPLIT OFF HERE, before every reader of the list. A use of
+// `kind: hardware` (a button painted on PARTS) went out as «CLOTH 2» before this round: counted in
+// «made of two different cloths», a candidate REMAINDER when it named no parts, and captioned
+// «fabric photograph — CLOTH 2 … read its weave». It has its own reader (statedHardware), its own
+// caption and its own paragraph (renderhardware.go).
 func statedCloths(c *colourRecipe) []fabricUse {
 	if c == nil {
 		return nil
 	}
 	out := make([]fabricUse, 0, len(c.Fabrics))
 	for _, f := range c.Fabrics {
+		if clothIsHardware(f) {
+			continue
+		}
 		// A MAP LABEL IS A STATEMENT, AND THE STRONGEST ONE ON THIS ROW. A cloth whose only content
 		// is `map_hex` was placed by somebody painting it onto the drawing — the picture says
 		// exactly which parts it covers — so leaving it out of the count would drop a whole cloth
@@ -385,6 +394,11 @@ func renderFabricSection(f fabricStated, cloths []fabricUse, maps []colourMap, v
 		if len(cloths) == 1 && clothIsAPattern(cloths[0]) {
 			paras = append(paras, renderPatternClothParagraph(cloths[0], attached))
 		}
+		// A MOCKUP (T13) IS NOT A DIVISION, so unlike the map it does speak here: its scale is
+		// still the one thing the model copies from it. Absent on every run without one.
+		if s := renderMockupSentence(maps, attached); s != "" {
+			paras = append(paras, s)
+		}
 		return paras
 	}
 	lines := renderClothLines(cloths, maps, views, attached)
@@ -421,6 +435,18 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 	// Теперь факт один и считается один раз: `sent` — карты, доехавшие до модели ИМЕННО КАРТАМИ.
 	// Из него живут все трое — заголовок, признак «отметки есть» и клаузула места на строке ткани.
 	sent := colourMapsSent(maps, attached)
+	// R9 · a map no cloth claims a label on (only hardware was painted) addresses nothing: it is
+	// not spoken as a colour map, and its mockups are named on their own below.
+	labelled := false
+	for _, c := range cloths {
+		if strings.TrimSpace(c.MapHex) != "" {
+			labelled = true
+			break
+		}
+	}
+	if !labelled {
+		sent = nil
+	}
 	mapped := len(sent) > 0
 
 	// ⚠ «SOMEBODY MARKED SOMETHING» NOW HAS TWO SPELLINGS, AND BOTH COUNT. A cloth pinned by a
@@ -459,8 +485,24 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 	//
 	// A RUN WITH NO MAPS ADDS NOTHING HERE, which is why every prompt this file composed before
 	// Feature A is the prompt it composes now.
-	if s := renderColourMapSentence(sent, views, attached); s != "" {
+	//
+	// ⚠ КАРТА БЫВАЕТ ЧАСТИЧНОЙ: белое на ней — «без ярлыка». Куда уходит белое, решает ткань-ОСТАТОК
+	// (ни частей, ни ярлыка) — если она на списке есть.
+	remainder := false
+	if anyParts {
+		for _, c := range cloths {
+			if oneLine(c.Parts) == "" && strings.TrimSpace(c.MapHex) == "" {
+				remainder = true
+				break
+			}
+		}
+	}
+	if s := renderColourMapSentence(sent, views, attached, remainder); s != "" {
 		heading += " " + s
+	} else if !labelled {
+		if s := renderMockupSentence(maps, attached); s != "" {
+			heading += " " + s
+		}
 	}
 	lines := []string{heading + " " + rule + " The cloths, in the order they were stated:"}
 	for i, c := range cloths {
@@ -487,7 +529,10 @@ func renderClothLines(cloths []fabricUse, maps []colourMap, views []string, atta
 // fills in. Handed a front map and a back drawing with no map, it either carries the division over
 // (what we want) or treats the unmapped view as a second garment (what we have seen). Said out
 // loud, it is one reading instead of a lottery.
-func renderColourMapSentence(maps []colourMap, views []string, attached []refCaption) string {
+//
+// A MAP MAY BE PARTIAL, so white is said out loud: with a REMAINDER cloth on the list white is that
+// cloth; without one, white continues the cloth of the panel it belongs to.
+func renderColourMapSentence(maps []colourMap, views []string, attached []refCaption, remainder bool) string {
 	var numbers []string
 	var painted []string
 	seen := make(map[string]struct{}, len(maps))
@@ -506,13 +551,18 @@ func renderColourMapSentence(maps []colourMap, views []string, attached []refCap
 	var b strings.Builder
 	if len(numbers) == 1 {
 		b.WriteString("Image " + numbers[0] + " is a colour map of the " + painted[0] +
-			" drawing — the same drawing with each part flooded in one flat colour.")
+			" drawing — the same drawing with the labelled parts flooded in flat colours; parts left white carry no label.")
 	} else {
 		b.WriteString("Images " + joinWords(numbers) + " are colour maps of the " +
-			joinWords(painted) + " drawings — the same drawings with each part flooded in one flat colour.")
+			joinWords(painted) + " drawings — the same drawings with the labelled parts flooded in flat colours; parts left white carry no label.")
 	}
 	b.WriteString(" Those flat colours are LABELS that say which cloth covers which part; they are " +
 		"not the garment's colours, which the list below states.")
+	if remainder {
+		b.WriteString(" Parts left white on a map are made of the REMAINDER cloth.")
+	} else {
+		b.WriteString(" Parts left white on a map continue the cloth of the panel they belong to.")
+	}
 
 	// The views this run draws that carry no map. `detail` is left out on purpose: a detail frame
 	// is a close-up of something already divided by the sides, not a side of its own to divide.
@@ -535,7 +585,64 @@ func renderColourMapSentence(maps []colourMap, views []string, attached []refCap
 		b.WriteString(" The " + joinWords(bare) + " drawings carry no colour map: on those views, " +
 			"divide the cloths as the mapped views imply.")
 	}
+
+	if s := renderMockupSentence(maps, attached); s != "" {
+		b.WriteString(" " + s)
+	}
 	return b.String()
+}
+
+// renderMockupSentence names the cloth mockups (T13) BY THEIR IMAGE NUMBERS. Empty when none went
+// out, so a run with no mockup composes the prompt it composed before, byte for byte. The split of
+// authority is the measured one (paint-parts t13 A/B): the motif's SCALE from the mockup, the
+// construction from the drawings, material and drape from the cloth pictures.
+func renderMockupSentence(maps []colourMap, attached []refCaption) string {
+	var mockups []string
+	placement := true
+	for _, m := range colourMapsSent(maps, attached) {
+		if img := mockupNumberOf(attached, m.MockupMediaID); img > 0 {
+			mockups = append(mockups, strconv.Itoa(img))
+			placement = placement && attached[img-1].IsPlacement
+		}
+	}
+	// R9 · placement mockups carry no cloth: the model takes the hardware's place and size there.
+	switch {
+	case placement && len(mockups) == 1:
+		return "Image " + mockups[0] + " is a placement mockup of the same drawing: take each " +
+			"piece of hardware's place and size from it; take the construction from the drawing and " +
+			"the cloth from what this request states about it."
+	case placement && len(mockups) > 1:
+		return "Images " + joinWords(mockups) + " are placement mockups of the same drawings: " +
+			"take each piece of hardware's place and size from them; take the construction from the " +
+			"drawings and the cloth from what this request states about it."
+	}
+	switch {
+	case len(mockups) == 1:
+		return "Image " + mockups[0] + " is a cloth mockup of the same drawing: take the " +
+			"scale of each cloth's motif from it; take the construction from the drawing and the " +
+			"material and drape from the cloth pictures."
+	case len(mockups) > 1:
+		return "Images " + joinWords(mockups) + " are cloth mockups of the same drawings: " +
+			"take the scale of each cloth's motif from them; take the construction from the drawings " +
+			"and the material and drape from the cloth pictures."
+	}
+	return ""
+}
+
+// mockupNumberOf — номер картинки, уехавшей МАКЕТОМ карты (T13). 0 = такого макета в запросе нет.
+func mockupNumberOf(attached []refCaption, mediaID int) int {
+	if mediaID <= 0 {
+		return 0
+	}
+	for i, rc := range attached {
+		if rc.MediaID == mediaID {
+			if !rc.IsMockup {
+				return 0
+			}
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // joinWords is «a, b and c» — the way a sentence lists things, not the way a machine does. A
@@ -747,10 +854,16 @@ var colourNames = []struct {
 //
 // ⚠ HSL AND NOT RGB, BECAUSE THE QUESTION IS «WHAT WOULD A PERSON CALL THIS», NOT «HOW FAR APART
 // ARE THESE TWO SIGNALS». In RGB, `#3a7bd5` sits nearer to some greys than to any blue; in HSL its
-// hue answers the question directly. HUE IS WEIGHTED BY THE LOWER OF THE TWO SATURATIONS, which is
-// the one piece of arithmetic here that is load-bearing: an unsaturated colour HAS no meaningful
-// hue, and comparing it by hue would name a near-grey «magenta» on the strength of a rounding
-// error.
+// hue answers the question directly.
+//
+// ⚠ R9 · HUE FIRST. The first form weighed hue by the lower of the two saturations against
+// unweighted saturation and lightness, so a painted label (every client label is s 0.62, l 0.52)
+// was named by whichever anchor shared its saturation and lightness rather than its hue: #d0398f
+// (magenta-pink) printed as «brown», #2fa84f (green) as «steel blue» — in every painted
+// multi-cloth prompt, beside the hex it contradicted. Now a coloured label is named among the
+// coloured anchors with the hue weighing most (saturation and lightness only part anchors of one
+// hue: orange from brown, blue from navy, steel blue from blue), and a label with too little
+// saturation to have an honest hue is grey.
 //
 // AN UNPARSEABLE LABEL FALLS BACK TO THE HEX ITSELF rather than to a guess. The door already
 // refuses anything that is not `#rrggbb` (entity.IsDesignColourMapHex), so this branch is reachable
@@ -761,16 +874,19 @@ func colourWord(hex string) string {
 	if !ok {
 		return hex
 	}
-	best, bestD := "", 0.0
-	for i, c := range colourNames {
+	if s < colourWordGreyBelow {
+		return "grey"
+	}
+	best, bestD := "", math.Inf(1)
+	for _, c := range colourNames {
 		ch, cs, cl, ok := hexToHSL(c.hex)
-		if !ok {
+		if !ok || cs < colourWordGreyBelow {
 			continue
 		}
-		dh := hueDistance(h, ch) * math.Min(s, cs)
+		dh := hueDistance(h, ch)
 		ds, dl := s-cs, l-cl
-		d := 2*dh*dh + ds*ds + dl*dl
-		if i == 0 || d < bestD {
+		d := 4*dh*dh + 0.15*ds*ds + dl*dl
+		if d < bestD {
 			best, bestD = c.name, d
 		}
 	}
@@ -779,6 +895,9 @@ func colourWord(hex string) string {
 	}
 	return best
 }
+
+// colourWordGreyBelow — under this saturation a label has no honest hue: it is grey.
+const colourWordGreyBelow = 0.15
 
 // hueDistance is the shortest way round the wheel, normalised to 0..1. Hue is CIRCULAR and 350° is
 // ten degrees from 0°, not three hundred and fifty: a linear subtraction here would call a red
@@ -846,6 +965,12 @@ func hexToHSL(hex string) (h, s, l float64, ok bool) {
 // telling a model to read the cloth off an image it was never shown is how a render comes back in
 // an invented fabric.
 func renderCraft(p runParams, detailNames []string, attached []refCaption) string {
+	return renderCraftWith(p, detailNames, attached, nil)
+}
+
+// renderCraftWith is renderCraft plus the placed ARTWORKS of the run (70-ROUND7 B7): one paragraph
+// each, after the cloth section. No artworks — the block renderCraft always composed, byte for byte.
+func renderCraftWith(p runParams, detailNames []string, attached []refCaption, arts []artworkUse) string {
 	stated := fabricStated{}
 	if c := p.Colour; c != nil {
 		stated.photoImage = imageNumberOf(attached, c.FabricMediaID)
@@ -866,6 +991,8 @@ func renderCraft(p runParams, detailNames []string, attached []refCaption) strin
 		maps = c.ColourMaps
 	}
 	paras = append(paras, renderFabricSection(stated, statedCloths(p.Colour), maps, p.Views, attached)...)
+	paras = append(paras, renderArtworkParagraphs(arts, attached)...)
+	paras = append(paras, renderHardwareParagraphs(statedHardware(p.Colour), maps, attached)...)
 	paras = append(paras,
 		renderLayoutParagraph(p.Views, detailNames, p.Layout),
 		renderStyle,

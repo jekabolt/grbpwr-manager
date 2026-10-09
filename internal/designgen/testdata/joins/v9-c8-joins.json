@@ -1,0 +1,476 @@
+{
+ "fit": {
+  "ease": "slim",
+  "waist": "fitted"
+ },
+ "consistency": {
+  "same_garment": true,
+  "notes": "All five photos show the same cropped, single-breasted black linen-look blazer with notch lapels. Image 1 is the front, image 2 the back, image 3 the wearer's right side, image 4 the cuff slit and image 5 the centre-back vent. Image 5 was taken outdoors in different light, but the fabric, the centre-back seam and the vent match image 2.",
+  "trust": [
+   1,
+   2,
+   3,
+   4,
+   5
+  ]
+ },
+ "items": [
+  {
+   "id": "shoulder_L",
+   "kind": "seam",
+   "path": [
+    "NP_L",
+    "SP_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_L",
+    "collar"
+   ],
+   "note": "shoulder seam"
+  },
+  {
+   "id": "shoulder_R",
+   "kind": "seam",
+   "path": [
+    "NP_R",
+    "SP_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_R",
+    "collar"
+   ],
+   "note": "shoulder seam"
+  },
+  {
+   "id": "armhole_L",
+   "kind": "seam",
+   "path": [
+    "SP_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "SP_L"
+   ],
+   "continues_into": [
+    "sleeve_L",
+    "side_L"
+   ],
+   "note": "set-in sleeve seam, front and back"
+  },
+  {
+   "id": "armhole_R",
+   "kind": "seam",
+   "path": [
+    "SP_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "SP_R"
+   ],
+   "continues_into": [
+    "sleeve_R",
+    "side_R"
+   ],
+   "note": "set-in sleeve seam, front and back"
+  },
+  {
+   "id": "side_L",
+   "kind": "seam",
+   "path": [
+    "UA_L",
+    "WL_L",
+    "UA_L..HEM_L:0.8"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "hem_front_L",
+    "hem_back"
+   ],
+   "note": "side seam, suppressed at the waist"
+  },
+  {
+   "id": "side_R",
+   "kind": "seam",
+   "path": [
+    "UA_R",
+    "WL_R",
+    "UA_R..HEM_R:0.8"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "hem_front_R",
+    "hem_back"
+   ],
+   "note": "side seam, suppressed at the waist"
+  },
+  {
+   "id": "hem_front_L",
+   "kind": "edge",
+   "path": [
+    "UA_L..HEM_L:0.8",
+    "WF_C..HEM_FC:0.8"
+   ],
+   "closed": false,
+   "sharp": [
+    "WF_C..HEM_FC:0.8"
+   ],
+   "continues_into": [
+    "front_edge_L"
+   ],
+   "note": "cropped hem just below the waist; front corner nearly square"
+  },
+  {
+   "id": "hem_front_R",
+   "kind": "edge",
+   "path": [
+    "UA_R..HEM_R:0.8",
+    "WF_C..HEM_FC:0.8"
+   ],
+   "closed": false,
+   "sharp": [
+    "WF_C..HEM_FC:0.8"
+   ],
+   "continues_into": [
+    "front_edge_R"
+   ],
+   "note": "cropped hem; front corner nearly square"
+  },
+  {
+   "id": "front_edge_R",
+   "kind": "edge",
+   "path": [
+    "GORGE_R",
+    "LAPEL_TIP_R",
+    "BREAK",
+    "WF_C..HEM_FC:0.8"
+   ],
+   "closed": false,
+   "sharp": [
+    "LAPEL_TIP_R"
+   ],
+   "continues_into": [
+    "hem_front_R",
+    "collar"
+   ],
+   "note": "lapel outer edge, then the front opening edge"
+  },
+  {
+   "id": "front_edge_L",
+   "kind": "edge",
+   "path": [
+    "GORGE_L",
+    "LAPEL_TIP_L",
+    "BREAK",
+    "WF_C..HEM_FC:0.8"
+   ],
+   "closed": false,
+   "sharp": [
+    "LAPEL_TIP_L"
+   ],
+   "continues_into": [
+    "hem_front_L",
+    "collar"
+   ],
+   "note": "overlapping panel; lapel edge, then the front opening edge"
+  },
+  {
+   "id": "roll_line_L",
+   "kind": "edge",
+   "path": [
+    "NP_L",
+    "BREAK"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "lapel roll fold"
+  },
+  {
+   "id": "roll_line_R",
+   "kind": "edge",
+   "path": [
+    "NP_R",
+    "BREAK"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "lapel roll fold"
+  },
+  {
+   "id": "gorge_L",
+   "kind": "seam",
+   "path": [
+    "GORGE_L",
+    "NP_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "GORGE_L"
+   ],
+   "continues_into": [
+    "collar"
+   ],
+   "note": "gorge seam; forms the notch with the collar"
+  },
+  {
+   "id": "gorge_R",
+   "kind": "seam",
+   "path": [
+    "GORGE_R",
+    "NP_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "GORGE_R"
+   ],
+   "continues_into": [
+    "collar"
+   ],
+   "note": "gorge seam; forms the notch with the collar"
+  },
+  {
+   "id": "collar",
+   "kind": "collar",
+   "width": "narrow",
+   "path": [
+    "GORGE_R",
+    "NECK_SIDE_R",
+    "CBN",
+    "NECK_SIDE_L",
+    "GORGE_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "GORGE_R",
+    "GORGE_L"
+   ],
+   "continues_into": [
+    "gorge_L",
+    "gorge_R"
+   ],
+   "note": "notch-lapel top collar running around the back neck"
+  },
+  {
+   "id": "closure",
+   "kind": "closure",
+   "type": "buttons",
+   "path": [
+    "BREAK",
+    "WF_C"
+   ],
+   "count": 2,
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "single-breasted, three buttons from the chest to the waist"
+  },
+  {
+   "id": "back_yoke",
+   "kind": "seam",
+   "path": [
+    "YOKE_R",
+    "UB_C",
+    "YOKE_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "armhole_L",
+    "armhole_R"
+   ],
+   "note": "curved upper-back seam, armhole to armhole"
+  },
+  {
+   "id": "cb_seam",
+   "kind": "seam",
+   "path": [
+    "CBN",
+    "UB_C",
+    "MB_C",
+    "WB_C"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "cb_vent"
+   ],
+   "note": "centre-back seam"
+  },
+  {
+   "id": "cb_vent",
+   "kind": "edge",
+   "path": [
+    "WB_C",
+    "WB_C..HEM_BC:0.8"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "hem_back"
+   ],
+   "note": "short centre-back vent slit, bar-tacked at the top"
+  },
+  {
+   "id": "hem_back",
+   "kind": "edge",
+   "path": [
+    "UA_L..HEM_L:0.8",
+    "WB_C..HEM_BC:0.8",
+    "UA_R..HEM_R:0.8"
+   ],
+   "closed": false,
+   "sharp": [
+    "UA_L..HEM_L:0.8",
+    "UA_R..HEM_R:0.8"
+   ],
+   "continues_into": [
+    "side_L",
+    "side_R"
+   ],
+   "note": "straight cropped back hem, split by the vent"
+  },
+  {
+   "id": "sleeve_L",
+   "kind": "sleeve",
+   "path": [
+    "SP_L",
+    "ELB_OUT_L",
+    "WRIST_OUT_L",
+    "WRIST_IN_L",
+    "ELB_IN_L",
+    "UA_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_L",
+    "WRIST_IN_L"
+   ],
+   "continues_into": [
+    "armhole_L"
+   ],
+   "note": "slim two-piece long sleeve"
+  },
+  {
+   "id": "sleeve_R",
+   "kind": "sleeve",
+   "path": [
+    "SP_R",
+    "ELB_OUT_R",
+    "WRIST_OUT_R",
+    "WRIST_IN_R",
+    "ELB_IN_R",
+    "UA_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_R",
+    "WRIST_IN_R"
+   ],
+   "continues_into": [
+    "armhole_R"
+   ],
+   "note": "slim two-piece long sleeve"
+  },
+  {
+   "id": "sleeve_back_seam_L",
+   "kind": "seam",
+   "path": [
+    "SP_L..ELB_OUT_L:0.3",
+    "ELB_OUT_L",
+    "ELB_OUT_L..WRIST_OUT_L:0.75"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "cuff_vent_L"
+   ],
+   "note": "back sleeve seam"
+  },
+  {
+   "id": "sleeve_back_seam_R",
+   "kind": "seam",
+   "path": [
+    "SP_R..ELB_OUT_R:0.3",
+    "ELB_OUT_R",
+    "ELB_OUT_R..WRIST_OUT_R:0.75"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [
+    "cuff_vent_R"
+   ],
+   "note": "back sleeve seam"
+  },
+  {
+   "id": "cuff_vent_L",
+   "kind": "edge",
+   "path": [
+    "ELB_OUT_L..WRIST_OUT_L:0.75",
+    "WRIST_OUT_L"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_L"
+   ],
+   "continues_into": [],
+   "note": "open slit at the cuff, tacked at the top; no buttons"
+  },
+  {
+   "id": "cuff_vent_R",
+   "kind": "edge",
+   "path": [
+    "ELB_OUT_R..WRIST_OUT_R:0.75",
+    "WRIST_OUT_R"
+   ],
+   "closed": false,
+   "sharp": [
+    "WRIST_OUT_R"
+   ],
+   "continues_into": [],
+   "note": "open slit at the cuff, tacked at the top; no buttons"
+  },
+  {
+   "id": "sleeve_hem_L",
+   "kind": "edge",
+   "path": [
+    "WRIST_OUT_L",
+    "WRIST_IN_L"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "plain sleeve hem"
+  },
+  {
+   "id": "sleeve_hem_R",
+   "kind": "edge",
+   "path": [
+    "WRIST_OUT_R",
+    "WRIST_IN_R"
+   ],
+   "closed": false,
+   "sharp": [],
+   "continues_into": [],
+   "note": "plain sleeve hem"
+  }
+ ],
+ "absent": [
+  "no front pockets of any kind (no flaps, welts or patches)",
+  "no chest welt pocket",
+  "no cuff buttons",
+  "no separate cuffs",
+  "no side vents",
+  "no back belt or half-belt",
+  "no visible front darts or topstitching",
+  "no double-breasted overlap"
+ ]
+}

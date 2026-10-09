@@ -1,0 +1,1664 @@
+{
+  "version": 1,
+  "frame": {
+    "width": 64,
+    "height": 96
+  },
+  "views": [
+    "front",
+    "back",
+    "side_l",
+    "side_r"
+  ],
+  "part_syntax": "space-separated key:view tokens; view f=front b=back s=side_l; suffix (z) = zone fill; whole first",
+  "groups": [
+    "tops",
+    "outerwear",
+    "bottoms",
+    "dresses and one-pieces",
+    "underwear and swim",
+    "headwear",
+    "footwear",
+    "bags and small leather",
+    "small accessories",
+    "objects"
+  ],
+  "traits": {
+    "knitwear": "fully fashioned knitwear: gauge/structure checklist line, no seam-construction question",
+    "cut_sew_knit": "cut-and-sew jersey: knit seams line (514/516/607, coverstitch, bound edges)",
+    "bottoms_fit": "one-piece with legs: add the bottoms fit line (rise, seat, leg, length)",
+    "skirt_volume": "skirt or dress: add the volume line (gathers, pleats, godets, slit, lining)",
+    "bra_fit": "band and cup basis (size system, wired or soft)"
+  },
+  "part_labels": {
+    "whole": "whole",
+    "neckline": "neckline",
+    "shoulder": "shoulder",
+    "chest": "chest",
+    "sleeve": "sleeve",
+    "cuff": "cuff",
+    "pocket": "pocket",
+    "hem": "hem",
+    "back": "back",
+    "side_seam": "side seam",
+    "label": "label",
+    "collar": "collar",
+    "placket": "placket",
+    "closure": "closure",
+    "yoke": "yoke",
+    "hood": "hood",
+    "drawcord": "drawcord",
+    "zip": "zip",
+    "lapel": "lapel",
+    "lining": "lining",
+    "belt": "belt",
+    "strap": "strap",
+    "bodice": "bodice",
+    "waist": "waist",
+    "panel": "panel",
+    "slit": "slit",
+    "leg": "leg",
+    "knee": "knee",
+    "waistband": "waistband",
+    "fly": "fly",
+    "rise": "rise",
+    "back_pocket": "back pocket",
+    "seat": "seat",
+    "hip": "hip",
+    "thigh": "thigh",
+    "inseam": "inseam",
+    "pleat": "pleat",
+    "front": "front",
+    "leg_opening": "leg opening",
+    "gusset": "gusset",
+    "cup": "cup",
+    "underband": "underband",
+    "crown": "crown",
+    "brim": "brim",
+    "band": "band",
+    "vent": "vent",
+    "palm": "palm",
+    "fingers": "fingers",
+    "thumb": "thumb",
+    "foot": "foot",
+    "heel": "heel",
+    "toe": "toe",
+    "edge": "edge",
+    "end": "end",
+    "fringe": "fringe",
+    "tip": "tip",
+    "knot": "knot",
+    "blade": "blade",
+    "keeper": "keeper",
+    "frame": "frame",
+    "lens": "lens",
+    "bridge": "bridge",
+    "temple": "temple",
+    "hinge": "hinge",
+    "card_slot": "card slot",
+    "coin_pocket": "coin pocket",
+    "ring": "ring",
+    "charm": "charm",
+    "clasp": "clasp",
+    "chain": "chain",
+    "pendant": "pendant",
+    "upper": "upper",
+    "throat": "throat",
+    "laces": "laces",
+    "tongue": "tongue",
+    "quarter": "quarter",
+    "sole": "sole",
+    "shaft": "shaft",
+    "pull_tab": "pull tab",
+    "footbed": "footbed",
+    "buckle": "buckle",
+    "body": "body",
+    "handle": "handle",
+    "flap": "flap",
+    "hardware": "hardware",
+    "base": "base",
+    "lid": "lid",
+    "front_panel": "front panel",
+    "side": "side",
+    "armhole": "armhole",
+    "bib": "bib",
+    "vamp": "vamp",
+    "trim": "trim",
+    "baffle": "baffle",
+    "top_piece": "top piece",
+    "bottom_piece": "bottom piece",
+    "post": "post"
+  },
+  "families": {
+    "tee": {
+      "label": "short-sleeve tee",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f neckline:f shoulder:f chest:f sleeve:f cuff:f pocket:f hem:f back:b side_seam:s label:b"
+    },
+    "shirt": {
+      "label": "long-sleeve shirt",
+      "group": "tops",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f collar:f placket:f closure:f chest:f pocket:f sleeve:f cuff:f yoke:b back:b hem:f side_seam:s"
+    },
+    "knit": {
+      "label": "pullover knit",
+      "group": "tops",
+      "traits": [
+        "knitwear"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f neckline:f shoulder:f chest:f placket:f pocket:f sleeve:f cuff:f hem:f back:b"
+    },
+    "hoodie": {
+      "label": "pullover hoodie",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f hood:s neckline:f drawcord:f zip:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b"
+    },
+    "jacket": {
+      "label": "jacket (generic, collared)",
+      "group": "outerwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f collar:f lapel:f closure:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f yoke:b back:b side_seam:s lining:f(z)"
+    },
+    "coat": {
+      "label": "overcoat",
+      "group": "outerwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f collar:f lapel:f closure:f chest:f pocket:f belt:f shoulder:f sleeve:f cuff:f hem:f yoke:b back:b slit:b lining:f(z)"
+    },
+    "vest": {
+      "label": "waistcoat",
+      "group": "outerwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f neckline:f closure:f pocket:f hem:f back:b lining:f(z)"
+    },
+    "dress": {
+      "label": "midi dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f neckline:f strap:f bodice:f waist:f sleeve:f cuff:f pocket:f panel:f slit:f hem:f back:b closure:b"
+    },
+    "jumpsuit": {
+      "label": "jumpsuit",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "bottoms_fit"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f neckline:f collar:f closure:f bodice:f waist:f pocket:f sleeve:f cuff:f leg:f knee:f hem:f back:b"
+    },
+    "trousers": {
+      "label": "trousers",
+      "group": "bottoms",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f yoke:b"
+    },
+    "shorts": {
+      "label": "shorts (fly, pockets)",
+      "group": "bottoms",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b leg:f inseam:f side_seam:s hem:f"
+    },
+    "skirt": {
+      "label": "midi skirt",
+      "group": "bottoms",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f waistband:f closure:b hip:f pocket:f panel:f pleat:f slit:f hem:f yoke:b"
+    },
+    "briefs": {
+      "label": "briefs",
+      "group": "underwear and swim",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f waistband:f front:f seat:b leg_opening:f gusset:f label:b"
+    },
+    "bra": {
+      "label": "bra / bralette",
+      "group": "underwear and swim",
+      "traits": [
+        "bra_fit"
+      ],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f cup:f underband:f strap:f closure:b neckline:f"
+    },
+    "cap": {
+      "label": "baseball cap",
+      "group": "headwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:s crown:s brim:s panel:f vent:f closure:b label:f"
+    },
+    "hat": {
+      "label": "brimmed hat",
+      "group": "headwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:s crown:s brim:s band:s label:f"
+    },
+    "glove": {
+      "label": "glove",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f palm:f back:b fingers:f thumb:f cuff:f"
+    },
+    "sock": {
+      "label": "crew sock",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:s cuff:s leg:s heel:s foot:s toe:s"
+    },
+    "belt": {
+      "label": "belt",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f strap:f(z) buckle:f keeper:f tip:f"
+    },
+    "scarf": {
+      "label": "scarf",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f edge:f end:f fringe:f label:f"
+    },
+    "tie": {
+      "label": "tie",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f knot:f blade:f tip:f keeper:b"
+    },
+    "glasses": {
+      "label": "glasses",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f frame:f lens:f(z) bridge:f temple:s hinge:s"
+    },
+    "wallet": {
+      "label": "wallet",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f closure:f card_slot:f coin_pocket:f zip:f edge:f lining:f(z) back:b"
+    },
+    "keyring": {
+      "label": "keyring",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f ring:f charm:f clasp:f"
+    },
+    "necklace": {
+      "label": "necklace",
+      "group": "small accessories",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f chain:f pendant:f clasp:b"
+    },
+    "shoe": {
+      "label": "low-top sneaker",
+      "group": "footwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:s upper:s toe:s throat:f laces:s tongue:s quarter:s heel:s sole:s label:b"
+    },
+    "boot": {
+      "label": "ankle boot",
+      "group": "footwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:s shaft:s upper:s toe:s laces:s heel:s sole:s pull_tab:b zip:s"
+    },
+    "sandal": {
+      "label": "flat sandal",
+      "group": "footwear",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:s strap:s footbed:s toe:s heel:s sole:s buckle:s"
+    },
+    "bag": {
+      "label": "tote bag",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f body:f handle:f strap:f flap:f closure:f zip:f pocket:f panel:f hardware:f base:s lining:f(z) back:b"
+    },
+    "object": {
+      "label": "object (flacon)",
+      "group": "objects",
+      "traits": [],
+      "base": "",
+      "status": "existing",
+      "parts": "whole:f body:f lid:f front_panel:f side:s base:s label:f"
+    },
+    "ls_tee": {
+      "label": "long-sleeve tee",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f neckline:f shoulder:f chest:f sleeve:f cuff:f pocket:f hem:f back:b side_seam:s label:b"
+    },
+    "henley": {
+      "label": "henley",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f neckline:f placket:f closure:f shoulder:f chest:f sleeve:f cuff:f hem:f back:b side_seam:s label:b"
+    },
+    "tank": {
+      "label": "tank top",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f neckline:f strap:f armhole:f chest:f hem:f back:b side_seam:s label:b"
+    },
+    "cami": {
+      "label": "camisole / strappy top",
+      "group": "tops",
+      "traits": [],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f neckline:f strap:f chest:f hem:f back:b side_seam:s label:b"
+    },
+    "crop_top": {
+      "label": "crop top",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f neckline:f shoulder:f chest:f sleeve:f cuff:f hem:f back:b side_seam:s"
+    },
+    "polo": {
+      "label": "polo",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f collar:f placket:f closure:f chest:f sleeve:f cuff:f pocket:f hem:f back:b side_seam:s label:b"
+    },
+    "bodysuit": {
+      "label": "bodysuit",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f neckline:f shoulder:f chest:f sleeve:f waist:f closure:f gusset:f leg_opening:f back:b side_seam:s"
+    },
+    "blouse": {
+      "label": "blouse",
+      "group": "tops",
+      "traits": [],
+      "base": "shirt",
+      "status": "new",
+      "parts": "whole:f neckline:f collar:f placket:f closure:b shoulder:f chest:f sleeve:f cuff:f hem:f back:b side_seam:s"
+    },
+    "ss_shirt": {
+      "label": "short-sleeve shirt",
+      "group": "tops",
+      "traits": [],
+      "base": "shirt",
+      "status": "new",
+      "parts": "whole:f collar:f placket:f closure:f chest:f pocket:f sleeve:f cuff:f yoke:b back:b hem:f side_seam:s"
+    },
+    "overshirt": {
+      "label": "overshirt",
+      "group": "tops",
+      "traits": [],
+      "base": "shirt",
+      "status": "new",
+      "parts": "whole:f collar:f placket:f closure:f chest:f pocket:f sleeve:f cuff:f yoke:b back:b hem:f side_seam:s"
+    },
+    "cardigan": {
+      "label": "cardigan",
+      "group": "tops",
+      "traits": [
+        "knitwear"
+      ],
+      "base": "knit",
+      "status": "new",
+      "parts": "whole:f neckline:f placket:f closure:f shoulder:f chest:f pocket:f sleeve:f cuff:f hem:f back:b"
+    },
+    "turtleneck": {
+      "label": "turtleneck",
+      "group": "tops",
+      "traits": [
+        "knitwear"
+      ],
+      "base": "knit",
+      "status": "new",
+      "parts": "whole:f collar:f shoulder:f chest:f sleeve:f cuff:f hem:f back:b"
+    },
+    "knit_vest": {
+      "label": "sweater vest",
+      "group": "tops",
+      "traits": [
+        "knitwear"
+      ],
+      "base": "knit",
+      "status": "new",
+      "parts": "whole:f neckline:f armhole:f shoulder:f chest:f hem:f back:b"
+    },
+    "zip_hoodie": {
+      "label": "zip hoodie",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "hoodie",
+      "status": "new",
+      "parts": "whole:f hood:s neckline:f drawcord:f zip:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b"
+    },
+    "sweatshirt": {
+      "label": "crewneck sweatshirt",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "hoodie",
+      "status": "new",
+      "parts": "whole:f neckline:f shoulder:f chest:f sleeve:f cuff:f pocket:f hem:f back:b label:b"
+    },
+    "half_zip": {
+      "label": "half-zip sweatshirt",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "hoodie",
+      "status": "new",
+      "parts": "whole:f collar:f zip:f shoulder:f chest:f sleeve:f cuff:f pocket:f hem:f back:b"
+    },
+    "crop_hoodie": {
+      "label": "cropped hoodie",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "hoodie",
+      "status": "new",
+      "parts": "whole:f hood:s neckline:f drawcord:f zip:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b"
+    },
+    "bomber": {
+      "label": "bomber jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f zip:f closure:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "biker": {
+      "label": "biker / leather jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f lapel:f zip:f closure:f chest:f pocket:f belt:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "puffer": {
+      "label": "puffer jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f hood:s zip:f closure:f baffle:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "shell": {
+      "label": "shell / windbreaker",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f hood:s zip:f closure:f chest:f pocket:f drawcord:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "blazer": {
+      "label": "blazer",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f lapel:f closure:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f vent:b back:b side_seam:s lining:f(z)"
+    },
+    "denim_jacket": {
+      "label": "denim jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f placket:f closure:f chest:f pocket:f yoke:f shoulder:f sleeve:f cuff:f band:f hem:f back:b side_seam:s"
+    },
+    "track_jacket": {
+      "label": "track jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f zip:f chest:f pocket:f panel:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s"
+    },
+    "shearling": {
+      "label": "shearling jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f trim:f closure:f zip:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "fleece": {
+      "label": "fleece jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f zip:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s"
+    },
+    "varsity": {
+      "label": "varsity jacket",
+      "group": "outerwear",
+      "traits": [],
+      "base": "jacket",
+      "status": "new",
+      "parts": "whole:f collar:f closure:f chest:f pocket:f panel:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "trench": {
+      "label": "trench coat",
+      "group": "outerwear",
+      "traits": [],
+      "base": "coat",
+      "status": "new",
+      "parts": "whole:f collar:f lapel:f closure:f chest:f pocket:f belt:f shoulder:f sleeve:f cuff:f hem:f yoke:b back:b slit:b lining:f(z)"
+    },
+    "peacoat": {
+      "label": "peacoat",
+      "group": "outerwear",
+      "traits": [],
+      "base": "coat",
+      "status": "new",
+      "parts": "whole:f collar:f lapel:f closure:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f yoke:b back:b lining:f(z)"
+    },
+    "puffer_coat": {
+      "label": "long puffer coat",
+      "group": "outerwear",
+      "traits": [],
+      "base": "coat",
+      "status": "new",
+      "parts": "whole:f collar:f hood:s zip:f closure:f baffle:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "parka": {
+      "label": "parka",
+      "group": "outerwear",
+      "traits": [],
+      "base": "coat",
+      "status": "new",
+      "parts": "whole:f collar:f hood:s trim:f zip:f closure:f drawcord:f waist:f chest:f pocket:f shoulder:f sleeve:f cuff:f hem:f back:b side_seam:s lining:f(z)"
+    },
+    "duffle": {
+      "label": "duffle coat",
+      "group": "outerwear",
+      "traits": [],
+      "base": "coat",
+      "status": "new",
+      "parts": "whole:f hood:s collar:f closure:f chest:f pocket:f yoke:f shoulder:f sleeve:f cuff:f hem:f back:b lining:f(z)"
+    },
+    "puffer_vest": {
+      "label": "puffer vest",
+      "group": "outerwear",
+      "traits": [],
+      "base": "vest",
+      "status": "new",
+      "parts": "whole:f collar:f zip:f closure:f baffle:f armhole:f pocket:f hem:f back:b lining:f(z)"
+    },
+    "gilet": {
+      "label": "zip gilet (fleece / softshell)",
+      "group": "outerwear",
+      "traits": [],
+      "base": "vest",
+      "status": "new",
+      "parts": "whole:f collar:f zip:f armhole:f pocket:f drawcord:f hem:f back:b lining:f(z)"
+    },
+    "utility_vest": {
+      "label": "utility / cargo vest",
+      "group": "outerwear",
+      "traits": [],
+      "base": "vest",
+      "status": "new",
+      "parts": "whole:f neckline:f closure:f zip:f armhole:f pocket:f hem:f back:b"
+    },
+    "cargo_pants": {
+      "label": "cargo pants",
+      "group": "bottoms",
+      "traits": [],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f yoke:b"
+    },
+    "drop_crotch": {
+      "label": "drop-crotch pants",
+      "group": "bottoms",
+      "traits": [],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f yoke:b"
+    },
+    "joggers": {
+      "label": "joggers",
+      "group": "bottoms",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f drawcord:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s cuff:f hem:f"
+    },
+    "jeans": {
+      "label": "jeans",
+      "group": "bottoms",
+      "traits": [],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f coin_pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f yoke:b"
+    },
+    "sweatpants": {
+      "label": "sweatpants",
+      "group": "bottoms",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f drawcord:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s cuff:f hem:f"
+    },
+    "wide_leg": {
+      "label": "wide-leg trousers",
+      "group": "bottoms",
+      "traits": [],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f yoke:b"
+    },
+    "track_pants": {
+      "label": "track pants",
+      "group": "bottoms",
+      "traits": [],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f drawcord:f rise:s pocket:f panel:f seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f"
+    },
+    "leggings": {
+      "label": "leggings",
+      "group": "bottoms",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "trousers",
+      "status": "new",
+      "parts": "whole:f waistband:f rise:s gusset:f seat:b hip:f thigh:f knee:f leg:f inseam:f side_seam:s hem:f"
+    },
+    "cargo_shorts": {
+      "label": "cargo shorts",
+      "group": "bottoms",
+      "traits": [],
+      "base": "shorts",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b leg:f inseam:f side_seam:s hem:f"
+    },
+    "sport_shorts": {
+      "label": "athletic shorts",
+      "group": "bottoms",
+      "traits": [],
+      "base": "shorts",
+      "status": "new",
+      "parts": "whole:f waistband:f drawcord:f rise:s pocket:f seat:b leg:f side_seam:s hem:f slit:f lining:f(z)"
+    },
+    "sweat_shorts": {
+      "label": "sweat shorts",
+      "group": "bottoms",
+      "traits": [
+        "cut_sew_knit"
+      ],
+      "base": "shorts",
+      "status": "new",
+      "parts": "whole:f waistband:f drawcord:f rise:s pocket:f back_pocket:b seat:b leg:f inseam:f side_seam:s hem:f"
+    },
+    "bermuda": {
+      "label": "bermuda shorts",
+      "group": "bottoms",
+      "traits": [],
+      "base": "shorts",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f rise:s pocket:f back_pocket:b seat:b leg:f inseam:f side_seam:s hem:f"
+    },
+    "mini_skirt": {
+      "label": "mini skirt",
+      "group": "bottoms",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "skirt",
+      "status": "new",
+      "parts": "whole:f waistband:f closure:b hip:f pocket:f panel:f pleat:f slit:f hem:f yoke:b"
+    },
+    "maxi_skirt": {
+      "label": "maxi skirt",
+      "group": "bottoms",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "skirt",
+      "status": "new",
+      "parts": "whole:f waistband:f closure:b hip:f pocket:f panel:f pleat:f slit:f hem:f yoke:b"
+    },
+    "pencil_skirt": {
+      "label": "pencil skirt",
+      "group": "bottoms",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "skirt",
+      "status": "new",
+      "parts": "whole:f waistband:f closure:b hip:f panel:f slit:b hem:f yoke:b"
+    },
+    "pleat_skirt": {
+      "label": "pleated skirt",
+      "group": "bottoms",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "skirt",
+      "status": "new",
+      "parts": "whole:f waistband:f closure:b hip:f pleat:f panel:f hem:f yoke:b"
+    },
+    "wrap_skirt": {
+      "label": "wrap skirt",
+      "group": "bottoms",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "skirt",
+      "status": "new",
+      "parts": "whole:f waistband:f closure:f belt:f hip:f panel:f slit:f hem:f"
+    },
+    "boiler_suit": {
+      "label": "boiler suit",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "bottoms_fit"
+      ],
+      "base": "jumpsuit",
+      "status": "new",
+      "parts": "whole:f neckline:f collar:f zip:f closure:f bodice:f waist:f belt:f pocket:f sleeve:f cuff:f leg:f knee:f hem:f back:b"
+    },
+    "overalls": {
+      "label": "overalls / dungarees",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "bottoms_fit"
+      ],
+      "base": "jumpsuit",
+      "status": "new",
+      "parts": "whole:f bib:f strap:f buckle:f pocket:f waist:f leg:f knee:f inseam:f side_seam:s hem:f back:b back_pocket:b seat:b"
+    },
+    "shirt_dress": {
+      "label": "shirt dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "dress",
+      "status": "new",
+      "parts": "whole:f collar:f placket:f closure:f bodice:f waist:f belt:f sleeve:f cuff:f pocket:f hem:f back:b yoke:b"
+    },
+    "maxi_dress": {
+      "label": "maxi dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "dress",
+      "status": "new",
+      "parts": "whole:f neckline:f strap:f bodice:f waist:f sleeve:f cuff:f pocket:f panel:f slit:f hem:f back:b closure:b"
+    },
+    "mini_dress": {
+      "label": "mini dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "dress",
+      "status": "new",
+      "parts": "whole:f neckline:f strap:f bodice:f waist:f sleeve:f cuff:f pocket:f panel:f slit:f hem:f back:b closure:b"
+    },
+    "slip_dress": {
+      "label": "slip dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "dress",
+      "status": "new",
+      "parts": "whole:f neckline:f strap:f bodice:f waist:f slit:f hem:f back:b"
+    },
+    "knit_dress": {
+      "label": "knit dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "knitwear",
+        "skirt_volume"
+      ],
+      "base": "dress",
+      "status": "new",
+      "parts": "whole:f neckline:f shoulder:f bodice:f sleeve:f cuff:f waist:f hem:f back:b"
+    },
+    "wrap_dress": {
+      "label": "wrap dress",
+      "group": "dresses and one-pieces",
+      "traits": [
+        "skirt_volume"
+      ],
+      "base": "dress",
+      "status": "new",
+      "parts": "whole:f neckline:f bodice:f waist:f belt:f sleeve:f cuff:f panel:f slit:f hem:f back:b"
+    },
+    "boxers": {
+      "label": "boxer shorts",
+      "group": "underwear and swim",
+      "traits": [],
+      "base": "shorts",
+      "status": "new",
+      "parts": "whole:f waistband:f fly:f leg:f leg_opening:f seat:b side_seam:s hem:f label:b"
+    },
+    "sports_bra": {
+      "label": "sports bra",
+      "group": "underwear and swim",
+      "traits": [
+        "bra_fit",
+        "cut_sew_knit"
+      ],
+      "base": "bra",
+      "status": "new",
+      "parts": "whole:f cup:f underband:f strap:f neckline:f back:b"
+    },
+    "robe": {
+      "label": "robe",
+      "group": "outerwear",
+      "traits": [],
+      "base": "coat",
+      "status": "new",
+      "parts": "whole:f collar:f lapel:f belt:f pocket:f sleeve:f cuff:f hem:f back:b"
+    },
+    "swimsuit": {
+      "label": "one-piece swimsuit",
+      "group": "underwear and swim",
+      "traits": [
+        "bra_fit",
+        "cut_sew_knit"
+      ],
+      "base": "bra",
+      "status": "new",
+      "parts": "whole:f neckline:f strap:f cup:f waist:f leg_opening:f gusset:f back:b lining:f(z)"
+    },
+    "swim_shorts": {
+      "label": "swim shorts",
+      "group": "underwear and swim",
+      "traits": [],
+      "base": "shorts",
+      "status": "new",
+      "parts": "whole:f waistband:f drawcord:f rise:s pocket:f seat:b leg:f side_seam:s hem:f lining:f(z)"
+    },
+    "pyjamas": {
+      "label": "pyjama set",
+      "group": "tops",
+      "traits": [
+        "bottoms_fit"
+      ],
+      "base": "shirt",
+      "status": "new",
+      "parts": "whole:f top_piece:f bottom_piece:f collar:f placket:f closure:f pocket:f sleeve:f cuff:f waistband:f leg:f hem:f back:b"
+    },
+    "lounge_set": {
+      "label": "lounge set",
+      "group": "tops",
+      "traits": [
+        "cut_sew_knit",
+        "bottoms_fit"
+      ],
+      "base": "tee",
+      "status": "new",
+      "parts": "whole:f top_piece:f bottom_piece:f neckline:f sleeve:f cuff:f waistband:f drawcord:f leg:f hem:f back:b"
+    },
+    "earring": {
+      "label": "earring",
+      "group": "small accessories",
+      "traits": [],
+      "base": "necklace",
+      "status": "new",
+      "parts": "whole:f post:f charm:f clasp:f"
+    },
+    "ring": {
+      "label": "ring",
+      "group": "small accessories",
+      "traits": [],
+      "base": "keyring",
+      "status": "new",
+      "parts": "whole:f band:f charm:f"
+    },
+    "bracelet": {
+      "label": "bracelet",
+      "group": "small accessories",
+      "traits": [],
+      "base": "necklace",
+      "status": "new",
+      "parts": "whole:f chain:f charm:f clasp:f"
+    },
+    "mitten": {
+      "label": "mitten",
+      "group": "small accessories",
+      "traits": [],
+      "base": "glove",
+      "status": "new",
+      "parts": "whole:f palm:f back:b thumb:f cuff:f"
+    },
+    "beanie": {
+      "label": "beanie",
+      "group": "headwear",
+      "traits": [
+        "knitwear"
+      ],
+      "base": "cap",
+      "status": "new",
+      "parts": "whole:s crown:s cuff:f label:f"
+    },
+    "bucket_hat": {
+      "label": "bucket hat",
+      "group": "headwear",
+      "traits": [],
+      "base": "hat",
+      "status": "new",
+      "parts": "whole:s crown:s brim:s band:s label:f"
+    },
+    "ankle_sock": {
+      "label": "ankle sock",
+      "group": "small accessories",
+      "traits": [],
+      "base": "sock",
+      "status": "new",
+      "parts": "whole:s cuff:s leg:s heel:s foot:s toe:s"
+    },
+    "knee_sock": {
+      "label": "knee-high sock",
+      "group": "small accessories",
+      "traits": [],
+      "base": "sock",
+      "status": "new",
+      "parts": "whole:s cuff:s leg:s heel:s foot:s toe:s"
+    },
+    "bandana": {
+      "label": "bandana",
+      "group": "small accessories",
+      "traits": [],
+      "base": "scarf",
+      "status": "new",
+      "parts": "whole:f edge:f end:f label:f"
+    },
+    "cardholder": {
+      "label": "cardholder",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "wallet",
+      "status": "new",
+      "parts": "whole:f card_slot:f edge:f back:b"
+    },
+    "tall_boot": {
+      "label": "tall boot (mid-calf / knee)",
+      "group": "footwear",
+      "traits": [],
+      "base": "boot",
+      "status": "new",
+      "parts": "whole:s shaft:s upper:s toe:s laces:s heel:s sole:s pull_tab:b zip:s"
+    },
+    "heel": {
+      "label": "heeled pump",
+      "group": "footwear",
+      "traits": [],
+      "base": "shoe",
+      "status": "new",
+      "parts": "whole:s upper:s vamp:s toe:s strap:s heel:s sole:s"
+    },
+    "ballerina": {
+      "label": "ballerina flat",
+      "group": "footwear",
+      "traits": [],
+      "base": "shoe",
+      "status": "new",
+      "parts": "whole:s upper:s vamp:s toe:s strap:s heel:s sole:s"
+    },
+    "derby": {
+      "label": "derby / oxford",
+      "group": "footwear",
+      "traits": [],
+      "base": "shoe",
+      "status": "new",
+      "parts": "whole:s upper:s vamp:s toe:s laces:s tongue:s quarter:s heel:s sole:s label:b"
+    },
+    "loafer": {
+      "label": "loafer",
+      "group": "footwear",
+      "traits": [],
+      "base": "shoe",
+      "status": "new",
+      "parts": "whole:s upper:s vamp:s toe:s strap:s heel:s sole:s label:b"
+    },
+    "high_top": {
+      "label": "high-top sneaker",
+      "group": "footwear",
+      "traits": [],
+      "base": "shoe",
+      "status": "new",
+      "parts": "whole:s shaft:s upper:s toe:s throat:f laces:s tongue:s quarter:s heel:s sole:s label:b"
+    },
+    "heel_sandal": {
+      "label": "heeled sandal",
+      "group": "footwear",
+      "traits": [],
+      "base": "sandal",
+      "status": "new",
+      "parts": "whole:s strap:s footbed:s toe:s heel:s sole:s buckle:s"
+    },
+    "mule": {
+      "label": "mule / clog",
+      "group": "footwear",
+      "traits": [],
+      "base": "sandal",
+      "status": "new",
+      "parts": "whole:s upper:s vamp:s toe:s footbed:s heel:s sole:s"
+    },
+    "monk": {
+      "label": "monk strap",
+      "group": "footwear",
+      "traits": [],
+      "base": "shoe",
+      "status": "new",
+      "parts": "whole:s upper:s vamp:s toe:s buckle:s strap:s heel:s sole:s"
+    },
+    "backpack": {
+      "label": "backpack",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f strap:b handle:f flap:f zip:f pocket:f panel:f hardware:f base:s back:b lining:f(z)"
+    },
+    "handbag": {
+      "label": "top-handle bag",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f handle:f strap:f flap:f closure:f zip:f pocket:f panel:f hardware:f base:s lining:f(z) back:b"
+    },
+    "shoulder_bag": {
+      "label": "shoulder bag",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f handle:f strap:f flap:f closure:f zip:f pocket:f panel:f hardware:f base:s lining:f(z) back:b"
+    },
+    "crossbody": {
+      "label": "crossbody bag",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f handle:f strap:f flap:f closure:f zip:f pocket:f panel:f hardware:f base:s lining:f(z) back:b"
+    },
+    "belt_bag": {
+      "label": "belt bag",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f strap:f zip:f pocket:f buckle:f hardware:f base:s back:b lining:f(z)"
+    },
+    "clutch": {
+      "label": "clutch",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f flap:f closure:f zip:f hardware:f edge:f back:b lining:f(z)"
+    },
+    "duffle_bag": {
+      "label": "duffle bag",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f handle:f strap:f zip:f pocket:f panel:f hardware:f base:s back:b lining:f(z)"
+    },
+    "pouch": {
+      "label": "pouch",
+      "group": "bags and small leather",
+      "traits": [],
+      "base": "bag",
+      "status": "new",
+      "parts": "whole:f body:f zip:f pocket:f hardware:f edge:f back:b lining:f(z)"
+    }
+  },
+  "categories": {
+    "outerwear": "jacket",
+    "tops": "tee",
+    "bottoms": "trousers",
+    "dresses": "dress",
+    "loungewear_sleepwear": "tee",
+    "accessories": "cap",
+    "shoes": "shoe",
+    "bags": "bag",
+    "objects": "object",
+    "outerwear/jackets": "jacket",
+    "outerwear/jackets/bomber": "bomber",
+    "outerwear/jackets/leather": "biker",
+    "outerwear/jackets/puffer": "puffer",
+    "outerwear/jackets/rain": "shell",
+    "outerwear/jackets/softshell": "shell",
+    "outerwear/jackets/hardshell": "shell",
+    "outerwear/jackets/blazer": "blazer",
+    "outerwear/jackets/denim": "denim_jacket",
+    "outerwear/jackets/track": "track_jacket",
+    "outerwear/jackets/windbreaker": "shell",
+    "outerwear/jackets/shearling": "shearling",
+    "outerwear/jackets/fleece": "fleece",
+    "outerwear/jackets/varsity": "varsity",
+    "outerwear/coats": "coat",
+    "outerwear/coats/trench": "trench",
+    "outerwear/coats/peacoats": "peacoat",
+    "outerwear/coats/duvet": "puffer_coat",
+    "outerwear/coats/parkas": "parka",
+    "outerwear/coats/duffle": "duffle",
+    "outerwear/coats/overcoat": "coat",
+    "outerwear/coats/wool": "coat",
+    "outerwear/coats/car_coat": "coat",
+    "outerwear/coats/shearling": "shearling",
+    "outerwear/vests": "vest",
+    "outerwear/vests/puffer": "puffer_vest",
+    "outerwear/vests/fleece": "gilet",
+    "outerwear/vests/leather": "vest",
+    "outerwear/vests/down": "puffer_vest",
+    "outerwear/vests/cargo": "utility_vest",
+    "outerwear/vests/softshell": "gilet",
+    "tops/shirts": "shirt",
+    "tops/shirts/short_sleeve": "ss_shirt",
+    "tops/shirts/overshirts": "overshirt",
+    "tops/shirts/linen": "shirt",
+    "tops/shirts/mesh": "shirt",
+    "tops/shirts/flannel": "shirt",
+    "tops/shirts/denim": "shirt",
+    "tops/shirts/oxford": "shirt",
+    "tops/tshirts": "tee",
+    "tops/tshirts/crew_neck": "tee",
+    "tops/tshirts/v_neck": "tee",
+    "tops/tshirts/graphic": "tee",
+    "tops/tshirts/long_sleeve": "ls_tee",
+    "tops/tshirts/pocket": "tee",
+    "tops/tshirts/henley": "henley",
+    "tops/sweaters_knits": "knit",
+    "tops/sweaters_knits/pullovers": "knit",
+    "tops/sweaters_knits/cardigans": "cardigan",
+    "tops/sweaters_knits/turtlenecks": "turtleneck",
+    "tops/sweaters_knits/lightweight": "knit",
+    "tops/sweaters_knits/mesh": "knit",
+    "tops/sweaters_knits/sweater_vests": "knit_vest",
+    "tops/tanks": "tank",
+    "tops/hoodies_sweatshirts": "hoodie",
+    "tops/hoodies_sweatshirts/pullover": "hoodie",
+    "tops/hoodies_sweatshirts/zip": "zip_hoodie",
+    "tops/hoodies_sweatshirts/graphic": "hoodie",
+    "tops/hoodies_sweatshirts/crewneck": "sweatshirt",
+    "tops/hoodies_sweatshirts/cropped": "crop_hoodie",
+    "tops/hoodies_sweatshirts/half_zip": "half_zip",
+    "tops/crop": "crop_top",
+    "tops/polos": "polo",
+    "tops/bodysuits": "bodysuit",
+    "tops/blouses": "blouse",
+    "bottoms/pants": "trousers",
+    "bottoms/pants/trousers": "trousers",
+    "bottoms/pants/cargo": "cargo_pants",
+    "bottoms/pants/drop_crotch": "drop_crotch",
+    "bottoms/pants/cropped": "trousers",
+    "bottoms/pants/joggers": "joggers",
+    "bottoms/pants/denim": "jeans",
+    "bottoms/pants/chinos": "trousers",
+    "bottoms/pants/leather": "trousers",
+    "bottoms/pants/sweatpants": "sweatpants",
+    "bottoms/pants/wide_leg": "wide_leg",
+    "bottoms/pants/pleated": "trousers",
+    "bottoms/pants/track": "track_pants",
+    "bottoms/shorts": "shorts",
+    "bottoms/shorts/cargo": "cargo_shorts",
+    "bottoms/shorts/drop_crotch": "shorts",
+    "bottoms/shorts/cropped": "shorts",
+    "bottoms/shorts/athletic": "sport_shorts",
+    "bottoms/shorts/denim": "shorts",
+    "bottoms/shorts/chinos": "shorts",
+    "bottoms/shorts/leather": "shorts",
+    "bottoms/shorts/sweat": "sweat_shorts",
+    "bottoms/shorts/bermuda": "bermuda",
+    "bottoms/skirts": "skirt",
+    "bottoms/skirts/mini": "mini_skirt",
+    "bottoms/skirts/midi": "skirt",
+    "bottoms/skirts/maxi": "maxi_skirt",
+    "bottoms/skirts/pencil": "pencil_skirt",
+    "bottoms/skirts/pleated": "pleat_skirt",
+    "bottoms/skirts/wrap": "wrap_skirt",
+    "bottoms/leggings": "leggings",
+    "bottoms/jumpsuits": "jumpsuit",
+    "bottoms/jumpsuits/boiler_suit": "boiler_suit",
+    "bottoms/jumpsuits/overalls": "overalls",
+    "dresses//shirt": "shirt_dress",
+    "dresses//maxi": "maxi_dress",
+    "dresses//mini": "mini_dress",
+    "dresses//mesh": "dress",
+    "dresses//midi": "dress",
+    "dresses//slip": "slip_dress",
+    "dresses//knit": "knit_dress",
+    "dresses//wrap": "wrap_dress",
+    "loungewear_sleepwear/boxers": "boxers",
+    "loungewear_sleepwear/boxers/classic": "boxers",
+    "loungewear_sleepwear/boxers/boxer": "boxers",
+    "loungewear_sleepwear/boxers/relaxed": "boxers",
+    "loungewear_sleepwear/bralettes": "bra",
+    "loungewear_sleepwear/bralettes/cotton": "bra",
+    "loungewear_sleepwear/bralettes/lace": "bra",
+    "loungewear_sleepwear/bralettes/sports": "sports_bra",
+    "loungewear_sleepwear/bralettes/mesh": "bra",
+    "loungewear_sleepwear/briefs": "briefs",
+    "loungewear_sleepwear/briefs/lace": "briefs",
+    "loungewear_sleepwear/briefs/sports": "briefs",
+    "loungewear_sleepwear/briefs/mesh": "briefs",
+    "loungewear_sleepwear/briefs/cotton": "briefs",
+    "loungewear_sleepwear/robes": "robe",
+    "loungewear_sleepwear/robes/waffle": "robe",
+    "loungewear_sleepwear/robes/belted": "robe",
+    "loungewear_sleepwear/robes/wrap": "robe",
+    "loungewear_sleepwear/swimwear_w": "swimsuit",
+    "loungewear_sleepwear/swimwear_m": "swim_shorts",
+    "loungewear_sleepwear/pyjamas": "pyjamas",
+    "loungewear_sleepwear/sets": "lounge_set",
+    "accessories/jewelry": "necklace",
+    "accessories/jewelry/necklaces": "necklace",
+    "accessories/jewelry/earrings": "earring",
+    "accessories/jewelry/rings": "ring",
+    "accessories/jewelry/bracelets": "bracelet",
+    "accessories/gloves": "glove",
+    "accessories/gloves/leather": "glove",
+    "accessories/gloves/fingerless": "glove",
+    "accessories/gloves/mittens": "mitten",
+    "accessories/hats": "hat",
+    "accessories/hats/beanies": "beanie",
+    "accessories/hats/caps": "cap",
+    "accessories/hats/panama": "hat",
+    "accessories/hats/bucket": "bucket_hat",
+    "accessories/hats/sun": "hat",
+    "accessories/socks": "sock",
+    "accessories/socks/crew": "sock",
+    "accessories/socks/ankle": "ankle_sock",
+    "accessories/socks/knee_high": "knee_sock",
+    "accessories/belts": "belt",
+    "accessories/scarves": "scarf",
+    "accessories/scarves/silk": "scarf",
+    "accessories/scarves/cashmere": "scarf",
+    "accessories/scarves/bandanas": "bandana",
+    "accessories/scarves/shawls": "scarf",
+    "accessories/eyewear": "glasses",
+    "accessories/eyewear/sunglasses": "glasses",
+    "accessories/eyewear/optical": "glasses",
+    "accessories/wallets": "wallet",
+    "accessories/wallets/cardholder": "cardholder",
+    "accessories/wallets/bifold": "wallet",
+    "accessories/keychains": "keyring",
+    "accessories/ties": "tie",
+    "shoes/boots": "boot",
+    "shoes/boots/ankle": "boot",
+    "shoes/boots/tall": "tall_boot",
+    "shoes/boots/mid_calf": "tall_boot",
+    "shoes/heels": "heel",
+    "shoes/flats": "ballerina",
+    "shoes/flats/ballerina": "ballerina",
+    "shoes/flats/lace_ups": "derby",
+    "shoes/flats/slippers_loafers": "loafer",
+    "shoes/slippers_loafers": "loafer",
+    "shoes/sneakers": "shoe",
+    "shoes/sneakers/high_top": "high_top",
+    "shoes/sneakers/low_top": "shoe",
+    "shoes/sneakers/wedge": "shoe",
+    "shoes/sandals": "sandal",
+    "shoes/sandals/flat": "sandal",
+    "shoes/sandals/heeled": "heel_sandal",
+    "shoes/mules_clogs": "mule",
+    "shoes/dress_shoes": "derby",
+    "shoes/dress_shoes/derby": "derby",
+    "shoes/dress_shoes/oxford": "derby",
+    "shoes/dress_shoes/monk": "monk",
+    "bags/backpacks": "backpack",
+    "bags/handle": "handbag",
+    "bags/shoulder": "shoulder_bag",
+    "bags/tote": "bag",
+    "bags/crossbody": "crossbody",
+    "bags/belt_bags": "belt_bag",
+    "bags/clutches": "clutch",
+    "bags/duffle_bags": "duffle_bag",
+    "bags/pouches": "pouch",
+    "objects/home": "object",
+    "objects/body": "object",
+    "objects/other": "object"
+  },
+  "refinements": [
+    {
+      "id": "sleeveless",
+      "detail_keys": [
+        "silhouette",
+        "sleeveCuff",
+        "collar"
+      ],
+      "any_words": [
+        "sleeveless",
+        "strappy",
+        "spaghetti",
+        "camisole",
+        "cami",
+        "tank",
+        "no sleeves",
+        "racerback"
+      ],
+      "from_to": {
+        "blouse": "cami",
+        "shirt": "cami",
+        "ss_shirt": "cami",
+        "tee": "tank",
+        "crop_top": "tank",
+        "ls_tee": "tank",
+        "henley": "tank",
+        "polo": "tank",
+        "knit": "knit_vest",
+        "turtleneck": "knit_vest"
+      }
+    }
+  ],
+  "vectors": [
+    {
+      "top": "tops",
+      "sub": "tanks",
+      "type": "",
+      "family": "tank"
+    },
+    {
+      "top": "tops",
+      "sub": "blouses",
+      "type": "",
+      "family": "blouse"
+    },
+    {
+      "top": "tops",
+      "sub": "blouses",
+      "type": "",
+      "details": {
+        "silhouette": "Sleeveless strappy top"
+      },
+      "family": "cami"
+    },
+    {
+      "top": "tops",
+      "sub": "blouses",
+      "type": "",
+      "details": {
+        "sleeveCuff": "strappy"
+      },
+      "family": "cami"
+    },
+    {
+      "top": "tops",
+      "sub": "tanks",
+      "type": "",
+      "details": {
+        "silhouette": "Sleeveless strappy top"
+      },
+      "family": "tank"
+    },
+    {
+      "top": "tops",
+      "sub": "crop",
+      "type": "",
+      "family": "crop_top"
+    },
+    {
+      "top": "tops",
+      "sub": "crop",
+      "type": "",
+      "details": {
+        "silhouette": "sleeveless"
+      },
+      "family": "tank"
+    },
+    {
+      "top": "tops",
+      "sub": "tshirts",
+      "type": "",
+      "details": {
+        "collar": "Racerback, scoop neck"
+      },
+      "family": "tank"
+    },
+    {
+      "top": "tops",
+      "sub": "shirts",
+      "type": "linen",
+      "details": {
+        "sleeveCuff": "long sleeve, barrel cuff"
+      },
+      "family": "shirt"
+    },
+    {
+      "top": "bottoms",
+      "sub": "pants",
+      "type": "",
+      "details": {
+        "silhouette": "sleeveless"
+      },
+      "family": "trousers"
+    },
+    {
+      "top": "tops",
+      "sub": "tshirts",
+      "type": "long_sleeve",
+      "family": "ls_tee"
+    },
+    {
+      "top": "tops",
+      "sub": "hoodies_sweatshirts",
+      "type": "crewneck",
+      "family": "sweatshirt"
+    },
+    {
+      "top": "tops",
+      "sub": "new_sub_from_future",
+      "type": "",
+      "family": "tee"
+    },
+    {
+      "top": "outerwear",
+      "sub": "jackets",
+      "type": "denim",
+      "family": "denim_jacket"
+    },
+    {
+      "top": "outerwear",
+      "sub": "coats",
+      "type": "shearling",
+      "family": "shearling"
+    },
+    {
+      "top": "outerwear",
+      "sub": "vests",
+      "type": "cargo",
+      "family": "utility_vest"
+    },
+    {
+      "top": "bottoms",
+      "sub": "pants",
+      "type": "denim",
+      "family": "jeans"
+    },
+    {
+      "top": "bottoms",
+      "sub": "skirts",
+      "type": "pencil",
+      "family": "pencil_skirt"
+    },
+    {
+      "top": "bottoms",
+      "sub": "leggings",
+      "type": "",
+      "family": "leggings"
+    },
+    {
+      "top": "dresses",
+      "sub": "",
+      "type": "slip",
+      "family": "slip_dress"
+    },
+    {
+      "top": "dresses",
+      "sub": "",
+      "type": "",
+      "family": "dress"
+    },
+    {
+      "top": "loungewear_sleepwear",
+      "sub": "swimwear_m",
+      "type": "",
+      "family": "swim_shorts"
+    },
+    {
+      "top": "loungewear_sleepwear",
+      "sub": "robes",
+      "type": "wrap",
+      "family": "robe"
+    },
+    {
+      "top": "accessories",
+      "sub": "hats",
+      "type": "beanies",
+      "family": "beanie"
+    },
+    {
+      "top": "accessories",
+      "sub": "jewelry",
+      "type": "rings",
+      "family": "ring"
+    },
+    {
+      "top": "shoes",
+      "sub": "flats",
+      "type": "lace_ups",
+      "family": "derby"
+    },
+    {
+      "top": "shoes",
+      "sub": "boots",
+      "type": "mid_calf",
+      "family": "tall_boot"
+    },
+    {
+      "top": "bags",
+      "sub": "backpacks",
+      "type": "",
+      "family": "backpack"
+    },
+    {
+      "top": "objects",
+      "sub": "home",
+      "type": "",
+      "family": "object"
+    },
+    {
+      "top": "",
+      "sub": "",
+      "type": "",
+      "family": ""
+    },
+    {
+      "top": "spaceships",
+      "sub": "",
+      "type": "",
+      "family": ""
+    }
+  ]
+}

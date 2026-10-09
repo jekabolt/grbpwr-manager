@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -739,6 +740,7 @@ type TechCardMediaItem struct {
 	Category TechCardMediaCategory `db:"category"`
 	Kind     TechCardMediaKind     `db:"kind"`
 	Caption  sql.NullString        `db:"caption"`
+	Role     TechCardMediaRole     `db:"role"`
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -747,6 +749,28 @@ type TechCardMediaFull struct {
 	Category TechCardMediaCategory
 	Kind     TechCardMediaKind
 	Caption  sql.NullString
+	Role     TechCardMediaRole
+}
+
+// TechCardMediaRole says what a MOODBOARD picture is for (0395, tech_card_media.role). Empty =
+// unassigned: prompts treat it as mood and name no role. Technical rows keep it empty.
+type TechCardMediaRole string
+
+const (
+	TechCardMediaRoleNone     TechCardMediaRole = ""
+	TechCardMediaRoleTarget   TechCardMediaRole = "target"   // the garment we make
+	TechCardMediaRoleDetail   TechCardMediaRole = "detail"   // a detail reference
+	TechCardMediaRoleMaterial TechCardMediaRole = "material" // fabric / colour / texture
+	TechCardMediaRoleMood     TechCardMediaRole = "mood"     // atmosphere only
+)
+
+// IsTechCardMediaRole reports whether r is in the column's vocabulary (empty included).
+func IsTechCardMediaRole(r TechCardMediaRole) bool {
+	switch r {
+	case TechCardMediaRoleNone, TechCardMediaRoleTarget, TechCardMediaRoleDetail, TechCardMediaRoleMaterial, TechCardMediaRoleMood:
+		return true
+	}
+	return false
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
@@ -803,6 +827,39 @@ type TechCardCallout struct {
 	//   3. НЕ ОБЯЗАТЕЛЕН. Хранимые строки читаются с пустым ключом; старый клиент его не шлёт, его
 	//      номера остаются его, и он ничего не теряет.
 	ClientRef sql.NullString `db:"client_ref"`
+	// Spec — НАЗНАЧЕНИЕ выноски и её структурное содержимое (0388): JSON-объект строкой, канонизированный
+	// CanonicalCalloutSpec. Ось, ортогональная виду, как Caps. NULL в колонке ↔ "" здесь: обычная выноска.
+	// Входит в атомарную группу геометрии (перенос при KindOmitted) и в подпись DESIGN четвёртым хвостом.
+	Spec sql.NullString `db:"spec"`
+	// SpecOmitted — на проводе пришла ПУСТАЯ строка: клиент про назначение не сказал (бандл до
+	// 0388 шлёт вид, но не spec). Тогда хранимый spec переносится той же идентичностью, что и
+	// геометрия, — независимо от KindOmitted. Явная очистка — "{}". Не колонка: факт запроса.
+	SpecOmitted bool `db:"-"`
+}
+
+// MaxCalloutSpecBytes — предел канонизированного spec выноски.
+const MaxCalloutSpecBytes = 16384
+
+// CanonicalCalloutSpec приводит spec выноски к одному написанию: пусто остаётся пустым, JSON-объект
+// перемаршаливается с ключами по алфавиту. Нужна И на записи, И на чтении: MySQL хранит JSON бинарно
+// и отдаёт его в своём порядке ключей и со своими пробелами, и без второй канонизации отпечаток DESIGN
+// не совпадал бы сам с собой. Ошибка — не объект (массив, скаляр, битый JSON).
+func CanonicalCalloutSpec(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", err
+	}
+	if obj == nil {
+		return "", fmt.Errorf("spec is null, not an object")
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // PartList — детали указания ОДНИМ СПИСКОМ, по единственному правилу: непустой список главнее,
@@ -3667,6 +3724,110 @@ type TechCardPackaging struct {
 	Notes            sql.NullString `db:"notes"`
 }
 
+// --- labels rework (0386) --------------------------------------------------------------------------
+
+// Care-label QR presets (tech_card_care_label.qr_preset). Closed here; the column is a plain VARCHAR.
+const (
+	CareLabelQRStorefront = "storefront"
+	CareLabelQRCustom     = "custom"
+	CareLabelQRFixed      = "fixed"
+)
+
+// ValidCareLabelQRPresets is the accepted qr_preset set.
+var ValidCareLabelQRPresets = map[string]bool{
+	CareLabelQRStorefront: true, CareLabelQRCustom: true, CareLabelQRFixed: true,
+}
+
+// TechCardCareLabel — СОСТАВНИК: the overrides of the always-present composition label (1:1 with the
+// card, tech_card_care_label). Every empty field means «the derived value». Line lists are stored
+// newline-joined; nil = NULL = derived.
+type TechCardCareLabel struct {
+	LogoMediaId      sql.NullInt32 // NULL = the brand mark
+	CareProseLines   []string
+	QRPreset         string // one of ValidCareLabelQRPresets; never "" after parse
+	QRTemplate       sql.NullString
+	BackCaptionLines []string
+	AddressLines     []string
+	Colorways        []TechCardCareLabelColorway // sorted by ColorwayId after parse and on read
+}
+
+// TechCardCareLabelColorway is one colourway's overrides on the composition label
+// (tech_card_care_label_colorway + its fibre rows).
+type TechCardCareLabelColorway struct {
+	ColorwayId int
+	ColourName sql.NullString           // NULL = derived colour name
+	Fibers     []TechCardCareLabelFiber // empty = composition derived from the BOM
+}
+
+// TechCardCareLabelFiber is one fibre row of a colourway's composition override.
+type TechCardCareLabelFiber struct {
+	Part      TechCardBomLabelPart
+	FiberCode string
+	Pct       int // 1..100
+}
+
+// TechCardGarmentLabel is a garment label other than the composition label (tech_card_garment_label).
+// Key is freeform like TechCardDetail.Key: known-ness is the client's constant.
+type TechCardGarmentLabel struct {
+	Key           string
+	Placement     sql.NullString
+	Attachment    sql.NullString
+	Folding       sql.NullString
+	Size          sql.NullString
+	QtyPerGarment int           // ≥ 1
+	BomItemId     sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
+	// BomLineKey is WRITE-SIDE TRANSPORT for server-built payloads (the season clone): the source
+	// card's BOM ids mean nothing on the new card, so the link travels as the line's stable key and
+	// the store resolves it against the ids it just minted. Never read back, never hashed.
+	BomLineKey string
+	Note       sql.NullString
+	MediaIds   []int // mockups, in display order
+}
+
+// TechCardPackagingItem is one packaging item (tech_card_packaging_item) — the garment label with
+// Usage in place of placement and Packing in place of attachment + folding.
+type TechCardPackagingItem struct {
+	Key           string
+	Usage         sql.NullString
+	Packing       sql.NullString
+	Size          sql.NullString
+	QtyPerGarment int
+	BomItemId     sql.NullInt32
+	BomLineKey    string // see TechCardGarmentLabel.BomLineKey
+	Note          sql.NullString
+	MediaIds      []int
+}
+
+// LabelMediaIds is every media id the labels rework references on this card — the composition
+// label's logo override, then each garment label's mockups, then each packaging item's mockups —
+// deduplicated, first occurrence wins. It is what the read resolves into TechCard.ResolvedLabelMedia
+// (M-02): the client must not depend on its media-library page to turn these ids into pictures.
+func (tc *TechCardInsert) LabelMediaIds() []int {
+	var out []int
+	seen := make(map[int]bool)
+	add := func(id int) {
+		if id <= 0 || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if tc.CareLabel != nil && tc.CareLabel.LogoMediaId.Valid {
+		add(int(tc.CareLabel.LogoMediaId.Int32))
+	}
+	for _, l := range tc.GarmentLabels {
+		for _, id := range l.MediaIds {
+			add(id)
+		}
+	}
+	for _, it := range tc.PackagingItems {
+		for _, id := range it.MediaIds {
+			add(id)
+		}
+	}
+	return out
+}
+
 // TechCardCosting holds the manually-entered per-unit cost articles (Sheet
 // «Калькуляция», 1:1), all in a single currency. The materials line and the unit/order
 // totals are computed on read (see dto), not stored. Pricing (markup/wholesale/retail)
@@ -4181,6 +4342,17 @@ type TechCardInsert struct {
 	// отредактированной после подписания — на всех карточках разом и в момент деплоя.
 	GarmentDescription        sql.NullString `db:"garment_description"`
 	GarmentDescriptionOmitted bool           `db:"-"`
+	// FlatWords — СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (0406, flat-consistency M14, владелец 07.10: «показывай в
+	// WORDS только то, что уходит»). Печатает ТОЛЬКО человек в FLAT › WORDS под строкой класса; ни
+	// модель, ни засев, ни `ai ✦` сюда не пишут — поэтому автор известен по построению. Описанию
+	// выше (засев брифом модели + правки людей, одна строка без автора) этого не хватает, и флэт его
+	// не шлёт (designgen.FlatWordsCarryDescription); эти строки — шлёт, как напечатаны, под
+	// «garment: <класс>» (designgen.FlatGarmentNote). Читают только прогоны флэта.
+	//
+	// Тот же трёхсостоянийный verbatim-протокол, что у описания (FlatWordsOmitted: поле
+	// отсутствовало на проводе → колонку не трогать). В проекцию дайджеста НЕ ВХОДИТ.
+	FlatWords        sql.NullString `db:"flat_words"`
+	FlatWordsOmitted bool           `db:"-"`
 	// CalloutSeq — МОНОТОННЫЙ ИСТОЧНИК НОМЕРА ВЫНОСКИ (0345). Серверный счётчик карточки: хендлер
 	// UpdateTechCard двигает его ТЕМ ЖЕ UPDATE, который бампает lock_version, поэтому взаимное
 	// исключение уже стоит — сейв идёт под expected_lock_version, и два сейва не сминтят один номер.
@@ -4207,11 +4379,25 @@ type TechCardInsert struct {
 	// a fresh approval. Empty means «neither exists», and the projection then appends nothing, so a
 	// card that has neither hashes byte-identically to before this phase.
 	DerivedCostInputsDigest string `db:"-"`
+	// DesignQuizDigest is entity.DesignQuizAnswersDigest of the card's moodboard quiz answers
+	// (62-DEEP-FIXES D2) — the DESIGN signature covers them although they live outside this payload.
+	// Populated by the STORE on read, and by the write path from the store before stamping a fresh
+	// DESIGN approval. Empty (no answers) appends nothing: such a card hashes byte-identically.
+	DesignQuizDigest string `db:"-"`
 	// production (Phase 3); 1:1 sections are nil when unset
-	Construction   *TechCardConstruction  `db:"-"`
-	Operations     []TechCardOperation    `db:"-"`
-	Labels         []TechCardLabel        `db:"-"`
-	Packaging      *TechCardPackaging     `db:"-"`
+	Construction *TechCardConstruction `db:"-"`
+	Operations   []TechCardOperation   `db:"-"`
+	// Labels is the LEGACY tech_card_label list: read-only since 0386 (the save neither clears nor
+	// writes it) and in no digest. Dropped by I-19.
+	Labels    []TechCardLabel    `db:"-"`
+	Packaging *TechCardPackaging `db:"-"`
+	// Labels rework (0386). CareLabel nil on write = keep the stored record; on read = no record.
+	CareLabel      *TechCardCareLabel      `db:"-"`
+	GarmentLabels  []TechCardGarmentLabel  `db:"-"`
+	PackagingItems []TechCardPackagingItem `db:"-"`
+	// LabelsAware says the client knows GarmentLabels / PackagingItems exist. Transport, not content:
+	// without it UpdateTechCard keeps both stored lists (an old bundle would otherwise erase them).
+	LabelsAware    bool                   `db:"-"`
 	Costing        *TechCardCosting       `db:"-"`
 	Issues         []TechCardIssue        `db:"-"`
 	SizeQuantities []TechCardSizeQuantity `db:"-"`
@@ -4484,6 +4670,13 @@ type TechCard struct {
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	// Guided — the card was created through the guided studio flow (0407) and the guide has not been
+	// left yet. Here, NOT on TechCardInsert: only AddTechCard writes it (CreateOpts) and only
+	// ExitTechCardGuide clears it; the shared header column list (update/clone/import) never names it.
+	Guided bool `db:"guided"`
+	// Setup — guided, no moodboard picture and no concept yet (TechCardSetup). Derived on the list
+	// paths (ListTechCards, GetStylePipeline); false elsewhere.
+	Setup bool `db:"-"`
 	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
 	// (GetTechCardById); empty on list views.
 	RoleAssignments []TechCardRoleAssignment `db:"-"`
@@ -4496,6 +4689,14 @@ type TechCard struct {
 	// media_id, а URL и размеры это read-данные — та же разводка, что у карточных медиа, где
 	// TechCardMediaItem пишет, а ResolvedMedia читает.
 	ResolvedOperationMedia []TechCardMediaFull `db:"-"`
+	// ResolvedLabelMedia — the MediaFull of every id in LabelMediaIds (M-02), in that order; an id
+	// whose media is gone is simply absent. Read-only projection, never written.
+	ResolvedLabelMedia []TechCardMediaFull `db:"-"`
+	// QuizAnswers — the moodboard quiz answers of this card (0389, tech_card_design_quiz_answer), in
+	// display order. Read-only projection loaded by enrich; written ONLY by SaveDesignQuizAnswers,
+	// never by UpdateTechCard (the table is not in its full-replace loop, so autosave cannot drop it).
+	// Not mapped into common.TechCard: the quiz has its own RPCs.
+	QuizAnswers []TechCardQuizAnswer `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an
@@ -4549,6 +4750,40 @@ type TechCard struct {
 	// article, and the production plan labels/converts its rollup rows, from this one map. Nil on
 	// list views and writes; every consumer must degrade to the BOM line's own snapshot fields.
 	LinkedMaterials map[int]MaterialWithPrice `db:"-"`
+}
+
+// TechCardCreateRequestIdMaxRunes bounds CreateTechCardRequest.client_request_id — the width of
+// tech_card.create_request_id (0407).
+const TechCardCreateRequestIdMaxRunes = 64
+
+// TechCardCreateRequestIdIndex is the name 0407 gives UNIQUE(tech_card.create_request_id). The API
+// layer reads it out of a 1062's message to tell a replay race from a style-number collision.
+const TechCardCreateRequestIdIndex = "uq_tech_card_create_request_id"
+
+// TechCardCreateOpts carries what a CreateTechCard call adds beyond the card itself (0407).
+// The zero value is a plain create: no replay key, not guided.
+type TechCardCreateOpts struct {
+	// RequestId is the client-minted replay key, already trimmed; "" = none. A create under a key
+	// that already made a card returns that card instead of inserting a second one.
+	RequestId string
+	// Guided creates the card in the guided studio flow (TechCard.Guided).
+	Guided bool
+}
+
+// TechCardInSetup is the list `setup` rule (0407): a guided card whose board has no picture yet and
+// whose concept is empty. A board picture is a moodboard row that is not a reference — reference rows
+// are the flat's inputs, not pictures the person put on the board. The ONE definition for every list
+// path (ListTechCards and GetStylePipeline render the same tile).
+func TechCardInSetup(guided bool, concept sql.NullString, media []TechCardMediaFull) bool {
+	if !guided || strings.TrimSpace(concept.String) != "" {
+		return false
+	}
+	for i := range media {
+		if media[i].Category == TechCardMediaCategoryMoodboard && media[i].Kind != TechCardMediaReference {
+			return false
+		}
+	}
+	return true
 }
 
 // LinkedProductIDs returns the style's live (non-archived) colourway product ids. PR6 R1: a style's

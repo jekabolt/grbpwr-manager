@@ -252,11 +252,17 @@ func parseTechCardMediaItems(items []*pb_common.TechCardMediaItem, cat entity.Te
 		if len(m.Caption) > maxVarchar255 {
 			return nil, fmt.Errorf("media caption must be at most %d characters", maxVarchar255)
 		}
+		role := entity.TechCardMediaRole(m.Role)
+		if !entity.IsTechCardMediaRole(role) {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("%s[%d].role", field, i),
+				"unknown_role", m.Role, "role must be one of target, detail, material, mood, or empty")
+		}
 		out = append(out, entity.TechCardMediaItem{
 			MediaId:  int(m.MediaId),
 			Category: cat,
 			Kind:     kind,
 			Caption:  nullStringFromPb(m.Caption),
+			Role:     role,
 		})
 	}
 	return out, nil
@@ -863,6 +869,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, entity.NewFieldViolation(path+".client_ref", "too_long", "",
 				fmt.Sprintf("a callout's client key is at most %d characters", maxVarchar64))
 		}
+		spec, specOmitted, err := calloutSpecFromPb(path, c.Spec)
+		if err != nil {
+			return nil, err
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(part),
@@ -887,6 +897,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			// Ключ строки едет ДО минта номера: именно он — гейт минта (см. ClientRef), и хендлер
 			// читает его на уже разобранной сущности.
 			ClientRef: nullStringFromPb(c.ClientRef),
+			// Назначение выноски (0388) — канонизированный JSON-объект; пусто ⇒ NULL.
+			Spec:        nullStringFromPb(spec),
+			SpecOmitted: specOmitted,
 		})
 	}
 
@@ -948,6 +961,19 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 	packaging, err := parseTechCardPackaging(pb.Packaging)
+	if err != nil {
+		return nil, err
+	}
+	// Labels rework (0386): the composition label record (nil = keep), garment labels, packaging items.
+	careLabel, err := parseTechCardCareLabel(pb.CareLabel)
+	if err != nil {
+		return nil, err
+	}
+	garmentLabels, err := parseTechCardGarmentLabels(pb.GarmentLabels)
+	if err != nil {
+		return nil, err
+	}
+	packagingItems, err := parseTechCardPackagingItems(pb.PackagingItems)
 	if err != nil {
 		return nil, err
 	}
@@ -1061,23 +1087,31 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// следующая генерация ушла бы к модели, ничего не зная об изделии.
 		GarmentDescription:        nullStringFromPb(pb.GetGarmentDescription()),
 		GarmentDescriptionOmitted: pb.GarmentDescription == nil,
-		SizeIds:                   sizeIds,
-		Media:                     media,
-		Callouts:                  callouts,
-		Details:                   details,
-		BomItems:                  bomItems,
-		Construction:              construction,
-		Operations:                operations,
-		Labels:                    labels,
-		Packaging:                 packaging,
-		Costing:                   costing,
-		Issues:                    issues,
-		SizeQuantities:            sizeQuantities,
-		Signoffs:                  signoffs,
-		Patterns:                  patterns,
-		Pieces:                    pieces,
-		PieceDxfAliases:           pieceDxfAliases,
-		PieceDxfAliasesSet:        pieceDxfAliasesSet,
+		// СЛОВА ЧЕЛОВЕКА ДЛЯ ФЛЭТА (M14) — тот же verbatim-протокол: присутствие решает.
+		FlatWords:        nullStringFromPb(pb.GetFlatWords()),
+		FlatWordsOmitted: pb.FlatWords == nil,
+		SizeIds:          sizeIds,
+		Media:            media,
+		Callouts:         callouts,
+		Details:          details,
+		BomItems:         bomItems,
+		Construction:     construction,
+		Operations:       operations,
+		Labels:           labels,
+		Packaging:        packaging,
+		CareLabel:        careLabel,
+		GarmentLabels:    garmentLabels,
+		PackagingItems:   packagingItems,
+		// Транспорт, не содержание (щит полной замены двух списков) — ни в один дайджест не входит.
+		LabelsAware:        pb.LabelsAware,
+		Costing:            costing,
+		Issues:             issues,
+		SizeQuantities:     sizeQuantities,
+		Signoffs:           signoffs,
+		Patterns:           patterns,
+		Pieces:             pieces,
+		PieceDxfAliases:    pieceDxfAliases,
+		PieceDxfAliasesSet: pieceDxfAliasesSet,
 
 		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2). ABSENT is carried through as INVALID — «take the workshop
 		// default» — and an explicit 0 is carried through as a set zero. Deliberately NOT folded into
@@ -1381,6 +1415,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MediaId: int32(m.MediaId),
 			Kind:    pbTechCardMediaKind(m.Kind),
 			Caption: pbStringFromNull(m.Caption),
+			Role:    string(m.Role),
 		}
 		if m.Category == entity.TechCardMediaCategoryMoodboard {
 			moodboardMedia = append(moodboardMedia, item)
@@ -1395,6 +1430,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Media:   ConvertEntityToCommonMedia(&tc.ResolvedMedia[i].Media),
 			Kind:    pbTechCardMediaKind(tc.ResolvedMedia[i].Kind),
 			Caption: pbStringFromNull(tc.ResolvedMedia[i].Caption),
+			Role:    string(tc.ResolvedMedia[i].Role),
 		}
 		if tc.ResolvedMedia[i].Category == entity.TechCardMediaCategoryMoodboard {
 			resolvedMoodboard = append(resolvedMoodboard, item)
@@ -1430,6 +1466,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			// сопоставляет свою строку с серверным номером по нему, а не по номеру, которого у
 			// новой строки ещё не было. Пусто у всего, что заведено до 0345.
 			ClientRef: pbStringFromNull(c.ClientRef),
+			Spec:      pbStringFromNull(c.Spec),
 		})
 	}
 
@@ -1449,6 +1486,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 	moodNote := pbStringFromNull(tc.MoodNote)
 	// Описание изделия — тоже присутствующим полем всегда, по тому же доводу.
 	garmentDescription := pbStringFromNull(tc.GarmentDescription)
+	// Слова человека для флэта (M14) — тоже присутствующим полем всегда.
+	flatWords := pbStringFromNull(tc.FlatWords)
 
 	return &pb_common.TechCard{
 		Id:              int32(tc.Id),
@@ -1459,6 +1498,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		UpdatedBy:       tc.UpdatedBy,
 		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
 		Revisions:       techCardRevisionsToPb(tc.Revisions),
+		Guided:          tc.Guided, // 0407, output-only
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber.String,
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
@@ -1489,6 +1529,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MoodNote: &moodNote,
 			// ОПИСАНИЕ ИЗДЕЛИЯ — ровно та же присутствующая-всегда форма, что у заметки выше.
 			GarmentDescription: &garmentDescription,
+			FlatWords:          &flatWords,
 			SizeIds:            sizeIds,
 			MoodboardMedia:     moodboardMedia,
 			TechnicalMedia:     technicalMedia,
@@ -1499,6 +1540,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Operations:         techCardOperationsToPb(tc.Operations),
 			Labels:             techCardLabelsToPb(tc.Labels),
 			Packaging:          techCardPackagingToPb(tc.Packaging),
+			CareLabel:          techCardCareLabelToPb(tc.CareLabel),
+			GarmentLabels:      techCardGarmentLabelsToPb(tc.GarmentLabels),
+			PackagingItems:     techCardPackagingItemsToPb(tc.PackagingItems),
 			Costing:            techCardCostingToPb(tc, fx),
 			Issues:             techCardIssuesToPb(tc.Issues),
 			SizeQuantities:     techCardSizeQuantitiesToPb(tc.SizeQuantities),
@@ -1516,6 +1560,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Операционные снимки (0308) — словарь «media_id → откуда взять картинку». Дистинкт по
 		// карточке: одна фотография законно висит на нескольких шагах.
 		ResolvedOperationMedia: resolvedOperationMedia(tc),
+		// Labels rework media (M-02): care-label logo + garment-label / packaging-item mockups,
+		// resolved so the client never depends on its media-library page to draw them.
+		ResolvedLabelMedia: resolvedLabelMedia(tc),
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
 		Colorways: techCardColorwayRefsToPb(tc, orderQtyBySize, fx),
@@ -2547,6 +2594,10 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		// листа не только ради показа: из неё клиент собирает пул значений фасета, и карты с
 		// рукописными и архивными именами вне словаря становятся фильтруемыми.
 		Collection: pbStringFromNull(tc.Collection),
+		// Guided create (0407): the flag, and `setup` as the list paths derived it
+		// (entity.TechCardInSetup) — false off the list paths.
+		Guided: tc.Guided,
+		Setup:  tc.Setup,
 	}
 }
 

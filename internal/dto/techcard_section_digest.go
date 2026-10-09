@@ -267,6 +267,9 @@ type digestMedia struct {
 	Kind    string `json:"k"`
 	Caption string `json:"c"`
 	Cat     string `json:"g"`
+	// Role (0395): what the picture means to the model (target/detail/material/mood). omitempty keeps
+	// digests of role-less media byte-identical; a role change re-opens the DESIGN sign-off.
+	Role string `json:"r,omitempty"`
 }
 
 func designProjection(tc *entity.TechCardInsert) any {
@@ -274,7 +277,7 @@ func designProjection(tc *entity.TechCardInsert) any {
 	for _, m := range tc.Media {
 		media = append(media, digestMedia{
 			MediaID: m.MediaId, Kind: string(m.Kind),
-			Caption: m.Caption.String, Cat: string(m.Category),
+			Caption: m.Caption.String, Cat: string(m.Category), Role: string(m.Role),
 		})
 	}
 	callouts := make([]any, 0, len(tc.Callouts))
@@ -327,18 +330,30 @@ func designProjection(tc *entity.TechCardInsert) any {
 		// ВХОДИТ В ПОДПИСЬ, как пунктир, а не как цвет: засечка говорит «этот участок измерен»,
 		// стрелка — «смотри сюда», точка — «вот здесь». Это разные указания цеху.
 		caps := c.Caps != "" && calloutKindOrPin(c.Kind).HasCaps()
-		if geom || style || caps {
+		// ЧЕТВЁРТЫЙ ХВОСТ — НАЗНАЧЕНИЕ (0388), открывается ТОЛЬКО непустым spec и тянет за собой все
+		// три предыдущих по тому же правилу: позиция в кортеже обязана значить одно и то же. Карточка,
+		// где назначения никто не выбирал, хэшируется байт в байт как до 0388. Spec уже канонизирован
+		// (ключи по алфавиту) и на записи, и на чтении.
+		spec := c.Spec.Valid && c.Spec.String != ""
+		if geom || style || caps || spec {
 			points := make([]any, 0, len(c.Points))
 			for _, p := range c.Points {
 				points = append(points, []any{p.X.String(), p.Y.String()})
 			}
 			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
 		}
-		if style || caps {
+		if style || caps || spec {
 			row = append(row, []any{c.Dashed, c.Filled, parts})
 		}
-		if caps {
-			row = append(row, string(c.Caps))
+		if caps || spec {
+			capsVal := ""
+			if caps {
+				capsVal = string(c.Caps)
+			}
+			row = append(row, capsVal)
+		}
+		if spec {
+			row = append(row, c.Spec.String)
 		}
 		callouts = append(callouts, row)
 	}
@@ -349,7 +364,14 @@ func designProjection(tc *entity.TechCardInsert) any {
 		// DESIGN такой карточки не совпадал сам с собой — подпись рождалась протухшей.
 		details = append(details, []any{d.Key.String, d.Text.String, digestList(d.MediaIds)})
 	}
-	return []any{tc.Concept.String, media, callouts, details}
+	out := []any{tc.Concept.String, media, callouts, details}
+	// THE QUIZ TAIL (62-DEEP-FIXES D2): the moodboard quiz answers are design decisions, so a changed
+	// answer must stale a DESIGN sign-off. A tail opened ONLY by a card that has answers: a card
+	// without them hashes byte-identically to before (no mass sign-off flip at deploy).
+	if tc.DesignQuizDigest != "" {
+		out = append(out, tc.DesignQuizDigest)
+	}
+	return out
 }
 
 // constructionRow — головной кортеж секции: то, что карточка объявляет умолчаниями пошива.
@@ -1169,15 +1191,60 @@ func colourProjection(tc *entity.TechCardInsert) any {
 	return out
 }
 
+// labelsProjection (LABELS) — переделка этикеток (0386): этикетки изделия (garment_labels) плюс
+// составник (care_label) тегированным хвостом.
+//
+// ЛЕГАСИ-СТРОКИ tech_card_label УШЛИ ИЗ ПРОЕКЦИИ. Сохранение их больше не пишет и не чистит, клиент
+// волны их не шлёт — останься они здесь, чтение хешировало бы их, а запись нет, и подпись LABELS была
+// бы вечно протухшей. Цена — один раз «изменено после утверждения» у карточек, где старые строки
+// были (решение D-09).
+//
+// КАРТОЧКА БЕЗ НОВЫХ ДАННЫХ ХЕШИРУЕТСЯ ТАК ЖЕ, как карточка без этикеток до волны: пустой список `[]`.
+// Составник без единой правки (нет записи ИЛИ запись из одних дефолтов — blankAsAbsent) хвоста не
+// рождает.
+//
+// Кортеж этикетки: ключ, размещение, крепление, складывание, размер, штук на изделие, строка BOM,
+// заметка, макеты (порядок макетов — содержание: первый показывается в слоте). BomLineKey — транспорт
+// клона, не содержание, в проекцию не входит.
 func labelsProjection(tc *entity.TechCardInsert) any {
-	labels := make([]any, 0, len(tc.Labels))
-	for _, l := range tc.Labels {
-		labels = append(labels, []any{
-			string(l.LabelType), l.Content.String, l.Placement.String,
-			l.Attachment.String, l.Size.String, l.Note.String, l.BomItemId.Int32,
+	out := make([]any, 0, len(tc.GarmentLabels)+1)
+	for _, l := range tc.GarmentLabels {
+		out = append(out, []any{
+			l.Key, l.Placement.String, l.Attachment.String, l.Folding.String, l.Size.String,
+			l.QtyPerGarment, l.BomItemId.Int32, l.Note.String, digestList(l.MediaIds),
 		})
 	}
-	return labels
+	if care := blankAsAbsent(tc.CareLabel, careLabelRow); care != nil {
+		out = append(out, []any{"care_label", care})
+	}
+	return out
+}
+
+// careLabelRow — строка составника для blankAsAbsent: нулевая запись и запись из дефолтов
+// (qr_preset "" = storefront) обязаны совпасть, поэтому пресет нормализуется здесь.
+func careLabelRow(c *entity.TechCardCareLabel) []any {
+	preset := c.QRPreset
+	if preset == "" {
+		preset = entity.CareLabelQRStorefront
+	}
+	cws := make([]entity.TechCardCareLabelColorway, len(c.Colorways))
+	copy(cws, c.Colorways)
+	sort.SliceStable(cws, func(i, j int) bool { return cws[i].ColorwayId < cws[j].ColorwayId })
+	colorways := make([]any, 0, len(cws))
+	for _, cw := range cws {
+		fibers := make([]entity.TechCardCareLabelFiber, len(cw.Fibers))
+		copy(fibers, cw.Fibers)
+		sort.SliceStable(fibers, func(i, j int) bool { return fibers[i].Part < fibers[j].Part })
+		fs := make([]any, 0, len(fibers))
+		for _, f := range fibers {
+			fs = append(fs, []any{string(f.Part), f.FiberCode, f.Pct})
+		}
+		colorways = append(colorways, []any{cw.ColorwayId, cw.ColourName.String, digestList(fs)})
+	}
+	return []any{
+		c.LogoMediaId.Int32, digestList(c.CareProseLines), preset, c.QRTemplate.String,
+		digestList(c.BackCaptionLines), digestList(c.AddressLines), digestList(colorways),
+	}
 }
 
 // packagingProjection — упаковочный лист: ГОЛОВА из десяти замороженных позиций плюс тегированные
@@ -1201,8 +1268,39 @@ func labelsProjection(tc *entity.TechCardInsert) any {
 // и закрыл вкладку упаковки, ничего не заполнив, объявляла бы свою секцию PACKAGING изменённой без
 // единого изменения. Довод и выбор каноничного написания — у blankAsAbsent, решение то же, что уже
 // принято у парка оборудования.
+//
+// УПАКОВОЧНЫЕ ВЕЩИ (0386) — ХВОСТ "items" ПОСЛЕ ВСЕГО ЛИСТА. Вещи живут не на листе, а рядом
+// (tc.PackagingItems), поэтому хвост ставится здесь, а не в packagingTails. Нет вещей — нет хвоста, и
+// отпечаток карточки совпадает побайтно с тем, что был до волны (packagingGoldDigestHex). Есть вещи —
+// лист всегда пишется полной строкой (нулевой, если листа нет), и последним элементом идёт
+// ["items", [кортежи]]: так «лист без полей + вещи» не спутать ни с одной формой без вещей.
 func packagingProjection(tc *entity.TechCardInsert) any {
-	return blankAsAbsent(tc.Packaging, packagingRow)
+	head := blankAsAbsent(tc.Packaging, packagingRow)
+	items := packagingItemsTail(tc.PackagingItems)
+	if items == nil {
+		return head
+	}
+	row, ok := head.([]any)
+	if !ok {
+		row = packagingRow(&entity.TechCardPackaging{})
+	}
+	return append(row, items)
+}
+
+// packagingItemsTail — ["items", [ключ, применение, упаковка, размер, штук на изделие, строка BOM,
+// заметка, макеты]…] или nil, когда вещей нет.
+func packagingItemsTail(items []entity.TechCardPackagingItem) []any {
+	if len(items) == 0 {
+		return nil
+	}
+	rows := make([]any, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, []any{
+			it.Key, it.Usage.String, it.Packing.String, it.Size.String,
+			it.QtyPerGarment, it.BomItemId.Int32, it.Note.String, digestList(it.MediaIds),
+		})
+	}
+	return []any{"items", rows}
 }
 
 // packagingRow — голова плюс хвосты одним строителем: он же прогоняется на НУЛЕВОМ листе, чтобы

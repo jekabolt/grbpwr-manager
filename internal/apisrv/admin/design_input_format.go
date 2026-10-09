@@ -126,6 +126,11 @@ func designRunInputMediaRefs(params *pb_common.DesignRunParams, inputs *pb_commo
 	// B-32: the video's first frame travels to Kling as image_url, so «not a picture» (a .glb, another
 	// clip), «display only» and «hidden» must see it.
 	add(int(params.GetVideo().GetSourceMediaId()), "params.video.source_media_id")
+	// 81-FINAL-MODES: the card's own flats a hand_flat run redraws travel to the provider first (they
+	// are also the snapshot's first refs; named here so a refusal says which field).
+	for i, r := range params.GetFlat().GetStructureRefs() {
+		add(int(r.GetMediaId()), "params.flat.structure_refs."+strconv.Itoa(i)+".media_id")
+	}
 	add(int(params.GetColour().GetFabricMediaId()), "params.colour.fabric_media_id")
 	for i, f := range params.GetColour().GetFabrics() {
 		add(int(f.GetMediaId()), "params.colour.fabrics."+strconv.Itoa(i)+".media_id")
@@ -205,8 +210,11 @@ func designNonPictureRefusal(ref designInputMediaRef, contentType string) error 
 // клиента: неработоспособная форма прогона остаётся неработоспособной и на повторе, а
 // замороженный прогон, чей вход поставщик прочитать не может, обязан быть остановлен здесь —
 // иначе новый бинарь повторит его и заплатит за отказ ещё раз.
-func (s *Server) designRefuseNonPictureInputs(ctx context.Context, params *pb_common.DesignRunParams, inputs *pb_common.DesignInputSnapshot) error {
-	refs := designRunInputMediaRefs(params, inputs)
+//
+// A render's frozen artwork pictures (`arts`) travel to the provider too, so they are asked as well.
+func (s *Server) designRefuseNonPictureInputs(ctx context.Context, params *pb_common.DesignRunParams,
+	inputs *pb_common.DesignInputSnapshot, arts []designFrozenArtwork) error {
+	refs := designArtworkMediaRefs(designRunInputMediaRefs(params, inputs), arts)
 	if len(refs) == 0 {
 		return nil
 	}

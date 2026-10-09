@@ -58,6 +58,10 @@ var designRefusals = []struct {
 	// у клиента здесь другой экран и другое объяснение («коллега сохранил свой план цвета, ваш
 	// не записан»), а различить их он может только по машинному слову.
 	{entity.ErrDesignColourPlanRevMismatch, codes.Aborted, "colour_plan_rev_mismatch"},
+	// joins_rev_mismatch — the flat route's join list (0397): a regeneration or another tab saved first.
+	{entity.ErrDesignJoinsRevMismatch, codes.Aborted, "joins_rev_mismatch"},
+	// parts_pieces_rev_mismatch — PARTS' pieces list (M6): another tab saved the list first.
+	{entity.ErrDesignPartsPiecesRevMismatch, codes.Aborted, "parts_pieces_rev_mismatch"},
 	{entity.ErrDesignForeignCardPlate, codes.FailedPrecondition, "foreign_card_plate"},
 	{entity.ErrDesignCompositePlate, codes.FailedPrecondition, "composite_plate"},
 	{entity.ErrDesignHiddenPlate, codes.FailedPrecondition, "hidden_plate"},
@@ -70,6 +74,13 @@ var designRefusals = []struct {
 	{entity.ErrDesignDetailNameRequired, codes.FailedPrecondition, "detail_name_required"},
 	{entity.ErrDesignSlotFilled, codes.FailedPrecondition, "slot_filled"},
 	{entity.ErrDesignNotADetailSlot, codes.FailedPrecondition, "not_a_detail_slot"},
+	// SetDesignDetailKept (0400): the views moved under the person is a race (Aborted, re-read the band).
+	{entity.ErrDesignNotAFlatDetail, codes.FailedPrecondition, "not_a_flat_detail"},
+	{entity.ErrDesignDetailEmpty, codes.FailedPrecondition, "detail_empty"},
+	// nothing_to_hold — «remove from prompt» on a picture that is not in the prompt (109 §5).
+	{entity.ErrDesignNothingToHold, codes.FailedPrecondition, "nothing_to_hold"},
+	{entity.ErrDesignDetailNotStale, codes.FailedPrecondition, "detail_not_stale"},
+	{entity.ErrDesignViewsChanged, codes.Aborted, "views_changed"},
 	{entity.ErrDesignInSlot, codes.FailedPrecondition, "in_slot"},
 	{entity.ErrDesignLiveRunInput, codes.FailedPrecondition, "live_run_input"},
 	{entity.ErrDesignLiveCropParent, codes.FailedPrecondition, "live_crop_parent"},
@@ -128,6 +139,10 @@ var designRefusals = []struct {
 	// слотом пары, не этой карточки. FailedPrecondition на КАЖДОЙ двери — и у SetDesignAssetBinding,
 	// и у денежной двери прогона паттерна, — одним токеном.
 	{entity.ErrDesignForeignBomLine, codes.FailedPrecondition, entity.DesignErrorCodeForeignBomLine},
+	// Род ассета против семьи строки BOM (fabrics and hardware bench): тот же класс и те же токены,
+	// что у денежной двери прогона паттерна.
+	{entity.ErrDesignHardwareOnClothLine, codes.FailedPrecondition, entity.DesignErrorCodeHardwareOnClothLine},
+	{entity.ErrDesignClothOnTrimLine, codes.FailedPrecondition, entity.DesignErrorCodeClothOnTrimLine},
 	// ambiguous_flatten_base — FailedPrecondition того же класса: запрос правилен, не годится
 	// СОСТОЯНИЕ (один файл зарегистрирован на карточке под несколькими колорвеями, а слой не
 	// назвал, поверх которого из них рисовали).
@@ -152,6 +167,15 @@ var designRefusals = []struct {
 	{entity.ErrDesignTechnicalSheet, codes.FailedPrecondition, "technical_sheet"},
 	{entity.ErrDesignCutSheet, codes.FailedPrecondition, "cut_sheet"},
 	{entity.ErrDesignHiddenPicture, codes.FailedPrecondition, "hidden_picture"},
+	// ─── UNDO / REDO ПРАВКИ (0387, T28 v2) ───
+	//
+	// stale_chain — FailedPrecondition, как и велит контракт: CAS по текущей версии цепочки не сошёлся,
+	// клиент перечитывает полосу. undone_picture — жест над отменённым звеном (перезапись, разрез,
+	// постановка в слот); чинится redo либо «save as new».
+	{entity.ErrDesignStaleChain, codes.FailedPrecondition, "stale_chain"},
+	{entity.ErrDesignNothingToUndo, codes.FailedPrecondition, "nothing_to_undo"},
+	{entity.ErrDesignNothingToRedo, codes.FailedPrecondition, "nothing_to_redo"},
+	{entity.ErrDesignUndonePicture, codes.FailedPrecondition, "undone_picture"},
 	// ─── УДАЛИТЬ НАСОВСЕМ (O-68, D-74) ───
 	//
 	// picture_not_found — NotFound СВОИМ токеном, а не общим not_found: модалка удаления называет
@@ -256,6 +280,9 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 	if err != nil {
 		return nil, designError(ctx, "failed to read the design band", err, nil)
 	}
+	// MOODBOARD LABELS (101): a lost task (pending past the stale window) or a board not looked at for
+	// a while is re-synced in the background — the band read never waits for a model.
+	s.designBoardLabelLazy(ctx, int(req.GetTechCardId()), band.References)
 	// Картинки входов резолвятся ОДНИМ запросом на всю страницу прогонов — см. довод у
 	// joinDesignRunInputMedia; снимок хранит только идентификаторы.
 	runsPb := designRunsToPb(ctx, band.Runs)
@@ -289,7 +316,7 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// по-прежнему отвечает 200, стена полок просто пустеет, а метки на флэтах исчезают:
 		// молчаливая потеря, которую ловит только проба формы ответа.
 		Assets:          designAssetsToPb(band.Assets),
-		AssetPlacements: designAssetPlacementsToPb(band.AssetPlacements),
+		AssetPlacements: designAssetPlacementsWithPicturesToPb(band.AssetPlacements, band.AssetPlacementPictures),
 		// ТКАНИ ПАР (КОЛОРВЕЙ, СЛОТ), 0368 — ВСЯ КАРТОЧКА, bench_colorway_id ИХ НЕ СУЖАЕТ. Конвертер
 		// отдаёт [] при пустоте, и это несущее: на проводе пустой список значит «ничего не выбрано»,
 		// а отсутствие — «старый бинарь», против которого клиент не рисует двери слотов.
@@ -371,6 +398,16 @@ func (s *Server) GetDesignBand(ctx context.Context, req *pb_admin.GetDesignBandR
 		// then draws the static Ideas list only. Drop this line and the band still answers 200 while
 		// every Ideas menu stays static on a server that can suggest.
 		SuggestPromptsModel: s.designSuggestPromptsModel(),
+		// AUTO PARTS (0390, field 34): the cached answers of the flat each side holds now.
+		// M6: only the rows named under the pieces list's current rev.
+		PartsSuggestions: designPartsSuggestionsToPb(designPartsCurrentRows(band.PartsSuggestions, band.PartsPieces)),
+		// FLAT ROUTE (0397, field 35): the card's current join list; absent = none yet.
+		Joins: designJoinsToPb(band.Joins),
+		// The wall-clock cap (fields 36–37): the client draws elapsed / limit from started_at.
+		ImageRunCapSeconds: int32(s.designRunCap().Seconds()),
+		CappedRunKinds:     entity.DesignCappedRunKinds(),
+		// PARTS · the pieces list (M6, field 38): the closed names the labeller uses; absent = none.
+		PartsPieces: designPartsPiecesToPb(band.PartsPieces, band.FlatMedia),
 	}
 	// ⚠ ШТАМП ВЫХОДА НЕ НЕСЁТ ДЕНЕГ, И ПОТОМУ stripDesignCosting ЕГО НЕ КАСАЕТСЯ. Проверено по
 	// полям, а не по названию: DesignCardOutput везёт id прогона, род, rrev и колорвей —
@@ -463,6 +500,28 @@ func (s *Server) SetDesignBenchSlot(ctx context.Context, req *pb_admin.SetDesign
 	return &pb_admin.SetDesignBenchSlotResponse{Slot: designSlotToPb(*slot)}, nil
 }
 
+// SetDesignDetailKept marks a stale flat detail kept, or takes the mark off (0400, 82-INPUT-REDESIGN
+// §5). «discard» is SetDesignBenchSlot with picture_id = 0, not this verb.
+func (s *Server) SetDesignDetailKept(ctx context.Context, req *pb_admin.SetDesignDetailKeptRequest) (*pb_admin.SetDesignDetailKeptResponse, error) {
+	if req.GetTechCardId() <= 0 || req.GetSlotId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "tech_card_id and slot_id are required")
+	}
+	if req.GetAgainstRunId() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "against_run_id must be ≥ 0")
+	}
+	slot, err := s.repo.Design().SetDetailKept(ctx, entity.DesignDetailKeptSet{
+		TechCardId:   int(req.GetTechCardId()),
+		SlotId:       int(req.GetSlotId()),
+		Keep:         req.GetKeep(),
+		AgainstRunId: int(req.GetAgainstRunId()),
+		Actor:        designActor(ctx),
+	})
+	if err != nil {
+		return nil, designError(ctx, "failed to set the kept mark of the design detail", err, nil)
+	}
+	return &pb_admin.SetDesignDetailKeptResponse{Slot: designSlotToPb(*slot)}, nil
+}
+
 // DeleteDesignDetailSlot removes an EMPTY detail slot that no version quotes.
 func (s *Server) DeleteDesignDetailSlot(ctx context.Context, req *pb_admin.DeleteDesignDetailSlotRequest) (*pb_admin.DeleteDesignDetailSlotResponse, error) {
 	if err := s.repo.Design().DeleteDetailSlot(ctx, int(req.GetSlotId())); err != nil {
@@ -488,6 +547,13 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 	if n := len([]rune(req.GetNote())); n > designMaxRefNoteRunes {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"note is %d characters; the ceiling is %d", n, designMaxRefNoteRunes)
+	}
+	// front_flat / back_flat / mood are the snapshot's own roles of a flat run (81-FINAL-MODES); a card
+	// reference wearing one would be indistinguishable from them.
+	if role := strings.TrimSpace(req.GetRole()); entity.IsDesignRefRoleReserved(role) {
+		return nil, designRefusal(codes.InvalidArgument, "role_reserved",
+			fmt.Sprintf("«%s» is a role the server gives a flat run's pictures; pick a side of the garment", role),
+			map[string]string{"role": role})
 	}
 	ref, err := s.repo.Design().SetReferenceRole(ctx, entity.DesignReferenceRole{
 		TechCardId: int(req.GetTechCardId()),
@@ -519,6 +585,35 @@ func (s *Server) SetDesignReferenceRole(ctx context.Context, req *pb_admin.SetDe
 		resp.Reference = designReferenceToPb(*ref)
 	}
 	return resp, nil
+}
+
+// SetDesignReferenceHeld takes a labelled board picture out of the prompt or puts it back (109 §4).
+// Putting back a model's detail photo whose slot went with the hold leaves its label pending: the
+// sync is kicked here so the photo is read again now, not at the next save.
+func (s *Server) SetDesignReferenceHeld(ctx context.Context, req *pb_admin.SetDesignReferenceHeldRequest) (*pb_admin.SetDesignReferenceHeldResponse, error) {
+	ref, err := s.repo.Design().SetReferenceHeld(ctx, entity.DesignReferenceHold{
+		TechCardId: int(req.GetTechCardId()),
+		MediaId:    int(req.GetMediaId()),
+		Held:       req.GetHeld(),
+		Actor:      designActor(ctx),
+	})
+	if err != nil {
+		return nil, designError(ctx, "failed to hold the design reference", err, nil)
+	}
+	resp := &pb_admin.SetDesignReferenceHeldResponse{}
+	if ref != nil {
+		resp.Reference = designReferenceToPb(*ref)
+		if designHeldPutBackRereads(req.GetHeld(), *ref) {
+			s.designBoardLabelKick(ctx, int(req.GetTechCardId()))
+		}
+	}
+	return resp, nil
+}
+
+// designHeldPutBackRereads — a put-back left the model's label pending (its detail slot went with the
+// hold), so the photo must be read again now.
+func designHeldPutBackRereads(held bool, ref entity.DesignReference) bool {
+	return !held && entity.IsDesignLabelByModel(ref.LabelSource) && ref.LabelState == entity.DesignLabelStatePending
 }
 
 // ─────────────────────────── pictures ───────────────────────────
@@ -601,7 +696,10 @@ func (s *Server) RegisterDesignUpload(ctx context.Context, req *pb_admin.Registe
 		ClientRequestId: strings.TrimSpace(req.GetClientRequestId()),
 		Items:           items,
 		ExpectedSlotRev: int(req.GetExpectedSlotRev()),
-		Actor:           designActor(ctx),
+		// T15: the name of a detail slot that `target` mints — without it a mint-from-media in one
+		// call was refused detail_name_required. Trimmed exactly as in SetDesignBenchSlot.
+		NewDetailName: strings.TrimSpace(req.GetNewDetailName()),
+		Actor:         designActor(ctx),
 	}
 	if req.GetTarget() != nil {
 		ref, err := designSlotRefFromPb(req.GetTarget())
@@ -631,6 +729,63 @@ func (s *Server) HideDesignPicture(ctx context.Context, req *pb_admin.HideDesign
 		return nil, designError(ctx, "failed to set design picture visibility", err, nil)
 	}
 	return &pb_admin.HideDesignPictureResponse{Picture: designPictureToPb(*pic)}, nil
+}
+
+// UndoDesignEdit takes back the current version of an edit chain (T28 v2).
+func (s *Server) UndoDesignEdit(ctx context.Context, req *pb_admin.UndoDesignEditRequest) (*pb_admin.UndoDesignEditResponse, error) {
+	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetExpectedTargetId(), req.GetIdempotencyKey())
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.repo.Design().UndoEdit(ctx, in)
+	if err != nil {
+		return nil, designError(ctx, "failed to undo the design edit", err, nil)
+	}
+	return &pb_admin.UndoDesignEditResponse{Chain: designEditChainToPb(res)}, nil
+}
+
+// RedoDesignEdit brings back the undone link after the current version (T28 v2).
+func (s *Server) RedoDesignEdit(ctx context.Context, req *pb_admin.RedoDesignEditRequest) (*pb_admin.RedoDesignEditResponse, error) {
+	in, err := designEditChainStepRequest(ctx, req.GetPictureId(), req.GetExpectedCurrentId(), req.GetExpectedTargetId(), req.GetIdempotencyKey())
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.repo.Design().RedoEdit(ctx, in)
+	if err != nil {
+		return nil, designError(ctx, "failed to redo the design edit", err, nil)
+	}
+	return &pb_admin.RedoDesignEditResponse{Chain: designEditChainToPb(res)}, nil
+}
+
+func designEditChainStepRequest(ctx context.Context, pictureID, expected, target int32, key string) (entity.DesignEditChainStepRequest, error) {
+	key = strings.TrimSpace(key)
+	if pictureID <= 0 || expected <= 0 || target <= 0 {
+		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument,
+			"picture_id, expected_current_id and expected_target_id are required")
+	}
+	if key == "" {
+		return entity.DesignEditChainStepRequest{}, status.Error(codes.InvalidArgument, "idempotency_key is required")
+	}
+	if len([]rune(key)) > entity.DesignRequestKeyMaxRunes {
+		return entity.DesignEditChainStepRequest{}, status.Errorf(codes.InvalidArgument,
+			"idempotency_key is longer than %d characters", entity.DesignRequestKeyMaxRunes)
+	}
+	return entity.DesignEditChainStepRequest{
+		PictureId: int(pictureID), ExpectedCurrentId: int(expected), ExpectedTargetId: int(target),
+		IdempotencyKey: key, Actor: designActor(ctx),
+	}, nil
+}
+
+func designEditChainToPb(res *entity.DesignEditChainResult) *pb_admin.DesignEditChainState {
+	out := &pb_admin.DesignEditChainState{
+		CurrentPictureId: int32(res.CurrentPictureId),
+		Pictures:         designPicturesToPb(res.Pictures),
+		Slots:            make([]*pb_common.DesignBenchSlot, 0, len(res.Slots)),
+	}
+	for _, sl := range res.Slots {
+		out.Slots = append(out.Slots, designSlotToPb(sl))
+	}
+	return out
 }
 
 // DeleteDesignPicture removes a derived picture FOR GOOD (O-68, D-74). The rows go in the store's
@@ -856,15 +1011,14 @@ func (s *Server) SplitDesignPicture(ctx context.Context, req *pb_admin.SplitDesi
 	// ДО байтовой работы — чтения оригинала, нарезки, заливки каждого куска и уборки их следом.
 	// Голова цепочки ищется тем же обходом, что и в сторе (entity.DesignAlreadyReplaced), только
 	// своими чтениями; лист, заменённый между этой проверкой и транзакцией, откажет уже стор.
-	if parent.ReplacedBy.Valid {
-		return nil, designError(ctx, "failed to split the design picture",
-			entity.DesignAlreadyReplaced(*parent, func(id int) (entity.DesignPicture, error) {
-				p, err := s.repo.Design().GetPicture(ctx, id)
-				if err != nil {
-					return entity.DesignPicture{}, err
-				}
-				return *p, nil
-			}), nil)
+	if err := entity.DesignSplitReplacedRefusal(*parent, func(id int) (entity.DesignPicture, error) {
+		p, err := s.repo.Design().GetPicture(ctx, id)
+		if err != nil {
+			return entity.DesignPicture{}, err
+		}
+		return *p, nil
+	}); err != nil {
+		return nil, designError(ctx, "failed to split the design picture", err, nil)
 	}
 	// СПРЯТАННЫЙ КАДР НЕ РЕЖЕТСЯ (O-53 review, раунд 3) — тоже предпроверка того же правила
 	// (entity.DesignSplitHiddenRefusal), авторитетного в транзакции SplitPicture, и в том же порядке:
@@ -1140,7 +1294,8 @@ func designUnitInterval(field string, d *pb_decimal.Decimal) (decimal.Decimal, e
 	return v, nil
 }
 
-// designCropPNG cuts one frame out of the decoded source and encodes it as PNG.
+// designCropPNG cuts one frame out of the decoded source, squares it on white (T25,
+// designSquarePiece) and encodes it as PNG. Its only caller is SplitDesignPicture.
 //
 // PNG, and not the source's own format, because the cut must be LOSSLESS: re-encoding a JPEG
 // composite as JPEG would add a generation of loss to every crop, and a flat that gets printed
@@ -1179,6 +1334,11 @@ func designCropPNG(src image.Image, bounds image.Rectangle, r designUnitRect) ([
 			}
 		}
 		cropped = dst
+	}
+	// T25: the piece comes out SQUARE — the garment tightened and centred on white with an 8 %
+	// margin (designSquarePiece). A frame with no garment in it keeps the plain crop.
+	if sq, ok := designSquarePiece(cropped); ok {
+		cropped = sq
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, cropped); err != nil {
@@ -1359,6 +1519,17 @@ func designSlotToPb(s entity.DesignBenchSlot) *pb_common.DesignBenchSlot {
 		out.RunKind = s.RunKind
 		out.RunRrev = int32(s.RunRrev)
 	}
+	// STALE FLAT DETAIL AND ITS «KEEP» (0400) — computed by the store over the whole bench.
+	out.Stale = s.Stale
+	out.Kept = s.Kept
+	out.MadeByModel = s.MadeByModel
+	out.StaleAgainstRunId = int32(s.StaleAgainstRunId)
+	if s.Kept {
+		out.KeptBy = s.KeptBy
+		if s.KeptAt.Valid {
+			out.KeptAt = timestamppb.New(s.KeptAt.Time)
+		}
+	}
 	return out
 }
 
@@ -1403,6 +1574,19 @@ func designPictureToPb(p entity.DesignPicture) *pb_common.DesignPicture {
 		// его от ОТСУТСТВИЯ ключа — так выглядит сервер старше поля, который заменять не умеет.
 		ReplacedBy: p.ReplacedBy.Int32,
 		CreatedAt:  timestamppb.New(p.CreatedAt),
+		// T28 v2: углы undo/redo по всей цепочке (стор, annotateEditChains).
+		CanUndo:  p.CanUndo,
+		CanRedo:  p.CanRedo,
+		UndoToId: int32(p.UndoToId),
+	}
+	if p.UndoneAt.Valid {
+		out.UndoneAt = timestamppb.New(p.UndoneAt.Time)
+	}
+	// 0397: the worker's pixel labels («grey»).
+	for _, f := range strings.Split(p.QAFlags, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out.Flags = append(out.Flags, f)
+		}
 	}
 	if p.HiddenAt.Valid {
 		out.HiddenAt = timestamppb.New(p.HiddenAt.Time)
@@ -1723,7 +1907,7 @@ func designReferencesToPb(in []entity.DesignReference) []*pb_common.DesignRefere
 }
 
 func designReferenceToPb(r entity.DesignReference) *pb_common.DesignReference {
-	return &pb_common.DesignReference{
+	out := &pb_common.DesignReference{
 		TechCardId: int32(r.TechCardId),
 		MediaId:    int32(r.MediaId),
 		Role:       r.Role,
@@ -1737,7 +1921,18 @@ func designReferenceToPb(r entity.DesignReference) *pb_common.DesignReference {
 		Ordinal:      int32(r.Ordinal),
 		SetBy:        r.SetBy,
 		SetAt:        timestamppb.New(r.SetAt),
+		// The board label (101): who set it, its state, the model's purpose proposal and what it read
+		// (never sent to a prompt — the client shows it greyed in «what the model gets» only).
+		LabelSource:     r.LabelSource,
+		LabelState:      entity.DesignLabelStateOrOk(r.LabelState),
+		ProposedPurpose: r.ProposedPurpose,
+		ModelCaption:    r.ModelCaption.String,
+		LabelModel:      r.LabelModel,
 	}
+	if r.LabelledAt.Valid {
+		out.LabelledAt = timestamppb.New(r.LabelledAt.Time)
+	}
+	return out
 }
 
 func designLayersToPb(in []entity.DesignEditLayer, withStrokes bool) []*pb_common.DesignEditLayer {

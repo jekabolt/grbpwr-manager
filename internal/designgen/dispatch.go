@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/shopspring/decimal"
@@ -23,12 +25,44 @@ import (
 // these writes always find a live pool; the bound is what keeps that wait short.
 const settleTimeout = 30 * time.Second
 
+// settlePerArtifact / settleMax — the settle budget GROWS WITH WHAT IS LANDED (live bug, run 148:
+// four flat candidates came back in 20 s and their landing ran out of a fixed 30 s; the compensation
+// and the FailRun hit the same expired context, and the row spun on its 20-minute lease). The base
+// is settleTimeout; each artifact adds settlePerArtifact; the whole is capped at settleMax.
+const (
+	settlePerArtifact = 30 * time.Second
+	settleMax         = 3 * time.Minute
+	// closeTimeout — the FRESH budget of every write that closes a run or compensates a landing:
+	// it never inherits a context that may already be spent.
+	closeTimeout = 15 * time.Second
+	// publishParallel — how many artifacts land at once.
+	publishParallel = 4
+)
+
+// settleBudget — the settle deadline for an outcome of n artifacts.
+func settleBudget(n int) time.Duration {
+	d := settleTimeout + time.Duration(n)*settlePerArtifact
+	if d > settleMax {
+		d = settleMax
+	}
+	return d
+}
+
+// freshCtx — a context that survives the caller's cancellation and deadline, under its own budget.
+func freshCtx(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), d)
+}
+
 // runStore is the slice of the design store this worker turns. It is an interface so the pass can
 // be exercised against a fake — this package must never open a database in its own tests, because
 // outside CI the store's TestMain reads a production DSN and drops every table.
 type runStore interface {
 	ClaimRuns(ctx context.Context, n int, lease time.Duration, claimToken string) ([]entity.DesignRun, error)
 	ReviveExpiredRuns(ctx context.Context) (int, error)
+	// CloseOverdueRuns — the wall-clock cap's sweep (entity.DesignOverdueSweep).
+	CloseOverdueRuns(ctx context.Context, req entity.DesignOverdueSweep) (int, error)
+	// CapClaim shortens a live claim to end `within` from now (never lengthens it).
+	CapClaim(ctx context.Context, runID int, claimToken string, within time.Duration) error
 	GetRun(ctx context.Context, runID int) (*entity.DesignRun, error)
 	RecordRunPrompt(ctx context.Context, runID int, claimToken, prompt string) error
 	StartAttempt(ctx context.Context, req entity.DesignAttemptStart) (*entity.DesignRunAttempt, error)
@@ -441,7 +475,13 @@ func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, toke
 	// The pass may be running on a context whose deadline has already passed — a long provider
 	// call is exactly the case. Everything from here on is short, and losing it would lose the
 	// paid result, so it runs beyond cancellation.
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	//
+	// THE BUDGET GROWS WITH WHAT IS LANDED (settleBudget, run 148).
+	n := 0
+	if out != nil {
+		n = len(out.Artifacts)
+	}
+	sctx, cancel := freshCtx(ctx, settleBudget(n))
 	defer cancel()
 
 	// ─── НАРУЖУ ВЫХОДИТ РОВНО ОДИН КАДР — ТАМ, ГДЕ ДВЕРЬ ПРОДАЛА ОДИН. Стоит ДО подсчёта, потому
@@ -522,37 +562,45 @@ func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, toke
 	}
 
 	// ─── BYTES INTO THE BUCKET, BEFORE THE TRANSACTION. Whatever nobody adopts is swept below.
+	// ─── LANDING: the pictures are BOUGHT. Two tries, each on a fresh budget; a landing that fails
+	// twice closes the run `landing_failed` — never re-queued, which would buy them again (run 148).
 	minted, outputs, perr := w.publish(sctx, run, out)
+	if perr != nil && errors.Is(perr, errStorageFailed) {
+		w.sweep(ctx, minted)
+		rctx, rcancel := freshCtx(ctx, settleBudget(n))
+		minted, outputs, perr = w.publish(rctx, run, out)
+		rcancel()
+	}
 	if perr != nil {
-		w.sweep(sctx, minted)
-		return w.failRun(sctx, run, token, perr)
+		w.sweep(ctx, minted)
+		if errors.Is(perr, errStorageFailed) {
+			perr = fmt.Errorf("%w: %w", errLandingFailed, perr)
+		}
+		return w.failRun(ctx, run, token, perr)
 	}
 
-	filed, err := w.store.CompleteRun(sctx, entity.DesignRunComplete{
-		RunId:      run.Id,
-		ClaimToken: token,
-		Outputs:    outputs,
-	})
+	complete := entity.DesignRunComplete{RunId: run.Id, ClaimToken: token, Outputs: outputs}
+	filed, err := w.store.CompleteRun(sctx, complete)
+	if err != nil && !designResultRefused(err) && !errors.Is(err, entity.ErrDesignClaimLost) &&
+		!errors.Is(err, entity.ErrDesignRunTerminal) {
+		// a transient filing fault (a spent deadline, a dropped connection): once more, fresh
+		cctx, ccancel := freshCtx(ctx, closeTimeout)
+		filed, err = w.store.CompleteRun(cctx, complete)
+		ccancel()
+	}
 	if err != nil {
-		// NOTHING WAS FILED, SO EVERYTHING MINTED IS AN ORPHAN. Sweeping is not optional here: the
-		// objects are already publicly addressable and the media rows already exist, and the only
-		// list of them is the one in this stack frame.
-		w.sweep(sctx, minted)
-		// ⚠ «СТРОКА БОЛЬШЕ НЕ НАША» И «СТОР ОТВЕРГ ВЫДАЧУ» — ДВА РАЗНЫХ ИСХОДА, И РАНЬШЕ ОБА
-		// УХОДИЛИ В abandon. Разница — в деньгах. Потерянный захват действительно не инцидент:
-		// работу доделает тот, кто её перехватил. А отвергнутая выдача — детерминированный баг
-		// ВОРКЕРА: платный вызов уже записан как delivered, abandon строку НЕ проваливает, лизинг
-		// истекает, очередь выдаёт то же задание снова — и так до потолка платных попыток, после
-		// чего строка закрывается безымянным `lease_expired`. То есть ошибка маршрутизации
-		// покупала один и тот же плохой ответ пять раз и стирала собственную причину.
-		//
-		// Дорога «не повторять» в этом воркере уже есть — failRun с Retryable=false, — и
-		// классификатор теперь называет этот класс своим кодом (CodeOutputRefused). Прогон
-		// проваливается СРАЗУ и НАЗВАННО.
-		if designResultRefused(err) {
-			return w.failRun(sctx, run, token, err)
+		// NOTHING WAS FILED, SO EVERYTHING MINTED IS AN ORPHAN — swept on its own fresh budget.
+		w.sweep(ctx, minted)
+		// ⚠ A REFUSED RESULT is a deterministic worker bug: fail it NAMED (CodeOutputRefused),
+		// never abandon — abandon would re-queue and buy the same bad output again. A lost claim or
+		// a closed row is not ours any more. Anything else, after the second try: landing_failed.
+		switch {
+		case designResultRefused(err):
+			return w.failRun(ctx, run, token, err)
+		case errors.Is(err, entity.ErrDesignClaimLost), errors.Is(err, entity.ErrDesignRunTerminal):
+			return w.abandon(ctx, run, err)
 		}
-		return w.abandon(sctx, run, err)
+		return w.failRun(ctx, run, token, fmt.Errorf("%w: the result could not be filed: %w", errLandingFailed, err))
 	}
 
 	// ─── THE SWEEP THAT MATTERS ON SUCCESS. An idempotent re-file returns the pictures of an
@@ -569,9 +617,11 @@ func (w *Worker) settle(ctx context.Context, job Job, run entity.DesignRun, toke
 	for _, p := range filed.Pictures {
 		adopted = append(adopted, p.MediaId)
 	}
+	var orphans []MintedMedia
 	for _, id := range design.OrphanedMedia(mintedIDs, adopted) {
-		w.sink.Drop(sctx, byID[id])
+		orphans = append(orphans, byID[id])
 	}
+	w.sweep(ctx, orphans)
 	return nil
 }
 
@@ -629,15 +679,46 @@ func designKindBuysOnePicture(kind string) bool {
 // publish uploads every artifact and describes it as an output row. On the first failure it stops
 // and hands back what it had already minted, so the caller can sweep all of it: a half-filed run
 // is worse than a failed one, because it looks finished.
+//
+// THE ARTIFACTS LAND IN PARALLEL (at most publishParallel at once), each into its own ordinal; the
+// first failure is returned with everything that DID land, so the caller can sweep it.
 func (w *Worker) publish(ctx context.Context, run entity.DesignRun, out *Outcome) ([]MintedMedia, []entity.DesignPictureInsert, error) {
-	minted := make([]MintedMedia, 0, len(out.Artifacts))
-	outputs := make([]entity.DesignPictureInsert, 0, len(out.Artifacts))
+	n := len(out.Artifacts)
+	// A NONCE PER PUBLISH: the object key is derived from the name, and a landing retry after a
+	// best-effort sweep must never point a second media row at the first one's objects (deleting
+	// the orphan later would delete the adopted picture's files). Every publish gets its own keys.
+	nonce := strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	got := make([]MintedMedia, n)
+	errs := make([]error, n)
+	sem := make(chan struct{}, publishParallel)
+	var wg sync.WaitGroup
 	for i, a := range out.Artifacts {
-		m, err := w.sink.Put(ctx, a.Bytes, a.ContentType, fmt.Sprintf("run-%d-%d", run.Id, i))
-		if err != nil {
-			return minted, nil, err
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, a Artifact) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			got[i], errs[i] = w.sink.Put(ctx, a.Bytes, a.ContentType, fmt.Sprintf("run-%d-%d-%s", run.Id, i, nonce))
+		}(i, a)
+	}
+	wg.Wait()
+	minted := make([]MintedMedia, 0, n)
+	var first error
+	for i := range got {
+		if errs[i] != nil {
+			if first == nil {
+				first = errs[i]
+			}
+			continue
 		}
-		minted = append(minted, m)
+		minted = append(minted, got[i])
+	}
+	if first != nil {
+		return minted, nil, first
+	}
+	outputs := make([]entity.DesignPictureInsert, 0, n)
+	for i, a := range out.Artifacts {
+		m := got[i]
 		outputs = append(outputs, entity.DesignPictureInsert{
 			MediaId: m.ID,
 			Ordinal: i,
@@ -647,6 +728,7 @@ func (w *Worker) publish(ctx context.Context, run entity.DesignRun, out *Outcome
 			// on the per-view route where each call was made for a named side.
 			GhostView:   a.GhostView,
 			SourceClass: entity.DesignSourceAI,
+			QAFlags:     a.Flags,
 		})
 	}
 	return minted, outputs, nil
@@ -702,7 +784,17 @@ func (w *Worker) failRun(ctx context.Context, run entity.DesignRun, token string
 // (B-13/A5) — so the back-off exponent stays the store's.
 // Zero = the store's own back-off.
 func (w *Worker) failRunAt(ctx context.Context, run entity.DesignRun, token string, cause error, next time.Time) error {
+	// A FRESH BUDGET, ALWAYS: a run must never stay `running` because the context of the pass that
+	// failed it was already spent (run 148).
+	ctx, cancel := freshCtx(ctx, closeTimeout)
+	defer cancel()
 	v := classify(cause)
+	// PAST THE WALL-CLOCK CAP a retry would only spin longer: the run closes `timed_out`.
+	if v.Retryable && w.pastCap(run) {
+		v.Retryable = false
+		v.Code = entity.DesignErrorCodeTimedOut
+		cause = fmt.Errorf("took longer than %d min — try again (%w)", int(w.imageRunCap().Minutes()), cause)
+	}
 	if _, err := w.store.FailRun(ctx, entity.DesignRunFail{
 		RunId:       run.Id,
 		ClaimToken:  token,
@@ -728,6 +820,11 @@ func (w *Worker) failRunAt(ctx context.Context, run entity.DesignRun, token stri
 //
 // The store's two ceilings still apply unchanged: a fallback is an attempt like any other.
 func (w *Worker) advanceCandidate(ctx context.Context, run entity.DesignRun, token string, cause error, from, to string) error {
+	if w.pastCap(run) {
+		return w.failRun(ctx, run, token, cause)
+	}
+	ctx, cancel := freshCtx(ctx, closeTimeout)
+	defer cancel()
 	v := classify(cause)
 	if _, err := w.store.FailRun(ctx, entity.DesignRunFail{
 		RunId:       run.Id,
@@ -785,9 +882,53 @@ func (w *Worker) abandon(ctx context.Context, run entity.DesignRun, err error) e
 // sweep drops every minted file. Best-effort by contract: the caller's own failure is the one a
 // person has to see.
 func (w *Worker) sweep(ctx context.Context, minted []MintedMedia) {
+	if len(minted) == 0 {
+		return
+	}
+	// its own budget: compensation must not die with the landing it compensates (run 148)
+	ctx, cancel := freshCtx(ctx, closeTimeout+time.Duration(len(minted))*5*time.Second)
+	defer cancel()
 	for _, m := range minted {
 		w.sink.Drop(ctx, m)
 	}
+}
+
+// imageRunCap — the deployment's wall-clock cap of an image run.
+func (w *Worker) imageRunCap() time.Duration {
+	if w.c != nil && w.c.ImageRunCap > 0 {
+		return w.c.ImageRunCap
+	}
+	return entity.DesignImageRunCapDefault
+}
+
+// runDeadline — when a capped run must be done (its first start + the cap); false for an uncapped
+// kind or a run that never started.
+func (w *Worker) runDeadline(run entity.DesignRun) (time.Time, bool) {
+	if !entity.DesignRunKindIsCapped(run.Kind) || !run.StartedAt.Valid {
+		return time.Time{}, false
+	}
+	return run.StartedAt.Time.Add(w.imageRunCap()), true
+}
+
+// claimTailAfterCap — how long a capped run's claim outlives its cap: the worst a LIVE worker can
+// still need after its provider phase stopped at the deadline — two landings (settleMax each), two
+// fresh closing writes, and a minute of slack.
+const claimTailAfterCap = 2*settleMax + 2*closeTimeout + time.Minute
+
+// capClaimWithin — the claim length that ends claimTailAfterCap after deadline d, and never less
+// than the time a worker needs to close a run already past its cap.
+func (w *Worker) capClaimWithin(d time.Time) time.Duration {
+	within := d.Add(claimTailAfterCap).Sub(w.clock())
+	if floor := 2*closeTimeout + time.Minute; within < floor {
+		within = floor
+	}
+	return within
+}
+
+// pastCap — a capped run is past its wall-clock cap now.
+func (w *Worker) pastCap(run entity.DesignRun) bool {
+	d, ok := w.runDeadline(run)
+	return ok && !w.clock().Before(d)
 }
 
 // submitSettleGrace — how long after an attempt was OPENED its pass could still be inside the paid
@@ -801,7 +942,7 @@ func (w *Worker) submitSettleGrace() time.Duration {
 	if w.c != nil && w.c.ClaimLease > 0 {
 		lease = w.c.ClaimLease
 	}
-	return lease + settleTimeout
+	return lease + settleMax
 }
 
 // clock is the worker's «now»; a field so a probe can stand at a chosen moment.

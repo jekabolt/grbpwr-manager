@@ -44,6 +44,7 @@ type fakeStore struct {
 	recordedPrompts []string
 	recordErr       error
 	events          []string
+	capped          map[int]time.Duration // CapClaim: run → claim length
 }
 
 func (f *fakeStore) ClaimRuns(_ context.Context, _ int, _ time.Duration, token string) ([]entity.DesignRun, error) {
@@ -59,6 +60,18 @@ func (f *fakeStore) ClaimRuns(_ context.Context, _ int, _ time.Duration, token s
 }
 
 func (f *fakeStore) ReviveExpiredRuns(context.Context) (int, error) { return f.revived, f.reviveErr }
+func (f *fakeStore) CloseOverdueRuns(context.Context, entity.DesignOverdueSweep) (int, error) {
+	return 0, nil
+}
+func (f *fakeStore) CapClaim(_ context.Context, runID int, _ string, within time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.capped == nil {
+		f.capped = map[int]time.Duration{}
+	}
+	f.capped[runID] = within
+	return nil
+}
 
 func (f *fakeStore) GetRun(context.Context, int) (*entity.DesignRun, error) {
 	return f.getRun, f.getRunErr
@@ -158,6 +171,7 @@ type fakeSink struct {
 	// AFTER something was already minted.
 	failAfter int
 	failWith  error
+	names     []string // every name Put was handed (object keys derive from it)
 }
 
 func newFakeSink(types ...string) *fakeSink {
@@ -170,9 +184,10 @@ func newFakeSink(types ...string) *fakeSink {
 
 func (f *fakeSink) Accepts(ct string) bool { return f.accepts[normalizeContentType(ct)] }
 
-func (f *fakeSink) Put(_ context.Context, raw []byte, ct, _ string) (MintedMedia, error) {
+func (f *fakeSink) Put(_ context.Context, raw []byte, ct, name string) (MintedMedia, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.names = append(f.names, name)
 	if f.failAfter >= 0 && len(f.put) == f.failAfter {
 		if f.failWith != nil {
 			return MintedMedia{}, f.failWith

@@ -53,15 +53,15 @@ func TestColorwayPayloadToken(t *testing.T) {
 
 // The version the export writes is the one the reader compares against, and 1.1 is a MINOR: the
 // reader takes it, and it takes a 1.0 archive too.
-func TestFormatVersionIsOneOne(t *testing.T) {
+func TestFormatVersionIsOneTwo(t *testing.T) {
 	major, minor, err := ParseFormatVersion(FormatVersion)
 	if err != nil || major != FormatMajor || minor != FormatMinor {
 		t.Fatalf("FormatVersion %q = %d.%d (%v) disagrees with %d.%d", FormatVersion, major, minor, err, FormatMajor, FormatMinor)
 	}
-	if FormatMinor != 1 {
-		t.Fatalf("T45 made the format 1.1 (the colourway identity); FormatMinor is %d", FormatMinor)
+	if FormatMinor != 2 {
+		t.Fatalf("T45 made the format 1.1 (the colourway identity), 62 D2 made it 1.2 (design_quiz.json); FormatMinor is %d", FormatMinor)
 	}
-	for _, v := range []string{"1.0", "1.1"} {
+	for _, v := range []string{"1.0", "1.1", "1.2"} {
 		m := &Manifest{Format: FormatName, FormatVersion: v, MoneyPolicy: MoneyPolicyStrippedV1}
 		if err := checkManifestContract(m); err != nil {
 			t.Fatalf("a %s archive must be read: %v", v, err)

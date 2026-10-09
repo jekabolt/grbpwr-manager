@@ -89,9 +89,59 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err := s.enrichProduction(ctx, cards); err != nil {
 		return err
 	}
+	if err := s.enrichLabelsRework(ctx, cards); err != nil {
+		return err
+	}
+	if err := s.enrichDesignQuiz(ctx, cards); err != nil {
+		return err
+	}
 	// ПОСЛЕ производства, а не вместе с карточными медиа: id операционных снимков известны только
 	// когда операции уже прочитаны. Резолвится одним запросом на всю пачку карточек.
-	return s.enrichOperationMedia(ctx, cards)
+	if err := s.enrichOperationMedia(ctx, cards); err != nil {
+		return err
+	}
+	// AFTER enrichLabelsRework: the label media ids are known only once the labels are read (M-02).
+	return s.enrichLabelMedia(ctx, cards)
+}
+
+// enrichLabelMedia resolves the labels rework's media ids (care-label logo, garment-label and
+// packaging-item mockups — entity.TechCardInsert.LabelMediaIds) into full media records, one query
+// for the whole batch. Same contract as enrichOperationMedia: a missing media is simply absent.
+func (s *Store) enrichLabelMedia(ctx context.Context, cards []entity.TechCard) error {
+	perCard := make([][]int, len(cards))
+	wanted := make(map[int]bool)
+	for i := range cards {
+		perCard[i] = cards[i].LabelMediaIds()
+		for _, id := range perCard[i] {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load label media: %w", err)
+	}
+	byID := make(map[int]entity.MediaFull, len(rows))
+	for i := range rows {
+		byID[rows[i].Id] = rows[i]
+	}
+	for i := range cards {
+		var out []entity.TechCardMediaFull
+		for _, id := range perCard[i] {
+			if full, ok := byID[id]; ok {
+				out = append(out, entity.TechCardMediaFull{Media: full})
+			}
+		}
+		cards[i].ResolvedLabelMedia = out
+	}
+	return nil
 }
 
 // enrichOperationMedia разрешает media_id операционных снимков (0308) в полные записи медиа.
@@ -177,6 +227,7 @@ type techCardMediaRow struct {
 	Category   entity.TechCardMediaCategory `db:"category"`
 	Kind       entity.TechCardMediaKind     `db:"kind"`
 	Caption    sql.NullString               `db:"caption"`
+	Role       entity.TechCardMediaRole     `db:"role"`
 	entity.MediaFull
 }
 
@@ -187,7 +238,7 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 		return items, full, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardMediaRow](ctx, s.DB, `
-		SELECT tcm.tech_card_id, tcm.category, tcm.kind, tcm.caption, m.*
+		SELECT tcm.tech_card_id, tcm.category, tcm.kind, tcm.caption, tcm.role, m.*
 		FROM tech_card_media tcm
 		JOIN media m ON m.id = tcm.media_id
 		WHERE tcm.tech_card_id IN (:ids)
@@ -197,8 +248,8 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 	}
 	for i := range rows {
 		tcID := rows[i].TechCardID
-		items[tcID] = append(items[tcID], entity.TechCardMediaItem{MediaId: rows[i].Id, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption})
-		full[tcID] = append(full[tcID], entity.TechCardMediaFull{Media: rows[i].MediaFull, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption})
+		items[tcID] = append(items[tcID], entity.TechCardMediaItem{MediaId: rows[i].Id, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption, Role: rows[i].Role})
+		full[tcID] = append(full[tcID], entity.TechCardMediaFull{Media: rows[i].MediaFull, Category: rows[i].Category, Kind: rows[i].Kind, Caption: rows[i].Caption, Role: rows[i].Role})
 	}
 	return items, full, nil
 }
@@ -252,7 +303,7 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
 		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y,
-		       kind, color, dashed, filled, caps, points, parts, client_ref
+		       kind, color, dashed, filled, caps, points, parts, client_ref, spec
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -272,6 +323,19 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 				c.Points = nil
 				c.Kind = entity.AnnotationKindPin
 			}
+		}
+		if c.Spec.Valid {
+			// MySQL отдаёт JSON в своём порядке ключей и со своими пробелами: канонизируем тем же
+			// правилом, что на записи, иначе отпечаток DESIGN не совпал бы сам с собой. Битое
+			// значение читается как обычная выноска — видно, а чтение карточки не падает.
+			spec, err := entity.CanonicalCalloutSpec(c.Spec.String)
+			if err != nil {
+				slog.Default().Error("tech card callout: broken spec json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				spec = ""
+			}
+			c.Spec = sql.NullString{String: spec, Valid: spec != ""}
 		}
 		if len(c.PartsRaw) > 0 {
 			// Битый список деталей — та же логика, что у якорей: указание остаётся с одной

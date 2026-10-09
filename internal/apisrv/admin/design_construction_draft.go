@@ -305,6 +305,7 @@ var designConstructionAspectKeys = []string{
 	"pockets",
 	"sleeveCuff",
 	"topstitching",
+	"seams",
 	"extraDetails",
 	"auxMaterials",
 }
@@ -484,6 +485,7 @@ var designAspectAbsenceNouns = func() map[string][]string {
 	cuffs := []string{"cuff"}
 	hem := []string{"hem", "hemline"}
 	topstitching := []string{"topstitch", "topstitching", "stitching"}
+	seams := []string{"seam", "seams", "finish", "binding"}
 	hardware := []string{"hardware", "eyelet", "grommet", "rivet", "buckle"}
 	aux := []string{"interfacing", "fusing", "tape", "elastic"}
 	src := map[string][]string{
@@ -494,6 +496,7 @@ var designAspectAbsenceNouns = func() map[string][]string {
 		"sleeveCuff": cuffs, "cuffs": cuffs, "cuff": cuffs,
 		"hem": hem, "hems": hem,
 		"topstitching": topstitching,
+		"seams":        seams,
 		"hardware":     hardware,
 		"auxMaterials": aux,
 	}
@@ -715,9 +718,8 @@ const (
 
 // designConstructionSystemPrompt — РОЛЬ И ФОРМА ОТВЕТА.
 //
-// ⚠ ЭТО ВТОРАЯ РОЛЬ, А НЕ ПРАВКА ПЕРВОЙ. draftIdeaSystemPrompt рядом остаётся ДОСЛОВНО тем же:
-// его три заголовка — контракт со старым клиентом (V-19), и клиент, который их разбирает,
-// продолжает работать ровно до тех пор, пока эти байты не тронуты.
+// ⚠ ЭТО ВТОРАЯ РОЛЬ, А НЕ ПРАВКА ПЕРВОЙ. draftIdeaSystemPrompt рядом — роль прозаической ветки,
+// которая с T39 пишет само описание (design_draft_description.go); эта роль от неё не зависит.
 //
 // РОЛЬ ГОВОРИТ ПРО КАРТИНКИ, ПОТОМУ ЧТО КАРТИНКИ ПРИЕЗЖАЮТ, и про то, что каждая записка называет
 // свою картинку и место на ней: за привязку уже заплачено сборкой промпта, и роль, умалчивающая о
@@ -823,7 +825,11 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"2. Prefer the designer's own words where they say the same thing.\n" +
 	"3. Construction features visible on the pictures — seams, closures, edges, pockets, bindings — " +
 	"go into \"aspects\" under the fitting key (fastening, pockets, topstitching, extraDetails, or " +
-	"a short custom key); do not list them separately.\n" +
+	"a short custom key); do not list them separately. Seam constructions the designer decided " +
+	"(lines starting with 'seam' or naming main seam / extra seams / hem finish) go into ONE aspect " +
+	"with key \"seams\", quoting the constructions and where they apply; a lined garment's interior " +
+	"finish is not an aspect. A taped seam needs a bom line of kind seam_sealing_tape; a Hong Kong " +
+	"finish, a bound seam or a bound edge needs a bom line of kind binding.\n" +
 	"4. \"bom\" names components BY THEIR ROLE («main fabric», «neck binding», «care label»), one " +
 	"line per component. Use the section / purpose / kind tokens given in the prompt; leave a token " +
 	"empty when it does not apply. \"composition\" is written as \"NN% fibre, NN% fibre\". " +
@@ -850,7 +856,12 @@ const designConstructionSystemPrompt = "You are a garment technologist's assista
 	"the combination's palette: 1 to 4 distinct colours, the main cloth's colour first, each a " +
 	"Pantone code and a hex, or a short \"label\" when no Pantone code fits. \"color_code\" is " +
 	"the code from the colour list in the prompt closest to the MAIN colour (empty when none is " +
-	"close); several colourways may share a code. Never invent a colour the board does not show.\n" +
+	"close); several colourways may share a code. Never invent a colour the board does not show. " +
+	"Never propose a colourway the prompt lists as already existing on the card — not under its " +
+	"name, not with its main Pantone code, not with its main hex. When the prompt carries a " +
+	"Colourway brief, propose exactly that many colourways (never more than 4), one per named main " +
+	"colour, in the named order, with the thread / hardware / artwork decisions applied to the " +
+	"slots; the brief outranks what the pictures suggest.\n" +
 	"10. \"bom\" always includes one \"thread\" line (sewing thread) unless the card already has " +
 	"one. Include hardware and trim lines ONLY when the pictures or the notes show them — a zipper, " +
 	"buttons, a drawcord, an eyelet; never add hardware the pictures do not show.\n" +
@@ -930,7 +941,7 @@ func designConstructionUserPrompt(
 	// долях кадра», ради которой был отдельный круг работы и на которую стоят пробы. Вырезка по
 	// заголовку (первый вариант этой функции) держалась бы на том, что заголовок не поправят, —
 	// а поправив его, мы вынули бы замысел и записки из платного запроса МОЛЧА.
-	b.WriteString(designBoardPromptBody(mood, attachedIDs))
+	b.WriteString(designBoardPromptBodyRoles(mood, attachedIDs, designBoardRoles(card)))
 
 	// ─── 4. УЖЕ НА КАРТОЧКЕ ───
 	if already := designCardAlreadySays(card); already != "" {
@@ -957,6 +968,14 @@ func designConstructionUserPrompt(
 	b.WriteString("bom units (for \"unit\"): " + strings.Join(designUnitTokens, ", ") + "\n")
 	b.WriteString("fit: " + strings.Join(designConstructionFits, ", ") + "\n")
 	b.WriteString(designColourTokenLine(colours))
+
+	// ─── 5б. БРИФ КОЛОРВЕЕВ ИЗ КВИЗА (70-SEAMS B2) ───
+	//
+	// ⚠ ПЕРЕД «Slots to colour», А НЕ В «Уже на карточке»: там байтовый бюджет может его вытеснить,
+	// а правило 9 говорит модели, что бриф старше картинок.
+	if brief := designQuizColourwayBrief(card); brief != "" {
+		b.WriteString("\n" + brief + "\n")
+	}
 
 	// ─── 6. СЛОТЫ ПОД ЦВЕТ (O-44 п.2) ───
 	//
@@ -1163,6 +1182,14 @@ func designSizeRunLine(card *entity.TechCard) string {
 // именно там, где обещали их не получать. Строка «(+N more … not listed)» стоит десяток байт и
 // делает список ЧЕСТНЫМ вместо ПОЛНОГО.
 func designCardAlreadySays(card *entity.TechCard) string {
+	// The moodboard quiz's decisions follow the card's own lists, with their own ceiling, so a long
+	// BOM cannot push the designer's answers out (designQuizDecisionsBlock).
+	return designCardAlreadySaysBase(card) + designQuizDecisionsBlock(card)
+}
+
+// designCardAlreadySaysBase — designCardAlreadySays without the quiz decisions: the quiz's own
+// prompt lists earlier answers separately (with the skipped ones), so it reads this half only.
+func designCardAlreadySaysBase(card *entity.TechCard) string {
 	if card == nil {
 		return ""
 	}
@@ -1185,7 +1212,30 @@ func designCardAlreadySays(card *entity.TechCard) string {
 		}
 	}
 
+	// COLOURWAYS FIRST (owner item 6): a re-run kept proposing colourways the card already has,
+	// because no section named them. They go before the aspects so the byte budget cannot push
+	// them out; the server-side filter (designDropExistingColourways) is the second half.
 	shown, skipped := 0, 0
+	for _, cw := range card.Colorways {
+		if cw.Status == entity.ColorwayStatusArchived {
+			continue
+		}
+		line := designExistingColourwayLine(cw)
+		if line == "" {
+			continue
+		}
+		if shown == 0 {
+			b.WriteString("- colourways that already exist — do not propose these again:\n")
+		}
+		if shown >= designConstructionMaxAlreadyRows || !write("  - "+line+"\n") {
+			skipped++
+			continue
+		}
+		shown++
+	}
+	tail("colourways", skipped)
+
+	shown, skipped = 0, 0
 	for _, d := range card.Details {
 		key := aiBoundedText(strings.TrimSpace(d.Key.String), designConstructionMaxVarchar64)
 		text := aiBoundedText(designOneLine(d.Text.String), designConstructionMaxAlreadyLineRunes)
@@ -1435,6 +1485,10 @@ type designConstructionStats struct {
 	// ⚠ НЕ ПОТЕРЯ И НЕ ПОПРАВКА — предложение сверх ответа, как CalloutsUnasked, поэтому в Coerced()
 	// не входит: Warn «was coerced» на ответе, которому мы ДОБАВИЛИ код, был бы неправдой.
 	ColourFamiliesProposed int
+	// ColourwaysExisting — the proposal repeats a colourway ALREADY ON THE CARD (same folded name,
+	// main Pantone code or main hex) and was dropped (owner item 6). Not in Coerced(): it is a
+	// deliberate filter, not a repair of the answer.
+	ColourwaysExisting int
 	// BomEstDropped — ОЦЕНКА РАСХОДА СНЯТА СО СТРОКИ, А САМА СТРОКА ОСТАЛАСЬ (B-16). Модель пишет
 	// «about 2», «1,6», «1.5-2 m» — это не десятичное число, и положить его в DECIMAL(12,3) нельзя.
 	//
@@ -2241,9 +2295,9 @@ func designVerifyColourways(
 	dict designColourDictionary,
 	cardSlots map[string]string,
 	stats *designConstructionStats,
-) {
+) (autoNamed map[*pb_common.DesignColourwayProposal]bool) {
 	if draft == nil || len(draft.Colourways) == 0 {
-		return
+		return nil
 	}
 
 	// ЧТО СЧИТАЕТСЯ СУЩЕСТВУЮЩИМ СЛОТОМ: строки спеки ЭТОГО ЖЕ ОТВЕТА плюс строки спеки КАРТОЧКИ.
@@ -2319,11 +2373,19 @@ func designVerifyColourways(
 	// ⚠ СЧИТАЕТСЯ ПО ПОРЯДКУ В ОТВЕТЕ, А НЕ ПО ЧИСЛУ БЕЗЫМЯННЫХ: «colourway 2» рядом с «Black /
 	// Bone» и «colourway 3» читается как «второе и третье предложение», а два подряд «colourway 1»
 	// и «colourway 2» на местах 2 и 4 не сказали бы человеку ничего.
+	//
+	// The labelled proposals are RETURNED (T06/BX2): the label names a position in this answer, not a
+	// colour, so designDropExistingColourways must not name-match it — while a model that literally
+	// named a proposal «colourway 2» did say a name, and that one must match. The text alone cannot
+	// tell the two apart; the server knows which ones it labelled.
+	autoNamed = map[*pb_common.DesignColourwayProposal]bool{}
 	for i, cw := range draft.Colourways {
 		if cw.Name == "" {
 			cw.Name = "colourway " + strconv.Itoa(i+1)
+			autoNamed[cw] = true
 		}
 	}
+	return autoNamed
 }
 
 // designSettleColourwayPalettes — ПАЛИТРА И СЕМЕЙСТВО ПРЕДЛОЖЕНИЯ, ТРЕТИЙ ШАГ ЖИВОГО ОТВЕТА (T45).
@@ -2664,4 +2726,103 @@ var designConstructionMarshal = protojson.MarshalOptions{UseProtoNames: true, Em
 
 func designMarshalConstructionDraft(d *pb_common.DesignConstructionDraft) ([]byte, error) {
 	return designConstructionMarshal.Marshal(d)
+}
+
+// ─────────────────── T06: colourways already on the card ───────────────────
+
+// designColourwayMain is a colourway's main colour: the first palette colour (T45), or the legacy
+// scalar Pantone / Hex of a single-colour colourway.
+func designColourwayMain(cw entity.TechCardColorway) (pantone, hex string) {
+	if len(cw.Colours) > 0 {
+		pantone, hex = cw.Colours[0].Pantone, cw.Colours[0].Hex
+	}
+	if pantone == "" {
+		pantone = cw.Pantone.String
+	}
+	if hex == "" {
+		hex = cw.Hex.String
+	}
+	return strings.TrimSpace(pantone), strings.TrimSpace(hex)
+}
+
+// designExistingColourwayLine prints one existing colourway for the prompt: «name · pantone · hex».
+func designExistingColourwayLine(cw entity.TechCardColorway) string {
+	pantone, hex := designColourwayMain(cw)
+	var parts []string
+	for _, v := range []string{designOneLine(cw.Name), pantone, hex} {
+		if v = aiBoundedText(strings.TrimSpace(v), designConstructionMaxAlreadyLineRunes); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// designPantoneKey folds a Pantone code to its identity: case, spaces and punctuation go, and so do
+// the word «pantone» and the book suffix, so «19-4005 TCX», «19-4005tcx» and «PANTONE 19-4005»
+// are one colour. A code with no digits (a named colour) keeps its letters.
+func designPantoneKey(s string) string {
+	k := designFoldToken(s)
+	k = strings.TrimPrefix(k, "pantone")
+	if !strings.ContainsAny(k, "0123456789") {
+		return k
+	}
+	return strings.TrimRightFunc(k, unicode.IsLetter)
+}
+
+// designHexKey folds a hex to lowercase without «#»; anything that is not #RRGGBB has no key.
+func designHexKey(s string) string {
+	h := designHexColour(s)
+	if h == "" {
+		return ""
+	}
+	return strings.ToLower(h[1:])
+}
+
+// designDropExistingColourways removes every proposal that repeats a colourway already on the card
+// (non-archived): the same folded name, OR the same main Pantone code, OR the same main hex
+// (owner item 6). Runs once, on the live answer, before the canonical JSON is filed — like
+// designVerifyColourways, a replay never re-judges a paid answer by today's card. autoNamed is the
+// set designVerifyColourways labelled itself («colourway N»): those take no part in the name match.
+// The card's own colourway names always do, whatever they spell.
+func designDropExistingColourways(
+	draft *pb_common.DesignConstructionDraft, existing []entity.TechCardColorway,
+	autoNamed map[*pb_common.DesignColourwayProposal]bool, stats *designConstructionStats,
+) {
+	if draft == nil || len(draft.Colourways) == 0 || len(existing) == 0 {
+		return
+	}
+	names, pantones, hexes := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, cw := range existing {
+		if cw.Status == entity.ColorwayStatusArchived {
+			continue
+		}
+		if k := designFoldToken(cw.Name); k != "" {
+			names[k] = true
+		}
+		pantone, hex := designColourwayMain(cw)
+		if k := designPantoneKey(pantone); k != "" {
+			pantones[k] = true
+		}
+		if k := designHexKey(hex); k != "" {
+			hexes[k] = true
+		}
+	}
+	kept := draft.Colourways[:0]
+	for _, cw := range draft.Colourways {
+		pantone, hex := cw.GetPantone(), cw.GetHex()
+		if len(cw.GetColours()) > 0 {
+			pantone, hex = cw.Colours[0].GetPantone(), cw.Colours[0].GetHex()
+		}
+		nameKey, pantoneKey, hexKey := designFoldToken(cw.GetName()), designPantoneKey(pantone), designHexKey(hex)
+		if autoNamed[cw] {
+			nameKey = ""
+		}
+		if (nameKey != "" && names[nameKey]) || (pantoneKey != "" && pantones[pantoneKey]) ||
+			(hexKey != "" && hexes[hexKey]) {
+			stats.ColourwaysExisting++
+			continue
+		}
+		kept = append(kept, cw)
+	}
+	draft.Colourways = kept
 }

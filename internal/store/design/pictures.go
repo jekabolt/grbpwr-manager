@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -280,6 +281,7 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 				Slot:            target,
 				PictureId:       pics[0].Id,
 				ExpectedSlotRev: req.ExpectedSlotRev,
+				NewDetailName:   req.NewDetailName,
 				Actor:           req.Actor,
 			})
 			if err != nil {
@@ -584,8 +586,12 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		// return: a replaced sheet whose old crops are still visible is refused as well, since the
 		// answer a stale tab needs is «cut the head», not the crops of a picture it should not be
 		// looking at. The refusal carries the head of the chain.
-		if parent.ReplacedBy.Valid {
-			return designAlreadyReplaced(ctx, db, parent)
+		// T28 v2: only a picture whose place ANOTHER picture holds — a restored original (its successor
+		// undone) is the current version and is cut like any other.
+		if err := entity.DesignSplitReplacedRefusal(parent, func(id int) (entity.DesignPicture, error) {
+			return pictureByID(ctx, db, id)
+		}); err != nil {
+			return err
 		}
 		// A HIDDEN SHEET IS NOT CUT (O-53 review, round 3). Crops are born visible, so a cut of a
 		// hidden picture hangs live pieces under a parent nobody can look at — the very state
@@ -731,10 +737,12 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 				// Упсерт, а не голый INSERT — на случай, когда одно медиа названо двумя кадрами одного
 				// запроса; записка (note) НЕ перечислена и потому не затирается, если строка уже была.
 				if err := storeutil.ExecNamed(ctx, db, `
-				INSERT INTO design_reference (tech_card_id, media_id, role, ordinal, set_by, set_at)
-				VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6))
+				INSERT INTO design_reference (tech_card_id, media_id, role, ordinal, set_by, set_at, label_source, label_state)
+				VALUES (:card, :media, :role, :ord, :who, UTC_TIMESTAMP(6), 'human', 'ok')
 				ON DUPLICATE KEY UPDATE
 					role = VALUES(role),
+					-- a cut named by a person is a person's label (101)
+					label_source = 'human', label_state = 'ok',
 					-- ВТОРОЙ ПИСАТЕЛЬ РОЛИ НИКОГДА НЕ ЗНАЕТ СЛОТА ДЕТАЛИ — и потому ПОДЧИНЯЕТСЯ ТОМУ ЖЕ
 					-- ТРЁХЧЛЕННОМУ ПРАВИЛУ, что и ручная дверь 0360. Роль перестала быть деталью —
 					-- связь очищается; роль осталась деталью, а про слот НЕ СКАЗАНО — связь остаётся
@@ -1009,6 +1017,86 @@ func (s *Store) MediaHeldHiddenOnly(ctx context.Context, mediaIDs []int) ([]int,
 		out = make([]int, 0, len(rows))
 		for _, r := range rows {
 			out = append(out, r.MediaId)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MediaProducers — FOR EACH NAMED MEDIA, THE DESIGN RUNS THAT PRODUCED IT (M16, owner 07.10: «в инпут
+// на флеты не должны подсовываться фабрик рендеры»).
+//
+// A picture is a run's output when its design_picture row carries a run_id: the worker files every
+// output that way (queue.go), and a crop or a flatten inherits its parent's run (SplitPicture,
+// FlattenEditLayer), so a cut-up or painted-over render is still a render. A batch upload, a drawing
+// and a garment photo on the board have no run and are absent from the answer. Any card: the file is
+// generated wherever it lies.
+//
+// A CUTOUT also says what it was cut from — its frozen snapshot refs (`$.refs[*].media_id`, the one
+// picture a cutout takes): the caller follows them, so a cutout of a render is a render
+// (admin.designGeneratedMedia). Which kinds may still feed a flat is the caller's rule
+// (admin.designOutputFeedsAFlat), not this read's.
+//
+// The same shape as its neighbours: an empty input answers empty without touching the base; zeros and
+// repeats are dropped here.
+func (s *Store) MediaProducers(ctx context.Context, mediaIDs []int) (map[int][]entity.DesignMediaProducer, error) {
+	ids := make([]int, 0, len(mediaIDs))
+	seen := make(map[int]struct{}, len(mediaIDs))
+	for _, id := range mediaIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	type row struct {
+		MediaId int            `db:"media_id"`
+		Kind    string         `db:"kind"`
+		Sources sql.NullString `db:"sources"`
+	}
+	var out map[int][]entity.DesignMediaProducer
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		rows, err := storeutil.QueryListNamed[row](ctx, rep.DB(), `
+			SELECT p.media_id, r.kind,
+				CASE WHEN r.kind = :cutout
+					THEN CAST(JSON_EXTRACT(r.inputs, '$.refs[*].media_id') AS CHAR)
+					ELSE NULL END AS sources
+			FROM design_picture p
+			JOIN design_run r ON r.id = p.run_id
+			WHERE p.media_id IN (:ids)
+			ORDER BY p.media_id, r.id`,
+			map[string]any{"ids": ids, "cutout": entity.DesignRunKindCutout})
+		if err != nil {
+			return fmt.Errorf("failed to read which design runs produced the media: %w", err)
+		}
+		out = make(map[int][]entity.DesignMediaProducer, len(rows))
+		type key struct {
+			media         int
+			kind, sources string
+		}
+		dup := make(map[key]bool, len(rows))
+		for _, r := range rows {
+			k := key{r.MediaId, r.Kind, r.Sources.String}
+			if dup[k] {
+				continue
+			}
+			dup[k] = true
+			p := entity.DesignMediaProducer{RunKind: r.Kind}
+			if r.Sources.Valid && strings.TrimSpace(r.Sources.String) != "" {
+				// A malformed list reads as «cut from nothing known»: the caller then judges the
+				// cutout by itself.
+				_ = json.Unmarshal([]byte(r.Sources.String), &p.Sources)
+			}
+			out[r.MediaId] = append(out[r.MediaId], p)
 		}
 		return nil
 	})

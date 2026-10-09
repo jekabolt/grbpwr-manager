@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
@@ -127,6 +128,29 @@ type Server struct {
 	suggestCache suggestPromptsCache
 	// suggestFlight coalesces identical SuggestPrompts misses in flight (G-03, Codex 11). Zero value works.
 	suggestFlight singleflight.Group
+	// quizFlight coalesces GenerateDesignQuiz presses of ONE card in flight (design_quiz.go): a double
+	// click pays once and both presses get the same questions. Zero value works.
+	quizFlight singleflight.Group
+	// boardLabels — the per-card moodboard label sync (design_board_label.go, 101). Zero value works.
+	boardLabels designBoardLabeller
+	// partsFlight coalesces SuggestDesignParts presses of ONE (card, view, flat, cut) in flight
+	// (design_parts.go). Zero value works.
+	partsFlight singleflight.Group
+	// calloutCache / calloutFlight — SuggestCallouts answers for ten minutes and identical presses
+	// coalesced in flight (callout_suggest.go). Zero values work.
+	calloutCache  calloutSuggestCache
+	calloutFlight singleflight.Group
+	// partsCardFlight coalesces SuggestDesignPartsCard presses of ONE (card, sides+flats, cut) in
+	// flight (design_parts_card.go). Zero value works.
+	partsCardFlight singleflight.Group
+	// partsPiecesFlight coalesces the pieces reads of ONE (card, front plate, back plate, rev) in
+	// flight (design_parts_pieces.go, M6). Zero value works.
+	partsPiecesFlight singleflight.Group
+	// joinsFlight coalesces GenerateDesignJoins presses of ONE (card, source) in flight
+	// (design_joins.go). Zero value works.
+	joinsFlight singleflight.Group
+	// designImageRunCap — the worker's wall-clock cap of an image run (SetDesignImageRunCap).
+	designImageRunCap time.Duration
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer
@@ -227,6 +251,7 @@ func New(
 		noteFormatSem:        make(chan struct{}, maxConcurrentNoteFormats),
 		enhanceSem:           make(chan struct{}, maxConcurrentEnhance),
 		jpkTaxpayer:          jpkTaxpayer,
+		boardLabels:          designBoardLabeller{live: true},
 	}, nil
 }
 

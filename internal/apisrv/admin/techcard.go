@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
@@ -156,11 +157,19 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationWorkRetiredGate(req.TechCard, nil); err != nil {
 		return nil, err
 	}
+	opts, err := techCardCreateOpts(req)
+	if err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
+		return nil, err
+	}
+	// 101 Ф4: a new card has no flat input either — any reference row goes onto the board.
+	if tc.Media, err = designFoldReferenceRows(tc.Media, nil); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя проверяются ПО СУТИ (MAJOR 3): у новой карточки
@@ -190,6 +199,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
+	// D-04 (labels rework): a LABELS approval needs a mockup on every garment label.
+	if err := validateLabelsMockupSignGate(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
 	// here exactly as it does on update — so the same correction applies. The card id is 0 on purpose:
 	// it does not exist yet, so it can carry neither measured areas nor a recipe (Ф-П).
@@ -199,13 +212,21 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
 
-	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
+	id, created, err := s.repo.TechCards().AddTechCardWithOpts(ctx, tc, opts)
 	if err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
 		}
 		if s.repo.IsErrUniqueViolation(err) {
+			// A race on the replay key (two first calls under one key, the loser past the store's own
+			// pre-read) is a replay, not a collision: answer with the card the winner made. Any other
+			// 1062 keeps its meaning.
+			if opts.RequestId != "" && strings.Contains(err.Error(), entity.TechCardCreateRequestIdIndex) {
+				if prior, rErr := s.repo.TechCards().TechCardIdByCreateRequestId(ctx, opts.RequestId); rErr == nil {
+					return &pb_admin.CreateTechCardResponse{Id: int32(prior)}, nil
+				}
+			}
 			return nil, techCardUniqueViolation(err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
@@ -216,9 +237,24 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't add tech card")
 	}
-	s.seedProductCostsFromTechCard(ctx, id, 0)
-	s.snapshotReleaseIfReleased(ctx, id)
+	// A replay (created=false) returns the first call's card and runs none of the post-create work:
+	// the release snapshot is MAX+1 and would mint a second Rev on every retry.
+	if created {
+		s.seedProductCostsFromTechCard(ctx, id, 0)
+		s.snapshotReleaseIfReleased(ctx, id)
+	}
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
+}
+
+// techCardCreateOpts reads CreateTechCard's replay key and guided flag (0407). The key is trimmed
+// (the column compares bytes, so «k» and «k » would be two keys) and bounded by the column width.
+func techCardCreateOpts(req *pb_admin.CreateTechCardRequest) (entity.TechCardCreateOpts, error) {
+	key := strings.TrimSpace(req.GetClientRequestId())
+	if utf8.RuneCountInString(key) > entity.TechCardCreateRequestIdMaxRunes {
+		return entity.TechCardCreateOpts{}, apierr.Invalid(entity.NewFieldViolation("client_request_id", "too_long", "",
+			fmt.Sprintf("client_request_id is at most %d characters", entity.TechCardCreateRequestIdMaxRunes)))
+	}
+	return entity.TechCardCreateOpts{RequestId: key, Guided: req.GetGuided()}, nil
 }
 
 // SuggestStyleNumber proposes the next free style number for a season (Q1). Advisory: the client may
@@ -388,6 +424,18 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err := s.verifyBomWastageClaims(ctx, stored, tc.BomItems); err != nil {
 		return nil, err
 	}
+	// 101 Ф4: a stale tab's old flat-input rows (kind reference) go onto the moodboard, as migration
+	// 0404 moved the stored ones — before the sign-off digests are stamped from tc. A released card is
+	// frozen and skipped, as the migration skips it.
+	if stored.ApprovalState != entity.TechCardApprovalReleased {
+		folded, err := designFoldReferenceRows(tc.Media, func() ([]entity.DesignReference, error) {
+			return s.designLabelsForFold(ctx, id)
+		})
+		if err != nil {
+			return nil, err
+		}
+		tc.Media = folded
+	}
 	username := authsrv.GetAdminUsername(ctx)
 	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)
 	freshSignoffs := reconcileUpdateTechCardSignoffs(tc, in.Signoffs, stored.Signoffs,
@@ -459,6 +507,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
+	if err := validateFreshLabelsSectionsCarried(tc, &stored.TechCardInsert, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// The two sign-off belts, both between the presence check and the restamp — the last point where
 	// the fresh set, the stored card and the payload are all in view, and the last point at which a
 	// refusal is still a refusal of the REQUEST rather than a fingerprint already taken.
@@ -466,6 +517,10 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 		return nil, apierr.Invalid(err)
 	}
 	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	// D-04 (labels rework): a LABELS approval needs a mockup on every garment label.
+	if err := validateLabelsMockupSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
 	if err := s.restampFreshSignoffDigests(ctx, id, tc, freshSignoffs); err != nil {
@@ -535,6 +590,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, s.techCardWriteError(ctx, err)
 	}
 	s.finalizeTechCardWrite(ctx, int(req.Id), int(req.ExpectedLockVersion), orphanedPatternURLs)
+	// MOODBOARD LABELS (101): the save may have put pictures on the board or changed a purpose — the
+	// server labels them in the background (never blocks the save, never writes the form).
+	s.designBoardLabelKick(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
 }
 
@@ -614,6 +672,17 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, techCardID int,
 			return err
 		}
 		tc.DerivedCostInputsDigest = derived
+	}
+	// THE QUIZ TOKEN (62-DEEP-FIXES D2), by the same rule: the moodboard quiz answers live in their
+	// own table and are written by their own RPC, the read puts their token on the entity, so a
+	// fresh DESIGN approval must take it from the store — else it is stale from birth on every card
+	// with answers. Only when DESIGN is approved; a new card has no answers (empty token).
+	if techCardID > 0 && freshSignoffs[entity.SignoffDesign] {
+		answers, err := s.repo.TechCards().ListDesignQuizAnswers(ctx, techCardID)
+		if err != nil {
+			return err
+		}
+		tc.DesignQuizDigest = entity.DesignQuizAnswersDigest(answers)
 	}
 	final := dto.TechCardSectionDigestsAsRead(tc, identities)
 	for _, so := range fresh {

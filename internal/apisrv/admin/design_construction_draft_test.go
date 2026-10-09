@@ -481,10 +481,8 @@ func TestConstructionSystemPromptAsksForOneJSONObject(t *testing.T) {
 	require.Contains(t, designConstructionSystemPrompt, "\"colourways\"")
 	require.Contains(t, designConstructionSystemPrompt, "\"color_code\"")
 	require.NotEqual(t, draftIdeaSystemPrompt, designConstructionSystemPrompt)
-	// СТАРАЯ РОЛЬ — КОНТРАКТ С РАБОТАЮЩИМ КЛИЕНТОМ: три заголовка, по которым он режет ответ.
-	require.Contains(t, draftIdeaSystemPrompt, "DESCRIPTION")
-	require.Contains(t, draftIdeaSystemPrompt, "DESIGN ASPECTS")
-	require.Contains(t, draftIdeaSystemPrompt, "MISSING CALLOUTS")
+	// The prose role answers the bare description since T39 (design_draft_description_test.go).
+	require.NotContains(t, draftIdeaSystemPrompt, "\"aspects\"")
 }
 
 // ─────────────────────────── ХЕНДЛЕР ───────────────────────────
@@ -1175,7 +1173,7 @@ func TestDraftDesignIdeaRefusesABoardWhoseWordsTravelWithPicturesThatDidNot(t *t
 		ai: newTestRouter(openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1"})),
 	}
 
-	_, err := srv.DraftDesignIdea(designRunCtx(), draftRequest())
+	_, err := srv.DraftDesignIdea(designRunCtx(), draftConstructionRequest()) // T39: the prose branch answers board_has_no_pictures first
 	require.Error(t, err, "промпт из двух строк шапки — платный вызов ни о чём")
 	code, _ := errorReason(t, err)
 	require.Equal(t, codes.FailedPrecondition, code)

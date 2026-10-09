@@ -157,15 +157,5 @@ func TestDraftIdeaMoodNoteIsConceptPlusLegacy(t *testing.T) {
 	require.Nil(t, designMoodSnapshot(&entity.TechCard{}))
 }
 
-// СИСТЕМНЫЙ ПРОМПТ ПРОСИТ РОВНО ТРИ СЕКЦИИ, И ИХ ЗАГОЛОВКИ — КОНТРАКТ С КЛИЕНТОМ.
-//
-// parseDraftSections на клиенте различает судьбы ответа ПО ЭТИМ СТРОКАМ: описание предлагается
-// в концепт, аспекты и недостающие выноски — совет. Переименованный здесь заголовок молча
-// понизил бы свою секцию до «предлагать всё в концепт».
-func TestDraftIdeaSystemPromptNamesTheThreeSections(t *testing.T) {
-	for _, title := range []string{"DESCRIPTION", "DESIGN ASPECTS", "MISSING CALLOUTS"} {
-		require.Contains(t, draftIdeaSystemPrompt, title)
-	}
-	require.Contains(t, draftIdeaSystemPrompt, "names its picture by number",
-		"роль обязана сказать модели, что привязка пинов к картинкам ЕСТЬ и что ею надо пользоваться")
-}
+// The three-section role this file used to pin was retired by T39: the prose branch now answers
+// the description itself — see design_draft_description_test.go.

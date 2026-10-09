@@ -51,8 +51,9 @@ var designPlaygroundDoorCodes = []string{
 	entity.DesignErrorCodeUnknownImageModel, entity.DesignErrorCodeQualityNotSupported,
 	entity.DesignErrorCodeAspectNotSupported, entity.DesignErrorCodeBackgroundNotSupported,
 	entity.DesignErrorCodeImageOptionsForbidden,
-	// §12 3D reference mode (+ the card boundary and the input doors over the new id list)
-	"threed_forbidden", "duplicate_picture", "foreign_media", entity.DesignErrorCodeDisplayOnlyInput,
+	// §12 3D reference mode (+ the input doors over the new id list). T64 (05.10): foreign_media is
+	// no longer a refusal — the media library is shared.
+	"threed_forbidden", "duplicate_picture", entity.DesignErrorCodeDisplayOnlyInput,
 	// G-02: the configured 3D route has no reserve number; a window's picture too small to cut; a
 	// try-on product that is not a render of its named colourway
 	entity.DesignErrorCodeThreedReserveUnbounded, entity.DesignErrorCodeSourceTooSmall,
@@ -396,13 +397,9 @@ func playgroundDoorRows(t *testing.T) []playgroundDoorRow {
 			want:   entity.DesignErrorCodeOptionNotRead},
 		{name: "3d fields on a render run", kind: entity.DesignRunKindRender,
 			params: pgThreed(&pb_common.DesignThreedParams{Quality: "detailed"}), want: "threed_forbidden"},
-		{name: "3d: a picture of another card", kind: entity.DesignRunKindThreed,
-			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 4040}}),
-			setup: func(t *testing.T, rig *designRunRig) {
-				rig.design.EXPECT().AssertMediaNotForeign(mock.Anything, designRunCardID, []int{31, 4040}).
-					Return(entity.ErrDesignForeignMedia).Once()
-			},
-			want: "foreign_media"},
+		// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+		{name: "3d: a picture another card holds passes", kind: entity.DesignRunKindThreed,
+			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 4040}})},
 		{name: "3d: a display-only picture", kind: entity.DesignRunKindThreed,
 			params: pgThreed(&pb_common.DesignThreedParams{ReferenceMediaIds: []int32{31, 4141}}),
 			setup: func(t *testing.T, rig *designRunRig) {
@@ -470,7 +467,6 @@ func pgDropCalls(calls []*mock.Call, method string) []*mock.Call {
 // TestThePlaygroundDoorREFUSES_BEFORE_THE_STORE_AND_LETS_EVERY_TILE_THROUGH — every row through the
 // real StartDesignRun. MUTATIONS (each measured red, on exactly the rows named):
 //   - drop the designRefuseMalformedThreedReferences call → the six 3D shape rows reach the store;
-//   - drop the card boundary over params.threed.reference_media_ids → «a picture of another card»;
 //   - drop the reference-ids loop of designRunInputMediaRefs → «a display-only picture»;
 //   - designRefuseRerunChangesWorkflow answering nil → both rerun_changes_workflow rows;
 //   - drop the designRefuseThreedRerunReferenceSwap call → both «rerun 3d» refusal rows (G-02 M-2);

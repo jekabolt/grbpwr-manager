@@ -503,6 +503,20 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	var out entity.DesignPicture
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		// ПЕРЕЗАПИСЬ БЕРЁТ ЗАМКИ В ОБЩЕМ ПОРЯДКЕ (T28 v2 C2, locks.go): карточка → оригинал (его штампуют)
+		// → слоты верстака (один из них переедет) — до первого чтения, чтобы ни одна из этих строк не
+		// была прочитана под S и потом записана.
+		if req.ReplacePictureId > 0 {
+			if err := lockDesignCard(ctx, db, req.TechCardId); err != nil {
+				return err
+			}
+			if err := lockDesignPictures(ctx, db, req.TechCardId, req.ReplacePictureId); err != nil {
+				return err
+			}
+			if err := lockDesignBench(ctx, db, req.TechCardId); err != nil {
+				return err
+			}
+		}
 		// ─── 0. ПОВТОР ЖЕСТА (0370) — раньше всего остального, см. доку функции ───
 		if prior, ok, err := pictureByRequestKey(ctx, db, req.TechCardId, key); err != nil {
 			return err
@@ -608,7 +622,10 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// PROVENANCE. Both strings come from the wire vocabulary of DesignPicture.source_class —
 		// see entity.DesignSourceAIEdits for why the wire wins over the migration's prose.
 		src := designFlattenSourceClass(layer.Origin, parent != nil)
-		ghost, kind := any(nil), entity.DesignPictureKindFlat
+		kind := entity.DesignPictureKindFlat
+		// ВИДЫ НАСЛЕДУЮТСЯ ОТ БАЗЫ ЦЕЛИКОМ (T14): правка — тот же лист, поэтому мультивью остаётся
+		// мультивью (composite_views), а сторона — стороной (ghost_view). Кропы этого не делают.
+		ghost, composite := entity.DesignFlattenInheritedViews(parent)
 		mixed := false
 		runID, batchID, derived := any(nil), any(nil), any(nil)
 		cw := any(nil)
@@ -625,9 +642,6 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 			// Флэттен — СИБЛИНГ подложки и наследует её колорвей (0356): перекрашенный слоем
 			// рендер колорвея A остаётся кадром колорвея A, иначе он выпал бы из своего верстака.
 			cw = nullInt32(parent.ColorwayId)
-			if parent.GhostView.Valid {
-				ghost = parent.GhostView.String
-			}
 		}
 		ord := 0
 		if parent != nil {
@@ -655,14 +669,15 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 		// сверяет, что ключ назван ТЕМ ЖЕ слоем (entity.DesignFlattenReplayRefusal).
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO design_picture
-				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view,
+				(tech_card_id, media_id, run_id, batch_id, ordinal, kind, ghost_view, composite_views,
 				 colorway_id, derived_from, derivation, source_class, mixed_input, layer_rev,
 				 display_only, request_key, source_layer_id)
-			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :cw, :parent, :derivation,
-			        :src, :mixed, :layer, :display_only, :request_key, :source_layer)`,
+			VALUES (:card, :media, :run, :batch, :ord, :kind, :ghost, :composite, :cw, :parent,
+			        :derivation, :src, :mixed, :layer, :display_only, :request_key, :source_layer)`,
 			map[string]any{
 				"card": req.TechCardId, "media": req.MediaId, "run": runID, "batch": batchID,
-				"ord": ord, "kind": kind, "ghost": ghost, "cw": cw, "parent": derived,
+				"ord": ord, "kind": kind, "ghost": ghost, "composite": composite, // RawJSON: empty → NULL (Value)
+				"cw": cw, "parent": derived,
 				"derivation": derivation,
 				"src":        src, "mixed": mixed, "layer": layer.Rev,
 				"display_only": displayOnly,
@@ -800,9 +815,13 @@ func designBranchQuery(q string, params map[string]any, limit int) (string, []an
 // правило «замену не переписывают» дороже допущения об изоляции и стоит ровно одну строку. Ноль
 // затронутых строк — ОТКАЗ already_replaced, а не молчаливый успех, по тому же доводу, что у
 // adoptPictureIntoColorway.
+//
+// ПОВЕРХ ОТМЕНЁННОГО (T28 v2): `<=> :was` — то значение, что прочитала транзакция (NULL либо отменённый
+// преемник, undone_at, entity.DesignReplaceFacts.SuccessorUndone). Ни на что другое штамп не ложится;
+// отменённая ветка остаётся строками, отрезанной от цепочки.
 const designStampReplacedBy = `
 	UPDATE design_picture SET replaced_by = :edit
-	WHERE id = :id AND replaced_by IS NULL`
+	WHERE id = :id AND replaced_by <=> :was`
 
 // flattenReplaceTarget — ОРИГИНАЛ, ЧЬЁ МЕСТО ЗАНИМАЕТ ПРАВКА: читается и судится В ТРАНЗАКЦИИ
 // ФЛЭТТЕНА, до вставки. Отказ здесь не подаёт ничего — в том числе повтор перезаписи без ключа,
@@ -831,6 +850,16 @@ func flattenReplaceTarget(ctx context.Context, db dependency.DB, req entity.Desi
 		return original, err
 	}
 	var facts entity.DesignReplaceFacts
+	// ОТМЕНЁННЫЙ ПРЕЕМНИК (T28 v2): правка, которую человек отменил (undone_at, UndoEdit). Только отмена
+	// освобождает место — просто спрятанный преемник его держит. Читается в этой же транзакции, до
+	// решения: под SERIALIZABLE redo преемника между этим чтением и штампом ждёт.
+	if original.ReplacedBy.Valid && original.TechCardId == req.TechCardId {
+		next, err := pictureByID(ctx, db, int(original.ReplacedBy.Int32))
+		if err != nil {
+			return original, err
+		}
+		facts.SuccessorUndone = entity.DesignSuccessorUndone(next)
+	}
 	if err := entity.DesignReplaceRefusal(req.TechCardId, layer.BaseMediaId, original, facts); err != nil {
 		if errors.Is(err, entity.ErrDesignAlreadyReplaced) {
 			return original, designAlreadyReplaced(ctx, db, original)
@@ -929,25 +958,11 @@ func designAlreadyReplaced(ctx context.Context, db dependency.DB, p entity.Desig
 // нечему, и оригинал только получает штамп.
 func flattenTakeThePlaceOf(ctx context.Context, rep dependency.Repository, original entity.DesignPicture, editID int, actor string) error {
 	db := rep.DB()
-	holders, err := storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db, `
-		SELECT * FROM design_bench_slot WHERE tech_card_id = :card AND picture_id = :pic`,
-		map[string]any{"card": original.TechCardId, "pic": original.Id})
-	if err != nil {
-		return fmt.Errorf("failed to find the bench slot of design picture %d: %w", original.Id, err)
-	}
-	for _, h := range holders {
-		if _, err := setBenchSlotTx(ctx, rep, entity.DesignBenchSlotSet{
-			TechCardId:      original.TechCardId,
-			Slot:            entity.DesignSlotRef{SlotId: h.Id},
-			PictureId:       editID,
-			ExpectedSlotRev: h.SlotRev,
-			Actor:           actor,
-		}); err != nil {
-			return err
-		}
+	if _, err := moveBenchSlots(ctx, rep, original.TechCardId, original.Id, editID, actor); err != nil {
+		return err
 	}
 	n, err := storeutil.ExecNamedRows(ctx, db, designStampReplacedBy,
-		map[string]any{"id": original.Id, "edit": editID})
+		map[string]any{"id": original.Id, "edit": editID, "was": original.ReplacedBy})
 	if err != nil {
 		return fmt.Errorf("failed to stamp design picture %d as replaced by %d: %w", original.Id, editID, err)
 	}
@@ -1034,111 +1049,21 @@ func layerByRequestID(ctx context.Context, db dependency.DB, requestID string) (
 	return rows[0], true, nil
 }
 
-// AssertMediaNotForeign — та же граница, вынесенная НАРУЖУ, для двери.
+// AssertMediaNotForeign — бывшая граница карточки для медиа, вынесенная для двери.
 //
-// ⚠ ЗАЧЕМ ГЛАГОЛ, А НЕ КОПИЯ ПРАВИЛА В ХЕНДЛЕРЕ. Дверь обязана отказать ДО резерва денег: прогон с
-// чужой картинкой не должен даже открываться. Но правило «чьё это медиа» знает только база, и
-// хендлер, отвечавший на него по-своему (через реестр ссылок media), был ВТОРЫМ мнением о том же
-// вопросе — а два мнения расходятся в тот день, когда правят одно. Здесь оно одно, и спрашивают его
-// оба: дверь снаружи транзакции, ImportVector — внутри своей.
-//
-// ЧИТАЮЩАЯ ТРАНЗАКЦИЯ, а не пишущая: это вопрос, а не изменение, и SERIALIZABLE-писатель ради
-// одного COUNT держал бы блокировки на чужих строках.
-func (s *Store) AssertMediaNotForeign(ctx context.Context, techCardID int, mediaIDs []int) error {
-	if err := requireCard(techCardID); err != nil {
-		return err
-	}
-	if len(mediaIDs) == 0 {
-		return nil
-	}
-	return s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		return refuseForeignMedia(ctx, rep.DB(), techCardID, mediaIDs...)
-	})
+// T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ. Любой файл библиотеки
+// законно выбирается на любой карточке (референс, флэт, вход рендера, фото ткани, плейграунд…).
+// Глагол оставлен, чтобы не трогать интерфейс и двери; проверяется только сам номер карточки.
+// Чужие КАРТИНКИ полосы (design_picture id), foreign_card_plate и чужие ассеты полок — другие
+// правила, и они на месте.
+func (s *Store) AssertMediaNotForeign(_ context.Context, techCardID int, _ []int) error {
+	return requireCard(techCardID)
 }
 
-// refuseForeignMedia — ГРАНИЦА КАРТОЧКИ ДЛЯ ИДЕНТИФИКАТОРА МЕДИА, ПРИШЕДШЕГО С ПРОВОДА.
-//
-// ⚠ ПРАВИЛО ОТРИЦАТЕЛЬНОЕ («не принадлежит ДРУГОЙ карточке»), А НЕ ПОЛОЖИТЕЛЬНОЕ («принадлежит
-// этой»), И ЭТО РЕШЕНИЕ, А НЕ СЛАБОСТЬ. Положительное правило — то, что стоит у SetReferenceRole
-// («медиа обязано лежать в tech_card_media этой карточки»), — здесь ЛОЖНО ОТКАЗЫВАЛО БЫ на
-// законном жесте: файл, только что загруженный через UploadContentImage, не принадлежит ещё ни
-// одной карточке (контракт ImportDesignVector говорит это про source_media_id дословно), а
-// картинка полосы живёт в design_picture и в tech_card_media не попадает вовсе — ту таблицу
-// целиком переписывает сейв карточки.
-//
-// ДЕРЖАТЕЛЕЙ РОВНО ДВА, И ЭТО НЕ ПРОИЗВОЛ: tech_card_media — картинки, которые карточка держит
-// сама, design_picture — картинки её полосы. Больше НИ ОДНА таблица не отвечает на вопрос «чья это
-// карточка» (реестр ссылок media знает ещё продукты, архивы и примерки, но они про другую
-// принадлежность). Медиа, за которым не стоит ни одна карточка, — ничейное, и оно проходит.
-//
-// ⚠ design_asset.media_id ЗДЕСЬ НЕТ НАМЕРЕННО, И ЭТО РЕШЕНИЕ, КОТОРОЕ УЖЕ ОСПАРИВАЛИ. Полки (0354)
-// — третья пер-карточная таблица со ссылкой на media, и «третий держатель, который забыли» выглядит
-// очевидным выводом. Он неверен, и вот чем.
-//
-// ДВА ДЕРЖАТЕЛЯ ВЫШЕ — ЭТО КАРТИНКИ САМОГО ИЗДЕЛИЯ: его флэты, его референсы, его рендеры. Такая
-// картинка по построению принадлежит ОДНОМУ стилю, поэтому правило «не чужая» никогда не мешает
-// работе. Ассет — это картинка МАТЕРИАЛА: лоскут ткани, плитка паттерна, снимок фурнитуры. Один и
-// тот же джерси законно шьётся в десяти стилях, и дверь загрузки ассета — это ПИКЕР БИБЛИОТЕКИ
-// (клиент: MediaSlot на полке), то есть выбрать тот же файл на второй карточке — один клик.
-//
-// ЧТО БЫ ДАЛО ДОБАВЛЕНИЕ. Оба запроса ниже симметричны, и таблица, попавшая в них, попадает в оба:
-// первая карточка, положившая лоскут на полку, стала бы его ЕДИНСТВЕННЫМ держателем (`others = 1`,
-// `mine = 0`), и всякая следующая получала бы отказ «media belongs to another tech card». Полки,
-// заведённые ради того, чтобы называть ткани изделия, начали бы запрещать называть ту же ткань во
-// втором изделии — то есть правило границы съело бы саму функцию.
-//
-// А ГДЕ ВРЕД ОТ ОТСУТСТВИЯ, ТАМ ОН ЗАКРЫТ ДРУГИМ ПРАВИЛОМ. Настоящая опасность звучит не «чужой
-// лоскут», а «чужая ПОЛКА»: прогон, замораживающий в своей истории `fabrics[*].asset_id` другой
-// карточки. Это проверяется по имени — designRefuseForeignClothAssets у двери прогона, — и
-// отмывания через ассет тоже не выходит: чтобы положить на полку карточки B чужую картинку, надо
-// сначала пройти ЭТУ функцию, а флэт или референс карточки A она держит.
-//
-// НОЛЬ И ОТРИЦАТЕЛЬНОЕ МОЛЧА ПРОПУСКАЮТСЯ: «не задано» — законное состояние обоих полей, и
-// отказывать за отсутствие значения обязан тот, кто его требует, а не эта функция.
-func refuseForeignMedia(ctx context.Context, db dependency.DB, cardID int, mediaIDs ...int) error {
-	seen := make(map[int]struct{}, len(mediaIDs))
-	for _, id := range mediaIDs {
-		if id <= 0 {
-			continue
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-
-		// СНАЧАЛА СПРАШИВАЕТСЯ «ЧУЖОЕ ЛИ», и обычный ответ — ноль, на котором второй запрос не
-		// нужен вовсе: ничейный свежий файл проходит одним чтением.
-		others, err := storeutil.QueryCountNamed(ctx, db, `
-			SELECT COUNT(*) FROM (
-				SELECT tech_card_id FROM tech_card_media WHERE media_id = :media
-				UNION ALL
-				SELECT tech_card_id FROM design_picture WHERE media_id = :media
-			) h WHERE h.tech_card_id <> :card`,
-			map[string]any{"media": id, "card": cardID})
-		if err != nil {
-			return fmt.Errorf("failed to check who media %d belongs to: %w", id, err)
-		}
-		if others == 0 {
-			continue
-		}
-		// ОДИН ФАЙЛ В ДВУХ КАРТОЧКАХ — ОБЫЧНОЕ ДЕЛО (та же ткань, тот же референс), и отказывать
-		// за это нельзя: правило про то, что картинка НЕ ЧУЖАЯ, а не про то, что она больше нигде
-		// не встречается.
-		mine, err := storeutil.QueryCountNamed(ctx, db, `
-			SELECT COUNT(*) FROM (
-				SELECT tech_card_id FROM tech_card_media WHERE media_id = :media
-				UNION ALL
-				SELECT tech_card_id FROM design_picture WHERE media_id = :media
-			) h WHERE h.tech_card_id = :card`,
-			map[string]any{"media": id, "card": cardID})
-		if err != nil {
-			return fmt.Errorf("failed to check whether media %d belongs here: %w", id, err)
-		}
-		if mine == 0 {
-			return fmt.Errorf("%w: media %d belongs to another tech card, not to %d",
-				entity.ErrDesignForeignMedia, id, cardID)
-		}
-	}
+// refuseForeignMedia — T64 (05.10): владелец — медиатека общая, foreign_media больше не отказ.
+// Медиа, которое держит другая карточка (tech_card_media / design_picture), проходит так же, как
+// ничейное. Вызовы оставлены на местах, чтобы правка была одной точкой.
+func refuseForeignMedia(_ context.Context, _ dependency.DB, _ int, _ ...int) error {
 	return nil
 }
 
