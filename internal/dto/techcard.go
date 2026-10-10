@@ -1605,6 +1605,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// читаемой обёртке, а не в TechCardInsert: пишет их отдельный RPC, и полная замена карточки
 		// не должна иметь возможности их стереть. Это же кладёт их в слепок релиза.
 		PieceAreaScopes: TechCardPieceAreaScopesToPb(tc.PieceAreaScopes),
+		// Seam decisions (tech_card_seam) — read model only, written through Upsert/DeleteTechCardSeams;
+		// never on TechCardInsert, so outside every section digest.
+		Seams: TechCardSeamsToPb(tc.Seams),
 	}
 }
 

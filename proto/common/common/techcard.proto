@@ -3829,6 +3829,11 @@ message TechCard {
   // (CreateTechCardRequest.guided) and the guide has not been left yet. Cleared only by
   // ExitTechCardGuide, which does not bump lock_version. Ignored on write.
   bool guided = 31;
+  // OUTPUT-ONLY: the technologist's seam decisions (confirmed / rejected / connected by hand), with
+  // the server's staleness verdict resolved on this read. Written ONLY through UpsertTechCardSeams /
+  // DeleteTechCardSeams — never through TechCardInsert, so a full card save cannot erase them, the
+  // seams RPCs never bump lock_version, and they enter no section digest. Ignored on write.
+  repeated TechCardSeam seams = 32;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.
@@ -3881,6 +3886,118 @@ message TechCardPieceArea {
   // листов в пачке, и сравнивать его с чем-либо нельзя. НЕ то же самое, что hulled — состояния
   // разные и ведут к разным фразам на экране.
   bool ambiguous_pick = 5;
+}
+
+// ─── CONFIRMED SEAMS (tech_card_seam) ───────────────────────────────────────────────────────────
+//
+// A technologist accepts or rejects the seams the assembly engine proposes, or connects two edges
+// by hand; the decision is stored on the card and every reader (doll, skeleton, assembly map, POM)
+// resolves ONE list instead of guessing again on each open.
+//
+// AN EDGE IS NEVER ADDRESSED BY ITS CORNER INDEX (`pieceKey#k`): that number is counted from the
+// DXF's first vertex and moves with the exporter's start point or any corner appearing. A seam side
+// is a list of ANCHORS — the piece's stable line_key plus the edge's SHAPE in the piece's own frame —
+// and the client resolves them geometrically; what does not fit reads as stale, never re-pointed.
+
+// TechCardSeamSample is one point of an edge's shape, in the piece's own bbox-normalised frame
+// (u, v ∈ [0, 1]).
+message TechCardSeamSample {
+  double u = 1;
+  double v = 2;
+}
+
+// TechCardSeamAnchor is one run of one piece taking part in a seam side.
+message TechCardSeamAnchor {
+  // tech_card_piece.line_key — never a block name, never an id.
+  string piece_line_key = 1;
+  // Five points along the run at s = 0, 1/4, 1/2, 3/4, 1 of its length, walk order (CCW).
+  repeated TechCardSeamSample samples = 2;
+  // Share of the sewing-line perimeter covered by the run, (0, 1].
+  double perim_share = 3;
+  // Run length at the size it was anchored on, mm (> 0).
+  double len_mm = 4;
+  // Notch count on the run, ends excluded.
+  int32 notches = 5;
+  // Signed turn of the run, degrees (+ convex).
+  double turn_deg = 6;
+  // Sewn sub-range of the run as shares of its length from its start. range_from = range_to = 0 is
+  // the WHOLE run (protojson cannot carry «absent» for doubles; 0/0 is the whole run by rule).
+  double range_from = 7;
+  double range_to = 8;
+  // Fast path + diagnostics, never trusted alone: the engine's edge id when anchored ('FP_L#2',
+  // 'BP#3+4') and the piece contour's signature then.
+  string edge_hint = 9;
+  string contour_sig = 10;
+}
+
+// TechCardSeamSide is one side of a seam: its anchors in walk order (1..8).
+message TechCardSeamSide {
+  repeated TechCardSeamAnchor parts = 1;
+}
+
+// TechCardSeamStatus is the technologist's decision on a seam.
+enum TechCardSeamStatus {
+  TECH_CARD_SEAM_STATUS_UNKNOWN = 0;
+  TECH_CARD_SEAM_STATUS_CONFIRMED = 1;
+  TECH_CARD_SEAM_STATUS_REJECTED = 2;
+}
+
+// TechCardSeamKind is the shape of a seam: one edge to one edge, a sub-range of a longer edge, a
+// walk across several pieces (sleeve cap into a front + back armhole), a patch onto a face, or a
+// closure (zip / button front) that is NOT sewn shut.
+enum TechCardSeamKind {
+  TECH_CARD_SEAM_KIND_UNKNOWN = 0;
+  TECH_CARD_SEAM_KIND_EDGE = 1;
+  TECH_CARD_SEAM_KIND_PARTIAL = 2;
+  TECH_CARD_SEAM_KIND_COMPOSITE = 3;
+  TECH_CARD_SEAM_KIND_SURFACE = 4;
+  TECH_CARD_SEAM_KIND_CLOSURE = 5;
+}
+
+// TechCardSeamDirection is how the two sides walk against each other. REVERSED is the normal seam
+// (face-up pieces walk a shared seam oppositely); SAME when one side is a flipped instance. UNKNOWN
+// is legal on write: the reader then picks the pairing itself.
+enum TechCardSeamDirection {
+  TECH_CARD_SEAM_DIRECTION_UNKNOWN = 0;
+  TECH_CARD_SEAM_DIRECTION_REVERSED = 1;
+  TECH_CARD_SEAM_DIRECTION_SAME = 2;
+}
+
+// TechCardSeamSource is where the seam came from before a person decided on it. AI is reserved.
+enum TechCardSeamSource {
+  TECH_CARD_SEAM_SOURCE_UNKNOWN = 0;
+  TECH_CARD_SEAM_SOURCE_GRAPH = 1;
+  TECH_CARD_SEAM_SOURCE_DOLL = 2;
+  TECH_CARD_SEAM_SOURCE_ORDER = 3;
+  TECH_CARD_SEAM_SOURCE_MANUAL = 4;
+  TECH_CARD_SEAM_SOURCE_AI = 5;
+}
+
+// TechCardSeam is one stored seam decision, keyed by a client-minted ULID.
+message TechCardSeam {
+  // ULID (26 chars), client-minted, the row's identity across saves.
+  string seam_key = 1;
+  TechCardSeamStatus status = 2;
+  TechCardSeamKind kind = 3;
+  TechCardSeamDirection direction = 4;
+  TechCardSeamSource source = 5;
+  TechCardSeamSide side_a = 6;
+  TechCardSeamSide side_b = 7;
+  // Size code the anchors were written on — honesty for display; the resolver compares by ratio.
+  string anchored_size = 8;
+  // The technologist's words («eased at the yoke», «CF is a zip»), ≤ 255 chars.
+  string note = 9;
+  // OUTPUT ONLY (ignored on write): the server's verdict and provenance.
+  //
+  // stale = the SOURCE of the seam's pieces moved since the row was written: the fingerprint of the
+  // sheets AND block→piece links of the pieces' fabric scopes, computed now, differs from the one
+  // stamped on write (a DXF re-uploaded, a block re-aliased). A stale row must not be applied as is
+  // — the client shows it and offers re-confirm, which rewrites it and clears the flag.
+  bool stale = 20;
+  string created_by = 21;
+  google.protobuf.Timestamp created_at = 22;
+  string updated_by = 23;
+  google.protobuf.Timestamp updated_at = 24;
 }
 
 // TechCardSlotAreaEstimate — ОЦЕНКА РАСХОДА ОДНОГО РУЛОННОГО СЛОТА в ЭТОМ колорвее: сколько ткани

@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (424 rpc) ----
+// ---- admin (426 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -832,6 +832,14 @@ func (c *Client) DeleteTechCardMarker(ctx context.Context, in *admin.DeleteTechC
 func (c *Client) DeleteTechCardOutputVariant(ctx context.Context, in *admin.DeleteTechCardOutputVariantRequest) (*admin.DeleteTechCardOutputVariantResponse, error) {
 	out := new(admin.DeleteTechCardOutputVariantResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/output-variant/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteTechCardSeams(ctx context.Context, in *admin.DeleteTechCardSeamsRequest) (*admin.DeleteTechCardSeamsResponse, error) {
+	out := new(admin.DeleteTechCardSeamsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/seams:delete", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -3384,6 +3392,14 @@ func (c *Client) UpsertStyleAssembly(ctx context.Context, in *admin.UpsertStyleA
 func (c *Client) UpsertTechCardOutputVariant(ctx context.Context, in *admin.UpsertTechCardOutputVariantRequest) (*admin.UpsertTechCardOutputVariantResponse, error) {
 	out := new(admin.UpsertTechCardOutputVariantResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/output-variant/upsert", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpsertTechCardSeams(ctx context.Context, in *admin.UpsertTechCardSeamsRequest) (*admin.UpsertTechCardSeamsResponse, error) {
+	out := new(admin.UpsertTechCardSeamsResponse)
+	if err := c.call(ctx, "PUT", "/api/admin/tech-card/{tech_card_id}/seams", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

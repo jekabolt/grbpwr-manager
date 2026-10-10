@@ -451,6 +451,11 @@ var methodRequirements = map[string]Requirement{
 	// Плановик производства не должен уметь его переписать: право переписать площади — это право
 	// снять себе блокер.
 	"SaveTechCardPieceAreas": wr(SectionTechCards),
+	// Подтверждённые швы (tech_card_seam): тот же уровень, что площади — решение технолога о
+	// сборке из выкроек карточки, пишется с вкладки конструкции. Отдельные RPC, lock_version не
+	// двигают и в дайджест не входят; выпущенная карточка отказывает.
+	"UpsertTechCardSeams": wr(SectionTechCards),
+	"DeleteTechCardSeams": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);

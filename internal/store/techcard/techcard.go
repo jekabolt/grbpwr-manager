@@ -1029,6 +1029,13 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].PieceAreaScopes = areas
+	// Seam decisions (tech_card_seam), staleness resolved like the areas above. Read model only —
+	// outside every digest and outside lock_version; an empty list is «nobody reviewed the seams».
+	seams, err := s.GetTechCardSeams(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].Seams = seams
 	// ЦЕХОВОЙ ЭТАЛОН ПРИПУСКА (0277) — вторая половина каскада, без которой первая ничего не решает.
 	// Режим дублирования «по припуску» (0304) берёт ширину полосы из этого эталона: переопределение
 	// карточки, иначе цеховой дефолт. Прочитать здесь — значит прочитать один раз для всех, кто

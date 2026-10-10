@@ -2755,6 +2755,37 @@ service AdminService {
     };
   }
 
+  // UpsertTechCardSeams stores the technologist's seam decisions — confirmed / rejected seams and
+  // seams connected by hand on the pieces map — so every reader resolves ONE list.
+  //
+  // KEYED AND PARTIAL: a row per seam_key is inserted or replaced whole; rows not named are
+  // untouched. A reviewer decides one seam at a time, and two reviewers on one card must not clobber
+  // each other's rows.
+  //
+  // The server stamps each row's source fingerprint from ITS OWN tables (sheets + block→piece links
+  // of the pieces' fabric scopes) — the client cannot supply it — and echoes the card's full current
+  // list with `stale` resolved, so the client re-syncs instead of trusting its optimistic copy.
+  //
+  // NO lock_version BUMP and NO section digest: seams are a side table; the form's autosave keeps
+  // working while somebody confirms a seam. A released card refuses (the frozen wording).
+  // wr(tech_cards), the same right as the piece areas.
+  rpc UpsertTechCardSeams(UpsertTechCardSeamsRequest) returns (UpsertTechCardSeamsResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/seams"
+      body: "*"
+    };
+  }
+
+  // DeleteTechCardSeams removes seam decisions by seam_key (an orphan row whose piece left the card,
+  // or a decision the technologist takes back). Unknown keys are not an error. Same lock, same
+  // released-card refusal, same echo of the full list as UpsertTechCardSeams.
+  rpc DeleteTechCardSeams(DeleteTechCardSeamsRequest) returns (DeleteTechCardSeamsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/seams:delete"
+      body: "*"
+    };
+  }
+
   // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
   // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
   // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
@@ -11308,6 +11339,27 @@ message SaveTechCardPieceAreasRequest {
 message SaveTechCardPieceAreasResponse {
   string sheet_fingerprint = 1; // what the server recorded
   int32 stored = 2; // rows written for this scope
+}
+
+message UpsertTechCardSeamsRequest {
+  int32 tech_card_id = 1;
+  // Rows to insert or replace whole, by seam_key. Output-only fields (stale, *_by, *_at) are ignored.
+  repeated common.TechCardSeam seams = 2;
+}
+
+message UpsertTechCardSeamsResponse {
+  repeated common.TechCardSeam seams = 1; // the card's full list after the write, stale resolved
+  int32 written = 2; // rows inserted or replaced
+}
+
+message DeleteTechCardSeamsRequest {
+  int32 tech_card_id = 1;
+  repeated string seam_keys = 2;
+}
+
+message DeleteTechCardSeamsResponse {
+  repeated common.TechCardSeam seams = 1; // the card's full list after the delete, stale resolved
+  int32 deleted = 2; // rows actually removed
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

@@ -4737,6 +4737,10 @@ type TechCard struct {
 	// A map, not a slice: every reader asks «what are the areas of THIS fabric», never «what is the
 	// third scope», and the one place that needs a stable order (the wire) sorts on the way out.
 	PieceAreaScopes map[string]PieceAreaScope `db:"-"`
+	// Seams are the technologist's seam decisions (tech_card_seam), staleness resolved. Populated on
+	// the single-card read (nil on lists/writes). Written only through Upsert/DeleteTechCardSeams —
+	// never part of TechCardInsert, so outside every section digest and outside lock_version.
+	Seams []TechCardSeam `db:"-"`
 	// WorkshopSeamAllowanceMm is the SHOP's default seam allowance (0277) carried onto the card at
 	// read time, so a reader can resolve the standard's full cascade — card override, else shop — with
 	// RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm).
