@@ -799,9 +799,11 @@ type skeletonAIAnswer struct {
 	Order    *[]skeletonAIAnswerOrder   `json:"order"`
 	Picks    *[]skeletonAIAnswerPick    `json:"picks"`
 	Warnings *[]skeletonAIAnswerWarning `json:"warnings"`
-	// Optional (06-AI-STRUCTURE): an answer of the older shape still decodes; missing = keep.
-	Category *skeletonAIAnswerCategory `json:"category"`
-	Units    *[]skeletonAIAnswerUnit   `json:"units"`
+	// Optional and LENIENT (06-AI-STRUCTURE): an answer of the older shape still decodes, missing or
+	// null = keep; a malformed category or unit is dropped with a note in parseSkeletonAI, never a
+	// structural violation — the order, picks and warnings of the same answer stand.
+	Category json.RawMessage `json:"category"`
+	Units    json.RawMessage `json:"units"`
 }
 
 type skeletonAIAnswerCategory struct {
@@ -983,11 +985,13 @@ func parseSkeletonAI(raw string, in skeletonAIInput) (*pb_admin.SuggestAssemblyS
 		out.Warnings = append(out.Warnings, cw)
 	}
 
-	// ── category ──
-	if c := ans.Category; c != nil {
-		if c.ID == nil || c.Reason == nil {
-			return nil, fmt.Errorf("category has no id or no reason")
-		}
+	// ── category ── (lenient: a malformed category is dropped with a note)
+	var c skeletonAIAnswerCategory
+	switch {
+	case skeletonAIAbsent(ans.Category):
+	case json.Unmarshal(ans.Category, &c) != nil || c.ID == nil || c.Reason == nil:
+		note("the category is not an object with a string id and reason; dropped")
+	default:
 		id := strings.TrimSpace(*c.ID)
 		switch {
 		case id == "":
@@ -1001,23 +1005,31 @@ func parseSkeletonAI(raw string, in skeletonAIInput) (*pb_admin.SuggestAssemblyS
 		}
 	}
 
-	// ── units ──
-	if ans.Units != nil {
-		units, err := skeletonAIUnits(*ans.Units, in, note)
-		if err != nil {
-			return nil, err
-		}
-		out.Units = units
+	// ── units ── (lenient: a malformed member or unit is dropped with a note)
+	var rawUnits []json.RawMessage
+	switch {
+	case skeletonAIAbsent(ans.Units):
+	case json.Unmarshal(ans.Units, &rawUnits) != nil:
+		note("the units are not a list; dropped")
+	default:
+		out.Units = skeletonAIUnits(rawUnits, in, note)
 	}
 	return out, nil
+}
+
+// skeletonAIAbsent — an optional member the answer left out or set to null.
+func skeletonAIAbsent(raw json.RawMessage) bool {
+	t := strings.TrimSpace(string(raw))
+	return t == "" || t == "null"
 }
 
 // skeletonAIUnits validates the model's units: unknown piece keys are removed and repeats inside a set
 // collapsed; a set of fewer than 2 pieces, a set equal to an earlier kept one, and a set that
 // partially overlaps an earlier KEPT one (neither holds the other, yet they share a piece) are
-// dropped with a note; at most 2 × pieces units are kept. The kept units go out smallest set first
+// dropped with a note, and so is a unit that is not {pieces: [string], name: string, reason: string};
+// at most 2 × pieces units are kept. The kept units go out smallest set first
 // (stable), so a client can build them bottom-up.
-func skeletonAIUnits(raw []skeletonAIAnswerUnit, in skeletonAIInput, note func(string, ...any)) ([]*pb_admin.AssemblySkeletonUnitHint, error) {
+func skeletonAIUnits(raw []json.RawMessage, in skeletonAIInput, note func(string, ...any)) []*pb_admin.AssemblySkeletonUnitHint {
 	type kept struct {
 		hint  *pb_admin.AssemblySkeletonUnitHint
 		label string
@@ -1025,13 +1037,15 @@ func skeletonAIUnits(raw []skeletonAIAnswerUnit, in skeletonAIInput, note func(s
 	}
 	limit := 2 * len(in.Pieces)
 	var units []kept
-	for i, u := range raw {
-		if u.Pieces == nil || u.Name == nil || u.Reason == nil {
-			return nil, fmt.Errorf("units[%d] has no pieces, name or reason", i)
-		}
+	for i, r := range raw {
 		if len(units) == limit {
 			note("more than %d units; the rest are dropped", limit)
 			break
+		}
+		var u skeletonAIAnswerUnit
+		if json.Unmarshal(r, &u) != nil || u.Pieces == nil || u.Name == nil || u.Reason == nil {
+			note("units[%d] is not an object with a list of piece keys, a name and a reason; dropped", i)
+			continue
 		}
 		name := designPartsTrim(*u.Name, skeletonAIMaxNameRunes)
 		label := fmt.Sprintf("units[%d]", i)
@@ -1097,7 +1111,7 @@ func skeletonAIUnits(raw []skeletonAIAnswerUnit, in skeletonAIInput, note func(s
 	for _, u := range units {
 		out = append(out, u.hint)
 	}
-	return out, nil
+	return out
 }
 
 // skeletonAIOrderBreaks — "" when the order (riders after their join, in the draft's own order)

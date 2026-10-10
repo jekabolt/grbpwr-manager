@@ -579,21 +579,65 @@ func TestParseSkeletonAIStructureDecode(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "shirt", out.AiCategory.GetId())
 
-	// Types stay strict: a structural violation is asked again.
-	for name, tail := range map[string]string{
-		"category as string":     `"category":"trousers"`,
-		"category without id":    `"category":{"reason":"x"}`,
-		"category id as number":  `"category":{"id":3,"reason":"x"}`,
-		"category unknown field": `"category":{"id":"tee","reason":"x","why":1}`,
-		"units as object":        `"units":{}`,
-		"unit without name":      `"units":[{"pieces":["FP_L","BP"],"reason":""}]`,
-		"unit pieces as string":  `"units":[{"pieces":"FP_L","name":"x","reason":""}]`,
-	} {
+	// Lenient: a malformed category or unit is dropped with a note, never a structural violation;
+	// the order, picks and warnings of the same answer stand, and a well-formed unit next to a
+	// malformed one is kept.
+	good := `{"pieces":["FP_L","BP"],"name":"Left shoulder","reason":"r"}`
+	cases := map[string]struct {
+		tail, note      string
+		category, units int
+	}{
+		"category as string":      {`"category":"trousers","units":[` + good + `]`, "the category is not an object", 0, 1},
+		"category as list":        {`"category":["trousers"]`, "the category is not an object", 0, 0},
+		"category without id":     {`"category":{"reason":"x"}`, "the category is not an object", 0, 0},
+		"category without reason": {`"category":{"id":"trousers"}`, "the category is not an object", 0, 0},
+		"category id as number":   {`"category":{"id":3,"reason":"x"}`, "the category is not an object", 0, 0},
+		"units as object":         {`"category":{"id":"trousers","reason":"x"},"units":{}`, "the units are not a list", 1, 0},
+		"units as string":         {`"units":"FP_L,BP"`, "the units are not a list", 0, 0},
+		"unit without name":       {`"units":[{"pieces":["FP_L","BP"],"reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit pieces as string":   {`"units":[` + good + `,{"pieces":"FP_R","name":"x","reason":""}]`, "units[1] is not an object", 0, 1},
+		"unit piece as number":    {`"units":[{"pieces":["FP_R",3],"name":"x","reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit as string":          {`"units":["FP_R",` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit null":               {`"units":[null,` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit reason as number":   {`"units":[` + good + `,{"pieces":["FP_R","SL"],"name":"x","reason":1}]`, "units[1] is not an object", 0, 1},
+	}
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,`+tail+`}`, in)
-			require.Error(t, err)
+			out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,`+c.tail+`}`, in)
+			require.NoError(t, err, "a malformed optional member is never asked again")
+			require.Len(t, out.Order, 4, "the order survives")
+			require.Len(t, out.Picks, 1, "the picks survive")
+			require.Contains(t, strings.Join(out.Notes, "\n"), c.note)
+			if c.category == 1 {
+				require.NotNil(t, out.AiCategory)
+			} else {
+				require.Nil(t, out.AiCategory)
+			}
+			require.Len(t, out.Units, c.units)
 		})
 	}
+	// The top level stays strict: an unknown member is still a structural violation.
+	_, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"unitz":[]}`, in)
+	require.Error(t, err)
+}
+
+// A malformed category and units cost no retry: one provider call, the order offered and cached.
+func TestSuggestAssemblySkeletonMalformedStructureIsNoRetry(t *testing.T) {
+	ans := `{` + skeletonAIOrderOnly + `,"category":"trousers","units":[{"pieces":"FP_L"}]}`
+	rig := newSKRig(t, nil, ppReply(ans, 0.01), ppReply(skeletonAIGoodAnswer, 0.02))
+	req := skeletonAITestRequest()
+	req.CategoryOptions = []string{"shirt", "trousers"}
+	res, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), req)
+	require.NoError(t, err)
+	require.Equal(t, 1, rig.providerCalls(), "no retry for a malformed optional member")
+	require.Len(t, res.Order, 4)
+	require.Nil(t, res.AiCategory)
+	require.Empty(t, res.Units)
+	notes := strings.Join(res.Notes, "\n")
+	require.Contains(t, notes, "the category is not an object")
+	require.Contains(t, notes, "units[0] is not an object")
+	require.Equal(t, "0.01", res.CostUsd)
+	require.Equal(t, 1, rig.cacheEntries(), "a usable order is cached as before")
 }
 
 func TestParseSkeletonAICategoryNotOffered(t *testing.T) {
