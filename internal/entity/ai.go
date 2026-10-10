@@ -129,6 +129,10 @@ const (
 	// AIPurposePatternPieces — pattern import (F9, 0408): one vision+JSON call naming the numbered
 	// pieces of an imported sewing pattern (code, name, fabrics, cut quantity, fold, pair).
 	AIPurposePatternPieces = "chat.pattern_pieces"
+	// AIPurposeAssemblySkeleton — the assembly skeleton's second opinion (lane E, 0409): one JSON
+	// call reading the skeleton the client built off the pattern and suggesting an order, a reading
+	// per ambiguous join and plausibility warnings. Shown marked AI, applied only on a press.
+	AIPurposeAssemblySkeleton = "chat.assembly_skeleton"
 	// AIPurposeBoardLabel / AIPurposeBoardRead — the moodboard labels (101-MOODBOARD-ROLES): a cheap
 	// vision call names the view of a target picture (and proposes the purpose of a picture without
 	// one); a strong one takes the unclear views and reads which detail a detail photo shows.
@@ -147,7 +151,7 @@ const (
 func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposeAssemblySkeleton,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
@@ -163,7 +167,7 @@ func IsAIPurpose(v string) bool {
 func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposeAssemblySkeleton,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas:
 		return AICapabilityChat

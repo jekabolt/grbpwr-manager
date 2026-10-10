@@ -153,6 +153,10 @@ type Server struct {
 	// presses coalesced in flight (pattern_pieces.go). Zero values work.
 	patternPiecesCache  patternPiecesCache
 	patternPiecesFlight singleflight.Group
+	// skeletonAICache / skeletonAIFlight — SuggestAssemblySkeleton answers for an hour and identical
+	// presses coalesced in flight (assembly_skeleton_ai.go). Zero values work.
+	skeletonAICache  skeletonAICache
+	skeletonAIFlight singleflight.Group
 	// designImageRunCap — the worker's wall-clock cap of an image run (SetDesignImageRunCap).
 	designImageRunCap time.Duration
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.

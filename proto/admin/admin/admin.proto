@@ -2690,6 +2690,31 @@ service AdminService {
     };
   }
 
+  // SuggestAssemblySkeleton (assembly skeleton, lane E) — ONE sync JSON call (chat.assembly_skeleton)
+  // that gives a SECOND OPINION on the assembly skeleton the client read off the pattern. The client
+  // builds the skeleton itself (pieces → seams → units → order, deterministic) and sends it here as
+  // data: the pieces (name, cloth, hand, ×n), the seams it found with their scores, the ambiguous
+  // joins as decisions with their readings, the category and its template's stage order, and the
+  // steps in the order it proposes. Up to 3 pictures (Set-of-Mark renders) are optional. The model
+  // returns: a suggested order of the steps (each with a reason), a pick per decision (each with a
+  // reason) and plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
+  // before its facings, a piece in no step…). The server validates the answer against the request:
+  // unknown step, decision and piece ids are dropped, a pick outside a decision's readings is
+  // dropped, and an order that is not a complete permutation of the ordered steps or that sews a
+  // unit before the step that makes it is returned EMPTY with a note. Nothing is stored and nothing
+  // is applied: the client shows the answer marked AI and applies it only on a press. An identical
+  // request within an hour is answered from process memory (cached) unless force.
+  //
+  // InvalidArgument: 0 or more than 80 pieces, 0 or more than 240 steps, more than 400 seams, 60
+  // decisions or 3 pictures, a duplicate or unknown id, a field above its bound. FailedPrecondition:
+  // a picture is not a picture.
+  rpc SuggestAssemblySkeleton(SuggestAssemblySkeletonRequest) returns (SuggestAssemblySkeletonResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/assembly-skeleton:suggest"
+      body: "*"
+    };
+  }
+
   // SaveTechCardPieceAreas stores the MEASURED AREAS of one fabric scope's cut pieces (Ф0) — the
   // geometry the server needs to DERIVE a fabric consumption norm instead of demanding that somebody
   // type one.
@@ -11157,6 +11182,102 @@ message SuggestPatternPiecesResponse {
   string cost_usd = 5; // the provider's reported charge, "" = not reported
   repeated string warnings = 6; // marks left unnamed, codes refused, duplicate codes
   bool cached = 7; // true = an identical request was answered within the hour, no call made
+}
+
+// ASSEMBLY SKELETON · AI SECOND OPINION messages (SuggestAssemblySkeleton).
+
+// AssemblySkeletonPiece is one cut piece of the garment as the skeleton read it.
+message AssemblySkeletonPiece {
+  string key = 1; // the card's piece key (lineKey), unique in the request, ≤ 64 runes
+  string name = 2; // the piece's name on the card, ≤ 80 runes
+  string cloth = 3; // main lining pocketing interfacing insulation contrast mesh other, "" = unknown
+  string hand = 4; // "L", "R" or "" (no side)
+  int32 count = 5; // pieces per garment (×n), 1..20; 0 = 1
+  bool fused = 6; // fused with interfacing
+}
+
+// AssemblySkeletonSeam is one edge pair the client matched (or could not decide).
+message AssemblySkeletonSeam {
+  string a = 1; // a piece key of the request
+  string b = 2; // a piece key of the request (may equal a: a seam of one piece onto itself)
+  double score = 3; // 0..1, the client's confidence in the pair
+  string kind = 4; // edge partial composite surface closure
+  string evidence = 5; // the client's evidence in words ("518 = 518 mm, 2 notches"), ≤ 160 runes
+}
+
+// AssemblySkeletonReading is one way an ambiguous join can be read.
+message AssemblySkeletonReading {
+  repeated string inputs = 1; // piece keys or unit keys, as a step's inputs
+  string reason = 2; // why the client considers it, ≤ 200 runes
+}
+
+// AssemblySkeletonDecision is an ambiguous join: two or more readings, one chosen by the client.
+message AssemblySkeletonDecision {
+  string id = 1; // stable decision id, unique in the request, ≤ 64 runes
+  repeated AssemblySkeletonReading readings = 2; // 2..6, in the client's stable order
+  int32 chosen = 3; // the reading the steps were built with (index into readings)
+}
+
+// AssemblySkeletonStep is one step of the client's proposed order.
+message AssemblySkeletonStep {
+  string id = 1; // step id, unique in the request, ≤ 16 runes ("s1")
+  repeated string inputs = 2; // piece keys or earlier steps' output units, 1..16
+  string output_unit = 3; // the unit the step makes, "" = processing (the work stays on the table)
+  string output_name = 4; // the unit's name, ≤ 80 runes
+  string operation = 5; // MACHINE PRESS PRESS_OPEN FUSING HANDWORK
+  string label = 6; // what the step does, in words, ≤ 120 runes
+  double confidence = 7; // 0..1, the client's confidence
+  string decision_id = 8; // the decision this step is the chosen reading of, "" = none
+  string follows = 9; // a press or processing step that rides on this join's step id; "" = its own
+}
+
+message SuggestAssemblySkeletonRequest {
+  int32 tech_card_id = 1; // optional (0 = none): the card asked about, for the log
+  string category = 2; // the template's garment category (tee, shirt, jacket-lined …), ≤ 32 runes
+  repeated string template_stages = 3; // the template's stage order in words, ≤ 40 × 80 runes
+  repeated AssemblySkeletonPiece pieces = 4; // 1..80
+  repeated AssemblySkeletonSeam seams = 5; // ≤ 400
+  repeated AssemblySkeletonDecision decisions = 6; // ≤ 60
+  repeated AssemblySkeletonStep steps = 7; // 1..240, in the client's order
+  repeated int32 media_ids = 8; // ≤ 3 optional pictures (Set-of-Mark renders of the pieces)
+  bool force = 9; // ask again even when an identical request was answered within the hour
+}
+
+// AssemblySkeletonOrderItem is one step in the model's suggested order.
+message AssemblySkeletonOrderItem {
+  string step_id = 1;
+  string reason = 2; // why here, "" = nothing to add, ≤ 200 runes
+}
+
+// AssemblySkeletonPick is the model's reading of one decision.
+message AssemblySkeletonPick {
+  string decision_id = 1;
+  int32 reading = 2; // index into the decision's readings
+  string reason = 3; // ≤ 200 runes
+}
+
+// AssemblySkeletonWarning is one plausibility doubt about the skeleton.
+message AssemblySkeletonWarning {
+  // order (a step before what it needs: sleeve before shoulder), lining (lining or facing order),
+  // missing (a piece in no step, a step the garment needs), closure, pressing, other
+  string kind = 1;
+  string message = 2; // ≤ 240 runes
+  repeated string step_ids = 3; // steps of the request it is about
+  repeated string piece_keys = 4; // pieces of the request it is about
+}
+
+message SuggestAssemblySkeletonResponse {
+  // order — the ordered steps (every step without `follows`), each exactly once; EMPTY when the
+  // model gave no usable order (the reason is in notes). A rider follows its join.
+  repeated AssemblySkeletonOrderItem order = 1;
+  repeated AssemblySkeletonPick picks = 2; // at most one per decision, in request order
+  repeated AssemblySkeletonWarning warnings = 3; // the model's plausibility doubts
+  string model = 4; // the model that answered
+  int32 prompt_tokens = 5;
+  int32 completion_tokens = 6;
+  string cost_usd = 7; // the provider's reported charge, "" = not reported
+  repeated string notes = 8; // what the server dropped or refused in the answer
+  bool cached = 9; // true = an identical request was answered within the hour, no call made
 }
 
 message SaveTechCardPieceAreasRequest {

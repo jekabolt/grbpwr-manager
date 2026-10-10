@@ -496,6 +496,8 @@ var methodRequirements = map[string]Requirement{
 	"SuggestDesignPartsCard": wr(SectionTechCards),
 	// Pattern import: naming an imported pattern's pieces spends the key (write).
 	"SuggestPatternPieces": wr(SectionTechCards),
+	// Assembly skeleton: the AI second opinion on the order spends the key (write).
+	"SuggestAssemblySkeleton": wr(SectionTechCards),
 	// PARTS pieces list (M6): the designer's edit of card data (write; spends no key).
 	"SetDesignPartsPieces": wr(SectionTechCards),
 	// Flat route join list: generating spends the key, saving edits card data (write).
