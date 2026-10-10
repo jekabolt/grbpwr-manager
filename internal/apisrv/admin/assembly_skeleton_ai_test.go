@@ -1,18 +1,21 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
+	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
-	"github.com/stretchr/testify/mock"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -91,8 +94,6 @@ func TestSkeletonAIInputOfRefusesBadRequests(t *testing.T) {
 		"step without input": func(r *pb_admin.SuggestAssemblySkeletonRequest) { r.Steps[3].Inputs = nil },
 		"rider of later":     func(r *pb_admin.SuggestAssemblySkeletonRequest) { r.Steps[1].Follows = "s4" },
 		"rider of itself":    func(r *pb_admin.SuggestAssemblySkeletonRequest) { r.Steps[1].Follows = "s2" },
-		"too many pictures":  func(r *pb_admin.SuggestAssemblySkeletonRequest) { r.MediaIds = []int32{1, 2, 3, 4} },
-		"picture twice":      func(r *pb_admin.SuggestAssemblySkeletonRequest) { r.MediaIds = []int32{1, 1} },
 		"long label": func(r *pb_admin.SuggestAssemblySkeletonRequest) {
 			r.Steps[0].Label = strings.Repeat("x", skeletonAIMaxLabelRunes+1)
 		},
@@ -220,7 +221,6 @@ func TestParseSkeletonAIStructuralViolations(t *testing.T) {
 
 type skRig struct {
 	s        *Server
-	media    *mocks.MockMedia
 	mu       sync.Mutex
 	calls    int
 	recorded *[]fakeORCall
@@ -243,10 +243,8 @@ func newSKRig(t *testing.T, gate func(), replies ...func(http.ResponseWriter)) *
 		replies[i](w)
 	})
 	rig.recorded = recorded
-	repo := mocks.NewMockRepository(t)
-	rig.media = mocks.NewMockMedia(t)
-	repo.EXPECT().Media().Return(rig.media).Maybe()
-	rig.s = &Server{ai: newTestRouter(client), repo: repo, enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
+	// No repository: the door reads nothing from the store (no media, no card).
+	rig.s = &Server{ai: newTestRouter(client), enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
 	return rig
 }
 
@@ -325,38 +323,109 @@ func TestSuggestAssemblySkeletonTwoInvalidAnswers(t *testing.T) {
 	require.Equal(t, designPartsUnusableMsg, status.Convert(err).Message())
 	require.Equal(t, 2, rig.providerCalls())
 	require.Equal(t, 0, rig.cacheEntries())
+	spend := skeletonAISpendDetail(t, err)
+	require.Equal(t, map[string]string{"calls": "2", "unknown_calls": "0", "cost_usd": "0.02"}, spend,
+		"a refused press still says what it was charged")
 	require.Equal(t, 1, rig.slotsUsed("alice"))
 }
 
-// No pictures: the media store is never asked. With pictures: they reach the provider; a file that
-// is not a picture is refused before any slot or call.
-func TestSuggestAssemblySkeletonPictures(t *testing.T) {
+func skeletonAISpendDetail(t *testing.T, err error) map[string]string {
+	t.Helper()
+	for _, d := range status.Convert(err).Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok && info.GetReason() == skeletonAISpendReason {
+			return info.GetMetadata()
+		}
+	}
+	t.Fatalf("no %s detail on %v", skeletonAISpendReason, err)
+	return nil
+}
+
+// scriptedChatter is one provider whose calls answer from a script, in order (the last repeats).
+type scriptedChatter struct {
+	mu    sync.Mutex
+	steps []func() (*aiprov.ChatResult, error)
+	calls int
+}
+
+func (c *scriptedChatter) Chat(_ context.Context, _ string, _ aiprov.ChatRequest) (*aiprov.ChatResult, error) {
+	c.mu.Lock()
+	i := c.calls
+	c.calls++
+	c.mu.Unlock()
+	if i >= len(c.steps) {
+		i = len(c.steps) - 1
+	}
+	return c.steps[i]()
+}
+
+func skAnswer(text, cost string) func() (*aiprov.ChatResult, error) {
+	return func() (*aiprov.ChatResult, error) {
+		return &aiprov.ChatResult{
+			Text: text, Usage: aiprov.TokenUsage{Prompt: 100, Completion: 40},
+			CostUSD: decimal.NullDecimal{Decimal: decimal.RequireFromString(cost), Valid: true},
+		}, nil
+	}
+}
+
+// engagedTimeout — the request was written and the provider hung: money may have moved, the charge
+// is unknown, and the router moves on to the next candidate (D-16).
+func engagedTimeout() (*aiprov.ChatResult, error) {
+	return nil, &aiprov.CallError{Provider: "openrouter", Code: aiprov.CodeTimeout, Engaged: true, Retryable: true}
+}
+
+// timeout → fallback → malformed → retry (timeout → fallback → valid): FOUR physical calls, two of
+// them with no known charge. The answer reports all of them, never just the last.
+func TestSuggestAssemblySkeletonCountsEveryCallOfTheChainAndTheRetry(t *testing.T) {
+	primary := &scriptedChatter{steps: []func() (*aiprov.ChatResult, error){engagedTimeout}}
+	fallback := &scriptedChatter{steps: []func() (*aiprov.ChatResult, error){
+		skAnswer("Sure! {", "0.01"), skAnswer(skeletonAIGoodAnswer, "0.02"),
+	}}
+	s := &Server{
+		ai: router.NewStatic([]router.StaticCandidate{
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: primary, Model: "anthropic/claude-sonnet-5.5"},
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: fallback, Model: "anthropic/claude-opus-5.5"},
+		}),
+		enhanceSem: make(chan struct{}, maxConcurrentEnhance),
+	}
+	res, err := s.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest())
+	require.NoError(t, err)
+	require.Equal(t, 2, primary.calls)
+	require.Equal(t, 2, fallback.calls)
+	require.EqualValues(t, 4, res.Calls, "every physical call of both chains")
+	require.EqualValues(t, 2, res.UnknownCalls, "the hung calls are not free: their charge is unknown")
+	require.Equal(t, "0.03", res.CostUsd)
+	require.EqualValues(t, 200, res.PromptTokens)
+	require.Contains(t, strings.Join(res.Notes, "\n"), "2 of 4 provider calls have no known charge")
+
+	// The same chain ending in a refusal still carries the four calls.
+	primary2 := &scriptedChatter{steps: []func() (*aiprov.ChatResult, error){engagedTimeout}}
+	fallback2 := &scriptedChatter{steps: []func() (*aiprov.ChatResult, error){skAnswer("{", "0.01")}}
+	s2 := &Server{
+		ai: router.NewStatic([]router.StaticCandidate{
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: primary2, Model: "anthropic/claude-sonnet-5.5"},
+			{ProviderKey: entity.AIProviderOpenRouter, Chatter: fallback2, Model: "anthropic/claude-opus-5.5"},
+		}),
+		enhanceSem: make(chan struct{}, maxConcurrentEnhance),
+	}
+	_, err = s2.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest())
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.Equal(t, map[string]string{"calls": "4", "unknown_calls": "2", "cost_usd": "0.02"}, skeletonAISpendDetail(t, err))
+	require.Equal(t, 4, primary2.calls+fallback2.calls, "at most one retry: two chains, no third")
+}
+
+// No picture can be sent: the request has no media field at all (a global media id would let a
+// tech_cards:write user hand any asset to an external model), and the call carries text only.
+func TestSuggestAssemblySkeletonSendsNoPicture(t *testing.T) {
+	fields := (&pb_admin.SuggestAssemblySkeletonRequest{}).ProtoReflect().Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		name := string(fields.Get(i).Name())
+		require.NotContains(t, name, "media", "the request must carry no media field")
+	}
 	rig := newSKRig(t, nil, ppReply(skeletonAIGoodAnswer, 0.01))
 	_, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest())
 	require.NoError(t, err)
-	rig.media.AssertNotCalled(t, "GetMediaByIds", mock.Anything, mock.Anything)
-
-	withPic := skeletonAITestRequest()
-	withPic.MediaIds = []int32{100}
-	rig2 := newSKRig(t, nil, ppReply(skeletonAIGoodAnswer, 0.01))
-	rig2.media.EXPECT().GetMediaByIds(mock.Anything, []int{100}).Return(map[int]entity.MediaFull{
-		100: {Id: 100, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/som.png"}},
-	}, nil).Once()
-	_, err = rig2.s.SuggestAssemblySkeleton(adminCtx("alice"), withPic)
-	require.NoError(t, err)
-	require.Equal(t, 1, rig2.providerCalls())
-	require.Equal(t, []string{"https://files.grbpwr.com/som.png"}, (*rig2.recorded)[0].Images)
-	require.Empty(t, (*rig.recorded)[0].Images, "no picture asked, none sent")
+	require.Empty(t, (*rig.recorded)[0].Images, "no picture reaches the provider")
 	require.Contains(t, (*rig.recorded)[0].User, "Order these 4 step ids")
-
-	rig3 := newSKRig(t, nil, ppReply(skeletonAIGoodAnswer, 0.01))
-	rig3.media.EXPECT().GetMediaByIds(mock.Anything, []int{100}).Return(map[int]entity.MediaFull{
-		100: {Id: 100, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/som.glb"}},
-	}, nil).Once()
-	_, err = rig3.s.SuggestAssemblySkeleton(adminCtx("alice"), withPic)
-	require.Equal(t, codes.FailedPrecondition, status.Code(err), "%v", err)
-	require.Equal(t, 0, rig3.providerCalls())
-	require.Equal(t, 0, rig3.slotsUsed("alice"))
 }
 
 // Two identical presses at once: one provider call, one slot.

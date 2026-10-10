@@ -21,6 +21,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
 	"golang.org/x/sync/singleflight"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -43,7 +44,7 @@ import (
 //
 // Doors, in order, all before money: the arguments (bounded on their RAW size) → the prompt's byte
 // ceiling → the purpose is callable → the hour cache (unless force) → one flight per (admin,
-// request digest) → [in the flight] the cache again → the pictures (optional) → the shared
+// request digest) → [in the flight] the cache again → the shared
 // semaphore → ONE slot of the hourly window shared with EnhanceText and the labellers → provider.
 // The same recipe as SuggestPatternPieces (pattern_pieces.go); the generic helpers come from there.
 
@@ -55,7 +56,6 @@ const (
 	skeletonAIMinReadings  = 2
 	skeletonAIMaxReadings  = 6
 	skeletonAIMaxInputs    = 16
-	skeletonAIMaxMedia     = 3
 	skeletonAIMaxStages    = 40
 	skeletonAIMaxCount     = 20
 
@@ -99,7 +99,6 @@ type skeletonAIInput struct {
 	Seams     []*pb_admin.AssemblySkeletonSeam
 	Decisions []*pb_admin.AssemblySkeletonDecision
 	Steps     []*pb_admin.AssemblySkeletonStep
-	MediaIDs  []int
 
 	pieceByKey map[string]*pb_admin.AssemblySkeletonPiece
 	stepByID   map[string]*pb_admin.AssemblySkeletonStep
@@ -166,31 +165,6 @@ type skeletonAIJob struct {
 	force  bool
 }
 
-// skeletonAIResolvePictures — the optional pictures as URLs the provider can read, or the refusal.
-func (s *Server) skeletonAIResolvePictures(ctx context.Context, job skeletonAIJob) ([]string, error) {
-	ids := job.in.MediaIDs
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	urls, attached, err := s.designBoardPictureURLs(ctx, ids)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "assembly skeleton ai: cannot resolve the pictures",
-			slog.Int("tech_card_id", job.cardID), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "cannot read the skeleton pictures")
-	}
-	if len(urls) != len(ids) {
-		return nil, status.Errorf(codes.InvalidArgument, "media %d has no file", patternPiecesMissingMedia(ids, attached))
-	}
-	refs := make([]designInputMediaRef, 0, len(urls))
-	for i, u := range urls {
-		refs = append(refs, designInputMediaRef{ID: attached[i], URL: u, Where: fmt.Sprintf("skeleton picture %d", i+1)})
-	}
-	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
-		return nil, designNonPictureRefusal(ref, ct)
-	}
-	return urls, nil
-}
-
 // skeletonAICall — the flight leader's work. A structurally invalid answer is asked once more;
 // tokens and cost are summed over every attempt; only an answer with a usable order is cached.
 func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget time.Duration) (*pb_admin.SuggestAssemblySkeletonResponse, error) {
@@ -200,10 +174,6 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 		if hit, ok := s.skeletonAICache.get(job.key, time.Now()); ok {
 			return skeletonAICachedCopy(hit), nil
 		}
-	}
-	urls, err := s.skeletonAIResolvePictures(ctx, job)
-	if err != nil {
-		return nil, err
 	}
 	select {
 	case s.enhanceSem <- struct{}{}:
@@ -217,16 +187,20 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 			enhancePerAdminCalls)
 	}
 
+	// EVERY PHYSICAL CALL IS COUNTED: the router books each candidate it tries (a fallback after an
+	// engaged timeout included) into this tally, across both attempts. The figures go out with the
+	// answer AND with a refusal, so a press is never charged without the person being told.
+	tally := &aiprov.CallTally{}
+	ctx = aiprov.WithCallTally(ctx, tally)
 	var (
 		out    *pb_admin.SuggestAssemblySkeletonResponse
 		usable bool
-		spend  skeletonAISpend
 	)
-	err = designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
+	err := designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
 		started := time.Now()
 		res, err := s.ai.Chat(actx, purpose, aiprov.ChatRequest{
-			System: skeletonAISystemPrompt, User: job.user, ImageURLs: urls,
-			UserAsParts: len(urls) > 0, JSONMode: true, MaxTokens: skeletonAIMaxTokens, Effort: skeletonAIEffort,
+			System: skeletonAISystemPrompt, User: job.user,
+			JSONMode: true, MaxTokens: skeletonAIMaxTokens, Effort: skeletonAIEffort,
 		})
 		var (
 			raw, finishReason string
@@ -234,12 +208,11 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 		)
 		if res != nil {
 			raw, finishReason, usage = res.Text, res.FinishReason, res.Usage
-			spend.add(attempt, res)
 		}
 		answered := s.aiModelOf(purpose, res)
 		logAttrs := []any{
 			slog.Int("tech_card_id", job.cardID), slog.Int("pieces", len(in.Pieces)), slog.Int("steps", len(in.Steps)),
-			slog.Int("decisions", len(in.Decisions)), slog.Int("pictures", len(urls)),
+			slog.Int("decisions", len(in.Decisions)),
 			slog.String("model", answered), slog.Int("attempt", attempt),
 			slog.Duration("took", time.Since(started)), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
 			slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
@@ -262,8 +235,9 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 			slog.Int("warnings", len(parsed.Warnings)), slog.Int("notes", len(parsed.Notes)))...)
 		return nil
 	})
+	spend := skeletonAISpendOf(tally.Calls())
 	if err != nil {
-		return nil, err
+		return nil, spend.attachTo(err)
 	}
 	spend.fill(out)
 	if usable {
@@ -272,33 +246,77 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 	return out, nil
 }
 
-// skeletonAISpend sums what every attempt of one flight cost: a retried answer was paid twice.
+// skeletonAISpend sums the physical calls of one press: every candidate the router tried and every
+// attempt. A call that never left (free) is not a call; a call whose charge is not known (an
+// engaged timeout, an answer the provider did not price) is counted as unknown, never as zero.
 type skeletonAISpend struct {
+	calls, unknown     int
 	prompt, completion int
 	cost               decimal.Decimal
 	costKnown          bool
-	unpriced           []int
 }
 
-func (sp *skeletonAISpend) add(attempt int, res *aiprov.ChatResult) {
-	sp.prompt += res.Usage.Prompt
-	sp.completion += res.Usage.Completion
-	if res.CostUSD.Valid {
-		sp.cost = sp.cost.Add(res.CostUSD.Decimal)
-		sp.costKnown = true
-	} else {
-		sp.unpriced = append(sp.unpriced, attempt)
+func skeletonAISpendOf(calls []aiprov.CallSpend) skeletonAISpend {
+	var sp skeletonAISpend
+	for _, c := range calls {
+		if c.Status == entity.AICallFree {
+			continue
+		}
+		sp.calls++
+		sp.prompt += c.PromptTokens
+		sp.completion += c.CompletionTokens
+		if c.CostUSD.Valid {
+			sp.cost = sp.cost.Add(c.CostUSD.Decimal)
+			sp.costKnown = true
+		} else {
+			sp.unknown++
+		}
 	}
+	return sp
 }
 
-func (sp *skeletonAISpend) fill(out *pb_admin.SuggestAssemblySkeletonResponse) {
+func (sp skeletonAISpend) costString() string {
+	if !sp.costKnown {
+		return ""
+	}
+	return sp.cost.String()
+}
+
+func (sp skeletonAISpend) fill(out *pb_admin.SuggestAssemblySkeletonResponse) {
 	out.PromptTokens, out.CompletionTokens = int32(sp.prompt), int32(sp.completion)
-	if sp.costKnown {
-		out.CostUsd = sp.cost.String()
+	out.CostUsd = sp.costString()
+	out.Calls, out.UnknownCalls = int32(sp.calls), int32(sp.unknown)
+	if sp.unknown > 0 {
+		out.Notes = append(out.Notes, fmt.Sprintf(
+			"%d of %d provider calls have no known charge; cost_usd covers the priced calls only", sp.unknown, sp.calls))
 	}
-	for _, a := range sp.unpriced {
-		out.Notes = append(out.Notes, fmt.Sprintf("attempt %d: the provider reported no cost; cost_usd covers the reported attempts only", a))
+}
+
+// skeletonAISpendReason — the ErrorInfo reason that carries a refused press's spend.
+const skeletonAISpendReason = "AI_SPEND"
+
+// attachTo adds the spend to a refusal as an ErrorInfo detail (calls, unknown_calls, cost_usd), next
+// to whatever details the refusal already had. A refusal before any call goes out as it is.
+func (sp skeletonAISpend) attachTo(err error) error {
+	if sp.calls == 0 {
+		return err
 	}
+	st, ok := status.FromError(err)
+	if !ok {
+		st = status.New(codes.Internal, designPartsUnusableMsg)
+	}
+	withSpend, derr := st.WithDetails(&errdetails.ErrorInfo{
+		Reason: skeletonAISpendReason, Domain: aiErrorDomain,
+		Metadata: map[string]string{
+			"calls":         strconv.Itoa(sp.calls),
+			"unknown_calls": strconv.Itoa(sp.unknown),
+			"cost_usd":      sp.costString(),
+		},
+	})
+	if derr != nil {
+		return err
+	}
+	return withSpend.Err()
 }
 
 // skeletonAIChatFailure maps a failed chat.assembly_skeleton call to its refusal (and logs it).
@@ -379,8 +397,6 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 		return bad("seams: at most %d seams, got %d", skeletonAIMaxSeams, len(req.GetSeams()))
 	case len(req.GetDecisions()) > skeletonAIMaxDecisions:
 		return bad("decisions: at most %d decisions, got %d", skeletonAIMaxDecisions, len(req.GetDecisions()))
-	case len(req.GetMediaIds()) > skeletonAIMaxMedia:
-		return bad("media_ids: at most %d pictures, got %d", skeletonAIMaxMedia, len(req.GetMediaIds()))
 	case len(req.GetTemplateStages()) > skeletonAIMaxStages:
 		return bad("template_stages: at most %d stages, got %d", skeletonAIMaxStages, len(req.GetTemplateStages()))
 	}
@@ -567,17 +583,6 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 		return bad("steps: every step follows another; at least one must stand on its own")
 	}
 
-	seenMedia := map[int]bool{}
-	for i, id := range req.GetMediaIds() {
-		if id <= 0 {
-			return bad("media_ids[%d]: must be positive", i)
-		}
-		if seenMedia[int(id)] {
-			return bad("media_ids: media %d is sent twice", id)
-		}
-		seenMedia[int(id)] = true
-		in.MediaIDs = append(in.MediaIDs, int(id))
-	}
 	return in, nil
 }
 
@@ -653,9 +658,6 @@ func skeletonAIUserPrompt(in skeletonAIInput) string {
 			fmt.Fprintf(&b, " %d. %s", i+1, q(s))
 		}
 		b.WriteString("\n")
-	}
-	if len(in.MediaIDs) > 0 {
-		fmt.Fprintf(&b, "%d picture(s) show the pattern pieces with their keys.\n", len(in.MediaIDs))
 	}
 
 	fmt.Fprintf(&b, "\nPieces (%d): key, name, cloth, side, pieces per garment.\n", len(in.Pieces))

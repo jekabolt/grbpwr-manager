@@ -2695,19 +2695,21 @@ service AdminService {
   // builds the skeleton itself (pieces → seams → units → order, deterministic) and sends it here as
   // data: the pieces (name, cloth, hand, ×n), the seams it found with their scores, the ambiguous
   // joins as decisions with their readings, the category and its template's stage order, and the
-  // steps in the order it proposes. Up to 3 pictures (Set-of-Mark renders) are optional. The model
-  // returns: a suggested order of the steps (each with a reason), a pick per decision (each with a
+  // steps in the order it proposes. Text only: no picture is sent. The model returns: a suggested order of the steps (each with a reason), a pick per decision (each with a
   // reason) and plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
   // before its facings, a piece in no step…). The server validates the answer against the request:
   // unknown step, decision and piece ids are dropped, a pick outside a decision's readings is
   // dropped, and an order that is not a complete permutation of the ordered steps or that sews a
   // unit before the step that makes it is returned EMPTY with a note. Nothing is stored and nothing
   // is applied: the client shows the answer marked AI and applies it only on a press. An identical
-  // request within an hour is answered from process memory (cached) unless force.
+  // request within an hour is answered from process memory (cached) unless force. One press may make
+  // more than one provider call (a fallback after an engaged timeout, one retry of an unusable
+  // answer): the response sums every call (calls, unknown_calls, cost_usd), and a refusal after a
+  // call carries the same figures as an ErrorInfo detail (reason AI_SPEND, metadata calls,
+  // unknown_calls, cost_usd).
   //
-  // InvalidArgument: 0 or more than 80 pieces, 0 or more than 240 steps, more than 400 seams, 60
-  // decisions or 3 pictures, a duplicate or unknown id, a field above its bound. FailedPrecondition:
-  // a picture is not a picture.
+  // InvalidArgument: 0 or more than 80 pieces, 0 or more than 240 steps, more than 400 seams or 60
+  // decisions, a duplicate or unknown id, a field above its bound.
   rpc SuggestAssemblySkeleton(SuggestAssemblySkeletonRequest) returns (SuggestAssemblySkeletonResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/assembly-skeleton:suggest"
@@ -11239,7 +11241,9 @@ message SuggestAssemblySkeletonRequest {
   repeated AssemblySkeletonSeam seams = 5; // ≤ 400
   repeated AssemblySkeletonDecision decisions = 6; // ≤ 60
   repeated AssemblySkeletonStep steps = 7; // 1..240, in the client's order
-  repeated int32 media_ids = 8; // ≤ 3 optional pictures (Set-of-Mark renders of the pieces)
+  // 8 was media_ids: pictures are not sent (a picture of another card must never reach a model).
+  reserved 8;
+  reserved "media_ids";
   bool force = 9; // ask again even when an identical request was answered within the hour
 }
 
@@ -11275,9 +11279,11 @@ message SuggestAssemblySkeletonResponse {
   string model = 4; // the model that answered
   int32 prompt_tokens = 5;
   int32 completion_tokens = 6;
-  string cost_usd = 7; // the provider's reported charge, "" = not reported
+  string cost_usd = 7; // the sum of the KNOWN charges of every call of this press, "" = none known
   repeated string notes = 8; // what the server dropped or refused in the answer
   bool cached = 9; // true = an identical request was answered within the hour, no call made
+  int32 calls = 10; // provider calls this press made that may have been billed (0 when cached)
+  int32 unknown_calls = 11; // of them, calls whose charge is not known (cost_usd leaves them out)
 }
 
 message SaveTechCardPieceAreasRequest {
