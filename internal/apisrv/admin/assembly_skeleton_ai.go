@@ -75,6 +75,11 @@ const (
 	skeletonAIMaxReasonRunes   = 200
 	skeletonAIMaxCategoryRunes = 32
 	skeletonAIMaxCategoryOpts  = 24
+	skeletonAIMaxExamples      = 4  // examples a request may send
+	skeletonAIAutoExamples     = 3  // examples the server picks itself when the request sends none
+	skeletonAIMaxExampleUnits  = 60 // units per example
+	skeletonAIMaxExampleParts  = 16 // parts per example unit
+	skeletonAIMaxExampleRunes  = 80 // an example's label, a unit's name, a part
 	skeletonAIMaxStageRunes    = 80
 	skeletonAIMaxWarningRunes  = 240
 	skeletonAIMaxWarnings      = 30
@@ -103,7 +108,8 @@ var (
 // skeletonAIInput — the request, validated, as the prompt builder and the answer's validator read it.
 type skeletonAIInput struct {
 	Category  string
-	Options   []string // the category ids the client offers (category_options), in its order
+	Options   []string            // the category ids the client offers (category_options), in its order
+	Examples  []skeletonAIExample // house style: the request's examples, or the server's own pick
 	Stages    []string
 	Pieces    []*pb_admin.AssemblySkeletonPiece
 	Seams     []*pb_admin.AssemblySkeletonSeam
@@ -118,6 +124,19 @@ type skeletonAIInput struct {
 	unitMaker  map[string]string // output unit → the step id that makes it
 	ordered    []string          // the step ids without `follows`, in the client's order
 	riders     map[string][]string
+}
+
+// skeletonAIExample — one assembly tree of ANOTHER garment, shown to the model as house style.
+type skeletonAIExample struct {
+	Label string
+	Units []skeletonAIExampleUnit
+}
+
+// skeletonAIExampleUnit — one join of an example: the unit's name and its parts (piece names or names
+// of earlier units of the same example).
+type skeletonAIExampleUnit struct {
+	Name  string
+	Parts []string
 }
 
 // SuggestAssemblySkeleton gives the AI second opinion on a skeleton (cached for an hour).
@@ -142,6 +161,22 @@ func (s *Server) SuggestAssemblySkeleton(ctx context.Context, req *pb_admin.Sugg
 	if !force {
 		if hit, ok := s.skeletonAICache.get(key, time.Now()); ok {
 			return skeletonAICachedCopy(hit), nil
+		}
+	}
+
+	// House style: with no examples in the request, the server picks other cards' assembly trees
+	// itself (after the cache: a hit reads nothing). Never fails the press — a failed read or a
+	// prompt that would outgrow the ceiling goes on without them.
+	if len(in.Examples) == 0 {
+		if auto := s.skeletonAIAutoExamples(ctx, int(req.GetTechCardId())); len(auto) > 0 {
+			with := in
+			with.Examples = auto
+			if u := skeletonAIUserPrompt(with); len(u) <= skeletonAIMaxPromptBytes {
+				in, user = with, u
+			} else {
+				slog.Default().WarnContext(ctx, "assembly skeleton ai: house-style examples left out, the prompt would be too large",
+					slog.Int("tech_card_id", int(req.GetTechCardId())), slog.Int("bytes", len(u)))
+			}
 		}
 	}
 
@@ -223,7 +258,7 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 		answered := s.aiModelOf(purpose, res)
 		logAttrs := []any{
 			slog.Int("tech_card_id", job.cardID), slog.Int("pieces", len(in.Pieces)), slog.Int("steps", len(in.Steps)),
-			slog.Int("decisions", len(in.Decisions)),
+			slog.Int("decisions", len(in.Decisions)), slog.Int("examples", len(in.Examples)),
 			slog.String("model", answered), slog.Int("attempt", attempt),
 			slog.Duration("took", time.Since(started)), slog.String("finish_reason", enhanceLogFinishReason(finishReason)),
 			slog.Int("prompt_tokens", usage.Prompt), slog.Int("completion_tokens", usage.Completion),
@@ -370,6 +405,108 @@ func skeletonAIBound(field, v string, maxRunes int) error {
 	return nil
 }
 
+// skeletonAIExampleText — an example's label, name or part: bounded on its raw size, non-empty after
+// trim; returned with its whitespace collapsed.
+func skeletonAIExampleText(field, v string) (string, error) {
+	if err := skeletonAIBound(field, v, skeletonAIMaxExampleRunes); err != nil {
+		return "", err
+	}
+	t := designPartsTrim(v, skeletonAIMaxExampleRunes)
+	if t == "" {
+		return "", status.Errorf(codes.InvalidArgument, "%s: must not be empty", field)
+	}
+	return t, nil
+}
+
+// skeletonAIAutoExamples picks the house style itself: up to skeletonAIAutoExamples OTHER cards with
+// ≥ 4 joins (the same category first, then the most recently updated), rendered as examples. None
+// for card 0 or without a store; a failed read is logged and gives none — never a refusal.
+func (s *Server) skeletonAIAutoExamples(ctx context.Context, cardID int) []skeletonAIExample {
+	if cardID <= 0 || s.repo == nil {
+		return nil
+	}
+	cards, err := s.repo.TechCards().ListAssemblyExampleCards(ctx, cardID, skeletonAIAutoExamples)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "assembly skeleton ai: house-style examples not loaded; going on without them",
+			slog.Int("tech_card_id", cardID), slog.String("err", err.Error()))
+		return nil
+	}
+	return skeletonAIExamplesOf(cards)
+}
+
+// skeletonAIExamplesOf renders other cards' joins as examples: the label is the card's style number,
+// name and category; each join is a unit named by its output unit name (or, for a join that
+// re-makes a unit, the name that unit was given earlier; else its key), and its parts are the
+// inputs by NAME — a piece input by the piece's name, a unit input by the name of the earlier unit
+// of this example that made it. A join any of whose inputs cannot be named (a nameless piece, a
+// unit no kept unit made) is dropped. Bounded like a request's examples, truncated, never refused.
+func skeletonAIExamplesOf(cards []entity.AssemblyExampleCard) []skeletonAIExample {
+	var out []skeletonAIExample
+	for _, c := range cards {
+		if len(out) == skeletonAIAutoExamples {
+			break
+		}
+		var head []string
+		for _, v := range []string{c.StyleNumber, c.Name} {
+			if t := designPartsTrim(v, skeletonAIMaxExampleRunes); t != "" {
+				head = append(head, t)
+			}
+		}
+		label := strings.Join(head, " ")
+		if cat := designPartsTrim(c.CategoryName, skeletonAIMaxExampleRunes); cat != "" {
+			if label == "" {
+				label = cat
+			} else {
+				label += " (" + cat + ")"
+			}
+		}
+		if label = designPartsTrim(label, skeletonAIMaxExampleRunes); label == "" {
+			label = "another garment"
+		}
+		ex := skeletonAIExample{Label: label}
+		named := map[string]string{} // unit key → its name, for the units kept so far
+		for _, j := range c.Joins {
+			if len(ex.Units) == skeletonAIMaxExampleUnits {
+				break
+			}
+			name := designPartsTrim(j.OutputUnitName, skeletonAIMaxExampleRunes)
+			if name == "" {
+				name = named[j.OutputUnitKey]
+			}
+			if name == "" {
+				name = designPartsTrim(j.OutputUnitKey, skeletonAIMaxExampleRunes)
+			}
+			var parts []string
+			ok := name != "" && len(j.Inputs) > 0
+			for _, in := range j.Inputs {
+				if !ok || len(parts) == skeletonAIMaxExampleParts {
+					break
+				}
+				part := ""
+				if in.UnitKey != "" {
+					part = named[in.UnitKey]
+				} else {
+					part = designPartsTrim(in.PieceName, skeletonAIMaxExampleRunes)
+				}
+				if part == "" {
+					ok = false
+					break
+				}
+				parts = append(parts, part)
+			}
+			if !ok {
+				continue
+			}
+			ex.Units = append(ex.Units, skeletonAIExampleUnit{Name: name, Parts: parts})
+			named[j.OutputUnitKey] = name
+		}
+		if len(ex.Units) > 0 {
+			out = append(out, ex)
+		}
+	}
+	return out
+}
+
 // skeletonAIUnit — a confidence or a score the client sends: finite, 0..1.
 func skeletonAIUnit(field string, f float64) error {
 	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 1 {
@@ -433,6 +570,40 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 		}
 		in.optionSet[o] = true
 		in.Options = append(in.Options, o)
+	}
+	if n := len(req.GetExamples()); n > skeletonAIMaxExamples {
+		return bad("examples: at most %d examples, got %d", skeletonAIMaxExamples, n)
+	}
+	for i, ex := range req.GetExamples() {
+		field := fmt.Sprintf("examples[%d]", i)
+		label, err := skeletonAIExampleText(field+".label", ex.GetLabel())
+		if err != nil {
+			return skeletonAIInput{}, err
+		}
+		if n := len(ex.GetUnits()); n > skeletonAIMaxExampleUnits {
+			return bad("%s: at most %d units, got %d", field, skeletonAIMaxExampleUnits, n)
+		}
+		e := skeletonAIExample{Label: label}
+		for j, u := range ex.GetUnits() {
+			uf := fmt.Sprintf("%s.units[%d]", field, j)
+			name, err := skeletonAIExampleText(uf+".name", u.GetName())
+			if err != nil {
+				return skeletonAIInput{}, err
+			}
+			if n := len(u.GetParts()); n == 0 || n > skeletonAIMaxExampleParts {
+				return bad("%s: 1..%d parts, got %d", uf, skeletonAIMaxExampleParts, n)
+			}
+			cu := skeletonAIExampleUnit{Name: name}
+			for k, part := range u.GetParts() {
+				pt, err := skeletonAIExampleText(fmt.Sprintf("%s.parts[%d]", uf, k), part)
+				if err != nil {
+					return skeletonAIInput{}, err
+				}
+				cu.Parts = append(cu.Parts, pt)
+			}
+			e.Units = append(e.Units, cu)
+		}
+		in.Examples = append(in.Examples, e)
 	}
 	for i, st := range req.GetTemplateStages() {
 		if err := skeletonAIBound(fmt.Sprintf("template_stages[%d]", i), st, skeletonAIMaxStageRunes); err != nil {
@@ -649,6 +820,7 @@ const skeletonAISystemPrompt = `You are an experienced garment technologist revi
 4. category — only when the request lists category options: the id of the garment category, from those options, that fits the PIECES best (their names, cloth, counts, the seams between them), or "" to keep the draft's category; a short reason. Judge by the pieces: the card's category may be wrong (a pattern of a waistband and leg panels is trousers whatever the card says). Without category options, answer id "".
 
 5. units — the subassemblies a workshop makes for this garment, from the smallest (two layers of a collar, a pocket and its flap) up to the whole garment, smaller units first. Give each unit an id ("u1", "u2", …) and list its parts: piece keys and ids of units listed before it; never repeat the pieces of a unit you can name by its id. A unit holds all the pieces of its parts. Every unit is a single join's result: its parts are whole smaller units and/or single pieces; two units never partially overlap (either one holds the other, or they share no piece). Include the lining units and the final garment. Give each unit a name (at most 6 words, e.g. "Collar", "Left front with pocket") and a short reason (at most 20 words). [] keeps the draft's grouping.
+   When EXAMPLES of this workshop's own assembly trees are given, follow their house style — what is joined first, how many things one join takes, which parts are made before the body, whether hands are joined as pairs or one side at a time. The examples are OTHER garments: never copy their pieces or names; use only this request's piece keys.
 
 Rules:
 - Use ONLY the step ids, decision ids and piece keys of the request.
@@ -700,6 +872,20 @@ func skeletonAIUserPrompt(in skeletonAIInput) string {
 			fmt.Fprintf(&b, " %d. %s", i+1, q(s))
 		}
 		b.WriteString("\n")
+	}
+
+	if len(in.Examples) > 0 {
+		b.WriteString("\nHouse style — assembly trees this workshop's technologist made for other garments:\n")
+		for i, ex := range in.Examples {
+			fmt.Fprintf(&b, "Example %d (%s):\n", i+1, q(ex.Label))
+			for _, u := range ex.Units {
+				parts := make([]string, len(u.Parts))
+				for j, p := range u.Parts {
+					parts[j] = q(p)
+				}
+				fmt.Fprintf(&b, "- %s = %s\n", q(u.Name), strings.Join(parts, " + "))
+			}
+		}
 	}
 
 	fmt.Fprintf(&b, "\nPieces (%d): key, name, cloth, side, pieces per garment.\n", len(in.Pieces))

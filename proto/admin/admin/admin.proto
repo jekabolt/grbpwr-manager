@@ -2700,7 +2700,8 @@ service AdminService {
   // plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
   // before its facings, a piece in no step…) and, in the same call, the structure it reads off the
   // pieces: a garment category out of the offered category_options and the subassemblies (units)
-  // as nested or disjoint sets of piece keys. The server validates the answer against the request:
+  // as nested or disjoint sets of piece keys, in the house style of the examples (the request's, or
+  // up to 3 assembly trees of other cards the server picks). The server validates the answer against the request:
   // unknown step, decision and piece ids are dropped, a pick outside a decision's readings is
   // dropped, and an order that is not a complete permutation of the ordered steps or that sews a
   // unit before the step that makes it is returned EMPTY with a note. Nothing is stored and nothing
@@ -2712,7 +2713,8 @@ service AdminService {
   // unknown_calls, cost_usd).
   //
   // InvalidArgument: 0 or more than 80 pieces, 0 or more than 240 steps, more than 400 seams or 60
-  // decisions, more than 24 category_options or an empty or repeated one, a duplicate or unknown
+  // decisions, more than 24 category_options or an empty or repeated one, more than 4 examples, 60
+  // units per example or 16 parts per unit, an empty label, name or part, a duplicate or unknown
   // id, a field above its bound.
   rpc SuggestAssemblySkeleton(SuggestAssemblySkeletonRequest) returns (SuggestAssemblySkeletonResponse) {
     option (google.api.http) = {
@@ -11284,6 +11286,25 @@ message SuggestAssemblySkeletonRequest {
   // dress, jumpsuit, shirt, jacket-lined, coat-lined, generic), ≤ 24 × 32 runes, unique; empty = the
   // model is not asked for a category
   repeated string category_options = 10;
+  // house style for the units: assembly trees this workshop's technologist made for OTHER garments,
+  // ≤ 4; EMPTY = the server picks up to 3 itself from the card base (other cards with ≥ 4 joins,
+  // the same category as tech_card_id's card first, then the most recently updated; none when
+  // tech_card_id is 0)
+  repeated AssemblySkeletonExample examples = 11;
+}
+
+// AssemblySkeletonExample is one assembly tree of another garment, shown to the model as house style.
+message AssemblySkeletonExample {
+  string label = 1; // the garment category or style name, non-empty, ≤ 80 runes
+  repeated AssemblySkeletonExampleUnit units = 2; // the joins in the order sewn, ≤ 60
+}
+
+// AssemblySkeletonExampleUnit is one join of an example: the unit it makes and what goes into it.
+message AssemblySkeletonExampleUnit {
+  string name = 1; // the unit's name, non-empty, ≤ 80 runes
+  // PIECE NAMES or NAMES of earlier units of the same example (names, not keys), 1..16, each
+  // non-empty, ≤ 80 runes
+  repeated string parts = 2;
 }
 
 // AssemblySkeletonOrderItem is one step in the model's suggested order.

@@ -999,6 +999,10 @@ type (
 		// GetTechCardNames returns id → name for the given tech cards (cheap header-only lookup used by
 		// the packing spec to label garment styles without an N+1 GetTechCardById).
 		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
+		// ListAssemblyExampleCards reads up to limit OTHER sellable cards (≠ excludeID) with ≥ 4 join
+		// operations, same category as excludeID's first, then the most recently updated, with their
+		// joins and inputs in order — the house style of SuggestAssemblySkeleton (read-only).
+		ListAssemblyExampleCards(ctx context.Context, excludeID, limit int) ([]entity.AssemblyExampleCard, error)
 		// GetPatternViewerManifest is the narrow read behind the public pattern viewer
 		// (GET /api/pv/{token}): style header, named size range, all pattern sheet rows and
 		// the roll-goods BOM lines. Deliberately NOT GetTechCardById — that read carries the
