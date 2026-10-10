@@ -306,6 +306,9 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			// operation_work(token) стоит на самой колонке, поэтому незнакомый токен сюда не
 			// доезжает вовсе — его отвергает именованное правило в dto задолго до вставки.
 			"work": o.Work,
+
+			// Черновик каркаса сборки (0410). NOT NULL DEFAULT 0, в дайджест не входит.
+			"draft": o.Draft,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -818,7 +821,7 @@ const techCardOperationsQuery = `
 		       o.bartack_length_mm, o.attach_pattern, o.zipper_application,
 		       o.binding_style, o.label_attach_stitch,
 		       o.press_action, o.press_toward,
-		       o.work
+		       o.work, o.draft
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`

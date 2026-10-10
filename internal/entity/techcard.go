@@ -3399,6 +3399,11 @@ type TechCardOperation struct {
 	// глагол и синонимы работы — никогда, они представление.
 	Work sql.NullString `db:"work"`
 
+	// Draft — шаг записал каркас сборки, и его ещё никто не проверил (0410). NOT NULL DEFAULT 0:
+	// старые шаги = не черновик, и это правда. В дайджест НЕ входит (techcard_section_digest.go его
+	// не проецирует; голден в internal/dto это держит): проверка шага карточку не переподписывает.
+	Draft bool `db:"draft"`
+
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
 	PieceLineKeys []string `db:"-"`

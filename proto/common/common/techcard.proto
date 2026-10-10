@@ -2854,6 +2854,13 @@ message TechCardOperation {
   // жест, а не потеря.
   repeated TechCardOperationBomQty bom_quantities = 67;
 
+  // ЧЕРНОВИК КАРКАСА СБОРКИ (0410). true = шаг записал каркас сборки (OPERATIONS → build from pattern
+  // → apply), и его ещё никто не проверил. Снимает первая смысловая правка строки или клик по чипу
+  // «draft» (reviewed). В ДАЙДЖЕСТ НЕ ВХОДИТ: проверка шага не меняет того, что карточка говорит цеху,
+  // а хеш метки переподписывал бы карточку на каждом ревью чужого шага. Не входит ни в аудит, ни в гейт
+  // сборки — это пометка для команды, а не инструкция.
+  bool draft = 68;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
