@@ -2695,8 +2695,9 @@ service AdminService {
   // builds the skeleton itself (pieces → seams → units → order, deterministic) and sends it here as
   // data: the pieces (name, cloth, hand, ×n), the seams it found with their scores, the ambiguous
   // joins as decisions with their readings, the category and its template's stage order, and the
-  // steps in the order it proposes. Text only: no picture is sent. The model returns: a suggested order of the steps (each with a reason), a pick per decision (each with a
-  // reason) and plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
+  // steps in the order it proposes. Text only: no picture is sent. The model returns: a suggested
+  // order of the steps (each with a reason), a pick per decision (each with a reason) and
+  // plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
   // before its facings, a piece in no step…). The server validates the answer against the request:
   // unknown step, decision and piece ids are dropped, a pick outside a decision's readings is
   // dropped, and an order that is not a complete permutation of the ordered steps or that sews a
