@@ -85,6 +85,65 @@ func TestSkeletonAIDigestCoversExamples(t *testing.T) {
 	require.NotEqual(t, skeletonAIDigest(a), skeletonAIDigest(b))
 }
 
+// Auto mode (no examples): the house style is picked from the card, so the card is in the key.
+// Explicit examples: the card does not change the question, so it stays out (another card, same
+// skeleton and examples → a cache hit). force never counts.
+func TestSkeletonAIDigestCardOnlyInAutoMode(t *testing.T) {
+	withCard := func(id int32, examples bool) *pb_admin.SuggestAssemblySkeletonRequest {
+		r := skeletonAITestRequest()
+		r.TechCardId = id
+		if examples {
+			r.Examples = []*pb_admin.AssemblySkeletonExample{skeletonAITestExample()}
+		}
+		return r
+	}
+	require.NotEqual(t, skeletonAIDigest(withCard(0, false)), skeletonAIDigest(withCard(7, false)), "auto: card 0 vs card 7")
+	require.NotEqual(t, skeletonAIDigest(withCard(7, false)), skeletonAIDigest(withCard(8, false)), "auto: another card")
+	require.Equal(t, skeletonAIDigest(withCard(7, false)), skeletonAIDigest(withCard(7, false)))
+	require.Equal(t, skeletonAIDigest(withCard(0, true)), skeletonAIDigest(withCard(7, true)), "explicit: the card is cleared")
+	require.Equal(t, skeletonAIDigest(withCard(7, true)), skeletonAIDigest(withCard(8, true)))
+	forced := withCard(7, false)
+	forced.Force = true
+	require.Equal(t, skeletonAIDigest(withCard(7, false)), skeletonAIDigest(forced), "force never counts")
+}
+
+// End to end: card 0 (no house style) is answered first and cached; card 7 with the same body must
+// not get that answer — it calls the provider again, with its house style in the prompt.
+func TestSuggestAssemblySkeletonAutoModeCacheIsPerCard(t *testing.T) {
+	rig := newSKRig(t, nil, ppReply(skeletonAIGoodAnswer, 0.01))
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().ListAssemblyExampleCards(mock.Anything, 7, skeletonAIAutoExamples).Return(skeletonAIExampleCards(), nil).Once()
+	rig.s.repo = repo
+
+	none := skeletonAITestRequest()
+	none.TechCardId = 0
+	_, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), none)
+	require.NoError(t, err)
+	require.NotContains(t, (*rig.recorded)[0].User, "House style")
+
+	res, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest()) // card 7
+	require.NoError(t, err)
+	require.False(t, res.Cached, "card 7 never gets card 0's answer")
+	require.Equal(t, 2, rig.providerCalls())
+	require.Contains(t, (*rig.recorded)[1].User, "House style")
+
+	// Explicit examples: another card with the same body and examples is a cache hit.
+	ex := func(id int32) *pb_admin.SuggestAssemblySkeletonRequest {
+		r := skeletonAITestRequest()
+		r.TechCardId = id
+		r.Examples = []*pb_admin.AssemblySkeletonExample{skeletonAITestExample()}
+		return r
+	}
+	_, err = rig.s.SuggestAssemblySkeleton(adminCtx("alice"), ex(7))
+	require.NoError(t, err)
+	hit, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), ex(8))
+	require.NoError(t, err)
+	require.True(t, hit.Cached)
+	require.Equal(t, 3, rig.providerCalls())
+}
+
 func TestSkeletonAIPromptHouseStyle(t *testing.T) {
 	r := skeletonAITestRequest()
 	r.Examples = []*pb_admin.AssemblySkeletonExample{skeletonAITestExample()}

@@ -787,11 +787,17 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 	return in, nil
 }
 
-// skeletonAIDigest — the cache and flight key: the request as sent, less force and the card (so it
-// covers category_options too: other options are another question).
+// skeletonAIDigest — the cache and flight key: the request as sent (so category_options and examples
+// count: other options or examples are another question), less force — and less the card only when
+// the request sends its own examples. With none, the server picks the house style FROM the card
+// (other cards than this one, its category first), so the card is part of the question: card 0 and
+// card 7 with the same body must not share an answer.
 func skeletonAIDigest(req *pb_admin.SuggestAssemblySkeletonRequest) [sha256.Size]byte {
 	c := proto.Clone(req).(*pb_admin.SuggestAssemblySkeletonRequest)
-	c.Force, c.TechCardId = false, 0
+	c.Force = false
+	if len(c.GetExamples()) > 0 {
+		c.TechCardId = 0
+	}
 	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(c)
 	if err != nil {
 		b = []byte(fmt.Sprintf("unmarshalable %p %d", req, time.Now().UnixNano()))

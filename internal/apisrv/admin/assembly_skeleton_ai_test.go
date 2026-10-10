@@ -273,7 +273,8 @@ func (r *skRig) slotsUsed(admin string) int {
 }
 
 // invalid → valid: two calls, one cache entry, the tokens and cost of BOTH; the next identical press
-// (another card, same skeleton) is a cache hit that spends nothing.
+// (the same card: with no examples the card is part of the key — the house style comes from it) is
+// a cache hit that spends nothing.
 func TestSuggestAssemblySkeletonRetriesSumsAndCaches(t *testing.T) {
 	rig := newSKRig(t, nil, ppReply("Sure! {", 0.01), ppReply(skeletonAIGoodAnswer, 0.02))
 	res, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest())
@@ -288,7 +289,6 @@ func TestSuggestAssemblySkeletonRetriesSumsAndCaches(t *testing.T) {
 	require.Len(t, res.Picks, 1)
 
 	again := skeletonAITestRequest()
-	again.TechCardId = 8
 	hit, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), again)
 	require.NoError(t, err)
 	require.True(t, hit.Cached)
