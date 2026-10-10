@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,12 @@ func TestTechCardSeamsWriteFromPbRefusesUnknownDictionaries(t *testing.T) {
 			s.Direction = pb_common.TechCardSeamDirection(99)
 		},
 		"seams[0].side_b.parts": func(s *pb_common.TechCardSeam) { s.SideB = nil },
+		"seams[0].side_a.parts[0].samples": func(s *pb_common.TechCardSeam) {
+			s.SideA.Parts[0].Samples = make([]*pb_common.TechCardSeamSample, 100000)
+		},
+		"seams[0].side_a.parts[0].piece_line_key": func(s *pb_common.TechCardSeam) {
+			s.SideA.Parts[0].PieceLineKey = strings.Repeat("K", 27)
+		},
 	}
 	for field, edit := range cases {
 		t.Run(field, func(t *testing.T) {
@@ -129,4 +136,20 @@ func TestTechCardSeamsDoNotMoveSectionDigests(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, a.GetSectionDigests(), "positive control: digests are published at all")
 	require.JSONEq(t, string(ja), string(jb))
+}
+
+func TestTechCardSeamsWriteFromPbBoundsBeforeCopy(t *testing.T) {
+	many := make([]*pb_common.TechCardSeam, entity.TechCardSeamMaxRowsPerCard+1)
+	_, err := TechCardSeamsWriteFromPb(7, many, "ann")
+	var ve *entity.ValidationError
+	require.ErrorAs(t, err, &ve)
+	require.Equal(t, "seams", ve.Field)
+
+	s := seamPb()
+	for i := 0; i < 9; i++ {
+		s.SideB.Parts = append(s.SideB.Parts, seamPbAnchor("P", "h"))
+	}
+	_, err = TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{s}, "ann")
+	require.ErrorAs(t, err, &ve)
+	require.Equal(t, "seams[0].side_b.parts", ve.Field)
 }

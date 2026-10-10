@@ -35,6 +35,7 @@ const (
 	TechCardSeamNoteMaxRunes         = 255
 	TechCardSeamAnchoredSizeMaxRunes = 16
 	TechCardSeamHintMaxRunes         = 64 // edge_hint / contour_sig: diagnostics, not payload
+	TechCardSeamPieceKeyMaxBytes     = 26 // tech_card_piece.line_key is CHAR(26)
 )
 
 // TechCardSeamStatus is the decision on a seam.
@@ -329,6 +330,9 @@ func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 		a.PieceLineKey = strings.TrimSpace(a.PieceLineKey)
 		if a.PieceLineKey == "" {
 			return NewFieldViolation(af+".piece_line_key", "required", "", "the piece's line_key")
+		}
+		if len(a.PieceLineKey) > TechCardSeamPieceKeyMaxBytes {
+			return NewFieldViolation(af+".piece_line_key", "too_long", "", "the piece's line_key")
 		}
 		a.EdgeHint = strings.TrimSpace(a.EdgeHint)
 		a.ContourSig = strings.TrimSpace(a.ContourSig)

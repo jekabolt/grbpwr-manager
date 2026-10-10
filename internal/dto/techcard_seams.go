@@ -58,6 +58,35 @@ var (
 // (stale, *_by, *_at) are ignored. UNKNOWN status / kind / source are refused with the field named;
 // UNKNOWN direction is legal («the reader picks the pairing»).
 func TechCardSeamsWriteFromPb(techCardID int, seams []*pb_common.TechCardSeam, by string) (entity.TechCardSeamsWrite, error) {
+	// BOUNDS BEFORE ANY COPY. The transport admits tens of MiB; converting first and validating after
+	// would let one authenticated request allocate hundreds of thousands of anchors before being told
+	// «at most 400». Counts and key lengths are checked on the wire messages themselves.
+	if len(seams) > entity.TechCardSeamMaxRowsPerCard {
+		return entity.TechCardSeamsWrite{}, entity.NewFieldViolation("seams", "too_many", "",
+			fmt.Sprintf("at most %d seams per card", entity.TechCardSeamMaxRowsPerCard))
+	}
+	for i, s := range seams {
+		for _, side := range []struct {
+			name string
+			v    *pb_common.TechCardSeamSide
+		}{{"side_a", s.GetSideA()}, {"side_b", s.GetSideB()}} {
+			parts := side.v.GetParts()
+			if len(parts) > entity.TechCardSeamMaxAnchorsPerSide {
+				return entity.TechCardSeamsWrite{}, entity.NewFieldViolation(fmt.Sprintf("seams[%d].%s.parts", i, side.name), "too_many", "",
+					fmt.Sprintf("at most %d anchors per side", entity.TechCardSeamMaxAnchorsPerSide))
+			}
+			for j, p := range parts {
+				af := fmt.Sprintf("seams[%d].%s.parts[%d]", i, side.name, j)
+				if len(p.GetSamples()) != entity.TechCardSeamSamplesPerAnchor {
+					return entity.TechCardSeamsWrite{}, entity.NewFieldViolation(af+".samples", "count", "",
+						fmt.Sprintf("exactly %d samples along the run", entity.TechCardSeamSamplesPerAnchor))
+				}
+				if len(p.GetPieceLineKey()) > entity.TechCardSeamPieceKeyMaxBytes {
+					return entity.TechCardSeamsWrite{}, entity.NewFieldViolation(af+".piece_line_key", "too_long", "", "the piece's line_key")
+				}
+			}
+		}
+	}
 	in := entity.TechCardSeamsWrite{TechCardId: techCardID, By: by, Seams: make([]entity.TechCardSeamInput, 0, len(seams))}
 	for i, s := range seams {
 		f := fmt.Sprintf("seams[%d]", i)
