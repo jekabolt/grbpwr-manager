@@ -845,20 +845,26 @@ type skeletonAIAnswerWarning struct {
 // skeletonAIMaxObjectTries — how many '{' of the reply are tried as the start of a JSON object.
 const skeletonAIMaxObjectTries = 64
 
-// skeletonAIDecode reads the answer's JSON object out of the reply. A model sometimes writes prose, a
-// fence or both around the object (JSON mode notwithstanding), and the prose may quote an example
+// skeletonAICandidate — one top-level object of the reply that has the answer's shape; read is its
+// length in bytes.
+type skeletonAICandidate struct {
+	ans  skeletonAIAnswer
+	read int
+}
+
+// skeletonAIDecode finds the answer's candidate objects in the reply. A model sometimes writes prose,
+// a fence or both around the object (JSON mode notwithstanding), and the prose may quote an example
 // object, before or after the answer. Only SYNTACTIC top-level objects are considered: a '{' that
 // starts a value json.Decoder reads as JSON is skipped past whole, whether or not it is of the
 // answer's shape, so nothing nested in any decoded object is ever a candidate; a '{' that does not
 // start valid JSON is passed over to the next one (at most skeletonAIMaxObjectTries attempts in
-// all). Of the top-level objects that pass the full shape check, the one with the MOST order items
-// wins (an example is rarely longer than the answer); a tie goes to the later one (the final
-// answer). When none passes, the error of the attempt that read furthest is returned.
-func skeletonAIDecode(raw string) (skeletonAIAnswer, error) {
+// all). The candidates (objects of the answer's shape) come in reply order; parseSkeletonAI
+// validates each against the request and picks. With no candidate, the error of the attempt that
+// read furthest is returned.
+func skeletonAIDecode(raw string) ([]skeletonAICandidate, error) {
 	body := strings.TrimSpace(raw)
 	var (
-		best     skeletonAIAnswer
-		found    bool
+		cands    []skeletonAICandidate
 		bestErr  error
 		bestRead = -1
 	)
@@ -871,9 +877,7 @@ func skeletonAIDecode(raw string) (skeletonAIAnswer, error) {
 		ans, read, syntactic, err := skeletonAIDecodeAt(body[off:])
 		switch {
 		case err == nil:
-			if !found || len(*ans.Order) >= len(*best.Order) {
-				best, found = ans, true
-			}
+			cands = append(cands, skeletonAICandidate{ans: ans, read: read})
 		case read > bestRead:
 			bestErr, bestRead = err, read
 		}
@@ -884,12 +888,12 @@ func skeletonAIDecode(raw string) (skeletonAIAnswer, error) {
 		}
 	}
 	switch {
-	case found:
-		return best, nil
+	case len(cands) > 0:
+		return cands, nil
 	case bestErr != nil:
-		return skeletonAIAnswer{}, bestErr
+		return nil, bestErr
 	}
-	return skeletonAIAnswer{}, fmt.Errorf("no JSON object in the reply")
+	return nil, fmt.Errorf("no JSON object in the reply")
 }
 
 // skeletonAIDecodeAt reads exactly one JSON value from the start of body (what follows it is not
@@ -932,11 +936,40 @@ func skeletonAIDecodeAt(body string) (ans skeletonAIAnswer, read int, syntactic 
 // dropped with a note; an order that is not a complete permutation of the ordered steps, or that
 // sews a unit before the step that makes it (riders follow their join), is returned EMPTY with a
 // note. Picks come in the request's decision order; warnings keep the model's order.
+//
+// The reply may hold more than one object of the answer's shape (an example quoted in prose): each
+// is validated in full; of those that pass, the one whose VALIDATED order is longest wins, a tie the
+// later (the final answer). When none passes, the error of the candidate that read furthest — or,
+// with no candidate, of the furthest decode attempt — is returned.
 func parseSkeletonAI(raw string, in skeletonAIInput) (*pb_admin.SuggestAssemblySkeletonResponse, error) {
-	ans, err := skeletonAIDecode(raw)
+	cands, err := skeletonAIDecode(raw)
 	if err != nil {
 		return nil, err
 	}
+	var (
+		best     *pb_admin.SuggestAssemblySkeletonResponse
+		bestErr  error
+		bestRead = -1
+	)
+	for _, c := range cands {
+		out, err := skeletonAIValidate(c.ans, in)
+		switch {
+		case err == nil:
+			if best == nil || len(out.Order) >= len(best.Order) {
+				best = out
+			}
+		case c.read > bestRead:
+			bestErr, bestRead = err, c.read
+		}
+	}
+	if best == nil {
+		return nil, bestErr
+	}
+	return best, nil
+}
+
+// skeletonAIValidate is parseSkeletonAI's validation of ONE decoded object of the answer's shape.
+func skeletonAIValidate(ans skeletonAIAnswer, in skeletonAIInput) (*pb_admin.SuggestAssemblySkeletonResponse, error) {
 	if len(*ans.Order) == 0 {
 		return nil, fmt.Errorf("an empty order")
 	}

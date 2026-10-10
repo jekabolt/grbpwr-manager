@@ -818,7 +818,7 @@ func TestSkeletonAIDecodeNeverAcceptsAnObjectNestedInAnInvalidOne(t *testing.T) 
 		"wrapper of a list": `{"answers":[` + skeletonAIGoodAnswer + `]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := skeletonAIDecode(raw)
+			_, err := parseSkeletonAI(raw, skeletonAITestInput(t))
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "unknown field")
 		})
@@ -827,19 +827,42 @@ func TestSkeletonAIDecodeNeverAcceptsAnObjectNestedInAnInvalidOne(t *testing.T) 
 
 // Of several shape-valid top-level objects the one with the most order items wins, a tie the later.
 func TestSkeletonAIDecodePrefersTheLongestOrder(t *testing.T) {
-	ans, err := skeletonAIDecode(skeletonAIGoodAnswer + " Example: " + skeletonAIDecoyEmpty)
+	in := skeletonAITestInput(t)
+	out, err := parseSkeletonAI(skeletonAIGoodAnswer+" Example: "+skeletonAIDecoyEmpty, in)
 	require.NoError(t, err)
-	require.Len(t, *ans.Order, 4)
-	require.Equal(t, "s5", *(*ans.Order)[2].Step, "the answer, not the trailing empty example")
+	require.Len(t, out.Order, 4)
+	require.Equal(t, "s5", out.Order[2].StepId, "the answer, not the trailing empty example")
 
-	ans, err = skeletonAIDecode(skeletonAIDecoyComplete + " Final: " + skeletonAIGoodAnswer)
+	out, err = parseSkeletonAI(skeletonAIDecoyComplete+" Final: "+skeletonAIGoodAnswer, in)
 	require.NoError(t, err)
-	require.Equal(t, "s5", *(*ans.Order)[2].Step, "a tie goes to the later object")
+	require.Equal(t, "s5", out.Order[2].StepId, "a tie goes to the later object")
+
+	// Codex on 35ef473: a longer RAW order of invalid items must not outrank the answer — ranking is
+	// by the validated order, and an object that fails validation is no candidate at all.
+	out, err = parseSkeletonAI(skeletonAIGoodAnswer+"\nExample: {\"order\":[{},{},{},{},{}],\"picks\":[],\"warnings\":[]}", in)
+	require.NoError(t, err)
+	require.Len(t, out.Order, 4)
+	require.Equal(t, "s5", out.Order[2].StepId)
+	require.Len(t, out.Picks, 1)
+
+	// Same with the invalid example first, and with unknown steps (valid items, an unusable order).
+	out, err = parseSkeletonAI(`Example: {"order":[{"step":"x1","reason":""},{"step":"x2","reason":""},{"step":"x3","reason":""},{"step":"x4","reason":""},{"step":"x5","reason":""}],"picks":[],"warnings":[]} Final: `+skeletonAIGoodAnswer, in)
+	require.NoError(t, err)
+	require.Len(t, out.Order, 4)
+	require.Equal(t, "s5", out.Order[2].StepId)
+	require.Empty(t, out.Notes, "the losing example leaves no notes")
+
+	// A fully valid example AFTER the answer whose validated order is shorter (unknown steps → no
+	// usable order) loses to the answer: most validated items first, the later only on a tie.
+	out, err = parseSkeletonAI(skeletonAIGoodAnswer+` Example: {"order":[{"step":"x1","reason":""}],"picks":[],"warnings":[]}`, in)
+	require.NoError(t, err)
+	require.Len(t, out.Order, 4)
+	require.Empty(t, out.Notes)
 }
 
 // When nothing passes, the error is the one of the attempt that read furthest — not the prose's.
 func TestSkeletonAIDecodeReportsTheFurthestAttempt(t *testing.T) {
-	_, err := skeletonAIDecode(`Sure {x} {"order":[{"step":"s1","reason":""}],"picks":[]} thanks`)
+	_, err := parseSkeletonAI(`Sure {x} {"order":[{"step":"s1","reason":""}],"picks":[]} thanks`, skeletonAITestInput(t))
 	require.EqualError(t, err, "no warnings member")
 }
 
