@@ -137,6 +137,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationWorkWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Щит черновика каркаса (0410), тот же довод и тот же момент.
+	if err := operationDraftWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Щит количеств на связях шага (0334), тот же довод и тот же момент. Стор-гейта на создании у
 	// него нет по той же причине, что у щита видов: парного `*_cleared` он не несёт, а сказать про
 	// несуществующую карточку ему больше нечего.
@@ -356,6 +360,10 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err := operationWorkWireGate(in); err != nil {
 		return nil, err
 	}
+	// Тот же довод, тот же момент — щит черновика каркаса (0410).
+	if err := operationDraftWireGate(in); err != nil {
+		return nil, err
+	}
 	// Тот же довод, тот же момент — щит количеств на связях шага (0334).
 	if err := bomQtyWireGate(in); err != nil {
 		return nil, err
@@ -409,6 +417,10 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 		return nil, err
 	}
 	if err := operationWorkRetiredGate(in, stored); err != nil {
+		return nil, err
+	}
+	// Щит черновика каркаса (0410) — правило 2: устаревшая вкладка стёрла бы метки «не проверено».
+	if err := operationDraftStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит количеств на связях шага (0334) — правило 2, то самое, что срабатывает на практике:
