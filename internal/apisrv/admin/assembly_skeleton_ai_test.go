@@ -209,7 +209,6 @@ func TestParseSkeletonAIStructuralViolations(t *testing.T) {
 		"unknown member":       `{"order":[{"step":"s1","reason":""}],"picks":[],"warnings":[],"extra":1}`,
 		"reading as string":    `{"order":[{"step":"s1","reason":""}],"picks":[{"decision":"shoulders","reading":"1","reason":""}],"warnings":[]}`,
 		"order without reason": `{"order":[{"step":"s1"}],"picks":[],"warnings":[]}`,
-		"two objects":          `{"order":[{"step":"s1","reason":""}],"picks":[],"warnings":[]} {}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseSkeletonAI(raw, in)
@@ -545,7 +544,7 @@ func TestSkeletonAIPromptAsksForStructure(t *testing.T) {
 	without := skeletonAIUserPrompt(skeletonAITestInput(t))
 	require.NotContains(t, without, "Category options:")
 	require.Contains(t, without, `No category options are offered: category id "". Then the units`)
-	for _, want := range []string{"4. category", "5. units", "may be wrong", `"category":{"id":"trousers"`, `"units":[{"pieces":["K1","K2"]`} {
+	for _, want := range []string{"4. category", "5. units", "may be wrong", `"category":{"id":"trousers"`, `"units":[{"id":"u1","parts":["K1","K2"]`, `"parts":["u1","K7"]`, "never repeat the pieces of a unit", "Your reply starts with { and ends with }"} {
 		require.Contains(t, skeletonAISystemPrompt, want)
 	}
 }
@@ -563,7 +562,7 @@ func TestParseSkeletonAIStructureDecode(t *testing.T) {
 	require.Nil(t, out.AiCategory)
 	// The new shape.
 	out, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":{"id":"trousers","reason":"leg panels"},`+
-		`"units":[{"pieces":["FP_L","BP"],"name":"Left shoulder","reason":"r"}]}`, in)
+		`"units":[{"id":"u1","parts":["FP_L","BP"],"name":"Left shoulder","reason":"r"}]}`, in)
 	require.NoError(t, err)
 	require.Equal(t, "trousers", out.AiCategory.GetId())
 	require.Equal(t, "leg panels", out.AiCategory.GetReason())
@@ -582,7 +581,7 @@ func TestParseSkeletonAIStructureDecode(t *testing.T) {
 	// Lenient: a malformed category or unit is dropped with a note, never a structural violation;
 	// the order, picks and warnings of the same answer stand, and a well-formed unit next to a
 	// malformed one is kept.
-	good := `{"pieces":["FP_L","BP"],"name":"Left shoulder","reason":"r"}`
+	good := `{"id":"u1","parts":["FP_L","BP"],"name":"Left shoulder","reason":"r"}`
 	cases := map[string]struct {
 		tail, note      string
 		category, units int
@@ -594,12 +593,14 @@ func TestParseSkeletonAIStructureDecode(t *testing.T) {
 		"category id as number":   {`"category":{"id":3,"reason":"x"}`, "the category is not an object", 0, 0},
 		"units as object":         {`"category":{"id":"trousers","reason":"x"},"units":{}`, "the units are not a list", 1, 0},
 		"units as string":         {`"units":"FP_L,BP"`, "the units are not a list", 0, 0},
-		"unit without name":       {`"units":[{"pieces":["FP_L","BP"],"reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
-		"unit pieces as string":   {`"units":[` + good + `,{"pieces":"FP_R","name":"x","reason":""}]`, "units[1] is not an object", 0, 1},
-		"unit piece as number":    {`"units":[{"pieces":["FP_R",3],"name":"x","reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit without name":       {`"units":[{"id":"u5","parts":["FP_L","BP"],"reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit pieces as string":   {`"units":[` + good + `,{"id":"u5","parts":"FP_R","name":"x","reason":""}]`, "units[1] is not an object", 0, 1},
+		"unit piece as number":    {`"units":[{"id":"u5","parts":["FP_R",3],"name":"x","reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit without id":         {`"units":[{"parts":["FP_R","SL"],"name":"x","reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
+		"unit with pieces only":   {`"units":[{"id":"u5","pieces":["FP_R","SL"],"name":"x","reason":""},` + good + `]`, "units[0] is not an object", 0, 1},
 		"unit as string":          {`"units":["FP_R",` + good + `]`, "units[0] is not an object", 0, 1},
 		"unit null":               {`"units":[null,` + good + `]`, "units[0] is not an object", 0, 1},
-		"unit reason as number":   {`"units":[` + good + `,{"pieces":["FP_R","SL"],"name":"x","reason":1}]`, "units[1] is not an object", 0, 1},
+		"unit reason as number":   {`"units":[` + good + `,{"id":"u5","parts":["FP_R","SL"],"name":"x","reason":1}]`, "units[1] is not an object", 0, 1},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -655,8 +656,8 @@ func TestParseSkeletonAICategoryNotOffered(t *testing.T) {
 }
 
 func TestParseSkeletonAIUnits(t *testing.T) {
-	unit := func(name string, keys ...string) string {
-		b, _ := json.Marshal(map[string]any{"pieces": keys, "name": name, "reason": "r"})
+	unit := func(id, name string, parts ...string) string {
+		b, _ := json.Marshal(map[string]any{"id": id, "parts": parts, "name": name, "reason": "r"})
 		return string(b)
 	}
 	type want struct {
@@ -668,33 +669,74 @@ func TestParseSkeletonAIUnits(t *testing.T) {
 		want  want
 	}{
 		"unknown and duplicate keys": {
-			[]string{unit("Shoulders", "FP_L", "NOPE", "BP", "FP_L", " BP ")},
-			want{[][]string{{"FP_L", "BP"}}, []string{`units[0] "Shoulders" names "NOPE", not pieces of the request; removed`}},
+			[]string{unit("u1", "Shoulders", "FP_L", "NOPE", "BP", "FP_L", " BP ")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[0] u1 "Shoulders" names "NOPE", not pieces of the request; removed`}},
 		},
 		"fewer than 2 pieces": {
-			[]string{unit("Lonely", "SL", "SL"), unit("Ghosts", "X1", "X2")},
-			want{nil, []string{`units[0] "Lonely" has fewer than 2 pieces`, `units[1] "Ghosts" has fewer than 2 pieces`}},
+			[]string{unit("u1", "Lonely", "SL", "SL"), unit("u2", "Ghosts", "X1", "X2")},
+			want{nil, []string{`units[0] u1 "Lonely" has fewer than 2 pieces`, `units[1] u2 "Ghosts" has fewer than 2 pieces`}},
 		},
 		"identical set": {
-			[]string{unit("Body", "FP_L", "FP_R", "BP"), unit("Body again", "BP", "FP_R", "FP_L")},
-			want{[][]string{{"FP_L", "FP_R", "BP"}}, []string{`units[1] "Body again" repeats units[0] "Body"; dropped`}},
+			[]string{unit("u1", "Body", "FP_L", "FP_R", "BP"), unit("u2", "Body again", "BP", "FP_R", "FP_L")},
+			want{[][]string{{"FP_L", "FP_R", "BP"}}, []string{`units[1] u2 "Body again" repeats units[0] u1 "Body"; dropped`}},
+		},
+		"identical set through an id": {
+			[]string{unit("u1", "Body", "FP_L", "FP_R", "BP"), unit("u2", "Body again", "u1")},
+			want{[][]string{{"FP_L", "FP_R", "BP"}}, []string{`units[1] u2 "Body again" repeats units[0] u1 "Body"; dropped`}},
 		},
 		"partial overlap": {
-			[]string{unit("Left", "FP_L", "BP"), unit("Right", "FP_R", "BP")},
-			want{[][]string{{"FP_L", "BP"}}, []string{`units[1] "Right" partially overlaps units[0] "Left"`}},
+			[]string{unit("u1", "Left", "FP_L", "BP"), unit("u2", "Right", "FP_R", "BP")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[1] u2 "Right" partially overlaps units[0] u1 "Left"`}},
 		},
-		"nested and disjoint, sorted by size": {
+		"expansion, nested 3 levels": {
+			[]string{unit("u1", "Left shoulder", "FP_L", "BP"), unit("u2", "Body", "u1", "FP_R"), unit("u3", "Garment", "u2", "SL")},
+			want{[][]string{{"FP_L", "BP"}, {"FP_L", "BP", "FP_R"}, {"FP_L", "BP", "FP_R", "SL"}}, nil},
+		},
+		"flat sets, largest first, sorted by size": {
 			[]string{
-				unit("Garment", "FP_L", "FP_R", "BP", "SL"),
-				unit("Body", "FP_L", "FP_R", "BP"),
-				unit("Left shoulder", "FP_L", "BP"),
-				unit("", "FP_R", "SL"), // partial against Body (kept) → dropped
+				unit("u1", "Garment", "FP_L", "FP_R", "BP", "SL"),
+				unit("u2", "Body", "FP_L", "FP_R", "BP"),
+				unit("u3", "Left shoulder", "FP_L", "BP"),
+				unit("u4", "", "FP_R", "SL"), // partial against Body (kept) → dropped
 			},
 			want{[][]string{{"FP_L", "BP"}, {"FP_L", "FP_R", "BP"}, {"FP_L", "FP_R", "BP", "SL"}},
-				[]string{`units[3] partially overlaps units[1] "Body"`}},
+				[]string{`units[3] u4 partially overlaps units[1] u2 "Body"`}},
+		},
+		"forward reference": {
+			[]string{unit("u1", "Body", "u2", "FP_R"), unit("u2", "Left shoulder", "FP_L", "BP")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[0] u1 "Body" names unit u2, which is not listed before it; dropped`}},
+		},
+		"unknown unit id": {
+			[]string{unit("u1", "Left shoulder", "FP_L", "BP"), unit("u2", "Body", "u1", "u9", "FP_R")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[1] u2 "Body" names unit u9, which is not listed before it; dropped`}},
+		},
+		"self reference": {
+			[]string{unit("u1", "Loop", "u1", "FP_L", "BP")},
+			want{nil, []string{`units[0] u1 "Loop" names unit u1, which is not listed before it; dropped`}},
+		},
+		"a forward-dropped unit's id stays unknown": {
+			[]string{unit("u1", "Body", "u2", "FP_R"), unit("u2", "Left shoulder", "FP_L", "BP"), unit("u3", "Body", "u1", "u2")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[2] u3 "Body" names unit u1, which is not listed before it`}},
+		},
+		"bad ids": {
+			[]string{
+				unit("x1", "Bad", "FP_L", "BP"), unit("u1000", "Too long", "FP_L", "BP"), unit("", "None", "FP_L", "BP"),
+				unit("u1", "Left shoulder", "FP_L", "BP"), unit("u1", "Again", "FP_R", "SL"),
+			},
+			want{[][]string{{"FP_L", "BP"}}, []string{
+				`units[0] "Bad" has id "x1", not u1…u999; dropped`, `units[1] "Too long" has id "u1000"`, `units[2] "None" has id ""`,
+				`units[4] u1 "Again" repeats the id of an earlier unit; dropped`,
+			}},
+		},
+		"an id used by two units": {
+			[]string{unit("u1", "Left shoulder", "FP_L", "BP"), unit("u2", "A", "u1", "FP_R"), unit("u3", "B", "u1", "SL")},
+			want{[][]string{{"FP_L", "BP"}, {"FP_L", "BP", "FP_R"}}, []string{
+				`u1 is a part of both units[1] u2 "A" and units[2] u3 "B"`,
+				`units[2] u3 "B" partially overlaps units[1] u2 "A"`,
+			}},
 		},
 		"disjoint siblings keep the model's order at one size": {
-			[]string{unit("Front", "FP_L", "FP_R"), unit("Back and sleeve", "BP", "SL")},
+			[]string{unit("u1", "Front", "FP_L", "FP_R"), unit("u2", "Back and sleeve", "BP", "SL")},
 			want{[][]string{{"FP_L", "FP_R"}, {"BP", "SL"}}, nil},
 		},
 	}
@@ -718,12 +760,11 @@ func TestParseSkeletonAIUnits(t *testing.T) {
 		})
 	}
 
-	// Name and reason are bounded; the cap is 2 × pieces (4 pieces → 8), one note for the rest.
+	// The name is bounded.
 	long := strings.Repeat("n", skeletonAIMaxNameRunes+10)
-	out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"units":[`+unit(long, "FP_L", "BP")+`]}`, skeletonAITestInput(t))
+	out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"units":[`+unit("u1", long, "FP_L", "BP")+`]}`, skeletonAITestInput(t))
 	require.NoError(t, err)
 	require.Equal(t, skeletonAIMaxNameRunes, utf8.RuneCountInString(out.Units[0].Name))
-
 }
 
 // The cap (2 × pieces) cannot bite on a valid family: nested-or-disjoint sets of ≥ 2 pieces over n
@@ -742,10 +783,46 @@ func TestParseSkeletonAIUnitsCap(t *testing.T) {
 	in.Pieces = in.Pieces[:2]
 	units := make([]string, 0, 10)
 	for i := 0; i < 10; i++ {
-		units = append(units, fmt.Sprintf(`{"pieces":["P%d","P%d"],"name":"pair %d","reason":""}`, 2*i, 2*i+1, i))
+		units = append(units, fmt.Sprintf(`{"id":"u%d","parts":["P%d","P%d"],"name":"pair %d","reason":""}`, i+1, 2*i, 2*i+1, i))
 	}
 	out, err := parseSkeletonAI(`{"order":[{"step":"s1","reason":""}],"picks":[],"warnings":[],"units":[`+strings.Join(units, ",")+`]}`, in)
 	require.NoError(t, err)
 	require.Len(t, out.Units, 4, "at most 2 × pieces units")
 	require.Equal(t, 1, strings.Count(strings.Join(out.Notes, "\n"), "more than 4 units; the rest are dropped"))
+}
+
+// A reply with prose or a fence around the object decodes; text after the object is ignored; what
+// holds no answer object still fails.
+func TestSkeletonAIDecodeToleratesProseAroundTheObject(t *testing.T) {
+	in := skeletonAITestInput(t)
+	for name, raw := range map[string]string{
+		"bare":                  skeletonAIGoodAnswer,
+		"fence":                 "```json\n" + skeletonAIGoodAnswer + "\n```",
+		"prose prefix":          "Here is my review of the skeleton.\n\n" + skeletonAIGoodAnswer,
+		"prose then fence":      "Here is the JSON:\n```json\n" + skeletonAIGoodAnswer + "\n```\nHope it helps.",
+		"trailing prose":        skeletonAIGoodAnswer + "\n\nNote: s5 could also go last.",
+		"a brace in the prose":  "The units {collar, stand} come first. " + skeletonAIGoodAnswer,
+		"an empty object first": "Template: {}\n" + skeletonAIGoodAnswer,
+		"two objects":           skeletonAIGoodAnswer + " {}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := parseSkeletonAI(raw, in)
+			require.NoError(t, err)
+			require.Len(t, out.Order, 4)
+			require.Len(t, out.Picks, 1)
+		})
+	}
+	for name, raw := range map[string]string{
+		"empty":          "",
+		"no object":      "I cannot review this skeleton.",
+		"broken":         `{"order":[{"step":"s1","reason":""}`,
+		"unknown member": `Sure: {"order":[{"step":"s1","reason":""}],"picks":[],"warnings":[],"extra":1}`,
+		"wrong shape":    `{"foo":1}`,
+		"a list":         `[{"step":"s1","reason":""}]`,
+	} {
+		t.Run("fails/"+name, func(t *testing.T) {
+			_, err := parseSkeletonAI(raw, in)
+			require.Error(t, err)
+		})
+	}
 }
