@@ -2698,7 +2698,9 @@ service AdminService {
   // steps in the order it proposes. Text only: no picture is sent. The model returns: a suggested
   // order of the steps (each with a reason), a pick per decision (each with a reason) and
   // plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
-  // before its facings, a piece in no step…). The server validates the answer against the request:
+  // before its facings, a piece in no step…) and, in the same call, the structure it reads off the
+  // pieces: a garment category out of the offered category_options and the subassemblies (units)
+  // as nested or disjoint sets of piece keys. The server validates the answer against the request:
   // unknown step, decision and piece ids are dropped, a pick outside a decision's readings is
   // dropped, and an order that is not a complete permutation of the ordered steps or that sews a
   // unit before the step that makes it is returned EMPTY with a note. Nothing is stored and nothing
@@ -2710,7 +2712,8 @@ service AdminService {
   // unknown_calls, cost_usd).
   //
   // InvalidArgument: 0 or more than 80 pieces, 0 or more than 240 steps, more than 400 seams or 60
-  // decisions, a duplicate or unknown id, a field above its bound.
+  // decisions, more than 24 category_options or an empty or repeated one, a duplicate or unknown
+  // id, a field above its bound.
   rpc SuggestAssemblySkeleton(SuggestAssemblySkeletonRequest) returns (SuggestAssemblySkeletonResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/assembly-skeleton:suggest"
@@ -11277,6 +11280,10 @@ message SuggestAssemblySkeletonRequest {
   reserved 8;
   reserved "media_ids";
   bool force = 9; // ask again even when an identical request was answered within the hour
+  // the garment category ids the client has a template for (tee, sweat, hoodie, trousers, skirt,
+  // dress, jumpsuit, shirt, jacket-lined, coat-lined, generic), ≤ 24 × 32 runes, unique; empty = the
+  // model is not asked for a category
+  repeated string category_options = 10;
 }
 
 // AssemblySkeletonOrderItem is one step in the model's suggested order.
@@ -11302,6 +11309,20 @@ message AssemblySkeletonWarning {
   repeated string piece_keys = 4; // pieces of the request it is about
 }
 
+// AssemblySkeletonCategoryPick is the model's reading of the garment category, judged by the pieces.
+message AssemblySkeletonCategoryPick {
+  string id = 1; // one of the request's category_options
+  string reason = 2; // ≤ 200 runes
+}
+
+// AssemblySkeletonUnitHint is one subassembly a workshop makes: a set of piece keys that is a single
+// join's result. Two hints of one answer are nested or disjoint, never partially overlapping.
+message AssemblySkeletonUnitHint {
+  repeated string piece_keys = 1; // piece keys of the request, ≥ 2, unique
+  string name = 2; // the unit's name ("Collar", "Left front with pocket"), ≤ 80 runes
+  string reason = 3; // ≤ 200 runes
+}
+
 message SuggestAssemblySkeletonResponse {
   // order — the ordered steps (every step without `follows`), each exactly once; EMPTY when the
   // model gave no usable order (the reason is in notes). A rider follows its join.
@@ -11316,6 +11337,13 @@ message SuggestAssemblySkeletonResponse {
   bool cached = 9; // true = an identical request was answered within the hour, no call made
   int32 calls = 10; // provider calls this press made that may have been billed (0 when cached)
   int32 unknown_calls = 11; // of them, calls whose charge is not known (cost_usd leaves them out)
+  // ai_category — the category the model reads off the pieces; unset = keep the draft's (no options
+  // offered, none given, or not one of the options — the reason is in notes)
+  AssemblySkeletonCategoryPick ai_category = 12;
+  // units — the model's subassemblies, smallest set first, nested or disjoint; EMPTY = keep the
+  // draft's grouping. Unknown keys, sets of < 2 pieces, repeats and partial overlaps are dropped
+  // with a note.
+  repeated AssemblySkeletonUnitHint units = 13;
 }
 
 message SaveTechCardPieceAreasRequest {

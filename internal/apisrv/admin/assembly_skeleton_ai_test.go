@@ -2,11 +2,15 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
@@ -473,4 +477,231 @@ func TestSuggestAssemblySkeletonDoorsBeforeMoney(t *testing.T) {
 	_, err = off.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest())
 	require.Error(t, err)
 	require.NotEqual(t, codes.InvalidArgument, status.Code(err))
+}
+
+// ─── the structural lever (06-AI-STRUCTURE): category + units ───
+
+const skeletonAIOrderOnly = `"order":[{"step":"s1","reason":""},{"step":"s3","reason":""},{"step":"s4","reason":""},{"step":"s5","reason":""}],"picks":[{"decision":"shoulders","reading":0,"reason":""}],"warnings":[]`
+
+func skeletonAIStructureInput(t *testing.T) skeletonAIInput {
+	t.Helper()
+	r := skeletonAITestRequest()
+	r.CategoryOptions = []string{"tee", "shirt", "trousers", "jacket-lined", "generic"}
+	in, err := skeletonAIInputOf(r)
+	require.NoError(t, err)
+	return in
+}
+
+func TestSkeletonAIInputOfCategoryOptions(t *testing.T) {
+	cases := map[string]struct {
+		opts []string
+		ok   bool
+	}{
+		"none":         {nil, true},
+		"the template": {[]string{"tee", "sweat", "hoodie", "trousers", "skirt", "dress", "jumpsuit", "shirt", "jacket-lined", "coat-lined", "generic"}, true},
+		"24":           {skeletonAIOptions(24), true},
+		"25":           {skeletonAIOptions(25), false},
+		"empty":        {[]string{"tee", " "}, false},
+		"duplicate":    {[]string{"tee", "shirt", " tee"}, false},
+		"32 runes":     {[]string{strings.Repeat("ж", skeletonAIMaxCategoryRunes)}, true},
+		"33 runes":     {[]string{strings.Repeat("ж", skeletonAIMaxCategoryRunes+1)}, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := skeletonAITestRequest()
+			r.CategoryOptions = c.opts
+			in, err := skeletonAIInputOf(r)
+			if c.ok {
+				require.NoError(t, err)
+				require.Len(t, in.Options, len(c.opts))
+				return
+			}
+			require.Equal(t, codes.InvalidArgument, status.Code(err), "%v", err)
+		})
+	}
+}
+
+func skeletonAIOptions(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "c" + strconv.Itoa(i)
+	}
+	return out
+}
+
+func TestSkeletonAIDigestCoversCategoryOptions(t *testing.T) {
+	a, b := skeletonAITestRequest(), skeletonAITestRequest()
+	b.CategoryOptions = []string{"shirt", "tee"}
+	require.NotEqual(t, skeletonAIDigest(a), skeletonAIDigest(b))
+	c := skeletonAITestRequest()
+	c.CategoryOptions = []string{"shirt", "tee"}
+	require.Equal(t, skeletonAIDigest(b), skeletonAIDigest(c))
+}
+
+func TestSkeletonAIPromptAsksForStructure(t *testing.T) {
+	with := skeletonAIUserPrompt(skeletonAIStructureInput(t))
+	require.Contains(t, with, `Category options: "tee", "shirt", "trousers", "jacket-lined", "generic".`)
+	require.Contains(t, with, "Then the category (one of the category options")
+	without := skeletonAIUserPrompt(skeletonAITestInput(t))
+	require.NotContains(t, without, "Category options:")
+	require.Contains(t, without, `No category options are offered: category id "". Then the units`)
+	for _, want := range []string{"4. category", "5. units", "may be wrong", `"category":{"id":"trousers"`, `"units":[{"pieces":["K1","K2"]`} {
+		require.Contains(t, skeletonAISystemPrompt, want)
+	}
+}
+
+func TestParseSkeletonAIStructureDecode(t *testing.T) {
+	in := skeletonAIStructureInput(t)
+	// The older shape (no category, no units) decodes: keep both.
+	out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`}`, in)
+	require.NoError(t, err)
+	require.Nil(t, out.AiCategory)
+	require.Empty(t, out.Units)
+	// null members are missing members.
+	out, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":null,"units":null}`, in)
+	require.NoError(t, err)
+	require.Nil(t, out.AiCategory)
+	// The new shape.
+	out, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":{"id":"trousers","reason":"leg panels"},`+
+		`"units":[{"pieces":["FP_L","BP"],"name":"Left shoulder","reason":"r"}]}`, in)
+	require.NoError(t, err)
+	require.Equal(t, "trousers", out.AiCategory.GetId())
+	require.Equal(t, "leg panels", out.AiCategory.GetReason())
+	require.Len(t, out.Units, 1)
+	require.Equal(t, []string{"FP_L", "BP"}, out.Units[0].PieceKeys)
+	require.Empty(t, out.Notes)
+	// "" = keep, no note; the request's own category is kept too.
+	out, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":{"id":"","reason":""},"units":[]}`, in)
+	require.NoError(t, err)
+	require.Nil(t, out.AiCategory)
+	require.Empty(t, out.Notes)
+	out, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":{"id":"shirt","reason":"same"},"units":[]}`, in)
+	require.NoError(t, err)
+	require.Equal(t, "shirt", out.AiCategory.GetId())
+
+	// Types stay strict: a structural violation is asked again.
+	for name, tail := range map[string]string{
+		"category as string":     `"category":"trousers"`,
+		"category without id":    `"category":{"reason":"x"}`,
+		"category id as number":  `"category":{"id":3,"reason":"x"}`,
+		"category unknown field": `"category":{"id":"tee","reason":"x","why":1}`,
+		"units as object":        `"units":{}`,
+		"unit without name":      `"units":[{"pieces":["FP_L","BP"],"reason":""}]`,
+		"unit pieces as string":  `"units":[{"pieces":"FP_L","name":"x","reason":""}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,`+tail+`}`, in)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestParseSkeletonAICategoryNotOffered(t *testing.T) {
+	out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":{"id":"dress","reason":"x"}}`, skeletonAIStructureInput(t))
+	require.NoError(t, err)
+	require.Nil(t, out.AiCategory)
+	require.Contains(t, strings.Join(out.Notes, "\n"), `the category "dress" is not one of the offered options; dropped`)
+	require.Len(t, out.Order, 4, "a dropped category never costs the order")
+
+	// No options sent: any category is dropped.
+	out, err = parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"category":{"id":"shirt","reason":"x"}}`, skeletonAITestInput(t))
+	require.NoError(t, err)
+	require.Nil(t, out.AiCategory)
+	require.Contains(t, strings.Join(out.Notes, "\n"), "no options were offered")
+}
+
+func TestParseSkeletonAIUnits(t *testing.T) {
+	unit := func(name string, keys ...string) string {
+		b, _ := json.Marshal(map[string]any{"pieces": keys, "name": name, "reason": "r"})
+		return string(b)
+	}
+	type want struct {
+		units [][]string
+		notes []string
+	}
+	cases := map[string]struct {
+		units []string
+		want  want
+	}{
+		"unknown and duplicate keys": {
+			[]string{unit("Shoulders", "FP_L", "NOPE", "BP", "FP_L", " BP ")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[0] "Shoulders" names "NOPE", not pieces of the request; removed`}},
+		},
+		"fewer than 2 pieces": {
+			[]string{unit("Lonely", "SL", "SL"), unit("Ghosts", "X1", "X2")},
+			want{nil, []string{`units[0] "Lonely" has fewer than 2 pieces`, `units[1] "Ghosts" has fewer than 2 pieces`}},
+		},
+		"identical set": {
+			[]string{unit("Body", "FP_L", "FP_R", "BP"), unit("Body again", "BP", "FP_R", "FP_L")},
+			want{[][]string{{"FP_L", "FP_R", "BP"}}, []string{`units[1] "Body again" repeats units[0] "Body"; dropped`}},
+		},
+		"partial overlap": {
+			[]string{unit("Left", "FP_L", "BP"), unit("Right", "FP_R", "BP")},
+			want{[][]string{{"FP_L", "BP"}}, []string{`units[1] "Right" partially overlaps units[0] "Left"`}},
+		},
+		"nested and disjoint, sorted by size": {
+			[]string{
+				unit("Garment", "FP_L", "FP_R", "BP", "SL"),
+				unit("Body", "FP_L", "FP_R", "BP"),
+				unit("Left shoulder", "FP_L", "BP"),
+				unit("", "FP_R", "SL"), // partial against Body (kept) → dropped
+			},
+			want{[][]string{{"FP_L", "BP"}, {"FP_L", "FP_R", "BP"}, {"FP_L", "FP_R", "BP", "SL"}},
+				[]string{`units[3] partially overlaps units[1] "Body"`}},
+		},
+		"disjoint siblings keep the model's order at one size": {
+			[]string{unit("Front", "FP_L", "FP_R"), unit("Back and sleeve", "BP", "SL")},
+			want{[][]string{{"FP_L", "FP_R"}, {"BP", "SL"}}, nil},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"units":[`+strings.Join(c.units, ",")+`]}`, skeletonAITestInput(t))
+			require.NoError(t, err)
+			var got [][]string
+			for _, u := range out.Units {
+				got = append(got, u.PieceKeys)
+			}
+			require.Equal(t, c.want.units, got)
+			notes := strings.Join(out.Notes, "\n")
+			for _, n := range c.want.notes {
+				require.Contains(t, notes, n)
+			}
+			if len(c.want.notes) == 0 {
+				require.Empty(t, out.Notes)
+			}
+			require.Len(t, out.Order, 4)
+		})
+	}
+
+	// Name and reason are bounded; the cap is 2 × pieces (4 pieces → 8), one note for the rest.
+	long := strings.Repeat("n", skeletonAIMaxNameRunes+10)
+	out, err := parseSkeletonAI(`{`+skeletonAIOrderOnly+`,"units":[`+unit(long, "FP_L", "BP")+`]}`, skeletonAITestInput(t))
+	require.NoError(t, err)
+	require.Equal(t, skeletonAIMaxNameRunes, utf8.RuneCountInString(out.Units[0].Name))
+
+}
+
+// The cap (2 × pieces) cannot bite on a valid family: nested-or-disjoint sets of ≥ 2 pieces over n
+// pieces number at most n − 1. It guards the answer's size, so the test narrows the cap's view of
+// the pieces (len(in.Pieces) = 2 → cap 4) while every key stays known.
+func TestParseSkeletonAIUnitsCap(t *testing.T) {
+	r := skeletonAITestRequest()
+	r.Pieces = nil
+	for i := 0; i < 20; i++ {
+		r.Pieces = append(r.Pieces, &pb_admin.AssemblySkeletonPiece{Key: "P" + strconv.Itoa(i), Name: "p", Cloth: "main", Count: 1})
+	}
+	r.Seams, r.Decisions = nil, nil
+	r.Steps = []*pb_admin.AssemblySkeletonStep{{Id: "s1", Inputs: []string{"P0", "P1"}, OutputUnit: "U", Operation: "MACHINE", Confidence: 1}}
+	in, err := skeletonAIInputOf(r)
+	require.NoError(t, err)
+	in.Pieces = in.Pieces[:2]
+	units := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		units = append(units, fmt.Sprintf(`{"pieces":["P%d","P%d"],"name":"pair %d","reason":""}`, 2*i, 2*i+1, i))
+	}
+	out, err := parseSkeletonAI(`{"order":[{"step":"s1","reason":""}],"picks":[],"warnings":[],"units":[`+strings.Join(units, ",")+`]}`, in)
+	require.NoError(t, err)
+	require.Len(t, out.Units, 4, "at most 2 × pieces units")
+	require.Equal(t, 1, strings.Count(strings.Join(out.Notes, "\n"), "more than 4 units; the rest are dropped"))
 }
