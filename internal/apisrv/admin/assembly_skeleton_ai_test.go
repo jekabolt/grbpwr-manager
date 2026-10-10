@@ -809,6 +809,34 @@ func TestSkeletonAIDecodeNeverChoosesAnInnerObject(t *testing.T) {
 	require.Contains(t, strings.Join(out.Notes, "\n"), "units[0] is not an object", "the inner object is read as a (malformed) unit")
 }
 
+// A shape-invalid outer object is skipped whole: an object of the answer's shape nested in it is
+// never a candidate, so the reply is refused (strict), not answered by the inner object.
+func TestSkeletonAIDecodeNeverAcceptsAnObjectNestedInAnInvalidOne(t *testing.T) {
+	for name, raw := range map[string]string{
+		"wrapper":           `{"wrapper":` + skeletonAIGoodAnswer + `}`,
+		"wrapper in prose":  "Here: " + `{"wrapper":` + skeletonAIGoodAnswer + `} done`,
+		"wrapper of a list": `{"answers":[` + skeletonAIGoodAnswer + `]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := skeletonAIDecode(raw)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "unknown field")
+		})
+	}
+}
+
+// Of several shape-valid top-level objects the one with the most order items wins, a tie the later.
+func TestSkeletonAIDecodePrefersTheLongestOrder(t *testing.T) {
+	ans, err := skeletonAIDecode(skeletonAIGoodAnswer + " Example: " + skeletonAIDecoyEmpty)
+	require.NoError(t, err)
+	require.Len(t, *ans.Order, 4)
+	require.Equal(t, "s5", *(*ans.Order)[2].Step, "the answer, not the trailing empty example")
+
+	ans, err = skeletonAIDecode(skeletonAIDecoyComplete + " Final: " + skeletonAIGoodAnswer)
+	require.NoError(t, err)
+	require.Equal(t, "s5", *(*ans.Order)[2].Step, "a tie goes to the later object")
+}
+
 // When nothing passes, the error is the one of the attempt that read furthest — not the prose's.
 func TestSkeletonAIDecodeReportsTheFurthestAttempt(t *testing.T) {
 	_, err := skeletonAIDecode(`Sure {x} {"order":[{"step":"s1","reason":""}],"picks":[]} thanks`)
@@ -842,6 +870,7 @@ func TestSkeletonAIDecodeToleratesProseAroundTheObject(t *testing.T) {
 		"two objects":             skeletonAIGoodAnswer + " {}",
 		"trailing prose with {}":  skeletonAIGoodAnswer + "\nUnits like {} are left out.",
 		"empty-order decoy first": "Example: '" + skeletonAIDecoyEmpty + "'\nFinal: " + skeletonAIGoodAnswer,
+		"empty decoy after":       skeletonAIGoodAnswer + "\nExample: " + skeletonAIDecoyEmpty,
 		"complete decoy first":    "Example: '" + skeletonAIDecoyComplete + "'\nFinal: " + skeletonAIGoodAnswer,
 	} {
 		t.Run(name, func(t *testing.T) {
