@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -840,55 +841,78 @@ type skeletonAIAnswerWarning struct {
 }
 
 // skeletonAIMaxObjectTries — how many '{' of the reply are tried as the start of the answer.
-const skeletonAIMaxObjectTries = 16
+const skeletonAIMaxObjectTries = 64
 
-// skeletonAIDecode reads ONE JSON object of the answer's shape out of the reply. A model sometimes
-// writes prose, a fence or both around the object (JSON mode notwithstanding), so the reply is read
-// from its first '{' — and, if that does not decode, from each next '{' (prose may hold a brace),
-// at most skeletonAIMaxObjectTries — and whatever follows the object is ignored. The shape stays
-// strict: unknown members, wrong types and missing required members fail the decode.
+// skeletonAIDecode reads the answer's JSON object out of the reply. A model sometimes writes prose, a
+// fence or both around the object (JSON mode notwithstanding), and the prose may quote an example
+// object. So every '{' is tried as a start (at most skeletonAIMaxObjectTries attempts); a start
+// whose ONE JSON value decodes and passes the shape check (skeletonAIDecodeAt) is a candidate, and
+// the braces inside a candidate are skipped (an inner object is never the answer). The LAST
+// candidate wins: the final top-level answer, never an example quoted before it. Text after a
+// candidate is not read as part of it. When nothing passes, the error of the attempt that read
+// furthest is returned.
 func skeletonAIDecode(raw string) (skeletonAIAnswer, error) {
 	body := strings.TrimSpace(raw)
-	var firstErr error
+	var (
+		best     skeletonAIAnswer
+		found    bool
+		bestErr  error
+		bestRead = -1
+	)
 	for off, tries := 0, 0; tries < skeletonAIMaxObjectTries; tries++ {
 		i := strings.IndexByte(body[off:], '{')
 		if i < 0 {
 			break
 		}
 		off += i
-		ans, err := skeletonAIDecodeAt(body[off:])
+		ans, read, err := skeletonAIDecodeAt(body[off:])
 		if err == nil {
-			return ans, nil
+			best, found = ans, true
+			off += read // skip the candidate's own inner objects
+			continue
 		}
-		if firstErr == nil {
-			firstErr = err
+		if read > bestRead {
+			bestErr, bestRead = err, read
 		}
 		off++
 	}
-	if firstErr == nil {
-		firstErr = fmt.Errorf("no JSON object in the reply")
+	switch {
+	case found:
+		return best, nil
+	case bestErr != nil:
+		return skeletonAIAnswer{}, bestErr
 	}
-	return skeletonAIAnswer{}, firstErr
+	return skeletonAIAnswer{}, fmt.Errorf("no JSON object in the reply")
 }
 
 // skeletonAIDecodeAt decodes exactly one JSON value from the start of body (what follows it is not
-// read) and checks the required members.
-func skeletonAIDecodeAt(body string) (skeletonAIAnswer, error) {
-	var ans skeletonAIAnswer
+// read) and checks the required members. read is how far the attempt got: the value's length when
+// it decoded, else the offset of the failure.
+func skeletonAIDecodeAt(body string) (ans skeletonAIAnswer, read int, err error) {
 	dec := json.NewDecoder(strings.NewReader(body))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&ans); err != nil {
-		return ans, fmt.Errorf("not the answer's JSON shape: %s", patternPiecesDecodeWhy(err))
+	if derr := dec.Decode(&ans); derr != nil {
+		read = int(dec.InputOffset())
+		var se *json.SyntaxError
+		var te *json.UnmarshalTypeError
+		switch {
+		case errors.As(derr, &se):
+			read = int(se.Offset)
+		case errors.As(derr, &te):
+			read = int(te.Offset)
+		}
+		return ans, read, fmt.Errorf("not the answer's JSON shape: %s", patternPiecesDecodeWhy(derr))
 	}
+	read = int(dec.InputOffset())
 	switch {
 	case ans.Order == nil:
-		return ans, fmt.Errorf("no order member")
+		return ans, read, fmt.Errorf("no order member")
 	case ans.Picks == nil:
-		return ans, fmt.Errorf("no picks member")
+		return ans, read, fmt.Errorf("no picks member")
 	case ans.Warnings == nil:
-		return ans, fmt.Errorf("no warnings member")
+		return ans, read, fmt.Errorf("no warnings member")
 	}
-	return ans, nil
+	return ans, read, nil
 }
 
 // parseSkeletonAI validates the model's answer against the request. A structural violation (not one

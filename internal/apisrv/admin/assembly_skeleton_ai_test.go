@@ -791,24 +791,64 @@ func TestParseSkeletonAIUnitsCap(t *testing.T) {
 	require.Equal(t, 1, strings.Count(strings.Join(out.Notes, "\n"), "more than 4 units; the rest are dropped"))
 }
 
+// Decoys: an example object in the prose, shape-valid, before the real answer. The empty-order one
+// would cost a paid retry, the complete one would silently replace the answer.
+const (
+	skeletonAIDecoyEmpty    = `{"order":[],"picks":[],"warnings":[]}`
+	skeletonAIDecoyComplete = `{"order":[{"step":"s1","reason":""},{"step":"s3","reason":""},{"step":"s4","reason":""},{"step":"s5","reason":""}],"picks":[],"warnings":[]}`
+)
+
+// An object of the answer's shape nested INSIDE the answer (units are read raw, so any JSON fits
+// there) is never chosen: the braces inside a candidate are skipped.
+func TestSkeletonAIDecodeNeverChoosesAnInnerObject(t *testing.T) {
+	raw := strings.TrimSuffix(skeletonAIGoodAnswer, "}") + `,"units":[` + skeletonAIDecoyComplete + `]}`
+	out, err := parseSkeletonAI("Answer: "+raw, skeletonAITestInput(t))
+	require.NoError(t, err)
+	require.Equal(t, "s5", out.Order[2].StepId)
+	require.Len(t, out.Picks, 1)
+	require.Contains(t, strings.Join(out.Notes, "\n"), "units[0] is not an object", "the inner object is read as a (malformed) unit")
+}
+
+// When nothing passes, the error is the one of the attempt that read furthest — not the prose's.
+func TestSkeletonAIDecodeReportsTheFurthestAttempt(t *testing.T) {
+	_, err := skeletonAIDecode(`Sure {x} {"order":[{"step":"s1","reason":""}],"picks":[]} thanks`)
+	require.EqualError(t, err, "no warnings member")
+}
+
+// The decoy before the answer costs no retry: one provider call, the final answer offered.
+func TestSuggestAssemblySkeletonDecoyIsNoRetry(t *testing.T) {
+	reply := "Example: '" + skeletonAIDecoyEmpty + "'\nFinal: " + skeletonAIGoodAnswer
+	rig := newSKRig(t, nil, ppReply(reply, 0.01), ppReply(skeletonAIDecoyComplete, 0.02))
+	res, err := rig.s.SuggestAssemblySkeleton(adminCtx("alice"), skeletonAITestRequest())
+	require.NoError(t, err)
+	require.Equal(t, 1, rig.providerCalls())
+	require.Len(t, res.Order, 4)
+	require.Equal(t, "s5", res.Order[2].StepId)
+	require.Len(t, res.Picks, 1)
+}
+
 // A reply with prose or a fence around the object decodes; text after the object is ignored; what
 // holds no answer object still fails.
 func TestSkeletonAIDecodeToleratesProseAroundTheObject(t *testing.T) {
 	in := skeletonAITestInput(t)
 	for name, raw := range map[string]string{
-		"bare":                  skeletonAIGoodAnswer,
-		"fence":                 "```json\n" + skeletonAIGoodAnswer + "\n```",
-		"prose prefix":          "Here is my review of the skeleton.\n\n" + skeletonAIGoodAnswer,
-		"prose then fence":      "Here is the JSON:\n```json\n" + skeletonAIGoodAnswer + "\n```\nHope it helps.",
-		"trailing prose":        skeletonAIGoodAnswer + "\n\nNote: s5 could also go last.",
-		"a brace in the prose":  "The units {collar, stand} come first. " + skeletonAIGoodAnswer,
-		"an empty object first": "Template: {}\n" + skeletonAIGoodAnswer,
-		"two objects":           skeletonAIGoodAnswer + " {}",
+		"bare":                    skeletonAIGoodAnswer,
+		"fence":                   "```json\n" + skeletonAIGoodAnswer + "\n```",
+		"prose prefix":            "Here is my review of the skeleton.\n\n" + skeletonAIGoodAnswer,
+		"prose then fence":        "Here is the JSON:\n```json\n" + skeletonAIGoodAnswer + "\n```\nHope it helps.",
+		"trailing prose":          skeletonAIGoodAnswer + "\n\nNote: s5 could also go last.",
+		"a brace in the prose":    "The units {collar, stand} come first. " + skeletonAIGoodAnswer,
+		"an empty object first":   "Template: {}\n" + skeletonAIGoodAnswer,
+		"two objects":             skeletonAIGoodAnswer + " {}",
+		"trailing prose with {}":  skeletonAIGoodAnswer + "\nUnits like {} are left out.",
+		"empty-order decoy first": "Example: '" + skeletonAIDecoyEmpty + "'\nFinal: " + skeletonAIGoodAnswer,
+		"complete decoy first":    "Example: '" + skeletonAIDecoyComplete + "'\nFinal: " + skeletonAIGoodAnswer,
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := parseSkeletonAI(raw, in)
 			require.NoError(t, err)
 			require.Len(t, out.Order, 4)
+			require.Equal(t, "s5", out.Order[2].StepId, "the final answer, not a decoy")
 			require.Len(t, out.Picks, 1)
 		})
 	}
