@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (426 rpc) ----
+// ---- admin (427 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -376,6 +376,14 @@ func (c *Client) CancelOrder(ctx context.Context, in *admin.CancelOrderRequest) 
 func (c *Client) CheckProductionRunReadiness(ctx context.Context, in *admin.CheckProductionRunReadinessRequest) (*admin.CheckProductionRunReadinessResponse, error) {
 	out := new(admin.CheckProductionRunReadinessResponse)
 	if err := c.call(ctx, "POST", "/api/admin/production-runs/readiness", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ClassifyPatternPages(ctx context.Context, in *admin.ClassifyPatternPagesRequest) (*admin.ClassifyPatternPagesResponse, error) {
+	out := new(admin.ClassifyPatternPagesResponse)
+	if err := c.call(ctx, "POST", "/api/admin/pattern-import/pages:classify", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

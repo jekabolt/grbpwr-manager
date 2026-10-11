@@ -2690,6 +2690,29 @@ service AdminService {
     };
   }
 
+  // ClassifyPatternPages (pattern import, A9) — ONE sync vision+JSON call (chat.pattern_pages) that
+  // says WHAT each page of an imported pattern PDF is, from a small picture of the page (media_id, a
+  // PNG of ≤ 1024 px on its long side) and the client's own page statistics (size, line length,
+  // piece-sized outlines, tile marks, amount of text, a text excerpt). One call per file, so the
+  // model sees the neighbouring pages. role is one of: pattern_tile (a 1:1 part of an assembled
+  // sheet), pattern_sheet (a whole 1:1 sheet), overview (a reduced layout of the pieces),
+  // instructions (sewing steps, diagrams), cutting_layout (the pieces laid on the fabric), cover,
+  // table (sizes, consumption), other. The server validates the answer: unknown pages are dropped, a
+  // role outside the list becomes "other" with a warning, the confidence is clamped to 0..1, the
+  // evidence is kept to 3 quotes of ≤ 120 runes. The model never moves geometry: the client decides,
+  // the answer is one piece of evidence. Nothing is stored; an identical request within an hour is
+  // answered from process memory (cached) unless force. tech_card_id is optional (0 = no card yet).
+  //
+  // InvalidArgument: 0 or more than 40 pages, a page_no outside 1..999 or listed twice, a page
+  // without media_id, a media_id sent twice, an excerpt over 600 runes. FailedPrecondition: an image
+  // is not a picture.
+  rpc ClassifyPatternPages(ClassifyPatternPagesRequest) returns (ClassifyPatternPagesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/pattern-import/pages:classify"
+      body: "*"
+    };
+  }
+
   // SuggestAssemblySkeleton (assembly skeleton, lane E) — ONE sync JSON call (chat.assembly_skeleton)
   // that gives a SECOND OPINION on the assembly skeleton the client read off the pattern. The client
   // builds the skeleton itself (pieces → seams → units → order, deterministic) and sends it here as
@@ -11220,6 +11243,49 @@ message SuggestPatternPiecesResponse {
   int32 completion_tokens = 4;
   string cost_usd = 5; // the provider's reported charge, "" = not reported
   repeated string warnings = 6; // marks left unnamed, codes refused, duplicate codes
+  bool cached = 7; // true = an identical request was answered within the hour, no call made
+}
+
+// PATTERN IMPORT · PAGE ROLES messages (ClassifyPatternPages).
+
+// PatternPageEvidence is one page of the pattern file: its picture and what the client measured on it.
+message PatternPageEvidence {
+  int32 page_no = 1; // the page number in the file, 1..999, unique in the request
+  int32 media_id = 2; // the page rendered as a PNG of ≤ 1024 px on its long side
+  double width_mm = 3; // the page's size as printed
+  double height_mm = 4;
+  string text_excerpt = 5; // the page's text as extracted, ≤ 600 runes
+  double line_length_m = 6; // the total length of the drawn lines, metres
+  int32 piece_sized_outlines = 7; // closed outlines big enough to be a pattern piece
+  bool has_tile_marks = 8; // tile/registration marks (crosses, triangles, page labels) were found
+  int32 text_chars = 9; // characters of text on the whole page (the excerpt may be shorter)
+}
+
+message ClassifyPatternPagesRequest {
+  int32 tech_card_id = 1; // optional (0 = no card yet): the card the import lands on, for the log
+  string file_name = 2; // the pattern file's name, ≤ 200 runes (data for the model, e.g. "instructions.pdf")
+  repeated PatternPageEvidence pages = 3; // 1..40 pages, one picture each
+  string language_hint = 4; // the pattern's language ("de", "ru"), "" = unknown
+  bool force = 5; // ask again even when an identical request was answered within the hour
+}
+
+// PatternPageRole is the model's reading of one page, validated by the server.
+message PatternPageRole {
+  int32 page_no = 1;
+  // role — pattern_tile, pattern_sheet, overview, instructions, cutting_layout, cover, table or
+  // other (also when the model's role was outside the list; the warning says so).
+  string role = 2;
+  double confidence = 3; // 0..1, how sure the model is of the role
+  repeated string evidence = 4; // short quotes or visual facts the model relied on (≤ 3, ≤ 120 runes each)
+}
+
+message ClassifyPatternPagesResponse {
+  repeated PatternPageRole pages = 1; // one per classified page, in page_no order
+  string model = 2; // the model that answered
+  int32 prompt_tokens = 3;
+  int32 completion_tokens = 4;
+  string cost_usd = 5; // the provider's reported charge, "" = not reported
+  repeated string warnings = 6; // pages left unclassified, roles outside the list, unpriced calls
   bool cached = 7; // true = an identical request was answered within the hour, no call made
 }
 

@@ -153,6 +153,10 @@ type Server struct {
 	// presses coalesced in flight (pattern_pieces.go). Zero values work.
 	patternPiecesCache  patternPiecesCache
 	patternPiecesFlight singleflight.Group
+	// patternPagesCache / patternPagesFlight — ClassifyPatternPages answers for an hour and identical
+	// presses coalesced in flight (pattern_pages.go). Zero values work.
+	patternPagesCache  patternPagesCache
+	patternPagesFlight singleflight.Group
 	// skeletonAICache / skeletonAIFlight — SuggestAssemblySkeleton answers for an hour and identical
 	// presses coalesced in flight (assembly_skeleton_ai.go). Zero values work.
 	skeletonAICache  skeletonAICache

@@ -46,6 +46,8 @@ var purposes = []Purpose{
 		"design → flat: writes the garment's join list from its reference photos", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposePatternPieces, "pattern piece names",
 		"tech card → patterns → import: names the numbered pieces of an imported pattern", PurposeGroupChat, entity.AICapabilityChat},
+	{entity.AIPurposePatternPages, "pattern page roles",
+		"tech card → patterns → import: says what each page of a pattern file is (tile, overview, instructions …)", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeAssemblySkeleton, "assembly skeleton",
 		"tech card → operations → suggest skeleton → ask ai: a second opinion on the order, the ambiguous joins and plausibility", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeBoardLabel, "board labels",

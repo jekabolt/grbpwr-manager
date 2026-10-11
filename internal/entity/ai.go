@@ -129,6 +129,9 @@ const (
 	// AIPurposePatternPieces — pattern import (F9, 0408): one vision+JSON call naming the numbered
 	// pieces of an imported sewing pattern (code, name, fabrics, cut quantity, fold, pair).
 	AIPurposePatternPieces = "chat.pattern_pieces"
+	// AIPurposePatternPages — pattern import (A9): one vision+JSON call saying what each page of an
+	// imported pattern file is (pattern tile, whole sheet, overview, instructions, cutting layout …).
+	AIPurposePatternPages = "chat.pattern_pages"
 	// AIPurposeAssemblySkeleton — the assembly skeleton's second opinion (lane E, 0409): one JSON
 	// call reading the skeleton the client built off the pattern and suggesting an order, a reading
 	// per ambiguous join and plausibility warnings. Shown marked AI, applied only on a press.
@@ -151,7 +154,7 @@ const (
 func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposeAssemblySkeleton,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposePatternPages, AIPurposeAssemblySkeleton,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
@@ -167,7 +170,7 @@ func IsAIPurpose(v string) bool {
 func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposeAssemblySkeleton,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposePatternPages, AIPurposeAssemblySkeleton,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas:
 		return AICapabilityChat
