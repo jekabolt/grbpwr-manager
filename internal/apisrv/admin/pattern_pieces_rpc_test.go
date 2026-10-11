@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -44,6 +45,9 @@ func ppReply(content string, cost any) func(http.ResponseWriter) {
 func newPPRig(t *testing.T, gate func(), replies ...func(http.ResponseWriter)) *ppRig {
 	t.Helper()
 	rig := &ppRig{}
+	// The pictures must be on the bucket's own hosts (dto.IsManagedMediaURL, fail-closed when empty).
+	dto.SetManagedPatternHosts("files.grbpwr.com")
+	t.Cleanup(func() { dto.SetManagedPatternHosts() })
 	client, _ := newFakeOpenRouter(t, func(w http.ResponseWriter) {
 		rig.mu.Lock()
 		i := rig.calls
@@ -66,8 +70,8 @@ func newPPRig(t *testing.T, gate func(), replies ...func(http.ResponseWriter)) *
 
 func (r *ppRig) picturesOK() {
 	r.media.EXPECT().GetMediaByIds(mock.Anything, []int{100, 101}).Return(map[int]entity.MediaFull{
-		100: {Id: 100, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/sheet.png"}},
-		101: {Id: 101, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/crop.png"}},
+		100: {Id: 100, CreatedAt: time.Now(), MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/sheet.png"}},
+		101: {Id: 101, CreatedAt: time.Now(), MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/crop.png"}},
 	}, nil).Maybe()
 }
 
@@ -166,8 +170,8 @@ func TestSuggestPatternPiecesTwoInvalidAnswers(t *testing.T) {
 func TestSuggestPatternPiecesRefusedMediaSpendsNothing(t *testing.T) {
 	rig := newPPRig(t, nil, ppReply(ppAnswer(1, 2, 3), 0.01))
 	rig.media.EXPECT().GetMediaByIds(mock.Anything, []int{100, 101}).Return(map[int]entity.MediaFull{
-		100: {Id: 100, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/sheet.glb"}},
-		101: {Id: 101, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/crop.png"}},
+		100: {Id: 100, CreatedAt: time.Now(), MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/sheet.glb"}},
+		101: {Id: 101, CreatedAt: time.Now(), MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/crop.png"}},
 	}, nil).Once()
 	_, err := rig.s.SuggestPatternPieces(adminCtx("alice"), patternPiecesTestRequest())
 	require.Equal(t, codes.FailedPrecondition, status.Code(err), "%v", err)
@@ -177,7 +181,7 @@ func TestSuggestPatternPiecesRefusedMediaSpendsNothing(t *testing.T) {
 	// A missing file too.
 	rig2 := newPPRig(t, nil, ppReply(ppAnswer(1, 2, 3), 0.01))
 	rig2.media.EXPECT().GetMediaByIds(mock.Anything, []int{100, 101}).Return(map[int]entity.MediaFull{
-		100: {Id: 100, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/sheet.png"}},
+		100: {Id: 100, CreatedAt: time.Now(), MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/sheet.png"}},
 	}, nil).Once()
 	_, err = rig2.s.SuggestPatternPieces(adminCtx("alice"), patternPiecesTestRequest())
 	require.Equal(t, codes.InvalidArgument, status.Code(err))

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -165,47 +166,52 @@ func ppgPage(n int, role string) string {
 
 func ppgAnswer(pages ...string) string { return `{"pages":[` + strings.Join(pages, ",") + `]}` }
 
-// TestParsePatternPagesCleansTheAnswer — roles of the list and their synonyms pass, a role outside the
-// list is "other" with a warning, unasked and repeated pages are dropped, confidence clamped, evidence
-// kept to 3 × 120 runes, page order.
+// TestParsePatternPagesCleansTheAnswer — roles of the list and the few safe synonyms pass; a role
+// outside them LEAVES THE PAGE OUT (never "other" with the model's confidence) and makes the answer
+// incomplete; unasked and repeated pages are dropped, confidence clamped, evidence kept to 3 × 120
+// runes, page order.
 func TestParsePatternPagesCleansTheAnswer(t *testing.T) {
 	in := patternPagesTestInput(t)
 	long := strings.Repeat("x", patternPagesMaxEvidenceRune+30)
 	raw := "```json\n" + ppgAnswer(
 		`{"page_no":3,"role":"Pattern-Tile","confidence":1.7,"evidence":["a","b","c","d","`+long+`"]}`,
-		`{"page_no":2,"role":"sewing instructions","confidence":-0.2,"evidence":[]}`,
-		ppgPage(1, "fashion photo"),
+		`{"page_no":2,"role":"instruction","confidence":-0.2,"evidence":[]}`,
+		`{"page_no":1,"role":"full_scale_pattern_page","confidence":0.98,"evidence":["x"]}`,
 		ppgPage(9, "cover"),
 		ppgPage(2, "cover"),
 	) + "\n```"
-	out, warnings, complete, err := parsePatternPages(raw, in)
+	out, warnings, complete, unknown, err := parsePatternPages(raw, in)
 	require.NoError(t, err)
-	require.True(t, complete)
-	require.Len(t, out, 3)
-	require.EqualValues(t, 1, out[0].PageNo)
-	require.Equal(t, "other", out[0].Role)
-	require.Equal(t, "instructions", out[1].Role)
-	require.Zero(t, out[1].Confidence)
-	require.Equal(t, "pattern_tile", out[2].Role)
-	require.EqualValues(t, 1, out[2].Confidence)
-	require.Equal(t, []string{"a", "b", "c"}, out[2].Evidence)
+	require.False(t, complete, "a page left out for its role is not a complete answer")
+	require.Equal(t, 1, unknown)
+	require.Len(t, out, 2, "page 1 is left out, not read as other")
+	require.EqualValues(t, 2, out[0].PageNo)
+	require.Equal(t, "instructions", out[0].Role)
+	require.Zero(t, out[0].Confidence)
+	require.Equal(t, "pattern_tile", out[1].Role)
+	require.EqualValues(t, 1, out[1].Confidence)
+	require.Equal(t, []string{"a", "b", "c"}, out[1].Evidence)
 	joined := strings.Join(warnings, "\n")
-	require.Contains(t, joined, `page 1: role "fashion photo" is not one of the roles; read as other`)
+	require.Contains(t, joined, `page 1: role "full_scale_pattern_page" is not one of the roles; left out`)
 	require.Contains(t, joined, "page 9, which was not asked")
 	require.Contains(t, joined, "page 2: classified twice")
-
 	for _, p := range out {
 		_, known := patternPageRoleOf(p.Role)
 		require.True(t, known, "every role out is of the closed list")
 	}
-	_, _, _, err = parsePatternPages(ppgAnswer(`{"page_no":1,"role":"cover","confidence":0.5,"evidence":["`+long+`"]}`), in)
+
+	// Negative control: the same answer with a role of the list for page 1 is complete.
+	out, _, complete, unknown, err = parsePatternPages(ppgAnswer(ppgPage(1, "other"), ppgPage(2, "cover"), ppgPage(3, "tile")), in)
 	require.NoError(t, err)
+	require.True(t, complete)
+	require.Zero(t, unknown)
+	require.Equal(t, "other", out[0].Role, "other said by the model is a role of the list")
 }
 
 // TestParsePatternPagesPartialIsNotComplete — a page left out is warned and the answer is not
 // complete (so it is never cached).
 func TestParsePatternPagesPartialIsNotComplete(t *testing.T) {
-	out, warnings, complete, err := parsePatternPages(ppgAnswer(ppgPage(1, "cover"), ppgPage(3, "pattern_tile")), patternPagesTestInput(t))
+	out, warnings, complete, _, err := parsePatternPages(ppgAnswer(ppgPage(1, "cover"), ppgPage(3, "pattern_tile")), patternPagesTestInput(t))
 	require.NoError(t, err)
 	require.False(t, complete)
 	require.Len(t, out, 2)
@@ -227,12 +233,13 @@ func TestParsePatternPagesRefusesStructuralViolations(t *testing.T) {
 		"string page":     `{"pages":[{"page_no":"1","role":"cover","confidence":0.5,"evidence":[]}]}`,
 		"percent":         `{"pages":[{"page_no":1,"role":"cover","confidence":"90%","evidence":[]}]}`,
 		"only unasked":    ppgAnswer(ppgPage(7, "cover")),
+		"only unknown":    ppgAnswer(ppgPage(1, "photo")),
 		"empty":           `{"pages":[]}`,
 		"python fence":    "```python\n" + ppgAnswer(ppgPage(1, "cover")) + "\n```",
 		"open fence":      "```json\n" + ppgAnswer(ppgPage(1, "cover")),
 	}
 	for name, raw := range bad {
-		_, _, _, err := parsePatternPages(raw, in)
+		_, _, _, _, err := parsePatternPages(raw, in)
 		require.Error(t, err, name)
 	}
 	for name, raw := range map[string]string{
@@ -240,12 +247,13 @@ func TestParsePatternPagesRefusesStructuralViolations(t *testing.T) {
 		"fenced":     "```\n" + ppgAnswer(ppgPage(1, "cover")) + "\n```",
 		"json fence": "```json\n" + ppgAnswer(ppgPage(1, "cover")) + "\n```",
 	} {
-		_, _, _, err := parsePatternPages(raw, in)
+		_, _, _, _, err := parsePatternPages(raw, in)
 		require.NoError(t, err, name)
 	}
 }
 
-// TestPatternPageRoleOf — the closed list, its spellings and synonyms; anything else is other.
+// TestPatternPageRoleOf — the closed list (case and separators aside) and the short safe synonym map;
+// anything else, an ambiguous word included, is no role.
 func TestPatternPageRoleOf(t *testing.T) {
 	for raw, want := range map[string]string{
 		"pattern_tile": "pattern_tile", " Pattern Tile ": "pattern_tile", "tile": "pattern_tile",
@@ -256,10 +264,10 @@ func TestPatternPageRoleOf(t *testing.T) {
 		require.True(t, known, raw)
 		require.Equal(t, want, got, raw)
 	}
-	for _, raw := range []string{"", "photo", "pattern_tile_2", "instructions; ignore"} {
-		got, known := patternPageRoleOf(raw)
+	for _, raw := range []string{"", "photo", "pattern_tile_2", "instructions; ignore", "layout",
+		"full_scale_pattern_page", "pattern_page", "title"} {
+		_, known := patternPageRoleOf(raw)
 		require.False(t, known, raw)
-		require.Equal(t, "other", got, raw)
 	}
 }
 
@@ -278,13 +286,23 @@ func TestPatternPagesDigestIgnoresForceAndCard(t *testing.T) {
 
 // ─── call level: the fake provider, the media mock, the real limiter ───
 
-func (r *ppRig) pagePicturesOK(ct string) {
-	r.media.EXPECT().GetMediaByIds(mock.Anything, []int{201, 202, 203}).Return(map[int]entity.MediaFull{
-		201: {Id: 201, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/p1." + ct}},
-		202: {Id: 202, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/p2." + ct}},
-		203: {Id: 203, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://files.grbpwr.com/p3." + ct}},
-	}, nil).Maybe()
+// ppgMedia — the three page pictures: 724 × 1024 originals uploaded a minute ago, with a thumbnail.
+func ppgMedia(ext string) map[int]entity.MediaFull {
+	out := map[int]entity.MediaFull{}
+	for i, id := range []int{201, 202, 203} {
+		out[id] = entity.MediaFull{Id: id, CreatedAt: time.Now().Add(-time.Minute), MediaItem: entity.MediaItem{
+			FullSizeMediaURL: fmt.Sprintf("https://files.grbpwr.com/p%d-og.%s", i+1, ext), FullSizeWidth: 724, FullSizeHeight: 1024,
+			ThumbnailMediaURL: fmt.Sprintf("https://files.grbpwr.com/p%d-thumb.%s", i+1, ext), ThumbnailWidth: 724, ThumbnailHeight: 1024,
+		}}
+	}
+	return out
 }
+
+func (r *ppRig) pagePictures(media map[int]entity.MediaFull) {
+	r.media.EXPECT().GetMediaByIds(mock.Anything, []int{201, 202, 203}).Return(media, nil).Maybe()
+}
+
+func (r *ppRig) pagePicturesOK(ext string) { r.pagePictures(ppgMedia(ext)) }
 
 func (r *ppRig) pageCacheEntries() int {
 	r.s.patternPagesCache.mu.Lock()
@@ -292,11 +310,14 @@ func (r *ppRig) pageCacheEntries() int {
 	return len(r.s.patternPagesCache.entries)
 }
 
-// invalid → valid: two calls, the spend of both, one cache entry; the next press is a cache hit
-// that spends no slot and no call.
+func ppgFull() string {
+	return ppgAnswer(ppgPage(1, "cover"), ppgPage(2, "instructions"), ppgPage(3, "pattern_tile"))
+}
+
+// invalid → valid: two calls, TWO slots (every paid attempt spends one), the spend of both, one
+// cache entry; the next press is a cache hit that spends no slot and no call.
 func TestClassifyPatternPagesRetriesSumsAndCaches(t *testing.T) {
-	full := ppgAnswer(ppgPage(1, "cover"), ppgPage(2, "instructions"), ppgPage(3, "pattern_tile"))
-	rig := newPPRig(t, nil, ppReply("Sure! {", 0.01), ppReply(full, 0.02))
+	rig := newPPRig(t, nil, ppReply("Sure! {", 0.01), ppReply(ppgFull(), 0.02))
 	rig.pagePicturesOK("png")
 	res, err := rig.s.ClassifyPatternPages(adminCtx("alice"), patternPagesTestRequest())
 	require.NoError(t, err)
@@ -314,7 +335,64 @@ func TestClassifyPatternPagesRetriesSumsAndCaches(t *testing.T) {
 	require.Zero(t, hit.PromptTokens)
 	require.Empty(t, hit.CostUsd)
 	require.Equal(t, 2, rig.providerCalls(), "a cache hit calls nobody")
-	require.Equal(t, 1, rig.slotsUsed("alice"))
+	require.Equal(t, 2, rig.slotsUsed("alice"), "two paid attempts = two slots; the cache hit spends none")
+}
+
+// A single good answer spends exactly one slot (negative control of the retry accounting).
+func TestClassifyPatternPagesOneCallOneSlot(t *testing.T) {
+	rig := newPPRig(t, nil, ppReply(ppgFull(), 0.01))
+	rig.pagePicturesOK("png")
+	_, err := rig.s.ClassifyPatternPages(adminCtx("erin"), patternPagesTestRequest())
+	require.NoError(t, err)
+	require.Equal(t, 1, rig.providerCalls())
+	require.Equal(t, 1, rig.slotsUsed("erin"))
+}
+
+// No slot left for the retry: the retry is not sent; the refusal carries the first call's spend.
+func TestClassifyPatternPagesRetryNeedsASlot(t *testing.T) {
+	rig := newPPRig(t, nil, ppReply("nope", 0.01), ppReply(ppgFull(), 0.02))
+	rig.pagePicturesOK("png")
+	for i := 0; i < enhancePerAdminCalls-1; i++ {
+		require.True(t, rig.s.enhanceRuns.allow("frank"))
+	}
+	_, err := rig.s.ClassifyPatternPages(adminCtx("frank"), patternPagesTestRequest())
+	require.Equal(t, codes.ResourceExhausted, status.Code(err), "%v", err)
+	require.Equal(t, 1, rig.providerCalls(), "the retry was never sent")
+	require.Zero(t, rig.pageCacheEntries())
+}
+
+// A role outside the list: asked once more; a good second answer is used (complete, cached).
+func TestClassifyPatternPagesUnknownRoleIsAskedAgain(t *testing.T) {
+	first := ppgAnswer(`{"page_no":1,"role":"full_scale_pattern_page","confidence":0.98,"evidence":["x"]}`,
+		ppgPage(2, "instructions"), ppgPage(3, "pattern_tile"))
+	rig := newPPRig(t, nil, ppReply(first, 0.01), ppReply(ppgFull(), 0.01))
+	rig.pagePicturesOK("png")
+	res, err := rig.s.ClassifyPatternPages(adminCtx("gina"), patternPagesTestRequest())
+	require.NoError(t, err)
+	require.Equal(t, 2, rig.providerCalls())
+	require.Len(t, res.Pages, 3)
+	require.Equal(t, "cover", res.Pages[0].Role)
+	require.Equal(t, 1, rig.pageCacheEntries())
+	require.Equal(t, 2, rig.slotsUsed("gina"))
+}
+
+// A role outside the list twice: the page is LEFT OUT with a warning (never other + 0.98), the
+// answer is returned and not cached.
+func TestClassifyPatternPagesUnknownRoleTwiceDropsThePage(t *testing.T) {
+	bad := ppgAnswer(`{"page_no":1,"role":"full_scale_pattern_page","confidence":0.98,"evidence":["x"]}`,
+		ppgPage(2, "instructions"), ppgPage(3, "pattern_tile"))
+	rig := newPPRig(t, nil, ppReply(bad, 0.01))
+	rig.pagePicturesOK("png")
+	res, err := rig.s.ClassifyPatternPages(adminCtx("hank"), patternPagesTestRequest())
+	require.NoError(t, err)
+	require.Equal(t, 2, rig.providerCalls())
+	require.Len(t, res.Pages, 2)
+	for _, p := range res.Pages {
+		require.NotEqual(t, int32(1), p.PageNo)
+	}
+	require.Contains(t, strings.Join(res.Warnings, "\n"), `page 1: role "full_scale_pattern_page" is not one of the roles; left out`)
+	require.Zero(t, rig.pageCacheEntries())
+	require.Equal(t, "0.02", res.CostUsd, "both paid attempts are reported")
 }
 
 // A partial answer is returned but never cached.
@@ -328,25 +406,85 @@ func TestClassifyPatternPagesNeverCachesAPartialAnswer(t *testing.T) {
 	require.Equal(t, 1, rig.providerCalls())
 }
 
-// A page picture that is not a picture is refused before the semaphore, the slot and the provider.
-func TestClassifyPatternPagesRefusesANonPicture(t *testing.T) {
-	rig := newPPRig(t, nil, ppReply("{}", 0.01))
-	rig.pagePicturesOK("pdf")
+// The picture doors: each refuses before the semaphore, the slot and the provider; the good media
+// passes (negative control).
+func TestClassifyPatternPagesPictureDoors(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(m map[int]entity.MediaFull)
+		code   codes.Code
+	}{
+		"not a picture": {func(m map[int]entity.MediaFull) { m[202] = withURLs(m[202], "https://files.grbpwr.com/p2.pdf") }, codes.FailedPrecondition},
+		"foreign host":  {func(m map[int]entity.MediaFull) { m[202] = withURLs(m[202], "https://evil.example/p2.png") }, codes.FailedPrecondition},
+		"plain http":    {func(m map[int]entity.MediaFull) { m[202] = withURLs(m[202], "http://files.grbpwr.com/p2.png") }, codes.FailedPrecondition},
+		"older than 2 h": {func(m map[int]entity.MediaFull) {
+			x := m[203]
+			x.CreatedAt = time.Now().Add(-3 * time.Hour)
+			m[203] = x
+		}, codes.FailedPrecondition},
+		"no created_at":   {func(m map[int]entity.MediaFull) { x := m[203]; x.CreatedAt = time.Time{}; m[203] = x }, codes.FailedPrecondition},
+		"from the future": {func(m map[int]entity.MediaFull) { x := m[203]; x.CreatedAt = time.Now().Add(time.Hour); m[203] = x }, codes.FailedPrecondition},
+		"missing file":    {func(m map[int]entity.MediaFull) { delete(m, 201) }, codes.InvalidArgument},
+		"too large":       {func(m map[int]entity.MediaFull) { x := m[201]; x.FullSizeWidth = 1025; m[201] = x }, codes.InvalidArgument},
+		"unknown size":    {func(m map[int]entity.MediaFull) { x := m[201]; x.FullSizeHeight = 0; m[201] = x }, codes.InvalidArgument},
+		"thumbnail foreign": {func(m map[int]entity.MediaFull) {
+			x := m[201]
+			x.ThumbnailMediaURL = "https://evil.example/t.png"
+			m[201] = x
+		}, codes.FailedPrecondition},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			rig := newPPRig(t, nil, ppReply(ppgFull(), 0.01))
+			media := ppgMedia("png")
+			c.mutate(media)
+			rig.pagePictures(media)
+			_, err := rig.s.ClassifyPatternPages(adminCtx("carol"), patternPagesTestRequest())
+			require.Equal(t, c.code, status.Code(err), "%v", err)
+			require.Zero(t, rig.providerCalls())
+			require.Zero(t, rig.slotsUsed("carol"))
+		})
+	}
+	// At the bounds: 1024 px long side, 1 h 59 min old.
+	rig := newPPRig(t, nil, ppReply(ppgFull(), 0.01))
+	media := ppgMedia("png")
+	x := media[201]
+	x.FullSizeWidth, x.FullSizeHeight, x.CreatedAt = 1024, 1024, time.Now().Add(-119*time.Minute)
+	media[201] = x
+	rig.pagePictures(media)
 	_, err := rig.s.ClassifyPatternPages(adminCtx("carol"), patternPagesTestRequest())
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Zero(t, rig.providerCalls())
-	require.Zero(t, rig.slotsUsed("carol"))
+	require.NoError(t, err)
 }
 
-// The pictures go to the provider in page order, the user turn carries the evidence.
-func TestClassifyPatternPagesSendsPicturesInPageOrder(t *testing.T) {
-	var seen []fakeORCall
+func withURLs(m entity.MediaFull, u string) entity.MediaFull {
+	m.FullSizeMediaURL, m.ThumbnailMediaURL = u, u
+	return m
+}
+
+// TestPatternPagesPictureSizesAggregateCap — the per-call pixel cap counts the variants sent.
+func TestPatternPagesPictureSizesAggregateCap(t *testing.T) {
+	var pics []patternImportPicture
+	var in patternPagesInput
+	for i := 1; i <= patternPagesMaxPages; i++ {
+		in.Pages = append(in.Pages, patternPageFacts{PageNo: i})
+		pics = append(pics, patternImportPicture{URL: "t", Media: entity.MediaFull{MediaItem: entity.MediaItem{
+			FullSizeMediaURL: "f", FullSizeWidth: 1024, FullSizeHeight: 1024, ThumbnailWidth: 1024, ThumbnailHeight: 1024,
+		}}})
+	}
+	err := patternPagesPictureSizes(pics, in)
+	require.Equal(t, codes.InvalidArgument, status.Code(err), "40 square 1024 px pages are over the cap")
+	for i := range pics {
+		pics[i].Media.FullSizeWidth, pics[i].Media.ThumbnailWidth = 724, 724
+	}
+	require.NoError(t, patternPagesPictureSizes(pics, in), "40 A4 pages at 1024 px fit")
+}
+
+// The thumbnails go to the provider in page order, the user turn carries the evidence.
+func TestClassifyPatternPagesSendsThumbnailsInPageOrder(t *testing.T) {
 	client, calls := newFakeOpenRouter(t, func(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant",
-				"content": ppgAnswer(ppgPage(1, "cover"), ppgPage(2, "instructions"), ppgPage(3, "pattern_tile"))}}},
-			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001},
+			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": ppgFull()}}},
+			"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001},
 		})
 	})
 	rig := newPPRig(t, nil, ppReply("{}", 0))
@@ -354,10 +492,10 @@ func TestClassifyPatternPagesSendsPicturesInPageOrder(t *testing.T) {
 	rig.pagePicturesOK("png")
 	_, err := rig.s.ClassifyPatternPages(adminCtx("dave"), patternPagesTestRequest())
 	require.NoError(t, err)
-	seen = *calls
+	seen := *calls
 	require.Len(t, seen, 1)
 	require.Equal(t, []string{
-		"https://files.grbpwr.com/p1.png", "https://files.grbpwr.com/p2.png", "https://files.grbpwr.com/p3.png",
+		"https://files.grbpwr.com/p1-thumb.png", "https://files.grbpwr.com/p2-thumb.png", "https://files.grbpwr.com/p3-thumb.png",
 	}, seen[0].Images)
 	require.Contains(t, seen[0].User, "page 2 (picture 2):")
 	require.Equal(t, patternPagesSystemPrompt, seen[0].System)

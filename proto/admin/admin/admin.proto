@@ -2682,7 +2682,8 @@ service AdminService {
   // from process memory (cached) unless force. tech_card_id is optional (0 = no card yet).
   //
   // InvalidArgument: no overview, 0 or more than 80 pieces, more than 12 crops, a duplicate mark, a
-  // crop of a mark not in pieces. FailedPrecondition: an image is not a picture.
+  // crop of a mark not in pieces. FailedPrecondition: a picture not uploaded within the last 2 hours,
+  // a picture off this store's storage, an image is not a picture.
   rpc SuggestPatternPieces(SuggestPatternPiecesRequest) returns (SuggestPatternPiecesResponse) {
     option (google.api.http) = {
       post: "/api/admin/pattern-import/pieces:suggest"
@@ -2698,14 +2699,18 @@ service AdminService {
   // sheet), pattern_sheet (a whole 1:1 sheet), overview (a reduced layout of the pieces),
   // instructions (sewing steps, diagrams), cutting_layout (the pieces laid on the fabric), cover,
   // table (sizes, consumption), other. The server validates the answer: unknown pages are dropped, a
-  // role outside the list becomes "other" with a warning, the confidence is clamped to 0..1, the
-  // evidence is kept to 3 quotes of ≤ 120 runes. The model never moves geometry: the client decides,
-  // the answer is one piece of evidence. Nothing is stored; an identical request within an hour is
-  // answered from process memory (cached) unless force. tech_card_id is optional (0 = no card yet).
+  // page whose role is outside the list is asked once more and then LEFT OUT of pages (a warning
+  // says so; never turned into "other"), the confidence is clamped to 0..1, the evidence is kept to
+  // 3 quotes of ≤ 120 runes. The model never moves geometry: the client decides, the answer is one
+  // piece of evidence. Nothing is stored; an identical request within an hour is answered from
+  // process memory (cached) unless force. tech_card_id is optional (0 = no card yet). Every paid
+  // attempt (a retry, a provider fallback) spends one call of the hourly per-admin window.
   //
   // InvalidArgument: 0 or more than 40 pages, a page_no outside 1..999 or listed twice, a page
-  // without media_id, a media_id sent twice, an excerpt over 600 runes. FailedPrecondition: an image
-  // is not a picture.
+  // without media_id, a media_id sent twice, an excerpt over 600 runes, a picture over 1024 px on
+  // its long side (or of unknown size), more than 32 M pixels of pictures in one call.
+  // FailedPrecondition: a picture not uploaded within the last 2 hours, a picture off this store's
+  // storage, a file that is not a picture.
   rpc ClassifyPatternPages(ClassifyPatternPagesRequest) returns (ClassifyPatternPagesResponse) {
     option (google.api.http) = {
       post: "/api/admin/pattern-import/pages:classify"
@@ -11273,7 +11278,7 @@ message ClassifyPatternPagesRequest {
 message PatternPageRole {
   int32 page_no = 1;
   // role — pattern_tile, pattern_sheet, overview, instructions, cutting_layout, cover, table or
-  // other (also when the model's role was outside the list; the warning says so).
+  // other. A page the model gave a role outside this list is not in the answer at all.
   string role = 2;
   double confidence = 3; // 0..1, how sure the model is of the role
   repeated string evidence = 4; // short quotes or visual facts the model relied on (≤ 3, ≤ 120 runes each)

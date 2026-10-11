@@ -210,29 +210,22 @@ type patternPiecesJob struct {
 }
 
 // patternPiecesResolvePictures — the overview and the crops as URLs the provider can read, or the
-// refusal (a missing file, a file that is not a picture).
+// refusal (a missing file, a file not uploaded for this import, a url off the bucket's hosts, a file
+// that is not a picture): patternImportPictures.
 func (s *Server) patternPiecesResolvePictures(ctx context.Context, job patternPiecesJob) ([]string, error) {
-	urls, attached, err := s.designBoardPictureURLs(ctx, job.mediaIDs)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "pattern pieces: cannot resolve the pictures",
-			slog.Int("tech_card_id", job.cardID), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "cannot read the pattern pictures")
-	}
-	if len(urls) != len(job.mediaIDs) {
-		return nil, status.Errorf(codes.InvalidArgument, "media %d has no file", patternPiecesMissingMedia(job.mediaIDs, attached))
-	}
-	refs := make([]designInputMediaRef, 0, len(urls))
-	for i, u := range urls {
-		where := "the pattern overview"
-		if i > 0 {
-			where = fmt.Sprintf("the close-up of mark %d", job.in.CropMarks[i-1])
+	where := make([]string, 0, len(job.mediaIDs))
+	for i := range job.mediaIDs {
+		if i == 0 {
+			where = append(where, "the pattern overview")
+		} else {
+			where = append(where, fmt.Sprintf("the close-up of mark %d", job.in.CropMarks[i-1]))
 		}
-		refs = append(refs, designInputMediaRef{ID: attached[i], URL: u, Where: where})
 	}
-	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
-		return nil, designNonPictureRefusal(ref, ct)
+	pics, err := s.patternImportPictures(ctx, job.mediaIDs, where, false, time.Now())
+	if err != nil {
+		return nil, err
 	}
-	return urls, nil
+	return patternImportURLs(pics), nil
 }
 
 // patternPiecesCall — the flight leader's work: cache → pictures → semaphore → one hourly slot → the
@@ -600,19 +593,6 @@ func patternPiecesFinite(f float64) float64 {
 		return 0
 	}
 	return f
-}
-
-func patternPiecesMissingMedia(ids, attached []int) int {
-	have := map[int]bool{}
-	for _, id := range attached {
-		have[id] = true
-	}
-	for _, id := range ids {
-		if !have[id] {
-			return id
-		}
-	}
-	return 0
 }
 
 // patternPiecesDigest — the cache and flight key: the request as sent, less force and the card (the

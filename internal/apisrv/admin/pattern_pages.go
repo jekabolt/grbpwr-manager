@@ -34,14 +34,16 @@ import (
 // moves geometry and the client never removes a page that fits the tile grid on its word alone.
 //
 // Everything the model says is cleaned here before the client sees it (parsePatternPages): unknown or
-// repeated pages are dropped, a role outside the closed list becomes "other" with a warning, the
-// confidence is clamped, the evidence is kept to 3 × 120 runes.
+// repeated pages are dropped, a page whose role is outside the closed list is asked once more and
+// then left out with a warning (never "other"), the confidence is clamped, the evidence is kept to
+// 3 × 120 runes.
 //
 // Doors, in order, all before money (the SuggestPatternPieces recipe, pattern_pieces.go): the
 // arguments (bounded on their RAW size) → the prompt's byte ceiling → the purpose is callable → the
 // hour cache (unless force) → ONE flight per (admin, request digest) → [in the flight] the cache
-// again → the media lookup (+ not-a-picture refusal) → the shared semaphore → ONE slot of the hourly
-// window shared with EnhanceText and the labellers → the provider.
+// again → the media lookup (uploaded within 2 h, on the bucket's hosts, a picture, ≤ 1024 px) → the
+// shared semaphore → a slot of the hourly window (shared with EnhanceText and the labellers) for
+// EVERY paid attempt → the provider.
 
 const (
 	patternPagesMaxPages        = 40
@@ -52,6 +54,9 @@ const (
 	patternPagesMaxEvidenceRune = 120
 	patternPagesMaxRoleRunes    = 40
 	patternPagesMaxPromptBytes  = 96 << 10
+	patternPagesMaxPictureSide  = 1024
+	// 40 A4 pages at 1024 px (724 × 1024) are 29.7 M pixels; square pages hit the cap first.
+	patternPagesMaxTotalPixels = 32 << 20
 
 	patternPagesMaxTokens = 6000
 	patternPagesEffort    = "low"
@@ -70,15 +75,13 @@ var patternPageRoles = []string{
 	"pattern_tile", "pattern_sheet", "overview", "instructions", "cutting_layout", "cover", "table", patternPageRoleOther,
 }
 
-// patternPageRoleSynonyms — the words a model writes for a role of the list (after lowercasing and
-// "-"/" " → "_"). Anything else is "other" with a warning.
+// patternPageRoleSynonyms — the few spellings a model writes for a role that cannot mean anything
+// else (after lowercasing and "-"/" " → "_"). Deliberately short: a word that could be two roles
+// ("layout": a cutting layout or the tile plan, an overview) is NOT here and leaves the page out.
 var patternPageRoleSynonyms = map[string]string{
-	"tile": "pattern_tile", "pattern_page": "pattern_tile", "pattern_part": "pattern_tile",
-	"sheet": "pattern_sheet", "full_sheet": "pattern_sheet", "whole_sheet": "pattern_sheet",
-	"instruction": "instructions", "sewing_instructions": "instructions",
-	"layout": "cutting_layout", "cutting_plan": "cutting_layout", "cut_layout": "cutting_layout",
-	"size_table": "table", "size_chart": "table",
-	"title": "cover", "cover_page": "cover",
+	"tile": "pattern_tile", "sheet": "pattern_sheet", "instruction": "instructions",
+	"cutting_plan": "cutting_layout", "cut_layout": "cutting_layout",
+	"size_chart": "table", "size_table": "table", "cover_page": "cover",
 }
 
 // patternPagesInput — the request, cleaned, as the prompt builder and the validator read it.
@@ -157,29 +160,54 @@ type patternPagesJob struct {
 }
 
 // patternPagesResolvePictures — the page pictures as URLs the provider can read (in page order), or
-// the refusal (a missing file, a file that is not a picture).
+// the refusal: patternImportPictures (missing, not uploaded for this import, off the bucket's hosts,
+// not a picture), then the size doors. The media table records the pixel size of every variant but
+// not the byte size, so the per-page and per-call caps are in pixels: the ORIGINAL must be ≤ 1024 px
+// on its long side (what the client promises to render), and the variants sent must stay within
+// patternPagesMaxTotalPixels together. The thumbnail variant is sent when the row has one (the same
+// pixels for a ≤ 1024 px page, re-encoded smaller).
 func (s *Server) patternPagesResolvePictures(ctx context.Context, job patternPagesJob) ([]string, error) {
 	ids := make([]int, 0, len(job.in.Pages))
+	where := make([]string, 0, len(job.in.Pages))
 	for _, p := range job.in.Pages {
 		ids = append(ids, p.MediaID)
+		where = append(where, fmt.Sprintf("the picture of page %d", p.PageNo))
 	}
-	urls, attached, err := s.designBoardPictureURLs(ctx, ids)
+	pics, err := s.patternImportPictures(ctx, ids, where, true, time.Now())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "pattern pages: cannot resolve the pictures",
-			slog.Int("tech_card_id", job.cardID), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "cannot read the pattern page pictures")
+		return nil, err
 	}
-	if len(urls) != len(ids) {
-		return nil, status.Errorf(codes.InvalidArgument, "media %d has no file", patternPiecesMissingMedia(ids, attached))
+	if err := patternPagesPictureSizes(pics, job.in); err != nil {
+		return nil, err
 	}
-	refs := make([]designInputMediaRef, 0, len(urls))
-	for i, u := range urls {
-		refs = append(refs, designInputMediaRef{ID: attached[i], URL: u, Where: fmt.Sprintf("the picture of page %d", job.in.Pages[i].PageNo)})
+	return patternImportURLs(pics), nil
+}
+
+// patternPagesPictureSizes refuses a page picture over patternPagesMaxPictureSide on its long side
+// (or of unknown size) and a call whose pictures together exceed patternPagesMaxTotalPixels.
+func patternPagesPictureSizes(pics []patternImportPicture, in patternPagesInput) error {
+	total := 0
+	for i, p := range pics {
+		page := in.Pages[i].PageNo
+		w, h := p.Media.FullSizeWidth, p.Media.FullSizeHeight
+		if w <= 0 || h <= 0 {
+			return status.Errorf(codes.InvalidArgument, "page %d: the picture's size is unknown — upload it as a PNG", page)
+		}
+		if max(w, h) > patternPagesMaxPictureSide {
+			return status.Errorf(codes.InvalidArgument, "page %d: the picture is %d × %d px, at most %d px on its long side",
+				page, w, h, patternPagesMaxPictureSide)
+		}
+		sw, sh := w, h
+		if p.URL != strings.TrimSpace(p.Media.FullSizeMediaURL) && p.Media.ThumbnailWidth > 0 && p.Media.ThumbnailHeight > 0 {
+			sw, sh = p.Media.ThumbnailWidth, p.Media.ThumbnailHeight
+		}
+		total += sw * sh
 	}
-	if ref, ct, bad := designFirstNonPictureInput(refs); bad {
-		return nil, designNonPictureRefusal(ref, ct)
+	if total > patternPagesMaxTotalPixels {
+		return status.Errorf(codes.InvalidArgument, "the page pictures are %d pixels together, at most %d per call — send smaller pictures or fewer pages",
+			total, patternPagesMaxTotalPixels)
 	}
-	return urls, nil
+	return nil
 }
 
 // patternPagesCall — the flight leader's work: cache → pictures → semaphore → one hourly slot → the
@@ -204,21 +232,30 @@ func (s *Server) patternPagesCall(ctx context.Context, job patternPagesJob, budg
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
+	// EVERY PAID ATTEMPT SPENDS A SLOT: the first here, a retry before it is sent (no slot left = no
+	// retry), and after the flight every physical call the router made beyond them (a fallback inside
+	// one attempt) is booked too. A refusal after a paid call carries the spend as an ErrorInfo detail.
 	if !s.enhanceRuns.allow(job.admin) {
-		return nil, status.Errorf(codes.ResourceExhausted,
-			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts, the pattern pieces and pages and the skeleton share the limit); every call spends the AI key — try again later",
-			enhancePerAdminCalls)
+		return nil, patternImportSlotRefusal()
 	}
-
-	// EVERY PHYSICAL CALL IS COUNTED (the router books each candidate it tries into the tally, across
-	// both attempts); a refusal after a paid call carries the spend as an ErrorInfo detail.
+	slots := 1
 	tally := &aiprov.CallTally{}
 	ctx = aiprov.WithCallTally(ctx, tally)
 	var (
 		out      *pb_admin.ClassifyPatternPagesResponse
 		complete bool
+		// fallback — a validated answer that dropped pages with a role outside the list; asked
+		// once more, and returned (pages dropped, warned, never cached) when the retry gives nothing
+		// better.
+		fallback *pb_admin.ClassifyPatternPagesResponse
 	)
 	err = designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
+		if attempt > 1 {
+			if !s.enhanceRuns.allow(job.admin) {
+				return patternImportSlotRefusal()
+			}
+			slots++
+		}
 		started := time.Now()
 		res, err := s.ai.Chat(actx, purpose, aiprov.ChatRequest{
 			System: patternPagesSystemPrompt, User: job.user, ImageURLs: urls,
@@ -241,20 +278,31 @@ func (s *Server) patternPagesCall(ctx context.Context, job patternPagesJob, budg
 		if err != nil {
 			return s.patternPagesChatFailure(ctx, res, err, logAttrs)
 		}
-		roles, warnings, whole, perr := parsePatternPages(raw, in)
+		roles, warnings, whole, unknown, perr := parsePatternPages(raw, in)
 		if perr != nil {
 			// The violation names a field or a position, never the model's text.
 			slog.Default().ErrorContext(ctx, "pattern pages: the answer is not the promised JSON",
 				append(logAttrs, slog.String("violation", perr.Error()))...)
 			return status.Error(codes.Internal, designPartsUnusableMsg)
 		}
-		out = &pb_admin.ClassifyPatternPagesResponse{Pages: roles, Model: answered, Warnings: warnings}
-		complete = whole
+		answer := &pb_admin.ClassifyPatternPagesResponse{Pages: roles, Model: answered, Warnings: warnings}
 		slog.Default().InfoContext(ctx, "pattern pages", append(logAttrs,
-			slog.Int("classified", len(roles)), slog.Int("warnings", len(warnings)), slog.Bool("complete", whole))...)
+			slog.Int("classified", len(roles)), slog.Int("unknown_roles", unknown),
+			slog.Int("warnings", len(warnings)), slog.Bool("complete", whole))...)
+		if unknown > 0 && attempt < patternPagesAttempts {
+			// A role outside the list is an unusable answer for that page: ask once more.
+			fallback = answer
+			return status.Error(codes.Internal, designPartsUnusableMsg)
+		}
+		out, complete = answer, whole
 		return nil
 	})
 	spend := skeletonAISpendOf(tally.Calls())
+	s.patternImportSpendExtraSlots(job.admin, spend.calls, slots)
+	if err != nil && fallback != nil {
+		out, complete, err = fallback, false, nil
+		out.Warnings = append(out.Warnings, "the pages with a role outside the list were asked once more without a better answer; they are left out")
+	}
 	if err != nil {
 		return nil, spend.attachTo(err)
 	}
@@ -508,13 +556,14 @@ func patternPagesDecode(raw string) ([]patternPagesAnswerPage, error) {
 // parsePatternPages validates the model's answer against the request. A structural violation (not
 // one JSON object of the shape, a member missing or of the wrong type, no asked page classified) is
 // an error — the caller asks again. Within a valid answer: a page not asked (or classified twice) is
-// dropped with a warning, a role outside the list becomes "other" with a warning, the confidence is
-// clamped to 0..1, the evidence kept to 3 items of ≤ 120 runes. complete = every asked page is
-// classified (only then may the answer be cached). Roles come in page order.
-func parsePatternPages(raw string, in patternPagesInput) (out []*pb_admin.PatternPageRole, warnings []string, complete bool, err error) {
+// dropped with a warning; a role outside the list (and its short synonym map) LEAVES THE PAGE OUT
+// with a warning and is counted in unknown (the caller asks once more); the confidence is clamped to
+// 0..1, the evidence kept to 3 items of ≤ 120 runes. complete = every asked page has a role of the
+// list (only then may the answer be cached). Roles come in page order.
+func parsePatternPages(raw string, in patternPagesInput) (out []*pb_admin.PatternPageRole, warnings []string, complete bool, unknown int, err error) {
 	list, err := patternPagesDecode(raw)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, 0, err
 	}
 	asked := map[int]bool{}
 	for _, p := range in.Pages {
@@ -523,7 +572,7 @@ func parsePatternPages(raw string, in patternPagesInput) (out []*pb_admin.Patter
 	done := map[int]bool{}
 	for i, p := range list {
 		if missing := patternPagesMissingMember(p); missing != "" {
-			return nil, nil, false, fmt.Errorf("pages[%d] has no %s", i, missing)
+			return nil, nil, false, 0, fmt.Errorf("pages[%d] has no %s", i, missing)
 		}
 		n := *p.PageNo
 		if !asked[n] {
@@ -537,8 +586,12 @@ func parsePatternPages(raw string, in patternPagesInput) (out []*pb_admin.Patter
 		done[n] = true
 		role, known := patternPageRoleOf(*p.Role)
 		if !known {
-			warnings = append(warnings, fmt.Sprintf("page %d: role %q is not one of the roles; read as other",
+			// NEVER "other" with the model's confidence: a page the model saw as something we have no
+			// word for is no reading at all. Left out (the client keeps its own geometry verdict).
+			unknown++
+			warnings = append(warnings, fmt.Sprintf("page %d: role %q is not one of the roles; left out",
 				n, designPartsTrim(*p.Role, patternPagesMaxRoleRunes)))
+			continue
 		}
 		out = append(out, &pb_admin.PatternPageRole{
 			PageNo:     int32(n),
@@ -548,17 +601,17 @@ func parsePatternPages(raw string, in patternPagesInput) (out []*pb_admin.Patter
 		})
 	}
 	if len(out) == 0 {
-		return nil, nil, false, fmt.Errorf("no page of the request is classified")
+		return nil, nil, false, 0, fmt.Errorf("no page of the request is classified")
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PageNo < out[j].PageNo })
-	complete = true
+	complete = unknown == 0
 	for _, p := range in.Pages {
 		if !done[p.PageNo] {
 			complete = false
 			warnings = append(warnings, fmt.Sprintf("page %d: not classified by the model", p.PageNo))
 		}
 	}
-	return out, warnings, complete, nil
+	return out, warnings, complete, unknown, nil
 }
 
 // patternPagesMissingMember names the first required member a page lacks; "" when it has all.

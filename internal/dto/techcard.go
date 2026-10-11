@@ -4037,6 +4037,20 @@ func SetManagedPatternHosts(hosts ...string) {
 	managedPatternHosts = next
 }
 
+// IsManagedMediaURL reports whether raw is an https url (no userinfo) on one of the bucket's own
+// hosts (SetManagedPatternHosts: the CDN subdomain and the virtual-hosted origin). FAIL-CLOSED like
+// the pattern rule: with no hosts configured nothing is ours. The AI readers of the pattern import
+// call it before a stored media url goes to a provider, so a media row can never make the provider
+// fetch a host of somebody else's choosing.
+func IsManagedMediaURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return false
+	}
+	_, ok := managedPatternHosts[strings.ToLower(u.Host)]
+	return ok
+}
+
 // ManagedPatternURLStandIn returns a url of the shape a STORED pattern row carries on this
 // instance — an object under the dedicated pattern folder, on one of the bucket's own hosts — for
 // a caller that has to hand the pattern parser a url it will accept and has none of its own.
