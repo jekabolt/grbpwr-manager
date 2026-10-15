@@ -7993,6 +7993,10 @@ message WorkshopSettings {
   // says which of the two is missing rather than printing a height nobody can trust.
   google.type.Decimal max_stack_height_cm = 6;
 
+  // Usable WIDTH of the cutting/spreading table, in CENTIMETRES (0413) — the length's partner, so the
+  // marker modal can draw the table to scale. ABSENT = not configured ⇒ no width verdict, never 0.
+  google.type.Decimal cutting_table_width_cm = 8;
+
   reserved 4;
   reserved "default_seam_allowance_cm";
 }
@@ -8048,6 +8052,10 @@ message UpdateWorkshopSettingsRequest {
   // clearing the setting (send the empty message), which withholds the verdict instead of failing
   // it. Same floor argument as the table length, opposite to the seam allowance's legal zero.
   google.type.Decimal max_stack_height_cm = 4;
+
+  // 0413 — table width, CENTIMETRES, band [50, 1000] (entity.Min/MaxCuttingTableWidthCm). Tri-state
+  // like the length: absent = leave alone, empty message = clear, number = set.
+  google.type.Decimal cutting_table_width_cm = 6;
 
   reserved 2;
   reserved "default_seam_allowance_cm";

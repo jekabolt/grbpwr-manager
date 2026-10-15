@@ -43,6 +43,10 @@ func WorkshopSettingsToPb(s *entity.WorkshopSettings) *pb_admin.WorkshopSettings
 	if s.MaxStackHeightCm.Valid {
 		out.MaxStackHeightCm = &pb_decimal.Decimal{Value: s.MaxStackHeightCm.Decimal.String()}
 	}
+	// 0413 — absent when unconfigured, same presence law as the length.
+	if s.CuttingTableWidthCm.Valid {
+		out.CuttingTableWidthCm = &pb_decimal.Decimal{Value: s.CuttingTableWidthCm.Decimal.String()}
+	}
 	if !s.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(s.UpdatedAt)
 	}
@@ -78,6 +82,11 @@ func WorkshopSettingsPatchFromPb(req *pb_admin.UpdateWorkshopSettingsRequest) (e
 		return p, err
 	}
 	p.MaxStackHeightCm = stack
+	width, err := presentNullDecimal(req.CuttingTableWidthCm, "cutting_table_width_cm")
+	if err != nil {
+		return p, err
+	}
+	p.CuttingTableWidthCm = width
 	// Ф6.9 — presence carried by proto3 `optional`, which is the ONLY reason this is safe to add. On
 	// a bare bool, «did not send it» and «turn it off» are the same bytes, and a workshop tab holding
 	// a bundle from before this field existed would disable the gate on every unrelated save.

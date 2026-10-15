@@ -183,3 +183,43 @@ func TestEffectiveMaxStackHeightCmWithholdsRatherThanZeroes(t *testing.T) {
 	}
 }
 
+func TestValidateCuttingTableWidthCm(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     decimal.NullDecimal
+		reason string
+	}{
+		{name: "unset is accepted", in: decimal.NullDecimal{}},
+		{name: "typical table", in: wsND("180")},
+		{name: "floor boundary", in: wsND("50")},
+		{name: "ceiling boundary", in: wsND("1000")},
+		{name: "two decimals", in: wsND("182.50")},
+		{name: "zero", in: wsND("0"), reason: "must_be_positive"},
+		{name: "negative", in: wsND("-1"), reason: "must_be_positive"},
+		{name: "metres typed as centimetres", in: wsND("1.8"), reason: "implausibly_narrow"},
+		{name: "millimetres typed as centimetres", in: wsND("1800"), reason: "implausibly_wide"},
+		{name: "over-precise", in: wsND("180.005"), reason: "too_many_decimal_places"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateCuttingTableWidthCm(tc.in)
+			if tc.reason == "" {
+				if err != nil {
+					t.Fatalf("unexpected rejection: %v", err)
+				}
+				return
+			}
+			ve, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("expected *ValidationError, got %T (%v)", err, err)
+			}
+			if ve.Field != "cutting_table_width_cm" || ve.Reason != tc.reason {
+				t.Errorf("got %s/%s, want cutting_table_width_cm/%s", ve.Field, ve.Reason, tc.reason)
+			}
+		})
+	}
+	// Must stay inside chk_workshop_settings_table_width in 0413.
+	if MaxCuttingTableWidthCm != 1000 || MinCuttingTableWidthCm <= 0 {
+		t.Error("width band drifted from chk_workshop_settings_table_width (0413); move both together")
+	}
+}

@@ -65,6 +65,12 @@ type WorkshopSettings struct {
 	// the check is Material.FabricThicknessMm; either half missing ⇒ UNKNOWN.
 	MaxStackHeightCm decimal.NullDecimal `db:"max_stack_height_cm"`
 
+	// CuttingTableWidthCm is the usable WIDTH of the cutting/spreading table, in centimetres (0413) —
+	// the length's partner, so the marker modal can draw the table to scale and show whether the
+	// fabric width fits across it. Same house law: INVALID (NULL) = не настроено ⇒ no width verdict,
+	// never a comparison against zero.
+	CuttingTableWidthCm decimal.NullDecimal `db:"cutting_table_width_cm"`
+
 	UpdatedBy string    `db:"updated_by"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -115,6 +121,8 @@ type WorkshopSettingsPatch struct {
 	// настроено», because a wrong limit fails настилы that are perfectly fine while an unset one
 	// simply declines to judge them.
 	MaxStackHeightCm *decimal.NullDecimal
+	// CuttingTableWidthCm (0413) is three-state like the table length it sits next to.
+	CuttingTableWidthCm *decimal.NullDecimal
 }
 
 // IsEmpty reports whether the patch names no setting at all. Such a request is rejected rather than
@@ -127,7 +135,8 @@ type WorkshopSettingsPatch struct {
 // TestWorkshopSettingsPatchIsEmptyCoversEveryField holds the line by reflection.
 func (p WorkshopSettingsPatch) IsEmpty() bool {
 	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceMm == nil &&
-		p.RunReadinessBlocking == nil && p.MaxStackHeightCm == nil
+		p.RunReadinessBlocking == nil && p.MaxStackHeightCm == nil &&
+		p.CuttingTableWidthCm == nil
 }
 
 // Plausibility band for a cutting/spreading table length, in centimetres.
@@ -215,6 +224,43 @@ func ValidateMaxStackHeightCm(v decimal.NullDecimal) error {
 	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxStackHeightCm)) {
 		return NewFieldViolation(field, "implausibly_tall", v.Decimal.String(),
 			"the value is in CENTIMETRES and the longest cutting knives reach about 30 cm, so anything past 100 is a unit mistake")
+	}
+	return nil
+}
+
+// Plausibility band for the cutting/spreading table WIDTH, in centimetres (0413).
+//
+// The ceiling is repeated verbatim by the named CHECK chk_workshop_settings_table_width in 0413 — the
+// two must move together. Real spreading tables are 120–250 cm wide (fabric up to ~320 cm); past
+// 10 m it is a stray zero or millimetres, not a table. The floor lives only here, for the same reason
+// as the length's: metres typed into a centimetre field ("1.8" for a 1.8 m table) must be caught.
+const (
+	MinCuttingTableWidthCm = 50
+	MaxCuttingTableWidthCm = 1000
+)
+
+// ValidateCuttingTableWidthCm checks an incoming table width against the band above. An INVALID
+// (unset) value is accepted — clearing the setting is legal.
+func ValidateCuttingTableWidthCm(v decimal.NullDecimal) error {
+	const field = "cutting_table_width_cm"
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.Exponent() < -2 {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 2 decimal places — the column stores no more, so the extra digits would be lost silently")
+	}
+	if v.Decimal.LessThanOrEqual(decimal.Zero) {
+		return NewFieldViolation(field, "must_be_positive", v.Decimal.String(),
+			"enter the table width in centimetres; to record that the width is not configured, clear the setting instead of entering 0")
+	}
+	if v.Decimal.LessThan(decimal.NewFromInt(MinCuttingTableWidthCm)) {
+		return NewFieldViolation(field, "implausibly_narrow", v.Decimal.String(),
+			"the value is in CENTIMETRES — a 1.8 m wide table is 180, not 1.8")
+	}
+	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxCuttingTableWidthCm)) {
+		return NewFieldViolation(field, "implausibly_wide", v.Decimal.String(),
+			"the value is in CENTIMETRES and spreading tables are about 120–250 cm wide; check for a stray zero or millimetres")
 	}
 	return nil
 }

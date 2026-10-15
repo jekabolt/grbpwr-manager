@@ -189,3 +189,33 @@ func TestWorkshopSettingsToPbLeavesTheStackLimitAbsent(t *testing.T) {
 		t.Errorf("value = %q, want 15", pb.GetMaxStackHeightCm().GetValue())
 	}
 }
+
+func TestWorkshopSettingsTableWidthTriState(t *testing.T) {
+	p, err := WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		CuttingTableLengthCm: &pb_decimal.Decimal{Value: "600"},
+	})
+	if err != nil || p.CuttingTableWidthCm != nil {
+		t.Fatalf("absent width must map to nil (err=%v)", err)
+	}
+	p, err = WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		CuttingTableWidthCm: &pb_decimal.Decimal{},
+	})
+	if err != nil || p.CuttingTableWidthCm == nil || p.CuttingTableWidthCm.Valid || p.IsEmpty() {
+		t.Fatalf("empty width must be a clear (err=%v, %+v)", err, p.CuttingTableWidthCm)
+	}
+	p, err = WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		CuttingTableWidthCm: &pb_decimal.Decimal{Value: "180"},
+	})
+	if err != nil || p.CuttingTableWidthCm == nil || !p.CuttingTableWidthCm.Decimal.Equal(decimal.NewFromInt(180)) {
+		t.Fatalf("width must be set (err=%v)", err)
+	}
+	if WorkshopSettingsToPb(&entity.WorkshopSettings{}).GetCuttingTableWidthCm() != nil {
+		t.Error("unset width must be absent on the wire")
+	}
+	pb := WorkshopSettingsToPb(&entity.WorkshopSettings{
+		CuttingTableWidthCm: decimal.NullDecimal{Decimal: decimal.NewFromInt(180), Valid: true},
+	})
+	if pb.GetCuttingTableWidthCm().GetValue() != "180" {
+		t.Errorf("value = %q, want 180", pb.GetCuttingTableWidthCm().GetValue())
+	}
+}

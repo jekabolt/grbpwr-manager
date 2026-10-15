@@ -34,7 +34,7 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 }
 
 const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_mm, run_readiness_blocking,
-	       max_stack_height_cm, updated_by, updated_at
+	       max_stack_height_cm, cutting_table_width_cm, updated_by, updated_at
 	FROM workshop_settings WHERE id = :id`
 
 // GetSettings returns the workshop configuration. A MISSING singleton row is not an error: it reads
@@ -78,6 +78,11 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 			return nil, err
 		}
 	}
+	if patch.CuttingTableWidthCm != nil {
+		if err := entity.ValidateCuttingTableWidthCm(*patch.CuttingTableWidthCm); err != nil {
+			return nil, err
+		}
+	}
 	// Ф3.2's tenant validates through a DIFFERENT function on purpose: a 0 cm table is nonsense and is
 	// rejected, a 0 cm allowance is a real setting («our выкройки carry the cut line») and is accepted.
 	// One shared validator could not have held both floors — which is exactly the argument 0272 made
@@ -117,6 +122,9 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		// would let it.
 		"max_stack_height_omitted": patch.MaxStackHeightCm == nil,
 		"max_stack_height_cm":      nullDecimalParam(patch.MaxStackHeightCm),
+		// 0413 — table width, same mask.
+		"cutting_table_width_omitted": patch.CuttingTableWidthCm == nil,
+		"cutting_table_width_cm":      nullDecimalParam(patch.CuttingTableWidthCm),
 	}
 
 	var out *entity.WorkshopSettings
@@ -132,6 +140,7 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 				default_seam_allowance_mm = IF(:seam_allowance_omitted, default_seam_allowance_mm, :default_seam_allowance_mm),
 				run_readiness_blocking = IF(:run_readiness_blocking_omitted, run_readiness_blocking, :run_readiness_blocking),
 				max_stack_height_cm = IF(:max_stack_height_omitted, max_stack_height_cm, :max_stack_height_cm),
+				cutting_table_width_cm = IF(:cutting_table_width_omitted, cutting_table_width_cm, :cutting_table_width_cm),
 				updated_by = :updated_by
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update workshop settings: %w", err)
