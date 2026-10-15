@@ -2347,6 +2347,39 @@ var markerPlacementRotations = map[int32]bool{0: true, 90: true, 180: true, 270:
 // a piece upside down on ворс with the server's blessing.
 func normaliseRotation(deg int32) int32 { return ((deg % 360) + 360) % 360 }
 
+// Bounds of layout.spread (the настил a раскладка was planned for). The blob is a JSON column with
+// no CHECK behind it, so this save path is the only gate. Stored blobs are never re-validated —
+// readers decode whatever is on file.
+const (
+	markerSpreadMaxPlies       = 1000
+	markerSpreadMaxEndLossCm   = 100.0
+	markerSpreadMinTableLength = 50.0
+	markerSpreadMaxTableLength = 5000.0
+)
+
+// validateMarkerSpread refuses an out-of-range настил. nil = not recorded, which is legal (every
+// stale bundle omits it). table_length_cm 0 = the table was not recorded; mode UNKNOWN = the mode
+// was not recorded; an enum number this server does not know is refused.
+func validateMarkerSpread(sp *pb_common.TechCardMarkerSpread) error {
+	if sp == nil {
+		return nil
+	}
+	if p := sp.GetPlies(); p < 1 || p > markerSpreadMaxPlies {
+		return fmt.Errorf("layout.spread.plies is %d, must be 1..%d", p, markerSpreadMaxPlies)
+	}
+	if e := sp.GetEndLossCm(); math.IsNaN(e) || e < 0 || e > markerSpreadMaxEndLossCm {
+		return fmt.Errorf("layout.spread.end_loss_cm is %v, must be 0..%v", e, markerSpreadMaxEndLossCm)
+	}
+	if t := sp.GetTableLengthCm(); math.IsNaN(t) || t != 0 && (t < markerSpreadMinTableLength || t > markerSpreadMaxTableLength) {
+		return fmt.Errorf("layout.spread.table_length_cm is %v, must be 0 (not recorded) or %v..%v",
+			t, markerSpreadMinTableLength, markerSpreadMaxTableLength)
+	}
+	if _, ok := pb_common.TechCardMarkerSpreadMode_name[int32(sp.GetMode())]; !ok {
+		return fmt.Errorf("layout.spread.mode %d is not a known spread mode", sp.GetMode())
+	}
+	return nil
+}
+
 // MarkerLayoutFactsFromPb distils the few things the SAVE PATH must know about a layout out of the
 // blob, so nothing downstream has to open it again: the blob is stored opaque (0257) and the store
 // never parses it, so whatever the store DECIDES on has to leave the transport layer as a fact.
@@ -2360,6 +2393,9 @@ func normaliseRotation(deg int32) int32 { return ((deg % 360) + 360) % 360 }
 // the version is what decides whether the rotation policy applies at all (Ф1.6).
 func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLayoutFacts, error) {
 	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	if err := validateMarkerSpread(l.GetSpread()); err != nil {
+		return entity.MarkerLayoutFacts{}, err
+	}
 	// СОСТАВ (Ф2). Validated here so a malformed one is refused before anything is stored, and
 	// CANONICALISED in place for the same reason rot_deg is: these bytes are the blob moments later,
 	// and the состав the server judged must be the состав that gets written down. Sorting also makes

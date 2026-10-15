@@ -4526,6 +4526,33 @@ message TechCardMarkerLayout {
   // outlive the used_length it was derived from — and would be indistinguishable from a измеренное
   // one to every future reader.
   repeated TechCardMarkerCompositionEntry composition = 6;
+  // НАСТИЛ the раскладка was planned for on the cutting table: plies, end loss, spread mode and the
+  // PHYSICAL table length. ABSENT = not recorded (every blob saved before this field, and every
+  // stale bundle). Replaces the old client hack that stuffed the usable table length into
+  // params.target_length_cm and wrote a «cutting table:» line into warnings — readers keep decoding
+  // that hack for blobs that predate this field. No schema_version bump: the field is additive and
+  // readers branch on its PRESENCE.
+  TechCardMarkerSpread spread = 7;
+}
+
+// TechCardMarkerSpreadMode is how the plies of the настил face each other.
+enum TechCardMarkerSpreadMode {
+  TECH_CARD_MARKER_SPREAD_MODE_UNKNOWN = 0; // not recorded
+  TECH_CARD_MARKER_SPREAD_MODE_FACE_UP = 1; // every ply face up, one direction
+  TECH_CARD_MARKER_SPREAD_MODE_FACE_TO_FACE = 2; // plies alternate face down / face up (зигзаг, лицом к лицу)
+}
+
+// TechCardMarkerSpread is the cutting-table half of the conditions a раскладка was taken under.
+// Validated on save (SaveTechCardMarker refuses out-of-range values with InvalidArgument):
+// plies 1..1000, end_loss_cm 0..100, table_length_cm 0 (= not recorded) or 50..5000, mode a known
+// value.
+message TechCardMarkerSpread {
+  int32 plies = 1; // >= 1 — number of plies in the настил
+  double end_loss_cm = 2; // allowance lost at EACH end of every ply, cm, >= 0
+  TechCardMarkerSpreadMode mode = 3;
+  // The PHYSICAL length of the cutting table, cm; 0 = not recorded. Its own field — NOT
+  // params.target_length_cm, which is the engine's target and stays what the search was asked for.
+  double table_length_cm = 4;
 }
 
 // TechCardMarkerNestParams are the engine inputs that produced the layout — enough to label the
