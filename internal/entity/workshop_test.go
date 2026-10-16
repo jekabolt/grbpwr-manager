@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -221,5 +222,50 @@ func TestValidateCuttingTableWidthCm(t *testing.T) {
 	// Must stay inside chk_workshop_settings_table_width in 0413.
 	if MaxCuttingTableWidthCm != 1000 || MinCuttingTableWidthCm <= 0 {
 		t.Error("width band drifted from chk_workshop_settings_table_width (0413); move both together")
+	}
+}
+
+func TestValidateWorkshopCostingDefaults(t *testing.T) {
+	reasonOf := func(err error) string {
+		if err == nil {
+			return ""
+		}
+		ve, ok := err.(*ValidationError)
+		if !ok {
+			t.Fatalf("expected *ValidationError, got %T (%v)", err, err)
+		}
+		return ve.Reason
+	}
+	ns := func(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+	cases := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"currency unset", ValidateWorkshopCostingCurrency(sql.NullString{}), ""},
+		{"currency EUR", ValidateWorkshopCostingCurrency(ns("EUR")), ""},
+		{"currency USDT (expense-only)", ValidateWorkshopCostingCurrency(ns("USDT")), ""},
+		{"currency lower-case", ValidateWorkshopCostingCurrency(ns("eur")), "unsupported_currency"},
+		{"currency unknown", ValidateWorkshopCostingCurrency(ns("XYZ")), "unsupported_currency"},
+		{"country unset", ValidateWorkshopCountryOfOrigin(sql.NullString{}), ""},
+		{"country PT", ValidateWorkshopCountryOfOrigin(ns("PT")), ""},
+		{"country alpha-3", ValidateWorkshopCountryOfOrigin(ns("PRT")), "unknown_country"},
+		{"country lower-case", ValidateWorkshopCountryOfOrigin(ns("pt")), "unknown_country"},
+		{"rate unset", ValidateLabourRatePerMin(decimal.NullDecimal{}), ""},
+		{"rate typical", ValidateLabourRatePerMin(wsND("0.3500")), ""},
+		{"rate zero", ValidateLabourRatePerMin(wsND("0")), "must_be_positive"},
+		{"rate over-precise", ValidateLabourRatePerMin(wsND("0.12345")), "too_many_decimal_places"},
+		{"rate stray zeros", ValidateLabourRatePerMin(wsND("1000000")), "implausibly_high"},
+		{"pct zero is legal", ValidateWorkshopPercent("defect_percent", wsND("0"), MaxDefectPercent), ""},
+		{"pct ceiling", ValidateWorkshopPercent("defect_percent", wsND("100"), MaxDefectPercent), ""},
+		{"pct over ceiling", ValidateWorkshopPercent("defect_percent", wsND("100.01"), MaxDefectPercent), "out_of_range"},
+		{"overhead over 100 legal", ValidateWorkshopPercent("overhead_pct", wsND("150"), MaxOverheadPct), ""},
+		{"pct negative", ValidateWorkshopPercent("target_margin_pct", wsND("-1"), MaxTargetMarginPct), "must_not_be_negative"},
+		{"pct over-precise", ValidateWorkshopPercent("overhead_pct", wsND("1.005"), MaxOverheadPct), "too_many_decimal_places"},
+	}
+	for _, tc := range cases {
+		if got := reasonOf(tc.err); got != tc.reason {
+			t.Errorf("%s: reason = %q, want %q", tc.name, got, tc.reason)
+		}
 	}
 }

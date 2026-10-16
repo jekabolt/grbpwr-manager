@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -217,5 +218,63 @@ func TestWorkshopSettingsTableWidthTriState(t *testing.T) {
 	})
 	if pb.GetCuttingTableWidthCm().GetValue() != "180" {
 		t.Errorf("value = %q, want 180", pb.GetCuttingTableWidthCm().GetValue())
+	}
+}
+
+func TestWorkshopSettingsCostingDefaultsTriState(t *testing.T) {
+	p, err := WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		CuttingTableLengthCm: &pb_decimal.Decimal{Value: "600"},
+	})
+	if err != nil || p.CostingCurrency != nil || p.CountryOfOrigin != nil || p.LabourRatePerMin != nil ||
+		p.OverheadPct != nil || p.DefectPercent != nil || p.TargetMarginPct != nil {
+		t.Fatalf("absent defaults must map to nil (err=%v, %+v)", err, p)
+	}
+	blank := "  "
+	p, err = WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		CostingCurrency: &blank,
+		DefectPercent:   &pb_decimal.Decimal{},
+	})
+	if err != nil || p.CostingCurrency == nil || p.CostingCurrency.Valid ||
+		p.DefectPercent == nil || p.DefectPercent.Valid || p.IsEmpty() {
+		t.Fatalf("blank string / empty decimal must be a clear (err=%v)", err)
+	}
+	cur, country := " eur ", "pt"
+	p, err = WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		CostingCurrency:  &cur,
+		CountryOfOrigin:  &country,
+		LabourRatePerMin: &pb_decimal.Decimal{Value: "0.35"},
+		OverheadPct:      &pb_decimal.Decimal{Value: "15"},
+		DefectPercent:    &pb_decimal.Decimal{Value: "3"},
+		TargetMarginPct:  &pb_decimal.Decimal{Value: "60"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.CostingCurrency.String != "EUR" || p.CountryOfOrigin.String != "PT" {
+		t.Errorf("codes must be trimmed and upper-cased, got %q / %q", p.CostingCurrency.String, p.CountryOfOrigin.String)
+	}
+	if !p.LabourRatePerMin.Decimal.Equal(decimal.RequireFromString("0.35")) || !p.TargetMarginPct.Valid {
+		t.Errorf("decimals must be set: %+v", p)
+	}
+	if _, err := WorkshopSettingsPatchFromPb(&pb_admin.UpdateWorkshopSettingsRequest{
+		OverheadPct: &pb_decimal.Decimal{Value: "abc"},
+	}); err == nil {
+		t.Error("a non-number must be refused")
+	}
+
+	empty := WorkshopSettingsToPb(&entity.WorkshopSettings{})
+	if empty.CostingCurrency != nil || empty.CountryOfOrigin != nil || empty.LabourRatePerMin != nil ||
+		empty.OverheadPct != nil || empty.DefectPercent != nil || empty.TargetMarginPct != nil {
+		t.Error("unset defaults must be absent on the wire")
+	}
+	pb := WorkshopSettingsToPb(&entity.WorkshopSettings{
+		CostingCurrency:  sql.NullString{String: "EUR", Valid: true},
+		CountryOfOrigin:  sql.NullString{String: "PT", Valid: true},
+		LabourRatePerMin: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.35"), Valid: true},
+		DefectPercent:    decimal.NullDecimal{Decimal: decimal.Zero, Valid: true},
+	})
+	if pb.GetCostingCurrency() != "EUR" || pb.GetCountryOfOrigin() != "PT" ||
+		pb.GetLabourRatePerMin().GetValue() != "0.35" || pb.GetDefectPercent().GetValue() != "0" {
+		t.Errorf("set defaults must travel: %+v", pb)
 	}
 }

@@ -7997,6 +7997,21 @@ message WorkshopSettings {
   // marker modal can draw the table to scale. ABSENT = not configured ⇒ no width verdict, never 0.
   google.type.Decimal cutting_table_width_cm = 8;
 
+  // 0414 — costing / label DEFAULTS, read only to PREFILL a new costing and the «made in» line.
+  // Each is ABSENT when not configured ⇒ no prefill (never a zero or an empty string on the wire).
+  // ISO 4217 code every money default here is in (any expense currency, e.g. EUR; USDT legal).
+  optional string costing_currency = 9;
+  // Cost of one production minute (SAM), in costing_currency.
+  google.type.Decimal labour_rate_per_min = 10;
+  // Overhead as a percentage of direct cost, 0..1000.
+  google.type.Decimal overhead_pct = 11;
+  // Брак / запас allowance, percent 0..100 (same band as TechCardCosting.defect_percent).
+  google.type.Decimal defect_percent = 12;
+  // Gross-margin target, percent 0..100 (same band as TechCardCosting.target_margin_pct).
+  google.type.Decimal target_margin_pct = 13;
+  // ISO 3166-1 alpha-2 country of origin («made in»), upper-case, e.g. "PT".
+  optional string country_of_origin = 14;
+
   reserved 4;
   reserved "default_seam_allowance_cm";
 }
@@ -8056,6 +8071,16 @@ message UpdateWorkshopSettingsRequest {
   // 0413 — table width, CENTIMETRES, band [50, 1000] (entity.Min/MaxCuttingTableWidthCm). Tri-state
   // like the length: absent = leave alone, empty message = clear, number = set.
   google.type.Decimal cutting_table_width_cm = 6;
+
+  // 0414 — costing / label defaults, all tri-state. Decimals: absent = leave alone, empty message =
+  // clear, number = set. Strings are proto3 `optional` for the same presence: absent = leave alone,
+  // "" = clear, value = set (trimmed, upper-cased server-side).
+  optional string costing_currency = 7; // ISO 4217, an expense currency
+  google.type.Decimal labour_rate_per_min = 8; // > 0, ≤ 4 decimals, ≤ 100000
+  google.type.Decimal overhead_pct = 9; // [0, 1000], ≤ 2 decimals
+  google.type.Decimal defect_percent = 10; // [0, 100], ≤ 2 decimals
+  google.type.Decimal target_margin_pct = 11; // [0, 100], ≤ 2 decimals
+  optional string country_of_origin = 12; // ISO 3166-1 alpha-2
 
   reserved 2;
   reserved "default_seam_allowance_cm";
