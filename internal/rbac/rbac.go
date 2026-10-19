@@ -294,6 +294,7 @@ var methodRequirements = map[string]Requirement{
 	"DeleteFromBucket":   wr(SectionContent),
 	"ListObjectsPaged":   rd(SectionContent),
 	"ListMediaMonths":    rd(SectionContent),
+	"ListMediaFacets":    rd(SectionContent),
 	"GetMediaUsage":      rd(SectionContent),
 	// hero
 	"AddHero":                wr(SectionHero),
@@ -344,6 +345,7 @@ var methodRequirements = map[string]Requirement{
 	"UpdateFittingChangeRequest":    wr(SectionFittings),
 	"DeleteFittingChangeRequest":    wr(SectionFittings),
 	"ListOpenFittingChangeRequests": rd(SectionFittings),
+	"DraftFittingEdits":             wr(SectionFittings),
 	// samples (new-flow NF-04) — part of the fitting/try-on cycle
 	"AddSample":    wr(SectionFittings),
 	"UpdateSample": wr(SectionFittings),
