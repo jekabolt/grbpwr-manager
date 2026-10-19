@@ -15,4 +15,5 @@ SELECT 'Model photos', 'system', 'system', 'system:model-photos' FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM tech_card WHERE create_request_id = 'system:model-photos');
 
 -- +migrate Down
-DELETE FROM tech_card WHERE create_request_id = 'system:model-photos';
+-- Deliberately a no-op: deleting the card would cascade (design_run FK, 0340) and erase paid
+-- cutout runs and their history. A rolled-back binary simply sees one extra draft card.
