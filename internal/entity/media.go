@@ -11,6 +11,24 @@ type MediaFull struct {
 	MediaItem
 }
 
+// MonthCount is the number of media rows created in one UTC calendar month.
+type MonthCount struct {
+	Year  int `db:"y" json:"year"`
+	Month int `db:"m" json:"month"`
+	Count int `db:"c" json:"count"`
+}
+
+// MediaFacetRow is one cell of the media library's filter cube. Width and Height are the
+// thumbnail dimensions exposed by MediaFull; InUse has exactly the same meaning as a non-empty
+// GetMediaUsage result.
+type MediaFacetRow struct {
+	IsVideo bool `json:"is_video"`
+	Width   int  `json:"width"`
+	Height  int  `json:"height"`
+	InUse   bool `json:"in_use"`
+	Count   int  `json:"count"`
+}
+
 // MediaUsageRef is a single place still holding on to a media item: which entity, which
 // slot inside it, and a name a human recognises. It answers the only question the media
 // library could not previously answer — "may I delete this file, and if not, why not".

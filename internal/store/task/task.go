@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -418,13 +420,14 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 
 // ListTasks returns a paged, optionally filtered list of tasks (with labels and
 // resolved media) plus the total number of matching tasks (ignoring pagination).
-// Rows are clustered by (board,status) and ordered by position so a board renders
-// directly.
+// Without a text query, rows are clustered by (board,status) and ordered by
+// position so a board renders directly. Search results use relevance ordering.
 func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error) {
 	limit, offset := clampPagination(f.Limit, f.Offset)
 
 	filterParams := map[string]any{}
 	where := ""
+	queryPattern, queryTaskID, hasQuery := taskSearchParams(f.Query)
 	if f.Board != "" {
 		where += " AND board = :board"
 		filterParams["board"] = string(f.Board)
@@ -490,6 +493,27 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if !f.IncludeArchived {
 		where += " AND archived_at IS NULL"
 	}
+	if hasQuery {
+		where += ` AND (
+			LOWER(task.title) LIKE :queryPattern ESCAPE '\\'
+			OR LOWER(task.description) LIKE :queryPattern ESCAPE '\\'
+			OR EXISTS (
+				SELECT 1 FROM task_comment tc
+				WHERE tc.task_id = task.id
+					AND LOWER(tc.body) LIKE :queryPattern ESCAPE '\\'
+			)
+			OR EXISTS (
+				SELECT 1 FROM task_checklist_item tci
+				WHERE tci.task_id = task.id
+					AND LOWER(tci.content) LIKE :queryPattern ESCAPE '\\'
+			)`
+		filterParams["queryPattern"] = queryPattern
+		if queryTaskID > 0 {
+			where += " OR task.id = :queryTaskId"
+			filterParams["queryTaskId"] = queryTaskID
+		}
+		where += ")"
+	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
 		fmt.Sprintf(`SELECT COUNT(*) FROM task WHERE 1=1%s`, where), filterParams)
@@ -499,11 +523,22 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 
 	filterParams["limit"] = limit
 	filterParams["offset"] = offset
-	query := fmt.Sprintf(`
-		SELECT * FROM task
-		WHERE 1=1%s
-		ORDER BY board, status, position %s, id %s
-		LIMIT :limit OFFSET :offset`, where, f.OrderFactor.String(), f.OrderFactor.String())
+	var query string
+	if hasQuery {
+		query = fmt.Sprintf(`
+			SELECT * FROM task
+			WHERE 1=1%s
+			ORDER BY archived_at IS NOT NULL,
+				CASE WHEN LOWER(title) LIKE :queryPattern ESCAPE '\\' THEN 0 ELSE 1 END,
+				id DESC
+			LIMIT :limit OFFSET :offset`, where)
+	} else {
+		query = fmt.Sprintf(`
+			SELECT * FROM task
+			WHERE 1=1%s
+			ORDER BY board, status, position %s, id %s
+			LIMIT :limit OFFSET :offset`, where, f.OrderFactor.String(), f.OrderFactor.String())
+	}
 
 	tasks, err := storeutil.QueryListNamed[entity.Task](ctx, s.DB, query, filterParams)
 	if err != nil {
@@ -562,6 +597,41 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		tasks[i].FileIds = fileIDs[tasks[i].Id]
 	}
 	return tasks, total, nil
+}
+
+// taskSearchParams turns a non-blank user query into a literal LIKE pattern and,
+// for #123/123 queries, an exact task id. A leading # is presentation for ids,
+// so the digits are still searched as text in every other field.
+func taskSearchParams(raw string) (pattern string, taskID int, ok bool) {
+	query := strings.TrimSpace(raw)
+	if query == "" {
+		return "", 0, false
+	}
+
+	textQuery := query
+	digits := strings.TrimPrefix(query, "#")
+	if digits != "" && isASCIIDigits(digits) {
+		textQuery = digits
+		if parsed, err := strconv.ParseInt(digits, 10, 32); err == nil && parsed > 0 {
+			taskID = int(parsed)
+		}
+	}
+
+	escaped := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	).Replace(strings.ToLower(textQuery))
+	return "%" + escaped + "%", taskID, true
+}
+
+func isASCIIDigits(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // AddTaskComment appends a comment to a task with the given author, returning the

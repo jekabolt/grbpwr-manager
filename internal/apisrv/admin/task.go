@@ -281,6 +281,7 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		// правах, что и project_topic_id выше.
 		ParentTaskId:    int(req.ParentTaskId),
 		IncludeArchived: req.IncludeArchived,
+		Query:           req.Query,
 		Limit:           int(req.Limit),
 		Offset:          int(req.Offset),
 		OrderFactor:     dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),

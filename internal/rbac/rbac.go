@@ -293,6 +293,7 @@ var methodRequirements = map[string]Requirement{
 	"UploadContentModel": wr(SectionContent),
 	"DeleteFromBucket":   wr(SectionContent),
 	"ListObjectsPaged":   rd(SectionContent),
+	"ListMediaMonths":    rd(SectionContent),
 	"GetMediaUsage":      rd(SectionContent),
 	// hero
 	"AddHero":                wr(SectionHero),
