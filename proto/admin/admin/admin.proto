@@ -1187,6 +1187,15 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/fitting/change-request/open"};
   }
 
+  // DraftFittingEdits turns a fitting note into unsaved change-request drafts. The client decides
+  // which drafts to create through AddFittingChangeRequest.
+  rpc DraftFittingEdits(DraftFittingEditsRequest) returns (DraftFittingEditsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fittings/{fitting_id}/draft-edits"
+      body: "*"
+    };
+  }
+
   // TASK MANAGER
   // Internal team kanban (NOT customer orders). Same list-after-{id} route
   // ordering as fitting/models: GET /task/list is declared AFTER GET /task/{id}
@@ -6381,6 +6390,20 @@ message DeleteFittingRequest {
 }
 
 message DeleteFittingResponse {}
+
+message DraftFittingEditsRequest {
+  int32 fitting_id = 1;
+  string note = 2;
+}
+
+message DraftFittingEditsResponse {
+  repeated DraftFittingEdit edits = 1;
+}
+
+message DraftFittingEdit {
+  string note = 1;
+  string target = 2;
+}
 
 // SAMPLES (new-flow NF-04)
 
