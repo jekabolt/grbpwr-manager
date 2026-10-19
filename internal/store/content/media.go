@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -258,4 +259,108 @@ func (s *Store) ListMediaMonths(ctx context.Context) ([]entity.MonthCount, error
 		return nil, fmt.Errorf("failed to list media months: %w", err)
 	}
 	return months, nil
+}
+
+const mediaFacetUsageChunkSize = 500
+
+type mediaFacetSource struct {
+	Id                int    `db:"id"`
+	ThumbnailMediaURL string `db:"thumbnail"`
+	ThumbnailWidth    int    `db:"thumbnail_width"`
+	ThumbnailHeight   int    `db:"thumbnail_height"`
+}
+
+type mediaFacetKey struct {
+	IsVideo bool
+	Width   int
+	Height  int
+	InUse   bool
+}
+
+// ListMediaFacets counts the whole media library by the fields the client's filter rail needs.
+//
+// InUse is deliberately obtained from mediaUsageOn rather than from a second, cheaper-looking
+// query. That helper is the single definition shared with GetMediaUsage and includes both the
+// relational reference registry and media ids embedded in owned JSON documents. Batches use the
+// same 500-id ceiling as the RPC: the registry repeats the id bind in every UNION branch, so an
+// unbounded library would eventually exceed MySQL's prepared-statement placeholder limit.
+func (s *Store) ListMediaFacets(ctx context.Context) ([]entity.MediaFacetRow, int, error) {
+	media, err := storeutil.QueryListNamed[mediaFacetSource](ctx, s.DB,
+		`SELECT id, thumbnail, thumbnail_width, thumbnail_height FROM media`, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list media facet sources: %w", err)
+	}
+	if len(media) == 0 {
+		return []entity.MediaFacetRow{}, 0, nil
+	}
+
+	inUse := make(map[int]struct{}, len(media))
+	for start := 0; start < len(media); start += mediaFacetUsageChunkSize {
+		end := min(start+mediaFacetUsageChunkSize, len(media))
+		ids := make([]int, 0, end-start)
+		for _, m := range media[start:end] {
+			ids = append(ids, m.Id)
+		}
+		usage, err := mediaUsageOn(ctx, s.DB, ids)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to list media facet usage: %w", err)
+		}
+		for id, refs := range usage {
+			if len(refs) > 0 {
+				inUse[id] = struct{}{}
+			}
+		}
+	}
+
+	counts := make(map[mediaFacetKey]int)
+	for _, m := range media {
+		_, used := inUse[m.Id]
+		key := mediaFacetKey{
+			IsVideo: mediaThumbnailIsVideo(m.ThumbnailMediaURL),
+			Width:   m.ThumbnailWidth,
+			Height:  m.ThumbnailHeight,
+			InUse:   used,
+		}
+		counts[key]++
+	}
+
+	rows := make([]entity.MediaFacetRow, 0, len(counts))
+	for key, count := range counts {
+		rows = append(rows, entity.MediaFacetRow{
+			IsVideo: key.IsVideo,
+			Width:   key.Width,
+			Height:  key.Height,
+			InUse:   key.InUse,
+			Count:   count,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].IsVideo != rows[j].IsVideo {
+			return !rows[i].IsVideo
+		}
+		if rows[i].Width != rows[j].Width {
+			return rows[i].Width < rows[j].Width
+		}
+		if rows[i].Height != rows[j].Height {
+			return rows[i].Height < rows[j].Height
+		}
+		return !rows[i].InUse && rows[j].InUse
+	})
+	return rows, len(media), nil
+}
+
+// mediaThumbnailIsVideo matches admin-client's isVideo(thumbnail URL): take the characters after
+// the final dot, lowercase them, and consult filterExtensionToContentType. That map has exactly two
+// video extensions today, mp4 and webm; query strings are intentionally not stripped by the client.
+func mediaThumbnailIsVideo(mediaURL string) bool {
+	dot := strings.LastIndexByte(mediaURL, '.')
+	if dot < 0 || dot == len(mediaURL)-1 {
+		return false
+	}
+	switch strings.ToLower(mediaURL[dot+1:]) {
+	case "mp4", "webm":
+		return true
+	default:
+		return false
+	}
 }

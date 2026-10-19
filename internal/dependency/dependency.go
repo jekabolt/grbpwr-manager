@@ -1876,6 +1876,9 @@ type (
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
 		ListMediaMonths(ctx context.Context) ([]entity.MonthCount, error)
+		// ListMediaFacets counts the entire media library by client-visible content type,
+		// thumbnail dimensions, and whether GetMediaUsage would return at least one ref.
+		ListMediaFacets(ctx context.Context) ([]entity.MediaFacetRow, int, error)
 		// GetMediaUsage reports which entities still reference each of the given media ids,
 		// so the library can tell a free file from one standing on the storefront. Ids with
 		// no references are absent from the map. One query covers the whole batch.

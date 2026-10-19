@@ -204,6 +204,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/content/months"};
   }
 
+  // ListMediaFacets counts the whole media library as a small cube, so the library's filter rail
+  // can show true counts before (and independent of) paging. One row per distinct
+  // (is_video, width, height, in_use); the client folds rows into its own ratio buckets and
+  // computes faceted counts (each shelf excluding its own filter) by summing rows.
+  rpc ListMediaFacets(ListMediaFacetsRequest) returns (ListMediaFacetsResponse) {
+    option (google.api.http) = {get: "/api/admin/content/facets"};
+  }
+
   // PRODUCTS MANAGER
 
   // CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
@@ -4419,6 +4427,21 @@ message ListMediaMonthsRequest {}
 
 message ListMediaMonthsResponse {
   repeated MonthCount months = 1; // newest month first
+}
+
+message ListMediaFacetsRequest {}
+
+message MediaFacetRow {
+  bool is_video = 1;
+  int32 width = 2; // thumbnail width as stored; 0 = unknown
+  int32 height = 3;
+  bool in_use = 4; // referenced anywhere: the same registry + JSON definition as GetMediaUsage
+  int32 count = 5;
+}
+
+message ListMediaFacetsResponse {
+  repeated MediaFacetRow rows = 1;
+  int32 total = 2; // == sum(rows.count) == COUNT(*) FROM media
 }
 
 message GetMediaUsageRequest {

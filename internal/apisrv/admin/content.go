@@ -439,6 +439,30 @@ func (s *Server) ListMediaMonths(ctx context.Context, _ *pb_admin.ListMediaMonth
 	return &pb_admin.ListMediaMonthsResponse{Months: months}, nil
 }
 
+// ListMediaFacets returns whole-library counts for the media filter rail, independent of paging.
+func (s *Server) ListMediaFacets(ctx context.Context, _ *pb_admin.ListMediaFacetsRequest) (*pb_admin.ListMediaFacetsResponse, error) {
+	list, total, err := s.repo.Media().ListMediaFacets(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list media facets",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to list media facets: %v", err)
+	}
+
+	rows := make([]*pb_admin.MediaFacetRow, 0, len(list))
+	for _, row := range list {
+		rows = append(rows, &pb_admin.MediaFacetRow{
+			IsVideo: row.IsVideo,
+			Width:   int32(row.Width),
+			Height:  int32(row.Height),
+			InUse:   row.InUse,
+			Count:   int32(row.Count),
+		})
+	}
+
+	return &pb_admin.ListMediaFacetsResponse{Rows: rows, Total: int32(total)}, nil
+}
+
 // GetMediaUsage reports where each requested media item is still referenced.
 //
 // Without it the library cannot distinguish a free file from one on the storefront, and

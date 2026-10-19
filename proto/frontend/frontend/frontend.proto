@@ -115,7 +115,7 @@ service FrontendService {
   rpc GetArchive(GetArchiveRequest) returns (GetArchiveResponse) {
     option (google.api.http) = {
       get: "/api/frontend/archive/{code}"
-      additional_bindings {get: "/api/frontend/archive/{heading}/{tag}/{id}"}
+      additional_bindings: {get: "/api/frontend/archive/{heading}/{tag}/{id}"}
     };
   }
 
