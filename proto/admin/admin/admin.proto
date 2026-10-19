@@ -193,6 +193,17 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/content/usage"};
   }
 
+  // ListMediaMonths counts the media library per calendar month of created_at, newest month
+  // first. It is the index behind the date scrubber: ListObjectsPaged pages by offset and has
+  // no total, so the client cannot reach an old month without paging through everything in
+  // front of it. With these counts the offset of a month's first item is the sum of the counts
+  // of every newer month — valid only because ListObjectsPaged orders by created_at (then id)
+  // in the same direction. Months are UTC; the client labels items in UTC to match. Empty
+  // months are omitted.
+  rpc ListMediaMonths(ListMediaMonthsRequest) returns (ListMediaMonthsResponse) {
+    option (google.api.http) = {get: "/api/admin/content/months"};
+  }
+
   // PRODUCTS MANAGER
 
   // CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
@@ -4394,6 +4405,21 @@ message DeleteFromBucketRequest {
 }
 
 message DeleteFromBucketResponse {}
+
+// MonthCount is one calendar month (UTC) and how many items fall in it.
+message MonthCount {
+  int32 year = 1;
+  int32 month = 2; // 1..12
+  int32 count = 3;
+}
+
+// ListMediaMonthsRequest carries no filter on purpose: ListObjectsPaged has none, and the
+// counts must describe exactly the list they index.
+message ListMediaMonthsRequest {}
+
+message ListMediaMonthsResponse {
+  repeated MonthCount months = 1; // newest month first
+}
 
 message GetMediaUsageRequest {
   repeated int32 media_ids = 1; // the media ids to look up, typically one library page
