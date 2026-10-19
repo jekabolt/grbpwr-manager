@@ -387,8 +387,9 @@ func fittingChangeRequestPieceIds(pieceIDs []int32, pieceID int32) ([]int, error
 // both the embedded initial batch (FittingInsert) and the dedicated CRUD.
 func fittingChangeRequestEntity(target, note string, calloutNumber, pieceID, carriedFromID int32, pieceIDs []int32, zone, status string) (entity.FittingChangeRequest, error) {
 	t := strings.ToLower(strings.TrimSpace(target))
-	if !entity.ValidFittingChangeTargets[t] {
-		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request target must be one of pattern|construction|material|grading|other")
+	// '' = category not set yet (the fitting screen adds an edit first, categorises it later).
+	if t != "" && !entity.ValidFittingChangeTargets[t] {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request target must be empty or one of pattern|construction|material|grading|other")
 	}
 	n := strings.TrimSpace(note)
 	if n == "" {

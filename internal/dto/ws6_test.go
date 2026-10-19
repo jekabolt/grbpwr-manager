@@ -147,6 +147,18 @@ func TestConvertPbFittingChangeRequestInsert(t *testing.T) {
 		}
 	}
 
+	// An empty target = category not set yet; an unknown one is still refused.
+	if got, err := ConvertPbFittingChangeRequestInsertToEntity(&pb_common.FittingChangeRequestInsert{
+		FittingId: 5, Target: " ", Note: "x",
+	}); err != nil || got.Target != "" {
+		t.Errorf("empty target: got %q, err %v", got.Target, err)
+	}
+	if _, err := ConvertPbFittingChangeRequestInsertToEntity(&pb_common.FittingChangeRequestInsert{
+		FittingId: 5, Target: "colour", Note: "x",
+	}); err == nil {
+		t.Error("unknown target accepted")
+	}
+
 	// piece_ids: zeros are skipped, duplicates collapse, selection order survives.
 	pieces, err := ConvertPbFittingChangeRequestInsertToEntity(&pb_common.FittingChangeRequestInsert{
 		FittingId: 5, Target: "pattern", Note: "x", PieceIds: []int32{7, 0, 7, 2},
