@@ -567,3 +567,40 @@ func TestWorkTailAbsentWhenWorkIsNull(t *testing.T) {
 		}
 	}
 }
+
+// TestDraftMarkIsNotInTheDigest — черновик каркаса сборки (0410) В ДАЙДЖЕСТ НЕ ВХОДИТ.
+//
+// Тот же замороженный hex, что у TestTechCardConstructionDigestHexFrozen и
+// TestTechCardConstructionWorkDigestHexFrozen, но каждый шаг помечен Draft = true. Эталоны НЕ
+// переписаны: равенство байт в байт и есть доказательство, что проверка шага («reviewed» снимает
+// метку) не переподписывает карточку, а миграция 0410 не двигает ни одной существующей подписи.
+// Мутация, которой тест проверен: добавить o.Draft в кортеж шага в constructionProjection —
+// оба кейса краснеют.
+func TestDraftMarkIsNotInTheDigest(t *testing.T) {
+	draft := func(op entity.TechCardOperation) entity.TechCardOperation {
+		op.Draft = true
+		return op
+	}
+	cases := []struct {
+		name string
+		ops  []entity.TechCardOperation
+		want string
+	}{
+		{"существующие строки", []entity.TechCardOperation{
+			draft(opGoldCaseByName(t, "только обязательные поля: тип и зона, без хвостов")),
+			draft(opGoldCaseByName(t, "машинный блок: хвост есть, machine_type в нём пуст (уехал в компат-позицию)")),
+			draft(opGoldCaseByName(t, "сборка и медиа: хвосты assembly и media поверх головы")),
+		}, opGoldConstructionDigestHex},
+		{"шаг с работой", []entity.TechCardOperation{
+			draft(opGoldCaseByName(t, "ось работа: хвост work поверх головы, ничего больше")),
+			draft(opWorkNextToFastening()),
+		}, opGoldWorkDigestHex},
+	}
+	for _, c := range cases {
+		got := digestOf(constructionProjection(&entity.TechCardInsert{Operations: c.ops}))
+		if got != c.want {
+			t.Errorf("%s: метка draft сдвинула отпечаток CONSTRUCTION — ревью шага переподписывало бы "+
+				"карточку.\n--- эталон ---\n%s\n--- сейчас ---\n%s", c.name, c.want, got)
+		}
+	}
+}

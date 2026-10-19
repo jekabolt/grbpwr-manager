@@ -2668,6 +2668,89 @@ service AdminService {
     };
   }
 
+  // SuggestPatternPieces (pattern import, F9) — ONE sync vision+JSON call (chat.pattern_pieces) that
+  // NAMES the pieces of an imported sewing pattern. The client finds the pieces itself (geometry is
+  // deterministic and never comes from the model), renders the assembled sheet with a number on
+  // every piece (Set-of-Mark, overview_media_id), optionally crops of single pieces, and sends its
+  // own evidence per mark (text inside the contour, quantity note, area, bbox, symmetry and fold
+  // hints) plus the card's context. The model proposes, per mark: a piece code of the card's grammar
+  // (PREFIX[_modifiers], uppercase, NO size tail), an English name, fabric purposes, cut quantity,
+  // fold, pair, a variant label, a confidence and short evidence quotes. The server validates the
+  // answer: unknown marks are dropped, the confidence is clamped to 0..1, the code is normalised to
+  // the grammar and refused (code "", a warning) when its prefix is not allowed or it carries a size
+  // tail or an unknown modifier. Nothing is stored; an identical request within an hour is answered
+  // from process memory (cached) unless force. tech_card_id is optional (0 = no card yet).
+  //
+  // InvalidArgument: no overview, 0 or more than 80 pieces, more than 12 crops, a duplicate mark, a
+  // crop of a mark not in pieces. FailedPrecondition: a picture not uploaded within the last 2 hours,
+  // a picture off this store's storage, an image is not a picture.
+  rpc SuggestPatternPieces(SuggestPatternPiecesRequest) returns (SuggestPatternPiecesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/pattern-import/pieces:suggest"
+      body: "*"
+    };
+  }
+
+  // ClassifyPatternPages (pattern import, A9) — ONE sync vision+JSON call (chat.pattern_pages) that
+  // says WHAT each page of an imported pattern PDF is, from a small picture of the page (media_id, a
+  // PNG of ≤ 1024 px on its long side) and the client's own page statistics (size, line length,
+  // piece-sized outlines, tile marks, amount of text, a text excerpt). One call per file, so the
+  // model sees the neighbouring pages. role is one of: pattern_tile (a 1:1 part of an assembled
+  // sheet), pattern_sheet (a whole 1:1 sheet), overview (a reduced layout of the pieces),
+  // instructions (sewing steps, diagrams), cutting_layout (the pieces laid on the fabric), cover,
+  // table (sizes, consumption), other. The server validates the answer: unknown pages are dropped, a
+  // page whose role is outside the list is asked once more and then LEFT OUT of pages (a warning
+  // says so; never turned into "other"), the confidence is clamped to 0..1, the evidence is kept to
+  // 3 quotes of ≤ 120 runes. The model never moves geometry: the client decides, the answer is one
+  // piece of evidence. Nothing is stored; an identical request within an hour is answered from
+  // process memory (cached) unless force. tech_card_id is optional (0 = no card yet). Every paid
+  // attempt (a retry, a provider fallback) spends one call of the hourly per-admin window.
+  //
+  // InvalidArgument: 0 or more than 40 pages, a page_no outside 1..999 or listed twice, a page
+  // without media_id, a media_id sent twice, an excerpt over 600 runes, a picture over 1024 px on
+  // its long side (or of unknown size), more than 32 M pixels of pictures in one call.
+  // FailedPrecondition: a picture not uploaded within the last 2 hours, a picture off this store's
+  // storage, a file that is not a picture.
+  rpc ClassifyPatternPages(ClassifyPatternPagesRequest) returns (ClassifyPatternPagesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/pattern-import/pages:classify"
+      body: "*"
+    };
+  }
+
+  // SuggestAssemblySkeleton (assembly skeleton, lane E) — ONE sync JSON call (chat.assembly_skeleton)
+  // that gives a SECOND OPINION on the assembly skeleton the client read off the pattern. The client
+  // builds the skeleton itself (pieces → seams → units → order, deterministic) and sends it here as
+  // data: the pieces (name, cloth, hand, ×n), the seams it found with their scores, the ambiguous
+  // joins as decisions with their readings, the category and its template's stage order, and the
+  // steps in the order it proposes. Text only: no picture is sent. The model returns: a suggested
+  // order of the steps (each with a reason), a pick per decision (each with a reason) and
+  // plausibility warnings (a sleeve set before the shoulders are joined, a lining bagged
+  // before its facings, a piece in no step…) and, in the same call, the structure it reads off the
+  // pieces: a garment category out of the offered category_options and the subassemblies (units)
+  // as nested or disjoint sets of piece keys, in the house style of the examples (the request's, or
+  // up to 3 assembly trees of other cards the server picks). The server validates the answer against the request:
+  // unknown step, decision and piece ids are dropped, a pick outside a decision's readings is
+  // dropped, and an order that is not a complete permutation of the ordered steps or that sews a
+  // unit before the step that makes it is returned EMPTY with a note. Nothing is stored and nothing
+  // is applied: the client shows the answer marked AI and applies it only on a press. An identical
+  // request within an hour is answered from process memory (cached) unless force. One press may make
+  // more than one provider call (a fallback after an engaged timeout, one retry of an unusable
+  // answer): the response sums every call (calls, unknown_calls, cost_usd), and a refusal after a
+  // call carries the same figures as an ErrorInfo detail (reason AI_SPEND, metadata calls,
+  // unknown_calls, cost_usd).
+  //
+  // InvalidArgument: 0 or more than 80 pieces, 0 or more than 240 steps, more than 400 seams or 60
+  // decisions, more than 24 category_options or an empty or repeated one, more than 4 examples, 60
+  // units per example or 16 parts per unit, an empty label, name or part, a duplicate or unknown
+  // id, a field above its bound.
+  rpc SuggestAssemblySkeleton(SuggestAssemblySkeletonRequest) returns (SuggestAssemblySkeletonResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/assembly-skeleton:suggest"
+      body: "*"
+    };
+  }
+
   // SaveTechCardPieceAreas stores the MEASURED AREAS of one fabric scope's cut pieces (Ф0) — the
   // geometry the server needs to DERIVE a fabric consumption norm instead of demanding that somebody
   // type one.
@@ -2701,6 +2784,37 @@ service AdminService {
   rpc SaveTechCardPieceAreas(SaveTechCardPieceAreasRequest) returns (SaveTechCardPieceAreasResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/piece-areas"
+      body: "*"
+    };
+  }
+
+  // UpsertTechCardSeams stores the technologist's seam decisions — confirmed / rejected seams and
+  // seams connected by hand on the pieces map — so every reader resolves ONE list.
+  //
+  // KEYED AND PARTIAL: a row per seam_key is inserted or replaced whole; rows not named are
+  // untouched. A reviewer decides one seam at a time, and two reviewers on one card must not clobber
+  // each other's rows.
+  //
+  // The server stamps each row's source fingerprint from ITS OWN tables (sheets + block→piece links
+  // of the pieces' fabric scopes) — the client cannot supply it — and echoes the card's full current
+  // list with `stale` resolved, so the client re-syncs instead of trusting its optimistic copy.
+  //
+  // NO lock_version BUMP and NO section digest: seams are a side table; the form's autosave keeps
+  // working while somebody confirms a seam. A released card refuses (the frozen wording).
+  // wr(tech_cards), the same right as the piece areas.
+  rpc UpsertTechCardSeams(UpsertTechCardSeamsRequest) returns (UpsertTechCardSeamsResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/seams"
+      body: "*"
+    };
+  }
+
+  // DeleteTechCardSeams removes seam decisions by seam_key (an orphan row whose piece left the card,
+  // or a decision the technologist takes back). Unknown keys are not an error. Same lock, same
+  // released-card refusal, same echo of the full list as UpsertTechCardSeams.
+  rpc DeleteTechCardSeams(DeleteTechCardSeamsRequest) returns (DeleteTechCardSeamsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/seams:delete"
       body: "*"
     };
   }
@@ -7879,6 +7993,25 @@ message WorkshopSettings {
   // says which of the two is missing rather than printing a height nobody can trust.
   google.type.Decimal max_stack_height_cm = 6;
 
+  // Usable WIDTH of the cutting/spreading table, in CENTIMETRES (0413) — the length's partner, so the
+  // marker modal can draw the table to scale. ABSENT = not configured ⇒ no width verdict, never 0.
+  google.type.Decimal cutting_table_width_cm = 8;
+
+  // 0414 — costing / label DEFAULTS, read only to PREFILL a new costing and the «made in» line.
+  // Each is ABSENT when not configured ⇒ no prefill (never a zero or an empty string on the wire).
+  // ISO 4217 code every money default here is in (any expense currency, e.g. EUR; USDT legal).
+  optional string costing_currency = 9;
+  // Cost of one production minute (SAM), in costing_currency.
+  google.type.Decimal labour_rate_per_min = 10;
+  // Overhead as a percentage of direct cost, 0..1000.
+  google.type.Decimal overhead_pct = 11;
+  // Брак / запас allowance, percent 0..100 (same band as TechCardCosting.defect_percent).
+  google.type.Decimal defect_percent = 12;
+  // Gross-margin target, percent 0..100 (same band as TechCardCosting.target_margin_pct).
+  google.type.Decimal target_margin_pct = 13;
+  // ISO 3166-1 alpha-2 country of origin («made in»), upper-case, e.g. "PT".
+  optional string country_of_origin = 14;
+
   reserved 4;
   reserved "default_seam_allowance_cm";
 }
@@ -7934,6 +8067,20 @@ message UpdateWorkshopSettingsRequest {
   // clearing the setting (send the empty message), which withholds the verdict instead of failing
   // it. Same floor argument as the table length, opposite to the seam allowance's legal zero.
   google.type.Decimal max_stack_height_cm = 4;
+
+  // 0413 — table width, CENTIMETRES, band [50, 1000] (entity.Min/MaxCuttingTableWidthCm). Tri-state
+  // like the length: absent = leave alone, empty message = clear, number = set.
+  google.type.Decimal cutting_table_width_cm = 6;
+
+  // 0414 — costing / label defaults, all tri-state. Decimals: absent = leave alone, empty message =
+  // clear, number = set. Strings are proto3 `optional` for the same presence: absent = leave alone,
+  // "" = clear, value = set (trimmed, upper-cased server-side).
+  optional string costing_currency = 7; // ISO 4217, an expense currency
+  google.type.Decimal labour_rate_per_min = 8; // > 0, ≤ 4 decimals, ≤ 100000
+  google.type.Decimal overhead_pct = 9; // [0, 1000], ≤ 2 decimals
+  google.type.Decimal defect_percent = 10; // [0, 100], ≤ 2 decimals
+  google.type.Decimal target_margin_pct = 11; // [0, 100], ≤ 2 decimals
+  optional string country_of_origin = 12; // ISO 3166-1 alpha-2
 
   reserved 2;
   reserved "default_seam_allowance_cm";
@@ -11061,6 +11208,269 @@ message PutTechCardPatternSizeIndexResponse {
   int32 resolved_size_count = 2; // how many tokens landed on sizes of the card's range
 }
 
+// PATTERN IMPORT · PIECE NAMES messages (SuggestPatternPieces).
+
+// PatternPieceEvidence is what the client measured and read on one marked piece.
+message PatternPieceEvidence {
+  int32 mark = 1; // the number drawn on the piece in the overview, 1..999, unique in the request
+  repeated string text_inside = 2; // text found inside the contour, as printed (≤ 12 items, ≤ 120 runes each)
+  string quantity_text = 3; // a quantity note found by the piece ("2x", "cut 2 on fold"), ≤ 120 runes
+  double area_cm2 = 4; // the contour's area
+  double bbox_w_mm = 5; // the contour's bounding box, as laid on the sheet
+  double bbox_h_mm = 6;
+  bool is_symmetric_hint = 7; // the contour is mirror-symmetric about an axis
+  bool has_fold_line_hint = 8; // a fold line was found on the contour
+}
+
+// PatternPieceCrop is a close-up picture of one marked piece.
+message PatternPieceCrop {
+  int32 mark = 1; // a mark of SuggestPatternPiecesRequest.pieces
+  int32 media_id = 2; // the uploaded picture
+}
+
+// PatternPiecesContext is what the card and the pattern's own pages say around the pieces.
+message PatternPiecesContext {
+  repeated string size_names = 1; // the card's size range as written ("XS", "44"); a code never ends with one
+  repeated string fabric_purposes_in_bom = 2; // the card's BOM purposes (main, lining, interfacing…)
+  repeated string existing_card_piece_names = 3; // pieces the card already lists
+  string instructions_text_excerpt = 4; // e.g. the cutting-layout text, ≤ 4000 runes
+  string language_hint = 5; // the pattern's language ("de", "ru"), "" = unknown
+}
+
+// PatternPieceCodeOption is one allowed code prefix and its English name.
+message PatternPieceCodeOption {
+  string code = 1; // uppercase prefix: "FP"
+  string name = 2; // "front piece"
+}
+
+message SuggestPatternPiecesRequest {
+  int32 tech_card_id = 1; // optional (0 = no card yet): the card the import lands on, for the log
+  int32 overview_media_id = 2; // the assembled sheet with a number on every piece
+  repeated PatternPieceCrop crops = 3; // ≤ 12 close-ups, after the overview in the model's view
+  repeated PatternPieceEvidence pieces = 4; // 1..80 marked pieces
+  PatternPiecesContext context = 5;
+  // allowed_codes — the code prefixes the answer may use; empty = the server's default vocabulary
+  // (FP BP SL CLR CUF PLK WB PCK YK FAC LIN SP FL GST BLT WS).
+  repeated PatternPieceCodeOption allowed_codes = 6;
+  // allowed_modifiers — the letter/symbol modifiers a code may carry; empty = L R F B #. A part
+  // number 1..20 is always allowed.
+  repeated string allowed_modifiers = 7;
+  bool force = 8; // ask again even when an identical request was answered within the hour
+}
+
+// PatternPieceSuggestion is the model's proposal for one marked piece, validated by the server.
+message PatternPieceSuggestion {
+  int32 mark = 1;
+  // code — PREFIX[_L|_R][_F|_B][_n][_#], uppercase, no size tail; "" when the model's code was
+  // refused (the reason is in warnings) or the model gave none.
+  string code = 2;
+  string human_name_en = 3; // lowercase English, e.g. "front piece left"
+  repeated string fabric_purposes = 4; // BOM purposes: main lining pocketing interfacing insulation contrast mesh other
+  int32 cut_quantity = 5; // pieces cut per garment, 1..20; 0 = unknown
+  bool fold = 6; // cut on the fold
+  bool pair = 7; // cut as a mirrored pair (left + right)
+  string variant = 8; // the model/variant the piece belongs to, "" = all
+  double confidence = 9; // 0..1
+  repeated string evidence = 10; // short quotes of what the model relied on (≤ 4, ≤ 120 runes each)
+}
+
+message SuggestPatternPiecesResponse {
+  repeated PatternPieceSuggestion suggestions = 1; // one per named mark, in mark order
+  string model = 2; // the model that answered
+  int32 prompt_tokens = 3;
+  int32 completion_tokens = 4;
+  string cost_usd = 5; // the provider's reported charge, "" = not reported
+  repeated string warnings = 6; // marks left unnamed, codes refused, duplicate codes
+  bool cached = 7; // true = an identical request was answered within the hour, no call made
+}
+
+// PATTERN IMPORT · PAGE ROLES messages (ClassifyPatternPages).
+
+// PatternPageEvidence is one page of the pattern file: its picture and what the client measured on it.
+message PatternPageEvidence {
+  int32 page_no = 1; // the page number in the file, 1..999, unique in the request
+  int32 media_id = 2; // the page rendered as a PNG of ≤ 1024 px on its long side
+  double width_mm = 3; // the page's size as printed
+  double height_mm = 4;
+  string text_excerpt = 5; // the page's text as extracted, ≤ 600 runes
+  double line_length_m = 6; // the total length of the drawn lines, metres
+  int32 piece_sized_outlines = 7; // closed outlines big enough to be a pattern piece
+  bool has_tile_marks = 8; // tile/registration marks (crosses, triangles, page labels) were found
+  int32 text_chars = 9; // characters of text on the whole page (the excerpt may be shorter)
+}
+
+message ClassifyPatternPagesRequest {
+  int32 tech_card_id = 1; // optional (0 = no card yet): the card the import lands on, for the log
+  string file_name = 2; // the pattern file's name, ≤ 200 runes (data for the model, e.g. "instructions.pdf")
+  repeated PatternPageEvidence pages = 3; // 1..40 pages, one picture each
+  string language_hint = 4; // the pattern's language ("de", "ru"), "" = unknown
+  bool force = 5; // ask again even when an identical request was answered within the hour
+}
+
+// PatternPageRole is the model's reading of one page, validated by the server.
+message PatternPageRole {
+  int32 page_no = 1;
+  // role — pattern_tile, pattern_sheet, overview, instructions, cutting_layout, cover, table or
+  // other. A page the model gave a role outside this list is not in the answer at all.
+  string role = 2;
+  double confidence = 3; // 0..1, how sure the model is of the role
+  repeated string evidence = 4; // short quotes or visual facts the model relied on (≤ 3, ≤ 120 runes each)
+}
+
+message ClassifyPatternPagesResponse {
+  repeated PatternPageRole pages = 1; // one per classified page, in page_no order
+  string model = 2; // the model that answered
+  int32 prompt_tokens = 3;
+  int32 completion_tokens = 4;
+  string cost_usd = 5; // the provider's reported charge, "" = not reported
+  repeated string warnings = 6; // pages left unclassified, roles outside the list, unpriced calls
+  bool cached = 7; // true = an identical request was answered within the hour, no call made
+}
+
+// ASSEMBLY SKELETON · AI SECOND OPINION messages (SuggestAssemblySkeleton).
+
+// AssemblySkeletonPiece is one cut piece of the garment as the skeleton read it.
+message AssemblySkeletonPiece {
+  string key = 1; // the card's piece key (lineKey), unique in the request, ≤ 64 runes
+  string name = 2; // the piece's name on the card, ≤ 80 runes
+  string cloth = 3; // main lining pocketing interfacing insulation contrast mesh other, "" = unknown
+  string hand = 4; // "L", "R" or "" (no side)
+  int32 count = 5; // pieces per garment (×n), 1..20; 0 = 1
+  bool fused = 6; // fused with interfacing
+}
+
+// AssemblySkeletonSeam is one edge pair the client matched (or could not decide).
+message AssemblySkeletonSeam {
+  string a = 1; // a piece key of the request
+  string b = 2; // a piece key of the request (may equal a: a seam of one piece onto itself)
+  double score = 3; // 0..1, the client's confidence in the pair
+  string kind = 4; // edge partial composite surface closure
+  string evidence = 5; // the client's evidence in words ("518 = 518 mm, 2 notches"), ≤ 160 runes
+}
+
+// AssemblySkeletonReading is one way an ambiguous join can be read.
+message AssemblySkeletonReading {
+  repeated string inputs = 1; // piece keys or unit keys, as a step's inputs
+  string reason = 2; // why the client considers it, ≤ 200 runes
+}
+
+// AssemblySkeletonDecision is an ambiguous join: two or more readings, one chosen by the client.
+message AssemblySkeletonDecision {
+  string id = 1; // stable decision id, unique in the request, ≤ 64 runes
+  repeated AssemblySkeletonReading readings = 2; // 2..6, in the client's stable order
+  int32 chosen = 3; // the reading the steps were built with (index into readings)
+}
+
+// AssemblySkeletonStep is one step of the client's proposed order.
+message AssemblySkeletonStep {
+  string id = 1; // step id, unique in the request, ≤ 16 runes ("s1")
+  repeated string inputs = 2; // piece keys or earlier steps' output units, 1..16
+  string output_unit = 3; // the unit the step makes, "" = processing (the work stays on the table)
+  string output_name = 4; // the unit's name, ≤ 80 runes
+  string operation = 5; // MACHINE PRESS PRESS_OPEN FUSING HANDWORK
+  string label = 6; // what the step does, in words, ≤ 120 runes
+  double confidence = 7; // 0..1, the client's confidence
+  string decision_id = 8; // the decision this step is the chosen reading of, "" = none
+  string follows = 9; // a press or processing step that rides on this join's step id; "" = its own
+}
+
+message SuggestAssemblySkeletonRequest {
+  int32 tech_card_id = 1; // optional (0 = none): the card asked about, for the log
+  string category = 2; // the template's garment category (tee, shirt, jacket-lined …), ≤ 32 runes
+  repeated string template_stages = 3; // the template's stage order in words, ≤ 40 × 80 runes
+  repeated AssemblySkeletonPiece pieces = 4; // 1..80
+  repeated AssemblySkeletonSeam seams = 5; // ≤ 400
+  repeated AssemblySkeletonDecision decisions = 6; // ≤ 60
+  repeated AssemblySkeletonStep steps = 7; // 1..240, in the client's order
+  // 8 was media_ids: pictures are not sent (a picture of another card must never reach a model).
+  reserved 8;
+  reserved "media_ids";
+  bool force = 9; // ask again even when an identical request was answered within the hour
+  // the garment category ids the client has a template for (tee, sweat, hoodie, trousers, skirt,
+  // dress, jumpsuit, shirt, jacket-lined, coat-lined, generic), ≤ 24 × 32 runes, unique; empty = the
+  // model is not asked for a category
+  repeated string category_options = 10;
+  // house style for the units: assembly trees this workshop's technologist made for OTHER garments,
+  // ≤ 4; EMPTY = the server picks up to 3 itself from the card base (other cards with ≥ 4 joins,
+  // the same category as tech_card_id's card first, then the most recently updated; none when
+  // tech_card_id is 0)
+  repeated AssemblySkeletonExample examples = 11;
+}
+
+// AssemblySkeletonExample is one assembly tree of another garment, shown to the model as house style.
+message AssemblySkeletonExample {
+  string label = 1; // the garment category or style name, non-empty, ≤ 80 runes
+  repeated AssemblySkeletonExampleUnit units = 2; // the joins in the order sewn, ≤ 60
+}
+
+// AssemblySkeletonExampleUnit is one join of an example: the unit it makes and what goes into it.
+message AssemblySkeletonExampleUnit {
+  string name = 1; // the unit's name, non-empty, ≤ 80 runes
+  // PIECE NAMES or NAMES of earlier units of the same example (names, not keys), 1..16, each
+  // non-empty, ≤ 80 runes
+  repeated string parts = 2;
+}
+
+// AssemblySkeletonOrderItem is one step in the model's suggested order.
+message AssemblySkeletonOrderItem {
+  string step_id = 1;
+  string reason = 2; // why here, "" = nothing to add, ≤ 200 runes
+}
+
+// AssemblySkeletonPick is the model's reading of one decision.
+message AssemblySkeletonPick {
+  string decision_id = 1;
+  int32 reading = 2; // index into the decision's readings
+  string reason = 3; // ≤ 200 runes
+}
+
+// AssemblySkeletonWarning is one plausibility doubt about the skeleton.
+message AssemblySkeletonWarning {
+  // order (a step before what it needs: sleeve before shoulder), lining (lining or facing order),
+  // missing (a piece in no step, a step the garment needs), closure, pressing, other
+  string kind = 1;
+  string message = 2; // ≤ 240 runes
+  repeated string step_ids = 3; // steps of the request it is about
+  repeated string piece_keys = 4; // pieces of the request it is about
+}
+
+// AssemblySkeletonCategoryPick is the model's reading of the garment category, judged by the pieces.
+message AssemblySkeletonCategoryPick {
+  string id = 1; // one of the request's category_options
+  string reason = 2; // ≤ 200 runes
+}
+
+// AssemblySkeletonUnitHint is one subassembly a workshop makes: a set of piece keys that is a single
+// join's result. Two hints of one answer are nested or disjoint, never partially overlapping.
+message AssemblySkeletonUnitHint {
+  repeated string piece_keys = 1; // piece keys of the request, ≥ 2, unique
+  string name = 2; // the unit's name ("Collar", "Left front with pocket"), ≤ 80 runes
+  string reason = 3; // ≤ 200 runes
+}
+
+message SuggestAssemblySkeletonResponse {
+  // order — the ordered steps (every step without `follows`), each exactly once; EMPTY when the
+  // model gave no usable order (the reason is in notes). A rider follows its join.
+  repeated AssemblySkeletonOrderItem order = 1;
+  repeated AssemblySkeletonPick picks = 2; // at most one per decision, in request order
+  repeated AssemblySkeletonWarning warnings = 3; // the model's plausibility doubts
+  string model = 4; // the model that answered
+  int32 prompt_tokens = 5;
+  int32 completion_tokens = 6;
+  string cost_usd = 7; // the sum of the KNOWN charges of every call of this press, "" = none known
+  repeated string notes = 8; // what the server dropped or refused in the answer
+  bool cached = 9; // true = an identical request was answered within the hour, no call made
+  int32 calls = 10; // provider calls this press made that may have been billed (0 when cached)
+  int32 unknown_calls = 11; // of them, calls whose charge is not known (cost_usd leaves them out)
+  // ai_category — the category the model reads off the pieces; unset = keep the draft's (no options
+  // offered, none given, or not one of the options — the reason is in notes)
+  AssemblySkeletonCategoryPick ai_category = 12;
+  // units — the model's subassemblies, smallest set first, nested or disjoint; EMPTY = keep the
+  // draft's grouping. Unknown keys, sets of < 2 pieces, repeats and partial overlaps are dropped
+  // with a note.
+  repeated AssemblySkeletonUnitHint units = 13;
+}
+
 message SaveTechCardPieceAreasRequest {
   int32 tech_card_id = 1;
   // The fabric scope: назначение (0265) when the card has been sorted, else the BOM line's line_key —
@@ -11082,6 +11492,27 @@ message SaveTechCardPieceAreasRequest {
 message SaveTechCardPieceAreasResponse {
   string sheet_fingerprint = 1; // what the server recorded
   int32 stored = 2; // rows written for this scope
+}
+
+message UpsertTechCardSeamsRequest {
+  int32 tech_card_id = 1;
+  // Rows to insert or replace whole, by seam_key. Output-only fields (stale, *_by, *_at) are ignored.
+  repeated common.TechCardSeam seams = 2;
+}
+
+message UpsertTechCardSeamsResponse {
+  repeated common.TechCardSeam seams = 1; // the card's full list after the write, stale resolved
+  int32 written = 2; // rows inserted or replaced
+}
+
+message DeleteTechCardSeamsRequest {
+  int32 tech_card_id = 1;
+  repeated string seam_keys = 2;
+}
+
+message DeleteTechCardSeamsResponse {
+  repeated common.TechCardSeam seams = 1; // the card's full list after the delete, stale resolved
+  int32 deleted = 2; // rows actually removed
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

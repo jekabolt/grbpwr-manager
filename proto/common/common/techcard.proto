@@ -2854,6 +2854,13 @@ message TechCardOperation {
   // жест, а не потеря.
   repeated TechCardOperationBomQty bom_quantities = 67;
 
+  // ЧЕРНОВИК КАРКАСА СБОРКИ (0410). true = шаг записал каркас сборки (OPERATIONS → build from pattern
+  // → apply), и его ещё никто не проверил. Снимает первая смысловая правка строки или клик по чипу
+  // «draft» (reviewed). В ДАЙДЖЕСТ НЕ ВХОДИТ: проверка шага не меняет того, что карточка говорит цеху,
+  // а хеш метки переподписывал бы карточку на каждом ревью чужого шага. Не входит ни в аудит, ни в гейт
+  // сборки — это пометка для команды, а не инструкция.
+  bool draft = 68;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3700,6 +3707,15 @@ message TechCardInsert {
   // ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест секции.
   bool labels_aware = 123;
 
+  // ЩИТ ЧЕРНОВИКА КАРКАСА (0410) для TechCardOperation.draft (68). draft — bool без присутствия, а
+  // операции пишутся полной заменой без стабильного ключа: payload бандла, который поля не знает,
+  // неотличим от «все шаги проверены», и открытая старая вкладка стёрла бы каждую метку первой же
+  // правкой. Без флага UpdateTechCard ОТКАЗЫВАЕТ (FailedPrecondition, «обнови админку»), если у
+  // сохранённой карточки есть хоть один draft-шаг, и любая запись отказывает, если payload без
+  // флага несёт draft = true (эхо). Флаг не фильтрует разбор. Серверные пути (клон сезона,
+  // импорт архива) ставят его явно. ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест.
+  bool operation_draft_aware = 125;
+
   reserved 108;
   reserved "required_seam_allowance_cm";
 
@@ -3813,6 +3829,11 @@ message TechCard {
   // (CreateTechCardRequest.guided) and the guide has not been left yet. Cleared only by
   // ExitTechCardGuide, which does not bump lock_version. Ignored on write.
   bool guided = 31;
+  // OUTPUT-ONLY: the technologist's seam decisions (confirmed / rejected / connected by hand), with
+  // the server's staleness verdict resolved on this read. Written ONLY through UpsertTechCardSeams /
+  // DeleteTechCardSeams — never through TechCardInsert, so a full card save cannot erase them, the
+  // seams RPCs never bump lock_version, and they enter no section digest. Ignored on write.
+  repeated TechCardSeam seams = 32;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.
@@ -3865,6 +3886,118 @@ message TechCardPieceArea {
   // листов в пачке, и сравнивать его с чем-либо нельзя. НЕ то же самое, что hulled — состояния
   // разные и ведут к разным фразам на экране.
   bool ambiguous_pick = 5;
+}
+
+// ─── CONFIRMED SEAMS (tech_card_seam) ───────────────────────────────────────────────────────────
+//
+// A technologist accepts or rejects the seams the assembly engine proposes, or connects two edges
+// by hand; the decision is stored on the card and every reader (doll, skeleton, assembly map, POM)
+// resolves ONE list instead of guessing again on each open.
+//
+// AN EDGE IS NEVER ADDRESSED BY ITS CORNER INDEX (`pieceKey#k`): that number is counted from the
+// DXF's first vertex and moves with the exporter's start point or any corner appearing. A seam side
+// is a list of ANCHORS — the piece's stable line_key plus the edge's SHAPE in the piece's own frame —
+// and the client resolves them geometrically; what does not fit reads as stale, never re-pointed.
+
+// TechCardSeamSample is one point of an edge's shape, in the piece's own bbox-normalised frame
+// (u, v ∈ [0, 1]).
+message TechCardSeamSample {
+  double u = 1;
+  double v = 2;
+}
+
+// TechCardSeamAnchor is one run of one piece taking part in a seam side.
+message TechCardSeamAnchor {
+  // tech_card_piece.line_key — never a block name, never an id.
+  string piece_line_key = 1;
+  // Five points along the run at s = 0, 1/4, 1/2, 3/4, 1 of its length, walk order (CCW).
+  repeated TechCardSeamSample samples = 2;
+  // Share of the sewing-line perimeter covered by the run, (0, 1].
+  double perim_share = 3;
+  // Run length at the size it was anchored on, mm (> 0).
+  double len_mm = 4;
+  // Notch count on the run, ends excluded.
+  int32 notches = 5;
+  // Signed turn of the run, degrees (+ convex).
+  double turn_deg = 6;
+  // Sewn sub-range of the run as shares of its length from its start. range_from = range_to = 0 is
+  // the WHOLE run (protojson cannot carry «absent» for doubles; 0/0 is the whole run by rule).
+  double range_from = 7;
+  double range_to = 8;
+  // Fast path + diagnostics, never trusted alone: the engine's edge id when anchored ('FP_L#2',
+  // 'BP#3+4') and the piece contour's signature then.
+  string edge_hint = 9;
+  string contour_sig = 10;
+}
+
+// TechCardSeamSide is one side of a seam: its anchors in walk order (1..8).
+message TechCardSeamSide {
+  repeated TechCardSeamAnchor parts = 1;
+}
+
+// TechCardSeamStatus is the technologist's decision on a seam.
+enum TechCardSeamStatus {
+  TECH_CARD_SEAM_STATUS_UNKNOWN = 0;
+  TECH_CARD_SEAM_STATUS_CONFIRMED = 1;
+  TECH_CARD_SEAM_STATUS_REJECTED = 2;
+}
+
+// TechCardSeamKind is the shape of a seam: one edge to one edge, a sub-range of a longer edge, a
+// walk across several pieces (sleeve cap into a front + back armhole), a patch onto a face, or a
+// closure (zip / button front) that is NOT sewn shut.
+enum TechCardSeamKind {
+  TECH_CARD_SEAM_KIND_UNKNOWN = 0;
+  TECH_CARD_SEAM_KIND_EDGE = 1;
+  TECH_CARD_SEAM_KIND_PARTIAL = 2;
+  TECH_CARD_SEAM_KIND_COMPOSITE = 3;
+  TECH_CARD_SEAM_KIND_SURFACE = 4;
+  TECH_CARD_SEAM_KIND_CLOSURE = 5;
+}
+
+// TechCardSeamDirection is how the two sides walk against each other. REVERSED is the normal seam
+// (face-up pieces walk a shared seam oppositely); SAME when one side is a flipped instance. UNKNOWN
+// is legal on write: the reader then picks the pairing itself.
+enum TechCardSeamDirection {
+  TECH_CARD_SEAM_DIRECTION_UNKNOWN = 0;
+  TECH_CARD_SEAM_DIRECTION_REVERSED = 1;
+  TECH_CARD_SEAM_DIRECTION_SAME = 2;
+}
+
+// TechCardSeamSource is where the seam came from before a person decided on it. AI is reserved.
+enum TechCardSeamSource {
+  TECH_CARD_SEAM_SOURCE_UNKNOWN = 0;
+  TECH_CARD_SEAM_SOURCE_GRAPH = 1;
+  TECH_CARD_SEAM_SOURCE_DOLL = 2;
+  TECH_CARD_SEAM_SOURCE_ORDER = 3;
+  TECH_CARD_SEAM_SOURCE_MANUAL = 4;
+  TECH_CARD_SEAM_SOURCE_AI = 5;
+}
+
+// TechCardSeam is one stored seam decision, keyed by a client-minted ULID.
+message TechCardSeam {
+  // ULID (26 chars), client-minted, the row's identity across saves.
+  string seam_key = 1;
+  TechCardSeamStatus status = 2;
+  TechCardSeamKind kind = 3;
+  TechCardSeamDirection direction = 4;
+  TechCardSeamSource source = 5;
+  TechCardSeamSide side_a = 6;
+  TechCardSeamSide side_b = 7;
+  // Size code the anchors were written on — honesty for display; the resolver compares by ratio.
+  string anchored_size = 8;
+  // The technologist's words («eased at the yoke», «CF is a zip»), ≤ 255 chars.
+  string note = 9;
+  // OUTPUT ONLY (ignored on write): the server's verdict and provenance.
+  //
+  // stale = the SOURCE of the seam's pieces moved since the row was written: the fingerprint of the
+  // sheets AND block→piece links of the pieces' fabric scopes, computed now, differs from the one
+  // stamped on write (a DXF re-uploaded, a block re-aliased). A stale row must not be applied as is
+  // — the client shows it and offers re-confirm, which rewrites it and clears the flag.
+  bool stale = 20;
+  string created_by = 21;
+  google.protobuf.Timestamp created_at = 22;
+  string updated_by = 23;
+  google.protobuf.Timestamp updated_at = 24;
 }
 
 // TechCardSlotAreaEstimate — ОЦЕНКА РАСХОДА ОДНОГО РУЛОННОГО СЛОТА в ЭТОМ колорвее: сколько ткани
@@ -4393,6 +4526,33 @@ message TechCardMarkerLayout {
   // outlive the used_length it was derived from — and would be indistinguishable from a измеренное
   // one to every future reader.
   repeated TechCardMarkerCompositionEntry composition = 6;
+  // НАСТИЛ the раскладка was planned for on the cutting table: plies, end loss, spread mode and the
+  // PHYSICAL table length. ABSENT = not recorded (every blob saved before this field, and every
+  // stale bundle). Replaces the old client hack that stuffed the usable table length into
+  // params.target_length_cm and wrote a «cutting table:» line into warnings — readers keep decoding
+  // that hack for blobs that predate this field. No schema_version bump: the field is additive and
+  // readers branch on its PRESENCE.
+  TechCardMarkerSpread spread = 7;
+}
+
+// TechCardMarkerSpreadMode is how the plies of the настил face each other.
+enum TechCardMarkerSpreadMode {
+  TECH_CARD_MARKER_SPREAD_MODE_UNKNOWN = 0; // not recorded
+  TECH_CARD_MARKER_SPREAD_MODE_FACE_UP = 1; // every ply face up, one direction
+  TECH_CARD_MARKER_SPREAD_MODE_FACE_TO_FACE = 2; // plies alternate face down / face up (зигзаг, лицом к лицу)
+}
+
+// TechCardMarkerSpread is the cutting-table half of the conditions a раскладка was taken under.
+// Validated on save (SaveTechCardMarker refuses out-of-range values with InvalidArgument):
+// plies 1..1000, end_loss_cm 0..100, table_length_cm 0 (= not recorded) or 50..5000, mode a known
+// value.
+message TechCardMarkerSpread {
+  int32 plies = 1; // >= 1 — number of plies in the настил
+  double end_loss_cm = 2; // allowance lost at EACH end of every ply, cm, >= 0
+  TechCardMarkerSpreadMode mode = 3;
+  // The PHYSICAL length of the cutting table, cm; 0 = not recorded. Its own field — NOT
+  // params.target_length_cm, which is the engine's target and stays what the search was asked for.
+  double table_length_cm = 4;
 }
 
 // TechCardMarkerNestParams are the engine inputs that produced the layout — enough to label the

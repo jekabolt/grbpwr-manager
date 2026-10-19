@@ -3399,6 +3399,11 @@ type TechCardOperation struct {
 	// глагол и синонимы работы — никогда, они представление.
 	Work sql.NullString `db:"work"`
 
+	// Draft — шаг записал каркас сборки, и его ещё никто не проверил (0410). NOT NULL DEFAULT 0:
+	// старые шаги = не черновик, и это правда. В дайджест НЕ входит (techcard_section_digest.go его
+	// не проецирует; голден в internal/dto это держит): проверка шага карточку не переподписывает.
+	Draft bool `db:"draft"`
+
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
 	PieceLineKeys []string `db:"-"`
@@ -4732,6 +4737,10 @@ type TechCard struct {
 	// A map, not a slice: every reader asks «what are the areas of THIS fabric», never «what is the
 	// third scope», and the one place that needs a stable order (the wire) sorts on the way out.
 	PieceAreaScopes map[string]PieceAreaScope `db:"-"`
+	// Seams are the technologist's seam decisions (tech_card_seam), staleness resolved. Populated on
+	// the single-card read (nil on lists/writes). Written only through Upsert/DeleteTechCardSeams —
+	// never part of TechCardInsert, so outside every section digest and outside lock_version.
+	Seams []TechCardSeam `db:"-"`
 	// WorkshopSeamAllowanceMm is the SHOP's default seam allowance (0277) carried onto the card at
 	// read time, so a reader can resolve the standard's full cascade — card override, else shop — with
 	// RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm).

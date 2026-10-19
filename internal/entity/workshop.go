@@ -2,7 +2,11 @@ package entity
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 
 	"github.com/shopspring/decimal"
 )
@@ -65,6 +69,34 @@ type WorkshopSettings struct {
 	// the check is Material.FabricThicknessMm; either half missing ⇒ UNKNOWN.
 	MaxStackHeightCm decimal.NullDecimal `db:"max_stack_height_cm"`
 
+	// CuttingTableWidthCm is the usable WIDTH of the cutting/spreading table, in centimetres (0413) —
+	// the length's partner, so the marker modal can draw the table to scale and show whether the
+	// fabric width fits across it. Same house law: INVALID (NULL) = не настроено ⇒ no width verdict,
+	// never a comparison against zero.
+	CuttingTableWidthCm decimal.NullDecimal `db:"cutting_table_width_cm"`
+
+	// Costing / label DEFAULTS (0414). Unlike the tenants above these are not physical constants of
+	// the room but the shop's house numbers, read ONLY to PREFILL a new costing and the «made in»
+	// line of a label — never as a fallback at compute time. A tech card's own costing stays the
+	// source of truth once written; changing a default here re-prices nothing.
+	//
+	// Same house law: INVALID (NULL) = не настроено ⇒ no prefill, the field is left blank for the
+	// operator. A zero percentage IS a real setting («у нас нет брака в смете»), unlike the rate.
+	//
+	// CostingCurrency is the ISO 4217 code every money default below is denominated in (any expense
+	// currency, so USDT is legal — the column is VARCHAR(4) like every currency since 0185).
+	CostingCurrency sql.NullString `db:"costing_currency"`
+	// LabourRatePerMin is the cost of one production minute (SAM) in CostingCurrency.
+	LabourRatePerMin decimal.NullDecimal `db:"labour_rate_per_min"`
+	// OverheadPct is overhead as a percentage of the direct cost, 0..1000.
+	OverheadPct decimal.NullDecimal `db:"overhead_pct"`
+	// DefectPercent is the брак / запас allowance, 0..100 — same band as TechCardCosting.defect_percent.
+	DefectPercent decimal.NullDecimal `db:"defect_percent"`
+	// TargetMarginPct is the gross-margin target, 0..100 — same band as TechCardCosting.target_margin_pct.
+	TargetMarginPct decimal.NullDecimal `db:"target_margin_pct"`
+	// CountryOfOrigin is the ISO 3166-1 alpha-2 country the shop produces in («made in»), uppercase.
+	CountryOfOrigin sql.NullString `db:"country_of_origin"`
+
 	UpdatedBy string    `db:"updated_by"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -115,6 +147,16 @@ type WorkshopSettingsPatch struct {
 	// настроено», because a wrong limit fails настилы that are perfectly fine while an unset one
 	// simply declines to judge them.
 	MaxStackHeightCm *decimal.NullDecimal
+	// CuttingTableWidthCm (0413) is three-state like the table length it sits next to.
+	CuttingTableWidthCm *decimal.NullDecimal
+	// Costing / label defaults (0414) — all three-state. For the two strings an INVALID NullString
+	// is the clear.
+	CostingCurrency  *sql.NullString
+	LabourRatePerMin *decimal.NullDecimal
+	OverheadPct      *decimal.NullDecimal
+	DefectPercent    *decimal.NullDecimal
+	TargetMarginPct  *decimal.NullDecimal
+	CountryOfOrigin  *sql.NullString
 }
 
 // IsEmpty reports whether the patch names no setting at all. Such a request is rejected rather than
@@ -127,7 +169,10 @@ type WorkshopSettingsPatch struct {
 // TestWorkshopSettingsPatchIsEmptyCoversEveryField holds the line by reflection.
 func (p WorkshopSettingsPatch) IsEmpty() bool {
 	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceMm == nil &&
-		p.RunReadinessBlocking == nil && p.MaxStackHeightCm == nil
+		p.RunReadinessBlocking == nil && p.MaxStackHeightCm == nil &&
+		p.CuttingTableWidthCm == nil &&
+		p.CostingCurrency == nil && p.LabourRatePerMin == nil && p.OverheadPct == nil &&
+		p.DefectPercent == nil && p.TargetMarginPct == nil && p.CountryOfOrigin == nil
 }
 
 // Plausibility band for a cutting/spreading table length, in centimetres.
@@ -215,6 +260,130 @@ func ValidateMaxStackHeightCm(v decimal.NullDecimal) error {
 	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxStackHeightCm)) {
 		return NewFieldViolation(field, "implausibly_tall", v.Decimal.String(),
 			"the value is in CENTIMETRES and the longest cutting knives reach about 30 cm, so anything past 100 is a unit mistake")
+	}
+	return nil
+}
+
+// Plausibility band for the cutting/spreading table WIDTH, in centimetres (0413).
+//
+// The ceiling is repeated verbatim by the named CHECK chk_workshop_settings_table_width in 0413 — the
+// two must move together. Real spreading tables are 120–250 cm wide (fabric up to ~320 cm); past
+// 10 m it is a stray zero or millimetres, not a table. The floor lives only here, for the same reason
+// as the length's: metres typed into a centimetre field ("1.8" for a 1.8 m table) must be caught.
+const (
+	MinCuttingTableWidthCm = 50
+	MaxCuttingTableWidthCm = 1000
+)
+
+// ValidateCuttingTableWidthCm checks an incoming table width against the band above. An INVALID
+// (unset) value is accepted — clearing the setting is legal.
+func ValidateCuttingTableWidthCm(v decimal.NullDecimal) error {
+	const field = "cutting_table_width_cm"
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.Exponent() < -2 {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 2 decimal places — the column stores no more, so the extra digits would be lost silently")
+	}
+	if v.Decimal.LessThanOrEqual(decimal.Zero) {
+		return NewFieldViolation(field, "must_be_positive", v.Decimal.String(),
+			"enter the table width in centimetres; to record that the width is not configured, clear the setting instead of entering 0")
+	}
+	if v.Decimal.LessThan(decimal.NewFromInt(MinCuttingTableWidthCm)) {
+		return NewFieldViolation(field, "implausibly_narrow", v.Decimal.String(),
+			"the value is in CENTIMETRES — a 1.8 m wide table is 180, not 1.8")
+	}
+	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxCuttingTableWidthCm)) {
+		return NewFieldViolation(field, "implausibly_wide", v.Decimal.String(),
+			"the value is in CENTIMETRES and spreading tables are about 120–250 cm wide; check for a stray zero or millimetres")
+	}
+	return nil
+}
+
+// Bands for the costing / label defaults (0414). They live ONLY here, not in the schema: the owner's
+// rule for this table's later tenants is «no CHECK on an existing table», and a band is a judgement
+// about operator input that must stay retunable without a migration.
+const (
+	// MaxLabourRatePerMin is a stray-zero ceiling, generous enough for the weakest supported currency
+	// (a KRW minute is a few hundred).
+	MaxLabourRatePerMin = 100000
+	// MaxOverheadPct: overhead on direct cost can honestly exceed 100 % in a small atelier; past
+	// 1000 % it is a typo.
+	MaxOverheadPct = 1000
+	// MaxDefectPercent / MaxTargetMarginPct repeat the tech-card costing bands (dto parseTechCardCosting)
+	// so a prefilled value is always one the costing form will accept on save.
+	MaxDefectPercent   = 100
+	MaxTargetMarginPct = 100
+)
+
+// ValidateWorkshopCostingCurrency accepts an unset value (clear) or an upper-case ISO 4217 code the
+// shop can denominate an expense in — the same predicate the tech-card costing currency uses.
+func ValidateWorkshopCostingCurrency(v sql.NullString) error {
+	const field = "costing_currency"
+	if !v.Valid {
+		return nil
+	}
+	if v.String != strings.ToUpper(strings.TrimSpace(v.String)) || !currency.IsExpenseCurrency(v.String) {
+		return NewFieldViolation(field, "unsupported_currency", v.String,
+			"pick one of the shop's currencies (ISO 4217, e.g. EUR) or clear the setting")
+	}
+	return nil
+}
+
+// ValidateWorkshopCountryOfOrigin accepts an unset value (clear) or an upper-case ISO 3166-1 alpha-2
+// code present in the country dictionary seed — the same set product.country_code can hold.
+func ValidateWorkshopCountryOfOrigin(v sql.NullString) error {
+	const field = "country_of_origin"
+	if !v.Valid {
+		return nil
+	}
+	if _, ok := iso2ToISO3[v.String]; !ok {
+		return NewFieldViolation(field, "unknown_country", v.String,
+			"enter an ISO 3166-1 alpha-2 country code, e.g. PT, or clear the setting")
+	}
+	return nil
+}
+
+// ValidateLabourRatePerMin: positive (a zero rate would prefill a costing with free labour — clear the
+// setting instead), at most 4 decimal places (DECIMAL(12,4)), under the stray-zero ceiling.
+func ValidateLabourRatePerMin(v decimal.NullDecimal) error {
+	const field = "labour_rate_per_min"
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.Exponent() < -4 {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 4 decimal places — the column stores no more, so the extra digits would be lost silently")
+	}
+	if v.Decimal.LessThanOrEqual(decimal.Zero) {
+		return NewFieldViolation(field, "must_be_positive", v.Decimal.String(),
+			"enter the cost of one production minute; to have no default, clear the setting instead of entering 0")
+	}
+	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxLabourRatePerMin)) {
+		return NewFieldViolation(field, "implausibly_high", v.Decimal.String(),
+			"the rate is PER MINUTE, not per hour or per garment; check for a stray zero")
+	}
+	return nil
+}
+
+// ValidateWorkshopPercent checks a percentage default: 0 is legal, at most 2 decimal places
+// (DECIMAL(6,2)), not above max.
+func ValidateWorkshopPercent(field string, v decimal.NullDecimal, max int64) error {
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.Exponent() < -2 {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 2 decimal places — the column stores no more, so the extra digits would be lost silently")
+	}
+	if v.Decimal.LessThan(decimal.Zero) {
+		return NewFieldViolation(field, "must_not_be_negative", v.Decimal.String(),
+			"enter a percentage from 0 up, or clear the setting")
+	}
+	if v.Decimal.GreaterThan(decimal.NewFromInt(max)) {
+		return NewFieldViolation(field, "out_of_range", v.Decimal.String(),
+			fmt.Sprintf("the value is a PERCENTAGE and must be at most %d", max))
 	}
 	return nil
 }

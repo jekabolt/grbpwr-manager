@@ -999,6 +999,10 @@ type (
 		// GetTechCardNames returns id → name for the given tech cards (cheap header-only lookup used by
 		// the packing spec to label garment styles without an N+1 GetTechCardById).
 		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
+		// ListAssemblyExampleCards reads up to limit OTHER sellable cards (≠ excludeID) with ≥ 4 join
+		// operations, same category as excludeID's first, then the most recently updated, with their
+		// joins and inputs in order — the house style of SuggestAssemblySkeleton (read-only).
+		ListAssemblyExampleCards(ctx context.Context, excludeID, limit int) ([]entity.AssemblyExampleCard, error)
 		// GetPatternViewerManifest is the narrow read behind the public pattern viewer
 		// (GET /api/pv/{token}): style header, named size range, all pattern sheet rows and
 		// the roll-goods BOM lines. Deliberately NOT GetTechCardById — that read carries the
@@ -1154,6 +1158,17 @@ type (
 		// different set of files would answer for files nobody read, and an understated area
 		// understates the norm, which is discovered in the warehouse rather than on screen.
 		SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaWrite) (entity.PieceAreaResult, error)
+		// GetTechCardSeams returns a card's seam decisions (tech_card_seam) with staleness resolved
+		// against today's sheets + block links of each seam's pieces' fabric scopes.
+		GetTechCardSeams(ctx context.Context, techCardID int) ([]entity.TechCardSeam, error)
+		// UpsertTechCardSeams inserts or replaces seams by seam_key (rows not named are untouched),
+		// stamps the server-side source fingerprint, and returns the card's full list. Locks the card
+		// row FOR UPDATE first, refuses a released card, never bumps lock_version. `in` must already
+		// have passed entity.ValidateTechCardSeamsWrite; the store adds the piece-membership check.
+		UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeamsWrite) ([]entity.TechCardSeam, int, error)
+		// DeleteTechCardSeams removes seams by seam_key (unknown keys are not an error) and returns the
+		// card's full list plus how many rows went. Same lock and released-card refusal as the upsert.
+		DeleteTechCardSeams(ctx context.Context, techCardID int, seamKeys []string) ([]entity.TechCardSeam, int, error)
 		// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs the card's own write does
 		// not carry — measured piece areas and the recipe's piece→fabric assignments (Ф-П). The write
 		// path needs it to stamp a fresh COSTING approval over content it cannot see; the read path

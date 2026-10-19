@@ -126,6 +126,16 @@ const (
 	// AIPurposeDesignJoins — the flat route's join list (0397): one vision+JSON call writing the
 	// garment's construction on the fixed landmark ruler from its reference photos.
 	AIPurposeDesignJoins = "chat.design_joins"
+	// AIPurposePatternPieces — pattern import (F9, 0408): one vision+JSON call naming the numbered
+	// pieces of an imported sewing pattern (code, name, fabrics, cut quantity, fold, pair).
+	AIPurposePatternPieces = "chat.pattern_pieces"
+	// AIPurposePatternPages — pattern import (A9): one vision+JSON call saying what each page of an
+	// imported pattern file is (pattern tile, whole sheet, overview, instructions, cutting layout …).
+	AIPurposePatternPages = "chat.pattern_pages"
+	// AIPurposeAssemblySkeleton — the assembly skeleton's second opinion (lane E, 0409): one JSON
+	// call reading the skeleton the client built off the pattern and suggesting an order, a reading
+	// per ambiguous join and plausibility warnings. Shown marked AI, applied only on a press.
+	AIPurposeAssemblySkeleton = "chat.assembly_skeleton"
 	// AIPurposeBoardLabel / AIPurposeBoardRead — the moodboard labels (101-MOODBOARD-ROLES): a cheap
 	// vision call names the view of a target picture (and proposes the purpose of a picture without
 	// one); a strong one takes the unclear views and reads which detail a detail photo shows.
@@ -144,7 +154,7 @@ const (
 func AIPurposes() []string {
 	return []string{
 		AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposePatternPages, AIPurposeAssemblySkeleton,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas, AIPurposeImageGenerate, AIPurposeImageCutout, AIPurposeImageExtend, AIPurposeImageInpaint,
 		AIPurposeThreed, AIPurposeVideoGenerate,
@@ -160,7 +170,7 @@ func IsAIPurpose(v string) bool {
 func AIPurposeCapability(p string) string {
 	switch p {
 	case AIPurposeTechCardEnhance, AIPurposeTechCardAnalysis,
-		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins,
+		AIPurposeNoteMarkdown, AIPurposeEmailTranslate, AIPurposeDesignDraftIdea, AIPurposeDesignQuiz, AIPurposeDesignParts, AIPurposeCalloutSuggest, AIPurposeDesignJoins, AIPurposePatternPieces, AIPurposePatternPages, AIPurposeAssemblySkeleton,
 		AIPurposeBoardLabel, AIPurposeBoardRead,
 		AIPurposePlaygroundIdeas:
 		return AICapabilityChat

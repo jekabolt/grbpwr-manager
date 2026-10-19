@@ -345,6 +345,9 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// иначе не проходит, и количества уехали бы из клона молча.
 	pbInsert.BomQtyAware = true
 	pbInsert.OperationWorkAware = true
+	// Черновик каркаса (0410): клон строит payload сам и несёт draft, проводное правило иначе
+	// отвергло бы его собственный payload.
+	pbInsert.OperationDraftAware = true
 	pbInsert.LabelsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {

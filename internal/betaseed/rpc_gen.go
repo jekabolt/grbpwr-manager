@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (422 rpc) ----
+// ---- admin (427 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -376,6 +376,14 @@ func (c *Client) CancelOrder(ctx context.Context, in *admin.CancelOrderRequest) 
 func (c *Client) CheckProductionRunReadiness(ctx context.Context, in *admin.CheckProductionRunReadinessRequest) (*admin.CheckProductionRunReadinessResponse, error) {
 	out := new(admin.CheckProductionRunReadinessResponse)
 	if err := c.call(ctx, "POST", "/api/admin/production-runs/readiness", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ClassifyPatternPages(ctx context.Context, in *admin.ClassifyPatternPagesRequest) (*admin.ClassifyPatternPagesResponse, error) {
+	out := new(admin.ClassifyPatternPagesResponse)
+	if err := c.call(ctx, "POST", "/api/admin/pattern-import/pages:classify", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -832,6 +840,14 @@ func (c *Client) DeleteTechCardMarker(ctx context.Context, in *admin.DeleteTechC
 func (c *Client) DeleteTechCardOutputVariant(ctx context.Context, in *admin.DeleteTechCardOutputVariantRequest) (*admin.DeleteTechCardOutputVariantResponse, error) {
 	out := new(admin.DeleteTechCardOutputVariantResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/output-variant/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteTechCardSeams(ctx context.Context, in *admin.DeleteTechCardSeamsRequest) (*admin.DeleteTechCardSeamsResponse, error) {
+	out := new(admin.DeleteTechCardSeamsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/seams:delete", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2869,6 +2885,14 @@ func (c *Client) StartDesignRun(ctx context.Context, in *admin.StartDesignRunReq
 	return out, nil
 }
 
+func (c *Client) SuggestAssemblySkeleton(ctx context.Context, in *admin.SuggestAssemblySkeletonRequest) (*admin.SuggestAssemblySkeletonResponse, error) {
+	out := new(admin.SuggestAssemblySkeletonResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/assembly-skeleton:suggest", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) SuggestCallouts(ctx context.Context, in *admin.SuggestCalloutsRequest) (*admin.SuggestCalloutsResponse, error) {
 	out := new(admin.SuggestCalloutsResponse)
 	if err := c.call(ctx, "POST", "/api/admin/ai/suggest-callouts", in, out); err != nil {
@@ -2888,6 +2912,14 @@ func (c *Client) SuggestDesignParts(ctx context.Context, in *admin.SuggestDesign
 func (c *Client) SuggestDesignPartsCard(ctx context.Context, in *admin.SuggestDesignPartsCardRequest) (*admin.SuggestDesignPartsCardResponse, error) {
 	out := new(admin.SuggestDesignPartsCardResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/parts:suggest-card", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SuggestPatternPieces(ctx context.Context, in *admin.SuggestPatternPiecesRequest) (*admin.SuggestPatternPiecesResponse, error) {
+	out := new(admin.SuggestPatternPiecesResponse)
+	if err := c.call(ctx, "POST", "/api/admin/pattern-import/pieces:suggest", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -3368,6 +3400,14 @@ func (c *Client) UpsertStyleAssembly(ctx context.Context, in *admin.UpsertStyleA
 func (c *Client) UpsertTechCardOutputVariant(ctx context.Context, in *admin.UpsertTechCardOutputVariantRequest) (*admin.UpsertTechCardOutputVariantResponse, error) {
 	out := new(admin.UpsertTechCardOutputVariantResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/output-variant/upsert", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpsertTechCardSeams(ctx context.Context, in *admin.UpsertTechCardSeamsRequest) (*admin.UpsertTechCardSeamsResponse, error) {
+	out := new(admin.UpsertTechCardSeamsResponse)
+	if err := c.call(ctx, "PUT", "/api/admin/tech-card/{tech_card_id}/seams", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

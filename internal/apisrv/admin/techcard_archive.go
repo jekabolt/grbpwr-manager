@@ -868,6 +868,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		assemblyCapabilityWireGate,
 		operationKindsWireGate,
 		operationWorkWireGate,
+		operationDraftWireGate,
 		bomQtyWireGate,
 	} {
 		if err := gate(in); err != nil {

@@ -387,6 +387,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.MediaAware = true
 	insert.OperationKindsAware = true
 	insert.OperationWorkAware = true
+	insert.OperationDraftAware = true
 	insert.BomQtyAware = true
 	insert.LabelsAware = true
 

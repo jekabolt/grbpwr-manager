@@ -733,19 +733,43 @@ func (r *Router) call(ctx context.Context, purpose string, c candidate, model st
 		err = fmt.Errorf("%s: the chat transport returned neither an answer nor an error", c.ProviderKey)
 	}
 	if err == nil {
-		r.ledger.Finish(ctx, h, okEnd(c.ProviderKey, res, latency))
+		end := okEnd(c.ProviderKey, res, latency)
+		r.ledger.Finish(ctx, h, end)
+		tallyCall(ctx, c.ProviderKey, model, end)
 		if r.reg != nil {
 			r.reg.RecordSuccess(c.ProviderKey, entity.AICapabilityChat, adm)
 		}
 		return res, false, nil
 	}
 
-	r.ledger.Finish(ctx, h, failEnd(c.ProviderKey, res, err, latency))
+	end := failEnd(c.ProviderKey, res, err, latency)
+	r.ledger.Finish(ctx, h, end)
+	tallyCall(ctx, c.ProviderKey, model, end)
 	if r.reg != nil {
 		// The registry's one rule decides what counts; every other failure ends the admission.
 		r.reg.RecordFailure(c.ProviderKey, entity.AICapabilityChat, adm, err)
 	}
 	return res, ownDeadline, err
+}
+
+// tallyCall hands the call's ledger row to the caller's tally (aiprov.WithCallTally), if any: the
+// same status and price the ledger books, so a door can say what a press cost across the chain.
+func tallyCall(ctx context.Context, providerKey, model string, e entity.AICallEnd) {
+	t := aiprov.CallTallyFrom(ctx)
+	if t == nil {
+		return
+	}
+	c := aiprov.CallSpend{Provider: providerKey, Model: model, Status: e.Status, CostUSD: e.CostUSD}
+	if e.PromptTokens != nil {
+		c.PromptTokens = *e.PromptTokens
+	}
+	if e.CompletionTokens != nil {
+		c.CompletionTokens = *e.CompletionTokens
+	}
+	if e.ModelActual != "" {
+		c.Model = e.ModelActual
+	}
+	t.Add(c)
 }
 
 // fill makes the provenance whole: the billing provider, the slug (the requested one when the

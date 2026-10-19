@@ -561,6 +561,10 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 
 			// Ось «работа» (0330) — тем же дописыванием, последней.
 			Work: work,
+
+			// Черновик каркаса сборки (0410). Обычный bool строки: старый клиент его не шлёт, и
+			// его сохранение снимает метки — это законно, метка подсказка команде, а не инструкция.
+			Draft: o.GetDraft(),
 		})
 	}
 	return out, nil
@@ -920,6 +924,8 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			// есть клон молча терял бы разметку, без единой ошибки. Ровно та катастрофа, ради
 			// которой флаг осведомлённости не фильтрует поля.
 			Work: pbStringFromNull(o.Work),
+			// Черновик каркаса сборки (0410). Эмитится всегда: клон сезона строит payload здесь.
+			Draft: o.Draft,
 		})
 	}
 	return out

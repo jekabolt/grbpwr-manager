@@ -258,6 +258,7 @@ Four verdicts, and they are not synonyms:
 | 26 | `markers` | travel as **summaries** and are **ignored**. The authority is `markers/index.json` plus the blobs (§5.7); a summary here carries the source's `id`, `tech_card_id`, `colorway_id` and `size_id`, and nothing remaps them because nothing reads them. |
 | 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** and the scope's `stale` verdict **cleared** — see «measured piece areas» below. |
 | 29 | `age_group` | travels and is **written** — see «style facts» below. `AGE_GROUP_ENUM_UNKNOWN` (every archive older than the field, and every source style nobody classified) is «not stated»: the imported card lands unset (NULL), never with a guessed group. |
+| 32 | `seams` | **cleared.** The technologist's seam decisions (`tech_card_seam`) are a review of the assembly engine over THIS instance's DXF files, and their `stale` verdict speaks about the source's sheets. Not carried in v1 (carrying them is the owner's P2 call): an imported card starts with no decisions and the receiving engine proposes again. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`

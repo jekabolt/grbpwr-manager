@@ -76,11 +76,14 @@ overlaid by **environment variables, which take precedence**. Each setting is bo
   `db.CA_CERT`. The runtime image ships the cert at `/etc/grbpwr-products-manager/certs/ca-certificate.crt`.
 - When adding a new config field: add it to the struct in `config/cfg.go` (+ the relevant package `Config`),
   add a `viper.BindEnv` line, and set it in `.do/app.yaml` / `.do/app-beta.yaml`.
+- AI provider keys (OpenRouter, fal, runblob, …) are NOT config: the only key source is the key an admin
+  saved in admin → AI providers (sealed under `AI_KEYS_MASTER_KEY`, which is therefore required); the old env
+  variables are read once at boot for a one-time import into the panel and never at call time (B-33).
 
 ## Database / migrations
 
 MySQL via `sqlx`. Numbered SQL migrations in `internal/store/sql/` (`0001_…` … latest). Applied on boot when
-`MYSQL_AUTOMIGRATE=true` (true on **both** beta and prod — a master merge deploys prod and auto-applies pending
+`MYSQL_AUTOMIGRATE=true` (true on **both** beta and prod — every prod deployment auto-applies pending
 migrations). Because of this, a migration that fails on prod-specific data halts prod startup: every migration
 must be safe against existing data (e.g. dedupe before adding a UNIQUE index — see `0059`), and it reaches beta
 first via the feature→beta→master flow. Add a new migration as the next-numbered `NNNN_description.sql` file; do
@@ -107,7 +110,9 @@ Two DigitalOcean App Platform apps, configured **purely via env vars** (no code 
   cluster), `MYSQL_AUTOMIGRATE=true`, Stripe TEST keys, analytics off, spec `.do/app-beta.yaml` (gitignored —
   holds plaintext secrets until DO encrypts them).
 
-Branch flow: feature → `beta` (auto-deploys beta) → verify → merge to `master` (deploys prod). Frontends
+Branch flow: feature → `beta` (auto-deploys beta) → verify → merge to `master` → prod ships only on
+`doctl apps create-deployment <prod-app-id>` — `.do/app.yaml` has no `deploy_on_push`, so a merge alone deploys
+nothing (changing the prod spec with `doctl apps update --spec` also ships current `master`). Frontends
 (`grbpwr.com` / `admin.grbpwr.com` and their `beta.` / `admin.beta.` counterparts) are separate Vercel
 projects, not in this repo. See `git log` and project memory for the full beta bring-up details.
 

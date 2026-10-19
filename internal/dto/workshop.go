@@ -1,7 +1,9 @@
 package dto
 
 import (
+	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -43,6 +45,31 @@ func WorkshopSettingsToPb(s *entity.WorkshopSettings) *pb_admin.WorkshopSettings
 	if s.MaxStackHeightCm.Valid {
 		out.MaxStackHeightCm = &pb_decimal.Decimal{Value: s.MaxStackHeightCm.Decimal.String()}
 	}
+	// 0413 — absent when unconfigured, same presence law as the length.
+	if s.CuttingTableWidthCm.Valid {
+		out.CuttingTableWidthCm = &pb_decimal.Decimal{Value: s.CuttingTableWidthCm.Decimal.String()}
+	}
+	// 0414 — costing / label defaults, each absent when unconfigured.
+	if s.CostingCurrency.Valid {
+		v := s.CostingCurrency.String
+		out.CostingCurrency = &v
+	}
+	if s.LabourRatePerMin.Valid {
+		out.LabourRatePerMin = &pb_decimal.Decimal{Value: s.LabourRatePerMin.Decimal.String()}
+	}
+	if s.OverheadPct.Valid {
+		out.OverheadPct = &pb_decimal.Decimal{Value: s.OverheadPct.Decimal.String()}
+	}
+	if s.DefectPercent.Valid {
+		out.DefectPercent = &pb_decimal.Decimal{Value: s.DefectPercent.Decimal.String()}
+	}
+	if s.TargetMarginPct.Valid {
+		out.TargetMarginPct = &pb_decimal.Decimal{Value: s.TargetMarginPct.Decimal.String()}
+	}
+	if s.CountryOfOrigin.Valid {
+		v := s.CountryOfOrigin.String
+		out.CountryOfOrigin = &v
+	}
 	if !s.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(s.UpdatedAt)
 	}
@@ -78,6 +105,30 @@ func WorkshopSettingsPatchFromPb(req *pb_admin.UpdateWorkshopSettingsRequest) (e
 		return p, err
 	}
 	p.MaxStackHeightCm = stack
+	width, err := presentNullDecimal(req.CuttingTableWidthCm, "cutting_table_width_cm")
+	if err != nil {
+		return p, err
+	}
+	p.CuttingTableWidthCm = width
+	// 0414 — costing / label defaults, same tri-state.
+	for _, d := range []struct {
+		in    *pb_decimal.Decimal
+		field string
+		out   **decimal.NullDecimal
+	}{
+		{req.LabourRatePerMin, "labour_rate_per_min", &p.LabourRatePerMin},
+		{req.OverheadPct, "overhead_pct", &p.OverheadPct},
+		{req.DefectPercent, "defect_percent", &p.DefectPercent},
+		{req.TargetMarginPct, "target_margin_pct", &p.TargetMarginPct},
+	} {
+		v, err := presentNullDecimal(d.in, d.field)
+		if err != nil {
+			return p, err
+		}
+		*d.out = v
+	}
+	p.CostingCurrency = presentNullCode(req.CostingCurrency)
+	p.CountryOfOrigin = presentNullCode(req.CountryOfOrigin)
 	// Ф6.9 — presence carried by proto3 `optional`, which is the ONLY reason this is safe to add. On
 	// a bare bool, «did not send it» and «turn it off» are the same bytes, and a workshop tab holding
 	// a bundle from before this field existed would disable the gate on every unrelated save.
@@ -104,4 +155,18 @@ func presentNullDecimal(d *pb_decimal.Decimal, field string) (*decimal.NullDecim
 			fmt.Sprintf("enter a decimal number, e.g. 600 (%v)", err))
 	}
 	return &decimal.NullDecimal{Decimal: v, Valid: true}, nil
+}
+
+// presentNullCode turns a proto3 `optional string` code into the tri-state pointer: nil field -> nil
+// (absent), blank -> a non-nil invalid NullString (clear), anything else -> trimmed and upper-cased
+// (ISO codes), left for the entity validator to accept or refuse.
+func presentNullCode(s *string) *sql.NullString {
+	if s == nil {
+		return nil
+	}
+	v := strings.ToUpper(strings.TrimSpace(*s))
+	if v == "" {
+		return &sql.NullString{}
+	}
+	return &sql.NullString{String: v, Valid: true}
 }

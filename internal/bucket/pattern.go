@@ -92,42 +92,75 @@ func isPDF(raw []byte) bool {
 // binaryDXFSentinel opens every binary-encoded DXF (AutoCAD's 22-byte magic).
 var binaryDXFSentinel = []byte("AutoCAD Binary DXF\r\n\x1a\x00")
 
+// dxfHeadWindow bounds how far past the comment prologue the opening 0/SECTION pair
+// (plus any blank lines before it) may sit. A DXF with no leading 999 comments must
+// open within the first 64 KB of the payload, exactly as before the prologue allowance.
+const dxfHeadWindow = 64 * 1024
+
+// dxfMaxCommentPrologue caps the leading 999-comment prologue at 4 MiB. Our own
+// importer writes a conversion manifest there as base64 999 chunks — 70–110 KB for
+// 90–140-block patterns — so 4 MiB leaves ~40x headroom while still refusing a
+// payload that is nothing but comments without walking the whole upload.
+const dxfMaxCommentPrologue = 4 << 20
+
 // isDXF reports whether raw looks like a DXF drawing. Binary DXF carries a fixed
 // sentinel. ASCII DXF has no magic header — it is a sequence of group-code/value line
 // pairs — so it is recognized by its mandatory opening: the first pair after an optional
 // UTF-8 BOM and any leading 999-comment pairs must be group code 0 with value SECTION.
 // Only the head of the payload is examined; anything past the opening pair is the
-// drawing's own business. The window is 64 KB because real exporters (AccuMark, Optitex,
-// Lectra) front the file with multi-line 999 provenance headers that can run past a few
-// KB — the opening pair must merely fall inside the window, not at the top.
+// drawing's own business.
+//
+// The head is walked line by line with an index (no split of a multi-MB payload). The
+// window starts at dxfHeadWindow bytes; every complete 999 pair slides it so that it
+// ends dxfHeadWindow bytes past that pair. Real exporters (AccuMark, Optitex, Lectra)
+// and our importer's manifest front the file with 999 headers that can run far past
+// 64 KB, so the prologue may span up to dxfMaxCommentPrologue bytes; a longer one is
+// rejected. Lines end in \n; a trailing \r and surrounding whitespace are trimmed.
 func isDXF(raw []byte) bool {
 	if bytes.HasPrefix(raw, binaryDXFSentinel) {
 		return true
 	}
-	head := raw
-	if len(head) > 64*1024 {
-		head = head[:64*1024]
-	}
-	head = bytes.TrimPrefix(head, []byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM
-	lines := bytes.Split(head, []byte("\n"))
-	expectComment := false
-	for i := 0; i < len(lines); i++ {
-		line := bytes.TrimSpace(lines[i])
-		if expectComment {
-			// The value line of a 999 pair — arbitrary text, skip it.
-			expectComment = false
-			continue
+	// nextLine returns the line starting at p, cut at end, the offset after its
+	// newline (or end), and whether a newline terminated it before end.
+	nextLine := func(p, end int) ([]byte, int, bool) {
+		i := bytes.IndexByte(raw[p:end], '\n')
+		if i < 0 {
+			return raw[p:end], end, false
 		}
+		return raw[p : p+i], p + i + 1, true
+	}
+	limit := min(len(raw), dxfHeadWindow)
+	pos := 0
+	if bytes.HasPrefix(raw[:limit], []byte{0xEF, 0xBB, 0xBF}) { // UTF-8 BOM
+		pos = 3
+	}
+	for pos < limit {
+		line, after, _ := nextLine(pos, limit)
+		line = bytes.TrimSpace(line)
+		pos = after
 		if len(line) == 0 {
 			continue
 		}
 		switch string(line) {
 		case "999":
-			expectComment = true
+			// The value line of a 999 pair — arbitrary text, skip it. It may run past
+			// the current window but not past the prologue cap.
+			if pos >= dxfMaxCommentPrologue {
+				return false
+			}
+			_, after, ok := nextLine(pos, min(len(raw), dxfMaxCommentPrologue))
+			if !ok {
+				// EOF inside the comment, or the prologue overruns the cap.
+				return false
+			}
+			pos = after
+			limit = min(len(raw), pos+dxfHeadWindow)
 		case "0":
 			// First real group code — must open a SECTION.
-			for j := i + 1; j < len(lines); j++ {
-				value := bytes.TrimSpace(lines[j])
+			for pos < limit {
+				value, after, _ := nextLine(pos, limit)
+				value = bytes.TrimSpace(value)
+				pos = after
 				if len(value) == 0 {
 					continue
 				}

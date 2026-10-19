@@ -34,7 +34,9 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 }
 
 const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_mm, run_readiness_blocking,
-	       max_stack_height_cm, updated_by, updated_at
+	       max_stack_height_cm, cutting_table_width_cm,
+	       costing_currency, labour_rate_per_min, overhead_pct, defect_percent, target_margin_pct,
+	       country_of_origin, updated_by, updated_at
 	FROM workshop_settings WHERE id = :id`
 
 // GetSettings returns the workshop configuration. A MISSING singleton row is not an error: it reads
@@ -78,6 +80,11 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 			return nil, err
 		}
 	}
+	if patch.CuttingTableWidthCm != nil {
+		if err := entity.ValidateCuttingTableWidthCm(*patch.CuttingTableWidthCm); err != nil {
+			return nil, err
+		}
+	}
 	// Ф3.2's tenant validates through a DIFFERENT function on purpose: a 0 cm table is nonsense and is
 	// rejected, a 0 cm allowance is a real setting («our выкройки carry the cut line») and is accepted.
 	// One shared validator could not have held both floors — which is exactly the argument 0272 made
@@ -94,6 +101,37 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 	if patch.MaxStackHeightCm != nil {
 		if err := entity.ValidateMaxStackHeightCm(*patch.MaxStackHeightCm); err != nil {
 			return nil, err
+		}
+	}
+	// 0414 — costing / label defaults. Bands live only in Go (no CHECK on this table's later tenants).
+	if patch.CostingCurrency != nil {
+		if err := entity.ValidateWorkshopCostingCurrency(*patch.CostingCurrency); err != nil {
+			return nil, err
+		}
+	}
+	if patch.CountryOfOrigin != nil {
+		if err := entity.ValidateWorkshopCountryOfOrigin(*patch.CountryOfOrigin); err != nil {
+			return nil, err
+		}
+	}
+	if patch.LabourRatePerMin != nil {
+		if err := entity.ValidateLabourRatePerMin(*patch.LabourRatePerMin); err != nil {
+			return nil, err
+		}
+	}
+	for _, pc := range []struct {
+		field string
+		v     *decimal.NullDecimal
+		max   int64
+	}{
+		{"overhead_pct", patch.OverheadPct, entity.MaxOverheadPct},
+		{"defect_percent", patch.DefectPercent, entity.MaxDefectPercent},
+		{"target_margin_pct", patch.TargetMarginPct, entity.MaxTargetMarginPct},
+	} {
+		if pc.v != nil {
+			if err := entity.ValidateWorkshopPercent(pc.field, *pc.v, pc.max); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -117,6 +155,22 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		// would let it.
 		"max_stack_height_omitted": patch.MaxStackHeightCm == nil,
 		"max_stack_height_cm":      nullDecimalParam(patch.MaxStackHeightCm),
+		// 0413 — table width, same mask.
+		"cutting_table_width_omitted": patch.CuttingTableWidthCm == nil,
+		"cutting_table_width_cm":      nullDecimalParam(patch.CuttingTableWidthCm),
+		// 0414 — costing / label defaults, same mask.
+		"costing_currency_omitted":    patch.CostingCurrency == nil,
+		"costing_currency":            nullStringParam(patch.CostingCurrency),
+		"labour_rate_per_min_omitted": patch.LabourRatePerMin == nil,
+		"labour_rate_per_min":         nullDecimalParam(patch.LabourRatePerMin),
+		"overhead_pct_omitted":        patch.OverheadPct == nil,
+		"overhead_pct":                nullDecimalParam(patch.OverheadPct),
+		"defect_percent_omitted":      patch.DefectPercent == nil,
+		"defect_percent":              nullDecimalParam(patch.DefectPercent),
+		"target_margin_pct_omitted":   patch.TargetMarginPct == nil,
+		"target_margin_pct":           nullDecimalParam(patch.TargetMarginPct),
+		"country_of_origin_omitted":   patch.CountryOfOrigin == nil,
+		"country_of_origin":           nullStringParam(patch.CountryOfOrigin),
 	}
 
 	var out *entity.WorkshopSettings
@@ -132,6 +186,13 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 				default_seam_allowance_mm = IF(:seam_allowance_omitted, default_seam_allowance_mm, :default_seam_allowance_mm),
 				run_readiness_blocking = IF(:run_readiness_blocking_omitted, run_readiness_blocking, :run_readiness_blocking),
 				max_stack_height_cm = IF(:max_stack_height_omitted, max_stack_height_cm, :max_stack_height_cm),
+				cutting_table_width_cm = IF(:cutting_table_width_omitted, cutting_table_width_cm, :cutting_table_width_cm),
+				costing_currency = IF(:costing_currency_omitted, costing_currency, :costing_currency),
+				labour_rate_per_min = IF(:labour_rate_per_min_omitted, labour_rate_per_min, :labour_rate_per_min),
+				overhead_pct = IF(:overhead_pct_omitted, overhead_pct, :overhead_pct),
+				defect_percent = IF(:defect_percent_omitted, defect_percent, :defect_percent),
+				target_margin_pct = IF(:target_margin_pct_omitted, target_margin_pct, :target_margin_pct),
+				country_of_origin = IF(:country_of_origin_omitted, country_of_origin, :country_of_origin),
 				updated_by = :updated_by
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update workshop settings: %w", err)
@@ -166,4 +227,12 @@ func boolParam(v *bool) any {
 		return nil
 	}
 	return *v
+}
+
+// nullStringParam binds a tri-state string patch: nil (not named) or cleared binds NULL.
+func nullStringParam(v *sql.NullString) any {
+	if v == nil || !v.Valid {
+		return nil
+	}
+	return v.String
 }

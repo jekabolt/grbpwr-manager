@@ -451,6 +451,11 @@ var methodRequirements = map[string]Requirement{
 	// Плановик производства не должен уметь его переписать: право переписать площади — это право
 	// снять себе блокер.
 	"SaveTechCardPieceAreas": wr(SectionTechCards),
+	// Подтверждённые швы (tech_card_seam): тот же уровень, что площади — решение технолога о
+	// сборке из выкроек карточки, пишется с вкладки конструкции. Отдельные RPC, lock_version не
+	// двигают и в дайджест не входят; выпущенная карточка отказывает.
+	"UpsertTechCardSeams": wr(SectionTechCards),
+	"DeleteTechCardSeams": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);
@@ -494,6 +499,12 @@ var methodRequirements = map[string]Requirement{
 	// Auto parts: naming a flat's parts spends the key (write).
 	"SuggestDesignParts":     wr(SectionTechCards),
 	"SuggestDesignPartsCard": wr(SectionTechCards),
+	// Pattern import: naming an imported pattern's pieces spends the key (write).
+	"SuggestPatternPieces": wr(SectionTechCards),
+	// Pattern import: classifying an imported pattern's pages spends the key (write).
+	"ClassifyPatternPages": wr(SectionTechCards),
+	// Assembly skeleton: the AI second opinion on the order spends the key (write).
+	"SuggestAssemblySkeleton": wr(SectionTechCards),
 	// PARTS pieces list (M6): the designer's edit of card data (write; spends no key).
 	"SetDesignPartsPieces": wr(SectionTechCards),
 	// Flat route join list: generating spends the key, saving edits card data (write).
