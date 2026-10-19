@@ -91,7 +91,27 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get care symbols: %w", err)
 	}
 
+	if dict.ModelPhotoTechCardID, err = s.getModelPhotoTechCardID(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get model photo tech card: %w", err)
+	}
+
 	return &dict, nil
+}
+
+// getModelPhotoTechCardID returns the id of the hidden system tech card model-photo cutout runs are
+// booked on (entity.TechCardModelPhotosKey, seeded by 0417), or 0 when the row is missing — a
+// missing seed must not stop the dictionary from loading; the admin client then hides the action.
+func (s *Store) getModelPhotoTechCardID(ctx context.Context) (int, error) {
+	ids, err := storeutil.QueryScalarListNamed[int](ctx, s.DB,
+		`SELECT id FROM tech_card WHERE create_request_id = :key`,
+		map[string]any{"key": entity.TechCardModelPhotosKey})
+	if err != nil {
+		return 0, fmt.Errorf("can't get model photo tech card: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return ids[0], nil
 }
 
 // getCareSymbols returns the controlled ISO 3758 care vocabulary with its per-language wording,

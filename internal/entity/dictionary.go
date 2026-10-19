@@ -35,4 +35,7 @@ type DictionaryInfo struct {
 	// admin picker reads names and categories from it, the storefront reads ShortProse. Archived
 	// entries are included, flagged via ArchivedAt.
 	CareSymbols []CareSymbol
+	// ModelPhotoTechCardID is the id of the hidden system tech card model-photo cutout runs are
+	// booked on (TechCardModelPhotosKey); 0 when the seed row is missing. Admin-only output.
+	ModelPhotoTechCardID int
 }

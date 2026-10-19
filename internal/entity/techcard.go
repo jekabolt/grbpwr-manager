@@ -20,6 +20,16 @@ var ErrTechCardConflict = errors.New("tech card was modified concurrently")
 // without first re-opening it to DRAFT (a released card is frozen for the factory).
 var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
+// ErrTechCardSystem is returned when a write targets a backend-owned system tech card (its
+// create_request_id carries TechCardSystemKeyPrefix): such a card is neither editable, archivable
+// nor deletable.
+var ErrTechCardSystem = errors.New("system tech card cannot be edited or deleted")
+
+// IsTechCardSystemKey reports whether a create_request_id belongs to a backend-owned system card.
+func IsTechCardSystemKey(key string) bool {
+	return strings.HasPrefix(key, TechCardSystemKeyPrefix)
+}
+
 // ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
 // purpose (sellable↔auxiliary) after something downstream has committed to the old answer: a SOLD
 // colourway (final), a non-cancelled production run, a still-live colourway, or use as an assembly
@@ -4768,6 +4778,17 @@ const TechCardCreateRequestIdMaxRunes = 64
 // TechCardCreateRequestIdIndex is the name 0407 gives UNIQUE(tech_card.create_request_id). The API
 // layer reads it out of a 1062's message to tell a replay race from a style-number collision.
 const TechCardCreateRequestIdIndex = "uq_tech_card_create_request_id"
+
+// TechCardSystemKeyPrefix marks a tech_card.create_request_id the backend reserves for its own
+// system cards. CreateTechCard refuses a client replay key with this prefix, so a client can never
+// mint, replay into or collide with a system card.
+const TechCardSystemKeyPrefix = "system:"
+
+// TechCardModelPhotosKey is the create_request_id of the hidden system card that owns every
+// model-photo cutout run (seeded by migration 0417). It carries no garment data: it is kept out of
+// ListTechCards and the style pipeline, and UpdateTechCard / DeleteTechCard refuse it, so it can
+// be neither edited, archived (approval_state obsolete) nor deleted.
+const TechCardModelPhotosKey = TechCardSystemKeyPrefix + "model-photos"
 
 // TechCardCreateOpts carries what a CreateTechCard call adds beyond the card itself (0407).
 // The zero value is a plain create: no replay key, not guided.

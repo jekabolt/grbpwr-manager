@@ -444,21 +444,28 @@ func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
 	var orphanedPatternURLs []string
 	cur, err := storeutil.QueryNamedOne[struct {
-		LockVersion     int          `db:"lock_version"`
-		ApprovalState   string       `db:"approval_state"`
-		ApprovedAt      sql.NullTime `db:"approved_at"`
-		ReleasedAt      sql.NullTime `db:"released_at"`
-		Purpose         string       `db:"purpose"`
-		Stage           string       `db:"stage"`
-		MeasurementUnit string       `db:"measurement_unit"`
+		LockVersion     int            `db:"lock_version"`
+		ApprovalState   string         `db:"approval_state"`
+		ApprovedAt      sql.NullTime   `db:"approved_at"`
+		ReleasedAt      sql.NullTime   `db:"released_at"`
+		Purpose         string         `db:"purpose"`
+		Stage           string         `db:"stage"`
+		MeasurementUnit string         `db:"measurement_unit"`
+		CreateRequestID sql.NullString `db:"create_request_id"`
 	}](ctx, rep.DB(),
-		`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit
+		`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit,
+		        create_request_id
 		 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
 		}
 		return nil, fmt.Errorf("failed to load tech card for update: %w", err)
+	}
+	// A backend-owned system card (the hidden model-photo card) is never edited — this is also what
+	// keeps it from being archived, since archiving is a write of approval_state=obsolete.
+	if entity.IsTechCardSystemKey(cur.CreateRequestID.String) {
+		return nil, entity.ErrTechCardSystem
 	}
 	// Freeze check BEFORE the version check (plan §4): a released card is frozen for
 	// the factory — only a re-open to draft is allowed; any other edit while still
@@ -901,6 +908,15 @@ func (s *Store) deleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 	var orphanedPatternURLs []string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		orphanedPatternURLs = nil
+		systemCount, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM tech_card WHERE id = :id AND NOT `+techCardNotSystemSQL,
+			map[string]any{"id": id, techCardSystemKeyPatternParam: techCardSystemKeyPattern})
+		if err != nil {
+			return fmt.Errorf("check system tech card: %w", err)
+		}
+		if systemCount > 0 {
+			return entity.ErrTechCardSystem
+		}
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
 			SELECT COUNT(*) FROM material_stock_movement m
 			JOIN sample s ON s.id = m.sample_id WHERE s.tech_card_id = :id`, map[string]any{"id": id})
@@ -1079,13 +1095,30 @@ func (s *Store) GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.
 	return card, nil
 }
 
+// techCardNotSystemSQL keeps backend-owned system cards (create_request_id with
+// entity.TechCardSystemKeyPrefix, e.g. the hidden model-photo card of 0417) out of every list,
+// search and count. Every query using it binds techCardSystemKeyPatternParam to
+// techCardSystemKeyPattern.
+//
+// The pattern is BOUND, never spelled in the SQL: the prefix holds a ':' and sqlx's named-param
+// scanner reads ':' inside a string literal as an empty bind name (see storeutil.makeQuery).
+// The IS NULL arm is load-bearing: NOT LIKE on a NULL key is NULL, which would drop every ordinary
+// card created without a replay key.
+const (
+	techCardSystemKeyPatternParam = "systemKeyPattern"
+	techCardSystemKeyPattern      = entity.TechCardSystemKeyPrefix + "%"
+	techCardNotSystemSQL          = `(create_request_id IS NULL OR create_request_id NOT LIKE :` +
+		techCardSystemKeyPatternParam + `)`
+)
+
 // ListTechCards returns a paged, header-only list of tech cards (no child
 // sections), with the total number of matching cards (ignoring pagination).
+// System cards (techCardNotSystemSQL) are never listed or counted.
 func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error) {
 	limit, offset = clampPagination(limit, offset)
 
-	params := map[string]any{}
-	where := ""
+	params := map[string]any{techCardSystemKeyPatternParam: techCardSystemKeyPattern}
+	where := " AND " + techCardNotSystemSQL
 	if filter.Stage != "" {
 		where += " AND stage = :stage"
 		params["stage"] = filter.Stage
@@ -1403,7 +1436,8 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 	countRows, err := storeutil.QueryListNamed[struct {
 		Stage string `db:"stage"`
 		C     int    `db:"c"`
-	}](ctx, s.DB, `SELECT stage, COUNT(*) AS c FROM tech_card GROUP BY stage`, map[string]any{})
+	}](ctx, s.DB, `SELECT stage, COUNT(*) AS c FROM tech_card WHERE `+techCardNotSystemSQL+` GROUP BY stage`,
+		map[string]any{techCardSystemKeyPatternParam: techCardSystemKeyPattern})
 	if err != nil {
 		return nil, fmt.Errorf("can't count tech cards by stage: %w", err)
 	}
@@ -1416,9 +1450,10 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 	var previewIDs []int
 	for _, st := range stylePipelineOrder {
 		cards, err := storeutil.QueryListNamed[entity.TechCard](ctx, s.DB, `
-			SELECT * FROM tech_card WHERE stage = :stage
+			SELECT * FROM tech_card WHERE stage = :stage AND `+techCardNotSystemSQL+`
 			ORDER BY updated_at DESC, id DESC LIMIT :n`,
-			map[string]any{"stage": string(st), "n": cardsPerStage})
+			map[string]any{"stage": string(st), "n": cardsPerStage,
+				techCardSystemKeyPatternParam: techCardSystemKeyPattern})
 		if err != nil {
 			return nil, fmt.Errorf("can't list %s tech cards: %w", st, err)
 		}

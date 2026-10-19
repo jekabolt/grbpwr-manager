@@ -41,6 +41,10 @@ message Dictionary {
   repeated DictionaryRevision revisions = 23; // R9: per-namespace revision snapshot for cache invalidation
   repeated CategorySizeSystem category_size_systems = 24; // S10/WS5: category -> permitted size-system(s)
   repeated CareSymbol care_symbols = 26; // controlled ISO 3758 care vocabulary, in canonical print order
+  // Id of the hidden system tech card that owns model-photo cutout runs (StartDesignRun kind
+  // cutout on library photos). Admin-only: set by the admin GetDictionary, 0 on the storefront.
+  // The card never appears in tech card lists, search or counts and cannot be edited or deleted.
+  int32 model_photo_tech_card_id = 27;
 }
 
 message Collection {

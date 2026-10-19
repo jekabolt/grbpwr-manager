@@ -258,6 +258,12 @@ func techCardCreateOpts(req *pb_admin.CreateTechCardRequest) (entity.TechCardCre
 		return entity.TechCardCreateOpts{}, apierr.Invalid(entity.NewFieldViolation("client_request_id", "too_long", "",
 			fmt.Sprintf("client_request_id is at most %d characters", entity.TechCardCreateRequestIdMaxRunes)))
 	}
+	// The "system:" namespace belongs to backend-owned cards (the hidden model-photo card): a client
+	// key there could replay into one, or seize the key before its seed runs.
+	if entity.IsTechCardSystemKey(key) {
+		return entity.TechCardCreateOpts{}, apierr.Invalid(entity.NewFieldViolation("client_request_id", "reserved", "",
+			fmt.Sprintf("client_request_id must not start with %q", entity.TechCardSystemKeyPrefix)))
+	}
 	return entity.TechCardCreateOpts{RequestId: key, Guided: req.GetGuided()}, nil
 }
 
@@ -560,6 +566,9 @@ func (s *Server) techCardWriteError(ctx context.Context, err error) error {
 	if errors.Is(err, entity.ErrTechCardReleased) {
 		return status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
 	}
+	if errors.Is(err, entity.ErrTechCardSystem) {
+		return status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
+	}
 	if errors.Is(err, entity.ErrTechCardPurposeLocked) {
 		// err, not the bare sentinel: the store appends the references that actually pin the
 		// purpose, and that list is the only actionable part of the message.
@@ -591,6 +600,11 @@ func (s *Server) finalizeTechCardWrite(ctx context.Context, id, expectedLockVers
 func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCardRequest) (*pb_admin.UpdateTechCardResponse, error) {
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
+	}
+	// Early, so a payload validation error never masks it; the store refuses it again in the
+	// transaction (UpdateTechCardTx) for a cache that has not loaded the id.
+	if cache.IsModelPhotoTechCard(int(req.Id)) {
+		return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
 	}
 	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard)
 	if err != nil {
@@ -1557,6 +1571,9 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 		}
 		if errors.Is(err, entity.ErrSampleHasMovements) {
 			return nil, status.Error(codes.FailedPrecondition, "a sample of this tech card has material movements; delete/return them first")
+		}
+		if errors.Is(err, entity.ErrTechCardSystem) {
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
 		}
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
