@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -265,30 +266,52 @@ func (s *Server) UploadContentModel(ctx context.Context, req *pb_admin.UploadCon
 	}, nil
 }
 
-// DeleteFromBucket
+// DeleteFromBucket deletes a media item from the library — only when nothing uses it.
+//
+// IN USE MEANS KEPT. The owner's rule (MEDIA-MOBILE, 19.10): a file that something still shows is
+// not deletable, full stop; only free files go. The foreign keys alone cannot enforce that: several
+// columns into media(id) are ON DELETE SET NULL (tech card / fitting callouts, product swatch,
+// material image, lab-dip swatch), and against those a plain DELETE does not fail — it succeeds and
+// blanks somebody's picture. So the delete goes through DeleteMediaByIdIfUnused, which asks the
+// usage registry and deletes under one row lock, and a held file is refused with FailedPrecondition
+// naming who holds it ("media is in use: product Black Coat, tech card TC-01"). The FK mapping stays
+// below as a backstop for a RESTRICT column the registry has not learned about yet.
+//
+// THE ROW GOES BEFORE ITS OBJECTS, and a refused row keeps them: S3 is only touched once the row is
+// gone. A missing row counts as deleted (the store's contract), which keeps a repeated call harmless.
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "media id must be positive, got %d", req.GetId())
+	}
+	id := int(req.GetId())
 	resp := &pb_admin.DeleteFromBucketResponse{}
 
 	// Capture the media's object URLs before the row is gone so the backing S3
 	// objects can be removed afterwards; deleting only the row leaves orphaned,
 	// still-public CDN files (cost + data-leak). Best effort: a load failure only
 	// means we can't clean S3, not that we should block the delete.
-	media, mediaErr := s.repo.Media().GetMediaById(ctx, int(req.Id))
+	media, mediaErr := s.repo.Media().GetMediaById(ctx, id)
 	if mediaErr != nil {
 		slog.Default().WarnContext(ctx, "can't load media before delete; S3 objects may be orphaned",
-			slog.Int("id", int(req.Id)), slog.String("err", mediaErr.Error()))
+			slog.Int("id", id), slog.String("err", mediaErr.Error()))
 	}
 
-	err := s.repo.Media().DeleteMediaById(ctx, int(req.Id))
+	deleted, refs, err := s.repo.Media().DeleteMediaByIdIfUnused(ctx, id)
 	if err != nil {
 		if s.repo.IsErrForeignKeyViolation(err) {
-			return nil, status.Error(codes.FailedPrecondition,
-				"media is still referenced (product, archive, model, fitting or tech card) and cannot be deleted")
+			slog.Default().ErrorContext(ctx, "media delete refused by a foreign key the usage registry does not list",
+				slog.Int("id", id), slog.String("err", err.Error()))
+			return nil, status.Error(codes.FailedPrecondition, mediaInUseUnlistedMessage)
 		}
 		slog.Default().ErrorContext(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "failed to delete media: %v", err)
+	}
+	if !deleted {
+		slog.Default().InfoContext(ctx, "media delete refused: still in use",
+			slog.Int("id", id), slog.Any("used_by", tcflUsageSummary(refs)))
+		return nil, status.Error(codes.FailedPrecondition, mediaInUseMessage(refs))
 	}
 
 	// The row is gone; remove the S3 objects it referenced. Failures here only leak
@@ -296,7 +319,7 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 	if media != nil {
 		if delErr := s.bucket.DeleteObjects(ctx, media.FullSizeMediaURL, media.CompressedMediaURL, media.ThumbnailMediaURL); delErr != nil {
 			slog.Default().ErrorContext(ctx, "media row deleted but S3 objects may be orphaned",
-				slog.Int("id", int(req.Id)), slog.String("err", delErr.Error()))
+				slog.Int("id", id), slog.String("err", delErr.Error()))
 		}
 	}
 
@@ -308,6 +331,68 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 		return nil, status.Errorf(codes.Internal, "media deleted but failed to refresh hero: %v", err)
 	}
 	return resp, nil
+}
+
+// mediaInUsePrefix opens every refusal of a held file, so the client can tell «kept because used»
+// from any other FailedPrecondition by one stable string; the gRPC code is the primary signal.
+const mediaInUsePrefix = "media is in use"
+
+// mediaInUseUnlistedMessage is the backstop: the database refused, but the usage registry named no
+// holder — a RESTRICT foreign key into media(id) that mediaRefRegistry has not been taught.
+const mediaInUseUnlistedMessage = mediaInUsePrefix + ": referenced by a table the usage list does not cover"
+
+// mediaInUseMaxPlaces bounds the places named in a refusal. A logo can sit on dozens of products;
+// the message is a toast line, and the full list is one GetMediaUsage call away.
+const mediaInUseMaxPlaces = 3
+
+// mediaInUseMessage renders the holders of a refused delete as one short line:
+// "media is in use: product Black Coat, tech card TC-01 +2 more".
+//
+// One place per (kind, entity): the registry reports a card once per slot it uses the file in, and
+// «tech card TC-01, tech card TC-01» says nothing the first mention did not. Order is the
+// registry's own (kind, entity, slot), so the message is stable for the same state.
+func mediaInUseMessage(refs []entity.MediaUsageRef) string {
+	type place struct {
+		kind string
+		id   int
+	}
+	seen := make(map[place]struct{}, len(refs))
+	names := make([]string, 0, len(refs))
+	for _, r := range refs {
+		p := place{kind: r.Kind, id: r.EntityId}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		names = append(names, mediaUsagePlaceName(r))
+	}
+	if len(names) == 0 {
+		return mediaInUsePrefix
+	}
+	msg := mediaInUsePrefix + ": " + strings.Join(names[:min(len(names), mediaInUseMaxPlaces)], ", ")
+	if extra := len(names) - mediaInUseMaxPlaces; extra > 0 {
+		msg += fmt.Sprintf(" +%d more", extra)
+	}
+	return msg
+}
+
+// mediaUsagePlaceName is «<kind> <name>» for one holder — "product Black Coat", "tech card TC-01".
+// The kind is spelled the way the admin client spells it (usageKindLabel: snake_case → spaces).
+// The registry's fallback labels already carry the kind ("product 412", "tech card 88", a sample's
+// "TC-01 sample 3"), so a label that names its kind as a word is not prefixed a second time.
+func mediaUsagePlaceName(r entity.MediaUsageRef) string {
+	kind := strings.ReplaceAll(strings.TrimSpace(r.Kind), "_", " ")
+	if kind == "" {
+		kind = "elsewhere"
+	}
+	label := strings.TrimSpace(r.Label)
+	if label == "" {
+		return fmt.Sprintf("%s %d", kind, r.EntityId)
+	}
+	if strings.Contains(" "+strings.ToLower(label)+" ", " "+kind+" ") {
+		return label
+	}
+	return kind + " " + label
 }
 
 // ListObjects
