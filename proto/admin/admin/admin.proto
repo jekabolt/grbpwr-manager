@@ -7693,6 +7693,7 @@ message ListTasksRequest {
   // project_topic_id выше): это тот же список задач, просто суженный, и он обязан идти под тем же
   // rd(tasks). 0 = no filter.
   int32 parent_task_id = 16;
+  string query = 17; // optional case-insensitive search across task text, comments, checklist, and exact id
 }
 
 message ListTasksResponse {

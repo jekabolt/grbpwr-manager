@@ -270,7 +270,8 @@ type TaskListFilter struct {
 	// ParentTaskId — «сабтаски этой задачи». Фильтр того же списка, а не отдельный RPC (доктрина
 	// 0322: не заводить второй путь к тем же данным). 0 = no filter.
 	ParentTaskId    int
-	IncludeArchived bool // false = active only (default); true = include archived
+	IncludeArchived bool   // false = active only (default); true = include archived
+	Query           string // blank = no search
 	Limit           int
 	Offset          int
 	OrderFactor     OrderFactor
