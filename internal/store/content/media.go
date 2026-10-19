@@ -226,13 +226,15 @@ func (s *Store) DeleteMediaByIdIfUnused(ctx context.Context, id int) (bool, []en
 	return deleted, refs, nil
 }
 
-// ListMediaPaged retrieves a paginated list of media items.
+// ListMediaPaged retrieves a paginated list of media items. The id tie-breaker makes
+// pagination deterministic when several items share the same creation timestamp.
 func (s *Store) ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error) {
 	if limit <= 0 || offset < 0 {
 		return nil, fmt.Errorf("invalid pagination parameters")
 	}
 
-	query := fmt.Sprintf(`SELECT * FROM media ORDER BY id %s LIMIT :limit OFFSET :offset`, orderFactor.String())
+	direction := orderFactor.String()
+	query := fmt.Sprintf(`SELECT * FROM media ORDER BY created_at %s, id %s LIMIT :limit OFFSET :offset`, direction, direction)
 	mediaPage, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB, query, map[string]any{
 		"limit":  limit,
 		"offset": offset,
@@ -242,4 +244,18 @@ func (s *Store) ListMediaPaged(ctx context.Context, limit, offset int, orderFact
 	}
 
 	return mediaPage, nil
+}
+
+// ListMediaMonths returns media counts by UTC calendar month, newest first.
+func (s *Store) ListMediaMonths(ctx context.Context) ([]entity.MonthCount, error) {
+	const query = `SELECT YEAR(created_at) y, MONTH(created_at) m, COUNT(*) c
+		FROM media
+		GROUP BY y, m
+		ORDER BY y DESC, m DESC`
+
+	months, err := storeutil.QueryListNamed[entity.MonthCount](ctx, s.DB, query, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list media months: %w", err)
+	}
+	return months, nil
 }

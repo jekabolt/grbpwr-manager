@@ -417,6 +417,28 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 	}, nil
 }
 
+// ListMediaMonths returns the UTC calendar-month index for the media library.
+func (s *Server) ListMediaMonths(ctx context.Context, _ *pb_admin.ListMediaMonthsRequest) (*pb_admin.ListMediaMonthsResponse, error) {
+	list, err := s.repo.Media().ListMediaMonths(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list media months",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to list media months: %v", err)
+	}
+
+	months := make([]*pb_admin.MonthCount, 0, len(list))
+	for _, m := range list {
+		months = append(months, &pb_admin.MonthCount{
+			Year:  int32(m.Year),
+			Month: int32(m.Month),
+			Count: int32(m.Count),
+		})
+	}
+
+	return &pb_admin.ListMediaMonthsResponse{Months: months}, nil
+}
+
 // GetMediaUsage reports where each requested media item is still referenced.
 //
 // Without it the library cannot distinguish a free file from one on the storefront, and
