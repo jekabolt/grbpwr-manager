@@ -193,67 +193,13 @@ func (l *mediaLoader) get(ctx context.Context, id int) (*entity.MediaFull, error
 	return m, nil
 }
 
-// collectHeroMediaIds gathers, best effort, every media id a hero insert
-// references so mediaLoader can pre-load them in one query. It is a performance
-// optimization only: a type it doesn't cover simply falls back to per-id loading,
-// so keeping it in sync with new hero types is desirable but not required for
-// correctness.
+// collectHeroMediaIds gathers every media id a hero insert references so mediaLoader
+// can pre-load them in one query. The walk itself is entity.HeroMediaSlots — the one
+// answer to "which media does the hero show", shared with the media usage scan
+// (media_usage_json.go), which must refuse to delete exactly these files. Here it is a
+// performance optimization only: an id it misses still loads through mediaLoader.get.
 func collectHeroMediaIds(hfi entity.HeroFullInsert) []int {
-	seen := make(map[int]struct{})
-	var ids []int
-	add := func(vals ...int) {
-		for _, v := range vals {
-			if v == 0 {
-				continue
-			}
-			if _, ok := seen[v]; ok {
-				continue
-			}
-			seen[v] = struct{}{}
-			ids = append(ids, v)
-		}
-	}
-	addMedia := func(m entity.HeroMedia) { add(m.PortraitId, m.LandscapeId) }
-	addSingle := func(s entity.HeroSingleInsert) { addMedia(s.Media) }
-	addSingles := func(ss []entity.HeroSingleInsert) {
-		for i := range ss {
-			addMedia(ss[i].Media)
-		}
-	}
-
-	for _, e := range hfi.Entities {
-		switch e.Type {
-		case entity.HeroTypeSingle:
-			addSingle(e.Single)
-		case entity.HeroTypeDouble:
-			addSingle(e.Double.Left)
-			addSingle(e.Double.Right)
-		case entity.HeroTypeMain:
-			addMedia(e.Main.Media)
-		case entity.HeroTypeEmbed:
-			addMedia(e.Embed.Fallback)
-		case entity.HeroTypeDrop:
-			addMedia(e.Drop.Media)
-		case entity.HeroTypeSlideshow:
-			addSingles(e.Slideshow.Slides)
-		case entity.HeroTypeMosaic:
-			addSingles(e.Mosaic.Tiles)
-		case entity.HeroTypeSplit:
-			addSingle(e.Split.Media)
-		case entity.HeroTypeVideo:
-			add(e.Video.MediaId, e.Video.PosterMediaId)
-		case entity.HeroTypeProductSpotlight:
-			addMedia(e.ProductSpotlight.Media)
-		case entity.HeroTypeNewsletter:
-			addMedia(e.Newsletter.Media)
-		case entity.HeroTypeStatement:
-			addMedia(e.Statement.Media)
-		case entity.HeroTypeLookbook:
-			addSingles(e.Lookbook.Frames)
-		}
-	}
-	add(hfi.NavFeatured.Men.MediaId, hfi.NavFeatured.Women.MediaId)
-	return ids
+	return entity.MediaSlotIds(entity.HeroMediaSlots(hfi))
 }
 
 // resolveHeroMedia turns a HeroMedia (ids) into a HeroMediaFull. A missing

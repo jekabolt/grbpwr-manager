@@ -3,6 +3,7 @@ package content
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -26,6 +27,11 @@ const (
 	productLabel = `COALESCE(NULLIF(pt.name, ''), NULLIF(p.sku, ''), CONCAT('product ', p.id))`
 
 	techCardLabel = `COALESCE(NULLIF(tc.name, ''), NULLIF(tc.style_number, ''), CONCAT('tech card ', tc.id))`
+
+	// An archive is named the same way for its thumbnail (a registry column) and for the media
+	// its timeline body cites (media_usage_json.go).
+	archiveJoin  = `LEFT JOIN archive_translation atr ON atr.archive_id = a.id AND atr.language_id = ` + defaultLanguageID
+	archiveLabel = `COALESCE(NULLIF(atr.heading, ''), NULLIF(a.code, ''), NULLIF(a.tag, ''), CONCAT('archive ', a.id))`
 )
 
 // mediaRefSource is one entry of the media reference registry: a table owning a foreign key
@@ -96,10 +102,7 @@ var mediaRefRegistry = []mediaRefSource{
 	// archive
 	{
 		kind: "archive", table: "archive a", column: "a.thumbnail_id",
-		joins:      `LEFT JOIN archive_translation atr ON atr.archive_id = a.id AND atr.language_id = ` + defaultLanguageID,
-		entityExpr: "a.id",
-		labelExpr:  `COALESCE(NULLIF(atr.heading, ''), NULLIF(a.code, ''), NULLIF(a.tag, ''), CONCAT('archive ', a.id))`,
-		slot:       "thumbnail",
+		joins: archiveJoin, entityExpr: "a.id", labelExpr: archiveLabel, slot: "thumbnail",
 	},
 
 	// model
@@ -309,6 +312,10 @@ var mediaRefRegistry = []mediaRefSource{
 	//     model, not ownership. It carries a bare KEY and no foreign key precisely so that this
 	//     registry stays the list of holders; the full argument lives in the head of
 	//     0347_design_reference.sql, with design_picture.derived_from (0340) as the precedent.
+	//
+	// Media cited INSIDE a JSON document that does own it — the hero, an archive timeline, an email
+	// campaign, a colour plan's painted maps — is not a column and is not listed here: it is
+	// read by mediaJSONUsage (media_usage_json.go), whose head lists its own omissions.
 }
 
 // fittingLabel is declared after the shared consts because it references techCardLabel through
@@ -424,6 +431,12 @@ func (s *Store) GetMediaUsage(ctx context.Context, ids []int) (map[int][]entity.
 // a second enumeration of the same columns — one for showing usage, one for deciding a delete —
 // would drift the day a new foreign key lands, and it would drift silently in the worse
 // direction: the delete path would call a referenced row free.
+//
+// TWO STATEMENTS, ONE ANSWER. The registry covers the foreign-key columns; the documents that cite
+// media inside JSON (hero, archive timeline, email campaign, colour plan) have no column to UNION
+// and are read by mediaJSONUsage. Both run on the same connection, so inside the delete's
+// transaction they see the same snapshot, and both are merged here so that no caller can ask one
+// half of the question.
 func mediaUsageOn(ctx context.Context, db dependency.DB, ids []int) (map[int][]entity.MediaUsageRef, error) {
 	if len(ids) == 0 {
 		return map[int][]entity.MediaUsageRef{}, nil
@@ -433,9 +446,39 @@ func mediaUsageOn(ctx context.Context, db dependency.DB, ids []int) (map[int][]e
 	if err != nil {
 		return nil, fmt.Errorf("failed to get media usage: %w", err)
 	}
-	out := make(map[int][]entity.MediaUsageRef, len(rows))
-	for _, r := range rows {
+	jsonRefs, err := mediaJSONUsage(ctx, db, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get media usage: %w", err)
+	}
+	return mergeMediaUsage(rows, jsonRefs), nil
+}
+
+// mergeMediaUsage groups both halves of the answer by media id.
+//
+// The registry's rows arrive ordered (media, kind, entity, slot); the JSON holders' refs are
+// slotted in by a stable sort on (kind, entity), so an archive's thumbnail and its timeline blocks
+// stay together and the registry's own order is left exactly as it was.
+func mergeMediaUsage(registry, jsonRefs []entity.MediaUsageRef) map[int][]entity.MediaUsageRef {
+	out := make(map[int][]entity.MediaUsageRef, len(registry)+len(jsonRefs))
+	for _, r := range registry {
 		out[r.MediaId] = append(out[r.MediaId], r)
 	}
-	return out, nil
+	if len(jsonRefs) == 0 {
+		return out
+	}
+	touched := make(map[int]struct{}, len(jsonRefs))
+	for _, r := range jsonRefs {
+		out[r.MediaId] = append(out[r.MediaId], r)
+		touched[r.MediaId] = struct{}{}
+	}
+	for id := range touched {
+		refs := out[id]
+		sort.SliceStable(refs, func(i, j int) bool {
+			if refs[i].Kind != refs[j].Kind {
+				return refs[i].Kind < refs[j].Kind
+			}
+			return refs[i].EntityId < refs[j].EntityId
+		})
+	}
+	return out
 }
