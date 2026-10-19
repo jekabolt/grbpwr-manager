@@ -68,7 +68,11 @@ func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
 	}
 	switch ct {
 	case contentTypeJPEG:
-		return jpeg.Decode(bytes.NewReader(raw))
+		img, err := jpeg.Decode(bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		return applyOrientation(img, jpegEXIFOrientation(raw)), nil
 	case contentTypePNG:
 		return png.Decode(bytes.NewReader(raw))
 	case contentTypeWEBP:
