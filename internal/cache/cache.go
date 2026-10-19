@@ -122,6 +122,10 @@ var (
 	entityCareSymbols = []entity.CareSymbol{}
 	careIndex         = entity.CareIndex{}
 
+	// modelPhotoTechCardID is the hidden system tech card model-photo cutout runs are booked on
+	// (entity.TechCardModelPhotosKey); 0 until the dictionary loads or when the seed row is missing.
+	modelPhotoTechCardID int
+
 	entityCollections = []entity.Collection{}
 
 	entityProductTags = []string{}
@@ -225,6 +229,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entityFibers = dInfo.Fibers
 	entityCareSymbols = dInfo.CareSymbols
 	careIndex = entity.BuildCareIndex(dInfo.CareSymbols)
+	modelPhotoTechCardID = dInfo.ModelPhotoTechCardID
 
 	for _, c := range entityCategories {
 		categoryById[c.ID] = c
@@ -362,6 +367,10 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	entityFibers = dInfo.Fibers
 	entityCareSymbols = dInfo.CareSymbols
 	careIndex = entity.BuildCareIndex(dInfo.CareSymbols)
+	// The system card id never changes once seeded; a partial DictionaryInfo (0) keeps the known id.
+	if dInfo.ModelPhotoTechCardID > 0 {
+		modelPhotoTechCardID = dInfo.ModelPhotoTechCardID
+	}
 	categoryById = make(map[int]entity.Category, len(entityCategories))
 	for _, c := range entityCategories {
 		categoryById[c.ID] = c
@@ -793,6 +802,29 @@ func GetFibers() []entity.Fiber {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
 	return entityFibers
+}
+
+// GetModelPhotoTechCardID returns the id of the hidden system tech card model-photo cutout runs are
+// booked on, or 0 when it is unknown (dictionary not loaded or seed row missing).
+func GetModelPhotoTechCardID() int {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return modelPhotoTechCardID
+}
+
+// SetModelPhotoTechCardID replaces the cached system model-photo card id. The dictionary load is
+// the production writer; this exists so tests can arm the guard without a full DictionaryInfo
+// (RefreshDictionary would replace every other dictionary slice with the partial one's).
+func SetModelPhotoTechCardID(id int) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	modelPhotoTechCardID = id
+}
+
+// IsModelPhotoTechCard reports whether id is the hidden system model-photo tech card.
+func IsModelPhotoTechCard(id int) bool {
+	cardID := GetModelPhotoTechCardID()
+	return cardID > 0 && id == cardID
 }
 
 // GetCareSymbols returns the controlled ISO 3758 care vocabulary in canonical print order.

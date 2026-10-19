@@ -36,6 +36,9 @@ type Dict struct {
 	CategorySizeSystems         []entity.CategorySizeSystem
 	Fibers                      []entity.Fiber
 	CareSymbols                 []entity.CareSymbol
+	// ModelPhotoTechCardID is the hidden system card model-photo cutout runs are booked on. Only
+	// the admin GetDictionary sets it; the storefront dictionary leaves it 0.
+	ModelPhotoTechCardID int
 }
 
 var (
@@ -341,6 +344,8 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 			Translations: translations,
 		})
 	}
+
+	commonDict.ModelPhotoTechCardId = int32(dict.ModelPhotoTechCardID)
 
 	return commonDict
 }
