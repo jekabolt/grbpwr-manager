@@ -13375,11 +13375,13 @@ message StartDesignRunRequest {
   // free, before anything is reserved:
   //   · extend — anything other than exactly one picture in params.extra_input_media_ids
   //     («one_source_picture»); an `ask` or a params.freeform on a route that reads no words
-  //     («extend_takes_no_words»); a params.extend.aspect_ratio outside the nine targets, `auto`
-  //     and '' included («extend_aspect_unknown»); a target within 0.5 % of the source's own
-  //     proportion, which adds no pixels on either side («target_aspect_must_extend»); a source
-  //     under the minimum side («source_too_small»); a source over 18 MP, by its stored size or its
-  //     header («source_too_large»). A params.extend on any other kind is «extend_forbidden»;
+  //     («extend_takes_no_words»); with no per-side fields, a params.extend.aspect_ratio outside the
+  //     nine targets, `auto` and '' included («extend_aspect_unknown»); with any per-side field,
+  //     a negative expansion or one over 3× its corresponding source side («extend_sides_invalid»);
+  //     a target within 0.5 % of the source's own proportion OR a per-side request whose four sides
+  //     are zero, both of which add no pixels («target_aspect_must_extend»); a source under the
+  //     minimum side («source_too_small»); a source over 18 MP, by its stored size or its header
+  //     («source_too_large»). A params.extend on any other kind is «extend_forbidden»;
   //   · inpaint — no params.inpaint.source_media_id («no_source_picture»); no
   //     params.inpaint.mask_media_id («mask_required»); a mask whose width and height differ from
   //     the source's («mask_size_mismatch»); a mask that is not a readable PNG, or is the source

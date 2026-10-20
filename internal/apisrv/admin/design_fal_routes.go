@@ -153,7 +153,8 @@ func designRefuseMalformedRoutes(kind string, spoken *pb_common.DesignRunParams)
 }
 
 // designRefuseUnworkableExtend — the shape of an extend, on EFFECTIVE params (a rerun that cannot
-// work does not work however it was spoken): exactly one source, no words, one of the nine ratios.
+// work does not work however it was spoken): exactly one source, no words, and either the legacy
+// ratio target or at least one valid per-side pixel expansion.
 func designRefuseUnworkableExtend(ask string, params *pb_common.DesignRunParams) error {
 	if n := len(params.GetExtraInputMediaIds()); n != 1 {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeOneSourcePicture,
@@ -167,6 +168,19 @@ func designRefuseUnworkableExtend(ask string, params *pb_common.DesignRunParams)
 				"so your words would go nowhere. Clear `ask` (and params.freeform). Nothing was reserved and "+
 				"nothing was charged", nil)
 	}
+	sides, perSide := designExtendSides(params.GetExtend())
+	if perSide {
+		if err := designgen.ValidateExtendSides(0, 0, sides); err != nil {
+			return designRefuseExtendSidesInvalid(err)
+		}
+		if sides.AddsNothing() {
+			return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeTargetAspectMustExtend,
+				"params.extend states per-side placement, but all four expansions are zero — the canvas would be "+
+					"the source itself. Add pixels on at least one side. Nothing was reserved and nothing was charged",
+				map[string]string{"target": "per_side", "source": "unchanged"})
+		}
+		return nil
+	}
 	r := strings.TrimSpace(params.GetExtend().GetAspectRatio())
 	if !entity.IsDesignExtendRatio(r) {
 		return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeExtendAspectUnknown,
@@ -178,11 +192,29 @@ func designRefuseUnworkableExtend(ask string, params *pb_common.DesignRunParams)
 	return nil
 }
 
-// designRefuseExtendTarget — THE SOURCE MUST BE BIG ENOUGH AND THE TARGET MUST ADD PIXELS, read off
-// the stored full-size dimensions (one media read, only for an extend) with the WORKER'S OWN
-// predicate (designgen.ExtendTargetAddsNothing). A row with no stored dimensions (legacy 0×0) is
-// UNKNOWN, not small: it passes, and the worker — which decodes the picture before any money — is
-// the second lock.
+// designExtendSides defaults omitted optional fields to zero while preserving whether ANY field was
+// stated. Presence, including an explicit zero, selects per-side mode; value alone cannot do that.
+func designExtendSides(p *pb_common.DesignExtendParams) (designgen.ExtendSides, bool) {
+	if p == nil {
+		return designgen.ExtendSides{}, false
+	}
+	return designgen.ExtendSides{
+		Top: int(p.GetExpandTop()), Bottom: int(p.GetExpandBottom()),
+		Left: int(p.GetExpandLeft()), Right: int(p.GetExpandRight()),
+	}, p.ExpandTop != nil || p.ExpandBottom != nil || p.ExpandLeft != nil || p.ExpandRight != nil
+}
+
+func designRefuseExtendSidesInvalid(err error) error {
+	return designRefusal(codes.InvalidArgument, entity.DesignErrorCodeExtendSidesInvalid,
+		fmt.Sprintf("the per-side extend is invalid: %v. Nothing was reserved and nothing was charged", err),
+		map[string]string{"why": err.Error()})
+}
+
+// designRefuseExtendTarget — THE SOURCE MUST BE BIG ENOUGH AND THE TARGET MUST ADD LEGAL PIXELS,
+// read off the stored full-size dimensions (one media read, only for an extend) with the WORKER'S
+// OWN ratio predicate / per-side validator. A row with no stored dimensions (legacy 0×0) is
+// UNKNOWN, not small: it passes what its header cannot answer, and the worker — which decodes the
+// picture before any money — is the second lock.
 func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, params *pb_common.DesignRunParams) error {
 	if kind != entity.DesignRunKindExtend {
 		return nil
@@ -203,13 +235,21 @@ func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, para
 		// source_gone — after the reservation. Refused here, free.
 		return designRefuseMissingSource(id, "params.extra_input_media_ids")
 	}
+	sides, perSide := designExtendSides(params.GetExtend())
 	if m.FullSizeWidth <= 0 || m.FullSizeHeight <= 0 {
 		// ⚠ A LEGACY ROW STATES NO SIZE, SO ITS HEADER IS READ (G-03 r2, Codex BLOCKER 1): the one
 		// question the door cannot leave to the worker is the working pixel cap — past it the composite
 		// would run after the payment in a 0.5 GB process. Header only, no pixel decoded; a header this
 		// door cannot read is left to the worker's own header check (free, terminal source_too_large).
-		if w, h, ok := s.designStoredPictureHeader(ctx, m.FullSizeMediaURL); ok && designOverCompositeCap(w, h) {
-			return designRefuseSourceTooLarge(id, w, h, "an extend")
+		if w, h, ok := s.designStoredPictureHeader(ctx, m.FullSizeMediaURL); ok {
+			if designOverCompositeCap(w, h) {
+				return designRefuseSourceTooLarge(id, w, h, "an extend")
+			}
+			if perSide {
+				if err := designgen.ValidateExtendSides(w, h, sides); err != nil {
+					return designRefuseExtendSidesInvalid(err)
+				}
+			}
 		}
 		return nil
 	}
@@ -226,6 +266,12 @@ func (s *Server) designRefuseExtendTarget(ctx context.Context, kind string, para
 				"height":   strconv.Itoa(m.FullSizeHeight),
 				"minimum":  strconv.Itoa(minSide),
 			})
+	}
+	if perSide {
+		if err := designgen.ValidateExtendSides(m.FullSizeWidth, m.FullSizeHeight, sides); err != nil {
+			return designRefuseExtendSidesInvalid(err)
+		}
+		return nil
 	}
 	target := strings.TrimSpace(params.GetExtend().GetAspectRatio())
 	if nothing, ok := designgen.ExtendTargetAddsNothing(m.FullSizeWidth, m.FullSizeHeight, target); ok && nothing {
