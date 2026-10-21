@@ -45,6 +45,16 @@ enum TaskStatus {
   TASK_STATUS_DONE = 5;
 }
 
+// TaskStatusChange is one status-only audit event. from_status is UNKNOWN for creation. For tasks
+// created before status history existed, GetTask appends a synthetic creation event whose
+// to_status is also UNKNOWN because the initial status cannot be recovered.
+message TaskStatusChange {
+  TaskStatus from_status = 1;
+  TaskStatus to_status = 2;
+  string changed_by = 3;
+  google.protobuf.Timestamp changed_at = 4;
+}
+
 enum TaskPriority {
   TASK_PRIORITY_UNKNOWN = 0;
   TASK_PRIORITY_LOW = 1;

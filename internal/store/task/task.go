@@ -72,6 +72,13 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		if err != nil {
 			return fmt.Errorf("failed to insert task: %w", err)
 		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+			INSERT INTO task_status_history (task_id, from_status, to_status, changed_by)
+			VALUES (:taskId, NULL, :toStatus, :changedBy)`, map[string]any{
+			"taskId": id, "toStatus": string(t.Status), "changedBy": t.CreatedBy,
+		}); err != nil {
+			return fmt.Errorf("failed to insert initial task status history: %w", err)
+		}
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
 			return err
 		}
@@ -165,7 +172,7 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 // (status), and position within that column, re-sequencing sibling positions so
 // each column stays a gap-free 0..n-1 sequence. Returns sql.ErrNoRows when no
 // task with the given id exists.
-func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int) error {
+func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int, changedBy string) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Only active tasks have a meaningful position in the gap-free sequence.
 		// An archived task carries a frozen, out-of-band position, so moving it
@@ -227,6 +234,17 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 				UPDATE task SET started_at = UTC_TIMESTAMP() WHERE id = :id AND started_at IS NULL`,
 				map[string]any{"id": id}); err != nil {
 				return fmt.Errorf("failed to stamp task start: %w", err)
+			}
+		}
+		// A board-only or position-only drag is not a status transition. Keep this inside the same
+		// transaction as the task update so the card and its audit trail can never disagree.
+		if cur.Status != status {
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				INSERT INTO task_status_history (task_id, from_status, to_status, changed_by)
+				VALUES (:taskId, :fromStatus, :toStatus, :changedBy)`, map[string]any{
+				"taskId": id, "fromStatus": string(cur.Status), "toStatus": string(status), "changedBy": changedBy,
+			}); err != nil {
+				return fmt.Errorf("failed to insert task status history: %w", err)
 			}
 		}
 		return nil
@@ -407,6 +425,31 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	history, err := storeutil.QueryListNamed[entity.TaskStatusChange](ctx, s.DB, `
+		SELECT id, task_id, from_status, to_status, changed_by, changed_at
+		FROM task_status_history
+		WHERE task_id = :id
+		ORDER BY changed_at DESC, id DESC`, map[string]any{"id": id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get task status history: %w", err)
+	}
+	// Migration 0418 intentionally has no backfill. If no real initial row exists, append the
+	// only creation fact that can be stated honestly for an older task: who created it and when,
+	// with both statuses unknown. Real transitions remain ahead of it in descending order.
+	hasInitialStatus := false
+	for i := range history {
+		if !history[i].FromStatus.Valid {
+			hasInitialStatus = true
+			break
+		}
+	}
+	if !hasInitialStatus {
+		history = append(history, entity.TaskStatusChange{
+			TaskId:    t.Id,
+			ChangedBy: t.CreatedBy,
+			ChangedAt: t.CreatedAt,
+		})
+	}
 	t.Media = media[id]
 	t.MediaAnnotations = mediaAnnotations[id]
 	t.Checklist = checklist[id]
@@ -415,6 +458,7 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	t.Links = links[id]
 	t.SubtaskTotal = counts[id].Total
 	t.SubtaskDone = counts[id].Done
+	t.StatusHistory = history
 	return &t, nil
 }
 

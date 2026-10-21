@@ -144,8 +144,9 @@ func (s *Server) GetTask(ctx context.Context, req *pb_admin.GetTaskRequest) (*pb
 		}
 	}
 	return &pb_admin.GetTaskResponse{
-		Task:  dto.ConvertEntityTaskToPb(t),
-		Files: files,
+		Task:          dto.ConvertEntityTaskToPb(t),
+		Files:         files,
+		StatusHistory: dto.ConvertEntityTaskStatusHistoryToPb(t.StatusHistory),
 	}, nil
 }
 
@@ -195,7 +196,7 @@ func (s *Server) MoveTask(ctx context.Context, req *pb_admin.MoveTaskRequest) (*
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "target status is required")
 	}
-	if err := s.repo.Tasks().MoveTask(ctx, int(req.Id), board, taskStatus, int(req.Position)); err != nil {
+	if err := s.repo.Tasks().MoveTask(ctx, int(req.Id), board, taskStatus, int(req.Position), authsrv.GetAdminUsername(ctx)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "task not found")
 		}

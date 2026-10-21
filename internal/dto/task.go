@@ -442,6 +442,30 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 	}
 }
 
+// ConvertEntityTaskStatusHistoryToPb converts detail-only status audit rows. A NULL from_status
+// maps to UNKNOWN for creation. The synthetic legacy creation row also has UNKNOWN to_status,
+// because the initial status of a pre-0418 task is not recoverable.
+func ConvertEntityTaskStatusHistoryToPb(history []entity.TaskStatusChange) []*pb_common.TaskStatusChange {
+	if len(history) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TaskStatusChange, 0, len(history))
+	for i := range history {
+		change := &history[i]
+		var fromStatus pb_common.TaskStatus
+		if change.FromStatus.Valid {
+			fromStatus = taskStatusEntityToPb[entity.TaskStatus(change.FromStatus.String)]
+		}
+		out = append(out, &pb_common.TaskStatusChange{
+			FromStatus: fromStatus,
+			ToStatus:   taskStatusEntityToPb[change.ToStatus],
+			ChangedBy:  change.ChangedBy,
+			ChangedAt:  timestamppb.New(change.ChangedAt),
+		})
+	}
+	return out
+}
+
 // taskLinkRoleToPb — перспектива хранилища → перспектива контракта. Ролей ТРИ, видов в хранилище ДВА:
 // BLOCKED_BY это blocks, прочитанный с другого конца.
 var taskLinkRoleToPb = map[entity.TaskLinkRole]pb_common.TaskLinkKind{

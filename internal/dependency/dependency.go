@@ -636,7 +636,7 @@ type (
 		AddTask(ctx context.Context, t *entity.Task) (int, error)
 		GetTaskById(ctx context.Context, id int) (*entity.Task, error)
 		UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) error
-		MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int) error
+		MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int, changedBy string) error
 		DeleteTask(ctx context.Context, id int) error
 		ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error)
 		AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert, author string) (int, error)

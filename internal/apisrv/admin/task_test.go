@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -88,17 +89,69 @@ func TestMoveTaskKeepCurrentBoardAndNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tasks := mocks.NewMockTasks(t)
 	repo.EXPECT().Tasks().Return(tasks)
-	tasks.EXPECT().MoveTask(mock.Anything, 5, entity.TaskBoard(""), entity.TaskStatusReview, 3).
+	tasks.EXPECT().MoveTask(mock.Anything, 5, entity.TaskBoard(""), entity.TaskStatusReview, 3, "anna").
 		Return(sql.ErrNoRows)
 
 	s := &Server{repo: repo}
-	_, err := s.MoveTask(context.Background(), &pb_admin.MoveTaskRequest{
+	ctx := authsrv.PutAdminUsername(context.Background(), "anna")
+	_, err := s.MoveTask(ctx, &pb_admin.MoveTaskRequest{
 		Id:       5,
 		Status:   pb_common.TaskStatus_TASK_STATUS_REVIEW,
 		Position: 3,
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Errorf("want NotFound, got %v", err)
+	}
+}
+
+func TestGetTaskReturnsStatusHistory(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+
+	changedAt := time.Date(2026, 10, 21, 12, 35, 0, 0, time.UTC)
+	createdAt := changedAt.Add(-time.Hour)
+	tasks.EXPECT().GetTaskById(mock.Anything, 5).Return(&entity.Task{
+		Id:        5,
+		Status:    entity.TaskStatusDone,
+		CreatedAt: createdAt,
+		StatusHistory: []entity.TaskStatusChange{{
+			TaskId:     5,
+			FromStatus: sql.NullString{String: string(entity.TaskStatusReview), Valid: true},
+			ToStatus:   entity.TaskStatusDone,
+			ChangedBy:  "jeka",
+			ChangedAt:  changedAt,
+		}, {
+			TaskId:    5,
+			ChangedBy: "olya",
+			ChangedAt: createdAt,
+		}},
+	}, nil)
+
+	s := &Server{repo: repo}
+	resp, err := s.GetTask(context.Background(), &pb_admin.GetTaskRequest{Id: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.StatusHistory) != 2 {
+		t.Fatalf("status_history length = %d, want 2", len(resp.StatusHistory))
+	}
+	got := resp.StatusHistory[0]
+	if got.FromStatus != pb_common.TaskStatus_TASK_STATUS_REVIEW || got.ToStatus != pb_common.TaskStatus_TASK_STATUS_DONE {
+		t.Errorf("statuses = %v -> %v, want REVIEW -> DONE", got.FromStatus, got.ToStatus)
+	}
+	if got.ChangedBy != "jeka" {
+		t.Errorf("changed_by = %q, want jeka", got.ChangedBy)
+	}
+	if !got.ChangedAt.AsTime().Equal(changedAt) {
+		t.Errorf("changed_at = %v, want %v", got.ChangedAt.AsTime(), changedAt)
+	}
+	legacy := resp.StatusHistory[1]
+	if legacy.FromStatus != pb_common.TaskStatus_TASK_STATUS_UNKNOWN || legacy.ToStatus != pb_common.TaskStatus_TASK_STATUS_UNKNOWN {
+		t.Errorf("legacy creation statuses = %v -> %v, want UNKNOWN -> UNKNOWN", legacy.FromStatus, legacy.ToStatus)
+	}
+	if legacy.ChangedBy != "olya" || !legacy.ChangedAt.AsTime().Equal(createdAt) {
+		t.Errorf("legacy creation = %q at %v, want olya at %v", legacy.ChangedBy, legacy.ChangedAt.AsTime(), createdAt)
 	}
 }
 

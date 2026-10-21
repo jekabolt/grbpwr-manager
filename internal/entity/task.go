@@ -175,6 +175,22 @@ type Task struct {
 	// SubtaskTotal/SubtaskDone — свёртка АКТИВНЫХ (незаархивированных) детей для карточки на доске.
 	SubtaskTotal int `db:"-"`
 	SubtaskDone  int `db:"-"`
+	// StatusHistory is detail-only audit data. It deliberately does not live on common.Task because
+	// that message is reused in heavy lists and durable snapshots; admin.GetTaskResponse owns the
+	// wire field. Old tasks receive one synthetic creation entry with both statuses unknown.
+	StatusHistory []TaskStatusChange `db:"-"`
+}
+
+// TaskStatusChange is one status transition. FromStatus is NULL only for the real initial row
+// written with a newly created task. A synthetic legacy creation row has both FromStatus invalid
+// and ToStatus empty because the task's initial pre-deploy status cannot be recovered.
+type TaskStatusChange struct {
+	Id         int            `db:"id"`
+	TaskId     int            `db:"task_id"`
+	FromStatus sql.NullString `db:"from_status"`
+	ToStatus   TaskStatus     `db:"to_status"`
+	ChangedBy  string         `db:"changed_by"`
+	ChangedAt  time.Time      `db:"changed_at"`
 }
 
 // TaskLinkKind — вид связи В ХРАНИЛИЩЕ. Их ДВА, и это не сокращение контракта: BLOCKED_BY на проводе

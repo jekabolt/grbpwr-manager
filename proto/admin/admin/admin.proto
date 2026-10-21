@@ -6588,6 +6588,9 @@ message GetTaskResponse {
   // common.Task itself only carries their ids: it is reused in contexts that get
   // persisted, and a url with a 6-12h life must never be written down anywhere.
   repeated LibraryFile files = 2;
+  // Detail-only status audit trail, ordered by changed_at DESC, id DESC. Kept off common.Task
+  // because that message is reused in heavy lists and durable snapshots.
+  repeated common.TaskStatusChange status_history = 3;
 }
 
 // LibraryFile is one file in the shared library.
