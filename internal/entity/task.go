@@ -36,6 +36,8 @@ var (
 	ErrTaskBoardNotEmpty = errors.New("task board is not empty: choose a board to move its tasks to")
 	// ErrTaskBoardMoveTarget — the move target is the board being deleted or does not exist.
 	ErrTaskBoardMoveTarget = errors.New("invalid board to move tasks to")
+	// ErrTaskBoardSetMismatch — a reorder did not name every current board exactly once.
+	ErrTaskBoardSetMismatch = errors.New("board ids must contain every existing board exactly once")
 )
 
 // TaskBoard is the LEGACY department-lane enum string (task.board). Since migration 0420 boards are
@@ -239,6 +241,17 @@ type Task struct {
 	// that message is reused in heavy lists and durable snapshots; admin.GetTaskResponse owns the
 	// wire field. Old tasks receive one synthetic creation entry with both statuses unknown.
 	StatusHistory []TaskStatusChange `db:"-"`
+	// Match is list-only search metadata. It is populated only for a non-empty ListTasks query and
+	// deliberately stays outside common.Task, which is also used in durable snapshots.
+	Match *TaskMatch `db:"-"`
+}
+
+// TaskMatch identifies the first field that matched a ListTasks query. Field is one of
+// title|description|id|comment|checklist. Title/id carry an empty snippet.
+type TaskMatch struct {
+	TaskId  int
+	Field   string
+	Snippet string
 }
 
 // TaskStatusChange is one status transition. FromStatus is NULL for a real initial row and for

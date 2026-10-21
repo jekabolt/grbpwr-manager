@@ -155,6 +155,37 @@ func TestListTaskBoardsMapsLegacyEnumAndCounts(t *testing.T) {
 	}
 }
 
+func TestReorderTaskBoardsReturnsRailAndMapsSetMismatch(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+	tasks.EXPECT().ReorderTaskBoards(mock.Anything, []int{7, 2, 1}).Return([]entity.TaskBoardEntry{
+		{Id: 7, Name: "samples", Position: 0},
+		{Id: 2, Name: "design", Position: 1},
+		{Id: 1, Name: "development", Position: 2},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).ReorderTaskBoards(context.Background(),
+		&pb_admin.ReorderTaskBoardsRequest{Ids: []int32{7, 2, 1}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Boards) != 3 || resp.Boards[0].Id != 7 || resp.Boards[2].Position != 2 {
+		t.Fatalf("unexpected reordered boards: %+v", resp.Boards)
+	}
+
+	repo2 := mocks.NewMockRepository(t)
+	tasks2 := mocks.NewMockTasks(t)
+	repo2.EXPECT().Tasks().Return(tasks2)
+	tasks2.EXPECT().ReorderTaskBoards(mock.Anything, []int{1, 1}).
+		Return(nil, fmt.Errorf("can't reorder task boards: %w", entity.ErrTaskBoardSetMismatch))
+	_, err = (&Server{repo: repo2}).ReorderTaskBoards(context.Background(),
+		&pb_admin.ReorderTaskBoardsRequest{Ids: []int32{1, 1}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
+	}
+}
+
 // AddTaskBoard trims the name, stamps created_by and answers the stored row.
 func TestAddTaskBoardTrimsAndStamps(t *testing.T) {
 	repo := mocks.NewMockRepository(t)

@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (434 rpc) ----
+// ---- admin (435 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -2456,6 +2456,14 @@ func (c *Client) RenderCampaignPreview(ctx context.Context, in *admin.RenderCamp
 func (c *Client) ReopenAcctPeriod(ctx context.Context, in *admin.ReopenAcctPeriodRequest) (*admin.ReopenAcctPeriodResponse, error) {
 	out := new(admin.ReopenAcctPeriodResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/periods/reopen", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ReorderTaskBoards(ctx context.Context, in *admin.ReorderTaskBoardsRequest) (*admin.ReorderTaskBoardsResponse, error) {
+	out := new(admin.ReorderTaskBoardsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/task/board/reorder", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

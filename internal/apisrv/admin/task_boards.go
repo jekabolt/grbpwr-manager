@@ -27,6 +27,24 @@ func (s *Server) ListTaskBoards(ctx context.Context, _ *pb_admin.ListTaskBoardsR
 	return &pb_admin.ListTaskBoardsResponse{Boards: dto.ConvertEntityTaskBoardsToPb(boards)}, nil
 }
 
+// ReorderTaskBoards replaces the complete rail order. The store validates the id set while its
+// board rows are locked, so a stale client receives InvalidArgument and no partial positions.
+func (s *Server) ReorderTaskBoards(ctx context.Context, req *pb_admin.ReorderTaskBoardsRequest) (*pb_admin.ReorderTaskBoardsResponse, error) {
+	ids := make([]int, 0, len(req.Ids))
+	for _, id := range req.Ids {
+		ids = append(ids, int(id))
+	}
+	boards, err := s.repo.Tasks().ReorderTaskBoards(ctx, ids)
+	if errors.Is(err, entity.ErrTaskBoardSetMismatch) {
+		return nil, status.Error(codes.InvalidArgument, entity.ErrTaskBoardSetMismatch.Error())
+	}
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't reorder task boards", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't reorder task boards")
+	}
+	return &pb_admin.ReorderTaskBoardsResponse{Boards: dto.ConvertEntityTaskBoardsToPb(boards)}, nil
+}
+
 // AddTaskBoard creates a board at the end of the rail; created_by comes from the JWT.
 func (s *Server) AddTaskBoard(ctx context.Context, req *pb_admin.AddTaskBoardRequest) (*pb_admin.AddTaskBoardResponse, error) {
 	name, err := dto.ValidateTaskBoardName(req.Name)

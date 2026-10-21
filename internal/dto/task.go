@@ -562,6 +562,18 @@ func ConvertEntityTaskTimingToPb(timing *entity.TaskTiming) *pb_common.TaskTimin
 	}
 }
 
+// ConvertEntityTaskMatchToPb converts list-only search metadata.
+func ConvertEntityTaskMatchToPb(match *entity.TaskMatch) *pb_common.TaskMatch {
+	if match == nil {
+		return nil
+	}
+	return &pb_common.TaskMatch{
+		TaskId:  int32(match.TaskId),
+		Field:   match.Field,
+		Snippet: match.Snippet,
+	}
+}
+
 // taskLinkRoleToPb — перспектива хранилища → перспектива контракта. Ролей ТРИ, видов в хранилище ДВА:
 // BLOCKED_BY это blocks, прочитанный с другого конца.
 var taskLinkRoleToPb = map[entity.TaskLinkRole]pb_common.TaskLinkKind{

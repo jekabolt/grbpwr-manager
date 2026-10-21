@@ -253,6 +253,37 @@ func TestListTasksClosedRangeReturnsBatchedClosingMetadata(t *testing.T) {
 	}
 }
 
+func TestListTasksReturnsSearchMatchProjection(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+	tasks.EXPECT().ListTasks(mock.Anything, mock.MatchedBy(func(f entity.TaskListFilter) bool {
+		return f.Query == "иголка"
+	})).Return([]entity.Task{{
+		Id:     12,
+		Status: entity.TaskStatusTodo,
+		Match: &entity.TaskMatch{
+			TaskId: 12, Field: "description", Snippet: "…до ИГОЛКА после…",
+		},
+	}}, 1, nil)
+	tasks.EXPECT().GetTaskTimingByIds(mock.Anything, []int{12}).Return(map[int]entity.TaskTiming{
+		12: {TaskId: 12, StatusSince: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).ListTasks(context.Background(),
+		&pb_admin.ListTasksRequest{Query: "иголка"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("matches length = %d, want 1", len(resp.Matches))
+	}
+	match := resp.Matches[0]
+	if match.TaskId != 12 || match.Field != "description" || match.Snippet != "…до ИГОЛКА после…" {
+		t.Errorf("unexpected match: %+v", match)
+	}
+}
+
 func TestListTasksRejectsEmptyClosedRangeBeforeStore(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	at := timestamppb.New(time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC))

@@ -59,14 +59,18 @@ const taskBoardSelect = `
 
 // ListTaskBoards returns every board in rail order with its active and archived task counts.
 func (s *Store) ListTaskBoards(ctx context.Context) ([]entity.TaskBoardEntry, error) {
-	boards, err := storeutil.QueryListNamed[entity.TaskBoardEntry](ctx, s.DB,
-		taskBoardSelect+`
-	GROUP BY b.id
-	ORDER BY b.position, b.id`, map[string]any{})
+	boards, err := listTaskBoards(ctx, s.DB)
 	if err != nil {
 		return nil, fmt.Errorf("can't list task boards: %w", err)
 	}
 	return boards, nil
+}
+
+func listTaskBoards(ctx context.Context, db dependency.DB) ([]entity.TaskBoardEntry, error) {
+	return storeutil.QueryListNamed[entity.TaskBoardEntry](ctx, db,
+		taskBoardSelect+`
+	GROUP BY b.id
+	ORDER BY b.position, b.id`, map[string]any{})
 }
 
 // GetTaskBoardById returns one board with its counts; sql.ErrNoRows (wrapped) when missing.
@@ -103,6 +107,57 @@ func (s *Store) AddTaskBoard(ctx context.Context, name, createdBy string) (int, 
 		return 0, fmt.Errorf("can't add task board: %w", err)
 	}
 	return id, nil
+}
+
+// ReorderTaskBoards replaces the complete rail order in one transaction. Locking and comparing
+// the current id set before any UPDATE makes a stale/partial request a no-op instead of silently
+// leaving new boards at an arbitrary position.
+func (s *Store) ReorderTaskBoards(ctx context.Context, ids []int) ([]entity.TaskBoardEntry, error) {
+	var boards []entity.TaskBoardEntry
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		existing, err := storeutil.QueryScalarListNamed[int](ctx, db,
+			`SELECT id FROM task_board ORDER BY id FOR UPDATE`, map[string]any{})
+		if err != nil {
+			return fmt.Errorf("failed to lock task boards: %w", err)
+		}
+		if len(ids) != len(existing) {
+			return entity.ErrTaskBoardSetMismatch
+		}
+		current := make(map[int]struct{}, len(existing))
+		for _, id := range existing {
+			current[id] = struct{}{}
+		}
+		seen := make(map[int]struct{}, len(ids))
+		for _, id := range ids {
+			if id <= 0 {
+				return entity.ErrTaskBoardSetMismatch
+			}
+			if _, ok := current[id]; !ok {
+				return entity.ErrTaskBoardSetMismatch
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return entity.ErrTaskBoardSetMismatch
+			}
+			seen[id] = struct{}{}
+		}
+		for position, id := range ids {
+			if err := storeutil.ExecNamed(ctx, db,
+				`UPDATE task_board SET position = :position WHERE id = :id`,
+				map[string]any{"position": position, "id": id}); err != nil {
+				return fmt.Errorf("failed to set task board %d position: %w", id, err)
+			}
+		}
+		boards, err = listTaskBoards(ctx, db)
+		if err != nil {
+			return fmt.Errorf("failed to read reordered task boards: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't reorder task boards: %w", err)
+	}
+	return boards, nil
 }
 
 // RenameTaskBoard renames any board, seeded ones included (their slug stays). sql.ErrNoRows when the

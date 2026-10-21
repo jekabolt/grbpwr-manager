@@ -1267,6 +1267,15 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/task/board/list"};
   }
 
+  // ReorderTaskBoards replaces the whole board rail order. ids must contain every current board
+  // exactly once; accepting a partial list would silently hide concurrent/new boards at the end.
+  rpc ReorderTaskBoards(ReorderTaskBoardsRequest) returns (ReorderTaskBoardsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/board/reorder"
+      body: "*"
+    };
+  }
+
   // AddTaskBoard creates a board at the end of the rail. A name already taken (case-insensitive)
   // is ALREADY_EXISTS.
   rpc AddTaskBoard(AddTaskBoardRequest) returns (AddTaskBoardResponse) {
@@ -7753,6 +7762,14 @@ message ListTaskBoardsResponse {
   repeated common.TaskBoardEntry boards = 1; // ordered by position, then id
 }
 
+message ReorderTaskBoardsRequest {
+  repeated int32 ids = 1; // every existing board id, exactly once, in the new order
+}
+
+message ReorderTaskBoardsResponse {
+  repeated common.TaskBoardEntry boards = 1; // the complete rail in its new order
+}
+
 message AddTaskBoardRequest {
   string name = 1; // required; trimmed, 1..64 chars
 }
@@ -7823,6 +7840,7 @@ message ListTasksResponse {
   int32 total = 2; // total matching tasks, ignoring pagination
   repeated common.TaskClosed closed = 3; // latest transition into DONE for every returned DONE task
   repeated common.TaskTiming timing = 4; // status age for every returned task
+  repeated common.TaskMatch matches = 5; // one row per returned task only when query is non-empty
 }
 
 message AddTaskCommentRequest {

@@ -78,6 +78,15 @@ message TaskTiming {
   bool approximate = 3;
 }
 
+// TaskMatch is list-only search metadata. One row accompanies every task returned by a non-empty
+// ListTasks query. field is one of title|description|id|comment|checklist; title/id need no snippet
+// because the task row already shows the title (and its id).
+message TaskMatch {
+  int32 task_id = 1;
+  string field = 2;
+  string snippet = 3;
+}
+
 enum TaskPriority {
   TASK_PRIORITY_UNKNOWN = 0;
   TASK_PRIORITY_LOW = 1;

@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Pagination bounds for ListTasks. A board fetch wants the whole column set, so
@@ -700,6 +702,9 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		tasks[i].Checklist = checklist[tasks[i].Id]
 		tasks[i].FileIds = fileIDs[tasks[i].Id]
 	}
+	if err := s.attachTaskMatches(ctx, tasks, f.Query); err != nil {
+		return nil, 0, err
+	}
 	return tasks, total, nil
 }
 
@@ -810,30 +815,188 @@ func (s *Store) ListTaskIdsToAutoArchive(ctx context.Context, closedBefore time.
 	return ids, nil
 }
 
-// taskSearchParams turns a non-blank user query into a literal LIKE pattern and,
-// for #123/123 queries, an exact task id. A leading # is presentation for ids,
-// so the digits are still searched as text in every other field.
-func taskSearchParams(raw string) (pattern string, taskID int, ok bool) {
+// taskSearchNeedle normalizes a non-blank user query for both the SQL predicate and the page-only
+// match projection. A leading # is presentation for ids, so the digits are still searched as text
+// in every other field.
+func taskSearchNeedle(raw string) (needle string, taskID int, ok bool) {
 	query := strings.TrimSpace(raw)
 	if query == "" {
 		return "", 0, false
 	}
 
-	textQuery := query
+	needle = query
 	digits := strings.TrimPrefix(query, "#")
 	if digits != "" && isASCIIDigits(digits) {
-		textQuery = digits
+		needle = digits
 		if parsed, err := strconv.ParseInt(digits, 10, 32); err == nil && parsed > 0 {
 			taskID = int(parsed)
 		}
 	}
+	return needle, taskID, true
+}
 
+// taskSearchParams turns the normalized needle into a literal LIKE pattern.
+func taskSearchParams(raw string) (pattern string, taskID int, ok bool) {
+	needle, taskID, ok := taskSearchNeedle(raw)
+	if !ok {
+		return "", 0, false
+	}
 	escaped := strings.NewReplacer(
 		`\`, `\\`,
 		`%`, `\%`,
 		`_`, `\_`,
-	).Replace(strings.ToLower(textQuery))
+	).Replace(strings.ToLower(needle))
 	return "%" + escaped + "%", taskID, true
+}
+
+type taskMatchTextRow struct {
+	TaskId       int    `db:"task_id"`
+	Field        string `db:"field"`
+	MatchText    string `db:"match_text"`
+	FieldOrder   int    `db:"field_order"`
+	ItemPosition int    `db:"item_position"`
+	ItemId       int    `db:"item_id"`
+}
+
+// attachTaskMatches computes one match row for every task on the returned page. The main search
+// query stays unchanged: comments and checklist text are fetched together in one page-bounded
+// query, then field priority and UTF-8-safe snippets are resolved in Go.
+func (s *Store) attachTaskMatches(ctx context.Context, tasks []entity.Task, rawQuery string) error {
+	needle, queryTaskID, ok := taskSearchNeedle(rawQuery)
+	if !ok || len(tasks) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(tasks))
+	for i := range tasks {
+		ids = append(ids, tasks[i].Id)
+	}
+	rows, err := storeutil.QueryListNamed[taskMatchTextRow](ctx, s.DB, `
+		SELECT task_id, 'comment' AS field, body AS match_text,
+			0 AS field_order, 0 AS item_position, id AS item_id
+		FROM task_comment
+		WHERE task_id IN (:ids)
+		UNION ALL
+		SELECT task_id, 'checklist' AS field, content AS match_text,
+			1 AS field_order, position AS item_position, id AS item_id
+		FROM task_checklist_item
+		WHERE task_id IN (:ids)
+		ORDER BY task_id, field_order, item_position, item_id`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load task search match text: %w", err)
+	}
+	byTaskID := make(map[int][]taskMatchTextRow, len(tasks))
+	for i := range rows {
+		byTaskID[rows[i].TaskId] = append(byTaskID[rows[i].TaskId], rows[i])
+	}
+
+	for i := range tasks {
+		match := taskMatchForTask(&tasks[i], byTaskID[tasks[i].Id], needle, queryTaskID)
+		if match == nil {
+			// The page came from the same literal, case-insensitive predicate. Treat a divergence as an
+			// invariant failure instead of returning fewer match rows than tasks.
+			return fmt.Errorf("can't identify search match for task %d", tasks[i].Id)
+		}
+		tasks[i].Match = match
+	}
+	return nil
+}
+
+func taskMatchForTask(
+	task *entity.Task,
+	rows []taskMatchTextRow,
+	needle string,
+	queryTaskID int,
+) *entity.TaskMatch {
+	if _, _, ok := taskSearchRuneSpan(task.Title, needle); ok {
+		return &entity.TaskMatch{TaskId: task.Id, Field: "title"}
+	}
+	if queryTaskID > 0 && task.Id == queryTaskID {
+		return &entity.TaskMatch{TaskId: task.Id, Field: "id"}
+	}
+	if task.Description.Valid {
+		if snippet, ok := taskMatchSnippet(task.Description.String, needle); ok {
+			return &entity.TaskMatch{TaskId: task.Id, Field: "description", Snippet: snippet}
+		}
+	}
+	for i := range rows {
+		if snippet, ok := taskMatchSnippet(rows[i].MatchText, needle); ok {
+			return &entity.TaskMatch{TaskId: task.Id, Field: rows[i].Field, Snippet: snippet}
+		}
+	}
+	return nil
+}
+
+const taskMatchSnippetRunes = 80
+
+// taskMatchSnippet returns about 80 whole runes around the first hit. It first cuts by rune index,
+// then collapses whitespace so newlines cannot leak into the one-line search result.
+func taskMatchSnippet(value, needle string) (string, bool) {
+	hitStart, hitEnd, ok := taskSearchRuneSpan(value, needle)
+	if !ok {
+		return "", false
+	}
+	runes := []rune(value)
+	windowStart, windowEnd := hitStart, hitEnd
+	hitLen := hitEnd - hitStart
+	if hitLen < taskMatchSnippetRunes {
+		remaining := taskMatchSnippetRunes - hitLen
+		windowStart = max(0, hitStart-remaining/2)
+		windowEnd = min(len(runes), hitEnd+(remaining-remaining/2))
+		// Reuse space lost at one edge so ordinary snippets stay close to 80 runes.
+		if windowStart == 0 && windowEnd < len(runes) {
+			windowEnd = min(len(runes), taskMatchSnippetRunes)
+		}
+		if windowEnd == len(runes) && windowStart > 0 {
+			windowStart = max(0, len(runes)-taskMatchSnippetRunes)
+		}
+	}
+	snippet := strings.Join(strings.Fields(string(runes[windowStart:windowEnd])), " ")
+	if windowStart > 0 {
+		snippet = "…" + snippet
+	}
+	if windowEnd < len(runes) {
+		snippet += "…"
+	}
+	return snippet, true
+}
+
+// taskSearchRuneSpan locates the first case/accent-insensitive hit and maps it back to original
+// rune indexes. Removing combining marks mirrors the default MySQL 8 *_ai_ci collation closely
+// enough that every SQL hit still receives a Go-computed projection; the index map keeps cuts safe
+// for precomposed Cyrillic/Latin characters.
+func taskSearchRuneSpan(value, needle string) (start, end int, ok bool) {
+	haystack, indexes := taskSearchFoldedRunes(value)
+	wanted, _ := taskSearchFoldedRunes(needle)
+	if len(wanted) == 0 || len(wanted) > len(haystack) {
+		return 0, 0, false
+	}
+	for i := 0; i <= len(haystack)-len(wanted); i++ {
+		matched := true
+		for j := range wanted {
+			if haystack[i+j] != wanted[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return indexes[i], indexes[i+len(wanted)-1] + 1, true
+		}
+	}
+	return 0, 0, false
+}
+
+func taskSearchFoldedRunes(value string) (folded []rune, originalIndexes []int) {
+	runes := []rune(value)
+	for i, r := range runes {
+		for _, normalized := range []rune(norm.NFD.String(strings.ToLower(string(r)))) {
+			if unicode.Is(unicode.Mn, normalized) {
+				continue
+			}
+			folded = append(folded, normalized)
+			originalIndexes = append(originalIndexes, i)
+		}
+	}
+	return folded, originalIndexes
 }
 
 func isASCIIDigits(value string) bool {

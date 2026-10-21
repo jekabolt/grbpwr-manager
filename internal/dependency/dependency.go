@@ -656,6 +656,9 @@ type (
 		GetTaskBoardById(ctx context.Context, id int) (*entity.TaskBoardEntry, error)
 		// AddTaskBoard appends a custom board; a taken name is a unique violation.
 		AddTaskBoard(ctx context.Context, name, createdBy string) (int, error)
+		// ReorderTaskBoards atomically assigns positions 0..n-1. ids must name every current board
+		// exactly once or it returns entity.ErrTaskBoardSetMismatch without changing any position.
+		ReorderTaskBoards(ctx context.Context, ids []int) ([]entity.TaskBoardEntry, error)
 		// RenameTaskBoard: sql.ErrNoRows when missing; a taken name is a unique violation.
 		RenameTaskBoard(ctx context.Context, id int, name string) error
 		// DeleteTaskBoard moves the board's tasks (archived included) to moveToId, appended per

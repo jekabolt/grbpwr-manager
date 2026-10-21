@@ -335,8 +335,12 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		return nil, status.Errorf(codes.Internal, "can't list tasks")
 	}
 	pbTasks := make([]*pb_common.Task, 0, len(tasks))
+	matches := make([]*pb_common.TaskMatch, 0, len(tasks))
 	for i := range tasks {
 		pbTasks = append(pbTasks, dto.ConvertEntityTaskToPb(&tasks[i]))
+		if tasks[i].Match != nil {
+			matches = append(matches, dto.ConvertEntityTaskMatchToPb(tasks[i].Match))
+		}
 	}
 
 	// Closing facts stay off common.Task because that message is persisted in snapshots. Resolve
@@ -387,7 +391,7 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		}
 	}
 	return &pb_admin.ListTasksResponse{
-		Tasks: pbTasks, Total: int32(total), Closed: closed, Timing: timing,
+		Tasks: pbTasks, Total: int32(total), Closed: closed, Timing: timing, Matches: matches,
 	}, nil
 }
 
