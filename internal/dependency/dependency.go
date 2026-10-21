@@ -640,6 +640,7 @@ type (
 		DeleteTask(ctx context.Context, id int) error
 		ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error)
 		GetTaskClosedByIds(ctx context.Context, ids []int) (map[int]entity.TaskClosed, error)
+		GetTaskTimingByIds(ctx context.Context, ids []int) (map[int]entity.TaskTiming, error)
 		ListTaskIdsToAutoArchive(ctx context.Context, closedBefore time.Time) ([]int, error)
 		AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert, author string) (int, error)
 		ListTaskComments(ctx context.Context, taskID int) ([]entity.TaskComment, error)

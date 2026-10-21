@@ -7753,6 +7753,7 @@ message ListTasksResponse {
   repeated common.Task tasks = 1;
   int32 total = 2; // total matching tasks, ignoring pagination
   repeated common.TaskClosed closed = 3; // latest transition into DONE for every returned DONE task
+  repeated common.TaskTiming timing = 4; // status age for every returned task
 }
 
 message AddTaskCommentRequest {

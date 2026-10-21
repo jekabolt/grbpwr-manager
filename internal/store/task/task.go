@@ -708,6 +708,57 @@ func (s *Store) GetTaskClosedByIds(ctx context.Context, ids []int) (map[int]enti
 	return out, nil
 }
 
+// GetTaskTimingByIds returns one status-age row for every requested task. The latest history row
+// whose destination matches the task's current status is authoritative. Legacy tasks without such
+// a row fall back to started_at for in-progress work when available, otherwise updated_at, and are
+// marked approximate. The whole page is resolved in one query.
+func (s *Store) GetTaskTimingByIds(ctx context.Context, ids []int) (map[int]entity.TaskTiming, error) {
+	if len(ids) == 0 {
+		return map[int]entity.TaskTiming{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.TaskTiming](ctx, s.DB, `
+		WITH requested_task AS (
+			SELECT id, status, started_at, updated_at
+			FROM task
+			WHERE id IN (:ids)
+		), ranked_current_status AS (
+			SELECT tsh.task_id, tsh.changed_at AS status_since, tsh.approximate,
+				ROW_NUMBER() OVER (
+					PARTITION BY tsh.task_id
+					ORDER BY tsh.changed_at DESC, tsh.id DESC
+				) AS row_num
+			FROM task_status_history tsh
+			JOIN requested_task ON requested_task.id = tsh.task_id
+				AND requested_task.status = tsh.to_status
+		)
+		SELECT requested_task.id AS task_id,
+			COALESCE(
+				ranked_current_status.status_since,
+				CASE
+					WHEN requested_task.status = :inProgressStatus
+						THEN COALESCE(requested_task.started_at, requested_task.updated_at)
+					ELSE requested_task.updated_at
+				END
+			) AS status_since,
+			CASE
+				WHEN ranked_current_status.task_id IS NULL THEN 1
+				ELSE ranked_current_status.approximate
+			END AS approximate
+		FROM requested_task
+		LEFT JOIN ranked_current_status ON ranked_current_status.task_id = requested_task.id
+			AND ranked_current_status.row_num = 1`, map[string]any{
+		"ids": ids, "inProgressStatus": string(entity.TaskStatusInProgress),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task timing metadata: %w", err)
+	}
+	out := make(map[int]entity.TaskTiming, len(rows))
+	for i := range rows {
+		out[rows[i].TaskId] = rows[i]
+	}
+	return out, nil
+}
+
 // ListTaskIdsToAutoArchive returns active cards whose current status is DONE and whose latest
 // transition into DONE is strictly older than closedBefore. Approximate migration rows participate
 // naturally: they have the same to_status and changed_at shape as exact transitions.

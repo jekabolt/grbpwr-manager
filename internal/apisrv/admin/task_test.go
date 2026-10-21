@@ -198,6 +198,7 @@ func TestListTasksClosedRangeReturnsBatchedClosingMetadata(t *testing.T) {
 	to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	closed7 := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	closed9 := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	reviewSince := time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)
 
 	tasks.EXPECT().ListTasks(mock.Anything, mock.MatchedBy(func(f entity.TaskListFilter) bool {
 		return f.ClosedFrom.Valid && f.ClosedFrom.Time.Equal(from) &&
@@ -211,6 +212,11 @@ func TestListTasksClosedRangeReturnsBatchedClosingMetadata(t *testing.T) {
 	tasks.EXPECT().GetTaskClosedByIds(mock.Anything, []int{7, 9}).Return(map[int]entity.TaskClosed{
 		7: {TaskId: 7, ClosedAt: closed7, ClosedBy: "anna"},
 		9: {TaskId: 9, ClosedAt: closed9, Approximate: true},
+	}, nil)
+	tasks.EXPECT().GetTaskTimingByIds(mock.Anything, []int{7, 8, 9}).Return(map[int]entity.TaskTiming{
+		7: {TaskId: 7, StatusSince: closed7},
+		8: {TaskId: 8, StatusSince: reviewSince},
+		9: {TaskId: 9, StatusSince: closed9, Approximate: true},
 	}, nil)
 
 	resp, err := (&Server{repo: repo}).ListTasks(context.Background(), &pb_admin.ListTasksRequest{
@@ -232,6 +238,18 @@ func TestListTasksClosedRangeReturnsBatchedClosingMetadata(t *testing.T) {
 	}
 	if got := resp.Closed[1]; got.TaskId != 9 || !got.ClosedAt.AsTime().Equal(closed9) || !got.Approximate {
 		t.Errorf("closed[1] = %+v, want approximate task 9 closure", got)
+	}
+	if len(resp.Timing) != 3 {
+		t.Fatalf("timing length = %d, want one row per returned task", len(resp.Timing))
+	}
+	if got := resp.Timing[0]; got.TaskId != 7 || !got.StatusSince.AsTime().Equal(closed7) || got.Approximate {
+		t.Errorf("timing[0] = %+v, want exact task 7 timing", got)
+	}
+	if got := resp.Timing[1]; got.TaskId != 8 || !got.StatusSince.AsTime().Equal(reviewSince) || got.Approximate {
+		t.Errorf("timing[1] = %+v, want exact task 8 timing", got)
+	}
+	if got := resp.Timing[2]; got.TaskId != 9 || !got.StatusSince.AsTime().Equal(closed9) || !got.Approximate {
+		t.Errorf("timing[2] = %+v, want approximate task 9 timing", got)
 	}
 }
 

@@ -67,6 +67,15 @@ message TaskClosed {
   bool approximate = 4;
 }
 
+// TaskTiming is list-only status-age metadata. status_since is the latest transition into the
+// card's current status. approximate is copied from that transition, or true when legacy data has
+// no matching transition and the server falls back to the task's own timestamps.
+message TaskTiming {
+  int32 task_id = 1;
+  google.protobuf.Timestamp status_since = 2;
+  bool approximate = 3;
+}
+
 enum TaskPriority {
   TASK_PRIORITY_UNKNOWN = 0;
   TASK_PRIORITY_LOW = 1;

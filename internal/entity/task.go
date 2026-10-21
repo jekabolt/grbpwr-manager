@@ -205,6 +205,14 @@ type TaskClosed struct {
 	Approximate bool      `db:"approximate"`
 }
 
+// TaskTiming is the latest transition into a task's current status. Approximate is copied from
+// that history row, or true when the timestamp falls back to started_at/updated_at for legacy data.
+type TaskTiming struct {
+	TaskId      int       `db:"task_id"`
+	StatusSince time.Time `db:"status_since"`
+	Approximate bool      `db:"approximate"`
+}
+
 // TaskLinkKind — вид связи В ХРАНИЛИЩЕ. Их ДВА, и это не сокращение контракта: BLOCKED_BY на проводе
 // это blocks, прочитанный с другого конца, а не третий вид строки. Одна строка на факт — иначе пара
 // могла бы полусуществовать.

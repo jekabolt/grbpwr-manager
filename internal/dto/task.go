@@ -480,6 +480,18 @@ func ConvertEntityTaskClosedToPb(closed *entity.TaskClosed) *pb_common.TaskClose
 	}
 }
 
+// ConvertEntityTaskTimingToPb converts list-only status-age metadata.
+func ConvertEntityTaskTimingToPb(timing *entity.TaskTiming) *pb_common.TaskTiming {
+	if timing == nil {
+		return nil
+	}
+	return &pb_common.TaskTiming{
+		TaskId:      int32(timing.TaskId),
+		StatusSince: timestamppb.New(timing.StatusSince),
+		Approximate: timing.Approximate,
+	}
+}
+
 // taskLinkRoleToPb — перспектива хранилища → перспектива контракта. Ролей ТРИ, видов в хранилище ДВА:
 // BLOCKED_BY это blocks, прочитанный с другого конца.
 var taskLinkRoleToPb = map[entity.TaskLinkRole]pb_common.TaskLinkKind{

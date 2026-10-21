@@ -335,8 +335,10 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 
 	// Closing facts stay off common.Task because that message is persisted in snapshots. Resolve
 	// them once for all DONE rows on this page and return the parallel list-only projection.
+	taskIDs := make([]int, 0, len(tasks))
 	doneIDs := make([]int, 0, len(tasks))
 	for i := range tasks {
+		taskIDs = append(taskIDs, tasks[i].Id)
 		if tasks[i].Status == entity.TaskStatusDone {
 			doneIDs = append(doneIDs, tasks[i].Id)
 		}
@@ -358,7 +360,29 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 			closed = append(closed, dto.ConvertEntityTaskClosedToPb(&row))
 		}
 	}
-	return &pb_admin.ListTasksResponse{Tasks: pbTasks, Total: int32(total), Closed: closed}, nil
+
+	// Status age is parallel list-only metadata for every returned task. One batched store query
+	// selects the latest transition into each card's current status and applies legacy fallbacks.
+	timing := make([]*pb_common.TaskTiming, 0, len(taskIDs))
+	if len(taskIDs) > 0 {
+		timingByID, err := taskStore.GetTaskTimingByIds(ctx, taskIDs)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't load task timing metadata", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't list tasks")
+		}
+		for _, taskID := range taskIDs {
+			row, ok := timingByID[taskID]
+			if !ok {
+				slog.Default().ErrorContext(ctx, "task has no timing metadata",
+					slog.Int("task_id", taskID))
+				return nil, status.Error(codes.Internal, "can't list tasks")
+			}
+			timing = append(timing, dto.ConvertEntityTaskTimingToPb(&row))
+		}
+	}
+	return &pb_admin.ListTasksResponse{
+		Tasks: pbTasks, Total: int32(total), Closed: closed, Timing: timing,
+	}, nil
 }
 
 // ArchiveTask soft-archives a task (hidden from the board, restorable).
