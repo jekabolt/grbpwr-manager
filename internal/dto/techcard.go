@@ -1383,6 +1383,14 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		if err != nil {
 			return nil, err
 		}
+		var sha256 sql.NullString
+		if p.Sha256 != nil {
+			digest := strings.ToLower(strings.TrimSpace(p.GetSha256()))
+			if digest != "" && !isLowerHexSHA256(digest) {
+				return nil, fmt.Errorf("patterns[%d].sha256 must be 64 hexadecimal characters", len(out))
+			}
+			sha256 = sql.NullString{String: digest, Valid: true}
+		}
 		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
 		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
@@ -1394,10 +1402,23 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			Filename:      nullStringFromPb(p.Filename),
 			Name:          name,
 			SizeBytes:     nullInt64FromPb(p.SizeBytes),
+			SHA256:        sha256,
 			Version:       int(p.Version),
 		})
 	}
 	return out, nil
+}
+
+func isLowerHexSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard. fx supplies the
@@ -2579,6 +2600,7 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 			Filename:      pbStringFromNull(p.Filename),
 			Name:          pbOptStringFromNull(p.Name),
 			SizeBytes:     p.SizeBytes.Int64,
+			Sha256:        pbOptStringFromNull(p.SHA256),
 			Version:       int32(p.Version),
 			UploadedAt:    pbTimestampFromNullTime(p.UploadedAt),
 		})

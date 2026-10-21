@@ -1526,6 +1526,10 @@ message TechCardSizePattern {
   // carried by at least one roll-goods BOM line of this card, except when it round-trips the row's
   // stored value unchanged.
   optional TechCardBomPurpose fabric_purpose = 12;
+  // Lowercase hex SHA-256 of the uploaded object's bytes. Presence is explicit: omission preserves
+  // the stored digest only while the URL is unchanged; a replacement without a digest clears it,
+  // as does a present empty string. Used to stop an identical DXF re-upload before minting a revision.
+  optional string sha256 = 13;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).
@@ -2861,6 +2865,11 @@ message TechCardOperation {
   // сборки — это пометка для команды, а не инструкция.
   bool draft = 68;
 
+  // Why this step needs a human pass after DXF reconciliation. Empty means reviewed; non-empty is
+  // one of reshaped|remapped|split|orphan and blocks release readiness. This is deliberately a
+  // string rather than an enum so an older protojson client cannot silently drop a future reason.
+  string review = 69;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3715,6 +3724,12 @@ message TechCardInsert {
   // флага несёт draft = true (эхо). Флаг не фильтрует разбор. Серверные пути (клон сезона,
   // импорт архива) ставят его явно. ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест.
   bool operation_draft_aware = 125;
+
+  // ЩИТ СВЕРКИ DXF для TechCardOperation.review (69). Операции пишутся полной заменой без
+  // стабильного ключа строки, поэтому неосведомлённая вкладка не может безопасно сохранить
+  // карточку с review-метками: без этого флага сервер отказывает, а не стирает их. Транспорт,
+  // не содержание; ни в один дайджест не входит.
+  bool operation_review_aware = 126;
 
   reserved 108;
   reserved "required_seam_allowance_cm";

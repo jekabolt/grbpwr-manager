@@ -115,7 +115,8 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
 		Patterns: []*pb_common.TechCardSizePattern{
-			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  "),
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234,
+				Name: stringPointer("  перед  "), Sha256: stringPointer(strings.Repeat("A", 64)),
 				LineKey: " 01SHEETKEY0000000000000001 ", BomLineKey: stringPointer("01FABRICSLOT00000000000001")},
 			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4b.dxf"},                                                        // multiple per size is allowed; name absent
 			{SizeId: 5, Url: "https://cdn/tech-card-patterns/x5.pdf", Name: stringPointer(""), BomLineKey: stringPointer("")}, // present-empty = explicit clear/unbind
@@ -131,6 +132,9 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	// name presence survives dto→entity: present is Valid (trimmed), absent is not.
 	if !ent.Patterns[0].Name.Valid || ent.Patterns[0].Name.String != "перед" {
 		t.Fatalf("present name not parsed/trimmed: %+v", ent.Patterns[0].Name)
+	}
+	if !ent.Patterns[0].SHA256.Valid || ent.Patterns[0].SHA256.String != strings.Repeat("a", 64) {
+		t.Fatalf("sha256 not parsed and normalized: %+v", ent.Patterns[0].SHA256)
 	}
 	if ent.Patterns[1].Name.Valid {
 		t.Fatalf("absent name must stay invalid (carry-forward marker): %+v", ent.Patterns[1].Name)
@@ -161,6 +165,9 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	}
 	if out.TechCard.Patterns[0].GetName() != "перед" || out.TechCard.Patterns[1].Name != nil {
 		t.Fatalf("name round-trip mismatch: %+v", out.TechCard.Patterns)
+	}
+	if out.TechCard.Patterns[0].GetSha256() != strings.Repeat("a", 64) || out.TechCard.Patterns[1].Sha256 != nil {
+		t.Fatalf("sha256 round-trip mismatch: %+v", out.TechCard.Patterns)
 	}
 	if out.TechCard.Patterns[0].LineKey != "01SHEETKEY0000000000000001" ||
 		out.TechCard.Patterns[0].GetBomLineKey() != "01FABRICSLOT00000000000001" {

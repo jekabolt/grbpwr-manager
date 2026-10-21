@@ -206,6 +206,8 @@ func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity
 		readinessReq("signoffs", "every recorded sign-off is approved",
 			f.Signoffs > 0 && f.SignoffsApproved == f.Signoffs && len(staleSignoffs) == 0,
 			signoffsDetail(f, staleSignoffs)),
+		readinessReq("operation_reviews", "every DXF-reconciled operation was reviewed",
+			f.OperationReviews == 0, operationReviewsDetail(f.OperationReviews)),
 		// Совещательная половина правила 4. Жёсткий отказ живёт в конвертере и срабатывает уже на
 		// попытке сохранить RELEASED — без этой строки чек-лист обещал бы готовность, которую
 		// сохранение тут же опровергнет. На неразмеченной карточке выполняется вакуумно: узлов
@@ -213,6 +215,13 @@ func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity
 		readinessReq("construction_graph", "the assembly graph converges into one garment",
 			assemblyBlocker == "", assemblyBlocker),
 	}
+}
+
+func operationReviewsDetail(n int) string {
+	if n == 1 {
+		return "1 operation still needs review after DXF reconciliation"
+	}
+	return fmt.Sprintf("%d operations still need review after DXF reconciliation", n)
 }
 
 // readinessReq builds one checklist row. A met row carries no detail — the detail field is the

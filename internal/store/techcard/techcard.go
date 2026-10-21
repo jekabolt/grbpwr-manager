@@ -479,6 +479,11 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
 	}
+	if tc.SnapshotReason != "" {
+		if err := appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, tc); err != nil {
+			return nil, err
+		}
+	}
 	// NF-07: purpose is a commitment to what the card PRODUCES, so it may only move while nothing
 	// downstream has committed to the old answer. The line is the first sale: until a colourway of
 	// this style has actually been bought, mis-filing a dust bag as a garment is a correctable data
@@ -751,6 +756,17 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	}
 	// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
 	action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
+	if tc.SnapshotReason != "" {
+		// Do not hide an approval/release transition when a client also requested a DXF snapshot.
+		// An ordinary update needs only the specific history row; a transition keeps its own row and
+		// gains the snapshot reason as a second, independently useful entry.
+		if action != "updated" {
+			if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
+				return nil, err
+			}
+		}
+		action, section, summary = "updated", "pieces", tc.SnapshotReason
+	}
 	if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
 		return nil, err
 	}
@@ -1585,7 +1601,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
-	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds)
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason)
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
@@ -1607,6 +1623,9 @@ type patternHistoryRow struct {
 	Version       int            `db:"version"`
 	UploadedAt    sql.NullTime   `db:"uploaded_at"`
 	Name          sql.NullString `db:"name"`
+	Filename      sql.NullString `db:"filename"`
+	SizeBytes     sql.NullInt64  `db:"size_bytes"`
+	SHA256        sql.NullString `db:"sha256"`
 }
 
 func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
@@ -1626,7 +1645,8 @@ func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) 
 		// COALESCE on size_id: NULL is the graded sheet (0281) and reads as 0 in the entity, the
 		// same value the wire uses for it.
 		`SELECT id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
-		        url, COALESCE(size_id, 0) AS size_id, version, uploaded_at, name
+		        url, COALESCE(size_id, 0) AS size_id, version, uploaded_at, name,
+		        filename, size_bytes, sha256
 		 FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": techCardID})
 	if err != nil {
@@ -1678,7 +1698,7 @@ func patternObjectIdentity(raw string) string {
 // key may carry a distinct row — keeping the first would silently delete the row the second
 // claimed). Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding to a slot created
 // by the same save resolves.
-func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int) error {
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string) error {
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
@@ -1865,6 +1885,10 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			nameFallback = matched.Name
 		}
 		name := storeutil.ResolvePatternName(p.Name, nameFallback)
+		sha256 := p.SHA256
+		if matched != nil && matched.URL == p.URL {
+			sha256 = storeutil.ResolveNullableOnPresence(p.SHA256, matched.SHA256)
+		}
 		if seen, ok := known[key]; ok {
 			// This exact sheet is already on this size: it keeps its identity, the client never owns these.
 			if version <= 0 {
@@ -1952,6 +1976,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			"filename":      p.Filename,
 			"name":          name,
 			"size_bytes":    p.SizeBytes,
+			"sha256":        sha256,
 			"version":       version,
 			"uploaded_at":   uploadedAt,
 			"display_order": order,
@@ -1959,12 +1984,18 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		order++
 		if matched != nil {
 			consumed[matched.Id] = struct{}{}
+			if matched.URL != p.URL {
+				if err := archiveTechCardPattern(ctx, db, id, *matched, actor,
+					patternHistoryReason(snapshotReason, "pattern replaced")); err != nil {
+					return err
+				}
+			}
 			params["id"] = matched.Id
 			if err := storeutil.ExecNamed(ctx, db, `
 				UPDATE tech_card_size_pattern SET
 					line_key = :line_key, bom_line_key = :bom_line_key, fabric_purpose = :fabric_purpose,
 					size_id = :size_id, url = :url,
-					filename = :filename, name = :name, size_bytes = :size_bytes, version = :version,
+					filename = :filename, name = :name, size_bytes = :size_bytes, sha256 = :sha256, version = :version,
 					uploaded_at = :uploaded_at, display_order = :display_order
 				WHERE id = :id`, params); err != nil {
 				return fmt.Errorf("failed to update tech card pattern: %w", err)
@@ -1973,8 +2004,8 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
 			INSERT INTO tech_card_size_pattern
-				(tech_card_id, line_key, bom_line_key, fabric_purpose, size_id, url, filename, name, size_bytes, version, uploaded_at, display_order)
-			VALUES (:tech_card_id, :line_key, :bom_line_key, :fabric_purpose, :size_id, :url, :filename, :name, :size_bytes, :version, :uploaded_at, :display_order)`,
+				(tech_card_id, line_key, bom_line_key, fabric_purpose, size_id, url, filename, name, size_bytes, sha256, version, uploaded_at, display_order)
+			VALUES (:tech_card_id, :line_key, :bom_line_key, :fabric_purpose, :size_id, :url, :filename, :name, :size_bytes, :sha256, :version, :uploaded_at, :display_order)`,
 			params); err != nil {
 			return fmt.Errorf("failed to insert tech card pattern: %w", err)
 		}
@@ -1985,10 +2016,47 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if _, used := consumed[r.Id]; used {
 			continue
 		}
+		if err := archiveTechCardPattern(ctx, db, id, r, actor,
+			patternHistoryReason(snapshotReason, "pattern removed")); err != nil {
+			return err
+		}
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_size_pattern WHERE id = :id`, map[string]any{"id": r.Id}); err != nil {
 			return fmt.Errorf("failed to delete tech card pattern: %w", err)
 		}
+	}
+	return nil
+}
+
+func patternHistoryReason(snapshotReason, fallback string) string {
+	if reason := strings.TrimSpace(snapshotReason); reason != "" {
+		return reason
+	}
+	return fallback
+}
+
+func archiveTechCardPattern(ctx context.Context, db dependency.DB, techCardID int, row patternHistoryRow, actor, reason string) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_size_pattern_history
+			(tech_card_id, line_key, scope_key, size_id, version, url, filename, size_bytes,
+			 sha256, uploaded_at, replaced_by, reason)
+		VALUES
+			(:tech_card_id, :line_key, :scope_key, :size_id, :version, :url, :filename, :size_bytes,
+			 :sha256, :uploaded_at, :replaced_by, :reason)`, map[string]any{
+		"tech_card_id": techCardID,
+		"line_key":     sql.NullString{String: row.LineKey, Valid: row.LineKey != ""},
+		"scope_key":    entity.FabricScopeKey(row.FabricPurpose.String, row.BomLineKey.String),
+		"size_id":      sql.NullInt64{Int64: int64(row.SizeId), Valid: row.SizeId > 0},
+		"version":      row.Version,
+		"url":          row.URL,
+		"filename":     row.Filename,
+		"size_bytes":   row.SizeBytes,
+		"sha256":       row.SHA256,
+		"uploaded_at":  row.UploadedAt,
+		"replaced_by":  sql.NullString{String: actor, Valid: actor != ""},
+		"reason":       sql.NullString{String: reason, Valid: reason != ""},
+	}); err != nil {
+		return fmt.Errorf("failed to archive tech card pattern: %w", err)
 	}
 	return nil
 }
@@ -2214,6 +2282,26 @@ func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, autho
 			"summary":      sql.NullString{String: summary, Valid: summary != ""},
 		}); err != nil {
 		return fmt.Errorf("failed to append tech card revision: %w", err)
+	}
+	return nil
+}
+
+func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersion int, tc *entity.TechCardInsert) error {
+	if tc.SnapshotJSON == "" {
+		return fmt.Errorf("snapshot reason was provided without a pre-update card snapshot")
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_snapshot
+			(tech_card_id, lock_version, reason, snapshot, created_by)
+		VALUES
+			(:tech_card_id, :lock_version, :reason, :snapshot, :created_by)`, map[string]any{
+		"tech_card_id": id,
+		"lock_version": lockVersion,
+		"reason":       tc.SnapshotReason,
+		"snapshot":     tc.SnapshotJSON,
+		"created_by":   sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
+	}); err != nil {
+		return fmt.Errorf("failed to append tech card snapshot: %w", err)
 	}
 	return nil
 }

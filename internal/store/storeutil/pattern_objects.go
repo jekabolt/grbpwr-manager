@@ -4,13 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
-	"strings"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/patternrefs"
 )
-
-const patternObjectPathSegment = "tech-card-patterns"
 
 // ResolvePatternName applies the presence-gated write semantics of a pattern's display
 // name across a full-replace save, shared by the tech-card and fitting stores. The
@@ -47,20 +45,7 @@ func ResolveNullableOnPresence(payload, prior sql.NullString) sql.NullString {
 // referenced through the other. Configured-host ownership is enforced at the bucket deletion
 // boundary, which owns that configuration; this layer only recognizes the dedicated pattern path.
 func UnreferencedPatternObjectURLs(ctx context.Context, db dependency.DB, candidates []string) ([]string, error) {
-	candidateByKey := make(map[string]string, len(candidates))
-	candidateKeys := make([]string, 0, len(candidates))
-	for _, raw := range candidates {
-		key, ok := PatternObjectKey(raw)
-		if !ok {
-			continue
-		}
-		if _, seen := candidateByKey[key]; seen {
-			continue
-		}
-		candidateByKey[key] = raw
-		candidateKeys = append(candidateKeys, key)
-	}
-	if len(candidateKeys) == 0 {
+	if len(candidates) == 0 {
 		return nil, nil
 	}
 
@@ -69,40 +54,44 @@ func UnreferencedPatternObjectURLs(ctx context.Context, db dependency.DB, candid
 	}](ctx, db, `
 		SELECT url FROM tech_card_size_pattern
 		UNION
-		SELECT url FROM fitting_pattern`, nil)
+		SELECT url FROM fitting_pattern
+		UNION
+		SELECT url FROM tech_card_size_pattern_history`, nil)
 	if err != nil {
 		return nil, fmt.Errorf("check remaining pattern object references: %w", err)
 	}
-	referencedKeys := make(map[string]struct{}, len(refs))
+	referencedURLs := make([]string, 0, len(refs))
 	for _, ref := range refs {
-		if key, ok := PatternObjectKey(ref.URL); ok {
-			referencedKeys[key] = struct{}{}
-		}
+		referencedURLs = append(referencedURLs, ref.URL)
 	}
 
-	orphaned := make([]string, 0, len(candidateKeys))
-	for _, key := range candidateKeys {
-		if _, ok := referencedKeys[key]; !ok {
-			orphaned = append(orphaned, candidateByKey[key])
-		}
+	snapshots, err := QueryListNamed[struct {
+		Snapshot string `db:"snapshot"`
+	}](ctx, db, `
+		SELECT CAST(snapshot AS CHAR) AS snapshot FROM tech_card_snapshot
+		UNION ALL
+		SELECT snapshot FROM tech_card_release`, nil)
+	if err != nil {
+		return nil, fmt.Errorf("check pattern references in snapshots: %w", err)
 	}
-	return orphaned, nil
+	blobs := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		blobs = append(blobs, snapshot.Snapshot)
+	}
+	snapshotURLs, err := patternrefs.URLsFromSnapshots(blobs)
+	if err != nil {
+		// A malformed historical blob must leak candidates, never delete an object it may reference.
+		slog.Default().WarnContext(ctx, "pattern GC skipped because a card snapshot is unreadable",
+			slog.String("err", err.Error()))
+		return nil, nil
+	}
+	referencedURLs = append(referencedURLs, snapshotURLs...)
+	return patternrefs.UnreferencedObjectURLs(candidates, referencedURLs), nil
 }
 
 // PatternObjectKey extracts the canonical S3 key from a syntactically valid pattern URL. It does
 // not decide whether the host belongs to this deployment because storeutil deliberately has no
 // bucket configuration; Bucket.DeleteObjects performs that ownership check before any side effect.
 func PatternObjectKey(raw string) (string, bool) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return "", false
-	}
-	key := strings.Trim(u.Path, "/")
-	segments := strings.Split(key, "/")
-	for i, segment := range segments {
-		if segment == patternObjectPathSegment && i < len(segments)-1 {
-			return key, true
-		}
-	}
-	return "", false
+	return patternrefs.ObjectKey(raw)
 }

@@ -141,6 +141,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationDraftWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	if err := operationReviewWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Щит количеств на связях шага (0334), тот же довод и тот же момент. Стор-гейта на создании у
 	// него нет по той же причине, что у щита видов: парного `*_cleared` он не несёт, а сказать про
 	// несуществующую карточку ему больше нечего.
@@ -170,6 +173,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
+		return nil, err
+	}
+	if err := operationReviewReleaseGate(tc); err != nil {
 		return nil, err
 	}
 	// 101 Ф4: a new card has no flat input either — any reference row goes onto the board.
@@ -338,7 +344,7 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 //
 // It returns the entity ready for the store; the caller owns the transaction and the post-commit
 // work (finalizeTechCardWrite).
-func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common.TechCardInsert) (*entity.TechCardInsert, error) {
+func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common.TechCardInsert, snapshotReason string) (*entity.TechCardInsert, error) {
 	canReadCosting, canWriteCosting := s.costingAccess(ctx)
 	if !canWriteCosting && techCardInsertHasCostingData(in) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
@@ -370,6 +376,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err := operationDraftWireGate(in); err != nil {
 		return nil, err
 	}
+	if err := operationReviewWireGate(in); err != nil {
+		return nil, err
+	}
 	// Тот же довод, тот же момент — щит количеств на связях шага (0334).
 	if err := bomQtyWireGate(in); err != nil {
 		return nil, err
@@ -379,6 +388,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
+		return nil, err
+	}
+	if err := operationReviewReleaseGate(tc); err != nil {
 		return nil, err
 	}
 	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
@@ -427,6 +439,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	}
 	// Щит черновика каркаса (0410) — правило 2: устаревшая вкладка стёрла бы метки «не проверено».
 	if err := operationDraftStoredGate(in, stored); err != nil {
+		return nil, err
+	}
+	if err := operationReviewStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит количеств на связях шага (0334) — правило 2, то самое, что срабатывает на практике:
@@ -546,6 +561,16 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
+	if snapshotReason != "" {
+		blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
+				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
+		}
+		tc.SnapshotReason = snapshotReason
+		tc.SnapshotJSON = blob
+	}
 	return tc, nil
 }
 
@@ -606,7 +631,12 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if cache.IsModelPhotoTechCard(int(req.Id)) {
 		return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
 	}
-	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard)
+	snapshotReason := strings.TrimSpace(req.GetSnapshotReason())
+	if utf8.RuneCountInString(snapshotReason) > 255 {
+		return nil, apierr.Invalid(entity.NewFieldViolation("snapshot_reason", "too_long", snapshotReason,
+			"keep the snapshot reason to 255 characters or fewer"))
+	}
+	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
 	if err != nil {
 		return nil, err
 	}
@@ -620,6 +650,14 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// server labels them in the background (never blocks the save, never writes the form).
 	s.designBoardLabelKick(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
+}
+
+func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, error) {
+	blob, err := protojson.Marshal(dto.ConvertEntityTechCardToPb(card, fx))
+	if err != nil {
+		return "", err
+	}
+	return string(blob), nil
 }
 
 // restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the
@@ -1262,7 +1300,7 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 		return
 	}
 	fx := s.costingFx(ctx)
-	blob, err := protojson.Marshal(dto.ConvertEntityTechCardToPb(card, fx))
+	blob, err := marshalTechCardSnapshot(card, fx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "release snapshot: can't marshal snapshot",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
@@ -1281,7 +1319,7 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 			UnitCost:   unit,
 			Currency:   sql.NullString{String: currency, Valid: unit.Valid && currency != ""},
 		},
-		Snapshot: string(blob),
+		Snapshot: blob,
 	}
 	if err := s.repo.TechCards().SaveTechCardRelease(ctx, rel); err != nil {
 		slog.Default().ErrorContext(ctx, "RELEASE SNAPSHOT LOST: released card has no immutable snapshot",

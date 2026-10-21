@@ -129,8 +129,8 @@ func buildArchiveCardJSON(card *entity.TechCard) ([]byte, []techcardarchive.Expo
 // TARGET (a size name that base lacks, an article it never heard of) — those are the resolver's
 // holes and are already reported by their own codes.
 //
-// THE SIX AWARE FLAGS ARE SET, and that is not cosmetic. They are write-only transport flags, so
-// the read converter never emits them, and the import's resolver sets all six to true
+// THE COMPATIBILITY AWARE FLAGS ARE SET, and that is not cosmetic. They are write-only transport
+// flags, so the read converter never emits them, and the import's resolver sets all of them to true
 // (techcard_archive_resolve.go). They change what is checked: with AssemblyAware false the graph is
 // classified from the LEGACY piece-only projection, so a card whose unit graph breaks rule 3 would
 // probe clean and still be refused on arrival. A probe that runs a different converter than the
@@ -166,6 +166,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationKindsAware = true
 	probe.OperationWorkAware = true
 	probe.OperationDraftAware = true
+	probe.OperationReviewAware = true
 	probe.BomQtyAware = true
 
 	if _, err := dto.ConvertPbTechCardInsertToEntity(probe); err != nil {

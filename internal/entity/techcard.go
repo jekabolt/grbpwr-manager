@@ -2288,6 +2288,9 @@ type TechCardSizePattern struct {
 	// as given, with an empty string clearing the name (stored as NULL).
 	Name      sql.NullString `db:"name"`
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
+	// SHA256 is the lowercase hex digest of the uploaded object's bytes. NULL means an older upload
+	// whose bytes the backend never observed; it must never be guessed from the URL.
+	SHA256 sql.NullString `db:"sha256"`
 	// Version is the sheet's revision within its (style, size). 0 on the wire means "assign one":
 	// patterns are a full-replace child, so the store re-derives this on every save from the rows it
 	// is about to delete — a url it has seen keeps its number, a new one takes MAX+1.
@@ -3413,6 +3416,9 @@ type TechCardOperation struct {
 	// старые шаги = не черновик, и это правда. В дайджест НЕ входит (techcard_section_digest.go его
 	// не проецирует; голден в internal/dto это держит): проверка шага карточку не переподписывает.
 	Draft bool `db:"draft"`
+	// Review is a closed DXF-reconciliation reason (0422). NULL means no human review is pending.
+	// Like Draft it is workflow metadata, not an instruction, and stays outside section digests.
+	Review sql.NullString `db:"review"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
@@ -4239,6 +4245,11 @@ type TechCardInsert struct {
 	// wire — the handler overwrites them — and surfaces them read-only on the TechCard message.
 	CreatedBy string `db:"created_by"`
 	UpdatedBy string `db:"updated_by"`
+	// Snapshot* are write-command metadata, never card content. UpdateTechCard fills them after
+	// serialising the stored pre-update card with the release-snapshot builder; the store persists
+	// them atomically with the document rewrite.
+	SnapshotReason string `db:"-"`
+	SnapshotJSON   string `db:"-"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
@@ -4601,6 +4612,8 @@ type TechCardReadinessFacts struct {
 	Sizes      int `db:"sizes"`
 	Pieces     int `db:"pieces"`
 	Operations int `db:"operations"`
+	// OperationReviews is the number of DXF-reconciliation marks a person has not cleared yet.
+	OperationReviews int `db:"operation_reviews"`
 
 	BomLines       int `db:"bom_lines"`
 	BomFabricLines int `db:"bom_fabric_lines"`

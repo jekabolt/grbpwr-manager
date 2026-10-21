@@ -251,6 +251,11 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 	out := make([]entity.TechCardOperation, 0, len(pbs))
 	for i, o := range pbs {
 		step := fmt.Sprintf("operations[%d]", i)
+		review := strings.TrimSpace(o.GetReview())
+		if review != "" && !validOperationReview[review] {
+			return nil, entity.NewFieldViolation(step+".review", "unknown_value", review,
+				"use reshaped, remapped, split, orphan, or clear the review mark")
+		}
 		if o.OperationType == pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN {
 			return nil, entity.NewFieldViolation(step+".operation_type", "required", "",
 				"pick what the step DOES (join, overlock, topstitch, …) — it names the step and drives its defaults")
@@ -564,7 +569,8 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 
 			// Черновик каркаса сборки (0410). Обычный bool строки: старый клиент его не шлёт, и
 			// его сохранение снимает метки — это законно, метка подсказка команде, а не инструкция.
-			Draft: o.GetDraft(),
+			Draft:  o.GetDraft(),
+			Review: sql.NullString{String: review, Valid: review != ""},
 		})
 	}
 	return out, nil
@@ -581,6 +587,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 //     WIDTH, а ширина при EDGE отвергалась; на деле это был один приём — строчка от КРАЯ ДЕТАЛИ, —
 //     где выбор между двумя режимами сводился к тому, заполнена ли соседняя ячейка. Теперь
 //     заполненная ширина значит отступ от края, пустая — вплотную к краю.
+//
 // The violation paths here are FLAT (`topstitch_width_mm`), not the nested wire path
 // (`topstitch.width_mm`), and that is deliberate: a field violation exists to point the admin at the
 // CONTROL the operator must fix, and the admin routes it by camel-casing the path onto a form field.
@@ -925,10 +932,18 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			// которой флаг осведомлённости не фильтрует поля.
 			Work: pbStringFromNull(o.Work),
 			// Черновик каркаса сборки (0410). Эмитится всегда: клон сезона строит payload здесь.
-			Draft: o.Draft,
+			Draft:  o.Draft,
+			Review: pbStringFromNull(o.Review),
 		})
 	}
 	return out
+}
+
+var validOperationReview = map[string]bool{
+	"reshaped": true,
+	"remapped": true,
+	"split":    true,
+	"orphan":   true,
 }
 
 // emitOperationType emits the verb and the machine. ONLY the new values go out: the nine legacy

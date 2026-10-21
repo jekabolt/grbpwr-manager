@@ -376,7 +376,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	techcardarchive.SanitizeImportedCard(insert)
 	techcardarchive.RedactFieldsDeep(card.ProtoReflect(), techcardarchive.MoneyFieldNamesArchive)
 
-	// The six compatibility shields, all of them, exactly as the season clone sets them
+	// The compatibility shields, all of them, exactly as the season clone sets them
 	// (style.go): this payload is built by the SERVER out of a card our own exporter read with our
 	// own converters, so it knows every field by construction. operation_work_aware is not
 	// future-proofing but load-bearing today — the wire rule refuses a non-empty `work` from a
@@ -388,6 +388,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.OperationKindsAware = true
 	insert.OperationWorkAware = true
 	insert.OperationDraftAware = true
+	insert.OperationReviewAware = true
 	insert.BomQtyAware = true
 	insert.LabelsAware = true
 

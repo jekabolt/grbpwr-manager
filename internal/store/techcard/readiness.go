@@ -36,6 +36,8 @@ const techCardReadinessQuery = `SELECT
 	(SELECT COUNT(*) FROM tech_card_size z WHERE z.tech_card_id = tc.id)       AS sizes,
 	(SELECT COUNT(*) FROM tech_card_piece p WHERE p.tech_card_id = tc.id)      AS pieces,
 	(SELECT COUNT(*) FROM tech_card_operation o WHERE o.tech_card_id = tc.id)  AS operations,
+	(SELECT COUNT(*) FROM tech_card_operation o
+		WHERE o.tech_card_id = tc.id AND o.review IS NOT NULL)                  AS operation_reviews,
 	(SELECT COUNT(*) FROM tech_card_bom_item b WHERE b.tech_card_id = tc.id)   AS bom_lines,
 	(SELECT COUNT(*) FROM tech_card_bom_item b
 		WHERE b.tech_card_id = tc.id AND b.section = 'fabric')                AS bom_fabric_lines,

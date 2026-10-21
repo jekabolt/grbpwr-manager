@@ -9837,6 +9837,9 @@ message UpdateTechCardRequest {
   int32 id = 1;
   common.TechCardInsert tech_card = 2;
   int32 expected_lock_version = 3; // from GetTechCard; a mismatch means a concurrent edit -> Aborted
+  // Non-empty only for an atomic, history-worthy rewrite such as DXF reconciliation. The server
+  // stores the pre-update card snapshot and a matching revision-journal line in the same transaction.
+  string snapshot_reason = 4;
 }
 
 message UpdateTechCardResponse {}
