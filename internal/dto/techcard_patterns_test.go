@@ -188,6 +188,8 @@ func TestTechCardPatternHistoryMapping(t *testing.T) {
 				SHA256:    sql.NullString{String: strings.Repeat("b", 64), Valid: true},
 				Filename:  sql.NullString{String: "front-v2.dxf", Valid: true},
 				CreatedAt: sql.NullTime{Time: newer, Valid: true},
+				// 0425: the snapshot the save that replaced v2 froze — «restore v2» restores it.
+				SnapshotID: sql.NullInt64{Int64: 4711, Valid: true},
 			},
 			{
 				Revision:  1,
@@ -202,11 +204,12 @@ func TestTechCardPatternHistoryMapping(t *testing.T) {
 	got := out[0].History
 	if got[0].Revision != 2 || got[0].Url != "https://cdn/tech-card-patterns/front-v2.dxf" ||
 		got[0].Sha256 != strings.Repeat("b", 64) || got[0].FileName != "front-v2.dxf" ||
-		!got[0].CreatedAt.AsTime().Equal(newer) {
+		!got[0].CreatedAt.AsTime().Equal(newer) || got[0].SnapshotId != 4711 {
 		t.Fatalf("newest history revision mismatch: %+v", got[0])
 	}
+	// A revision archived without a snapshot (NULL) is not restorable: 0 on the wire.
 	if got[1].Revision != 1 || got[1].Sha256 != "" || got[1].FileName != "" ||
-		!got[1].CreatedAt.AsTime().Equal(older) {
+		!got[1].CreatedAt.AsTime().Equal(older) || got[1].SnapshotId != 0 {
 		t.Fatalf("oldest history revision mismatch: %+v", got[1])
 	}
 }

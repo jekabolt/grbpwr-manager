@@ -2618,9 +2618,18 @@ func techCardPatternHistoryToPb(history []entity.TechCardPatternRevision) []*pb_
 			Sha256:    pbStringFromNull(revision.SHA256),
 			FileName:  pbStringFromNull(revision.Filename),
 			CreatedAt: pbTimestampFromNullTime(revision.CreatedAt),
+			// 0 = no snapshot (NULL): the revision can be re-attached as a file but not restored as a card.
+			SnapshotId: snapshotIDToPb(revision.SnapshotID),
 		})
 	}
 	return out
+}
+
+func snapshotIDToPb(id sql.NullInt64) int64 {
+	if !id.Valid || id.Int64 <= 0 {
+		return 0
+	}
+	return id.Int64
 }
 
 // ConvertEntityTechCardToListItemPb converts a header-only entity.TechCard to a

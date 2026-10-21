@@ -300,7 +300,7 @@ func (s *Store) AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInse
 		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
 			return err
 		}
-		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
+		if err := insertTechCardChildren(ctx, rep.DB(), id, tc, 0); err != nil {
 			return err
 		}
 		// A card created directly in RELEASED state freezes at commit exactly like the update path,
@@ -479,8 +479,19 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
 	}
+	// snapshotID is the tech_card_snapshot this save freezes; the pattern rows it archives below
+	// carry it (0425), so «restore v.N» finds the whole card as it was while v.N was current.
+	var snapshotID int64
 	if tc.SnapshotReason != "" {
-		if err := appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, tc); err != nil {
+		// The blob was serialised by the handler from a read taken OUTSIDE this transaction. It is
+		// the state this save replaces only if the row is still at that read's version — a client
+		// may send an expected_lock_version it never read, and then the blob would freeze an older
+		// card under the id the archived sheet will point at.
+		if cur.LockVersion != tc.SnapshotLockVersion {
+			return nil, entity.ErrTechCardConflict
+		}
+		snapshotID, err = appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, tc)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -727,7 +738,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 		kept.GarmentLabels, kept.PackagingItems = nil, nil
 		children = &kept
 	}
-	if err := insertTechCardChildren(ctx, rep.DB(), id, children); err != nil {
+	if err := insertTechCardChildren(ctx, rep.DB(), id, children, snapshotID); err != nil {
 		return nil, err
 	}
 	// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
@@ -1506,7 +1517,9 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 
 // insertTechCardChildren inserts the size range, product links, sketch media,
 // callouts and revisions for a tech card (used by both Add and Update).
-func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert) error {
+// snapshotID is the tech_card_snapshot the calling save froze in this transaction (0 = none); it is
+// stamped on every pattern row the save archives.
+func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert, snapshotID int64) error {
 	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
 		return err
 	}
@@ -1601,7 +1614,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
-	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason)
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason, snapshotID)
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
@@ -1698,10 +1711,14 @@ func patternObjectIdentity(raw string) string {
 // key may carry a distinct row — keeping the first would silently delete the row the second
 // claimed). Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding to a slot created
 // by the same save resolves.
-func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string) error {
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotID int64) error {
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
+	}
+	archived, err := techCardArchivedPatternRows(ctx, db, id)
+	if err != nil {
+		return err
 	}
 	// Carry-forward stays keyed EXACTLY as before (version per (size, url), uploaded_at per url,
 	// name presence-gated per (size, url)) — the line_key decides only which ROW a payload entry is
@@ -1723,6 +1740,24 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 		if r.Version > maxVersionBySize[r.SizeId] {
 			maxVersionBySize[r.SizeId] = r.Version
+		}
+	}
+	// THE HISTORY IS PART OF THE NUMBERING (0425). A revision number, once given, is never given to
+	// another file on the same size: after «restore v.6» over v.7 the active row is v.6 again and
+	// v.7 lives only in the history, so a MAX+1 over active rows alone would mint a SECOND v.7 — two
+	// different files answering to one «v.7» chip, one of which restores a different card. The same
+	// history also remembers when a sheet first arrived, so an object coming back from it (a restore)
+	// keeps its upload time instead of reading as uploaded today.
+	archivedUploadByURL := make(map[string]sql.NullTime, len(archived))
+	for _, r := range archived {
+		if r.Version > maxVersionBySize[r.SizeId] {
+			maxVersionBySize[r.SizeId] = r.Version
+		}
+		if !r.UploadedAt.Valid {
+			continue
+		}
+		if prev, seen := archivedUploadByURL[r.URL]; !seen || r.UploadedAt.Time.Before(prev.Time) {
+			archivedUploadByURL[r.URL] = r.UploadedAt
 		}
 	}
 	now := time.Now().UTC()
@@ -1900,6 +1935,9 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			// sheet moved between sizes). Its arrival time carries over; its revision number does NOT —
 			// numbering is per size, so within THIS size the sheet is new and takes MAX+1 below.
 			uploadedAt = first
+		} else if first, ok := archivedUploadByURL[p.URL]; ok {
+			// An object coming back out of the history (restore v.N): the same upload, the same time.
+			uploadedAt = first
 		} else {
 			uploadedAt = sql.NullTime{Time: now, Valid: true}
 		}
@@ -1986,7 +2024,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			consumed[matched.Id] = struct{}{}
 			if matched.URL != p.URL {
 				if err := archiveTechCardPattern(ctx, db, id, *matched, actor,
-					patternHistoryReason(snapshotReason, "pattern replaced")); err != nil {
+					patternHistoryReason(snapshotReason, "pattern replaced"), snapshotID); err != nil {
 					return err
 				}
 			}
@@ -2017,7 +2055,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			continue
 		}
 		if err := archiveTechCardPattern(ctx, db, id, r, actor,
-			patternHistoryReason(snapshotReason, "pattern removed")); err != nil {
+			patternHistoryReason(snapshotReason, "pattern removed"), snapshotID); err != nil {
 			return err
 		}
 		if err := storeutil.ExecNamed(ctx, db,
@@ -2028,6 +2066,19 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	return nil
 }
 
+// techCardArchivedPatternRows reads the card's sheet history as the numbering needs it: which
+// revision numbers each size has already given out, and when each archived object first arrived.
+func techCardArchivedPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
+	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db, `
+		SELECT COALESCE(size_id, 0) AS size_id, version, url, uploaded_at
+		FROM tech_card_size_pattern_history WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load tech card pattern history: %w", err)
+	}
+	return rows, nil
+}
+
 func patternHistoryReason(snapshotReason, fallback string) string {
 	if reason := strings.TrimSpace(snapshotReason); reason != "" {
 		return reason
@@ -2035,14 +2086,18 @@ func patternHistoryReason(snapshotReason, fallback string) string {
 	return fallback
 }
 
-func archiveTechCardPattern(ctx context.Context, db dependency.DB, techCardID int, row patternHistoryRow, actor, reason string) error {
+// archiveTechCardPattern records the OUTGOING row of a replacement or removal. snapshotID (0 = none)
+// is the tech_card_snapshot the same save froze before rewriting the card — i.e. the card exactly as
+// it was while THIS row was the current sheet — which is what «restore» of this revision restores.
+// The incoming row is never archived here: the current sheet has no history entry of its own.
+func archiveTechCardPattern(ctx context.Context, db dependency.DB, techCardID int, row patternHistoryRow, actor, reason string, snapshotID int64) error {
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_size_pattern_history
 			(tech_card_id, line_key, scope_key, size_id, version, url, filename, size_bytes,
-			 sha256, uploaded_at, replaced_by, reason)
+			 sha256, uploaded_at, replaced_by, reason, snapshot_id)
 		VALUES
 			(:tech_card_id, :line_key, :scope_key, :size_id, :version, :url, :filename, :size_bytes,
-			 :sha256, :uploaded_at, :replaced_by, :reason)`, map[string]any{
+			 :sha256, :uploaded_at, :replaced_by, :reason, :snapshot_id)`, map[string]any{
 		"tech_card_id": techCardID,
 		"line_key":     sql.NullString{String: row.LineKey, Valid: row.LineKey != ""},
 		"scope_key":    entity.FabricScopeKey(row.FabricPurpose.String, row.BomLineKey.String),
@@ -2055,6 +2110,7 @@ func archiveTechCardPattern(ctx context.Context, db dependency.DB, techCardID in
 		"uploaded_at":  row.UploadedAt,
 		"replaced_by":  sql.NullString{String: actor, Valid: actor != ""},
 		"reason":       sql.NullString{String: reason, Valid: reason != ""},
+		"snapshot_id":  sql.NullInt64{Int64: snapshotID, Valid: snapshotID > 0},
 	}); err != nil {
 		return fmt.Errorf("failed to archive tech card pattern: %w", err)
 	}
@@ -2286,11 +2342,12 @@ func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, autho
 	return nil
 }
 
-func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersion int, tc *entity.TechCardInsert) error {
+// appendTechCardSnapshot inserts the pre-update snapshot and returns its id.
+func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersion int, tc *entity.TechCardInsert) (int64, error) {
 	if tc.SnapshotJSON == "" {
-		return fmt.Errorf("snapshot reason was provided without a pre-update card snapshot")
+		return 0, fmt.Errorf("snapshot reason was provided without a pre-update card snapshot")
 	}
-	if err := storeutil.ExecNamed(ctx, db, `
+	snapshotID, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO tech_card_snapshot
 			(tech_card_id, lock_version, reason, snapshot, created_by)
 		VALUES
@@ -2300,10 +2357,31 @@ func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersi
 		"reason":       tc.SnapshotReason,
 		"snapshot":     tc.SnapshotJSON,
 		"created_by":   sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
-	}); err != nil {
-		return fmt.Errorf("failed to append tech card snapshot: %w", err)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to append tech card snapshot: %w", err)
 	}
-	return nil
+	if snapshotID <= 0 {
+		return 0, fmt.Errorf("tech card snapshot insert returned no id")
+	}
+	return int64(snapshotID), nil
+}
+
+// GetTechCardSnapshot loads one snapshot OF THIS CARD. A snapshot id that exists but belongs to
+// another card answers sql.ErrNoRows exactly like a missing one: the pair is the identity.
+func (s *Store) GetTechCardSnapshot(ctx context.Context, techCardID int, snapshotID int64) (*entity.TechCardSnapshot, error) {
+	snap, err := storeutil.QueryNamedOne[entity.TechCardSnapshot](ctx, s.DB, `
+		SELECT id, tech_card_id, lock_version, reason, CAST(snapshot AS CHAR) AS snapshot, created_by, created_at
+		FROM tech_card_snapshot
+		WHERE id = :snapshot_id AND tech_card_id = :tech_card_id`,
+		map[string]any{"snapshot_id": snapshotID, "tech_card_id": techCardID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("failed to get tech card snapshot: %w", err)
+	}
+	return &snap, nil
 }
 
 // revisionActionForUpdate classifies an update into the journal action (Q1): a transition INTO

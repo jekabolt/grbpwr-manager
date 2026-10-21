@@ -2258,6 +2258,22 @@ type TechCardPatternRevision struct {
 	SHA256    sql.NullString `db:"sha256"`
 	Filename  sql.NullString `db:"file_name"`
 	CreatedAt sql.NullTime   `db:"created_at"`
+	// SnapshotID is the tech_card_snapshot the save that archived this revision froze in the same
+	// transaction: the whole card as it was while this revision was the current sheet. NULL = no
+	// snapshot was taken (an ordinary save, or a row archived before 0425) — not restorable.
+	SnapshotID sql.NullInt64 `db:"snapshot_id"`
+}
+
+// TechCardSnapshot is one immutable tech_card_snapshot row (0424): the card's read model frozen
+// before the save that wrote it. Snapshot is protojson of common.TechCard.
+type TechCardSnapshot struct {
+	Id          int64          `db:"id"`
+	TechCardId  int            `db:"tech_card_id"`
+	LockVersion int            `db:"lock_version"`
+	Reason      string         `db:"reason"`
+	Snapshot    string         `db:"snapshot"`
+	CreatedBy   sql.NullString `db:"created_by"`
+	CreatedAt   time.Time      `db:"created_at"`
 }
 
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
@@ -4264,6 +4280,10 @@ type TechCardInsert struct {
 	// them atomically with the document rewrite.
 	SnapshotReason string `db:"-"`
 	SnapshotJSON   string `db:"-"`
+	// SnapshotLockVersion is the lock_version of the card SnapshotJSON was serialised from. The store
+	// refuses the write (ErrTechCardConflict) unless the row it locks is still at that version, so
+	// the frozen blob is provably the state this very save replaces — never an older read.
+	SnapshotLockVersion int `db:"-"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.

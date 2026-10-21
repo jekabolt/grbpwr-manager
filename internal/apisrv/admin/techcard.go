@@ -296,7 +296,24 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	tc, err := s.repo.TechCards().GetTechCardById(ctx, int(req.Id))
+	pbTc, err := s.readTechCardForResponse(ctx, int(req.Id), req.GetVatCountryCode())
+	if err != nil {
+		return nil, err
+	}
+	return &pb_admin.GetTechCardResponse{
+		TechCard: pbTc,
+		// The card-viewer token rides the response for the same reason the urls above do:
+		// it must never land on common.TechCard, which release snapshots persist. Best
+		// effort — "" on any failure, never a failed read.
+		PatternViewerToken: s.patternURLs.MintCardViewerToken(ctx, int(req.Id)),
+	}, nil
+}
+
+// readTechCardForResponse is the card exactly as GetTechCard answers it: costing stripped for an
+// account without costing:read, tokenized pattern urls minted on the response only. Every RPC that
+// answers with the full card owes the same three steps.
+func (s *Server) readTechCardForResponse(ctx context.Context, id int, vatCountryCode string) (*pb_common.TechCard, error) {
+	tc, err := s.repo.TechCards().GetTechCardById(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
@@ -306,20 +323,14 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 		)
 		return nil, status.Errorf(codes.Internal, "can't get tech card")
 	}
-	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, req.GetVatCountryCode()))
+	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, vatCountryCode))
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
 	}
 	// Tokenized read urls are minted on the RESPONSE only — the release-snapshot path
 	// converts the entity separately and must stay token-free (persisted blobs).
 	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, pbTc.GetTechCard().GetPatterns())
-	return &pb_admin.GetTechCardResponse{
-		TechCard: pbTc,
-		// The card-viewer token rides the response for the same reason the urls above do:
-		// it must never land on common.TechCard, which release snapshots persist. Best
-		// effort — "" on any failure, never a failed read.
-		PatternViewerToken: s.patternURLs.MintCardViewerToken(ctx, int(req.Id)),
-	}, nil
+	return pbTc, nil
 }
 
 // prepareTechCardWrite IS THE HANDLER-SIDE PIPELINE OF A TECH-CARD WRITE — everything that happens
@@ -345,6 +356,23 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 // It returns the entity ready for the store; the caller owns the transaction and the post-commit
 // work (finalizeTechCardWrite).
 func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common.TechCardInsert, snapshotReason string) (*entity.TechCardInsert, error) {
+	return s.prepareTechCardWriteFrom(ctx, id, in, snapshotReason, techCardWriteSource{})
+}
+
+// techCardWriteSource is what a SERVER-BUILT write (RestoreTechCardSnapshot) hands the one pipeline
+// instead of letting it start from the wire alone. Both members are optional; the zero value is the
+// ordinary client save.
+type techCardWriteSource struct {
+	// stored is the card the caller already read to BUILD the payload. Passing it makes the gates,
+	// the carries and the snapshot blob judge the very state the payload was built against — a
+	// second read could see a newer card than the one the payload answers.
+	stored *entity.TechCard
+	// readdress runs right after the conversion, before anything reads the entity: it may only
+	// re-express references (an id the payload cannot keep → the stable key the store resolves).
+	readdress func(tc *entity.TechCardInsert)
+}
+
+func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_common.TechCardInsert, snapshotReason string, src techCardWriteSource) (*entity.TechCardInsert, error) {
 	canReadCosting, canWriteCosting := s.costingAccess(ctx)
 	if !canWriteCosting && techCardInsertHasCostingData(in) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
@@ -387,20 +415,26 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
+	if src.readdress != nil {
+		src.readdress(tc)
+	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
 	if err := operationReviewReleaseGate(tc); err != nil {
 		return nil, err
 	}
-	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "tech card not found")
+	stored := src.stored
+	if stored == nil {
+		stored, err = s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, status.Errorf(codes.NotFound, "tech card not found")
+			}
+			slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
+				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't load tech card; try again")
 		}
-		slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
-			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
 	if stored == nil {
 		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
@@ -570,6 +604,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 		}
 		tc.SnapshotReason = snapshotReason
 		tc.SnapshotJSON = blob
+		// The blob is `stored`; the store writes it only if the row is still at this version, so the
+		// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
+		tc.SnapshotLockVersion = stored.LockVersion
 	}
 	return tc, nil
 }

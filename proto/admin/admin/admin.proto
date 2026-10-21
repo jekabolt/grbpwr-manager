@@ -2076,6 +2076,20 @@ service AdminService {
     };
   }
 
+  // RestoreTechCardSnapshot brings a card back to one of its own snapshots
+  // (TechCardPatternRevision.snapshot_id). One transaction: the current card is snapshotted first
+  // (reason «restore:<snapshot_id>»), then rewritten through the UpdateTechCard write path. Approval,
+  // sign-offs, stage, style number, category and measurement unit stay as they are now. Errors:
+  // NotFound (no such snapshot on this card), Aborted (expected_lock_version is stale),
+  // FailedPrecondition (released or system card, unreadable snapshot, narrower size range),
+  // PermissionDenied (the snapshot's costing differs from the card's and the caller lacks costing:write).
+  rpc RestoreTechCardSnapshot(RestoreTechCardSnapshotRequest) returns (RestoreTechCardSnapshotResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/snapshot/{snapshot_id}/restore"
+      body: "*"
+    };
+  }
+
   // DeleteTechCard deletes a tech card by id (nested sections cascade).
   rpc DeleteTechCard(DeleteTechCardRequest) returns (DeleteTechCardResponse) {
     option (google.api.http) = {delete: "/api/admin/tech-card/{id}"};
@@ -9843,6 +9857,16 @@ message UpdateTechCardRequest {
 }
 
 message UpdateTechCardResponse {}
+
+message RestoreTechCardSnapshotRequest {
+  int32 tech_card_id = 1;
+  int64 snapshot_id = 2; // TechCardPatternRevision.snapshot_id of THIS card
+  int32 expected_lock_version = 3; // from GetTechCard; a mismatch means a concurrent edit -> Aborted
+}
+
+message RestoreTechCardSnapshotResponse {
+  common.TechCard tech_card = 1; // the restored card, as GetTechCard returns it
+}
 
 // GetTechCardConstructionAuditRequest — which saved card to audit. Nothing else: the machine layer
 // has no options, and a report you can configure is a report whose two runs cannot be compared.

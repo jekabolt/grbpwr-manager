@@ -427,7 +427,7 @@ func (s *Store) patternHistoriesByTechCardIds(ctx context.Context, ids []int) ([
 	rows, err := storeutil.QueryListNamed[techCardPatternHistoryRow](ctx, s.DB, `
 		SELECT tech_card_id, line_key, scope_key, COALESCE(size_id, 0) AS size_id,
 		       version AS revision, url, sha256, filename AS file_name,
-		       COALESCE(uploaded_at, replaced_at) AS created_at
+		       COALESCE(uploaded_at, replaced_at) AS created_at, snapshot_id
 		FROM tech_card_size_pattern_history
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, version DESC, replaced_at DESC, id DESC`, map[string]any{"ids": ids})
@@ -483,6 +483,12 @@ func attachPatternHistories(patterns map[int][]entity.TechCardSizePattern, rows 
 			continue
 		}
 		cardPatterns := patterns[row.TechCardID]
+		// The file the sheet carries NOW is not a superseded revision of it. It is in the history only
+		// because it once left and came back (RestoreTechCardSnapshot, or the old re-attach of a url);
+		// offering «restore» of the file already on the sheet would restore a card nobody is looking at.
+		if row.URL == cardPatterns[index].URL {
+			continue
+		}
 		cardPatterns[index].History = append(cardPatterns[index].History, row.TechCardPatternRevision)
 		patterns[row.TechCardID] = cardPatterns
 	}

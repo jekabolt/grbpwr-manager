@@ -1462,6 +1462,10 @@ message TechCardPatternRevision {
   string sha256 = 3;
   string file_name = 4;
   google.protobuf.Timestamp created_at = 5;
+  // The tech_card_snapshot frozen by the save that replaced or removed this file: the whole card as
+  // it was while this file was the current sheet. Admin.RestoreTechCardSnapshot takes it to bring the
+  // card back to that state (operations, pieces, aliases, sheets). 0 = no snapshot, not restorable.
+  int64 snapshot_id = 6;
 }
 
 // TechCardSizePattern is a downloadable выкройка (cut pattern) file for one size of a
