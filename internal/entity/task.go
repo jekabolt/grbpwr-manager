@@ -181,16 +181,28 @@ type Task struct {
 	StatusHistory []TaskStatusChange `db:"-"`
 }
 
-// TaskStatusChange is one status transition. FromStatus is NULL only for the real initial row
-// written with a newly created task. A synthetic legacy creation row has both FromStatus invalid
-// and ToStatus empty because the task's initial pre-deploy status cannot be recovered.
+// TaskStatusChange is one status transition. FromStatus is NULL for a real initial row and for
+// migration 0419's approximate legacy DONE row; Approximate distinguishes those meanings. A
+// synthetic legacy creation row has both FromStatus invalid and ToStatus empty because the task's
+// initial pre-deploy status cannot be recovered.
 type TaskStatusChange struct {
-	Id         int            `db:"id"`
-	TaskId     int            `db:"task_id"`
-	FromStatus sql.NullString `db:"from_status"`
-	ToStatus   TaskStatus     `db:"to_status"`
-	ChangedBy  string         `db:"changed_by"`
-	ChangedAt  time.Time      `db:"changed_at"`
+	Id          int            `db:"id"`
+	TaskId      int            `db:"task_id"`
+	FromStatus  sql.NullString `db:"from_status"`
+	ToStatus    TaskStatus     `db:"to_status"`
+	ChangedBy   string         `db:"changed_by"`
+	ChangedAt   time.Time      `db:"changed_at"`
+	Approximate bool           `db:"approximate"`
+}
+
+// TaskClosed is the latest transition into DONE for one currently-DONE task. It is list-only
+// projection data, not part of Task, because Task is persisted in snapshots and a closing fact is
+// meaningful only while the card remains in DONE.
+type TaskClosed struct {
+	TaskId      int       `db:"task_id"`
+	ClosedAt    time.Time `db:"closed_at"`
+	ClosedBy    string    `db:"closed_by"`
+	Approximate bool      `db:"approximate"`
 }
 
 // TaskLinkKind — вид связи В ХРАНИЛИЩЕ. Их ДВА, и это не сокращение контракта: BLOCKED_BY на проводе
@@ -286,8 +298,10 @@ type TaskListFilter struct {
 	// ParentTaskId — «сабтаски этой задачи». Фильтр того же списка, а не отдельный RPC (доктрина
 	// 0322: не заводить второй путь к тем же данным). 0 = no filter.
 	ParentTaskId    int
-	IncludeArchived bool   // false = active only (default); true = include archived
-	Query           string // blank = no search
+	IncludeArchived bool         // false = active only (default); true = include archived
+	Query           string       // blank = no search
+	ClosedFrom      sql.NullTime // latest DONE transition >= this instant; also forces current DONE
+	ClosedTo        sql.NullTime // latest DONE transition < this instant; also forces current DONE
 	Limit           int
 	Offset          int
 	OrderFactor     OrderFactor

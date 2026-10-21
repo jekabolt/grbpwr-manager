@@ -287,6 +287,26 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		Offset:          int(req.Offset),
 		OrderFactor:     dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	}
+	if req.ClosedFrom != nil {
+		if err := req.ClosedFrom.CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid closed_from: %v", err)
+		}
+		filter.ClosedFrom = sql.NullTime{Time: req.ClosedFrom.AsTime(), Valid: true}
+	}
+	if req.ClosedTo != nil {
+		if err := req.ClosedTo.CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid closed_to: %v", err)
+		}
+		filter.ClosedTo = sql.NullTime{Time: req.ClosedTo.AsTime(), Valid: true}
+	}
+	if filter.ClosedFrom.Valid && filter.ClosedTo.Valid && !filter.ClosedFrom.Time.Before(filter.ClosedTo.Time) {
+		return nil, status.Error(codes.InvalidArgument, "closed_from must be before closed_to")
+	}
+	// The board's historical position order remains unchanged. A closing-period query, however,
+	// is a reverse chronology by default; callers can still explicitly request ascending order.
+	if (filter.ClosedFrom.Valid || filter.ClosedTo.Valid) && req.OrderFactor == pb_common.OrderFactor_ORDER_FACTOR_UNKNOWN {
+		filter.OrderFactor = entity.Descending
+	}
 	if req.Board != pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
 		b, err := dto.ConvertPbTaskBoardToEntity(req.Board)
 		if err != nil {
@@ -302,7 +322,8 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		filter.Status = st
 	}
 
-	tasks, total, err := s.repo.Tasks().ListTasks(ctx, filter)
+	taskStore := s.repo.Tasks()
+	tasks, total, err := taskStore.ListTasks(ctx, filter)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list tasks", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't list tasks")
@@ -311,7 +332,33 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 	for i := range tasks {
 		pbTasks = append(pbTasks, dto.ConvertEntityTaskToPb(&tasks[i]))
 	}
-	return &pb_admin.ListTasksResponse{Tasks: pbTasks, Total: int32(total)}, nil
+
+	// Closing facts stay off common.Task because that message is persisted in snapshots. Resolve
+	// them once for all DONE rows on this page and return the parallel list-only projection.
+	doneIDs := make([]int, 0, len(tasks))
+	for i := range tasks {
+		if tasks[i].Status == entity.TaskStatusDone {
+			doneIDs = append(doneIDs, tasks[i].Id)
+		}
+	}
+	closed := make([]*pb_common.TaskClosed, 0, len(doneIDs))
+	if len(doneIDs) > 0 {
+		closedByID, err := taskStore.GetTaskClosedByIds(ctx, doneIDs)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't load task closing metadata", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't list tasks")
+		}
+		for _, taskID := range doneIDs {
+			row, ok := closedByID[taskID]
+			if !ok {
+				slog.Default().ErrorContext(ctx, "DONE task has no closing history",
+					slog.Int("task_id", taskID))
+				return nil, status.Error(codes.Internal, "can't list tasks")
+			}
+			closed = append(closed, dto.ConvertEntityTaskClosedToPb(&row))
+		}
+	}
+	return &pb_admin.ListTasksResponse{Tasks: pbTasks, Total: int32(total), Closed: closed}, nil
 }
 
 // ArchiveTask soft-archives a task (hidden from the board, restorable).

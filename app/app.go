@@ -63,6 +63,7 @@ import (
 	designstore "github.com/jekabolt/grbpwr-manager/internal/store/design"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
+	"github.com/jekabolt/grbpwr-manager/internal/taskarchive"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 )
 
@@ -87,6 +88,7 @@ type App struct {
 	dsw *deliverysync.Worker
 	sc  *storefrontcleanup.Worker
 	acw *archivecleanup.Worker
+	taw *taskarchive.Worker
 	tm  *tiermanagement.Worker
 	maw *marketingaggregate.Worker
 	om  *opexmaterialize.Worker
@@ -306,6 +308,16 @@ func (a *App) Start(ctx context.Context) error {
 	a.tm = tiermanagement.New(&a.c.TierManagement, a.db, a.ma)
 	if err = a.tm.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start tier management worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	// Keep DONE bounded without inventing a second archive implementation: the worker discovers
+	// cards from status history, then calls the same task store ArchiveTask path as the admin RPC.
+	a.taw = taskarchive.New(&a.c.TaskAutoArchive, a.db.Tasks())
+	if err = a.taw.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start task auto-archive worker",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -1191,6 +1203,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.acw != nil {
 		_ = a.acw.Stop()
 	}
+	if a.taw != nil {
+		_ = a.taw.Stop()
+	}
 	if a.tm != nil {
 		_ = a.tm.Stop()
 	}
@@ -1300,6 +1315,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.acw != nil {
 		addWorker(a.acw)
+	}
+	if a.taw != nil {
+		addWorker(a.taw)
 	}
 	if a.tm != nil {
 		addWorker(a.tm)

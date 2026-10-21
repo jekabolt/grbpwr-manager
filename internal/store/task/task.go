@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -426,19 +427,20 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 		return nil, err
 	}
 	history, err := storeutil.QueryListNamed[entity.TaskStatusChange](ctx, s.DB, `
-		SELECT id, task_id, from_status, to_status, changed_by, changed_at
+		SELECT id, task_id, from_status, to_status, changed_by, changed_at, approximate
 		FROM task_status_history
 		WHERE task_id = :id
 		ORDER BY changed_at DESC, id DESC`, map[string]any{"id": id})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get task status history: %w", err)
 	}
-	// Migration 0418 intentionally has no backfill. If no real initial row exists, append the
-	// only creation fact that can be stated honestly for an older task: who created it and when,
-	// with both statuses unknown. Real transitions remain ahead of it in descending order.
+	// Migration 0418 intentionally had no creation backfill. Migration 0419's legacy DONE row also
+	// has from_status NULL, but approximate=1 marks it as a closing estimate, NOT a creation row.
+	// Ignore that row when deciding whether to synthesize the only creation fact that can be stated
+	// honestly for an older task: who created it and when, with both statuses unknown.
 	hasInitialStatus := false
 	for i := range history {
-		if !history[i].FromStatus.Valid {
+		if !history[i].FromStatus.Valid && !history[i].Approximate {
 			hasInitialStatus = true
 			break
 		}
@@ -470,7 +472,35 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	limit, offset := clampPagination(f.Limit, f.Offset)
 
 	filterParams := map[string]any{}
+	from := "task"
 	where := ""
+	hasClosedFilter := f.ClosedFrom.Valid || f.ClosedTo.Valid
+	if hasClosedFilter {
+		// One latest-DONE row per task, tie-broken exactly like GetTask history. The current task
+		// status is checked separately below: an old closing event says nothing about a card that
+		// has since been reopened.
+		from += `
+			JOIN (
+				SELECT task_id, changed_at AS closed_at
+				FROM (
+					SELECT task_id, changed_at, id,
+						ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY changed_at DESC, id DESC) AS row_num
+					FROM task_status_history
+					WHERE to_status = :closedStatus
+				) ranked_task_done
+				WHERE row_num = 1
+			) task_closed ON task_closed.task_id = task.id`
+		where += " AND task.status = :closedStatus"
+		filterParams["closedStatus"] = string(entity.TaskStatusDone)
+		if f.ClosedFrom.Valid {
+			where += " AND task_closed.closed_at >= :closedFrom"
+			filterParams["closedFrom"] = f.ClosedFrom.Time
+		}
+		if f.ClosedTo.Valid {
+			where += " AND task_closed.closed_at < :closedTo"
+			filterParams["closedTo"] = f.ClosedTo.Time
+		}
+	}
 	queryPattern, queryTaskID, hasQuery := taskSearchParams(f.Query)
 	if f.Board != "" {
 		where += " AND board = :board"
@@ -560,7 +590,7 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
-		fmt.Sprintf(`SELECT COUNT(*) FROM task WHERE 1=1%s`, where), filterParams)
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE 1=1%s`, from, where), filterParams)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't count tasks: %w", err)
 	}
@@ -568,20 +598,26 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	filterParams["limit"] = limit
 	filterParams["offset"] = offset
 	var query string
-	if hasQuery {
+	if hasClosedFilter {
 		query = fmt.Sprintf(`
-			SELECT * FROM task
+			SELECT task.* FROM %s
+			WHERE 1=1%s
+			ORDER BY task_closed.closed_at %s, task.id %s
+			LIMIT :limit OFFSET :offset`, from, where, f.OrderFactor.String(), f.OrderFactor.String())
+	} else if hasQuery {
+		query = fmt.Sprintf(`
+			SELECT task.* FROM %s
 			WHERE 1=1%s
 			ORDER BY archived_at IS NOT NULL,
 				CASE WHEN LOWER(title) LIKE :queryPattern ESCAPE '\\' THEN 0 ELSE 1 END,
 				id DESC
-			LIMIT :limit OFFSET :offset`, where)
+			LIMIT :limit OFFSET :offset`, from, where)
 	} else {
 		query = fmt.Sprintf(`
-			SELECT * FROM task
+			SELECT task.* FROM %s
 			WHERE 1=1%s
 			ORDER BY board, status, position %s, id %s
-			LIMIT :limit OFFSET :offset`, where, f.OrderFactor.String(), f.OrderFactor.String())
+			LIMIT :limit OFFSET :offset`, from, where, f.OrderFactor.String(), f.OrderFactor.String())
 	}
 
 	tasks, err := storeutil.QueryListNamed[entity.Task](ctx, s.DB, query, filterParams)
@@ -641,6 +677,62 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		tasks[i].FileIds = fileIDs[tasks[i].Id]
 	}
 	return tasks, total, nil
+}
+
+// GetTaskClosedByIds returns the latest transition into DONE for each requested task that has one.
+// It is intentionally one batched query: ListTasks uses the result as response metadata and must
+// not turn a DONE-heavy page into one history read per card.
+func (s *Store) GetTaskClosedByIds(ctx context.Context, ids []int) (map[int]entity.TaskClosed, error) {
+	if len(ids) == 0 {
+		return map[int]entity.TaskClosed{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.TaskClosed](ctx, s.DB, `
+		WITH ranked_task_done AS (
+			SELECT task_id, changed_at AS closed_at, changed_by AS closed_by, approximate,
+				ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY changed_at DESC, id DESC) AS row_num
+			FROM task_status_history
+			WHERE task_id IN (:ids) AND to_status = :doneStatus
+		)
+		SELECT task_id, closed_at, closed_by, approximate
+		FROM ranked_task_done
+		WHERE row_num = 1`, map[string]any{
+		"ids": ids, "doneStatus": string(entity.TaskStatusDone),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task closing metadata: %w", err)
+	}
+	out := make(map[int]entity.TaskClosed, len(rows))
+	for i := range rows {
+		out[rows[i].TaskId] = rows[i]
+	}
+	return out, nil
+}
+
+// ListTaskIdsToAutoArchive returns active cards whose current status is DONE and whose latest
+// transition into DONE is strictly older than closedBefore. Approximate migration rows participate
+// naturally: they have the same to_status and changed_at shape as exact transitions.
+func (s *Store) ListTaskIdsToAutoArchive(ctx context.Context, closedBefore time.Time) ([]int, error) {
+	ids, err := storeutil.QueryScalarListNamed[int](ctx, s.DB, `
+		WITH ranked_task_done AS (
+			SELECT task_id, changed_at AS closed_at,
+				ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY changed_at DESC, id DESC) AS row_num
+			FROM task_status_history
+			WHERE to_status = :doneStatus
+		)
+		SELECT task.id
+		FROM task
+		JOIN ranked_task_done
+			ON ranked_task_done.task_id = task.id AND ranked_task_done.row_num = 1
+		WHERE task.status = :doneStatus
+			AND task.archived_at IS NULL
+			AND ranked_task_done.closed_at < :closedBefore
+		ORDER BY ranked_task_done.closed_at, task.id`, map[string]any{
+		"doneStatus": string(entity.TaskStatusDone), "closedBefore": closedBefore,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't list tasks eligible for auto-archive: %w", err)
+	}
+	return ids, nil
 }
 
 // taskSearchParams turns a non-blank user query into a literal LIKE pattern and,

@@ -457,13 +457,27 @@ func ConvertEntityTaskStatusHistoryToPb(history []entity.TaskStatusChange) []*pb
 			fromStatus = taskStatusEntityToPb[entity.TaskStatus(change.FromStatus.String)]
 		}
 		out = append(out, &pb_common.TaskStatusChange{
-			FromStatus: fromStatus,
-			ToStatus:   taskStatusEntityToPb[change.ToStatus],
-			ChangedBy:  change.ChangedBy,
-			ChangedAt:  timestamppb.New(change.ChangedAt),
+			FromStatus:  fromStatus,
+			ToStatus:    taskStatusEntityToPb[change.ToStatus],
+			ChangedBy:   change.ChangedBy,
+			ChangedAt:   timestamppb.New(change.ChangedAt),
+			Approximate: change.Approximate,
 		})
 	}
 	return out
+}
+
+// ConvertEntityTaskClosedToPb converts list-only closing metadata.
+func ConvertEntityTaskClosedToPb(closed *entity.TaskClosed) *pb_common.TaskClosed {
+	if closed == nil {
+		return nil
+	}
+	return &pb_common.TaskClosed{
+		TaskId:      int32(closed.TaskId),
+		ClosedAt:    timestamppb.New(closed.ClosedAt),
+		ClosedBy:    closed.ClosedBy,
+		Approximate: closed.Approximate,
+	}
 }
 
 // taskLinkRoleToPb — перспектива хранилища → перспектива контракта. Ролей ТРИ, видов в хранилище ДВА:

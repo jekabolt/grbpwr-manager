@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // AddTask stamps created_by from the JWT, maps the board, and defaults the column
@@ -152,6 +153,98 @@ func TestGetTaskReturnsStatusHistory(t *testing.T) {
 	}
 	if legacy.ChangedBy != "olya" || !legacy.ChangedAt.AsTime().Equal(createdAt) {
 		t.Errorf("legacy creation = %q at %v, want olya at %v", legacy.ChangedBy, legacy.ChangedAt.AsTime(), createdAt)
+	}
+}
+
+func TestGetTaskExposesApproximateStatusHistory(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+
+	changedAt := time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC)
+	tasks.EXPECT().GetTaskById(mock.Anything, 8).Return(&entity.Task{
+		Id:     8,
+		Status: entity.TaskStatusDone,
+		StatusHistory: []entity.TaskStatusChange{{
+			TaskId:      8,
+			ToStatus:    entity.TaskStatusDone,
+			ChangedAt:   changedAt,
+			Approximate: true,
+		}},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).GetTask(context.Background(), &pb_admin.GetTaskRequest{Id: 8})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.StatusHistory) != 1 {
+		t.Fatalf("status_history length = %d, want 1", len(resp.StatusHistory))
+	}
+	got := resp.StatusHistory[0]
+	if got.FromStatus != pb_common.TaskStatus_TASK_STATUS_UNKNOWN || got.ToStatus != pb_common.TaskStatus_TASK_STATUS_DONE {
+		t.Errorf("statuses = %v -> %v, want UNKNOWN -> DONE", got.FromStatus, got.ToStatus)
+	}
+	if !got.Approximate {
+		t.Error("approximate backfill row lost its marker")
+	}
+}
+
+func TestListTasksClosedRangeReturnsBatchedClosingMetadata(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	closed7 := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	closed9 := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+
+	tasks.EXPECT().ListTasks(mock.Anything, mock.MatchedBy(func(f entity.TaskListFilter) bool {
+		return f.ClosedFrom.Valid && f.ClosedFrom.Time.Equal(from) &&
+			f.ClosedTo.Valid && f.ClosedTo.Time.Equal(to) &&
+			f.IncludeArchived && f.OrderFactor == entity.Descending
+	})).Return([]entity.Task{
+		{Id: 7, Status: entity.TaskStatusDone},
+		{Id: 8, Status: entity.TaskStatusReview},
+		{Id: 9, Status: entity.TaskStatusDone, ArchivedAt: sql.NullTime{Time: closed9.Add(time.Hour), Valid: true}},
+	}, 3, nil)
+	tasks.EXPECT().GetTaskClosedByIds(mock.Anything, []int{7, 9}).Return(map[int]entity.TaskClosed{
+		7: {TaskId: 7, ClosedAt: closed7, ClosedBy: "anna"},
+		9: {TaskId: 9, ClosedAt: closed9, Approximate: true},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).ListTasks(context.Background(), &pb_admin.ListTasksRequest{
+		IncludeArchived: true,
+		ClosedFrom:      timestamppb.New(from),
+		ClosedTo:        timestamppb.New(to),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Total != 3 || len(resp.Tasks) != 3 {
+		t.Fatalf("tasks/total = %d/%d, want 3/3", len(resp.Tasks), resp.Total)
+	}
+	if len(resp.Closed) != 2 {
+		t.Fatalf("closed length = %d, want 2", len(resp.Closed))
+	}
+	if got := resp.Closed[0]; got.TaskId != 7 || got.ClosedBy != "anna" || !got.ClosedAt.AsTime().Equal(closed7) || got.Approximate {
+		t.Errorf("closed[0] = %+v, want exact task 7 closure", got)
+	}
+	if got := resp.Closed[1]; got.TaskId != 9 || !got.ClosedAt.AsTime().Equal(closed9) || !got.Approximate {
+		t.Errorf("closed[1] = %+v, want approximate task 9 closure", got)
+	}
+}
+
+func TestListTasksRejectsEmptyClosedRangeBeforeStore(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	at := timestamppb.New(time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC))
+
+	_, err := (&Server{repo: repo}).ListTasks(context.Background(), &pb_admin.ListTasksRequest{
+		ClosedFrom: at,
+		ClosedTo:   at,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
 	}
 }
 

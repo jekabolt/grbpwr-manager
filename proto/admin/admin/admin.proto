@@ -7743,11 +7743,16 @@ message ListTasksRequest {
   // rd(tasks). 0 = no filter.
   int32 parent_task_id = 16;
   string query = 17; // optional case-insensitive search across task text, comments, checklist, and exact id
+  // Half-open closing-time filter [closed_from, closed_to). Setting either bound also restricts
+  // the answer to cards whose CURRENT status is DONE; include_archived retains its normal meaning.
+  google.protobuf.Timestamp closed_from = 18;
+  google.protobuf.Timestamp closed_to = 19;
 }
 
 message ListTasksResponse {
   repeated common.Task tasks = 1;
   int32 total = 2; // total matching tasks, ignoring pagination
+  repeated common.TaskClosed closed = 3; // latest transition into DONE for every returned DONE task
 }
 
 message AddTaskCommentRequest {

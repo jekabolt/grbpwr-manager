@@ -36,6 +36,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
+	"github.com/jekabolt/grbpwr-manager/internal/taskarchive"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
@@ -92,6 +93,7 @@ type Config struct {
 	AfterShip          aftership.Config          `mapstructure:"aftership"`
 	ShippingLabel      shippinglabel.Config      `mapstructure:"shipping_label"`
 	StorefrontCleanup  storefrontcleanup.Config  `mapstructure:"storefront_cleanup"`
+	TaskAutoArchive    taskarchive.Config        `mapstructure:"task_auto_archive"`
 	TierManagement     tiermanagement.Config     `mapstructure:"tier_management"`
 	MarketingAggregate marketingaggregate.Config `mapstructure:"marketing_aggregate"`
 	OpexMaterialize    opexmaterialize.Config    `mapstructure:"opex_materialize"`
@@ -504,6 +506,9 @@ func bindEnvVars() {
 
 	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
 	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
+
+	// Task auto-archive (cards that have remained in DONE past the retention window)
+	viper.BindEnv("task_auto_archive.retention_period", "TASK_AUTO_ARCHIVE_RETENTION_PERIOD")
 
 	// Marketing account aggregate (email segmentation behavioral fields)
 	viper.BindEnv("marketing_aggregate.worker_interval", "MARKETING_AGGREGATE_WORKER_INTERVAL")
