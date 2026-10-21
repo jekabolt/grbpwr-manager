@@ -101,7 +101,7 @@ func TestTaskLinkKindPerspective(t *testing.T) {
 func TestTaskLinkRoleToPb(t *testing.T) {
 	pb := ConvertEntityTaskLinksToPb([]entity.TaskLink{
 		{TaskId: 2, Role: entity.TaskLinkRoleBlocks, Title: "а", Status: entity.TaskStatusTodo, Board: entity.TaskBoardDesign},
-		{TaskId: 3, Role: entity.TaskLinkRoleBlockedBy, Title: "б", Status: entity.TaskStatusDone, Board: entity.TaskBoardProduction, Archived: true},
+		{TaskId: 3, Role: entity.TaskLinkRoleBlockedBy, Title: "б", Status: entity.TaskStatusDone, Board: entity.TaskBoardProduction, Archived: true, Assignees: []string{"olya", "kirill"}},
 		{TaskId: 4, Role: entity.TaskLinkRoleRelates, Title: "в", Status: entity.TaskStatusReview, Board: entity.TaskBoardContent},
 	})
 	require.Len(t, pb, 3)
@@ -114,4 +114,5 @@ func TestTaskLinkRoleToPb(t *testing.T) {
 	require.Equal(t, pb_common.TaskStatus_TASK_STATUS_DONE, pb[1].Status)
 	require.Equal(t, pb_common.TaskBoard_TASK_BOARD_PRODUCTION, pb[1].Board)
 	require.True(t, pb[1].Archived)
+	require.Equal(t, []string{"olya", "kirill"}, pb[1].Assignees)
 }

@@ -190,8 +190,8 @@ type taskLinkRow struct {
 	Archived    bool   `db:"archived"`
 }
 
-// linksByTaskIds — батч-чтение связей страницы ОДНИМ запросом (UNION ALL двух половин), со вторым
-// концом, уже разрешённым в заголовок/статус/доску.
+// linksByTaskIds — батч-чтение связей страницы одним запросом (UNION ALL двух половин), затем
+// исполнителей всех вторых концов ещё одним батч-запросом. Никаких запросов на отдельную связь.
 //
 // ДВЕ ПОЛОВИНЫ, А НЕ ДВА ЗАПРОСА: исходящие (эта задача — from) и входящие (эта задача — to). У
 // relates обе половины дают роль relates, поэтому одна нормализованная строка честно видна с обоих
@@ -220,6 +220,19 @@ func (s *Store) linksByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 	if err != nil {
 		return nil, fmt.Errorf("can't load task links: %w", err)
 	}
+	otherTaskIDs := make([]int, 0, len(rows))
+	seenOtherTaskIDs := make(map[int]struct{}, len(rows))
+	for _, r := range rows {
+		if _, seen := seenOtherTaskIDs[r.TaskID]; seen {
+			continue
+		}
+		seenOtherTaskIDs[r.TaskID] = struct{}{}
+		otherTaskIDs = append(otherTaskIDs, r.TaskID)
+	}
+	assignees, err := s.assigneesByTaskIds(ctx, otherTaskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("can't load task link assignees: %w", err)
+	}
 	out := make(map[int][]entity.TaskLink, len(ids))
 	for _, r := range rows {
 		out[r.OwnerTaskID] = append(out[r.OwnerTaskID], entity.TaskLink{
@@ -231,6 +244,7 @@ func (s *Store) linksByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 			Board:       entity.TaskBoard(r.Board),
 			BoardId:     r.BoardID,
 			Archived:    r.Archived,
+			Assignees:   assignees[r.TaskID],
 		})
 	}
 	return out, nil

@@ -613,13 +613,14 @@ func ConvertEntityTaskLinksToPb(links []entity.TaskLink) []*pb_common.TaskLink {
 	out := make([]*pb_common.TaskLink, 0, len(links))
 	for _, l := range links {
 		out = append(out, &pb_common.TaskLink{
-			TaskId:   int32(l.TaskId),
-			Kind:     taskLinkRoleToPb[l.Role],
-			Title:    l.Title,
-			Status:   taskStatusEntityToPb[l.Status],
-			Board:    taskBoardEntityToPb[l.Board],
-			BoardId:  int32(l.BoardId),
-			Archived: l.Archived,
+			TaskId:    int32(l.TaskId),
+			Kind:      taskLinkRoleToPb[l.Role],
+			Title:     l.Title,
+			Status:    taskStatusEntityToPb[l.Status],
+			Board:     taskBoardEntityToPb[l.Board],
+			BoardId:   int32(l.BoardId),
+			Archived:  l.Archived,
+			Assignees: l.Assignees,
 		})
 	}
 	return out
