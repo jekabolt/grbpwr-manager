@@ -77,8 +77,14 @@ func upsertStock(ctx context.Context, db dependency.DB, materialID int, onHand d
 		})
 }
 
-// insertMovement appends a ledger row and returns it with its assigned id.
-func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMovement) (entity.MaterialMovement, error) {
+// insertMovement appends a ledger row and returns it with its assigned id. Every movement carries a
+// business date: one the request did not name (write-offs, counts, packaging consume, production
+// receipts never ask for it) is dated the store clock's UTC day, so the journal can sort and
+// date-filter every row instead of leaving it NULL. A date the request did name is kept as is.
+func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMovement, now time.Time) (entity.MaterialMovement, error) {
+	if !m.OccurredAt.Valid {
+		m.OccurredAt = sql.NullTime{Time: dateOnlyUTC(now), Valid: true}
+	}
 	id, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO material_stock_movement
 			(material_id, movement_type, quantity, on_hand_before, on_hand_after,
@@ -120,6 +126,13 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 	}
 	m.Id = id
 	return m, nil
+}
+
+// dateOnlyUTC is t's calendar day at 00:00 UTC — the codebase's date convention (DATE columns are read
+// and written as midnight UTC).
+func dateOnlyUTC(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // materialMeta is the descriptive state needed to gate a movement (archived flag).
@@ -362,7 +375,7 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 		return entity.MaterialMovement{}, err
 	}
 	m.LotId = lotID
-	out, err := insertMovement(ctx, db, m)
+	out, err := insertMovement(ctx, db, m, now)
 	if err != nil {
 		return entity.MaterialMovement{}, err
 	}
@@ -550,7 +563,7 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 			return entity.MaterialMovement{}, err
 		}
 	}
-	return insertMovement(ctx, db, m)
+	return insertMovement(ctx, db, m, now)
 }
 
 // productAttribution returns the colourway (product) an issue is attributed to (gap-07 v2 C). It is
@@ -594,7 +607,7 @@ func (s *Store) AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdju
 		if err != nil {
 			return err
 		}
-		out, err = adjustInTx(ctx, db, ins, reserved)
+		out, err = adjustInTx(ctx, db, ins, reserved, s.Now())
 		return err
 	})
 	if err != nil {
@@ -606,7 +619,7 @@ func (s *Store) AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdju
 // adjustInTx is AdjustMaterialStock's body on the caller's transaction, so multi-material flows
 // (packaging auto-consume) can share one atomic transaction with their bookkeeping (g25-02). Every
 // guard fails BEFORE any write, so a guard failure leaves the shared transaction clean.
-func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjustInsert, reservedOpen decimal.Decimal) (entity.MaterialMovement, error) {
+func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjustInsert, reservedOpen decimal.Decimal, now time.Time) (entity.MaterialMovement, error) {
 	if _, err := readMaterialMeta(ctx, db, ins.MaterialId); err != nil {
 		return entity.MaterialMovement{}, err
 	}
@@ -665,7 +678,7 @@ func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjust
 	if ins.Reason != "" {
 		m.Reason = sql.NullString{String: ins.Reason, Valid: true}
 	}
-	return insertMovement(ctx, db, m)
+	return insertMovement(ctx, db, m, now)
 }
 
 // GetMaterialStock returns a material's stock balance, or a zero balance (no error) when the
@@ -692,8 +705,9 @@ func (s *Store) GetMaterialStock(ctx context.Context, materialID int) (*entity.M
 	return &st, nil
 }
 
-// ListMaterialMovements returns the movement ledger (newest first) matching the filter, with the
-// total count ignoring pagination.
+// ListMaterialMovements returns the movement ledger matching the filter, newest business date first
+// (occurred_at DESC, then id DESC within a day, so a backdated receipt sits on its own day rather than
+// on top), with the total count ignoring pagination.
 func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, filter entity.MaterialMovementFilter) ([]entity.MaterialMovement, int, error) {
 	limit, offset = clampPagination(limit, offset)
 	params := map[string]any{}
@@ -714,14 +728,16 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 		where += " AND movement_type = :movement_type"
 		params["movement_type"] = string(filter.MovementType)
 	}
-	// Inclusive occurred_at date window (B-5): compare on DATE(occurred_at) so a plain YYYY-MM-DD
-	// upper bound includes movements stamped any time that day.
+	// Inclusive occurred_at date window (B-5). occurred_at is a DATE column, so a plain YYYY-MM-DD bound
+	// is already day-inclusive; comparing the bare column (not DATE(occurred_at)) lets idx_msm_occurred
+	// serve the range. Every movement is dated (insertMovement defaults it; the occurred-at backfill
+	// migration filled the legacy NULLs), so no row silently drops out of a window.
 	if filter.OccurredFrom != "" {
-		where += " AND DATE(occurred_at) >= :occurred_from"
+		where += " AND occurred_at >= :occurred_from"
 		params["occurred_from"] = filter.OccurredFrom
 	}
 	if filter.OccurredTo != "" {
-		where += " AND DATE(occurred_at) <= :occurred_to"
+		where += " AND occurred_at <= :occurred_to"
 		params["occurred_to"] = filter.OccurredTo
 	}
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
@@ -736,7 +752,7 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 			unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
 			lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at
 		FROM material_stock_movement WHERE 1=1%s
-		ORDER BY id DESC LIMIT :limit OFFSET :offset`, where), params)
+		ORDER BY occurred_at DESC, id DESC LIMIT :limit OFFSET :offset`, where), params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list material movements: %w", err)
 	}

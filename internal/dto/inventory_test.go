@@ -1,8 +1,11 @@
 package dto
 
 import (
+	"database/sql"
 	"testing"
+	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,4 +91,22 @@ func TestConvertPbReceiveMaterialStock_RollFactsNeedALot(t *testing.T) {
 	_, err = ConvertPbReceiveMaterialStock(overPrecise)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decimal places")
+}
+
+// TestConvertEntityMaterialMovementToPb_OccurredAtFallback pins the defensive date: an undated
+// movement (a row an older binary wrote during a deploy overlap) shows its created_at's UTC day, a
+// dated one keeps its own date.
+func TestConvertEntityMaterialMovementToPb_OccurredAtFallback(t *testing.T) {
+	created := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
+
+	undated := ConvertEntityMaterialMovementToPb(entity.MaterialMovement{Id: 1, CreatedAt: created})
+	require.NotNil(t, undated.OccurredAt)
+	assert.Equal(t, time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC), undated.OccurredAt.AsTime())
+
+	own := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	dated := ConvertEntityMaterialMovementToPb(entity.MaterialMovement{
+		Id: 2, CreatedAt: created, OccurredAt: sql.NullTime{Time: own, Valid: true},
+	})
+	require.NotNil(t, dated.OccurredAt)
+	assert.Equal(t, own, dated.OccurredAt.AsTime())
 }
