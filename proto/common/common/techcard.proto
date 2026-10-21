@@ -1453,6 +1453,17 @@ message TechCardSizeQuantity {
   int32 order_qty = 2; // typical calculation quantity, not an order
 }
 
+// TechCardPatternRevision is one superseded file of a pattern sheet. The active file stays on
+// TechCardSizePattern; this read-only history lets a client restore an older file by sending its url
+// back through the ordinary UpdateTechCard flow.
+message TechCardPatternRevision {
+  int32 revision = 1;
+  string url = 2;
+  string sha256 = 3;
+  string file_name = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
 // TechCardSizePattern is a downloadable выкройка (cut pattern) file for one size of a
 // tech card — the FINAL pattern for that size. A size can carry many patterns (pieces
 // split across sheets). The file is a PDF or a DXF, uploaded via Admin.UploadPattern,
@@ -1530,6 +1541,9 @@ message TechCardSizePattern {
   // the stored digest only while the URL is unchanged; a replacement without a digest clears it,
   // as does a present empty string. Used to stop an identical DXF re-upload before minting a revision.
   optional string sha256 = 13;
+  // Superseded files, newest first. OUTPUT-ONLY: ignored when this message comes back through
+  // UpdateTechCard; restoring one means putting its url into the active fields above.
+  repeated TechCardPatternRevision history = 14;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).

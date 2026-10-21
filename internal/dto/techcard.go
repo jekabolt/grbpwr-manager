@@ -2603,6 +2603,21 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 			Sha256:        pbOptStringFromNull(p.SHA256),
 			Version:       int32(p.Version),
 			UploadedAt:    pbTimestampFromNullTime(p.UploadedAt),
+			History:       techCardPatternHistoryToPb(p.History),
+		})
+	}
+	return out
+}
+
+func techCardPatternHistoryToPb(history []entity.TechCardPatternRevision) []*pb_common.TechCardPatternRevision {
+	out := make([]*pb_common.TechCardPatternRevision, 0, len(history))
+	for _, revision := range history {
+		out = append(out, &pb_common.TechCardPatternRevision{
+			Revision:  int32(revision.Revision),
+			Url:       revision.URL,
+			Sha256:    pbStringFromNull(revision.SHA256),
+			FileName:  pbStringFromNull(revision.Filename),
+			CreatedAt: pbTimestampFromNullTime(revision.CreatedAt),
 		})
 	}
 	return out

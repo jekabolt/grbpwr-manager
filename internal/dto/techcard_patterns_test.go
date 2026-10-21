@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -172,6 +173,62 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	if out.TechCard.Patterns[0].LineKey != "01SHEETKEY0000000000000001" ||
 		out.TechCard.Patterns[0].GetBomLineKey() != "01FABRICSLOT00000000000001" {
 		t.Fatalf("line keys round-trip mismatch: %+v", out.TechCard.Patterns[0])
+	}
+}
+
+func TestTechCardPatternHistoryMapping(t *testing.T) {
+	newer := time.Date(2026, time.October, 20, 12, 30, 0, 0, time.UTC)
+	older := newer.Add(-24 * time.Hour)
+	out := techCardPatternsToPb([]entity.TechCardSizePattern{{
+		Version: 3,
+		History: []entity.TechCardPatternRevision{
+			{
+				Revision:  2,
+				URL:       "https://cdn/tech-card-patterns/front-v2.dxf",
+				SHA256:    sql.NullString{String: strings.Repeat("b", 64), Valid: true},
+				Filename:  sql.NullString{String: "front-v2.dxf", Valid: true},
+				CreatedAt: sql.NullTime{Time: newer, Valid: true},
+			},
+			{
+				Revision:  1,
+				URL:       "https://cdn/tech-card-patterns/front-v1.dxf",
+				CreatedAt: sql.NullTime{Time: older, Valid: true},
+			},
+		},
+	}})
+	if len(out) != 1 || out[0].Version != 3 || len(out[0].History) != 2 {
+		t.Fatalf("pattern history not mapped: %+v", out)
+	}
+	got := out[0].History
+	if got[0].Revision != 2 || got[0].Url != "https://cdn/tech-card-patterns/front-v2.dxf" ||
+		got[0].Sha256 != strings.Repeat("b", 64) || got[0].FileName != "front-v2.dxf" ||
+		!got[0].CreatedAt.AsTime().Equal(newer) {
+		t.Fatalf("newest history revision mismatch: %+v", got[0])
+	}
+	if got[1].Revision != 1 || got[1].Sha256 != "" || got[1].FileName != "" ||
+		!got[1].CreatedAt.AsTime().Equal(older) {
+		t.Fatalf("oldest history revision mismatch: %+v", got[1])
+	}
+}
+
+func TestTechCardPatternHistoryIgnoredOnWrite(t *testing.T) {
+	in := &pb_common.TechCardInsert{
+		StyleNumber: "ST-HISTORY",
+		Name:        "Coat",
+		Patterns: []*pb_common.TechCardSizePattern{{
+			Url: "https://cdn/tech-card-patterns/current.dxf",
+			History: []*pb_common.TechCardPatternRevision{{
+				Revision: 99,
+				Url:      "not-an-upload-url",
+			}},
+		}},
+	}
+	ent, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("history must be ignored on write: %v", err)
+	}
+	if len(ent.Patterns) != 1 || len(ent.Patterns[0].History) != 0 {
+		t.Fatalf("history leaked into the write entity: %+v", ent.Patterns)
 	}
 }
 

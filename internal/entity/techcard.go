@@ -2249,6 +2249,17 @@ type TechCardSizeQuantity struct {
 	OrderQty int `db:"order_qty"`
 }
 
+// TechCardPatternRevision is one superseded pattern object. Revision is the version the object had
+// while it was active; CreatedAt is that version's original upload time (or its archive time for
+// legacy rows that do not carry uploaded_at).
+type TechCardPatternRevision struct {
+	Revision  int            `db:"revision"`
+	URL       string         `db:"url"`
+	SHA256    sql.NullString `db:"sha256"`
+	Filename  sql.NullString `db:"file_name"`
+	CreatedAt sql.NullTime   `db:"created_at"`
+}
+
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
 // the url's extension. A graded DXF carries the whole range at once, so a sheet is filed under one
 // size of the card or under none at all (SizeId 0); see the field.
@@ -2298,6 +2309,9 @@ type TechCardSizePattern struct {
 	// UploadedAt is when the PDF was first attached. Server-owned: carried across the full-replace by
 	// matching the url, so it means what it says instead of drifting to "last card save".
 	UploadedAt sql.NullTime `db:"uploaded_at"`
+	// History is a newest-first read model. It is never populated from an UpdateTechCard payload and
+	// is not persisted by the active-row upsert.
+	History []TechCardPatternRevision `db:"-"`
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower
