@@ -22,9 +22,11 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 // caller's JWT (never client-supplied); the board itself is gated by a new
 // `tasks` RBAC section.
 
-// TaskBoard is the department lane a task lives in. Fixed taxonomy for now; a
-// task belongs to exactly one board. Extend by appending members (never reuse
-// numbers) — 0 stays UNKNOWN per proto3 convention.
+// TaskBoard is the LEGACY department-lane enum. Since custom boards (migration 0420) a board is a
+// TaskBoardEntry row addressed by id, and the six members below are the six seeded boards (their
+// ids equal these numbers, and TaskBoardEntry.legacy_board maps back). Kept only so clients built
+// before board ids keep working: requests accept either the enum or a board_id (board_id wins);
+// responses fill the enum for a seeded board and UNKNOWN for a custom one. Do not extend.
 enum TaskBoard {
   TASK_BOARD_UNKNOWN = 0;
   TASK_BOARD_DEVELOPMENT = 1; // портной/конструктор — разработка вещей (образцы, техкарты)
@@ -222,8 +224,9 @@ message TaskLink {
   TaskLinkKind kind = 2;
   string title = 3;
   TaskStatus status = 4;
-  TaskBoard board = 5;
+  TaskBoard board = 5 [deprecated = true]; // legacy enum; UNKNOWN for a custom board, read board_id
   bool archived = 6;
+  int32 board_id = 7; // TaskBoardEntry.id of the other end's board
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
@@ -245,7 +248,8 @@ message TaskChecklistItem {
 message Task {
   int32 id = 1;
   TaskInsert task = 2; // content
-  TaskBoard board = 3; // placement: department lane; set by AddTask, changed by MoveTask
+  // Legacy enum of the board (UNKNOWN for a custom board); the placement is board_id.
+  TaskBoard board = 3 [deprecated = true];
   TaskStatus status = 4; // placement: kanban column; set by AddTask, changed by MoveTask
   int32 position = 5; // placement: order within its (board,status) column; managed by AddTask/MoveTask
   repeated MediaFull media = 6; // resolved from task.media_ids for display
@@ -292,6 +296,23 @@ message Task {
   // берёт их фильтром ListTasks(parent_task_id).
   int32 subtask_total = 16;
   int32 subtask_done = 17;
+
+  // Placement: TaskBoardEntry.id of the board; set by AddTask, changed by MoveTask.
+  int32 board_id = 18;
+}
+
+// TaskBoardEntry is one kanban board (department lane) as the board rail draws it.
+message TaskBoardEntry {
+  int32 id = 1;
+  string name = 2; // unique case-insensitively, 1..64 chars
+  // The enum this board had before custom boards; UNKNOWN for a board created in the admin.
+  // Lets a client translate an enum it stored earlier (e.g. the last open board) into an id.
+  TaskBoard legacy_board = 3;
+  int32 position = 4; // order in the rail; new boards go last
+  int32 task_count = 5; // active (non-archived) tasks on the board
+  int32 archived_task_count = 6; // archived tasks, which a delete moves too
+  string created_by = 7; // AdminAccount.username; empty for the six seeded boards
+  google.protobuf.Timestamp created_at = 8;
 }
 
 // TaskCommentInsert is the writable payload for a comment. author is set

@@ -66,8 +66,12 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-	board, err := dto.ConvertPbTaskBoardToEntity(req.Board)
+	// board_id wins; the legacy enum is accepted for clients built before board ids.
+	board, err := dto.ConvertPbTaskBoardRefToEntity(req.BoardId, req.Board)
 	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if board.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "task board is required")
 	}
 	// The initial column defaults to TODO when unset.
@@ -87,7 +91,7 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 	}
 	t := &entity.Task{
 		TaskInsert: *ti,
-		Board:      board,
+		BoardRef:   board,
 		Status:     taskStatus,
 		CreatedBy:  authsrv.GetAdminUsername(ctx),
 	}
@@ -101,6 +105,9 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 		// «does not reference an existing record» было бы прямым враньём: id существует.
 		if errors.Is(err, entity.ErrTaskNeedsProjectTopic) {
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		if errors.Is(err, entity.ErrTaskBoardNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "task board does not exist")
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, taskFKViolationMsg)
@@ -183,14 +190,10 @@ func (s *Server) MoveTask(ctx context.Context, req *pb_admin.MoveTaskRequest) (*
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "task id is required")
 	}
-	// Board is optional: UNKNOWN = keep the task's current board.
-	var board entity.TaskBoard
-	if req.Board != pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
-		b, err := dto.ConvertPbTaskBoardToEntity(req.Board)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-		}
-		board = b
+	// Board is optional: board_id wins, else the legacy enum; both unset = keep the current board.
+	board, err := dto.ConvertPbTaskBoardRefToEntity(req.BoardId, req.Board)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	taskStatus, err := dto.ConvertPbTaskStatusToEntity(req.Status)
 	if err != nil {
@@ -199,6 +202,9 @@ func (s *Server) MoveTask(ctx context.Context, req *pb_admin.MoveTaskRequest) (*
 	if err := s.repo.Tasks().MoveTask(ctx, int(req.Id), board, taskStatus, int(req.Position), authsrv.GetAdminUsername(ctx)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "task not found")
+		}
+		if errors.Is(err, entity.ErrTaskBoardNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "target board does not exist")
 		}
 		slog.Default().ErrorContext(ctx, "can't move task", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't move task")
@@ -307,13 +313,13 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 	if (filter.ClosedFrom.Valid || filter.ClosedTo.Valid) && req.OrderFactor == pb_common.OrderFactor_ORDER_FACTOR_UNKNOWN {
 		filter.OrderFactor = entity.Descending
 	}
-	if req.Board != pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
-		b, err := dto.ConvertPbTaskBoardToEntity(req.Board)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-		}
-		filter.Board = b
+	// board_id wins; the legacy enum filters by its seeded board.
+	boardRef, err := dto.ConvertPbTaskBoardRefToEntity(req.BoardId, req.Board)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	filter.BoardId = boardRef.Id
+	filter.Board = boardRef.Slug
 	if req.Status != pb_common.TaskStatus_TASK_STATUS_UNKNOWN {
 		st, err := dto.ConvertPbTaskStatusToEntity(req.Status)
 		if err != nil {

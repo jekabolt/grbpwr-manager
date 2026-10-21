@@ -53,7 +53,7 @@ func (s *Store) ListTasksByFileId(ctx context.Context, fileID int) ([]entity.Lib
 	// тем же батч-хелпером, что и у доски, — по собранным id, а не JOIN'ом, иначе строка задачи
 	// размножилась бы по числу исполнителей.
 	rows, err := storeutil.QueryListNamed[entity.LibraryFileTask](ctx, s.DB, `
-		SELECT t.id, t.title, t.status, t.due_date, t.board
+		SELECT t.id, t.title, t.status, t.due_date, t.board, t.board_id
 		FROM task_file tf
 		JOIN task t ON t.id = tf.task_id
 		WHERE tf.file_id = :fileId AND `+v.ExistsFile("tf.file_id", params)+`

@@ -39,23 +39,36 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 }
 
 // AddTask inserts a task (content + placement) with its labels and media,
-// appending it to the end of its (board,status) column. Returns the new id.
+// appending it to the end of its (board,status) column. The board comes from t.BoardRef (id wins,
+// else legacy slug); when that is empty, from t.BoardId / t.Board. entity.ErrTaskBoardNotFound when
+// it names no board. Returns the new id; t.BoardId and t.Board are filled with the resolved board.
 func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		ref := t.BoardRef
+		if ref.IsZero() {
+			ref = entity.TaskBoardRef{Id: t.BoardId, Slug: t.Board}
+		}
+		board, err := resolveTaskBoard(ctx, rep.DB(), ref)
+		if err != nil {
+			return err
+		}
+		t.BoardId = board.Id
+		t.Board = board.legacy()
 		if err := ensureProjectTopic(ctx, rep.DB(), t.ProjectTopicId); err != nil {
 			return err
 		}
 		// Append to the end of the target column. Archived tasks are excluded from
 		// position accounting (they are outside the visible sequence).
 		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL`,
-			map[string]any{"board": string(t.Board), "status": string(t.Status)})
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board_id = :boardId AND status = :status AND archived_at IS NULL`,
+			map[string]any{"boardId": board.Id, "status": string(t.Status)})
 		if err != nil {
 			return fmt.Errorf("failed to compute task position: %w", err)
 		}
 		params := taskContentParams(&t.TaskInsert)
 		params["board"] = string(t.Board)
+		params["boardId"] = board.Id
 		params["status"] = string(t.Status)
 		params["position"] = pos
 		params["createdBy"] = t.CreatedBy
@@ -66,8 +79,8 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		// может быть ничьим предком.
 		params["parentTaskId"] = t.ParentTaskId
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO task (title, description, board, status, position, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, parent_task_id, started_at)
-			VALUES (:title, :description, :board, :status, :position, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId, :parentTaskId,
+			INSERT INTO task (title, description, board, board_id, status, position, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, parent_task_id, started_at)
+			VALUES (:title, :description, :board, :boardId, :status, :position, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId, :parentTaskId,
 				CASE WHEN :status = 'in_progress' THEN UTC_TIMESTAMP() ELSE NULL END)`,
 			params)
 		if err != nil {
@@ -169,39 +182,45 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 	return nil
 }
 
-// MoveTask changes a task's placement: board (empty = keep current), column
-// (status), and position within that column, re-sequencing sibling positions so
-// each column stays a gap-free 0..n-1 sequence. Returns sql.ErrNoRows when no
-// task with the given id exists.
-func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int, changedBy string) error {
+// MoveTask changes a task's placement: board (zero ref = keep current; id wins over legacy slug),
+// column (status), and position within that column, re-sequencing sibling positions so each
+// column stays a gap-free 0..n-1 sequence. Returns sql.ErrNoRows when no active task with the
+// given id exists, entity.ErrTaskBoardNotFound when the ref names no board.
+func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoardRef, status entity.TaskStatus, position int, changedBy string) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Only active tasks have a meaningful position in the gap-free sequence.
 		// An archived task carries a frozen, out-of-band position, so moving it
 		// would corrupt the active column — require it be active (NotFound
 		// otherwise; unarchive first).
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NULL`, map[string]any{"id": id})
+			`SELECT board_id, status, position FROM task WHERE id = :id AND archived_at IS NULL`, map[string]any{"id": id})
 		if err != nil {
 			return err // wraps sql.ErrNoRows when missing or archived
 		}
-		if board == "" {
-			board = cur.Board
+		if board.IsZero() {
+			board = entity.TaskBoardRef{Id: cur.BoardId}
+		}
+		// The target row is read even when the board is kept: its slug gives the legacy task.board
+		// value, and rewriting it also realigns a row an old binary left drifted.
+		target, err := resolveTaskBoard(ctx, rep.DB(), board)
+		if err != nil {
+			return err
 		}
 
 		// 1) Close the gap left in the source column. Archived tasks are outside
 		// the position sequence, so they are excluded here and below.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position - 1
-			WHERE board = :board AND status = :status AND archived_at IS NULL AND position > :pos`,
-			map[string]any{"board": string(cur.Board), "status": string(cur.Status), "pos": cur.Position}); err != nil {
+			WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND position > :pos`,
+			map[string]any{"boardId": cur.BoardId, "status": string(cur.Status), "pos": cur.Position}); err != nil {
 			return fmt.Errorf("failed to compact source column: %w", err)
 		}
 
 		// 2) Clamp the target position to the target column's current size
 		// (excluding this task, which is not yet placed there).
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
-			SELECT COUNT(*) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL AND id != :id`,
-			map[string]any{"board": string(board), "status": string(status), "id": id})
+			SELECT COUNT(*) FROM task WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND id != :id`,
+			map[string]any{"boardId": target.Id, "status": string(status), "id": id})
 		if err != nil {
 			return fmt.Errorf("failed to size target column: %w", err)
 		}
@@ -215,15 +234,15 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 		// 3) Open a slot in the target column.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position + 1
-			WHERE board = :board AND status = :status AND archived_at IS NULL AND id != :id AND position >= :pos`,
-			map[string]any{"board": string(board), "status": string(status), "id": id, "pos": position}); err != nil {
+			WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND id != :id AND position >= :pos`,
+			map[string]any{"boardId": target.Id, "status": string(status), "id": id, "pos": position}); err != nil {
 			return fmt.Errorf("failed to open target slot: %w", err)
 		}
 
 		// 4) Place the task.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
-			UPDATE task SET board = :board, status = :status, position = :pos WHERE id = :id`,
-			map[string]any{"board": string(board), "status": string(status), "pos": position, "id": id}); err != nil {
+			UPDATE task SET board_id = :boardId, board = :board, status = :status, position = :pos WHERE id = :id`,
+			map[string]any{"boardId": target.Id, "board": string(target.legacy()), "status": string(status), "pos": position, "id": id}); err != nil {
 			return fmt.Errorf("failed to place task: %w", err)
 		}
 
@@ -271,7 +290,7 @@ func (s *Store) DeleteTask(ctx context.Context, id int) error {
 func (s *Store) ArchiveTask(ctx context.Context, id int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NULL`,
+			`SELECT board_id, status, position FROM task WHERE id = :id AND archived_at IS NULL`,
 			map[string]any{"id": id})
 		if err != nil {
 			return err // wraps sql.ErrNoRows when missing or already archived
@@ -284,8 +303,8 @@ func (s *Store) ArchiveTask(ctx context.Context, id int) error {
 		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position - 1
-			WHERE board = :board AND status = :status AND archived_at IS NULL AND position > :pos`,
-			map[string]any{"board": string(cur.Board), "status": string(cur.Status), "pos": cur.Position}); err != nil {
+			WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND position > :pos`,
+			map[string]any{"boardId": cur.BoardId, "status": string(cur.Status), "pos": cur.Position}); err != nil {
 			return fmt.Errorf("failed to compact column after archive: %w", err)
 		}
 		return nil
@@ -302,14 +321,14 @@ func (s *Store) ArchiveTask(ctx context.Context, id int) error {
 func (s *Store) UnarchiveTask(ctx context.Context, id int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NOT NULL`,
+			`SELECT board_id, status, position FROM task WHERE id = :id AND archived_at IS NOT NULL`,
 			map[string]any{"id": id})
 		if err != nil {
 			return err // wraps sql.ErrNoRows when missing or not archived
 		}
 		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL`,
-			map[string]any{"board": string(cur.Board), "status": string(cur.Status)})
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board_id = :boardId AND status = :status AND archived_at IS NULL`,
+			map[string]any{"boardId": cur.BoardId, "status": string(cur.Status)})
 		if err != nil {
 			return fmt.Errorf("failed to compute unarchive position: %w", err)
 		}
@@ -466,7 +485,7 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 
 // ListTasks returns a paged, optionally filtered list of tasks (with labels and
 // resolved media) plus the total number of matching tasks (ignoring pagination).
-// Without a text query, rows are clustered by (board,status) and ordered by
+// Without a text query, rows are clustered by (board_id,status) and ordered by
 // position so a board renders directly. Search results use relevance ordering.
 func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error) {
 	limit, offset := clampPagination(f.Limit, f.Offset)
@@ -502,8 +521,13 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		}
 	}
 	queryPattern, queryTaskID, hasQuery := taskSearchParams(f.Query)
-	if f.Board != "" {
-		where += " AND board = :board"
+	// board_id wins; the legacy slug (an old client's enum) resolves through task_board, so a
+	// seeded board that was deleted answers empty instead of matching a stale task.board string.
+	if f.BoardId > 0 {
+		where += " AND task.board_id = :boardId"
+		filterParams["boardId"] = f.BoardId
+	} else if f.Board != "" {
+		where += " AND task.board_id = (SELECT tb.id FROM task_board tb WHERE tb.slug = :board)"
 		filterParams["board"] = string(f.Board)
 	}
 	if f.Status != "" {
@@ -616,7 +640,7 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		query = fmt.Sprintf(`
 			SELECT task.* FROM %s
 			WHERE 1=1%s
-			ORDER BY board, status, position %s, id %s
+			ORDER BY board_id, status, position %s, id %s
 			LIMIT :limit OFFSET :offset`, from, where, f.OrderFactor.String(), f.OrderFactor.String())
 	}
 
@@ -902,7 +926,7 @@ func (s *Store) DeleteTaskComment(ctx context.Context, id int) error {
 
 // taskPlacement is the placement subset of a task row, read for a move.
 type taskPlacement struct {
-	Board    entity.TaskBoard  `db:"board"`
+	BoardId  int               `db:"board_id"`
 	Status   entity.TaskStatus `db:"status"`
 	Position int               `db:"position"`
 }

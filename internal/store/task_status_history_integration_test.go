@@ -29,12 +29,12 @@ func TestTaskStatusHistoryRoundTrip(t *testing.T) {
 	require.Equal(t, "test-task-relations", got.StatusHistory[0].ChangedBy)
 
 	// Same status with a different board/position is placement-only and writes no history row.
-	require.NoError(t, s.Tasks().MoveTask(ctx, taskID, entity.TaskBoardDevelopment, entity.TaskStatusTodo, 0, "anna"))
+	require.NoError(t, s.Tasks().MoveTask(ctx, taskID, entity.TaskBoardRef{Slug: entity.TaskBoardDevelopment}, entity.TaskStatusTodo, 0, "anna"))
 	got, err = s.Tasks().GetTaskById(ctx, taskID)
 	require.NoError(t, err)
 	require.Len(t, got.StatusHistory, 1)
 
-	require.NoError(t, s.Tasks().MoveTask(ctx, taskID, "", entity.TaskStatusReview, 0, "anna"))
+	require.NoError(t, s.Tasks().MoveTask(ctx, taskID, entity.TaskBoardRef{}, entity.TaskStatusReview, 0, "anna"))
 	got, err = s.Tasks().GetTaskById(ctx, taskID)
 	require.NoError(t, err)
 	require.Len(t, got.StatusHistory, 2)

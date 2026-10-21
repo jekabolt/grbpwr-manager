@@ -207,6 +207,9 @@ func registerTLSConfig(cfg Config) error {
 }
 
 // New connects to the database, applies migrations and returns a new MYSQLStore object.
+// taskBoardHealDelay is when the second HealTaskBoardIds pass runs: past a rolling deploy's overlap.
+const taskBoardHealDelay = 5 * time.Minute
+
 func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if err := registerTLSConfig(cfg); err != nil {
 		return nil, fmt.Errorf("failed to register TLS config: %w", err)
@@ -305,6 +308,31 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		}
 		return nil, fmt.Errorf("sku readiness check failed: %w", err)
 	}
+
+	// CUSTOM BOARDS (0420): a pre-0420 binary's MoveTask rewrites only task.board and leaves
+	// board_id stale. Heal once now (rows a rolled-back binary moved) and once more after the deploy
+	// overlap, when the old instance is gone. Never fatal: a stale board_id misplaces a card, a
+	// failed start ships nothing.
+	healTaskBoards := func(pass string) {
+		n, hErr := ss.taskStore.HealTaskBoardIds(ctx)
+		if hErr != nil {
+			slog.Default().ErrorContext(ctx, "can't heal task board ids", slog.String("pass", pass), slog.String("err", hErr.Error()))
+			return
+		}
+		if n > 0 {
+			slog.Default().WarnContext(ctx, "healed task board ids", slog.String("pass", pass), slog.Int64("rows", n))
+		}
+	}
+	healTaskBoards("startup")
+	go func() {
+		t := time.NewTimer(taskBoardHealDelay)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+		case <-t.C:
+			healTaskBoards("delayed")
+		}
+	}()
 
 	go func() {
 		<-ctx.Done()

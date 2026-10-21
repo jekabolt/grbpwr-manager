@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -24,7 +25,23 @@ var (
 	ErrTaskReverseBlock = errors.New("these tasks already block each other the other way round")
 )
 
-// TaskBoard is the department lane a kanban task lives in. Stored verbatim.
+// Board refusals. The handler maps them to gRPC codes; the store returns them from inside the
+// writing transaction, where the board row is read under SERIALIZABLE locks.
+var (
+	// ErrTaskBoardNotFound — the referenced board (by id or by legacy slug) does not exist.
+	ErrTaskBoardNotFound = errors.New("task board not found")
+	// ErrTaskBoardLast — deleting it would leave no board at all.
+	ErrTaskBoardLast = errors.New("the last task board cannot be deleted")
+	// ErrTaskBoardNotEmpty — the board still has tasks (archived included) and no move target was given.
+	ErrTaskBoardNotEmpty = errors.New("task board is not empty: choose a board to move its tasks to")
+	// ErrTaskBoardMoveTarget — the move target is the board being deleted or does not exist.
+	ErrTaskBoardMoveTarget = errors.New("invalid board to move tasks to")
+)
+
+// TaskBoard is the LEGACY department-lane enum string (task.board). Since migration 0420 boards are
+// rows of task_board and placement is Task.BoardId; the six former enum values survive as the
+// seeded boards' slugs, so an old client's enum still resolves. task.board is written as the slug
+// for a seeded board and as TaskBoardLegacyValue(id) for a custom one, until the column is dropped.
 type TaskBoard string
 
 const (
@@ -36,7 +53,7 @@ const (
 	TaskBoardContent     TaskBoard = "content"
 )
 
-// ValidTaskBoards is the set of accepted task boards.
+// ValidTaskBoards is the set of seeded-board slugs (the former enum).
 var ValidTaskBoards = map[TaskBoard]bool{
 	TaskBoardDevelopment: true,
 	TaskBoardDesign:      true,
@@ -44,6 +61,45 @@ var ValidTaskBoards = map[TaskBoard]bool{
 	TaskBoardProduction:  true,
 	TaskBoardSourcing:    true,
 	TaskBoardContent:     true,
+}
+
+// TaskBoardNameMaxLen bounds a board name (task_board.name VARCHAR(64)).
+const TaskBoardNameMaxLen = 64
+
+// TaskBoardRef names a board on the way IN: Id wins; otherwise Slug (an old client's enum); both
+// zero = "none" (MoveTask: keep the current board).
+type TaskBoardRef struct {
+	Id   int
+	Slug TaskBoard
+}
+
+// IsZero reports that neither an id nor a slug was given.
+func (r TaskBoardRef) IsZero() bool { return r.Id <= 0 && r.Slug == "" }
+
+// TaskBoardEntry is one board row with its task counts, as the board rail draws it.
+type TaskBoardEntry struct {
+	Id   int    `db:"id"`
+	Name string `db:"name"`
+	// Slug is the former enum string for the six seeded boards; invalid/NULL = a custom board.
+	Slug      sql.NullString `db:"slug"`
+	Position  int            `db:"position"`
+	CreatedBy string         `db:"created_by"`
+	CreatedAt time.Time      `db:"created_at"`
+	UpdatedAt time.Time      `db:"updated_at"`
+	// TaskCount counts active (non-archived) tasks; ArchivedTaskCount the archived ones, which a
+	// delete moves too.
+	TaskCount         int `db:"task_count"`
+	ArchivedTaskCount int `db:"archived_task_count"`
+}
+
+// TaskBoardLegacyValue is what task.board holds for a board: its slug when seeded, otherwise
+// "custom-<id>" — unique per board, so a rolled-back binary's (board,status,position) arithmetic
+// stays per-board correct.
+func TaskBoardLegacyValue(id int, slug sql.NullString) TaskBoard {
+	if slug.Valid && slug.String != "" {
+		return TaskBoard(slug.String)
+	}
+	return TaskBoard("custom-" + strconv.Itoa(id))
 }
 
 // TaskStatus is the kanban column a task sits in.
@@ -150,10 +206,14 @@ type TaskMediaAnnotations struct {
 type Task struct {
 	Id int `db:"id"`
 	TaskInsert
-	Board    TaskBoard   `db:"board"`
-	Status   TaskStatus  `db:"status"`
-	Position int         `db:"position"`
-	Media    []MediaFull `db:"-"`
+	// Board is the legacy enum string (see TaskBoard); BoardId is the placement. On AddTask the
+	// store resolves the board from BoardRef and fills both.
+	Board    TaskBoard    `db:"board"`
+	BoardId  int          `db:"board_id"`
+	BoardRef TaskBoardRef `db:"-"`
+	Status   TaskStatus   `db:"status"`
+	Position int          `db:"position"`
+	Media    []MediaFull  `db:"-"`
 	// Files are the resolved library attachments. Resolved by the handler rather
 	// than the task store, so the task store never has to know the files store.
 	Files     []LibraryFile `db:"-"`
@@ -249,6 +309,7 @@ type TaskLink struct {
 	Title    string       `db:"title"`
 	Status   TaskStatus   `db:"status"`
 	Board    TaskBoard    `db:"board"`
+	BoardId  int          `db:"board_id"`
 	Archived bool         `db:"archived"`
 }
 
@@ -282,13 +343,15 @@ type LibraryFileTask struct {
 	DueDate sql.NullTime `db:"due_date"`
 	// Board is the department lane, чтобы строка говорила, ГДЕ живёт работа: один и тот же файл
 	// висит на задачах из разных досок одновременно.
-	Board TaskBoard `db:"board"`
+	Board   TaskBoard `db:"board"`
+	BoardId int       `db:"board_id"`
 }
 
 // TaskListFilter narrows a ListTasks query. Zero-value fields are "no filter".
 type TaskListFilter struct {
-	Board  TaskBoard  // "" = all boards
-	Status TaskStatus // "" = all columns
+	BoardId int        // 0 = no filter; wins over Board
+	Board   TaskBoard  // legacy enum slug; "" = all boards
+	Status  TaskStatus // "" = all columns
 	// Assignee — ЧЛЕНСТВО в списке исполнителей, а не равенство одному полю: «мои» находит и
 	// задачи, где я второй. "" = any assignee.
 	Assignee        string

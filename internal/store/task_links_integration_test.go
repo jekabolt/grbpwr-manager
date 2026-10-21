@@ -187,7 +187,7 @@ func TestTaskParentCycleAndCascade(t *testing.T) {
 	require.Equal(t, 0, got.SubtaskDone)
 
 	// Доделанный ребёнок считается сделанным — иначе счётчик «1 из 3» не сдвинулся бы никогда.
-	require.NoError(t, s.Tasks().MoveTask(ctx, taskB, entity.TaskBoardDesign, entity.TaskStatusDone, 0, ""))
+	require.NoError(t, s.Tasks().MoveTask(ctx, taskB, entity.TaskBoardRef{Slug: entity.TaskBoardDesign}, entity.TaskStatusDone, 0, ""))
 	got, err = s.Tasks().GetTaskById(ctx, taskA)
 	require.NoError(t, err)
 	require.Equal(t, 1, got.SubtaskTotal)

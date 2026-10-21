@@ -707,6 +707,11 @@ var methodRequirements = map[string]Requirement{
 	"AddTaskComment":   wr(SectionTasks),
 	"ListTaskComments": rd(SectionTasks),
 	"ListTasks":        rd(SectionTasks),
+	// Custom boards (0420): the rail is read with the board, edited under the same write right.
+	"ListTaskBoards":  rd(SectionTasks),
+	"AddTaskBoard":    wr(SectionTasks),
+	"UpdateTaskBoard": wr(SectionTasks),
+	"DeleteTaskBoard": wr(SectionTasks),
 
 	// files library
 	"GetLibraryFile":    rd(SectionFiles),

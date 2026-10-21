@@ -54,6 +54,38 @@
   `newAdminJSONMarshaler`, `internal/api/http/http.go`) — `reserved 3;` / `reserved 4;` плюс
   `reserved "assignee";`.
 
+## `task.board` + индекс `idx_task_board_status_pos` (свои доски, custom-boards)
+
+- **Осиротели**: волной своих досок (`0420_task_board.sql`, 2026-10-21, план `tmp/plans/custom-boards/`).
+  Доска задачи теперь `task.board_id` → `task_board(id)` (FK `fk_task_board`, индекс
+  `idx_task_board_id_status_pos`). Шесть бывших enum-досок засеяны id 1..6 и держат свою строку в
+  `task_board.slug`; CHECK на `task.board` снят той же миграцией.
+- **Кто читает/пишет сегодня**: новый бинарь всё раскладывает по `board_id`, а `board` только
+  ДОПИСЫВАЕТ: slug для засеянной доски, `custom-<id>` для своей (`entity.TaskBoardLegacyValue`).
+  Читают `board` лишь `HealTaskBoardIds` (`internal/store/task/boards.go`, вызов при старте и через
+  5 минут в `internal/store/store.go`) и выражение-DEFAULT у `board_id`. Наружу колонка уходит
+  deprecated-полем enum (`Task.board = 3`, `TaskLink.board = 5`, `LibraryFileTask.board = 6`).
+- **Почему не дропнута сразу**: до-волновой бинарь раскладывает задачи по `board` и именует её в
+  INSERT/UPDATE; откат образа после дропа ронял бы весь канбан.
+- **Что сделать потом** (отдельной миграцией, после того как прод отработал на бинаре 0420), строго
+  в таком порядке, каждый шаг под гвардом по `information_schema`
+  (`PREPARE`/`EXECUTE`/`DEALLOCATE` по одному оператору на строку):
+
+  ```sql
+  ALTER TABLE task ALTER COLUMN board_id DROP DEFAULT
+  ALTER TABLE task DROP INDEX idx_task_board_status_pos, DROP COLUMN board
+  ```
+
+  Первый шаг обязателен: DEFAULT у `board_id` — выражение над `board`, и пока он висит, MySQL не
+  даст снести колонку (ошибка 3766, проверено на 8.0). В том же коммите: убрать `HealTaskBoardIds` и оба его вызова из
+  `store.go`, перестать писать `board` в `internal/store/task/{task,boards}.go`, убрать `Board` из
+  `entity.Task`, `TaskLink`, `LibraryFileTask`; `task_board.slug` остаётся мостом enum → id, пока
+  на проводе живы deprecated-поля.
+- **Контракт** (по процедуре retired-полей, см. раздел про `TaskInsert.assignee` выше): `reserved` на
+  `Task.board = 3`, `TaskLink.board = 5`, `LibraryFileTask.board = 6`, `AddTaskRequest.board = 2`,
+  `MoveTaskRequest.board = 2`, `ListTasksRequest.board = 1` и enum `TaskBoard` — только когда ни один
+  клиент их не шлёт.
+
 ## `tech_card_label` + `tech_card_packaging.polybag / bag_sticker / inserts` (переделка этикеток, I-19)
 
 - **Осиротели**: волной переделки этикеток (`0386_labels_rework.sql`, 2026-09-30, план

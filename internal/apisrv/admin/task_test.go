@@ -46,8 +46,8 @@ func TestAddTaskStampsIdentityAndDefaults(t *testing.T) {
 	if captured.CreatedBy != "olya" {
 		t.Errorf("created_by not stamped from JWT: %q", captured.CreatedBy)
 	}
-	if captured.Board != entity.TaskBoardDesign {
-		t.Errorf("board mismatch: %v", captured.Board)
+	if captured.BoardRef != (entity.TaskBoardRef{Slug: entity.TaskBoardDesign}) {
+		t.Errorf("legacy enum must resolve to its seeded slug, got %+v", captured.BoardRef)
 	}
 	if captured.Status != entity.TaskStatusTodo {
 		t.Errorf("status should default to todo, got %v", captured.Status)
@@ -90,7 +90,7 @@ func TestMoveTaskKeepCurrentBoardAndNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tasks := mocks.NewMockTasks(t)
 	repo.EXPECT().Tasks().Return(tasks)
-	tasks.EXPECT().MoveTask(mock.Anything, 5, entity.TaskBoard(""), entity.TaskStatusReview, 3, "anna").
+	tasks.EXPECT().MoveTask(mock.Anything, 5, entity.TaskBoardRef{}, entity.TaskStatusReview, 3, "anna").
 		Return(sql.ErrNoRows)
 
 	s := &Server{repo: repo}
