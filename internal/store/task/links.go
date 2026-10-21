@@ -186,6 +186,7 @@ type taskLinkRow struct {
 	Title       string `db:"title"`
 	Status      string `db:"status"`
 	Board       string `db:"board"`
+	BoardID     int    `db:"board_id"`
 	Archived    bool   `db:"archived"`
 }
 
@@ -202,7 +203,7 @@ func (s *Store) linksByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 	rows, err := storeutil.QueryListNamed[taskLinkRow](ctx, s.DB, `
 		SELECT l.from_task_id AS owner_task_id, l.to_task_id AS task_id,
 		       IF(l.kind = 'blocks', 'blocks', 'relates') AS role,
-		       t.title AS title, t.status AS status, t.board AS board,
+		       t.title AS title, t.status AS status, t.board AS board, t.board_id AS board_id,
 		       (t.archived_at IS NOT NULL) AS archived
 		FROM task_link l
 		JOIN task t ON t.id = l.to_task_id
@@ -210,7 +211,7 @@ func (s *Store) linksByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 		UNION ALL
 		SELECT l.to_task_id AS owner_task_id, l.from_task_id AS task_id,
 		       IF(l.kind = 'blocks', 'blocked_by', 'relates') AS role,
-		       t.title AS title, t.status AS status, t.board AS board,
+		       t.title AS title, t.status AS status, t.board AS board, t.board_id AS board_id,
 		       (t.archived_at IS NOT NULL) AS archived
 		FROM task_link l
 		JOIN task t ON t.id = l.from_task_id
@@ -228,6 +229,7 @@ func (s *Store) linksByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 			Title:       r.Title,
 			Status:      entity.TaskStatus(r.Status),
 			Board:       entity.TaskBoard(r.Board),
+			BoardId:     r.BoardID,
 			Archived:    r.Archived,
 		})
 	}

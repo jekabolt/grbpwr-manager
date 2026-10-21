@@ -282,6 +282,11 @@ envs:
 - key: ORDER_CLEANUP_PLACED_THRESHOLD
   scope: RUN_TIME
   value: 24h
+# DONE cards stay visible for two weeks after their latest transition into DONE, then the hourly
+# taskarchive worker soft-archives them through the normal ArchiveTask path.
+- key: TASK_AUTO_ARCHIVE_RETENTION_PERIOD
+  scope: RUN_TIME
+  value: 336h
 # Delivery sync (shipped -> delivered): polls AfterShip for a real delivery signal and, as a
 # safety net, silently delivers stuck/untrackable shipments after the per-carrier window.
 - key: DELIVERY_SYNC_WORKER_INTERVAL

@@ -636,13 +636,37 @@ type (
 		AddTask(ctx context.Context, t *entity.Task) (int, error)
 		GetTaskById(ctx context.Context, id int) (*entity.Task, error)
 		UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) error
-		MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int) error
+		// MoveTask: a zero board ref keeps the current board; entity.ErrTaskBoardNotFound when the ref
+		// names no board.
+		MoveTask(ctx context.Context, id int, board entity.TaskBoardRef, status entity.TaskStatus, position int, changedBy string) error
 		DeleteTask(ctx context.Context, id int) error
 		ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error)
+		GetTaskClosedByIds(ctx context.Context, ids []int) (map[int]entity.TaskClosed, error)
+		GetTaskTimingByIds(ctx context.Context, ids []int) (map[int]entity.TaskTiming, error)
+		ListTaskIdsToAutoArchive(ctx context.Context, closedBefore time.Time) ([]int, error)
 		AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert, author string) (int, error)
 		ListTaskComments(ctx context.Context, taskID int) ([]entity.TaskComment, error)
 		ArchiveTask(ctx context.Context, id int) error
 		UnarchiveTask(ctx context.Context, id int) error
+
+		// --- Boards (0420): task_board rows; the six seeded ones keep the old enum as slug ---
+
+		ListTaskBoards(ctx context.Context) ([]entity.TaskBoardEntry, error)
+		// GetTaskBoardById: sql.ErrNoRows (wrapped) when missing.
+		GetTaskBoardById(ctx context.Context, id int) (*entity.TaskBoardEntry, error)
+		// AddTaskBoard appends a custom board; a taken name is a unique violation.
+		AddTaskBoard(ctx context.Context, name, createdBy string) (int, error)
+		// ReorderTaskBoards atomically assigns positions 0..n-1. ids must name every current board
+		// exactly once or it returns entity.ErrTaskBoardSetMismatch without changing any position.
+		ReorderTaskBoards(ctx context.Context, ids []int) ([]entity.TaskBoardEntry, error)
+		// RenameTaskBoard: sql.ErrNoRows when missing; a taken name is a unique violation.
+		RenameTaskBoard(ctx context.Context, id int, name string) error
+		// DeleteTaskBoard moves the board's tasks (archived included) to moveToId, appended per
+		// column, then deletes it. entity.ErrTaskBoardNotFound / ErrTaskBoardLast /
+		// ErrTaskBoardNotEmpty / ErrTaskBoardMoveTarget.
+		DeleteTaskBoard(ctx context.Context, id, moveToId int) error
+		// HealTaskBoardIds realigns board_id with a seeded task.board slug a pre-0420 binary moved.
+		HealTaskBoardIds(ctx context.Context) (int64, error)
 		AddTaskChecklistItem(ctx context.Context, taskID int, content string) (int, error)
 		SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error
 		DeleteTaskChecklistItem(ctx context.Context, id int) error

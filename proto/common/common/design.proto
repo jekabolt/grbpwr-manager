@@ -377,7 +377,7 @@ message DesignRunParams {
 
   // THE MASK RETOUCH OF A PLAYGROUND RUN (kind=inpaint). Refused on every other kind (`inpaint_forbidden`).
   DesignInpaintParams inpaint = 17;
-  // THE TARGET FORMAT OF AN EXTEND RUN (kind=extend). Refused on every other kind (`extend_forbidden`).
+  // THE TARGET CANVAS OF AN EXTEND RUN (kind=extend). Refused on every other kind (`extend_forbidden`).
   DesignExtendParams extend = 18;
   // THE SOURCE PICTURE OF A VIDEO RUN (kind=video, B-32). Refused on every other kind (`video_forbidden`).
   DesignVideoParams video = 19;
@@ -461,16 +461,28 @@ message DesignInpaintParams {
   int32 mask_media_id = 2; // FK media(id); the mask PNG, same width and height as the source
 }
 
-// DesignExtendParams — the final proportion of an extend (outpaint) run. The ONE source travels in
+// DesignExtendParams — the canvas of an extend (outpaint) run. The ONE source travels in
 // DesignRunParams.extra_input_media_ids (exactly one, `one_source_picture`); the route takes no words
-// (`extend_takes_no_words`). aspect_ratio ∈ 9:16 | 1:1 | 3:4 | 2:3 | 16:9 | 4:3 | 3:2 | 21:9 | 9:21 — never auto
-// (`extend_aspect_unknown`); a target that adds no pixels on either side is `target_aspect_must_extend`. The
-// server computes the per-side expansion, caps the canvas at 3 megapixels (downscaling the source first), and
-// re-composites the untouched source pixels into the answer, stored as a lossless PNG, so «the original is kept» is a
-// fact of the pixels: the source region is the source's own decoded pixels (at the scale the cap allows). The source
-// may be at most 18 MP (`source_too_large`).
+// (`extend_takes_no_words`). There are two modes, selected by FIELD PRESENCE rather than by a non-zero value:
+//   · with none of expand_top / bottom / left / right present, the old aspect-ratio mode is unchanged:
+//     aspect_ratio ∈ 9:16 | 1:1 | 3:4 | 2:3 | 16:9 | 4:3 | 3:2 | 21:9 | 9:21 — never auto
+//     (`extend_aspect_unknown`), and the source is centred on the axis the target grows;
+//   · with ANY expand_* present, the sides are whole pixels in the SOURCE picture's coordinates and the canvas is
+//     exactly source + those four sides. Omitted sides are zero; aspect_ratio may be empty and does not place the
+//     source. Every side must be non-negative and at most 3× its corresponding source side (`extend_sides_invalid`).
+//
+// A request that adds no pixels is `target_aspect_must_extend` in either mode (so four explicitly present zeroes do
+// not buy a no-op). The server caps the canvas at 3 megapixels by downscaling the source AND all four stated sides
+// together, and re-composites the untouched source pixels into the answer, stored as a lossless PNG, so «the original
+// is kept» is a fact of the pixels: the source region is the source's own decoded pixels (at the scale the cap allows).
+// The source may be at most 18 MP (`source_too_large`).
 message DesignExtendParams {
+  // Legacy target mode. Ignored for placement when any expand_* field is present.
   string aspect_ratio = 1;
+  optional int32 expand_top = 2;
+  optional int32 expand_bottom = 3;
+  optional int32 expand_left = 4;
+  optional int32 expand_right = 5;
 }
 
 // DesignPatternParams is the frozen ask of a REPEATING-TILE run (kind=pattern, K-13).

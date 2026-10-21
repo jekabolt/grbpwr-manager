@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (427 rpc) ----
+// ---- admin (435 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -136,6 +136,14 @@ func (c *Client) AddShipmentCarrier(ctx context.Context, in *admin.AddShipmentCa
 func (c *Client) AddTask(ctx context.Context, in *admin.AddTaskRequest) (*admin.AddTaskResponse, error) {
 	out := new(admin.AddTaskResponse)
 	if err := c.call(ctx, "POST", "/api/admin/task/add", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) AddTaskBoard(ctx context.Context, in *admin.AddTaskBoardRequest) (*admin.AddTaskBoardResponse, error) {
+	out := new(admin.AddTaskBoardResponse)
+	if err := c.call(ctx, "POST", "/api/admin/task/board/add", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -789,6 +797,14 @@ func (c *Client) DeleteTask(ctx context.Context, in *admin.DeleteTaskRequest) (*
 	return out, nil
 }
 
+func (c *Client) DeleteTaskBoard(ctx context.Context, in *admin.DeleteTaskBoardRequest) (*admin.DeleteTaskBoardResponse, error) {
+	out := new(admin.DeleteTaskBoardResponse)
+	if err := c.call(ctx, "DELETE", "/api/admin/task/board/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) DeleteTaskChecklistItem(ctx context.Context, in *admin.DeleteTaskChecklistItemRequest) (*admin.DeleteTaskChecklistItemResponse, error) {
 	out := new(admin.DeleteTaskChecklistItemResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/task/checklist/{id}", in, out); err != nil {
@@ -880,6 +896,14 @@ func (c *Client) DisablePromoCode(ctx context.Context, in *admin.DisablePromoCod
 func (c *Client) DraftDesignIdea(ctx context.Context, in *admin.DraftDesignIdeaRequest) (*admin.DraftDesignIdeaResponse, error) {
 	out := new(admin.DraftDesignIdeaResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/design/draft-idea", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DraftFittingEdits(ctx context.Context, in *admin.DraftFittingEditsRequest) (*admin.DraftFittingEditsResponse, error) {
+	out := new(admin.DraftFittingEditsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/fittings/{fitting_id}/draft-edits", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1957,6 +1981,22 @@ func (c *Client) ListMaterials(ctx context.Context, in *admin.ListMaterialsReque
 	return out, nil
 }
 
+func (c *Client) ListMediaFacets(ctx context.Context, in *admin.ListMediaFacetsRequest) (*admin.ListMediaFacetsResponse, error) {
+	out := new(admin.ListMediaFacetsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/content/facets", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListMediaMonths(ctx context.Context, in *admin.ListMediaMonthsRequest) (*admin.ListMediaMonthsResponse, error) {
+	out := new(admin.ListMediaMonthsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/content/months", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListMembers(ctx context.Context, in *admin.ListMembersRequest) (*admin.ListMembersResponse, error) {
 	out := new(admin.ListMembersResponse)
 	if err := c.call(ctx, "GET", "/api/admin/members", in, out); err != nil {
@@ -2144,6 +2184,14 @@ func (c *Client) ListSuppliers(ctx context.Context, in *admin.ListSuppliersReque
 func (c *Client) ListTags(ctx context.Context, in *admin.ListTagsRequest) (*admin.ListTagsResponse, error) {
 	out := new(admin.ListTagsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/dictionaries/tags", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListTaskBoards(ctx context.Context, in *admin.ListTaskBoardsRequest) (*admin.ListTaskBoardsResponse, error) {
+	out := new(admin.ListTaskBoardsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/task/board/list", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2408,6 +2456,14 @@ func (c *Client) RenderCampaignPreview(ctx context.Context, in *admin.RenderCamp
 func (c *Client) ReopenAcctPeriod(ctx context.Context, in *admin.ReopenAcctPeriodRequest) (*admin.ReopenAcctPeriodResponse, error) {
 	out := new(admin.ReopenAcctPeriodResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/periods/reopen", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ReorderTaskBoards(ctx context.Context, in *admin.ReorderTaskBoardsRequest) (*admin.ReorderTaskBoardsResponse, error) {
+	out := new(admin.ReorderTaskBoardsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/task/board/reorder", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -3184,6 +3240,14 @@ func (c *Client) UpdateTag(ctx context.Context, in *admin.UpdateTagRequest) (*ad
 func (c *Client) UpdateTask(ctx context.Context, in *admin.UpdateTaskRequest) (*admin.UpdateTaskResponse, error) {
 	out := new(admin.UpdateTaskResponse)
 	if err := c.call(ctx, "POST", "/api/admin/task/update", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateTaskBoard(ctx context.Context, in *admin.UpdateTaskBoardRequest) (*admin.UpdateTaskBoardResponse, error) {
+	out := new(admin.UpdateTaskBoardResponse)
+	if err := c.call(ctx, "POST", "/api/admin/task/board/update", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

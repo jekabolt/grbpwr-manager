@@ -96,10 +96,33 @@ type videoParams struct {
 	Model         string `json:"model"`
 }
 
-// extendParams — DesignExtendParams: the target proportion of an extend run (the source travels in
-// extra_input_media_ids).
+// extendParams — DesignExtendParams: either the legacy target proportion or optional per-side
+// source-pixel expansion of an extend run (the source travels in extra_input_media_ids). Pointers
+// carry proto optional PRESENCE through the frozen JSON; four stated zeroes are a per-side no-op,
+// not the legacy ratio mode.
 type extendParams struct {
-	AspectRatio string `json:"aspect_ratio"`
+	AspectRatio  string `json:"aspect_ratio"`
+	ExpandTop    *int   `json:"expand_top"`
+	ExpandBottom *int   `json:"expand_bottom"`
+	ExpandLeft   *int   `json:"expand_left"`
+	ExpandRight  *int   `json:"expand_right"`
+}
+
+func (p *extendParams) sides() (ExtendSides, bool) {
+	if p == nil {
+		return ExtendSides{}, false
+	}
+	present := p.ExpandTop != nil || p.ExpandBottom != nil || p.ExpandLeft != nil || p.ExpandRight != nil
+	value := func(v *int) int {
+		if v == nil {
+			return 0
+		}
+		return *v
+	}
+	return ExtendSides{
+		Top: value(p.ExpandTop), Bottom: value(p.ExpandBottom),
+		Left: value(p.ExpandLeft), Right: value(p.ExpandRight),
+	}, present
 }
 
 // inpaintParams — DesignInpaintParams: the picture to repaint and its painted mask (white = repaint).

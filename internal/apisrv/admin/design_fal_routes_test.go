@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // ═══ B-13 — kind=extend AT THE LIVE DOOR, and the capability it advertises ═══
@@ -65,6 +66,14 @@ func falDoorRows() []falDoorRow {
 		{name: "legal extend with known dims", kind: entity.DesignRunKindExtend,
 			params: extendParams("16:9", designRefMediaID),
 			setup:  []func(*testing.T, *designRunRig){routes, pgMediaDims(designRefMediaID, 600, 800)}, price: "0.12"},
+		{name: "legal per-side extend needs no aspect ratio", kind: entity.DesignRunKindExtend,
+			params: &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{designRefMediaID},
+				Extend: &pb_common.DesignExtendParams{ExpandTop: proto.Int32(120), ExpandLeft: proto.Int32(40)}},
+			setup: []func(*testing.T, *designRunRig){routes, pgMediaDims(designRefMediaID, 600, 800)}, price: "0.12"},
+		{name: "per-side placement wins over a stale aspect ratio", kind: entity.DesignRunKindExtend,
+			params: &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{designRefMediaID},
+				Extend: &pb_common.DesignExtendParams{AspectRatio: "auto", ExpandRight: proto.Int32(40)}},
+			setup: []func(*testing.T, *designRunRig){routes, pgMediaDims(designRefMediaID, 600, 800)}, price: "0.12"},
 		{name: "no source", kind: entity.DesignRunKindExtend, params: extendParams("21:9"),
 			setup: []func(*testing.T, *designRunRig){routes}, want: entity.DesignErrorCodeOneSourcePicture},
 		{name: "two sources", kind: entity.DesignRunKindExtend, params: extendParams("21:9", designRefMediaID, designPlateMediaID),
@@ -82,6 +91,19 @@ func falDoorRows() []falDoorRow {
 			params: extendParams("3:4", designRefMediaID),
 			setup:  []func(*testing.T, *designRunRig){routes, pgMediaDims(designRefMediaID, 600, 800)},
 			want:   entity.DesignErrorCodeTargetAspectMustExtend},
+		{name: "explicit per-side zero is a no-op", kind: entity.DesignRunKindExtend,
+			params: &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{designRefMediaID},
+				Extend: &pb_common.DesignExtendParams{ExpandTop: proto.Int32(0)}},
+			setup: []func(*testing.T, *designRunRig){routes}, want: entity.DesignErrorCodeTargetAspectMustExtend},
+		{name: "a negative side is invalid", kind: entity.DesignRunKindExtend,
+			params: &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{designRefMediaID},
+				Extend: &pb_common.DesignExtendParams{ExpandBottom: proto.Int32(-1)}},
+			setup: []func(*testing.T, *designRunRig){routes}, want: entity.DesignErrorCodeExtendSidesInvalid},
+		{name: "a side over three source sides is invalid", kind: entity.DesignRunKindExtend,
+			params: &pb_common.DesignRunParams{ExtraInputMediaIds: []int32{designRefMediaID},
+				Extend: &pb_common.DesignExtendParams{ExpandLeft: proto.Int32(1801)}},
+			setup: []func(*testing.T, *designRunRig){routes, pgMediaDims(designRefMediaID, 600, 800)},
+			want:  entity.DesignErrorCodeExtendSidesInvalid},
 		{name: "a source too small to extend", kind: entity.DesignRunKindExtend,
 			params: extendParams("21:9", designRefMediaID),
 			setup:  []func(*testing.T, *designRunRig){routes, pgMediaDims(designRefMediaID, 50, 50)},
@@ -141,6 +163,32 @@ func TestTheExtendDoorREFUSES_BEFORE_THE_STORE(t *testing.T) {
 			require.Nil(t, rig.sent, "refused before the store: nothing reserved")
 		})
 	}
+}
+
+// TestAnExtendRunISALLOWED_ON_THE_MODEL_PHOTO_SYSTEM_CARD — Dictionary.model_photo_tech_card_id is
+// an ordinary StartDesignRun owner even though list/edit/delete hide or protect it. Cutout already
+// relies on that path; passport framing must reach the same id without a special-card refusal.
+func TestAnExtendRunISALLOWED_ON_THE_MODEL_PHOTO_SYSTEM_CARD(t *testing.T) {
+	armModelPhotoCard(t)
+	rig := newDesignRunRigForCardID(t, testModelPhotoCardID, &entity.TechCard{}, &entity.DesignBand{})
+	withFalRoutes(fal.Config{})(t, rig)
+	pgMediaDims(designRefMediaID, 600, 800)(t, rig)
+
+	req := designStartRequest(entity.DesignRunKindExtend)
+	req.TechCardId = testModelPhotoCardID
+	req.Params = &pb_common.DesignRunParams{
+		ExtraInputMediaIds: []int32{designRefMediaID},
+		Extend: &pb_common.DesignExtendParams{
+			ExpandTop: proto.Int32(120), ExpandBottom: proto.Int32(24),
+			ExpandLeft: proto.Int32(8), ExpandRight: proto.Int32(16),
+		},
+	}
+
+	_, err := rig.srv.StartDesignRun(designRunCtx(), req)
+	require.NoError(t, err)
+	require.NotNil(t, rig.sent)
+	require.Equal(t, testModelPhotoCardID, rig.sent.TechCardId)
+	require.Equal(t, entity.DesignRunKindExtend, rig.sent.Kind)
 }
 
 // TestRunKindsLISTS_A_FAL_KIND_ONLY_WITH_A_BOUNDED_ROUTE — band field 32 and playground_workflows

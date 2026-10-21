@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // AddTask stamps created_by from the JWT, maps the board, and defaults the column
@@ -44,8 +46,8 @@ func TestAddTaskStampsIdentityAndDefaults(t *testing.T) {
 	if captured.CreatedBy != "olya" {
 		t.Errorf("created_by not stamped from JWT: %q", captured.CreatedBy)
 	}
-	if captured.Board != entity.TaskBoardDesign {
-		t.Errorf("board mismatch: %v", captured.Board)
+	if captured.BoardRef != (entity.TaskBoardRef{Slug: entity.TaskBoardDesign}) {
+		t.Errorf("legacy enum must resolve to its seeded slug, got %+v", captured.BoardRef)
 	}
 	if captured.Status != entity.TaskStatusTodo {
 		t.Errorf("status should default to todo, got %v", captured.Status)
@@ -88,17 +90,210 @@ func TestMoveTaskKeepCurrentBoardAndNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tasks := mocks.NewMockTasks(t)
 	repo.EXPECT().Tasks().Return(tasks)
-	tasks.EXPECT().MoveTask(mock.Anything, 5, entity.TaskBoard(""), entity.TaskStatusReview, 3).
+	tasks.EXPECT().MoveTask(mock.Anything, 5, entity.TaskBoardRef{}, entity.TaskStatusReview, 3, "anna").
 		Return(sql.ErrNoRows)
 
 	s := &Server{repo: repo}
-	_, err := s.MoveTask(context.Background(), &pb_admin.MoveTaskRequest{
+	ctx := authsrv.PutAdminUsername(context.Background(), "anna")
+	_, err := s.MoveTask(ctx, &pb_admin.MoveTaskRequest{
 		Id:       5,
 		Status:   pb_common.TaskStatus_TASK_STATUS_REVIEW,
 		Position: 3,
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Errorf("want NotFound, got %v", err)
+	}
+}
+
+func TestGetTaskReturnsStatusHistory(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+
+	changedAt := time.Date(2026, 10, 21, 12, 35, 0, 0, time.UTC)
+	createdAt := changedAt.Add(-time.Hour)
+	tasks.EXPECT().GetTaskById(mock.Anything, 5).Return(&entity.Task{
+		Id:        5,
+		Status:    entity.TaskStatusDone,
+		CreatedAt: createdAt,
+		StatusHistory: []entity.TaskStatusChange{{
+			TaskId:     5,
+			FromStatus: sql.NullString{String: string(entity.TaskStatusReview), Valid: true},
+			ToStatus:   entity.TaskStatusDone,
+			ChangedBy:  "jeka",
+			ChangedAt:  changedAt,
+		}, {
+			TaskId:    5,
+			ChangedBy: "olya",
+			ChangedAt: createdAt,
+		}},
+	}, nil)
+
+	s := &Server{repo: repo}
+	resp, err := s.GetTask(context.Background(), &pb_admin.GetTaskRequest{Id: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.StatusHistory) != 2 {
+		t.Fatalf("status_history length = %d, want 2", len(resp.StatusHistory))
+	}
+	got := resp.StatusHistory[0]
+	if got.FromStatus != pb_common.TaskStatus_TASK_STATUS_REVIEW || got.ToStatus != pb_common.TaskStatus_TASK_STATUS_DONE {
+		t.Errorf("statuses = %v -> %v, want REVIEW -> DONE", got.FromStatus, got.ToStatus)
+	}
+	if got.ChangedBy != "jeka" {
+		t.Errorf("changed_by = %q, want jeka", got.ChangedBy)
+	}
+	if !got.ChangedAt.AsTime().Equal(changedAt) {
+		t.Errorf("changed_at = %v, want %v", got.ChangedAt.AsTime(), changedAt)
+	}
+	legacy := resp.StatusHistory[1]
+	if legacy.FromStatus != pb_common.TaskStatus_TASK_STATUS_UNKNOWN || legacy.ToStatus != pb_common.TaskStatus_TASK_STATUS_UNKNOWN {
+		t.Errorf("legacy creation statuses = %v -> %v, want UNKNOWN -> UNKNOWN", legacy.FromStatus, legacy.ToStatus)
+	}
+	if legacy.ChangedBy != "olya" || !legacy.ChangedAt.AsTime().Equal(createdAt) {
+		t.Errorf("legacy creation = %q at %v, want olya at %v", legacy.ChangedBy, legacy.ChangedAt.AsTime(), createdAt)
+	}
+}
+
+func TestGetTaskExposesApproximateStatusHistory(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+
+	changedAt := time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC)
+	tasks.EXPECT().GetTaskById(mock.Anything, 8).Return(&entity.Task{
+		Id:     8,
+		Status: entity.TaskStatusDone,
+		StatusHistory: []entity.TaskStatusChange{{
+			TaskId:      8,
+			ToStatus:    entity.TaskStatusDone,
+			ChangedAt:   changedAt,
+			Approximate: true,
+		}},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).GetTask(context.Background(), &pb_admin.GetTaskRequest{Id: 8})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.StatusHistory) != 1 {
+		t.Fatalf("status_history length = %d, want 1", len(resp.StatusHistory))
+	}
+	got := resp.StatusHistory[0]
+	if got.FromStatus != pb_common.TaskStatus_TASK_STATUS_UNKNOWN || got.ToStatus != pb_common.TaskStatus_TASK_STATUS_DONE {
+		t.Errorf("statuses = %v -> %v, want UNKNOWN -> DONE", got.FromStatus, got.ToStatus)
+	}
+	if !got.Approximate {
+		t.Error("approximate backfill row lost its marker")
+	}
+}
+
+func TestListTasksClosedRangeReturnsBatchedClosingMetadata(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	closed7 := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	closed9 := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	reviewSince := time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)
+
+	tasks.EXPECT().ListTasks(mock.Anything, mock.MatchedBy(func(f entity.TaskListFilter) bool {
+		return f.ClosedFrom.Valid && f.ClosedFrom.Time.Equal(from) &&
+			f.ClosedTo.Valid && f.ClosedTo.Time.Equal(to) &&
+			f.IncludeArchived && f.OrderFactor == entity.Descending
+	})).Return([]entity.Task{
+		{Id: 7, Status: entity.TaskStatusDone},
+		{Id: 8, Status: entity.TaskStatusReview},
+		{Id: 9, Status: entity.TaskStatusDone, ArchivedAt: sql.NullTime{Time: closed9.Add(time.Hour), Valid: true}},
+	}, 3, nil)
+	tasks.EXPECT().GetTaskClosedByIds(mock.Anything, []int{7, 9}).Return(map[int]entity.TaskClosed{
+		7: {TaskId: 7, ClosedAt: closed7, ClosedBy: "anna"},
+		9: {TaskId: 9, ClosedAt: closed9, Approximate: true},
+	}, nil)
+	tasks.EXPECT().GetTaskTimingByIds(mock.Anything, []int{7, 8, 9}).Return(map[int]entity.TaskTiming{
+		7: {TaskId: 7, StatusSince: closed7},
+		8: {TaskId: 8, StatusSince: reviewSince},
+		9: {TaskId: 9, StatusSince: closed9, Approximate: true},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).ListTasks(context.Background(), &pb_admin.ListTasksRequest{
+		IncludeArchived: true,
+		ClosedFrom:      timestamppb.New(from),
+		ClosedTo:        timestamppb.New(to),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Total != 3 || len(resp.Tasks) != 3 {
+		t.Fatalf("tasks/total = %d/%d, want 3/3", len(resp.Tasks), resp.Total)
+	}
+	if len(resp.Closed) != 2 {
+		t.Fatalf("closed length = %d, want 2", len(resp.Closed))
+	}
+	if got := resp.Closed[0]; got.TaskId != 7 || got.ClosedBy != "anna" || !got.ClosedAt.AsTime().Equal(closed7) || got.Approximate {
+		t.Errorf("closed[0] = %+v, want exact task 7 closure", got)
+	}
+	if got := resp.Closed[1]; got.TaskId != 9 || !got.ClosedAt.AsTime().Equal(closed9) || !got.Approximate {
+		t.Errorf("closed[1] = %+v, want approximate task 9 closure", got)
+	}
+	if len(resp.Timing) != 3 {
+		t.Fatalf("timing length = %d, want one row per returned task", len(resp.Timing))
+	}
+	if got := resp.Timing[0]; got.TaskId != 7 || !got.StatusSince.AsTime().Equal(closed7) || got.Approximate {
+		t.Errorf("timing[0] = %+v, want exact task 7 timing", got)
+	}
+	if got := resp.Timing[1]; got.TaskId != 8 || !got.StatusSince.AsTime().Equal(reviewSince) || got.Approximate {
+		t.Errorf("timing[1] = %+v, want exact task 8 timing", got)
+	}
+	if got := resp.Timing[2]; got.TaskId != 9 || !got.StatusSince.AsTime().Equal(closed9) || !got.Approximate {
+		t.Errorf("timing[2] = %+v, want approximate task 9 timing", got)
+	}
+}
+
+func TestListTasksReturnsSearchMatchProjection(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+	tasks.EXPECT().ListTasks(mock.Anything, mock.MatchedBy(func(f entity.TaskListFilter) bool {
+		return f.Query == "иголка"
+	})).Return([]entity.Task{{
+		Id:     12,
+		Status: entity.TaskStatusTodo,
+		Match: &entity.TaskMatch{
+			TaskId: 12, Field: "description", Snippet: "…до ИГОЛКА после…",
+		},
+	}}, 1, nil)
+	tasks.EXPECT().GetTaskTimingByIds(mock.Anything, []int{12}).Return(map[int]entity.TaskTiming{
+		12: {TaskId: 12, StatusSince: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)},
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).ListTasks(context.Background(),
+		&pb_admin.ListTasksRequest{Query: "иголка"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("matches length = %d, want 1", len(resp.Matches))
+	}
+	match := resp.Matches[0]
+	if match.TaskId != 12 || match.Field != "description" || match.Snippet != "…до ИГОЛКА после…" {
+		t.Errorf("unexpected match: %+v", match)
+	}
+}
+
+func TestListTasksRejectsEmptyClosedRangeBeforeStore(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	at := timestamppb.New(time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC))
+
+	_, err := (&Server{repo: repo}).ListTasks(context.Background(), &pb_admin.ListTasksRequest{
+		ClosedFrom: at,
+		ClosedTo:   at,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
 	}
 }
 

@@ -84,6 +84,10 @@ type designRunRig struct {
 
 // newDesignRunRig собирает сервер с ВКЛЮЧЁННЫМ флагом: пробы ворот включают его сами.
 func newDesignRunRig(t *testing.T, card *entity.TechCard, band *entity.DesignBand) *designRunRig {
+	return newDesignRunRigForCardID(t, designRunCardID, card, band)
+}
+
+func newDesignRunRigForCardID(t *testing.T, cardID int, card *entity.TechCard, band *entity.DesignBand) *designRunRig {
 	t.Helper()
 	rig := &designRunRig{
 		repo:   mocks.NewMockRepository(t),
@@ -94,15 +98,15 @@ func newDesignRunRig(t *testing.T, card *entity.TechCard, band *entity.DesignBan
 	rig.repo.EXPECT().Design().Return(rig.design).Maybe()
 	designStubAnyMedia(t, rig.repo)
 	designStubNoDisplayOnly(rig.design)
-	rig.cards.EXPECT().GetTechCardById(mock.Anything, designRunCardID).Return(card, nil).Maybe()
-	rig.design.EXPECT().GetBand(mock.Anything, designRunCardID, mock.Anything).Return(band, nil).Maybe()
+	rig.cards.EXPECT().GetTechCardById(mock.Anything, cardID).Return(card, nil).Maybe()
+	rig.design.EXPECT().GetBand(mock.Anything, cardID, mock.Anything).Return(band, nil).Maybe()
 	rig.design.EXPECT().StartRun(mock.Anything, mock.AnythingOfType("entity.DesignRunStart")).
 		Run(func(_ context.Context, req entity.DesignRunStart) {
 			cp := req
 			rig.sent = &cp
 		}).
 		Return(&entity.DesignRunStarted{
-			Run:    entity.DesignRun{Id: 900, TechCardId: designRunCardID, Status: entity.DesignRunPending},
+			Run:    entity.DesignRun{Id: 900, TechCardId: cardID, Status: entity.DesignRunPending},
 			Budget: entity.DesignBudget{Day: "2026-08-30"},
 		}, nil).Maybe()
 	rig.srv = &Server{repo: rig.repo, designGenerationEnabled: true}

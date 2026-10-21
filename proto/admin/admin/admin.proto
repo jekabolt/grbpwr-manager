@@ -1262,6 +1262,44 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/task/list"};
   }
 
+  // ListTaskBoards returns every board in rail order with its task counts. rd(tasks).
+  rpc ListTaskBoards(ListTaskBoardsRequest) returns (ListTaskBoardsResponse) {
+    option (google.api.http) = {get: "/api/admin/task/board/list"};
+  }
+
+  // ReorderTaskBoards replaces the whole board rail order. ids must contain every current board
+  // exactly once; accepting a partial list would silently hide concurrent/new boards at the end.
+  rpc ReorderTaskBoards(ReorderTaskBoardsRequest) returns (ReorderTaskBoardsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/board/reorder"
+      body: "*"
+    };
+  }
+
+  // AddTaskBoard creates a board at the end of the rail. A name already taken (case-insensitive)
+  // is ALREADY_EXISTS.
+  rpc AddTaskBoard(AddTaskBoardRequest) returns (AddTaskBoardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/board/add"
+      body: "*"
+    };
+  }
+
+  // UpdateTaskBoard renames a board, the six seeded ones included.
+  rpc UpdateTaskBoard(UpdateTaskBoardRequest) returns (UpdateTaskBoardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/board/update"
+      body: "*"
+    };
+  }
+
+  // DeleteTaskBoard deletes a board. A board with tasks (archived ones included) needs move_to_id:
+  // its tasks move there, appended to the end of each column in their current order. Without it
+  // the call is FAILED_PRECONDITION, as is deleting the last board.
+  rpc DeleteTaskBoard(DeleteTaskBoardRequest) returns (DeleteTaskBoardResponse) {
+    option (google.api.http) = {delete: "/api/admin/task/board/{id}"};
+  }
+
   // ArchiveTask soft-archives a task: it is hidden from the board and the default
   // list (restorable), and its former (board,status) column is re-sequenced so
   // positions stay gap-free. Placement is otherwise preserved.
@@ -6565,13 +6603,17 @@ message ListSamplesResponse {
 
 message AddTaskRequest {
   common.TaskInsert task = 1; // content
-  common.TaskBoard board = 2; // required: the department lane the card is created in
+  // Legacy enum board; board_id wins when set. One of the two is required.
+  common.TaskBoard board = 2 [deprecated = true];
   common.TaskStatus status = 3; // initial column; TASK_STATUS_UNKNOWN = server default (TODO)
   // Родитель СОЗДАВАЕМОЙ карточки; 0 = верхний уровень. Единственное место, где родитель едет не
   // отдельным SetTaskParent: «создать сабтаску» обязано быть одним вызовом, а стирать здесь нечего —
   // карточки ещё нет. Несуществующий id отвечает тем же InvalidArgument, что остальные глубокие
   // ссылки.
   int32 parent_task_id = 4;
+  // The board the card is created on (TaskBoardEntry.id). It lives here and not on TaskInsert
+  // because TaskInsert is the full-replace CONTENT of a card; placement is never part of it.
+  int32 board_id = 5;
 }
 
 message AddTaskResponse {
@@ -6588,6 +6630,9 @@ message GetTaskResponse {
   // common.Task itself only carries their ids: it is reused in contexts that get
   // persisted, and a url with a 6-12h life must never be written down anywhere.
   repeated LibraryFile files = 2;
+  // Detail-only status audit trail, ordered by changed_at DESC, id DESC. Kept off common.Task
+  // because that message is reused in heavy lists and durable snapshots.
+  repeated common.TaskStatusChange status_history = 3;
 }
 
 // LibraryFile is one file in the shared library.
@@ -7275,10 +7320,11 @@ message LibraryFileTask {
   google.protobuf.Timestamp due_date = 5;
   // board is the department lane, so the row can say WHERE the work lives — the
   // same file is attached from several lanes at once.
-  common.TaskBoard board = 6;
+  common.TaskBoard board = 6 [deprecated = true]; // legacy enum; UNKNOWN for a custom board
   // Все, кто на задаче; пусто = её никто не взял. Порядок — порядок показа аватарок, «главного»
   // среди них нет (см. common.TaskInsert.assignees).
   repeated string assignees = 7;
+  int32 board_id = 8; // TaskBoardEntry.id of the task's board
 }
 
 message ListLibraryFileTasksRequest {
@@ -7695,9 +7741,11 @@ message UpdateTaskResponse {}
 
 message MoveTaskRequest {
   int32 id = 1;
-  common.TaskBoard board = 2; // target board; TASK_BOARD_UNKNOWN = keep current board
+  // Legacy enum target board; TASK_BOARD_UNKNOWN (and board_id 0) = keep current board.
+  common.TaskBoard board = 2 [deprecated = true];
   common.TaskStatus status = 3; // target column
   int32 position = 4; // target index within the column (0-based)
+  int32 board_id = 5; // target board (TaskBoardEntry.id); wins over board; 0 = see board
 }
 
 message MoveTaskResponse {}
@@ -7708,8 +7756,48 @@ message DeleteTaskRequest {
 
 message DeleteTaskResponse {}
 
+message ListTaskBoardsRequest {}
+
+message ListTaskBoardsResponse {
+  repeated common.TaskBoardEntry boards = 1; // ordered by position, then id
+}
+
+message ReorderTaskBoardsRequest {
+  repeated int32 ids = 1; // every existing board id, exactly once, in the new order
+}
+
+message ReorderTaskBoardsResponse {
+  repeated common.TaskBoardEntry boards = 1; // the complete rail in its new order
+}
+
+message AddTaskBoardRequest {
+  string name = 1; // required; trimmed, 1..64 chars
+}
+
+message AddTaskBoardResponse {
+  common.TaskBoardEntry board = 1;
+}
+
+message UpdateTaskBoardRequest {
+  int32 id = 1;
+  string name = 2; // required; trimmed, 1..64 chars
+}
+
+message UpdateTaskBoardResponse {
+  common.TaskBoardEntry board = 1;
+}
+
+message DeleteTaskBoardRequest {
+  int32 id = 1;
+  // Board that receives the deleted board's tasks; required when it has any, ignored when empty.
+  int32 move_to_id = 2;
+}
+
+message DeleteTaskBoardResponse {}
+
 message ListTasksRequest {
-  common.TaskBoard board = 1; // optional filter; TASK_BOARD_UNKNOWN = all boards
+  // Legacy enum board filter; TASK_BOARD_UNKNOWN = all boards. board_id wins when set.
+  common.TaskBoard board = 1 [deprecated = true];
   common.TaskStatus status = 2; // optional filter; TASK_STATUS_UNKNOWN = all columns
   string assignee = 3; // optional filter; "" = any assignee
   int32 limit = 4; // 0 = default (all tasks for the board)
@@ -7740,11 +7828,19 @@ message ListTasksRequest {
   // rd(tasks). 0 = no filter.
   int32 parent_task_id = 16;
   string query = 17; // optional case-insensitive search across task text, comments, checklist, and exact id
+  // Half-open closing-time filter [closed_from, closed_to). Setting either bound also restricts
+  // the answer to cards whose CURRENT status is DONE; include_archived retains its normal meaning.
+  google.protobuf.Timestamp closed_from = 18;
+  google.protobuf.Timestamp closed_to = 19;
+  int32 board_id = 20; // optional board filter (TaskBoardEntry.id); 0 = see board
 }
 
 message ListTasksResponse {
   repeated common.Task tasks = 1;
   int32 total = 2; // total matching tasks, ignoring pagination
+  repeated common.TaskClosed closed = 3; // latest transition into DONE for every returned DONE task
+  repeated common.TaskTiming timing = 4; // status age for every returned task
+  repeated common.TaskMatch matches = 5; // one row per returned task only when query is non-empty
 }
 
 message AddTaskCommentRequest {
@@ -13375,11 +13471,13 @@ message StartDesignRunRequest {
   // free, before anything is reserved:
   //   · extend — anything other than exactly one picture in params.extra_input_media_ids
   //     («one_source_picture»); an `ask` or a params.freeform on a route that reads no words
-  //     («extend_takes_no_words»); a params.extend.aspect_ratio outside the nine targets, `auto`
-  //     and '' included («extend_aspect_unknown»); a target within 0.5 % of the source's own
-  //     proportion, which adds no pixels on either side («target_aspect_must_extend»); a source
-  //     under the minimum side («source_too_small»); a source over 18 MP, by its stored size or its
-  //     header («source_too_large»). A params.extend on any other kind is «extend_forbidden»;
+  //     («extend_takes_no_words»); with no per-side fields, a params.extend.aspect_ratio outside the
+  //     nine targets, `auto` and '' included («extend_aspect_unknown»); with any per-side field,
+  //     a negative expansion or one over 3× its corresponding source side («extend_sides_invalid»);
+  //     a target within 0.5 % of the source's own proportion OR a per-side request whose four sides
+  //     are zero, both of which add no pixels («target_aspect_must_extend»); a source under the
+  //     minimum side («source_too_small»); a source over 18 MP, by its stored size or its header
+  //     («source_too_large»). A params.extend on any other kind is «extend_forbidden»;
   //   · inpaint — no params.inpaint.source_media_id («no_source_picture»); no
   //     params.inpaint.mask_media_id («mask_required»); a mask whose width and height differ from
   //     the source's («mask_size_mismatch»); a mask that is not a readable PNG, or is the source

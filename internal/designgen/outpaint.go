@@ -23,12 +23,12 @@ import (
 
 // ═══════════════ TILE 9 «EXTEND IMAGE» — kind=extend on fal's outpaint route (PLAYGROUND phase 3) ═══════════════
 //
-// ONE PICTURE, ONE TARGET PROPORTION, NO WORDS. The server decides everything else: how many pixels
-// each side grows (the source stays centred on the axis that grows), whether the canvas has to be
-// scaled down to stay under the 3 MP cap the money ceiling was computed for, and — after the paid
-// call — that THE ORIGINAL IS KEPT: the untouched source pixels are drawn back over the provider's
-// answer with draw.Src, so «the original is kept» is a property of the bytes, not a promise of the
-// model.
+// ONE PICTURE, ONE CANVAS, NO WORDS. The canvas is either the old target proportion (the source
+// stays centred on the axis that grows) or four explicitly placed sides in source pixels. The server
+// decides whether the whole geometry has to be scaled down to stay under the 3 MP cap the money
+// ceiling was computed for, and — after the paid call — that THE ORIGINAL IS KEPT: the untouched
+// source pixels are drawn back over the provider's answer with draw.Src, so «the original is kept»
+// is a property of the bytes, not a promise of the model.
 //
 // THE PLAN IS FROZEN BEFORE THE MONEY (buildJob, before StartAttempt) and read twice after it — by
 // the route (the body) and by the composite (where to paste). A plan recomputed after the call would
@@ -48,10 +48,13 @@ const CodeExtendNotComposited = "extend_not_composited"
 const CodeTargetAspectMustExtend = entity.DesignErrorCodeTargetAspectMustExtend
 
 var (
-	// errExtendNothingToAdd — the frozen target is the source's own proportion (within
-	// extendSameRatioTolerance): the door refused this already; this is the second lock, for a
-	// picture whose stored dimensions were unknown. Free and terminal.
+	// errExtendNothingToAdd — the frozen ratio is the source's own proportion (within
+	// extendSameRatioTolerance), or every stated side is zero. The door refused this already; this
+	// is the second lock for a picture whose stored dimensions were unknown. Free and terminal.
 	errExtendNothingToAdd = errors.New("designgen: the target proportion adds no pixels to this picture")
+	// errExtendSidesInvalid — a negative per-side expansion or one beyond the source-relative limit.
+	// The door refuses it first when dimensions are known; this is the worker's second lock.
+	errExtendSidesInvalid = errors.New("designgen: invalid per-side expansion")
 	// errExtendNotComposited is raised BESIDE the artifact, never instead of it.
 	errExtendNotComposited = errors.New("designgen: the extended canvas could not be composited with its source")
 )
@@ -64,6 +67,9 @@ const (
 	// extendSameRatioTolerance — a target within 0.5 % of the source's proportion adds nothing worth
 	// a paid call (the door's target_aspect_must_extend uses the same function).
 	extendSameRatioTolerance = 0.005
+	// ExtendMaxSideMultiple — no one side may add more than three corresponding source sides. It
+	// bounds malformed coordinates before any canvas arithmetic or paid request.
+	ExtendMaxSideMultiple = 3
 	// extendAnswerSlackPx / extendAnswerSlackFraction — how far each side of the provider's canvas
 	// may drift from the frozen one and still be fitted to it: max(16 px, 2 % of the side) — a model
 	// that rounds its output to a multiple of 16 px. Beyond it the canvas is kept as delivered and
@@ -71,6 +77,43 @@ const (
 	extendAnswerSlackPx       = 16
 	extendAnswerSlackFraction = 0.02
 )
+
+// ExtendSides is a source-pixel placement: the output canvas is Left + source width + Right by
+// Top + source height + Bottom. Proto presence selects this mode; this value only carries its
+// already-defaulted numbers.
+type ExtendSides struct {
+	Top, Bottom, Left, Right int
+}
+
+// AddsNothing reports the per-side equivalent of targeting the source's own aspect ratio.
+func (s ExtendSides) AddsNothing() bool {
+	return s.Top == 0 && s.Bottom == 0 && s.Left == 0 && s.Right == 0
+}
+
+// ValidateExtendSides is shared by the free door and the worker's second lock. Non-positive source
+// dimensions mean «unknown» and defer only the relative ceiling; negativity can always be refused.
+func ValidateExtendSides(w, h int, s ExtendSides) error {
+	for _, side := range []struct {
+		name   string
+		value  int
+		source int
+	}{
+		{"expand_top", s.Top, h},
+		{"expand_bottom", s.Bottom, h},
+		{"expand_left", s.Left, w},
+		{"expand_right", s.Right, w},
+	} {
+		if side.value < 0 {
+			return fmt.Errorf("%w: params.extend.%s is %d; a side must not be negative",
+				errExtendSidesInvalid, side.name, side.value)
+		}
+		if side.source > 0 && int64(side.value) > int64(ExtendMaxSideMultiple)*int64(side.source) {
+			return fmt.Errorf("%w: params.extend.%s is %d px; the ceiling for this %d px source side is %d px (3×)",
+				errExtendSidesInvalid, side.name, side.value, side.source, ExtendMaxSideMultiple*side.source)
+		}
+	}
+	return nil
+}
 
 // ExtendPlan — what an extend run froze about itself BEFORE it paid.
 type ExtendPlan struct {
@@ -173,6 +216,74 @@ func planExtendUnder(w, h int, r float64, maxPixels int) (ExtendPlan, error) {
 		errFreeformJobTooLarge, maxPixels, w, h)
 }
 
+// planExtendSidesUnder is the per-side twin of planExtendUnder. When the requested canvas exceeds
+// the money ceiling, a single scale is applied to the source and all four expansions. Positive
+// sides stay at least one pixel, so a legal outpaint cannot collapse into a paid no-op at the cap.
+func planExtendSidesUnder(w, h int, sides ExtendSides, maxPixels int) (ExtendPlan, error) {
+	if maxPixels <= 0 || maxPixels > extendMaxPixels {
+		maxPixels = extendMaxPixels
+	}
+	if w <= 0 || h <= 0 {
+		return ExtendPlan{}, fmt.Errorf("%w: a %d×%d picture has no usable size", errExtendSidesInvalid, w, h)
+	}
+	if err := ValidateExtendSides(w, h, sides); err != nil {
+		return ExtendPlan{}, err
+	}
+	if sides.AddsNothing() {
+		return ExtendPlan{}, fmt.Errorf("%w: all four per-side expansions are zero", errExtendNothingToAdd)
+	}
+
+	geometry := func(scale float64) (sw, sh, top, bottom, left, right int) {
+		scaledSource := func(n int) int { return int(math.Max(1, math.Floor(float64(n)*scale))) }
+		scaledSide := func(n int) int {
+			if n == 0 {
+				return 0
+			}
+			return int(math.Max(1, math.Floor(float64(n)*scale)))
+		}
+		return scaledSource(w), scaledSource(h),
+			scaledSide(sides.Top), scaledSide(sides.Bottom),
+			scaledSide(sides.Left), scaledSide(sides.Right)
+	}
+	fits := func(scale float64) bool {
+		sw, sh, top, bottom, left, right := geometry(scale)
+		return int64(sw+left+right)*int64(sh+top+bottom) <= int64(maxPixels)
+	}
+
+	scale := 1.0
+	if !fits(scale) {
+		// Monotone despite integer floors and the one-pixel floor for stated sides. Keep the largest
+		// scale whose canvas fits, rather than repeatedly rounding already-rounded components.
+		lo, hi := 0.0, 1.0
+		for range 64 {
+			mid := (lo + hi) / 2
+			if fits(mid) {
+				lo = mid
+			} else {
+				hi = mid
+			}
+		}
+		scale = lo
+	}
+	sw, sh, top, bottom, left, right := geometry(scale)
+	cw, ch := sw+left+right, sh+top+bottom
+	if int64(cw)*int64(ch) > int64(maxPixels) {
+		return ExtendPlan{}, fmt.Errorf("%w: no per-side canvas under %d pixels could be planned for %d×%d",
+			errFreeformJobTooLarge, maxPixels, w, h)
+	}
+	return ExtendPlan{
+		Original:     image.Rect(0, 0, w, h),
+		Source:       image.Rect(0, 0, sw, sh),
+		Canvas:       image.Rect(0, 0, cw, ch),
+		Offset:       image.Pt(left, top),
+		ExpandTop:    top,
+		ExpandBottom: bottom,
+		ExpandLeft:   left,
+		ExpandRight:  right,
+		Scale:        math.Min(float64(sw)/float64(w), float64(sh)/float64(h)),
+	}, nil
+}
+
 // extendInlineCap — the largest data URI the scaled source may travel as: fal.MaxDataURIBytes. A var
 // only so a probe can reach the shrink loop with a small picture.
 var extendInlineCap = fal.MaxDataURIBytes
@@ -201,14 +312,26 @@ func deriveExtendPlan(ctx context.Context, objects objectFetcher, p runParams, j
 	if len(job.References) != 1 {
 		return fmt.Errorf("%w: an extend is one picture, and this run carries %d", fal.ErrBadRequest, len(job.References))
 	}
+	sides, perSide := p.Extend.sides()
 	ratio := ""
-	if p.Extend != nil {
-		ratio = strings.TrimSpace(p.Extend.AspectRatio)
-	}
-	r, ok := entity.DesignExtendRatioValue(ratio)
-	if !ok {
-		return fmt.Errorf("%w: the frozen extend target %q is not one of %s", fal.ErrBadOption, ratio,
-			strings.Join(entity.DesignExtendRatios(), " "))
+	r := 0.0
+	if perSide {
+		if err := ValidateExtendSides(0, 0, sides); err != nil {
+			return err
+		}
+		if sides.AddsNothing() {
+			return fmt.Errorf("%w: all four frozen per-side expansions are zero", errExtendNothingToAdd)
+		}
+	} else {
+		if p.Extend != nil {
+			ratio = strings.TrimSpace(p.Extend.AspectRatio)
+		}
+		var ok bool
+		r, ok = entity.DesignExtendRatioValue(ratio)
+		if !ok {
+			return fmt.Errorf("%w: the frozen extend target %q is not one of %s", fal.ErrBadOption, ratio,
+				strings.Join(entity.DesignExtendRatios(), " "))
+		}
 	}
 	if objects == nil {
 		return fmt.Errorf("designgen: an extend run needs the picture it extends, and this worker has no object store")
@@ -241,7 +364,12 @@ func deriveExtendPlan(ctx context.Context, objects objectFetcher, p runParams, j
 	// and whatever it still refuses is refused here, in buildJob, before StartAttempt — free.
 	limit := extendMaxPixels
 	for try := 0; ; try++ {
-		plan, err := planExtendUnder(b.Dx(), b.Dy(), r, limit)
+		var plan ExtendPlan
+		if perSide {
+			plan, err = planExtendSidesUnder(b.Dx(), b.Dy(), sides, limit)
+		} else {
+			plan, err = planExtendUnder(b.Dx(), b.Dy(), r, limit)
+		}
 		if err != nil {
 			return err
 		}

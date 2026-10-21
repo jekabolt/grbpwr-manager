@@ -1156,6 +1156,7 @@ const (
 const (
 	DesignErrorCodeExtendTakesNoWords     = "extend_takes_no_words"
 	DesignErrorCodeExtendAspectUnknown    = "extend_aspect_unknown"
+	DesignErrorCodeExtendSidesInvalid     = "extend_sides_invalid"
 	DesignErrorCodeTargetAspectMustExtend = "target_aspect_must_extend"
 	DesignErrorCodeExtendForbidden        = "extend_forbidden"
 	DesignErrorCodeInpaintForbidden       = "inpaint_forbidden"

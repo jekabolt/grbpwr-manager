@@ -10,10 +10,13 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Pagination bounds for ListTasks. A board fetch wants the whole column set, so
@@ -38,23 +41,36 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 }
 
 // AddTask inserts a task (content + placement) with its labels and media,
-// appending it to the end of its (board,status) column. Returns the new id.
+// appending it to the end of its (board,status) column. The board comes from t.BoardRef (id wins,
+// else legacy slug); when that is empty, from t.BoardId / t.Board. entity.ErrTaskBoardNotFound when
+// it names no board. Returns the new id; t.BoardId and t.Board are filled with the resolved board.
 func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		ref := t.BoardRef
+		if ref.IsZero() {
+			ref = entity.TaskBoardRef{Id: t.BoardId, Slug: t.Board}
+		}
+		board, err := resolveTaskBoard(ctx, rep.DB(), ref)
+		if err != nil {
+			return err
+		}
+		t.BoardId = board.Id
+		t.Board = board.legacy()
 		if err := ensureProjectTopic(ctx, rep.DB(), t.ProjectTopicId); err != nil {
 			return err
 		}
 		// Append to the end of the target column. Archived tasks are excluded from
 		// position accounting (they are outside the visible sequence).
 		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL`,
-			map[string]any{"board": string(t.Board), "status": string(t.Status)})
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board_id = :boardId AND status = :status AND archived_at IS NULL`,
+			map[string]any{"boardId": board.Id, "status": string(t.Status)})
 		if err != nil {
 			return fmt.Errorf("failed to compute task position: %w", err)
 		}
 		params := taskContentParams(&t.TaskInsert)
 		params["board"] = string(t.Board)
+		params["boardId"] = board.Id
 		params["status"] = string(t.Status)
 		params["position"] = pos
 		params["createdBy"] = t.CreatedBy
@@ -65,12 +81,19 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		// может быть ничьим предком.
 		params["parentTaskId"] = t.ParentTaskId
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO task (title, description, board, status, position, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, parent_task_id, started_at)
-			VALUES (:title, :description, :board, :status, :position, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId, :parentTaskId,
+			INSERT INTO task (title, description, board, board_id, status, position, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, parent_task_id, started_at)
+			VALUES (:title, :description, :board, :boardId, :status, :position, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId, :parentTaskId,
 				CASE WHEN :status = 'in_progress' THEN UTC_TIMESTAMP() ELSE NULL END)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert task: %w", err)
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+			INSERT INTO task_status_history (task_id, from_status, to_status, changed_by)
+			VALUES (:taskId, NULL, :toStatus, :changedBy)`, map[string]any{
+			"taskId": id, "toStatus": string(t.Status), "changedBy": t.CreatedBy,
+		}); err != nil {
+			return fmt.Errorf("failed to insert initial task status history: %w", err)
 		}
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
 			return err
@@ -161,39 +184,45 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 	return nil
 }
 
-// MoveTask changes a task's placement: board (empty = keep current), column
-// (status), and position within that column, re-sequencing sibling positions so
-// each column stays a gap-free 0..n-1 sequence. Returns sql.ErrNoRows when no
-// task with the given id exists.
-func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int) error {
+// MoveTask changes a task's placement: board (zero ref = keep current; id wins over legacy slug),
+// column (status), and position within that column, re-sequencing sibling positions so each
+// column stays a gap-free 0..n-1 sequence. Returns sql.ErrNoRows when no active task with the
+// given id exists, entity.ErrTaskBoardNotFound when the ref names no board.
+func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoardRef, status entity.TaskStatus, position int, changedBy string) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Only active tasks have a meaningful position in the gap-free sequence.
 		// An archived task carries a frozen, out-of-band position, so moving it
 		// would corrupt the active column — require it be active (NotFound
 		// otherwise; unarchive first).
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NULL`, map[string]any{"id": id})
+			`SELECT board_id, status, position FROM task WHERE id = :id AND archived_at IS NULL`, map[string]any{"id": id})
 		if err != nil {
 			return err // wraps sql.ErrNoRows when missing or archived
 		}
-		if board == "" {
-			board = cur.Board
+		if board.IsZero() {
+			board = entity.TaskBoardRef{Id: cur.BoardId}
+		}
+		// The target row is read even when the board is kept: its slug gives the legacy task.board
+		// value, and rewriting it also realigns a row an old binary left drifted.
+		target, err := resolveTaskBoard(ctx, rep.DB(), board)
+		if err != nil {
+			return err
 		}
 
 		// 1) Close the gap left in the source column. Archived tasks are outside
 		// the position sequence, so they are excluded here and below.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position - 1
-			WHERE board = :board AND status = :status AND archived_at IS NULL AND position > :pos`,
-			map[string]any{"board": string(cur.Board), "status": string(cur.Status), "pos": cur.Position}); err != nil {
+			WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND position > :pos`,
+			map[string]any{"boardId": cur.BoardId, "status": string(cur.Status), "pos": cur.Position}); err != nil {
 			return fmt.Errorf("failed to compact source column: %w", err)
 		}
 
 		// 2) Clamp the target position to the target column's current size
 		// (excluding this task, which is not yet placed there).
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
-			SELECT COUNT(*) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL AND id != :id`,
-			map[string]any{"board": string(board), "status": string(status), "id": id})
+			SELECT COUNT(*) FROM task WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND id != :id`,
+			map[string]any{"boardId": target.Id, "status": string(status), "id": id})
 		if err != nil {
 			return fmt.Errorf("failed to size target column: %w", err)
 		}
@@ -207,15 +236,15 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 		// 3) Open a slot in the target column.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position + 1
-			WHERE board = :board AND status = :status AND archived_at IS NULL AND id != :id AND position >= :pos`,
-			map[string]any{"board": string(board), "status": string(status), "id": id, "pos": position}); err != nil {
+			WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND id != :id AND position >= :pos`,
+			map[string]any{"boardId": target.Id, "status": string(status), "id": id, "pos": position}); err != nil {
 			return fmt.Errorf("failed to open target slot: %w", err)
 		}
 
 		// 4) Place the task.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
-			UPDATE task SET board = :board, status = :status, position = :pos WHERE id = :id`,
-			map[string]any{"board": string(board), "status": string(status), "pos": position, "id": id}); err != nil {
+			UPDATE task SET board_id = :boardId, board = :board, status = :status, position = :pos WHERE id = :id`,
+			map[string]any{"boardId": target.Id, "board": string(target.legacy()), "status": string(status), "pos": position, "id": id}); err != nil {
 			return fmt.Errorf("failed to place task: %w", err)
 		}
 
@@ -227,6 +256,17 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 				UPDATE task SET started_at = UTC_TIMESTAMP() WHERE id = :id AND started_at IS NULL`,
 				map[string]any{"id": id}); err != nil {
 				return fmt.Errorf("failed to stamp task start: %w", err)
+			}
+		}
+		// A board-only or position-only drag is not a status transition. Keep this inside the same
+		// transaction as the task update so the card and its audit trail can never disagree.
+		if cur.Status != status {
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				INSERT INTO task_status_history (task_id, from_status, to_status, changed_by)
+				VALUES (:taskId, :fromStatus, :toStatus, :changedBy)`, map[string]any{
+				"taskId": id, "fromStatus": string(cur.Status), "toStatus": string(status), "changedBy": changedBy,
+			}); err != nil {
+				return fmt.Errorf("failed to insert task status history: %w", err)
 			}
 		}
 		return nil
@@ -252,7 +292,7 @@ func (s *Store) DeleteTask(ctx context.Context, id int) error {
 func (s *Store) ArchiveTask(ctx context.Context, id int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NULL`,
+			`SELECT board_id, status, position FROM task WHERE id = :id AND archived_at IS NULL`,
 			map[string]any{"id": id})
 		if err != nil {
 			return err // wraps sql.ErrNoRows when missing or already archived
@@ -265,8 +305,8 @@ func (s *Store) ArchiveTask(ctx context.Context, id int) error {
 		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position - 1
-			WHERE board = :board AND status = :status AND archived_at IS NULL AND position > :pos`,
-			map[string]any{"board": string(cur.Board), "status": string(cur.Status), "pos": cur.Position}); err != nil {
+			WHERE board_id = :boardId AND status = :status AND archived_at IS NULL AND position > :pos`,
+			map[string]any{"boardId": cur.BoardId, "status": string(cur.Status), "pos": cur.Position}); err != nil {
 			return fmt.Errorf("failed to compact column after archive: %w", err)
 		}
 		return nil
@@ -283,14 +323,14 @@ func (s *Store) ArchiveTask(ctx context.Context, id int) error {
 func (s *Store) UnarchiveTask(ctx context.Context, id int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NOT NULL`,
+			`SELECT board_id, status, position FROM task WHERE id = :id AND archived_at IS NOT NULL`,
 			map[string]any{"id": id})
 		if err != nil {
 			return err // wraps sql.ErrNoRows when missing or not archived
 		}
 		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL`,
-			map[string]any{"board": string(cur.Board), "status": string(cur.Status)})
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board_id = :boardId AND status = :status AND archived_at IS NULL`,
+			map[string]any{"boardId": cur.BoardId, "status": string(cur.Status)})
 		if err != nil {
 			return fmt.Errorf("failed to compute unarchive position: %w", err)
 		}
@@ -407,6 +447,32 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	history, err := storeutil.QueryListNamed[entity.TaskStatusChange](ctx, s.DB, `
+		SELECT id, task_id, from_status, to_status, changed_by, changed_at, approximate
+		FROM task_status_history
+		WHERE task_id = :id
+		ORDER BY changed_at DESC, id DESC`, map[string]any{"id": id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get task status history: %w", err)
+	}
+	// Migration 0418 intentionally had no creation backfill. Migration 0419's legacy DONE row also
+	// has from_status NULL, but approximate=1 marks it as a closing estimate, NOT a creation row.
+	// Ignore that row when deciding whether to synthesize the only creation fact that can be stated
+	// honestly for an older task: who created it and when, with both statuses unknown.
+	hasInitialStatus := false
+	for i := range history {
+		if !history[i].FromStatus.Valid && !history[i].Approximate {
+			hasInitialStatus = true
+			break
+		}
+	}
+	if !hasInitialStatus {
+		history = append(history, entity.TaskStatusChange{
+			TaskId:    t.Id,
+			ChangedBy: t.CreatedBy,
+			ChangedAt: t.CreatedAt,
+		})
+	}
 	t.Media = media[id]
 	t.MediaAnnotations = mediaAnnotations[id]
 	t.Checklist = checklist[id]
@@ -415,21 +481,55 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	t.Links = links[id]
 	t.SubtaskTotal = counts[id].Total
 	t.SubtaskDone = counts[id].Done
+	t.StatusHistory = history
 	return &t, nil
 }
 
 // ListTasks returns a paged, optionally filtered list of tasks (with labels and
 // resolved media) plus the total number of matching tasks (ignoring pagination).
-// Without a text query, rows are clustered by (board,status) and ordered by
+// Without a text query, rows are clustered by (board_id,status) and ordered by
 // position so a board renders directly. Search results use relevance ordering.
 func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error) {
 	limit, offset := clampPagination(f.Limit, f.Offset)
 
 	filterParams := map[string]any{}
+	from := "task"
 	where := ""
+	hasClosedFilter := f.ClosedFrom.Valid || f.ClosedTo.Valid
+	if hasClosedFilter {
+		// One latest-DONE row per task, tie-broken exactly like GetTask history. The current task
+		// status is checked separately below: an old closing event says nothing about a card that
+		// has since been reopened.
+		from += `
+			JOIN (
+				SELECT task_id, changed_at AS closed_at
+				FROM (
+					SELECT task_id, changed_at, id,
+						ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY changed_at DESC, id DESC) AS row_num
+					FROM task_status_history
+					WHERE to_status = :closedStatus
+				) ranked_task_done
+				WHERE row_num = 1
+			) task_closed ON task_closed.task_id = task.id`
+		where += " AND task.status = :closedStatus"
+		filterParams["closedStatus"] = string(entity.TaskStatusDone)
+		if f.ClosedFrom.Valid {
+			where += " AND task_closed.closed_at >= :closedFrom"
+			filterParams["closedFrom"] = f.ClosedFrom.Time
+		}
+		if f.ClosedTo.Valid {
+			where += " AND task_closed.closed_at < :closedTo"
+			filterParams["closedTo"] = f.ClosedTo.Time
+		}
+	}
 	queryPattern, queryTaskID, hasQuery := taskSearchParams(f.Query)
-	if f.Board != "" {
-		where += " AND board = :board"
+	// board_id wins; the legacy slug (an old client's enum) resolves through task_board, so a
+	// seeded board that was deleted answers empty instead of matching a stale task.board string.
+	if f.BoardId > 0 {
+		where += " AND task.board_id = :boardId"
+		filterParams["boardId"] = f.BoardId
+	} else if f.Board != "" {
+		where += " AND task.board_id = (SELECT tb.id FROM task_board tb WHERE tb.slug = :board)"
 		filterParams["board"] = string(f.Board)
 	}
 	if f.Status != "" {
@@ -516,7 +616,7 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
-		fmt.Sprintf(`SELECT COUNT(*) FROM task WHERE 1=1%s`, where), filterParams)
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE 1=1%s`, from, where), filterParams)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't count tasks: %w", err)
 	}
@@ -524,20 +624,26 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	filterParams["limit"] = limit
 	filterParams["offset"] = offset
 	var query string
-	if hasQuery {
+	if hasClosedFilter {
 		query = fmt.Sprintf(`
-			SELECT * FROM task
+			SELECT task.* FROM %s
+			WHERE 1=1%s
+			ORDER BY task_closed.closed_at %s, task.id %s
+			LIMIT :limit OFFSET :offset`, from, where, f.OrderFactor.String(), f.OrderFactor.String())
+	} else if hasQuery {
+		query = fmt.Sprintf(`
+			SELECT task.* FROM %s
 			WHERE 1=1%s
 			ORDER BY archived_at IS NOT NULL,
 				CASE WHEN LOWER(title) LIKE :queryPattern ESCAPE '\\' THEN 0 ELSE 1 END,
 				id DESC
-			LIMIT :limit OFFSET :offset`, where)
+			LIMIT :limit OFFSET :offset`, from, where)
 	} else {
 		query = fmt.Sprintf(`
-			SELECT * FROM task
+			SELECT task.* FROM %s
 			WHERE 1=1%s
-			ORDER BY board, status, position %s, id %s
-			LIMIT :limit OFFSET :offset`, where, f.OrderFactor.String(), f.OrderFactor.String())
+			ORDER BY board_id, status, position %s, id %s
+			LIMIT :limit OFFSET :offset`, from, where, f.OrderFactor.String(), f.OrderFactor.String())
 	}
 
 	tasks, err := storeutil.QueryListNamed[entity.Task](ctx, s.DB, query, filterParams)
@@ -596,33 +702,301 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		tasks[i].Checklist = checklist[tasks[i].Id]
 		tasks[i].FileIds = fileIDs[tasks[i].Id]
 	}
+	if err := s.attachTaskMatches(ctx, tasks, f.Query); err != nil {
+		return nil, 0, err
+	}
 	return tasks, total, nil
 }
 
-// taskSearchParams turns a non-blank user query into a literal LIKE pattern and,
-// for #123/123 queries, an exact task id. A leading # is presentation for ids,
-// so the digits are still searched as text in every other field.
-func taskSearchParams(raw string) (pattern string, taskID int, ok bool) {
+// GetTaskClosedByIds returns the latest transition into DONE for each requested task that has one.
+// It is intentionally one batched query: ListTasks uses the result as response metadata and must
+// not turn a DONE-heavy page into one history read per card.
+func (s *Store) GetTaskClosedByIds(ctx context.Context, ids []int) (map[int]entity.TaskClosed, error) {
+	if len(ids) == 0 {
+		return map[int]entity.TaskClosed{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.TaskClosed](ctx, s.DB, `
+		WITH ranked_task_done AS (
+			SELECT task_id, changed_at AS closed_at, changed_by AS closed_by, approximate,
+				ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY changed_at DESC, id DESC) AS row_num
+			FROM task_status_history
+			WHERE task_id IN (:ids) AND to_status = :doneStatus
+		)
+		SELECT task_id, closed_at, closed_by, approximate
+		FROM ranked_task_done
+		WHERE row_num = 1`, map[string]any{
+		"ids": ids, "doneStatus": string(entity.TaskStatusDone),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task closing metadata: %w", err)
+	}
+	out := make(map[int]entity.TaskClosed, len(rows))
+	for i := range rows {
+		out[rows[i].TaskId] = rows[i]
+	}
+	return out, nil
+}
+
+// GetTaskTimingByIds returns one status-age row for every requested task. The latest history row
+// whose destination matches the task's current status is authoritative. Legacy tasks without such
+// a row fall back to started_at for in-progress work when available, otherwise updated_at, and are
+// marked approximate. The whole page is resolved in one query.
+func (s *Store) GetTaskTimingByIds(ctx context.Context, ids []int) (map[int]entity.TaskTiming, error) {
+	if len(ids) == 0 {
+		return map[int]entity.TaskTiming{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.TaskTiming](ctx, s.DB, `
+		WITH requested_task AS (
+			SELECT id, status, started_at, updated_at
+			FROM task
+			WHERE id IN (:ids)
+		), ranked_current_status AS (
+			SELECT tsh.task_id, tsh.changed_at AS status_since, tsh.approximate,
+				ROW_NUMBER() OVER (
+					PARTITION BY tsh.task_id
+					ORDER BY tsh.changed_at DESC, tsh.id DESC
+				) AS row_num
+			FROM task_status_history tsh
+			JOIN requested_task ON requested_task.id = tsh.task_id
+				AND requested_task.status = tsh.to_status
+		)
+		SELECT requested_task.id AS task_id,
+			COALESCE(
+				ranked_current_status.status_since,
+				CASE
+					WHEN requested_task.status = :inProgressStatus
+						THEN COALESCE(requested_task.started_at, requested_task.updated_at)
+					ELSE requested_task.updated_at
+				END
+			) AS status_since,
+			CASE
+				WHEN ranked_current_status.task_id IS NULL THEN 1
+				ELSE ranked_current_status.approximate
+			END AS approximate
+		FROM requested_task
+		LEFT JOIN ranked_current_status ON ranked_current_status.task_id = requested_task.id
+			AND ranked_current_status.row_num = 1`, map[string]any{
+		"ids": ids, "inProgressStatus": string(entity.TaskStatusInProgress),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task timing metadata: %w", err)
+	}
+	out := make(map[int]entity.TaskTiming, len(rows))
+	for i := range rows {
+		out[rows[i].TaskId] = rows[i]
+	}
+	return out, nil
+}
+
+// ListTaskIdsToAutoArchive returns active cards whose current status is DONE and whose latest
+// transition into DONE is strictly older than closedBefore. Approximate migration rows participate
+// naturally: they have the same to_status and changed_at shape as exact transitions.
+func (s *Store) ListTaskIdsToAutoArchive(ctx context.Context, closedBefore time.Time) ([]int, error) {
+	ids, err := storeutil.QueryScalarListNamed[int](ctx, s.DB, `
+		WITH ranked_task_done AS (
+			SELECT task_id, changed_at AS closed_at,
+				ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY changed_at DESC, id DESC) AS row_num
+			FROM task_status_history
+			WHERE to_status = :doneStatus
+		)
+		SELECT task.id
+		FROM task
+		JOIN ranked_task_done
+			ON ranked_task_done.task_id = task.id AND ranked_task_done.row_num = 1
+		WHERE task.status = :doneStatus
+			AND task.archived_at IS NULL
+			AND ranked_task_done.closed_at < :closedBefore
+		ORDER BY ranked_task_done.closed_at, task.id`, map[string]any{
+		"doneStatus": string(entity.TaskStatusDone), "closedBefore": closedBefore,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't list tasks eligible for auto-archive: %w", err)
+	}
+	return ids, nil
+}
+
+// taskSearchNeedle normalizes a non-blank user query for both the SQL predicate and the page-only
+// match projection. A leading # is presentation for ids, so the digits are still searched as text
+// in every other field.
+func taskSearchNeedle(raw string) (needle string, taskID int, ok bool) {
 	query := strings.TrimSpace(raw)
 	if query == "" {
 		return "", 0, false
 	}
 
-	textQuery := query
+	needle = query
 	digits := strings.TrimPrefix(query, "#")
 	if digits != "" && isASCIIDigits(digits) {
-		textQuery = digits
+		needle = digits
 		if parsed, err := strconv.ParseInt(digits, 10, 32); err == nil && parsed > 0 {
 			taskID = int(parsed)
 		}
 	}
+	return needle, taskID, true
+}
 
+// taskSearchParams turns the normalized needle into a literal LIKE pattern.
+func taskSearchParams(raw string) (pattern string, taskID int, ok bool) {
+	needle, taskID, ok := taskSearchNeedle(raw)
+	if !ok {
+		return "", 0, false
+	}
 	escaped := strings.NewReplacer(
 		`\`, `\\`,
 		`%`, `\%`,
 		`_`, `\_`,
-	).Replace(strings.ToLower(textQuery))
+	).Replace(strings.ToLower(needle))
 	return "%" + escaped + "%", taskID, true
+}
+
+type taskMatchTextRow struct {
+	TaskId       int    `db:"task_id"`
+	Field        string `db:"field"`
+	MatchText    string `db:"match_text"`
+	FieldOrder   int    `db:"field_order"`
+	ItemPosition int    `db:"item_position"`
+	ItemId       int    `db:"item_id"`
+}
+
+// attachTaskMatches computes one match row for every task on the returned page. The main search
+// query stays unchanged: comments and checklist text are fetched together in one page-bounded
+// query, then field priority and UTF-8-safe snippets are resolved in Go.
+func (s *Store) attachTaskMatches(ctx context.Context, tasks []entity.Task, rawQuery string) error {
+	needle, queryTaskID, ok := taskSearchNeedle(rawQuery)
+	if !ok || len(tasks) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(tasks))
+	for i := range tasks {
+		ids = append(ids, tasks[i].Id)
+	}
+	rows, err := storeutil.QueryListNamed[taskMatchTextRow](ctx, s.DB, `
+		SELECT task_id, 'comment' AS field, body AS match_text,
+			0 AS field_order, 0 AS item_position, id AS item_id
+		FROM task_comment
+		WHERE task_id IN (:ids)
+		UNION ALL
+		SELECT task_id, 'checklist' AS field, content AS match_text,
+			1 AS field_order, position AS item_position, id AS item_id
+		FROM task_checklist_item
+		WHERE task_id IN (:ids)
+		ORDER BY task_id, field_order, item_position, item_id`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load task search match text: %w", err)
+	}
+	byTaskID := make(map[int][]taskMatchTextRow, len(tasks))
+	for i := range rows {
+		byTaskID[rows[i].TaskId] = append(byTaskID[rows[i].TaskId], rows[i])
+	}
+
+	for i := range tasks {
+		match := taskMatchForTask(&tasks[i], byTaskID[tasks[i].Id], needle, queryTaskID)
+		if match == nil {
+			// The page came from the same literal, case-insensitive predicate. Treat a divergence as an
+			// invariant failure instead of returning fewer match rows than tasks.
+			return fmt.Errorf("can't identify search match for task %d", tasks[i].Id)
+		}
+		tasks[i].Match = match
+	}
+	return nil
+}
+
+func taskMatchForTask(
+	task *entity.Task,
+	rows []taskMatchTextRow,
+	needle string,
+	queryTaskID int,
+) *entity.TaskMatch {
+	if _, _, ok := taskSearchRuneSpan(task.Title, needle); ok {
+		return &entity.TaskMatch{TaskId: task.Id, Field: "title"}
+	}
+	if queryTaskID > 0 && task.Id == queryTaskID {
+		return &entity.TaskMatch{TaskId: task.Id, Field: "id"}
+	}
+	if task.Description.Valid {
+		if snippet, ok := taskMatchSnippet(task.Description.String, needle); ok {
+			return &entity.TaskMatch{TaskId: task.Id, Field: "description", Snippet: snippet}
+		}
+	}
+	for i := range rows {
+		if snippet, ok := taskMatchSnippet(rows[i].MatchText, needle); ok {
+			return &entity.TaskMatch{TaskId: task.Id, Field: rows[i].Field, Snippet: snippet}
+		}
+	}
+	return nil
+}
+
+const taskMatchSnippetRunes = 80
+
+// taskMatchSnippet returns about 80 whole runes around the first hit. It first cuts by rune index,
+// then collapses whitespace so newlines cannot leak into the one-line search result.
+func taskMatchSnippet(value, needle string) (string, bool) {
+	hitStart, hitEnd, ok := taskSearchRuneSpan(value, needle)
+	if !ok {
+		return "", false
+	}
+	runes := []rune(value)
+	windowStart, windowEnd := hitStart, hitEnd
+	hitLen := hitEnd - hitStart
+	if hitLen < taskMatchSnippetRunes {
+		remaining := taskMatchSnippetRunes - hitLen
+		windowStart = max(0, hitStart-remaining/2)
+		windowEnd = min(len(runes), hitEnd+(remaining-remaining/2))
+		// Reuse space lost at one edge so ordinary snippets stay close to 80 runes.
+		if windowStart == 0 && windowEnd < len(runes) {
+			windowEnd = min(len(runes), taskMatchSnippetRunes)
+		}
+		if windowEnd == len(runes) && windowStart > 0 {
+			windowStart = max(0, len(runes)-taskMatchSnippetRunes)
+		}
+	}
+	snippet := strings.Join(strings.Fields(string(runes[windowStart:windowEnd])), " ")
+	if windowStart > 0 {
+		snippet = "…" + snippet
+	}
+	if windowEnd < len(runes) {
+		snippet += "…"
+	}
+	return snippet, true
+}
+
+// taskSearchRuneSpan locates the first case/accent-insensitive hit and maps it back to original
+// rune indexes. Removing combining marks mirrors the default MySQL 8 *_ai_ci collation closely
+// enough that every SQL hit still receives a Go-computed projection; the index map keeps cuts safe
+// for precomposed Cyrillic/Latin characters.
+func taskSearchRuneSpan(value, needle string) (start, end int, ok bool) {
+	haystack, indexes := taskSearchFoldedRunes(value)
+	wanted, _ := taskSearchFoldedRunes(needle)
+	if len(wanted) == 0 || len(wanted) > len(haystack) {
+		return 0, 0, false
+	}
+	for i := 0; i <= len(haystack)-len(wanted); i++ {
+		matched := true
+		for j := range wanted {
+			if haystack[i+j] != wanted[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return indexes[i], indexes[i+len(wanted)-1] + 1, true
+		}
+	}
+	return 0, 0, false
+}
+
+func taskSearchFoldedRunes(value string) (folded []rune, originalIndexes []int) {
+	runes := []rune(value)
+	for i, r := range runes {
+		for _, normalized := range []rune(norm.NFD.String(strings.ToLower(string(r)))) {
+			if unicode.Is(unicode.Mn, normalized) {
+				continue
+			}
+			folded = append(folded, normalized)
+			originalIndexes = append(originalIndexes, i)
+		}
+	}
+	return folded, originalIndexes
 }
 
 func isASCIIDigits(value string) bool {
@@ -715,7 +1089,7 @@ func (s *Store) DeleteTaskComment(ctx context.Context, id int) error {
 
 // taskPlacement is the placement subset of a task row, read for a move.
 type taskPlacement struct {
-	Board    entity.TaskBoard  `db:"board"`
+	BoardId  int               `db:"board_id"`
 	Status   entity.TaskStatus `db:"status"`
 	Position int               `db:"position"`
 }

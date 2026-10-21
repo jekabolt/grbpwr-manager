@@ -66,8 +66,12 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-	board, err := dto.ConvertPbTaskBoardToEntity(req.Board)
+	// board_id wins; the legacy enum is accepted for clients built before board ids.
+	board, err := dto.ConvertPbTaskBoardRefToEntity(req.BoardId, req.Board)
 	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if board.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "task board is required")
 	}
 	// The initial column defaults to TODO when unset.
@@ -87,7 +91,7 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 	}
 	t := &entity.Task{
 		TaskInsert: *ti,
-		Board:      board,
+		BoardRef:   board,
 		Status:     taskStatus,
 		CreatedBy:  authsrv.GetAdminUsername(ctx),
 	}
@@ -101,6 +105,9 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 		// «does not reference an existing record» было бы прямым враньём: id существует.
 		if errors.Is(err, entity.ErrTaskNeedsProjectTopic) {
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		if errors.Is(err, entity.ErrTaskBoardNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "task board does not exist")
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, taskFKViolationMsg)
@@ -144,8 +151,9 @@ func (s *Server) GetTask(ctx context.Context, req *pb_admin.GetTaskRequest) (*pb
 		}
 	}
 	return &pb_admin.GetTaskResponse{
-		Task:  dto.ConvertEntityTaskToPb(t),
-		Files: files,
+		Task:          dto.ConvertEntityTaskToPb(t),
+		Files:         files,
+		StatusHistory: dto.ConvertEntityTaskStatusHistoryToPb(t.StatusHistory),
 	}, nil
 }
 
@@ -182,22 +190,21 @@ func (s *Server) MoveTask(ctx context.Context, req *pb_admin.MoveTaskRequest) (*
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "task id is required")
 	}
-	// Board is optional: UNKNOWN = keep the task's current board.
-	var board entity.TaskBoard
-	if req.Board != pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
-		b, err := dto.ConvertPbTaskBoardToEntity(req.Board)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-		}
-		board = b
+	// Board is optional: board_id wins, else the legacy enum; both unset = keep the current board.
+	board, err := dto.ConvertPbTaskBoardRefToEntity(req.BoardId, req.Board)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	taskStatus, err := dto.ConvertPbTaskStatusToEntity(req.Status)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "target status is required")
 	}
-	if err := s.repo.Tasks().MoveTask(ctx, int(req.Id), board, taskStatus, int(req.Position)); err != nil {
+	if err := s.repo.Tasks().MoveTask(ctx, int(req.Id), board, taskStatus, int(req.Position), authsrv.GetAdminUsername(ctx)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "task not found")
+		}
+		if errors.Is(err, entity.ErrTaskBoardNotFound) {
+			return nil, status.Error(codes.InvalidArgument, "target board does not exist")
 		}
 		slog.Default().ErrorContext(ctx, "can't move task", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't move task")
@@ -286,13 +293,33 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		Offset:          int(req.Offset),
 		OrderFactor:     dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	}
-	if req.Board != pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
-		b, err := dto.ConvertPbTaskBoardToEntity(req.Board)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	if req.ClosedFrom != nil {
+		if err := req.ClosedFrom.CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid closed_from: %v", err)
 		}
-		filter.Board = b
+		filter.ClosedFrom = sql.NullTime{Time: req.ClosedFrom.AsTime(), Valid: true}
 	}
+	if req.ClosedTo != nil {
+		if err := req.ClosedTo.CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid closed_to: %v", err)
+		}
+		filter.ClosedTo = sql.NullTime{Time: req.ClosedTo.AsTime(), Valid: true}
+	}
+	if filter.ClosedFrom.Valid && filter.ClosedTo.Valid && !filter.ClosedFrom.Time.Before(filter.ClosedTo.Time) {
+		return nil, status.Error(codes.InvalidArgument, "closed_from must be before closed_to")
+	}
+	// The board's historical position order remains unchanged. A closing-period query, however,
+	// is a reverse chronology by default; callers can still explicitly request ascending order.
+	if (filter.ClosedFrom.Valid || filter.ClosedTo.Valid) && req.OrderFactor == pb_common.OrderFactor_ORDER_FACTOR_UNKNOWN {
+		filter.OrderFactor = entity.Descending
+	}
+	// board_id wins; the legacy enum filters by its seeded board.
+	boardRef, err := dto.ConvertPbTaskBoardRefToEntity(req.BoardId, req.Board)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	filter.BoardId = boardRef.Id
+	filter.Board = boardRef.Slug
 	if req.Status != pb_common.TaskStatus_TASK_STATUS_UNKNOWN {
 		st, err := dto.ConvertPbTaskStatusToEntity(req.Status)
 		if err != nil {
@@ -301,16 +328,71 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		filter.Status = st
 	}
 
-	tasks, total, err := s.repo.Tasks().ListTasks(ctx, filter)
+	taskStore := s.repo.Tasks()
+	tasks, total, err := taskStore.ListTasks(ctx, filter)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list tasks", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't list tasks")
 	}
 	pbTasks := make([]*pb_common.Task, 0, len(tasks))
+	matches := make([]*pb_common.TaskMatch, 0, len(tasks))
 	for i := range tasks {
 		pbTasks = append(pbTasks, dto.ConvertEntityTaskToPb(&tasks[i]))
+		if tasks[i].Match != nil {
+			matches = append(matches, dto.ConvertEntityTaskMatchToPb(tasks[i].Match))
+		}
 	}
-	return &pb_admin.ListTasksResponse{Tasks: pbTasks, Total: int32(total)}, nil
+
+	// Closing facts stay off common.Task because that message is persisted in snapshots. Resolve
+	// them once for all DONE rows on this page and return the parallel list-only projection.
+	taskIDs := make([]int, 0, len(tasks))
+	doneIDs := make([]int, 0, len(tasks))
+	for i := range tasks {
+		taskIDs = append(taskIDs, tasks[i].Id)
+		if tasks[i].Status == entity.TaskStatusDone {
+			doneIDs = append(doneIDs, tasks[i].Id)
+		}
+	}
+	closed := make([]*pb_common.TaskClosed, 0, len(doneIDs))
+	if len(doneIDs) > 0 {
+		closedByID, err := taskStore.GetTaskClosedByIds(ctx, doneIDs)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't load task closing metadata", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't list tasks")
+		}
+		for _, taskID := range doneIDs {
+			row, ok := closedByID[taskID]
+			if !ok {
+				slog.Default().ErrorContext(ctx, "DONE task has no closing history",
+					slog.Int("task_id", taskID))
+				return nil, status.Error(codes.Internal, "can't list tasks")
+			}
+			closed = append(closed, dto.ConvertEntityTaskClosedToPb(&row))
+		}
+	}
+
+	// Status age is parallel list-only metadata for every returned task. One batched store query
+	// selects the latest transition into each card's current status and applies legacy fallbacks.
+	timing := make([]*pb_common.TaskTiming, 0, len(taskIDs))
+	if len(taskIDs) > 0 {
+		timingByID, err := taskStore.GetTaskTimingByIds(ctx, taskIDs)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't load task timing metadata", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't list tasks")
+		}
+		for _, taskID := range taskIDs {
+			row, ok := timingByID[taskID]
+			if !ok {
+				slog.Default().ErrorContext(ctx, "task has no timing metadata",
+					slog.Int("task_id", taskID))
+				return nil, status.Error(codes.Internal, "can't list tasks")
+			}
+			timing = append(timing, dto.ConvertEntityTaskTimingToPb(&row))
+		}
+	}
+	return &pb_admin.ListTasksResponse{
+		Tasks: pbTasks, Total: int32(total), Closed: closed, Timing: timing, Matches: matches,
+	}, nil
 }
 
 // ArchiveTask soft-archives a task (hidden from the board, restorable).

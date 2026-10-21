@@ -107,15 +107,15 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 	require.True(t, task.StartDate.Valid)
 	require.False(t, task.StartedAt.Valid, "started_at must be NULL before in_progress")
 
-	require.NoError(t, s.Tasks().MoveTask(ctx, tid, "", entity.TaskStatusInProgress, 0))
+	require.NoError(t, s.Tasks().MoveTask(ctx, tid, entity.TaskBoardRef{}, entity.TaskStatusInProgress, 0, ""))
 	task, err = s.Tasks().GetTaskById(ctx, tid)
 	require.NoError(t, err)
 	require.True(t, task.StartedAt.Valid, "started_at stamped on first in_progress")
 	firstStart := task.StartedAt.Time
 
 	// move away and back — started_at must NOT change.
-	require.NoError(t, s.Tasks().MoveTask(ctx, tid, "", entity.TaskStatusReview, 0))
-	require.NoError(t, s.Tasks().MoveTask(ctx, tid, "", entity.TaskStatusInProgress, 0))
+	require.NoError(t, s.Tasks().MoveTask(ctx, tid, entity.TaskBoardRef{}, entity.TaskStatusReview, 0, ""))
+	require.NoError(t, s.Tasks().MoveTask(ctx, tid, entity.TaskBoardRef{}, entity.TaskStatusInProgress, 0, ""))
 	task, err = s.Tasks().GetTaskById(ctx, tid)
 	require.NoError(t, err)
 	require.WithinDuration(t, firstStart, task.StartedAt.Time, time.Second, "started_at is not re-stamped")

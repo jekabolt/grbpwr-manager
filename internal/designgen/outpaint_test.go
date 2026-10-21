@@ -22,6 +22,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // ═══ B-13 — kind=extend: the plan, the bodies, the composite, the money ═══
@@ -76,6 +77,53 @@ func TestTheExtendPlanGROWS_THE_SIDE_THE_TARGET_ASKS_FOR(t *testing.T) {
 	require.False(t, ok, "auto is not a target")
 }
 
+// TestThePerSideExtendPlanPLACES_THE_SOURCE_AND_SCALES_EVERY_COMPONENT — field presence gives the
+// client exact placement, and a canvas over the same 3 MP money cap shrinks source and sides as one
+// geometry. Positive sides cannot disappear through integer rounding.
+func TestThePerSideExtendPlanPLACES_THE_SOURCE_AND_SCALES_EVERY_COMPONENT(t *testing.T) {
+	sides := ExtendSides{Top: 11, Bottom: 13, Left: 17, Right: 19}
+	p, err := planExtendSidesUnder(200, 300, sides, extendMaxPixels)
+	require.NoError(t, err)
+	require.Equal(t, image.Rect(0, 0, 236, 324), p.Canvas)
+	require.Equal(t, image.Rect(0, 0, 200, 300), p.Source)
+	require.Equal(t, image.Pt(17, 11), p.Offset)
+	require.Equal(t, [4]int{11, 13, 17, 19},
+		[4]int{p.ExpandTop, p.ExpandBottom, p.ExpandLeft, p.ExpandRight})
+	require.Equal(t, 1.0, p.Scale)
+
+	maxed := ExtendSides{Top: 4500, Bottom: 4500, Left: 3000, Right: 3000}
+	p, err = planExtendSidesUnder(1000, 1500, maxed, extendMaxPixels)
+	require.NoError(t, err)
+	require.Less(t, p.Scale, 1.0)
+	require.LessOrEqual(t, int64(p.Canvas.Dx())*int64(p.Canvas.Dy()), int64(extendMaxPixels))
+	require.Equal(t, p.Canvas.Dx(), p.ExpandLeft+p.Source.Dx()+p.ExpandRight)
+	require.Equal(t, p.Canvas.Dy(), p.ExpandTop+p.Source.Dy()+p.ExpandBottom)
+	require.Positive(t, p.ExpandTop)
+	require.Positive(t, p.ExpandBottom)
+	require.Positive(t, p.ExpandLeft)
+	require.Positive(t, p.ExpandRight)
+	require.InDelta(t, 3, float64(p.ExpandLeft)/float64(p.Source.Dx()), 0.02,
+		"the left side scales with the source")
+	require.InDelta(t, 3, float64(p.ExpandTop)/float64(p.Source.Dy()), 0.02,
+		"the top side scales with the source")
+
+	ceiling, _ := fal.EstimatedRouteUSD(fal.RouteOutpaint).Float64()
+	in := p.Source.Dx() * p.Source.Dy()
+	out := p.Canvas.Dx() * p.Canvas.Dy()
+	cost := 0.03 + 0.015*(math.Ceil(float64(in)/1e6)+math.Ceil(float64(out)/1e6)-1)
+	require.LessOrEqual(t, cost, ceiling, "per-side geometry stays under the same money ceiling")
+
+	require.NoError(t, ValidateExtendSides(100, 200,
+		ExtendSides{Top: 600, Bottom: 600, Left: 300, Right: 300}), "exactly 3× is legal")
+	invalid := ValidateExtendSides(100, 200, ExtendSides{Left: -1})
+	require.ErrorIs(t, invalid, errExtendSidesInvalid)
+	require.Equal(t, entity.DesignErrorCodeExtendSidesInvalid, classify(invalid).Code,
+		"the worker's second lock says the door's own stable refusal")
+	require.ErrorIs(t, ValidateExtendSides(100, 200, ExtendSides{Right: 301}), errExtendSidesInvalid)
+	_, err = planExtendSidesUnder(100, 200, ExtendSides{}, extendMaxPixels)
+	require.ErrorIs(t, err, errExtendNothingToAdd)
+}
+
 // TestTheExtendCapFITS_THE_CEILING — the 3 MP cap and the $0.12 ceiling are ONE decision. The worst
 // plan over every ratio and a spread of source sizes stays ≤ 3 MP, and the outpaint price of the
 // worst plan (0.03 + 0.015 × (ceil(in MP) + ceil(out MP) − 1), fal's published formula) stays under
@@ -116,32 +164,29 @@ func TestTheExtendCapFITS_THE_CEILING(t *testing.T) {
 // TestTheOutpaintBodyISPER_SLUG_FAMILY — flux gets expand_* in pixels, bria gets the canvas and the
 // placement; any other slug is refused BEFORE the submit (no guessing a body with money on it).
 func TestTheOutpaintBodyISPER_SLUG_FAMILY(t *testing.T) {
-	r, _ := entity.DesignExtendRatioValue("4:3")
-	plan, err := planExtend(500, 500, r)
+	plan, err := planExtendSidesUnder(500, 500,
+		ExtendSides{Top: 11, Bottom: 13, Left: 17, Right: 19}, extendMaxPixels)
 	require.NoError(t, err)
 
 	body, err := outpaintBody(fal.DefaultModelOutpaint, "https://cdn.example/m/11.png", plan)
 	require.NoError(t, err)
 	raw, _ := json.Marshal(body)
-	require.JSONEq(t, `{"image_url":"https://cdn.example/m/11.png","expand_top":0,"expand_bottom":0,
-		"expand_left":83,"expand_right":84,"auto_crop":false,"mode":"high","output_format":"png"}`, string(raw))
+	require.JSONEq(t, `{"image_url":"https://cdn.example/m/11.png","expand_top":11,"expand_bottom":13,
+		"expand_left":17,"expand_right":19,"auto_crop":false,"mode":"high","output_format":"png"}`, string(raw))
 
 	body, err = outpaintBody("fal-ai/bria/expand", "https://cdn.example/m/11.png", plan)
 	require.NoError(t, err)
 	raw, _ = json.Marshal(body)
-	require.JSONEq(t, `{"image_url":"https://cdn.example/m/11.png","canvas_size":[667,500],
-		"original_image_size":[500,500],"original_image_location":[83,0]}`, string(raw))
+	require.JSONEq(t, `{"image_url":"https://cdn.example/m/11.png","canvas_size":[536,524],
+		"original_image_size":[500,500],"original_image_location":[17,11]}`, string(raw))
 	require.NotContains(t, string(raw), "aspect_ratio", "bria's aspect_ratio lacks 21:9 and overrides the placement")
 
 	_, err = outpaintBody("fal-ai/some-other/outpainter", "https://cdn.example/m/11.png", plan)
 	require.ErrorIs(t, err, fal.ErrBadOption)
 
-	// And the route refuses it without a request leaving the process.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("a request left for a slug whose body was never read")
-	}))
-	defer srv.Close()
-	c := fal.New(fal.Config{APIKey: "k", BaseURL: srv.URL, ModelOutpaint: "fal-ai/some-other/outpainter"})
+	// And the route refuses it before transport. The deliberately dead base URL plus the sentinel
+	// assertion prove this is the body's bad-option refusal, not a network error after a request.
+	c := fal.New(fal.Config{APIKey: "k", BaseURL: "http://127.0.0.1:1", ModelOutpaint: "fal-ai/some-other/outpainter"})
 	_, err = NewFalOutpaintProvider(c).Execute(context.Background(),
 		Job{References: []string{"https://cdn.example/m/11.png"}, Extend: &plan})
 	require.ErrorIs(t, err, fal.ErrBadOption)
@@ -260,16 +305,16 @@ func extendRun(params string) entity.DesignRun {
 	return r
 }
 
-// TestTheExtendCompositeKEEPS_THE_ORIGINAL_BYTE_FOR_BYTE — end to end through the worker: the plan is
-// frozen before the call, the provider answers a canvas painted a translucent red everywhere, and
-// the filed picture carries THE SOURCE'S OWN PIXELS in the source rectangle and the answer outside
-// it. Mutation: draw.Over instead of draw.Src for the source → red (the half-transparent source
-// blends with the red beneath).
+// TestTheExtendCompositeKEEPS_THE_ORIGINAL_BYTE_FOR_BYTE — end to end through the worker, using an
+// asymmetric per-side placement: the plan is frozen before the call, the provider answers a canvas
+// painted a translucent red everywhere, and the filed picture carries THE SOURCE'S OWN PIXELS in
+// the source rectangle and the answer outside it. Mutation: draw.Over instead of draw.Src for the
+// source → red (the half-transparent source blends with the red beneath).
 func TestTheExtendCompositeKEEPS_THE_ORIGINAL_BYTE_FOR_BYTE(t *testing.T) {
 	srcBytes, src := translucentSource(t)
 	objs := &fakeObjects{byKey: map[string][]byte{"m/11.png": srcBytes}}
-	// 200×300 → 16:9: canvas 533×300, source at x 166..366.
-	answer := solidPNG(t, 533, 300, color.NRGBA{R: 250, G: 0, B: 0, A: 200})
+	// Canvas = 17 + 200 + 19 by 11 + 300 + 13; source starts at (17,11).
+	answer := solidPNG(t, 236, 324, color.NRGBA{R: 250, G: 0, B: 0, A: 200})
 	prov := &fakeProvider{name: providerNameFalOutpaint, out: &Outcome{
 		Artifacts: []Artifact{{Bytes: answer, ContentType: ContentTypePNG}},
 	}}
@@ -279,14 +324,16 @@ func TestTheExtendCompositeKEEPS_THE_ORIGINAL_BYTE_FOR_BYTE(t *testing.T) {
 	w.objects = objs
 
 	require.NoError(t, w.execute(context.Background(),
-		extendRun(`{"extra_input_media_ids":[11],"extend":{"aspect_ratio":"16:9"}}`), "tok"))
+		extendRun(`{"extra_input_media_ids":[11],"extend":{"expand_top":11,"expand_bottom":13,`+
+			`"expand_left":17,"expand_right":19}}`), "tok"))
 
 	require.Len(t, prov.calls, 1)
 	job := prov.calls[0]
 	require.NotNil(t, job.Extend, "the plan was frozen before the call")
 	require.Equal(t, []string{"https://cdn.example/m/11.png"}, job.References,
 		"under the cap the stored url travels unchanged — no download for fal, no data URI")
-	require.Equal(t, image.Rect(0, 0, 533, 300), job.Extend.Canvas)
+	require.Equal(t, image.Rect(0, 0, 236, 324), job.Extend.Canvas)
+	require.Equal(t, image.Pt(17, 11), job.Extend.Offset)
 	require.True(t, job.Extend.KeepAlpha)
 
 	require.Len(t, sink.put, 1)
@@ -294,7 +341,7 @@ func TestTheExtendCompositeKEEPS_THE_ORIGINAL_BYTE_FOR_BYTE(t *testing.T) {
 	gotImg, err := png.Decode(bytes.NewReader(sink.putBytes[0]))
 	require.NoError(t, err)
 	got := gotImg.(*image.NRGBA)
-	require.Equal(t, image.Rect(0, 0, 533, 300), got.Bounds())
+	require.Equal(t, image.Rect(0, 0, 236, 324), got.Bounds())
 	off := job.Extend.Offset
 	for y := 0; y < 300; y++ {
 		for x := 0; x < 200; x++ {
@@ -303,7 +350,7 @@ func TestTheExtendCompositeKEEPS_THE_ORIGINAL_BYTE_FOR_BYTE(t *testing.T) {
 		}
 	}
 	require.Equal(t, color.NRGBA{R: 250, G: 0, B: 0, A: 200}, got.NRGBAAt(3, 150), "outside: the model's canvas")
-	require.Equal(t, color.NRGBA{R: 250, G: 0, B: 0, A: 200}, got.NRGBAAt(530, 10))
+	require.Equal(t, color.NRGBA{R: 250, G: 0, B: 0, A: 200}, got.NRGBAAt(234, 10))
 }
 
 // TestAnExtendAnswerOfTheWrongSizeISKEPT_AND_COMPLAINED — a canvas of another proportion is not
@@ -392,7 +439,10 @@ func TestABigExtendSendsTHE_SCALED_SOURCE(t *testing.T) {
 // camelCase half proving the tags carry the value (every one of the three is multi-word).
 func TestThePhase3ParamsAreREAD_BY_THEIR_SNAKE_CASE_NAMES(t *testing.T) {
 	written := &pb_common.DesignRunParams{
-		Extend:  &pb_common.DesignExtendParams{AspectRatio: "21:9"},
+		Extend: &pb_common.DesignExtendParams{
+			AspectRatio: "21:9", ExpandTop: proto.Int32(0), ExpandBottom: proto.Int32(13),
+			ExpandLeft: proto.Int32(17), ExpandRight: proto.Int32(19),
+		},
 		Inpaint: &pb_common.DesignInpaintParams{SourceMediaId: 41, MaskMediaId: 42},
 	}
 	raw, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(written)
@@ -400,15 +450,26 @@ func TestThePhase3ParamsAreREAD_BY_THEIR_SNAKE_CASE_NAMES(t *testing.T) {
 	p := parseParams(entity.RawJSON(raw))
 	require.NotNil(t, p.Extend)
 	require.Equal(t, "21:9", p.Extend.AspectRatio)
+	require.NotNil(t, p.Extend.ExpandTop, "an explicitly stated zero must retain presence")
+	require.Zero(t, *p.Extend.ExpandTop)
+	require.Equal(t, 13, *p.Extend.ExpandBottom)
+	require.Equal(t, 17, *p.Extend.ExpandLeft)
+	require.Equal(t, 19, *p.Extend.ExpandRight)
+	sides, present := p.Extend.sides()
+	require.True(t, present)
+	require.Equal(t, ExtendSides{Top: 0, Bottom: 13, Left: 17, Right: 19}, sides)
 	require.NotNil(t, p.Inpaint)
 	require.Equal(t, inpaintParams{SourceMediaID: 41, MaskMediaID: 42}, *p.Inpaint)
 
 	camel, err := protojson.Marshal(written)
 	require.NoError(t, err)
 	require.Contains(t, string(camel), `"aspectRatio"`, "the fixture must really be camelCase")
+	require.Contains(t, string(camel), `"expandTop":0`, "optional zero presence must survive proto JSON")
 	c := parseParams(entity.RawJSON(camel))
 	require.NotNil(t, c.Extend)
 	require.Empty(t, c.Extend.AspectRatio)
+	_, present = c.Extend.sides()
+	require.False(t, present, "the worker's frozen reader intentionally accepts snake_case only")
 	require.NotNil(t, c.Inpaint)
 	require.Zero(t, c.Inpaint.SourceMediaID)
 	require.Zero(t, c.Inpaint.MaskMediaID)

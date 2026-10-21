@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -78,6 +79,73 @@ func ConvertPbTaskBoardToEntity(b pb_common.TaskBoard) (entity.TaskBoard, error)
 		return "", fmt.Errorf("unknown or unset task board: %v", b)
 	}
 	return v, nil
+}
+
+// ConvertPbTaskBoardRefToEntity reads the board a request names: board_id wins; otherwise the
+// legacy enum maps to its seeded board's slug. Both unset = zero ref, and the caller decides what
+// that means (AddTask: required; MoveTask: keep the current board).
+func ConvertPbTaskBoardRefToEntity(boardID int32, legacy pb_common.TaskBoard) (entity.TaskBoardRef, error) {
+	if boardID < 0 {
+		return entity.TaskBoardRef{}, fmt.Errorf("board_id must be positive, got %d", boardID)
+	}
+	if boardID > 0 {
+		return entity.TaskBoardRef{Id: int(boardID)}, nil
+	}
+	if legacy == pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
+		return entity.TaskBoardRef{}, nil
+	}
+	slug, ok := taskBoardPbToEntity[legacy]
+	if !ok {
+		return entity.TaskBoardRef{}, fmt.Errorf("unknown task board: %v", legacy)
+	}
+	return entity.TaskBoardRef{Slug: slug}, nil
+}
+
+// ValidateTaskBoardName trims a board name and bounds it to task_board.name (VARCHAR(64), counted
+// in characters). Uniqueness is the database's: uniq_task_board_name, case-insensitive.
+func ValidateTaskBoardName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("board name is required")
+	}
+	if !utf8.ValidString(name) {
+		return "", fmt.Errorf("board name must be valid UTF-8")
+	}
+	if n := utf8.RuneCountInString(name); n > entity.TaskBoardNameMaxLen {
+		return "", fmt.Errorf("board name is too long: %d characters, max %d", n, entity.TaskBoardNameMaxLen)
+	}
+	return name, nil
+}
+
+// ConvertEntityTaskBoardToPb maps one board row; legacy_board is the enum of a seeded board's slug
+// (UNKNOWN for a custom board).
+func ConvertEntityTaskBoardToPb(b *entity.TaskBoardEntry) *pb_common.TaskBoardEntry {
+	if b == nil {
+		return nil
+	}
+	legacy := pb_common.TaskBoard_TASK_BOARD_UNKNOWN
+	if b.Slug.Valid {
+		legacy = taskBoardEntityToPb[entity.TaskBoard(b.Slug.String)]
+	}
+	return &pb_common.TaskBoardEntry{
+		Id:                int32(b.Id),
+		Name:              b.Name,
+		LegacyBoard:       legacy,
+		Position:          int32(b.Position),
+		TaskCount:         int32(b.TaskCount),
+		ArchivedTaskCount: int32(b.ArchivedTaskCount),
+		CreatedBy:         b.CreatedBy,
+		CreatedAt:         timestamppb.New(b.CreatedAt),
+	}
+}
+
+// ConvertEntityTaskBoardsToPb maps the board rail.
+func ConvertEntityTaskBoardsToPb(boards []entity.TaskBoardEntry) []*pb_common.TaskBoardEntry {
+	out := make([]*pb_common.TaskBoardEntry, 0, len(boards))
+	for i := range boards {
+		out = append(out, ConvertEntityTaskBoardToPb(&boards[i]))
+	}
+	return out
 }
 
 // ConvertPbTaskStatusToEntity maps a proto status to entity, erroring on UNKNOWN or
@@ -422,7 +490,9 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 			// сохраняет одна форма, и то, что она не прочитала, она сотрёт полной заменой.
 			MediaAnnotations: taskMediaAnnotationsToPb(t.MediaAnnotations),
 		},
+		// Legacy enum: the slug of a seeded board maps, a custom board's 'custom-<id>' is UNKNOWN.
 		Board:      taskBoardEntityToPb[t.Board],
+		BoardId:    int32(t.BoardId),
 		Status:     taskStatusEntityToPb[t.Status],
 		Position:   int32(t.Position),
 		Media:      media,
@@ -439,6 +509,68 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 		Links:        ConvertEntityTaskLinksToPb(t.Links),
 		SubtaskTotal: int32(t.SubtaskTotal),
 		SubtaskDone:  int32(t.SubtaskDone),
+	}
+}
+
+// ConvertEntityTaskStatusHistoryToPb converts detail-only status audit rows. A NULL from_status
+// maps to UNKNOWN for creation. The synthetic legacy creation row also has UNKNOWN to_status,
+// because the initial status of a pre-0418 task is not recoverable.
+func ConvertEntityTaskStatusHistoryToPb(history []entity.TaskStatusChange) []*pb_common.TaskStatusChange {
+	if len(history) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TaskStatusChange, 0, len(history))
+	for i := range history {
+		change := &history[i]
+		var fromStatus pb_common.TaskStatus
+		if change.FromStatus.Valid {
+			fromStatus = taskStatusEntityToPb[entity.TaskStatus(change.FromStatus.String)]
+		}
+		out = append(out, &pb_common.TaskStatusChange{
+			FromStatus:  fromStatus,
+			ToStatus:    taskStatusEntityToPb[change.ToStatus],
+			ChangedBy:   change.ChangedBy,
+			ChangedAt:   timestamppb.New(change.ChangedAt),
+			Approximate: change.Approximate,
+		})
+	}
+	return out
+}
+
+// ConvertEntityTaskClosedToPb converts list-only closing metadata.
+func ConvertEntityTaskClosedToPb(closed *entity.TaskClosed) *pb_common.TaskClosed {
+	if closed == nil {
+		return nil
+	}
+	return &pb_common.TaskClosed{
+		TaskId:      int32(closed.TaskId),
+		ClosedAt:    timestamppb.New(closed.ClosedAt),
+		ClosedBy:    closed.ClosedBy,
+		Approximate: closed.Approximate,
+	}
+}
+
+// ConvertEntityTaskTimingToPb converts list-only status-age metadata.
+func ConvertEntityTaskTimingToPb(timing *entity.TaskTiming) *pb_common.TaskTiming {
+	if timing == nil {
+		return nil
+	}
+	return &pb_common.TaskTiming{
+		TaskId:      int32(timing.TaskId),
+		StatusSince: timestamppb.New(timing.StatusSince),
+		Approximate: timing.Approximate,
+	}
+}
+
+// ConvertEntityTaskMatchToPb converts list-only search metadata.
+func ConvertEntityTaskMatchToPb(match *entity.TaskMatch) *pb_common.TaskMatch {
+	if match == nil {
+		return nil
+	}
+	return &pb_common.TaskMatch{
+		TaskId:  int32(match.TaskId),
+		Field:   match.Field,
+		Snippet: match.Snippet,
 	}
 }
 
@@ -486,6 +618,7 @@ func ConvertEntityTaskLinksToPb(links []entity.TaskLink) []*pb_common.TaskLink {
 			Title:    l.Title,
 			Status:   taskStatusEntityToPb[l.Status],
 			Board:    taskBoardEntityToPb[l.Board],
+			BoardId:  int32(l.BoardId),
 			Archived: l.Archived,
 		})
 	}
@@ -548,6 +681,7 @@ func ConvertEntityLibraryFileTasksToPb(rows []entity.LibraryFileTask) []*pb_admi
 			// Срока может не быть, и тогда поля нет вовсе — «нет срока», а не «сегодня».
 			DueDate: pbTimestampFromNullTime(r.DueDate),
 			Board:   taskBoardEntityToPb[r.Board],
+			BoardId: int32(r.BoardId),
 		})
 	}
 	return out

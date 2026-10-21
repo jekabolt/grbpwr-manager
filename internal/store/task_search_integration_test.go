@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
@@ -84,6 +86,9 @@ func TestTaskSearchAcrossArchiveCommentsChecklistIDAndLiterals(t *testing.T) {
 	require.Equal(t, archivedID, found[0].Id)
 	require.Equal(t, entity.TaskBoardMarketing, found[0].Board)
 	require.True(t, found[0].ArchivedAt.Valid)
+	require.NotNil(t, found[0].Match)
+	require.Equal(t, "comment", found[0].Match.Field)
+	require.Contains(t, strings.ToLower(found[0].Match.Snippet), "archivedcommentneedle")
 
 	_, total, err = s.Tasks().ListTasks(ctx, entity.TaskListFilter{Query: "ArchivedCommentNeedle"})
 	require.NoError(t, err)
@@ -93,10 +98,18 @@ func TestTaskSearchAcrossArchiveCommentsChecklistIDAndLiterals(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, total)
 	require.Equal(t, []int{checklistID}, taskIDs(found))
+	require.Equal(t, "checklist", found[0].Match.Field)
+	require.Contains(t, strings.ToLower(found[0].Match.Snippet), "checklistonlyneedle")
 
 	found, _, err = s.Tasks().ListTasks(ctx, entity.TaskListFilter{Query: fmt.Sprintf("#%d", checklistID)})
 	require.NoError(t, err)
 	require.Contains(t, taskIDs(found), checklistID)
+	for i := range found {
+		if found[i].Id == checklistID {
+			require.Equal(t, "id", found[i].Match.Field)
+			require.Empty(t, found[i].Match.Snippet)
+		}
+	}
 	found, _, err = s.Tasks().ListTasks(ctx, entity.TaskListFilter{Query: strconv.Itoa(checklistID)})
 	require.NoError(t, err)
 	require.Contains(t, taskIDs(found), checklistID)
@@ -106,6 +119,21 @@ func TestTaskSearchAcrossArchiveCommentsChecklistIDAndLiterals(t *testing.T) {
 	require.Equal(t, 1, total, "% and _ must be literals, not LIKE wildcards")
 	require.Equal(t, []int{literalID}, taskIDs(found))
 	require.NotContains(t, taskIDs(found), decoyID)
+	require.Equal(t, "title", found[0].Match.Field)
+	require.Empty(t, found[0].Match.Snippet)
+
+	descriptionID := addSearchTask(ctx, t, s, "Cyrillic description card",
+		strings.Repeat("я", 48)+" до\nИГОЛКА\tпосле "+strings.Repeat("ю", 48), entity.TaskBoardDevelopment)
+	found, total, err = s.Tasks().ListTasks(ctx, entity.TaskListFilter{Query: "иголка"})
+	require.NoError(t, err)
+	require.Equal(t, 1, total)
+	require.Equal(t, []int{descriptionID}, taskIDs(found))
+	require.Equal(t, "description", found[0].Match.Field)
+	require.True(t, utf8.ValidString(found[0].Match.Snippet))
+	require.NotContains(t, found[0].Match.Snippet, "\n")
+	require.NotContains(t, found[0].Match.Snippet, "\t")
+	require.True(t, strings.HasPrefix(found[0].Match.Snippet, "…"))
+	require.True(t, strings.HasSuffix(found[0].Match.Snippet, "…"))
 
 	// Query ordering is active first, then title hits, then id descending. These three rows hit the
 	// title, checklist, and archived comment respectively, so each ranking tier is observable.
@@ -113,6 +141,9 @@ func TestTaskSearchAcrossArchiveCommentsChecklistIDAndLiterals(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, total)
 	require.Equal(t, []int{titleRankID, checklistID, archivedID}, taskIDs(found))
+	require.Equal(t, []string{"title", "checklist", "comment"}, []string{
+		found[0].Match.Field, found[1].Match.Field, found[2].Match.Field,
+	})
 
 	// Whitespace-only input must take the exact legacy path, including its board/status/position
 	// ordering and hydrated response.
@@ -122,4 +153,7 @@ func TestTaskSearchAcrossArchiveCommentsChecklistIDAndLiterals(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, legacyTotal, blankTotal)
 	require.Equal(t, legacy, blank)
+	for i := range blank {
+		require.Nil(t, blank[i].Match)
+	}
 }

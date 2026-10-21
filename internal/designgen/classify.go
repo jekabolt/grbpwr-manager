@@ -334,6 +334,8 @@ func classifyBySentinel(err error) verdict {
 	// StartAttempt, so free; terminal because the snapshot and the picture are frozen.
 	case errors.Is(err, errExtendNothingToAdd):
 		return verdict{Retryable: false, Code: CodeTargetAspectMustExtend, State: entity.DesignAttemptFailed}
+	case errors.Is(err, errExtendSidesInvalid):
+		return verdict{Retryable: false, Code: entity.DesignErrorCodeExtendSidesInvalid, State: entity.DesignAttemptFailed}
 	// ─── ours, phase 3: the mask of a retouch fails its second lock at build time (before
 	// StartAttempt, so free). Terminal: the mask row is immutable and the snapshot frozen.
 	case errors.Is(err, errInpaintMaskGone):
