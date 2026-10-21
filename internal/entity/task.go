@@ -312,18 +312,20 @@ const (
 	TaskLinkRoleRelates   TaskLinkRole = "relates"
 )
 
-// TaskLink — одна связь, как её рисует карточка: второй конец уже разрешён в заголовок/статус/доску.
+// TaskLink — одна связь, как её рисует карточка: второй конец уже разрешён в
+// заголовок/статус/доску/исполнителей.
 type TaskLink struct {
 	// OwnerTaskId — карточка, в чьём списке едет строка (для группировки батч-чтения).
 	OwnerTaskId int `db:"owner_task_id"`
 	// TaskId — ВТОРОЙ конец связи.
-	TaskId   int          `db:"task_id"`
-	Role     TaskLinkRole `db:"-"`
-	Title    string       `db:"title"`
-	Status   TaskStatus   `db:"status"`
-	Board    TaskBoard    `db:"board"`
-	BoardId  int          `db:"board_id"`
-	Archived bool         `db:"archived"`
+	TaskId    int          `db:"task_id"`
+	Role      TaskLinkRole `db:"-"`
+	Title     string       `db:"title"`
+	Status    TaskStatus   `db:"status"`
+	Board     TaskBoard    `db:"board"`
+	BoardId   int          `db:"board_id"`
+	Archived  bool         `db:"archived"`
+	Assignees []string     `db:"-"`
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with

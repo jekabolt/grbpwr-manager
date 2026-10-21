@@ -102,7 +102,7 @@ func (s *Store) ConsumePackagingForOrder(ctx context.Context, orderID, itemCount
 				Reason:        entity.MaterialAdjustReasonPackaging,
 				Comment:       sql.NullString{String: fmt.Sprintf("auto packaging for order %d", orderID), Valid: true},
 				AdminUsername: username,
-			}, decimal.Zero)
+			}, decimal.Zero, s.Now())
 			switch {
 			case err == nil:
 				out = append(out, mv)

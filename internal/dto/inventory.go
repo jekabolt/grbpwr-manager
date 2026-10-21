@@ -334,6 +334,12 @@ func ConvertEntityMaterialMovementToPb(m entity.MaterialMovement) *pb_common.Mat
 	}
 	if m.OccurredAt.Valid {
 		out.OccurredAt = timestamppb.New(m.OccurredAt.Time)
+	} else if !m.CreatedAt.IsZero() {
+		// Defensive: every movement is dated at insert and the occurred-at backfill migration filled the
+		// legacy NULLs, but a row written by an older binary during a deploy overlap could still be
+		// undated — show the UTC day it was recorded (as the backfill does) rather than a blank date.
+		c := m.CreatedAt.UTC()
+		out.OccurredAt = timestamppb.New(time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC))
 	}
 	if m.ExpectedAt.Valid {
 		out.ExpectedAt = timestamppb.New(m.ExpectedAt.Time)

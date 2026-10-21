@@ -219,9 +219,9 @@ enum TaskLinkKind {
   TASK_LINK_KIND_RELATES = 3; // просто связаны
 }
 
-// TaskLink — строка связи, КАК ЕЁ РИСУЕТ КАРТОЧКА: второй конец УЖЕ разрешён в заголовок, статус и
-// доску (та же доктрина проекции, что у admin.LibraryFileTask), чтобы бейдж «заблокирована» и
-// список связей не требовали ни второго RPC, ни N+1.
+// TaskLink — строка связи, КАК ЕЁ РИСУЕТ КАРТОЧКА: второй конец УЖЕ разрешён в заголовок, статус,
+// доску и исполнителей (та же доктрина проекции, что у admin.LibraryFileTask), чтобы бейдж
+// «заблокирована» и список связей не требовали ни второго RPC, ни N+1.
 //
 // БЛОКЕР — СОВЕТ, А НЕ ЗАМОК: сервер НЕ запрещает перевести в DONE задачу с открытыми блокерами.
 // Доска — drag-and-drop, и отказ посреди жеста хуже бейджа; заархивированный недоделанный блокер
@@ -236,6 +236,7 @@ message TaskLink {
   TaskBoard board = 5 [deprecated = true]; // legacy enum; UNKNOWN for a custom board, read board_id
   bool archived = 6;
   int32 board_id = 7; // TaskBoardEntry.id of the other end's board
+  repeated string assignees = 8; // исполнители второго конца, в порядке показа аватарок
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
