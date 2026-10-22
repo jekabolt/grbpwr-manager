@@ -200,6 +200,22 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 	return nil
 }
 
+// RevalidateTechCardAssembly repeats the converter's final assembly pass after another subsystem
+// has changed operation order or inputs. Automatic FUSING reconciliation is such a subsystem: it
+// moves FUSING steps first, so a formerly valid unit input can otherwise become produced-later.
+func RevalidateTechCardAssembly(tc *entity.TechCardInsert) *entity.ValidationError {
+	if tc == nil {
+		return nil
+	}
+	if verr := canonicalizeAssembly(tc.Operations, tc.Pieces, tc.AssemblyAware); verr != nil {
+		return verr
+	}
+	if tc.ApprovalState == entity.TechCardApprovalReleased {
+		return assemblyReleaseCheck(tc.Operations, tc.Pieces)
+	}
+	return nil
+}
+
 // assemblyReleaseCheck — правило 4, на переходе в RELEASED: ровно один терминальный узел, и
 // каждая объявленная строка детали в него попадает.
 //

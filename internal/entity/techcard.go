@@ -3450,6 +3450,11 @@ type TechCardOperation struct {
 	// Review is a closed DXF-reconciliation reason (0422). NULL means no human review is pending.
 	// Like Draft it is workflow metadata, not an instruction, and stays outside section digests.
 	Review sql.NullString `db:"review"`
+	// AutoFusingLineKey is the private identity snapshot of an automatically managed FUSING group.
+	// Valid+empty is the shared unresolved group; a non-empty value is the INTERLINING line_key the
+	// group was created for. It deliberately survives deletion of that BOM row, letting an edited
+	// orphan shed the dead FK without becoming indistinguishable from unresolved NULL. Not on wire.
+	AutoFusingLineKey sql.NullString `db:"auto_fusing_line_key"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
@@ -4611,6 +4616,11 @@ type TechCardInsert struct {
 	Signoffs       []TechCardSignoff      `db:"-"`
 	Patterns       []TechCardSizePattern  `db:"-"`
 	Pieces         []TechCardPiece        `db:"-"` // structural cut-pieces + per-colourway fabric mapping (NF-05)
+	// ReconcileFusing is write-command metadata. Create/clone writers set it unconditionally;
+	// UpdateTechCard sets it only when the stored and incoming piece-fusing/interlining state differs.
+	// It keeps the transaction-side reconciliation aligned with the in-memory pass, so an unrelated
+	// full-document save cannot reorder, unlink, or review-mark historical FUSING operations.
+	ReconcileFusing bool `db:"-"`
 	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
 	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false
 	// means the payload did not speak — the store preserves stored aliases, so a stale client cannot

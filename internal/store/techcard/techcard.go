@@ -261,6 +261,9 @@ func (s *Store) AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInse
 	if err := s.EnsureDictionaryFresh(ctx, "create"); err != nil {
 		return 0, false, err
 	}
+	// Creation always gets the transaction-side pass, including direct store callers that did not
+	// come through the API's in-memory reconciliation.
+	tc.ReconcileFusing = true
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	requestId := sql.NullString{String: opts.RequestId, Valid: opts.RequestId != ""}
 	var id int
@@ -668,6 +671,12 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// they are NOT part of the tech-card full-replace and keep their stable ids and sample links.
 	prevProductLinks, err := captureCardProductLinks(ctx, rep.DB(), id)
 	if err != nil {
+		return nil, err
+	}
+	// Automatic FUSING identity is private store metadata and therefore is not echoed by protobuf.
+	// Carry it before the operation full-replace so direct/maintenance writers preserve the same
+	// orphan discriminator as the API update path.
+	if err := carryStoredAutoFusingKeys(ctx, rep.DB(), id, tc.Operations); err != nil {
 		return nil, err
 	}
 
@@ -1621,9 +1630,12 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	}
 	// FUSING steps are derived from the final piece + BOM state of this save. Reconcile only after
 	// both are durable and after issues, whose operation-number references move with the generated
-	// steps. db is the caller's transaction, so every link/order/review change commits atomically.
-	if err := ReconcileFusingOps(ctx, db, id); err != nil {
-		return err
+	// steps. Updates set this flag only after a stored-vs-incoming fusing-state comparison; creates
+	// and clones set it unconditionally. Thus unrelated saves do not touch historical FUSING rows.
+	if tc.ReconcileFusing {
+		if err := ReconcileFusingOps(ctx, db, id); err != nil {
+			return err
+		}
 	}
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err

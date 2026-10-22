@@ -202,6 +202,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := fusingops.ReconcileTechCard(tc); err != nil {
 		return nil, apierr.Invalid(err)
 	}
+	tc.ReconcileFusing = true
+	if err := dto.RevalidateTechCardAssembly(tc); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
@@ -570,12 +574,20 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	// optional for the same stale-tab reason. Carry each omitted value before restamping the
 	// CONSTRUCTION digest so the signature describes what the store's guarded UPDATE will retain.
 	carryOmittedPieceFusingDetailsFrom(stored, tc)
-	// Reconcile after every presence carry: an old tab may omit the selected interlining, and the
-	// resolved operation must be computed from the value the same transaction will actually retain.
-	// This also happens before the final sign-off restamp, preventing a generated/moved step from
-	// making a fresh CONSTRUCTION approval stale on its first read.
-	if err := fusingops.ReconcileTechCard(tc); err != nil {
-		return nil, apierr.Invalid(err)
+	// Reconcile after every presence carry, but only if a fusing field or INTERLINING membership
+	// actually changed. This protects historical FUSING steps from unrelated full-document saves.
+	// The store receives the same verdict and skips its SQL pass on the same no-op path.
+	changed, reconcileErr := fusingops.ReconcileTechCardUpdate(&stored.TechCardInsert, tc)
+	if reconcileErr != nil {
+		return nil, apierr.Invalid(reconcileErr)
+	}
+	tc.ReconcileFusing = changed
+	if changed {
+		// Reconciliation can move a FUSING step ahead of a unit it consumes. Re-run the exact
+		// canonicalization and release convergence gates before any fresh sign-off is restamped.
+		if err := dto.RevalidateTechCardAssembly(tc); err != nil {
+			return nil, apierr.Invalid(err)
+		}
 	}
 	if err := operationReviewReleaseGate(tc); err != nil {
 		return nil, err

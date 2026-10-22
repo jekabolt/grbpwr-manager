@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fusingops"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -380,6 +381,15 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	insert.TargetDropDate = sql.NullTime{}
 	insert.CreatedBy = authsrv.GetAdminUsername(ctx)
 	insert.UpdatedBy = insert.CreatedBy
+	// A clone is a new card: always materialize its automatic FUSING groups, then repeat assembly
+	// validation because moving a FUSING step first can invalidate a carried unit dependency.
+	if err := fusingops.ReconcileTechCard(insert); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	insert.ReconcileFusing = true
+	if err := dto.RevalidateTechCardAssembly(insert); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	newID, err := s.repo.TechCards().CloneTechCardForSeason(ctx, int(req.SourceStyleId), int(req.ExpectedSourceVersion), insert)
 	if err != nil {
 		// A clone round-trips the source card's category_id and size_ids, so the insert can raise the
