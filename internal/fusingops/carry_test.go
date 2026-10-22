@@ -278,3 +278,156 @@ func TestStaleSaveWithFusingChangeRecreatesMissingAutoOp(t *testing.T) {
 		t.Fatalf("issue operation number = %#v, want 20", got)
 	}
 }
+
+// manualFusing is a hand-made FUSING step: no automatic identity, never a draft.
+func manualFusing(number int32, bom []string, pieces ...string) entity.TechCardOperation {
+	op := entity.TechCardOperation{
+		OperationNumber: opNumber(number),
+		OperationType:   entity.OpTypeFusing,
+		Zone:            entity.ZoneInterlining,
+		BomLineKeys:     bom,
+		Note:            sql.NullString{String: "by hand", Valid: true},
+	}
+	for _, piece := range pieces {
+		op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: piece})
+		op.InputKeys = append(op.InputKeys, piece)
+		op.PieceLineKeys = append(op.PieceLineKeys, piece)
+	}
+	return op
+}
+
+// wireEcho is a stored step as an up-to-date client sends it back: no private key, no resolved ids.
+func wireEcho(op entity.TechCardOperation, number int32) entity.TechCardOperation {
+	op.OperationNumber = opNumber(number)
+	op.AutoFusingLineKey = sql.NullString{}
+	op.PieceIds, op.BomIds = nil, nil
+	return op
+}
+
+func TestManualStepOnSameLineAndNumberDoesNotHideDraftAutoOp(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pieces []string
+	}{
+		{name: "other pieces", pieces: []string{"BACK"}},
+		{name: "same pieces as the automatic step", pieces: []string{"FRONT"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manual := manualFusing(20, []string{"INTERLINING-A"}, tc.pieces...)
+			stored := fusedCard([]entity.TechCardOperation{
+				storedAutoFusing(10, "INTERLINING-A", "FRONT"), manual, machineOp(30, "join"),
+			})
+			// The stale list never had the automatic step, so the manual one sits on its number 10.
+			incoming := staleCopy(stored, []entity.TechCardOperation{wireEcho(manual, 10), machineOp(20, "join")})
+
+			outcome, err := ReconcileTechCardUpdate(stored, incoming)
+			if err != nil || !outcome.Carried || outcome.Reconcile {
+				t.Fatalf("outcome = %+v err = %v, want the automatic step carried", outcome, err)
+			}
+			if len(incoming.Operations) != 3 {
+				t.Fatalf("operations = %#v, want carried auto, manual, machine", incoming.Operations)
+			}
+			if got := incoming.Operations[0]; got.AutoFusingLineKey != autoKey("INTERLINING-A") || !got.Draft {
+				t.Fatalf("first step = %#v, want the carried draft automatic step", got)
+			}
+			if got := incoming.Operations[1]; !reflect.DeepEqual(got, wireEcho(manual, 20)) {
+				t.Fatalf("manual step was adopted or changed: want=%#v got=%#v", wireEcho(manual, 20), got)
+			}
+		})
+	}
+}
+
+func TestLinklessManualStepDoesNotHideUnresolvedAutoOp(t *testing.T) {
+	manual := manualFusing(20, nil, "BACK")
+	stored := fusedCard([]entity.TechCardOperation{storedAutoFusing(10, "", "FRONT"), manual, machineOp(30, "join")})
+	stored.BomItems = append(stored.BomItems, entity.TechCardBomItem{LineKey: "INTERLINING-B", Section: entity.BomSectionInterlining})
+	stored.Pieces[0].FusingBomLineKey = ""
+	incoming := staleCopy(stored, []entity.TechCardOperation{wireEcho(manual, 10), machineOp(20, "join")})
+
+	outcome, err := ReconcileTechCardUpdate(stored, incoming)
+	if err != nil || !outcome.Carried {
+		t.Fatalf("outcome = %+v err = %v, want the unresolved step carried", outcome, err)
+	}
+	if len(incoming.Operations) != 3 || incoming.Operations[0].AutoFusingLineKey != autoKey("") {
+		t.Fatalf("operations = %#v, want the unresolved automatic step first", incoming.Operations)
+	}
+	if got := incoming.Operations[1]; got.AutoFusingLineKey.Valid || !reflect.DeepEqual(got, wireEcho(manual, 20)) {
+		t.Fatalf("linkless manual step was adopted into the unresolved group: %#v", got)
+	}
+}
+
+func TestStepOnEditedAutoOpNumberDoesNotInheritItsIdentity(t *testing.T) {
+	edited := storedAutoFusing(10, "INTERLINING-A", "FRONT")
+	edited.Draft = false
+	for _, tc := range []struct {
+		name     string
+		stored   []entity.TechCardOperation
+		incoming []entity.TechCardOperation
+	}{
+		{
+			// The operator deleted the edited automatic step; the stored manual step moved up onto 10.
+			name: "stored manual step renumbered onto it",
+			stored: []entity.TechCardOperation{
+				edited, manualFusing(20, []string{"INTERLINING-A"}, "FRONT"), machineOp(30, "join"),
+			},
+			incoming: []entity.TechCardOperation{
+				wireEcho(manualFusing(20, []string{"INTERLINING-A"}, "FRONT"), 10), machineOp(20, "join"),
+			},
+		},
+		{
+			name:   "new step with other links on its number",
+			stored: []entity.TechCardOperation{edited, machineOp(20, "join")},
+			incoming: []entity.TechCardOperation{
+				manualFusing(10, []string{"INTERLINING-A", "THREAD"}, "FRONT"), machineOp(20, "join"),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := fusedCard(tc.stored)
+			stored.BomItems = append(stored.BomItems, entity.TechCardBomItem{LineKey: "THREAD"})
+			incoming := staleCopy(stored, tc.incoming)
+			before := append([]entity.TechCardOperation(nil), incoming.Operations...)
+
+			outcome, err := ReconcileTechCardUpdate(stored, incoming)
+			if err != nil || outcome.Carried || outcome.Reconcile {
+				t.Fatalf("outcome = %+v err = %v, want no change (edited step stays deleted)", outcome, err)
+			}
+			if !reflect.DeepEqual(incoming.Operations, before) {
+				t.Fatalf("a manual step gained the edited step's identity: before=%#v after=%#v", before, incoming.Operations)
+			}
+		})
+	}
+}
+
+func TestAutoOpReviewedInThisSaveKeepsIdentity(t *testing.T) {
+	stored := fusedCard([]entity.TechCardOperation{storedAutoFusing(10, "INTERLINING-A", "FRONT"), machineOp(20, "join")})
+	reviewed := wireEcho(stored.Operations[0], 10)
+	reviewed.Draft = false
+	reviewed.PressTemperatureC = sql.NullInt32{Int32: 140, Valid: true}
+	incoming := staleCopy(stored, []entity.TechCardOperation{reviewed, machineOp(20, "join")})
+
+	outcome, err := ReconcileTechCardUpdate(stored, incoming)
+	if err != nil || outcome.Carried || outcome.Reconcile {
+		t.Fatalf("outcome = %+v err = %v, want no carry", outcome, err)
+	}
+	if len(incoming.Operations) != 2 || incoming.Operations[0].AutoFusingLineKey != autoKey("INTERLINING-A") ||
+		incoming.Operations[0].Draft {
+		t.Fatalf("operations = %#v, want the reviewed step alone, keeping its identity", incoming.Operations)
+	}
+}
+
+func TestDraftEchoWithStalePiecesIsNotMissing(t *testing.T) {
+	stored := fusedCard([]entity.TechCardOperation{storedAutoFusing(10, "INTERLINING-A", "FRONT", "BACK"), machineOp(20, "join")})
+	stored.Pieces[1].Fused = true
+	stored.Pieces[1].FusingBomLineKey = "INTERLINING-A"
+	echo := wireEcho(storedAutoFusing(30, "INTERLINING-A", "FRONT"), 30) // client missed BACK joining
+	incoming := staleCopy(stored, []entity.TechCardOperation{machineOp(10, "join"), echo})
+
+	outcome, err := ReconcileTechCardUpdate(stored, incoming)
+	if err != nil || outcome.Carried {
+		t.Fatalf("outcome = %+v err = %v, want no carry", outcome, err)
+	}
+	if len(incoming.Operations) != 2 || incoming.Operations[1].AutoFusingLineKey != autoKey("INTERLINING-A") {
+		t.Fatalf("operations = %#v, want the draft echo matched", incoming.Operations)
+	}
+}

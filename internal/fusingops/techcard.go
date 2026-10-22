@@ -125,62 +125,98 @@ func FusingStateChanged(stored, incoming *entity.TechCardInsert) bool {
 		!reflect.DeepEqual(storedInterlinings, incomingInterlinings)
 }
 
-// linksAutoFusingGroup reports whether an operation, by its own content, is the automatic FUSING
-// step of group key: linked to that INTERLINING line or, for the unresolved group (key ""), linkless
-// and not an orphan. The wire carries no operation id, so this is the identity that survives a client
-// renumbering or reordering its steps.
-func linksAutoFusingGroup(op *entity.TechCardOperation, key string) bool {
-	if key == "" {
-		return len(op.BomLineKeys) == 0 && !(op.Review.Valid && op.Review.String == ReviewOrphan)
-	}
-	for _, raw := range op.BomLineKeys {
-		if strings.TrimSpace(raw) == key {
-			return true
-		}
-	}
-	return false
+// fusingOpShape is the identity a FUSING step keeps across a save when the wire carries no id: its
+// draft flag, its BOM links and its piece inputs (as sets — order and number are not identity).
+type fusingOpShape struct {
+	draft  bool
+	bom    string
+	pieces string
 }
 
-// matchAutoFusingOps pairs every stored automatic FUSING operation (auto_fusing_line_key set) with at
-// most one incoming FUSING operation and copies the private group key onto it. Returned is the set of
-// stored indexes that found a counterpart.
+func sortedKeySet(keys []string) string {
+	set := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, raw := range keys {
+		key := strings.TrimSpace(raw)
+		if key == "" || set[key] {
+			continue
+		}
+		set[key] = true
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return strings.Join(out, "\x00")
+}
+
+func shapeOfFusingOp(op *entity.TechCardOperation) fusingOpShape {
+	pieces := op.PieceLineKeys
+	if len(op.AssemblyInputs) > 0 {
+		pieces = make([]string, 0, len(op.AssemblyInputs))
+		for _, input := range op.AssemblyInputs {
+			if input.Kind == entity.AssemblyInputPiece {
+				pieces = append(pieces, input.Key)
+			}
+		}
+	}
+	return fusingOpShape{draft: op.Draft, bom: sortedKeySet(op.BomLineKeys), pieces: sortedKeySet(pieces)}
+}
+
+// matchAutoFusingOps pairs every stored automatic FUSING step (auto_fusing_line_key set) with at most
+// one incoming FUSING step and copies the private group key onto it. It returns the stored indexes
+// that found a counterpart; carryMissingAutoFusingOps treats every other draft automatic step as
+// dropped by the payload.
 //
-// The matching rule, in order:
-//  1. an incoming operation that already carries the key (server-built writers);
-//  2. content identity: the incoming FUSING step links the group's INTERLINING line (or, for the
-//     unresolved group, is linkless and not an orphan), at any operation number;
-//  3. operation number, but only for an edited (non-draft) stored step. An edited orphan may have
-//     lost its dead line link, so its number is its only address. A draft step's links are exactly
-//     its group, so a same-numbered step without them is a different step that a stale payload
-//     shifted onto that number: adopting it would hand a legacy step an automatic identity and hide
-//     the missing draft from carryMissingAutoFusingOps.
+// The wire has no operation id, and both the number and the interlining link are shared by steps
+// that are not the same step, so identity is the whole shape (fusingOpShape), in this order:
+//  0. an incoming step that already carries the key (server-built writers);
+//  1. every stored MANUAL step (NULL key) first claims an incoming step of its own shape. Such a
+//     step is never adopted: 0428's invariant is that NULL means manual, and a stale payload shifts
+//     manual steps onto the numbers the automatic steps hold;
+//  2. the exact echo: same draft flag, same BOM links, same pieces, at any number (a client may
+//     renumber or reorder);
+//  3. a draft step still a draft with the same BOM links, at any number — a client that holds the
+//     step but not its latest piece list;
+//  4. the same step reviewed in this save: draft cleared, same BOM links, same pieces, at the
+//     stored number.
 //
-// Among several candidates the one at the stored operation number wins, so an up-to-date echo always
-// pairs with itself.
+// Among several candidates the one at the stored number wins, so an up-to-date echo pairs with
+// itself. Anything looser (a group link alone, a number alone) is not identity: a missed draft step
+// is carried back as a visible duplicate, while a false match silently deletes it and hands a
+// manual step an automatic identity.
 func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 	matched := make(map[int]bool)
 	if stored == nil || incoming == nil {
 		return matched
 	}
 	autoIdx := make([]int, 0)
+	manualIdx := make([]int, 0)
 	for i := range stored.Operations {
 		op := &stored.Operations[i]
-		if op.OperationType == entity.OpTypeFusing && op.AutoFusingLineKey.Valid {
+		if op.OperationType != entity.OpTypeFusing {
+			continue
+		}
+		if op.AutoFusingLineKey.Valid {
 			autoIdx = append(autoIdx, i)
+		} else {
+			manualIdx = append(manualIdx, i)
 		}
 	}
 	if len(autoIdx) == 0 {
 		return matched
 	}
+	shapes := make([]fusingOpShape, len(incoming.Operations))
+	for j := range incoming.Operations {
+		shapes[j] = shapeOfFusingOp(&incoming.Operations[j])
+	}
 	taken := make(map[int]bool, len(incoming.Operations))
-	pick := func(s *entity.TechCardOperation, accept func(*entity.TechCardOperation) bool) int {
+	pick := func(number sql.NullInt32, accept func(j int, in *entity.TechCardOperation) bool) int {
 		best := -1
 		for j := range incoming.Operations {
 			in := &incoming.Operations[j]
-			if taken[j] || in.OperationType != entity.OpTypeFusing || !accept(in) {
+			if taken[j] || in.OperationType != entity.OpTypeFusing || !accept(j, in) {
 				continue
 			}
-			if s.OperationNumber.Valid && in.OperationNumber == s.OperationNumber {
+			if number.Valid && in.OperationNumber == number {
 				return j
 			}
 			if best < 0 {
@@ -189,15 +225,17 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		}
 		return best
 	}
-	pass := func(eligible func(*entity.TechCardOperation) bool,
-		accept func(s, in *entity.TechCardOperation) bool,
-	) {
+	groupKey := func(op *entity.TechCardOperation) string { return strings.TrimSpace(op.AutoFusingLineKey.String) }
+	pass := func(accept func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool) {
 		for _, i := range autoIdx {
-			s := &stored.Operations[i]
-			if matched[i] || !eligible(s) {
+			if matched[i] {
 				continue
 			}
-			j := pick(s, func(in *entity.TechCardOperation) bool { return accept(s, in) })
+			s := &stored.Operations[i]
+			sShape := shapeOfFusingOp(s)
+			j := pick(s.OperationNumber, func(j int, in *entity.TechCardOperation) bool {
+				return accept(s, sShape, j, in)
+			})
 			if j < 0 {
 				continue
 			}
@@ -208,18 +246,31 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 			}
 		}
 	}
-	groupKey := func(op *entity.TechCardOperation) string { return strings.TrimSpace(op.AutoFusingLineKey.String) }
-	always := func(*entity.TechCardOperation) bool { return true }
-	pass(always, func(s, in *entity.TechCardOperation) bool {
+
+	pass(func(s *entity.TechCardOperation, _ fusingOpShape, _ int, in *entity.TechCardOperation) bool {
 		return in.AutoFusingLineKey.Valid && groupKey(in) == groupKey(s)
 	})
-	pass(always, func(s, in *entity.TechCardOperation) bool {
-		return !in.AutoFusingLineKey.Valid && linksAutoFusingGroup(in, groupKey(s))
+	for _, i := range manualIdx {
+		m := &stored.Operations[i]
+		mShape := shapeOfFusingOp(m)
+		if j := pick(m.OperationNumber, func(j int, in *entity.TechCardOperation) bool {
+			return !in.AutoFusingLineKey.Valid && shapes[j] == mShape
+		}); j >= 0 {
+			taken[j] = true
+		}
+	}
+	pass(func(_ *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
+		return !in.AutoFusingLineKey.Valid && shapes[j] == sShape
 	})
-	pass(func(s *entity.TechCardOperation) bool { return !s.Draft && s.OperationNumber.Valid },
-		func(s, in *entity.TechCardOperation) bool {
-			return !in.AutoFusingLineKey.Valid && in.OperationNumber == s.OperationNumber
-		})
+	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
+		return !in.AutoFusingLineKey.Valid && s.Draft && in.Draft && shapes[j].bom == sShape.bom
+	})
+	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
+		reviewed := sShape
+		reviewed.draft = false
+		return !in.AutoFusingLineKey.Valid && s.Draft && s.OperationNumber.Valid &&
+			in.OperationNumber == s.OperationNumber && shapes[j] == reviewed
+	})
 	return matched
 }
 
