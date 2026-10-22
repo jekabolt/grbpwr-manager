@@ -3111,9 +3111,32 @@ func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.Tec
 		return &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
 			X0: values[0], Y0: values[1], X1: values[2], Y1: values[3],
 		}}, false, nil
+	case *pb_common.TechCardPieceFusingZone_Spline:
+		if shape.Spline == nil {
+			return nil, false, entity.NewFieldViolation(field+".fusing_zone.spline",
+				"fusing spline is empty", "", "draw a closed outline with 3 to 64 points, or clear the zone")
+		}
+		points := make([]entity.TechCardPieceFusingSplinePoint, 0, len(shape.Spline.GetPoints()))
+		for i, point := range shape.Spline.GetPoints() {
+			pointField := fmt.Sprintf("%s.fusing_zone.spline.points[%d]", field, i)
+			if point == nil {
+				return nil, false, entity.NewFieldViolation(pointField, "fusing spline point is empty", "",
+					"remove the empty point or place it on the outline")
+			}
+			x, err := fusingDecimalFromPb(point.GetX(), pointField+".x")
+			if err != nil {
+				return nil, false, err
+			}
+			y, err := fusingDecimalFromPb(point.GetY(), pointField+".y")
+			if err != nil {
+				return nil, false, err
+			}
+			points = append(points, entity.TechCardPieceFusingSplinePoint{X: x, Y: y, Corner: point.GetCorner()})
+		}
+		return &entity.TechCardPieceFusingZone{Spline: &entity.TechCardPieceFusingSpline{Points: points}}, false, nil
 	default:
 		return nil, false, entity.NewFieldViolation(field+".fusing_zone", "unknown zone shape", "",
-			"draw a rectangle or select a dedicated DXF piece")
+			"draw a rectangle or spline, or select a dedicated DXF piece")
 	}
 }
 
@@ -4053,6 +4076,17 @@ func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCa
 				X0: pbDecimalFromDecimal(zone.Rect.X0), Y0: pbDecimalFromDecimal(zone.Rect.Y0),
 				X1: pbDecimalFromDecimal(zone.Rect.X1), Y1: pbDecimalFromDecimal(zone.Rect.Y1),
 			},
+		}}
+	}
+	if zone.Spline != nil {
+		points := make([]*pb_common.TechCardPieceFusingSplinePoint, 0, len(zone.Spline.Points))
+		for _, point := range zone.Spline.Points {
+			points = append(points, &pb_common.TechCardPieceFusingSplinePoint{
+				X: pbDecimalFromDecimal(point.X), Y: pbDecimalFromDecimal(point.Y), Corner: point.Corner,
+			})
+		}
+		return &pb_common.TechCardPieceFusingZone{Shape: &pb_common.TechCardPieceFusingZone_Spline{
+			Spline: &pb_common.TechCardPieceFusingSpline{Points: points},
 		}}
 	}
 	if zone.DxfPieceKey != "" {

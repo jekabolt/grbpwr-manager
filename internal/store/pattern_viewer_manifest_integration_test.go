@@ -84,19 +84,11 @@ func TestPatternViewerManifest(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", id) })
 
-	lock := func() int {
-		tc, err := T.GetTechCardById(ctx, id)
-		require.NoError(t, err)
-		return tc.LockVersion
-	}
-	// The BOM moves: contrast loses its назначение, lineGone is deleted. The sheets
-	// round-trip their stored bindings unchanged, which the write path tolerates.
-	_, err = T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC([]entity.TechCardBomItem{
-		bomLine(lineMain, "Основная", "main"),
-		bomLine(linePocket, "Карманка", ""),
-		bomLine(lineContrast, "Контраст", ""),
-		{LineKey: "01PVLINEHW0000000000000005", Section: entity.BomSectionHardware, Name: "Молния"},
-	}), lock())
+	// Legacy data: contrast lost its назначение and lineGone was deleted before the save path refused
+	// orphaning a sheet. The store no longer produces this state, so the test writes it directly.
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card_bom_item SET purpose = NULL WHERE tech_card_id = ? AND line_key = ?", id, lineContrast)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, "DELETE FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = ?", id, lineGone)
 	require.NoError(t, err)
 
 	m, err := T.GetPatternViewerManifest(ctx, id)

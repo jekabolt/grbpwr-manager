@@ -161,13 +161,13 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	require.Error(t, err, "a parse naming a sheet this scope does not hold is refused")
 	require.Contains(t, err.Error(), "sheet_set_mismatch")
 
-	// A scope with no sheets at all cannot be indexed: there is nothing to fingerprint, and an index
-	// under an unknown key would answer for a cloth the card does not have.
+	// A scope with no live BOM line cannot be indexed: an index under an unknown key would answer
+	// for a cloth the card does not have.
 	_, err = T.PutTechCardPatternSizeIndex(ctx, entity.PatternSizeIndexWrite{
 		TechCardId: tcID, ScopeKey: "01F6NOSUCHSCOPE000000000Z9", SizeTokens: []string{"m"},
 	})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "scope_has_no_sheets")
+	require.Contains(t, err.Error(), "scope_not_live")
 
 	// ── 4. an EMPTY token set is a legal answer ───────────────────────────────────────────────
 	// One size per file yields no tokens at all. Storing it is what lets the gate say «the files

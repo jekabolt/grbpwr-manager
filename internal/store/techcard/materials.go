@@ -65,8 +65,13 @@ type pieceFusingEdgeJSON struct {
 }
 
 type pieceFusingZoneJSON struct {
-	Rect        []json.Number `json:"rect,omitempty"`
-	DxfPieceKey string        `json:"dxf_piece_key,omitempty"`
+	Rect        []json.Number          `json:"rect,omitempty"`
+	Spline      *pieceFusingSplineJSON `json:"spline,omitempty"`
+	DxfPieceKey string                 `json:"dxf_piece_key,omitempty"`
+}
+
+type pieceFusingSplineJSON struct {
+	Pts [][]json.Number `json:"pts"`
 }
 
 func pieceFusingEdgesJSON(edges []entity.TechCardPieceFusingEdge) (any, error) {
@@ -95,6 +100,18 @@ func pieceFusingZoneJSONValue(zone *entity.TechCardPieceFusingZone) (any, error)
 		row.Rect = []json.Number{
 			json.Number(zone.Rect.X0.String()), json.Number(zone.Rect.Y0.String()),
 			json.Number(zone.Rect.X1.String()), json.Number(zone.Rect.Y1.String()),
+		}
+	}
+	if zone.Spline != nil {
+		row.Spline = &pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(zone.Spline.Points))}
+		for _, point := range zone.Spline.Points {
+			corner := json.Number("0")
+			if point.Corner {
+				corner = json.Number("1")
+			}
+			row.Spline.Pts = append(row.Spline.Pts, []json.Number{
+				json.Number(point.X.String()), json.Number(point.Y.String()), corner,
+			})
 		}
 	}
 	raw, err := json.Marshal(row)
@@ -132,6 +149,15 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 	if err := json.Unmarshal(p.FusingZoneRaw, &row); err != nil {
 		return fmt.Errorf("decode fusing_zone of piece %q: %w", p.LineKey, err)
 	}
+	shapeCount := 0
+	for _, present := range []bool{len(row.Rect) > 0, row.Spline != nil, strings.TrimSpace(row.DxfPieceKey) != ""} {
+		if present {
+			shapeCount++
+		}
+	}
+	if shapeCount != 1 {
+		return fmt.Errorf("decode fusing_zone of piece %q: want exactly one of rect, spline, or dxf_piece_key", p.LineKey)
+	}
 	switch {
 	case len(row.Rect) > 0:
 		if len(row.Rect) != 4 {
@@ -148,10 +174,30 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 		p.FusingZone = &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
 			X0: coords[0], Y0: coords[1], X1: coords[2], Y1: coords[3],
 		}}
+	case row.Spline != nil:
+		points := make([]entity.TechCardPieceFusingSplinePoint, 0, len(row.Spline.Pts))
+		for i, tuple := range row.Spline.Pts {
+			if len(tuple) != 3 {
+				return fmt.Errorf("decode fusing_zone spline point %d of piece %q: has %d values, want 3", i, p.LineKey, len(tuple))
+			}
+			x, err := decimal.NewFromString(tuple[0].String())
+			if err != nil {
+				return fmt.Errorf("decode fusing_zone spline point %d x of piece %q: %w", i, p.LineKey, err)
+			}
+			y, err := decimal.NewFromString(tuple[1].String())
+			if err != nil {
+				return fmt.Errorf("decode fusing_zone spline point %d y of piece %q: %w", i, p.LineKey, err)
+			}
+			if tuple[2].String() != "0" && tuple[2].String() != "1" {
+				return fmt.Errorf("decode fusing_zone spline point %d corner of piece %q: got %q, want 0 or 1", i, p.LineKey, tuple[2])
+			}
+			points = append(points, entity.TechCardPieceFusingSplinePoint{
+				X: x, Y: y, Corner: tuple[2].String() == "1",
+			})
+		}
+		p.FusingZone = &entity.TechCardPieceFusingZone{Spline: &entity.TechCardPieceFusingSpline{Points: points}}
 	case row.DxfPieceKey != "":
 		p.FusingZone = &entity.TechCardPieceFusingZone{DxfPieceKey: row.DxfPieceKey}
-	default:
-		return fmt.Errorf("decode fusing_zone of piece %q: no rect or dxf_piece_key", p.LineKey)
 	}
 	return nil
 }
@@ -1505,7 +1551,11 @@ func nullIfEmpty(s string) sql.NullString {
 // A card MID-SORT — some lines sorted, some not — is the normal state for the whole transition, and
 // it needs no special case here: each alias resolves on its own, so a line-scoped row and a
 // purpose-scoped row of the same card coexist and are diffed side by side.
-func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string) error {
+//
+// bindingsCopied (season clone, archive import): every pair is new on the destination card but its
+// scope is the source's, unchanged, so a pair the source already held in a dead scope is carried
+// as-is rather than aborting the create — the same grandfathering an existing card gets above.
+func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string, bindingsCopied bool) error {
 	if !set {
 		return nil
 	}
@@ -1561,6 +1611,9 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 			return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i),
 				"not_found", a.PieceLineKey, "the referenced cut-piece is not on this card")
 		}
+		// A purpose-bound alias may retain a compatibility line from an earlier BOM shape. Clear the
+		// echo when that line no longer belongs to the live purpose; the purpose remains authoritative.
+		a.BomLineKey = entity.NormalizeFabricBomLineKey(a.FabricPurpose, a.BomLineKey, rollGoods)
 		scope := a.Scope(rollGoods)
 		key := ciKey(scope.Key, a.BlockName)
 		if prev, exists := existingByKey[key]; exists {
@@ -1584,7 +1637,7 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 				}
 			}
 		} else {
-			if !scope.Live() {
+			if !scope.Live() && !bindingsCopied {
 				// Two different dead ends, two different controls to fix them in — so two messages.
 				// Self-contained on purpose: the operator may see this without the form scrolling
 				// anywhere, so it has to say what to do, not merely what is wrong.

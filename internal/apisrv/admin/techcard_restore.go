@@ -43,6 +43,10 @@ const restoreCarryDigest = "restore-carry"
 // (restoreSeamsFromSnapshot) and the store brings the table to it in the same transaction, through
 // the seam RPCs' own write and delete. Still outside lock_version and every digest.
 //
+// SCOPE SIDECARS. They are likewise absent from the snapshot payload. UpdateTechCardTx applies its
+// normal prospective-graph rekey/dead-scope cleanup after restoring the BOM and sheets, so current
+// size-index and piece-area rows cannot remain filed under a scope the restored card no longer has.
+//
 // What the restore does NOT take from the snapshot is the card's identity and lifecycle — approval
 // state and its stamps, sign-offs, stage, style number and its source, season, category, purpose,
 // aux subtype, output material, measurement unit: those are decisions taken about the card since,

@@ -1442,7 +1442,7 @@ enum TechCardPieceFusingMode {
   TECH_CARD_PIECE_FUSING_MODE_UNKNOWN = 0; // не размечено (см. выше — это не «целиком»)
   TECH_CARD_PIECE_FUSING_MODE_FULL = 1; // дублируется вся деталь: клеевая = тот же контур
   TECH_CARD_PIECE_FUSING_MODE_STRIP = 3; // полоса вдоль среза; ширина пуста = эталон припуска (0277)
-  TECH_CARD_PIECE_FUSING_MODE_ZONE = 4; // отдельная зона: прямоугольник на детали или DXF-лекало
+  TECH_CARD_PIECE_FUSING_MODE_ZONE = 4; // отдельная зона: прямоугольник/сплайн на детали или DXF-лекало
 }
 
 // TechCardSizeQuantity is the TYPICAL calculation batch for a size — «типовой тираж для
@@ -3267,12 +3267,24 @@ message TechCardPieceFusingRect {
   google.type.Decimal y1 = 4;
 }
 
-// Geometry for ZONE fusing: either a rectangle drawn on the garment piece or a dedicated DXF
-// piece supplied by the pattern maker. An empty message deliberately clears the stored zone.
+message TechCardPieceFusingSplinePoint {
+  google.type.Decimal x = 1;
+  google.type.Decimal y = 2;
+  bool corner = 3;
+}
+
+// Closed spline through piece-local points in millimetres. corner keeps that point sharp.
+message TechCardPieceFusingSpline {
+  repeated TechCardPieceFusingSplinePoint points = 1;
+}
+
+// Geometry for ZONE fusing: a rectangle or freeform spline drawn on the garment piece, or a
+// dedicated DXF piece supplied by the pattern maker. An empty message deliberately clears it.
 message TechCardPieceFusingZone {
   oneof shape {
     TechCardPieceFusingRect rect = 1;
     string dxf_piece_key = 2;
+    TechCardPieceFusingSpline spline = 3;
   }
 }
 

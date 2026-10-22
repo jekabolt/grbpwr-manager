@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"strconv"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -127,5 +128,98 @@ func TestValidatePieceFusingRefusesSubMillimetrePrecision(t *testing.T) {
 	}
 	if err := ValidatePieceFusing("f", true, fusingMode(PieceFusingModeStrip), fusingDec("25.3")); err != nil {
 		t.Errorf("законная десятая доля отклонена: %v", err)
+	}
+}
+
+func splineTestPoint(x, y string, corner bool) TechCardPieceFusingSplinePoint {
+	return TechCardPieceFusingSplinePoint{
+		X: decimal.RequireFromString(x), Y: decimal.RequireFromString(y), Corner: corner,
+	}
+}
+
+func splineTestPiece(points ...TechCardPieceFusingSplinePoint) *TechCardPiece {
+	return &TechCardPiece{
+		Fused:      true,
+		FusingMode: fusingMode(PieceFusingModeZone),
+		FusingZone: &TechCardPieceFusingZone{Spline: &TechCardPieceFusingSpline{Points: points}},
+	}
+}
+
+func TestValidatePieceFusingSplineGeometry(t *testing.T) {
+	valid := splineTestPiece(
+		splineTestPoint("0", "0", true), splineTestPoint("20", "0", true),
+		splineTestPoint("20", "10", true), splineTestPoint("0", "10", true),
+	)
+	if err := ValidatePieceFusingDetails("pieces[0]", valid); err != nil {
+		t.Fatalf("valid rectangular spline rejected: %v", err)
+	}
+	flat, err := flattenPieceFusingSpline(valid.FusingZone.Spline)
+	if err != nil || len(flat) != 20 {
+		t.Fatalf("sharp rectangle vertices = %d, want TypeScript result 20: err=%v", len(flat), err)
+	}
+
+	curved := splineTestPiece(
+		splineTestPoint("0", "0", false), splineTestPoint("20", "0", false),
+		splineTestPoint("20", "10", false), splineTestPoint("0", "10", false),
+	)
+	flat, err = flattenPieceFusingSpline(curved.FusingZone.Spline)
+	if err != nil {
+		t.Fatalf("flatten rounded spline: %v", err)
+	}
+	points := []fusingSplineFloatPoint{{0, 0}, {20, 0}, {20, 10}, {0, 10}}
+	tangents := []fusingSplineFloatPoint{{10, -5}, {10, 5}, {-10, 5}, {-10, -5}}
+	for i, want := range []int{4, 4, 4, 4} {
+		got := fusingSplineSteps(points[i], tangents[i], points[(i+1)%4], tangents[(i+1)%4], fusingSplineChordErrorMm)
+		if got != want {
+			t.Errorf("segment %d steps = %d, want TypeScript stepsOf result %d", i, got, want)
+		}
+	}
+	if got := fusingSplineSteps(points[0], tangents[0], points[1], tangents[1], 0); got != 1 {
+		t.Errorf("non-finite step calculation = %d, want TypeScript fallback 1", got)
+	}
+	if len(flat) != 16 {
+		t.Fatalf("flattened vertex count = %d, want TypeScript flattenSpline result 16", len(flat))
+	}
+	for i, want := range []fusingSplineFloatPoint{{0, 0}, {20, 0}, {20, 10}, {0, 10}} {
+		if got := flat[i*4]; got != want {
+			t.Errorf("vertex %d = %+v, want control point %+v", i*4, got, want)
+		}
+	}
+	if got, want := flat[1], (fusingSplineFloatPoint{x: 4.0625, y: -0.9375}); got != want {
+		t.Errorf("first t=1/4 vertex = %+v, want TypeScript result %+v", got, want)
+	}
+	if flat[len(flat)-1] == flat[0] {
+		t.Fatal("flattened spline duplicated its closing point")
+	}
+}
+
+func TestValidatePieceFusingSplineRejectsInvalidPolygons(t *testing.T) {
+	tooMany := make([]TechCardPieceFusingSplinePoint, 65)
+	for i := range tooMany {
+		tooMany[i] = splineTestPoint(strconv.Itoa(i), strconv.Itoa(i%2), true)
+	}
+	tests := map[string]*TechCardPiece{
+		"too few points": splineTestPiece(
+			splineTestPoint("0", "0", true), splineTestPoint("10", "0", true)),
+		"too many points": splineTestPiece(tooMany...),
+		"zero area": splineTestPiece(
+			splineTestPoint("0", "0", true), splineTestPoint("10", "0", true), splineTestPoint("20", "0", true)),
+		"self intersection": splineTestPiece(
+			splineTestPoint("0", "0", true), splineTestPoint("10", "10", true),
+			splineTestPoint("0", "10", true), splineTestPoint("10", "0", true)),
+	}
+	for name, piece := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidatePieceFusingDetails("pieces[0]", piece); err == nil {
+				t.Fatal("invalid spline accepted")
+			}
+		})
+	}
+
+	multiple := splineTestPiece(
+		splineTestPoint("0", "0", true), splineTestPoint("10", "0", true), splineTestPoint("0", "10", true))
+	multiple.FusingZone.Rect = &TechCardPieceFusingRect{X1: decimal.NewFromInt(1), Y1: decimal.NewFromInt(1)}
+	if err := ValidatePieceFusingDetails("pieces[0]", multiple); err == nil {
+		t.Fatal("zone with both rect and spline accepted")
 	}
 }

@@ -19,6 +19,9 @@ func (s *Store) CloneTechCardForSeason(ctx context.Context, sourceID, expectedSo
 		return 0, err
 	}
 	tc.ReconcileFusing = true
+	// Sheets and DXF aliases are the source's, bindings unchanged: a grandfathered unresolved one is
+	// carried, not a reason to refuse the clone.
+	tc.FabricBindingsCopied = true
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

@@ -519,13 +519,10 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // livePieceKeysOfSizedAreas keeps only the sized areas whose scope STILL resolves to cloth on the
 // card, and returns the pieces they belong to.
 //
-// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. scope_key — это ВЕДРО ЗАПИСИ
-// (COALESCE(fabric_purpose, bom_line_key)), и оно намеренно не двигается вслед за BOM. Значит
-// назначение, присвоенное или переименованное ПОСЛЕ замера, оставляет пер-размерные строки под
-// ключом, которого на карточке больше нет. Предписанное лекарство «перемерьте» на них не действует:
-// полная замена работает по одному ЖИВОМУ скоупу (пустой набор отвергается, мёртвый не пройдёт
-// scope_has_no_sheets), то есть деталь стала бы непомечаемой навсегда, без единого способа это
-// расшить.
+// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. SaveTechCard now rekeys one-destination
+// scope moves and deletes dead buckets in the SAME transaction as the BOM edit. Rows predating that
+// hygiene can still exist, though, and this guard must not turn one into a permanent UNI blocker:
+// a dead scope cannot be replaced through the side RPC and the operator has no direct delete action.
 //
 // А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
 // ЖИВОЙ строки (dto.slotAreaEstimate считает его как EffectiveFabricScopeKey(строка)),
@@ -721,15 +718,15 @@ func pieceSetDiff(expected, submitted map[string]bool) string {
 // fingerprint exists to prevent, reached by accident rather than malice.
 func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaWrite) (entity.PieceAreaResult, error) {
 	var out entity.PieceAreaResult
-	scopeKey := strings.TrimSpace(in.ScopeKey)
-	if scopeKey == "" {
+	requested := strings.TrimSpace(in.ScopeKey)
+	if requested == "" {
 		return out, entity.NewFieldViolation("scope_key", "required", "",
 			"name the fabric scope: its purpose, or the BOM line's line_key when the card has not been sorted")
 	}
 	if len(in.Rows) == 0 {
 		// An empty set is NOT «this fabric needs no pieces» — it is a parse that found nothing, and
 		// storing it would turn a failed read into a confident zero area, i.e. a free garment.
-		return out, entity.NewFieldViolation("areas", "empty", scopeKey,
+		return out, entity.NewFieldViolation("areas", "empty", requested,
 			"the parse produced no areas for this fabric — nothing is stored; check the contour layer and the block↔piece links")
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -778,6 +775,14 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
 		if err != nil {
 			return err
+		}
+		// An older client publishes the sheet's RAW binding: the line key of a line that has since been
+		// sorted into a purpose. That key still names exactly one cloth, so the measurement is written
+		// under the line's effective scope rather than refused; a key that names no cloth is refused.
+		scopeKey, live := entity.LiveFabricScopeKey(requested, lines)
+		if !live {
+			return entity.NewFieldViolation("scope_key", "scope_not_live", requested,
+				"choose a fabric purpose or unsorted/interlining BOM line that is still a live scope on this card")
 		}
 		sheetsByScope, err := scopeSheetRefs(ctx, db, in.TechCardId, lines)
 		if err != nil {

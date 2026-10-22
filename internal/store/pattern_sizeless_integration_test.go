@@ -211,9 +211,15 @@ func TestPatternSizelessAdoptionIsOrderIndependent(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size WHERE id > ?", szA).Scan(&szB))
 
 	const url = "https://cdn.example/base/tech-card-patterns/2026/august/combined.dxf"
+	const fabKey = "01SLAMBIGFABRIC00000000001"
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: v != ""} }
 	mkTC := func(patterns ...entity.TechCardSizePattern) *entity.TechCardInsert {
+		// A new DXF sheet must name a live fabric scope; every row binds the one fabric line.
+		for i := range patterns {
+			patterns[i].BomLineKey = ns(fabKey)
+		}
 		return &entity.TechCardInsert{
+			BomItems:    []entity.TechCardBomItem{{LineKey: fabKey, Section: entity.BomSectionFabric, Name: "Основная"}},
 			StyleNumber: ns("SL-AMBIG"), Name: "AMB",
 			Stage: entity.TechCardStageProto, ApprovalState: entity.TechCardApprovalDraft,
 			MeasurementUnit: entity.TechCardUnitMm,

@@ -31,10 +31,17 @@ type edgeState struct {
 	StartMm, EndMm string
 }
 
+type splinePointState struct {
+	X, Y   string
+	Corner bool
+}
+
 type zoneState struct {
 	DxfPieceKey    string
 	Rect           bool
 	X0, Y0, X1, Y1 string
+	Spline         bool
+	Points         []splinePointState
 }
 
 type pieceFusingState struct {
@@ -84,13 +91,21 @@ func pieceState(piece entity.TechCardPiece) pieceFusingState {
 			state.Zone.X0, state.Zone.Y0 = rect.X0.String(), rect.Y0.String()
 			state.Zone.X1, state.Zone.Y1 = rect.X1.String(), rect.Y1.String()
 		}
+		if spline := piece.FusingZone.Spline; spline != nil {
+			state.Zone.Spline = true
+			for _, point := range spline.Points {
+				state.Zone.Points = append(state.Zone.Points, splinePointState{
+					X: point.X.String(), Y: point.Y.String(), Corner: point.Corner,
+				})
+			}
+		}
 	}
 	return state
 }
 
 func hasPieceFusingState(state pieceFusingState) bool {
 	return state.Fused || state.Mode.Valid || state.Width.Valid || state.BOMLineKey != "" ||
-		len(state.Edges) > 0 || state.Zone.Rect || state.Zone.DxfPieceKey != "" ||
+		len(state.Edges) > 0 || state.Zone.Rect || state.Zone.Spline || state.Zone.DxfPieceKey != "" ||
 		state.InsetMm.Valid || state.InsetNet.Valid || state.Grain.Valid || state.Darts.Valid
 }
 

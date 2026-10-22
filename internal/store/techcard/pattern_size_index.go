@@ -74,8 +74,8 @@ func (s *Store) GetTechCardPatternSizeIndex(ctx context.Context, techCardID int)
 // the fingerprint exists to prevent, reached by accident instead of by malice.
 func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.PatternSizeIndexWrite) (entity.PatternSizeIndexResult, error) {
 	var out entity.PatternSizeIndexResult
-	scopeKey := strings.TrimSpace(in.ScopeKey)
-	if scopeKey == "" {
+	requested := strings.TrimSpace(in.ScopeKey)
+	if requested == "" {
 		return out, entity.NewFieldViolation("scope_key", "required", "",
 			"name the fabric scope: its purpose, or the BOM line's line_key when the card has not been sorted")
 	}
@@ -84,6 +84,14 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 		lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
 		if err != nil {
 			return err
+		}
+		// An older client publishes the sheet's RAW binding: the line key of a line that has since been
+		// sorted into a purpose. That key still names exactly one cloth, so it is written under the
+		// line's effective scope rather than refused; a key that names no cloth is still refused.
+		scopeKey, live := entity.LiveFabricScopeKey(requested, lines)
+		if !live {
+			return entity.NewFieldViolation("scope_key", "scope_not_live", requested,
+				"choose a fabric purpose or unsorted/interlining BOM line that is still a live scope on this card")
 		}
 		// The scope's CURRENT membership, bucketed by the ТКАНЬ each sheet addresses — the same
 		// grouping the panel shows and the same key dto.patternScopesOfCard reads this row back
